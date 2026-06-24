@@ -835,6 +835,9 @@ export function resolveReviewer(loop, detected = {}) {
   let reviewer = r.reviewer || 'subagent-checker';
   if ((reviewer === 'deep-review-loop' || reviewer === 'deep-review') && !detected['deep-review']) {
     reviewer = detected['codex'] ? 'codex-cross' : 'subagent-checker';
+  } else if (reviewer === 'subagent-checker' && detected['codex']) {
+    // deep-review 부재로 auto 선택된 subagent-checker 도 codex 감지 시 cross-model(codex) 선호 (spec §7)
+    reviewer = 'codex-cross';
   }
   return { reviewer, flags: r.flags || [], mode: r.mode || 'cross-model' };
 }
