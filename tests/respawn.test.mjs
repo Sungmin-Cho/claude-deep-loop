@@ -157,6 +157,23 @@ test('respawn: lease stolen during spawnFn → fenced outcome, child lease not c
   assert.notEqual(childSession?.outcome, 'failed_launch');
 });
 
+// Codex r5 🔴1: gate-blocked pause write fenced — if the lease is taken over between emitHandoff and
+// respawn (parent releases + child acquires), respawn must return 'fenced' and NOT set status='paused'.
+test('respawn gate-blocked with lease takeover before pause → fenced, status NOT paused', () => {
+  const { root, runId } = seed((d) => { d.budget.total = 0; });
+  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1 });
+  const CHILD = h.childRunId;
+  // Simulate takeover: parent releases, child acquires → generation advances to 2
+  releaseLease(root, runId, { owner: runId, generation: 1 });
+  acquireLease(root, runId, { owner: CHILD, expectGeneration: 1, now: NOW1 });
+  // Now call respawn as the original parent (runId, gen 1) — gate-blocked but lease has changed
+  const r = respawn(root, runId, { childRunId: CHILD, key: h.key, handoffRel: h.handoffRel, now: NOW1, spawnFn: () => { return { ok: true }; } });
+  assert.equal(r.ok, false);
+  assert.equal(r.outcome, 'fenced', 'must return fenced when lease changed before pause write');
+  const after = readState(root, runId).data;
+  assert.notEqual(after.status, 'paused', 'status must NOT be paused when fenced');
+});
+
 // respawn race (§14 test 12): Continue↔PreCompact 동시 트리거 → 멱등키로 emit 1회
 test('double emit + single respawn (race): only one child chain, no double spawn', () => {
   const { root, runId } = seed();

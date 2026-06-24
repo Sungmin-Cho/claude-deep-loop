@@ -93,6 +93,24 @@ test('handoff emit via CLI sets releasing', () => {
   assert.equal(readState(root, runId).data.session_chain.lease.state, 'releasing');
 });
 
+// Codex r5 🟡3: lease acquire with valueless --owner exits 3
+test('lease acquire --owner (valueless) exits with code 3', () => {
+  const { root, runId } = seed();
+  let code = 0;
+  try { run(root, ['lease', 'acquire', '--owner', '--generation', '1', '--run-id', runId]); }
+  catch (e) { code = e.status; }
+  assert.equal(code, 3);
+});
+
+// Codex r5 🟡3: lease acquire with missing --owner exits 3
+test('lease acquire (missing --owner) exits with code 3', () => {
+  const { root, runId } = seed();
+  let code = 0;
+  try { run(root, ['lease', 'acquire', '--generation', '1', '--run-id', runId]); }
+  catch (e) { code = e.status; }
+  assert.equal(code, 3);
+});
+
 test('full suite still green count grows (smoke: validate ok)', () => {
   const { root } = seed();
   const out = run(root, ['validate']);

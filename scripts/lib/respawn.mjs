@@ -42,7 +42,17 @@ export function respawn(root, runId, { childRunId, key, handoffRel = '', headles
   const gate = respawnGate(loop, { now });
   if (!gate.ok) {
     // 실패모드 (A): spawn 시도 안 함 → handoff(emitted) 유지 + paused, 사람 수동 resume.
-    withLock(root, runId, () => { const { data } = readState(root, runId); data.status = 'paused'; writeState(root, runId, data); });
+    // Codex r5 🔴1: lease 가 releasing 중이라 recovery/child 가 사이에 인수 가능 → withLock 내에서
+    // 신선한 상태를 읽어 owner/generation 이 아직 일치할 때만 paused 로 기록 (fence-before-write).
+    let fenced = false;
+    withLock(root, runId, () => {
+      const { data } = readState(root, runId);
+      const l = data.session_chain.lease;
+      if (l.owner_run_id !== runId || l.generation !== generation) { fenced = true; return; }
+      data.status = 'paused';
+      writeState(root, runId, data);
+    });
+    if (fenced) return { ok: false, outcome: 'fenced', reason: 'lease-changed-before-pause', childRunId };
     return { ok: false, outcome: 'gate-blocked', reason: gate.reason, childRunId };
   }
   // Codex r2 🔴3: 외부 spawn **이전에** emitted→spawned 를 원자적(withLock CAS)으로 클레임.

@@ -33,10 +33,12 @@ function finishOrAdvance(loop, gate, fanoutBlocked) {
   // Codex r3 🔴4: 리뷰 안 된 done maker 가 있으면 finish 금지 → checker dispatch (리뷰 게이트 불변식).
   const unreviewed = eps.find(e => e.role === 'maker' && e.status === 'done' && !reviewSatisfied(loop, e));
   if (unreviewed) return A(gate, { type: 'dispatch_checker', episode_id: unreviewed.id, point: unreviewed.point, workstream_id: unreviewed.workstream_id }, '/deep-loop-continue');
-  // finish 는 active workstream 0 + 모든 episode 가 done/approved + 모든 done maker 리뷰 통과일 때만 (Codex r2 🔴7 / r3 🔴4)
+  // finish 는 active workstream 0 + 모든 episode 가 settled 일 때만 (Codex r2 🔴7 / r3 🔴4 / r5 🟡2)
+  // settled: done/approved, OR 리뷰-충족된 rejected checker (나중 승인으로 포인트가 통과된 경우).
+  const settled = (e) => ['done', 'approved'].includes(e.status) || (e.role === 'checker' && e.status === 'rejected' && reviewSatisfied(loop, e));
   const noActiveWs = (loop.active_workstreams || []).length === 0;
-  const allPositive = eps.length > 0 && eps.every(e => ['done', 'approved'].includes(e.status));
-  if (noActiveWs && allPositive) return A(gate, { type: 'finish' }, '/deep-loop-finish');
+  const allSettled = eps.length > 0 && eps.every(settled);
+  if (noActiveWs && allSettled) return A(gate, { type: 'finish' }, '/deep-loop-finish');
   return A(gate, { type: 'await_human', reason: 'active-work-remains' }, '/deep-loop-status');
 }
 

@@ -32,8 +32,13 @@ function intArg(f, name) {
   if (typeof v !== 'string' || !/^\d+$/.test(v)) { error('INVALID_' + name.toUpperCase().replace('-', '_') + ': must be a positive integer'); process.exit(3); }
   return Number(v);
 }
+function strArg(f, name) {
+  const v = f[name];
+  if (typeof v !== 'string' || v.length === 0) { error('INVALID_' + name.toUpperCase().replace(/-/g, '_') + ': must be a non-empty string'); process.exit(3); }
+  return v;
+}
 function requireLease(root, runId, f, intent = 'business') {
-  if (typeof f.owner !== 'string' || !f.owner) { error('INVALID_OWNER'); process.exit(3); }
+  strArg(f, 'owner');
   const generation = intArg(f, 'generation');
   const { data } = readState(root, runId);
   const r = leaseCheck(data, { owner: f.owner, generation, intent });
@@ -79,9 +84,9 @@ const handlers = {
   tick: async (a) => { const f = parseFlags(a); const root = rootOf(f); const { data } = readState(root, runIdOf(root, f)); json({ mode: f.mode || 'advance', ...nextAction(data) }); return 0; },
   lease: async (a) => {
     const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
-    if (verb === 'check') { const { data } = readState(root, runId); json(leaseCheck(data, { owner: f.owner, generation: intArg(f, 'generation') })); return 0; }
-    if (verb === 'acquire') { json(acquireLease(root, runId, { owner: f.owner, expectGeneration: intArg(f, f['expect-generation'] !== undefined ? 'expect-generation' : 'generation') })); return 0; }
-    if (verb === 'release') { json(releaseLease(root, runId, { owner: f.owner, generation: intArg(f, 'generation') })); return 0; }
+    if (verb === 'check') { const { data } = readState(root, runId); json(leaseCheck(data, { owner: strArg(f, 'owner'), generation: intArg(f, 'generation') })); return 0; }
+    if (verb === 'acquire') { json(acquireLease(root, runId, { owner: strArg(f, 'owner'), expectGeneration: intArg(f, f['expect-generation'] !== undefined ? 'expect-generation' : 'generation') })); return 0; }
+    if (verb === 'release') { json(releaseLease(root, runId, { owner: strArg(f, 'owner'), generation: intArg(f, 'generation') })); return 0; }
     error(`unknown lease verb: ${verb}`); return 2;
   },
   workstream: async (a) => {

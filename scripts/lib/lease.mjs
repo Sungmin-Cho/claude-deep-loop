@@ -24,6 +24,7 @@ export function leaseCheck(loop, { owner, generation, intent = 'business' } = {}
 
 // CAS 인수: released 또는 stale(expired)만, generation === expectGeneration 펜싱. 성공 시 generation+1.
 export function acquireLease(root, runId, { owner, expectGeneration, now = Date.now() }) {
+  if (typeof owner !== 'string' || owner.length === 0) throw new Error('INVALID_OWNER');
   return withLock(root, runId, () => {
     const { data } = readState(root, runId);
     const lease = data.session_chain.lease;
@@ -54,6 +55,7 @@ export function acquireLease(root, runId, { owner, expectGeneration, now = Date.
 }
 
 export function releaseLease(root, runId, { owner, generation }) {
+  if (typeof owner !== 'string' || owner.length === 0) throw new Error('INVALID_OWNER');
   return withLock(root, runId, () => {
     const { data } = readState(root, runId);
     const lease = data.session_chain.lease;

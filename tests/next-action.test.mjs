@@ -165,3 +165,21 @@ test('superseded rejected checker (review_points_done satisfied) does not block 
   // Must NOT be fix_episode (the old rejected checker is review-satisfied)
   assert.notEqual(r.action.type, 'fix_episode', 'stale rejected checker must not trigger fix_episode');
 });
+
+// Codex r5 🟡2: superseded rejected checker must not block finish
+// A loop with: OLD rejected checker (ws-01/plan), review_points_done=['plan'] (later approved),
+// a done+reviewed maker (ws-01/plan), no active workstreams, current_episode=null → finish (not await_human, not fix_episode).
+test('superseded rejected checker + done reviewed maker + no active ws → finish (not await_human)', () => {
+  const l = loop({
+    workstreams: [{ id: 'ws-01', status: 'in_progress', review_points_done: ['plan'], episodes: [], depends_on: [] }],
+    active_workstreams: [],
+    episodes: [
+      { id: '001-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
+      { id: '002-deep-review-old', role: 'checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01' },
+      { id: '003-deep-review-new', role: 'checker', status: 'approved', point: 'plan', workstream_id: 'ws-01' },
+    ],
+    current_episode: null,
+  });
+  const r = nextAction(l, { now: Date.parse('2026-06-24T00:00:00Z') });
+  assert.equal(r.action.type, 'finish', `expected finish but got ${r.action.type} (reason: ${r.action.reason})`);
+});
