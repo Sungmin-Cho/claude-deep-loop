@@ -35,6 +35,8 @@ export function respawn(root, runId, { childRunId, key, handoffRel = '', headles
   // 멱등/펜싱 사전조건 (Codex r1 🔴2): 잘못된 owner/key 거부, 이미 spawned 면 재spawn 금지(이중 spawn 차단).
   if (lease.owner_run_id !== runId) return { ok: false, outcome: 'fenced', reason: 'owner-mismatch', childRunId };
   if (lease.handoff_idempotency_key !== key) return { ok: false, outcome: 'key-mismatch', reason: 'key-mismatch', childRunId };
+  // Codex impl r8 🟡: bind the spawn to the RESERVED handoff child — a valid key must not spawn an arbitrary child.
+  if (childRunId !== lease.handoff_child_run_id) return { ok: false, outcome: 'child-mismatch', reason: `childRunId ${childRunId} != reserved ${lease.handoff_child_run_id}`, childRunId };
   if (lease.handoff_phase === 'spawned') return { ok: true, outcome: 'already-spawned', reason: 'idempotent', childRunId };
   if (lease.handoff_phase !== 'emitted' || lease.state !== 'releasing') {
     return { ok: false, outcome: 'not-emitted', reason: `phase=${lease.handoff_phase} state=${lease.state}`, childRunId };
@@ -64,7 +66,10 @@ export function respawn(root, runId, { childRunId, key, handoffRel = '', headles
     return { ok: false, outcome: 'phase-error', reason: claim.reason, childRunId };
   }
   if (claim.reason === 'idempotent-noop') return { ok: true, outcome: 'already-spawned', reason: 'idempotent', childRunId };
-  const cmds = buildLaunchCommand({ root, parentRunId: runId, childRunId, handoffRel, headless });
+  // Codex impl r8 🟡: derive handoffRel from the reserved child session (don't trust caller); fall back to arg.
+  const childSession = loop.session_chain.sessions.find(s => s.run_id === childRunId);
+  const effHandoffRel = (childSession && childSession.handoff_rel) || handoffRel;
+  const cmds = buildLaunchCommand({ root, parentRunId: runId, childRunId, handoffRel: effHandoffRel, headless });
   const cmd = headless ? cmds.headless : cmds.interactive;
   try {
     const res = spawnFn(cmd);

@@ -59,6 +59,20 @@ test('respawn launch failure → failed_launch outcome + lease rollback (mode B)
   assert.equal(after.session_chain.sessions.find(s => s.run_id === runId).superseded_by, null);
 });
 
+// Codex impl r8 🟡: a valid key must not spawn an arbitrary (unreserved) child.
+test('respawn rejects childRunId that does not match the reserved handoff child (no spawn, no phase advance)', () => {
+  const { root, runId } = seed();
+  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1 });
+  let spawned = false;
+  const r = respawn(root, runId, { childRunId: 'WRONG-CHILD', key: h.key, handoffRel: h.handoffRel, now: NOW1, spawnFn: () => { spawned = true; return { ok: true }; } });
+  assert.equal(r.ok, false);
+  assert.equal(r.outcome, 'child-mismatch');
+  assert.equal(spawned, false);
+  const after = readState(root, runId).data.session_chain.lease;
+  assert.equal(after.handoff_phase, 'emitted');   // no advance to spawned
+  assert.equal(after.state, 'releasing');
+});
+
 test('respawn success → spawned, lease released, child can acquire (generation+1); retry is idempotent', () => {
   const { root, runId } = seed();
   const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1 });
