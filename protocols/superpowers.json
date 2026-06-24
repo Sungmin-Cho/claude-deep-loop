@@ -1,0 +1,7 @@
+{
+  "protocol": "superpowers",
+  "dispatch": { "kind": "invoke_skill", "skill": "superpowers:writing-plans", "args_template": "<task>", "then": "superpowers:subagent-driven-development" },
+  "await": { "kind": "poll_file", "path_template": "docs/superpowers/plans/<task>.md", "done_when": { "exists": true } },
+  "read": { "receipt_path_template": "docs/superpowers/plans/<task>.md", "producer": null, "artifact_kind": null },
+  "implementer_verb": "then"
+}
