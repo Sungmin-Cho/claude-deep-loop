@@ -149,3 +149,15 @@ test('newEpisode throws FENCE_REQUIRED when called without fence', () => {
     /FENCE_REQUIRED/
   );
 });
+
+// Codex impl r15 🟡: a non-null nonexistent workstream is rejected at creation (no stranded/unreviewable maker).
+test('newEpisode rejects a non-null nonexistent workstream; no episode created, anchor stays consistent', () => {
+  const { root, runId } = seed();
+  const f = fence(runId);
+  assert.throws(
+    () => newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation', workstream: 'ws-nope', fence: f }),
+    /WORKSTREAM_NOT_FOUND/
+  );
+  assert.equal(readState(root, runId).data.episodes.length, 0);   // no stranded episode
+  assert.doesNotThrow(() => reconcileBudget(root, runId));          // preCheck threw before append → anchor consistent
+});

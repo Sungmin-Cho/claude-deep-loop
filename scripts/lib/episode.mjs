@@ -44,10 +44,15 @@ export function newEpisode(root, runId, { plugin, role, kind, point, workstream 
     loop.current_episode = id;
     if (role === 'maker') loop.comprehension.episodes_total = (loop.comprehension.episodes_total || 0) + 1;
     if (workstream) {
-      const ws = loop.workstreams.find(w => w.id === workstream);
-      if (ws) ws.episodes.push(id);
+      // preCheck guarantees the workstream exists when non-null (Codex impl r14/r15) — bind episode to it.
+      loop.workstreams.find(w => w.id === workstream).episodes.push(id);
     }
-  }, fence ? (loop) => { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); } : undefined);
+  }, (loop) => {
+    const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason);
+    // Codex impl r15 🟡: reject a non-null workstream that does not exist — otherwise a maker bound to a phantom
+    // workstream becomes unreviewable (dispatchReview rightly rejects WORKSTREAM_NOT_FOUND at review time).
+    if (workstream && !loop.workstreams.find(w => w.id === workstream)) throw new Error(`WORKSTREAM_NOT_FOUND: ${workstream}`);
+  });
   // Assert containment before FS writes
   const base = resolve(runDir(root, runId), 'episodes');
   const full = resolve(dir);
