@@ -1,0 +1,8 @@
+# deep-suite scratch / runtime state (never committed)
+.deep-review/
+.deep-loop/
+.superpowers/
+.claude/worktrees/
+node_modules/
+package-lock.json
+.DS_Store
