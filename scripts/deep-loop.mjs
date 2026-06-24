@@ -93,7 +93,19 @@ const handlers = {
     const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
     requireLease(root, runId, f);
     const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'business' };
-    if (verb === 'new') { const r = newWorkstream(root, runId, { title: f.title, branch: f.branch, worktree: f.worktree, dependsOn: f['depends-on'] ? JSON.parse(f['depends-on']) : [], fence }); json(r); return 0; }
+    if (verb === 'new') {
+      const title = strArg(f, 'title');
+      const branch = strArg(f, 'branch');
+      const worktree = strArg(f, 'worktree');
+      let dependsOn = [];
+      if (f['depends-on'] !== undefined) {
+        let parsed;
+        try { parsed = JSON.parse(f['depends-on']); } catch { error('INVALID_DEPENDS_ON'); return 3; }
+        if (!Array.isArray(parsed) || parsed.some(d => typeof d !== 'string' || d.length === 0)) { error('INVALID_DEPENDS_ON'); return 3; }
+        dependsOn = parsed;
+      }
+      const r = newWorkstream(root, runId, { title, branch, worktree, dependsOn, fence }); json(r); return 0;
+    }
     if (verb === 'set') { setWorkstreamStatus(root, runId, f.id, f.status, { fence }); json({ ok: true }); return 0; }
     // 터미널(ready/merged/abandoned)은 proof 필수 — 커널 파생 (Codex r1 🔴6: CLI 경계로 노출)
     if (verb === 'terminal') { recordWorkstreamTerminal(root, runId, f.id, { status: f.status, proof: f.proof ? JSON.parse(f.proof) : {}, fence }); json({ ok: true }); return 0; }

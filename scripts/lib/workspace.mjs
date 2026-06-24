@@ -9,6 +9,14 @@ const NON_TERMINAL = ['planned', 'in_progress', 'in_review', 'parked'];
 const TERMINAL = ['ready', 'merged', 'abandoned'];
 
 export function newWorkstream(root, runId, { title, branch, worktree, baseCommit = null, dependsOn = [], fence } = {}) {
+  if (typeof title !== 'string' || title.length === 0 ||
+      typeof branch !== 'string' || branch.length === 0 ||
+      typeof worktree !== 'string' || worktree.length === 0) {
+    throw new Error('WORKSTREAM_INPUT_INVALID: title/branch/worktree must be non-empty strings');
+  }
+  if (!Array.isArray(dependsOn) || dependsOn.some(d => typeof d !== 'string' || d.length === 0)) {
+    throw new Error('WORKSTREAM_INPUT_INVALID: dependsOn must be an array of strings');
+  }
   let id;
   appendAnchored(root, runId, { type: 'workstream-new', data: { title } }, (loop) => {
     const n = String(loop.workstreams.length + 1).padStart(2, '0');
@@ -92,9 +100,9 @@ export function integrationOrder(loop) {
   const ids = new Set(ws.map(w => w.id));
   // Codex r2 🟡9: 미지 의존을 silent drop 하지 않는다 — 오타/누락 id 는 needs-human 에스컬레이션.
   const missing = [];
-  for (const w of ws) for (const d of (w.depends_on || [])) if (!ids.has(d)) missing.push({ id: w.id, missing_dep: d });
+  for (const w of ws) for (const d of (Array.isArray(w.depends_on) ? w.depends_on : [])) if (!ids.has(d)) missing.push({ id: w.id, missing_dep: d });
   if (missing.length) return { order: [], cycle: false, missing };
-  const deps = new Map(ws.map(w => [w.id, (w.depends_on || [])]));
+  const deps = new Map(ws.map(w => [w.id, (Array.isArray(w.depends_on) ? w.depends_on : [])]));
   const order = [], state = new Map(); // 0=unseen 1=visiting 2=done
   let cycle = false;
   const visit = (id) => {

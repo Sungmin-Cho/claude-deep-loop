@@ -27,7 +27,16 @@ export function recordReviewVerdict(root, runId, verdict, fence) {
       if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason);
     }
     const cb = data.circuit_breaker || { consecutive_request_changes: 0 };
-    cb.consecutive_request_changes = verdict === 'REQUEST_CHANGES' ? (cb.consecutive_request_changes || 0) + 1 : 0;
+    if (verdict === 'REQUEST_CHANGES') {
+      cb.consecutive_request_changes = (cb.consecutive_request_changes || 0) + 1;
+      if (cb.consecutive_request_changes >= THRESHOLD && !cb.tripped) {
+        cb.tripped = true;
+        cb.trip_reason = 'consecutive-request-changes';
+        data.status = 'paused';
+      }
+    } else {
+      cb.consecutive_request_changes = 0;   // counter resets; tripped stays latched (human-reset only)
+    }
     data.circuit_breaker = cb;
     writeState(root, runId, data);
   });

@@ -111,6 +111,15 @@ test('lease acquire (missing --owner) exits with code 3', () => {
   assert.equal(code, 3);
 });
 
+// Codex r6 🟡: workstream new missing --title exits 3
+test('workstream new missing --title exits with code 3', () => {
+  const { root, runId } = seed();
+  let code = 0;
+  try { run(root, ['workstream', 'new', '--branch', 'b', '--worktree', 'w', '--owner', runId, '--generation', '1']); }
+  catch (e) { code = e.status; }
+  assert.equal(code, 3);
+});
+
 test('full suite still green count grows (smoke: validate ok)', () => {
   const { root } = seed();
   const out = run(root, ['validate']);

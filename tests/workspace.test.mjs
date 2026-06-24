@@ -152,6 +152,41 @@ test('inheritWorkstreams reports missing worktree paths (no silent recreate)', (
   assert.equal(r.missing[0].id, b);
 });
 
+// Codex r6 🟡: workstream input validation
+test('newWorkstream throws WORKSTREAM_INPUT_INVALID for empty title', () => {
+  const { root, runId } = seed();
+  assert.throws(
+    () => newWorkstream(root, runId, { title: '', branch: 'b', worktree: 'w' }),
+    /WORKSTREAM_INPUT_INVALID/
+  );
+});
+
+test('newWorkstream throws WORKSTREAM_INPUT_INVALID for non-array dependsOn', () => {
+  const { root, runId } = seed();
+  assert.throws(
+    () => newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: 'w', dependsOn: true }),
+    /WORKSTREAM_INPUT_INVALID/
+  );
+});
+
+test('integrationOrder treats non-array depends_on as no-deps (defensive)', () => {
+  const { root, runId } = seed();
+  // Create workstream normally
+  newWorkstream(root, runId, { title: 'Core', branch: 'c', worktree: 'wc' });
+  // Inject malformed depends_on via writeState
+  {
+    const { data } = readState(root, runId);
+    data.workstreams[0].depends_on = 'bad-value';
+    writeState(root, runId, data);
+  }
+  // Should not throw — malformed treated as no-deps
+  const { data } = readState(root, runId);
+  const r = integrationOrder(data);
+  assert.equal(r.cycle, false);
+  assert.equal(r.missing.length, 0);
+  assert.deepEqual(r.order, [data.workstreams[0].id]);
+});
+
 test('integrationOrder topo-sorts by depends_on and detects cycles', () => {
   const { root, runId } = seed();
   const core = newWorkstream(root, runId, { title: 'Core', branch: 'c', worktree: 'wc' }).id;
