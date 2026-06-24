@@ -776,6 +776,7 @@ test('parseVerdict reads JSON verdict then keywords', () => {
   assert.equal(parseVerdict('Overall: REQUEST_CHANGES on 2 findings'), 'REQUEST_CHANGES');
   assert.equal(parseVerdict('looks good, APPROVE'), 'APPROVE');
   assert.equal(parseVerdict('no verdict here'), null);
+  assert.equal(parseVerdict('do not APPROVE this'), null);   // 부정문 (Codex r4 ℹ️2)
 });
 
 test('dispatchReview creates checker episode + returns descriptor (no call)', () => {
@@ -853,6 +854,7 @@ export function parseVerdict(text) {
   try { const v = JSON.parse(s)?.verdict; if (['APPROVE', 'REQUEST_CHANGES', 'CONCERN'].includes(v)) return v; } catch { /* not json */ }
   if (/REQUEST_CHANGES/.test(s)) return 'REQUEST_CHANGES';
   if (/\bCONCERN\b/.test(s)) return 'CONCERN';
+  if (/\b(?:do not|don't|not|never|cannot|can't)\s+approve\b/i.test(s)) return null;  // 부정문 오분류 방지 (Codex r4 ℹ️2)
   if (/\bAPPROVE\b/.test(s)) return 'APPROVE';
   return null;
 }
@@ -1000,6 +1002,17 @@ test('readArtifacts applies identity guard: null on mismatch, payload on match',
   assert.equal(a.readArtifacts({ root, task: 'auth-core' }).receipt, null);
 });
 
+// Codex r4 🟡1: superpowers(producer:null) 는 markdown 을 JSON.parse 하지 않고 원문 receipt 로 반환.
+test('superpowers readArtifacts returns raw markdown (producer:null)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-'));
+  const dir = join(root, 'docs', 'superpowers', 'plans'); mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'auth-core.md'), '# Plan\n\nbody');
+  const r = resolveAdapter('superpowers').readArtifacts({ root, task: 'auth-core' });
+  assert.equal(r.receipt.kind, 'raw');
+  assert.match(r.receipt.content, /# Plan/);
+  assert.equal(r.proofs.length, 1);
+});
+
 test('guardTierProtocol blocks read-only superpowers implementer dispatch', () => {
   assert.equal(guardTierProtocol('read-only', 'superpowers', 'then').ok, false);
   assert.equal(guardTierProtocol('recommend', 'superpowers', 'then').ok, true);
@@ -1039,13 +1052,13 @@ export function resolveAdapter(name) {
       if (!rel) return { receipt: null, proofs: [] };
       const path = join(ref.root || '.', rel);
       if (!existsSync(path)) return { receipt: null, proofs: [] };
-      let obj; try { obj = JSON.parse(readFileSync(path, 'utf8')); } catch { return { receipt: null, proofs: [] }; }
-      if (p.read.producer) {
-        const guarded = unwrap(obj, { producer: p.read.producer, artifact_kind: p.read.artifact_kind });
-        if (!guarded) { warn(`adapter ${name}: identity guard mismatch at ${rel} (legacy/foreign artifact ignored)`); return { receipt: null, proofs: [path] }; }
-        return { receipt: guarded, proofs: [path] };
-      }
-      return { receipt: obj, proofs: [path] };
+      const raw = readFileSync(path, 'utf8');
+      // producer:null (superpowers 등 비-envelope, 예: markdown 플랜/리포트) → JSON.parse 하지 않고 원문을 정규화 receipt 로 반환 (Codex r4 🟡1)
+      if (!p.read.producer) return { receipt: { kind: 'raw', path: rel, content: raw }, proofs: [path] };
+      let obj; try { obj = JSON.parse(raw); } catch { warn(`adapter ${name}: non-JSON receipt at ${rel}`); return { receipt: null, proofs: [path] }; }
+      const guarded = unwrap(obj, { producer: p.read.producer, artifact_kind: p.read.artifact_kind });
+      if (!guarded) { warn(`adapter ${name}: identity guard mismatch at ${rel} (legacy/foreign artifact ignored)`); return { receipt: null, proofs: [path] }; }
+      return { receipt: guarded, proofs: [path] };
     },
   };
 }
@@ -1060,7 +1073,7 @@ export function guardTierProtocol(tier, protocol, verb) {
 }
 ```
 
-- [ ] **Step 5: Run to verify pass** — Run: `node --test tests/adapters.test.mjs` → PASS (5 tests)
+- [ ] **Step 5: Run to verify pass** — Run: `node --test tests/adapters.test.mjs` → PASS (6 tests)
 
 - [ ] **Step 6: Commit**
 
@@ -1959,7 +1972,7 @@ handlers에 추가(객체 리터럴 끝에):
 
 - [ ] **Step 5: 전체 테스트 + preflight**
 
-Run: `npm test` → 기존 62 + 신규(lease 8 + workspace 6 + episode 4 + review 6 + adapters 5 + next-action 10 + handoff 6 + respawn 8 + orch-cli 7 = 60) = **122 tests green**
+Run: `npm test` → 기존 62 + 신규(lease 8 + workspace 6 + episode 4 + review 6 + adapters 6 + next-action 10 + handoff 6 + respawn 8 + orch-cli 7 = 61) = **123 tests green**
 Run: `npm run preflight` → PASS
 
 - [ ] **Step 6: Commit**
@@ -2038,6 +2051,12 @@ git commit -m "feat(orch): CLI — lease/next-action/episode/workstream/review/h
 - 🟡6 (Task 8): `respawnGate` max_sessions off-by-one(pending child 선카운트) → `>=`→`>`. 경계 테스트 추가.
 
 신규 테스트 총계: 60 (라운드 3 전 58 → 60). `npm test` = 기존 62 + 60 = **122 green** 목표.
+
+**라운드 4 (CONCERN, critical 0 — 1 should-fix + 1 info) — 수정 완료** (Codex 가 라운드 3 critical 수정 전부 complete 확인):
+- 🟡1 (Task 5): `adapters.readArtifacts` 가 superpowers 의 markdown 산출물을 JSON.parse 시도 → 항상 drop → `producer:null` 이면 원문을 `{kind:'raw',content}` receipt 로 반환. 테스트 추가.
+- ℹ️2 (Task 4): `parseVerdict` 키워드 fallback 이 부정문("do not APPROVE")을 APPROVE 로 오분류 → 부정 표현 가드 추가. 부정 테스트 추가.
+
+신규 테스트 총계: 61 (라운드 4 전 60 → 61). `npm test` = 기존 62 + 61 = **123 green** 목표.
 
 ---
 
