@@ -4,6 +4,7 @@ import { readState, writeState, withLock, runDir } from './state.mjs';
 import { appendAnchored } from './integrity.mjs';
 import { atomicWrite } from './envelope.mjs';
 import { slugify } from './slug.mjs';
+import { leaseCheck } from './lease.mjs';
 
 const NON_TERMINAL = ['pending', 'in_progress', 'blocked'];
 const TERMINAL = ['done', 'approved', 'rejected'];
@@ -19,7 +20,7 @@ function requestSkeleton({ id, plugin, role, kind, point, workstream, expectedAr
   ].join('\n');
 }
 
-export function newEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [] }) {
+export function newEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], fence } = {}) {
   // Codex r2 🟡: expectedArtifacts 경로 안전성 검증 — 절대 경로 및 '..' 세그먼트 사전 차단.
   for (const a of expectedArtifacts) {
     if (isAbsolute(a) || a.split(/[/\\]/).includes('..')) throw new Error('EPISODE_ARTIFACT_UNSAFE: ' + a);
@@ -42,7 +43,7 @@ export function newEpisode(root, runId, { plugin, role, kind, point, workstream 
       const ws = loop.workstreams.find(w => w.id === workstream);
       if (ws) ws.episodes.push(id);
     }
-  });
+  }, fence ? (loop) => { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); } : undefined);
   // Assert containment before FS writes
   const base = resolve(runDir(root, runId), 'episodes');
   const full = resolve(dir);
@@ -52,42 +53,54 @@ export function newEpisode(root, runId, { plugin, role, kind, point, workstream 
   return { id, requestPath };
 }
 
-export function recordEpisode(root, runId, episodeId, { status, artifacts = [], proof = {} }) {
+export function recordEpisode(root, runId, episodeId, { status, artifacts = [], proof = {}, fence } = {}) {
+  // Cheap input validation: status domain (no state access needed)
   if (![...NON_TERMINAL, ...TERMINAL].includes(status)) throw new Error(`EPISODE_STATUS_INVALID: ${status}`);
-  // Codex r3 🔴5: appendAnchored 의 mutate 가 throw 하면 event 가 이미 append 된 뒤라 event_log_head 앵커가 stale 된다.
-  // → 모든 실패 조건(존재 + 터미널 proof)을 appendAnchored **이전에** 검증한다.
-  const ep0 = readState(root, runId).data.episodes.find(e => e.id === episodeId);
-  if (!ep0) throw new Error(`EPISODE_NOT_FOUND: ${episodeId}`);
-  // 터미널은 커널이 proof에서 파생 — 검증 후에만 (spec §4)
-  if (TERMINAL.includes(status)) {
-    if (status === 'done') {
-      const expected = (ep0.expected_artifacts || []);
-      // Codex r2 🟡: 각 expected artifact 경로 안전성 재검증 + root 내 포함 확인.
-      const rootResolved = resolve(root);
-      for (const a of expected) {
-        if (isAbsolute(a) || a.split(/[/\\]/).includes('..')) throw new Error('EPISODE_ARTIFACT_ESCAPE: ' + a);
-        const full = resolve(root, a);
-        if (!full.startsWith(rootResolved + sep)) throw new Error('EPISODE_ARTIFACT_ESCAPE: ' + a);
-      }
-      const missing = expected.filter(a => !existsSync(join(root, a)));
-      if (expected.length === 0 || missing.length) {
-        throw new Error(`EPISODE_TERMINAL_NO_PROOF: ${episodeId} done requires existing artifacts (missing: ${missing.join(',') || 'none-declared'})`);
-      }
-      // Codex r2 🟡: 제출된 artifacts 가 expected_artifacts 를 모두 커버하는지 확인.
-      const submitted = new Set(artifacts);
-      const uncovered = expected.filter(a => !submitted.has(a));
-      if (uncovered.length) throw new Error('EPISODE_ARTIFACTS_INCOMPLETE: ' + uncovered.join(','));
-    } else if (status === 'approved' && !['APPROVE', 'CONCERN'].includes(proof.verdict)) {
-      throw new Error(`EPISODE_TERMINAL_NO_PROOF: ${episodeId} approved requires proof.verdict=APPROVE|CONCERN (accepted concern)`);
-    } else if (status === 'rejected' && proof.verdict !== 'REQUEST_CHANGES') {
-      throw new Error(`EPISODE_TERMINAL_NO_PROOF: ${episodeId} rejected requires proof.verdict=REQUEST_CHANGES`);
-    }
-  }
   appendAnchored(root, runId, { type: 'episode-record', data: { id: episodeId, status, artifacts } }, (loop) => {
     const ep = loop.episodes.find(e => e.id === episodeId);
-    if (!ep) throw new Error(`EPISODE_NOT_FOUND: ${episodeId}`);   // 방어적(이미 위에서 검증됨)
+    if (!ep) throw new Error(`EPISODE_NOT_FOUND: ${episodeId}`);   // 방어적
     ep.status = status;
     if (artifacts.length) ep.artifacts = artifacts;
     for (const [k, v] of Object.entries(proof)) if (/^result_[A-Za-z0-9_]+$/.test(k)) ep[k] = v;
+  }, (loop) => {
+    // Codex r3 🔴: All throwing validations inside preCheck (run on fresh loop, before append)
+    if (fence) { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
+    const ep = loop.episodes.find(e => e.id === episodeId);
+    if (!ep) throw new Error(`EPISODE_NOT_FOUND: ${episodeId}`);
+    // Codex r3 🔴2: atomic replay guard — already-terminal episode cannot be re-terminaled
+    if (TERMINAL.includes(status) && ['approved', 'rejected', 'done'].includes(ep.status)) {
+      throw new Error('EPISODE_ALREADY_TERMINAL: ' + episodeId);
+    }
+    // 터미널은 커널이 proof에서 파생 — 검증 후에만 (spec §4)
+    if (TERMINAL.includes(status)) {
+      if (status === 'done') {
+        const expected = (ep.expected_artifacts || []);
+        // Codex r3 🟡: validate submitted artifacts paths BEFORE coverage check (FIX 4)
+        const rootResolved = resolve(root);
+        for (const a of artifacts) {
+          if (isAbsolute(a) || a.split(/[/\\]/).includes('..')) throw new Error('EPISODE_ARTIFACT_ESCAPE: ' + a);
+          const full = resolve(root, a);
+          if (!full.startsWith(rootResolved + sep)) throw new Error('EPISODE_ARTIFACT_ESCAPE: ' + a);
+        }
+        // Codex r2 🟡: 각 expected artifact 경로 안전성 재검증 + root 내 포함 확인.
+        for (const a of expected) {
+          if (isAbsolute(a) || a.split(/[/\\]/).includes('..')) throw new Error('EPISODE_ARTIFACT_ESCAPE: ' + a);
+          const full = resolve(root, a);
+          if (!full.startsWith(rootResolved + sep)) throw new Error('EPISODE_ARTIFACT_ESCAPE: ' + a);
+        }
+        const missing = expected.filter(a => !existsSync(join(root, a)));
+        if (expected.length === 0 || missing.length) {
+          throw new Error(`EPISODE_TERMINAL_NO_PROOF: ${episodeId} done requires existing artifacts (missing: ${missing.join(',') || 'none-declared'})`);
+        }
+        // Codex r2 🟡: 제출된 artifacts 가 expected_artifacts 를 모두 커버하는지 확인.
+        const submitted = new Set(artifacts);
+        const uncovered = expected.filter(a => !submitted.has(a));
+        if (uncovered.length) throw new Error('EPISODE_ARTIFACTS_INCOMPLETE: ' + uncovered.join(','));
+      } else if (status === 'approved' && !['APPROVE', 'CONCERN'].includes(proof.verdict)) {
+        throw new Error(`EPISODE_TERMINAL_NO_PROOF: ${episodeId} approved requires proof.verdict=APPROVE|CONCERN (accepted concern)`);
+      } else if (status === 'rejected' && proof.verdict !== 'REQUEST_CHANGES') {
+        throw new Error(`EPISODE_TERMINAL_NO_PROOF: ${episodeId} rejected requires proof.verdict=REQUEST_CHANGES`);
+      }
+    }
   });
 }

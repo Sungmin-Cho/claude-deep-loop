@@ -115,3 +115,18 @@ test('recordReviewOutcome rejects invalid verdict before mutating breaker', () =
   assert.throws(() => recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'plan', verdict: 'APPROV' }), /REVIEW_VERDICT_INVALID/);
   assert.equal(readState(root, runId).data.circuit_breaker.consecutive_request_changes, before);
 });
+
+// Codex r3 FIX 2: concurrent callers — second recordReviewOutcome on same checker throws, no extra breaker mutation
+test('recordReviewOutcome twice → second throws EPISODE_ALREADY_TERMINAL, breaker unchanged', () => {
+  const { root, runId } = seed();
+  const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: 'w' }).id;
+  const r = dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { 'deep-review': true } });
+  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'plan', verdict: 'APPROVE' });
+  const breakerAfterFirst = readState(root, runId).data.circuit_breaker.consecutive_request_changes;
+  // Second call with different verdict — must throw and not mutate breaker
+  assert.throws(
+    () => recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'plan', verdict: 'REQUEST_CHANGES' }),
+    /EPISODE_ALREADY_TERMINAL|REVIEW_ALREADY_RECORDED/
+  );
+  assert.equal(readState(root, runId).data.circuit_breaker.consecutive_request_changes, breakerAfterFirst);
+});

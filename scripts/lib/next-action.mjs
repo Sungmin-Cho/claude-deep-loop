@@ -25,7 +25,8 @@ function finishOrAdvance(loop, gate, fanoutBlocked) {
     if (fanoutBlocked && pendingMaker.kind !== 'fix') return A(gate, { type: 'await_human', episode_id: pendingMaker.id, reason: 'comprehension-debt' }, '/deep-loop-status');
     return A(gate, { type: 'dispatch_maker', episode_id: pendingMaker.id, point: pendingMaker.point, workstream_id: pendingMaker.workstream_id }, '/deep-loop-continue');
   }
-  const rejected = eps.find(e => e.role === 'checker' && e.status === 'rejected');
+  // Codex r3 🔴3: skip superseded rejected checkers whose point is already review-satisfied (convergence fix).
+  const rejected = eps.find(e => e.role === 'checker' && e.status === 'rejected' && !reviewSatisfied(loop, e));
   if (rejected) return A(gate, { type: 'fix_episode', episode_id: rejected.id, point: rejected.point, workstream_id: rejected.workstream_id }, '/deep-loop-continue');
   const inProg = eps.find(e => e.status === 'in_progress');
   if (inProg) return A(gate, { type: 'await_result', episode_id: inProg.id }, '/deep-loop-continue');

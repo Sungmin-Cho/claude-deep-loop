@@ -123,6 +123,22 @@ test('recordWorkstreamTerminal blocks terminal->terminal rewrites (merged/abando
   );
 });
 
+// Codex r3 FIX 2: atomic terminal guard — second recordWorkstreamTerminal throws WORKSTREAM_TERMINAL_LOCKED
+test('recordWorkstreamTerminal twice on same workstream → second throws WORKSTREAM_TERMINAL_LOCKED', () => {
+  const { root, runId } = seed();
+  const { id } = newWorkstream(root, runId, { title: 'T', branch: 'b', worktree: 'w' });
+  // First terminal call (abandoned is immediately takeable from planned without review points)
+  recordWorkstreamTerminal(root, runId, id, { status: 'abandoned', proof: { reason: 'no longer needed' } });
+  assert.equal(readState(root, runId).data.workstreams.find(w => w.id === id).status, 'abandoned');
+  // Second call — must throw WORKSTREAM_TERMINAL_LOCKED atomically
+  assert.throws(
+    () => recordWorkstreamTerminal(root, runId, id, { status: 'abandoned', proof: { reason: 'retry' } }),
+    /WORKSTREAM_TERMINAL_LOCKED/
+  );
+  // Status must be unchanged
+  assert.equal(readState(root, runId).data.workstreams.find(w => w.id === id).status, 'abandoned');
+});
+
 test('inheritWorkstreams reports missing worktree paths (no silent recreate)', () => {
   const { root, runId } = seed();
   const present = join(root, 'wt-present'); mkdirSync(present, { recursive: true });

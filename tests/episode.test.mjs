@@ -88,3 +88,29 @@ test('recordEpisode approved/rejected derive from verdict proof', () => {
   recordEpisode(root, runId, id, { status: 'approved', proof: { verdict: 'APPROVE' } });
   assert.equal(readState(root, runId).data.episodes[0].status, 'approved');
 });
+
+// Codex r3 FIX 2: atomic replay guard — EPISODE_ALREADY_TERMINAL on second terminal call
+test('recordEpisode twice on same episode with terminal status throws EPISODE_ALREADY_TERMINAL', () => {
+  const { root, runId } = seed();
+  const { id } = newEpisode(root, runId, { plugin: 'deep-review', role: 'checker', kind: 'impl-review', point: 'implementation' });
+  recordEpisode(root, runId, id, { status: 'approved', proof: { verdict: 'APPROVE' } });
+  assert.throws(
+    () => recordEpisode(root, runId, id, { status: 'rejected', proof: { verdict: 'REQUEST_CHANGES' } }),
+    /EPISODE_ALREADY_TERMINAL/
+  );
+  // Status must be unchanged
+  assert.equal(readState(root, runId).data.episodes[0].status, 'approved');
+});
+
+// Codex r3 FIX 4: submitted artifact path validation — escaping paths rejected
+test('recordEpisode done throws EPISODE_ARTIFACT_ESCAPE for path-traversal in submitted artifacts', () => {
+  const { root, runId } = seed();
+  const artPath = join(root, 'out.txt');
+  writeFileSync(artPath, 'x');
+  const { id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation', expectedArtifacts: ['out.txt'] });
+  // Submitted artifact includes a path-traversal entry alongside the valid one
+  assert.throws(
+    () => recordEpisode(root, runId, id, { status: 'done', artifacts: ['out.txt', '../outside'] }),
+    /EPISODE_ARTIFACT/
+  );
+});

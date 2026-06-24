@@ -144,3 +144,24 @@ test('dispatchReview → recordReviewOutcome(RC) → nextAction returns fix_epis
   const { data } = readState(root, runId);
   assert.equal(nextAction(data, { now: Date.parse('2026-06-24T00:00:00Z') }).action.type, 'fix_episode');
 });
+
+// Codex r3 FIX 3: superseded rejected checker must not block convergence
+// A loop with an OLD rejected checker for ws-01/plan AND review_points_done containing 'plan'
+// (a later approval happened) AND no current actionable episode → nextAction does NOT return fix_episode
+test('superseded rejected checker (review_points_done satisfied) does not block convergence', () => {
+  // Build a loop with:
+  // - ws-01 with review_points_done=['plan'] (i.e. a later approval happened)
+  // - An OLD rejected checker episode for ws-01/plan
+  // - No current actionable episode (current_episode=null, no pending/in_progress)
+  const l = loop({
+    workstreams: [{ id: 'ws-01', status: 'in_progress', review_points_done: ['plan'], episodes: [], depends_on: [] }],
+    active_workstreams: ['ws-01'],
+    episodes: [
+      { id: '001-deep-review', role: 'checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01' },
+    ],
+    current_episode: null,
+  });
+  const r = nextAction(l, { now: Date.parse('2026-06-24T00:00:00Z') });
+  // Must NOT be fix_episode (the old rejected checker is review-satisfied)
+  assert.notEqual(r.action.type, 'fix_episode', 'stale rejected checker must not trigger fix_episode');
+});

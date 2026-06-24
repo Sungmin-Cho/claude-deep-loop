@@ -68,10 +68,12 @@ export function verifyHead(root, runId, expected) {
 // 단일 anchored append 경로 — 이벤트 append + loop.json의 event_log_head 앵커 갱신을 한 lock 안에서.
 // 모든 이벤트 기록(cost 포함)은 이 경로를 통해야 앵커가 stale되지 않는다 (Codex impl r2 🟡).
 // mutate(loop, spent): 호출자별 상태 변경(예: budget.spent) — 선택.
-export function appendAnchored(root, runId, { type, data }, mutate) {
+// preCheck(loop): lock 안 fresh loop 위에서 실행 — throw하면 append 전에 중단 (Codex r3 🔴: 가드 원자성).
+export function appendAnchored(root, runId, { type, data }, mutate, preCheck) {
   return withLock(root, runId, () => {
-    appendEvent(root, runId, { type, data });
     const { data: loop } = readState(root, runId);
+    if (preCheck) preCheck(loop);              // throws BEFORE append → anchor stays consistent
+    appendEvent(root, runId, { type, data });
     loop.event_log_head = lastLogHead(root, runId);
     if (mutate) mutate(loop, recomputeSpent(root, runId));
     writeState(root, runId, loop);
