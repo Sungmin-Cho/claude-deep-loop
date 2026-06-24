@@ -57,7 +57,7 @@ slug.mjs:        slugify(text,maxWords?) · runIdSlug(goal,now?)
 - Consumes: `state.runDir/readState/writeState/withLock`, `envelope.contentHash`.
 - Produces:
   - `deriveIdempotencyKey(ownerRunId, ownerGeneration, triggerReason): string` — 결정론 16-hex 키.
-  - `leaseCheck(loop, {owner, generation, intent='business', now?}): {ok, reason}` — 펜싱 가드(읽기 외 mutating 경로용). `intent='lease'`는 carve-out(releasing 중 자기 lease 관리만 허용).
+  - `leaseCheck(loop, {owner, generation, intent='business'}): {ok, reason}` — 펜싱 가드(읽기 외 mutating 경로용). owner/generation/state 만 검사(expiry 로 active 소유자를 fence하지 않음 — Codex r2 🔴2). `intent='lease'`는 carve-out(releasing 중 자기 lease 관리만 허용).
   - `acquireLease(root, runId, {owner, expectGeneration, now?}): {ok, generation, reason}` — CAS 인수(released/expired만 가능, `generation === expectGeneration` 필수, 성공 시 `generation+1` · `phase='acquired'` · 키 클리어). 같은 owner 활성 재획득은 멱등.
   - `releaseLease(root, runId, {owner, generation, now?}): {ok, reason}` — `state='released'`(펜싱).
   - `reserveHandoff(root, runId, {trigger, now?}): {ok, reserved, key, reason}` — `phase∈{idle,acquired}`일 때만 CAS 예약(→reserved). 그 외엔 같은 키면 멱등 no-op, 다른 트리거면 거부(이중 spawn 봉인).
@@ -93,12 +93,15 @@ test('deriveIdempotencyKey is deterministic and trigger-sensitive', () => {
   assert.notEqual(a, deriveIdempotencyKey('R', 2, 'milestone'));
 });
 
-test('leaseCheck passes for current owner+generation, rejects mismatch', () => {
+test('leaseCheck passes for current owner+generation, rejects mismatch; active owner never time-fenced', () => {
   const { root, runId } = seed();
   const { data } = readState(root, runId);
   assert.equal(leaseCheck(data, { owner: runId, generation: 1 }).ok, true);
   assert.equal(leaseCheck(data, { owner: 'OTHER', generation: 1 }).ok, false);
   assert.equal(leaseCheck(data, { owner: runId, generation: 2 }).ok, false);
+  // Codex r2 🔴2: active 소유자는 expires_at 가 과거여도 fence 되지 않는다 (deadlock 방지). leaseCheck 는 시간을 안 본다.
+  data.session_chain.lease.expires_at = '2000-01-01T00:00:00Z';
+  assert.equal(leaseCheck(data, { owner: runId, generation: 1 }).ok, true);
 });
 
 test('reserveHandoff dedups concurrent triggers (PreCompact no-op after Decide)', () => {
@@ -141,17 +144,22 @@ test('acquireLease: child takes over released lease, generation+1; stale generat
   assert.equal(lease.handoff_idempotency_key, null);
 });
 
-test('acquireLease: active non-expired lease cannot be stolen; stale (expired) can', () => {
+test('acquireLease: active lease is never stolen (even past expires_at); released is takeable', () => {
   const { root, runId } = seed();
-  // active, not released → not takeable by other
+  // active → not takeable by another owner
   assert.equal(acquireLease(root, runId, { owner: 'CHILD', expectGeneration: 1 }).ok, false);
-  // far-future now → lease expired (expires_at is null initially; force via release then expiry path)
+  // 심지어 active 에 과거 expires_at 이 있어도 탈취 불가 (active 는 deadline 없음 — Codex r2 🔴2)
   const { data } = readState(root, runId);
   data.session_chain.lease.expires_at = new Date(Date.parse('2026-06-24T00:00:00Z') + 1000).toISOString();
   writeState(root, runId, data);
   const future = Date.parse('2026-06-24T01:00:00Z');
+  assert.equal(acquireLease(root, runId, { owner: 'CHILD', expectGeneration: 1, now: future }).ok, false);
+  // released → takeable, generation+1
+  releaseLease(root, runId, { owner: runId, generation: 1 });
   const ok = acquireLease(root, runId, { owner: 'CHILD', expectGeneration: 1, now: future });
   assert.equal(ok.ok, true);
+  assert.equal(ok.generation, 2);
+  assert.equal(readState(root, runId).data.session_chain.lease.expires_at, null);  // active = no deadline
 });
 
 test('rollbackHandoff restores active/idle (launch-failure path)', () => {
@@ -202,7 +210,7 @@ export function deriveIdempotencyKey(ownerRunId, ownerGeneration, triggerReason)
 }
 
 // 펜싱 가드 — 읽기를 제외한 모든 커널 mutating 경로가 진입 전에 호출 (spec §9.1).
-export function leaseCheck(loop, { owner, generation, intent = 'business', now = Date.now() } = {}) {
+export function leaseCheck(loop, { owner, generation, intent = 'business' } = {}) {
   const lease = loop?.session_chain?.lease;
   if (!lease) return { ok: false, reason: 'no-lease' };
   if (lease.owner_run_id !== owner) return { ok: false, reason: 'owner-mismatch' };
@@ -210,7 +218,9 @@ export function leaseCheck(loop, { owner, generation, intent = 'business', now =
   if (lease.state === 'released') return { ok: false, reason: 'lease-released' };
   // 부모 carve-out: releasing 중 업무 write 거부, 자기 lease 관리(intent='lease')만 허용
   if (lease.state === 'releasing' && intent === 'business') return { ok: false, reason: 'lease-releasing-carveout' };
-  if (intent === 'business' && lease.expires_at && now > Date.parse(lease.expires_at)) return { ok: false, reason: 'lease-expired' };
+  // Codex r2 🔴2: expires_at 로 active 소유자를 fence 하지 않는다 — 살아있는 소유자가 TTL(15분) 후 자기 write 에서
+  // 죽으면 안 됨. stale 소유자(자식이 인수해 generation 이 올라간 경우)는 generation-mismatch 로 이미 펜싱된다.
+  // expires_at 는 오직 acquireLease 의 takeover 판단(releasing 크래시)에만 쓰인다.
   return { ok: true, reason: 'ok' };
 }
 
@@ -219,20 +229,21 @@ export function acquireLease(root, runId, { owner, expectGeneration, now = Date.
   return withLock(root, runId, () => {
     const { data } = readState(root, runId);
     const lease = data.session_chain.lease;
-    const expired = lease.expires_at && now > Date.parse(lease.expires_at);
-    if (lease.owner_run_id === owner && lease.state === 'active' && !expired) {
+    // 같은 owner 가 이미 active 면 멱등 (active 는 만료 deadline 이 없다 — Codex r2 🔴2)
+    if (lease.owner_run_id === owner && lease.state === 'active') {
       return { ok: true, generation: lease.generation, reason: 'already-owned' };
     }
     if (lease.generation !== expectGeneration) {
       return { ok: false, generation: lease.generation, reason: 'generation-mismatch' };
     }
-    const takeable = lease.state === 'released' || expired;
-    if (!takeable) return { ok: false, generation: lease.generation, reason: 'lease-active' };
-    const ttlMs = (data.session_chain.stale_lease_ttl_sec || 900) * 1000;
+    // takeover 가능: released(정상 인수) 또는 releasing+expired(부모가 handoff 중 크래시). active 는 절대 탈취 안 됨.
+    const expired = lease.expires_at && now > Date.parse(lease.expires_at);
+    const takeable = lease.state === 'released' || (lease.state === 'releasing' && expired);
+    if (!takeable) return { ok: false, generation: lease.generation, reason: 'lease-not-takeable' };
     const iso = new Date(now).toISOString();
     data.session_chain.lease = {
       ...lease, owner_run_id: owner, generation: expectGeneration + 1,
-      acquired_at: iso, expires_at: new Date(now + ttlMs).toISOString(),
+      acquired_at: iso, expires_at: null,   // active 소유자는 deadline 없음 → 무기한 write (renewal 불필요)
       state: 'active', handoff_phase: 'acquired', handoff_idempotency_key: null,
     };
     const childEntry = data.session_chain.sessions.find(s => s.run_id === owner);
@@ -300,7 +311,8 @@ export function rollbackHandoff(root, runId, { owner, generation }) {
     const { data } = readState(root, runId);
     const lease = data.session_chain.lease;
     if (lease.owner_run_id !== owner || lease.generation !== generation) return { ok: false, reason: 'fenced' };
-    data.session_chain.lease = { ...lease, state: 'active', handoff_phase: 'idle', handoff_idempotency_key: null };
+    // active 복귀 시 expires_at=null — 롤백된 부모가 emit 때 설정된 stale TTL 로 나중에 인수당하지 않게 (Codex r2 🔴2)
+    data.session_chain.lease = { ...lease, state: 'active', handoff_phase: 'idle', handoff_idempotency_key: null, expires_at: null };
     writeState(root, runId, data);
     return { ok: true, reason: 'rolled-back' };
   });
@@ -386,15 +398,21 @@ test('max_parallel enforced on activation', () => {
   assert.throws(() => setWorkstreamStatus(root, runId, c, 'in_progress'), /MAX_PARALLEL_EXCEEDED/);
 });
 
-test('recordWorkstreamTerminal requires proof; sets ready and clears active', () => {
+test('recordWorkstreamTerminal derives terminal from proof content; clears active', () => {
   const { root, runId } = seed();
   const { id } = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: 'w' });
   setWorkstreamStatus(root, runId, id, 'in_progress');
+  // 빈/무관 proof 로는 ready 불가 (Codex r2 🔴5)
   assert.throws(() => recordWorkstreamTerminal(root, runId, id, { status: 'ready', proof: {} }), /WORKSTREAM_TERMINAL_NO_PROOF/);
-  recordWorkstreamTerminal(root, runId, id, { status: 'ready', proof: { review_approved: true, tests: 'pass' } });
+  recordWorkstreamTerminal(root, runId, id, { status: 'ready', proof: { review_approved: true } });
   const { data } = readState(root, runId);
   assert.equal(data.workstreams.find(w => w.id === id).status, 'ready');
   assert.equal(data.active_workstreams.includes(id), false);
+  // merged 는 사람 승인(merge_commit + human_approved) 필수 — 임의 proof 거부 (proposal-only)
+  const { id: id2 } = newWorkstream(root, runId, { title: 'B', branch: 'b2', worktree: 'w2' });
+  assert.throws(() => recordWorkstreamTerminal(root, runId, id2, { status: 'merged', proof: { x: true } }), /WORKSTREAM_TERMINAL_NO_PROOF/);
+  recordWorkstreamTerminal(root, runId, id2, { status: 'merged', proof: { merge_commit: 'abc123', human_approved: true } });
+  assert.equal(readState(root, runId).data.workstreams.find(w => w.id === id2).status, 'merged');
 });
 
 test('inheritWorkstreams reports missing worktree paths (no silent recreate)', () => {
@@ -421,6 +439,12 @@ test('integrationOrder topo-sorts by depends_on and detects cycles', () => {
   // inject a cycle
   data.workstreams[0].depends_on = [ui];
   assert.equal(integrationOrder(data).cycle, true);
+  // 미지 의존 → missing 보고 + order 비움 (Codex r2 🟡9)
+  data.workstreams[0].depends_on = ['ws-99-nonexistent'];
+  data.workstreams[1].depends_on = [];
+  const m = integrationOrder(data);
+  assert.equal(m.missing.length, 1);
+  assert.deepEqual(m.order, []);
 });
 ```
 
@@ -470,15 +494,24 @@ export function setWorkstreamStatus(root, runId, wsId, status) {
   });
 }
 
-export function recordWorkstreamTerminal(root, runId, wsId, { status, proof }) {
+export function recordWorkstreamTerminal(root, runId, wsId, { status, proof = {} }) {
   if (!TERMINAL.includes(status)) throw new Error(`WORKSTREAM_STATUS_INVALID: ${status} is not terminal`);
-  if (!proof || typeof proof !== 'object' || Object.keys(proof).length === 0) {
-    throw new Error(`WORKSTREAM_TERMINAL_NO_PROOF: ${wsId} -> ${status} requires proof artifact`);
-  }
+  if (!proof || typeof proof !== 'object' || Array.isArray(proof)) throw new Error(`WORKSTREAM_TERMINAL_NO_PROOF: ${wsId} requires proof object`);
+  // Codex r2 🔴5: 터미널은 proof **내용**에서 파생/검증 — 임의 status+빈/무관 proof 로 ready/merged/abandoned 못 함 (spec §4).
+  // 검증은 appendAnchored 이전(이벤트 append 전)에 — mutate 안에서 throw 하면 event_log_head 앵커가 stale 된다.
+  const { data } = readState(root, runId);
+  const ws = data.workstreams.find(w => w.id === wsId);
+  if (!ws) throw new Error(`WORKSTREAM_NOT_FOUND: ${wsId}`);
+  const reviewPoints = (data.review?.points || []);
+  const ok =
+    status === 'ready'     ? (proof.review_approved === true || (reviewPoints.length > 0 && reviewPoints.every(p => (ws.review_points_done || []).includes(p)))) :
+    status === 'merged'    ? (typeof proof.merge_commit === 'string' && proof.human_approved === true) :   // 비가역 = 사람 승인 (proposal-only, §15)
+    status === 'abandoned' ? (typeof proof.reason === 'string' && proof.reason.length > 0) : false;
+  if (!ok) throw new Error(`WORKSTREAM_TERMINAL_NO_PROOF: ${wsId} -> ${status} proof insufficient`);
   appendAnchored(root, runId, { type: 'workstream-terminal', data: { id: wsId, status, proof } }, (loop) => {
-    const ws = loop.workstreams.find(w => w.id === wsId);
-    if (!ws) throw new Error(`WORKSTREAM_NOT_FOUND: ${wsId}`);
-    ws.status = status;
+    const w = loop.workstreams.find(x => x.id === wsId);
+    if (!w) throw new Error(`WORKSTREAM_NOT_FOUND: ${wsId}`);
+    w.status = status;
     loop.active_workstreams = loop.active_workstreams.filter(x => x !== wsId);
   });
 }
@@ -497,11 +530,15 @@ export function inheritWorkstreams(root, runId) {
   return { inherited, missing };
 }
 
-// 머지 순서 = depends_on 위상정렬 (spec §8.1). 순환 탐지.
+// 머지 순서 = depends_on 위상정렬 (spec §8.1). 순환 + 미지 의존 탐지.
 export function integrationOrder(loop) {
   const ws = loop.workstreams || [];
   const ids = new Set(ws.map(w => w.id));
-  const deps = new Map(ws.map(w => [w.id, (w.depends_on || []).filter(d => ids.has(d))]));
+  // Codex r2 🟡9: 미지 의존을 silent drop 하지 않는다 — 오타/누락 id 는 needs-human 에스컬레이션.
+  const missing = [];
+  for (const w of ws) for (const d of (w.depends_on || [])) if (!ids.has(d)) missing.push({ id: w.id, missing_dep: d });
+  if (missing.length) return { order: [], cycle: false, missing };
+  const deps = new Map(ws.map(w => [w.id, (w.depends_on || [])]));
   const order = [], state = new Map(); // 0=unseen 1=visiting 2=done
   let cycle = false;
   const visit = (id) => {
@@ -515,7 +552,7 @@ export function integrationOrder(loop) {
     order.push(id);
   };
   for (const w of ws) visit(w.id);
-  return { order: cycle ? [] : order, cycle };
+  return { order: cycle ? [] : order, cycle, missing: [] };
 }
 ```
 
@@ -712,6 +749,7 @@ import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState } from '../scripts/lib/state.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
+import { nextAction } from '../scripts/lib/next-action.mjs';
 import { resolveReviewer, dispatchReview, parseVerdict, recordReviewOutcome } from '../scripts/lib/review.mjs';
 
 function seed(detected = { 'deep-review': true }) {
@@ -762,6 +800,26 @@ test('recordReviewOutcome derives checker terminal + drives breaker/comprehensio
   assert.equal(d.circuit_breaker.consecutive_request_changes, 0);
   assert.ok(d.workstreams.find(w => w.id === ws).review_points_done.includes('plan'));
 });
+
+// Codex r2 🔴4: RC outcome 후 nextAction 이 debt(=1.0)에도 fix_episode 로 진입 — 종단 검증.
+test('dispatchReview → recordReviewOutcome(RC) → nextAction returns fix_episode', () => {
+  const { root, runId } = seed();
+  const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: 'w' }).id;
+  const r = dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { 'deep-review': true } });
+  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'plan', verdict: 'REQUEST_CHANGES' });
+  const { data } = readState(root, runId);
+  assert.equal(nextAction(data, { now: Date.parse('2026-06-24T00:00:00Z') }).action.type, 'fix_episode');
+});
+
+// Codex r2 🔴6: invalid verdict 는 어떤 변경(breaker) 전에 거부.
+test('recordReviewOutcome rejects invalid verdict before mutating breaker', () => {
+  const { root, runId } = seed();
+  const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: 'w' }).id;
+  const r = dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { 'deep-review': true } });
+  const before = readState(root, runId).data.circuit_breaker.consecutive_request_changes;
+  assert.throws(() => recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'plan', verdict: 'APPROV' }), /REVIEW_VERDICT_INVALID/);
+  assert.equal(readState(root, runId).data.circuit_breaker.consecutive_request_changes, before);
+});
 ```
 
 - [ ] **Step 2: Run to verify fail** — Run: `node --test tests/review.test.mjs` → FAIL
@@ -809,6 +867,8 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
 }
 
 export function recordReviewOutcome(root, runId, { episodeId, workstreamId, point, verdict, source = 'deep-review-approve' }) {
+  // Codex r2 🔴6: 어떤 상태 변경(breaker 등) 전에 verdict 를 검증 — 부분 변조 방지.
+  if (!['APPROVE', 'CONCERN', 'REQUEST_CHANGES'].includes(verdict)) throw new Error(`REVIEW_VERDICT_INVALID: ${verdict}`);
   recordReviewVerdict(root, runId, verdict);              // 자기 lock — breaker 카운터
   // Codex r1 🔴5: checker episode 터미널 상태를 verdict proof 에서 파생 — 안 하면 checker 가 pending 으로 남아
   // nextAction 이 fix_episode 로 진입 못 하고 finish 로 오폴백한다. 'accepted concern'(CONCERN)도 pass (spec §7).
@@ -828,7 +888,7 @@ export function recordReviewOutcome(root, runId, { episodeId, workstreamId, poin
 }
 ```
 
-- [ ] **Step 4: Run to verify pass** — Run: `node --test tests/review.test.mjs` → PASS (4 tests)
+- [ ] **Step 4: Run to verify pass** — Run: `node --test tests/review.test.mjs` → PASS (6 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -1011,13 +1071,12 @@ git commit -m "feat(orch): adapters — 4-verb protocol adapters (descriptor-ret
 **Interfaces:**
 - Consumes: `budget.checkBudget`, `breaker.checkBreaker`, `comprehension.computeDebt`.
 - Produces:
-  - `nextAction(loop, {now?}): {gate, action, next_command}` — **순수 함수**(상태 변경/ dispatch ❌, §1.1). `gate={allowed, blocked_by:[], reason, tier_after}`. 게이트 순서: budget → breaker → comprehension debt. 막히면 `action.type='await_human'`(breaker/debt) 또는 `'handoff'`(budget hard-stop). 통과 시 현재 episode/마일스톤으로 action 산출:
-    - episode 없음 → `'discover'`
-    - 현재 episode `pending`+maker → `'dispatch_maker'`
-    - 현재 episode `done`+리뷰 지점 → `'dispatch_checker'`
-    - 현재 checker `rejected` → `'fix_episode'`
-    - `per_session_turn_cap` 도달 또는 마일스톤 → `'handoff'`
-    - 활성 작업 없음 + 미완 episode 없음 → `'finish'`
+  - `nextAction(loop, {now?}): {gate, action, next_command}` — **순수 함수**(상태 변경/ dispatch ❌, §1.1). `gate={allowed, blocked_by:[], reason, tier_after}`. **budget hard-stop/breaker 는 전역 차단**(handoff/await_human). **comprehension-debt 는 `discover`(새 fan-out)만 차단** — 현재 episode 진행/fix/리뷰/finish 는 허용(spec §15). action 타입:
+    - episode 없음 + 전체 비어있음 → `'discover'` (debt blocked 면 `'await_human'`)
+    - maker `pending`→`'dispatch_maker'` / `in_progress`→`'await_result'` / `blocked`→`'await_human'` / `done`→`'dispatch_checker'`
+    - checker `pending`→`'dispatch_checker'` / `in_progress`→`'await_result'`(재dispatch ❌) / `rejected`→`'fix_episode'` / `approved`→finishOrAdvance
+    - `per_session_turn_cap` 도달 → `'handoff'`
+    - `'finish'`는 **active_workstreams 0 AND 모든 episode ∈ {done,approved}** 일 때만; 그 외 미완 작업 잔존 시 `'await_human'`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1089,6 +1148,44 @@ test('checker rejected → fix_episode; checker approved → finish (no fall-thr
   l.episodes[0].status = 'approved';
   assert.equal(nextAction(l, { now: 0 }).action.type, 'finish');
 });
+
+// Codex r2 🔴7: in_progress/blocked 는 finish/재dispatch 가 아니라 await.
+test('in-progress→await_result, blocked→await_human, checker in_progress not re-dispatched', () => {
+  const l = loop();
+  l.episodes = [{ id: '001-deep-work', role: 'maker', status: 'in_progress', point: 'implementation' }];
+  l.current_episode = '001-deep-work';
+  assert.equal(nextAction(l, { now: 0 }).action.type, 'await_result');
+  l.episodes[0].status = 'blocked';
+  assert.equal(nextAction(l, { now: 0 }).action.type, 'await_human');
+  l.episodes = [{ id: '002-deep-review', role: 'checker', status: 'in_progress', point: 'plan' }];
+  l.current_episode = '002-deep-review';
+  assert.equal(nextAction(l, { now: 0 }).action.type, 'await_result');
+});
+
+// Codex r2 🔴7: finish 는 active workstream 0 일 때만.
+test('finish requires zero active workstreams', () => {
+  const l = loop();
+  l.episodes = [{ id: '001-deep-work', role: 'maker', status: 'done', point: 'implementation' }];
+  l.current_episode = null;
+  l.active_workstreams = ['ws-01'];
+  assert.equal(nextAction(l, { now: 0 }).action.type, 'await_human');
+  l.active_workstreams = [];
+  // maker done 이지만 checker 통과 없음 → 모든 episode 가 done/approved? maker done 은 positive → finish
+  assert.equal(nextAction(l, { now: 0 }).action.type, 'finish');
+});
+
+// Codex r2 🔴4: comprehension-debt 는 discover(새 fan-out)만 막고 fix flow 는 막지 않는다.
+test('comprehension-debt blocks discover but not the fix flow', () => {
+  const l = loop();
+  l.comprehension = { episodes_total: 4, episodes_human_reviewed: 0, debt_threshold: 0.5 };  // debt=1.0 blocked
+  l.episodes = []; l.current_episode = null;
+  const r0 = nextAction(l, { now: 0 });
+  assert.equal(r0.action.type, 'await_human');
+  assert.ok(r0.gate.blocked_by.includes('comprehension-debt'));
+  l.episodes = [{ id: '002-deep-review', role: 'checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01' }];
+  l.current_episode = '002-deep-review';
+  assert.equal(nextAction(l, { now: 0 }).action.type, 'fix_episode');  // debt 무관
+});
 ```
 
 - [ ] **Step 2: Run to verify fail** — Run: `node --test tests/next-action.test.mjs` → FAIL
@@ -1105,59 +1202,66 @@ function currentSessionTurns(loop) {
   return s ? (s.turns || 0) : 0;
 }
 
+const A = (gate, action, next_command) => ({ gate, action, next_command });
+
+// 현재 actionable episode 가 없을 때: 미완 maker/거부 checker/in-progress 를 우선 처리하고, 전부 정리됐을 때만 finish.
+function finishOrAdvance(loop, gate) {
+  const eps = loop.episodes || [];
+  const pendingMaker = eps.find(e => e.role === 'maker' && e.status === 'pending');
+  if (pendingMaker) return A(gate, { type: 'dispatch_maker', episode_id: pendingMaker.id, point: pendingMaker.point, workstream_id: pendingMaker.workstream_id }, '/deep-loop-continue');
+  const rejected = eps.find(e => e.role === 'checker' && e.status === 'rejected');
+  if (rejected) return A(gate, { type: 'fix_episode', episode_id: rejected.id, point: rejected.point, workstream_id: rejected.workstream_id }, '/deep-loop-continue');
+  const inProg = eps.find(e => e.status === 'in_progress');
+  if (inProg) return A(gate, { type: 'await_result', episode_id: inProg.id }, '/deep-loop-continue');
+  // finish 는 active workstream 0 + 모든 episode 가 done/approved 일 때만 (Codex r2 🔴7: 미완 작업 중 finish 금지)
+  const noActiveWs = (loop.active_workstreams || []).length === 0;
+  const allPositive = eps.length > 0 && eps.every(e => ['done', 'approved'].includes(e.status));
+  if (noActiveWs && allPositive) return A(gate, { type: 'finish' }, '/deep-loop-finish');
+  return A(gate, { type: 'await_human', reason: 'active-work-remains' }, '/deep-loop-status');
+}
+
 export function nextAction(loop, { now = Date.now() } = {}) {
-  const blocked_by = [];
   const b = checkBudget(loop, { now });
   const br = checkBreaker(loop);
   const debt = computeDebt(loop);
-  if (!b.ok) blocked_by.push('budget');
-  if (br.tripped) blocked_by.push('breaker');
-  if (debt.blocked) blocked_by.push('comprehension-debt');
 
-  if (blocked_by.length) {
-    // budget hard-stop은 handoff(세션 천장), breaker/debt는 사람 호출
-    const type = blocked_by.includes('budget') && !br.tripped && !debt.blocked ? 'handoff' : 'await_human';
-    return { gate: { allowed: false, blocked_by, reason: b.reason || br.reason || 'comprehension-debt', tier_after: b.tier_after },
-      action: { type, reason: blocked_by.join(',') }, next_command: type === 'handoff' ? '/deep-loop-handoff' : '/deep-loop-status' };
-  }
+  // budget hard-stop / breaker 는 모든 행동을 막는 전역 게이트.
+  if (!b.ok) return A({ allowed: false, blocked_by: ['budget'], reason: b.reason, tier_after: b.tier_after }, { type: 'handoff', reason: 'budget' }, '/deep-loop-handoff');
+  if (br.tripped) return A({ allowed: false, blocked_by: ['breaker'], reason: br.reason, tier_after: b.tier_after }, { type: 'await_human', reason: 'breaker' }, '/deep-loop-status');
 
-  const gate = { allowed: true, blocked_by: [], reason: b.reason, tier_after: b.tier_after };
+  // comprehension-debt 는 **새 fan-out(discover)만** 막는다 — 현재 episode 진행/fix/리뷰/handoff/finish 는 허용 (spec §15, Codex r2 🔴4).
+  const gate = { allowed: true, blocked_by: debt.blocked ? ['comprehension-debt'] : [], reason: b.reason, tier_after: b.tier_after };
 
   // 마일스톤: per_session_turn_cap 도달 → 선제 handoff
   const cap = loop.budget?.per_session_turn_cap;
-  if (cap && currentSessionTurns(loop) >= cap) {
-    return { gate, action: { type: 'handoff', reason: 'per_session_turn_cap' }, next_command: '/deep-loop-handoff' };
-  }
+  if (cap && currentSessionTurns(loop) >= cap) return A(gate, { type: 'handoff', reason: 'per_session_turn_cap' }, '/deep-loop-handoff');
 
   const ep = (loop.episodes || []).find(e => e.id === loop.current_episode);
   if (!ep) {
-    if (!loop.episodes || loop.episodes.length === 0) return { gate, action: { type: 'discover' }, next_command: '/deep-loop-discover' };
-    return { gate, action: { type: 'finish' }, next_command: '/deep-loop-finish' };
+    if (!loop.episodes || loop.episodes.length === 0) {
+      if (debt.blocked) return A(gate, { type: 'await_human', reason: 'comprehension-debt' }, '/deep-loop-status');  // discover=fan-out → debt 면 사람 검토 먼저
+      return A(gate, { type: 'discover' }, '/deep-loop-discover');
+    }
+    return finishOrAdvance(loop, gate);
   }
-  if (ep.role === 'maker' && ep.status === 'pending') {
-    return { gate, action: { type: 'dispatch_maker', episode_id: ep.id, point: ep.point, workstream_id: ep.workstream_id }, next_command: '/deep-loop-continue' };
+  if (ep.role === 'maker') {
+    if (ep.status === 'pending') return A(gate, { type: 'dispatch_maker', episode_id: ep.id, point: ep.point, workstream_id: ep.workstream_id }, '/deep-loop-continue');
+    if (ep.status === 'in_progress') return A(gate, { type: 'await_result', episode_id: ep.id }, '/deep-loop-continue');
+    if (ep.status === 'blocked') return A(gate, { type: 'await_human', episode_id: ep.id, reason: 'episode-blocked' }, '/deep-loop-status');
+    if (ep.status === 'done') return A(gate, { type: 'dispatch_checker', episode_id: ep.id, point: ep.point, workstream_id: ep.workstream_id }, '/deep-loop-continue');
   }
-  if (ep.role === 'maker' && ep.status === 'done') {
-    return { gate, action: { type: 'dispatch_checker', episode_id: ep.id, point: ep.point, workstream_id: ep.workstream_id }, next_command: '/deep-loop-continue' };
+  if (ep.role === 'checker') {
+    if (ep.status === 'pending') return A(gate, { type: 'dispatch_checker', episode_id: ep.id, point: ep.point, workstream_id: ep.workstream_id }, '/deep-loop-continue');
+    if (ep.status === 'in_progress') return A(gate, { type: 'await_result', episode_id: ep.id }, '/deep-loop-continue');   // 재dispatch 금지 (Codex r2 🔴7)
+    if (ep.status === 'blocked') return A(gate, { type: 'await_human', episode_id: ep.id, reason: 'episode-blocked' }, '/deep-loop-status');
+    if (ep.status === 'rejected') return A(gate, { type: 'fix_episode', episode_id: ep.id, point: ep.point, workstream_id: ep.workstream_id }, '/deep-loop-continue');  // Codex r1 🔴5
+    if (ep.status === 'approved') return finishOrAdvance(loop, gate);
   }
-  if (ep.role === 'checker' && (ep.status === 'pending' || ep.status === 'in_progress')) {
-    return { gate, action: { type: 'dispatch_checker', episode_id: ep.id, point: ep.point, workstream_id: ep.workstream_id }, next_command: '/deep-loop-continue' };
-  }
-  if (ep.role === 'checker' && ep.status === 'rejected') {
-    // Codex r1 🔴5: 리뷰 거부 → fix maker episode 가 필요. Execution 이 episode new(role=maker,kind=fix) 후 dispatch.
-    return { gate, action: { type: 'fix_episode', episode_id: ep.id, point: ep.point, workstream_id: ep.workstream_id }, next_command: '/deep-loop-continue' };
-  }
-  if (ep.role === 'checker' && ep.status === 'approved') {
-    // 리뷰 통과 → 미완 maker 가 있으면 그쪽, 없으면 finish.
-    const pending = (loop.episodes || []).find(e => e.role === 'maker' && e.status === 'pending');
-    if (pending) return { gate, action: { type: 'dispatch_maker', episode_id: pending.id, point: pending.point, workstream_id: pending.workstream_id }, next_command: '/deep-loop-continue' };
-    return { gate, action: { type: 'finish' }, next_command: '/deep-loop-finish' };
-  }
-  return { gate, action: { type: 'finish' }, next_command: '/deep-loop-finish' };
+  return finishOrAdvance(loop, gate);
 }
 ```
 
-- [ ] **Step 4: Run to verify pass** — Run: `node --test tests/next-action.test.mjs` → PASS (7 tests)
+- [ ] **Step 4: Run to verify pass** — Run: `node --test tests/next-action.test.mjs` → PASS (10 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -1177,8 +1281,8 @@ git commit -m "feat(orch): next-action — pure gate+action descriptor (no dispa
 **Interfaces:**
 - Consumes: `lease.reserveHandoff/advanceHandoffPhase`, `state.readState/runDir`, `integrity.appendAnchored`, `envelope.wrap/ulid/atomicWrite`.
 - Produces:
-  - `buildLaunchCommand({root, childRunId, handoffRel, headless}): {interactive, headless, macos, windows, tmux}` — 전 OS 진입 명령 문자열.
-  - `emitHandoff(root, runId, {reason='milestone', trigger='milestone', now?, headless=false}): {ok, reason, handoffPath, childRunId, key}` — (1) `reserveHandoff(trigger)` — 거부 시 `{ok:false, reason:'handoff-in-flight'}` no-op. (2) childRunId=ulid. (3) `handoffs/<ts>-next-session.md` 작성. (4) `handoffs/<ts>-compaction-state.json`(M3 envelope, `parent_run_id=runId`). (5) `terminal/launch-command.txt`. (6) `appendAnchored('handoff-emitted')`로 session_chain entry append + `superseded_by` 마킹. (7) `advanceHandoffPhase('emitted')` → `lease.state='releasing'`.
+  - `buildLaunchCommand({root, parentRunId, childRunId, handoffRel, headless}): {interactive, headless, macos, windows, tmux}` — 전 OS 진입 명령 문자열. handoff 파일은 **부모** run 디렉터리(`.deep-loop/runs/<parentRunId>/<handoffRel>`)를 가리킨다.
+  - `emitHandoff(root, runId, {reason='milestone', trigger='milestone', now?, headless=false}): {ok, reason, handoffPath, childRunId, key, csName, mdName, handoffRel}` — (1) `reserveHandoff(trigger)` — 다른 트리거 in-flight면 `{ok:false}` no-op, 같은 트리거 재진입이면 기존 emit 멱등 반환(전체 메타데이터). (2) childRunId=ulid. (3) `handoffs/<ts>-next-session.md`. (4) `handoffs/<ts>-compaction-state.json`(M3, `parent_run_id=runId`). (5) `terminal/launch-command.txt`. (6) `appendAnchored('handoff-emitted')`로 session_chain entry(handoff 메타 포함) append + `superseded_by`. (7) `advanceHandoffPhase('emitted')` → `lease.state='releasing'`, `expires_at` 설정.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1247,6 +1351,7 @@ test('emitHandoff same-trigger re-entry is idempotent (one child, no duplicate s
   assert.equal(again.ok, true);
   assert.equal(again.reason, 'already-emitted');
   assert.equal(again.childRunId, first.childRunId);
+  assert.equal(again.handoffRel, first.handoffRel);  // 전체 메타데이터 멱등 반환 (Codex r2 🔴1) → respawn 이 올바른 경로 사용
   const children = readState(root, runId).data.session_chain.sessions.filter(s => s.run_id !== runId);
   assert.equal(children.length, 1);
 });
@@ -1308,13 +1413,22 @@ function handoffMarkdown(loop, childRunId, reason) {
 export function emitHandoff(root, runId, { reason = 'milestone', trigger = 'milestone', now = Date.now(), headless = false } = {}) {
   const res = reserveHandoff(root, runId, { trigger });
   if (!res.ok) return { ok: false, reason: res.reason, key: res.key };
-  // Codex r1 🔴1: 같은 트리거 재진입(reserved:false)이면 이미 in-flight handoff 가 있다.
-  // 새 child/파일을 만들지 말고 기존 emit 을 멱등 반환. 단 reserve 만 되고 emit 미완(superseded_by 미설정)이면
-  // 아래로 fall-through 해 emit 을 완료(crash-resume).
+  // Codex r1 🔴1 / r2 🔴1: 같은 트리거 재진입(reserved:false)이면 이미 in-flight handoff 가 있다.
+  // 새 child/파일을 만들지 말고 기존 emit 을 **전체 메타데이터와 함께** 멱등 반환. 단 reserve 만 되고
+  // emit 미완(child 미생성)이면 아래로 fall-through 해 emit 을 완료(crash-resume).
   if (!res.reserved) {
     const { data } = readState(root, runId);
     const cur = data.session_chain.sessions.find(s => s.run_id === runId);
-    if (cur && cur.superseded_by) return { ok: true, reason: 'already-emitted', childRunId: cur.superseded_by, key: res.key };
+    const childId = cur && cur.superseded_by;
+    if (childId) {
+      // emit↔advance 사이 크래시로 phase 가 reserved 에 멈췄으면 emitted 까지 마무리 (Codex r2 🔴1: respawn 이 phase!==emitted 로 거부하는 데드락 방지)
+      if (data.session_chain.lease.handoff_phase === 'reserved') advanceHandoffPhase(root, runId, { key: res.key, toPhase: 'emitted', now });
+      const child = data.session_chain.sessions.find(s => s.run_id === childId);
+      return { ok: true, reason: 'already-emitted', childRunId: childId, key: res.key,
+        handoffRel: child?.handoff_rel ?? null, handoffPath: child?.handoff_path ?? null,
+        csName: child?.handoff_cs ?? null, mdName: child?.handoff_md ?? null };
+    }
+    // reserved 됐지만 child 미생성 → fall-through 해 emit 완료
   }
   const { data: loop } = readState(root, runId);
   const childRunId = ulid(now);
@@ -1342,7 +1456,9 @@ export function emitHandoff(root, runId, { reason = 'milestone', trigger = 'mile
     [`# interactive`, cmds.interactive, ``, `# headless`, cmds.headless, ``, `# macOS`, cmds.macos, ``, `# windows`, cmds.windows, ``, `# tmux`, cmds.tmux, ``].join('\n'));
 
   appendAnchored(root, runId, { type: 'handoff-emitted', data: { child_run_id: childRunId, reason, key: res.key } }, (l) => {
-    l.session_chain.sessions.push({ run_id: childRunId, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: null });
+    // 재진입 멱등 반환에 쓰도록 handoff 메타데이터를 child 세션 엔트리에 영속 (Codex r2 🔴1)
+    l.session_chain.sessions.push({ run_id: childRunId, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: null,
+      handoff_rel: handoffRel, handoff_path: handoffPath, handoff_md: mdName, handoff_cs: csName });
     const cur = l.session_chain.sessions.find(s => s.run_id === runId);
     if (cur) cur.superseded_by = childRunId;
   });
@@ -1458,6 +1574,23 @@ test('respawn success → spawned, lease released, child can acquire (generation
   assert.equal(a.generation, 2);
 });
 
+// Codex r2 🔴3: 외부 spawn 전 원자적 클레임이 동시 호출의 이중 spawn 을 막는지.
+// spawnFn 안에서 같은 respawn 을 재진입(=동시 호출 시뮬레이션): 첫 호출이 이미 spawned 로 클레임했으므로 둘째는 spawn 안 함.
+test('respawn claims atomically before external spawn → concurrent re-entry does not double-spawn', () => {
+  const { root, runId } = seed();
+  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1 });
+  let spawns = 0; let reentered = null;
+  const spawnFn = (cmd) => {
+    spawns++;
+    if (spawns === 1) reentered = respawn(root, runId, { childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel, now: NOW1, spawnFn });
+    return { ok: true };
+  };
+  const r = respawn(root, runId, { childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel, now: NOW1, spawnFn });
+  assert.equal(r.ok, true);
+  assert.equal(spawns, 1);                       // 재진입 호출은 외부 spawn 을 추가 실행하지 않음
+  assert.equal(reentered.outcome, 'already-spawned');
+});
+
 // Codex r1 🟡8: 동시 다발 실패 시 게이트 순서(budget→breaker→max_sessions→wallclock) 보고가 일관적인지.
 test('respawnGate reports documented order; wallclock not mislabeled as budget', () => {
   const { root, runId } = seed((d) => {
@@ -1536,13 +1669,19 @@ export function respawn(root, runId, { childRunId, key, handoffRel = '', headles
     withLock(root, runId, () => { const { data } = readState(root, runId); data.status = 'paused'; writeState(root, runId, data); });
     return { ok: false, outcome: 'gate-blocked', reason: gate.reason, childRunId };
   }
+  // Codex r2 🔴3: 외부 spawn **이전에** emitted→spawned 를 원자적(withLock CAS)으로 클레임.
+  // 동시 호출 둘이 emitted/releasing 을 읽어도 advanceHandoffPhase 가 직렬화되어 1명만 'advanced',
+  // 나머지는 'idempotent-noop' → spawn 안 함 (이중 외부 spawn 차단).
+  const claim = advanceHandoffPhase(root, runId, { key, toPhase: 'spawned', now });
+  if (!claim.ok) return { ok: false, outcome: 'phase-error', reason: claim.reason, childRunId };
+  if (claim.reason === 'idempotent-noop') return { ok: true, outcome: 'already-spawned', reason: 'idempotent', childRunId };
   const cmds = buildLaunchCommand({ root, parentRunId: runId, childRunId, handoffRel, headless });
   const cmd = headless ? cmds.headless : cmds.interactive;
   try {
     const res = spawnFn(cmd);
     if (res && res.ok === false) throw new Error(res.reason || 'spawn-returned-false');
   } catch (e) {
-    // 실패모드 (B): 부모로 lease 롤백 + chain 정정 (인수한 적 없는 세션을 기술하지 않게 superseded_by 해제)
+    // 실패모드 (B): spawned→active/idle 롤백 + chain 정정 (인수한 적 없는 세션을 기술하지 않게 superseded_by 해제)
     appendAnchored(root, runId, { type: 'respawn-failed', data: { child_run_id: childRunId, error: String(e.message || e) } }, (l) => {
       const child = l.session_chain.sessions.find(s => s.run_id === childRunId);
       if (child) child.outcome = 'failed_launch';
@@ -1552,17 +1691,15 @@ export function respawn(root, runId, { childRunId, key, handoffRel = '', headles
     rollbackHandoff(root, runId, { owner: runId, generation });
     return { ok: false, outcome: 'failed_launch', reason: String(e.message || e), childRunId };
   }
-  // 성공: spawned → 부모 lease release(자식이 acquire 가능). 전이 반환값 검증(silent 실패 금지).
+  // spawn 성공 → 부모 lease release(자식이 acquire 가능). 전이 반환값 검증(silent 실패 금지).
   appendAnchored(root, runId, { type: 'respawn-spawned', data: { child_run_id: childRunId, headless } });
-  const adv = advanceHandoffPhase(root, runId, { key, toPhase: 'spawned', now });
-  if (!adv.ok) return { ok: false, outcome: 'phase-error', reason: adv.reason, childRunId };
   const rel = releaseLease(root, runId, { owner: runId, generation });
   if (!rel.ok) return { ok: false, outcome: 'release-error', reason: rel.reason, childRunId };
   return { ok: true, outcome: 'spawned', reason: 'spawned', childRunId };
 }
 ```
 
-- [ ] **Step 4: Run to verify pass** — Run: `node --test tests/respawn.test.mjs` → PASS (6 tests)
+- [ ] **Step 4: Run to verify pass** — Run: `node --test tests/respawn.test.mjs` → PASS (7 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -1755,7 +1892,7 @@ handlers에 추가(객체 리터럴 끝에):
 
 - [ ] **Step 5: 전체 테스트 + preflight**
 
-Run: `npm test` → 기존 62 + 신규(lease 8 + workspace 6 + episode 4 + review 4 + adapters 5 + next-action 7 + handoff 5 + respawn 6 + orch-cli 7 = 52) = **114 tests green**
+Run: `npm test` → 기존 62 + 신규(lease 8 + workspace 6 + episode 4 + review 6 + adapters 5 + next-action 10 + handoff 5 + respawn 7 + orch-cli 7 = 58) = **120 tests green**
 Run: `npm run preflight` → PASS
 
 - [ ] **Step 6: Commit**
@@ -1787,7 +1924,7 @@ git commit -m "feat(orch): CLI — lease/next-action/episode/workstream/review/h
 
 **Type consistency:**
 - lease: `leaseCheck(loop,{owner,generation,intent})→{ok,reason}`, `acquireLease(root,runId,{owner,expectGeneration,now})→{ok,generation,reason}`, `reserveHandoff(...)→{ok,reserved,key,reason}`, `advanceHandoffPhase(...,{key,toPhase})→{ok,reason}`, `rollbackHandoff(...,{owner,generation})→{ok,reason}` — Task 7·8에서 동일 시그니처 소비. ✅
-- handoff: `emitHandoff(...)→{ok,reason,handoffPath,childRunId,key,csName,mdName}`, `buildLaunchCommand({root,childRunId,handoffRel,headless})→{interactive,headless,macos,windows,tmux}` — Task 8 respawn이 `buildLaunchCommand`·`childRunId`·`key` 소비. ✅
+- handoff: `emitHandoff(...)→{ok,reason,handoffPath,childRunId,key,csName,mdName,handoffRel}`, `buildLaunchCommand({root,parentRunId,childRunId,handoffRel,headless})→{interactive,headless,macos,windows,tmux}` — Task 8 respawn이 `childRunId`·`key`·`handoffRel` 소비(부모 경로 launch 명령). ✅
 - workspace: `newWorkstream(...)→{id}`, `setWorkstreamStatus`, `recordWorkstreamTerminal({status,proof})`, `inheritWorkstreams→{inherited,missing}`, `integrationOrder(loop)→{order,cycle}`. Task 4 review가 `newWorkstream` 사용. ✅
 - episode: `newEpisode(...)→{id,requestPath}`, `recordEpisode(...,{status,artifacts,proof})`. Task 4 review가 `newEpisode` 소비. ✅
 - adapters: `resolveAdapter(name)→{dispatch,awaitResult,checker,readArtifacts}`, `guardTierProtocol(tier,protocol,verb)→{ok,reason}`. ✅
@@ -1814,7 +1951,18 @@ git commit -m "feat(orch): CLI — lease/next-action/episode/workstream/review/h
 - 🟡7 (Task 8): mode-A 테스트가 `budget.spent` 변조로 `reconcileBudget` throw → `budget.total=0` 으로 무결성 유지하며 hard-stop 유발.
 - 🟡8 (Task 8): wallclock 이 `checkBudget` 내부에서 게이트 순서보다 먼저 평가 → `respawnGate` 가 `sessionStart:now` 로 내부 검사 무력화 + 문서 순서대로 명시 검사. 순서 테스트 추가.
 
-신규 테스트 총계: 52 (라운드 1 전 46 → 52). `npm test` = 기존 62 + 52 = **114 green** 목표.
+**라운드 2 (REQUEST_CHANGES, 7 critical + 2 should-fix) — 전부 수정** (라운드 1 fix 7·8 은 correct 확인됨):
+- 🔴1 (Task 7): same-trigger 멱등 반환이 respawn 메타데이터 손실 + phase 가 reserved 에 멈춘 크래시 미복구 → 전체 메타데이터(handoffRel 등)를 child 세션에 영속 + 재진입 시 reserved→emitted 마무리.
+- 🔴2 (Task 1): active 소유자가 stale TTL(15분) 후 자기 write 에서 fence 되는 데드락 → `leaseCheck` 에서 expiry 분기 제거(generation 이 stale parent 펜싱), active=`expires_at:null`(무기한), TTL 은 releasing 크래시 인수에만. `acquireLease` takeover = released 또는 releasing+expired(active 절대 탈취 ❌).
+- 🔴3 (Task 8): respawn 이 phase 검증 후 비원자적으로 spawn → 동시 호출 이중 spawn → 외부 spawn **이전에** emitted→spawned CAS 클레임(`idempotent-noop` 이면 spawn 안 함). 재진입 동시성 테스트 추가.
+- 🔴4 (Task 4·6): comprehension-debt 가 fix flow 보다 먼저 발화 → fix 도달 불가 → debt 는 `discover`(새 fan-out)만 차단, 현재 episode 진행/fix/리뷰/finish 는 허용. dispatchReview→RC→nextAction=fix_episode 종단 테스트 추가.
+- 🔴5 (Task 2·9): workstream 터미널이 임의 status+빈 proof 로 설정 가능 → proof **내용**을 터미널별 검증(ready=review/approved, merged=merge_commit+human_approved[사람승인], abandoned=reason). 검증은 appendAnchored 이전.
+- 🔴6 (Task 4·9): invalid verdict 가 검증 전 breaker 변조 → `recordReviewOutcome` 가 최상단에서 verdict allowlist 검증 후 진행.
+- 🔴7 (Task 6): nextAction 이 in_progress/blocked 에서 finish/재dispatch 오작동 → in_progress→`await_result`, blocked→`await_human`, checker in_progress 재dispatch ❌, finish 는 active_workstreams 0 + 모든 episode 양성 터미널일 때만(`finishOrAdvance`).
+- 🟡8 (Task 7): Interfaces/Self-Review 의 buildLaunchCommand/emitHandoff 시그니처를 실제(parentRunId/handoffRel/csName/mdName)와 일치.
+- 🟡9 (Task 2): integrationOrder 가 미지 의존을 silent drop → `missing[]` 반환 + order 비움(needs-human).
+
+신규 테스트 총계: 58 (라운드 2 전 52 → 58). `npm test` = 기존 62 + 58 = **120 green** 목표.
 
 ---
 
