@@ -3,7 +3,14 @@ import { join } from 'node:path';
 import { contentHash, atomicWrite } from './envelope.mjs';
 import { validate } from './schema.mjs';
 
-export function runDir(root, runId) { return join(root, '.deep-loop', 'runs', runId); }
+// Codex impl r12 🔴: runId must be a single safe path segment — a '../' (or slash) runId would make runDir
+// resolve outside the project root, and ALL state/event/episode/handoff writers build paths from runDir.
+export function runDir(root, runId) {
+  if (typeof runId !== 'string' || runId.length === 0 || runId === '.' || runId === '..' || /[/\\]/.test(runId)) {
+    throw new Error(`RUN_ID_INVALID: ${runId}`);
+  }
+  return join(root, '.deep-loop', 'runs', runId);
+}
 const loopPath = (root, runId) => join(runDir(root, runId), 'loop.json');
 const hashPath = (root, runId) => join(runDir(root, runId), '.loop.hash');
 

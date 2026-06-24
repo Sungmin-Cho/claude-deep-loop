@@ -1,4 +1,5 @@
 import { readState, writeState, withLock } from './state.mjs';
+import { leaseCheck } from './lease.mjs';
 
 const THRESHOLD = 3;
 
@@ -18,11 +19,24 @@ export function tripBreaker(root, runId, reason) {
   });
 }
 
-export function recordReviewVerdict(root, runId, verdict) {
+export function recordReviewVerdict(root, runId, verdict, fence) {
   return withLock(root, runId, () => {
     const { data } = readState(root, runId);
+    if (fence) {
+      const r = leaseCheck(data, fence);
+      if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason);
+    }
     const cb = data.circuit_breaker || { consecutive_request_changes: 0 };
-    cb.consecutive_request_changes = verdict === 'REQUEST_CHANGES' ? (cb.consecutive_request_changes || 0) + 1 : 0;
+    if (verdict === 'REQUEST_CHANGES') {
+      cb.consecutive_request_changes = (cb.consecutive_request_changes || 0) + 1;
+      if (cb.consecutive_request_changes >= THRESHOLD && !cb.tripped) {
+        cb.tripped = true;
+        cb.trip_reason = 'consecutive-request-changes';
+        data.status = 'paused';
+      }
+    } else {
+      cb.consecutive_request_changes = 0;   // counter resets; tripped stays latched (human-reset only)
+    }
     data.circuit_breaker = cb;
     writeState(root, runId, data);
   });
