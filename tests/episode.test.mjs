@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, runDir } from '../scripts/lib/state.mjs';
+import { reconcileBudget } from '../scripts/lib/budget.mjs';
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 
 function seed() {
@@ -113,4 +114,18 @@ test('recordEpisode done throws EPISODE_ARTIFACT_ESCAPE for path-traversal in su
     () => recordEpisode(root, runId, id, { status: 'done', artifacts: ['out.txt', '../outside'] }),
     /EPISODE_ARTIFACT/
   );
+});
+
+// Codex impl r7 🔴: malformed non-terminal inputs (null artifacts/proof) must fail BEFORE appendAnchored,
+// leaving the event-log anchor consistent (no BUDGET_TAMPERED on next reconcile).
+test('recordEpisode rejects null artifacts/proof cleanly without staling the event_log_head anchor', () => {
+  const { root, runId } = seed();
+  const { id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation' });
+  assert.throws(() => recordEpisode(root, runId, id, { status: 'in_progress', artifacts: null }), /EPISODE_INPUT_INVALID/);
+  assert.throws(() => recordEpisode(root, runId, id, { status: 'in_progress', proof: null }), /EPISODE_INPUT_INVALID/);
+  // anchor must still reconcile (no orphaned event appended)
+  assert.doesNotThrow(() => reconcileBudget(root, runId));
+  // a well-formed record still works after the rejected attempts
+  recordEpisode(root, runId, id, { status: 'in_progress', proof: { result_note: 'ok' } });
+  assert.equal(readState(root, runId).data.episodes[0].status, 'in_progress');
 });

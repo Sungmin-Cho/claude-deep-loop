@@ -21,6 +21,9 @@ function requestSkeleton({ id, plugin, role, kind, point, workstream, expectedAr
 }
 
 export function newEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], fence } = {}) {
+  // Codex impl r7 🔴: expectedArtifacts must be an array of strings (a null/non-array would throw in the
+  // loop below; though that is before appendAnchored, give a clean error rather than a raw TypeError).
+  if (!Array.isArray(expectedArtifacts) || !expectedArtifacts.every(a => typeof a === 'string')) throw new Error('EPISODE_INPUT_INVALID: expectedArtifacts must be an array of strings');
   // Codex r2 🟡: expectedArtifacts 경로 안전성 검증 — 절대 경로 및 '..' 세그먼트 사전 차단.
   for (const a of expectedArtifacts) {
     if (isAbsolute(a) || a.split(/[/\\]/).includes('..')) throw new Error('EPISODE_ARTIFACT_UNSAFE: ' + a);
@@ -54,8 +57,12 @@ export function newEpisode(root, runId, { plugin, role, kind, point, workstream 
 }
 
 export function recordEpisode(root, runId, episodeId, { status, artifacts = [], proof = {}, fence } = {}) {
-  // Cheap input validation: status domain (no state access needed)
+  // Cheap input validation BEFORE appendAnchored (no state access needed). Codex impl r7 🔴:
+  // a null/non-array `artifacts` or null/non-object `proof` would otherwise throw INSIDE the mutate
+  // (after the event is appended), staling event_log_head → BUDGET_TAMPERED on next reconcile.
   if (![...NON_TERMINAL, ...TERMINAL].includes(status)) throw new Error(`EPISODE_STATUS_INVALID: ${status}`);
+  if (!Array.isArray(artifacts) || !artifacts.every(a => typeof a === 'string')) throw new Error('EPISODE_INPUT_INVALID: artifacts must be an array of strings');
+  if (proof === null || typeof proof !== 'object' || Array.isArray(proof)) throw new Error('EPISODE_INPUT_INVALID: proof must be an object');
   appendAnchored(root, runId, { type: 'episode-record', data: { id: episodeId, status, artifacts } }, (loop) => {
     const ep = loop.episodes.find(e => e.id === episodeId);
     if (!ep) throw new Error(`EPISODE_NOT_FOUND: ${episodeId}`);   // 방어적
