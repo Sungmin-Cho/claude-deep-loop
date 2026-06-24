@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { checkBudget, recordCost, reconcileBudget } from '../scripts/lib/budget.mjs';
+import { appendAnchored } from '../scripts/lib/integrity.mjs';
 import { writeState, readState, runDir } from '../scripts/lib/state.mjs';
 
 // 자기완결 minimal valid loop (cross-task import 없음)
@@ -87,4 +88,15 @@ test('checkBudget derives wallclock from created_at when sessionStart omitted', 
   const l = base();
   l.created_at = new Date(Date.now() - 4000 * 1000).toISOString(); // 4000s ago > 3600 cap
   assert.equal(checkBudget(l, {}).ok, false);
+});
+
+test('non-cost anchored append keeps reconcile consistent; its truncation is caught', () => {
+  const root = seedRun();
+  recordCost(root, 'R', { turns: 2, tokens: 0 });
+  appendAnchored(root, 'R', { type: 'decision', data: { note: 'x' } }); // non-cost advances anchor
+  reconcileBudget(root, 'R'); // must NOT throw (anchor tracks tail, spent still 2)
+  const p = join(runDir(root, 'R'), 'event-log.jsonl');
+  const lines = readFileSync(p, 'utf8').split('\n').filter(Boolean);
+  writeFileSync(p, lines.slice(0, -1).join('\n') + '\n'); // truncate the non-cost event
+  assert.throws(() => reconcileBudget(root, 'R'), /BUDGET_TAMPERED/);
 });

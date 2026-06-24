@@ -1,5 +1,5 @@
-import { appendEvent, recomputeSpent, verifyLog, verifyHead, lastLogHead, validCost } from './integrity.mjs';
-import { readState, writeState, withLock } from './state.mjs';
+import { appendAnchored, recomputeSpent, verifyLog, verifyHead, validCost } from './integrity.mjs';
+import { readState, withLock } from './state.mjs';
 
 export function checkBudget(loop, { now = Date.now(), sessionStart, measurable = true } = {}) {
   const b = loop.budget;
@@ -19,17 +19,12 @@ export function checkBudget(loop, { now = Date.now(), sessionStart, measurable =
   return { ok: true, reason: 'ok', tier_after: loop.autonomy.tier };
 }
 
-// cost 이벤트 기록 + 커널 파생 spent + log head 앵커를 loop.json에 동기화 (단일 lock 안에서)
+// cost 이벤트 기록 — anchored append 단일 경로 사용 (append + event_log_head 앵커 + budget.spent를 한 lock 안에서)
 export function recordCost(root, runId, { turns = 0, tokens = 0 }) {
   if (!validCost({ turns, tokens })) throw new Error(`INVALID_COST: turns/tokens must be finite >= 0 (got ${turns}/${tokens})`);
-  return withLock(root, runId, () => {
-    appendEvent(root, runId, { type: 'cost', data: { turns, tokens } });
-    const { data } = readState(root, runId);
-    const t = recomputeSpent(root, runId);
-    data.budget.spent = t.turns;
-    data.budget.tokens_spent = t.tokens;
-    data.event_log_head = lastLogHead(root, runId);   // hash-보호 loop.json에 tail 앵커
-    writeState(root, runId, data);
+  return appendAnchored(root, runId, { type: 'cost', data: { turns, tokens } }, (loop, spent) => {
+    loop.budget.spent = spent.turns;
+    loop.budget.tokens_spent = spent.tokens;
   });
 }
 
