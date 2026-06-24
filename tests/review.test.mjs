@@ -149,6 +149,10 @@ test('recordReviewOutcome: stale fence throws LEASE_FENCED; breaker and review_p
     () => recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'plan', verdict: 'APPROVE', fence }),
     /LEASE_FENCED/
   );
+  // Codex impl r10 🔴: ATOMIC — the checker must NOT be terminalized (no half-commit) when the fenced
+  // transaction is rejected. With the old multi-lock version the checker was approved before the later
+  // fenced writes threw; the single-transaction version leaves it fully unmutated.
+  assert.equal(readState(root, runId).data.episodes.find(e => e.id === r.checkerEpisodeId).status, 'pending');
   // Breaker counter must not have been mutated
   assert.equal(readState(root, runId).data.circuit_breaker.consecutive_request_changes, breakerBefore);
   // review_points_done must not contain 'plan'
