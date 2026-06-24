@@ -1,0 +1,8 @@
+{
+  "id": "robust-implementation",
+  "name": "Robust Implementation",
+  "triggers": ["feature","implement","bug","refactor","fix","build","구현","수정","리팩터링","버그"],
+  "protocol_hint": "deep-work",
+  "flow": ["discover","deep-work:maker","deep-review:checker","deep-docs:scan","archive"],
+  "expected_artifacts": [".deep-work/<session>/session-receipt.json",".deep-review/reports/*.md",".deep-docs/last-scan.json"]
+}
