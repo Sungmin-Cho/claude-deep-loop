@@ -14,6 +14,8 @@ function seed() {
   return { root, runId };
 }
 
+function expect_(runId) { return { owner: runId, generation: 1 }; }
+
 test('buildLaunchCommand produces per-OS commands referencing child run + resume', () => {
   const c = buildLaunchCommand({ root: '/p', parentRunId: 'PARENT', childRunId: 'CHILD', handoffRel: 'handoffs/x.md', headless: false });
   assert.match(c.interactive, /claude -n/);
@@ -26,7 +28,7 @@ test('buildLaunchCommand produces per-OS commands referencing child run + resume
 test('emitHandoff writes md + compaction-state(M3) + launch-command, chains session, sets releasing', () => {
   const { root, runId } = seed();
   const now = Date.parse('2026-06-24T01:00:00Z');
-  const r = emitHandoff(root, runId, { reason: 'milestone', trigger: 'milestone', now });
+  const r = emitHandoff(root, runId, { reason: 'milestone', trigger: 'milestone', now, expect: expect_(runId) });
   assert.equal(r.ok, true);
   assert.ok(existsSync(r.handoffPath));
   // compaction-state는 M3 envelope (producer=deep-loop, parent_run_id=runId)
@@ -47,8 +49,9 @@ test('emitHandoff writes md + compaction-state(M3) + launch-command, chains sess
 test('emitHandoff dedups: second trigger while in-flight is a no-op', () => {
   const { root, runId } = seed();
   const now = Date.parse('2026-06-24T01:00:00Z');
-  assert.equal(emitHandoff(root, runId, { trigger: 'milestone', now }).ok, true);
-  const second = emitHandoff(root, runId, { trigger: 'precompact', now });
+  const ex = expect_(runId);
+  assert.equal(emitHandoff(root, runId, { trigger: 'milestone', now, expect: ex }).ok, true);
+  const second = emitHandoff(root, runId, { trigger: 'precompact', now, expect: ex });
   assert.equal(second.ok, false);
   assert.equal(second.reason, 'handoff-in-flight');
 });
@@ -57,8 +60,9 @@ test('emitHandoff dedups: second trigger while in-flight is a no-op', () => {
 test('emitHandoff same-trigger re-entry is idempotent (one child, no duplicate session)', () => {
   const { root, runId } = seed();
   const now = Date.parse('2026-06-24T01:00:00Z');
-  const first = emitHandoff(root, runId, { trigger: 'milestone', now });
-  const again = emitHandoff(root, runId, { trigger: 'milestone', now });
+  const ex = expect_(runId);
+  const first = emitHandoff(root, runId, { trigger: 'milestone', now, expect: ex });
+  const again = emitHandoff(root, runId, { trigger: 'milestone', now, expect: ex });
   assert.equal(again.ok, true);
   assert.equal(again.reason, 'already-emitted');
   assert.equal(again.childRunId, first.childRunId);
@@ -112,12 +116,23 @@ test('emitHandoff: lease stolen before call → fenced at reserve, new owner lea
 test('emitHandoff fall-through after bare reserve reuses reserved childRunId (no duplicate child)', () => {
   const { root, runId } = seed();
   const now = Date.parse('2026-06-24T01:00:00Z');
+  const ex = expect_(runId);
   const r = reserveHandoff(root, runId, { trigger: 'milestone', now });
   assert.equal(r.reserved, true);
-  const e1 = emitHandoff(root, runId, { trigger: 'milestone', now });
+  const e1 = emitHandoff(root, runId, { trigger: 'milestone', now, expect: ex });
   assert.equal(e1.childRunId, r.childRunId);
-  const e2 = emitHandoff(root, runId, { trigger: 'milestone', now });
+  const e2 = emitHandoff(root, runId, { trigger: 'milestone', now, expect: ex });
   assert.equal(e2.childRunId, r.childRunId);
   const children = readState(root, runId).data.session_chain.sessions.filter(s => s.run_id !== runId);
   assert.equal(children.length, 1);
+});
+
+// Codex r13: FENCE_REQUIRED — emitHandoff throws when expect is absent
+test('emitHandoff throws FENCE_REQUIRED when called without expect', () => {
+  const { root, runId } = seed();
+  const now = Date.parse('2026-06-24T01:00:00Z');
+  assert.throws(
+    () => emitHandoff(root, runId, { trigger: 'milestone', now }),
+    /FENCE_REQUIRED/
+  );
 });

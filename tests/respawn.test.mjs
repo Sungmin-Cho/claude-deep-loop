@@ -20,6 +20,8 @@ function seed(mutate) {
   return { root, runId };
 }
 
+function expect_(runId) { return { owner: runId, generation: 1 }; }
+
 test('respawnGate: total sessions may reach max_sessions but not exceed (off-by-one, Codex r3 🟡6)', () => {
   // 경계: sessions.length == max_sessions (pending child 가 max 번째) → 허용
   const ok = seed((d) => { d.autonomy.max_sessions = 2; d.session_chain.sessions = [{ run_id: 'a' }, { run_id: 'b' }]; });
@@ -35,7 +37,7 @@ test('respawn gate-blocked (budget) → paused, no spawn, lease stays emitted (m
   // Codex r1 🟡7: budget.spent 를 변조하면 respawn 의 reconcileBudget 가 BUDGET_TAMPERED 로 throw.
   // 대신 total=0 으로 만들어 stored/log 불일치 없이 hard-stop(spent 0 >= 0) 을 유발한다.
   const { root, runId } = seed((d) => { d.budget.total = 0; });
-  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1 });
+  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });
   let called = false;
   const r = respawn(root, runId, { childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel, now: NOW1, spawnFn: () => { called = true; return { ok: true }; } });
   assert.equal(r.ok, false);
@@ -48,7 +50,7 @@ test('respawn gate-blocked (budget) → paused, no spawn, lease stays emitted (m
 
 test('respawn launch failure → failed_launch outcome + lease rollback (mode B)', () => {
   const { root, runId } = seed();
-  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1 });
+  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });
   const r = respawn(root, runId, { childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel, now: NOW1, spawnFn: () => { throw new Error('launch boom'); } });
   assert.equal(r.ok, false);
   assert.equal(r.outcome, 'failed_launch');
@@ -62,7 +64,7 @@ test('respawn launch failure → failed_launch outcome + lease rollback (mode B)
 // Codex impl r8 🟡: a valid key must not spawn an arbitrary (unreserved) child.
 test('respawn rejects childRunId that does not match the reserved handoff child (no spawn, no phase advance)', () => {
   const { root, runId } = seed();
-  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1 });
+  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });
   let spawned = false;
   const r = respawn(root, runId, { childRunId: 'WRONG-CHILD', key: h.key, handoffRel: h.handoffRel, now: NOW1, spawnFn: () => { spawned = true; return { ok: true }; } });
   assert.equal(r.ok, false);
@@ -75,7 +77,7 @@ test('respawn rejects childRunId that does not match the reserved handoff child 
 
 test('respawn success → spawned, lease released, child can acquire (generation+1); retry is idempotent', () => {
   const { root, runId } = seed();
-  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1 });
+  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });
   const cmds = [];
   const spawnFn = (cmd) => { cmds.push(cmd); return { ok: true }; };
   const r = respawn(root, runId, { childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel, now: NOW1, spawnFn });
@@ -98,7 +100,7 @@ test('respawn success → spawned, lease released, child can acquire (generation
 // Codex impl r9 🔴: a RELEASED handoff lease may be acquired ONLY by the reserved child (before stale TTL).
 test('released handoff lease is acquirable only by the reserved child (non-reserved child fenced)', () => {
   const { root, runId } = seed();
-  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1 });
+  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });
   respawn(root, runId, { childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel, now: NOW1, spawnFn: () => ({ ok: true }) });
   // wrong child cannot acquire the released lease before stale TTL
   const wrong = acquireLease(root, runId, { owner: 'WRONG-CHILD', expectGeneration: 1, now: NOW1 });
@@ -115,7 +117,7 @@ test('released handoff lease is acquirable only by the reserved child (non-reser
 // spawnFn 안에서 같은 respawn 을 재진입(=동시 호출 시뮬레이션): 첫 호출이 이미 spawned 로 클레임했으므로 둘째는 spawn 안 함.
 test('respawn claims atomically before external spawn → concurrent re-entry does not double-spawn', () => {
   const { root, runId } = seed();
-  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1 });
+  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });
   let spawns = 0; let reentered = null;
   const spawnFn = (cmd) => {
     spawns++;
@@ -131,7 +133,7 @@ test('respawn claims atomically before external spawn → concurrent re-entry do
 // Codex r3 🔴2: claim(spawned) 후 release 전 크래시는 **영구 stranded 가 아니다** — releasing+expired 로 successor 인수 복구.
 test('crash after spawned-claim recovers via stale-TTL acquire (not permanently stranded)', () => {
   const { root, runId } = seed();
-  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1 });   // expires_at = NOW1 + 900s
+  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });   // expires_at = NOW1 + 900s
   advanceHandoffPhase(root, runId, { key: h.key, toPhase: 'spawned', now: NOW1 });   // claim 만(=respawn 이 release 전 크래시)
   const st = readState(root, runId).data.session_chain.lease;
   assert.equal(st.handoff_phase, 'spawned');
@@ -161,7 +163,7 @@ test('respawnGate reports documented order; wallclock not mislabeled as budget',
 // respawn must return outcome='fenced', NOT mark the active child as failed_launch or corrupt the lease.
 test('respawn: lease stolen during spawnFn → fenced outcome, child lease not corrupted', () => {
   const { root, runId } = seed();
-  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1 });
+  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });
   const CHILD = h.childRunId;
   let spawnCalled = false;
   const spawnFn = () => {
@@ -191,7 +193,7 @@ test('respawn: lease stolen during spawnFn → fenced outcome, child lease not c
 // respawn (parent releases + child acquires), respawn must return 'fenced' and NOT set status='paused'.
 test('respawn gate-blocked with lease takeover before pause → fenced, status NOT paused', () => {
   const { root, runId } = seed((d) => { d.budget.total = 0; });
-  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1 });
+  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });
   const CHILD = h.childRunId;
   // Simulate takeover: parent releases, child acquires → generation advances to 2
   releaseLease(root, runId, { owner: runId, generation: 1 });
@@ -207,8 +209,9 @@ test('respawn gate-blocked with lease takeover before pause → fenced, status N
 // respawn race (§14 test 12): Continue↔PreCompact 동시 트리거 → 멱등키로 emit 1회
 test('double emit + single respawn (race): only one child chain, no double spawn', () => {
   const { root, runId } = seed();
-  const a = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1 });
-  const b = emitHandoff(root, runId, { trigger: 'precompact', now: NOW1 });   // no-op
+  const ex = expect_(runId);
+  const a = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: ex });
+  const b = emitHandoff(root, runId, { trigger: 'precompact', now: NOW1, expect: ex });   // no-op
   assert.equal(a.ok, true); assert.equal(b.ok, false);
   let spawns = 0;
   const r1 = respawn(root, runId, { childRunId: a.childRunId, key: a.key, handoffRel: a.handoffRel, now: NOW1, spawnFn: () => { spawns++; return { ok: true }; } });

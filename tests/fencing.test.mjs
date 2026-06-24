@@ -53,7 +53,7 @@ test('setWorkstreamStatus with stale fence throws LEASE_FENCED', () => {
   const owner = data.session_chain.lease.owner_run_id;
   const gen1 = data.session_chain.lease.generation;
 
-  const { id } = newWorkstream(root, runId, { title: 'T', branch: 'b', worktree: 'w' });
+  const { id } = newWorkstream(root, runId, { title: 'T', branch: 'b', worktree: 'w', fence: { owner, generation: gen1, intent: 'business' } });
 
   // Simulate child takeover
   releaseLease(root, runId, { owner, generation: gen1 });
@@ -71,7 +71,7 @@ test('recordWorkstreamTerminal with stale fence throws LEASE_FENCED', () => {
   const owner = data.session_chain.lease.owner_run_id;
   const gen1 = data.session_chain.lease.generation;
 
-  const { id } = newWorkstream(root, runId, { title: 'T', branch: 'b', worktree: 'w' });
+  const { id } = newWorkstream(root, runId, { title: 'T', branch: 'b', worktree: 'w', fence: { owner, generation: gen1, intent: 'business' } });
 
   // Simulate child takeover
   releaseLease(root, runId, { owner, generation: gen1 });
@@ -105,7 +105,7 @@ test('recordEpisode with stale fence throws LEASE_FENCED', () => {
   const owner = d0.session_chain.lease.owner_run_id;
   const gen1 = d0.session_chain.lease.generation;
 
-  const { id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation' });
+  const { id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation', fence: { owner, generation: gen1, intent: 'business' } });
 
   // Simulate child takeover
   releaseLease(root, runId, { owner, generation: gen1 });
@@ -123,8 +123,8 @@ test('recordReviewOutcome with stale fence throws LEASE_FENCED', () => {
   const owner = d0.session_chain.lease.owner_run_id;
   const gen1 = d0.session_chain.lease.generation;
 
-  const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: 'w' }).id;
-  const r = dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { 'deep-review': true } });
+  const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: 'w', fence: { owner, generation: gen1, intent: 'business' } }).id;
+  const r = dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { 'deep-review': true }, fence: { owner, generation: gen1, intent: 'business' } });
 
   // Simulate child takeover
   releaseLease(root, runId, { owner, generation: gen1 });
@@ -136,17 +136,42 @@ test('recordReviewOutcome with stale fence throws LEASE_FENCED', () => {
   );
 });
 
-// fence=undefined: existing callers with no fence still work (backward compatibility)
-test('all mutators without fence param still succeed (backward compatible)', () => {
+// Codex r13: fence is now MANDATORY — calling any mutator without fence throws FENCE_REQUIRED
+test('all mutators without fence param throw FENCE_REQUIRED (fence is now mandatory)', () => {
   const { root, runId } = seed();
-  const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: 'w' }).id;
-  assert.ok(ws);
-  setWorkstreamStatus(root, runId, ws, 'in_progress');
-  const { id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation' });
-  assert.ok(id);
-  recordEpisode(root, runId, id, { status: 'in_progress' });
-  const r = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws, detected: {} });
-  assert.ok(r.checkerEpisodeId);
-  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, verdict: 'APPROVE' });
-  assert.equal(readState(root, runId).data.episodes.find(e => e.id === r.checkerEpisodeId).status, 'approved');
+  // newWorkstream
+  assert.throws(
+    () => newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: 'w' }),
+    /FENCE_REQUIRED/
+  );
+  // setWorkstreamStatus (need a ws to call it, but the FENCE_REQUIRED is thrown before any state read)
+  assert.throws(
+    () => setWorkstreamStatus(root, runId, 'ws-01', 'in_progress'),
+    /FENCE_REQUIRED/
+  );
+  // recordWorkstreamTerminal
+  assert.throws(
+    () => recordWorkstreamTerminal(root, runId, 'ws-01', { status: 'abandoned', proof: { reason: 'x' } }),
+    /FENCE_REQUIRED/
+  );
+  // newEpisode
+  assert.throws(
+    () => newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation' }),
+    /FENCE_REQUIRED/
+  );
+  // recordEpisode
+  assert.throws(
+    () => recordEpisode(root, runId, 'ep-id', { status: 'in_progress' }),
+    /FENCE_REQUIRED/
+  );
+  // dispatchReview
+  assert.throws(
+    () => dispatchReview(root, runId, { point: 'plan', workstreamId: 'ws-01', detected: {} }),
+    /FENCE_REQUIRED/
+  );
+  // recordReviewOutcome
+  assert.throws(
+    () => recordReviewOutcome(root, runId, { episodeId: 'ep-id', verdict: 'APPROVE' }),
+    /FENCE_REQUIRED/
+  );
 });

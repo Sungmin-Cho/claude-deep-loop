@@ -30,6 +30,7 @@ export function parseVerdict(text) {
 
 // checker episode 생성 + dispatch 디스크립터 반환 — 커널은 sibling을 호출하지 않음 (spec §1.1·§6).
 export function dispatchReview(root, runId, { point, workstreamId, detected = {}, fence } = {}) {
+  if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: dispatchReview');
   const { data } = readState(root, runId);
   const { reviewer, flags, mode } = resolveReviewer(data, detected);
   const { id } = newEpisode(root, runId, { plugin: reviewer === 'deep-review-loop' ? 'deep-review' : reviewer, role: 'checker', kind: `${point}-review`, point, workstream: workstreamId, fence });
@@ -44,6 +45,7 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
 }
 
 export function recordReviewOutcome(root, runId, { episodeId, workstreamId, point, verdict, source = 'deep-review-approve', fence } = {}) {
+  if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: recordReviewOutcome');
   // Codex impl r10 🔴: the ENTIRE review outcome (checker terminal + breaker + review_points_done + comprehension)
   // must be ONE atomic appendAnchored transaction. A multi-lock version could half-commit if a handoff sets the
   // lease to `releasing` between locks (checker terminalized, but breaker/review_points throw LEASE_FENCED, with

@@ -39,6 +39,7 @@ function handoffMarkdown(loop, childRunId, reason) {
 }
 
 export function emitHandoff(root, runId, { reason = 'milestone', trigger = 'milestone', now = Date.now(), headless = false, expect } = {}) {
+  if (!expect || typeof expect.owner !== 'string' || !Number.isInteger(expect.generation)) throw new Error('FENCE_REQUIRED: emitHandoff');
   const res = reserveHandoff(root, runId, { trigger, now, expect });
   if (!res.ok) return { ok: false, reason: res.reason, key: res.key };
   // Codex r1 🔴1 / r2 🔴1 / r3 🔴1: 같은 트리거 재진입(reserved:false)이면 이미 in-flight handoff 가 있다.

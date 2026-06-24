@@ -9,6 +9,7 @@ const NON_TERMINAL = ['planned', 'in_progress', 'in_review', 'parked'];
 const TERMINAL = ['ready', 'merged', 'abandoned'];
 
 export function newWorkstream(root, runId, { title, branch, worktree, baseCommit = null, dependsOn = [], fence } = {}) {
+  if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: newWorkstream');
   if (typeof title !== 'string' || title.length === 0 ||
       typeof branch !== 'string' || branch.length === 0 ||
       typeof worktree !== 'string' || worktree.length === 0) {
@@ -34,6 +35,7 @@ export function setWorkstreamStatus(root, runId, wsId, status, opts = {}) {
   if (TERMINAL.includes(status)) throw new Error(`WORKSTREAM_TERMINAL_NO_PROOF: ${status} is kernel-derived (use recordWorkstreamTerminal)`);
   if (!NON_TERMINAL.includes(status)) throw new Error(`WORKSTREAM_STATUS_INVALID: ${status}`);
   const { fence } = opts;
+  if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: setWorkstreamStatus');
   return withLock(root, runId, () => {
     const { data } = readState(root, runId);
     if (fence) { const r = leaseCheck(data, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
@@ -52,6 +54,7 @@ export function setWorkstreamStatus(root, runId, wsId, status, opts = {}) {
 }
 
 export function recordWorkstreamTerminal(root, runId, wsId, { status, proof = {}, fence } = {}) {
+  if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: recordWorkstreamTerminal');
   // Cheap input validation (no atomicity required)
   if (!TERMINAL.includes(status)) throw new Error(`WORKSTREAM_STATUS_INVALID: ${status} is not terminal`);
   if (!proof || typeof proof !== 'object' || Array.isArray(proof)) throw new Error(`WORKSTREAM_TERMINAL_NO_PROOF: ${wsId} requires proof object`);

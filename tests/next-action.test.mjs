@@ -119,12 +119,13 @@ test('comprehension-debt blocks discover but not the fix flow', () => {
 test('recordReviewOutcome(APPROVE) marks maker episodes human_reviewed, computeDebt not blocked', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
   const { runId } = initRun(root, { goal: 'g', detected: { 'deep-review': true }, now: new Date('2026-06-24T00:00:00Z') });
-  const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: 'w' }).id;
+  const f = { owner: runId, generation: 1, intent: 'business' };
+  const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: 'w', fence: f }).id;
   // Create a maker episode for point 'implementation'
-  newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation', workstream: ws });
+  newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation', workstream: ws, fence: f });
   // Dispatch and approve the review
-  const r = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws, detected: { 'deep-review': true } });
-  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'implementation', verdict: 'APPROVE' });
+  const r = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
+  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'implementation', verdict: 'APPROVE', fence: f });
   const { data } = readState(root, runId);
   // Maker episode should be marked human_reviewed
   const maker = data.episodes.find(e => e.role === 'maker' && e.point === 'implementation');
@@ -138,9 +139,10 @@ test('recordReviewOutcome(APPROVE) marks maker episodes human_reviewed, computeD
 test('dispatchReview → recordReviewOutcome(RC) → nextAction returns fix_episode (end-to-end)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
   const { runId } = initRun(root, { goal: 'g', detected: { 'deep-review': true }, now: new Date('2026-06-24T00:00:00Z') });
-  const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: 'w' }).id;
-  const r = dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { 'deep-review': true } });
-  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'plan', verdict: 'REQUEST_CHANGES' });
+  const f = { owner: runId, generation: 1, intent: 'business' };
+  const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: 'w', fence: f }).id;
+  const r = dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
+  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'plan', verdict: 'REQUEST_CHANGES', fence: f });
   const { data } = readState(root, runId);
   assert.equal(nextAction(data, { now: Date.parse('2026-06-24T00:00:00Z') }).action.type, 'fix_episode');
 });
