@@ -1,7 +1,6 @@
 import { readState, writeState, withLock } from './state.mjs';
 import { newEpisode, recordEpisode } from './episode.mjs';
 import { recordReviewVerdict } from './breaker.mjs';
-import { recordReviewed } from './comprehension.mjs';
 
 export function resolveReviewer(loop, detected = {}) {
   const r = loop.review || {};
@@ -45,6 +44,8 @@ export function recordReviewOutcome(root, runId, { episodeId, workstreamId, poin
   if (!['APPROVE', 'CONCERN', 'REQUEST_CHANGES'].includes(verdict)) throw new Error(`REVIEW_VERDICT_INVALID: ${verdict}`);
   const pre = readState(root, runId).data;
   if (!pre.episodes.find(e => e.id === episodeId)) throw new Error(`EPISODE_NOT_FOUND: ${episodeId}`);
+  const tgt = pre.episodes.find(e => e.id === episodeId);
+  if (tgt.role !== 'checker') throw new Error('REVIEW_TARGET_NOT_CHECKER: ' + episodeId);
   if (workstreamId && !pre.workstreams.find(w => w.id === workstreamId)) throw new Error(`WORKSTREAM_NOT_FOUND: ${workstreamId}`);
   recordReviewVerdict(root, runId, verdict);              // 자기 lock — breaker 카운터
   // Codex r1 🔴5: checker episode 터미널 상태를 verdict proof 에서 파생 — 안 하면 checker 가 pending 으로 남아
@@ -52,13 +53,19 @@ export function recordReviewOutcome(root, runId, { episodeId, workstreamId, poin
   const passed = verdict === 'APPROVE' || verdict === 'CONCERN';
   recordEpisode(root, runId, episodeId, { status: passed ? 'approved' : 'rejected', proof: { verdict } });  // 자기 lock(appendAnchored)
   if (passed) {
-    withLock(root, runId, () => {                          // review_points_done(kernel 필드) 기록
+    withLock(root, runId, () => {                          // review_points_done(kernel 필드) 기록 + comprehension
       const { data } = readState(root, runId);
       const ws = data.workstreams.find(w => w.id === workstreamId);
       if (ws && !ws.review_points_done.includes(point)) ws.review_points_done.push(point);
+      const requireHumanAck = data.review?.require_human_ack === true;
+      if (!(requireHumanAck && source === 'deep-review-approve')) {
+        for (const m of data.episodes.filter(e => e.role === 'maker' && e.workstream_id === workstreamId && e.point === point && !e.human_reviewed)) {
+          m.human_reviewed = true;
+          data.comprehension.episodes_human_reviewed = (data.comprehension.episodes_human_reviewed || 0) + 1;
+        }
+      }
       writeState(root, runId, data);
     });
-    recordReviewed(root, runId, episodeId, source);        // 자기 lock — comprehension
   }
   // REQUEST_CHANGES → checker='rejected'. nextAction 이 fix_episode 디스크립터를 반환하고 Execution 이 fix maker 를 생성.
   return { verdict, passed, terminal: passed ? 'approved' : 'rejected' };

@@ -1,8 +1,9 @@
 import { mkdirSync, existsSync } from 'node:fs';
-import { isAbsolute, join } from 'node:path';
+import { isAbsolute, join, resolve, sep } from 'node:path';
 import { readState, writeState, withLock, runDir } from './state.mjs';
 import { appendAnchored } from './integrity.mjs';
 import { atomicWrite } from './envelope.mjs';
+import { slugify } from './slug.mjs';
 
 const NON_TERMINAL = ['pending', 'in_progress', 'blocked'];
 const TERMINAL = ['done', 'approved', 'rejected'];
@@ -19,26 +20,31 @@ function requestSkeleton({ id, plugin, role, kind, point, workstream, expectedAr
 }
 
 export function newEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [] }) {
-  let id, requestPath;
+  let id, requestPath, dir;
+  const safePlugin = slugify(plugin) || 'plugin';
   appendAnchored(root, runId, { type: 'episode-new', data: { plugin, role, kind, point } }, (loop) => {
     const n = String(loop.episodes.length + 1).padStart(3, '0');
-    id = `${n}-${plugin}`;
-    const dir = join(runDir(root, runId), 'episodes', id);
-    mkdirSync(dir, { recursive: true });
+    id = `${n}-${safePlugin}`;
+    dir = join(runDir(root, runId), 'episodes', id);
     requestPath = join(dir, 'request.md');
-    atomicWrite(requestPath, requestSkeleton({ id, plugin, role, kind, point, workstream, expectedArtifacts }));
     loop.episodes.push({
       id, plugin, role, kind, point, workstream_id: workstream, status: 'pending',
       request_path: requestPath, expected_artifacts: expectedArtifacts,
       verification: { checker_episode_required: role === 'maker', checker_plugin: 'deep-review', review_point: point, proof_required: expectedArtifacts },
     });
     loop.current_episode = id;
-    loop.comprehension.episodes_total = (loop.comprehension.episodes_total || 0) + 1;
+    if (role === 'maker') loop.comprehension.episodes_total = (loop.comprehension.episodes_total || 0) + 1;
     if (workstream) {
       const ws = loop.workstreams.find(w => w.id === workstream);
       if (ws) ws.episodes.push(id);
     }
   });
+  // Assert containment before FS writes
+  const base = resolve(runDir(root, runId), 'episodes');
+  const full = resolve(dir);
+  if (full !== base && !full.startsWith(base + sep)) throw new Error('EPISODE_PATH_ESCAPE: ' + id);
+  mkdirSync(dir, { recursive: true });
+  atomicWrite(requestPath, requestSkeleton({ id, plugin, role, kind, point, workstream, expectedArtifacts }));
   return { id, requestPath };
 }
 

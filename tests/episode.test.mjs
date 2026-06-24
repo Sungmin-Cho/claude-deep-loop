@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, runDir } from '../scripts/lib/state.mjs';
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
@@ -40,6 +40,19 @@ test('recordEpisode done requires expected artifacts to exist', () => {
   writeFileSync(art, 'x');
   recordEpisode(root, runId, id, { status: 'done', artifacts: ['out.txt'] });
   assert.equal(readState(root, runId).data.episodes[0].status, 'done');
+});
+
+// Fix 3: path-traversal plugin name produces safe id and file is inside episodes dir
+test('newEpisode with path-traversal plugin name produces safe id and contained path', () => {
+  const { root, runId } = seed();
+  const { id, requestPath } = newEpisode(root, runId, { plugin: '../../../../etc/evil', role: 'maker', kind: 'x', point: 'implementation' });
+  // id must not contain path separators
+  assert.match(id, /^001-[a-z0-9-]+$/);
+  assert.ok(!/[/\\]/.test(id), 'id must not contain path separators');
+  // request file must exist and be under runDir/episodes
+  assert.ok(existsSync(requestPath));
+  const base = resolve(runDir(root, runId), 'episodes');
+  assert.ok(requestPath.startsWith(base), `requestPath ${requestPath} must start with ${base}`);
 });
 
 test('recordEpisode approved/rejected derive from verdict proof', () => {

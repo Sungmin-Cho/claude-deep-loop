@@ -27,9 +27,16 @@ function runIdOf(root, f) {
   return existsSync(p) ? readFileSync(p, 'utf8').trim() : null;
 }
 // 변경 명령 펜싱 (spec §9.1) — owner/generation 불일치 시 LEASE_FENCED.
+function intArg(f, name) {
+  const v = f[name];
+  if (typeof v !== 'string' || !/^\d+$/.test(v)) { error('INVALID_' + name.toUpperCase().replace('-', '_') + ': must be a positive integer'); process.exit(3); }
+  return Number(v);
+}
 function requireLease(root, runId, f, intent = 'business') {
+  if (typeof f.owner !== 'string' || !f.owner) { error('INVALID_OWNER'); process.exit(3); }
+  const generation = intArg(f, 'generation');
   const { data } = readState(root, runId);
-  const r = leaseCheck(data, { owner: f.owner, generation: Number(f.generation), intent });
+  const r = leaseCheck(data, { owner: f.owner, generation, intent });
   if (!r.ok) { error(`LEASE_FENCED: ${r.reason}`); process.exit(3); }
   return data;
 }
@@ -72,9 +79,9 @@ const handlers = {
   tick: async (a) => { const f = parseFlags(a); const root = rootOf(f); const { data } = readState(root, runIdOf(root, f)); json({ mode: f.mode || 'advance', ...nextAction(data) }); return 0; },
   lease: async (a) => {
     const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
-    if (verb === 'check') { const { data } = readState(root, runId); json(leaseCheck(data, { owner: f.owner, generation: Number(f.generation) })); return 0; }
-    if (verb === 'acquire') { json(acquireLease(root, runId, { owner: f.owner, expectGeneration: Number(f['expect-generation'] ?? f.generation) })); return 0; }
-    if (verb === 'release') { json(releaseLease(root, runId, { owner: f.owner, generation: Number(f.generation) })); return 0; }
+    if (verb === 'check') { const { data } = readState(root, runId); json(leaseCheck(data, { owner: f.owner, generation: intArg(f, 'generation') })); return 0; }
+    if (verb === 'acquire') { json(acquireLease(root, runId, { owner: f.owner, expectGeneration: intArg(f, f['expect-generation'] !== undefined ? 'expect-generation' : 'generation') })); return 0; }
+    if (verb === 'release') { json(releaseLease(root, runId, { owner: f.owner, generation: intArg(f, 'generation') })); return 0; }
     error(`unknown lease verb: ${verb}`); return 2;
   },
   workstream: async (a) => {
@@ -90,7 +97,10 @@ const handlers = {
     const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
     requireLease(root, runId, f);
     if (verb === 'new') { const r = newEpisode(root, runId, { plugin: f.plugin, role: f.role, kind: f.kind, point: f.point, workstream: f.workstream, expectedArtifacts: f.artifacts ? JSON.parse(f.artifacts) : [] }); json({ id: r.id, request_path: r.requestPath }); return 0; }
-    if (verb === 'record') { recordEpisode(root, runId, f.id, { status: f.status, artifacts: f.artifacts ? JSON.parse(f.artifacts) : [], proof: f.proof ? JSON.parse(f.proof) : {} }); json({ ok: true }); return 0; }
+    if (verb === 'record') {
+      if (f.status === 'approved' || f.status === 'rejected') { error(`EPISODE_TERMINAL_VIA_REVIEW: approved/rejected come only from 'review record'`); return 3; }
+      recordEpisode(root, runId, f.id, { status: f.status, artifacts: f.artifacts ? JSON.parse(f.artifacts) : [], proof: f.proof ? JSON.parse(f.proof) : {} }); json({ ok: true }); return 0;
+    }
     error(`unknown episode verb: ${verb}`); return 2;
   },
   review: async (a) => {
@@ -104,15 +114,15 @@ const handlers = {
   handoff: async (a) => {
     const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
     requireLease(root, runId, f, 'lease');
-    if (verb === 'emit') { json(emitHandoff(root, runId, { reason: f.reason, trigger: f.trigger || f.reason || 'milestone', headless: !!f.headless })); return 0; }
+    if (verb === 'emit') { json(emitHandoff(root, runId, { reason: f.reason, trigger: f.trigger || f.reason || 'milestone', headless: f.headless === true || f.headless === 'true' })); return 0; }
     error(`unknown handoff verb: ${verb}`); return 2;
   },
   respawn: async (a) => {
     const f = parseFlags(a); const root = rootOf(f); const runId = runIdOf(root, f);
     const { data } = readState(root, runId);
     if (f['dry-run']) { json(respawnGate(data)); return 0; }
-    // CLI는 spawnFn 미주입 → 실제 spawn은 드라이버(Plan 3). 게이트/디스크립터만.
-    json({ note: 'respawn requires a driver-provided spawnFn; CLI exposes gate via --dry-run', gate: respawnGate(data) }); return 0;
+    // CLI는 spawnFn 미주입 → 실제 spawn은 드라이버(Plan 3). 게이트만 평가.
+    json({ spawn: 'requires-driver', reason: 'actual session spawn is provided by a Plan-3 headless driver (spawnFn); CLI evaluates the gate only', gate: respawnGate(data) }); return 0;
   },
 };
 

@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { readState } from '../scripts/lib/state.mjs';
+import { readState, writeState } from '../scripts/lib/state.mjs';
 import {
   newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal,
   inheritWorkstreams, integrationOrder,
@@ -48,9 +48,17 @@ test('recordWorkstreamTerminal derives terminal from proof content; clears activ
   const { root, runId } = seed();
   const { id } = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: 'w' });
   setWorkstreamStatus(root, runId, id, 'in_progress');
-  // 빈/무관 proof 로는 ready 불가 (Codex r2 🔴5)
+  // ready FAILS when review_points_done is empty (kernel-derived, not proof shortcut)
   assert.throws(() => recordWorkstreamTerminal(root, runId, id, { status: 'ready', proof: {} }), /WORKSTREAM_TERMINAL_NO_PROOF/);
-  recordWorkstreamTerminal(root, runId, id, { status: 'ready', proof: { review_approved: true } });
+  // Populate review_points_done via readState+writeState to all review.points
+  {
+    const { data } = readState(root, runId);
+    const ws = data.workstreams.find(w => w.id === id);
+    ws.review_points_done = [...(data.review?.points || [])];
+    writeState(root, runId, data);
+  }
+  // Now ready SUCCEEDS (proof can be empty — derivation is from state)
+  recordWorkstreamTerminal(root, runId, id, { status: 'ready', proof: {} });
   const { data } = readState(root, runId);
   assert.equal(data.workstreams.find(w => w.id === id).status, 'ready');
   assert.equal(data.active_workstreams.includes(id), false);
@@ -59,6 +67,23 @@ test('recordWorkstreamTerminal derives terminal from proof content; clears activ
   assert.throws(() => recordWorkstreamTerminal(root, runId, id2, { status: 'merged', proof: { x: true } }), /WORKSTREAM_TERMINAL_NO_PROOF/);
   recordWorkstreamTerminal(root, runId, id2, { status: 'merged', proof: { merge_commit: 'abc123', human_approved: true } });
   assert.equal(readState(root, runId).data.workstreams.find(w => w.id === id2).status, 'merged');
+});
+
+test('setWorkstreamStatus throws WORKSTREAM_TERMINAL_LOCKED when workstream is terminal', () => {
+  const { root, runId } = seed();
+  const { id } = newWorkstream(root, runId, { title: 'C', branch: 'c', worktree: 'wc' });
+  setWorkstreamStatus(root, runId, id, 'in_progress');
+  // Mark it ready via state manipulation + recordWorkstreamTerminal
+  {
+    const { data } = readState(root, runId);
+    const ws = data.workstreams.find(w => w.id === id);
+    ws.review_points_done = [...(data.review?.points || [])];
+    writeState(root, runId, data);
+  }
+  recordWorkstreamTerminal(root, runId, id, { status: 'ready', proof: {} });
+  assert.equal(readState(root, runId).data.workstreams.find(w => w.id === id).status, 'ready');
+  // Now trying to set it back to in_progress must fail
+  assert.throws(() => setWorkstreamStatus(root, runId, id, 'in_progress'), /WORKSTREAM_TERMINAL_LOCKED/);
 });
 
 test('inheritWorkstreams reports missing worktree paths (no silent recreate)', () => {

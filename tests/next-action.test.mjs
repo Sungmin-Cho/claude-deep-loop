@@ -6,8 +6,10 @@ import { join } from 'node:path';
 import { buildInitialLoop, initRun } from '../scripts/lib/initrun.mjs';
 import { readState } from '../scripts/lib/state.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
+import { newEpisode } from '../scripts/lib/episode.mjs';
 import { dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
 import { nextAction } from '../scripts/lib/next-action.mjs';
+import { computeDebt } from '../scripts/lib/comprehension.mjs';
 
 function loop(over = {}) {
   const l = buildInitialLoop({ goal: 'g', protocol: 'deep-work', recipe: { id: 'r', name: 'r', reason: '' }, runId: 'R', now: new Date('2026-06-24T00:00:00Z') });
@@ -111,6 +113,24 @@ test('comprehension-debt blocks discover but not the fix flow', () => {
   l.episodes = [{ id: '002-deep-review', role: 'checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01' }];
   l.current_episode = '002-deep-review';
   assert.equal(nextAction(l, { now: 0 }).action.type, 'fix_episode');  // debt 무관
+});
+
+// Fix 4: after APPROVE, maker episodes for that point are human_reviewed and not blocking debt
+test('recordReviewOutcome(APPROVE) marks maker episodes human_reviewed, computeDebt not blocked', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-'));
+  const { runId } = initRun(root, { goal: 'g', detected: { 'deep-review': true }, now: new Date('2026-06-24T00:00:00Z') });
+  const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: 'w' }).id;
+  // Create a maker episode for point 'implementation'
+  newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation', workstream: ws });
+  // Dispatch and approve the review
+  const r = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws, detected: { 'deep-review': true } });
+  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'implementation', verdict: 'APPROVE' });
+  const { data } = readState(root, runId);
+  // Maker episode should be marked human_reviewed
+  const maker = data.episodes.find(e => e.role === 'maker' && e.point === 'implementation');
+  assert.ok(maker.human_reviewed, 'maker episode should be human_reviewed after APPROVE');
+  // computeDebt should not be blocked (episodes_human_reviewed == episodes_total)
+  assert.equal(computeDebt(data).blocked, false);
 });
 
 // Codex r2 🔴4 / r5 🟡1: review.mjs+next-action.mjs 종단 — RC 후 debt(=1.0)에도 fix_episode 진입.

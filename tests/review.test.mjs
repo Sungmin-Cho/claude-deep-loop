@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState } from '../scripts/lib/state.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
+import { newEpisode } from '../scripts/lib/episode.mjs';
 import { resolveReviewer, dispatchReview, parseVerdict, recordReviewOutcome } from '../scripts/lib/review.mjs';
 
 function seed(detected = { 'deep-review': true }) {
@@ -59,6 +60,18 @@ test('recordReviewOutcome derives checker terminal + drives breaker/comprehensio
 });
 
 // (RC → nextAction=fix_episode 종단 테스트는 Task 6 next-action.test.mjs 로 이동 — Task 4 는 next-action.mjs 미존재. Codex r5 🟡1)
+
+// Fix 1: recordReviewOutcome on a maker episode id throws REVIEW_TARGET_NOT_CHECKER
+test('recordReviewOutcome throws REVIEW_TARGET_NOT_CHECKER when target is a maker episode', () => {
+  const { root, runId } = seed();
+  const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: 'w' }).id;
+  // Create a maker episode
+  const { id: makerId } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation', workstream: ws });
+  assert.throws(
+    () => recordReviewOutcome(root, runId, { episodeId: makerId, workstreamId: ws, point: 'implementation', verdict: 'APPROVE' }),
+    /REVIEW_TARGET_NOT_CHECKER/
+  );
+});
 
 // Codex r2 🔴6: invalid verdict 는 어떤 변경(breaker) 전에 거부.
 test('recordReviewOutcome rejects invalid verdict before mutating breaker', () => {

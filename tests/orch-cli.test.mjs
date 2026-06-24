@@ -47,15 +47,44 @@ test('episode new creates request + episode via CLI', () => {
 });
 
 // Codex r1 🔴6: proof-파생 터미널/리뷰 결과가 CLI 경계로 도달 가능해야 (Execution 은 CLI 로만 상태 변경).
-test('workstream terminal + review record reach kernel via CLI', () => {
+// Fix 2: workstream terminal --status ready now uses kernel-derived proof (abandoned doesn't need review_points).
+test('workstream terminal (abandoned) + review record reach kernel via CLI', () => {
   const { root, runId } = seed();
   const ws = JSON.parse(run(root, ['workstream', 'new', '--title', 'A', '--branch', 'b', '--worktree', 'w', '--owner', runId, '--generation', '1']));
   run(root, ['workstream', 'set', '--id', ws.id, '--status', 'in_progress', '--owner', runId, '--generation', '1']);
-  run(root, ['workstream', 'terminal', '--id', ws.id, '--status', 'ready', '--proof', '{"review_approved":true}', '--owner', runId, '--generation', '1']);
-  assert.equal(readState(root, runId).data.workstreams[0].status, 'ready');
-  const disp = JSON.parse(run(root, ['review', 'dispatch', '--point', 'plan', '--workstream', ws.id, '--owner', runId, '--generation', '1']));
-  run(root, ['review', 'record', '--episode', disp.checkerEpisodeId, '--workstream', ws.id, '--point', 'plan', '--verdict', 'APPROVE', '--owner', runId, '--generation', '1']);
+  run(root, ['workstream', 'terminal', '--id', ws.id, '--status', 'abandoned', '--proof', '{"reason":"superseded"}', '--owner', runId, '--generation', '1']);
+  assert.equal(readState(root, runId).data.workstreams[0].status, 'abandoned');
+  // review record: dispatch then record outcome (checker episode)
+  const ws2 = JSON.parse(run(root, ['workstream', 'new', '--title', 'B', '--branch', 'b2', '--worktree', 'w2', '--owner', runId, '--generation', '1']));
+  const disp = JSON.parse(run(root, ['review', 'dispatch', '--point', 'plan', '--workstream', ws2.id, '--owner', runId, '--generation', '1']));
+  run(root, ['review', 'record', '--episode', disp.checkerEpisodeId, '--workstream', ws2.id, '--point', 'plan', '--verdict', 'APPROVE', '--owner', runId, '--generation', '1']);
   assert.equal(readState(root, runId).data.episodes.find(e => e.id === disp.checkerEpisodeId).status, 'approved');
+});
+
+// Fix 1: episode record --status approved/rejected exits nonzero (status 3)
+test('episode record --status approved exits with code 3', () => {
+  const { root, runId } = seed();
+  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'checker', '--kind', 'impl-review', '--point', 'implementation', '--owner', runId, '--generation', '1']));
+  let code = 0;
+  try { run(root, ['episode', 'record', '--id', ep.id, '--status', 'approved', '--proof', '{"verdict":"APPROVE"}', '--owner', runId, '--generation', '1']); }
+  catch (e) { code = e.status; }
+  assert.equal(code, 3);
+});
+
+// Fix 5: respawn --dry-run returns JSON with ok field and exits 0
+test('respawn --dry-run returns JSON with ok field', () => {
+  const { root } = seed();
+  const out = JSON.parse(run(root, ['respawn', '--dry-run']));
+  assert.ok('ok' in out);
+});
+
+// Fix 6: workstream new with --generation flag but no value exits nonzero (status 3)
+test('workstream new with valueless --generation flag exits with code 3', () => {
+  const { root, runId } = seed();
+  let code = 0;
+  try { run(root, ['workstream', 'new', '--title', 'X', '--branch', 'b', '--worktree', 'w', '--owner', runId, '--generation']); }
+  catch (e) { code = e.status; }
+  assert.equal(code, 3);
 });
 
 test('handoff emit via CLI sets releasing', () => {

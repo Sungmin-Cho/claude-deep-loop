@@ -28,6 +28,7 @@ export function setWorkstreamStatus(root, runId, wsId, status) {
     const { data } = readState(root, runId);
     const ws = data.workstreams.find(w => w.id === wsId);
     if (!ws) throw new Error(`WORKSTREAM_NOT_FOUND: ${wsId}`);
+    if (['ready', 'merged', 'abandoned'].includes(ws.status)) throw new Error(`WORKSTREAM_TERMINAL_LOCKED: ${wsId} is ${ws.status}`);
     if (status === 'in_progress' && !data.active_workstreams.includes(wsId)) {
       const cap = data.autonomy?.max_parallel ?? 2;
       if (data.active_workstreams.length >= cap) throw new Error(`MAX_PARALLEL_EXCEEDED: ${data.active_workstreams.length}/${cap}`);
@@ -49,7 +50,7 @@ export function recordWorkstreamTerminal(root, runId, wsId, { status, proof = {}
   if (!ws) throw new Error(`WORKSTREAM_NOT_FOUND: ${wsId}`);
   const reviewPoints = (data.review?.points || []);
   const ok =
-    status === 'ready'     ? (proof.review_approved === true || (reviewPoints.length > 0 && reviewPoints.every(p => (ws.review_points_done || []).includes(p)))) :
+    status === 'ready'     ? (reviewPoints.length > 0 && reviewPoints.every(p => (ws.review_points_done || []).includes(p))) :
     status === 'merged'    ? (typeof proof.merge_commit === 'string' && proof.human_approved === true) :   // 비가역 = 사람 승인 (proposal-only, §15)
     status === 'abandoned' ? (typeof proof.reason === 'string' && proof.reason.length > 0) : false;
   if (!ok) throw new Error(`WORKSTREAM_TERMINAL_NO_PROOF: ${wsId} -> ${status} proof insufficient`);
