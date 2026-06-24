@@ -39,6 +39,11 @@ export function acquireLease(root, runId, { owner, expectGeneration, now = Date.
     const expired = lease.expires_at && now > Date.parse(lease.expires_at);
     const takeable = lease.state === 'released' || (lease.state === 'releasing' && expired);
     if (!takeable) return { ok: false, generation: lease.generation, reason: 'lease-not-takeable' };
+    // Codex impl r9 🔴: a RELEASED handoff lease reserved a specific child — only that child may acquire it
+    // (binds reserve→emit→claim→release→acquire). After stale TTL (expired), allow recovery by any owner.
+    if (lease.state === 'released' && lease.handoff_child_run_id && owner !== lease.handoff_child_run_id && !expired) {
+      return { ok: false, generation: lease.generation, reason: 'child-not-reserved' };
+    }
     const iso = new Date(now).toISOString();
     data.session_chain.lease = {
       ...lease, owner_run_id: owner, generation: expectGeneration + 1,

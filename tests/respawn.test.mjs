@@ -95,6 +95,22 @@ test('respawn success → spawned, lease released, child can acquire (generation
   assert.equal(a.generation, 2);
 });
 
+// Codex impl r9 🔴: a RELEASED handoff lease may be acquired ONLY by the reserved child (before stale TTL).
+test('released handoff lease is acquirable only by the reserved child (non-reserved child fenced)', () => {
+  const { root, runId } = seed();
+  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1 });
+  respawn(root, runId, { childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel, now: NOW1, spawnFn: () => ({ ok: true }) });
+  // wrong child cannot acquire the released lease before stale TTL
+  const wrong = acquireLease(root, runId, { owner: 'WRONG-CHILD', expectGeneration: 1, now: NOW1 });
+  assert.equal(wrong.ok, false);
+  assert.equal(wrong.reason, 'child-not-reserved');
+  assert.equal(readState(root, runId).data.session_chain.lease.handoff_child_run_id, h.childRunId);  // binding intact
+  // reserved child acquires (generation+1)
+  const ok = acquireLease(root, runId, { owner: h.childRunId, expectGeneration: 1, now: NOW1 });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.generation, 2);
+});
+
 // Codex r2 🔴3: 외부 spawn 전 원자적 클레임이 동시 호출의 이중 spawn 을 막는지.
 // spawnFn 안에서 같은 respawn 을 재진입(=동시 호출 시뮬레이션): 첫 호출이 이미 spawned 로 클레임했으므로 둘째는 spawn 안 함.
 test('respawn claims atomically before external spawn → concurrent re-entry does not double-spawn', () => {
