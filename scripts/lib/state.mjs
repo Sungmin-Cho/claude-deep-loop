@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync, rmdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, rmdirSync, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { contentHash, atomicWrite } from './envelope.mjs';
 import { validate } from './schema.mjs';
@@ -42,8 +42,12 @@ export function classifyPatch(field, value) {
 
 export function readState(root, runId) {
   const raw = readFileSync(loopPath(root, runId), 'utf8');
-  const stored = existsSync(hashPath(root, runId)) ? readFileSync(hashPath(root, runId), 'utf8').trim() : null;
-  if (stored !== null && contentHash(raw) !== stored) {
+  // loop.json이 있는데 hash anchor가 없으면 = anchor 제거 공격/손상 → fail-closed (Codex impl 🔴1)
+  if (!existsSync(hashPath(root, runId))) {
+    throw new Error(`STATE_TAMPERED: ${runId} .loop.hash anchor missing`);
+  }
+  const stored = readFileSync(hashPath(root, runId), 'utf8').trim();
+  if (contentHash(raw) !== stored) {
     throw new Error(`STATE_TAMPERED: ${runId} loop.json content-hash mismatch`);
   }
   return { data: JSON.parse(raw), hash: stored };
@@ -58,8 +62,10 @@ export function writeState(root, runId, data) {
   atomicWrite(hashPath(root, runId), contentHash(raw));
 }
 
+const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 function setPath(obj, path, value) {
   const keys = path.split('.'); const last = keys.pop();
+  for (const k of [...keys, last]) if (UNSAFE_KEYS.has(k)) throw new Error(`FIELD_FORBIDDEN: unsafe key ${k}`);
   const t = keys.reduce((o, k) => (o[k] ??= {}), obj);
   t[last] = value;
 }
@@ -73,11 +79,16 @@ export function patch(root, runId, field, value) {
   });
 }
 
-export function withLock(root, runId, fn) {
+function sleepMs(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
+
+export function withLock(root, runId, fn, { ttlMs = 30000, retries = 100, backoffMs = 5 } = {}) {
   const lock = join(runDir(root, runId), '.lock');
   let acquired = false;
-  for (let i = 0; i < 50 && !acquired; i++) {
-    try { mkdirSync(lock); acquired = true; } catch { /* spin */ }
+  for (let i = 0; i < retries && !acquired; i++) {
+    try { mkdirSync(lock); acquired = true; break; } catch { /* held */ }
+    // stale-lock 복구: 소유 프로세스가 죽어 남은 락은 TTL 후 회수
+    try { if (Date.now() - statSync(lock).mtimeMs > ttlMs) { rmdirSync(lock); continue; } } catch { /* lock vanished */ }
+    sleepMs(backoffMs);
   }
   if (!acquired) throw new Error(`LOCK_BUSY: ${runId}`);
   try { return fn(); } finally { try { rmdirSync(lock); } catch {} }

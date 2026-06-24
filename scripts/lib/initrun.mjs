@@ -20,6 +20,7 @@ export function buildInitialLoop({ goal, protocol, recipe, detected = {}, review
     budget: { unit: 'turns', total: 200, spent: 0, tokens_total: 4000000, tokens_spent: 0, per_session_turn_cap: 40, max_wallclock_sec: 86400, soft_stop_ratio: 0.8, hard_stop_ratio: 1.0, enforcement: 'best-effort-interactive', unattended_requires_headless: true, on_unmeasurable_usage: 'fail-closed', on_exhaust: 'pause-and-handoff' },
     comprehension: { episodes_total: 0, episodes_human_reviewed: 0, unreviewed_diff_lines: 0, debt_ratio: 0, debt_threshold: 0.5 },
     circuit_breaker: { consecutive_request_changes: 0, tripped: false, trip_reason: null },
+    event_log_head: { seq: 0, checksum: 'GENESIS' },
     session_chain: { parent_run_id: null, lease: { owner_run_id: runId, generation: 1, acquired_at: iso, expires_at: null, state: 'active', handoff_idempotency_key: null, handoff_phase: 'idle' }, stale_lease_ttl_sec: 900, sessions: [{ run_id: runId, started_at: iso, ended_at: null, turns: 0, outcome: null, superseded_by: null }] },
     workspace_policy: 'recommend',
     workstreams: [], active_workstreams: [],

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { checkBudget, recordCost, reconcileBudget } from '../scripts/lib/budget.mjs';
@@ -65,4 +65,26 @@ test('reconcileBudget throws on stored/log mismatch', () => {
   recordCost(root, 'R', { turns: 5, tokens: 0 });
   const { data } = readState(root, 'R'); data.budget.spent = 0; writeState(root, 'R', data); // tamper low
   assert.throws(() => reconcileBudget(root, 'R'), /BUDGET_TAMPERED/);
+});
+
+test('recordCost rejects negative / non-finite values', () => {
+  const root = seedRun();
+  assert.throws(() => recordCost(root, 'R', { turns: -1, tokens: 0 }), /INVALID_COST/);
+  assert.throws(() => recordCost(root, 'R', { turns: 1, tokens: Infinity }), /INVALID_COST/);
+});
+
+test('reconcileBudget detects event-log suffix truncation', () => {
+  const root = seedRun();
+  recordCost(root, 'R', { turns: 2, tokens: 0 });
+  recordCost(root, 'R', { turns: 3, tokens: 0 });
+  const p = join(runDir(root, 'R'), 'event-log.jsonl');
+  const lines = readFileSync(p, 'utf8').split('\n').filter(Boolean);
+  writeFileSync(p, lines.slice(0, -1).join('\n') + '\n'); // drop last event
+  assert.throws(() => reconcileBudget(root, 'R'), /BUDGET_TAMPERED/);
+});
+
+test('checkBudget derives wallclock from created_at when sessionStart omitted', () => {
+  const l = base();
+  l.created_at = new Date(Date.now() - 4000 * 1000).toISOString(); // 4000s ago > 3600 cap
+  assert.equal(checkBudget(l, {}).ok, false);
 });

@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readState, writeState, patch, runDir } from '../scripts/lib/state.mjs';
+import { readState, writeState, patch, withLock, runDir } from '../scripts/lib/state.mjs';
 
 function seed() {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
@@ -80,4 +80,26 @@ test('episode result sub-path / lookalike forbidden, only result_* allowed', () 
   assert.throws(() => patch(root, runId, 'episodes.0.resultEvil', 'x'), /FIELD_FORBIDDEN/);
   patch(root, runId, 'episodes.0.result_summary', 'ok'); // allowed
   assert.equal(readState(root, runId).data.episodes[0].result_summary, 'ok');
+});
+
+test('missing hash anchor fails closed', () => {
+  const { root, runId } = seed();
+  rmSync(join(runDir(root, runId), '.loop.hash'));
+  assert.throws(() => readState(root, runId), /STATE_TAMPERED/);
+});
+
+test('prototype-pollution field path forbidden', () => {
+  const { root, runId } = seed();
+  assert.throws(() => patch(root, runId, 'episodes.0.__proto__', { x: 1 }), /FIELD_FORBIDDEN/);
+});
+
+test('stale lock is reclaimed after TTL', () => {
+  const { root, runId } = seed();
+  const lock = join(runDir(root, runId), '.lock');
+  mkdirSync(lock);                               // simulate dead-process lock
+  const old = new Date(Date.now() - 60000);
+  utimesSync(lock, old, old);                    // 60s old > 30s TTL
+  let ran = false;
+  withLock(root, runId, () => { ran = true; }, { ttlMs: 30000, retries: 5, backoffMs: 1 });
+  assert.equal(ran, true);
 });
