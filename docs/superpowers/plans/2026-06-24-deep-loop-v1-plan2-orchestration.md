@@ -74,7 +74,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { readState } from '../scripts/lib/state.mjs';
+import { readState, writeState } from '../scripts/lib/state.mjs';
 import {
   deriveIdempotencyKey, leaseCheck, acquireLease, releaseLease,
   reserveHandoff, advanceHandoffPhase, rollbackHandoff,
@@ -148,7 +148,7 @@ test('acquireLease: active non-expired lease cannot be stolen; stale (expired) c
   // far-future now → lease expired (expires_at is null initially; force via release then expiry path)
   const { data } = readState(root, runId);
   data.session_chain.lease.expires_at = new Date(Date.parse('2026-06-24T00:00:00Z') + 1000).toISOString();
-  writeBack(root, runId, data);
+  writeState(root, runId, data);
   const future = Date.parse('2026-06-24T01:00:00Z');
   const ok = acquireLease(root, runId, { owner: 'CHILD', expectGeneration: 1, now: future });
   assert.equal(ok.ok, true);
@@ -166,8 +166,22 @@ test('rollbackHandoff restores active/idle (launch-failure path)', () => {
   assert.equal(lease.handoff_idempotency_key, null);
 });
 
-// 테스트 헬퍼: 직접 writeState (state 모듈 재노출). lease 모듈 테스트 setup 전용.
-import { writeState as writeBack } from '../scripts/lib/state.mjs';
+// Codex r1 🔴4: emitted 진입이 expires_at 를 설정해야 부모 크래시(releaseLease 누락) 후에도 자식이 TTL 경과로 인수 가능.
+test('emitted sets expires_at → child can take over after stale TTL without explicit release', () => {
+  const { root, runId } = seed();
+  const now0 = Date.parse('2026-06-24T00:00:00Z');
+  const { key } = reserveHandoff(root, runId, { trigger: 'milestone' });
+  advanceHandoffPhase(root, runId, { key, toPhase: 'emitted', now: now0 });
+  const lease = readState(root, runId).data.session_chain.lease;
+  assert.equal(lease.state, 'releasing');
+  assert.ok(lease.expires_at, 'expires_at must be set on emitted');
+  // 부모가 releaseLease 를 못 하고 죽음. TTL(900s) 경과 전: 인수 불가(releasing 은 takeable 아님)
+  assert.equal(acquireLease(root, runId, { owner: 'CHILD', expectGeneration: 1, now: now0 + 1000 }).ok, false);
+  // TTL 경과 후: stale → 인수 가능
+  const ok = acquireLease(root, runId, { owner: 'CHILD', expectGeneration: 1, now: now0 + 901 * 1000 });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.generation, 2);
+});
 ```
 
 - [ ] **Step 2: Run to verify fail**
@@ -257,7 +271,7 @@ export function reserveHandoff(root, runId, { trigger }) {
   });
 }
 
-export function advanceHandoffPhase(root, runId, { key, toPhase }) {
+export function advanceHandoffPhase(root, runId, { key, toPhase, now = Date.now() }) {
   return withLock(root, runId, () => {
     const { data } = readState(root, runId);
     const lease = data.session_chain.lease;
@@ -268,7 +282,13 @@ export function advanceHandoffPhase(root, runId, { key, toPhase }) {
     if (next === cur) return { ok: true, reason: 'idempotent-noop' };
     if (next !== cur + 1) return { ok: false, reason: `illegal-transition ${lease.handoff_phase}->${toPhase}` };
     const patch = { handoff_phase: toPhase };
-    if (toPhase === 'emitted') patch.state = 'releasing';
+    if (toPhase === 'emitted') {
+      // 부모 carve-out 시작 + stale TTL 설정. 부모가 emitted 후 죽어 releaseLease 를 못 해도
+      // expires_at 경과 시 자식이 인수 가능 (Codex r1 🔴4: null expires_at 은 영원히 안 만료 → 데드락).
+      patch.state = 'releasing';
+      const ttlMs = (data.session_chain.stale_lease_ttl_sec || 900) * 1000;
+      patch.expires_at = new Date(now + ttlMs).toISOString();
+    }
     data.session_chain.lease = { ...lease, ...patch };
     writeState(root, runId, data);
     return { ok: true, reason: 'advanced' };
@@ -290,7 +310,7 @@ export function rollbackHandoff(root, runId, { owner, generation }) {
 - [ ] **Step 4: Run to verify pass**
 
 Run: `node --test tests/lease.test.mjs`
-Expected: PASS (7 tests)
+Expected: PASS (8 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -639,8 +659,8 @@ export function recordEpisode(root, runId, episodeId, { status, artifacts = [], 
       if (expected.length === 0 || missing.length) {
         throw new Error(`EPISODE_TERMINAL_NO_PROOF: ${episodeId} done requires existing artifacts (missing: ${missing.join(',') || 'none-declared'})`);
       }
-    } else if (status === 'approved' && proof.verdict !== 'APPROVE') {
-      throw new Error(`EPISODE_TERMINAL_NO_PROOF: ${episodeId} approved requires proof.verdict=APPROVE`);
+    } else if (status === 'approved' && !['APPROVE', 'CONCERN'].includes(proof.verdict)) {
+      throw new Error(`EPISODE_TERMINAL_NO_PROOF: ${episodeId} approved requires proof.verdict=APPROVE|CONCERN (accepted concern)`);
     } else if (status === 'rejected' && proof.verdict !== 'REQUEST_CHANGES') {
       throw new Error(`EPISODE_TERMINAL_NO_PROOF: ${episodeId} rejected requires proof.verdict=REQUEST_CHANGES`);
     }
@@ -725,16 +745,22 @@ test('dispatchReview creates checker episode + returns descriptor (no call)', ()
   assert.equal(ep.kind, 'implementation-review');
 });
 
-test('recordReviewOutcome APPROVE marks point done + counts comprehension; REQUEST_CHANGES bumps breaker', () => {
+test('recordReviewOutcome derives checker terminal + drives breaker/comprehension/points', () => {
   const { root, runId } = seed();
   const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: 'w' }).id;
-  const r = dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { 'deep-review': true } });
-  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'plan', verdict: 'REQUEST_CHANGES' });
-  assert.equal(readState(root, runId).data.circuit_breaker.consecutive_request_changes, 1);
-  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'plan', verdict: 'APPROVE' });
-  const { data } = readState(root, runId);
-  assert.equal(data.circuit_breaker.consecutive_request_changes, 0);
-  assert.ok(data.workstreams.find(w => w.id === ws).review_points_done.includes('plan'));
+  // REQUEST_CHANGES → checker rejected + breaker++ (Codex r1 🔴5: checker 터미널 파생)
+  const r1 = dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { 'deep-review': true } });
+  recordReviewOutcome(root, runId, { episodeId: r1.checkerEpisodeId, workstreamId: ws, point: 'plan', verdict: 'REQUEST_CHANGES' });
+  let d = readState(root, runId).data;
+  assert.equal(d.episodes.find(e => e.id === r1.checkerEpisodeId).status, 'rejected');
+  assert.equal(d.circuit_breaker.consecutive_request_changes, 1);
+  // APPROVE (new round) → checker approved + point done + breaker reset + comprehension
+  const r2 = dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { 'deep-review': true } });
+  recordReviewOutcome(root, runId, { episodeId: r2.checkerEpisodeId, workstreamId: ws, point: 'plan', verdict: 'APPROVE' });
+  d = readState(root, runId).data;
+  assert.equal(d.episodes.find(e => e.id === r2.checkerEpisodeId).status, 'approved');
+  assert.equal(d.circuit_breaker.consecutive_request_changes, 0);
+  assert.ok(d.workstreams.find(w => w.id === ws).review_points_done.includes('plan'));
 });
 ```
 
@@ -744,7 +770,7 @@ test('recordReviewOutcome APPROVE marks point done + counts comprehension; REQUE
 
 ```javascript
 import { readState, writeState, withLock } from './state.mjs';
-import { newEpisode } from './episode.mjs';
+import { newEpisode, recordEpisode } from './episode.mjs';
 import { recordReviewVerdict } from './breaker.mjs';
 import { recordReviewed } from './comprehension.mjs';
 
@@ -784,7 +810,11 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
 
 export function recordReviewOutcome(root, runId, { episodeId, workstreamId, point, verdict, source = 'deep-review-approve' }) {
   recordReviewVerdict(root, runId, verdict);              // 자기 lock — breaker 카운터
-  if (verdict === 'APPROVE') {
+  // Codex r1 🔴5: checker episode 터미널 상태를 verdict proof 에서 파생 — 안 하면 checker 가 pending 으로 남아
+  // nextAction 이 fix_episode 로 진입 못 하고 finish 로 오폴백한다. 'accepted concern'(CONCERN)도 pass (spec §7).
+  const passed = verdict === 'APPROVE' || verdict === 'CONCERN';
+  recordEpisode(root, runId, episodeId, { status: passed ? 'approved' : 'rejected', proof: { verdict } });  // 자기 lock(appendAnchored)
+  if (passed) {
     withLock(root, runId, () => {                          // review_points_done(kernel 필드) 기록
       const { data } = readState(root, runId);
       const ws = data.workstreams.find(w => w.id === workstreamId);
@@ -793,6 +823,8 @@ export function recordReviewOutcome(root, runId, { episodeId, workstreamId, poin
     });
     recordReviewed(root, runId, episodeId, source);        // 자기 lock — comprehension
   }
+  // REQUEST_CHANGES → checker='rejected'. nextAction 이 fix_episode 디스크립터를 반환하고 Execution 이 fix maker 를 생성.
+  return { verdict, passed, terminal: passed ? 'approved' : 'rejected' };
 }
 ```
 
@@ -1047,6 +1079,16 @@ test('per_session_turn_cap reached → handoff', () => {
   l.current_episode = '001-deep-work';
   assert.equal(nextAction(l, { now: 0 }).action.type, 'handoff');
 });
+
+// Codex r1 🔴5: 리뷰 outcome 이 checker 터미널을 세팅한 뒤 nextAction 이 fix flow 로 진입해야 (finish 오폴백 금지).
+test('checker rejected → fix_episode; checker approved → finish (no fall-through)', () => {
+  const l = loop();
+  l.episodes = [{ id: '002-deep-review', role: 'checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01' }];
+  l.current_episode = '002-deep-review';
+  assert.equal(nextAction(l, { now: 0 }).action.type, 'fix_episode');
+  l.episodes[0].status = 'approved';
+  assert.equal(nextAction(l, { now: 0 }).action.type, 'finish');
+});
 ```
 
 - [ ] **Step 2: Run to verify fail** — Run: `node --test tests/next-action.test.mjs` → FAIL
@@ -1098,14 +1140,24 @@ export function nextAction(loop, { now = Date.now() } = {}) {
   if (ep.role === 'maker' && ep.status === 'done') {
     return { gate, action: { type: 'dispatch_checker', episode_id: ep.id, point: ep.point, workstream_id: ep.workstream_id }, next_command: '/deep-loop-continue' };
   }
+  if (ep.role === 'checker' && (ep.status === 'pending' || ep.status === 'in_progress')) {
+    return { gate, action: { type: 'dispatch_checker', episode_id: ep.id, point: ep.point, workstream_id: ep.workstream_id }, next_command: '/deep-loop-continue' };
+  }
   if (ep.role === 'checker' && ep.status === 'rejected') {
+    // Codex r1 🔴5: 리뷰 거부 → fix maker episode 가 필요. Execution 이 episode new(role=maker,kind=fix) 후 dispatch.
     return { gate, action: { type: 'fix_episode', episode_id: ep.id, point: ep.point, workstream_id: ep.workstream_id }, next_command: '/deep-loop-continue' };
+  }
+  if (ep.role === 'checker' && ep.status === 'approved') {
+    // 리뷰 통과 → 미완 maker 가 있으면 그쪽, 없으면 finish.
+    const pending = (loop.episodes || []).find(e => e.role === 'maker' && e.status === 'pending');
+    if (pending) return { gate, action: { type: 'dispatch_maker', episode_id: pending.id, point: pending.point, workstream_id: pending.workstream_id }, next_command: '/deep-loop-continue' };
+    return { gate, action: { type: 'finish' }, next_command: '/deep-loop-finish' };
   }
   return { gate, action: { type: 'finish' }, next_command: '/deep-loop-finish' };
 }
 ```
 
-- [ ] **Step 4: Run to verify pass** — Run: `node --test tests/next-action.test.mjs` → PASS (6 tests)
+- [ ] **Step 4: Run to verify pass** — Run: `node --test tests/next-action.test.mjs` → PASS (7 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -1148,7 +1200,7 @@ function seed() {
 }
 
 test('buildLaunchCommand produces per-OS commands referencing child run + resume', () => {
-  const c = buildLaunchCommand({ root: '/p', childRunId: 'CHILD', handoffRel: 'handoffs/x.md', headless: false });
+  const c = buildLaunchCommand({ root: '/p', parentRunId: 'PARENT', childRunId: 'CHILD', handoffRel: 'handoffs/x.md', headless: false });
   assert.match(c.interactive, /claude -n/);
   assert.match(c.macos, /osascript/);
   assert.match(c.windows, /wt\.exe/);
@@ -1185,6 +1237,26 @@ test('emitHandoff dedups: second trigger while in-flight is a no-op', () => {
   assert.equal(second.ok, false);
   assert.equal(second.reason, 'handoff-in-flight');
 });
+
+// Codex r1 🔴1: 같은 트리거 재호출은 새 child/session 을 만들지 않고 기존 emit 을 멱등 반환.
+test('emitHandoff same-trigger re-entry is idempotent (one child, no duplicate session)', () => {
+  const { root, runId } = seed();
+  const now = Date.parse('2026-06-24T01:00:00Z');
+  const first = emitHandoff(root, runId, { trigger: 'milestone', now });
+  const again = emitHandoff(root, runId, { trigger: 'milestone', now });
+  assert.equal(again.ok, true);
+  assert.equal(again.reason, 'already-emitted');
+  assert.equal(again.childRunId, first.childRunId);
+  const children = readState(root, runId).data.session_chain.sessions.filter(s => s.run_id !== runId);
+  assert.equal(children.length, 1);
+});
+
+// launch 명령이 **부모** run 경로의 handoff 파일을 가리키는지 (Codex r1 🔴3)
+test('launch command references parent run dir handoff path', () => {
+  const c = buildLaunchCommand({ root: '/p', parentRunId: 'PARENT', childRunId: 'CHILD', handoffRel: 'handoffs/x.md', headless: false });
+  assert.match(c.interactive, /\.deep-loop\/runs\/PARENT\/handoffs\/x\.md/);
+  assert.match(c.interactive, /deep-loop-CHILD/);
+});
 ```
 (주의: 테스트는 `r.handoffPath`/`r.childRunId`/`r.csName`를 사용 — emitHandoff 반환에 `csName`(compaction-state 파일명)을 포함시켜라.)
 
@@ -1202,8 +1274,9 @@ import { reserveHandoff, advanceHandoffPhase } from './lease.mjs';
 
 function tsName(now) { return new Date(now).toISOString().replace(/[:.]/g, '-'); }
 
-export function buildLaunchCommand({ root, childRunId, handoffRel, headless }) {
-  const resumePrompt = `Read .deep-loop/runs/${childRunId}/${handoffRel} first; then run /deep-loop-resume`;
+export function buildLaunchCommand({ root, parentRunId, childRunId, handoffRel, headless }) {
+  // handoff 파일은 **부모** run 디렉터리에 있다 → 자식은 부모 경로에서 읽는다 (Codex r1 🔴3).
+  const resumePrompt = `Read .deep-loop/runs/${parentRunId}/${handoffRel} first; then run /deep-loop-resume`;
   const interactive = `cd ${root} && claude -n deep-loop-${childRunId} "${resumePrompt}"`;
   const headlessCmd = `cd ${root} && claude -p "${resumePrompt}" --permission-mode acceptEdits`;
   return {
@@ -1235,6 +1308,14 @@ function handoffMarkdown(loop, childRunId, reason) {
 export function emitHandoff(root, runId, { reason = 'milestone', trigger = 'milestone', now = Date.now(), headless = false } = {}) {
   const res = reserveHandoff(root, runId, { trigger });
   if (!res.ok) return { ok: false, reason: res.reason, key: res.key };
+  // Codex r1 🔴1: 같은 트리거 재진입(reserved:false)이면 이미 in-flight handoff 가 있다.
+  // 새 child/파일을 만들지 말고 기존 emit 을 멱등 반환. 단 reserve 만 되고 emit 미완(superseded_by 미설정)이면
+  // 아래로 fall-through 해 emit 을 완료(crash-resume).
+  if (!res.reserved) {
+    const { data } = readState(root, runId);
+    const cur = data.session_chain.sessions.find(s => s.run_id === runId);
+    if (cur && cur.superseded_by) return { ok: true, reason: 'already-emitted', childRunId: cur.superseded_by, key: res.key };
+  }
   const { data: loop } = readState(root, runId);
   const childRunId = ulid(now);
   const dir = join(runDir(root, runId), 'handoffs');
@@ -1256,7 +1337,7 @@ export function emitHandoff(root, runId, { reason = 'milestone', trigger = 'mile
     now: new Date(now).toISOString(),
   });
   atomicWrite(join(dir, csName), JSON.stringify(compaction, null, 2));
-  const cmds = buildLaunchCommand({ root, childRunId, handoffRel, headless });
+  const cmds = buildLaunchCommand({ root, parentRunId: runId, childRunId, handoffRel, headless });
   atomicWrite(join(termDir, 'launch-command.txt'),
     [`# interactive`, cmds.interactive, ``, `# headless`, cmds.headless, ``, `# macOS`, cmds.macos, ``, `# windows`, cmds.windows, ``, `# tmux`, cmds.tmux, ``].join('\n'));
 
@@ -1265,12 +1346,13 @@ export function emitHandoff(root, runId, { reason = 'milestone', trigger = 'mile
     const cur = l.session_chain.sessions.find(s => s.run_id === runId);
     if (cur) cur.superseded_by = childRunId;
   });
-  advanceHandoffPhase(root, runId, { key: res.key, toPhase: 'emitted' });
-  return { ok: true, reason: 'emitted', handoffPath, childRunId, key: res.key, csName, mdName };
+  advanceHandoffPhase(root, runId, { key: res.key, toPhase: 'emitted', now });
+  // handoffRel 반환 → respawn 이 동일 경로로 launch 명령을 빌드 (Codex r1 🔴3)
+  return { ok: true, reason: 'emitted', handoffPath, childRunId, key: res.key, csName, mdName, handoffRel };
 }
 ```
 
-- [ ] **Step 4: Run to verify pass** — Run: `node --test tests/handoff.test.mjs` → PASS (3 tests)
+- [ ] **Step 4: Run to verify pass** — Run: `node --test tests/handoff.test.mjs` → PASS (5 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -1327,10 +1409,12 @@ test('respawnGate fails when sessions >= max_sessions', () => {
 });
 
 test('respawn gate-blocked (budget) → paused, no spawn, lease stays emitted (mode A)', () => {
-  const { root, runId } = seed((d) => { d.budget.spent = d.budget.total; });
+  // Codex r1 🟡7: budget.spent 를 변조하면 respawn 의 reconcileBudget 가 BUDGET_TAMPERED 로 throw.
+  // 대신 total=0 으로 만들어 stored/log 불일치 없이 hard-stop(spent 0 >= 0) 을 유발한다.
+  const { root, runId } = seed((d) => { d.budget.total = 0; });
   const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1 });
   let called = false;
-  const r = respawn(root, runId, { childRunId: h.childRunId, key: h.key, now: NOW1, spawnFn: () => { called = true; return { ok: true }; } });
+  const r = respawn(root, runId, { childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel, now: NOW1, spawnFn: () => { called = true; return { ok: true }; } });
   assert.equal(r.ok, false);
   assert.equal(r.outcome, 'gate-blocked');
   assert.equal(called, false);
@@ -1342,7 +1426,7 @@ test('respawn gate-blocked (budget) → paused, no spawn, lease stays emitted (m
 test('respawn launch failure → failed_launch outcome + lease rollback (mode B)', () => {
   const { root, runId } = seed();
   const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1 });
-  const r = respawn(root, runId, { childRunId: h.childRunId, key: h.key, now: NOW1, spawnFn: () => { throw new Error('launch boom'); } });
+  const r = respawn(root, runId, { childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel, now: NOW1, spawnFn: () => { throw new Error('launch boom'); } });
   assert.equal(r.ok, false);
   assert.equal(r.outcome, 'failed_launch');
   const after = readState(root, runId).data;
@@ -1352,20 +1436,39 @@ test('respawn launch failure → failed_launch outcome + lease rollback (mode B)
   assert.equal(after.session_chain.sessions.find(s => s.run_id === runId).superseded_by, null);
 });
 
-test('respawn success → spawned, lease released, child can acquire (generation+1)', () => {
+test('respawn success → spawned, lease released, child can acquire (generation+1); retry is idempotent', () => {
   const { root, runId } = seed();
   const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1 });
   const cmds = [];
-  const r = respawn(root, runId, { childRunId: h.childRunId, key: h.key, now: NOW1, spawnFn: (cmd) => { cmds.push(cmd); return { ok: true }; } });
+  const spawnFn = (cmd) => { cmds.push(cmd); return { ok: true }; };
+  const r = respawn(root, runId, { childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel, now: NOW1, spawnFn });
   assert.equal(r.ok, true);
   assert.equal(r.outcome, 'spawned');
   assert.equal(cmds.length, 1);
+  assert.match(cmds[0], new RegExp(`\\.deep-loop/runs/${runId}/`));  // 부모 경로 참조 (🔴3)
   const after = readState(root, runId).data;
   assert.equal(after.session_chain.lease.handoff_phase, 'spawned');
   assert.equal(after.session_chain.lease.state, 'released');
+  // Codex r1 🔴2: 같은 respawn 재시도는 already-spawned no-op (이중 spawn 금지)
+  const retry = respawn(root, runId, { childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel, now: NOW1, spawnFn });
+  assert.equal(retry.outcome, 'already-spawned');
+  assert.equal(cmds.length, 1);
   const a = acquireLease(root, runId, { owner: h.childRunId, expectGeneration: 1, now: NOW1 });
   assert.equal(a.ok, true);
   assert.equal(a.generation, 2);
+});
+
+// Codex r1 🟡8: 동시 다발 실패 시 게이트 순서(budget→breaker→max_sessions→wallclock) 보고가 일관적인지.
+test('respawnGate reports documented order; wallclock not mislabeled as budget', () => {
+  const { root, runId } = seed((d) => {
+    d.autonomy.max_sessions = 1; d.session_chain.sessions = [{ run_id: 'a' }, { run_id: 'b' }];
+    d.budget.max_wallclock_sec = 1;            // created_at(NOW0) 기준 NOW1 은 1h 경과 → wallclock 초과
+  });
+  const r = respawnGate(readState(root, runId).data, { now: NOW1 });
+  assert.equal(r.ok, false);
+  assert.ok(r.blocked_by.includes('max_sessions'));
+  assert.ok(r.blocked_by.includes('wallclock'));
+  assert.equal(r.blocked_by.includes('budget'), false);  // wallclock 이 budget 으로 오분류되지 않음
 });
 
 // respawn race (§14 test 12): Continue↔PreCompact 동시 트리거 → 멱등키로 emit 1회
@@ -1375,7 +1478,7 @@ test('double emit + single respawn (race): only one child chain, no double spawn
   const b = emitHandoff(root, runId, { trigger: 'precompact', now: NOW1 });   // no-op
   assert.equal(a.ok, true); assert.equal(b.ok, false);
   let spawns = 0;
-  const r1 = respawn(root, runId, { childRunId: a.childRunId, key: a.key, now: NOW1, spawnFn: () => { spawns++; return { ok: true }; } });
+  const r1 = respawn(root, runId, { childRunId: a.childRunId, key: a.key, handoffRel: a.handoffRel, now: NOW1, spawnFn: () => { spawns++; return { ok: true }; } });
   assert.equal(r1.ok, true);
   assert.equal(spawns, 1);
   const children = readState(root, runId).data.session_chain.sessions.filter(s => s.run_id !== runId);
@@ -1398,7 +1501,9 @@ import { buildLaunchCommand } from './handoff.mjs';
 // 게이트 순서: budget → breaker → max_sessions → wallclock → auto_handoff (spec §9). 순수.
 export function respawnGate(loop, { now = Date.now() } = {}) {
   const blocked_by = [];
-  const b = checkBudget(loop, { now });
+  // Codex r1 🟡8: checkBudget 은 created_at 기반 wallclock 도 검사하므로, sessionStart=now 로 그 내부 검사를
+  // 무력화(wall=0)하고 wallclock 은 아래 문서화된 순서(max_sessions 다음)에서 명시 검사 → 순서/라벨 일관.
+  const b = checkBudget(loop, { now, sessionStart: now });
   if (!b.ok) blocked_by.push('budget');
   if (checkBreaker(loop).tripped) blocked_by.push('breaker');
   if ((loop.session_chain?.sessions?.length || 0) >= (loop.autonomy?.max_sessions ?? 8)) blocked_by.push('max_sessions');
@@ -1413,22 +1518,31 @@ function defaultSpawn(cmd) {
   throw new Error('SPAWN_NOT_WIRED: provide spawnFn (interactive=manual launch, headless=Plan3 driver)');
 }
 
-export function respawn(root, runId, { childRunId, key, headless = false, now = Date.now(), spawnFn = defaultSpawn }) {
+export function respawn(root, runId, { childRunId, key, handoffRel = '', headless = false, now = Date.now(), spawnFn = defaultSpawn }) {
   reconcileBudget(root, runId);                       // 무결성 fail-stop (탐지 시 throw)
   const { data: loop } = readState(root, runId);
-  const generation = loop.session_chain.lease.generation;
+  const lease = loop.session_chain.lease;
+  const generation = lease.generation;
+  // 멱등/펜싱 사전조건 (Codex r1 🔴2): 잘못된 owner/key 거부, 이미 spawned 면 재spawn 금지(이중 spawn 차단).
+  if (lease.owner_run_id !== runId) return { ok: false, outcome: 'fenced', reason: 'owner-mismatch', childRunId };
+  if (lease.handoff_idempotency_key !== key) return { ok: false, outcome: 'key-mismatch', reason: 'key-mismatch', childRunId };
+  if (lease.handoff_phase === 'spawned') return { ok: true, outcome: 'already-spawned', reason: 'idempotent', childRunId };
+  if (lease.handoff_phase !== 'emitted' || lease.state !== 'releasing') {
+    return { ok: false, outcome: 'not-emitted', reason: `phase=${lease.handoff_phase} state=${lease.state}`, childRunId };
+  }
   const gate = respawnGate(loop, { now });
   if (!gate.ok) {
+    // 실패모드 (A): spawn 시도 안 함 → handoff(emitted) 유지 + paused, 사람 수동 resume.
     withLock(root, runId, () => { const { data } = readState(root, runId); data.status = 'paused'; writeState(root, runId, data); });
     return { ok: false, outcome: 'gate-blocked', reason: gate.reason, childRunId };
   }
-  const cmds = buildLaunchCommand({ root, childRunId, handoffRel: '', headless });
+  const cmds = buildLaunchCommand({ root, parentRunId: runId, childRunId, handoffRel, headless });
   const cmd = headless ? cmds.headless : cmds.interactive;
   try {
     const res = spawnFn(cmd);
     if (res && res.ok === false) throw new Error(res.reason || 'spawn-returned-false');
   } catch (e) {
-    // 실패모드 (B): 부모로 lease 롤백 + chain 정정
+    // 실패모드 (B): 부모로 lease 롤백 + chain 정정 (인수한 적 없는 세션을 기술하지 않게 superseded_by 해제)
     appendAnchored(root, runId, { type: 'respawn-failed', data: { child_run_id: childRunId, error: String(e.message || e) } }, (l) => {
       const child = l.session_chain.sessions.find(s => s.run_id === childRunId);
       if (child) child.outcome = 'failed_launch';
@@ -1438,15 +1552,17 @@ export function respawn(root, runId, { childRunId, key, headless = false, now = 
     rollbackHandoff(root, runId, { owner: runId, generation });
     return { ok: false, outcome: 'failed_launch', reason: String(e.message || e), childRunId };
   }
-  // 성공: spawned → 부모 lease release(자식이 acquire 가능)
+  // 성공: spawned → 부모 lease release(자식이 acquire 가능). 전이 반환값 검증(silent 실패 금지).
   appendAnchored(root, runId, { type: 'respawn-spawned', data: { child_run_id: childRunId, headless } });
-  advanceHandoffPhase(root, runId, { key, toPhase: 'spawned' });
-  releaseLease(root, runId, { owner: runId, generation });
+  const adv = advanceHandoffPhase(root, runId, { key, toPhase: 'spawned', now });
+  if (!adv.ok) return { ok: false, outcome: 'phase-error', reason: adv.reason, childRunId };
+  const rel = releaseLease(root, runId, { owner: runId, generation });
+  if (!rel.ok) return { ok: false, outcome: 'release-error', reason: rel.reason, childRunId };
   return { ok: true, outcome: 'spawned', reason: 'spawned', childRunId };
 }
 ```
 
-- [ ] **Step 4: Run to verify pass** — Run: `node --test tests/respawn.test.mjs` → PASS (5 tests)
+- [ ] **Step 4: Run to verify pass** — Run: `node --test tests/respawn.test.mjs` → PASS (6 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -1470,8 +1586,8 @@ git commit -m "feat(orch): respawn — gate ordering, injectable spawn, mode A g
   - `lease acquire|release|check --owner --generation [--expect-generation]`
   - `next-action [--json]` — `nextAction` 결과 출력(dispatch 안 함)
   - `episode new --plugin --role --kind --point [--workstream]` / `episode record --id --status [--artifacts <json>] [--proof <json>]`
-  - `workstream new --title --branch --worktree [--depends-on <json>]` / `workstream set --id --status`
-  - `review dispatch --point --workstream`
+  - `workstream new --title --branch --worktree [--depends-on <json>]` / `workstream set --id --status` / `workstream terminal --id --status --proof <json>` (커널 파생 터미널)
+  - `review dispatch --point --workstream` / `review record --episode --workstream --point --verdict [--source]` (verdict→checker 터미널 파생)
   - `handoff emit [--reason] [--trigger] [--headless]`
   - `respawn [--child <id>] [--key <k>] [--headless]` — **테스트/수동에서는 spawn 미실행**(spawnFn 미주입 시 SPAWN_NOT_WIRED). CLI는 `--dry-run`으로 게이트만 평가.
   - `tick --mode discover|triage|advance|full` — `next-action` 반환(스스로 판단 안 함, §1.1).
@@ -1529,6 +1645,18 @@ test('episode new creates request + episode via CLI', () => {
   assert.equal(readState(root, runId).data.episodes.length, 1);
 });
 
+// Codex r1 🔴6: proof-파생 터미널/리뷰 결과가 CLI 경계로 도달 가능해야 (Execution 은 CLI 로만 상태 변경).
+test('workstream terminal + review record reach kernel via CLI', () => {
+  const { root, runId } = seed();
+  const ws = JSON.parse(run(root, ['workstream', 'new', '--title', 'A', '--branch', 'b', '--worktree', 'w', '--owner', runId, '--generation', '1']));
+  run(root, ['workstream', 'set', '--id', ws.id, '--status', 'in_progress', '--owner', runId, '--generation', '1']);
+  run(root, ['workstream', 'terminal', '--id', ws.id, '--status', 'ready', '--proof', '{"review_approved":true}', '--owner', runId, '--generation', '1']);
+  assert.equal(readState(root, runId).data.workstreams[0].status, 'ready');
+  const disp = JSON.parse(run(root, ['review', 'dispatch', '--point', 'plan', '--workstream', ws.id, '--owner', runId, '--generation', '1']));
+  run(root, ['review', 'record', '--episode', disp.checkerEpisodeId, '--workstream', ws.id, '--point', 'plan', '--verdict', 'APPROVE', '--owner', runId, '--generation', '1']);
+  assert.equal(readState(root, runId).data.episodes.find(e => e.id === disp.checkerEpisodeId).status, 'approved');
+});
+
 test('handoff emit via CLI sets releasing', () => {
   const { root, runId } = seed();
   run(root, ['handoff', 'emit', '--reason', 'milestone', '--trigger', 'milestone', '--owner', runId, '--generation', '1']);
@@ -1550,9 +1678,9 @@ test('full suite still green count grows (smoke: validate ok)', () => {
 ```javascript
 import { writeState } from './lib/state.mjs';
 import { leaseCheck, acquireLease, releaseLease } from './lib/lease.mjs';
-import { newWorkstream, setWorkstreamStatus } from './lib/workspace.mjs';
+import { newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal } from './lib/workspace.mjs';
 import { newEpisode, recordEpisode } from './lib/episode.mjs';
-import { dispatchReview } from './lib/review.mjs';
+import { dispatchReview, recordReviewOutcome } from './lib/review.mjs';
 import { nextAction } from './lib/next-action.mjs';
 import { emitHandoff } from './lib/handoff.mjs';
 import { respawn, respawnGate } from './lib/respawn.mjs';
@@ -1588,6 +1716,8 @@ handlers에 추가(객체 리터럴 끝에):
     requireLease(root, runId, f);
     if (verb === 'new') { const r = newWorkstream(root, runId, { title: f.title, branch: f.branch, worktree: f.worktree, dependsOn: f['depends-on'] ? JSON.parse(f['depends-on']) : [] }); json(r); return 0; }
     if (verb === 'set') { setWorkstreamStatus(root, runId, f.id, f.status); json({ ok: true }); return 0; }
+    // 터미널(ready/merged/abandoned)은 proof 필수 — 커널 파생 (Codex r1 🔴6: CLI 경계로 노출)
+    if (verb === 'terminal') { recordWorkstreamTerminal(root, runId, f.id, { status: f.status, proof: f.proof ? JSON.parse(f.proof) : {} }); json({ ok: true }); return 0; }
     error(`unknown workstream verb: ${verb}`); return 2;
   },
   episode: async (a) => {
@@ -1601,6 +1731,8 @@ handlers에 추가(객체 리터럴 끝에):
     const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
     requireLease(root, runId, f);
     if (verb === 'dispatch') { json(dispatchReview(root, runId, { point: f.point, workstreamId: f.workstream, detected: detectPlugins(root) })); return 0; }
+    // verdict 기록 → checker 터미널 파생 + breaker/comprehension/review_points (Codex r1 🔴6: CLI 경계로 노출)
+    if (verb === 'record') { json(recordReviewOutcome(root, runId, { episodeId: f.episode, workstreamId: f.workstream, point: f.point, verdict: f.verdict, source: f.source || 'deep-review-approve' })); return 0; }
     error(`unknown review verb: ${verb}`); return 2;
   },
   handoff: async (a) => {
@@ -1619,11 +1751,11 @@ handlers에 추가(객체 리터럴 끝에):
 ```
 (`init-run`/`detect-plugins`/`recipe-match`도 `--project-root` 지원하도록 `process.cwd()` → `rootOf(parseFlags(a))`로 정정. `requireLease`의 `--generation`은 숫자 변환.)
 
-- [ ] **Step 4: Run to verify pass** — Run: `node --test tests/orch-cli.test.mjs` → PASS (6 tests)
+- [ ] **Step 4: Run to verify pass** — Run: `node --test tests/orch-cli.test.mjs` → PASS (7 tests)
 
 - [ ] **Step 5: 전체 테스트 + preflight**
 
-Run: `npm test` → 기존 62 + 신규(7+6+4+4+5+6+3+5+6 = 46) ≈ **108 tests green**
+Run: `npm test` → 기존 62 + 신규(lease 8 + workspace 6 + episode 4 + review 4 + adapters 5 + next-action 7 + handoff 5 + respawn 6 + orch-cli 7 = 52) = **114 tests green**
 Run: `npm run preflight` → PASS
 
 - [ ] **Step 6: Commit**
@@ -1667,6 +1799,22 @@ git commit -m "feat(orch): CLI — lease/next-action/episode/workstream/review/h
 - 터미널 상태는 proof 파생(episode done=artifacts 존재, approved/rejected=verdict; workstream terminal=proof 필수). ✅
 - respawn은 acting tier로 게이팅하지 않음(`respawnGate`에 tier 없음). 외부 행동 실행 0(proposal-only). ✅
 - project root 밖 쓰기 0(handoff/episode 산출은 전부 `runDir` 하위). ✅
+
+---
+
+## Codex 2-way 리뷰 반영 로그
+
+**라운드 1 (REQUEST_CHANGES, 6 critical + 2 should-fix) — 전부 수정:**
+- 🔴1 (Task 7): `emitHandoff` 가 같은-트리거 재진입(`reserved:false`)에서 새 child/파일을 만들던 이중 emit → `superseded_by` 확인 후 멱등 반환(crash-resume fall-through 포함). 테스트 추가.
+- 🔴2 (Task 8): `respawn` 이 phase/key 검증 없이 spawn → 사전조건 가드(owner/key/phase=emitted/state=releasing) + `spawned` 면 멱등 no-op + 전이 반환값 검증. 멱등 재시도 테스트 추가.
+- 🔴3 (Task 7·8): `buildLaunchCommand` 가 `childRunId` 경로를 가리켜 자식이 없는 파일을 읽음 → `parentRunId` 사용 + `emitHandoff` 가 `handoffRel` 반환 + `respawn` 이 이를 전달. 경로 단언 테스트 추가.
+- 🔴4 (Task 1): `advanceHandoffPhase('emitted')` 가 `expires_at` 미설정 → 부모 크래시 시 데드락 → emitted 진입에서 `expires_at = now + stale_ttl` 설정. stale 인수 테스트 추가.
+- 🔴5 (Task 4·6): `recordReviewOutcome` 가 checker 터미널/ fix flow 미구동 → verdict proof 에서 checker 터미널 파생(accepted concern 포함) + `nextAction` 이 checker pending/rejected/approved 명시 처리. 테스트 추가.
+- 🔴6 (Task 9): proof-파생 터미널/리뷰 결과가 CLI 미노출 → `workstream terminal`·`review record` 명령 추가(leased). 테스트 추가.
+- 🟡7 (Task 8): mode-A 테스트가 `budget.spent` 변조로 `reconcileBudget` throw → `budget.total=0` 으로 무결성 유지하며 hard-stop 유발.
+- 🟡8 (Task 8): wallclock 이 `checkBudget` 내부에서 게이트 순서보다 먼저 평가 → `respawnGate` 가 `sessionStart:now` 로 내부 검사 무력화 + 문서 순서대로 명시 검사. 순서 테스트 추가.
+
+신규 테스트 총계: 52 (라운드 1 전 46 → 52). `npm test` = 기존 62 + 52 = **114 green** 목표.
 
 ---
 
