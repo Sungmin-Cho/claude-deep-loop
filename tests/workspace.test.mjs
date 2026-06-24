@@ -86,6 +86,43 @@ test('setWorkstreamStatus throws WORKSTREAM_TERMINAL_LOCKED when workstream is t
   assert.throws(() => setWorkstreamStatus(root, runId, id, 'in_progress'), /WORKSTREAM_TERMINAL_LOCKED/);
 });
 
+// Codex r2 🔴: 터미널→터미널 전환 차단 — merged 는 흡수; ready→merged 는 허용; abandoned→merged 는 차단.
+test('recordWorkstreamTerminal blocks terminal->terminal rewrites (merged/abandoned absorbing)', () => {
+  const { root, runId } = seed();
+  // Set up a workstream that is already merged
+  const { id: idM } = newWorkstream(root, runId, { title: 'M', branch: 'bm', worktree: 'wm' });
+  recordWorkstreamTerminal(root, runId, idM, { status: 'merged', proof: { merge_commit: 'abc123', human_approved: true } });
+  assert.equal(readState(root, runId).data.workstreams.find(w => w.id === idM).status, 'merged');
+  // merged → abandoned must throw WORKSTREAM_TERMINAL_LOCKED
+  assert.throws(
+    () => recordWorkstreamTerminal(root, runId, idM, { status: 'abandoned', proof: { reason: 'x' } }),
+    /WORKSTREAM_TERMINAL_LOCKED/
+  );
+
+  // Set up a workstream that is 'ready' and confirm it CAN go to 'merged'
+  const { id: idR } = newWorkstream(root, runId, { title: 'R', branch: 'br', worktree: 'wr' });
+  {
+    const { data } = readState(root, runId);
+    const ws = data.workstreams.find(w => w.id === idR);
+    ws.review_points_done = [...(data.review?.points || [])];
+    writeState(root, runId, data);
+  }
+  recordWorkstreamTerminal(root, runId, idR, { status: 'ready', proof: {} });
+  assert.equal(readState(root, runId).data.workstreams.find(w => w.id === idR).status, 'ready');
+  // ready → merged must succeed (the only allowed terminal→terminal transition)
+  recordWorkstreamTerminal(root, runId, idR, { status: 'merged', proof: { merge_commit: 'def456', human_approved: true } });
+  assert.equal(readState(root, runId).data.workstreams.find(w => w.id === idR).status, 'merged');
+
+  // Set up an abandoned workstream — cannot go to merged
+  const { id: idA } = newWorkstream(root, runId, { title: 'Ab', branch: 'ba2', worktree: 'wa2' });
+  recordWorkstreamTerminal(root, runId, idA, { status: 'abandoned', proof: { reason: 'no longer needed' } });
+  assert.equal(readState(root, runId).data.workstreams.find(w => w.id === idA).status, 'abandoned');
+  assert.throws(
+    () => recordWorkstreamTerminal(root, runId, idA, { status: 'merged', proof: { merge_commit: 'xyz', human_approved: true } }),
+    /WORKSTREAM_TERMINAL_LOCKED/
+  );
+});
+
 test('inheritWorkstreams reports missing worktree paths (no silent recreate)', () => {
   const { root, runId } = seed();
   const present = join(root, 'wt-present'); mkdirSync(present, { recursive: true });

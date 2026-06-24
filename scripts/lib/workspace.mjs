@@ -48,6 +48,12 @@ export function recordWorkstreamTerminal(root, runId, wsId, { status, proof = {}
   const { data } = readState(root, runId);
   const ws = data.workstreams.find(w => w.id === wsId);
   if (!ws) throw new Error(`WORKSTREAM_NOT_FOUND: ${wsId}`);
+  // Codex r2 🔴: 터미널→터미널 전환 차단 — merged/abandoned 는 흡수 상태; 유일한 허용 전환은 ready→merged.
+  if (TERMINAL.includes(ws.status)) {
+    if (!(ws.status === 'ready' && status === 'merged')) {
+      throw new Error('WORKSTREAM_TERMINAL_LOCKED: ' + wsId + ' ' + ws.status + '->' + status + ' not allowed');
+    }
+  }
   const reviewPoints = (data.review?.points || []);
   const ok =
     status === 'ready'     ? (reviewPoints.length > 0 && reviewPoints.every(p => (ws.review_points_done || []).includes(p))) :

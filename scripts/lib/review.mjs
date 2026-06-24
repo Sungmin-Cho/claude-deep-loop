@@ -46,7 +46,12 @@ export function recordReviewOutcome(root, runId, { episodeId, workstreamId, poin
   if (!pre.episodes.find(e => e.id === episodeId)) throw new Error(`EPISODE_NOT_FOUND: ${episodeId}`);
   const tgt = pre.episodes.find(e => e.id === episodeId);
   if (tgt.role !== 'checker') throw new Error('REVIEW_TARGET_NOT_CHECKER: ' + episodeId);
-  if (workstreamId && !pre.workstreams.find(w => w.id === workstreamId)) throw new Error(`WORKSTREAM_NOT_FOUND: ${workstreamId}`);
+  // Codex r2 🔴: 이미 터미널 상태인 checker에 대한 replay 방지 — appendAnchored 이전에 검증.
+  if (tgt.status === 'approved' || tgt.status === 'rejected') throw new Error('REVIEW_ALREADY_RECORDED: ' + episodeId);
+  // Codex r2 🔴: 호출자 제공 workstreamId/point 를 신뢰하지 않음 — checker episode 에서 권위적으로 파생.
+  const wsId = tgt.workstream_id;
+  const pt = tgt.point;
+  if (wsId && !pre.workstreams.find(w => w.id === wsId)) throw new Error(`WORKSTREAM_NOT_FOUND: ${wsId}`);
   recordReviewVerdict(root, runId, verdict);              // 자기 lock — breaker 카운터
   // Codex r1 🔴5: checker episode 터미널 상태를 verdict proof 에서 파생 — 안 하면 checker 가 pending 으로 남아
   // nextAction 이 fix_episode 로 진입 못 하고 finish 로 오폴백한다. 'accepted concern'(CONCERN)도 pass (spec §7).
@@ -55,11 +60,11 @@ export function recordReviewOutcome(root, runId, { episodeId, workstreamId, poin
   if (passed) {
     withLock(root, runId, () => {                          // review_points_done(kernel 필드) 기록 + comprehension
       const { data } = readState(root, runId);
-      const ws = data.workstreams.find(w => w.id === workstreamId);
-      if (ws && !ws.review_points_done.includes(point)) ws.review_points_done.push(point);
+      const ws = data.workstreams.find(w => w.id === wsId);
+      if (ws && !ws.review_points_done.includes(pt)) ws.review_points_done.push(pt);
       const requireHumanAck = data.review?.require_human_ack === true;
       if (!(requireHumanAck && source === 'deep-review-approve')) {
-        for (const m of data.episodes.filter(e => e.role === 'maker' && e.workstream_id === workstreamId && e.point === point && !e.human_reviewed)) {
+        for (const m of data.episodes.filter(e => e.role === 'maker' && e.workstream_id === wsId && e.point === pt && !e.human_reviewed)) {
           m.human_reviewed = true;
           data.comprehension.episodes_human_reviewed = (data.comprehension.episodes_human_reviewed || 0) + 1;
         }

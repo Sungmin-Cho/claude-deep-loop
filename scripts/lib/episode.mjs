@@ -20,6 +20,10 @@ function requestSkeleton({ id, plugin, role, kind, point, workstream, expectedAr
 }
 
 export function newEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [] }) {
+  // Codex r2 🟡: expectedArtifacts 경로 안전성 검증 — 절대 경로 및 '..' 세그먼트 사전 차단.
+  for (const a of expectedArtifacts) {
+    if (isAbsolute(a) || a.split(/[/\\]/).includes('..')) throw new Error('EPISODE_ARTIFACT_UNSAFE: ' + a);
+  }
   let id, requestPath, dir;
   const safePlugin = slugify(plugin) || 'plugin';
   appendAnchored(root, runId, { type: 'episode-new', data: { plugin, role, kind, point } }, (loop) => {
@@ -58,10 +62,21 @@ export function recordEpisode(root, runId, episodeId, { status, artifacts = [], 
   if (TERMINAL.includes(status)) {
     if (status === 'done') {
       const expected = (ep0.expected_artifacts || []);
-      const missing = expected.filter(a => !existsSync(isAbsolute(a) ? a : join(root, a)));
+      // Codex r2 🟡: 각 expected artifact 경로 안전성 재검증 + root 내 포함 확인.
+      const rootResolved = resolve(root);
+      for (const a of expected) {
+        if (isAbsolute(a) || a.split(/[/\\]/).includes('..')) throw new Error('EPISODE_ARTIFACT_ESCAPE: ' + a);
+        const full = resolve(root, a);
+        if (!full.startsWith(rootResolved + sep)) throw new Error('EPISODE_ARTIFACT_ESCAPE: ' + a);
+      }
+      const missing = expected.filter(a => !existsSync(join(root, a)));
       if (expected.length === 0 || missing.length) {
         throw new Error(`EPISODE_TERMINAL_NO_PROOF: ${episodeId} done requires existing artifacts (missing: ${missing.join(',') || 'none-declared'})`);
       }
+      // Codex r2 🟡: 제출된 artifacts 가 expected_artifacts 를 모두 커버하는지 확인.
+      const submitted = new Set(artifacts);
+      const uncovered = expected.filter(a => !submitted.has(a));
+      if (uncovered.length) throw new Error('EPISODE_ARTIFACTS_INCOMPLETE: ' + uncovered.join(','));
     } else if (status === 'approved' && !['APPROVE', 'CONCERN'].includes(proof.verdict)) {
       throw new Error(`EPISODE_TERMINAL_NO_PROOF: ${episodeId} approved requires proof.verdict=APPROVE|CONCERN (accepted concern)`);
     } else if (status === 'rejected' && proof.verdict !== 'REQUEST_CHANGES') {

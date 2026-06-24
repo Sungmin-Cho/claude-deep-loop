@@ -73,6 +73,39 @@ test('recordReviewOutcome throws REVIEW_TARGET_NOT_CHECKER when target is a make
   );
 });
 
+// Codex r2 🔴: checker episode 에서 workstream/point 파생 — 호출자 제공 값 무시.
+test('recordReviewOutcome derives workstream/point from checker episode, ignores caller-supplied mismatched values', () => {
+  const { root, runId } = seed();
+  const wsA = newWorkstream(root, runId, { title: 'ws-A', branch: 'ba', worktree: 'wa' }).id;
+  const wsBogus = newWorkstream(root, runId, { title: 'ws-bogus', branch: 'bb', worktree: 'wb' }).id;
+  // dispatch checker for ws-A / plan
+  const r = dispatchReview(root, runId, { point: 'plan', workstreamId: wsA, detected: { 'deep-review': true } });
+  // call with MISMATCHED caller workstreamId + point
+  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: wsBogus, point: 'implementation', verdict: 'APPROVE' });
+  const d = readState(root, runId).data;
+  // Real workstream (ws-A) gets 'plan' in review_points_done
+  assert.ok(d.workstreams.find(w => w.id === wsA).review_points_done.includes('plan'), 'ws-A should have plan done');
+  // Bogus workstream must be untouched
+  assert.deepEqual(d.workstreams.find(w => w.id === wsBogus).review_points_done, [], 'ws-bogus must be untouched');
+  // Also 'implementation' must NOT appear in ws-A (bogus point)
+  assert.ok(!d.workstreams.find(w => w.id === wsA).review_points_done.includes('implementation'), 'ws-A must not have implementation');
+});
+
+// Codex r2 🔴: 같은 checker episode 에 두 번 recordReviewOutcome 호출 → 두 번째 throw REVIEW_ALREADY_RECORDED.
+test('recordReviewOutcome throws REVIEW_ALREADY_RECORDED on second call to same checker episode', () => {
+  const { root, runId } = seed();
+  const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: 'w' }).id;
+  const r = dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { 'deep-review': true } });
+  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'plan', verdict: 'APPROVE' });
+  const breakerBefore = readState(root, runId).data.circuit_breaker.consecutive_request_changes;
+  assert.throws(
+    () => recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'plan', verdict: 'REQUEST_CHANGES' }),
+    /REVIEW_ALREADY_RECORDED/
+  );
+  // breaker counter must be unchanged by second call
+  assert.equal(readState(root, runId).data.circuit_breaker.consecutive_request_changes, breakerBefore);
+});
+
 // Codex r2 🔴6: invalid verdict 는 어떤 변경(breaker) 전에 거부.
 test('recordReviewOutcome rejects invalid verdict before mutating breaker', () => {
   const { root, runId } = seed();

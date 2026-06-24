@@ -55,6 +55,32 @@ test('newEpisode with path-traversal plugin name produces safe id and contained 
   assert.ok(requestPath.startsWith(base), `requestPath ${requestPath} must start with ${base}`);
 });
 
+// Codex r2 🟡: newEpisode 에 절대 경로나 '..' 세그먼트가 있는 expectedArtifacts 는 거부.
+test('newEpisode throws EPISODE_ARTIFACT_UNSAFE for absolute or path-traversal expectedArtifacts', () => {
+  const { root, runId } = seed();
+  assert.throws(
+    () => newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation', expectedArtifacts: ['/etc/passwd'] }),
+    /EPISODE_ARTIFACT_UNSAFE/
+  );
+  assert.throws(
+    () => newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation', expectedArtifacts: ['../../x'] }),
+    /EPISODE_ARTIFACT_UNSAFE/
+  );
+});
+
+// Codex r2 🟡: recordEpisode done 에서 artifacts 가 expected_artifacts 를 커버하지 않으면 EPISODE_ARTIFACTS_INCOMPLETE.
+test('recordEpisode done throws EPISODE_ARTIFACTS_INCOMPLETE when artifacts do not cover expected', () => {
+  const { root, runId } = seed();
+  const art = join(root, 'out.txt');
+  const { id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation', expectedArtifacts: ['out.txt'] });
+  writeFileSync(art, 'x');
+  // artifacts: [] does not cover expected 'out.txt'
+  assert.throws(
+    () => recordEpisode(root, runId, id, { status: 'done', artifacts: [] }),
+    /EPISODE_ARTIFACTS_INCOMPLETE/
+  );
+});
+
 test('recordEpisode approved/rejected derive from verdict proof', () => {
   const { root, runId } = seed();
   const { id } = newEpisode(root, runId, { plugin: 'deep-review', role: 'checker', kind: 'impl-review', point: 'implementation' });
