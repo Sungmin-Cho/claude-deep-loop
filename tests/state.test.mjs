@@ -103,3 +103,14 @@ test('stale lock is reclaimed after TTL', () => {
   withLock(root, runId, () => { ran = true; }, { ttlMs: 30000, retries: 5, backoffMs: 1 });
   assert.equal(ran, true);
 });
+
+// Codex impl r12 🔴: runId must be a safe single path segment — a '../' (or slash) runId would let runDir
+// resolve outside the project root and every state/event/episode/handoff writer would escape.
+test('runDir rejects unsafe run-id path segments', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-'));
+  for (const bad of ['../evil', '..', '.', 'a/b', 'a\\b', '', null]) {
+    assert.throws(() => runDir(root, bad), /RUN_ID_INVALID/, `runId ${JSON.stringify(bad)} should be rejected`);
+  }
+  // a normal ULID-ish id is accepted
+  assert.ok(runDir(root, '01KVWFJA0QKSCMN8XMQ0WJXBBC').endsWith('01KVWFJA0QKSCMN8XMQ0WJXBBC'));
+});

@@ -73,6 +73,13 @@ export function appendAnchored(root, runId, { type, data }, mutate, preCheck) {
   return withLock(root, runId, () => {
     const { data: loop } = readState(root, runId);
     if (preCheck) preCheck(loop);              // throws BEFORE append → anchor stays consistent
+    // Codex impl r12 🔴: verify the existing log (chain + tail vs stored anchor) BEFORE appending. Otherwise a
+    // suffix-truncated/tampered log would be laundered — a new append + fresh anchor would hide the loss and
+    // reconcileBudget would no longer detect it. Fail-stop here keeps the anchor honest.
+    const v = verifyLog(root, runId);
+    if (!v.ok) throw new Error(`LOG_TAMPERED: ${v.errors.join('; ')}`);
+    const h = verifyHead(root, runId, loop.event_log_head);
+    if (!h.ok) throw new Error(`LOG_TAMPERED: ${h.errors.join('; ')}`);
     appendEvent(root, runId, { type, data });
     loop.event_log_head = lastLogHead(root, runId);
     if (mutate) mutate(loop, recomputeSpent(root, runId));
