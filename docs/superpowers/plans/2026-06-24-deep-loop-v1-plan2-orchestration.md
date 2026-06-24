@@ -755,7 +755,6 @@ import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState } from '../scripts/lib/state.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
-import { nextAction } from '../scripts/lib/next-action.mjs';
 import { resolveReviewer, dispatchReview, parseVerdict, recordReviewOutcome } from '../scripts/lib/review.mjs';
 
 function seed(detected = { 'deep-review': true }) {
@@ -808,15 +807,7 @@ test('recordReviewOutcome derives checker terminal + drives breaker/comprehensio
   assert.ok(d.workstreams.find(w => w.id === ws).review_points_done.includes('plan'));
 });
 
-// Codex r2 🔴4: RC outcome 후 nextAction 이 debt(=1.0)에도 fix_episode 로 진입 — 종단 검증.
-test('dispatchReview → recordReviewOutcome(RC) → nextAction returns fix_episode', () => {
-  const { root, runId } = seed();
-  const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: 'w' }).id;
-  const r = dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { 'deep-review': true } });
-  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'plan', verdict: 'REQUEST_CHANGES' });
-  const { data } = readState(root, runId);
-  assert.equal(nextAction(data, { now: Date.parse('2026-06-24T00:00:00Z') }).action.type, 'fix_episode');
-});
+// (RC → nextAction=fix_episode 종단 테스트는 Task 6 next-action.test.mjs 로 이동 — Task 4 는 next-action.mjs 미존재. Codex r5 🟡1)
 
 // Codex r2 🔴6: invalid verdict 는 어떤 변경(breaker) 전에 거부.
 test('recordReviewOutcome rejects invalid verdict before mutating breaker', () => {
@@ -899,7 +890,7 @@ export function recordReviewOutcome(root, runId, { episodeId, workstreamId, poin
 }
 ```
 
-- [ ] **Step 4: Run to verify pass** — Run: `node --test tests/review.test.mjs` → PASS (6 tests)
+- [ ] **Step 4: Run to verify pass** — Run: `node --test tests/review.test.mjs` → PASS (5 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -1106,7 +1097,13 @@ git commit -m "feat(orch): adapters — 4-verb protocol adapters (descriptor-ret
 ```javascript
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildInitialLoop } from '../scripts/lib/initrun.mjs';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { buildInitialLoop, initRun } from '../scripts/lib/initrun.mjs';
+import { readState } from '../scripts/lib/state.mjs';
+import { newWorkstream } from '../scripts/lib/workspace.mjs';
+import { dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
 import { nextAction } from '../scripts/lib/next-action.mjs';
 
 function loop(over = {}) {
@@ -1212,6 +1209,18 @@ test('comprehension-debt blocks discover but not the fix flow', () => {
   l.current_episode = '002-deep-review';
   assert.equal(nextAction(l, { now: 0 }).action.type, 'fix_episode');  // debt 무관
 });
+
+// Codex r2 🔴4 / r5 🟡1: review.mjs+next-action.mjs 종단 — RC 후 debt(=1.0)에도 fix_episode 진입.
+// (Task 4 가 아니라 여기 둠 — 이 시점에 review.mjs·next-action.mjs 둘 다 존재.)
+test('dispatchReview → recordReviewOutcome(RC) → nextAction returns fix_episode (end-to-end)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-'));
+  const { runId } = initRun(root, { goal: 'g', detected: { 'deep-review': true }, now: new Date('2026-06-24T00:00:00Z') });
+  const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: 'w' }).id;
+  const r = dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { 'deep-review': true } });
+  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'plan', verdict: 'REQUEST_CHANGES' });
+  const { data } = readState(root, runId);
+  assert.equal(nextAction(data, { now: Date.parse('2026-06-24T00:00:00Z') }).action.type, 'fix_episode');
+});
 ```
 
 - [ ] **Step 2: Run to verify fail** — Run: `node --test tests/next-action.test.mjs` → FAIL
@@ -1305,7 +1314,7 @@ export function nextAction(loop, { now = Date.now() } = {}) {
 }
 ```
 
-- [ ] **Step 4: Run to verify pass** — Run: `node --test tests/next-action.test.mjs` → PASS (10 tests)
+- [ ] **Step 4: Run to verify pass** — Run: `node --test tests/next-action.test.mjs` → PASS (11 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -1972,7 +1981,7 @@ handlers에 추가(객체 리터럴 끝에):
 
 - [ ] **Step 5: 전체 테스트 + preflight**
 
-Run: `npm test` → 기존 62 + 신규(lease 8 + workspace 6 + episode 4 + review 6 + adapters 6 + next-action 10 + handoff 6 + respawn 8 + orch-cli 7 = 61) = **123 tests green**
+Run: `npm test` → 기존 62 + 신규(lease 8 + workspace 6 + episode 4 + review 5 + adapters 6 + next-action 11 + handoff 6 + respawn 8 + orch-cli 7 = 61) = **123 tests green**
 Run: `npm run preflight` → PASS
 
 - [ ] **Step 6: Commit**
@@ -2057,6 +2066,11 @@ git commit -m "feat(orch): CLI — lease/next-action/episode/workstream/review/h
 - ℹ️2 (Task 4): `parseVerdict` 키워드 fallback 이 부정문("do not APPROVE")을 APPROVE 로 오분류 → 부정 표현 가드 추가. 부정 테스트 추가.
 
 신규 테스트 총계: 61 (라운드 4 전 60 → 61). `npm test` = 기존 62 + 61 = **123 green** 목표.
+
+**라운드 5 (CONCERN, critical 0 — 1 should-fix) — 수정 완료:**
+- 🟡1 (Task 4): review.test 가 Task 6 의 `next-action.mjs` 를 import → 순서대로 구현 시 Task 4 Step 4 가 통과 불가(모듈 미존재). RC→fix_episode 종단 테스트를 Task 6 next-action.test 로 이동(이 시점에 review.mjs·next-action.mjs 둘 다 존재). Task 4 는 review-owned 동작만 테스트.
+
+테스트 재배치(총계 불변 61). `npm test` = **123 green** 목표.
 
 ---
 
