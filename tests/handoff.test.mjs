@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, runDir } from '../scripts/lib/state.mjs';
-import { reserveHandoff } from '../scripts/lib/lease.mjs';
+import { reserveHandoff, releaseLease, acquireLease } from '../scripts/lib/lease.mjs';
 import { emitHandoff, buildLaunchCommand } from '../scripts/lib/handoff.mjs';
 
 function seed() {
@@ -72,6 +72,40 @@ test('launch command references parent run dir handoff path', () => {
   const c = buildLaunchCommand({ root: '/p', parentRunId: 'PARENT', childRunId: 'CHILD', handoffRel: 'handoffs/x.md', headless: false });
   assert.match(c.interactive, /\.deep-loop\/runs\/PARENT\/handoffs\/x\.md/);
   assert.match(c.interactive, /deep-loop-CHILD/);
+});
+
+// Fix 3: emitHandoff with stale expect is fenced at reserve step; correct expect succeeds
+test('emitHandoff: stale expect fences at reserve (no mutation); correct expect proceeds', () => {
+  const { root, runId } = seed();
+  const now = Date.parse('2026-06-24T01:00:00Z');
+  // Stale owner → fenced
+  const r1 = emitHandoff(root, runId, { trigger: 'milestone', now, expect: { owner: 'WRONG', generation: 1 } });
+  assert.equal(r1.ok, false);
+  assert.equal(r1.reason, 'fenced');
+  assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'idle');
+  // Correct expect → succeeds
+  const r2 = emitHandoff(root, runId, { trigger: 'milestone', now, expect: { owner: runId, generation: 1 } });
+  assert.equal(r2.ok, true);
+  assert.equal(r2.reason, 'emitted');
+});
+
+// Fix 3: emitHandoff with generation bumped (lease acquired by another actor) → fenced at reserve step
+test('emitHandoff: lease stolen before call → fenced at reserve, new owner lease intact', () => {
+  const { root, runId } = seed();
+  const now = Date.parse('2026-06-24T01:00:00Z');
+  const CHILD2 = 'CHILD2-ACTOR';
+  // Lease is released and taken by another actor (generation bumps to 2)
+  releaseLease(root, runId, { owner: runId, generation: 1 });
+  acquireLease(root, runId, { owner: CHILD2, expectGeneration: 1, now });
+  // emitHandoff with stale expect (original owner/gen=1) → fenced at reserveHandoff (generation mismatch)
+  const r = emitHandoff(root, runId, { trigger: 'milestone', now, expect: { owner: runId, generation: 1 } });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'fenced');
+  // New owner's lease is intact (not mutated)
+  const lease = readState(root, runId).data.session_chain.lease;
+  assert.equal(lease.owner_run_id, CHILD2);
+  assert.equal(lease.generation, 2);
+  assert.equal(lease.handoff_phase, 'acquired');
 });
 
 // Codex r3 🔴1: reserve 후 session 미생성(첫 emit 중단) 상태에서 재진입해도 reserve 가 영속한 childRunId 로 1개만 생성.

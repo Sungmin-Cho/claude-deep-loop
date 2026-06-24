@@ -59,10 +59,14 @@ export function recordReviewOutcome(root, runId, { episodeId, workstreamId, poin
   // Codex r1 🔴5: checker episode 터미널 상태를 verdict proof 에서 파생 — 안 하면 checker 가 pending 으로 남아
   // nextAction 이 fix_episode 로 진입 못 하고 finish 로 오폴백한다. 'accepted concern'(CONCERN)도 pass (spec §7).
   recordEpisode(root, runId, episodeId, { status: passed ? 'approved' : 'rejected', proof: { verdict }, fence });  // 자기 lock(appendAnchored) + atomic replay guard
-  recordReviewVerdict(root, runId, verdict);              // 자기 lock — breaker 카운터
+  recordReviewVerdict(root, runId, verdict, fence);       // 자기 lock — breaker 카운터
   if (passed) {
     withLock(root, runId, () => {                          // review_points_done(kernel 필드) 기록 + comprehension
       const { data } = readState(root, runId);
+      if (fence) {
+        const r = leaseCheck(data, fence);
+        if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason);
+      }
       const ws = data.workstreams.find(w => w.id === wsId);
       if (ws && !ws.review_points_done.includes(pt)) ws.review_points_done.push(pt);
       const requireHumanAck = data.review?.require_human_ack === true;

@@ -38,8 +38,8 @@ function handoffMarkdown(loop, childRunId, reason) {
   ].join('\n');
 }
 
-export function emitHandoff(root, runId, { reason = 'milestone', trigger = 'milestone', now = Date.now(), headless = false } = {}) {
-  const res = reserveHandoff(root, runId, { trigger, now });
+export function emitHandoff(root, runId, { reason = 'milestone', trigger = 'milestone', now = Date.now(), headless = false, expect } = {}) {
+  const res = reserveHandoff(root, runId, { trigger, now, expect });
   if (!res.ok) return { ok: false, reason: res.reason, key: res.key };
   // Codex r1 🔴1 / r2 🔴1 / r3 🔴1: 같은 트리거 재진입(reserved:false)이면 이미 in-flight handoff 가 있다.
   // childRunId 는 reserve 가 영속한 값(res.childRunId)이라 동시/재진입이 같은 child 를 본다.
@@ -48,7 +48,7 @@ export function emitHandoff(root, runId, { reason = 'milestone', trigger = 'mile
     const child = data.session_chain.sessions.find(s => s.run_id === res.childRunId);
     if (child) {
       // 이미 emit 됨(session 존재). phase 가 reserved 에 멈췄으면 emitted 까지 마무리 (respawn 이 phase!==emitted 로 거부하는 데드락 방지)
-      if (data.session_chain.lease.handoff_phase === 'reserved') advanceHandoffPhase(root, runId, { key: res.key, toPhase: 'emitted', now });
+      if (data.session_chain.lease.handoff_phase === 'reserved') advanceHandoffPhase(root, runId, { key: res.key, toPhase: 'emitted', now, expect });
       return { ok: true, reason: 'already-emitted', childRunId: res.childRunId, key: res.key,
         handoffRel: child.handoff_rel ?? null, handoffPath: child.handoff_path ?? null,
         csName: child.handoff_cs ?? null, mdName: child.handoff_md ?? null };
@@ -88,8 +88,12 @@ export function emitHandoff(root, runId, { reason = 'milestone', trigger = 'mile
     }
     const cur = l.session_chain.sessions.find(s => s.run_id === runId);
     if (cur) cur.superseded_by = childRunId;
-  });
-  advanceHandoffPhase(root, runId, { key: res.key, toPhase: 'emitted', now });
+  }, expect ? (loop) => {
+    if (loop.session_chain.lease.owner_run_id !== expect.owner || loop.session_chain.lease.generation !== expect.generation) {
+      throw new Error('LEASE_FENCED: handoff-emit');
+    }
+  } : undefined);
+  advanceHandoffPhase(root, runId, { key: res.key, toPhase: 'emitted', now, expect });
   // handoffRel 반환 → respawn 이 동일 경로로 launch 명령을 빌드 (Codex r1 🔴3)
   return { ok: true, reason: 'emitted', handoffPath, childRunId, key: res.key, csName, mdName, handoffRel };
 }

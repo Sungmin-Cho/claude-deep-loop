@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState } from '../scripts/lib/state.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
-import { acquireLease, advanceHandoffPhase } from '../scripts/lib/lease.mjs';
+import { acquireLease, advanceHandoffPhase, releaseLease } from '../scripts/lib/lease.mjs';
 import { respawn, respawnGate } from '../scripts/lib/respawn.mjs';
 
 const NOW0 = new Date('2026-06-24T00:00:00Z');
@@ -125,6 +125,36 @@ test('respawnGate reports documented order; wallclock not mislabeled as budget',
   assert.ok(r.blocked_by.includes('max_sessions'));
   assert.ok(r.blocked_by.includes('wallclock'));
   assert.equal(r.blocked_by.includes('budget'), false);  // wallclock 이 budget 으로 오분류되지 않음
+});
+
+// Fix 2: spawnFn bumps the lease generation (simulates child acquiring mid-spawn), then throws.
+// respawn must return outcome='fenced', NOT mark the active child as failed_launch or corrupt the lease.
+test('respawn: lease stolen during spawnFn → fenced outcome, child lease not corrupted', () => {
+  const { root, runId } = seed();
+  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1 });
+  const CHILD = h.childRunId;
+  let spawnCalled = false;
+  const spawnFn = () => {
+    spawnCalled = true;
+    // Simulate: child acquires the lease (parent releases + child acquire bumps gen to 2) THEN spawn fails
+    releaseLease(root, runId, { owner: runId, generation: 1 });
+    acquireLease(root, runId, { owner: CHILD, expectGeneration: 1, now: NOW1 });
+    throw new Error('external-spawn-failed-after-acquire');
+  };
+  const r = respawn(root, runId, { childRunId: CHILD, key: h.key, handoffRel: h.handoffRel, now: NOW1, spawnFn });
+  assert.equal(spawnCalled, true);
+  // Must return fenced outcome (not failed_launch) because the child already owns the lease
+  assert.equal(r.ok, false);
+  assert.equal(r.outcome, 'fenced');
+  // Child's lease must be active and NOT marked failed_launch
+  const after = readState(root, runId).data;
+  const lease = after.session_chain.lease;
+  assert.equal(lease.owner_run_id, CHILD);
+  assert.equal(lease.state, 'active');
+  assert.equal(lease.generation, 2);
+  // Child session must NOT be marked failed_launch (it is actively running)
+  const childSession = after.session_chain.sessions.find(s => s.run_id === CHILD);
+  assert.notEqual(childSession?.outcome, 'failed_launch');
 });
 
 // respawn race (§14 test 12): Continue↔PreCompact 동시 트리거 → 멱등키로 emit 1회

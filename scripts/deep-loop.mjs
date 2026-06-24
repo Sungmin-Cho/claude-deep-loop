@@ -117,7 +117,8 @@ const handlers = {
   handoff: async (a) => {
     const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
     requireLease(root, runId, f, 'lease');
-    if (verb === 'emit') { json(emitHandoff(root, runId, { reason: f.reason, trigger: f.trigger || f.reason || 'milestone', headless: f.headless === true || f.headless === 'true' })); return 0; }
+    const expect = { owner: f.owner, generation: intArg(f, 'generation') };
+    if (verb === 'emit') { json(emitHandoff(root, runId, { reason: f.reason, trigger: f.trigger || f.reason || 'milestone', headless: f.headless === true || f.headless === 'true', expect })); return 0; }
     error(`unknown handoff verb: ${verb}`); return 2;
   },
   respawn: async (a) => {

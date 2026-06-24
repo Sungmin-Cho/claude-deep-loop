@@ -65,10 +65,13 @@ export function releaseLease(root, runId, { owner, generation }) {
 }
 
 // 멱등키 선예약 CAS — phase∈{idle,acquired}에서만 신규 예약. 이중 트리거를 phase로 봉인 (spec §9.1).
-export function reserveHandoff(root, runId, { trigger, now = Date.now() }) {
+export function reserveHandoff(root, runId, { trigger, now = Date.now(), expect } = {}) {
   return withLock(root, runId, () => {
     const { data } = readState(root, runId);
     const lease = data.session_chain.lease;
+    if (expect && (lease.owner_run_id !== expect.owner || lease.generation !== expect.generation)) {
+      return { ok: false, reserved: false, reason: 'fenced', key: lease.handoff_idempotency_key, childRunId: lease.handoff_child_run_id };
+    }
     const key = deriveIdempotencyKey(lease.owner_run_id, lease.generation, trigger);
     if (lease.handoff_phase === 'idle' || lease.handoff_phase === 'acquired') {
       // Codex r3 🔴1: childRunId 를 **예약 시점에 결정·영속**한다. 동시/재진입 emit 이 같은 child 를 보게 되어
@@ -83,10 +86,13 @@ export function reserveHandoff(root, runId, { trigger, now = Date.now() }) {
   });
 }
 
-export function advanceHandoffPhase(root, runId, { key, toPhase, now = Date.now() }) {
+export function advanceHandoffPhase(root, runId, { key, toPhase, now = Date.now(), expect } = {}) {
   return withLock(root, runId, () => {
     const { data } = readState(root, runId);
     const lease = data.session_chain.lease;
+    if (expect && (lease.owner_run_id !== expect.owner || lease.generation !== expect.generation)) {
+      return { ok: false, reason: 'fenced' };
+    }
     if (lease.handoff_idempotency_key !== key) return { ok: false, reason: 'key-mismatch' };
     const cur = PHASE_ORDER[lease.handoff_phase];
     const next = PHASE_ORDER[toPhase];

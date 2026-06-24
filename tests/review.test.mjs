@@ -8,6 +8,7 @@ import { readState } from '../scripts/lib/state.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { newEpisode } from '../scripts/lib/episode.mjs';
 import { resolveReviewer, dispatchReview, parseVerdict, recordReviewOutcome } from '../scripts/lib/review.mjs';
+import { releaseLease, acquireLease } from '../scripts/lib/lease.mjs';
 
 function seed(detected = { 'deep-review': true }) {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
@@ -129,4 +130,28 @@ test('recordReviewOutcome twice → second throws EPISODE_ALREADY_TERMINAL, brea
     /EPISODE_ALREADY_TERMINAL|REVIEW_ALREADY_RECORDED/
   );
   assert.equal(readState(root, runId).data.circuit_breaker.consecutive_request_changes, breakerAfterFirst);
+});
+
+// Fix 1 (round 4): stale fence → LEASE_FENCED thrown, no partial mutation (breaker / review_points_done unchanged)
+test('recordReviewOutcome: stale fence throws LEASE_FENCED; breaker and review_points_done not mutated', () => {
+  const { root, runId } = seed();
+  const now = Date.parse('2026-06-24T00:00:00Z');
+  const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: 'w' }).id;
+  const r = dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { 'deep-review': true } });
+  // Capture fence with current owner+generation (gen=1)
+  const fence = { owner: runId, generation: 1, intent: 'business' };
+  const breakerBefore = readState(root, runId).data.circuit_breaker.consecutive_request_changes;
+  // Now advance the lease generation: release + child acquires (gen bumps to 2)
+  releaseLease(root, runId, { owner: runId, generation: 1 });
+  acquireLease(root, runId, { owner: 'CHILD-ACTOR', expectGeneration: 1, now });
+  // recordReviewOutcome with stale fence must throw LEASE_FENCED somewhere in the chain
+  assert.throws(
+    () => recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'plan', verdict: 'APPROVE', fence }),
+    /LEASE_FENCED/
+  );
+  // Breaker counter must not have been mutated
+  assert.equal(readState(root, runId).data.circuit_breaker.consecutive_request_changes, breakerBefore);
+  // review_points_done must not contain 'plan'
+  const wsData = readState(root, runId).data.workstreams.find(w => w.id === ws);
+  assert.ok(!wsData.review_points_done.includes('plan'), 'review_points_done must not include plan after fenced call');
 });

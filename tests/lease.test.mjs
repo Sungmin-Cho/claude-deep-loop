@@ -120,3 +120,44 @@ test('emitted sets expires_at → child can take over after stale TTL without ex
   assert.equal(ok.ok, true);
   assert.equal(ok.generation, 2);
 });
+
+// Fix A: reserveHandoff with stale expect is fenced (generation-mismatch); without expect is unchanged
+test('reserveHandoff: stale expect fences without mutating; no expect is unchanged', () => {
+  const { root, runId } = seed();
+  // Stale owner → fenced
+  const r1 = reserveHandoff(root, runId, { trigger: 'milestone', expect: { owner: 'WRONG', generation: 1 } });
+  assert.equal(r1.ok, false);
+  assert.equal(r1.reason, 'fenced');
+  assert.equal(r1.reserved, false);
+  // Stale generation → fenced
+  const r2 = reserveHandoff(root, runId, { trigger: 'milestone', expect: { owner: runId, generation: 99 } });
+  assert.equal(r2.ok, false);
+  assert.equal(r2.reason, 'fenced');
+  // State is NOT mutated by fenced calls
+  assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'idle');
+  // Correct expect → succeeds
+  const r3 = reserveHandoff(root, runId, { trigger: 'milestone', expect: { owner: runId, generation: 1 } });
+  assert.equal(r3.ok, true);
+  assert.equal(r3.reserved, true);
+  // No expect → unchanged behavior (backward compat)
+  const { root: root2, runId: runId2 } = seed();
+  const r4 = reserveHandoff(root2, runId2, { trigger: 'milestone' });
+  assert.equal(r4.ok, true);
+  assert.equal(r4.reserved, true);
+});
+
+// Fix A: advanceHandoffPhase with stale expect is fenced before key/phase checks
+test('advanceHandoffPhase: stale expect fences before key/phase checks; correct expect proceeds', () => {
+  const { root, runId } = seed();
+  const { key } = reserveHandoff(root, runId, { trigger: 'milestone' });
+  // Stale generation → fenced (before key check)
+  const r1 = advanceHandoffPhase(root, runId, { key, toPhase: 'emitted', expect: { owner: runId, generation: 99 } });
+  assert.equal(r1.ok, false);
+  assert.equal(r1.reason, 'fenced');
+  // State not mutated
+  assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'reserved');
+  // Correct expect → proceeds
+  const r2 = advanceHandoffPhase(root, runId, { key, toPhase: 'emitted', expect: { owner: runId, generation: 1 } });
+  assert.equal(r2.ok, true);
+  assert.equal(readState(root, runId).data.session_chain.lease.state, 'releasing');
+});

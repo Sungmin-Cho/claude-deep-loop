@@ -48,8 +48,11 @@ export function respawn(root, runId, { childRunId, key, handoffRel = '', headles
   // Codex r2 🔴3: 외부 spawn **이전에** emitted→spawned 를 원자적(withLock CAS)으로 클레임.
   // 동시 호출 둘이 emitted/releasing 을 읽어도 advanceHandoffPhase 가 직렬화되어 1명만 'advanced',
   // 나머지는 'idempotent-noop' → spawn 안 함 (이중 외부 spawn 차단).
-  const claim = advanceHandoffPhase(root, runId, { key, toPhase: 'spawned', now });
-  if (!claim.ok) return { ok: false, outcome: 'phase-error', reason: claim.reason, childRunId };
+  const claim = advanceHandoffPhase(root, runId, { key, toPhase: 'spawned', now, expect: { owner: runId, generation } });
+  if (!claim.ok) {
+    if (claim.reason === 'fenced') return { ok: false, outcome: 'fenced', reason: 'lease-changed-during-claim', childRunId };
+    return { ok: false, outcome: 'phase-error', reason: claim.reason, childRunId };
+  }
   if (claim.reason === 'idempotent-noop') return { ok: true, outcome: 'already-spawned', reason: 'idempotent', childRunId };
   const cmds = buildLaunchCommand({ root, parentRunId: runId, childRunId, handoffRel, headless });
   const cmd = headless ? cmds.headless : cmds.interactive;
@@ -58,17 +61,43 @@ export function respawn(root, runId, { childRunId, key, handoffRel = '', headles
     if (res && res.ok === false) throw new Error(res.reason || 'spawn-returned-false');
   } catch (e) {
     // 실패모드 (B): spawned→active/idle 롤백 + chain 정정 (인수한 적 없는 세션을 기술하지 않게 superseded_by 해제)
-    appendAnchored(root, runId, { type: 'respawn-failed', data: { child_run_id: childRunId, error: String(e.message || e) } }, (l) => {
-      const child = l.session_chain.sessions.find(s => s.run_id === childRunId);
-      if (child) child.outcome = 'failed_launch';
-      const parent = l.session_chain.sessions.find(s => s.superseded_by === childRunId);
-      if (parent) parent.superseded_by = null;
-    });
-    rollbackHandoff(root, runId, { owner: runId, generation });
+    let failedAppend = false;
+    try {
+      appendAnchored(root, runId, { type: 'respawn-failed', data: { child_run_id: childRunId, error: String(e.message || e) } }, (l) => {
+        const child = l.session_chain.sessions.find(s => s.run_id === childRunId);
+        if (child) child.outcome = 'failed_launch';
+        const parent = l.session_chain.sessions.find(s => s.superseded_by === childRunId);
+        if (parent) parent.superseded_by = null;
+      }, (loop) => {
+        if (loop.session_chain.lease.owner_run_id !== runId || loop.session_chain.lease.generation !== generation) {
+          throw new Error('RESPAWN_FENCED: failure-append');
+        }
+      });
+    } catch (appendErr) {
+      if (String(appendErr.message).startsWith('RESPAWN_FENCED')) {
+        // Child already took over the lease — do NOT rollback or mark failed_launch
+        return { ok: false, outcome: 'fenced', reason: 'lease-changed-before-failure-record', childRunId };
+      }
+      throw appendErr;
+    }
+    const rb = rollbackHandoff(root, runId, { owner: runId, generation });
+    if (!rb.ok) return { ok: false, outcome: 'rollback-error', reason: rb.reason, childRunId };
     return { ok: false, outcome: 'failed_launch', reason: String(e.message || e), childRunId };
   }
   // spawn 성공 → 부모 lease release(자식이 acquire 가능). 전이 반환값 검증(silent 실패 금지).
-  appendAnchored(root, runId, { type: 'respawn-spawned', data: { child_run_id: childRunId, headless } });
+  try {
+    appendAnchored(root, runId, { type: 'respawn-spawned', data: { child_run_id: childRunId, headless } }, undefined, (loop) => {
+      if (loop.session_chain.lease.owner_run_id !== runId || loop.session_chain.lease.generation !== generation) {
+        throw new Error('RESPAWN_FENCED: spawned-append');
+      }
+    });
+  } catch (appendErr) {
+    if (String(appendErr.message).startsWith('RESPAWN_FENCED')) {
+      // Child already owns the lease — do not release or mutate
+      return { ok: false, outcome: 'fenced', reason: 'lease-changed-after-spawn', childRunId };
+    }
+    throw appendErr;
+  }
   const rel = releaseLease(root, runId, { owner: runId, generation });
   if (!rel.ok) return { ok: false, outcome: 'release-error', reason: rel.reason, childRunId };
   return { ok: true, outcome: 'spawned', reason: 'spawned', childRunId };
