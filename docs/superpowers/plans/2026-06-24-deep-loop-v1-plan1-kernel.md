@@ -446,6 +446,10 @@ test('wrong schema_version fails', () => {
   const o = minimalValid(); o.schema_version = '9.9.9';
   assert.equal(validate(o).ok, false);
 });
+test('non-number budget.soft_stop_ratio fails', () => {
+  const o = minimalValid(); o.budget = { unit: 'turns', soft_stop_ratio: '0.8' };
+  assert.equal(validate(o).ok, false);
+});
 ```
 
 - [ ] **Step 3: Run to verify fail**
@@ -487,8 +491,8 @@ export function validate(loopJson, schema = loadSchema()) {
     const v = get(loopJson, arr);
     if (v !== undefined && !Array.isArray(v)) errors.push(`${arr} must be array`);
   }
-  // budget 숫자 필드
-  if (loopJson.budget) for (const k of ['total', 'spent', 'tokens_spent']) {
+  // budget 숫자 필드 (Task 9가 소비하는 모든 수치)
+  if (loopJson.budget) for (const k of ['total', 'spent', 'tokens_total', 'tokens_spent', 'per_session_turn_cap', 'max_wallclock_sec', 'soft_stop_ratio', 'hard_stop_ratio']) {
     const v = loopJson.budget[k];
     if (v !== undefined && typeof v !== 'number') errors.push(`budget.${k} must be number`);
   }
@@ -615,6 +619,14 @@ test('non-status workstream field (title) forbidden', () => {
   const { root, runId } = seed();
   assert.throws(() => patch(root, runId, 'workstreams.0.title', 'x'), /FIELD_FORBIDDEN/);
 });
+
+test('episode result sub-path / lookalike forbidden, only result_* allowed', () => {
+  const { root, runId } = seed();
+  assert.throws(() => patch(root, runId, 'episodes.0.result.status', 'x'), /FIELD_FORBIDDEN/);
+  assert.throws(() => patch(root, runId, 'episodes.0.resultEvil', 'x'), /FIELD_FORBIDDEN/);
+  patch(root, runId, 'episodes.0.result_summary', 'ok'); // allowed
+  assert.equal(readState(root, runId).data.episodes[0].result_summary, 'ok');
+});
 ```
 
 - [ ] **Step 2: Run to verify fail**
@@ -653,7 +665,7 @@ export function classifyPatch(field, value) {
   if (m) {
     const sub = m[1];
     if (sub === 'status') return TERMINAL_EPISODE.includes(value) ? 'forbid' : 'allow';
-    if (/^result/.test(sub)) return 'allow';
+    if (/^result_[A-Za-z0-9_]+$/.test(sub)) return 'allow';   // 최상위 result_* 만 (result.status / resultEvil 차단)
     return 'forbid';   // verification/worktree/plugin 등 비허용
   }
   m = field.match(/^workstreams\.\d+\.(.+)$/);
@@ -1119,10 +1131,10 @@ export function checkBudget(loop, { now = Date.now(), sessionStart = now, measur
   return { ok: true, reason: 'ok', tier_after: loop.autonomy.tier };
 }
 
-// cost 이벤트 기록 + 커널 파생 spent를 loop.json에 동기화 (budget.spent/tokens_spent는 커널 전용)
+// cost 이벤트 기록 + 커널 파생 spent를 loop.json에 동기화 (append/recompute/write를 단일 lock 안에서)
 export function recordCost(root, runId, { turns = 0, tokens = 0 }) {
-  appendEvent(root, runId, { type: 'cost', data: { turns, tokens } });
   return withLock(root, runId, () => {
+    appendEvent(root, runId, { type: 'cost', data: { turns, tokens } });
     const { data } = readState(root, runId);
     const t = recomputeSpent(root, runId);
     data.budget.spent = t.turns;
@@ -1131,18 +1143,21 @@ export function recordCost(root, runId, { turns = 0, tokens = 0 }) {
   });
 }
 
-// 저장된 budget vs event-log 재계산 비교 — 불일치/로그손상 시 fail-stop
+// 저장된 budget vs event-log 재계산 비교 — 불일치/로그손상 시 fail-stop (lock 안에서 일관 관측)
 export function reconcileBudget(root, runId) {
-  const v = verifyLog(root, runId);
-  if (!v.ok) throw new Error(`BUDGET_TAMPERED: event-log integrity: ${v.errors.join('; ')}`);
-  const { data } = readState(root, runId);
-  const t = recomputeSpent(root, runId);
-  if ((data.budget.spent || 0) !== t.turns || (data.budget.tokens_spent || 0) !== t.tokens) {
-    throw new Error(`BUDGET_TAMPERED: stored ${data.budget.spent}/${data.budget.tokens_spent} != log ${t.turns}/${t.tokens}`);
-  }
-  return { turns: t.turns, tokens: t.tokens };
+  return withLock(root, runId, () => {
+    const v = verifyLog(root, runId);
+    if (!v.ok) throw new Error(`BUDGET_TAMPERED: event-log integrity: ${v.errors.join('; ')}`);
+    const { data } = readState(root, runId);
+    const t = recomputeSpent(root, runId);
+    if ((data.budget.spent || 0) !== t.turns || (data.budget.tokens_spent || 0) !== t.tokens) {
+      throw new Error(`BUDGET_TAMPERED: stored ${data.budget.spent}/${data.budget.tokens_spent} != log ${t.turns}/${t.tokens}`);
+    }
+    return { turns: t.turns, tokens: t.tokens };
+  });
 }
 ```
+(주의: `withLock`은 비재진입 — recordCost/reconcileBudget 본문은 lock을 다시 잡는 함수를 호출하지 않는다.)
 
 - [ ] **Step 4: Run to verify pass** — PASS (5 tests)
 
