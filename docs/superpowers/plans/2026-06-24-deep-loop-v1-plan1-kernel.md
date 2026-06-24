@@ -429,6 +429,23 @@ test('bad enum fails', () => {
   assert.equal(r.ok, false);
   assert.ok(r.errors.some(e => e.includes('status')));
 });
+
+test('invalid episode status fails', () => {
+  const o = minimalValid(); o.episodes = [{ id: 'e', status: 'bogus' }];
+  assert.equal(validate(o).ok, false);
+});
+test('invalid workstream status fails', () => {
+  const o = minimalValid(); o.workstreams = [{ id: 'w', status: 'nope' }];
+  assert.equal(validate(o).ok, false);
+});
+test('non-number budget.total fails', () => {
+  const o = minimalValid(); o.budget = { unit: 'turns', total: 'lots' };
+  assert.equal(validate(o).ok, false);
+});
+test('wrong schema_version fails', () => {
+  const o = minimalValid(); o.schema_version = '9.9.9';
+  assert.equal(validate(o).ok, false);
+});
 ```
 
 - [ ] **Step 3: Run to verify fail**
@@ -461,6 +478,29 @@ export function validate(loopJson, schema = loadSchema()) {
     const v = get(loopJson, path);
     if (v !== undefined && !allowed.includes(v)) errors.push(`invalid enum at ${path}: ${v}`);
   }
+  // schema_version 정확 일치
+  if (loopJson.schema_version !== undefined && loopJson.schema_version !== '0.2.0') {
+    errors.push(`schema_version must be 0.2.0, got ${loopJson.schema_version}`);
+  }
+  // 배열 타입
+  for (const arr of ['workstreams', 'episodes', 'active_workstreams', 'discovered_items']) {
+    const v = get(loopJson, arr);
+    if (v !== undefined && !Array.isArray(v)) errors.push(`${arr} must be array`);
+  }
+  // budget 숫자 필드
+  if (loopJson.budget) for (const k of ['total', 'spent', 'tokens_spent']) {
+    const v = loopJson.budget[k];
+    if (v !== undefined && typeof v !== 'number') errors.push(`budget.${k} must be number`);
+  }
+  // episode/workstream item status는 (skill ∪ kernel) 도메인 안에 있어야 함
+  const epAllowed = [...(schema.episode_status?.skill || []), ...(schema.episode_status?.kernel || [])];
+  for (const ep of (Array.isArray(loopJson.episodes) ? loopJson.episodes : [])) {
+    if (ep?.status !== undefined && !epAllowed.includes(ep.status)) errors.push(`invalid episode status: ${ep.status}`);
+  }
+  const wsAllowed = [...(schema.workstream_status?.skill || []), ...(schema.workstream_status?.kernel || [])];
+  for (const ws of (Array.isArray(loopJson.workstreams) ? loopJson.workstreams : [])) {
+    if (ws?.status !== undefined && !wsAllowed.includes(ws.status)) errors.push(`invalid workstream status: ${ws.status}`);
+  }
   return { ok: errors.length === 0, errors };
 }
 ```
@@ -492,7 +532,8 @@ git commit -m "feat(kernel): schema — self-contained loop.json validator"
   - `readState(root, runId): {data, hash}` — loop.json + 저장 content-hash 검증(불일치 시 throw `STATE_TAMPERED`).
   - `writeState(root, runId, data): void` — schema 검증 후 atomic write + `.hash` 동기 기록.
   - `patch(root, runId, field, value): void` — **화이트리스트** 검증 후 writeState. 금지 필드는 throw `FIELD_FORBIDDEN`.
-  - `WHITELIST: Set<string>` (정확히 spec §4).
+  - `classifyPatch(field, value): 'allow'|'forbid'` — default-deny 정확 경로 분류기 (배열 요소 전체-객체 patch도 차단).
+  - `WHITELIST: Set<string>` (문서/검증용, 정확히 spec §4).
   - `withLock(root, runId, fn): T` — mkdir 기반 락.
 
 - [ ] **Step 1: Write the failing test**
@@ -549,6 +590,31 @@ test('tampered hash detected on read', () => {
   writeFileSync(join(runDir(root, runId), 'loop.json'), '{"goal":"hacked"}'); // direct write, hash unchanged
   assert.throws(() => readState(root, runId), /STATE_TAMPERED/);
 });
+
+test('whole-object array patch bypass is forbidden', () => {
+  const { root, runId } = seed();
+  assert.throws(() => patch(root, runId, 'episodes.0', { status: 'done' }), /FIELD_FORBIDDEN/);
+  assert.throws(() => patch(root, runId, 'workstreams.0', { status: 'merged' }), /FIELD_FORBIDDEN/);
+});
+
+test('terminal status value via dotted path is forbidden', () => {
+  const { root, runId } = seed();
+  assert.throws(() => patch(root, runId, 'episodes.0.status', 'done'), /FIELD_FORBIDDEN/);
+  assert.throws(() => patch(root, runId, 'workstreams.0.status', 'merged'), /FIELD_FORBIDDEN/);
+});
+
+test('non-terminal status + depends_on allowed', () => {
+  const { root, runId } = seed();
+  patch(root, runId, 'episodes.0.status', 'in_progress');
+  patch(root, runId, 'workstreams.0.depends_on', ['ws-2']);
+  assert.equal(readState(root, runId).data.episodes[0].status, 'in_progress');
+  assert.deepEqual(readState(root, runId).data.workstreams[0].depends_on, ['ws-2']);
+});
+
+test('non-status workstream field (title) forbidden', () => {
+  const { root, runId } = seed();
+  assert.throws(() => patch(root, runId, 'workstreams.0.title', 'x'), /FIELD_FORBIDDEN/);
+});
 ```
 
 - [ ] **Step 2: Run to verify fail**
@@ -568,38 +634,37 @@ export function runDir(root, runId) { return join(root, '.deep-loop', 'runs', ru
 const loopPath = (root, runId) => join(runDir(root, runId), 'loop.json');
 const hashPath = (root, runId) => join(runDir(root, runId), '.loop.hash');
 
-// 스킬이 patch 가능한 필드 prefix (spec §4). 와일드카드 = startsWith.
-const ALLOWED_PREFIXES = [
-  'discovered_items', 'triage.', 'decisions',
-  'active_workstreams', 'workstreams.', 'episodes.',
-];
-// 명시 금지 (ALLOWED 안에 들어가도 우선 차단)
-const FORBIDDEN_PREFIXES = [
-  'budget.spent', 'budget.tokens_spent', 'review.', 'schema_version',
-  'session_chain', 'termination.proofs', 'circuit_breaker.tripped',
-  'workstreams.*.worktree', 'workstreams.*.branch', 'workstreams.*.base_commit',
-];
-const FORBIDDEN_VALUES = {
-  // 터미널 상태는 patch로 설정 불가
-  'episodes.status': ['done', 'approved', 'rejected'],
-  'workstreams.status': ['ready', 'merged', 'abandoned'],
-};
+// patch 분류기 (spec §4 정확 일치). 정확 경로/패턴만 allow, 나머지 전부 forbid (default-deny).
+const TERMINAL_EPISODE = ['done', 'approved', 'rejected'];
+const TERMINAL_WORKSTREAM = ['ready', 'merged', 'abandoned'];
 
-function fieldForbidden(field, value) {
-  for (const f of FORBIDDEN_PREFIXES) {
-    const re = new RegExp('^' + f.replace(/\./g, '\\.').replace(/\*/g, '[^.]+'));
-    if (re.test(field)) return true;
+// 스킬 patch 허용 경로 (문서/검증용)
+export const WHITELIST = new Set([
+  'discovered_items', 'decisions', 'active_workstreams',
+  'triage.actionable', 'triage.needs_human', 'triage.blocked', 'triage.archived',
+  'episodes.<i>.status(non-terminal)', 'episodes.<i>.result_*',
+  'workstreams.<i>.status(non-terminal)', 'workstreams.<i>.depends_on',
+]);
+
+export function classifyPatch(field, value) {
+  if (field === 'discovered_items' || field === 'decisions' || field === 'active_workstreams') return 'allow';
+  if (/^triage\.(actionable|needs_human|blocked|archived)$/.test(field)) return 'allow';
+  let m = field.match(/^episodes\.\d+\.(.+)$/);
+  if (m) {
+    const sub = m[1];
+    if (sub === 'status') return TERMINAL_EPISODE.includes(value) ? 'forbid' : 'allow';
+    if (/^result/.test(sub)) return 'allow';
+    return 'forbid';   // verification/worktree/plugin 등 비허용
   }
-  for (const [suffix, bad] of Object.entries(FORBIDDEN_VALUES)) {
-    const key = suffix.split('.').pop();
-    if (field.endsWith('.' + key) || field === suffix) {
-      if (bad.includes(value)) return true;
-    }
+  m = field.match(/^workstreams\.\d+\.(.+)$/);
+  if (m) {
+    const sub = m[1];
+    if (sub === 'status') return TERMINAL_WORKSTREAM.includes(value) ? 'forbid' : 'allow';
+    if (sub === 'depends_on') return 'allow';
+    return 'forbid';   // title/pr/worktree/branch/base_commit 등 비허용
   }
-  return false;
-}
-function fieldAllowed(field) {
-  return ALLOWED_PREFIXES.some(p => p.endsWith('.') ? field.startsWith(p) : field === p || field.startsWith(p + '.'));
+  // 배열 요소 전체-객체 patch (episodes.0 / workstreams.0) 및 그 외 모든 경로 차단 → 터미널 우회 방지
+  return 'forbid';
 }
 
 export function readState(root, runId) {
@@ -627,8 +692,7 @@ function setPath(obj, path, value) {
 }
 
 export function patch(root, runId, field, value) {
-  if (fieldForbidden(field, value)) throw new Error(`FIELD_FORBIDDEN: ${field}`);
-  if (!fieldAllowed(field)) throw new Error(`FIELD_FORBIDDEN: ${field} (not in whitelist)`);
+  if (classifyPatch(field, value) !== 'allow') throw new Error(`FIELD_FORBIDDEN: ${field}`);
   return withLock(root, runId, () => {
     const { data } = readState(root, runId);
     setPath(data, field, value);
@@ -791,7 +855,7 @@ git commit -m "feat(kernel): integrity — chained event-log, verify, spent reco
 ```javascript
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { detectPlugins } from '../scripts/lib/detect.mjs';
@@ -799,7 +863,7 @@ import { detectPlugins } from '../scripts/lib/detect.mjs';
 test('detects deep-review by .deep-review/config.yaml', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
   mkdirSync(join(root, '.deep-review'), { recursive: true });
-  require('node:fs').writeFileSync(join(root, '.deep-review', 'config.yaml'), 'x');
+  writeFileSync(join(root, '.deep-review', 'config.yaml'), 'x');
   const home = mkdtempSync(join(tmpdir(), 'home-'));
   assert.equal(detectPlugins(root, home)['deep-review'], true);
   assert.equal(detectPlugins(root, home)['deep-wiki'], false);
@@ -812,7 +876,6 @@ test('missing siblings report false, never throw', () => {
   assert.equal(Object.values(d).every(v => v === false), true);
 });
 ```
-(註: ESM에서 `require` 대신 `import { writeFileSync }`를 파일 상단에 추가.)
 
 - [ ] **Step 2: Run to verify fail** — FAIL
 
@@ -857,7 +920,7 @@ git commit -m "feat(kernel): detect — sibling/codex install detection (gracefu
 - Test: `tests/recipes.test.mjs`
 
 **Interfaces:**
-- Produces: `matchRecipe(goal, detected): {recipe, protocol, reason}` — 키워드 결정론 매칭. protocol = superpowers 키워드 시 superpowers, deep-work 감지 시 deep-work, 아니면 standalone. `loadRecipes(): object[]`.
+- Produces: `matchRecipe(goal, detected): {recipe, protocol, reason}` — 키워드 결정론 매칭. **protocol 우선순위: superpowers 키워드 > (매칭 recipe의 `protocol_hint`가 deep-work이고 deep-work 설치됨 → deep-work) > standalone.** recipe hint가 standalone이면(context-handoff-only/triage-and-discovery) deep-work 설치돼도 standalone 유지(설계 의도). `loadRecipes(): object[]`.
 
 - [ ] **Step 1: recipe JSON 6개 작성** (각 `{id, name, triggers:[...], flow:[...], protocol_hint, expected_artifacts:[...]}`; trigger 키워드는 spec §9의 한/영 키워드). 예 `recipes/robust-implementation.json`:
 
@@ -898,6 +961,11 @@ test('superpowers keyword forces superpowers protocol', () => {
 test('no match → triage-and-discovery fallback', () => {
   const r = matchRecipe('알 수 없는 목표 xyzzy', {});
   assert.equal(r.recipe, 'triage-and-discovery');
+});
+test('standalone-hinted recipe stays standalone even with deep-work installed', () => {
+  const r = matchRecipe('세션 이어서 진행', { 'deep-work': true });
+  assert.equal(r.recipe, 'context-handoff-only');
+  assert.equal(r.protocol, 'standalone');
 });
 ```
 
@@ -948,17 +1016,39 @@ git commit -m "feat(kernel): recipes — 6 recipes + keyword recipe/protocol mat
 - Test: `tests/budget.test.mjs`
 
 **Interfaces:**
-- Consumes: `integrity.recomputeSpent`.
+- Consumes: `integrity.recomputeSpent`, `integrity.verifyLog`, `integrity.appendEvent`, `state.readState/writeState/withLock`.
 - Produces:
   - `checkBudget(loop, {now, sessionStart, measurable=true}): {ok, reason, tier_after}` — hard_stop(spent≥total*hard or tokens≥tokens_total or wallclock≥max_wallclock_sec) → ok:false; soft_stop → tier 강등 recommend; measurable=false + enforcement!='best-effort-interactive' → fail-closed(ok:false).
-  - `recordCost(root, runId, {turns, tokens}): void` — `integrity.appendEvent({type:'cost'})`.
+  - `recordCost(root, runId, {turns, tokens}): void` — cost 이벤트 append **+ 커널 파생** `budget.spent/tokens_spent`를 event-log 재계산값으로 동기화(writeState).
+  - `reconcileBudget(root, runId): {turns, tokens}` — verifyLog + 저장값 vs 재계산값 비교, 불일치/로그손상 시 throw `BUDGET_TAMPERED`. respawn/budget 결정 전 호출.
 
 - [ ] **Step 1: Write the failing test** `tests/budget.test.mjs`
 
 ```javascript
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { checkBudget } from '../scripts/lib/budget.mjs';
+import { mkdtempSync, mkdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { checkBudget, recordCost, reconcileBudget } from '../scripts/lib/budget.mjs';
+import { writeState, readState, runDir } from '../scripts/lib/state.mjs';
+
+// 자기완결 minimal valid loop (cross-task import 없음)
+function minimalLoop(runId) {
+  return {
+    schema_version: '0.2.0', run_id: runId, goal: 'g', status: 'running',
+    project: {}, routing: { protocol: 'standalone' }, review: {}, autonomy: { tier: 'act-gated', spawn_style: 'interactive' },
+    budget: { unit: 'turns', total: 100, spent: 0, tokens_total: 1000, tokens_spent: 0, soft_stop_ratio: 0.8, hard_stop_ratio: 1.0, max_wallclock_sec: 3600, enforcement: 'best-effort-interactive', on_unmeasurable_usage: 'fail-closed' },
+    comprehension: {}, circuit_breaker: {}, session_chain: { lease: { state: 'active', handoff_phase: 'idle' }, sessions: [] },
+    workstreams: [], active_workstreams: [], triage: {}, episodes: [], termination: {},
+  };
+}
+function seedRun() {
+  const root = mkdtempSync(join(tmpdir(), 'dl-'));
+  mkdirSync(runDir(root, 'R'), { recursive: true });
+  writeState(root, 'R', minimalLoop('R'));
+  return root;
+}
 
 const base = () => ({
   budget: { unit: 'turns', total: 100, spent: 0, tokens_total: 1000, tokens_spent: 0,
@@ -987,6 +1077,22 @@ test('headless unmeasurable → fail-closed', () => {
   const l = base(); l.budget.enforcement = 'hard'; l.budget.spent = 1;
   assert.equal(checkBudget(l, { now: 0, sessionStart: 0, measurable: false }).ok, false);
 });
+
+test('recordCost syncs kernel-derived spent from event-log', () => {
+  const root = seedRun();
+  recordCost(root, 'R', { turns: 5, tokens: 100 });
+  recordCost(root, 'R', { turns: 3, tokens: 50 });
+  const { data } = readState(root, 'R');
+  assert.equal(data.budget.spent, 8);
+  assert.equal(data.budget.tokens_spent, 150);
+});
+
+test('reconcileBudget throws on stored/log mismatch', () => {
+  const root = seedRun();
+  recordCost(root, 'R', { turns: 5, tokens: 0 });
+  const { data } = readState(root, 'R'); data.budget.spent = 0; writeState(root, 'R', data); // tamper low
+  assert.throws(() => reconcileBudget(root, 'R'), /BUDGET_TAMPERED/);
+});
 ```
 
 - [ ] **Step 2: Run to verify fail** — FAIL
@@ -994,7 +1100,8 @@ test('headless unmeasurable → fail-closed', () => {
 - [ ] **Step 3: Write `scripts/lib/budget.mjs`**
 
 ```javascript
-import { appendEvent } from './integrity.mjs';
+import { appendEvent, recomputeSpent, verifyLog } from './integrity.mjs';
+import { readState, writeState, withLock } from './state.mjs';
 
 export function checkBudget(loop, { now = Date.now(), sessionStart = now, measurable = true } = {}) {
   const b = loop.budget;
@@ -1012,8 +1119,28 @@ export function checkBudget(loop, { now = Date.now(), sessionStart = now, measur
   return { ok: true, reason: 'ok', tier_after: loop.autonomy.tier };
 }
 
+// cost 이벤트 기록 + 커널 파생 spent를 loop.json에 동기화 (budget.spent/tokens_spent는 커널 전용)
 export function recordCost(root, runId, { turns = 0, tokens = 0 }) {
   appendEvent(root, runId, { type: 'cost', data: { turns, tokens } });
+  return withLock(root, runId, () => {
+    const { data } = readState(root, runId);
+    const t = recomputeSpent(root, runId);
+    data.budget.spent = t.turns;
+    data.budget.tokens_spent = t.tokens;
+    writeState(root, runId, data);
+  });
+}
+
+// 저장된 budget vs event-log 재계산 비교 — 불일치/로그손상 시 fail-stop
+export function reconcileBudget(root, runId) {
+  const v = verifyLog(root, runId);
+  if (!v.ok) throw new Error(`BUDGET_TAMPERED: event-log integrity: ${v.errors.join('; ')}`);
+  const { data } = readState(root, runId);
+  const t = recomputeSpent(root, runId);
+  if ((data.budget.spent || 0) !== t.turns || (data.budget.tokens_spent || 0) !== t.tokens) {
+    throw new Error(`BUDGET_TAMPERED: stored ${data.budget.spent}/${data.budget.tokens_spent} != log ${t.turns}/${t.tokens}`);
+  }
+  return { turns: t.turns, tokens: t.tokens };
 }
 ```
 
