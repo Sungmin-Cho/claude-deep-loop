@@ -1,0 +1,8 @@
+{
+  "id": "autonomous-evolution",
+  "name": "Autonomous Evolution",
+  "triggers": ["optimize","improve","coverage","performance","성능","최적화","커버리지"],
+  "protocol_hint": "deep-work",
+  "flow": ["analyze","deep-work:optimizer","deep-review:verifier","deep-docs:update","archive"],
+  "expected_artifacts": [".deep-work/<session>/session-receipt.json",".deep-review/reports/*.md"]
+}

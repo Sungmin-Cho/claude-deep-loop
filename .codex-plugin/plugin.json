@@ -1,0 +1,18 @@
+{
+  "name": "deep-loop",
+  "version": "0.1.0",
+  "description": "Loop Engineering control plane over the deep-suite",
+  "repository": { "type": "git", "url": "https://github.com/Sungmin-Cho/claude-deep-loop.git" },
+  "license": "MIT",
+  "keywords": ["loop-engineering","orchestration","durable-state","handoff"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Deep Loop",
+    "shortDescription": "Loop Engineering control plane over the deep-suite",
+    "longDescription": "Discovers work, routes to sibling deep-* plugins as maker/checker episodes, keeps durable loop state, and hands off to fresh sessions autonomously.",
+    "developerName": "Sungmin Cho",
+    "category": "Coding",
+    "capabilities": ["Interactive","Read","Write"],
+    "defaultPrompt": ["$deep-loop:deep-loop \"<goal>\""]
+  }
+}

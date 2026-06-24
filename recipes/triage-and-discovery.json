@@ -1,0 +1,8 @@
+{
+  "id": "triage-and-discovery",
+  "name": "Triage and Discovery",
+  "triggers": ["triage","discover","점검","정리","scan"],
+  "protocol_hint": "standalone",
+  "flow": ["assess","classify","report"],
+  "expected_artifacts": [".deep-loop/triage-report.json"]
+}
