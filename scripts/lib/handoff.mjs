@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { readState, runDir } from './state.mjs';
 import { appendAnchored } from './integrity.mjs';
 import { wrap, atomicWrite } from './envelope.mjs';
-import { reserveHandoff, advanceHandoffPhase } from './lease.mjs';
+import { reserveHandoff } from './lease.mjs';
 
 function tsName(now) { return new Date(now).toISOString().replace(/[:.]/g, '-'); }
 
@@ -47,8 +47,8 @@ export function emitHandoff(root, runId, { reason = 'milestone', trigger = 'mile
     const { data } = readState(root, runId);
     const child = data.session_chain.sessions.find(s => s.run_id === res.childRunId);
     if (child) {
-      // 이미 emit 됨(session 존재). phase 가 reserved 에 멈췄으면 emitted 까지 마무리 (respawn 이 phase!==emitted 로 거부하는 데드락 방지)
-      if (data.session_chain.lease.handoff_phase === 'reserved') advanceHandoffPhase(root, runId, { key: res.key, toPhase: 'emitted', now, expect });
+      // 이미 emit 됨(session 존재). emit 은 이제 원자적(child push + phase=emitted 가 한 트랜잭션, Codex impl r11)이라
+      // child 가 존재하면 phase 는 반드시 emitted 이상 → 추가 전이 불필요. 기존 메타데이터를 멱등 반환.
       return { ok: true, reason: 'already-emitted', childRunId: res.childRunId, key: res.key,
         handoffRel: child.handoff_rel ?? null, handoffPath: child.handoff_path ?? null,
         csName: child.handoff_cs ?? null, mdName: child.handoff_md ?? null };
@@ -80,6 +80,10 @@ export function emitHandoff(root, runId, { reason = 'milestone', trigger = 'mile
   atomicWrite(join(termDir, 'launch-command.txt'),
     [`# interactive`, cmds.interactive, ``, `# headless`, cmds.headless, ``, `# macOS`, cmds.macos, ``, `# windows`, cmds.windows, ``, `# tmux`, cmds.tmux, ``].join('\n'));
 
+  // Codex impl r11 🔴: child session push + superseded_by + lease reserved→emitted (releasing + stale TTL) must be
+  // ONE atomic transaction — a crash between a separate event-append and the phase advance previously left a recorded
+  // handoff-emitted with phase still 'reserved' (respawn requires emitted/releasing → stranded). Single appendAnchored.
+  const ttlMs = (loop.session_chain.stale_lease_ttl_sec || 900) * 1000;
   appendAnchored(root, runId, { type: 'handoff-emitted', data: { child_run_id: childRunId, reason, key: res.key } }, (l) => {
     // 멱등 push (Codex r3 🔴1): 같은 childRunId 가 이미 있으면 재push 금지 → 동시 emit 도 child 1개.
     if (!l.session_chain.sessions.some(s => s.run_id === childRunId)) {
@@ -88,12 +92,15 @@ export function emitHandoff(root, runId, { reason = 'milestone', trigger = 'mile
     }
     const cur = l.session_chain.sessions.find(s => s.run_id === runId);
     if (cur) cur.superseded_by = childRunId;
-  }, expect ? (loop) => {
-    if (loop.session_chain.lease.owner_run_id !== expect.owner || loop.session_chain.lease.generation !== expect.generation) {
-      throw new Error('LEASE_FENCED: handoff-emit');
+    const lease = l.session_chain.lease;
+    if (lease.handoff_phase === 'reserved') {   // 부모 carve-out 시작 + stale TTL (Codex r1 🔴4)
+      l.session_chain.lease = { ...lease, handoff_phase: 'emitted', state: 'releasing', expires_at: new Date(now + ttlMs).toISOString() };
     }
-  } : undefined);
-  advanceHandoffPhase(root, runId, { key: res.key, toPhase: 'emitted', now, expect });
+  }, (l) => {
+    const lease = l.session_chain.lease;
+    if (expect && (lease.owner_run_id !== expect.owner || lease.generation !== expect.generation)) throw new Error('LEASE_FENCED: handoff-emit');
+    if (lease.handoff_idempotency_key !== res.key) throw new Error('HANDOFF_KEY_MISMATCH');
+  });
   // handoffRel 반환 → respawn 이 동일 경로로 launch 명령을 빌드 (Codex r1 🔴3)
   return { ok: true, reason: 'emitted', handoffPath, childRunId, key: res.key, csName, mdName, handoffRel };
 }

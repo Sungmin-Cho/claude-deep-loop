@@ -2,7 +2,7 @@ import { readState, writeState, withLock } from './state.mjs';
 import { appendAnchored } from './integrity.mjs';
 import { checkBudget, reconcileBudget } from './budget.mjs';
 import { checkBreaker } from './breaker.mjs';
-import { advanceHandoffPhase, releaseLease, rollbackHandoff } from './lease.mjs';
+import { advanceHandoffPhase } from './lease.mjs';
 import { buildLaunchCommand } from './handoff.mjs';
 
 // 게이트 순서: budget → breaker → max_sessions → wallclock → auto_handoff (spec §9). 순수.
@@ -75,14 +75,16 @@ export function respawn(root, runId, { childRunId, key, handoffRel = '', headles
     const res = spawnFn(cmd);
     if (res && res.ok === false) throw new Error(res.reason || 'spawn-returned-false');
   } catch (e) {
-    // 실패모드 (B): spawned→active/idle 롤백 + chain 정정 (인수한 적 없는 세션을 기술하지 않게 superseded_by 해제)
-    let failedAppend = false;
+    // 실패모드 (B): respawn-failed 기록 + chain 정정 + lease 롤백(active/idle)을 ONE 트랜잭션으로
+    // (Codex impl r11 🔴: 이벤트 기록과 lease 롤백을 분리하면 half-commit 가능 → 단일 appendAnchored).
     try {
       appendAnchored(root, runId, { type: 'respawn-failed', data: { child_run_id: childRunId, error: String(e.message || e) } }, (l) => {
         const child = l.session_chain.sessions.find(s => s.run_id === childRunId);
         if (child) child.outcome = 'failed_launch';
         const parent = l.session_chain.sessions.find(s => s.superseded_by === childRunId);
         if (parent) parent.superseded_by = null;
+        // 부모로 lease 롤백 (releasing/spawned → active/idle, stale TTL 해제)
+        l.session_chain.lease = { ...l.session_chain.lease, state: 'active', handoff_phase: 'idle', handoff_idempotency_key: null, handoff_child_run_id: null, expires_at: null };
       }, (loop) => {
         if (loop.session_chain.lease.owner_run_id !== runId || loop.session_chain.lease.generation !== generation) {
           throw new Error('RESPAWN_FENCED: failure-append');
@@ -95,13 +97,14 @@ export function respawn(root, runId, { childRunId, key, handoffRel = '', headles
       }
       throw appendErr;
     }
-    const rb = rollbackHandoff(root, runId, { owner: runId, generation });
-    if (!rb.ok) return { ok: false, outcome: 'rollback-error', reason: rb.reason, childRunId };
     return { ok: false, outcome: 'failed_launch', reason: String(e.message || e), childRunId };
   }
-  // spawn 성공 → 부모 lease release(자식이 acquire 가능). 전이 반환값 검증(silent 실패 금지).
+  // spawn 성공 → respawn-spawned 기록 + 부모 lease release(state='released')를 ONE 트랜잭션으로
+  // (Codex impl r11 🔴: 이벤트 기록과 lease 전이를 분리하면 사이 크래시로 half-commit 가능 → 단일 appendAnchored).
   try {
-    appendAnchored(root, runId, { type: 'respawn-spawned', data: { child_run_id: childRunId, headless } }, undefined, (loop) => {
+    appendAnchored(root, runId, { type: 'respawn-spawned', data: { child_run_id: childRunId, headless } }, (l) => {
+      l.session_chain.lease = { ...l.session_chain.lease, state: 'released' };   // 자식이 acquire 가능
+    }, (loop) => {
       if (loop.session_chain.lease.owner_run_id !== runId || loop.session_chain.lease.generation !== generation) {
         throw new Error('RESPAWN_FENCED: spawned-append');
       }
@@ -113,7 +116,5 @@ export function respawn(root, runId, { childRunId, key, handoffRel = '', headles
     }
     throw appendErr;
   }
-  const rel = releaseLease(root, runId, { owner: runId, generation });
-  if (!rel.ok) return { ok: false, outcome: 'release-error', reason: rel.reason, childRunId };
   return { ok: true, outcome: 'spawned', reason: 'spawned', childRunId };
 }
