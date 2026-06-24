@@ -180,3 +180,12 @@ test('dispatchReview throws FENCE_REQUIRED when called without fence', () => {
     /FENCE_REQUIRED/
   );
 });
+
+// Codex impl r14 🟡: dispatchReview must reject a missing/nonexistent workstream at dispatch time (no stranded checker).
+test('dispatchReview rejects missing/nonexistent workstream and creates no checker episode', () => {
+  const { root, runId } = seed();
+  const f = fence(runId);
+  assert.throws(() => dispatchReview(root, runId, { point: 'plan', workstreamId: 'ws-nope', detected: { 'deep-review': true }, fence: f }), /WORKSTREAM_NOT_FOUND/);
+  assert.throws(() => dispatchReview(root, runId, { point: 'plan', detected: { 'deep-review': true }, fence: f }), /WORKSTREAM_NOT_FOUND/);
+  assert.equal(readState(root, runId).data.episodes.length, 0);   // no stranded checker
+});
