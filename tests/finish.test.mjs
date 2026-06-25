@@ -49,7 +49,7 @@ test('finishProofState blocks when there is no independent review proof', () => 
 test('finishProofState passes only with settled + reviewed + terminal', () => {
   const loop = { episodes: [
       { id: 'm', role: 'maker', point: 'implementation', workstream_id: 'w', status: 'done' },
-      { id: 'c', role: 'checker', point: 'implementation', workstream_id: 'w', status: 'approved' }],
+      { id: 'c', role: 'checker', point: 'implementation', workstream_id: 'w', status: 'approved', target_maker: 'm' }],
     workstreams: [{ id: 'w', status: 'ready', review_points_done: ['implementation'] }], active_workstreams: [] };
   assert.deepEqual(finishProofState(loop).missing, []);
 });
@@ -74,13 +74,25 @@ test('finishProofState blocks two done makers sharing one approved checker (anom
   assert.ok(finishProofState(loop).missing.includes('unreviewed-maker'));
 });
 
-// FIX 1 regression: fix-loop 형태 — 2 done maker + 1 rejected checker + 1 approved checker, 같은 point → 통과
-test('finishProofState passes for a fix-loop (2 done makers + 1 rejected + 1 approved checker, same point)', () => {
+// Plan-3 r3 fix: two done makers same ws+point, TWO checkers both bound to maker1 (one approved), maker2 unbound → blocks.
+// Validates per-maker binding: checkers for maker1 cannot satisfy maker2's review requirement.
+test('finishProofState blocks when two checkers are both bound to maker1 but maker2 has no bound checker', () => {
   const loop = { episodes: [
       { id: 'm1', role: 'maker', point: 'implementation', workstream_id: 'w', status: 'done' },
       { id: 'm2', role: 'maker', point: 'implementation', workstream_id: 'w', status: 'done' },
-      { id: 'c1', role: 'checker', point: 'implementation', workstream_id: 'w', status: 'rejected' },
-      { id: 'c2', role: 'checker', point: 'implementation', workstream_id: 'w', status: 'approved' }],
+      { id: 'c1', role: 'checker', point: 'implementation', workstream_id: 'w', status: 'rejected', target_maker: 'm1' },
+      { id: 'c2', role: 'checker', point: 'implementation', workstream_id: 'w', status: 'approved', target_maker: 'm1' }],
+    workstreams: [{ id: 'w', status: 'ready', review_points_done: ['implementation'] }], active_workstreams: [] };
+  assert.ok(finishProofState(loop).missing.includes('unreviewed-maker'));
+});
+
+// FIX 1 regression: fix-loop 형태 — maker1 (done) + checker bound to maker1 (rejected) + maker2 (done) + checker bound to maker2 (approved) → 통과
+test('finishProofState passes for a fix-loop (maker1+rejected-checker, maker2+approved-checker, same point)', () => {
+  const loop = { episodes: [
+      { id: 'm1', role: 'maker', point: 'implementation', workstream_id: 'w', status: 'done' },
+      { id: 'm2', role: 'maker', point: 'implementation', workstream_id: 'w', status: 'done' },
+      { id: 'c1', role: 'checker', point: 'implementation', workstream_id: 'w', status: 'rejected', target_maker: 'm1' },
+      { id: 'c2', role: 'checker', point: 'implementation', workstream_id: 'w', status: 'approved', target_maker: 'm2' }],
     workstreams: [{ id: 'w', status: 'ready', review_points_done: ['implementation'] }], active_workstreams: [] };
   assert.deepEqual(finishProofState(loop).missing, []);
 });

@@ -28,6 +28,14 @@ export function parseVerdict(text) {
   return null;
 }
 
+// A maker is reviewed if there is a terminal checker bound to it (via target_maker) with approved/rejected status.
+export function makerReviewed(loop, maker) {
+  return (loop.episodes || []).some(e =>
+    e.role === 'checker' && e.target_maker === maker.id &&
+    (e.status === 'approved' || e.status === 'rejected')
+  );
+}
+
 // checker episode 생성 + dispatch 디스크립터 반환 — 커널은 sibling을 호출하지 않음 (spec §1.1·§6).
 export function dispatchReview(root, runId, { point, workstreamId, detected = {}, fence } = {}) {
   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: dispatchReview');
@@ -38,8 +46,20 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
   // workstream and recordReviewOutcome (which derives workstream_id from the checker) later fails WORKSTREAM_NOT_FOUND,
   // stranding a pending checker that can't converge. Fail early instead.
   if (!workstreamId || !data.workstreams.find(w => w.id === workstreamId)) throw new Error(`WORKSTREAM_NOT_FOUND: ${workstreamId}`);
+  // Derive the target maker: the latest done maker for this (workstreamId, point) that does NOT already have a bound terminal checker.
+  const eps = data.episodes || [];
+  const eligibleMakers = eps.filter(e =>
+    e.role === 'maker' && e.status === 'done' &&
+    e.workstream_id === workstreamId && e.point === point &&
+    !makerReviewed(data, e)
+  );
+  // Pick the highest episode id (lexicographic ordering works since ids are zero-padded numeric prefixes).
+  const targetMakerEp = eligibleMakers.length > 0
+    ? eligibleMakers.reduce((a, b) => (a.id > b.id ? a : b))
+    : null;
+  const targetMaker = targetMakerEp ? targetMakerEp.id : undefined;
   const { reviewer, flags, mode } = resolveReviewer(data, detected);
-  const { id } = newEpisode(root, runId, { plugin: reviewer === 'deep-review-loop' ? 'deep-review' : reviewer, role: 'checker', kind: `${point}-review`, point, workstream: workstreamId, fence });
+  const { id } = newEpisode(root, runId, { plugin: reviewer === 'deep-review-loop' ? 'deep-review' : reviewer, role: 'checker', kind: `${point}-review`, point, workstream: workstreamId, targetMaker, fence });
   const skillByReviewer = {
     'deep-review-loop': 'deep-review:deep-review-loop',
     'codex-cross': 'codex:rescue',

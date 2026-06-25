@@ -20,7 +20,7 @@ function requestSkeleton({ id, plugin, role, kind, point, workstream, expectedAr
   ].join('\n');
 }
 
-export function newEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], fence } = {}) {
+export function newEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker, fence } = {}) {
   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: newEpisode');
   // Fix 3: validate required non-fence args before any state write
   if (!plugin || typeof plugin !== 'string' || !plugin.length) throw new Error('EPISODE_INPUT_INVALID: plugin');
@@ -42,11 +42,13 @@ export function newEpisode(root, runId, { plugin, role, kind, point, workstream 
     id = `${n}-${safePlugin}`;
     dir = join(runDir(root, runId), 'episodes', id);
     requestPath = join(dir, 'request.md');
-    loop.episodes.push({
+    const epObj = {
       id, plugin, role, kind, point, workstream_id: workstream, status: 'pending',
       request_path: requestPath, expected_artifacts: expectedArtifacts,
       verification: { checker_episode_required: role === 'maker', checker_plugin: 'deep-review', review_point: point, proof_required: expectedArtifacts },
-    });
+    };
+    if (targetMaker && typeof targetMaker === 'string' && targetMaker.length) epObj.target_maker = targetMaker;
+    loop.episodes.push(epObj);
     loop.current_episode = id;
     if (role === 'maker') loop.comprehension.episodes_total = (loop.comprehension.episodes_total || 0) + 1;
     if (workstream) {

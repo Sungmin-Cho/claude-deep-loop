@@ -3,6 +3,7 @@ import { resolve, sep } from 'node:path';
 import { appendAnchored } from './integrity.mjs';
 import { leaseCheck } from './lease.mjs';
 import { runDir } from './state.mjs';
+import { makerReviewed } from './review.mjs';
 
 function reviewSatisfied(loop, ep) {
   const ws = (loop.workstreams || []).find(w => w.id === ep.workstream_id);
@@ -18,20 +19,14 @@ export function finishProofState(loop) {
   const settled = eps.every(e => settledEp(loop, e));
   const noActiveWs = (loop.active_workstreams || []).length === 0;
   const wsAll = (loop.workstreams || []).every(w => TERMINAL_WS.includes(w.status));
-  // Codex r2 critical-1: COUNT-BASED per-(ws,point) check — 같은 ws+point 의 두 번째 done maker 도 자신의 checker 필요.
-  // terminalCheckers >= doneMakers && approvedCheckers >= 1 인 그룹만 리뷰 커버.
-  const groups = new Map();
-  for (const e of eps) {
-    const key = `${e.workstream_id}|${e.point}`;
-    if (!groups.has(key)) groups.set(key, { doneMakers: 0, terminalCheckers: 0, approvedCheckers: 0 });
-    const g = groups.get(key);
-    if (e.role === 'maker' && e.status === 'done') g.doneMakers++;
-    if (e.role === 'checker' && (e.status === 'approved' || e.status === 'rejected')) g.terminalCheckers++;
-    if (e.role === 'checker' && e.status === 'approved') g.approvedCheckers++;
-  }
-  const allMakersReviewed = [...groups.values()].every(g => g.doneMakers === 0 || (g.terminalCheckers >= g.doneMakers && g.approvedCheckers >= 1));
-  const totalDoneMakers = [...groups.values()].reduce((s, g) => s + g.doneMakers, 0);
-  const reviewedProof = totalDoneMakers > 0 && allMakersReviewed;   // 최소 1 리뷰된 maker = 독립 리뷰 proof
+  // Per-maker binding check: every done maker must have a bound terminal checker (target_maker === maker.id).
+  const doneMakers = eps.filter(e => e.role === 'maker' && e.status === 'done');
+  const allMakersReviewed = doneMakers.every(m => makerReviewed(loop, m));
+  // Convergence: every (ws,point) that has a done maker must have at least one APPROVED checker.
+  const pointsWithMakers = new Set(doneMakers.map(m => `${m.workstream_id}|${m.point}`));
+  const approvedPoints = new Set(eps.filter(e => e.role === 'checker' && e.status === 'approved').map(e => `${e.workstream_id}|${e.point}`));
+  const allPointsApproved = [...pointsWithMakers].every(k => approvedPoints.has(k));
+  const reviewedProof = doneMakers.length > 0 && allMakersReviewed && allPointsApproved;
   const missing = [];
   if (!hasWork) missing.push('no-proof-of-work');                  // 최소 1 episode 필요 (Array.every 공허-통과 방지)
   if (!settled) missing.push('unsettled-episodes');
