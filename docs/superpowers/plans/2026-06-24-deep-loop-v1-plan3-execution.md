@@ -988,6 +988,16 @@ test('finishProofState passes only with settled + reviewed + terminal', () => {
   assert.deepEqual(finishProofState(loop).missing, []);
 });
 
+// Codex r6 critical-1: 한 maker 는 리뷰됐지만 다른 done maker 는 미리뷰면 completed 차단.
+test('finishProofState blocks when any one done maker is unreviewed', () => {
+  const loop = { episodes: [
+      { id: 'm1', role: 'maker', point: 'implementation', workstream_id: 'w', status: 'done' },
+      { id: 'c1', role: 'checker', point: 'implementation', workstream_id: 'w', status: 'approved' },
+      { id: 'm2', role: 'maker', point: 'plan', workstream_id: 'w', status: 'done' }],   // 'plan' 리뷰 없음
+    workstreams: [{ id: 'w', status: 'ready', review_points_done: ['implementation'] }], active_workstreams: [] };
+  assert.ok(finishProofState(loop).missing.includes('unreviewed-maker'));
+});
+
 // --- finishRun 디스크 ---
 test('finish completed is blocked on an empty run even with a report', () => {
   const { root, runId, fence } = seed();
@@ -1072,16 +1082,19 @@ export function finishProofState(loop) {
   const settled = eps.every(e => settledEp(loop, e));
   const noActiveWs = (loop.active_workstreams || []).length === 0;
   const wsAll = (loop.workstreams || []).every(w => TERMINAL_WS.includes(w.status));
-  // 독립 리뷰 proof (spec §5 termination.proofs: "independent review verdict approve or accepted concern")
-  const reviewedProof = eps.some(e => e.role === 'checker' && e.status === 'approved')
-    || (loop.workstreams || []).some(w => (w.review_points_done || []).length > 0);
+  // Codex r6 critical-1: **모든** done maker 가 reviewSatisfied 여야 한다 (전역 any 가 아니라 per-maker) —
+  // nextAction(next-action.mjs:33-35)·spec §488("checker 없이 maker done 간주 ❌")와 동일 강도.
+  const doneMakers = eps.filter(e => e.role === 'maker' && e.status === 'done');
+  const allMakersReviewed = doneMakers.every(m => reviewSatisfied(loop, m));
+  const reviewedProof = doneMakers.length > 0 && allMakersReviewed;   // 최소 1 리뷰된 maker = 독립 리뷰 proof
   const missing = [];
   if (!hasWork) missing.push('no-proof-of-work');                  // 최소 1 episode 필요 (Array.every 공허-통과 방지)
   if (!settled) missing.push('unsettled-episodes');
   if (!noActiveWs) missing.push('active-workstreams');
   if (!wsAll) missing.push('non-terminal-workstreams');
+  if (!allMakersReviewed) missing.push('unreviewed-maker');        // 미리뷰 done maker 차단
   if (hasWork && !reviewedProof) missing.push('no-independent-review');
-  return { hasWork, settled, noActiveWs, allWsTerminal: wsAll, reviewedProof, missing };
+  return { hasWork, settled, noActiveWs, allWsTerminal: wsAll, allMakersReviewed, reviewedProof, missing };
 }
 
 export function finishRun(root, runId, { status, reportRel, proof = {}, fence, now = Date.now() } = {}) {
@@ -1221,16 +1234,18 @@ function frontmatter(src) {
 // 셸 redirect 는 **마크다운 blockquote(줄이 '>' 로 시작)를 제외하고** 줄 단위로만 판정한다
 // — '> [!IMPORTANT] loop.json + handoff are source of truth' 같은 정상 callout 오탐 방지.
 function violatesBoundary(src) {
-  const DUR = '(loop\\.json|event-log\\.jsonl|\\.loop\\.hash|\\.deep-loop\\/runs)';
+  // Codex r6 sf-3: 금지 대상은 **커널 전용 durable state 파일 3종**뿐. `.deep-loop/runs/<id>/final-report.md`
+  // 같은 비-상태 artifact 쓰기는 /deep-loop-finish 가 정당하게 수행하므로 차단하지 않는다(§12·§15).
+  const DUR = '(loop\\.json|event-log\\.jsonl|\\.loop\\.hash)';
   const callForms = [
-    /(Write|Edit)\s*\([^)]*?(loop\.json|event-log\.jsonl|\.loop\.hash)/,
+    new RegExp(`(Write|Edit)\\s*\\([^)]*?${DUR}`),
     new RegExp(`(writeFileSync|appendFileSync|writeFile|appendFile)\\s*\\([^)]*?${DUR}`),
     new RegExp(`\\bsed\\s+-i\\b[^\\n]*?${DUR}`),                     // sed -i 인플레이스
     new RegExp(`\\b(perl|ruby)\\s+-[a-z]*i[a-z]*\\b[^\\n]*?${DUR}`),  // perl/ruby -i 인플레이스
     new RegExp(`open\\s*\\([^)]*${DUR}[^)]*,\\s*["'][wa]`),           // python/ruby open(..., "w"/"a")
   ];
   if (callForms.some(re => re.test(src))) return true;
-  // 줄 단위(blockquote 제외): durable 경로를 대상으로 하는 셸 쓰기/redirect (Codex r3 sf-4: cp/mv/rm/truncate/dd 추가).
+  // 줄 단위(blockquote 제외): state 파일을 대상으로 하는 셸 쓰기/redirect (cp/mv/rm/truncate/dd).
   const redirect = new RegExp(`(?:>>?|\\btee\\b)\\s+\\S*${DUR}`);
   const shellWrite = new RegExp(`\\b(cp|mv|rm|truncate|install|dd)\\b[^\\n]*${DUR}`);
   return src.split('\n').some(line => {
@@ -1273,6 +1288,7 @@ test('boundary scan flags forbidden write forms and allows reads/mentions/blockq
     '> [!IMPORTANT] loop.json + handoff are the source of truth.',   // blockquote 오탐 금지
     '> .deep-loop/runs/<id>/loop.json 은 커널만 쓴다.',               // blockquote path 언급 허용
     'run dir 은 .deep-loop/runs/<id>/ 이다 (커널만 씀).',             // 비-blockquote path 언급(쓰기 동사 없음) 허용
+    'Write({ file_path: ".deep-loop/runs/<id>/final-report.md", content: report })',   // Codex r6 sf-3: 정당한 artifact write 허용
     'node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field status',
     'Read .deep-loop/runs/<id>/handoffs/<ts>-next-session.md first; then /deep-loop-resume',
     'event-log.jsonl 은 커널이 appendAnchored 단일 경로로만 쓴다 (스킬은 절대 직접 쓰지 않음).',
@@ -1660,15 +1676,35 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 `respawn`에 주입할 `spawnFn`. `cmd`(= `buildLaunchCommand`가 만든 `claude -p ...` 셸 문자열)를 child_process로 실행, timeout 강제, usage 파싱. **측정 불가 시 fail-closed**(`{ok:false}` 반환 → respawn이 실패모드 B로 lease를 부모로 롤백, 트랩 F7).
 
 **Files:**
+- Modify: `scripts/lib/handoff.mjs` (`buildLaunchCommand` headless 변형에 `--output-format json`)
 - Create: `scripts/lib/spawn-driver.mjs`
-- Test: `tests/spawn-driver.test.mjs`
+- Test: `tests/spawn-driver.test.mjs`, `tests/handoff.test.mjs` (headless 명령 검증)
 
 **Interfaces:**
 - Consumes: `node:child_process.spawnSync`(기본 runner; 테스트는 주입).
 - Produces:
+  - `handoff.buildLaunchCommand` — 변경: headless 변형을 `claude -p "<resume>" --output-format json --permission-mode acceptEdits` 로(Codex r6 sf-4). `--output-format json` 이 없으면 `claude -p` 가 num_turns/usage 를 stdout 으로 내보내지 않아 `headlessSpawn`/`driveHeadless` 가 항상 측정불가(fail-closed)로 멈춘다. interactive 변형은 변경 없음.
   - `spawn-driver.headlessSpawn(cmd, { timeoutMs = 1800000, run = defaultRun } = {})` → `{ ok:true, usage } | { ok:false, reason }`. `run(cmd,{timeoutMs}) → {code, stdout, stderr, timedOut}`. timeout/non-zero exit/usage 측정불가는 전부 `ok:false`.
-  - `spawn-driver.parseUsage(stdout)` → `{num_turns?, tokens?} | null` (claude `-p --output-format json` 또는 텍스트 마커 파싱; 없으면 `null`).
+  - `spawn-driver.parseUsage(stdout)` → `{num_turns?, tokens?} | null` (claude `-p --output-format json` 의 `num_turns`/`usage` 파싱; 없으면 `null`).
   - `spawn-driver.defaultRun(cmd, {timeoutMs})` → `spawnSync('bash', ['-c', cmd], {timeout})` 래핑.
+
+- [ ] **Step 0: `buildLaunchCommand` headless 에 `--output-format json` (lib + 테스트)**
+
+`scripts/lib/handoff.mjs:14` 의 `headlessCmd` 를 교체:
+
+```javascript
+  const headlessCmd = `cd ${root} && claude -p "${resumePrompt}" --output-format json --permission-mode acceptEdits`;
+```
+
+`tests/handoff.test.mjs` 에 추가:
+
+```javascript
+test('buildLaunchCommand headless requests metric-bearing output', () => {
+  const cmds = buildLaunchCommand({ root: '/r', parentRunId: 'p', childRunId: 'c', handoffRel: 'handoffs/x.md', headless: true });
+  assert.match(cmds.headless, /--output-format json/);
+  assert.match(cmds.interactive, /--output-format json/);   // headless=true 면 interactive 필드도 headless 명령
+});
+```
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1827,6 +1863,7 @@ test('unattended → emits + respawns with injected spawnFn', async () => {
   const r = await runPreCompactHandoff({ unattended: true }, { root, now: Date.parse('2026-06-24T00:01:00Z'), spawnFn: (cmd) => { spawnedCmd = cmd; return { ok: true }; } });
   assert.equal(r.action, 'respawned');
   assert.match(spawnedCmd, /claude -p/);
+  assert.match(spawnedCmd, /--output-format json/);   // Codex r6 sf-4: 측정 가능한 출력 요청
 });
 
 // Codex r1 should-fix-3: gate 차단(wallclock 소진) headless PreCompact 는 spawn 하지 않고 status=paused.
@@ -2006,16 +2043,38 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 무인 장기 실행은 headless 강제 + 측정불가 시 fail-closed(§9). **Codex r2 sf-6: 템플릿이 raw `claude -p` 를 직접 부르면 timeout/usage/fail-closed 안전장치를 우회한다.** 따라서 `headlessSpawn`을 감싸는 작은 드라이버(`drive-headless.mjs`)를 만들고, cron/GitHub Actions 템플릿이 **그 드라이버**를 호출한다.
 
 **Files:**
+- Modify: `scripts/lib/lease.mjs` (`leaseCheck` 에 `accounting` carve-out)
 - Create: `scripts/hooks-impl/drive-headless.mjs`
 - Create: `recipes/automation/cron-morning-triage.yml`
 - Create: `recipes/automation/github-actions-loop.yml`
-- Test: `tests/automation.test.mjs`
+- Test: `tests/automation.test.mjs`, `tests/lease.test.mjs` (carve-out 단위)
 
 **Interfaces:**
-- Consumes: `spawn-driver.headlessSpawn`(Task 16), `node:fs`(`.deep-loop/current`).
+- Consumes: `spawn-driver.headlessSpawn`(Task 16), `budget.recordCost`, `state.readState`, `lease.leaseCheck`.
 - Produces:
-  - `drive-headless.driveHeadless({ root = process.cwd(), prompt = '/deep-loop-continue', spawnFn = headlessSpawn, timeoutMs } = {})` → `{ ok:true, action:'drove', usage } | { ok:false, action:'fail-closed', reason } | { ok:true, action:'no-run' }`. `claude -p "<prompt>"` 를 `headlessSpawn` 으로 timeout + usage 측정 하에 구동, 측정불가/timeout/비0 종료 시 `fail-closed`(트랩 F7 — 재시도 안 함, cron/CI 가 사람 점검 전 재트리거 금지). CLI 진입은 `drove`/`no-run` 이면 exit 0, `fail-closed` 면 exit 1.
+  - `lease.leaseCheck` — 변경: `releasing` 상태 carve-out 에 **`intent='accounting'`** 추가(기존 `intent='lease'` 와 함께). 비용 회계는 상태기계 mutation 이 아니라 이미 발생한 cost 기록이라 owner+generation 일치 시 releasing 중에도 허용(Codex r6 sf-2). generation 불일치(자식 인수)는 여전히 거부.
+  - `drive-headless.driveHeadless({ root = process.cwd(), prompt = '/deep-loop-continue', spawnFn = headlessSpawn, timeoutMs } = {})` → `{ ok:true, action:'drove', usage, recorded } | { ok:false, action:'fail-closed', reason } | { ok:true, action:'no-run' }`. headlessSpawn 으로 timeout+usage 측정, 측정불가/timeout/비0 → `fail-closed`. 성공 시 측정 usage 를 `recordCost`(intent:'accounting')로 권위있게 커밋. CLI 진입은 `drove`/`no-run` exit 0, `fail-closed` exit 1.
   - `cron-morning-triage.yml` / `github-actions-loop.yml`: schedule + **`drive-headless.mjs` 호출**(raw `claude -p` 금지) + proposal-only 주석.
+
+- [ ] **Step 0: `leaseCheck` accounting carve-out (lib + 단위테스트)**
+
+`scripts/lib/lease.mjs` 의 releasing carve-out 줄을 교체:
+
+```javascript
+  // 부모 carve-out: releasing 중 업무 write 거부; 자기 lease 관리(intent='lease')와 비용 회계(intent='accounting')만 허용.
+  if (lease.state === 'releasing' && intent !== 'lease' && intent !== 'accounting') return { ok: false, reason: 'lease-releasing-carveout' };
+```
+
+`tests/lease.test.mjs` 에 추가:
+
+```javascript
+test('leaseCheck allows accounting during releasing for matching owner/generation', () => {
+  const loop = { session_chain: { lease: { owner_run_id: 'r', generation: 2, state: 'releasing' } } };
+  assert.equal(leaseCheck(loop, { owner: 'r', generation: 2, intent: 'business' }).ok, false);    // 업무 write 거부
+  assert.equal(leaseCheck(loop, { owner: 'r', generation: 2, intent: 'accounting' }).ok, true);   // 회계 허용
+  assert.equal(leaseCheck(loop, { owner: 'r', generation: 3, intent: 'accounting' }).ok, false);  // generation 불일치 거부
+});
+```
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2030,6 +2089,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState } from '../scripts/lib/state.mjs';
+import { emitHandoff } from '../scripts/lib/handoff.mjs';
 import { driveHeadless } from '../scripts/hooks-impl/drive-headless.mjs';
 
 const A = join(dirname(fileURLToPath(import.meta.url)), '..', 'recipes', 'automation');
@@ -2039,9 +2099,11 @@ function seedRun() {
   return { root, runId };
 }
 
-test('driveHeadless drives when spawn ok', () => {
-  const r = driveHeadless({ root: seedRun().root, spawnFn: () => ({ ok: true, usage: { num_turns: 1, tokens: 50 } }) });
+test('driveHeadless drives when spawn ok and requests metric output', () => {
+  let cmd = null;
+  const r = driveHeadless({ root: seedRun().root, spawnFn: (c) => { cmd = c; return { ok: true, usage: { num_turns: 1, tokens: 50 } }; } });
   assert.equal(r.action, 'drove');
+  assert.match(cmd, /--output-format json/);   // Codex r6 sf-4
 });
 
 // Codex r5 critical-2: 성공한 headless 실행의 측정 usage 는 budget+session 에 결정론적으로 커밋되어야 한다.
@@ -2053,6 +2115,17 @@ test('driveHeadless commits measured usage to budget on success', () => {
   assert.equal(d.budget.spent, 3);
   assert.equal(d.budget.tokens_spent, 100);
   assert.equal(d.session_chain.sessions[0].turns, 3);   // per_session_turn_cap 도 구동
+});
+
+// Codex r6 sf-2: 자식 tick 이 milestone 에서 handoff 를 emit 해 lease 가 releasing 이 돼도 측정 usage 는 정확히 1회 회계.
+test('driveHeadless still accounts usage when the child emitted a handoff', () => {
+  const { root, runId } = seedRun();
+  const r = driveHeadless({ root, spawnFn: () => {
+    emitHandoff(root, runId, { reason: 'milestone', trigger: 'milestone', expect: { owner: runId, generation: 1 } });  // lease → releasing
+    return { ok: true, usage: { num_turns: 2, tokens: 50 } };
+  } });
+  assert.equal(r.recorded, true);
+  assert.equal(readState(root, runId).data.budget.spent, 2);
 });
 
 test('driveHeadless fails closed when usage unmeasurable/timeout', () => {
@@ -2102,17 +2175,19 @@ function currentRunId(root) { const p = join(root, '.deep-loop', 'current'); ret
 // DEEP_LOOP_UNATTENDED=1 로 자식의 자기보고를 끄므로 driver 의 기록이 단일 출처(이중계상 없음, Codex r5 critical-2).
 export function driveHeadless({ root = process.cwd(), prompt = '/deep-loop-continue', spawnFn = headlessSpawn, timeoutMs } = {}) {
   if (!currentRunId(root)) return { ok: true, action: 'no-run' };
-  const cmd = `cd ${root} && DEEP_LOOP_UNATTENDED=1 claude -p "${prompt}" --permission-mode acceptEdits`;
+  // Codex r6 sf-4: --output-format json 으로 num_turns/usage 를 stdout 에 내보내야 headlessSpawn 이 측정 가능.
+  const cmd = `cd ${root} && DEEP_LOOP_UNATTENDED=1 claude -p "${prompt}" --output-format json --permission-mode acceptEdits`;
   const res = spawnFn(cmd, timeoutMs ? { timeoutMs } : {});
   if (!res.ok) return { ok: false, action: 'fail-closed', reason: res.reason };
-  // 측정 usage 를 budget+session 에 커밋. 현재 lease 로 fence — 자식이 handoff 로 lease 를 가져갔으면(generation 변경)
-  // LEASE_FENCED → 자식이 자기 회계를 가지므로 skip (이중계상 방지).
+  // 측정 usage 를 budget+session 에 커밋. **intent:'accounting'** 으로 fence — 자식이 milestone 에서 handoff 를
+  // emit 해 lease 가 'releasing' 이 돼도(Codex r6 sf-2) 같은 owner+generation 의 비용 회계는 허용된다(이미 발생한 cost).
+  // generation 이 바뀌었으면(자식이 완전히 인수) LEASE_FENCED → skip (그 경우는 자식이 자기 회계를 가짐).
   const runId = currentRunId(root);
   let recorded = false;
   try {
     const lease = readState(root, runId).data.session_chain?.lease || {};
     recordCost(root, runId, { turns: res.usage?.num_turns || 0, tokens: res.usage?.tokens || 0,
-      fence: { owner: lease.owner_run_id, generation: lease.generation, intent: 'business' } });
+      fence: { owner: lease.owner_run_id, generation: lease.generation, intent: 'accounting' } });
     recorded = true;
   } catch (e) { if (!String(e.message).startsWith('LEASE_FENCED')) throw e; }
   return { ok: true, action: 'drove', usage: res.usage, recorded };
