@@ -16,6 +16,7 @@ import { nextAction } from './lib/next-action.mjs';
 import { emitHandoff } from './lib/handoff.mjs';
 import { respawn, respawnGate } from './lib/respawn.mjs';
 import { resolveAdapter, guardTierProtocol, loadProtocol } from './lib/adapters.mjs';
+import { recordCost, checkBudget } from './lib/budget.mjs';
 
 function parseFlags(argv) {
   const f = {}; for (let i = 0; i < argv.length; i++) { if (argv[i].startsWith('--')) { const k = argv[i].slice(2); const v = argv[i + 1]?.startsWith('--') || argv[i + 1] === undefined ? true : argv[++i]; f[k] = v; } } return f;
@@ -207,6 +208,23 @@ const handlers = {
       json({ protocol, selected: sel, descriptor: map[sel], guard }); return 0;
     }
     json({ protocol, dispatch, await: awaitD, read, checker_via: 'review dispatch --point <p> --workstream <ws> (kernel derives checker episode + descriptor)', guard }); return 0;
+  },
+  budget: async (a) => {
+    const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
+    if (verb === 'check') { const { data } = readState(root, runId); json(checkBudget(data, { now: parseNow(f) })); return 0; }
+    if (verb === 'record') {
+      requireLease(root, runId, f);
+      // Codex r4 sf-4: parseFlags 는 값 없는 플래그를 true 로 둔다 → Number(true)=1 오기록 방지.
+      // 미지정 → 0, 지정 시 비음정수 문자열만 허용(true/음수/NaN/Infinity 거부).
+      const turns = optInt(f, 'turns'); const tokens = optInt(f, 'tokens');
+      if (turns === null || tokens === null) { error('INVALID_COST: --turns/--tokens must be non-negative integers'); return 1; }
+      const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'business' };
+      try { recordCost(root, runId, { turns, tokens, fence }); }
+      catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }
+      const { data } = readState(root, runId);
+      json({ ok: true, spent: data.budget.spent, tokens_spent: data.budget.tokens_spent }); return 0;
+    }
+    error(`unknown budget verb: ${verb}`); return 2;
   },
 };
 

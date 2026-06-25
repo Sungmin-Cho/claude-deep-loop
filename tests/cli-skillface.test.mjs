@@ -94,3 +94,46 @@ test('state patch forbids terminal episode status (exit 1)', () => {
   // episodes.0.status=done 은 터미널 → classifyPatch forbid (episode 가 없어도 분류 단계에서 거부)
   assert.equal(runFail(root, ['state', 'patch', '--field', 'episodes.0.status', '--value', '"done"', '--owner', runId, '--generation', '1']), 1);
 });
+
+test('budget record accrues turns/tokens via event log with fence', () => {
+  const { root, runId } = seed();
+  const r = JSON.parse(run(root, ['budget', 'record', '--turns', '3', '--tokens', '1000', '--owner', runId, '--generation', '1']));
+  assert.equal(r.ok, true);
+  const spent = JSON.parse(run(root, ['state', 'get', '--field', 'budget.spent']));
+  assert.equal(spent, 3);
+});
+
+test('budget record is fenced (exit 3)', () => {
+  const { root, runId } = seed();
+  assert.equal(runFail(root, ['budget', 'record', '--turns', '1', '--owner', runId, '--generation', '9']), 3);
+});
+
+// Codex r4 sf-4: 값 없는 --turns 는 1 로 오기록하지 말고 거부(exit 1).
+test('budget record rejects a valueless --turns (exit 1)', () => {
+  const { root, runId } = seed();
+  assert.equal(runFail(root, ['budget', 'record', '--turns', '--owner', runId, '--generation', '1']), 1);
+});
+
+test('budget check is read-only and reports ok', () => {
+  const { root } = seed();
+  const r = JSON.parse(run(root, ['budget', 'check', '--now', '2026-06-24T00:00:01Z']));
+  assert.equal(r.ok, true);
+});
+
+// Codex r3 critical-1: budget record 가 세션 turns 를 증가시켜 per_session_turn_cap 마일스톤을 실제로 구동.
+test('budget record drives per_session_turn_cap → next-action handoff', () => {
+  const { root, runId } = seed();
+  run(root, ['budget', 'record', '--turns', '40', '--owner', runId, '--generation', '1']);   // == per_session_turn_cap(40)
+  const na = JSON.parse(run(root, ['next-action', '--json', '--now', '2026-06-24T00:00:01Z']));
+  assert.equal(na.action.type, 'handoff');
+  assert.equal(na.action.reason, 'per_session_turn_cap');
+});
+
+// Codex r3 sf-2: 스킬이 쓰는 CLI 경로(episode new --artifacts → record done)가 실제로 통과하는지 통합 검증.
+test('episode new --artifacts then record done (the skill flow)', () => {
+  const { root, runId } = seed();
+  writeFileSync(join(root, 'art.txt'), 'x');   // expected artifact 가 root 하위에 존재해야 done 통과
+  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'implementation', '--point', 'implementation', '--artifacts', '["art.txt"]', '--owner', runId, '--generation', '1']));
+  run(root, ['episode', 'record', '--id', ep.id, '--status', 'done', '--artifacts', '["art.txt"]', '--owner', runId, '--generation', '1']);
+  assert.equal(JSON.parse(run(root, ['state', 'get', '--field', 'episodes.0.status'])), 'done');
+});
