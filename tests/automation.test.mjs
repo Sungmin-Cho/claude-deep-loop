@@ -5,13 +5,16 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { readState } from '../scripts/lib/state.mjs';
+import { readState, writeState } from '../scripts/lib/state.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
 import { respawn } from '../scripts/lib/respawn.mjs';
 import { acquireLease } from '../scripts/lib/lease.mjs';
 import { driveHeadless } from '../scripts/hooks-impl/drive-headless.mjs';
 
 const A = join(dirname(fileURLToPath(import.meta.url)), '..', 'recipes', 'automation');
+
+// Deterministic "now" within the run's wallclock window so respawnGate does not wallclock-block.
+const NOW1 = Date.parse('2026-06-24T00:01:00Z');
 
 // Seed a run AND emit a handoff so there is a pending handoff with a reserved child.
 // Returns { root, runId, em } where em is the emitHandoff result.
@@ -21,7 +24,7 @@ function seedRunWithHandoff() {
   const em = emitHandoff(root, runId, {
     reason: 'pre-compact', trigger: 'pre-compact', headless: true,
     expect: { owner: runId, generation: 1 },
-    now: Date.parse('2026-06-24T00:00:00Z'),
+    now: NOW1,
   });
   assert.ok(em.ok, `emitHandoff must succeed: ${em.reason}`);
   return { root, runId, em };
@@ -40,6 +43,7 @@ test('driveHeadless resumes pending handoff with measured resume command', () =>
   let capturedCmd = null;
   const r = driveHeadless({
     root,
+    now: NOW1,
     spawnFn: (cmd) => {
       capturedCmd = cmd;
       assert.match(cmd, /deep-loop-resume/, 'resume command must reference deep-loop-resume');
@@ -58,6 +62,7 @@ test('driveHeadless commits measured usage to budget on success', () => {
   const { root, runId } = seedRunWithHandoff();
   const r = driveHeadless({
     root,
+    now: NOW1,
     spawnFn: () => ({ ok: true, usage: { num_turns: 2, tokens: 50 } }),
   });
   assert.equal(r.action, 'resumed');
@@ -67,21 +72,71 @@ test('driveHeadless commits measured usage to budget on success', () => {
   assert.equal(d.budget.tokens_spent, 50);
 });
 
-// fail-closed: spawnFn returns { ok:false } → driveHeadless returns action:'fail-closed'
+// fail-closed: spawnFn returns { ok:false } → respawn does failure-mode-B rollback and returns
+// outcome:'failed_launch'; driveHeadless surfaces this as action:'fail-closed'.
 test('driveHeadless fails closed when usage unmeasurable/timeout', () => {
   const { root } = seedRunWithHandoff();
   const r = driveHeadless({
     root,
+    now: NOW1,
     spawnFn: () => ({ ok: false, reason: 'unmeasurable-fail-closed' }),
   });
   assert.equal(r.ok, false);
   assert.equal(r.action, 'fail-closed');
 });
 
+// gate-blocked: budget.total=0 forces budget gate block; spawnFn must NOT be called; status=paused.
+test('driveHeadless returns gate-blocked and pauses run when respawnGate blocks', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-auto-'));
+  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  // Emit handoff first so there is a pending handoff to attempt.
+  const em = emitHandoff(root, runId, {
+    reason: 'pre-compact', trigger: 'pre-compact', headless: true,
+    expect: { owner: runId, generation: 1 },
+    now: NOW1,
+  });
+  assert.ok(em.ok, `emitHandoff must succeed: ${em.reason}`);
+  // Exhaust the budget: set spent >= total * hard_stop_ratio.
+  // Directly mutate state to set budget.spent >= budget.total (bypass recordCost to avoid lease issues).
+  const { data } = readState(root, runId);
+  data.budget.total = 0;  // 0 total → spent(0) >= 0*ratio → gate blocks
+  // Write directly without going through recordCost to avoid lease issues.
+  writeState(root, runId, data);
+
+  let spawnCalled = false;
+  const r = driveHeadless({
+    root,
+    now: NOW1,
+    spawnFn: () => { spawnCalled = true; throw new Error('should not spawn'); },
+  });
+  assert.equal(r.ok, false, 'gate-blocked must return ok:false');
+  assert.equal(r.action, 'gate-blocked', 'action must be gate-blocked');
+  assert.equal(spawnCalled, false, 'spawnFn must NOT be called when gate blocks');
+  assert.equal(readState(root, runId).data.status, 'paused', 'run status must be paused');
+});
+
+// already-spawned idempotency: second call returns action:'already-spawned', no double cost.
+test('driveHeadless is idempotent — second call returns already-spawned, no double cost', () => {
+  const { root, runId } = seedRunWithHandoff();
+  let spawnCount = 0;
+  const spawnFn = () => { spawnCount++; return { ok: true, usage: { num_turns: 3, tokens: 60 } }; };
+
+  const r1 = driveHeadless({ root, now: NOW1, spawnFn });
+  assert.equal(r1.action, 'resumed', 'first call must resume');
+  assert.equal(r1.recorded, true);
+  const spent1 = readState(root, runId).data.budget.spent;
+
+  const r2 = driveHeadless({ root, now: NOW1, spawnFn });
+  assert.equal(r2.action, 'already-spawned', 'second call must be idempotent');
+  const spent2 = readState(root, runId).data.budget.spent;
+  assert.equal(spent2, spent1, 'budget.spent must not increase on second call');
+  assert.equal(spawnCount, 1, 'spawnFn must have been called exactly once');
+});
+
 // no pending handoff: a fresh initRun (no emitHandoff) → action:'no-pending-handoff'
 test('driveHeadless returns no-pending-handoff when no handoff in flight', () => {
   const { root } = seedRun();
-  const r = driveHeadless({ root, spawnFn: () => { throw new Error('must not spawn'); } });
+  const r = driveHeadless({ root, now: NOW1, spawnFn: () => { throw new Error('must not spawn'); } });
   assert.equal(r.ok, true);
   assert.equal(r.action, 'no-pending-handoff');
 });
@@ -101,6 +156,7 @@ test('driveHeadless does not throw when post-resume lease fenced (grandchild acq
   const spawnNow = Date.parse('2026-06-24T00:00:01Z');
   const r = driveHeadless({
     root,
+    now: NOW1,
     spawnFn: () => {
       // Simulate: child acquires the lease (generation+1); then emits its own handoff (releasing)
       // so the grandchild also acquires → generation+2. driveHeadless reads THAT as the fresh fence.

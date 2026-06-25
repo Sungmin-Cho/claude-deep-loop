@@ -1,9 +1,9 @@
-import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { readState } from '../lib/state.mjs';
 import { recordCost } from '../lib/budget.mjs';
+import { respawn } from '../lib/respawn.mjs';
 import { headlessSpawn } from '../lib/spawn-driver.mjs';
-import { buildLaunchCommand } from '../lib/handoff.mjs';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 function currentRunId(root) { const p = join(root, '.deep-loop', 'current'); return existsSync(p) ? readFileSync(p, 'utf8').trim() : null; }
 
@@ -11,7 +11,8 @@ function currentRunId(root) { const p = join(root, '.deep-loop', 'current'); ret
 // PreCompact 가 emit 한 handoff(phase=emitted|spawned, reserved child)를 재개(round-2 handshake).
 // 측정불가/timeout/비0 종료 → fail-closed. 성공 시 **측정 usage 를 budget 에 권위있게 커밋**(spec §9 hard 강제).
 // DEEP_LOOP_UNATTENDED=1 로 자식의 자기보고를 끄므로 driver 의 기록이 단일 출처(이중계상 없음).
-export function driveHeadless({ root = process.cwd(), spawnFn = headlessSpawn, timeoutMs } = {}) {
+// respawn() 경유로 respawnGate(budget/breaker/max_sessions/wallclock/auto_handoff) 와 emitted→spawned CAS 클레임 강제.
+export function driveHeadless({ root = process.cwd(), spawnFn = headlessSpawn, now = Date.now(), timeoutMs } = {}) {
   const runId = currentRunId(root);
   if (!runId) return { ok: true, action: 'no-run' };
 
@@ -26,15 +27,38 @@ export function driveHeadless({ root = process.cwd(), spawnFn = headlessSpawn, t
   }
 
   const childRunId = lease.handoff_child_run_id;
+  const key = lease.handoff_idempotency_key;
   const cs = loop.session_chain.sessions.find(s => s.run_id === childRunId);
   const handoffRel = cs && cs.handoff_rel;
 
-  // 측정 resume 명령 — buildLaunchCommand 의 headless 변형: claude -p "<resume prompt>" --output-format json --permission-mode acceptEdits
-  const cmd = buildLaunchCommand({ root, parentRunId: runId, childRunId, handoffRel, headless: true }).headless;
+  // Usage capture: wrap spawnFn to capture the measured result; respawn discards it beyond ok.
+  let captured = null;
+  const measuring = (cmd, opts) => {
+    const r = spawnFn(cmd, opts);
+    captured = r;
+    return r;
+  };
 
-  const res = spawnFn(cmd, timeoutMs ? { timeoutMs } : {});
-  if (!res.ok) return { ok: false, action: 'fail-closed', reason: res.reason };
+  // 정규 경로: respawn 이 respawnGate + emitted→spawned CAS 클레임 + 실패모드-B 롤백을 처리.
+  const rr = respawn(root, runId, { childRunId, key, handoffRel, headless: true, now, spawnFn: measuring });
 
+  if (rr.outcome === 'gate-blocked') {
+    // respawn 이 이미 status=paused 로 기록함. 사람이 수동 resume 필요.
+    return { ok: false, action: 'gate-blocked', reason: rr.reason };
+  }
+  if (rr.outcome === 'already-spawned') {
+    // 멱등 — 이전 호출이 이미 클레임함; 비용 이중 기록 금지, captured 는 null.
+    return { ok: true, action: 'already-spawned' };
+  }
+  if (!rr.ok) {
+    // failed_launch: 측정 spawnFn 이 ok:false 를 반환 → respawn 이 failure-mode-B 롤백 후 outcome='failed_launch'.
+    // driveHeadless 문맥에서는 "측정 불가/fail-closed" 로 노출.
+    if (rr.outcome === 'failed_launch') return { ok: false, action: 'fail-closed', reason: rr.reason };
+    // fenced / not-emitted / phase-error 등
+    return { ok: false, action: rr.outcome || 'failed', reason: rr.reason };
+  }
+
+  // rr.ok && rr.outcome === 'spawned'
   // POST-resume 소유자로 lease 를 신선하게 재읽어 fence 구성.
   // 성공한 /deep-loop-resume 은 reserved child lease 를 인수(generation+1)했거나, 추가 handoff → releasing.
   // accounting carve-out: releasing 상태에서도 intent='accounting' 이면 허용 (leaseCheck spec §9.1).
@@ -45,11 +69,13 @@ export function driveHeadless({ root = process.cwd(), spawnFn = headlessSpawn, t
 
   let recorded = false;
   try {
-    recordCost(root, runId, { turns: res.usage?.num_turns || 0, tokens: res.usage?.tokens || 0, fence });
-    recorded = true;
+    if (captured && captured.usage) {
+      recordCost(root, runId, { turns: captured.usage.num_turns || 0, tokens: captured.usage.tokens || 0, fence });
+      recorded = true;
+    }
   } catch (e) { if (!String(e.message).startsWith('LEASE_FENCED')) throw e; }
 
-  return { ok: true, action: 'resumed', usage: res.usage, recorded };
+  return { ok: true, action: 'resumed', usage: captured && captured.usage, recorded };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
