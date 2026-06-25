@@ -19,6 +19,7 @@ import { resolveAdapter, guardTierProtocol, loadProtocol } from './lib/adapters.
 import { recordCost, checkBudget } from './lib/budget.mjs';
 import { computeDebt, ack as ackComprehension } from './lib/comprehension.mjs';
 import { checkBreaker, resetBreaker } from './lib/breaker.mjs';
+import { finishRun } from './lib/finish.mjs';
 
 function parseFlags(argv) {
   const f = {}; for (let i = 0; i < argv.length; i++) { if (argv[i].startsWith('--')) { const k = argv[i].slice(2); const v = argv[i + 1]?.startsWith('--') || argv[i + 1] === undefined ? true : argv[++i]; f[k] = v; } } return f;
@@ -252,6 +253,17 @@ const handlers = {
       catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }
     }
     error(`unknown breaker verb: ${verb}`); return 2;
+  },
+  finish: async (a) => {
+    const f = parseFlags(a); const root = rootOf(f); const runId = runIdOf(root, f);
+    requireLease(root, runId, f);   // fence 인자 → exit 3
+    const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'business' };
+    const status = reqStr(f, 'status'); if (!status) { error('MISSING_STATUS'); return 2; }   // Codex r1 sf-6
+    const reportRel = f.report && f.report !== true ? String(f.report) : undefined;
+    if (reportRel && (reportRel.startsWith('/') || reportRel.split('/').includes('..'))) { error('FINISH_REPORT_PATH_UNSAFE'); return 1; }
+    let proof; try { proof = f.proof ? JSON.parse(f.proof) : {}; } catch { error('INVALID_PROOF: must be JSON'); return 1; }   // 무효 값 → exit 1
+    try { const r = finishRun(root, runId, { status, reportRel, proof, fence, now: parseNow(f) }); json(r); return 0; }
+    catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }   // FINISH_STATUS_INVALID/PROOF_UNMET → exit 1
   },
 };
 
