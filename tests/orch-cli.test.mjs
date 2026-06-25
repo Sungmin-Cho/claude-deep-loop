@@ -17,11 +17,18 @@ function seed() {
   return { root, runId };
 }
 
-test('next-action prints descriptor JSON', () => {
-  const { root } = seed();
-  const out = JSON.parse(run(root, ['next-action', '--json']));
+test('next-action prints descriptor JSON (deterministic now)', () => {
+  const { root } = seed();   // run created_at = 2026-06-24T00:00:00Z
+  const out = JSON.parse(run(root, ['next-action', '--json', '--now', '2026-06-24T00:00:01Z']));
   assert.ok(out.action && out.gate);
-  assert.equal(out.action.type, 'discover');
+  assert.equal(out.action.type, 'discover');   // wallclock 창 안 → handoff 아님
+});
+
+test('next-action honors --now for wallclock hard-stop', () => {
+  const { root } = seed();
+  const out = JSON.parse(run(root, ['next-action', '--json', '--now', '2026-06-30T00:00:00Z'])); // > 24h
+  assert.equal(out.action.type, 'handoff');
+  assert.equal(out.gate.blocked_by[0], 'budget');
 });
 
 test('workstream new + set via CLI with lease', () => {

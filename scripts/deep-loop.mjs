@@ -20,6 +20,13 @@ function parseFlags(argv) {
   const f = {}; for (let i = 0; i < argv.length; i++) { if (argv[i].startsWith('--')) { const k = argv[i].slice(2); const v = argv[i + 1]?.startsWith('--') || argv[i + 1] === undefined ? true : argv[++i]; f[k] = v; } } return f;
 }
 
+function parseNow(f) {
+  if (f.now === undefined || f.now === true) return Date.now();
+  const s = String(f.now);
+  const n = /^\d+$/.test(s) ? Number(s) : Date.parse(s);
+  return Number.isFinite(n) ? n : Date.now();
+}
+
 function rootOf(f) { return f['project-root'] || process.cwd(); }
 function runIdOf(root, f) {
   if (f['run-id']) return f['run-id'];
@@ -80,8 +87,8 @@ const handlers = {
     const { runId } = initRun(root, { goal: f.goal, protocol: f.protocol, recipe: f.recipe, detected: detectPlugins(root), review: f.review ? JSON.parse(f.review) : undefined });
     json({ run_id: runId }); return 0;
   },
-  'next-action': async (a) => { const f = parseFlags(a); const root = rootOf(f); const { data } = readState(root, runIdOf(root, f)); json(nextAction(data)); return 0; },
-  tick: async (a) => { const f = parseFlags(a); const root = rootOf(f); const { data } = readState(root, runIdOf(root, f)); json({ mode: f.mode || 'advance', ...nextAction(data) }); return 0; },
+  'next-action': async (a) => { const f = parseFlags(a); const root = rootOf(f); const { data } = readState(root, runIdOf(root, f)); json(nextAction(data, { now: parseNow(f) })); return 0; },
+  tick: async (a) => { const f = parseFlags(a); const root = rootOf(f); const { data } = readState(root, runIdOf(root, f)); json({ mode: f.mode || 'advance', ...nextAction(data, { now: parseNow(f) }) }); return 0; },
   lease: async (a) => {
     const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
     if (verb === 'check') { const { data } = readState(root, runId); json(leaseCheck(data, { owner: strArg(f, 'owner'), generation: intArg(f, 'generation') })); return 0; }
