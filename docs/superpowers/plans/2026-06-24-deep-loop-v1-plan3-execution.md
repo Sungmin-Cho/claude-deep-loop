@@ -1241,13 +1241,17 @@ function violatesBoundary(src) {
 
 // Codex r3 sf-4: deep-loop.mjs 를 실제 호출하는 라인 중 mutating subcommand 는 --owner 와 --generation 을 **둘 다** 가져야 한다.
 const MUTATING_SUB = /(state\s+patch|episode\s+(?:new|record)|workstream\s+(?:new|set|terminal)|review\s+(?:dispatch|record)|handoff\s+emit|budget\s+record|comprehension\s+ack|breaker\s+reset|lease\s+(?:acquire|release)|finish\b)/;
+// Codex r5 sf-3: shorthand 명령(예: `episode record --status done`, `finish --status completed`)도 잡는다.
+// "command 라인" = deep-loop.mjs 호출이거나, mutating sub 뒤에 CLI 플래그(--xxx)가 오는 경우. 순수 산문 멘션은 무시.
+const MUTATING_CMD = /(?:state\s+patch|episode\s+(?:new|record)|workstream\s+(?:new|set|terminal)|review\s+(?:dispatch|record)|handoff\s+emit|budget\s+record|comprehension\s+ack|breaker\s+reset|lease\s+(?:acquire|release)|finish)\b[^\n]*\s--\w/;
 function mutatingFenced(text) {
   // Codex r4 sf-2: 셸 라인 연속(\ 로 끝나는 줄)을 논리 명령으로 먼저 합친다 — multi-line unfenced 명령 회피 차단.
   const joined = text.replace(/\\\n\s*/g, ' ');
   return joined.split('\n').every(line => {
-    if (!/deep-loop\.mjs/.test(line)) return true;   // 실제 CLI 호출 라인만 검사
-    if (!MUTATING_SUB.test(line)) return true;       // read-only sub → fence 불필요
-    return /--owner\b/.test(line) && /--generation\b/.test(line);   // mutating → 두 flag 필수 (OR 아님)
+    if (!MUTATING_SUB.test(line)) return true;                       // mutating sub 언급 없음 → OK
+    const isCommand = /deep-loop\.mjs/.test(line) || MUTATING_CMD.test(line);
+    if (!isCommand) return true;                                     // 산문 멘션(플래그 없음) → 무시
+    return /--owner\b/.test(line) && /--generation\b/.test(line);    // mutating 명령 → 두 fence flag 필수 (OR 아님)
   });
 }
 
@@ -1281,10 +1285,14 @@ test('mutatingFenced requires both fence flags on mutating CLI lines (fixtures)'
   assert.ok(!mutatingFenced('node x/deep-loop.mjs episode record --status done --owner $R'));   // --generation 누락
   assert.ok(!mutatingFenced('node x/deep-loop.mjs review record --verdict APPROVE --generation 1'));   // --owner 누락
   assert.ok(mutatingFenced('node x/deep-loop.mjs next-action --json'));   // read-only → fence 불필요
-  assert.ok(mutatingFenced('record the result via `episode record`'));    // CLI 호출 아닌 산문 → 무시
+  assert.ok(mutatingFenced('record the result via `episode record`'));    // 산문(플래그 없음) → 무시
   // Codex r4 sf-2: 셸 연속줄로 fence 를 분리해 회피하는 시도 차단.
   assert.ok(!mutatingFenced('node x/deep-loop.mjs \\\n  state patch --field discovered_items --value "[]"'));
   assert.ok(mutatingFenced('node x/deep-loop.mjs \\\n  state patch --field x --value "[]" --owner $R --generation 1'));
+  // Codex r5 sf-3: deep-loop.mjs 프리픽스 없는 shorthand mutating 명령도 fence 필요.
+  assert.ok(!mutatingFenced('episode record --status done --artifacts \'["a"]\''));   // shorthand unfenced
+  assert.ok(!mutatingFenced('finish --status completed --report final-report.md'));   // shorthand unfenced
+  assert.ok(mutatingFenced('episode record --status done --owner $R --generation 1'));   // shorthand fenced OK
 });
 
 for (const [dir, name, invocable, triggers, refsCLI] of SKILLS) {
@@ -1397,12 +1405,12 @@ user-invocable: false
 **본문 + references 콘텐츠 스펙:**
 - `SKILL.md`: 4-verb 개요 + 각 verb를 **Execution LLM이** 수행하는 방식(커널은 호출 안 함, §1.1) + references 인덱스 + "사용자 언어 감지" 지침.
 - `references/adapters.md`:
-  - **dispatch:** `adapter resolve --protocol <p> --task "<brief>" [--tier <t>]`로 디스크립터(`{kind,skill,then,args}`)를 받아 → `kind==='invoke_skill'`이면 `Skill({skill, args})`로 sibling invoke, `kind==='inline'`이면 직접 도구 사용. `guard.ok===false`면 dispatch 중단(tier×protocol 모순).
+  - **dispatch:** **`adapter resolve --protocol <p> --task "<brief>" --tier <gate.tier_after>`** (Codex r5 sf-1: `--tier` 를 **반드시** `next-action` 의 `gate.tier_after` 로 전달 — 빠지면 guard 가 `no-tier` no-op 라 read-only run 이 implementer 를 dispatch 한다). 디스크립터(`{dispatch,await,read,checker_via,guard}`)에서 `guard.ok===false`면 **dispatch 중단**(tier×protocol 모순 → `await_human`). 통과 시 `dispatch.kind==='invoke_skill'`이면 `Skill({skill, args})`로 sibling invoke(superpowers 는 `dispatch.skill`=`writing-plans` 만; **read-only tier 면 `then` implementer(`subagent-driven-development`) 단계는 건너뛴다** — 계획-only 허용, 구현 dispatch 금지), `kind==='inline'`이면 직접 도구 사용.
   - **awaitResult:** 디스크립터의 `await.kind`가 `poll_file`이면 그 경로(`path_template` 채워진)를 `done_when` 만족까지 폴링(LLM/드라이버가 수행). deep-work는 `.deep-work/<task>/session-receipt.json`의 `current_phase=idle`.
   - **checker:** `review dispatch --point <p> --workstream <ws> --owner --generation`로 checker episode + 디스크립터 생성 → 그 reviewer 스킬을 invoke → verdict를 `review record --episode <id> --workstream <ws> --point <p> --verdict <APPROVE|REQUEST_CHANGES|CONCERN> --owner --generation`로 기록(커널이 터미널·breaker·comprehension 파생).
   - **readArtifacts:** sibling receipt 경로 + 식별 가드(§10). 불일치 시 throw 금지 → null + 경고.
 - `references/review-strategy.md`: §7 확인 질문 흐름, deep-review 유/무 분기, `review` JSON 형태(`points`/`reviewer`/`mode`/`flags`/`converge`/`max_review_rounds`/`require_human_ack`).
-- `references/handoff-respawn.md`: §9 호출자 3종, `handoff emit` → (interactive: `terminal/launch-command.txt`를 사람에게 제시 / headless: 드라이버가 respawn). respawn 게이트 순서. "미감시 자율은 headless 강제".
+- `references/handoff-respawn.md`: §9 호출자 3종, `handoff emit` → (interactive: `terminal/launch-command.txt`를 사람에게 제시 / headless: 드라이버가 respawn). respawn 게이트 순서. "미감시 자율은 headless 강제". **비용 회계 모델(Codex r5 critical-2):** 진짜 무인 장기 실행의 하드 강제는 **drive-headless 드라이버**가 측정 usage 를 `budget record` 로 권위있게 커밋(단일 출처). PreCompact respawn 은 *세션 연속을 위한 안전망*이라 spawnFn 의 measured usage 를 기록하지 않고 버린다 — 인수한 **자식 세션이 자기 drive 사이클(drive-headless 또는 interactive tick)에서 자기 비용을 회계**한다(이중계상 방지).
 
 **structural test:** Task 9 하네스의 `deep-loop-workflow` 행(user-invocable:false, triggers `adapter`/`어댑터`). 추가로 references 3파일 `existsSync` 검증을 하네스에 inline(아래 Step 1).
 
@@ -1464,14 +1472,14 @@ user-invocable: true
 - 1. **게이트(항상 먼저):** `next-action --json`. `gate.allowed===false`거나 `action.type ∈ {handoff, await_human}`면: budget/breaker면 `handoff emit` + 사람 호출 후 종료; breaker면 `/deep-loop-status`로 사람 reset(`breaker reset --confirm --owner <run_id> --generation <n>`) 안내. (continue tick 은 autonomous 라 스스로 `--confirm` 을 주지 않는다 — breaker 해제는 사람 전용.)
 - 2. **action 분기(next-action이 반환한 `action.type`대로, 스스로 판단 추가 금지):**
   - `discover` → `/deep-loop-discover` 안내(또는 invoke).
-  - `dispatch_maker` → `adapter resolve`로 디스크립터(+`read.path`로 expected artifacts 도출) → `episode record --status in_progress`(비-터미널) → sibling `Skill()` invoke(`deep-loop-workflow/references/adapters.md`) → 완료 후 `episode record --status done --artifacts '<json: 실제 생성된 산출물 경로>' --proof '<json>'`. (Codex r3 sf-2: 제출 artifacts 는 episode 생성 시의 expected_artifacts 를 모두 커버해야 하고 파일이 root 하위에 실제 존재해야 함.)
-  - `dispatch_checker` → `review dispatch` → reviewer invoke → `review record --verdict ...`.
-  - `fix_episode` → fix maker episode 생성(`episode new --kind fix --artifacts '<json: expected 산출물>' --owner --generation`, Codex r3 sf-2: fix 도 maker 라 expected_artifacts 필수) 후 dispatch.
+  - `dispatch_maker` → **`adapter resolve --protocol <p> --task "<brief>" --tier <gate.tier_after>`** (Codex r5 sf-1: `next-action` 의 `gate.tier_after` 를 **반드시** 전달 — `--tier` 없으면 guard 가 no-op 라 read-only run 이 implementer 를 dispatch 할 수 있다). **`guard.ok===false` 면 dispatch 중단** → `await_human`(tier×protocol 모순) 안내. 통과 시 디스크립터(+`read.path`로 expected artifacts 도출) → `episode record --status in_progress --owner <run_id> --generation <n>` → sibling `Skill()` invoke → 완료 후 `episode record --status done --artifacts '<json>' --proof '<json>' --owner <run_id> --generation <n>`.
+  - `dispatch_checker` → `review dispatch --point <p> --workstream <ws> --owner <run_id> --generation <n>` → reviewer invoke → `review record --episode <id> --workstream <ws> --point <p> --verdict <APPROVE|REQUEST_CHANGES|CONCERN> --owner <run_id> --generation <n>`.
+  - `fix_episode` → fix maker episode 생성(`episode new --kind fix --artifacts '<json: expected 산출물>' --owner <run_id> --generation <n>`, fix 도 maker 라 expected_artifacts 필수) 후 dispatch.
   - `await_result` → 폴링.
   - `finish` → `/deep-loop-finish` 안내.
-- 3. **record:** 각 단계 후 CLI로 기록(위). 턴 소비는 `budget record --turns N`.
-- 4. **Decide:** 마일스톤(`milestone_predicate`) 통과 or `per_session_turn_cap` 도달이면 `handoff emit` + respawn(드라이버/사람). 아니면 다음 episode 안내.
-- mutating은 전부 `--owner <run_id> --generation <n>`. 비가역 외부행동 proposal-only.
+- 3. **record:** 각 단계 후 CLI로 기록(위). **비용 기록(Codex r5 sf-2):** interactive tick 은 best-effort 로 `budget record --turns <n> --owner <run_id> --generation <n>` 자기보고(per_session_turn_cap 구동). **headless 구동(`DEEP_LOOP_UNATTENDED` set)에서는 자기보고를 생략** — drive-headless 드라이버가 측정 usage 를 권위있게 기록하므로 이중계상 방지.
+- 4. **Decide:** 마일스톤(`milestone_predicate`) 통과 or `per_session_turn_cap` 도달이면 `handoff emit --owner <run_id> --generation <n>` + respawn(드라이버/사람). 아니면 다음 episode 안내.
+- **mutating CLI 예시는 전부 `--owner <run_id> --generation <n>` 를 인라인 포함한다**(structural test `mutatingFenced` 가 강제). 비가역 외부행동 proposal-only.
 
 - [ ] **Step 1~2:** 하네스 `deep-loop-continue` 행 RED 확인.
 - [ ] **Step 3:** SKILL.md 작성.
@@ -2021,22 +2029,34 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
+import { readState } from '../scripts/lib/state.mjs';
 import { driveHeadless } from '../scripts/hooks-impl/drive-headless.mjs';
 
 const A = join(dirname(fileURLToPath(import.meta.url)), '..', 'recipes', 'automation');
 function seedRun() {
   const root = mkdtempSync(join(tmpdir(), 'dl-auto-'));
-  initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
-  return root;
+  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  return { root, runId };
 }
 
 test('driveHeadless drives when spawn ok', () => {
-  const r = driveHeadless({ root: seedRun(), spawnFn: () => ({ ok: true, usage: { num_turns: 1 } }) });
+  const r = driveHeadless({ root: seedRun().root, spawnFn: () => ({ ok: true, usage: { num_turns: 1, tokens: 50 } }) });
   assert.equal(r.action, 'drove');
 });
 
+// Codex r5 critical-2: 성공한 headless 실행의 측정 usage 는 budget+session 에 결정론적으로 커밋되어야 한다.
+test('driveHeadless commits measured usage to budget on success', () => {
+  const { root, runId } = seedRun();
+  const r = driveHeadless({ root, spawnFn: () => ({ ok: true, usage: { num_turns: 3, tokens: 100 } }) });
+  assert.equal(r.recorded, true);
+  const d = readState(root, runId).data;
+  assert.equal(d.budget.spent, 3);
+  assert.equal(d.budget.tokens_spent, 100);
+  assert.equal(d.session_chain.sessions[0].turns, 3);   // per_session_turn_cap 도 구동
+});
+
 test('driveHeadless fails closed when usage unmeasurable/timeout', () => {
-  const r = driveHeadless({ root: seedRun(), spawnFn: () => ({ ok: false, reason: 'unmeasurable-fail-closed' }) });
+  const r = driveHeadless({ root: seedRun().root, spawnFn: () => ({ ok: false, reason: 'unmeasurable-fail-closed' }) });
   assert.equal(r.ok, false);
   assert.equal(r.action, 'fail-closed');
 });
@@ -2071,18 +2091,31 @@ test('github-actions template is a scheduled workflow calling the driver', () =>
 ```javascript
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { readState } from '../lib/state.mjs';
+import { recordCost } from '../lib/budget.mjs';
 import { headlessSpawn } from '../lib/spawn-driver.mjs';
 
 function currentRunId(root) { const p = join(root, '.deep-loop', 'current'); return existsSync(p) ? readFileSync(p, 'utf8').trim() : null; }
 
 // 무인 자동화 진입점: headlessSpawn 으로 claude -p 를 timeout + usage 측정 하에 구동.
-// 측정불가/timeout/비0 종료 → fail-closed (재시도 안 함; cron/CI 는 사람 점검 전 재트리거 금지).
+// 측정불가/timeout/비0 종료 → fail-closed. 성공 시 **측정 usage 를 budget 에 권위있게 커밋**(spec §9 hard 강제).
+// DEEP_LOOP_UNATTENDED=1 로 자식의 자기보고를 끄므로 driver 의 기록이 단일 출처(이중계상 없음, Codex r5 critical-2).
 export function driveHeadless({ root = process.cwd(), prompt = '/deep-loop-continue', spawnFn = headlessSpawn, timeoutMs } = {}) {
   if (!currentRunId(root)) return { ok: true, action: 'no-run' };
-  const cmd = `cd ${root} && claude -p "${prompt}" --permission-mode acceptEdits`;
+  const cmd = `cd ${root} && DEEP_LOOP_UNATTENDED=1 claude -p "${prompt}" --permission-mode acceptEdits`;
   const res = spawnFn(cmd, timeoutMs ? { timeoutMs } : {});
   if (!res.ok) return { ok: false, action: 'fail-closed', reason: res.reason };
-  return { ok: true, action: 'drove', usage: res.usage };
+  // 측정 usage 를 budget+session 에 커밋. 현재 lease 로 fence — 자식이 handoff 로 lease 를 가져갔으면(generation 변경)
+  // LEASE_FENCED → 자식이 자기 회계를 가지므로 skip (이중계상 방지).
+  const runId = currentRunId(root);
+  let recorded = false;
+  try {
+    const lease = readState(root, runId).data.session_chain?.lease || {};
+    recordCost(root, runId, { turns: res.usage?.num_turns || 0, tokens: res.usage?.tokens || 0,
+      fence: { owner: lease.owner_run_id, generation: lease.generation, intent: 'business' } });
+    recorded = true;
+  } catch (e) { if (!String(e.message).startsWith('LEASE_FENCED')) throw e; }
+  return { ok: true, action: 'drove', usage: res.usage, recorded };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
