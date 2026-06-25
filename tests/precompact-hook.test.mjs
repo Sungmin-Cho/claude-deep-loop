@@ -1,10 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, existsSync } from 'node:fs';
+import { readFileSync as rf } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { runPreCompactHandoff } from '../scripts/hooks-impl/precompact-handoff.mjs';
+const PROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 function seed() {
   const root = mkdtempSync(join(tmpdir(), 'dl-pc-'));
@@ -45,4 +48,20 @@ test('unattended but gate-blocked → no spawn, run paused', async () => {
   assert.equal(r.action, 'gate-blocked');
   const { readState } = await import('../scripts/lib/state.mjs');
   assert.equal(readState(root, runId).data.status, 'paused');
+});
+
+test('hooks.json declares PreCompact → precompact-handoff.sh', () => {
+  const h = JSON.parse(rf(join(PROOT, 'hooks', 'hooks.json'), 'utf8'));
+  assert.ok(h.hooks.PreCompact, 'PreCompact event present');
+  const cmd = h.hooks.PreCompact[0].hooks[0].command;
+  assert.match(cmd, /precompact-handoff\.sh/);
+  assert.match(cmd, /\$\{CLAUDE_PLUGIN_ROOT\}/);
+});
+
+test('precompact-handoff.sh is Bash 3.2 safe', () => {
+  const sh = rf(join(PROOT, 'hooks', 'scripts', 'precompact-handoff.sh'), 'utf8');
+  assert.match(sh, /set -Eeuo pipefail/);
+  assert.ok(!/declare -A/.test(sh), 'no associative arrays');
+  assert.ok(!/\$\{[A-Za-z_]+,,\}/.test(sh), 'no ${var,,} lowercasing');
+  assert.match(sh, /precompact-handoff\.mjs/);
 });
