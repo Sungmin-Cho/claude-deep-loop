@@ -18,6 +18,7 @@ import { respawn, respawnGate } from './lib/respawn.mjs';
 import { resolveAdapter, guardTierProtocol, loadProtocol } from './lib/adapters.mjs';
 import { recordCost, checkBudget } from './lib/budget.mjs';
 import { computeDebt, ack as ackComprehension } from './lib/comprehension.mjs';
+import { checkBreaker, resetBreaker } from './lib/breaker.mjs';
 
 function parseFlags(argv) {
   const f = {}; for (let i = 0; i < argv.length; i++) { if (argv[i].startsWith('--')) { const k = argv[i].slice(2); const v = argv[i + 1]?.startsWith('--') || argv[i + 1] === undefined ? true : argv[++i]; f[k] = v; } } return f;
@@ -239,6 +240,18 @@ const handlers = {
       const { data } = readState(root, runId); json({ ok: true, ...computeDebt(data) }); return 0;
     }
     error(`unknown comprehension verb: ${verb}`); return 2;
+  },
+  breaker: async (a) => {
+    const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
+    if (verb === 'check') { const { data } = readState(root, runId); json(checkBreaker(data)); return 0; }
+    if (verb === 'reset') {
+      if (f.confirm !== true && f.confirm !== 'true') { error('BREAKER_RESET_REQUIRES_CONFIRM: pass --confirm (human-only)'); return 2; }
+      requireLease(root, runId, f);   // Codex r2 critical-1: fence 도 필수 (--owner/--generation, exit 3)
+      const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'business' };
+      try { json(resetBreaker(root, runId, { fence })); return 0; }
+      catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }
+    }
+    error(`unknown breaker verb: ${verb}`); return 2;
   },
 };
 

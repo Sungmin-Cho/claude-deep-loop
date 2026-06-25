@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { checkBreaker, recordReviewVerdict } from '../scripts/lib/breaker.mjs';
+import { checkBreaker, recordReviewVerdict, resetBreaker } from '../scripts/lib/breaker.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState } from '../scripts/lib/state.mjs';
 
@@ -47,4 +47,18 @@ test('recordReviewVerdict APPROVE after latch resets counter but keeps tripped l
   const { data } = readState(root, runId);
   assert.equal(data.circuit_breaker.consecutive_request_changes, 0, 'counter resets');
   assert.equal(data.circuit_breaker.tripped, true, 'tripped stays latched (human-reset only)');
+});
+
+test('resetBreaker clears a tripped latch under valid fence; wrong gen throws', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-rb-'));
+  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  const fence = { owner: runId, generation: 1, intent: 'business' };
+  recordReviewVerdict(root, runId, 'REQUEST_CHANGES', fence);
+  recordReviewVerdict(root, runId, 'REQUEST_CHANGES', fence);
+  recordReviewVerdict(root, runId, 'REQUEST_CHANGES', fence);   // 연속 3 → tripped + status=paused
+  assert.equal(checkBreaker(readState(root, runId).data).tripped, true);
+  assert.throws(() => resetBreaker(root, runId, { fence: { owner: runId, generation: 9 } }), /LEASE_FENCED/);   // fence 강제
+  const r = resetBreaker(root, runId, { fence });
+  assert.equal(r.status, 'running');   // breaker 사유 paused → 복귀
+  assert.equal(checkBreaker(readState(root, runId).data).tripped, false);
 });
