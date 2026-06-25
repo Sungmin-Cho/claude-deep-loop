@@ -137,3 +137,26 @@ test('episode new --artifacts then record done (the skill flow)', () => {
   run(root, ['episode', 'record', '--id', ep.id, '--status', 'done', '--artifacts', '["art.txt"]', '--owner', runId, '--generation', '1']);
   assert.equal(JSON.parse(run(root, ['state', 'get', '--field', 'episodes.0.status'])), 'done');
 });
+
+test('comprehension status is read-only', () => {
+  const { root } = seed();
+  const r = JSON.parse(run(root, ['comprehension', 'status']));
+  assert.equal(r.debt_ratio, 0);
+});
+
+test('comprehension ack is fenced (exit 3)', () => {
+  const { root, runId } = seed();
+  assert.equal(runFail(root, ['comprehension', 'ack', '--episode', 'x', '--owner', runId, '--generation', '9']), 3);
+});
+
+// Codex r1 should-fix-5: 부재 episode ack 는 overcount 를 일으키면 안 된다 → 거부(exit 1).
+test('comprehension ack rejects nonexistent episode (exit 1)', () => {
+  const { root, runId } = seed();
+  assert.equal(runFail(root, ['comprehension', 'ack', '--episode', 'ghost', '--owner', runId, '--generation', '1']), 1);
+});
+
+// Codex r1 should-fix-6: 비-fence 인자 누락 → exit 2 (usage).
+test('comprehension ack missing --episode exits 2', () => {
+  const { root, runId } = seed();
+  assert.equal(runFail(root, ['comprehension', 'ack', '--owner', runId, '--generation', '1']), 2);
+});

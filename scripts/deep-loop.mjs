@@ -17,6 +17,7 @@ import { emitHandoff } from './lib/handoff.mjs';
 import { respawn, respawnGate } from './lib/respawn.mjs';
 import { resolveAdapter, guardTierProtocol, loadProtocol } from './lib/adapters.mjs';
 import { recordCost, checkBudget } from './lib/budget.mjs';
+import { computeDebt, ack as ackComprehension } from './lib/comprehension.mjs';
 
 function parseFlags(argv) {
   const f = {}; for (let i = 0; i < argv.length; i++) { if (argv[i].startsWith('--')) { const k = argv[i].slice(2); const v = argv[i + 1]?.startsWith('--') || argv[i + 1] === undefined ? true : argv[++i]; f[k] = v; } } return f;
@@ -225,6 +226,19 @@ const handlers = {
       json({ ok: true, spent: data.budget.spent, tokens_spent: data.budget.tokens_spent }); return 0;
     }
     error(`unknown budget verb: ${verb}`); return 2;
+  },
+  comprehension: async (a) => {
+    const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
+    if (verb === 'status') { const { data } = readState(root, runId); json(computeDebt(data)); return 0; }
+    if (verb === 'ack') {
+      requireLease(root, runId, f);   // fence 인자 → exit 3
+      const episode = reqStr(f, 'episode'); if (!episode) { error('MISSING_EPISODE'); return 2; }   // Codex r1 sf-6
+      const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'business' };
+      try { ackComprehension(root, runId, episode, { fence }); }
+      catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }   // EPISODE_NOT_FOUND → exit 1
+      const { data } = readState(root, runId); json({ ok: true, ...computeDebt(data) }); return 0;
+    }
+    error(`unknown comprehension verb: ${verb}`); return 2;
   },
 };
 
