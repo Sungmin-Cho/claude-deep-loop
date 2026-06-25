@@ -198,7 +198,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
@@ -425,12 +425,23 @@ test('state patch forbids terminal episode status (exit 1)', () => {
 });
 ```
 
-`tests/state.test.mjs` 에 fence 단위(직접 lib):
+`tests/state.test.mjs` 에 fence 단위(직접 lib, Codex r3 sf-5: 실행 가능한 assertion):
 
 ```javascript
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { initRun } from '../scripts/lib/initrun.mjs';
+import { patch, readState } from '../scripts/lib/state.mjs';
+
 test('patch enforces fence inside the lock', () => {
-  // seed a run, then patch with mismatched generation throws LEASE_FENCED
-  // (uses existing test helpers in this file; mirror their seed pattern)
+  const root = mkdtempSync(join(tmpdir(), 'dl-pf-'));
+  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  patch(root, runId, 'discovered_items', ['a'], { fence: { owner: runId, generation: 1, intent: 'business' } });
+  assert.deepEqual(readState(root, runId).data.discovered_items, ['a']);
+  assert.throws(() => patch(root, runId, 'discovered_items', ['b'], { fence: { owner: runId, generation: 9, intent: 'business' } }), /LEASE_FENCED/);
+  // forbidden field 는 fence 와 무관하게 거부
+  assert.throws(() => patch(root, runId, 'budget.spent', 1, { fence: { owner: runId, generation: 1, intent: 'business' } }), /FIELD_FORBIDDEN/);
 });
 ```
 
@@ -535,6 +546,24 @@ test('budget check is read-only and reports ok', () => {
   const r = JSON.parse(run(root, ['budget', 'check', '--now', '2026-06-24T00:00:01Z']));
   assert.equal(r.ok, true);
 });
+
+// Codex r3 critical-1: budget record 가 세션 turns 를 증가시켜 per_session_turn_cap 마일스톤을 실제로 구동.
+test('budget record drives per_session_turn_cap → next-action handoff', () => {
+  const { root, runId } = seed();
+  run(root, ['budget', 'record', '--turns', '40', '--owner', runId, '--generation', '1']);   // == per_session_turn_cap(40)
+  const na = JSON.parse(run(root, ['next-action', '--json', '--now', '2026-06-24T00:00:01Z']));
+  assert.equal(na.action.type, 'handoff');
+  assert.equal(na.action.reason, 'per_session_turn_cap');
+});
+
+// Codex r3 sf-2: 스킬이 쓰는 CLI 경로(episode new --artifacts → record done)가 실제로 통과하는지 통합 검증.
+test('episode new --artifacts then record done (the skill flow)', () => {
+  const { root, runId } = seed();
+  writeFileSync(join(root, 'art.txt'), 'x');   // expected artifact 가 root 하위에 존재해야 done 통과
+  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'implementation', '--point', 'implementation', '--artifacts', '["art.txt"]', '--owner', runId, '--generation', '1']));
+  run(root, ['episode', 'record', '--id', ep.id, '--status', 'done', '--artifacts', '["art.txt"]', '--owner', runId, '--generation', '1']);
+  assert.equal(JSON.parse(run(root, ['state', 'get', '--field', 'episodes.0.status'])), 'done');
+});
 ```
 
 - [ ] **Step 2: Run to verify fail**
@@ -556,6 +585,11 @@ export function recordCost(root, runId, { turns = 0, tokens = 0, fence } = {}) {
   return appendAnchored(root, runId, { type: 'cost', data: { turns, tokens } }, (loop, spent) => {
     loop.budget.spent = spent.turns;
     loop.budget.tokens_spent = spent.tokens;
+    // Codex r3 critical-1: per_session_turn_cap 마일스톤은 nextAction 이 lease owner 의 session.turns 로 판정한다
+    // (next-action.mjs:5-7,57-59). 같은 트랜잭션에서 현재 세션의 turns 를 이 호출의 delta 만큼 증가시켜야 cap 이 실제로 터진다.
+    const owner = loop.session_chain?.lease?.owner_run_id;
+    const sess = (loop.session_chain?.sessions || []).find(s => s.run_id === owner);
+    if (sess) sess.turns = (sess.turns || 0) + turns;
   }, (loop) => {
     if (fence) { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
   });
@@ -644,12 +678,27 @@ test('comprehension ack missing --episode exits 2', () => {
 });
 ```
 
-`tests/comprehension.test.mjs` 에 dedup 단위 테스트 추가(직접 lib):
+`tests/comprehension.test.mjs` 에 dedup 단위 테스트 추가(직접 lib, Codex r3 sf-5: 실행 가능):
 
 ```javascript
-test('ack is idempotent — duplicate ack does not double-count', () => {
-  // seed a run with one episode (newEpisode); ack twice; episodes_human_reviewed === 1.
-  // (mirror this file의 기존 seed/헬퍼 사용)
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { initRun } from '../scripts/lib/initrun.mjs';
+import { newEpisode } from '../scripts/lib/episode.mjs';
+import { ack } from '../scripts/lib/comprehension.mjs';
+import { readState } from '../scripts/lib/state.mjs';
+
+test('ack is idempotent and validates episode existence', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-ack-'));
+  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  const fence = { owner: runId, generation: 1, intent: 'business' };
+  const ep = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', expectedArtifacts: ['a'], fence });
+  ack(root, runId, ep.id, { fence });
+  ack(root, runId, ep.id, { fence });   // 중복 — 카운트 증가 금지
+  assert.equal(readState(root, runId).data.comprehension.episodes_human_reviewed, 1);
+  assert.throws(() => ack(root, runId, 'ghost', { fence }), /EPISODE_NOT_FOUND/);
+  assert.throws(() => ack(root, runId, ep.id, { fence: { owner: runId, generation: 9 } }), /LEASE_FENCED/);
 });
 ```
 
@@ -735,13 +784,28 @@ circuit breaker가 latch되면(연속 REQUEST_CHANGES 3) 사람 reset 전까지 
 
 - [ ] **Step 1: Write the failing test**
 
-`tests/breaker.test.mjs` 에 추가(직접 lib + trip→reset):
+`tests/breaker.test.mjs` 에 추가(직접 lib + trip→reset, Codex r3 sf-5: 실행 가능):
 
 ```javascript
-test('resetBreaker clears latch under valid fence and is fenced otherwise', () => {
-  // seed run; recordReviewVerdict REQUEST_CHANGES x3 → tripped + status=paused
-  // resetBreaker(root, runId, { fence: {owner:runId, generation:1} }) → tripped=false, counter=0, status=running
-  // resetBreaker(root, runId, { fence: {owner:runId, generation:9} }) → throws /LEASE_FENCED/
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { initRun } from '../scripts/lib/initrun.mjs';
+import { checkBreaker, recordReviewVerdict, resetBreaker } from '../scripts/lib/breaker.mjs';
+import { readState } from '../scripts/lib/state.mjs';
+
+test('resetBreaker clears a tripped latch under valid fence; wrong gen throws', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-rb-'));
+  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  const fence = { owner: runId, generation: 1, intent: 'business' };
+  recordReviewVerdict(root, runId, 'REQUEST_CHANGES', fence);
+  recordReviewVerdict(root, runId, 'REQUEST_CHANGES', fence);
+  recordReviewVerdict(root, runId, 'REQUEST_CHANGES', fence);   // 연속 3 → tripped + status=paused
+  assert.equal(checkBreaker(readState(root, runId).data).tripped, true);
+  assert.throws(() => resetBreaker(root, runId, { fence: { owner: runId, generation: 9 } }), /LEASE_FENCED/);   // fence 강제
+  const r = resetBreaker(root, runId, { fence });
+  assert.equal(r.status, 'running');   // breaker 사유 paused → 복귀
+  assert.equal(checkBreaker(readState(root, runId).data).tripped, false);
 });
 ```
 
@@ -935,6 +999,19 @@ test('finish is fenced', () => {
   const { root, runId } = seed();
   assert.throws(() => finishRun(root, runId, { status: 'stopped', proof: { human_reason: 'x' }, fence: { owner: runId, generation: 9 } }), /LEASE_FENCED/);
 });
+
+// Codex r3 sf-3: fence 는 lib 레벨 필수 (CLI 우회 호출도 차단).
+test('finishRun requires a fence object', () => {
+  const { root, runId } = seed();
+  assert.throws(() => finishRun(root, runId, { status: 'stopped', proof: { human_reason: 'x' } }), /FENCE_REQUIRED/);
+});
+
+// Codex r3 sf-3: report 경로는 runDir 하위로 격리 — 바깥 경로는 proof 미충족.
+test('finish completed rejects a report path outside runDir', () => {
+  const { root, runId, fence } = seed();
+  buildSettledRun(root, runId, fence);
+  assert.throws(() => finishRun(root, runId, { status: 'completed', reportRel: '../../escape.md', proof: {}, fence }), /final-report-missing|FINISH_PROOF_UNMET/);
+});
 ```
 
 - [ ] **Step 2: Run to verify fail**
@@ -946,7 +1023,7 @@ Expected: FAIL — `Cannot find module finish.mjs`.
 
 ```javascript
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { resolve, sep } from 'node:path';
 import { appendAnchored } from './integrity.mjs';
 import { leaseCheck } from './lease.mjs';
 import { runDir } from './state.mjs';
@@ -978,6 +1055,8 @@ export function finishProofState(loop) {
 }
 
 export function finishRun(root, runId, { status, reportRel, proof = {}, fence, now = Date.now() } = {}) {
+  // Codex r3 sf-3: fence 는 lib 레벨에서 **필수** (CLI 우회 호출도 fence 강제). newEpisode/recordEpisode 와 동일 규약.
+  if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: finishRun');
   let result;
   appendAnchored(root, runId, { type: 'finish', data: { status, reportRel: reportRel || null } },
     (loop) => {
@@ -988,15 +1067,17 @@ export function finishRun(root, runId, { status, reportRel, proof = {}, fence, n
       result = { ok: true, status };
     },
     (loop) => {
-      if (fence) { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
+      const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason);   // 무조건 (fence 필수)
       if (status !== 'completed' && status !== 'stopped') throw new Error(`FINISH_STATUS_INVALID: ${status}`);
       if (status === 'stopped') {
         if (!proof || !proof.human_reason) throw new Error('FINISH_PROOF_UNMET: stopped requires proof.human_reason');
         return;
       }
-      // completed
+      // completed: report 는 runDir 하위로 정규화·격리(containment)된 채 존재해야 — CLI 가드에 의존하지 않고 lib 가 강제.
       const ps = finishProofState(loop);
-      const reportOk = reportRel && existsSync(join(runDir(root, runId), reportRel));
+      const base = resolve(runDir(root, runId));
+      const full = reportRel ? resolve(base, reportRel) : null;
+      const reportOk = full && (full === base || full.startsWith(base + sep)) && existsSync(full);
       if (!reportOk) ps.missing.push('final-report-missing');
       if (ps.missing.length) throw new Error(`FINISH_PROOF_UNMET: ${ps.missing.join(',')}`);
     });
@@ -1113,14 +1194,27 @@ function violatesBoundary(src) {
   const callForms = [
     /(Write|Edit)\s*\([^)]*?(loop\.json|event-log\.jsonl|\.loop\.hash)/,
     new RegExp(`(writeFileSync|appendFileSync|writeFile|appendFile)\\s*\\([^)]*?${DUR}`),
-    new RegExp(`\\bsed\\s+-i\\b[^\\n]*?${DUR}`),   // sed -i 는 라인 어디든 in-place 쓰기
+    new RegExp(`\\bsed\\s+-i\\b[^\\n]*?${DUR}`),                     // sed -i 인플레이스
+    new RegExp(`\\b(perl|ruby)\\s+-[a-z]*i[a-z]*\\b[^\\n]*?${DUR}`),  // perl/ruby -i 인플레이스
+    new RegExp(`open\\s*\\([^)]*${DUR}[^)]*,\\s*["'][wa]`),           // python/ruby open(..., "w"/"a")
   ];
   if (callForms.some(re => re.test(src))) return true;
-  // 셸 redirect/tee: blockquote 줄 제외 + redirect target 이 durable 경로인 줄만.
+  // 줄 단위(blockquote 제외): durable 경로를 대상으로 하는 셸 쓰기/redirect (Codex r3 sf-4: cp/mv/rm/truncate/dd 추가).
   const redirect = new RegExp(`(?:>>?|\\btee\\b)\\s+\\S*${DUR}`);
+  const shellWrite = new RegExp(`\\b(cp|mv|rm|truncate|install|dd)\\b[^\\n]*${DUR}`);
   return src.split('\n').some(line => {
-    if (/^\s*>/.test(line)) return false;   // 마크다운 blockquote — 셸 redirect 아님
-    return redirect.test(line);
+    if (/^\s*>/.test(line)) return false;   // 마크다운 blockquote — 셸 쓰기 아님
+    return redirect.test(line) || shellWrite.test(line);
+  });
+}
+
+// Codex r3 sf-4: deep-loop.mjs 를 실제 호출하는 라인 중 mutating subcommand 는 --owner 와 --generation 을 **둘 다** 가져야 한다.
+const MUTATING_SUB = /(state\s+patch|episode\s+(?:new|record)|workstream\s+(?:new|set|terminal)|review\s+(?:dispatch|record)|handoff\s+emit|budget\s+record|comprehension\s+ack|breaker\s+reset|lease\s+(?:acquire|release)|finish\b)/;
+function mutatingFenced(text) {
+  return text.split('\n').every(line => {
+    if (!/deep-loop\.mjs/.test(line)) return true;   // 실제 CLI 호출 라인만 검사
+    if (!MUTATING_SUB.test(line)) return true;       // read-only sub → fence 불필요
+    return /--owner\b/.test(line) && /--generation\b/.test(line);   // mutating → 두 flag 필수 (OR 아님)
   });
 }
 
@@ -1130,18 +1224,31 @@ test('boundary scan flags forbidden write forms and allows reads/mentions/blockq
     'fs.appendFileSync(".deep-loop/runs/x/event-log.jsonl", line)',
     'echo "$JSON" > .deep-loop/runs/$ID/loop.json',
     'sed -i "s/running/paused/" .deep-loop/runs/x/loop.json',
+    'cp tmp .deep-loop/runs/$ID/loop.json',
+    'mv tmp .deep-loop/runs/x/event-log.jsonl',
+    'truncate -s 0 .deep-loop/runs/x/loop.json',
+    "python -c \"open('.deep-loop/runs/x/loop.json', 'w')\"",
     'node -e "fs.writeFileSync(\'a/.loop.hash\', h)"',
   ];
   for (const s of bad) assert.ok(violatesBoundary(s), `should flag: ${s}`);
   const ok = [
     'loop.json + handoff 가 source of truth. 이전 대화 가정 금지.',
-    '> [!IMPORTANT] loop.json + handoff are the source of truth.',   // Codex r2 sf-3: blockquote 오탐 금지
-    '> .deep-loop/runs/<id>/loop.json 은 커널만 쓴다.',               // blockquote path 언급도 허용
+    '> [!IMPORTANT] loop.json + handoff are the source of truth.',   // blockquote 오탐 금지
+    '> .deep-loop/runs/<id>/loop.json 은 커널만 쓴다.',               // blockquote path 언급 허용
+    'run dir 은 .deep-loop/runs/<id>/ 이다 (커널만 씀).',             // 비-blockquote path 언급(쓰기 동사 없음) 허용
     'node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field status',
     'Read .deep-loop/runs/<id>/handoffs/<ts>-next-session.md first; then /deep-loop-resume',
     'event-log.jsonl 은 커널이 appendAnchored 단일 경로로만 쓴다 (스킬은 절대 직접 쓰지 않음).',
   ];
   for (const s of ok) assert.ok(!violatesBoundary(s), `should allow: ${s}`);
+});
+
+test('mutatingFenced requires both fence flags on mutating CLI lines (fixtures)', () => {
+  assert.ok(mutatingFenced('node x/deep-loop.mjs episode record --status done --owner $R --generation 1'));
+  assert.ok(!mutatingFenced('node x/deep-loop.mjs episode record --status done --owner $R'));   // --generation 누락
+  assert.ok(!mutatingFenced('node x/deep-loop.mjs review record --verdict APPROVE --generation 1'));   // --owner 누락
+  assert.ok(mutatingFenced('node x/deep-loop.mjs next-action --json'));   // read-only → fence 불필요
+  assert.ok(mutatingFenced('record the result via `episode record`'));    // CLI 호출 아닌 산문 → 무시
 });
 
 for (const [dir, name, invocable, triggers, refsCLI] of SKILLS) {
@@ -1168,10 +1275,11 @@ for (const [dir, name, invocable, triggers, refsCLI] of SKILLS) {
       `${dir} instructs a direct durable-state write — must route through the fenced CLI`);
   });
   if (refsCLI) {
-    test(`skill ${dir}: routes mutations through the CLI with fence`, () => {
+    test(`skill ${dir}: every mutating CLI line carries both fence flags`, () => {
       const src = readFileSync(skillPath(dir), 'utf8');
       assert.match(src, /deep-loop\.mjs/, `${dir} must invoke kernel CLI`);
-      assert.match(src, /--owner|--generation/, `${dir} mutating CLI must pass lease fence`);
+      // Codex r3 sf-4: --owner 와 --generation 둘 다 (OR 아님). mutating CLI 라인마다 fence 필수.
+      assert.ok(mutatingFenced(src), `${dir} has a mutating deep-loop.mjs line missing --owner or --generation`);
     });
   }
   if (invocable && dir !== 'deep-loop-status') {
@@ -1211,7 +1319,7 @@ user-invocable: true
   4. **workstream 분해(§8):** 큰 goal이면 N개 workstream(=PR) 제안 후 사람 확인("[이대로/조정/단일 PR로]"), 작은 작업이면 1 workstream 자동.
   5. **run 생성:** `init-run --goal "<goal>" --protocol <p> --recipe '<json>' --review '<json>'` → `run_id` 회수. 이후 모든 mutating은 `--owner <run_id> --generation 1`.
   6. workstream 생성: `workstream new --title ... --branch ... --worktree ... [--depends-on '<json>'] --owner <run_id> --generation 1`.
-  7. 첫 episode: `episode new --plugin <maker> --role maker --kind <k> --point <design|plan|implementation> --workstream <ws> --owner ... --generation 1`.
+  7. 첫 episode: `episode new --plugin <maker> --role maker --kind <k> --point <design|plan|implementation> --workstream <ws> --artifacts '<json: expected output paths>' --owner ... --generation 1`. **`--artifacts` 필수** (Codex r3 sf-2): maker `done` 전이는 비어있지 않은 expected_artifacts + 그 파일들의 실제 존재를 요구한다(episode.mjs). expected 경로는 protocol read 디스크립터(`adapter resolve` 의 `read.path`) 또는 계획된 산출물에서 도출.
 - **Section 3 (완료 메시지):** 다음 명령(`/deep-loop-continue`) 안내 + run_id + workstream 요약.
 
 - [ ] **Step 4: Run to verify the entry skill passes its harness rows**
@@ -1271,6 +1379,18 @@ test('deep-loop-workflow references exist', () => {
   for (const r of ['adapters.md', 'review-strategy.md', 'handoff-respawn.md'])
     assert.ok(existsSync(join(ROOT, 'skills', 'deep-loop-workflow', 'references', r)), `missing reference ${r}`);
 });
+
+// Codex r3 sf-4: SKILL.md + workflow references 의 *모든* mutating CLI 라인이 fence(--owner+--generation)를 갖는지 전역 검사.
+// deep-loop-workflow 는 references 에 review dispatch/record(mutating)를 담으므로 여기서 함께 검증된다.
+test('all skills + workflow references fence every mutating CLI line', () => {
+  const files = SKILLS.map(([dir]) => skillPath(dir));
+  for (const r of ['adapters.md', 'review-strategy.md', 'handoff-respawn.md'])
+    files.push(join(ROOT, 'skills', 'deep-loop-workflow', 'references', r));
+  for (const f of files) {
+    if (!existsSync(f)) continue;
+    assert.ok(mutatingFenced(readFileSync(f, 'utf8')), `${f} has an unfenced mutating CLI invocation`);
+  }
+});
 ```
 
 - [ ] **Step 2: Run to verify fail** — `node --test tests/skills.test.mjs` → workflow 행 + references FAIL.
@@ -1308,9 +1428,9 @@ user-invocable: true
 - 1. **게이트(항상 먼저):** `next-action --json`. `gate.allowed===false`거나 `action.type ∈ {handoff, await_human}`면: budget/breaker면 `handoff emit` + 사람 호출 후 종료; breaker면 `/deep-loop-status`로 사람 reset(`breaker reset --confirm --owner <run_id> --generation <n>`) 안내. (continue tick 은 autonomous 라 스스로 `--confirm` 을 주지 않는다 — breaker 해제는 사람 전용.)
 - 2. **action 분기(next-action이 반환한 `action.type`대로, 스스로 판단 추가 금지):**
   - `discover` → `/deep-loop-discover` 안내(또는 invoke).
-  - `dispatch_maker` → `adapter resolve`로 디스크립터 → `episode record --status in_progress`(비-터미널) → sibling `Skill()` invoke(`deep-loop-workflow/references/adapters.md`) → 완료 후 `episode record --status done --artifacts '<json>' --proof '<json>'`.
+  - `dispatch_maker` → `adapter resolve`로 디스크립터(+`read.path`로 expected artifacts 도출) → `episode record --status in_progress`(비-터미널) → sibling `Skill()` invoke(`deep-loop-workflow/references/adapters.md`) → 완료 후 `episode record --status done --artifacts '<json: 실제 생성된 산출물 경로>' --proof '<json>'`. (Codex r3 sf-2: 제출 artifacts 는 episode 생성 시의 expected_artifacts 를 모두 커버해야 하고 파일이 root 하위에 실제 존재해야 함.)
   - `dispatch_checker` → `review dispatch` → reviewer invoke → `review record --verdict ...`.
-  - `fix_episode` → fix maker episode 생성(`episode new --kind fix`) 후 dispatch.
+  - `fix_episode` → fix maker episode 생성(`episode new --kind fix --artifacts '<json: expected 산출물>' --owner --generation`, Codex r3 sf-2: fix 도 maker 라 expected_artifacts 필수) 후 dispatch.
   - `await_result` → 폴링.
   - `finish` → `/deep-loop-finish` 안내.
 - 3. **record:** 각 단계 후 CLI로 기록(위). 턴 소비는 `budget record --turns N`.
