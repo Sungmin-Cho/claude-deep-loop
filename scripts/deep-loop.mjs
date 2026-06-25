@@ -155,6 +155,17 @@ const handlers = {
     // CLI는 spawnFn 미주입 → 실제 spawn은 드라이버(Plan 3). 게이트만 평가.
     json({ spawn: 'requires-driver', reason: 'actual session spawn is provided by a Plan-3 headless driver (spawnFn); CLI evaluates the gate only', gate: respawnGate(data) }); return 0;
   },
+  state: async (a) => {
+    const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
+    if (verb === 'get') {
+      const { data } = readState(root, runId);
+      if (f.field === undefined || f.field === true) { json(data); return 0; }
+      const val = String(f.field).split('.').reduce((o, k) => (o == null ? undefined : o[k]), data);
+      json(val === undefined ? null : val); return 0;
+    }
+    // 'patch' verb는 Task 4에서 추가
+    error(`unknown state verb: ${verb}`); return 2;
+  },
   adapter: async (a) => {
     const [verb, ...rest] = a; const f = parseFlags(rest);
     if (verb !== 'resolve') { error(`unknown adapter verb: ${verb}`); return 2; }

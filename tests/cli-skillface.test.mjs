@@ -61,3 +61,13 @@ test('adapter resolve missing --protocol exits 2 (usage, not fence-3)', () => {
   const { root } = seed();
   assert.equal(runFail(root, ['adapter', 'resolve', '--task', 'x']), 2);
 });
+
+test('state get returns whole loop and a field path', () => {
+  const { root } = seed();
+  const whole = JSON.parse(run(root, ['state', 'get']));
+  assert.equal(whole.goal, 'g');
+  const status = JSON.parse(run(root, ['state', 'get', '--field', 'status']));
+  assert.equal(status, 'running');
+  const missing = JSON.parse(run(root, ['state', 'get', '--field', 'nope.deep']));
+  assert.equal(missing, null);
+});
