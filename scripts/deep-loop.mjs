@@ -15,6 +15,7 @@ import { dispatchReview, recordReviewOutcome } from './lib/review.mjs';
 import { nextAction } from './lib/next-action.mjs';
 import { emitHandoff } from './lib/handoff.mjs';
 import { respawn, respawnGate } from './lib/respawn.mjs';
+import { resolveAdapter, guardTierProtocol, loadProtocol } from './lib/adapters.mjs';
 
 function parseFlags(argv) {
   const f = {}; for (let i = 0; i < argv.length; i++) { if (argv[i].startsWith('--')) { const k = argv[i].slice(2); const v = argv[i + 1]?.startsWith('--') || argv[i + 1] === undefined ? true : argv[++i]; f[k] = v; } } return f;
@@ -26,6 +27,8 @@ function parseNow(f) {
   const n = /^\d+$/.test(s) ? Number(s) : Date.parse(s);
   return Number.isFinite(n) ? n : Date.now();
 }
+
+function reqStr(f, name) { const v = f[name]; return (typeof v === 'string' && v.length) ? v : null; }   // 누락 시 null (핸들러가 exit 2 결정)
 
 function rootOf(f) { return f['project-root'] || process.cwd(); }
 function runIdOf(root, f) {
@@ -151,6 +154,34 @@ const handlers = {
     if (f['dry-run']) { json(respawnGate(data)); return 0; }
     // CLI는 spawnFn 미주입 → 실제 spawn은 드라이버(Plan 3). 게이트만 평가.
     json({ spawn: 'requires-driver', reason: 'actual session spawn is provided by a Plan-3 headless driver (spawnFn); CLI evaluates the gate only', gate: respawnGate(data) }); return 0;
+  },
+  adapter: async (a) => {
+    const [verb, ...rest] = a; const f = parseFlags(rest);
+    if (verb !== 'resolve') { error(`unknown adapter verb: ${verb}`); return 2; }
+    const protocol = reqStr(f, 'protocol'); if (!protocol) { error('MISSING_PROTOCOL'); return 2; }
+    let ad, p; try { ad = resolveAdapter(protocol); p = loadProtocol(protocol); } catch { error(`UNKNOWN_PROTOCOL: ${protocol}`); return 2; }
+    const task = reqStr(f, 'task') || '';
+    const ref = { task };
+    const fillTask = (t) => String(t || '').replace(/<task>/g, task);
+    let dispatch = ad.dispatch(ref);
+    const awaitD = ad.awaitResult(ref);
+    const read = { path: p.read.receipt_path_template ? fillTask(p.read.receipt_path_template) : null, producer: p.read.producer, artifact_kind: p.read.artifact_kind };
+    // guard 는 implementer_verb 기준 (tier×protocol 모순). Codex r7 sf-1: read-only 가 implementer 를 막을 때,
+    // implementer_verb 가 'then'(superpowers)이면 planning(dispatch.skill=writing-plans)은 살리고 `then`(subagent-driven-development)만 strip,
+    // 'dispatch'(deep-work/standalone)면 dispatch 자체가 implementer 라 전체 차단(guard.ok=false).
+    const implGuard = f.tier && f.tier !== true ? guardTierProtocol(f.tier, protocol, p.implementer_verb) : { ok: true, reason: 'no-tier' };
+    let guard = implGuard;
+    if (!implGuard.ok && p.implementer_verb === 'then') {
+      dispatch = { ...dispatch, then: null };                                  // planning-only: writing-plans 실행, then skip
+      guard = { ok: true, reason: 'planning-only-readonly', planning_only: true };
+    }
+    const sel = f.verb && f.verb !== true ? String(f.verb) : null;
+    if (sel) {
+      const map = { dispatch, await: awaitD, read };
+      if (!(sel in map)) { error(`UNKNOWN_VERB: ${sel}`); return 2; }
+      json({ protocol, selected: sel, descriptor: map[sel], guard }); return 0;
+    }
+    json({ protocol, dispatch, await: awaitD, read, checker_via: 'review dispatch --point <p> --workstream <ws> (kernel derives checker episode + descriptor)', guard }); return 0;
   },
 };
 
