@@ -98,12 +98,16 @@ export function recordReviewOutcome(root, runId, { episodeId, workstreamId, poin
       }
       loop.circuit_breaker = cb;
       if (passed) {
+        // FIX 1: only mark review_points_done when the passing checker is bound to a maker (unbound checkers reviewed no maker).
         const ws = loop.workstreams.find(w => w.id === wsId);
-        if (ws && !ws.review_points_done.includes(pt)) ws.review_points_done.push(pt);
+        if (ws && tgt.target_maker && !ws.review_points_done.includes(pt)) ws.review_points_done.push(pt);
+        // FIX 3: comprehension — honor require_human_ack and only mark the bound maker.
         const requireHumanAck = loop.review?.require_human_ack === true;
-        if (!(requireHumanAck && source === 'deep-review-approve')) {
-          for (const m of loop.episodes.filter(e => e.role === 'maker' && e.workstream_id === wsId && e.point === pt && !e.human_reviewed)) {
-            m.human_reviewed = true;
+        if (!requireHumanAck) {
+          // Only the maker bound to this checker counts; unbound checker marks nothing.
+          const target = loop.episodes.find(e => e.id === tgt.target_maker);
+          if (target && target.role === 'maker' && !target.human_reviewed) {
+            target.human_reviewed = true;
             loop.comprehension.episodes_human_reviewed = (loop.comprehension.episodes_human_reviewed || 0) + 1;
           }
         }

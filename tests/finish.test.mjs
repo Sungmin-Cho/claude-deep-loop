@@ -86,7 +86,18 @@ test('finishProofState blocks when two checkers are both bound to maker1 but mak
   assert.ok(finishProofState(loop).missing.includes('unreviewed-maker'));
 });
 
-// FIX 1 regression: fix-loop 형태 — maker1 (done) + checker bound to maker1 (rejected) + maker2 (done) + checker bound to maker2 (approved) → 통과
+// FIX 1 regression (a): maker1 (done) + checker bound to maker1 (rejected) + UNBOUND approved checker on same ws+point → blocks.
+// An unbound approved checker has no target_maker, so it cannot satisfy the latest-done-maker convergence rule.
+test('finishProofState blocks: bound-rejected checker on maker1 + unbound approved checker (no target_maker) on same point', () => {
+  const loop = { episodes: [
+      { id: 'm1', role: 'maker', point: 'implementation', workstream_id: 'w', status: 'done' },
+      { id: 'c1', role: 'checker', point: 'implementation', workstream_id: 'w', status: 'rejected', target_maker: 'm1' },
+      { id: 'c2', role: 'checker', point: 'implementation', workstream_id: 'w', status: 'approved' }],   // no target_maker
+    workstreams: [{ id: 'w', status: 'ready', review_points_done: [] }], active_workstreams: [] };
+  assert.ok(finishProofState(loop).missing.includes('no-independent-review'));
+});
+
+// FIX 1 regression (b): fix-loop 형태 — maker1 (done) + checker bound to maker1 (rejected) + maker2 (done) + checker bound to maker2 (approved) → 통과
 test('finishProofState passes for a fix-loop (maker1+rejected-checker, maker2+approved-checker, same point)', () => {
   const loop = { episodes: [
       { id: 'm1', role: 'maker', point: 'implementation', workstream_id: 'w', status: 'done' },

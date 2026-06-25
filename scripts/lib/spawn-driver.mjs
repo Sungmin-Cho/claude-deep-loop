@@ -1,16 +1,4 @@
-import { spawnSync, spawn } from 'node:child_process';
-
-function claudeAvailable() {
-  try { return spawnSync('bash', ['-lc', 'command -v claude'], { encoding: 'utf8' }).status === 0; } catch { return false; }
-}
-
-// respawn launcher: detached fire-and-forget. Fix 2: claude binary precheck before spawn so a missing claude
-// binary returns ok:false (failure-mode-B rollback) instead of silently succeeding and stranding the lease.
-export function detachedSpawn(cmd, { available = claudeAvailable } = {}) {
-  if (!available()) return { ok: false, reason: 'claude-not-found' };
-  try { const c = spawn('bash', ['-c', cmd], { detached: true, stdio: 'ignore' }); c.unref(); return { ok: true }; }
-  catch (e) { return { ok: false, reason: `launch-error: ${e.message || e}` }; }
-}
+import { spawnSync } from 'node:child_process';
 
 // Codex r2 sf-4: budget 을 강제하려면 enforceable metric(turns 또는 tokens)이 최소 1개 finite 여야 한다.
 // total_cost_usd 만 있는 출력은 turns/tokens 로 budget 게이트를 못 거니 측정 불가(null) → fail-closed.

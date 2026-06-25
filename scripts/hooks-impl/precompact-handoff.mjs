@@ -1,16 +1,26 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { readState } from '../lib/state.mjs';
+import { readState, writeState, withLock } from '../lib/state.mjs';
 import { emitHandoff } from '../lib/handoff.mjs';
-import { respawn } from '../lib/respawn.mjs';
-import { headlessSpawn, detachedSpawn } from '../lib/spawn-driver.mjs';
+import { respawnGate } from '../lib/respawn.mjs';
+
+/**
+ * PreCompact emits a clean handoff only; measured fail-closed resumption is the cron `driveHeadless`
+ * driver's job (spec §9). Gate-blocked unattended → status=paused (fail-closed).
+ *
+ * PreCompact is a within-session SAFETY NET: it writes the handoff artifact and updates the lease to
+ * `releasing` so the measured cron driver (`driveHeadless`, which uses `headlessSpawn` with timeout
+ * and usage accounting) can pick it up. PreCompact must NOT itself spawn an unmeasured child:
+ * - sync spawn would block the hook (compaction delayed indefinitely on long runs)
+ * - detached spawn can't measure turns/tokens → violates spec §9 fail-closed requirement
+ */
 
 function currentRunId(root) {
   const p = join(root, '.deep-loop', 'current');
   return existsSync(p) ? readFileSync(p, 'utf8').trim() : null;
 }
 
-export async function runPreCompactHandoff(input = {}, { root = process.cwd(), spawnFn = detachedSpawn, now = Date.now() } = {}) {
+export async function runPreCompactHandoff(input = {}, { root = process.cwd(), now = Date.now() } = {}) {
   const runId = currentRunId(root);
   if (!runId) return { ok: true, action: 'no-run' };
   let loop;
@@ -20,15 +30,30 @@ export async function runPreCompactHandoff(input = {}, { root = process.cwd(), s
   const headless = input.unattended === true || loop.autonomy?.spawn_style === 'headless' || input.tty === false;
   const em = emitHandoff(root, runId, { reason: 'pre-compact', trigger: 'pre-compact', headless, expect });
   if (!em.ok) return { ok: false, action: 'fenced', reason: em.reason };
-  // Codex r1 should-fix-3: 외부에서 게이트를 선검사하지 않는다. headless && auto_handoff 면 **항상** respawn 을 호출해
-  // respawn 내부의 canonical 실패모드 A 경로(gate 차단 시 status=paused 기록)를 타게 한다. 선검사하면 budget/wallclock
-  // 소진된 headless PreCompact 가 releasing handoff 만 남기고 paused 를 못 박는다(spec §9.1).
+
   if (headless && loop.autonomy?.auto_handoff) {
-    const rr = respawn(root, runId, { childRunId: em.childRunId, key: em.key, handoffRel: em.handoffRel, headless: true, now, spawnFn });
-    const action = rr.ok ? 'respawned' : (rr.outcome === 'gate-blocked' ? 'gate-blocked' : 'respawn-failed');
-    return { ok: rr.ok, action, childRunId: em.childRunId, outcome: rr.outcome };
+    // Gate check: if budget/breaker/wallclock/max_sessions blocks resumption, mark paused (fail-closed).
+    // The measured cron driveHeadless will resume if/when the gate opens.
+    const gate = respawnGate(loop, { now });
+    if (!gate.ok) {
+      // Fence-before-write: only set paused if the lease is still ours (mirroring respawn's fence-before-write).
+      const parentOwner = expect.owner;
+      const generation = expect.generation;
+      let fenced = false;
+      withLock(root, runId, () => {
+        const { data } = readState(root, runId);
+        const l = data.session_chain.lease;
+        if (l.owner_run_id !== parentOwner || l.generation !== generation) { fenced = true; return; }
+        data.status = 'paused';
+        writeState(root, runId, data);
+      });
+      if (fenced) return { ok: false, action: 'fenced', reason: 'lease-changed-before-pause', childRunId: em.childRunId };
+      return { ok: true, action: 'gate-blocked-paused', childRunId: em.childRunId };
+    }
+    // Gate open: handoff emitted with lease=releasing; measured cron driveHeadless will resume via round-2 handshake.
+    return { ok: true, action: 'emitted', childRunId: em.childRunId };
   }
-  return { ok: true, action: 'emitted', childRunId: em.childRunId };   // interactive → 사람 수동 resume
+  return { ok: true, action: 'emitted', childRunId: em.childRunId };   // interactive → human uses terminal/launch-command.txt
 }
 
 // CLI 진입 — best-effort, 절대 compaction 차단 안 함.

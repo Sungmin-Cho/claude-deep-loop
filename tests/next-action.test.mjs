@@ -1,12 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildInitialLoop, initRun } from '../scripts/lib/initrun.mjs';
 import { readState } from '../scripts/lib/state.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
-import { newEpisode } from '../scripts/lib/episode.mjs';
+import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
 import { nextAction } from '../scripts/lib/next-action.mjs';
 import { computeDebt } from '../scripts/lib/comprehension.mjs';
@@ -117,15 +117,18 @@ test('comprehension-debt blocks discover but not the fix flow', () => {
   assert.equal(nextAction(l, { now: 0 }).action.type, 'fix_episode');  // debt 무관
 });
 
-// Fix 4: after APPROVE, maker episodes for that point are human_reviewed and not blocking debt
+// Fix 4: after APPROVE, the bound maker episode is human_reviewed and debt not blocked.
+// Setup: maker must be 'done' so dispatchReview binds the checker to it (target_maker set).
 test('recordReviewOutcome(APPROVE) marks maker episodes human_reviewed, computeDebt not blocked', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
   const { runId } = initRun(root, { goal: 'g', detected: { 'deep-review': true }, now: new Date('2026-06-24T00:00:00Z') });
   const f = { owner: runId, generation: 1, intent: 'business' };
   const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: 'w', fence: f }).id;
-  // Create a maker episode for point 'implementation'
-  newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation', workstream: ws, fence: f });
-  // Dispatch and approve the review
+  // Maker must be 'done' so dispatchReview binds the checker to it (target_maker set).
+  writeFileSync(join(root, 'art.txt'), 'artifact');
+  const { id: makerId } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation', workstream: ws, expectedArtifacts: ['art.txt'], fence: f });
+  recordEpisode(root, runId, makerId, { status: 'done', artifacts: ['art.txt'], proof: {}, fence: f });
+  // Dispatch and approve the review — checker is now bound to the done maker.
   const r = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
   recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'implementation', verdict: 'APPROVE', fence: f });
   const { data } = readState(root, runId);

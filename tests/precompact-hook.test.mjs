@@ -23,29 +23,26 @@ test('no current run → no-op', async () => {
 
 test('interactive → emits handoff, no spawn', async () => {
   const { root } = seed();
-  let spawned = false;
-  const r = await runPreCompactHandoff({ tty: true }, { root, now: Date.parse('2026-06-24T00:01:00Z'), spawnFn: () => { spawned = true; return { ok: true }; } });
+  // spawnFn is no longer accepted — just verify action and that no side-effect occurs.
+  const r = await runPreCompactHandoff({ tty: true }, { root, now: Date.parse('2026-06-24T00:01:00Z') });
   assert.equal(r.action, 'emitted');
-  assert.equal(spawned, false);
 });
 
-test('unattended → emits + respawns with injected spawnFn', async () => {
+// PreCompact is emit-only: unattended within-budget → action='emitted', no child process spawned.
+// The measured cron driveHeadless (headlessSpawn) will resume via round-2 handshake.
+test('unattended within budget → emits handoff, no spawn (measured resume via cron)', async () => {
   const { root } = seed();
-  let spawnedCmd = null;
-  const r = await runPreCompactHandoff({ unattended: true }, { root, now: Date.parse('2026-06-24T00:01:00Z'), spawnFn: (cmd) => { spawnedCmd = cmd; return { ok: true }; } });
-  assert.equal(r.action, 'respawned');
-  assert.match(spawnedCmd, /claude -p/);
-  assert.match(spawnedCmd, /--output-format json/);   // Codex r6 sf-4: 측정 가능한 출력 요청
+  const r = await runPreCompactHandoff({ unattended: true }, { root, now: Date.parse('2026-06-24T00:01:00Z') });
+  assert.equal(r.action, 'emitted');
+  assert.ok(r.childRunId, 'childRunId present');
 });
 
-// Codex r1 should-fix-3: gate 차단(wallclock 소진) headless PreCompact 는 spawn 하지 않고 status=paused.
-test('unattended but gate-blocked → no spawn, run paused', async () => {
+// Fix 2: gate-blocked (wallclock exhausted) → action='gate-blocked-paused', status=paused, no spawn.
+test('unattended but gate-blocked → no spawn, run paused, action=gate-blocked-paused', async () => {
   const { root, runId } = seed();
-  let spawned = false;
   // created_at=2026-06-24 + now 한참 뒤 → wallclock(max 86400s) 초과 → respawnGate 차단.
-  const r = await runPreCompactHandoff({ unattended: true }, { root, now: Date.parse('2026-07-01T00:00:00Z'), spawnFn: () => { spawned = true; return { ok: true }; } });
-  assert.equal(spawned, false);
-  assert.equal(r.action, 'gate-blocked');
+  const r = await runPreCompactHandoff({ unattended: true }, { root, now: Date.parse('2026-07-01T00:00:00Z') });
+  assert.equal(r.action, 'gate-blocked-paused');
   const { readState } = await import('../scripts/lib/state.mjs');
   assert.equal(readState(root, runId).data.status, 'paused');
 });

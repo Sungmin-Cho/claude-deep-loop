@@ -22,11 +22,17 @@ export function finishProofState(loop) {
   // Per-maker binding check: every done maker must have a bound terminal checker (target_maker === maker.id).
   const doneMakers = eps.filter(e => e.role === 'maker' && e.status === 'done');
   const allMakersReviewed = doneMakers.every(m => makerReviewed(loop, m));
-  // Convergence: every (ws,point) that has a done maker must have at least one APPROVED checker.
-  const pointsWithMakers = new Set(doneMakers.map(m => `${m.workstream_id}|${m.point}`));
-  const approvedPoints = new Set(eps.filter(e => e.role === 'checker' && e.status === 'approved').map(e => `${e.workstream_id}|${e.point}`));
-  const allPointsApproved = [...pointsWithMakers].every(k => approvedPoints.has(k));
-  const reviewedProof = doneMakers.length > 0 && allMakersReviewed && allPointsApproved;
+  // Convergence: for each (ws,point) that has done makers, the LATEST done maker (highest episode id)
+  // must have a bound APPROVED checker. An unbound approved checker cannot satisfy this requirement.
+  const latestByPoint = new Map();
+  for (const m of doneMakers) {
+    const k = `${m.workstream_id}|${m.point}`;
+    const cur = latestByPoint.get(k);
+    if (!cur || m.id > cur.id) latestByPoint.set(k, m);
+  }
+  const boundApproved = (mid) => (loop.episodes || []).some(e => e.role === 'checker' && e.target_maker === mid && e.status === 'approved');
+  const allPointsConverged = [...latestByPoint.values()].every(m => boundApproved(m.id));
+  const reviewedProof = doneMakers.length > 0 && allMakersReviewed && allPointsConverged;
   const missing = [];
   if (!hasWork) missing.push('no-proof-of-work');                  // 최소 1 episode 필요 (Array.every 공허-통과 방지)
   if (!settled) missing.push('unsettled-episodes');
