@@ -71,3 +71,26 @@ test('state get returns whole loop and a field path', () => {
   const missing = JSON.parse(run(root, ['state', 'get', '--field', 'nope.deep']));
   assert.equal(missing, null);
 });
+
+test('state patch writes whitelisted field with valid fence', () => {
+  const { root, runId } = seed();
+  run(root, ['state', 'patch', '--field', 'discovered_items', '--value', '["a","b"]', '--owner', runId, '--generation', '1']);
+  const got = JSON.parse(run(root, ['state', 'get', '--field', 'discovered_items']));
+  assert.deepEqual(got, ['a', 'b']);
+});
+
+test('state patch rejects forbidden field (exit 1)', () => {
+  const { root, runId } = seed();
+  assert.equal(runFail(root, ['state', 'patch', '--field', 'budget.spent', '--value', '999', '--owner', runId, '--generation', '1']), 1);
+});
+
+test('state patch is fenced on wrong generation (exit 3)', () => {
+  const { root, runId } = seed();
+  assert.equal(runFail(root, ['state', 'patch', '--field', 'decisions', '--value', '["x"]', '--owner', runId, '--generation', '9']), 3);
+});
+
+test('state patch forbids terminal episode status (exit 1)', () => {
+  const { root, runId } = seed();
+  // episodes.0.status=done 은 터미널 → classifyPatch forbid (episode 가 없어도 분류 단계에서 거부)
+  assert.equal(runFail(root, ['state', 'patch', '--field', 'episodes.0.status', '--value', '"done"', '--owner', runId, '--generation', '1']), 1);
+});

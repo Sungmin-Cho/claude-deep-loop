@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, mkdirSync, rmdirSync, existsSync, statSync
 import { join } from 'node:path';
 import { contentHash, atomicWrite } from './envelope.mjs';
 import { validate } from './schema.mjs';
+import { leaseCheck } from './lease.mjs';
 
 // Codex impl r12 🔴: runId must be a single safe path segment — a '../' (or slash) runId would make runDir
 // resolve outside the project root, and ALL state/event/episode/handoff writers build paths from runDir.
@@ -77,10 +78,11 @@ function setPath(obj, path, value) {
   t[last] = value;
 }
 
-export function patch(root, runId, field, value) {
+export function patch(root, runId, field, value, { fence } = {}) {
   if (classifyPatch(field, value) !== 'allow') throw new Error(`FIELD_FORBIDDEN: ${field}`);
   return withLock(root, runId, () => {
     const { data } = readState(root, runId);
+    if (fence) { const r = leaseCheck(data, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
     setPath(data, field, value);
     writeState(root, runId, data);
   });

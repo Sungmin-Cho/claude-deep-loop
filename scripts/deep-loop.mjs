@@ -7,7 +7,7 @@ import { detectPlugins } from './lib/detect.mjs';
 import { matchRecipe } from './lib/recipes.mjs';
 import { json } from './lib/log.mjs';
 import { validate as validateLoop } from './lib/schema.mjs';
-import { readState, writeState } from './lib/state.mjs';
+import { readState, writeState, patch as patchState } from './lib/state.mjs';
 import { leaseCheck, acquireLease, releaseLease } from './lib/lease.mjs';
 import { newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal } from './lib/workspace.mjs';
 import { newEpisode, recordEpisode } from './lib/episode.mjs';
@@ -29,6 +29,12 @@ function parseNow(f) {
 }
 
 function reqStr(f, name) { const v = f[name]; return (typeof v === 'string' && v.length) ? v : null; }   // 누락 시 null (핸들러가 exit 2 결정)
+function optInt(f, name) {   // 미지정 → 0; 지정 시 비음정수 문자열만 허용, 아니면 null(핸들러가 exit 1)
+  const v = f[name];
+  if (v === undefined) return 0;
+  if (typeof v !== 'string' || !/^\d+$/.test(v)) return null;
+  return Number(v);
+}
 
 function rootOf(f) { return f['project-root'] || process.cwd(); }
 function runIdOf(root, f) {
@@ -163,7 +169,15 @@ const handlers = {
       const val = String(f.field).split('.').reduce((o, k) => (o == null ? undefined : o[k]), data);
       json(val === undefined ? null : val); return 0;
     }
-    // 'patch' verb는 Task 4에서 추가
+    if (verb === 'patch') {
+      requireLease(root, runId, f);   // --owner/--generation 누락·불일치 → exit 3 (fence)
+      const field = reqStr(f, 'field'); if (!field) { error('MISSING_FIELD'); return 2; }       // Codex r1 sf-6: 비-fence 누락 → exit 2
+      const rawVal = reqStr(f, 'value'); if (rawVal === null) { error('MISSING_VALUE'); return 2; }
+      let value; try { value = JSON.parse(rawVal); } catch { error('INVALID_VALUE: must be JSON'); return 1; }   // 무효 값 → exit 1
+      try { patchState(root, runId, field, value, { fence: { owner: f.owner, generation: intArg(f, 'generation'), intent: 'business' } }); }
+      catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }
+      json({ ok: true }); return 0;
+    }
     error(`unknown state verb: ${verb}`); return 2;
   },
   adapter: async (a) => {

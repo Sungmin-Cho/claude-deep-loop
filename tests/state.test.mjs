@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readState, writeState, patch, withLock, runDir } from '../scripts/lib/state.mjs';
+import { initRun } from '../scripts/lib/initrun.mjs';
 
 function seed() {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
@@ -113,4 +114,14 @@ test('runDir rejects unsafe run-id path segments', () => {
   }
   // a normal ULID-ish id is accepted
   assert.ok(runDir(root, '01KVWFJA0QKSCMN8XMQ0WJXBBC').endsWith('01KVWFJA0QKSCMN8XMQ0WJXBBC'));
+});
+
+test('patch enforces fence inside the lock', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-pf-'));
+  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  patch(root, runId, 'discovered_items', ['a'], { fence: { owner: runId, generation: 1, intent: 'business' } });
+  assert.deepEqual(readState(root, runId).data.discovered_items, ['a']);
+  assert.throws(() => patch(root, runId, 'discovered_items', ['b'], { fence: { owner: runId, generation: 9, intent: 'business' } }), /LEASE_FENCED/);
+  // forbidden field 는 fence 와 무관하게 거부
+  assert.throws(() => patch(root, runId, 'budget.spent', 1, { fence: { owner: runId, generation: 1, intent: 'business' } }), /FIELD_FORBIDDEN/);
 });
