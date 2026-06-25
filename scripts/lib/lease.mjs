@@ -14,8 +14,8 @@ export function leaseCheck(loop, { owner, generation, intent = 'business' } = {}
   if (lease.owner_run_id !== owner) return { ok: false, reason: 'owner-mismatch' };
   if (lease.generation !== generation) return { ok: false, reason: 'generation-mismatch' };
   if (lease.state === 'released') return { ok: false, reason: 'lease-released' };
-  // 부모 carve-out: releasing 중 업무 write 거부, 자기 lease 관리(intent='lease')만 허용
-  if (lease.state === 'releasing' && intent === 'business') return { ok: false, reason: 'lease-releasing-carveout' };
+  // 부모 carve-out: releasing 중 업무 write 거부; 자기 lease 관리(intent='lease')와 비용 회계(intent='accounting')만 허용.
+  if (lease.state === 'releasing' && intent !== 'lease' && intent !== 'accounting') return { ok: false, reason: 'lease-releasing-carveout' };
   // Codex r2 🔴2: expires_at 로 active 소유자를 fence 하지 않는다 — 살아있는 소유자가 TTL(15분) 후 자기 write 에서
   // 죽으면 안 됨. stale 소유자(자식이 인수해 generation 이 올라간 경우)는 generation-mismatch 로 이미 펜싱된다.
   // expires_at 는 오직 acquireLease 의 takeover 판단(releasing 크래시)에만 쓰인다.
@@ -35,9 +35,9 @@ export function acquireLease(root, runId, { owner, expectGeneration, now = Date.
     if (lease.generation !== expectGeneration) {
       return { ok: false, generation: lease.generation, reason: 'generation-mismatch' };
     }
-    // takeover 가능: released(정상 인수) 또는 releasing+expired(부모가 handoff 중 크래시). active 는 절대 탈취 안 됨.
+    // takeover 가능: released(정상 인수), releasing+expired(부모 크래시 복구), releasing+예약된child(handshake). active 절대 탈취 안 됨.
     const expired = lease.expires_at && now > Date.parse(lease.expires_at);
-    const takeable = lease.state === 'released' || (lease.state === 'releasing' && expired);
+    const takeable = lease.state === 'released' || (lease.state === 'releasing' && expired) || (lease.state === 'releasing' && owner === lease.handoff_child_run_id);
     if (!takeable) return { ok: false, generation: lease.generation, reason: 'lease-not-takeable' };
     // Codex impl r9 🔴: a RELEASED handoff lease reserved a specific child — only that child may acquire it
     // (binds reserve→emit→claim→release→acquire). After stale TTL (expired), allow recovery by any owner.

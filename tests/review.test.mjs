@@ -1,12 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState } from '../scripts/lib/state.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
-import { newEpisode } from '../scripts/lib/episode.mjs';
+import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { resolveReviewer, dispatchReview, parseVerdict, recordReviewOutcome } from '../scripts/lib/review.mjs';
 import { releaseLease, acquireLease } from '../scripts/lib/lease.mjs';
 
@@ -49,13 +49,20 @@ test('recordReviewOutcome derives checker terminal + drives breaker/comprehensio
   const { root, runId } = seed();
   const f = fence(runId);
   const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: 'w', fence: f }).id;
+  // Create a done maker for 'plan' so dispatchReview binds the checker (target_maker required for review_points_done).
+  writeFileSync(join(root, 'plan.txt'), 'plan artifact');
+  const { id: planMakerId } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'plan', point: 'plan', workstream: ws, expectedArtifacts: ['plan.txt'], fence: f });
+  recordEpisode(root, runId, planMakerId, { status: 'done', artifacts: ['plan.txt'], proof: {}, fence: f });
   // REQUEST_CHANGES → checker rejected + breaker++ (Codex r1 🔴5: checker 터미널 파생)
   const r1 = dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
   recordReviewOutcome(root, runId, { episodeId: r1.checkerEpisodeId, workstreamId: ws, point: 'plan', verdict: 'REQUEST_CHANGES', fence: f });
   let d = readState(root, runId).data;
   assert.equal(d.episodes.find(e => e.id === r1.checkerEpisodeId).status, 'rejected');
   assert.equal(d.circuit_breaker.consecutive_request_changes, 1);
-  // APPROVE (new round) → checker approved + point done + breaker reset + comprehension
+  // Fix maker done (second round) and APPROVE → checker approved + point done + breaker reset + comprehension.
+  writeFileSync(join(root, 'plan2.txt'), 'plan artifact v2');
+  const { id: planMakerId2 } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'plan', point: 'plan', workstream: ws, expectedArtifacts: ['plan2.txt'], fence: f });
+  recordEpisode(root, runId, planMakerId2, { status: 'done', artifacts: ['plan2.txt'], proof: {}, fence: f });
   const r2 = dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
   recordReviewOutcome(root, runId, { episodeId: r2.checkerEpisodeId, workstreamId: ws, point: 'plan', verdict: 'APPROVE', fence: f });
   d = readState(root, runId).data;
@@ -85,9 +92,13 @@ test('recordReviewOutcome derives workstream/point from checker episode, ignores
   const f = fence(runId);
   const wsA = newWorkstream(root, runId, { title: 'ws-A', branch: 'ba', worktree: 'wa', fence: f }).id;
   const wsBogus = newWorkstream(root, runId, { title: 'ws-bogus', branch: 'bb', worktree: 'wb', fence: f }).id;
-  // dispatch checker for ws-A / plan
+  // Create a done maker for ws-A/plan so dispatchReview binds the checker (required for review_points_done update).
+  writeFileSync(join(root, 'plan-a.txt'), 'plan artifact');
+  const { id: planMakerId } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'plan', point: 'plan', workstream: wsA, expectedArtifacts: ['plan-a.txt'], fence: f });
+  recordEpisode(root, runId, planMakerId, { status: 'done', artifacts: ['plan-a.txt'], proof: {}, fence: f });
+  // dispatch checker for ws-A / plan — checker is bound to planMakerId
   const r = dispatchReview(root, runId, { point: 'plan', workstreamId: wsA, detected: { 'deep-review': true }, fence: f });
-  // call with MISMATCHED caller workstreamId + point
+  // call with MISMATCHED caller workstreamId + point — derives from checker episode, not caller
   recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: wsBogus, point: 'implementation', verdict: 'APPROVE', fence: f });
   const d = readState(root, runId).data;
   // Real workstream (ws-A) gets 'plan' in review_points_done
@@ -188,4 +199,42 @@ test('dispatchReview rejects missing/nonexistent workstream and creates no check
   assert.throws(() => dispatchReview(root, runId, { point: 'plan', workstreamId: 'ws-nope', detected: { 'deep-review': true }, fence: f }), /WORKSTREAM_NOT_FOUND/);
   assert.throws(() => dispatchReview(root, runId, { point: 'plan', detected: { 'deep-review': true }, fence: f }), /WORKSTREAM_NOT_FOUND/);
   assert.equal(readState(root, runId).data.episodes.length, 0);   // no stranded checker
+});
+
+// FIX 3 regression (a): require_human_ack=true → approved review record does NOT change episodes_human_reviewed
+// (even when source is 'deep-review-approve' or any other source). Only /deep-loop-ack may grant comprehension.
+test('recordReviewOutcome: require_human_ack=true → episodes_human_reviewed unchanged after approve', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-ack-'));
+  const reviewCfg = { points: ['implementation'], reviewer: 'deep-review-loop', mode: 'cross-model', flags: [], converge: true, max_review_rounds: 5, require_human_ack: true };
+  const { runId } = initRun(root, { goal: 'g', review: reviewCfg, detected: { 'deep-review': true }, now: new Date('2026-06-24T00:00:00Z') });
+  const f = fence(runId);
+  const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: 'w', fence: f }).id;
+  newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws, fence: f });
+  const r = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
+  const beforeReviewed = readState(root, runId).data.comprehension?.episodes_human_reviewed || 0;
+  // approve with any source — must NOT increment comprehension when require_human_ack=true
+  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'implementation', verdict: 'APPROVE', source: 'deep-review-approve', fence: f });
+  const afterReviewed = readState(root, runId).data.comprehension?.episodes_human_reviewed || 0;
+  assert.equal(afterReviewed, beforeReviewed, 'require_human_ack=true must not increment episodes_human_reviewed from review record');
+});
+
+// FIX 3 regression (b): two done makers same point, approving checker bound to maker2 (latest) increments
+// episodes_human_reviewed by exactly 1 (only maker2), not 2.
+test('recordReviewOutcome: bound approve increments episodes_human_reviewed by 1 (only the bound maker, not all makers on point)', () => {
+  const { root, runId } = seed();
+  const f = fence(runId);
+  const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: 'w', fence: f }).id;
+  // Two done makers on the same point — both must be done for dispatchReview to bind to the latest.
+  writeFileSync(join(root, 'impl1.txt'), 'artifact 1');
+  writeFileSync(join(root, 'impl2.txt'), 'artifact 2');
+  const { id: maker1Id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws, expectedArtifacts: ['impl1.txt'], fence: f });
+  recordEpisode(root, runId, maker1Id, { status: 'done', artifacts: ['impl1.txt'], proof: {}, fence: f });
+  const { id: maker2Id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws, expectedArtifacts: ['impl2.txt'], fence: f });
+  recordEpisode(root, runId, maker2Id, { status: 'done', artifacts: ['impl2.txt'], proof: {}, fence: f });
+  // dispatch review — binds to the latest unreviewed done maker (maker2)
+  const r = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
+  const beforeReviewed = readState(root, runId).data.comprehension?.episodes_human_reviewed || 0;
+  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'implementation', verdict: 'APPROVE', fence: f });
+  const afterReviewed = readState(root, runId).data.comprehension?.episodes_human_reviewed || 0;
+  assert.equal(afterReviewed - beforeReviewed, 1, 'only the bound maker (maker2) should be marked human_reviewed, not all makers on the point');
 });

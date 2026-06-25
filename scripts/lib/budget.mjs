@@ -1,5 +1,6 @@
 import { appendAnchored, recomputeSpent, verifyLog, verifyHead, validCost } from './integrity.mjs';
 import { readState, withLock } from './state.mjs';
+import { leaseCheck } from './lease.mjs';
 
 export function checkBudget(loop, { now = Date.now(), sessionStart, measurable = true } = {}) {
   const b = loop.budget;
@@ -20,11 +21,18 @@ export function checkBudget(loop, { now = Date.now(), sessionStart, measurable =
 }
 
 // cost 이벤트 기록 — anchored append 단일 경로 사용 (append + event_log_head 앵커 + budget.spent를 한 lock 안에서)
-export function recordCost(root, runId, { turns = 0, tokens = 0 }) {
+export function recordCost(root, runId, { turns = 0, tokens = 0, fence } = {}) {
   if (!validCost({ turns, tokens })) throw new Error(`INVALID_COST: turns/tokens must be finite >= 0 (got ${turns}/${tokens})`);
   return appendAnchored(root, runId, { type: 'cost', data: { turns, tokens } }, (loop, spent) => {
     loop.budget.spent = spent.turns;
     loop.budget.tokens_spent = spent.tokens;
+    // Codex r3 critical-1: per_session_turn_cap 마일스톤은 nextAction 이 lease owner 의 session.turns 로 판정한다
+    // (next-action.mjs:5-7,57-59). 같은 트랜잭션에서 현재 세션의 turns 를 이 호출의 delta 만큼 증가시켜야 cap 이 실제로 터진다.
+    const owner = loop.session_chain?.lease?.owner_run_id;
+    const sess = (loop.session_chain?.sessions || []).find(s => s.run_id === owner);
+    if (sess) sess.turns = (sess.turns || 0) + turns;
+  }, (loop) => {
+    if (fence) { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
   });
 }
 

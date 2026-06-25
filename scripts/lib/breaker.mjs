@@ -19,6 +19,18 @@ export function tripBreaker(root, runId, reason) {
   });
 }
 
+export function resetBreaker(root, runId, { fence } = {}) {
+  return withLock(root, runId, () => {
+    const { data } = readState(root, runId);
+    if (fence) { const r = leaseCheck(data, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }   // Codex r2 critical-1: in-lock fence
+    const wasBreaker = data.status === 'paused' && /request-changes|consecutive/.test(data.circuit_breaker?.trip_reason || '');
+    data.circuit_breaker = { consecutive_request_changes: 0, tripped: false, trip_reason: null };
+    if (wasBreaker) data.status = 'running';
+    writeState(root, runId, data);
+    return { ok: true, status: data.status };
+  });
+}
+
 export function recordReviewVerdict(root, runId, verdict, fence) {
   return withLock(root, runId, () => {
     const { data } = readState(root, runId);

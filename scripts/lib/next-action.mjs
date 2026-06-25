@@ -1,6 +1,7 @@
 import { checkBudget } from './budget.mjs';
 import { checkBreaker } from './breaker.mjs';
 import { computeDebt } from './comprehension.mjs';
+import { makerReviewed } from './review.mjs';
 
 function currentSessionTurns(loop) {
   const s = (loop.session_chain?.sessions || []).find(x => x.run_id === loop.session_chain?.lease?.owner_run_id);
@@ -9,11 +10,12 @@ function currentSessionTurns(loop) {
 
 const A = (gate, action, next_command) => ({ gate, action, next_command });
 
-// maker 의 review point 가 통과됐는지 — 같은 workstream+point 의 approved checker 또는 review_points_done 포함.
-function reviewSatisfied(loop, makerEp) {
-  const ws = (loop.workstreams || []).find(w => w.id === makerEp.workstream_id);
-  if (ws && (ws.review_points_done || []).includes(makerEp.point)) return true;
-  return (loop.episodes || []).some(e => e.role === 'checker' && e.status === 'approved' && e.workstream_id === makerEp.workstream_id && e.point === makerEp.point);
+// point-level review satisfaction — used for checker convergence (superseded rejected checker skipping).
+function reviewSatisfied(loop, ep) {
+  const ws = (loop.workstreams || []).find(w => w.id === ep.workstream_id);
+  if (ws && (ws.review_points_done || []).includes(ep.point)) return true;
+  // Fix 3: only a BOUND (target_maker set) approved checker satisfies a review point — unbound approvals do not.
+  return (loop.episodes || []).some(e => e.role === 'checker' && e.status === 'approved' && e.target_maker && e.workstream_id === ep.workstream_id && e.point === ep.point);
 }
 
 // 현재 actionable episode 가 없을 때: 미완 maker/거부 checker/in-progress/미리뷰 done maker 를 우선 처리하고, 전부 정리됐을 때만 finish.
@@ -31,7 +33,8 @@ function finishOrAdvance(loop, gate, fanoutBlocked) {
   const inProg = eps.find(e => e.status === 'in_progress');
   if (inProg) return A(gate, { type: 'await_result', episode_id: inProg.id }, '/deep-loop-continue');
   // Codex r3 🔴4: 리뷰 안 된 done maker 가 있으면 finish 금지 → checker dispatch (리뷰 게이트 불변식).
-  const unreviewed = eps.find(e => e.role === 'maker' && e.status === 'done' && !reviewSatisfied(loop, e));
+  // Uses per-maker binding predicate (makerReviewed) so two checkers for maker1 cannot satisfy maker2.
+  const unreviewed = eps.find(e => e.role === 'maker' && e.status === 'done' && !makerReviewed(loop, e));
   if (unreviewed) return A(gate, { type: 'dispatch_checker', episode_id: unreviewed.id, point: unreviewed.point, workstream_id: unreviewed.workstream_id }, '/deep-loop-continue');
   // finish 는 active workstream 0 + 모든 episode 가 settled 일 때만 (Codex r2 🔴7 / r3 🔴4 / r5 🟡2)
   // settled: done/approved, OR 리뷰-충족된 rejected checker (나중 승인으로 포인트가 통과된 경우).

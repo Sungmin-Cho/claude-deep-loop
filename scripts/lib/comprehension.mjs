@@ -1,4 +1,5 @@
 import { readState, writeState, withLock } from './state.mjs';
+import { leaseCheck } from './lease.mjs';
 
 export function computeDebt(loop) {
   const c = loop.comprehension || {};
@@ -8,13 +9,17 @@ export function computeDebt(loop) {
   return { debt_ratio, blocked: total > 0 && debt_ratio >= (c.debt_threshold ?? 0.5) };
 }
 
-export function ack(root, runId, episodeId) {
+export function ack(root, runId, episodeId, { fence } = {}) {
   return withLock(root, runId, () => {
     const { data } = readState(root, runId);
-    data.comprehension.episodes_human_reviewed = (data.comprehension.episodes_human_reviewed || 0) + 1;
+    if (fence) { const r = leaseCheck(data, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
     const ep = data.episodes.find(e => e.id === episodeId);
-    if (ep) ep.human_reviewed = true;
+    if (!ep) throw new Error(`EPISODE_NOT_FOUND: ${episodeId}`);   // Codex r1 sf-5: 부재 episode overcount 차단
+    if (ep.human_reviewed) return { ok: true, already: true };     // 멱등 — 중복 ack 는 카운트 증가 안 함
+    ep.human_reviewed = true;
+    data.comprehension.episodes_human_reviewed = (data.comprehension.episodes_human_reviewed || 0) + 1;
     writeState(root, runId, data);
+    return { ok: true, already: false };
   });
 }
 

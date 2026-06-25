@@ -121,6 +121,13 @@ test('emitted sets expires_at → child can take over after stale TTL without ex
   assert.equal(ok.generation, 2);
 });
 
+test('leaseCheck allows accounting during releasing for matching owner/generation', () => {
+  const loop = { session_chain: { lease: { owner_run_id: 'r', generation: 2, state: 'releasing' } } };
+  assert.equal(leaseCheck(loop, { owner: 'r', generation: 2, intent: 'business' }).ok, false);    // 업무 write 거부
+  assert.equal(leaseCheck(loop, { owner: 'r', generation: 2, intent: 'accounting' }).ok, true);   // 회계 허용
+  assert.equal(leaseCheck(loop, { owner: 'r', generation: 3, intent: 'accounting' }).ok, false);  // generation 불일치 거부
+});
+
 // Fix A: reserveHandoff with stale expect is fenced (generation-mismatch); without expect is unchanged
 test('reserveHandoff: stale expect fences without mutating; no expect is unchanged', () => {
   const { root, runId } = seed();

@@ -11,7 +11,7 @@ export function buildLaunchCommand({ root, parentRunId, childRunId, handoffRel, 
   // handoff 파일은 **부모** run 디렉터리에 있다 → 자식은 부모 경로에서 읽는다 (Codex r1 🔴3).
   const resumePrompt = `Read .deep-loop/runs/${parentRunId}/${handoffRel} first; then run /deep-loop-resume`;
   const interactive = `cd ${root} && claude -n deep-loop-${childRunId} "${resumePrompt}"`;
-  const headlessCmd = `cd ${root} && claude -p "${resumePrompt}" --permission-mode acceptEdits`;
+  const headlessCmd = `cd ${root} && claude -p "${resumePrompt}" --output-format json --permission-mode acceptEdits`;
   return {
     interactive: headless ? headlessCmd : interactive,
     headless: headlessCmd,
@@ -91,7 +91,7 @@ export function emitHandoff(root, runId, { reason = 'milestone', trigger = 'mile
       l.session_chain.sessions.push({ run_id: childRunId, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: null,
         handoff_rel: handoffRel, handoff_path: handoffPath, handoff_md: mdName, handoff_cs: csName });
     }
-    const cur = l.session_chain.sessions.find(s => s.run_id === runId);
+    const cur = l.session_chain.sessions.find(s => s.run_id === expect.owner);
     if (cur) cur.superseded_by = childRunId;
     const lease = l.session_chain.lease;
     if (lease.handoff_phase === 'reserved') {   // 부모 carve-out 시작 + stale TTL (Codex r1 🔴4)

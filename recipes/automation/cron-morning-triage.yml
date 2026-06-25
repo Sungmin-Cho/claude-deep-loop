@@ -1,0 +1,18 @@
+# deep-loop — unattended morning triage (cron template).
+# 무인 장기 실행은 headless 강제 + 측정불가 시 fail-closed (spec §9).
+# 안전장치(timeout/usage/fail-closed)는 drive-headless.mjs 가 claude -p 를 감싸 제공한다 — raw claude -p 직접 호출 금지.
+# crontab -e 에 붙여넣어 사용. <PROJECT_ROOT>/<DEEP_LOOP_DIR> 를 실제 경로로 치환.
+#
+# ┌ min  ┌ hour ┌ dom ┌ mon ┌ dow
+# 0      8      *     *     *   cd <PROJECT_ROOT> && \
+#   DEEP_LOOP_UNATTENDED=1 node <DEEP_LOOP_DIR>/scripts/hooks-impl/drive-headless.mjs >> deep-loop-cron.log 2>&1
+#
+# 동작:
+#   - .deep-loop/current 의 run 을 headless 로 1 tick 진행 (drive-headless → headlessSpawn(claude -p "/deep-loop-continue")).
+#   - budget(turns/tokens/wallclock) 하드캡 + usage 측정불가/timeout 시 fail-closed(비0 종료, 재트리거 전 사람 점검).
+#   - 비가역 외부 행동(push/PR/merge/publish)은 v1 에서 proposal-only — cron 이 자동 실행하지 않음.
+#   - run 이 없으면 no-op. breaker latch 시 사람 reset 전까지 진행 중단.
+schedule: "0 8 * * *"
+drive: 'node <DEEP_LOOP_DIR>/scripts/hooks-impl/drive-headless.mjs'
+unattended: true
+notes: "drive-headless wraps claude -p with timeout + usage fail-closed; external actions remain proposal-only"

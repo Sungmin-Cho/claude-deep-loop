@@ -150,6 +150,15 @@ test('newEpisode throws FENCE_REQUIRED when called without fence', () => {
   );
 });
 
+// Fix 3: newEpisode throws EPISODE_INPUT_INVALID for missing required fields
+test('newEpisode throws EPISODE_INPUT_INVALID when role is missing', () => {
+  const { root, runId } = seed();
+  assert.throws(
+    () => newEpisode(root, runId, { plugin: 'deep-work', kind: 'impl', point: 'implementation', fence: fence(runId) }),
+    /EPISODE_INPUT_INVALID/
+  );
+});
+
 // Codex impl r15 🟡: a non-null nonexistent workstream is rejected at creation (no stranded/unreviewable maker).
 test('newEpisode rejects a non-null nonexistent workstream; no episode created, anchor stays consistent', () => {
   const { root, runId } = seed();

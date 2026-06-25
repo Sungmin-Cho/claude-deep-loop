@@ -28,16 +28,38 @@ export function parseVerdict(text) {
   return null;
 }
 
+// A maker is reviewed if there is a terminal checker bound to it (via target_maker) with approved/rejected status.
+export function makerReviewed(loop, maker) {
+  return (loop.episodes || []).some(e =>
+    e.role === 'checker' && e.target_maker === maker.id &&
+    (e.status === 'approved' || e.status === 'rejected')
+  );
+}
+
 // checker episode 생성 + dispatch 디스크립터 반환 — 커널은 sibling을 호출하지 않음 (spec §1.1·§6).
 export function dispatchReview(root, runId, { point, workstreamId, detected = {}, fence } = {}) {
   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: dispatchReview');
+  // Fix 3: validate point before any state read/write
+  if (!point || typeof point !== 'string' || !point.length) throw new Error('REVIEW_INPUT_INVALID: point');
   const { data } = readState(root, runId);
   // Codex impl r14 🟡: validate the workstream EXISTS at dispatch time — otherwise the checker is bound to a phantom
   // workstream and recordReviewOutcome (which derives workstream_id from the checker) later fails WORKSTREAM_NOT_FOUND,
   // stranding a pending checker that can't converge. Fail early instead.
   if (!workstreamId || !data.workstreams.find(w => w.id === workstreamId)) throw new Error(`WORKSTREAM_NOT_FOUND: ${workstreamId}`);
+  // Derive the target maker: the latest done maker for this (workstreamId, point) that does NOT already have a bound terminal checker.
+  const eps = data.episodes || [];
+  const eligibleMakers = eps.filter(e =>
+    e.role === 'maker' && e.status === 'done' &&
+    e.workstream_id === workstreamId && e.point === point &&
+    !makerReviewed(data, e)
+  );
+  // Pick the highest episode id (lexicographic ordering works since ids are zero-padded numeric prefixes).
+  const targetMakerEp = eligibleMakers.length > 0
+    ? eligibleMakers.reduce((a, b) => (a.id > b.id ? a : b))
+    : null;
+  const targetMaker = targetMakerEp ? targetMakerEp.id : undefined;
   const { reviewer, flags, mode } = resolveReviewer(data, detected);
-  const { id } = newEpisode(root, runId, { plugin: reviewer === 'deep-review-loop' ? 'deep-review' : reviewer, role: 'checker', kind: `${point}-review`, point, workstream: workstreamId, fence });
+  const { id } = newEpisode(root, runId, { plugin: reviewer === 'deep-review-loop' ? 'deep-review' : reviewer, role: 'checker', kind: `${point}-review`, point, workstream: workstreamId, targetMaker, fence });
   const skillByReviewer = {
     'deep-review-loop': 'deep-review:deep-review-loop',
     'codex-cross': 'codex:rescue',
@@ -76,12 +98,16 @@ export function recordReviewOutcome(root, runId, { episodeId, workstreamId, poin
       }
       loop.circuit_breaker = cb;
       if (passed) {
+        // FIX 1: only mark review_points_done when the passing checker is bound to a maker (unbound checkers reviewed no maker).
         const ws = loop.workstreams.find(w => w.id === wsId);
-        if (ws && !ws.review_points_done.includes(pt)) ws.review_points_done.push(pt);
+        if (ws && tgt.target_maker && !ws.review_points_done.includes(pt)) ws.review_points_done.push(pt);
+        // FIX 3: comprehension — honor require_human_ack and only mark the bound maker.
         const requireHumanAck = loop.review?.require_human_ack === true;
-        if (!(requireHumanAck && source === 'deep-review-approve')) {
-          for (const m of loop.episodes.filter(e => e.role === 'maker' && e.workstream_id === wsId && e.point === pt && !e.human_reviewed)) {
-            m.human_reviewed = true;
+        if (!requireHumanAck) {
+          // Only the maker bound to this checker counts; unbound checker marks nothing.
+          const target = loop.episodes.find(e => e.id === tgt.target_maker);
+          if (target && target.role === 'maker' && !target.human_reviewed) {
+            target.human_reviewed = true;
             loop.comprehension.episodes_human_reviewed = (loop.comprehension.episodes_human_reviewed || 0) + 1;
           }
         }

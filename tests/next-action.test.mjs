@@ -1,12 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildInitialLoop, initRun } from '../scripts/lib/initrun.mjs';
 import { readState } from '../scripts/lib/state.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
-import { newEpisode } from '../scripts/lib/episode.mjs';
+import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
 import { nextAction } from '../scripts/lib/next-action.mjs';
 import { computeDebt } from '../scripts/lib/comprehension.mjs';
@@ -95,7 +95,9 @@ test('finish gated on review of done makers AND zero active workstreams', () => 
   l.active_workstreams = [];
   // 리뷰 안 된 done maker → finish 가 아니라 checker dispatch (리뷰 게이트)
   assert.equal(nextAction(l, { now: 0 }).action.type, 'dispatch_checker');
-  l.workstreams[0].review_points_done = ['implementation'];   // 리뷰 통과 처리
+  // 리뷰 통과 처리: add a bound approved checker (target_maker binds to the maker id)
+  l.episodes.push({ id: '002-deep-review', role: 'checker', status: 'approved', point: 'implementation', workstream_id: 'ws-01', target_maker: '001-deep-work' });
+  l.workstreams[0].review_points_done = ['implementation'];
   l.active_workstreams = ['ws-01'];                            // 그러나 active workstream 잔존 → finish 금지
   assert.equal(nextAction(l, { now: 0 }).action.type, 'await_human');
   l.active_workstreams = [];                                   // active 0 + 리뷰 통과 → finish
@@ -115,15 +117,18 @@ test('comprehension-debt blocks discover but not the fix flow', () => {
   assert.equal(nextAction(l, { now: 0 }).action.type, 'fix_episode');  // debt 무관
 });
 
-// Fix 4: after APPROVE, maker episodes for that point are human_reviewed and not blocking debt
+// Fix 4: after APPROVE, the bound maker episode is human_reviewed and debt not blocked.
+// Setup: maker must be 'done' so dispatchReview binds the checker to it (target_maker set).
 test('recordReviewOutcome(APPROVE) marks maker episodes human_reviewed, computeDebt not blocked', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
   const { runId } = initRun(root, { goal: 'g', detected: { 'deep-review': true }, now: new Date('2026-06-24T00:00:00Z') });
   const f = { owner: runId, generation: 1, intent: 'business' };
   const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: 'w', fence: f }).id;
-  // Create a maker episode for point 'implementation'
-  newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation', workstream: ws, fence: f });
-  // Dispatch and approve the review
+  // Maker must be 'done' so dispatchReview binds the checker to it (target_maker set).
+  writeFileSync(join(root, 'art.txt'), 'artifact');
+  const { id: makerId } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation', workstream: ws, expectedArtifacts: ['art.txt'], fence: f });
+  recordEpisode(root, runId, makerId, { status: 'done', artifacts: ['art.txt'], proof: {}, fence: f });
+  // Dispatch and approve the review — checker is now bound to the done maker.
   const r = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
   recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'implementation', verdict: 'APPROVE', fence: f });
   const { data } = readState(root, runId);
@@ -168,17 +173,60 @@ test('superseded rejected checker (review_points_done satisfied) does not block 
   assert.notEqual(r.action.type, 'fix_episode', 'stale rejected checker must not trigger fix_episode');
 });
 
+// Plan-3 r3 fix (Codex finding 2): two done makers same point, one with bound approved checker, one without
+// → nextAction must dispatch_checker for the unreviewed maker (NOT finish).
+test('two done makers same point: one reviewed, one unreviewed → dispatch_checker not finish', () => {
+  const l = loop({
+    workstreams: [{ id: 'ws-01', status: 'in_progress', review_points_done: ['plan'], episodes: [], depends_on: [] }],
+    active_workstreams: [],
+    episodes: [
+      { id: '001-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
+      { id: '002-deep-review', role: 'checker', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
+      { id: '003-deep-work-fix', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
+      // 003-deep-work-fix has NO bound checker → must trigger dispatch_checker
+    ],
+    current_episode: null,
+  });
+  const r = nextAction(l, { now: Date.parse('2026-06-24T00:00:00Z') });
+  assert.equal(r.action.type, 'dispatch_checker', `expected dispatch_checker but got ${r.action.type}`);
+});
+
+// Fix 3 regression: unbound approved checker must NOT satisfy reviewSatisfied → rejected checker is not superseded.
+// State: maker(done) + bound rejected checker (target_maker set) + unbound approved checker (no target_maker).
+// Expected: fix_episode (rejected checker is still active) NOT finish.
+test('unbound approved checker does not satisfy rejected checker convergence (fix3 regression)', () => {
+  const l = loop({
+    workstreams: [{ id: 'ws-01', status: 'in_progress', review_points_done: [], episodes: [], depends_on: [] }],
+    active_workstreams: [],
+    episodes: [
+      { id: '001-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
+      // bound rejected checker (target_maker set → this is a real checker for 001-deep-work)
+      { id: '002-deep-review-rejected', role: 'checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
+      // unbound approved checker (no target_maker → should NOT satisfy reviewSatisfied for the rejected checker)
+      { id: '003-deep-review-approved-unbound', role: 'checker', status: 'approved', point: 'plan', workstream_id: 'ws-01' },
+    ],
+    current_episode: null,
+  });
+  const r = nextAction(l, { now: Date.parse('2026-06-24T00:00:00Z') });
+  // The rejected checker is NOT superseded by the unbound approved checker → must trigger fix_episode, not finish
+  assert.notEqual(r.action.type, 'finish', 'unbound approved checker must not allow finish while bound rejected checker exists');
+  assert.ok(
+    r.action.type === 'fix_episode' || r.action.type === 'dispatch_checker',
+    `expected fix_episode or dispatch_checker, got ${r.action.type}`,
+  );
+});
+
 // Codex r5 🟡2: superseded rejected checker must not block finish
-// A loop with: OLD rejected checker (ws-01/plan), review_points_done=['plan'] (later approved),
-// a done+reviewed maker (ws-01/plan), no active workstreams, current_episode=null → finish (not await_human, not fix_episode).
+// A loop with: OLD rejected checker (ws-01/plan) bound to maker, a later approved checker also bound to maker,
+// review_points_done=['plan'], no active workstreams, current_episode=null → finish (not await_human, not fix_episode).
 test('superseded rejected checker + done reviewed maker + no active ws → finish (not await_human)', () => {
   const l = loop({
     workstreams: [{ id: 'ws-01', status: 'in_progress', review_points_done: ['plan'], episodes: [], depends_on: [] }],
     active_workstreams: [],
     episodes: [
       { id: '001-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
-      { id: '002-deep-review-old', role: 'checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01' },
-      { id: '003-deep-review-new', role: 'checker', status: 'approved', point: 'plan', workstream_id: 'ws-01' },
+      { id: '002-deep-review-old', role: 'checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
+      { id: '003-deep-review-new', role: 'checker', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
     ],
     current_episode: null,
   });

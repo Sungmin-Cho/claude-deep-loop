@@ -1,0 +1,13 @@
+{
+  "description": "deep-loop autonomous handoff safety net — emit a clean handoff (and headless respawn when unattended) just before context compaction.",
+  "hooks": {
+    "PreCompact": [
+      {
+        "matcher": "*",
+        "hooks": [
+          { "type": "command", "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/precompact-handoff.sh" }
+        ]
+      }
+    ]
+  }
+}
