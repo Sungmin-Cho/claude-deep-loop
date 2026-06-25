@@ -211,12 +211,24 @@ function seed() {
   return { root, runId };
 }
 
-test('adapter resolve returns deep-work dispatch descriptor', () => {
+// Codex r1 should-fix-2: spec §6 의 4-verb 계약을 CLI 가 노출해야 한다 (dispatch 만 X).
+test('adapter resolve returns a normalized 4-verb descriptor', () => {
   const { root } = seed();
   const out = JSON.parse(run(root, ['adapter', 'resolve', '--protocol', 'deep-work', '--task', 'Add auth']));
-  assert.equal(out.descriptor.kind, 'invoke_skill');
-  assert.equal(out.descriptor.skill, 'deep-work:deep-work-orchestrator');
-  assert.match(out.descriptor.args, /Add auth/);
+  assert.equal(out.dispatch.kind, 'invoke_skill');
+  assert.equal(out.dispatch.skill, 'deep-work:deep-work-orchestrator');
+  assert.match(out.dispatch.args, /Add auth/);
+  assert.equal(out.await.kind, 'poll_file');
+  assert.match(out.await.path, /Add auth/);          // path_template <task> 치환
+  assert.ok('read' in out);                            // readArtifacts receipt 디스크립터
+  assert.match(out.checker_via, /review dispatch/);    // checker 는 review dispatch CLI 경유
+});
+
+test('adapter resolve --verb selects a single verb descriptor', () => {
+  const { root } = seed();
+  const a = JSON.parse(run(root, ['adapter', 'resolve', '--protocol', 'deep-work', '--task', 'x', '--verb', 'await']));
+  assert.equal(a.selected, 'await');
+  assert.equal(a.descriptor.kind, 'poll_file');
 });
 
 test('adapter resolve guards read-only tier from implementer dispatch', () => {
@@ -228,6 +240,12 @@ test('adapter resolve guards read-only tier from implementer dispatch', () => {
 test('adapter resolve rejects unknown protocol (exit 2)', () => {
   const { root } = seed();
   assert.equal(runFail(root, ['adapter', 'resolve', '--protocol', 'nope', '--task', 'x']), 2);
+});
+
+// Codex r1 should-fix-6: 비-fence 인자 누락은 usage 오류(exit 2)지 fence 코드(3) 가 아니다.
+test('adapter resolve missing --protocol exits 2 (usage, not fence-3)', () => {
+  const { root } = seed();
+  assert.equal(runFail(root, ['adapter', 'resolve', '--task', 'x']), 2);
 });
 ```
 
@@ -241,25 +259,46 @@ Expected: FAIL — `unknown subcommand: adapter`.
 `scripts/deep-loop.mjs` — import 추가 + 핸들러:
 
 ```javascript
-import { resolveAdapter, guardTierProtocol } from './lib/adapters.mjs';
+import { resolveAdapter, guardTierProtocol, loadProtocol } from './lib/adapters.mjs';
 ```
 
-handlers 객체에:
+**Codex r1 should-fix-6 — exit-code 분리 헬퍼.** 기존 `strArg`/`intArg`는 누락/무효 시 `process.exit(3)`인데, 3은 **fence 전용 코드**(`LEASE_FENCED`/`FENCE_REQUIRED`)다. 비-fence 인자(adapter `--protocol`, state-patch `--field`/`--value`, comprehension `--episode`, finish `--status`)는 fence 코드로 보고하면 안 된다. fence 인자(`--owner`/`--generation`)는 계속 `requireLease`/`intArg`(exit 3), 비-fence 인자는 아래 비-exiting 헬퍼로 받아 핸들러가 적절한 코드를 `return`한다:
+- 누락(required missing) → **exit 2** (usage 오류, unknown 커맨드/verb 와 동일 계열)
+- 무효 값(bad JSON / 잘못된 enum) → **exit 1**
+
+`parseFlags` 아래에 추가:
+
+```javascript
+function reqStr(f, name) { const v = f[name]; return (typeof v === 'string' && v.length) ? v : null; }   // 누락 시 null (핸들러가 exit 2 결정)
+```
+
+handlers 객체에 (`adapter resolve`는 read-only라 `requireLease` 호출 안 함; 4-verb 정규화 디스크립터 반환):
 
 ```javascript
   adapter: async (a) => {
     const [verb, ...rest] = a; const f = parseFlags(rest);
     if (verb !== 'resolve') { error(`unknown adapter verb: ${verb}`); return 2; }
-    const protocol = strArg(f, 'protocol');
-    let ad; try { ad = resolveAdapter(protocol); } catch { error(`UNKNOWN_PROTOCOL: ${protocol}`); return 2; }
-    const callVerb = f.verb && f.verb !== true ? f.verb : 'dispatch';
-    const descriptor = ad.dispatch({ task: f.task && f.task !== true ? f.task : '' });
-    const guard = f.tier && f.tier !== true ? guardTierProtocol(f.tier, protocol, callVerb) : { ok: true, reason: 'no-tier' };
-    json({ protocol, verb: callVerb, descriptor, guard }); return 0;
+    const protocol = reqStr(f, 'protocol'); if (!protocol) { error('MISSING_PROTOCOL'); return 2; }
+    let ad, p; try { ad = resolveAdapter(protocol); p = loadProtocol(protocol); } catch { error(`UNKNOWN_PROTOCOL: ${protocol}`); return 2; }
+    const task = reqStr(f, 'task') || '';
+    const ref = { task };
+    const fillTask = (t) => String(t || '').replace(/<task>/g, task);
+    const dispatch = ad.dispatch(ref);
+    const awaitD = ad.awaitResult(ref);
+    const read = { path: p.read.receipt_path_template ? fillTask(p.read.receipt_path_template) : null, producer: p.read.producer, artifact_kind: p.read.artifact_kind };
+    // guard 는 implementer_verb 기준 (tier×protocol 모순). checker 는 review dispatch CLI 가 담당.
+    const guard = f.tier && f.tier !== true ? guardTierProtocol(f.tier, protocol, p.implementer_verb) : { ok: true, reason: 'no-tier' };
+    const sel = f.verb && f.verb !== true ? String(f.verb) : null;
+    if (sel) {
+      const map = { dispatch, await: awaitD, read };
+      if (!(sel in map)) { error(`UNKNOWN_VERB: ${sel}`); return 2; }
+      json({ protocol, selected: sel, descriptor: map[sel], guard }); return 0;
+    }
+    json({ protocol, dispatch, await: awaitD, read, checker_via: 'review dispatch --point <p> --workstream <ws> (kernel derives checker episode + descriptor)', guard }); return 0;
   },
 ```
 
-(주의: `strArg`/`error`/`json`/`parseFlags`는 기존 헬퍼. `adapter resolve`는 read-only라 `requireLease` 호출하지 않음.)
+(주의: `loadProtocol`/`resolveAdapter`/`guardTierProtocol`는 `adapters.mjs` 기존 export. `awaitResult(ref)`는 `path_template`을 `<task>`로 채워 반환. `read`는 디스크 읽기를 *실행하지 않고* receipt 경로 템플릿 + 식별 가드만 노출(스킬이 await 후 `readArtifacts`를 직접 수행).)
 
 - [ ] **Step 4: Run to verify pass**
 
@@ -433,9 +472,10 @@ import { readState, writeState, patch as patchState } from './lib/state.mjs';
 
 ```javascript
     if (verb === 'patch') {
-      requireLease(root, runId, f);
-      const field = strArg(f, 'field');
-      let value; try { value = JSON.parse(strArg(f, 'value')); } catch { error('INVALID_VALUE: must be JSON'); return 1; }
+      requireLease(root, runId, f);   // --owner/--generation 누락·불일치 → exit 3 (fence)
+      const field = reqStr(f, 'field'); if (!field) { error('MISSING_FIELD'); return 2; }       // Codex r1 sf-6: 비-fence 누락 → exit 2
+      const rawVal = reqStr(f, 'value'); if (rawVal === null) { error('MISSING_VALUE'); return 2; }
+      let value; try { value = JSON.parse(rawVal); } catch { error('INVALID_VALUE: must be JSON'); return 1; }   // 무효 값 → exit 1
       try { patchState(root, runId, field, value, { fence: { owner: f.owner, generation: intArg(f, 'generation'), intent: 'business' } }); }
       catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }
       json({ ok: true }); return 0;
@@ -521,7 +561,7 @@ export function recordCost(root, runId, { turns = 0, tokens = 0, fence } = {}) {
 }
 ```
 
-(주의: `appendAnchored`의 3번째 인자 = mutate(loop, spent), 4번째 = preCheck(loop). 기존 호출자(테스트)는 fence 미전달 → 동작 불변.)
+(주의: 실제 시그니처는 `appendAnchored(root, runId, {type,data}, mutate, preCheck)` — mutate는 **4번째** 위치인자 `(loop, spent)`, preCheck는 **5번째** `(loop)`. 위 코드는 이를 정확히 호출한다. 기존 호출자(테스트)는 fence 미전달 → 동작 불변. [Codex r1 info-7])
 
 - [ ] **Step 3b: Add the `budget` handler**
 
@@ -589,6 +629,27 @@ test('comprehension ack is fenced (exit 3)', () => {
   const { root, runId } = seed();
   assert.equal(runFail(root, ['comprehension', 'ack', '--episode', 'x', '--owner', runId, '--generation', '9']), 3);
 });
+
+// Codex r1 should-fix-5: 부재 episode ack 는 overcount 를 일으키면 안 된다 → 거부(exit 1).
+test('comprehension ack rejects nonexistent episode (exit 1)', () => {
+  const { root, runId } = seed();
+  assert.equal(runFail(root, ['comprehension', 'ack', '--episode', 'ghost', '--owner', runId, '--generation', '1']), 1);
+});
+
+// Codex r1 should-fix-6: 비-fence 인자 누락 → exit 2 (usage).
+test('comprehension ack missing --episode exits 2', () => {
+  const { root, runId } = seed();
+  assert.equal(runFail(root, ['comprehension', 'ack', '--owner', runId, '--generation', '1']), 2);
+});
+```
+
+`tests/comprehension.test.mjs` 에 dedup 단위 테스트 추가(직접 lib):
+
+```javascript
+test('ack is idempotent — duplicate ack does not double-count', () => {
+  // seed a run with one episode (newEpisode); ack twice; episodes_human_reviewed === 1.
+  // (mirror this file의 기존 seed/헬퍼 사용)
+});
 ```
 
 - [ ] **Step 2: Run to verify fail**
@@ -609,10 +670,13 @@ export function ack(root, runId, episodeId, { fence } = {}) {
   return withLock(root, runId, () => {
     const { data } = readState(root, runId);
     if (fence) { const r = leaseCheck(data, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
-    data.comprehension.episodes_human_reviewed = (data.comprehension.episodes_human_reviewed || 0) + 1;
     const ep = data.episodes.find(e => e.id === episodeId);
-    if (ep) ep.human_reviewed = true;
+    if (!ep) throw new Error(`EPISODE_NOT_FOUND: ${episodeId}`);   // Codex r1 sf-5: 부재 episode overcount 차단
+    if (ep.human_reviewed) return { ok: true, already: true };     // 멱등 — 중복 ack 는 카운트 증가 안 함
+    ep.human_reviewed = true;
+    data.comprehension.episodes_human_reviewed = (data.comprehension.episodes_human_reviewed || 0) + 1;
     writeState(root, runId, data);
+    return { ok: true, already: false };
   });
 }
 ```
@@ -628,10 +692,11 @@ import { computeDebt, ack as ackComprehension } from './lib/comprehension.mjs';
     const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
     if (verb === 'status') { const { data } = readState(root, runId); json(computeDebt(data)); return 0; }
     if (verb === 'ack') {
-      requireLease(root, runId, f);
+      requireLease(root, runId, f);   // fence 인자 → exit 3
+      const episode = reqStr(f, 'episode'); if (!episode) { error('MISSING_EPISODE'); return 2; }   // Codex r1 sf-6
       const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'business' };
-      try { ackComprehension(root, runId, strArg(f, 'episode'), { fence }); }
-      catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }
+      try { ackComprehension(root, runId, episode, { fence }); }
+      catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }   // EPISODE_NOT_FOUND → exit 1
       const { data } = readState(root, runId); json({ ok: true, ...computeDebt(data) }); return 0;
     }
     error(`unknown comprehension verb: ${verb}`); return 2;
@@ -777,8 +842,11 @@ import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { runDir } from '../scripts/lib/state.mjs';
-import { finishRun } from '../scripts/lib/finish.mjs';
+import { runDir, patch } from '../scripts/lib/state.mjs';
+import { newWorkstream, recordWorkstreamTerminal } from '../scripts/lib/workspace.mjs';
+import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
+import { dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
+import { finishRun, finishProofState } from '../scripts/lib/finish.mjs';
 
 function seed() {
   const root = mkdtempSync(join(tmpdir(), 'dl-fin-'));
@@ -786,23 +854,62 @@ function seed() {
   return { root, runId, fence: { owner: runId, generation: 1, intent: 'business' } };
 }
 
-test('finish completed is blocked without report + settled proof', () => {
+// 완전히 settled+reviewed+terminal 인 run 을 lib 로 조립 (completed proof 충족).
+function buildSettledRun(root, runId, fence) {
+  const ws = newWorkstream(root, runId, { title: 'W', branch: 'b', worktree: 'wt', fence });
+  const ep = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws.id, fence });
+  recordEpisode(root, runId, ep.id, { status: 'done', artifacts: ['x'], proof: { receipt: 'r' }, fence });
+  const dr = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws.id, detected: {}, fence });
+  recordReviewOutcome(root, runId, { episodeId: dr.checkerEpisodeId, workstreamId: ws.id, point: 'implementation', verdict: 'APPROVE', fence });
+  recordWorkstreamTerminal(root, runId, ws.id, { status: 'ready', proof: { review_approved: true, merge_commit: null, human_approved: true }, fence });
+  patch(root, runId, 'active_workstreams', [], { fence });   // 터미널 후 active 비움 (whitelist)
+  return ws.id;
+}
+
+// --- finishProofState 순수 단위 (디스크 없음) — Codex r1 critical-1 ---
+test('finishProofState blocks an empty run (no proof of work)', () => {
+  const ps = finishProofState({ episodes: [], workstreams: [], active_workstreams: [] });
+  assert.ok(ps.missing.includes('no-proof-of-work'));
+});
+
+test('finishProofState blocks when there is no independent review proof', () => {
+  const loop = { episodes: [{ id: 'm', role: 'maker', point: 'implementation', workstream_id: 'w', status: 'done' }],
+    workstreams: [{ id: 'w', status: 'ready', review_points_done: [] }], active_workstreams: [] };
+  assert.ok(finishProofState(loop).missing.includes('no-independent-review'));
+});
+
+test('finishProofState passes only with settled + reviewed + terminal', () => {
+  const loop = { episodes: [
+      { id: 'm', role: 'maker', point: 'implementation', workstream_id: 'w', status: 'done' },
+      { id: 'c', role: 'checker', point: 'implementation', workstream_id: 'w', status: 'approved' }],
+    workstreams: [{ id: 'w', status: 'ready', review_points_done: ['implementation'] }], active_workstreams: [] };
+  assert.deepEqual(finishProofState(loop).missing, []);
+});
+
+// --- finishRun 디스크 ---
+test('finish completed is blocked on an empty run even with a report', () => {
   const { root, runId, fence } = seed();
+  writeFileSync(join(runDir(root, runId), 'final-report.md'), '# report');
   assert.throws(() => finishRun(root, runId, { status: 'completed', reportRel: 'final-report.md', proof: {}, fence }), /FINISH_PROOF_UNMET/);
 });
 
-test('finish completed succeeds when no episodes/workstreams and report exists', () => {
+test('finish completed is blocked without report (proof otherwise met)', () => {
   const { root, runId, fence } = seed();
-  const rel = 'final-report.md';
-  writeFileSync(join(runDir(root, runId), rel), '# report');
-  const r = finishRun(root, runId, { status: 'completed', reportRel: rel, proof: {}, fence });
-  assert.equal(r.ok, true);
+  buildSettledRun(root, runId, fence);
+  assert.throws(() => finishRun(root, runId, { status: 'completed', reportRel: 'final-report.md', proof: {}, fence }), /final-report-missing|FINISH_PROOF_UNMET/);
+});
+
+test('finish completed succeeds with full proof + report', () => {
+  const { root, runId, fence } = seed();
+  buildSettledRun(root, runId, fence);
+  writeFileSync(join(runDir(root, runId), 'final-report.md'), '# report');
+  const r = finishRun(root, runId, { status: 'completed', reportRel: 'final-report.md', proof: {}, fence });
   assert.equal(r.status, 'completed');
 });
 
 test('finish stopped requires human_reason', () => {
   const { root, runId, fence } = seed();
-  assert.throws(() => finishRun(root, runId, { status: 'stopped', proof: {}, fence }), /FINISH_PROOF_UNMET|human_reason/);
+  assert.throws(() => finishRun(root, runId, { status: 'stopped', proof: {}, fence }), /human_reason|FINISH_PROOF_UNMET/);
   const r = finishRun(root, runId, { status: 'stopped', proof: { human_reason: 'user asked' }, fence });
   assert.equal(r.status, 'stopped');
 });
@@ -837,14 +944,20 @@ const TERMINAL_WS = ['ready', 'merged', 'abandoned'];
 
 export function finishProofState(loop) {
   const eps = loop.episodes || [];
+  const hasWork = eps.length > 0;                                  // Codex r1 critical-1: 빈 run 의 공허-통과 차단
   const settled = eps.every(e => settledEp(loop, e));
   const noActiveWs = (loop.active_workstreams || []).length === 0;
   const wsAll = (loop.workstreams || []).every(w => TERMINAL_WS.includes(w.status));
+  // 독립 리뷰 proof (spec §5 termination.proofs: "independent review verdict approve or accepted concern")
+  const reviewedProof = eps.some(e => e.role === 'checker' && e.status === 'approved')
+    || (loop.workstreams || []).some(w => (w.review_points_done || []).length > 0);
   const missing = [];
+  if (!hasWork) missing.push('no-proof-of-work');                  // 최소 1 episode 필요 (Array.every 공허-통과 방지)
   if (!settled) missing.push('unsettled-episodes');
   if (!noActiveWs) missing.push('active-workstreams');
   if (!wsAll) missing.push('non-terminal-workstreams');
-  return { settled, noActiveWs, allWsTerminal: wsAll, missing };
+  if (hasWork && !reviewedProof) missing.push('no-independent-review');
+  return { hasWork, settled, noActiveWs, allWsTerminal: wsAll, reviewedProof, missing };
 }
 
 export function finishRun(root, runId, { status, reportRel, proof = {}, fence, now = Date.now() } = {}) {
@@ -885,14 +998,14 @@ import { finishRun } from './lib/finish.mjs';
 ```javascript
   finish: async (a) => {
     const f = parseFlags(a); const root = rootOf(f); const runId = runIdOf(root, f);
-    requireLease(root, runId, f);
+    requireLease(root, runId, f);   // fence 인자 → exit 3
     const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'business' };
-    const status = strArg(f, 'status');
+    const status = reqStr(f, 'status'); if (!status) { error('MISSING_STATUS'); return 2; }   // Codex r1 sf-6
     const reportRel = f.report && f.report !== true ? String(f.report) : undefined;
     if (reportRel && (reportRel.startsWith('/') || reportRel.split('/').includes('..'))) { error('FINISH_REPORT_PATH_UNSAFE'); return 1; }
-    const proof = f.proof ? JSON.parse(f.proof) : {};
+    let proof; try { proof = f.proof ? JSON.parse(f.proof) : {}; } catch { error('INVALID_PROOF: must be JSON'); return 1; }   // 무효 값 → exit 1
     try { const r = finishRun(root, runId, { status, reportRel, proof, fence, now: parseNow(f) }); json(r); return 0; }
-    catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }
+    catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }   // FINISH_STATUS_INVALID/PROOF_UNMET → exit 1
   },
 ```
 
@@ -974,6 +1087,36 @@ function frontmatter(src) {
   return m[1];
 }
 
+// Codex r1 should-fix-4: 2-plane 경계 강제 — durable state 에 대한 *쓰기 지침*만 잡고, 읽기/언급은 허용한다.
+// durable paths: loop.json · event-log.jsonl · .loop.hash · .deep-loop/runs.
+// write forms: Write()/Edit() 툴 호출, writeFileSync/appendFileSync/writeFile/appendFile, 셸 redirect(>,>>)/tee/sed -i.
+function violatesBoundary(src) {
+  const forms = [
+    /(Write|Edit)\s*\([^)]*?(loop\.json|event-log\.jsonl|\.loop\.hash)/,
+    /(writeFileSync|appendFileSync|writeFile|appendFile)\s*\([^)]*?(loop\.json|event-log\.jsonl|\.loop\.hash|\.deep-loop\/runs)/,
+    /(>>?|tee\b|sed\s+-i)\s+[^\n|]*?(loop\.json|event-log\.jsonl|\.loop\.hash|\.deep-loop\/runs)/,
+  ];
+  return forms.some(re => re.test(src));
+}
+
+test('boundary scan flags forbidden write forms and allows reads/mentions (fixtures)', () => {
+  const bad = [
+    'Write({ file_path: ".deep-loop/runs/x/loop.json", content: "..." })',
+    'fs.appendFileSync(".deep-loop/runs/x/event-log.jsonl", line)',
+    'echo "$JSON" > .deep-loop/runs/$ID/loop.json',
+    'sed -i "s/running/paused/" .deep-loop/runs/x/loop.json',
+    'node -e "fs.writeFileSync(\'a/.loop.hash\', h)"',
+  ];
+  for (const s of bad) assert.ok(violatesBoundary(s), `should flag: ${s}`);
+  const ok = [
+    'loop.json + handoff 가 source of truth. 이전 대화 가정 금지.',
+    'node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field status',
+    'Read .deep-loop/runs/<id>/handoffs/<ts>-next-session.md first; then /deep-loop-resume',
+    'event-log.jsonl 은 커널이 appendAnchored 단일 경로로만 쓴다 (스킬은 절대 직접 쓰지 않음).',
+  ];
+  for (const s of ok) assert.ok(!violatesBoundary(s), `should allow: ${s}`);
+});
+
 for (const [dir, name, invocable, triggers, refsCLI] of SKILLS) {
   test(`skill ${dir}: exists`, () => assert.ok(existsSync(skillPath(dir)), `${dir}/SKILL.md missing`));
   test(`skill ${dir}: frontmatter has exactly name/description/user-invocable`, () => {
@@ -993,11 +1136,9 @@ for (const [dir, name, invocable, triggers, refsCLI] of SKILLS) {
     const src = readFileSync(skillPath(dir), 'utf8');
     assert.match(src, /언어|language/i);
   });
-  test(`skill ${dir}: never writes durable state directly`, () => {
-    const src = readFileSync(skillPath(dir), 'utf8');
-    // loop.json/.loop.hash/event-log.jsonl 에 Write/Edit 하라는 지침 금지
-    assert.ok(!/(Write|Edit)\([^)]*loop\.json/.test(src), `${dir} instructs direct loop.json write`);
-    assert.ok(!/\.loop\.hash/.test(src) || /절대.*쓰|never write/i.test(src), `${dir} references hash anchor unsafely`);
+  test(`skill ${dir}: never instructs a direct durable-state write`, () => {
+    assert.ok(!violatesBoundary(readFileSync(skillPath(dir), 'utf8')),
+      `${dir} instructs a direct durable-state write — must route through the fenced CLI`);
   });
   if (refsCLI) {
     test(`skill ${dir}: routes mutations through the CLI with fence`, () => {
@@ -1480,6 +1621,18 @@ test('unattended → emits + respawns with injected spawnFn', async () => {
   assert.equal(r.action, 'respawned');
   assert.match(spawnedCmd, /claude -p/);
 });
+
+// Codex r1 should-fix-3: gate 차단(wallclock 소진) headless PreCompact 는 spawn 하지 않고 status=paused.
+test('unattended but gate-blocked → no spawn, run paused', async () => {
+  const { root, runId } = seed();
+  let spawned = false;
+  // created_at=2026-06-24 + now 한참 뒤 → wallclock(max 86400s) 초과 → respawnGate 차단.
+  const r = await runPreCompactHandoff({ unattended: true }, { root, now: Date.parse('2026-07-01T00:00:00Z'), spawnFn: () => { spawned = true; return { ok: true }; } });
+  assert.equal(spawned, false);
+  assert.equal(r.action, 'gate-blocked');
+  const { readState } = await import('../scripts/lib/state.mjs');
+  assert.equal(readState(root, runId).data.status, 'paused');
+});
 ```
 
 - [ ] **Step 2: Run to verify fail** — module 없음.
@@ -1491,7 +1644,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readState } from '../lib/state.mjs';
 import { emitHandoff } from '../lib/handoff.mjs';
-import { respawn, respawnGate } from '../lib/respawn.mjs';
+import { respawn } from '../lib/respawn.mjs';
 import { headlessSpawn } from '../lib/spawn-driver.mjs';
 
 function currentRunId(root) {
@@ -1509,12 +1662,15 @@ export async function runPreCompactHandoff(input = {}, { root = process.cwd(), s
   const headless = input.unattended === true || loop.autonomy?.spawn_style === 'headless' || input.tty === false;
   const em = emitHandoff(root, runId, { reason: 'pre-compact', trigger: 'pre-compact', headless, expect });
   if (!em.ok) return { ok: false, action: 'fenced', reason: em.reason };
-  const gate = respawnGate(loop, { now });
-  if (headless && loop.autonomy?.auto_handoff && gate.ok) {
+  // Codex r1 should-fix-3: 외부에서 게이트를 선검사하지 않는다. headless && auto_handoff 면 **항상** respawn 을 호출해
+  // respawn 내부의 canonical 실패모드 A 경로(gate 차단 시 status=paused 기록)를 타게 한다. 선검사하면 budget/wallclock
+  // 소진된 headless PreCompact 가 releasing handoff 만 남기고 paused 를 못 박는다(spec §9.1).
+  if (headless && loop.autonomy?.auto_handoff) {
     const rr = respawn(root, runId, { childRunId: em.childRunId, key: em.key, handoffRel: em.handoffRel, headless: true, now, spawnFn });
-    return { ok: rr.ok, action: rr.ok ? 'respawned' : 'gate-blocked', childRunId: em.childRunId, outcome: rr.outcome };
+    const action = rr.ok ? 'respawned' : (rr.outcome === 'gate-blocked' ? 'gate-blocked' : 'respawn-failed');
+    return { ok: rr.ok, action, childRunId: em.childRunId, outcome: rr.outcome };
   }
-  return { ok: true, action: 'emitted', childRunId: em.childRunId };
+  return { ok: true, action: 'emitted', childRunId: em.childRunId };   // interactive → 사람 수동 resume
 }
 
 // CLI 진입 — best-effort, 절대 compaction 차단 안 함.
