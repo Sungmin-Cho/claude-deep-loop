@@ -19,10 +19,11 @@ user-invocable: true
 이전 대화 컨텍스트를 **가정하지 않는다**. 항상 handoff 문서에서 시작한다.
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field session_chain.sessions
 ```
 
-`session_chain.latest_handoff`에서 최신 handoff 파일 경로를 확인한다. handoff.md를 Read한다.
+마지막 세션 항목의 `handoff_rel` 또는 `handoff_path`에서 handoff.md 경로를 확인한다 (런 디렉터리 기준).
+`.deep-loop/runs/<parent_run_id>/<handoff_rel>` 경로로 handoff.md를 Read한다.
 
 ## 단계 2: Lease 인수 (CAS)
 

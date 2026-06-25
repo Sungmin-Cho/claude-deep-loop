@@ -38,7 +38,13 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" handoff emit --owner <run_id>
 ### Interactive (사람 개입)
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field session_chain.latest_handoff.launch_command_path
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field session_chain.sessions
+```
+
+마지막 항목(child session)에서 런 디렉터리를 파악하고, 부모 런 디렉터리의 `terminal/launch-command.txt`를 Read한다. 예:
+
+```
+Read .deep-loop/runs/<parent_run_id>/terminal/launch-command.txt
 ```
 
 `terminal/launch-command.txt` 내용을 사람에게 제시한다. 사람이 직접 새 세션을 시작한다.

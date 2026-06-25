@@ -201,7 +201,8 @@ test('respawn gate-blocked with lease takeover before pause → fenced, status N
   // Now call respawn as the original parent (runId, gen 1) — gate-blocked but lease has changed
   const r = respawn(root, runId, { childRunId: CHILD, key: h.key, handoffRel: h.handoffRel, now: NOW1, spawnFn: () => { return { ok: true }; } });
   assert.equal(r.ok, false);
-  assert.equal(r.outcome, 'fenced', 'must return fenced when lease changed before pause write');
+  // After Fix 1: owner-mismatch check removed; key is nulled by acquireLease → key-mismatch fires (still a fencing outcome).
+  assert.ok(r.outcome === 'fenced' || r.outcome === 'key-mismatch', 'must return a fencing outcome when lease changed before pause write');
   const after = readState(root, runId).data;
   assert.notEqual(after.status, 'paused', 'status must NOT be paused when fenced');
 });
@@ -219,4 +220,29 @@ test('double emit + single respawn (race): only one child chain, no double spawn
   assert.equal(spawns, 1);
   const children = readState(root, runId).data.session_chain.sessions.filter(s => s.run_id !== runId);
   assert.equal(children.length, 1);
+});
+
+test('a child owner can emit a second handoff and respawn (multi-session, Fix 1)', () => {
+  const { root, runId } = seed();
+  const NOWa = Date.parse('2026-06-24T00:01:00Z'), NOWb = Date.parse('2026-06-24T00:02:00Z');
+  const h1 = emitHandoff(root, runId, { trigger: 'm1', now: NOWa, expect: { owner: runId, generation: 1 } });
+  respawn(root, runId, { childRunId: h1.childRunId, key: h1.key, handoffRel: h1.handoffRel, headless: true, now: NOWa, spawnFn: () => ({ ok: true }) });
+  acquireLease(root, runId, { owner: h1.childRunId, expectGeneration: 1, now: NOWa });   // child owns, generation 2
+  const h2 = emitHandoff(root, runId, { trigger: 'm2', now: NOWb, expect: { owner: h1.childRunId, generation: 2 } });
+  assert.equal(h2.ok, true);
+  const r2 = respawn(root, runId, { childRunId: h2.childRunId, key: h2.key, handoffRel: h2.handoffRel, headless: true, now: NOWb, spawnFn: () => ({ ok: true }) });
+  assert.equal(r2.ok, true);
+  assert.equal(r2.outcome, 'spawned');
+  assert.equal(readState(root, runId).data.session_chain.sessions.find(s => s.run_id === h1.childRunId).superseded_by, h2.childRunId);
+});
+
+test('child can acquire the lease after a headless respawn releases it (Fix 2)', () => {
+  const { root, runId } = seed();
+  const NOWa = Date.parse('2026-06-24T00:01:00Z'), NOWb = Date.parse('2026-06-24T00:02:00Z');
+  const h = emitHandoff(root, runId, { trigger: 'm', now: NOWa, expect: { owner: runId, generation: 1 } });
+  const r = respawn(root, runId, { childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel, headless: true, now: NOWa, spawnFn: () => ({ ok: true }) });
+  assert.equal(r.outcome, 'spawned');
+  assert.equal(readState(root, runId).data.session_chain.lease.state, 'released');
+  const acq = acquireLease(root, runId, { owner: h.childRunId, expectGeneration: 1, now: NOWb });
+  assert.equal(acq.ok, true); assert.equal(acq.generation, 2);
 });

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { headlessSpawn, parseUsage } from '../scripts/lib/spawn-driver.mjs';
+import { headlessSpawn, parseUsage, detachedSpawn } from '../scripts/lib/spawn-driver.mjs';
 
 const okRun = () => ({ code: 0, stdout: '{"num_turns":3,"usage":{"input_tokens":10}}', stderr: '', timedOut: false });
 const timeoutRun = () => ({ code: null, stdout: '', stderr: '', timedOut: true });
@@ -37,4 +37,14 @@ test('parseUsage requires a finite enforceable metric', () => {
   assert.ok(parseUsage('{"usage":{"input_tokens":5,"output_tokens":7}}').tokens === 12);
   assert.equal(parseUsage('{"total_cost_usd":0.12}'), null);   // cost-only → 측정 불가
   assert.equal(parseUsage('nothing'), null);
+});
+
+test('detachedSpawn returns ok:true for an immediately-exiting command', () => {
+  const r = detachedSpawn('true');
+  assert.equal(r.ok, true);
+});
+
+test('detachedSpawn returns object with ok boolean on any result', () => {
+  const r = detachedSpawn('true');
+  assert.ok(typeof r.ok === 'boolean');
 });

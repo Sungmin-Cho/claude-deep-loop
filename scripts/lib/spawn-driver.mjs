@@ -1,4 +1,11 @@
-import { spawnSync } from 'node:child_process';
+import { spawnSync, spawn } from 'node:child_process';
+
+// respawn launcher: detached fire-and-forget. respawn 은 launch 후 lease 를 release 하므로 동기 spawn 은
+// child 가 lease 를 인수하지 못해 데드락(Codex impl r1-2). detached 로 즉시 반환 → respawn release → child acquire.
+export function detachedSpawn(cmd) {
+  try { const c = spawn('bash', ['-c', cmd], { detached: true, stdio: 'ignore' }); c.unref(); return { ok: true }; }
+  catch (e) { return { ok: false, reason: `launch-error: ${e.message || e}` }; }
+}
 
 // Codex r2 sf-4: budget 을 강제하려면 enforceable metric(turns 또는 tokens)이 최소 1개 finite 여야 한다.
 // total_cost_usd 만 있는 출력은 turns/tokens 로 budget 게이트를 못 거니 측정 불가(null) → fail-closed.

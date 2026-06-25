@@ -68,14 +68,14 @@ test('workstream terminal (abandoned) + review record reach kernel via CLI', () 
   assert.equal(readState(root, runId).data.episodes.find(e => e.id === disp.checkerEpisodeId).status, 'approved');
 });
 
-// Fix 1: episode record --status approved/rejected exits nonzero (status 3)
-test('episode record --status approved exits with code 3', () => {
+// Fix 1: episode record --status approved/rejected exits nonzero (status 1 — invalid value, not a fence violation)
+test('episode record --status approved exits with code 1', () => {
   const { root, runId } = seed();
   const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'checker', '--kind', 'impl-review', '--point', 'implementation', '--owner', runId, '--generation', '1']));
   let code = 0;
   try { run(root, ['episode', 'record', '--id', ep.id, '--status', 'approved', '--proof', '{"verdict":"APPROVE"}', '--owner', runId, '--generation', '1']); }
   catch (e) { code = e.status; }
-  assert.equal(code, 3);
+  assert.equal(code, 1);
 });
 
 // Fix 5: respawn --dry-run returns JSON with ok field and exits 0
@@ -118,13 +118,13 @@ test('lease acquire (missing --owner) exits with code 3', () => {
   assert.equal(code, 3);
 });
 
-// Codex r6 🟡: workstream new missing --title exits 3
-test('workstream new missing --title exits with code 3', () => {
+// Fix 3: workstream new missing --title exits 2 (usage error, not a fence violation)
+test('workstream new missing --title exits with code 2', () => {
   const { root, runId } = seed();
   let code = 0;
   try { run(root, ['workstream', 'new', '--branch', 'b', '--worktree', 'w', '--owner', runId, '--generation', '1']); }
   catch (e) { code = e.status; }
-  assert.equal(code, 3);
+  assert.equal(code, 2);
 });
 
 test('full suite still green count grows (smoke: validate ok)', () => {

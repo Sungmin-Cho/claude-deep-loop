@@ -114,14 +114,14 @@ const handlers = {
     requireLease(root, runId, f);
     const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'business' };
     if (verb === 'new') {
-      const title = strArg(f, 'title');
-      const branch = strArg(f, 'branch');
-      const worktree = strArg(f, 'worktree');
+      const title = reqStr(f, 'title'); if (!title) { error('MISSING_TITLE'); return 2; }
+      const branch = reqStr(f, 'branch'); if (!branch) { error('MISSING_BRANCH'); return 2; }
+      const worktree = reqStr(f, 'worktree'); if (!worktree) { error('MISSING_WORKTREE'); return 2; }
       let dependsOn = [];
       if (f['depends-on'] !== undefined) {
         let parsed;
-        try { parsed = JSON.parse(f['depends-on']); } catch { error('INVALID_DEPENDS_ON'); return 3; }
-        if (!Array.isArray(parsed) || parsed.some(d => typeof d !== 'string' || d.length === 0)) { error('INVALID_DEPENDS_ON'); return 3; }
+        try { parsed = JSON.parse(f['depends-on']); } catch { error('INVALID_DEPENDS_ON'); return 1; }
+        if (!Array.isArray(parsed) || parsed.some(d => typeof d !== 'string' || d.length === 0)) { error('INVALID_DEPENDS_ON'); return 1; }
         dependsOn = parsed;
       }
       const r = newWorkstream(root, runId, { title, branch, worktree, dependsOn, fence }); json(r); return 0;
@@ -137,7 +137,7 @@ const handlers = {
     const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'business' };
     if (verb === 'new') { const r = newEpisode(root, runId, { plugin: f.plugin, role: f.role, kind: f.kind, point: f.point, workstream: f.workstream, expectedArtifacts: f.artifacts ? JSON.parse(f.artifacts) : [], fence }); json({ id: r.id, request_path: r.requestPath }); return 0; }
     if (verb === 'record') {
-      if (f.status === 'approved' || f.status === 'rejected') { error(`EPISODE_TERMINAL_VIA_REVIEW: approved/rejected come only from 'review record'`); return 3; }
+      if (f.status === 'approved' || f.status === 'rejected') { error(`EPISODE_TERMINAL_VIA_REVIEW: approved/rejected come only from 'review record'`); return 1; }
       recordEpisode(root, runId, f.id, { status: f.status, artifacts: f.artifacts ? JSON.parse(f.artifacts) : [], proof: f.proof ? JSON.parse(f.proof) : {}, fence }); json({ ok: true }); return 0;
     }
     error(`unknown episode verb: ${verb}`); return 2;

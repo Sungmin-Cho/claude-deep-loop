@@ -32,8 +32,8 @@ export function respawn(root, runId, { childRunId, key, handoffRel = '', headles
   const { data: loop } = readState(root, runId);
   const lease = loop.session_chain.lease;
   const generation = lease.generation;
-  // 멱등/펜싱 사전조건 (Codex r1 🔴2): 잘못된 owner/key 거부, 이미 spawned 면 재spawn 금지(이중 spawn 차단).
-  if (lease.owner_run_id !== runId) return { ok: false, outcome: 'fenced', reason: 'owner-mismatch', childRunId };
+  const parentOwner = loop.session_chain.lease.owner_run_id;
+  // 멱등/펜싱 사전조건 (Codex r1 🔴2): 잘못된 key 거부, 이미 spawned 면 재spawn 금지(이중 spawn 차단).
   if (lease.handoff_idempotency_key !== key) return { ok: false, outcome: 'key-mismatch', reason: 'key-mismatch', childRunId };
   // Codex impl r8 🟡: bind the spawn to the RESERVED handoff child — a valid key must not spawn an arbitrary child.
   if (childRunId !== lease.handoff_child_run_id) return { ok: false, outcome: 'child-mismatch', reason: `childRunId ${childRunId} != reserved ${lease.handoff_child_run_id}`, childRunId };
@@ -50,7 +50,7 @@ export function respawn(root, runId, { childRunId, key, handoffRel = '', headles
     withLock(root, runId, () => {
       const { data } = readState(root, runId);
       const l = data.session_chain.lease;
-      if (l.owner_run_id !== runId || l.generation !== generation) { fenced = true; return; }
+      if (l.owner_run_id !== parentOwner || l.generation !== generation) { fenced = true; return; }
       data.status = 'paused';
       writeState(root, runId, data);
     });
@@ -60,7 +60,7 @@ export function respawn(root, runId, { childRunId, key, handoffRel = '', headles
   // Codex r2 🔴3: 외부 spawn **이전에** emitted→spawned 를 원자적(withLock CAS)으로 클레임.
   // 동시 호출 둘이 emitted/releasing 을 읽어도 advanceHandoffPhase 가 직렬화되어 1명만 'advanced',
   // 나머지는 'idempotent-noop' → spawn 안 함 (이중 외부 spawn 차단).
-  const claim = advanceHandoffPhase(root, runId, { key, toPhase: 'spawned', now, expect: { owner: runId, generation } });
+  const claim = advanceHandoffPhase(root, runId, { key, toPhase: 'spawned', now, expect: { owner: parentOwner, generation } });
   if (!claim.ok) {
     if (claim.reason === 'fenced') return { ok: false, outcome: 'fenced', reason: 'lease-changed-during-claim', childRunId };
     return { ok: false, outcome: 'phase-error', reason: claim.reason, childRunId };
@@ -86,7 +86,7 @@ export function respawn(root, runId, { childRunId, key, handoffRel = '', headles
         // 부모로 lease 롤백 (releasing/spawned → active/idle, stale TTL 해제)
         l.session_chain.lease = { ...l.session_chain.lease, state: 'active', handoff_phase: 'idle', handoff_idempotency_key: null, handoff_child_run_id: null, expires_at: null };
       }, (loop) => {
-        if (loop.session_chain.lease.owner_run_id !== runId || loop.session_chain.lease.generation !== generation) {
+        if (loop.session_chain.lease.owner_run_id !== parentOwner || loop.session_chain.lease.generation !== generation) {
           throw new Error('RESPAWN_FENCED: failure-append');
         }
       });
@@ -105,7 +105,7 @@ export function respawn(root, runId, { childRunId, key, handoffRel = '', headles
     appendAnchored(root, runId, { type: 'respawn-spawned', data: { child_run_id: childRunId, headless } }, (l) => {
       l.session_chain.lease = { ...l.session_chain.lease, state: 'released' };   // 자식이 acquire 가능
     }, (loop) => {
-      if (loop.session_chain.lease.owner_run_id !== runId || loop.session_chain.lease.generation !== generation) {
+      if (loop.session_chain.lease.owner_run_id !== parentOwner || loop.session_chain.lease.generation !== generation) {
         throw new Error('RESPAWN_FENCED: spawned-append');
       }
     });

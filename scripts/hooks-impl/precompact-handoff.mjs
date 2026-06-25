@@ -3,14 +3,14 @@ import { join } from 'node:path';
 import { readState } from '../lib/state.mjs';
 import { emitHandoff } from '../lib/handoff.mjs';
 import { respawn } from '../lib/respawn.mjs';
-import { headlessSpawn } from '../lib/spawn-driver.mjs';
+import { headlessSpawn, detachedSpawn } from '../lib/spawn-driver.mjs';
 
 function currentRunId(root) {
   const p = join(root, '.deep-loop', 'current');
   return existsSync(p) ? readFileSync(p, 'utf8').trim() : null;
 }
 
-export async function runPreCompactHandoff(input = {}, { root = process.cwd(), spawnFn = headlessSpawn, now = Date.now() } = {}) {
+export async function runPreCompactHandoff(input = {}, { root = process.cwd(), spawnFn = detachedSpawn, now = Date.now() } = {}) {
   const runId = currentRunId(root);
   if (!runId) return { ok: true, action: 'no-run' };
   let loop;

@@ -91,7 +91,7 @@ export function emitHandoff(root, runId, { reason = 'milestone', trigger = 'mile
       l.session_chain.sessions.push({ run_id: childRunId, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: null,
         handoff_rel: handoffRel, handoff_path: handoffPath, handoff_md: mdName, handoff_cs: csName });
     }
-    const cur = l.session_chain.sessions.find(s => s.run_id === runId);
+    const cur = l.session_chain.sessions.find(s => s.run_id === expect.owner);
     if (cur) cur.superseded_by = childRunId;
     const lease = l.session_chain.lease;
     if (lease.handoff_phase === 'reserved') {   // 부모 carve-out 시작 + stale TTL (Codex r1 🔴4)
