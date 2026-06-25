@@ -18,11 +18,20 @@ export function finishProofState(loop) {
   const settled = eps.every(e => settledEp(loop, e));
   const noActiveWs = (loop.active_workstreams || []).length === 0;
   const wsAll = (loop.workstreams || []).every(w => TERMINAL_WS.includes(w.status));
-  // Codex r6 critical-1: **모든** done maker 가 reviewSatisfied 여야 한다 (전역 any 가 아니라 per-maker) —
-  // nextAction(next-action.mjs:33-35)·spec §488("checker 없이 maker done 간주 ❌")와 동일 강도.
-  const doneMakers = eps.filter(e => e.role === 'maker' && e.status === 'done');
-  const allMakersReviewed = doneMakers.every(m => reviewSatisfied(loop, m));
-  const reviewedProof = doneMakers.length > 0 && allMakersReviewed;   // 최소 1 리뷰된 maker = 독립 리뷰 proof
+  // Codex r2 critical-1: COUNT-BASED per-(ws,point) check — 같은 ws+point 의 두 번째 done maker 도 자신의 checker 필요.
+  // terminalCheckers >= doneMakers && approvedCheckers >= 1 인 그룹만 리뷰 커버.
+  const groups = new Map();
+  for (const e of eps) {
+    const key = `${e.workstream_id}|${e.point}`;
+    if (!groups.has(key)) groups.set(key, { doneMakers: 0, terminalCheckers: 0, approvedCheckers: 0 });
+    const g = groups.get(key);
+    if (e.role === 'maker' && e.status === 'done') g.doneMakers++;
+    if (e.role === 'checker' && (e.status === 'approved' || e.status === 'rejected')) g.terminalCheckers++;
+    if (e.role === 'checker' && e.status === 'approved') g.approvedCheckers++;
+  }
+  const allMakersReviewed = [...groups.values()].every(g => g.doneMakers === 0 || (g.terminalCheckers >= g.doneMakers && g.approvedCheckers >= 1));
+  const totalDoneMakers = [...groups.values()].reduce((s, g) => s + g.doneMakers, 0);
+  const reviewedProof = totalDoneMakers > 0 && allMakersReviewed;   // 최소 1 리뷰된 maker = 독립 리뷰 proof
   const missing = [];
   if (!hasWork) missing.push('no-proof-of-work');                  // 최소 1 episode 필요 (Array.every 공허-통과 방지)
   if (!settled) missing.push('unsettled-episodes');

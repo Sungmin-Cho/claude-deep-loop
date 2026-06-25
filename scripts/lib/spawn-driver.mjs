@@ -1,8 +1,13 @@
 import { spawnSync, spawn } from 'node:child_process';
 
-// respawn launcher: detached fire-and-forget. respawn 은 launch 후 lease 를 release 하므로 동기 spawn 은
-// child 가 lease 를 인수하지 못해 데드락(Codex impl r1-2). detached 로 즉시 반환 → respawn release → child acquire.
-export function detachedSpawn(cmd) {
+function claudeAvailable() {
+  try { return spawnSync('bash', ['-lc', 'command -v claude'], { encoding: 'utf8' }).status === 0; } catch { return false; }
+}
+
+// respawn launcher: detached fire-and-forget. Fix 2: claude binary precheck before spawn so a missing claude
+// binary returns ok:false (failure-mode-B rollback) instead of silently succeeding and stranding the lease.
+export function detachedSpawn(cmd, { available = claudeAvailable } = {}) {
+  if (!available()) return { ok: false, reason: 'claude-not-found' };
   try { const c = spawn('bash', ['-c', cmd], { detached: true, stdio: 'ignore' }); c.unref(); return { ok: true }; }
   catch (e) { return { ok: false, reason: `launch-error: ${e.message || e}` }; }
 }

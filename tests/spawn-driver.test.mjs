@@ -40,11 +40,23 @@ test('parseUsage requires a finite enforceable metric', () => {
 });
 
 test('detachedSpawn returns ok:true for an immediately-exiting command', () => {
-  const r = detachedSpawn('true');
+  const r = detachedSpawn('true', { available: () => true });
   assert.equal(r.ok, true);
 });
 
 test('detachedSpawn returns object with ok boolean on any result', () => {
-  const r = detachedSpawn('true');
+  const r = detachedSpawn('true', { available: () => true });
   assert.ok(typeof r.ok === 'boolean');
+});
+
+// Fix 2(c): precheck — missing claude binary is caught before spawn
+test('detachedSpawn with available=()=>false returns {ok:false, reason:"claude-not-found"}', () => {
+  const r = detachedSpawn('true', { available: () => false });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'claude-not-found');
+});
+
+test('detachedSpawn with available=()=>true returns {ok:true}', () => {
+  const r = detachedSpawn('true', { available: () => true });
+  assert.equal(r.ok, true);
 });

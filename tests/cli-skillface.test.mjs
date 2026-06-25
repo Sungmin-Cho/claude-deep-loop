@@ -176,3 +176,19 @@ test('breaker check is read-only', () => {
   const r = JSON.parse(run(root, ['breaker', 'check']));
   assert.equal(r.tripped, false);
 });
+
+// Fix 3: missing required non-fence args → exit 2
+test('episode new missing --plugin exits 2', () => {
+  const { root, runId } = seed();
+  assert.equal(runFail(root, ['episode', 'new', '--role', 'maker', '--kind', 'implementation', '--point', 'implementation', '--owner', runId, '--generation', '1']), 2);
+});
+
+test('episode new missing --role exits 2', () => {
+  const { root, runId } = seed();
+  assert.equal(runFail(root, ['episode', 'new', '--plugin', 'deep-work', '--kind', 'implementation', '--point', 'implementation', '--owner', runId, '--generation', '1']), 2);
+});
+
+test('review dispatch missing --point exits 2', () => {
+  const { root, runId } = seed();
+  assert.equal(runFail(root, ['review', 'dispatch', '--workstream', 'ws1', '--owner', runId, '--generation', '1']), 2);
+});

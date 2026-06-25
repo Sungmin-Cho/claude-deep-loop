@@ -126,19 +126,35 @@ const handlers = {
       }
       const r = newWorkstream(root, runId, { title, branch, worktree, dependsOn, fence }); json(r); return 0;
     }
-    if (verb === 'set') { setWorkstreamStatus(root, runId, f.id, f.status, { fence }); json({ ok: true }); return 0; }
+    if (verb === 'set') {
+      const id = reqStr(f, 'id'); if (!id) { error('MISSING_ID'); return 2; }
+      const status = reqStr(f, 'status'); if (!status) { error('MISSING_STATUS'); return 2; }
+      setWorkstreamStatus(root, runId, id, status, { fence }); json({ ok: true }); return 0;
+    }
     // 터미널(ready/merged/abandoned)은 proof 필수 — 커널 파생 (Codex r1 🔴6: CLI 경계로 노출)
-    if (verb === 'terminal') { recordWorkstreamTerminal(root, runId, f.id, { status: f.status, proof: f.proof ? JSON.parse(f.proof) : {}, fence }); json({ ok: true }); return 0; }
+    if (verb === 'terminal') {
+      const id = reqStr(f, 'id'); if (!id) { error('MISSING_ID'); return 2; }
+      const status = reqStr(f, 'status'); if (!status) { error('MISSING_STATUS'); return 2; }
+      recordWorkstreamTerminal(root, runId, id, { status, proof: f.proof ? JSON.parse(f.proof) : {}, fence }); json({ ok: true }); return 0;
+    }
     error(`unknown workstream verb: ${verb}`); return 2;
   },
   episode: async (a) => {
     const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
     requireLease(root, runId, f);
     const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'business' };
-    if (verb === 'new') { const r = newEpisode(root, runId, { plugin: f.plugin, role: f.role, kind: f.kind, point: f.point, workstream: f.workstream, expectedArtifacts: f.artifacts ? JSON.parse(f.artifacts) : [], fence }); json({ id: r.id, request_path: r.requestPath }); return 0; }
+    if (verb === 'new') {
+      const plugin = reqStr(f, 'plugin'); if (!plugin) { error('MISSING_PLUGIN'); return 2; }
+      const role = reqStr(f, 'role'); if (!role) { error('MISSING_ROLE'); return 2; }
+      const kind = reqStr(f, 'kind'); if (!kind) { error('MISSING_KIND'); return 2; }
+      const point = reqStr(f, 'point'); if (!point) { error('MISSING_POINT'); return 2; }
+      const r = newEpisode(root, runId, { plugin, role, kind, point, workstream: f.workstream, expectedArtifacts: f.artifacts ? JSON.parse(f.artifacts) : [], fence }); json({ id: r.id, request_path: r.requestPath }); return 0;
+    }
     if (verb === 'record') {
-      if (f.status === 'approved' || f.status === 'rejected') { error(`EPISODE_TERMINAL_VIA_REVIEW: approved/rejected come only from 'review record'`); return 1; }
-      recordEpisode(root, runId, f.id, { status: f.status, artifacts: f.artifacts ? JSON.parse(f.artifacts) : [], proof: f.proof ? JSON.parse(f.proof) : {}, fence }); json({ ok: true }); return 0;
+      const id = reqStr(f, 'id'); if (!id) { error('MISSING_ID'); return 2; }
+      const status = reqStr(f, 'status'); if (!status) { error('MISSING_STATUS'); return 2; }
+      if (status === 'approved' || status === 'rejected') { error(`EPISODE_TERMINAL_VIA_REVIEW: approved/rejected come only from 'review record'`); return 1; }
+      recordEpisode(root, runId, id, { status, artifacts: f.artifacts ? JSON.parse(f.artifacts) : [], proof: f.proof ? JSON.parse(f.proof) : {}, fence }); json({ ok: true }); return 0;
     }
     error(`unknown episode verb: ${verb}`); return 2;
   },
@@ -146,9 +162,19 @@ const handlers = {
     const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
     requireLease(root, runId, f);
     const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'business' };
-    if (verb === 'dispatch') { json(dispatchReview(root, runId, { point: f.point, workstreamId: f.workstream, detected: detectPlugins(root), fence })); return 0; }
+    if (verb === 'dispatch') {
+      const point = reqStr(f, 'point'); if (!point) { error('MISSING_POINT'); return 2; }
+      const workstream = reqStr(f, 'workstream'); if (!workstream) { error('MISSING_WORKSTREAM'); return 2; }
+      json(dispatchReview(root, runId, { point, workstreamId: workstream, detected: detectPlugins(root), fence })); return 0;
+    }
     // verdict 기록 → checker 터미널 파생 + breaker/comprehension/review_points (Codex r1 🔴6: CLI 경계로 노출)
-    if (verb === 'record') { json(recordReviewOutcome(root, runId, { episodeId: f.episode, workstreamId: f.workstream, point: f.point, verdict: f.verdict, source: f.source || 'deep-review-approve', fence })); return 0; }
+    if (verb === 'record') {
+      const episode = reqStr(f, 'episode'); if (!episode) { error('MISSING_EPISODE'); return 2; }
+      const workstream = reqStr(f, 'workstream'); if (!workstream) { error('MISSING_WORKSTREAM'); return 2; }
+      const point = reqStr(f, 'point'); if (!point) { error('MISSING_POINT'); return 2; }
+      const verdict = reqStr(f, 'verdict'); if (!verdict) { error('MISSING_VERDICT'); return 2; }
+      json(recordReviewOutcome(root, runId, { episodeId: episode, workstreamId: workstream, point, verdict, source: f.source || 'deep-review-approve', fence })); return 0;
+    }
     error(`unknown review verb: ${verb}`); return 2;
   },
   handoff: async (a) => {

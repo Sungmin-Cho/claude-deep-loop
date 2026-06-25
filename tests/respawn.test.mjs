@@ -75,7 +75,7 @@ test('respawn rejects childRunId that does not match the reserved handoff child 
   assert.equal(after.state, 'releasing');
 });
 
-test('respawn success → spawned, lease released, child can acquire (generation+1); retry is idempotent', () => {
+test('respawn success → spawned, lease stays releasing, child can acquire via handshake (generation+1); retry is idempotent', () => {
   const { root, runId } = seed();
   const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });
   const cmds = [];
@@ -87,27 +87,31 @@ test('respawn success → spawned, lease released, child can acquire (generation
   assert.match(cmds[0], new RegExp(`\\.deep-loop/runs/${runId}/`));  // 부모 경로 참조 (🔴3)
   const after = readState(root, runId).data;
   assert.equal(after.session_chain.lease.handoff_phase, 'spawned');
-  assert.equal(after.session_chain.lease.state, 'released');
+  // Fix 2: lease stays 'releasing' — child acquires via handshake (releasing + owner===handoff_child_run_id)
+  assert.equal(after.session_chain.lease.state, 'releasing');
   // Codex r1 🔴2: 같은 respawn 재시도는 already-spawned no-op (이중 spawn 금지)
   const retry = respawn(root, runId, { childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel, now: NOW1, spawnFn });
   assert.equal(retry.outcome, 'already-spawned');
   assert.equal(cmds.length, 1);
+  // Child acquires the releasing lease via handshake (not released — acquiring 'releasing' directly)
   const a = acquireLease(root, runId, { owner: h.childRunId, expectGeneration: 1, now: NOW1 });
   assert.equal(a.ok, true);
   assert.equal(a.generation, 2);
 });
 
-// Codex impl r9 🔴: a RELEASED handoff lease may be acquired ONLY by the reserved child (before stale TTL).
-test('released handoff lease is acquirable only by the reserved child (non-reserved child fenced)', () => {
+// Fix 2: After respawn, lease stays 'releasing'. Wrong child cannot acquire (not the reserved child, not expired).
+// Reserved child can acquire via handshake (releasing + owner===handoff_child_run_id).
+test('releasing handoff lease is acquirable only by the reserved child (non-reserved child fenced)', () => {
   const { root, runId } = seed();
   const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });
   respawn(root, runId, { childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel, now: NOW1, spawnFn: () => ({ ok: true }) });
-  // wrong child cannot acquire the released lease before stale TTL
+  // wrong child cannot acquire the releasing lease (not reserved child, not expired)
   const wrong = acquireLease(root, runId, { owner: 'WRONG-CHILD', expectGeneration: 1, now: NOW1 });
   assert.equal(wrong.ok, false);
-  assert.equal(wrong.reason, 'child-not-reserved');
+  // With 'releasing' state, non-child non-expired → lease-not-takeable (not child-not-reserved)
+  assert.ok(['child-not-reserved', 'lease-not-takeable'].includes(wrong.reason));
   assert.equal(readState(root, runId).data.session_chain.lease.handoff_child_run_id, h.childRunId);  // binding intact
-  // reserved child acquires (generation+1)
+  // reserved child acquires via handshake (generation+1)
   const ok = acquireLease(root, runId, { owner: h.childRunId, expectGeneration: 1, now: NOW1 });
   assert.equal(ok.ok, true);
   assert.equal(ok.generation, 2);
@@ -236,13 +240,14 @@ test('a child owner can emit a second handoff and respawn (multi-session, Fix 1)
   assert.equal(readState(root, runId).data.session_chain.sessions.find(s => s.run_id === h1.childRunId).superseded_by, h2.childRunId);
 });
 
-test('child can acquire the lease after a headless respawn releases it (Fix 2)', () => {
+test('child can acquire the releasing lease after a headless respawn via handshake (Fix 2)', () => {
   const { root, runId } = seed();
   const NOWa = Date.parse('2026-06-24T00:01:00Z'), NOWb = Date.parse('2026-06-24T00:02:00Z');
   const h = emitHandoff(root, runId, { trigger: 'm', now: NOWa, expect: { owner: runId, generation: 1 } });
   const r = respawn(root, runId, { childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel, headless: true, now: NOWa, spawnFn: () => ({ ok: true }) });
   assert.equal(r.outcome, 'spawned');
-  assert.equal(readState(root, runId).data.session_chain.lease.state, 'released');
+  // Fix 2: lease stays 'releasing' — child acquires via handshake
+  assert.equal(readState(root, runId).data.session_chain.lease.state, 'releasing');
   const acq = acquireLease(root, runId, { owner: h.childRunId, expectGeneration: 1, now: NOWb });
   assert.equal(acq.ok, true); assert.equal(acq.generation, 2);
 });

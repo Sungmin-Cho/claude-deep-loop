@@ -64,6 +64,27 @@ test('finishProofState blocks when any one done maker is unreviewed', () => {
   assert.ok(finishProofState(loop).missing.includes('unreviewed-maker'));
 });
 
+// FIX 1 regression: 같은 ws+point 에 done maker 2명인데 approved checker 가 1명뿐 → unreviewed-maker
+test('finishProofState blocks two done makers sharing one approved checker (anomaly: count-based)', () => {
+  const loop = { episodes: [
+      { id: 'm1', role: 'maker', point: 'implementation', workstream_id: 'w', status: 'done' },
+      { id: 'm2', role: 'maker', point: 'implementation', workstream_id: 'w', status: 'done' },
+      { id: 'c1', role: 'checker', point: 'implementation', workstream_id: 'w', status: 'approved' }],
+    workstreams: [{ id: 'w', status: 'ready', review_points_done: ['implementation'] }], active_workstreams: [] };
+  assert.ok(finishProofState(loop).missing.includes('unreviewed-maker'));
+});
+
+// FIX 1 regression: fix-loop 형태 — 2 done maker + 1 rejected checker + 1 approved checker, 같은 point → 통과
+test('finishProofState passes for a fix-loop (2 done makers + 1 rejected + 1 approved checker, same point)', () => {
+  const loop = { episodes: [
+      { id: 'm1', role: 'maker', point: 'implementation', workstream_id: 'w', status: 'done' },
+      { id: 'm2', role: 'maker', point: 'implementation', workstream_id: 'w', status: 'done' },
+      { id: 'c1', role: 'checker', point: 'implementation', workstream_id: 'w', status: 'rejected' },
+      { id: 'c2', role: 'checker', point: 'implementation', workstream_id: 'w', status: 'approved' }],
+    workstreams: [{ id: 'w', status: 'ready', review_points_done: ['implementation'] }], active_workstreams: [] };
+  assert.deepEqual(finishProofState(loop).missing, []);
+});
+
 // --- finishRun 디스크 ---
 test('finish completed is blocked on an empty run even with a report', () => {
   const { root, runId, fence } = seed();

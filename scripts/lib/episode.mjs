@@ -22,6 +22,12 @@ function requestSkeleton({ id, plugin, role, kind, point, workstream, expectedAr
 
 export function newEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], fence } = {}) {
   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: newEpisode');
+  // Fix 3: validate required non-fence args before any state write
+  if (!plugin || typeof plugin !== 'string' || !plugin.length) throw new Error('EPISODE_INPUT_INVALID: plugin');
+  if (!role || typeof role !== 'string' || !role.length) throw new Error('EPISODE_INPUT_INVALID: role');
+  if (!['maker', 'checker'].includes(role)) throw new Error('EPISODE_INPUT_INVALID: role');
+  if (!kind || typeof kind !== 'string' || !kind.length) throw new Error('EPISODE_INPUT_INVALID: kind');
+  if (!point || typeof point !== 'string' || !point.length) throw new Error('EPISODE_INPUT_INVALID: point');
   // Codex impl r7 🔴: expectedArtifacts must be an array of strings (a null/non-array would throw in the
   // loop below; though that is before appendAnchored, give a clean error rather than a raw TypeError).
   if (!Array.isArray(expectedArtifacts) || !expectedArtifacts.every(a => typeof a === 'string')) throw new Error('EPISODE_INPUT_INVALID: expectedArtifacts must be an array of strings');
@@ -64,6 +70,8 @@ export function newEpisode(root, runId, { plugin, role, kind, point, workstream 
 
 export function recordEpisode(root, runId, episodeId, { status, artifacts = [], proof = {}, fence } = {}) {
   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: recordEpisode');
+  // Fix 3: episodeId must be a non-empty string
+  if (!episodeId || typeof episodeId !== 'string' || !episodeId.length) throw new Error('EPISODE_INPUT_INVALID: episodeId');
   // Cheap input validation BEFORE appendAnchored (no state access needed). Codex impl r7 🔴:
   // a null/non-array `artifacts` or null/non-object `proof` would otherwise throw INSIDE the mutate
   // (after the event is appended), staling event_log_head → BUDGET_TAMPERED on next reconcile.

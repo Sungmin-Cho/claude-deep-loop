@@ -99,11 +99,12 @@ export function respawn(root, runId, { childRunId, key, handoffRel = '', headles
     }
     return { ok: false, outcome: 'failed_launch', reason: String(e.message || e), childRunId };
   }
-  // spawn 성공 → respawn-spawned 기록 + 부모 lease release(state='released')를 ONE 트랜잭션으로
+  // spawn 성공 → respawn-spawned 기록. lease 는 releasing 유지 — 자식이 releasing 상태를 handshake acquire.
   // (Codex impl r11 🔴: 이벤트 기록과 lease 전이를 분리하면 사이 크래시로 half-commit 가능 → 단일 appendAnchored).
+  // Fix 2: state 를 'released' 로 바꾸지 않는다 — 자식이 죽으면 stale TTL 이 복구한다.
   try {
-    appendAnchored(root, runId, { type: 'respawn-spawned', data: { child_run_id: childRunId, headless } }, (l) => {
-      l.session_chain.lease = { ...l.session_chain.lease, state: 'released' };   // 자식이 acquire 가능
+    appendAnchored(root, runId, { type: 'respawn-spawned', data: { child_run_id: childRunId, headless } }, (_l) => {
+      // 자식이 releasing 상태의 lease 를 handshake acquire (acquireLease: releasing && owner===handoff_child_run_id).
     }, (loop) => {
       if (loop.session_chain.lease.owner_run_id !== parentOwner || loop.session_chain.lease.generation !== generation) {
         throw new Error('RESPAWN_FENCED: spawned-append');

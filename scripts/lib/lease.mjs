@@ -35,9 +35,9 @@ export function acquireLease(root, runId, { owner, expectGeneration, now = Date.
     if (lease.generation !== expectGeneration) {
       return { ok: false, generation: lease.generation, reason: 'generation-mismatch' };
     }
-    // takeover 가능: released(정상 인수) 또는 releasing+expired(부모가 handoff 중 크래시). active 는 절대 탈취 안 됨.
+    // takeover 가능: released(정상 인수), releasing+expired(부모 크래시 복구), releasing+예약된child(handshake). active 절대 탈취 안 됨.
     const expired = lease.expires_at && now > Date.parse(lease.expires_at);
-    const takeable = lease.state === 'released' || (lease.state === 'releasing' && expired);
+    const takeable = lease.state === 'released' || (lease.state === 'releasing' && expired) || (lease.state === 'releasing' && owner === lease.handoff_child_run_id);
     if (!takeable) return { ok: false, generation: lease.generation, reason: 'lease-not-takeable' };
     // Codex impl r9 🔴: a RELEASED handoff lease reserved a specific child — only that child may acquire it
     // (binds reserve→emit→claim→release→acquire). After stale TTL (expired), allow recovery by any owner.
