@@ -11,7 +11,7 @@ export function buildLaunchCommand({ root, parentRunId, childRunId, handoffRel, 
   // handoff 파일은 **부모** run 디렉터리에 있다 → 자식은 부모 경로에서 읽는다 (Codex r1 🔴3).
   const resumePrompt = `Read .deep-loop/runs/${parentRunId}/${handoffRel} first; then run /deep-loop-resume`;
   const interactive = `cd ${root} && claude -n deep-loop-${childRunId} "${resumePrompt}"`;
-  const headlessCmd = `cd ${root} && claude -p "${resumePrompt}" --permission-mode acceptEdits`;
+  const headlessCmd = `cd ${root} && claude -p "${resumePrompt}" --output-format json --permission-mode acceptEdits`;
   return {
     interactive: headless ? headlessCmd : interactive,
     headless: headlessCmd,

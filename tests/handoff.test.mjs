@@ -136,3 +136,9 @@ test('emitHandoff throws FENCE_REQUIRED when called without expect', () => {
     /FENCE_REQUIRED/
   );
 });
+
+test('buildLaunchCommand headless requests metric-bearing output', () => {
+  const cmds = buildLaunchCommand({ root: '/r', parentRunId: 'p', childRunId: 'c', handoffRel: 'handoffs/x.md', headless: true });
+  assert.match(cmds.headless, /--output-format json/);
+  assert.match(cmds.interactive, /--output-format json/);   // headless=true 면 interactive 필드도 headless 명령
+});
