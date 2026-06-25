@@ -1,0 +1,21 @@
+# deep-loop — scheduled autonomous loop (GitHub Actions template).
+# 사용자가 .github/workflows/ 로 복사. 안전장치는 drive-headless.mjs(headlessSpawn 래퍼)가 제공 — raw claude -p 금지.
+name: deep-loop
+on:
+  schedule:
+    - cron: "0 8 * * *"   # 매일 08:00 UTC
+  workflow_dispatch: {}
+jobs:
+  loop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      # headless 구동 — 비대화형(non-tty)이라 unattended=headless. drive-headless 가 timeout + usage fail-closed 강제.
+      - name: Drive deep-loop (headless, fail-closed)
+        env:
+          DEEP_LOOP_UNATTENDED: "1"
+        run: node scripts/hooks-impl/drive-headless.mjs
+      # 주의: 비가역 외부 행동(push/PR/merge/publish/delete)은 v1 에서 proposal-only —
+      # 사람 승인 게이트. 이 workflow 는 코드 변경/세션 연속만 자동화하며 자동 머지/배포하지 않는다.

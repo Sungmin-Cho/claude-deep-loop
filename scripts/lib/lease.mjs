@@ -14,8 +14,8 @@ export function leaseCheck(loop, { owner, generation, intent = 'business' } = {}
   if (lease.owner_run_id !== owner) return { ok: false, reason: 'owner-mismatch' };
   if (lease.generation !== generation) return { ok: false, reason: 'generation-mismatch' };
   if (lease.state === 'released') return { ok: false, reason: 'lease-released' };
-  // 부모 carve-out: releasing 중 업무 write 거부, 자기 lease 관리(intent='lease')만 허용
-  if (lease.state === 'releasing' && intent === 'business') return { ok: false, reason: 'lease-releasing-carveout' };
+  // 부모 carve-out: releasing 중 업무 write 거부; 자기 lease 관리(intent='lease')와 비용 회계(intent='accounting')만 허용.
+  if (lease.state === 'releasing' && intent !== 'lease' && intent !== 'accounting') return { ok: false, reason: 'lease-releasing-carveout' };
   // Codex r2 🔴2: expires_at 로 active 소유자를 fence 하지 않는다 — 살아있는 소유자가 TTL(15분) 후 자기 write 에서
   // 죽으면 안 됨. stale 소유자(자식이 인수해 generation 이 올라간 경우)는 generation-mismatch 로 이미 펜싱된다.
   // expires_at 는 오직 acquireLease 의 takeover 판단(releasing 크래시)에만 쓰인다.
