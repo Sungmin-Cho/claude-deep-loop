@@ -14,7 +14,8 @@ const A = (gate, action, next_command) => ({ gate, action, next_command });
 function reviewSatisfied(loop, ep) {
   const ws = (loop.workstreams || []).find(w => w.id === ep.workstream_id);
   if (ws && (ws.review_points_done || []).includes(ep.point)) return true;
-  return (loop.episodes || []).some(e => e.role === 'checker' && e.status === 'approved' && e.workstream_id === ep.workstream_id && e.point === ep.point);
+  // Fix 3: only a BOUND (target_maker set) approved checker satisfies a review point — unbound approvals do not.
+  return (loop.episodes || []).some(e => e.role === 'checker' && e.status === 'approved' && e.target_maker && e.workstream_id === ep.workstream_id && e.point === ep.point);
 }
 
 // 현재 actionable episode 가 없을 때: 미완 maker/거부 checker/in-progress/미리뷰 done maker 를 우선 처리하고, 전부 정리됐을 때만 finish.

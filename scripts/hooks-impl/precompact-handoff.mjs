@@ -32,9 +32,10 @@ export async function runPreCompactHandoff(input = {}, { root = process.cwd(), n
   if (!em.ok) return { ok: false, action: 'fenced', reason: em.reason };
 
   if (headless && loop.autonomy?.auto_handoff) {
-    // Gate check: if budget/breaker/wallclock/max_sessions blocks resumption, mark paused (fail-closed).
-    // The measured cron driveHeadless will resume if/when the gate opens.
-    const gate = respawnGate(loop, { now });
+    // Gate check on POST-emit state (Fix 2): emitHandoff appended the reserved child session so
+    // sessions.length grew — respawnGate must see the fresh state or max_sessions is off-by-one.
+    const fresh = readState(root, runId).data;
+    const gate = respawnGate(fresh, { now });
     if (!gate.ok) {
       // Fence-before-write: only set paused if the lease is still ours (mirroring respawn's fence-before-write).
       const parentOwner = expect.owner;

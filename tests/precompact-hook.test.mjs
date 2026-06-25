@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
+import { readState, writeState } from '../scripts/lib/state.mjs';
 import { runPreCompactHandoff } from '../scripts/hooks-impl/precompact-handoff.mjs';
 const PROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -44,6 +45,21 @@ test('unattended but gate-blocked → no spawn, run paused, action=gate-blocked-
   const r = await runPreCompactHandoff({ unattended: true }, { root, now: Date.parse('2026-07-01T00:00:00Z') });
   assert.equal(r.action, 'gate-blocked-paused');
   const { readState } = await import('../scripts/lib/state.mjs');
+  assert.equal(readState(root, runId).data.status, 'paused');
+});
+
+// Fix 2 regression: gate must be evaluated on POST-emit state, not PRE-emit state.
+// Seed a run whose sessions.length === max_sessions BEFORE PreCompact.
+// emitHandoff will append the reserved child → sessions.length = max_sessions + 1 → gate blocks.
+// On PRE-emit state sessions.length === max_sessions which is NOT > max_sessions → would NOT block (the bug).
+test('unattended with sessions.length == max_sessions before emit → gate-blocked-paused after emit', async () => {
+  const { root, runId } = seed();
+  // After initRun there is 1 session. Set max_sessions=1 so the post-emit count (2) exceeds it.
+  const { data } = readState(root, runId);
+  data.autonomy.max_sessions = 1;
+  writeState(root, runId, data);
+  const r = await runPreCompactHandoff({ unattended: true }, { root, now: Date.parse('2026-06-24T00:01:00Z') });
+  assert.equal(r.action, 'gate-blocked-paused', `expected gate-blocked-paused, got ${r.action}`);
   assert.equal(readState(root, runId).data.status, 'paused');
 });
 

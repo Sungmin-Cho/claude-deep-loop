@@ -3,31 +3,53 @@ import { join } from 'node:path';
 import { readState } from '../lib/state.mjs';
 import { recordCost } from '../lib/budget.mjs';
 import { headlessSpawn } from '../lib/spawn-driver.mjs';
+import { buildLaunchCommand } from '../lib/handoff.mjs';
 
 function currentRunId(root) { const p = join(root, '.deep-loop', 'current'); return existsSync(p) ? readFileSync(p, 'utf8').trim() : null; }
 
 // 무인 자동화 진입점: headlessSpawn 으로 claude -p 를 timeout + usage 측정 하에 구동.
+// PreCompact 가 emit 한 handoff(phase=emitted|spawned, reserved child)를 재개(round-2 handshake).
 // 측정불가/timeout/비0 종료 → fail-closed. 성공 시 **측정 usage 를 budget 에 권위있게 커밋**(spec §9 hard 강제).
-// DEEP_LOOP_UNATTENDED=1 로 자식의 자기보고를 끄므로 driver 의 기록이 단일 출처(이중계상 없음, Codex r5 critical-2).
-export function driveHeadless({ root = process.cwd(), prompt = '/deep-loop-continue', spawnFn = headlessSpawn, timeoutMs } = {}) {
+// DEEP_LOOP_UNATTENDED=1 로 자식의 자기보고를 끄므로 driver 의 기록이 단일 출처(이중계상 없음).
+export function driveHeadless({ root = process.cwd(), spawnFn = headlessSpawn, timeoutMs } = {}) {
   const runId = currentRunId(root);
   if (!runId) return { ok: true, action: 'no-run' };
-  // Codex r7 sf-2: fence 를 spawn **이전에** 캡처. 자식이 generation+1 로 lease 를 인수했으면 stale 부모는
-  // generation/owner mismatch 로 펜싱돼 recordCost 가 LEASE_FENCED → skip(자식이 자기 회계를 가짐). post-spawn lease 를
-  // 쓰면 자식 신원으로 잘못 기록되므로 금지.
-  const pre = readState(root, runId).data.session_chain?.lease || {};
-  const fence = { owner: pre.owner_run_id, generation: pre.generation, intent: 'accounting' };
-  // Codex r6 sf-4: --output-format json 으로 num_turns/usage 를 stdout 에 내보내야 headlessSpawn 이 측정 가능.
-  const cmd = `cd ${root} && DEEP_LOOP_UNATTENDED=1 claude -p "${prompt}" --output-format json --permission-mode acceptEdits`;
+
+  const { data: loop } = readState(root, runId);
+  const lease = loop.session_chain?.lease || {};
+
+  // 대기 중인 handoff(emitted 또는 spawned) + reserved child 가 있을 때만 resume.
+  const pendingHandoff = (lease.handoff_phase === 'emitted' || lease.handoff_phase === 'spawned') && lease.handoff_child_run_id;
+  if (!pendingHandoff) {
+    // active/idle: cron 은 emitted handoff 만 resume 가능; 직접 구동 중인 run 은 건드리지 않음.
+    return { ok: true, action: 'no-pending-handoff' };
+  }
+
+  const childRunId = lease.handoff_child_run_id;
+  const cs = loop.session_chain.sessions.find(s => s.run_id === childRunId);
+  const handoffRel = cs && cs.handoff_rel;
+
+  // 측정 resume 명령 — buildLaunchCommand 의 headless 변형: claude -p "<resume prompt>" --output-format json --permission-mode acceptEdits
+  const cmd = buildLaunchCommand({ root, parentRunId: runId, childRunId, handoffRel, headless: true }).headless;
+
   const res = spawnFn(cmd, timeoutMs ? { timeoutMs } : {});
   if (!res.ok) return { ok: false, action: 'fail-closed', reason: res.reason };
-  // 측정 usage 를 캡처한 fence(intent:'accounting')로 커밋 — releasing(같은 owner/gen)은 허용, generation 변경은 거부.
+
+  // POST-resume 소유자로 lease 를 신선하게 재읽어 fence 구성.
+  // 성공한 /deep-loop-resume 은 reserved child lease 를 인수(generation+1)했거나, 추가 handoff → releasing.
+  // accounting carve-out: releasing 상태에서도 intent='accounting' 이면 허용 (leaseCheck spec §9.1).
+  // 자식이 추가 handoff 없이 정상 완료 → lease 는 여전히 releasing(부모 owner/gen) → recorded=true.
+  // 손자(grandchild)가 완전 인수(generation 또 올라감) → LEASE_FENCED → swallow, recorded=false.
+  const freshLease = readState(root, runId).data.session_chain?.lease || {};
+  const fence = { owner: freshLease.owner_run_id, generation: freshLease.generation, intent: 'accounting' };
+
   let recorded = false;
   try {
     recordCost(root, runId, { turns: res.usage?.num_turns || 0, tokens: res.usage?.tokens || 0, fence });
     recorded = true;
   } catch (e) { if (!String(e.message).startsWith('LEASE_FENCED')) throw e; }
-  return { ok: true, action: 'drove', usage: res.usage, recorded };
+
+  return { ok: true, action: 'resumed', usage: res.usage, recorded };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
