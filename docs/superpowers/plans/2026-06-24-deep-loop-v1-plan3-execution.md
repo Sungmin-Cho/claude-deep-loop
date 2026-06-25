@@ -232,10 +232,20 @@ test('adapter resolve --verb selects a single verb descriptor', () => {
   assert.equal(a.descriptor.kind, 'poll_file');
 });
 
-test('adapter resolve guards read-only tier from implementer dispatch', () => {
+test('adapter resolve blocks the deep-work implementer entirely under read-only', () => {
   const { root } = seed();
   const out = JSON.parse(run(root, ['adapter', 'resolve', '--protocol', 'deep-work', '--task', 'x', '--tier', 'read-only']));
-  assert.equal(out.guard.ok, false);
+  assert.equal(out.guard.ok, false);   // dispatch 자체가 implementer → 전체 차단
+});
+
+// Codex r7 sf-1: read-only superpowers 는 planning(writing-plans)은 허용하고 then(implementer)만 strip.
+test('adapter resolve allows planning-only superpowers under read-only', () => {
+  const { root } = seed();
+  const out = JSON.parse(run(root, ['adapter', 'resolve', '--protocol', 'superpowers', '--task', 'x', '--tier', 'read-only']));
+  assert.equal(out.guard.ok, true);
+  assert.equal(out.guard.planning_only, true);
+  assert.equal(out.dispatch.skill, 'superpowers:writing-plans');
+  assert.equal(out.dispatch.then, null);   // subagent-driven-development(implementer) 차단
 });
 
 test('adapter resolve rejects unknown protocol (exit 2)', () => {
@@ -284,11 +294,18 @@ handlers 객체에 (`adapter resolve`는 read-only라 `requireLease` 호출 안 
     const task = reqStr(f, 'task') || '';
     const ref = { task };
     const fillTask = (t) => String(t || '').replace(/<task>/g, task);
-    const dispatch = ad.dispatch(ref);
+    let dispatch = ad.dispatch(ref);
     const awaitD = ad.awaitResult(ref);
     const read = { path: p.read.receipt_path_template ? fillTask(p.read.receipt_path_template) : null, producer: p.read.producer, artifact_kind: p.read.artifact_kind };
-    // guard 는 implementer_verb 기준 (tier×protocol 모순). checker 는 review dispatch CLI 가 담당.
-    const guard = f.tier && f.tier !== true ? guardTierProtocol(f.tier, protocol, p.implementer_verb) : { ok: true, reason: 'no-tier' };
+    // guard 는 implementer_verb 기준 (tier×protocol 모순). Codex r7 sf-1: read-only 가 implementer 를 막을 때,
+    // implementer_verb 가 'then'(superpowers)이면 planning(dispatch.skill=writing-plans)은 살리고 `then`(subagent-driven-development)만 strip,
+    // 'dispatch'(deep-work/standalone)면 dispatch 자체가 implementer 라 전체 차단(guard.ok=false).
+    const implGuard = f.tier && f.tier !== true ? guardTierProtocol(f.tier, protocol, p.implementer_verb) : { ok: true, reason: 'no-tier' };
+    let guard = implGuard;
+    if (!implGuard.ok && p.implementer_verb === 'then') {
+      dispatch = { ...dispatch, then: null };                                  // planning-only: writing-plans 실행, then skip
+      guard = { ok: true, reason: 'planning-only-readonly', planning_only: true };
+    }
     const sel = f.verb && f.verb !== true ? String(f.verb) : null;
     if (sel) {
       const map = { dispatch, await: awaitD, read };
@@ -299,7 +316,7 @@ handlers 객체에 (`adapter resolve`는 read-only라 `requireLease` 호출 안 
   },
 ```
 
-(주의: `loadProtocol`/`resolveAdapter`/`guardTierProtocol`는 `adapters.mjs` 기존 export. `awaitResult(ref)`는 `path_template`을 `<task>`로 채워 반환. `read`는 디스크 읽기를 *실행하지 않고* receipt 경로 템플릿 + 식별 가드만 노출(스킬이 await 후 `readArtifacts`를 직접 수행).)
+(주의: `loadProtocol`/`resolveAdapter`/`guardTierProtocol`는 `adapters.mjs` 기존 export. `awaitResult(ref)`는 `path_template`을 `<task>`로 채워 반환. `read`는 디스크 읽기를 *실행하지 않고* receipt 경로 템플릿 + 식별 가드만 노출. **스킬은 `guard.ok===true && dispatch.skill` 이면 planning 을 실행하고, `dispatch.then` 이 non-null 일 때만 implementer 단계를 실행한다** — `planning_only` 면 then 이 null 이라 자동으로 implementer 를 건너뛴다.)
 
 - [ ] **Step 4: Run to verify pass**
 
@@ -2090,6 +2107,8 @@ import { dirname, join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState } from '../scripts/lib/state.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
+import { respawn } from '../scripts/lib/respawn.mjs';
+import { acquireLease } from '../scripts/lib/lease.mjs';
 import { driveHeadless } from '../scripts/hooks-impl/drive-headless.mjs';
 
 const A = join(dirname(fileURLToPath(import.meta.url)), '..', 'recipes', 'automation');
@@ -2126,6 +2145,19 @@ test('driveHeadless still accounts usage when the child emitted a handoff', () =
   } });
   assert.equal(r.recorded, true);
   assert.equal(readState(root, runId).data.budget.spent, 2);
+});
+
+// Codex r7 sf-2: 자식이 generation+1 로 완전히 인수했으면 stale 부모(캡처한 generation)는 펜싱돼 기록하지 않는다.
+test('driveHeadless does not record under a child that fully acquired the lease', () => {
+  const { root, runId } = seedRun();
+  const r = driveHeadless({ root, spawnFn: () => {
+    const em = emitHandoff(root, runId, { reason: 'milestone', trigger: 'milestone', expect: { owner: runId, generation: 1 } });
+    respawn(root, runId, { childRunId: em.childRunId, key: em.key, handoffRel: em.handoffRel, headless: true, spawnFn: () => ({ ok: true }) });  // lease → released
+    acquireLease(root, runId, { owner: em.childRunId, expectGeneration: 1 });   // 자식 인수 → generation 2, owner=child
+    return { ok: true, usage: { num_turns: 4 } };
+  } });
+  assert.equal(r.recorded, false);                              // 캡처한 부모 fence(gen 1) 가 펜싱됨
+  assert.equal(readState(root, runId).data.budget.spent, 0);    // 부모는 기록 안 함
 });
 
 test('driveHeadless fails closed when usage unmeasurable/timeout', () => {
@@ -2174,20 +2206,21 @@ function currentRunId(root) { const p = join(root, '.deep-loop', 'current'); ret
 // 측정불가/timeout/비0 종료 → fail-closed. 성공 시 **측정 usage 를 budget 에 권위있게 커밋**(spec §9 hard 강제).
 // DEEP_LOOP_UNATTENDED=1 로 자식의 자기보고를 끄므로 driver 의 기록이 단일 출처(이중계상 없음, Codex r5 critical-2).
 export function driveHeadless({ root = process.cwd(), prompt = '/deep-loop-continue', spawnFn = headlessSpawn, timeoutMs } = {}) {
-  if (!currentRunId(root)) return { ok: true, action: 'no-run' };
+  const runId = currentRunId(root);
+  if (!runId) return { ok: true, action: 'no-run' };
+  // Codex r7 sf-2: fence 를 spawn **이전에** 캡처. 자식이 generation+1 로 lease 를 인수했으면 stale 부모는
+  // generation/owner mismatch 로 펜싱돼 recordCost 가 LEASE_FENCED → skip(자식이 자기 회계를 가짐). post-spawn lease 를
+  // 쓰면 자식 신원으로 잘못 기록되므로 금지.
+  const pre = readState(root, runId).data.session_chain?.lease || {};
+  const fence = { owner: pre.owner_run_id, generation: pre.generation, intent: 'accounting' };
   // Codex r6 sf-4: --output-format json 으로 num_turns/usage 를 stdout 에 내보내야 headlessSpawn 이 측정 가능.
   const cmd = `cd ${root} && DEEP_LOOP_UNATTENDED=1 claude -p "${prompt}" --output-format json --permission-mode acceptEdits`;
   const res = spawnFn(cmd, timeoutMs ? { timeoutMs } : {});
   if (!res.ok) return { ok: false, action: 'fail-closed', reason: res.reason };
-  // 측정 usage 를 budget+session 에 커밋. **intent:'accounting'** 으로 fence — 자식이 milestone 에서 handoff 를
-  // emit 해 lease 가 'releasing' 이 돼도(Codex r6 sf-2) 같은 owner+generation 의 비용 회계는 허용된다(이미 발생한 cost).
-  // generation 이 바뀌었으면(자식이 완전히 인수) LEASE_FENCED → skip (그 경우는 자식이 자기 회계를 가짐).
-  const runId = currentRunId(root);
+  // 측정 usage 를 캡처한 fence(intent:'accounting')로 커밋 — releasing(같은 owner/gen)은 허용, generation 변경은 거부.
   let recorded = false;
   try {
-    const lease = readState(root, runId).data.session_chain?.lease || {};
-    recordCost(root, runId, { turns: res.usage?.num_turns || 0, tokens: res.usage?.tokens || 0,
-      fence: { owner: lease.owner_run_id, generation: lease.generation, intent: 'accounting' } });
+    recordCost(root, runId, { turns: res.usage?.num_turns || 0, tokens: res.usage?.tokens || 0, fence });
     recorded = true;
   } catch (e) { if (!String(e.message).startsWith('LEASE_FENCED')) throw e; }
   return { ok: true, action: 'drove', usage: res.usage, recorded };
