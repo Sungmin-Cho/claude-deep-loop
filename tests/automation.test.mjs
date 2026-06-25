@@ -10,6 +10,7 @@ import { emitHandoff } from '../scripts/lib/handoff.mjs';
 import { respawn } from '../scripts/lib/respawn.mjs';
 import { acquireLease } from '../scripts/lib/lease.mjs';
 import { driveHeadless } from '../scripts/hooks-impl/drive-headless.mjs';
+import { pauseRun } from '../scripts/lib/state.mjs';
 
 const A = join(dirname(fileURLToPath(import.meta.url)), '..', 'recipes', 'automation');
 
@@ -17,7 +18,8 @@ const A = join(dirname(fileURLToPath(import.meta.url)), '..', 'recipes', 'automa
 const NOW1 = Date.parse('2026-06-24T00:01:00Z');
 
 // Seed a run AND emit a handoff so there is a pending handoff with a reserved child.
-// Returns { root, runId, em } where em is the emitHandoff result.
+// Returns { root, runId, em, childRunId } where em is the emitHandoff result and
+// childRunId is the reserved child run id (from lease.handoff_child_run_id).
 function seedRunWithHandoff() {
   const root = mkdtempSync(join(tmpdir(), 'dl-auto-'));
   const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
@@ -27,7 +29,8 @@ function seedRunWithHandoff() {
     now: NOW1,
   });
   assert.ok(em.ok, `emitHandoff must succeed: ${em.reason}`);
-  return { root, runId, em };
+  const childRunId = readState(root, runId).data.session_chain.lease.handoff_child_run_id;
+  return { root, runId, em, childRunId };
 }
 
 function seedRun() {
@@ -169,6 +172,21 @@ test('driveHeadless does not throw when post-resume lease fenced (grandchild acq
   assert.equal(r.action, 'resumed');
   // recorded may be true (accounting carve-out applies) — just ensure no throw
   assert.ok(typeof r.recorded === 'boolean');
+});
+
+// Regression: driveHeadless must fail-closed PAUSE even when the resume child already acquired the
+// lease before measurement failure was detected (spec §9 headless fail-closed invariant).
+test('driveHeadless fails closed (pauses) when measurement fails after the child acquired the lease', () => {
+  const { root, runId, childRunId } = seedRunWithHandoff();
+  const r = driveHeadless({ root, now: NOW1, spawnFn: () => {
+    // Simulate: the resume child takes over the releasing lease (generation+1), then the process
+    // times out / is unmeasurable — spawnFn returns {ok:false} after the child already acquired.
+    acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, now: NOW1 });
+    return { ok: false, reason: 'unmeasurable-fail-closed' };
+  }});
+  assert.equal(r.ok, false);
+  assert.equal(r.action, 'fail-closed');
+  assert.equal(readState(root, runId).data.status, 'paused', 'fail-closed pause must be set even when child took over lease');
 });
 
 test('cron template calls the fail-closed driver (not raw claude -p)', () => {

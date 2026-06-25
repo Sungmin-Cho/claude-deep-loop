@@ -102,3 +102,16 @@ export function withLock(root, runId, fn, { ttlMs = 30000, retries = 100, backof
   if (!acquired) throw new Error(`LOCK_BUSY: ${runId}`);
   try { return fn(); } finally { try { rmdirSync(lock); } catch {} }
 }
+
+// Fail-closed safety pause (spec §9 / §1.2): set status=paused atomically under the lock.
+// Used when measured headless usage cannot be enforced after a resume takeover. Safety stop, not a business mutation.
+export function pauseRun(root, runId, reason) {
+  return withLock(root, runId, () => {
+    const { data } = readState(root, runId);
+    if (data.status !== 'paused') {
+      data.status = 'paused';
+      data.pause_reason = reason || 'fail-closed';
+      writeState(root, runId, data);
+    }
+  });
+}

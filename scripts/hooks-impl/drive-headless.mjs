@@ -1,4 +1,4 @@
-import { readState } from '../lib/state.mjs';
+import { readState, pauseRun } from '../lib/state.mjs';
 import { recordCost } from '../lib/budget.mjs';
 import { respawn } from '../lib/respawn.mjs';
 import { headlessSpawn } from '../lib/spawn-driver.mjs';
@@ -51,10 +51,15 @@ export function driveHeadless({ root = process.cwd(), spawnFn = headlessSpawn, n
     return { ok: true, action: 'already-spawned' };
   }
   if (!rr.ok) {
-    // failed_launch: 측정 spawnFn 이 ok:false 를 반환 → respawn 이 failure-mode-B 롤백 후 outcome='failed_launch'.
-    // driveHeadless 문맥에서는 "측정 불가/fail-closed" 로 노출.
-    if (rr.outcome === 'failed_launch') return { ok: false, action: 'fail-closed', reason: rr.reason };
-    // fenced / not-emitted / phase-error 등
+    // If the measured spawnFn itself failed (captured.ok===false), apply fail-closed pause regardless of
+    // whether the child already acquired the lease (outcome='fenced') or rollback succeeded (outcome='failed_launch').
+    // This ensures that a timed-out/unmeasurable resume that leaves child-owned committed state ACTIVE
+    // does not silently continue — spec §9 headless fail-closed invariant.
+    if (captured && captured.ok === false) {
+      pauseRun(root, runId, 'headless-unmeasurable');
+      return { ok: false, action: 'fail-closed', reason: (captured && captured.reason) || rr.reason };
+    }
+    // respawn blocked before ever calling spawnFn (not-emitted, phase-error, key-mismatch, child-mismatch, fenced-pre-spawn, etc.)
     return { ok: false, action: rr.outcome || 'failed', reason: rr.reason };
   }
 
