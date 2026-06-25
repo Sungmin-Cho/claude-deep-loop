@@ -541,6 +541,12 @@ test('budget record is fenced (exit 3)', () => {
   assert.equal(runFail(root, ['budget', 'record', '--turns', '1', '--owner', runId, '--generation', '9']), 3);
 });
 
+// Codex r4 sf-4: 값 없는 --turns 는 1 로 오기록하지 말고 거부(exit 1).
+test('budget record rejects a valueless --turns (exit 1)', () => {
+  const { root, runId } = seed();
+  assert.equal(runFail(root, ['budget', 'record', '--turns', '--owner', runId, '--generation', '1']), 1);
+});
+
 test('budget check is read-only and reports ok', () => {
   const { root } = seed();
   const r = JSON.parse(run(root, ['budget', 'check', '--now', '2026-06-24T00:00:01Z']));
@@ -612,14 +618,29 @@ import { recordCost, checkBudget } from './lib/budget.mjs';
     if (verb === 'check') { const { data } = readState(root, runId); json(checkBudget(data, { now: parseNow(f) })); return 0; }
     if (verb === 'record') {
       requireLease(root, runId, f);
+      // Codex r4 sf-4: parseFlags 는 값 없는 플래그를 true 로 둔다 → Number(true)=1 오기록 방지.
+      // 미지정 → 0, 지정 시 비음정수 문자열만 허용(true/음수/NaN/Infinity 거부).
+      const turns = optInt(f, 'turns'); const tokens = optInt(f, 'tokens');
+      if (turns === null || tokens === null) { error('INVALID_COST: --turns/--tokens must be non-negative integers'); return 1; }
       const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'business' };
-      try { recordCost(root, runId, { turns: f.turns ? Number(f.turns) : 0, tokens: f.tokens ? Number(f.tokens) : 0, fence }); }
+      try { recordCost(root, runId, { turns, tokens, fence }); }
       catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }
       const { data } = readState(root, runId);
       json({ ok: true, spent: data.budget.spent, tokens_spent: data.budget.tokens_spent }); return 0;
     }
     error(`unknown budget verb: ${verb}`); return 2;
   },
+```
+
+`optInt` 헬퍼는 `parseFlags`/`reqStr` 근처에 한 번 정의(Task 2 에서 `reqStr` 와 함께 도입):
+
+```javascript
+function optInt(f, name) {   // 미지정 → 0; 지정 시 비음정수 문자열만 허용, 아니면 null(핸들러가 exit 1)
+  const v = f[name];
+  if (v === undefined) return 0;
+  if (typeof v !== 'string' || !/^\d+$/.test(v)) return null;
+  return Number(v);
+}
 ```
 
 - [ ] **Step 4: Run to verify pass**
@@ -1012,6 +1033,15 @@ test('finish completed rejects a report path outside runDir', () => {
   buildSettledRun(root, runId, fence);
   assert.throws(() => finishRun(root, runId, { status: 'completed', reportRel: '../../escape.md', proof: {}, fence }), /final-report-missing|FINISH_PROOF_UNMET/);
 });
+
+// Codex r4 critical-1: runDir 자체('.') 나 디렉터리('handoffs')는 final report 가 아니다 → 거부.
+test('finish completed rejects runDir itself or a directory as the report', () => {
+  const { root, runId, fence } = seed();
+  buildSettledRun(root, runId, fence);
+  mkdirSync(join(runDir(root, runId), 'handoffs'), { recursive: true });
+  assert.throws(() => finishRun(root, runId, { status: 'completed', reportRel: '.', proof: {}, fence }), /final-report-missing|FINISH_PROOF_UNMET/);
+  assert.throws(() => finishRun(root, runId, { status: 'completed', reportRel: 'handoffs', proof: {}, fence }), /final-report-missing|FINISH_PROOF_UNMET/);
+});
 ```
 
 - [ ] **Step 2: Run to verify fail**
@@ -1022,7 +1052,7 @@ Expected: FAIL — `Cannot find module finish.mjs`.
 - [ ] **Step 3a: Write `scripts/lib/finish.mjs`**
 
 ```javascript
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
 import { appendAnchored } from './integrity.mjs';
 import { leaseCheck } from './lease.mjs';
@@ -1077,7 +1107,8 @@ export function finishRun(root, runId, { status, reportRel, proof = {}, fence, n
       const ps = finishProofState(loop);
       const base = resolve(runDir(root, runId));
       const full = reportRel ? resolve(base, reportRel) : null;
-      const reportOk = full && (full === base || full.startsWith(base + sep)) && existsSync(full);
+      // Codex r4 critical-1: report 는 runDir **하위**(자체 아님)의 **실제 파일**이어야 한다 — `--report .` / 디렉터리 거부.
+      const reportOk = full && full.startsWith(base + sep) && existsSync(full) && statSync(full).isFile();
       if (!reportOk) ps.missing.push('final-report-missing');
       if (ps.missing.length) throw new Error(`FINISH_PROOF_UNMET: ${ps.missing.join(',')}`);
     });
@@ -1211,7 +1242,9 @@ function violatesBoundary(src) {
 // Codex r3 sf-4: deep-loop.mjs 를 실제 호출하는 라인 중 mutating subcommand 는 --owner 와 --generation 을 **둘 다** 가져야 한다.
 const MUTATING_SUB = /(state\s+patch|episode\s+(?:new|record)|workstream\s+(?:new|set|terminal)|review\s+(?:dispatch|record)|handoff\s+emit|budget\s+record|comprehension\s+ack|breaker\s+reset|lease\s+(?:acquire|release)|finish\b)/;
 function mutatingFenced(text) {
-  return text.split('\n').every(line => {
+  // Codex r4 sf-2: 셸 라인 연속(\ 로 끝나는 줄)을 논리 명령으로 먼저 합친다 — multi-line unfenced 명령 회피 차단.
+  const joined = text.replace(/\\\n\s*/g, ' ');
+  return joined.split('\n').every(line => {
     if (!/deep-loop\.mjs/.test(line)) return true;   // 실제 CLI 호출 라인만 검사
     if (!MUTATING_SUB.test(line)) return true;       // read-only sub → fence 불필요
     return /--owner\b/.test(line) && /--generation\b/.test(line);   // mutating → 두 flag 필수 (OR 아님)
@@ -1249,6 +1282,9 @@ test('mutatingFenced requires both fence flags on mutating CLI lines (fixtures)'
   assert.ok(!mutatingFenced('node x/deep-loop.mjs review record --verdict APPROVE --generation 1'));   // --owner 누락
   assert.ok(mutatingFenced('node x/deep-loop.mjs next-action --json'));   // read-only → fence 불필요
   assert.ok(mutatingFenced('record the result via `episode record`'));    // CLI 호출 아닌 산문 → 무시
+  // Codex r4 sf-2: 셸 연속줄로 fence 를 분리해 회피하는 시도 차단.
+  assert.ok(!mutatingFenced('node x/deep-loop.mjs \\\n  state patch --field discovered_items --value "[]"'));
+  assert.ok(mutatingFenced('node x/deep-loop.mjs \\\n  state patch --field x --value "[]" --owner $R --generation 1'));
 });
 
 for (const [dir, name, invocable, triggers, refsCLI] of SKILLS) {
@@ -1317,7 +1353,7 @@ user-invocable: true
   2. `recipe-match --goal "<goal>"`로 recipe+protocol 결정론 제안(LLM은 제안만, 확정 변경은 사람 — `recipe_override_auth=user-only`).
   3. **리뷰 전략 확인 질문(§7):** deep-review 감지 시 기본 추천 `deep-review:deep-review-loop --contract --codex`(cross-model); 미감지 시 codex 2-way / 서브에이전트 checker / standalone 제안 → 사용자 확정. 결과를 `review` JSON으로 조립. 상세: `Read("../deep-loop-workflow/references/review-strategy.md")`.
   4. **workstream 분해(§8):** 큰 goal이면 N개 workstream(=PR) 제안 후 사람 확인("[이대로/조정/단일 PR로]"), 작은 작업이면 1 workstream 자동.
-  5. **run 생성:** `init-run --goal "<goal>" --protocol <p> --recipe '<json>' --review '<json>'` → `run_id` 회수. 이후 모든 mutating은 `--owner <run_id> --generation 1`.
+  5. **run 생성:** `init-run --goal "<goal>" --protocol <p> --recipe <recipe-id> --review '<json>'` → `run_id` 회수. **`--recipe` 는 `recipe-match` 가 준 recipe **id 문자열**(예: `robust-implementation`)이다 — JSON 아님(Codex r4 sf-3: CLI 가 f.recipe 를 id/name 으로 저장). `--review` 만 JSON.** 이후 모든 mutating은 `--owner <run_id> --generation 1`.
   6. workstream 생성: `workstream new --title ... --branch ... --worktree ... [--depends-on '<json>'] --owner <run_id> --generation 1`.
   7. 첫 episode: `episode new --plugin <maker> --role maker --kind <k> --point <design|plan|implementation> --workstream <ws> --artifacts '<json: expected output paths>' --owner ... --generation 1`. **`--artifacts` 필수** (Codex r3 sf-2): maker `done` 전이는 비어있지 않은 expected_artifacts + 그 파일들의 실제 존재를 요구한다(episode.mjs). expected 경로는 protocol read 디스크립터(`adapter resolve` 의 `read.path`) 또는 계획된 산출물에서 도출.
 - **Section 3 (완료 메시지):** 다음 명령(`/deep-loop-continue`) 안내 + run_id + workstream 요약.
