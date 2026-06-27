@@ -310,3 +310,22 @@ test('emitHandoff throws FENCE_REQUIRED when called without expect', () => {
     /FENCE_REQUIRED/
   );
 });
+
+// Task 11: resumePolicy wired to lease.resume_policy in same appendAnchored txn
+test('emitHandoff with resumePolicy headless → lease.resume_policy headless', () => {
+  const { root, runId } = seed();
+  emitHandoff(root, runId, { trigger: 'milestone', now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId), resumePolicy: 'headless' });
+  assert.equal(readState(root, runId).data.session_chain.lease.resume_policy, 'headless');
+});
+
+test('emitHandoff with resumePolicy visible → lease.resume_policy visible', () => {
+  const { root, runId } = seed();
+  emitHandoff(root, runId, { trigger: 'milestone', now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId), resumePolicy: 'visible' });
+  assert.equal(readState(root, runId).data.session_chain.lease.resume_policy, 'visible');
+});
+
+test('emitHandoff with no resumePolicy → lease.resume_policy defaults to visible', () => {
+  const { root, runId } = seed();
+  emitHandoff(root, runId, { trigger: 'milestone', now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId) });
+  assert.equal(readState(root, runId).data.session_chain.lease.resume_policy, 'visible');
+});

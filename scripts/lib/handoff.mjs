@@ -142,7 +142,7 @@ function handoffMarkdown(loop, childRunId, reason) {
   ].join('\n');
 }
 
-export function emitHandoff(root, runId, { reason = 'milestone', trigger = 'milestone', now = Date.now(), headless = false, expect } = {}) {
+export function emitHandoff(root, runId, { reason = 'milestone', trigger = 'milestone', now = Date.now(), headless = false, resumePolicy = 'visible', expect } = {}) {
   if (!expect || typeof expect.owner !== 'string' || !Number.isInteger(expect.generation)) throw new Error('FENCE_REQUIRED: emitHandoff');
   const res = reserveHandoff(root, runId, { trigger, now, expect });
   if (!res.ok) return { ok: false, reason: res.reason, key: res.key };
@@ -213,7 +213,7 @@ export function emitHandoff(root, runId, { reason = 'milestone', trigger = 'mile
     if (cur) cur.superseded_by = childRunId;
     const lease = l.session_chain.lease;
     if (lease.handoff_phase === 'reserved') {   // 부모 carve-out 시작 + stale TTL (Codex r1 🔴4)
-      l.session_chain.lease = { ...lease, handoff_phase: 'emitted', state: 'releasing', expires_at: new Date(now + ttlMs).toISOString() };
+      l.session_chain.lease = { ...lease, handoff_phase: 'emitted', state: 'releasing', expires_at: new Date(now + ttlMs).toISOString(), resume_policy: resumePolicy };
     }
   }, (l) => {
     if (l.status === 'paused') throw new Error('RUN_PAUSED: emitHandoff');

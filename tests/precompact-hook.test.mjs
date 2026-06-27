@@ -63,6 +63,30 @@ test('unattended with sessions.length == max_sessions before emit → gate-block
   assert.equal(readState(root, runId).data.status, 'paused');
 });
 
+// Task 11: tty===false alone (no unattended, spawn_style visible) → headless false (uses isHeadlessInvocation, not tty flag)
+test('tty===false alone with empty env → headless false (isHeadlessInvocation replaces tty check)', async () => {
+  const { root } = seed();
+  const r = await runPreCompactHandoff({ tty: false }, { root, now: Date.parse('2026-06-24T00:01:00Z'), env: {} });
+  assert.equal(r.action, 'emitted');
+  assert.equal(r.headless, false, 'tty===false alone must NOT trigger headless; only env signals do');
+});
+
+// Task 11: explicit unattended:true → headless true
+test('explicit unattended:true → headless true (input.unattended wins)', async () => {
+  const { root } = seed();
+  const r = await runPreCompactHandoff({ unattended: true }, { root, now: Date.parse('2026-06-24T00:01:00Z'), env: {} });
+  assert.equal(r.action, 'emitted');
+  assert.equal(r.headless, true);
+});
+
+// Task 11: spawn_style visible + no input.unattended + env DEEP_LOOP_UNATTENDED=1 → headless true
+test('env DEEP_LOOP_UNATTENDED=1 with spawn_style visible → headless true (isHeadlessInvocation)', async () => {
+  const { root } = seed(); // default spawn_style='visible'
+  const r = await runPreCompactHandoff({}, { root, now: Date.parse('2026-06-24T00:01:00Z'), env: { DEEP_LOOP_UNATTENDED: '1' } });
+  assert.equal(r.action, 'emitted');
+  assert.equal(r.headless, true);
+});
+
 test('hooks.json declares PreCompact → precompact-handoff.sh', () => {
   const h = JSON.parse(rf(join(PROOT, 'hooks', 'hooks.json'), 'utf8'));
   assert.ok(h.hooks.PreCompact, 'PreCompact event present');

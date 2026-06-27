@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readState, writeState, withLock } from '../lib/state.mjs';
 import { emitHandoff } from '../lib/handoff.mjs';
-import { respawnGate } from '../lib/respawn.mjs';
+import { respawnGate, isHeadlessInvocation } from '../lib/respawn.mjs';
 
 /**
  * PreCompact emits a clean handoff only; measured fail-closed resumption is the cron `driveHeadless`
@@ -20,15 +20,16 @@ function currentRunId(root) {
   return existsSync(p) ? readFileSync(p, 'utf8').trim() : null;
 }
 
-export async function runPreCompactHandoff(input = {}, { root = process.cwd(), now = Date.now() } = {}) {
+export async function runPreCompactHandoff(input = {}, { root = process.cwd(), now = Date.now(), env = process.env } = {}) {
   const runId = currentRunId(root);
   if (!runId) return { ok: true, action: 'no-run' };
   let loop;
   try { ({ data: loop } = readState(root, runId)); } catch (e) { return { ok: false, action: 'error', reason: String(e.message || e) }; }
   const lease = loop.session_chain?.lease || {};
   const expect = { owner: lease.owner_run_id, generation: lease.generation };
-  const headless = input.unattended === true || loop.autonomy?.spawn_style === 'headless' || input.tty === false;
-  const em = emitHandoff(root, runId, { reason: 'pre-compact', trigger: 'pre-compact', headless, expect });
+  const headless = input.unattended === true || loop.autonomy?.spawn_style === 'headless' || isHeadlessInvocation(env);
+  const resumePolicy = headless ? 'headless' : 'visible';
+  const em = emitHandoff(root, runId, { reason: 'pre-compact', trigger: 'pre-compact', headless, resumePolicy, expect });
   if (!em.ok) return { ok: false, action: 'fenced', reason: em.reason };
 
   if (headless && loop.autonomy?.auto_handoff) {
@@ -48,13 +49,13 @@ export async function runPreCompactHandoff(input = {}, { root = process.cwd(), n
         data.status = 'paused';
         writeState(root, runId, data);
       });
-      if (fenced) return { ok: false, action: 'fenced', reason: 'lease-changed-before-pause', childRunId: em.childRunId };
-      return { ok: true, action: 'gate-blocked-paused', childRunId: em.childRunId };
+      if (fenced) return { ok: false, action: 'fenced', reason: 'lease-changed-before-pause', childRunId: em.childRunId, headless };
+      return { ok: true, action: 'gate-blocked-paused', childRunId: em.childRunId, headless };
     }
     // Gate open: handoff emitted with lease=releasing; measured cron driveHeadless will resume via round-2 handshake.
-    return { ok: true, action: 'emitted', childRunId: em.childRunId };
+    return { ok: true, action: 'emitted', childRunId: em.childRunId, headless };
   }
-  return { ok: true, action: 'emitted', childRunId: em.childRunId };   // interactive → human uses terminal/launch-command.txt
+  return { ok: true, action: 'emitted', childRunId: em.childRunId, headless };   // interactive → human uses terminal/launch-command.txt
 }
 
 // CLI 진입 — best-effort, 절대 compaction 차단 안 함.
