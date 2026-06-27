@@ -49,12 +49,26 @@ export function acquireLease(root, runId, { owner, expectGeneration, now = Date.
     if (lease.state === 'released' && lease.handoff_child_run_id && owner !== lease.handoff_child_run_id && !expired) {
       return { ok: false, generation: lease.generation, reason: 'child-not-reserved' };
     }
+    // Terminal guard — defensive: stopped/completed runs are never re-acquired.
+    // A recovered run is 'paused' (not terminal) so it remains acquireable.
+    if (data.status === 'stopped' || data.status === 'completed') {
+      return { ok: false, generation: lease.generation, reason: 'run-terminal' };
+    }
+    const waspaused = data.status === 'paused';
     const iso = new Date(now).toISOString();
     data.session_chain.lease = {
       ...lease, owner_run_id: owner, generation: expectGeneration + 1,
       acquired_at: iso, expires_at: null,   // active 소유자는 deadline 없음 → 무기한 write (renewal 불필요)
       state: 'active', handoff_phase: 'acquired', handoff_idempotency_key: null, handoff_child_run_id: null,
     };
+    // Unpause (same transaction): covers BOTH preserve-resume (releasing+reserved-child) AND
+    // recover-resume (released, no reserved child). This is the acquire-resume path that is
+    // exempt from the RUN_PAUSED gate (Task 6 / leaseCheck intent='resume').
+    if (waspaused) {
+      data.status = 'running';
+      data.pause_reason = null;
+      data.session_chain.lease.resume_policy = null;
+    }
     const childEntry = data.session_chain.sessions.find(s => s.run_id === owner);
     if (childEntry && !childEntry.started_at) childEntry.started_at = iso;
     const parentEntry = data.session_chain.sessions.find(s => s.superseded_by === owner);
