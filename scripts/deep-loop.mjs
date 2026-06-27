@@ -20,6 +20,7 @@ import { recordCost, checkBudget } from './lib/budget.mjs';
 import { computeDebt, ack as ackComprehension } from './lib/comprehension.mjs';
 import { checkBreaker, resetBreaker } from './lib/breaker.mjs';
 import { finishRun } from './lib/finish.mjs';
+import { detectAndPersist } from './lib/detect-terminal.mjs';
 
 function parseFlags(argv) {
   const f = {}; for (let i = 0; i < argv.length; i++) { if (argv[i].startsWith('--')) { const k = argv[i].slice(2); const v = argv[i + 1]?.startsWith('--') || argv[i + 1] === undefined ? true : argv[++i]; f[k] = v; } } return f;
@@ -279,6 +280,20 @@ const handlers = {
       catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }
     }
     error(`unknown breaker verb: ${verb}`); return 2;
+  },
+  'detect-terminal': async (a) => {
+    const f = parseFlags(a); const root = rootOf(f); const runId = runIdOf(root, f);
+    if (!runId) { error('MISSING_RUN_ID'); return 2; }
+    // intent:'lease' so a releasing lease is not rejected (releasing-safe R11-HH)
+    requireLease(root, runId, f, 'lease');
+    const now = new Date(parseNow(f)).toISOString();
+    try {
+      const d = detectAndPersist(root, runId, { owner: f.owner, generation: intArg(f, 'generation'), now });
+      json(d); return 0;
+    } catch (e) {
+      if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; }
+      error(e.message); return 1;
+    }
   },
   finish: async (a) => {
     const f = parseFlags(a); const root = rootOf(f); const runId = runIdOf(root, f);

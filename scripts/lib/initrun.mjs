@@ -4,8 +4,9 @@ import { runIdSlug } from './slug.mjs';
 import { matchRecipe } from './recipes.mjs';
 import { writeState, runDir } from './state.mjs';
 import { ulid } from './envelope.mjs';
+import { detectTerminal, defaultProbeRun } from './detect-terminal.mjs';
 
-export function buildInitialLoop({ goal, protocol, recipe, detected = {}, review, now = new Date(), runId, git = {} }) {
+export function buildInitialLoop({ goal, protocol, recipe, detected = {}, review, now = new Date(), runId, git = {}, env = process.env, platform = process.platform, run = defaultProbeRun }) {
   const iso = now.toISOString();
   return {
     schema_version: '0.2.0', run_id: runId, goal, status: 'running',
@@ -22,7 +23,7 @@ export function buildInitialLoop({ goal, protocol, recipe, detected = {}, review
     circuit_breaker: { consecutive_request_changes: 0, tripped: false, trip_reason: null },
     event_log_head: { seq: 0, checksum: 'GENESIS' },
     session_chain: { parent_run_id: null, lease: { owner_run_id: runId, generation: 1, acquired_at: iso, expires_at: null, state: 'active', handoff_idempotency_key: null, handoff_phase: 'idle' }, stale_lease_ttl_sec: 900, sessions: [{ run_id: runId, started_at: iso, ended_at: null, turns: 0, outcome: null, superseded_by: null }] },
-    session_spawn: { platform: process.platform, launcher: 'none', launcher_bin: null, launcher_socket: null, surface: null, reachable: false, visible: false, signals: {}, probe: null, reason: 'not-detected', fallback: 'launch-command-file', detected_at: iso },
+    session_spawn: detectTerminal({ env, platform, run, now: iso, allowPowershellVisible: false }),
     workspace_policy: 'recommend',
     workstreams: [], active_workstreams: [],
     discovered_items: [], triage: { actionable: [], needs_human: [], blocked: [], archived: [] },
@@ -32,12 +33,12 @@ export function buildInitialLoop({ goal, protocol, recipe, detected = {}, review
   };
 }
 
-export function initRun(root, { goal, protocol, recipe, review, detected = {}, now = new Date(), git = {} }) {
+export function initRun(root, { goal, protocol, recipe, review, detected = {}, now = new Date(), git = {}, env = process.env, platform = process.platform, run = defaultProbeRun }) {
   const runId = ulid(now.getTime());
   const m = matchRecipe(goal, detected);
   const proto = protocol || m.protocol;
   const rec = recipe ? { id: recipe, name: recipe, reason: 'user' } : { id: m.recipe, name: m.recipe, reason: m.reason };
-  const loop = buildInitialLoop({ goal, protocol: proto, recipe: rec, detected, review, now, runId, git });
+  const loop = buildInitialLoop({ goal, protocol: proto, recipe: rec, detected, review, now, runId, git, env, platform, run });
   loop.project.root = root;
   mkdirSync(runDir(root, runId), { recursive: true });
   writeState(root, runId, loop);

@@ -12,10 +12,13 @@ import { respawn, respawnGate } from '../scripts/lib/respawn.mjs';
 const NOW0 = new Date('2026-06-24T00:00:00Z');
 const NOW1 = Date.parse('2026-06-24T01:00:00Z');
 
+// Inject no-signal env + no-op run so detect-terminal is deterministic regardless of ambient env.
+const noOpRun = () => ({ code: 1 });
+
 // 자기완결 seed: run 생성 후 mutate(loop)로 필요한 필드만 조정하고 writeState.
 function seed(mutate) {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
-  const { runId } = initRun(root, { goal: 'g', now: NOW0 });
+  const { runId } = initRun(root, { goal: 'g', now: NOW0, env: {}, platform: 'linux', run: noOpRun });
   if (mutate) { const { data } = readState(root, runId); mutate(data); writeState(root, runId, data); }
   return { root, runId };
 }

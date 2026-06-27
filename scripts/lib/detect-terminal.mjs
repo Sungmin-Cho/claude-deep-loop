@@ -1,4 +1,7 @@
 import { spawnSync } from 'node:child_process';
+import { appendAnchored } from './integrity.mjs';
+import { readState } from './state.mjs';
+import { reconcileBudget } from './budget.mjs';
 
 /** Non-invasive probe runner — never opens a window. */
 export function defaultProbeRun(bin, argv, { timeoutMs = 5000 } = {}) {
@@ -170,4 +173,39 @@ export function detectTerminal({
 
   // ── 4. Any other platform ───────────────────────────────────────────────────
   return noneDescriptor('no-host-signal');
+}
+
+/**
+ * Fenced, releasing-safe: detect the terminal and persist the descriptor.
+ *
+ * Releasing-safe (R11-HH): the preCheck compares owner/generation ONLY — it does
+ * NOT apply the leaseCheck releasing-carve-out so detect-terminal succeeds even
+ * while the parent lease is in `state: 'releasing'` (post-handoff-emit metadata).
+ *
+ * Returns the descriptor so the CLI can print it.
+ */
+export function detectAndPersist(root, runId, {
+  owner, generation,
+  env = process.env,
+  platform = process.platform,
+  run = defaultProbeRun,
+  now,
+} = {}) {
+  reconcileBudget(root, runId);
+  const { data: loop } = readState(root, runId);
+  const allowPowershellVisible = loop.autonomy?.allow_powershell_visible ?? false;
+  const d = detectTerminal({ env, platform, run, now, allowPowershellVisible });
+  appendAnchored(
+    root, runId,
+    { type: 'terminal-detected', data: { launcher: d.launcher } },
+    (l) => { l.session_spawn = d; },
+    (l) => {
+      const lease = l.session_chain.lease;
+      // Direct owner/generation check only — must NOT reject on lease.state==='releasing'.
+      if (lease.owner_run_id !== owner || lease.generation !== generation) {
+        throw new Error('LEASE_FENCED: detect-terminal');
+      }
+    }
+  );
+  return d;
 }
