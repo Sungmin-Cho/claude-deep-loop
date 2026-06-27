@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { validate } from '../scripts/lib/schema.mjs';
+import { buildInitialLoop } from '../scripts/lib/initrun.mjs';
 
 function minimalValid() {
   return {
@@ -49,4 +50,26 @@ test('wrong schema_version fails', () => {
 test('non-number budget.soft_stop_ratio fails', () => {
   const o = minimalValid(); o.budget = { unit: 'turns', soft_stop_ratio: '0.8' };
   assert.equal(validate(o).ok, false);
+});
+
+test('spawn_style enum accepts visible; session_spawn additive validates', () => {
+  const loop = buildInitialLoop({ runId: 'r1', goal: 'g', recipe: {}, now: new Date('2026-06-27T00:00:00Z') });
+  loop.autonomy.spawn_style = 'visible';
+  loop.session_spawn = { platform: 'darwin', launcher: 'cmux', launcher_bin: '/x/cmux', launcher_socket: null, surface: 'workspace', reachable: true, visible: true, signals: {}, probe: { cmd: 'x ping', code: 0 }, reason: null, fallback: 'launch-command-file', detected_at: '2026-06-27T00:00:00Z' };
+  assert.equal(validate(loop).ok, true, `validate errors: ${JSON.stringify(validate(loop).errors)}`);
+  loop.autonomy.spawn_style = 'bogus';
+  assert.equal(validate(loop).ok, false);
+});
+
+test('session_spawn null still validates (R5-plan)', () => {
+  const loop = buildInitialLoop({ runId: 'r1', goal: 'g', recipe: {}, now: new Date('2026-06-27T00:00:00Z') });
+  const loopNull = { ...loop, session_spawn: null };
+  assert.equal(validate(loopNull).ok, true, `session_spawn:null must pass, errors: ${JSON.stringify(validate(loopNull).errors)}`);
+});
+
+test('session_spawn absent still validates', () => {
+  const loop = buildInitialLoop({ runId: 'r1', goal: 'g', recipe: {}, now: new Date('2026-06-27T00:00:00Z') });
+  const loopAbsent = { ...loop };
+  delete loopAbsent.session_spawn;
+  assert.equal(validate(loopAbsent).ok, true, `session_spawn absent must pass, errors: ${JSON.stringify(validate(loopAbsent).errors)}`);
 });

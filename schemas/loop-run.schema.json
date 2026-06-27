@@ -5,10 +5,16 @@
     "status": ["running","paused","completed","stopped"],
     "routing.protocol": ["deep-work","superpowers","standalone"],
     "autonomy.tier": ["read-only","recommend","act-reversible","act-gated"],
-    "autonomy.spawn_style": ["interactive","headless"],
+    "autonomy.spawn_style": ["visible","interactive","headless"],
     "budget.unit": ["turns","tokens"],
     "session_chain.lease.state": ["active","releasing","released"],
-    "session_chain.lease.handoff_phase": ["idle","reserved","emitted","spawned","acquired"]
+    "session_chain.lease.handoff_phase": ["idle","reserved","emitted","spawned","acquired"],
+    "session_spawn.launcher": ["cmux","iterm2","terminal-app","wt","powershell","none"]
+  },
+  "properties": {
+    "session_spawn": { "type": "object" },
+    "pause_reason": { "type": "string" },
+    "session_chain.lease.resume_policy": { "type": "string" }
   },
   "episode_status": { "skill": ["pending","in_progress","blocked"], "kernel": ["done","approved","rejected"] },
   "workstream_status": { "skill": ["planned","in_progress","in_review","parked"], "kernel": ["ready","merged","abandoned"] }

@@ -8,7 +8,7 @@ export function loadSchema() {
 }
 
 function get(obj, path) {
-  return path.split('.').reduce((o, k) => (o == null ? o : o[k]), obj);
+  return path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj);
 }
 
 export function validate(loopJson, schema = loadSchema()) {
