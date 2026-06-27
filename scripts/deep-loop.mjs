@@ -21,6 +21,7 @@ import { computeDebt, ack as ackComprehension } from './lib/comprehension.mjs';
 import { checkBreaker, resetBreaker } from './lib/breaker.mjs';
 import { finishRun } from './lib/finish.mjs';
 import { detectAndPersist } from './lib/detect-terminal.mjs';
+import { recoverRun } from './lib/recover.mjs';
 
 function parseFlags(argv) {
   const f = {}; for (let i = 0; i < argv.length; i++) { if (argv[i].startsWith('--')) { const k = argv[i].slice(2); const v = argv[i + 1]?.startsWith('--') || argv[i + 1] === undefined ? true : argv[++i]; f[k] = v; } } return f;
@@ -227,6 +228,26 @@ const handlers = {
     } catch (e) {
       const msg = String(e?.message || e);
       if (msg.startsWith('LEASE_FENCED')) { error(msg); return 3; }
+      error(msg); return 1;
+    }
+  },
+  // recover --owner <id> --generation <n> --confirm
+  // Human-approved escape hatch (mirrors breaker reset --confirm): unstick-for-resume, NOT terminate.
+  // Clears stale handoff state so a fresh acquireLease (Task 8) can take over and unpause.
+  // Exit 3 = LEASE_FENCED (wrong owner/generation); 2 = missing --confirm or usage; 0 = success.
+  recover: async (a) => {
+    const f = parseFlags(a); const root = rootOf(f); const runId = runIdOf(root, f);
+    if (!runId) { error('MISSING_RUN_ID'); return 2; }
+    if (f.confirm !== true && f.confirm !== 'true') { error('CONFIRM_REQUIRED: pass --confirm (human-only)'); return 2; }
+    const owner = reqStr(f, 'owner'); if (!owner) { error('MISSING_OWNER'); return 2; }
+    const generation = intArg(f, 'generation');   // exits 3 on invalid/missing
+    try {
+      recoverRun(root, runId, { expect: { owner, generation }, confirm: true, now: parseNow(f) });
+      json({ ok: true, status: 'paused', pause_reason: 'recovered:awaiting-resume' }); return 0;
+    } catch (e) {
+      const msg = String(e?.message || e);
+      if (msg.startsWith('LEASE_FENCED')) { error(msg); return 3; }
+      if (msg.startsWith('NOT_RECOVERABLE') || msg.startsWith('CONFIRM_REQUIRED')) { error(msg); return 2; }
       error(msg); return 1;
     }
   },
