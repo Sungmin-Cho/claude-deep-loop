@@ -90,6 +90,23 @@ deep-suite 내에서 사용 시, deep-loop는 오케스트레이션 백본으로
 - **deep-wiki** — 문서 워크스트림용 writer 어댑터
 - **deep-memory** — `/deep-loop-finish`가 run 아티팩트 아카이브를 위임
 
+## 가시적 세션 연속성 (Self-Spawn)
+
+`autonomy.spawn_style`이 `'visible'`이고 run 초기화 시 지원되는 터미널 멀티플렉서가 감지되면, deep-loop는 다음 세션을 새로운 가시적 창에 자동으로 스폰할 수 있습니다:
+
+| 런처 | 감지 신호 | 새 세션 대상 |
+|------|-----------|-------------|
+| cmux | `CMUX_BUNDLED_CLI_PATH` + `CMUX_SOCKET_PATH` + surface ID | 소켓을 통한 새 cmux workspace |
+| iTerm2 | `TERM_PROGRAM=iTerm.app` + osascript 프로브 | 새 iTerm 창 |
+| Terminal.app | `TERM_PROGRAM=Apple_Terminal` + osascript 프로브 | 새 Terminal 창 |
+| Windows Terminal | `WT_SESSION` + `wt.exe` 프로브 | 새 WT 탭 |
+
+스폰은 **attended 전용**: 부모 세션이 인터랙티브하게 시작된 경우만 (`--attended` 플래그). 부모가 headless(`DEEP_LOOP_UNATTENDED=1`, `spawn_style='headless'`, 또는 headless 진입점 감지)이면 가시적 스폰을 우회하고 headless 경로를 사용합니다.
+
+**OS 무관 폴백**: 런처 미감지(`launcher='none'`) 또는 attended 아닌 경우, `respawn`은 `{ok:false, outcome:'no-launcher'}`를 반환합니다. 스킬은 `pauseRun({mode:'preserve'})`를 호출해 예약된 child를 핸드오프에 유지합니다. 이후 사람이 새 터미널을 열고 `/deep-loop-resume`을 실행하거나, 예약된 child 세션이 나중에 시작해 아직 releasing 상태인 lease를 인수하면 — 어느 경로든 run이 자동으로 일시정지 해제됩니다. 핸드오프 문서와 `launch-command.txt`는 항상 수동 복사-붙여넣기 명령을 제공합니다.
+
+**게이트 순서**: budget → breaker → max_sessions → wallclock → auto_handoff. 게이트 실패 시 `rollbackAndPause`(lease 롤백, child 무효화). 실행 명령 실패도 롤백. 준비 타임아웃 시 `preservePause`(child 유지, 늦은 인수도 성공).
+
 ## PreCompact Hook
 
 deep-loop는 Claude Code 컨텍스트 컴팩션 직전에 clean handoff를 방출하는 `PreCompact` hook을 등록합니다. 무인 모드에서는 headless respawn도 트리거합니다. hook은 컴팩션을 절대 막지 않습니다(항상 exit 0).
