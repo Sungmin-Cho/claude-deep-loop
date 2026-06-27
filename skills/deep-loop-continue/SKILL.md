@@ -97,9 +97,55 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" budget record --turns <n> --o
 
 ## 4. Decide (마일스톤 / Turn Cap)
 
-마일스톤(`milestone_predicate`) 통과 또는 `per_session_turn_cap` 도달 시:
+마일스톤(`milestone_predicate`) 통과 또는 `per_session_turn_cap` 도달 시 **visible respawn 결정 흐름**을 실행한다. 아니면 다음 episode 안내 후 종료.
+
+### 4a. 이미 emit된 핸드오프 확인 (PreCompact 안전망)
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field session_chain.lease
+```
+
+`lease.handoff_phase === 'emitted'`이면 reserved child가 이미 존재한다 — **re-emit 금지**, 4c로 바로 이동.
+
+### 4b. 핸드오프 Emit (handoff_phase=idle인 경우)
+
 ```
 node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" handoff emit --owner <run_id> --generation <n>
 ```
 
-respawn은 드라이버 또는 사람이 수행한다. 아니면 다음 episode 안내 후 종료.
+### 4c. Terminal 감지 및 Spawn Style 결정
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" detect-terminal --owner <run_id> --generation <n>
+```
+
+`session_spawn`과 `autonomy`를 읽는다:
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field session_spawn
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field autonomy
+```
+
+**분기:**
+
+**1. visible** (`spawn_style=visible` + `launcher≠none`):
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" respawn --owner <run_id> --generation <n> --attended
+```
+
+커널이 자동으로 새 세션을 시작한다. 이 스킬은 직접 `claude -p`를 실행하지 않는다(§9).
+
+**2. unattended** (명시적 드라이버 마커 / `DEEP_LOOP_UNATTENDED` set / non-tty):
+
+드라이버(`drive-headless.mjs`)가 respawn을 처리한다 — 이 스킬은 아무것도 실행하지 않는다.
+
+**3. else** (`launcher=none` / visible 아님 / legacy interactive):
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" pause --owner <run_id> --generation <n> --mode preserve --reason needs-human:<reason>
+```
+
+> **R6-plan 필수**: `handoff emit`이 lease를 `releasing` 상태로 전환했으므로 `--owner`/`--generation` fence가 반드시 필요하다. Unfenced `pause`는 exit 3(LEASE_FENCED)으로 실패하여 run이 un-paused 상태로 남는다 → stale takeover 위험.
+
+`terminal/launch-command.txt` 내용을 사람에게 제시한다. 다음 세션에서 `/deep-loop-resume`을 실행한다.

@@ -165,3 +165,43 @@ test('all skills + workflow references fence every mutating CLI line', () => {
     assert.ok(mutatingFenced(readFileSync(f, 'utf8')), `${f} has an unfenced mutating CLI invocation`);
   }
 });
+
+// Task 12: visible respawn decision flow — string-presence checks (read+CLI only, 2-plane boundary).
+test('continue + handoff Decide: detect-terminal subcommand documented', () => {
+  for (const dir of ['deep-loop-continue', 'deep-loop-handoff']) {
+    const src = readFileSync(skillPath(dir), 'utf8');
+    assert.ok(src.includes('detect-terminal'),
+      `${dir} Decide step must reference the detect-terminal subcommand`);
+  }
+});
+
+test('continue + handoff Decide: respawn --attended documented', () => {
+  for (const dir of ['deep-loop-continue', 'deep-loop-handoff']) {
+    const src = readFileSync(skillPath(dir), 'utf8');
+    assert.ok(src.includes('respawn'),
+      `${dir} must reference the respawn subcommand`);
+    assert.ok(src.includes('--attended'),
+      `${dir} must reference the --attended flag for visible-session respawn`);
+  }
+});
+
+test('continue + handoff Decide: fenced pause --mode preserve (R6-plan: --owner+--generation mandatory)', () => {
+  for (const dir of ['deep-loop-continue', 'deep-loop-handoff']) {
+    const src = readFileSync(skillPath(dir), 'utf8');
+    assert.ok(src.includes('--mode preserve'),
+      `${dir} must document pause --mode preserve for the legacy-interactive branch`);
+    // R6-plan: handoff emit already moved lease to 'releasing'; unfenced pause exits 3 → stale takeover.
+    // Assert the --mode preserve guidance carries BOTH --owner and --generation on the same line.
+    const hasFencedPause = src.split('\n').some(
+      l => l.includes('--mode preserve') && l.includes('--owner') && l.includes('--generation')
+    );
+    assert.ok(hasFencedPause,
+      `${dir} pause --mode preserve must carry --owner and --generation on the same line (R6-plan)`);
+  }
+});
+
+test('resume: recover --confirm documented as human escape hatch', () => {
+  const src = readFileSync(skillPath('deep-loop-resume'), 'utf8');
+  assert.ok(src.includes('recover --confirm'),
+    'deep-loop-resume must document recover --confirm as the escape hatch for stuck preserve-paused/gate-blocked runs');
+});

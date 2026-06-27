@@ -21,6 +21,53 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" handoff emit \
 - `handoffs/<timestamp>-compaction-state.json` — 압축 상태
 - `terminal/launch-command.txt` — 재시작 명령
 
+## Visible Respawn 결정 흐름 (Task 12)
+
+handoff emit 후 spawn style을 결정한다.
+
+### 1. 이미 emit된 핸드오프 확인 (PreCompact 안전망)
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field session_chain.lease
+```
+
+`lease.handoff_phase === 'emitted'`이면 reserved child 존재 — **re-emit 금지**, 바로 분기 평가로.
+
+### 2. Terminal 감지
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" detect-terminal --owner <run_id> --generation <n>
+```
+
+`session_spawn.launcher`와 `autonomy.spawn_style`을 읽는다:
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field session_spawn
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field autonomy
+```
+
+### 3. Spawn Style 분기
+
+**visible** (`spawn_style=visible` + `launcher≠none`):
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" respawn --owner <run_id> --generation <n> --attended
+```
+
+커널이 자동으로 새 세션을 시작한다. 스킬이 직접 `claude -p`를 실행하지 않는다(§9).
+
+**unattended** (드라이버 마커 / `DEEP_LOOP_UNATTENDED` / non-tty): 드라이버가 처리.
+
+**else** (`launcher=none` / visible 아님 / legacy interactive):
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" pause --owner <run_id> --generation <n> --mode preserve --reason needs-human:<reason>
+```
+
+> **R6-plan 필수**: `handoff emit`이 lease를 `releasing`으로 전환했으므로 `--owner`/`--generation` fence가 반드시 필요하다. Unfenced `pause`는 exit 3(LEASE_FENCED)으로 실패 → run이 un-paused 상태로 남음 → stale takeover 위험.
+
+`terminal/launch-command.txt` 내용을 사람에게 제시한다.
+
 ## Interactive vs Headless
 
 ### Interactive (사람 개입)
@@ -58,6 +105,17 @@ respawn이 내부적으로 평가하는 순서:
 
 새 세션 시작 시 `/deep-loop-resume`:
 1. `handoffs/<latest>-next-session.md` + `state get` 읽기(이전 대화 가정 금지)
-2. `lease acquire`로 세션 lease CAS 인수
+2. `lease acquire`로 세션 lease CAS 인수 — reserved child acquire가 run을 un-pause한다(커널 처리, Task 8)
 3. active workstream worktree 경로 무결성 확인
 4. `/deep-loop-continue`로 진행
+
+## 사람 탈출 수단: recover --confirm
+
+`preserve-paused` 또는 게이트 차단으로 stuck된 run을 사람이 복구한다:
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" recover --confirm --owner <run_id> --generation <n>
+```
+
+stale handoff 상태를 정리하여 새 `lease acquire`가 가능하도록 한다. 이후 `/deep-loop-resume`으로 인수.
+autonomous tick이 스스로 `recover --confirm`을 발행하지 않는다.
