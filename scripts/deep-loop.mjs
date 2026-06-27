@@ -14,7 +14,8 @@ import { newEpisode, recordEpisode } from './lib/episode.mjs';
 import { dispatchReview, recordReviewOutcome } from './lib/review.mjs';
 import { nextAction } from './lib/next-action.mjs';
 import { emitHandoff } from './lib/handoff.mjs';
-import { respawn, respawnGate } from './lib/respawn.mjs';
+import { respawn, respawnGate, resolveSpawnMode } from './lib/respawn.mjs';
+import { headlessSpawn, visibleSpawn } from './lib/spawn-driver.mjs';
 import { resolveAdapter, guardTierProtocol, loadProtocol } from './lib/adapters.mjs';
 import { recordCost, checkBudget } from './lib/budget.mjs';
 import { computeDebt, ack as ackComprehension } from './lib/comprehension.mjs';
@@ -186,12 +187,36 @@ const handlers = {
     if (verb === 'emit') { json(emitHandoff(root, runId, { reason: f.reason, trigger: f.trigger || f.reason || 'milestone', headless: f.headless === true || f.headless === 'true', expect })); return 0; }
     error(`unknown handoff verb: ${verb}`); return 2;
   },
+  // respawn --owner <id> --generation <n> [--attended] [--headless]
+  // Resolves the spawn mode FIRST (R2-plan), then injects the matching spawnFn (headless→headlessSpawn measured,
+  // visible launcher→visibleSpawn best-effort) — a headless entry must NEVER run through visibleSpawn. The fence
+  // (--owner/--generation) is required (exit 3) and re-checked in-lock by respawn's appendAnchored preChecks (R11-II).
   respawn: async (a) => {
     const f = parseFlags(a); const root = rootOf(f); const runId = runIdOf(root, f);
+    if (!runId) { error('MISSING_RUN_ID'); return 2; }
     const { data } = readState(root, runId);
     if (f['dry-run']) { json(respawnGate(data)); return 0; }
-    // CLI는 spawnFn 미주입 → 실제 spawn은 드라이버(Plan 3). 게이트만 평가.
-    json({ spawn: 'requires-driver', reason: 'actual session spawn is provided by a Plan-3 headless driver (spawnFn); CLI evaluates the gate only', gate: respawnGate(data) }); return 0;
+    // Require + fence --owner/--generation (exit 3). intent 'lease' so a releasing handoff lease is not rejected.
+    requireLease(root, runId, f, 'lease');
+    const headless = f.headless === true || f.headless === 'true';
+    const attended = f.attended === true || f.attended === 'true';
+    const mode = resolveSpawnMode(data, { headless, attended, env: process.env });
+    const spawnFn = mode === 'headless' ? headlessSpawn : visibleSpawn;
+    const lease = data.session_chain?.lease || {};
+    const childRunId = lease.handoff_child_run_id;
+    const key = lease.handoff_idempotency_key;
+    const cs = (data.session_chain?.sessions || []).find(s => s.run_id === childRunId);
+    const handoffRel = cs && cs.handoff_rel;
+    const pollLease = () => readState(root, runId).data.session_chain.lease;
+    try {
+      const r = respawn(root, runId, { childRunId, key, handoffRel, headless, attended, now: parseNow(f), spawnFn, pollLease, env: process.env });
+      json({ mode, ...r });
+      return r.ok ? 0 : (r.outcome === 'fenced' ? 3 : 0);
+    } catch (e) {
+      const msg = String(e?.message || e);
+      if (msg.startsWith('LEASE_FENCED') || msg.startsWith('RESPAWN_FENCED')) { error(msg); return 3; }
+      error(msg); return 1;
+    }
   },
   state: async (a) => {
     const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
