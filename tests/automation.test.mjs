@@ -41,21 +41,24 @@ function seedRun() {
 
 // driveHeadless must issue the measured RESUME command (claude -p "<resume prompt>" --output-format json)
 // when there is an emitted handoff with a reserved child.
+// spawnFn now receives an entry {bin, argv, cwd} (not a shell string) — check argv contents.
 test('driveHeadless resumes pending handoff with measured resume command', () => {
   const { root } = seedRunWithHandoff();
-  let capturedCmd = null;
+  let capturedEntry = null;
   const r = driveHeadless({
     root,
     now: NOW1,
-    spawnFn: (cmd) => {
-      capturedCmd = cmd;
-      assert.match(cmd, /deep-loop-resume/, 'resume command must reference deep-loop-resume');
-      assert.match(cmd, /--output-format json/, 'must request json output for measurement');
+    spawnFn: (entry) => {
+      capturedEntry = entry;
+      // headless entry: bin='claude', argv contains resume prompt and output format flag
+      const argStr = entry.argv.join(' ');
+      assert.ok(argStr.includes('deep-loop-resume'), 'resume command must reference deep-loop-resume');
+      assert.ok(entry.argv.includes('--output-format'), 'must include --output-format flag for measurement');
       return { ok: true, usage: { num_turns: 2, tokens: 50 } };
     },
   });
   assert.equal(r.action, 'resumed');
-  assert.ok(capturedCmd, 'spawnFn must have been called');
+  assert.ok(capturedEntry, 'spawnFn must have been called');
 });
 
 // driveHeadless commits measured usage to budget on success.

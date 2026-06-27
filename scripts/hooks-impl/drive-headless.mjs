@@ -32,9 +32,10 @@ export function driveHeadless({ root = process.cwd(), spawnFn = headlessSpawn, n
   const handoffRel = cs && cs.handoff_rel;
 
   // Usage capture: wrap spawnFn to capture the measured result; respawn discards it beyond ok.
+  // entry shape: { bin, argv, cwd } — passed through to headlessSpawn (or mock in tests).
   let captured = null;
-  const measuring = (cmd, opts) => {
-    const r = spawnFn(cmd, opts);
+  const measuring = (entry) => {
+    const r = spawnFn(entry);
     captured = r;
     return r;
   };

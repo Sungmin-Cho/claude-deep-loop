@@ -7,17 +7,121 @@ import { reserveHandoff } from './lease.mjs';
 
 function tsName(now) { return new Date(now).toISOString().replace(/[:.]/g, '-'); }
 
-export function buildLaunchCommand({ root, parentRunId, childRunId, handoffRel, headless }) {
-  // handoff 파일은 **부모** run 디렉터리에 있다 → 자식은 부모 경로에서 읽는다 (Codex r1 🔴3).
+// POSIX single-quote wrap: embed s safely in a single-quoted shell argument.
+// ' → '\'' (close-quote, literal-quote, reopen-quote).
+function q(s) { return "'" + String(s).replace(/'/g, "'\\''") + "'"; }
+
+// Escape for an AppleScript double-quoted string literal. AppleScript's string-literal
+// parser treats backslash as an escape char, so a literal backslash must be DOUBLED
+// (\ → \\) BEFORE escaping double-quotes (" → \"). Order matters: doubling first keeps
+// the backslash the quote-escape introduces from being re-doubled. Without doubling,
+// q(root) for an apostrophe root (e.g. '/p'\''s') leaks a lone backslash that AppleScript
+// consumes → shell receives '/p''s' → wrong dir. (spec §5 / Handoff invariant 8)
+function escApple(s) { return String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"'); }
+
+// PowerShell single-quote escaping: ' → '' (doubling).
+function psq(s) { return String(s).replace(/'/g, "''"); }
+
+const SAFE_ID = /^[A-Za-z0-9_-]+$/;
+const SAFE_HANDOFF_REL = /^handoffs\/[A-Za-z0-9._-]+$/;
+
+/**
+ * Build per-launcher argv entry map for spawning the child session.
+ *
+ * Returns:
+ *   { cmux, iterm2, 'terminal-app', wt, powershell, headless, interactive }
+ *
+ * Each entry (except interactive) has { bin, argv, display }.
+ * headless also has { cwd }.
+ * interactive has { display } only (human copies it; no auto-spawn).
+ *
+ * Validates parentRunId, childRunId, and handoffRel to catch shell-injection
+ * before any string is interpolated (UNSAFE_SPAWN_ARG guard).
+ */
+export function buildLaunchCommand({ root, parentRunId, childRunId, handoffRel, launcher, launcherBin, launcherSocket }) {
+  // Defensive validation: run ids are ULIDs in production, but defense-in-depth catches injection.
+  if (!SAFE_ID.test(String(parentRunId))) {
+    throw Object.assign(new Error(`UNSAFE_SPAWN_ARG: parentRunId=${parentRunId}`), { code: 'UNSAFE_SPAWN_ARG' });
+  }
+  if (!SAFE_ID.test(String(childRunId))) {
+    throw Object.assign(new Error(`UNSAFE_SPAWN_ARG: childRunId=${childRunId}`), { code: 'UNSAFE_SPAWN_ARG' });
+  }
+  if (!SAFE_HANDOFF_REL.test(String(handoffRel))) {
+    throw Object.assign(new Error(`UNSAFE_SPAWN_ARG: handoffRel=${handoffRel}`), { code: 'UNSAFE_SPAWN_ARG' });
+  }
+
   const resumePrompt = `Read .deep-loop/runs/${parentRunId}/${handoffRel} first; then run /deep-loop-resume`;
-  const interactive = `cd ${root} && claude -n deep-loop-${childRunId} "${resumePrompt}"`;
-  const headlessCmd = `cd ${root} && claude -p "${resumePrompt}" --output-format json --permission-mode acceptEdits`;
+  const inner = `deep-loop-${childRunId}`;
+
+  // ── cmux ──────────────────────────────────────────────────────────────────
+  // --command carries a shell fragment run by cmux; only dynamic args are q()-quoted.
+  // root is passed as --cwd (separate argv element, no shell involved).
+  const cmuxCmdStr = `claude -n ${q(inner)} ${q(resumePrompt)}`;
+  const cmuxArgv = launcherSocket
+    ? ['--socket', launcherSocket, 'new-workspace', '--cwd', root, '--command', cmuxCmdStr, '--focus', 'true']
+    : ['new-workspace', '--cwd', root, '--command', cmuxCmdStr, '--focus', 'true'];
+  const effectiveBin = launcherBin || 'cmux';
+
+  // ── osascript inner shell command ──────────────────────────────────────────
+  // q(root) makes the cd argument safe for any POSIX path; escApple escapes "
+  // so the shell command can be embedded in an AppleScript double-quoted string.
+  const innerSh = `cd ${q(root)} && claude -n ${inner} "${resumePrompt}"`;
+
+  // ── iterm2 ────────────────────────────────────────────────────────────────
+  const iterm2Script = `tell application "iTerm" to create window with default profile command "${escApple(innerSh)}"`;
+
+  // ── terminal-app ──────────────────────────────────────────────────────────
+  const terminalScript = `tell application "Terminal" to do script "${escApple(innerSh)}"`;
+
+  // ── powershell ────────────────────────────────────────────────────────────
+  // Build UTF-16LE base64 encoded command (Start-Process opens a new visible window).
+  const innerPS = `Set-Location -LiteralPath '${psq(root)}'; & claude -n '${psq(inner)}' '${psq(resumePrompt)}'`;
+  const b64 = Buffer.from(innerPS, 'utf16le').toString('base64');
+  const psCmd = `Start-Process powershell -ArgumentList '-NoExit','-EncodedCommand','${b64}'`;
+
+  // ── display strings ────────────────────────────────────────────────────────
+  // launch-command.txt is copied by a human; q(root) prevents apostrophe/semicolon/newline injection.
+  const headlessDisplay = `cd ${q(root)} && claude -p "${resumePrompt}" --output-format json --permission-mode acceptEdits`;
+  const interactiveDisplay = `cd ${q(root)} && claude -n ${inner} "${resumePrompt}"`;
+  // Human-paste form: q() root, socket, and the whole --command value (a single shell word)
+  // so a root/socket with space/apostrophe/semicolon/newline can't break or inject. (spec §5 / inv.8)
+  const cmuxDisplay = `${effectiveBin}${launcherSocket ? ` --socket ${q(launcherSocket)}` : ''} new-workspace --cwd ${q(root)} --command ${q(cmuxCmdStr)} --focus true`;
+
   return {
-    interactive: headless ? headlessCmd : interactive,
-    headless: headlessCmd,
-    macos: `osascript -e 'tell application "Terminal" to do script "${interactive.replace(/"/g, '\\"')}"'`,
-    windows: `wt.exe -d ${root} cmd /k claude -n deep-loop-${childRunId} "${resumePrompt}"`,
-    tmux: `tmux new-window -c ${root} '${interactive}'`,
+    cmux: {
+      bin: effectiveBin,
+      argv: cmuxArgv,
+      display: cmuxDisplay,
+    },
+    iterm2: {
+      bin: 'osascript',
+      argv: ['-e', iterm2Script],
+      display: `osascript -e '${iterm2Script}'`,
+    },
+    'terminal-app': {
+      bin: 'osascript',
+      argv: ['-e', terminalScript],
+      display: `osascript -e '${terminalScript}'`,
+    },
+    wt: {
+      bin: 'wt.exe',
+      argv: ['-d', root, 'claude', '-n', inner, resumePrompt],
+      display: `wt.exe -d ${q(root)} claude -n ${inner} "${resumePrompt}"`,
+    },
+    powershell: {
+      bin: 'powershell',
+      argv: ['-Command', psCmd],
+      display: `powershell -Command "${psCmd}"`,
+    },
+    headless: {
+      bin: 'claude',
+      argv: ['-p', resumePrompt, '--output-format', 'json', '--permission-mode', 'acceptEdits'],
+      cwd: root,
+      display: headlessDisplay,
+    },
+    interactive: {
+      display: interactiveDisplay,
+    },
   };
 }
 
@@ -77,9 +181,23 @@ export function emitHandoff(root, runId, { reason = 'milestone', trigger = 'mile
     now: new Date(now).toISOString(),
   });
   atomicWrite(join(dir, csName), JSON.stringify(compaction, null, 2));
-  const cmds = buildLaunchCommand({ root, parentRunId: runId, childRunId, handoffRel, headless });
-  atomicWrite(join(termDir, 'launch-command.txt'),
-    [`# interactive`, cmds.interactive, ``, `# headless`, cmds.headless, ``, `# macOS`, cmds.macos, ``, `# windows`, cmds.windows, ``, `# tmux`, cmds.tmux, ``].join('\n'));
+
+  // Build all entry variants; write display strings to launch-command.txt for human fallback.
+  const cmds = buildLaunchCommand({
+    root, parentRunId: runId, childRunId, handoffRel,
+    launcher: loop.session_spawn?.launcher,
+    launcherBin: loop.session_spawn?.launcher_bin,
+    launcherSocket: loop.session_spawn?.launcher_socket,
+  });
+  atomicWrite(join(termDir, 'launch-command.txt'), [
+    `# interactive`, cmds.interactive.display, ``,
+    `# headless`, cmds.headless.display, ``,
+    `# cmux`, cmds.cmux.display, ``,
+    `# iterm2`, cmds.iterm2.display, ``,
+    `# terminal-app`, cmds['terminal-app'].display, ``,
+    `# wt`, cmds.wt.display, ``,
+    `# powershell`, cmds.powershell.display, ``,
+  ].join('\n'));
 
   // Codex impl r11 🔴: child session push + superseded_by + lease reserved→emitted (releasing + stale TTL) must be
   // ONE atomic transaction — a crash between a separate event-append and the phase advance previously left a recorded

@@ -81,13 +81,14 @@ test('respawn rejects childRunId that does not match the reserved handoff child 
 test('respawn success → spawned, lease stays releasing, child can acquire via handshake (generation+1); retry is idempotent', () => {
   const { root, runId } = seed();
   const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });
-  const cmds = [];
-  const spawnFn = (cmd) => { cmds.push(cmd); return { ok: true }; };
+  const entries = [];
+  const spawnFn = (entry) => { entries.push(entry); return { ok: true }; };
   const r = respawn(root, runId, { childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel, now: NOW1, spawnFn });
   assert.equal(r.ok, true);
   assert.equal(r.outcome, 'spawned');
-  assert.equal(cmds.length, 1);
-  assert.match(cmds[0], new RegExp(`\\.deep-loop/runs/${runId}/`));  // 부모 경로 참조 (🔴3)
+  assert.equal(entries.length, 1);
+  // interactive entry has display string referencing parent run dir (🔴3)
+  assert.match(entries[0].display, new RegExp(`\\.deep-loop/runs/${runId}/`));
   const after = readState(root, runId).data;
   assert.equal(after.session_chain.lease.handoff_phase, 'spawned');
   // Fix 2: lease stays 'releasing' — child acquires via handshake (releasing + owner===handoff_child_run_id)
@@ -95,7 +96,7 @@ test('respawn success → spawned, lease stays releasing, child can acquire via 
   // Codex r1 🔴2: 같은 respawn 재시도는 already-spawned no-op (이중 spawn 금지)
   const retry = respawn(root, runId, { childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel, now: NOW1, spawnFn });
   assert.equal(retry.outcome, 'already-spawned');
-  assert.equal(cmds.length, 1);
+  assert.equal(entries.length, 1);
   // Child acquires the releasing lease via handshake (not released — acquiring 'releasing' directly)
   const a = acquireLease(root, runId, { owner: h.childRunId, expectGeneration: 1, now: NOW1 });
   assert.equal(a.ok, true);

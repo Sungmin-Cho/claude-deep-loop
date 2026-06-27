@@ -69,10 +69,15 @@ export function respawn(root, runId, { childRunId, key, handoffRel = '', headles
   // Codex impl r8 🟡: derive handoffRel from the reserved child session (don't trust caller); fall back to arg.
   const childSession = loop.session_chain.sessions.find(s => s.run_id === childRunId);
   const effHandoffRel = (childSession && childSession.handoff_rel) || handoffRel;
-  const cmds = buildLaunchCommand({ root, parentRunId: runId, childRunId, handoffRel: effHandoffRel, headless });
-  const cmd = headless ? cmds.headless : cmds.interactive;
+  const cmds = buildLaunchCommand({
+    root, parentRunId: runId, childRunId, handoffRel: effHandoffRel,
+    launcher: loop.session_spawn?.launcher,
+    launcherBin: loop.session_spawn?.launcher_bin,
+    launcherSocket: loop.session_spawn?.launcher_socket,
+  });
+  const entry = headless ? cmds.headless : cmds.interactive;
   try {
-    const res = spawnFn(cmd);
+    const res = spawnFn(entry);
     if (res && res.ok === false) throw new Error(res.reason || 'spawn-returned-false');
   } catch (e) {
     // 실패모드 (B): respawn-failed 기록 + chain 정정 + lease 롤백(active/idle)을 ONE 트랜잭션으로

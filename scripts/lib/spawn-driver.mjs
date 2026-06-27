@@ -18,16 +18,18 @@ export function parseUsage(stdout) {
   return { num_turns: turns, tokens };
 }
 
-export function defaultRun(cmd, { timeoutMs }) {
-  const r = spawnSync('bash', ['-c', cmd], { encoding: 'utf8', timeout: timeoutMs });
+// Direct spawnSync (no bash -c): bin and argv are passed directly to the OS.
+export function defaultRun(bin, argv, { timeoutMs, cwd } = {}) {
+  const r = spawnSync(bin, argv, { encoding: 'utf8', timeout: timeoutMs, cwd });
   const timedOut = r.error && (r.error.code === 'ETIMEDOUT' || r.signal === 'SIGTERM');
   return { code: r.status ?? null, stdout: r.stdout || '', stderr: r.stderr || '', timedOut: !!timedOut };
 }
 
 // respawn 의 spawnFn 계약: {ok:true} | throw/{ok:false,reason}. fail-closed = ok:false (respawn 실패모드 B 롤백).
-export function headlessSpawn(cmd, { timeoutMs = 30 * 60 * 1000, run = defaultRun } = {}) {
+// entry shape: { bin: string, argv: string[], cwd?: string }
+export function headlessSpawn(entry, { timeoutMs = 30 * 60 * 1000, run = defaultRun } = {}) {
   let out;
-  try { out = run(cmd, { timeoutMs }); } catch (e) { return { ok: false, reason: `spawn-error: ${e.message || e}` }; }
+  try { out = run(entry.bin, entry.argv, { timeoutMs, cwd: entry.cwd }); } catch (e) { return { ok: false, reason: `spawn-error: ${e.message || e}` }; }
   if (out.timedOut) return { ok: false, reason: 'timeout' };
   if (out.code !== 0) return { ok: false, reason: `exit-${out.code}` };
   const usage = parseUsage(out.stdout);
