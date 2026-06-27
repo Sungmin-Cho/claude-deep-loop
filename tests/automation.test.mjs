@@ -29,6 +29,11 @@ function seedRunWithHandoff() {
     now: NOW1,
   });
   assert.ok(em.ok, `emitHandoff must succeed: ${em.reason}`);
+  // Task 10: driveHeadless gates on resume_policy==='headless'. Task 11 will persist this via emitHandoff;
+  // for now, seed it directly so headless-driver test scenarios reflect headless-intended handoffs.
+  const { data } = readState(root, runId);
+  data.session_chain.lease.resume_policy = 'headless';
+  writeState(root, runId, data);
   const childRunId = readState(root, runId).data.session_chain.lease.handoff_child_run_id;
   return { root, runId, em, childRunId };
 }
@@ -102,11 +107,11 @@ test('driveHeadless returns gate-blocked and pauses run when respawnGate blocks'
     now: NOW1,
   });
   assert.ok(em.ok, `emitHandoff must succeed: ${em.reason}`);
-  // Exhaust the budget: set spent >= total * hard_stop_ratio.
+  // Set resume_policy='headless' so the R5 gate passes; budget exhaustion is what triggers gate-blocked.
   // Directly mutate state to set budget.spent >= budget.total (bypass recordCost to avoid lease issues).
   const { data } = readState(root, runId);
   data.budget.total = 0;  // 0 total → spent(0) >= 0*ratio → gate blocks
-  // Write directly without going through recordCost to avoid lease issues.
+  data.session_chain.lease.resume_policy = 'headless';
   writeState(root, runId, data);
 
   let spawnCalled = false;
@@ -190,6 +195,77 @@ test('driveHeadless fails closed (pauses) when measurement fails after the child
   assert.equal(r.ok, false);
   assert.equal(r.action, 'fail-closed');
   assert.equal(readState(root, runId).data.status, 'paused', 'fail-closed pause must be set even when child took over lease');
+});
+
+// R5-plan gate: driveHeadless must skip handoffs not intended for headless resumption.
+
+test('driveHeadless skips handoff with resume_policy=human (spawnFn must NOT be called)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-auto-'));
+  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  const em = emitHandoff(root, runId, {
+    reason: 'pre-compact', trigger: 'pre-compact', headless: true,
+    expect: { owner: runId, generation: 1 },
+    now: NOW1,
+  });
+  assert.ok(em.ok, `emitHandoff must succeed: ${em.reason}`);
+  // Simulate preserve-timeout: resume_policy='human' (Task 11 will set this via emitHandoff for visible spawns)
+  const { data } = readState(root, runId);
+  data.session_chain.lease.resume_policy = 'human';
+  writeState(root, runId, data);
+
+  const r = driveHeadless({
+    root, now: NOW1,
+    spawnFn: () => { throw new Error('spawnFn must NOT be called for human-policy handoff'); },
+  });
+  assert.equal(r.skipped, true, 'must be skipped');
+  assert.equal(r.reason, 'human-resume-policy');
+});
+
+test('driveHeadless skips visible-intended handoff (resume_policy null — not-headless-intended)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-auto-'));
+  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  const em = emitHandoff(root, runId, {
+    reason: 'pre-compact', trigger: 'pre-compact', headless: true,
+    expect: { owner: runId, generation: 1 },
+    now: NOW1,
+  });
+  assert.ok(em.ok, `emitHandoff must succeed: ${em.reason}`);
+  // resume_policy stays null (Task 11 not yet applied) — driveHeadless must skip
+
+  const r = driveHeadless({
+    root, now: NOW1,
+    spawnFn: () => { throw new Error('spawnFn must NOT be called for null-policy handoff'); },
+  });
+  assert.equal(r.skipped, true, 'must be skipped');
+  assert.equal(r.reason, 'not-headless-intended');
+});
+
+test('driveHeadless resumes headless-intended handoff (resume_policy=headless)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-auto-'));
+  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  const em = emitHandoff(root, runId, {
+    reason: 'pre-compact', trigger: 'pre-compact', headless: true,
+    expect: { owner: runId, generation: 1 },
+    now: NOW1,
+  });
+  assert.ok(em.ok, `emitHandoff must succeed: ${em.reason}`);
+  // Seed resume_policy='headless' (Task 11 will do this via emitHandoff param)
+  const { data } = readState(root, runId);
+  data.session_chain.lease.resume_policy = 'headless';
+  writeState(root, runId, data);
+
+  let spawnCalled = false;
+  const r = driveHeadless({
+    root, now: NOW1,
+    spawnFn: (entry) => {
+      spawnCalled = true;
+      assert.ok(entry.argv.join(' ').includes('deep-loop-resume'), 'must invoke resume command');
+      return { ok: true, usage: { num_turns: 1, tokens: 10 } };
+    },
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.action, 'resumed');
+  assert.equal(spawnCalled, true, 'spawnFn must be called for headless-policy handoff');
 });
 
 test('cron template calls the fail-closed driver (not raw claude -p)', () => {

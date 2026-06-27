@@ -26,6 +26,13 @@ export function driveHeadless({ root = process.cwd(), spawnFn = headlessSpawn, n
     return { ok: true, action: 'no-pending-handoff' };
   }
 
+  // R5-plan gate: resume ONLY if the PERSISTED resume_policy is 'headless' (Task 10).
+  // 'human' → preserve/needs-human must never be auto-headless.
+  // 'visible' or null/undefined → a visible session's emitted handoff; the cron driver must not degrade it.
+  const resumePolicy = lease.resume_policy;
+  if (resumePolicy === 'human') return { ok: true, skipped: true, reason: 'human-resume-policy' };
+  if (resumePolicy !== 'headless') return { ok: true, skipped: true, reason: 'not-headless-intended' };
+
   const childRunId = lease.handoff_child_run_id;
   const key = lease.handoff_idempotency_key;
   const cs = loop.session_chain.sessions.find(s => s.run_id === childRunId);
