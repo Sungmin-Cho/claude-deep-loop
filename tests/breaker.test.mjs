@@ -58,7 +58,8 @@ test('resetBreaker clears a tripped latch under valid fence; wrong gen throws', 
   recordReviewVerdict(root, runId, 'REQUEST_CHANGES', fence);   // 연속 3 → tripped + status=paused
   assert.equal(checkBreaker(readState(root, runId).data).tripped, true);
   assert.throws(() => resetBreaker(root, runId, { fence: { owner: runId, generation: 9 } }), /LEASE_FENCED/);   // fence 강제
-  const r = resetBreaker(root, runId, { fence });
+  // RUN_PAUSED gate: breaker reset requires intent='breaker-reset' on a paused run (exempt from RUN_PAUSED).
+  const r = resetBreaker(root, runId, { fence: { owner: runId, generation: 1, intent: 'breaker-reset' } });
   assert.equal(r.status, 'running');   // breaker 사유 paused → 복귀
   assert.equal(checkBreaker(readState(root, runId).data).tripped, false);
 });

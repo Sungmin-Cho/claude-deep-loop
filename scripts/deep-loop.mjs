@@ -7,7 +7,7 @@ import { detectPlugins } from './lib/detect.mjs';
 import { matchRecipe } from './lib/recipes.mjs';
 import { json } from './lib/log.mjs';
 import { validate as validateLoop } from './lib/schema.mjs';
-import { readState, writeState, patch as patchState } from './lib/state.mjs';
+import { readState, writeState, patch as patchState, pauseRun } from './lib/state.mjs';
 import { leaseCheck, acquireLease, releaseLease } from './lib/lease.mjs';
 import { newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal } from './lib/workspace.mjs';
 import { newEpisode, recordEpisode } from './lib/episode.mjs';
@@ -211,6 +211,25 @@ const handlers = {
     }
     error(`unknown state verb: ${verb}`); return 2;
   },
+  // pause --owner <id> --generation <n> --reason <r> [--mode preserve|rollback]
+  // Two-mode safety pause: RUN_PAUSED blocks business writes; humans resume/recover manually.
+  // Exit 3 = LEASE_FENCED (wrong owner/generation); 2 = missing required arg; 0 = success.
+  pause: async (a) => {
+    const f = parseFlags(a); const root = rootOf(f); const runId = runIdOf(root, f);
+    if (!runId) { error('MISSING_RUN_ID'); return 2; }
+    const owner = reqStr(f, 'owner'); if (!owner) { error('MISSING_OWNER'); return 2; }
+    const reason = reqStr(f, 'reason'); if (!reason) { error('MISSING_REASON'); return 2; }
+    const generation = intArg(f, 'generation');   // exits 3 on invalid/missing (consistent with other handlers)
+    const mode = (f.mode === 'rollback') ? 'rollback' : 'preserve';
+    try {
+      pauseRun(root, runId, { reason, mode, expect: { owner, generation }, now: Date.now() });
+      json({ ok: true, status: 'paused' }); return 0;
+    } catch (e) {
+      const msg = String(e?.message || e);
+      if (msg.startsWith('LEASE_FENCED')) { error(msg); return 3; }
+      error(msg); return 1;
+    }
+  },
   adapter: async (a) => {
     const [verb, ...rest] = a; const f = parseFlags(rest);
     if (verb !== 'resolve') { error(`unknown adapter verb: ${verb}`); return 2; }
@@ -274,8 +293,8 @@ const handlers = {
     if (verb === 'check') { const { data } = readState(root, runId); json(checkBreaker(data)); return 0; }
     if (verb === 'reset') {
       if (f.confirm !== true && f.confirm !== 'true') { error('BREAKER_RESET_REQUIRES_CONFIRM: pass --confirm (human-only)'); return 2; }
-      requireLease(root, runId, f);   // Codex r2 critical-1: fence 도 필수 (--owner/--generation, exit 3)
-      const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'business' };
+      requireLease(root, runId, f, 'breaker-reset');   // Codex r2 critical-1: fence 필수; breaker-reset exempt from RUN_PAUSED gate
+      const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'breaker-reset' };
       try { json(resetBreaker(root, runId, { fence })); return 0; }
       catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }
     }

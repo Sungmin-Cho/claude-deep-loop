@@ -41,6 +41,8 @@ export function respawn(root, runId, { childRunId, key, handoffRel = '', headles
   if (lease.handoff_phase !== 'emitted' || lease.state !== 'releasing') {
     return { ok: false, outcome: 'not-emitted', reason: `phase=${lease.handoff_phase} state=${lease.state}`, childRunId };
   }
+  // RUN_PAUSED: paused 상태에서는 respawn 금지. respawn 은 leaseCheck 를 경유하지 않으므로 명시 차단.
+  if (loop.status === 'paused') return { ok: false, outcome: 'paused', reason: 'RUN_PAUSED', childRunId };
   const gate = respawnGate(loop, { now });
   if (!gate.ok) {
     // 실패모드 (A): spawn 시도 안 함 → handoff(emitted) 유지 + paused, 사람 수동 resume.

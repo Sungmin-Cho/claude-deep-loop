@@ -57,7 +57,16 @@ export function driveHeadless({ root = process.cwd(), spawnFn = headlessSpawn, n
     // This ensures that a timed-out/unmeasurable resume that leaves child-owned committed state ACTIVE
     // does not silently continue — spec §9 headless fail-closed invariant.
     if (captured && captured.ok === false) {
-      pauseRun(root, runId, 'headless-unmeasurable');
+      // spec §9: fail-closed regardless of lease ownership — must pause even if child took over.
+      // Primary attempt uses initial lease (the "lease we hold"). If LEASE_FENCED (child already
+      // acquired), fall back to unfenced pause: measurement failed → safety overrides fencing.
+      try {
+        pauseRun(root, runId, { reason: 'headless-unmeasurable', mode: 'preserve', expect: { owner: lease.owner_run_id, generation: lease.generation }, now });
+      } catch (pauseErr) {
+        if (!String(pauseErr?.message || pauseErr).includes('LEASE_FENCED')) throw pauseErr;
+        // Child already owns the lease but measurement still failed → unfenced fail-closed pause.
+        pauseRun(root, runId, { reason: 'headless-unmeasurable', mode: 'preserve', now });
+      }
       return { ok: false, action: 'fail-closed', reason: (captured && captured.reason) || rr.reason };
     }
     // respawn blocked before ever calling spawnFn (not-emitted, phase-error, key-mismatch, child-mismatch, fenced-pre-spawn, etc.)

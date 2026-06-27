@@ -216,6 +216,7 @@ export function emitHandoff(root, runId, { reason = 'milestone', trigger = 'mile
       l.session_chain.lease = { ...lease, handoff_phase: 'emitted', state: 'releasing', expires_at: new Date(now + ttlMs).toISOString() };
     }
   }, (l) => {
+    if (l.status === 'paused') throw new Error('RUN_PAUSED: emitHandoff');
     const lease = l.session_chain.lease;
     if (expect && (lease.owner_run_id !== expect.owner || lease.generation !== expect.generation)) throw new Error('LEASE_FENCED: handoff-emit');
     if (lease.handoff_idempotency_key !== res.key) throw new Error('HANDOFF_KEY_MISMATCH');
