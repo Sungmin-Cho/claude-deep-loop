@@ -1,9 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, existsSync, mkdtempSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+
+const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'deep-loop.mjs');
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState } from '../scripts/lib/state.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
@@ -283,4 +286,39 @@ test('github-actions template is a scheduled workflow calling the driver', () =>
   assert.match(s, /cron:/);
   assert.match(s, /drive-headless\.mjs/);
   assert.match(s, /proposal-only|사람 승인|human/i);
+});
+
+// Regression: handoff emit CLI must honor spawn_style='headless' even without --headless flag.
+// Bug: CLI derived resumePolicy from ONLY --headless → autonomous loops stall (not-headless-intended).
+// Fix: symmetric derivation (spawn_style + isHeadlessInvocation), same as precompact-handoff.mjs.
+test('handoff emit derives resume_policy=headless from spawn_style without --headless flag (CLI regression)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-auto-'));
+  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  // Seed spawn_style='headless' so autonomous driver knows this run is headless.
+  const { data } = readState(root, runId);
+  data.autonomy.spawn_style = 'headless';
+  writeState(root, runId, data);
+
+  // Call handoff emit via CLI WITHOUT --headless flag — the fix must derive headless from spawn_style.
+  const out = JSON.parse(execFileSync('node', [
+    CLI, 'handoff', 'emit',
+    '--reason', 'milestone',
+    '--owner', runId, '--generation', '1',
+    '--project-root', root,
+  ], { encoding: 'utf8' }));
+  assert.ok(out.ok, `handoff emit must succeed: ${JSON.stringify(out)}`);
+
+  // resume_policy must be 'headless' (derived from spawn_style, not --headless flag).
+  const d = readState(root, runId).data;
+  assert.equal(d.session_chain.lease.resume_policy, 'headless',
+    'resume_policy must be headless when spawn_style=headless even without --headless CLI flag');
+
+  // driveHeadless on this run must RESUME — not skip with reason='not-headless-intended'.
+  const r = driveHeadless({
+    root,
+    now: NOW1,
+    spawnFn: () => ({ ok: true, usage: { num_turns: 1, tokens: 10 } }),
+  });
+  assert.equal(r.action, 'resumed',
+    `driveHeadless must resume, not skip: ${JSON.stringify(r)}`);
 });
