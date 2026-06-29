@@ -51,7 +51,7 @@ function seedRun() {
 // when there is an emitted handoff with a reserved child.
 // spawnFn now receives an entry {bin, argv, cwd} (not a shell string) — check argv contents.
 test('driveHeadless resumes pending handoff with measured resume command', () => {
-  const { root } = seedRunWithHandoff();
+  const { root, runId, childRunId } = seedRunWithHandoff();
   let capturedEntry = null;
   const r = driveHeadless({
     root,
@@ -62,6 +62,8 @@ test('driveHeadless resumes pending handoff with measured resume command', () =>
       const argStr = entry.argv.join(' ');
       assert.ok(argStr.includes('deep-loop-resume'), 'resume command must reference deep-loop-resume');
       assert.ok(entry.argv.includes('--output-format'), 'must include --output-format flag for measurement');
+      // Simulate child calling /deep-loop-resume → acquires lease (generation+1)
+      acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, now: NOW1 });
       return { ok: true, usage: { num_turns: 2, tokens: 50 } };
     },
   });
@@ -69,15 +71,17 @@ test('driveHeadless resumes pending handoff with measured resume command', () =>
   assert.ok(capturedEntry, 'spawnFn must have been called');
 });
 
-// driveHeadless commits measured usage to budget on success.
-// The injected spawnFn does not actually acquire the lease (no real claude session),
-// so the lease stays releasing with the parent owner/gen → accounting carve-out allows recordCost.
+// driveHeadless commits measured usage to budget on success (child acquired the lease).
 test('driveHeadless commits measured usage to budget on success', () => {
-  const { root, runId } = seedRunWithHandoff();
+  const { root, runId, childRunId } = seedRunWithHandoff();
   const r = driveHeadless({
     root,
     now: NOW1,
-    spawnFn: () => ({ ok: true, usage: { num_turns: 2, tokens: 50 } }),
+    spawnFn: () => {
+      // Simulate child calling /deep-loop-resume → acquires lease (generation+1)
+      acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, now: NOW1 });
+      return { ok: true, usage: { num_turns: 2, tokens: 50 } };
+    },
   });
   assert.equal(r.action, 'resumed');
   assert.equal(r.recorded, true);
@@ -129,19 +133,26 @@ test('driveHeadless returns gate-blocked and pauses run when respawnGate blocks'
   assert.equal(readState(root, runId).data.status, 'paused', 'run status must be paused');
 });
 
-// already-spawned idempotency: second call returns action:'already-spawned', no double cost.
-test('driveHeadless is idempotent — second call returns already-spawned, no double cost', () => {
-  const { root, runId } = seedRunWithHandoff();
+// Idempotency: after the child acquires on the first call, the second call sees no pending handoff.
+// No double cost, spawnFn called exactly once.
+test('driveHeadless is idempotent — second call returns no-pending-handoff after acquisition, no double cost', () => {
+  const { root, runId, childRunId } = seedRunWithHandoff();
   let spawnCount = 0;
-  const spawnFn = () => { spawnCount++; return { ok: true, usage: { num_turns: 3, tokens: 60 } }; };
+  const spawnFn = () => {
+    spawnCount++;
+    // Child acquires the lease (generation+1) so the second call sees no pending handoff.
+    acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, now: NOW1 });
+    return { ok: true, usage: { num_turns: 3, tokens: 60 } };
+  };
 
   const r1 = driveHeadless({ root, now: NOW1, spawnFn });
   assert.equal(r1.action, 'resumed', 'first call must resume');
   assert.equal(r1.recorded, true);
   const spent1 = readState(root, runId).data.budget.spent;
 
+  // After child acquired, handoff_phase is 'acquired' → no pending handoff on second call.
   const r2 = driveHeadless({ root, now: NOW1, spawnFn });
-  assert.equal(r2.action, 'already-spawned', 'second call must be idempotent');
+  assert.equal(r2.action, 'no-pending-handoff', 'second call returns no-pending-handoff after child acquired');
   const spent2 = readState(root, runId).data.budget.spent;
   assert.equal(spent2, spent1, 'budget.spent must not increase on second call');
   assert.equal(spawnCount, 1, 'spawnFn must have been called exactly once');
@@ -161,27 +172,22 @@ test('driveHeadless is a no-op when no current run', () => {
   assert.equal(driveHeadless({ root }).action, 'no-run');
 });
 
-// When a grandchild fully acquires the lease (generation bumped twice), the post-resume
-// fence is the grandchild's lease; accounting under that owner succeeds → recorded=true.
-// (In practice the grandchild would have its own accounting; LEASE_FENCED is the defense.)
-// This test verifies the swallow path: even if we get fenced we return ok:true, recorded:false.
-test('driveHeadless does not throw when post-resume lease fenced (grandchild acquired)', () => {
-  const { root, runId, em } = seedRunWithHandoff();
-  const spawnNow = Date.parse('2026-06-24T00:00:01Z');
+// When the child acquires the lease, driveHeadless confirms acquisition and records cost.
+// ok must be true, action must be 'resumed', recorded must be a boolean (true on normal acquire).
+test('driveHeadless does not throw when post-resume lease fenced (child acquired)', () => {
+  const { root, runId, childRunId } = seedRunWithHandoff();
   const r = driveHeadless({
     root,
     now: NOW1,
     spawnFn: () => {
-      // Simulate: child acquires the lease (generation+1); then emits its own handoff (releasing)
-      // so the grandchild also acquires → generation+2. driveHeadless reads THAT as the fresh fence.
-      // Here we just advance to emitted phase (the parent lease is already releasing/emitted).
-      // The important thing: recorded may be true or false; ok must be true.
+      // Child acquires the lease (generation+1) — leaseMovedForward=true → proceed to record.
+      acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, now: NOW1 });
       return { ok: true, usage: { num_turns: 4, tokens: 100 } };
     },
   });
   assert.equal(r.ok, true);
   assert.equal(r.action, 'resumed');
-  // recorded may be true (accounting carve-out applies) — just ensure no throw
+  // recorded must be a boolean (true when accounting fence matches)
   assert.ok(typeof r.recorded === 'boolean');
 });
 
@@ -256,6 +262,7 @@ test('driveHeadless resumes headless-intended handoff (resume_policy=headless)',
   const { data } = readState(root, runId);
   data.session_chain.lease.resume_policy = 'headless';
   writeState(root, runId, data);
+  const childRunId = readState(root, runId).data.session_chain.lease.handoff_child_run_id;
 
   let spawnCalled = false;
   const r = driveHeadless({
@@ -263,6 +270,8 @@ test('driveHeadless resumes headless-intended handoff (resume_policy=headless)',
     spawnFn: (entry) => {
       spawnCalled = true;
       assert.ok(entry.argv.join(' ').includes('deep-loop-resume'), 'must invoke resume command');
+      // Simulate child calling /deep-loop-resume → acquires lease (generation+1)
+      acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, now: NOW1 });
       return { ok: true, usage: { num_turns: 1, tokens: 10 } };
     },
   });
@@ -314,10 +323,15 @@ test('handoff emit derives resume_policy=headless from spawn_style without --hea
     'resume_policy must be headless when spawn_style=headless even without --headless CLI flag');
 
   // driveHeadless on this run must RESUME — not skip with reason='not-headless-intended'.
+  const childRunId2 = readState(root, runId).data.session_chain.lease.handoff_child_run_id;
   const r = driveHeadless({
     root,
     now: NOW1,
-    spawnFn: () => ({ ok: true, usage: { num_turns: 1, tokens: 10 } }),
+    spawnFn: () => {
+      // Simulate child calling /deep-loop-resume → acquires lease (generation+1)
+      acquireLease(root, runId, { owner: childRunId2, expectGeneration: 1, now: NOW1 });
+      return { ok: true, usage: { num_turns: 1, tokens: 10 } };
+    },
   });
   assert.equal(r.action, 'resumed',
     `driveHeadless must resume, not skip: ${JSON.stringify(r)}`);
@@ -358,4 +372,43 @@ test('driveHeadless: fresh-fence pause when spawn fails, child acquired, run non
   assert.equal(r.ok, false);
   assert.equal(r.action, 'fail-closed', 'non-terminal run must be fail-closed paused');
   assert.equal(readState(root, runId).data.status, 'paused', 'run must be paused with fresh fence');
+});
+
+// ── Codex-R6B: child acquisition verification before reporting success ──────────
+
+// Codex r6 HIGH: headless resume must verify child acquisition before reporting success (fail-closed otherwise).
+// A claude -p that exits 0 with usage but never runs /deep-loop-resume leaves the run in releasing/spawned;
+// driveHeadless must NOT report 'resumed' — must fail-closed with action:'resumed-unconfirmed'.
+test('driveHeadless: resumed-unconfirmed (fail-closed) when spawn ok but child never acquired lease', () => {
+  const { root, runId } = seedRunWithHandoff();
+  const budgetBefore = readState(root, runId).data.budget.spent;
+  const r = driveHeadless({
+    root, now: NOW1,
+    // spawnFn returns ok:true with usage but child NEVER calls /deep-loop-resume → lease stays releasing/spawned
+    spawnFn: () => ({ ok: true, usage: { num_turns: 2, tokens: 50 } }),
+  });
+  assert.equal(r.ok, false, 'must be ok:false when child did not acquire');
+  assert.equal(r.action, 'resumed-unconfirmed', 'action must be resumed-unconfirmed');
+  assert.equal(r.reason, 'child-did-not-acquire', 'reason must be child-did-not-acquire');
+  assert.equal(readState(root, runId).data.budget.spent, budgetBefore,
+    'must NOT record cost when unconfirmed (no proven progress)');
+  assert.equal(readState(root, runId).data.status, 'paused',
+    'must fail-closed pause the run when child did not acquire');
+});
+
+// Codex r6 HIGH happy path: child DID acquire the lease → action:'resumed' + cost recorded.
+test('driveHeadless: resumed with cost when child acquires lease (acquisition proof confirmed)', () => {
+  const { root, runId, childRunId } = seedRunWithHandoff();
+  const r = driveHeadless({
+    root, now: NOW1,
+    spawnFn: () => {
+      // Child calls /deep-loop-resume → acquires the lease (generation+1)
+      acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, now: NOW1 });
+      return { ok: true, usage: { num_turns: 2, tokens: 50 } };
+    },
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.action, 'resumed');
+  assert.equal(r.recorded, true);
+  assert.ok(readState(root, runId).data.budget.spent > 0, 'cost must be recorded on confirmed acquisition');
 });

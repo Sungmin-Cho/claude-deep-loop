@@ -95,12 +95,40 @@ export function driveHeadless({ root = process.cwd(), spawnFn = headlessSpawn, n
   }
 
   // rr.ok && rr.outcome === 'spawned'
-  // POST-resume 소유자로 lease 를 신선하게 재읽어 fence 구성.
-  // 성공한 /deep-loop-resume 은 reserved child lease 를 인수(generation+1)했거나, 추가 handoff → releasing.
-  // accounting carve-out: releasing 상태에서도 intent='accounting' 이면 허용 (leaseCheck spec §9.1).
-  // 자식이 추가 handoff 없이 정상 완료 → lease 는 여전히 releasing(부모 owner/gen) → recorded=true.
-  // 손자(grandchild)가 완전 인수(generation 또 올라감) → LEASE_FENCED → swallow, recorded=false.
-  const freshLease = readState(root, runId).data.session_chain?.lease || {};
+  // Acquisition proof: the child MUST have taken over the lease (owner_run_id moved away from parent) OR
+  // the run reached terminal status. A claude -p that exits 0 without running /deep-loop-resume leaves the
+  // lease in releasing/spawned (parent-owned) → silently stranded. Fail-closed when unconfirmed (spec §9).
+  const freshLoop = readState(root, runId).data;
+  const freshLease = freshLoop.session_chain?.lease || {};
+  const isTerminal = freshLoop.status === 'completed' || freshLoop.status === 'stopped';
+  // Lease moved forward = owner changed away from parent (child acquired, possibly re-emitted or grandchild took over).
+  const leaseMovedForward = freshLease.owner_run_id !== runId;
+
+  if (!leaseMovedForward && !isTerminal) {
+    // Child did not acquire — fail-closed: pause with fresh fence (same pattern as unmeasurable branch).
+    try {
+      pauseRun(root, runId, { reason: 'headless-child-did-not-acquire', mode: 'preserve', expect: { owner: freshLease.owner_run_id, generation: freshLease.generation }, now });
+    } catch (pauseErr) {
+      const pauseMsg = String(pauseErr?.message || pauseErr);
+      if (!pauseMsg.includes('LEASE_FENCED')) throw pauseErr;
+      // LEASE_FENCED: state changed concurrently — re-read for terminal check.
+      const freshLoop2 = readState(root, runId).data;
+      if (freshLoop2.status === 'completed' || freshLoop2.status === 'stopped') {
+        return { ok: false, action: 'fail-closed-terminal', reason: 'child-did-not-acquire' };
+      }
+      const freshLease2 = freshLoop2.session_chain?.lease || {};
+      try {
+        pauseRun(root, runId, { reason: 'headless-child-did-not-acquire', mode: 'preserve', expect: { owner: freshLease2.owner_run_id, generation: freshLease2.generation }, now });
+      } catch (retryErr) {
+        return { ok: false, action: 'fail-closed-raced', reason: 'child-did-not-acquire' };
+      }
+    }
+    return { ok: false, action: 'resumed-unconfirmed', reason: 'child-did-not-acquire' };
+  }
+
+  // Acquisition confirmed — record cost with accounting fence.
+  // accounting carve-out: intent='accounting' allows write even across owner change (leaseCheck spec §9.1).
+  // 손자(grandchild)가 완전 인수(owner 또 바뀜) → LEASE_FENCED → swallow, recorded=false.
   const fence = { owner: freshLease.owner_run_id, generation: freshLease.generation, intent: 'accounting' };
 
   let recorded = false;
