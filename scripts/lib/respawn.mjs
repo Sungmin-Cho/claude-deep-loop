@@ -74,7 +74,7 @@ function classifyReadiness(l, { childRunId, startGeneration }) {
 // cleared, lease rolled back to active/idle (stale TTL released), status='paused' + pause_reason. The reserved
 // child is invalidated (it never ran). In-lock parent fence → if the lease changed (child took over), abort
 // WITHOUT mutating (returns {fenced:true}). No half-commit: event + chain + lease + status are one transaction.
-function rollbackAndPause(root, runId, { childRunId, parentOwner, generation, eventData, pauseReason }) {
+export function rollbackAndPause(root, runId, { childRunId, parentOwner, generation, eventData, pauseReason }) {
   try {
     appendAnchored(root, runId, { type: 'respawn-failed', data: { ...eventData, pause_reason: pauseReason } }, (l) => {
       const child = l.session_chain.sessions.find(s => s.run_id === childRunId);
