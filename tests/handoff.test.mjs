@@ -8,22 +8,195 @@ import { readState, runDir } from '../scripts/lib/state.mjs';
 import { reserveHandoff, releaseLease, acquireLease } from '../scripts/lib/lease.mjs';
 import { emitHandoff, buildLaunchCommand } from '../scripts/lib/handoff.mjs';
 
+// Inject deterministic env so detectTerminal never probes real cmux/osascript.
 function seed() {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
-  const { runId } = initRun(root, { goal: '인증 기능 구현', detected: { 'deep-work': true }, now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { goal: '인증 기능 구현', detected: { 'deep-work': true }, now: new Date('2026-06-24T00:00:00Z'), env: {}, platform: 'linux', run: () => ({ code: 1 }) });
   return { root, runId };
 }
 
 function expect_(runId) { return { owner: runId, generation: 1 }; }
 
-test('buildLaunchCommand produces per-OS commands referencing child run + resume', () => {
-  const c = buildLaunchCommand({ root: '/p', parentRunId: 'PARENT', childRunId: 'CHILD', handoffRel: 'handoffs/x.md', headless: false });
-  assert.match(c.interactive, /claude -n/);
-  assert.match(c.macos, /osascript/);
-  assert.match(c.windows, /wt\.exe/);
-  assert.match(c.tmux, /tmux/);
-  assert.match(c.interactive, /deep-loop-resume/);
+// ── Entry map shape tests ────────────────────────────────────────────────────
+
+test('buildLaunchCommand produces per-OS entry map referencing child run + resume', () => {
+  const c = buildLaunchCommand({ root: '/p', parentRunId: 'PARENT', childRunId: 'CHILD', handoffRel: 'handoffs/x.md' });
+  // interactive has display only
+  assert.match(c.interactive.display, /claude -n/);
+  assert.match(c.interactive.display, /deep-loop-resume/);
+  // terminal-app uses osascript
+  assert.equal(c['terminal-app'].bin, 'osascript');
+  // wt uses wt.exe
+  assert.equal(c.wt.bin, 'wt.exe');
+  // headless uses claude
+  assert.equal(c.headless.bin, 'claude');
 });
+
+test('cmux entry: --command quotes only dynamic args, bin=launcherBin', () => {
+  const c = buildLaunchCommand({ root: '/p a', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'cmux', launcherBin: '/a/cmux' });
+  assert.equal(c.cmux.bin, '/a/cmux');
+  // No launcherSocket → argv starts with new-workspace (no --socket prefix)
+  assert.deepEqual(c.cmux.argv.slice(0, 4), ['new-workspace', '--cwd', '/p a', '--command']);
+  // --command value uses q() on inner and resumePrompt, NOT on root
+  assert.match(c.cmux.argv[4], /^claude -n 'deep-loop-C' '.*deep-loop-resume'$/);
+});
+
+test('cmux entry: --socket prepended when launcherSocket provided', () => {
+  const c = buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'cmux', launcherBin: '/a/cmux', launcherSocket: '/var/run/cmux.sock' });
+  assert.deepEqual(c.cmux.argv.slice(0, 4), ['--socket', '/var/run/cmux.sock', 'new-workspace', '--cwd']);
+});
+
+test('headless entry has no bash; uses cwd=root, bin=claude', () => {
+  const c = buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'none' });
+  assert.equal(c.headless.bin, 'claude');
+  assert.equal(c.headless.cwd, '/p');
+  assert.ok(!c.headless.argv.includes('-c'), 'no bash -c');
+  assert.notEqual(c.headless.bin, 'bash');
+});
+
+test('buildLaunchCommand headless entry requests metric-bearing output', () => {
+  const cmds = buildLaunchCommand({ root: '/r', parentRunId: 'p', childRunId: 'c', handoffRel: 'handoffs/x.md' });
+  assert.ok(cmds.headless.argv.includes('--output-format'), 'headless must request output format');
+  assert.ok(cmds.headless.argv.includes('json'), 'headless must request json format');
+  assert.ok(cmds.headless.argv.includes('--permission-mode'), 'headless must specify permission mode');
+  assert.match(cmds.headless.argv.join(' '), /--output-format json/);
+});
+
+test('iterm2 entry: bin=osascript, argv=["-e", ...]', () => {
+  const c = buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'iterm2' });
+  assert.equal(c.iterm2.bin, 'osascript');
+  assert.equal(c.iterm2.argv[0], '-e');
+  assert.match(c.iterm2.argv[1], /iTerm/);
+  assert.match(c.iterm2.argv[1], /create window/);
+});
+
+test('terminal-app entry: bin=osascript, argv=["-e", ...]', () => {
+  const c = buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'terminal-app' });
+  assert.equal(c['terminal-app'].bin, 'osascript');
+  assert.equal(c['terminal-app'].argv[0], '-e');
+  assert.match(c['terminal-app'].argv[1], /Terminal/);
+  assert.match(c['terminal-app'].argv[1], /do script/);
+});
+
+test('wt entry: bin=wt.exe, argv structure correct', () => {
+  const c = buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'wt' });
+  assert.equal(c.wt.bin, 'wt.exe');
+  assert.equal(c.wt.argv[0], '-d');
+  assert.equal(c.wt.argv[1], '/p');
+  assert.equal(c.wt.argv[2], 'claude');
+  assert.equal(c.wt.argv[3], '-n');
+  assert.equal(c.wt.argv[4], 'deep-loop-C');
+  // resumePrompt is the last element (unquoted, no shell)
+  assert.match(c.wt.argv[5], /deep-loop-resume/);
+});
+
+test('interactive entry has display string only (no bin/argv)', () => {
+  const c = buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md' });
+  assert.ok(typeof c.interactive.display === 'string');
+  assert.equal(c.interactive.bin, undefined);
+  assert.equal(c.interactive.argv, undefined);
+});
+
+// ── Escaping tests ───────────────────────────────────────────────────────────
+
+test('osascript inner cd uses q(root) + escApple backslash-doubling — apostrophe root safe', () => {
+  const c = buildLaunchCommand({ root: "/p's", parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'terminal-app' });
+  assert.equal(c['terminal-app'].bin, 'osascript');
+  // q("/p's") = '/p'\''s' (one literal backslash). escApple DOUBLES it (\ → \\) so AppleScript's
+  // string-literal parser decodes it back to a single backslash and the shell receives the
+  // correct '/p'\''s' → /p's. Without doubling AppleScript would consume the lone backslash →
+  // shell gets '/p''s' → /ps (wrong dir). So the AppleScript must contain the DOUBLED form.
+  assert.ok(
+    c['terminal-app'].argv[1].includes("cd '/p'\\\\''s'"),
+    'escApple must double the backslash q() introduced for the apostrophe',
+  );
+  // The un-doubled (single-backslash) form must NOT appear — that would be the bug.
+  assert.ok(!c['terminal-app'].argv[1].includes("cd '/p'\\''s'"), 'lone-backslash form must not leak through');
+});
+
+test('escApple doubles backslash AND escapes double-quote (root with both)', () => {
+  const c = buildLaunchCommand({ root: '/a\\b"c', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'iterm2' });
+  const script = c.iterm2.argv[1];
+  // root /a\b"c → q() (no apostrophes) = '/a\b"c'. escApple: backslash → \\, then " → \".
+  // So the AppleScript string literal must contain '/a\\b\"c' (doubled backslash + escaped quote).
+  assert.ok(script.includes('/a\\\\b\\"c'), 'escApple must double the backslash then escape the double-quote');
+});
+
+test('powershell uses -EncodedCommand of psq-escaped inner', () => {
+  const c = buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'powershell' });
+  assert.equal(c.powershell.argv[0], '-Command');
+  const cmdStr = c.powershell.argv[1];
+  const b64 = cmdStr.match(/-EncodedCommand','([A-Za-z0-9+/=]+)'/)[1];
+  const decoded = Buffer.from(b64, 'base64').toString('utf16le');
+  assert.match(decoded, /Set-Location -LiteralPath '\/p'/);
+});
+
+test('powershell: root with single-quote is doubled (psq escaping)', () => {
+  const c = buildLaunchCommand({ root: "/p'q", parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'powershell' });
+  const cmdStr = c.powershell.argv[1];
+  const b64 = cmdStr.match(/-EncodedCommand','([A-Za-z0-9+/=]+)'/)[1];
+  const decoded = Buffer.from(b64, 'base64').toString('utf16le');
+  // psq("/p'q") = "/p''q" — single-quote doubled
+  assert.match(decoded, /Set-Location -LiteralPath '\/p''q'/);
+});
+
+test('display strings use q(root) for paths with apostrophes and semicolons', () => {
+  const specialRoot = "/p 's;x";
+  const c = buildLaunchCommand({ root: specialRoot, parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcherBin: 'cmux', launcherSocket: '/sock x' });
+  const display = c.interactive.display;
+  // The raw unescaped root must not appear verbatim — if it did, ';x' would be a separate shell command.
+  assert.ok(!display.includes(specialRoot), 'raw unescaped root must not appear verbatim in interactive display');
+  // POSIX escape form must be present (q() wraps and escapes the apostrophe as '\''')
+  assert.ok(display.includes("'\\''"), 'POSIX quote-escape must appear for apostrophe in root');
+  // headless display also uses q(root)
+  assert.ok(c.headless.display.includes("'\\''"), 'headless display must also use q(root)');
+  // EVERY display must quote root (spec §5 / inv.8) — cmux.display and wt.display too.
+  assert.ok(!c.cmux.display.includes(specialRoot), 'raw unescaped root must not appear verbatim in cmux display');
+  assert.ok(c.cmux.display.includes("'\\''"), 'cmux display must q()-escape the apostrophe in root');
+  assert.ok(!c.wt.display.includes(specialRoot), 'raw unescaped root must not appear verbatim in wt display');
+  assert.ok(c.wt.display.includes("'\\''"), 'wt display must q()-escape the apostrophe in root');
+  // launcherSocket with a space must also be quoted in cmux display (no bare token splitting).
+  assert.ok(!c.cmux.display.includes('--socket /sock x'), 'cmux display must quote the socket');
+});
+
+// ── Validation tests ─────────────────────────────────────────────────────────
+
+test('UNSAFE_SPAWN_ARG: childRunId with illegal chars throws', () => {
+  assert.throws(
+    () => buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'bad$id', handoffRel: 'handoffs/x.md' }),
+    /UNSAFE_SPAWN_ARG/
+  );
+});
+
+test('UNSAFE_SPAWN_ARG: parentRunId with illegal chars throws', () => {
+  assert.throws(
+    () => buildLaunchCommand({ root: '/p', parentRunId: 'P;evil', childRunId: 'C', handoffRel: 'handoffs/x.md' }),
+    /UNSAFE_SPAWN_ARG/
+  );
+});
+
+test('UNSAFE_SPAWN_ARG: parentRunId with shell-injection chars throws', () => {
+  assert.throws(
+    () => buildLaunchCommand({ root: '/p', parentRunId: 'P$(inject)', childRunId: 'C', handoffRel: 'handoffs/x.md' }),
+    /UNSAFE_SPAWN_ARG/
+  );
+});
+
+test('UNSAFE_SPAWN_ARG: handoffRel with path traversal throws', () => {
+  assert.throws(
+    () => buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/../evil.md' }),
+    /UNSAFE_SPAWN_ARG/
+  );
+});
+
+test('UNSAFE_SPAWN_ARG: handoffRel not starting with handoffs/ throws', () => {
+  assert.throws(
+    () => buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'other/x.md' }),
+    /UNSAFE_SPAWN_ARG/
+  );
+});
+
+// ── emitHandoff integration tests (unchanged semantics) ─────────────────────
 
 test('emitHandoff writes md + compaction-state(M3) + launch-command, chains session, sets releasing', () => {
   const { root, runId } = seed();
@@ -73,9 +246,10 @@ test('emitHandoff same-trigger re-entry is idempotent (one child, no duplicate s
 
 // launch 명령이 **부모** run 경로의 handoff 파일을 가리키는지 (Codex r1 🔴3)
 test('launch command references parent run dir handoff path', () => {
-  const c = buildLaunchCommand({ root: '/p', parentRunId: 'PARENT', childRunId: 'CHILD', handoffRel: 'handoffs/x.md', headless: false });
-  assert.match(c.interactive, /\.deep-loop\/runs\/PARENT\/handoffs\/x\.md/);
-  assert.match(c.interactive, /deep-loop-CHILD/);
+  const c = buildLaunchCommand({ root: '/p', parentRunId: 'PARENT', childRunId: 'CHILD', handoffRel: 'handoffs/x.md' });
+  assert.match(c.interactive.display, /\.deep-loop\/runs\/PARENT\/handoffs\/x\.md/);
+  assert.match(c.headless.display, /\.deep-loop\/runs\/PARENT\/handoffs\/x\.md/);
+  assert.match(c.interactive.display, /deep-loop-CHILD/);
 });
 
 // Fix 3: emitHandoff with stale expect is fenced at reserve step; correct expect succeeds
@@ -137,8 +311,21 @@ test('emitHandoff throws FENCE_REQUIRED when called without expect', () => {
   );
 });
 
-test('buildLaunchCommand headless requests metric-bearing output', () => {
-  const cmds = buildLaunchCommand({ root: '/r', parentRunId: 'p', childRunId: 'c', handoffRel: 'handoffs/x.md', headless: true });
-  assert.match(cmds.headless, /--output-format json/);
-  assert.match(cmds.interactive, /--output-format json/);   // headless=true 면 interactive 필드도 headless 명령
+// Task 11: resumePolicy wired to lease.resume_policy in same appendAnchored txn
+test('emitHandoff with resumePolicy headless → lease.resume_policy headless', () => {
+  const { root, runId } = seed();
+  emitHandoff(root, runId, { trigger: 'milestone', now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId), resumePolicy: 'headless' });
+  assert.equal(readState(root, runId).data.session_chain.lease.resume_policy, 'headless');
+});
+
+test('emitHandoff with resumePolicy visible → lease.resume_policy visible', () => {
+  const { root, runId } = seed();
+  emitHandoff(root, runId, { trigger: 'milestone', now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId), resumePolicy: 'visible' });
+  assert.equal(readState(root, runId).data.session_chain.lease.resume_policy, 'visible');
+});
+
+test('emitHandoff with no resumePolicy → lease.resume_policy defaults to visible', () => {
+  const { root, runId } = seed();
+  emitHandoff(root, runId, { trigger: 'milestone', now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId) });
+  assert.equal(readState(root, runId).data.session_chain.lease.resume_policy, 'visible');
 });

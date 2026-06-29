@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { contentHash, atomicWrite } from './envelope.mjs';
 import { validate } from './schema.mjs';
 import { leaseCheck } from './lease.mjs';
+import { appendAnchored } from './integrity.mjs';
 
 // Codex impl r12 🔴: runId must be a single safe path segment — a '../' (or slash) runId would make runDir
 // resolve outside the project root, and ALL state/event/episode/handoff writers build paths from runDir.
@@ -103,15 +104,47 @@ export function withLock(root, runId, fn, { ttlMs = 30000, retries = 100, backof
   try { return fn(); } finally { try { rmdirSync(lock); } catch {} }
 }
 
-// Fail-closed safety pause (spec §9 / §1.2): set status=paused atomically under the lock.
-// Used when measured headless usage cannot be enforced after a resume takeover. Safety stop, not a business mutation.
-export function pauseRun(root, runId, reason) {
-  return withLock(root, runId, () => {
-    const { data } = readState(root, runId);
-    if (data.status !== 'paused') {
-      data.status = 'paused';
-      data.pause_reason = reason || 'fail-closed';
-      writeState(root, runId, data);
+// Two-mode safety pause (spec §9 / §1.2). Uses appendAnchored for event-log consistency.
+// mode='preserve' (default): sets status=paused, keeps lease.state/handoff_child_run_id intact,
+//   sets lease.resume_policy='human' + lease.expires_at=null.
+// mode='rollback': additionally resets lease to active/idle and clears all handoff fields.
+// preCheck: owner/generation fence. Does NOT apply releasing carve-out (pause is privileged).
+export function pauseRun(root, runId, { reason, mode = 'preserve', expect, now = Date.now() } = {}) {
+  return appendAnchored(root, runId, { type: 'run-paused', data: { reason: reason || 'fail-closed', mode } },
+    (loop) => {
+      loop.status = 'paused';
+      loop.pause_reason = reason || 'fail-closed';
+      if (mode === 'rollback') {
+        loop.session_chain.lease = {
+          ...loop.session_chain.lease,
+          state: 'active',
+          handoff_phase: 'idle',
+          handoff_child_run_id: null,
+          handoff_idempotency_key: null,
+          expires_at: null,
+        };
+      } else {
+        // preserve: keep lease.state + handoff_child_run_id intact; set resume_policy + expires_at
+        loop.session_chain.lease = {
+          ...loop.session_chain.lease,
+          resume_policy: 'human',
+          expires_at: null,
+        };
+      }
+    },
+    (loop) => {
+      if (expect) {
+        const lease = loop.session_chain?.lease;
+        if (!lease || lease.owner_run_id !== expect.owner || lease.generation !== expect.generation) {
+          throw new Error('LEASE_FENCED: pauseRun wrong generation');
+        }
+      }
+      // Terminal guard (spec §1.2 / acquireLease mirror): completed/stopped runs must never be demoted to paused.
+      // Checked after fence so that LEASE_FENCED fires first when both conditions hold —
+      // drive-headless re-reads state to detect terminal after catching LEASE_FENCED.
+      if (loop.status === 'completed' || loop.status === 'stopped') {
+        throw new Error('RUN_TERMINAL: pauseRun');
+      }
     }
-  });
+  );
 }

@@ -7,19 +7,22 @@ import { detectPlugins } from './lib/detect.mjs';
 import { matchRecipe } from './lib/recipes.mjs';
 import { json } from './lib/log.mjs';
 import { validate as validateLoop } from './lib/schema.mjs';
-import { readState, writeState, patch as patchState } from './lib/state.mjs';
+import { readState, writeState, patch as patchState, pauseRun } from './lib/state.mjs';
 import { leaseCheck, acquireLease, releaseLease } from './lib/lease.mjs';
 import { newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal } from './lib/workspace.mjs';
 import { newEpisode, recordEpisode } from './lib/episode.mjs';
 import { dispatchReview, recordReviewOutcome } from './lib/review.mjs';
 import { nextAction } from './lib/next-action.mjs';
 import { emitHandoff } from './lib/handoff.mjs';
-import { respawn, respawnGate } from './lib/respawn.mjs';
+import { respawn, respawnGate, resolveSpawnMode, isHeadlessInvocation } from './lib/respawn.mjs';
+import { headlessSpawn, visibleSpawn } from './lib/spawn-driver.mjs';
 import { resolveAdapter, guardTierProtocol, loadProtocol } from './lib/adapters.mjs';
 import { recordCost, checkBudget } from './lib/budget.mjs';
 import { computeDebt, ack as ackComprehension } from './lib/comprehension.mjs';
 import { checkBreaker, resetBreaker } from './lib/breaker.mjs';
 import { finishRun } from './lib/finish.mjs';
+import { detectAndPersist } from './lib/detect-terminal.mjs';
+import { recoverRun } from './lib/recover.mjs';
 
 function parseFlags(argv) {
   const f = {}; for (let i = 0; i < argv.length; i++) { if (argv[i].startsWith('--')) { const k = argv[i].slice(2); const v = argv[i + 1]?.startsWith('--') || argv[i + 1] === undefined ? true : argv[++i]; f[k] = v; } } return f;
@@ -179,17 +182,41 @@ const handlers = {
   },
   handoff: async (a) => {
     const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
-    requireLease(root, runId, f, 'lease');
+    const data = requireLease(root, runId, f, 'lease');
     const expect = { owner: f.owner, generation: intArg(f, 'generation') };
-    if (verb === 'emit') { json(emitHandoff(root, runId, { reason: f.reason, trigger: f.trigger || f.reason || 'milestone', headless: f.headless === true || f.headless === 'true', expect })); return 0; }
+    if (verb === 'emit') { const h = f.headless === true || f.headless === 'true' || data.autonomy?.spawn_style === 'headless' || isHeadlessInvocation(process.env); json(emitHandoff(root, runId, { reason: f.reason, trigger: f.trigger || f.reason || 'milestone', headless: h, resumePolicy: h ? 'headless' : 'visible', expect })); return 0; }
     error(`unknown handoff verb: ${verb}`); return 2;
   },
+  // respawn --owner <id> --generation <n> [--attended] [--headless]
+  // Resolves the spawn mode FIRST (R2-plan), then injects the matching spawnFn (headless→headlessSpawn measured,
+  // visible launcher→visibleSpawn best-effort) — a headless entry must NEVER run through visibleSpawn. The fence
+  // (--owner/--generation) is required (exit 3) and re-checked in-lock by respawn's appendAnchored preChecks (R11-II).
   respawn: async (a) => {
     const f = parseFlags(a); const root = rootOf(f); const runId = runIdOf(root, f);
+    if (!runId) { error('MISSING_RUN_ID'); return 2; }
     const { data } = readState(root, runId);
     if (f['dry-run']) { json(respawnGate(data)); return 0; }
-    // CLI는 spawnFn 미주입 → 실제 spawn은 드라이버(Plan 3). 게이트만 평가.
-    json({ spawn: 'requires-driver', reason: 'actual session spawn is provided by a Plan-3 headless driver (spawnFn); CLI evaluates the gate only', gate: respawnGate(data) }); return 0;
+    // Require + fence --owner/--generation (exit 3). intent 'lease' so a releasing handoff lease is not rejected.
+    requireLease(root, runId, f, 'lease');
+    const headless = f.headless === true || f.headless === 'true';
+    const attended = f.attended === true || f.attended === 'true';
+    const mode = resolveSpawnMode(data, { headless, attended, env: process.env });
+    const spawnFn = mode === 'headless' ? headlessSpawn : visibleSpawn;
+    const lease = data.session_chain?.lease || {};
+    const childRunId = lease.handoff_child_run_id;
+    const key = lease.handoff_idempotency_key;
+    const cs = (data.session_chain?.sessions || []).find(s => s.run_id === childRunId);
+    const handoffRel = cs && cs.handoff_rel;
+    const pollLease = () => readState(root, runId).data.session_chain.lease;
+    try {
+      const r = respawn(root, runId, { childRunId, key, handoffRel, headless, attended, now: parseNow(f), spawnFn, pollLease, env: process.env });
+      json({ mode, ...r });
+      return r.ok ? 0 : (r.outcome === 'fenced' ? 3 : 0);
+    } catch (e) {
+      const msg = String(e?.message || e);
+      if (msg.startsWith('LEASE_FENCED') || msg.startsWith('RESPAWN_FENCED')) { error(msg); return 3; }
+      error(msg); return 1;
+    }
   },
   state: async (a) => {
     const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
@@ -209,6 +236,45 @@ const handlers = {
       json({ ok: true }); return 0;
     }
     error(`unknown state verb: ${verb}`); return 2;
+  },
+  // pause --owner <id> --generation <n> --reason <r> [--mode preserve|rollback]
+  // Two-mode safety pause: RUN_PAUSED blocks business writes; humans resume/recover manually.
+  // Exit 3 = LEASE_FENCED (wrong owner/generation); 2 = missing required arg; 0 = success.
+  pause: async (a) => {
+    const f = parseFlags(a); const root = rootOf(f); const runId = runIdOf(root, f);
+    if (!runId) { error('MISSING_RUN_ID'); return 2; }
+    const owner = reqStr(f, 'owner'); if (!owner) { error('MISSING_OWNER'); return 2; }
+    const reason = reqStr(f, 'reason'); if (!reason) { error('MISSING_REASON'); return 2; }
+    const generation = intArg(f, 'generation');   // exits 3 on invalid/missing (consistent with other handlers)
+    const mode = (f.mode === 'rollback') ? 'rollback' : 'preserve';
+    try {
+      pauseRun(root, runId, { reason, mode, expect: { owner, generation }, now: Date.now() });
+      json({ ok: true, status: 'paused' }); return 0;
+    } catch (e) {
+      const msg = String(e?.message || e);
+      if (msg.startsWith('LEASE_FENCED')) { error(msg); return 3; }
+      error(msg); return 1;
+    }
+  },
+  // recover --owner <id> --generation <n> --confirm
+  // Human-approved escape hatch (mirrors breaker reset --confirm): unstick-for-resume, NOT terminate.
+  // Clears stale handoff state so a fresh acquireLease (Task 8) can take over and unpause.
+  // Exit 3 = LEASE_FENCED (wrong owner/generation); 2 = missing --confirm or usage; 0 = success.
+  recover: async (a) => {
+    const f = parseFlags(a); const root = rootOf(f); const runId = runIdOf(root, f);
+    if (!runId) { error('MISSING_RUN_ID'); return 2; }
+    if (f.confirm !== true && f.confirm !== 'true') { error('CONFIRM_REQUIRED: pass --confirm (human-only)'); return 2; }
+    const owner = reqStr(f, 'owner'); if (!owner) { error('MISSING_OWNER'); return 2; }
+    const generation = intArg(f, 'generation');   // exits 3 on invalid/missing
+    try {
+      recoverRun(root, runId, { expect: { owner, generation }, confirm: true, now: parseNow(f) });
+      json({ ok: true, status: 'paused', pause_reason: 'recovered:awaiting-resume' }); return 0;
+    } catch (e) {
+      const msg = String(e?.message || e);
+      if (msg.startsWith('LEASE_FENCED')) { error(msg); return 3; }
+      if (msg.startsWith('NOT_RECOVERABLE') || msg.startsWith('CONFIRM_REQUIRED')) { error(msg); return 2; }
+      error(msg); return 1;
+    }
   },
   adapter: async (a) => {
     const [verb, ...rest] = a; const f = parseFlags(rest);
@@ -273,12 +339,26 @@ const handlers = {
     if (verb === 'check') { const { data } = readState(root, runId); json(checkBreaker(data)); return 0; }
     if (verb === 'reset') {
       if (f.confirm !== true && f.confirm !== 'true') { error('BREAKER_RESET_REQUIRES_CONFIRM: pass --confirm (human-only)'); return 2; }
-      requireLease(root, runId, f);   // Codex r2 critical-1: fence 도 필수 (--owner/--generation, exit 3)
-      const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'business' };
+      requireLease(root, runId, f, 'breaker-reset');   // Codex r2 critical-1: fence 필수; breaker-reset exempt from RUN_PAUSED gate
+      const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'breaker-reset' };
       try { json(resetBreaker(root, runId, { fence })); return 0; }
       catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }
     }
     error(`unknown breaker verb: ${verb}`); return 2;
+  },
+  'detect-terminal': async (a) => {
+    const f = parseFlags(a); const root = rootOf(f); const runId = runIdOf(root, f);
+    if (!runId) { error('MISSING_RUN_ID'); return 2; }
+    // intent:'lease' so a releasing lease is not rejected (releasing-safe R11-HH)
+    requireLease(root, runId, f, 'lease');
+    const now = new Date(parseNow(f)).toISOString();
+    try {
+      const d = detectAndPersist(root, runId, { owner: f.owner, generation: intArg(f, 'generation'), now });
+      json(d); return 0;
+    } catch (e) {
+      if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; }
+      error(e.message); return 1;
+    }
   },
   finish: async (a) => {
     const f = parseFlags(a); const root = rootOf(f); const runId = runIdOf(root, f);

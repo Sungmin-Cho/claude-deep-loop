@@ -1,8 +1,8 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { readState, writeState, withLock } from '../lib/state.mjs';
+import { readState } from '../lib/state.mjs';
 import { emitHandoff } from '../lib/handoff.mjs';
-import { respawnGate } from '../lib/respawn.mjs';
+import { respawnGate, isHeadlessInvocation, rollbackAndPause } from '../lib/respawn.mjs';
 
 /**
  * PreCompact emits a clean handoff only; measured fail-closed resumption is the cron `driveHeadless`
@@ -20,15 +20,16 @@ function currentRunId(root) {
   return existsSync(p) ? readFileSync(p, 'utf8').trim() : null;
 }
 
-export async function runPreCompactHandoff(input = {}, { root = process.cwd(), now = Date.now() } = {}) {
+export async function runPreCompactHandoff(input = {}, { root = process.cwd(), now = Date.now(), env = process.env } = {}) {
   const runId = currentRunId(root);
   if (!runId) return { ok: true, action: 'no-run' };
   let loop;
   try { ({ data: loop } = readState(root, runId)); } catch (e) { return { ok: false, action: 'error', reason: String(e.message || e) }; }
   const lease = loop.session_chain?.lease || {};
   const expect = { owner: lease.owner_run_id, generation: lease.generation };
-  const headless = input.unattended === true || loop.autonomy?.spawn_style === 'headless' || input.tty === false;
-  const em = emitHandoff(root, runId, { reason: 'pre-compact', trigger: 'pre-compact', headless, expect });
+  const headless = input.unattended === true || loop.autonomy?.spawn_style === 'headless' || isHeadlessInvocation(env);
+  const resumePolicy = headless ? 'headless' : 'visible';
+  const em = emitHandoff(root, runId, { reason: 'pre-compact', trigger: 'pre-compact', headless, resumePolicy, expect });
   if (!em.ok) return { ok: false, action: 'fenced', reason: em.reason };
 
   if (headless && loop.autonomy?.auto_handoff) {
@@ -37,24 +38,22 @@ export async function runPreCompactHandoff(input = {}, { root = process.cwd(), n
     const fresh = readState(root, runId).data;
     const gate = respawnGate(fresh, { now });
     if (!gate.ok) {
-      // Fence-before-write: only set paused if the lease is still ours (mirroring respawn's fence-before-write).
-      const parentOwner = expect.owner;
-      const generation = expect.generation;
-      let fenced = false;
-      withLock(root, runId, () => {
-        const { data } = readState(root, runId);
-        const l = data.session_chain.lease;
-        if (l.owner_run_id !== parentOwner || l.generation !== generation) { fenced = true; return; }
-        data.status = 'paused';
-        writeState(root, runId, data);
+      // R12-LL fix: gate-blocked must ROLLBACK (invalidate reserved child), not merely set status=paused.
+      // A status-only pause leaves handoff_child_run_id intact, allowing a human to bypass the gate via
+      // /deep-loop-resume → acquireLease(reserved child). Use rollbackAndPause (same as respawn's path):
+      // child.outcome='failed_launch', superseded_by cleared, lease→active/idle, status='paused'.
+      const res = rollbackAndPause(root, runId, {
+        childRunId: em.childRunId, parentOwner: expect.owner, generation: expect.generation,
+        eventData: { child_run_id: em.childRunId, gate: gate.reason, trigger: 'pre-compact' },
+        pauseReason: `gate:${gate.reason}`,
       });
-      if (fenced) return { ok: false, action: 'fenced', reason: 'lease-changed-before-pause', childRunId: em.childRunId };
-      return { ok: true, action: 'gate-blocked-paused', childRunId: em.childRunId };
+      if (res.fenced) return { ok: false, action: 'fenced', reason: 'lease-changed-before-pause', childRunId: em.childRunId, headless };
+      return { ok: true, action: 'gate-blocked-paused', childRunId: em.childRunId, headless };
     }
     // Gate open: handoff emitted with lease=releasing; measured cron driveHeadless will resume via round-2 handshake.
-    return { ok: true, action: 'emitted', childRunId: em.childRunId };
+    return { ok: true, action: 'emitted', childRunId: em.childRunId, headless };
   }
-  return { ok: true, action: 'emitted', childRunId: em.childRunId };   // interactive → human uses terminal/launch-command.txt
+  return { ok: true, action: 'emitted', childRunId: em.childRunId, headless };   // interactive → human uses terminal/launch-command.txt
 }
 
 // CLI 진입 — best-effort, 절대 compaction 차단 안 함.

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { readState, writeState } from '../scripts/lib/state.mjs';
+import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { runPreCompactHandoff } from '../scripts/hooks-impl/precompact-handoff.mjs';
 const PROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -63,6 +63,30 @@ test('unattended with sessions.length == max_sessions before emit → gate-block
   assert.equal(readState(root, runId).data.status, 'paused');
 });
 
+// Task 11: tty===false alone (no unattended, spawn_style visible) → headless false (uses isHeadlessInvocation, not tty flag)
+test('tty===false alone with empty env → headless false (isHeadlessInvocation replaces tty check)', async () => {
+  const { root } = seed();
+  const r = await runPreCompactHandoff({ tty: false }, { root, now: Date.parse('2026-06-24T00:01:00Z'), env: {} });
+  assert.equal(r.action, 'emitted');
+  assert.equal(r.headless, false, 'tty===false alone must NOT trigger headless; only env signals do');
+});
+
+// Task 11: explicit unattended:true → headless true
+test('explicit unattended:true → headless true (input.unattended wins)', async () => {
+  const { root } = seed();
+  const r = await runPreCompactHandoff({ unattended: true }, { root, now: Date.parse('2026-06-24T00:01:00Z'), env: {} });
+  assert.equal(r.action, 'emitted');
+  assert.equal(r.headless, true);
+});
+
+// Task 11: spawn_style visible + no input.unattended + env DEEP_LOOP_UNATTENDED=1 → headless true
+test('env DEEP_LOOP_UNATTENDED=1 with spawn_style visible → headless true (isHeadlessInvocation)', async () => {
+  const { root } = seed(); // default spawn_style='visible'
+  const r = await runPreCompactHandoff({}, { root, now: Date.parse('2026-06-24T00:01:00Z'), env: { DEEP_LOOP_UNATTENDED: '1' } });
+  assert.equal(r.action, 'emitted');
+  assert.equal(r.headless, true);
+});
+
 test('hooks.json declares PreCompact → precompact-handoff.sh', () => {
   const h = JSON.parse(rf(join(PROOT, 'hooks', 'hooks.json'), 'utf8'));
   assert.ok(h.hooks.PreCompact, 'PreCompact event present');
@@ -78,3 +102,55 @@ test('precompact-handoff.sh is Bash 3.2 safe', () => {
   assert.ok(!/\$\{[A-Za-z_]+,,\}/.test(sh), 'no ${var,,} lowercasing');
   assert.match(sh, /precompact-handoff\.mjs/);
 });
+
+// R12-LL regression: gate-blocked precompact MUST rollback the reserved child (invalidate it),
+// NOT merely set status=paused while leaving handoff_child_run_id intact (which would allow a
+// human to bypass the gate via /deep-loop-resume → acquireLease(reserved child)).
+test('gate-blocked precompact ROLLBACK: reserved child invalidated, respawn-failed event appended (R12-LL)', async () => {
+  const { root, runId } = seed();
+  // Trip the circuit breaker so respawnGate returns { ok: false, blocked_by: ['breaker'] }.
+  const { data } = readState(root, runId);
+  data.circuit_breaker.tripped = true;
+  writeState(root, runId, data);
+
+  const r = await runPreCompactHandoff({ unattended: true }, { root, now: Date.parse('2026-06-24T00:01:00Z'), env: {} });
+  assert.equal(r.action, 'gate-blocked-paused', `expected gate-blocked-paused, got ${r.action}`);
+  assert.ok(r.childRunId, 'childRunId must be present in response');
+
+  const { data: loop } = readState(root, runId);
+  const lease = loop.session_chain.lease;
+
+  // 1. Reserved child must be invalidated — NOT resumable via acquireLease.
+  assert.equal(lease.handoff_child_run_id, null, 'lease.handoff_child_run_id must be null after rollback');
+
+  // 2. Child session outcome must be failed_launch (excluded from max_sessions).
+  const childSession = loop.session_chain.sessions.find(s => s.run_id === r.childRunId);
+  assert.ok(childSession, 'child session must exist in sessions array');
+  assert.equal(childSession.outcome, 'failed_launch', 'child.outcome must be failed_launch');
+
+  // 3. Parent session superseded_by must be cleared.
+  const parentSession = loop.session_chain.sessions.find(s => s.run_id === runId);
+  assert.ok(parentSession, 'parent session must exist');
+  assert.equal(parentSession.superseded_by, null, 'parent.superseded_by must be null after rollback');
+
+  // 4. Lease fully rolled back to active/idle state.
+  assert.equal(lease.state, 'active', 'lease.state must be active');
+  assert.equal(lease.handoff_phase, 'idle', 'lease.handoff_phase must be idle');
+  assert.equal(lease.expires_at, null, 'lease.expires_at must be null');
+  assert.equal(lease.resume_policy, null, 'lease.resume_policy must be null');
+
+  // 5. Run paused with gate: prefixed reason.
+  assert.equal(loop.status, 'paused', 'status must be paused');
+  assert.match(loop.pause_reason, /^gate:/, 'pause_reason must start with gate:');
+
+  // 6. Event log must contain a respawn-failed event (ONE appendAnchored transaction).
+  const logPath = join(runDir(root, runId), 'event-log.jsonl');
+  const events = parseLog(logPath);
+  const respawnFailed = events.find(e => e.type === 'respawn-failed');
+  assert.ok(respawnFailed, 'event log must contain a respawn-failed event');
+});
+
+function parseLog(path) {
+  try { return rf(path, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)); }
+  catch { return []; }
+}

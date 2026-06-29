@@ -165,3 +165,68 @@ test('all skills + workflow references fence every mutating CLI line', () => {
     assert.ok(mutatingFenced(readFileSync(f, 'utf8')), `${f} has an unfenced mutating CLI invocation`);
   }
 });
+
+// Task 12: visible respawn decision flow — string-presence checks (read+CLI only, 2-plane boundary).
+test('continue + handoff Decide: detect-terminal subcommand documented', () => {
+  for (const dir of ['deep-loop-continue', 'deep-loop-handoff']) {
+    const src = readFileSync(skillPath(dir), 'utf8');
+    assert.ok(src.includes('detect-terminal'),
+      `${dir} Decide step must reference the detect-terminal subcommand`);
+  }
+});
+
+test('continue + handoff Decide: respawn --attended documented', () => {
+  for (const dir of ['deep-loop-continue', 'deep-loop-handoff']) {
+    const src = readFileSync(skillPath(dir), 'utf8');
+    assert.ok(src.includes('respawn'),
+      `${dir} must reference the respawn subcommand`);
+    assert.ok(src.includes('--attended'),
+      `${dir} must reference the --attended flag for visible-session respawn`);
+  }
+});
+
+test('continue + handoff Decide: fenced pause --mode preserve (R6-plan: --owner+--generation mandatory)', () => {
+  for (const dir of ['deep-loop-continue', 'deep-loop-handoff']) {
+    const src = readFileSync(skillPath(dir), 'utf8');
+    assert.ok(src.includes('--mode preserve'),
+      `${dir} must document pause --mode preserve for the legacy-interactive branch`);
+    // R6-plan: handoff emit already moved lease to 'releasing'; unfenced pause exits 3 → stale takeover.
+    // Assert the --mode preserve guidance carries BOTH --owner and --generation on the same line.
+    const hasFencedPause = src.split('\n').some(
+      l => l.includes('--mode preserve') && l.includes('--owner') && l.includes('--generation')
+    );
+    assert.ok(hasFencedPause,
+      `${dir} pause --mode preserve must carry --owner and --generation on the same line (R6-plan)`);
+  }
+});
+
+test('resume: recover --confirm documented as human escape hatch', () => {
+  const src = readFileSync(skillPath('deep-loop-resume'), 'utf8');
+  assert.ok(src.includes('recover --confirm'),
+    'deep-loop-resume must document recover --confirm as the escape hatch for stuck preserve-paused/gate-blocked runs');
+});
+
+// Codex r6 CRITICAL: no-launcher else-branch must always route through respawn (gate-first) before preserve-pause.
+// respawn returns gate-blocked (rollback+paused, skill must NOT re-pause) or no-launcher (gate passed, then preserve).
+test('continue + handoff no-launcher else-branch: respawn before preserve-pause, gate-blocked/no-launcher branching', () => {
+  for (const dir of ['deep-loop-continue', 'deep-loop-handoff']) {
+    const src = readFileSync(skillPath(dir), 'utf8');
+    // Must document gate-blocked outcome (respawn already paused — skill must NOT pause again).
+    assert.ok(src.includes('gate-blocked'),
+      `${dir}: no-launcher branch must handle respawn gate-blocked outcome`);
+    // gate-blocked recovery: recover --confirm (documented escape hatch), not re-pause.
+    assert.ok(src.includes('recover --confirm'),
+      `${dir}: gate-blocked path must document recover --confirm (not re-pause)`);
+    // Must document no-launcher outcome (gate passed but no auto-launcher — then preserve-pause).
+    assert.ok(src.includes('no-launcher'),
+      `${dir}: must reference no-launcher outcome from respawn`);
+    // preserve-pause must be conditioned on no-launcher outcome:
+    // 'no-launcher' substring must appear BEFORE '--mode preserve' in the text.
+    const noLauncherIdx = src.lastIndexOf('no-launcher');
+    const preserveIdx = src.lastIndexOf('--mode preserve');
+    assert.ok(noLauncherIdx !== -1, `${dir}: must reference no-launcher outcome`);
+    assert.ok(preserveIdx !== -1, `${dir}: must reference --mode preserve`);
+    assert.ok(noLauncherIdx < preserveIdx,
+      `${dir}: no-launcher outcome must appear before --mode preserve (preserve-pause conditioned on no-launcher, not before respawn gate)`);
+  }
+});

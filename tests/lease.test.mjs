@@ -168,3 +168,128 @@ test('advanceHandoffPhase: stale expect fences before key/phase checks; correct 
   assert.equal(r2.ok, true);
   assert.equal(readState(root, runId).data.session_chain.lease.state, 'releasing');
 });
+
+// ── Task 8: preserve-resume unpause + terminal guard ─────────────────────────
+
+// Helper: seed a preserve-paused run (status=paused, lease.state=releasing, reserved child)
+function seedPreservePaused(root, runId, childRunId = 'C') {
+  const { data } = readState(root, runId);
+  data.status = 'paused';
+  data.pause_reason = 'preserve-paused-test';
+  data.session_chain.lease = {
+    ...data.session_chain.lease,
+    state: 'releasing',
+    handoff_child_run_id: childRunId,
+    handoff_phase: 'spawned',
+    resume_policy: 'human',
+    expires_at: null,
+  };
+  writeState(root, runId, data);
+}
+
+test('reserved child acquiring a preserve-paused run unpauses it (R14-RR)', () => {
+  const { root, runId } = seed();
+  seedPreservePaused(root, runId, 'C');
+  const now0 = Date.parse('2026-06-24T12:00:00Z');
+
+  const r = acquireLease(root, runId, { owner: 'C', expectGeneration: 1, now: now0 });
+  assert.equal(r.ok, true);
+  assert.equal(r.generation, 2);
+  const { data } = readState(root, runId);
+  assert.equal(data.status, 'running');
+  assert.equal(data.pause_reason, null);
+  assert.equal(data.session_chain.lease.resume_policy, null);
+  assert.equal(data.session_chain.lease.generation, 2);
+});
+
+test('non-reserved owner still cannot acquire preserve-paused run (expires_at=null)', () => {
+  const { root, runId } = seed();
+  seedPreservePaused(root, runId, 'C');
+  // expires_at=null → expired=false → only reserved child 'C' is takeable; 'OTHER' is not
+  const r = acquireLease(root, runId, { owner: 'OTHER', expectGeneration: 1, now: Date.parse('2099-01-01T00:00:00Z') });
+  assert.equal(r.ok, false);
+  // status must remain paused (no spurious change)
+  assert.equal(readState(root, runId).data.status, 'paused');
+});
+
+test('recover round-trip: released-paused run acquired by fresh owner unpauses (Task 7 closed)', () => {
+  // Simulates the state left by recoverRun: status=paused, lease.state=released,
+  // handoff_child_run_id=null, pause_reason='recovered:awaiting-resume'.
+  // Task 8 acquireLease must clear the pause.
+  const { root, runId } = seed();
+  const { data: d0 } = readState(root, runId);
+  d0.status = 'paused';
+  d0.pause_reason = 'recovered:awaiting-resume';
+  d0.session_chain.lease = {
+    ...d0.session_chain.lease,
+    state: 'released',
+    handoff_child_run_id: null,
+    handoff_idempotency_key: null,
+    handoff_phase: 'idle',
+    resume_policy: null,
+    expires_at: null,
+  };
+  writeState(root, runId, d0);
+
+  const r = acquireLease(root, runId, { owner: 'FRESH', expectGeneration: 1 });
+  assert.equal(r.ok, true);
+  const { data } = readState(root, runId);
+  assert.equal(data.status, 'running');
+  assert.equal(data.pause_reason, null);
+  assert.equal(data.session_chain.lease.generation, 2);
+});
+
+test('terminal guard: stopped run rejects acquireLease with run-terminal', () => {
+  const { root, runId } = seed();
+  releaseLease(root, runId, { owner: runId, generation: 1 });
+  const { data: d0 } = readState(root, runId);
+  d0.status = 'stopped';
+  writeState(root, runId, d0);
+
+  const r = acquireLease(root, runId, { owner: 'NEW', expectGeneration: 1 });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'run-terminal');
+});
+
+test('terminal guard: completed run rejects acquireLease with run-terminal', () => {
+  const { root, runId } = seed();
+  releaseLease(root, runId, { owner: runId, generation: 1 });
+  const { data: d0 } = readState(root, runId);
+  d0.status = 'completed';
+  writeState(root, runId, d0);
+
+  const r = acquireLease(root, runId, { owner: 'NEW', expectGeneration: 1 });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'run-terminal');
+});
+
+test('regression: non-paused run acquire leaves status running, no spurious pause_reason write', () => {
+  const { root, runId } = seed();
+  releaseLease(root, runId, { owner: runId, generation: 1 });
+  const r = acquireLease(root, runId, { owner: 'CHILD', expectGeneration: 1 });
+  assert.equal(r.ok, true);
+  const { data } = readState(root, runId);
+  assert.equal(data.status, 'running');
+  assert.ok(!data.pause_reason, 'pause_reason must not be set on non-paused acquire');
+});
+
+// Codex r3 🔴1: releaseLease must reject when status=paused — prevents owner bypassing recover audit path.
+test('releaseLease on paused run returns RUN_PAUSED; lease NOT released; acquireLease stays blocked (codex-high)', () => {
+  const { root, runId } = seed();
+  // Seed a gate-blocked-style paused state: status=paused, lease.state=active, same owner/generation.
+  { const { data } = readState(root, runId); data.status = 'paused'; data.pause_reason = 'gate:budget'; writeState(root, runId, data); }
+  // releaseLease must refuse
+  const r = releaseLease(root, runId, { owner: runId, generation: 1 });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'RUN_PAUSED');
+  // lease NOT released — state still active
+  const lease = readState(root, runId).data.session_chain.lease;
+  assert.equal(lease.state, 'active');
+  assert.equal(lease.owner_run_id, runId);
+  // acquireLease by a new owner must still be blocked (run is paused, lease not released → not takeable)
+  const acq = acquireLease(root, runId, { owner: 'BYPASS', expectGeneration: 1 });
+  assert.equal(acq.ok, false);
+  assert.ok(acq.reason !== 'acquired', 'paused run must not be re-acquired via bypassed release');
+  // run status remains paused
+  assert.equal(readState(root, runId).data.status, 'paused');
+});

@@ -103,6 +103,23 @@ When used within the deep-suite, deep-loop acts as the orchestration backbone:
 
 The `adapter resolve` CLI returns normalized 4-verb descriptors (dispatch/await/read/checker_via) for each protocol, letting skills dispatch the right sibling without hardcoding adapter logic.
 
+## Visible Session Continuity (Self-Spawn)
+
+When `autonomy.spawn_style` is `'visible'` and deep-loop detects a supported terminal multiplexer at run-init, it can spawn the next session in a new visible window automatically:
+
+| Launcher | Detection signal | New session target |
+|----------|-----------------|-------------------|
+| cmux | `CMUX_BUNDLED_CLI_PATH` + `CMUX_SOCKET_PATH` + surface ID | new cmux workspace via socket |
+| iTerm2 | `TERM_PROGRAM=iTerm.app` + osascript probe | new iTerm window |
+| Terminal.app | `TERM_PROGRAM=Apple_Terminal` + osascript probe | new Terminal window |
+| Windows Terminal | `WT_SESSION` + `wt.exe` probe | new WT tab |
+
+The spawn is **attended-only**: the parent session must have been launched interactively (`--attended` flag set by the skill). If the parent is headless (`DEEP_LOOP_UNATTENDED=1`, `spawn_style='headless'`, or a headless-entrypoint is detected), visible spawn is bypassed and the headless path is taken instead.
+
+**OS-agnostic fallback**: If no launcher is detected (`launcher='none'`), or the session is not attended, `respawn` returns `{ok:false, outcome:'no-launcher'}`. The skill then calls `pauseRun({mode:'preserve'})`, keeping the reserved child in the handoff. A human opens a new terminal and runs `/deep-loop-resume`, or the reserved child session starts later and acquires the still-releasing lease — either path unpauses the run automatically. The handoff document and `launch-command.txt` always provide a copy-paste command for manual use.
+
+**Gate order**: budget → breaker → max_sessions → wallclock → auto_handoff. A gate failure triggers `rollbackAndPause` (lease rolled back, child invalidated). A launch command failure also rolls back. A readiness timeout uses `preservePause` (child kept, late acquire still succeeds).
+
 ## PreCompact Hook
 
 deep-loop registers a `PreCompact` hook that emits a clean handoff before Claude Code compacts context. In unattended mode, it also triggers a headless respawn. The hook never blocks compaction (always exits 0).

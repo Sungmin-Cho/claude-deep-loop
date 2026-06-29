@@ -8,6 +8,7 @@ export function deriveIdempotencyKey(ownerRunId, ownerGeneration, triggerReason)
 }
 
 // 펜싱 가드 — 읽기를 제외한 모든 커널 mutating 경로가 진입 전에 호출 (spec §9.1).
+// RUN_PAUSED gate: paused 상태에서 업무 write 거부. 예외 intent: 'recover', 'resume', 'breaker-reset'.
 export function leaseCheck(loop, { owner, generation, intent = 'business' } = {}) {
   const lease = loop?.session_chain?.lease;
   if (!lease) return { ok: false, reason: 'no-lease' };
@@ -19,6 +20,10 @@ export function leaseCheck(loop, { owner, generation, intent = 'business' } = {}
   // Codex r2 🔴2: expires_at 로 active 소유자를 fence 하지 않는다 — 살아있는 소유자가 TTL(15분) 후 자기 write 에서
   // 죽으면 안 됨. stale 소유자(자식이 인수해 generation 이 올라간 경우)는 generation-mismatch 로 이미 펜싱된다.
   // expires_at 는 오직 acquireLease 의 takeover 판단(releasing 크래시)에만 쓰인다.
+  // RUN_PAUSED: paused 상태 → 업무 write 차단. 인간 전용 recover/resume/breaker-reset intent 만 통과.
+  if (loop.status === 'paused' && intent !== 'recover' && intent !== 'resume' && intent !== 'breaker-reset') {
+    return { ok: false, reason: 'RUN_PAUSED' };
+  }
   return { ok: true, reason: 'ok' };
 }
 
@@ -44,12 +49,26 @@ export function acquireLease(root, runId, { owner, expectGeneration, now = Date.
     if (lease.state === 'released' && lease.handoff_child_run_id && owner !== lease.handoff_child_run_id && !expired) {
       return { ok: false, generation: lease.generation, reason: 'child-not-reserved' };
     }
+    // Terminal guard — defensive: stopped/completed runs are never re-acquired.
+    // A recovered run is 'paused' (not terminal) so it remains acquireable.
+    if (data.status === 'stopped' || data.status === 'completed') {
+      return { ok: false, generation: lease.generation, reason: 'run-terminal' };
+    }
+    const waspaused = data.status === 'paused';
     const iso = new Date(now).toISOString();
     data.session_chain.lease = {
       ...lease, owner_run_id: owner, generation: expectGeneration + 1,
       acquired_at: iso, expires_at: null,   // active 소유자는 deadline 없음 → 무기한 write (renewal 불필요)
       state: 'active', handoff_phase: 'acquired', handoff_idempotency_key: null, handoff_child_run_id: null,
     };
+    // Unpause (same transaction): covers BOTH preserve-resume (releasing+reserved-child) AND
+    // recover-resume (released, no reserved child). This is the acquire-resume path that is
+    // exempt from the RUN_PAUSED gate (Task 6 / leaseCheck intent='resume').
+    if (waspaused) {
+      data.status = 'running';
+      data.pause_reason = null;
+      data.session_chain.lease.resume_policy = null;
+    }
     const childEntry = data.session_chain.sessions.find(s => s.run_id === owner);
     if (childEntry && !childEntry.started_at) childEntry.started_at = iso;
     const parentEntry = data.session_chain.sessions.find(s => s.superseded_by === owner);
@@ -65,6 +84,10 @@ export function releaseLease(root, runId, { owner, generation }) {
     const { data } = readState(root, runId);
     const lease = data.session_chain.lease;
     if (lease.owner_run_id !== owner || lease.generation !== generation) return { ok: false, reason: 'fenced' };
+    // Codex r3 🔴1: RUN_PAUSED — refuse to release when paused. An owner that got gate-blocked
+    // (rollbackAndPause) must not call releaseLease to bypass the `recover --confirm` audit path.
+    // leaseCheck intent='recover' (human-only) is the only way to resume from a paused run.
+    if (data.status === 'paused') return { ok: false, reason: 'RUN_PAUSED' };
     data.session_chain.lease = { ...lease, state: 'released' };
     writeState(root, runId, data);
     return { ok: true, reason: 'released' };
@@ -72,9 +95,14 @@ export function releaseLease(root, runId, { owner, generation }) {
 }
 
 // 멱등키 선예약 CAS — phase∈{idle,acquired}에서만 신규 예약. 이중 트리거를 phase로 봉인 (spec §9.1).
+// RUN_PAUSED: paused 상태에서는 예약 금지 — emitHandoff 도 차단 (lease intent='lease' 는 leaseCheck 예외지만
+// reserveHandoff 는 leaseCheck 를 거치지 않으므로 여기서 명시 차단).
 export function reserveHandoff(root, runId, { trigger, now = Date.now(), expect } = {}) {
   return withLock(root, runId, () => {
     const { data } = readState(root, runId);
+    if (data.status === 'paused') {
+      return { ok: false, reserved: false, reason: 'RUN_PAUSED', key: null, childRunId: null };
+    }
     const lease = data.session_chain.lease;
     if (expect && (lease.owner_run_id !== expect.owner || lease.generation !== expect.generation)) {
       return { ok: false, reserved: false, reason: 'fenced', key: lease.handoff_idempotency_key, childRunId: lease.handoff_child_run_id };

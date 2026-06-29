@@ -53,3 +53,15 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field workstreams
 ```
 
 다음 action을 `next-action --json`으로 읽고 계속한다.
+
+## 사람 탈출 수단: recover --confirm
+
+`preserve-paused` 상태이거나 respawn 게이트가 차단된 run이 stuck(교착 상태)이면 사람이 직접 복구할 수 있다:
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" recover --confirm --owner <run_id> --generation <n>
+```
+
+이 명령은 stale handoff 상태를 정리하여 새 `lease acquire`(CAS 인수)가 가능하도록 한다. 커널이 un-pause를 처리하며, 다음 세션에서 `/deep-loop-resume`으로 lease를 인수한다.
+
+> 이 명령은 사람이 실행한다 — autonomous tick이 스스로 `recover --confirm`을 발행하지 않는다.

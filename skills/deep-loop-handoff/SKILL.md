@@ -22,7 +22,17 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field session_cha
 
 `owner_run_id`와 `generation`을 확인한다.
 
-## 단계 2: Handoff Emit
+## 단계 2: Handoff Emit (handoff_phase=idle인 경우)
+
+이미 emit된 핸드오프가 있으면 re-emit을 건너뛴다. 먼저 확인:
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field session_chain.lease
+```
+
+`lease.handoff_phase === 'emitted'`이면 **re-emit 금지**, 단계 3으로 바로 이동.
+
+`handoff_phase=idle`인 경우에만 emit:
 
 ```
 node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" handoff emit --owner <run_id> --generation <n>
@@ -33,31 +43,58 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" handoff emit --owner <run_id>
 - `handoffs/<timestamp>-compaction-state.json` — 압축 상태
 - `terminal/launch-command.txt` — 재시작 명령
 
-## 단계 3: Respawn 또는 사람 제시
-
-### Interactive (사람 개입)
+## 단계 3: Terminal 감지 및 Spawn Style 결정
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field session_chain.sessions
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" detect-terminal --owner <run_id> --generation <n>
 ```
 
-마지막 항목(child session)에서 런 디렉터리를 파악하고, 부모 런 디렉터리의 `terminal/launch-command.txt`를 Read한다. 예:
+`session_spawn`과 `autonomy`를 읽는다:
 
 ```
-Read .deep-loop/runs/<parent_run_id>/terminal/launch-command.txt
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field session_spawn
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field autonomy
 ```
 
-`terminal/launch-command.txt` 내용을 사람에게 제시한다. 사람이 직접 새 세션을 시작한다.
+**분기:**
 
-자동 spawn은 **드라이버만 수행**한다 — 이 스킬은 직접 `claude -p`를 실행하지 않는다(§9).
+### Visible (spawn_style=visible + launcher≠none)
 
-### Headless / 미감시 자율
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" respawn --owner <run_id> --generation <n> --attended
+```
 
-`DEEP_LOOP_UNATTENDED` set 시 드라이버(`drive-headless.mjs`)가 respawn을 자동으로 처리한다.
+커널이 자동으로 새 세션을 시작한다. 이 스킬은 직접 `claude -p`를 실행하지 않는다(§9).
 
-### Respawn 게이트 차단 시
+### Unattended (드라이버 마커 / DEEP_LOOP_UNATTENDED / non-tty)
 
-respawn 게이트(budget/breaker/sessions/wallclock)가 차단하면 `status=paused`로 기록되고 수동 resume을 안내한다.
+드라이버(`drive-headless.mjs`)가 respawn을 자동으로 처리한다.
+
+### Else (launcher=none / visible 아님 / legacy interactive)
+
+respawn을 통해 게이트를 먼저 평가한다 — unfenced pause 전에 항상 respawn 경유 필수:
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" respawn --owner <run_id> --generation <n>
+```
+
+respawn의 `outcome`에 따라 분기:
+
+- **`gate-blocked`**: respawn이 이미 rollback + `status=paused` 처리 완료. 다시 pause 하지 않는다.
+  사람에게 게이트 해소 후 수동 재개를 안내한다:
+  ```
+  deep-loop recover --confirm --owner <run_id> --generation <n>
+  ```
+
+- **`no-launcher`**: 게이트 통과 — 이제 preserve-pause가 적합. fence flag 필수(R6-plan):
+  ```
+  node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" pause --owner <run_id> --generation <n> --mode preserve --reason needs-human:<reason>
+  ```
+  > **R6-plan 필수**: `handoff emit`이 lease를 `releasing` 상태로 전환했으므로 `--owner`/`--generation` fence가 반드시 필요하다. Unfenced `pause`는 exit 3(LEASE_FENCED)으로 실패하여 run이 un-paused 상태로 남는다 → stale takeover 위험.
+
+  `terminal/launch-command.txt` 내용을 사람에게 제시한다. 사람이 직접 새 세션을 시작한다.
+
+- **그 외** (`fenced` 등): 보고만 하고 pause 하지 않는다.
 
 ## 다음 세션
 
