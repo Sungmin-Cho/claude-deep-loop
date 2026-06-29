@@ -18,6 +18,13 @@ export function driveHeadless({ root = process.cwd(), spawnFn = headlessSpawn, n
 
   const { data: loop } = readState(root, runId);
   const lease = loop.session_chain?.lease || {};
+  // Pre-respawn snapshot: capture the owner/generation BEFORE calling respawn so that the
+  // acquisition proof compares against the actual pre-handoff parent state, not the top-level
+  // runId.  On a 2nd+ generation handoff the lease owner is already a child session id (child1),
+  // which differs from runId — the old `!== runId` check therefore falsely passed.  The correct
+  // baseline is whichever session held the lease BEFORE this respawn call.
+  const preOwner = lease.owner_run_id;
+  const preGen   = lease.generation;
 
   // 대기 중인 handoff(emitted 또는 spawned) + reserved child 가 있을 때만 resume.
   const pendingHandoff = (lease.handoff_phase === 'emitted' || lease.handoff_phase === 'spawned') && lease.handoff_child_run_id;
@@ -101,8 +108,15 @@ export function driveHeadless({ root = process.cwd(), spawnFn = headlessSpawn, n
   const freshLoop = readState(root, runId).data;
   const freshLease = freshLoop.session_chain?.lease || {};
   const isTerminal = freshLoop.status === 'completed' || freshLoop.status === 'stopped';
-  // Lease moved forward = owner changed away from parent (child acquired, possibly re-emitted or grandchild took over).
-  const leaseMovedForward = freshLease.owner_run_id !== runId;
+  // Lease moved forward = owner OR generation changed away from the pre-respawn snapshot.
+  // A genuine child acquisition bumps generation (acquireLease does expectGeneration+1) and/or
+  // changes owner_run_id away from the pre-respawn parent.  A child that exits 0 without calling
+  // /deep-loop-resume leaves owner_run_id and generation IDENTICAL to the pre-respawn snapshot →
+  // leaseMovedForward is false → fail-closed.
+  // NOTE: we compare against preOwner/preGen (captured before respawn), NOT against runId.  On
+  // a 2nd+ generation handoff preOwner is already a child session id (e.g. child1 ≠ runId), so
+  // the old `!== runId` check falsely treated the unchanged child1 owner as "moved forward".
+  const leaseMovedForward = freshLease.owner_run_id !== preOwner || freshLease.generation !== preGen;
 
   if (!leaseMovedForward && !isTerminal) {
     // Child did not acquire — fail-closed: pause with fresh fence (same pattern as unmeasurable branch).

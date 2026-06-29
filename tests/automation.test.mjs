@@ -412,3 +412,98 @@ test('driveHeadless: resumed with cost when child acquires lease (acquisition pr
   assert.equal(r.recorded, true);
   assert.ok(readState(root, runId).data.budget.spent > 0, 'cost must be recorded on confirmed acquisition');
 });
+
+// ── Codex-R7: pre-respawn-snapshot fix regression tests ──────────────────────
+//
+// Seed a 2nd-generation run: lease.owner_run_id is already 'child1' (not the top-level runId)
+// because a prior handoff already happened. A pending handoff has reserved 'child2'.
+// Returns { root, runId, child1RunId, child2RunId }.
+function seedRun2ndGenHandoff() {
+  const root = mkdtempSync(join(tmpdir(), 'dl-auto-'));
+  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+
+  // 1st handoff: top-level runId emits, child1 is reserved then acquired.
+  const em1 = emitHandoff(root, runId, {
+    reason: 'pre-compact', trigger: 'pre-compact', headless: true, resumePolicy: 'headless',
+    expect: { owner: runId, generation: 1 },
+    now: NOW1,
+  });
+  assert.ok(em1.ok, `1st emitHandoff must succeed: ${em1.reason}`);
+  const child1RunId = em1.childRunId;
+
+  // child1 acquires the lease (simulates /deep-loop-resume in the child session).
+  // After this: owner_run_id=child1, generation=2, handoff_phase='acquired'.
+  const acq = acquireLease(root, runId, { owner: child1RunId, expectGeneration: 1, now: NOW1 });
+  assert.ok(acq.ok, `child1 acquireLease must succeed: ${acq.reason}`);
+  assert.equal(acq.generation, 2);
+
+  // 2nd handoff: child1 emits a new handoff, reserving child2.
+  // headless intent must use child1 as owner with generation=2.
+  const em2 = emitHandoff(root, runId, {
+    reason: 'pre-compact', trigger: 'pre-compact', headless: true, resumePolicy: 'headless',
+    expect: { owner: child1RunId, generation: 2 },
+    now: NOW1 + 1000,
+  });
+  assert.ok(em2.ok, `2nd emitHandoff must succeed: ${em2.reason}`);
+  const child2RunId = em2.childRunId;
+
+  // Ensure resume_policy='headless' is persisted (emitHandoff sets this but verify).
+  const { data } = readState(root, runId);
+  assert.equal(data.session_chain.lease.resume_policy, 'headless', 'resume_policy must be headless');
+  assert.equal(data.session_chain.lease.owner_run_id, child1RunId, 'lease owner must be child1 (not top-level runId)');
+  assert.equal(data.session_chain.lease.generation, 2, 'generation must be 2');
+  assert.equal(data.session_chain.lease.handoff_child_run_id, child2RunId, 'child2 must be reserved');
+
+  return { root, runId, child1RunId, child2RunId };
+}
+
+// Codex r7 HIGH regression (RED→GREEN):
+// On a 2nd-generation headless handoff the lease pre-respawn owner is child1 (≠ top-level runId).
+// If child2 exits 0 without acquiring, freshLease.owner_run_id is still child1.
+// OLD check (`!== runId`): child1 !== R1 → TRUE → falsely returns action:'resumed'.
+// NEW check (pre-respawn snapshot): child1 !== child1 → FALSE → fail-closes correctly.
+test('driveHeadless: 2nd-gen no-acquire must fail-close (not falsely resumed) — codex-r7', () => {
+  const { root, runId } = seedRun2ndGenHandoff();
+  const budgetBefore = readState(root, runId).data.budget.spent;
+
+  const r = driveHeadless({
+    root, now: NOW1 + 2000,
+    // child2 exits 0 with usage but NEVER calls /deep-loop-resume — lease stays on child1.
+    spawnFn: () => ({ ok: true, usage: { num_turns: 3, tokens: 75 } }),
+  });
+
+  assert.equal(r.ok, false, 'must be ok:false when child2 did not acquire (2nd-gen)');
+  // The fix must NOT return 'resumed' — it must fail-close.
+  assert.notEqual(r.action, 'resumed', 'action must NOT be resumed when child2 never acquired');
+  // Expected fail-closed action is 'resumed-unconfirmed' (child did not acquire branch).
+  assert.equal(r.action, 'resumed-unconfirmed', 'action must be resumed-unconfirmed for 2nd-gen no-acquire');
+  assert.equal(r.reason, 'child-did-not-acquire', 'reason must be child-did-not-acquire');
+  // No cost must be recorded (no proven progress).
+  assert.equal(readState(root, runId).data.budget.spent, budgetBefore,
+    'budget.spent must NOT increase when child2 did not acquire');
+  // Run must be paused (fail-closed).
+  assert.equal(readState(root, runId).data.status, 'paused',
+    'run must be paused (fail-closed) on 2nd-gen no-acquire');
+});
+
+// Codex r7 HIGH contrast: 2nd-gen where child2 DOES acquire → action:'resumed' + cost recorded.
+// Verifies the fix does not break the happy path for 2nd-generation handoffs.
+test('driveHeadless: 2nd-gen child2 acquires → action:resumed + cost recorded (codex-r7 happy path)', () => {
+  const { root, runId, child2RunId } = seedRun2ndGenHandoff();
+
+  const r = driveHeadless({
+    root, now: NOW1 + 2000,
+    spawnFn: () => {
+      // child2 calls /deep-loop-resume → acquires the lease (generation 2→3).
+      const acq = acquireLease(root, runId, { owner: child2RunId, expectGeneration: 2, now: NOW1 + 3000 });
+      assert.ok(acq.ok, `child2 acquireLease must succeed: ${acq.reason}`);
+      assert.equal(acq.generation, 3, 'generation must bump to 3 after child2 acquisition');
+      return { ok: true, usage: { num_turns: 3, tokens: 75 } };
+    },
+  });
+
+  assert.equal(r.ok, true, 'must be ok:true when child2 acquired (2nd-gen happy path)');
+  assert.equal(r.action, 'resumed', 'action must be resumed after confirmed 2nd-gen acquisition');
+  assert.equal(r.recorded, true, 'cost must be recorded on confirmed 2nd-gen acquisition');
+  assert.ok(readState(root, runId).data.budget.spent > 0, 'budget.spent must increase after child2 acquired');
+});
