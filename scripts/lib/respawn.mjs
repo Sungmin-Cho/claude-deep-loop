@@ -101,12 +101,12 @@ export function rollbackAndPause(root, runId, { childRunId, parentOwner, generat
 // status='paused', pause_reason='child-timeout-awaiting' so a LATE /deep-loop-resume by the reserved child still
 // acquires (Task 8) and unpauses; the headless driver skips it; a human `recover` can abandon it. ONE transaction.
 // If the child acquired right at the boundary (fence), distinguish success (reserved child) from a real fence.
-function preservePause(root, runId, { childRunId, parentOwner, generation }) {
+function preservePause(root, runId, { childRunId, parentOwner, generation, pauseReason = 'child-timeout-awaiting' }) {
   try {
-    appendAnchored(root, runId, { type: 'respawn-timeout', data: { child_run_id: childRunId, pause_reason: 'child-timeout-awaiting' } }, (l) => {
+    appendAnchored(root, runId, { type: 'respawn-timeout', data: { child_run_id: childRunId, pause_reason: pauseReason } }, (l) => {
       l.session_chain.lease = { ...l.session_chain.lease, resume_policy: 'human', expires_at: null };
       l.status = 'paused';
-      l.pause_reason = 'child-timeout-awaiting';
+      l.pause_reason = pauseReason;
     }, (l) => {
       const lease = l.session_chain.lease;
       if (lease.owner_run_id !== parentOwner || lease.generation !== generation) throw new Error('RESPAWN_FENCED: timeout-preserve');
@@ -120,6 +120,32 @@ function preservePause(root, runId, { childRunId, parentOwner, generation }) {
     throw appendErr;
   }
   return { ok: true };
+}
+
+// Bounded child-readiness handshake shared by the visible first-entry spawn-success path AND the
+// already-spawned re-entry recovery (codex r5 finding A). launcher exit 0 (or a prior CAS) is NOT proof the
+// reserved child acquired — poll the (releasing) lease until the child takes over (generation+1) or the
+// deadline lapses. On deadline → preservePause (do NOT rollback / do NOT re-spawn): a slow child may still
+// acquire (Task 8 late-acquire) and a human `recover` can abandon — autonomous-detectable, never silent.
+// Count-based loop (maxPolls) with an injectable poll/sleep → deterministic under fixed clocks.
+function awaitChildReadiness(root, runId, {
+  childRunId, parentOwner, generation, loop, poll, sleep, pollIntervalMs,
+  successOutcome, successReason, lateAcquireReason, pauseReason, timeoutOutcome,
+}) {
+  const timeoutMs = (loop.autonomy?.child_ready_timeout_sec ?? 75) * 1000;
+  const interval = pollIntervalMs > 0 ? pollIntervalMs : 1500;
+  const maxPolls = Math.max(1, Math.ceil(timeoutMs / interval));
+  for (let i = 0; i < maxPolls; i++) {
+    const verdict = classifyReadiness(poll(), { childRunId, startGeneration: generation });
+    if (verdict === 'success') return { ok: true, outcome: successOutcome, reason: successReason, childRunId };
+    if (verdict === 'fenced') return { ok: false, outcome: 'fenced', reason: 'lease-changed-during-readiness', childRunId };
+    if (i < maxPolls - 1) sleep(interval);
+  }
+  // readiness TIMEOUT → PRESERVE (do NOT rollback) — 늦은 /deep-loop-resume 도 reserved child 면 인수 성공.
+  const res = preservePause(root, runId, { childRunId, parentOwner, generation, pauseReason });
+  if (res.acquired) return { ok: true, outcome: successOutcome, reason: lateAcquireReason, childRunId };
+  if (res.fenced) return { ok: false, outcome: 'fenced', reason: 'lease-changed-at-timeout', childRunId };
+  return { ok: false, outcome: timeoutOutcome, reason: 'readiness-timeout-preserve', childRunId };
 }
 
 export function respawn(root, runId, {
@@ -138,7 +164,34 @@ export function respawn(root, runId, {
   if (lease.handoff_idempotency_key !== key) return { ok: false, outcome: 'key-mismatch', reason: 'key-mismatch', childRunId };
   // Codex impl r8 🟡: bind the spawn to the RESERVED handoff child — a valid key must not spawn an arbitrary child.
   if (childRunId !== lease.handoff_child_run_id) return { ok: false, outcome: 'child-mismatch', reason: `childRunId ${childRunId} != reserved ${lease.handoff_child_run_id}`, childRunId };
-  if (lease.handoff_phase === 'spawned') return { ok: true, outcome: 'already-spawned', reason: 'idempotent', childRunId };
+  // Codex r5 finding A (HIGH): 'spawned' is the CAS-before-spawn CLAIM, NOT proof the child launched + took
+  // over. A prior call may have crashed AFTER the CAS, before/during the external spawn → a blind
+  // already-spawned return would strand the handoff with no autonomous recovery. So VERIFY child acquisition;
+  // when unconfirmed, recover via the SAME bounded readiness wait the first-entry uses, then preserve-pause.
+  // Re-spawn is NEVER done here (that would risk the double spawn the CAS prevents) — recovery is verify+wait+preserve.
+  if (lease.handoff_phase === 'spawned') {
+    // (1) Reserved child already acquired → genuine already-spawned (a prior call spawned + the child took over).
+    if (classifyReadiness(poll(), { childRunId, startGeneration: generation }) === 'success') {
+      return { ok: true, outcome: 'already-spawned', reason: 'idempotent', childRunId };
+    }
+    // (2) Not yet acquired. headless first-entry measures synchronously (the child acquires DURING the
+    //     measured subprocess) and interactive never auto-spawns, so a re-entry-before-acquire in those modes
+    //     is the normal idempotent-retry / concurrent double-spawn-guard contract — keep the plain no-op (no
+    //     spurious pause). An already-paused run was handled by a prior preserve → idempotent no-op too.
+    const reMode = resolveSpawnMode(loop, { headless, attended, env });
+    if (reMode === 'headless' || reMode === 'interactive' || loop.status === 'paused') {
+      return { ok: true, outcome: 'already-spawned', reason: 'idempotent', childRunId };
+    }
+    // (3) Visible re-entry: launcher exit was never proof of acquisition + the CAS-doer may have crashed.
+    //     Bounded-wait for the reserved child; if it never acquires, preserve-pause (late acquire still safe,
+    //     human recover can abandon) — autonomous-detectable, NOT a false success.
+    return awaitChildReadiness(root, runId, {
+      childRunId, parentOwner, generation, loop, poll, sleep, pollIntervalMs,
+      successOutcome: 'already-spawned', successReason: 'child-acquired-on-reentry',
+      lateAcquireReason: 'child-acquired-on-reentry-at-timeout',
+      pauseReason: 'spawn-unconfirmed-awaiting', timeoutOutcome: 'spawn-unconfirmed-awaiting',
+    });
+  }
   if (lease.handoff_phase !== 'emitted' || lease.state !== 'releasing') {
     return { ok: false, outcome: 'not-emitted', reason: `phase=${lease.handoff_phase} state=${lease.state}`, childRunId };
   }
@@ -236,18 +289,11 @@ export function respawn(root, runId, {
 
   // visible 경로: bounded child-readiness handshake (R1-B). launcher exit 0 != 자식 생성 증명 — 자식이 releasing
   // lease 를 acquire(generation+1)할 때까지 deadline 동안 poll. deadlock 없음(lease 가 releasing).
-  const timeoutMs = (loop.autonomy?.child_ready_timeout_sec ?? 75) * 1000;
-  const interval = pollIntervalMs > 0 ? pollIntervalMs : 1500;
-  const maxPolls = Math.max(1, Math.ceil(timeoutMs / interval));
-  for (let i = 0; i < maxPolls; i++) {
-    const verdict = classifyReadiness(poll(), { childRunId, startGeneration: generation });
-    if (verdict === 'success') return { ok: true, outcome: 'spawned', reason: 'child-acquired', childRunId };
-    if (verdict === 'fenced') return { ok: false, outcome: 'fenced', reason: 'lease-changed-during-readiness', childRunId };
-    if (i < maxPolls - 1) sleep(interval);
-  }
-  // readiness TIMEOUT → PRESERVE (do NOT rollback) — 늦은 /deep-loop-resume 도 reserved child 면 인수 성공.
-  const res = preservePause(root, runId, { childRunId, parentOwner, generation });
-  if (res.acquired) return { ok: true, outcome: 'spawned', reason: 'child-acquired-at-timeout', childRunId };
-  if (res.fenced) return { ok: false, outcome: 'fenced', reason: 'lease-changed-at-timeout', childRunId };
-  return { ok: false, outcome: 'child-timeout-awaiting', reason: 'readiness-timeout-preserve', childRunId };
+  // Same helper as the already-spawned re-entry recovery (codex r5 finding A) — single readiness contract.
+  return awaitChildReadiness(root, runId, {
+    childRunId, parentOwner, generation, loop, poll, sleep, pollIntervalMs,
+    successOutcome: 'spawned', successReason: 'child-acquired',
+    lateAcquireReason: 'child-acquired-at-timeout',
+    pauseReason: 'child-timeout-awaiting', timeoutOutcome: 'child-timeout-awaiting',
+  });
 }

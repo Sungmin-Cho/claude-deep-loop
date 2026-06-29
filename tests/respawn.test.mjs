@@ -416,6 +416,60 @@ test('respawn gate-blocked with lease takeover before pause → fenced, status N
   assert.notEqual(after.status, 'paused', 'status must NOT be paused when fenced');
 });
 
+// ── codex r5 finding A (HIGH): already-spawned re-entry must VERIFY child acquisition ───────────
+// CAS-before-spawn ordering means handoff_phase==='spawned' is only the CAS claim, NOT proof the child
+// launched + took over. A prior call may have crashed AFTER the CAS, before/during the external spawn.
+// The idempotent re-entry must therefore verify child acquisition and recover (bounded wait → preserve-
+// pause) instead of returning a false 'already-spawned' success that strands the handoff with no
+// autonomous recovery. Re-spawn is NEVER done on this path (the CAS double-spawn guard must hold).
+
+test('already-spawned re-entry, child NEVER acquires (visible) → bounded wait then preserve-pause, no re-spawn (codex-r5a)', () => {
+  const { root, runId } = seedLauncher();
+  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });
+  // Simulate a prior respawn that did the emitted→spawned CAS then crashed before/during the external spawn.
+  advanceHandoffPhase(root, runId, { key: h.key, toPhase: 'spawned', now: NOW1 });
+  assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'spawned');
+  // Reserved child never acquires (poll always shows the parent still releasing). spawnFn must NOT be re-called.
+  const pollLease = () => ({ state: 'releasing', owner_run_id: runId, generation: 1 });
+  const r = respawn(root, runId, {
+    childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
+    attended: true, env: {}, now: NOW1, sleep: noSleep, pollLease,
+    spawnFn: () => { throw new Error('must NOT re-spawn on the already-spawned path (CAS double-spawn guard)'); },
+  });
+  // NOT a bare already-spawned success — it waited to the deadline then preserve-paused (autonomous-detectable).
+  assert.equal(r.ok, false);
+  assert.equal(r.outcome, 'spawn-unconfirmed-awaiting');
+  const d = readState(root, runId).data;
+  assert.equal(d.status, 'paused');
+  assert.equal(d.session_chain.lease.handoff_child_run_id, h.childRunId, 'reserved child preserved (not invalidated)');
+  assert.equal(d.session_chain.lease.resume_policy, 'human');
+  assert.equal(d.session_chain.lease.expires_at, null);
+  assert.equal(d.session_chain.lease.state, 'releasing', 'lease still releasing → reserved child can still acquire');
+  // Task 8 late-acquire: a subsequent reserved-child acquireLease STILL succeeds + unpauses.
+  const acq = acquireLease(root, runId, { owner: h.childRunId, expectGeneration: 1, now: NOW1 + 5000 });
+  assert.equal(acq.ok, true);
+  assert.equal(acq.generation, 2);
+  assert.equal(readState(root, runId).data.status, 'running', 'late reserved-child acquire must unpause');
+});
+
+test('already-spawned re-entry where the child HAS acquired → already-spawned immediately, no false pause (codex-r5a)', () => {
+  const { root, runId } = seedLauncher();
+  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });
+  advanceHandoffPhase(root, runId, { key: h.key, toPhase: 'spawned', now: NOW1 });
+  // Lease already shows the reserved child acquired (a prior call genuinely spawned + the child took over).
+  const pollLease = () => ({ state: 'active', handoff_phase: 'acquired', owner_run_id: h.childRunId, generation: 2 });
+  let spawned = false;
+  const r = respawn(root, runId, {
+    childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
+    attended: true, env: {}, now: NOW1, sleep: noSleep, pollLease,
+    spawnFn: () => { spawned = true; return { ok: true }; },
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.outcome, 'already-spawned');
+  assert.equal(spawned, false, 'must NOT re-spawn when the child already acquired');
+  assert.notEqual(readState(root, runId).data.status, 'paused', 'genuine already-spawned must not pause');
+});
+
 // respawn race (§14 test 12): Continue↔PreCompact 동시 트리거 → 멱등키로 emit 1회
 test('double emit + single respawn (race): only one child chain, no double spawn', () => {
   const { root, runId } = seed();
