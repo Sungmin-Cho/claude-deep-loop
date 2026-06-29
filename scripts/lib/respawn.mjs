@@ -145,15 +145,11 @@ export function respawn(root, runId, {
   // RUN_PAUSED (Task 6): paused 상태에서는 respawn 금지. respawn 은 leaseCheck 를 경유하지 않으므로 명시 차단.
   if (loop.status === 'paused') return { ok: false, outcome: 'paused', reason: 'RUN_PAUSED', childRunId };
 
-  // ── mode selection (spec §7) ────────────────────────────────────────────────
-  const mode = resolveSpawnMode(loop, { headless, attended, env });
-  if (mode === 'interactive') {
-    // No auto-spawn possible. PRESERVE the emitted handoff (do NOT rollback) — the skill pauses via
-    // `deep-loop pause --mode preserve`, keeping the reserved child for a human/visible-continue to pick up.
-    return { ok: false, outcome: 'no-launcher', reason: 'no-auto-launcher', childRunId };
-  }
-  const isHeadless = mode === 'headless';
-
+  // ── gate check (spec §9, R12-LL) ─────────────────────────────────────────
+  // Gate MUST win regardless of launcher availability (R12-LL fix): a gate-blocked run must always
+  // ROLLBACK + pause, even when there is no auto-launcher. Evaluating gate before mode selection ensures
+  // that gate-blocked + no-launcher → rollback/invalidate (not preserve). Only after a passing gate does
+  // mode selection run; gate-OK + no-launcher is a genuine needs-human → preserve is then correct.
   const gate = respawnGate(loop, { now });
   if (!gate.ok) {
     // 실패모드 (A) gate-blocked: ROLLBACK + paused — ONE 트랜잭션 (R12-LL; 자식 무효화, 결코 실행 안 됨).
@@ -161,6 +157,16 @@ export function respawn(root, runId, {
     if (res.fenced) return { ok: false, outcome: 'fenced', reason: 'lease-changed-before-pause', childRunId };
     return { ok: false, outcome: 'gate-blocked', reason: gate.reason, childRunId };
   }
+
+  // ── mode selection (spec §7) ────────────────────────────────────────────────
+  const mode = resolveSpawnMode(loop, { headless, attended, env });
+  if (mode === 'interactive') {
+    // No auto-spawn possible; gate already passed → PRESERVE the emitted handoff (do NOT rollback) — the
+    // skill pauses via `deep-loop pause --mode preserve`, keeping the reserved child for a human/visible-continue
+    // to pick up. This is a genuine needs-human, NOT a gate bypass (gate check already passed above).
+    return { ok: false, outcome: 'no-launcher', reason: 'no-auto-launcher', childRunId };
+  }
+  const isHeadless = mode === 'headless';
   // Codex r3 🔴3: derive effHandoffRel + construct/validate the launch entry BEFORE the spawned CAS.
   // buildLaunchCommand can throw UNSAFE_SPAWN_ARG (or cmds[mode] undefined for an unrecognised mode).
   // A throw here leaves the lease in 'emitted' (no CAS yet → not stranded). Only command CONSTRUCTION

@@ -483,3 +483,68 @@ test('respawn on a paused run returns paused (RUN_PAUSED precondition)', () => {
   assert.equal(r.outcome, 'paused');
   assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'emitted');
 });
+
+// R12-LL regression: gate-blocked + no-launcher → gate WINS (rollback), not 'no-launcher' (preserve).
+// Before the fix, mode selection fired before respawnGate so a no-launcher run returned 'no-launcher'
+// and kept the reserved child alive — bypassing the gate. After the fix, gate is evaluated first.
+test('R12-LL: gate-blocked + no-launcher → gate wins, reserved child rolled back (not preserved)', () => {
+  // budget.total=0 → gate blocks; default linux+noOpRun seed → launcher='none', attended=false → no-launcher
+  // IF mode were checked first (old bug). After fix, gate fires first → rollback.
+  const { root, runId } = seed((d) => { d.budget.total = 0; });
+  assert.equal(readState(root, runId).data.session_spawn.launcher, 'none', 'seed must have no launcher');
+  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });
+  let spawned = false;
+  const r = respawn(root, runId, {
+    childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
+    attended: false, env: {}, now: NOW1,
+    spawnFn: () => { spawned = true; return { ok: true }; },
+    sleep: noSleep,
+  });
+
+  // Gate MUST win: outcome is 'gate-blocked', not 'no-launcher'
+  assert.equal(r.ok, false);
+  assert.equal(r.outcome, 'gate-blocked', 'gate-blocked must win over no-launcher (R12-LL)');
+  assert.equal(spawned, false, 'spawnFn must not be called when gate blocks');
+
+  // Reserved child MUST be invalidated (rollback, not preserve)
+  const d = readState(root, runId).data;
+  assert.equal(d.status, 'paused');
+  assert.match(d.pause_reason, /^gate:/, 'pause_reason must start with gate:');
+  assert.equal(d.session_chain.lease.handoff_child_run_id, null, 'handoff_child_run_id must be cleared (invalidated)');
+  assert.equal(d.session_chain.lease.state, 'active', 'lease state must roll back to active');
+  assert.equal(d.session_chain.lease.handoff_phase, 'idle', 'handoff_phase must roll back to idle');
+  const childSession = d.session_chain.sessions.find(s => s.run_id === h.childRunId);
+  assert.equal(childSession.outcome, 'failed_launch', 'child session outcome must be failed_launch (invalidated)');
+  const parentSession = d.session_chain.sessions.find(s => s.run_id === runId);
+  assert.equal(parentSession.superseded_by, null, 'parent superseded_by must be cleared');
+
+  // Gate must NOT be bypassed: the old reserved child cannot acquire the now-active lease
+  const acq = acquireLease(root, runId, { owner: h.childRunId, expectGeneration: 1, now: NOW1 + 1000 });
+  assert.equal(acq.ok, false, 'old child must not be able to acquire after gate-blocked rollback');
+});
+
+// R12-LL companion: gate-OK + no-launcher → 'no-launcher' with reserved child PRESERVED (needs-human).
+// Proves the two paths are correctly distinguished after the gate-before-mode reorder.
+test('R12-LL: gate-OK + no-launcher → no-launcher outcome, reserved child preserved (needs-human)', () => {
+  // Default seed: gate passes (budget.total=200, auto_handoff=true, etc.); launcher='none', attended=false
+  const { root, runId } = seed();
+  assert.equal(readState(root, runId).data.session_spawn.launcher, 'none', 'seed must have no launcher');
+  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });
+  const r = respawn(root, runId, {
+    childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
+    attended: false, env: {}, now: NOW1,
+    spawnFn: () => { throw new Error('should not spawn'); },
+    sleep: noSleep,
+  });
+
+  // Gate passes → mode='interactive' → no-launcher (correct: genuine needs-human)
+  assert.equal(r.ok, false);
+  assert.equal(r.outcome, 'no-launcher', 'gate-OK + no-launcher must return no-launcher (not gate-blocked)');
+
+  // Reserved child MUST be PRESERVED (not rolled back): skill pauses via `deep-loop pause --mode preserve`
+  const d = readState(root, runId).data;
+  assert.equal(d.session_chain.lease.handoff_child_run_id, h.childRunId, 'handoff_child_run_id must be preserved');
+  assert.equal(d.session_chain.lease.handoff_phase, 'emitted', 'handoff_phase must stay emitted');
+  assert.equal(d.session_chain.lease.state, 'releasing', 'lease state must stay releasing');
+  assert.notEqual(d.status, 'paused', 'status must NOT be paused (skill handles pause-mode-preserve separately)');
+});
