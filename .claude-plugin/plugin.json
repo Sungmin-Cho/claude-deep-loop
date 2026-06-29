@@ -3,8 +3,7 @@
   "version": "0.1.0",
   "description": "Loop Engineering control plane: cross-plugin orchestration, durable loop state, autonomous session handoff",
   "author": { "name": "Sungmin Cho" },
-  "repository": { "type": "git", "url": "https://github.com/Sungmin-Cho/claude-deep-loop.git" },
+  "repository": "https://github.com/Sungmin-Cho/claude-deep-loop.git",
   "license": "MIT",
-  "category": "Productivity",
   "keywords": ["loop-engineering","orchestration","durable-state","handoff","deep-suite"]
 }
