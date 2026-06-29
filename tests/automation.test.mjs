@@ -322,3 +322,40 @@ test('handoff emit derives resume_policy=headless from spawn_style without --hea
   assert.equal(r.action, 'resumed',
     `driveHeadless must resume, not skip: ${JSON.stringify(r)}`);
 });
+
+// ── Codex-R5B: terminal guard + fresh-fence regression tests ─────────────────
+
+// driveHeadless must NOT demote a terminal (completed) run to paused, even when
+// the measured spawn fails AND the child already acquired the lease (unfenced demote bug).
+// Expected: action='fail-closed-terminal', status stays 'completed'.
+test('driveHeadless: fail-closed-terminal when spawn fails and run reached completed status', () => {
+  const { root, runId, childRunId } = seedRunWithHandoff();
+  const r = driveHeadless({ root, now: NOW1, spawnFn: () => {
+    // Child acquires the lease (generation bumps to 2)
+    acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, now: NOW1 });
+    // Then the run reaches terminal status (completed)
+    const { data } = readState(root, runId);
+    data.status = 'completed';
+    writeState(root, runId, data);
+    // Spawn returns failure (unmeasurable)
+    return { ok: false, reason: 'unmeasurable-fail-closed' };
+  }});
+  assert.equal(r.ok, false);
+  assert.equal(r.action, 'fail-closed-terminal', 'terminal run must not be demoted to paused');
+  assert.equal(readState(root, runId).data.status, 'completed', 'status must stay completed, not paused');
+});
+
+// driveHeadless must use a FRESH fence (not unfenced) when the child acquired the lease
+// and the run is non-terminal. After fix: fresh-fence pause succeeds normally.
+// Expected: action='fail-closed', status='paused' (same end result but via fenced pause).
+test('driveHeadless: fresh-fence pause when spawn fails, child acquired, run non-terminal', () => {
+  const { root, runId, childRunId } = seedRunWithHandoff();
+  const r = driveHeadless({ root, now: NOW1, spawnFn: () => {
+    // Child acquires the lease (generation bumps to 2), run stays 'running'
+    acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, now: NOW1 });
+    return { ok: false, reason: 'unmeasurable-fail-closed' };
+  }});
+  assert.equal(r.ok, false);
+  assert.equal(r.action, 'fail-closed', 'non-terminal run must be fail-closed paused');
+  assert.equal(readState(root, runId).data.status, 'paused', 'run must be paused with fresh fence');
+});

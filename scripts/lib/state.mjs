@@ -139,6 +139,12 @@ export function pauseRun(root, runId, { reason, mode = 'preserve', expect, now =
           throw new Error('LEASE_FENCED: pauseRun wrong generation');
         }
       }
+      // Terminal guard (spec §1.2 / acquireLease mirror): completed/stopped runs must never be demoted to paused.
+      // Checked after fence so that LEASE_FENCED fires first when both conditions hold —
+      // drive-headless re-reads state to detect terminal after catching LEASE_FENCED.
+      if (loop.status === 'completed' || loop.status === 'stopped') {
+        throw new Error('RUN_TERMINAL: pauseRun');
+      }
     }
   );
 }

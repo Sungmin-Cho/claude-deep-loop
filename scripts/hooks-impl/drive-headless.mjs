@@ -66,13 +66,27 @@ export function driveHeadless({ root = process.cwd(), spawnFn = headlessSpawn, n
     if (captured && captured.ok === false) {
       // spec §9: fail-closed regardless of lease ownership — must pause even if child took over.
       // Primary attempt uses initial lease (the "lease we hold"). If LEASE_FENCED (child already
-      // acquired), fall back to unfenced pause: measurement failed → safety overrides fencing.
+      // acquired), re-read state: terminal → skip pause (fail-closed-terminal); non-terminal →
+      // retry with fresh fence. Never unfenced. If retry also fenced/terminal: fail-closed-raced.
       try {
         pauseRun(root, runId, { reason: 'headless-unmeasurable', mode: 'preserve', expect: { owner: lease.owner_run_id, generation: lease.generation }, now });
       } catch (pauseErr) {
-        if (!String(pauseErr?.message || pauseErr).includes('LEASE_FENCED')) throw pauseErr;
-        // Child already owns the lease but measurement still failed → unfenced fail-closed pause.
-        pauseRun(root, runId, { reason: 'headless-unmeasurable', mode: 'preserve', now });
+        const pauseMsg = String(pauseErr?.message || pauseErr);
+        if (!pauseMsg.includes('LEASE_FENCED')) throw pauseErr;
+        // LEASE_FENCED: child already acquired — re-read current state to detect terminal.
+        const freshLoop = readState(root, runId).data;
+        if (freshLoop.status === 'completed' || freshLoop.status === 'stopped') {
+          // Terminal run: do NOT demote to paused; child ran to completion normally.
+          return { ok: false, action: 'fail-closed-terminal', reason: (captured && captured.reason) || rr.reason };
+        }
+        // Non-terminal: pause with a FRESH fence (never unfenced) — spec §9 fail-closed + no unfenced demote.
+        const freshLease = freshLoop.session_chain?.lease || {};
+        try {
+          pauseRun(root, runId, { reason: 'headless-unmeasurable', mode: 'preserve', expect: { owner: freshLease.owner_run_id, generation: freshLease.generation }, now });
+        } catch (retryErr) {
+          // LEASE_FENCED or RUN_TERMINAL on retry (concurrent change): swallow — do not loop.
+          return { ok: false, action: 'fail-closed-raced', reason: (captured && captured.reason) || rr.reason };
+        }
       }
       return { ok: false, action: 'fail-closed', reason: (captured && captured.reason) || rr.reason };
     }

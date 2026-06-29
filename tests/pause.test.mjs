@@ -278,6 +278,30 @@ test('pauseRun appends run-paused event to event log', () => {
   assert.equal(paused.data.reason, 'event-log-check');
 });
 
+// ── 14. pauseRun terminal guard: completed status ─────────────────────────────
+
+test('pauseRun terminal guard: completed status throws RUN_TERMINAL, no state change', () => {
+  const { root, runId } = seed({ status: 'completed' });
+  assert.throws(
+    () => pauseRun(root, runId, { reason: 'x', expect: { owner: OWNER, generation: GEN } }),
+    /RUN_TERMINAL/
+  );
+  // status must not have been demoted to paused
+  assert.equal(readState(root, runId).data.status, 'completed', 'completed status must not be demoted');
+});
+
+// ── 15. pauseRun terminal guard: stopped status ───────────────────────────────
+
+test('pauseRun terminal guard: stopped status throws RUN_TERMINAL, no state change', () => {
+  const { root, runId } = seed({ status: 'stopped' });
+  assert.throws(
+    () => pauseRun(root, runId, { reason: 'x', expect: { owner: OWNER, generation: GEN } }),
+    /RUN_TERMINAL/
+  );
+  // status must not have been demoted to paused
+  assert.equal(readState(root, runId).data.status, 'stopped', 'stopped status must not be demoted');
+});
+
 // ── helpers ────────────────────────────────────────────────────────────────────
 
 import { readFileSync } from 'node:fs';
