@@ -161,7 +161,29 @@ export function respawn(root, runId, {
     if (res.fenced) return { ok: false, outcome: 'fenced', reason: 'lease-changed-before-pause', childRunId };
     return { ok: false, outcome: 'gate-blocked', reason: gate.reason, childRunId };
   }
+  // Codex r3 🔴3: derive effHandoffRel + construct/validate the launch entry BEFORE the spawned CAS.
+  // buildLaunchCommand can throw UNSAFE_SPAWN_ARG (or cmds[mode] undefined for an unrecognised mode).
+  // A throw here leaves the lease in 'emitted' (no CAS yet → not stranded). Only command CONSTRUCTION
+  // moves above the CAS; spawnFn call and its try/catch remain below, unchanged.
+  const childSession = loop.session_chain.sessions.find(s => s.run_id === childRunId);
+  const effHandoffRel = (childSession && childSession.handoff_rel) || handoffRel;
+  let _cmds, _entry;
+  try {
+    // launcherBin + launcherSocket threading (R3/R7-plan): cmux requires the absolute bundled bin + verified socket.
+    _cmds = buildLaunchCommand({
+      root, parentRunId: runId, childRunId, handoffRel: effHandoffRel,
+      launcher: loop.session_spawn?.launcher,
+      launcherBin: loop.session_spawn?.launcher_bin,
+      launcherSocket: loop.session_spawn?.launcher_socket,
+    });
+    _entry = _cmds[mode];
+  } catch (buildErr) {
+    // Throw happened while lease is still 'emitted' — no CAS yet, not stranded. Return clear error.
+    return { ok: false, outcome: 'build-error', reason: String(buildErr.message || buildErr), childRunId };
+  }
+
   // Codex r2 🔴3: 외부 spawn **이전에** emitted→spawned 를 원자적(withLock CAS)으로 클레임 (이중 외부 spawn 차단).
+  // Command is already validated above; only the CAS + spawnFn call remain below.
   const claim = advanceHandoffPhase(root, runId, { key, toPhase: 'spawned', now, expect: { owner: parentOwner, generation } });
   if (!claim.ok) {
     if (claim.reason === 'fenced') return { ok: false, outcome: 'fenced', reason: 'lease-changed-during-claim', childRunId };
@@ -169,17 +191,8 @@ export function respawn(root, runId, {
   }
   if (claim.reason === 'idempotent-noop') return { ok: true, outcome: 'already-spawned', reason: 'idempotent', childRunId };
 
-  // Codex impl r8 🟡: derive handoffRel from the reserved child session (don't trust caller); fall back to arg.
-  const childSession = loop.session_chain.sessions.find(s => s.run_id === childRunId);
-  const effHandoffRel = (childSession && childSession.handoff_rel) || handoffRel;
-  // launcherBin + launcherSocket threading (R3/R7-plan): cmux requires the absolute bundled bin + verified socket.
-  const cmds = buildLaunchCommand({
-    root, parentRunId: runId, childRunId, handoffRel: effHandoffRel,
-    launcher: loop.session_spawn?.launcher,
-    launcherBin: loop.session_spawn?.launcher_bin,
-    launcherSocket: loop.session_spawn?.launcher_socket,
-  });
-  const entry = cmds[mode];
+  // Codex impl r8 🟡: entry is already built + validated before the CAS above.
+  const entry = _entry;
   try {
     const res = spawnFn(entry);
     if (res && res.ok === false) throw new Error(res.reason || 'spawn-returned-false');

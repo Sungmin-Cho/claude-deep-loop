@@ -457,6 +457,22 @@ test('child can acquire the releasing lease after a headless respawn via handsha
   assert.equal(acq.ok, true); assert.equal(acq.generation, 2);
 });
 
+// Codex r3 🔴3: buildLaunchCommand throw must happen BEFORE spawned CAS — lease stays emitted.
+test('respawn: buildLaunchCommand throw (unsafe handoffRel) must not advance lease to spawned (codex-medium)', () => {
+  const { root, runId } = seed();
+  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });
+  // Blank the child session's handoff_rel so effHandoffRel falls back to the respawn arg.
+  { const { data } = readState(root, runId); const cs = data.session_chain.sessions.find(s => s.run_id === h.childRunId); if (cs) cs.handoff_rel = null; writeState(root, runId, data); }
+  // Pass unsafe/empty handoffRel (fails SAFE_HANDOFF_REL → buildLaunchCommand throws UNSAFE_SPAWN_ARG).
+  const r = respawn(root, runId, { childRunId: h.childRunId, key: h.key, handoffRel: '', headless: true, now: NOW1, spawnFn: () => { throw new Error('must not reach spawnFn'); } });
+  // Lease MUST NOT have advanced to 'spawned' (must be emitted/releasing — re-tryable, not stranded).
+  const lease = readState(root, runId).data.session_chain.lease;
+  assert.notEqual(lease.handoff_phase, 'spawned', 'buildLaunchCommand throw must happen before spawned CAS');
+  assert.equal(lease.state, 'releasing', 'lease must stay releasing (emitted, re-tryable)');
+  assert.equal(lease.handoff_phase, 'emitted', 'lease must stay emitted when build throws before CAS');
+  assert.equal(r.ok, false, 'respawn must return ok:false on build error');
+});
+
 // RUN_PAUSED gate: respawn on a paused run returns {ok:false, outcome:'paused'} (Task 6).
 test('respawn on a paused run returns paused (RUN_PAUSED precondition)', () => {
   const { root, runId } = seed();
