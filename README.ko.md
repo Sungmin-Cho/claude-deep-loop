@@ -1,3 +1,5 @@
+[English](./README.md) | **한국어**
+
 # deep-loop
 
 **Claude Code용 내구성 있는 오케스트레이션 플러그인** — 엄격한 2-plane 아키텍처, 예산 강제, proposal-only 안전 불변식으로 멀티세션·크로스플러그인 엔지니어링 작업을 조율합니다.

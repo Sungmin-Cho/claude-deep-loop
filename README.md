@@ -1,3 +1,5 @@
+**English** | [한국어](./README.ko.md)
+
 # deep-loop
 
 **Durable orchestration plugin for Claude Code** — coordinates multi-session, cross-plugin engineering work with a strict 2-plane architecture, budget enforcement, and proposal-only safety invariants.
