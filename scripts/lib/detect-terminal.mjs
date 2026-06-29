@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { isAbsolute } from 'node:path';
 import { appendAnchored } from './integrity.mjs';
 import { readState } from './state.mjs';
 import { reconcileBudget } from './budget.mjs';
@@ -66,9 +67,12 @@ export function detectTerminal({
     const surface_id  = env.CMUX_WORKSPACE_ID || env.CMUX_SURFACE_ID;
 
     // Missing-piece reason precedence (check in this exact order).
-    if (!cmux_bin)    return noneDescriptor('cmux-no-bundled-bin');
-    if (!socket_path) return noneDescriptor('cmux-no-socket');
-    if (!surface_id)  return noneDescriptor('cmux-no-surface');
+    if (!cmux_bin)                 return noneDescriptor('cmux-no-bundled-bin');
+    // Codex r3 🔴2: a relative/bare bin (e.g. 'cmux') resolves via PATH/cwd at probe time —
+    // fail-closed without probing or persisting any relative value.
+    if (!isAbsolute(cmux_bin))     return noneDescriptor('cmux-bin-not-absolute');
+    if (!socket_path)              return noneDescriptor('cmux-no-socket');
+    if (!surface_id)               return noneDescriptor('cmux-no-surface');
 
     // Probe MUST target the explicit socket — persist the SAME verified socket.
     const probe_argv   = ['--socket', socket_path, 'ping'];

@@ -50,3 +50,18 @@ test('win32 WT_SESSION → wt; powershell needs opt-in', () => {
 test('linux / no signal → none', () => {
   assert.equal(detectTerminal({ env:{}, platform:'linux', run: ok, now: NOW }).launcher, 'none');
 });
+
+// Codex r3 🔴2: relative/bare CMUX_BUNDLED_CLI_PATH must fail-closed — never probe, never persist.
+test('cmux: RELATIVE CMUX_BUNDLED_CLI_PATH (e.g. "cmux") → none cmux-bin-not-absolute, probe never called (codex-high)', () => {
+  let probeCallCount = 0;
+  const recordingRun = (bin, argv) => { probeCallCount++; return { code: 0 }; };
+  const d = detectTerminal({
+    env: { CMUX_BUNDLED_CLI_PATH: 'cmux', CMUX_SOCKET_PATH: '/run/cmux.sock', CMUX_WORKSPACE_ID: 'w1' },
+    platform: 'linux',
+    run: recordingRun,
+    now: NOW,
+  });
+  assert.equal(d.launcher, 'none');
+  assert.equal(d.reason, 'cmux-bin-not-absolute');
+  assert.equal(probeCallCount, 0, 'probe must NOT be called when cmux_bin is not absolute');
+});
