@@ -272,3 +272,24 @@ test('regression: non-paused run acquire leaves status running, no spurious paus
   assert.equal(data.status, 'running');
   assert.ok(!data.pause_reason, 'pause_reason must not be set on non-paused acquire');
 });
+
+// Codex r3 🔴1: releaseLease must reject when status=paused — prevents owner bypassing recover audit path.
+test('releaseLease on paused run returns RUN_PAUSED; lease NOT released; acquireLease stays blocked (codex-high)', () => {
+  const { root, runId } = seed();
+  // Seed a gate-blocked-style paused state: status=paused, lease.state=active, same owner/generation.
+  { const { data } = readState(root, runId); data.status = 'paused'; data.pause_reason = 'gate:budget'; writeState(root, runId, data); }
+  // releaseLease must refuse
+  const r = releaseLease(root, runId, { owner: runId, generation: 1 });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'RUN_PAUSED');
+  // lease NOT released — state still active
+  const lease = readState(root, runId).data.session_chain.lease;
+  assert.equal(lease.state, 'active');
+  assert.equal(lease.owner_run_id, runId);
+  // acquireLease by a new owner must still be blocked (run is paused, lease not released → not takeable)
+  const acq = acquireLease(root, runId, { owner: 'BYPASS', expectGeneration: 1 });
+  assert.equal(acq.ok, false);
+  assert.ok(acq.reason !== 'acquired', 'paused run must not be re-acquired via bypassed release');
+  // run status remains paused
+  assert.equal(readState(root, runId).data.status, 'paused');
+});

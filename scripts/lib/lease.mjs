@@ -84,6 +84,10 @@ export function releaseLease(root, runId, { owner, generation }) {
     const { data } = readState(root, runId);
     const lease = data.session_chain.lease;
     if (lease.owner_run_id !== owner || lease.generation !== generation) return { ok: false, reason: 'fenced' };
+    // Codex r3 🔴1: RUN_PAUSED — refuse to release when paused. An owner that got gate-blocked
+    // (rollbackAndPause) must not call releaseLease to bypass the `recover --confirm` audit path.
+    // leaseCheck intent='recover' (human-only) is the only way to resume from a paused run.
+    if (data.status === 'paused') return { ok: false, reason: 'RUN_PAUSED' };
     data.session_chain.lease = { ...lease, state: 'released' };
     writeState(root, runId, data);
     return { ok: true, reason: 'released' };
