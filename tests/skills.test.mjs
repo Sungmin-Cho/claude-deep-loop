@@ -205,3 +205,28 @@ test('resume: recover --confirm documented as human escape hatch', () => {
   assert.ok(src.includes('recover --confirm'),
     'deep-loop-resume must document recover --confirm as the escape hatch for stuck preserve-paused/gate-blocked runs');
 });
+
+// Codex r6 CRITICAL: no-launcher else-branch must always route through respawn (gate-first) before preserve-pause.
+// respawn returns gate-blocked (rollback+paused, skill must NOT re-pause) or no-launcher (gate passed, then preserve).
+test('continue + handoff no-launcher else-branch: respawn before preserve-pause, gate-blocked/no-launcher branching', () => {
+  for (const dir of ['deep-loop-continue', 'deep-loop-handoff']) {
+    const src = readFileSync(skillPath(dir), 'utf8');
+    // Must document gate-blocked outcome (respawn already paused — skill must NOT pause again).
+    assert.ok(src.includes('gate-blocked'),
+      `${dir}: no-launcher branch must handle respawn gate-blocked outcome`);
+    // gate-blocked recovery: recover --confirm (documented escape hatch), not re-pause.
+    assert.ok(src.includes('recover --confirm'),
+      `${dir}: gate-blocked path must document recover --confirm (not re-pause)`);
+    // Must document no-launcher outcome (gate passed but no auto-launcher — then preserve-pause).
+    assert.ok(src.includes('no-launcher'),
+      `${dir}: must reference no-launcher outcome from respawn`);
+    // preserve-pause must be conditioned on no-launcher outcome:
+    // 'no-launcher' substring must appear BEFORE '--mode preserve' in the text.
+    const noLauncherIdx = src.lastIndexOf('no-launcher');
+    const preserveIdx = src.lastIndexOf('--mode preserve');
+    assert.ok(noLauncherIdx !== -1, `${dir}: must reference no-launcher outcome`);
+    assert.ok(preserveIdx !== -1, `${dir}: must reference --mode preserve`);
+    assert.ok(noLauncherIdx < preserveIdx,
+      `${dir}: no-launcher outcome must appear before --mode preserve (preserve-pause conditioned on no-launcher, not before respawn gate)`);
+  }
+});
