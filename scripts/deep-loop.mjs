@@ -10,7 +10,7 @@ import { validate as validateLoop } from './lib/schema.mjs';
 import { readState, writeState, patch as patchState, pauseRun } from './lib/state.mjs';
 import { leaseCheck, acquireLease, releaseLease } from './lib/lease.mjs';
 import { newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal } from './lib/workspace.mjs';
-import { newEpisode, recordEpisode } from './lib/episode.mjs';
+import { newEpisode, recordEpisode, abandonEpisode } from './lib/episode.mjs';
 import { dispatchReview, recordReviewOutcome } from './lib/review.mjs';
 import { nextAction } from './lib/next-action.mjs';
 import { emitHandoff } from './lib/handoff.mjs';
@@ -157,7 +157,14 @@ const handlers = {
       const id = reqStr(f, 'id'); if (!id) { error('MISSING_ID'); return 2; }
       const status = reqStr(f, 'status'); if (!status) { error('MISSING_STATUS'); return 2; }
       if (status === 'approved' || status === 'rejected') { error(`EPISODE_TERMINAL_VIA_REVIEW: approved/rejected come only from 'review record'`); return 1; }
+      if (status === 'abandoned') { error(`EPISODE_ABANDON_VIA_VERB: use 'episode abandon --confirm'`); return 1; }
       recordEpisode(root, runId, id, { status, artifacts: f.artifacts ? JSON.parse(f.artifacts) : [], proof: f.proof ? JSON.parse(f.proof) : {}, fence }); json({ ok: true }); return 0;
+    }
+    if (verb === 'abandon') {
+      const id = reqStr(f, 'id'); if (!id) { error('MISSING_ID'); return 2; }
+      const reason = reqStr(f, 'reason'); if (!reason) { error('MISSING_REASON'); return 2; }
+      const confirm = f.confirm === true || f.confirm === 'true';
+      abandonEpisode(root, runId, id, { reason, confirm, fence }); json({ ok: true, status: 'abandoned' }); return 0;
     }
     error(`unknown episode verb: ${verb}`); return 2;
   },

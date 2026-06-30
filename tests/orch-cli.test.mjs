@@ -132,3 +132,24 @@ test('full suite still green count grows (smoke: validate ok)', () => {
   const out = run(root, ['validate']);
   assert.match(out, /ok/);
 });
+
+function setupRunWithPendingMaker() {
+  const { root, runId } = seed();
+  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'impl', '--point', 'implementation', '--owner', runId, '--generation', '1']));
+  return { root, runId, episodeId: ep.id };
+}
+
+// Task 9: episode abandon verb + record abandoned rejection
+test('episode abandon settles a stranded pending maker (exit 0)', () => {
+  const { root, runId, episodeId } = setupRunWithPendingMaker();
+  run(root, ['episode', 'abandon', '--id', episodeId, '--reason', 'orphan', '--confirm', '--owner', runId, '--generation', '1']);
+  assert.equal(readState(root, runId).data.episodes[0].status, 'abandoned');
+});
+
+test('episode record --status abandoned is rejected (exit 1)', () => {
+  const { root, runId, episodeId } = setupRunWithPendingMaker();
+  let code = 0;
+  try { run(root, ['episode', 'record', '--id', episodeId, '--status', 'abandoned', '--owner', runId, '--generation', '1']); }
+  catch (e) { code = e.status; }
+  assert.equal(code, 1);
+});
