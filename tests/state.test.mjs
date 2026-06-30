@@ -125,3 +125,38 @@ test('patch enforces fence inside the lock', () => {
   // forbidden field 는 fence 와 무관하게 거부
   assert.throws(() => patch(root, runId, 'budget.spent', 1, { fence: { owner: runId, generation: 1, intent: 'business' } }), /FIELD_FORBIDDEN/);
 });
+
+test('patch: cannot set episode status to abandoned (classifyPatch forbids)', () => {
+  const { root, runId } = seed();
+  assert.throws(() => patch(root, runId, 'episodes.0.status', 'abandoned'), /FIELD_FORBIDDEN/);
+});
+
+test('patch: cannot resurrect a terminal episode to non-terminal via patch', () => {
+  const { root, runId } = seed();
+  const data = readState(root, runId).data;
+  data.episodes[0].status = 'abandoned';
+  writeState(root, runId, data);
+  assert.throws(() => patch(root, runId, 'episodes.0.status', 'pending'), /FIELD_FORBIDDEN/);
+});
+
+test('patch: out-of-range index rejected for all indexed sub-fields (no phantom item)', () => {
+  const { root, runId } = seed();
+  assert.throws(() => patch(root, runId, 'episodes.5.status', 'in_progress'), /FIELD_FORBIDDEN/);
+  assert.throws(() => patch(root, runId, 'episodes.5.result_summary', 'x'), /FIELD_FORBIDDEN/);
+  assert.throws(() => patch(root, runId, 'workstreams.9.status', 'in_progress'), /FIELD_FORBIDDEN/);
+  assert.throws(() => patch(root, runId, 'workstreams.9.depends_on', ['x']), /FIELD_FORBIDDEN/);
+});
+
+test('patch: non-canonical (leading-zero) index rejected on both arrays', () => {
+  const { root, runId } = seed();
+  assert.throws(() => patch(root, runId, 'episodes.01.status', 'in_progress'), /FIELD_FORBIDDEN/);
+  assert.throws(() => patch(root, runId, 'workstreams.01.depends_on', ['x']), /FIELD_FORBIDDEN/);
+});
+
+test('patch: non-terminal workstream status allowed; terminal workstream resurrection rejected', () => {
+  const { root, runId } = seed();   // workstreams[0]=ws-1, status in_progress
+  patch(root, runId, 'workstreams.0.status', 'in_progress');                 // non-terminal → allowed
+  assert.equal(readState(root, runId).data.workstreams[0].status, 'in_progress');
+  const data = readState(root, runId).data; data.workstreams[0].status = 'ready'; writeState(root, runId, data);  // fix terminal
+  assert.throws(() => patch(root, runId, 'workstreams.0.status', 'in_progress'), /FIELD_FORBIDDEN/);   // resurrection rejected
+});

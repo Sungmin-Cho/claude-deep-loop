@@ -17,7 +17,7 @@ const loopPath = (root, runId) => join(runDir(root, runId), 'loop.json');
 const hashPath = (root, runId) => join(runDir(root, runId), '.loop.hash');
 
 // patch 분류기 (spec §4 정확 일치). 정확 경로/패턴만 allow, 나머지 전부 forbid (default-deny).
-const TERMINAL_EPISODE = ['done', 'approved', 'rejected'];
+const TERMINAL_EPISODE = ['done', 'approved', 'rejected', 'abandoned'];
 const TERMINAL_WORKSTREAM = ['ready', 'merged', 'abandoned'];
 
 // 스킬 patch 허용 경로 (문서/검증용)
@@ -84,6 +84,17 @@ export function patch(root, runId, field, value, { fence } = {}) {
   return withLock(root, runId, () => {
     const { data } = readState(root, runId);
     if (fence) { const r = leaseCheck(data, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
+    const im = field.match(/^(episodes|workstreams)\.(\d+)\.(.+)$/);
+    if (im) {
+      const [, arr, idxStr, sub] = im;
+      if (!/^(0|[1-9]\d*)$/.test(idxStr)) throw new Error(`FIELD_FORBIDDEN: ${field} (non-canonical index)`);
+      const list = data[arr]; const idx = Number(idxStr);
+      if (!Array.isArray(list) || idx >= list.length || list[idx] == null) throw new Error(`FIELD_FORBIDDEN: ${field} (index out of range)`);
+      if (sub === 'status') {
+        const term = arr === 'episodes' ? TERMINAL_EPISODE : TERMINAL_WORKSTREAM;
+        if (term.includes(list[idx].status)) throw new Error(`FIELD_FORBIDDEN: ${field} (terminal status immutable)`);
+      }
+    }
     setPath(data, field, value);
     writeState(root, runId, data);
   });
