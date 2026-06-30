@@ -50,7 +50,12 @@ function finishOrAdvance(loop, gate, fanoutBlocked) {
     return A(gate, { type: 'await_human', episode_id: rejected.id, reason: 'unbound-rejected-unresolved' }, '/deep-loop-status');
   }
   const inProg = eps.find(e => e.status === 'in_progress');
-  if (inProg) return A(gate, { type: 'await_result', episode_id: inProg.id }, '/deep-loop-continue');
+  if (inProg) {
+    // P2-b: a proof-impossible orphan maker (expected_artifacts === []) cannot reach `done` even from in_progress
+    // (recordEpisode('done') rejects empty expected_artifacts) → don't await_result forever; surface abandon recovery.
+    if (inProg.role === 'maker' && isOrphanMaker(inProg)) return A(gate, { type: 'await_human', episode_id: inProg.id, reason: 'orphan-maker-no-artifacts' }, '/deep-loop-status');
+    return A(gate, { type: 'await_result', episode_id: inProg.id }, '/deep-loop-continue');
+  }
   // pending checker 는 actionable 이나 auto-dispatch (dispatch_checker = review dispatch) 가 중복 checker 를 만든다.
   // 사람에게 surface — driver 가 무한 dispatch loop 에 빠지지 않도록.
   const pendingChecker = eps.find(e => e.role === 'checker' && e.status === 'pending');
@@ -104,7 +109,12 @@ export function nextAction(loop, { now = Date.now() } = {}) {
       if (debt.blocked && ep.kind !== 'fix') return A(gate, { type: 'await_human', episode_id: ep.id, reason: 'comprehension-debt' }, '/deep-loop-status');
       return A(gate, { type: 'dispatch_maker', episode_id: ep.id, point: ep.point, workstream_id: ep.workstream_id }, '/deep-loop-continue');
     }
-    if (ep.status === 'in_progress') return A(gate, { type: 'await_result', episode_id: ep.id }, '/deep-loop-continue');
+    if (ep.status === 'in_progress') {
+      // P2-b: same orphan routing as finishOrAdvance — an in_progress orphan maker can never reach `done`, so surface
+      // the human-gated abandon recovery instead of awaiting a result that can never validate.
+      if (isOrphanMaker(ep)) return A(gate, { type: 'await_human', episode_id: ep.id, reason: 'orphan-maker-no-artifacts' }, '/deep-loop-status');
+      return A(gate, { type: 'await_result', episode_id: ep.id }, '/deep-loop-continue');
+    }
     if (ep.status === 'blocked') return A(gate, { type: 'await_human', episode_id: ep.id, reason: 'episode-blocked' }, '/deep-loop-status');
     if (ep.status === 'done') {
       // dispatch_checker 는 workstream 이 있어야 가능 (review dispatch → WORKSTREAM_NOT_FOUND 방지). 없으면 사람에게 surface.

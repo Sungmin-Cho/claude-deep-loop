@@ -76,3 +76,36 @@ test('abandonEpisode clamps episodes_total at 0 for a legacy/corrupt run (total 
   abandonEpisode(root, runId, id, { reason: 'orphan', confirm: true, fence });
   assert.equal(readState(root, runId).data.comprehension.episodes_total, 0);
 });
+
+// P2-a regression: an abandoned NON-reviewed maker is out of BOTH comprehension counters and must be UN-ackable —
+// a later ack must NOT bump episodes_human_reviewed (otherwise reviewed/total can exceed 1 and debt wrongly drops to 0,
+// unblocking fan-out). After abandon, ep.human_reviewed is set true (primary fix) AND ack/recordReviewed skip an
+// abandoned episode (belt-and-suspenders) → ack is a no-op either way.
+test('P2-a: ack on an abandoned (never-reviewed) maker is a no-op — episodes_human_reviewed stays 0', () => {
+  const { root, runId, fence } = freshRun();
+  const { id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: null, expectedArtifacts: [], fence });
+  assert.equal(readState(root, runId).data.comprehension.episodes_total, 1);
+  abandonEpisode(root, runId, id, { reason: 'orphan', confirm: true, fence });
+  // abandoned maker is out of episodes_total …
+  assert.equal(readState(root, runId).data.comprehension.episodes_total, 0);
+  // … and the maker is marked reviewed so ack returns early as a no-op (no double count into episodes_human_reviewed)
+  const r = ack(root, runId, id, { fence });
+  assert.equal(r.ok, true);
+  const c = readState(root, runId).data.comprehension;
+  assert.equal(c.episodes_human_reviewed, 0, 'ack on an abandoned maker must not increment episodes_human_reviewed');
+  assert.equal(c.episodes_total, 0);
+  // computeDebt must not be corrupted to reviewed/total > 1 (debt 0): with both counters 0 → debt 0, not blocked.
+  assert.equal(computeDebt(readState(root, runId).data).debt_ratio, 0);
+});
+
+// P2-a belt-and-suspenders: even if an abandoned episode somehow has human_reviewed=false (legacy/corrupt state),
+// the comprehension guard makes ack a no-op purely from status==='abandoned' (independent of the episode.mjs fix).
+test('P2-a: ack guard skips an abandoned episode with human_reviewed=false (status-based no-op)', () => {
+  const { root, runId, fence } = freshRun();
+  const { id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: null, expectedArtifacts: [], fence });
+  abandonEpisode(root, runId, id, { reason: 'orphan', confirm: true, fence });
+  // Force the legacy/corrupt shape: abandoned but human_reviewed reset to false.
+  const data = readState(root, runId).data; data.episodes.find(e => e.id === id).human_reviewed = false; writeState(root, runId, data);
+  ack(root, runId, id, { fence });
+  assert.equal(readState(root, runId).data.comprehension.episodes_human_reviewed, 0, 'status==abandoned guard must keep ack a no-op');
+});

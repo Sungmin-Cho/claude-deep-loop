@@ -101,6 +101,46 @@ test('pending maker with non-empty / omitted expected_artifacts → still dispat
   assert.equal(nextAction(l2, { now: Date.parse('2026-06-24T00:00:00Z') }).action.type, 'dispatch_maker');
 });
 
+// P2-b: an in_progress orphan maker (expected_artifacts === []) is ALSO proof-impossible — recordEpisode('done')
+// rejects empty expected_artifacts — so awaiting a result spins forever. nextAction must route it to the human-gated
+// abandon recovery via await_human(orphan-maker-no-artifacts) at BOTH in_progress sites: (a) current_episode = the
+// orphan (main-body maker branch), (b) current_episode=null → finishOrAdvance's inProg scan.
+test('orphan in_progress maker (expected_artifacts: []) → await_human(orphan-maker-no-artifacts), not await_result', () => {
+  const l = loop();
+  l.episodes = [{ id: '001-deep-work', role: 'maker', status: 'in_progress', point: 'implementation', workstream_id: 'ws-01', expected_artifacts: [] }];
+  // (a) main-body current_episode path
+  l.current_episode = '001-deep-work';
+  const r1 = nextAction(l, { now: Date.parse('2026-06-24T00:00:00Z') });
+  assert.equal(r1.action.type, 'await_human', `expected await_human but got ${r1.action.type}`);
+  assert.equal(r1.action.reason, 'orphan-maker-no-artifacts');
+  assert.equal(r1.action.episode_id, '001-deep-work');
+  // (b) finishOrAdvance inProg path (current_episode=null)
+  l.current_episode = null;
+  const r2 = nextAction(l, { now: Date.parse('2026-06-24T00:00:00Z') });
+  assert.equal(r2.action.type, 'await_human', `expected await_human but got ${r2.action.type}`);
+  assert.equal(r2.action.reason, 'orphan-maker-no-artifacts');
+  assert.equal(r2.action.episode_id, '001-deep-work');
+});
+
+// No false positive: a non-orphan in_progress maker (non-empty expected_artifacts, or the field omitted) must STILL
+// return await_result at both routing sites — the orphan predicate fires ONLY on an explicit empty array.
+test('non-orphan in_progress maker (expected_artifacts:[x] / omitted) → still await_result (no false positive)', () => {
+  // non-empty expected_artifacts → await_result (both sites)
+  const l = loop();
+  l.episodes = [{ id: '001-deep-work', role: 'maker', status: 'in_progress', point: 'implementation', workstream_id: 'ws-01', expected_artifacts: ['x'] }];
+  l.current_episode = '001-deep-work';
+  assert.equal(nextAction(l, { now: 0 }).action.type, 'await_result');
+  l.current_episode = null;
+  assert.equal(nextAction(l, { now: 0 }).action.type, 'await_result');
+  // OMITS expected_artifacts → not an orphan → await_result (both sites)
+  const l2 = loop();
+  l2.episodes = [{ id: '001-deep-work', role: 'maker', status: 'in_progress', point: 'implementation', workstream_id: 'ws-01' }];
+  l2.current_episode = '001-deep-work';
+  assert.equal(nextAction(l2, { now: 0 }).action.type, 'await_result');
+  l2.current_episode = null;
+  assert.equal(nextAction(l2, { now: 0 }).action.type, 'await_result');
+});
+
 test('per_session_turn_cap reached → handoff', () => {
   const l = loop();
   l.budget.per_session_turn_cap = 5;

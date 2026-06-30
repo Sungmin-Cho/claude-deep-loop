@@ -88,6 +88,10 @@ export function abandonEpisode(root, runId, episodeId, { reason, confirm, fence 
       c.episodes_total = Math.max(0, (c.episodes_total || 0) - 1);
       if (ep.human_reviewed) c.episodes_human_reviewed = Math.max(0, (c.episodes_human_reviewed || 0) - 1);
     }
+    // P2-a: AFTER the decrement (which read the OLD human_reviewed), mark the abandoned episode reviewed so a later
+    // `ack`/`recordReviewed` is a no-op — an abandoned maker is out of episodes_total and must never be re-counted
+    // into episodes_human_reviewed (which would make reviewed/total exceed 1 and wrongly drop comprehension debt to 0).
+    ep.human_reviewed = true;
   }, (loop) => {
     const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason);
     const ep = loop.episodes.find(e => e.id === episodeId);
