@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const skillPath = (dir) => join(ROOT, 'skills', dir, 'SKILL.md');
+const _rf = readFileSync;
 
 // 매니페스트: [dir, name, userInvocable, triggers[](영+한 둘 다 포함해야), refsCLI?(mutating이면 CLI 참조 필수)]
 const SKILLS = [
@@ -67,6 +68,40 @@ function mutatingFenced(text) {
     return /--owner\b/.test(line) && /--generation\b/.test(line);    // mutating 명령 → 두 fence flag 필수 (OR 아님)
   });
 }
+
+// R3 high-3: bare-relative `.claude/worktrees/ws`(git이 cwd 기준 해석 → worktree 안에서 중첩)도 위험.
+// 안전 조건을 강화: worktree 경로가 등장하면 반드시 $ORIG_ROOT 절대 앵커여야 한다. '..'·foreign-abs·bare-relative 모두 flag.
+// 산문 오탐 회피: worktrees 경로 토큰이나 foreign 절대경로가 없는 순수 멘션 라인은 무시.
+function worktreeWriteOutsideRoot(src) {
+  const joined = src.replace(/\\\n\s*/g, ' ');   // 백슬래시 연속줄 join (mutatingFenced 패턴)
+  return joined.split('\n').some(line => {
+    // R5 P2-1: git 옵션(-C 등)이 git 과 worktree add 사이에 와도 매칭.
+    if (!/\bgit\b[^\n]*\bworktree\s+add\b/.test(line)) return false;
+    if (/\.\.(\/|\\)/.test(line)) return true;                                    // '..' escape
+    const origRootAnchored = /\$\{?ORIG_ROOT\}?\/[^"'\s]*\.(claude\/worktrees|worktrees)\//.test(line);
+    const mentionsWtPath = /\.(claude\/worktrees|worktrees)\//.test(line);
+    if (mentionsWtPath && !origRootAnchored) return true;                         // bare/cwd-relative worktrees path
+    const hasForeignAbs = /\s["']?\/(?!\/)/.test(line) || /\s["']?[A-Za-z]:\\/.test(line);
+    return hasForeignAbs && !origRootAnchored;                                    // /tmp 등 foreign abs
+  });
+}
+
+test('boundary: worktree-write guard flags root-escape/bare-relative/git-options, allows $ORIG_ROOT-anchored', () => {
+  assert.ok(worktreeWriteOutsideRoot('git worktree add /tmp/wt -b x base'), 'abs /tmp flagged');
+  assert.ok(worktreeWriteOutsideRoot('git worktree add ../sib/wt -b x base'), '.. flagged');
+  assert.ok(worktreeWriteOutsideRoot('git worktree add -b x \\\n  /tmp/wt base'), 'multiline escape flagged');
+  assert.ok(worktreeWriteOutsideRoot('git worktree add .claude/worktrees/ws -b x base'), 'bare-relative worktrees flagged (R3 high-3)');
+  assert.ok(worktreeWriteOutsideRoot('git -C "$ORIG_ROOT" worktree add /tmp/wt -b x base'), 'git -C option + /tmp flagged (R5 P2-1)');
+  assert.ok(!worktreeWriteOutsideRoot('git worktree add -b worktree-ws "$ORIG_ROOT/.claude/worktrees/ws" "$BASE_REF"'), 'ORIG_ROOT-anchored allowed');
+  assert.ok(!worktreeWriteOutsideRoot('git worktree add \\\n  -b w "$ORIG_ROOT/.claude/worktrees/ws" "$BASE_REF"'), 'ORIG_ROOT-anchored multiline allowed');
+  assert.ok(!worktreeWriteOutsideRoot('이미 worktree 안이면 재사용 (산문)'), 'prose without git-worktree-add ignored');
+});
+
+test('CLAUDE.md: invariant #7 carries explicit worktree-write carve-out', () => {
+  const md = _rf(join(ROOT, 'CLAUDE.md'), 'utf8');
+  assert.match(md, /\.claude\/worktrees\//, 'names .claude/worktrees/ carve-out');
+  assert.match(md, /worktree[\s\S]{0,400}(proposal-only|사람 승인|human|containment)/i, 'carve-out rules present');
+});
 
 test('boundary scan flags forbidden write forms and allows reads/mentions/blockquotes (fixtures)', () => {
   const bad = [
