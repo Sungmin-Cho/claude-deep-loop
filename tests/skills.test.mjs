@@ -458,6 +458,47 @@ test('deep-loop §2-7: adapter read.path must be explicitly transformed to workt
   );
 });
 
+// FIX N: workstream new --worktree must record root-relative path, not $ORIG_ROOT absolute.
+// git worktree add uses $ORIG_ROOT absolute (correct — git needs an absolute target); but the
+// value RECORDED via workstream new must be root-relative (.claude/worktrees/<slug>) so that
+// artifact prefixes are root-relative and pass episode.mjs containment (no absolute/.. paths).
+test('deep-loop §2-6: workstream new records root-relative .claude/worktrees/<slug> (not $ORIG_ROOT absolute)', () => {
+  const s = dlSkill();
+  const joined = s.replace(/\\\n\s*/g, ' ');
+  // workstream new and --worktree must appear on the same logical line after joining continuations
+  const wsNewLine = joined.split('\n').find(l => /workstream\s+new/.test(l) && /--worktree/.test(l));
+  assert.ok(wsNewLine, 'workstream new --worktree must appear in a joined logical command line');
+  assert.ok(
+    /--worktree\s+"?\.claude\/worktrees\//.test(wsNewLine),
+    'workstream new --worktree must record root-relative .claude/worktrees/<slug> path (not $ORIG_ROOT absolute)'
+  );
+  assert.ok(
+    !/--worktree\s+"?\$\{?ORIG_ROOT\}?\//.test(wsNewLine),
+    'workstream new --worktree must NOT use $ORIG_ROOT absolute path for the recorded value'
+  );
+});
+
+// FIX O: state get --field project.root emits JSON-encoded string with quotes (e.g. "/repo").
+// Assigning that raw to a shell variable and using it as a path embeds literal quotes →
+// final-report path is wrong → finish --status completed fails final-report-missing.
+test('deep-loop-finish: project.root read must strip JSON quotes before use as filesystem path', () => {
+  const s = _rf(skillPath('deep-loop-finish'), 'utf8');
+  // Must document JSON quote-stripping (JSON.parse, tr -d, or sed) near the project.root read
+  assert.match(s,
+    /project\.root[\s\S]{0,400}(JSON\.parse|tr\s+-d\s+['"]|sed\b[^\n]*s[^\n]*")/,
+    'deep-loop-finish must document JSON quote-stripping when reading project.root for filesystem path use (state get emits quoted JSON)'
+  );
+});
+
+test('deep-loop-continue §1.5: project.root read must strip JSON quotes before filesystem path use', () => {
+  const s = _rf(skillPath('deep-loop-continue'), 'utf8');
+  // state get --field project.root emits JSON-encoded string with quotes; must document stripping
+  assert.match(s,
+    /project\.root[\s\S]{0,400}(JSON\.parse|tr\s+-d\s+['"]|sed\b[^\n]*s[^\n]*")/,
+    'deep-loop-continue §1.5 must document JSON quote-stripping when reading project.root for path absolutization'
+  );
+});
+
 // FIX G: deep-loop SKILL.md episode new --artifacts example must use worktree-prefixed paths
 test('deep-loop §2-7: episode new --artifacts example uses worktree-prefixed paths', () => {
   const s = dlSkill();

@@ -22,8 +22,11 @@ user-invocable: true
 
 **먼저 project root를 상태에서 읽는다:**
 
+> `state get --field project.root`는 JSON-인코딩된 문자열(예: `"/repo"`)을 출력한다 — 따옴표를 제거해야 한다.
+
 ```
-PROJECT_ROOT=$(node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field project.root)
+PROJECT_ROOT=$(node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field project.root \
+  | node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0,"utf8")))')
 ```
 
 `<project-root>/.deep-loop/runs/<run_id>/final-report.md`에 **절대 경로**로 final report를 작성한다:

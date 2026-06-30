@@ -117,7 +117,7 @@ BASE_REF=$(git rev-parse HEAD)               # 의도한 base commit
 - ① native 호출 **전에** 그 도구가 `$ORIG_ROOT/.claude/worktrees/` 밑에 worktree를 생성할 것이 **보장**되는지 확인한다. Claude Code `EnterWorktree`는 알려진 동작이므로 사용 가능; 보장 불가하면 처음부터 **Step 1b(git 폴백)**으로 전환.
 - ② 보장했는데도 native가 root 밖에 생성했다면 **즉시 fail-closed STOP(needs-human)** — 사후 audit 의존 ❌.
 
-생성 후 **실제** path + branch를 캡처 → Step 2.
+생성 후 **실제** path + branch를 캡처 → Step 2. **기록 전 변환 필수:** 캡처한 절대 경로가 `$ORIG_ROOT/.claude/worktrees/` 밑이면 `$ORIG_ROOT` 접두를 제거해 루트-상대(`.claude/worktrees/<slug>`) 형태로 변환한 뒤 Step 2에서 `--worktree`로 기록한다.
 
 #### Step 1b — git (다중 workstream run의 모든 worktree, 또는 단일 run의 native 부재/폴백)
 
@@ -135,14 +135,14 @@ git worktree add -b worktree-<ws-slug> "$ORIG_ROOT/.claude/worktrees/<ws-slug>" 
 ```
 다중 run에서 git을 사용하는 이유: cwd를 이동시키지 않아 ORIG_ROOT에 머문 채 N개를 생성할 수 있다(native cwd 이동/중첩 회피).
 
-생성 후 **실제** path + branch를 캡처 → Step 2.
+생성 후 **실제** path + branch를 캡처 → Step 2. **기록 시 루트-상대 변환 필수:** `$ORIG_ROOT` 접두를 제거해 `.claude/worktrees/<slug>` 형태로 `--worktree`를 지정한다(절대 경로 기록 금지 — artifact prefix가 절대 경로가 되면 `episode.mjs` containment 실패).
 
 #### §0.5 원본 root·base 캡처 + cwd 분리 + artifact 경로 규칙
 
 - **ORIG_ROOT/BASE_REF 캡처(sibling git 경로 구성용):** 어떤 worktree 전환보다 먼저 `$ORIG_ROOT`(격리 진입 전 `git rev-parse --show-toplevel`)와 `$BASE_REF`(의도한 base commit)를 캡처한다(위 캡처 블록 참조). 이 값이 sibling git 폴백의 절대경로·명시 base 인자가 된다.
 - **cwd 분리:** maker/checker 파일 편집은 해당 worktree 안에서(분리) 수행한다. 커널 상태 호출은 `rootOf` 상향탐색이 cwd에서 root를 자동 해석(`--project-root` 불필요).
 - **artifact 경로는 ORIG_ROOT-상대로 기록:** episode artifact를 `.claude/worktrees/<slug>/…` 형태(ORIG_ROOT 기준 상대)로 기록해야 `episode.mjs` containment(절대경로·`..` 금지)를 통과한다. worktree가 root 밑에 있어야 이 경로가 성립한다.
-- **worktree 기록 경로 규율(FIX A):** `workstream new`에 기록하는 worktree 경로는 반드시 `$ORIG_ROOT/.claude/worktrees/<slug>` (또는 `.worktrees/<slug>`) 형태여야 한다. 커널 `findRoot`는 이 두 컨벤션 경로에서만 run을 상향탐색으로 해석한다. 비컨벤션 경로를 기록하면 worktree 안에서 실행한 커널 호출이 run을 찾지 못해 root 해석이 실패하는 discipline violation이다.
+- **worktree 기록 경로 규율(FIX A/FIX N):** git worktree **생성**은 `$ORIG_ROOT/.claude/worktrees/<slug>` 절대경로로 하되(git은 절대경로 필요), `workstream new`에 **기록**하는 worktree 값은 반드시 루트-상대(root-relative) 형태 `.claude/worktrees/<slug>` (또는 `.worktrees/<slug>`)여야 한다. native EnterWorktree 경로도 동일 — 캡처한 절대 경로를 `$ORIG_ROOT` 기준으로 잘라 루트-상대로 변환한 뒤 기록. 이유: artifact 경로는 `<recorded-worktree>/<artifact>`로 도출되는데, 기록된 worktree가 절대 경로이면 artifact prefix도 절대 경로가 되어 `episode.mjs` containment(`절대경로·.. 금지`)를 통과하지 못한다. 커널 `findRoot`는 이 두 컨벤션 경로에서만 run을 상향탐색으로 해석한다.
 
 #### Step 1.5 — create↔record 정합 (고아 방지)
 
@@ -166,13 +166,15 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" lease check --owner <run_id> 
 
 #### Step 2 — 기록
 
-캡처한 실제 값으로 기록한다(`--project-root` 불필요 — 커널 `rootOf`가 cwd 상향탐색으로 root를 자동 해석):
+캡처한 실제 값으로 기록한다(`--project-root` 불필요 — 커널 `rootOf`가 cwd 상향탐색으로 root를 자동 해석).
+
+**`--worktree`는 반드시 루트-상대(root-relative) 경로**로 기록한다 — git이 `$ORIG_ROOT/.claude/worktrees/<slug>` 절대경로로 생성하더라도 기록 값은 `.claude/worktrees/<slug>` 형태다:
 
 ```
 node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" workstream new \
   --title "<workstream title>" \
   --branch "<actual-branch>" \
-  --worktree "<actual-path>" \
+  --worktree ".claude/worktrees/<ws-slug>" \
   --owner <run_id> --generation 1
 ```
 
@@ -186,7 +188,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" workstream new \
 | 단일 run · 이미 격리 · 부적격/미확인 | 재사용 ❌ → git(Step 1b) 또는 human 중단 |
 | 단일 run · 비격리 · native 있음 | `EnterWorktree` native 생성(Step 1a) |
 | 단일 run · 비격리 · native 없음 | git 컨벤션 경로(Step 1b) |
-| 다중 run · 모든 ws | 전부 git `$ORIG_ROOT/.claude/worktrees/<slug>` `-b worktree-<slug>` (Step 1b; native 미사용) |
+| 다중 run · 모든 ws | 전부 git(Step 1b): 생성 `$ORIG_ROOT/.claude/worktrees/<slug>` — 기록 `.claude/worktrees/<slug>` (루트-상대, native 미사용) |
 | gitignore 미설정 | proposal-only 제안 — 승인 시에만 진행, 자동 커밋 ❌ |
 | native가 root 밖에 생성 | fail-closed STOP(needs-human) |
 
