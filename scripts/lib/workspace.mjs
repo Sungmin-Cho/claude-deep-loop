@@ -1,5 +1,5 @@
-import { existsSync } from 'node:fs';
-import { isAbsolute, join } from 'node:path';
+import { existsSync, realpathSync } from 'node:fs';
+import { isAbsolute, join, resolve, sep, dirname, basename } from 'node:path';
 import { readState, writeState, withLock } from './state.mjs';
 import { appendAnchored } from './integrity.mjs';
 import { slugify } from './slug.mjs';
@@ -17,6 +17,23 @@ export function newWorkstream(root, runId, { title, branch, worktree, baseCommit
   }
   if (!Array.isArray(dependsOn) || dependsOn.some(d => typeof d !== 'string' || d.length === 0)) {
     throw new Error('WORKSTREAM_INPUT_INVALID: dependsOn must be an array of strings');
+  }
+  // §0.6-2: containment — worktree must resolve under project root (or be root itself: reuse case).
+  // R5 P2-2: existing paths use realpathSync (blocks symlink escapes); non-existent paths walk up to
+  // the nearest existing ancestor for symlink resolution (handles /tmp→/private/tmp on macOS).
+  const _rootResolved = realpathSync(root);
+  function _resolveDeep(p) {
+    const abs = resolve(p);
+    if (existsSync(abs)) return realpathSync(abs);
+    const par = dirname(abs);
+    if (par === abs) return abs; // filesystem root — can't walk further
+    return join(_resolveDeep(par), basename(abs));
+  }
+  const _wtBase = isAbsolute(worktree) ? worktree : join(_rootResolved, worktree);
+  const _wtResolved = _resolveDeep(_wtBase);
+  const _underRoot = _wtResolved === _rootResolved || _wtResolved.startsWith(_rootResolved + sep);
+  if (worktree.split(/[/\\]/).includes('..') || !_underRoot) {
+    throw new Error('WORKSTREAM_WORKTREE_ESCAPE: worktree must resolve under project root: ' + worktree);
   }
   let id;
   appendAnchored(root, runId, { type: 'workstream-new', data: { title } }, (loop) => {

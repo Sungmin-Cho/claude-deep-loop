@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
@@ -223,4 +223,34 @@ test('newWorkstream throws FENCE_REQUIRED when called without fence', () => {
     () => newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: 'w' }),
     /FENCE_REQUIRED/
   );
+});
+
+test('newWorkstream rejects worktree outside project root (containment)', () => {
+  const { root, runId } = seed();
+  for (const bad of ['/tmp/escape-wt', '../sibling/wt', '.claude/worktrees/../../escape']) {
+    assert.throws(
+      () => newWorkstream(root, runId, { title: 'X', branch: 'b', worktree: bad, fence: fence(runId) }),
+      /WORKSTREAM_WORKTREE_ESCAPE/, `must reject ${bad}`);
+  }
+});
+
+test('newWorkstream allows worktree under project root (relative + absolute + root-self reuse)', () => {
+  const { root, runId } = seed();
+  assert.ok(newWorkstream(root, runId, { title: 'Rel', branch: 'b2', worktree: '.claude/worktrees/ws', fence: fence(runId) }).id);
+  assert.ok(newWorkstream(root, runId, { title: 'Abs', branch: 'b3', worktree: join(root, '.claude/worktrees/ws2'), fence: fence(runId) }).id);
+  // R3 medium: worktree == root (단일·재사용 케이스) 허용
+  assert.ok(newWorkstream(root, runId, { title: 'Self', branch: 'b4', worktree: root, fence: fence(runId) }).id);
+  assert.ok(newWorkstream(root, runId, { title: 'Dot', branch: 'b5', worktree: '.', fence: fence(runId) }).id);
+});
+
+test('newWorkstream rejects symlinked worktree parent escaping root (R5 P2-2)', () => {
+  const { root, runId } = seed();
+  const outside = mkdtempSync(join(tmpdir(), 'dl-outside-'));   // 프로젝트 밖 실제 디렉터리
+  mkdirSync(join(root, '.claude'), { recursive: true });
+  symlinkSync(outside, join(root, '.claude', 'worktrees'));      // .claude/worktrees -> outside (symlink)
+  mkdirSync(join(outside, 'ws'), { recursive: true });           // 실제 worktree 는 outside/ws
+  // lexical 로는 root 밑처럼 보이나 realpath 는 outside → 거부돼야 함.
+  assert.throws(
+    () => newWorkstream(root, runId, { title: 'Sym', branch: 'bs', worktree: '.claude/worktrees/ws', fence: fence(runId) }),
+    /WORKSTREAM_WORKTREE_ESCAPE/, 'symlinked parent escaping root rejected');
 });
