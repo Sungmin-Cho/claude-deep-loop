@@ -3,14 +3,14 @@ import { resolve, sep } from 'node:path';
 import { appendAnchored } from './integrity.mjs';
 import { leaseCheck } from './lease.mjs';
 import { runDir } from './state.mjs';
-import { makerReviewed } from './review.mjs';
+import { makerReviewed, unsatisfiedReviewPoints } from './review.mjs';
 
 function reviewSatisfied(loop, ep) {
   const ws = (loop.workstreams || []).find(w => w.id === ep.workstream_id);
   if (ws && (ws.review_points_done || []).includes(ep.point)) return true;
   return (loop.episodes || []).some(e => e.role === 'checker' && e.status === 'approved' && e.workstream_id === ep.workstream_id && e.point === ep.point);
 }
-const settledEp = (loop, e) => ['done', 'approved'].includes(e.status) || (e.role === 'checker' && e.status === 'rejected' && reviewSatisfied(loop, e));
+const settledEp = (loop, e) => ['done', 'approved', 'abandoned'].includes(e.status) || (e.role === 'checker' && e.status === 'rejected' && reviewSatisfied(loop, e));
 const TERMINAL_WS = ['ready', 'merged', 'abandoned'];
 
 export function finishProofState(loop) {
@@ -33,6 +33,7 @@ export function finishProofState(loop) {
   const boundApproved = (mid) => (loop.episodes || []).some(e => e.role === 'checker' && e.target_maker === mid && e.status === 'approved');
   const allPointsConverged = [...latestByPoint.values()].every(m => boundApproved(m.id));
   const reviewedProof = doneMakers.length > 0 && allMakersReviewed && allPointsConverged;
+  const unboundDoneMaker = doneMakers.some(m => !m.workstream_id || !(loop.workstreams || []).some(w => w.id === m.workstream_id));
   const missing = [];
   if (!hasWork) missing.push('no-proof-of-work');                  // 최소 1 episode 필요 (Array.every 공허-통과 방지)
   if (!settled) missing.push('unsettled-episodes');
@@ -40,6 +41,8 @@ export function finishProofState(loop) {
   if (!wsAll) missing.push('non-terminal-workstreams');
   if (!allMakersReviewed) missing.push('unreviewed-maker');        // 미리뷰 done maker 차단
   if (hasWork && !reviewedProof) missing.push('no-independent-review');
+  if (unsatisfiedReviewPoints(loop).length) missing.push('review-point-unsatisfied');
+  if (unboundDoneMaker) missing.push('unbound-proof-episode');
   return { hasWork, settled, noActiveWs, allWsTerminal: wsAll, allMakersReviewed, reviewedProof, missing };
 }
 

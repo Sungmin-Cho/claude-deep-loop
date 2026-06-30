@@ -108,6 +108,35 @@ test('finishProofState passes for a fix-loop (maker1+rejected-checker, maker2+ap
   assert.deepEqual(finishProofState(loop).missing, []);
 });
 
+test('finishProofState: unmet review.points -> review-point-unsatisfied', () => {
+  const loop = { review: { points: ['design', 'implementation'] },
+    episodes: [
+      { id: 'm', role: 'maker', point: 'design', workstream_id: 'w', status: 'done' },
+      { id: 'c', role: 'checker', point: 'design', workstream_id: 'w', status: 'approved', target_maker: 'm' }],
+    workstreams: [{ id: 'w', status: 'ready', review_points_done: ['design'] }], active_workstreams: [] };
+  assert.ok(finishProofState(loop).missing.includes('review-point-unsatisfied'));
+});
+
+test('finishProofState: done maker not bound to existing workstream -> unbound-proof-episode', () => {
+  const loop = { review: { points: [] },
+    episodes: [
+      { id: 'm', role: 'maker', point: 'implementation', workstream_id: null, status: 'done' },
+      { id: 'c', role: 'checker', point: 'implementation', workstream_id: null, status: 'approved', target_maker: 'm' }],
+    workstreams: [], active_workstreams: [] };
+  assert.ok(finishProofState(loop).missing.includes('unbound-proof-episode'));
+});
+
+test('finishProofState: abandoned episode counts as settled', () => {
+  const loop = { review: { points: ['implementation'] },
+    episodes: [
+      { id: 'm', role: 'maker', point: 'implementation', workstream_id: 'w', status: 'done' },
+      { id: 'c', role: 'checker', point: 'implementation', workstream_id: 'w', status: 'approved', target_maker: 'm' },
+      { id: 'x', role: 'maker', point: 'implementation', workstream_id: 'w', status: 'abandoned' }],
+    workstreams: [{ id: 'w', status: 'ready', review_points_done: ['implementation'] }], active_workstreams: [] };
+  const ps = finishProofState(loop);
+  assert.ok(!ps.missing.includes('unsettled-episodes'), ps.missing.join(','));
+});
+
 // --- finishRun 디스크 ---
 test('finish completed is blocked on an empty run even with a report', () => {
   const { root, runId, fence } = seed();
