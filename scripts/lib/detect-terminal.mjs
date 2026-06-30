@@ -1,11 +1,16 @@
 import { spawnSync } from 'node:child_process';
 import { isAbsolute } from 'node:path';
+import { existsSync } from 'node:fs';
 import { appendAnchored } from './integrity.mjs';
 import { readState } from './state.mjs';
 import { reconcileBudget } from './budget.mjs';
 
-/** Non-invasive probe runner — never opens a window. */
-export function defaultProbeRun(bin, argv, { timeoutMs = 5000 } = {}) {
+/** Non-invasive probe runner — never opens a window. capture:true returns stdout. */
+export function defaultProbeRun(bin, argv, { timeoutMs = 5000, capture = false } = {}) {
+  if (capture) {
+    const r = spawnSync(bin, argv, { timeout: timeoutMs, encoding: 'utf8' });
+    return { code: r.status ?? 1, stdout: typeof r.stdout === 'string' ? r.stdout : '' };
+  }
   const r = spawnSync(bin, argv, { timeout: timeoutMs, stdio: 'ignore' });
   return { code: r.status ?? 1 };
 }
@@ -25,7 +30,9 @@ export function detectTerminal({
   platform = process.platform,
   run = defaultProbeRun,
   now,
-  allowPowershellVisible = false,
+  pid = (typeof process !== 'undefined' ? process.pid : 0),
+  exists = (p) => { try { return existsSync(p); } catch { return false; } },
+  allowPowershellVisible = false,   // removed in B2; kept here so B1 is a no-op behavior change
 } = {}) {
   // detected_at is an ISO string passed in; do NOT call .toISOString() on it.
   const detected_at = now;

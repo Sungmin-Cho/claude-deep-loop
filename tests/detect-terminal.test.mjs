@@ -65,3 +65,17 @@ test('cmux: RELATIVE CMUX_BUNDLED_CLI_PATH (e.g. "cmux") → none cmux-bin-not-a
   assert.equal(d.reason, 'cmux-bin-not-absolute');
   assert.equal(probeCallCount, 0, 'probe must NOT be called when cmux_bin is not absolute');
 });
+
+// ── B1: probe stdout capture (2026-06-29 Windows fixes) ─────────────────────────
+import { defaultProbeRun } from '../scripts/lib/detect-terminal.mjs';
+test('B1: defaultProbeRun captures stdout when capture:true', () => {
+  const r = defaultProbeRun(process.execPath, ['-e', "process.stdout.write('HELLO')"], { capture: true });
+  assert.equal(r.code, 0);
+  assert.equal(typeof r.stdout, 'string');
+  assert.match(r.stdout, /HELLO/);
+});
+test('B1: defaultProbeRun without capture returns code only (no stdout field)', () => {
+  const r = defaultProbeRun(process.execPath, ['-e', '0'], {});
+  assert.equal(r.code, 0);
+  assert.equal(r.stdout, undefined);
+});
