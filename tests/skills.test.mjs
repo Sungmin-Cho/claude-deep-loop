@@ -381,3 +381,11 @@ test('handoff-respawn.md: documents post-verify worktree entry and --project-roo
   assert.ok(src.includes('--project-root'),
     'handoff-respawn.md must document the --project-root rationale (rootOf 상향탐색으로 불필요)');
 });
+
+test('deep-loop-finish: proposal-only worktree cleanup + reconcile audit surface', () => {
+  const s = _rf(skillPath('deep-loop-finish'), 'utf8');
+  assert.match(s, /Worktree 사용 현황/, 'report section');
+  assert.match(s, /(ExitWorktree|git worktree remove)/, 'native cleanup proposed');
+  assert.match(s, /proposal-only|제안|사람 승인|human/i, 'cleanup proposal-only');
+  assert.match(s, /(reconcile|audit|미기록|기록에 없는|고아)/, 'reconcile audit surface');
+});
