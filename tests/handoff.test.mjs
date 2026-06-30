@@ -7,6 +7,7 @@ import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, runDir } from '../scripts/lib/state.mjs';
 import { reserveHandoff, releaseLease, acquireLease } from '../scripts/lib/lease.mjs';
 import { emitHandoff, buildLaunchCommand } from '../scripts/lib/handoff.mjs';
+import { newEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
 
 // Inject deterministic env so detectTerminal never probes real cmux/osascript.
 function seed() {
@@ -328,4 +329,22 @@ test('emitHandoff with no resumePolicy → lease.resume_policy defaults to visib
   const { root, runId } = seed();
   emitHandoff(root, runId, { trigger: 'milestone', now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId) });
   assert.equal(readState(root, runId).data.session_chain.lease.resume_policy, 'visible');
+});
+
+// Task 10: abandoned episodes must appear in handoff markdown so the inheriting session sees cancelled work.
+test('handoff markdown lists abandoned episodes under abandoned: label', () => {
+  const { root, runId } = seed();
+  const now = Date.parse('2026-06-24T01:00:00Z');
+  const fence = expect_(runId);
+  // Create a maker episode then immediately abandon it (simulates orphaned/stranded work).
+  const ep = newEpisode(root, runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'implement', point: 'implementation',
+    fence,
+  });
+  abandonEpisode(root, runId, ep.id, { reason: 'orphan', confirm: true, fence });
+  // Emit handoff and read the generated markdown.
+  const r = emitHandoff(root, runId, { reason: 'milestone', trigger: 'milestone', now, expect: fence });
+  assert.equal(r.ok, true);
+  const md = readFileSync(r.handoffPath, 'utf8');
+  assert.match(md, /abandoned:.*001-deep-work/);
 });
