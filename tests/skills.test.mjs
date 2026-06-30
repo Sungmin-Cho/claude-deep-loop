@@ -251,6 +251,19 @@ test('deep-loop-workflow references exist', () => {
     assert.ok(existsSync(join(ROOT, 'skills', 'deep-loop-workflow', 'references', r)), `missing reference ${r}`);
 });
 
+test('worktree-aware skills: enter worktree before maker/checker/handoff; verify unchanged', () => {
+  const cont = _rf(skillPath('deep-loop-continue'), 'utf8');
+  assert.match(cont, /(worktree[\s\S]{0,40}(진입|cd|attach)|active worktree)/, 'continue enters worktree');
+  assert.ok(mutatingFenced(cont), 'continue fenced');
+  const res = _rf(skillPath('deep-loop-resume'), 'utf8');
+  assert.match(res, /(무결성|existsSync|경로.*확인|needs-human)/, 'resume verify unchanged');
+  assert.match(res, /worktree[\s\S]{0,40}(진입|cd|attach)/, 'resume enters worktree after verify');
+  // review P2 #3: handoff 도 worktree 진입을 명시(fenced 만 확인하면 미변경도 통과).
+  const hand = _rf(skillPath('deep-loop-handoff'), 'utf8');
+  assert.match(hand, /worktree[\s\S]{0,40}(진입|cd|attach)/, 'handoff enters worktree before handoff work');
+  assert.ok(mutatingFenced(hand), 'handoff fenced');
+});
+
 // Codex r3 sf-4: SKILL.md + workflow references 의 *모든* mutating CLI 라인이 fence(--owner+--generation)를 갖는지 전역 검사.
 // deep-loop-workflow 는 references 에 review dispatch/record(mutating)를 담으므로 여기서 함께 검증된다.
 test('all skills + workflow references fence every mutating CLI line', () => {
@@ -326,4 +339,45 @@ test('continue + handoff no-launcher else-branch: respawn before preserve-pause,
     assert.ok(noLauncherIdx < preserveIdx,
       `${dir}: no-launcher outcome must appear before --mode preserve (preserve-pause conditioned on no-launcher, not before respawn gate)`);
   }
+});
+
+// Task 6: worktree-entry ordering constraints
+// resume: integrity-verify (단계 3) MUST precede worktree-entry (단계 3.5)
+test('resume: worktree-entry ordering — integrity-verify step must precede entry step', () => {
+  const res = readFileSync(skillPath('deep-loop-resume'), 'utf8');
+  // '무결성' appears in §3 heading/body (path integrity check) — stable, won't move to §3.5
+  const verifyIdx = res.indexOf('무결성');
+  // '단계 3.5' is the unique section header for the worktree-entry step
+  const entryIdx  = res.indexOf('단계 3.5');
+  assert.ok(verifyIdx !== -1,
+    'resume: integrity-verify marker (무결성) must exist in SKILL.md');
+  assert.ok(entryIdx !== -1,
+    'resume: worktree-entry section marker (단계 3.5) must exist in SKILL.md');
+  assert.ok(verifyIdx < entryIdx,
+    'resume: 무결성 verify step must appear BEFORE 단계 3.5 worktree-entry — entry is gated on the verify passing');
+});
+
+// continue: worktree-entry (§1.5) MUST precede maker/checker dispatch (§2)
+test('continue: worktree-entry ordering — §1.5 entry must precede §2 dispatch', () => {
+  const cont = readFileSync(skillPath('deep-loop-continue'), 'utf8');
+  // '1.5' is the section number in the §1.5 heading (Active Worktree 진입)
+  const entryIdx    = cont.indexOf('1.5');
+  // '## 2.' is the dispatch/action-branch section header
+  const dispatchIdx = cont.indexOf('## 2.');
+  assert.ok(entryIdx !== -1,
+    'continue: worktree-entry section (§1.5) must exist in SKILL.md');
+  assert.ok(dispatchIdx !== -1,
+    'continue: dispatch section (## 2.) must exist in SKILL.md');
+  assert.ok(entryIdx < dispatchIdx,
+    'continue: worktree-entry (§1.5) must appear BEFORE dispatch (§2) — file work must run in the correct worktree');
+});
+
+// handoff-respawn.md: documents post-verify worktree entry + --project-root rationale
+test('handoff-respawn.md: documents post-verify worktree entry and --project-root rationale', () => {
+  const refPath = join(ROOT, 'skills', 'deep-loop-workflow', 'references', 'handoff-respawn.md');
+  const src = readFileSync(refPath, 'utf8');
+  assert.ok(src.includes('진입'),
+    'handoff-respawn.md must document worktree entry (진입)');
+  assert.ok(src.includes('--project-root'),
+    'handoff-respawn.md must document the --project-root rationale (rootOf 상향탐색으로 불필요)');
 });

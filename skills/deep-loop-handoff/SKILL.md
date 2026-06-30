@@ -22,6 +22,16 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field session_cha
 
 `owner_run_id`와 `generation`을 확인한다.
 
+## 단계 1.5: Active Worktree 진입
+
+handoff 파일 작업이 올바른 격리 공간에서 일어나도록, **handoff emit 전에** active workstream의 worktree로 진입한다.
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field workstreams
+```
+
+active workstream의 `worktree` 경로를 읽는다. native attach 도구(`EnterWorktree` 등)가 있으면 그것으로 진입하고, 없으면 `cd`로 전환한다. 커널 상태(`rootOf` 상향탐색)는 cwd 이동 후에도 원본 root를 자동 해석하므로 `--project-root`는 불필요하다.
+
 ## 단계 2: Handoff Emit (handoff_phase=idle인 경우)
 
 이미 emit된 핸드오프가 있으면 re-emit을 건너뛴다. 먼저 확인:

@@ -44,6 +44,10 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field workstreams
 
 각 active workstream의 worktree 경로 무결성을 확인한다. 경로 소실 시 조용히 재생성하지 않는다 — `needs-human`으로 표시하고 사람에게 보고한다.
 
+## 단계 3.5: Active Worktree 진입
+
+경로 무결성 확인(단계 3) 통과 후, active workstream의 worktree로 진입한다. native attach 도구(`EnterWorktree` 등)가 있으면 그것으로 진입하고, 없으면 `cd`로 전환한다. 커널 상태(`rootOf` 상향탐색)는 cwd 이동 후에도 원본 root를 자동 해석하므로 `--project-root`는 불필요하다.
+
 ## 단계 4: 진행
 
 이어서 진행(`resume`)한다:
