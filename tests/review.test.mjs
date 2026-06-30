@@ -7,7 +7,7 @@ import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState } from '../scripts/lib/state.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
-import { resolveReviewer, dispatchReview, parseVerdict, recordReviewOutcome } from '../scripts/lib/review.mjs';
+import { resolveReviewer, dispatchReview, parseVerdict, recordReviewOutcome, unsatisfiedReviewPoints } from '../scripts/lib/review.mjs';
 import { releaseLease, acquireLease } from '../scripts/lib/lease.mjs';
 
 function seed(detected = { 'deep-review': true }) {
@@ -216,6 +216,21 @@ test('recordReviewOutcome: require_human_ack=true → episodes_human_reviewed un
   recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'implementation', verdict: 'APPROVE', source: 'deep-review-approve', fence: f });
   const afterReviewed = readState(root, runId).data.comprehension?.episodes_human_reviewed || 0;
   assert.equal(afterReviewed, beforeReviewed, 'require_human_ack=true must not increment episodes_human_reviewed from review record');
+});
+
+test('unsatisfiedReviewPoints: returns points not covered by any workstream review_points_done', () => {
+  const loop = { review: { points: ['design', 'plan', 'implementation'] },
+    workstreams: [{ id: 'w', review_points_done: ['design', 'plan'] }] };
+  assert.deepEqual(unsatisfiedReviewPoints(loop), ['implementation']);
+});
+test('unsatisfiedReviewPoints: empty points -> [] (vacuous)', () => {
+  assert.deepEqual(unsatisfiedReviewPoints({ review: { points: [] }, workstreams: [] }), []);
+  assert.deepEqual(unsatisfiedReviewPoints({ workstreams: [] }), []);
+});
+test('unsatisfiedReviewPoints: union across multiple workstreams', () => {
+  const loop = { review: { points: ['design', 'implementation'] },
+    workstreams: [{ id: 'a', review_points_done: ['design'] }, { id: 'b', review_points_done: ['implementation'] }] };
+  assert.deepEqual(unsatisfiedReviewPoints(loop), []);
 });
 
 // FIX 3 regression (b): two done makers same point, approving checker bound to maker2 (latest) increments

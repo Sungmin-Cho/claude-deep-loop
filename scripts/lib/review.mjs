@@ -126,3 +126,10 @@ export function recordReviewOutcome(root, runId, { episodeId, workstreamId, poin
   // REQUEST_CHANGES → checker='rejected'. nextAction returns fix_episode and Execution creates the fix maker.
   return result;
 }
+
+// review.points = run-level 계약. 충족은 workstream review_points_done(bound approved checker가 채움)이 단일 출처.
+export function unsatisfiedReviewPoints(loop) {
+  const pts = loop.review?.points || [];
+  const done = (loop.workstreams || []).flatMap(w => w.review_points_done || []);
+  return pts.filter(p => !done.includes(p));
+}
