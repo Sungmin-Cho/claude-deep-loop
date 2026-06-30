@@ -7,8 +7,9 @@ import { slugify } from './slug.mjs';
 import { leaseCheck } from './lease.mjs';
 
 const NON_TERMINAL = ['pending', 'in_progress', 'blocked'];
-const TERMINAL = ['done', 'approved', 'rejected'];
-const ALL_TERMINAL = ['done', 'approved', 'rejected', 'abandoned'];
+const RECORDABLE_TERMINAL = ['done', 'approved', 'rejected'];   // record 가 설정 가능한 터미널 (abandoned 제외)
+const TERMINAL = RECORDABLE_TERMINAL;                            // 하위 호환 — done 가드/검증 등 기존 참조 유지
+const ALL_TERMINAL = [...RECORDABLE_TERMINAL, 'abandoned'];     // 4개 전체 터미널 (abandonEpisode 가드 포함)
 
 function requestSkeleton({ id, plugin, role, kind, point, workstream, expectedArtifacts }) {
   return [
@@ -116,8 +117,8 @@ export function recordEpisode(root, runId, episodeId, { status, artifacts = [], 
     if (fence) { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
     const ep = loop.episodes.find(e => e.id === episodeId);
     if (!ep) throw new Error(`EPISODE_NOT_FOUND: ${episodeId}`);
-    // Codex r3 🔴2: atomic replay guard — already-terminal episode cannot be re-terminaled
-    if (TERMINAL.includes(status) && ['approved', 'rejected', 'done'].includes(ep.status)) {
+    // Codex r3 🔴2 + R1 f2/R2 f1: 현재 status 가 터미널(abandoned 포함)이면 요청 status 무관하게 재기록 불가.
+    if (ALL_TERMINAL.includes(ep.status)) {
       throw new Error('EPISODE_ALREADY_TERMINAL: ' + episodeId);
     }
     // 터미널은 커널이 proof에서 파생 — 검증 후에만 (spec §4)

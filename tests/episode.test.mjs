@@ -4,7 +4,7 @@ import { mkdtempSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { readState, runDir } from '../scripts/lib/state.mjs';
+import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { reconcileBudget } from '../scripts/lib/budget.mjs';
 import { newEpisode, recordEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
 
@@ -195,4 +195,34 @@ test('abandonEpisode: fence enforced', () => {
   const { root, runId, fence: f } = freshRun();
   const { id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: null, expectedArtifacts: [], fence: f });
   assert.throws(() => abandonEpisode(root, runId, id, { reason: 'r', confirm: true, fence: { owner: 'wrong', generation: 1 } }), /LEASE_FENCED/);
+});
+
+test('recordEpisode: status="abandoned" is not recordable (only abandonEpisode writes it)', () => {
+  const { root, runId, fence } = freshRun();
+  const { id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: null, expectedArtifacts: [], fence });
+  assert.throws(() => recordEpisode(root, runId, id, { status: 'abandoned', fence }), /EPISODE_STATUS_INVALID/);
+});
+
+test('recordEpisode: cannot resurrect an abandoned episode to a non-terminal status', () => {
+  const { root, runId, fence } = freshRun();
+  const { id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: null, expectedArtifacts: [], fence });
+  abandonEpisode(root, runId, id, { reason: 'orphan', confirm: true, fence });
+  assert.throws(() => recordEpisode(root, runId, id, { status: 'in_progress', fence }), /EPISODE_ALREADY_TERMINAL/);
+});
+
+test('recordEpisode: cannot record over a done episode (current terminal immutable)', () => {
+  const { root, runId, fence } = freshRun();
+  writeFileSync(join(root, 'art.txt'), 'x');
+  const { id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: null, expectedArtifacts: ['art.txt'], fence });
+  recordEpisode(root, runId, id, { status: 'done', artifacts: ['art.txt'], proof: {}, fence });
+  assert.throws(() => recordEpisode(root, runId, id, { status: 'in_progress', fence }), /EPISODE_ALREADY_TERMINAL/);
+});
+
+test('recordEpisode: cannot resurrect an approved/rejected episode to non-terminal (R3 — all 4 terminals)', () => {
+  const { root, runId, fence } = freshRun();
+  const { id } = newEpisode(root, runId, { plugin: 'deep-review', role: 'checker', kind: 'implementation-review', point: 'implementation', workstream: null, expectedArtifacts: [], fence });
+  for (const term of ['approved', 'rejected']) {
+    const data = readState(root, runId).data; data.episodes.find(e => e.id === id).status = term; writeState(root, runId, data);   // 터미널 고정(approved/rejected는 정상적으론 review record 경유)
+    assert.throws(() => recordEpisode(root, runId, id, { status: 'in_progress', fence }), /EPISODE_ALREADY_TERMINAL/);
+  }
 });
