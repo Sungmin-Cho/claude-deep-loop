@@ -9,6 +9,7 @@ import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
 import { nextAction } from '../scripts/lib/next-action.mjs';
+import { finishProofState } from '../scripts/lib/finish.mjs';
 import { computeDebt } from '../scripts/lib/comprehension.mjs';
 
 function loop(over = {}) {
@@ -120,7 +121,10 @@ test('comprehension-debt blocks discover but not the fix flow', () => {
   const r0 = nextAction(l, { now: 0 });
   assert.equal(r0.action.type, 'await_human');
   assert.ok(r0.gate.blocked_by.includes('comprehension-debt'));
-  l.episodes = [{ id: '002-deep-review', role: 'checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01' }];
+  // The fix flow is driven by a BOUND rejected checker (target_maker set). debt must not block it.
+  l.episodes = [
+    { id: '001-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
+    { id: '002-deep-review', role: 'checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' }];
   l.current_episode = '002-deep-review';
   assert.equal(nextAction(l, { now: 0 }).action.type, 'fix_episode');  // debt 무관
 });
@@ -149,11 +153,17 @@ test('recordReviewOutcome(APPROVE) marks maker episodes human_reviewed, computeD
 
 // Codex r2 🔴4 / r5 🟡1: review.mjs+next-action.mjs 종단 — RC 후 debt(=1.0)에도 fix_episode 진입.
 // (Task 4 가 아니라 여기 둠 — 이 시점에 review.mjs·next-action.mjs 둘 다 존재.)
+// Final fix 2: the checker must bind to a done maker (real flow) so the rejected outcome drives fix — an unbound
+// rejected checker reviews no specific maker and must NOT route to fix (its settlement is the finish gate's job).
 test('dispatchReview → recordReviewOutcome(RC) → nextAction returns fix_episode (end-to-end)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
   const { runId } = initRun(root, { goal: 'g', detected: { 'deep-review': true }, now: new Date('2026-06-24T00:00:00Z') });
   const f = { owner: runId, generation: 1, intent: 'business' };
   const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: 'w', fence: f }).id;
+  // A done maker so dispatchReview binds the checker to it (target_maker set) — the realistic review flow.
+  writeFileSync(join(root, 'art.txt'), 'artifact');
+  const { id: makerId } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'plan', workstream: ws, expectedArtifacts: ['art.txt'], fence: f });
+  recordEpisode(root, runId, makerId, { status: 'done', artifacts: ['art.txt'], proof: {}, fence: f });
   const r = dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
   recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'plan', verdict: 'REQUEST_CHANGES', fence: f });
   const { data } = readState(root, runId);
@@ -330,4 +340,93 @@ test('abandoned maker does not block finish (settled)', () => {
     { id: '009', role: 'maker', status: 'abandoned', point: 'implementation', workstream_id: 'ws-01' }];
   l.current_episode = null;
   assert.equal(nextAction(l, { now: 0 }).action.type, 'finish');
+});
+
+// Final fix 2 (codex-r2 regression): an UNBOUND rejected checker (no target_maker) reviewed no specific maker.
+// Its target point was later satisfied by a done + bound-APPROVED maker (review_points_done=['plan']). It is
+// settled by finishProofState (via reviewSatisfied), so nextAction must NOT route it to fix_episode forever —
+// it must reach the finish gate. Before the `e.target_maker &&` guard this returned fix_episode (a terminal,
+// non-abandonable checker → the loop never finishes); after the guard it returns finish.
+test('unbound rejected checker on a satisfied point → finish (not fix_episode forever)', () => {
+  const l = loop({
+    review: { points: ['plan'], reviewer: 'subagent-checker', flags: [], mode: 'cross-model' },
+    workstreams: [{ id: 'ws-01', status: 'ready', review_points_done: ['plan'], episodes: [], depends_on: [] }],
+    active_workstreams: [],
+    episodes: [
+      // later maker for 'plan', done + bound APPROVED → satisfies the latest-maker proof
+      { id: '001-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
+      { id: '002-deep-review', role: 'checker', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
+      // UNBOUND rejected checker (no target_maker) — must NOT drive fix; settled via point-level reviewSatisfied
+      { id: '003-deep-review-unbound', role: 'checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01' },
+    ],
+    current_episode: null,
+  });
+  const r = nextAction(l, { now: 0 });
+  assert.equal(r.action.type, 'finish', `expected finish but got ${r.action.type} (reason: ${r.action.reason})`);
+});
+
+// Final fix 2 (line-110 path): newEpisode always sets current_episode to the last-created episode, so a redundant
+// re-review on an already-approved point leaves an UNBOUND rejected checker as current_episode. The checker branch
+// must NOT route it to fix_episode (it bypasses the finish gate) — it must fall through to finishProofState → finish.
+test('unbound rejected checker AS current_episode → finish (not fix_episode via line-110)', () => {
+  const l = loop({
+    review: { points: ['plan'], reviewer: 'subagent-checker', flags: [], mode: 'cross-model' },
+    workstreams: [{ id: 'ws-01', status: 'ready', review_points_done: ['plan'], episodes: [], depends_on: [] }],
+    active_workstreams: [],
+    episodes: [
+      { id: '001-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
+      { id: '002-deep-review', role: 'checker', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
+      { id: '003-deep-review-unbound', role: 'checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01' },
+    ],
+    current_episode: '003-deep-review-unbound',   // points AT the unbound rejected checker
+  });
+  const r = nextAction(l, { now: 0 });
+  assert.equal(r.action.type, 'finish', `expected finish but got ${r.action.type} (reason: ${r.action.reason})`);
+});
+
+// Consistency invariant (recommend ≡ enforce): whenever finishProofState reports COMPLETE (missing==[]),
+// nextAction MUST recommend finish — there can be NO state where nextAction says fix_episode/await_human while
+// the finish gate would pass. Encodes the divergence the final-fix-2 guard closes.
+test('invariant: finishProofState.missing empty IMPLIES nextAction === finish', () => {
+  const fixtures = [
+    // (A) the codex-r2 unbound-rejected-checker fixture
+    loop({
+      review: { points: ['plan'], reviewer: 'subagent-checker', flags: [], mode: 'cross-model' },
+      workstreams: [{ id: 'ws-01', status: 'ready', review_points_done: ['plan'], episodes: [], depends_on: [] }],
+      active_workstreams: [],
+      episodes: [
+        { id: '001-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
+        { id: '002-deep-review', role: 'checker', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
+        { id: '003-deep-review-unbound', role: 'checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01' },
+      ],
+      current_episode: null,
+    }),
+    // (A2) same finishable state but current_episode points AT the unbound rejected checker (line-110 path)
+    loop({
+      review: { points: ['plan'], reviewer: 'subagent-checker', flags: [], mode: 'cross-model' },
+      workstreams: [{ id: 'ws-01', status: 'ready', review_points_done: ['plan'], episodes: [], depends_on: [] }],
+      active_workstreams: [],
+      episodes: [
+        { id: '001-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
+        { id: '002-deep-review', role: 'checker', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
+        { id: '003-deep-review-unbound', role: 'checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01' },
+      ],
+      current_episode: '003-deep-review-unbound',
+    }),
+    // (B) superseded (bound) rejected checker + done reviewed maker — also a finishable state
+    (() => { const l = loop({
+      workstreams: [{ id: 'ws-01', status: 'ready', review_points_done: ['plan'], episodes: [], depends_on: [] }],
+      active_workstreams: [],
+      episodes: [
+        { id: '001-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
+        { id: '002-deep-review-old', role: 'checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
+        { id: '003-deep-review-new', role: 'checker', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
+      ],
+      current_episode: null,
+    }); l.review.points = ['plan']; return l; })(),
+  ];
+  for (const l of fixtures) {
+    assert.equal(finishProofState(l).missing.length, 0, 'fixture must be finishable (missing==[])');
+    assert.equal(nextAction(l, { now: 0 }).action.type, 'finish', 'finishProofState complete must IMPLY nextAction finish');
+  }
 });

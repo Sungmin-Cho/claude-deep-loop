@@ -40,7 +40,11 @@ function finishOrAdvance(loop, gate, fanoutBlocked) {
   }
   // Codex r3 🔴3: skip GENUINELY superseded rejected checkers (re-approved maker, or a later done maker for the
   // same (ws,point)) — but a later rejected maker on an already-done point still routes to fix (convergence fix).
-  const rejected = eps.find(e => e.role === 'checker' && e.status === 'rejected' && !supersededRejected(loop, e));
+  // Codex r2 (final fix 2): only BOUND rejected checkers (target_maker set) drive fix — an UNBOUND rejected
+  // checker reviewed no specific maker, so it cannot anchor a "fix THIS maker" flow; its settlement is governed by
+  // finishProofState/reviewSatisfied. Without this guard supersededRejected (which short-circuits false on unbound)
+  // would route it to fix_episode forever, diverging from the finish gate (recommend ≠ enforce).
+  const rejected = eps.find(e => e.role === 'checker' && e.status === 'rejected' && e.target_maker && !supersededRejected(loop, e));
   if (rejected) return A(gate, { type: 'fix_episode', episode_id: rejected.id, point: rejected.point, workstream_id: rejected.workstream_id }, '/deep-loop-continue');
   const inProg = eps.find(e => e.status === 'in_progress');
   if (inProg) return A(gate, { type: 'await_result', episode_id: inProg.id }, '/deep-loop-continue');
@@ -107,7 +111,12 @@ export function nextAction(loop, { now = Date.now() } = {}) {
     if (ep.status === 'pending') return A(gate, { type: 'await_human', episode_id: ep.id, reason: 'pending-checker-unresolved' }, '/deep-loop-status');
     if (ep.status === 'in_progress') return A(gate, { type: 'await_result', episode_id: ep.id }, '/deep-loop-continue');   // 재dispatch 금지 (Codex r2 🔴7)
     if (ep.status === 'blocked') return A(gate, { type: 'await_human', episode_id: ep.id, reason: 'episode-blocked' }, '/deep-loop-status');
-    if (ep.status === 'rejected') return A(gate, { type: 'fix_episode', episode_id: ep.id, point: ep.point, workstream_id: ep.workstream_id }, '/deep-loop-continue');  // Codex r1 🔴5
+    // Codex r1 🔴5 / final fix 2: same predicate as the finishOrAdvance scan — only a BOUND, non-superseded
+    // rejected checker drives fix. An UNBOUND (or superseded) rejected checker reviewed no specific maker, so it
+    // falls through to the finishProofState gate instead of routing to fix_episode forever (recommend ≡ enforce).
+    // (current_episode points at the last-created episode, so a redundant re-review on an already-approved point
+    // leaves an unbound rejected checker as current_episode — this path must not diverge from the finish gate.)
+    if (ep.status === 'rejected' && ep.target_maker && !supersededRejected(loop, ep)) return A(gate, { type: 'fix_episode', episode_id: ep.id, point: ep.point, workstream_id: ep.workstream_id }, '/deep-loop-continue');
     if (ep.status === 'approved') return finishOrAdvance(loop, gate, debt.blocked);
   }
   return finishOrAdvance(loop, gate, debt.blocked);
