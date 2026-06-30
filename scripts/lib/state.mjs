@@ -1,9 +1,27 @@
 import { readFileSync, writeFileSync, mkdirSync, rmdirSync, existsSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 import { contentHash, atomicWrite } from './envelope.mjs';
 import { validate } from './schema.mjs';
 import { leaseCheck } from './lease.mjs';
 import { appendAnchored } from './integrity.mjs';
+
+// R5 high-2: 상향탐색을 worktree 컨벤션(.claude/worktrees | .worktrees)으로 **한정**한다.
+// 무한정 walk 는 부모 run 밑의 nested repo/submodule 을 부모 run 에 잘못 바인딩(격리 회귀)시킨다.
+// cwd 가 <root>/.claude/worktrees/<slug>/... (또는 .worktrees) 안일 때만 그 부모 <root>(.deep-loop/current 보유)를 반환;
+// 그 외에는 startDir 그대로(기존 process.cwd() 동작과 동일 — 하위호환).
+export function findRoot(startDir) {
+  const parts = resolve(startDir).split(sep);
+  for (let i = parts.length - 1; i >= 1; i--) {
+    const isClaudeWt = parts[i - 1] === '.claude' && parts[i] === 'worktrees';
+    const isPlainWt = parts[i] === '.worktrees';
+    if (isClaudeWt || isPlainWt) {
+      const base = parts.slice(0, isClaudeWt ? i - 1 : i).join(sep) || sep;
+      if (existsSync(join(base, '.deep-loop', 'current'))) return base;
+      break;   // 컨벤션 디렉터리는 있으나 부모에 run 없음 → fallback
+    }
+  }
+  return startDir;
+}
 
 // Codex impl r12 🔴: runId must be a single safe path segment — a '../' (or slash) runId would make runDir
 // resolve outside the project root, and ALL state/event/episode/handoff writers build paths from runDir.

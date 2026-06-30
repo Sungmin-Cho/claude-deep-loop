@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
@@ -131,4 +131,13 @@ test('full suite still green count grows (smoke: validate ok)', () => {
   const { root } = seed();
   const out = run(root, ['validate']);
   assert.match(out, /ok/);
+});
+
+test('CLI validate from nested .claude/worktrees cwd resolves the run (rootOf upward-search)', () => {
+  const { root, runId } = seed();
+  const wt = join(root, '.claude', 'worktrees', 'ws-01');
+  mkdirSync(wt, { recursive: true });
+  // --project-root 없이, cwd 를 worktree 로 두고 validate 호출 → run 을 찾아야 함.
+  const out = execFileSync('node', [CLI, 'validate'], { cwd: wt, encoding: 'utf8' });
+  assert.match(out, new RegExp(`ok \\(run ${runId}\\)`), 'validate found run from worktree cwd');
 });
