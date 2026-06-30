@@ -161,24 +161,47 @@ test('dispatchReview → recordReviewOutcome(RC) → nextAction returns fix_epis
 });
 
 // Codex r3 FIX 3: superseded rejected checker must not block convergence
-// A loop with an OLD rejected checker for ws-01/plan AND review_points_done containing 'plan'
-// (a later approval happened) AND no current actionable episode → nextAction does NOT return fix_episode
+// ws-01/plan: maker 001 was rejected (002) then re-reviewed and APPROVED (003) → the OLD rejected checker is
+// GENUINELY superseded (path (a): its target maker was re-approved) and must NOT re-trigger fix_episode.
+// (review_points_done is satisfied, but supersession is now proof-based, not point-flag-based.)
 test('superseded rejected checker (review_points_done satisfied) does not block convergence', () => {
-  // Build a loop with:
-  // - ws-01 with review_points_done=['plan'] (i.e. a later approval happened)
-  // - An OLD rejected checker episode for ws-01/plan
-  // - No current actionable episode (current_episode=null, no pending/in_progress)
   const l = loop({
     workstreams: [{ id: 'ws-01', status: 'in_progress', review_points_done: ['plan'], episodes: [], depends_on: [] }],
     active_workstreams: ['ws-01'],
     episodes: [
-      { id: '001-deep-review', role: 'checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01' },
+      { id: '001-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
+      // OLD rejected checker bound to 001 …
+      { id: '002-deep-review', role: 'checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
+      // … but 001 was later re-reviewed and APPROVED → the rejected checker is genuinely superseded.
+      { id: '003-deep-review', role: 'checker', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
     ],
     current_episode: null,
   });
   const r = nextAction(l, { now: Date.parse('2026-06-24T00:00:00Z') });
-  // Must NOT be fix_episode (the old rejected checker is review-satisfied)
-  assert.notEqual(r.action.type, 'fix_episode', 'stale rejected checker must not trigger fix_episode');
+  // Must NOT be fix_episode (the old rejected checker's maker was re-approved)
+  assert.notEqual(r.action.type, 'fix_episode', 'genuinely superseded rejected checker must not trigger fix_episode');
+});
+
+// Finish-path robustness regression: an EARLIER approval set review_points_done=['plan'] for ws-01, but a LATER
+// done maker for the SAME point was REJECTED. The new rejected checker is NOT superseded (review_points_done must
+// not mask it) → nextAction must route to fix_episode (NOT await_human, NOT finish).
+test('later rejected maker on an already-review_points_done point → fix_episode (not await_human)', () => {
+  const l = loop({
+    workstreams: [{ id: 'ws-01', status: 'in_progress', review_points_done: ['plan'], episodes: [], depends_on: [] }],
+    active_workstreams: ['ws-01'],
+    episodes: [
+      // earlier maker, APPROVED → set review_points_done=['plan']
+      { id: '001-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
+      { id: '002-deep-review', role: 'checker', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
+      // LATER done maker for the SAME point, REJECTED by a bound checker → must route to fix
+      { id: '003-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
+      { id: '004-deep-review', role: 'checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01', target_maker: '003-deep-work' },
+    ],
+    current_episode: null,
+  });
+  const r = nextAction(l, { now: Date.parse('2026-06-24T00:00:00Z') });
+  assert.equal(r.action.type, 'fix_episode', `expected fix_episode but got ${r.action.type} (reason: ${r.action.reason})`);
+  assert.equal(r.action.episode_id, '004-deep-review');
 });
 
 // Plan-3 r3 fix (Codex finding 2): two done makers same point, one with bound approved checker, one without

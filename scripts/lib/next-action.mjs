@@ -11,12 +11,20 @@ function currentSessionTurns(loop) {
 
 const A = (gate, action, next_command) => ({ gate, action, next_command });
 
-// point-level review satisfaction — used for checker convergence (superseded rejected checker skipping).
-function reviewSatisfied(loop, ep) {
-  const ws = (loop.workstreams || []).find(w => w.id === ep.workstream_id);
-  if (ws && (ws.review_points_done || []).includes(ep.point)) return true;
-  // Fix 3: only a BOUND (target_maker set) approved checker satisfies a review point — unbound approvals do not.
-  return (loop.episodes || []).some(e => e.role === 'checker' && e.status === 'approved' && e.target_maker && e.workstream_id === ep.workstream_id && e.point === ep.point);
+// A rejected checker is GENUINELY SUPERSEDED — and thus must NOT re-trigger fix_episode — when either
+//   (a) its target maker was re-reviewed and APPROVED (a bound approved checker shares its target_maker), or
+//   (b) a LATER done maker exists for the same (workstream_id, point) than its target_maker (the flow moved on
+//       to a newer maker, whose own review drives progress — ids are zero-padded so lexicographic `>` is order).
+// NOTE: point-level review_points_done deliberately does NOT suppress a rejected checker — an earlier approval on
+// the same point must not mask a LATER done maker that was genuinely rejected (else the fix flow never dispatches).
+function supersededRejected(loop, e) {
+  if (!e.target_maker) return false;   // unbound rejected checker has no maker to have been superseded for
+  const eps = loop.episodes || [];
+  // (a) the same target maker was re-reviewed and APPROVED (bound)
+  if (eps.some(c => c.role === 'checker' && c.status === 'approved' && c.target_maker === e.target_maker)) return true;
+  // (b) a strictly later done maker exists for the same (workstream_id, point)
+  return eps.some(m => m.role === 'maker' && m.status === 'done'
+    && m.workstream_id === e.workstream_id && m.point === e.point && m.id > e.target_maker);
 }
 
 // 현재 actionable episode 가 없을 때: 미완 maker/거부 checker/in-progress/미리뷰 done maker 를 우선 처리하고,
@@ -30,8 +38,9 @@ function finishOrAdvance(loop, gate, fanoutBlocked) {
     if (fanoutBlocked && pendingMaker.kind !== 'fix') return A(gate, { type: 'await_human', episode_id: pendingMaker.id, reason: 'comprehension-debt' }, '/deep-loop-status');
     return A(gate, { type: 'dispatch_maker', episode_id: pendingMaker.id, point: pendingMaker.point, workstream_id: pendingMaker.workstream_id }, '/deep-loop-continue');
   }
-  // Codex r3 🔴3: skip superseded rejected checkers whose point is already review-satisfied (convergence fix).
-  const rejected = eps.find(e => e.role === 'checker' && e.status === 'rejected' && !reviewSatisfied(loop, e));
+  // Codex r3 🔴3: skip GENUINELY superseded rejected checkers (re-approved maker, or a later done maker for the
+  // same (ws,point)) — but a later rejected maker on an already-done point still routes to fix (convergence fix).
+  const rejected = eps.find(e => e.role === 'checker' && e.status === 'rejected' && !supersededRejected(loop, e));
   if (rejected) return A(gate, { type: 'fix_episode', episode_id: rejected.id, point: rejected.point, workstream_id: rejected.workstream_id }, '/deep-loop-continue');
   const inProg = eps.find(e => e.status === 'in_progress');
   if (inProg) return A(gate, { type: 'await_result', episode_id: inProg.id }, '/deep-loop-continue');
