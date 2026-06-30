@@ -18,7 +18,9 @@ export function newWorkstream(root, runId, { title, branch, worktree, baseCommit
   if (!Array.isArray(dependsOn) || dependsOn.some(d => typeof d !== 'string' || d.length === 0)) {
     throw new Error('WORKSTREAM_INPUT_INVALID: dependsOn must be an array of strings');
   }
-  // §0.6-2: containment — worktree must resolve under project root (or be root itself: reuse case).
+  // §0.6-2: containment — worktree must resolve strictly inside a convention dir:
+  //   <root>/.claude/worktrees/  OR  <root>/.worktrees/
+  // Root-self ('.', root) and arbitrary under-root paths are rejected; only convention dirs accepted.
   // R5 P2-2: existing paths use realpathSync (blocks symlink escapes); non-existent paths walk up to
   // the nearest existing ancestor for symlink resolution (handles /tmp→/private/tmp on macOS).
   const _rootResolved = realpathSync(root);
@@ -31,8 +33,12 @@ export function newWorkstream(root, runId, { title, branch, worktree, baseCommit
   }
   const _wtBase = isAbsolute(worktree) ? worktree : join(_rootResolved, worktree);
   const _wtResolved = _resolveDeep(_wtBase);
-  const _underRoot = _wtResolved === _rootResolved || _wtResolved.startsWith(_rootResolved + sep);
-  if (worktree.split(/[/\\]/).includes('..') || !_underRoot) {
+  // Convention prefixes are lexical (rooted at resolved root) — do NOT resolve the convention dirs
+  // themselves, so a symlinked .claude/worktrees pointing outside root is still rejected.
+  const _conv1 = _rootResolved + sep + '.claude' + sep + 'worktrees' + sep;
+  const _conv2 = _rootResolved + sep + '.worktrees' + sep;
+  const _underConvention = _wtResolved.startsWith(_conv1) || _wtResolved.startsWith(_conv2);
+  if (worktree.split(/[/\\]/).includes('..') || !_underConvention) {
     throw new Error('WORKSTREAM_WORKTREE_ESCAPE: worktree must resolve under project root: ' + worktree);
   }
   let id;

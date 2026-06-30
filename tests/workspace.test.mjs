@@ -30,7 +30,7 @@ test('newWorkstream creates planned workstream with kernel fields', () => {
 
 test('setWorkstreamStatus non-terminal ok; terminal value rejected', () => {
   const { root, runId } = seed();
-  const { id } = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: 'w', fence: fence(runId) });
+  const { id } = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: '.claude/worktrees/w', fence: fence(runId) });
   setWorkstreamStatus(root, runId, id, 'in_progress', { fence: fence(runId) });
   assert.deepEqual(readState(root, runId).data.active_workstreams, [id]);
   assert.throws(() => setWorkstreamStatus(root, runId, id, 'merged', { fence: fence(runId) }), /WORKSTREAM_TERMINAL_NO_PROOF/);
@@ -39,9 +39,9 @@ test('setWorkstreamStatus non-terminal ok; terminal value rejected', () => {
 test('max_parallel enforced on activation', () => {
   const { root, runId } = seed(); // max_parallel default 2
   const f = fence(runId);
-  const a = newWorkstream(root, runId, { title: 'A', branch: 'a', worktree: 'wa', fence: f }).id;
-  const b = newWorkstream(root, runId, { title: 'B', branch: 'b', worktree: 'wb', fence: f }).id;
-  const c = newWorkstream(root, runId, { title: 'C', branch: 'c', worktree: 'wc', fence: f }).id;
+  const a = newWorkstream(root, runId, { title: 'A', branch: 'a', worktree: '.claude/worktrees/wa', fence: f }).id;
+  const b = newWorkstream(root, runId, { title: 'B', branch: 'b', worktree: '.claude/worktrees/wb', fence: f }).id;
+  const c = newWorkstream(root, runId, { title: 'C', branch: 'c', worktree: '.claude/worktrees/wc', fence: f }).id;
   setWorkstreamStatus(root, runId, a, 'in_progress', { fence: f });
   setWorkstreamStatus(root, runId, b, 'in_progress', { fence: f });
   assert.throws(() => setWorkstreamStatus(root, runId, c, 'in_progress', { fence: f }), /MAX_PARALLEL_EXCEEDED/);
@@ -50,7 +50,7 @@ test('max_parallel enforced on activation', () => {
 test('recordWorkstreamTerminal derives terminal from proof content; clears active', () => {
   const { root, runId } = seed();
   const f = fence(runId);
-  const { id } = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: 'w', fence: f });
+  const { id } = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: '.claude/worktrees/w', fence: f });
   setWorkstreamStatus(root, runId, id, 'in_progress', { fence: f });
   // ready FAILS when review_points_done is empty (kernel-derived, not proof shortcut)
   assert.throws(() => recordWorkstreamTerminal(root, runId, id, { status: 'ready', proof: {}, fence: f }), /WORKSTREAM_TERMINAL_NO_PROOF/);
@@ -67,7 +67,7 @@ test('recordWorkstreamTerminal derives terminal from proof content; clears activ
   assert.equal(data.workstreams.find(w => w.id === id).status, 'ready');
   assert.equal(data.active_workstreams.includes(id), false);
   // merged 는 사람 승인(merge_commit + human_approved) 필수 — 임의 proof 거부 (proposal-only)
-  const { id: id2 } = newWorkstream(root, runId, { title: 'B', branch: 'b2', worktree: 'w2', fence: f });
+  const { id: id2 } = newWorkstream(root, runId, { title: 'B', branch: 'b2', worktree: '.claude/worktrees/w2', fence: f });
   assert.throws(() => recordWorkstreamTerminal(root, runId, id2, { status: 'merged', proof: { x: true }, fence: f }), /WORKSTREAM_TERMINAL_NO_PROOF/);
   recordWorkstreamTerminal(root, runId, id2, { status: 'merged', proof: { merge_commit: 'abc123', human_approved: true }, fence: f });
   assert.equal(readState(root, runId).data.workstreams.find(w => w.id === id2).status, 'merged');
@@ -76,7 +76,7 @@ test('recordWorkstreamTerminal derives terminal from proof content; clears activ
 test('setWorkstreamStatus throws WORKSTREAM_TERMINAL_LOCKED when workstream is terminal', () => {
   const { root, runId } = seed();
   const f = fence(runId);
-  const { id } = newWorkstream(root, runId, { title: 'C', branch: 'c', worktree: 'wc', fence: f });
+  const { id } = newWorkstream(root, runId, { title: 'C', branch: 'c', worktree: '.claude/worktrees/wc', fence: f });
   setWorkstreamStatus(root, runId, id, 'in_progress', { fence: f });
   // Mark it ready via state manipulation + recordWorkstreamTerminal
   {
@@ -96,7 +96,7 @@ test('recordWorkstreamTerminal blocks terminal->terminal rewrites (merged/abando
   const { root, runId } = seed();
   const f = fence(runId);
   // Set up a workstream that is already merged
-  const { id: idM } = newWorkstream(root, runId, { title: 'M', branch: 'bm', worktree: 'wm', fence: f });
+  const { id: idM } = newWorkstream(root, runId, { title: 'M', branch: 'bm', worktree: '.claude/worktrees/wm', fence: f });
   recordWorkstreamTerminal(root, runId, idM, { status: 'merged', proof: { merge_commit: 'abc123', human_approved: true }, fence: f });
   assert.equal(readState(root, runId).data.workstreams.find(w => w.id === idM).status, 'merged');
   // merged → abandoned must throw WORKSTREAM_TERMINAL_LOCKED
@@ -106,7 +106,7 @@ test('recordWorkstreamTerminal blocks terminal->terminal rewrites (merged/abando
   );
 
   // Set up a workstream that is 'ready' and confirm it CAN go to 'merged'
-  const { id: idR } = newWorkstream(root, runId, { title: 'R', branch: 'br', worktree: 'wr', fence: f });
+  const { id: idR } = newWorkstream(root, runId, { title: 'R', branch: 'br', worktree: '.claude/worktrees/wr', fence: f });
   {
     const { data } = readState(root, runId);
     const ws = data.workstreams.find(w => w.id === idR);
@@ -120,7 +120,7 @@ test('recordWorkstreamTerminal blocks terminal->terminal rewrites (merged/abando
   assert.equal(readState(root, runId).data.workstreams.find(w => w.id === idR).status, 'merged');
 
   // Set up an abandoned workstream — cannot go to merged
-  const { id: idA } = newWorkstream(root, runId, { title: 'Ab', branch: 'ba2', worktree: 'wa2', fence: f });
+  const { id: idA } = newWorkstream(root, runId, { title: 'Ab', branch: 'ba2', worktree: '.claude/worktrees/wa2', fence: f });
   recordWorkstreamTerminal(root, runId, idA, { status: 'abandoned', proof: { reason: 'no longer needed' }, fence: f });
   assert.equal(readState(root, runId).data.workstreams.find(w => w.id === idA).status, 'abandoned');
   assert.throws(
@@ -133,7 +133,7 @@ test('recordWorkstreamTerminal blocks terminal->terminal rewrites (merged/abando
 test('recordWorkstreamTerminal twice on same workstream → second throws WORKSTREAM_TERMINAL_LOCKED', () => {
   const { root, runId } = seed();
   const f = fence(runId);
-  const { id } = newWorkstream(root, runId, { title: 'T', branch: 'b', worktree: 'w', fence: f });
+  const { id } = newWorkstream(root, runId, { title: 'T', branch: 'b', worktree: '.claude/worktrees/w', fence: f });
   // First terminal call (abandoned is immediately takeable from planned without review points)
   recordWorkstreamTerminal(root, runId, id, { status: 'abandoned', proof: { reason: 'no longer needed' }, fence: f });
   assert.equal(readState(root, runId).data.workstreams.find(w => w.id === id).status, 'abandoned');
@@ -149,9 +149,9 @@ test('recordWorkstreamTerminal twice on same workstream → second throws WORKST
 test('inheritWorkstreams reports missing worktree paths (no silent recreate)', () => {
   const { root, runId } = seed();
   const f = fence(runId);
-  const present = join(root, 'wt-present'); mkdirSync(present, { recursive: true });
+  const present = join(root, '.claude', 'worktrees', 'wt-present'); mkdirSync(present, { recursive: true });
   const a = newWorkstream(root, runId, { title: 'A', branch: 'a', worktree: present, fence: f }).id;
-  const b = newWorkstream(root, runId, { title: 'B', branch: 'b', worktree: join(root, 'wt-gone'), fence: f }).id;
+  const b = newWorkstream(root, runId, { title: 'B', branch: 'b', worktree: join(root, '.claude', 'worktrees', 'wt-gone'), fence: f }).id;
   setWorkstreamStatus(root, runId, a, 'in_progress', { fence: f });
   setWorkstreamStatus(root, runId, b, 'in_progress', { fence: f });
   const r = inheritWorkstreams(root, runId);
@@ -164,7 +164,7 @@ test('inheritWorkstreams reports missing worktree paths (no silent recreate)', (
 test('newWorkstream throws WORKSTREAM_INPUT_INVALID for empty title', () => {
   const { root, runId } = seed();
   assert.throws(
-    () => newWorkstream(root, runId, { title: '', branch: 'b', worktree: 'w', fence: fence(runId) }),
+    () => newWorkstream(root, runId, { title: '', branch: 'b', worktree: '.claude/worktrees/w', fence: fence(runId) }),
     /WORKSTREAM_INPUT_INVALID/
   );
 });
@@ -172,7 +172,7 @@ test('newWorkstream throws WORKSTREAM_INPUT_INVALID for empty title', () => {
 test('newWorkstream throws WORKSTREAM_INPUT_INVALID for non-array dependsOn', () => {
   const { root, runId } = seed();
   assert.throws(
-    () => newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: 'w', dependsOn: true, fence: fence(runId) }),
+    () => newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: '.claude/worktrees/w', dependsOn: true, fence: fence(runId) }),
     /WORKSTREAM_INPUT_INVALID/
   );
 });
@@ -181,7 +181,7 @@ test('integrationOrder treats non-array depends_on as no-deps (defensive)', () =
   const { root, runId } = seed();
   const f = fence(runId);
   // Create workstream normally
-  newWorkstream(root, runId, { title: 'Core', branch: 'c', worktree: 'wc', fence: f });
+  newWorkstream(root, runId, { title: 'Core', branch: 'c', worktree: '.claude/worktrees/wc', fence: f });
   // Inject malformed depends_on via writeState
   {
     const { data } = readState(root, runId);
@@ -199,8 +199,8 @@ test('integrationOrder treats non-array depends_on as no-deps (defensive)', () =
 test('integrationOrder topo-sorts by depends_on and detects cycles', () => {
   const { root, runId } = seed();
   const f = fence(runId);
-  const core = newWorkstream(root, runId, { title: 'Core', branch: 'c', worktree: 'wc', fence: f }).id;
-  const ui = newWorkstream(root, runId, { title: 'UI', branch: 'u', worktree: 'wu', dependsOn: [core], fence: f }).id;
+  const core = newWorkstream(root, runId, { title: 'Core', branch: 'c', worktree: '.claude/worktrees/wc', fence: f }).id;
+  const ui = newWorkstream(root, runId, { title: 'UI', branch: 'u', worktree: '.claude/worktrees/wu', dependsOn: [core], fence: f }).id;
   const { data } = readState(root, runId);
   const r = integrationOrder(data);
   assert.equal(r.cycle, false);
@@ -227,20 +227,24 @@ test('newWorkstream throws FENCE_REQUIRED when called without fence', () => {
 
 test('newWorkstream rejects worktree outside project root (containment)', () => {
   const { root, runId } = seed();
-  for (const bad of ['/tmp/escape-wt', '../sibling/wt', '.claude/worktrees/../../escape']) {
+  for (const bad of ['/tmp/escape-wt', '../sibling/wt', '.claude/worktrees/../../escape',
+                     'tmp/ws', 'src', root, '.']) {
     assert.throws(
       () => newWorkstream(root, runId, { title: 'X', branch: 'b', worktree: bad, fence: fence(runId) }),
       /WORKSTREAM_WORKTREE_ESCAPE/, `must reject ${bad}`);
   }
 });
 
-test('newWorkstream allows worktree under project root (relative + absolute + root-self reuse)', () => {
+test('newWorkstream allows worktree under convention dirs (.claude/worktrees/ or .worktrees/)', () => {
   const { root, runId } = seed();
+  // .claude/worktrees/ convention (relative)
   assert.ok(newWorkstream(root, runId, { title: 'Rel', branch: 'b2', worktree: '.claude/worktrees/ws', fence: fence(runId) }).id);
+  // .claude/worktrees/ convention (absolute)
   assert.ok(newWorkstream(root, runId, { title: 'Abs', branch: 'b3', worktree: join(root, '.claude/worktrees/ws2'), fence: fence(runId) }).id);
-  // R3 medium: worktree == root (단일·재사용 케이스) 허용
-  assert.ok(newWorkstream(root, runId, { title: 'Self', branch: 'b4', worktree: root, fence: fence(runId) }).id);
-  assert.ok(newWorkstream(root, runId, { title: 'Dot', branch: 'b5', worktree: '.', fence: fence(runId) }).id);
+  // .worktrees/ convention (relative)
+  assert.ok(newWorkstream(root, runId, { title: 'Wt', branch: 'b6', worktree: '.worktrees/ws3', fence: fence(runId) }).id);
+  // .worktrees/ convention (absolute)
+  assert.ok(newWorkstream(root, runId, { title: 'WtAbs', branch: 'b7', worktree: join(root, '.worktrees/ws4'), fence: fence(runId) }).id);
 });
 
 test('newWorkstream rejects symlinked worktree parent escaping root (R5 P2-2)', () => {

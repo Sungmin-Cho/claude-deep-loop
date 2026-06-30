@@ -38,7 +38,8 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" next-action --json
 
 ## 1.5. Action-keyed Worktree 진입 (maker/checker dispatch 전)
 
-`action.type ∈ {dispatch_maker, dispatch_checker, fix_episode}`인 경우에만 이 단계를 실행한다 — `await_result`, `finish`, `handoff`, `await_human`, `discover` 등 `workstream_id`가 없는 action 타입은 이 단계를 건너뛴다.
+`action.workstream_id`가 존재하는 action에만 이 단계를 실행한다. 이는 `dispatch_maker`, `dispatch_checker`, `fix_episode`, `await_result`(진행 중인 maker/checker 폴링 시 워크트리 경로가 필요)를 포함한다.
+`workstream_id`가 없는 action 타입(`finish`, `handoff`, `await_human`, `discover`)은 이 단계를 건너뛴다.
 
 §1에서 실행한 `next-action --json` 결과의 `action.workstream_id`를 읽는다. 그 ID를 기준으로:
 

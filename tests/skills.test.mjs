@@ -403,3 +403,30 @@ test('deep-loop-finish: proposal-only worktree cleanup + reconcile audit surface
   assert.match(s, /proposal-only|제안|사람 승인|human/i, 'cleanup proposal-only');
   assert.match(s, /(reconcile|audit|미기록|기록에 없는|고아)/, 'reconcile audit surface');
 });
+
+// FIX E: await_result must enter the worktree (it carries action.workstream_id)
+test('deep-loop-continue §1.5: await_result is in the worktree-entry set (not skipped)', () => {
+  const cont = _rf(skillPath('deep-loop-continue'), 'utf8');
+  // The gating sentence must key on action.workstream_id PRESENCE, not a hardcoded type list
+  // that excludes await_result. Verify await_result is explicitly mentioned as entering.
+  assert.ok(
+    cont.includes('await_result'),
+    'continue §1.5 must mention await_result'
+  );
+  // await_result must NOT appear in the skip/건너뛴다 sentence
+  const skipLine = cont.split('\n').find(l => /건너뛴다|skip/.test(l) && /await_result/.test(l));
+  assert.ok(!skipLine, 'await_result must not appear in the skip sentence of §1.5');
+  // The gating sentence must key on workstream_id presence (not an explicit list that omits await_result)
+  assert.match(cont, /workstream_id[\s\S]{0,300}await_result|await_result[\s\S]{0,300}workstream_id/, 'await_result and workstream_id must be co-located in §1.5 gating text');
+});
+
+// FIX G: deep-loop SKILL.md episode new --artifacts example must use worktree-prefixed paths
+test('deep-loop §2-7: episode new --artifacts example uses worktree-prefixed paths', () => {
+  const s = dlSkill();
+  // Must NOT have bare path/to/... in --artifacts
+  assert.ok(!s.includes('"path/to/expected-output.md"'), 'bare path/to/expected-output.md must be replaced with worktree-prefixed path in episode new example');
+  // Must have worktree-prefixed expected-artifacts example
+  assert.match(s, /--artifacts[\s\S]{0,200}\.claude\/worktrees\//, '--artifacts example in episode new must use .claude/worktrees/<slug>/ prefix');
+  // Must carry a note that expected artifacts and submitted artifacts use same ORIG_ROOT-relative worktree-prefixed paths
+  assert.match(s, /(expected|episode new)[\s\S]{0,400}(ORIG_ROOT|worktree.*prefix|워크트리.*접두사|\.claude\/worktrees)[\s\S]{0,400}(episode record|submitted|동일)/, 'note that expected and submitted artifacts must use same ORIG_ROOT-relative worktree-prefixed paths');
+});
