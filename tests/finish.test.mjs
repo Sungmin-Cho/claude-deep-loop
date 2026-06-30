@@ -4,9 +4,9 @@ import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { runDir } from '../scripts/lib/state.mjs';
+import { readState, runDir } from '../scripts/lib/state.mjs';
 import { newWorkstream, recordWorkstreamTerminal } from '../scripts/lib/workspace.mjs';
-import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
+import { newEpisode, recordEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
 import { dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
 import { finishRun, finishProofState } from '../scripts/lib/finish.mjs';
 
@@ -190,4 +190,28 @@ test('finish completed rejects runDir itself or a directory as the report', () =
   mkdirSync(join(runDir(root, runId), 'handoffs'), { recursive: true });
   assert.throws(() => finishRun(root, runId, { status: 'completed', reportRel: '.', proof: {}, fence }), /final-report-missing|FINISH_PROOF_UNMET/);
   assert.throws(() => finishRun(root, runId, { status: 'completed', reportRel: 'handoffs', proof: {}, fence }), /final-report-missing|FINISH_PROOF_UNMET/);
+});
+
+// Regression: repro of real-world "009" stuck state — pending maker with zero expectedArtifacts
+// blocks finish until abandonEpisode settles it.
+test('repro: abandoning the orphan pending maker unblocks finish --status completed', () => {
+  const { root, runId, fence } = seed();   // review.points=['implementation']
+  const ws = newWorkstream(root, runId, { title: 'W', branch: 'b', worktree: 'wt', fence });
+  // Normal sequence: done maker + approved checker (satisfies implementation review point).
+  writeFileSync(join(root, 'art.txt'), 'x');
+  const good = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws.id, expectedArtifacts: ['art.txt'], fence });
+  recordEpisode(root, runId, good.id, { status: 'done', artifacts: ['art.txt'], proof: {}, fence });
+  const dr = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws.id, detected: {}, fence });
+  recordReviewOutcome(root, runId, { episodeId: dr.checkerEpisodeId, workstreamId: ws.id, point: 'implementation', verdict: 'APPROVE', fence });
+  // Orphan: stranded pending maker with zero expectedArtifacts — isomorphic to repro episode 009.
+  const orphan = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws.id, expectedArtifacts: [], fence });
+  recordWorkstreamTerminal(root, runId, ws.id, { status: 'ready', proof: {}, fence });
+  // Mid-test assertion 1: orphan blocks finish.
+  assert.ok(finishProofState(readState(root, runId).data).missing.includes('unsettled-episodes'));
+  // Resolve via abandonEpisode (human-gated escape hatch).
+  abandonEpisode(root, runId, orphan.id, { reason: 'orphan, no artifacts', confirm: true, fence });
+  // Mid-test assertion 2: completed path succeeds after abandon.
+  writeFileSync(join(runDir(root, runId), 'final-report.md'), '# done');
+  const res = finishRun(root, runId, { status: 'completed', reportRel: 'final-report.md', fence });
+  assert.equal(res.status, 'completed');
 });
