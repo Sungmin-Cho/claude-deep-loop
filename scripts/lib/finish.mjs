@@ -31,8 +31,17 @@ export function finishProofState(loop) {
     const cur = latestByPoint.get(k);
     if (!cur || epOrder(m.id, cur.id) > 0) latestByPoint.set(k, m);
   }
-  const boundApproved = (mid) => (loop.episodes || []).some(e => e.role === 'checker' && e.target_maker === mid && e.status === 'approved');
-  const allPointsConverged = [...latestByPoint.values()].every(m => boundApproved(m.id));
+  // final-fix-4: convergence must be ORDER-AWARE on the checker side too — mirror next-action's supersededRejected.
+  // A maker converges only when its LATEST bound terminal checker (by epOrder) is APPROVED. An older approve
+  // followed by a newer reject (same target_maker) must NOT mask the rejection (a plain any-approved test would,
+  // diverging from nextAction which routes to fix_episode). An unbound checker has no target_maker so cannot count.
+  const boundLatestApproved = (mid) => {
+    const cs = (loop.episodes || []).filter(e => e.role === 'checker' && e.target_maker === mid && (e.status === 'approved' || e.status === 'rejected'));
+    if (!cs.length) return false;
+    const latest = cs.reduce((a, b) => (epOrder(a.id, b.id) >= 0 ? a : b));
+    return latest.status === 'approved';
+  };
+  const allPointsConverged = [...latestByPoint.values()].every(m => boundLatestApproved(m.id));
   const reviewedProof = doneMakers.length > 0 && allMakersReviewed && allPointsConverged;
   const unboundDoneMaker = doneMakers.some(m => !m.workstream_id || !(loop.workstreams || []).some(w => w.id === m.workstream_id));
   const missing = [];

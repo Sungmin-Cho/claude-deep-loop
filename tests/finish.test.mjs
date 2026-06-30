@@ -108,6 +108,20 @@ test('finishProofState passes for a fix-loop (maker1+rejected-checker, maker2+ap
   assert.deepEqual(finishProofState(loop).missing, []);
 });
 
+// final-fix-4 regression: a SINGLE done maker whose LATEST bound checker is REJECTED (older approve '002' then
+// newer reject '003', both target '001') must NOT report complete — finishProofState must mirror next-action's
+// order-aware supersededRejected (an older approve cannot mask a newer reject). Before the fix, boundApproved
+// (any-approved) returned true → missing===[] (would COMPLETE), diverging from nextAction's fix_episode.
+test('finishProofState blocks when a maker\'s LATEST bound checker is rejected (older approve, newer reject)', () => {
+  const loop = { episodes: [
+      { id: '001', role: 'maker', point: 'plan', workstream_id: 'w', status: 'done' },
+      { id: '002', role: 'checker', point: 'plan', workstream_id: 'w', status: 'approved', target_maker: '001' },
+      { id: '003', role: 'checker', point: 'plan', workstream_id: 'w', status: 'rejected', target_maker: '001' }],
+    workstreams: [{ id: 'w', status: 'ready', review_points_done: ['plan'] }], active_workstreams: [] };
+  const ps = finishProofState(loop);
+  assert.ok(ps.missing.includes('no-independent-review'), ps.missing.join(','));
+});
+
 // Codex adversarial: episode ids are zero-padded to only 3 digits, so string `>` mis-orders at the 999→1000
 // boundary ('1000-x' < '999-x' lexicographically). The LATEST done maker for (w,implementation) is 1000-x, which
 // is REJECTED — finishProofState MUST NOT report complete (the latest maker has no bound APPROVED checker).
