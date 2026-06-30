@@ -36,15 +36,19 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" next-action --json
   - **breaker tripped**: `/deep-loop-status`로 상태 확인 후 사람이 `breaker reset --confirm --owner <run_id> --generation <n>` 실행 필요 — **autonomous tick은 스스로 `--confirm`을 주지 않는다.**
   - **await_human**: 사람 입력 요청 후 종료.
 
-## 1.5. Active Worktree 진입 (maker/checker 전)
+## 1.5. Action-keyed Worktree 진입 (maker/checker dispatch 전)
 
-active workstream의 파일 작업이 올바른 격리 공간에서 일어나도록, **dispatch 전에** 해당 workstream의 worktree로 진입한다.
+`action.type ∈ {dispatch_maker, dispatch_checker, fix_episode}`인 경우에만 이 단계를 실행한다 — `await_result`, `finish`, `handoff`, `await_human`, `discover` 등 `workstream_id`가 없는 action 타입은 이 단계를 건너뛴다.
+
+§1에서 실행한 `next-action --json` 결과의 `action.workstream_id`를 읽는다. 그 ID를 기준으로:
 
 ```
 node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field workstreams
 ```
 
-active workstream의 `worktree` 경로를 읽는다. native attach 도구(`EnterWorktree` 등)가 있으면 그것으로 진입하고, 없으면 `cd`로 전환한다. 커널 상태(`rootOf` 상향탐색)는 cwd 이동과 무관하게 원본 root를 자동 해석하므로 `--project-root`는 불필요하다.
+workstream 목록에서 `id === action.workstream_id`인 항목의 `worktree` 경로를 확인한다. native attach 도구(`EnterWorktree` 등)가 있으면 그것으로 진입하고, 없으면 `cd`로 전환한다. 커널 상태(`rootOf` 상향탐색)는 cwd 이동과 무관하게 원본 root를 자동 해석하므로 `--project-root`는 불필요하다.
+
+`max_parallel` 환경에서 여러 active workstream이 있어도, 항상 `action.workstream_id`가 지정하는 workstream의 worktree만 진입한다 — 임의 active workstream이 아님.
 
 ## 2. Action 분기 (next-action이 반환한 `action.type`대로, 스스로 판단 추가 금지)
 

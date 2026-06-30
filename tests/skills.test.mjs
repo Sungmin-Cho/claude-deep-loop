@@ -251,16 +251,18 @@ test('deep-loop-workflow references exist', () => {
     assert.ok(existsSync(join(ROOT, 'skills', 'deep-loop-workflow', 'references', r)), `missing reference ${r}`);
 });
 
-test('worktree-aware skills: enter worktree before maker/checker/handoff; verify unchanged', () => {
+test('worktree-aware skills: action-keyed entry in continue; resume defers; handoff no entry; verify unchanged', () => {
   const cont = _rf(skillPath('deep-loop-continue'), 'utf8');
-  assert.match(cont, /(worktree[\s\S]{0,40}(진입|cd|attach)|active worktree)/, 'continue enters worktree');
+  // continue §1.5 must key entry on action.workstream_id (not blind active workstream pick)
+  assert.match(cont, /action\.workstream_id/, 'continue §1.5 keys worktree entry by action.workstream_id — not blind active workstream pick');
   assert.ok(mutatingFenced(cont), 'continue fenced');
   const res = _rf(skillPath('deep-loop-resume'), 'utf8');
   assert.match(res, /(무결성|existsSync|경로.*확인|needs-human)/, 'resume verify unchanged');
-  assert.match(res, /worktree[\s\S]{0,40}(진입|cd|attach)/, 'resume enters worktree after verify');
-  // review P2 #3: handoff 도 worktree 진입을 명시(fenced 만 확인하면 미변경도 통과).
+  // resume §3.5 defers per-action worktree entry to /deep-loop-continue (avoids mis-routing in multi-parallel runs)
+  assert.match(res, /단계 3\.5[\s\S]{0,300}위임/, 'resume §3.5 defers worktree entry to /deep-loop-continue (not pre-entering)');
+  // handoff §1.5: kernel resolves root via findRoot; no file work → no worktree entry needed
   const hand = _rf(skillPath('deep-loop-handoff'), 'utf8');
-  assert.match(hand, /worktree[\s\S]{0,40}(진입|cd|attach)/, 'handoff enters worktree before handoff work');
+  assert.match(hand, /단계 1\.5[\s\S]{0,200}(불필요|findRoot)/, 'handoff §1.5 documents no worktree entry needed (kernel resolves root via findRoot)');
   assert.ok(mutatingFenced(hand), 'handoff fenced');
 });
 
@@ -342,19 +344,19 @@ test('continue + handoff no-launcher else-branch: respawn before preserve-pause,
 });
 
 // Task 6: worktree-entry ordering constraints
-// resume: integrity-verify (단계 3) MUST precede worktree-entry (단계 3.5)
-test('resume: worktree-entry ordering — integrity-verify step must precede entry step', () => {
+// resume: integrity-verify (단계 3) MUST precede §3.5 deferral section
+test('resume: ordering — integrity-verify step must precede §3.5 worktree-deferral section', () => {
   const res = readFileSync(skillPath('deep-loop-resume'), 'utf8');
   // '무결성' appears in §3 heading/body (path integrity check) — stable, won't move to §3.5
   const verifyIdx = res.indexOf('무결성');
-  // '단계 3.5' is the unique section header for the worktree-entry step
-  const entryIdx  = res.indexOf('단계 3.5');
+  // '단계 3.5' is the section documenting that worktree entry is DEFERRED to /deep-loop-continue
+  const deferIdx  = res.indexOf('단계 3.5');
   assert.ok(verifyIdx !== -1,
     'resume: integrity-verify marker (무결성) must exist in SKILL.md');
-  assert.ok(entryIdx !== -1,
-    'resume: worktree-entry section marker (단계 3.5) must exist in SKILL.md');
-  assert.ok(verifyIdx < entryIdx,
-    'resume: 무결성 verify step must appear BEFORE 단계 3.5 worktree-entry — entry is gated on the verify passing');
+  assert.ok(deferIdx !== -1,
+    'resume: §3.5 deferral section marker (단계 3.5) must exist in SKILL.md');
+  assert.ok(verifyIdx < deferIdx,
+    'resume: 무결성 verify step must appear BEFORE 단계 3.5 — verify first, then deferral note explains /deep-loop-continue handles per-action worktree entry');
 });
 
 // continue: worktree-entry (§1.5) MUST precede maker/checker dispatch (§2)
