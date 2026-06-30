@@ -84,15 +84,84 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" init-run \
 
 ### 2-6. Workstream 생성
 
+각 `workstream new` 호출 **직전**, 아래 절차로 worktree를 먼저 생성(eager)한 뒤 실제 path/branch를 기록한다.
+
+**어떤 worktree 전환보다 먼저 두 값을 캡처한다:**
+```bash
+ORIG_ROOT=$(git rev-parse --show-toplevel)   # 격리 진입 전 원본 repo root
+BASE_REF=$(git rev-parse HEAD)               # 의도한 base commit
+```
+
+#### Step 0 — 기존 격리 감지 및 재사용 결정
+
+현재 세션이 이미 linked worktree 안인지 확인한다(`git rev-parse --git-dir` ≠ `--git-common-dir`; submodule 가드: `--show-superproject-working-tree`가 경로를 반환하면 일반 repo로 취급).
+
+**이미 격리 상태이면** 적격성을 먼저 검증한다:
+- **(a) clean** — 무관한 미커밋 변경 없음
+- **(b) base** — 의도한 base commit 기반
+- **(c) 소유** — 이 run 전용 브랜치/경로
+
+세 조건 충족 **+ 사용자 확인** 시에만 첫 workstream을 재사용(실제 path/branch 캡처 → Step 2). 부적격 또는 미확인이면 git 생성(Step 1b) 또는 human selection 중단.
+
+**비격리 상태이면:**
+- **단일 workstream run → native 우선(Step 1a)**
+- **다중 workstream run → 모든 ws를 전부 git(Step 1b)**, 세션은 ORIG_ROOT 유지
+
+#### Step 1a — native (단일 workstream run 전용)
+
+> 적용 범위: 단일 workstream run의 비격리 케이스. 다중은 Step 1b.
+
+`EnterWorktree`(Claude Code), `/worktree`, `--worktree` 플래그 등 플랫폼 native worktree 도구가 있으면 ws 슬러그를 넘겨 격리 작업공간을 생성한다. Claude Code 컨벤션 경로: `<root>/.claude/worktrees/<slug>`, 브랜치 `worktree-<slug>`.
+
+**Containment(생성 전 보장이 유일 경로):**
+- ① native 호출 **전에** 그 도구가 `$ORIG_ROOT/.claude/worktrees/` 밑에 worktree를 생성할 것이 **보장**되는지 확인한다. Claude Code `EnterWorktree`는 알려진 동작이므로 사용 가능; 보장 불가하면 처음부터 **Step 1b(git 폴백)**으로 전환.
+- ② 보장했는데도 native가 root 밖에 생성했다면 **즉시 fail-closed STOP(needs-human)** — 사후 audit 의존 ❌.
+
+생성 후 **실제** path + branch를 캡처 → Step 2.
+
+#### Step 1b — git (다중 workstream run의 모든 worktree, 또는 단일 run의 native 부재/폴백)
+
+순서가 중요하다. 안전 검증을 먼저 수행한 **뒤에만** 생성 명령을 실행한다.
+
+① **`git check-ignore` 검증(proposal-only, 생성 전 필수):**
+```bash
+git check-ignore -q .claude/worktrees/
+```
+gitignore되어 있으면 통과. **ignore 안 됐으면 `.gitignore`를 자동 편집·커밋하지 않는다** — 사람에게 해당 한 줄 추가를 **제안(proposal-only)**하고 **승인 시에만** 진행, 미승인이면 fail-closed 중단. 이 repo는 `.claude/worktrees/`가 이미 gitignore되어 무수정 통과.
+
+② **검증 통과 후** `$ORIG_ROOT`-앵커 절대경로 + 명시 base로 생성한다:
+```bash
+git worktree add -b worktree-<ws-slug> "$ORIG_ROOT/.claude/worktrees/<ws-slug>" "$BASE_REF"
+```
+다중 run에서 git을 사용하는 이유: cwd를 이동시키지 않아 ORIG_ROOT에 머문 채 N개를 생성할 수 있다(native cwd 이동/중첩 회피).
+
+생성 후 **실제** path + branch를 캡처 → Step 2.
+
+#### Step 2 — 기록
+
+캡처한 실제 값으로 기록한다(`--project-root` 불필요 — 커널 `rootOf`가 cwd 상향탐색으로 root를 자동 해석):
+
 ```
 node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" workstream new \
   --title "<workstream title>" \
-  --branch "<branch-name>" \
-  --worktree "<worktree-path>" \
+  --branch "<actual-branch>" \
+  --worktree "<actual-path>" \
   --owner <run_id> --generation 1
 ```
 
 의존 관계가 있으면 `--depends-on '<["ws-id-1"]>'`도 추가.
+
+#### 결정표
+
+| 상황 | 동작 |
+|------|------|
+| 단일 run · 이미 격리 · 적격(clean·base·소유)+사용자 확인 | 현재 worktree 재사용 |
+| 단일 run · 이미 격리 · 부적격/미확인 | 재사용 ❌ → git(Step 1b) 또는 human 중단 |
+| 단일 run · 비격리 · native 있음 | `EnterWorktree` native 생성(Step 1a) |
+| 단일 run · 비격리 · native 없음 | git 컨벤션 경로(Step 1b) |
+| 다중 run · 모든 ws | 전부 git `$ORIG_ROOT/.claude/worktrees/<slug>` `-b worktree-<slug>` (Step 1b; native 미사용) |
+| gitignore 미설정 | proposal-only 제안 — 승인 시에만 진행, 자동 커밋 ❌ |
+| native가 root 밖에 생성 | fail-closed STOP(needs-human) |
 
 ### 2-7. 첫 번째 Episode 생성
 

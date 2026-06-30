@@ -144,6 +144,43 @@ test('mutatingFenced requires both fence flags on mutating CLI lines (fixtures)'
   assert.ok(mutatingFenced('episode record --status done --owner $R --generation 1'));   // shorthand fenced OK
 });
 
+// Task 4: deep-loop §2-6 worktree creation discipline
+const dlSkill = () => _rf(skillPath('deep-loop'), 'utf8');
+
+test('deep-loop §2-6: native-first + git-fallback + convention path + single/multi split', () => {
+  const s = dlSkill();
+  assert.match(s, /EnterWorktree/, 'native example');
+  assert.match(s, /git worktree add/, 'git fallback');
+  assert.match(s, /\.claude\/worktrees\//, 'convention path');
+  assert.match(s, /단일[\s\S]{0,80}native/, 'single-run native');
+  assert.match(s, /다중[\s\S]{0,120}(git|전부 git|모든)/, 'multi-run git');
+});
+
+test('deep-loop §2-6: detection-first + reuse eligibility gate', () => {
+  const s = dlSkill();
+  assert.match(s, /git-common-dir|이미 (격리|worktree)/, 'Step 0 detection');
+  assert.match(s, /clean[\s\S]{0,160}base[\s\S]{0,160}(소유|브랜치)/, 'reuse eligibility');
+  assert.match(s, /(사용자 확인|human|승인)/, 'reuse confirm gate');
+});
+
+test('deep-loop §2-6: gitignore proposal-only + check-ignore precedes add', () => {
+  const s = dlSkill();
+  const ci = s.indexOf('check-ignore'), wa = s.indexOf('git worktree add');
+  assert.ok(ci !== -1 && wa !== -1 && ci < wa, 'check-ignore precedes worktree add');
+  const autoCommit = s.split('\n').some(l => /gitignore/i.test(l) && /\bgit\s+commit\b/.test(l));
+  assert.ok(!autoCommit, 'no auto-commit .gitignore');
+  assert.match(s, /proposal-only|제안|승인 시에만/, 'gitignore proposal-only');
+});
+
+test('deep-loop §2-6: worktree creation never escapes root + no --project-root on command lines', () => {
+  const s = dlSkill();
+  assert.ok(!worktreeWriteOutsideRoot(s), 'no root-escaping git worktree add');
+  // R4 medium: 산문의 "`--project-root` 불필요" 멘션은 허용 — deep-loop.mjs **명령 라인**에만 없어야 한다.
+  const projRootCmd = s.split('\n').some(l => /deep-loop\.mjs/.test(l) && /--project-root/.test(l));
+  assert.ok(!projRootCmd, 'no --project-root on deep-loop.mjs command lines (rootOf handles it)');
+  assert.ok(mutatingFenced(s), 'mutating CLI still fenced');
+});
+
 for (const [dir, name, invocable, triggers, refsCLI] of SKILLS) {
   test(`skill ${dir}: exists`, () => assert.ok(existsSync(skillPath(dir)), `${dir}/SKILL.md missing`));
   test(`skill ${dir}: frontmatter has exactly name/description/user-invocable`, () => {
