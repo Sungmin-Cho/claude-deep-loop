@@ -196,6 +196,9 @@ test('deep-loop: ORIG_ROOT/BASE_REF capture (sibling path) + cwd split + artifac
   assert.match(sec05, /cwd[\s\S]{0,80}(분리|worktree)/, 'cwd split in §0.5 section');
   // Rule 5: artifact ORIG_ROOT-relative
   assert.match(sec05, /artifact[\s\S]{0,160}(ORIG_ROOT|상대|\.claude\/worktrees)/, 'artifact ORIG_ROOT-relative in §0.5 section');
+  // FIX P: ORIG_ROOT must use git-common-dir (main repo root), not bare --show-toplevel
+  // (in a linked worktree, --show-toplevel returns the worktree path, not the project root)
+  assert.match(sec05, /git-common-dir/, 'ORIG_ROOT must use git-common-dir main-root derivation in §0.5 (not bare --show-toplevel)');
 });
 
 test('deep-loop Step 1.5: lease check precheck + orphan handling (no --field lease command)', () => {

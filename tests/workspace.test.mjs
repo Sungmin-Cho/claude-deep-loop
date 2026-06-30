@@ -279,3 +279,25 @@ test('newWorkstream allows absent (not-yet-created) worktree leaf under conventi
   const id = newWorkstream(root, runId, { title: 'Future', branch: 'bf', worktree: '.claude/worktrees/future-ws', fence: fence(runId) }).id;
   assert.match(id, /^ws-\d+-/, 'absent-leaf worktree accepted');
 });
+
+// FIX Q: kernel must normalize stored worktree to root-relative regardless of whether absolute or
+// relative input is given — so artifact paths (derived from stored worktree prefix) stay root-relative
+// and pass episode.mjs containment (which rejects absolute/.. paths).
+test('newWorkstream normalizes absolute worktree input to root-relative in stored state (FIX Q)', () => {
+  const { root, runId } = seed();
+  const f = fence(runId);
+  // Absolute input: <root>/.claude/worktrees/ws-abs → stored as .claude/worktrees/ws-abs
+  newWorkstream(root, runId, { title: 'AbsClaude', branch: 'b-abs-c', worktree: join(root, '.claude/worktrees/ws-abs'), fence: f });
+  const ws1 = readState(root, runId).data.workstreams.find(w => w.branch === 'b-abs-c');
+  assert.equal(ws1.worktree, '.claude/worktrees/ws-abs', 'absolute .claude/worktrees/ input stored root-relative');
+
+  // Absolute input: <root>/.worktrees/ws-abs2 → stored as .worktrees/ws-abs2
+  newWorkstream(root, runId, { title: 'AbsWt', branch: 'b-abs-w', worktree: join(root, '.worktrees/ws-abs2'), fence: f });
+  const ws2 = readState(root, runId).data.workstreams.find(w => w.branch === 'b-abs-w');
+  assert.equal(ws2.worktree, '.worktrees/ws-abs2', 'absolute .worktrees/ input stored root-relative');
+
+  // Relative input: stored unchanged
+  newWorkstream(root, runId, { title: 'Rel', branch: 'b-rel', worktree: '.claude/worktrees/ws-rel', fence: f });
+  const ws3 = readState(root, runId).data.workstreams.find(w => w.branch === 'b-rel');
+  assert.equal(ws3.worktree, '.claude/worktrees/ws-rel', 'relative input stored as-is (already root-relative)');
+});

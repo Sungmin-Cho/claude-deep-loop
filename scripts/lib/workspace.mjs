@@ -1,5 +1,5 @@
 import { existsSync, realpathSync, lstatSync } from 'node:fs';
-import { isAbsolute, join, resolve, sep, dirname, basename } from 'node:path';
+import { isAbsolute, join, resolve, relative, sep, dirname, basename } from 'node:path';
 import { readState, writeState, withLock } from './state.mjs';
 import { appendAnchored } from './integrity.mjs';
 import { slugify } from './slug.mjs';
@@ -51,12 +51,16 @@ export function newWorkstream(root, runId, { title, branch, worktree, baseCommit
   if (worktree.split(/[/\\]/).includes('..') || !_underConvention) {
     throw new Error('WORKSTREAM_WORKTREE_ESCAPE: worktree must resolve under project root: ' + worktree);
   }
+  // FIX Q: normalize stored worktree to root-relative form regardless of whether caller passed an
+  // absolute or relative path — stored value must be root-relative so artifact prefixes derived from
+  // it stay root-relative and pass episode.mjs containment (absolute/.. paths are rejected there).
+  const _storedWorktree = relative(_rootResolved, _wtResolved);  // e.g. '.claude/worktrees/<slug>'
   let id;
   appendAnchored(root, runId, { type: 'workstream-new', data: { title } }, (loop) => {
     const n = String(loop.workstreams.length + 1).padStart(2, '0');
     id = `ws-${n}-${slugify(title) || 'ws'}`;
     loop.workstreams.push({
-      id, title, status: 'planned', branch, worktree, base_commit: baseCommit,
+      id, title, status: 'planned', branch, worktree: _storedWorktree, base_commit: baseCommit,
       dirty_on_handoff: false, pr: { intended: true, state: 'none', url: null },
       episodes: [], review_points_done: [], depends_on: dependsOn,
     });
