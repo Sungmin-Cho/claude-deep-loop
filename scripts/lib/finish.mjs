@@ -3,14 +3,14 @@ import { resolve, sep } from 'node:path';
 import { appendAnchored } from './integrity.mjs';
 import { leaseCheck } from './lease.mjs';
 import { runDir } from './state.mjs';
-import { makerReviewed, unsatisfiedReviewPoints, epOrder } from './review.mjs';
+import { makerReviewed, unsatisfiedReviewPoints, epOrder, rejectionResolved } from './review.mjs';
 
-function reviewSatisfied(loop, ep) {
-  const ws = (loop.workstreams || []).find(w => w.id === ep.workstream_id);
-  if (ws && (ws.review_points_done || []).includes(ep.point)) return true;
-  return (loop.episodes || []).some(e => e.role === 'checker' && e.status === 'approved' && e.workstream_id === ep.workstream_id && e.point === ep.point);
-}
-const settledEp = (loop, e) => ['done', 'approved', 'abandoned'].includes(e.status) || (e.role === 'checker' && e.status === 'rejected' && reviewSatisfied(loop, e));
+// A rejected checker is settled only when it is RESOLVED by the SINGLE unified predicate rejectionResolved
+// (review.mjs) — the SAME order-aware predicate next-action.mjs uses for routing. (Replaces the old local
+// reviewSatisfied, which settled on review_points_done / any same-point approval and was NOT order-aware,
+// so a NEWER unbound REQUEST_CHANGES after an approved point was silently settled.) The boundLatestApproved
+// convergence check below is complementary (it gates makers, not the rejected checker's settlement).
+const settledEp = (loop, e) => ['done', 'approved', 'abandoned'].includes(e.status) || (e.role === 'checker' && e.status === 'rejected' && rejectionResolved(loop, e));
 const TERMINAL_WS = ['ready', 'merged', 'abandoned'];
 
 export function finishProofState(loop) {
@@ -31,7 +31,7 @@ export function finishProofState(loop) {
     const cur = latestByPoint.get(k);
     if (!cur || epOrder(m.id, cur.id) > 0) latestByPoint.set(k, m);
   }
-  // final-fix-4: convergence must be ORDER-AWARE on the checker side too — mirror next-action's supersededRejected.
+  // final-fix-4: convergence must be ORDER-AWARE on the checker side too — mirror the unified rejectionResolved.
   // A maker converges only when its LATEST bound terminal checker (by epOrder) is APPROVED. An older approve
   // followed by a newer reject (same target_maker) must NOT mask the rejection (a plain any-approved test would,
   // diverging from nextAction which routes to fix_episode). An unbound checker has no target_maker so cannot count.

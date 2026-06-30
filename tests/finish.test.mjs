@@ -165,6 +165,35 @@ test('finishProofState: abandoned episode counts as settled', () => {
   assert.ok(!ps.missing.includes('unsettled-episodes'), ps.missing.join(','));
 });
 
+// [R4] UNIFICATION regression — the root-cause class closer. An approved point (review_points_done=['plan'])
+// followed by a NEWER UNBOUND checker recording REQUEST_CHANGES (003 > 002, no target_maker). BEFORE the unified
+// rejectionResolved predicate, finishProofState's local reviewSatisfied SETTLED this rejection (review_points_done
+// had the point / a same-point approval existed) → missing===[] (silently COMPLETE), diverging from next-action.
+// Now the unbound rejection is UNRESOLVED (no NEWER approval), so it is NOT settled → 'unsettled-episodes'.
+test('finishProofState blocks a NEWER unbound rejected checker after an approved point ([R4] unsettled)', () => {
+  const loop = { review: { points: ['plan'] },
+    episodes: [
+      { id: '001', role: 'maker', point: 'plan', workstream_id: 'w', status: 'done' },
+      { id: '002', role: 'checker', point: 'plan', workstream_id: 'w', status: 'approved', target_maker: '001' },
+      { id: '003', role: 'checker', point: 'plan', workstream_id: 'w', status: 'rejected' }],   // NEWER, unbound
+    workstreams: [{ id: 'w', status: 'ready', review_points_done: ['plan'] }], active_workstreams: [] };
+  const ps = finishProofState(loop);
+  assert.ok(ps.missing.includes('unsettled-episodes'), ps.missing.join(','));
+  assert.notEqual(ps.missing.length, 0);
+});
+
+// UNIFICATION — the RESOLVED unbound case (complement of [R4]): an UNBOUND rejected checker (002) addressed by a
+// NEWER bound approval (003) for the same point is RESOLVED via rejectionResolved → settled → finishable (missing==[]).
+test('finishProofState passes a RESOLVED unbound rejected checker (older reject, newer approval)', () => {
+  const loop = { review: { points: ['plan'] },
+    episodes: [
+      { id: '001', role: 'maker', point: 'plan', workstream_id: 'w', status: 'done' },
+      { id: '002', role: 'checker', point: 'plan', workstream_id: 'w', status: 'rejected' },   // unbound, OLDER
+      { id: '003', role: 'checker', point: 'plan', workstream_id: 'w', status: 'approved', target_maker: '001' }],
+    workstreams: [{ id: 'w', status: 'ready', review_points_done: ['plan'] }], active_workstreams: [] };
+  assert.deepEqual(finishProofState(loop).missing, []);
+});
+
 // --- finishRun 디스크 ---
 test('finish completed is blocked on an empty run even with a report', () => {
   const { root, runId, fence } = seed();

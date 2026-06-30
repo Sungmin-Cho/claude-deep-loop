@@ -17,6 +17,28 @@ export const epOrder = (a, b) => {
   return a < b ? -1 : a > b ? 1 : 0;
 };
 
+// UNIFIED rejected-checker resolution predicate — the SINGLE source of truth for
+// "is this rejected checker RESOLVED (superseded)?", shared by next-action.mjs (routing)
+// AND finish.mjs (settledEp). Before this, the two files answered the question differently
+// (next-action: order-aware but ignored UNBOUND rejections; finish: review_points_done/any-approval,
+// not order-aware) → a NEWER unbound REQUEST_CHANGES after an approved point could be silently
+// finished past (next-action ignored it AND finish settled it). One predicate closes the whole class.
+// Order is computed with epOrder (numeric-prefix compare, not string) so the 999→1000 boundary is correct.
+//   bound (target_maker set): resolved iff the SAME target maker was re-reviewed and APPROVED by a checker
+//     NEWER than this rejection (an OLDER approve followed by a NEWER reject must NOT count), OR a strictly
+//     LATER done maker exists for the same (workstream_id, point) (the flow moved on to a newer maker).
+//   unbound (no target_maker): resolved iff a NEWER approved checker for the same (workstream_id, point)
+//     addressed the point AFTER this rejection — a newer reject is NOT masked by an older approval.
+export function rejectionResolved(loop, e) {
+  const eps = loop.episodes || [];
+  if (e.target_maker) {
+    const reApprovedNewer = eps.some(c => c.role === 'checker' && c.target_maker === e.target_maker && c.status === 'approved' && epOrder(c.id, e.id) > 0);
+    const laterDoneMaker = eps.some(m => m.role === 'maker' && m.status === 'done' && m.workstream_id === e.workstream_id && m.point === e.point && epOrder(m.id, e.target_maker) > 0);
+    return reApprovedNewer || laterDoneMaker;
+  }
+  return eps.some(c => c.role === 'checker' && c.status === 'approved' && c.workstream_id === e.workstream_id && c.point === e.point && epOrder(c.id, e.id) > 0);
+}
+
 export function resolveReviewer(loop, detected = {}) {
   const r = loop.review || {};
   let reviewer = r.reviewer || 'subagent-checker';
