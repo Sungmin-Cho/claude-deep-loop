@@ -602,3 +602,24 @@ test('R12-LL: gate-OK + no-launcher → no-launcher outcome, reserved child pres
   assert.equal(d.session_chain.lease.state, 'releasing', 'lease state must stay releasing');
   assert.notEqual(d.status, 'paused', 'status must NOT be paused (skill handles pause-mode-preserve separately)');
 });
+
+// ── B3: unavailable PowerShell entry (no trusted launcher_bin) routes to no-launcher (plan-ADV6) ──
+test('B3: powershell launcher with null launcher_bin → no-launcher (preserve), never spawns', () => {
+  const { root, runId } = seed((d) => {
+    d.autonomy.spawn_style = 'visible';
+    d.session_spawn = {
+      platform: 'win32', launcher: 'powershell', launcher_bin: null, launcher_socket: null,
+      surface: 'window', reachable: true, visible: true, signals: {}, probe: null,
+      reason: null, fallback: 'launch-command-file', detected_at: '2026-06-24T00:00:00Z',
+    };
+  });
+  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });
+  let spawned = false;
+  const r = respawn(root, runId, { childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel, attended: true, env: {}, now: NOW1, spawnFn: () => { spawned = true; return { ok: true }; }, sleep: noSleep });
+  assert.equal(spawned, false, 'must not spawn a bare powershell');
+  assert.equal(r.ok, false);
+  assert.equal(r.outcome, 'no-launcher');
+  // handoff PRESERVED (not stranded/rolled back) — skill preserve-pauses.
+  const after = readState(root, runId).data.session_chain.lease;
+  assert.equal(after.handoff_phase, 'emitted');
+});

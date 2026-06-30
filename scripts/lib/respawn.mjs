@@ -241,6 +241,13 @@ export function respawn(root, runId, {
     return { ok: false, outcome: 'build-error', reason: String(buildErr.message || buildErr), childRunId };
   }
 
+  // Fail closed: a powershell mode with an unavailable entry (no trusted launcher_bin — e.g. a stale/migrated
+  // launcher='powershell' run) must NOT spawn a bare powershell. Return the SAME no-launcher outcome the
+  // interactive branch returns so the skill preserve-pauses (build-error is report-only → would strand it).
+  if (mode === 'powershell' && (!_entry || _entry.unavailable || !_entry.bin)) {
+    return { ok: false, outcome: 'no-launcher', reason: 'powershell-launcher-unavailable', childRunId };
+  }
+
   // Codex r2 🔴3: 외부 spawn **이전에** emitted→spawned 를 원자적(withLock CAS)으로 클레임 (이중 외부 spawn 차단).
   // Command is already validated above; only the CAS + spawnFn call remain below.
   const claim = advanceHandoffPhase(root, runId, { key, toPhase: 'spawned', now, expect: { owner: parentOwner, generation } });
