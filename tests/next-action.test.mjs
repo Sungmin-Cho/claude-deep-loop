@@ -49,6 +49,8 @@ test('pending maker episode → dispatch_maker', () => {
 
 test('done maker at review point → dispatch_checker', () => {
   const l = loop();
+  // workstream-bound so the new wsExists guard allows dispatch_checker (unbound → await_human).
+  l.workstreams = [{ id: 'ws-01', status: 'in_progress', review_points_done: [], episodes: [], depends_on: [] }];
   l.episodes = [{ id: '001-deep-work', role: 'maker', status: 'done', point: 'implementation', workstream_id: 'ws-01' }];
   l.current_episode = '001-deep-work';
   assert.equal(nextAction(l, { now: 0 }).action.type, 'dispatch_checker');
@@ -65,11 +67,17 @@ test('per_session_turn_cap reached → handoff', () => {
 
 // Codex r1 🔴5: 리뷰 outcome 이 checker 터미널을 세팅한 뒤 nextAction 이 fix flow 로 진입해야 (finish 오폴백 금지).
 test('checker rejected → fix_episode; checker approved → finish (no fall-through)', () => {
-  const l = loop();
-  l.episodes = [{ id: '002-deep-review', role: 'checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01' }];
+  // Fully finishable state so the approved-checker path actually reaches finish under finishProofState reuse:
+  // review.points=['plan'], a bound done maker, ws terminal with the point done, zero active workstreams.
+  const l = loop(); l.review.points = ['plan'];
+  l.workstreams = [{ id: 'ws-01', status: 'ready', review_points_done: ['plan'], episodes: [], depends_on: [] }];
+  l.active_workstreams = [];
+  l.episodes = [
+    { id: '001-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
+    { id: '002-deep-review', role: 'checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' }];
   l.current_episode = '002-deep-review';
   assert.equal(nextAction(l, { now: 0 }).action.type, 'fix_episode');
-  l.episodes[0].status = 'approved';
+  l.episodes[1].status = 'approved';
   assert.equal(nextAction(l, { now: 0 }).action.type, 'finish');
 });
 
@@ -88,10 +96,10 @@ test('in-progress→await_result, blocked→await_human, checker in_progress not
 
 // Codex r2 🔴7 / r3 🔴4: finish 는 active workstream 0 + done maker 가 리뷰 통과일 때만.
 test('finish gated on review of done makers AND zero active workstreams', () => {
-  const l = loop();
+  const l = loop(); l.review.points = ['implementation'];
   l.episodes = [{ id: '001-deep-work', role: 'maker', status: 'done', point: 'implementation', workstream_id: 'ws-01' }];
   l.current_episode = null;
-  l.workstreams = [{ id: 'ws-01', review_points_done: [] }];
+  l.workstreams = [{ id: 'ws-01', status: 'ready', review_points_done: [] }];
   l.active_workstreams = [];
   // 리뷰 안 된 done maker → finish 가 아니라 checker dispatch (리뷰 게이트)
   assert.equal(nextAction(l, { now: 0 }).action.type, 'dispatch_checker');
@@ -100,7 +108,7 @@ test('finish gated on review of done makers AND zero active workstreams', () => 
   l.workstreams[0].review_points_done = ['implementation'];
   l.active_workstreams = ['ws-01'];                            // 그러나 active workstream 잔존 → finish 금지
   assert.equal(nextAction(l, { now: 0 }).action.type, 'await_human');
-  l.active_workstreams = [];                                   // active 0 + 리뷰 통과 → finish
+  l.active_workstreams = [];                                   // active 0 + ws terminal + 리뷰 통과 → finish
   assert.equal(nextAction(l, { now: 0 }).action.type, 'finish');
 });
 
@@ -221,7 +229,8 @@ test('unbound approved checker does not satisfy rejected checker convergence (fi
 // review_points_done=['plan'], no active workstreams, current_episode=null → finish (not await_human, not fix_episode).
 test('superseded rejected checker + done reviewed maker + no active ws → finish (not await_human)', () => {
   const l = loop({
-    workstreams: [{ id: 'ws-01', status: 'in_progress', review_points_done: ['plan'], episodes: [], depends_on: [] }],
+    // ws terminal (ready) + review.points=['plan'] so finishProofState passes once the point is satisfied.
+    workstreams: [{ id: 'ws-01', status: 'ready', review_points_done: ['plan'], episodes: [], depends_on: [] }],
     active_workstreams: [],
     episodes: [
       { id: '001-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
@@ -230,6 +239,72 @@ test('superseded rejected checker + done reviewed maker + no active ws → finis
     ],
     current_episode: null,
   });
+  l.review.points = ['plan'];
   const r = nextAction(l, { now: Date.parse('2026-06-24T00:00:00Z') });
   assert.equal(r.action.type, 'finish', `expected finish but got ${r.action.type} (reason: ${r.action.reason})`);
+});
+
+// Task 8: finishOrAdvance reuses the canonical finishProofState gate (recommend ≡ enforce) +
+// surfaces pending-checker / unbound / unsatisfied-review-point gaps as await_human (no dead-end dispatch).
+
+test('unsatisfied review.point (planned ws) -> await_human(review-point-unsatisfied), not finish', () => {
+  const l = loop();   // review.points = [design,plan,implementation]
+  l.workstreams = [{ id: 'ws-01', status: 'planned', review_points_done: ['design', 'plan'], episodes: [], depends_on: [] }];
+  l.active_workstreams = [];
+  l.episodes = [
+    { id: '001', role: 'maker', status: 'done', point: 'design', workstream_id: 'ws-01' },
+    { id: '002', role: 'checker', status: 'approved', point: 'design', workstream_id: 'ws-01', target_maker: '001' },
+    { id: '003', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
+    { id: '004', role: 'checker', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '003' }];
+  l.current_episode = null;
+  const r = nextAction(l, { now: 0 });
+  assert.notEqual(r.action.type, 'finish');
+  assert.equal(r.action.type, 'await_human');
+  assert.match(r.action.reason, /review-point-unsatisfied:.*implementation/);
+});
+
+test('workstream-null done maker (unreviewed) -> await_human(unbound-proof-episode), not dispatch_checker', () => {
+  const l = loop();
+  l.episodes = [{ id: '001', role: 'maker', status: 'done', point: 'implementation', workstream_id: null }];
+  l.workstreams = []; l.active_workstreams = []; l.current_episode = null;
+  const r = nextAction(l, { now: 0 });
+  assert.equal(r.action.type, 'await_human');
+  assert.equal(r.action.reason, 'unbound-proof-episode');
+});
+
+test('pending checker -> await_human(pending-checker-unresolved), not dispatch_checker', () => {
+  const l = loop();
+  l.workstreams = [{ id: 'ws-01', status: 'in_progress', review_points_done: [], episodes: [], depends_on: [] }];
+  l.active_workstreams = ['ws-01'];
+  l.episodes = [{ id: '009', role: 'checker', status: 'pending', point: 'implementation', workstream_id: 'ws-01' }];
+  l.current_episode = null;
+  assert.equal(nextAction(l, { now: 0 }).action.reason, 'pending-checker-unresolved');
+  // current_episode 경로도 동일 (auto-dispatch 가 중복 checker 를 만들지 않도록)
+  l.current_episode = '009';
+  assert.equal(nextAction(l, { now: 0 }).action.reason, 'pending-checker-unresolved');
+});
+
+test('planned workstream with all review points done -> await_human(active-work-remains), not finish', () => {
+  const l = loop(); l.review.points = ['design'];
+  l.workstreams = [{ id: 'ws-01', status: 'planned', review_points_done: ['design'], episodes: [], depends_on: [] }];
+  l.active_workstreams = [];
+  l.episodes = [
+    { id: '001', role: 'maker', status: 'done', point: 'design', workstream_id: 'ws-01' },
+    { id: '002', role: 'checker', status: 'approved', point: 'design', workstream_id: 'ws-01', target_maker: '001' }];
+  l.current_episode = null;
+  const r = nextAction(l, { now: 0 });
+  assert.notEqual(r.action.type, 'finish');         // ws 미터미널 → finishProofState.missing=['non-terminal-workstreams']
+  assert.equal(r.action.reason, 'active-work-remains');
+});
+
+test('abandoned maker does not block finish (settled)', () => {
+  const l = loop(); l.review.points = ['implementation'];
+  l.workstreams = [{ id: 'ws-01', status: 'ready', review_points_done: ['implementation'], episodes: [], depends_on: [] }];
+  l.active_workstreams = [];
+  l.episodes = [
+    { id: '001', role: 'maker', status: 'done', point: 'implementation', workstream_id: 'ws-01' },
+    { id: '002', role: 'checker', status: 'approved', point: 'implementation', workstream_id: 'ws-01', target_maker: '001' },
+    { id: '009', role: 'maker', status: 'abandoned', point: 'implementation', workstream_id: 'ws-01' }];
+  l.current_episode = null;
+  assert.equal(nextAction(l, { now: 0 }).action.type, 'finish');
 });

@@ -1,7 +1,8 @@
 import { checkBudget } from './budget.mjs';
 import { checkBreaker } from './breaker.mjs';
 import { computeDebt } from './comprehension.mjs';
-import { makerReviewed } from './review.mjs';
+import { makerReviewed, unsatisfiedReviewPoints } from './review.mjs';
+import { finishProofState } from './finish.mjs';
 
 function currentSessionTurns(loop) {
   const s = (loop.session_chain?.sessions || []).find(x => x.run_id === loop.session_chain?.lease?.owner_run_id);
@@ -18,9 +19,11 @@ function reviewSatisfied(loop, ep) {
   return (loop.episodes || []).some(e => e.role === 'checker' && e.status === 'approved' && e.target_maker && e.workstream_id === ep.workstream_id && e.point === ep.point);
 }
 
-// 현재 actionable episode 가 없을 때: 미완 maker/거부 checker/in-progress/미리뷰 done maker 를 우선 처리하고, 전부 정리됐을 때만 finish.
+// 현재 actionable episode 가 없을 때: 미완 maker/거부 checker/in-progress/미리뷰 done maker 를 우선 처리하고,
+// 그 외엔 canonical finish 게이트(finishProofState)를 재사용 — finish 추천 ≡ finishRun 집행 (divergence 제거).
 function finishOrAdvance(loop, gate, fanoutBlocked) {
   const eps = loop.episodes || [];
+  const wsExists = (id) => !!id && (loop.workstreams || []).some(w => w.id === id);
   const pendingMaker = eps.find(e => e.role === 'maker' && e.status === 'pending');
   if (pendingMaker) {
     // Codex r3 🔴3: debt 면 새 fan-out maker(kind≠fix) 차단. fix maker 는 현재 진행이라 허용.
@@ -32,16 +35,23 @@ function finishOrAdvance(loop, gate, fanoutBlocked) {
   if (rejected) return A(gate, { type: 'fix_episode', episode_id: rejected.id, point: rejected.point, workstream_id: rejected.workstream_id }, '/deep-loop-continue');
   const inProg = eps.find(e => e.status === 'in_progress');
   if (inProg) return A(gate, { type: 'await_result', episode_id: inProg.id }, '/deep-loop-continue');
+  // pending checker 는 actionable 이나 auto-dispatch (dispatch_checker = review dispatch) 가 중복 checker 를 만든다.
+  // 사람에게 surface — driver 가 무한 dispatch loop 에 빠지지 않도록.
+  const pendingChecker = eps.find(e => e.role === 'checker' && e.status === 'pending');
+  if (pendingChecker) return A(gate, { type: 'await_human', episode_id: pendingChecker.id, reason: 'pending-checker-unresolved' }, '/deep-loop-status');
   // Codex r3 🔴4: 리뷰 안 된 done maker 가 있으면 finish 금지 → checker dispatch (리뷰 게이트 불변식).
   // Uses per-maker binding predicate (makerReviewed) so two checkers for maker1 cannot satisfy maker2.
   const unreviewed = eps.find(e => e.role === 'maker' && e.status === 'done' && !makerReviewed(loop, e));
-  if (unreviewed) return A(gate, { type: 'dispatch_checker', episode_id: unreviewed.id, point: unreviewed.point, workstream_id: unreviewed.workstream_id }, '/deep-loop-continue');
-  // finish 는 active workstream 0 + 모든 episode 가 settled 일 때만 (Codex r2 🔴7 / r3 🔴4 / r5 🟡2)
-  // settled: done/approved, OR 리뷰-충족된 rejected checker (나중 승인으로 포인트가 통과된 경우).
-  const settled = (e) => ['done', 'approved'].includes(e.status) || (e.role === 'checker' && e.status === 'rejected' && reviewSatisfied(loop, e));
-  const noActiveWs = (loop.active_workstreams || []).length === 0;
-  const allSettled = eps.length > 0 && eps.every(settled);
-  if (noActiveWs && allSettled) return A(gate, { type: 'finish' }, '/deep-loop-finish');
+  if (unreviewed) {
+    // workstream 이 없는 done maker 는 checker 를 dispatch 해도 WORKSTREAM_NOT_FOUND 로 막힌다 (dead-end). 사람에게 surface.
+    if (!wsExists(unreviewed.workstream_id)) return A(gate, { type: 'await_human', episode_id: unreviewed.id, reason: 'unbound-proof-episode' }, '/deep-loop-status');
+    return A(gate, { type: 'dispatch_checker', episode_id: unreviewed.id, point: unreviewed.point, workstream_id: unreviewed.workstream_id }, '/deep-loop-continue');
+  }
+  // actionable 없음 → canonical finish 게이트 재사용 (추천 ≡ 집행: finishProofState 가 통과해야만 finish).
+  const ps = finishProofState(loop);
+  if (ps.missing.length === 0) return A(gate, { type: 'finish' }, '/deep-loop-finish');
+  if (ps.missing.includes('review-point-unsatisfied')) return A(gate, { type: 'await_human', reason: `review-point-unsatisfied:${unsatisfiedReviewPoints(loop).join(',')}` }, '/deep-loop-status');
+  if (ps.missing.includes('unbound-proof-episode')) return A(gate, { type: 'await_human', reason: 'unbound-proof-episode' }, '/deep-loop-status');
   return A(gate, { type: 'await_human', reason: 'active-work-remains' }, '/deep-loop-status');
 }
 
@@ -77,10 +87,15 @@ export function nextAction(loop, { now = Date.now() } = {}) {
     }
     if (ep.status === 'in_progress') return A(gate, { type: 'await_result', episode_id: ep.id }, '/deep-loop-continue');
     if (ep.status === 'blocked') return A(gate, { type: 'await_human', episode_id: ep.id, reason: 'episode-blocked' }, '/deep-loop-status');
-    if (ep.status === 'done') return A(gate, { type: 'dispatch_checker', episode_id: ep.id, point: ep.point, workstream_id: ep.workstream_id }, '/deep-loop-continue');
+    if (ep.status === 'done') {
+      // dispatch_checker 는 workstream 이 있어야 가능 (review dispatch → WORKSTREAM_NOT_FOUND 방지). 없으면 사람에게 surface.
+      if (!(loop.workstreams || []).some(w => w.id === ep.workstream_id)) return A(gate, { type: 'await_human', episode_id: ep.id, reason: 'unbound-proof-episode' }, '/deep-loop-status');
+      return A(gate, { type: 'dispatch_checker', episode_id: ep.id, point: ep.point, workstream_id: ep.workstream_id }, '/deep-loop-continue');
+    }
   }
   if (ep.role === 'checker') {
-    if (ep.status === 'pending') return A(gate, { type: 'dispatch_checker', episode_id: ep.id, point: ep.point, workstream_id: ep.workstream_id }, '/deep-loop-continue');
+    // pending checker auto-dispatch 는 중복 checker 를 만든다 (dispatch_checker = review dispatch). 사람에게 surface.
+    if (ep.status === 'pending') return A(gate, { type: 'await_human', episode_id: ep.id, reason: 'pending-checker-unresolved' }, '/deep-loop-status');
     if (ep.status === 'in_progress') return A(gate, { type: 'await_result', episode_id: ep.id }, '/deep-loop-continue');   // 재dispatch 금지 (Codex r2 🔴7)
     if (ep.status === 'blocked') return A(gate, { type: 'await_human', episode_id: ep.id, reason: 'episode-blocked' }, '/deep-loop-status');
     if (ep.status === 'rejected') return A(gate, { type: 'fix_episode', episode_id: ep.id, point: ep.point, workstream_id: ep.workstream_id }, '/deep-loop-continue');  // Codex r1 🔴5
