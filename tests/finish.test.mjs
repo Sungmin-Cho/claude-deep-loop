@@ -108,6 +108,20 @@ test('finishProofState passes for a fix-loop (maker1+rejected-checker, maker2+ap
   assert.deepEqual(finishProofState(loop).missing, []);
 });
 
+// Codex adversarial: episode ids are zero-padded to only 3 digits, so string `>` mis-orders at the 999→1000
+// boundary ('1000-x' < '999-x' lexicographically). The LATEST done maker for (w,implementation) is 1000-x, which
+// is REJECTED — finishProofState MUST NOT report complete (the latest maker has no bound APPROVED checker).
+test('finishProofState: 999 approved + 1000 rejected for same (ws,point) is NOT complete (999→1000 order)', () => {
+  const loop = { episodes: [
+      { id: '999-x', role: 'maker', point: 'implementation', workstream_id: 'w', status: 'done' },
+      { id: '0998-c', role: 'checker', point: 'implementation', workstream_id: 'w', status: 'approved', target_maker: '999-x' },
+      { id: '1000-x', role: 'maker', point: 'implementation', workstream_id: 'w', status: 'done' },
+      { id: '1001-c', role: 'checker', point: 'implementation', workstream_id: 'w', status: 'rejected', target_maker: '1000-x' }],
+    workstreams: [{ id: 'w', status: 'ready', review_points_done: ['implementation'] }], active_workstreams: [] };
+  const ps = finishProofState(loop);
+  assert.notEqual(ps.missing.length, 0, 'rejected newest maker (1000-x) must keep finishProofState NON-complete');
+});
+
 test('finishProofState: unmet review.points -> review-point-unsatisfied', () => {
   const loop = { review: { points: ['design', 'implementation'] },
     episodes: [

@@ -6,6 +6,17 @@ import { leaseCheck } from './lease.mjs';
 // 연속 REQUEST_CHANGES 임계 (breaker.mjs THRESHOLD 미러 — fail-stop latch).
 const BREAKER_THRESHOLD = 3;
 
+// Hybrid episode-order comparator (shared — finish.mjs / next-action.mjs import it). Episode ids are
+// `NNN-plugin` zero-padded to only 3 digits, so naive string `>` breaks at the 999→1000 boundary
+// ('1000-x' < '999-x' lexicographically). When BOTH ids carry a numeric prefix, compare NUMERICALLY;
+// otherwise fall back to string compare (preserves synthetic test ids like m1/m2/c1). "a is later than b"
+// iff epOrder(a, b) > 0.
+export const epOrder = (a, b) => {
+  const na = parseInt(a, 10), nb = parseInt(b, 10);
+  if (Number.isInteger(na) && Number.isInteger(nb)) return na - nb;
+  return a < b ? -1 : a > b ? 1 : 0;
+};
+
 export function resolveReviewer(loop, detected = {}) {
   const r = loop.review || {};
   let reviewer = r.reviewer || 'subagent-checker';
@@ -53,9 +64,11 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
     e.workstream_id === workstreamId && e.point === point &&
     !makerReviewed(data, e)
   );
-  // Pick the highest episode id (lexicographic ordering works since ids are zero-padded numeric prefixes).
+  // Pick the latest episode via epOrder (hybrid numeric/string). Naive string `>` is WRONG here: ids are
+  // zero-padded to only 3 digits, so '1000-x' < '999-x' lexicographically — at the 999→1000 boundary it
+  // would mis-pick the target maker.
   const targetMakerEp = eligibleMakers.length > 0
-    ? eligibleMakers.reduce((a, b) => (a.id > b.id ? a : b))
+    ? eligibleMakers.reduce((a, b) => (epOrder(a.id, b.id) > 0 ? a : b))
     : null;
   const targetMaker = targetMakerEp ? targetMakerEp.id : undefined;
   const { reviewer, flags, mode } = resolveReviewer(data, detected);

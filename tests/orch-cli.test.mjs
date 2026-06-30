@@ -153,3 +153,15 @@ test('episode record --status abandoned is rejected (exit 1)', () => {
   catch (e) { code = e.status; }
   assert.equal(code, 1);
 });
+
+// Codex review P2: episode abandon WITHOUT --confirm must exit 2 (usage/human-gate) with CONFIRM_REQUIRED,
+// mirroring the recover/breaker-reset contract — NOT exit 1 from an uncaught CONFIRM_REQUIRED throw.
+test('episode abandon without --confirm exits 2 with CONFIRM_REQUIRED', () => {
+  const { root, runId, episodeId } = setupRunWithPendingMaker();
+  let code = 0, stderr = '';
+  try { run(root, ['episode', 'abandon', '--id', episodeId, '--reason', 'orphan', '--owner', runId, '--generation', '1']); }
+  catch (e) { code = e.status; stderr = String(e.stderr || ''); }
+  assert.equal(code, 2);
+  assert.match(stderr, /CONFIRM_REQUIRED/);
+  assert.equal(readState(root, runId).data.episodes[0].status, 'pending');   // not abandoned
+});

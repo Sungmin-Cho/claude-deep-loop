@@ -163,8 +163,16 @@ const handlers = {
     if (verb === 'abandon') {
       const id = reqStr(f, 'id'); if (!id) { error('MISSING_ID'); return 2; }
       const reason = reqStr(f, 'reason'); if (!reason) { error('MISSING_REASON'); return 2; }
-      const confirm = f.confirm === true || f.confirm === 'true';
-      abandonEpisode(root, runId, id, { reason, confirm, fence }); json({ ok: true, status: 'abandoned' }); return 0;
+      // Mirror the recover/breaker-reset human-gate: missing --confirm is a usage error (exit 2), not an
+      // uncaught CONFIRM_REQUIRED stack trace (exit 1). Keep passing confirm:true into the lib (defense in depth).
+      if (f.confirm !== true && f.confirm !== 'true') { error('CONFIRM_REQUIRED: pass --confirm (human-only)'); return 2; }
+      try {
+        abandonEpisode(root, runId, id, { reason, confirm: true, fence }); json({ ok: true, status: 'abandoned' }); return 0;
+      } catch (e) {
+        const msg = String(e?.message || e);
+        if (msg.startsWith('LEASE_FENCED')) { error(msg); return 3; }
+        error(msg); return 1;   // EPISODE_ALREADY_TERMINAL / EPISODE_NOT_FOUND / EPISODE_INPUT_INVALID → exit 1
+      }
     }
     error(`unknown episode verb: ${verb}`); return 2;
   },

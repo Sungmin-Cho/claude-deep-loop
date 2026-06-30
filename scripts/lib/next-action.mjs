@@ -1,7 +1,7 @@
 import { checkBudget } from './budget.mjs';
 import { checkBreaker } from './breaker.mjs';
 import { computeDebt } from './comprehension.mjs';
-import { makerReviewed, unsatisfiedReviewPoints } from './review.mjs';
+import { makerReviewed, unsatisfiedReviewPoints, epOrder } from './review.mjs';
 import { finishProofState } from './finish.mjs';
 
 function currentSessionTurns(loop) {
@@ -12,19 +12,22 @@ function currentSessionTurns(loop) {
 const A = (gate, action, next_command) => ({ gate, action, next_command });
 
 // A rejected checker is GENUINELY SUPERSEDED — and thus must NOT re-trigger fix_episode — when either
-//   (a) its target maker was re-reviewed and APPROVED (a bound approved checker shares its target_maker), or
+//   (a) its target maker was re-reviewed and APPROVED by a checker that is NEWER than this rejected checker
+//       (an OLDER approve followed by a NEWER reject must NOT mask the rejection — order matters), or
 //   (b) a LATER done maker exists for the same (workstream_id, point) than its target_maker (the flow moved on
-//       to a newer maker, whose own review drives progress — ids are zero-padded so lexicographic `>` is order).
+//       to a newer maker, whose own review drives progress).
+// Recency is computed with epOrder (numeric prefix compare, not string) so the 999→1000 episode boundary is correct.
 // NOTE: point-level review_points_done deliberately does NOT suppress a rejected checker — an earlier approval on
 // the same point must not mask a LATER done maker that was genuinely rejected (else the fix flow never dispatches).
 function supersededRejected(loop, e) {
   if (!e.target_maker) return false;   // unbound rejected checker has no maker to have been superseded for
   const eps = loop.episodes || [];
-  // (a) the same target maker was re-reviewed and APPROVED (bound)
-  if (eps.some(c => c.role === 'checker' && c.status === 'approved' && c.target_maker === e.target_maker)) return true;
+  // (a) the same target maker was re-reviewed and APPROVED by a checker NEWER than this rejected checker
+  if (eps.some(c => c.role === 'checker' && c.status === 'approved' && c.target_maker === e.target_maker
+    && epOrder(c.id, e.id) > 0)) return true;
   // (b) a strictly later done maker exists for the same (workstream_id, point)
   return eps.some(m => m.role === 'maker' && m.status === 'done'
-    && m.workstream_id === e.workstream_id && m.point === e.point && m.id > e.target_maker);
+    && m.workstream_id === e.workstream_id && m.point === e.point && epOrder(m.id, e.target_maker) > 0);
 }
 
 // 현재 actionable episode 가 없을 때: 미완 maker/거부 checker/in-progress/미리뷰 done maker 를 우선 처리하고,

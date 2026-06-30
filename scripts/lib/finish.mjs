@@ -3,7 +3,7 @@ import { resolve, sep } from 'node:path';
 import { appendAnchored } from './integrity.mjs';
 import { leaseCheck } from './lease.mjs';
 import { runDir } from './state.mjs';
-import { makerReviewed, unsatisfiedReviewPoints } from './review.mjs';
+import { makerReviewed, unsatisfiedReviewPoints, epOrder } from './review.mjs';
 
 function reviewSatisfied(loop, ep) {
   const ws = (loop.workstreams || []).find(w => w.id === ep.workstream_id);
@@ -22,13 +22,14 @@ export function finishProofState(loop) {
   // Per-maker binding check: every done maker must have a bound terminal checker (target_maker === maker.id).
   const doneMakers = eps.filter(e => e.role === 'maker' && e.status === 'done');
   const allMakersReviewed = doneMakers.every(m => makerReviewed(loop, m));
-  // Convergence: for each (ws,point) that has done makers, the LATEST done maker (highest episode id)
+  // Convergence: for each (ws,point) that has done makers, the LATEST done maker (highest episode id,
+  // via epOrder — numeric prefix compare, not string, so the 999→1000 boundary is correct)
   // must have a bound APPROVED checker. An unbound approved checker cannot satisfy this requirement.
   const latestByPoint = new Map();
   for (const m of doneMakers) {
     const k = `${m.workstream_id}|${m.point}`;
     const cur = latestByPoint.get(k);
-    if (!cur || m.id > cur.id) latestByPoint.set(k, m);
+    if (!cur || epOrder(m.id, cur.id) > 0) latestByPoint.set(k, m);
   }
   const boundApproved = (mid) => (loop.episodes || []).some(e => e.role === 'checker' && e.target_maker === mid && e.status === 'approved');
   const allPointsConverged = [...latestByPoint.values()].every(m => boundApproved(m.id));

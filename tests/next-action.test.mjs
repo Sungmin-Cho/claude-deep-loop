@@ -277,6 +277,47 @@ test('superseded rejected checker + done reviewed maker + no active ws → finis
   assert.equal(r.action.type, 'finish', `expected finish but got ${r.action.type} (reason: ${r.action.reason})`);
 });
 
+// Codex review P1 (order-broken supersession): the SAME maker M has an OLDER bound APPROVED checker AND a NEWER
+// bound REJECTED checker. The older approval must NOT supersede the newer rejection — nextAction must route to
+// fix_episode (a real fix is still needed). Mirrors the inverse of the rejected-then-approved supersession test.
+test('older bound approved checker does NOT supersede a newer bound rejected checker → fix_episode', () => {
+  const l = loop({
+    workstreams: [{ id: 'ws-01', status: 'in_progress', review_points_done: [], episodes: [], depends_on: [] }],
+    active_workstreams: ['ws-01'],
+    episodes: [
+      { id: '001-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
+      // OLDER bound approved checker …
+      { id: '002-deep-review', role: 'checker', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
+      // … NEWER bound rejected checker for the SAME maker → must drive a fix (older approval cannot mask it).
+      { id: '003-deep-review', role: 'checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
+    ],
+    current_episode: null,
+  });
+  const r = nextAction(l, { now: Date.parse('2026-06-24T00:00:00Z') });
+  assert.equal(r.action.type, 'fix_episode', `expected fix_episode but got ${r.action.type} (reason: ${r.action.reason})`);
+  assert.equal(r.action.episode_id, '003-deep-review');
+});
+
+// Codex adversarial (999→1000 string-order boundary): the latest done maker for (ws-01,plan) is 1000-deep-work,
+// which is REJECTED. String `>` would mis-pick 999-deep-work as "latest" and let finish through; the numeric
+// comparator must keep nextAction OFF finish (a fix is still pending for the genuinely-newest maker).
+test('999 approved + 1000 rejected (same ws,point) → nextAction NOT finish (numeric order)', () => {
+  const l = loop({
+    workstreams: [{ id: 'ws-01', status: 'ready', review_points_done: ['plan'], episodes: [], depends_on: [] }],
+    active_workstreams: [],
+    episodes: [
+      { id: '999-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
+      { id: '0998-deep-review', role: 'checker', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '999-deep-work' },
+      { id: '1000-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
+      { id: '1001-deep-review', role: 'checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01', target_maker: '1000-deep-work' },
+    ],
+    current_episode: null,
+  });
+  l.review.points = ['plan'];
+  const r = nextAction(l, { now: Date.parse('2026-06-24T00:00:00Z') });
+  assert.notEqual(r.action.type, 'finish', `must not finish with a rejected newest maker, got ${r.action.type}`);
+});
+
 // Task 8: finishOrAdvance reuses the canonical finishProofState gate (recommend ≡ enforce) +
 // surfaces pending-checker / unbound / unsatisfied-review-point gaps as await_human (no dead-end dispatch).
 
