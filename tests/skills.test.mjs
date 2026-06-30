@@ -181,6 +181,31 @@ test('deep-loop §2-6: worktree creation never escapes root + no --project-root 
   assert.ok(mutatingFenced(s), 'mutating CLI still fenced');
 });
 
+// Task 5: §0.5 cwd split + artifact ORIG_ROOT-relative + Step 1.5 orphan mitigation
+test('deep-loop: ORIG_ROOT/BASE_REF capture (sibling path) + cwd split + artifact ORIG_ROOT-rel', () => {
+  const s = dlSkill();
+  // Extract the §0.5 section: from its heading to the next #### heading
+  const sec05Match = s.match(/####\s*§0\.5[\s\S]*?(?=\n####|\n###|\n##|$)/);
+  assert.ok(sec05Match, '§0.5 section present');
+  const sec05 = sec05Match[0];
+  // Rule 1: ORIG_ROOT/BASE_REF capture must be documented IN the §0.5 section
+  assert.match(sec05, /ORIG_ROOT/, 'ORIG_ROOT capture documented in §0.5 section');
+  assert.match(sec05, /BASE_REF/, 'BASE_REF capture documented in §0.5 section');
+  assert.match(sec05, /(sibling|캡처)/, 'capture purpose (sibling/캡처) documented in §0.5 section');
+  // Rule 4: cwd split
+  assert.match(sec05, /cwd[\s\S]{0,80}(분리|worktree)/, 'cwd split in §0.5 section');
+  // Rule 5: artifact ORIG_ROOT-relative
+  assert.match(sec05, /artifact[\s\S]{0,160}(ORIG_ROOT|상대|\.claude\/worktrees)/, 'artifact ORIG_ROOT-relative in §0.5 section');
+});
+
+test('deep-loop Step 1.5: lease check precheck + orphan handling (no --field lease command)', () => {
+  const s = dlSkill();
+  assert.match(s, /lease check/, 'lease check precheck');
+  assert.ok(!/state\s+get[^\n]*--field\s+lease\b/.test(s), 'no `state get --field lease` command');
+  assert.match(s, /(reconcile|audit)/, 'reconcile audit');
+  assert.match(s, /(고아|orphan)/, 'orphan handling');
+});
+
 for (const [dir, name, invocable, triggers, refsCLI] of SKILLS) {
   test(`skill ${dir}: exists`, () => assert.ok(existsSync(skillPath(dir)), `${dir}/SKILL.md missing`));
   test(`skill ${dir}: frontmatter has exactly name/description/user-invocable`, () => {
