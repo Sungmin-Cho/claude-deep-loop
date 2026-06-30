@@ -2,6 +2,7 @@ import { readState } from './state.mjs';
 import { appendAnchored } from './integrity.mjs';
 import { newEpisode } from './episode.mjs';
 import { leaseCheck } from './lease.mjs';
+import { pluginPresent } from './detect.mjs';
 
 // 연속 REQUEST_CHANGES 임계 (breaker.mjs THRESHOLD 미러 — fail-stop latch).
 const BREAKER_THRESHOLD = 3;
@@ -9,9 +10,9 @@ const BREAKER_THRESHOLD = 3;
 export function resolveReviewer(loop, detected = {}) {
   const r = loop.review || {};
   let reviewer = r.reviewer || 'subagent-checker';
-  if ((reviewer === 'deep-review-loop' || reviewer === 'deep-review') && !detected['deep-review']) {
-    reviewer = detected['codex'] ? 'codex-cross' : 'subagent-checker';
-  } else if (reviewer === 'subagent-checker' && detected['codex']) {
+  if ((reviewer === 'deep-review-loop' || reviewer === 'deep-review') && !pluginPresent(detected, 'deep-review')) {
+    reviewer = pluginPresent(detected, 'codex') ? 'codex-cross' : 'subagent-checker';
+  } else if (reviewer === 'subagent-checker' && pluginPresent(detected, 'codex')) {
     reviewer = 'codex-cross';
   }
   return { reviewer, flags: r.flags || [], mode: r.mode || 'cross-model' };

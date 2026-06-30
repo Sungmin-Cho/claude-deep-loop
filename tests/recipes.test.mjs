@@ -26,3 +26,11 @@ test('standalone-hinted recipe stays standalone even with deep-work installed', 
   assert.equal(r.recipe, 'context-handoff-only');
   assert.equal(r.protocol, 'standalone');
 });
+
+// ── C2: object-shape routing regression (2026-06-29 Windows fixes) ──────────────
+test('C2: matchRecipe routes deep-work protocol only when present (object shape)', () => {
+  const r0 = matchRecipe('인증 기능 구현', { 'deep-work': { present: false } });
+  assert.notEqual(r0.protocol, 'deep-work');
+  const r1 = matchRecipe('인증 기능 구현', { 'deep-work': { present: true } });
+  assert.equal(r1.protocol, 'deep-work');
+});
