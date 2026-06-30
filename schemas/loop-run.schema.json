@@ -16,6 +16,6 @@
     "pause_reason": { "type": "string" },
     "session_chain.lease.resume_policy": { "type": "string" }
   },
-  "episode_status": { "skill": ["pending","in_progress","blocked"], "kernel": ["done","approved","rejected"] },
+  "episode_status": { "skill": ["pending","in_progress","blocked"], "kernel": ["done","approved","rejected","abandoned"] },
   "workstream_status": { "skill": ["planned","in_progress","in_review","parked"], "kernel": ["ready","merged","abandoned"] }
 }
