@@ -30,6 +30,6 @@ user-invocable: false
 ## 핵심 불변식
 
 - 스킬은 상태를 **읽기만** — `state get`, `next-action`, `adapter resolve`, `budget check` 등 read-only CLI.
-- **변경은 반드시 mutating CLI subcommand로만** (`state patch`, `episode new/record`, `review dispatch/record`, `handoff emit`, `budget record`, `comprehension ack`, `finish` 등).
+- **변경은 반드시 mutating CLI subcommand로만** (`state patch`, `episode new/record/abandon`, `review dispatch/record`, `handoff emit`, `budget record`, `comprehension ack`, `finish` 등).
 - 모든 mutating CLI는 `--owner <run_id> --generation <n>` fence 필수.
 - `loop.json` · `event-log.jsonl` · `.loop.hash`는 커널만 쓴다 — 스킬은 절대 직접 쓰지 않는다.
