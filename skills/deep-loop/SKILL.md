@@ -206,7 +206,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" episode new \
 `--artifacts`는 필수다 — maker `done` 전이는 비어있지 않은 `expected_artifacts`와 실제 파일 존재를 요구한다.
 expected 경로는 `adapter resolve`의 `read.path` 또는 계획된 산출물에서 도출한다.
 
-> **artifact 경로 규칙:** 최초 episode 생성(`episode new`)의 `--artifacts`(expected)와 완료 기록(`episode record`)의 `--artifacts`(submitted)는 반드시 동일한 ORIG_ROOT 기준 상대 경로, 워크트리 slug 접두사 포함 형태로 지정해야 한다 — `.claude/worktrees/<ws-slug>/path/to/file`. 두 목록이 일치하지 않으면 커널의 coverage + existence 검사가 실패한다.
+> **artifact 경로 규칙(기록된 worktree 경로(루트 기준 상대) 접두):** 최초 episode 생성(`episode new`)의 `--artifacts`(expected)와 완료 기록(`episode record`)의 `--artifacts`(submitted)는 반드시 동일한 project root 기준 상대 경로, **기록된 worktree 경로(루트 기준 상대) 접두** 형태로 지정해야 한다 — `<recorded-worktree-relative-to-root>/path/to/file` (예: `.claude/worktrees/<ws-slug>/path/to/file` 또는 `.worktrees/<ws-slug>/path/to/file`). 두 목록이 일치하지 않으면 커널의 coverage + existence 검사가 실패한다.
 
 ## 단계 3: 완료 메시지
 

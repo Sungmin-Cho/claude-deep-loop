@@ -17,7 +17,9 @@ export function findRoot(startDir) {
     if (isClaudeWt || isPlainWt) {
       const base = parts.slice(0, isClaudeWt ? i - 1 : i).join(sep) || sep;
       if (existsSync(join(base, '.deep-loop', 'current'))) return base;
-      break;   // 컨벤션 디렉터리는 있으나 부모에 run 없음 → fallback
+      // FIX H: 첫 번째 컨벤션 매치에 마커 없어도 break하지 말고 계속 탐색 — 중첩 컨벤션 경로에서 외부 run을 찾을 수 있음.
+      // 어떤 컨벤션 세그먼트도 마커를 가진 base를 제공하지 못하면 루프 종료 후 startDir 반환.
+      // continue
     }
   }
   return startDir;

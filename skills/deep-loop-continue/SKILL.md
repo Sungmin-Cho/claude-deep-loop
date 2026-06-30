@@ -47,9 +47,15 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" next-action --json
 node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field workstreams
 ```
 
-workstream 목록에서 `id === action.workstream_id`인 항목의 `worktree` 경로를 확인한다. **경로 절대화(FIX C):** 기록된 `worktree` 값이 상대 경로이면 `$ORIG_ROOT/<recorded>` 형태로 절대화한다. 이미 절대 경로이면 그대로 사용한다. native attach 도구(`EnterWorktree` 등)가 있으면 그것으로 진입하고, 없으면 절대 경로를 사용해 `cd`로 전환한다. 커널 상태(`rootOf` 상향탐색)는 cwd 이동과 무관하게 원본 root를 자동 해석하므로 `--project-root`는 불필요하다.
+workstream 목록에서 `id === action.workstream_id`인 항목의 `worktree` 경로를 확인한다. **경로 절대화(FIX C/FIX I):** 기록된 `worktree` 값이 상대 경로이면, 먼저 state에서 project root를 읽어 절대화한다:
 
-> **artifact 경로 규칙(ORIG_ROOT-상대):** `episode new`·`episode record` 의 artifact 인자는 반드시 ORIG_ROOT 기준 상대 경로, 워크트리 slug 접두사 포함 형태로 지정한다 — `.claude/worktrees/<ws-slug>/path/to/file`. §1.5에서 cwd가 worktree 안으로 이동했더라도 containment 검증은 항상 project root 기준이므로, 이 규칙을 어기면 artifact proof가 실패한다.
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field project.root
+```
+
+`<project.root>/<recorded-worktree>` 형태로 절대화한다. 이미 절대 경로이면 그대로 사용한다(`$ORIG_ROOT` 쉘 변수는 fresh/resumed 세션에서 정의되지 않으므로 사용하지 않는다). native attach 도구(`EnterWorktree` 등)가 있으면 그것으로 진입하고, 없으면 절대 경로를 사용해 `cd`로 전환한다. 커널 상태(`rootOf` 상향탐색)는 cwd 이동과 무관하게 원본 root를 자동 해석하므로 `--project-root`는 불필요하다.
+
+> **artifact 경로 규칙(project-root 기준 상대, 기록된 worktree 경로 접두):** `episode new`·`episode record` 의 artifact 인자는 반드시 project root 기준 상대 경로, **기록된 worktree 경로(루트 기준 상대) 접두** 형태로 지정한다 — `<recorded-worktree-relative-to-root>/path/to/file` (예: `.claude/worktrees/<ws-slug>/path/to/file` 또는 `.worktrees/<ws-slug>/path/to/file`). §1.5에서 cwd가 worktree 안으로 이동했더라도 containment 검증은 항상 project root 기준이므로, 이 규칙을 어기면 artifact proof가 실패한다.
 
 `max_parallel` 환경에서 여러 active workstream이 있어도, 항상 `action.workstream_id`가 지정하는 workstream의 worktree만 진입한다 — 임의 active workstream이 아님.
 

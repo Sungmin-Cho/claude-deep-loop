@@ -153,6 +153,19 @@ test('findRoot: does NOT bind a nested repo under a parent run (R5 high-2)', () 
   assert.equal(findRoot(nested), nested, 'nested non-worktree dir resolves to itself, not parent run');
 });
 
+// FIX H: nested convention worktrees — <root>/.claude/worktrees/a/.claude/worktrees/b
+// 내부 base(<root>/.claude/worktrees/a)에 .deep-loop/current 없어도 계속 탐색해 외부 root 발견.
+test('findRoot: nested convention worktrees resolves to outer root with .deep-loop/current (FIX H)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fr4-'));
+  mkdirSync(join(root, '.deep-loop'), { recursive: true });
+  writeFileSync(join(root, '.deep-loop', 'current'), 'run-outer');
+  // nested: <root>/.claude/worktrees/a/.claude/worktrees/b
+  const nested = join(root, '.claude', 'worktrees', 'a', '.claude', 'worktrees', 'b');
+  mkdirSync(nested, { recursive: true });
+  // inner base <root>/.claude/worktrees/a has no .deep-loop/current — should NOT stop here
+  assert.equal(findRoot(nested), root, 'nested convention: inner base without marker continues to outer root');
+});
+
 const _R = _dn(_dn(fileURLToPath(import.meta.url)));   // repo root (tests/..)
 test('findRoot is shared across CLI + hook + headless entrypoints', () => {
   for (const f of ['scripts/deep-loop.mjs', 'scripts/hooks-impl/precompact-handoff.mjs', 'scripts/hooks-impl/drive-headless.mjs']) {

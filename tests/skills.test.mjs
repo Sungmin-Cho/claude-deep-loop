@@ -390,10 +390,10 @@ test('deep-loop-continue: artifact paths in record/dispatch examples are ORIG_RO
   // Must NOT have bare relative paths like 'path/to/artifact' or 'path/to/fix-output' in --artifacts examples
   assert.ok(!cont.includes('"path/to/artifact"'), 'bare "path/to/artifact" must be replaced with worktree-prefixed path');
   assert.ok(!cont.includes('"path/to/fix-output"'), 'bare "path/to/fix-output" must be replaced with worktree-prefixed path');
-  // Must have worktree-prefixed artifact paths (.claude/worktrees/<slug>/...)
-  assert.match(cont, /\.claude\/worktrees\/[^\s"]*\/[^\s"]+/, 'artifact examples must use .claude/worktrees/<slug>/ prefix');
-  // Must have explicit instruction about ORIG_ROOT-relative artifact paths
-  assert.match(cont, /(ORIG_ROOT|ORIG_ROOT-상대|ORIG_ROOT.*(relative|기준|상대))[\s\S]{0,400}artifact|artifact[\s\S]{0,400}(ORIG_ROOT|ORIG_ROOT-상대|worktree.*prefix)/i, 'must instruct ORIG_ROOT-relative artifact paths');
+  // Must have worktree-prefixed artifact paths (.claude/worktrees/<slug>/... OR .worktrees/<slug>/...) — FIX J: generic convention
+  assert.match(cont, /(?:\.claude\/worktrees|\.worktrees)\/[^\s"]*\/[^\s"]+/, 'artifact examples must use recorded worktree path (.claude/worktrees/<slug>/ or .worktrees/<slug>/) as prefix');
+  // Must have explicit instruction about project-root-relative artifact paths (generic rule — FIX J)
+  assert.match(cont, /(project.root|ORIG_ROOT|루트 기준|worktree.*접두|recorded.worktree)[\s\S]{0,400}artifact|artifact[\s\S]{0,400}(project.root|ORIG_ROOT|루트 기준|worktree.*접두|recorded.worktree)/i, 'must instruct project-root-relative artifact paths with recorded worktree prefix');
 });
 
 test('deep-loop-finish: proposal-only worktree cleanup + reconcile audit surface', () => {
@@ -425,8 +425,8 @@ test('deep-loop §2-7: episode new --artifacts example uses worktree-prefixed pa
   const s = dlSkill();
   // Must NOT have bare path/to/... in --artifacts
   assert.ok(!s.includes('"path/to/expected-output.md"'), 'bare path/to/expected-output.md must be replaced with worktree-prefixed path in episode new example');
-  // Must have worktree-prefixed expected-artifacts example
-  assert.match(s, /--artifacts[\s\S]{0,200}\.claude\/worktrees\//, '--artifacts example in episode new must use .claude/worktrees/<slug>/ prefix');
+  // Must have worktree-prefixed expected-artifacts example (.claude/worktrees/ OR .worktrees/) — FIX J: generic convention
+  assert.match(s, /--artifacts[\s\S]{0,200}(?:\.claude\/worktrees|\.worktrees)\//, '--artifacts example in episode new must use recorded worktree path (.claude/worktrees/<slug>/ or .worktrees/<slug>/) as prefix');
   // Must carry a note that expected artifacts and submitted artifacts use same ORIG_ROOT-relative worktree-prefixed paths
   assert.match(s, /(expected|episode new)[\s\S]{0,400}(ORIG_ROOT|worktree.*prefix|워크트리.*접두사|\.claude\/worktrees)[\s\S]{0,400}(episode record|submitted|동일)/, 'note that expected and submitted artifacts must use same ORIG_ROOT-relative worktree-prefixed paths');
 });
