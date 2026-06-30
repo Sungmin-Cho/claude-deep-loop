@@ -8,6 +8,7 @@ import { leaseCheck } from './lease.mjs';
 
 const NON_TERMINAL = ['pending', 'in_progress', 'blocked'];
 const TERMINAL = ['done', 'approved', 'rejected'];
+const ALL_TERMINAL = ['done', 'approved', 'rejected', 'abandoned'];
 
 function requestSkeleton({ id, plugin, role, kind, point, workstream, expectedArtifacts }) {
   return [
@@ -68,6 +69,30 @@ export function newEpisode(root, runId, { plugin, role, kind, point, workstream 
   mkdirSync(dir, { recursive: true });
   atomicWrite(requestPath, requestSkeleton({ id, plugin, role, kind, point, workstream, expectedArtifacts }));
   return { id, requestPath };
+}
+
+// Human-gated escape hatch — settles a stranded non-terminal episode as abandoned.
+// Separate from the record path to preserve the done-needs-proof invariant.
+export function abandonEpisode(root, runId, episodeId, { reason, confirm, fence } = {}) {
+  if (confirm !== true) throw new Error('CONFIRM_REQUIRED: pass --confirm (human-only)');
+  if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: abandonEpisode');
+  if (!episodeId || typeof episodeId !== 'string' || !episodeId.length) throw new Error('EPISODE_INPUT_INVALID: episodeId');
+  if (!reason || typeof reason !== 'string' || !reason.length) throw new Error('EPISODE_INPUT_INVALID: reason');
+  appendAnchored(root, runId, { type: 'episode-abandon', data: { id: episodeId, reason } }, (loop) => {
+    const ep = loop.episodes.find(e => e.id === episodeId);
+    ep.status = 'abandoned';
+    ep.abandon_reason = reason;
+    if (ep.role === 'maker') {
+      const c = loop.comprehension || (loop.comprehension = {});
+      c.episodes_total = Math.max(0, (c.episodes_total || 0) - 1);
+      if (ep.human_reviewed) c.episodes_human_reviewed = Math.max(0, (c.episodes_human_reviewed || 0) - 1);
+    }
+  }, (loop) => {
+    const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason);
+    const ep = loop.episodes.find(e => e.id === episodeId);
+    if (!ep) throw new Error(`EPISODE_NOT_FOUND: ${episodeId}`);
+    if (ALL_TERMINAL.includes(ep.status)) throw new Error('EPISODE_ALREADY_TERMINAL: ' + episodeId);
+  });
 }
 
 export function recordEpisode(root, runId, episodeId, { status, artifacts = [], proof = {}, fence } = {}) {

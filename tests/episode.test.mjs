@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, runDir } from '../scripts/lib/state.mjs';
 import { reconcileBudget } from '../scripts/lib/budget.mjs';
-import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
+import { newEpisode, recordEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
 
 function seed() {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
@@ -15,6 +15,7 @@ function seed() {
 }
 
 function fence(runId) { return { owner: runId, generation: 1, intent: 'business' }; }
+function freshRun() { const { root, runId } = seed(); return { root, runId, fence: fence(runId) }; }
 
 test('newEpisode scaffolds request.md, bumps episodes_total, sets current', () => {
   const { root, runId } = seed();
@@ -169,4 +170,29 @@ test('newEpisode rejects a non-null nonexistent workstream; no episode created, 
   );
   assert.equal(readState(root, runId).data.episodes.length, 0);   // no stranded episode
   assert.doesNotThrow(() => reconcileBudget(root, runId));          // preCheck threw before append → anchor consistent
+});
+
+test('abandonEpisode: non-terminal maker -> abandoned, requires --confirm + reason + fence', () => {
+  const { root, runId, fence: f } = freshRun();
+  const { id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: null, expectedArtifacts: [], fence: f });
+  assert.throws(() => abandonEpisode(root, runId, id, { reason: 'orphan', confirm: false, fence: f }), /CONFIRM_REQUIRED/);
+  assert.throws(() => abandonEpisode(root, runId, id, { reason: '', confirm: true, fence: f }), /EPISODE_INPUT_INVALID/);
+  abandonEpisode(root, runId, id, { reason: 'orphan, no artifacts', confirm: true, fence: f });
+  const ep = readState(root, runId).data.episodes.find(e => e.id === id);
+  assert.equal(ep.status, 'abandoned');
+  assert.equal(ep.abandon_reason, 'orphan, no artifacts');
+});
+
+test('abandonEpisode: already-terminal episode rejected', () => {
+  const { root, runId, fence: f } = freshRun();
+  writeFileSync(join(root, 'art.txt'), 'x');
+  const { id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: null, expectedArtifacts: ['art.txt'], fence: f });
+  recordEpisode(root, runId, id, { status: 'done', artifacts: ['art.txt'], proof: {}, fence: f });
+  assert.throws(() => abandonEpisode(root, runId, id, { reason: 'late', confirm: true, fence: f }), /EPISODE_ALREADY_TERMINAL/);
+});
+
+test('abandonEpisode: fence enforced', () => {
+  const { root, runId, fence: f } = freshRun();
+  const { id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: null, expectedArtifacts: [], fence: f });
+  assert.throws(() => abandonEpisode(root, runId, id, { reason: 'r', confirm: true, fence: { owner: 'wrong', generation: 1 } }), /LEASE_FENCED/);
 });
