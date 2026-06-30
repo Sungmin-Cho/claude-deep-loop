@@ -619,7 +619,10 @@ test('B3: powershell launcher with null launcher_bin → no-launcher (preserve),
   assert.equal(spawned, false, 'must not spawn a bare powershell');
   assert.equal(r.ok, false);
   assert.equal(r.outcome, 'no-launcher');
-  // handoff PRESERVED (not stranded/rolled back) — skill preserve-pauses.
-  const after = readState(root, runId).data.session_chain.lease;
-  assert.equal(after.handoff_phase, 'emitted');
+  // respawn SELF-preserve-pauses — the VISIBLE skill branch (launcher!=='none') runs `respawn --attended` and
+  // does NOT inspect the outcome, so without a self-pause the handoff would be stranded (IMPL-ADV1).
+  const after = readState(root, runId).data;
+  assert.equal(after.status, 'paused', 'run must be preserve-paused by respawn itself');
+  assert.equal(after.session_chain.lease.handoff_phase, 'emitted');     // handoff preserved for recovery
+  assert.equal(after.session_chain.lease.resume_policy, 'human');
 });

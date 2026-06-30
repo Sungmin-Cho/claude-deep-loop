@@ -242,9 +242,13 @@ export function respawn(root, runId, {
   }
 
   // Fail closed: a powershell mode with an unavailable entry (no trusted launcher_bin — e.g. a stale/migrated
-  // launcher='powershell' run) must NOT spawn a bare powershell. Return the SAME no-launcher outcome the
-  // interactive branch returns so the skill preserve-pauses (build-error is report-only → would strand it).
+  // launcher='powershell' run) must NOT spawn a bare powershell. Unlike the interactive no-launcher path (which
+  // the else/none skill branch preserve-pauses), this is reached via the VISIBLE skill branch (launcher!=='none'
+  // → `respawn --attended`), which does NOT inspect the outcome — so respawn must preserve-pause ITSELF here, or
+  // the handoff is left emitted/releasing, unpaused, with no child spawned (stranded). Mirrors gate-blocked self-pause.
   if (mode === 'powershell' && (!_entry || _entry.unavailable || !_entry.bin)) {
+    const res = preservePause(root, runId, { childRunId, parentOwner, generation, pauseReason: 'powershell-launcher-unavailable' });
+    if (res.fenced) return { ok: false, outcome: 'fenced', reason: 'lease-changed-before-pause', childRunId };
     return { ok: false, outcome: 'no-launcher', reason: 'powershell-launcher-unavailable', childRunId };
   }
 
