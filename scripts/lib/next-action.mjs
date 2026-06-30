@@ -11,6 +11,13 @@ function currentSessionTurns(loop) {
 
 const A = (gate, action, next_command) => ({ gate, action, next_command });
 
+// Finish-path robustness (repro-009): a PROOF-IMPOSSIBLE ORPHAN maker — one whose expected_artifacts is an explicit
+// empty array — can NEVER be recorded `done` (recordEpisode rejects empty expected_artifacts with
+// EPISODE_TERMINAL_NO_PROOF). Dispatching it forever burns budget / spins autonomous runs; instead surface the
+// human-gated `episode abandon --confirm` recovery via await_human. PRECISE: fires ONLY on an explicit empty array
+// (how newEpisode stores an artifact-less maker), NOT on synthetic fixtures that omit the field (those still dispatch).
+const isOrphanMaker = (ep) => Array.isArray(ep.expected_artifacts) && ep.expected_artifacts.length === 0;
+
 // A rejected checker is GENUINELY SUPERSEDED — and thus must NOT re-trigger fix_episode — when either
 //   (a) its target maker was re-reviewed and APPROVED by a checker that is NEWER than this rejected checker
 //       (an OLDER approve followed by a NEWER reject must NOT mask the rejection — order matters), or
@@ -37,6 +44,10 @@ function finishOrAdvance(loop, gate, fanoutBlocked) {
   const wsExists = (id) => !!id && (loop.workstreams || []).some(w => w.id === id);
   const pendingMaker = eps.find(e => e.role === 'maker' && e.status === 'pending');
   if (pendingMaker) {
+    // Proof-impossible orphan (expected_artifacts === []) can NEVER reach `done` → route to the human-gated
+    // `episode abandon --confirm` recovery instead of dispatching forever. BEFORE the debt check (an orphan can
+    // never complete regardless of debt). Keeps next-action ↔ finishProofState consistent (orphan = unsettled).
+    if (isOrphanMaker(pendingMaker)) return A(gate, { type: 'await_human', episode_id: pendingMaker.id, reason: 'orphan-maker-no-artifacts' }, '/deep-loop-status');
     // Codex r3 🔴3: debt 면 새 fan-out maker(kind≠fix) 차단. fix maker 는 현재 진행이라 허용.
     if (fanoutBlocked && pendingMaker.kind !== 'fix') return A(gate, { type: 'await_human', episode_id: pendingMaker.id, reason: 'comprehension-debt' }, '/deep-loop-status');
     return A(gate, { type: 'dispatch_maker', episode_id: pendingMaker.id, point: pendingMaker.point, workstream_id: pendingMaker.workstream_id }, '/deep-loop-continue');
@@ -97,6 +108,9 @@ export function nextAction(loop, { now = Date.now() } = {}) {
   }
   if (ep.role === 'maker') {
     if (ep.status === 'pending') {
+      // Proof-impossible orphan (expected_artifacts === []) can NEVER reach `done` → human-gated abandon recovery.
+      // BEFORE the debt check (an orphan can never complete regardless of debt). See finishOrAdvance for rationale.
+      if (isOrphanMaker(ep)) return A(gate, { type: 'await_human', episode_id: ep.id, reason: 'orphan-maker-no-artifacts' }, '/deep-loop-status');
       // Codex r3 🔴3: debt 면 새 fan-out maker(kind≠fix) 차단. fix maker 는 현재 진행이라 허용.
       if (debt.blocked && ep.kind !== 'fix') return A(gate, { type: 'await_human', episode_id: ep.id, reason: 'comprehension-debt' }, '/deep-loop-status');
       return A(gate, { type: 'dispatch_maker', episode_id: ep.id, point: ep.point, workstream_id: ep.workstream_id }, '/deep-loop-continue');

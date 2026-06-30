@@ -61,6 +61,16 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field workstreams
 
 comprehension `episodes_human_reviewed`가 낮으면 미검토 episode 목록을 출력하고 `/deep-loop-ack`을 안내한다.
 
+### 7. 막힌(stranded) non-terminal episode
+
+`next-action`이 `await_human`을 반환하고 `reason`이 `orphan-maker-no-artifacts`(proof-impossible: `expected_artifacts: []`라 절대 `done`이 될 수 없는 maker)이거나, 기타 터미널에 도달하지 못한 채 막힌 episode일 때는 사람이 해당 episode를 abandon으로 정착(settle)시켜 finish를 풀어준다:
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" episode abandon --id <id> --reason "<why>" --confirm --owner <run_id> --generation <n>
+```
+
+(`--confirm` + lease fence(`--owner`/`--generation`)는 사람 전용 경로 — autonomous tick은 자동으로 주지 않는다. abandon 후 episode는 `abandoned`(settled)가 되어 finish 게이트가 풀린다.)
+
 ## 다음 명령 제안
 
 상태에 따라 적절한 다음 명령을 제안한다:

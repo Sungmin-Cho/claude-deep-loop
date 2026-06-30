@@ -57,6 +57,50 @@ test('done maker at review point → dispatch_checker', () => {
   assert.equal(nextAction(l, { now: 0 }).action.type, 'dispatch_checker');
 });
 
+// Finish-path robustness (repro-009): a PROOF-IMPOSSIBLE ORPHAN maker — expected_artifacts is an explicit empty
+// array — can NEVER be recorded `done` (recordEpisode rejects empty expected_artifacts with EPISODE_TERMINAL_NO_PROOF).
+// nextAction must NOT keep dispatching it (autonomous spin / budget burn); it must surface the human-gated
+// `episode abandon --confirm` recovery via await_human(reason=orphan-maker-no-artifacts). Both routing sites:
+// (a) current_episode = the orphan (main-body maker pending branch), (b) current_episode=null → finishOrAdvance.
+test('orphan pending maker (expected_artifacts: []) → await_human(orphan-maker-no-artifacts), not dispatch_maker', () => {
+  const l = loop();
+  l.episodes = [{ id: '001-deep-work', role: 'maker', status: 'pending', point: 'implementation', workstream_id: 'ws-01', expected_artifacts: [] }];
+  // (a) main-body current_episode path
+  l.current_episode = '001-deep-work';
+  const r1 = nextAction(l, { now: Date.parse('2026-06-24T00:00:00Z') });
+  assert.equal(r1.action.type, 'await_human', `expected await_human but got ${r1.action.type}`);
+  assert.equal(r1.action.reason, 'orphan-maker-no-artifacts');
+  assert.equal(r1.action.episode_id, '001-deep-work');
+  // (b) finishOrAdvance path (current_episode=null, orphan as the only/first pending maker)
+  l.current_episode = null;
+  const r2 = nextAction(l, { now: Date.parse('2026-06-24T00:00:00Z') });
+  assert.equal(r2.action.type, 'await_human', `expected await_human but got ${r2.action.type}`);
+  assert.equal(r2.action.reason, 'orphan-maker-no-artifacts');
+  assert.equal(r2.action.episode_id, '001-deep-work');
+  // Consistency: finishProofState reports unsettled (pending orphan) → await_human (not finish) stays consistent.
+  assert.ok(finishProofState(l).missing.includes('unsettled-episodes'));
+});
+
+// No false positive: a pending maker with NON-EMPTY expected_artifacts (a real, completable maker) and a synthetic
+// fixture that OMITS expected_artifacts entirely must BOTH still return dispatch_maker — the orphan predicate fires
+// ONLY on an explicit empty array (Array.isArray && length===0), never on a missing field.
+test('pending maker with non-empty / omitted expected_artifacts → still dispatch_maker (no false positive)', () => {
+  // non-empty expected_artifacts → dispatch (both routing sites)
+  const l = loop();
+  l.episodes = [{ id: '001-deep-work', role: 'maker', status: 'pending', point: 'implementation', workstream_id: 'ws-01', expected_artifacts: ['x'] }];
+  l.current_episode = '001-deep-work';
+  assert.equal(nextAction(l, { now: Date.parse('2026-06-24T00:00:00Z') }).action.type, 'dispatch_maker');
+  l.current_episode = null;
+  assert.equal(nextAction(l, { now: Date.parse('2026-06-24T00:00:00Z') }).action.type, 'dispatch_maker');
+  // OMITS expected_artifacts → must NOT match the orphan predicate → still dispatch (both routing sites)
+  const l2 = loop();
+  l2.episodes = [{ id: '001-deep-work', role: 'maker', status: 'pending', point: 'implementation', workstream_id: 'ws-01' }];
+  l2.current_episode = '001-deep-work';
+  assert.equal(nextAction(l2, { now: Date.parse('2026-06-24T00:00:00Z') }).action.type, 'dispatch_maker');
+  l2.current_episode = null;
+  assert.equal(nextAction(l2, { now: Date.parse('2026-06-24T00:00:00Z') }).action.type, 'dispatch_maker');
+});
+
 test('per_session_turn_cap reached → handoff', () => {
   const l = loop();
   l.budget.per_session_turn_cap = 5;
