@@ -15,6 +15,37 @@ export function defaultProbeRun(bin, argv, { timeoutMs = 5000, capture = false }
   return { code: r.status ?? 1 };
 }
 
+// Fixed canonical trusted PowerShell locations — NOT derived from overridable env
+// (SystemRoot/ProgramFiles can be spoofed by a parent) and NOT from where/PATH/cwd.
+const TRUSTED_PS = [
+  'C:\\Program Files\\PowerShell\\7\\pwsh.exe',          // PS7 (preferred)
+  'C:\\Program Files (x86)\\PowerShell\\7\\pwsh.exe',
+  'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',   // Windows PowerShell 5.1 (guaranteed)
+];
+function trustedPsCandidates(exists) {
+  return TRUSTED_PS.filter((p) => { try { return exists(p); } catch { return false; } });
+}
+// Single source of the PowerShell trust boundary — exported so handoff/respawn re-validate a
+// persisted launcher_bin against the SAME canonical set. Exact membership: a stale/hand-edited
+// 'C:\repo\powershell.exe' or UNC '\\srv\share\pwsh.exe' is rejected → fail-closed.
+export function isTrustedPsBin(p) { return TRUSTED_PS.includes(p); }
+
+// Bounded parent-process ancestry walk. The PS one-liner outputs 3-valued PS/NO/UNKNOWN
+// (only a true top-reach is authoritative NO; CIM failure/exhaustion → UNKNOWN). MEASURED-PS-ONLY:
+// only a measured 'PS' ancestor returns host:true. NO/UNKNOWN/all-probes-failed → host:false.
+// No env fallback (POWERSHELL_DISTRIBUTION_CHANNEL is parent-spoofable; the walk already covers 5.1 + PS7).
+function detectPsHost({ run, pid, candidates }) {
+  const script = `$p=${pid}; $r='UNKNOWN'; for($i=0;$i -lt 8 -and $p;$i++){ $q=Get-CimInstance Win32_Process -Filter ("ProcessId="+$p) -EA SilentlyContinue; if(-not $q){ break }; if($q.Name -match '^(powershell|pwsh)(\\.exe)?$'){ $r='PS'; break }; if(-not $q.ParentProcessId -or $q.ParentProcessId -eq 0){ $r='NO'; break }; $p=$q.ParentProcessId }; $r`;
+  for (const bin of candidates) {
+    const r = run(bin, ['-NoProfile', '-NonInteractive', '-Command', script], { timeoutMs: 5000, capture: true });
+    const out = (r && typeof r.stdout === 'string') ? r.stdout : '';
+    if (r && r.code === 0 && /(^|\s)PS(\s|$)/.test(out)) return { host: true, bin };
+    if (r && r.code === 0 && /(^|\s)NO(\s|$)/.test(out)) return { host: false, bin };
+    // UNKNOWN / failure → try next candidate
+  }
+  return { host: false, bin: candidates[candidates.length - 1] };   // no measured PS → not a PowerShell host
+}
+
 /**
  * Fail-closed, positive-host-signal terminal/launcher detection.
  *
@@ -32,7 +63,6 @@ export function detectTerminal({
   now,
   pid = (typeof process !== 'undefined' ? process.pid : 0),
   exists = (p) => { try { return existsSync(p); } catch { return false; } },
-  allowPowershellVisible = false,   // removed in B2; kept here so B1 is a no-op behavior change
 } = {}) {
   // detected_at is an ISO string passed in; do NOT call .toISOString() on it.
   const detected_at = now;
@@ -165,21 +195,20 @@ export function detectTerminal({
       return noneDescriptor('no-host-signal', probe);
     }
 
-    if (allowPowershellVisible) {
-      const pr    = run('where', ['powershell'], { timeoutMs: 5000 });
-      const probe = { cmd: ['where', 'powershell'], code: pr.code };
-      if (pr.code === 0) {
-        return {
-          platform, launcher: 'powershell', launcher_bin: null, launcher_socket: null,
-          surface: 'window', reachable: true, visible: true,
-          signals, probe, reason: null, fallback: 'launch-command-file', detected_at,
-        };
-      }
-      return noneDescriptor('no-host-signal', probe);
+    // No WT_SESSION: PowerShell host detection (no opt-in). launcher_bin resolves ONLY from the
+    // fixed TRUSTED_PS system paths (no where/PATH/cwd/env-derived roots); host is decided by a
+    // measured parent-process ancestry walk run via the trusted bin.
+    const candidates = trustedPsCandidates(exists);
+    if (candidates.length === 0) return noneDescriptor('no-host-signal');
+    const { host, bin } = detectPsHost({ run, pid, candidates });
+    if (host) {
+      return {
+        platform, launcher: 'powershell', launcher_bin: bin, launcher_socket: null,
+        surface: 'window', reachable: true, visible: true,
+        signals, probe: null, reason: null, fallback: 'launch-command-file', detected_at,
+      };
     }
-
-    // No WT_SESSION and powershell opt-in not granted.
-    return noneDescriptor('powershell-needs-optin');
+    return noneDescriptor('no-host-signal');
   }
 
   // ── 4. Any other platform ───────────────────────────────────────────────────
@@ -201,11 +230,11 @@ export function detectAndPersist(root, runId, {
   platform = process.platform,
   run = defaultProbeRun,
   now,
+  pid = (typeof process !== 'undefined' ? process.pid : 0),
 } = {}) {
   reconcileBudget(root, runId);
   const { data: loop } = readState(root, runId);
-  const allowPowershellVisible = loop.autonomy?.allow_powershell_visible ?? false;
-  const d = detectTerminal({ env, platform, run, now, allowPowershellVisible });
+  const d = detectTerminal({ env, platform, run, now, pid });
   appendAnchored(
     root, runId,
     { type: 'terminal-detected', data: { launcher: d.launcher } },

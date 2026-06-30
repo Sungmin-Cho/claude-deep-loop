@@ -42,10 +42,8 @@ test('darwin iTerm2 installed → iterm2; not installed → none', () => {
 test('darwin Apple_Terminal id ok → terminal-app', () => {
   assert.equal(detectTerminal({ env:{ TERM_PROGRAM:'Apple_Terminal' }, platform:'darwin', run: ok, now: NOW }).launcher, 'terminal-app');
 });
-test('win32 WT_SESSION → wt; powershell needs opt-in', () => {
+test('win32 WT_SESSION → wt (regression)', () => {
   assert.equal(detectTerminal({ env:{ WT_SESSION:'x' }, platform:'win32', run: ok, now: NOW }).launcher, 'wt');
-  assert.equal(detectTerminal({ env:{}, platform:'win32', run: ok, now: NOW, allowPowershellVisible:false }).launcher, 'none');
-  assert.equal(detectTerminal({ env:{}, platform:'win32', run: ok, now: NOW, allowPowershellVisible:true }).launcher, 'powershell');
 });
 test('linux / no signal → none', () => {
   assert.equal(detectTerminal({ env:{}, platform:'linux', run: ok, now: NOW }).launcher, 'none');
@@ -78,4 +76,58 @@ test('B1: defaultProbeRun without capture returns code only (no stdout field)', 
   const r = defaultProbeRun(process.execPath, ['-e', '0'], {});
   assert.equal(r.code, 0);
   assert.equal(r.stdout, undefined);
+});
+
+// ── B2: PowerShell host detection (trusted-path ancestry walk, measured-PS-only) ──
+const PS7 = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe';
+const PS51 = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+const mkRun = ({ probe = {}, whereWt = 0 } = {}) => (bin, argv) => {
+  if (bin === 'where') return { code: argv[0] === 'wt.exe' ? whereWt : 1, stdout: '' };
+  if (probe[bin]) return probe[bin];            // ancestry probe for a TRUSTED_PS bin
+  return { code: 1, stdout: '' };
+};
+const existsOf = (set) => (p) => set.has(p);
+
+test('B2: WT_SESSION → wt (ancestry not run)', () => {
+  const d = detectTerminal({ env:{ WT_SESSION:'x' }, platform:'win32', run: mkRun({ whereWt:0 }), now: NOW, pid: 100, exists: existsOf(new Set([PS51])) });
+  assert.equal(d.launcher, 'wt');
+});
+test('B2: no WT + PS7 exists + ancestry PS → powershell with PS7 launcher_bin', () => {
+  const d = detectTerminal({ env:{}, platform:'win32', run: mkRun({ probe: { [PS7]: { code:0, stdout:'PS' } } }), now: NOW, pid: 100, exists: existsOf(new Set([PS7, PS51])) });
+  assert.equal(d.launcher, 'powershell');
+  assert.equal(d.launcher_bin, PS7);
+  assert.equal(d.visible, true);
+  assert.equal(d.surface, 'window');
+});
+test('B2: cmd guard — PSModulePath present but ancestry NO → none', () => {
+  const env = { PSModulePath: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules' };
+  const d = detectTerminal({ env, platform:'win32', run: mkRun({ probe: { [PS51]: { code:0, stdout:'NO' } } }), now: NOW, pid: 100, exists: existsOf(new Set([PS51])) });
+  assert.equal(d.launcher, 'none');
+});
+test('B2: 5.1 only (no channel) ancestry PS → powershell with 5.1 bin', () => {
+  const d = detectTerminal({ env:{}, platform:'win32', run: mkRun({ probe: { [PS51]: { code:0, stdout:'PS' } } }), now: NOW, pid: 100, exists: existsOf(new Set([PS51])) });
+  assert.equal(d.launcher, 'powershell');
+  assert.equal(d.launcher_bin, PS51);
+});
+test('B2: ordered fallback — PS7 probe broken, 5.1 PS → powershell with 5.1 bin', () => {
+  const d = detectTerminal({ env:{}, platform:'win32', run: mkRun({ probe: { [PS7]: { code:1, stdout:'' }, [PS51]: { code:0, stdout:'PS' } } }), now: NOW, pid: 100, exists: existsOf(new Set([PS7, PS51])) });
+  assert.equal(d.launcher, 'powershell');
+  assert.equal(d.launcher_bin, PS51);
+});
+test('B2: all probes fail + SPOOFED channel → none (no env fallback, plan-ADV1)', () => {
+  const d = detectTerminal({ env:{ POWERSHELL_DISTRIBUTION_CHANNEL:'MSI:Windows 10 Enterprise' }, platform:'win32', run: mkRun({ probe: { [PS51]: { code:1, stdout:'' } } }), now: NOW, pid: 100, exists: existsOf(new Set([PS51])) });
+  assert.equal(d.launcher, 'none');
+});
+test('B2: probe UNKNOWN + spoofed channel → none', () => {
+  const d = detectTerminal({ env:{ POWERSHELL_DISTRIBUTION_CHANNEL:'x' }, platform:'win32', run: mkRun({ probe: { [PS51]: { code:0, stdout:'UNKNOWN' } } }), now: NOW, pid: 100, exists: existsOf(new Set([PS51])) });
+  assert.equal(d.launcher, 'none');
+});
+test('B2: no trusted PS installed (exists empty) → none', () => {
+  const d = detectTerminal({ env:{}, platform:'win32', run: mkRun({}), now: NOW, pid: 100, exists: existsOf(new Set()) });
+  assert.equal(d.launcher, 'none');
+});
+test('B2: cwd-shadow C:\\repo\\powershell.exe is never a candidate', () => {
+  const shadow = 'C:\\repo\\powershell.exe';
+  const d = detectTerminal({ env:{}, platform:'win32', run: mkRun({ probe: { [shadow]: { code:0, stdout:'PS' } } }), now: NOW, pid: 100, exists: existsOf(new Set([shadow])) });
+  assert.equal(d.launcher, 'none');
 });

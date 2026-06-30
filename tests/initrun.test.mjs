@@ -18,7 +18,7 @@ test('buildInitialLoop autonomy defaults — spawn_style visible, new fields', (
   assert.ok(!loop.autonomy.unattended_detect.includes('non-tty'), `unattended_detect must not include 'non-tty': ${JSON.stringify(loop.autonomy.unattended_detect)}`);
   assert.ok(loop.autonomy.unattended_detect.includes('headless-invocation'), `unattended_detect must include 'headless-invocation': ${JSON.stringify(loop.autonomy.unattended_detect)}`);
   assert.equal(loop.autonomy.child_ready_timeout_sec, 75);
-  assert.equal(loop.autonomy.allow_powershell_visible, false);
+  assert.ok(!('allow_powershell_visible' in loop.autonomy), 'allow_powershell_visible gate removed (PowerShell auto-detects)');
   assert.ok(loop.session_spawn !== undefined && loop.session_spawn !== null, 'session_spawn must be a valid descriptor');
   assert.equal(loop.session_spawn.launcher, 'none');
   assert.equal(loop.session_spawn.reason, 'no-host-signal');  // detectTerminal result for linux/no-signals
