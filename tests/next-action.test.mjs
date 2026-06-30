@@ -216,6 +216,34 @@ test('unbound approved checker does not satisfy rejected checker convergence (fi
   );
 });
 
+// FIX B: await_result must carry workstream_id from the episode.
+test('await_result action carries episode workstream_id (maker in_progress, current_episode set)', () => {
+  const l = loop();
+  l.episodes = [{ id: '001-deep-work', role: 'maker', status: 'in_progress', point: 'implementation', workstream_id: 'ws-42' }];
+  l.current_episode = '001-deep-work';
+  const r = nextAction(l, { now: 0 });
+  assert.equal(r.action.type, 'await_result');
+  assert.equal(r.action.workstream_id, 'ws-42', 'await_result must include episode workstream_id');
+});
+
+test('await_result action carries episode workstream_id (checker in_progress, current_episode set)', () => {
+  const l = loop();
+  l.episodes = [{ id: '002-deep-review', role: 'checker', status: 'in_progress', point: 'plan', workstream_id: 'ws-99' }];
+  l.current_episode = '002-deep-review';
+  const r = nextAction(l, { now: 0 });
+  assert.equal(r.action.type, 'await_result');
+  assert.equal(r.action.workstream_id, 'ws-99', 'await_result for checker must include episode workstream_id');
+});
+
+test('await_result action carries episode workstream_id (in_progress via finishOrAdvance, no current_episode)', () => {
+  const l = loop();
+  l.episodes = [{ id: '003-deep-work', role: 'maker', status: 'in_progress', point: 'implementation', workstream_id: 'ws-77' }];
+  l.current_episode = null;
+  const r = nextAction(l, { now: 0 });
+  assert.equal(r.action.type, 'await_result');
+  assert.equal(r.action.workstream_id, 'ws-77', 'await_result via finishOrAdvance must include episode workstream_id');
+});
+
 // Codex r5 🟡2: superseded rejected checker must not block finish
 // A loop with: OLD rejected checker (ws-01/plan) bound to maker, a later approved checker also bound to maker,
 // review_points_done=['plan'], no active workstreams, current_episode=null → finish (not await_human, not fix_episode).

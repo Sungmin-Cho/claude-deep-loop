@@ -142,6 +142,7 @@ git worktree add -b worktree-<ws-slug> "$ORIG_ROOT/.claude/worktrees/<ws-slug>" 
 - **ORIG_ROOT/BASE_REF 캡처(sibling git 경로 구성용):** 어떤 worktree 전환보다 먼저 `$ORIG_ROOT`(격리 진입 전 `git rev-parse --show-toplevel`)와 `$BASE_REF`(의도한 base commit)를 캡처한다(위 캡처 블록 참조). 이 값이 sibling git 폴백의 절대경로·명시 base 인자가 된다.
 - **cwd 분리:** maker/checker 파일 편집은 해당 worktree 안에서(분리) 수행한다. 커널 상태 호출은 `rootOf` 상향탐색이 cwd에서 root를 자동 해석(`--project-root` 불필요).
 - **artifact 경로는 ORIG_ROOT-상대로 기록:** episode artifact를 `.claude/worktrees/<slug>/…` 형태(ORIG_ROOT 기준 상대)로 기록해야 `episode.mjs` containment(절대경로·`..` 금지)를 통과한다. worktree가 root 밑에 있어야 이 경로가 성립한다.
+- **worktree 기록 경로 규율(FIX A):** `workstream new`에 기록하는 worktree 경로는 반드시 `$ORIG_ROOT/.claude/worktrees/<slug>` (또는 `.worktrees/<slug>`) 형태여야 한다. 커널 `findRoot`는 이 두 컨벤션 경로에서만 run을 상향탐색으로 해석한다. 비컨벤션 경로를 기록하면 worktree 안에서 실행한 커널 호출이 run을 찾지 못해 root 해석이 실패하는 discipline violation이다.
 
 #### Step 1.5 — create↔record 정합 (고아 방지)
 

@@ -384,6 +384,18 @@ test('handoff-respawn.md: documents post-verify worktree entry and --project-roo
     'handoff-respawn.md must document the --project-root rationale (rootOf 상향탐색으로 불필요)');
 });
 
+// FIX D: continue skill must document ORIG_ROOT-relative, worktree-prefixed artifact paths.
+test('deep-loop-continue: artifact paths in record/dispatch examples are ORIG_ROOT-relative worktree-prefixed', () => {
+  const cont = _rf(skillPath('deep-loop-continue'), 'utf8');
+  // Must NOT have bare relative paths like 'path/to/artifact' or 'path/to/fix-output' in --artifacts examples
+  assert.ok(!cont.includes('"path/to/artifact"'), 'bare "path/to/artifact" must be replaced with worktree-prefixed path');
+  assert.ok(!cont.includes('"path/to/fix-output"'), 'bare "path/to/fix-output" must be replaced with worktree-prefixed path');
+  // Must have worktree-prefixed artifact paths (.claude/worktrees/<slug>/...)
+  assert.match(cont, /\.claude\/worktrees\/[^\s"]*\/[^\s"]+/, 'artifact examples must use .claude/worktrees/<slug>/ prefix');
+  // Must have explicit instruction about ORIG_ROOT-relative artifact paths
+  assert.match(cont, /(ORIG_ROOT|ORIG_ROOT-상대|ORIG_ROOT.*(relative|기준|상대))[\s\S]{0,400}artifact|artifact[\s\S]{0,400}(ORIG_ROOT|ORIG_ROOT-상대|worktree.*prefix)/i, 'must instruct ORIG_ROOT-relative artifact paths');
+});
+
 test('deep-loop-finish: proposal-only worktree cleanup + reconcile audit surface', () => {
   const s = _rf(skillPath('deep-loop-finish'), 'utf8');
   assert.match(s, /Worktree 사용 현황/, 'report section');
