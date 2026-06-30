@@ -4,9 +4,9 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { readState } from '../scripts/lib/state.mjs';
+import { readState, writeState } from '../scripts/lib/state.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
-import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
+import { newEpisode, recordEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
 import { resolveReviewer, dispatchReview, parseVerdict, recordReviewOutcome, unsatisfiedReviewPoints } from '../scripts/lib/review.mjs';
 import { releaseLease, acquireLease } from '../scripts/lib/lease.mjs';
 
@@ -17,6 +17,11 @@ function seed(detected = { 'deep-review': true }) {
 }
 
 function fence(runId) { return { owner: runId, generation: 1, intent: 'business' }; }
+
+function freshRun() {
+  const { root, runId } = seed();
+  return { root, runId, fence: fence(runId) };
+}
 
 test('resolveReviewer falls back when deep-review absent', () => {
   const { root, runId } = seed({ 'deep-review': false, codex: true });
@@ -235,6 +240,32 @@ test('unsatisfiedReviewPoints: union across multiple workstreams', () => {
 
 // FIX 3 regression (b): two done makers same point, approving checker bound to maker2 (latest) increments
 // episodes_human_reviewed by exactly 1 (only maker2), not 2.
+test('recordReviewOutcome: rejects recording on an abandoned checker', () => {
+  const { root, runId, fence } = freshRun();
+  const ws = newWorkstream(root, runId, { title: 'W', branch: 'b', worktree: 'wt', fence });
+  writeFileSync(join(root, 'art.txt'), 'x');
+  const m = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws.id, expectedArtifacts: ['art.txt'], fence });
+  recordEpisode(root, runId, m.id, { status: 'done', artifacts: ['art.txt'], proof: {}, fence });
+  const dr = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws.id, detected: {}, fence });
+  abandonEpisode(root, runId, dr.checkerEpisodeId, { reason: 'stale checker', confirm: true, fence });
+  assert.throws(() => recordReviewOutcome(root, runId, { episodeId: dr.checkerEpisodeId, workstreamId: ws.id, point: 'implementation', verdict: 'APPROVE', fence }), /REVIEW_ALREADY_RECORDED/);
+  // review point 오염 없음
+  const ws2 = readState(root, runId).data.workstreams.find(w => w.id === ws.id);
+  assert.ok(!ws2.review_points_done.includes('implementation'));
+});
+
+test('recordReviewOutcome: rejects recording on a done checker (defensive)', () => {
+  const { root, runId, fence } = freshRun();
+  const ws = newWorkstream(root, runId, { title: 'W', branch: 'b', worktree: 'wt', fence });
+  writeFileSync(join(root, 'art.txt'), 'x');
+  const m = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws.id, expectedArtifacts: ['art.txt'], fence });
+  recordEpisode(root, runId, m.id, { status: 'done', artifacts: ['art.txt'], proof: {}, fence });
+  const dr = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws.id, detected: {}, fence });
+  // checker 를 'done' 으로 강제(정상 경로로는 도달 불가 — 방어적 가드 확인)
+  const data = readState(root, runId).data; data.episodes.find(e => e.id === dr.checkerEpisodeId).status = 'done'; writeState(root, runId, data);
+  assert.throws(() => recordReviewOutcome(root, runId, { episodeId: dr.checkerEpisodeId, workstreamId: ws.id, point: 'implementation', verdict: 'APPROVE', fence }), /REVIEW_ALREADY_RECORDED/);
+});
+
 test('recordReviewOutcome: bound approve increments episodes_human_reviewed by 1 (only the bound maker, not all makers on point)', () => {
   const { root, runId } = seed();
   const f = fence(runId);

@@ -120,7 +120,8 @@ export function recordReviewOutcome(root, runId, { episodeId, workstreamId, poin
       const tgt = loop.episodes.find(e => e.id === episodeId);
       if (!tgt) throw new Error(`EPISODE_NOT_FOUND: ${episodeId}`);
       if (tgt.role !== 'checker') throw new Error('REVIEW_TARGET_NOT_CHECKER: ' + episodeId);
-      if (tgt.status === 'approved' || tgt.status === 'rejected') throw new Error('REVIEW_ALREADY_RECORDED: ' + episodeId);
+      const REVIEW_TERMINAL = ['done', 'approved', 'rejected', 'abandoned'];
+      if (REVIEW_TERMINAL.includes(tgt.status)) throw new Error('REVIEW_ALREADY_RECORDED: ' + episodeId);
       if (!loop.workstreams.find(w => w.id === tgt.workstream_id)) throw new Error(`WORKSTREAM_NOT_FOUND: ${tgt.workstream_id}`);
     });
   // REQUEST_CHANGES → checker='rejected'. nextAction returns fix_episode and Execution creates the fix maker.
