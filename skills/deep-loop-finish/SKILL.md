@@ -17,11 +17,22 @@ user-invocable: true
 
 ## 단계 1: Final Report 작성
 
-`<project-root>/.deep-loop/runs/<run_id>/final-report.md`에 final report를 작성한다.
+> [!IMPORTANT]
+> cwd가 worktree 안일 때 상대 경로는 worktree 하위에 파일을 생성해 `finishRun`의 존재 확인을 실패시킨다. **반드시 `project.root`-앵커된 절대 경로를 사용한다.**
+
+**먼저 project root를 상태에서 읽는다:**
 
 ```
-Write({ file_path: ".deep-loop/runs/<run_id>/final-report.md", content: report })
+PROJECT_ROOT=$(node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field project.root)
 ```
+
+`<project-root>/.deep-loop/runs/<run_id>/final-report.md`에 **절대 경로**로 final report를 작성한다:
+
+```
+Write({ file_path: "<project-root>/.deep-loop/runs/<run_id>/final-report.md", content: report })
+```
+
+여기서 `<project-root>`는 위에서 읽은 `PROJECT_ROOT` 값(절대 경로)으로 대체한다.
 
 report 내용:
 - **목표 & 결과**: 달성된 goal 요약
@@ -86,7 +97,9 @@ Skill({ skill: "deep-memory:deep-memory-harvest" })
 deep-wiki 플러그인이 설치된 경우:
 
 ```javascript
-Skill({ skill: "deep-wiki:wiki-ingest", args: ".deep-loop/runs/<run_id>/final-report.md" })
+Skill({ skill: "deep-wiki:wiki-ingest", args: "<project-root>/.deep-loop/runs/<run_id>/final-report.md" })
 ```
+
+`<project-root>`는 단계 1에서 읽은 `PROJECT_ROOT` 절대 경로 값이다.
 
 미감지 시 스킵하고 명시적으로 로그에 기록한다.

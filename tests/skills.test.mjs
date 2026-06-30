@@ -420,6 +420,44 @@ test('deep-loop-continue §1.5: await_result is in the worktree-entry set (not s
   assert.match(cont, /workstream_id[\s\S]{0,300}await_result|await_result[\s\S]{0,300}workstream_id/, 'await_result and workstream_id must be co-located in §1.5 gating text');
 });
 
+// FIX K: deep-loop-finish must write final-report to project.root-anchored absolute path.
+// Bare relative Write(".deep-loop/runs/...") breaks when cwd is inside a worktree.
+test('deep-loop-finish: final-report Write must be project.root-anchored (not bare relative)', () => {
+  const s = _rf(skillPath('deep-loop-finish'), 'utf8');
+  // Must instruct reading project.root from state before writing
+  assert.match(s, /state get[\s\S]{0,80}--field[\s\S]{0,40}project\.root|project\.root[\s\S]{0,40}--field[\s\S]{0,40}state get/,
+    'must read project.root from state (state get --field project.root) before writing final report');
+  // Must NOT have a bare relative Write to .deep-loop/runs/.../final-report.md (without a project.root anchor).
+  const bareWrite = s.split('\n').some(l =>
+    /Write\s*\(/.test(l) &&
+    /\.deep-loop\/runs\/[^"]*final-report\.md/.test(l) &&
+    !/(project\.root|<project-root>|\$\{?PROJECT_ROOT\}?|\$\{?ROOT\}?)/.test(l)
+  );
+  assert.ok(!bareWrite, 'deep-loop-finish must not instruct a bare relative Write(".deep-loop/runs/...final-report.md"); must anchor to project.root');
+  // Must use project.root in the Write call or nearby absolute path pattern
+  assert.match(s, /(project\.root|<project-root>|\$PROJECT_ROOT|\$ROOT)[\s\S]{0,300}final-report\.md|final-report\.md[\s\S]{0,100}(project\.root|<project-root>|\$PROJECT_ROOT|\$ROOT)/,
+    'final-report.md Write must reference project.root or <project-root>-anchored absolute path');
+  // deep-wiki delegation args must also be anchored (not bare relative .deep-loop/...)
+  const bareWikiArg = s.split('\n').some(l =>
+    /wiki-ingest/.test(l) &&
+    /args.*\.deep-loop\/runs/.test(l) &&
+    !/(project\.root|<project-root>|\$\{?PROJECT_ROOT\}?|\$\{?ROOT\}?)/.test(l)
+  );
+  assert.ok(!bareWikiArg, 'deep-wiki wiki-ingest delegation must not use bare relative .deep-loop path; must anchor to project.root');
+});
+
+// FIX L: adapter read.path must be explicitly described as requiring TRANSFORMATION to worktree-prefixed form.
+test('deep-loop §2-7: adapter read.path must be explicitly transformed to worktree-prefixed path (FIX L)', () => {
+  const s = dlSkill();
+  // Must explicitly state adapter read.path is TRANSFORMED/PREFIXED with the recorded worktree path.
+  // Acceptable signals: 변환, TRANSFORM, transform, 접두(prefix), or worktree + prefix in close proximity to adapter read.path.
+  assert.match(
+    s,
+    /adapter[\s\S]{0,300}(read\.path|read path)[\s\S]{0,300}(변환|TRANSFORM|transform|접두|prefix)|(변환|TRANSFORM|transform|접두|prefix)[\s\S]{0,200}adapter[\s\S]{0,200}(read\.path|read path)/i,
+    'must explicitly instruct transformation of adapter read.path to worktree-prefixed form before passing to --artifacts'
+  );
+});
+
 // FIX G: deep-loop SKILL.md episode new --artifacts example must use worktree-prefixed paths
 test('deep-loop §2-7: episode new --artifacts example uses worktree-prefixed paths', () => {
   const s = dlSkill();

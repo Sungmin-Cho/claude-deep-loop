@@ -1,4 +1,4 @@
-import { existsSync, realpathSync } from 'node:fs';
+import { existsSync, realpathSync, lstatSync } from 'node:fs';
 import { isAbsolute, join, resolve, sep, dirname, basename } from 'node:path';
 import { readState, writeState, withLock } from './state.mjs';
 import { appendAnchored } from './integrity.mjs';
@@ -27,6 +27,16 @@ export function newWorkstream(root, runId, { title, branch, worktree, baseCommit
   function _resolveDeep(p) {
     const abs = resolve(p);
     if (existsSync(abs)) return realpathSync(abs);
+    // FIX M: existsSync follows symlinks and returns false for dangling symlinks.
+    // lstatSync does NOT follow symlinks — it detects the symlink itself even when dangling.
+    // A dangling symlink component must be rejected: once the target is created the path escapes.
+    try {
+      const st = lstatSync(abs);
+      if (st.isSymbolicLink()) throw new Error('WORKSTREAM_WORKTREE_ESCAPE: dangling symlink component: ' + abs);
+    } catch (e) {
+      if (e.message.startsWith('WORKSTREAM_WORKTREE_ESCAPE')) throw e;
+      // ENOENT (or other) → truly absent leaf; continue walking up
+    }
     const par = dirname(abs);
     if (par === abs) return abs; // filesystem root — can't walk further
     return join(_resolveDeep(par), basename(abs));

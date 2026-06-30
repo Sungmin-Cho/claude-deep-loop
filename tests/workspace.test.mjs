@@ -258,3 +258,24 @@ test('newWorkstream rejects symlinked worktree parent escaping root (R5 P2-2)', 
     () => newWorkstream(root, runId, { title: 'Sym', branch: 'bs', worktree: '.claude/worktrees/ws', fence: fence(runId) }),
     /WORKSTREAM_WORKTREE_ESCAPE/, 'symlinked parent escaping root rejected');
 });
+
+// FIX M: dangling symlink component (.claude/worktrees -> nonexistent target) must also be rejected.
+// existsSync returns false for dangling symlinks (follows symlink, target absent) so _resolveDeep
+// previously treated them as absent leaves and reconstructed a lexical path → escape once target created.
+test('newWorkstream rejects dangling symlink worktree component (FIX M)', () => {
+  const { root, runId } = seed();
+  mkdirSync(join(root, '.claude'), { recursive: true });
+  // Dangling symlink: .claude/worktrees → /nonexistent/target (target does NOT exist)
+  symlinkSync('/nonexistent/dl-outside-target', join(root, '.claude', 'worktrees'));
+  assert.throws(
+    () => newWorkstream(root, runId, { title: 'Dangle', branch: 'bd', worktree: '.claude/worktrees/ws', fence: fence(runId) }),
+    /WORKSTREAM_WORKTREE_ESCAPE/, 'dangling symlink component must be rejected');
+});
+
+// Confirm normal absent leaf (no symlink) still accepted under convention dir
+test('newWorkstream allows absent (not-yet-created) worktree leaf under convention dir', () => {
+  const { root, runId } = seed();
+  // No symlinks — the leaf simply does not exist yet (normal worktree creation path)
+  const id = newWorkstream(root, runId, { title: 'Future', branch: 'bf', worktree: '.claude/worktrees/future-ws', fence: fence(runId) }).id;
+  assert.match(id, /^ws-\d+-/, 'absent-leaf worktree accepted');
+});
