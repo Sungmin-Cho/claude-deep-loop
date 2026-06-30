@@ -1,26 +1,41 @@
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { fileURLToPath } from 'node:url';
 
-const RUNTIME_CACHE = { claude: join('.claude', 'plugins', 'cache'), codex: join('.codex', 'plugins', 'cache') };
+// Known plugin-cache roots across runtimes. `installed` is the UNION over these — a best-effort
+// "this sibling is installed somewhere" discovery signal. Routing keys on `present` (installed OR
+// initialized marker), which is robust to install-detection imperfection: a missed install falls back
+// to the project marker, and the 2-plane boundary means the executor verifies callability at dispatch.
+const CACHE_ROOTS = [join('.claude', 'plugins', 'cache'), join('.codex', 'plugins', 'cache')];
 const PLUGINS = ['deep-work', 'deep-review', 'deep-docs', 'deep-evolve', 'deep-dashboard', 'deep-memory', 'deep-wiki', 'codex'];
 
 const has = (p) => { try { return existsSync(p); } catch { return false; } };
 const ls = (p) => { try { return readdirSync(p, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name); } catch { return []; } };
 
-// True if <cacheRoot>/<marketplace>/<plugin>/<version>/.{claude,codex}-plugin/plugin.json exists for any marketplace/version.
-// A versioned manifest (not a bare/stale dir) is the minimum evidence of an actually-installed plugin.
-function installedIn(cacheRoot, plugin) {
-  for (const market of ls(cacheRoot)) {
-    const pdir = join(cacheRoot, market, plugin);
-    if (!has(pdir)) continue;
-    for (const version of ls(pdir)) {
-      if (has(join(pdir, version, '.claude-plugin', 'plugin.json')) ||
-          has(join(pdir, version, '.codex-plugin', 'plugin.json'))) return true;
+// Collect installed plugin NAMES from a cache root by reading plugin manifests at bounded depth (1..3).
+// Reading the manifest `name` handles BOTH cache layouts uniformly (IMPL-ADV5):
+//   - versioned marketplace:  <root>/<market>/<plugin>/<version>/.{claude,codex}-plugin/plugin.json
+//   - direct (git/local):     <root>/<entry>/.{claude,codex}-plugin/plugin.json  (plugin name only in the manifest)
+function installedNamesIn(cacheRoot) {
+  const names = new Set();
+  const collect = (dir) => {
+    for (const md of ['.claude-plugin', '.codex-plugin']) {
+      try {
+        const j = JSON.parse(readFileSync(join(dir, md, 'plugin.json'), 'utf8'));
+        if (j && typeof j.name === 'string' && j.name) names.add(j.name);
+      } catch { /* no/invalid manifest here */ }
+    }
+  };
+  for (const a of ls(cacheRoot)) {                 // depth 1 (direct entry OR marketplace)
+    collect(join(cacheRoot, a));
+    for (const b of ls(join(cacheRoot, a))) {       // depth 2 (plugin)
+      collect(join(cacheRoot, a, b));
+      for (const c of ls(join(cacheRoot, a, b))) {  // depth 3 (version)
+        collect(join(cacheRoot, a, b, c));
+      }
     }
   }
-  return false;
+  return names;
 }
 
 function initializedOf(root, home) {
@@ -36,24 +51,23 @@ function initializedOf(root, home) {
   };
 }
 
-// pluginPath defaults to the RESOLVED path of THIS module (unspoofable) — NOT a parent-controlled env var
-// (CLAUDE_PLUGIN_ROOT is spoofable). Injectable for tests.
-export function detectPlugins(root, home = homedir(), pluginPath = fileURLToPath(import.meta.url)) {
-  // Current runtime = whichever cache the running deep-loop module lives in (Claude default for dev/standalone).
-  const isCodex = typeof pluginPath === 'string' && pluginPath.includes(RUNTIME_CACHE.codex);
-  const curRoot = join(home, isCodex ? RUNTIME_CACHE.codex : RUNTIME_CACHE.claude);
-  const otherRoot = join(home, isCodex ? RUNTIME_CACHE.claude : RUNTIME_CACHE.codex);
+export function detectPlugins(root, home = homedir()) {
+  // Union of installed names across all known cache roots (runtime-agnostic, layout-robust best-effort).
+  const installedNames = new Set();
+  for (const rel of CACHE_ROOTS) for (const n of installedNamesIn(join(home, rel))) installedNames.add(n);
   const init = initializedOf(root, home);
   const out = {};
   for (const name of PLUGINS) {
-    const installed = installedIn(curRoot, name);
-    const installed_other = installedIn(otherRoot, name);
+    const installed = installedNames.has(name);
     const initialized = !!init[name];
-    out[name] = { installed, installed_other, initialized, present: installed || initialized };
+    out[name] = { installed, initialized, present: installed || initialized };
   }
   return out;
 }
 
+// pluginPresent = "installed somewhere OR initialized in this project" — the routing/recommendation signal.
+// Routing keys on this (the user's chosen Problem C contract); the 2-plane boundary means the Execution-plane
+// LLM verifies callability when it actually dispatches the recommended reviewer/protocol.
 // Tolerant: accepts the object shape (.present) and the legacy flat boolean.
 export function pluginPresent(detected, name) {
   const v = (detected || {})[name];

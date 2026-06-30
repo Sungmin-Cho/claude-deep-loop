@@ -27,10 +27,10 @@ test('standalone-hinted recipe stays standalone even with deep-work installed', 
   assert.equal(r.protocol, 'standalone');
 });
 
-// ── C2: object-shape routing regression (2026-06-29 Windows fixes) ──────────────
+// ── C2: object-shape routing regression — routes on present (installed‖initialized) ───
 test('C2: matchRecipe routes deep-work protocol only when present (object shape)', () => {
-  const r0 = matchRecipe('인증 기능 구현', { 'deep-work': { present: false } });
-  assert.notEqual(r0.protocol, 'deep-work');
-  const r1 = matchRecipe('인증 기능 구현', { 'deep-work': { present: true } });
-  assert.equal(r1.protocol, 'deep-work');
+  assert.notEqual(matchRecipe('인증 기능 구현', { 'deep-work': { present: false } }).protocol, 'deep-work');
+  assert.equal(matchRecipe('인증 기능 구현', { 'deep-work': { present: true } }).protocol, 'deep-work');
+  // installed-but-uninitialized sibling (original Problem C) → present:true → routed
+  assert.equal(matchRecipe('인증 기능 구현', { 'deep-work': { installed: true, initialized: false, present: true } }).protocol, 'deep-work');
 });

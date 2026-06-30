@@ -39,10 +39,13 @@ test('initRun creates state, current pointer, valid schema', () => {
   assert.equal(data.session_chain.lease.owner_run_id, runId);
 });
 
-// ── C2: object-shape initial reviewer selection regression ─────────────────────
+// ── C2: object-shape initial reviewer selection — routes on present (installed‖initialized) ───
 test('C2: initRun review.reviewer routes on present (object shape)', () => {
   const r1 = initRun(mkdtempSync(join(tmpdir(), 'dl-c2-')), { goal: 'g', detected: { 'deep-review': { present: false } }, now: new Date('2026-06-24T00:00:00Z') });
   assert.equal(r1.loop.review.reviewer, 'subagent-checker');
   const r2 = initRun(mkdtempSync(join(tmpdir(), 'dl-c2-')), { goal: 'g', detected: { 'deep-review': { present: true } }, now: new Date('2026-06-24T00:00:00Z') });
   assert.equal(r2.loop.review.reviewer, 'deep-review-loop');
+  // installed-but-uninitialized (original Problem C) → present:true → deep-review-loop
+  const r3 = initRun(mkdtempSync(join(tmpdir(), 'dl-c2-')), { goal: 'g', detected: { 'deep-review': { installed: true, initialized: false, present: true } }, now: new Date('2026-06-24T00:00:00Z') });
+  assert.equal(r3.loop.review.reviewer, 'deep-review-loop');
 });
