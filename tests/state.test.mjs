@@ -1,9 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync, readFileSync as _rfRoot } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { readState, writeState, patch, withLock, runDir } from '../scripts/lib/state.mjs';
+import { join, dirname as _dn } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { readState, writeState, patch, withLock, runDir, findRoot } from '../scripts/lib/state.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 
 function seed() {
@@ -124,4 +125,50 @@ test('patch enforces fence inside the lock', () => {
   assert.throws(() => patch(root, runId, 'discovered_items', ['b'], { fence: { owner: runId, generation: 9, intent: 'business' } }), /LEASE_FENCED/);
   // forbidden field 는 fence 와 무관하게 거부
   assert.throws(() => patch(root, runId, 'budget.spent', 1, { fence: { owner: runId, generation: 1, intent: 'business' } }), /FIELD_FORBIDDEN/);
+});
+
+test('findRoot: from .claude/worktrees/<slug> resolves to main root (bounded)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fr-'));
+  mkdirSync(join(root, '.deep-loop'), { recursive: true });
+  writeFileSync(join(root, '.deep-loop', 'current'), 'run-x');
+  const wt = join(root, '.claude', 'worktrees', 'ws-01');
+  mkdirSync(wt, { recursive: true });
+  assert.equal(findRoot(wt), root, 'from worktree resolves to main root');
+  assert.equal(findRoot(join(root, '.worktrees', 'ws-02')), root, '.worktrees convention too');
+  assert.equal(findRoot(root), root, 'at root resolves to root');
+});
+
+test('findRoot: falls back to startDir when no .deep-loop/current ancestor', () => {
+  const d = mkdtempSync(join(tmpdir(), 'fr2-'));
+  assert.equal(findRoot(d), d, 'no marker → startDir fallback (init-run path)');
+});
+
+test('findRoot: does NOT bind a nested repo under a parent run (R5 high-2)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fr3-'));
+  mkdirSync(join(root, '.deep-loop'), { recursive: true });
+  writeFileSync(join(root, '.deep-loop', 'current'), 'run-parent');
+  const nested = join(root, 'some', 'nested-repo');
+  mkdirSync(nested, { recursive: true });
+  // nested dir 은 worktree 컨벤션 밖 → 부모 run 으로 올라가지 않고 자기 자신 반환(격리 유지).
+  assert.equal(findRoot(nested), nested, 'nested non-worktree dir resolves to itself, not parent run');
+});
+
+// FIX H: nested convention worktrees — <root>/.claude/worktrees/a/.claude/worktrees/b
+// 내부 base(<root>/.claude/worktrees/a)에 .deep-loop/current 없어도 계속 탐색해 외부 root 발견.
+test('findRoot: nested convention worktrees resolves to outer root with .deep-loop/current (FIX H)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fr4-'));
+  mkdirSync(join(root, '.deep-loop'), { recursive: true });
+  writeFileSync(join(root, '.deep-loop', 'current'), 'run-outer');
+  // nested: <root>/.claude/worktrees/a/.claude/worktrees/b
+  const nested = join(root, '.claude', 'worktrees', 'a', '.claude', 'worktrees', 'b');
+  mkdirSync(nested, { recursive: true });
+  // inner base <root>/.claude/worktrees/a has no .deep-loop/current — should NOT stop here
+  assert.equal(findRoot(nested), root, 'nested convention: inner base without marker continues to outer root');
+});
+
+const _R = _dn(_dn(fileURLToPath(import.meta.url)));   // repo root (tests/..)
+test('findRoot is shared across CLI + hook + headless entrypoints', () => {
+  for (const f of ['scripts/deep-loop.mjs', 'scripts/hooks-impl/precompact-handoff.mjs', 'scripts/hooks-impl/drive-headless.mjs']) {
+    assert.match(_rfRoot(join(_R, f), 'utf8'), /findRoot\s*\(/, `${f} must resolve root via shared findRoot`);
+  }
 });

@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const skillPath = (dir) => join(ROOT, 'skills', dir, 'SKILL.md');
+const _rf = readFileSync;
 
 // 매니페스트: [dir, name, userInvocable, triggers[](영+한 둘 다 포함해야), refsCLI?(mutating이면 CLI 참조 필수)]
 const SKILLS = [
@@ -68,6 +69,40 @@ function mutatingFenced(text) {
   });
 }
 
+// R3 high-3: bare-relative `.claude/worktrees/ws`(git이 cwd 기준 해석 → worktree 안에서 중첩)도 위험.
+// 안전 조건을 강화: worktree 경로가 등장하면 반드시 $ORIG_ROOT 절대 앵커여야 한다. '..'·foreign-abs·bare-relative 모두 flag.
+// 산문 오탐 회피: worktrees 경로 토큰이나 foreign 절대경로가 없는 순수 멘션 라인은 무시.
+function worktreeWriteOutsideRoot(src) {
+  const joined = src.replace(/\\\n\s*/g, ' ');   // 백슬래시 연속줄 join (mutatingFenced 패턴)
+  return joined.split('\n').some(line => {
+    // R5 P2-1: git 옵션(-C 등)이 git 과 worktree add 사이에 와도 매칭.
+    if (!/\bgit\b[^\n]*\bworktree\s+add\b/.test(line)) return false;
+    if (/\.\.(\/|\\)/.test(line)) return true;                                    // '..' escape
+    const origRootAnchored = /\$\{?ORIG_ROOT\}?\/[^"'\s]*\.(claude\/worktrees|worktrees)\//.test(line);
+    const mentionsWtPath = /\.(claude\/worktrees|worktrees)\//.test(line);
+    if (mentionsWtPath && !origRootAnchored) return true;                         // bare/cwd-relative worktrees path
+    const hasForeignAbs = /\s["']?\/(?!\/)/.test(line) || /\s["']?[A-Za-z]:\\/.test(line);
+    return hasForeignAbs && !origRootAnchored;                                    // /tmp 등 foreign abs
+  });
+}
+
+test('boundary: worktree-write guard flags root-escape/bare-relative/git-options, allows $ORIG_ROOT-anchored', () => {
+  assert.ok(worktreeWriteOutsideRoot('git worktree add /tmp/wt -b x base'), 'abs /tmp flagged');
+  assert.ok(worktreeWriteOutsideRoot('git worktree add ../sib/wt -b x base'), '.. flagged');
+  assert.ok(worktreeWriteOutsideRoot('git worktree add -b x \\\n  /tmp/wt base'), 'multiline escape flagged');
+  assert.ok(worktreeWriteOutsideRoot('git worktree add .claude/worktrees/ws -b x base'), 'bare-relative worktrees flagged (R3 high-3)');
+  assert.ok(worktreeWriteOutsideRoot('git -C "$ORIG_ROOT" worktree add /tmp/wt -b x base'), 'git -C option + /tmp flagged (R5 P2-1)');
+  assert.ok(!worktreeWriteOutsideRoot('git worktree add -b worktree-ws "$ORIG_ROOT/.claude/worktrees/ws" "$BASE_REF"'), 'ORIG_ROOT-anchored allowed');
+  assert.ok(!worktreeWriteOutsideRoot('git worktree add \\\n  -b w "$ORIG_ROOT/.claude/worktrees/ws" "$BASE_REF"'), 'ORIG_ROOT-anchored multiline allowed');
+  assert.ok(!worktreeWriteOutsideRoot('이미 worktree 안이면 재사용 (산문)'), 'prose without git-worktree-add ignored');
+});
+
+test('CLAUDE.md: invariant #7 carries explicit worktree-write carve-out', () => {
+  const md = _rf(join(ROOT, 'CLAUDE.md'), 'utf8');
+  assert.match(md, /\.claude\/worktrees\//, 'names .claude/worktrees/ carve-out');
+  assert.match(md, /worktree[\s\S]{0,400}(proposal-only|사람 승인|human|containment)/i, 'carve-out rules present');
+});
+
 test('boundary scan flags forbidden write forms and allows reads/mentions/blockquotes (fixtures)', () => {
   const bad = [
     'Write({ file_path: ".deep-loop/runs/x/loop.json", content: "..." })',
@@ -107,6 +142,71 @@ test('mutatingFenced requires both fence flags on mutating CLI lines (fixtures)'
   assert.ok(!mutatingFenced('episode record --status done --artifacts \'["a"]\''));   // shorthand unfenced
   assert.ok(!mutatingFenced('finish --status completed --report final-report.md'));   // shorthand unfenced
   assert.ok(mutatingFenced('episode record --status done --owner $R --generation 1'));   // shorthand fenced OK
+});
+
+// Task 4: deep-loop §2-6 worktree creation discipline
+const dlSkill = () => _rf(skillPath('deep-loop'), 'utf8');
+
+test('deep-loop §2-6: native-first + git-fallback + convention path + single/multi split', () => {
+  const s = dlSkill();
+  assert.match(s, /EnterWorktree/, 'native example');
+  assert.match(s, /git worktree add/, 'git fallback');
+  assert.match(s, /\.claude\/worktrees\//, 'convention path');
+  assert.match(s, /단일[\s\S]{0,80}native/, 'single-run native');
+  assert.match(s, /다중[\s\S]{0,120}(git|전부 git|모든)/, 'multi-run git');
+});
+
+test('deep-loop §2-6: detection-first + reuse eligibility gate', () => {
+  const s = dlSkill();
+  assert.match(s, /git-common-dir|이미 (격리|worktree)/, 'Step 0 detection');
+  assert.match(s, /clean[\s\S]{0,160}base[\s\S]{0,160}(소유|브랜치)/, 'reuse eligibility');
+  assert.match(s, /(사용자 확인|human|승인)/, 'reuse confirm gate');
+});
+
+test('deep-loop §2-6: gitignore proposal-only + check-ignore precedes add', () => {
+  const s = dlSkill();
+  const ci = s.indexOf('check-ignore'), wa = s.indexOf('git worktree add');
+  assert.ok(ci !== -1 && wa !== -1 && ci < wa, 'check-ignore precedes worktree add');
+  const autoCommit = s.split('\n').some(l => /gitignore/i.test(l) && /\bgit\s+commit\b/.test(l));
+  assert.ok(!autoCommit, 'no auto-commit .gitignore');
+  assert.match(s, /proposal-only|제안|승인 시에만/, 'gitignore proposal-only');
+});
+
+test('deep-loop §2-6: worktree creation never escapes root + no --project-root on command lines', () => {
+  const s = dlSkill();
+  assert.ok(!worktreeWriteOutsideRoot(s), 'no root-escaping git worktree add');
+  // R4 medium: 산문의 "`--project-root` 불필요" 멘션은 허용 — deep-loop.mjs **명령 라인**에만 없어야 한다.
+  const projRootCmd = s.split('\n').some(l => /deep-loop\.mjs/.test(l) && /--project-root/.test(l));
+  assert.ok(!projRootCmd, 'no --project-root on deep-loop.mjs command lines (rootOf handles it)');
+  assert.ok(mutatingFenced(s), 'mutating CLI still fenced');
+});
+
+// Task 5: §0.5 cwd split + artifact ORIG_ROOT-relative + Step 1.5 orphan mitigation
+test('deep-loop: ORIG_ROOT/BASE_REF capture (sibling path) + cwd split + artifact ORIG_ROOT-rel', () => {
+  const s = dlSkill();
+  // Extract the §0.5 section: from its heading to the next #### heading
+  const sec05Match = s.match(/####\s*§0\.5[\s\S]*?(?=\n####|\n###|\n##|$)/);
+  assert.ok(sec05Match, '§0.5 section present');
+  const sec05 = sec05Match[0];
+  // Rule 1: ORIG_ROOT/BASE_REF capture must be documented IN the §0.5 section
+  assert.match(sec05, /ORIG_ROOT/, 'ORIG_ROOT capture documented in §0.5 section');
+  assert.match(sec05, /BASE_REF/, 'BASE_REF capture documented in §0.5 section');
+  assert.match(sec05, /(sibling|캡처)/, 'capture purpose (sibling/캡처) documented in §0.5 section');
+  // Rule 4: cwd split
+  assert.match(sec05, /cwd[\s\S]{0,80}(분리|worktree)/, 'cwd split in §0.5 section');
+  // Rule 5: artifact ORIG_ROOT-relative
+  assert.match(sec05, /artifact[\s\S]{0,160}(ORIG_ROOT|상대|\.claude\/worktrees)/, 'artifact ORIG_ROOT-relative in §0.5 section');
+  // FIX P: ORIG_ROOT must use git-common-dir (main repo root), not bare --show-toplevel
+  // (in a linked worktree, --show-toplevel returns the worktree path, not the project root)
+  assert.match(sec05, /git-common-dir/, 'ORIG_ROOT must use git-common-dir main-root derivation in §0.5 (not bare --show-toplevel)');
+});
+
+test('deep-loop Step 1.5: lease check precheck + orphan handling (no --field lease command)', () => {
+  const s = dlSkill();
+  assert.match(s, /lease check/, 'lease check precheck');
+  assert.ok(!/state\s+get[^\n]*--field\s+lease\b/.test(s), 'no `state get --field lease` command');
+  assert.match(s, /(reconcile|audit)/, 'reconcile audit');
+  assert.match(s, /(고아|orphan)/, 'orphan handling');
 });
 
 for (const [dir, name, invocable, triggers, refsCLI] of SKILLS) {
@@ -152,6 +252,21 @@ for (const [dir, name, invocable, triggers, refsCLI] of SKILLS) {
 test('deep-loop-workflow references exist', () => {
   for (const r of ['adapters.md', 'review-strategy.md', 'handoff-respawn.md'])
     assert.ok(existsSync(join(ROOT, 'skills', 'deep-loop-workflow', 'references', r)), `missing reference ${r}`);
+});
+
+test('worktree-aware skills: action-keyed entry in continue; resume defers; handoff no entry; verify unchanged', () => {
+  const cont = _rf(skillPath('deep-loop-continue'), 'utf8');
+  // continue §1.5 must key entry on action.workstream_id (not blind active workstream pick)
+  assert.match(cont, /action\.workstream_id/, 'continue §1.5 keys worktree entry by action.workstream_id — not blind active workstream pick');
+  assert.ok(mutatingFenced(cont), 'continue fenced');
+  const res = _rf(skillPath('deep-loop-resume'), 'utf8');
+  assert.match(res, /(무결성|existsSync|경로.*확인|needs-human)/, 'resume verify unchanged');
+  // resume §3.5 defers per-action worktree entry to /deep-loop-continue (avoids mis-routing in multi-parallel runs)
+  assert.match(res, /단계 3\.5[\s\S]{0,300}위임/, 'resume §3.5 defers worktree entry to /deep-loop-continue (not pre-entering)');
+  // handoff §1.5: kernel resolves root via findRoot; no file work → no worktree entry needed
+  const hand = _rf(skillPath('deep-loop-handoff'), 'utf8');
+  assert.match(hand, /단계 1\.5[\s\S]{0,200}(불필요|findRoot)/, 'handoff §1.5 documents no worktree entry needed (kernel resolves root via findRoot)');
+  assert.ok(mutatingFenced(hand), 'handoff fenced');
 });
 
 // Codex r3 sf-4: SKILL.md + workflow references 의 *모든* mutating CLI 라인이 fence(--owner+--generation)를 갖는지 전역 검사.
@@ -229,4 +344,171 @@ test('continue + handoff no-launcher else-branch: respawn before preserve-pause,
     assert.ok(noLauncherIdx < preserveIdx,
       `${dir}: no-launcher outcome must appear before --mode preserve (preserve-pause conditioned on no-launcher, not before respawn gate)`);
   }
+});
+
+// Task 6: worktree-entry ordering constraints
+// resume: integrity-verify (단계 3) MUST precede §3.5 deferral section
+test('resume: ordering — integrity-verify step must precede §3.5 worktree-deferral section', () => {
+  const res = readFileSync(skillPath('deep-loop-resume'), 'utf8');
+  // '무결성' appears in §3 heading/body (path integrity check) — stable, won't move to §3.5
+  const verifyIdx = res.indexOf('무결성');
+  // '단계 3.5' is the section documenting that worktree entry is DEFERRED to /deep-loop-continue
+  const deferIdx  = res.indexOf('단계 3.5');
+  assert.ok(verifyIdx !== -1,
+    'resume: integrity-verify marker (무결성) must exist in SKILL.md');
+  assert.ok(deferIdx !== -1,
+    'resume: §3.5 deferral section marker (단계 3.5) must exist in SKILL.md');
+  assert.ok(verifyIdx < deferIdx,
+    'resume: 무결성 verify step must appear BEFORE 단계 3.5 — verify first, then deferral note explains /deep-loop-continue handles per-action worktree entry');
+});
+
+// continue: worktree-entry (§1.5) MUST precede maker/checker dispatch (§2)
+test('continue: worktree-entry ordering — §1.5 entry must precede §2 dispatch', () => {
+  const cont = readFileSync(skillPath('deep-loop-continue'), 'utf8');
+  // '1.5' is the section number in the §1.5 heading (Active Worktree 진입)
+  const entryIdx    = cont.indexOf('1.5');
+  // '## 2.' is the dispatch/action-branch section header
+  const dispatchIdx = cont.indexOf('## 2.');
+  assert.ok(entryIdx !== -1,
+    'continue: worktree-entry section (§1.5) must exist in SKILL.md');
+  assert.ok(dispatchIdx !== -1,
+    'continue: dispatch section (## 2.) must exist in SKILL.md');
+  assert.ok(entryIdx < dispatchIdx,
+    'continue: worktree-entry (§1.5) must appear BEFORE dispatch (§2) — file work must run in the correct worktree');
+});
+
+// handoff-respawn.md: documents post-verify worktree entry + --project-root rationale
+test('handoff-respawn.md: documents post-verify worktree entry and --project-root rationale', () => {
+  const refPath = join(ROOT, 'skills', 'deep-loop-workflow', 'references', 'handoff-respawn.md');
+  const src = readFileSync(refPath, 'utf8');
+  assert.ok(src.includes('진입'),
+    'handoff-respawn.md must document worktree entry (진입)');
+  assert.ok(src.includes('--project-root'),
+    'handoff-respawn.md must document the --project-root rationale (rootOf 상향탐색으로 불필요)');
+});
+
+// FIX D: continue skill must document ORIG_ROOT-relative, worktree-prefixed artifact paths.
+test('deep-loop-continue: artifact paths in record/dispatch examples are ORIG_ROOT-relative worktree-prefixed', () => {
+  const cont = _rf(skillPath('deep-loop-continue'), 'utf8');
+  // Must NOT have bare relative paths like 'path/to/artifact' or 'path/to/fix-output' in --artifacts examples
+  assert.ok(!cont.includes('"path/to/artifact"'), 'bare "path/to/artifact" must be replaced with worktree-prefixed path');
+  assert.ok(!cont.includes('"path/to/fix-output"'), 'bare "path/to/fix-output" must be replaced with worktree-prefixed path');
+  // Must have worktree-prefixed artifact paths (.claude/worktrees/<slug>/... OR .worktrees/<slug>/...) — FIX J: generic convention
+  assert.match(cont, /(?:\.claude\/worktrees|\.worktrees)\/[^\s"]*\/[^\s"]+/, 'artifact examples must use recorded worktree path (.claude/worktrees/<slug>/ or .worktrees/<slug>/) as prefix');
+  // Must have explicit instruction about project-root-relative artifact paths (generic rule — FIX J)
+  assert.match(cont, /(project.root|ORIG_ROOT|루트 기준|worktree.*접두|recorded.worktree)[\s\S]{0,400}artifact|artifact[\s\S]{0,400}(project.root|ORIG_ROOT|루트 기준|worktree.*접두|recorded.worktree)/i, 'must instruct project-root-relative artifact paths with recorded worktree prefix');
+});
+
+test('deep-loop-finish: proposal-only worktree cleanup + reconcile audit surface', () => {
+  const s = _rf(skillPath('deep-loop-finish'), 'utf8');
+  assert.match(s, /Worktree 사용 현황/, 'report section');
+  assert.match(s, /(ExitWorktree|git worktree remove)/, 'native cleanup proposed');
+  assert.match(s, /proposal-only|제안|사람 승인|human/i, 'cleanup proposal-only');
+  assert.match(s, /(reconcile|audit|미기록|기록에 없는|고아)/, 'reconcile audit surface');
+});
+
+// FIX E: await_result must enter the worktree (it carries action.workstream_id)
+test('deep-loop-continue §1.5: await_result is in the worktree-entry set (not skipped)', () => {
+  const cont = _rf(skillPath('deep-loop-continue'), 'utf8');
+  // The gating sentence must key on action.workstream_id PRESENCE, not a hardcoded type list
+  // that excludes await_result. Verify await_result is explicitly mentioned as entering.
+  assert.ok(
+    cont.includes('await_result'),
+    'continue §1.5 must mention await_result'
+  );
+  // await_result must NOT appear in the skip/건너뛴다 sentence
+  const skipLine = cont.split('\n').find(l => /건너뛴다|skip/.test(l) && /await_result/.test(l));
+  assert.ok(!skipLine, 'await_result must not appear in the skip sentence of §1.5');
+  // The gating sentence must key on workstream_id presence (not an explicit list that omits await_result)
+  assert.match(cont, /workstream_id[\s\S]{0,300}await_result|await_result[\s\S]{0,300}workstream_id/, 'await_result and workstream_id must be co-located in §1.5 gating text');
+});
+
+// FIX K: deep-loop-finish must write final-report to project.root-anchored absolute path.
+// Bare relative Write(".deep-loop/runs/...") breaks when cwd is inside a worktree.
+test('deep-loop-finish: final-report Write must be project.root-anchored (not bare relative)', () => {
+  const s = _rf(skillPath('deep-loop-finish'), 'utf8');
+  // Must instruct reading project.root from state before writing
+  assert.match(s, /state get[\s\S]{0,80}--field[\s\S]{0,40}project\.root|project\.root[\s\S]{0,40}--field[\s\S]{0,40}state get/,
+    'must read project.root from state (state get --field project.root) before writing final report');
+  // Must NOT have a bare relative Write to .deep-loop/runs/.../final-report.md (without a project.root anchor).
+  const bareWrite = s.split('\n').some(l =>
+    /Write\s*\(/.test(l) &&
+    /\.deep-loop\/runs\/[^"]*final-report\.md/.test(l) &&
+    !/(project\.root|<project-root>|\$\{?PROJECT_ROOT\}?|\$\{?ROOT\}?)/.test(l)
+  );
+  assert.ok(!bareWrite, 'deep-loop-finish must not instruct a bare relative Write(".deep-loop/runs/...final-report.md"); must anchor to project.root');
+  // Must use project.root in the Write call or nearby absolute path pattern
+  assert.match(s, /(project\.root|<project-root>|\$PROJECT_ROOT|\$ROOT)[\s\S]{0,300}final-report\.md|final-report\.md[\s\S]{0,100}(project\.root|<project-root>|\$PROJECT_ROOT|\$ROOT)/,
+    'final-report.md Write must reference project.root or <project-root>-anchored absolute path');
+  // deep-wiki delegation args must also be anchored (not bare relative .deep-loop/...)
+  const bareWikiArg = s.split('\n').some(l =>
+    /wiki-ingest/.test(l) &&
+    /args.*\.deep-loop\/runs/.test(l) &&
+    !/(project\.root|<project-root>|\$\{?PROJECT_ROOT\}?|\$\{?ROOT\}?)/.test(l)
+  );
+  assert.ok(!bareWikiArg, 'deep-wiki wiki-ingest delegation must not use bare relative .deep-loop path; must anchor to project.root');
+});
+
+// FIX L: adapter read.path must be explicitly described as requiring TRANSFORMATION to worktree-prefixed form.
+test('deep-loop §2-7: adapter read.path must be explicitly transformed to worktree-prefixed path (FIX L)', () => {
+  const s = dlSkill();
+  // Must explicitly state adapter read.path is TRANSFORMED/PREFIXED with the recorded worktree path.
+  // Acceptable signals: 변환, TRANSFORM, transform, 접두(prefix), or worktree + prefix in close proximity to adapter read.path.
+  assert.match(
+    s,
+    /adapter[\s\S]{0,300}(read\.path|read path)[\s\S]{0,300}(변환|TRANSFORM|transform|접두|prefix)|(변환|TRANSFORM|transform|접두|prefix)[\s\S]{0,200}adapter[\s\S]{0,200}(read\.path|read path)/i,
+    'must explicitly instruct transformation of adapter read.path to worktree-prefixed form before passing to --artifacts'
+  );
+});
+
+// FIX N: workstream new --worktree must record root-relative path, not $ORIG_ROOT absolute.
+// git worktree add uses $ORIG_ROOT absolute (correct — git needs an absolute target); but the
+// value RECORDED via workstream new must be root-relative (.claude/worktrees/<slug>) so that
+// artifact prefixes are root-relative and pass episode.mjs containment (no absolute/.. paths).
+test('deep-loop §2-6: workstream new records root-relative .claude/worktrees/<slug> (not $ORIG_ROOT absolute)', () => {
+  const s = dlSkill();
+  const joined = s.replace(/\\\n\s*/g, ' ');
+  // workstream new and --worktree must appear on the same logical line after joining continuations
+  const wsNewLine = joined.split('\n').find(l => /workstream\s+new/.test(l) && /--worktree/.test(l));
+  assert.ok(wsNewLine, 'workstream new --worktree must appear in a joined logical command line');
+  assert.ok(
+    /--worktree\s+"?\.claude\/worktrees\//.test(wsNewLine),
+    'workstream new --worktree must record root-relative .claude/worktrees/<slug> path (not $ORIG_ROOT absolute)'
+  );
+  assert.ok(
+    !/--worktree\s+"?\$\{?ORIG_ROOT\}?\//.test(wsNewLine),
+    'workstream new --worktree must NOT use $ORIG_ROOT absolute path for the recorded value'
+  );
+});
+
+// FIX O: state get --field project.root emits JSON-encoded string with quotes (e.g. "/repo").
+// Assigning that raw to a shell variable and using it as a path embeds literal quotes →
+// final-report path is wrong → finish --status completed fails final-report-missing.
+test('deep-loop-finish: project.root read must strip JSON quotes before use as filesystem path', () => {
+  const s = _rf(skillPath('deep-loop-finish'), 'utf8');
+  // Must document JSON quote-stripping (JSON.parse, tr -d, or sed) near the project.root read
+  assert.match(s,
+    /project\.root[\s\S]{0,400}(JSON\.parse|tr\s+-d\s+['"]|sed\b[^\n]*s[^\n]*")/,
+    'deep-loop-finish must document JSON quote-stripping when reading project.root for filesystem path use (state get emits quoted JSON)'
+  );
+});
+
+test('deep-loop-continue §1.5: project.root read must strip JSON quotes before filesystem path use', () => {
+  const s = _rf(skillPath('deep-loop-continue'), 'utf8');
+  // state get --field project.root emits JSON-encoded string with quotes; must document stripping
+  assert.match(s,
+    /project\.root[\s\S]{0,400}(JSON\.parse|tr\s+-d\s+['"]|sed\b[^\n]*s[^\n]*")/,
+    'deep-loop-continue §1.5 must document JSON quote-stripping when reading project.root for path absolutization'
+  );
+});
+
+// FIX G: deep-loop SKILL.md episode new --artifacts example must use worktree-prefixed paths
+test('deep-loop §2-7: episode new --artifacts example uses worktree-prefixed paths', () => {
+  const s = dlSkill();
+  // Must NOT have bare path/to/... in --artifacts
+  assert.ok(!s.includes('"path/to/expected-output.md"'), 'bare path/to/expected-output.md must be replaced with worktree-prefixed path in episode new example');
+  // Must have worktree-prefixed expected-artifacts example (.claude/worktrees/ OR .worktrees/) — FIX J: generic convention
+  assert.match(s, /--artifacts[\s\S]{0,200}(?:\.claude\/worktrees|\.worktrees)\//, '--artifacts example in episode new must use recorded worktree path (.claude/worktrees/<slug>/ or .worktrees/<slug>/) as prefix');
+  // Must carry a note that expected artifacts and submitted artifacts use same ORIG_ROOT-relative worktree-prefixed paths
+  assert.match(s, /(expected|episode new)[\s\S]{0,400}(ORIG_ROOT|worktree.*prefix|워크트리.*접두사|\.claude\/worktrees)[\s\S]{0,400}(episode record|submitted|동일)/, 'note that expected and submitted artifacts must use same ORIG_ROOT-relative worktree-prefixed paths');
 });

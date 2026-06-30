@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { readState } from '../lib/state.mjs';
+import { readState, findRoot } from '../lib/state.mjs';
 import { emitHandoff } from '../lib/handoff.mjs';
 import { respawnGate, isHeadlessInvocation, rollbackAndPause } from '../lib/respawn.mjs';
 
@@ -20,7 +20,7 @@ function currentRunId(root) {
   return existsSync(p) ? readFileSync(p, 'utf8').trim() : null;
 }
 
-export async function runPreCompactHandoff(input = {}, { root = process.cwd(), now = Date.now(), env = process.env } = {}) {
+export async function runPreCompactHandoff(input = {}, { root = findRoot(process.cwd()), now = Date.now(), env = process.env } = {}) {
   const runId = currentRunId(root);
   if (!runId) return { ok: true, action: 'no-run' };
   let loop;
@@ -64,7 +64,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       const chunks = []; for await (const c of process.stdin) chunks.push(c);
       if (chunks.length) input = JSON.parse(Buffer.concat(chunks).toString('utf8'));
     } catch { /* ignore */ }
-    try { await runPreCompactHandoff(input, { root: input.cwd || process.cwd() }); } catch { /* swallow */ }
+    try { await runPreCompactHandoff(input, { root: findRoot(input.cwd || process.cwd()) }); } catch { /* swallow */ }
     process.exit(0);
   })();
 }

@@ -1,5 +1,5 @@
-import { existsSync } from 'node:fs';
-import { isAbsolute, join } from 'node:path';
+import { existsSync, realpathSync, lstatSync } from 'node:fs';
+import { isAbsolute, join, resolve, relative, sep, dirname, basename } from 'node:path';
 import { readState, writeState, withLock } from './state.mjs';
 import { appendAnchored } from './integrity.mjs';
 import { slugify } from './slug.mjs';
@@ -18,12 +18,49 @@ export function newWorkstream(root, runId, { title, branch, worktree, baseCommit
   if (!Array.isArray(dependsOn) || dependsOn.some(d => typeof d !== 'string' || d.length === 0)) {
     throw new Error('WORKSTREAM_INPUT_INVALID: dependsOn must be an array of strings');
   }
+  // §0.6-2: containment — worktree must resolve strictly inside a convention dir:
+  //   <root>/.claude/worktrees/  OR  <root>/.worktrees/
+  // Root-self ('.', root) and arbitrary under-root paths are rejected; only convention dirs accepted.
+  // R5 P2-2: existing paths use realpathSync (blocks symlink escapes); non-existent paths walk up to
+  // the nearest existing ancestor for symlink resolution (handles /tmp→/private/tmp on macOS).
+  const _rootResolved = realpathSync(root);
+  function _resolveDeep(p) {
+    const abs = resolve(p);
+    if (existsSync(abs)) return realpathSync(abs);
+    // FIX M: existsSync follows symlinks and returns false for dangling symlinks.
+    // lstatSync does NOT follow symlinks — it detects the symlink itself even when dangling.
+    // A dangling symlink component must be rejected: once the target is created the path escapes.
+    try {
+      const st = lstatSync(abs);
+      if (st.isSymbolicLink()) throw new Error('WORKSTREAM_WORKTREE_ESCAPE: dangling symlink component: ' + abs);
+    } catch (e) {
+      if (e.message.startsWith('WORKSTREAM_WORKTREE_ESCAPE')) throw e;
+      // ENOENT (or other) → truly absent leaf; continue walking up
+    }
+    const par = dirname(abs);
+    if (par === abs) return abs; // filesystem root — can't walk further
+    return join(_resolveDeep(par), basename(abs));
+  }
+  const _wtBase = isAbsolute(worktree) ? worktree : join(_rootResolved, worktree);
+  const _wtResolved = _resolveDeep(_wtBase);
+  // Convention prefixes are lexical (rooted at resolved root) — do NOT resolve the convention dirs
+  // themselves, so a symlinked .claude/worktrees pointing outside root is still rejected.
+  const _conv1 = _rootResolved + sep + '.claude' + sep + 'worktrees' + sep;
+  const _conv2 = _rootResolved + sep + '.worktrees' + sep;
+  const _underConvention = _wtResolved.startsWith(_conv1) || _wtResolved.startsWith(_conv2);
+  if (worktree.split(/[/\\]/).includes('..') || !_underConvention) {
+    throw new Error('WORKSTREAM_WORKTREE_ESCAPE: worktree must resolve under project root: ' + worktree);
+  }
+  // FIX Q: normalize stored worktree to root-relative form regardless of whether caller passed an
+  // absolute or relative path — stored value must be root-relative so artifact prefixes derived from
+  // it stay root-relative and pass episode.mjs containment (absolute/.. paths are rejected there).
+  const _storedWorktree = relative(_rootResolved, _wtResolved);  // e.g. '.claude/worktrees/<slug>'
   let id;
   appendAnchored(root, runId, { type: 'workstream-new', data: { title } }, (loop) => {
     const n = String(loop.workstreams.length + 1).padStart(2, '0');
     id = `ws-${n}-${slugify(title) || 'ws'}`;
     loop.workstreams.push({
-      id, title, status: 'planned', branch, worktree, base_commit: baseCommit,
+      id, title, status: 'planned', branch, worktree: _storedWorktree, base_commit: baseCommit,
       dirty_on_handoff: false, pr: { intended: true, state: 'none', url: null },
       episodes: [], review_points_done: [], depends_on: dependsOn,
     });

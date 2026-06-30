@@ -7,7 +7,7 @@ import { detectPlugins } from './lib/detect.mjs';
 import { matchRecipe } from './lib/recipes.mjs';
 import { json } from './lib/log.mjs';
 import { validate as validateLoop } from './lib/schema.mjs';
-import { readState, writeState, patch as patchState, pauseRun, runDir } from './lib/state.mjs';
+import { readState, writeState, patch as patchState, pauseRun, runDir, findRoot } from './lib/state.mjs';
 import { leaseCheck, acquireLease, releaseLease } from './lib/lease.mjs';
 import { newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal } from './lib/workspace.mjs';
 import { newEpisode, recordEpisode } from './lib/episode.mjs';
@@ -43,7 +43,7 @@ function optInt(f, name) {   // 미지정 → 0; 지정 시 비음정수 문자�
   return Number(v);
 }
 
-function rootOf(f) { return f['project-root'] || process.cwd(); }
+function rootOf(f) { return f['project-root'] || findRoot(process.cwd()); }
 function runIdOf(root, f) {
   if (f['run-id']) return f['run-id'];
   const p = join(root, '.deep-loop', 'current');
@@ -81,9 +81,8 @@ const handlers = {
     const sample = buildInitialLoop({ goal: 'self-test', protocol: 'standalone', recipe: { id: 'r', name: 'r', reason: '' }, runId: 'SELFTEST00000000000000000T', now: new Date() });
     const sv = validateLoop(sample);
     if (!sv.ok) errors.push(`builder self-test: ${sv.errors.join('; ')}`);
-    const root = f['project-root'] || process.cwd();
-    const currentPath = join(root, '.deep-loop', 'current');
-    const runId = f['run-id'] || (existsSync(currentPath) ? readFileSync(currentPath, 'utf8').trim() : null);
+    const root = rootOf(f);
+    const runId = runIdOf(root, f);
     if (runId) {
       try {
         const { data } = readState(root, runId);   // 해시 anchor 검증 발화

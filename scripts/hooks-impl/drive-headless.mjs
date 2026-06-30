@@ -1,4 +1,4 @@
-import { readState, pauseRun } from '../lib/state.mjs';
+import { readState, pauseRun, findRoot } from '../lib/state.mjs';
 import { recordCost } from '../lib/budget.mjs';
 import { respawn } from '../lib/respawn.mjs';
 import { headlessSpawn } from '../lib/spawn-driver.mjs';
@@ -12,7 +12,7 @@ function currentRunId(root) { const p = join(root, '.deep-loop', 'current'); ret
 // 측정불가/timeout/비0 종료 → fail-closed. 성공 시 **측정 usage 를 budget 에 권위있게 커밋**(spec §9 hard 강제).
 // DEEP_LOOP_UNATTENDED=1 로 자식의 자기보고를 끄므로 driver 의 기록이 단일 출처(이중계상 없음).
 // respawn() 경유로 respawnGate(budget/breaker/max_sessions/wallclock/auto_handoff) 와 emitted→spawned CAS 클레임 강제.
-export function driveHeadless({ root = process.cwd(), spawnFn = headlessSpawn, now = Date.now(), timeoutMs } = {}) {
+export function driveHeadless({ root = findRoot(process.cwd()), spawnFn = headlessSpawn, now = Date.now(), timeoutMs } = {}) {
   const runId = currentRunId(root);
   if (!runId) return { ok: true, action: 'no-run' };
 
@@ -157,7 +157,7 @@ export function driveHeadless({ root = process.cwd(), spawnFn = headlessSpawn, n
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const r = driveHeadless({ root: process.cwd() });
+  const r = driveHeadless({ root: findRoot(process.cwd()) });
   process.stdout.write(JSON.stringify(r) + '\n');
   process.exit(r.ok ? 0 : 1);
 }

@@ -123,7 +123,7 @@ test('recordReviewOutcome(APPROVE) marks maker episodes human_reviewed, computeD
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
   const { runId } = initRun(root, { goal: 'g', detected: { 'deep-review': true }, now: new Date('2026-06-24T00:00:00Z') });
   const f = { owner: runId, generation: 1, intent: 'business' };
-  const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: 'w', fence: f }).id;
+  const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: '.claude/worktrees/w', fence: f }).id;
   // Maker must be 'done' so dispatchReview binds the checker to it (target_maker set).
   writeFileSync(join(root, 'art.txt'), 'artifact');
   const { id: makerId } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation', workstream: ws, expectedArtifacts: ['art.txt'], fence: f });
@@ -145,7 +145,7 @@ test('dispatchReview → recordReviewOutcome(RC) → nextAction returns fix_epis
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
   const { runId } = initRun(root, { goal: 'g', detected: { 'deep-review': true }, now: new Date('2026-06-24T00:00:00Z') });
   const f = { owner: runId, generation: 1, intent: 'business' };
-  const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: 'w', fence: f }).id;
+  const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: '.claude/worktrees/w', fence: f }).id;
   const r = dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
   recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'plan', verdict: 'REQUEST_CHANGES', fence: f });
   const { data } = readState(root, runId);
@@ -214,6 +214,34 @@ test('unbound approved checker does not satisfy rejected checker convergence (fi
     r.action.type === 'fix_episode' || r.action.type === 'dispatch_checker',
     `expected fix_episode or dispatch_checker, got ${r.action.type}`,
   );
+});
+
+// FIX B: await_result must carry workstream_id from the episode.
+test('await_result action carries episode workstream_id (maker in_progress, current_episode set)', () => {
+  const l = loop();
+  l.episodes = [{ id: '001-deep-work', role: 'maker', status: 'in_progress', point: 'implementation', workstream_id: 'ws-42' }];
+  l.current_episode = '001-deep-work';
+  const r = nextAction(l, { now: 0 });
+  assert.equal(r.action.type, 'await_result');
+  assert.equal(r.action.workstream_id, 'ws-42', 'await_result must include episode workstream_id');
+});
+
+test('await_result action carries episode workstream_id (checker in_progress, current_episode set)', () => {
+  const l = loop();
+  l.episodes = [{ id: '002-deep-review', role: 'checker', status: 'in_progress', point: 'plan', workstream_id: 'ws-99' }];
+  l.current_episode = '002-deep-review';
+  const r = nextAction(l, { now: 0 });
+  assert.equal(r.action.type, 'await_result');
+  assert.equal(r.action.workstream_id, 'ws-99', 'await_result for checker must include episode workstream_id');
+});
+
+test('await_result action carries episode workstream_id (in_progress via finishOrAdvance, no current_episode)', () => {
+  const l = loop();
+  l.episodes = [{ id: '003-deep-work', role: 'maker', status: 'in_progress', point: 'implementation', workstream_id: 'ws-77' }];
+  l.current_episode = null;
+  const r = nextAction(l, { now: 0 });
+  assert.equal(r.action.type, 'await_result');
+  assert.equal(r.action.workstream_id, 'ws-77', 'await_result via finishOrAdvance must include episode workstream_id');
 });
 
 // Codex r5 🟡2: superseded rejected checker must not block finish

@@ -22,6 +22,12 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field session_cha
 
 `owner_run_id`와 `generation`을 확인한다.
 
+## 단계 1.5: Worktree 진입 불필요
+
+handoff emit과 respawn은 커널 상태 조작이다. 커널 CLI는 `findRoot` 상향탐색으로 project root를 자동 해석하므로 cwd와 무관하게 올바른 경로를 찾는다. handoff descriptor도 project root 기준 경로로 기록된다.
+
+maker/checker 파일 작업은 handoff에서 일어나지 않으므로, worktree 진입 없이 단계 2로 진행한다.
+
 ## 단계 2: Handoff Emit (handoff_phase=idle인 경우)
 
 이미 emit된 핸드오프가 있으면 re-emit을 건너뛴다. 먼저 확인:
