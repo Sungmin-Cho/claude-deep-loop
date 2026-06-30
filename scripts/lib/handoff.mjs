@@ -1,5 +1,6 @@
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { isTrustedPsBin } from './detect-terminal.mjs';
 import { readState, runDir } from './state.mjs';
 import { appendAnchored } from './integrity.mjs';
 import { wrap, atomicWrite } from './envelope.mjs';
@@ -74,10 +75,22 @@ export function buildLaunchCommand({ root, parentRunId, childRunId, handoffRel, 
   const terminalScript = `tell application "Terminal" to do script "${escApple(innerSh)}"`;
 
   // ── powershell ────────────────────────────────────────────────────────────
-  // Build UTF-16LE base64 encoded command (Start-Process opens a new visible window).
-  const innerPS = `Set-Location -LiteralPath '${psq(root)}'; & claude -n '${psq(inner)}' '${psq(resumePrompt)}'`;
-  const b64 = Buffer.from(innerPS, 'utf16le').toString('base64');
-  const psCmd = `Start-Process powershell -ArgumentList '-NoExit','-EncodedCommand','${b64}'`;
+  // Build a runnable entry ONLY when launcherBin is a TRUSTED_PS member (detect-terminal single source).
+  // Never trust mere absoluteness (a stale/migrated/hand-edited launcher_bin could be a cwd/UNC shadow).
+  // Never fall back to bare 'powershell'; never throw at build time (buildLaunchCommand builds ALL entries —
+  // a throw would break non-PowerShell respawns). Non-member → an `unavailable` entry (still carries a display
+  // for launch-command.txt); respawn fails closed for a powershell mode with that entry.
+  let powershellEntry;
+  if (isTrustedPsBin(launcherBin)) {
+    const innerPS = `Set-Location -LiteralPath '${psq(root)}'; & claude -n '${psq(inner)}' '${psq(resumePrompt)}'`;
+    const b64 = Buffer.from(innerPS, 'utf16le').toString('base64');
+    const psCmd = `Start-Process '${psq(launcherBin)}' -ArgumentList '-NoExit','-EncodedCommand','${b64}'`;
+    // display is the HUMAN paste-fallback; use the PowerShell call operator `& '...'` so a Program Files
+    // path with spaces actually INVOKES (a bare '...' is a string literal in PowerShell).
+    powershellEntry = { bin: launcherBin, argv: ['-Command', psCmd], display: `& '${psq(launcherBin)}' -Command "${psCmd}"` };
+  } else {
+    powershellEntry = { bin: null, argv: null, unavailable: true, display: '# powershell: unavailable (no trusted launcher_bin)' };
+  }
 
   // ── display strings ────────────────────────────────────────────────────────
   // launch-command.txt is copied by a human; q(root) prevents apostrophe/semicolon/newline injection.
@@ -108,11 +121,7 @@ export function buildLaunchCommand({ root, parentRunId, childRunId, handoffRel, 
       argv: ['-d', root, 'claude', '-n', inner, resumePrompt],
       display: `wt.exe -d ${q(root)} claude -n ${inner} "${resumePrompt}"`,
     },
-    powershell: {
-      bin: 'powershell',
-      argv: ['-Command', psCmd],
-      display: `powershell -Command "${psCmd}"`,
-    },
+    powershell: powershellEntry,
     headless: {
       bin: 'claude',
       argv: ['-p', resumePrompt, '--output-format', 'json', '--permission-mode', 'acceptEdits'],

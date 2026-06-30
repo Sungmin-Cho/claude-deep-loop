@@ -192,3 +192,66 @@ test('review dispatch missing --point exits 2', () => {
   const { root, runId } = seed();
   assert.equal(runFail(root, ['review', 'dispatch', '--workstream', 'ws1', '--owner', runId, '--generation', '1']), 2);
 });
+
+// ── Problem A: state get no-active-run guard (2026-06-29 Windows fixes) ──────────
+import { mkdirSync, rmSync } from 'node:fs';
+function runBoth(root, args) {
+  try { const out = execFileSync('node', [CLI, ...args, '--project-root', root], { encoding: 'utf8' }); return { out: out.trim(), code: 0, err: '' }; }
+  catch (e) { return { out: (e.stdout || '').trim(), code: e.status ?? 1, err: (e.stderr || '').trim() }; }
+}
+
+test('A1: state get with no current pointer → null, exit 0, no stacktrace', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-a1-'));
+  const r = runBoth(root, ['state', 'get', '--field', 'status']);
+  assert.equal(r.out, 'null');
+  assert.equal(r.code, 0);
+  assert.ok(!/\bat .*:\d+:\d+/.test(r.err), 'no stacktrace in stderr');
+});
+
+test('A1: dangling current (run dir absent) → null, exit 0', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-a1-'));
+  mkdirSync(join(root, '.deep-loop'), { recursive: true });
+  writeFileSync(join(root, '.deep-loop', 'current'), '01JABCNOTAREALRUN\n');
+  const r = runBoth(root, ['state', 'get', '--field', 'status']);
+  assert.equal(r.out, 'null');
+  assert.equal(r.code, 0);
+});
+
+test('A1: partial state loss (run dir present, loop.json gone) → STATE_MISSING, exit≠0', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-a1-'));
+  const rid = '01JABCPARTIALLOSS';
+  const rd = join(root, '.deep-loop', 'runs', rid);
+  mkdirSync(rd, { recursive: true });
+  writeFileSync(join(rd, 'event-log.jsonl'), '{}\n');   // run dir + artifact exist; loop.json does NOT
+  writeFileSync(join(root, '.deep-loop', 'current'), rid + '\n');
+  const r = runBoth(root, ['state', 'get', '--field', 'status']);
+  assert.notEqual(r.code, 0);
+  assert.match(r.err, /STATE_MISSING/);
+});
+
+test('A1: explicit --run-id miss → fail closed (not null)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-a1-'));
+  const r = runBoth(root, ['state', 'get', '--run-id', '01JABCDOESNOTEXIST', '--field', 'status']);
+  assert.notEqual(r.code, 0);
+  assert.notEqual(r.out, 'null');
+});
+
+test('A1: corrupt loop.json (bad JSON) → fail closed (not null)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-a1-'));
+  const rid = '01JABCCORRUPTJSON';
+  const rd = join(root, '.deep-loop', 'runs', rid);
+  mkdirSync(rd, { recursive: true });
+  writeFileSync(join(rd, 'loop.json'), '{ not json');
+  writeFileSync(join(rd, '.loop.hash'), 'whatever');
+  writeFileSync(join(root, '.deep-loop', 'current'), rid + '\n');
+  const r = runBoth(root, ['state', 'get', '--field', 'status']);
+  assert.notEqual(r.code, 0);
+  assert.notEqual(r.out, 'null');
+});
+
+test('A1: state patch with no run → MISSING_RUN_ID, exit 2', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-a1-'));
+  const r = runBoth(root, ['state', 'patch', '--field', 'discovered_items', '--value', '[]', '--owner', 'x', '--generation', '1']);
+  assert.equal(r.code, 2);
+  assert.match(r.err, /MISSING_RUN_ID/);
+});

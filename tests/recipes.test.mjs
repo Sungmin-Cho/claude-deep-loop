@@ -26,3 +26,11 @@ test('standalone-hinted recipe stays standalone even with deep-work installed', 
   assert.equal(r.recipe, 'context-handoff-only');
   assert.equal(r.protocol, 'standalone');
 });
+
+// ── C2: object-shape routing regression — routes on present (installed‖initialized) ───
+test('C2: matchRecipe routes deep-work protocol only when present (object shape)', () => {
+  assert.notEqual(matchRecipe('인증 기능 구현', { 'deep-work': { present: false } }).protocol, 'deep-work');
+  assert.equal(matchRecipe('인증 기능 구현', { 'deep-work': { present: true } }).protocol, 'deep-work');
+  // installed-but-uninitialized sibling (original Problem C) → present:true → routed
+  assert.equal(matchRecipe('인증 기능 구현', { 'deep-work': { installed: true, initialized: false, present: true } }).protocol, 'deep-work');
+});

@@ -238,3 +238,17 @@ test('recordReviewOutcome: bound approve increments episodes_human_reviewed by 1
   const afterReviewed = readState(root, runId).data.comprehension?.episodes_human_reviewed || 0;
   assert.equal(afterReviewed - beforeReviewed, 1, 'only the bound maker (maker2) should be marked human_reviewed, not all makers on the point');
 });
+
+// ── C2: object-shape routing — resolveReviewer downgrades on present (installed‖initialized) ───
+test('C2: resolveReviewer downgrades a configured deep-review reviewer when not present (object shape)', () => {
+  const { root, runId } = seed({ 'deep-review': { present: true } });   // → review.reviewer = 'deep-review-loop'
+  const { data } = readState(root, runId);
+  // deep-review absent, codex present → codex-cross
+  assert.equal(resolveReviewer(data, { 'deep-review': { present: false }, codex: { present: true } }).reviewer, 'codex-cross');
+  // neither present → subagent-checker
+  assert.equal(resolveReviewer(data, { 'deep-review': { present: false }, codex: { present: false } }).reviewer, 'subagent-checker');
+  // deep-review present → stays deep-review-loop
+  assert.equal(resolveReviewer(data, { 'deep-review': { present: true } }).reviewer, 'deep-review-loop');
+  // installed-but-uninitialized (original Problem C) → present:true → stays deep-review-loop
+  assert.equal(resolveReviewer(data, { 'deep-review': { installed: true, initialized: false, present: true } }).reviewer, 'deep-review-loop');
+});

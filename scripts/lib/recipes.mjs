@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { pluginPresent } from './detect.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const recipesDir = join(here, '../../recipes');
@@ -16,7 +17,7 @@ export function matchRecipe(goal, detected = {}, recipes = loadRecipes()) {
   if (!chosen) chosen = recipes.find(r => r.id === 'triage-and-discovery');
   let protocol;
   if (g.includes('superpowers')) protocol = 'superpowers';
-  else if (chosen.protocol_hint === 'deep-work' && detected['deep-work']) protocol = 'deep-work';
+  else if (chosen.protocol_hint === 'deep-work' && pluginPresent(detected, 'deep-work')) protocol = 'deep-work';
   else protocol = 'standalone';
   return { recipe: chosen.id, protocol, reason: `matched ${chosen.id}; protocol=${protocol}` };
 }

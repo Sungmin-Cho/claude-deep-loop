@@ -35,6 +35,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" detect-plugins
 ```
 
 감지된 플러그인 목록을 확인한다(deep-work, deep-review, deep-wiki, deep-memory 등).
+`detect-plugins`는 각 sibling을 `installed`(어느 런타임 캐시에든 설치 — best-effort union, 마켓플레이스/직접 git 레이아웃 모두 매니페스트 `name`으로 감지) / `initialized`(프로젝트·홈 마커) / `present`(installed‖initialized)로 구분 감지한다. 리뷰/recipe 전략 분기는 `present`를 본다(설치-but-미초기화 sibling 누락 방지). 실제 dispatch는 Execution-plane LLM이 수행하며 그 시점에 호출 가능 여부를 확인한다(2-plane).
 
 ### 2-2. Recipe + Protocol 결정
 
