@@ -396,7 +396,10 @@ const desktopArgs = (over) => ({ root: '/repo', parentRunId: 'P1', childRunId: '
 
 test('macOS desktop entry targets verified app, never bare/-b', () => {
   const cmds = buildLaunchCommand(desktopArgs({ platform: 'darwin', desktopTarget: { kind: 'macos-app', appPath: '/Applications/Claude.app' } }));
-  assert.equal(cmds.desktop.bin, 'open');
+  // absolute path — NOT the bare, PATH-resolvable 'open' (a PATH shim ahead of /usr/bin/open would
+  // otherwise intercept the launch and defeat the verified-handler trust boundary; see handoff.mjs).
+  assert.equal(cmds.desktop.bin, '/usr/bin/open');
+  assert.ok(cmds.desktop.bin.startsWith('/'), 'desktop bin must be an absolute path, not PATH-resolved');
   assert.equal(cmds.desktop.argv[0], '-a');
   assert.equal(cmds.desktop.argv[1], '/Applications/Claude.app');
   const url = cmds.desktop.argv[2];

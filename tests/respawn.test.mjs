@@ -712,7 +712,7 @@ test('Task 5b: desktop respawn with a verified probe target reaches spawnFn (ope
     spawnFn, pollLease, sleep: noSleep,
   });
   assert.ok(got, 'spawnFn must have been called with the desktop entry');
-  assert.equal(got.bin, 'open');
+  assert.equal(got.bin, '/usr/bin/open');
   assert.equal(got.argv[0], '-a');
   assert.equal(got.argv[1], '/Applications/Claude.app');
   assert.equal(r.ok, true);

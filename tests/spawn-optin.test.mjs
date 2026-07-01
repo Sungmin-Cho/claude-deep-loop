@@ -182,6 +182,44 @@ test('confirmDesktop appends exactly one event on success; rejections append non
   assert.equal(afterAccept.seq, 2, 'offer + confirm each append exactly one event');
 });
 
+// ── out-of-range ttlSec must fail BEFORE appendAnchored, never half-commit an event ──
+// (Finding 2: computing `new Date(now + ttlSec*1000)` INSIDE the appendAnchored mutate callback
+// throws AFTER the event is already appended — appendAnchored appends the event, THEN runs mutate,
+// THEN writes loop.json's event_log_head anchor (see integrity.mjs). A digits-but-out-of-range
+// --ttl-sec passes the CLI's `/^\d+$/` integer check yet overflows Date's ~±8.64e15ms range →
+// `RangeError: Invalid time value` from mutate → event-log.jsonl ends up ahead of the persisted
+// anchor → every subsequent op fails LOG_TAMPERED. The fix computes+validates the expiry BEFORE
+// entering appendAnchored, so an invalid ttlSec never appends anything at all.)
+test('offerDesktop with out-of-range ttlSec returns {ok:false} and appends NO event (no half-commit)', () => {
+  const { root, runId, expect } = seedFreshRun();
+  const before = readState(root, runId).data.event_log_head;
+  assert.equal(before.seq, 0);
+
+  const r = offerDesktop(root, runId, { expect, now: T0, ttlSec: Number.MAX_SAFE_INTEGER, nonce: 'n1' });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'INVALID_TTL_SEC');
+
+  // no event appended, no pending nonce persisted, anchor untouched — no half-commit.
+  const after = readState(root, runId).data.event_log_head;
+  assert.deepEqual(after, before, 'a rejected offer must not advance event_log_head at all');
+  assert.equal(readState(root, runId).data.autonomy.spawn_style_optin_pending, undefined);
+
+  // crucially: a subsequent NORMAL kernel op on the same run must still work — proof the log/anchor
+  // was never corrupted (no LOG_TAMPERED fallout from a half-committed event).
+  const o = offerDesktop(root, runId, { expect, now: T0 + 1000, nonce: 'n2' });
+  assert.equal(o.ok, true);
+  assert.equal(readState(root, runId).data.autonomy.spawn_style_optin_pending.nonce, 'n2');
+  assert.equal(readState(root, runId).data.event_log_head.seq, 1, 'the good offer is the FIRST event — the bad one appended none');
+});
+
+test('offerDesktop with non-finite now returns {ok:false} INVALID_TTL_SEC and appends no event', () => {
+  const { root, runId, expect } = seedFreshRun();
+  const r = offerDesktop(root, runId, { expect, now: NaN, ttlSec: 600, nonce: 'n1' });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'INVALID_TTL_SEC');
+  assert.equal(readState(root, runId).data.event_log_head.seq, 0);
+});
+
 // ── CLI: spawn-style offer-desktop | confirm-desktop | decline-desktop ───────
 
 test('CLI spawn-style offer-desktop → confirm-desktop happy path (exit 0, spawn_style=desktop)', () => {

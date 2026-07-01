@@ -19,15 +19,28 @@ function assertFenceShape(expect, who) {
   }
 }
 
-// offerDesktop({ expect, now, ttlSec=600, nonce }) → { ok, nonce }
+// offerDesktop({ expect, now, ttlSec=600, nonce }) → { ok, nonce } | { ok:false, reason:'INVALID_TTL_SEC' }
 // Sets loop.autonomy.spawn_style_optin_pending = { nonce, expires_at }. Unconditional on the current
 // spawn_style (offering is harmless; confirmDesktop is where the source-state gate lives) — fenced only.
+//
+// The expiry Date must be computed AND validated BEFORE entering appendAnchored (never inside mutate):
+// appendAnchored appends the event first and only updates loop.json's event_log_head + writes state
+// afterward (see integrity.mjs appendAnchored) — a throw from Date math inside mutate (a digits-but
+// -out-of-range --ttl-sec/--now overflowing Date's ~±8.64e15ms range passes the CLI's `/^\d+$/` integer
+// check yet yields `RangeError: Invalid time value`) would leave the just-appended event ahead of the
+// persisted anchor → LOG_TAMPERED on every subsequent op. Fail closed BEFORE any append instead.
 export function offerDesktop(root, runId, { expect, now = Date.now(), ttlSec = 600, nonce } = {}) {
   assertFenceShape(expect, 'offerDesktop');
+  const expiresAtMs = now + ttlSec * 1000;
+  if (!Number.isFinite(expiresAtMs)) return { ok: false, reason: 'INVALID_TTL_SEC' };
+  let expiresAt;
+  try { expiresAt = new Date(expiresAtMs).toISOString(); }
+  catch { return { ok: false, reason: 'INVALID_TTL_SEC' }; }
   const issued = nonce ?? randomUUID();
   appendAnchored(root, runId, { type: 'spawn-style-desktop-offered', data: { nonce: issued } },
     (l) => {
-      l.autonomy.spawn_style_optin_pending = { nonce: issued, expires_at: new Date(now + ttlSec * 1000).toISOString() };
+      // ONLY assigns the pre-computed, already-validated expiresAt string — no Date math here.
+      l.autonomy.spawn_style_optin_pending = { nonce: issued, expires_at: expiresAt };
     },
     (l) => {
       const lc = leaseCheck(l, { owner: expect.owner, generation: expect.generation });

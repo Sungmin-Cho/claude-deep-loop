@@ -84,7 +84,12 @@ export function buildLaunchCommand({ root, parentRunId, childRunId, handoffRel, 
   const desktopUrl = `claude://code/new?folder=${encodeURIComponent(root)}&q=${encodeURIComponent(resumePrompt)}`;
   let desktopEntry;
   if (desktopTarget && desktopTarget.kind === 'macos-app' && platform === 'darwin') {
-    desktopEntry = { bin: 'open', argv: ['-a', desktopTarget.appPath, desktopUrl], available: true };
+    // Absolute path (never the bare, PATH-resolved `open`) — a PATH shim ahead of /usr/bin/open
+    // (e.g. a dev-tool's `open` shim earlier on PATH) would otherwise intercept this launch and
+    // could be handed the verified-target argv (appPath + claude:// url) instead of the real
+    // macOS opener, defeating the verified-handler trust boundary (visibleSpawn resolves `bin`
+    // via spawnSync, which is PATH resolution unless `bin` is itself absolute).
+    desktopEntry = { bin: '/usr/bin/open', argv: ['-a', desktopTarget.appPath, desktopUrl], available: true };
   } else if (desktopTarget && desktopTarget.kind === 'win-exe' && platform === 'win32') {
     const psBin = trustedPsCandidates(exists)[0];
     if (psBin) {

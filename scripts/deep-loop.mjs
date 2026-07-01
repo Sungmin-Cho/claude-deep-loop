@@ -389,7 +389,7 @@ const handlers = {
     const nonce = (f.nonce !== undefined && f.nonce !== true) ? String(f.nonce) : undefined;
     if (verb === 'offer-desktop') {
       let ttlSec; if (f['ttl-sec'] !== undefined) { ttlSec = optInt(f, 'ttl-sec'); if (ttlSec === null) { error('INVALID_TTL_SEC'); return 1; } }
-      try { json(offerDesktop(root, runId, { expect, now, nonce, ...(ttlSec != null ? { ttlSec } : {}) })); return 0; }
+      try { const r = offerDesktop(root, runId, { expect, now, nonce, ...(ttlSec != null ? { ttlSec } : {}) }); json(r); return r.ok ? 0 : 1; }
       catch (e) { const msg = String(e?.message || e); if (msg.startsWith('LEASE_FENCED')) { error(msg); return 3; } error(msg); return 1; }
     }
     if (verb === 'confirm-desktop') {
