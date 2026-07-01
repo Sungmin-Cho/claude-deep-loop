@@ -230,6 +230,13 @@ export function emitHandoff(root, runId, {
     launcherSocket: loop.session_spawn?.launcher_socket,
     platform, desktopTarget: dt && dt.ok ? dt.argvTarget : null,
   });
+  // desktop 라인은 여기서 구성(P4-2/P5): available이면 사람용 재개 지시(URL 없음), 아니면 마커.
+  // 자동 auto-pop이 주 경로. 이 수동 fallback은 auto-pop readiness timeout 시 사람이 쓰며, releasing lease를
+  // 인수하도록 이미 설계된 /deep-loop-resume 를 재사용한다(child 식별·releasing/paused fence를 resume이 처리 — P5).
+  // raw claude:// deeplink는 절대 여기 쓰지 않는다 — URL은 cmds.desktop.argv(machine 전용)에만 존재한다.
+  const desktopLine = cmds.desktop.available
+    ? '# desktop: 새 Claude Desktop Code 탭을 열고 `/deep-loop-resume` 실행 (auto-pop 미개방 시 수동 재개)'
+    : '# desktop: unavailable (handler unverified)';
   atomicWrite(join(termDir, 'launch-command.txt'), [
     `# interactive`, cmds.interactive.display, ``,
     `# headless`, cmds.headless.display, ``,
@@ -238,6 +245,7 @@ export function emitHandoff(root, runId, {
     `# terminal-app`, cmds['terminal-app'].display, ``,
     `# wt`, cmds.wt.display, ``,
     `# powershell`, cmds.powershell.display, ``,
+    `# desktop`, desktopLine, ``,
   ].join('\n'));
 
   // Codex impl r11 🔴: child session push + superseded_by + lease reserved→emitted (releasing + stale TTL) must be

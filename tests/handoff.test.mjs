@@ -469,3 +469,31 @@ test('emitHandoff: non-desktop spawn_style (default visible) never invokes deskt
   assert.equal(r.ok, true, 'emitHandoff must succeed (probe never invoked, so its throw never surfaces)');
   assert.equal(called, false, 'non-desktop emitHandoff must never invoke desktopProbe');
 });
+
+// ── Task 6: launch-command.txt `# desktop` line — verified-target instruction or unavailable marker,
+// NEVER a raw claude:// deeplink (URL lives only in machine argv, per handoff.mjs's desktopEntry). ──
+test('launch-command.txt desktop line is verified-target resume instruction, never raw deeplink', () => {
+  const { root, runId } = seed();
+  const { data } = readState(root, runId);
+  data.autonomy.spawn_style = 'desktop';
+  writeState(root, runId, data);
+  const now = Date.parse('2026-06-24T01:00:00Z');
+  const desktopProbe = () => ({ ok: true, argvTarget: { kind: 'macos-app', appPath: '/Applications/Claude.app' } });
+  const r = emitHandoff(root, runId, { trigger: 'milestone', now, expect: expect_(runId), platform: 'darwin', desktopProbe });
+  assert.equal(r.ok, true);
+  const txt = readFileSync(join(runDir(root, runId), 'terminal', 'launch-command.txt'), 'utf8');
+  assert.match(txt, /# desktop/);
+  assert.match(txt, /\/deep-loop-resume/);
+  assert.ok(!/claude:\/\//.test(txt), 'launch-command.txt must never contain a raw claude:// deeplink');
+});
+
+test('launch-command.txt desktop line is unavailable marker for non-desktop runs; still no raw deeplink', () => {
+  const { root, runId } = seed();   // default spawn_style='visible' → desktopProbe never invoked, dt stays null
+  const now = Date.parse('2026-06-24T01:00:00Z');
+  const r = emitHandoff(root, runId, { trigger: 'milestone', now, expect: expect_(runId), platform: 'darwin' });
+  assert.equal(r.ok, true);
+  const txt = readFileSync(join(runDir(root, runId), 'terminal', 'launch-command.txt'), 'utf8');
+  assert.match(txt, /# desktop/);
+  assert.match(txt, /unavailable/);
+  assert.ok(!/claude:\/\//.test(txt), 'launch-command.txt must never contain a raw claude:// deeplink');
+});
