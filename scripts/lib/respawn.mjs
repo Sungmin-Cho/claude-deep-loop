@@ -42,10 +42,11 @@ export function isHeadlessInvocation(env = process.env) {
   return false;
 }
 
-// Resolve the spawn mode (spec §7). Returns 'headless' | a launcher name (cmux|iterm2|terminal-app|wt|powershell)
+// Resolve the spawn mode (spec §7). Returns 'headless' | 'desktop' | a launcher name (cmux|iterm2|terminal-app|wt|powershell)
 // | 'interactive'. Headless wins over everything: explicit flag, autonomy.spawn_style==='headless', OR a
-// detected headless invocation (regardless of launcher/attended). A visible launcher mode requires
-// spawn_style==='visible' AND attended===true AND a real (non-'none') detected launcher; otherwise 'interactive'.
+// detected headless invocation (regardless of launcher/attended). Then 'desktop' when spawn_style==='desktop' AND
+// attended===true (Claude Desktop deeplink transport). A visible launcher mode requires spawn_style==='visible'
+// AND attended===true AND a real (non-'none') detected launcher; otherwise 'interactive'.
 export function resolveSpawnMode(loop, { headless = false, attended = false, env = process.env } = {}) {
   if (headless || loop?.autonomy?.spawn_style === 'headless' || isHeadlessInvocation(env)) return 'headless';
   if (loop?.autonomy?.spawn_style === 'desktop' && attended === true) return 'desktop';
