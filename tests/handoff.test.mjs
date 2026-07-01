@@ -4,7 +4,7 @@ import { mkdtempSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { readState, runDir } from '../scripts/lib/state.mjs';
+import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { reserveHandoff, releaseLease, acquireLease } from '../scripts/lib/lease.mjs';
 import { emitHandoff, buildLaunchCommand } from '../scripts/lib/handoff.mjs';
 import { newEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
@@ -433,4 +433,39 @@ test('desktop entry: no platform/desktopTarget passed (existing callers) default
     const cmds = buildLaunchCommand({ ...baseArgs });
     assert.equal(cmds.desktop.unavailable, true);
   });
+});
+
+// ── Task 5b (review fix): emitHandoff's desktopProbe call is gated to spawn_style==='desktop' ──
+// (mirrors respawn.mjs's `mode === 'desktop'` gate). Non-desktop runs (the vast majority of the
+// suite) must never pay for a real osascript/reg.exe subprocess. buildLaunchCommand's `desktop` key
+// is computed but NOT yet written into launch-command.txt (that's Task 6, still unimplemented) — so
+// the only currently-observable wiring signal is whether the injected desktopProbe is invoked at all.
+test('emitHandoff: spawn_style=desktop invokes the injected desktopProbe (probe is honored)', () => {
+  const { root, runId } = seed();
+  const { data } = readState(root, runId);
+  data.autonomy.spawn_style = 'desktop';
+  writeState(root, runId, data);
+  const now = Date.parse('2026-06-24T01:00:00Z');
+  let calls = 0;
+  let seenPlatform;
+  const desktopProbe = (opts) => {
+    calls += 1;
+    seenPlatform = opts?.platform;
+    return { ok: true, argvTarget: { kind: 'macos-app', appPath: '/Applications/Claude.app' } };
+  };
+  const r = emitHandoff(root, runId, { trigger: 'milestone', now, expect: expect_(runId), platform: 'darwin', desktopProbe });
+  assert.equal(r.ok, true);
+  assert.equal(calls, 1, 'desktop spawn_style must invoke the injected desktopProbe exactly once');
+  assert.equal(seenPlatform, 'darwin', 'the platform passed to emitHandoff must be forwarded to desktopProbe');
+});
+
+test('emitHandoff: non-desktop spawn_style (default visible) never invokes desktopProbe', () => {
+  const { root, runId } = seed();   // seed()'s initRun leaves autonomy.spawn_style at its default ('visible')
+  assert.equal(readState(root, runId).data.autonomy.spawn_style, 'visible');
+  const now = Date.parse('2026-06-24T01:00:00Z');
+  let called = false;
+  const desktopProbe = () => { called = true; throw new Error('desktopProbe must not be called for non-desktop runs'); };
+  const r = emitHandoff(root, runId, { trigger: 'milestone', now, expect: expect_(runId), platform: 'darwin', desktopProbe });
+  assert.equal(r.ok, true, 'emitHandoff must succeed (probe never invoked, so its throw never surfaces)');
+  assert.equal(called, false, 'non-desktop emitHandoff must never invoke desktopProbe');
 });

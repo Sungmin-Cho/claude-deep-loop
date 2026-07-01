@@ -6,7 +6,10 @@ import { defaultProbeRun } from './detect-terminal.mjs';
 // accept as the real `claude://` deeplink handler. Fixed, non-configurable constants (not env-derived
 // — an env var is parent-spoofable, same rationale as detect-terminal's TRUSTED_PS list).
 export const ALLOW_MAC_PATHS = ['/Applications/Claude.app'];
-export const ALLOW_BUNDLE_IDS = ['com.anthropic.claude'];
+// Real installed Claude Desktop's bundle id (verified via the macProbeRun query below against an
+// actual install) is `com.anthropic.claudefordesktop` — NOT `com.anthropic.claude`. Keep the latter
+// as an extra fallback entry in case a differently-bundled build ever registers under it.
+export const ALLOW_BUNDLE_IDS = ['com.anthropic.claudefordesktop', 'com.anthropic.claude'];
 export const ALLOW_WIN_PATHS = [
   'C:\\Program Files\\Claude\\Claude.exe',
   'C:\\Program Files (x86)\\Claude\\Claude.exe',

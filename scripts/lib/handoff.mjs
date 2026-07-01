@@ -214,11 +214,14 @@ export function emitHandoff(root, runId, {
   });
   atomicWrite(join(dir, csName), JSON.stringify(compaction, null, 2));
 
-  // Best-effort handler-verification probe (Task 5b) — regardless of the run's spawn_style/mode, so
-  // launch-command.txt's `# desktop` line (Task 6) can reflect a verified target when one exists.
-  // Never let a probe glitch break handoff emission: any throw is swallowed → unverified (null) target.
+  // Best-effort handler-verification probe (Task 5b) — gated to desktop-spawn runs only (mirrors
+  // respawn.mjs's `mode === 'desktop'` gate), so non-desktop handoffs never pay for a real osascript/
+  // reg.exe subprocess. When gated in, so launch-command.txt's `# desktop` line (Task 6) can reflect a
+  // verified target. Never let a probe glitch break handoff emission: any throw is swallowed → null.
   let dt = null;
-  try { dt = desktopProbe({ platform }); } catch { dt = null; }
+  if (loop.autonomy?.spawn_style === 'desktop') {
+    try { dt = desktopProbe({ platform }); } catch { dt = null; }
+  }
   // Build all entry variants; write display strings to launch-command.txt for human fallback.
   const cmds = buildLaunchCommand({
     root, parentRunId: runId, childRunId, handoffRel,
