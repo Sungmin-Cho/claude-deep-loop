@@ -2,7 +2,16 @@
 
 All notable changes to deep-loop are documented in this file.
 
-## [Unreleased]
+## [1.0.0] — 2026-07-01
+
+### Finish-Path Robustness (kernel termination state machine)
+- **Premature finish fixed** — `next-action` no longer recommends `finish` (and `finishProofState`/`finishRun` no longer accept `completed`) unless every declared `review.point` is satisfied by a **bound APPROVED** checker, every done maker is bound to an **existing workstream**, and the **latest** maker per `(workstream,point)` is the bound-approved one. `next-action` now reuses the canonical `finishProofState` gate (recommend ≡ enforce) via the shared `unsatisfiedReviewPoints` helper.
+- **Stranded maker recovery** — new human-gated terminal `abandoned` + `episode abandon --id --reason --confirm` (lease-fenced); an orphan/proof-impossible maker (empty `expected_artifacts`, or in-progress) is surfaced to `await_human(orphan-maker-no-artifacts)` with the abandon recovery command; abandoned counts as settled in both termination paths, is excluded from comprehension counters, and is un-ackable.
+- **Terminal immutability** — no resurrection of `done/approved/rejected/abandoned` via `episode record`, `review record` (terminal checker), or `state patch` (value→abandoned, terminal→non-terminal, and phantom/out-of-range/non-canonical/leading-zero index guards); `abandoned` is written **only** by `abandonEpisode`.
+- **Review-convergence correctness** — order-aware episode comparator (`epOrder`, numeric with string fallback; correct past the 999→1000 id boundary); a single `rejectionResolved` predicate shared by `next-action` routing and `finishProofState.settledEp` (a rejected checker resolves only via a **newer** bound approval or a later done maker); `finishProofState` convergence uses `boundLatestApproved`.
+- **Unbound checkers prevented at source** — `dispatchReview` throws `REVIEW_NO_ELIGIBLE_MAKER` when there is no done maker (no unbound checker is ever created); `recordReviewOutcome` rejects a verdict on an unbound checker; any legacy unbound rejected checker is treated as neutral (cannot block or strand).
+- Schema `episode_status.kernel += abandoned`; handoff summary surfaces abandoned episodes; docs (`CLAUDE.md`/`README`/`README.ko`/finish skill) synced; 2-plane fence matcher covers `episode abandon`.
+- Reviewed to convergence via a codex-only 2-way adversarial loop (spec 7 rounds, plan 4 rounds, implementation 6 rounds).
 
 ### Self-Spawning Session Continuity
 - OS/terminal-agnostic automatic **visible** new-session handoff — the next session opens in a fresh visible window, keeping the human in the verification loop, not the cycle

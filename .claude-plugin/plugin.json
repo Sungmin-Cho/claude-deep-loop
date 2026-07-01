@@ -1,6 +1,6 @@
 {
   "name": "deep-loop",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Loop Engineering control plane: cross-plugin orchestration, durable loop state, autonomous session handoff",
   "author": { "name": "Sungmin Cho" },
   "repository": "https://github.com/Sungmin-Cho/claude-deep-loop.git",
