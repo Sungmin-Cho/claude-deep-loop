@@ -242,15 +242,18 @@ export function respawn(root, runId, {
     return { ok: false, outcome: 'build-error', reason: String(buildErr.message || buildErr), childRunId };
   }
 
-  // Fail closed: a powershell mode with an unavailable entry (no trusted launcher_bin — e.g. a stale/migrated
-  // launcher='powershell' run) must NOT spawn a bare powershell. Unlike the interactive no-launcher path (which
-  // the else/none skill branch preserve-pauses), this is reached via the VISIBLE skill branch (launcher!=='none'
+  // Fail closed: ANY visible/desktop mode with an unavailable entry (no trusted launcher_bin — e.g. a
+  // stale/migrated launcher='powershell' run — or a mode buildLaunchCommand does not yet build a key for,
+  // e.g. 'desktop' — must NOT spawn. `interactive` never reaches here (it returns above, before `_cmds` is
+  // built); `headless`'s entry always carries `bin:'claude'` (guard never fires); a valid launcher entry
+  // always has a `bin` (guard never fires). Unlike the interactive no-launcher path (which the else/none
+  // skill branch preserve-pauses), this is reached via the VISIBLE/DESKTOP skill branch (launcher!=='none'
   // → `respawn --attended`), which does NOT inspect the outcome — so respawn must preserve-pause ITSELF here, or
   // the handoff is left emitted/releasing, unpaused, with no child spawned (stranded). Mirrors gate-blocked self-pause.
-  if (mode === 'powershell' && (!_entry || _entry.unavailable || !_entry.bin)) {
-    const res = preservePause(root, runId, { childRunId, parentOwner, generation, pauseReason: 'powershell-launcher-unavailable' });
+  if (!_entry || _entry.unavailable || !_entry.bin) {
+    const res = preservePause(root, runId, { childRunId, parentOwner, generation, pauseReason: `${mode}-launcher-unavailable` });
     if (res.fenced) return { ok: false, outcome: 'fenced', reason: 'lease-changed-before-pause', childRunId };
-    return { ok: false, outcome: 'no-launcher', reason: 'powershell-launcher-unavailable', childRunId };
+    return { ok: false, outcome: 'no-launcher', reason: `${mode}-launcher-unavailable`, childRunId };
   }
 
   // Codex r2 🔴3: 외부 spawn **이전에** emitted→spawned 를 원자적(withLock CAS)으로 클레임 (이중 외부 spawn 차단).

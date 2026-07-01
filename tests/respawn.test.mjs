@@ -647,3 +647,28 @@ test('B3: powershell launcher with null launcher_bin → no-launcher (preserve),
   assert.equal(after.session_chain.lease.handoff_phase, 'emitted');     // handoff preserved for recovery
   assert.equal(after.session_chain.lease.resume_policy, 'human');
 });
+
+// ── Task 3: unavailable-entry guard generalized (any mode, not just powershell) ──
+test('desktop mode with unavailable entry (buildLaunchCommand has no desktop key yet) → preserve-pause, not rollback', () => {
+  const { root, runId } = seed((d) => {
+    d.autonomy.spawn_style = 'desktop';
+    d.session_spawn = {
+      platform: 'darwin', launcher: 'none', launcher_bin: null, launcher_socket: null,
+      surface: 'window', reachable: true, visible: true, signals: {}, probe: null,
+      reason: null, fallback: 'launch-command-file', detected_at: '2026-06-24T00:00:00Z',
+    };
+  });
+  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });
+  let spawned = false;
+  const r = respawn(root, runId, { childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel, attended: true, env: {}, now: NOW1, spawnFn: () => { spawned = true; return { ok: true }; }, sleep: noSleep });
+  assert.equal(spawned, false, 'must not spawn when the desktop entry is unavailable/undefined');
+  assert.equal(r.ok, false);
+  assert.equal(r.outcome, 'no-launcher');
+  assert.equal(r.reason, 'desktop-launcher-unavailable');
+  // respawn SELF-preserve-pauses (same contract as B3) — reserved child preserved, NOT invalidated/rolled back.
+  const after = readState(root, runId).data;
+  assert.equal(after.status, 'paused', 'run must be preserve-paused by respawn itself');
+  assert.equal(after.session_chain.lease.handoff_phase, 'emitted');       // handoff preserved for recovery
+  assert.equal(after.session_chain.lease.handoff_child_run_id, h.childRunId, 'reserved child preserved (not invalidated)');
+  assert.equal(after.session_chain.lease.resume_policy, 'human');
+});
