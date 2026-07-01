@@ -56,6 +56,14 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" respawn --owner <run_id> --ge
 
 커널이 자동으로 새 세션을 시작한다. 스킬이 직접 `claude -p`를 실행하지 않는다(§9).
 
+**desktop** (`spawn_style==='desktop'` — init 시 opt-in한 Claude Desktop 딥링크 재시작, `launcher===none`이어도 유효):
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" respawn --owner <run_id> --generation <n> --attended
+```
+
+visible과 동일한 명령 — 커널이 검증된 desktop 엔트리(`open -a`/직접 실행)로 자동 재시작한다. 선택은 init에서 확정된 durable 값이라 재질문하지 않는다.
+
 **unattended** (드라이버 마커 / `DEEP_LOOP_UNATTENDED` / non-tty): 드라이버가 처리.
 
 **else** (`launcher=none` / visible 아님 / legacy interactive):

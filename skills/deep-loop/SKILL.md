@@ -82,6 +82,42 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" init-run \
 `--recipe`는 `recipe-match`가 반환한 recipe **id 문자열**(예: `robust-implementation`)이다 — JSON이 아님.
 `run_id`를 받아 저장한다. 이후 모든 mutating CLI는 `--owner <run_id> --generation 1`.
 
+### 2-5-1. Desktop 딥링크 재시작 opt-in 제안 (선택적, 최초 1회)
+
+`init-run` 직후, 이번 run에서 **딱 한 번만** 실행한다(선택은 durable — 이후 handoff/continue에서 재질문하지 않는다).
+
+터미널 상태를 감지한다:
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" detect-terminal --owner <run_id> --generation 1
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field session_spawn
+```
+
+`session_spawn.launcher === 'none'` **AND** 현재 세션이 attended(사람이 지켜보는 interactive 세션 — 드라이버 마커/`DEEP_LOOP_UNATTENDED`/non-tty가 아님) **AND** `process.platform ∈ {darwin, win32}`(Claude Desktop이 존재하는 플랫폼)일 때만 아래 제안을 진행한다. 그 외(런처 정상 감지 · unattended · 미지원 플랫폼)에는 **아무것도 묻지 않는다** — 기존 happy path 무마찰이며, `decline-desktop` 호출조차 생략한다.
+
+게이트를 통과하면 커널에 단명 pending nonce를 기록한다:
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" spawn-style offer-desktop --owner <run_id> --generation 1
+```
+
+반환된 `nonce`를 받아 `AskUserQuestion`으로 사람에게 묻는다:
+
+> "터미널 런처가 감지되지 않았습니다. Claude Desktop에서 실행 중이면 딥링크 자동 재시작(반자동: 폴더 확인+Enter 필요)을 켤까요?"
+
+- **예**:
+  ```
+  node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" spawn-style confirm-desktop --owner <run_id> --generation 1 --nonce <nonce>
+  ```
+  `autonomy.spawn_style`이 `desktop`으로 전이한다(`visible`/`interactive`에서만 유효한 전이 — `exit 3`=fence, `exit 1`=거부).
+- **아니오** (또는 미지원 플랫폼이라 애초에 제안하지 않은 경우는 호출 불필요):
+  ```
+  node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" spawn-style decline-desktop --owner <run_id> --generation 1
+  ```
+  pending nonce를 clear하고 기존 수동 `/deep-loop-resume` 흐름을 유지한다.
+
+이 선택은 `autonomy.spawn_style`에 durable하게 저장된다 — `/deep-loop-continue`·`/deep-loop-handoff`가 이후 매 handoff마다 `spawn_style==='desktop'`이면 자동으로 `respawn --attended`를 호출하므로, 이 opt-in을 다시 묻지 않는다.
+
 ### 2-6. Workstream 생성
 
 각 `workstream new` 호출 **직전**, 아래 절차로 worktree를 먼저 생성(eager)한 뒤 실제 path/branch를 기록한다.

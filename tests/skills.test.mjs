@@ -517,3 +517,42 @@ test('deep-loop §2-7: episode new --artifacts example uses worktree-prefixed pa
   // Must carry a note that expected artifacts and submitted artifacts use same ORIG_ROOT-relative worktree-prefixed paths
   assert.match(s, /(expected|episode new)[\s\S]{0,400}(ORIG_ROOT|worktree.*prefix|워크트리.*접두사|\.claude\/worktrees)[\s\S]{0,400}(episode record|submitted|동일)/, 'note that expected and submitted artifacts must use same ORIG_ROOT-relative worktree-prefixed paths');
 });
+
+// Task 8: Claude Desktop deeplink respawn — init opt-in offer + handoff/continue desktop branch wiring.
+test('desktop skill wiring stays 2-plane (kernel CLI only)', () => {
+  for (const dir of ['deep-loop', 'deep-loop-handoff', 'deep-loop-continue']) {
+    const s = _rf(skillPath(dir), 'utf8');
+    if (/spawn_style==='desktop'|offer-desktop|confirm-desktop/.test(s)) {
+      assert.ok(!violatesBoundary(s), `${dir}/SKILL.md must not instruct a direct durable-state write (2-plane)`);
+    }
+  }
+});
+
+test('all three declared desktop skill paths branch to respawn --attended', () => {
+  const files = [
+    skillPath('deep-loop-handoff'),
+    skillPath('deep-loop-continue'),
+    join(ROOT, 'skills', 'deep-loop-workflow', 'references', 'handoff-respawn.md'),
+  ];
+  for (const f of files) {
+    const s = _rf(f, 'utf8');
+    assert.match(s, /spawn_style==='desktop'[\s\S]*respawn[\s\S]*--attended/, `${f} missing desktop branch (spawn_style==='desktop' → respawn ... --attended)`);
+  }
+});
+
+test('deep-loop SKILL.md: init opt-in offer gated on launcher===none + attended + darwin/win32', () => {
+  const s = dlSkill();
+  assert.match(s, /detect-terminal/, 'must run detect-terminal before offering desktop opt-in');
+  assert.match(s, /launcher\s*===?\s*'none'/, "must gate on session_spawn.launcher === 'none'");
+  assert.match(s, /attended/, 'must gate on the session being attended (not headless)');
+  assert.match(s, /darwin/, 'must gate on process.platform darwin');
+  assert.match(s, /win32/, 'must gate on process.platform win32');
+  assert.match(s, /spawn-style offer-desktop/, 'must call spawn-style offer-desktop');
+  assert.match(s, /AskUserQuestion/, 'must present the opt-in question via AskUserQuestion');
+  assert.match(s, /spawn-style confirm-desktop/, 'must call spawn-style confirm-desktop on yes');
+  assert.match(s, /spawn-style decline-desktop/, 'must call spawn-style decline-desktop on no');
+  // both offer/confirm/decline lines must carry the fence (kernel requires it; not enforced by mutatingFenced's MUTATING_SUB list)
+  for (const line of s.split('\n').filter(l => /spawn-style\s+(offer|confirm|decline)-desktop/.test(l))) {
+    assert.ok(/--owner\b/.test(line) && /--generation\b/.test(line), `spawn-style line missing fence flags: ${line}`);
+  }
+});
