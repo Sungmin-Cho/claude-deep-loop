@@ -409,13 +409,20 @@ test('macOS desktop entry targets verified app, never bare/-b', () => {
 test('unverified desktopTarget → unavailable entry', () => {
   const cmds = buildLaunchCommand(desktopArgs({ platform: 'darwin', desktopTarget: null }));
   assert.equal(cmds.desktop.unavailable, true);
-  assert.ok(!/claude:\/\//.test(cmds.desktop.display));          // negative: no raw deeplink in display
+  // the unavailable entry carries no URL-bearing field at all (no `display`, no `argv`) — a
+  // raw claude:// deeplink can never leak through it.
+  assert.ok(!('display' in cmds.desktop) || !/claude:\/\//.test(String(cmds.desktop.display)));
+  assert.ok(!('argv' in cmds.desktop));
 });
 
-test('windows desktop entry targets verified exe', () => {
+// v1: Windows desktop launch is fail-closed even with a verified win-exe target — a GUI exe run
+// through visibleSpawn's synchronous exit-0 contract would stay resident, time out, and roll back
+// the reserved handoff child. Non-blocking dispatch is deferred to backlog; Windows falls back to
+// manual /deep-loop-resume. (macOS `open -a` exits immediately, so darwin is unaffected — see the
+// macOS test above.)
+test('windows desktop entry is fail-closed (v1 defer) even with a verified win-exe target', () => {
   const cmds = buildLaunchCommand(desktopArgs({ platform: 'win32', desktopTarget: { kind: 'win-exe', exePath: 'C:\\Program Files\\Claude\\Claude.exe' } }));
-  assert.equal(cmds.desktop.bin, 'C:\\Program Files\\Claude\\Claude.exe');
-  assert.match(cmds.desktop.argv[0], /^claude:\/\/code\/new/);
+  assert.equal(cmds.desktop.unavailable, true);
 });
 
 test('url folder/q are encodeURIComponent-encoded', () => {

@@ -243,6 +243,34 @@ test('CLI spawn-style unknown verb exits 2 (with a valid fence)', () => {
   assert.equal(code, 2);
 });
 
+// ── CLI --ttl-sec flag (offer-desktop) ────────────────────────────────────────
+
+test('CLI spawn-style offer-desktop --ttl-sec notanumber exits 1 (INVALID_TTL_SEC)', () => {
+  const { root, runId, expect } = seedFreshRun();
+  withCurrentPointer(root, runId);
+  let code = 0, stderr = '';
+  try {
+    execFileSync('node', [CLI, 'spawn-style', 'offer-desktop', '--owner', expect.owner, '--generation', String(expect.generation), '--ttl-sec', 'notanumber', '--project-root', root], { encoding: 'utf8' });
+  } catch (e) { code = e.status; stderr = String(e.stderr || ''); }
+  assert.equal(code, 1);
+  assert.match(stderr, /INVALID_TTL_SEC/);
+  assert.equal(readState(root, runId).data.autonomy.spawn_style_optin_pending, undefined, 'a rejected --ttl-sec must not persist a pending nonce');
+});
+
+test('CLI spawn-style offer-desktop --ttl-sec 120 succeeds and the persisted expiry reflects 120s (not the 600s default)', () => {
+  const { root, runId, expect } = seedFreshRun();
+  withCurrentPointer(root, runId);
+  const out = execFileSync('node', [CLI, 'spawn-style', 'offer-desktop', '--owner', expect.owner, '--generation', String(expect.generation), '--nonce', 'n1', '--ttl-sec', '120', '--now', String(T0), '--project-root', root], { encoding: 'utf8' });
+  assert.equal(JSON.parse(out).ok, true);
+  const pending = readState(root, runId).data.autonomy.spawn_style_optin_pending;
+  assert.equal(pending.nonce, 'n1');
+  assert.equal(Date.parse(pending.expires_at), T0 + 120 * 1000, 'expiry must reflect the --ttl-sec 120 override, not the 600s default');
+  // a confirm within the 120s window still succeeds (end-to-end proof the threaded ttlSec is usable).
+  const outConfirm = execFileSync('node', [CLI, 'spawn-style', 'confirm-desktop', '--owner', expect.owner, '--generation', String(expect.generation), '--nonce', 'n1', '--now', String(T0 + 60000), '--project-root', root], { encoding: 'utf8' });
+  assert.equal(JSON.parse(outConfirm).ok, true);
+  assert.equal(readState(root, runId).data.autonomy.spawn_style, 'desktop');
+});
+
 // ── generic `state patch` must NOT be usable for spawn_style (dedicated fenced path only) ──
 
 test('state patch autonomy.spawn_style is FIELD_FORBIDDEN (classifyPatch does not whitelist it)', async () => {

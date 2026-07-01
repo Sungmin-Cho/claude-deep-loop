@@ -54,21 +54,24 @@ function winProbeRun() {
  * verifyDesktopHandler (Task 4), returning its verdict. Best-effort and MUST fail closed — any
  * probe/parse failure (or an unsupported platform) returns `{ ok:false }`, never throws.
  *
- * This real query runs only at actual runtime (the default injected into respawn/emitHandoff); unit
- * tests inject a fake `desktopProbe` instead of exercising this function (see the Task 5b wiring
- * tests in tests/respawn.test.mjs) — its host-dependent shell-out is intentionally NOT unit-tested.
+ * `run` and `realpath` are INJECTABLE (default to the real per-platform host probe / realpathSync)
+ * so tests can exercise the wiring — which platform selects which allowlist, and that the module
+ * allowlist constants actually reach verifyDesktopHandler — without shelling out to osascript/reg.exe
+ * (see tests/desktop-target.test.mjs). Production callers (respawn/emitHandoff) never pass these,
+ * so real runtime behavior is unchanged: platform-appropriate real probe + realpathSync + the fixed
+ * module allowlist constants.
  */
-export function defaultDesktopProbe({ platform = process.platform } = {}) {
+export function defaultDesktopProbe({ platform = process.platform, run, realpath = realpathSync } = {}) {
   try {
     if (platform === 'darwin') {
       return verifyDesktopHandler({
-        platform, run: macProbeRun, realpath: realpathSync,
+        platform, run: run || macProbeRun, realpath,
         allowMacPaths: ALLOW_MAC_PATHS, allowBundleIds: ALLOW_BUNDLE_IDS,
       });
     }
     if (platform === 'win32') {
       return verifyDesktopHandler({
-        platform, run: winProbeRun, realpath: realpathSync,
+        platform, run: run || winProbeRun, realpath,
         allowWinPaths: ALLOW_WIN_PATHS,
       });
     }

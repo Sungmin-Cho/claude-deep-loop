@@ -36,8 +36,10 @@ const SAFE_HANDOFF_REL = /^handoffs\/[A-Za-z0-9._-]+$/;
  * Each entry (except interactive) has { bin, argv, display }.
  * headless also has { cwd }.
  * interactive has { display } only (human copies it; no auto-spawn).
- * desktop has { bin, argv, available: true } when desktopTarget is verified for the
- * given platform, else { unavailable: true } — deliberately no `display` (see below).
+ * desktop has { bin, argv, available: true } when desktopTarget is a verified macOS
+ * app target (platform==='darwin'), else { unavailable: true } — deliberately no `display`
+ * (see below). win32 desktop is ALWAYS { unavailable: true } in v1 (fail-closed — see the
+ * win32 branch comment below); this is a controller decision, not a probe/verification gap.
  *
  * Validates parentRunId, childRunId, and handoffRel to catch shell-injection
  * before any string is interpolated (UNSAFE_SPAWN_ARG guard).
@@ -60,14 +62,22 @@ export function buildLaunchCommand({ root, parentRunId, childRunId, handoffRel, 
   // ── desktop (Claude Desktop deeplink) ───────────────────────────────────────
   // url lives ONLY in machine argv (never in a `display` string — the human-readable
   // `# desktop` launch-command.txt line is composed later by emitHandoff/Task 6).
-  // Only a verified target (desktopTarget produced by verifyDesktopHandler, matching
-  // the current platform) yields a runnable entry; otherwise fail closed to unavailable.
+  // macOS: only a verified target (desktopTarget produced by verifyDesktopHandler, matching
+  // platform==='darwin') yields a runnable entry; otherwise fail closed to unavailable.
+  // Windows: ALWAYS unavailable in v1 regardless of verification (see the win32 branch below) —
+  // `open -a` exits immediately so the darwin path is safe under visibleSpawn's synchronous exit-0
+  // contract, but a Windows GUI exe launched directly stays resident and would time out that same
+  // contract, triggering a launch-timeout rollback that invalidates the reserved handoff child.
   const desktopUrl = `claude://code/new?folder=${encodeURIComponent(root)}&q=${encodeURIComponent(resumePrompt)}`;
   let desktopEntry;
   if (desktopTarget && desktopTarget.kind === 'macos-app' && platform === 'darwin') {
     desktopEntry = { bin: 'open', argv: ['-a', desktopTarget.appPath, desktopUrl], available: true };
   } else if (desktopTarget && desktopTarget.kind === 'win-exe' && platform === 'win32') {
-    desktopEntry = { bin: desktopTarget.exePath, argv: [desktopUrl], available: true };
+    // v1: Windows desktop launch fail-closed — a GUI exe run through visibleSpawn's synchronous
+    // exit-0 contract would time out and roll back the child; a non-blocking dispatch (cmd /c start /
+    // ShellExecute targeting the verified exe) + real Windows verification is deferred (backlog).
+    // Windows desktop runs fall back to manual /deep-loop-resume.
+    desktopEntry = { unavailable: true };
   } else {
     desktopEntry = { unavailable: true };
   }
@@ -214,10 +224,13 @@ export function emitHandoff(root, runId, {
   });
   atomicWrite(join(dir, csName), JSON.stringify(compaction, null, 2));
 
-  // Best-effort handler-verification probe (Task 5b) — gated to desktop-spawn runs only (mirrors
-  // respawn.mjs's `mode === 'desktop'` gate), so non-desktop handoffs never pay for a real osascript/
-  // reg.exe subprocess. When gated in, so launch-command.txt's `# desktop` line (Task 6) can reflect a
-  // verified target. Never let a probe glitch break handoff emission: any throw is swallowed → null.
+  // Best-effort handler-verification probe (Task 5b) — fires on the durable `spawn_style==='desktop'`
+  // flag alone, so non-desktop handoffs never pay for a real osascript/reg.exe subprocess. This is NOT
+  // the automatic-spawn gate (that lives in respawn.mjs via resolveSpawnMode, where `headless` preempts
+  // `desktop` even when spawn_style==='desktop'); here it only populates the informational, best-effort,
+  // bounded launch-command.txt `# desktop` line (Task 6) so it can reflect a verified target when one
+  // exists. A functional headless-fold-in gate here was reviewed and deemed unnecessary for an
+  // informational display line. Never let a probe glitch break handoff emission: any throw is swallowed → null.
   let dt = null;
   if (loop.autonomy?.spawn_style === 'desktop') {
     try { dt = desktopProbe({ platform }); } catch { dt = null; }
