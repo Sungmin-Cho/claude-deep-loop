@@ -53,12 +53,15 @@ deep-loop는 엄격한 **2-plane 분리**(spec §1)를 강제합니다:
 ## 설치
 
 ```bash
-# Claude Code 플러그인으로 설치 (deep-suite 또는 독립):
-claude plugin install https://github.com/Sungmin-Cho/claude-deep-loop.git
-
-# 또는 로컬 클론:
-git clone https://github.com/Sungmin-Cho/claude-deep-loop.git ~/.claude/plugins/deep-loop
+# 권장 — Deep Suite 마켓플레이스에서 설치:
+/plugin marketplace add Sungmin-Cho/claude-deep-suite
+/plugin install deep-loop@claude-deep-suite
 ```
+
+독립 사용 (스위트의 나머지 없이):
+
+- **skills 디렉토리 (영구):** 이 repo를 `~/.claude/skills/deep-loop/` 로 클론하면 다음 세션에 `deep-loop@skills-dir` 로 로드된다.
+- **세션 한정:** `claude --plugin-dir /path/to/claude-deep-loop`
 
 요구사항: Node >= 20, 외부 npm 의존성 없음.
 
