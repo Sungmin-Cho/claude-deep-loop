@@ -27,8 +27,11 @@ export const epOrder = (a, b) => {
 //   bound (target_maker set): resolved iff the SAME target maker was re-reviewed and APPROVED by a checker
 //     NEWER than this rejection (an OLDER approve followed by a NEWER reject must NOT count), OR a strictly
 //     LATER done maker exists for the same (workstream_id, point) (the flow moved on to a newer maker).
-//   unbound (no target_maker): resolved iff a NEWER approved checker for the same (workstream_id, point)
-//     addressed the point AFTER this rejection — a newer reject is NOT masked by an older approval.
+//   unbound (no target_maker): ALWAYS resolved (neutral). Such a checker reviewed no maker, so a rejection on it is
+//     meaningless — it must neither block finish nor route to action. dispatchReview no longer creates unbound
+//     checkers (REVIEW_NO_ELIGIBLE_MAKER), so this branch only settles LEGACY unbound rejected checkers in old
+//     loop.json — treating them as neutral avoids BOTH silent-completion (never silently masked by an unrelated
+//     approval) AND strand (a terminal unbound checker can neither be abandoned nor re-recorded).
 export function rejectionResolved(loop, e) {
   const eps = loop.episodes || [];
   if (e.target_maker) {
@@ -36,7 +39,7 @@ export function rejectionResolved(loop, e) {
     const laterDoneMaker = eps.some(m => m.role === 'maker' && m.status === 'done' && m.workstream_id === e.workstream_id && m.point === e.point && epOrder(m.id, e.target_maker) > 0);
     return reApprovedNewer || laterDoneMaker;
   }
-  return eps.some(c => c.role === 'checker' && c.status === 'approved' && c.workstream_id === e.workstream_id && c.point === e.point && epOrder(c.id, e.id) > 0);
+  return true;   // unbound → neutral (see comment above)
 }
 
 export function resolveReviewer(loop, detected = {}) {
@@ -92,7 +95,12 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
   const targetMakerEp = eligibleMakers.length > 0
     ? eligibleMakers.reduce((a, b) => (epOrder(a.id, b.id) > 0 ? a : b))
     : null;
-  const targetMaker = targetMakerEp ? targetMakerEp.id : undefined;
+  // ROOT FIX: a review MUST bind to a real done maker. With no eligible done maker the checker would be UNBOUND
+  // ("reviewed no maker") — a degenerate state that either silently completes (if its REQUEST_CHANGES is ignored)
+  // or strands the run (a terminal unbound checker can't be abandoned or re-recorded). Refuse to create it at the
+  // source, so every checker is ALWAYS bound going forward. (preCheck — thrown before newEpisode: no episode created.)
+  if (!targetMakerEp) throw new Error('REVIEW_NO_ELIGIBLE_MAKER: no done maker to review for ' + point + '/' + workstreamId);
+  const targetMaker = targetMakerEp.id;
   const { reviewer, flags, mode } = resolveReviewer(data, detected);
   const { id } = newEpisode(root, runId, { plugin: reviewer === 'deep-review-loop' ? 'deep-review' : reviewer, role: 'checker', kind: `${point}-review`, point, workstream: workstreamId, targetMaker, fence });
   const skillByReviewer = {
@@ -155,6 +163,10 @@ export function recordReviewOutcome(root, runId, { episodeId, workstreamId, poin
       const tgt = loop.episodes.find(e => e.id === episodeId);
       if (!tgt) throw new Error(`EPISODE_NOT_FOUND: ${episodeId}`);
       if (tgt.role !== 'checker') throw new Error('REVIEW_TARGET_NOT_CHECKER: ' + episodeId);
+      // Defense-in-depth (mirrors dispatchReview's REVIEW_NO_ELIGIBLE_MAKER): never record a verdict on an UNBOUND
+      // checker (no target_maker — reviewed no maker). Blocks any legacy pending unbound checker from being
+      // terminalized, so no NEW unbound terminal (rejected/approved) checker can arise.
+      if (!tgt.target_maker) throw new Error('REVIEW_UNBOUND_CHECKER: cannot record a verdict on a checker bound to no maker: ' + episodeId);
       const REVIEW_TERMINAL = ['done', 'approved', 'rejected', 'abandoned'];
       if (REVIEW_TERMINAL.includes(tgt.status)) throw new Error('REVIEW_ALREADY_RECORDED: ' + episodeId);
       if (!loop.workstreams.find(w => w.id === tgt.workstream_id)) throw new Error(`WORKSTREAM_NOT_FOUND: ${tgt.workstream_id}`);

@@ -165,21 +165,21 @@ test('finishProofState: abandoned episode counts as settled', () => {
   assert.ok(!ps.missing.includes('unsettled-episodes'), ps.missing.join(','));
 });
 
-// [R4] UNIFICATION regression — the root-cause class closer. An approved point (review_points_done=['plan'])
-// followed by a NEWER UNBOUND checker recording REQUEST_CHANGES (003 > 002, no target_maker). BEFORE the unified
-// rejectionResolved predicate, finishProofState's local reviewSatisfied SETTLED this rejection (review_points_done
-// had the point / a same-point approval existed) → missing===[] (silently COMPLETE), diverging from next-action.
-// Now the unbound rejection is UNRESOLVED (no NEWER approval), so it is NOT settled → 'unsettled-episodes'.
-test('finishProofState blocks a NEWER unbound rejected checker after an approved point ([R4] unsettled)', () => {
+// ROOT FIX (3) — a LEGACY unbound rejected checker is NEUTRAL. dispatchReview can no longer create an unbound checker
+// (REVIEW_NO_ELIGIBLE_MAKER), so the only way an unbound rejected checker exists is in old loop.json. Such a checker
+// "reviewed no maker" → rejectionResolved=true → NEUTRAL: it must NOT block finish (no strand) yet its neutrality is
+// deliberate (the bound approval on the same point is the real proof). A hand-built loop with an approved point +
+// a NEWER unbound rejected checker (003 > 002) is therefore FINISHABLE — missing has no unsettled/unbound entry.
+test('finishProofState treats a legacy unbound rejected checker as neutral (no unsettled-episodes strand)', () => {
   const loop = { review: { points: ['plan'] },
     episodes: [
       { id: '001', role: 'maker', point: 'plan', workstream_id: 'w', status: 'done' },
       { id: '002', role: 'checker', point: 'plan', workstream_id: 'w', status: 'approved', target_maker: '001' },
-      { id: '003', role: 'checker', point: 'plan', workstream_id: 'w', status: 'rejected' }],   // NEWER, unbound
+      { id: '003', role: 'checker', point: 'plan', workstream_id: 'w', status: 'rejected' }],   // NEWER, unbound (legacy)
     workstreams: [{ id: 'w', status: 'ready', review_points_done: ['plan'] }], active_workstreams: [] };
   const ps = finishProofState(loop);
-  assert.ok(ps.missing.includes('unsettled-episodes'), ps.missing.join(','));
-  assert.notEqual(ps.missing.length, 0);
+  assert.ok(!ps.missing.includes('unsettled-episodes'), ps.missing.join(','));
+  assert.deepEqual(ps.missing, []);   // neutral → finishable, not stranded
 });
 
 // UNIFICATION — the RESOLVED unbound case (complement of [R4]): an UNBOUND rejected checker (002) addressed by a
