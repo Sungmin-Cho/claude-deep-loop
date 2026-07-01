@@ -15,11 +15,13 @@ test('macOS: allowed app-path + bundle -> verified', () => {
 test('macOS: allowed bundle at UNTRUSTED path -> unavailable (path is the trust boundary)', () => {
   const r = verifyDesktopHandler({ ...MAC_OK, run: macRun('/Users/x/Evil.app\ncom.anthropic.claude\n') });
   assert.equal(r.ok, false);            // bundle matches but path not in allowMacPaths
+  assert.equal(r.reason, 'path-not-allowed');
 });
 
 test('macOS: trusted path but wrong bundle -> unavailable', () => {
   const r = verifyDesktopHandler({ ...MAC_OK, run: macRun('/Applications/Claude.app\ncom.evil\n') });
   assert.equal(r.ok, false);
+  assert.equal(r.reason, 'bundle-not-allowed');
 });
 
 test('probe failure -> unavailable', () => {
@@ -55,6 +57,22 @@ test('macOS: realpath uses canonical path, not raw symlink, for comparison and r
   assert.deepEqual(r.argvTarget, { kind: 'macos-app', appPath: '/private/var/canonical/Claude.app' });
 });
 
+test('macOS: realpath throws on appPath -> unavailable (realpath-error)', () => {
+  const throwingRealpath = (p) => {
+    if (p === '/Applications/Claude.app') throw new Error('realpath failed');
+    return p;
+  };
+  const r = verifyDesktopHandler({
+    platform: 'darwin',
+    realpath: throwingRealpath,
+    allowMacPaths: ['/Applications/Claude.app'],
+    allowBundleIds: ['com.anthropic.claude'],
+    run: macRun('/Applications/Claude.app\ncom.anthropic.claude\n'),
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'realpath-error');
+});
+
 test('win32: allowed exe path -> verified', () => {
   const r = verifyDesktopHandler({
     platform: 'win32',
@@ -74,6 +92,7 @@ test('win32: exe path not in allowlist -> unavailable', () => {
     run: macRun('C:\\Users\\x\\Evil.exe\n'),
   });
   assert.equal(r.ok, false);
+  assert.equal(r.reason, 'path-not-allowed');
 });
 
 test('win32: probe failure -> unavailable', () => {
@@ -84,4 +103,32 @@ test('win32: probe failure -> unavailable', () => {
     run: macRun('', 1),
   });
   assert.equal(r.ok, false);
+  assert.equal(r.reason, 'probe-failed');
+});
+
+test('win32: realpath throws on exePath -> unavailable (realpath-error)', () => {
+  const throwingRealpath = (p) => {
+    if (p === 'C:\\Program Files\\Claude\\Claude.exe') throw new Error('realpath failed');
+    return p;
+  };
+  const r = verifyDesktopHandler({
+    platform: 'win32',
+    realpath: throwingRealpath,
+    allowWinPaths: ['C:\\Program Files\\Claude\\Claude.exe'],
+    run: macRun('C:\\Program Files\\Claude\\Claude.exe\n'),
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'realpath-error');
+});
+
+test('win32: realpath uses canonical path for comparison and result', () => {
+  const rp = (p) => (p === 'C:\\Program Files\\Claude\\Claude.exe' ? 'C:\\canonical\\Claude.exe' : p);
+  const r = verifyDesktopHandler({
+    platform: 'win32',
+    realpath: rp,
+    allowWinPaths: ['C:\\canonical\\Claude.exe'],
+    run: macRun('C:\\Program Files\\Claude\\Claude.exe\n'),
+  });
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.argvTarget, { kind: 'win-exe', exePath: 'C:\\canonical\\Claude.exe' });
 });
