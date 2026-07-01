@@ -118,6 +118,7 @@ When `autonomy.spawn_style` is `'visible'` and deep-loop detects a supported ter
 | iTerm2 | `TERM_PROGRAM=iTerm.app` + osascript probe | new iTerm window |
 | Terminal.app | `TERM_PROGRAM=Apple_Terminal` + osascript probe | new Terminal window |
 | Windows Terminal | `WT_SESSION` + `wt.exe` probe | new WT tab |
+| desktop | (user opt-in) Claude Desktop Code tab | opens a verified Claude Desktop handler via `claude://code/new` deeplink — **semi-automatic**: user confirms folder + presses Enter |
 
 The spawn is **attended-only**: the parent session must have been launched interactively (`--attended` flag set by the skill). If the parent is headless (`DEEP_LOOP_UNATTENDED=1`, `spawn_style='headless'`, or a headless-entrypoint is detected), visible spawn is bypassed and the headless path is taken instead.
 
