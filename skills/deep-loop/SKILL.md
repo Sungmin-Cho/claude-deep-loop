@@ -35,6 +35,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" detect-plugins
 ```
 
 감지된 플러그인 목록을 확인한다(deep-work, deep-review, deep-wiki, deep-memory 등).
+`detect-plugins`는 각 sibling을 `installed`(어느 런타임 캐시에든 설치 — best-effort union, 마켓플레이스/직접 git 레이아웃 모두 매니페스트 `name`으로 감지) / `initialized`(프로젝트·홈 마커) / `present`(installed‖initialized)로 구분 감지한다. 리뷰/recipe 전략 분기는 `present`를 본다(설치-but-미초기화 sibling 누락 방지). 실제 dispatch는 Execution-plane LLM이 수행하며 그 시점에 호출 가능 여부를 확인한다(2-plane).
 
 ### 2-2. Recipe + Protocol 결정
 
@@ -83,15 +84,114 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" init-run \
 
 ### 2-6. Workstream 생성
 
+각 `workstream new` 호출 **직전**, 아래 절차로 worktree를 먼저 생성(eager)한 뒤 실제 path/branch를 기록한다.
+
+**어떤 worktree 전환보다 먼저 두 값을 캡처한다:**
+```bash
+# linked worktree에서 --show-toplevel은 연결된 worktree를 반환 — project root ❌
+ORIG_ROOT=$(cd "$(git rev-parse --path-format=absolute --git-common-dir)/.." && pwd)   # main repo root
+BASE_REF=$(git rev-parse HEAD)               # 의도한 base commit
+```
+
+#### Step 0 — 기존 격리 감지 및 재사용 결정
+
+현재 세션이 이미 linked worktree 안인지 확인한다(`git rev-parse --git-dir` ≠ `--git-common-dir`; submodule 가드: `--show-superproject-working-tree`가 경로를 반환하면 일반 repo로 취급).
+
+**이미 격리 상태이면** 적격성을 먼저 검증한다:
+- **(a) clean** — 무관한 미커밋 변경 없음
+- **(b) base** — 의도한 base commit 기반
+- **(c) 소유** — 이 run 전용 브랜치/경로
+
+세 조건 충족 **+ 사용자 확인** 시에만 첫 workstream을 재사용(실제 path/branch 캡처 → Step 2). 부적격 또는 미확인이면 git 생성(Step 1b) 또는 human selection 중단.
+
+**비격리 상태이면:**
+- **단일 workstream run → native 우선(Step 1a)**
+- **다중 workstream run → 모든 ws를 전부 git(Step 1b)**, 세션은 ORIG_ROOT 유지
+
+#### Step 1a — native (단일 workstream run 전용)
+
+> 적용 범위: 단일 workstream run의 비격리 케이스. 다중은 Step 1b.
+
+`EnterWorktree`(Claude Code), `/worktree`, `--worktree` 플래그 등 플랫폼 native worktree 도구가 있으면 ws 슬러그를 넘겨 격리 작업공간을 생성한다. Claude Code 컨벤션 경로: `<root>/.claude/worktrees/<slug>`, 브랜치 `worktree-<slug>`.
+
+**Containment(생성 전 보장이 유일 경로):**
+- ① native 호출 **전에** 그 도구가 `$ORIG_ROOT/.claude/worktrees/` 밑에 worktree를 생성할 것이 **보장**되는지 확인한다. Claude Code `EnterWorktree`는 알려진 동작이므로 사용 가능; 보장 불가하면 처음부터 **Step 1b(git 폴백)**으로 전환.
+- ② 보장했는데도 native가 root 밖에 생성했다면 **즉시 fail-closed STOP(needs-human)** — 사후 audit 의존 ❌.
+
+생성 후 **실제** path + branch를 캡처 → Step 2. **기록 전 변환 필수:** 캡처한 절대 경로가 `$ORIG_ROOT/.claude/worktrees/` 밑이면 `$ORIG_ROOT` 접두를 제거해 루트-상대(`.claude/worktrees/<slug>`) 형태로 변환한 뒤 Step 2에서 `--worktree`로 기록한다.
+
+#### Step 1b — git (다중 workstream run의 모든 worktree, 또는 단일 run의 native 부재/폴백)
+
+순서가 중요하다. 안전 검증을 먼저 수행한 **뒤에만** 생성 명령을 실행한다.
+
+① **`git check-ignore` 검증(proposal-only, 생성 전 필수):**
+```bash
+git check-ignore -q .claude/worktrees/
+```
+gitignore되어 있으면 통과. **ignore 안 됐으면 `.gitignore`를 자동 편집·커밋하지 않는다** — 사람에게 해당 한 줄 추가를 **제안(proposal-only)**하고 **승인 시에만** 진행, 미승인이면 fail-closed 중단. 이 repo는 `.claude/worktrees/`가 이미 gitignore되어 무수정 통과.
+
+② **검증 통과 후** `$ORIG_ROOT`-앵커 절대경로 + 명시 base로 생성한다:
+```bash
+git worktree add -b worktree-<ws-slug> "$ORIG_ROOT/.claude/worktrees/<ws-slug>" "$BASE_REF"
+```
+다중 run에서 git을 사용하는 이유: cwd를 이동시키지 않아 ORIG_ROOT에 머문 채 N개를 생성할 수 있다(native cwd 이동/중첩 회피).
+
+생성 후 **실제** path + branch를 캡처 → Step 2. **기록 시 루트-상대 변환 필수:** `$ORIG_ROOT` 접두를 제거해 `.claude/worktrees/<slug>` 형태로 `--worktree`를 지정한다(절대 경로 기록 금지 — artifact prefix가 절대 경로가 되면 `episode.mjs` containment 실패).
+
+#### §0.5 원본 root·base 캡처 + cwd 분리 + artifact 경로 규칙
+
+- **ORIG_ROOT/BASE_REF 캡처(sibling git 경로 구성용):** 어떤 worktree 전환보다 먼저 `$ORIG_ROOT`(main repo root — git-common-dir 기반 파생; linked worktree에서 `--show-toplevel`은 project root가 아닌 연결된 worktree를 반환하므로 `cd "$(git rev-parse --path-format=absolute --git-common-dir)/.." && pwd` 사용)와 `$BASE_REF`(의도한 base commit)를 캡처한다(위 캡처 블록 참조). 이 값이 sibling git 폴백의 절대경로·명시 base 인자가 된다.
+- **cwd 분리:** maker/checker 파일 편집은 해당 worktree 안에서(분리) 수행한다. 커널 상태 호출은 `rootOf` 상향탐색이 cwd에서 root를 자동 해석(`--project-root` 불필요).
+- **artifact 경로는 ORIG_ROOT-상대로 기록:** episode artifact를 `.claude/worktrees/<slug>/…` 형태(ORIG_ROOT 기준 상대)로 기록해야 `episode.mjs` containment(절대경로·`..` 금지)를 통과한다. worktree가 root 밑에 있어야 이 경로가 성립한다.
+- **worktree 기록 경로 규율(FIX A/FIX N):** git worktree **생성**은 `$ORIG_ROOT/.claude/worktrees/<slug>` 절대경로로 하되(git은 절대경로 필요), `workstream new`에 **기록**하는 worktree 값은 반드시 루트-상대(root-relative) 형태 `.claude/worktrees/<slug>` (또는 `.worktrees/<slug>`)여야 한다. native EnterWorktree 경로도 동일 — 캡처한 절대 경로를 `$ORIG_ROOT` 기준으로 잘라 루트-상대로 변환한 뒤 기록. 이유: artifact 경로는 `<recorded-worktree>/<artifact>`로 도출되는데, 기록된 worktree가 절대 경로이면 artifact prefix도 절대 경로가 되어 `episode.mjs` containment(`절대경로·.. 금지`)를 통과하지 못한다. 커널 `findRoot`는 이 두 컨벤션 경로에서만 run을 상향탐색으로 해석한다.
+
+#### Step 1.5 — create↔record 정합 (고아 방지)
+
+**(a) 생성 직전 lease check 사전점검(read-only, `--project-root` 불필요):**
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" lease check --owner <run_id> --generation <n>
+```
+
+`ok:false`이면 생성하지 않고 fail-closed. (lease 유효성은 `lease check`로만 읽는다 — `state get`으로 lease 필드를 직접 읽으면 올바른 경로가 아니어서 동작하지 않는다.)
+
+**(b) 멱등 재시도:** 대상 경로/브랜치가 이미 존재하면(이전 실패 잔재) Step 0 적격성 검증을 재적용해 재사용/감지한다.
+
+**(c) record 실패 시 proposal-only 정리:** `workstream new` 실패 시 "worktree `<path>` 고아(orphan) — 정리(`ExitWorktree`/`git worktree remove`) 제안"을 surface(proposal-only, 자동 삭제 ❌).
+
+**(d) reconcile audit(unattended 보강):** respawn/finish 시 `$ORIG_ROOT/.claude/worktrees/`(및 폴백 `.worktrees/`) 밑의 실제 디렉터리 중 active workstream에 매핑되지 않는 것을 고아 후보로 surface(proposal-only 정리 제안). root-밖 native 고아는 Step 1a①②가 처음부터 안 만드므로 audit 대상 아님.
+
+**(e) 잔여 TOCTOU:** `lease check`와 `workstream new`의 `requireLease` 사이에 좁은 TOCTOU가 남는다. 고아는 gitignored `.claude/worktrees/` 밑이므로 repo를 오염시키지 않으며 (d) audit으로 발견된다.
+
+**(f) 커널 2-phase는 명시적 후속:** 고아 원천 차단은 커널 2-phase 예약이 필요(v1 비-스코프 — 스코프 상향 시 TDD 동반).
+
+#### Step 2 — 기록
+
+캡처한 실제 값으로 기록한다(`--project-root` 불필요 — 커널 `rootOf`가 cwd 상향탐색으로 root를 자동 해석).
+
+**`--worktree`는 반드시 루트-상대(root-relative) 경로**로 기록한다 — git이 `$ORIG_ROOT/.claude/worktrees/<slug>` 절대경로로 생성하더라도 기록 값은 `.claude/worktrees/<slug>` 형태다:
+
 ```
 node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" workstream new \
   --title "<workstream title>" \
-  --branch "<branch-name>" \
-  --worktree "<worktree-path>" \
+  --branch "<actual-branch>" \
+  --worktree ".claude/worktrees/<ws-slug>" \
   --owner <run_id> --generation 1
 ```
 
 의존 관계가 있으면 `--depends-on '<["ws-id-1"]>'`도 추가.
+
+#### 결정표
+
+| 상황 | 동작 |
+|------|------|
+| 단일 run · 이미 격리 · 적격(clean·base·소유)+사용자 확인 | 현재 worktree 재사용 |
+| 단일 run · 이미 격리 · 부적격/미확인 | 재사용 ❌ → git(Step 1b) 또는 human 중단 |
+| 단일 run · 비격리 · native 있음 | `EnterWorktree` native 생성(Step 1a) |
+| 단일 run · 비격리 · native 없음 | git 컨벤션 경로(Step 1b) |
+| 다중 run · 모든 ws | 전부 git(Step 1b): 생성 `$ORIG_ROOT/.claude/worktrees/<slug>` — 기록 `.claude/worktrees/<slug>` (루트-상대, native 미사용) |
+| gitignore 미설정 | proposal-only 제안 — 승인 시에만 진행, 자동 커밋 ❌ |
+| native가 root 밖에 생성 | fail-closed STOP(needs-human) |
 
 ### 2-7. 첫 번째 Episode 생성
 
@@ -102,12 +202,14 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" episode new \
   --kind implementation \
   --point design \
   --workstream <workstream_id> \
-  --artifacts '["path/to/expected-output.md"]' \
+  --artifacts '[".claude/worktrees/<ws-slug>/expected-output.md"]' \
   --owner <run_id> --generation 1
 ```
 
 `--artifacts`는 필수다 — maker `done` 전이는 비어있지 않은 `expected_artifacts`와 실제 파일 존재를 요구한다.
-expected 경로는 `adapter resolve`의 `read.path` 또는 계획된 산출물에서 도출한다.
+expected 경로는 `adapter resolve`의 `read.path`를 **변환(TRANSFORM)** 하여 도출한다: `adapter resolve`가 반환하는 `read.path`(예: `.deep-work/<task>/session-receipt.json`)는 UNPREFIXED 경로이므로 반드시 `<recorded-worktree-relative-to-root>/<adapter read.path>` 형태로 워크트리 접두(prefix)를 붙여야 한다(예: `.claude/worktrees/<ws-slug>/.deep-work/<task>/session-receipt.json`). 계획된 산출물도 동일하게 변환한다.
+
+> **artifact 경로 규칙(기록된 worktree 경로(루트 기준 상대) 접두):** 최초 episode 생성(`episode new`)의 `--artifacts`(expected)와 완료 기록(`episode record`)의 `--artifacts`(submitted)는 반드시 동일한 project root 기준 상대 경로, **기록된 worktree 경로(루트 기준 상대) 접두** 형태로 지정해야 한다 — `<recorded-worktree-relative-to-root>/path/to/file` (예: `.claude/worktrees/<ws-slug>/path/to/file` 또는 `.worktrees/<ws-slug>/path/to/file`). 두 목록이 일치하지 않으면 커널의 coverage + existence 검사가 실패한다.
 
 ## 단계 3: 완료 메시지
 

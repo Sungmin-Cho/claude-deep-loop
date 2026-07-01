@@ -52,7 +52,8 @@ function finishOrAdvance(loop, gate, fanoutBlocked) {
     // P2-b: a proof-impossible orphan maker (expected_artifacts === []) cannot reach `done` even from in_progress
     // (recordEpisode('done') rejects empty expected_artifacts) → don't await_result forever; surface abandon recovery.
     if (inProg.role === 'maker' && isOrphanMaker(inProg)) return A(gate, { type: 'await_human', episode_id: inProg.id, reason: 'orphan-maker-no-artifacts' }, '/deep-loop-status');
-    return A(gate, { type: 'await_result', episode_id: inProg.id }, '/deep-loop-continue');
+    // native-worktree: carry workstream_id so the driver can enter the episode's worktree for await_result.
+    return A(gate, { type: 'await_result', episode_id: inProg.id, workstream_id: inProg.workstream_id }, '/deep-loop-continue');
   }
   // pending checker 는 actionable 이나 auto-dispatch (dispatch_checker = review dispatch) 가 중복 checker 를 만든다.
   // 사람에게 surface — driver 가 무한 dispatch loop 에 빠지지 않도록.
@@ -111,7 +112,8 @@ export function nextAction(loop, { now = Date.now() } = {}) {
       // P2-b: same orphan routing as finishOrAdvance — an in_progress orphan maker can never reach `done`, so surface
       // the human-gated abandon recovery instead of awaiting a result that can never validate.
       if (isOrphanMaker(ep)) return A(gate, { type: 'await_human', episode_id: ep.id, reason: 'orphan-maker-no-artifacts' }, '/deep-loop-status');
-      return A(gate, { type: 'await_result', episode_id: ep.id }, '/deep-loop-continue');
+      // native-worktree: carry workstream_id so the driver can enter the episode's worktree for await_result.
+      return A(gate, { type: 'await_result', episode_id: ep.id, workstream_id: ep.workstream_id }, '/deep-loop-continue');
     }
     if (ep.status === 'blocked') return A(gate, { type: 'await_human', episode_id: ep.id, reason: 'episode-blocked' }, '/deep-loop-status');
     if (ep.status === 'done') {
@@ -123,7 +125,8 @@ export function nextAction(loop, { now = Date.now() } = {}) {
   if (ep.role === 'checker') {
     // pending checker auto-dispatch 는 중복 checker 를 만든다 (dispatch_checker = review dispatch). 사람에게 surface.
     if (ep.status === 'pending') return A(gate, { type: 'await_human', episode_id: ep.id, reason: 'pending-checker-unresolved' }, '/deep-loop-status');
-    if (ep.status === 'in_progress') return A(gate, { type: 'await_result', episode_id: ep.id }, '/deep-loop-continue');   // 재dispatch 금지 (Codex r2 🔴7)
+    // native-worktree: carry workstream_id for worktree entry on await_result.
+    if (ep.status === 'in_progress') return A(gate, { type: 'await_result', episode_id: ep.id, workstream_id: ep.workstream_id }, '/deep-loop-continue');   // 재dispatch 금지 (Codex r2 🔴7)
     if (ep.status === 'blocked') return A(gate, { type: 'await_human', episode_id: ep.id, reason: 'episode-blocked' }, '/deep-loop-status');
     // Same unified predicate as the finishOrAdvance scan (recommend ≡ enforce). An UNRESOLVED rejected checker is
     // ALWAYS bound (unbound rejected are rejectionResolved=true → neutral) → fix_episode (re-make THIS maker). A

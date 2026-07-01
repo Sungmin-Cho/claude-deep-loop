@@ -7,7 +7,7 @@ import { detectPlugins } from './lib/detect.mjs';
 import { matchRecipe } from './lib/recipes.mjs';
 import { json } from './lib/log.mjs';
 import { validate as validateLoop } from './lib/schema.mjs';
-import { readState, writeState, patch as patchState, pauseRun } from './lib/state.mjs';
+import { readState, writeState, patch as patchState, pauseRun, runDir, findRoot } from './lib/state.mjs';
 import { leaseCheck, acquireLease, releaseLease } from './lib/lease.mjs';
 import { newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal } from './lib/workspace.mjs';
 import { newEpisode, recordEpisode, abandonEpisode } from './lib/episode.mjs';
@@ -43,7 +43,7 @@ function optInt(f, name) {   // 미지정 → 0; 지정 시 비음정수 문자�
   return Number(v);
 }
 
-function rootOf(f) { return f['project-root'] || process.cwd(); }
+function rootOf(f) { return f['project-root'] || findRoot(process.cwd()); }
 function runIdOf(root, f) {
   if (f['run-id']) return f['run-id'];
   const p = join(root, '.deep-loop', 'current');
@@ -81,9 +81,8 @@ const handlers = {
     const sample = buildInitialLoop({ goal: 'self-test', protocol: 'standalone', recipe: { id: 'r', name: 'r', reason: '' }, runId: 'SELFTEST00000000000000000T', now: new Date() });
     const sv = validateLoop(sample);
     if (!sv.ok) errors.push(`builder self-test: ${sv.errors.join('; ')}`);
-    const root = f['project-root'] || process.cwd();
-    const currentPath = join(root, '.deep-loop', 'current');
-    const runId = f['run-id'] || (existsSync(currentPath) ? readFileSync(currentPath, 'utf8').trim() : null);
+    const root = rootOf(f);
+    const runId = runIdOf(root, f);
     if (runId) {
       try {
         const { data } = readState(root, runId);   // 해시 anchor 검증 발화
@@ -236,12 +235,26 @@ const handlers = {
   state: async (a) => {
     const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
     if (verb === 'get') {
-      const { data } = readState(root, runId);
+      if (runId == null) { json(null); return 0; }   // no pointer at all (first entry) → clean null
+      const explicit = f['run-id'] != null;           // explicit --run-id vs implicit .deep-loop/current
+      let data;
+      try { ({ data } = readState(root, runId)); }
+      catch (e) {
+        // null ONLY for: implicit current pointer AND the run dir itself is absent (genuine stale pointer).
+        if (e && e.code === 'ENOENT' && !explicit && !existsSync(runDir(root, runId))) { json(null); return 0; }
+        // run dir present but loop.json gone = partial state loss → fail closed (don't mask as "no run").
+        if (e && e.code === 'ENOENT' && existsSync(runDir(root, runId))) {
+          error(`STATE_MISSING: ${runId} loop.json absent but run dir exists`); return 1;
+        }
+        // explicit --run-id miss / STATE_TAMPERED / bad JSON / EACCES / RUN_ID_INVALID / other → surface.
+        error(String(e && e.message || e)); return 1;
+      }
       if (f.field === undefined || f.field === true) { json(data); return 0; }
       const val = String(f.field).split('.').reduce((o, k) => (o == null ? undefined : o[k]), data);
       json(val === undefined ? null : val); return 0;
     }
     if (verb === 'patch') {
+      if (runId == null) { error('MISSING_RUN_ID'); return 2; }   // mutating with no run = usage error (before fence)
       requireLease(root, runId, f);   // --owner/--generation 누락·불일치 → exit 3 (fence)
       const field = reqStr(f, 'field'); if (!field) { error('MISSING_FIELD'); return 2; }       // Codex r1 sf-6: 비-fence 누락 → exit 2
       const rawVal = reqStr(f, 'value'); if (rawVal === null) { error('MISSING_VALUE'); return 2; }

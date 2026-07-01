@@ -44,6 +44,12 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field workstreams
 
 각 active workstream의 worktree 경로 무결성을 확인한다. 경로 소실 시 조용히 재생성하지 않는다 — `needs-human`으로 표시하고 사람에게 보고한다.
 
+## 단계 3.5: Worktree 진입 위임
+
+resume은 특정 worktree에 미리 진입하지 않는다. per-action worktree 진입은 `/deep-loop-continue` §1.5(`action.workstream_id` 기반)에 위임한다 — `max_parallel` 환경에서 여러 active workstream이 존재할 때 잘못된 worktree로 라우팅되는 것을 방지한다.
+
+resume이 단계 4에서 `/deep-loop-continue`를 호출하면, continue가 `action.workstream_id`를 기준으로 올바른 worktree에 자동 진입한다.
+
 ## 단계 4: 진행
 
 이어서 진행(`resume`)한다:

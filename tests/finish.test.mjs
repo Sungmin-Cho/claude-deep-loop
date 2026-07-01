@@ -24,7 +24,7 @@ function seed() {
 // (episode.mjs:89-112). recordWorkstreamTerminal('ready')는 전 review point coverage 필요(위 seed 가 1개로 축소).
 function buildSettledRun(root, runId, fence) {
   writeFileSync(join(root, 'art.txt'), 'artifact');   // expected artifact 가 디스크에 존재해야 done 통과
-  const ws = newWorkstream(root, runId, { title: 'W', branch: 'b', worktree: 'wt', fence });
+  const ws = newWorkstream(root, runId, { title: 'W', branch: 'b', worktree: '.claude/worktrees/wt', fence });
   const ep = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws.id, expectedArtifacts: ['art.txt'], fence });
   recordEpisode(root, runId, ep.id, { status: 'done', artifacts: ['art.txt'], proof: {}, fence });   // artifacts 가 expected 를 커버
   const dr = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws.id, detected: {}, fence });
@@ -253,7 +253,7 @@ test('finish completed rejects runDir itself or a directory as the report', () =
 // blocks finish until abandonEpisode settles it.
 test('repro: abandoning the orphan pending maker unblocks finish --status completed', () => {
   const { root, runId, fence } = seed();   // review.points=['implementation']
-  const ws = newWorkstream(root, runId, { title: 'W', branch: 'b', worktree: 'wt', fence });
+  const ws = newWorkstream(root, runId, { title: 'W', branch: 'b', worktree: '.claude/worktrees/wt', fence });
   // Normal sequence: done maker + approved checker (satisfies implementation review point).
   writeFileSync(join(root, 'art.txt'), 'x');
   const good = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws.id, expectedArtifacts: ['art.txt'], fence });

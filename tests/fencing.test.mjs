@@ -32,7 +32,7 @@ test('newWorkstream with stale fence throws LEASE_FENCED', () => {
 
   // Old parent tries to mutate with stale fence (gen1) — must throw LEASE_FENCED
   assert.throws(
-    () => newWorkstream(root, runId, { title: 'T', branch: 'b', worktree: 'w', fence: { owner, generation: gen1, intent: 'business' } }),
+    () => newWorkstream(root, runId, { title: 'T', branch: 'b', worktree: '.claude/worktrees/w', fence: { owner, generation: gen1, intent: 'business' } }),
     /LEASE_FENCED/
   );
 });
@@ -44,7 +44,7 @@ test('newWorkstream with correct current fence succeeds', () => {
   const gen = data.session_chain.lease.generation;
 
   // Correct fence — should succeed
-  const { id } = newWorkstream(root, runId, { title: 'Auth', branch: 'b', worktree: 'w', fence: { owner, generation: gen, intent: 'business' } });
+  const { id } = newWorkstream(root, runId, { title: 'Auth', branch: 'b', worktree: '.claude/worktrees/w', fence: { owner, generation: gen, intent: 'business' } });
   assert.match(id, /^ws-01-auth$/);
 });
 
@@ -54,7 +54,7 @@ test('setWorkstreamStatus with stale fence throws LEASE_FENCED', () => {
   const owner = data.session_chain.lease.owner_run_id;
   const gen1 = data.session_chain.lease.generation;
 
-  const { id } = newWorkstream(root, runId, { title: 'T', branch: 'b', worktree: 'w', fence: { owner, generation: gen1, intent: 'business' } });
+  const { id } = newWorkstream(root, runId, { title: 'T', branch: 'b', worktree: '.claude/worktrees/w', fence: { owner, generation: gen1, intent: 'business' } });
 
   // Simulate child takeover
   releaseLease(root, runId, { owner, generation: gen1 });
@@ -72,7 +72,7 @@ test('recordWorkstreamTerminal with stale fence throws LEASE_FENCED', () => {
   const owner = data.session_chain.lease.owner_run_id;
   const gen1 = data.session_chain.lease.generation;
 
-  const { id } = newWorkstream(root, runId, { title: 'T', branch: 'b', worktree: 'w', fence: { owner, generation: gen1, intent: 'business' } });
+  const { id } = newWorkstream(root, runId, { title: 'T', branch: 'b', worktree: '.claude/worktrees/w', fence: { owner, generation: gen1, intent: 'business' } });
 
   // Simulate child takeover
   releaseLease(root, runId, { owner, generation: gen1 });
@@ -125,7 +125,7 @@ test('recordReviewOutcome with stale fence throws LEASE_FENCED', () => {
   const gen1 = d0.session_chain.lease.generation;
 
   const fence1 = { owner, generation: gen1, intent: 'business' };
-  const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: 'w', fence: fence1 }).id;
+  const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: '.claude/worktrees/w', fence: fence1 }).id;
   // A done maker so dispatchReview binds the checker (unbound checkers are refused: REVIEW_NO_ELIGIBLE_MAKER).
   writeFileSync(join(root, 'plan-art.txt'), 'artifact');
   const m = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'plan', point: 'plan', workstream: ws, expectedArtifacts: ['plan-art.txt'], fence: fence1 });
@@ -147,7 +147,7 @@ test('all mutators without fence param throw FENCE_REQUIRED (fence is now mandat
   const { root, runId } = seed();
   // newWorkstream
   assert.throws(
-    () => newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: 'w' }),
+    () => newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: '.claude/worktrees/w' }),
     /FENCE_REQUIRED/
   );
   // setWorkstreamStatus (need a ws to call it, but the FENCE_REQUIRED is thrown before any state read)

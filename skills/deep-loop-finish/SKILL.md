@@ -17,11 +17,25 @@ user-invocable: true
 
 ## 단계 1: Final Report 작성
 
-`<project-root>/.deep-loop/runs/<run_id>/final-report.md`에 final report를 작성한다.
+> [!IMPORTANT]
+> cwd가 worktree 안일 때 상대 경로는 worktree 하위에 파일을 생성해 `finishRun`의 존재 확인을 실패시킨다. **반드시 `project.root`-앵커된 절대 경로를 사용한다.**
+
+**먼저 project root를 상태에서 읽는다:**
+
+> `state get --field project.root`는 JSON-인코딩된 문자열(예: `"/repo"`)을 출력한다 — 따옴표를 제거해야 한다.
 
 ```
-Write({ file_path: ".deep-loop/runs/<run_id>/final-report.md", content: report })
+PROJECT_ROOT=$(node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field project.root \
+  | node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0,"utf8")))')
 ```
+
+`<project-root>/.deep-loop/runs/<run_id>/final-report.md`에 **절대 경로**로 final report를 작성한다:
+
+```
+Write({ file_path: "<project-root>/.deep-loop/runs/<run_id>/final-report.md", content: report })
+```
+
+여기서 `<project-root>`는 위에서 읽은 `PROJECT_ROOT` 값(절대 경로)으로 대체한다.
 
 report 내용:
 - **목표 & 결과**: 달성된 goal 요약
@@ -29,6 +43,8 @@ report 내용:
 - **사용 명령 & 원칙**: 핵심 CLI 호출 기록
 - **Maker-Checker 흐름**: episode별 maker/checker 결과
 - **Worktree 사용 현황**: 브랜치 & 병합 상태
+  - `merged`/`abandoned` worktree 정리 제안: native `ExitWorktree` 우선, 없으면 `git worktree remove` — proposal-only(자동 삭제 ❌, 사람 승인)
+  - reconcile audit: `$ORIG_ROOT/.claude/worktrees/`(및 `.worktrees/`) 밑에서 기록에 없는(어떤 workstream에도 매핑 안 된) 디렉터리를 고아 후보로 surface(proposal-only); root-밖 native worktree는 audit 대상 아님(Step 1a가 애초에 생성 안 함)
 - **Heartbeat & 검증 결과**: budget 소비, comprehension debt
 - **통합 여부**: PR/브랜치 병합 상태(proposal-only — 실제 push는 사람이)
 - **남은 TODO**: 미완료 항목 목록
@@ -84,7 +100,9 @@ Skill({ skill: "deep-memory:deep-memory-harvest" })
 deep-wiki 플러그인이 설치된 경우:
 
 ```javascript
-Skill({ skill: "deep-wiki:wiki-ingest", args: ".deep-loop/runs/<run_id>/final-report.md" })
+Skill({ skill: "deep-wiki:wiki-ingest", args: "<project-root>/.deep-loop/runs/<run_id>/final-report.md" })
 ```
+
+`<project-root>`는 단계 1에서 읽은 `PROJECT_ROOT` 절대 경로 값이다.
 
 미감지 시 스킵하고 명시적으로 로그에 기록한다.

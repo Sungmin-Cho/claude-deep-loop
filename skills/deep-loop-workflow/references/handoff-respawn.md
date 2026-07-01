@@ -106,7 +106,8 @@ respawn이 내부적으로 평가하는 순서:
 새 세션 시작 시 `/deep-loop-resume`:
 1. `handoffs/<latest>-next-session.md` + `state get` 읽기(이전 대화 가정 금지)
 2. `lease acquire`로 세션 lease CAS 인수 — reserved child acquire가 run을 un-pause한다(커널 처리, Task 8)
-3. active workstream worktree 경로 무결성 확인
+3. active workstream worktree 경로 무결성 확인(existsSync → 소실 시 needs-human)
+3.5. worktree **진입은 `/deep-loop-continue`가 next-action의 `action.workstream_id` 기준으로 수행**한다(resume은 특정 worktree로 미리 진입하지 않음 — 다중 병렬 오진입 방지). 커널 `rootOf` 상향탐색이 cwd 무관하게 원본 root를 자동 해석하므로 `--project-root`는 불필요
 4. `/deep-loop-continue`로 진행
 
 ## 사람 탈출 수단: recover --confirm

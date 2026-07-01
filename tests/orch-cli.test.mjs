@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
@@ -33,7 +33,7 @@ test('next-action honors --now for wallclock hard-stop', () => {
 
 test('workstream new + set via CLI with lease', () => {
   const { root, runId } = seed();
-  const ws = JSON.parse(run(root, ['workstream', 'new', '--title', 'Auth', '--branch', 'b', '--worktree', 'w', '--owner', runId, '--generation', '1']));
+  const ws = JSON.parse(run(root, ['workstream', 'new', '--title', 'Auth', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--owner', runId, '--generation', '1']));
   run(root, ['workstream', 'set', '--id', ws.id, '--status', 'in_progress', '--owner', runId, '--generation', '1']);
   assert.equal(readState(root, runId).data.workstreams[0].status, 'in_progress');
 });
@@ -41,7 +41,7 @@ test('workstream new + set via CLI with lease', () => {
 test('mutating command with wrong generation is fenced (exit 3)', () => {
   const { root, runId } = seed();
   let code = 0;
-  try { run(root, ['workstream', 'new', '--title', 'X', '--branch', 'b', '--worktree', 'w', '--owner', runId, '--generation', '9']); }
+  try { run(root, ['workstream', 'new', '--title', 'X', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--owner', runId, '--generation', '9']); }
   catch (e) { code = e.status; }
   assert.equal(code, 3);
 });
@@ -57,12 +57,12 @@ test('episode new creates request + episode via CLI', () => {
 // Fix 2: workstream terminal --status ready now uses kernel-derived proof (abandoned doesn't need review_points).
 test('workstream terminal (abandoned) + review record reach kernel via CLI', () => {
   const { root, runId } = seed();
-  const ws = JSON.parse(run(root, ['workstream', 'new', '--title', 'A', '--branch', 'b', '--worktree', 'w', '--owner', runId, '--generation', '1']));
+  const ws = JSON.parse(run(root, ['workstream', 'new', '--title', 'A', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--owner', runId, '--generation', '1']));
   run(root, ['workstream', 'set', '--id', ws.id, '--status', 'in_progress', '--owner', runId, '--generation', '1']);
   run(root, ['workstream', 'terminal', '--id', ws.id, '--status', 'abandoned', '--proof', '{"reason":"superseded"}', '--owner', runId, '--generation', '1']);
   assert.equal(readState(root, runId).data.workstreams[0].status, 'abandoned');
   // review record: a done maker (so the checker binds — dispatchReview refuses unbound), then dispatch + record.
-  const ws2 = JSON.parse(run(root, ['workstream', 'new', '--title', 'B', '--branch', 'b2', '--worktree', 'w2', '--owner', runId, '--generation', '1']));
+  const ws2 = JSON.parse(run(root, ['workstream', 'new', '--title', 'B', '--branch', 'b2', '--worktree', '.claude/worktrees/w2', '--owner', runId, '--generation', '1']));
   writeFileSync(join(root, 'plan-art.txt'), 'artifact');
   const maker = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'plan', '--point', 'plan', '--workstream', ws2.id, '--artifacts', '["plan-art.txt"]', '--owner', runId, '--generation', '1']));
   run(root, ['episode', 'record', '--id', maker.id, '--status', 'done', '--artifacts', '["plan-art.txt"]', '--owner', runId, '--generation', '1']);
@@ -92,7 +92,7 @@ test('respawn --dry-run returns JSON with ok field', () => {
 test('workstream new with valueless --generation flag exits with code 3', () => {
   const { root, runId } = seed();
   let code = 0;
-  try { run(root, ['workstream', 'new', '--title', 'X', '--branch', 'b', '--worktree', 'w', '--owner', runId, '--generation']); }
+  try { run(root, ['workstream', 'new', '--title', 'X', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--owner', runId, '--generation']); }
   catch (e) { code = e.status; }
   assert.equal(code, 3);
 });
@@ -125,7 +125,7 @@ test('lease acquire (missing --owner) exits with code 3', () => {
 test('workstream new missing --title exits with code 2', () => {
   const { root, runId } = seed();
   let code = 0;
-  try { run(root, ['workstream', 'new', '--branch', 'b', '--worktree', 'w', '--owner', runId, '--generation', '1']); }
+  try { run(root, ['workstream', 'new', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--owner', runId, '--generation', '1']); }
   catch (e) { code = e.status; }
   assert.equal(code, 2);
 });
@@ -167,4 +167,13 @@ test('episode abandon without --confirm exits 2 with CONFIRM_REQUIRED', () => {
   assert.equal(code, 2);
   assert.match(stderr, /CONFIRM_REQUIRED/);
   assert.equal(readState(root, runId).data.episodes[0].status, 'pending');   // not abandoned
+});
+
+test('CLI validate from nested .claude/worktrees cwd resolves the run (rootOf upward-search)', () => {
+  const { root, runId } = seed();
+  const wt = join(root, '.claude', 'worktrees', 'ws-01');
+  mkdirSync(wt, { recursive: true });
+  // --project-root 없이, cwd 를 worktree 로 두고 validate 호출 → run 을 찾아야 함.
+  const out = execFileSync('node', [CLI, 'validate'], { cwd: wt, encoding: 'utf8' });
+  assert.match(out, new RegExp(`ok \\(run ${runId}\\)`), 'validate found run from worktree cwd');
 });

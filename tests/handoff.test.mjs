@@ -123,8 +123,9 @@ test('escApple doubles backslash AND escapes double-quote (root with both)', () 
   assert.ok(script.includes('/a\\\\b\\"c'), 'escApple must double the backslash then escape the double-quote');
 });
 
+const TRUSTED_PS_BIN = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
 test('powershell uses -EncodedCommand of psq-escaped inner', () => {
-  const c = buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'powershell' });
+  const c = buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'powershell', launcherBin: TRUSTED_PS_BIN });
   assert.equal(c.powershell.argv[0], '-Command');
   const cmdStr = c.powershell.argv[1];
   const b64 = cmdStr.match(/-EncodedCommand','([A-Za-z0-9+/=]+)'/)[1];
@@ -133,7 +134,7 @@ test('powershell uses -EncodedCommand of psq-escaped inner', () => {
 });
 
 test('powershell: root with single-quote is doubled (psq escaping)', () => {
-  const c = buildLaunchCommand({ root: "/p'q", parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'powershell' });
+  const c = buildLaunchCommand({ root: "/p'q", parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'powershell', launcherBin: TRUSTED_PS_BIN });
   const cmdStr = c.powershell.argv[1];
   const b64 = cmdStr.match(/-EncodedCommand','([A-Za-z0-9+/=]+)'/)[1];
   const decoded = Buffer.from(b64, 'base64').toString('utf16le');
@@ -347,4 +348,45 @@ test('handoff markdown lists abandoned episodes under abandoned: label', () => {
   assert.equal(r.ok, true);
   const md = readFileSync(r.handoffPath, 'utf8');
   assert.match(md, /abandoned:.*001-deep-work/);
+});
+
+// ── B3: nullable powershell entry + trusted-bin gate (2026-06-29 Windows fixes) ──
+const baseArgs = { root: '/p', parentRunId: '01PARENT', childRunId: '01CHILD', handoffRel: 'handoffs/x.md' };
+const PS7BIN = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe';
+
+test('B3: powershell entry uses absolute trusted launcherBin as bin (not bare powershell)', () => {
+  const cmds = buildLaunchCommand({ ...baseArgs, launcher: 'powershell', launcherBin: PS7BIN });
+  assert.equal(cmds.powershell.bin, PS7BIN);
+  assert.notEqual(cmds.powershell.bin, 'powershell');
+  assert.ok(!cmds.powershell.unavailable);
+});
+
+test('B3: powershell display is PS-pasteable (call operator) for a path with spaces — plan-ADV2', () => {
+  const cmds = buildLaunchCommand({ ...baseArgs, launcher: 'powershell', launcherBin: PS7BIN });
+  assert.match(cmds.powershell.display, /^& '/);
+  assert.match(cmds.powershell.display, /pwsh\.exe' -Command /);
+  assert.ok(!/^'C:\\/.test(cmds.powershell.display), 'display must not be a bare quoted-path literal');
+});
+
+test('B3: launcher=powershell + launcherBin null → unavailable entry, no bare bin', () => {
+  const cmds = buildLaunchCommand({ ...baseArgs, launcher: 'powershell', launcherBin: null });
+  assert.equal(cmds.powershell.unavailable, true);
+  assert.equal(cmds.powershell.bin, null);
+  assert.equal(typeof cmds.powershell.display, 'string');   // still has a display for launch-command.txt
+});
+
+test('B3: untrusted absolute / UNC launcherBin → unavailable (not runnable) — plan-ADV3', () => {
+  for (const bad of ['C:\\repo\\powershell.exe', '\\\\server\\share\\pwsh.exe', 'C:\\Users\\me\\powershell.exe']) {
+    const cmds = buildLaunchCommand({ ...baseArgs, launcher: 'powershell', launcherBin: bad });
+    assert.equal(cmds.powershell.unavailable, true, `untrusted ${bad} must be unavailable`);
+    assert.equal(cmds.powershell.bin, null);
+  }
+});
+
+test('B3: non-PowerShell launcher + launcherBin null → buildLaunchCommand does not throw, builds all entries', () => {
+  assert.doesNotThrow(() => {
+    const cmds = buildLaunchCommand({ ...baseArgs, launcher: 'terminal-app', launcherBin: null });
+    assert.equal(typeof cmds.powershell.display, 'string');  // unavailable placeholder, not a throw
+    assert.ok(cmds['terminal-app'].display);                 // the actual launcher entry is intact
+  });
 });
