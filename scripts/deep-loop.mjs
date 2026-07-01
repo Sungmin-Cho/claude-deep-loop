@@ -20,6 +20,7 @@ import { resolveAdapter, guardTierProtocol, loadProtocol } from './lib/adapters.
 import { recordCost, checkBudget } from './lib/budget.mjs';
 import { computeDebt, ack as ackComprehension } from './lib/comprehension.mjs';
 import { checkBreaker, resetBreaker } from './lib/breaker.mjs';
+import { offerDesktop, confirmDesktop, declineDesktop } from './lib/spawn-optin.mjs';
 import { finishRun } from './lib/finish.mjs';
 import { detectAndPersist } from './lib/detect-terminal.mjs';
 import { recoverRun } from './lib/recover.mjs';
@@ -373,6 +374,33 @@ const handlers = {
       catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }
     }
     error(`unknown breaker verb: ${verb}`); return 2;
+  },
+  // spawn-style offer-desktop|confirm-desktop|decline-desktop --owner <id> --generation <n> [--nonce <n>]
+  // Durable, nonce-bound desktop opt-in (Task 7). Fence-fenced like every other mutating subcommand:
+  // requireLease is a fast outer pre-check (exit 3 on missing/invalid/mismatched owner-generation); the
+  // lib functions re-check the SAME fence in-lock (authoritative — see spawn-optin.mjs). Exit codes:
+  // 3 = LEASE_FENCED (fence, incl. missing/invalid --owner/--generation), 1 = {ok:false} rejection
+  // (NONCE_INVALID/NONCE_EXPIRED/SOURCE_INVALID) or any other thrown error, 2 = unknown verb.
+  'spawn-style': async (a) => {
+    const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
+    requireLease(root, runId, f);
+    const expect = { owner: f.owner, generation: intArg(f, 'generation') };
+    const now = parseNow(f);
+    const nonce = (f.nonce !== undefined && f.nonce !== true) ? String(f.nonce) : undefined;
+    if (verb === 'offer-desktop') {
+      let ttlSec; if (f['ttl-sec'] !== undefined) { ttlSec = optInt(f, 'ttl-sec'); if (ttlSec === null) { error('INVALID_TTL_SEC'); return 1; } }
+      try { json(offerDesktop(root, runId, { expect, now, nonce, ...(ttlSec != null ? { ttlSec } : {}) })); return 0; }
+      catch (e) { const msg = String(e?.message || e); if (msg.startsWith('LEASE_FENCED')) { error(msg); return 3; } error(msg); return 1; }
+    }
+    if (verb === 'confirm-desktop') {
+      try { const r = confirmDesktop(root, runId, { expect, now, nonce }); json(r); return r.ok ? 0 : 1; }
+      catch (e) { const msg = String(e?.message || e); if (msg.startsWith('LEASE_FENCED')) { error(msg); return 3; } error(msg); return 1; }
+    }
+    if (verb === 'decline-desktop') {
+      try { json(declineDesktop(root, runId, { expect, now })); return 0; }
+      catch (e) { const msg = String(e?.message || e); if (msg.startsWith('LEASE_FENCED')) { error(msg); return 3; } error(msg); return 1; }
+    }
+    error(`unknown spawn-style verb: ${verb}`); return 2;
   },
   'detect-terminal': async (a) => {
     const f = parseFlags(a); const root = rootOf(f); const runId = runIdOf(root, f);
