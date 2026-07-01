@@ -62,12 +62,15 @@ Skill (LLM) ──write──▶ state patch / budget record / comprehension ack
 ## Installation
 
 ```bash
-# Install as a Claude Code plugin from the deep-suite or standalone:
-claude plugin install https://github.com/Sungmin-Cho/claude-deep-loop.git
-
-# Or clone locally and add to your project:
-git clone https://github.com/Sungmin-Cho/claude-deep-loop.git ~/.claude/plugins/deep-loop
+# Recommended — install from the Deep Suite marketplace:
+/plugin marketplace add Sungmin-Cho/claude-deep-suite
+/plugin install deep-loop@claude-deep-suite
 ```
+
+Standalone (without the rest of the suite):
+
+- **Skills directory (permanent):** clone this repo into `~/.claude/skills/deep-loop/`; it loads as `deep-loop@skills-dir` on the next session.
+- **Session only:** `claude --plugin-dir /path/to/claude-deep-loop`
 
 Requirements: Node >= 20, no external npm dependencies.
 
