@@ -4,6 +4,7 @@ import { checkBudget, reconcileBudget } from './budget.mjs';
 import { checkBreaker } from './breaker.mjs';
 import { advanceHandoffPhase } from './lease.mjs';
 import { buildLaunchCommand } from './handoff.mjs';
+import { defaultDesktopProbe } from './desktop-target.mjs';
 
 // 게이트 순서: budget → breaker → max_sessions → wallclock → auto_handoff (spec §9). 순수.
 export function respawnGate(loop, { now = Date.now() } = {}) {
@@ -153,6 +154,7 @@ export function respawn(root, runId, {
   childRunId, key, handoffRel = '', headless = false, attended = false,
   now = Date.now(), spawnFn = defaultSpawn, pollLease, env = process.env,
   sleep = defaultSleep, pollIntervalMs = 1500,
+  platform = process.platform, desktopProbe = defaultDesktopProbe,
 } = {}) {
   reconcileBudget(root, runId);                       // 무결성 fail-stop (탐지 시 throw)
   const { data: loop } = readState(root, runId);
@@ -227,6 +229,11 @@ export function respawn(root, runId, {
   // moves above the CAS; spawnFn call and its try/catch remain below, unchanged.
   const childSession = loop.session_chain.sessions.find(s => s.run_id === childRunId);
   const effHandoffRel = (childSession && childSession.handoff_rel) || handoffRel;
+  // Task 5b: only a 'desktop' mode spawn probes the real (or injected) handler-verification target —
+  // other modes never touch it. A verified target's argvTarget threads through as `desktopTarget`; an
+  // unverified/failed probe (dt.ok===false) yields null → buildLaunchCommand's unavailable entry →
+  // the generalized unavailable-entry guard below preserve-pauses (never a rollback/fenced-target spawn).
+  const dt = mode === 'desktop' ? desktopProbe({ platform }) : null;
   let _cmds, _entry;
   try {
     // launcherBin + launcherSocket threading (R3/R7-plan): cmux requires the absolute bundled bin + verified socket.
@@ -235,6 +242,7 @@ export function respawn(root, runId, {
       launcher: loop.session_spawn?.launcher,
       launcherBin: loop.session_spawn?.launcher_bin,
       launcherSocket: loop.session_spawn?.launcher_socket,
+      platform, desktopTarget: dt && dt.ok ? dt.argvTarget : null,
     });
     _entry = _cmds[mode];
   } catch (buildErr) {

@@ -649,7 +649,11 @@ test('B3: powershell launcher with null launcher_bin → no-launcher (preserve),
 });
 
 // ── Task 3: unavailable-entry guard generalized (any mode, not just powershell) ──
-test('desktop mode with unavailable entry (buildLaunchCommand has no desktop key yet) → preserve-pause, not rollback', () => {
+// NOTE: post-Task-5b, respawn's desktopProbe defaults to defaultDesktopProbe (a REAL host query) —
+// this test explicitly injects a stub `desktopProbe` returning unverified so its outcome stays
+// deterministic across hosts/CI (never depends on whether the test machine happens to have Claude
+// Desktop installed at the allowlisted path/bundle-id).
+test('desktop mode with unverified target (desktopProbe: ok:false) → preserve-pause, not rollback', () => {
   const { root, runId } = seed((d) => {
     d.autonomy.spawn_style = 'desktop';
     d.session_spawn = {
@@ -660,8 +664,12 @@ test('desktop mode with unavailable entry (buildLaunchCommand has no desktop key
   });
   const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });
   let spawned = false;
-  const r = respawn(root, runId, { childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel, attended: true, env: {}, now: NOW1, spawnFn: () => { spawned = true; return { ok: true }; }, sleep: noSleep });
-  assert.equal(spawned, false, 'must not spawn when the desktop entry is unavailable/undefined');
+  const r = respawn(root, runId, {
+    childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel, attended: true, env: {}, now: NOW1,
+    platform: 'darwin', desktopProbe: () => ({ ok: false }),
+    spawnFn: () => { spawned = true; return { ok: true }; }, sleep: noSleep,
+  });
+  assert.equal(spawned, false, 'must not spawn when the desktop target is unverified');
   assert.equal(r.ok, false);
   assert.equal(r.outcome, 'no-launcher');
   assert.equal(r.reason, 'desktop-launcher-unavailable');
@@ -671,4 +679,55 @@ test('desktop mode with unavailable entry (buildLaunchCommand has no desktop key
   assert.equal(after.session_chain.lease.handoff_phase, 'emitted');       // handoff preserved for recovery
   assert.equal(after.session_chain.lease.handoff_child_run_id, h.childRunId, 'reserved child preserved (not invalidated)');
   assert.equal(after.session_chain.lease.resume_policy, 'human');
+});
+
+// ── Task 5b: wire the handler-verification probe into respawn (verified desktopTarget reaches
+// buildLaunchCommand → spawnFn; unverified → the Task-3 guard above preserve-pauses) ──
+function seedDesktop() {
+  return seed((d) => {
+    d.autonomy.spawn_style = 'desktop';
+    d.session_spawn = {
+      platform: 'darwin', launcher: 'none', launcher_bin: null, launcher_socket: null,
+      surface: 'window', reachable: true, visible: true, signals: {}, probe: null,
+      reason: null, fallback: 'launch-command-file', detected_at: '2026-06-24T00:00:00Z',
+    };
+  });
+}
+
+test('Task 5b: desktop respawn with a verified probe target reaches spawnFn (open -a Claude.app)', () => {
+  const { root, runId } = seedDesktop();
+  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });
+  let got;
+  const spawnFn = (e) => { got = e; return { ok: true }; };
+  // Simulate the reserved child acquiring the lease (same handshake pattern as the visible-launcher
+  // success test above) so respawn reports a genuine success outcome, not just command construction.
+  const pollLease = seq([
+    { state: 'releasing', owner_run_id: runId, generation: 1 },
+    { state: 'active', handoff_phase: 'acquired', owner_run_id: h.childRunId, generation: 2 },
+  ]);
+  const r = respawn(root, runId, {
+    childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel, attended: true, env: {}, now: NOW1,
+    platform: 'darwin',
+    desktopProbe: () => ({ ok: true, argvTarget: { kind: 'macos-app', appPath: '/Applications/Claude.app' } }),
+    spawnFn, pollLease, sleep: noSleep,
+  });
+  assert.ok(got, 'spawnFn must have been called with the desktop entry');
+  assert.equal(got.bin, 'open');
+  assert.equal(got.argv[0], '-a');
+  assert.equal(got.argv[1], '/Applications/Claude.app');
+  assert.equal(r.ok, true);
+  assert.equal(r.outcome, 'spawned');
+});
+
+test('Task 5b: desktop respawn with an unverified probe (ok:false) never reaches spawnFn (preserve-pause)', () => {
+  const { root, runId } = seedDesktop();
+  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });
+  const r = respawn(root, runId, {
+    childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel, attended: true, env: {}, now: NOW1,
+    platform: 'darwin', desktopProbe: () => ({ ok: false }),
+    spawnFn: () => { throw new Error('should not spawn'); }, sleep: noSleep,
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.outcome, 'no-launcher');
+  assert.equal(readState(root, runId).data.status, 'paused');
 });

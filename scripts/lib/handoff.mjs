@@ -5,6 +5,7 @@ import { readState, runDir } from './state.mjs';
 import { appendAnchored } from './integrity.mjs';
 import { wrap, atomicWrite } from './envelope.mjs';
 import { reserveHandoff } from './lease.mjs';
+import { defaultDesktopProbe } from './desktop-target.mjs';
 
 function tsName(now) { return new Date(now).toISOString().replace(/[:.]/g, '-'); }
 
@@ -170,7 +171,10 @@ function handoffMarkdown(loop, childRunId, reason) {
   ].join('\n');
 }
 
-export function emitHandoff(root, runId, { reason = 'milestone', trigger = 'milestone', now = Date.now(), headless = false, resumePolicy = 'visible', expect } = {}) {
+export function emitHandoff(root, runId, {
+  reason = 'milestone', trigger = 'milestone', now = Date.now(), headless = false, resumePolicy = 'visible', expect,
+  platform = process.platform, desktopProbe = defaultDesktopProbe,
+} = {}) {
   if (!expect || typeof expect.owner !== 'string' || !Number.isInteger(expect.generation)) throw new Error('FENCE_REQUIRED: emitHandoff');
   const res = reserveHandoff(root, runId, { trigger, now, expect });
   if (!res.ok) return { ok: false, reason: res.reason, key: res.key };
@@ -210,12 +214,18 @@ export function emitHandoff(root, runId, { reason = 'milestone', trigger = 'mile
   });
   atomicWrite(join(dir, csName), JSON.stringify(compaction, null, 2));
 
+  // Best-effort handler-verification probe (Task 5b) — regardless of the run's spawn_style/mode, so
+  // launch-command.txt's `# desktop` line (Task 6) can reflect a verified target when one exists.
+  // Never let a probe glitch break handoff emission: any throw is swallowed → unverified (null) target.
+  let dt = null;
+  try { dt = desktopProbe({ platform }); } catch { dt = null; }
   // Build all entry variants; write display strings to launch-command.txt for human fallback.
   const cmds = buildLaunchCommand({
     root, parentRunId: runId, childRunId, handoffRel,
     launcher: loop.session_spawn?.launcher,
     launcherBin: loop.session_spawn?.launcher_bin,
     launcherSocket: loop.session_spawn?.launcher_socket,
+    platform, desktopTarget: dt && dt.ok ? dt.argvTarget : null,
   });
   atomicWrite(join(termDir, 'launch-command.txt'), [
     `# interactive`, cmds.interactive.display, ``,
