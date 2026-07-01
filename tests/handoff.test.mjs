@@ -483,7 +483,10 @@ test('launch-command.txt desktop line is verified-target resume instruction, nev
   assert.equal(r.ok, true);
   const txt = readFileSync(join(runDir(root, runId), 'terminal', 'launch-command.txt'), 'utf8');
   assert.match(txt, /# desktop/);
-  assert.match(txt, /\/deep-loop-resume/);
+  // Extract desktop line (content immediately after '# desktop' header)
+  const desktopLineIndex = txt.split('\n').indexOf('# desktop');
+  const desktopLine = txt.split('\n')[desktopLineIndex + 1];
+  assert.match(desktopLine, /\/deep-loop-resume/);
   assert.ok(!/claude:\/\//.test(txt), 'launch-command.txt must never contain a raw claude:// deeplink');
 });
 
@@ -494,6 +497,10 @@ test('launch-command.txt desktop line is unavailable marker for non-desktop runs
   assert.equal(r.ok, true);
   const txt = readFileSync(join(runDir(root, runId), 'terminal', 'launch-command.txt'), 'utf8');
   assert.match(txt, /# desktop/);
-  assert.match(txt, /unavailable/);
+  // Extract desktop line (content immediately after '# desktop' header)
+  const desktopLineIndex = txt.split('\n').indexOf('# desktop');
+  const desktopLine = txt.split('\n')[desktopLineIndex + 1];
+  assert.match(desktopLine, /unavailable/);
+  assert.ok(!/\/deep-loop-resume/.test(desktopLine), 'desktop line in unavailable case must not contain /deep-loop-resume');
   assert.ok(!/claude:\/\//.test(txt), 'launch-command.txt must never contain a raw claude:// deeplink');
 });
