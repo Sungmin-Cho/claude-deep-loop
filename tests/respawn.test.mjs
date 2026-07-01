@@ -96,6 +96,27 @@ test('resolveSpawnMode: precedence (headless flag / spawn_style / invocation > v
   assert.equal(resolveSpawnMode(hl, { headless: false, attended: true, env: {} }), 'headless');
 });
 
+test('desktop mode when spawn_style=desktop and attended', () => {
+  const base = (over = {}) => ({ autonomy: { spawn_style: 'desktop' }, session_spawn: { launcher: 'none' }, ...over });
+  assert.equal(resolveSpawnMode(base(), { attended: true, env: {} }), 'desktop');
+});
+
+test('headless preempts desktop (unattended forces headless)', () => {
+  const base = (over = {}) => ({ autonomy: { spawn_style: 'desktop' }, session_spawn: { launcher: 'none' }, ...over });
+  assert.equal(resolveSpawnMode(base(), { headless: true, attended: true, env: {} }), 'headless');
+  assert.equal(resolveSpawnMode(base(), { attended: true, env: { DEEP_LOOP_UNATTENDED: '1' } }), 'headless');
+});
+
+test('desktop requires attended; else interactive', () => {
+  const base = (over = {}) => ({ autonomy: { spawn_style: 'desktop' }, session_spawn: { launcher: 'none' }, ...over });
+  assert.equal(resolveSpawnMode(base(), { attended: false, env: {} }), 'interactive');
+});
+
+test('existing visible launcher path unchanged', () => {
+  const loop = { autonomy: { spawn_style: 'visible' }, session_spawn: { launcher: 'iterm2' } };
+  assert.equal(resolveSpawnMode(loop, { attended: true, env: {} }), 'iterm2');
+});
+
 test('spawn_style!=visible → no visible spawn even with launcher present (mode interactive → no-launcher)', () => {
   const { root, runId } = seedLauncher({ spawn_style: 'interactive', launcher: 'cmux' });
   const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });

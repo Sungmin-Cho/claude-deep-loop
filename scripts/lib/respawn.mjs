@@ -47,6 +47,7 @@ export function isHeadlessInvocation(env = process.env) {
 // spawn_style==='visible' AND attended===true AND a real (non-'none') detected launcher; otherwise 'interactive'.
 export function resolveSpawnMode(loop, { headless = false, attended = false, env = process.env } = {}) {
   if (headless || loop?.autonomy?.spawn_style === 'headless' || isHeadlessInvocation(env)) return 'headless';
+  if (loop?.autonomy?.spawn_style === 'desktop' && attended === true) return 'desktop';
   const launcher = loop?.session_spawn?.launcher;
   if (loop?.autonomy?.spawn_style === 'visible' && attended === true && launcher && launcher !== 'none') return launcher;
   return 'interactive';
