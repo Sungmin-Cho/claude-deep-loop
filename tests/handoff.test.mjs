@@ -415,13 +415,38 @@ test('unverified desktopTarget → unavailable entry', () => {
   assert.ok(!('argv' in cmds.desktop));
 });
 
-// v1: Windows desktop launch is fail-closed even with a verified win-exe target — a GUI exe run
-// through visibleSpawn's synchronous exit-0 contract would stay resident, time out, and roll back
-// the reserved handoff child. Non-blocking dispatch is deferred to backlog; Windows falls back to
-// manual /deep-loop-resume. (macOS `open -a` exits immediately, so darwin is unaffected — see the
-// macOS test above.)
-test('windows desktop entry is fail-closed (v1 defer) even with a verified win-exe target', () => {
-  const cmds = buildLaunchCommand(desktopArgs({ platform: 'win32', desktopTarget: { kind: 'win-exe', exePath: 'C:\\Program Files\\Claude\\Claude.exe' } }));
+// Windows desktop launch: a verified win-exe target + a trusted PowerShell bin dispatches through
+// `Start-Process -FilePath <verified-exe>` — DETACHED and non-blocking, so it fixes the resident-GUI
+// launch-timeout rollback the interim v1 fail-closed behavior was sidestepping. (macOS `open -a`
+// already exits immediately, so darwin is unaffected — see the macOS test above.)
+test('windows desktop entry: verified win-exe target + trusted PS available → non-blocking Start-Process launcher', () => {
+  const trustedPs = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe';
+  const exePath = 'C:\\Program Files\\Claude\\Claude.exe';
+  const exists = (p) => p === trustedPs;
+  const cmds = buildLaunchCommand(desktopArgs({
+    platform: 'win32', desktopTarget: { kind: 'win-exe', exePath }, exists,
+  }));
+  assert.equal(cmds.desktop.available, true);
+  assert.equal(cmds.desktop.bin, trustedPs);
+  const joined = cmds.desktop.argv.join(' ');
+  assert.match(joined, /Start-Process -FilePath '/);
+  assert.ok(joined.includes(exePath), 'argv must target the verified exe path');
+  assert.match(joined, /-ArgumentList '/);
+  // the encoded resume URL is present (single-quoted) in argv...
+  assert.match(joined, /claude:\/\/code\/new\?folder=/);
+  // ...but never as a bare direct-exec of the exe, and never delegated to the OS default handler.
+  assert.ok(!/Claude\.exe\s+claude:\/\//.test(joined), 'must not directly exec the exe with the raw url');
+  assert.ok(!/Start-Process\s+'claude:\/\//.test(joined), 'must not Start-Process the url itself (default-handler form)');
+  // no human-readable display carries the raw URL.
+  assert.ok(!('display' in cmds.desktop) || !/claude:\/\//.test(String(cmds.desktop.display)));
+});
+
+test('windows desktop entry: no trusted PS bin found → unavailable (fail-closed)', () => {
+  const exePath = 'C:\\Program Files\\Claude\\Claude.exe';
+  const exists = () => false;   // simulates no trusted PowerShell present on the Windows host
+  const cmds = buildLaunchCommand(desktopArgs({
+    platform: 'win32', desktopTarget: { kind: 'win-exe', exePath }, exists,
+  }));
   assert.equal(cmds.desktop.unavailable, true);
 });
 

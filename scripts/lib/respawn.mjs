@@ -252,9 +252,10 @@ export function respawn(root, runId, {
   }
 
   // Fail closed: ANY visible/desktop mode with an unavailable entry (no trusted launcher_bin — e.g. a
-  // stale/migrated launcher='powershell' run — or an unverified/win32 desktop target, e.g. mode==='desktop'
-  // with `_cmds.desktop.unavailable===true` — v1 Windows desktop is ALWAYS unavailable, see handoff.mjs's
-  // win32 branch) — must NOT spawn. `interactive` never reaches here (it returns above, before `_cmds` is
+  // stale/migrated launcher='powershell' run — or an unverified desktop target, or (win32 only) a
+  // verified win-exe target with no trusted PowerShell bin resolvable — see handoff.mjs's win32
+  // branch, which otherwise builds a runnable non-blocking `Start-Process` entry) — must NOT spawn.
+  // `interactive` never reaches here (it returns above, before `_cmds` is
   // built); `headless`'s entry always carries `bin:'claude'` (guard never fires); a valid launcher entry
   // always has a `bin` (guard never fires). Unlike the interactive no-launcher path (which the else/none
   // skill branch preserve-pauses), this is reached via the VISIBLE/DESKTOP skill branch (launcher!=='none'

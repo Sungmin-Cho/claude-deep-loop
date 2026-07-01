@@ -1,6 +1,6 @@
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { isTrustedPsBin } from './detect-terminal.mjs';
+import { isTrustedPsBin, trustedPsCandidates } from './detect-terminal.mjs';
 import { readState, runDir } from './state.mjs';
 import { appendAnchored } from './integrity.mjs';
 import { wrap, atomicWrite } from './envelope.mjs';
@@ -37,14 +37,14 @@ const SAFE_HANDOFF_REL = /^handoffs\/[A-Za-z0-9._-]+$/;
  * headless also has { cwd }.
  * interactive has { display } only (human copies it; no auto-spawn).
  * desktop has { bin, argv, available: true } when desktopTarget is a verified macOS
- * app target (platform==='darwin'), else { unavailable: true } — deliberately no `display`
- * (see below). win32 desktop is ALWAYS { unavailable: true } in v1 (fail-closed — see the
- * win32 branch comment below); this is a controller decision, not a probe/verification gap.
+ * app target (platform==='darwin') or a verified win-exe target (platform==='win32') AND a
+ * trusted PowerShell bin is resolvable (see the win32 branch comment below), else
+ * { unavailable: true } — deliberately no `display` (see below).
  *
  * Validates parentRunId, childRunId, and handoffRel to catch shell-injection
  * before any string is interpolated (UNSAFE_SPAWN_ARG guard).
  */
-export function buildLaunchCommand({ root, parentRunId, childRunId, handoffRel, launcher, launcherBin, launcherSocket, platform = process.platform, desktopTarget = null }) {
+export function buildLaunchCommand({ root, parentRunId, childRunId, handoffRel, launcher, launcherBin, launcherSocket, platform = process.platform, desktopTarget = null, exists = existsSync }) {
   // Defensive validation: run ids are ULIDs in production, but defense-in-depth catches injection.
   if (!SAFE_ID.test(String(parentRunId))) {
     throw Object.assign(new Error(`UNSAFE_SPAWN_ARG: parentRunId=${parentRunId}`), { code: 'UNSAFE_SPAWN_ARG' });
@@ -64,20 +64,35 @@ export function buildLaunchCommand({ root, parentRunId, childRunId, handoffRel, 
   // `# desktop` launch-command.txt line is composed later by emitHandoff/Task 6).
   // macOS: only a verified target (desktopTarget produced by verifyDesktopHandler, matching
   // platform==='darwin') yields a runnable entry; otherwise fail closed to unavailable.
-  // Windows: ALWAYS unavailable in v1 regardless of verification (see the win32 branch below) —
-  // `open -a` exits immediately so the darwin path is safe under visibleSpawn's synchronous exit-0
-  // contract, but a Windows GUI exe launched directly stays resident and would time out that same
-  // contract, triggering a launch-timeout rollback that invalidates the reserved handoff child.
+  // `open -a` exits immediately, so it is safe under visibleSpawn's synchronous exit-0 contract.
+  //
+  // Windows: a verified win-exe target dispatches through a TRUSTED PowerShell's `Start-Process`,
+  // which launches the verified exe DETACHED and returns immediately — so PowerShell itself exits 0
+  // within visibleSpawn's synchronous contract (non-blocking). This is what fixes the earlier bug:
+  // running `Claude.exe <url>` directly launches a resident GUI process that never exits, which
+  // visibleSpawn's launch-timeout treats as a failed launch and rolls back the reserved handoff
+  // child. `-FilePath <verified-exe>` targets the ALLOW_WIN_PATHS-verified executable directly —
+  // deliberately NOT `Start-Process '<url>'`, which would hand the `claude://` scheme off to
+  // whatever the OS has registered as the default handler (bypassing our own verification).
+  // psq() single-quotes both the exe path and the url so PowerShell treats them as literal
+  // strings — the encoded url's `%`/`&` would otherwise be shell/cmd metacharacters. The url
+  // lives only in argv here — never in a human-readable `display` field (see desktopEntry
+  // contract above). Resolving the trusted PS bin is done HERE (build time) against the same
+  // fixed TRUSTED_PS allowlist detect-terminal.mjs uses, because the desktop launcher targets
+  // desktopTarget.exePath, not the persisted session_spawn.launcher_bin. No trusted PS bin found
+  // → fail closed to unavailable (can't launch non-blocking without it).
   const desktopUrl = `claude://code/new?folder=${encodeURIComponent(root)}&q=${encodeURIComponent(resumePrompt)}`;
   let desktopEntry;
   if (desktopTarget && desktopTarget.kind === 'macos-app' && platform === 'darwin') {
     desktopEntry = { bin: 'open', argv: ['-a', desktopTarget.appPath, desktopUrl], available: true };
   } else if (desktopTarget && desktopTarget.kind === 'win-exe' && platform === 'win32') {
-    // v1: Windows desktop launch fail-closed — a GUI exe run through visibleSpawn's synchronous
-    // exit-0 contract would time out and roll back the child; a non-blocking dispatch (cmd /c start /
-    // ShellExecute targeting the verified exe) + real Windows verification is deferred (backlog).
-    // Windows desktop runs fall back to manual /deep-loop-resume.
-    desktopEntry = { unavailable: true };
+    const psBin = trustedPsCandidates(exists)[0];
+    if (psBin) {
+      const psCmd = `Start-Process -FilePath '${psq(desktopTarget.exePath)}' -ArgumentList '${psq(desktopUrl)}'`;
+      desktopEntry = { bin: psBin, argv: ['-NoProfile', '-Command', psCmd], available: true };
+    } else {
+      desktopEntry = { unavailable: true };
+    }
   } else {
     desktopEntry = { unavailable: true };
   }
