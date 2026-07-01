@@ -54,10 +54,10 @@ function violatesBoundary(src) {
 }
 
 // Codex r3 sf-4: deep-loop.mjs 를 실제 호출하는 라인 중 mutating subcommand 는 --owner 와 --generation 을 **둘 다** 가져야 한다.
-const MUTATING_SUB = /(state\s+patch|episode\s+(?:new|record)|workstream\s+(?:new|set|terminal)|review\s+(?:dispatch|record)|handoff\s+emit|budget\s+record|comprehension\s+ack|breaker\s+reset|lease\s+(?:acquire|release)|finish\b)/;
+const MUTATING_SUB = /(state\s+patch|episode\s+(?:new|record|abandon)|workstream\s+(?:new|set|terminal)|review\s+(?:dispatch|record)|handoff\s+emit|budget\s+record|comprehension\s+ack|breaker\s+reset|lease\s+(?:acquire|release)|finish\b)/;
 // Codex r5 sf-3: shorthand 명령(예: `episode record --status done`, `finish --status completed`)도 잡는다.
 // "command 라인" = deep-loop.mjs 호출이거나, mutating sub 뒤에 CLI 플래그(--xxx)가 오는 경우. 순수 산문 멘션은 무시.
-const MUTATING_CMD = /(?:state\s+patch|episode\s+(?:new|record)|workstream\s+(?:new|set|terminal)|review\s+(?:dispatch|record)|handoff\s+emit|budget\s+record|comprehension\s+ack|breaker\s+reset|lease\s+(?:acquire|release)|finish)\b[^\n]*\s--\w/;
+const MUTATING_CMD = /(?:state\s+patch|episode\s+(?:new|record|abandon)|workstream\s+(?:new|set|terminal)|review\s+(?:dispatch|record)|handoff\s+emit|budget\s+record|comprehension\s+ack|breaker\s+reset|lease\s+(?:acquire|release)|finish)\b[^\n]*\s--\w/;
 function mutatingFenced(text) {
   // Codex r4 sf-2: 셸 라인 연속(\ 로 끝나는 줄)을 논리 명령으로 먼저 합친다 — multi-line unfenced 명령 회피 차단.
   const joined = text.replace(/\\\n\s*/g, ' ');
@@ -248,6 +248,11 @@ for (const [dir, name, invocable, triggers, refsCLI] of SKILLS) {
     });
   }
 }
+
+test('episode abandon must be fenced (mutatingFenced)', () => {
+  assert.equal(mutatingFenced('node deep-loop.mjs episode abandon --id x --reason r --confirm'), false);   // fence 없음 → false
+  assert.equal(mutatingFenced('node deep-loop.mjs episode abandon --id x --reason r --confirm --owner R --generation 1'), true);
+});
 
 test('deep-loop-workflow references exist', () => {
   for (const r of ['adapters.md', 'review-strategy.md', 'handoff-respawn.md'])

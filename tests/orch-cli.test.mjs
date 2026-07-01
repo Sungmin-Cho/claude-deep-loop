@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
@@ -61,8 +61,11 @@ test('workstream terminal (abandoned) + review record reach kernel via CLI', () 
   run(root, ['workstream', 'set', '--id', ws.id, '--status', 'in_progress', '--owner', runId, '--generation', '1']);
   run(root, ['workstream', 'terminal', '--id', ws.id, '--status', 'abandoned', '--proof', '{"reason":"superseded"}', '--owner', runId, '--generation', '1']);
   assert.equal(readState(root, runId).data.workstreams[0].status, 'abandoned');
-  // review record: dispatch then record outcome (checker episode)
+  // review record: a done maker (so the checker binds — dispatchReview refuses unbound), then dispatch + record.
   const ws2 = JSON.parse(run(root, ['workstream', 'new', '--title', 'B', '--branch', 'b2', '--worktree', '.claude/worktrees/w2', '--owner', runId, '--generation', '1']));
+  writeFileSync(join(root, 'plan-art.txt'), 'artifact');
+  const maker = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'plan', '--point', 'plan', '--workstream', ws2.id, '--artifacts', '["plan-art.txt"]', '--owner', runId, '--generation', '1']));
+  run(root, ['episode', 'record', '--id', maker.id, '--status', 'done', '--artifacts', '["plan-art.txt"]', '--owner', runId, '--generation', '1']);
   const disp = JSON.parse(run(root, ['review', 'dispatch', '--point', 'plan', '--workstream', ws2.id, '--owner', runId, '--generation', '1']));
   run(root, ['review', 'record', '--episode', disp.checkerEpisodeId, '--workstream', ws2.id, '--point', 'plan', '--verdict', 'APPROVE', '--owner', runId, '--generation', '1']);
   assert.equal(readState(root, runId).data.episodes.find(e => e.id === disp.checkerEpisodeId).status, 'approved');
@@ -131,6 +134,39 @@ test('full suite still green count grows (smoke: validate ok)', () => {
   const { root } = seed();
   const out = run(root, ['validate']);
   assert.match(out, /ok/);
+});
+
+function setupRunWithPendingMaker() {
+  const { root, runId } = seed();
+  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'impl', '--point', 'implementation', '--owner', runId, '--generation', '1']));
+  return { root, runId, episodeId: ep.id };
+}
+
+// Task 9: episode abandon verb + record abandoned rejection
+test('episode abandon settles a stranded pending maker (exit 0)', () => {
+  const { root, runId, episodeId } = setupRunWithPendingMaker();
+  run(root, ['episode', 'abandon', '--id', episodeId, '--reason', 'orphan', '--confirm', '--owner', runId, '--generation', '1']);
+  assert.equal(readState(root, runId).data.episodes[0].status, 'abandoned');
+});
+
+test('episode record --status abandoned is rejected (exit 1)', () => {
+  const { root, runId, episodeId } = setupRunWithPendingMaker();
+  let code = 0;
+  try { run(root, ['episode', 'record', '--id', episodeId, '--status', 'abandoned', '--owner', runId, '--generation', '1']); }
+  catch (e) { code = e.status; }
+  assert.equal(code, 1);
+});
+
+// Codex review P2: episode abandon WITHOUT --confirm must exit 2 (usage/human-gate) with CONFIRM_REQUIRED,
+// mirroring the recover/breaker-reset contract — NOT exit 1 from an uncaught CONFIRM_REQUIRED throw.
+test('episode abandon without --confirm exits 2 with CONFIRM_REQUIRED', () => {
+  const { root, runId, episodeId } = setupRunWithPendingMaker();
+  let code = 0, stderr = '';
+  try { run(root, ['episode', 'abandon', '--id', episodeId, '--reason', 'orphan', '--owner', runId, '--generation', '1']); }
+  catch (e) { code = e.status; stderr = String(e.stderr || ''); }
+  assert.equal(code, 2);
+  assert.match(stderr, /CONFIRM_REQUIRED/);
+  assert.equal(readState(root, runId).data.episodes[0].status, 'pending');   // not abandoned
 });
 
 test('CLI validate from nested .claude/worktrees cwd resolves the run (rootOf upward-search)', () => {

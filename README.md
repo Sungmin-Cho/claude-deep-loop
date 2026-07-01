@@ -56,7 +56,7 @@ Skill (LLM) ──write──▶ state patch / budget record / comprehension ack
 2. **Lease fencing** — every mutating kernel CLI requires matching `--owner` (run_id) and `--generation`. Stale sessions are rejected before any state change.
 3. **Fail-closed on unmeasurable usage** — unattended (headless) sessions that cannot measure turns/tokens are rejected, not silently passed. The `drive-headless.mjs` driver enforces this.
 4. **Circuit breaker** — 3 consecutive REQUEST_CHANGES latch the breaker; a human must explicitly run `breaker reset --confirm --owner <run_id> --generation <n>` (lease-fenced, human-only) to resume. (`/deep-loop-ack` is unrelated — it reduces comprehension debt.)
-5. **Terminal states via proof only** — episode `done`/`approved`/`rejected`, workstream `merged`/`abandoned` can only be set through verified proof artifacts, not direct state patch.
+5. **Terminal states via proof only** — episode `done`/`approved`/`rejected`, workstream `merged`/`abandoned` can only be set through verified proof artifacts, not direct state patch. **Exception: episode `abandoned` is a human-gated (`--confirm`) escape for stranded episodes, not proof-derived.**
 6. **No writes outside `.deep-loop/`** — all kernel writes go under `<project-root>/.deep-loop/`. External writes (deep-memory store, wiki) are delegated to those plugins' own skills.
 
 ## Installation

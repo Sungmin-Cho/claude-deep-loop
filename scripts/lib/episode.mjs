@@ -7,7 +7,9 @@ import { slugify } from './slug.mjs';
 import { leaseCheck } from './lease.mjs';
 
 const NON_TERMINAL = ['pending', 'in_progress', 'blocked'];
-const TERMINAL = ['done', 'approved', 'rejected'];
+const RECORDABLE_TERMINAL = ['done', 'approved', 'rejected'];   // record 가 설정 가능한 터미널 (abandoned 제외)
+const TERMINAL = RECORDABLE_TERMINAL;                            // 하위 호환 — done 가드/검증 등 기존 참조 유지
+const ALL_TERMINAL = [...RECORDABLE_TERMINAL, 'abandoned'];     // 4개 전체 터미널 (abandonEpisode 가드 포함)
 
 function requestSkeleton({ id, plugin, role, kind, point, workstream, expectedArtifacts }) {
   return [
@@ -70,6 +72,34 @@ export function newEpisode(root, runId, { plugin, role, kind, point, workstream 
   return { id, requestPath };
 }
 
+// Human-gated escape hatch — settles a stranded non-terminal episode as abandoned.
+// Separate from the record path to preserve the done-needs-proof invariant.
+export function abandonEpisode(root, runId, episodeId, { reason, confirm, fence } = {}) {
+  if (confirm !== true) throw new Error('CONFIRM_REQUIRED: pass --confirm (human-only)');
+  if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: abandonEpisode');
+  if (!episodeId || typeof episodeId !== 'string' || !episodeId.length) throw new Error('EPISODE_INPUT_INVALID: episodeId');
+  if (!reason || typeof reason !== 'string' || !reason.length) throw new Error('EPISODE_INPUT_INVALID: reason');
+  appendAnchored(root, runId, { type: 'episode-abandon', data: { id: episodeId, reason } }, (loop) => {
+    const ep = loop.episodes.find(e => e.id === episodeId);
+    ep.status = 'abandoned';
+    ep.abandon_reason = reason;
+    if (ep.role === 'maker') {
+      const c = loop.comprehension || (loop.comprehension = {});
+      c.episodes_total = Math.max(0, (c.episodes_total || 0) - 1);
+      if (ep.human_reviewed) c.episodes_human_reviewed = Math.max(0, (c.episodes_human_reviewed || 0) - 1);
+    }
+    // P2-a: AFTER the decrement (which read the OLD human_reviewed), mark the abandoned episode reviewed so a later
+    // `ack`/`recordReviewed` is a no-op — an abandoned maker is out of episodes_total and must never be re-counted
+    // into episodes_human_reviewed (which would make reviewed/total exceed 1 and wrongly drop comprehension debt to 0).
+    ep.human_reviewed = true;
+  }, (loop) => {
+    const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason);
+    const ep = loop.episodes.find(e => e.id === episodeId);
+    if (!ep) throw new Error(`EPISODE_NOT_FOUND: ${episodeId}`);
+    if (ALL_TERMINAL.includes(ep.status)) throw new Error('EPISODE_ALREADY_TERMINAL: ' + episodeId);
+  });
+}
+
 export function recordEpisode(root, runId, episodeId, { status, artifacts = [], proof = {}, fence } = {}) {
   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: recordEpisode');
   // Fix 3: episodeId must be a non-empty string
@@ -91,8 +121,8 @@ export function recordEpisode(root, runId, episodeId, { status, artifacts = [], 
     if (fence) { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
     const ep = loop.episodes.find(e => e.id === episodeId);
     if (!ep) throw new Error(`EPISODE_NOT_FOUND: ${episodeId}`);
-    // Codex r3 🔴2: atomic replay guard — already-terminal episode cannot be re-terminaled
-    if (TERMINAL.includes(status) && ['approved', 'rejected', 'done'].includes(ep.status)) {
+    // Codex r3 🔴2 + R1 f2/R2 f1: 현재 status 가 터미널(abandoned 포함)이면 요청 status 무관하게 재기록 불가.
+    if (ALL_TERMINAL.includes(ep.status)) {
       throw new Error('EPISODE_ALREADY_TERMINAL: ' + episodeId);
     }
     // 터미널은 커널이 proof에서 파생 — 검증 후에만 (spec §4)

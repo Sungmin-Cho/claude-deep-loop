@@ -73,3 +73,10 @@ test('session_spawn absent still validates', () => {
   delete loopAbsent.session_spawn;
   assert.equal(validate(loopAbsent).ok, true, `session_spawn absent must pass, errors: ${JSON.stringify(validate(loopAbsent).errors)}`);
 });
+
+test('episode status "abandoned" is a valid kernel terminal', () => {
+  const base = minimalValid();
+  base.episodes = [{ id: 'e1', role: 'maker', status: 'abandoned', point: 'implementation', workstream_id: 'w' }];
+  const v = validate(base);
+  assert.equal(v.ok, true, v.errors?.join('; '));
+});

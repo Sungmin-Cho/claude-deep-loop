@@ -4,10 +4,10 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { readState } from '../scripts/lib/state.mjs';
+import { readState, writeState } from '../scripts/lib/state.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
-import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
-import { resolveReviewer, dispatchReview, parseVerdict, recordReviewOutcome } from '../scripts/lib/review.mjs';
+import { newEpisode, recordEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
+import { resolveReviewer, dispatchReview, parseVerdict, recordReviewOutcome, unsatisfiedReviewPoints } from '../scripts/lib/review.mjs';
 import { releaseLease, acquireLease } from '../scripts/lib/lease.mjs';
 
 function seed(detected = { 'deep-review': true }) {
@@ -17,6 +17,21 @@ function seed(detected = { 'deep-review': true }) {
 }
 
 function fence(runId) { return { owner: runId, generation: 1, intent: 'business' }; }
+
+function freshRun() {
+  const { root, runId } = seed();
+  return { root, runId, fence: fence(runId) };
+}
+
+// Every review must bind to a real done maker — dispatchReview now throws REVIEW_NO_ELIGIBLE_MAKER otherwise.
+// Helper: create + record a done maker for (ws, point) so a subsequent dispatchReview binds its checker to it.
+function doneMaker(root, runId, ws, point, f, file) {
+  const art = file || `${point}-art.txt`;
+  writeFileSync(join(root, art), 'artifact');
+  const { id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: point, point, workstream: ws, expectedArtifacts: [art], fence: f });
+  recordEpisode(root, runId, id, { status: 'done', artifacts: [art], proof: {}, fence: f });
+  return id;
+}
 
 test('resolveReviewer falls back when deep-review absent', () => {
   const { root, runId } = seed({ 'deep-review': false, codex: true });
@@ -37,12 +52,14 @@ test('dispatchReview creates checker episode + returns descriptor (no call)', ()
   const { root, runId } = seed();
   const f = fence(runId);
   const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: '.claude/worktrees/w', fence: f }).id;
+  const makerId = doneMaker(root, runId, ws, 'implementation', f);   // checker must bind to a real done maker
   const r = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
   assert.equal(r.reviewer, 'deep-review-loop');
   assert.equal(r.descriptor.kind, 'invoke_skill');
   const ep = readState(root, runId).data.episodes.find(e => e.id === r.checkerEpisodeId);
   assert.equal(ep.role, 'checker');
   assert.equal(ep.kind, 'implementation-review');
+  assert.equal(ep.target_maker, makerId);   // always bound going forward
 });
 
 test('recordReviewOutcome derives checker terminal + drives breaker/comprehension/points', () => {
@@ -114,6 +131,7 @@ test('recordReviewOutcome throws REVIEW_ALREADY_RECORDED on second call to same 
   const { root, runId } = seed();
   const f = fence(runId);
   const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: '.claude/worktrees/w', fence: f }).id;
+  doneMaker(root, runId, ws, 'plan', f);
   const r = dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
   recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'plan', verdict: 'APPROVE', fence: f });
   const breakerBefore = readState(root, runId).data.circuit_breaker.consecutive_request_changes;
@@ -130,6 +148,7 @@ test('recordReviewOutcome rejects invalid verdict before mutating breaker', () =
   const { root, runId } = seed();
   const f = fence(runId);
   const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: '.claude/worktrees/w', fence: f }).id;
+  doneMaker(root, runId, ws, 'plan', f);
   const r = dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
   const before = readState(root, runId).data.circuit_breaker.consecutive_request_changes;
   assert.throws(() => recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'plan', verdict: 'APPROV', fence: f }), /REVIEW_VERDICT_INVALID/);
@@ -141,6 +160,7 @@ test('recordReviewOutcome twice → second throws EPISODE_ALREADY_TERMINAL, brea
   const { root, runId } = seed();
   const f = fence(runId);
   const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: '.claude/worktrees/w', fence: f }).id;
+  doneMaker(root, runId, ws, 'plan', f);
   const r = dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
   recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'plan', verdict: 'APPROVE', fence: f });
   const breakerAfterFirst = readState(root, runId).data.circuit_breaker.consecutive_request_changes;
@@ -158,6 +178,7 @@ test('recordReviewOutcome: stale fence throws LEASE_FENCED; breaker and review_p
   const now = Date.parse('2026-06-24T00:00:00Z');
   const f = fence(runId);
   const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: '.claude/worktrees/w', fence: f }).id;
+  doneMaker(root, runId, ws, 'plan', f);
   const r = dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
   // Capture fence with current owner+generation (gen=1)
   const staleFence = { owner: runId, generation: 1, intent: 'business' };
@@ -201,6 +222,36 @@ test('dispatchReview rejects missing/nonexistent workstream and creates no check
   assert.equal(readState(root, runId).data.episodes.length, 0);   // no stranded checker
 });
 
+// ROOT FIX (1): dispatchReview for a (point, ws) with NO eligible done maker throws REVIEW_NO_ELIGIBLE_MAKER and
+// creates NO checker — an unbound checker ("reviewed no maker") can never be created at the source going forward.
+test('dispatchReview throws REVIEW_NO_ELIGIBLE_MAKER when no done maker exists for the point', () => {
+  const { root, runId } = seed();
+  const f = fence(runId);
+  const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: '.claude/worktrees/w', fence: f }).id;
+  // workstream EXISTS but there is no done maker for (ws, 'plan') → refuse to create an unbound checker.
+  assert.throws(() => dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { 'deep-review': true }, fence: f }), /REVIEW_NO_ELIGIBLE_MAKER/);
+  assert.equal(readState(root, runId).data.episodes.length, 0);   // no checker created
+  // A pending (not done) maker is still not eligible — dispatch stays refused (episode.mjs 'in_progress' fixture).
+  newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'plan', point: 'plan', workstream: ws, fence: f });
+  assert.throws(() => dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { 'deep-review': true }, fence: f }), /REVIEW_NO_ELIGIBLE_MAKER/);
+});
+
+// ROOT FIX (2) defense-in-depth: recording a verdict on an UNBOUND checker (no target_maker) throws
+// REVIEW_UNBOUND_CHECKER — so a legacy pending unbound checker can never be terminalized into a rejected/approved one.
+test('recordReviewOutcome throws REVIEW_UNBOUND_CHECKER on a checker with no target_maker', () => {
+  const { root, runId } = seed();
+  const f = fence(runId);
+  const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: '.claude/worktrees/w', fence: f }).id;
+  // Inject a legacy unbound pending checker directly (dispatchReview can no longer create one) to prove the guard.
+  const data = readState(root, runId).data;
+  data.episodes.push({ id: '001-deep-review', role: 'checker', status: 'pending', point: 'plan', workstream_id: ws, kind: 'plan-review' });
+  writeState(root, runId, data);
+  assert.throws(
+    () => recordReviewOutcome(root, runId, { episodeId: '001-deep-review', workstreamId: ws, point: 'plan', verdict: 'APPROVE', fence: f }),
+    /REVIEW_UNBOUND_CHECKER/
+  );
+});
+
 // FIX 3 regression (a): require_human_ack=true → approved review record does NOT change episodes_human_reviewed
 // (even when source is 'deep-review-approve' or any other source). Only /deep-loop-ack may grant comprehension.
 test('recordReviewOutcome: require_human_ack=true → episodes_human_reviewed unchanged after approve', () => {
@@ -209,7 +260,7 @@ test('recordReviewOutcome: require_human_ack=true → episodes_human_reviewed un
   const { runId } = initRun(root, { goal: 'g', review: reviewCfg, detected: { 'deep-review': true }, now: new Date('2026-06-24T00:00:00Z') });
   const f = fence(runId);
   const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: '.claude/worktrees/w', fence: f }).id;
-  newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws, fence: f });
+  doneMaker(root, runId, ws, 'implementation', f);   // done so the checker binds; require_human_ack still gates comprehension
   const r = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
   const beforeReviewed = readState(root, runId).data.comprehension?.episodes_human_reviewed || 0;
   // approve with any source — must NOT increment comprehension when require_human_ack=true
@@ -218,8 +269,49 @@ test('recordReviewOutcome: require_human_ack=true → episodes_human_reviewed un
   assert.equal(afterReviewed, beforeReviewed, 'require_human_ack=true must not increment episodes_human_reviewed from review record');
 });
 
+test('unsatisfiedReviewPoints: returns points not covered by any workstream review_points_done', () => {
+  const loop = { review: { points: ['design', 'plan', 'implementation'] },
+    workstreams: [{ id: 'w', review_points_done: ['design', 'plan'] }] };
+  assert.deepEqual(unsatisfiedReviewPoints(loop), ['implementation']);
+});
+test('unsatisfiedReviewPoints: empty points -> [] (vacuous)', () => {
+  assert.deepEqual(unsatisfiedReviewPoints({ review: { points: [] }, workstreams: [] }), []);
+  assert.deepEqual(unsatisfiedReviewPoints({ workstreams: [] }), []);
+});
+test('unsatisfiedReviewPoints: union across multiple workstreams', () => {
+  const loop = { review: { points: ['design', 'implementation'] },
+    workstreams: [{ id: 'a', review_points_done: ['design'] }, { id: 'b', review_points_done: ['implementation'] }] };
+  assert.deepEqual(unsatisfiedReviewPoints(loop), []);
+});
+
 // FIX 3 regression (b): two done makers same point, approving checker bound to maker2 (latest) increments
 // episodes_human_reviewed by exactly 1 (only maker2), not 2.
+test('recordReviewOutcome: rejects recording on an abandoned checker', () => {
+  const { root, runId, fence } = freshRun();
+  const ws = newWorkstream(root, runId, { title: 'W', branch: 'b', worktree: '.claude/worktrees/wt', fence });
+  writeFileSync(join(root, 'art.txt'), 'x');
+  const m = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws.id, expectedArtifacts: ['art.txt'], fence });
+  recordEpisode(root, runId, m.id, { status: 'done', artifacts: ['art.txt'], proof: {}, fence });
+  const dr = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws.id, detected: {}, fence });
+  abandonEpisode(root, runId, dr.checkerEpisodeId, { reason: 'stale checker', confirm: true, fence });
+  assert.throws(() => recordReviewOutcome(root, runId, { episodeId: dr.checkerEpisodeId, workstreamId: ws.id, point: 'implementation', verdict: 'APPROVE', fence }), /REVIEW_ALREADY_RECORDED/);
+  // review point 오염 없음
+  const ws2 = readState(root, runId).data.workstreams.find(w => w.id === ws.id);
+  assert.ok(!ws2.review_points_done.includes('implementation'));
+});
+
+test('recordReviewOutcome: rejects recording on a done checker (defensive)', () => {
+  const { root, runId, fence } = freshRun();
+  const ws = newWorkstream(root, runId, { title: 'W', branch: 'b', worktree: '.claude/worktrees/wt', fence });
+  writeFileSync(join(root, 'art.txt'), 'x');
+  const m = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws.id, expectedArtifacts: ['art.txt'], fence });
+  recordEpisode(root, runId, m.id, { status: 'done', artifacts: ['art.txt'], proof: {}, fence });
+  const dr = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws.id, detected: {}, fence });
+  // checker 를 'done' 으로 강제(정상 경로로는 도달 불가 — 방어적 가드 확인)
+  const data = readState(root, runId).data; data.episodes.find(e => e.id === dr.checkerEpisodeId).status = 'done'; writeState(root, runId, data);
+  assert.throws(() => recordReviewOutcome(root, runId, { episodeId: dr.checkerEpisodeId, workstreamId: ws.id, point: 'implementation', verdict: 'APPROVE', fence }), /REVIEW_ALREADY_RECORDED/);
+});
+
 test('recordReviewOutcome: bound approve increments episodes_human_reviewed by 1 (only the bound maker, not all makers on point)', () => {
   const { root, runId } = seed();
   const f = fence(runId);

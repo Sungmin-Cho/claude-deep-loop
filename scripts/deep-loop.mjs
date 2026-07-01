@@ -10,7 +10,7 @@ import { validate as validateLoop } from './lib/schema.mjs';
 import { readState, writeState, patch as patchState, pauseRun, runDir, findRoot } from './lib/state.mjs';
 import { leaseCheck, acquireLease, releaseLease } from './lib/lease.mjs';
 import { newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal } from './lib/workspace.mjs';
-import { newEpisode, recordEpisode } from './lib/episode.mjs';
+import { newEpisode, recordEpisode, abandonEpisode } from './lib/episode.mjs';
 import { dispatchReview, recordReviewOutcome } from './lib/review.mjs';
 import { nextAction } from './lib/next-action.mjs';
 import { emitHandoff } from './lib/handoff.mjs';
@@ -156,7 +156,22 @@ const handlers = {
       const id = reqStr(f, 'id'); if (!id) { error('MISSING_ID'); return 2; }
       const status = reqStr(f, 'status'); if (!status) { error('MISSING_STATUS'); return 2; }
       if (status === 'approved' || status === 'rejected') { error(`EPISODE_TERMINAL_VIA_REVIEW: approved/rejected come only from 'review record'`); return 1; }
+      if (status === 'abandoned') { error(`EPISODE_ABANDON_VIA_VERB: use 'episode abandon --confirm'`); return 1; }
       recordEpisode(root, runId, id, { status, artifacts: f.artifacts ? JSON.parse(f.artifacts) : [], proof: f.proof ? JSON.parse(f.proof) : {}, fence }); json({ ok: true }); return 0;
+    }
+    if (verb === 'abandon') {
+      const id = reqStr(f, 'id'); if (!id) { error('MISSING_ID'); return 2; }
+      const reason = reqStr(f, 'reason'); if (!reason) { error('MISSING_REASON'); return 2; }
+      // Mirror the recover/breaker-reset human-gate: missing --confirm is a usage error (exit 2), not an
+      // uncaught CONFIRM_REQUIRED stack trace (exit 1). Keep passing confirm:true into the lib (defense in depth).
+      if (f.confirm !== true && f.confirm !== 'true') { error('CONFIRM_REQUIRED: pass --confirm (human-only)'); return 2; }
+      try {
+        abandonEpisode(root, runId, id, { reason, confirm: true, fence }); json({ ok: true, status: 'abandoned' }); return 0;
+      } catch (e) {
+        const msg = String(e?.message || e);
+        if (msg.startsWith('LEASE_FENCED')) { error(msg); return 3; }
+        error(msg); return 1;   // EPISODE_ALREADY_TERMINAL / EPISODE_NOT_FOUND / EPISODE_INPUT_INVALID → exit 1
+      }
     }
     error(`unknown episode verb: ${verb}`); return 2;
   },

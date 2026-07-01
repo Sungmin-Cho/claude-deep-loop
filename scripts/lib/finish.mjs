@@ -3,14 +3,14 @@ import { resolve, sep } from 'node:path';
 import { appendAnchored } from './integrity.mjs';
 import { leaseCheck } from './lease.mjs';
 import { runDir } from './state.mjs';
-import { makerReviewed } from './review.mjs';
+import { makerReviewed, unsatisfiedReviewPoints, epOrder, rejectionResolved } from './review.mjs';
 
-function reviewSatisfied(loop, ep) {
-  const ws = (loop.workstreams || []).find(w => w.id === ep.workstream_id);
-  if (ws && (ws.review_points_done || []).includes(ep.point)) return true;
-  return (loop.episodes || []).some(e => e.role === 'checker' && e.status === 'approved' && e.workstream_id === ep.workstream_id && e.point === ep.point);
-}
-const settledEp = (loop, e) => ['done', 'approved'].includes(e.status) || (e.role === 'checker' && e.status === 'rejected' && reviewSatisfied(loop, e));
+// A rejected checker is settled only when it is RESOLVED by the SINGLE unified predicate rejectionResolved
+// (review.mjs) — the SAME order-aware predicate next-action.mjs uses for routing. (Replaces the old local
+// reviewSatisfied, which settled on review_points_done / any same-point approval and was NOT order-aware,
+// so a NEWER unbound REQUEST_CHANGES after an approved point was silently settled.) The boundLatestApproved
+// convergence check below is complementary (it gates makers, not the rejected checker's settlement).
+const settledEp = (loop, e) => ['done', 'approved', 'abandoned'].includes(e.status) || (e.role === 'checker' && e.status === 'rejected' && rejectionResolved(loop, e));
 const TERMINAL_WS = ['ready', 'merged', 'abandoned'];
 
 export function finishProofState(loop) {
@@ -22,17 +22,28 @@ export function finishProofState(loop) {
   // Per-maker binding check: every done maker must have a bound terminal checker (target_maker === maker.id).
   const doneMakers = eps.filter(e => e.role === 'maker' && e.status === 'done');
   const allMakersReviewed = doneMakers.every(m => makerReviewed(loop, m));
-  // Convergence: for each (ws,point) that has done makers, the LATEST done maker (highest episode id)
+  // Convergence: for each (ws,point) that has done makers, the LATEST done maker (highest episode id,
+  // via epOrder — numeric prefix compare, not string, so the 999→1000 boundary is correct)
   // must have a bound APPROVED checker. An unbound approved checker cannot satisfy this requirement.
   const latestByPoint = new Map();
   for (const m of doneMakers) {
     const k = `${m.workstream_id}|${m.point}`;
     const cur = latestByPoint.get(k);
-    if (!cur || m.id > cur.id) latestByPoint.set(k, m);
+    if (!cur || epOrder(m.id, cur.id) > 0) latestByPoint.set(k, m);
   }
-  const boundApproved = (mid) => (loop.episodes || []).some(e => e.role === 'checker' && e.target_maker === mid && e.status === 'approved');
-  const allPointsConverged = [...latestByPoint.values()].every(m => boundApproved(m.id));
+  // final-fix-4: convergence must be ORDER-AWARE on the checker side too — mirror the unified rejectionResolved.
+  // A maker converges only when its LATEST bound terminal checker (by epOrder) is APPROVED. An older approve
+  // followed by a newer reject (same target_maker) must NOT mask the rejection (a plain any-approved test would,
+  // diverging from nextAction which routes to fix_episode). An unbound checker has no target_maker so cannot count.
+  const boundLatestApproved = (mid) => {
+    const cs = (loop.episodes || []).filter(e => e.role === 'checker' && e.target_maker === mid && (e.status === 'approved' || e.status === 'rejected'));
+    if (!cs.length) return false;
+    const latest = cs.reduce((a, b) => (epOrder(a.id, b.id) >= 0 ? a : b));
+    return latest.status === 'approved';
+  };
+  const allPointsConverged = [...latestByPoint.values()].every(m => boundLatestApproved(m.id));
   const reviewedProof = doneMakers.length > 0 && allMakersReviewed && allPointsConverged;
+  const unboundDoneMaker = doneMakers.some(m => !m.workstream_id || !(loop.workstreams || []).some(w => w.id === m.workstream_id));
   const missing = [];
   if (!hasWork) missing.push('no-proof-of-work');                  // 최소 1 episode 필요 (Array.every 공허-통과 방지)
   if (!settled) missing.push('unsettled-episodes');
@@ -40,6 +51,8 @@ export function finishProofState(loop) {
   if (!wsAll) missing.push('non-terminal-workstreams');
   if (!allMakersReviewed) missing.push('unreviewed-maker');        // 미리뷰 done maker 차단
   if (hasWork && !reviewedProof) missing.push('no-independent-review');
+  if (unsatisfiedReviewPoints(loop).length) missing.push('review-point-unsatisfied');
+  if (unboundDoneMaker) missing.push('unbound-proof-episode');
   return { hasWork, settled, noActiveWs, allWsTerminal: wsAll, allMakersReviewed, reviewedProof, missing };
 }
 

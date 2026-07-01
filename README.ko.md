@@ -47,7 +47,7 @@ deep-loop는 엄격한 **2-plane 분리**(spec §1)를 강제합니다:
 2. **리스 펜싱** — 모든 mutating 커널 CLI는 매칭되는 `--owner`(run_id)와 `--generation` 필요. 잘못된 세션은 상태 변경 전 거부.
 3. **측정불가 사용량 fail-closed** — 무인(headless) 세션에서 turn/token 측정 불가 시 조용히 진행 않고 거부. `drive-headless.mjs` 드라이버가 강제.
 4. **서킷 브레이커** — 반복 실패 시 브레이커 트립; 사람이 명시적으로 리셋해야 재개.
-5. **proof 경유 터미널 상태** — 에피소드 `done`/`approved`/`rejected`, 워크스트림 `merged`/`abandoned`는 검증된 proof 아티팩트를 통해서만 설정 가능.
+5. **proof 경유 터미널 상태** — 에피소드 `done`/`approved`/`rejected`, 워크스트림 `merged`/`abandoned`는 검증된 proof 아티팩트를 통해서만 설정 가능. **예외: episode `abandoned`는 사람 게이트(`--confirm`) escape 터미널 — proof 불필요, review point 충족으로 치지 않으며 두 종료 경로에서 settled로 취급.**
 6. **`.deep-loop/` 외부 쓰기 금지** — 모든 커널 쓰기는 `<project-root>/.deep-loop/` 하위에만.
 
 ## 설치

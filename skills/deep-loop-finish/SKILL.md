@@ -62,7 +62,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field workstreams
 ```
 
 proof 요건:
-- 모든 episode settled (`done`/`approved`)
+- 모든 episode settled (`done`/`approved`/`abandoned`)
 - `active_workstreams` 비어있음
 - 모든 workstream 터미널 상태 (`ready`/`merged`/`abandoned`)
 - final-report.md 존재

@@ -1,7 +1,7 @@
 // Codex r3 FIX 1: atomic lease fencing tests — library-level interleaving scenarios
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
@@ -124,8 +124,13 @@ test('recordReviewOutcome with stale fence throws LEASE_FENCED', () => {
   const owner = d0.session_chain.lease.owner_run_id;
   const gen1 = d0.session_chain.lease.generation;
 
-  const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: '.claude/worktrees/w', fence: { owner, generation: gen1, intent: 'business' } }).id;
-  const r = dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { 'deep-review': true }, fence: { owner, generation: gen1, intent: 'business' } });
+  const fence1 = { owner, generation: gen1, intent: 'business' };
+  const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: '.claude/worktrees/w', fence: fence1 }).id;
+  // A done maker so dispatchReview binds the checker (unbound checkers are refused: REVIEW_NO_ELIGIBLE_MAKER).
+  writeFileSync(join(root, 'plan-art.txt'), 'artifact');
+  const m = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'plan', point: 'plan', workstream: ws, expectedArtifacts: ['plan-art.txt'], fence: fence1 });
+  recordEpisode(root, runId, m.id, { status: 'done', artifacts: ['plan-art.txt'], proof: {}, fence: fence1 });
+  const r = dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { 'deep-review': true }, fence: fence1 });
 
   // Simulate child takeover
   releaseLease(root, runId, { owner, generation: gen1 });

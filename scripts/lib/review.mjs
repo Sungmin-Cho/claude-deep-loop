@@ -7,6 +7,42 @@ import { pluginPresent } from './detect.mjs';
 // 연속 REQUEST_CHANGES 임계 (breaker.mjs THRESHOLD 미러 — fail-stop latch).
 const BREAKER_THRESHOLD = 3;
 
+// Hybrid episode-order comparator (shared — finish.mjs / next-action.mjs import it). Episode ids are
+// `NNN-plugin` zero-padded to only 3 digits, so naive string `>` breaks at the 999→1000 boundary
+// ('1000-x' < '999-x' lexicographically). When BOTH ids carry a numeric prefix, compare NUMERICALLY;
+// otherwise fall back to string compare (preserves synthetic test ids like m1/m2/c1). "a is later than b"
+// iff epOrder(a, b) > 0.
+export const epOrder = (a, b) => {
+  const na = parseInt(a, 10), nb = parseInt(b, 10);
+  if (Number.isInteger(na) && Number.isInteger(nb)) return na - nb;
+  return a < b ? -1 : a > b ? 1 : 0;
+};
+
+// UNIFIED rejected-checker resolution predicate — the SINGLE source of truth for
+// "is this rejected checker RESOLVED (superseded)?", shared by next-action.mjs (routing)
+// AND finish.mjs (settledEp). Before this, the two files answered the question differently
+// (next-action: order-aware but ignored UNBOUND rejections; finish: review_points_done/any-approval,
+// not order-aware) → a NEWER unbound REQUEST_CHANGES after an approved point could be silently
+// finished past (next-action ignored it AND finish settled it). One predicate closes the whole class.
+// Order is computed with epOrder (numeric-prefix compare, not string) so the 999→1000 boundary is correct.
+//   bound (target_maker set): resolved iff the SAME target maker was re-reviewed and APPROVED by a checker
+//     NEWER than this rejection (an OLDER approve followed by a NEWER reject must NOT count), OR a strictly
+//     LATER done maker exists for the same (workstream_id, point) (the flow moved on to a newer maker).
+//   unbound (no target_maker): ALWAYS resolved (neutral). Such a checker reviewed no maker, so a rejection on it is
+//     meaningless — it must neither block finish nor route to action. dispatchReview no longer creates unbound
+//     checkers (REVIEW_NO_ELIGIBLE_MAKER), so this branch only settles LEGACY unbound rejected checkers in old
+//     loop.json — treating them as neutral avoids BOTH silent-completion (never silently masked by an unrelated
+//     approval) AND strand (a terminal unbound checker can neither be abandoned nor re-recorded).
+export function rejectionResolved(loop, e) {
+  const eps = loop.episodes || [];
+  if (e.target_maker) {
+    const reApprovedNewer = eps.some(c => c.role === 'checker' && c.target_maker === e.target_maker && c.status === 'approved' && epOrder(c.id, e.id) > 0);
+    const laterDoneMaker = eps.some(m => m.role === 'maker' && m.status === 'done' && m.workstream_id === e.workstream_id && m.point === e.point && epOrder(m.id, e.target_maker) > 0);
+    return reApprovedNewer || laterDoneMaker;
+  }
+  return true;   // unbound → neutral (see comment above)
+}
+
 export function resolveReviewer(loop, detected = {}) {
   const r = loop.review || {};
   let reviewer = r.reviewer || 'subagent-checker';
@@ -54,11 +90,18 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
     e.workstream_id === workstreamId && e.point === point &&
     !makerReviewed(data, e)
   );
-  // Pick the highest episode id (lexicographic ordering works since ids are zero-padded numeric prefixes).
+  // Pick the latest episode via epOrder (hybrid numeric/string). Naive string `>` is WRONG here: ids are
+  // zero-padded to only 3 digits, so '1000-x' < '999-x' lexicographically — at the 999→1000 boundary it
+  // would mis-pick the target maker.
   const targetMakerEp = eligibleMakers.length > 0
-    ? eligibleMakers.reduce((a, b) => (a.id > b.id ? a : b))
+    ? eligibleMakers.reduce((a, b) => (epOrder(a.id, b.id) > 0 ? a : b))
     : null;
-  const targetMaker = targetMakerEp ? targetMakerEp.id : undefined;
+  // ROOT FIX: a review MUST bind to a real done maker. With no eligible done maker the checker would be UNBOUND
+  // ("reviewed no maker") — a degenerate state that either silently completes (if its REQUEST_CHANGES is ignored)
+  // or strands the run (a terminal unbound checker can't be abandoned or re-recorded). Refuse to create it at the
+  // source, so every checker is ALWAYS bound going forward. (preCheck — thrown before newEpisode: no episode created.)
+  if (!targetMakerEp) throw new Error('REVIEW_NO_ELIGIBLE_MAKER: no done maker to review for ' + point + '/' + workstreamId);
+  const targetMaker = targetMakerEp.id;
   const { reviewer, flags, mode } = resolveReviewer(data, detected);
   const { id } = newEpisode(root, runId, { plugin: reviewer === 'deep-review-loop' ? 'deep-review' : reviewer, role: 'checker', kind: `${point}-review`, point, workstream: workstreamId, targetMaker, fence });
   const skillByReviewer = {
@@ -121,9 +164,21 @@ export function recordReviewOutcome(root, runId, { episodeId, workstreamId, poin
       const tgt = loop.episodes.find(e => e.id === episodeId);
       if (!tgt) throw new Error(`EPISODE_NOT_FOUND: ${episodeId}`);
       if (tgt.role !== 'checker') throw new Error('REVIEW_TARGET_NOT_CHECKER: ' + episodeId);
-      if (tgt.status === 'approved' || tgt.status === 'rejected') throw new Error('REVIEW_ALREADY_RECORDED: ' + episodeId);
+      // Defense-in-depth (mirrors dispatchReview's REVIEW_NO_ELIGIBLE_MAKER): never record a verdict on an UNBOUND
+      // checker (no target_maker — reviewed no maker). Blocks any legacy pending unbound checker from being
+      // terminalized, so no NEW unbound terminal (rejected/approved) checker can arise.
+      if (!tgt.target_maker) throw new Error('REVIEW_UNBOUND_CHECKER: cannot record a verdict on a checker bound to no maker: ' + episodeId);
+      const REVIEW_TERMINAL = ['done', 'approved', 'rejected', 'abandoned'];
+      if (REVIEW_TERMINAL.includes(tgt.status)) throw new Error('REVIEW_ALREADY_RECORDED: ' + episodeId);
       if (!loop.workstreams.find(w => w.id === tgt.workstream_id)) throw new Error(`WORKSTREAM_NOT_FOUND: ${tgt.workstream_id}`);
     });
   // REQUEST_CHANGES → checker='rejected'. nextAction returns fix_episode and Execution creates the fix maker.
   return result;
+}
+
+// review.points = run-level 계약. 충족은 workstream review_points_done(bound approved checker가 채움)이 단일 출처.
+export function unsatisfiedReviewPoints(loop) {
+  const pts = loop.review?.points || [];
+  const done = (loop.workstreams || []).flatMap(w => w.review_points_done || []);
+  return pts.filter(p => !done.includes(p));
 }

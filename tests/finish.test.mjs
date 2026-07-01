@@ -4,9 +4,9 @@ import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { runDir } from '../scripts/lib/state.mjs';
+import { readState, runDir } from '../scripts/lib/state.mjs';
 import { newWorkstream, recordWorkstreamTerminal } from '../scripts/lib/workspace.mjs';
-import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
+import { newEpisode, recordEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
 import { dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
 import { finishRun, finishProofState } from '../scripts/lib/finish.mjs';
 
@@ -108,6 +108,92 @@ test('finishProofState passes for a fix-loop (maker1+rejected-checker, maker2+ap
   assert.deepEqual(finishProofState(loop).missing, []);
 });
 
+// final-fix-4 regression: a SINGLE done maker whose LATEST bound checker is REJECTED (older approve '002' then
+// newer reject '003', both target '001') must NOT report complete — finishProofState must mirror next-action's
+// order-aware supersededRejected (an older approve cannot mask a newer reject). Before the fix, boundApproved
+// (any-approved) returned true → missing===[] (would COMPLETE), diverging from nextAction's fix_episode.
+test('finishProofState blocks when a maker\'s LATEST bound checker is rejected (older approve, newer reject)', () => {
+  const loop = { episodes: [
+      { id: '001', role: 'maker', point: 'plan', workstream_id: 'w', status: 'done' },
+      { id: '002', role: 'checker', point: 'plan', workstream_id: 'w', status: 'approved', target_maker: '001' },
+      { id: '003', role: 'checker', point: 'plan', workstream_id: 'w', status: 'rejected', target_maker: '001' }],
+    workstreams: [{ id: 'w', status: 'ready', review_points_done: ['plan'] }], active_workstreams: [] };
+  const ps = finishProofState(loop);
+  assert.ok(ps.missing.includes('no-independent-review'), ps.missing.join(','));
+});
+
+// Codex adversarial: episode ids are zero-padded to only 3 digits, so string `>` mis-orders at the 999→1000
+// boundary ('1000-x' < '999-x' lexicographically). The LATEST done maker for (w,implementation) is 1000-x, which
+// is REJECTED — finishProofState MUST NOT report complete (the latest maker has no bound APPROVED checker).
+test('finishProofState: 999 approved + 1000 rejected for same (ws,point) is NOT complete (999→1000 order)', () => {
+  const loop = { episodes: [
+      { id: '999-x', role: 'maker', point: 'implementation', workstream_id: 'w', status: 'done' },
+      { id: '0998-c', role: 'checker', point: 'implementation', workstream_id: 'w', status: 'approved', target_maker: '999-x' },
+      { id: '1000-x', role: 'maker', point: 'implementation', workstream_id: 'w', status: 'done' },
+      { id: '1001-c', role: 'checker', point: 'implementation', workstream_id: 'w', status: 'rejected', target_maker: '1000-x' }],
+    workstreams: [{ id: 'w', status: 'ready', review_points_done: ['implementation'] }], active_workstreams: [] };
+  const ps = finishProofState(loop);
+  assert.notEqual(ps.missing.length, 0, 'rejected newest maker (1000-x) must keep finishProofState NON-complete');
+});
+
+test('finishProofState: unmet review.points -> review-point-unsatisfied', () => {
+  const loop = { review: { points: ['design', 'implementation'] },
+    episodes: [
+      { id: 'm', role: 'maker', point: 'design', workstream_id: 'w', status: 'done' },
+      { id: 'c', role: 'checker', point: 'design', workstream_id: 'w', status: 'approved', target_maker: 'm' }],
+    workstreams: [{ id: 'w', status: 'ready', review_points_done: ['design'] }], active_workstreams: [] };
+  assert.ok(finishProofState(loop).missing.includes('review-point-unsatisfied'));
+});
+
+test('finishProofState: done maker not bound to existing workstream -> unbound-proof-episode', () => {
+  const loop = { review: { points: [] },
+    episodes: [
+      { id: 'm', role: 'maker', point: 'implementation', workstream_id: null, status: 'done' },
+      { id: 'c', role: 'checker', point: 'implementation', workstream_id: null, status: 'approved', target_maker: 'm' }],
+    workstreams: [], active_workstreams: [] };
+  assert.ok(finishProofState(loop).missing.includes('unbound-proof-episode'));
+});
+
+test('finishProofState: abandoned episode counts as settled', () => {
+  const loop = { review: { points: ['implementation'] },
+    episodes: [
+      { id: 'm', role: 'maker', point: 'implementation', workstream_id: 'w', status: 'done' },
+      { id: 'c', role: 'checker', point: 'implementation', workstream_id: 'w', status: 'approved', target_maker: 'm' },
+      { id: 'x', role: 'maker', point: 'implementation', workstream_id: 'w', status: 'abandoned' }],
+    workstreams: [{ id: 'w', status: 'ready', review_points_done: ['implementation'] }], active_workstreams: [] };
+  const ps = finishProofState(loop);
+  assert.ok(!ps.missing.includes('unsettled-episodes'), ps.missing.join(','));
+});
+
+// ROOT FIX (3) — a LEGACY unbound rejected checker is NEUTRAL. dispatchReview can no longer create an unbound checker
+// (REVIEW_NO_ELIGIBLE_MAKER), so the only way an unbound rejected checker exists is in old loop.json. Such a checker
+// "reviewed no maker" → rejectionResolved=true → NEUTRAL: it must NOT block finish (no strand) yet its neutrality is
+// deliberate (the bound approval on the same point is the real proof). A hand-built loop with an approved point +
+// a NEWER unbound rejected checker (003 > 002) is therefore FINISHABLE — missing has no unsettled/unbound entry.
+test('finishProofState treats a legacy unbound rejected checker as neutral (no unsettled-episodes strand)', () => {
+  const loop = { review: { points: ['plan'] },
+    episodes: [
+      { id: '001', role: 'maker', point: 'plan', workstream_id: 'w', status: 'done' },
+      { id: '002', role: 'checker', point: 'plan', workstream_id: 'w', status: 'approved', target_maker: '001' },
+      { id: '003', role: 'checker', point: 'plan', workstream_id: 'w', status: 'rejected' }],   // NEWER, unbound (legacy)
+    workstreams: [{ id: 'w', status: 'ready', review_points_done: ['plan'] }], active_workstreams: [] };
+  const ps = finishProofState(loop);
+  assert.ok(!ps.missing.includes('unsettled-episodes'), ps.missing.join(','));
+  assert.deepEqual(ps.missing, []);   // neutral → finishable, not stranded
+});
+
+// UNIFICATION — the RESOLVED unbound case (complement of [R4]): an UNBOUND rejected checker (002) addressed by a
+// NEWER bound approval (003) for the same point is RESOLVED via rejectionResolved → settled → finishable (missing==[]).
+test('finishProofState passes a RESOLVED unbound rejected checker (older reject, newer approval)', () => {
+  const loop = { review: { points: ['plan'] },
+    episodes: [
+      { id: '001', role: 'maker', point: 'plan', workstream_id: 'w', status: 'done' },
+      { id: '002', role: 'checker', point: 'plan', workstream_id: 'w', status: 'rejected' },   // unbound, OLDER
+      { id: '003', role: 'checker', point: 'plan', workstream_id: 'w', status: 'approved', target_maker: '001' }],
+    workstreams: [{ id: 'w', status: 'ready', review_points_done: ['plan'] }], active_workstreams: [] };
+  assert.deepEqual(finishProofState(loop).missing, []);
+});
+
 // --- finishRun 디스크 ---
 test('finish completed is blocked on an empty run even with a report', () => {
   const { root, runId, fence } = seed();
@@ -161,4 +247,28 @@ test('finish completed rejects runDir itself or a directory as the report', () =
   mkdirSync(join(runDir(root, runId), 'handoffs'), { recursive: true });
   assert.throws(() => finishRun(root, runId, { status: 'completed', reportRel: '.', proof: {}, fence }), /final-report-missing|FINISH_PROOF_UNMET/);
   assert.throws(() => finishRun(root, runId, { status: 'completed', reportRel: 'handoffs', proof: {}, fence }), /final-report-missing|FINISH_PROOF_UNMET/);
+});
+
+// Regression: repro of real-world "009" stuck state — pending maker with zero expectedArtifacts
+// blocks finish until abandonEpisode settles it.
+test('repro: abandoning the orphan pending maker unblocks finish --status completed', () => {
+  const { root, runId, fence } = seed();   // review.points=['implementation']
+  const ws = newWorkstream(root, runId, { title: 'W', branch: 'b', worktree: '.claude/worktrees/wt', fence });
+  // Normal sequence: done maker + approved checker (satisfies implementation review point).
+  writeFileSync(join(root, 'art.txt'), 'x');
+  const good = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws.id, expectedArtifacts: ['art.txt'], fence });
+  recordEpisode(root, runId, good.id, { status: 'done', artifacts: ['art.txt'], proof: {}, fence });
+  const dr = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws.id, detected: {}, fence });
+  recordReviewOutcome(root, runId, { episodeId: dr.checkerEpisodeId, workstreamId: ws.id, point: 'implementation', verdict: 'APPROVE', fence });
+  // Orphan: stranded pending maker with zero expectedArtifacts — isomorphic to repro episode 009.
+  const orphan = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws.id, expectedArtifacts: [], fence });
+  recordWorkstreamTerminal(root, runId, ws.id, { status: 'ready', proof: {}, fence });
+  // Mid-test assertion 1: orphan blocks finish.
+  assert.ok(finishProofState(readState(root, runId).data).missing.includes('unsettled-episodes'));
+  // Resolve via abandonEpisode (human-gated escape hatch).
+  abandonEpisode(root, runId, orphan.id, { reason: 'orphan, no artifacts', confirm: true, fence });
+  // Mid-test assertion 2: completed path succeeds after abandon.
+  writeFileSync(join(runDir(root, runId), 'final-report.md'), '# done');
+  const res = finishRun(root, runId, { status: 'completed', reportRel: 'final-report.md', fence });
+  assert.equal(res.status, 'completed');
 });
