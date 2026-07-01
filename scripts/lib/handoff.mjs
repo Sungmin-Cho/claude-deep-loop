@@ -30,16 +30,18 @@ const SAFE_HANDOFF_REL = /^handoffs\/[A-Za-z0-9._-]+$/;
  * Build per-launcher argv entry map for spawning the child session.
  *
  * Returns:
- *   { cmux, iterm2, 'terminal-app', wt, powershell, headless, interactive }
+ *   { cmux, iterm2, 'terminal-app', wt, powershell, desktop, headless, interactive }
  *
  * Each entry (except interactive) has { bin, argv, display }.
  * headless also has { cwd }.
  * interactive has { display } only (human copies it; no auto-spawn).
+ * desktop has { bin, argv, available: true } when desktopTarget is verified for the
+ * given platform, else { unavailable: true } — deliberately no `display` (see below).
  *
  * Validates parentRunId, childRunId, and handoffRel to catch shell-injection
  * before any string is interpolated (UNSAFE_SPAWN_ARG guard).
  */
-export function buildLaunchCommand({ root, parentRunId, childRunId, handoffRel, launcher, launcherBin, launcherSocket }) {
+export function buildLaunchCommand({ root, parentRunId, childRunId, handoffRel, launcher, launcherBin, launcherSocket, platform = process.platform, desktopTarget = null }) {
   // Defensive validation: run ids are ULIDs in production, but defense-in-depth catches injection.
   if (!SAFE_ID.test(String(parentRunId))) {
     throw Object.assign(new Error(`UNSAFE_SPAWN_ARG: parentRunId=${parentRunId}`), { code: 'UNSAFE_SPAWN_ARG' });
@@ -53,6 +55,21 @@ export function buildLaunchCommand({ root, parentRunId, childRunId, handoffRel, 
 
   const resumePrompt = `Read .deep-loop/runs/${parentRunId}/${handoffRel} first; then run /deep-loop-resume`;
   const inner = `deep-loop-${childRunId}`;
+
+  // ── desktop (Claude Desktop deeplink) ───────────────────────────────────────
+  // url lives ONLY in machine argv (never in a `display` string — the human-readable
+  // `# desktop` launch-command.txt line is composed later by emitHandoff/Task 6).
+  // Only a verified target (desktopTarget produced by verifyDesktopHandler, matching
+  // the current platform) yields a runnable entry; otherwise fail closed to unavailable.
+  const desktopUrl = `claude://code/new?folder=${encodeURIComponent(root)}&q=${encodeURIComponent(resumePrompt)}`;
+  let desktopEntry;
+  if (desktopTarget && desktopTarget.kind === 'macos-app' && platform === 'darwin') {
+    desktopEntry = { bin: 'open', argv: ['-a', desktopTarget.appPath, desktopUrl], available: true };
+  } else if (desktopTarget && desktopTarget.kind === 'win-exe' && platform === 'win32') {
+    desktopEntry = { bin: desktopTarget.exePath, argv: [desktopUrl], available: true };
+  } else {
+    desktopEntry = { unavailable: true };
+  }
 
   // ── cmux ──────────────────────────────────────────────────────────────────
   // --command carries a shell fragment run by cmux; only dynamic args are q()-quoted.
@@ -122,6 +139,7 @@ export function buildLaunchCommand({ root, parentRunId, childRunId, handoffRel, 
       display: `wt.exe -d ${q(root)} claude -n ${inner} "${resumePrompt}"`,
     },
     powershell: powershellEntry,
+    desktop: desktopEntry,
     headless: {
       bin: 'claude',
       argv: ['-p', resumePrompt, '--output-format', 'json', '--permission-mode', 'acceptEdits'],

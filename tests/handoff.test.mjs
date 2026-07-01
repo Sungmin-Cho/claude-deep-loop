@@ -390,3 +390,47 @@ test('B3: non-PowerShell launcher + launcherBin null → buildLaunchCommand does
     assert.ok(cmds['terminal-app'].display);                 // the actual launcher entry is intact
   });
 });
+
+// ── desktop entry tests (Task 5: buildLaunchCommand desktop key, verified-target only) ──
+const desktopArgs = (over) => ({ root: '/repo', parentRunId: 'P1', childRunId: 'C1', handoffRel: 'handoffs/x.md', ...over });
+
+test('macOS desktop entry targets verified app, never bare/-b', () => {
+  const cmds = buildLaunchCommand(desktopArgs({ platform: 'darwin', desktopTarget: { kind: 'macos-app', appPath: '/Applications/Claude.app' } }));
+  assert.equal(cmds.desktop.bin, 'open');
+  assert.equal(cmds.desktop.argv[0], '-a');
+  assert.equal(cmds.desktop.argv[1], '/Applications/Claude.app');
+  const url = cmds.desktop.argv[2];
+  assert.match(url, /^claude:\/\/code\/new\?folder=/);
+  assert.match(url, /q=Read/);
+  assert.ok(!cmds.desktop.argv.includes('-b'));                 // negative: no bundle-id-only
+  assert.equal(cmds.desktop.available, true);                   // machine entry available (display는 emitHandoff이 구성)
+});
+
+test('unverified desktopTarget → unavailable entry', () => {
+  const cmds = buildLaunchCommand(desktopArgs({ platform: 'darwin', desktopTarget: null }));
+  assert.equal(cmds.desktop.unavailable, true);
+  assert.ok(!/claude:\/\//.test(cmds.desktop.display));          // negative: no raw deeplink in display
+});
+
+test('windows desktop entry targets verified exe', () => {
+  const cmds = buildLaunchCommand(desktopArgs({ platform: 'win32', desktopTarget: { kind: 'win-exe', exePath: 'C:\\Program Files\\Claude\\Claude.exe' } }));
+  assert.equal(cmds.desktop.bin, 'C:\\Program Files\\Claude\\Claude.exe');
+  assert.match(cmds.desktop.argv[0], /^claude:\/\/code\/new/);
+});
+
+test('url folder/q are encodeURIComponent-encoded', () => {
+  const cmds = buildLaunchCommand(desktopArgs({ root: '/re po/&x', platform: 'darwin', desktopTarget: { kind: 'macos-app', appPath: '/Applications/Claude.app' } }));
+  assert.match(cmds.desktop.argv[2], /folder=%2Fre%20po%2F%26x/);
+});
+
+test('desktop entry: mismatched platform/kind (win-exe on darwin) → unavailable', () => {
+  const cmds = buildLaunchCommand(desktopArgs({ platform: 'darwin', desktopTarget: { kind: 'win-exe', exePath: 'C:\\Program Files\\Claude\\Claude.exe' } }));
+  assert.equal(cmds.desktop.unavailable, true);
+});
+
+test('desktop entry: no platform/desktopTarget passed (existing callers) defaults to unavailable, no throw', () => {
+  assert.doesNotThrow(() => {
+    const cmds = buildLaunchCommand({ ...baseArgs });
+    assert.equal(cmds.desktop.unavailable, true);
+  });
+});
