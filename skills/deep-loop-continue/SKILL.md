@@ -170,7 +170,9 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" respawn --owner <run_id> --ge
 
 visible과 동일한 명령이다 — 커널이 검증된 desktop 엔트리(`open -a`/직접 실행)를 골라 자동으로 재시작한다. 사람이 이미 init에서 확정한 선택이므로 재질문하지 않는다.
 
-**2. unattended** (명시적 드라이버 마커 / `DEEP_LOOP_UNATTENDED` set / non-tty):
+**2. unattended** (커널 `isHeadlessInvocation(env)` 마커 전용 — non-tty 아님):
+
+**판단 기준은 오직 커널의 `isHeadlessInvocation(env)`뿐이다** — `DEEP_LOOP_UNATTENDED`/`DEEP_LOOP_HEADLESS` 또는 드라이버 entrypoint 휴리스틱(`CLAUDE_CODE_ENTRYPOINT`가 sdk*/print/headless/non-interactive) 중 하나가 참일 때만 unattended로 판정한다. **tty 유무는 신호가 아니다** — Claude Desktop Code 탭은 사람이 지켜보는 GUI이지만 tty가 없다(§init의 "attended" 정의와 동일 기준). 이 마커가 하나도 없으면 위 desktop 또는 아래 else 분기로 진행한다(non-tty만으로 여기서 멈추지 않는다).
 
 드라이버(`drive-headless.mjs`)가 respawn을 처리한다 — 이 스킬은 아무것도 실행하지 않는다.
 

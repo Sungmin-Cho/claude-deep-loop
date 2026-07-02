@@ -6,7 +6,7 @@
 // match (not either alone) — can be exercised without shelling out to osascript/reg.exe.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultDesktopProbe, ALLOW_MAC_PATHS, ALLOW_BUNDLE_IDS, ALLOW_WIN_PATHS, ALLOW_TEAM_IDS, ALLOW_WIN_PUBLISHERS } from '../scripts/lib/desktop-target.mjs';
+import { defaultDesktopProbe, ALLOW_MAC_PATHS, ALLOW_BUNDLE_IDS, ALLOW_WIN_PATHS, ALLOW_TEAM_IDS, ALLOW_WIN_PUBLISHERS, winProbeRun, WIN_REG_BIN } from '../scripts/lib/desktop-target.mjs';
 
 const idRp = (p) => p;   // injected realpath: identity (canonicalization itself is desktop-handler.test.mjs's concern)
 const okRun = (out, code = 0) => () => ({ code, stdout: out });
@@ -109,4 +109,29 @@ test('defaultDesktopProbe: allowlist wiring — win32 allowed path but NON-allow
   });
   assert.equal(r.ok, false);
   assert.equal(r.reason, 'publisher-not-allowed');
+});
+
+// Round-8 review Finding 2: winProbeRun previously invoked bare `reg.exe`, which Node/Windows resolves
+// via PATH/cwd — a malicious `reg.exe` placed in the workspace or earlier on PATH would execute BEFORE
+// any Authenticode check ever runs. It must invoke a FIXED absolute System32 path instead (same trust
+// rationale as detect-terminal.mjs's TRUSTED_PS), never a bare/PATH-resolved binary name. Host-independent:
+// `probeRun` is injected so this never shells out to a real reg.exe.
+test('winProbeRun: invokes reg.exe via the fixed absolute System32 path, never bare/PATH-resolved "reg.exe"', () => {
+  assert.equal(WIN_REG_BIN, 'C:\\Windows\\System32\\reg.exe', 'fixed canonical absolute reg.exe path');
+  let capturedBin;
+  const r = winProbeRun({
+    probeRun: (bin) => { capturedBin = bin; return { code: 0, stdout: '"C:\\Program Files\\Claude\\Claude.exe"' }; },
+  });
+  assert.equal(capturedBin, WIN_REG_BIN, 'winProbeRun must invoke the absolute System32 reg.exe, not bare reg.exe');
+  assert.notEqual(capturedBin, 'reg.exe', 'must never PATH-resolve a bare reg.exe');
+  assert.equal(r.code, 0);
+  assert.equal(r.stdout, 'C:\\Program Files\\Claude\\Claude.exe');
+});
+
+// Absent/broken reg.exe (missing key, non-zero exit, malformed output) must still fail closed — the
+// absolute-path fix must not weaken the existing fail-closed behavior.
+test('winProbeRun: probe failure (non-zero exit) fails closed', () => {
+  const r = winProbeRun({ probeRun: () => ({ code: 1, stdout: '' }) });
+  assert.equal(r.code, 1);
+  assert.equal(r.stdout, '');
 });

@@ -85,12 +85,22 @@ function macCodesignVerify({ appPath } = {}, { timeoutMs = 5000 } = {}) {
   return { ok: true, teamId };
 }
 
+// Fixed canonical trusted reg.exe location — NOT derived from %SystemRoot%/PATH/cwd (same trust
+// rationale as detect-terminal.mjs's TRUSTED_PS: an env var or PATH entry is parent-spoofable). A
+// bare `reg.exe` is resolved by Node/Windows via PATH/cwd, so a malicious `reg.exe` placed in the
+// workspace or earlier on PATH would execute BEFORE any Authenticode check ever runs (round-8 review
+// Finding 2). Exported so tests can assert the probe never regresses to a bare/PATH-resolved binary.
+export const WIN_REG_BIN = 'C:\\Windows\\System32\\reg.exe';
+
 // Windows: the `claude` URL protocol's default open command lives in the registry at
 // HKCR\claude\shell\open\command (the standard URL-protocol-handler registration point). `reg query
 // /ve` prints the default value; extract the quoted .exe path. Any failure (reg.exe missing, key
 // absent, malformed output) → empty stdout / non-zero code → verifyDesktopHandler fails closed.
-function winProbeRun() {
-  const r = defaultProbeRun('reg.exe', ['query', 'HKCR\\claude\\shell\\open\\command', '/ve'], { timeoutMs: 5000, capture: true });
+// `probeRun` is INJECTABLE (defaults to the real defaultProbeRun) purely for host-independent testing
+// (see tests/desktop-target.test.mjs) — production callers (defaultDesktopProbe passes this whole
+// function as `run`, called with zero args) always get the real spawnSync-backed probe.
+export function winProbeRun({ probeRun = defaultProbeRun } = {}) {
+  const r = probeRun(WIN_REG_BIN, ['query', 'HKCR\\claude\\shell\\open\\command', '/ve'], { timeoutMs: 5000, capture: true });
   if (!r || r.code !== 0) return { code: 1, stdout: '' };
   const m = /"([^"]+\.exe)"/i.exec(String(r.stdout || ''));
   return { code: m ? 0 : 1, stdout: m ? m[1] : '' };

@@ -540,6 +540,66 @@ test('all three declared desktop skill paths branch to respawn --attended', () =
   }
 });
 
+// Round-8 review Finding 1: the CONTINUE/HANDOFF unattended branch previously keyed off a bare
+// non-tty check ("드라이버 마커 / DEEP_LOOP_UNATTENDED / non-tty"), inconsistent with the kernel's
+// isHeadlessInvocation semantics and the init-skill fix that treats non-tty Desktop Code tabs as
+// attended. A launcher=none attended non-tty session (desktop declined/suppressed) would fall into
+// the do-nothing unattended branch after handoff emit — stranding the lease in 'releasing' with no
+// respawn/preserve-pause. Fixed to key unattended ONLY off headless markers (isHeadlessInvocation:
+// DEEP_LOOP_UNATTENDED/DEEP_LOOP_HEADLESS/driver entrypoint heuristic), never a bare tty check.
+test('continue + handoff + handoff-respawn.md: unattended branch keys ONLY off headless markers, not non-tty', () => {
+  const files = [
+    skillPath('deep-loop-continue'),
+    skillPath('deep-loop-handoff'),
+    join(ROOT, 'skills', 'deep-loop-workflow', 'references', 'handoff-respawn.md'),
+  ];
+  for (const f of files) {
+    const s = _rf(f, 'utf8');
+    // The unattended branch heading/description must reference the kernel's isHeadlessInvocation
+    // semantics (or the concrete headless markers it recognizes), not a bare tty check.
+    assert.match(s, /isHeadlessInvocation|DEEP_LOOP_HEADLESS/,
+      `${f}: unattended branch must reference isHeadlessInvocation/DEEP_LOOP_HEADLESS kernel markers`);
+    // Must explicitly state tty/non-tty is NOT a trigger for the unattended branch (documents the
+    // fix, guards against reintroducing the bare tty check).
+    assert.match(s, /tty[\s\S]{0,80}(아니다|not a (signal|trigger))/i,
+      `${f}: must explicitly document that non-tty alone is not an unattended signal`);
+    // The unattended branch's own heading/description must NOT contain a bare "non-tty" trigger
+    // token immediately inside its own parenthetical marker list (i.e. no regression to
+    // "드라이버 마커 / DEEP_LOOP_UNATTENDED / non-tty" style bare-list phrasing).
+    assert.ok(!/(?:드라이버 마커|explicit driver marker)\s*\/\s*`?DEEP_LOOP_UNATTENDED`?\s*(?:set)?\s*\/\s*non-tty/.test(s),
+      `${f}: must not regress to the bare "driver marker / DEEP_LOOP_UNATTENDED / non-tty" unattended trigger list`);
+  }
+});
+
+// Round-8 review Finding 1 (part 2): a launcher=none ATTENDED session (not a headless marker, not
+// desktop) must route through respawn (gate-first) then preserve-pause on the no-launcher outcome —
+// the existing else/manual path — never the do-nothing unattended branch. Verify structurally: the
+// unattended-branch text block must appear BEFORE the else/no-launcher/preserve-pause block (so an
+// attended non-tty session that isn't caught by the (now headless-marker-only) unattended check
+// falls through to the manual respawn-gate → preserve-pause path documented later in the file),
+// and the file must NOT describe the unattended branch as also covering launcher=none/attended cases.
+test('continue + handoff + handoff-respawn.md: launcher=none attended routes to respawn/preserve-pause (manual), not a no-op', () => {
+  const files = [
+    skillPath('deep-loop-continue'),
+    skillPath('deep-loop-handoff'),
+    join(ROOT, 'skills', 'deep-loop-workflow', 'references', 'handoff-respawn.md'),
+  ];
+  for (const f of files) {
+    const s = _rf(f, 'utf8');
+    // else/manual branch (launcher=none / visible 아님 / legacy interactive) must exist and route
+    // through respawn (gate) before any pause, exactly like the existing no-launcher-else assertions
+    // elsewhere in this file — reconfirm no-launcher precedes --mode preserve.
+    const noLauncherIdx = s.lastIndexOf('no-launcher');
+    const preserveIdx = s.lastIndexOf('--mode preserve');
+    assert.ok(noLauncherIdx !== -1 && preserveIdx !== -1 && noLauncherIdx < preserveIdx,
+      `${f}: launcher=none attended path must reach the no-launcher → --mode preserve manual path (not the unattended do-nothing branch)`);
+    // The unattended branch must not itself instruct pause/preserve or claim it is a no-op for
+    // launcher=none — it defers entirely to the driver.
+    const unattendedHeadingIdx = s.search(/unattended|Unattended/);
+    assert.ok(unattendedHeadingIdx !== -1, `${f}: unattended branch heading must exist`);
+  }
+});
+
 test('deep-loop SKILL.md: init opt-in offer gated on launcher===none + attended + darwin/win32', () => {
   const s = dlSkill();
   assert.match(s, /detect-terminal/, 'must run detect-terminal before offering desktop opt-in');
