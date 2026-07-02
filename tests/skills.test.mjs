@@ -54,10 +54,10 @@ function violatesBoundary(src) {
 }
 
 // Codex r3 sf-4: deep-loop.mjs 를 실제 호출하는 라인 중 mutating subcommand 는 --owner 와 --generation 을 **둘 다** 가져야 한다.
-const MUTATING_SUB = /(state\s+patch|episode\s+(?:new|record|abandon)|workstream\s+(?:new|set|terminal)|review\s+(?:dispatch|record)|handoff\s+emit|budget\s+record|comprehension\s+ack|breaker\s+reset|lease\s+(?:acquire|release)|finish\b)/;
+const MUTATING_SUB = /(state\s+patch|episode\s+(?:new|record|abandon)|workstream\s+(?:new|set|terminal)|review\s+(?:dispatch|record)|handoff\s+emit|budget\s+record|comprehension\s+ack|breaker\s+reset|session-profile\s+set|lease\s+(?:acquire|release)|finish\b)/;
 // Codex r5 sf-3: shorthand 명령(예: `episode record --status done`, `finish --status completed`)도 잡는다.
 // "command 라인" = deep-loop.mjs 호출이거나, mutating sub 뒤에 CLI 플래그(--xxx)가 오는 경우. 순수 산문 멘션은 무시.
-const MUTATING_CMD = /(?:state\s+patch|episode\s+(?:new|record|abandon)|workstream\s+(?:new|set|terminal)|review\s+(?:dispatch|record)|handoff\s+emit|budget\s+record|comprehension\s+ack|breaker\s+reset|lease\s+(?:acquire|release)|finish)\b[^\n]*\s--\w/;
+const MUTATING_CMD = /(?:state\s+patch|episode\s+(?:new|record|abandon)|workstream\s+(?:new|set|terminal)|review\s+(?:dispatch|record)|handoff\s+emit|budget\s+record|comprehension\s+ack|breaker\s+reset|session-profile\s+set|lease\s+(?:acquire|release)|finish)\b[^\n]*\s--\w/;
 function mutatingFenced(text) {
   // Codex r4 sf-2: 셸 라인 연속(\ 로 끝나는 줄)을 논리 명령으로 먼저 합친다 — multi-line unfenced 명령 회피 차단.
   const joined = text.replace(/\\\n\s*/g, ' ');
@@ -642,5 +642,18 @@ test('deep-loop SKILL.md: init opt-in offer gated on launcher===none + attended 
   // both offer/confirm/decline lines must carry the fence (kernel requires it; not enforced by mutatingFenced's MUTATING_SUB list)
   for (const line of s.split('\n').filter(l => /spawn-style\s+(offer|confirm|decline)-desktop/.test(l))) {
     assert.ok(/--owner\b/.test(line) && /--generation\b/.test(line), `spawn-style line missing fence flags: ${line}`);
+  }
+});
+
+test('continue/handoff/resume skills + shared reference wire session-profile refresh (WS1)', () => {
+  const paths = [
+    '../skills/deep-loop-continue/SKILL.md',
+    '../skills/deep-loop-handoff/SKILL.md',
+    '../skills/deep-loop-resume/SKILL.md',
+    '../skills/deep-loop-workflow/references/handoff-respawn.md',
+  ];
+  for (const p of paths) {
+    const body = readFileSync(new URL(p, import.meta.url), 'utf8');
+    assert.match(body, /session-profile set/, `${p} should reference session-profile set`);
   }
 });

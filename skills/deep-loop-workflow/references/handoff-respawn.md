@@ -8,6 +8,20 @@
 2. **per_session_turn_cap 소진** — budget 게이트가 `handoff` action을 반환
 3. **사람 수동 요청** — `/deep-loop-handoff`로 언제든 emit 가능
 
+## §0.5 세션 model/effort refresh (handoff emit / respawn 전 항상)
+
+handoff를 emit하거나 respawn하기 전에, 살아있는 세션이 자기 model/effort를 durable state에 갱신한다 — 자식이 부모와 같은 model/effort로 열리도록(self-healing). `intent:'lease'`라 handoff가 이미 emit되어 lease가 `releasing`이어도 통과한다:
+
+```bash
+CLAUDE_EFFORT_VAL=$(node -e "process.stdout.write(process.env.CLAUDE_EFFORT||'')")
+SP_ARGS=(session-profile set --model "<이 세션의 모델 ID>" --owner <run_id> --generation <n>)
+[ -n "$CLAUDE_EFFORT_VAL" ] && SP_ARGS+=(--effort "$CLAUDE_EFFORT_VAL")   # 빈 effort 생략(INVALID_EFFORT 방지)
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" "${SP_ARGS[@]}"
+```
+
+- 관측된 값만 플래그로 포함(빈 effort 생략). 값이 그대로면 no-op(이벤트 안 쌓임). observation 실패 시 건너뛴다(기존 state로 진행).
+- `lease.handoff_phase`가 `emitted`/`spawned`이면(PreCompact 안전망이 이미 emit) business write는 releasing carve-out으로 fence되므로, 정상 tick 작업을 건너뛰고 곧장 respawn 분기로 간다. phase `emitted`는 respawn이 갱신된 state로 launch를 빌드(self-heal 완결), phase `spawned`는 이미 뜬 자식이 `/deep-loop-resume`의 refresh로 다음 handoff에 교정한다.
+
 ## Handoff Emit
 
 ```
