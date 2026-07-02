@@ -15,11 +15,13 @@ const okRun = (out, code = 0) => () => ({ code, stdout: out });
 // desktop-handler.test.mjs; this file only proves defaultDesktopProbe threads verifySignature/allowTeamIds
 // through, same as it already does for run/realpath/allowMacPaths/allowBundleIds).
 const okSig = () => ({ ok: true, teamId: ALLOW_TEAM_IDS[0] });
-// Fake Authenticode verifier — a valid signature carrying the real allowlisted publisher. Injected so
-// win32 tests never shell out to the real `powershell`/`pwsh` (round-5 review Finding 1 wiring proof
-// lives in desktop-handler.test.mjs; this file only proves defaultDesktopProbe threads
-// verifyWinSignature/allowWinPublishers through, same as it already does for verifySignature/allowTeamIds).
-const okWinSig = () => ({ ok: true, publisher: ALLOW_WIN_PUBLISHERS[0], thumbprint: 'DEADBEEF' });
+// Fake Authenticode verifier — a VALID signature whose signer is NOT in the (round-10: intentionally
+// empty, fail-closed) production ALLOW_WIN_PUBLISHERS. Injected so win32 tests never shell out to the real
+// `powershell`/`pwsh`. The happy-path VERIFIED wiring for win32 is proven at the handler level
+// (desktop-handler.test.mjs, which injects a non-empty allowWinPublishers directly); this file proves the
+// defaultDesktopProbe→verifyDesktopHandler wiring via the negative outcomes (path/publisher rejection),
+// which is all the empty production allowlist permits.
+const okWinSig = () => ({ ok: true, publisher: 'CN=Unlisted Valid Signer', thumbprint: 'DEADBEEF' });
 
 test('defaultDesktopProbe: unsupported platform (linux) -> unavailable, no injection needed', () => {
   const r = defaultDesktopProbe({ platform: 'linux' });
@@ -73,7 +75,14 @@ test('defaultDesktopProbe: allowlist wiring — allowed path+bundle but NON-allo
   assert.equal(r.reason, 'team-id-not-allowed');
 });
 
-test('defaultDesktopProbe: win32 + injected run/realpath/verifyWinSignature returning an allowlisted exe+publisher -> verified', () => {
+// Round-10 review fix (codex adversarial [high]): the production ALLOW_WIN_PUBLISHERS is intentionally
+// EMPTY (fail-closed until a real Windows signer is pinned — a guessed Subject could accidentally match the
+// real notarized signer and pass with no verified trust anchor). So even a VALID signature at an ALLOWED
+// path fails closed at the defaultDesktopProbe level — the current "Windows desktop not yet configured"
+// posture. This asserts the empty module constant actually reaches verifyDesktopHandler (a permissive/
+// non-empty default would flip this to ok:true). The happy-path VERIFIED win32 wiring is covered in
+// desktop-handler.test.mjs, which injects a non-empty allowWinPublishers directly.
+test('defaultDesktopProbe: win32 valid signature at allowed path but empty production ALLOW_WIN_PUBLISHERS -> fail-closed (not yet configured)', () => {
   const exePath = ALLOW_WIN_PATHS[0];
   const r = defaultDesktopProbe({
     platform: 'win32',
@@ -81,8 +90,9 @@ test('defaultDesktopProbe: win32 + injected run/realpath/verifyWinSignature retu
     realpath: idRp,
     verifyWinSignature: okWinSig,
   });
-  assert.equal(r.ok, true);
-  assert.deepEqual(r.argvTarget, { kind: 'win-exe', exePath });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'publisher-not-allowed');
+  assert.equal(ALLOW_WIN_PUBLISHERS.length, 0, 'Windows desktop is fail-closed until a real signer thumbprint is pinned (round-10)');
 });
 
 test('defaultDesktopProbe: win32 exe path not in allowlist -> unavailable (allowlist wiring)', () => {

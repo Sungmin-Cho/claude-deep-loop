@@ -144,11 +144,24 @@ export function declineDesktop(root, runId, { expect, now = Date.now() } = {}) {
 // lease-releasing-carveout gate at once: 'recover'/'resume'/'breaker-reset' clear RUN_PAUSED but NOT the
 // releasing-carveout, while 'lease'/'accounting' clear the releasing-carveout but NOT RUN_PAUSED. Routing
 // through leaseCheck() here would leave the escape hatch fenced-out in precisely the state it exists to
-// repair. Instead this mirrors recoverRun's (recover.mjs) bespoke in-lock fence EXACTLY — an owner+
-// generation-only check with no lease.state/RUN_PAUSED gating — the SAME established "human recovery
-// operation" pattern, not a new one. Deliberately does NOT touch `status` or `lease.state`/`resume_policy`:
-// downgrading spawn_style is the full scope of this op; unpausing (if the pause was desktop-caused) is
-// left to the existing `recover` path / a fresh acquireLease, so a human can still audit before resuming.
+// repair. Instead this uses recoverRun's (recover.mjs) bespoke in-lock fence PATTERN — an owner+generation
+// check that deliberately skips leaseCheck's RUN_PAUSED gate and releasing-carveout — the SAME established
+// "human recovery operation" pattern, not a new one.
+//
+// Round-10 review fix (codex review P2 + adversarial [medium]): recoverRun's owner+generation check is only
+// SAFE because it ALSO gates on status==='paused' (recover.mjs:12 outside-lock + :24 in-lock) — a released
+// lease on a paused recovering run is legitimate, and terminal runs are excluded by that same paused gate.
+// This function had dropped BOTH protections while claiming to mirror recoverRun "exactly", so a stale
+// former owner whose generation was still recorded could mutate spawn_style AFTER `lease release`
+// (state==='released') or after the run settled (completed/stopped) — violating invariant #2 (lease-fence)
+// and #4 (terminal states settled). The two guards below restore recoverRun's protections without
+// requiring paused-only: reject 'released' (leaseCheck lease.mjs:17 parity — the escape hatch needs
+// 'releasing', NOT 'released', so this does not fence out the state resetDesktop exists to repair) and
+// reject terminal runs (pauseRun terminal guard state.mjs:176 parity). Healthy 'running'+'active' downgrade
+// and the 'paused'+'releasing' escape hatch both remain allowed.
+// Deliberately does NOT touch `status` or `lease.state`/`resume_policy`: downgrading spawn_style is the full
+// scope of this op; unpausing (if the pause was desktop-caused) is left to the existing `recover` path /
+// a fresh acquireLease, so a human can still audit before resuming.
 export function resetDesktop(root, runId, { expect, now = Date.now() } = {}) {
   assertFenceShape(expect, 'resetDesktop');
   try {
@@ -162,12 +175,15 @@ export function resetDesktop(root, runId, { expect, now = Date.now() } = {}) {
         if (!lease) throw new Error('LEASE_FENCED: no-lease');
         if (lease.owner_run_id !== expect.owner) throw new Error('LEASE_FENCED: owner-mismatch');
         if (lease.generation !== expect.generation) throw new Error('LEASE_FENCED: generation-mismatch');
+        if (lease.state === 'released') throw new Error('LEASE_FENCED: lease-released');
+        if (l.status === 'completed' || l.status === 'stopped') throw new Error('RUN_TERMINAL: resetDesktop');
         const cur = l.autonomy?.spawn_style;
         if (cur !== 'desktop') throw new Error('SOURCE_INVALID: resetDesktop');
       });
   } catch (e) {
     const msg = String(e?.message || e);
     if (/^SOURCE_INVALID:/.test(msg)) return { ok: false, reason: 'SOURCE_INVALID' };
+    if (/^RUN_TERMINAL:/.test(msg)) return { ok: false, reason: 'RUN_TERMINAL' };   // terminal run — settled; exit 1 (LEASE_FENCED still propagates → exit 3)
     throw e;
   }
   return { ok: true };

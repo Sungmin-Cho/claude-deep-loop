@@ -26,16 +26,21 @@ export const ALLOW_TEAM_IDS = ['Q6L2SF6YDW'];
 // macOS TeamIdentifier check above. Closes the same gap on Windows: a malicious/replaced exe placed
 // at an ALLOW_WIN_PATHS path would otherwise pass on path alone.
 //
-// PLACEHOLDER — there is no real Windows machine with Claude Desktop installed available in this
-// environment to capture the actual Authenticode signer. Until a real Windows host confirms the
-// true publisher Subject/Thumbprint (via `Get-AuthenticodeSignature 'C:\Program Files\Claude\Claude.exe'
-// | Select-Object -ExpandProperty SignerCertificate`), THIS LIST DOES NOT MATCH ANY REAL SIGNATURE —
-// Windows desktop-deeplink dispatch fails closed (publisher-not-allowed) and the human falls back to
-// manual `/deep-loop-resume`, which is the same fail-closed posture the rest of the Windows path
-// already has (spec §4.4/§9 — Windows desktop launch is pending real-Windows verification end to end).
-export const ALLOW_WIN_PUBLISHERS = [
-  'CN=Anthropic PBC, O=Anthropic PBC, L=San Francisco, S=California, C=US',   // TBD — confirm exact Subject string on a real Windows host
-];
+// NOT YET CONFIGURED (round-10 review fix — codex adversarial [high]) — an EMPTY allowlist, deliberately.
+// There is no real Windows machine with Claude Desktop installed available in this environment to capture
+// the actual Authenticode signer, so there is no trustworthy value to pin. A *guessed* Subject string (the
+// prior placeholder) is worse than empty: because verifyDesktopHandler passes when the found signer Subject
+// OR Thumbprint is in this list, a plausible guess like "CN=Anthropic PBC, ..." could ACCIDENTALLY match the
+// real notarized signer and let the handler through with NO verified trust anchor — a false-positive on the
+// exact trust boundary this list exists to enforce. An empty list can never false-positive: win32 desktop
+// deterministically fails closed (`publisher-not-allowed`) and the human falls back to manual
+// `/deep-loop-resume` (same fail-closed posture as the rest of the Windows path — spec §4.4/§9).
+//
+// TO ACTIVATE Windows desktop dispatch: on a real Windows host with Claude Desktop installed, run
+//   Get-AuthenticodeSignature 'C:\Program Files\Claude\Claude.exe' | Select-Object -ExpandProperty SignerCertificate
+// and pin the reported Thumbprint (preferred — the cryptographic identity; Subject strings are attacker-
+// nameable, and only chain-to-trusted-root + Status='Valid' keeps subject-matching safe) into this array.
+export const ALLOW_WIN_PUBLISHERS = [];
 
 // macOS: ask NSWorkspace (via a small JXA snippet) which app is currently bound to the `claude://`
 // URL scheme, then read that app's Info.plist bundle id — the two facts verifyDesktopHandler needs

@@ -392,6 +392,61 @@ test('resetDesktop wrong owner/generation while paused+releasing still throws LE
   assert.equal(readState(root, runId).data.autonomy.spawn_style, 'desktop', 'no mutation on a fenced call');
 });
 
+// Round-10 review fix (codex review P2 + adversarial [medium]): resetDesktop's bespoke owner+generation
+// fence must ALSO reject released leases and terminal runs — recoverRun (whose pattern this borrows) is
+// safe only because it additionally gates on status==='paused'. Without these guards a stale former owner
+// whose generation is still recorded could mutate spawn_style after `lease release` (state==='released') or
+// after the run settled (completed/stopped). Helper seeds a desktop run with a custom status/lease.state.
+function seedDesktopWith({ status = 'running', leaseState = 'active' } = {}) {
+  const root = mkdtempSync(join(tmpdir(), 'dl-spawn-optin-reset-'));
+  const runId = OWNER;
+  mkdirSync(runDir(root, runId), { recursive: true });
+  const data = baseData({
+    status,
+    autonomy: { tier: 'recommend', spawn_style: 'desktop' },
+    session_chain: {
+      lease: {
+        owner_run_id: OWNER, generation: GEN, state: leaseState, handoff_phase: 'idle',
+        handoff_idempotency_key: null, handoff_child_run_id: null, expires_at: null,
+      },
+      sessions: [{ run_id: OWNER, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: null }],
+    },
+  });
+  writeState(root, runId, data);
+  return { root, runId, expect: { owner: OWNER, generation: GEN } };
+}
+
+test('resetDesktop on a RELEASED lease is fenced (LEASE_FENCED: lease-released) even with matching owner/generation — no mutation', () => {
+  const { root, runId, expect } = seedDesktopWith({ leaseState: 'released' });
+  assert.throws(() => resetDesktop(root, runId, { expect, now: T0 }), /LEASE_FENCED: lease-released/);
+  assert.equal(readState(root, runId).data.autonomy.spawn_style, 'desktop', 'released lease must not permit a spawn_style mutation');
+});
+
+test('resetDesktop on a COMPLETED (terminal) run is rejected (RUN_TERMINAL, exit-1 semantics) — no mutation', () => {
+  const { root, runId, expect } = seedDesktopWith({ status: 'completed' });
+  const r = resetDesktop(root, runId, { expect, now: T0 });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'RUN_TERMINAL');
+  assert.equal(readState(root, runId).data.autonomy.spawn_style, 'desktop', 'terminal run is settled — no mutation');
+});
+
+test('resetDesktop on a STOPPED (terminal) run is rejected (RUN_TERMINAL) — no mutation', () => {
+  const { root, runId, expect } = seedDesktopWith({ status: 'stopped' });
+  const r = resetDesktop(root, runId, { expect, now: T0 });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'RUN_TERMINAL');
+  assert.equal(readState(root, runId).data.autonomy.spawn_style, 'desktop', 'terminal run is settled — no mutation');
+});
+
+// The healthy downgrade path (running + active lease) still works — the new guards fence out ONLY
+// released/terminal, not the normal case resetDesktop is also meant to serve.
+test('resetDesktop on a healthy running+active desktop run still succeeds (guards do not over-fence)', () => {
+  const { root, runId, expect } = seedDesktopWith({ status: 'running', leaseState: 'active' });
+  const r = resetDesktop(root, runId, { expect, now: T0 });
+  assert.equal(r.ok, true);
+  assert.equal(readState(root, runId).data.autonomy.spawn_style, 'visible');
+});
+
 // ── CLI: spawn-style probe-desktop ────────────────────────────────────────────
 
 // Round-7 review fix, Finding 2: asserts SHAPE only (exit 0, valid JSON, boolean `ok`) — never `ok===true`.
@@ -469,6 +524,31 @@ test('CLI spawn-style reset-desktop wrong owner while paused+releasing still exi
   } catch (e) { code = e.status; }
   assert.equal(code, 3);
   assert.equal(readState(root, runId).data.autonomy.spawn_style, 'desktop', 'a fenced-out reset must not mutate spawn_style');
+});
+
+// Round-10 review fix: CLI-level proof of the released/terminal fences. A released lease with a matching
+// owner/generation must still exit 3 (LEASE_FENCED — invariant #2), and a terminal run must exit 1
+// (RUN_TERMINAL — invariant #4); neither may mutate spawn_style.
+test('CLI spawn-style reset-desktop on a RELEASED lease exits 3 (fence) — no mutation', () => {
+  const { root, runId, expect } = seedDesktopWith({ leaseState: 'released' });
+  withCurrentPointer(root, runId);
+  let code = 0;
+  try {
+    execFileSync('node', [CLI, 'spawn-style', 'reset-desktop', '--owner', expect.owner, '--generation', String(expect.generation), '--project-root', root], { encoding: 'utf8' });
+  } catch (e) { code = e.status; }
+  assert.equal(code, 3);
+  assert.equal(readState(root, runId).data.autonomy.spawn_style, 'desktop', 'a released-lease reset must not mutate spawn_style');
+});
+
+test('CLI spawn-style reset-desktop on a COMPLETED (terminal) run exits 1 (RUN_TERMINAL) — no mutation', () => {
+  const { root, runId, expect } = seedDesktopWith({ status: 'completed' });
+  withCurrentPointer(root, runId);
+  let code = 0;
+  try {
+    execFileSync('node', [CLI, 'spawn-style', 'reset-desktop', '--owner', expect.owner, '--generation', String(expect.generation), '--project-root', root], { encoding: 'utf8' });
+  } catch (e) { code = e.status; }
+  assert.equal(code, 1);
+  assert.equal(readState(root, runId).data.autonomy.spawn_style, 'desktop', 'a terminal-run reset must not mutate spawn_style');
 });
 
 // ── CLI: spawn-style offer-desktop | confirm-desktop | decline-desktop ───────
