@@ -22,6 +22,21 @@ const T0 = Date.parse('2026-07-01T00:00:00.000Z');
 const passingProbe = () => ({ ok: true, argvTarget: { kind: 'macos-app', appPath: '/Applications/Claude.app' } });
 const failingProbe = () => ({ ok: false, reason: 'signature-invalid' });
 
+// Round-7 review fix, Finding 2: computed ONCE at module load by actually running the real, uninjected
+// `probe-desktop` CLI verb — NOT inferred from `process.platform` alone. A darwin/win32 host with no
+// verified Claude Desktop install (clean CI, a Windows box before ALLOW_WIN_PUBLISHERS is confirmed
+// against a real signature — see desktop-target.mjs) reports {ok:false}, and any CLI test that exercises
+// the REAL confirm-desktop happy path (which always probes the real, uninjected desktopProbe — see
+// spawn-optin.mjs confirmDesktop) must be skipped there too, or `npm test` becomes host-dependent. On a
+// host that IS provisioned (this dev machine), it stays gated to true and the happy-path still runs.
+const desktopProbeVerified = (() => {
+  if (!['darwin', 'win32'].includes(process.platform)) return false;
+  try {
+    const out = execFileSync('node', [CLI, 'spawn-style', 'probe-desktop'], { encoding: 'utf8' });
+    return JSON.parse(out).ok === true;
+  } catch { return false; }
+})();
+
 function baseData(overrides = {}) {
   return {
     schema_version: '0.2.0', run_id: OWNER, goal: 'g', status: 'running',
@@ -57,6 +72,35 @@ function seedFreshRun({ spawn_style } = {}) {
 // (a real appendAnchored transaction, distinct from the opt-in path under test).
 function forceSpawnStyle(root, runId, style) {
   appendAnchored(root, runId, { type: 'test-force-spawn-style', data: { style } }, (l) => { l.autonomy.spawn_style = style; });
+}
+
+// Round-7 review fix (Finding 1): reproduces the EXACT stuck state respawn.mjs's preservePause leaves
+// behind on a desktop-unavailable respawn — status='paused', lease.state='releasing' (handoff still
+// 'emitted', reserved child never acquired), spawn_style='desktop'. Mirrors recover.test.mjs's baseData
+// override shape (same seeding convention for a preserve-paused run).
+function seedPausedReleasingDesktop() {
+  const root = mkdtempSync(join(tmpdir(), 'dl-spawn-optin-stuck-'));
+  const runId = OWNER;
+  const CHILD = 'SPAWNOPTINCHILD1';
+  mkdirSync(runDir(root, runId), { recursive: true });
+  const data = baseData({
+    status: 'paused',
+    pause_reason: 'desktop-launcher-unavailable',
+    autonomy: { tier: 'recommend', spawn_style: 'desktop' },
+    session_chain: {
+      lease: {
+        owner_run_id: OWNER, generation: GEN, state: 'releasing', handoff_phase: 'emitted',
+        handoff_idempotency_key: 'key123', handoff_child_run_id: CHILD,
+        expires_at: null, resume_policy: 'human',
+      },
+      sessions: [
+        { run_id: OWNER, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: CHILD },
+        { run_id: CHILD, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: null },
+      ],
+    },
+  });
+  writeState(root, runId, data);
+  return { root, runId, expect: { owner: OWNER, generation: GEN } };
 }
 
 function withCurrentPointer(root, runId) {
@@ -323,21 +367,44 @@ test('resetDesktop appends exactly one event on success; rejections append none'
   assert.equal(readState(root, runId).data.event_log_head.seq, afterForce + 1, 'a successful reset appends exactly one event');
 });
 
+// Round-7 review fix, Finding 1: resetDesktop is the escape hatch for a run stuck in EXACTLY the state a
+// desktop-unavailable respawn leaves it in (status='paused', lease.state='releasing') — proves it is NOT
+// fenced out of the paused/releasing state it exists to repair, and that a wrong owner/generation is
+// still correctly rejected (LEASE_FENCED) even in that same stuck state (not accidentally wide-open).
+test('resetDesktop succeeds while status=paused and lease.state=releasing (the exact desktop-unavailable stuck state)', () => {
+  const { root, runId, expect } = seedPausedReleasingDesktop();
+  const before = readState(root, runId).data;
+  assert.equal(before.status, 'paused');
+  assert.equal(before.session_chain.lease.state, 'releasing');
+  const r = resetDesktop(root, runId, { expect, now: T0 });
+  assert.equal(r.ok, true);
+  const after = readState(root, runId).data;
+  assert.equal(after.autonomy.spawn_style, 'visible');
+  // status/lease.state deliberately untouched — downgrading spawn_style is the full scope of this op;
+  // unpausing is left to the existing `recover` path (see spawn-optin.mjs resetDesktop doc comment).
+  assert.equal(after.status, 'paused');
+  assert.equal(after.session_chain.lease.state, 'releasing');
+});
+
+test('resetDesktop wrong owner/generation while paused+releasing still throws LEASE_FENCED (no mutation)', () => {
+  const { root, runId } = seedPausedReleasingDesktop();
+  assert.throws(() => resetDesktop(root, runId, { expect: { owner: 'wrong', generation: 1 }, now: T0 }), /LEASE_FENCED/);
+  assert.equal(readState(root, runId).data.autonomy.spawn_style, 'desktop', 'no mutation on a fenced call');
+});
+
 // ── CLI: spawn-style probe-desktop ────────────────────────────────────────────
 
-// Read-only smoke test — no run/state/lease needed at all (no --owner/--generation/--project-root).
-// On this macOS host with a real, verifiable Claude.app install (see scripts/lib/desktop-target.mjs
-// ALLOW_MAC_PATHS/ALLOW_BUNDLE_IDS/ALLOW_TEAM_IDS), the real defaultDesktopProbe reports ok:true.
-test('CLI spawn-style probe-desktop is read-only and prints a probe verdict (smoke)', () => {
+// Round-7 review fix, Finding 2: asserts SHAPE only (exit 0, valid JSON, boolean `ok`) — never `ok===true`.
+// Asserting a real positive verdict here would require an actual verified /Applications/Claude.app (or
+// win32 equivalent) install on the host running `npm test`, which fails on a clean CI runner / Windows
+// placeholder and breaks the zero-external-dep, host-independent preflight invariant (CLAUDE.md). The
+// POSITIVE (ok:true) path is proven deterministically via INJECTED probes in tests/desktop-target.test.mjs
+// (defaultDesktopProbe) and tests/desktop-handler.test.mjs (verifyDesktopHandler) — this CLI test only
+// proves the subcommand is wired, read-only, and returns a well-shaped verdict on ANY host.
+test('CLI spawn-style probe-desktop is read-only and prints a well-shaped probe verdict (host-independent)', () => {
   const out = execFileSync('node', [CLI, 'spawn-style', 'probe-desktop'], { encoding: 'utf8' });
   const r = JSON.parse(out);
   assert.equal(typeof r.ok, 'boolean');
-  if (process.platform === 'darwin' || process.platform === 'win32') {
-    // smoke: on this dev host (darwin, real Claude.app installed) the probe should verify.
-    assert.equal(r.ok, true, `expected probe-desktop ok:true on this host, got: ${JSON.stringify(r)}`);
-  } else {
-    assert.equal(r.ok, false);
-  }
 });
 
 test('CLI spawn-style probe-desktop needs no run/owner/generation (works with no active run at all)', () => {
@@ -378,6 +445,32 @@ test('CLI spawn-style reset-desktop when spawn_style is not desktop exits 1 (SOU
   assert.equal(readState(root, runId).data.autonomy.spawn_style, 'visible');
 });
 
+// Round-7 review fix, Finding 1: the CLI-level proof that reset-desktop is NOT fenced out of the exact
+// stuck state it exists to repair (status='paused', lease.state='releasing' — see respawn.mjs
+// preservePause on a desktop-launcher-unavailable respawn). Previously this went through requireLease's
+// default business-intent leaseCheck() at the CLI precheck layer and returned exit 3 (LEASE_FENCED)
+// before ever reaching resetDesktop.
+test('CLI spawn-style reset-desktop succeeds while status=paused and lease.state=releasing (exit 0)', () => {
+  const { root, runId, expect } = seedPausedReleasingDesktop();
+  withCurrentPointer(root, runId);
+  const out = execFileSync('node', [CLI, 'spawn-style', 'reset-desktop', '--owner', expect.owner, '--generation', String(expect.generation), '--project-root', root], { encoding: 'utf8' });
+  assert.equal(JSON.parse(out).ok, true);
+  const after = readState(root, runId).data;
+  assert.equal(after.autonomy.spawn_style, 'visible');
+  assert.equal(after.status, 'paused', 'unpausing is left to the existing recover path, not reset-desktop');
+});
+
+test('CLI spawn-style reset-desktop wrong owner while paused+releasing still exits 3 (fence, not RUN_PAUSED bypass)', () => {
+  const { root, runId, expect } = seedPausedReleasingDesktop();
+  withCurrentPointer(root, runId);
+  let code = 0;
+  try {
+    execFileSync('node', [CLI, 'spawn-style', 'reset-desktop', '--owner', 'wrong-owner', '--generation', String(expect.generation), '--project-root', root], { encoding: 'utf8' });
+  } catch (e) { code = e.status; }
+  assert.equal(code, 3);
+  assert.equal(readState(root, runId).data.autonomy.spawn_style, 'desktop', 'a fenced-out reset must not mutate spawn_style');
+});
+
 // ── CLI: spawn-style offer-desktop | confirm-desktop | decline-desktop ───────
 
 // confirm-desktop's CLI wrapper doesn't take a --platform flag (it reads process.platform, unlike
@@ -385,7 +478,10 @@ test('CLI spawn-style reset-desktop when spawn_style is not desktop exits 1 (SOU
 // PLATFORM_UNSUPPORTED guard (spawn-optin.mjs confirmDesktop check ②) makes this exit 1 on any host
 // other than macOS/Windows (e.g. a Linux CI runner). Skip rather than weaken: the lib-level tests
 // already prove the guard's behavior on every platform via injection (Finding 2, round-5 review).
-test('CLI spawn-style offer-desktop → confirm-desktop happy path (exit 0, spawn_style=desktop)', { skip: !['darwin', 'win32'].includes(process.platform) }, () => {
+// Round-7 review fix, Finding 2: gated on `desktopProbeVerified` (an ACTUAL positive probe result), not
+// just platform — a darwin/win32 host without a verified Claude Desktop install (clean CI) also skips,
+// since confirm-desktop's real (uninjected) desktopProbe would report HANDLER_UNVERIFIED there too.
+test('CLI spawn-style offer-desktop → confirm-desktop happy path (exit 0, spawn_style=desktop)', { skip: !desktopProbeVerified }, () => {
   const { root, runId, expect } = seedFreshRun();
   withCurrentPointer(root, runId);
   const outOffer = execFileSync('node', [CLI, 'spawn-style', 'offer-desktop', '--owner', expect.owner, '--generation', String(expect.generation), '--nonce', 'n1', '--now', String(T0), '--project-root', root], { encoding: 'utf8' });
@@ -459,8 +555,9 @@ test('CLI spawn-style offer-desktop --ttl-sec notanumber exits 1 (INVALID_TTL_SE
 });
 
 // Same host-dependence as the happy-path test above: this test's confirm-desktop call also hits the
-// process.platform-read PLATFORM_UNSUPPORTED guard on a non-macOS/Windows CI runner (Finding 2, round-5 review).
-test('CLI spawn-style offer-desktop --ttl-sec 120 succeeds and the persisted expiry reflects 120s (not the 600s default)', { skip: !['darwin', 'win32'].includes(process.platform) }, () => {
+// process.platform-read PLATFORM_UNSUPPORTED guard on a non-macOS/Windows CI runner (Finding 2, round-5
+// review) AND the real desktopProbe (round-7 review Finding 2) — gated on `desktopProbeVerified` too.
+test('CLI spawn-style offer-desktop --ttl-sec 120 succeeds and the persisted expiry reflects 120s (not the 600s default)', { skip: !desktopProbeVerified }, () => {
   const { root, runId, expect } = seedFreshRun();
   withCurrentPointer(root, runId);
   const out = execFileSync('node', [CLI, 'spawn-style', 'offer-desktop', '--owner', expect.owner, '--generation', String(expect.generation), '--nonce', 'n1', '--ttl-sec', '120', '--now', String(T0), '--project-root', root], { encoding: 'utf8' });

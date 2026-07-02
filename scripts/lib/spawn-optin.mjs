@@ -136,6 +136,19 @@ export function declineDesktop(root, runId, { expect, now = Date.now() } = {}) {
 // exists once spawn_style==='desktop', since confirmDesktop already clears it on success).
 // Gated on cur==='desktop' (else SOURCE_INVALID, no mutation) — same in-lock TOCTOU-safe re-read pattern
 // as confirmDesktop's ⑤ — so this cannot be misused to silently downgrade a headless/interactive run.
+//
+// Round-7 review fix, Finding 1: resetDesktop is the escape hatch for the EXACT stuck state a
+// desktop-unavailable respawn leaves behind — respawn.mjs's preservePause sets status='paused' AND keeps
+// lease.state='releasing' (handoff still 'emitted', child never acquired; see round-6 preserve-pause).
+// The shared leaseCheck() (lease.mjs) has NO single intent that clears BOTH its RUN_PAUSED gate and its
+// lease-releasing-carveout gate at once: 'recover'/'resume'/'breaker-reset' clear RUN_PAUSED but NOT the
+// releasing-carveout, while 'lease'/'accounting' clear the releasing-carveout but NOT RUN_PAUSED. Routing
+// through leaseCheck() here would leave the escape hatch fenced-out in precisely the state it exists to
+// repair. Instead this mirrors recoverRun's (recover.mjs) bespoke in-lock fence EXACTLY — an owner+
+// generation-only check with no lease.state/RUN_PAUSED gating — the SAME established "human recovery
+// operation" pattern, not a new one. Deliberately does NOT touch `status` or `lease.state`/`resume_policy`:
+// downgrading spawn_style is the full scope of this op; unpausing (if the pause was desktop-caused) is
+// left to the existing `recover` path / a fresh acquireLease, so a human can still audit before resuming.
 export function resetDesktop(root, runId, { expect, now = Date.now() } = {}) {
   assertFenceShape(expect, 'resetDesktop');
   try {
@@ -145,8 +158,10 @@ export function resetDesktop(root, runId, { expect, now = Date.now() } = {}) {
         delete l.autonomy.spawn_style_optin_pending;
       },
       (l) => {
-        const lc = leaseCheck(l, { owner: expect.owner, generation: expect.generation });
-        if (!lc.ok) throw new Error('LEASE_FENCED: ' + lc.reason);
+        const lease = l.session_chain?.lease;
+        if (!lease) throw new Error('LEASE_FENCED: no-lease');
+        if (lease.owner_run_id !== expect.owner) throw new Error('LEASE_FENCED: owner-mismatch');
+        if (lease.generation !== expect.generation) throw new Error('LEASE_FENCED: generation-mismatch');
         const cur = l.autonomy?.spawn_style;
         if (cur !== 'desktop') throw new Error('SOURCE_INVALID: resetDesktop');
       });
