@@ -80,3 +80,10 @@ test('episode status "abandoned" is a valid kernel terminal', () => {
   const v = validate(base);
   assert.equal(v.ok, true, v.errors?.join('; '));
 });
+
+test('spawn_style=desktop is a valid enum value', () => {
+  const loop = minimalValid();
+  loop.autonomy.spawn_style = 'desktop';
+  const res = validate(loop);
+  assert.equal(res.ok, true, JSON.stringify(res.errors));
+});

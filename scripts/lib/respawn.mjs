@@ -4,6 +4,7 @@ import { checkBudget, reconcileBudget } from './budget.mjs';
 import { checkBreaker } from './breaker.mjs';
 import { advanceHandoffPhase } from './lease.mjs';
 import { buildLaunchCommand } from './handoff.mjs';
+import { defaultDesktopProbe } from './desktop-target.mjs';
 
 // 게이트 순서: budget → breaker → max_sessions → wallclock → auto_handoff (spec §9). 순수.
 export function respawnGate(loop, { now = Date.now() } = {}) {
@@ -41,12 +42,14 @@ export function isHeadlessInvocation(env = process.env) {
   return false;
 }
 
-// Resolve the spawn mode (spec §7). Returns 'headless' | a launcher name (cmux|iterm2|terminal-app|wt|powershell)
+// Resolve the spawn mode (spec §7). Returns 'headless' | 'desktop' | a launcher name (cmux|iterm2|terminal-app|wt|powershell)
 // | 'interactive'. Headless wins over everything: explicit flag, autonomy.spawn_style==='headless', OR a
-// detected headless invocation (regardless of launcher/attended). A visible launcher mode requires
-// spawn_style==='visible' AND attended===true AND a real (non-'none') detected launcher; otherwise 'interactive'.
+// detected headless invocation (regardless of launcher/attended). Then 'desktop' when spawn_style==='desktop' AND
+// attended===true (Claude Desktop deeplink transport). A visible launcher mode requires spawn_style==='visible'
+// AND attended===true AND a real (non-'none') detected launcher; otherwise 'interactive'.
 export function resolveSpawnMode(loop, { headless = false, attended = false, env = process.env } = {}) {
   if (headless || loop?.autonomy?.spawn_style === 'headless' || isHeadlessInvocation(env)) return 'headless';
+  if (loop?.autonomy?.spawn_style === 'desktop' && attended === true) return 'desktop';
   const launcher = loop?.session_spawn?.launcher;
   if (loop?.autonomy?.spawn_style === 'visible' && attended === true && launcher && launcher !== 'none') return launcher;
   return 'interactive';
@@ -152,6 +155,7 @@ export function respawn(root, runId, {
   childRunId, key, handoffRel = '', headless = false, attended = false,
   now = Date.now(), spawnFn = defaultSpawn, pollLease, env = process.env,
   sleep = defaultSleep, pollIntervalMs = 1500,
+  platform = process.platform, desktopProbe = defaultDesktopProbe,
 } = {}) {
   reconcileBudget(root, runId);                       // 무결성 fail-stop (탐지 시 throw)
   const { data: loop } = readState(root, runId);
@@ -226,6 +230,11 @@ export function respawn(root, runId, {
   // moves above the CAS; spawnFn call and its try/catch remain below, unchanged.
   const childSession = loop.session_chain.sessions.find(s => s.run_id === childRunId);
   const effHandoffRel = (childSession && childSession.handoff_rel) || handoffRel;
+  // Task 5b: only a 'desktop' mode spawn probes the real (or injected) handler-verification target —
+  // other modes never touch it. A verified target's argvTarget threads through as `desktopTarget`; an
+  // unverified/failed probe (dt.ok===false) yields null → buildLaunchCommand's unavailable entry →
+  // the generalized unavailable-entry guard below preserve-pauses (never a rollback/fenced-target spawn).
+  const dt = mode === 'desktop' ? desktopProbe({ platform }) : null;
   let _cmds, _entry;
   try {
     // launcherBin + launcherSocket threading (R3/R7-plan): cmux requires the absolute bundled bin + verified socket.
@@ -234,6 +243,7 @@ export function respawn(root, runId, {
       launcher: loop.session_spawn?.launcher,
       launcherBin: loop.session_spawn?.launcher_bin,
       launcherSocket: loop.session_spawn?.launcher_socket,
+      platform, desktopTarget: dt && dt.ok ? dt.argvTarget : null,
     });
     _entry = _cmds[mode];
   } catch (buildErr) {
@@ -241,15 +251,20 @@ export function respawn(root, runId, {
     return { ok: false, outcome: 'build-error', reason: String(buildErr.message || buildErr), childRunId };
   }
 
-  // Fail closed: a powershell mode with an unavailable entry (no trusted launcher_bin — e.g. a stale/migrated
-  // launcher='powershell' run) must NOT spawn a bare powershell. Unlike the interactive no-launcher path (which
-  // the else/none skill branch preserve-pauses), this is reached via the VISIBLE skill branch (launcher!=='none'
+  // Fail closed: ANY visible/desktop mode with an unavailable entry (no trusted launcher_bin — e.g. a
+  // stale/migrated launcher='powershell' run — or an unverified desktop target, or (win32 only) a
+  // verified win-exe target with no trusted PowerShell bin resolvable — see handoff.mjs's win32
+  // branch, which otherwise builds a runnable non-blocking `Start-Process` entry) — must NOT spawn.
+  // `interactive` never reaches here (it returns above, before `_cmds` is
+  // built); `headless`'s entry always carries `bin:'claude'` (guard never fires); a valid launcher entry
+  // always has a `bin` (guard never fires). Unlike the interactive no-launcher path (which the else/none
+  // skill branch preserve-pauses), this is reached via the VISIBLE/DESKTOP skill branch (launcher!=='none'
   // → `respawn --attended`), which does NOT inspect the outcome — so respawn must preserve-pause ITSELF here, or
   // the handoff is left emitted/releasing, unpaused, with no child spawned (stranded). Mirrors gate-blocked self-pause.
-  if (mode === 'powershell' && (!_entry || _entry.unavailable || !_entry.bin)) {
-    const res = preservePause(root, runId, { childRunId, parentOwner, generation, pauseReason: 'powershell-launcher-unavailable' });
+  if (!_entry || _entry.unavailable || !_entry.bin) {
+    const res = preservePause(root, runId, { childRunId, parentOwner, generation, pauseReason: `${mode}-launcher-unavailable` });
     if (res.fenced) return { ok: false, outcome: 'fenced', reason: 'lease-changed-before-pause', childRunId };
-    return { ok: false, outcome: 'no-launcher', reason: 'powershell-launcher-unavailable', childRunId };
+    return { ok: false, outcome: 'no-launcher', reason: `${mode}-launcher-unavailable`, childRunId };
   }
 
   // Codex r2 🔴3: 외부 spawn **이전에** emitted→spawned 를 원자적(withLock CAS)으로 클레임 (이중 외부 spawn 차단).

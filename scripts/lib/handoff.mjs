@@ -1,10 +1,11 @@
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { isTrustedPsBin } from './detect-terminal.mjs';
+import { isTrustedPsBin, trustedPsCandidates } from './detect-terminal.mjs';
 import { readState, runDir } from './state.mjs';
 import { appendAnchored } from './integrity.mjs';
 import { wrap, atomicWrite } from './envelope.mjs';
 import { reserveHandoff } from './lease.mjs';
+import { defaultDesktopProbe } from './desktop-target.mjs';
 
 function tsName(now) { return new Date(now).toISOString().replace(/[:.]/g, '-'); }
 
@@ -30,16 +31,20 @@ const SAFE_HANDOFF_REL = /^handoffs\/[A-Za-z0-9._-]+$/;
  * Build per-launcher argv entry map for spawning the child session.
  *
  * Returns:
- *   { cmux, iterm2, 'terminal-app', wt, powershell, headless, interactive }
+ *   { cmux, iterm2, 'terminal-app', wt, powershell, desktop, headless, interactive }
  *
  * Each entry (except interactive) has { bin, argv, display }.
  * headless also has { cwd }.
  * interactive has { display } only (human copies it; no auto-spawn).
+ * desktop has { bin, argv, available: true } when desktopTarget is a verified macOS
+ * app target (platform==='darwin') or a verified win-exe target (platform==='win32') AND a
+ * trusted PowerShell bin is resolvable (see the win32 branch comment below), else
+ * { unavailable: true } — deliberately no `display` (see below).
  *
  * Validates parentRunId, childRunId, and handoffRel to catch shell-injection
  * before any string is interpolated (UNSAFE_SPAWN_ARG guard).
  */
-export function buildLaunchCommand({ root, parentRunId, childRunId, handoffRel, launcher, launcherBin, launcherSocket }) {
+export function buildLaunchCommand({ root, parentRunId, childRunId, handoffRel, launcher, launcherBin, launcherSocket, platform = process.platform, desktopTarget = null, exists = existsSync }) {
   // Defensive validation: run ids are ULIDs in production, but defense-in-depth catches injection.
   if (!SAFE_ID.test(String(parentRunId))) {
     throw Object.assign(new Error(`UNSAFE_SPAWN_ARG: parentRunId=${parentRunId}`), { code: 'UNSAFE_SPAWN_ARG' });
@@ -53,6 +58,49 @@ export function buildLaunchCommand({ root, parentRunId, childRunId, handoffRel, 
 
   const resumePrompt = `Read .deep-loop/runs/${parentRunId}/${handoffRel} first; then run /deep-loop-resume`;
   const inner = `deep-loop-${childRunId}`;
+
+  // ── desktop (Claude Desktop deeplink) ───────────────────────────────────────
+  // url lives ONLY in machine argv (never in a `display` string — the human-readable
+  // `# desktop` launch-command.txt line is composed later by emitHandoff/Task 6).
+  // macOS: only a verified target (desktopTarget produced by verifyDesktopHandler, matching
+  // platform==='darwin') yields a runnable entry; otherwise fail closed to unavailable.
+  // `open -a` exits immediately, so it is safe under visibleSpawn's synchronous exit-0 contract.
+  //
+  // Windows: a verified win-exe target dispatches through a TRUSTED PowerShell's `Start-Process`,
+  // which launches the verified exe DETACHED and returns immediately — so PowerShell itself exits 0
+  // within visibleSpawn's synchronous contract (non-blocking). This is what fixes the earlier bug:
+  // running `Claude.exe <url>` directly launches a resident GUI process that never exits, which
+  // visibleSpawn's launch-timeout treats as a failed launch and rolls back the reserved handoff
+  // child. `-FilePath <verified-exe>` targets the ALLOW_WIN_PATHS-verified executable directly —
+  // deliberately NOT `Start-Process '<url>'`, which would hand the `claude://` scheme off to
+  // whatever the OS has registered as the default handler (bypassing our own verification).
+  // psq() single-quotes both the exe path and the url so PowerShell treats them as literal
+  // strings — the encoded url's `%`/`&` would otherwise be shell/cmd metacharacters. The url
+  // lives only in argv here — never in a human-readable `display` field (see desktopEntry
+  // contract above). Resolving the trusted PS bin is done HERE (build time) against the same
+  // fixed TRUSTED_PS allowlist detect-terminal.mjs uses, because the desktop launcher targets
+  // desktopTarget.exePath, not the persisted session_spawn.launcher_bin. No trusted PS bin found
+  // → fail closed to unavailable (can't launch non-blocking without it).
+  const desktopUrl = `claude://code/new?folder=${encodeURIComponent(root)}&q=${encodeURIComponent(resumePrompt)}`;
+  let desktopEntry;
+  if (desktopTarget && desktopTarget.kind === 'macos-app' && platform === 'darwin') {
+    // Absolute path (never the bare, PATH-resolved `open`) — a PATH shim ahead of /usr/bin/open
+    // (e.g. a dev-tool's `open` shim earlier on PATH) would otherwise intercept this launch and
+    // could be handed the verified-target argv (appPath + claude:// url) instead of the real
+    // macOS opener, defeating the verified-handler trust boundary (visibleSpawn resolves `bin`
+    // via spawnSync, which is PATH resolution unless `bin` is itself absolute).
+    desktopEntry = { bin: '/usr/bin/open', argv: ['-a', desktopTarget.appPath, desktopUrl], available: true };
+  } else if (desktopTarget && desktopTarget.kind === 'win-exe' && platform === 'win32') {
+    const psBin = trustedPsCandidates(exists)[0];
+    if (psBin) {
+      const psCmd = `Start-Process -FilePath '${psq(desktopTarget.exePath)}' -ArgumentList '${psq(desktopUrl)}'`;
+      desktopEntry = { bin: psBin, argv: ['-NoProfile', '-Command', psCmd], available: true };
+    } else {
+      desktopEntry = { unavailable: true };
+    }
+  } else {
+    desktopEntry = { unavailable: true };
+  }
 
   // ── cmux ──────────────────────────────────────────────────────────────────
   // --command carries a shell fragment run by cmux; only dynamic args are q()-quoted.
@@ -122,6 +170,7 @@ export function buildLaunchCommand({ root, parentRunId, childRunId, handoffRel, 
       display: `wt.exe -d ${q(root)} claude -n ${inner} "${resumePrompt}"`,
     },
     powershell: powershellEntry,
+    desktop: desktopEntry,
     headless: {
       bin: 'claude',
       argv: ['-p', resumePrompt, '--output-format', 'json', '--permission-mode', 'acceptEdits'],
@@ -152,7 +201,10 @@ function handoffMarkdown(loop, childRunId, reason) {
   ].join('\n');
 }
 
-export function emitHandoff(root, runId, { reason = 'milestone', trigger = 'milestone', now = Date.now(), headless = false, resumePolicy = 'visible', expect } = {}) {
+export function emitHandoff(root, runId, {
+  reason = 'milestone', trigger = 'milestone', now = Date.now(), headless = false, resumePolicy = 'visible', expect,
+  platform = process.platform, desktopProbe = defaultDesktopProbe,
+} = {}) {
   if (!expect || typeof expect.owner !== 'string' || !Number.isInteger(expect.generation)) throw new Error('FENCE_REQUIRED: emitHandoff');
   const res = reserveHandoff(root, runId, { trigger, now, expect });
   if (!res.ok) return { ok: false, reason: res.reason, key: res.key };
@@ -192,13 +244,32 @@ export function emitHandoff(root, runId, { reason = 'milestone', trigger = 'mile
   });
   atomicWrite(join(dir, csName), JSON.stringify(compaction, null, 2));
 
+  // Best-effort handler-verification probe (Task 5b) — fires on the durable `spawn_style==='desktop'`
+  // flag alone, so non-desktop handoffs never pay for a real osascript/reg.exe subprocess. This is NOT
+  // the automatic-spawn gate (that lives in respawn.mjs via resolveSpawnMode, where `headless` preempts
+  // `desktop` even when spawn_style==='desktop'); here it only populates the informational, best-effort,
+  // bounded launch-command.txt `# desktop` line (Task 6) so it can reflect a verified target when one
+  // exists. A functional headless-fold-in gate here was reviewed and deemed unnecessary for an
+  // informational display line. Never let a probe glitch break handoff emission: any throw is swallowed → null.
+  let dt = null;
+  if (loop.autonomy?.spawn_style === 'desktop') {
+    try { dt = desktopProbe({ platform }); } catch { dt = null; }
+  }
   // Build all entry variants; write display strings to launch-command.txt for human fallback.
   const cmds = buildLaunchCommand({
     root, parentRunId: runId, childRunId, handoffRel,
     launcher: loop.session_spawn?.launcher,
     launcherBin: loop.session_spawn?.launcher_bin,
     launcherSocket: loop.session_spawn?.launcher_socket,
+    platform, desktopTarget: dt && dt.ok ? dt.argvTarget : null,
   });
+  // desktop 라인은 여기서 구성(P4-2/P5): available이면 사람용 재개 지시(URL 없음), 아니면 마커.
+  // 자동 auto-pop이 주 경로. 이 수동 fallback은 auto-pop readiness timeout 시 사람이 쓰며, releasing lease를
+  // 인수하도록 이미 설계된 /deep-loop-resume 를 재사용한다(child 식별·releasing/paused fence를 resume이 처리 — P5).
+  // raw claude:// deeplink는 절대 여기 쓰지 않는다 — URL은 cmds.desktop.argv(machine 전용)에만 존재한다.
+  const desktopLine = cmds.desktop.available
+    ? '# desktop: 새 Claude Desktop Code 탭을 열고 `/deep-loop-resume` 실행 (auto-pop 미개방 시 수동 재개)'
+    : '# desktop: unavailable (handler unverified)';
   atomicWrite(join(termDir, 'launch-command.txt'), [
     `# interactive`, cmds.interactive.display, ``,
     `# headless`, cmds.headless.display, ``,
@@ -207,6 +278,7 @@ export function emitHandoff(root, runId, { reason = 'milestone', trigger = 'mile
     `# terminal-app`, cmds['terminal-app'].display, ``,
     `# wt`, cmds.wt.display, ``,
     `# powershell`, cmds.powershell.display, ``,
+    `# desktop`, desktopLine, ``,
   ].join('\n'));
 
   // Codex impl r11 🔴: child session push + superseded_by + lease reserved→emitted (releasing + stale TTL) must be

@@ -22,7 +22,10 @@ const TRUSTED_PS = [
   'C:\\Program Files (x86)\\PowerShell\\7\\pwsh.exe',
   'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',   // Windows PowerShell 5.1 (guaranteed)
 ];
-function trustedPsCandidates(exists) {
+// Exported so handoff.mjs's buildLaunchCommand can resolve a trusted PS bin at BUILD time (the
+// Windows desktop launcher targets desktopTarget.exePath directly — it is not the persisted
+// session_spawn.launcher_bin, so it needs its own resolution against the same trust boundary).
+export function trustedPsCandidates(exists) {
   return TRUSTED_PS.filter((p) => { try { return exists(p); } catch { return false; } });
 }
 // Single source of the PowerShell trust boundary — exported so handoff/respawn re-validate a

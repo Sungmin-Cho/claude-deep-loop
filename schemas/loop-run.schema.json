@@ -5,7 +5,7 @@
     "status": ["running","paused","completed","stopped"],
     "routing.protocol": ["deep-work","superpowers","standalone"],
     "autonomy.tier": ["read-only","recommend","act-reversible","act-gated"],
-    "autonomy.spawn_style": ["visible","interactive","headless"],
+    "autonomy.spawn_style": ["visible","interactive","headless","desktop"],
     "budget.unit": ["turns","tokens"],
     "session_chain.lease.state": ["active","releasing","released"],
     "session_chain.lease.handoff_phase": ["idle","reserved","emitted","spawned","acquired"],

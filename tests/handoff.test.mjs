@@ -4,7 +4,7 @@ import { mkdtempSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { readState, runDir } from '../scripts/lib/state.mjs';
+import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { reserveHandoff, releaseLease, acquireLease } from '../scripts/lib/lease.mjs';
 import { emitHandoff, buildLaunchCommand } from '../scripts/lib/handoff.mjs';
 import { newEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
@@ -389,4 +389,153 @@ test('B3: non-PowerShell launcher + launcherBin null → buildLaunchCommand does
     assert.equal(typeof cmds.powershell.display, 'string');  // unavailable placeholder, not a throw
     assert.ok(cmds['terminal-app'].display);                 // the actual launcher entry is intact
   });
+});
+
+// ── desktop entry tests (Task 5: buildLaunchCommand desktop key, verified-target only) ──
+const desktopArgs = (over) => ({ root: '/repo', parentRunId: 'P1', childRunId: 'C1', handoffRel: 'handoffs/x.md', ...over });
+
+test('macOS desktop entry targets verified app, never bare/-b', () => {
+  const cmds = buildLaunchCommand(desktopArgs({ platform: 'darwin', desktopTarget: { kind: 'macos-app', appPath: '/Applications/Claude.app' } }));
+  // absolute path — NOT the bare, PATH-resolvable 'open' (a PATH shim ahead of /usr/bin/open would
+  // otherwise intercept the launch and defeat the verified-handler trust boundary; see handoff.mjs).
+  assert.equal(cmds.desktop.bin, '/usr/bin/open');
+  assert.ok(cmds.desktop.bin.startsWith('/'), 'desktop bin must be an absolute path, not PATH-resolved');
+  assert.equal(cmds.desktop.argv[0], '-a');
+  assert.equal(cmds.desktop.argv[1], '/Applications/Claude.app');
+  const url = cmds.desktop.argv[2];
+  assert.match(url, /^claude:\/\/code\/new\?folder=/);
+  assert.match(url, /q=Read/);
+  assert.ok(!cmds.desktop.argv.includes('-b'));                 // negative: no bundle-id-only
+  assert.equal(cmds.desktop.available, true);                   // machine entry available (display는 emitHandoff이 구성)
+});
+
+test('unverified desktopTarget → unavailable entry', () => {
+  const cmds = buildLaunchCommand(desktopArgs({ platform: 'darwin', desktopTarget: null }));
+  assert.equal(cmds.desktop.unavailable, true);
+  // the unavailable entry carries no URL-bearing field at all (no `display`, no `argv`) — a
+  // raw claude:// deeplink can never leak through it.
+  assert.ok(!('display' in cmds.desktop) || !/claude:\/\//.test(String(cmds.desktop.display)));
+  assert.ok(!('argv' in cmds.desktop));
+});
+
+// Windows desktop launch: a verified win-exe target + a trusted PowerShell bin dispatches through
+// `Start-Process -FilePath <verified-exe>` — DETACHED and non-blocking, so it fixes the resident-GUI
+// launch-timeout rollback the interim v1 fail-closed behavior was sidestepping. (macOS `open -a`
+// already exits immediately, so darwin is unaffected — see the macOS test above.)
+test('windows desktop entry: verified win-exe target + trusted PS available → non-blocking Start-Process launcher', () => {
+  const trustedPs = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe';
+  const exePath = 'C:\\Program Files\\Claude\\Claude.exe';
+  const exists = (p) => p === trustedPs;
+  const cmds = buildLaunchCommand(desktopArgs({
+    platform: 'win32', desktopTarget: { kind: 'win-exe', exePath }, exists,
+  }));
+  assert.equal(cmds.desktop.available, true);
+  assert.equal(cmds.desktop.bin, trustedPs);
+  const joined = cmds.desktop.argv.join(' ');
+  assert.match(joined, /Start-Process -FilePath '/);
+  assert.ok(joined.includes(exePath), 'argv must target the verified exe path');
+  assert.match(joined, /-ArgumentList '/);
+  // the encoded resume URL is present (single-quoted) in argv...
+  assert.match(joined, /claude:\/\/code\/new\?folder=/);
+  // ...but never as a bare direct-exec of the exe, and never delegated to the OS default handler.
+  assert.ok(!/Claude\.exe\s+claude:\/\//.test(joined), 'must not directly exec the exe with the raw url');
+  assert.ok(!/Start-Process\s+'claude:\/\//.test(joined), 'must not Start-Process the url itself (default-handler form)');
+  // no human-readable display carries the raw URL.
+  assert.ok(!('display' in cmds.desktop) || !/claude:\/\//.test(String(cmds.desktop.display)));
+});
+
+test('windows desktop entry: no trusted PS bin found → unavailable (fail-closed)', () => {
+  const exePath = 'C:\\Program Files\\Claude\\Claude.exe';
+  const exists = () => false;   // simulates no trusted PowerShell present on the Windows host
+  const cmds = buildLaunchCommand(desktopArgs({
+    platform: 'win32', desktopTarget: { kind: 'win-exe', exePath }, exists,
+  }));
+  assert.equal(cmds.desktop.unavailable, true);
+});
+
+test('url folder/q are encodeURIComponent-encoded', () => {
+  const cmds = buildLaunchCommand(desktopArgs({ root: '/re po/&x', platform: 'darwin', desktopTarget: { kind: 'macos-app', appPath: '/Applications/Claude.app' } }));
+  assert.match(cmds.desktop.argv[2], /folder=%2Fre%20po%2F%26x/);
+});
+
+test('desktop entry: mismatched platform/kind (win-exe on darwin) → unavailable', () => {
+  const cmds = buildLaunchCommand(desktopArgs({ platform: 'darwin', desktopTarget: { kind: 'win-exe', exePath: 'C:\\Program Files\\Claude\\Claude.exe' } }));
+  assert.equal(cmds.desktop.unavailable, true);
+});
+
+test('desktop entry: no platform/desktopTarget passed (existing callers) defaults to unavailable, no throw', () => {
+  assert.doesNotThrow(() => {
+    const cmds = buildLaunchCommand({ ...baseArgs });
+    assert.equal(cmds.desktop.unavailable, true);
+  });
+});
+
+// ── Task 5b (review fix): emitHandoff's desktopProbe call is gated to spawn_style==='desktop' ──
+// (mirrors respawn.mjs's `mode === 'desktop'` gate). Non-desktop runs (the vast majority of the
+// suite) must never pay for a real osascript/reg.exe subprocess. buildLaunchCommand's `desktop` key
+// is computed but NOT yet written into launch-command.txt (that's Task 6, still unimplemented) — so
+// the only currently-observable wiring signal is whether the injected desktopProbe is invoked at all.
+test('emitHandoff: spawn_style=desktop invokes the injected desktopProbe (probe is honored)', () => {
+  const { root, runId } = seed();
+  const { data } = readState(root, runId);
+  data.autonomy.spawn_style = 'desktop';
+  writeState(root, runId, data);
+  const now = Date.parse('2026-06-24T01:00:00Z');
+  let calls = 0;
+  let seenPlatform;
+  const desktopProbe = (opts) => {
+    calls += 1;
+    seenPlatform = opts?.platform;
+    return { ok: true, argvTarget: { kind: 'macos-app', appPath: '/Applications/Claude.app' } };
+  };
+  const r = emitHandoff(root, runId, { trigger: 'milestone', now, expect: expect_(runId), platform: 'darwin', desktopProbe });
+  assert.equal(r.ok, true);
+  assert.equal(calls, 1, 'desktop spawn_style must invoke the injected desktopProbe exactly once');
+  assert.equal(seenPlatform, 'darwin', 'the platform passed to emitHandoff must be forwarded to desktopProbe');
+});
+
+test('emitHandoff: non-desktop spawn_style (default visible) never invokes desktopProbe', () => {
+  const { root, runId } = seed();   // seed()'s initRun leaves autonomy.spawn_style at its default ('visible')
+  assert.equal(readState(root, runId).data.autonomy.spawn_style, 'visible');
+  const now = Date.parse('2026-06-24T01:00:00Z');
+  let called = false;
+  const desktopProbe = () => { called = true; throw new Error('desktopProbe must not be called for non-desktop runs'); };
+  const r = emitHandoff(root, runId, { trigger: 'milestone', now, expect: expect_(runId), platform: 'darwin', desktopProbe });
+  assert.equal(r.ok, true, 'emitHandoff must succeed (probe never invoked, so its throw never surfaces)');
+  assert.equal(called, false, 'non-desktop emitHandoff must never invoke desktopProbe');
+});
+
+// ── Task 6: launch-command.txt `# desktop` line — verified-target instruction or unavailable marker,
+// NEVER a raw claude:// deeplink (URL lives only in machine argv, per handoff.mjs's desktopEntry). ──
+test('launch-command.txt desktop line is verified-target resume instruction, never raw deeplink', () => {
+  const { root, runId } = seed();
+  const { data } = readState(root, runId);
+  data.autonomy.spawn_style = 'desktop';
+  writeState(root, runId, data);
+  const now = Date.parse('2026-06-24T01:00:00Z');
+  const desktopProbe = () => ({ ok: true, argvTarget: { kind: 'macos-app', appPath: '/Applications/Claude.app' } });
+  const r = emitHandoff(root, runId, { trigger: 'milestone', now, expect: expect_(runId), platform: 'darwin', desktopProbe });
+  assert.equal(r.ok, true);
+  const txt = readFileSync(join(runDir(root, runId), 'terminal', 'launch-command.txt'), 'utf8');
+  assert.match(txt, /# desktop/);
+  // Extract desktop line (content immediately after '# desktop' header)
+  const desktopLineIndex = txt.split('\n').indexOf('# desktop');
+  const desktopLine = txt.split('\n')[desktopLineIndex + 1];
+  assert.match(desktopLine, /\/deep-loop-resume/);
+  assert.ok(!/claude:\/\//.test(txt), 'launch-command.txt must never contain a raw claude:// deeplink');
+});
+
+test('launch-command.txt desktop line is unavailable marker for non-desktop runs; still no raw deeplink', () => {
+  const { root, runId } = seed();   // default spawn_style='visible' → desktopProbe never invoked, dt stays null
+  const now = Date.parse('2026-06-24T01:00:00Z');
+  const r = emitHandoff(root, runId, { trigger: 'milestone', now, expect: expect_(runId), platform: 'darwin' });
+  assert.equal(r.ok, true);
+  const txt = readFileSync(join(runDir(root, runId), 'terminal', 'launch-command.txt'), 'utf8');
+  assert.match(txt, /# desktop/);
+  // Extract desktop line (content immediately after '# desktop' header)
+  const desktopLineIndex = txt.split('\n').indexOf('# desktop');
+  const desktopLine = txt.split('\n')[desktopLineIndex + 1];
+  assert.match(desktopLine, /unavailable/);
+  assert.ok(!/\/deep-loop-resume/.test(desktopLine), 'desktop line in unavailable case must not contain /deep-loop-resume');
+  assert.ok(!/claude:\/\//.test(txt), 'launch-command.txt must never contain a raw claude:// deeplink');
 });
