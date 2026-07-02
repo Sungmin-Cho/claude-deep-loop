@@ -125,15 +125,68 @@ test('macOS: realpath throws on appPath -> unavailable (realpath-error)', () => 
   assert.equal(r.reason, 'realpath-error');
 });
 
+// Fake Windows Authenticode verifier: a valid signature carrying the allowlisted publisher — used
+// as the default injected `verifyWinSignature` for the positive-path tests below (round-5 review
+// Finding 1, parity with macOS's okSig/allowTeamIds).
+const okWinSig = () => ({ ok: true, publisher: 'CN=Anthropic PBC', thumbprint: 'ABCDEF1234' });
+const WIN_OK = {
+  platform: 'win32', realpath: idRp,
+  allowWinPaths: ['C:\\Program Files\\Claude\\Claude.exe'],
+  verifyWinSignature: okWinSig, allowWinPublishers: ['CN=Anthropic PBC'],
+};
+
 test('win32: allowed exe path -> verified', () => {
   const r = verifyDesktopHandler({
-    platform: 'win32',
-    realpath: idRp,
-    allowWinPaths: ['C:\\Program Files\\Claude\\Claude.exe'],
+    ...WIN_OK,
     run: macRun('C:\\Program Files\\Claude\\Claude.exe\n'),
   });
   assert.equal(r.ok, true);
   assert.deepEqual(r.argvTarget, { kind: 'win-exe', exePath: 'C:\\Program Files\\Claude\\Claude.exe' });
+});
+
+// Round-5 review Finding 1: path-only verification would let a replaced/junctioned exe at an
+// allowlisted path pass. (a) valid sig + allowed publisher -> ok:true (covered by the test above).
+test('win32: path allowed but INVALID/absent Authenticode signature -> unavailable (signature-invalid)', () => {
+  const r = verifyDesktopHandler({
+    ...WIN_OK,
+    verifyWinSignature: () => ({ ok: false }),
+    run: macRun('C:\\Program Files\\Claude\\Claude.exe\n'),
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'signature-invalid');
+});
+
+test('win32: Authenticode verifier throws -> unavailable (signature-error, fail closed)', () => {
+  const r = verifyDesktopHandler({
+    ...WIN_OK,
+    verifyWinSignature: () => { throw new Error('Get-AuthenticodeSignature: boom'); },
+    run: macRun('C:\\Program Files\\Claude\\Claude.exe\n'),
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'signature-error');
+});
+
+// (c) valid sig but WRONG publisher -> unavailable (the junction/replace case the finding is about:
+// a malicious exe placed at the allowed canonical path, validly signed by SOMEONE ELSE, must still
+// be rejected).
+test('win32: path allowed + valid signature but WRONG publisher -> unavailable (publisher-not-allowed)', () => {
+  const r = verifyDesktopHandler({
+    ...WIN_OK,
+    verifyWinSignature: () => ({ ok: true, publisher: 'CN=Evil Corp', thumbprint: 'EVILTHUMB' }),
+    run: macRun('C:\\Program Files\\Claude\\Claude.exe\n'),
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'publisher-not-allowed');
+});
+
+test('win32: valid signature matched by THUMBPRINT (not publisher string) -> verified', () => {
+  const r = verifyDesktopHandler({
+    ...WIN_OK,
+    allowWinPublishers: ['ABCDEF1234'],
+    verifyWinSignature: () => ({ ok: true, publisher: 'CN=Some Other Subject', thumbprint: 'ABCDEF1234' }),
+    run: macRun('C:\\Program Files\\Claude\\Claude.exe\n'),
+  });
+  assert.equal(r.ok, true);
 });
 
 test('win32: exe path not in allowlist -> unavailable', () => {
@@ -176,7 +229,7 @@ test('win32: realpath throws on exePath -> unavailable (realpath-error)', () => 
 test('win32: realpath uses canonical path for comparison and result', () => {
   const rp = (p) => (p === 'C:\\Program Files\\Claude\\Claude.exe' ? 'C:\\canonical\\Claude.exe' : p);
   const r = verifyDesktopHandler({
-    platform: 'win32',
+    ...WIN_OK,
     realpath: rp,
     allowWinPaths: ['C:\\canonical\\Claude.exe'],
     run: macRun('C:\\Program Files\\Claude\\Claude.exe\n'),

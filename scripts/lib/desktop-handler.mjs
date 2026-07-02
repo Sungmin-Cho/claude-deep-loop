@@ -1,11 +1,15 @@
 // Pure parser + decision: host lookup is done by the injected run(), path canonicalization by
-// the injected realpath(), code-signature/team-id verification by the injected verifySignature().
-// No now()/randomness. Trust boundary on macOS is THREE-FOLD: canonical app path + bundle-id +
-// a valid Developer ID code signature whose TeamIdentifier is allowlisted. Path-in-allowlist and
-// bundle-id-in-allowlist are each necessary but NOT sufficient on their own — a malicious app
-// dropped at the trusted canonical path (or with a hand-edited Info.plist bundle id) would pass
-// both of those checks; only the signature/team-id check closes that gap (round-3 review Finding 3).
-export function verifyDesktopHandler({ platform, run, realpath = (p) => p, allowMacPaths = [], allowBundleIds = [], allowWinPaths = [], verifySignature, allowTeamIds = [] } = {}) {
+// the injected realpath(), code-signature/team-id verification by the injected verifySignature()
+// (macOS) / verifyWinSignature() (Windows). No now()/randomness. Trust boundary on macOS is
+// THREE-FOLD: canonical app path + bundle-id + a valid Developer ID code signature whose
+// TeamIdentifier is allowlisted. Path-in-allowlist and bundle-id-in-allowlist are each necessary
+// but NOT sufficient on their own — a malicious app dropped at the trusted canonical path (or with
+// a hand-edited Info.plist bundle id) would pass both of those checks; only the signature/team-id
+// check closes that gap (round-3 review Finding 3). Windows trust boundary mirrors this: exe path
+// in allowlist + a valid Authenticode signature whose signer (publisher subject or thumbprint) is
+// allowlisted — path-in-allowlist alone would let a replaced/junctioned exe at the trusted path
+// pass (round-5 review Finding 1, parity with the macOS codesign/team-id check).
+export function verifyDesktopHandler({ platform, run, realpath = (p) => p, allowMacPaths = [], allowBundleIds = [], allowWinPaths = [], verifySignature, allowTeamIds = [], verifyWinSignature, allowWinPublishers = [] } = {}) {
   if (platform === 'darwin') {
     let out; try { out = run(); } catch { return { ok: false, reason: 'probe-error' }; }
     if (!out || out.code !== 0) return { ok: false, reason: 'probe-failed' };
@@ -28,6 +32,15 @@ export function verifyDesktopHandler({ platform, run, realpath = (p) => p, allow
     if (!out || out.code !== 0) return { ok: false, reason: 'probe-failed' };
     let exePath; try { exePath = realpath(String(out.stdout || '').trim()); } catch { return { ok: false, reason: 'realpath-error' }; }
     if (!exePath || !allowWinPaths.map(p => { try { return realpath(p); } catch { return p; } }).includes(exePath)) return { ok: false, reason: 'path-not-allowed' };
+    // Authenticode signature + publisher check — mirrors the macOS codesign/TeamIdentifier check
+    // above (round-5 review Finding 1): path-in-allowlist alone would let a replaced/junctioned exe
+    // at the trusted path pass. Fail closed on ANY of: verifyWinSignature missing/throws, an
+    // invalid/absent Authenticode signature, or a signer (publisher/thumbprint) not in allowWinPublishers.
+    let sig; try { sig = verifyWinSignature({ exePath }); } catch { return { ok: false, reason: 'signature-error' }; }
+    if (!sig || sig.ok !== true) return { ok: false, reason: 'signature-invalid' };
+    const publisherOk = !!sig.publisher && allowWinPublishers.includes(sig.publisher);
+    const thumbprintOk = !!sig.thumbprint && allowWinPublishers.includes(sig.thumbprint);
+    if (!publisherOk && !thumbprintOk) return { ok: false, reason: 'publisher-not-allowed' };
     return { ok: true, argvTarget: { kind: 'win-exe', exePath } };
   }
   return { ok: false, reason: 'unsupported-platform' };

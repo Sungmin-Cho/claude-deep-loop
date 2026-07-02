@@ -6,7 +6,7 @@
 // match (not either alone) — can be exercised without shelling out to osascript/reg.exe.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultDesktopProbe, ALLOW_MAC_PATHS, ALLOW_BUNDLE_IDS, ALLOW_WIN_PATHS, ALLOW_TEAM_IDS } from '../scripts/lib/desktop-target.mjs';
+import { defaultDesktopProbe, ALLOW_MAC_PATHS, ALLOW_BUNDLE_IDS, ALLOW_WIN_PATHS, ALLOW_TEAM_IDS, ALLOW_WIN_PUBLISHERS } from '../scripts/lib/desktop-target.mjs';
 
 const idRp = (p) => p;   // injected realpath: identity (canonicalization itself is desktop-handler.test.mjs's concern)
 const okRun = (out, code = 0) => () => ({ code, stdout: out });
@@ -15,6 +15,11 @@ const okRun = (out, code = 0) => () => ({ code, stdout: out });
 // desktop-handler.test.mjs; this file only proves defaultDesktopProbe threads verifySignature/allowTeamIds
 // through, same as it already does for run/realpath/allowMacPaths/allowBundleIds).
 const okSig = () => ({ ok: true, teamId: ALLOW_TEAM_IDS[0] });
+// Fake Authenticode verifier — a valid signature carrying the real allowlisted publisher. Injected so
+// win32 tests never shell out to the real `powershell`/`pwsh` (round-5 review Finding 1 wiring proof
+// lives in desktop-handler.test.mjs; this file only proves defaultDesktopProbe threads
+// verifyWinSignature/allowWinPublishers through, same as it already does for verifySignature/allowTeamIds).
+const okWinSig = () => ({ ok: true, publisher: ALLOW_WIN_PUBLISHERS[0], thumbprint: 'DEADBEEF' });
 
 test('defaultDesktopProbe: unsupported platform (linux) -> unavailable, no injection needed', () => {
   const r = defaultDesktopProbe({ platform: 'linux' });
@@ -68,12 +73,13 @@ test('defaultDesktopProbe: allowlist wiring — allowed path+bundle but NON-allo
   assert.equal(r.reason, 'team-id-not-allowed');
 });
 
-test('defaultDesktopProbe: win32 + injected run/realpath returning an allowlisted exe -> verified', () => {
+test('defaultDesktopProbe: win32 + injected run/realpath/verifyWinSignature returning an allowlisted exe+publisher -> verified', () => {
   const exePath = ALLOW_WIN_PATHS[0];
   const r = defaultDesktopProbe({
     platform: 'win32',
     run: okRun(`${exePath}\n`),
     realpath: idRp,
+    verifyWinSignature: okWinSig,
   });
   assert.equal(r.ok, true);
   assert.deepEqual(r.argvTarget, { kind: 'win-exe', exePath });
@@ -84,7 +90,23 @@ test('defaultDesktopProbe: win32 exe path not in allowlist -> unavailable (allow
     platform: 'win32',
     run: okRun('C:\\Users\\x\\Evil.exe\n'),
     realpath: idRp,
+    verifyWinSignature: okWinSig,
   });
   assert.equal(r.ok, false);
   assert.equal(r.reason, 'path-not-allowed');
+});
+
+// Publisher allowlist wiring proof: an allowed path but a NON-allowlisted publisher/thumbprint must
+// still be rejected — this only holds if the real ALLOW_WIN_PUBLISHERS module constant actually
+// reached verifyDesktopHandler as allowWinPublishers (not omitted/replaced by an empty/permissive default).
+test('defaultDesktopProbe: allowlist wiring — win32 allowed path but NON-allowlisted publisher -> unavailable', () => {
+  const exePath = ALLOW_WIN_PATHS[0];
+  const r = defaultDesktopProbe({
+    platform: 'win32',
+    run: okRun(`${exePath}\n`),
+    realpath: idRp,
+    verifyWinSignature: () => ({ ok: true, publisher: 'CN=Evil Corp', thumbprint: 'EVILTHUMB' }),
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'publisher-not-allowed');
 });

@@ -239,7 +239,12 @@ test('offerDesktop with non-finite now returns {ok:false} INVALID_TTL_SEC and ap
 
 // ── CLI: spawn-style offer-desktop | confirm-desktop | decline-desktop ───────
 
-test('CLI spawn-style offer-desktop → confirm-desktop happy path (exit 0, spawn_style=desktop)', () => {
+// confirm-desktop's CLI wrapper doesn't take a --platform flag (it reads process.platform, unlike
+// the lib-level confirmDesktop tests above which inject platform:'darwin') — the round-3
+// PLATFORM_UNSUPPORTED guard (spawn-optin.mjs confirmDesktop check ②) makes this exit 1 on any host
+// other than macOS/Windows (e.g. a Linux CI runner). Skip rather than weaken: the lib-level tests
+// already prove the guard's behavior on every platform via injection (Finding 2, round-5 review).
+test('CLI spawn-style offer-desktop → confirm-desktop happy path (exit 0, spawn_style=desktop)', { skip: !['darwin', 'win32'].includes(process.platform) }, () => {
   const { root, runId, expect } = seedFreshRun();
   withCurrentPointer(root, runId);
   const outOffer = execFileSync('node', [CLI, 'spawn-style', 'offer-desktop', '--owner', expect.owner, '--generation', String(expect.generation), '--nonce', 'n1', '--now', String(T0), '--project-root', root], { encoding: 'utf8' });
@@ -312,7 +317,9 @@ test('CLI spawn-style offer-desktop --ttl-sec notanumber exits 1 (INVALID_TTL_SE
   assert.equal(readState(root, runId).data.autonomy.spawn_style_optin_pending, undefined, 'a rejected --ttl-sec must not persist a pending nonce');
 });
 
-test('CLI spawn-style offer-desktop --ttl-sec 120 succeeds and the persisted expiry reflects 120s (not the 600s default)', () => {
+// Same host-dependence as the happy-path test above: this test's confirm-desktop call also hits the
+// process.platform-read PLATFORM_UNSUPPORTED guard on a non-macOS/Windows CI runner (Finding 2, round-5 review).
+test('CLI spawn-style offer-desktop --ttl-sec 120 succeeds and the persisted expiry reflects 120s (not the 600s default)', { skip: !['darwin', 'win32'].includes(process.platform) }, () => {
   const { root, runId, expect } = seedFreshRun();
   withCurrentPointer(root, runId);
   const out = execFileSync('node', [CLI, 'spawn-style', 'offer-desktop', '--owner', expect.owner, '--generation', String(expect.generation), '--nonce', 'n1', '--ttl-sec', '120', '--now', String(T0), '--project-root', root], { encoding: 'utf8' });
