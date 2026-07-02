@@ -8,12 +8,19 @@ import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { appendAnchored } from '../scripts/lib/integrity.mjs';
-import { offerDesktop, confirmDesktop, declineDesktop } from '../scripts/lib/spawn-optin.mjs';
+import { offerDesktop, confirmDesktop, declineDesktop, resetDesktop } from '../scripts/lib/spawn-optin.mjs';
 
 const CLI = join(process.cwd(), 'scripts', 'deep-loop.mjs');
 const OWNER = 'SPAWNOPTIN01';
 const GEN = 1;
 const T0 = Date.parse('2026-07-01T00:00:00.000Z');
+
+// Round-6 review fix (part a): confirmDesktop now gates the desktop→ transition on a LIVE
+// desktopProbe({platform}) result — lib-level happy-path tests inject a deterministic PASSING probe so
+// they never depend on this host's real Claude Desktop install (host-dependence is confined to the
+// dedicated probe-desktop/confirm-desktop CLI smoke tests below, which stay host-gated).
+const passingProbe = () => ({ ok: true, argvTarget: { kind: 'macos-app', appPath: '/Applications/Claude.app' } });
+const failingProbe = () => ({ ok: false, reason: 'signature-invalid' });
 
 function baseData(overrides = {}) {
   return {
@@ -73,11 +80,11 @@ test('offer→confirm transitions to desktop and consumes nonce (single-use)', (
   assert.equal(o.ok, true);
   assert.equal(o.nonce, 'n1');
   assert.equal(readState(root, runId).data.autonomy.spawn_style_optin_pending.nonce, 'n1');
-  assert.equal(confirmDesktop(root, runId, { expect, now: T0 + 1000, nonce: 'n1', platform: 'darwin' }).ok, true);
+  assert.equal(confirmDesktop(root, runId, { expect, now: T0 + 1000, nonce: 'n1', platform: 'darwin', desktopProbe: passingProbe }).ok, true);
   assert.equal(readState(root, runId).data.autonomy.spawn_style, 'desktop');
   assert.equal(readState(root, runId).data.autonomy.spawn_style_optin_pending, undefined, 'pending cleared on confirm');
   // reuse rejected — nonce is single-use
-  const r2 = confirmDesktop(root, runId, { expect, now: T0 + 2000, nonce: 'n1', platform: 'darwin' });
+  const r2 = confirmDesktop(root, runId, { expect, now: T0 + 2000, nonce: 'n1', platform: 'darwin', desktopProbe: passingProbe });
   assert.equal(r2.ok, false);
   assert.equal(r2.reason, 'NONCE_INVALID');
 });
@@ -129,9 +136,37 @@ test('confirm rejected when spawn_style not in {visible,interactive} (headless)'
 test('confirm accepted when spawn_style=interactive', () => {
   const { root, runId, expect } = seedFreshRun({ spawn_style: 'interactive' });
   offerDesktop(root, runId, { expect, now: T0, nonce: 'n1' });
-  const r = confirmDesktop(root, runId, { expect, now: T0 + 1, nonce: 'n1', platform: 'darwin' });
+  const r = confirmDesktop(root, runId, { expect, now: T0 + 1, nonce: 'n1', platform: 'darwin', desktopProbe: passingProbe });
   assert.equal(r.ok, true);
   assert.equal(readState(root, runId).data.autonomy.spawn_style, 'desktop');
+});
+
+// Round-6 review fix, part (a) — codex both reviewers 2/2: confirmDesktop must never persist
+// spawn_style='desktop' unless the handler that will actually be invoked on every future handoff
+// verifies RIGHT NOW. A FAILING probe rejects with HANDLER_UNVERIFIED, leaves spawn_style untouched,
+// and — critically — does NOT consume the pending nonce (no half-commit; a subsequent confirm with a
+// PASSING probe using the SAME nonce still succeeds).
+test('confirmDesktop with a FAILING desktopProbe rejects HANDLER_UNVERIFIED — no transition, nonce not consumed', () => {
+  const { root, runId, expect } = seedFreshRun();
+  offerDesktop(root, runId, { expect, now: T0, nonce: 'n1' });
+  const r = confirmDesktop(root, runId, { expect, now: T0 + 1, nonce: 'n1', platform: 'darwin', desktopProbe: failingProbe });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'HANDLER_UNVERIFIED');
+  assert.equal(readState(root, runId).data.autonomy.spawn_style, 'visible', 'spawn_style unchanged on a failing probe');
+  assert.equal(readState(root, runId).data.autonomy.spawn_style_optin_pending.nonce, 'n1', 'nonce NOT consumed by a rejected confirm');
+  // the SAME nonce still works once the handler verifies — proves no half-commit / no nonce burn.
+  const r2 = confirmDesktop(root, runId, { expect, now: T0 + 2, nonce: 'n1', platform: 'darwin', desktopProbe: passingProbe });
+  assert.equal(r2.ok, true);
+  assert.equal(readState(root, runId).data.autonomy.spawn_style, 'desktop');
+});
+
+test('confirmDesktop with a FAILING desktopProbe appends NO event (no half-commit)', () => {
+  const { root, runId, expect } = seedFreshRun();
+  offerDesktop(root, runId, { expect, now: T0, nonce: 'n1' });
+  const beforeSeq = readState(root, runId).data.event_log_head.seq;
+  const r = confirmDesktop(root, runId, { expect, now: T0 + 1, nonce: 'n1', platform: 'darwin', desktopProbe: failingProbe });
+  assert.equal(r.ok, false);
+  assert.equal(readState(root, runId).data.event_log_head.seq, beforeSeq, 'a HANDLER_UNVERIFIED rejection must not advance event_log_head');
 });
 
 // Finding 2 (round-3 review): kernel-side platform guard — confirmDesktop must reject the transition
@@ -146,7 +181,7 @@ test('confirmDesktop with platform:"linux" is rejected (PLATFORM_UNSUPPORTED) ev
   assert.equal(readState(root, runId).data.autonomy.spawn_style, 'visible', 'spawn_style unchanged');
   // the pending nonce is also untouched (preCheck threw before mutate ran) — a subsequent confirm on
   // a supported platform with the SAME nonce still succeeds, proving no partial mutation occurred.
-  const r2 = confirmDesktop(root, runId, { expect, now: T0 + 2, nonce: 'n1', platform: 'darwin' });
+  const r2 = confirmDesktop(root, runId, { expect, now: T0 + 2, nonce: 'n1', platform: 'darwin', desktopProbe: passingProbe });
   assert.equal(r2.ok, true);
   assert.equal(readState(root, runId).data.autonomy.spawn_style, 'desktop');
 });
@@ -194,7 +229,7 @@ test('confirmDesktop appends exactly one event on success; rejections append non
   const afterReject = readState(root, runId).data.event_log_head;
   assert.equal(afterReject.seq, 0, 'a rejected confirm must append NO event');
   offerDesktop(root, runId, { expect, now: T0, nonce: 'n1' });
-  confirmDesktop(root, runId, { expect, now: T0 + 1, nonce: 'n1', platform: 'darwin' });                   // accepted
+  confirmDesktop(root, runId, { expect, now: T0 + 1, nonce: 'n1', platform: 'darwin', desktopProbe: passingProbe });                   // accepted
   const afterAccept = readState(root, runId).data.event_log_head;
   assert.equal(afterAccept.seq, 2, 'offer + confirm each append exactly one event');
 });
@@ -235,6 +270,112 @@ test('offerDesktop with non-finite now returns {ok:false} INVALID_TTL_SEC and ap
   assert.equal(r.ok, false);
   assert.equal(r.reason, 'INVALID_TTL_SEC');
   assert.equal(readState(root, runId).data.event_log_head.seq, 0);
+});
+
+// ── lib: resetDesktop (Round-6 review, part c — human recovery downgrade) ────
+
+test('resetDesktop transitions desktop -> visible (fenced)', () => {
+  const { root, runId, expect } = seedFreshRun({ spawn_style: 'desktop' });
+  const r = resetDesktop(root, runId, { expect, now: T0 });
+  assert.equal(r.ok, true);
+  assert.equal(readState(root, runId).data.autonomy.spawn_style, 'visible');
+});
+
+test('resetDesktop also clears a stray pending nonce', () => {
+  const { root, runId, expect } = seedFreshRun({ spawn_style: 'desktop' });
+  // defensive case: a pending nonce left over despite spawn_style already being 'desktop'.
+  appendAnchored(root, runId, { type: 'test-force-pending', data: {} }, (l) => {
+    l.autonomy.spawn_style_optin_pending = { nonce: 'stray', expires_at: new Date(T0 + 1000).toISOString() };
+  });
+  const r = resetDesktop(root, runId, { expect, now: T0 });
+  assert.equal(r.ok, true);
+  assert.equal(readState(root, runId).data.autonomy.spawn_style, 'visible');
+  assert.equal(readState(root, runId).data.autonomy.spawn_style_optin_pending, undefined);
+});
+
+test('resetDesktop rejected when spawn_style is not desktop (SOURCE_INVALID, no mutation)', () => {
+  const { root, runId, expect } = seedFreshRun({ spawn_style: 'visible' });
+  const r = resetDesktop(root, runId, { expect, now: T0 });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'SOURCE_INVALID');
+  assert.equal(readState(root, runId).data.autonomy.spawn_style, 'visible');
+});
+
+test('resetDesktop fence mismatch throws LEASE_FENCED, no mutation', () => {
+  const { root, runId } = seedFreshRun({ spawn_style: 'desktop' });
+  assert.throws(() => resetDesktop(root, runId, { expect: { owner: 'wrong', generation: 1 }, now: T0 }), /LEASE_FENCED/);
+  assert.equal(readState(root, runId).data.autonomy.spawn_style, 'desktop');
+});
+
+test('resetDesktop missing/invalid fence shape throws FENCE_REQUIRED', () => {
+  const { root, runId } = seedFreshRun({ spawn_style: 'desktop' });
+  assert.throws(() => resetDesktop(root, runId, { now: T0 }), /FENCE_REQUIRED/);
+});
+
+test('resetDesktop appends exactly one event on success; rejections append none', () => {
+  const { root, runId, expect } = seedFreshRun({ spawn_style: 'visible' });
+  resetDesktop(root, runId, { expect, now: T0 });                         // rejected: not desktop
+  assert.equal(readState(root, runId).data.event_log_head.seq, 0, 'a rejected reset must append NO event');
+  forceSpawnStyle(root, runId, 'desktop');
+  const afterForce = readState(root, runId).data.event_log_head.seq;
+  const r = resetDesktop(root, runId, { expect, now: T0 + 1 });
+  assert.equal(r.ok, true);
+  assert.equal(readState(root, runId).data.event_log_head.seq, afterForce + 1, 'a successful reset appends exactly one event');
+});
+
+// ── CLI: spawn-style probe-desktop ────────────────────────────────────────────
+
+// Read-only smoke test — no run/state/lease needed at all (no --owner/--generation/--project-root).
+// On this macOS host with a real, verifiable Claude.app install (see scripts/lib/desktop-target.mjs
+// ALLOW_MAC_PATHS/ALLOW_BUNDLE_IDS/ALLOW_TEAM_IDS), the real defaultDesktopProbe reports ok:true.
+test('CLI spawn-style probe-desktop is read-only and prints a probe verdict (smoke)', () => {
+  const out = execFileSync('node', [CLI, 'spawn-style', 'probe-desktop'], { encoding: 'utf8' });
+  const r = JSON.parse(out);
+  assert.equal(typeof r.ok, 'boolean');
+  if (process.platform === 'darwin' || process.platform === 'win32') {
+    // smoke: on this dev host (darwin, real Claude.app installed) the probe should verify.
+    assert.equal(r.ok, true, `expected probe-desktop ok:true on this host, got: ${JSON.stringify(r)}`);
+  } else {
+    assert.equal(r.ok, false);
+  }
+});
+
+test('CLI spawn-style probe-desktop needs no run/owner/generation (works with no active run at all)', () => {
+  // deliberately no --project-root / --owner / --generation — proves it never touches lease/state.
+  const out = execFileSync('node', [CLI, 'spawn-style', 'probe-desktop'], { encoding: 'utf8', cwd: mkdtempSync(join(tmpdir(), 'dl-probe-no-run-')) });
+  assert.equal(typeof JSON.parse(out).ok, 'boolean');
+});
+
+// ── CLI: spawn-style reset-desktop ────────────────────────────────────────────
+
+test('CLI spawn-style reset-desktop transitions desktop -> visible (exit 0)', () => {
+  const { root, runId, expect } = seedFreshRun({ spawn_style: 'desktop' });
+  withCurrentPointer(root, runId);
+  const out = execFileSync('node', [CLI, 'spawn-style', 'reset-desktop', '--owner', expect.owner, '--generation', String(expect.generation), '--project-root', root], { encoding: 'utf8' });
+  assert.equal(JSON.parse(out).ok, true);
+  assert.equal(readState(root, runId).data.autonomy.spawn_style, 'visible');
+});
+
+test('CLI spawn-style reset-desktop wrong generation exits 3 (fence)', () => {
+  const { root, runId, expect } = seedFreshRun({ spawn_style: 'desktop' });
+  withCurrentPointer(root, runId);
+  let code = 0;
+  try {
+    execFileSync('node', [CLI, 'spawn-style', 'reset-desktop', '--owner', expect.owner, '--generation', '99', '--project-root', root], { encoding: 'utf8' });
+  } catch (e) { code = e.status; }
+  assert.equal(code, 3);
+  assert.equal(readState(root, runId).data.autonomy.spawn_style, 'desktop', 'a fenced-out reset must not mutate spawn_style');
+});
+
+test('CLI spawn-style reset-desktop when spawn_style is not desktop exits 1 (SOURCE_INVALID)', () => {
+  const { root, runId, expect } = seedFreshRun({ spawn_style: 'visible' });
+  withCurrentPointer(root, runId);
+  let code = 0;
+  try {
+    execFileSync('node', [CLI, 'spawn-style', 'reset-desktop', '--owner', expect.owner, '--generation', String(expect.generation), '--project-root', root], { encoding: 'utf8' });
+  } catch (e) { code = e.status; }
+  assert.equal(code, 1);
+  assert.equal(readState(root, runId).data.autonomy.spawn_style, 'visible');
 });
 
 // ── CLI: spawn-style offer-desktop | confirm-desktop | decline-desktop ───────

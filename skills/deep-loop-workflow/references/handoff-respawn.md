@@ -64,6 +64,8 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" respawn --owner <run_id> --ge
 
 visible과 동일한 명령 — 커널이 검증된 desktop 엔트리(`open -a`/직접 실행)로 자동 재시작한다. 선택은 init에서 확정된 durable 값이라 재질문하지 않는다.
 
+핸들러 프로브가 (앱 삭제/이동, 서명 변경 등으로) 실패하면 `desktopProbe` unavailable → `buildLaunchCommand`가 unavailable entry를 반환 → 아래 `else`(preserve-pause) 분기로 흐른다. `spawn_style`은 opt-in 시점에 이미 라이브 프로브로 검증된 뒤에만 durable하게 저장되므로(round-6 리뷰 수정, `confirmDesktop`의 `HANDLER_UNVERIFIED` 가드) 이 실패는 어디까지나 "이후에 깨진" 경우다 — 반복되는 preserve-pause에서 벗어나려면 사람이 `spawn-style reset-desktop`으로 `desktop → visible` 복구 후 재확인해야 한다(아래 "사람 탈출 수단" 참고).
+
 **unattended** (드라이버 마커 / `DEEP_LOOP_UNATTENDED` / non-tty): 드라이버가 처리.
 
 **else** (`launcher=none` / visible 아님 / legacy interactive):
@@ -128,3 +130,11 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" recover --confirm --owner <ru
 
 stale handoff 상태를 정리하여 새 `lease acquire`가 가능하도록 한다. 이후 `/deep-loop-resume`으로 인수.
 autonomous tick이 스스로 `recover --confirm`을 발행하지 않는다.
+
+**desktop opt-in 전용 복구 (round-6 part c):** `recover --confirm`은 handoff/lease 상태만 정리할 뿐 `autonomy.spawn_style`은 건드리지 않는다(generic `state patch`는 `autonomy.spawn_style`을 forbid — classifyPatch). 확인됐던 desktop 핸들러가 이후 깨져 매 handoff가 `HANDLER_UNVERIFIED`(prospectively, 위 desktop 분기 참고)로 preserve-pause를 반복하면, 사람이 별도로:
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" spawn-style reset-desktop --owner <run_id> --generation <n>
+```
+
+로 `desktop → visible`을 fenced 전이시킨 뒤(`desktop`이 아니면 exit 1 `SOURCE_INVALID`), 다시 opt-in 절차(§2-5-1)를 밟아 재확인할 수 있다.

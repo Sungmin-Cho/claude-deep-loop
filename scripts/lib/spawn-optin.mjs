@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { appendAnchored } from './integrity.mjs';
 import { leaseCheck } from './lease.mjs';
+import { defaultDesktopProbe } from './desktop-target.mjs';
 
 // Task 7 — durable, nonce-bound desktop opt-in (offer/confirm/decline). Each function is a single
 // appendAnchored transaction: fence check FIRST (LEASE_FENCED never swallowed — fail loud), then
@@ -49,7 +50,21 @@ export function offerDesktop(root, runId, { expect, now = Date.now(), ttlSec = 6
   return { ok: true, nonce: issued };
 }
 
-// confirmDesktop({ expect, now, nonce, platform=process.platform }) → { ok:true } | { ok:false, reason }
+// confirmDesktop({ expect, now, nonce, platform=process.platform, desktopProbe=defaultDesktopProbe })
+//   → { ok:true } | { ok:false, reason }
+// Round-6 review fix (both codex reviewers, 2/2): a durable `desktop` opt-in must NEVER be persistable
+// unless the handler that will actually be invoked on every future handoff verifies RIGHT NOW — otherwise
+// a placeholder verifier (e.g. ALLOW_WIN_PUBLISHERS, still a TBD Subject string pending real-Windows
+// confirmation — see desktop-target.mjs) can durably set spawn_style='desktop', after which every
+// respawn resolves desktop, the handler fails verification, and preserve-pause repeats forever with no
+// downgrade (generic `state patch` forbids autonomy.spawn_style — see classifyPatch).
+//
+// The probe is a READ-ONLY host call (no lock needed for it) — it is invoked ONCE, BEFORE
+// appendAnchored/the lock is taken (same pre-appendAnchored-validation shape as offerDesktop's ttlSec
+// check above), and its already-computed result is captured and re-checked INSIDE the in-lock preCheck
+// as the final guard — so a failing probe still means NO mutation and NO event appended (no half-commit),
+// consistent with every other rejection path here.
+//
 // ALL validation happens inside the appendAnchored preCheck (in-lock), in order:
 //   ① fence (leaseCheck result)              → LEASE_FENCED (rethrown, never swallowed)
 //   ② platform ∈ {darwin,win32}              → else PLATFORM_UNSUPPORTED (cheap kernel-side guard —
@@ -58,11 +73,15 @@ export function offerDesktop(root, runId, { expect, now = Date.now(), ttlSec = 6
 //   ③ pending nonce exists & matches          → else NONCE_INVALID
 //   ④ not expired                             → else NONCE_EXPIRED
 //   ⑤ current spawn_style ∈ {visible,interactive} (re-read in-lock, TOCTOU-safe) → else SOURCE_INVALID
+//   ⑥ desktopProbe({ platform }) returned { ok:true, ... } (pre-computed above) → else HANDLER_UNVERIFIED
 // A throwing preCheck aborts appendAnchored with NO mutation and NO event appended.
-// `platform` is injected (defaults to process.platform) purely for testability — never used for
-// anything but this in-lock allowlist check.
-export function confirmDesktop(root, runId, { expect, now = Date.now(), nonce, platform = process.platform } = {}) {
+// `platform` and `desktopProbe` are injected (default to process.platform / defaultDesktopProbe) purely
+// for testability — production callers never pass them, so real runtime behavior always probes the real
+// handler on this host.
+export function confirmDesktop(root, runId, { expect, now = Date.now(), nonce, platform = process.platform, desktopProbe = defaultDesktopProbe } = {}) {
   assertFenceShape(expect, 'confirmDesktop');
+  let probeResult;
+  try { probeResult = desktopProbe({ platform }); } catch { probeResult = { ok: false, reason: 'probe-error' }; }
   try {
     appendAnchored(root, runId, { type: 'spawn-style-desktop-confirmed', data: { nonce } },
       (l) => {
@@ -78,12 +97,13 @@ export function confirmDesktop(root, runId, { expect, now = Date.now(), nonce, p
         if (Date.parse(p.expires_at) <= now) throw new Error('NONCE_EXPIRED: confirmDesktop');                            // ④ expiry
         const cur = l.autonomy?.spawn_style;
         if (cur !== 'visible' && cur !== 'interactive') throw new Error('SOURCE_INVALID: confirmDesktop');               // ⑤ source-state (in-lock)
+        if (!probeResult || probeResult.ok !== true) throw new Error('HANDLER_UNVERIFIED: confirmDesktop');              // ⑥ live handler probe (pre-computed, read-only)
       });
   } catch (e) {
     const msg = String(e?.message || e);
-    // Only the 4 known domain-validation reasons are translated to a rejection return.
+    // Only the 5 known domain-validation reasons are translated to a rejection return.
     // LEASE_FENCED and any unknown error (integrity/lock/IO/schema) are rethrown fail-loud — never swallowed.
-    if (/^(NONCE_INVALID|NONCE_EXPIRED|SOURCE_INVALID|PLATFORM_UNSUPPORTED):/.test(msg)) return { ok: false, reason: msg.split(':')[0] };
+    if (/^(NONCE_INVALID|NONCE_EXPIRED|SOURCE_INVALID|PLATFORM_UNSUPPORTED|HANDLER_UNVERIFIED):/.test(msg)) return { ok: false, reason: msg.split(':')[0] };
     throw e;
   }
   return { ok: true };
@@ -91,6 +111,8 @@ export function confirmDesktop(root, runId, { expect, now = Date.now(), nonce, p
 
 // declineDesktop({ expect, now }) → { ok:true }
 // Fenced clear of any pending opt-in. Idempotent — a no-op (still appends the event) if nothing is pending.
+// Scoped to the PENDING-offer cancel path only (does not touch an already-confirmed spawn_style) — for
+// downgrading an already-durable 'desktop' opt-in, see resetDesktop below.
 export function declineDesktop(root, runId, { expect, now = Date.now() } = {}) {
   assertFenceShape(expect, 'declineDesktop');
   appendAnchored(root, runId, { type: 'spawn-style-desktop-declined', data: {} },
@@ -101,5 +123,37 @@ export function declineDesktop(root, runId, { expect, now = Date.now() } = {}) {
       const lc = leaseCheck(l, { owner: expect.owner, generation: expect.generation });
       if (!lc.ok) throw new Error('LEASE_FENCED: ' + lc.reason);
     });
+  return { ok: true };
+}
+
+// resetDesktop({ expect, now }) → { ok:true } | { ok:false, reason:'SOURCE_INVALID' }
+// Round-6 review fix, part (c) — fenced HUMAN RECOVERY downgrade: desktop → visible. Because confirmDesktop
+// now gates on a LIVE probe (guarantee (a) above), a handler that verified at confirm-time can still later
+// stop verifying (app uninstalled/moved, code signature changed, etc.) — with generic `state patch`
+// forbidding autonomy.spawn_style (see classifyPatch's default-deny), there was previously NO way back to
+// 'visible' once durable. resetDesktop closes that gap: a single fenced appendAnchored transaction that
+// transitions spawn_style back to 'visible' AND clears any stray pending nonce (defensive — normally none
+// exists once spawn_style==='desktop', since confirmDesktop already clears it on success).
+// Gated on cur==='desktop' (else SOURCE_INVALID, no mutation) — same in-lock TOCTOU-safe re-read pattern
+// as confirmDesktop's ⑤ — so this cannot be misused to silently downgrade a headless/interactive run.
+export function resetDesktop(root, runId, { expect, now = Date.now() } = {}) {
+  assertFenceShape(expect, 'resetDesktop');
+  try {
+    appendAnchored(root, runId, { type: 'spawn-style-desktop-reset', data: {} },
+      (l) => {
+        l.autonomy.spawn_style = 'visible';
+        delete l.autonomy.spawn_style_optin_pending;
+      },
+      (l) => {
+        const lc = leaseCheck(l, { owner: expect.owner, generation: expect.generation });
+        if (!lc.ok) throw new Error('LEASE_FENCED: ' + lc.reason);
+        const cur = l.autonomy?.spawn_style;
+        if (cur !== 'desktop') throw new Error('SOURCE_INVALID: resetDesktop');
+      });
+  } catch (e) {
+    const msg = String(e?.message || e);
+    if (/^SOURCE_INVALID:/.test(msg)) return { ok: false, reason: 'SOURCE_INVALID' };
+    throw e;
+  }
   return { ok: true };
 }

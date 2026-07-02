@@ -20,7 +20,8 @@ import { resolveAdapter, guardTierProtocol, loadProtocol } from './lib/adapters.
 import { recordCost, checkBudget } from './lib/budget.mjs';
 import { computeDebt, ack as ackComprehension } from './lib/comprehension.mjs';
 import { checkBreaker, resetBreaker } from './lib/breaker.mjs';
-import { offerDesktop, confirmDesktop, declineDesktop } from './lib/spawn-optin.mjs';
+import { offerDesktop, confirmDesktop, declineDesktop, resetDesktop } from './lib/spawn-optin.mjs';
+import { defaultDesktopProbe } from './lib/desktop-target.mjs';
 import { finishRun } from './lib/finish.mjs';
 import { detectAndPersist } from './lib/detect-terminal.mjs';
 import { recoverRun } from './lib/recover.mjs';
@@ -375,14 +376,21 @@ const handlers = {
     }
     error(`unknown breaker verb: ${verb}`); return 2;
   },
-  // spawn-style offer-desktop|confirm-desktop|decline-desktop --owner <id> --generation <n> [--nonce <n>]
-  // Durable, nonce-bound desktop opt-in (Task 7). Fence-fenced like every other mutating subcommand:
-  // requireLease is a fast outer pre-check (exit 3 on missing/invalid/mismatched owner-generation); the
-  // lib functions re-check the SAME fence in-lock (authoritative — see spawn-optin.mjs). Exit codes:
-  // 3 = LEASE_FENCED (fence, incl. missing/invalid --owner/--generation), 1 = {ok:false} rejection
-  // (NONCE_INVALID/NONCE_EXPIRED/SOURCE_INVALID/PLATFORM_UNSUPPORTED) or any other thrown error, 2 = unknown verb.
+  // spawn-style offer-desktop|confirm-desktop|decline-desktop|reset-desktop --owner <id> --generation <n> [--nonce <n>]
+  //           | probe-desktop
+  // Durable, nonce-bound desktop opt-in (Task 7; round-6 review parts a/b/c). Fence-fenced like every
+  // other mutating subcommand: requireLease is a fast outer pre-check (exit 3 on missing/invalid/
+  // mismatched owner-generation); the lib functions re-check the SAME fence in-lock (authoritative — see
+  // spawn-optin.mjs). `probe-desktop` is the ONE exception — it is READ-ONLY (no state mutation, no
+  // event appended), so it needs no fence/owner/generation/run and is dispatched BEFORE requireLease;
+  // the skill uses it to gate whether to even OFFER the opt-in (round-6 part b), and a human/operator can
+  // run it standalone with no active run. Exit codes: 3 = LEASE_FENCED (fence, incl. missing/invalid
+  // --owner/--generation — N/A for probe-desktop), 1 = {ok:false} rejection (NONCE_INVALID/NONCE_EXPIRED/
+  // SOURCE_INVALID/PLATFORM_UNSUPPORTED/HANDLER_UNVERIFIED) or any other thrown error, 2 = unknown verb.
   'spawn-style': async (a) => {
-    const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
+    const [verb, ...rest] = a; const f = parseFlags(rest);
+    if (verb === 'probe-desktop') { json(defaultDesktopProbe({ platform: process.platform })); return 0; }
+    const root = rootOf(f); const runId = runIdOf(root, f);
     requireLease(root, runId, f);
     const expect = { owner: f.owner, generation: intArg(f, 'generation') };
     const now = parseNow(f);
@@ -393,11 +401,18 @@ const handlers = {
       catch (e) { const msg = String(e?.message || e); if (msg.startsWith('LEASE_FENCED')) { error(msg); return 3; } error(msg); return 1; }
     }
     if (verb === 'confirm-desktop') {
+      // desktopProbe not injected here — defaults to defaultDesktopProbe (real host probe on process.platform),
+      // matching the (uninjected) `platform` default too. Round-6 part (a): a failing probe now returns
+      // {ok:false, reason:'HANDLER_UNVERIFIED'} and persists NOTHING.
       try { const r = confirmDesktop(root, runId, { expect, now, nonce }); json(r); return r.ok ? 0 : 1; }
       catch (e) { const msg = String(e?.message || e); if (msg.startsWith('LEASE_FENCED')) { error(msg); return 3; } error(msg); return 1; }
     }
     if (verb === 'decline-desktop') {
       try { json(declineDesktop(root, runId, { expect, now })); return 0; }
+      catch (e) { const msg = String(e?.message || e); if (msg.startsWith('LEASE_FENCED')) { error(msg); return 3; } error(msg); return 1; }
+    }
+    if (verb === 'reset-desktop') {
+      try { const r = resetDesktop(root, runId, { expect, now }); json(r); return r.ok ? 0 : 1; }
       catch (e) { const msg = String(e?.message || e); if (msg.startsWith('LEASE_FENCED')) { error(msg); return 3; } error(msg); return 1; }
     }
     error(`unknown spawn-style verb: ${verb}`); return 2;
