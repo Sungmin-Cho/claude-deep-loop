@@ -244,6 +244,7 @@ export function respawn(root, runId, {
       launcherBin: loop.session_spawn?.launcher_bin,
       launcherSocket: loop.session_spawn?.launcher_socket,
       platform, desktopTarget: dt && dt.ok ? dt.argvTarget : null,
+      model: loop.autonomy?.session_model ?? null, effort: loop.autonomy?.session_effort ?? null,
     });
     _entry = _cmds[mode];
   } catch (buildErr) {

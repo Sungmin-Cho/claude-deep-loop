@@ -731,3 +731,30 @@ test('Task 5b: desktop respawn with an unverified probe (ok:false) never reaches
   assert.equal(r.outcome, 'no-launcher');
   assert.equal(readState(root, runId).data.status, 'paused');
 });
+
+// ── WS1: respawn threads state model/effort into the spawned child entry ──────
+test('respawn threads state model/effort into the spawned headless entry (WS1)', () => {
+  const { root, runId } = seedLauncher({ spawn_style: 'headless', launcher: 'cmux' });
+  { const { data } = readState(root, runId); data.autonomy.session_model = 'claude-opus-4-8[1m]'; data.autonomy.session_effort = 'xhigh'; writeState(root, runId, data); }
+  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });
+  let captured = null;
+  const spawnFn = (entry) => { captured = entry; return { ok: true, usage: { num_turns: 1, tokens: 1 } }; };
+  const r = respawn(root, runId, { childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel, headless: true, now: NOW1 + 1000, spawnFn });
+  assert.equal(r.ok, true);
+  assert.ok(captured, 'spawnFn was called');
+  assert.ok(captured.argv.includes('--model') && captured.argv.includes('claude-opus-4-8[1m]'), 'headless entry carries --model');
+  assert.ok(captured.argv.includes('--effort') && captured.argv.includes('xhigh'), 'headless entry carries --effort');
+});
+
+test('respawn threads state model/effort into the spawned VISIBLE entry (WS1)', () => {
+  const { root, runId } = seedLauncher({ spawn_style: 'visible', launcher: 'cmux' });
+  { const { data } = readState(root, runId); data.autonomy.session_model = 'claude-opus-4-8[1m]'; data.autonomy.session_effort = 'high'; writeState(root, runId, data); }
+  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });
+  let got;
+  const spawnFn = (e) => { got = e; return { ok: true }; };
+  const pollLease = seq([{ state: 'releasing', owner_run_id: runId, generation: 1 }, { state: 'active', handoff_phase: 'acquired', owner_run_id: h.childRunId, generation: 2 }]);
+  const r = respawn(root, runId, { childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel, attended: true, env: {}, now: NOW1, spawnFn, pollLease, sleep: noSleep });
+  assert.equal(r.ok, true);
+  const cmuxCmd = got.argv[got.argv.indexOf('--command') + 1];
+  assert.match(cmuxCmd, /--model 'claude-opus-4-8\[1m\]' --effort 'high'/);
+});
