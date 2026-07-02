@@ -124,3 +124,12 @@ test('CLI rejects value-less --model/--effort as usage (exit 2)', () => {
   r = cli(root, ['init-run', '--goal', 'g', '--model']);
   assert.equal(r.status, 2, 'value-less --model on init-run → usage exit 2');
 });
+
+test('CLI supports --key=value form for --model/--effort (WS1 parseFlags)', () => {
+  const { root, runId } = seed();
+  const r = cli(root, ['session-profile', 'set', '--model=claude-opus-4-8[1m]', '--effort=xhigh', '--owner', runId, '--generation', '1']);
+  assert.equal(r.status, 0);
+  const { data } = readState(root, runId);
+  assert.equal(data.autonomy.session_model, 'claude-opus-4-8[1m]');
+  assert.equal(data.autonomy.session_effort, 'xhigh');
+});

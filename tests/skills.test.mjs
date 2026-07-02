@@ -657,3 +657,9 @@ test('continue/handoff/resume skills + shared reference wire session-profile ref
     assert.match(body, /session-profile set/, `${p} should reference session-profile set`);
   }
 });
+
+test('deep-loop init skill observes + seeds session model/effort into init-run (WS1)', () => {
+  const body = readFileSync(new URL('../skills/deep-loop/SKILL.md', import.meta.url), 'utf8');
+  assert.match(body, /CLAUDE_EFFORT/, 'init skill observes CLAUDE_EFFORT');
+  assert.match(body, /init-run[\s\S]*--model[\s\S]*--effort/, 'init skill threads --model/--effort into init-run');
+});

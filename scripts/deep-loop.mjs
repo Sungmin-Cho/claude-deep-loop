@@ -28,7 +28,19 @@ import { detectAndPersist } from './lib/detect-terminal.mjs';
 import { recoverRun } from './lib/recover.mjs';
 
 function parseFlags(argv) {
-  const f = {}; for (let i = 0; i < argv.length; i++) { if (argv[i].startsWith('--')) { const k = argv[i].slice(2); const v = argv[i + 1]?.startsWith('--') || argv[i + 1] === undefined ? true : argv[++i]; f[k] = v; } } return f;
+  const f = {};
+  for (let i = 0; i < argv.length; i++) {
+    if (!argv[i].startsWith('--')) continue;
+    const body = argv[i].slice(2);
+    // Support the `--key=value` single-token form (previously silently became a literal key with no
+    // value → a flag like `--model=opus` was dropped). Only splits when the '=' is in the SAME token;
+    // the space form `--key value` (and values that themselves contain '=') are unaffected.
+    const eq = body.indexOf('=');
+    if (eq >= 0) { f[body.slice(0, eq)] = body.slice(eq + 1); continue; }
+    const v = argv[i + 1]?.startsWith('--') || argv[i + 1] === undefined ? true : argv[++i];
+    f[body] = v;
+  }
+  return f;
 }
 
 function parseNow(f) {
