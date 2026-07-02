@@ -36,6 +36,19 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" lease acquire --owner <child_
 - 성공 시: 이 세션이 새 owner. `generation`이 +1 증가.
 - 실패(다른 세션이 이미 인수): 에러 보고 후 종료.
 
+## 단계 2.5: 세션 model/effort refresh (acquire 직후)
+
+lease를 인수해 이 세션이 owner가 된 직후, 자기 실제 model/effort를 durable state에 갱신한다 — 부모가 `--model`/`--effort`로 정확히 띄웠어도, desktop transport(URL은 flag 못 실음)나 사람의 `/model` 변경으로 이 세션의 실제 값이 state와 다를 수 있으므로:
+
+```bash
+CLAUDE_EFFORT_VAL=$(node -e "process.stdout.write(process.env.CLAUDE_EFFORT||'')")
+SP_ARGS=(session-profile set --model "<이 세션의 모델 ID>" --owner <child_run_id> --generation <new_generation>)
+[ -n "$CLAUDE_EFFORT_VAL" ] && SP_ARGS+=(--effort "$CLAUDE_EFFORT_VAL")   # 빈 effort는 생략
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" "${SP_ARGS[@]}"
+```
+
+acquire가 owner를 이 세션으로 바꾸고 generation을 올리며 paused run을 running으로 되돌리므로, 이 setter는 새 owner/generation + `intent:'lease'`로 통과한다. 실패(예: 여전히 paused)하면 best-effort로 건너뛰고 다음 `/deep-loop-continue` §0.5가 갱신한다.
+
 ## 단계 3: Active Worktree 확인
 
 ```

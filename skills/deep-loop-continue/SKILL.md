@@ -25,6 +25,22 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field session_cha
 
 `run_id` = `lease.owner_run_id`, `generation` = `lease.generation`.
 
+## 0.5. 세션 model/effort refresh (respawn 전 항상)
+
+§0에서 lease를 확보한 직후, 게이트/디스패치 이전에 현재 세션의 model/effort를 durable state에 갱신한다(self-healing). 이래야 이 tick이 띄울 자식이 최신 model/effort로 열린다.
+
+```bash
+CLAUDE_EFFORT_VAL=$(node -e "process.stdout.write(process.env.CLAUDE_EFFORT||'')")
+# 관측된 값만 플래그로 넣는다(빈 effort를 --effort ""로 넘기면 커널이 INVALID_EFFORT로 exit 1).
+SP_ARGS=(session-profile set --model "<이 세션의 모델 ID>" --owner <run_id> --generation <n>)
+[ -n "$CLAUDE_EFFORT_VAL" ] && SP_ARGS+=(--effort "$CLAUDE_EFFORT_VAL")
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" "${SP_ARGS[@]}"
+```
+
+- **빈 값 금지**: `--model`/`--effort`는 관측된 것만 포함한다(`CLAUDE_EFFORT`가 비면 `--effort` 생략). 모델도 관측 못 하고 effort도 비면 이 단계 전체를 건너뛴다(state 그대로 진행 — 무해).
+- setter는 `intent:'lease'`라 handoff가 이미 emit되어 lease가 `releasing`이어도 통과한다. 값이 그대로면 no-op(이벤트 안 쌓임).
+- **in-flight handoff 조기 분기**: §0에서 읽은 `lease.handoff_phase`가 `emitted` 또는 `spawned`이면(reserved child 존재 — PreCompact 안전망이 이미 emit한 상태), §1.5/§2/§3의 business write는 releasing carve-out으로 fence되므로 **건너뛰고 곧장 §4c(respawn)로 이동**한다. (phase `emitted`이면 respawn이 위 refresh된 state로 launch를 빌드 → 자식이 최신값으로 뜬다. phase `spawned`이면 자식은 이미 떠 있고, 그 자식이 `/deep-loop-resume`에서 자기 값을 refresh해 다음 handoff에 반영한다.)
+
 ## 1. 게이트 검사 (항상 먼저)
 
 ```

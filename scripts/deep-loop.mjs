@@ -21,13 +21,26 @@ import { recordCost, checkBudget } from './lib/budget.mjs';
 import { computeDebt, ack as ackComprehension } from './lib/comprehension.mjs';
 import { checkBreaker, resetBreaker } from './lib/breaker.mjs';
 import { offerDesktop, confirmDesktop, declineDesktop, resetDesktop } from './lib/spawn-optin.mjs';
+import { setSessionProfile } from './lib/session-profile.mjs';
 import { defaultDesktopProbe } from './lib/desktop-target.mjs';
 import { finishRun } from './lib/finish.mjs';
 import { detectAndPersist } from './lib/detect-terminal.mjs';
 import { recoverRun } from './lib/recover.mjs';
 
 function parseFlags(argv) {
-  const f = {}; for (let i = 0; i < argv.length; i++) { if (argv[i].startsWith('--')) { const k = argv[i].slice(2); const v = argv[i + 1]?.startsWith('--') || argv[i + 1] === undefined ? true : argv[++i]; f[k] = v; } } return f;
+  const f = {};
+  for (let i = 0; i < argv.length; i++) {
+    if (!argv[i].startsWith('--')) continue;
+    const body = argv[i].slice(2);
+    // Support the `--key=value` single-token form (previously silently became a literal key with no
+    // value → a flag like `--model=opus` was dropped). Only splits when the '=' is in the SAME token;
+    // the space form `--key value` (and values that themselves contain '=') are unaffected.
+    const eq = body.indexOf('=');
+    if (eq >= 0) { f[body.slice(0, eq)] = body.slice(eq + 1); continue; }
+    const v = argv[i + 1]?.startsWith('--') || argv[i + 1] === undefined ? true : argv[++i];
+    f[body] = v;
+  }
+  return f;
 }
 
 function parseNow(f) {
@@ -101,8 +114,15 @@ const handlers = {
   'init-run': async (a) => {
     const f = parseFlags(a);
     const root = rootOf(f);
-    const { runId } = initRun(root, { goal: f.goal, protocol: f.protocol, recipe: f.recipe, detected: detectPlugins(root), review: f.review ? JSON.parse(f.review) : undefined });
-    json({ run_id: runId }); return 0;
+    if (f.model === true || f.effort === true) { error('USAGE: --model/--effort require a value'); return 2; }
+    const model = f.model !== undefined ? String(f.model) : null;
+    const effort = f.effort !== undefined ? String(f.effort) : null;
+    try {
+      const { runId } = initRun(root, { goal: f.goal, protocol: f.protocol, recipe: f.recipe, detected: detectPlugins(root), review: f.review ? JSON.parse(f.review) : undefined, model, effort });
+      json({ run_id: runId }); return 0;
+    } catch (e) {
+      error(String(e?.message || e)); return 1;   // INVALID_MODEL / INVALID_EFFORT → exit 1 (fail-closed)
+    }
   },
   'next-action': async (a) => { const f = parseFlags(a); const root = rootOf(f); const { data } = readState(root, runIdOf(root, f)); json(nextAction(data, { now: parseNow(f) })); return 0; },
   tick: async (a) => { const f = parseFlags(a); const root = rootOf(f); const { data } = readState(root, runIdOf(root, f)); json({ mode: f.mode || 'advance', ...nextAction(data, { now: parseNow(f) }) }); return 0; },
@@ -429,6 +449,31 @@ const handlers = {
       catch (e) { const msg = String(e?.message || e); if (msg.startsWith('LEASE_FENCED')) { error(msg); return 3; } error(msg); return 1; }
     }
     error(`unknown spawn-style verb: ${verb}`); return 2;
+  },
+  // session-profile set --model <m> --effort <e> --owner <id> --generation <n>
+  // Refresh durable autonomy.session_model/effort (WS1). intent:'lease' (releasing-safe, like respawn/
+  // detect-terminal) so an attended session can refresh while a PreCompact handoff is in-flight. Exit
+  // codes: 3 = LEASE_FENCED (incl. missing/invalid --owner/--generation), 1 = invalid model/effort, 2 = usage.
+  'session-profile': async (a) => {
+    const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
+    if (verb !== 'set') { error(`unknown session-profile verb: ${verb}`); return 2; }
+    if (!runId) { error('MISSING_RUN_ID'); return 2; }
+    // A value-less --model/--effort (parseFlags → true) is a malformed invocation, NOT an omission —
+    // reject as usage (exit 2) so it can never silently drop the field while writing the other.
+    if (f.model === true || f.effort === true) { error('USAGE: --model/--effort require a value'); return 2; }
+    requireLease(root, runId, f, 'lease');   // releasing-safe outer fence (exit 3)
+    const expect = { owner: f.owner, generation: intArg(f, 'generation') };
+    const model = f.model !== undefined ? String(f.model) : undefined;
+    const effort = f.effort !== undefined ? String(f.effort) : undefined;
+    if (model === undefined && effort === undefined) { error('NOTHING_TO_SET'); return 2; }
+    try {
+      const r = setSessionProfile(root, runId, { model, effort, expect, now: parseNow(f) });
+      json(r); return 0;
+    } catch (e) {
+      const msg = String(e?.message || e);
+      if (msg.startsWith('LEASE_FENCED')) { error(msg); return 3; }
+      error(msg); return 1;
+    }
   },
   'detect-terminal': async (a) => {
     const f = parseFlags(a); const root = rootOf(f); const runId = runIdOf(root, f);

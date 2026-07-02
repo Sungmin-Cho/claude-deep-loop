@@ -22,6 +22,20 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field session_cha
 
 `owner_run_id`와 `generation`을 확인한다.
 
+## 단계 1.4: 세션 model/effort refresh (emit/respawn 전 항상)
+
+emit·respawn 이전에 현재 세션의 model/effort를 durable state에 갱신해, 새 세션이 부모와 같은 model/effort로 열리도록 한다(self-healing). `intent:'lease'`라 이미 emit된(releasing) handoff에서도 통과한다:
+
+```bash
+CLAUDE_EFFORT_VAL=$(node -e "process.stdout.write(process.env.CLAUDE_EFFORT||'')")
+# 관측된 값만 플래그로 넣는다(빈 effort는 커널이 INVALID_EFFORT로 거부하므로 생략).
+SP_ARGS=(session-profile set --model "<이 세션의 모델 ID>" --owner <run_id> --generation <n>)
+[ -n "$CLAUDE_EFFORT_VAL" ] && SP_ARGS+=(--effort "$CLAUDE_EFFORT_VAL")
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" "${SP_ARGS[@]}"
+```
+
+값이 그대로면 no-op(이벤트 안 쌓임). 관측 실패(model·effort 둘 다) 시 이 단계를 건너뛴다(기존 state로 진행). 이후 emit/respawn이 갱신된 state를 읽는다.
+
 ## 단계 1.5: Worktree 진입 불필요
 
 handoff emit과 respawn은 커널 상태 조작이다. 커널 CLI는 `findRoot` 상향탐색으로 project root를 자동 해석하므로 cwd와 무관하게 올바른 경로를 찾는다. handoff descriptor도 project root 기준 경로로 기록된다.

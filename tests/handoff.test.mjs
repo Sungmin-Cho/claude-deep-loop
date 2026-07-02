@@ -539,3 +539,68 @@ test('launch-command.txt desktop line is unavailable marker for non-desktop runs
   assert.ok(!/\/deep-loop-resume/.test(desktopLine), 'desktop line in unavailable case must not contain /deep-loop-resume');
   assert.ok(!/claude:\/\//.test(txt), 'launch-command.txt must never contain a raw claude:// deeplink');
 });
+
+// ── WS1: model/effort threading ──────────────────────────────────────────────
+function writeStateWith(root, runId, mutate) {
+  const { data } = readState(root, runId);
+  mutate(data);
+  writeState(root, runId, data);
+}
+
+test('buildLaunchCommand threads --model/--effort into every transport', () => {
+  const m = 'claude-opus-4-8[1m]';
+  const c = buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'cmux', launcherBin: '/a/cmux', model: m, effort: 'xhigh' });
+  assert.ok(c.headless.argv.includes('--model') && c.headless.argv.includes(m));
+  assert.ok(c.headless.argv.includes('--effort') && c.headless.argv.includes('xhigh'));
+  assert.ok(c.wt.argv.includes('--model') && c.wt.argv.includes(m));
+  assert.match(c.wt.display, /--model 'claude-opus-4-8\[1m\]' --effort 'xhigh'/);
+  const cmuxCmd = c.cmux.argv[c.cmux.argv.indexOf('--command') + 1];
+  assert.match(cmuxCmd, /--model 'claude-opus-4-8\[1m\]' --effort 'xhigh'/);
+  assert.match(c.interactive.display, /--model 'claude-opus-4-8\[1m\]' --effort 'xhigh'/);
+  assert.match(c.headless.display, /--model 'claude-opus-4-8\[1m\]' --effort 'xhigh'/);
+});
+
+test('buildLaunchCommand omits flags when model/effort absent (backward compat)', () => {
+  const c = buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md' });
+  assert.ok(!c.headless.argv.includes('--model'));
+  assert.ok(!c.headless.argv.includes('--effort'));
+  assert.ok(!c.wt.argv.includes('--model'));
+  assert.ok(!c.wt.display.includes('--model'));
+  assert.ok(!c.interactive.display.includes('--model'));
+  assert.ok(!c.interactive.display.includes('undefined'));
+});
+
+test('powershell entry threads --model/--effort with psq quoting', () => {
+  const psBin = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+  const c = buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'powershell', launcherBin: psBin, model: 'claude-sonnet-5', effort: 'high' });
+  assert.ok(!c.powershell.unavailable, 'trusted PS bin → runnable entry');
+  const psCmd = c.powershell.argv[c.powershell.argv.indexOf('-Command') + 1];
+  const enc = psCmd.match(/EncodedCommand','([A-Za-z0-9+/=]+)'/)[1];
+  const innerPS = Buffer.from(enc, 'base64').toString('utf16le');
+  assert.match(innerPS, /--model 'claude-sonnet-5' --effort 'high'/);
+});
+
+test('emitHandoff threads state model/effort into launch-command.txt + continuity note', () => {
+  const { root, runId } = seed();
+  writeStateWith(root, runId, (d) => { d.autonomy.session_model = 'claude-opus-4-8[1m]'; d.autonomy.session_effort = 'xhigh'; });
+  const r = emitHandoff(root, runId, { now: 1, expect: expect_(runId) });
+  assert.equal(r.ok, true);
+  const lc = readFileSync(join(runDir(root, runId), 'terminal', 'launch-command.txt'), 'utf8');
+  assert.match(lc, /--model 'claude-opus-4-8\[1m\]' --effort 'xhigh'/);
+  const desktopLine = lc.split('\n').find((ln) => ln.startsWith('# desktop:'));
+  assert.match(desktopLine, /model=claude-opus-4-8\[1m\]/);
+  assert.match(desktopLine, /effort=xhigh/);
+  const md = readFileSync(r.handoffPath, 'utf8');
+  assert.match(md, /## Session continuity/);
+  assert.match(md, /claude-opus-4-8\[1m\]/);
+  assert.match(md, /xhigh/);
+});
+
+test('emitHandoff does NOT modify autonomy.session_* (refresh is the setter, not emit)', () => {
+  const { root, runId } = seed();
+  writeStateWith(root, runId, (d) => { d.autonomy.session_model = 'opus'; d.autonomy.session_effort = 'high'; });
+  emitHandoff(root, runId, { now: 1, expect: expect_(runId) });
+  const { data } = readState(root, runId);
+  assert.equal(data.autonomy.session_model, 'opus');
+  assert.equal(data.autonomy.session_effort, 'high');
+});

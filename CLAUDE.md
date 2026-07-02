@@ -22,8 +22,8 @@ The kernel **never calls sibling skills as functions** — it returns descriptor
 
 ## Repo map
 
-- `scripts/deep-loop.mjs` — CLI dispatcher (the **only** state-change boundary). Subcommands: `validate · detect-plugins · recipe-match · init-run · state get/patch · next-action · tick · lease · workstream · episode (+ abandon) · review · handoff · respawn · adapter resolve · budget · comprehension · breaker · finish`.
-- `scripts/lib/*.mjs` (22 modules) — `state · integrity · budget · breaker · comprehension · schema · envelope · slug · detect · recipes · initrun · log · lease · workspace · episode · review · adapters · next-action · handoff · respawn · finish · spawn-driver`.
+- `scripts/deep-loop.mjs` — CLI dispatcher (the **only** state-change boundary). Subcommands: `validate · detect-plugins · recipe-match · init-run · state get/patch · next-action · tick · lease · workstream · episode (+ abandon) · review · handoff · respawn · session-profile set · adapter resolve · budget · comprehension · breaker · finish`.
+- `scripts/lib/*.mjs` (23 modules) — `state · integrity · budget · breaker · comprehension · schema · envelope · slug · detect · recipes · initrun · log · lease · workspace · episode · review · adapters · next-action · handoff · respawn · finish · spawn-driver · session-profile`.
 - `scripts/hooks-impl/{precompact-handoff,drive-headless}.mjs` — hook glue + headless cron driver (the only lib importers outside the kernel).
 - `hooks/hooks.json` + `hooks/scripts/precompact-handoff.sh` — PreCompact safety-net (Bash 3.2).
 - `skills/deep-loop*/SKILL.md` (10) + `skills/deep-loop-workflow/references/*.md` — Execution plane.

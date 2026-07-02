@@ -69,17 +69,33 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" recipe-match --goal "<goal>"
 
 큰 goal이면 N개 workstream(각각 하나의 PR)을 제안하고 사람 확인을 받는다("[이대로/조정/단일 PR로]"). 작은 작업이면 1 workstream 자동 결정.
 
+### 2-4.5. 세션 model/effort 관측 (자동, 무프롬프트)
+
+respawn이 자식 세션을 부모와 같은 model/effort로 띄우도록, init 시 현재 세션 값을 캡처한다(이 값이 durable "init seed" — 첫 handoff가 PreCompact/headless여도 fallback이 된다):
+
+```bash
+CLAUDE_EFFORT_VAL=$(node -e "process.stdout.write(process.env.CLAUDE_EFFORT||'')")
+# CLAUDE_MODEL = 이 세션의 정확한 모델 ID (세션 컨텍스트가 알려준 값, 예: claude-opus-4-8[1m])
+```
+
+- effort는 `$CLAUDE_EFFORT` env에서 읽는다(비어 있으면 그 항목만 최소 확인 — model은 컨텍스트로 거의 항상 알 수 있음). 정상 경로에선 아무것도 묻지 않는다(무프롬프트).
+- 관측된 값만 아래 `init-run`에 플래그로 덧붙인다(값 없는 `--model`/`--effort`는 커널이 usage exit 2로 거부하므로, 관측 못 한 항목은 플래그 자체를 생략한다). 무효 effort는 커널이 exit 1로 거부.
+
 ### 2-5. Run 생성 (`init-run`)
+
+관측된 model/effort를 플래그로 덧붙인다(둘 다 관측된 경우):
 
 ```
 node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" init-run \
   --goal "<goal>" \
   --protocol <protocol> \
   --recipe <recipe_id> \
-  --review '<review_json>'
+  --review '<review_json>' \
+  --model "<CLAUDE_MODEL>" --effort "<CLAUDE_EFFORT_VAL>"
 ```
 
 `--recipe`는 `recipe-match`가 반환한 recipe **id 문자열**(예: `robust-implementation`)이다 — JSON이 아님.
+`--model`/`--effort`는 §2-4.5에서 관측한 값(관측된 것만; effort가 비면 `--effort` 생략, 둘 다 못 하면 둘 다 생략 → 커널 기본값). 이 값이 `autonomy.session_model`/`session_effort`로 seed된다.
 `run_id`를 받아 저장한다. 이후 모든 mutating CLI는 `--owner <run_id> --generation 1`.
 
 ### 2-5-1. Desktop 딥링크 재시작 opt-in 제안 (선택적, 최초 1회)
