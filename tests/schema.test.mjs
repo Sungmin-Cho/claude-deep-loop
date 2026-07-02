@@ -87,3 +87,22 @@ test('spawn_style=desktop is a valid enum value', () => {
   const res = validate(loop);
   assert.equal(res.ok, true, JSON.stringify(res.errors));
 });
+
+test('autonomy.session_effort enum + session_model type (WS1, optional)', () => {
+  const base = buildInitialLoop({ goal: 'g', protocol: 'standalone', recipe: { id: 'r', name: 'r', reason: '' }, runId: 'SELFTEST00000000000000000T', now: new Date('2026-07-02T00:00:00Z') });
+  // absent → ok (backward compat)
+  assert.equal(validate(base).ok, true);
+  // valid effort + model → ok
+  base.autonomy.session_effort = 'xhigh';
+  base.autonomy.session_model = 'claude-opus-4-8[1m]';
+  assert.equal(validate(base).ok, true);
+  // invalid effort → rejected
+  base.autonomy.session_effort = 'ultra';
+  assert.equal(validate(base).ok, false);
+  base.autonomy.session_effort = 'xhigh';
+  // non-string model → rejected
+  base.autonomy.session_model = 123;
+  const v = validate(base);
+  assert.equal(v.ok, false);
+  assert.ok(v.errors.some((e) => /session_model/.test(e)));
+});
