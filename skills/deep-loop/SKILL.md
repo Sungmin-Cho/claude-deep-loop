@@ -93,7 +93,9 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" detect-terminal --owner <run_
 node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field session_spawn
 ```
 
-`session_spawn.launcher === 'none'` **AND** 현재 세션이 attended(사람이 지켜보는 interactive 세션 — 드라이버 마커/`DEEP_LOOP_UNATTENDED`/non-tty가 아님) **AND** `process.platform ∈ {darwin, win32}`(Claude Desktop이 존재하는 플랫폼)일 때만 아래 제안을 진행한다. 그 외(런처 정상 감지 · unattended · 미지원 플랫폼)에는 **아무것도 묻지 않는다** — 기존 happy path 무마찰이며, `decline-desktop` 호출조차 생략한다.
+`session_spawn.launcher === 'none'` **AND** 현재 세션이 attended **AND** `process.platform ∈ {darwin, win32}`(Claude Desktop이 존재하는 플랫폼)일 때만 아래 제안을 진행한다. 그 외(런처 정상 감지 · unattended · 미지원 플랫폼)에는 **아무것도 묻지 않는다** — 기존 happy path 무마찰이며, `decline-desktop` 호출조차 생략한다.
+
+**"attended"의 정의(중요 — TTY 유무가 아니다):** 커널의 `isHeadlessInvocation(env)`가 `false`인 것, 즉 명시적 unattended/headless 마커(`DEEP_LOOP_UNATTENDED`/`DEEP_LOOP_HEADLESS`/드라이버 entrypoint 휴리스틱)가 하나도 없는 세션을 attended로 판단한다. **non-tty라는 이유만으로 unattended로 취급하지 않는다** — Claude Desktop의 Code 탭은 사람이 지켜보는 GUI이지만 tty가 없으므로, tty 존재를 기준으로 삼으면 정확히 이 desktop 대상 환경에서 opt-in 제안이 억제되는 버그가 된다. 판단이 애매하면(마커도 없고 tty도 없는 등) fail-open하여 attended로 간주하고 제안한다 — 사람은 언제든 "아니오"로 거절할 수 있으므로 과소-제안보다 과다-제안이 안전하다.
 
 게이트를 통과하면 커널에 단명 pending nonce를 기록한다:
 

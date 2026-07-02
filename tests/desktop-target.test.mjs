@@ -6,10 +6,15 @@
 // match (not either alone) — can be exercised without shelling out to osascript/reg.exe.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultDesktopProbe, ALLOW_MAC_PATHS, ALLOW_BUNDLE_IDS, ALLOW_WIN_PATHS } from '../scripts/lib/desktop-target.mjs';
+import { defaultDesktopProbe, ALLOW_MAC_PATHS, ALLOW_BUNDLE_IDS, ALLOW_WIN_PATHS, ALLOW_TEAM_IDS } from '../scripts/lib/desktop-target.mjs';
 
 const idRp = (p) => p;   // injected realpath: identity (canonicalization itself is desktop-handler.test.mjs's concern)
 const okRun = (out, code = 0) => () => ({ code, stdout: out });
+// Fake codesign runner — a valid signature carrying the real allowlisted team-id. Injected so darwin
+// tests never shell out to the real `codesign` binary (round-3 review Finding 3 wiring proof lives in
+// desktop-handler.test.mjs; this file only proves defaultDesktopProbe threads verifySignature/allowTeamIds
+// through, same as it already does for run/realpath/allowMacPaths/allowBundleIds).
+const okSig = () => ({ ok: true, teamId: ALLOW_TEAM_IDS[0] });
 
 test('defaultDesktopProbe: unsupported platform (linux) -> unavailable, no injection needed', () => {
   const r = defaultDesktopProbe({ platform: 'linux' });
@@ -17,13 +22,14 @@ test('defaultDesktopProbe: unsupported platform (linux) -> unavailable, no injec
   assert.equal(r.reason, 'unsupported-platform');
 });
 
-test('defaultDesktopProbe: darwin + injected run/realpath returning an allowlisted app+bundle -> verified', () => {
+test('defaultDesktopProbe: darwin + injected run/realpath/verifySignature returning an allowlisted app+bundle+team-id -> verified', () => {
   const appPath = ALLOW_MAC_PATHS[0];
   const bundleId = ALLOW_BUNDLE_IDS[0];
   const r = defaultDesktopProbe({
     platform: 'darwin',
     run: okRun(`${appPath}\n${bundleId}\n`),
     realpath: idRp,
+    verifySignature: okSig,
   });
   assert.equal(r.ok, true);
   assert.deepEqual(r.argvTarget, { kind: 'macos-app', appPath });
@@ -40,9 +46,26 @@ test('defaultDesktopProbe: allowlist wiring — allowed bundle-id at a NON-allow
     platform: 'darwin',
     run: okRun(`/Applications/RogueClaude.app\n${bundleId}\n`),
     realpath: idRp,
+    verifySignature: okSig,
   });
   assert.equal(r.ok, false);
   assert.equal(r.reason, 'path-not-allowed');
+});
+
+// Team-id allowlist wiring proof: an allowed path + allowed bundle-id but a NON-allowlisted team-id
+// must still be rejected — this only holds if the real ALLOW_TEAM_IDS module constant actually
+// reached verifyDesktopHandler as allowTeamIds (not omitted/replaced by an empty/permissive default).
+test('defaultDesktopProbe: allowlist wiring — allowed path+bundle but NON-allowlisted team-id -> unavailable', () => {
+  const appPath = ALLOW_MAC_PATHS[0];
+  const bundleId = ALLOW_BUNDLE_IDS[0];
+  const r = defaultDesktopProbe({
+    platform: 'darwin',
+    run: okRun(`${appPath}\n${bundleId}\n`),
+    realpath: idRp,
+    verifySignature: () => ({ ok: true, teamId: 'EVILTEAM' }),
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'team-id-not-allowed');
 });
 
 test('defaultDesktopProbe: win32 + injected run/realpath returning an allowlisted exe -> verified', () => {

@@ -134,6 +134,23 @@ test('confirm accepted when spawn_style=interactive', () => {
   assert.equal(readState(root, runId).data.autonomy.spawn_style, 'desktop');
 });
 
+// Finding 2 (round-3 review): kernel-side platform guard — confirmDesktop must reject the transition
+// on an unsupported platform even with an otherwise-valid nonce + source state, so a buggy skill can
+// never durably set spawn_style='desktop' on Linux (Claude Desktop only ships for macOS/Windows).
+test('confirmDesktop with platform:"linux" is rejected (PLATFORM_UNSUPPORTED) even with valid nonce + visible source', () => {
+  const { root, runId, expect } = seedFreshRun({ spawn_style: 'visible' });
+  offerDesktop(root, runId, { expect, now: T0, nonce: 'n1' });
+  const r = confirmDesktop(root, runId, { expect, now: T0 + 1, nonce: 'n1', platform: 'linux' });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'PLATFORM_UNSUPPORTED');
+  assert.equal(readState(root, runId).data.autonomy.spawn_style, 'visible', 'spawn_style unchanged');
+  // the pending nonce is also untouched (preCheck threw before mutate ran) — a subsequent confirm on
+  // a supported platform with the SAME nonce still succeeds, proving no partial mutation occurred.
+  const r2 = confirmDesktop(root, runId, { expect, now: T0 + 2, nonce: 'n1', platform: 'darwin' });
+  assert.equal(r2.ok, true);
+  assert.equal(readState(root, runId).data.autonomy.spawn_style, 'desktop');
+});
+
 test('offerDesktop is unconditional on source-state (only fenced, not source-restricted)', () => {
   const { root, runId, expect } = seedFreshRun({ spawn_style: 'headless' });
   const o = offerDesktop(root, runId, { expect, now: T0, nonce: 'n1' });

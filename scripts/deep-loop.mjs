@@ -380,7 +380,7 @@ const handlers = {
   // requireLease is a fast outer pre-check (exit 3 on missing/invalid/mismatched owner-generation); the
   // lib functions re-check the SAME fence in-lock (authoritative — see spawn-optin.mjs). Exit codes:
   // 3 = LEASE_FENCED (fence, incl. missing/invalid --owner/--generation), 1 = {ok:false} rejection
-  // (NONCE_INVALID/NONCE_EXPIRED/SOURCE_INVALID) or any other thrown error, 2 = unknown verb.
+  // (NONCE_INVALID/NONCE_EXPIRED/SOURCE_INVALID/PLATFORM_UNSUPPORTED) or any other thrown error, 2 = unknown verb.
   'spawn-style': async (a) => {
     const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
     requireLease(root, runId, f);

@@ -49,14 +49,19 @@ export function offerDesktop(root, runId, { expect, now = Date.now(), ttlSec = 6
   return { ok: true, nonce: issued };
 }
 
-// confirmDesktop({ expect, now, nonce }) → { ok:true } | { ok:false, reason }
+// confirmDesktop({ expect, now, nonce, platform=process.platform }) → { ok:true } | { ok:false, reason }
 // ALL validation happens inside the appendAnchored preCheck (in-lock), in order:
 //   ① fence (leaseCheck result)              → LEASE_FENCED (rethrown, never swallowed)
-//   ② pending nonce exists & matches          → else NONCE_INVALID
-//   ③ not expired                             → else NONCE_EXPIRED
-//   ④ current spawn_style ∈ {visible,interactive} (re-read in-lock, TOCTOU-safe) → else SOURCE_INVALID
+//   ② platform ∈ {darwin,win32}              → else PLATFORM_UNSUPPORTED (cheap kernel-side guard —
+//      Claude Desktop only ships for macOS/Windows; a buggy skill must not be able to durably set
+//      spawn_style='desktop' on Linux even with a valid nonce + source state)
+//   ③ pending nonce exists & matches          → else NONCE_INVALID
+//   ④ not expired                             → else NONCE_EXPIRED
+//   ⑤ current spawn_style ∈ {visible,interactive} (re-read in-lock, TOCTOU-safe) → else SOURCE_INVALID
 // A throwing preCheck aborts appendAnchored with NO mutation and NO event appended.
-export function confirmDesktop(root, runId, { expect, now = Date.now(), nonce } = {}) {
+// `platform` is injected (defaults to process.platform) purely for testability — never used for
+// anything but this in-lock allowlist check.
+export function confirmDesktop(root, runId, { expect, now = Date.now(), nonce, platform = process.platform } = {}) {
   assertFenceShape(expect, 'confirmDesktop');
   try {
     appendAnchored(root, runId, { type: 'spawn-style-desktop-confirmed', data: { nonce } },
@@ -67,17 +72,18 @@ export function confirmDesktop(root, runId, { expect, now = Date.now(), nonce } 
       (l) => {
         const lc = leaseCheck(l, { owner: expect.owner, generation: expect.generation });
         if (!lc.ok) throw new Error('LEASE_FENCED: ' + lc.reason);                                                        // ① fence
+        if (platform !== 'darwin' && platform !== 'win32') throw new Error('PLATFORM_UNSUPPORTED: confirmDesktop');       // ② platform guard
         const p = l.autonomy?.spawn_style_optin_pending;
-        if (!p || p.nonce !== nonce) throw new Error('NONCE_INVALID: confirmDesktop');                                    // ② nonce
-        if (Date.parse(p.expires_at) <= now) throw new Error('NONCE_EXPIRED: confirmDesktop');                            // ③ expiry
+        if (!p || p.nonce !== nonce) throw new Error('NONCE_INVALID: confirmDesktop');                                    // ③ nonce
+        if (Date.parse(p.expires_at) <= now) throw new Error('NONCE_EXPIRED: confirmDesktop');                            // ④ expiry
         const cur = l.autonomy?.spawn_style;
-        if (cur !== 'visible' && cur !== 'interactive') throw new Error('SOURCE_INVALID: confirmDesktop');               // ④ source-state (in-lock)
+        if (cur !== 'visible' && cur !== 'interactive') throw new Error('SOURCE_INVALID: confirmDesktop');               // ⑤ source-state (in-lock)
       });
   } catch (e) {
     const msg = String(e?.message || e);
-    // Only the 3 known domain-validation reasons are translated to a rejection return.
+    // Only the 4 known domain-validation reasons are translated to a rejection return.
     // LEASE_FENCED and any unknown error (integrity/lock/IO/schema) are rethrown fail-loud — never swallowed.
-    if (/^(NONCE_INVALID|NONCE_EXPIRED|SOURCE_INVALID):/.test(msg)) return { ok: false, reason: msg.split(':')[0] };
+    if (/^(NONCE_INVALID|NONCE_EXPIRED|SOURCE_INVALID|PLATFORM_UNSUPPORTED):/.test(msg)) return { ok: false, reason: msg.split(':')[0] };
     throw e;
   }
   return { ok: true };

@@ -4,12 +4,62 @@ import { verifyDesktopHandler } from '../scripts/lib/desktop-handler.mjs';
 
 const macRun = (out, code = 0) => () => ({ code, stdout: out });
 const idRp = (p) => p;   // injected realpath: tests use identity (path canonicalization tested separately elsewhere)
-const MAC_OK = { platform: 'darwin', realpath: idRp, allowMacPaths: ['/Applications/Claude.app'], allowBundleIds: ['com.anthropic.claude'] };
+// Fake signature checker: a valid signature carrying the allowlisted team-id — used as the default
+// injected `verifySignature` for the positive-path tests below (round-3 review Finding 3).
+const okSig = () => ({ ok: true, teamId: 'TEAMID1' });
+const MAC_OK = {
+  platform: 'darwin', realpath: idRp,
+  allowMacPaths: ['/Applications/Claude.app'], allowBundleIds: ['com.anthropic.claude'],
+  verifySignature: okSig, allowTeamIds: ['TEAMID1'],
+};
 
-test('macOS: allowed app-path + bundle -> verified', () => {
+test('macOS: allowed app-path + bundle + valid signature + allowed team-id -> verified', () => {
   const r = verifyDesktopHandler({ ...MAC_OK, run: macRun('/Applications/Claude.app\ncom.anthropic.claude\n') });
   assert.equal(r.ok, true);
   assert.deepEqual(r.argvTarget, { kind: 'macos-app', appPath: '/Applications/Claude.app' });
+});
+
+// Finding 3 (round-3 review): the exact spoofed-bundle-at-trusted-path attack the finding is about —
+// a malicious app placed at the allowed canonical path, with the allowed bundle id (e.g. a hand-edited
+// Info.plist), must still be rejected once its signature's team-id doesn't match the allowlist.
+test('macOS: allowed path + allowed bundle but WRONG team-id -> unavailable (spoofed app at trusted path)', () => {
+  const r = verifyDesktopHandler({
+    ...MAC_OK,
+    verifySignature: () => ({ ok: true, teamId: 'EVILTEAM' }),
+    run: macRun('/Applications/Claude.app\ncom.anthropic.claude\n'),
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'team-id-not-allowed');
+});
+
+test('macOS: allowed path + allowed bundle but ABSENT team-id -> unavailable', () => {
+  const r = verifyDesktopHandler({
+    ...MAC_OK,
+    verifySignature: () => ({ ok: true, teamId: null }),
+    run: macRun('/Applications/Claude.app\ncom.anthropic.claude\n'),
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'team-id-not-allowed');
+});
+
+test('macOS: invalid/unsigned code signature -> unavailable (signature-invalid)', () => {
+  const r = verifyDesktopHandler({
+    ...MAC_OK,
+    verifySignature: () => ({ ok: false }),
+    run: macRun('/Applications/Claude.app\ncom.anthropic.claude\n'),
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'signature-invalid');
+});
+
+test('macOS: codesign runner throws -> unavailable (signature-error, fail closed)', () => {
+  const r = verifyDesktopHandler({
+    ...MAC_OK,
+    verifySignature: () => { throw new Error('codesign: boom'); },
+    run: macRun('/Applications/Claude.app\ncom.anthropic.claude\n'),
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'signature-error');
 });
 
 test('macOS: allowed bundle at UNTRUSTED path -> unavailable (path is the trust boundary)', () => {
@@ -51,6 +101,8 @@ test('macOS: realpath uses canonical path, not raw symlink, for comparison and r
     realpath: rp,
     allowMacPaths: ['/private/var/canonical/Claude.app'],
     allowBundleIds: ['com.anthropic.claude'],
+    verifySignature: okSig,
+    allowTeamIds: ['TEAMID1'],
     run: macRun('/Applications/Claude.app\ncom.anthropic.claude\n'),
   });
   assert.equal(r.ok, true);
