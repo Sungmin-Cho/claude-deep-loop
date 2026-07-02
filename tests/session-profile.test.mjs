@@ -1,0 +1,103 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { initRun } from '../scripts/lib/initrun.mjs';
+import { readState, writeState } from '../scripts/lib/state.mjs';
+import { reserveHandoff } from '../scripts/lib/lease.mjs';
+import { EFFORT_LEVELS, validateEffort, validateModel, setSessionProfile } from '../scripts/lib/session-profile.mjs';
+
+function seed() {
+  const root = mkdtempSync(join(tmpdir(), 'dl-sp-'));
+  const { runId } = initRun(root, { goal: 'g', detected: {}, now: new Date('2026-07-02T00:00:00Z'), env: {}, platform: 'linux', run: () => ({ code: 1 }) });
+  return { root, runId };
+}
+const expect_ = (runId) => ({ owner: runId, generation: 1 });
+
+test('validateEffort accepts allowlist, rejects others', () => {
+  assert.deepEqual(EFFORT_LEVELS, ['low', 'medium', 'high', 'xhigh', 'max']);
+  for (const e of EFFORT_LEVELS) assert.equal(validateEffort(e), e);
+  assert.throws(() => validateEffort('ultra'), /INVALID_EFFORT/);
+  assert.throws(() => validateEffort(''), /INVALID_EFFORT/);
+  assert.throws(() => validateEffort('XHIGH'), /INVALID_EFFORT/);
+});
+
+test('validateModel accepts real ids/aliases, rejects injection', () => {
+  for (const m of ['claude-opus-4-8[1m]', 'claude-sonnet-5', 'opus', 'claude-haiku-4-5-20251001']) assert.equal(validateModel(m), m);
+  for (const bad of ['-p', '--model', 'a b', 'a;b', "a'b", 'a`b', '', 'a'.repeat(129), '.leading']) assert.throws(() => validateModel(bad), /INVALID_MODEL/, `should reject ${JSON.stringify(bad)}`);
+});
+
+test('setSessionProfile persists both fields + one event, fenced', () => {
+  const { root, runId } = seed();
+  const r = setSessionProfile(root, runId, { model: 'claude-opus-4-8[1m]', effort: 'xhigh', expect: expect_(runId), now: 1 });
+  assert.deepEqual(r, { ok: true, changed: true });
+  const { data } = readState(root, runId);
+  assert.equal(data.autonomy.session_model, 'claude-opus-4-8[1m]');
+  assert.equal(data.autonomy.session_effort, 'xhigh');
+  assert.equal(data.event_log_head.seq, 1); // exactly one appended event
+});
+
+test('setSessionProfile is idempotent no-op on identical values', () => {
+  const { root, runId } = seed();
+  setSessionProfile(root, runId, { model: 'opus', effort: 'high', expect: expect_(runId), now: 1 });
+  const seqAfterFirst = readState(root, runId).data.event_log_head.seq;
+  const r = setSessionProfile(root, runId, { model: 'opus', effort: 'high', expect: expect_(runId), now: 2 });
+  assert.equal(r.changed, false);
+  assert.equal(readState(root, runId).data.event_log_head.seq, seqAfterFirst); // no new event
+});
+
+test('setSessionProfile partial update does not wipe the other field', () => {
+  const { root, runId } = seed();
+  setSessionProfile(root, runId, { model: 'opus', effort: 'high', expect: expect_(runId), now: 1 });
+  setSessionProfile(root, runId, { effort: 'low', expect: expect_(runId), now: 2 }); // model omitted
+  const { data } = readState(root, runId);
+  assert.equal(data.autonomy.session_model, 'opus'); // preserved
+  assert.equal(data.autonomy.session_effort, 'low');
+});
+
+test('setSessionProfile rejects fence mismatch (even on no-op)', () => {
+  const { root, runId } = seed();
+  setSessionProfile(root, runId, { model: 'opus', expect: expect_(runId), now: 1 });
+  assert.throws(() => setSessionProfile(root, runId, { model: 'opus', expect: { owner: runId, generation: 2 }, now: 2 }), /LEASE_FENCED/);
+  assert.throws(() => setSessionProfile(root, runId, { model: 'sonnet', expect: { owner: 'WRONG', generation: 1 }, now: 2 }), /LEASE_FENCED/);
+});
+
+test('setSessionProfile succeeds during releasing lease (intent lease)', () => {
+  const { root, runId } = seed();
+  reserveHandoff(root, runId, { trigger: 'milestone', now: 1, expect: expect_(runId) });
+  // emulate emitted/releasing lease
+  const { data } = readState(root, runId);
+  data.session_chain.lease = { ...data.session_chain.lease, state: 'releasing', handoff_phase: 'emitted' };
+  writeState(root, runId, data);
+  const r = setSessionProfile(root, runId, { effort: 'low', expect: expect_(runId), now: 2 });
+  assert.equal(r.ok, true);
+  assert.equal(readState(root, runId).data.autonomy.session_effort, 'low');
+});
+
+test('setSessionProfile invalid value throws and does not mutate', () => {
+  const { root, runId } = seed();
+  const seq0 = readState(root, runId).data.event_log_head.seq;
+  assert.throws(() => setSessionProfile(root, runId, { effort: 'bogus', expect: expect_(runId), now: 1 }), /INVALID_EFFORT/);
+  assert.throws(() => setSessionProfile(root, runId, { model: '-p', expect: expect_(runId), now: 1 }), /INVALID_MODEL/);
+  assert.equal(readState(root, runId).data.event_log_head.seq, seq0);
+});
+
+const CLI = new URL('../scripts/deep-loop.mjs', import.meta.url).pathname;
+function cli(root, args) {
+  return spawnSync('node', [CLI, ...args, '--project-root', root], { encoding: 'utf8' });
+}
+
+test('CLI session-profile set: exit codes', () => {
+  const { root, runId } = seed();
+  let r = cli(root, ['session-profile', 'set', '--model', 'opus', '--effort', 'high', '--owner', runId, '--generation', '1']);
+  assert.equal(r.status, 0);
+  assert.equal(readState(root, runId).data.autonomy.session_effort, 'high');
+  r = cli(root, ['session-profile', 'set', '--effort', 'ultra', '--owner', runId, '--generation', '1']);
+  assert.equal(r.status, 1);
+  r = cli(root, ['session-profile', 'set', '--effort', 'low', '--owner', runId, '--generation', '2']);
+  assert.equal(r.status, 3);
+  r = cli(root, ['session-profile', 'bogus', '--owner', runId, '--generation', '1']);
+  assert.equal(r.status, 2);
+});
