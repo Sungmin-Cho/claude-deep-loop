@@ -46,17 +46,11 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field session_spa
 node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field autonomy
 ```
 
-### 3. Spawn Style 분기
+### 3. Spawn Style 분기 (커널 `resolveSpawnMode` 우선순위 headless > desktop > visible > interactive와 동일 순서로 먼저 판정)
 
-**visible** (`spawn_style=visible` + `launcher≠none`):
+**unattended** (커널 `isHeadlessInvocation(env)` 마커 전용 — `DEEP_LOOP_UNATTENDED`/`DEEP_LOOP_HEADLESS`/드라이버 entrypoint 휴리스틱; **non-tty는 신호가 아니다**. **가장 먼저 판정** — desktop/visible보다 우선): 드라이버가 처리. tty 유무만으로는 이 분기에 들어가지 않는다 — Claude Desktop Code 탭처럼 사람이 지켜보는 non-tty GUI 세션은 마커가 없으면 아래 desktop/visible/else 분기로 흐른다(§init의 "attended" 정의와 동일 기준). **이 마커가 하나라도 있으면 durable `autonomy.spawn_style`이 `desktop`이든 `visible`이든 무조건 이 분기가 우선한다** — desktop opt-in한 run이라도 현재 호출이 headless라면(예: drive-headless 사이클 도중) 아래 desktop 분기로 새지 않는다(커널 `resolveSpawnMode`의 headless-preempts-desktop, 불변식 #6). **스킬은 여기서 `respawn`을 직접 호출하지 않는다** — drive-headless 래퍼 없이 직접 호출하면 측정 usage가 계상되지 않아 예산/fail-closed 모델이 깨진다.
 
-```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" respawn --owner <run_id> --generation <n> --attended
-```
-
-커널이 자동으로 새 세션을 시작한다. 스킬이 직접 `claude -p`를 실행하지 않는다(§9).
-
-**desktop** (`spawn_style==='desktop'` — init 시 opt-in한 Claude Desktop 딥링크 재시작, `launcher===none`이어도 유효):
+**desktop** (`spawn_style==='desktop'` — init 시 opt-in한 Claude Desktop 딥링크 재시작, `launcher===none`이어도 유효. **위 unattended 마커가 없을 때만** 해당):
 
 ```
 node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" respawn --owner <run_id> --generation <n> --attended
@@ -66,7 +60,13 @@ visible과 동일한 명령 — 커널이 검증된 desktop 엔트리(`open -a`/
 
 핸들러 프로브가 (앱 삭제/이동, 서명 변경 등으로) 실패하면 `desktopProbe` unavailable → `buildLaunchCommand`가 unavailable entry를 반환 → 아래 `else`(preserve-pause) 분기로 흐른다. `spawn_style`은 opt-in 시점에 이미 라이브 프로브로 검증된 뒤에만 durable하게 저장되므로(round-6 리뷰 수정, `confirmDesktop`의 `HANDLER_UNVERIFIED` 가드) 이 실패는 어디까지나 "이후에 깨진" 경우다 — 반복되는 preserve-pause에서 벗어나려면 사람이 `spawn-style reset-desktop`으로 `desktop → visible` 복구 후 재확인해야 한다(아래 "사람 탈출 수단" 참고).
 
-**unattended** (커널 `isHeadlessInvocation(env)` 마커 전용 — `DEEP_LOOP_UNATTENDED`/`DEEP_LOOP_HEADLESS`/드라이버 entrypoint 휴리스틱; **non-tty는 신호가 아니다**): 드라이버가 처리. tty 유무만으로는 이 분기에 들어가지 않는다 — Claude Desktop Code 탭처럼 사람이 지켜보는 non-tty GUI 세션은 마커가 없으면 desktop/else 분기로 흐른다(§init의 "attended" 정의와 동일 기준).
+**visible** (`spawn_style=visible` + `launcher≠none`):
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" respawn --owner <run_id> --generation <n> --attended
+```
+
+커널이 자동으로 새 세션을 시작한다. 스킬이 직접 `claude -p`를 실행하지 않는다(§9).
 
 **else** (`launcher=none` / visible 아님 / legacy interactive — 예: desktop opt-in을 거절/억제한 attended non-tty 세션):
 

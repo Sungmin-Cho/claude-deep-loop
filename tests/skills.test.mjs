@@ -600,6 +600,34 @@ test('continue + handoff + handoff-respawn.md: launcher=none attended routes to 
   }
 });
 
+// Round-9 review Finding: the CONTINUE/HANDOFF/handoff-respawn.md desktop branch (spawn_style==='desktop'
+// → respawn --attended) previously preceded the unattended/headless-marker branch. A run that opted into
+// desktop but is later executing under a headless invocation (DEEP_LOOP_UNATTENDED / headless entrypoint)
+// would take the desktop branch and call `respawn --attended` directly from the skill — bypassing the
+// drive-headless wrapper that records measured usage, undermining the budget/fail-closed model (invariant
+// #6 at the skill layer). Fixed by reordering so the unattended/headless-marker branch is evaluated BEFORE
+// the desktop branch, mirroring the kernel's resolveSpawnMode precedence (headless > desktop > visible >
+// interactive). Verify structurally: the unattended/headless-marker branch text must appear BEFORE the
+// spawn_style==='desktop' branch text in each of the three files.
+test('continue + handoff + handoff-respawn.md: unattended/headless branch precedes the desktop branch (kernel precedence: headless > desktop)', () => {
+  const files = [
+    skillPath('deep-loop-continue'),
+    skillPath('deep-loop-handoff'),
+    join(ROOT, 'skills', 'deep-loop-workflow', 'references', 'handoff-respawn.md'),
+  ];
+  for (const f of files) {
+    const s = _rf(f, 'utf8');
+    // First occurrence of the unattended/headless-marker branch heading (isHeadlessInvocation reference)
+    // must come before the first occurrence of the spawn_style==='desktop' branch condition.
+    const unattendedIdx = s.search(/isHeadlessInvocation/);
+    const desktopIdx = s.indexOf(`spawn_style==='desktop'`);
+    assert.ok(unattendedIdx !== -1, `${f}: unattended/headless branch (isHeadlessInvocation) must exist`);
+    assert.ok(desktopIdx !== -1, `${f}: desktop branch (spawn_style==='desktop') must exist`);
+    assert.ok(unattendedIdx < desktopIdx,
+      `${f}: unattended/headless-marker branch must precede the spawn_style==='desktop' branch (kernel resolveSpawnMode: headless preempts desktop, invariant #6) — got unattendedIdx=${unattendedIdx}, desktopIdx=${desktopIdx}`);
+  }
+});
+
 test('deep-loop SKILL.md: init opt-in offer gated on launcher===none + attended + darwin/win32', () => {
   const s = dlSkill();
   assert.match(s, /detect-terminal/, 'must run detect-terminal before offering desktop opt-in');
