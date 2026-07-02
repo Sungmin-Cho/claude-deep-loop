@@ -61,7 +61,7 @@ function withCurrentPointer(root, runId) {
 
 test('confirm without pending nonce is rejected', () => {
   const { root, runId, expect } = seedFreshRun();
-  const r = confirmDesktop(root, runId, { expect, now: T0, nonce: 'n1' });
+  const r = confirmDesktop(root, runId, { expect, now: T0, nonce: 'n1', platform: 'darwin' });
   assert.equal(r.ok, false);
   assert.equal(r.reason, 'NONCE_INVALID');
   assert.equal(readState(root, runId).data.autonomy.spawn_style, 'visible');
@@ -73,11 +73,11 @@ test('offer→confirm transitions to desktop and consumes nonce (single-use)', (
   assert.equal(o.ok, true);
   assert.equal(o.nonce, 'n1');
   assert.equal(readState(root, runId).data.autonomy.spawn_style_optin_pending.nonce, 'n1');
-  assert.equal(confirmDesktop(root, runId, { expect, now: T0 + 1000, nonce: 'n1' }).ok, true);
+  assert.equal(confirmDesktop(root, runId, { expect, now: T0 + 1000, nonce: 'n1', platform: 'darwin' }).ok, true);
   assert.equal(readState(root, runId).data.autonomy.spawn_style, 'desktop');
   assert.equal(readState(root, runId).data.autonomy.spawn_style_optin_pending, undefined, 'pending cleared on confirm');
   // reuse rejected — nonce is single-use
-  const r2 = confirmDesktop(root, runId, { expect, now: T0 + 2000, nonce: 'n1' });
+  const r2 = confirmDesktop(root, runId, { expect, now: T0 + 2000, nonce: 'n1', platform: 'darwin' });
   assert.equal(r2.ok, false);
   assert.equal(r2.reason, 'NONCE_INVALID');
 });
@@ -104,14 +104,14 @@ test('decline clears pending nonce', () => {
   const d = declineDesktop(root, runId, { expect, now: T0 + 1000 });
   assert.equal(d.ok, true);
   assert.equal(readState(root, runId).data.autonomy.spawn_style_optin_pending, undefined);
-  assert.equal(confirmDesktop(root, runId, { expect, now: T0 + 2000, nonce: 'n1' }).ok, false);
+  assert.equal(confirmDesktop(root, runId, { expect, now: T0 + 2000, nonce: 'n1', platform: 'darwin' }).ok, false);
   assert.equal(readState(root, runId).data.autonomy.spawn_style, 'visible');
 });
 
 test('expired nonce is rejected', () => {
   const { root, runId, expect } = seedFreshRun();
   offerDesktop(root, runId, { expect, now: T0, nonce: 'n1', ttlSec: 600 });
-  const r = confirmDesktop(root, runId, { expect, now: T0 + 600001, nonce: 'n1' });
+  const r = confirmDesktop(root, runId, { expect, now: T0 + 600001, nonce: 'n1', platform: 'darwin' });
   assert.equal(r.ok, false);
   assert.equal(r.reason, 'NONCE_EXPIRED');
   assert.equal(readState(root, runId).data.autonomy.spawn_style, 'visible');
@@ -120,7 +120,7 @@ test('expired nonce is rejected', () => {
 test('confirm rejected when spawn_style not in {visible,interactive} (headless)', () => {
   const { root, runId, expect } = seedFreshRun({ spawn_style: 'headless' });
   offerDesktop(root, runId, { expect, now: T0, nonce: 'n1' });
-  const r = confirmDesktop(root, runId, { expect, now: T0 + 1, nonce: 'n1' });
+  const r = confirmDesktop(root, runId, { expect, now: T0 + 1, nonce: 'n1', platform: 'darwin' });
   assert.equal(r.ok, false);
   assert.equal(r.reason, 'SOURCE_INVALID');
   assert.equal(readState(root, runId).data.autonomy.spawn_style, 'headless');
@@ -129,7 +129,7 @@ test('confirm rejected when spawn_style not in {visible,interactive} (headless)'
 test('confirm accepted when spawn_style=interactive', () => {
   const { root, runId, expect } = seedFreshRun({ spawn_style: 'interactive' });
   offerDesktop(root, runId, { expect, now: T0, nonce: 'n1' });
-  const r = confirmDesktop(root, runId, { expect, now: T0 + 1, nonce: 'n1' });
+  const r = confirmDesktop(root, runId, { expect, now: T0 + 1, nonce: 'n1', platform: 'darwin' });
   assert.equal(r.ok, true);
   assert.equal(readState(root, runId).data.autonomy.spawn_style, 'desktop');
 });
@@ -160,7 +160,7 @@ test('offerDesktop is unconditional on source-state (only fenced, not source-res
 
 test('fence mismatch → confirmDesktop throws LEASE_FENCED (fence checked first, even with no pending)', () => {
   const { root, runId } = seedFreshRun();
-  assert.throws(() => confirmDesktop(root, runId, { expect: { owner: 'wrong', generation: 1 }, now: T0, nonce: 'n1' }), /LEASE_FENCED/);
+  assert.throws(() => confirmDesktop(root, runId, { expect: { owner: 'wrong', generation: 1 }, now: T0, nonce: 'n1', platform: 'darwin' }), /LEASE_FENCED/);
   assert.equal(readState(root, runId).data.autonomy.spawn_style, 'visible');
 });
 
@@ -173,7 +173,7 @@ test('fence mismatch → offerDesktop and declineDesktop also throw LEASE_FENCED
 
 test('missing/invalid fence shape throws FENCE_REQUIRED (defense-in-depth)', () => {
   const { root, runId } = seedFreshRun();
-  assert.throws(() => confirmDesktop(root, runId, { now: T0, nonce: 'n1' }), /FENCE_REQUIRED/);
+  assert.throws(() => confirmDesktop(root, runId, { now: T0, nonce: 'n1', platform: 'darwin' }), /FENCE_REQUIRED/);
   assert.throws(() => offerDesktop(root, runId, { now: T0, nonce: 'n1' }), /FENCE_REQUIRED/);
   assert.throws(() => declineDesktop(root, runId, { now: T0 }), /FENCE_REQUIRED/);
 });
@@ -182,7 +182,7 @@ test('confirm rechecks source state IN-LOCK (stale pre-read cannot overwrite a c
   const { root, runId, expect } = seedFreshRun();                 // visible
   offerDesktop(root, runId, { expect, now: T0, nonce: 'n1' });
   forceSpawnStyle(root, runId, 'headless');                       // concurrent legit transition (test seam)
-  const r = confirmDesktop(root, runId, { expect, now: T0 + 1, nonce: 'n1' });
+  const r = confirmDesktop(root, runId, { expect, now: T0 + 1, nonce: 'n1', platform: 'darwin' });
   assert.equal(r.ok, false);
   assert.equal(r.reason, 'SOURCE_INVALID');
   assert.equal(readState(root, runId).data.autonomy.spawn_style, 'headless');   // not overwritten to desktop
@@ -190,11 +190,11 @@ test('confirm rechecks source state IN-LOCK (stale pre-read cannot overwrite a c
 
 test('confirmDesktop appends exactly one event on success; rejections append none', () => {
   const { root, runId, expect } = seedFreshRun();
-  confirmDesktop(root, runId, { expect, now: T0, nonce: 'n1' });                       // rejected: no pending
+  confirmDesktop(root, runId, { expect, now: T0, nonce: 'n1', platform: 'darwin' });                       // rejected: no pending
   const afterReject = readState(root, runId).data.event_log_head;
   assert.equal(afterReject.seq, 0, 'a rejected confirm must append NO event');
   offerDesktop(root, runId, { expect, now: T0, nonce: 'n1' });
-  confirmDesktop(root, runId, { expect, now: T0 + 1, nonce: 'n1' });                   // accepted
+  confirmDesktop(root, runId, { expect, now: T0 + 1, nonce: 'n1', platform: 'darwin' });                   // accepted
   const afterAccept = readState(root, runId).data.event_log_head;
   assert.equal(afterAccept.seq, 2, 'offer + confirm each append exactly one event');
 });
