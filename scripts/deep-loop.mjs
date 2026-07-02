@@ -102,8 +102,14 @@ const handlers = {
   'init-run': async (a) => {
     const f = parseFlags(a);
     const root = rootOf(f);
-    const { runId } = initRun(root, { goal: f.goal, protocol: f.protocol, recipe: f.recipe, detected: detectPlugins(root), review: f.review ? JSON.parse(f.review) : undefined });
-    json({ run_id: runId }); return 0;
+    const model = (f.model !== undefined && f.model !== true) ? String(f.model) : null;
+    const effort = (f.effort !== undefined && f.effort !== true) ? String(f.effort) : null;
+    try {
+      const { runId } = initRun(root, { goal: f.goal, protocol: f.protocol, recipe: f.recipe, detected: detectPlugins(root), review: f.review ? JSON.parse(f.review) : undefined, model, effort });
+      json({ run_id: runId }); return 0;
+    } catch (e) {
+      error(String(e?.message || e)); return 1;   // INVALID_MODEL / INVALID_EFFORT → exit 1 (fail-closed)
+    }
   },
   'next-action': async (a) => { const f = parseFlags(a); const root = rootOf(f); const { data } = readState(root, runIdOf(root, f)); json(nextAction(data, { now: parseNow(f) })); return 0; },
   tick: async (a) => { const f = parseFlags(a); const root = rootOf(f); const { data } = readState(root, runIdOf(root, f)); json({ mode: f.mode || 'advance', ...nextAction(data, { now: parseNow(f) }) }); return 0; },

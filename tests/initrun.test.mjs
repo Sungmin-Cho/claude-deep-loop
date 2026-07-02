@@ -49,3 +49,22 @@ test('C2: initRun review.reviewer routes on present (object shape)', () => {
   const r3 = initRun(mkdtempSync(join(tmpdir(), 'dl-c2-')), { goal: 'g', detected: { 'deep-review': { installed: true, initialized: false, present: true } }, now: new Date('2026-06-24T00:00:00Z') });
   assert.equal(r3.loop.review.reviewer, 'deep-review-loop');
 });
+
+test('initRun seeds autonomy.session_model/effort when provided (WS1)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-ir-'));
+  const { loop } = initRun(root, { goal: 'g', detected: {}, now: new Date('2026-07-02T00:00:00Z'), env: {}, platform: 'linux', run: () => ({ code: 1 }), model: 'claude-opus-4-8[1m]', effort: 'xhigh' });
+  assert.equal(loop.autonomy.session_model, 'claude-opus-4-8[1m]');
+  assert.equal(loop.autonomy.session_effort, 'xhigh');
+});
+
+test('initRun omits session_model/effort when not provided (backward compat)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-ir-'));
+  const { loop } = initRun(root, { goal: 'g', detected: {}, now: new Date('2026-07-02T00:00:00Z'), env: {}, platform: 'linux', run: () => ({ code: 1 }) });
+  assert.equal(loop.autonomy.session_model, undefined);
+  assert.equal(loop.autonomy.session_effort, undefined);
+});
+
+test('initRun rejects invalid effort (WS1)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-ir-'));
+  assert.throws(() => initRun(root, { goal: 'g', detected: {}, now: new Date('2026-07-02T00:00:00Z'), env: {}, platform: 'linux', run: () => ({ code: 1 }), effort: 'ultra' }), /INVALID_EFFORT/);
+});
