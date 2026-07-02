@@ -105,7 +105,7 @@ deep-suite 내에서 사용 시, deep-loop는 오케스트레이션 백본으로
 | iTerm2 | `TERM_PROGRAM=iTerm.app` + osascript 프로브 | 새 iTerm 창 |
 | Terminal.app | `TERM_PROGRAM=Apple_Terminal` + osascript 프로브 | 새 Terminal 창 |
 | Windows Terminal | `WT_SESSION` + `wt.exe` 프로브 | 새 WT 탭 |
-| desktop | (사용자 opt-in) Claude Desktop Code 탭 | 검증된 핸들러로 `claude://code/new` 딥링크 오픈 (반자동: 폴더 확인 + Enter) |
+| desktop | (사용자 opt-in) Claude Desktop Code 탭 | 검증된 핸들러로 `claude://code/new` 딥링크 오픈 (반자동: 폴더 확인 + Enter). **현재 macOS 전용**; Windows는 구현되어 있으나 실제 Claude Desktop 서명자 thumbprint가 pin되기 전까지 fail-closed(그때까지 Windows에서는 제안 자체를 하지 않음). |
 
 스폰은 **attended 전용**: 부모 세션이 인터랙티브하게 시작된 경우만 (`--attended` 플래그). 부모가 headless(`DEEP_LOOP_UNATTENDED=1`, `spawn_style='headless'`, 또는 headless 진입점 감지)이면 가시적 스폰을 우회하고 headless 경로를 사용합니다.
 

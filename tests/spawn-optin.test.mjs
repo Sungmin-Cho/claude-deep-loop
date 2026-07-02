@@ -397,7 +397,7 @@ test('resetDesktop wrong owner/generation while paused+releasing still throws LE
 // safe only because it additionally gates on status==='paused'. Without these guards a stale former owner
 // whose generation is still recorded could mutate spawn_style after `lease release` (state==='released') or
 // after the run settled (completed/stopped). Helper seeds a desktop run with a custom status/lease.state.
-function seedDesktopWith({ status = 'running', leaseState = 'active' } = {}) {
+function seedDesktopWith({ status = 'running', leaseState = 'active', handoffPhase = 'idle' } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'dl-spawn-optin-reset-'));
   const runId = OWNER;
   mkdirSync(runDir(root, runId), { recursive: true });
@@ -406,7 +406,7 @@ function seedDesktopWith({ status = 'running', leaseState = 'active' } = {}) {
     autonomy: { tier: 'recommend', spawn_style: 'desktop' },
     session_chain: {
       lease: {
-        owner_run_id: OWNER, generation: GEN, state: leaseState, handoff_phase: 'idle',
+        owner_run_id: OWNER, generation: GEN, state: leaseState, handoff_phase: handoffPhase,
         handoff_idempotency_key: null, handoff_child_run_id: null, expires_at: null,
       },
       sessions: [{ run_id: OWNER, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: null }],
@@ -445,6 +445,29 @@ test('resetDesktop on a healthy running+active desktop run still succeeds (guard
   const r = resetDesktop(root, runId, { expect, now: T0 });
   assert.equal(r.ok, true);
   assert.equal(readState(root, runId).data.autonomy.spawn_style, 'visible');
+});
+
+// Round-11 review fix (codex adversarial [high]): a HEALTHY in-flight handoff is status='running' +
+// lease.state='releasing' + handoff_phase='emitted' (emitHandoff refuses to emit on a paused run, so this
+// is NOT the paused+releasing escape hatch). resetDesktop must NOT flip spawn_style in that window — doing
+// so mid-handoff could strand the emitted handoff unpaused with no child acquired. Rejected as
+// HANDOFF_IN_FLIGHT (exit-1 semantics), no mutation. The paused+releasing escape hatch (tested above) and
+// the running+active healthy downgrade (tested above) are BOTH still allowed — this fences out only the
+// running+releasing shape.
+test('resetDesktop during a healthy in-flight handoff (running+releasing+emitted) is rejected (HANDOFF_IN_FLIGHT) — no mutation', () => {
+  const { root, runId, expect } = seedDesktopWith({ status: 'running', leaseState: 'releasing', handoffPhase: 'emitted' });
+  const r = resetDesktop(root, runId, { expect, now: T0 });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'HANDOFF_IN_FLIGHT');
+  assert.equal(readState(root, runId).data.autonomy.spawn_style, 'desktop', 'must not flip spawn_style mid-handoff');
+});
+
+test('resetDesktop during a running+releasing+spawned handoff is also rejected (HANDOFF_IN_FLIGHT)', () => {
+  const { root, runId, expect } = seedDesktopWith({ status: 'running', leaseState: 'releasing', handoffPhase: 'spawned' });
+  const r = resetDesktop(root, runId, { expect, now: T0 });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'HANDOFF_IN_FLIGHT');
+  assert.equal(readState(root, runId).data.autonomy.spawn_style, 'desktop', 'must not flip spawn_style mid-handoff');
 });
 
 // ── CLI: spawn-style probe-desktop ────────────────────────────────────────────
@@ -549,6 +572,17 @@ test('CLI spawn-style reset-desktop on a COMPLETED (terminal) run exits 1 (RUN_T
   } catch (e) { code = e.status; }
   assert.equal(code, 1);
   assert.equal(readState(root, runId).data.autonomy.spawn_style, 'desktop', 'a terminal-run reset must not mutate spawn_style');
+});
+
+test('CLI spawn-style reset-desktop during a healthy in-flight handoff (running+releasing) exits 1 (HANDOFF_IN_FLIGHT) — no mutation', () => {
+  const { root, runId, expect } = seedDesktopWith({ status: 'running', leaseState: 'releasing', handoffPhase: 'emitted' });
+  withCurrentPointer(root, runId);
+  let code = 0;
+  try {
+    execFileSync('node', [CLI, 'spawn-style', 'reset-desktop', '--owner', expect.owner, '--generation', String(expect.generation), '--project-root', root], { encoding: 'utf8' });
+  } catch (e) { code = e.status; }
+  assert.equal(code, 1);
+  assert.equal(readState(root, runId).data.autonomy.spawn_style, 'desktop', 'reset during an in-flight handoff must not mutate spawn_style');
 });
 
 // ── CLI: spawn-style offer-desktop | confirm-desktop | decline-desktop ───────

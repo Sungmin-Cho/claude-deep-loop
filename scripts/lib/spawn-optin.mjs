@@ -177,6 +177,16 @@ export function resetDesktop(root, runId, { expect, now = Date.now() } = {}) {
         if (lease.generation !== expect.generation) throw new Error('LEASE_FENCED: generation-mismatch');
         if (lease.state === 'released') throw new Error('LEASE_FENCED: lease-released');
         if (l.status === 'completed' || l.status === 'stopped') throw new Error('RUN_TERMINAL: resetDesktop');
+        // Round-11 review fix (codex adversarial [high]): lease.state==='releasing' has TWO shapes and only
+        // one is a legitimate reset target. emitHandoff (handoff.mjs:301) refuses to emit on a paused run, so
+        // a HEALTHY in-flight handoff is status='running' + releasing + handoff_phase='emitted'|'spawned'
+        // (child reserved, about to acquire) — NOT stuck. The escape hatch this op exists to repair is the
+        // preservePause shape: status='paused' + releasing (child never acquired). Allowing reset on the
+        // running+releasing window would flip spawn_style mid-handoff and could strand the emitted handoff
+        // unpaused with no child. Gate on status: releasing is resettable ONLY when paused (the stuck state);
+        // reject running+releasing. The healthy non-handoff downgrade (running + lease.state='active') is
+        // unaffected — it never enters this branch.
+        if (lease.state === 'releasing' && l.status !== 'paused') throw new Error('HANDOFF_IN_FLIGHT: resetDesktop');
         const cur = l.autonomy?.spawn_style;
         if (cur !== 'desktop') throw new Error('SOURCE_INVALID: resetDesktop');
       });
@@ -184,6 +194,7 @@ export function resetDesktop(root, runId, { expect, now = Date.now() } = {}) {
     const msg = String(e?.message || e);
     if (/^SOURCE_INVALID:/.test(msg)) return { ok: false, reason: 'SOURCE_INVALID' };
     if (/^RUN_TERMINAL:/.test(msg)) return { ok: false, reason: 'RUN_TERMINAL' };   // terminal run — settled; exit 1 (LEASE_FENCED still propagates → exit 3)
+    if (/^HANDOFF_IN_FLIGHT:/.test(msg)) return { ok: false, reason: 'HANDOFF_IN_FLIGHT' };   // healthy in-flight handoff (running+releasing); exit 1
     throw e;
   }
   return { ok: true };
