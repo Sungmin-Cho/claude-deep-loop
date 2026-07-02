@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { readState, writeState } from '../scripts/lib/state.mjs';
+import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
+import { readFileSync } from 'node:fs';
 import { reserveHandoff } from '../scripts/lib/lease.mjs';
 import { EFFORT_LEVELS, validateEffort, validateModel, setSessionProfile } from '../scripts/lib/session-profile.mjs';
 
@@ -100,4 +101,26 @@ test('CLI session-profile set: exit codes', () => {
   assert.equal(r.status, 3);
   r = cli(root, ['session-profile', 'bogus', '--owner', runId, '--generation', '1']);
   assert.equal(r.status, 2);
+});
+
+test('setSessionProfile partial-update event omits the absent field (no null clear)', () => {
+  const { root, runId } = seed();
+  setSessionProfile(root, runId, { model: 'opus', effort: 'high', expect: expect_(runId), now: 1 });
+  setSessionProfile(root, runId, { effort: 'low', expect: expect_(runId), now: 2 }); // model omitted
+  const lines = readFileSync(join(runDir(root, runId), 'event-log.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  const evts = lines.filter((e) => e.type === 'session-profile-set');
+  const last = evts[evts.length - 1];
+  assert.equal(last.data.effort, 'low');
+  assert.ok(!('model' in last.data), 'partial update event must NOT record an omitted model field');
+});
+
+test('CLI rejects value-less --model/--effort as usage (exit 2)', () => {
+  const { root, runId } = seed();
+  // `--model --effort high`: parseFlags consumes --effort as --model's (missing) value → f.model===true
+  let r = cli(root, ['session-profile', 'set', '--model', '--effort', 'high', '--owner', runId, '--generation', '1']);
+  assert.equal(r.status, 2, 'value-less --model → usage exit 2');
+  // state untouched (no silent partial write)
+  assert.equal(readState(root, runId).data.autonomy.session_effort, undefined);
+  r = cli(root, ['init-run', '--goal', 'g', '--model']);
+  assert.equal(r.status, 2, 'value-less --model on init-run → usage exit 2');
 });

@@ -47,7 +47,9 @@ export function setSessionProfile(root, runId, { model, effort, expect, now = Da
   });
   if (!needsWrite) return { ok: true, changed: false };
 
-  appendAnchored(root, runId, { type: 'session-profile-set', data: { model: model ?? null, effort: effort ?? null } },
+  // Event data records ONLY the fields actually being set (a partial update must not log an omitted
+  // field as null — replay/audit consumers would misread that as a clear).
+  appendAnchored(root, runId, { type: 'session-profile-set', data: { ...(model != null ? { model } : {}), ...(effort != null ? { effort } : {}) } },
     (l) => {
       if (model != null) l.autonomy.session_model = model;
       if (effort != null) l.autonomy.session_effort = effort;

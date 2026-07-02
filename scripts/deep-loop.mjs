@@ -102,8 +102,9 @@ const handlers = {
   'init-run': async (a) => {
     const f = parseFlags(a);
     const root = rootOf(f);
-    const model = (f.model !== undefined && f.model !== true) ? String(f.model) : null;
-    const effort = (f.effort !== undefined && f.effort !== true) ? String(f.effort) : null;
+    if (f.model === true || f.effort === true) { error('USAGE: --model/--effort require a value'); return 2; }
+    const model = f.model !== undefined ? String(f.model) : null;
+    const effort = f.effort !== undefined ? String(f.effort) : null;
     try {
       const { runId } = initRun(root, { goal: f.goal, protocol: f.protocol, recipe: f.recipe, detected: detectPlugins(root), review: f.review ? JSON.parse(f.review) : undefined, model, effort });
       json({ run_id: runId }); return 0;
@@ -445,10 +446,13 @@ const handlers = {
     const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
     if (verb !== 'set') { error(`unknown session-profile verb: ${verb}`); return 2; }
     if (!runId) { error('MISSING_RUN_ID'); return 2; }
+    // A value-less --model/--effort (parseFlags → true) is a malformed invocation, NOT an omission —
+    // reject as usage (exit 2) so it can never silently drop the field while writing the other.
+    if (f.model === true || f.effort === true) { error('USAGE: --model/--effort require a value'); return 2; }
     requireLease(root, runId, f, 'lease');   // releasing-safe outer fence (exit 3)
     const expect = { owner: f.owner, generation: intArg(f, 'generation') };
-    const model = (f.model !== undefined && f.model !== true) ? String(f.model) : undefined;
-    const effort = (f.effort !== undefined && f.effort !== true) ? String(f.effort) : undefined;
+    const model = f.model !== undefined ? String(f.model) : undefined;
+    const effort = f.effort !== undefined ? String(f.effort) : undefined;
     if (model === undefined && effort === undefined) { error('NOTHING_TO_SET'); return 2; }
     try {
       const r = setSessionProfile(root, runId, { model, effort, expect, now: parseNow(f) });
