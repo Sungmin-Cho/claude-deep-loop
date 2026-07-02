@@ -24,6 +24,19 @@ function escApple(s) { return String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\
 // PowerShell single-quote escaping: ' → '' (doubling).
 function psq(s) { return String(s).replace(/'/g, "''"); }
 
+// WS1: child --model/--effort flags. Values are already validated (session-profile/init boundary) or null.
+// Omit when null (pre-WS1 runs / unresolved observation) → identical to prior behavior.
+function meArgv(model, effort) {
+  const a = [];
+  if (model) a.push('--model', model);
+  if (effort) a.push('--effort', effort);
+  return a;
+}
+// quote: a token-quoter returning the fully-quoted shell token (q for POSIX/cmux/osascript; PS uses '${psq(x)}').
+function meSh(quote, model, effort) {
+  return `${model ? ` --model ${quote(model)}` : ''}${effort ? ` --effort ${quote(effort)}` : ''}`;
+}
+
 const SAFE_ID = /^[A-Za-z0-9_-]+$/;
 const SAFE_HANDOFF_REL = /^handoffs\/[A-Za-z0-9._-]+$/;
 
@@ -44,7 +57,7 @@ const SAFE_HANDOFF_REL = /^handoffs\/[A-Za-z0-9._-]+$/;
  * Validates parentRunId, childRunId, and handoffRel to catch shell-injection
  * before any string is interpolated (UNSAFE_SPAWN_ARG guard).
  */
-export function buildLaunchCommand({ root, parentRunId, childRunId, handoffRel, launcher, launcherBin, launcherSocket, platform = process.platform, desktopTarget = null, exists = existsSync }) {
+export function buildLaunchCommand({ root, parentRunId, childRunId, handoffRel, launcher, launcherBin, launcherSocket, platform = process.platform, desktopTarget = null, exists = existsSync, model = null, effort = null }) {
   // Defensive validation: run ids are ULIDs in production, but defense-in-depth catches injection.
   if (!SAFE_ID.test(String(parentRunId))) {
     throw Object.assign(new Error(`UNSAFE_SPAWN_ARG: parentRunId=${parentRunId}`), { code: 'UNSAFE_SPAWN_ARG' });
@@ -105,7 +118,7 @@ export function buildLaunchCommand({ root, parentRunId, childRunId, handoffRel, 
   // ── cmux ──────────────────────────────────────────────────────────────────
   // --command carries a shell fragment run by cmux; only dynamic args are q()-quoted.
   // root is passed as --cwd (separate argv element, no shell involved).
-  const cmuxCmdStr = `claude -n ${q(inner)} ${q(resumePrompt)}`;
+  const cmuxCmdStr = `claude -n ${q(inner)} ${q(resumePrompt)}${meSh(q, model, effort)}`;
   const cmuxArgv = launcherSocket
     ? ['--socket', launcherSocket, 'new-workspace', '--cwd', root, '--command', cmuxCmdStr, '--focus', 'true']
     : ['new-workspace', '--cwd', root, '--command', cmuxCmdStr, '--focus', 'true'];
@@ -114,7 +127,7 @@ export function buildLaunchCommand({ root, parentRunId, childRunId, handoffRel, 
   // ── osascript inner shell command ──────────────────────────────────────────
   // q(root) makes the cd argument safe for any POSIX path; escApple escapes "
   // so the shell command can be embedded in an AppleScript double-quoted string.
-  const innerSh = `cd ${q(root)} && claude -n ${inner} "${resumePrompt}"`;
+  const innerSh = `cd ${q(root)} && claude -n ${inner} "${resumePrompt}"${meSh(q, model, effort)}`;
 
   // ── iterm2 ────────────────────────────────────────────────────────────────
   const iterm2Script = `tell application "iTerm" to create window with default profile command "${escApple(innerSh)}"`;
@@ -130,7 +143,7 @@ export function buildLaunchCommand({ root, parentRunId, childRunId, handoffRel, 
   // for launch-command.txt); respawn fails closed for a powershell mode with that entry.
   let powershellEntry;
   if (isTrustedPsBin(launcherBin)) {
-    const innerPS = `Set-Location -LiteralPath '${psq(root)}'; & claude -n '${psq(inner)}' '${psq(resumePrompt)}'`;
+    const innerPS = `Set-Location -LiteralPath '${psq(root)}'; & claude -n '${psq(inner)}' '${psq(resumePrompt)}'${meSh((x) => `'${psq(x)}'`, model, effort)}`;
     const b64 = Buffer.from(innerPS, 'utf16le').toString('base64');
     const psCmd = `Start-Process '${psq(launcherBin)}' -ArgumentList '-NoExit','-EncodedCommand','${b64}'`;
     // display is the HUMAN paste-fallback; use the PowerShell call operator `& '...'` so a Program Files
@@ -142,8 +155,8 @@ export function buildLaunchCommand({ root, parentRunId, childRunId, handoffRel, 
 
   // ── display strings ────────────────────────────────────────────────────────
   // launch-command.txt is copied by a human; q(root) prevents apostrophe/semicolon/newline injection.
-  const headlessDisplay = `cd ${q(root)} && claude -p "${resumePrompt}" --output-format json --permission-mode acceptEdits`;
-  const interactiveDisplay = `cd ${q(root)} && claude -n ${inner} "${resumePrompt}"`;
+  const headlessDisplay = `cd ${q(root)} && claude -p "${resumePrompt}"${meSh(q, model, effort)} --output-format json --permission-mode acceptEdits`;
+  const interactiveDisplay = `cd ${q(root)} && claude -n ${inner} "${resumePrompt}"${meSh(q, model, effort)}`;
   // Human-paste form: q() root, socket, and the whole --command value (a single shell word)
   // so a root/socket with space/apostrophe/semicolon/newline can't break or inject. (spec §5 / inv.8)
   const cmuxDisplay = `${effectiveBin}${launcherSocket ? ` --socket ${q(launcherSocket)}` : ''} new-workspace --cwd ${q(root)} --command ${q(cmuxCmdStr)} --focus true`;
@@ -166,14 +179,14 @@ export function buildLaunchCommand({ root, parentRunId, childRunId, handoffRel, 
     },
     wt: {
       bin: 'wt.exe',
-      argv: ['-d', root, 'claude', '-n', inner, resumePrompt],
-      display: `wt.exe -d ${q(root)} claude -n ${inner} "${resumePrompt}"`,
+      argv: ['-d', root, 'claude', '-n', inner, resumePrompt, ...meArgv(model, effort)],
+      display: `wt.exe -d ${q(root)} claude -n ${inner} "${resumePrompt}"${meSh(q, model, effort)}`,
     },
     powershell: powershellEntry,
     desktop: desktopEntry,
     headless: {
       bin: 'claude',
-      argv: ['-p', resumePrompt, '--output-format', 'json', '--permission-mode', 'acceptEdits'],
+      argv: ['-p', resumePrompt, ...meArgv(model, effort), '--output-format', 'json', '--permission-mode', 'acceptEdits'],
       cwd: root,
       display: headlessDisplay,
     },
@@ -192,6 +205,10 @@ function handoffMarkdown(loop, childRunId, reason) {
     `> source of truth: 이 파일 + loop.json. **이전 대화 컨텍스트를 가정하지 말라.**`, '',
     `## Goal`, '', loop.goal, '',
     `## Routing`, `- recipe: ${loop.recipe?.id}`, `- protocol: ${loop.routing?.protocol}`, `- reason for handoff: ${reason}`, '',
+    `## Session continuity`,
+    `- model: ${loop.autonomy?.session_model || '(미지정 — CLI 기본값)'}`,
+    `- effort: ${loop.autonomy?.session_effort || '(미지정 — CLI 기본값)'}`,
+    `> desktop transport는 URL로 model/effort를 전달할 수 없으니, desktop 재개 시 이 값으로 세션을 맞추세요.`, '',
     `## Episodes`, `- completed: ${doneEp}`, `- abandoned: ${abandonedEp}`, `- current: ${loop.current_episode || '(none)'}`, '',
     `## Workstreams`, wsLines, '',
     `## Triage`, `- actionable: ${(loop.triage?.actionable || []).length}, needs_human: ${(loop.triage?.needs_human || []).length}`, '',
@@ -262,14 +279,20 @@ export function emitHandoff(root, runId, {
     launcherBin: loop.session_spawn?.launcher_bin,
     launcherSocket: loop.session_spawn?.launcher_socket,
     platform, desktopTarget: dt && dt.ok ? dt.argvTarget : null,
+    model: loop.autonomy?.session_model ?? null, effort: loop.autonomy?.session_effort ?? null,
   });
   // desktop 라인은 여기서 구성(P4-2/P5): available이면 사람용 재개 지시(URL 없음), 아니면 마커.
   // 자동 auto-pop이 주 경로. 이 수동 fallback은 auto-pop readiness timeout 시 사람이 쓰며, releasing lease를
   // 인수하도록 이미 설계된 /deep-loop-resume 를 재사용한다(child 식별·releasing/paused fence를 resume이 처리 — P5).
   // raw claude:// deeplink는 절대 여기 쓰지 않는다 — URL은 cmds.desktop.argv(machine 전용)에만 존재한다.
-  const desktopLine = cmds.desktop.available
+  // WS1: desktop URL cannot carry --model/--effort (§4), so state the intended values on the desktop
+  // line for a human resuming via Claude Desktop (they set them with /model etc after resume).
+  const meNote = (loop.autonomy?.session_model || loop.autonomy?.session_effort)
+    ? ` [model=${loop.autonomy?.session_model || 'default'} effort=${loop.autonomy?.session_effort || 'default'}]`
+    : '';
+  const desktopLine = (cmds.desktop.available
     ? '# desktop: 새 Claude Desktop Code 탭을 열고 `/deep-loop-resume` 실행 (auto-pop 미개방 시 수동 재개)'
-    : '# desktop: unavailable (handler unverified)';
+    : '# desktop: unavailable (handler unverified)') + meNote;
   atomicWrite(join(termDir, 'launch-command.txt'), [
     `# interactive`, cmds.interactive.display, ``,
     `# headless`, cmds.headless.display, ``,
