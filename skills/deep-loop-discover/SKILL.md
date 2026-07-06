@@ -21,7 +21,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get
 node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" comprehension status
 ```
 
-comprehension debt(`debt_ratio`)가 임계치(보통 0.5)를 초과하면 새 fan-out 자제 — 사람 검토(`/deep-loop-ack`)를 먼저 요청한다.
+comprehension debt(`debt_ratio`)가 임계치(보통 0.5)를 초과하면 새 fan-out 자제 — 사람 검토(`/deep-loop-ack --actor human`)를 먼저 요청한다. 기계 리뷰(checker APPROVE)는 debt를 줄이지 않으므로 사람 ack만 새 fan-out을 해제한다.
 
 ## 단계 2: 스캔
 

@@ -1,8 +1,24 @@
+import { readFileSync, realpathSync } from 'node:fs';
+import { resolve, sep } from 'node:path';
 import { readState } from './state.mjs';
 import { appendAnchored } from './integrity.mjs';
 import { newEpisode } from './episode.mjs';
 import { leaseCheck } from './lease.mjs';
 import { pluginPresent } from './detect.mjs';
+import { containedRealFile } from './fs-safe.mjs';
+import { contentHash } from './envelope.mjs';
+import { MUTATION_TURN_FLOOR } from './budget.mjs';
+
+// impl-R2 Fix 4: a passing verdict's report must be BOUND to the reviewed workstream — its realpath must sit under
+// the workstream's worktree directory. This stops an unrelated stale file (README.md, another ws's report) from
+// being reused as fake evidence. `realReport` is already a realpath (via containedRealFile); worktree is realpath'd
+// too so a symlinked worktree can't be spoofed.
+function reportBoundToWorktree(root, realReport, worktreeRel) {
+  if (!realReport || typeof worktreeRel !== 'string' || !worktreeRel.length) return false;
+  let wt;
+  try { wt = realpathSync(resolve(root, worktreeRel)); } catch { return false; }
+  return realReport === wt || realReport.startsWith(wt + sep);
+}
 
 // 연속 REQUEST_CHANGES 임계 (breaker.mjs THRESHOLD 미러 — fail-stop latch).
 const BREAKER_THRESHOLD = 3;
@@ -114,7 +130,7 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
   return { checkerEpisodeId: id, reviewer, descriptor };
 }
 
-export function recordReviewOutcome(root, runId, { episodeId, workstreamId, point, verdict, source = 'deep-review-approve', fence } = {}) {
+export function recordReviewOutcome(root, runId, { episodeId, workstreamId, point, verdict, source = 'deep-review-approve', proof = {}, fence } = {}) {
   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: recordReviewOutcome');
   // Codex impl r10 🔴: the ENTIRE review outcome (checker terminal + breaker + review_points_done + comprehension)
   // must be ONE atomic appendAnchored transaction. A multi-lock version could half-commit if a handoff sets the
@@ -122,8 +138,19 @@ export function recordReviewOutcome(root, runId, { episodeId, workstreamId, poin
   // no repair path because the checker is now terminal). Single preCheck + single mutate = all-or-nothing.
   if (!['APPROVE', 'CONCERN', 'REQUEST_CHANGES'].includes(verdict)) throw new Error(`REVIEW_VERDICT_INVALID: ${verdict}`);
   const passed = verdict === 'APPROVE' || verdict === 'CONCERN';
+  // #2: a passing verdict (APPROVE/CONCERN) must be backed by a REAL review-report artifact contained under the
+  // project root — symmetric with the maker's done-needs-existing-artifacts contract (episode.mjs). realpath
+  // containment (fs-safe) blocks a root-relative symlink escaping the project. The report's content hash is
+  // recorded in the event so a completed run's "independent review passed" claim is auditable + tamper-evident.
+  // Inline `findings` is only auxiliary metadata (forgeable) — it can never stand in for the report. REQUEST_CHANGES
+  // stays lightweight (reject reason only; only the passing path opens finish proof).
+  const realReport = passed ? containedRealFile(resolve(root), proof.report) : null;
+  const reportHash = realReport ? contentHash(readFileSync(realReport, 'utf8')) : null;
+  const findings = (proof.findings != null && String(proof.findings).length) ? String(proof.findings).slice(0, 2000) : null;
   let result;
-  appendAnchored(root, runId, { type: 'review-outcome', data: { episodeId, verdict } },
+  appendAnchored(root, runId, { type: 'review-outcome', data: { episodeId, verdict,
+      ...(realReport ? { report: proof.report, report_sha256: reportHash } : {}),
+      ...(findings ? { findings } : {}) } },
     (loop) => {
       // mutate — all in-memory on the single locked loop, written once (atomic)
       const tgt = loop.episodes.find(e => e.id === episodeId);
@@ -145,15 +172,14 @@ export function recordReviewOutcome(root, runId, { episodeId, workstreamId, poin
         // FIX 1: only mark review_points_done when the passing checker is bound to a maker (unbound checkers reviewed no maker).
         const ws = loop.workstreams.find(w => w.id === wsId);
         if (ws && tgt.target_maker && !ws.review_points_done.includes(pt)) ws.review_points_done.push(pt);
-        // FIX 3: comprehension — honor require_human_ack and only mark the bound maker.
-        const requireHumanAck = loop.review?.require_human_ack === true;
-        if (!requireHumanAck) {
-          // Only the maker bound to this checker counts; unbound checker marks nothing.
-          const target = loop.episodes.find(e => e.id === tgt.target_maker);
-          if (target && target.role === 'maker' && !target.human_reviewed) {
-            target.human_reviewed = true;
-            loop.comprehension.episodes_human_reviewed = (loop.comprehension.episodes_human_reviewed || 0) + 1;
-          }
+        // FIX(#1): a machine review (checker APPROVE/CONCERN) accrues to the AGENT comprehension counter only —
+        // it must NEVER mark the maker human_reviewed nor lower comprehension debt (computeDebt reads only
+        // episodes_human_reviewed). The old require_human_ack gate is removed: no config lets a machine review
+        // grant human credit — only /deep-loop-ack --actor human --confirm releases the human gate.
+        const target = loop.episodes.find(e => e.id === tgt.target_maker);
+        if (target && target.role === 'maker' && !target.human_reviewed && !target.agent_reviewed) {
+          target.agent_reviewed = true;
+          loop.comprehension.episodes_agent_reviewed = (loop.comprehension.episodes_agent_reviewed || 0) + 1;
         }
       }
       result = { verdict, passed, terminal: tgt.status };
@@ -170,8 +196,15 @@ export function recordReviewOutcome(root, runId, { episodeId, workstreamId, poin
       if (!tgt.target_maker) throw new Error('REVIEW_UNBOUND_CHECKER: cannot record a verdict on a checker bound to no maker: ' + episodeId);
       const REVIEW_TERMINAL = ['done', 'approved', 'rejected', 'abandoned'];
       if (REVIEW_TERMINAL.includes(tgt.status)) throw new Error('REVIEW_ALREADY_RECORDED: ' + episodeId);
-      if (!loop.workstreams.find(w => w.id === tgt.workstream_id)) throw new Error(`WORKSTREAM_NOT_FOUND: ${tgt.workstream_id}`);
-    });
+      const wsForReport = loop.workstreams.find(w => w.id === tgt.workstream_id);
+      if (!wsForReport) throw new Error(`WORKSTREAM_NOT_FOUND: ${tgt.workstream_id}`);
+      // #2 + impl-R2 Fix 4 evidence gate — LAST (so fence/checker/terminal errors still fire first). A passing
+      // verdict needs a real report BOUND to THIS review: an existing file whose realpath sits under the reviewed
+      // workstream's worktree (an unrelated file like README.md at root is refused). Kernel-authoritative (CLI-bypass safe).
+      if (passed && !reportBoundToWorktree(root, realReport, wsForReport.worktree)) {
+        throw new Error('REVIEW_NO_EVIDENCE: passing verdict requires proof.report — a real file under the reviewed workstream worktree');
+      }
+    }, { floor: MUTATION_TURN_FLOOR });
   // REQUEST_CHANGES → checker='rejected'. nextAction returns fix_episode and Execution creates the fix maker.
   return result;
 }

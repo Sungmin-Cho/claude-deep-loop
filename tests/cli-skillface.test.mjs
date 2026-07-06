@@ -255,3 +255,10 @@ test('A1: state patch with no run → MISSING_RUN_ID, exit 2', () => {
   assert.equal(r.code, 2);
   assert.match(r.err, /MISSING_RUN_ID/);
 });
+
+// #4: finish --status stopped is a human-only bypass — the CLI fast-fails (exit 2) without --confirm,
+// mirroring abandon/recover/breaker-reset. completed is unaffected.
+test('finish --status stopped without --confirm exits 2 (#4)', () => {
+  const { root, runId } = seed();
+  assert.equal(runFail(root, ['finish', '--status', 'stopped', '--proof', '{"human_reason":"x"}', '--owner', runId, '--generation', '1']), 2);
+});

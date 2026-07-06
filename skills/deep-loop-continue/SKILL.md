@@ -104,9 +104,9 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" episode record --id <episode_
 node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" review dispatch --point <review_point> --workstream <workstream_id> --owner <run_id> --generation <n>
 ```
 
-checker 스킬 invoke 후 verdict 기록:
+checker 스킬 invoke 후 verdict 기록. **APPROVE/CONCERN(통과)은 checker가 실제로 작성한 리뷰 리포트 파일을 `--report`로 첨부해야 한다 — 리뷰 대상 workstream의 worktree(`.claude/worktrees/<slug>/…`) 하위 경로**여야 하며(무관한 root 파일 재사용 차단), 없거나 밖이면 `REVIEW_NO_EVIDENCE`(exit 1). REQUEST_CHANGES는 `--report` 없이 통과(경량 reject 경로):
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" review record --episode <checker_episode_id> --workstream <workstream_id> --point <review_point> --verdict <APPROVE|REQUEST_CHANGES|CONCERN> --owner <run_id> --generation <n>
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" review record --episode <checker_episode_id> --workstream <workstream_id> --point <review_point> --verdict <APPROVE|REQUEST_CHANGES|CONCERN> --report <review-report-path> --owner <run_id> --generation <n>
 ```
 
 ### fix_episode
@@ -136,6 +136,8 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" budget record --turns <n> --o
 ```
 
 **`DEEP_LOOP_UNATTENDED` set 시 자기보고를 생략** — drive-headless 드라이버가 측정 usage를 권위있게 기록하므로 이중계상 방지.
+
+self-report는 best-effort 보정일 뿐이다 — 커널이 각 business mutation마다 최소 floor(1 turn)를 자동 계상하므로 미보고여도 예산·per_session_turn_cap이 mutation 수에 비례해 진행하고, `max_wallclock_sec`가 self-report 무관 hard bound다. 명시 `budget record`는 그 tick의 floor를 대체한다(max 규칙, 이중계상 없음).
 
 ## 4. Decide (마일스톤 / Turn Cap)
 

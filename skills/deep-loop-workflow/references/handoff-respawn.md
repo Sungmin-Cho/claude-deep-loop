@@ -141,6 +141,8 @@ respawn이 내부적으로 평가하는 순서:
 
 **Interactive tick**은 best-effort로 `budget record --turns <n> --owner <run_id> --generation <n>` 자기보고. `DEEP_LOOP_UNATTENDED` set 시 자기보고를 생략한다 — drive-headless가 측정 usage를 권위있게 기록하므로 이중계상 방지.
 
+**커널 경계 자동 floor (#3)**: self-report와 무관하게, 커널은 각 business mutation(`episode new/record/abandon`·`review record`·`workstream new/set/terminal`·`state patch`·`comprehension ack`·`finish`)마다 최소 1 turn을 `appendAnchored`로 **자동 계상**한다(생략 불가). 명시 `budget record`는 그 tick의 floor를 **대체**한다(max 규칙 — 보고값과 floor 합 중 큰 값, 합산 아님). 따라서 self-report는 best-effort 보정일 뿐이고, **`max_wallclock_sec`(default 86400s)이 self-report와 무관한 authoritative hard bound**다. 예산 시맨틱 = best-effort self-report + 커널 자동 floor + wallclock hard bound.
+
 ## Resume 흐름
 
 새 세션 시작 시 `/deep-loop-resume`:

@@ -212,7 +212,12 @@ const handlers = {
       const workstream = reqStr(f, 'workstream'); if (!workstream) { error('MISSING_WORKSTREAM'); return 2; }
       const point = reqStr(f, 'point'); if (!point) { error('MISSING_POINT'); return 2; }
       const verdict = reqStr(f, 'verdict'); if (!verdict) { error('MISSING_VERDICT'); return 2; }
-      json(recordReviewOutcome(root, runId, { episodeId: episode, workstreamId: workstream, point, verdict, source: f.source || 'deep-review-approve', fence })); return 0;
+      // --report (required for a passing verdict) / --findings (optional aux). The CLI does NOT pre-gate by
+      // verdict — the lib decides (CLI-bypass safe); a missing report on APPROVE/CONCERN surfaces REVIEW_NO_EVIDENCE.
+      const report = f.report && f.report !== true ? String(f.report) : undefined;
+      const findings = f.findings && f.findings !== true ? String(f.findings) : undefined;
+      try { json(recordReviewOutcome(root, runId, { episodeId: episode, workstreamId: workstream, point, verdict, source: f.source || 'deep-review-approve', proof: { report, findings }, fence })); return 0; }
+      catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }   // REVIEW_NO_EVIDENCE → exit 1
     }
     error(`unknown review verb: ${verb}`); return 2;
   },
@@ -377,9 +382,21 @@ const handlers = {
     if (verb === 'ack') {
       requireLease(root, runId, f);   // fence 인자 → exit 3
       const episode = reqStr(f, 'episode'); if (!episode) { error('MISSING_EPISODE'); return 2; }   // Codex r1 sf-6
+      if (f.actor === true) { error('USAGE: --actor requires a value (human|agent)'); return 2; }   // value-less 거부
+      const actor = f.actor !== undefined ? String(f.actor) : 'agent';
+      if (!['human', 'agent'].includes(actor)) { error('INVALID_ACTOR: --actor must be human|agent'); return 2; }
+      const confirm = f.confirm === true || f.confirm === 'true';
+      // Fast-fail UX + defense-in-depth. The authoritative guard is in ack() itself (CLI-bypass safe).
+      if (actor === 'human' && !confirm) { error('CONFIRM_REQUIRED: human ack requires --confirm (human-only)'); return 2; }
       const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'business' };
-      try { ackComprehension(root, runId, episode, { fence }); }
+      let r;
+      try { r = ackComprehension(root, runId, episode, { actor, confirm, env: process.env, fence }); }
       catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }   // EPISODE_NOT_FOUND → exit 1
+      if (r && r.ok === false && r.rejected) {
+        // headless-human fail-closed (the ack-rejected event is already appended). Surface as usage error.
+        error(`ACK_REJECTED: ${r.reason}`);
+        const { data } = readState(root, runId); json({ ok: false, ...computeDebt(data) }); return 2;
+      }
       const { data } = readState(root, runId); json({ ok: true, ...computeDebt(data) }); return 0;
     }
     error(`unknown comprehension verb: ${verb}`); return 2;
@@ -494,10 +511,14 @@ const handlers = {
     requireLease(root, runId, f);   // fence 인자 → exit 3
     const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'business' };
     const status = reqStr(f, 'status'); if (!status) { error('MISSING_STATUS'); return 2; }   // Codex r1 sf-6
+    const confirm = f.confirm === true || f.confirm === 'true';
+    // #4: stopped is a human-only bypass of completed-proof — mirror the abandon/recover/breaker-reset fast-fail
+    // (exit 2). Authoritative guard is in finishRun (CLI-bypass safe); completed is unaffected.
+    if (status === 'stopped' && !confirm) { error('CONFIRM_REQUIRED: stopped requires --confirm (human-only)'); return 2; }
     const reportRel = f.report && f.report !== true ? String(f.report) : undefined;
     if (reportRel && (reportRel.startsWith('/') || reportRel.split('/').includes('..'))) { error('FINISH_REPORT_PATH_UNSAFE'); return 1; }
     let proof; try { proof = f.proof ? JSON.parse(f.proof) : {}; } catch { error('INVALID_PROOF: must be JSON'); return 1; }   // 무효 값 → exit 1
-    try { const r = finishRun(root, runId, { status, reportRel, proof, fence, now: parseNow(f) }); json(r); return 0; }
+    try { const r = finishRun(root, runId, { status, reportRel, proof, confirm, fence, now: parseNow(f) }); json(r); return 0; }
     catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }   // FINISH_STATUS_INVALID/PROOF_UNMET → exit 1
   },
 };

@@ -1,6 +1,10 @@
-import { appendAnchored, recomputeSpent, verifyLog, verifyHead, validCost } from './integrity.mjs';
-import { readState, withLock } from './state.mjs';
+import { appendEvent, lastLogHead, readLines, recomputeSpent, verifyLog, verifyHead, validCost } from './integrity.mjs';
+import { readState, writeState, withLock } from './state.mjs';
 import { leaseCheck } from './lease.mjs';
+
+// #3: re-exported from integrity.mjs (the floor mechanism's home) so call sites/tests can import it from budget.mjs
+// while state.mjs imports it directly from integrity.mjs (no state↔budget cycle).
+export { MUTATION_TURN_FLOOR } from './integrity.mjs';
 
 export function checkBudget(loop, { now = Date.now(), sessionStart, measurable = true } = {}) {
   const b = loop.budget;
@@ -20,19 +24,45 @@ export function checkBudget(loop, { now = Date.now(), sessionStart, measurable =
   return { ok: true, reason: 'ok', tier_after: loop.autonomy.tier };
 }
 
-// cost 이벤트 기록 — anchored append 단일 경로 사용 (append + event_log_head 앵커 + budget.spent를 한 lock 안에서)
+// #3 max-rule: the auto-floor turns/tokens accrued since the last EXPLICIT cost event (i.e. the current "tick").
+// An explicit `budget record` ABSORBS this floor rather than stacking on top of it — the tick's contribution is
+// max(reported, floor-sum), not the sum. A non-floor (explicit) cost resets the running tick.
+// impl-R1 Fix 1: scoped to a SINGLE session (owner+generation). Only floors tagged with THIS session are absorbable;
+// a prior session's floors are confirmed consumption and are skipped (never swallowed by a later report). An
+// explicit cost of the SAME session closes its tick.
+function trailingFloor(lines, owner, generation) {
+  let tf = 0, tk = 0;
+  for (const e of lines) {
+    if (e.type !== 'cost') continue;
+    if (e.data?.owner !== owner || e.data?.generation !== generation) continue;   // different session → not ours to absorb
+    if (e.data?.auto_floor) { tf += e.data.turns || 0; tk += e.data.tokens || 0; }
+    else { tf = 0; tk = 0; }   // this session's explicit cost ends its tick
+  }
+  return { tf, tk };
+}
+
+// Explicit cost report — its own withLock (needs to read the log to absorb the tick's floor before appending an
+// ADJUSTED cost). Mirrors appendAnchored's verify→append→anchor→reconcile sequence; recomputeSpent stays a PURE
+// sum so reconcileBudget agrees automatically. Negative/non-finite still rejected (validCost).
 export function recordCost(root, runId, { turns = 0, tokens = 0, fence } = {}) {
   if (!validCost({ turns, tokens })) throw new Error(`INVALID_COST: turns/tokens must be finite >= 0 (got ${turns}/${tokens})`);
-  return appendAnchored(root, runId, { type: 'cost', data: { turns, tokens } }, (loop, spent) => {
+  return withLock(root, runId, () => {
+    const { data: loop } = readState(root, runId);
+    if (fence) { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
+    const v = verifyLog(root, runId); if (!v.ok) throw new Error(`LOG_TAMPERED: ${v.errors.join('; ')}`);
+    const h = verifyHead(root, runId, loop.event_log_head); if (!h.ok) throw new Error(`LOG_TAMPERED: ${h.errors.join('; ')}`);
+    const lease = loop.session_chain?.lease || {};
+    const { tf, tk } = trailingFloor(readLines(root, runId), lease.owner_run_id, lease.generation);   // this session's tick floor only
+    const adjTurns = Math.max(0, turns - tf), adjTokens = Math.max(0, tokens - tk);   // tick contribution = max(reported, floor-sum)
+    appendEvent(root, runId, { type: 'cost', data: { turns: adjTurns, tokens: adjTokens, reported_turns: turns, reported_tokens: tokens, owner: lease.owner_run_id, generation: lease.generation } });
+    loop.event_log_head = lastLogHead(root, runId);
+    const spent = recomputeSpent(root, runId);   // pure sum = prior + floors + adjusted = prior-session floors + max(reported, this-session floors)
     loop.budget.spent = spent.turns;
     loop.budget.tokens_spent = spent.tokens;
-    // Codex r3 critical-1: per_session_turn_cap 마일스톤은 nextAction 이 lease owner 의 session.turns 로 판정한다
-    // (next-action.mjs:5-7,57-59). 같은 트랜잭션에서 현재 세션의 turns 를 이 호출의 delta 만큼 증가시켜야 cap 이 실제로 터진다.
-    const owner = loop.session_chain?.lease?.owner_run_id;
-    const sess = (loop.session_chain?.sessions || []).find(s => s.run_id === owner);
-    if (sess) sess.turns = (sess.turns || 0) + turns;
-  }, (loop) => {
-    if (fence) { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
+    // per_session_turn_cap 판정용 session.turns 도 max-rule을 따른다 — 이 tick 기여분 = tf(이미 floor로 반영) + adjTurns.
+    const sess = (loop.session_chain?.sessions || []).find(s => s.run_id === lease.owner_run_id);
+    if (sess) sess.turns = (sess.turns || 0) + adjTurns;
+    writeState(root, runId, loop);
   });
 }
 

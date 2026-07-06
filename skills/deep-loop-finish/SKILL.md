@@ -80,8 +80,10 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" finish --status completed --r
 
 ### stopped (사람 명시 중단)
 
+`stopped`는 completed proof(리뷰·workstream 터미널·리포트)를 **우회하는 일방 종료 경로**이므로 형제 human-only 조작(abandon/recover/breaker reset)과 동형으로 **`--confirm`이 필수**다(누락 시 `CONFIRM_REQUIRED`, exit 2). **autonomous/headless tick은 이 커맨드를 스스로 발행하지 않는다** — 사람이 명시적으로 중단을 승인할 때만 쓴다:
+
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" finish --status stopped --proof '{"human_reason":"사람이 명시적으로 중단 요청"}' --owner <run_id> --generation <n>
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" finish --status stopped --confirm --proof '{"human_reason":"사람이 명시적으로 중단 요청"}' --owner <run_id> --generation <n>
 ```
 
 ## 단계 4: Deep-memory 위임 (감지 시)

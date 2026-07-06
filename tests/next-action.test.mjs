@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildInitialLoop, initRun } from '../scripts/lib/initrun.mjs';
@@ -10,7 +10,7 @@ import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
 import { nextAction } from '../scripts/lib/next-action.mjs';
 import { finishProofState } from '../scripts/lib/finish.mjs';
-import { computeDebt } from '../scripts/lib/comprehension.mjs';
+import { computeDebt, ack } from '../scripts/lib/comprehension.mjs';
 
 function loop(over = {}) {
   const l = buildInitialLoop({ goal: 'g', protocol: 'deep-work', recipe: { id: 'r', name: 'r', reason: '' }, runId: 'R', now: new Date('2026-06-24T00:00:00Z') });
@@ -213,9 +213,9 @@ test('comprehension-debt blocks discover but not the fix flow', () => {
   assert.equal(nextAction(l, { now: 0 }).action.type, 'fix_episode');  // debt 무관
 });
 
-// Fix 4: after APPROVE, the bound maker episode is human_reviewed and debt not blocked.
-// Setup: maker must be 'done' so dispatchReview binds the checker to it (target_maker set).
-test('recordReviewOutcome(APPROVE) marks maker episodes human_reviewed, computeDebt not blocked', () => {
+// #1: after a machine APPROVE, the bound maker is AGENT-reviewed only (not human_reviewed); the comprehension
+// gate stays blocked until a real human ack releases it. Setup: maker 'done' so dispatchReview binds the checker.
+test('#1: recordReviewOutcome(APPROVE) marks the maker agent-reviewed; comprehension gate stays until human ack', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
   const { runId } = initRun(root, { goal: 'g', detected: { 'deep-review': true }, now: new Date('2026-06-24T00:00:00Z') });
   const f = { owner: runId, generation: 1, intent: 'business' };
@@ -226,13 +226,18 @@ test('recordReviewOutcome(APPROVE) marks maker episodes human_reviewed, computeD
   recordEpisode(root, runId, makerId, { status: 'done', artifacts: ['art.txt'], proof: {}, fence: f });
   // Dispatch and approve the review — checker is now bound to the done maker.
   const r = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
-  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'implementation', verdict: 'APPROVE', fence: f });
+  mkdirSync(join(root, '.claude/worktrees/w'), { recursive: true });
+  writeFileSync(join(root, '.claude/worktrees/w/review.md'), '# review report');   // #2+Fix4: report under the reviewed ws worktree
+  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'implementation', verdict: 'APPROVE', proof: { report: '.claude/worktrees/w/review.md' }, fence: f });
   const { data } = readState(root, runId);
-  // Maker episode should be marked human_reviewed
   const maker = data.episodes.find(e => e.role === 'maker' && e.point === 'implementation');
-  assert.ok(maker.human_reviewed, 'maker episode should be human_reviewed after APPROVE');
-  // computeDebt should not be blocked (episodes_human_reviewed == episodes_total)
-  assert.equal(computeDebt(data).blocked, false);
+  assert.ok(!maker.human_reviewed, 'machine review must NOT mark the maker human_reviewed');
+  assert.ok(maker.agent_reviewed, 'machine review marks the maker agent_reviewed');
+  // The human comprehension gate is still blocked (episodes_human_reviewed stays 0).
+  assert.equal(computeDebt(data).blocked, true, 'machine review alone must not release the human comprehension gate');
+  // A real human ack releases it.
+  ack(root, runId, makerId, { actor: 'human', confirm: true, env: {}, fence: f });
+  assert.equal(computeDebt(readState(root, runId).data).blocked, false);
 });
 
 // Codex r2 🔴4 / r5 🟡1: review.mjs+next-action.mjs 종단 — RC 후 debt(=1.0)에도 fix_episode 진입.

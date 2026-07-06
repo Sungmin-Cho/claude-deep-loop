@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
@@ -28,7 +28,9 @@ function buildSettledRun(root, runId, fence) {
   const ep = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws.id, expectedArtifacts: ['art.txt'], fence });
   recordEpisode(root, runId, ep.id, { status: 'done', artifacts: ['art.txt'], proof: {}, fence });   // artifacts 가 expected 를 커버
   const dr = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws.id, detected: {}, fence });
-  recordReviewOutcome(root, runId, { episodeId: dr.checkerEpisodeId, workstreamId: ws.id, point: 'implementation', verdict: 'APPROVE', fence });
+  mkdirSync(join(root, '.claude/worktrees/wt'), { recursive: true });
+  writeFileSync(join(root, '.claude/worktrees/wt/review.md'), '# review report');   // #2+Fix4: report under the reviewed ws worktree
+  recordReviewOutcome(root, runId, { episodeId: dr.checkerEpisodeId, workstreamId: ws.id, point: 'implementation', verdict: 'APPROVE', proof: { report: '.claude/worktrees/wt/review.md' }, fence });
   // 'ready' 는 review_points_done 커버리지만 검사(proof 는 객체이기만 하면 됨); recordWorkstreamTerminal 이 active 에서 제거.
   recordWorkstreamTerminal(root, runId, ws.id, { status: 'ready', proof: {}, fence });
   return ws.id;
@@ -215,10 +217,16 @@ test('finish completed succeeds with full proof + report', () => {
   assert.equal(r.status, 'completed');
 });
 
-test('finish stopped requires human_reason', () => {
+// #4: stopped is a human-only bypass of completed-proof — it now carries the sibling --confirm gate (abandon/
+// recover/breaker-reset) IN ADDITION to the human_reason string. completed is unaffected.
+test('finish stopped requires --confirm AND human_reason', () => {
   const { root, runId, fence } = seed();
-  assert.throws(() => finishRun(root, runId, { status: 'stopped', proof: {}, fence }), /human_reason|FINISH_PROOF_UNMET/);
-  const r = finishRun(root, runId, { status: 'stopped', proof: { human_reason: 'user asked' }, fence });
+  // missing --confirm → CONFIRM_REQUIRED even with a human_reason (an autonomous driver can no longer self-supply it)
+  assert.throws(() => finishRun(root, runId, { status: 'stopped', proof: { human_reason: 'user asked' }, fence }), /CONFIRM_REQUIRED/);
+  // confirm but no human_reason → FINISH_PROOF_UNMET
+  assert.throws(() => finishRun(root, runId, { status: 'stopped', proof: {}, confirm: true, fence }), /human_reason|FINISH_PROOF_UNMET/);
+  // confirm + human_reason → stopped
+  const r = finishRun(root, runId, { status: 'stopped', proof: { human_reason: 'user asked' }, confirm: true, fence });
   assert.equal(r.status, 'stopped');
 });
 
@@ -249,6 +257,17 @@ test('finish completed rejects runDir itself or a directory as the report', () =
   assert.throws(() => finishRun(root, runId, { status: 'completed', reportRel: 'handoffs', proof: {}, fence }), /final-report-missing|FINISH_PROOF_UNMET/);
 });
 
+// impl-R1 Fix 2: a runDir-relative SYMLINK whose target is OUTSIDE the project must be refused — realpath deref
+// containment (containedRealFile). resolve+startsWith+statSync(follow) would have accepted it.
+test('finish completed rejects a runDir-relative symlink escaping the project (realpath containment)', () => {
+  const { root, runId, fence } = seed();
+  buildSettledRun(root, runId, fence);
+  const outside = mkdtempSync(join(tmpdir(), 'dl-fin-outside-'));
+  writeFileSync(join(outside, 'report.md'), '# report outside the project');
+  symlinkSync(join(outside, 'report.md'), join(runDir(root, runId), 'final-report.md'));   // escaping symlink under runDir
+  assert.throws(() => finishRun(root, runId, { status: 'completed', reportRel: 'final-report.md', proof: {}, fence }), /final-report-missing|FINISH_PROOF_UNMET/);
+});
+
 // Regression: repro of real-world "009" stuck state — pending maker with zero expectedArtifacts
 // blocks finish until abandonEpisode settles it.
 test('repro: abandoning the orphan pending maker unblocks finish --status completed', () => {
@@ -259,7 +278,9 @@ test('repro: abandoning the orphan pending maker unblocks finish --status comple
   const good = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws.id, expectedArtifacts: ['art.txt'], fence });
   recordEpisode(root, runId, good.id, { status: 'done', artifacts: ['art.txt'], proof: {}, fence });
   const dr = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws.id, detected: {}, fence });
-  recordReviewOutcome(root, runId, { episodeId: dr.checkerEpisodeId, workstreamId: ws.id, point: 'implementation', verdict: 'APPROVE', fence });
+  mkdirSync(join(root, '.claude/worktrees/wt'), { recursive: true });
+  writeFileSync(join(root, '.claude/worktrees/wt/review.md'), '# review report');
+  recordReviewOutcome(root, runId, { episodeId: dr.checkerEpisodeId, workstreamId: ws.id, point: 'implementation', verdict: 'APPROVE', proof: { report: '.claude/worktrees/wt/review.md' }, fence });
   // Orphan: stranded pending maker with zero expectedArtifacts — isomorphic to repro episode 009.
   const orphan = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws.id, expectedArtifacts: [], fence });
   recordWorkstreamTerminal(root, runId, ws.id, { status: 'ready', proof: {}, fence });

@@ -67,7 +67,10 @@ test('workstream terminal (abandoned) + review record reach kernel via CLI', () 
   const maker = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'plan', '--point', 'plan', '--workstream', ws2.id, '--artifacts', '["plan-art.txt"]', '--owner', runId, '--generation', '1']));
   run(root, ['episode', 'record', '--id', maker.id, '--status', 'done', '--artifacts', '["plan-art.txt"]', '--owner', runId, '--generation', '1']);
   const disp = JSON.parse(run(root, ['review', 'dispatch', '--point', 'plan', '--workstream', ws2.id, '--owner', runId, '--generation', '1']));
-  run(root, ['review', 'record', '--episode', disp.checkerEpisodeId, '--workstream', ws2.id, '--point', 'plan', '--verdict', 'APPROVE', '--owner', runId, '--generation', '1']);
+  // #2+Fix4: a passing verdict via CLI must carry --report — a real file under the reviewed ws worktree (.claude/worktrees/w2).
+  mkdirSync(join(root, '.claude/worktrees/w2'), { recursive: true });
+  writeFileSync(join(root, '.claude/worktrees/w2/plan-review.md'), '# plan review');
+  run(root, ['review', 'record', '--episode', disp.checkerEpisodeId, '--workstream', ws2.id, '--point', 'plan', '--verdict', 'APPROVE', '--report', '.claude/worktrees/w2/plan-review.md', '--owner', runId, '--generation', '1']);
   assert.equal(readState(root, runId).data.episodes.find(e => e.id === disp.checkerEpisodeId).status, 'approved');
 });
 
