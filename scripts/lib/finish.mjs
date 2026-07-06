@@ -57,7 +57,7 @@ export function finishProofState(loop) {
   return { hasWork, settled, noActiveWs, allWsTerminal: wsAll, allMakersReviewed, reviewedProof, missing };
 }
 
-export function finishRun(root, runId, { status, reportRel, proof = {}, fence, now = Date.now() } = {}) {
+export function finishRun(root, runId, { status, reportRel, proof = {}, confirm, fence, now = Date.now() } = {}) {
   // Codex r3 sf-3: fence 는 lib 레벨에서 **필수** (CLI 우회 호출도 fence 강제). newEpisode/recordEpisode 와 동일 규약.
   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: finishRun');
   let result;
@@ -73,6 +73,10 @@ export function finishRun(root, runId, { status, reportRel, proof = {}, fence, n
       const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason);   // 무조건 (fence 필수)
       if (status !== 'completed' && status !== 'stopped') throw new Error(`FINISH_STATUS_INVALID: ${status}`);
       if (status === 'stopped') {
+        // #4: `stopped` bypasses every completed-proof (review/workstream-terminal/report). It is a human-only
+        // one-way termination, so it carries the same --confirm gate as the sibling human-only ops (abandon /
+        // recover / breaker reset) — enforced in the lib (CLI-bypass safe). human_reason stays a required reason.
+        if (confirm !== true) throw new Error('CONFIRM_REQUIRED: stopped requires --confirm (human-only)');
         if (!proof || !proof.human_reason) throw new Error('FINISH_PROOF_UNMET: stopped requires proof.human_reason');
         return;
       }

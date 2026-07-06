@@ -216,10 +216,16 @@ test('finish completed succeeds with full proof + report', () => {
   assert.equal(r.status, 'completed');
 });
 
-test('finish stopped requires human_reason', () => {
+// #4: stopped is a human-only bypass of completed-proof — it now carries the sibling --confirm gate (abandon/
+// recover/breaker-reset) IN ADDITION to the human_reason string. completed is unaffected.
+test('finish stopped requires --confirm AND human_reason', () => {
   const { root, runId, fence } = seed();
-  assert.throws(() => finishRun(root, runId, { status: 'stopped', proof: {}, fence }), /human_reason|FINISH_PROOF_UNMET/);
-  const r = finishRun(root, runId, { status: 'stopped', proof: { human_reason: 'user asked' }, fence });
+  // missing --confirm → CONFIRM_REQUIRED even with a human_reason (an autonomous driver can no longer self-supply it)
+  assert.throws(() => finishRun(root, runId, { status: 'stopped', proof: { human_reason: 'user asked' }, fence }), /CONFIRM_REQUIRED/);
+  // confirm but no human_reason → FINISH_PROOF_UNMET
+  assert.throws(() => finishRun(root, runId, { status: 'stopped', proof: {}, confirm: true, fence }), /human_reason|FINISH_PROOF_UNMET/);
+  // confirm + human_reason → stopped
+  const r = finishRun(root, runId, { status: 'stopped', proof: { human_reason: 'user asked' }, confirm: true, fence });
   assert.equal(r.status, 'stopped');
 });
 
