@@ -1,14 +1,26 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { readState, writeState } from '../scripts/lib/state.mjs';
+import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { newEpisode, recordEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
 import { resolveReviewer, dispatchReview, parseVerdict, recordReviewOutcome, unsatisfiedReviewPoints } from '../scripts/lib/review.mjs';
 import { releaseLease, acquireLease } from '../scripts/lib/lease.mjs';
+import { contentHash } from '../scripts/lib/envelope.mjs';
+
+function eventLog(root, runId) {
+  return readFileSync(join(runDir(root, runId), 'event-log.jsonl'), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l));
+}
+// A bound, pending checker ready to receive a verdict for (ws, point). Writes a distinct maker artifact.
+function boundChecker(root, runId, f, point) {
+  const ws = newWorkstream(root, runId, { title: point, branch: 'b-' + point, worktree: '.claude/worktrees/w-' + point, fence: f }).id;
+  doneMaker(root, runId, ws, point, f);
+  const r = dispatchReview(root, runId, { point, workstreamId: ws, detected: { 'deep-review': true }, fence: f });
+  return { ws, checkerId: r.checkerEpisodeId };
+}
 
 function seed(detected = { 'deep-review': true }) {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
@@ -81,7 +93,8 @@ test('recordReviewOutcome derives checker terminal + drives breaker/comprehensio
   const { id: planMakerId2 } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'plan', point: 'plan', workstream: ws, expectedArtifacts: ['plan2.txt'], fence: f });
   recordEpisode(root, runId, planMakerId2, { status: 'done', artifacts: ['plan2.txt'], proof: {}, fence: f });
   const r2 = dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
-  recordReviewOutcome(root, runId, { episodeId: r2.checkerEpisodeId, workstreamId: ws, point: 'plan', verdict: 'APPROVE', fence: f });
+  writeFileSync(join(root, 'plan-review.md'), '# plan review');
+  recordReviewOutcome(root, runId, { episodeId: r2.checkerEpisodeId, workstreamId: ws, point: 'plan', verdict: 'APPROVE', proof: { report: 'plan-review.md' }, fence: f });
   d = readState(root, runId).data;
   assert.equal(d.episodes.find(e => e.id === r2.checkerEpisodeId).status, 'approved');
   assert.equal(d.circuit_breaker.consecutive_request_changes, 0);
@@ -116,7 +129,8 @@ test('recordReviewOutcome derives workstream/point from checker episode, ignores
   // dispatch checker for ws-A / plan — checker is bound to planMakerId
   const r = dispatchReview(root, runId, { point: 'plan', workstreamId: wsA, detected: { 'deep-review': true }, fence: f });
   // call with MISMATCHED caller workstreamId + point — derives from checker episode, not caller
-  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: wsBogus, point: 'implementation', verdict: 'APPROVE', fence: f });
+  writeFileSync(join(root, 'a-review.md'), '# review');
+  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: wsBogus, point: 'implementation', verdict: 'APPROVE', proof: { report: 'a-review.md' }, fence: f });
   const d = readState(root, runId).data;
   // Real workstream (ws-A) gets 'plan' in review_points_done
   assert.ok(d.workstreams.find(w => w.id === wsA).review_points_done.includes('plan'), 'ws-A should have plan done');
@@ -133,7 +147,8 @@ test('recordReviewOutcome throws REVIEW_ALREADY_RECORDED on second call to same 
   const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: '.claude/worktrees/w', fence: f }).id;
   doneMaker(root, runId, ws, 'plan', f);
   const r = dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
-  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'plan', verdict: 'APPROVE', fence: f });
+  writeFileSync(join(root, 'plan-review.md'), '# plan review');
+  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'plan', verdict: 'APPROVE', proof: { report: 'plan-review.md' }, fence: f });
   const breakerBefore = readState(root, runId).data.circuit_breaker.consecutive_request_changes;
   assert.throws(
     () => recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'plan', verdict: 'REQUEST_CHANGES', fence: f }),
@@ -162,7 +177,8 @@ test('recordReviewOutcome twice → second throws EPISODE_ALREADY_TERMINAL, brea
   const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: '.claude/worktrees/w', fence: f }).id;
   doneMaker(root, runId, ws, 'plan', f);
   const r = dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
-  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'plan', verdict: 'APPROVE', fence: f });
+  writeFileSync(join(root, 'plan-review.md'), '# plan review');
+  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'plan', verdict: 'APPROVE', proof: { report: 'plan-review.md' }, fence: f });
   const breakerAfterFirst = readState(root, runId).data.circuit_breaker.consecutive_request_changes;
   // Second call with different verdict — must throw and not mutate breaker
   assert.throws(
@@ -264,7 +280,8 @@ test('recordReviewOutcome: require_human_ack=true → episodes_human_reviewed un
   const r = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
   const beforeReviewed = readState(root, runId).data.comprehension?.episodes_human_reviewed || 0;
   // approve with any source — must NOT increment comprehension when require_human_ack=true
-  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'implementation', verdict: 'APPROVE', source: 'deep-review-approve', fence: f });
+  writeFileSync(join(root, 'impl-review.md'), '# impl review');
+  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'implementation', verdict: 'APPROVE', source: 'deep-review-approve', proof: { report: 'impl-review.md' }, fence: f });
   const afterReviewed = readState(root, runId).data.comprehension?.episodes_human_reviewed || 0;
   assert.equal(afterReviewed, beforeReviewed, 'require_human_ack=true must not increment episodes_human_reviewed from review record');
 });
@@ -345,4 +362,80 @@ test('C2: resolveReviewer downgrades a configured deep-review reviewer when not 
   assert.equal(resolveReviewer(data, { 'deep-review': { present: true } }).reviewer, 'deep-review-loop');
   // installed-but-uninitialized (original Problem C) → present:true → stays deep-review-loop
   assert.equal(resolveReviewer(data, { 'deep-review': { installed: true, initialized: false, present: true } }).reviewer, 'deep-review-loop');
+});
+
+// ── #2: a passing verdict needs a REAL, project-root-contained review report (maker symmetry) ──
+
+// #2(a): APPROVE with no report → REVIEW_NO_EVIDENCE (checker can no longer rubber-stamp with zero evidence).
+test('#2(a): APPROVE without a report is refused (REVIEW_NO_EVIDENCE)', () => {
+  const { root, runId, fence } = freshRun();
+  const { ws, checkerId } = boundChecker(root, runId, fence, 'plan');
+  assert.throws(
+    () => recordReviewOutcome(root, runId, { episodeId: checkerId, workstreamId: ws, point: 'plan', verdict: 'APPROVE', proof: {}, fence }),
+    /REVIEW_NO_EVIDENCE/
+  );
+  // checker stays pending (atomic — no half-commit)
+  assert.equal(readState(root, runId).data.episodes.find(e => e.id === checkerId).status, 'pending');
+});
+
+// #2(b): inline findings alone (no durable report artifact) cannot satisfy a passing verdict — forgeable.
+test('#2(b): findings-only APPROVE is refused (forged findings cannot stand in for a report)', () => {
+  const { root, runId, fence } = freshRun();
+  const { ws, checkerId } = boundChecker(root, runId, fence, 'plan');
+  assert.throws(
+    () => recordReviewOutcome(root, runId, { episodeId: checkerId, workstreamId: ws, point: 'plan', verdict: 'APPROVE', proof: { findings: 'looks fine to me' }, fence }),
+    /REVIEW_NO_EVIDENCE/
+  );
+});
+
+// #2(c): APPROVE + a real contained report → succeeds AND the review-outcome event records the path + content hash.
+test('#2(c): APPROVE with a real contained report succeeds; event records report path + content hash', () => {
+  const { root, runId, fence } = freshRun();
+  const { ws, checkerId } = boundChecker(root, runId, fence, 'plan');
+  writeFileSync(join(root, 'plan-review.md'), '# plan review\nverdict APPROVE — no blockers');
+  recordReviewOutcome(root, runId, { episodeId: checkerId, workstreamId: ws, point: 'plan', verdict: 'APPROVE', proof: { report: 'plan-review.md', findings: 'ok' }, fence });
+  assert.equal(readState(root, runId).data.episodes.find(e => e.id === checkerId).status, 'approved');
+  const ev = eventLog(root, runId).find(e => e.type === 'review-outcome' && e.data.episodeId === checkerId);
+  assert.ok(ev, 'a review-outcome event must be appended');
+  assert.equal(ev.data.report, 'plan-review.md');
+  assert.equal(ev.data.report_sha256, contentHash(readFileSync(join(root, 'plan-review.md'), 'utf8')));
+  assert.equal(ev.data.findings, 'ok');
+});
+
+// #2(d): a report path outside the project root (or absent) → REVIEW_NO_EVIDENCE.
+test('#2(d): report outside root or absent is refused', () => {
+  const { root, runId, fence } = freshRun();
+  const { ws, checkerId } = boundChecker(root, runId, fence, 'plan');
+  assert.throws(() => recordReviewOutcome(root, runId, { episodeId: checkerId, workstreamId: ws, point: 'plan', verdict: 'APPROVE', proof: { report: '../escape.md' }, fence }), /REVIEW_NO_EVIDENCE/);
+  assert.throws(() => recordReviewOutcome(root, runId, { episodeId: checkerId, workstreamId: ws, point: 'plan', verdict: 'APPROVE', proof: { report: 'does-not-exist.md' }, fence }), /REVIEW_NO_EVIDENCE/);
+});
+
+// #2(e): a root-relative SYMLINK pointing OUTSIDE the project must be refused (realpath deref containment) —
+// isAbsolute/'..'+existsSync alone would pass it (design-R3 #6).
+test('#2(e): a root-relative symlink escaping the project root is refused (realpath containment)', () => {
+  const { root, runId, fence } = freshRun();
+  const { ws, checkerId } = boundChecker(root, runId, fence, 'plan');
+  const outside = mkdtempSync(join(tmpdir(), 'dl-outside-'));
+  writeFileSync(join(outside, 'secret.md'), '# outside the project');
+  symlinkSync(join(outside, 'secret.md'), join(root, 'link.md'));   // root-relative name, escaping target
+  assert.throws(() => recordReviewOutcome(root, runId, { episodeId: checkerId, workstreamId: ws, point: 'plan', verdict: 'APPROVE', proof: { report: 'link.md' }, fence }), /REVIEW_NO_EVIDENCE/);
+});
+
+// #2(f): the recorded hash pins the exact report content — a post-hoc edit is detectable (stored hash mismatch).
+test('#2(f): recorded report hash detects a post-hoc content change (tamper smoke)', () => {
+  const { root, runId, fence } = freshRun();
+  const { ws, checkerId } = boundChecker(root, runId, fence, 'plan');
+  writeFileSync(join(root, 'r.md'), 'original review');
+  recordReviewOutcome(root, runId, { episodeId: checkerId, workstreamId: ws, point: 'plan', verdict: 'APPROVE', proof: { report: 'r.md' }, fence });
+  const ev = eventLog(root, runId).find(e => e.type === 'review-outcome' && e.data.episodeId === checkerId);
+  writeFileSync(join(root, 'r.md'), 'tampered review');   // edit after recording
+  assert.notEqual(ev.data.report_sha256, contentHash(readFileSync(join(root, 'r.md'), 'utf8')), 'a content change must diverge from the recorded hash');
+});
+
+// #2(g): REQUEST_CHANGES stays lightweight — no report required (only the passing path opens finish proof).
+test('#2(g): REQUEST_CHANGES needs no report (lightweight reject path)', () => {
+  const { root, runId, fence } = freshRun();
+  const { ws, checkerId } = boundChecker(root, runId, fence, 'plan');
+  const r = recordReviewOutcome(root, runId, { episodeId: checkerId, workstreamId: ws, point: 'plan', verdict: 'REQUEST_CHANGES', proof: {}, fence });
+  assert.equal(r.terminal, 'rejected');
 });

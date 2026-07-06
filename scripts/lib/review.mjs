@@ -1,8 +1,12 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { readState } from './state.mjs';
 import { appendAnchored } from './integrity.mjs';
 import { newEpisode } from './episode.mjs';
 import { leaseCheck } from './lease.mjs';
 import { pluginPresent } from './detect.mjs';
+import { containedRealFile } from './fs-safe.mjs';
+import { contentHash } from './envelope.mjs';
 
 // 연속 REQUEST_CHANGES 임계 (breaker.mjs THRESHOLD 미러 — fail-stop latch).
 const BREAKER_THRESHOLD = 3;
@@ -114,7 +118,7 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
   return { checkerEpisodeId: id, reviewer, descriptor };
 }
 
-export function recordReviewOutcome(root, runId, { episodeId, workstreamId, point, verdict, source = 'deep-review-approve', fence } = {}) {
+export function recordReviewOutcome(root, runId, { episodeId, workstreamId, point, verdict, source = 'deep-review-approve', proof = {}, fence } = {}) {
   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: recordReviewOutcome');
   // Codex impl r10 🔴: the ENTIRE review outcome (checker terminal + breaker + review_points_done + comprehension)
   // must be ONE atomic appendAnchored transaction. A multi-lock version could half-commit if a handoff sets the
@@ -122,8 +126,19 @@ export function recordReviewOutcome(root, runId, { episodeId, workstreamId, poin
   // no repair path because the checker is now terminal). Single preCheck + single mutate = all-or-nothing.
   if (!['APPROVE', 'CONCERN', 'REQUEST_CHANGES'].includes(verdict)) throw new Error(`REVIEW_VERDICT_INVALID: ${verdict}`);
   const passed = verdict === 'APPROVE' || verdict === 'CONCERN';
+  // #2: a passing verdict (APPROVE/CONCERN) must be backed by a REAL review-report artifact contained under the
+  // project root — symmetric with the maker's done-needs-existing-artifacts contract (episode.mjs). realpath
+  // containment (fs-safe) blocks a root-relative symlink escaping the project. The report's content hash is
+  // recorded in the event so a completed run's "independent review passed" claim is auditable + tamper-evident.
+  // Inline `findings` is only auxiliary metadata (forgeable) — it can never stand in for the report. REQUEST_CHANGES
+  // stays lightweight (reject reason only; only the passing path opens finish proof).
+  const realReport = passed ? containedRealFile(resolve(root), proof.report) : null;
+  const reportHash = realReport ? contentHash(readFileSync(realReport, 'utf8')) : null;
+  const findings = (proof.findings != null && String(proof.findings).length) ? String(proof.findings).slice(0, 2000) : null;
   let result;
-  appendAnchored(root, runId, { type: 'review-outcome', data: { episodeId, verdict } },
+  appendAnchored(root, runId, { type: 'review-outcome', data: { episodeId, verdict,
+      ...(realReport ? { report: proof.report, report_sha256: reportHash } : {}),
+      ...(findings ? { findings } : {}) } },
     (loop) => {
       // mutate — all in-memory on the single locked loop, written once (atomic)
       const tgt = loop.episodes.find(e => e.id === episodeId);
@@ -170,6 +185,9 @@ export function recordReviewOutcome(root, runId, { episodeId, workstreamId, poin
       const REVIEW_TERMINAL = ['done', 'approved', 'rejected', 'abandoned'];
       if (REVIEW_TERMINAL.includes(tgt.status)) throw new Error('REVIEW_ALREADY_RECORDED: ' + episodeId);
       if (!loop.workstreams.find(w => w.id === tgt.workstream_id)) throw new Error(`WORKSTREAM_NOT_FOUND: ${tgt.workstream_id}`);
+      // #2 evidence gate — LAST (so fence/checker/terminal errors still fire first). A passing verdict without a
+      // real contained report is refused; the kernel — not the CLI — is authoritative (CLI-bypass safe).
+      if (passed && !realReport) throw new Error('REVIEW_NO_EVIDENCE: passing verdict requires proof.report (an existing file contained under project root)');
     });
   // REQUEST_CHANGES → checker='rejected'. nextAction returns fix_episode and Execution creates the fix maker.
   return result;
