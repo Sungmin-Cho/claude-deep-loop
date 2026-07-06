@@ -2,6 +2,40 @@
 
 All notable changes to deep-loop are documented in this file.
 
+> Note: the `[1.1.0]`/`[1.2.0]` entries pre-date this changelog file (a known lag between
+> `plugin.json.version` and the changelog); this release does not retro-fill them.
+
+## [1.3.0] — 2026-07-07
+
+Audit hardening of the four human-in-the-loop / resource gates. The canonical version is
+`.claude-plugin/plugin.json` (the two other manifests are independent lines, out of scope).
+
+### Security / Fixed
+- **Human vs machine comprehension review (#1)** — `comprehension ack` is now recorded through the
+  tamper-evident event-log (`appendAnchored`) and separates `actor=human` (releases the debt gate, requires
+  `--confirm`, enforced in-lib) from `actor=agent` (accrues to a new `episodes_agent_reviewed` counter that
+  `computeDebt` ignores). A checker APPROVE routes to the agent counter unconditionally — no config lets a
+  machine review satisfy the human-oversight gate. A headless invocation asserting `actor=human` is fail-closed
+  (a `comprehension-ack-rejected` event is appended, no counter bump).
+- **Checker evidence for passing verdicts (#2)** — a passing `review record` (APPROVE/CONCERN) now requires a
+  real review-report file contained (realpath, symlink-escape safe) under the project root, symmetric with the
+  maker's done-needs-artifacts contract; the review-outcome event records the report path + sha256 hash. Inline
+  findings are auxiliary only; REQUEST_CHANGES stays lightweight.
+- **Kernel-boundary cost floor (#3)** — every business mutation is charged a minimum floor (1 turn) via a paired
+  cost event in the same anchor, so under-reporting / omitting `budget record` can no longer neutralize the turns
+  budget or per_session_turn_cap. `recordCost` absorbs the tick floor (max-rule, no double count). The previously
+  non-anchored `setWorkstreamStatus` / `state patch` paths are now anchored (`workstream-status` / `state-patch`
+  events) and floor-charged.
+- **`finish --status stopped` gate (#4)** — `stopped` (which bypasses completed-proof) now requires `--confirm`,
+  matching the sibling human-only ops (abandon / recover / breaker reset).
+- **`.gitignore` (#6)** — widen from `.claude/worktrees/` to the whole `.claude/` so hook capture files are never
+  exposed to `git add`.
+
+### Changed
+- `require_human_ack` default → `true` (honesty signal; the human/agent counter split is the real enforcement).
+- CLI: `comprehension ack --actor/--confirm`, `review record --report/--findings`, `finish --status stopped --confirm`
+  (fail-closed additions). Bundled skills synced in lockstep.
+
 ## [1.0.0] — 2026-07-01
 
 ### Finish-Path Robustness (kernel termination state machine)
