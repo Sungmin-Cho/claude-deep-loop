@@ -33,6 +33,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" comprehension ack --episode <
 ```
 
 - 성공 시 `{ ok: true, debt_ratio }` 반환.
+- **maker episode만 ack 대상** — checker 등 비-maker episode를 ack하면 `ACK_NOT_MAKER`(exit 1)로 거부된다(comprehension debt 분모는 maker만 세므로).
 - `--confirm` 누락 시 `CONFIRM_REQUIRED`(exit 2). headless 세션이 `--actor human`을 주장하면 `ACK_REJECTED`(exit 2)로 거부되고 `comprehension-ack-rejected`가 event-log에 남는다.
 - 이미 검토된 episode는 멱등 처리됨(카운트 중복 증가 없음).
 - 존재하지 않는 episode ID는 거부(오버카운트 방지).

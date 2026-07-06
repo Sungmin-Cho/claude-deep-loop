@@ -187,6 +187,18 @@ test('#1(f): lib ack enforces confirm/actor before any mutation (CLI-bypass guar
   assert.ok(!eventLog(root, runId).some(e => e.type === 'comprehension-ack' || e.type === 'comprehension-ack-rejected'));
 });
 
+// impl-R3 Fix 5: ack must target a MAKER episode. episodes_total counts only makers, so acking a checker would
+// inflate episodes_human_reviewed past episodes_total and drop debt_ratio below threshold with no maker reviewed.
+test('#1(Fix5): ack rejects a non-maker (checker) episode — both counters stay 0', () => {
+  const { root, runId, fence } = freshRun();
+  const { id } = newEpisode(root, runId, { plugin: 'deep-review', role: 'checker', kind: 'impl-review', point: 'implementation', fence });
+  assert.throws(() => ack(root, runId, id, { actor: 'human', confirm: true, env: ATTENDED, fence }), /ACK_NOT_MAKER/);
+  assert.throws(() => ack(root, runId, id, { actor: 'agent', env: ATTENDED, fence }), /ACK_NOT_MAKER/);
+  const c = readState(root, runId).data.comprehension;
+  assert.equal(c.episodes_human_reviewed || 0, 0);
+  assert.equal(c.episodes_agent_reviewed || 0, 0);
+});
+
 // #1: abandon decrements the agent counter symmetrically (mirrors the human-counter decrement).
 test('#1: abandonEpisode decrements episodes_agent_reviewed when the maker was agent-acked', () => {
   const { root, runId, fence } = freshRun();

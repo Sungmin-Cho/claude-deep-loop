@@ -37,7 +37,9 @@ export function ack(root, runId, episodeId, { actor = 'agent', confirm = false, 
       undefined,
       (loop) => {
         if (fence) { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
-        if (!loop.episodes.find(e => e.id === episodeId)) throw new Error(`EPISODE_NOT_FOUND: ${episodeId}`);
+        const ep = loop.episodes.find(e => e.id === episodeId);
+        if (!ep) throw new Error(`EPISODE_NOT_FOUND: ${episodeId}`);
+        if (ep.role !== 'maker') throw new Error('ACK_NOT_MAKER: only a maker episode can be acked');   // impl-R3 Fix 5
       },
       { floor: MUTATION_TURN_FLOOR });
     return { ok: false, rejected: true, reason: 'headless-human-ack-forbidden' };
@@ -61,7 +63,11 @@ export function ack(root, runId, episodeId, { actor = 'agent', confirm = false, 
     },
     (loop) => {
       if (fence) { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
-      if (!loop.episodes.find(e => e.id === episodeId)) throw new Error(`EPISODE_NOT_FOUND: ${episodeId}`);   // Codex r1 sf-5: overcount 차단
+      const ep = loop.episodes.find(e => e.id === episodeId);
+      if (!ep) throw new Error(`EPISODE_NOT_FOUND: ${episodeId}`);   // Codex r1 sf-5: overcount 차단
+      // impl-R3 Fix 5: ack is a MAKER-review signal. episodes_total counts only makers, so acking a checker would
+      // inflate episodes_human_reviewed past episodes_total and drive debt_ratio below threshold with no maker reviewed.
+      if (ep.role !== 'maker') throw new Error('ACK_NOT_MAKER: only a maker episode can be acked');
     },
     { floor: MUTATION_TURN_FLOOR });
   return out;
