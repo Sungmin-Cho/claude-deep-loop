@@ -87,6 +87,7 @@ export function abandonEpisode(root, runId, episodeId, { reason, confirm, fence 
       const c = loop.comprehension || (loop.comprehension = {});
       c.episodes_total = Math.max(0, (c.episodes_total || 0) - 1);
       if (ep.human_reviewed) c.episodes_human_reviewed = Math.max(0, (c.episodes_human_reviewed || 0) - 1);
+      if (ep.agent_reviewed) c.episodes_agent_reviewed = Math.max(0, (c.episodes_agent_reviewed || 0) - 1);
     }
     // P2-a: AFTER the decrement (which read the OLD human_reviewed), mark the abandoned episode reviewed so a later
     // `ack`/`recordReviewed` is a no-op — an abandoned maker is out of episodes_total and must never be re-counted

@@ -61,7 +61,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" recipe-match --goal "<goal>"
   "flags": [],
   "converge": true,
   "max_review_rounds": 5,
-  "require_human_ack": false
+  "require_human_ack": true
 }
 ```
 

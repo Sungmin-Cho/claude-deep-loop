@@ -284,8 +284,6 @@ test('unsatisfiedReviewPoints: union across multiple workstreams', () => {
   assert.deepEqual(unsatisfiedReviewPoints(loop), []);
 });
 
-// FIX 3 regression (b): two done makers same point, approving checker bound to maker2 (latest) increments
-// episodes_human_reviewed by exactly 1 (only maker2), not 2.
 test('recordReviewOutcome: rejects recording on an abandoned checker', () => {
   const { root, runId, fence } = freshRun();
   const ws = newWorkstream(root, runId, { title: 'W', branch: 'b', worktree: '.claude/worktrees/wt', fence });
@@ -312,7 +310,9 @@ test('recordReviewOutcome: rejects recording on a done checker (defensive)', () 
   assert.throws(() => recordReviewOutcome(root, runId, { episodeId: dr.checkerEpisodeId, workstreamId: ws.id, point: 'implementation', verdict: 'APPROVE', fence }), /REVIEW_ALREADY_RECORDED/);
 });
 
-test('recordReviewOutcome: bound approve increments episodes_human_reviewed by 1 (only the bound maker, not all makers on point)', () => {
+// #1: a machine APPROVE auto-marks the bound maker AGENT-reviewed (by exactly 1 — only maker2), and never
+// touches the human gate counter (episodes_human_reviewed). Machine review must not lower comprehension debt.
+test('recordReviewOutcome: bound approve increments episodes_agent_reviewed by 1 (only the bound maker), human gate untouched', () => {
   const { root, runId } = seed();
   const f = fence(runId);
   const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: '.claude/worktrees/w', fence: f }).id;
@@ -325,10 +325,12 @@ test('recordReviewOutcome: bound approve increments episodes_human_reviewed by 1
   recordEpisode(root, runId, maker2Id, { status: 'done', artifacts: ['impl2.txt'], proof: {}, fence: f });
   // dispatch review — binds to the latest unreviewed done maker (maker2)
   const r = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
-  const beforeReviewed = readState(root, runId).data.comprehension?.episodes_human_reviewed || 0;
-  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'implementation', verdict: 'APPROVE', fence: f });
-  const afterReviewed = readState(root, runId).data.comprehension?.episodes_human_reviewed || 0;
-  assert.equal(afterReviewed - beforeReviewed, 1, 'only the bound maker (maker2) should be marked human_reviewed, not all makers on the point');
+  const cBefore = readState(root, runId).data.comprehension;
+  writeFileSync(join(root, 'review.md'), '# review report\nverdict APPROVE');
+  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'implementation', verdict: 'APPROVE', proof: { report: 'review.md' }, fence: f });
+  const cAfter = readState(root, runId).data.comprehension;
+  assert.equal((cAfter.episodes_agent_reviewed || 0) - (cBefore.episodes_agent_reviewed || 0), 1, 'only the bound maker (maker2) should be marked agent_reviewed');
+  assert.equal(cAfter.episodes_human_reviewed || 0, cBefore.episodes_human_reviewed || 0, 'machine review must not touch the human gate counter');
 });
 
 // ── C2: object-shape routing — resolveReviewer downgrades on present (installed‖initialized) ───

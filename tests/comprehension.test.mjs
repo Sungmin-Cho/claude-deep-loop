@@ -1,12 +1,20 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { newEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
 import { ack, computeDebt } from '../scripts/lib/comprehension.mjs';
-import { readState, writeState } from '../scripts/lib/state.mjs';
+import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
+import { verifyLog } from '../scripts/lib/integrity.mjs';
+
+// Non-headless env for attended human acks — the test runner may inherit a headless CLAUDE_CODE_ENTRYPOINT,
+// so pass an explicit empty env whenever an ack should NOT be treated as headless.
+const ATTENDED = {};
+function eventLog(root, runId) {
+  return readFileSync(join(runDir(root, runId), 'event-log.jsonl'), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l));
+}
 
 function freshRun() {
   const root = mkdtempSync(join(tmpdir(), 'dl-comp-'));
@@ -35,11 +43,11 @@ test('ack is idempotent and validates episode existence', () => {
   const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
   const fence = { owner: runId, generation: 1, intent: 'business' };
   const ep = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', expectedArtifacts: ['a'], fence });
-  ack(root, runId, ep.id, { fence });
-  ack(root, runId, ep.id, { fence });   // 중복 — 카운트 증가 금지
+  ack(root, runId, ep.id, { actor: 'human', confirm: true, env: ATTENDED, fence });
+  ack(root, runId, ep.id, { actor: 'human', confirm: true, env: ATTENDED, fence });   // 중복 — 카운트 증가 금지
   assert.equal(readState(root, runId).data.comprehension.episodes_human_reviewed, 1);
-  assert.throws(() => ack(root, runId, 'ghost', { fence }), /EPISODE_NOT_FOUND/);
-  assert.throws(() => ack(root, runId, ep.id, { fence: { owner: runId, generation: 9 } }), /LEASE_FENCED/);
+  assert.throws(() => ack(root, runId, 'ghost', { actor: 'human', confirm: true, env: ATTENDED, fence }), /EPISODE_NOT_FOUND/);
+  assert.throws(() => ack(root, runId, ep.id, { actor: 'human', confirm: true, env: ATTENDED, fence: { owner: runId, generation: 9 } }), /LEASE_FENCED/);
 });
 
 test('abandonEpisode decrements episodes_total for a maker (0-clamp)', () => {
@@ -53,7 +61,7 @@ test('abandonEpisode decrements episodes_total for a maker (0-clamp)', () => {
 test('abandonEpisode also decrements episodes_human_reviewed when the maker was acked', () => {
   const { root, runId, fence } = freshRun();
   const { id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: null, expectedArtifacts: [], fence });
-  ack(root, runId, id, { fence });
+  ack(root, runId, id, { actor: 'human', confirm: true, env: ATTENDED, fence });
   assert.equal(readState(root, runId).data.comprehension.episodes_human_reviewed, 1);
   abandonEpisode(root, runId, id, { reason: 'orphan', confirm: true, fence });
   const c = readState(root, runId).data.comprehension;
@@ -89,7 +97,7 @@ test('P2-a: ack on an abandoned (never-reviewed) maker is a no-op — episodes_h
   // abandoned maker is out of episodes_total …
   assert.equal(readState(root, runId).data.comprehension.episodes_total, 0);
   // … and the maker is marked reviewed so ack returns early as a no-op (no double count into episodes_human_reviewed)
-  const r = ack(root, runId, id, { fence });
+  const r = ack(root, runId, id, { actor: 'human', confirm: true, env: ATTENDED, fence });
   assert.equal(r.ok, true);
   const c = readState(root, runId).data.comprehension;
   assert.equal(c.episodes_human_reviewed, 0, 'ack on an abandoned maker must not increment episodes_human_reviewed');
@@ -106,6 +114,87 @@ test('P2-a: ack guard skips an abandoned episode with human_reviewed=false (stat
   abandonEpisode(root, runId, id, { reason: 'orphan', confirm: true, fence });
   // Force the legacy/corrupt shape: abandoned but human_reviewed reset to false.
   const data = readState(root, runId).data; data.episodes.find(e => e.id === id).human_reviewed = false; writeState(root, runId, data);
-  ack(root, runId, id, { fence });
+  ack(root, runId, id, { actor: 'human', confirm: true, env: ATTENDED, fence });
   assert.equal(readState(root, runId).data.comprehension.episodes_human_reviewed, 0, 'status==abandoned guard must keep ack a no-op');
+});
+
+// ── #1: human/agent ack separation (tamper-evident + 절차 금지 + headless fail-closed) ──
+
+// #1(a): actor='agent' must route to the AGENT counter only — the human gate (episodes_human_reviewed,
+// the one computeDebt reads) must stay untouched so a machine review never lowers comprehension debt.
+test('#1(a): agent ack accrues to episodes_agent_reviewed, never the human gate counter', () => {
+  const { root, runId, fence } = freshRun();
+  const { id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', expectedArtifacts: ['a'], fence });
+  const r = ack(root, runId, id, { actor: 'agent', env: ATTENDED, fence });
+  assert.equal(r.ok, true);
+  const c = readState(root, runId).data.comprehension;
+  assert.equal(c.episodes_human_reviewed, 0, 'agent ack must not touch the human gate counter');
+  assert.equal(c.episodes_agent_reviewed, 1, 'agent ack increments the agent counter');
+  // agent ack is idempotent (no double count)
+  ack(root, runId, id, { actor: 'agent', env: ATTENDED, fence });
+  assert.equal(readState(root, runId).data.comprehension.episodes_agent_reviewed, 1);
+});
+
+// #1(default): actor defaults to 'agent' — an unqualified ack never releases the human gate.
+test('#1: ack defaults to actor=agent (gate not released)', () => {
+  const { root, runId, fence } = freshRun();
+  const { id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', expectedArtifacts: ['a'], fence });
+  ack(root, runId, id, { env: ATTENDED, fence });
+  const c = readState(root, runId).data.comprehension;
+  assert.equal(c.episodes_human_reviewed, 0);
+  assert.equal(c.episodes_agent_reviewed, 1);
+});
+
+// #1(d): a successful ack lands in the tamper-evident event-log as a comprehension-ack event (with actor context) —
+// the old withLock+writeState path left NO audit trail. verifyLog must stay green after the anchored append.
+test('#1(d): ack appends a comprehension-ack event (audit trail) + keeps the log verifiable', () => {
+  const { root, runId, fence } = freshRun();
+  const { id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', expectedArtifacts: ['a'], fence });
+  ack(root, runId, id, { actor: 'human', confirm: true, env: ATTENDED, fence });
+  const ev = eventLog(root, runId).find(e => e.type === 'comprehension-ack');
+  assert.ok(ev, 'ack must append a comprehension-ack event');
+  assert.equal(ev.data.actor, 'human');
+  assert.equal(ev.data.headless, false);
+  assert.equal(verifyLog(root, runId).ok, true);
+});
+
+// #1(c): a headless invocation asserting actor='human' is fail-closed — single flow: append a
+// comprehension-ack-rejected event (never a counter bump) THEN return non-ok. Three simultaneous assertions.
+test('#1(c): headless + actor=human → ack-rejected event, counter untouched, non-ok returned', () => {
+  const { root, runId, fence } = freshRun();
+  const { id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', expectedArtifacts: ['a'], fence });
+  const r = ack(root, runId, id, { actor: 'human', confirm: true, env: { DEEP_LOOP_UNATTENDED: '1' }, fence });
+  assert.equal(r.ok, false);
+  assert.equal(r.rejected, true);
+  assert.equal(readState(root, runId).data.comprehension.episodes_human_reviewed, 0, 'headless human ack must not release the gate');
+  const rej = eventLog(root, runId).find(e => e.type === 'comprehension-ack-rejected');
+  assert.ok(rej, 'a comprehension-ack-rejected event must be appended (post-audit)');
+  assert.equal(rej.data.reason, 'headless-human-ack-forbidden');
+  assert.equal(verifyLog(root, runId).ok, true);
+});
+
+// #1(f) (plan-R1 Fix 1): the lib itself enforces confirm/actor BEFORE any mutation, so a CLI-bypass direct call
+// cannot mint human credit. Neither rejected attempt may touch a counter or append an event.
+test('#1(f): lib ack enforces confirm/actor before any mutation (CLI-bypass guard)', () => {
+  const { root, runId, fence } = freshRun();
+  const { id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', expectedArtifacts: ['a'], fence });
+  assert.throws(() => ack(root, runId, id, { actor: 'human', confirm: false, env: ATTENDED, fence }), /CONFIRM_REQUIRED/);
+  assert.throws(() => ack(root, runId, id, { actor: 'bogus', env: ATTENDED, fence }), /INVALID_ACTOR/);
+  const c = readState(root, runId).data.comprehension;
+  assert.equal(c.episodes_human_reviewed || 0, 0);
+  assert.equal(c.episodes_agent_reviewed || 0, 0);
+  // no event appended by the rejected attempts (a fresh run's log has only the episode-new event)
+  assert.ok(!eventLog(root, runId).some(e => e.type === 'comprehension-ack' || e.type === 'comprehension-ack-rejected'));
+});
+
+// #1: abandon decrements the agent counter symmetrically (mirrors the human-counter decrement).
+test('#1: abandonEpisode decrements episodes_agent_reviewed when the maker was agent-acked', () => {
+  const { root, runId, fence } = freshRun();
+  const { id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: null, expectedArtifacts: [], fence });
+  ack(root, runId, id, { actor: 'agent', env: ATTENDED, fence });
+  assert.equal(readState(root, runId).data.comprehension.episodes_agent_reviewed, 1);
+  abandonEpisode(root, runId, id, { reason: 'orphan', confirm: true, fence });
+  const c = readState(root, runId).data.comprehension;
+  assert.equal(c.episodes_total, 0);
+  assert.equal(c.episodes_agent_reviewed, 0);
 });

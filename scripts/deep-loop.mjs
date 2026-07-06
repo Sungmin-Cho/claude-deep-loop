@@ -377,9 +377,21 @@ const handlers = {
     if (verb === 'ack') {
       requireLease(root, runId, f);   // fence 인자 → exit 3
       const episode = reqStr(f, 'episode'); if (!episode) { error('MISSING_EPISODE'); return 2; }   // Codex r1 sf-6
+      if (f.actor === true) { error('USAGE: --actor requires a value (human|agent)'); return 2; }   // value-less 거부
+      const actor = f.actor !== undefined ? String(f.actor) : 'agent';
+      if (!['human', 'agent'].includes(actor)) { error('INVALID_ACTOR: --actor must be human|agent'); return 2; }
+      const confirm = f.confirm === true || f.confirm === 'true';
+      // Fast-fail UX + defense-in-depth. The authoritative guard is in ack() itself (CLI-bypass safe).
+      if (actor === 'human' && !confirm) { error('CONFIRM_REQUIRED: human ack requires --confirm (human-only)'); return 2; }
       const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'business' };
-      try { ackComprehension(root, runId, episode, { fence }); }
+      let r;
+      try { r = ackComprehension(root, runId, episode, { actor, confirm, env: process.env, fence }); }
       catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }   // EPISODE_NOT_FOUND → exit 1
+      if (r && r.ok === false && r.rejected) {
+        // headless-human fail-closed (the ack-rejected event is already appended). Surface as usage error.
+        error(`ACK_REJECTED: ${r.reason}`);
+        const { data } = readState(root, runId); json({ ok: false, ...computeDebt(data) }); return 2;
+      }
       const { data } = readState(root, runId); json({ ok: true, ...computeDebt(data) }); return 0;
     }
     error(`unknown comprehension verb: ${verb}`); return 2;

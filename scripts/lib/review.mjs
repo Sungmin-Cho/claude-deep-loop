@@ -145,15 +145,14 @@ export function recordReviewOutcome(root, runId, { episodeId, workstreamId, poin
         // FIX 1: only mark review_points_done when the passing checker is bound to a maker (unbound checkers reviewed no maker).
         const ws = loop.workstreams.find(w => w.id === wsId);
         if (ws && tgt.target_maker && !ws.review_points_done.includes(pt)) ws.review_points_done.push(pt);
-        // FIX 3: comprehension — honor require_human_ack and only mark the bound maker.
-        const requireHumanAck = loop.review?.require_human_ack === true;
-        if (!requireHumanAck) {
-          // Only the maker bound to this checker counts; unbound checker marks nothing.
-          const target = loop.episodes.find(e => e.id === tgt.target_maker);
-          if (target && target.role === 'maker' && !target.human_reviewed) {
-            target.human_reviewed = true;
-            loop.comprehension.episodes_human_reviewed = (loop.comprehension.episodes_human_reviewed || 0) + 1;
-          }
+        // FIX(#1): a machine review (checker APPROVE/CONCERN) accrues to the AGENT comprehension counter only —
+        // it must NEVER mark the maker human_reviewed nor lower comprehension debt (computeDebt reads only
+        // episodes_human_reviewed). The old require_human_ack gate is removed: no config lets a machine review
+        // grant human credit — only /deep-loop-ack --actor human --confirm releases the human gate.
+        const target = loop.episodes.find(e => e.id === tgt.target_maker);
+        if (target && target.role === 'maker' && !target.human_reviewed && !target.agent_reviewed) {
+          target.agent_reviewed = true;
+          loop.comprehension.episodes_agent_reviewed = (loop.comprehension.episodes_agent_reviewed || 0) + 1;
         }
       }
       result = { verdict, passed, terminal: tgt.status };

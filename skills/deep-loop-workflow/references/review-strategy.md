@@ -32,7 +32,7 @@ run 시작 시 `/deep-loop`가 리뷰 전략을 확인하는 흐름과 `review` 
   "flags": [],
   "converge": true,
   "max_review_rounds": 5,
-  "require_human_ack": false
+  "require_human_ack": true
 }
 ```
 
@@ -44,10 +44,10 @@ run 시작 시 `/deep-loop`가 리뷰 전략을 확인하는 흐름과 `review` 
 - **flags**: reviewer 스킬에 전달할 추가 플래그.
 - **converge**: `true`이면 APPROVE가 나올 때까지 반복(max_review_rounds 한도 내).
 - **max_review_rounds**: breaker trip 전 최대 리뷰 라운드 수 (기본 5).
-- **require_human_ack**: `true`이면 `/deep-loop-ack`으로만 comprehension 카운트 인정.
+- **require_human_ack**: 정직 신호로 `true` default. 실질 강제는 human/agent 카운터 분리다 — 어떤 설정에서도 기계 리뷰는 comprehension 게이트(사람 검토)를 해제하지 못한다.
 
 ## 중요 사항
 
 - 리뷰 없이 completed 전이 불가 — `finishProofState`가 독립 리뷰 proof를 요구한다.
 - checker 없이 maker `done`만으로는 workstream을 `ready`로 전이할 수 없다.
-- `require_human_ack=true`이면 deep-review APPROVE만으로는 comprehension debt가 줄지 않는다.
+- **machine review(checker APPROVE)는 agent 카운터(`episodes_agent_reviewed`)로만 계상되어 comprehension debt를 줄이지 않는다.** comprehension 게이트(사람 검토)는 `/deep-loop-ack --actor human --confirm`만 해제한다.
