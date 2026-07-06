@@ -1,10 +1,9 @@
-import { existsSync, statSync } from 'node:fs';
-import { resolve, sep } from 'node:path';
 import { appendAnchored } from './integrity.mjs';
 import { leaseCheck } from './lease.mjs';
 import { runDir } from './state.mjs';
 import { makerReviewed, unsatisfiedReviewPoints, epOrder, rejectionResolved } from './review.mjs';
 import { MUTATION_TURN_FLOOR } from './budget.mjs';
+import { containedRealFile } from './fs-safe.mjs';
 
 // A rejected checker is settled only when it is RESOLVED by the SINGLE unified predicate rejectionResolved
 // (review.mjs) — the SAME order-aware predicate next-action.mjs uses for routing. (Replaces the old local
@@ -80,13 +79,13 @@ export function finishRun(root, runId, { status, reportRel, proof = {}, confirm,
         if (!proof || !proof.human_reason) throw new Error('FINISH_PROOF_UNMET: stopped requires proof.human_reason');
         return;
       }
-      // completed: report 는 runDir 하위로 정규화·격리(containment)된 채 존재해야 — CLI 가드에 의존하지 않고 lib 가 강제.
+      // completed: report 는 runDir 하위로 격리(containment)된 **실제 파일**이어야 — CLI 가드 비의존, lib 가 강제.
+      // impl-R1 Fix 2: containedRealFile(realpathSync deref)로 교체 — 기존 resolve+startsWith+statSync 는 symlink 를
+      // follow 해서 runDir-상대 symlink 가 프로젝트 밖을 가리켜도 통과했다(#2 review report 와 동일 결함 클래스).
+      // containedRealFile 은 `--report .` / 디렉터리(isFile 아님) / 부재 / '..'·절대경로도 모두 null 로 거부한다.
       const ps = finishProofState(loop);
-      const base = resolve(runDir(root, runId));
-      const full = reportRel ? resolve(base, reportRel) : null;
-      // Codex r4 critical-1: report 는 runDir **하위**(자체 아님)의 **실제 파일**이어야 한다 — `--report .` / 디렉터리 거부.
-      const reportOk = full && full.startsWith(base + sep) && existsSync(full) && statSync(full).isFile();
-      if (!reportOk) ps.missing.push('final-report-missing');
+      const real = reportRel ? containedRealFile(runDir(root, runId), reportRel) : null;
+      if (!real) ps.missing.push('final-report-missing');
       if (ps.missing.length) throw new Error(`FINISH_PROOF_UNMET: ${ps.missing.join(',')}`);
     }, { floor: MUTATION_TURN_FLOOR });
   return result;

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
@@ -254,6 +254,17 @@ test('finish completed rejects runDir itself or a directory as the report', () =
   mkdirSync(join(runDir(root, runId), 'handoffs'), { recursive: true });
   assert.throws(() => finishRun(root, runId, { status: 'completed', reportRel: '.', proof: {}, fence }), /final-report-missing|FINISH_PROOF_UNMET/);
   assert.throws(() => finishRun(root, runId, { status: 'completed', reportRel: 'handoffs', proof: {}, fence }), /final-report-missing|FINISH_PROOF_UNMET/);
+});
+
+// impl-R1 Fix 2: a runDir-relative SYMLINK whose target is OUTSIDE the project must be refused — realpath deref
+// containment (containedRealFile). resolve+startsWith+statSync(follow) would have accepted it.
+test('finish completed rejects a runDir-relative symlink escaping the project (realpath containment)', () => {
+  const { root, runId, fence } = seed();
+  buildSettledRun(root, runId, fence);
+  const outside = mkdtempSync(join(tmpdir(), 'dl-fin-outside-'));
+  writeFileSync(join(outside, 'report.md'), '# report outside the project');
+  symlinkSync(join(outside, 'report.md'), join(runDir(root, runId), 'final-report.md'));   // escaping symlink under runDir
+  assert.throws(() => finishRun(root, runId, { status: 'completed', reportRel: 'final-report.md', proof: {}, fence }), /final-report-missing|FINISH_PROOF_UNMET/);
 });
 
 // Regression: repro of real-world "009" stuck state — pending maker with zero expectedArtifacts
