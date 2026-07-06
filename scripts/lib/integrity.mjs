@@ -91,7 +91,13 @@ export function appendAnchored(root, runId, { type, data }, mutate, preCheck, op
     if (!h.ok) throw new Error(`LOG_TAMPERED: ${h.errors.join('; ')}`);
     appendEvent(root, runId, { type, data });
     // Paired floor cost — SAME lock/anchor as the mutation event, so verifyHead/reconcileBudget stay consistent.
-    if (opts.floor) appendEvent(root, runId, { type: 'cost', data: { turns: opts.floor, tokens: 0, auto_floor: true, for: type } });
+    // impl-R1 Fix 1: tag the floor with the CURRENT lease owner+generation. recordCost only absorbs floors from its
+    // OWN session, so an explicit report in a LATER session cannot swallow an EARLIER session's floors (which are
+    // confirmed prior consumption) — that would undercount total spent and weaken per_session_turn_cap.
+    if (opts.floor) {
+      const lease = loop.session_chain?.lease || {};
+      appendEvent(root, runId, { type: 'cost', data: { turns: opts.floor, tokens: 0, auto_floor: true, for: type, owner: lease.owner_run_id, generation: lease.generation } });
+    }
     loop.event_log_head = lastLogHead(root, runId);   // floor present → the cost event is the head
     const spent = (mutate || opts.floor) ? recomputeSpent(root, runId) : null;
     if (opts.floor) {

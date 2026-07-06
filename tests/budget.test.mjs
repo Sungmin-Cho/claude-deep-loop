@@ -10,6 +10,7 @@ import { initRun } from '../scripts/lib/initrun.mjs';
 import { newEpisode } from '../scripts/lib/episode.mjs';
 import { newWorkstream, setWorkstreamStatus } from '../scripts/lib/workspace.mjs';
 import { nextAction } from '../scripts/lib/next-action.mjs';
+import { releaseLease, acquireLease } from '../scripts/lib/lease.mjs';
 
 function floorRun() {
   const root = mkdtempSync(join(tmpdir(), 'dl-floor-'));
@@ -177,5 +178,22 @@ test('#3(e): setWorkstreamStatus + patch are anchored and floor-charged (workstr
   assert.ok(lines.some(e => e.type === 'state-patch' && e.data.field === 'decisions'));
   assert.ok(readState(root, runId).data.active_workstreams.includes(ws), 'setWorkstreamStatus mutation still applied');
   assert.deepEqual(readState(root, runId).data.decisions, ['noted'], 'patch mutation still applied');
+  assert.doesNotThrow(() => reconcileBudget(root, runId));
+});
+
+// #3 (impl-R1 Fix 1): an explicit budget record in a LATER session must NOT absorb an EARLIER session's floors —
+// those are confirmed prior consumption. gen 1: 3 floors, no report → advance lease to gen 2 → record K=5:
+// total = 3×floor + max(K, gen-2 floors=0) = 3 + 5 = 8, NOT max(3, 5) = 5 (the bug that swallowed the gen-1 floors).
+test('#3(Fix1): a later session budget record does not absorb an earlier session floors (session-scoped absorption)', () => {
+  const { root, runId, fence } = floorRun();
+  const now = Date.parse('2026-06-24T00:00:00Z');
+  mk(root, runId, fence, 3);   // gen 1: 3 floors → spent 3
+  assert.equal(readState(root, runId).data.budget.spent, 3 * MUTATION_TURN_FLOOR);
+  // advance the lease: release gen 1, a child acquires (gen 2)
+  releaseLease(root, runId, { owner: runId, generation: 1 });
+  acquireLease(root, runId, { owner: 'CHILD-ACTOR', expectGeneration: 1, now });
+  // gen 2 reports 5 turns — its own tick floor is 0, so it must NOT absorb the gen-1 floors
+  recordCost(root, runId, { turns: 5, tokens: 0, fence: { owner: 'CHILD-ACTOR', generation: 2, intent: 'business' } });
+  assert.equal(readState(root, runId).data.budget.spent, 3 * MUTATION_TURN_FLOOR + 5, 'gen-1 floors survive; gen-2 report adds max(5, 0)=5 on top');
   assert.doesNotThrow(() => reconcileBudget(root, runId));
 });

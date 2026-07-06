@@ -27,12 +27,16 @@ export function checkBudget(loop, { now = Date.now(), sessionStart, measurable =
 // #3 max-rule: the auto-floor turns/tokens accrued since the last EXPLICIT cost event (i.e. the current "tick").
 // An explicit `budget record` ABSORBS this floor rather than stacking on top of it — the tick's contribution is
 // max(reported, floor-sum), not the sum. A non-floor (explicit) cost resets the running tick.
-function trailingFloor(lines) {
+// impl-R1 Fix 1: scoped to a SINGLE session (owner+generation). Only floors tagged with THIS session are absorbable;
+// a prior session's floors are confirmed consumption and are skipped (never swallowed by a later report). An
+// explicit cost of the SAME session closes its tick.
+function trailingFloor(lines, owner, generation) {
   let tf = 0, tk = 0;
   for (const e of lines) {
     if (e.type !== 'cost') continue;
+    if (e.data?.owner !== owner || e.data?.generation !== generation) continue;   // different session → not ours to absorb
     if (e.data?.auto_floor) { tf += e.data.turns || 0; tk += e.data.tokens || 0; }
-    else { tf = 0; tk = 0; }   // an explicit cost ends the current tick
+    else { tf = 0; tk = 0; }   // this session's explicit cost ends its tick
   }
   return { tf, tk };
 }
@@ -47,16 +51,16 @@ export function recordCost(root, runId, { turns = 0, tokens = 0, fence } = {}) {
     if (fence) { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
     const v = verifyLog(root, runId); if (!v.ok) throw new Error(`LOG_TAMPERED: ${v.errors.join('; ')}`);
     const h = verifyHead(root, runId, loop.event_log_head); if (!h.ok) throw new Error(`LOG_TAMPERED: ${h.errors.join('; ')}`);
-    const { tf, tk } = trailingFloor(readLines(root, runId));
+    const lease = loop.session_chain?.lease || {};
+    const { tf, tk } = trailingFloor(readLines(root, runId), lease.owner_run_id, lease.generation);   // this session's tick floor only
     const adjTurns = Math.max(0, turns - tf), adjTokens = Math.max(0, tokens - tk);   // tick contribution = max(reported, floor-sum)
-    appendEvent(root, runId, { type: 'cost', data: { turns: adjTurns, tokens: adjTokens, reported_turns: turns, reported_tokens: tokens } });
+    appendEvent(root, runId, { type: 'cost', data: { turns: adjTurns, tokens: adjTokens, reported_turns: turns, reported_tokens: tokens, owner: lease.owner_run_id, generation: lease.generation } });
     loop.event_log_head = lastLogHead(root, runId);
-    const spent = recomputeSpent(root, runId);   // pure sum = prior + floors + adjusted = prior + max(reported, floors)
+    const spent = recomputeSpent(root, runId);   // pure sum = prior + floors + adjusted = prior-session floors + max(reported, this-session floors)
     loop.budget.spent = spent.turns;
     loop.budget.tokens_spent = spent.tokens;
     // per_session_turn_cap 판정용 session.turns 도 max-rule을 따른다 — 이 tick 기여분 = tf(이미 floor로 반영) + adjTurns.
-    const owner = loop.session_chain?.lease?.owner_run_id;
-    const sess = (loop.session_chain?.sessions || []).find(s => s.run_id === owner);
+    const sess = (loop.session_chain?.sessions || []).find(s => s.run_id === lease.owner_run_id);
     if (sess) sess.turns = (sess.turns || 0) + adjTurns;
     writeState(root, runId, loop);
   });
