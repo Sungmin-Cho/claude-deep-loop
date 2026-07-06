@@ -3,7 +3,7 @@ import { join, resolve, sep } from 'node:path';
 import { contentHash, atomicWrite } from './envelope.mjs';
 import { validate } from './schema.mjs';
 import { leaseCheck } from './lease.mjs';
-import { appendAnchored } from './integrity.mjs';
+import { appendAnchored, MUTATION_TURN_FLOOR } from './integrity.mjs';
 
 // R5 high-2: 상향탐색을 worktree 컨벤션(.claude/worktrees | .worktrees)으로 **한정**한다.
 // 무한정 walk 는 부모 run 밑의 nested repo/submodule 을 부모 run 에 잘못 바인딩(격리 회귀)시킨다.
@@ -101,23 +101,27 @@ function setPath(obj, path, value) {
 
 export function patch(root, runId, field, value, { fence } = {}) {
   if (classifyPatch(field, value) !== 'allow') throw new Error(`FIELD_FORBIDDEN: ${field}`);
-  return withLock(root, runId, () => {
-    const { data } = readState(root, runId);
-    if (fence) { const r = leaseCheck(data, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
-    const im = field.match(/^(episodes|workstreams)\.(\d+)\.(.+)$/);
-    if (im) {
-      const [, arr, idxStr, sub] = im;
-      if (!/^(0|[1-9]\d*)$/.test(idxStr)) throw new Error(`FIELD_FORBIDDEN: ${field} (non-canonical index)`);
-      const list = data[arr]; const idx = Number(idxStr);
-      if (!Array.isArray(list) || idx >= list.length || list[idx] == null) throw new Error(`FIELD_FORBIDDEN: ${field} (index out of range)`);
-      if (sub === 'status') {
-        const term = arr === 'episodes' ? TERMINAL_EPISODE : TERMINAL_WORKSTREAM;
-        if (term.includes(list[idx].status)) throw new Error(`FIELD_FORBIDDEN: ${field} (terminal status immutable)`);
+  // #3 (R1 Fix 2): route through appendAnchored so a whitelisted patch (which can flip active_workstreams — a
+  // finish proof input — and non-terminal episode/workstream status — a next-action routing input) is BOTH
+  // tamper-evident (was a silent withLock+writeState) AND floor-charged. The value is NOT recorded in the event
+  // (may be large/sensitive) — only the field path. All throwing guards live in preCheck (fresh loop, pre-append).
+  return appendAnchored(root, runId, { type: 'state-patch', data: { field } },
+    (loop) => { setPath(loop, field, value); },
+    (loop) => {
+      if (fence) { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
+      const im = field.match(/^(episodes|workstreams)\.(\d+)\.(.+)$/);
+      if (im) {
+        const [, arr, idxStr, sub] = im;
+        if (!/^(0|[1-9]\d*)$/.test(idxStr)) throw new Error(`FIELD_FORBIDDEN: ${field} (non-canonical index)`);
+        const list = loop[arr]; const idx = Number(idxStr);
+        if (!Array.isArray(list) || idx >= list.length || list[idx] == null) throw new Error(`FIELD_FORBIDDEN: ${field} (index out of range)`);
+        if (sub === 'status') {
+          const term = arr === 'episodes' ? TERMINAL_EPISODE : TERMINAL_WORKSTREAM;
+          if (term.includes(list[idx].status)) throw new Error(`FIELD_FORBIDDEN: ${field} (terminal status immutable)`);
+        }
       }
-    }
-    setPath(data, field, value);
-    writeState(root, runId, data);
-  });
+    },
+    { floor: MUTATION_TURN_FLOOR });
 }
 
 function sleepMs(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }

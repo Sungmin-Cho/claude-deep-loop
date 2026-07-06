@@ -137,6 +137,8 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" budget record --turns <n> --o
 
 **`DEEP_LOOP_UNATTENDED` set 시 자기보고를 생략** — drive-headless 드라이버가 측정 usage를 권위있게 기록하므로 이중계상 방지.
 
+self-report는 best-effort 보정일 뿐이다 — 커널이 각 business mutation마다 최소 floor(1 turn)를 자동 계상하므로 미보고여도 예산·per_session_turn_cap이 mutation 수에 비례해 진행하고, `max_wallclock_sec`가 self-report 무관 hard bound다. 명시 `budget record`는 그 tick의 floor를 대체한다(max 규칙, 이중계상 없음).
+
 ## 4. Decide (마일스톤 / Turn Cap)
 
 마일스톤(`milestone_predicate`) 통과 또는 `per_session_turn_cap` 도달 시 **visible respawn 결정 흐름**을 실행한다. 아니면 다음 episode 안내 후 종료.

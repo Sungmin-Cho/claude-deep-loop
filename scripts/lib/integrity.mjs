@@ -5,7 +5,12 @@ import { runDir, readState, writeState, withLock } from './state.mjs';
 
 const logPath = (root, runId) => join(runDir(root, runId), 'event-log.jsonl');
 
-function readLines(root, runId) {
+// #3: every business-intent mutation is charged at least this many turns via appendAnchored's `opts.floor`
+// (paired cost, same anchor). Lives here (with the floor mechanism) so both state.mjs and budget.mjs can import
+// it without a state↔budget cycle; budget.mjs re-exports it for call sites/tests.
+export const MUTATION_TURN_FLOOR = 1;
+
+export function readLines(root, runId) {
   const p = logPath(root, runId);
   if (!existsSync(p)) return [];
   return readFileSync(p, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l));
@@ -69,7 +74,11 @@ export function verifyHead(root, runId, expected) {
 // 모든 이벤트 기록(cost 포함)은 이 경로를 통해야 앵커가 stale되지 않는다 (Codex impl r2 🟡).
 // mutate(loop, spent): 호출자별 상태 변경(예: budget.spent) — 선택.
 // preCheck(loop): lock 안 fresh loop 위에서 실행 — throw하면 append 전에 중단 (Codex r3 🔴: 가드 원자성).
-export function appendAnchored(root, runId, { type, data }, mutate, preCheck) {
+// opts.floor (#3): a business-intent mutation is charged a minimum floor of `opts.floor` turns via a PAIRED cost
+// event appended in the SAME lock/anchor, so a driver cannot neutralize the turns budget / per_session_turn_cap by
+// under-reporting or skipping `budget record`. Omitting floor (control-plane appends, recordCost) keeps the old
+// behavior exactly — floor is strictly opt-in.
+export function appendAnchored(root, runId, { type, data }, mutate, preCheck, opts = {}) {
   return withLock(root, runId, () => {
     const { data: loop } = readState(root, runId);
     if (preCheck) preCheck(loop);              // throws BEFORE append → anchor stays consistent
@@ -81,8 +90,20 @@ export function appendAnchored(root, runId, { type, data }, mutate, preCheck) {
     const h = verifyHead(root, runId, loop.event_log_head);
     if (!h.ok) throw new Error(`LOG_TAMPERED: ${h.errors.join('; ')}`);
     appendEvent(root, runId, { type, data });
-    loop.event_log_head = lastLogHead(root, runId);
-    if (mutate) mutate(loop, recomputeSpent(root, runId));
+    // Paired floor cost — SAME lock/anchor as the mutation event, so verifyHead/reconcileBudget stay consistent.
+    if (opts.floor) appendEvent(root, runId, { type: 'cost', data: { turns: opts.floor, tokens: 0, auto_floor: true, for: type } });
+    loop.event_log_head = lastLogHead(root, runId);   // floor present → the cost event is the head
+    const spent = (mutate || opts.floor) ? recomputeSpent(root, runId) : null;
+    if (opts.floor) {
+      loop.budget.spent = spent.turns;
+      loop.budget.tokens_spent = spent.tokens;
+      // per_session_turn_cap is judged off the lease owner's session.turns (next-action.mjs) — bump it here so
+      // the floor drives the handoff cadence (= human checkpoints) too, not only budget.spent.
+      const owner = loop.session_chain?.lease?.owner_run_id;
+      const sess = (loop.session_chain?.sessions || []).find(s => s.run_id === owner);
+      if (sess) sess.turns = (sess.turns || 0) + opts.floor;
+    }
+    if (mutate) mutate(loop, spent);
     writeState(root, runId, loop);
   });
 }

@@ -1,5 +1,5 @@
 import { readState, writeState, withLock } from './state.mjs';
-import { appendAnchored } from './integrity.mjs';
+import { appendAnchored, MUTATION_TURN_FLOOR } from './integrity.mjs';
 import { isHeadlessInvocation } from './respawn.mjs';
 import { leaseCheck } from './lease.mjs';
 
@@ -38,7 +38,8 @@ export function ack(root, runId, episodeId, { actor = 'agent', confirm = false, 
       (loop) => {
         if (fence) { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
         if (!loop.episodes.find(e => e.id === episodeId)) throw new Error(`EPISODE_NOT_FOUND: ${episodeId}`);
-      });
+      },
+      { floor: MUTATION_TURN_FLOOR });
     return { ok: false, rejected: true, reason: 'headless-human-ack-forbidden' };
   }
   let out = { ok: true, already: false };
@@ -61,7 +62,8 @@ export function ack(root, runId, episodeId, { actor = 'agent', confirm = false, 
     (loop) => {
       if (fence) { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
       if (!loop.episodes.find(e => e.id === episodeId)) throw new Error(`EPISODE_NOT_FOUND: ${episodeId}`);   // Codex r1 sf-5: overcount 차단
-    });
+    },
+    { floor: MUTATION_TURN_FLOOR });
   return out;
 }
 

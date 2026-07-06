@@ -4,6 +4,7 @@ import { readState, writeState, withLock } from './state.mjs';
 import { appendAnchored } from './integrity.mjs';
 import { slugify } from './slug.mjs';
 import { leaseCheck } from './lease.mjs';
+import { MUTATION_TURN_FLOOR } from './budget.mjs';
 
 const NON_TERMINAL = ['planned', 'in_progress', 'in_review', 'parked'];
 const TERMINAL = ['ready', 'merged', 'abandoned'];
@@ -64,7 +65,7 @@ export function newWorkstream(root, runId, { title, branch, worktree, baseCommit
       dirty_on_handoff: false, pr: { intended: true, state: 'none', url: null },
       episodes: [], review_points_done: [], depends_on: dependsOn,
     });
-  }, fence ? (loop) => { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); } : undefined);
+  }, fence ? (loop) => { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); } : undefined, { floor: MUTATION_TURN_FLOOR });
   return { id };
 }
 
@@ -73,21 +74,27 @@ export function setWorkstreamStatus(root, runId, wsId, status, opts = {}) {
   if (!NON_TERMINAL.includes(status)) throw new Error(`WORKSTREAM_STATUS_INVALID: ${status}`);
   const { fence } = opts;
   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: setWorkstreamStatus');
-  return withLock(root, runId, () => {
-    const { data } = readState(root, runId);
-    if (fence) { const r = leaseCheck(data, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
-    const ws = data.workstreams.find(w => w.id === wsId);
-    if (!ws) throw new Error(`WORKSTREAM_NOT_FOUND: ${wsId}`);
-    if (['ready', 'merged', 'abandoned'].includes(ws.status)) throw new Error(`WORKSTREAM_TERMINAL_LOCKED: ${wsId} is ${ws.status}`);
-    if (status === 'in_progress' && !data.active_workstreams.includes(wsId)) {
-      const cap = data.autonomy?.max_parallel ?? 2;
-      if (data.active_workstreams.length >= cap) throw new Error(`MAX_PARALLEL_EXCEEDED: ${data.active_workstreams.length}/${cap}`);
-      data.active_workstreams.push(wsId);
-    }
-    if (status === 'parked') data.active_workstreams = data.active_workstreams.filter(x => x !== wsId);
-    ws.status = status;
-    writeState(root, runId, data);
-  });
+  // #3 (R1 Fix 2): route through appendAnchored so this status flip (which drives active_workstreams — a finish
+  // proof input — and non-terminal status — a next-action routing input) is BOTH tamper-evident (was a silent
+  // withLock+writeState) AND floor-charged. All throwing guards move to preCheck (fresh loop, before the append)
+  // so a rejected transition never stales the anchor; the mutate is pure.
+  appendAnchored(root, runId, { type: 'workstream-status', data: { id: wsId, status } },
+    (loop) => {
+      if (status === 'in_progress' && !loop.active_workstreams.includes(wsId)) loop.active_workstreams.push(wsId);
+      if (status === 'parked') loop.active_workstreams = loop.active_workstreams.filter(x => x !== wsId);
+      loop.workstreams.find(w => w.id === wsId).status = status;
+    },
+    (loop) => {
+      if (fence) { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
+      const ws = loop.workstreams.find(w => w.id === wsId);
+      if (!ws) throw new Error(`WORKSTREAM_NOT_FOUND: ${wsId}`);
+      if (['ready', 'merged', 'abandoned'].includes(ws.status)) throw new Error(`WORKSTREAM_TERMINAL_LOCKED: ${wsId} is ${ws.status}`);
+      if (status === 'in_progress' && !loop.active_workstreams.includes(wsId)) {
+        const cap = loop.autonomy?.max_parallel ?? 2;
+        if (loop.active_workstreams.length >= cap) throw new Error(`MAX_PARALLEL_EXCEEDED: ${loop.active_workstreams.length}/${cap}`);
+      }
+    },
+    { floor: MUTATION_TURN_FLOOR });
 }
 
 export function recordWorkstreamTerminal(root, runId, wsId, { status, proof = {}, fence } = {}) {
@@ -117,7 +124,7 @@ export function recordWorkstreamTerminal(root, runId, wsId, { status, proof = {}
       status === 'merged'    ? (typeof proof.merge_commit === 'string' && proof.human_approved === true) :
       status === 'abandoned' ? (typeof proof.reason === 'string' && proof.reason.length > 0) : false;
     if (!ok) throw new Error(`WORKSTREAM_TERMINAL_NO_PROOF: ${wsId} -> ${status} proof insufficient`);
-  });
+  }, { floor: MUTATION_TURN_FLOOR });
 }
 
 // respawn 인수: active worktree 경로가 디스크에 존재하는지만 확인. 누락은 조용히 재생성 ❌ → fail-safe.

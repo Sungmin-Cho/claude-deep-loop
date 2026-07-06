@@ -7,6 +7,7 @@ import { leaseCheck } from './lease.mjs';
 import { pluginPresent } from './detect.mjs';
 import { containedRealFile } from './fs-safe.mjs';
 import { contentHash } from './envelope.mjs';
+import { MUTATION_TURN_FLOOR } from './budget.mjs';
 
 // 연속 REQUEST_CHANGES 임계 (breaker.mjs THRESHOLD 미러 — fail-stop latch).
 const BREAKER_THRESHOLD = 3;
@@ -188,7 +189,7 @@ export function recordReviewOutcome(root, runId, { episodeId, workstreamId, poin
       // #2 evidence gate — LAST (so fence/checker/terminal errors still fire first). A passing verdict without a
       // real contained report is refused; the kernel — not the CLI — is authoritative (CLI-bypass safe).
       if (passed && !realReport) throw new Error('REVIEW_NO_EVIDENCE: passing verdict requires proof.report (an existing file contained under project root)');
-    });
+    }, { floor: MUTATION_TURN_FLOOR });
   // REQUEST_CHANGES → checker='rejected'. nextAction returns fix_episode and Execution creates the fix maker.
   return result;
 }

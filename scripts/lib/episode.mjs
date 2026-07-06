@@ -5,6 +5,7 @@ import { appendAnchored } from './integrity.mjs';
 import { atomicWrite } from './envelope.mjs';
 import { slugify } from './slug.mjs';
 import { leaseCheck } from './lease.mjs';
+import { MUTATION_TURN_FLOOR } from './budget.mjs';
 
 const NON_TERMINAL = ['pending', 'in_progress', 'blocked'];
 const RECORDABLE_TERMINAL = ['done', 'approved', 'rejected'];   // record 가 설정 가능한 터미널 (abandoned 제외)
@@ -62,7 +63,7 @@ export function newEpisode(root, runId, { plugin, role, kind, point, workstream 
     // Codex impl r15 🟡: reject a non-null workstream that does not exist — otherwise a maker bound to a phantom
     // workstream becomes unreviewable (dispatchReview rightly rejects WORKSTREAM_NOT_FOUND at review time).
     if (workstream && !loop.workstreams.find(w => w.id === workstream)) throw new Error(`WORKSTREAM_NOT_FOUND: ${workstream}`);
-  });
+  }, { floor: MUTATION_TURN_FLOOR });
   // Assert containment before FS writes
   const base = resolve(runDir(root, runId), 'episodes');
   const full = resolve(dir);
@@ -98,7 +99,7 @@ export function abandonEpisode(root, runId, episodeId, { reason, confirm, fence 
     const ep = loop.episodes.find(e => e.id === episodeId);
     if (!ep) throw new Error(`EPISODE_NOT_FOUND: ${episodeId}`);
     if (ALL_TERMINAL.includes(ep.status)) throw new Error('EPISODE_ALREADY_TERMINAL: ' + episodeId);
-  });
+  }, { floor: MUTATION_TURN_FLOOR });
 }
 
 export function recordEpisode(root, runId, episodeId, { status, artifacts = [], proof = {}, fence } = {}) {
@@ -157,5 +158,5 @@ export function recordEpisode(root, runId, episodeId, { status, artifacts = [], 
         throw new Error(`EPISODE_TERMINAL_NO_PROOF: ${episodeId} rejected requires proof.verdict=REQUEST_CHANGES`);
       }
     }
-  });
+  }, { floor: MUTATION_TURN_FLOOR });
 }

@@ -4,6 +4,7 @@ import { appendAnchored } from './integrity.mjs';
 import { leaseCheck } from './lease.mjs';
 import { runDir } from './state.mjs';
 import { makerReviewed, unsatisfiedReviewPoints, epOrder, rejectionResolved } from './review.mjs';
+import { MUTATION_TURN_FLOOR } from './budget.mjs';
 
 // A rejected checker is settled only when it is RESOLVED by the SINGLE unified predicate rejectionResolved
 // (review.mjs) — the SAME order-aware predicate next-action.mjs uses for routing. (Replaces the old local
@@ -83,6 +84,6 @@ export function finishRun(root, runId, { status, reportRel, proof = {}, fence, n
       const reportOk = full && full.startsWith(base + sep) && existsSync(full) && statSync(full).isFile();
       if (!reportOk) ps.missing.push('final-report-missing');
       if (ps.missing.length) throw new Error(`FINISH_PROOF_UNMET: ${ps.missing.join(',')}`);
-    });
+    }, { floor: MUTATION_TURN_FLOOR });
   return result;
 }
