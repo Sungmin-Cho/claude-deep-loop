@@ -28,8 +28,9 @@ function buildSettledRun(root, runId, fence) {
   const ep = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws.id, expectedArtifacts: ['art.txt'], fence });
   recordEpisode(root, runId, ep.id, { status: 'done', artifacts: ['art.txt'], proof: {}, fence });   // artifacts 가 expected 를 커버
   const dr = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws.id, detected: {}, fence });
-  writeFileSync(join(root, 'review.md'), '# review report');   // #2: passing verdict needs a real contained report
-  recordReviewOutcome(root, runId, { episodeId: dr.checkerEpisodeId, workstreamId: ws.id, point: 'implementation', verdict: 'APPROVE', proof: { report: 'review.md' }, fence });
+  mkdirSync(join(root, '.claude/worktrees/wt'), { recursive: true });
+  writeFileSync(join(root, '.claude/worktrees/wt/review.md'), '# review report');   // #2+Fix4: report under the reviewed ws worktree
+  recordReviewOutcome(root, runId, { episodeId: dr.checkerEpisodeId, workstreamId: ws.id, point: 'implementation', verdict: 'APPROVE', proof: { report: '.claude/worktrees/wt/review.md' }, fence });
   // 'ready' 는 review_points_done 커버리지만 검사(proof 는 객체이기만 하면 됨); recordWorkstreamTerminal 이 active 에서 제거.
   recordWorkstreamTerminal(root, runId, ws.id, { status: 'ready', proof: {}, fence });
   return ws.id;
@@ -277,8 +278,9 @@ test('repro: abandoning the orphan pending maker unblocks finish --status comple
   const good = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws.id, expectedArtifacts: ['art.txt'], fence });
   recordEpisode(root, runId, good.id, { status: 'done', artifacts: ['art.txt'], proof: {}, fence });
   const dr = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws.id, detected: {}, fence });
-  writeFileSync(join(root, 'review.md'), '# review report');
-  recordReviewOutcome(root, runId, { episodeId: dr.checkerEpisodeId, workstreamId: ws.id, point: 'implementation', verdict: 'APPROVE', proof: { report: 'review.md' }, fence });
+  mkdirSync(join(root, '.claude/worktrees/wt'), { recursive: true });
+  writeFileSync(join(root, '.claude/worktrees/wt/review.md'), '# review report');
+  recordReviewOutcome(root, runId, { episodeId: dr.checkerEpisodeId, workstreamId: ws.id, point: 'implementation', verdict: 'APPROVE', proof: { report: '.claude/worktrees/wt/review.md' }, fence });
   // Orphan: stranded pending maker with zero expectedArtifacts — isomorphic to repro episode 009.
   const orphan = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws.id, expectedArtifacts: [], fence });
   recordWorkstreamTerminal(root, runId, ws.id, { status: 'ready', proof: {}, fence });

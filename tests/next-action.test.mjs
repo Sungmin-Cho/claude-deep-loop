@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildInitialLoop, initRun } from '../scripts/lib/initrun.mjs';
@@ -226,8 +226,9 @@ test('#1: recordReviewOutcome(APPROVE) marks the maker agent-reviewed; comprehen
   recordEpisode(root, runId, makerId, { status: 'done', artifacts: ['art.txt'], proof: {}, fence: f });
   // Dispatch and approve the review — checker is now bound to the done maker.
   const r = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
-  writeFileSync(join(root, 'review.md'), '# review report');
-  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'implementation', verdict: 'APPROVE', proof: { report: 'review.md' }, fence: f });
+  mkdirSync(join(root, '.claude/worktrees/w'), { recursive: true });
+  writeFileSync(join(root, '.claude/worktrees/w/review.md'), '# review report');   // #2+Fix4: report under the reviewed ws worktree
+  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'implementation', verdict: 'APPROVE', proof: { report: '.claude/worktrees/w/review.md' }, fence: f });
   const { data } = readState(root, runId);
   const maker = data.episodes.find(e => e.role === 'maker' && e.point === 'implementation');
   assert.ok(!maker.human_reviewed, 'machine review must NOT mark the maker human_reviewed');

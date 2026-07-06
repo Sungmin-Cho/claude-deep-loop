@@ -104,7 +104,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" episode record --id <episode_
 node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" review dispatch --point <review_point> --workstream <workstream_id> --owner <run_id> --generation <n>
 ```
 
-checker 스킬 invoke 후 verdict 기록. **APPROVE/CONCERN(통과)은 checker가 실제로 작성한 리뷰 리포트 파일(프로젝트 root 하위, worktree-접두 상대경로)을 `--report`로 첨부해야 한다** — 없으면 `REVIEW_NO_EVIDENCE`(exit 1)로 거부된다. REQUEST_CHANGES는 `--report` 없이 통과(경량 reject 경로):
+checker 스킬 invoke 후 verdict 기록. **APPROVE/CONCERN(통과)은 checker가 실제로 작성한 리뷰 리포트 파일을 `--report`로 첨부해야 한다 — 리뷰 대상 workstream의 worktree(`.claude/worktrees/<slug>/…`) 하위 경로**여야 하며(무관한 root 파일 재사용 차단), 없거나 밖이면 `REVIEW_NO_EVIDENCE`(exit 1). REQUEST_CHANGES는 `--report` 없이 통과(경량 reject 경로):
 ```
 node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" review record --episode <checker_episode_id> --workstream <workstream_id> --point <review_point> --verdict <APPROVE|REQUEST_CHANGES|CONCERN> --report <review-report-path> --owner <run_id> --generation <n>
 ```

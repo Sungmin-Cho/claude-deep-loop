@@ -60,7 +60,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" review dispatch --point <revi
 
 ### Verdict 기록
 
-APPROVE/CONCERN(통과)은 실재하는 리뷰 리포트 파일(프로젝트 root 하위)을 `--report`로 첨부해야 하며(없으면 `REVIEW_NO_EVIDENCE`), 커널이 리포트 경로+content hash를 event-log에 남긴다. REQUEST_CHANGES는 `--report` 없이 통과:
+APPROVE/CONCERN(통과)은 실재하는 리뷰 리포트 파일을 `--report`로 첨부해야 한다 — **리뷰 대상 workstream의 worktree(`.claude/worktrees/<slug>/…`) 하위 경로**여야 하며(무관한 root 파일 재사용 차단), 없거나 밖이면 `REVIEW_NO_EVIDENCE`. 커널이 리포트 경로+content hash를 event-log에 남긴다. REQUEST_CHANGES는 `--report` 없이 통과:
 ```
 node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" review record --episode <checkerEpisodeId> --workstream <workstream_id> --point <review_point> --verdict <APPROVE|REQUEST_CHANGES|CONCERN> --report <review-report-path> --owner <run_id> --generation <n>
 ```

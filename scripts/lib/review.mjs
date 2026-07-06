@@ -1,5 +1,5 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { readFileSync, realpathSync } from 'node:fs';
+import { resolve, sep } from 'node:path';
 import { readState } from './state.mjs';
 import { appendAnchored } from './integrity.mjs';
 import { newEpisode } from './episode.mjs';
@@ -8,6 +8,17 @@ import { pluginPresent } from './detect.mjs';
 import { containedRealFile } from './fs-safe.mjs';
 import { contentHash } from './envelope.mjs';
 import { MUTATION_TURN_FLOOR } from './budget.mjs';
+
+// impl-R2 Fix 4: a passing verdict's report must be BOUND to the reviewed workstream — its realpath must sit under
+// the workstream's worktree directory. This stops an unrelated stale file (README.md, another ws's report) from
+// being reused as fake evidence. `realReport` is already a realpath (via containedRealFile); worktree is realpath'd
+// too so a symlinked worktree can't be spoofed.
+function reportBoundToWorktree(root, realReport, worktreeRel) {
+  if (!realReport || typeof worktreeRel !== 'string' || !worktreeRel.length) return false;
+  let wt;
+  try { wt = realpathSync(resolve(root, worktreeRel)); } catch { return false; }
+  return realReport === wt || realReport.startsWith(wt + sep);
+}
 
 // 연속 REQUEST_CHANGES 임계 (breaker.mjs THRESHOLD 미러 — fail-stop latch).
 const BREAKER_THRESHOLD = 3;
@@ -185,10 +196,14 @@ export function recordReviewOutcome(root, runId, { episodeId, workstreamId, poin
       if (!tgt.target_maker) throw new Error('REVIEW_UNBOUND_CHECKER: cannot record a verdict on a checker bound to no maker: ' + episodeId);
       const REVIEW_TERMINAL = ['done', 'approved', 'rejected', 'abandoned'];
       if (REVIEW_TERMINAL.includes(tgt.status)) throw new Error('REVIEW_ALREADY_RECORDED: ' + episodeId);
-      if (!loop.workstreams.find(w => w.id === tgt.workstream_id)) throw new Error(`WORKSTREAM_NOT_FOUND: ${tgt.workstream_id}`);
-      // #2 evidence gate — LAST (so fence/checker/terminal errors still fire first). A passing verdict without a
-      // real contained report is refused; the kernel — not the CLI — is authoritative (CLI-bypass safe).
-      if (passed && !realReport) throw new Error('REVIEW_NO_EVIDENCE: passing verdict requires proof.report (an existing file contained under project root)');
+      const wsForReport = loop.workstreams.find(w => w.id === tgt.workstream_id);
+      if (!wsForReport) throw new Error(`WORKSTREAM_NOT_FOUND: ${tgt.workstream_id}`);
+      // #2 + impl-R2 Fix 4 evidence gate — LAST (so fence/checker/terminal errors still fire first). A passing
+      // verdict needs a real report BOUND to THIS review: an existing file whose realpath sits under the reviewed
+      // workstream's worktree (an unrelated file like README.md at root is refused). Kernel-authoritative (CLI-bypass safe).
+      if (passed && !reportBoundToWorktree(root, realReport, wsForReport.worktree)) {
+        throw new Error('REVIEW_NO_EVIDENCE: passing verdict requires proof.report — a real file under the reviewed workstream worktree');
+      }
     }, { floor: MUTATION_TURN_FLOOR });
   // REQUEST_CHANGES → checker='rejected'. nextAction returns fix_episode and Execution creates the fix maker.
   return result;
