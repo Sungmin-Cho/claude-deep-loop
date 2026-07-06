@@ -45,6 +45,19 @@ test('patch forbidden review.* throws', () => {
   assert.throws(() => patch(root, runId, 'review.points', []), /FIELD_FORBIDDEN/);
 });
 
+// impl-R2 Fix 3: a whitelisted field with a schema-INVALID value (active_workstreams := non-array) must be rejected
+// BEFORE the event append — otherwise appendEvent commits, writeState's validate throws, and the event-log tail
+// out-runs the loop.json anchor → every later write bricks with LOG_TAMPERED.
+test('patch pre-validates the candidate: an invalid whitelisted value throws without staling the anchor', () => {
+  const { root, runId } = seed();
+  const before = readState(root, runId).data.budget.spent;
+  assert.throws(() => patch(root, runId, 'active_workstreams', 'bad'), /SCHEMA_INVALID/);
+  assert.equal(readState(root, runId).data.budget.spent, before, 'a rejected patch must not charge the floor');
+  // No brick: a subsequent valid patch still succeeds (would throw LOG_TAMPERED if the tail had advanced past the anchor).
+  assert.doesNotThrow(() => patch(root, runId, 'triage.actionable', [{ id: 'x' }]));
+  assert.equal(readState(root, runId).data.triage.actionable.length, 1);
+});
+
 test('tampered hash detected on read', () => {
   const { root, runId } = seed();
   writeFileSync(join(runDir(root, runId), 'loop.json'), '{"goal":"hacked"}'); // direct write, hash unchanged

@@ -120,6 +120,14 @@ export function patch(root, runId, field, value, { fence } = {}) {
           if (term.includes(list[idx].status)) throw new Error(`FIELD_FORBIDDEN: ${field} (terminal status immutable)`);
         }
       }
+      // impl-R2 Fix 3: pre-validate the POST-patch candidate here (before the event append). Otherwise an invalid
+      // whitelisted value (e.g. active_workstreams := "bad") would let appendEvent commit while writeState's schema
+      // validate throws afterwards — leaving the event-log tail ahead of the stored anchor → LOG_TAMPERED on the
+      // next write (run brick). setPath's unsafe-key guard also fires here, before any append.
+      const candidate = structuredClone(loop);
+      setPath(candidate, field, value);
+      const sv = validate(candidate);
+      if (!sv.ok) throw new Error(`SCHEMA_INVALID: ${sv.errors.join('; ')}`);
     },
     { floor: MUTATION_TURN_FLOOR });
 }
