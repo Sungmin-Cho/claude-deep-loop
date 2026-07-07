@@ -54,10 +54,11 @@ function violatesBoundary(src) {
 }
 
 // Codex r3 sf-4: deep-loop.mjs 를 실제 호출하는 라인 중 mutating subcommand 는 --owner 와 --generation 을 **둘 다** 가져야 한다.
-const MUTATING_SUB = /(state\s+patch|episode\s+(?:new|record|abandon)|workstream\s+(?:new|set|terminal)|review\s+(?:dispatch|record)|handoff\s+emit|budget\s+record|comprehension\s+ack|breaker\s+reset|session-profile\s+set|lease\s+(?:acquire|release)|finish\b)/;
+// Task 8: insights emit 도 mutating (lease-fenced) — MUTATING_SUB/MUTATING_CMD 둘 다 확장.
+const MUTATING_SUB = /(state\s+patch|episode\s+(?:new|record|abandon)|workstream\s+(?:new|set|terminal)|review\s+(?:dispatch|record)|handoff\s+emit|budget\s+record|comprehension\s+ack|breaker\s+reset|session-profile\s+set|lease\s+(?:acquire|release)|finish\b|insights\s+emit)/;
 // Codex r5 sf-3: shorthand 명령(예: `episode record --status done`, `finish --status completed`)도 잡는다.
 // "command 라인" = deep-loop.mjs 호출이거나, mutating sub 뒤에 CLI 플래그(--xxx)가 오는 경우. 순수 산문 멘션은 무시.
-const MUTATING_CMD = /(?:state\s+patch|episode\s+(?:new|record|abandon)|workstream\s+(?:new|set|terminal)|review\s+(?:dispatch|record)|handoff\s+emit|budget\s+record|comprehension\s+ack|breaker\s+reset|session-profile\s+set|lease\s+(?:acquire|release)|finish)\b[^\n]*\s--\w/;
+const MUTATING_CMD = /(?:state\s+patch|episode\s+(?:new|record|abandon)|workstream\s+(?:new|set|terminal)|review\s+(?:dispatch|record)|handoff\s+emit|budget\s+record|comprehension\s+ack|breaker\s+reset|session-profile\s+set|lease\s+(?:acquire|release)|finish|insights\s+emit)\b[^\n]*\s--\w/;
 function mutatingFenced(text) {
   // Codex r4 sf-2: 셸 라인 연속(\ 로 끝나는 줄)을 논리 명령으로 먼저 합친다 — multi-line unfenced 명령 회피 차단.
   const joined = text.replace(/\\\n\s*/g, ' ');
@@ -255,8 +256,36 @@ test('episode abandon must be fenced (mutatingFenced)', () => {
 });
 
 test('deep-loop-workflow references exist', () => {
-  for (const r of ['adapters.md', 'review-strategy.md', 'handoff-respawn.md'])
+  for (const r of ['adapters.md', 'review-strategy.md', 'handoff-respawn.md', 'hill-climbing.md'])
     assert.ok(existsSync(join(ROOT, 'skills', 'deep-loop-workflow', 'references', r)), `missing reference ${r}`);
+});
+
+// Task 8: hill-climbing protocol reference — Tier 목록 전문 + 증거 계약 (a)~(f) + ledger append 규약.
+test('hill-climbing reference: 존재 + Tier 목록 + 증거 계약 (a)~(f)', () => {
+  const src = readFileSync(join(ROOT, 'skills', 'deep-loop-workflow', 'references', 'hill-climbing.md'), 'utf8');
+  for (const marker of ['Tier 1', 'Tier 2', 'recipes/*.json', 'recipes/automation/*.yml',
+    'insights latest', 'falsification', 'hillclimb-ledger.json', '(e)', '(f)', 'append',
+    'diff', '수정', '삭제', '재배열', 'git log']) {   // ledger 순수-append 계약 핵심어 (r1 codex S3)
+    assert.ok(src.includes(marker), `hill-climbing.md missing marker: ${marker}`);
+  }
+  assert.ok(mutatingFenced(src), 'mutating commands must carry --owner/--generation');
+  assert.ok(!violatesBoundary(src));
+});
+
+// Task 8: finish must emit insights (non-fatal on failure); init must read insights latest (read-only).
+// Both must go through the kernel CLI — never parse/write .deep-loop/insights/ directly.
+test('finish/init 스킬: insights CLI 경유만 (직접 파싱·쓰기 금지)', () => {
+  for (const dir of ['deep-loop-finish', 'deep-loop']) {
+    const src = readFileSync(skillPath(dir), 'utf8');
+    // .deep-loop/insights/ 를 언급하는 명령 라인은 반드시 deep-loop.mjs insights 호출이어야 함
+    const bad = src.split('\n').some(line =>
+      /\.deep-loop\/insights\//.test(line) && !/deep-loop\.mjs/.test(line)
+      && (/(?:^|\s)(?:cat|jq|head|tail)\b/.test(line) || /readFileSync|Read\(/.test(line) || />>?\s*\S*\.deep-loop\/insights\//.test(line)));
+      // r1 opus S3: `>`는 \b 워드경계가 안 걸리므로 redirect 분기를 별도 패턴으로 — `> .deep-loop/insights/...` 미탐 방지
+    assert.ok(!bad, `${dir}: direct insights file access`);
+  }
+  assert.ok(readFileSync(skillPath('deep-loop-finish'), 'utf8').includes('insights emit'));
+  assert.ok(readFileSync(skillPath('deep-loop'), 'utf8').includes('insights latest'));
 });
 
 test('worktree-aware skills: action-keyed entry in continue; resume defers; handoff no entry; verify unchanged', () => {
