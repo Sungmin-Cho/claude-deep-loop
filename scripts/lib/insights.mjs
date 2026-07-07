@@ -17,13 +17,15 @@ export const CANDIDATE_RULES = {
 export function computeRunMetrics(loop, events) {
   const eps = loop.episodes || [];
   const byId = new Map(eps.map(e => [e.id, e]));
-  const count = (arr, key) => arr.reduce((a, e) => ((a[e[key]] = (a[e[key]] || 0) + 1), a), {});
+  // 버킷 키(point/kind/for/run_id)는 episode new가 임의 문자열을 허용하는 user-supplied 값 —
+  // plain {}에 '__proto__' 키를 넣으면 Object.prototype 오염/집계 유실이 나므로 모든 버킷은 null-prototype.
+  const count = (arr, key) => arr.reduce((a, e) => ((a[e[key]] = (a[e[key]] || 0) + 1), a), Object.create(null));
   const terminal = { done: 0, approved: 0, rejected: 0, abandoned: 0 };
   for (const e of eps) if (terminal[e.status] !== undefined) terminal[e.status]++;
   // abandoned는 loop.episodes 상태에도 남지만 소스 규약(§4)은 episode-abandon 이벤트 — 이벤트 기준으로 덮어쓴다.
   terminal.abandoned = events.filter(e => e.type === 'episode-abandon').length;
 
-  const per_point = {}; const fix_cycles = {};
+  const per_point = Object.create(null); const fix_cycles = Object.create(null);
   for (const ev of events.filter(e => e.type === 'review-outcome')) {
     const ep = byId.get(ev.data.episodeId) || {};
     const point = ep.point || 'unknown';
@@ -43,7 +45,7 @@ export function computeRunMetrics(loop, events) {
     tokens: costs.reduce((a, e) => a + (e.data.tokens || 0), 0),
     auto_floor_turns: costs.filter(e => e.data.auto_floor).reduce((a, e) => a + e.data.turns, 0),
     auto_floor_by_for: costs.filter(e => e.data.auto_floor && e.data.for)
-      .reduce((a, e) => ((a[e.data.for] = (a[e.data.for] || 0) + e.data.turns), a), {}),
+      .reduce((a, e) => ((a[e.data.for] = (a[e.data.for] || 0) + e.data.turns), a), Object.create(null)),
   };
 
   const acks = events.filter(e => e.type === 'comprehension-ack');
@@ -100,7 +102,7 @@ function pointOf(key) {
 // point별로 (ws,point) raw fix_cycles 항목을 모든 run에 걸쳐 pool한다 — fix_cycles_high(§5)와
 // aggregates.avg_fix_cycles_by_point가 공유하는 집계.
 function fixCyclesPointStats(perRunMap, runIds) {
-  const stats = {};
+  const stats = Object.create(null);
   for (const runId of runIds) {
     const m = perRunMap[runId];
     for (const [key, val] of Object.entries(m.review?.fix_cycles || {})) {
@@ -116,13 +118,13 @@ function fixCyclesPointStats(perRunMap, runIds) {
 // run 하나 안에서 point별 평균 fix_cycles (같은 point에 여러 workstream이 걸쳐있을 수 있음) —
 // fix_convergence_slow(§5)의 cross-run 시계열 한 점을 만드는 데 쓰인다.
 function perRunPointAverages(fixCycles) {
-  const acc = {};
+  const acc = Object.create(null);
   for (const [key, val] of Object.entries(fixCycles || {})) {
     const point = pointOf(key);
     const e = (acc[point] ||= { sum: 0, n: 0 });
     e.sum += val; e.n += 1;
   }
-  const out = {};
+  const out = Object.create(null);
   for (const [point, { sum, n }] of Object.entries(acc)) out[point] = sum / n;
   return out;
 }
@@ -133,7 +135,7 @@ const recipeHints = (recipes) => (recipes || []).map(r => `recipes/${r}.json`);
 export function avgFixCyclesByPoint(perRunMap) {
   const runIds = Object.keys(perRunMap).sort();
   const stats = fixCyclesPointStats(perRunMap, runIds);
-  const out = {};
+  const out = Object.create(null);
   for (const [point, { sum, n }] of Object.entries(stats)) out[point] = sum / n;
   return out;
 }
@@ -266,7 +268,7 @@ export function deriveCandidates(perRunMap, { integrityFailed = [] } = {}) {
 
   // fix_convergence_slow:<point> — cross-run 전용. 3+ runs에서 point 평균 fix_cycles가 시간순
   // (runIds 정렬 = runs_analyzed 순서) 비감소일 때만 발행. min_runs 미만인 point는 침묵.
-  const seriesByPoint = {};
+  const seriesByPoint = Object.create(null);
   for (const runId of runIds) {
     const avgs = perRunPointAverages(perRunMap[runId].review?.fix_cycles);
     for (const [point, avg] of Object.entries(avgs)) (seriesByPoint[point] ||= []).push(avg);
@@ -314,7 +316,7 @@ export function computeInsights(root, { selfRunId = null, now = Date.now(), retr
     insights_schema_version: INSIGHTS_SCHEMA_VERSION,
     generated_at: new Date(now).toISOString(),
     runs_analyzed: [], excluded_active: [], unreadable: [], integrity_failed_runs: [],
-    per_run: {}, aggregates: {}, candidates: [],
+    per_run: Object.create(null), aggregates: {}, candidates: [],
   };
   for (const id of listRunIds(root)) {
     const isSelf = id === selfRunId;

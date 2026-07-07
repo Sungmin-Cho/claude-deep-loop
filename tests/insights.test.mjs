@@ -377,3 +377,31 @@ test('ledger 스키마: 필수 필드 검증 + 시드 파일은 빈 배열', () 
   const seed = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'recipes', 'hillclimb-ledger.json'), 'utf8'));
   assert.deepEqual(seed, []);
 });
+
+// ── impl-R1 🟡2: user-supplied point·kind 키(__proto__)가 plain-object 버킷에서 Object.prototype을
+// 오염시키거나 집계를 유실하면 안 된다 (2026-07-08 리뷰 — episode.mjs:33은 비어있지 않은 문자열만 검사) ───
+test('computeRunMetrics/deriveCandidates: __proto__ point·kind가 프로토타입을 오염시키지 않고 own-entry로 집계된다', (t) => {
+  t.after(() => {
+    for (const k of ['checker_count', 'approve', 'request_changes', 'concern', 'sum', 'n', 'recipes']) {
+      delete Object.prototype[k];
+    }
+  });
+  const loop = {
+    run_id: 'RUNP', goal: 'g', status: 'completed', created_at: iso(T0),
+    episodes: [{ id: '001-m', role: 'maker', kind: '__proto__', point: '__proto__', workstream_id: 'ws-01', status: 'done' }],
+  };
+  let seq = 0; const ev = (type, data, ts) => ({ seq: ++seq, ts: iso(ts), type, data, checksum: 'x' });
+  const events = [ev('review-outcome', { episodeId: '001-m', verdict: 'REQUEST_CHANGES' }, T0 + 1000)];
+  const m = computeRunMetrics(loop, events);
+  // 전역 오염 없음 (p.checker_count++가 Object.prototype에 쓰였는지 검사)
+  assert.equal(Object.prototype.checker_count, undefined);
+  // __proto__ 키가 own-entry로 정상 집계됨
+  assert.equal(m.review.per_point['__proto__'].checker_count, 1);
+  assert.equal(m.review.per_point['__proto__'].request_changes, 1);
+  assert.equal(m.episodes.by_kind['__proto__'], 1);
+  assert.equal(m.review.fix_cycles['ws-01|__proto__'], 1);
+  // cross-run 집계 경로(fixCyclesPointStats/perRunPointAverages)도 own-entry로 동작 + 무오염
+  const cands = deriveCandidates({ RUNP: m });
+  assert.ok(cands.some(c => c.id === 'fix_cycles_high:__proto__'));
+  assert.equal(Object.prototype.sum, undefined);
+});
