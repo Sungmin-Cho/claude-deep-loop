@@ -10,7 +10,10 @@ export function loadRecipes(dir = recipesDir) {
   // recipes/에는 recipe 아닌 데이터 파일(hillclimb-ledger.json)도 있다 — malformed/null JSON 하나가
   // recipe 라우팅 전체(모든 init의 recipe-match)를 깨뜨리지 않도록 파일 단위로 건너뛴다.
   return readdirSync(dir).filter(f => f.endsWith('.json'))
-    .map(f => { try { return JSON.parse(readFileSync(join(dir, f), 'utf8')); } catch { return null; } })
+    .map(f => {
+      try { return JSON.parse(readFileSync(join(dir, f), 'utf8')); }
+      catch { process.stderr.write(`[deep-loop:warn] recipe ${f}: invalid JSON — skipped (validate가 fail-closed로 잡는다)\n`); return null; }
+    })
     .filter(r => r && Array.isArray(r.triggers));
 }
 

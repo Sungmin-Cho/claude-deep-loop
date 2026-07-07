@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { error } from './lib/log.mjs';
 import { initRun, buildInitialLoop } from './lib/initrun.mjs';
@@ -110,6 +110,17 @@ const handlers = {
     if (existsSync(ledgerPath)) {
       try { const lv = validateLedger(JSON.parse(readFileSync(ledgerPath, 'utf8'))); if (!lv.ok) errors.push(`ledger: ${lv.errors.join('; ')}`); }
       catch (e) { errors.push(`ledger: ${e.message}`); }
+    }
+    // recipes fail-closed 검증 (impl-R3 🟡C): 런타임 loadRecipes는 손상 파일을 fail-soft로 skip하므로
+    // (라우팅 생존), 손상 자체는 여기 validate(preflight/머지 게이트)가 파일명과 함께 잡는다.
+    const recipesDirPath = join(root, 'recipes');
+    if (existsSync(recipesDirPath)) {
+      for (const rf of readdirSync(recipesDirPath).filter(n => n.endsWith('.json') && n !== 'hillclimb-ledger.json')) {
+        try {
+          const r = JSON.parse(readFileSync(join(recipesDirPath, rf), 'utf8'));
+          if (!r || !Array.isArray(r.triggers)) errors.push(`recipe ${rf}: triggers must be an array`);
+        } catch (e) { errors.push(`recipe ${rf}: ${e.message}`); }
+      }
     }
     if (errors.length) { error(`validate failed:\n - ${errors.join('\n - ')}`); return 1; }
     process.stdout.write(`ok${runId ? ` (run ${runId})` : ' (schema+builder self-test)'}\n`);
