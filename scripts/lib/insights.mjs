@@ -347,3 +347,38 @@ export function computeInsights(root, { selfRunId = null, now = Date.now(), retr
   out.aggregates = { avg_fix_cycles_by_point: avgFixCyclesByPoint(out.per_run), total_runs: out.runs_analyzed.length };
   return out;
 }
+
+const insightsDir = (root) => join(root, '.deep-loop', 'insights');
+export const relInsightsPath = (name) => `.deep-loop/insights/${name}`;
+
+export function emitInsights(root, runId, { fence, now = Date.now(), rnd = Math.random, renameFn = renameSync, sleepFn } = {}) {
+  // lib 진입점 fence 필수 — shape까지 episode.mjs:26-27/finish.mjs 동형(owner 문자열 + generation 정수, r2 리뷰 정정)
+  if (!fence || typeof fence.owner !== 'string' || !fence.owner.length || !Number.isInteger(fence.generation)) {
+    throw new Error('FENCE_REQUIRED: emitInsights requires {owner: string, generation: integer}');
+  }
+  // fast-fail leaseCheck를 tmp write **이전에** 수행 (r2 리뷰 정정 — wrong-generation 호출이 .tmp- 잔재를 남기지 않게).
+  // 권위 검사는 여전히 아래 appendAnchored preCheck(락 안)에 있다 — 이건 잔재 방지용 사전 검사.
+  { const { data: pre } = readState(root, runId); const lc = leaseCheck(pre, fence); if (!lc.ok) throw new Error('LEASE_FENCED: ' + lc.reason); }
+  const payload = computeInsights(root, { selfRunId: runId, now, ...(sleepFn ? { sleepFn } : {}) });
+  const { data: loop } = readState(root, runId);
+  const envelope = wrap({ producer: 'deep-loop', artifact_kind: 'loop-insights',
+    schema: { name: 'loop-insights', version: String(INSIGHTS_SCHEMA_VERSION) },
+    run_id: runId, parent_run_id: loop.session_chain?.parent_run_id ?? null,
+    payload, now: new Date(now).toISOString() });
+  const json = JSON.stringify(envelope, null, 2);
+  const sha256 = contentHash(json);
+  const fileUlid = ulid(now, rnd);
+  const finalName = `${fileUlid}-insights.json`;
+  const rel = relInsightsPath(finalName);
+  mkdirSync(insightsDir(root), { recursive: true });
+  const tmp = join(insightsDir(root), `.tmp-${fileUlid}`);
+  atomicWrite(tmp, json);                                            // ① tmp (latest 스캔 제외 접두)
+  appendAnchored(root, runId,                                        // ② anchored 이벤트 = 신뢰 원천
+    { type: 'insights-emitted', data: { path: rel, sha256, candidates_count: payload.candidates.length } },
+    undefined,
+    (l) => { if (fence) { const r = leaseCheck(l, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); } },
+    { floor: MUTATION_TURN_FLOOR });
+  renameFn(tmp, join(insightsDir(root), finalName));                 // ③ 공개
+  // candidates를 반환에 포함 — finish 스킬이 파일을 직접 파싱하지 않고 CLI 출력만으로 제안 블록을 구성(§9, 2-plane)
+  return { ok: true, path: rel, sha256, candidates_count: payload.candidates.length, candidates: payload.candidates };
+}

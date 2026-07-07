@@ -1,10 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, renameSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, renameSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { computeRunMetrics, computeInsights, deriveCandidates } from '../scripts/lib/insights.mjs';
+import { computeRunMetrics, computeInsights, deriveCandidates, emitInsights } from '../scripts/lib/insights.mjs';
 import { readState, writeState, runDir as runDirOf } from '../scripts/lib/state.mjs';
+import { readLines } from '../scripts/lib/integrity.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
@@ -235,4 +236,34 @@ test('candidates: budget_overrun — ratio ≥ soft_stop_ratio 발행, 미만/nu
   assert.ok(deriveCandidates({ A: metricsWith({ budget_ratio: 0.85, soft_stop_ratio: 0.8 }) }).some(c => c.id === 'budget_overrun'));
   assert.ok(!deriveCandidates({ A: metricsWith({ budget_ratio: 0.5, soft_stop_ratio: 0.8 }) }).some(c => c.id === 'budget_overrun'));
   assert.ok(!deriveCandidates({ A: metricsWith({ budget_ratio: null, soft_stop_ratio: null }) }).some(c => c.id === 'budget_overrun'));
+});
+
+function emitFixture() {
+  const root = mkdtempSync(join(tmpdir(), 'dl-emit-'));
+  const { runId } = initRun(root, { goal: 'g', now: FIXED });
+  return { root, runId, fence: { owner: runId, generation: 1, intent: 'business' } };
+}
+
+test('emit: envelope 형태 + anchored 이벤트(path+sha256) + candidates 반환', () => {
+  const { root, runId, fence } = emitFixture();
+  const r = emitInsights(root, runId, { fence, now: FIXED.getTime(), rnd: () => 0.5 });
+  assert.match(r.path, /^\.deep-loop\/insights\/[0-9A-HJKMNP-TV-Z]{26}-insights\.json$/);
+  assert.ok(Array.isArray(r.candidates));                    // finish 제안 블록이 CLI 출력만으로 구성 가능해야 함(§9)
+  const env = JSON.parse(readFileSync(join(root, r.path), 'utf8'));
+  assert.equal(env.envelope.producer, 'deep-loop');
+  assert.equal(env.envelope.artifact_kind, 'loop-insights');
+  assert.equal(env.payload.insights_schema_version, 1);
+  const ev = readLines(root, runId).find(e => e.type === 'insights-emitted');
+  assert.equal(ev.data.path, r.path);
+  assert.equal(ev.data.sha256, r.sha256);
+});
+
+test('emit: fence 누락/불완전은 FENCE_REQUIRED, 불일치는 LEASE_FENCED — 파일·이벤트·.tmp- 잔재 전부 없음', () => {
+  const { root, runId } = emitFixture();
+  assert.throws(() => emitInsights(root, runId, { now: FIXED.getTime() }), /FENCE_REQUIRED/);
+  assert.throws(() => emitInsights(root, runId, { fence: { owner: runId }, now: FIXED.getTime() }), /FENCE_REQUIRED/);   // generation 정수 누락 (episode.mjs shape 동형)
+  assert.throws(() => emitInsights(root, runId, { fence: { owner: 'WRONG', generation: 9, intent: 'business' }, now: FIXED.getTime() }), /LEASE_FENCED/);
+  assert.ok(!readLines(root, runId).some(e => e.type === 'insights-emitted'));
+  const dir = join(root, '.deep-loop', 'insights');
+  assert.ok(!existsSync(dir) || readdirSync(dir).length === 0);       // wrong-generation도 .tmp- 잔재 ❌ (pre-tmp leaseCheck)
 });
