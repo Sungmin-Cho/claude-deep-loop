@@ -282,14 +282,34 @@ test('latest: 정상 emit → 검증 통과 최신 반환', () => {
   const { root, runId, fence } = emitFixture();
   const r1 = emitInsights(root, runId, { fence, now: FIXED.getTime(), rnd: () => 0.1 });
   const r2 = emitInsights(root, runId, { fence, now: FIXED.getTime() + 60000, rnd: () => 0.2 });
+  toTerminal(root, runId);   // Phase6 ITEM-4: latestInsights는 producer run이 terminal일 때만 신뢰한다
   const got = latestInsights(root);
   assert.equal(got.path, r2.path);                          // ULID 최신
   assert.equal(got.envelope.envelope.run_id, runId);
 });
 
+// ── Phase6 ITEM-4 (adversarial): finish는 proof 검증 이전에 insights emit을 실행하므로, proof 미충족
+// (FINISH_PROOF_UNMET)으로 finish가 실패하면 status=running인 run의 insights가 검증 통과 상태로
+// latest에 남아 다음 init/hill-climb이 소비할 수 있었다 — producer run terminal-only 게이트로 닫는다 ───
+test('latest: producer run이 running인 동안은 emit된 artifact를 반환하지 않는다 (emit→finish-proof 창 닫힘)', () => {
+  const { root, runId, fence } = emitFixture();
+  emitInsights(root, runId, { fence, now: FIXED.getTime() });
+  // toTerminal 미호출 — producer run은 여전히 running(emitFixture의 initRun 기본 상태)
+  assert.equal(latestInsights(root), null);
+});
+test('latest: producer run을 completed로 전환하면 동일 emit artifact가 즉시 유효화된다', () => {
+  const { root, runId, fence } = emitFixture();
+  const r = emitInsights(root, runId, { fence, now: FIXED.getTime() });
+  assert.equal(latestInsights(root), null);       // running 동안은 불신뢰
+  toTerminal(root, runId, 'completed');
+  const got = latestInsights(root);                // 재emit 없이 같은 파일이 유효화
+  assert.equal(got.path, r.path);
+});
+
 test('latest: anchored 이벤트 없는 고아 파일 불신뢰', () => {
   const { root, runId, fence } = emitFixture();
   emitInsights(root, runId, { fence, now: FIXED.getTime() });
+  toTerminal(root, runId);   // Phase6 ITEM-4
   // 고아 주입: 실제 emit 파일을 더 최신 ULID 이름으로 복사 (이벤트 없음 → path-binding 실패)
   const dir = join(root, '.deep-loop', 'insights');
   const real = readdirSync(dir).find(f => f.endsWith('-insights.json'));
@@ -310,6 +330,7 @@ test('latest: sha 불일치 불신뢰 → 유일 파일이면 null', () => {
 test('latest: 상위 insights_schema_version 파일은 skip하고 더 오래된 유효 파일을 반환 (schema 분기 고립 검증)', () => {
   const { root, runId, fence } = emitFixture();
   const old = emitInsights(root, runId, { fence, now: FIXED.getTime(), rnd: () => 0.1 });
+  toTerminal(root, runId);   // Phase6 ITEM-4: 검사 대상 기제(schema)만 고립 — terminal 전제는 미리 충족시켜 둔다
   // r2 리뷰 정정(codex S2): 미래 파일을 path-binding/sha까지 **통과**하도록 만들어 schema 분기만 고립 검증한다 —
   // 테스트 seam으로 appendAnchored를 직접 호출해 그 경로에 대한 anchored 이벤트(sha 일치)를 심는다.
   const dir = join(root, '.deep-loop', 'insights');
@@ -328,6 +349,7 @@ test('latest: 상위 insights_schema_version 파일은 skip하고 더 오래된 
 test('latest: per-file 예외(깨진 JSON)는 fail-soft로 skip하고 다음 유효 파일 반환', () => {
   const { root, runId, fence } = emitFixture();
   const ok = emitInsights(root, runId, { fence, now: FIXED.getTime(), rnd: () => 0.1 });
+  toTerminal(root, runId);   // Phase6 ITEM-4: 검사 대상 기제(깨진 JSON)만 고립
   const dir = join(root, '.deep-loop', 'insights');
   writeFileSync(join(dir, 'ZZZZZZZZZZ8888888888888888-insights.json'), '{torn');   // 최신 이름의 깨진 파일
   const got = latestInsights(root);                          // 크래시 없이
@@ -337,6 +359,7 @@ test('latest: per-file 예외(깨진 JSON)는 fail-soft로 skip하고 다음 유
 test('latest: 참조 run의 event-log 체인 변조(checksum 불변) → 파일 skip, latest null', () => {
   const { root, runId, fence } = emitFixture();
   emitInsights(root, runId, { fence, now: FIXED.getTime() });
+  toTerminal(root, runId);   // Phase6 ITEM-4: 검사 대상 기제(체인 변조)만 고립 — non-terminal 사유로 null이 되는 혼선 방지
   const ep = join(runDirOf(root, runId), 'event-log.jsonl');
   const lines = readFileSync(ep, 'utf8').trim().split('\n');
   const first = JSON.parse(lines[0]); first.data = { ...first.data, tampered: true };   // checksum 그대로 → verifyLog가 잡아야 함
@@ -365,6 +388,7 @@ test('CLI insights emit: fence 누락 exit 3 / 정상 emit 후 latest가 반환'
   assert.equal(cli(root, ['insights', 'emit']).code, 3);
   const ok = cli(root, ['insights', 'emit', '--owner', runId, '--generation', '1', '--now', String(FIXED.getTime())]);
   assert.equal(ok.code, 0);
+  toTerminal(root, runId);   // Phase6 ITEM-4: latestInsights는 producer run이 terminal일 때만 신뢰한다
   const latest = cli(root, ['insights', 'latest', '--json']);
   assert.equal(JSON.parse(latest.out).path, JSON.parse(ok.out).path);
 });

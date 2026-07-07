@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { error } from './lib/log.mjs';
 import { initRun, buildInitialLoop } from './lib/initrun.mjs';
 import { detectPlugins } from './lib/detect.mjs';
-import { matchRecipe } from './lib/recipes.mjs';
+import { matchRecipe, recipesDir, validateRecipesDir } from './lib/recipes.mjs';
 import { json } from './lib/log.mjs';
 import { validate as validateLoop } from './lib/schema.mjs';
 import { readState, writeState, patch as patchState, pauseRun, runDir, findRoot } from './lib/state.mjs';
@@ -106,22 +106,18 @@ const handlers = {
         if (!rv.ok) errors.push(`run ${runId}: ${rv.errors.join('; ')}`);
       } catch (e) { errors.push(`run ${runId}: ${e.message}`); }
     }
-    const ledgerPath = join(root, 'recipes', 'hillclimb-ledger.json');
+    // recipe/ledger 정적 검사는 런타임 라우팅이 실제로 읽는 **플러그인 번들** recipesDir 기준이다
+    // (project-root 기준이 아님) — --project-root가 타 프로젝트를 가리켜도 그 프로젝트의 recipes/는
+    // 검사 대상이 아니고, 번들 recipe는 root와 무관하게 항상 검증된다.
+    const ledgerPath = join(recipesDir, 'hillclimb-ledger.json');
     if (existsSync(ledgerPath)) {
       try { const lv = validateLedger(JSON.parse(readFileSync(ledgerPath, 'utf8'))); if (!lv.ok) errors.push(`ledger: ${lv.errors.join('; ')}`); }
       catch (e) { errors.push(`ledger: ${e.message}`); }
     }
     // recipes fail-closed 검증 (impl-R3 🟡C): 런타임 loadRecipes는 손상 파일을 fail-soft로 skip하므로
     // (라우팅 생존), 손상 자체는 여기 validate(preflight/머지 게이트)가 파일명과 함께 잡는다.
-    const recipesDirPath = join(root, 'recipes');
-    if (existsSync(recipesDirPath)) {
-      for (const rf of readdirSync(recipesDirPath).filter(n => n.endsWith('.json') && n !== 'hillclimb-ledger.json')) {
-        try {
-          const r = JSON.parse(readFileSync(join(recipesDirPath, rf), 'utf8'));
-          if (!r || !Array.isArray(r.triggers)) errors.push(`recipe ${rf}: triggers must be an array`);
-        } catch (e) { errors.push(`recipe ${rf}: ${e.message}`); }
-      }
-    }
+    const rv = validateRecipesDir(recipesDir);
+    if (!rv.ok) errors.push(...rv.errors);
     if (errors.length) { error(`validate failed:\n - ${errors.join('\n - ')}`); return 1; }
     process.stdout.write(`ok${runId ? ` (run ${runId})` : ' (schema+builder self-test)'}\n`);
     return 0;

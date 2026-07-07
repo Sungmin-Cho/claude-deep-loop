@@ -32,24 +32,31 @@ test('validate exits nonzero when loop.json is corrupted (hash anchor fires)', (
   assert.notEqual(runValidate(['--project-root', root, '--run-id', runId]), 0);
 });
 
-// ── impl-R3 🟡C: recipes fail-closed 검증 — 런타임 loadRecipes는 fail-soft(skip)지만, 손상은
-// validate(preflight/머지 게이트)가 파일명과 함께 fail-closed로 잡아야 silent 라우팅 변경이 없다 ───
-test('validate exits nonzero when a recipes/*.json is malformed', () => {
+// ── impl-R3 🟡C + Phase6 ITEM-1: recipes/ledger fail-closed 검증은 런타임 라우팅이 실제로 읽는
+// **플러그인 번들 recipesDir** 기준이다 (project-root 기준이 아님) — --project-root가 타 프로젝트를
+// 가리켜도 그 프로젝트 자체의 recipes/*.json은 검사 대상이 아니다(false-failure 방지, validateRecipesDir
+// 유닛 테스트는 tests/recipes.test.mjs가 주입 dir로 fail-closed 동작을 직접 검증한다).
+test('validate exits 0 even when --project-root has its own malformed recipes/*.json (project-root recipes/ is not the validated dir)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
   mkdirSync(join(root, 'recipes'), { recursive: true });
   writeFileSync(join(root, 'recipes', 'broken.json'), '{oops');
-  assert.notEqual(runValidate(['--project-root', root]), 0);
+  assert.equal(runValidate(['--project-root', root]), 0);
 });
-test('validate exits nonzero when a non-ledger recipe lacks a triggers array', () => {
+test('validate exits 0 even when a --project-root recipe lacks a triggers array (project-root recipes/ is not the validated dir)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
   mkdirSync(join(root, 'recipes'), { recursive: true });
   writeFileSync(join(root, 'recipes', 'not-a-recipe.json'), JSON.stringify({ id: 'x' }));
-  assert.notEqual(runValidate(['--project-root', root]), 0);
+  assert.equal(runValidate(['--project-root', root]), 0);
 });
-test('validate exits 0 with valid recipes + array ledger', () => {
+test('validate exits 0 with valid recipes + array ledger under --project-root (irrelevant to validated dir, still harmless)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
   mkdirSync(join(root, 'recipes'), { recursive: true });
   writeFileSync(join(root, 'recipes', 'ok.json'), JSON.stringify({ id: 'ok', triggers: ['x'] }));
   writeFileSync(join(root, 'recipes', 'hillclimb-ledger.json'), '[]');
+  assert.equal(runValidate(['--project-root', root]), 0);
+});
+// The bundled recipesDir itself (this repo's recipes/) must always validate clean, regardless of --project-root.
+test('validate exits 0 for the bundled recipes/ dir (validated independent of --project-root)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-'));
   assert.equal(runValidate(['--project-root', root]), 0);
 });

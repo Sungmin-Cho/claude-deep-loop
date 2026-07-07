@@ -414,7 +414,17 @@ export function latestInsights(root) {
       // 증거로 인정한다 (computeInsights §4-2 동형 — 단일 읽기, impl-R2 🟡2). 실패는 throw → per-file
       // catch → fail-soft skip.
       const rid = obj.envelope.run_id;
-      const anchor = readState(root, rid).data.event_log_head;
+      const producerData = readState(root, rid).data;
+      // Phase6 ITEM-4: finish는 proof 검증 **이전**에 insights emit을 실행하므로, proof 미충족으로
+      // finish가 실패하면 status=running인 run의 insights가 검증 통과 상태로 latest에 남아 다음
+      // init/hill-climb이 소비할 수 있다 — computeInsights가 타 run에 적용하는 terminal-only 원칙
+      // (TERMINAL_RUN, :306)을 여기 artifact 선택에도 대칭 적용한다. emit→finish 성공 사이 창에서만
+      // 일시 skip되고, finish가 status를 terminal로 바꾸는 순간 동일 artifact가 유효화된다.
+      if (!TERMINAL_RUN.has(producerData.status)) {
+        process.stderr.write(`[deep-loop:warn] insights ${f}: producer run ${rid} not terminal (status=${producerData.status}) — skipped\n`);
+        continue;
+      }
+      const anchor = producerData.event_log_head;
       const lines = readLines(root, rid);
       const vl = verifyLines(lines);
       if (!vl.ok) throw new Error(`LOG_TAMPERED: ${vl.errors.join('; ')}`);

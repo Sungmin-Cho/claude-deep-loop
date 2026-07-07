@@ -125,7 +125,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" episode new \
 
 **`/deep-loop-finish`** (final-report 작성 후, memory/wiki 단계 이전):
 1. `insights emit --owner <run_id> --generation <n>` 실행.
-2. `candidates.length > 0`이면 최종 메시지에 제안 블록 출력: 후보 요약 + `다음 명령: /deep-loop "하네스 개선: <후보 id 목록>"`. **자동 시작 ❌**.
+2. `candidates.length > 0`이면 최종 메시지에 제안 블록 출력: 후보 요약 + `다음 명령: /deep-loop "하네스 개선"`. 제안 명령의 goal은 이 고정 문구 그대로 쓴다 — 후보 id 상세(예: `fix_cycles_high:implementation`)는 명령 문자열 밖(메시지 본문 또는 `insights`/`insights latest` CLI 출력)에서만 표기한다(candidate id의 "fix"/"implement" 같은 substring이 다른 recipe 트리거와 충돌해 recipe-match를 비결정적으로 오라우팅할 수 있으므로). **자동 시작 ❌**.
 3. emit 실패는 **비치명** — finish는 계속 진행하고 실패를 로그·리포트에 명시한다.
 
 **`/deep-loop` (init)** — §2-2와 §2-3 사이:
