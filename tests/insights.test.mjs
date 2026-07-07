@@ -378,6 +378,44 @@ test('ledger 스키마: 필수 필드 검증 + 시드 파일은 빈 배열', () 
   assert.deepEqual(seed, []);
 });
 
+// ── impl-R3 🟡A: fix_cycles 분모에 0-cycle 리뷰 쌍 포함 — RC-only 분모는 평균을 항상 ≥1로 퇴화시켜
+// 단발 reject 1건에도 fix_cycles_high가 발행된다 (스펙 §5 임계 1.0의 의미 복원) ───
+test('fix_cycles: approve-only 리뷰 쌍도 0으로 분모에 포함된다', () => {
+  const loop = {
+    run_id: 'RUNZ', goal: 'g', status: 'completed', created_at: iso(T0),
+    episodes: [
+      { id: '001-m', role: 'maker', kind: 'implement', point: 'implementation', workstream_id: 'ws-a', status: 'done' },
+      { id: '002-c', role: 'checker', kind: 'review', point: 'implementation', workstream_id: 'ws-a', status: 'approved' },
+      { id: '003-m', role: 'maker', kind: 'implement', point: 'implementation', workstream_id: 'ws-b', status: 'done' },
+      { id: '004-c', role: 'checker', kind: 'review', point: 'implementation', workstream_id: 'ws-b', status: 'rejected' },
+    ],
+  };
+  let seq = 0; const ev = (type, data, ts) => ({ seq: ++seq, ts: iso(ts), type, data, checksum: 'x' });
+  const events = [
+    ev('review-outcome', { episodeId: '002-c', verdict: 'APPROVE' }, T0 + 1000),
+    ev('review-outcome', { episodeId: '004-c', verdict: 'REQUEST_CHANGES' }, T0 + 2000),
+  ];
+  const m = computeRunMetrics(loop, events);
+  assert.equal(m.review.fix_cycles['ws-a|implementation'], 0);   // approve-only 쌍이 분모에 존재
+  assert.equal(m.review.fix_cycles['ws-b|implementation'], 1);
+  // 평균 = (0+1)/2 = 0.5 < 1.0 → 단발 reject가 fix_cycles_high를 만들지 않는다
+  assert.ok(!deriveCandidates({ RUNZ: m }).some(c => c.id === 'fix_cycles_high:implementation'));
+  // 0-시드가 fix_convergence_slow에 위양성을 만들지도 않는다 — all-zero 시계열(클린 run 3개)은 후보 아님
+  const zero = { review: { per_point: {}, fix_cycles: { 'w|impl': 0 } } };
+  const three = { A: metricsWith(zero), B: metricsWith(zero), C: metricsWith(zero) };
+  assert.ok(!deriveCandidates(three).some(c => c.id === 'fix_convergence_slow:impl'));
+});
+
+// ── impl-R3 🟡D: 마이닝 대상은 과거/타 버전 커널이 쓴 run — 이벤트 shape drift로 metrics 산출이
+// 불능이어도 run 하나가 insights 전체를 크래시하면 안 된다 (per-run fail-soft → unreadable) ───
+test('computeInsights: metrics 산출 불능 run은 unreadable로 fail-soft한다', () => {
+  const { root, runId } = emitFixture();
+  appendAnchored(root, runId, { type: 'review-outcome' });   // data 없는 이벤트 — shape drift 시뮬레이션 (체인은 유효)
+  const out = computeInsights(root, { selfRunId: runId, now: FIXED.getTime(), sleepFn: NOSLEEP });
+  assert.ok(out.unreadable.includes(runId));
+  assert.equal(out.per_run[runId], undefined);
+});
+
 // ── impl-R2 🟡2: 단일 읽기 검증 스냅샷 — line-based 검증 helper (integrity.mjs). verifiedRead가
 // 로그를 두 번 읽으면(verifyLog↔readLines) 그 사이 concurrent append가 검증 밖 suffix로 유입된다 ───
 test('integrity: verifyLines/verifyHeadLines가 in-memory 라인 배열을 검증한다', async () => {

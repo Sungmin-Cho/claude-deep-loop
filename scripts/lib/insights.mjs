@@ -31,11 +31,14 @@ export function computeRunMetrics(loop, events) {
     const point = ep.point || 'unknown';
     const p = (per_point[point] ||= { checker_count: 0, approve: 0, request_changes: 0, concern: 0 });
     p.checker_count++;
+    // 분모 시드: 리뷰된 (ws,point) 쌍은 verdict와 무관하게 0부터 존재해야 한다 — RC-only 분모는
+    // 평균을 항상 ≥1로 퇴화시켜 임계 1.0(스펙 §5)이 무의미해진다 (impl-R3 🟡A).
+    const k = `${ep.workstream_id || 'unknown'}|${point}`;
+    fix_cycles[k] ||= 0;
     if (ev.data.verdict === 'APPROVE') p.approve++;
     else if (ev.data.verdict === 'REQUEST_CHANGES') {
       p.request_changes++;
-      const k = `${ep.workstream_id || 'unknown'}|${point}`;
-      fix_cycles[k] = (fix_cycles[k] || 0) + 1;
+      fix_cycles[k] += 1;
     } else if (ev.data.verdict === 'CONCERN') p.concern++;
   }
 
@@ -275,7 +278,8 @@ export function deriveCandidates(perRunMap, { integrityFailed = [] } = {}) {
   }
   for (const [point, series] of Object.entries(seriesByPoint)) {
     if (series.length < CANDIDATE_RULES.CROSS_RUN_MIN) continue;
-    const nonDecreasing = series.every((v, i) => i === 0 || v >= series[i - 1]);
+    // all-zero 시계열(클린 run들)은 "느린 수렴"이 아니다 — 0-시드 분모(위 🟡A) 도입 후 위양성 방지.
+    const nonDecreasing = series.every((v, i) => i === 0 || v >= series[i - 1]) && series[series.length - 1] > 0;
     if (nonDecreasing) {
       candidates.push({
         id: `fix_convergence_slow:${point}`, metric: 'fix_cycles_trend', value: series[series.length - 1],
@@ -345,7 +349,11 @@ export function computeInsights(root, { selfRunId = null, now = Date.now(), retr
     };
     try { ({ hash: loopHash, data: loop, events } = verifiedRead()); }
     catch { try { sleepFn(retryDelayMs); ({ hash: loopHash, data: loop, events } = verifiedRead()); } catch { out.integrity_failed_runs.push(id); continue; } }
-    const m = computeRunMetrics(loop, events);
+    // 검증은 통과했으나 metrics 산출이 불능인 run(과거/타 버전 커널의 이벤트 shape drift)은 fail-soft로
+    // unreadable에 분류 — run 하나가 insights 전체(피드백 루프)를 크래시하면 안 된다 (impl-R3 🟡D).
+    let m;
+    try { m = computeRunMetrics(loop, events); }
+    catch { out.unreadable.push(id); continue; }
     if (isSelf) m.self_snapshot = true;
     out.per_run[id] = m;
     out.runs_analyzed.push({ run_id: id, last_seq: m.last_seq, loop_sha256: loopHash });
