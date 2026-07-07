@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync, existsSync, renameSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { runDir, readState } from './state.mjs';
-import { readLines, verifyLog, verifyHead, appendAnchored, MUTATION_TURN_FLOOR } from './integrity.mjs';
+import { readLines, verifyLines, verifyHeadLines, appendAnchored, MUTATION_TURN_FLOOR } from './integrity.mjs';
 import { contentHash, wrap, unwrap, ulid, atomicWrite } from './envelope.mjs';
 import { leaseCheck } from './lease.mjs';
 
@@ -332,12 +332,16 @@ export function computeInsights(root, { selfRunId = null, now = Date.now(), retr
     const verifiedRead = () => {
       // Single verified read: readState hash-checks loop.json and returns the verified content hash — a second
       // readFileSync would open a TOCTOU window where loop_sha256 hashes different bytes than the analyzed data.
+      // 이벤트 로그도 같은 원리로 **1회만** 읽고 그 in-memory 배열에 체인 검증 + head-anchor 대조를 수행한다 —
+      // verifyLog/verifyHead(디스크 재읽기)와 분석용 readLines를 분리하면 그 사이 concurrent append가
+      // 검증 밖 suffix로 metrics/last_seq에 유입된다 (impl-R2 🟡2).
       const r = readState(root, id);                                   // hash anchor 검증
-      const vl = verifyLog(root, id);                                  // event-log 체인 검증
+      const lines = readLines(root, id);                               // 단일 읽기 — 검증 배열 == 분석 배열
+      const vl = verifyLines(lines);                                   // event-log 체인 검증
       if (!vl.ok) throw new Error(`LOG_TAMPERED: ${vl.errors.join('; ')}`);
-      const vh = verifyHead(root, id, r.data.event_log_head);          // suffix truncation 탐지
+      const vh = verifyHeadLines(lines, r.data.event_log_head);        // suffix truncation 탐지
       if (!vh.ok) throw new Error(`LOG_TAMPERED: ${vh.errors.join('; ')}`);
-      return { hash: r.hash, data: r.data, events: readLines(root, id) };
+      return { hash: r.hash, data: r.data, events: lines };
     };
     try { ({ hash: loopHash, data: loop, events } = verifiedRead()); }
     catch { try { sleepFn(retryDelayMs); ({ hash: loopHash, data: loop, events } = verifiedRead()); } catch { out.integrity_failed_runs.push(id); continue; } }
@@ -398,14 +402,17 @@ export function latestInsights(root) {
       if ((obj.payload?.insights_schema_version ?? Infinity) > INSIGHTS_SCHEMA_VERSION) { process.stderr.write(`[deep-loop:warn] insights ${f}: newer schema — skipped\n`); continue; }
       const rel = relInsightsPath(f);
       // 리뷰 판정(2026-07-07): anchored 신뢰는 체인 검증을 전제한다 — readLines는 parse만 하므로
-      // verifyLog(체크섬 체인) + verifyHead(head anchor, suffix truncation)를 통과한 로그의 이벤트만
-      // 증거로 인정한다 (computeInsights §4-2 동형). 실패는 throw → per-file catch → fail-soft skip.
+      // verifyLines(체크섬 체인) + verifyHeadLines(head anchor, suffix truncation)를 통과한 로그의 이벤트만
+      // 증거로 인정한다 (computeInsights §4-2 동형 — 단일 읽기, impl-R2 🟡2). 실패는 throw → per-file
+      // catch → fail-soft skip.
       const rid = obj.envelope.run_id;
-      const vl = verifyLog(root, rid);
+      const anchor = readState(root, rid).data.event_log_head;
+      const lines = readLines(root, rid);
+      const vl = verifyLines(lines);
       if (!vl.ok) throw new Error(`LOG_TAMPERED: ${vl.errors.join('; ')}`);
-      const vh = verifyHead(root, rid, readState(root, rid).data.event_log_head);
+      const vh = verifyHeadLines(lines, anchor);
       if (!vh.ok) throw new Error(`LOG_TAMPERED: ${vh.errors.join('; ')}`);
-      const ev = readLines(root, rid).find(e => e.type === 'insights-emitted' && e.data.path === rel);
+      const ev = lines.find(e => e.type === 'insights-emitted' && e.data.path === rel);
       if (!ev) continue;                                    // path-binding: 이벤트의 path와 정확 일치 필수
       if (ev.data.sha256 !== contentHash(raw)) continue;    // 내용 무결성
       return { path: rel, envelope: obj };

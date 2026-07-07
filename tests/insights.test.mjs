@@ -378,6 +378,35 @@ test('ledger 스키마: 필수 필드 검증 + 시드 파일은 빈 배열', () 
   assert.deepEqual(seed, []);
 });
 
+// ── impl-R2 🟡2: 단일 읽기 검증 스냅샷 — line-based 검증 helper (integrity.mjs). verifiedRead가
+// 로그를 두 번 읽으면(verifyLog↔readLines) 그 사이 concurrent append가 검증 밖 suffix로 유입된다 ───
+test('integrity: verifyLines/verifyHeadLines가 in-memory 라인 배열을 검증한다', async () => {
+  const integ = await import('../scripts/lib/integrity.mjs');
+  assert.equal(typeof integ.verifyLines, 'function');
+  assert.equal(typeof integ.verifyHeadLines, 'function');
+  const { root, runId, fence } = emitFixture();
+  emitInsights(root, runId, { fence, now: FIXED.getTime(), rnd: () => 0.5 });   // 이벤트 ≥1 생성 (initRun 직후 로그는 빈 상태)
+  const lines = readLines(root, runId);
+  assert.ok(lines.length >= 1);
+  assert.equal(integ.verifyLines(lines).ok, true);
+  const anchor = readState(root, runId).data.event_log_head;
+  assert.equal(integ.verifyHeadLines(lines, anchor).ok, true);
+  // anchor 초과 suffix(검증 밖 이벤트)는 head 불일치로 fail
+  const extra = [...lines, { ...lines[lines.length - 1], seq: lines.length + 1 }];
+  assert.equal(integ.verifyHeadLines(extra, anchor).ok, false);
+  // 체인 훼손 감지
+  const tampered = lines.map((e, i) => (i === 0 ? { ...e, data: { ...e.data, x: 1 } } : e));
+  assert.equal(integ.verifyLines(tampered).ok, false);
+});
+
+// ── impl-R2 ℹ️7: malformed run id도 clean 에러 exit 1 (uncaught RUN_ID_INVALID 스택 금지) ───
+test('CLI insights --run: malformed run id는 clean RUN_NOT_FOUND exit 1', () => {
+  const { root } = emitFixture();
+  const r = cli(root, ['insights', '--run', '../nope', '--json']);
+  assert.equal(r.code, 1);
+  assert.match(String(r.err), /RUN_NOT_FOUND/);
+});
+
 // ── impl-R1 🟡2: user-supplied point·kind 키(__proto__)가 plain-object 버킷에서 Object.prototype을
 // 오염시키거나 집계를 유실하면 안 된다 (2026-07-08 리뷰 — episode.mjs:33은 비어있지 않은 문자열만 검사) ───
 test('computeRunMetrics/deriveCandidates: __proto__ point·kind가 프로토타입을 오염시키지 않고 own-entry로 집계된다', (t) => {

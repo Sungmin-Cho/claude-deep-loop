@@ -429,7 +429,11 @@ const handlers = {
       const selfRunId = runIdOf(root, f);
       if (f.run !== undefined) {
         const target = String(f.run);
-        if (!existsSync(runDir(root, target))) { error(`RUN_NOT_FOUND: ${target}`); return 1; }
+        // runDir는 unsafe path segment('/'·'..' 등)에 RUN_ID_INVALID를 throw — read-only 조회에서는
+        // 존재하지 않는 run과 동일하게 clean exit 1로 취급한다 (uncaught 스택 금지, impl-R2 ℹ️7).
+        let targetDir;
+        try { targetDir = runDir(root, target); } catch { error(`RUN_NOT_FOUND: ${target}`); return 1; }
+        if (!existsSync(targetDir)) { error(`RUN_NOT_FOUND: ${target}`); return 1; }
         const out = computeInsights(root, { selfRunId, now: parseNow(f) });
         json({ ...out, per_run: { [target]: out.per_run[target] ?? null } }); return 0;
       }

@@ -29,8 +29,10 @@ export function appendEvent(root, runId, { type, data }) {
   appendFileSync(logPath(root, runId), JSON.stringify({ seq, ts, type, data, checksum }) + '\n');
 }
 
-export function verifyLog(root, runId) {
-  const lines = readLines(root, runId);
+// line-based 검증 — 호출자가 이미 읽어둔 in-memory 배열을 검증한다. "검증한 배열 == 분석하는 배열"이
+// 필요한 소비자(insights의 단일 읽기 스냅샷)가 디스크 재읽기 없이 쓴다 (impl-R2 🟡2: verifyHead와
+// readLines 사이 concurrent append가 검증 밖 suffix로 유입되는 창 제거).
+export function verifyLines(lines) {
   const errors = [];
   let prev = 'GENESIS';
   lines.forEach((e, i) => {
@@ -40,6 +42,10 @@ export function verifyLog(root, runId) {
     prev = e.checksum;
   });
   return { ok: errors.length === 0, errors };
+}
+
+export function verifyLog(root, runId) {
+  return verifyLines(readLines(root, runId));
 }
 
 // cost turns/tokens는 유한 비음수만 허용 (음수 주입으로 spent를 낮추는 우회 차단, Codex impl 🔴2)
@@ -55,19 +61,27 @@ export function recomputeSpent(root, runId) {
 }
 
 // 마지막 이벤트의 head {seq, checksum} (빈 로그면 GENESIS) — loop.json 앵커와 대조용 (Codex impl 🔴3)
-export function lastLogHead(root, runId) {
-  const lines = readLines(root, runId);
+export function headOfLines(lines) {
   return lines.length ? { seq: lines[lines.length - 1].seq, checksum: lines[lines.length - 1].checksum } : { seq: 0, checksum: 'GENESIS' };
 }
 
-// 실제 로그 tail이 기대 head와 일치하는지 — suffix truncation 탐지
-export function verifyHead(root, runId, expected) {
+export function lastLogHead(root, runId) {
+  return headOfLines(readLines(root, runId));
+}
+
+// 로그 tail이 기대 head와 일치하는지 — suffix truncation 탐지. line-based 변형은 verifyLines와 같은
+// 이유(검증 배열과 소비 배열의 동일성)로 존재한다.
+export function verifyHeadLines(lines, expected) {
   const exp = expected || { seq: 0, checksum: 'GENESIS' };
-  const head = lastLogHead(root, runId);
+  const head = headOfLines(lines);
   if (head.seq !== exp.seq || head.checksum !== exp.checksum) {
     return { ok: false, errors: [`log head ${head.seq}/${head.checksum} != anchor ${exp.seq}/${exp.checksum}`] };
   }
   return { ok: true, errors: [] };
+}
+
+export function verifyHead(root, runId, expected) {
+  return verifyHeadLines(readLines(root, runId), expected);
 }
 
 // 단일 anchored append 경로 — 이벤트 append + loop.json의 event_log_head 앵커 갱신을 한 lock 안에서.
