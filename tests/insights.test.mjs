@@ -330,3 +330,13 @@ test('latest: per-file 예외(깨진 JSON)는 fail-soft로 skip하고 다음 유
   const got = latestInsights(root);                          // 크래시 없이
   assert.equal(got.path, ok.path);                           // 다음 후보(정상본) 반환
 });
+
+test('latest: 참조 run의 event-log 체인 변조(checksum 불변) → 파일 skip, latest null', () => {
+  const { root, runId, fence } = emitFixture();
+  emitInsights(root, runId, { fence, now: FIXED.getTime() });
+  const ep = join(runDirOf(root, runId), 'event-log.jsonl');
+  const lines = readFileSync(ep, 'utf8').trim().split('\n');
+  const first = JSON.parse(lines[0]); first.data = { ...first.data, tampered: true };   // checksum 그대로 → verifyLog가 잡아야 함
+  writeFileSync(ep, [JSON.stringify(first), ...lines.slice(1)].join('\n') + '\n');
+  assert.equal(latestInsights(root), null);
+});

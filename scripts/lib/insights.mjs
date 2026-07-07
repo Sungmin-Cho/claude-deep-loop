@@ -394,7 +394,15 @@ export function latestInsights(root) {
       if (!obj) continue;
       if ((obj.payload?.insights_schema_version ?? Infinity) > INSIGHTS_SCHEMA_VERSION) { process.stderr.write(`[deep-loop:warn] insights ${f}: newer schema — skipped\n`); continue; }
       const rel = relInsightsPath(f);
-      const ev = readLines(root, obj.envelope.run_id).find(e => e.type === 'insights-emitted' && e.data.path === rel);
+      // 리뷰 판정(2026-07-07): anchored 신뢰는 체인 검증을 전제한다 — readLines는 parse만 하므로
+      // verifyLog(체크섬 체인) + verifyHead(head anchor, suffix truncation)를 통과한 로그의 이벤트만
+      // 증거로 인정한다 (computeInsights §4-2 동형). 실패는 throw → per-file catch → fail-soft skip.
+      const rid = obj.envelope.run_id;
+      const vl = verifyLog(root, rid);
+      if (!vl.ok) throw new Error(`LOG_TAMPERED: ${vl.errors.join('; ')}`);
+      const vh = verifyHead(root, rid, readState(root, rid).data.event_log_head);
+      if (!vh.ok) throw new Error(`LOG_TAMPERED: ${vh.errors.join('; ')}`);
+      const ev = readLines(root, rid).find(e => e.type === 'insights-emitted' && e.data.path === rel);
       if (!ev) continue;                                    // path-binding: 이벤트의 path와 정확 일치 필수
       if (ev.data.sha256 !== contentHash(raw)) continue;    // 내용 무결성
       return { path: rel, envelope: obj };
