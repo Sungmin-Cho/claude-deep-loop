@@ -2,7 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, renameSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 import { computeRunMetrics, computeInsights, deriveCandidates, emitInsights, latestInsights, relInsightsPath } from '../scripts/lib/insights.mjs';
 import { readState, writeState, runDir as runDirOf } from '../scripts/lib/state.mjs';
 import { readLines, appendAnchored } from '../scripts/lib/integrity.mjs';
@@ -339,4 +341,29 @@ test('latest: 참조 run의 event-log 체인 변조(checksum 불변) → 파일 
   const first = JSON.parse(lines[0]); first.data = { ...first.data, tampered: true };   // checksum 그대로 → verifyLog가 잡아야 함
   writeFileSync(ep, [JSON.stringify(first), ...lines.slice(1)].join('\n') + '\n');
   assert.equal(latestInsights(root), null);
+});
+
+// CLI tests
+const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'deep-loop.mjs');
+function cli(root, args, opts = {}) {
+  try { return { code: 0, out: execFileSync('node', [CLI, ...args, '--project-root', root], { encoding: 'utf8', ...opts }) }; }
+  catch (e) { return { code: e.status, out: String(e.stdout || ''), err: String(e.stderr || '') }; }
+}
+
+test('CLI insights: read-only 계산 (fence 불필요) + invalid run exit 1 + unknown verb exit 2', () => {
+  const { root, runId, fence } = emitFixture();
+  const r = cli(root, ['insights', '--json']);
+  assert.equal(r.code, 0);
+  assert.ok(JSON.parse(r.out).per_run[runId]);              // self(current) 포함
+  assert.equal(cli(root, ['insights', '--run', 'NOPE', '--json']).code, 1);
+  assert.equal(cli(root, ['insights', 'bogus-verb']).code, 2);
+});
+
+test('CLI insights emit: fence 누락 exit 3 / 정상 emit 후 latest가 반환', () => {
+  const { root, runId } = emitFixture();
+  assert.equal(cli(root, ['insights', 'emit']).code, 3);
+  const ok = cli(root, ['insights', 'emit', '--owner', runId, '--generation', '1', '--now', String(FIXED.getTime())]);
+  assert.equal(ok.code, 0);
+  const latest = cli(root, ['insights', 'latest', '--json']);
+  assert.equal(JSON.parse(latest.out).path, JSON.parse(ok.out).path);
 });

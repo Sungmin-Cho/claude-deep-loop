@@ -26,6 +26,7 @@ import { defaultDesktopProbe } from './lib/desktop-target.mjs';
 import { finishRun } from './lib/finish.mjs';
 import { detectAndPersist } from './lib/detect-terminal.mjs';
 import { recoverRun } from './lib/recover.mjs';
+import { computeInsights, emitInsights, latestInsights } from './lib/insights.mjs';
 
 function parseFlags(argv) {
   const f = {};
@@ -412,6 +413,32 @@ const handlers = {
       catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }
     }
     error(`unknown breaker verb: ${verb}`); return 2;
+  },
+  // insights [--run <id>] | insights emit --owner --generation | insights latest
+  // compute/latest = read-only (fence 불필요, spec §6). emit = mutating → requireLease(외곽) + lib preCheck(락 안).
+  insights: async (a) => {
+    const verb = a[0] && !a[0].startsWith('--') ? a[0] : null;
+    const f = parseFlags(verb ? a.slice(1) : a);
+    const root = rootOf(f);
+    if (verb === null) {
+      const selfRunId = runIdOf(root, f);
+      if (f.run !== undefined) {
+        const target = String(f.run);
+        if (!existsSync(runDir(root, target))) { error(`RUN_NOT_FOUND: ${target}`); return 1; }
+        const out = computeInsights(root, { selfRunId, now: parseNow(f) });
+        json({ ...out, per_run: { [target]: out.per_run[target] ?? null } }); return 0;
+      }
+      json(computeInsights(root, { selfRunId, now: parseNow(f) })); return 0;
+    }
+    if (verb === 'latest') { json(latestInsights(root)); return 0; }
+    if (verb === 'emit') {
+      const runId = runIdOf(root, f);
+      requireLease(root, runId, f);
+      const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'business' };
+      try { json(emitInsights(root, runId, { fence, now: parseNow(f) })); return 0; }
+      catch (e) { const m = String(e?.message || e); if (m.startsWith('LEASE_FENCED')) { error(m); return 3; } error(m); return 1; }
+    }
+    error(`unknown insights verb: ${verb}`); return 2;
   },
   // spawn-style offer-desktop|confirm-desktop|decline-desktop|reset-desktop --owner <id> --generation <n> [--nonce <n>]
   //           | probe-desktop
