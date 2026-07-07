@@ -1,7 +1,7 @@
 {
   "id": "harness-hill-climb",
   "name": "Harness Hill-Climb",
-  "triggers": ["hill-climb", "hill climbing", "harness improvement", "improve the harness", "loop improvement", "하네스 개선", "루프 개선", "환류"],
+  "triggers": ["hill-climb", "hill climbing", "하네스 개선", "루프 개선", "환류"],
   "protocol_hint": "standalone",
   "flow": ["insights", "standalone:maker", "deep-review:checker", "ship-proposal", "archive"],
   "expected_artifacts": [".deep-loop/insights/*.json", "harness diff (Tier 1)", "recipes/hillclimb-ledger.json", ".deep-review/reports/*.md"]
