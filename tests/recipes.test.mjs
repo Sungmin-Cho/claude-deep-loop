@@ -40,3 +40,13 @@ test('harness-hill-climb: 트리거 매칭 + standalone 폴백', () => {
   assert.equal(r.recipe, 'harness-hill-climb');
   assert.equal(r.protocol, 'standalone');
 });
+
+// ── impl-R1 🟡1: bare "harness" 트리거가 일반 목표를 hill-climb으로 오라우팅 (2026-07-08 리뷰) ───
+test('일반 목표의 "harness" 언급만으로는 hill-climb으로 라우팅되지 않는다', () => {
+  const r = matchRecipe('prepare a pytest harness for the auth module', {});
+  assert.notEqual(r.recipe, 'harness-hill-climb');
+});
+test('hill-climb 의도 트리거(영/한)는 유지된다', () => {
+  assert.equal(matchRecipe('run a harness hill-climb over past loop traces', {}).recipe, 'harness-hill-climb');
+  assert.equal(matchRecipe('deep-loop 하네스 개선 사이클 시작', {}).recipe, 'harness-hill-climb');
+});
