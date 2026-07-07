@@ -3,7 +3,14 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { computeRunMetrics } from '../scripts/lib/insights.mjs';
+import { computeRunMetrics, computeInsights } from '../scripts/lib/insights.mjs';
+import { readState, writeState, runDir as runDirOf } from '../scripts/lib/state.mjs';
+import { initRun } from '../scripts/lib/initrun.mjs';
+import { newWorkstream } from '../scripts/lib/workspace.mjs';
+import { contentHash } from '../scripts/lib/envelope.mjs';
+
+const FIXED = new Date('2026-07-07T00:00:00Z');
+const NOSLEEP = () => {};
 
 const T0 = Date.parse('2026-07-07T00:00:00Z');
 const iso = (ms) => new Date(ms).toISOString();
@@ -73,4 +80,101 @@ test('computeRunMetrics: maker 없는 run은 ack_before_first_dispatch=null', ()
   const loop = { ...loopFixture(), episodes: [] };
   const m = computeRunMetrics(loop, []);
   assert.equal(m.comprehension.ack_before_first_dispatch, null);
+});
+
+// fixture 전용 터미널 전이: readState → status 변경 → writeState (hash 재계산되므로 검증 읽기 통과)
+function toTerminal(root, runId, status = 'completed') {
+  const d = readState(root, runId).data; d.status = status; writeState(root, runId, d);
+}
+
+test('computeInsights: 터미널 + self만 집계, self_snapshot 표기, loop_sha256 기록', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-ins-'));
+  const { runId: rA } = initRun(root, { goal: 'a', now: FIXED });        // running (self)
+  const { runId: rB } = initRun(root, { goal: 'b', now: FIXED });
+  toTerminal(root, rB);
+  const out = computeInsights(root, { selfRunId: rA, now: FIXED.getTime(), sleepFn: NOSLEEP });
+  assert.deepEqual(out.excluded_active, []);                              // rA는 self라 포함
+  assert.ok(out.per_run[rA].self_snapshot);
+  assert.ok(out.per_run[rB]);
+  assert.equal(out.runs_analyzed.find(r => r.run_id === rB).loop_sha256,
+    contentHash(readFileSync(join(runDirOf(root, rB), 'loop.json'), 'utf8')));
+});
+
+test('computeInsights: 비터미널 타 run은 excluded_active, raw parse 실패는 unreadable(후보 없음)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-ins2-'));
+  const { runId: self } = initRun(root, { goal: 'self', now: FIXED });
+  const { runId: other } = initRun(root, { goal: 'other', now: FIXED }); // running 타 run
+  mkdirSync(join(root, '.deep-loop', 'runs', 'BROKEN'), { recursive: true });
+  writeFileSync(join(root, '.deep-loop', 'runs', 'BROKEN', 'loop.json'), '{not json');
+  const out = computeInsights(root, { selfRunId: self, now: FIXED.getTime(), sleepFn: NOSLEEP });
+  assert.deepEqual(out.excluded_active, [other]);
+  assert.deepEqual(out.unreadable, ['BROKEN']);
+  assert.deepEqual(out.integrity_failed_runs, []);
+  assert.ok(!out.candidates.some(c => c.id === 'integrity_failure'));    // unreadable은 후보 발행 ❌
+});
+
+test('computeInsights: 터미널 검증 실패(해시 불일치) → 재시도 후 재실패만 integrity_failed', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-ins3-'));
+  const { runId: self } = initRun(root, { goal: 'self', now: FIXED });
+  const { runId: bad } = initRun(root, { goal: 'bad', now: FIXED });
+  toTerminal(root, bad);
+  const lp = join(runDirOf(root, bad), 'loop.json');
+  writeFileSync(lp, readFileSync(lp, 'utf8').replace('"bad"', '"BAD"'));   // hash 불일치 유발
+  const out = computeInsights(root, { selfRunId: self, now: FIXED.getTime(), sleepFn: NOSLEEP });
+  assert.deepEqual(out.integrity_failed_runs, [bad]);
+});
+
+test('computeInsights: 전이 race — 재시도가 성공하면 정상 승격 (integrity_failed ❌)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-ins4-'));
+  const { runId: self } = initRun(root, { goal: 'self', now: FIXED });
+  const { runId: racy } = initRun(root, { goal: 'racy', now: FIXED });
+  toTerminal(root, racy);
+  const lp = join(runDirOf(root, racy), 'loop.json');
+  const good = readFileSync(lp, 'utf8');
+  writeFileSync(lp, good.replace('"racy"', '"RACY"'));                     // 1차 읽기는 실패하도록 변조
+  // sleepFn이 "전이 완료"를 시뮬레이션: 재시도 직전에 원본 복원 → 재시도 성공해야 함
+  const healingSleep = () => { writeFileSync(lp, good); };
+  const out = computeInsights(root, { selfRunId: self, now: FIXED.getTime(), sleepFn: healingSleep });
+  assert.deepEqual(out.integrity_failed_runs, []);
+  assert.ok(out.per_run[racy]);
+});
+
+// r2 리뷰 정정(opus S1): initRun은 event-log에 아무 이벤트도 남기지 않는다(event_log_head=GENESIS) —
+// 변조 fixture는 tamper 전에 **실제 anchored 이벤트**를 먼저 생성해야 한다. newWorkstream이 이벤트+floor cost를 남긴다.
+function seedTamperable(root, goal) {
+  const { runId } = initRun(root, { goal, now: FIXED });
+  newWorkstream(root, runId, { title: 't', branch: 'b', worktree: '.claude/worktrees/x',
+    fence: { owner: runId, generation: 1, intent: 'business' } });   // 이벤트 2줄(workstream-new + cost) 생성
+  toTerminal(root, runId);
+  return runId;
+}
+
+test('computeInsights: 터미널 run의 event-log 변조(JSON-valid, checksum 불변)는 verifyLog로 integrity_failed', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-ins5-'));
+  const { runId: self } = initRun(root, { goal: 'self', now: FIXED });
+  const tam = seedTamperable(root, 'tam');
+  const ep = join(runDirOf(root, tam), 'event-log.jsonl');
+  const lines = readFileSync(ep, 'utf8').trim().split('\n');
+  const first = JSON.parse(lines[0]); first.data = { ...first.data, tampered: true };   // checksum은 그대로
+  writeFileSync(ep, [JSON.stringify(first), ...lines.slice(1)].join('\n') + '\n');
+  const out = computeInsights(root, { selfRunId: self, now: FIXED.getTime(), sleepFn: NOSLEEP });
+  assert.deepEqual(out.integrity_failed_runs, [tam]);
+});
+
+test('computeInsights: suffix truncation(체인 유효, head anchor stale)은 verifyHead로 integrity_failed', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-ins6-'));
+  const { runId: self } = initRun(root, { goal: 'self', now: FIXED });
+  const tr = seedTamperable(root, 'tr');
+  const ep = join(runDirOf(root, tr), 'event-log.jsonl');
+  const lines = readFileSync(ep, 'utf8').trim().split('\n');
+  writeFileSync(ep, lines.slice(0, -1).join('\n') + '\n');            // 마지막 라인 절단 — 접두 체인은 여전히 유효
+  const out = computeInsights(root, { selfRunId: self, now: FIXED.getTime(), sleepFn: NOSLEEP });
+  assert.deepEqual(out.integrity_failed_runs, [tr]);                  // verifyLog는 통과하지만 verifyHead가 잡아야 함
+});
+
+test('computeInsights: 콜드스타트 runs 0개 → 빈 결과', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-ins0-'));
+  const out = computeInsights(root, { now: FIXED.getTime(), sleepFn: NOSLEEP });
+  assert.deepEqual(out.runs_analyzed, []);
+  assert.deepEqual(out.candidates, []);
 });

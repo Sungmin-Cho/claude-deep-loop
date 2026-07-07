@@ -84,3 +84,53 @@ export function computeRunMetrics(loop, events) {
       ack_before_first_dispatch },
   };
 }
+
+function defaultSleep(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
+const TERMINAL_RUN = new Set(['completed', 'stopped']);
+
+function listRunIds(root) {
+  const dir = join(root, '.deep-loop', 'runs');
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name).sort();
+}
+
+function rawStatusOnce(root, runId) {
+  return JSON.parse(readFileSync(join(runDir(root, runId), 'loop.json'), 'utf8')).status;
+}
+
+export function computeInsights(root, { selfRunId = null, now = Date.now(), retryDelayMs = 50, sleepFn = defaultSleep } = {}) {
+  const out = {
+    insights_schema_version: INSIGHTS_SCHEMA_VERSION,
+    generated_at: new Date(now).toISOString(),
+    runs_analyzed: [], excluded_active: [], unreadable: [], integrity_failed_runs: [],
+    per_run: {}, aggregates: {}, candidates: [],
+  };
+  for (const id of listRunIds(root)) {
+    const isSelf = id === selfRunId;
+    // 1단: raw parse (실패 → 1회 재시도 → unreadable)
+    let status;
+    try { status = rawStatusOnce(root, id); }
+    catch { try { sleepFn(retryDelayMs); status = rawStatusOnce(root, id); } catch { out.unreadable.push(id); continue; } }
+    if (!isSelf && !TERMINAL_RUN.has(status)) { out.excluded_active.push(id); continue; }
+    // 2단: 검증 읽기 = readState + verifyLog + verifyHead + readLines (스펙 §4-2). readLines는 JSON parse만 하므로
+    // verifyLog(checksum/seq 체인)와 verifyHead(loop.json의 event_log_head anchor 대조 — suffix truncation 탐지,
+    // appendAnchored와 동일 2중 검증)를 반드시 함께 돌린다. 실패 → ≥retryDelayMs 재시도 1회 → integrity_failed.
+    let loopRaw, loop, events;
+    const verifiedRead = () => {
+      const raw = readFileSync(join(runDir(root, id), 'loop.json'), 'utf8');
+      const r = readState(root, id);                                   // hash anchor 검증
+      const vl = verifyLog(root, id);                                  // event-log 체인 검증
+      if (!vl.ok) throw new Error(`LOG_TAMPERED: ${vl.errors.join('; ')}`);
+      const vh = verifyHead(root, id, r.data.event_log_head);          // suffix truncation 탐지
+      if (!vh.ok) throw new Error(`LOG_TAMPERED: ${vh.errors.join('; ')}`);
+      return { raw, data: r.data, events: readLines(root, id) };
+    };
+    try { ({ raw: loopRaw, data: loop, events } = verifiedRead()); }
+    catch { try { sleepFn(retryDelayMs); ({ raw: loopRaw, data: loop, events } = verifiedRead()); } catch { out.integrity_failed_runs.push(id); continue; } }
+    const m = computeRunMetrics(loop, events);
+    if (isSelf) m.self_snapshot = true;
+    out.per_run[id] = m;
+    out.runs_analyzed.push({ run_id: id, last_seq: m.last_seq, loop_sha256: contentHash(loopRaw) });
+  }
+  return out;
+}
