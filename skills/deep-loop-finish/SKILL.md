@@ -62,13 +62,14 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" insights emit --owner <run_id
 
 - **실패는 비치명이다** — `insights emit`이 실패해도(디스크 오류 등) finish는 계속 진행한다. 실패 시 그 사실을 로그에 명시하고 final report에도 기록한다(재시도 불필요 — 다음 run의 emit이 다시 시도된다).
 - 성공하면 stdout의 JSON 응답에 `candidates` 배열이 포함된다. **이 배열로부터 후보 요약을 만든다 — 파일을 열어 파싱하지 않는다**(2-plane: `insights emit`의 CLI 출력만 사용).
-- `candidates`가 비어있지 않으면 최종 메시지에 아래 제안 블록을 출력한다(후보 id·metric·value 요약 포함):
+- `candidates`가 비어있지 않으면 최종 메시지에 아래 제안 블록을 출력한다(후보 id·metric·value 요약은 **메시지 본문에만** 표기):
 
   ```
   하네스 개선 후보 N건 발견: <candidate.id 목록>
-  다음 명령: /deep-loop "하네스 개선: <후보 id 목록>"
+  다음 명령: /deep-loop "하네스 개선"
   ```
 
+  **제안 명령의 goal은 고정 문구 그대로 쓴다 — candidate id를 goal에 넣지 않는다.** id(`fix_cycles_high:implementation` 등)는 "fix"/"implement" 같은 다른 recipe 트리거를 부분문자열로 포함해 recipe-match(첫 매치 substring 라우팅)가 비결정적으로 샐 수 있기 때문이다. 새 hill-climb run의 design maker는 후보를 goal이 아니라 `insights --json`/`insights latest --json`에서 읽는다(§2 흐름).
   **자동으로 이 명령을 실행하지 않는다** — 사람이 직접 입력해야 다음 hill-climb run이 시작된다.
 - `candidates`가 비어있으면(또는 emit 실패로 응답이 없으면) 제안 블록을 생략하고 "개선 후보 없음"만 명시한다.
 

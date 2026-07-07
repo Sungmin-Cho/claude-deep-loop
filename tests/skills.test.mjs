@@ -714,3 +714,11 @@ for (const [dir, markers] of Object.entries(GATE_MARKERS)) {
     for (const m of markers) assert.ok(src.includes(m), `${dir}/SKILL.md lost gate marker: ${m}`);
   });
 }
+
+// ── impl-R3 🟡B: finish의 hill-climb 제안 명령 goal에 candidate id 원문을 넣지 않는다 —
+// id의 "fix"/"implement" 등이 다른 recipe 트리거와 substring 충돌해 비결정 라우팅이 된다 ───
+test('deep-loop-finish: hill-climb 제안 명령은 candidate id 없는 고정 문구다', () => {
+  const src = readFileSync(skillPath('deep-loop-finish'), 'utf8');
+  assert.ok(!src.includes('하네스 개선: <'), 'goal 템플릿에 candidate id 자리표시자가 남아 있음');
+  assert.ok(src.includes('/deep-loop "하네스 개선"'), '고정 문구 제안 명령이 없음');
+});

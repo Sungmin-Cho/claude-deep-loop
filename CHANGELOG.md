@@ -24,8 +24,9 @@ step, closing the loop between *running* deep-loop and *improving* deep-loop.
   directly — `insights latest` is the only trusted read path.
 - **`harness-hill-climb` recipe** (`recipes/harness-hill-climb.json`) + `recipes/hillclimb-ledger.json`
   (empty-array seed) — a `flow: [insights, standalone:maker, deep-review:checker, ship-proposal,
-  archive]` recipe triggered by "hill-climb" / "harness" / "하네스 개선" / "루프 개선" / "환류"; the
-  `validate` subcommand now also validates the ledger's shape.
+  archive]` recipe triggered by "hill-climb" / "hill climbing" / "하네스 개선" / "루프 개선" / "환류"
+  (a bare "harness" trigger was dropped in review — it misrouted ordinary goals); the `validate`
+  subcommand now also validates the ledger's shape and every `recipes/*.json` (fail-closed).
 - **Finish/init feedback integration** — `/deep-loop-finish` emits insights and proposes the next
   hill-climb command from the returned candidates (proposal only, never auto-starts); `/deep-loop`
   init reads `insights latest` (§2-2.5) and surfaces any pending candidate at run start.
