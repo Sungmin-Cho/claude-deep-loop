@@ -64,7 +64,10 @@ export function computeRunMetrics(loop, events) {
     wallclock_sec: (last && loop.created_at) ? Math.round((Date.parse(last.ts) - Date.parse(loop.created_at)) / 1000) : 0,
     episodes: { total: eps.length, by_role: count(eps, 'role'), by_kind: count(eps, 'kind'), by_point: count(eps, 'point'), terminal },
     review: { per_point, fix_cycles },
-    breaker: { trips: loop.circuit_breaker?.tripped ? 1 : events.filter(e => e.type === 'run-paused' && String(e.data.reason || '').includes('consecutive')).length,
+    // Honest semantics: only the END-OF-RUN latch is observable — the kernel emits no breaker trip/reset
+    // events (trips latch inline in review-outcome's mutate; resetBreaker writes state without an event),
+    // so mid-run trip→reset history is NOT reconstructable. 0/1, not a lifetime count.
+    breaker: { trips: loop.circuit_breaker?.tripped ? 1 : 0,
       max_consecutive_rc: loop.circuit_breaker?.consecutive_request_changes ?? 0 },
     cost,
     sessions: { count: (loop.session_chain?.sessions || []).length,
