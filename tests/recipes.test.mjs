@@ -54,6 +54,25 @@ test('hill-climb 의도 트리거(영/한)는 유지된다', () => {
   assert.equal(matchRecipe('deep-loop 하네스 개선 사이클 시작', {}).recipe, 'harness-hill-climb');
 });
 
+// ── Phase6 warning-2: 광역 트리거("improve")가 더 특이한 트리거("hill-climb")를 first-match로 선점 —
+// 최장 매칭 트리거의 recipe가 이기도록 교정 (r1/r2에 이은 같은 클래스 3회째 반복 종결) ───
+test('최장 매칭 트리거 특이성: 광역 트리거가 더 특이한 트리거를 선점하지 않는다', () => {
+  const r = matchRecipe('improve hill-climb harness', {});
+  assert.equal(r.recipe, 'harness-hill-climb');
+});
+test('단일 recipe만 매칭될 때는 특이성 변경의 영향을 받지 않는다', () => {
+  const r = matchRecipe('improve test coverage', {});
+  assert.equal(r.recipe, 'autonomous-evolution');
+});
+test('트리거 길이가 동률이면 기존 파일 순서(첫 매칭)가 유지된다', () => {
+  const recipes = [
+    { id: 'first', triggers: ['abcde'] },
+    { id: 'second', triggers: ['fghij'] },   // first와 동일 길이(5) 트리거 — 동률
+  ];
+  const r = matchRecipe('abcde fghij goal', {}, recipes);
+  assert.equal(r.recipe, 'first');
+});
+
 // ── impl-R2 🟡1: cross-recipe 트리거 섀도잉 lint — substring first-match에서 다른 recipe의 트리거를
 // 부분문자열로 포함하는 트리거는 dead trigger(도달 불가) 또는 readdir 순서 의존 비결정 라우팅이 된다 ───
 test('recipe 트리거는 다른 recipe의 트리거를 부분문자열로 포함하지 않는다(섀도잉 방지)', () => {

@@ -450,8 +450,13 @@ const handlers = {
     if (verb === 'emit') {
       const runId = runIdOf(root, f);
       requireLease(root, runId, f);
+      const nowMs = parseNow(f);
+      // Phase6 warning-1: reject future-skewed --now here — emitInsights names the artifact ulid(now) and
+      // latestInsights picks the lexicographically-last filename, so a future --now would permanently pin a
+      // stale candidate ahead of every later legitimate emit (past --now is self-healing, so only future is blocked).
+      if (f.now !== undefined && nowMs > Date.now() + 60_000) { error('INSIGHTS_NOW_FUTURE: --now must not be more than 60s in the future'); return 1; }
       const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'business' };
-      try { json(emitInsights(root, runId, { fence, now: parseNow(f) })); return 0; }
+      try { json(emitInsights(root, runId, { fence, now: nowMs })); return 0; }
       catch (e) { const m = String(e?.message || e); if (m.startsWith('LEASE_FENCED')) { error(m); return 3; } error(m); return 1; }
     }
     error(`unknown insights verb: ${verb}`); return 2;

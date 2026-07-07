@@ -53,7 +53,16 @@ export function loadRecipes(dir = recipesDir) {
 
 export function matchRecipe(goal, detected = {}, recipes = loadRecipes()) {
   const g = String(goal).toLowerCase();
-  let chosen = recipes.find(r => r.triggers.some(t => g.includes(t.toLowerCase())));
+  // Phase6 warning-2: longest-matching-trigger wins (not first-match by readdirSync/file order) — a broad
+  // trigger (e.g. "improve") must not shadow a more specific one (e.g. "hill-climb") in a combined goal
+  // string; strict '>' keeps file order as the tie-break (ends the r1/r2/r5 broad-trigger-shadowing class).
+  let chosen = null;
+  let bestLen = -1;
+  for (const r of recipes) {
+    let localBest = -1;
+    for (const t of r.triggers) { const tl = t.toLowerCase(); if (g.includes(tl) && tl.length > localBest) localBest = tl.length; }
+    if (localBest > bestLen) { bestLen = localBest; chosen = r; }
+  }
   if (!chosen) chosen = recipes.find(r => r.id === 'triage-and-discovery');
   let protocol;
   if (g.includes('superpowers')) protocol = 'superpowers';

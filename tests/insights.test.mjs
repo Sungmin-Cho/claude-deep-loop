@@ -393,6 +393,26 @@ test('CLI insights emit: fence 누락 exit 3 / 정상 emit 후 latest가 반환'
   assert.equal(JSON.parse(latest.out).path, JSON.parse(ok.out).path);
 });
 
+// Phase6 warning-1 (adversarial): --now를 그대로 ulid(now) 파일명에 흘려보내면 latestInsights의 파일명
+// 내림차순 선택이 미래 emit을 영구히 latest로 pinning한다 — CLI 경계에서 future --now를 거부한다
+// (과거 --now는 자기치유되므로 계속 허용, 결정론적 테스트용 FIXED emit은 위 테스트가 이미 검증).
+test('CLI insights emit: 미래 --now는 INSIGHTS_NOW_FUTURE exit 1로 거부 — ULID latest pinning 차단', () => {
+  const { root, runId } = emitFixture();
+  const future = Date.now() + 6 * 60 * 60 * 1000;   // 현재 + 6시간
+  const r = cli(root, ['insights', 'emit', '--owner', runId, '--generation', '1', '--now', String(future)]);
+  assert.equal(r.code, 1);
+  assert.match(r.err, /INSIGHTS_NOW_FUTURE/);
+  const dir = join(root, '.deep-loop', 'insights');
+  assert.ok(!existsSync(dir) || readdirSync(dir).length === 0);   // 거부된 emit은 파일/tmp 잔재를 남기지 않음
+});
+
+test('CLI insights emit: 과거 고정 --now는 계속 성공 (결정론 회귀 방지)', () => {
+  const { root, runId } = emitFixture();
+  const r = cli(root, ['insights', 'emit', '--owner', runId, '--generation', '1', '--now', String(FIXED.getTime())]);
+  assert.equal(r.code, 0);
+  assert.match(JSON.parse(r.out).path, /-insights\.json$/);
+});
+
 test('ledger 스키마: 필수 필드 검증 + 시드 파일은 빈 배열', () => {
   assert.equal(validateLedger([]).ok, true);
   assert.equal(validateLedger([{ date: '2026-07-07', insights_ref: 'x', candidates_addressed: ['a'], falsification: 'f' }]).ok, true);
