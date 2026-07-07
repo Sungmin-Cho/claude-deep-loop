@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, renameSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { computeRunMetrics, computeInsights, deriveCandidates, emitInsights } from '../scripts/lib/insights.mjs';
+import { computeRunMetrics, computeInsights, deriveCandidates, emitInsights, latestInsights, relInsightsPath } from '../scripts/lib/insights.mjs';
 import { readState, writeState, runDir as runDirOf } from '../scripts/lib/state.mjs';
-import { readLines } from '../scripts/lib/integrity.mjs';
+import { readLines, appendAnchored } from '../scripts/lib/integrity.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
@@ -266,4 +266,67 @@ test('emit: fence 누락/불완전은 FENCE_REQUIRED, 불일치는 LEASE_FENCED 
   assert.ok(!readLines(root, runId).some(e => e.type === 'insights-emitted'));
   const dir = join(root, '.deep-loop', 'insights');
   assert.ok(!existsSync(dir) || readdirSync(dir).length === 0);       // wrong-generation도 .tmp- 잔재 ❌ (pre-tmp leaseCheck)
+});
+
+test('emit: rename 실패(②↔③ 창) → 이벤트만 존재, latest는 null (파일 부재 탈락)', () => {
+  const { root, runId, fence } = emitFixture();
+  assert.throws(() => emitInsights(root, runId, { fence, now: FIXED.getTime(), renameFn: () => { throw new Error('EIO'); } }), /EIO/);
+  assert.ok(readLines(root, runId).some(e => e.type === 'insights-emitted'));   // 이벤트는 anchored
+  assert.equal(latestInsights(root), null);                                      // 신뢰 파일 없음 + .tmp- 제외
+});
+
+test('latest: 정상 emit → 검증 통과 최신 반환', () => {
+  const { root, runId, fence } = emitFixture();
+  const r1 = emitInsights(root, runId, { fence, now: FIXED.getTime(), rnd: () => 0.1 });
+  const r2 = emitInsights(root, runId, { fence, now: FIXED.getTime() + 60000, rnd: () => 0.2 });
+  const got = latestInsights(root);
+  assert.equal(got.path, r2.path);                          // ULID 최신
+  assert.equal(got.envelope.envelope.run_id, runId);
+});
+
+test('latest: anchored 이벤트 없는 고아 파일 불신뢰', () => {
+  const { root, runId, fence } = emitFixture();
+  emitInsights(root, runId, { fence, now: FIXED.getTime() });
+  // 고아 주입: 실제 emit 파일을 더 최신 ULID 이름으로 복사 (이벤트 없음 → path-binding 실패)
+  const dir = join(root, '.deep-loop', 'insights');
+  const real = readdirSync(dir).find(f => f.endsWith('-insights.json'));
+  writeFileSync(join(dir, 'ZZZZZZZZZZ9999999999999999-insights.json'), readFileSync(join(dir, real)));
+  const got = latestInsights(root);
+  assert.notEqual(got.path, '.deep-loop/insights/ZZZZZZZZZZ9999999999999999-insights.json');  // path-binding이 복사본 거부
+  assert.equal(got.path, relInsightsPath(real));   // 원본은 통과 — insights.mjs가 export하는 헬퍼를 import해 사용
+});
+
+test('latest: sha 불일치 불신뢰 → 유일 파일이면 null', () => {
+  const { root, runId, fence } = emitFixture();
+  const r = emitInsights(root, runId, { fence, now: FIXED.getTime() });
+  const abs = join(root, r.path);
+  writeFileSync(abs, readFileSync(abs, 'utf8').replace('"goal": "g"', '"goal": "tampered"'));
+  assert.equal(latestInsights(root), null);
+});
+
+test('latest: 상위 insights_schema_version 파일은 skip하고 더 오래된 유효 파일을 반환 (schema 분기 고립 검증)', () => {
+  const { root, runId, fence } = emitFixture();
+  const old = emitInsights(root, runId, { fence, now: FIXED.getTime(), rnd: () => 0.1 });
+  // r2 리뷰 정정(codex S2): 미래 파일을 path-binding/sha까지 **통과**하도록 만들어 schema 분기만 고립 검증한다 —
+  // 테스트 seam으로 appendAnchored를 직접 호출해 그 경로에 대한 anchored 이벤트(sha 일치)를 심는다.
+  const dir = join(root, '.deep-loop', 'insights');
+  const future = JSON.parse(readFileSync(join(root, old.path), 'utf8'));
+  future.payload.insights_schema_version = 99;
+  const futureJson = JSON.stringify(future, null, 2);
+  const futureName = 'ZZZZZZZZZZ9999999999999999-insights.json';
+  const futureRel = `.deep-loop/insights/${futureName}`;
+  appendAnchored(root, runId, { type: 'insights-emitted',
+    data: { path: futureRel, sha256: contentHash(futureJson), candidates_count: 0 } });   // path-binding+sha 성립
+  writeFileSync(join(dir, futureName), futureJson);
+  const got = latestInsights(root);
+  assert.equal(got.path, old.path);                          // schema 검사 **하나만으로** 미래 파일이 skip되어야 함
+});
+
+test('latest: per-file 예외(깨진 JSON)는 fail-soft로 skip하고 다음 유효 파일 반환', () => {
+  const { root, runId, fence } = emitFixture();
+  const ok = emitInsights(root, runId, { fence, now: FIXED.getTime(), rnd: () => 0.1 });
+  const dir = join(root, '.deep-loop', 'insights');
+  writeFileSync(join(dir, 'ZZZZZZZZZZ8888888888888888-insights.json'), '{torn');   // 최신 이름의 깨진 파일
+  const got = latestInsights(root);                          // 크래시 없이
+  assert.equal(got.path, ok.path);                           // 다음 후보(정상본) 반환
 });

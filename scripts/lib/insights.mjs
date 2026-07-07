@@ -382,3 +382,25 @@ export function emitInsights(root, runId, { fence, now = Date.now(), rnd = Math.
   // candidates를 반환에 포함 — finish 스킬이 파일을 직접 파싱하지 않고 CLI 출력만으로 제안 블록을 구성(§9, 2-plane)
   return { ok: true, path: rel, sha256, candidates_count: payload.candidates.length, candidates: payload.candidates };
 }
+
+export function latestInsights(root) {
+  const dir = insightsDir(root);
+  if (!existsSync(dir)) return null;
+  const files = readdirSync(dir).filter(f => f.endsWith('-insights.json') && !f.startsWith('.tmp-')).sort().reverse();
+  for (const f of files) {
+    try {
+      const raw = readFileSync(join(dir, f), 'utf8');
+      const obj = unwrap(JSON.parse(raw), { producer: 'deep-loop', artifact_kind: 'loop-insights' });
+      if (!obj) continue;
+      if ((obj.payload?.insights_schema_version ?? Infinity) > INSIGHTS_SCHEMA_VERSION) { process.stderr.write(`[deep-loop:warn] insights ${f}: newer schema — skipped\n`); continue; }
+      const rel = relInsightsPath(f);
+      const ev = readLines(root, obj.envelope.run_id).find(e => e.type === 'insights-emitted' && e.data.path === rel);
+      if (!ev) continue;                                    // path-binding: 이벤트의 path와 정확 일치 필수
+      if (ev.data.sha256 !== contentHash(raw)) continue;    // 내용 무결성
+      return { path: rel, envelope: obj };
+    } catch (e) {
+      process.stderr.write(`[deep-loop:warn] insights ${f}: ${String(e?.message || e)} — skipped\n`);   // fail-soft
+    }
+  }
+  return null;
+}
