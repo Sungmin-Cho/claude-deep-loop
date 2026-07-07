@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { computeRunMetrics, computeInsights } from '../scripts/lib/insights.mjs';
+import { computeRunMetrics, computeInsights, deriveCandidates } from '../scripts/lib/insights.mjs';
 import { readState, writeState, runDir as runDirOf } from '../scripts/lib/state.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
@@ -177,4 +177,37 @@ test('computeInsights: 콜드스타트 runs 0개 → 빈 결과', () => {
   const out = computeInsights(root, { now: FIXED.getTime(), sleepFn: NOSLEEP });
   assert.deepEqual(out.runs_analyzed, []);
   assert.deepEqual(out.candidates, []);
+});
+
+function metricsWith(over) {   // 최소 필드만 가진 per-run metrics 스텁
+  return { run_id: 'R', status: 'completed', review: { per_point: {}, fix_cycles: {} },
+    breaker: { trips: 0, max_consecutive_rc: 0 }, budget_ratio: 0, soft_stop_ratio: 0.8,
+    pauses: { count: 0, reasons: [], recovered: 0 }, episodes: { terminal: { abandoned: 0 } },
+    sessions: { respawn: { spawned: 0, failed: 0, timeout: 0 } },
+    comprehension: { ack_before_first_dispatch: false }, ...over };
+}
+
+test('candidates: fix_cycles_high 경계 (평균 1.0 이상만)', () => {
+  const hit = deriveCandidates({ R: metricsWith({ review: { per_point: {}, fix_cycles: { 'ws|design': 1 } } }) });
+  assert.ok(hit.some(c => c.id === 'fix_cycles_high:design'));
+  const miss = deriveCandidates({ R: metricsWith({ review: { per_point: {}, fix_cycles: {} } }) });
+  assert.ok(!miss.some(c => c.id.startsWith('fix_cycles_high')));
+});
+test('candidates: bootstrap_ack_friction + integrity_failure는 target 없음(note)', () => {
+  const cs = deriveCandidates({ R: metricsWith({ comprehension: { ack_before_first_dispatch: true } }) }, { integrityFailed: ['X'] });
+  assert.ok(cs.some(c => c.id === 'bootstrap_ack_friction' && c.target_tier === 2));
+  assert.ok(cs.some(c => c.id === 'integrity_failure' && c.target_hints.length === 0));
+});
+test('candidates: cross-run(min_runs=3) 후보는 2 runs에서 침묵', () => {
+  const two = { A: metricsWith({ review: { per_point: {}, fix_cycles: { 'w|impl': 2 } } }),
+                B: metricsWith({ review: { per_point: {}, fix_cycles: { 'w|impl': 2 } } }) };
+  assert.ok(!deriveCandidates(two).some(c => c.id.startsWith('fix_convergence_slow')));
+});
+test('candidates: fix_convergence_slow — 3 runs 비감소 추세에서 발행, 감소 추세에서 침묵', () => {
+  const fc = (n) => metricsWith({ review: { per_point: {}, fix_cycles: { 'w|impl': n } } });
+  // 키(run_id ULID)가 시간순 정렬키 — 명시적으로 오름차순 이름 사용
+  const rising = { '01A': fc(1), '01B': fc(1), '01C': fc(2) };     // 비감소(1,1,2) → 발행
+  assert.ok(deriveCandidates(rising).some(c => c.id === 'fix_convergence_slow:impl'));
+  const falling = { '01A': fc(3), '01B': fc(2), '01C': fc(1) };    // 감소(3,2,1) → 침묵
+  assert.ok(!deriveCandidates(falling).some(c => c.id.startsWith('fix_convergence_slow')));
 });
