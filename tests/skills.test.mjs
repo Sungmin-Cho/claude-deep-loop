@@ -692,3 +692,25 @@ test('deep-loop init skill observes + seeds session model/effort into init-run (
   assert.match(body, /CLAUDE_EFFORT/, 'init skill observes CLAUDE_EFFORT');
   assert.match(body, /init-run[\s\S]*--model[\s\S]*--effort/, 'init skill threads --model/--effort into init-run');
 });
+
+// Task 9 (spec §8.2): 게이트-크리티컬 마커 — 위치-독립 '존재' 단언, 삭제-회귀만 결정론 방어.
+// 마커 선정 기준: budget/breaker/comprehension 검사 지시, fence 플래그(--owner/--generation/--expect-generation),
+// human-only confirm(--confirm/--actor human/recover --confirm), proposal-only 선언 등 "게이트 의미"를 담은
+// 표현만 채택한다 — 테스트를 통과시키기 위한 임의 토큰은 배제(구현 주의 준수).
+// 잡는 것은 **삭제**뿐이다: 마커 문자열이 남아 있으면 그 옆의 지시문이 약화·반전되어도 이 존재-검사는 통과한다.
+// 의미 반전 탐지는 hill-climb checker 계약 (e)(적대적 diff 리뷰) + 사람 머지 리뷰의 몫이다 — overclaim 금지.
+const GATE_MARKERS = {
+  'deep-loop-continue': ['budget', 'breaker', 'comprehension', 'gate.allowed', '--confirm'],
+  'deep-loop-handoff': ['handoff emit', '--owner', 'gate-blocked', 'recover --confirm', 'isHeadlessInvocation'],
+  'deep-loop-resume': ['lease acquire', '--expect-generation', 'recover --confirm', 'needs-human'],
+  'deep-loop-ack': ['--actor human', '--confirm', 'CONFIRM_REQUIRED', 'ACK_REJECTED'],
+  'deep-loop-discover': ['state patch', '--owner', '--generation', 'debt_ratio'],
+  'deep-loop-finish': ['proof', '--confirm', 'FINISH_PROOF_UNMET', 'proposal-only'],
+  'deep-loop': ['proposal-only', 'AskUserQuestion', 'fail-closed', 'recipe_override_auth'],
+};
+for (const [dir, markers] of Object.entries(GATE_MARKERS)) {
+  test(`gate-critical markers present: ${dir}`, () => {
+    const src = readFileSync(skillPath(dir), 'utf8');
+    for (const m of markers) assert.ok(src.includes(m), `${dir}/SKILL.md lost gate marker: ${m}`);
+  });
+}
