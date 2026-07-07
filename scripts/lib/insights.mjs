@@ -66,7 +66,7 @@ export function computeRunMetrics(loop, events) {
     episodes: { total: eps.length, by_role: count(eps, 'role'), by_kind: count(eps, 'kind'), by_point: count(eps, 'point'), terminal },
     review: { per_point, fix_cycles },
     // §5 budget_overrun 경계 산정용 — loop.budget이 없으면(콜드스타트/구버전 fixture) null.
-    budget_ratio: loop.budget ? (loop.budget.spent / loop.budget.total) : null,
+    budget_ratio: loop.budget && loop.budget.total > 0 ? (loop.budget.spent / loop.budget.total) : null,
     soft_stop_ratio: budget ? budget.soft_stop_ratio : null,
     // Honest semantics: only the END-OF-RUN latch is observable — the kernel emits no breaker trip/reset
     // events (trips latch inline in review-outcome's mutate; resetBreaker writes state without an event),
@@ -225,6 +225,9 @@ export function deriveCandidates(perRunMap, { integrityFailed = [] } = {}) {
     }
   }
 
+  // §5: min_runs=1의 per-run 규칙 — "run-paused ≥ 2"는 단일 run 내 빈도(max-of-run)다. threshold 1인
+  // sibling 규칙들(breaker_trip 등)은 sum≡max라 패턴 근거가 없다. fleet-sum으로 바꾸면 1회씩 pause한
+  // 정상 run N개가 위양성으로 발행된다 (2026-07-07 리뷰 판정).
   // pause_frequency — run-paused ≥ 임계치. 대표값 = 가장 빈발한 run.
   {
     let maxCount = 0, recipe = null;

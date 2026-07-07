@@ -211,3 +211,28 @@ test('candidates: fix_convergence_slow — 3 runs 비감소 추세에서 발행,
   const falling = { '01A': fc(3), '01B': fc(2), '01C': fc(1) };    // 감소(3,2,1) → 침묵
   assert.ok(!deriveCandidates(falling).some(c => c.id.startsWith('fix_convergence_slow')));
 });
+
+test('candidates: pause_frequency는 단일 run 내 빈도(≥2, max-of-run) — 여러 run 1회씩은 침묵', () => {
+  const spread = { A: metricsWith({ pauses: { count: 1, reasons: ['x'], recovered: 0 } }),
+                   B: metricsWith({ pauses: { count: 1, reasons: ['y'], recovered: 0 } }),
+                   C: metricsWith({ pauses: { count: 1, reasons: ['z'], recovered: 0 } }) };
+  assert.ok(!deriveCandidates(spread).some(c => c.id === 'pause_frequency'));
+  const single = { A: metricsWith({ pauses: { count: 2, reasons: ['x', 'y'], recovered: 0 } }) };
+  assert.ok(deriveCandidates(single).some(c => c.id === 'pause_frequency'));
+});
+
+test('candidates: breaker_trip/respawn_failure/abandoned_episodes — ≥1 발행, 0 침묵', () => {
+  assert.ok(deriveCandidates({ A: metricsWith({ breaker: { trips: 1, max_consecutive_rc: 3 } }) }).some(c => c.id === 'breaker_trip'));
+  assert.ok(deriveCandidates({ A: metricsWith({ sessions: { respawn: { spawned: 0, failed: 1, timeout: 0 } } }) }).some(c => c.id === 'respawn_failure'));
+  assert.ok(deriveCandidates({ A: metricsWith({ episodes: { terminal: { abandoned: 1 } } }) }).some(c => c.id === 'abandoned_episodes'));
+  const none = deriveCandidates({ A: metricsWith({}) });
+  for (const id of ['breaker_trip', 'respawn_failure', 'abandoned_episodes', 'pause_frequency', 'budget_overrun']) {
+    assert.ok(!none.some(c => c.id === id), `unexpected ${id}`);
+  }
+});
+
+test('candidates: budget_overrun — ratio ≥ soft_stop_ratio 발행, 미만/null 침묵', () => {
+  assert.ok(deriveCandidates({ A: metricsWith({ budget_ratio: 0.85, soft_stop_ratio: 0.8 }) }).some(c => c.id === 'budget_overrun'));
+  assert.ok(!deriveCandidates({ A: metricsWith({ budget_ratio: 0.5, soft_stop_ratio: 0.8 }) }).some(c => c.id === 'budget_overrun'));
+  assert.ok(!deriveCandidates({ A: metricsWith({ budget_ratio: null, soft_stop_ratio: null }) }).some(c => c.id === 'budget_overrun'));
+});
