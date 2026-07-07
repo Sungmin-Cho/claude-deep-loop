@@ -48,7 +48,7 @@ deep-loop은 자신이 쌓은 run 이력을 3-verb 커널 서브커맨드(`scrip
 | 서브커맨드 | 역할 | fence | exit |
 |---|---|---|---|
 | `insights [--run <id>] [--json]` | 지표+후보 계산·출력. **기본 = §4 집계 규약**, `--run`은 `per_run`만 한정 (후보/집계는 전 run 대상). **읽기 전용** | 불필요 | 0 / 1(invalid run id) / 2(usage) |
-| `insights emit --owner <run_id> --generation <n>` | 아래 3단계 순서(tmp atomic write → `appendAnchored` `insights-emitted` 이벤트 → tmp→최종 atomic rename)로 envelope 발행 | **필수** (불변식 #2) | 0 / 3(fence) / 2(usage) |
+| `insights emit --owner <run_id> --generation <n>` | 아래 3단계 순서(tmp atomic write → `appendAnchored` `insights-emitted` 이벤트 → tmp→최종 atomic rename)로 envelope 발행 | **필수** (불변식 #2) | 0 / 1(invalid `--now` / lib error) / 3(fence) / 2(usage) |
 | `insights latest [--json]` | **검증된** 최신 insights 반환. **읽기 전용** — 스킬(`/deep-loop` init, `/deep-loop-finish`)은 이 명령만 사용, `.deep-loop/insights/*.json`을 직접 파싱하지 않음 | 불필요 | 0 / 2(usage) |
 
 ## 안전 불변식

@@ -386,7 +386,9 @@ test('CLI insights: read-only 계산 (fence 불필요) + invalid run exit 1 + un
 test('CLI insights emit: fence 누락 exit 3 / 정상 emit 후 latest가 반환', () => {
   const { root, runId } = emitFixture();
   assert.equal(cli(root, ['insights', 'emit']).code, 3);
-  const ok = cli(root, ['insights', 'emit', '--owner', runId, '--generation', '1', '--now', String(FIXED.getTime())]);
+  // Phase6 info-1: 절대 FIXED 대신 상대 오프셋 — 실벽시계가 FIXED보다 과거인 환경(CI 시계 skew)에서도
+  // INSIGHTS_NOW_FUTURE 가드(실 Date.now() 비교)를 결정론적으로 통과한다.
+  const ok = cli(root, ['insights', 'emit', '--owner', runId, '--generation', '1', '--now', String(Date.now() - 86_400_000)]);
   assert.equal(ok.code, 0);
   toTerminal(root, runId);   // Phase6 ITEM-4: latestInsights는 producer run이 terminal일 때만 신뢰한다
   const latest = cli(root, ['insights', 'latest', '--json']);
@@ -408,7 +410,8 @@ test('CLI insights emit: 미래 --now는 INSIGHTS_NOW_FUTURE exit 1로 거부 �
 
 test('CLI insights emit: 과거 고정 --now는 계속 성공 (결정론 회귀 방지)', () => {
   const { root, runId } = emitFixture();
-  const r = cli(root, ['insights', 'emit', '--owner', runId, '--generation', '1', '--now', String(FIXED.getTime())]);
+  // Phase6 info-1: 절대 FIXED 대신 상대 오프셋 — 실벽시계 기준 항상 과거이므로 CI 시계 skew에 flake하지 않는다.
+  const r = cli(root, ['insights', 'emit', '--owner', runId, '--generation', '1', '--now', String(Date.now() - 86_400_000)]);
   assert.equal(r.code, 0);
   assert.match(JSON.parse(r.out).path, /-insights\.json$/);
 });

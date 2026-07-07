@@ -123,7 +123,11 @@ const handlers = {
     return 0;
   },
   'detect-plugins': async (a) => { const f = parseFlags(a); json(detectPlugins(rootOf(f))); return 0; },
-  'recipe-match': async (a) => { const f = parseFlags(a); const root = rootOf(f); json(matchRecipe(f.goal || '', detectPlugins(root))); return 0; },
+  'recipe-match': async (a) => {
+    const f = parseFlags(a); const root = rootOf(f);
+    try { json(matchRecipe(f.goal || '', detectPlugins(root))); return 0; }
+    catch (e) { error(String(e?.message || e)); return 1; }   // NO_VALID_RECIPES (degraded bundle) → exit 1, no raw stack
+  },
   'init-run': async (a) => {
     const f = parseFlags(a);
     const root = rootOf(f);

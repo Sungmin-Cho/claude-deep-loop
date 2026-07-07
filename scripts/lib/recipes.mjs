@@ -37,6 +37,9 @@ export function loadRecipes(dir = recipesDir) {
   // 건너뛴다(경고 없음, validateRecipesDir과 동형 exclusion). 그 외 malformed/null JSON이나 shape
   // 위반(id 비문자열·triggers 비배열·triggers 원소 비문자열) recipe는 개별적으로 stderr 경고 후
   // skip한다 — 파일 하나의 손상이 recipe 라우팅 전체(모든 init의 recipe-match)를 깨뜨리지 않도록.
+  // Phase6 info-3: 부재 dir은 validateRecipesDir과 동형으로 빈 목록 반환(ENOENT throw 대신) — 커스텀
+  // dir 주입 시 빈 목록은 matchRecipe의 NO_VALID_RECIPES fail-closed로 이어지므로 침묵 실패가 아니다.
+  if (!existsSync(dir)) return [];
   return readdirSync(dir).filter(f => f.endsWith('.json') && f !== 'hillclimb-ledger.json')
     .map(f => {
       let parsed;
@@ -64,6 +67,11 @@ export function matchRecipe(goal, detected = {}, recipes = loadRecipes()) {
     if (localBest > bestLen) { bestLen = localBest; chosen = r; }
   }
   if (!chosen) chosen = recipes.find(r => r.id === 'triage-and-discovery');
+  // Phase6 warning-1: degraded recipe bundles (all recipes skipped by loadRecipes' fail-soft path, or a
+  // bundle missing the 'triage-and-discovery' fallback) must fail closed with a descriptive error instead
+  // of an uncaught TypeError from dereferencing `chosen.protocol_hint` below — callers (recipe-match /
+  // init-run CLI handlers) turn this into a clean exit 1, never a raw stack.
+  if (!chosen) throw new Error('NO_VALID_RECIPES: no loadable recipe (all skipped or fallback missing) — run validate');
   let protocol;
   if (g.includes('superpowers')) protocol = 'superpowers';
   else if (chosen.protocol_hint === 'deep-work' && pluginPresent(detected, 'deep-work')) protocol = 'deep-work';
