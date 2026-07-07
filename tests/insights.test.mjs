@@ -67,6 +67,7 @@ test('computeRunMetrics: 지표 exact 단언', () => {
   assert.equal(m.review.per_point.design.approve, 1);
   assert.equal(m.review.fix_cycles['ws-01|design'], 1);    // RC 1건 = fix cycle 1
   assert.equal(m.breaker.trips, 0);                         // untripped fixture → 0 (end-of-run latch only)
+  assert.equal(m.breaker.trip_reason, null);                // untripped fixture — spec §4 breaker row 완결(trips·trip_reason·max_consecutive_rc)
   assert.equal(m.breaker.max_consecutive_rc, 0);
   assert.equal(m.cost.turns, 6);                            // floor 1 + explicit 5
   assert.equal(m.cost.auto_floor_turns, 1);

@@ -57,7 +57,7 @@ deep-loop mines its own run history into deterministic insights via a 3-verb ker
 
 | Subcommand | Role | Fence | Exit |
 |---|---|---|---|
-| `insights [--run <id>] [--json]` | Computes metrics + candidates. **Default = spec §4 aggregation across all runs**; `--run` scopes to a single run. **Read-only** | Not required | 0 / 1 (invalid run id) / 2 (usage) |
+| `insights [--run <id>] [--json]` | Computes metrics + candidates. **Default = spec §4 aggregation across all runs**; `--run` narrows `per_run` only (candidates/aggregates stay fleet-wide). **Read-only** | Not required | 0 / 1 (invalid run id) / 2 (usage) |
 | `insights emit --owner <run_id> --generation <n>` | Emits an envelope via the 3-step order (tmp atomic write → `appendAnchored` `insights-emitted` event → tmp→final atomic rename) | **Required** (invariant #2) | 0 / 3 (fence) / 2 (usage) |
 | `insights latest [--json]` | Returns the **verified** latest insights. **Read-only** — skills (`/deep-loop` init, `/deep-loop-finish`) use only this command, never parse `.deep-loop/insights/*.json` directly | Not required | 0 / 2 (usage) |
 

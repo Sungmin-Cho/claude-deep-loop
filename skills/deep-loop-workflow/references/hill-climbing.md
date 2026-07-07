@@ -28,7 +28,7 @@ design maker는 후보를 읽을 때 항상 **읽기 전용** CLI만 쓴다(fenc
 node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" insights --json
 ```
 
-`--run <id>`로 단일 run에 한정할 수 있다. `.deep-loop/insights/`를 직접 읽거나 파싱하지 않는다 — 검증된 최신 결과가 필요하면 `insights latest --json`(아래 §4)만 사용한다.
+`--run <id>`로 `per_run`만 한정할 수 있다 (후보/집계는 전 run 대상). `.deep-loop/insights/`를 직접 읽거나 파싱하지 않는다 — 검증된 최신 결과가 필요하면 `insights latest --json`(아래 §4)만 사용한다.
 
 ## 2. run 흐름 (spec §7)
 

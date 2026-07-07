@@ -72,6 +72,7 @@ export function computeRunMetrics(loop, events) {
     // events (trips latch inline in review-outcome's mutate; resetBreaker writes state without an event),
     // so mid-run trip→reset history is NOT reconstructable. 0/1, not a lifetime count.
     breaker: { trips: loop.circuit_breaker?.tripped ? 1 : 0,
+      trip_reason: loop.circuit_breaker?.trip_reason ?? null,
       max_consecutive_rc: loop.circuit_breaker?.consecutive_request_changes ?? 0 },
     cost,
     sessions: { count: (loop.session_chain?.sessions || []).length,
