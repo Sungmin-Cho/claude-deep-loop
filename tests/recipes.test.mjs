@@ -34,3 +34,9 @@ test('C2: matchRecipe routes deep-work protocol only when present (object shape)
   // installed-but-uninitialized sibling (original Problem C) → present:true → routed
   assert.equal(matchRecipe('인증 기능 구현', { 'deep-work': { installed: true, initialized: false, present: true } }).protocol, 'deep-work');
 });
+
+test('harness-hill-climb: 트리거 매칭 + standalone 폴백', () => {
+  const r = matchRecipe('하네스 개선: bootstrap_ack_friction', {});
+  assert.equal(r.recipe, 'harness-hill-climb');
+  assert.equal(r.protocol, 'standalone');
+});

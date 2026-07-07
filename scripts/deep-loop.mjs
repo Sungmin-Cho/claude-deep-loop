@@ -26,7 +26,7 @@ import { defaultDesktopProbe } from './lib/desktop-target.mjs';
 import { finishRun } from './lib/finish.mjs';
 import { detectAndPersist } from './lib/detect-terminal.mjs';
 import { recoverRun } from './lib/recover.mjs';
-import { computeInsights, emitInsights, latestInsights } from './lib/insights.mjs';
+import { computeInsights, emitInsights, latestInsights, validateLedger } from './lib/insights.mjs';
 
 function parseFlags(argv) {
   const f = {};
@@ -105,6 +105,11 @@ const handlers = {
         const rv = validateLoop(data);
         if (!rv.ok) errors.push(`run ${runId}: ${rv.errors.join('; ')}`);
       } catch (e) { errors.push(`run ${runId}: ${e.message}`); }
+    }
+    const ledgerPath = join(root, 'recipes', 'hillclimb-ledger.json');
+    if (existsSync(ledgerPath)) {
+      try { const lv = validateLedger(JSON.parse(readFileSync(ledgerPath, 'utf8'))); if (!lv.ok) errors.push(`ledger: ${lv.errors.join('; ')}`); }
+      catch (e) { errors.push(`ledger: ${e.message}`); }
     }
     if (errors.length) { error(`validate failed:\n - ${errors.join('\n - ')}`); return 1; }
     process.stdout.write(`ok${runId ? ` (run ${runId})` : ' (schema+builder self-test)'}\n`);

@@ -8,7 +8,8 @@ const recipesDir = join(here, '../../recipes');
 
 export function loadRecipes() {
   return readdirSync(recipesDir).filter(f => f.endsWith('.json'))
-    .map(f => JSON.parse(readFileSync(join(recipesDir, f), 'utf8')));
+    .map(f => JSON.parse(readFileSync(join(recipesDir, f), 'utf8')))
+    .filter(r => Array.isArray(r.triggers));
 }
 
 export function matchRecipe(goal, detected = {}, recipes = loadRecipes()) {

@@ -412,3 +412,28 @@ export function latestInsights(root) {
   }
   return null;
 }
+
+// spec §8.3 — hillclimb-ledger.json 스키마 검증 (배열·append-only 항목 형태만; append-only 강제는
+// checker 계약 (f)의 diff 검사 + git history 폴백이 담당 — 여기서는 스키마·배열 형태만 단언).
+export function validateLedger(arr) {
+  const errors = [];
+  if (!Array.isArray(arr)) return { ok: false, errors: ['ledger must be an array'] };
+  arr.forEach((item, i) => {
+    if (typeof item?.date !== 'string') errors.push(`item ${i}: date must be a string`);
+    if (typeof item?.insights_ref !== 'string') errors.push(`item ${i}: insights_ref must be a string`);
+    if (!Array.isArray(item?.candidates_addressed) || !item.candidates_addressed.every(v => typeof v === 'string')) {
+      errors.push(`item ${i}: candidates_addressed must be a string[]`);
+    }
+    if (typeof item?.falsification !== 'string') errors.push(`item ${i}: falsification must be a string`);
+    if (item?.changes !== undefined && (!Array.isArray(item.changes) || !item.changes.every(v => typeof v === 'string'))) {
+      errors.push(`item ${i}: changes must be a string[]`);
+    }
+    if (item?.human_proposals !== undefined && (!Array.isArray(item.human_proposals) || !item.human_proposals.every(v => typeof v === 'string'))) {
+      errors.push(`item ${i}: human_proposals must be a string[]`);
+    }
+    if (item?.insights_sha256 !== undefined && typeof item.insights_sha256 !== 'string') {
+      errors.push(`item ${i}: insights_sha256 must be a string`);
+    }
+  });
+  return { ok: errors.length === 0, errors };
+}

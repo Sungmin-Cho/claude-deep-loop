@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
-import { computeRunMetrics, computeInsights, deriveCandidates, emitInsights, latestInsights, relInsightsPath } from '../scripts/lib/insights.mjs';
+import { computeRunMetrics, computeInsights, deriveCandidates, emitInsights, latestInsights, relInsightsPath, validateLedger } from '../scripts/lib/insights.mjs';
 import { readState, writeState, runDir as runDirOf } from '../scripts/lib/state.mjs';
 import { readLines, appendAnchored } from '../scripts/lib/integrity.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
@@ -366,4 +366,13 @@ test('CLI insights emit: fence 누락 exit 3 / 정상 emit 후 latest가 반환'
   assert.equal(ok.code, 0);
   const latest = cli(root, ['insights', 'latest', '--json']);
   assert.equal(JSON.parse(latest.out).path, JSON.parse(ok.out).path);
+});
+
+test('ledger 스키마: 필수 필드 검증 + 시드 파일은 빈 배열', () => {
+  assert.equal(validateLedger([]).ok, true);
+  assert.equal(validateLedger([{ date: '2026-07-07', insights_ref: 'x', candidates_addressed: ['a'], falsification: 'f' }]).ok, true);
+  assert.equal(validateLedger([{ date: 1 }]).ok, false);
+  assert.equal(validateLedger('nope').ok, false);
+  const seed = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'recipes', 'hillclimb-ledger.json'), 'utf8'));
+  assert.deepEqual(seed, []);
 });
