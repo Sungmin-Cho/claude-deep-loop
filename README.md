@@ -50,6 +50,17 @@ Skill (LLM) ──write──▶ state patch / budget record / comprehension ack
 
 > Note: `/deep-loop-workflow` is an internal non-user-invocable skill used by `/deep-loop-continue` and other skills.
 
+## Kernel CLI: `insights` (Hill-Climbing)
+
+deep-loop mines its own run history into deterministic insights via a 3-verb kernel subcommand
+(`scripts/lib/insights.mjs`, spec §6):
+
+| Subcommand | Role | Fence | Exit |
+|---|---|---|---|
+| `insights [--run <id>] [--json]` | Computes metrics + candidates. **Default = spec §4 aggregation across all runs**; `--run` scopes to a single run. **Read-only** | Not required | 0 / 1 (invalid run id) / 2 (usage) |
+| `insights emit --owner <run_id> --generation <n>` | Emits an envelope via the 3-step order (tmp atomic write → `appendAnchored` `insights-emitted` event → tmp→final atomic rename) | **Required** (invariant #2) | 0 / 3 (fence) / 2 (usage) |
+| `insights latest [--json]` | Returns the **verified** latest insights. **Read-only** — skills (`/deep-loop` init, `/deep-loop-finish`) use only this command, never parse `.deep-loop/insights/*.json` directly | Not required | 0 / 2 (usage) |
+
 ## Safety Invariants
 
 1. **proposal-only / human approval** — push, PR, merge, publish, delete are never executed automatically. v1 always surfaces a proposal and waits for human confirmation.
