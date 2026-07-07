@@ -115,22 +115,23 @@ export function computeInsights(root, { selfRunId = null, now = Date.now(), retr
     // 2단: 검증 읽기 = readState + verifyLog + verifyHead + readLines (스펙 §4-2). readLines는 JSON parse만 하므로
     // verifyLog(checksum/seq 체인)와 verifyHead(loop.json의 event_log_head anchor 대조 — suffix truncation 탐지,
     // appendAnchored와 동일 2중 검증)를 반드시 함께 돌린다. 실패 → ≥retryDelayMs 재시도 1회 → integrity_failed.
-    let loopRaw, loop, events;
+    let loopHash, loop, events;
     const verifiedRead = () => {
-      const raw = readFileSync(join(runDir(root, id), 'loop.json'), 'utf8');
+      // Single verified read: readState hash-checks loop.json and returns the verified content hash — a second
+      // readFileSync would open a TOCTOU window where loop_sha256 hashes different bytes than the analyzed data.
       const r = readState(root, id);                                   // hash anchor 검증
       const vl = verifyLog(root, id);                                  // event-log 체인 검증
       if (!vl.ok) throw new Error(`LOG_TAMPERED: ${vl.errors.join('; ')}`);
       const vh = verifyHead(root, id, r.data.event_log_head);          // suffix truncation 탐지
       if (!vh.ok) throw new Error(`LOG_TAMPERED: ${vh.errors.join('; ')}`);
-      return { raw, data: r.data, events: readLines(root, id) };
+      return { hash: r.hash, data: r.data, events: readLines(root, id) };
     };
-    try { ({ raw: loopRaw, data: loop, events } = verifiedRead()); }
-    catch { try { sleepFn(retryDelayMs); ({ raw: loopRaw, data: loop, events } = verifiedRead()); } catch { out.integrity_failed_runs.push(id); continue; } }
+    try { ({ hash: loopHash, data: loop, events } = verifiedRead()); }
+    catch { try { sleepFn(retryDelayMs); ({ hash: loopHash, data: loop, events } = verifiedRead()); } catch { out.integrity_failed_runs.push(id); continue; } }
     const m = computeRunMetrics(loop, events);
     if (isSelf) m.self_snapshot = true;
     out.per_run[id] = m;
-    out.runs_analyzed.push({ run_id: id, last_seq: m.last_seq, loop_sha256: contentHash(loopRaw) });
+    out.runs_analyzed.push({ run_id: id, last_seq: m.last_seq, loop_sha256: loopHash });
   }
   return out;
 }
