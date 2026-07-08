@@ -216,6 +216,10 @@ test('v1.5 (a): isSuspiciousActive 판정 표 — 위에서 아래 첫 매치', 
   assert.equal(isSuspiciousActive('running', { state: 'releasing' }, NOW), true);
   assert.equal(isSuspiciousActive('running', { state: 'releasing', expires_at: null }, NOW), true);
   assert.equal(isSuspiciousActive('running', { state: 'releasing', expires_at: 'garbage' }, NOW), true);
+  // releasing + 달력-무효/비정규 expires_at → 규약 밖 = suspicious (impl-r5, round-trip)
+  assert.equal(isSuspiciousActive('running', { state: 'releasing', expires_at: '2026-02-31T00:00:00Z' }, NOW), true);
+  assert.equal(isSuspiciousActive('running', { state: 'releasing', expires_at: '2026-07-08T02:00:00Z' }, NOW), true);   // 밀리초 없음 — 커널 형식 아님
+  assert.equal(isSuspiciousActive('running', { state: 'releasing', expires_at: iso(T0 + 60000) }, NOW), false);          // 정규 toISOString 미만료 — 기존 유지
   // active (expires_at=null 무기한 규약) → false
   assert.equal(isSuspiciousActive('running', { state: 'active', expires_at: null }, NOW), false);
 });

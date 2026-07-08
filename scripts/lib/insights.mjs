@@ -332,8 +332,12 @@ export function isSuspiciousActive(status, lease, nowMs) {
   if (lease.state === 'released') return true;
   if (lease.state === 'releasing') {
     if (!lease.expires_at) return true;
+    // V8 Date.parse는 '2026-02-31T00:00:00Z' 같은 달력-무효 값을 3월로 정규화한다(impl-r5 리뷰) —
+    // 커널은 expires_at을 항상 toISOString(밀리초 포함 Z)으로 쓰므로, round-trip 불일치(파싱불가·롤오버·
+    // 비정규 표기)는 전부 규약 밖 = suspicious (TTL-부재 처리와 동일한 보수 라벨 원칙).
     const exp = Date.parse(lease.expires_at);
-    return Number.isNaN(exp) ? true : nowMs > exp;
+    if (Number.isNaN(exp) || new Date(exp).toISOString() !== lease.expires_at) return true;
+    return nowMs > exp;
   }
   return false;
 }
