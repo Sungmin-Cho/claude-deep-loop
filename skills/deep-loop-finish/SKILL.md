@@ -62,6 +62,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" insights emit --owner <run_id
 
 - **실패는 비치명이다** — `insights emit`이 실패해도(디스크 오류 등) finish는 계속 진행한다. 실패 시 그 사실을 로그에 명시하고 final report에도 기록한다(재시도 불필요 — 다음 run의 emit이 다시 시도된다).
 - 성공하면 stdout의 JSON 응답에 `candidates` 배열이 포함된다. **이 배열로부터 후보 요약을 만든다 — 파일을 열어 파싱하지 않는다**(2-plane: `insights emit`의 CLI 출력만 사용).
+- stdout JSON의 `suspicious_active` / `post_finish_mutated` 배열이 비어있지 않으면 해당 run 목록을 ⚠️ 주의로 표기한다 — **후보 유무와 무관하게**(후보 0건으로 후보 요약 블록을 생략하는 경우에도 이 표기는 출력한다; plan-r3 — labels-only 케이스에서 라벨이 침묵하지 않도록). 신뢰 라벨은 집계에 이미 반영/유지되어 있으므로 사람 판단 참고용.
 - `candidates`가 비어있지 않으면 최종 메시지에 아래 제안 블록을 출력한다(후보 id·metric·value 요약은 **메시지 본문에만** 표기):
 
   ```

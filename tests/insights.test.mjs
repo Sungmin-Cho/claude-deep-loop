@@ -505,6 +505,43 @@ test('v1.5 (b): finish 이벤트 부재(status만 terminal) → skip', () => {
   assert.equal(latestInsights(root), null);
 });
 
+// ── v1.5.0 (b′): post_finish_mutated 라벨 — 집계 유지 + 노출 (spec §3, r5 리뷰 라벨 방식) ───
+test('v1.5 (b′): finish 후 이벤트 낀 terminal run → post_finish_mutated 라벨 + per_run 유지', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-pfm-'));
+  const { runId: self } = initRun(root, { goal: 'self', now: FIXED });
+  const { runId: tainted } = initRun(root, { goal: 'tainted', now: FIXED });
+  finishFixture(root, tainted);
+  businessEventFixture(root, tainted);                          // post-finish mutation (커널이 현재 막지 않음 — r2 판정)
+  const { runId: clean } = initRun(root, { goal: 'clean', now: FIXED });
+  finishFixture(root, clean);
+  const out = computeInsights(root, { selfRunId: self, now: FIXED.getTime(), sleepFn: NOSLEEP });
+  assert.deepEqual(out.post_finish_mutated, [tainted]);
+  assert.ok(out.per_run[tainted]);                              // 라벨이지 제외가 아니다 — 집계 유지
+  assert.ok(out.per_run[clean]);
+  assert.equal(out.insights_schema_version, 1);
+});
+
+test('v1.5 (b′): emitInsights 반환 JSON에 라벨 2배열 포함 — finish 스킬 소비 배선 (plan-r2)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-pfm3-'));
+  const { runId: dead } = initRun(root, { goal: 'dead', now: FIXED });     // suspicious 대상
+  { const d = readState(root, dead).data; d.session_chain.lease.state = 'released'; writeState(root, dead, d); }
+  const { runId } = initRun(root, { goal: 'self', now: FIXED });
+  const fence = { owner: runId, generation: 1, intent: 'business' };
+  const r = emitInsights(root, runId, { fence, now: FIXED.getTime() });
+  assert.deepEqual(r.suspicious_active, [dead]);                // CLI 반환으로 노출 — 2-plane: 소비자는 stdout만 읽는다
+  assert.deepEqual(r.post_finish_mutated, []);
+});
+
+test('v1.5 (b′): finish 이벤트 없는 terminal 로그(레거시)는 판정 불가 → 라벨 없음', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-pfm2-'));
+  const { runId: self } = initRun(root, { goal: 'self', now: FIXED });
+  const { runId: legacy } = initRun(root, { goal: 'legacy', now: FIXED });
+  toTerminal(root, legacy);                                     // finish 이벤트 없이 status만 terminal
+  const out = computeInsights(root, { selfRunId: self, now: FIXED.getTime(), sleepFn: NOSLEEP });
+  assert.deepEqual(out.post_finish_mutated, []);
+  assert.ok(out.per_run[legacy]);
+});
+
 // CLI tests
 const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'deep-loop.mjs');
 function cli(root, args, opts = {}) {

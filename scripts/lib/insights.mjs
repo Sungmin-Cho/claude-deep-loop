@@ -343,6 +343,7 @@ export function computeInsights(root, { selfRunId = null, now = Date.now(), retr
     insights_schema_version: INSIGHTS_SCHEMA_VERSION,
     generated_at: new Date(now).toISOString(),
     runs_analyzed: [], excluded_active: [], suspicious_active: [], unreadable: [], integrity_failed_runs: [],
+    post_finish_mutated: [],
     per_run: Object.create(null), aggregates: {}, candidates: [],
   };
   for (const id of listRunIds(root)) {
@@ -382,6 +383,11 @@ export function computeInsights(root, { selfRunId = null, now = Date.now(), retr
     try { m = computeRunMetrics(loop, events); }
     catch { out.unreadable.push(id); continue; }
     if (isSelf) m.self_snapshot = true;
+    // (b′) post-finish mutation 라벨 (spec §3, r5 리뷰 — 라벨 방식): finish 이후 non-exempt 이벤트가 낀
+    // terminal 로그는 집계에 유지하되 노출만 한다 (suspicious_active와 동일한 라벨 정신 — 제외는 run 전체
+    // 이력의 학습 손실이라 채택 안 함). finish 이벤트 없는 terminal 로그(레거시)는 판정 불가 → 라벨 없음.
+    const fin = events.find(e => e.type === 'finish');
+    if (fin && events.some(e => e.seq > fin.seq && nonExemptEvent(e))) out.post_finish_mutated.push(id);
     out.per_run[id] = m;
     out.runs_analyzed.push({ run_id: id, last_seq: m.last_seq, loop_sha256: loopHash });
   }
@@ -421,8 +427,10 @@ export function emitInsights(root, runId, { fence, now = Date.now(), rnd = Math.
     (l) => { if (fence) { const r = leaseCheck(l, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); } },
     { floor: MUTATION_TURN_FLOOR });
   renameFn(tmp, join(insightsDir(root), finalName));                 // ③ 공개
-  // candidates를 반환에 포함 — finish 스킬이 파일을 직접 파싱하지 않고 CLI 출력만으로 제안 블록을 구성(§9, 2-plane)
-  return { ok: true, path: rel, sha256, candidates_count: payload.candidates.length, candidates: payload.candidates };
+  // candidates를 반환에 포함 — finish 스킬이 파일을 직접 파싱하지 않고 CLI 출력만으로 제안 블록을 구성(§9, 2-plane).
+  // v1.5: 신뢰 라벨 2배열도 함께 노출 — payload에만 있으면 stdout-만 읽는 소비자에게 영원히 안 보인다 (plan-r2).
+  return { ok: true, path: rel, sha256, candidates_count: payload.candidates.length, candidates: payload.candidates,
+    suspicious_active: payload.suspicious_active, post_finish_mutated: payload.post_finish_mutated };
 }
 
 export function latestInsights(root) {
