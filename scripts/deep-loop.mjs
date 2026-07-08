@@ -44,11 +44,38 @@ function parseFlags(argv) {
   return f;
 }
 
+// --now 관례(v1.5.0, spec §4): 미지정 → Date.now() 폴백. 지정 시 화이트리스트 — ① 순수 정수(epoch ms)
+// ② ISO-8601: date-only(YYYY-MM-DD, UTC 자정 해석) 또는 tz 지정자 필수 datetime(YYYY-MM-DDTHH:mm[:ss[.sss]](Z|±HH:MM)).
+// 그 외 전부 INVALID_NOW exit 1 (dispatcher 말미의 좁은 catch가 변환; 불변식 #2: 1 = invalid value).
+// Date.parse는 쓰지 않는다 — V8이 '2026-02-31'을 3월로 롤오버하고 tz-less를 호스트 타임존으로 해석하므로
+// (impl-r1·r2·r3 리뷰), 캡처 정규식 + 자체 Date.UTC 구성 + 컴포넌트 역검증(롤오버 감지)으로 결정론을 완결한다.
+const ISO_NOW = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?(Z|[+-]\d{2}:\d{2}))?$/;
 function parseNow(f) {
-  if (f.now === undefined || f.now === true) return Date.now();
+  if (f.now === undefined) return Date.now();
+  if (f.now === true) throw new Error('INVALID_NOW: --now requires a value (epoch ms or ISO-8601 date)');
   const s = String(f.now);
-  const n = /^\d+$/.test(s) ? Number(s) : Date.parse(s);
-  return Number.isFinite(n) ? n : Date.now();
+  const bad = () => new Error(`INVALID_NOW: --now must be epoch ms or an ISO-8601 date (got: ${s})`);
+  if (/^\d+$/.test(s)) {
+    const n = Number(s);
+    if (!Number.isFinite(n) || n > 8.64e15) throw bad();
+    return n;
+  }
+  const m = ISO_NOW.exec(s);
+  if (!m) throw bad();
+  const [, y, mo, d, h = '00', mi = '00', sec = '00', frac = '', tz = 'Z'] = m;
+  const ms = Number((frac + '000').slice(0, 3));
+  if (tz !== 'Z') {
+    const offH = Number(tz.slice(1, 3)), offM = Number(tz.slice(4, 6));
+    if (offH > 23 || offM > 59) throw bad();   // +09:99 같은 범위 밖 오프셋 거부 (impl-r4)
+  }
+  const offMin = tz === 'Z' ? 0 : (tz[0] === '-' ? -1 : 1) * (Number(tz.slice(1, 3)) * 60 + Number(tz.slice(4, 6)));
+  const n = Date.UTC(+y, +mo - 1, +d, +h, +mi, +sec, ms) - offMin * 60000;
+  // 달력 역검증 — Date.UTC도 2026-02-31을 3월로 롤오버하므로, 입력 오프셋 뷰에서 컴포넌트를 재확인해 거부한다.
+  const v = new Date(n + offMin * 60000);
+  if (v.getUTCFullYear() !== +y || v.getUTCMonth() !== +mo - 1 || v.getUTCDate() !== +d
+    || v.getUTCHours() !== +h || v.getUTCMinutes() !== +mi || v.getUTCSeconds() !== +sec) throw bad();
+  if (!Number.isFinite(n) || Math.abs(n) > 8.64e15) throw bad();
+  return n;
 }
 
 function reqStr(f, name) { const v = f[name]; return (typeof v === 'string' && v.length) ? v : null; }   // 누락 시 null (핸들러가 exit 2 결정)
@@ -577,4 +604,11 @@ const handlers = {
 
 const fn = handlers[sub];
 if (!fn) { error(`unknown subcommand: ${sub ?? '<none>'}`); process.exit(2); }
-process.exit(await fn(rest));
+// INVALID_NOW만 exit 1로 변환하는 좁은 catch — 그 외 예외는 기존 fail-stop(uncaught) 그대로 재-throw
+// (integrity 등의 detect-and-fail-stop 모델을 넓은 catch로 삼키지 않는다).
+try {
+  process.exit(await fn(rest));
+} catch (e) {
+  if (String(e?.message || '').startsWith('INVALID_NOW')) { error(e.message); process.exit(1); }
+  throw e;
+}

@@ -55,11 +55,15 @@ Skill (LLM) ──write──▶ state patch / budget record / comprehension ack
 deep-loop mines its own run history into deterministic insights via a 3-verb kernel subcommand
 (`scripts/lib/insights.mjs`, spec §6):
 
+> Note: `--now` is accepted by most kernel CLI subcommands, not just `insights emit` (e.g. `next-action`, `tick`, `respawn`, `budget check`, `recover`, `session-profile set`, `finish`). Accepted forms are epoch ms or ISO-8601 (date-only is interpreted as UTC midnight; datetimes require a `Z`/`±HH:MM` designator). Across all of them, a malformed, value-less, or out-of-range (`±8.64e15`) value produces a common `INVALID_NOW` message on stderr and exit 1; omitting `--now` falls back to `Date.now()`.
+
 | Subcommand | Role | Fence | Exit |
 |---|---|---|---|
 | `insights [--run <id>] [--json]` | Computes metrics + candidates. **Default = spec §4 aggregation across all runs**; `--run` narrows `per_run` only (candidates/aggregates stay fleet-wide). **Read-only** | Not required | 0 / 1 (invalid run id) / 2 (usage) |
 | `insights emit --owner <run_id> --generation <n>` | Emits an envelope via the 3-step order (tmp atomic write → `appendAnchored` `insights-emitted` event → tmp→final atomic rename) | **Required** (invariant #2) | 0 / 1 (invalid `--now` / lib error) / 3 (fence) / 2 (usage) |
 | `insights latest [--json]` | Returns the **verified** latest insights. **Read-only** — skills (`/deep-loop` init, `/deep-loop-finish`) use only this command, never parse `.deep-loop/insights/*.json` directly | Not required | 0 / 2 (usage) |
+
+The payload (`insights_schema_version` stays `1` — these are additive fields) also carries two trust-labels: `suspicious_active` — a subset of `excluded_active` flagging non-terminal, non-paused runs whose lease is `released`, or `releasing` with an expired/missing TTL (a dead-lease signal, not an extra exclusion) — and `post_finish_mutated` — terminal runs whose `finish` event is followed by a non-exempt event (the run stays in the aggregates; only the label is added). `insights emit`'s stdout JSON returns both label arrays at the top level too, so stdout-only consumers see them without parsing the envelope. `insights latest` additionally trusts a run only when exactly one non-auto-floor-cost event follows the `insights-emitted` event the artifact is bound to (by path + sha256), and that event is `finish` — any other event(s) after the anchor, or none at all, cause a fail-soft skip to the next candidate file. Consumers that surface insights candidates to a human (e.g. `/deep-loop-finish`'s candidate block) should display `suspicious_active` / `post_finish_mutated` alongside candidates whenever either array is non-empty.
 
 ## Safety Invariants
 

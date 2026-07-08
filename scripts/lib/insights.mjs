@@ -305,30 +305,62 @@ export function deriveCandidates(perRunMap, { integrityFailed = [] } = {}) {
 function defaultSleep(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
 const TERMINAL_RUN = new Set(['completed', 'stopped']);
 
+// (b) finish-edge 인접성의 예외는 auto-floor cost(appendAnchored 자동 계상, data.auto_floor===true)뿐이다.
+// 명시 budget record cost(auto_floor 부재, budget.mjs recordCost)는 non-exempt (spec §3, r1 리뷰 P2):
+// emit→finish 사이에 끼면 payload가 최종 turns/tokens를 놓쳐 budget_overrun 후보가 억제되므로 재-emit을 요구한다.
+const nonExemptEvent = (e) => !(e.type === 'cost' && e.data?.auto_floor === true);
+
 function listRunIds(root) {
   const dir = join(root, '.deep-loop', 'runs');
   if (!existsSync(dir)) return [];
   return readdirSync(dir, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name).sort();
 }
 
-function rawStatusOnce(root, runId) {
-  return JSON.parse(readFileSync(join(runDir(root, runId), 'loop.json'), 'utf8')).status;
+// 1단 raw 읽기: 한 번의 JSON.parse에서 status + lease를 함께 뽑는다 (추가 I/O 없음 — 두-단계 읽기 구조 유지).
+function rawProbeOnce(root, runId) {
+  const parsed = JSON.parse(readFileSync(join(runDir(root, runId), 'loop.json'), 'utf8'));
+  return { status: parsed.status, lease: parsed.session_chain?.lease ?? null };
+}
+
+// (a) suspicious_active 판정 — raw(비검증) 읽기 기반의 **라벨**이지 신뢰 판단이 아니다(집계 제외 원칙은
+// terminal-only 불변; spec §2 판정 표를 위에서 아래로 첫 매치). paused 는 preserve-pause 사람-대기 정상
+// 상태라 최우선 제외. releasing 인데 expires_at 부재/파싱불가는 규약 밖(정상 커널은 releasing 전이 시 반드시
+// TTL 설정 — lease.mjs r1 🔴4) → timeout 인수도 불가한 stranded 이므로 suspicious (spec r4 리뷰 수용).
+export function isSuspiciousActive(status, lease, nowMs) {
+  if (status === 'paused') return false;
+  if (!lease || typeof lease !== 'object') return false;
+  if (lease.state === 'released') return true;
+  if (lease.state === 'releasing') {
+    if (!lease.expires_at) return true;
+    // V8 Date.parse는 '2026-02-31T00:00:00Z' 같은 달력-무효 값을 3월로 정규화한다(impl-r5 리뷰) —
+    // 커널은 expires_at을 항상 toISOString(밀리초 포함 Z)으로 쓰므로, round-trip 불일치(파싱불가·롤오버·
+    // 비정규 표기)는 전부 규약 밖 = suspicious (TTL-부재 처리와 동일한 보수 라벨 원칙).
+    const exp = Date.parse(lease.expires_at);
+    if (Number.isNaN(exp) || new Date(exp).toISOString() !== lease.expires_at) return true;
+    return nowMs > exp;
+  }
+  return false;
 }
 
 export function computeInsights(root, { selfRunId = null, now = Date.now(), retryDelayMs = 50, sleepFn = defaultSleep } = {}) {
   const out = {
     insights_schema_version: INSIGHTS_SCHEMA_VERSION,
     generated_at: new Date(now).toISOString(),
-    runs_analyzed: [], excluded_active: [], unreadable: [], integrity_failed_runs: [],
+    runs_analyzed: [], excluded_active: [], suspicious_active: [], unreadable: [], integrity_failed_runs: [],
+    post_finish_mutated: [],
     per_run: Object.create(null), aggregates: {}, candidates: [],
   };
   for (const id of listRunIds(root)) {
     const isSelf = id === selfRunId;
     // 1단: raw parse (실패 → 1회 재시도 → unreadable)
-    let status;
-    try { status = rawStatusOnce(root, id); }
-    catch { try { sleepFn(retryDelayMs); status = rawStatusOnce(root, id); } catch { out.unreadable.push(id); continue; } }
-    if (!isSelf && !TERMINAL_RUN.has(status)) { out.excluded_active.push(id); continue; }
+    let probe;
+    try { probe = rawProbeOnce(root, id); }
+    catch { try { sleepFn(retryDelayMs); probe = rawProbeOnce(root, id); } catch { out.unreadable.push(id); continue; } }
+    if (!isSelf && !TERMINAL_RUN.has(probe.status)) {
+      out.excluded_active.push(id);
+      if (isSuspiciousActive(probe.status, probe.lease, now)) out.suspicious_active.push(id);
+      continue;
+    }
     // 2단: 검증 읽기 = readState + verifyLog + verifyHead + readLines (스펙 §4-2). readLines는 JSON parse만 하므로
     // verifyLog(checksum/seq 체인)와 verifyHead(loop.json의 event_log_head anchor 대조 — suffix truncation 탐지,
     // appendAnchored와 동일 2중 검증)를 반드시 함께 돌린다. 실패 → ≥retryDelayMs 재시도 1회 → integrity_failed.
@@ -355,6 +387,11 @@ export function computeInsights(root, { selfRunId = null, now = Date.now(), retr
     try { m = computeRunMetrics(loop, events); }
     catch { out.unreadable.push(id); continue; }
     if (isSelf) m.self_snapshot = true;
+    // (b′) post-finish mutation 라벨 (spec §3, r5 리뷰 — 라벨 방식): finish 이후 non-exempt 이벤트가 낀
+    // terminal 로그는 집계에 유지하되 노출만 한다 (suspicious_active와 동일한 라벨 정신 — 제외는 run 전체
+    // 이력의 학습 손실이라 채택 안 함). finish 이벤트 없는 terminal 로그(레거시)는 판정 불가 → 라벨 없음.
+    const fin = events.find(e => e.type === 'finish');
+    if (fin && events.some(e => e.seq > fin.seq && nonExemptEvent(e))) out.post_finish_mutated.push(id);
     out.per_run[id] = m;
     out.runs_analyzed.push({ run_id: id, last_seq: m.last_seq, loop_sha256: loopHash });
   }
@@ -394,8 +431,10 @@ export function emitInsights(root, runId, { fence, now = Date.now(), rnd = Math.
     (l) => { if (fence) { const r = leaseCheck(l, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); } },
     { floor: MUTATION_TURN_FLOOR });
   renameFn(tmp, join(insightsDir(root), finalName));                 // ③ 공개
-  // candidates를 반환에 포함 — finish 스킬이 파일을 직접 파싱하지 않고 CLI 출력만으로 제안 블록을 구성(§9, 2-plane)
-  return { ok: true, path: rel, sha256, candidates_count: payload.candidates.length, candidates: payload.candidates };
+  // candidates를 반환에 포함 — finish 스킬이 파일을 직접 파싱하지 않고 CLI 출력만으로 제안 블록을 구성(§9, 2-plane).
+  // v1.5: 신뢰 라벨 2배열도 함께 노출 — payload에만 있으면 stdout-만 읽는 소비자에게 영원히 안 보인다 (plan-r2).
+  return { ok: true, path: rel, sha256, candidates_count: payload.candidates.length, candidates: payload.candidates,
+    suspicious_active: payload.suspicious_active, post_finish_mutated: payload.post_finish_mutated };
 }
 
 export function latestInsights(root) {
@@ -430,9 +469,21 @@ export function latestInsights(root) {
       if (!vl.ok) throw new Error(`LOG_TAMPERED: ${vl.errors.join('; ')}`);
       const vh = verifyHeadLines(lines, anchor);
       if (!vh.ok) throw new Error(`LOG_TAMPERED: ${vh.errors.join('; ')}`);
-      const ev = lines.find(e => e.type === 'insights-emitted' && e.data.path === rel);
-      if (!ev) continue;                                    // path-binding: 이벤트의 path와 정확 일치 필수
+      // (b) 앵커는 path-binding을 통과시킨 바로 그 이벤트 — artifact의 path와 정확 일치. 동일 path 매칭이
+      // 2개 이상이면 fail-closed(정상 경로에서 파일명 ULID가 유일하므로 중복은 규약 밖; spec §3 r3 리뷰).
+      const matches = lines.filter(e => e.type === 'insights-emitted' && e.data.path === rel);
+      if (matches.length === 0) continue;                   // path-binding: 이벤트의 path와 정확 일치 필수
+      if (matches.length > 1) { process.stderr.write(`[deep-loop:warn] insights ${f}: ${matches.length} insights-emitted events match path — skipped\n`); continue; }
+      const ev = matches[0];
       if (ev.data.sha256 !== contentHash(raw)) continue;    // 내용 무결성
+      // (b) finish-edge: 앵커 이후 non-exempt 이벤트가 정확히 finish 하나(=마지막 non-exempt)여야 신뢰
+      // (spec §3, r2 리뷰 🔴 2/2 일치) — mid-run emit(뒤에 business/명시 cost 이벤트)과 post-finish
+      // mutation(finish 뒤 non-exempt) 로그의 pre-finish payload를 모두 skip한다. 회복 경로는 재-emit.
+      const after = lines.filter(e => e.seq > ev.seq && nonExemptEvent(e));
+      if (after.length !== 1 || after[0].type !== 'finish') {
+        process.stderr.write(`[deep-loop:warn] insights ${f}: no clean finish edge after emit (non-exempt after: ${after.length ? after.map(e => e.type).join(',') : 'none'}) — skipped\n`);
+        continue;
+      }
       return { path: rel, envelope: obj };
     } catch (e) {
       process.stderr.write(`[deep-loop:warn] insights ${f}: ${String(e?.message || e)} — skipped\n`);   // fail-soft

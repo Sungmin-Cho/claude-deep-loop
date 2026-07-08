@@ -59,6 +59,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" insights latest --json
   - 제안을 **preselect하지 않는다** — 어떤 옵션도 기본 선택 상태로 두지 않는다.
   - 무응답/엔터 경로로 제안이 채택되게 하지 않는다.
   - 어떤 값도 **자동 적용 ❌** — 확정은 항상 사람이다(`recipe_override_auth=user-only`, AskUserQuestion을 거치는 구조로 보장).
+  - 반환 envelope.payload의 `suspicious_active` / `post_finish_mutated` 배열이 비어있지 않으면 제안·요약에 해당 run 목록을 ⚠️ 주의로 함께 표기한다 — 후보/제안 유무와 무관하게(라벨만 있는 경우에도 출력).
   - 이 표시 규칙은 prose-only 규율이다(자동 테스트 대상 아님) — 신뢰 원천은 커널의 `insights latest` 검증이지 스킬의 표시 방식이 아니다.
 
 ### 2-3. 리뷰 전략 확인

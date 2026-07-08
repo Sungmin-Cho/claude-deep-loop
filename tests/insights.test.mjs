@@ -1,16 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, renameSync, readdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, renameSync, readdirSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
-import { computeRunMetrics, computeInsights, deriveCandidates, emitInsights, latestInsights, relInsightsPath, validateLedger } from '../scripts/lib/insights.mjs';
+import { computeRunMetrics, computeInsights, deriveCandidates, emitInsights, latestInsights, relInsightsPath, validateLedger, isSuspiciousActive } from '../scripts/lib/insights.mjs';
 import { readState, writeState, runDir as runDirOf } from '../scripts/lib/state.mjs';
 import { readLines, appendAnchored } from '../scripts/lib/integrity.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
+import { recordCost } from '../scripts/lib/budget.mjs';
 
 const FIXED = new Date('2026-07-07T00:00:00Z');
 const NOSLEEP = () => {};
@@ -89,6 +90,20 @@ test('computeRunMetrics: maker 없는 run은 ack_before_first_dispatch=null', ()
 // fixture 전용 터미널 전이: readState → status 변경 → writeState (hash 재계산되므로 검증 읽기 통과)
 function toTerminal(root, runId, status = 'completed') {
   const d = readState(root, runId).data; d.status = status; writeState(root, runId, d);
+}
+
+// finish-edge 정합 픽스처: finishRun은 completed-proof(episode/review/report)를 요구하므로, 테스트는 동일
+// 트랜잭션 모양(appendAnchored: finish 이벤트 + status 전이 + auto-floor cost)만 재현한다 — spec §3의
+// 정상 event-log 형태 `insights-emitted(k) → cost(auto-floor) → finish(m) → cost(auto-floor)`가 만들어진다.
+function finishFixture(root, runId) {
+  appendAnchored(root, runId, { type: 'finish', data: { status: 'completed', reportRel: null } },
+    (loop) => { loop.status = 'completed'; }, undefined, { floor: 1 });
+}
+// finish-edge 위반 픽스처: anchored business 이벤트 1건 (preCheck 없음 — 커널상 post-finish mutation이
+// 가능하다는 r2 판정과 정합; raw appendEvent는 anchor를 stale하게 만들어 체인 검증에서 먼저 걸리므로 금지).
+function businessEventFixture(root, runId) {
+  appendAnchored(root, runId, { type: 'episode-new', data: { plugin: 'p', role: 'maker', kind: 'design', point: 'design' } },
+    undefined, undefined, { floor: 1 });
 }
 
 test('computeInsights: 터미널 + self만 집계, self_snapshot 표기, loop_sha256 기록', () => {
@@ -181,6 +196,50 @@ test('computeInsights: 콜드스타트 runs 0개 → 빈 결과', () => {
   const out = computeInsights(root, { now: FIXED.getTime(), sleepFn: NOSLEEP });
   assert.deepEqual(out.runs_analyzed, []);
   assert.deepEqual(out.candidates, []);
+});
+
+// ── v1.5.0 (a): suspicious_active — 죽은 lease 신호 라벨 (spec §2, 판정 표 그대로) ───
+test('v1.5 (a): isSuspiciousActive 판정 표 — 위에서 아래 첫 매치', () => {
+  const NOW = T0;
+  // paused 최우선 제외 (released여도 false)
+  assert.equal(isSuspiciousActive('paused', { state: 'released' }, NOW), false);
+  assert.equal(isSuspiciousActive('paused', { state: 'releasing', expires_at: iso(T0 - 1000) }, NOW), false);
+  // lease 부재/비객체 → 보수적 false
+  assert.equal(isSuspiciousActive('running', null, NOW), false);
+  assert.equal(isSuspiciousActive('running', undefined, NOW), false);
+  // released → true (놓았는데 비-terminal)
+  assert.equal(isSuspiciousActive('running', { state: 'released' }, NOW), true);
+  // releasing + TTL만료 → true / 미만료 → false
+  assert.equal(isSuspiciousActive('running', { state: 'releasing', expires_at: iso(T0 - 1) }, NOW), true);
+  assert.equal(isSuspiciousActive('running', { state: 'releasing', expires_at: iso(T0 + 60000) }, NOW), false);
+  // releasing + expires_at 부재/파싱불가 → true (r4 리뷰 — 규약 밖 stranded)
+  assert.equal(isSuspiciousActive('running', { state: 'releasing' }, NOW), true);
+  assert.equal(isSuspiciousActive('running', { state: 'releasing', expires_at: null }, NOW), true);
+  assert.equal(isSuspiciousActive('running', { state: 'releasing', expires_at: 'garbage' }, NOW), true);
+  // releasing + 달력-무효/비정규 expires_at → 규약 밖 = suspicious (impl-r5, round-trip)
+  assert.equal(isSuspiciousActive('running', { state: 'releasing', expires_at: '2026-02-31T00:00:00Z' }, NOW), true);
+  assert.equal(isSuspiciousActive('running', { state: 'releasing', expires_at: '2026-07-08T02:00:00Z' }, NOW), true);   // 밀리초 없음 — 커널 형식 아님
+  assert.equal(isSuspiciousActive('running', { state: 'releasing', expires_at: iso(T0 + 60000) }, NOW), false);          // 정규 toISOString 미만료 — 기존 유지
+  // active (expires_at=null 무기한 규약) → false
+  assert.equal(isSuspiciousActive('running', { state: 'active', expires_at: null }, NOW), false);
+});
+
+test('v1.5 (a): computeInsights suspicious_active — excluded 부분집합, 집계 미포함, version 1', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-susp-'));
+  const { runId: self } = initRun(root, { goal: 'self', now: FIXED });
+  const { runId: dead } = initRun(root, { goal: 'dead', now: FIXED });      // running + lease released → suspicious
+  { const d = readState(root, dead).data; d.session_chain.lease.state = 'released'; writeState(root, dead, d); }
+  const { runId: healthy } = initRun(root, { goal: 'healthy', now: FIXED }); // running + lease active → 비suspicious
+  const { runId: pausedR } = initRun(root, { goal: 'paused', now: FIXED });  // paused + releasing+만료 → 비suspicious (preserve-pause)
+  { const d = readState(root, pausedR).data; d.status = 'paused';
+    d.session_chain.lease = { ...d.session_chain.lease, state: 'releasing', expires_at: iso(T0 - 1000) };
+    writeState(root, pausedR, d); }
+  const out = computeInsights(root, { selfRunId: self, now: FIXED.getTime(), sleepFn: NOSLEEP });
+  assert.deepEqual(out.suspicious_active, [dead]);
+  for (const id of out.suspicious_active) assert.ok(out.excluded_active.includes(id));   // ⊆ excluded_active
+  assert.ok(out.excluded_active.includes(healthy) && out.excluded_active.includes(pausedR));
+  assert.equal(out.per_run[dead], undefined);                                            // 집계 제외 원칙 불변
+  assert.equal(out.insights_schema_version, 1);                                          // additive — version 유지
 });
 
 function metricsWith(over) {   // 최소 필드만 가진 per-run metrics 스텁
@@ -282,9 +341,9 @@ test('latest: 정상 emit → 검증 통과 최신 반환', () => {
   const { root, runId, fence } = emitFixture();
   const r1 = emitInsights(root, runId, { fence, now: FIXED.getTime(), rnd: () => 0.1 });
   const r2 = emitInsights(root, runId, { fence, now: FIXED.getTime() + 60000, rnd: () => 0.2 });
-  toTerminal(root, runId);   // Phase6 ITEM-4: latestInsights는 producer run이 terminal일 때만 신뢰한다
+  finishFixture(root, runId);   // 이벤트 순 ie(r1)→af→ie(r2)→af→finish — r1은 after에 ie(r2)가 껴 skip, r2는 finish-인접
   const got = latestInsights(root);
-  assert.equal(got.path, r2.path);                          // ULID 최신
+  assert.equal(got.path, r2.path);                          // ULID 최신 + finish-인접
   assert.equal(got.envelope.envelope.run_id, runId);
 });
 
@@ -301,15 +360,15 @@ test('latest: producer run을 completed로 전환하면 동일 emit artifact가 
   const { root, runId, fence } = emitFixture();
   const r = emitInsights(root, runId, { fence, now: FIXED.getTime() });
   assert.equal(latestInsights(root), null);       // running 동안은 불신뢰
-  toTerminal(root, runId, 'completed');
-  const got = latestInsights(root);                // 재emit 없이 같은 파일이 유효화
+  finishFixture(root, runId);
+  const got = latestInsights(root);                // 재emit 없이 같은 파일이 finish로 유효화
   assert.equal(got.path, r.path);
 });
 
 test('latest: anchored 이벤트 없는 고아 파일 불신뢰', () => {
   const { root, runId, fence } = emitFixture();
   emitInsights(root, runId, { fence, now: FIXED.getTime() });
-  toTerminal(root, runId);   // Phase6 ITEM-4
+  finishFixture(root, runId);
   // 고아 주입: 실제 emit 파일을 더 최신 ULID 이름으로 복사 (이벤트 없음 → path-binding 실패)
   const dir = join(root, '.deep-loop', 'insights');
   const real = readdirSync(dir).find(f => f.endsWith('-insights.json'));
@@ -322,34 +381,51 @@ test('latest: anchored 이벤트 없는 고아 파일 불신뢰', () => {
 test('latest: sha 불일치 불신뢰 → 유일 파일이면 null', () => {
   const { root, runId, fence } = emitFixture();
   const r = emitInsights(root, runId, { fence, now: FIXED.getTime() });
+  // finish-edge까지 먼저 충족시켜야 한다 — non-terminal이면 producer-terminal 게이트가 먼저 null을 만들어
+  // sha 분기에 영원히 도달하지 못하는 pre-existing 커버리지 약점(plan-r3 P2)이 있었다.
+  finishFixture(root, runId);
   const abs = join(root, r.path);
   writeFileSync(abs, readFileSync(abs, 'utf8').replace('"goal": "g"', '"goal": "tampered"'));
   assert.equal(latestInsights(root), null);
 });
 
 test('latest: 상위 insights_schema_version 파일은 skip하고 더 오래된 유효 파일을 반환 (schema 분기 고립 검증)', () => {
-  const { root, runId, fence } = emitFixture();
-  const old = emitInsights(root, runId, { fence, now: FIXED.getTime(), rnd: () => 0.1 });
-  toTerminal(root, runId);   // Phase6 ITEM-4: 검사 대상 기제(schema)만 고립 — terminal 전제는 미리 충족시켜 둔다
+  // finish-edge 도입 후 단일 run으로는 schema 분기를 고립할 수 없다 — 한 run에는 finish 이벤트가 하나뿐이라
+  // 두 artifact가 동시에 finish-edge를 통과할 수 없다(리뷰 실증: ZZZZ가 schema가 아닌 finish-edge에서 skip).
+  // **two-run 구조**: 각 run이 자기 finish에 인접한 artifact를 하나씩 갖게 해, ZZZZ는 terminal·체인·path·sha·
+  // finish-edge를 전부 통과하고 **오직 schema 검사에서만** skip되도록 만든다.
+  const root = mkdtempSync(join(tmpdir(), 'dl-schema-'));
+  // run A — 폴백으로 반환될 rOld (자기 finish에 인접)
+  const { runId: runA } = initRun(root, { goal: 'a', now: FIXED });
+  const rOld = emitInsights(root, runA, { fence: { owner: runA, generation: 1, intent: 'business' },
+    now: FIXED.getTime(), rnd: () => 0.5 });
+  finishFixture(root, runA);                                 // rOld의 after = [finish] → finish-edge 통과
+  // run B — future-schema 소재. r0B는 ULID가 rOld보다 작도록 과거 now로 emit.
+  const { runId: runB } = initRun(root, { goal: 'b', now: FIXED });
+  const r0B = emitInsights(root, runB, { fence: { owner: runB, generation: 1, intent: 'business' },
+    now: FIXED.getTime() - 60000, rnd: () => 0.1 });
   // r2 리뷰 정정(codex S2): 미래 파일을 path-binding/sha까지 **통과**하도록 만들어 schema 분기만 고립 검증한다 —
   // 테스트 seam으로 appendAnchored를 직접 호출해 그 경로에 대한 anchored 이벤트(sha 일치)를 심는다.
   const dir = join(root, '.deep-loop', 'insights');
-  const future = JSON.parse(readFileSync(join(root, old.path), 'utf8'));
+  const future = JSON.parse(readFileSync(join(root, r0B.path), 'utf8'));
   future.payload.insights_schema_version = 99;
   const futureJson = JSON.stringify(future, null, 2);
   const futureName = 'ZZZZZZZZZZ9999999999999999-insights.json';
-  const futureRel = `.deep-loop/insights/${futureName}`;
-  appendAnchored(root, runId, { type: 'insights-emitted',
-    data: { path: futureRel, sha256: contentHash(futureJson), candidates_count: 0 } });   // path-binding+sha 성립
+  appendAnchored(root, runB, { type: 'insights-emitted',
+    data: { path: relInsightsPath(futureName), sha256: contentHash(futureJson), candidates_count: 0 } },
+    undefined, undefined, { floor: 1 });                     // path-binding+sha 성립 (auto-floor cost 포함)
   writeFileSync(join(dir, futureName), futureJson);
+  finishFixture(root, runB);                                 // ZZZZ의 after = [finish] → finish-edge까지 전부 통과
+  // 순회(ULID 내림차순): ZZZZ → rOld → r0B. ZZZZ는 **schema 검사 하나만으로** skip되어야 rOld가 반환된다
+  // (r0B는 자기 after에 ie(ZZZZ)가 껴 finish-edge 탈락이지만, rOld가 먼저 반환되므로 도달하지 않는다).
   const got = latestInsights(root);
-  assert.equal(got.path, old.path);                          // schema 검사 **하나만으로** 미래 파일이 skip되어야 함
+  assert.equal(got.path, rOld.path);
 });
 
 test('latest: per-file 예외(깨진 JSON)는 fail-soft로 skip하고 다음 유효 파일 반환', () => {
   const { root, runId, fence } = emitFixture();
   const ok = emitInsights(root, runId, { fence, now: FIXED.getTime(), rnd: () => 0.1 });
-  toTerminal(root, runId);   // Phase6 ITEM-4: 검사 대상 기제(깨진 JSON)만 고립
+  finishFixture(root, runId);   // 검사 대상 기제(깨진 JSON)만 고립 — ok는 finish-인접으로 신뢰 전제
   const dir = join(root, '.deep-loop', 'insights');
   writeFileSync(join(dir, 'ZZZZZZZZZZ8888888888888888-insights.json'), '{torn');   // 최신 이름의 깨진 파일
   const got = latestInsights(root);                          // 크래시 없이
@@ -359,12 +435,115 @@ test('latest: per-file 예외(깨진 JSON)는 fail-soft로 skip하고 다음 유
 test('latest: 참조 run의 event-log 체인 변조(checksum 불변) → 파일 skip, latest null', () => {
   const { root, runId, fence } = emitFixture();
   emitInsights(root, runId, { fence, now: FIXED.getTime() });
-  toTerminal(root, runId);   // Phase6 ITEM-4: 검사 대상 기제(체인 변조)만 고립 — non-terminal 사유로 null이 되는 혼선 방지
+  finishFixture(root, runId);   // 검사 대상 기제(체인 변조)만 고립 — finish-edge까지 먼저 충족시켜 둔다
   const ep = join(runDirOf(root, runId), 'event-log.jsonl');
   const lines = readFileSync(ep, 'utf8').trim().split('\n');
   const first = JSON.parse(lines[0]); first.data = { ...first.data, tampered: true };   // checksum 그대로 → verifyLog가 잡아야 함
   writeFileSync(ep, [JSON.stringify(first), ...lines.slice(1)].join('\n') + '\n');
   assert.equal(latestInsights(root), null);
+});
+
+// ── v1.5.0 (b): finish-edge — 앵커 이후 non-exempt 이벤트가 정확히 finish 하나여야 신뢰 (spec §3) ───
+test('v1.5 (b): 정상 emit→auto-floor→finish 인접 → 신뢰', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-fe1-'));
+  const { runId } = initRun(root, { goal: 'g', now: FIXED });
+  const fence = { owner: runId, generation: 1, intent: 'business' };
+  const r = emitInsights(root, runId, { fence, now: FIXED.getTime(), rnd: () => 0.5 });
+  finishFixture(root, runId);
+  const got = latestInsights(root);
+  assert.equal(got.path, r.path);
+});
+
+test('v1.5 (b): mid-run emit(뒤에 business 이벤트) → skip — finish-인접 emit만 신뢰 (2-emit 재시도, r3 앵커 회귀)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-fe2-'));
+  const { runId } = initRun(root, { goal: 'g', now: FIXED });
+  const fence = { owner: runId, generation: 1, intent: 'business' };
+  const rMid = emitInsights(root, runId, { fence, now: FIXED.getTime(), rnd: () => 0.1 });
+  businessEventFixture(root, runId);
+  const rFinal = emitInsights(root, runId, { fence, now: FIXED.getTime() + 60000, rnd: () => 0.2 });
+  finishFixture(root, runId);
+  assert.equal(latestInsights(root).path, rFinal.path);          // 최신이자 유일하게 finish-인접
+  // r3 앵커 회귀: rFinal 파일을 지워 순회가 rMid로 폴백해도, rMid는 자기 앵커 기준 인접성 실패 → null
+  unlinkSync(join(root, rFinal.path));
+  assert.equal(latestInsights(root), null);
+});
+
+test('v1.5 (b): 동일 path 매칭 insights-emitted 이벤트 2개 → fail-closed skip (r3)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-fe6-'));
+  const { runId } = initRun(root, { goal: 'g', now: FIXED });
+  const fence = { owner: runId, generation: 1, intent: 'business' };
+  const r = emitInsights(root, runId, { fence, now: FIXED.getTime(), rnd: () => 0.5 });
+  // 같은 path·sha를 가리키는 중복 insights-emitted 이벤트(규약 밖 — 정상 경로에서 ULID 파일명은 유일)
+  appendAnchored(root, runId, { type: 'insights-emitted', data: { path: r.path, sha256: r.sha256, candidates_count: 0 } },
+    undefined, undefined, { floor: 1 });
+  finishFixture(root, runId);
+  assert.equal(latestInsights(root), null);                      // 앵커 모호 → fail-closed
+});
+
+test('v1.5 (b): emit→finish 사이 명시 budget record cost(auto_floor 부재) → skip (r1 P2)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-fe3-'));
+  const { runId } = initRun(root, { goal: 'g', now: FIXED });
+  const fence = { owner: runId, generation: 1, intent: 'business' };
+  emitInsights(root, runId, { fence, now: FIXED.getTime(), rnd: () => 0.5 });
+  recordCost(root, runId, { turns: 3, tokens: 0, fence: { owner: runId, generation: 1 } });
+  finishFixture(root, runId);
+  assert.equal(latestInsights(root), null);
+});
+
+test('v1.5 (b): finish 후 non-exempt 이벤트(post-finish mutation) → skip (r2 🔴)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-fe4-'));
+  const { runId } = initRun(root, { goal: 'g', now: FIXED });
+  const fence = { owner: runId, generation: 1, intent: 'business' };
+  emitInsights(root, runId, { fence, now: FIXED.getTime(), rnd: () => 0.5 });
+  finishFixture(root, runId);
+  businessEventFixture(root, runId);
+  assert.equal(latestInsights(root), null);
+});
+
+test('v1.5 (b): finish 이벤트 부재(status만 terminal) → skip', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-fe5-'));
+  const { runId } = initRun(root, { goal: 'g', now: FIXED });
+  const fence = { owner: runId, generation: 1, intent: 'business' };
+  emitInsights(root, runId, { fence, now: FIXED.getTime(), rnd: () => 0.5 });
+  toTerminal(root, runId);                                       // finish 이벤트 없이 status만 전이(레거시/드리프트)
+  assert.equal(latestInsights(root), null);
+});
+
+// ── v1.5.0 (b′): post_finish_mutated 라벨 — 집계 유지 + 노출 (spec §3, r5 리뷰 라벨 방식) ───
+test('v1.5 (b′): finish 후 이벤트 낀 terminal run → post_finish_mutated 라벨 + per_run 유지', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-pfm-'));
+  const { runId: self } = initRun(root, { goal: 'self', now: FIXED });
+  const { runId: tainted } = initRun(root, { goal: 'tainted', now: FIXED });
+  finishFixture(root, tainted);
+  businessEventFixture(root, tainted);                          // post-finish mutation (커널이 현재 막지 않음 — r2 판정)
+  const { runId: clean } = initRun(root, { goal: 'clean', now: FIXED });
+  finishFixture(root, clean);
+  const out = computeInsights(root, { selfRunId: self, now: FIXED.getTime(), sleepFn: NOSLEEP });
+  assert.deepEqual(out.post_finish_mutated, [tainted]);
+  assert.ok(out.per_run[tainted]);                              // 라벨이지 제외가 아니다 — 집계 유지
+  assert.ok(out.per_run[clean]);
+  assert.equal(out.insights_schema_version, 1);
+});
+
+test('v1.5 (b′): emitInsights 반환 JSON에 라벨 2배열 포함 — finish 스킬 소비 배선 (plan-r2)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-pfm3-'));
+  const { runId: dead } = initRun(root, { goal: 'dead', now: FIXED });     // suspicious 대상
+  { const d = readState(root, dead).data; d.session_chain.lease.state = 'released'; writeState(root, dead, d); }
+  const { runId } = initRun(root, { goal: 'self', now: FIXED });
+  const fence = { owner: runId, generation: 1, intent: 'business' };
+  const r = emitInsights(root, runId, { fence, now: FIXED.getTime() });
+  assert.deepEqual(r.suspicious_active, [dead]);                // CLI 반환으로 노출 — 2-plane: 소비자는 stdout만 읽는다
+  assert.deepEqual(r.post_finish_mutated, []);
+});
+
+test('v1.5 (b′): finish 이벤트 없는 terminal 로그(레거시)는 판정 불가 → 라벨 없음', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-pfm2-'));
+  const { runId: self } = initRun(root, { goal: 'self', now: FIXED });
+  const { runId: legacy } = initRun(root, { goal: 'legacy', now: FIXED });
+  toTerminal(root, legacy);                                     // finish 이벤트 없이 status만 terminal
+  const out = computeInsights(root, { selfRunId: self, now: FIXED.getTime(), sleepFn: NOSLEEP });
+  assert.deepEqual(out.post_finish_mutated, []);
+  assert.ok(out.per_run[legacy]);
 });
 
 // CLI tests
@@ -390,7 +569,7 @@ test('CLI insights emit: fence 누락 exit 3 / 정상 emit 후 latest가 반환'
   // INSIGHTS_NOW_FUTURE 가드(실 Date.now() 비교)를 결정론적으로 통과한다.
   const ok = cli(root, ['insights', 'emit', '--owner', runId, '--generation', '1', '--now', String(Date.now() - 86_400_000)]);
   assert.equal(ok.code, 0);
-  toTerminal(root, runId);   // Phase6 ITEM-4: latestInsights는 producer run이 terminal일 때만 신뢰한다
+  finishFixture(root, runId);   // latestInsights는 producer run의 finish-인접 emit만 신뢰한다
   const latest = cli(root, ['insights', 'latest', '--json']);
   assert.equal(JSON.parse(latest.out).path, JSON.parse(ok.out).path);
 });
