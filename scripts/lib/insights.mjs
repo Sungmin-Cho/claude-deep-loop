@@ -305,6 +305,11 @@ export function deriveCandidates(perRunMap, { integrityFailed = [] } = {}) {
 function defaultSleep(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
 const TERMINAL_RUN = new Set(['completed', 'stopped']);
 
+// (b) finish-edge 인접성의 예외는 auto-floor cost(appendAnchored 자동 계상, data.auto_floor===true)뿐이다.
+// 명시 budget record cost(auto_floor 부재, budget.mjs recordCost)는 non-exempt (spec §3, r1 리뷰 P2):
+// emit→finish 사이에 끼면 payload가 최종 turns/tokens를 놓쳐 budget_overrun 후보가 억제되므로 재-emit을 요구한다.
+const nonExemptEvent = (e) => !(e.type === 'cost' && e.data?.auto_floor === true);
+
 function listRunIds(root) {
   const dir = join(root, '.deep-loop', 'runs');
   if (!existsSync(dir)) return [];
@@ -452,9 +457,21 @@ export function latestInsights(root) {
       if (!vl.ok) throw new Error(`LOG_TAMPERED: ${vl.errors.join('; ')}`);
       const vh = verifyHeadLines(lines, anchor);
       if (!vh.ok) throw new Error(`LOG_TAMPERED: ${vh.errors.join('; ')}`);
-      const ev = lines.find(e => e.type === 'insights-emitted' && e.data.path === rel);
-      if (!ev) continue;                                    // path-binding: 이벤트의 path와 정확 일치 필수
+      // (b) 앵커는 path-binding을 통과시킨 바로 그 이벤트 — artifact의 path와 정확 일치. 동일 path 매칭이
+      // 2개 이상이면 fail-closed(정상 경로에서 파일명 ULID가 유일하므로 중복은 규약 밖; spec §3 r3 리뷰).
+      const matches = lines.filter(e => e.type === 'insights-emitted' && e.data.path === rel);
+      if (matches.length === 0) continue;                   // path-binding: 이벤트의 path와 정확 일치 필수
+      if (matches.length > 1) { process.stderr.write(`[deep-loop:warn] insights ${f}: ${matches.length} insights-emitted events match path — skipped\n`); continue; }
+      const ev = matches[0];
       if (ev.data.sha256 !== contentHash(raw)) continue;    // 내용 무결성
+      // (b) finish-edge: 앵커 이후 non-exempt 이벤트가 정확히 finish 하나(=마지막 non-exempt)여야 신뢰
+      // (spec §3, r2 리뷰 🔴 2/2 일치) — mid-run emit(뒤에 business/명시 cost 이벤트)과 post-finish
+      // mutation(finish 뒤 non-exempt) 로그의 pre-finish payload를 모두 skip한다. 회복 경로는 재-emit.
+      const after = lines.filter(e => e.seq > ev.seq && nonExemptEvent(e));
+      if (after.length !== 1 || after[0].type !== 'finish') {
+        process.stderr.write(`[deep-loop:warn] insights ${f}: no clean finish edge after emit (non-exempt after: ${after.length ? after.map(e => e.type).join(',') : 'none'}) — skipped\n`);
+        continue;
+      }
       return { path: rel, envelope: obj };
     } catch (e) {
       process.stderr.write(`[deep-loop:warn] insights ${f}: ${String(e?.message || e)} — skipped\n`);   // fail-soft
