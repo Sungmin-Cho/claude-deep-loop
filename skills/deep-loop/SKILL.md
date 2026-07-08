@@ -45,6 +45,22 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" recipe-match --goal "<goal>"
 
 반환된 `recipe_id`와 `protocol`을 사용자에게 제안한다. 최종 확정은 사람이 한다(`recipe_override_auth=user-only`).
 
+### 2-2.5. Hill-Climb Insights 환류 (읽기 전용, 무마찰)
+
+과거 run들의 결정론 마이닝 결과를 조회한다 — **검증된** 최신 insights만 커널이 반환하며, 스킬은 파일을 직접 읽거나 파싱하지 않는다:
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" insights latest --json
+```
+
+- `null`이면 그냥 스킵한다 — 표시할 것이 없으므로 무마찰로 다음 단계로 진행한다.
+- 결과가 있으면(candidates/aggregates 포함) 아래 §2-3의 리뷰 전략 질문 **설명**에 기존 문서화 기본값과 **나란히, 별도 옵션으로** 제안을 표시한다:
+  - 각 제안에는 반드시 **인용 지표를 병기**한다(예: "max_review_rounds 7 — 근거: 직전 run implementation fix_cycles 평균 2.0").
+  - 제안을 **preselect하지 않는다** — 어떤 옵션도 기본 선택 상태로 두지 않는다.
+  - 무응답/엔터 경로로 제안이 채택되게 하지 않는다.
+  - 어떤 값도 **자동 적용 ❌** — 확정은 항상 사람이다(`recipe_override_auth=user-only`, AskUserQuestion을 거치는 구조로 보장).
+  - 이 표시 규칙은 prose-only 규율이다(자동 테스트 대상 아님) — 신뢰 원천은 커널의 `insights latest` 검증이지 스킬의 표시 방식이 아니다.
+
 ### 2-3. 리뷰 전략 확인
 
 리뷰 전략을 결정한다(§7). 자세한 흐름은 `Read("../deep-loop-workflow/references/review-strategy.md")`를 참조:

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { error } from './lib/log.mjs';
 import { initRun, buildInitialLoop } from './lib/initrun.mjs';
 import { detectPlugins } from './lib/detect.mjs';
-import { matchRecipe } from './lib/recipes.mjs';
+import { matchRecipe, recipesDir, validateRecipesDir } from './lib/recipes.mjs';
 import { json } from './lib/log.mjs';
 import { validate as validateLoop } from './lib/schema.mjs';
 import { readState, writeState, patch as patchState, pauseRun, runDir, findRoot } from './lib/state.mjs';
@@ -26,6 +26,7 @@ import { defaultDesktopProbe } from './lib/desktop-target.mjs';
 import { finishRun } from './lib/finish.mjs';
 import { detectAndPersist } from './lib/detect-terminal.mjs';
 import { recoverRun } from './lib/recover.mjs';
+import { computeInsights, emitInsights, latestInsights, validateLedger } from './lib/insights.mjs';
 
 function parseFlags(argv) {
   const f = {};
@@ -105,12 +106,28 @@ const handlers = {
         if (!rv.ok) errors.push(`run ${runId}: ${rv.errors.join('; ')}`);
       } catch (e) { errors.push(`run ${runId}: ${e.message}`); }
     }
+    // recipe/ledger 정적 검사는 런타임 라우팅이 실제로 읽는 **플러그인 번들** recipesDir 기준이다
+    // (project-root 기준이 아님) — --project-root가 타 프로젝트를 가리켜도 그 프로젝트의 recipes/는
+    // 검사 대상이 아니고, 번들 recipe는 root와 무관하게 항상 검증된다.
+    const ledgerPath = join(recipesDir, 'hillclimb-ledger.json');
+    if (existsSync(ledgerPath)) {
+      try { const lv = validateLedger(JSON.parse(readFileSync(ledgerPath, 'utf8'))); if (!lv.ok) errors.push(`ledger: ${lv.errors.join('; ')}`); }
+      catch (e) { errors.push(`ledger: ${e.message}`); }
+    }
+    // recipes fail-closed 검증 (impl-R3 🟡C): 런타임 loadRecipes는 손상 파일을 fail-soft로 skip하므로
+    // (라우팅 생존), 손상 자체는 여기 validate(preflight/머지 게이트)가 파일명과 함께 잡는다.
+    const rv = validateRecipesDir(recipesDir);
+    if (!rv.ok) errors.push(...rv.errors);
     if (errors.length) { error(`validate failed:\n - ${errors.join('\n - ')}`); return 1; }
     process.stdout.write(`ok${runId ? ` (run ${runId})` : ' (schema+builder self-test)'}\n`);
     return 0;
   },
   'detect-plugins': async (a) => { const f = parseFlags(a); json(detectPlugins(rootOf(f))); return 0; },
-  'recipe-match': async (a) => { const f = parseFlags(a); const root = rootOf(f); json(matchRecipe(f.goal || '', detectPlugins(root))); return 0; },
+  'recipe-match': async (a) => {
+    const f = parseFlags(a); const root = rootOf(f);
+    try { json(matchRecipe(f.goal || '', detectPlugins(root))); return 0; }
+    catch (e) { error(String(e?.message || e)); return 1; }   // NO_VALID_RECIPES (degraded bundle) → exit 1, no raw stack
+  },
   'init-run': async (a) => {
     const f = parseFlags(a);
     const root = rootOf(f);
@@ -412,6 +429,41 @@ const handlers = {
       catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }
     }
     error(`unknown breaker verb: ${verb}`); return 2;
+  },
+  // insights [--run <id>] | insights emit --owner --generation | insights latest
+  // compute/latest = read-only (fence 불필요, spec §6). emit = mutating → requireLease(외곽) + lib preCheck(락 안).
+  insights: async (a) => {
+    const verb = a[0] && !a[0].startsWith('--') ? a[0] : null;
+    const f = parseFlags(verb ? a.slice(1) : a);
+    const root = rootOf(f);
+    if (verb === null) {
+      const selfRunId = runIdOf(root, f);
+      if (f.run !== undefined) {
+        const target = String(f.run);
+        // runDir는 unsafe path segment('/'·'..' 등)에 RUN_ID_INVALID를 throw — read-only 조회에서는
+        // 존재하지 않는 run과 동일하게 clean exit 1로 취급한다 (uncaught 스택 금지, impl-R2 ℹ️7).
+        let targetDir;
+        try { targetDir = runDir(root, target); } catch { error(`RUN_NOT_FOUND: ${target}`); return 1; }
+        if (!existsSync(targetDir)) { error(`RUN_NOT_FOUND: ${target}`); return 1; }
+        const out = computeInsights(root, { selfRunId, now: parseNow(f) });
+        json({ ...out, per_run: { [target]: out.per_run[target] ?? null } }); return 0;
+      }
+      json(computeInsights(root, { selfRunId, now: parseNow(f) })); return 0;
+    }
+    if (verb === 'latest') { json(latestInsights(root)); return 0; }
+    if (verb === 'emit') {
+      const runId = runIdOf(root, f);
+      requireLease(root, runId, f);
+      const nowMs = parseNow(f);
+      // Phase6 warning-1: reject future-skewed --now here — emitInsights names the artifact ulid(now) and
+      // latestInsights picks the lexicographically-last filename, so a future --now would permanently pin a
+      // stale candidate ahead of every later legitimate emit (past --now is self-healing, so only future is blocked).
+      if (f.now !== undefined && nowMs > Date.now() + 60_000) { error('INSIGHTS_NOW_FUTURE: --now must not be more than 60s in the future'); return 1; }
+      const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'business' };
+      try { json(emitInsights(root, runId, { fence, now: nowMs })); return 0; }
+      catch (e) { const m = String(e?.message || e); if (m.startsWith('LEASE_FENCED')) { error(m); return 3; } error(m); return 1; }
+    }
+    error(`unknown insights verb: ${verb}`); return 2;
   },
   // spawn-style offer-desktop|confirm-desktop|decline-desktop|reset-desktop --owner <id> --generation <n> [--nonce <n>]
   //           | probe-desktop

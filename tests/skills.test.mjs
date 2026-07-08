@@ -1,12 +1,23 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const skillPath = (dir) => join(ROOT, 'skills', dir, 'SKILL.md');
 const _rf = readFileSync;
+
+// Portable recursive .md walk (no reliance on Node ≥20.12 Dirent.parentPath) — Node ≥20 (engines) safe.
+function walkMdFiles(dir) {
+  let out = [];
+  for (const name of readdirSync(dir)) {
+    const p = join(dir, name);
+    if (statSync(p).isDirectory()) out = out.concat(walkMdFiles(p));
+    else if (name.endsWith('.md')) out.push(p);
+  }
+  return out;
+}
 
 // 매니페스트: [dir, name, userInvocable, triggers[](영+한 둘 다 포함해야), refsCLI?(mutating이면 CLI 참조 필수)]
 const SKILLS = [
@@ -54,10 +65,11 @@ function violatesBoundary(src) {
 }
 
 // Codex r3 sf-4: deep-loop.mjs 를 실제 호출하는 라인 중 mutating subcommand 는 --owner 와 --generation 을 **둘 다** 가져야 한다.
-const MUTATING_SUB = /(state\s+patch|episode\s+(?:new|record|abandon)|workstream\s+(?:new|set|terminal)|review\s+(?:dispatch|record)|handoff\s+emit|budget\s+record|comprehension\s+ack|breaker\s+reset|session-profile\s+set|lease\s+(?:acquire|release)|finish\b)/;
+// Task 8: insights emit 도 mutating (lease-fenced) — MUTATING_SUB/MUTATING_CMD 둘 다 확장.
+const MUTATING_SUB = /(state\s+patch|episode\s+(?:new|record|abandon)|workstream\s+(?:new|set|terminal)|review\s+(?:dispatch|record)|handoff\s+emit|budget\s+record|comprehension\s+ack|breaker\s+reset|session-profile\s+set|lease\s+(?:acquire|release)|finish\b|insights\s+emit)/;
 // Codex r5 sf-3: shorthand 명령(예: `episode record --status done`, `finish --status completed`)도 잡는다.
 // "command 라인" = deep-loop.mjs 호출이거나, mutating sub 뒤에 CLI 플래그(--xxx)가 오는 경우. 순수 산문 멘션은 무시.
-const MUTATING_CMD = /(?:state\s+patch|episode\s+(?:new|record|abandon)|workstream\s+(?:new|set|terminal)|review\s+(?:dispatch|record)|handoff\s+emit|budget\s+record|comprehension\s+ack|breaker\s+reset|session-profile\s+set|lease\s+(?:acquire|release)|finish)\b[^\n]*\s--\w/;
+const MUTATING_CMD = /(?:state\s+patch|episode\s+(?:new|record|abandon)|workstream\s+(?:new|set|terminal)|review\s+(?:dispatch|record)|handoff\s+emit|budget\s+record|comprehension\s+ack|breaker\s+reset|session-profile\s+set|lease\s+(?:acquire|release)|finish|insights\s+emit)\b[^\n]*\s--\w/;
 function mutatingFenced(text) {
   // Codex r4 sf-2: 셸 라인 연속(\ 로 끝나는 줄)을 논리 명령으로 먼저 합친다 — multi-line unfenced 명령 회피 차단.
   const joined = text.replace(/\\\n\s*/g, ' ');
@@ -255,8 +267,36 @@ test('episode abandon must be fenced (mutatingFenced)', () => {
 });
 
 test('deep-loop-workflow references exist', () => {
-  for (const r of ['adapters.md', 'review-strategy.md', 'handoff-respawn.md'])
+  for (const r of ['adapters.md', 'review-strategy.md', 'handoff-respawn.md', 'hill-climbing.md'])
     assert.ok(existsSync(join(ROOT, 'skills', 'deep-loop-workflow', 'references', r)), `missing reference ${r}`);
+});
+
+// Task 8: hill-climbing protocol reference — Tier 목록 전문 + 증거 계약 (a)~(f) + ledger append 규약.
+test('hill-climbing reference: 존재 + Tier 목록 + 증거 계약 (a)~(f)', () => {
+  const src = readFileSync(join(ROOT, 'skills', 'deep-loop-workflow', 'references', 'hill-climbing.md'), 'utf8');
+  for (const marker of ['Tier 1', 'Tier 2', 'recipes/*.json', 'recipes/automation/*.yml',
+    'insights latest', 'falsification', 'hillclimb-ledger.json', '(e)', '(f)', 'append',
+    'diff', '수정', '삭제', '재배열', 'git log']) {   // ledger 순수-append 계약 핵심어 (r1 codex S3)
+    assert.ok(src.includes(marker), `hill-climbing.md missing marker: ${marker}`);
+  }
+  assert.ok(mutatingFenced(src), 'mutating commands must carry --owner/--generation');
+  assert.ok(!violatesBoundary(src));
+});
+
+// Task 8: finish must emit insights (non-fatal on failure); init must read insights latest (read-only).
+// Both must go through the kernel CLI — never parse/write .deep-loop/insights/ directly.
+test('finish/init 스킬: insights CLI 경유만 (직접 파싱·쓰기 금지)', () => {
+  for (const dir of ['deep-loop-finish', 'deep-loop']) {
+    const src = readFileSync(skillPath(dir), 'utf8');
+    // .deep-loop/insights/ 를 언급하는 명령 라인은 반드시 deep-loop.mjs insights 호출이어야 함
+    const bad = src.split('\n').some(line =>
+      /\.deep-loop\/insights\//.test(line) && !/deep-loop\.mjs/.test(line)
+      && (/(?:^|\s)(?:cat|jq|head|tail)\b/.test(line) || /readFileSync|Read\(/.test(line) || />>?\s*\S*\.deep-loop\/insights\//.test(line)));
+      // r1 opus S3: `>`는 \b 워드경계가 안 걸리므로 redirect 분기를 별도 패턴으로 — `> .deep-loop/insights/...` 미탐 방지
+    assert.ok(!bad, `${dir}: direct insights file access`);
+  }
+  assert.ok(readFileSync(skillPath('deep-loop-finish'), 'utf8').includes('insights emit'));
+  assert.ok(readFileSync(skillPath('deep-loop'), 'utf8').includes('insights latest'));
 });
 
 test('worktree-aware skills: action-keyed entry in continue; resume defers; handoff no entry; verify unchanged', () => {
@@ -662,4 +702,47 @@ test('deep-loop init skill observes + seeds session model/effort into init-run (
   const body = readFileSync(new URL('../skills/deep-loop/SKILL.md', import.meta.url), 'utf8');
   assert.match(body, /CLAUDE_EFFORT/, 'init skill observes CLAUDE_EFFORT');
   assert.match(body, /init-run[\s\S]*--model[\s\S]*--effort/, 'init skill threads --model/--effort into init-run');
+});
+
+// Task 9 (spec §8.2): 게이트-크리티컬 마커 — 위치-독립 '존재' 단언, 삭제-회귀만 결정론 방어.
+// 마커 선정 기준: budget/breaker/comprehension 검사 지시, fence 플래그(--owner/--generation/--expect-generation),
+// human-only confirm(--confirm/--actor human/recover --confirm), proposal-only 선언 등 "게이트 의미"를 담은
+// 표현만 채택한다 — 테스트를 통과시키기 위한 임의 토큰은 배제(구현 주의 준수).
+// 잡는 것은 **삭제**뿐이다: 마커 문자열이 남아 있으면 그 옆의 지시문이 약화·반전되어도 이 존재-검사는 통과한다.
+// 의미 반전 탐지는 hill-climb checker 계약 (e)(적대적 diff 리뷰) + 사람 머지 리뷰의 몫이다 — overclaim 금지.
+const GATE_MARKERS = {
+  'deep-loop-continue': ['budget', 'breaker', 'comprehension', 'gate.allowed', '--confirm'],
+  'deep-loop-handoff': ['handoff emit', '--owner', 'gate-blocked', 'recover --confirm', 'isHeadlessInvocation'],
+  'deep-loop-resume': ['lease acquire', '--expect-generation', 'recover --confirm', 'needs-human'],
+  'deep-loop-ack': ['--actor human', '--confirm', 'CONFIRM_REQUIRED', 'ACK_REJECTED'],
+  'deep-loop-discover': ['state patch', '--owner', '--generation', 'debt_ratio'],
+  'deep-loop-finish': ['proof', '--confirm', 'FINISH_PROOF_UNMET', 'proposal-only'],
+  'deep-loop': ['proposal-only', 'AskUserQuestion', 'fail-closed', 'recipe_override_auth'],
+};
+for (const [dir, markers] of Object.entries(GATE_MARKERS)) {
+  test(`gate-critical markers present: ${dir}`, () => {
+    const src = readFileSync(skillPath(dir), 'utf8');
+    for (const m of markers) assert.ok(src.includes(m), `${dir}/SKILL.md lost gate marker: ${m}`);
+  });
+}
+
+// ── impl-R3 🟡B: finish의 hill-climb 제안 명령 goal에 candidate id 원문을 넣지 않는다 —
+// id의 "fix"/"implement" 등이 다른 recipe 트리거와 substring 충돌해 비결정 라우팅이 된다 ───
+test('deep-loop-finish: hill-climb 제안 명령은 candidate id 없는 고정 문구다', () => {
+  const src = readFileSync(skillPath('deep-loop-finish'), 'utf8');
+  assert.ok(!src.includes('하네스 개선: <'), 'goal 템플릿에 candidate id 자리표시자가 남아 있음');
+  assert.ok(src.includes('/deep-loop "하네스 개선"'), '고정 문구 제안 명령이 없음');
+});
+
+// ── Phase6 ITEM-3: r3 fix 57b8364가 finish 스킬의 제안 명령을 고정 문구로 바꿨지만 계약 문서
+// (hill-climbing.md:128)에 콜론-템플릿 형태가 남아 SSOT 불일치가 있었다 — skills/ 전역에서
+// 회귀를 결정론적으로 방어한다(위치 무관, 어느 .md 파일이든 이 패턴이 재도입되면 실패) ───
+test('skills/ 전역: hill-climb 제안 명령에 candidate id 콜론-템플릿 형태("하네스 개선: )가 남아있지 않다', () => {
+  const files = walkMdFiles(join(ROOT, 'skills'));
+  assert.ok(files.length > 0, 'skills/ 하위 .md 파일 탐색 실패(회귀 테스트가 무의미해짐)');
+  for (const f of files) {
+    const src = readFileSync(f, 'utf8');
+    assert.ok(!src.includes('"하네스 개선:'),
+      `${f}: candidate id 콜론-템플릿("하네스 개선:) 잔존 — 고정 문구 /deep-loop "하네스 개선" 로 동기화되어야 함`);
+  }
 });

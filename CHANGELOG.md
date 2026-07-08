@@ -5,6 +5,49 @@ All notable changes to deep-loop are documented in this file.
 > Note: the `[1.1.0]`/`[1.2.0]` entries pre-date this changelog file (a known lag between
 > `plugin.json.version` and the changelog); this release does not retro-fill them.
 
+## [1.4.0] — 2026-07-07
+
+Autonomous hill-climbing feedback loop — the kernel mines its own run history into deterministic
+insights, and those insights flow back into `/deep-loop-finish`'s proposal and `/deep-loop`'s init
+step, closing the loop between *running* deep-loop and *improving* deep-loop.
+
+### Added
+- **`insights` kernel subcommand, 3 verbs** (`lib/insights.mjs`) — `insights [--run <id>] [--json]`
+  computes deterministic per-run metrics and improvement candidates (read-only, no fence) via the
+  spec's two-phase read: terminal-only runs get a verified aggregation pass, non-terminal runs are
+  excluded, and the owning run also gets a `self_snapshot`. `insights emit --owner --generation`
+  anchors a computed payload in three ordered steps — tmp atomic write → `appendAnchored`
+  `insights-emitted` event → tmp→final atomic rename — lease-fenced per invariant #2. `insights
+  latest [--json]` returns only a payload that passes envelope + schema-version + path-binding +
+  sha256 verification against its anchored event, scanning ULID-descending and skipping (fail-soft)
+  any file that doesn't verify; read-only, no fence. Skills never parse `.deep-loop/insights/*.json`
+  directly — `insights latest` is the only trusted read path.
+- **`harness-hill-climb` recipe** (`recipes/harness-hill-climb.json`) + `recipes/hillclimb-ledger.json`
+  (empty-array seed) — a `flow: [insights, standalone:maker, deep-review:checker, ship-proposal,
+  archive]` recipe triggered by "hill-climb" / "hill climbing" / "하네스 개선" / "루프 개선" / "환류"
+  (a bare "harness" trigger was dropped in review — it misrouted ordinary goals); the `validate`
+  subcommand now also validates the ledger's shape and every `recipes/*.json` (fail-closed).
+- **Finish/init feedback integration** — `/deep-loop-finish` emits insights and proposes the next
+  hill-climb command from the returned candidates (proposal only, never auto-starts); `/deep-loop`
+  init reads `insights latest` (§2-2.5) and surfaces any pending candidate at run start.
+- **`references/hill-climbing.md`** — the maker/checker protocol reference for hill-climb runs: the
+  Tier-1 (`recipes/*.json` + `recipes/automation/*.yml` only, autonomous-editable) vs Tier-2
+  (everything else, human-proposal only) boundary, the (a)–(f) evidence contract, and the ledger's
+  pure-append invariant (no diff/edit/delete/reorder of existing entries).
+- **Gate-critical marker regression tests** (`tests/skills.test.mjs`) — deletion-only guards across
+  the 7 gate-relevant `SKILL.md` files, pinning the presence of budget/breaker/comprehension/
+  `--confirm`/fence tokens so a rewrite can't silently drop language a safety gate depends on.
+
+### Fixed (review hardening beyond plan)
+- **Honest `breaker.trips` semantics** — `insights.mjs` now reports `trips` as an end-of-run 0/1
+  latch instead of a miscounted boolean-as-count, and drops the dead `run-paused` "consecutive"
+  fallback branch the kernel never actually populates.
+- **`loop_sha256` single verified read** — `computeInsights` derives the hash from the
+  already-verified `readState` result instead of a second, TOCTOU-vulnerable re-read.
+- **`latestInsights` chain verification** — path-binding now also runs `verifyLog`/`verifyHead`
+  against the referenced run's event log before trusting it, closing a gap where a tampered but
+  path-matching event could otherwise pass.
+
 ## [1.3.0] — 2026-07-07
 
 Audit hardening of the four human-in-the-loop / resource gates. The canonical version is
