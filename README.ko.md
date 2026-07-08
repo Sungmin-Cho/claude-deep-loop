@@ -45,11 +45,15 @@ deep-loop는 엄격한 **2-plane 분리**(spec §1)를 강제합니다:
 
 deep-loop은 자신이 쌓은 run 이력을 3-verb 커널 서브커맨드(`scripts/lib/insights.mjs`, 스펙 §6)로 결정론 마이닝합니다.
 
+> 참고: `--now`는 `insights emit`뿐 아니라 대부분의 커널 CLI 서브커맨드가 공통으로 받습니다(예: `next-action`, `tick`, `respawn`, `budget check`, `recover`, `session-profile set`, `finish`). 모든 커맨드에서 malformed·값 누락·범위 초과(`±8.64e15`) `--now`는 공통 stderr `INVALID_NOW` + exit 1을 반환하며, 미지정 시 `Date.now()` 폴백은 그대로 유지됩니다.
+
 | 서브커맨드 | 역할 | fence | exit |
 |---|---|---|---|
 | `insights [--run <id>] [--json]` | 지표+후보 계산·출력. **기본 = §4 집계 규약**, `--run`은 `per_run`만 한정 (후보/집계는 전 run 대상). **읽기 전용** | 불필요 | 0 / 1(invalid run id) / 2(usage) |
 | `insights emit --owner <run_id> --generation <n>` | 아래 3단계 순서(tmp atomic write → `appendAnchored` `insights-emitted` 이벤트 → tmp→최종 atomic rename)로 envelope 발행 | **필수** (불변식 #2) | 0 / 1(invalid `--now` / lib error) / 3(fence) / 2(usage) |
 | `insights latest [--json]` | **검증된** 최신 insights 반환. **읽기 전용** — 스킬(`/deep-loop` init, `/deep-loop-finish`)은 이 명령만 사용, `.deep-loop/insights/*.json`을 직접 파싱하지 않음 | 불필요 | 0 / 2(usage) |
+
+payload(`insights_schema_version`은 `1` 유지 — 아래는 additive 필드)에는 신뢰 라벨 2종도 담깁니다: `suspicious_active`는 `excluded_active`의 부분집합으로, non-terminal·non-paused run 중 lease가 `released`이거나 `releasing`인데 TTL이 만료·부재인 경우를 표시합니다(죽은 lease 신호이지 추가 제외가 아님). `post_finish_mutated`는 terminal run의 `finish` 이벤트 뒤에 non-exempt 이벤트가 낀 경우를 표시합니다(집계에는 그대로 유지되고 라벨만 추가). `insights emit`의 stdout JSON은 두 라벨 배열을 envelope payload 안뿐 아니라 최상위 반환값에도 그대로 포함해 stdout만 읽는 소비자도 파싱 없이 볼 수 있습니다. `insights latest`는 artifact가 path+sha256으로 바인딩된 `insights-emitted` 이벤트(anchor) 이후, auto-floor cost를 제외한 이벤트가 정확히 하나이고 그것이 `finish`일 때만 신뢰합니다 — 그 외(다른 이벤트가 더 있거나 전혀 없는 경우)는 fail-soft로 다음 후보 파일로 건너뜁니다. 사람에게 insights 후보를 보여주는 소비자(예: `/deep-loop-finish`의 후보 블록)는 `suspicious_active`/`post_finish_mutated` 중 하나라도 비어있지 않으면 후보와 함께 표시해야 합니다.
 
 ## 안전 불변식
 
