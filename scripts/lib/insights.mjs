@@ -311,24 +311,46 @@ function listRunIds(root) {
   return readdirSync(dir, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name).sort();
 }
 
-function rawStatusOnce(root, runId) {
-  return JSON.parse(readFileSync(join(runDir(root, runId), 'loop.json'), 'utf8')).status;
+// 1단 raw 읽기: 한 번의 JSON.parse에서 status + lease를 함께 뽑는다 (추가 I/O 없음 — 두-단계 읽기 구조 유지).
+function rawProbeOnce(root, runId) {
+  const parsed = JSON.parse(readFileSync(join(runDir(root, runId), 'loop.json'), 'utf8'));
+  return { status: parsed.status, lease: parsed.session_chain?.lease ?? null };
+}
+
+// (a) suspicious_active 판정 — raw(비검증) 읽기 기반의 **라벨**이지 신뢰 판단이 아니다(집계 제외 원칙은
+// terminal-only 불변; spec §2 판정 표를 위에서 아래로 첫 매치). paused 는 preserve-pause 사람-대기 정상
+// 상태라 최우선 제외. releasing 인데 expires_at 부재/파싱불가는 규약 밖(정상 커널은 releasing 전이 시 반드시
+// TTL 설정 — lease.mjs r1 🔴4) → timeout 인수도 불가한 stranded 이므로 suspicious (spec r4 리뷰 수용).
+export function isSuspiciousActive(status, lease, nowMs) {
+  if (status === 'paused') return false;
+  if (!lease || typeof lease !== 'object') return false;
+  if (lease.state === 'released') return true;
+  if (lease.state === 'releasing') {
+    if (!lease.expires_at) return true;
+    const exp = Date.parse(lease.expires_at);
+    return Number.isNaN(exp) ? true : nowMs > exp;
+  }
+  return false;
 }
 
 export function computeInsights(root, { selfRunId = null, now = Date.now(), retryDelayMs = 50, sleepFn = defaultSleep } = {}) {
   const out = {
     insights_schema_version: INSIGHTS_SCHEMA_VERSION,
     generated_at: new Date(now).toISOString(),
-    runs_analyzed: [], excluded_active: [], unreadable: [], integrity_failed_runs: [],
+    runs_analyzed: [], excluded_active: [], suspicious_active: [], unreadable: [], integrity_failed_runs: [],
     per_run: Object.create(null), aggregates: {}, candidates: [],
   };
   for (const id of listRunIds(root)) {
     const isSelf = id === selfRunId;
     // 1단: raw parse (실패 → 1회 재시도 → unreadable)
-    let status;
-    try { status = rawStatusOnce(root, id); }
-    catch { try { sleepFn(retryDelayMs); status = rawStatusOnce(root, id); } catch { out.unreadable.push(id); continue; } }
-    if (!isSelf && !TERMINAL_RUN.has(status)) { out.excluded_active.push(id); continue; }
+    let probe;
+    try { probe = rawProbeOnce(root, id); }
+    catch { try { sleepFn(retryDelayMs); probe = rawProbeOnce(root, id); } catch { out.unreadable.push(id); continue; } }
+    if (!isSelf && !TERMINAL_RUN.has(probe.status)) {
+      out.excluded_active.push(id);
+      if (isSuspiciousActive(probe.status, probe.lease, now)) out.suspicious_active.push(id);
+      continue;
+    }
     // 2단: 검증 읽기 = readState + verifyLog + verifyHead + readLines (스펙 §4-2). readLines는 JSON parse만 하므로
     // verifyLog(checksum/seq 체인)와 verifyHead(loop.json의 event_log_head anchor 대조 — suffix truncation 탐지,
     // appendAnchored와 동일 2중 검증)를 반드시 함께 돌린다. 실패 → ≥retryDelayMs 재시도 1회 → integrity_failed.

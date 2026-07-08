@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
-import { computeRunMetrics, computeInsights, deriveCandidates, emitInsights, latestInsights, relInsightsPath, validateLedger } from '../scripts/lib/insights.mjs';
+import { computeRunMetrics, computeInsights, deriveCandidates, emitInsights, latestInsights, relInsightsPath, validateLedger, isSuspiciousActive } from '../scripts/lib/insights.mjs';
 import { readState, writeState, runDir as runDirOf } from '../scripts/lib/state.mjs';
 import { readLines, appendAnchored } from '../scripts/lib/integrity.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
@@ -181,6 +181,46 @@ test('computeInsights: 콜드스타트 runs 0개 → 빈 결과', () => {
   const out = computeInsights(root, { now: FIXED.getTime(), sleepFn: NOSLEEP });
   assert.deepEqual(out.runs_analyzed, []);
   assert.deepEqual(out.candidates, []);
+});
+
+// ── v1.5.0 (a): suspicious_active — 죽은 lease 신호 라벨 (spec §2, 판정 표 그대로) ───
+test('v1.5 (a): isSuspiciousActive 판정 표 — 위에서 아래 첫 매치', () => {
+  const NOW = T0;
+  // paused 최우선 제외 (released여도 false)
+  assert.equal(isSuspiciousActive('paused', { state: 'released' }, NOW), false);
+  assert.equal(isSuspiciousActive('paused', { state: 'releasing', expires_at: iso(T0 - 1000) }, NOW), false);
+  // lease 부재/비객체 → 보수적 false
+  assert.equal(isSuspiciousActive('running', null, NOW), false);
+  assert.equal(isSuspiciousActive('running', undefined, NOW), false);
+  // released → true (놓았는데 비-terminal)
+  assert.equal(isSuspiciousActive('running', { state: 'released' }, NOW), true);
+  // releasing + TTL만료 → true / 미만료 → false
+  assert.equal(isSuspiciousActive('running', { state: 'releasing', expires_at: iso(T0 - 1) }, NOW), true);
+  assert.equal(isSuspiciousActive('running', { state: 'releasing', expires_at: iso(T0 + 60000) }, NOW), false);
+  // releasing + expires_at 부재/파싱불가 → true (r4 리뷰 — 규약 밖 stranded)
+  assert.equal(isSuspiciousActive('running', { state: 'releasing' }, NOW), true);
+  assert.equal(isSuspiciousActive('running', { state: 'releasing', expires_at: null }, NOW), true);
+  assert.equal(isSuspiciousActive('running', { state: 'releasing', expires_at: 'garbage' }, NOW), true);
+  // active (expires_at=null 무기한 규약) → false
+  assert.equal(isSuspiciousActive('running', { state: 'active', expires_at: null }, NOW), false);
+});
+
+test('v1.5 (a): computeInsights suspicious_active — excluded 부분집합, 집계 미포함, version 1', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-susp-'));
+  const { runId: self } = initRun(root, { goal: 'self', now: FIXED });
+  const { runId: dead } = initRun(root, { goal: 'dead', now: FIXED });      // running + lease released → suspicious
+  { const d = readState(root, dead).data; d.session_chain.lease.state = 'released'; writeState(root, dead, d); }
+  const { runId: healthy } = initRun(root, { goal: 'healthy', now: FIXED }); // running + lease active → 비suspicious
+  const { runId: pausedR } = initRun(root, { goal: 'paused', now: FIXED });  // paused + releasing+만료 → 비suspicious (preserve-pause)
+  { const d = readState(root, pausedR).data; d.status = 'paused';
+    d.session_chain.lease = { ...d.session_chain.lease, state: 'releasing', expires_at: iso(T0 - 1000) };
+    writeState(root, pausedR, d); }
+  const out = computeInsights(root, { selfRunId: self, now: FIXED.getTime(), sleepFn: NOSLEEP });
+  assert.deepEqual(out.suspicious_active, [dead]);
+  for (const id of out.suspicious_active) assert.ok(out.excluded_active.includes(id));   // ⊆ excluded_active
+  assert.ok(out.excluded_active.includes(healthy) && out.excluded_active.includes(pausedR));
+  assert.equal(out.per_run[dead], undefined);                                            // 집계 제외 원칙 불변
+  assert.equal(out.insights_schema_version, 1);                                          // additive — version 유지
 });
 
 function metricsWith(over) {   // 최소 필드만 가진 per-run metrics 스텁
