@@ -180,3 +180,41 @@ test('CLI validate from nested .claude/worktrees cwd resolves the run (rootOf up
   const out = execFileSync('node', [CLI, 'validate'], { cwd: wt, encoding: 'utf8' });
   assert.match(out, new RegExp(`ok \\(run ${runId}\\)`), 'validate found run from worktree cwd');
 });
+
+// ── v1.5.0 (c): parseNow malformed → 전-커맨드 공통 INVALID_NOW exit 1 (spec §4) ───
+test('v1.5 (c): malformed --now → exit 1 + INVALID_NOW (read-only와 mutating 대표 커맨드)', () => {
+  const { root, runId } = seed();
+  const cases = [
+    ['next-action', '--json', '--now', 'not-a-date'],
+    ['insights', 'emit', '--now', 'not-a-date', '--owner', runId, '--generation', '1'],
+  ];
+  for (const args of cases) {
+    let code = 0, stderr = '';
+    try { run(root, args); } catch (e) { code = e.status; stderr = String(e.stderr); }
+    assert.equal(code, 1, args.join(' '));
+    assert.match(stderr, /INVALID_NOW/, args.join(' '));
+  }
+});
+
+test('v1.5 (c): value-less --now → exit 1 + INVALID_NOW', () => {
+  const { root } = seed();
+  let code = 0, stderr = '';
+  try { run(root, ['next-action', '--json', '--now']); } catch (e) { code = e.status; stderr = String(e.stderr); }
+  assert.equal(code, 1);
+  assert.match(stderr, /INVALID_NOW/);
+});
+
+test('v1.5 (c): Date 범위 밖 유한 숫자 --now → exit 1 + INVALID_NOW (후속 toISOString RangeError 차단, plan-r4)', () => {
+  const { root } = seed();
+  let code = 0, stderr = '';
+  try { run(root, ['next-action', '--json', '--now', '8640000000000001']); } catch (e) { code = e.status; stderr = String(e.stderr); }
+  assert.equal(code, 1);
+  assert.match(stderr, /INVALID_NOW/);
+});
+
+test('v1.5 (c): --now 미지정·유효 ms·유효 ISO는 정상 동작 유지', () => {
+  const { root } = seed();
+  assert.ok(JSON.parse(run(root, ['next-action', '--json'])).action);
+  assert.ok(JSON.parse(run(root, ['next-action', '--json', '--now', String(Date.parse('2026-06-24T00:00:01Z'))])).action);
+  assert.ok(JSON.parse(run(root, ['next-action', '--json', '--now', '2026-06-24T00:00:01Z'])).action);
+});

@@ -44,11 +44,18 @@ function parseFlags(argv) {
   return f;
 }
 
+// --now 관례(v1.5.0, spec §4): 미지정 → Date.now() 폴백. 지정됐는데(value-less 포함) epoch ms 정수도
+// Date.parse 가능한 문자열도 아니면 INVALID_NOW throw — dispatcher 말미의 좁은 catch가 exit 1로 변환한다
+// (불변식 #2: 1 = invalid value; optInt의 지정-무효→exit 1 관례와 동형). 호출처 12곳에 일괄 적용.
 function parseNow(f) {
-  if (f.now === undefined || f.now === true) return Date.now();
+  if (f.now === undefined) return Date.now();
+  if (f.now === true) throw new Error('INVALID_NOW: --now requires a value (epoch ms or ISO-8601 date)');
   const s = String(f.now);
   const n = /^\d+$/.test(s) ? Number(s) : Date.parse(s);
-  return Number.isFinite(n) ? n : Date.now();
+  // ECMAScript Date 유효 범위(±8.64e15 ms, TimeClip) 밖의 유한값은 digit-only 경로로 여기를 통과한 뒤
+  // 후속 new Date(n).toISOString()에서 RangeError 스택으로 터진다(plan-r4) — 입구에서 거부한다.
+  if (!Number.isFinite(n) || Math.abs(n) > 8.64e15) throw new Error(`INVALID_NOW: --now must be epoch ms or an ISO-8601 date (got: ${s})`);
+  return n;
 }
 
 function reqStr(f, name) { const v = f[name]; return (typeof v === 'string' && v.length) ? v : null; }   // 누락 시 null (핸들러가 exit 2 결정)
@@ -577,4 +584,11 @@ const handlers = {
 
 const fn = handlers[sub];
 if (!fn) { error(`unknown subcommand: ${sub ?? '<none>'}`); process.exit(2); }
-process.exit(await fn(rest));
+// INVALID_NOW만 exit 1로 변환하는 좁은 catch — 그 외 예외는 기존 fail-stop(uncaught) 그대로 재-throw
+// (integrity 등의 detect-and-fail-stop 모델을 넓은 catch로 삼키지 않는다).
+try {
+  process.exit(await fn(rest));
+} catch (e) {
+  if (String(e?.message || '').startsWith('INVALID_NOW')) { error(e.message); process.exit(1); }
+  throw e;
+}
