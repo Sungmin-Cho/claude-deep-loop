@@ -21,7 +21,7 @@ function isValidRecipeShape(r) {
 export function validateRecipesDir(dir = recipesDir) {
   const errors = [];
   if (!existsSync(dir)) return { ok: true, errors };
-  for (const rf of readdirSync(dir).filter(n => n.endsWith('.json') && n !== 'hillclimb-ledger.json')) {
+  for (const rf of readdirSync(dir).filter(n => n.endsWith('.json') && n !== 'hillclimb-ledger.json').sort()) {
     try {
       const r = JSON.parse(readFileSync(join(dir, rf), 'utf8'));
       if (!r || typeof r.id !== 'string') errors.push(`recipe ${rf}: id must be a string`);
@@ -40,7 +40,7 @@ export function loadRecipes(dir = recipesDir) {
   // Phase6 info-3: 부재 dir은 validateRecipesDir과 동형으로 빈 목록 반환(ENOENT throw 대신) — 커스텀
   // dir 주입 시 빈 목록은 matchRecipe의 NO_VALID_RECIPES fail-closed로 이어지므로 침묵 실패가 아니다.
   if (!existsSync(dir)) return [];
-  return readdirSync(dir).filter(f => f.endsWith('.json') && f !== 'hillclimb-ledger.json')
+  return readdirSync(dir).filter(f => f.endsWith('.json') && f !== 'hillclimb-ledger.json').sort()
     .map(f => {
       let parsed;
       try { parsed = JSON.parse(readFileSync(join(dir, f), 'utf8')); }
