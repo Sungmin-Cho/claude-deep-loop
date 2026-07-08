@@ -55,7 +55,7 @@ Skill (LLM) ──write──▶ state patch / budget record / comprehension ack
 deep-loop mines its own run history into deterministic insights via a 3-verb kernel subcommand
 (`scripts/lib/insights.mjs`, spec §6):
 
-> Note: `--now` is accepted by most kernel CLI subcommands, not just `insights emit` (e.g. `next-action`, `tick`, `respawn`, `budget check`, `recover`, `session-profile set`, `finish`). Across all of them, a malformed, value-less, or out-of-range (`±8.64e15`) value produces a common `INVALID_NOW` message on stderr and exit 1; omitting `--now` falls back to `Date.now()`.
+> Note: `--now` is accepted by most kernel CLI subcommands, not just `insights emit` (e.g. `next-action`, `tick`, `respawn`, `budget check`, `recover`, `session-profile set`, `finish`). Accepted forms are epoch ms or ISO-8601 (date-only is interpreted as UTC midnight; datetimes require a `Z`/`±HH:MM` designator). Across all of them, a malformed, value-less, or out-of-range (`±8.64e15`) value produces a common `INVALID_NOW` message on stderr and exit 1; omitting `--now` falls back to `Date.now()`.
 
 | Subcommand | Role | Fence | Exit |
 |---|---|---|---|

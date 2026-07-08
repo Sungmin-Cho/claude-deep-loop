@@ -45,7 +45,7 @@ deep-loop는 엄격한 **2-plane 분리**(spec §1)를 강제합니다:
 
 deep-loop은 자신이 쌓은 run 이력을 3-verb 커널 서브커맨드(`scripts/lib/insights.mjs`, 스펙 §6)로 결정론 마이닝합니다.
 
-> 참고: `--now`는 `insights emit`뿐 아니라 대부분의 커널 CLI 서브커맨드가 공통으로 받습니다(예: `next-action`, `tick`, `respawn`, `budget check`, `recover`, `session-profile set`, `finish`). 모든 커맨드에서 malformed·값 누락·범위 초과(`±8.64e15`) `--now`는 공통 stderr `INVALID_NOW` + exit 1을 반환하며, 미지정 시 `Date.now()` 폴백은 그대로 유지됩니다.
+> 참고: `--now`는 `insights emit`뿐 아니라 대부분의 커널 CLI 서브커맨드가 공통으로 받습니다(예: `next-action`, `tick`, `respawn`, `budget check`, `recover`, `session-profile set`, `finish`). 허용 형식은 epoch ms 또는 ISO-8601(date-only는 UTC 자정으로 해석, datetime은 `Z`/`±HH:MM` 지정자 필수)입니다. 모든 커맨드에서 malformed·값 누락·범위 초과(`±8.64e15`) `--now`는 공통 stderr `INVALID_NOW` + exit 1을 반환하며, 미지정 시 `Date.now()` 폴백은 그대로 유지됩니다.
 
 | 서브커맨드 | 역할 | fence | exit |
 |---|---|---|---|
