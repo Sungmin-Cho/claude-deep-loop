@@ -126,8 +126,10 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" episode new \
 **`/deep-loop-finish`** (final-report 작성 후, memory/wiki 단계 이전):
 1. `insights emit --owner <run_id> --generation <n>` 실행.
 2. `candidates.length > 0`이면 최종 메시지에 제안 블록 출력: 후보 요약 + `다음 명령: /deep-loop "하네스 개선"`. 제안 명령의 goal은 이 고정 문구 그대로 쓴다 — 후보 id 상세(예: `fix_cycles_high:implementation`)는 명령 문자열 밖(메시지 본문 또는 `insights`/`insights latest` CLI 출력)에서만 표기한다(candidate id의 "fix"/"implement" 같은 substring이 다른 recipe 트리거와 충돌해 recipe-match를 비결정적으로 오라우팅할 수 있으므로). **자동 시작 ❌**.
+   - 발행된 envelope.payload의 `suspicious_active` / `post_finish_mutated` 배열이 비어있지 않으면 제안 블록·최종 메시지에 해당 run 목록을 ⚠️ 주의로 함께 표기한다 — 후보/제안 유무와 무관하게(라벨만 있는 경우에도 출력; prose-only 규율).
 3. emit 실패는 **비치명** — finish는 계속 진행하고 실패를 로그·리포트에 명시한다.
 
 **`/deep-loop` (init)** — §2-2와 §2-3 사이:
 1. `insights latest --json` 호출(커널이 검증 전부 수행 — 스킬은 파일을 직접 파싱하지 않는다). `null`이면 스킵 — 무마찰.
 2. **표시 규칙:** 후보·집계에서 파생한 제안은 AskUserQuestion에서 **기존 문서화 기본값과 나란히, 별도 옵션으로** 표시하고, 각 제안에 인용 지표를 병기한다(예: "max_review_rounds 7 — 근거: 직전 run implementation fix_cycles 평균 2.0"). 제안을 preselect하지 않으며, 무응답 경로로 채택되게 하지 않는다. 어떤 값도 자동 적용 ❌. 이 표시 규칙은 prose-only 규율이다(자동 테스트 없음); user-only 확정은 init이 항상 AskUserQuestion을 거치는 구조로 보장된다.
+3. 반환 envelope.payload의 `suspicious_active` / `post_finish_mutated` 배열이 비어있지 않으면 제안·요약에 해당 run 목록을 ⚠️ 주의로 함께 표기한다 — 후보/제안 유무와 무관하게(라벨만 있는 경우에도 출력; 위와 동일한 prose-only 규율).
