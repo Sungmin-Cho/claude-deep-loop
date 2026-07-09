@@ -14,6 +14,10 @@ export function leaseCheck(loop, { owner, generation, intent = 'business' } = {}
   if (!lease) return { ok: false, reason: 'no-lease' };
   if (lease.owner_run_id !== owner) return { ok: false, reason: 'owner-mismatch' };
   if (lease.generation !== generation) return { ok: false, reason: 'generation-mismatch' };
+  // v1.6 terminal guard (spec §2.1): terminal은 one-way — 전 intent 거부(예외 없음, 사람 확정 2026-07-09).
+  // lease.state 체크보다 앞이어야 terminal+released/terminal+releasing에서도 reason이 안정적으로
+  // RUN_TERMINAL이다(r3 🟡3). fence(owner/generation) 불일치는 위에서 선착(fence-first, pauseRun 전례).
+  if (loop.status === 'completed' || loop.status === 'stopped') return { ok: false, reason: 'RUN_TERMINAL' };
   if (lease.state === 'released') return { ok: false, reason: 'lease-released' };
   // 부모 carve-out: releasing 중 업무 write 거부; 자기 lease 관리(intent='lease')와 비용 회계(intent='accounting')만 허용.
   if (lease.state === 'releasing' && intent !== 'lease' && intent !== 'accounting') return { ok: false, reason: 'lease-releasing-carveout' };

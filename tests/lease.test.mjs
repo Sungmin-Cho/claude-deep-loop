@@ -293,3 +293,40 @@ test('releaseLease on paused run returns RUN_PAUSED; lease NOT released; acquire
   // run status remains paused
   assert.equal(readState(root, runId).data.status, 'paused');
 });
+
+// ── v1.6 terminal guard (spec §2.1/§4-1) ─────────────────────────────────────
+function makeTerminal(root, runId, status = 'completed') {
+  const { data } = readState(root, runId);
+  data.status = status;                    // writeState가 .loop.hash 앵커를 재계산
+  writeState(root, runId, data);
+}
+
+test('leaseCheck: terminal run rejects EVERY intent with RUN_TERMINAL', () => {
+  const { root, runId } = seed();
+  const { data } = readState(root, runId);
+  const owner = data.session_chain.lease.owner_run_id;
+  const gen = data.session_chain.lease.generation;
+  const intents = ['business', 'lease', 'accounting', 'breaker-reset', 'recover', 'resume'];
+  for (const status of ['completed', 'stopped']) {
+    const loop = structuredClone(data);
+    loop.status = status;
+    for (const intent of intents) {
+      assert.deepEqual(leaseCheck(loop, { owner, generation: gen, intent }),
+        { ok: false, reason: 'RUN_TERMINAL' }, `${status}/${intent}`);
+    }
+    // terminal 게이트는 lease.state 게이트보다 앞 (spec r3 🟡3): released/releasing이어도 RUN_TERMINAL
+    for (const ls of ['released', 'releasing']) {
+      const l2 = structuredClone(loop);
+      l2.session_chain.lease.state = ls;
+      assert.equal(leaseCheck(l2, { owner, generation: gen, intent: 'business' }).reason, 'RUN_TERMINAL', `${status}/${ls}`);
+    }
+    // fence first: owner/generation 불일치가 terminal보다 우선
+    assert.equal(leaseCheck(loop, { owner: 'other', generation: gen, intent: 'business' }).reason, 'owner-mismatch');
+    assert.equal(leaseCheck(loop, { owner, generation: gen + 9, intent: 'business' }).reason, 'generation-mismatch');
+  }
+  // 비terminal 회귀: running/paused 기존 reason 불변
+  assert.equal(leaseCheck(data, { owner, generation: gen, intent: 'business' }).ok, true);
+  const paused = structuredClone(data); paused.status = 'paused';
+  assert.equal(leaseCheck(paused, { owner, generation: gen, intent: 'business' }).reason, 'RUN_PAUSED');
+  assert.equal(leaseCheck(paused, { owner, generation: gen, intent: 'recover' }).ok, true);
+});
