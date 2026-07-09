@@ -330,3 +330,16 @@ test('leaseCheck: terminal run rejects EVERY intent with RUN_TERMINAL', () => {
   assert.equal(leaseCheck(paused, { owner, generation: gen, intent: 'business' }).reason, 'RUN_PAUSED');
   assert.equal(leaseCheck(paused, { owner, generation: gen, intent: 'recover' }).ok, true);
 });
+
+test('reserveHandoff / advanceHandoffPhase reject terminal runs (spec §2.3-1/3)', () => {
+  const { root, runId } = seed();
+  // running에서 reserve 성공 → finish 경합 재현
+  const r1 = reserveHandoff(root, runId, { trigger: 't', now: Date.parse('2026-07-09T00:00:00Z') });
+  assert.equal(r1.reserved, true);
+  makeTerminal(root, runId, 'completed');
+  assert.deepEqual(
+    advanceHandoffPhase(root, runId, { key: r1.key, toPhase: 'emitted', now: Date.parse('2026-07-09T00:00:01Z') }),
+    { ok: false, reason: 'RUN_TERMINAL' });
+  const r2 = reserveHandoff(root, runId, { trigger: 't2', now: Date.parse('2026-07-09T00:00:02Z') });
+  assert.equal(r2.ok, false); assert.equal(r2.reason, 'RUN_TERMINAL'); assert.equal(r2.childRunId, null);
+});

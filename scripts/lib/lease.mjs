@@ -104,6 +104,10 @@ export function releaseLease(root, runId, { owner, generation }) {
 export function reserveHandoff(root, runId, { trigger, now = Date.now(), expect } = {}) {
   return withLock(root, runId, () => {
     const { data } = readState(root, runId);
+    // v1.6 (spec §2.3-1): terminal run에는 새 handoff 예약 금지 — RUN_PAUSED 명시 차단과 대칭.
+    if (data.status === 'completed' || data.status === 'stopped') {
+      return { ok: false, reserved: false, reason: 'RUN_TERMINAL', key: null, childRunId: null };
+    }
     if (data.status === 'paused') {
       return { ok: false, reserved: false, reason: 'RUN_PAUSED', key: null, childRunId: null };
     }
@@ -128,6 +132,9 @@ export function reserveHandoff(root, runId, { trigger, now = Date.now(), expect 
 export function advanceHandoffPhase(root, runId, { key, toPhase, now = Date.now(), expect } = {}) {
   return withLock(root, runId, () => {
     const { data } = readState(root, runId);
+    // v1.6 (spec §2.3-3): terminal run의 handoff 전진 금지 — reserve↔advance 사이 finish 경합 및
+    // 구버전 오염 상태(terminal+emitted 등)에 대한 방어-심층. respawn은 이 reason을 outcome:'terminal'로 전파.
+    if (data.status === 'completed' || data.status === 'stopped') return { ok: false, reason: 'RUN_TERMINAL' };
     const lease = data.session_chain.lease;
     if (expect && (lease.owner_run_id !== expect.owner || lease.generation !== expect.generation)) {
       return { ok: false, reason: 'fenced' };
