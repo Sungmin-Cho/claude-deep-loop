@@ -75,24 +75,21 @@ test('defaultDesktopProbe: allowlist wiring — allowed path+bundle but NON-allo
   assert.equal(r.reason, 'team-id-not-allowed');
 });
 
-// Round-10 review fix (codex adversarial [high]): the production ALLOW_WIN_PUBLISHERS is intentionally
-// EMPTY (fail-closed until a real Windows signer is pinned — a guessed Subject could accidentally match the
-// real notarized signer and pass with no verified trust anchor). So even a VALID signature at an ALLOWED
-// path fails closed at the defaultDesktopProbe level — the current "Windows desktop not yet configured"
-// posture. This asserts the empty module constant actually reaches verifyDesktopHandler (a permissive/
-// non-empty default would flip this to ok:true). The happy-path VERIFIED win32 wiring is covered in
-// desktop-handler.test.mjs, which injects a non-empty allowWinPublishers directly.
-test('defaultDesktopProbe: win32 valid signature at allowed path but empty production ALLOW_WIN_PUBLISHERS -> fail-closed (not yet configured)', () => {
+// Round-10 posture SUPERSEDED by WS2 (v1.7.0): ALLOW_WIN_PUBLISHERS is no longer empty — it pins the
+// signer thumbprint OBSERVED on a real Windows 11 host (2026-07-09; see desktop-target.mjs comment for the
+// observation evidence). The round-10 invariant that survives is narrower and still enforced here: a VALID
+// signature whose signer is NOT the pinned one must still fail closed (`publisher-not-allowed`) — i.e. the
+// pinned constant actually reaches verifyDesktopHandler and nothing widened to a permissive default.
+test('defaultDesktopProbe: win32 valid signature at allowed path but UNPINNED signer -> fail-closed (pin is authoritative)', () => {
   const exePath = ALLOW_WIN_PATHS[0];
   const r = defaultDesktopProbe({
     platform: 'win32',
     run: okRun(`${exePath}\n`),
     realpath: idRp,
-    verifyWinSignature: okWinSig,
+    verifyWinSignature: okWinSig,   // valid signature, but signer/thumbprint not in the pinned allowlist
   });
   assert.equal(r.ok, false);
   assert.equal(r.reason, 'publisher-not-allowed');
-  assert.equal(ALLOW_WIN_PUBLISHERS.length, 0, 'Windows desktop is fail-closed until a real signer thumbprint is pinned (round-10)');
 });
 
 test('defaultDesktopProbe: win32 exe path not in allowlist -> unavailable (allowlist wiring)', () => {
@@ -144,4 +141,79 @@ test('winProbeRun: probe failure (non-zero exit) fails closed', () => {
   const r = winProbeRun({ probeRun: () => ({ code: 1, stdout: '' }) });
   assert.equal(r.code, 1);
   assert.equal(r.stdout, '');
+});
+
+// ── WS2 (v1.7.0): 실기 관측 기반 Windows 활성화 ──────────────────────────────
+// 2026-07-09 실제 Windows 11 머신 관측(Get-AuthenticodeSignature, Status=Valid, chain-to-trusted-root):
+// thumbprint 0D7581D2C51C59DF686C3000C70BF543F9F6C6CB (leaf, 만료 2026-10-21 — 로테이션 시 재-pin),
+// claude:// 핸들러는 MSIX 패키지 경로(WindowsApps\Claude_<ver>_x64__pzs8sxrjxfjjc\app\Claude.exe).
+import { ALLOW_WIN_PATH_PATTERNS } from '../scripts/lib/desktop-target.mjs';
+
+test('ALLOW_WIN_PUBLISHERS pins the observed real signer thumbprint (fail-closed posture replaced by observed pin)', () => {
+  assert.deepEqual(ALLOW_WIN_PUBLISHERS, ['0D7581D2C51C59DF686C3000C70BF543F9F6C6CB']);
+});
+
+test('defaultDesktopProbe: win32 MSIX path + pinned thumbprint -> ok (module wiring of patterns + publishers)', () => {
+  const msix = 'C:\\Program Files\\WindowsApps\\Claude_1.18286.0.0_x64__pzs8sxrjxfjjc\\app\\Claude.exe';
+  const r = defaultDesktopProbe({
+    platform: 'win32',
+    run: okRun(`${msix}\n`),
+    realpath: idRp,
+    verifyWinSignature: () => ({ ok: true, publisher: 'CN="Anthropic, PBC", O="Anthropic, PBC"', thumbprint: '0D7581D2C51C59DF686C3000C70BF543F9F6C6CB' }),
+  });
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(r.argvTarget.exePath, msix);
+});
+
+test('ALLOW_WIN_PATH_PATTERNS: anchored, publisher-id pinned, version-only wildcard (no version-pinned path)', () => {
+  assert.equal(ALLOW_WIN_PATH_PATTERNS.length, 1);
+  const re = ALLOW_WIN_PATH_PATTERNS[0];
+  assert.ok(re.test('C:\\Program Files\\WindowsApps\\Claude_1.18286.0.0_x64__pzs8sxrjxfjjc\\app\\Claude.exe'));
+  assert.ok(re.test('C:\\Program Files\\WindowsApps\\Claude_99.0.1_x64__pzs8sxrjxfjjc\\app\\Claude.exe'));   // 미래 버전
+  assert.ok(!re.test('C:\\Program Files\\WindowsApps\\Claude_1.0_x64__evilhash\\app\\Claude.exe'));           // 타 publisher-id
+  assert.ok(!re.test('C:\\Program Files\\WindowsApps\\Claude_1.0_x64__pzs8sxrjxfjjc\\app\\Evil.exe'));        // 타 exe
+  assert.ok(!re.test('D:\\Program Files\\WindowsApps\\Claude_1.0_x64__pzs8sxrjxfjjc\\app\\Claude.exe'));      // 타 드라이브
+});
+
+test('defaultDesktopProbe: win32 traditional-installer exact path + pinned thumbprint -> ok (기존 경로 회귀)', () => {
+  const exePath = ALLOW_WIN_PATHS[0];
+  const r = defaultDesktopProbe({
+    platform: 'win32',
+    run: okRun(`${exePath}\n`),
+    realpath: idRp,
+    verifyWinSignature: () => ({ ok: true, publisher: 'CN="Anthropic, PBC"', thumbprint: '0D7581D2C51C59DF686C3000C70BF543F9F6C6CB' }),
+  });
+  assert.equal(r.ok, true, JSON.stringify(r));
+});
+
+// ── WS2 r2 (adversarial high): Authenticode 출력 파싱 — delimiter-injection 회귀 ─
+// Subject는 인증서 소유자가 통제하는 텍스트다. 구 파이프-프레이밍(`VALID|<Subject>|<Thumbprint>`)은
+// Subject에 `|<pinned thumbprint>`를 심으면 split('|')[2]가 pin 값으로 오파싱됐다.
+// v1.7.0: PowerShell이 ConvertTo-Json으로 구조화 출력 → Node JSON.parse + thumbprint 형식(40-hex) 검증.
+import { parseWinAuthenticodeOutput } from '../scripts/lib/desktop-target.mjs';
+
+test('parseWinAuthenticodeOutput: subject containing pipe+pinned-thumbprint cannot spoof the thumbprint field', () => {
+  const pinned = '0D7581D2C51C59DF686C3000C70BF543F9F6C6CB';
+  // 공격자 인증서: Subject에 pin 문자열 삽입, 실제 thumbprint는 다른 값 — JSON 구조화라 필드 경계가 보존된다.
+  const out = JSON.stringify({ subject: `CN=Evil|${pinned}|Corp`, thumbprint: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' });
+  const r = parseWinAuthenticodeOutput(out);
+  assert.equal(r.ok, true);
+  assert.equal(r.thumbprint, 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');   // 실제 값 그대로 — pin과 불일치해 뒤에서 거부됨
+  assert.notEqual(r.thumbprint, pinned);
+});
+
+test('parseWinAuthenticodeOutput: INVALID sentinel, malformed JSON, wrong-shape thumbprint all fail closed', () => {
+  assert.equal(parseWinAuthenticodeOutput('INVALID').ok, false);
+  assert.equal(parseWinAuthenticodeOutput('').ok, false);
+  assert.equal(parseWinAuthenticodeOutput('not json {').ok, false);
+  assert.equal(parseWinAuthenticodeOutput(JSON.stringify({ subject: 'x' })).ok, false);                       // thumbprint 부재
+  assert.equal(parseWinAuthenticodeOutput(JSON.stringify({ subject: 'x', thumbprint: 'short' })).ok, false);  // 40-hex 형식 위반
+  assert.equal(parseWinAuthenticodeOutput(JSON.stringify({ subject: 'x', thumbprint: 'ZZ7581D2C51C59DF686C3000C70BF543F9F6C6CB' })).ok, false); // 비-hex
+  assert.equal(parseWinAuthenticodeOutput(JSON.stringify({ subject: '', thumbprint: '0D7581D2C51C59DF686C3000C70BF543F9F6C6CB' })).ok, false);  // 빈 subject
+});
+
+test('parseWinAuthenticodeOutput: valid structured output parses subject + thumbprint verbatim', () => {
+  const out = JSON.stringify({ subject: 'CN="Anthropic, PBC", O="Anthropic, PBC"', thumbprint: '0D7581D2C51C59DF686C3000C70BF543F9F6C6CB' });
+  const r = parseWinAuthenticodeOutput(out);
+  assert.deepEqual(r, { ok: true, publisher: 'CN="Anthropic, PBC", O="Anthropic, PBC"', thumbprint: '0D7581D2C51C59DF686C3000C70BF543F9F6C6CB' });
 });

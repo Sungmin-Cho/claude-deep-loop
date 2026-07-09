@@ -237,3 +237,68 @@ test('win32: realpath uses canonical path for comparison and result', () => {
   assert.equal(r.ok, true);
   assert.deepEqual(r.argvTarget, { kind: 'win-exe', exePath: 'C:\\canonical\\Claude.exe' });
 });
+
+// ── WS2 (v1.7.0): MSIX 설치 경로 패턴 지원 ───────────────────────────────────
+// 실기 관측(2026-07-09, Windows 11): claude:// 핸들러가 MSIX/Store 패키지로 등록됨 —
+// C:\Program Files\WindowsApps\Claude_<버전>_x64__pzs8sxrjxfjjc\app\Claude.exe.
+// 버전 문자열이 경로에 박혀 정확-일치 allowlist로는 pin 불가(업데이트마다 변경).
+// allowWinPathPatterns(RegExp[])가 정확-일치 실패 시의 2차 매처 — publisher-id 해시는 고정.
+const MSIX_RE = /^C:\\Program Files\\WindowsApps\\Claude_[0-9.]+_x64__pzs8sxrjxfjjc\\app\\Claude\.exe$/i;
+
+test('win32: MSIX versioned path matches allowWinPathPatterns and passes with valid pinned signature', () => {
+  const msix = 'C:\\Program Files\\WindowsApps\\Claude_1.18286.0.0_x64__pzs8sxrjxfjjc\\app\\Claude.exe';
+  const r = verifyDesktopHandler({
+    platform: 'win32', realpath: idRp,
+    allowWinPaths: ['C:\\Program Files\\Claude\\Claude.exe'],
+    allowWinPathPatterns: [MSIX_RE],
+    allowWinPublishers: ['0D7581D2C51C59DF686C3000C70BF543F9F6C6CB'],
+    verifyWinSignature: () => ({ ok: true, publisher: 'CN="Anthropic, PBC"', thumbprint: '0D7581D2C51C59DF686C3000C70BF543F9F6C6CB' }),
+    run: macRun(`${msix}\n`),
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.argvTarget.exePath, msix);
+});
+
+test('win32: MSIX pattern rejects different publisher-id hash and non-Claude package (pattern anchoring)', () => {
+  for (const evil of [
+    'C:\\Program Files\\WindowsApps\\Claude_1.0.0_x64__evilhash9999\\app\\Claude.exe',      // 다른 publisher-id
+    'C:\\Program Files\\WindowsApps\\Evil_1.0.0_x64__pzs8sxrjxfjjc\\app\\Claude.exe',       // 다른 패키지명
+    'C:\\Program Files\\WindowsApps\\Claude_1.0.0_x64__pzs8sxrjxfjjc\\app\\Evil.exe',       // 다른 exe
+    'C:\\Evil\\Program Files\\WindowsApps\\Claude_1.0.0_x64__pzs8sxrjxfjjc\\app\\Claude.exe', // 접두 우회
+  ]) {
+    const r = verifyDesktopHandler({
+      platform: 'win32', realpath: idRp,
+      allowWinPaths: [],
+      allowWinPathPatterns: [MSIX_RE],
+      allowWinPublishers: ['0D7581D2C51C59DF686C3000C70BF543F9F6C6CB'],
+      verifyWinSignature: () => ({ ok: true, publisher: 'x', thumbprint: '0D7581D2C51C59DF686C3000C70BF543F9F6C6CB' }),
+      run: macRun(`${evil}\n`),
+    });
+    assert.equal(r.ok, false, evil);
+    assert.equal(r.reason, 'path-not-allowed', evil);
+  }
+});
+
+test('win32: MSIX path with valid pattern but non-allowlisted signer still rejected (signature stays authoritative)', () => {
+  const msix = 'C:\\Program Files\\WindowsApps\\Claude_2.0.1.0_x64__pzs8sxrjxfjjc\\app\\Claude.exe';
+  const r = verifyDesktopHandler({
+    platform: 'win32', realpath: idRp,
+    allowWinPaths: [],
+    allowWinPathPatterns: [MSIX_RE],
+    allowWinPublishers: ['0D7581D2C51C59DF686C3000C70BF543F9F6C6CB'],
+    verifyWinSignature: () => ({ ok: true, publisher: 'CN=Evil Corp', thumbprint: 'EVILTHUMB' }),
+    run: macRun(`${msix}\n`),
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'publisher-not-allowed');
+});
+
+test('win32: exact-match allowlist unaffected when patterns absent (backward compat)', () => {
+  const r = verifyDesktopHandler({
+    ...WIN_OK,
+    allowWinPublishers: ['T1'],
+    verifyWinSignature: () => ({ ok: true, publisher: 'p', thumbprint: 'T1' }),
+    run: macRun('C:\\Program Files\\Claude\\Claude.exe\n'),
+  });
+  assert.equal(r.ok, true);
+});

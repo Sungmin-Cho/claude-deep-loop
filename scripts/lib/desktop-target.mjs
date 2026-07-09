@@ -15,6 +15,18 @@ export const ALLOW_WIN_PATHS = [
   'C:\\Program Files\\Claude\\Claude.exe',
   'C:\\Program Files (x86)\\Claude\\Claude.exe',
 ];
+// WS2 (v1.7.0): MSIX/Store 패키지 경로 패턴 — 실기 관측(2026-07-09, Windows 11)에서 claude:// 핸들러가
+//   C:\Program Files\WindowsApps\Claude_1.18286.0.0_x64__pzs8sxrjxfjjc\app\Claude.exe
+// 로 등록됨. 버전 문자열이 경로에 박혀 정확-일치로는 pin 불가(업데이트마다 변경) — 버전-고정 경로 pin은
+// 취약하므로 하지 않는다. 대신 **버전만 와일드카드**하고 나머지는 전부 고정한다:
+//  - `pzs8sxrjxfjjc`는 MSIX publisher-id 해시로 패키지 서명자에서 파생 — 버전 무관 안정(사실상 2차 서명자 앵커).
+//  - WindowsApps는 TrustedInstaller 소유(일반/관리자 쓰기 불가) — 전통 경로보다 변조가 어렵다.
+//  - `i` 플래그: Windows 경로는 대소문자 불감 — 케이스 변형은 같은 파일이므로 우회가 아니라 오탐 방지.
+//  - x64만: 관측된 아키텍처만 pin(추측 pin 금지 원칙 — arm64 패키지가 관측되면 그때 추가).
+// 경로 게이트는 필요조건일 뿐 — Authenticode 서명자 검사(ALLOW_WIN_PUBLISHERS)가 뒤에서 여전히 권위다.
+export const ALLOW_WIN_PATH_PATTERNS = [
+  /^C:\\Program Files\\WindowsApps\\Claude_[0-9.]+_x64__pzs8sxrjxfjjc\\app\\Claude\.exe$/i,
+];
 // Round-3 review Finding 3: macOS TeamIdentifier allowlist — closes the gap where a malicious app
 // placed at the allowed canonical path with the allowed bundle id would otherwise pass. Observed
 // via `codesign -dv --verbose=4 /Applications/Claude.app` against a real, notarized install:
@@ -26,21 +38,24 @@ export const ALLOW_TEAM_IDS = ['Q6L2SF6YDW'];
 // macOS TeamIdentifier check above. Closes the same gap on Windows: a malicious/replaced exe placed
 // at an ALLOW_WIN_PATHS path would otherwise pass on path alone.
 //
-// NOT YET CONFIGURED (round-10 review fix — codex adversarial [high]) — an EMPTY allowlist, deliberately.
-// There is no real Windows machine with Claude Desktop installed available in this environment to capture
-// the actual Authenticode signer, so there is no trustworthy value to pin. A *guessed* Subject string (the
-// prior placeholder) is worse than empty: because verifyDesktopHandler passes when the found signer Subject
-// OR Thumbprint is in this list, a plausible guess like "CN=Anthropic PBC, ..." could ACCIDENTALLY match the
-// real notarized signer and let the handler through with NO verified trust anchor — a false-positive on the
-// exact trust boundary this list exists to enforce. An empty list can never false-positive: win32 desktop
-// deterministically fails closed (`publisher-not-allowed`) and the human falls back to manual
-// `/deep-loop-resume` (same fail-closed posture as the rest of the Windows path — spec §4.4/§9).
+// CONFIGURED (WS2, v1.7.0) — pinned from a REAL Windows 11 host observation (2026-07-09), replacing the
+// deliberate round-10 empty-list fail-closed posture. Guessed values were never acceptable here (a plausible
+// Subject guess could accidentally match the real signer with no verified trust anchor); an OBSERVED leaf
+// thumbprint is the strongest cryptographic identity available. Observation evidence
+// (Get-AuthenticodeSignature on the claude:// handler exe, chain builds & trusted: True):
+//   Status:     Valid ("Signature verified.")
+//   Subject:    CN="Anthropic, PBC", O="Anthropic, PBC", L=San Francisco, S=California, C=US (EV code sign)
+//   Issuer:     DigiCert Trusted G4 Code Signing RSA4096 SHA384 2021 CA1 → DigiCert Trusted Root G4
+//   Thumbprint: 0D7581D2C51C59DF686C3000C70BF543F9F6C6CB (leaf) — NotAfter 2026-10-21
 //
-// TO ACTIVATE Windows desktop dispatch: on a real Windows host with Claude Desktop installed, run
-//   Get-AuthenticodeSignature 'C:\Program Files\Claude\Claude.exe' | Select-Object -ExpandProperty SignerCertificate
-// and pin the reported Thumbprint (preferred — the cryptographic identity; Subject strings are attacker-
-// nameable, and only chain-to-trusted-root + Status='Valid' keeps subject-matching safe) into this array.
-export const ALLOW_WIN_PUBLISHERS = [];
+// ROTATION CONTRACT: this is a LEAF pin. When Anthropic renews the cert (~2026-10-21) the thumbprint
+// changes and win32 desktop dispatch returns to deterministic fail-closed (`publisher-not-allowed`) —
+// the safe failure mode; humans fall back to manual `/deep-loop-resume`. To re-pin: on a real Windows
+// host, resolve the claude:// handler exe (HKCR\claude\shell\open\command), run
+//   Get-AuthenticodeSignature '<exe>' | Select-Object -ExpandProperty SignerCertificate
+// verify Status='Valid' + chain-to-trusted-root, then replace the Thumbprint below (uppercase, no
+// separators — the raw SignerCertificate.Thumbprint form compared verbatim by verifyDesktopHandler).
+export const ALLOW_WIN_PUBLISHERS = ['0D7581D2C51C59DF686C3000C70BF543F9F6C6CB'];
 
 // macOS: ask NSWorkspace (via a small JXA snippet) which app is currently bound to the `claude://`
 // URL scheme, then read that app's Info.plist bundle id — the two facts verifyDesktopHandler needs
@@ -121,21 +136,34 @@ export function winProbeRun({ probeRun = defaultProbeRun } = {}) {
 // Fail closed on: no trusted PS bin found, non-zero exit, Status !== 'Valid', or a missing/unparseable
 // signer certificate. Never throws (verifyDesktopHandler still wraps the call in try/catch as
 // defense-in-depth, but this function itself does not let spawnSync exceptions escape).
+//
+// WS2 r2 fix (codex adversarial [high]): the old `VALID|<Subject>|<Thumbprint>` pipe framing let a
+// certificate-controlled Subject containing `|<pinned thumbprint>` spoof the thumbprint field via
+// `split('|')[2]` — unreachable while ALLOW_WIN_PUBLISHERS was empty, but a real bypass once pinned.
+// PowerShell now emits STRUCTURED JSON (ConvertTo-Json) so field boundaries survive any Subject text,
+// and the parser (exported for the delimiter-injection regression) additionally enforces the SHA-1
+// thumbprint shape (exactly 40 hex chars) before trusting the value.
+export function parseWinAuthenticodeOutput(stdout) {
+  const out = String(stdout || '').trim();
+  if (!out || out === 'INVALID') return { ok: false };
+  let parsed; try { parsed = JSON.parse(out); } catch { return { ok: false }; }
+  if (!parsed || typeof parsed !== 'object') return { ok: false };
+  const publisher = typeof parsed.subject === 'string' ? parsed.subject.trim() : '';
+  const thumbprint = typeof parsed.thumbprint === 'string' ? parsed.thumbprint.trim() : '';
+  if (!publisher) return { ok: false };
+  if (!/^[0-9A-F]{40}$/i.test(thumbprint)) return { ok: false };   // SHA-1 thumbprint shape — 40 hex, verbatim
+  return { ok: true, publisher, thumbprint };
+}
+
 function winAuthenticodeVerify({ exePath } = {}, { timeoutMs = 5000, exists = existsSync } = {}) {
   const psBin = trustedPsCandidates(exists)[0];
   if (!psBin) return { ok: false };
   const escaped = String(exePath).replace(/'/g, "''");
-  const script = `$s = Get-AuthenticodeSignature -LiteralPath '${escaped}'; if ($s.Status -ne 'Valid' -or -not $s.SignerCertificate) { 'INVALID' } else { 'VALID|' + $s.SignerCertificate.Subject + '|' + $s.SignerCertificate.Thumbprint }`;
+  const script = `$s = Get-AuthenticodeSignature -LiteralPath '${escaped}'; if ($s.Status -ne 'Valid' -or -not $s.SignerCertificate) { 'INVALID' } else { ConvertTo-Json -Compress @{ subject = $s.SignerCertificate.Subject; thumbprint = $s.SignerCertificate.Thumbprint } }`;
   const b64 = Buffer.from(script, 'utf16le').toString('base64');
   const r = spawnSync(psBin, ['-NoProfile', '-NonInteractive', '-EncodedCommand', b64], { timeout: timeoutMs, encoding: 'utf8' });
   if ((r.status ?? 1) !== 0) return { ok: false };
-  const out = String(r.stdout || '').trim();
-  if (!out.startsWith('VALID|')) return { ok: false };
-  const parts = out.split('|');
-  const publisher = (parts[1] || '').trim();
-  const thumbprint = (parts[2] || '').trim();
-  if (!publisher || !thumbprint) return { ok: false };
-  return { ok: true, publisher, thumbprint };
+  return parseWinAuthenticodeOutput(r.stdout);
 }
 
 /**
@@ -164,7 +192,7 @@ export function defaultDesktopProbe({ platform = process.platform, run, realpath
     if (platform === 'win32') {
       return verifyDesktopHandler({
         platform, run: run || winProbeRun, realpath,
-        allowWinPaths: ALLOW_WIN_PATHS,
+        allowWinPaths: ALLOW_WIN_PATHS, allowWinPathPatterns: ALLOW_WIN_PATH_PATTERNS,
         verifyWinSignature: verifyWinSignature || winAuthenticodeVerify, allowWinPublishers: ALLOW_WIN_PUBLISHERS,
       });
     }
