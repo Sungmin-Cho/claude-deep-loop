@@ -83,3 +83,21 @@ test('CLI lease acquire: terminal → exit 3 run-terminal; non-terminal generati
   assert.equal(JSON.parse(r2res.stdout).reason, 'generation-mismatch');
   void r2;
 });
+
+// §2.3 의도 고정 (impl r1 adversarial 기각 근거의 테스트화): lease release는 terminal에서 **의도적으로 허용**
+// (사람 확정 2026-07-09) — released는 terminal run의 자연 최종 상태(rollbackHandoff terminal 모드와 동일 안착점)이고,
+// 이후 재획득은 acquireLease run-terminal이, 모든 write는 leaseCheck가 차단하므로 무해. 누락이 아니라 설계다.
+test('CLI lease release on terminal run is intentionally allowed (cleanup path) and the result stays inert', () => {
+  const { root, runId, owner, gen } = seedTerminal('completed');
+  const r = run(root, ['lease', 'release', '--owner', owner, '--generation', String(gen)]);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(JSON.parse(r.stdout).ok, true);
+  assert.equal(readState(root, runId).data.session_chain.lease.state, 'released');
+  // 정리 후에도 불활성: 재획득 거부 + business write 거부
+  const acq = run(root, ['lease', 'acquire', '--owner', 'other-run', '--generation', String(gen)]);
+  assert.equal(acq.status, 3);
+  assert.equal(JSON.parse(acq.stdout).reason, 'run-terminal');
+  const w = run(root, ['state', 'patch', '--field', 'discovered_items', '--value', '[]', '--owner', owner, '--generation', String(gen)]);
+  assert.equal(w.status, 3);
+  assert.match(w.stderr, /RUN_TERMINAL/);
+});
