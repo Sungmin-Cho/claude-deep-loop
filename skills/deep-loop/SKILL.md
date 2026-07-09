@@ -136,7 +136,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field session_spa
 node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" spawn-style probe-desktop
 ```
 
-이 subcommand는 **read-only**다(상태 변경 없음, fence/owner/generation 불필요, run이 없어도 호출 가능). `{ ok: true, ... }`를 반환할 때만 아래 AskUserQuestion 제안을 진행한다. `{ ok: false, reason: ... }`이면 **조용히 건너뛴다** — AskUserQuestion도, `decline-desktop` 호출도 하지 않는다(기존 수동 `/deep-loop-resume` 흐름 유지). 이는 특히 Windows에서 중요하다: `ALLOW_WIN_PUBLISHERS`가 실제 Windows 서명자 thumbprint로 아직 pin되지 않아 **의도적으로 빈 allowlist**이므로(desktop-target.mjs 참고 — 추측성 값이 실제 서명자와 우연히 매치되는 false-positive를 피하기 위해 비워 둠), `probe-desktop`은 현재 Windows에서 항상 `ok:false`(publisher-not-allowed)를 반환하고 — Windows 사용자에게 "켤 수 있다"고 묻는 것 자체를 원천 차단한다. `confirmDesktop` 커널 자체도 동일한 라이브 프로브를 재확인하므로(guarantee (a)), 설령 스킬이 이 사전 게이트를 건너뛰더라도 durable 전이는 프로브가 실패하는 한 발생할 수 없다 — 이 스킬 단계는 순수 UX 최적화(불필요한 질문 방지)이며 안전장치의 유일한 층이 아니다.
+이 subcommand는 **read-only**다(상태 변경 없음, fence/owner/generation 불필요, run이 없어도 호출 가능). `{ ok: true, ... }`를 반환할 때만 아래 AskUserQuestion 제안을 진행한다. `{ ok: false, reason: ... }`이면 **조용히 건너뛴다** — AskUserQuestion도, `decline-desktop` 호출도 하지 않는다(기존 수동 `/deep-loop-resume` 흐름 유지). Windows에서는 v1.7.0부터 `ALLOW_WIN_PUBLISHERS`에 실기 관측 서명자 thumbprint가 pin되어(desktop-target.mjs — 2026-07-09 Windows 11 관측, MSIX 경로 패턴 포함) 정상 설치에서 `probe-desktop`이 `ok:true`를 반환할 수 있다. 단 leaf 인증서 로테이션(NotAfter 2026-10-21경) 이후에는 재-pin 전까지 `ok:false`(publisher-not-allowed)로 **fail-closed 복귀**한다 — 그 상태에서는 Windows 사용자에게 "켤 수 있다"고 묻는 것이 다시 원천 차단된다(관측 없는 추측성 pin은 금지). `confirmDesktop` 커널 자체도 동일한 라이브 프로브를 재확인하므로(guarantee (a)), 설령 스킬이 이 사전 게이트를 건너뛰더라도 durable 전이는 프로브가 실패하는 한 발생할 수 없다 — 이 스킬 단계는 순수 UX 최적화(불필요한 질문 방지)이며 안전장치의 유일한 층이 아니다.
 
 게이트를 통과하면 커널에 단명 pending nonce를 기록한다:
 
