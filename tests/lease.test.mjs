@@ -343,3 +343,20 @@ test('reserveHandoff / advanceHandoffPhase reject terminal runs (spec §2.3-1/3)
   const r2 = reserveHandoff(root, runId, { trigger: 't2', now: Date.parse('2026-07-09T00:00:02Z') });
   assert.equal(r2.ok, false); assert.equal(r2.reason, 'RUN_TERMINAL'); assert.equal(r2.childRunId, null);
 });
+
+test('acquireLease: active-terminal rejects with run-terminal; generation fence-first preserved (spec §4-5f)', () => {
+  const { root, runId } = seed();
+  const { data } = readState(root, runId);
+  const owner = data.session_chain.lease.owner_run_id;
+  const gen = data.session_chain.lease.generation;
+  makeTerminal(root, runId, 'completed');   // lease는 active 그대로 (정상 finish 상태)
+  // ① same-owner acquire → already-owned 위장 금지
+  assert.equal(acquireLease(root, runId, { owner, expectGeneration: gen }).reason, 'run-terminal');
+  // ② 타-owner + 올바른 generation → run-terminal
+  assert.equal(acquireLease(root, runId, { owner: 'other-run', expectGeneration: gen }).reason, 'run-terminal');
+  // ③ 타-owner + stale generation → generation-mismatch 우선 (fence-first)
+  assert.equal(acquireLease(root, runId, { owner: 'other-run', expectGeneration: gen + 9 }).reason, 'generation-mismatch');
+  // 비terminal 회귀: same-owner active 멱등 불변
+  const { root: r2, runId: run2 } = seed();
+  assert.equal(acquireLease(r2, run2, { owner: run2, expectGeneration: 1 }).reason, 'already-owned');
+});

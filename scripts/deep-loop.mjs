@@ -173,7 +173,13 @@ const handlers = {
   lease: async (a) => {
     const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
     if (verb === 'check') { const { data } = readState(root, runId); json(leaseCheck(data, { owner: strArg(f, 'owner'), generation: intArg(f, 'generation') })); return 0; }
-    if (verb === 'acquire') { json(acquireLease(root, runId, { owner: strArg(f, 'owner'), expectGeneration: intArg(f, f['expect-generation'] !== undefined ? 'expect-generation' : 'generation') })); return 0; }
+    if (verb === 'acquire') {
+      const r = acquireLease(root, runId, { owner: strArg(f, 'owner'), expectGeneration: intArg(f, f['expect-generation'] !== undefined ? 'expect-generation' : 'generation') });
+      json(r);
+      // v1.6 (spec §2.3-6 CLI 매핑): terminal 거부만 exit 3 — resume의 소유권 인수 경계에서 성공-모양(exit 0)
+      // 프로세스로 위장 금지 (respawn outcome:'terminal'→3과 동일 채널). 그 외 ok:false는 기존 exit 0 + JSON 유지.
+      return (r.ok === false && r.reason === 'run-terminal') ? 3 : 0;
+    }
     if (verb === 'release') { json(releaseLease(root, runId, { owner: strArg(f, 'owner'), generation: intArg(f, 'generation') })); return 0; }
     error(`unknown lease verb: ${verb}`); return 2;
   },

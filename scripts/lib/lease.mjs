@@ -39,10 +39,22 @@ export function acquireLease(root, runId, { owner, expectGeneration, now = Date.
     const lease = data.session_chain.lease;
     // 같은 owner 가 이미 active 면 멱등 (active 는 만료 deadline 이 없다 — Codex r2 🔴2)
     if (lease.owner_run_id === owner && lease.state === 'active') {
+      // v1.6 (spec §2.3-6, r5 P2-b): terminal+active(정상 finish 상태)에서 멱등 성공(already-owned)으로
+      // 위장 금지 — resume이 소유권 경계에서 명확히 거부되어야 한다.
+      if (data.status === 'stopped' || data.status === 'completed') {
+        return { ok: false, generation: lease.generation, reason: 'run-terminal' };
+      }
       return { ok: true, generation: lease.generation, reason: 'already-owned' };
     }
     if (lease.generation !== expectGeneration) {
       return { ok: false, generation: lease.generation, reason: 'generation-mismatch' };
+    }
+    // v1.6 (spec §2.3-6): generation CAS 직후·takeable 체크 앞 — stale expectGeneration은 위에서
+    // generation-mismatch(fence-first), generation이 맞는 terminal acquire는 여기서 안정적으로 run-terminal
+    // (기존 위치는 takeable 뒤라 terminal+released가 lease-not-takeable/child-not-reserved로 새었다).
+    // A recovered run is 'paused' (not terminal) so it remains acquireable.
+    if (data.status === 'stopped' || data.status === 'completed') {
+      return { ok: false, generation: lease.generation, reason: 'run-terminal' };
     }
     // takeover 가능: released(정상 인수), releasing+expired(부모 크래시 복구), releasing+예약된child(handshake). active 절대 탈취 안 됨.
     const expired = lease.expires_at && now > Date.parse(lease.expires_at);
@@ -52,11 +64,6 @@ export function acquireLease(root, runId, { owner, expectGeneration, now = Date.
     // (binds reserve→emit→claim→release→acquire). After stale TTL (expired), allow recovery by any owner.
     if (lease.state === 'released' && lease.handoff_child_run_id && owner !== lease.handoff_child_run_id && !expired) {
       return { ok: false, generation: lease.generation, reason: 'child-not-reserved' };
-    }
-    // Terminal guard — defensive: stopped/completed runs are never re-acquired.
-    // A recovered run is 'paused' (not terminal) so it remains acquireable.
-    if (data.status === 'stopped' || data.status === 'completed') {
-      return { ok: false, generation: lease.generation, reason: 'run-terminal' };
     }
     const waspaused = data.status === 'paused';
     const iso = new Date(now).toISOString();
