@@ -33,6 +33,7 @@ handoff에서 `child_run_id`와 현재 `generation`을 확인한다.
 node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" lease acquire --owner <child_run_id> --generation <new_generation> --expect-generation <current_generation>
 ```
 
+- **반환 JSON의 `ok:true`를 확인한 후에만 진행한다.** `reason:'run-terminal'`(exit 3)이면 run이 이미 종결(completed/stopped)된 것 — 인수를 중단하고 사람에게 보고한다(v1.6 terminal guard).
 - 성공 시: 이 세션이 새 owner. `generation`이 +1 증가.
 - 실패(다른 세션이 이미 인수): 에러 보고 후 종료.
 

@@ -507,3 +507,43 @@ test('driveHeadless: 2nd-gen child2 acquires → action:resumed + cost recorded 
   assert.equal(r.recorded, true, 'cost must be recorded on confirmed 2nd-gen acquisition');
   assert.ok(readState(root, runId).data.budget.spent > 0, 'budget.spent must increase after child2 acquired');
 });
+
+// ── v1.6 terminal 회귀 (spec §2.4 / §4-5·5c) ────────────────────────────────
+test('driveHeadless: child finishes the run → recordCost swallowed via LEASE_FENCED channel, recorded:false', () => {
+  const { root, runId, childRunId } = seedRunWithHandoff();
+  const r = driveHeadless({
+    root,
+    now: NOW1,
+    spawnFn: () => {
+      // 자식이 acquire 후 작업을 끝내고 run을 terminal로 전이시킨 시나리오
+      acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, now: NOW1 });
+      const { data } = readState(root, runId);
+      data.status = 'completed';
+      writeState(root, runId, data);
+      return { ok: true, usage: { num_turns: 3, tokens: 70 } };
+    },
+  });
+  // 가드 후에도 드라이버는 graceful: LEASE_FENCED: RUN_TERMINAL을 기존 catch가 swallow → recorded:false
+  assert.equal(r.ok, true);
+  assert.equal(r.action, 'resumed');
+  assert.equal(r.recorded, false);
+  const d = readState(root, runId).data;
+  assert.equal(d.status, 'completed');            // paused 강등 없음
+  assert.equal(d.budget.spent, 0);                // usage 이벤트 미기록 (전면 거부 — 사람 확정 트레이드오프)
+});
+
+test('driveHeadless: legacy terminal+emitted pending handoff → no write, terminal outcome (spec §4-5c ②)', () => {
+  const { root, runId } = seedRunWithHandoff();
+  const { data } = readState(root, runId);
+  data.status = 'completed';                       // legacy 오염 상태 직조 (가드 이전 로그 잔재 시나리오)
+  writeState(root, runId, data);
+  const before = JSON.stringify(readState(root, runId).data);
+  const r = driveHeadless({
+    root,
+    now: NOW1,
+    spawnFn: () => { throw new Error('must not spawn'); },
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.action, 'terminal');
+  assert.equal(JSON.stringify(readState(root, runId).data), before);   // 상태 무변
+});

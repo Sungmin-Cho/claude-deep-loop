@@ -248,6 +248,12 @@ export function detectAndPersist(root, runId, {
       if (lease.owner_run_id !== owner || lease.generation !== generation) {
         throw new Error('LEASE_FENCED: detect-terminal');
       }
+      // v1.6 (spec §2.3-4, r1 🟡2): terminal run에 terminal-detected write 금지. lease.state는 계속
+      // 안 보므로 releasing-safe(R11-HH) 불변. CLI 외곽 requireLease는 TOCTOU 창이 있고 lib 직접
+      // 호출은 외곽을 안 거친다 — 이 in-lock이 권위.
+      if (l.status === 'completed' || l.status === 'stopped') {
+        throw new Error('RUN_TERMINAL: detect-terminal');
+      }
     }
   );
   return d;

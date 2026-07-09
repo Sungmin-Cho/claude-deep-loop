@@ -197,3 +197,19 @@ test('#3(Fix1): a later session budget record does not absorb an earlier session
   assert.equal(readState(root, runId).data.budget.spent, 3 * MUTATION_TURN_FLOOR + 5, 'gen-1 floors survive; gen-2 report adds max(5, 0)=5 on top');
   assert.doesNotThrow(() => reconcileBudget(root, runId));
 });
+
+// ── v1.6 recordCost terminal 가드 (spec §2.3-7 / §4-5g) ──────────────────────
+import { initRun as initRunT } from '../scripts/lib/initrun.mjs';
+
+test('recordCost: terminal run — fenced call LEASE_FENCED channel, fence-less own throw; no event written', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-bud-t-'));
+  const { runId } = initRunT(root, { goal: 'g', now: new Date('2026-07-09T00:00:00Z') });
+  const { data } = readState(root, runId);
+  data.status = 'completed';
+  writeState(root, runId, data);
+  // fence 있는 호출 → leaseCheck 선행 → LEASE_FENCED: RUN_TERMINAL (drive-headless swallow 계약)
+  assert.throws(() => recordCost(root, runId, { turns: 1, tokens: 0, fence: { owner: runId, generation: 1, intent: 'accounting' } }), /LEASE_FENCED: RUN_TERMINAL/);
+  // fence-less 직접 호출 → 자체 가드
+  assert.throws(() => recordCost(root, runId, { turns: 1, tokens: 0 }), /RUN_TERMINAL: recordCost/);
+  assert.equal(readState(root, runId).data.budget.spent, 0);
+});

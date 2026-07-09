@@ -173,7 +173,13 @@ const handlers = {
   lease: async (a) => {
     const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
     if (verb === 'check') { const { data } = readState(root, runId); json(leaseCheck(data, { owner: strArg(f, 'owner'), generation: intArg(f, 'generation') })); return 0; }
-    if (verb === 'acquire') { json(acquireLease(root, runId, { owner: strArg(f, 'owner'), expectGeneration: intArg(f, f['expect-generation'] !== undefined ? 'expect-generation' : 'generation') })); return 0; }
+    if (verb === 'acquire') {
+      const r = acquireLease(root, runId, { owner: strArg(f, 'owner'), expectGeneration: intArg(f, f['expect-generation'] !== undefined ? 'expect-generation' : 'generation') });
+      json(r);
+      // v1.6 (spec §2.3-6 CLI 매핑): terminal 거부만 exit 3 — resume의 소유권 인수 경계에서 성공-모양(exit 0)
+      // 프로세스로 위장 금지 (respawn outcome:'terminal'→3과 동일 채널). 그 외 ok:false는 기존 exit 0 + JSON 유지.
+      return (r.ok === false && r.reason === 'run-terminal') ? 3 : 0;
+    }
     if (verb === 'release') { json(releaseLease(root, runId, { owner: strArg(f, 'owner'), generation: intArg(f, 'generation') })); return 0; }
     error(`unknown lease verb: ${verb}`); return 2;
   },
@@ -269,7 +275,13 @@ const handlers = {
     const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
     const data = requireLease(root, runId, f, 'lease');
     const expect = { owner: f.owner, generation: intArg(f, 'generation') };
-    if (verb === 'emit') { const h = f.headless === true || f.headless === 'true' || data.autonomy?.spawn_style === 'headless' || isHeadlessInvocation(process.env); json(emitHandoff(root, runId, { reason: f.reason, trigger: f.trigger || f.reason || 'milestone', headless: h, resumePolicy: h ? 'headless' : 'visible', expect })); return 0; }
+    if (verb === 'emit') {
+      const h = f.headless === true || f.headless === 'true' || data.autonomy?.spawn_style === 'headless' || isHeadlessInvocation(process.env);
+      // v1.6 (spec §2.3-2 CLI 매핑): 기존 RUN_PAUSED/HANDOFF_KEY_MISMATCH throw의 uncaught stack 해소 —
+      // respawn/pause/recover 핸들러와 동일 패턴. RUN_TERMINAL은 보상 롤백 후 반환 계약(JSON ok:false)이라 여기 안 걸린다.
+      try { json(emitHandoff(root, runId, { reason: f.reason, trigger: f.trigger || f.reason || 'milestone', headless: h, resumePolicy: h ? 'headless' : 'visible', expect })); return 0; }
+      catch (e) { const m = String(e?.message || e); if (m.startsWith('LEASE_FENCED')) { error(m); return 3; } error(m); return 1; }
+    }
     error(`unknown handoff verb: ${verb}`); return 2;
   },
   // respawn --owner <id> --generation <n> [--attended] [--headless]
@@ -296,7 +308,7 @@ const handlers = {
     try {
       const r = respawn(root, runId, { childRunId, key, handoffRel, headless, attended, now: parseNow(f), spawnFn, pollLease, env: process.env });
       json({ mode, ...r });
-      return r.ok ? 0 : (r.outcome === 'fenced' ? 3 : 0);
+      return r.ok ? 0 : (r.outcome === 'fenced' || r.outcome === 'terminal' ? 3 : 0);   // v1.6: terminal 거부는 fence 채널 — soft error(0) 위장 금지 (spec §2.3-5)
     } catch (e) {
       const msg = String(e?.message || e);
       if (msg.startsWith('LEASE_FENCED') || msg.startsWith('RESPAWN_FENCED')) { error(msg); return 3; }

@@ -271,3 +271,26 @@ test('detectAndPersist: works when lease.state === releasing (releasing-safe R11
   const after = readState(root, runId).data;
   assert.deepEqual(after.session_spawn, d);
 });
+
+// ── v1.6: detectAndPersist terminal 가드 (spec §2.3-4 / §4-5b) ───────────────
+test('detectAndPersist: terminal run throws RUN_TERMINAL (releasing-safe preserved)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-dt-'));
+  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-07-09T00:00:00Z') });
+  const { data } = readState(root, runId);
+  const owner = data.session_chain.lease.owner_run_id;
+  // terminal → 유효 fence여도 in-lock 가드가 거부 (외곽 requireLease 없이 lib 직접 — in-lock이 권위)
+  data.status = 'completed';
+  writeState(root, runId, data);
+  assert.throws(
+    () => detectAndPersist(root, runId, { owner, generation: 1, env: {}, platform: 'linux', run: noOpRun, now: '2026-07-09T00:00:01.000Z' }),
+    /RUN_TERMINAL: detect-terminal/
+  );
+  assert.equal(readLog(root, runId).filter(e => e.type === 'terminal-detected').length, 0);
+  // releasing-safe 불변: 비terminal + releasing lease는 기존대로 통과
+  const d2 = readState(root, runId).data;
+  d2.status = 'running';
+  d2.session_chain.lease.state = 'releasing';
+  writeState(root, runId, d2);
+  const d = detectAndPersist(root, runId, { owner, generation: 1, env: {}, platform: 'linux', run: noOpRun, now: '2026-07-09T00:00:02.000Z' });
+  assert.equal(typeof d.launcher, 'string');
+});

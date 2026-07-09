@@ -293,3 +293,70 @@ test('releaseLease on paused run returns RUN_PAUSED; lease NOT released; acquire
   // run status remains paused
   assert.equal(readState(root, runId).data.status, 'paused');
 });
+
+// ── v1.6 terminal guard (spec §2.1/§4-1) ─────────────────────────────────────
+function makeTerminal(root, runId, status = 'completed') {
+  const { data } = readState(root, runId);
+  data.status = status;                    // writeState가 .loop.hash 앵커를 재계산
+  writeState(root, runId, data);
+}
+
+test('leaseCheck: terminal run rejects EVERY intent with RUN_TERMINAL', () => {
+  const { root, runId } = seed();
+  const { data } = readState(root, runId);
+  const owner = data.session_chain.lease.owner_run_id;
+  const gen = data.session_chain.lease.generation;
+  const intents = ['business', 'lease', 'accounting', 'breaker-reset', 'recover', 'resume'];
+  for (const status of ['completed', 'stopped']) {
+    const loop = structuredClone(data);
+    loop.status = status;
+    for (const intent of intents) {
+      assert.deepEqual(leaseCheck(loop, { owner, generation: gen, intent }),
+        { ok: false, reason: 'RUN_TERMINAL' }, `${status}/${intent}`);
+    }
+    // terminal 게이트는 lease.state 게이트보다 앞 (spec r3 🟡3): released/releasing이어도 RUN_TERMINAL
+    for (const ls of ['released', 'releasing']) {
+      const l2 = structuredClone(loop);
+      l2.session_chain.lease.state = ls;
+      assert.equal(leaseCheck(l2, { owner, generation: gen, intent: 'business' }).reason, 'RUN_TERMINAL', `${status}/${ls}`);
+    }
+    // fence first: owner/generation 불일치가 terminal보다 우선
+    assert.equal(leaseCheck(loop, { owner: 'other', generation: gen, intent: 'business' }).reason, 'owner-mismatch');
+    assert.equal(leaseCheck(loop, { owner, generation: gen + 9, intent: 'business' }).reason, 'generation-mismatch');
+  }
+  // 비terminal 회귀: running/paused 기존 reason 불변
+  assert.equal(leaseCheck(data, { owner, generation: gen, intent: 'business' }).ok, true);
+  const paused = structuredClone(data); paused.status = 'paused';
+  assert.equal(leaseCheck(paused, { owner, generation: gen, intent: 'business' }).reason, 'RUN_PAUSED');
+  assert.equal(leaseCheck(paused, { owner, generation: gen, intent: 'recover' }).ok, true);
+});
+
+test('reserveHandoff / advanceHandoffPhase reject terminal runs (spec §2.3-1/3)', () => {
+  const { root, runId } = seed();
+  // running에서 reserve 성공 → finish 경합 재현
+  const r1 = reserveHandoff(root, runId, { trigger: 't', now: Date.parse('2026-07-09T00:00:00Z') });
+  assert.equal(r1.reserved, true);
+  makeTerminal(root, runId, 'completed');
+  assert.deepEqual(
+    advanceHandoffPhase(root, runId, { key: r1.key, toPhase: 'emitted', now: Date.parse('2026-07-09T00:00:01Z') }),
+    { ok: false, reason: 'RUN_TERMINAL' });
+  const r2 = reserveHandoff(root, runId, { trigger: 't2', now: Date.parse('2026-07-09T00:00:02Z') });
+  assert.equal(r2.ok, false); assert.equal(r2.reason, 'RUN_TERMINAL'); assert.equal(r2.childRunId, null);
+});
+
+test('acquireLease: active-terminal rejects with run-terminal; generation fence-first preserved (spec §4-5f)', () => {
+  const { root, runId } = seed();
+  const { data } = readState(root, runId);
+  const owner = data.session_chain.lease.owner_run_id;
+  const gen = data.session_chain.lease.generation;
+  makeTerminal(root, runId, 'completed');   // lease는 active 그대로 (정상 finish 상태)
+  // ① same-owner acquire → already-owned 위장 금지
+  assert.equal(acquireLease(root, runId, { owner, expectGeneration: gen }).reason, 'run-terminal');
+  // ② 타-owner + 올바른 generation → run-terminal
+  assert.equal(acquireLease(root, runId, { owner: 'other-run', expectGeneration: gen }).reason, 'run-terminal');
+  // ③ 타-owner + stale generation → generation-mismatch 우선 (fence-first)
+  assert.equal(acquireLease(root, runId, { owner: 'other-run', expectGeneration: gen + 9 }).reason, 'generation-mismatch');
+  // 비terminal 회귀: same-owner active 멱등 불변
+  const { root: r2, runId: run2 } = seed();
+  assert.equal(acquireLease(r2, run2, { owner: run2, expectGeneration: 1 }).reason, 'already-owned');
+});

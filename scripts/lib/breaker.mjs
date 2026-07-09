@@ -13,6 +13,8 @@ export function checkBreaker(loop) {
 export function tripBreaker(root, runId, reason) {
   return withLock(root, runId, () => {
     const { data } = readState(root, runId);
+    // v1.6 (spec §2.3-7): fence 파라미터가 없는 legacy export — terminal run을 paused로 강등 금지.
+    if (data.status === 'completed' || data.status === 'stopped') throw new Error('RUN_TERMINAL: tripBreaker');
     data.circuit_breaker = { ...data.circuit_breaker, tripped: true, trip_reason: reason };
     data.status = 'paused';
     writeState(root, runId, data);
@@ -23,6 +25,9 @@ export function resetBreaker(root, runId, { fence } = {}) {
   return withLock(root, runId, () => {
     const { data } = readState(root, runId);
     if (fence) { const r = leaseCheck(data, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }   // Codex r2 critical-1: in-lock fence
+    // v1.6 (spec §2.3-7): fence가 있으면 위 leaseCheck가 LEASE_FENCED: RUN_TERMINAL로 선착(채널 보존);
+    // fence-less 직접 호출만 이 자체 가드가 잡는다 — 순서가 계약이다.
+    if (data.status === 'completed' || data.status === 'stopped') throw new Error('RUN_TERMINAL: resetBreaker');
     const wasBreaker = data.status === 'paused' && /request-changes|consecutive/.test(data.circuit_breaker?.trip_reason || '');
     data.circuit_breaker = { consecutive_request_changes: 0, tripped: false, trip_reason: null };
     if (wasBreaker) data.status = 'running';
@@ -38,6 +43,8 @@ export function recordReviewVerdict(root, runId, verdict, fence) {
       const r = leaseCheck(data, fence);
       if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason);
     }
+    // v1.6 (spec §2.3-7): legacy export — terminal run에 카운터/paused 강등 write 금지 (fence-less 커버).
+    if (data.status === 'completed' || data.status === 'stopped') throw new Error('RUN_TERMINAL: recordReviewVerdict');
     const cb = data.circuit_breaker || { consecutive_request_changes: 0 };
     if (verdict === 'REQUEST_CHANGES') {
       cb.consecutive_request_changes = (cb.consecutive_request_changes || 0) + 1;

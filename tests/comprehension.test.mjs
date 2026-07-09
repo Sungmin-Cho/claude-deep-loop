@@ -210,3 +210,16 @@ test('#1: abandonEpisode decrements episodes_agent_reviewed when the maker was a
   assert.equal(c.episodes_total, 0);
   assert.equal(c.episodes_agent_reviewed, 0);
 });
+
+// ── v1.6 recordReviewed terminal 가드 (spec §2.3-7 / §4-5g) ──────────────────
+import { recordReviewed } from '../scripts/lib/comprehension.mjs';
+
+test('recordReviewed: terminal run throws RUN_TERMINAL, counters unchanged', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-comp-t-'));
+  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-07-09T00:00:00Z') });
+  const { data } = readState(root, runId);
+  data.status = 'stopped';
+  writeState(root, runId, data);
+  assert.throws(() => recordReviewed(root, runId, 'ep-x', 'src'), /RUN_TERMINAL: recordReviewed/);
+  assert.equal(readState(root, runId).data.comprehension.episodes_human_reviewed || 0, 0);
+});

@@ -96,6 +96,11 @@ export function appendAnchored(root, runId, { type, data }, mutate, preCheck, op
   return withLock(root, runId, () => {
     const { data: loop } = readState(root, runId);
     if (preCheck) preCheck(loop);              // throws BEFORE append → anchor stays consistent
+    // v1.6 gateway terminal gate (spec §2.1.5): 반드시 caller preCheck **뒤** — fence-first 보존
+    // (LEASE_FENCED/RESPAWN_FENCED/RUN_TERMINAL:emitHandoff 등 특정-에러 경로가 먼저 발화해야 한다).
+    // 여기 도달했는데 terminal이면 "어떤 preCheck도 못 잡은" fence-less 경로 — 최후 방벽.
+    // finish 이벤트는 preCheck 시점 non-terminal(전이는 mutate 단계)이라 자연 통과; double-finish는 차단된다.
+    if (loop.status === 'completed' || loop.status === 'stopped') throw new Error('RUN_TERMINAL: append');
     // Codex impl r12 🔴: verify the existing log (chain + tail vs stored anchor) BEFORE appending. Otherwise a
     // suffix-truncated/tampered log would be laundered — a new append + fresh anchor would hide the loss and
     // reconcileBudget would no longer detect it. Fail-stop here keeps the anchor honest.

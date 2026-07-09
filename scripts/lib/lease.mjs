@@ -14,6 +14,10 @@ export function leaseCheck(loop, { owner, generation, intent = 'business' } = {}
   if (!lease) return { ok: false, reason: 'no-lease' };
   if (lease.owner_run_id !== owner) return { ok: false, reason: 'owner-mismatch' };
   if (lease.generation !== generation) return { ok: false, reason: 'generation-mismatch' };
+  // v1.6 terminal guard (spec §2.1): terminal은 one-way — 전 intent 거부(예외 없음, 사람 확정 2026-07-09).
+  // lease.state 체크보다 앞이어야 terminal+released/terminal+releasing에서도 reason이 안정적으로
+  // RUN_TERMINAL이다(r3 🟡3). fence(owner/generation) 불일치는 위에서 선착(fence-first, pauseRun 전례).
+  if (loop.status === 'completed' || loop.status === 'stopped') return { ok: false, reason: 'RUN_TERMINAL' };
   if (lease.state === 'released') return { ok: false, reason: 'lease-released' };
   // 부모 carve-out: releasing 중 업무 write 거부; 자기 lease 관리(intent='lease')와 비용 회계(intent='accounting')만 허용.
   if (lease.state === 'releasing' && intent !== 'lease' && intent !== 'accounting') return { ok: false, reason: 'lease-releasing-carveout' };
@@ -35,10 +39,22 @@ export function acquireLease(root, runId, { owner, expectGeneration, now = Date.
     const lease = data.session_chain.lease;
     // 같은 owner 가 이미 active 면 멱등 (active 는 만료 deadline 이 없다 — Codex r2 🔴2)
     if (lease.owner_run_id === owner && lease.state === 'active') {
+      // v1.6 (spec §2.3-6, r5 P2-b): terminal+active(정상 finish 상태)에서 멱등 성공(already-owned)으로
+      // 위장 금지 — resume이 소유권 경계에서 명확히 거부되어야 한다.
+      if (data.status === 'stopped' || data.status === 'completed') {
+        return { ok: false, generation: lease.generation, reason: 'run-terminal' };
+      }
       return { ok: true, generation: lease.generation, reason: 'already-owned' };
     }
     if (lease.generation !== expectGeneration) {
       return { ok: false, generation: lease.generation, reason: 'generation-mismatch' };
+    }
+    // v1.6 (spec §2.3-6): generation CAS 직후·takeable 체크 앞 — stale expectGeneration은 위에서
+    // generation-mismatch(fence-first), generation이 맞는 terminal acquire는 여기서 안정적으로 run-terminal
+    // (기존 위치는 takeable 뒤라 terminal+released가 lease-not-takeable/child-not-reserved로 새었다).
+    // A recovered run is 'paused' (not terminal) so it remains acquireable.
+    if (data.status === 'stopped' || data.status === 'completed') {
+      return { ok: false, generation: lease.generation, reason: 'run-terminal' };
     }
     // takeover 가능: released(정상 인수), releasing+expired(부모 크래시 복구), releasing+예약된child(handshake). active 절대 탈취 안 됨.
     const expired = lease.expires_at && now > Date.parse(lease.expires_at);
@@ -48,11 +64,6 @@ export function acquireLease(root, runId, { owner, expectGeneration, now = Date.
     // (binds reserve→emit→claim→release→acquire). After stale TTL (expired), allow recovery by any owner.
     if (lease.state === 'released' && lease.handoff_child_run_id && owner !== lease.handoff_child_run_id && !expired) {
       return { ok: false, generation: lease.generation, reason: 'child-not-reserved' };
-    }
-    // Terminal guard — defensive: stopped/completed runs are never re-acquired.
-    // A recovered run is 'paused' (not terminal) so it remains acquireable.
-    if (data.status === 'stopped' || data.status === 'completed') {
-      return { ok: false, generation: lease.generation, reason: 'run-terminal' };
     }
     const waspaused = data.status === 'paused';
     const iso = new Date(now).toISOString();
@@ -100,6 +111,10 @@ export function releaseLease(root, runId, { owner, generation }) {
 export function reserveHandoff(root, runId, { trigger, now = Date.now(), expect } = {}) {
   return withLock(root, runId, () => {
     const { data } = readState(root, runId);
+    // v1.6 (spec §2.3-1): terminal run에는 새 handoff 예약 금지 — RUN_PAUSED 명시 차단과 대칭.
+    if (data.status === 'completed' || data.status === 'stopped') {
+      return { ok: false, reserved: false, reason: 'RUN_TERMINAL', key: null, childRunId: null };
+    }
     if (data.status === 'paused') {
       return { ok: false, reserved: false, reason: 'RUN_PAUSED', key: null, childRunId: null };
     }
@@ -124,6 +139,9 @@ export function reserveHandoff(root, runId, { trigger, now = Date.now(), expect 
 export function advanceHandoffPhase(root, runId, { key, toPhase, now = Date.now(), expect } = {}) {
   return withLock(root, runId, () => {
     const { data } = readState(root, runId);
+    // v1.6 (spec §2.3-3): terminal run의 handoff 전진 금지 — reserve↔advance 사이 finish 경합 및
+    // 구버전 오염 상태(terminal+emitted 등)에 대한 방어-심층. respawn은 이 reason을 outcome:'terminal'로 전파.
+    if (data.status === 'completed' || data.status === 'stopped') return { ok: false, reason: 'RUN_TERMINAL' };
     const lease = data.session_chain.lease;
     if (expect && (lease.owner_run_id !== expect.owner || lease.generation !== expect.generation)) {
       return { ok: false, reason: 'fenced' };
@@ -153,8 +171,18 @@ export function rollbackHandoff(root, runId, { owner, generation }) {
     const { data } = readState(root, runId);
     const lease = data.session_chain.lease;
     if (lease.owner_run_id !== owner || lease.generation !== generation) return { ok: false, reason: 'fenced' };
+    const terminal = data.status === 'completed' || data.status === 'stopped';
+    // terminal + 잔여 없음(idle, key/child null) → write 없는 no-op (plan r2 P1: 정상-finish 후
+    // emitHandoff 거부 경로의 무조건 보상 호출이 idle lease를 다시 쓰지 않도록).
+    if (terminal && lease.handoff_phase === 'idle' && !lease.handoff_idempotency_key && !lease.handoff_child_run_id) {
+      return { ok: true, reason: 'noop-idle-terminal' };
+    }
     // active 복귀 시 expires_at=null — 롤백된 부모가 emit 때 설정된 stale TTL 로 나중에 인수당하지 않게 (Codex r2 🔴2)
-    data.session_chain.lease = { ...lease, state: 'active', handoff_phase: 'idle', handoff_idempotency_key: null, handoff_child_run_id: null, expires_at: null };
+    data.session_chain.lease = terminal
+      // v1.6 terminal-aware (spec §2.3, 3차 r1): active 복원은 terminal run을 "소유된 모양"으로 만들어
+      // 미래 우회-writer 실수 표면을 넓힌다 — released로 불활성 안착 (재획득은 acquireLease가 차단).
+      ? { ...lease, state: 'released', handoff_phase: 'idle', handoff_idempotency_key: null, handoff_child_run_id: null, expires_at: null }
+      : { ...lease, state: 'active', handoff_phase: 'idle', handoff_idempotency_key: null, handoff_child_run_id: null, expires_at: null };
     writeState(root, runId, data);
     return { ok: true, reason: 'rolled-back' };
   });

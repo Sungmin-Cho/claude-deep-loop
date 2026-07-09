@@ -758,3 +758,33 @@ test('respawn threads state model/effort into the spawned VISIBLE entry (WS1)', 
   const cmuxCmd = got.argv[got.argv.indexOf('--command') + 1];
   assert.match(cmuxCmd, /--model 'claude-opus-4-8\[1m\]' --effort 'high'/);
 });
+
+// ── v1.6 terminal guards (spec §2.3-5 / §4-5c) ───────────────────────────────
+import { rollbackAndPause } from '../scripts/lib/respawn.mjs';
+
+test('respawn: terminal fast-return before every branch — emitted AND spawned legacy states', () => {
+  for (const phase of ['emitted', 'spawned']) {
+    const { root, runId } = seed((d) => {
+      d.status = 'completed';
+      d.session_chain.lease = { ...d.session_chain.lease, state: 'releasing', handoff_phase: phase,
+        handoff_child_run_id: 'child-legacy-01', handoff_idempotency_key: 'k1', resume_policy: 'headless' };
+    });
+    const before = JSON.stringify(readState(root, runId).data);
+    const r = respawn(root, runId, { childRunId: 'child-legacy-01', key: 'k1', now: NOW1,
+      spawnFn: () => { throw new Error('must not spawn'); } });
+    assert.equal(r.ok, false, phase); assert.equal(r.outcome, 'terminal', phase); assert.equal(r.reason, 'RUN_TERMINAL', phase);
+    assert.equal(JSON.stringify(readState(root, runId).data), before, `${phase}: 상태 무변`);
+  }
+});
+
+test('rollbackAndPause: terminal TOCTOU returns {terminal:true} and never demotes a completed run to paused', () => {
+  const { root, runId } = seed((d) => {
+    d.status = 'completed';
+    d.session_chain.lease = { ...d.session_chain.lease, state: 'releasing', handoff_phase: 'emitted',
+      handoff_child_run_id: 'child-x', handoff_idempotency_key: 'kx' };
+  });
+  const r = rollbackAndPause(root, runId, { childRunId: 'child-x', parentOwner: runId, generation: 1,
+    eventData: { child_run_id: 'child-x' }, pauseReason: 'gate:budget' });
+  assert.deepEqual(r, { terminal: true });
+  assert.equal(readState(root, runId).data.status, 'completed');   // paused 강등 없음
+});

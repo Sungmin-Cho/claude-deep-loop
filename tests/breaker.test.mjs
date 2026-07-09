@@ -63,3 +63,34 @@ test('resetBreaker clears a tripped latch under valid fence; wrong gen throws', 
   assert.equal(r.status, 'running');   // breaker 사유 paused → 복귀
   assert.equal(checkBreaker(readState(root, runId).data).tripped, false);
 });
+
+// ── v1.6 직접-writer terminal 가드 (spec §2.3-7 / §4-5g) ─────────────────────
+import { tripBreaker } from '../scripts/lib/breaker.mjs';
+import { writeState } from '../scripts/lib/state.mjs';
+
+function terminalSeed(status = 'completed') {
+  const root = mkdtempSync(join(tmpdir(), 'dl-brk-t-'));
+  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-07-09T00:00:00Z') });
+  const { data } = readState(root, runId);
+  data.status = status;
+  writeState(root, runId, data);
+  return { root, runId, owner: runId };
+}
+
+test('tripBreaker / recordReviewVerdict: terminal run throws RUN_TERMINAL, state unchanged', () => {
+  const { root, runId } = terminalSeed('completed');
+  assert.throws(() => tripBreaker(root, runId, 'x'), /RUN_TERMINAL: tripBreaker/);
+  // trip 분기 포함: REQUEST_CHANGES 3연속으로 paused 강등을 시도하는 fence-less 호출
+  assert.throws(() => recordReviewVerdict(root, runId, 'REQUEST_CHANGES'), /RUN_TERMINAL: recordReviewVerdict/);
+  const d = readState(root, runId).data;
+  assert.equal(d.status, 'completed');
+  assert.equal(d.circuit_breaker?.tripped ?? false, false);
+});
+
+test('resetBreaker: fenced call rejects via LEASE_FENCED channel; fence-less via own throw (order = contract)', () => {
+  const { root, runId, owner } = terminalSeed('stopped');
+  // fence 있는 호출 → leaseCheck 선행 (drive-headless LEASE_FENCED swallow 계약 보존)
+  assert.throws(() => resetBreaker(root, runId, { fence: { owner, generation: 1, intent: 'breaker-reset' } }), /LEASE_FENCED: RUN_TERMINAL/);
+  // fence-less 직접 호출 → 자체 가드
+  assert.throws(() => resetBreaker(root, runId, {}), /RUN_TERMINAL: resetBreaker/);
+});

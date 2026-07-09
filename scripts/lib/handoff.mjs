@@ -4,7 +4,7 @@ import { isTrustedPsBin, trustedPsCandidates } from './detect-terminal.mjs';
 import { readState, runDir } from './state.mjs';
 import { appendAnchored } from './integrity.mjs';
 import { wrap, atomicWrite } from './envelope.mjs';
-import { reserveHandoff } from './lease.mjs';
+import { reserveHandoff, rollbackHandoff } from './lease.mjs';
 import { defaultDesktopProbe } from './desktop-target.mjs';
 
 function tsName(now) { return new Date(now).toISOString().replace(/[:.]/g, '-'); }
@@ -224,7 +224,14 @@ export function emitHandoff(root, runId, {
 } = {}) {
   if (!expect || typeof expect.owner !== 'string' || !Number.isInteger(expect.generation)) throw new Error('FENCE_REQUIRED: emitHandoff');
   const res = reserveHandoff(root, runId, { trigger, now, expect });
-  if (!res.ok) return { ok: false, reason: res.reason, key: res.key };
+  if (!res.ok) {
+    if (res.reason === 'RUN_TERMINAL') {
+      // v1.6 (spec §2.3-2 / plan r1 P2-a): 기존-reserved terminal 잔여 정리. rollbackHandoff의 terminal
+      // 분기가 idle(잔여 없음)이면 write 없이 no-op이므로 정상-finish 후 신규-예약-거부 경로는 아무것도 쓰지 않는다.
+      try { rollbackHandoff(root, runId, { owner: expect.owner, generation: expect.generation }); } catch { /* fenced race — 잔여 불활성 */ }
+    }
+    return { ok: false, reason: res.reason, key: res.key };
+  }
   // Codex r1 🔴1 / r2 🔴1 / r3 🔴1: 같은 트리거 재진입(reserved:false)이면 이미 in-flight handoff 가 있다.
   // childRunId 는 reserve 가 영속한 값(res.childRunId)이라 동시/재진입이 같은 child 를 본다.
   if (!res.reserved) {
@@ -308,6 +315,7 @@ export function emitHandoff(root, runId, {
   // ONE atomic transaction — a crash between a separate event-append and the phase advance previously left a recorded
   // handoff-emitted with phase still 'reserved' (respawn requires emitted/releasing → stranded). Single appendAnchored.
   const ttlMs = (loop.session_chain.stale_lease_ttl_sec || 900) * 1000;
+  try {
   appendAnchored(root, runId, { type: 'handoff-emitted', data: { child_run_id: childRunId, reason, key: res.key } }, (l) => {
     // 멱등 push (Codex r3 🔴1): 같은 childRunId 가 이미 있으면 재push 금지 → 동시 emit 도 child 1개.
     if (!l.session_chain.sessions.some(s => s.run_id === childRunId)) {
@@ -322,10 +330,22 @@ export function emitHandoff(root, runId, {
     }
   }, (l) => {
     if (l.status === 'paused') throw new Error('RUN_PAUSED: emitHandoff');
+    // v1.6 (spec §2.3-2, r1 🔴1): reserve(lock A)↔이 최종 append(lock B) 사이 finish 경합을 in-lock에서 봉쇄.
+    if (l.status === 'completed' || l.status === 'stopped') throw new Error('RUN_TERMINAL: emitHandoff');
     const lease = l.session_chain.lease;
     if (expect && (lease.owner_run_id !== expect.owner || lease.generation !== expect.generation)) throw new Error('LEASE_FENCED: handoff-emit');
     if (lease.handoff_idempotency_key !== res.key) throw new Error('HANDOFF_KEY_MISMATCH');
   });
+  } catch (e) {
+    if (String(e?.message || e).startsWith('RUN_TERMINAL')) {
+      // 보상 롤백 (spec §2.3-2 r4): reservation residue-free — terminal-aware rollback이 released로 안착.
+      // 이미 써진 handoffs/*·launch-command.txt 파일은 삭제하지 않는다(이벤트 미등록이라 세션 체인 미참조,
+      // 모든 재개 경로가 terminal에서 불활성 — 감사 흔적 보존). 보상 실패(경합 fence) 시 잔여도 불활성.
+      try { rollbackHandoff(root, runId, { owner: expect.owner, generation: expect.generation }); } catch { /* 잔여 불활성 */ }
+      return { ok: false, reason: 'RUN_TERMINAL', key: res.key };
+    }
+    throw e;
+  }
   // handoffRel 반환 → respawn 이 동일 경로로 launch 명령을 빌드 (Codex r1 🔴3)
   return { ok: true, reason: 'emitted', handoffPath, childRunId, key: res.key, csName, mdName, handoffRel };
 }
