@@ -9,7 +9,7 @@
 // in allowlist + a valid Authenticode signature whose signer (publisher subject or thumbprint) is
 // allowlisted — path-in-allowlist alone would let a replaced/junctioned exe at the trusted path
 // pass (round-5 review Finding 1, parity with the macOS codesign/team-id check).
-export function verifyDesktopHandler({ platform, run, realpath = (p) => p, allowMacPaths = [], allowBundleIds = [], allowWinPaths = [], verifySignature, allowTeamIds = [], verifyWinSignature, allowWinPublishers = [] } = {}) {
+export function verifyDesktopHandler({ platform, run, realpath = (p) => p, allowMacPaths = [], allowBundleIds = [], allowWinPaths = [], allowWinPathPatterns = [], verifySignature, allowTeamIds = [], verifyWinSignature, allowWinPublishers = [] } = {}) {
   if (platform === 'darwin') {
     let out; try { out = run(); } catch { return { ok: false, reason: 'probe-error' }; }
     if (!out || out.code !== 0) return { ok: false, reason: 'probe-failed' };
@@ -31,7 +31,15 @@ export function verifyDesktopHandler({ platform, run, realpath = (p) => p, allow
     let out; try { out = run(); } catch { return { ok: false, reason: 'probe-error' }; }
     if (!out || out.code !== 0) return { ok: false, reason: 'probe-failed' };
     let exePath; try { exePath = realpath(String(out.stdout || '').trim()); } catch { return { ok: false, reason: 'realpath-error' }; }
-    if (!exePath || !allowWinPaths.map(p => { try { return realpath(p); } catch { return p; } }).includes(exePath)) return { ok: false, reason: 'path-not-allowed' };
+    // Path gate: exact-match allowlist (traditional installer paths) OR anchored pattern allowlist
+    // (WS2 v1.7.0 — MSIX/Store packages live under a VERSIONED WindowsApps directory, e.g.
+    // C:\Program Files\WindowsApps\Claude_<ver>_x64__pzs8sxrjxfjjc\app\Claude.exe, so exact match
+    // can never pin them; the pattern pins the signer-derived publisher-id hash and wildcards only
+    // the version). Either way the Authenticode signer check below stays authoritative — the path
+    // gate alone is necessary but not sufficient, same as before.
+    const exactOk = !!exePath && allowWinPaths.map(p => { try { return realpath(p); } catch { return p; } }).includes(exePath);
+    const patternOk = !!exePath && allowWinPathPatterns.some(re => re.test(exePath));
+    if (!exactOk && !patternOk) return { ok: false, reason: 'path-not-allowed' };
     // Authenticode signature + publisher check — mirrors the macOS codesign/TeamIdentifier check
     // above (round-5 review Finding 1): path-in-allowlist alone would let a replaced/junctioned exe
     // at the trusted path pass. Fail closed on ANY of: verifyWinSignature missing/throws, an
