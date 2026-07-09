@@ -136,21 +136,34 @@ export function winProbeRun({ probeRun = defaultProbeRun } = {}) {
 // Fail closed on: no trusted PS bin found, non-zero exit, Status !== 'Valid', or a missing/unparseable
 // signer certificate. Never throws (verifyDesktopHandler still wraps the call in try/catch as
 // defense-in-depth, but this function itself does not let spawnSync exceptions escape).
+//
+// WS2 r2 fix (codex adversarial [high]): the old `VALID|<Subject>|<Thumbprint>` pipe framing let a
+// certificate-controlled Subject containing `|<pinned thumbprint>` spoof the thumbprint field via
+// `split('|')[2]` — unreachable while ALLOW_WIN_PUBLISHERS was empty, but a real bypass once pinned.
+// PowerShell now emits STRUCTURED JSON (ConvertTo-Json) so field boundaries survive any Subject text,
+// and the parser (exported for the delimiter-injection regression) additionally enforces the SHA-1
+// thumbprint shape (exactly 40 hex chars) before trusting the value.
+export function parseWinAuthenticodeOutput(stdout) {
+  const out = String(stdout || '').trim();
+  if (!out || out === 'INVALID') return { ok: false };
+  let parsed; try { parsed = JSON.parse(out); } catch { return { ok: false }; }
+  if (!parsed || typeof parsed !== 'object') return { ok: false };
+  const publisher = typeof parsed.subject === 'string' ? parsed.subject.trim() : '';
+  const thumbprint = typeof parsed.thumbprint === 'string' ? parsed.thumbprint.trim() : '';
+  if (!publisher) return { ok: false };
+  if (!/^[0-9A-F]{40}$/i.test(thumbprint)) return { ok: false };   // SHA-1 thumbprint shape — 40 hex, verbatim
+  return { ok: true, publisher, thumbprint };
+}
+
 function winAuthenticodeVerify({ exePath } = {}, { timeoutMs = 5000, exists = existsSync } = {}) {
   const psBin = trustedPsCandidates(exists)[0];
   if (!psBin) return { ok: false };
   const escaped = String(exePath).replace(/'/g, "''");
-  const script = `$s = Get-AuthenticodeSignature -LiteralPath '${escaped}'; if ($s.Status -ne 'Valid' -or -not $s.SignerCertificate) { 'INVALID' } else { 'VALID|' + $s.SignerCertificate.Subject + '|' + $s.SignerCertificate.Thumbprint }`;
+  const script = `$s = Get-AuthenticodeSignature -LiteralPath '${escaped}'; if ($s.Status -ne 'Valid' -or -not $s.SignerCertificate) { 'INVALID' } else { ConvertTo-Json -Compress @{ subject = $s.SignerCertificate.Subject; thumbprint = $s.SignerCertificate.Thumbprint } }`;
   const b64 = Buffer.from(script, 'utf16le').toString('base64');
   const r = spawnSync(psBin, ['-NoProfile', '-NonInteractive', '-EncodedCommand', b64], { timeout: timeoutMs, encoding: 'utf8' });
   if ((r.status ?? 1) !== 0) return { ok: false };
-  const out = String(r.stdout || '').trim();
-  if (!out.startsWith('VALID|')) return { ok: false };
-  const parts = out.split('|');
-  const publisher = (parts[1] || '').trim();
-  const thumbprint = (parts[2] || '').trim();
-  if (!publisher || !thumbprint) return { ok: false };
-  return { ok: true, publisher, thumbprint };
+  return parseWinAuthenticodeOutput(r.stdout);
 }
 
 /**

@@ -185,3 +185,35 @@ test('defaultDesktopProbe: win32 traditional-installer exact path + pinned thumb
   });
   assert.equal(r.ok, true, JSON.stringify(r));
 });
+
+// ── WS2 r2 (adversarial high): Authenticode 출력 파싱 — delimiter-injection 회귀 ─
+// Subject는 인증서 소유자가 통제하는 텍스트다. 구 파이프-프레이밍(`VALID|<Subject>|<Thumbprint>`)은
+// Subject에 `|<pinned thumbprint>`를 심으면 split('|')[2]가 pin 값으로 오파싱됐다.
+// v1.7.0: PowerShell이 ConvertTo-Json으로 구조화 출력 → Node JSON.parse + thumbprint 형식(40-hex) 검증.
+import { parseWinAuthenticodeOutput } from '../scripts/lib/desktop-target.mjs';
+
+test('parseWinAuthenticodeOutput: subject containing pipe+pinned-thumbprint cannot spoof the thumbprint field', () => {
+  const pinned = '0D7581D2C51C59DF686C3000C70BF543F9F6C6CB';
+  // 공격자 인증서: Subject에 pin 문자열 삽입, 실제 thumbprint는 다른 값 — JSON 구조화라 필드 경계가 보존된다.
+  const out = JSON.stringify({ subject: `CN=Evil|${pinned}|Corp`, thumbprint: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' });
+  const r = parseWinAuthenticodeOutput(out);
+  assert.equal(r.ok, true);
+  assert.equal(r.thumbprint, 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');   // 실제 값 그대로 — pin과 불일치해 뒤에서 거부됨
+  assert.notEqual(r.thumbprint, pinned);
+});
+
+test('parseWinAuthenticodeOutput: INVALID sentinel, malformed JSON, wrong-shape thumbprint all fail closed', () => {
+  assert.equal(parseWinAuthenticodeOutput('INVALID').ok, false);
+  assert.equal(parseWinAuthenticodeOutput('').ok, false);
+  assert.equal(parseWinAuthenticodeOutput('not json {').ok, false);
+  assert.equal(parseWinAuthenticodeOutput(JSON.stringify({ subject: 'x' })).ok, false);                       // thumbprint 부재
+  assert.equal(parseWinAuthenticodeOutput(JSON.stringify({ subject: 'x', thumbprint: 'short' })).ok, false);  // 40-hex 형식 위반
+  assert.equal(parseWinAuthenticodeOutput(JSON.stringify({ subject: 'x', thumbprint: 'ZZ7581D2C51C59DF686C3000C70BF543F9F6C6CB' })).ok, false); // 비-hex
+  assert.equal(parseWinAuthenticodeOutput(JSON.stringify({ subject: '', thumbprint: '0D7581D2C51C59DF686C3000C70BF543F9F6C6CB' })).ok, false);  // 빈 subject
+});
+
+test('parseWinAuthenticodeOutput: valid structured output parses subject + thumbprint verbatim', () => {
+  const out = JSON.stringify({ subject: 'CN="Anthropic, PBC", O="Anthropic, PBC"', thumbprint: '0D7581D2C51C59DF686C3000C70BF543F9F6C6CB' });
+  const r = parseWinAuthenticodeOutput(out);
+  assert.deepEqual(r, { ok: true, publisher: 'CN="Anthropic, PBC", O="Anthropic, PBC"', thumbprint: '0D7581D2C51C59DF686C3000C70BF543F9F6C6CB' });
+});
