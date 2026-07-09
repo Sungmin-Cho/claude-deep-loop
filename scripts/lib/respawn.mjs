@@ -90,9 +90,12 @@ export function rollbackAndPause(root, runId, { childRunId, parentOwner, generat
     }, (l) => {
       const lease = l.session_chain.lease;
       if (lease.owner_run_id !== parentOwner || lease.generation !== generation) throw new Error('RESPAWN_FENCED: rollback-pause');
+      // v1.6 (spec §2.3-5): completed run을 paused로 강등 금지 — 초입 read↔이 append 사이 TOCTOU를 in-lock에서 봉쇄.
+      if (l.status === 'completed' || l.status === 'stopped') throw new Error('RUN_TERMINAL: respawn');
     });
   } catch (appendErr) {
     if (String(appendErr.message).startsWith('RESPAWN_FENCED')) return { fenced: true };
+    if (String(appendErr.message).startsWith('RUN_TERMINAL')) return { terminal: true };   // v1.6 — caller가 outcome:'terminal'로 전파
     throw appendErr;
   }
   return { ok: true };
@@ -113,8 +116,11 @@ function preservePause(root, runId, { childRunId, parentOwner, generation, pause
     }, (l) => {
       const lease = l.session_chain.lease;
       if (lease.owner_run_id !== parentOwner || lease.generation !== generation) throw new Error('RESPAWN_FENCED: timeout-preserve');
+      // v1.6 (spec §2.3-5): terminal run은 preserve-pause로도 강등 금지 (readiness-timeout TOCTOU).
+      if (l.status === 'completed' || l.status === 'stopped') throw new Error('RUN_TERMINAL: respawn');
     });
   } catch (appendErr) {
+    if (String(appendErr.message).startsWith('RUN_TERMINAL')) return { terminal: true };   // v1.6
     if (String(appendErr.message).startsWith('RESPAWN_FENCED')) {
       const fresh = readState(root, runId).data.session_chain.lease;
       if (fresh.owner_run_id === childRunId && fresh.state === 'active' && fresh.handoff_phase === 'acquired') return { acquired: true };
@@ -147,6 +153,7 @@ function awaitChildReadiness(root, runId, {
   // readiness TIMEOUT → PRESERVE (do NOT rollback) — 늦은 /deep-loop-resume 도 reserved child 면 인수 성공.
   const res = preservePause(root, runId, { childRunId, parentOwner, generation, pauseReason });
   if (res.acquired) return { ok: true, outcome: successOutcome, reason: lateAcquireReason, childRunId };
+  if (res.terminal) return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };   // v1.6 (plan r2 high): timeout outcome으로 뭉개짐 금지
   if (res.fenced) return { ok: false, outcome: 'fenced', reason: 'lease-changed-at-timeout', childRunId };
   return { ok: false, outcome: timeoutOutcome, reason: 'readiness-timeout-preserve', childRunId };
 }
@@ -164,6 +171,12 @@ export function respawn(root, runId, {
   const parentOwner = lease.owner_run_id;
   const poll = pollLease || (() => readState(root, runId).data.session_chain.lease);
 
+  // v1.6 (spec §2.3-5, r5 P2-a): terminal fast-return — 모든 분기(특히 spawned 재진입 :Codex r5 A)보다 앞.
+  // legacy terminal+spawned는 재진입 분기가 already-spawned 성공/preservePause(paused 강등)로 새고,
+  // legacy terminal+releasing+emitted는 not-emitted 체크를 통과하므로 초입 차단이 필수.
+  if (loop.status === 'completed' || loop.status === 'stopped') {
+    return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };
+  }
   // 멱등/펜싱 사전조건 (Codex r1 🔴2): 잘못된 key 거부, 이미 spawned 면 재spawn 금지(이중 spawn 차단).
   if (lease.handoff_idempotency_key !== key) return { ok: false, outcome: 'key-mismatch', reason: 'key-mismatch', childRunId };
   // Codex impl r8 🟡: bind the spawn to the RESERVED handoff child — a valid key must not spawn an arbitrary child.
@@ -211,6 +224,7 @@ export function respawn(root, runId, {
   if (!gate.ok) {
     // 실패모드 (A) gate-blocked: ROLLBACK + paused — ONE 트랜잭션 (R12-LL; 자식 무효화, 결코 실행 안 됨).
     const res = rollbackAndPause(root, runId, { childRunId, parentOwner, generation, eventData: { child_run_id: childRunId, gate: gate.reason }, pauseReason: `gate:${gate.reason}` });
+    if (res.terminal) return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };   // v1.6
     if (res.fenced) return { ok: false, outcome: 'fenced', reason: 'lease-changed-before-pause', childRunId };
     return { ok: false, outcome: 'gate-blocked', reason: gate.reason, childRunId };
   }
@@ -264,6 +278,7 @@ export function respawn(root, runId, {
   // the handoff is left emitted/releasing, unpaused, with no child spawned (stranded). Mirrors gate-blocked self-pause.
   if (!_entry || _entry.unavailable || !_entry.bin) {
     const res = preservePause(root, runId, { childRunId, parentOwner, generation, pauseReason: `${mode}-launcher-unavailable` });
+    if (res.terminal) return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };   // v1.6
     if (res.fenced) return { ok: false, outcome: 'fenced', reason: 'lease-changed-before-pause', childRunId };
     return { ok: false, outcome: 'no-launcher', reason: `${mode}-launcher-unavailable`, childRunId };
   }
@@ -272,6 +287,8 @@ export function respawn(root, runId, {
   // Command is already validated above; only the CAS + spawnFn call remain below.
   const claim = advanceHandoffPhase(root, runId, { key, toPhase: 'spawned', now, expect: { owner: parentOwner, generation } });
   if (!claim.ok) {
+    // v1.6 (spec §2.3-5, plan r1): 초입 read↔클레임 사이 finish 경합 — phase-error로 뭉개짐 금지.
+    if (claim.reason === 'RUN_TERMINAL') return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };
     if (claim.reason === 'fenced') return { ok: false, outcome: 'fenced', reason: 'lease-changed-during-claim', childRunId };
     return { ok: false, outcome: 'phase-error', reason: claim.reason, childRunId };
   }
@@ -285,6 +302,7 @@ export function respawn(root, runId, {
   } catch (e) {
     // 실패모드 (B) launch failure: ROLLBACK + paused — ONE 트랜잭션 (자식 무효화, 결코 시작 안 됨).
     const res = rollbackAndPause(root, runId, { childRunId, parentOwner, generation, eventData: { child_run_id: childRunId, error: String(e.message || e) }, pauseReason: 'launch-failed' });
+    if (res.terminal) return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };   // v1.6
     if (res.fenced) return { ok: false, outcome: 'fenced', reason: 'lease-changed-before-failure-record', childRunId };
     return { ok: false, outcome: 'failed_launch', reason: String(e.message || e), childRunId };
   }
@@ -298,8 +316,13 @@ export function respawn(root, runId, {
       if (l.session_chain.lease.owner_run_id !== parentOwner || l.session_chain.lease.generation !== generation) {
         throw new Error('RESPAWN_FENCED: spawned-append');
       }
+      // v1.6 (spec §2.3-5): terminal run에 respawn-spawned 이벤트 append 금지 (spawn↔기록 사이 TOCTOU).
+      if (l.status === 'completed' || l.status === 'stopped') throw new Error('RUN_TERMINAL: respawn');
     });
   } catch (appendErr) {
+    if (String(appendErr.message).startsWith('RUN_TERMINAL')) {
+      return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };   // v1.6
+    }
     if (String(appendErr.message).startsWith('RESPAWN_FENCED')) {
       // R6-U: a fast RESERVED child may have acquired before we recorded → that is SUCCESS, not a fence.
       const fresh = readState(root, runId).data.session_chain.lease;

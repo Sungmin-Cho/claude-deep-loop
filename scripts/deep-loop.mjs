@@ -302,7 +302,7 @@ const handlers = {
     try {
       const r = respawn(root, runId, { childRunId, key, handoffRel, headless, attended, now: parseNow(f), spawnFn, pollLease, env: process.env });
       json({ mode, ...r });
-      return r.ok ? 0 : (r.outcome === 'fenced' ? 3 : 0);
+      return r.ok ? 0 : (r.outcome === 'fenced' || r.outcome === 'terminal' ? 3 : 0);   // v1.6: terminal 거부는 fence 채널 — soft error(0) 위장 금지 (spec §2.3-5)
     } catch (e) {
       const msg = String(e?.message || e);
       if (msg.startsWith('LEASE_FENCED') || msg.startsWith('RESPAWN_FENCED')) { error(msg); return 3; }
