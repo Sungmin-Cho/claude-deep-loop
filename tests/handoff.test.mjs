@@ -604,3 +604,71 @@ test('emitHandoff does NOT modify autonomy.session_* (refresh is the setter, not
   assert.equal(data.autonomy.session_model, 'opus');
   assert.equal(data.autonomy.session_effort, 'high');
 });
+
+// ── v1.6 terminal race + compensating rollback (spec §2.3-2 / §4-4·5e) ──────
+import { rollbackHandoff } from '../scripts/lib/lease.mjs';
+
+const T_NOW = Date.parse('2026-07-09T03:00:00Z');
+function makeTerminal(root, runId, status = 'completed') {
+  const { data } = readState(root, runId);
+  data.status = status;
+  writeState(root, runId, data);
+}
+
+test('emitHandoff: reserve-succeeds-then-finish race → final-append rejected + compensating rollback (spec §4-5e)', () => {
+  const { root, runId } = seed();
+  const expect = expect_(runId);
+  // seam (plan r3): desktopProbe는 reserve 성공 후·최종 appendAnchored 전에 호출된다(spawn_style='desktop').
+  // 여기서 terminal 전이를 심어 "reserve는 running에서 성공 → 파일 write 중 finish → 최종 append 거부 → 보상" race를 재현.
+  const { data } = readState(root, runId);
+  data.autonomy.spawn_style = 'desktop';
+  writeState(root, runId, data);
+  const em = emitHandoff(root, runId, {
+    reason: 'milestone', trigger: 'milestone', now: T_NOW, expect,
+    desktopProbe: () => { makeTerminal(root, runId, 'completed'); return null; },
+  });
+  assert.equal(em.ok, false); assert.equal(em.reason, 'RUN_TERMINAL');
+  const lease = readState(root, runId).data.session_chain.lease;
+  assert.equal(lease.state, 'released');            // terminal-aware rollback 안착 (3차 r1)
+  assert.equal(lease.handoff_phase, 'idle');
+  assert.equal(lease.handoff_child_run_id, null);
+  assert.equal(lease.handoff_idempotency_key, null);
+  const logPath = join(runDir(root, runId), 'event-log.jsonl');
+  const log = existsSync(logPath) ? readFileSync(logPath, 'utf8') : '';   // 로그 부재 = 이벤트 0 (fresh run)
+  assert.ok(!log.includes('handoff-emitted'));      // 이벤트 미등록 — 파일 잔여는 불활성(감사 흔적 보존)
+});
+
+test('emitHandoff: pre-reserved terminal re-entry → early-return compensation cleans reserved residue (plan r1 P2-a)', () => {
+  const { root, runId } = seed();
+  const expect = expect_(runId);
+  const res = reserveHandoff(root, runId, { trigger: 'milestone', now: T_NOW, expect });
+  assert.equal(res.reserved, true);
+  makeTerminal(root, runId, 'stopped');
+  const em = emitHandoff(root, runId, { reason: 'milestone', trigger: 'milestone', now: T_NOW + 1000, expect });
+  assert.equal(em.ok, false); assert.equal(em.reason, 'RUN_TERMINAL');
+  const lease = readState(root, runId).data.session_chain.lease;
+  assert.equal(lease.state, 'released');
+  assert.equal(lease.handoff_phase, 'idle');
+});
+
+test('rollbackHandoff: terminal-aware — reserved settles to released; idle terminal is a no-op write (plan r2 P1)', () => {
+  const { root, runId } = seed();
+  const expect = expect_(runId);
+  // 비terminal: 기존 계약 — active/idle 복원
+  reserveHandoff(root, runId, { trigger: 't', now: T_NOW, expect });
+  assert.equal(rollbackHandoff(root, runId, expect).ok, true);
+  assert.equal(readState(root, runId).data.session_chain.lease.state, 'active');
+  // terminal + reserved 잔여: released 안착
+  reserveHandoff(root, runId, { trigger: 't2', now: T_NOW + 1, expect });
+  makeTerminal(root, runId, 'stopped');
+  assert.equal(rollbackHandoff(root, runId, expect).ok, true);
+  assert.equal(readState(root, runId).data.session_chain.lease.state, 'released');
+  // terminal + idle(잔여 없음): write 없는 no-op — lease.state를 임의 값으로 관측
+  const { data: d2 } = readState(root, runId);
+  d2.session_chain.lease.state = 'active';   // 정상-finish 직후 모양 재현
+  writeState(root, runId, d2);
+  const r = rollbackHandoff(root, runId, expect);
+  assert.equal(r.ok, true);
+  assert.equal(r.reason, 'noop-idle-terminal');
+  assert.equal(readState(root, runId).data.session_chain.lease.state, 'active');   // write 안 함
+});

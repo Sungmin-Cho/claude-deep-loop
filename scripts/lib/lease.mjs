@@ -164,8 +164,18 @@ export function rollbackHandoff(root, runId, { owner, generation }) {
     const { data } = readState(root, runId);
     const lease = data.session_chain.lease;
     if (lease.owner_run_id !== owner || lease.generation !== generation) return { ok: false, reason: 'fenced' };
+    const terminal = data.status === 'completed' || data.status === 'stopped';
+    // terminal + 잔여 없음(idle, key/child null) → write 없는 no-op (plan r2 P1: 정상-finish 후
+    // emitHandoff 거부 경로의 무조건 보상 호출이 idle lease를 다시 쓰지 않도록).
+    if (terminal && lease.handoff_phase === 'idle' && !lease.handoff_idempotency_key && !lease.handoff_child_run_id) {
+      return { ok: true, reason: 'noop-idle-terminal' };
+    }
     // active 복귀 시 expires_at=null — 롤백된 부모가 emit 때 설정된 stale TTL 로 나중에 인수당하지 않게 (Codex r2 🔴2)
-    data.session_chain.lease = { ...lease, state: 'active', handoff_phase: 'idle', handoff_idempotency_key: null, handoff_child_run_id: null, expires_at: null };
+    data.session_chain.lease = terminal
+      // v1.6 terminal-aware (spec §2.3, 3차 r1): active 복원은 terminal run을 "소유된 모양"으로 만들어
+      // 미래 우회-writer 실수 표면을 넓힌다 — released로 불활성 안착 (재획득은 acquireLease가 차단).
+      ? { ...lease, state: 'released', handoff_phase: 'idle', handoff_idempotency_key: null, handoff_child_run_id: null, expires_at: null }
+      : { ...lease, state: 'active', handoff_phase: 'idle', handoff_idempotency_key: null, handoff_child_run_id: null, expires_at: null };
     writeState(root, runId, data);
     return { ok: true, reason: 'rolled-back' };
   });

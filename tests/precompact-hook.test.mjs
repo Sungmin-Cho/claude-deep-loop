@@ -154,3 +154,17 @@ function parseLog(path) {
   try { return rf(path, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)); }
   catch { return []; }
 }
+
+// ── v1.6: terminal run에서 PreCompact 훅 graceful 거부 (spec §4-4③) ──────────
+test('terminal run → hook returns ok:false action:fenced RUN_TERMINAL (graceful, no write)', async () => {
+  const { root, runId } = seed();
+  const { data } = readState(root, runId);
+  data.status = 'completed';
+  writeState(root, runId, data);
+  const r = await runPreCompactHandoff({}, { root, now: Date.parse('2026-07-09T00:01:00Z') });
+  assert.equal(r.ok, false);
+  assert.equal(r.action, 'fenced');
+  assert.equal(r.reason, 'RUN_TERMINAL');
+  const lease = readState(root, runId).data.session_chain.lease;
+  assert.equal(lease.handoff_phase, 'idle');   // 예약 잔여 없음
+});
