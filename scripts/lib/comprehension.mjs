@@ -76,6 +76,8 @@ export function ack(root, runId, episodeId, { actor = 'agent', confirm = false, 
 export function recordReviewed(root, runId, episodeId, source) {
   return withLock(root, runId, () => {
     const { data } = readState(root, runId);
+    // v1.6 (spec §2.3-7): fence 없는 legacy export — terminal run에 카운터 write 금지.
+    if (data.status === 'completed' || data.status === 'stopped') throw new Error('RUN_TERMINAL: recordReviewed');
     const requireHumanAck = data.review?.require_human_ack === true;
     if (source === 'deep-review-approve' && requireHumanAck) return; // ack 필요, 카운트 안 함
     const ep = data.episodes.find(e => e.id === episodeId);
