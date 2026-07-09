@@ -70,6 +70,10 @@ export function finishRun(root, runId, { status, reportRel, proof = {}, confirm,
     },
     (loop) => {
       const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason);   // 무조건 (fence 필수)
+      // v1.6 defense-in-depth (spec §2.2): 전면 거부 하에선 위 leaseCheck가 항상 먼저 RUN_TERMINAL을
+      // 반환하므로 정상 경로에서 도달 불가 — 미래에 leaseCheck 예외 intent가 도입되어도 finish는
+      // 독립적으로 double-finish를 차단한다(의도된 도달-불가 방어-심층, 단위 테스트 비강제).
+      if (loop.status === 'completed' || loop.status === 'stopped') throw new Error(`FINISH_ALREADY_TERMINAL: ${loop.status}`);
       if (status !== 'completed' && status !== 'stopped') throw new Error(`FINISH_STATUS_INVALID: ${status}`);
       if (status === 'stopped') {
         // #4: `stopped` bypasses every completed-proof (review/workstream-terminal/report). It is a human-only
