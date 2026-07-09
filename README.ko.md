@@ -119,7 +119,7 @@ deep-suite 내에서 사용 시, deep-loop는 오케스트레이션 백본으로
 | iTerm2 | `TERM_PROGRAM=iTerm.app` + osascript 프로브 | 새 iTerm 창 |
 | Terminal.app | `TERM_PROGRAM=Apple_Terminal` + osascript 프로브 | 새 Terminal 창 |
 | Windows Terminal | `WT_SESSION` + `wt.exe` 프로브 | 새 WT 탭 |
-| desktop | (사용자 opt-in) Claude Desktop Code 탭 | 검증된 핸들러로 `claude://code/new` 딥링크 오픈 (반자동: 폴더 확인 + Enter). **현재 macOS 전용**; Windows는 구현되어 있으나 실제 Claude Desktop 서명자 thumbprint가 pin되기 전까지 fail-closed(그때까지 Windows에서는 제안 자체를 하지 않음). |
+| desktop | (사용자 opt-in) Claude Desktop Code 탭 | 검증된 핸들러로 `claude://code/new` 딥링크 오픈 (반자동: 폴더 확인 + Enter). macOS(경로+bundle-id+codesign TeamIdentifier)와 v1.7.0부터 **Windows**(전통 인스톨러 정확-일치 경로 + publisher-id 해시 고정 MSIX 경로 패턴 + **실제 Windows 11 관측으로 pin된** Authenticode 서명자 thumbprint) 지원. Windows 제안은 라이브 프로브가 설치된 핸들러를 검증할 때만 표시되며, pin된 leaf 인증서 로테이션(NotAfter 2026-10-21경) 이후에는 새 관측 thumbprint를 재-pin하기 전까지 결정론적 fail-closed로 복귀한다 — 추측성 pin은 절대 쓰지 않는다. |
 
 스폰은 **attended 전용**: 부모 세션이 인터랙티브하게 시작된 경우만 (`--attended` 플래그). 부모가 headless(`DEEP_LOOP_UNATTENDED=1`, `spawn_style='headless'`, 또는 headless 진입점 감지)이면 가시적 스폰을 우회하고 headless 경로를 사용합니다.
 

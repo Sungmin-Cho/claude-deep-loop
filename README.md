@@ -133,7 +133,7 @@ When `autonomy.spawn_style` is `'visible'` and deep-loop detects a supported ter
 | iTerm2 | `TERM_PROGRAM=iTerm.app` + osascript probe | new iTerm window |
 | Terminal.app | `TERM_PROGRAM=Apple_Terminal` + osascript probe | new Terminal window |
 | Windows Terminal | `WT_SESSION` + `wt.exe` probe | new WT tab |
-| desktop | (user opt-in) Claude Desktop Code tab | opens a verified Claude Desktop handler via `claude://code/new` deeplink — **semi-automatic**: user confirms folder + presses Enter. **macOS only today**; Windows is implemented but fail-closed until a real Claude Desktop signer thumbprint is pinned (never offered on Windows until then). |
+| desktop | (user opt-in) Claude Desktop Code tab | opens a verified Claude Desktop handler via `claude://code/new` deeplink — **semi-automatic**: user confirms folder + presses Enter. macOS (path + bundle-id + codesign TeamIdentifier) and, since v1.7.0, **Windows** (traditional-installer exact paths + MSIX path pattern with a pinned publisher-id hash, plus an Authenticode signer thumbprint **pinned from a real Windows 11 observation**). On Windows the offer appears only when the live probe verifies the installed handler; after the pinned leaf cert rotates (NotAfter ~2026-10-21) dispatch returns to deterministic fail-closed until a newly observed thumbprint is re-pinned — guessed pins are never used. |
 
 The spawn is **attended-only**: the parent session must have been launched interactively (`--attended` flag set by the skill). If the parent is headless (`DEEP_LOOP_UNATTENDED=1`, `spawn_style='headless'`, or a headless-entrypoint is detected), visible spawn is bypassed and the headless path is taken instead.
 
