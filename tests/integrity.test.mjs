@@ -52,3 +52,50 @@ test('appendAnchored fails closed on a truncated event log (no launder)', () => 
   // anchor must NOT have advanced (no laundering of the truncation)
   assert.deepEqual(readState(root, runId).data.event_log_head, anchorBefore);
 });
+
+// ── v1.6 appendAnchored gateway terminal gate (spec §2.1.5/§4-1b) ────────────
+import { appendAnchored } from '../scripts/lib/integrity.mjs';
+import { writeState, patch } from '../scripts/lib/state.mjs';
+
+function seededRun() {
+  const root = mkdtempSync(join(tmpdir(), 'dl-gw-'));
+  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-07-09T00:00:00Z') });
+  return { root, runId };
+}
+function makeTerminal(root, runId, status = 'completed') {
+  const { data } = readState(root, runId);
+  data.status = status;
+  writeState(root, runId, data);
+}
+
+test('appendAnchored: terminal gateway blocks any event after caller preCheck (spec §2.1.5)', () => {
+  const { root, runId } = seededRun();
+  appendAnchored(root, runId, { type: 'x-pre', data: {} }, () => {});   // 로그 생성 (fresh run은 이벤트 0)
+  makeTerminal(root, runId, 'completed');
+  const logPath = join(runDir(root, runId), 'event-log.jsonl');
+  const before = readFileSync(logPath, 'utf8');
+  // ① preCheck 없는 직접 append → RUN_TERMINAL: append
+  assert.throws(() => appendAnchored(root, runId, { type: 'x-test', data: {} }, () => {}), /RUN_TERMINAL: append/);
+  // ③ 순서 계약(4차 r1): caller preCheck의 특정 에러가 관문보다 우선 (fence-first)
+  assert.throws(() => appendAnchored(root, runId, { type: 'x-test', data: {} }, () => {},
+    () => { throw new Error('LEASE_FENCED: owner-mismatch'); }), /LEASE_FENCED: owner-mismatch/);
+  // 로그/상태 무변
+  assert.equal(readFileSync(logPath, 'utf8'), before);
+  assert.equal(readState(root, runId).data.status, 'completed');
+});
+
+test('appendAnchored: fence-less state patch is blocked on terminal (spec §4-1b ②)', () => {
+  const { root, runId } = seededRun();
+  makeTerminal(root, runId, 'stopped');
+  // 'discovered_items'는 classifyPatch 화이트리스트 필드 (비허용 필드는 FIELD_FORBIDDEN이 선착 — 관문 검증 불가)
+  assert.throws(() => patch(root, runId, 'discovered_items', []), /RUN_TERMINAL: append/);
+});
+
+test('appendAnchored: non-terminal finish transition + auto-floor cost still commit (spec §4-1b ④)', () => {
+  const { root, runId } = seededRun();
+  appendAnchored(root, runId, { type: 'x-transition', data: {} },
+    (loop) => { loop.status = 'stopped'; }, undefined, { floor: 1 });
+  const { data } = readState(root, runId);
+  assert.equal(data.status, 'stopped');   // 전이 자체는 mutate 단계 — preCheck 시점 non-terminal이라 통과
+  assert.ok(readFileSync(join(runDir(root, runId), 'event-log.jsonl'), 'utf8').includes('auto_floor'));
+});

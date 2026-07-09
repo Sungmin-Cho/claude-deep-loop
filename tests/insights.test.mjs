@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { computeRunMetrics, computeInsights, deriveCandidates, emitInsights, latestInsights, relInsightsPath, validateLedger, isSuspiciousActive } from '../scripts/lib/insights.mjs';
 import { readState, writeState, runDir as runDirOf } from '../scripts/lib/state.mjs';
-import { readLines, appendAnchored } from '../scripts/lib/integrity.mjs';
+import { readLines, appendAnchored, appendEvent, lastLogHead } from '../scripts/lib/integrity.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
@@ -99,11 +99,16 @@ function finishFixture(root, runId) {
   appendAnchored(root, runId, { type: 'finish', data: { status: 'completed', reportRel: null } },
     (loop) => { loop.status = 'completed'; }, undefined, { floor: 1 });
 }
-// finish-edge 위반 픽스처: anchored business 이벤트 1건 (preCheck 없음 — 커널상 post-finish mutation이
-// 가능하다는 r2 판정과 정합; raw appendEvent는 anchor를 stale하게 만들어 체인 검증에서 먼저 걸리므로 금지).
+// finish-edge 위반 픽스처 — v1.6 재설계(plan Task 11 / 3차 r1 P2-b): appendAnchored 관문(RUN_TERMINAL: append)이
+// 가드-시대 API로는 post-finish 이벤트 생성을 정확히 차단하므로(그것이 v1.6의 목적), 구버전(가드 이전)
+// 오염 로그는 raw로 직조한다: appendEvent(체인 checksum 유지) + event_log_head 앵커 수동 재계산 —
+// computeInsights의 무결성 검증(체인+head)을 통과해야 integrity_failed가 아닌 post_finish_mutated 경로로 분류된다.
 function businessEventFixture(root, runId) {
-  appendAnchored(root, runId, { type: 'episode-new', data: { plugin: 'p', role: 'maker', kind: 'design', point: 'design' } },
-    undefined, undefined, { floor: 1 });
+  appendEvent(root, runId, { type: 'episode-new', data: { plugin: 'p', role: 'maker', kind: 'design', point: 'design' } });
+  appendEvent(root, runId, { type: 'cost', data: { turns: 1, tokens: 0, auto_floor: true, for: 'episode-new' } });
+  const d = readState(root, runId).data;
+  d.event_log_head = lastLogHead(root, runId);
+  writeState(root, runId, d);
 }
 
 test('computeInsights: 터미널 + self만 집계, self_snapshot 표기, loop_sha256 기록', () => {
