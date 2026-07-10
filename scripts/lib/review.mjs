@@ -147,7 +147,7 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
   // 강제되는 리뷰만 만들 수 있다. `.deep-review/`는 gitignored라 fresh checkout에는 계약이 없고, deep-review는
   // 무-contract일 때 계약 미강제로 리뷰를 진행한다 — 그 APPROVE는 hill-climbing 방벽 ③이 요구하는 계약-강제
   // 리뷰가 아니다. preCheck 순서상 전부 newEpisode 전에 throw — checker episode가 생성되지 않는다. (codex r1)
-  let evidence;
+  let evidence, contract;
   if (data.recipe?.id === 'harness-hill-climb') {
     // ① 계약을 소비할 수 있는 reviewer만 — subagent/codex-cross/standalone은 HILLCLIMB-001.yaml을 읽지
     //    않으므로 계약 파일이 존재해도 무계약 APPROVE가 된다. --contract 플래그 부재는 첫 실사용 시리즈의
@@ -162,17 +162,22 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
     //    (예: criteria 비움 — deep-review는 빈 criteria면 계약 검증을 skip)이 통과한다. 계약은 run-불변이므로
     //    "그대로 복사"가 곧 판정 기준이다.
     const wsRec = data.workstreams.find(w => w.id === workstreamId);
-    const contractPath = resolve(root, wsRec.worktree, '.deep-review', 'contracts', 'HILLCLIMB-001.yaml');
-    let contractOk = false;
+    const contractRel = `${wsRec.worktree}/.deep-review/contracts/HILLCLIMB-001.yaml`;
+    let contractOk = false, trackedHash = null;
     try {
       const tracked = readFileSync(TRACKED_CONTRACT_PATH, 'utf8');
-      contractOk = readFileSync(contractPath, 'utf8') === tracked
+      contractOk = readFileSync(resolve(root, contractRel), 'utf8') === tracked
         && /^slice:\s*HILLCLIMB-001\s*$/m.test(tracked) && /^status:\s*active\s*$/m.test(tracked)
         && /^criteria:/m.test(tracked) && /^\s*-\s+/m.test(tracked);
+      if (contractOk) trackedHash = contentHash(tracked);
     } catch { contractOk = false; }
     if (!contractOk) {
-      throw new Error(`REVIEW_CONTRACT_MISSING: hill-climb run requires ${wsRec.worktree}/.deep-review/contracts/HILLCLIMB-001.yaml byte-identical to the tracked source (skills/deep-loop-workflow/references/contracts/HILLCLIMB-001.yaml) with status: active — materialize (그대로 복사) before dispatching review`);
+      throw new Error(`REVIEW_CONTRACT_MISSING: hill-climb run requires ${contractRel} byte-identical to the tracked source (skills/deep-loop-workflow/references/contracts/HILLCLIMB-001.yaml) with status: active — materialize (그대로 복사) before dispatching review`);
     }
+    // ⑤ codex r3: 검증된 계약 identity를 checker episode에 durable 기록(anchored loop.json) —
+    //    recordReviewOutcome이 passing verdict 시점에 같은 파일을 재검증해 dispatch~record 사이
+    //    삭제/변조(TOCTOU — deep-review는 무-contract면 조용히 skip) 창을 닫는다.
+    contract = { slice: 'HILLCLIMB-001', path: contractRel, sha256: trackedHash };
     // ④ criterion (a)의 결정론 근거 — 커널-검증된 최신 insights를 디스크립터 + checker request.md에 실어
     //    checker가 파일 파싱 없이 인용 지표를 대조할 수 있게 한다. 없으면 null(인용할 검증 지표가 없다는
     //    사실 자체가 checker의 판정 입력). emit_ulid는 artifact 파일명의 emit ULID(envelope.run_id는
@@ -200,7 +205,7 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
   // reviewer로 episode를 만들지 않는다.
   const skill = skillByReviewer[reviewer];
   if (!skill) throw new Error(`REVIEWER_UNRECOGNIZED: '${reviewer}' resolved but has no dispatch mapping — KNOWN_REVIEWERS and skillByReviewer are out of sync`);
-  const { id } = newEpisode(root, runId, { plugin: reviewer === 'deep-review-loop' ? 'deep-review' : reviewer, role: 'checker', kind: `${point}-review`, point, workstream: workstreamId, targetMaker, evidence, fence });
+  const { id } = newEpisode(root, runId, { plugin: reviewer === 'deep-review-loop' ? 'deep-review' : reviewer, role: 'checker', kind: `${point}-review`, point, workstream: workstreamId, targetMaker, evidence, contract, fence });
   const descriptor = { kind: reviewer === 'standalone' ? 'inline' : 'invoke_skill', skill, args: flags.join(' '), mode, review_point: point, workstream: workstreamId, ...(evidence !== undefined ? { evidence } : {}) };
   return { checkerEpisodeId: id, reviewer, descriptor };
 }
@@ -278,6 +283,15 @@ export function recordReviewOutcome(root, runId, { episodeId, workstreamId, poin
       // workstream's worktree (an unrelated file like README.md at root is refused). Kernel-authoritative (CLI-bypass safe).
       if (passed && !reportBoundToWorktree(root, realReport, wsForReport.worktree)) {
         throw new Error('REVIEW_NO_EVIDENCE: passing verdict requires proof.report — a real file under the reviewed workstream worktree');
+      }
+      // P2 codex r3: dispatch가 계약을 검증해 checker에 기록했다면(hill-climb), passing verdict 시점에 같은
+      // 파일을 재검증한다 — dispatch~record 사이 삭제/변조(TOCTOU) 시 deep-review는 무-contract를 조용히
+      // skip하므로, 그 창에서 나온 APPROVE가 계약-강제 리뷰로 기록되는 것을 record 게이트가 막는다.
+      // REQUEST_CHANGES는 경량 reject 경로 유지(passing만 finish proof를 연다).
+      if (passed && tgt.contract) {
+        let stillValid = false;
+        try { stillValid = contentHash(readFileSync(resolve(root, tgt.contract.path), 'utf8')) === tgt.contract.sha256; } catch { stillValid = false; }
+        if (!stillValid) throw new Error(`REVIEW_CONTRACT_MISSING: contract ${tgt.contract.path} was removed or altered since dispatch (recorded sha256 mismatch) — re-materialize the tracked contract and re-dispatch the review`);
       }
     }, { floor: MUTATION_TURN_FLOOR });
   // REQUEST_CHANGES → checker='rejected'. nextAction returns fix_episode and Execution creates the fix maker.

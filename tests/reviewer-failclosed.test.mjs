@@ -8,7 +8,7 @@
 //   무-contract skip으로 계약 미강제 APPROVE가 가능 — tracked 소스 + dispatch 시 부재 fail-closed.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, copyFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, copyFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,7 +16,7 @@ import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState } from '../scripts/lib/state.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
-import { resolveReviewer, dispatchReview } from '../scripts/lib/review.mjs';
+import { resolveReviewer, dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const TRACKED_CONTRACT = join(here, '..', 'skills', 'deep-loop-workflow', 'references', 'contracts', 'HILLCLIMB-001.yaml');
@@ -216,6 +216,51 @@ test('P2: hill-climb run without the --contract flag fails closed', () => {
   assert.throws(
     () => dispatchReview(root, runId, { point: 'design', workstreamId: ws, detected: { 'deep-review': true }, fence: f }),
     /REVIEW_CONTRACT_UNENFORCEABLE/);
+});
+
+// ── P2 codex r3: 계약 identity가 checker에 durable 기록되고, record 시점에 재검증된다(TOCTOU 봉합) ──
+test('P2: dispatch pins contract identity on the checker (anchored loop.json)', () => {
+  const { root, runId, f } = seedRun({ reviewer: 'deep-review-loop', flags: ['--contract', '--codex-only'], recipe: 'harness-hill-climb' });
+  const ws = doneMakerOn(root, runId, f);
+  materializeContract(root, '.claude/worktrees/w-design');
+  const r = dispatchReview(root, runId, { point: 'design', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
+  const ep = readState(root, runId).data.episodes.find(e => e.id === r.checkerEpisodeId);
+  assert.equal(ep.contract.slice, 'HILLCLIMB-001');
+  assert.equal(ep.contract.path, '.claude/worktrees/w-design/.deep-review/contracts/HILLCLIMB-001.yaml');
+  assert.match(ep.contract.sha256, /^[0-9a-f]{64}$/);
+  assert.ok('evidence' in ep, 'evidence is anchored in loop.json, not only in the editable request.md');
+});
+
+test('P2: contract removed between dispatch and record — passing verdict fails closed, checker stays pending', () => {
+  const { root, runId, f } = seedRun({ reviewer: 'deep-review-loop', flags: ['--contract', '--codex-only'], recipe: 'harness-hill-climb' });
+  const ws = doneMakerOn(root, runId, f);
+  materializeContract(root, '.claude/worktrees/w-design');
+  const r = dispatchReview(root, runId, { point: 'design', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
+  const report = join('.claude/worktrees/w-design', 'review-report.md');
+  writeFileSync(join(root, report), '# review report\nAPPROVE');
+  rmSync(join(root, '.claude/worktrees/w-design', '.deep-review', 'contracts', 'HILLCLIMB-001.yaml'));
+  assert.throws(
+    () => recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'design', verdict: 'APPROVE', proof: { report }, fence: f }),
+    /REVIEW_CONTRACT_MISSING/);
+  assert.equal(readState(root, runId).data.episodes.find(e => e.id === r.checkerEpisodeId).status, 'pending');
+});
+
+test('P2: contract altered between dispatch and record — sha mismatch fails closed; intact contract passes', () => {
+  const { root, runId, f } = seedRun({ reviewer: 'deep-review-loop', flags: ['--contract', '--codex-only'], recipe: 'harness-hill-climb' });
+  const ws = doneMakerOn(root, runId, f);
+  materializeContract(root, '.claude/worktrees/w-design');
+  const r = dispatchReview(root, runId, { point: 'design', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
+  const report = join('.claude/worktrees/w-design', 'review-report.md');
+  writeFileSync(join(root, report), '# review report\nAPPROVE');
+  const cPath = join(root, '.claude/worktrees/w-design', '.deep-review', 'contracts', 'HILLCLIMB-001.yaml');
+  writeFileSync(cPath, readFileSync(cPath, 'utf8').replace('status: active', 'status: archived'));
+  assert.throws(
+    () => recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'design', verdict: 'APPROVE', proof: { report }, fence: f }),
+    /REVIEW_CONTRACT_MISSING/);
+  // 복원(그대로 복사) 후에는 통과 — pending checker에 재기록 가능
+  copyFileSync(TRACKED_CONTRACT, cPath);
+  const out = recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'design', verdict: 'APPROVE', proof: { report }, fence: f });
+  assert.equal(out.terminal, 'approved');
 });
 
 // ── P2 스코프 한정 — hill-climb이 아닌 recipe는 계약 게이트 비대상(무회귀) ──

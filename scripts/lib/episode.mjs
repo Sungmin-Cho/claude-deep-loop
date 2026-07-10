@@ -19,14 +19,16 @@ function requestSkeleton({ id, plugin, role, kind, point, workstream, expectedAr
     `- review point: ${point}`, `- workstream: ${workstream || '(none)'}`, '',
     '## Task', '', '<!-- Execution plane: fill the maker/checker task here -->', '',
     '## Expected artifacts', '', ...(expectedArtifacts.length ? expectedArtifacts.map(a => `- ${a}`) : ['- <!-- list proof artifacts -->']), '',
-    // P2 codex r2: 커널-검증 evidence를 checker request에 durable 기록 — 디스크립터는 휘발(세션 메모리)이라
-    // 이 파일이 checker가 인용 지표를 대조할 durable 원본이다. undefined면 섹션 자체를 생략(비-hill-climb).
-    ...(evidence !== undefined ? ['## Evidence (kernel-verified insights)', '', '```json', JSON.stringify(evidence, null, 2), '```', ''] : []),
+    // P2 codex r2/r3: checker가 읽을 evidence 사본 — durable 원본은 anchored loop.json의 episode.evidence다
+    // (이 파일은 ## Task 편집이 허용되는 가변 문서). undefined면 섹션 자체를 생략(비-hill-climb).
+    ...(evidence !== undefined ? ['## Evidence (kernel-verified insights)', '',
+      '<!-- 사본 — anchored 원본은 loop.json episodes[].evidence. 불일치 시 loop.json이 이긴다. -->', '',
+      '```json', JSON.stringify(evidence, null, 2), '```', ''] : []),
     '## Constraints', '', '- 이전 대화 컨텍스트를 가정하지 말라. loop.json + 이 request가 source of truth.', '',
   ].join('\n');
 }
 
-export function newEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker, evidence, fence } = {}) {
+export function newEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker, evidence, contract, fence } = {}) {
   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: newEpisode');
   // Fix 3: validate required non-fence args before any state write
   if (!plugin || typeof plugin !== 'string' || !plugin.length) throw new Error('EPISODE_INPUT_INVALID: plugin');
@@ -54,6 +56,10 @@ export function newEpisode(root, runId, { plugin, role, kind, point, workstream 
       verification: { checker_episode_required: role === 'maker', checker_plugin: 'deep-review', review_point: point, proof_required: expectedArtifacts },
     };
     if (targetMaker && typeof targetMaker === 'string' && targetMaker.length) epObj.target_maker = targetMaker;
+    // P2 codex r3: evidence/contract는 anchored loop.json이 원본 — request.md는 편집 가능한(## Task) 사본이라
+    // durable 신뢰 원천이 될 수 없다. undefined면 필드 자체를 생략(비-hill-climb 무변화).
+    if (evidence !== undefined) epObj.evidence = evidence;
+    if (contract !== undefined) epObj.contract = contract;
     loop.episodes.push(epObj);
     loop.current_episode = id;
     if (role === 'maker') loop.comprehension.episodes_total = (loop.comprehension.episodes_total || 0) + 1;
