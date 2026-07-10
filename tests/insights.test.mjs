@@ -602,13 +602,15 @@ test('CLI insights emit: 과거 고정 --now는 계속 성공 (결정론 회귀 
   assert.match(JSON.parse(r.out).path, /-insights\.json$/);
 });
 
-test('ledger 스키마: 필수 필드 검증 + 시드 파일은 빈 배열', () => {
+test('ledger 스키마: 필수 필드 검증 + 실파일은 스키마 통과', () => {
   assert.equal(validateLedger([]).ok, true);
   assert.equal(validateLedger([{ date: '2026-07-07', insights_ref: 'x', candidates_addressed: ['a'], falsification: 'f' }]).ok, true);
   assert.equal(validateLedger([{ date: 1 }]).ok, false);
   assert.equal(validateLedger('nope').ok, false);
+  // 시드 "정확히 빈 배열" 단언은 hill-climbing 계약 §3.3(implementation maker의 append-only 기록)과
+  // 첫 append 시점부터 결정론적으로 모순 — 스키마 검증으로 교체 (2026-07-10 사람 승인, T2 변경).
   const seed = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'recipes', 'hillclimb-ledger.json'), 'utf8'));
-  assert.deepEqual(seed, []);
+  assert.equal(validateLedger(seed).ok, true);
 });
 
 // ── impl-R3 🟡A: fix_cycles 분모에 0-cycle 리뷰 쌍 포함 — RC-only 분모는 평균을 항상 ≥1로 퇴화시켜
