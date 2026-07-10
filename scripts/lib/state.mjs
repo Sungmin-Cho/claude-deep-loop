@@ -4,6 +4,7 @@ import { contentHash, atomicWrite } from './envelope.mjs';
 import { validate } from './schema.mjs';
 import { leaseCheck } from './lease.mjs';
 import { appendAnchored, MUTATION_TURN_FLOOR } from './integrity.mjs';
+import { assertProjectRootBinding } from './project-root.mjs';
 
 // R5 high-2: 상향탐색을 worktree 컨벤션(.claude/worktrees | .worktrees)으로 **한정**한다.
 // 무한정 walk 는 부모 run 밑의 nested repo/submodule 을 부모 run 에 잘못 바인딩(격리 회귀)시킨다.
@@ -69,7 +70,7 @@ export function classifyPatch(field, value) {
   return 'forbid';
 }
 
-export function readState(root, runId) {
+function readHashVerifiedState(root, runId) {
   const raw = readFileSync(loopPath(root, runId), 'utf8');
   // loop.json이 있는데 hash anchor가 없으면 = anchor 제거 공격/손상 → fail-closed (Codex impl 🔴1)
   if (!existsSync(hashPath(root, runId))) {
@@ -82,7 +83,18 @@ export function readState(root, runId) {
   return { data: JSON.parse(raw), hash: stored };
 }
 
+export function readStateForRootRecovery(root, runId) {
+  return readHashVerifiedState(root, runId);
+}
+
+export function readState(root, runId) {
+  const state = readHashVerifiedState(root, runId);
+  assertProjectRootBinding(root, state.data);
+  return state;
+}
+
 export function writeState(root, runId, data) {
+  assertProjectRootBinding(root, data);
   const v = validate(data);
   if (!v.ok) throw new Error(`SCHEMA_INVALID: ${v.errors.join('; ')}`);
   data.updated_at = new Date().toISOString();

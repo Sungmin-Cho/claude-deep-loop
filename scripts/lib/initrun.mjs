@@ -8,6 +8,7 @@ import { detectTerminal, defaultProbeRun } from './detect-terminal.mjs';
 import { pluginPresent } from './detect.mjs';
 import { validateModel, validateEffort } from './session-profile.mjs';
 import { validateSessionRuntime } from './runtime.mjs';
+import { canonicalProjectRoot } from './project-root.mjs';
 
 export function buildInitialLoop({ runtime, goal, protocol, recipe, detected = {}, review, now = new Date(), runId, git = {}, env = process.env, platform = process.platform, run = defaultProbeRun, pid = process.pid, model = null, effort = null }) {
   validateSessionRuntime(runtime);
@@ -41,15 +42,16 @@ export function initRun(root, { runtime, goal, protocol, recipe, review, detecte
   validateSessionRuntime(runtime);
   if (model != null) validateModel(model);
   if (effort != null) validateEffort(effort);
+  const canonicalRoot = canonicalProjectRoot(root);
   const runId = ulid(now.getTime());
   const m = matchRecipe(goal, detected);
   const proto = protocol || m.protocol;
   const rec = recipe ? { id: recipe, name: recipe, reason: 'user' } : { id: m.recipe, name: m.recipe, reason: m.reason };
   const loop = buildInitialLoop({ runtime, goal, protocol: proto, recipe: rec, detected, review, now, runId, git, env, platform, run, pid, model, effort });
-  loop.project.root = root;
-  mkdirSync(runDir(root, runId), { recursive: true });
-  writeState(root, runId, loop);
-  mkdirSync(join(root, '.deep-loop'), { recursive: true });
-  writeFileSync(join(root, '.deep-loop', 'current'), runId + '\n');
+  loop.project.root = canonicalRoot;
+  mkdirSync(runDir(canonicalRoot, runId), { recursive: true });
+  writeState(canonicalRoot, runId, loop);
+  mkdirSync(join(canonicalRoot, '.deep-loop'), { recursive: true });
+  writeFileSync(join(canonicalRoot, '.deep-loop', 'current'), runId + '\n');
   return { runId, loop };
 }

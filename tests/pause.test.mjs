@@ -41,7 +41,9 @@ function seed(overrides = {}) {
   const root = mkdtempSync(join(tmpdir(), 'dl-pause-'));
   const runId = OWNER;
   mkdirSync(runDir(root, runId), { recursive: true });
-  writeState(root, runId, baseData(overrides));
+  const data = baseData(overrides);
+  data.project.root = root;
+  writeState(root, runId, data);
   return { root, runId };
 }
 

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, mkdirSync, appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { appendEvent, verifyLog, recomputeSpent } from '../scripts/lib/integrity.mjs';
@@ -51,6 +51,28 @@ test('appendAnchored fails closed on a truncated event log (no launder)', () => 
   assert.throws(() => recordCost(root, runId, { turns: 1, tokens: 10 }), /LOG_TAMPERED/);
   // anchor must NOT have advanced (no laundering of the truncation)
   assert.deepEqual(readState(root, runId).data.event_log_head, anchorBefore);
+});
+
+test('appendAnchored rechecks project-root binding in-lock before precheck, event, or hash writes', () => {
+  const originalRoot = mkdtempSync(join(tmpdir(), 'dl-root-gateway-original-'));
+  const candidateRoot = mkdtempSync(join(tmpdir(), 'dl-root-gateway-copy-'));
+  const { runId } = initRun(originalRoot, { runtime: 'claude', goal: 'g', now: new Date('2026-07-11T00:00:00Z') });
+  appendAnchored(originalRoot, runId, { type: 'seed-event', data: {} }, () => {});
+  cpSync(join(originalRoot, '.deep-loop'), join(candidateRoot, '.deep-loop'), { recursive: true });
+
+  const eventPath = join(runDir(candidateRoot, runId), 'event-log.jsonl');
+  const hashPath = join(runDir(candidateRoot, runId), '.loop.hash');
+  const beforeEvent = readFileSync(eventPath, 'utf8');
+  const beforeHash = readFileSync(hashPath, 'utf8');
+  let preCheckRan = false;
+
+  assert.throws(
+    () => appendAnchored(candidateRoot, runId, { type: 'must-not-append', data: {} }, () => {}, () => { preCheckRan = true; }),
+    /PROJECT_ROOT_FENCED/
+  );
+  assert.equal(preCheckRan, false, 'root binding must reject before caller preCheck runs');
+  assert.equal(readFileSync(eventPath, 'utf8'), beforeEvent, 'root-fenced mutation must emit no event');
+  assert.equal(readFileSync(hashPath, 'utf8'), beforeHash, 'root-fenced mutation must not change the loop hash');
 });
 
 // ── v1.6 appendAnchored gateway terminal gate (spec §2.1.5/§4-1b) ────────────

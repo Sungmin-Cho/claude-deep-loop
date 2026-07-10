@@ -2,6 +2,7 @@ import { readFileSync, appendFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { contentHash } from './envelope.mjs';
 import { runDir, readState, writeState, withLock } from './state.mjs';
+import { assertProjectRootBinding } from './project-root.mjs';
 
 const logPath = (root, runId) => join(runDir(root, runId), 'event-log.jsonl');
 
@@ -95,6 +96,9 @@ export function verifyHead(root, runId, expected) {
 export function appendAnchored(root, runId, { type, data }, mutate, preCheck, opts = {}) {
   return withLock(root, runId, () => {
     const { data: loop } = readState(root, runId);
+    // Defense in depth at the shared mutation gateway: this check stays inside the existing lock and precedes
+    // caller guards and event writes. readState is already strict, so no unbound reader is exposed here.
+    assertProjectRootBinding(root, loop);
     if (preCheck) preCheck(loop);              // throws BEFORE append → anchor stays consistent
     // v1.6 gateway terminal gate (spec §2.1.5): 반드시 caller preCheck **뒤** — fence-first 보존
     // (LEASE_FENCED/RESPAWN_FENCED/RUN_TERMINAL:emitHandoff 등 특정-에러 경로가 먼저 발화해야 한다).

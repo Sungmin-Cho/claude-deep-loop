@@ -1,7 +1,7 @@
 // Codex r3 FIX 1: atomic lease fencing tests — library-level interleaving scenarios
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
@@ -17,6 +17,19 @@ function seed() {
   const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
   return { root, runId };
 }
+
+test('direct writeState replacement is fenced at a copied project root', () => {
+  const { root: originalRoot, runId } = seed();
+  const candidateRoot = mkdtempSync(join(tmpdir(), 'dl-fence-copy-'));
+  const { data } = readState(originalRoot, runId);
+  cpSync(join(originalRoot, '.deep-loop'), join(candidateRoot, '.deep-loop'), { recursive: true });
+  const hashPath = join(runDir(candidateRoot, runId), '.loop.hash');
+  const beforeHash = readFileSync(hashPath, 'utf8');
+
+  data.discovered_items = ['must-not-write'];
+  assert.throws(() => writeState(candidateRoot, runId, data), /PROJECT_ROOT_FENCED/);
+  assert.equal(readFileSync(hashPath, 'utf8'), beforeHash);
+});
 
 // FIX 1: stale parent (gen 1) loses lease → child acquires gen 2 → parent's mutator throws LEASE_FENCED
 test('newWorkstream with stale fence throws LEASE_FENCED', () => {

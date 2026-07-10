@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync, readFileSync as _rfRoot } from 'node:fs';
+import { cpSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync, readFileSync as _rfRoot } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname as _dn } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,7 +14,7 @@ function seed() {
   mkdirSync(dir, { recursive: true });
   const data = {
     schema_version: '0.2.0', run_id: runId, goal: 'g', status: 'running',
-    project: {}, routing: { protocol: 'deep-work' }, review: { points: ['design'] },
+    project: { root }, routing: { protocol: 'deep-work' }, review: { points: ['design'] },
     autonomy: { tier: 'recommend', spawn_style: 'interactive' }, budget: { unit: 'turns', spent: 5 },
     comprehension: {}, circuit_breaker: { tripped: false }, session_chain: { lease: { state: 'active', handoff_phase: 'idle' }, sessions: [] },
     workstreams: [{ id: 'ws-1', status: 'in_progress', depends_on: [] }], active_workstreams: ['ws-1'],
@@ -62,6 +62,15 @@ test('tampered hash detected on read', () => {
   const { root, runId } = seed();
   writeFileSync(join(runDir(root, runId), 'loop.json'), '{"goal":"hacked"}'); // direct write, hash unchanged
   assert.throws(() => readState(root, runId), /STATE_TAMPERED/);
+});
+
+test('copied-root reads verify the loop hash before checking project-root binding', () => {
+  const originalRoot = mkdtempSync(join(tmpdir(), 'dl-hash-first-original-'));
+  const candidateRoot = mkdtempSync(join(tmpdir(), 'dl-hash-first-copy-'));
+  const { runId } = initRun(originalRoot, { runtime: 'claude', goal: 'g', now: new Date('2026-07-11T00:00:00Z') });
+  cpSync(join(originalRoot, '.deep-loop'), join(candidateRoot, '.deep-loop'), { recursive: true });
+  writeFileSync(join(runDir(candidateRoot, runId), 'loop.json'), '{"goal":"tampered-copy"}');
+  assert.throws(() => readState(candidateRoot, runId), /STATE_TAMPERED/);
 });
 
 test('whole-object array patch bypass is forbidden', () => {
