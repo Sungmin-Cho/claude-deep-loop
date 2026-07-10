@@ -156,9 +156,18 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
   if (data.recipe?.id === 'harness-hill-climb') {
     // ① 계약을 소비할 수 있는 reviewer만 — subagent/codex-cross/standalone은 HILLCLIMB-001.yaml을 읽지
     //    않으므로 계약 파일이 존재해도 무계약 APPROVE가 된다. --contract 플래그 부재는 첫 실사용 시리즈의
-    //    재-init #2가 실측한 동일 결함.
-    if (reviewer !== 'deep-review-loop' || !flags.includes('--contract')) {
-      throw new Error(`REVIEW_CONTRACT_UNENFORCEABLE: hill-climb run requires reviewer 'deep-review-loop' with the --contract flag (got '${reviewer}', flags [${flags.join(', ')}]) — re-init the run with a contract-capable review config`);
+    //    재-init #2가 실측한 동일 결함. selector까지 검증한다(codex r5): deep-review 문법상
+    //    `--contract SLICE-NNN`은 그 slice만 로드하므로, 다른 selector(`--contract SLICE-999`)는 토큰
+    //    존재 체크를 통과하면서 HILLCLIMB-001을 평가하지 않는 우회가 된다 — selector는 생략(단독
+    //    `--contract` — 유일한 active 계약이 HILLCLIMB-001)이거나 정확히 HILLCLIMB-001이어야 한다.
+    const ci = flags.findIndex(fl => fl === '--contract' || (typeof fl === 'string' && fl.startsWith('--contract=')));
+    let selector = null;
+    if (ci !== -1) {
+      if (flags[ci].startsWith('--contract=')) selector = flags[ci].slice('--contract='.length);
+      else if (ci + 1 < flags.length && !String(flags[ci + 1]).startsWith('--')) selector = flags[ci + 1];
+    }
+    if (reviewer !== 'deep-review-loop' || ci === -1 || (selector !== null && selector !== 'HILLCLIMB-001')) {
+      throw new Error(`REVIEW_CONTRACT_UNENFORCEABLE: hill-climb run requires reviewer 'deep-review-loop' with the --contract flag selecting HILLCLIMB-001 (got '${reviewer}', flags [${flags.join(', ')}]) — re-init the run with a contract-capable review config`);
     }
     // ② 게이트 위치 = 소비처. checker는 workstream worktree를 cwd로 deep-review를 실행하고 deep-review는
     //    cwd의 `.deep-review/contracts/`를 읽는다 — project-root의 사본을 게이트하면 "게이트는 통과했는데

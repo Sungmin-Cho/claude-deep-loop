@@ -236,6 +236,27 @@ test('P2: hill-climb run without the --contract flag fails closed', () => {
     /REVIEW_CONTRACT_UNENFORCEABLE/);
 });
 
+// codex r5: `--contract <selector>`가 다른 slice를 지정하면 deep-review는 그 slice만 로드 —
+// 토큰 존재 체크만으로는 HILLCLIMB-001 미평가 APPROVE 우회가 된다. selector는 생략 또는 정확히
+// HILLCLIMB-001만 허용.
+test('P2: --contract with a different slice selector fails closed; HILLCLIMB-001 selector passes', () => {
+  for (const flags of [['--contract', 'SLICE-999', '--codex-only'], ['--contract=SLICE-999', '--codex-only']]) {
+    const { root, runId, f } = seedRun({ reviewer: 'deep-review-loop', flags, recipe: 'harness-hill-climb' });
+    const ws = doneMakerOn(root, runId, f);
+    materializeContract(root, '.claude/worktrees/w-design');
+    assert.throws(
+      () => dispatchReview(root, runId, { point: 'design', workstreamId: ws, detected: { 'deep-review': true }, fence: f }),
+      /REVIEW_CONTRACT_UNENFORCEABLE/, flags.join(' '));
+  }
+  for (const flags of [['--contract', 'HILLCLIMB-001', '--codex-only'], ['--contract=HILLCLIMB-001'], ['--contract', '--codex-only']]) {
+    const { root, runId, f } = seedRun({ reviewer: 'deep-review-loop', flags, recipe: 'harness-hill-climb' });
+    const ws = doneMakerOn(root, runId, f);
+    materializeContract(root, '.claude/worktrees/w-design');
+    const r = dispatchReview(root, runId, { point: 'design', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
+    assert.equal(r.descriptor.skill, 'deep-review:deep-review-loop', flags.join(' '));
+  }
+});
+
 // ── P2 codex r3: 계약 identity가 checker에 durable 기록되고, record 시점에 재검증된다(TOCTOU 봉합) ──
 test('P2: dispatch pins contract identity on the checker (anchored loop.json)', () => {
   const { root, runId, f } = seedRun({ reviewer: 'deep-review-loop', flags: ['--contract', '--codex-only'], recipe: 'harness-hill-climb' });
