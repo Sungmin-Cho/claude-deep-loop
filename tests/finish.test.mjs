@@ -15,7 +15,7 @@ import { finishRun, finishProofState } from '../scripts/lib/finish.mjs';
 function seed() {
   const root = mkdtempSync(join(tmpdir(), 'dl-fin-'));
   const review = { points: ['implementation'], reviewer: 'subagent-checker', mode: 'cross-model', flags: [], converge: true, max_review_rounds: 5, require_human_ack: false };
-  const { runId } = initRun(root, { goal: 'g', review, now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', review, now: new Date('2026-06-24T00:00:00Z') });
   return { root, runId, fence: { owner: runId, generation: 1, intent: 'business' } };
 }
 

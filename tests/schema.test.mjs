@@ -17,6 +17,29 @@ test('valid loop.json passes', () => {
   assert.equal(validate(minimalValid()).ok, true);
 });
 
+test('runtime_source cannot exist without session_runtime', () => {
+  const loop = minimalValid();
+  loop.autonomy.runtime_source = 'skill-asserted';
+  const result = validate(loop);
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((e) => /runtime_source.*session_runtime/.test(e)));
+});
+
+test('new runtime state requires runtime_source skill-asserted', () => {
+  const loop = minimalValid();
+  loop.autonomy.session_runtime = 'claude';
+  let result = validate(loop);
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((e) => /runtime_source.*skill-asserted/.test(e)));
+
+  loop.autonomy.runtime_source = 'inferred';
+  result = validate(loop);
+  assert.equal(result.ok, false);
+
+  loop.autonomy.runtime_source = 'skill-asserted';
+  assert.equal(validate(loop).ok, true);
+});
+
 test('missing required field fails', () => {
   const o = minimalValid(); delete o.goal;
   const r = validate(o);
@@ -53,7 +76,7 @@ test('non-number budget.soft_stop_ratio fails', () => {
 });
 
 test('spawn_style enum accepts visible; session_spawn additive validates', () => {
-  const loop = buildInitialLoop({ runId: 'r1', goal: 'g', recipe: {}, now: new Date('2026-06-27T00:00:00Z') });
+  const loop = buildInitialLoop({ runtime: 'claude', runId: 'r1', goal: 'g', recipe: {}, now: new Date('2026-06-27T00:00:00Z') });
   loop.autonomy.spawn_style = 'visible';
   loop.session_spawn = { platform: 'darwin', launcher: 'cmux', launcher_bin: '/x/cmux', launcher_socket: null, surface: 'workspace', reachable: true, visible: true, signals: {}, probe: { cmd: 'x ping', code: 0 }, reason: null, fallback: 'launch-command-file', detected_at: '2026-06-27T00:00:00Z' };
   assert.equal(validate(loop).ok, true, `validate errors: ${JSON.stringify(validate(loop).errors)}`);
@@ -62,13 +85,13 @@ test('spawn_style enum accepts visible; session_spawn additive validates', () =>
 });
 
 test('session_spawn null still validates (R5-plan)', () => {
-  const loop = buildInitialLoop({ runId: 'r1', goal: 'g', recipe: {}, now: new Date('2026-06-27T00:00:00Z') });
+  const loop = buildInitialLoop({ runtime: 'claude', runId: 'r1', goal: 'g', recipe: {}, now: new Date('2026-06-27T00:00:00Z') });
   const loopNull = { ...loop, session_spawn: null };
   assert.equal(validate(loopNull).ok, true, `session_spawn:null must pass, errors: ${JSON.stringify(validate(loopNull).errors)}`);
 });
 
 test('session_spawn absent still validates', () => {
-  const loop = buildInitialLoop({ runId: 'r1', goal: 'g', recipe: {}, now: new Date('2026-06-27T00:00:00Z') });
+  const loop = buildInitialLoop({ runtime: 'claude', runId: 'r1', goal: 'g', recipe: {}, now: new Date('2026-06-27T00:00:00Z') });
   const loopAbsent = { ...loop };
   delete loopAbsent.session_spawn;
   assert.equal(validate(loopAbsent).ok, true, `session_spawn absent must pass, errors: ${JSON.stringify(validate(loopAbsent).errors)}`);
@@ -89,7 +112,7 @@ test('spawn_style=desktop is a valid enum value', () => {
 });
 
 test('autonomy.session_effort enum + session_model type (WS1, optional)', () => {
-  const base = buildInitialLoop({ goal: 'g', protocol: 'standalone', recipe: { id: 'r', name: 'r', reason: '' }, runId: 'SELFTEST00000000000000000T', now: new Date('2026-07-02T00:00:00Z') });
+  const base = buildInitialLoop({ runtime: 'claude', goal: 'g', protocol: 'standalone', recipe: { id: 'r', name: 'r', reason: '' }, runId: 'SELFTEST00000000000000000T', now: new Date('2026-07-02T00:00:00Z') });
   // absent → ok (backward compat)
   assert.equal(validate(base).ok, true);
   // valid effort + model → ok

@@ -14,7 +14,7 @@ import { releaseLease, acquireLease } from '../scripts/lib/lease.mjs';
 
 function floorRun() {
   const root = mkdtempSync(join(tmpdir(), 'dl-floor-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
   return { root, runId, fence: { owner: runId, generation: 1, intent: 'business' } };
 }
 function ownerSessionTurns(root, runId) {
@@ -203,7 +203,7 @@ import { initRun as initRunT } from '../scripts/lib/initrun.mjs';
 
 test('recordCost: terminal run — fenced call LEASE_FENCED channel, fence-less own throw; no event written', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-bud-t-'));
-  const { runId } = initRunT(root, { goal: 'g', now: new Date('2026-07-09T00:00:00Z') });
+  const { runId } = initRunT(root, { runtime: 'claude', goal: 'g', now: new Date('2026-07-09T00:00:00Z') });
   const { data } = readState(root, runId);
   data.status = 'completed';
   writeState(root, runId, data);

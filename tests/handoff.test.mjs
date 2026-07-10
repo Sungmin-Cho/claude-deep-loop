@@ -12,7 +12,7 @@ import { newEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
 // Inject deterministic env so detectTerminal never probes real cmux/osascript.
 function seed() {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
-  const { runId } = initRun(root, { goal: '인증 기능 구현', detected: { 'deep-work': true }, now: new Date('2026-06-24T00:00:00Z'), env: {}, platform: 'linux', run: () => ({ code: 1 }) });
+  const { runId } = initRun(root, { runtime: 'claude', goal: '인증 기능 구현', detected: { 'deep-work': true }, now: new Date('2026-06-24T00:00:00Z'), env: {}, platform: 'linux', run: () => ({ code: 1 }) });
   return { root, runId };
 }
 

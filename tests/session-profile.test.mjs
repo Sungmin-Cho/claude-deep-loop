@@ -12,7 +12,7 @@ import { EFFORT_LEVELS, validateEffort, validateModel, setSessionProfile } from 
 
 function seed() {
   const root = mkdtempSync(join(tmpdir(), 'dl-sp-'));
-  const { runId } = initRun(root, { goal: 'g', detected: {}, now: new Date('2026-07-02T00:00:00Z'), env: {}, platform: 'linux', run: () => ({ code: 1 }) });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', detected: {}, now: new Date('2026-07-02T00:00:00Z'), env: {}, platform: 'linux', run: () => ({ code: 1 }) });
   return { root, runId };
 }
 const expect_ = (runId) => ({ owner: runId, generation: 1 });
@@ -121,7 +121,7 @@ test('CLI rejects value-less --model/--effort as usage (exit 2)', () => {
   assert.equal(r.status, 2, 'value-less --model → usage exit 2');
   // state untouched (no silent partial write)
   assert.equal(readState(root, runId).data.autonomy.session_effort, undefined);
-  r = cli(root, ['init-run', '--goal', 'g', '--model']);
+  r = cli(root, ['init-run', '--goal', 'g', '--runtime', 'claude', '--model']);
   assert.equal(r.status, 2, 'value-less --model on init-run → usage exit 2');
 });
 

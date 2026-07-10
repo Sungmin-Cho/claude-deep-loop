@@ -14,7 +14,7 @@ import { dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
 
 function seed() {
   const root = mkdtempSync(join(tmpdir(), 'dl-fence-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
   return { root, runId };
 }
 
@@ -195,7 +195,7 @@ function readLog(root, runId) {
 
 test('detectAndPersist: wrong owner throws LEASE_FENCED', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-dt-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-28T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-28T00:00:00Z') });
   assert.throws(
     () => detectAndPersist(root, runId, { owner: 'wrong-owner', generation: 1, env: {}, platform: 'linux', run: noOpRun, now: DT_NOW }),
     /LEASE_FENCED/
@@ -204,7 +204,7 @@ test('detectAndPersist: wrong owner throws LEASE_FENCED', () => {
 
 test('detectAndPersist: wrong generation throws LEASE_FENCED', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-dt-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-28T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-28T00:00:00Z') });
   const { data } = readState(root, runId);
   const owner = data.session_chain.lease.owner_run_id;
   assert.throws(
@@ -215,7 +215,7 @@ test('detectAndPersist: wrong generation throws LEASE_FENCED', () => {
 
 test('detectAndPersist: success writes session_spawn and terminal-detected event atomically', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-dt-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-28T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-28T00:00:00Z') });
   const { data } = readState(root, runId);
   const owner = data.session_chain.lease.owner_run_id;
   const generation = data.session_chain.lease.generation;
@@ -237,7 +237,7 @@ test('detectAndPersist: success writes session_spawn and terminal-detected event
 
 test('detectAndPersist: re-detect overwrites session_spawn (idempotent)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-dt-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-28T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-28T00:00:00Z') });
   const { data } = readState(root, runId);
   const owner = data.session_chain.lease.owner_run_id;
   const generation = data.session_chain.lease.generation;
@@ -254,7 +254,7 @@ test('detectAndPersist: re-detect overwrites session_spawn (idempotent)', () => 
 
 test('detectAndPersist: works when lease.state === releasing (releasing-safe R11-HH)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-dt-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-28T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-28T00:00:00Z') });
   const { data } = readState(root, runId);
   const owner = data.session_chain.lease.owner_run_id;
   const generation = data.session_chain.lease.generation;
@@ -275,7 +275,7 @@ test('detectAndPersist: works when lease.state === releasing (releasing-safe R11
 // ── v1.6: detectAndPersist terminal 가드 (spec §2.3-4 / §4-5b) ───────────────
 test('detectAndPersist: terminal run throws RUN_TERMINAL (releasing-safe preserved)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-dt-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-07-09T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-07-09T00:00:00Z') });
   const { data } = readState(root, runId);
   const owner = data.session_chain.lease.owner_run_id;
   // terminal → 유효 fence여도 in-lock 가드가 거부 (외곽 requireLease 없이 lib 직접 — in-lock이 권위)

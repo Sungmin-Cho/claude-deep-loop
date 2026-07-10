@@ -41,7 +41,7 @@ test('tampered event breaks chain', () => {
 // so the stale anchor is preserved (reconcile can still detect the loss) rather than overwritten.
 test('appendAnchored fails closed on a truncated event log (no launder)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
   recordCost(root, runId, { turns: 1, tokens: 10 });
   recordCost(root, runId, { turns: 1, tokens: 10 });
   const anchorBefore = readState(root, runId).data.event_log_head;
@@ -59,7 +59,7 @@ import { writeState, patch } from '../scripts/lib/state.mjs';
 
 function seededRun() {
   const root = mkdtempSync(join(tmpdir(), 'dl-gw-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-07-09T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-07-09T00:00:00Z') });
   return { root, runId };
 }
 function makeTerminal(root, runId, status = 'completed') {

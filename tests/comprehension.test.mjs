@@ -18,7 +18,7 @@ function eventLog(root, runId) {
 
 function freshRun() {
   const root = mkdtempSync(join(tmpdir(), 'dl-comp-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
   const fence = { owner: runId, generation: 1, intent: 'business' };
   return { root, runId, fence };
 }
@@ -40,7 +40,7 @@ test('zero episodes → debt 0, not blocked', () => {
 
 test('ack is idempotent and validates episode existence', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-ack-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
   const fence = { owner: runId, generation: 1, intent: 'business' };
   const ep = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', expectedArtifacts: ['a'], fence });
   ack(root, runId, ep.id, { actor: 'human', confirm: true, env: ATTENDED, fence });
@@ -216,7 +216,7 @@ import { recordReviewed } from '../scripts/lib/comprehension.mjs';
 
 test('recordReviewed: terminal run throws RUN_TERMINAL, counters unchanged', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-comp-t-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-07-09T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-07-09T00:00:00Z') });
   const { data } = readState(root, runId);
   data.status = 'stopped';
   writeState(root, runId, data);

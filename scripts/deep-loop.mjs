@@ -121,7 +121,7 @@ const handlers = {
   validate: async (a) => {
     const f = parseFlags(a);
     const errors = [];
-    const sample = buildInitialLoop({ goal: 'self-test', protocol: 'standalone', recipe: { id: 'r', name: 'r', reason: '' }, runId: 'SELFTEST00000000000000000T', now: new Date() });
+    const sample = buildInitialLoop({ runtime: 'claude', goal: 'self-test', protocol: 'standalone', recipe: { id: 'r', name: 'r', reason: '' }, runId: 'SELFTEST00000000000000000T', now: new Date() });
     const sv = validateLoop(sample);
     if (!sv.ok) errors.push(`builder self-test: ${sv.errors.join('; ')}`);
     const root = rootOf(f);
@@ -158,14 +158,16 @@ const handlers = {
   'init-run': async (a) => {
     const f = parseFlags(a);
     const root = rootOf(f);
+    const runtime = reqStr(f, 'runtime');
+    if (!runtime) { error('USAGE: --runtime <claude|codex> is required'); return 2; }
     if (f.model === true || f.effort === true) { error('USAGE: --model/--effort require a value'); return 2; }
     const model = f.model !== undefined ? String(f.model) : null;
     const effort = f.effort !== undefined ? String(f.effort) : null;
     try {
-      const { runId } = initRun(root, { goal: f.goal, protocol: f.protocol, recipe: f.recipe, detected: detectPlugins(root), review: f.review ? JSON.parse(f.review) : undefined, model, effort });
+      const { runId } = initRun(root, { runtime, goal: f.goal, protocol: f.protocol, recipe: f.recipe, detected: detectPlugins(root), review: f.review ? JSON.parse(f.review) : undefined, model, effort });
       json({ run_id: runId }); return 0;
     } catch (e) {
-      error(String(e?.message || e)); return 1;   // INVALID_MODEL / INVALID_EFFORT → exit 1 (fail-closed)
+      error(String(e?.message || e)); return 1;   // INVALID_RUNTIME / INVALID_MODEL / INVALID_EFFORT → exit 1 (fail-closed)
     }
   },
   'next-action': async (a) => { const f = parseFlags(a); const root = rootOf(f); const { data } = readState(root, runIdOf(root, f)); json(nextAction(data, { now: parseNow(f) })); return 0; },

@@ -37,7 +37,7 @@ const noSleep = () => {};
 /** Seed a run. initRun with no-signal env so launcher is always 'none'. */
 function seed(mutate) {
   const root = mkdtempSync(join(tmpdir(), 'dl-int-'));
-  const { runId } = initRun(root, { goal: 'g', now: NOW0, env: {}, platform: 'linux', run: noOpRun });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: NOW0, env: {}, platform: 'linux', run: noOpRun });
   if (mutate) {
     const { data } = readState(root, runId);
     mutate(data);

@@ -25,7 +25,7 @@ const NOW1 = Date.parse('2026-06-24T00:01:00Z');
 // childRunId is the reserved child run id (from lease.handoff_child_run_id).
 function seedRunWithHandoff() {
   const root = mkdtempSync(join(tmpdir(), 'dl-auto-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
   const em = emitHandoff(root, runId, {
     reason: 'pre-compact', trigger: 'pre-compact', headless: true,
     expect: { owner: runId, generation: 1 },
@@ -43,7 +43,7 @@ function seedRunWithHandoff() {
 
 function seedRun() {
   const root = mkdtempSync(join(tmpdir(), 'dl-auto-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
   return { root, runId };
 }
 
@@ -106,7 +106,7 @@ test('driveHeadless fails closed when usage unmeasurable/timeout', () => {
 // gate-blocked: budget.total=0 forces budget gate block; spawnFn must NOT be called; status=paused.
 test('driveHeadless returns gate-blocked and pauses run when respawnGate blocks', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-auto-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
   // Emit handoff first so there is a pending handoff to attempt.
   const em = emitHandoff(root, runId, {
     reason: 'pre-compact', trigger: 'pre-compact', headless: true,
@@ -210,7 +210,7 @@ test('driveHeadless fails closed (pauses) when measurement fails after the child
 
 test('driveHeadless skips handoff with resume_policy=human (spawnFn must NOT be called)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-auto-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
   const em = emitHandoff(root, runId, {
     reason: 'pre-compact', trigger: 'pre-compact', headless: true,
     expect: { owner: runId, generation: 1 },
@@ -232,7 +232,7 @@ test('driveHeadless skips handoff with resume_policy=human (spawnFn must NOT be 
 
 test('driveHeadless skips visible-intended handoff (resume_policy null — not-headless-intended)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-auto-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
   const em = emitHandoff(root, runId, {
     reason: 'pre-compact', trigger: 'pre-compact', headless: true,
     expect: { owner: runId, generation: 1 },
@@ -251,7 +251,7 @@ test('driveHeadless skips visible-intended handoff (resume_policy null — not-h
 
 test('driveHeadless resumes headless-intended handoff (resume_policy=headless)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-auto-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
   const em = emitHandoff(root, runId, {
     reason: 'pre-compact', trigger: 'pre-compact', headless: true,
     expect: { owner: runId, generation: 1 },
@@ -302,7 +302,7 @@ test('github-actions template is a scheduled workflow calling the driver', () =>
 // Fix: symmetric derivation (spawn_style + isHeadlessInvocation), same as precompact-handoff.mjs.
 test('handoff emit derives resume_policy=headless from spawn_style without --headless flag (CLI regression)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-auto-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
   // Seed spawn_style='headless' so autonomous driver knows this run is headless.
   const { data } = readState(root, runId);
   data.autonomy.spawn_style = 'headless';
@@ -420,7 +420,7 @@ test('driveHeadless: resumed with cost when child acquires lease (acquisition pr
 // Returns { root, runId, child1RunId, child2RunId }.
 function seedRun2ndGenHandoff() {
   const root = mkdtempSync(join(tmpdir(), 'dl-auto-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
 
   // 1st handoff: top-level runId emits, child1 is reserved then acquired.
   const em1 = emitHandoff(root, runId, {

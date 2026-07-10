@@ -13,7 +13,7 @@ import { finishProofState } from '../scripts/lib/finish.mjs';
 import { computeDebt, ack } from '../scripts/lib/comprehension.mjs';
 
 function loop(over = {}) {
-  const l = buildInitialLoop({ goal: 'g', protocol: 'deep-work', recipe: { id: 'r', name: 'r', reason: '' }, runId: 'R', now: new Date('2026-06-24T00:00:00Z') });
+  const l = buildInitialLoop({ runtime: 'claude', goal: 'g', protocol: 'deep-work', recipe: { id: 'r', name: 'r', reason: '' }, runId: 'R', now: new Date('2026-06-24T00:00:00Z') });
   return Object.assign(l, over);
 }
 
@@ -217,7 +217,7 @@ test('comprehension-debt blocks discover but not the fix flow', () => {
 // gate stays blocked until a real human ack releases it. Setup: maker 'done' so dispatchReview binds the checker.
 test('#1: recordReviewOutcome(APPROVE) marks the maker agent-reviewed; comprehension gate stays until human ack', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
-  const { runId } = initRun(root, { goal: 'g', detected: { 'deep-review': true }, now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', detected: { 'deep-review': true }, now: new Date('2026-06-24T00:00:00Z') });
   const f = { owner: runId, generation: 1, intent: 'business' };
   const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: '.claude/worktrees/w', fence: f }).id;
   // Maker must be 'done' so dispatchReview binds the checker to it (target_maker set).
@@ -246,7 +246,7 @@ test('#1: recordReviewOutcome(APPROVE) marks the maker agent-reviewed; comprehen
 // rejected checker reviews no specific maker and must NOT route to fix (its settlement is the finish gate's job).
 test('dispatchReview → recordReviewOutcome(RC) → nextAction returns fix_episode (end-to-end)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
-  const { runId } = initRun(root, { goal: 'g', detected: { 'deep-review': true }, now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', detected: { 'deep-review': true }, now: new Date('2026-06-24T00:00:00Z') });
   const f = { owner: runId, generation: 1, intent: 'business' };
   const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: '.claude/worktrees/w', fence: f }).id;
   // A done maker so dispatchReview binds the checker to it (target_maker set) — the realistic review flow.

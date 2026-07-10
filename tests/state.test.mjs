@@ -132,7 +132,7 @@ test('runDir rejects unsafe run-id path segments', () => {
 
 test('patch enforces fence inside the lock', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-pf-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
   patch(root, runId, 'discovered_items', ['a'], { fence: { owner: runId, generation: 1, intent: 'business' } });
   assert.deepEqual(readState(root, runId).data.discovered_items, ['a']);
   assert.throws(() => patch(root, runId, 'discovered_items', ['b'], { fence: { owner: runId, generation: 9, intent: 'business' } }), /LEASE_FENCED/);

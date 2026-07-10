@@ -34,11 +34,19 @@ export function validate(loopJson, schema = loadSchema()) {
     const v = loopJson.budget[k];
     if (v !== undefined && typeof v !== 'number') errors.push(`budget.${k} must be number`);
   }
-  // WS1: autonomy.session_model is a free string (effort is enforced by the enums loop above).
-  // schema.properties is not read by this validator, so mirror the budget-field hardcoded pattern.
+  // schema.properties is not read by this validator, so custom optional-field contracts live here.
+  // session_effort/session_runtime/runtime_source enum membership is enforced by the loop above.
   if (loopJson.autonomy) {
     const sm = loopJson.autonomy.session_model;
     if (sm !== undefined && typeof sm !== 'string') errors.push('autonomy.session_model must be string');
+    const runtime = loopJson.autonomy.session_runtime;
+    const source = loopJson.autonomy.runtime_source;
+    if (runtime === undefined && source !== undefined) {
+      errors.push('autonomy.runtime_source requires autonomy.session_runtime');
+    }
+    if (runtime !== undefined && source !== 'skill-asserted') {
+      errors.push('autonomy.session_runtime requires autonomy.runtime_source skill-asserted');
+    }
   }
   // episode/workstream item status는 (skill ∪ kernel) 도메인 안에 있어야 함
   const epAllowed = [...(schema.episode_status?.skill || []), ...(schema.episode_status?.kernel || [])];

@@ -33,7 +33,7 @@ function boundChecker(root, runId, f, point) {
 
 function seed(detected = { 'deep-review': true }) {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
-  const { runId } = initRun(root, { goal: 'g', detected, now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', detected, now: new Date('2026-06-24T00:00:00Z') });
   return { root, runId };
 }
 
@@ -282,7 +282,7 @@ test('recordReviewOutcome throws REVIEW_UNBOUND_CHECKER on a checker with no tar
 test('recordReviewOutcome: require_human_ack=true → episodes_human_reviewed unchanged after approve', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-ack-'));
   const reviewCfg = { points: ['implementation'], reviewer: 'deep-review-loop', mode: 'cross-model', flags: [], converge: true, max_review_rounds: 5, require_human_ack: true };
-  const { runId } = initRun(root, { goal: 'g', review: reviewCfg, detected: { 'deep-review': true }, now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', review: reviewCfg, detected: { 'deep-review': true }, now: new Date('2026-06-24T00:00:00Z') });
   const f = fence(runId);
   const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: '.claude/worktrees/w', fence: f }).id;
   doneMaker(root, runId, ws, 'implementation', f);   // done so the checker binds; require_human_ack still gates comprehension

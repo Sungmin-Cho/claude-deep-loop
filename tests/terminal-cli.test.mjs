@@ -12,7 +12,7 @@ const CLI = join(process.cwd(), 'scripts', 'deep-loop.mjs');
 
 function seedTerminal(status, mutate) {
   const root = mkdtempSync(join(tmpdir(), 'dl-term-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-07-09T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-07-09T00:00:00Z') });
   const { data } = readState(root, runId);
   data.status = status;
   if (mutate) mutate(data);
@@ -77,7 +77,7 @@ test('CLI lease acquire: terminal → exit 3 run-terminal; non-terminal generati
   assert.equal(JSON.parse(r.stdout).reason, 'run-terminal');
   // 비terminal + stale generation → 기존 계약(exit 0 + JSON)
   const fresh = mkdtempSync(join(tmpdir(), 'dl-term-nt-'));
-  const { runId: r2 } = initRun(fresh, { goal: 'g', now: new Date('2026-07-09T00:00:00Z') });
+  const { runId: r2 } = initRun(fresh, { runtime: 'claude', goal: 'g', now: new Date('2026-07-09T00:00:00Z') });
   const r2res = run(fresh, ['lease', 'acquire', '--owner', 'other-run', '--generation', '9']);
   assert.equal(r2res.status, 0, r2res.stdout + r2res.stderr);
   assert.equal(JSON.parse(r2res.stdout).reason, 'generation-mismatch');

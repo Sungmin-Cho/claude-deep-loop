@@ -11,7 +11,7 @@ function run(root, args) { return execFileSync('node', [CLI, ...args, '--project
 function runFail(root, args) { try { run(root, args); return 0; } catch (e) { return e.status; } }
 function seed() {
   const root = mkdtempSync(join(tmpdir(), 'dl-sf-'));
-  const { runId } = initRun(root, { goal: 'g', protocol: 'deep-work', now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', protocol: 'deep-work', now: new Date('2026-06-24T00:00:00Z') });
   return { root, runId };
 }
 
