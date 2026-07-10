@@ -173,11 +173,21 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
     if (!contractOk) {
       throw new Error(`REVIEW_CONTRACT_MISSING: hill-climb run requires ${wsRec.worktree}/.deep-review/contracts/HILLCLIMB-001.yaml byte-identical to the tracked source (skills/deep-loop-workflow/references/contracts/HILLCLIMB-001.yaml) with status: active — materialize (그대로 복사) before dispatching review`);
     }
-    // ④ criterion (a)의 결정론 근거 — 커널-검증된 최신 insights(경로·emit run·후보)를 디스크립터에 실어
+    // ④ criterion (a)의 결정론 근거 — 커널-검증된 최신 insights를 디스크립터 + checker request.md에 실어
     //    checker가 파일 파싱 없이 인용 지표를 대조할 수 있게 한다. 없으면 null(인용할 검증 지표가 없다는
-    //    사실 자체가 checker의 판정 입력).
+    //    사실 자체가 checker의 판정 입력). emit_ulid는 artifact 파일명의 emit ULID(envelope.run_id는
+    //    producer run — 별도 필드), sha256은 anchored 이벤트 값(codex r2). 바인딩: dispatch 시점 latest가
+    //    maker가 인용한 emit과 다를 수 있다 — checker는 evidence의 sha256/emit_ulid를 maker 인용
+    //    (ledger 항목의 insights_ref/insights_sha256, design/plan은 문서의 인용)과 대조하고 mismatch를
+    //    criterion (a) 위반으로 판정한다(v1 바인딩 메커니즘 — 커널은 T1 ledger를 파싱하지 않는다).
     const li = latestInsights(root);
-    evidence = li ? { insights_path: li.path, emit_run_id: li.envelope?.envelope?.run_id ?? null, candidates: li.envelope?.payload?.candidates ?? [] } : null;
+    evidence = li ? {
+      insights_path: li.path,
+      emit_ulid: li.path.replace(/^.*\//, '').replace(/-insights\.json$/, ''),
+      producer_run_id: li.envelope?.envelope?.run_id ?? null,
+      sha256: li.sha256 ?? null,
+      candidates: li.envelope?.payload?.candidates ?? [],
+    } : null;
   }
   const skillByReviewer = {
     'deep-review-loop': 'deep-review:deep-review-loop',
@@ -190,7 +200,7 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
   // reviewer로 episode를 만들지 않는다.
   const skill = skillByReviewer[reviewer];
   if (!skill) throw new Error(`REVIEWER_UNRECOGNIZED: '${reviewer}' resolved but has no dispatch mapping — KNOWN_REVIEWERS and skillByReviewer are out of sync`);
-  const { id } = newEpisode(root, runId, { plugin: reviewer === 'deep-review-loop' ? 'deep-review' : reviewer, role: 'checker', kind: `${point}-review`, point, workstream: workstreamId, targetMaker, fence });
+  const { id } = newEpisode(root, runId, { plugin: reviewer === 'deep-review-loop' ? 'deep-review' : reviewer, role: 'checker', kind: `${point}-review`, point, workstream: workstreamId, targetMaker, evidence, fence });
   const descriptor = { kind: reviewer === 'standalone' ? 'inline' : 'invoke_skill', skill, args: flags.join(' '), mode, review_point: point, workstream: workstreamId, ...(evidence !== undefined ? { evidence } : {}) };
   return { checkerEpisodeId: id, reviewer, descriptor };
 }

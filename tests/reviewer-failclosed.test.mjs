@@ -157,6 +157,20 @@ test('P2: hill-climb run dispatch succeeds after contract is materialized into t
   // criterion (a) 결정론 근거 — hill-climb 디스크립터는 evidence 키를 항상 실어준다(검증 insights 부재 시 null)
   assert.ok('evidence' in r.descriptor, 'hill-climb descriptor carries kernel-verified insights evidence');
   assert.equal(r.descriptor.evidence, null, 'fresh test run has no verified insights — evidence is null');
+  // codex r2: evidence는 디스크립터(휘발)만이 아니라 checker request.md에 durable 기록되어야 한다
+  const ep = readState(root, runId).data.episodes.find(e => e.id === r.checkerEpisodeId);
+  const req = readFileSync(ep.request_path, 'utf8');
+  assert.match(req, /## Evidence \(kernel-verified insights\)/);
+  assert.match(req, /```json\nnull\n```/);
+});
+
+test('P2: non-hill-climb checker request has no evidence section (undefined omits it)', () => {
+  const { root, runId, f } = seedRun({ reviewer: 'deep-review-loop' });
+  const ws = doneMakerOn(root, runId, f);
+  const r = dispatchReview(root, runId, { point: 'design', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
+  assert.ok(!('evidence' in r.descriptor), 'non-hill-climb descriptor has no evidence key');
+  const ep = readState(root, runId).data.episodes.find(e => e.id === r.checkerEpisodeId);
+  assert.doesNotMatch(readFileSync(ep.request_path, 'utf8'), /## Evidence/);
 });
 
 test('P2: project-root-only contract copy does NOT satisfy the worktree-local gate', () => {

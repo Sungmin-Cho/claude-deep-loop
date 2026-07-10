@@ -100,11 +100,21 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" episode record --id <episode_
 
 ### dispatch_checker
 
+**hill-climb recipe run(`recipe.id === "harness-hill-climb"`)이면 dispatch 전에 checker 계약을 materialize한다** (P2 — 커널이 fail-closed로 강제; 전체 규약은 `Read("../deep-loop-workflow/references/hill-climbing.md")` §3.4):
+
+```bash
+mkdir -p "<ORIG_ROOT>/<workstream.worktree>/.deep-review/contracts"
+cp "${CLAUDE_PLUGIN_ROOT}/skills/deep-loop-workflow/references/contracts/HILLCLIMB-001.yaml" \
+   "<ORIG_ROOT>/<workstream.worktree>/.deep-review/contracts/HILLCLIMB-001.yaml"
+```
+
+tracked 소스를 **그대로 복사**한다(byte-identical — 커널이 대조; 수정본은 `REVIEW_CONTRACT_MISSING`으로 거부). 계약-비소비 reviewer(subagent/codex-cross/standalone)나 `--contract` 플래그 부재는 `REVIEW_CONTRACT_UNENFORCEABLE` — run의 review 설정을 사람과 함께 재구성해야 한다.
+
 ```
 node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" review dispatch --point <review_point> --workstream <workstream_id> --owner <run_id> --generation <n>
 ```
 
-checker 스킬 invoke 후 verdict 기록. **APPROVE/CONCERN(통과)은 checker가 실제로 작성한 리뷰 리포트 파일을 `--report`로 첨부해야 한다 — 리뷰 대상 workstream의 worktree(`.claude/worktrees/<slug>/…`) 하위 경로**여야 하며(무관한 root 파일 재사용 차단), 없거나 밖이면 `REVIEW_NO_EVIDENCE`(exit 1). REQUEST_CHANGES는 `--report` 없이 통과(경량 reject 경로):
+checker 스킬 invoke 후 verdict 기록. **hill-climb run에서는 dispatch 응답의 `descriptor.evidence`(커널-검증 insights — 경로·emit_ulid·sha256·후보; checker episode의 `request.md`에도 동일 내용이 durable 기록됨)를 checker 리뷰 요청 본문에 그대로 포함한다** — checker는 이것으로 계약 criterion (a)의 인용 지표를 대조하며, maker 인용(ledger `insights_ref`/`insights_sha256`)과의 mismatch는 (a) 위반이다. **APPROVE/CONCERN(통과)은 checker가 실제로 작성한 리뷰 리포트 파일을 `--report`로 첨부해야 한다 — 리뷰 대상 workstream의 worktree(`.claude/worktrees/<slug>/…`) 하위 경로**여야 하며(무관한 root 파일 재사용 차단), 없거나 밖이면 `REVIEW_NO_EVIDENCE`(exit 1). REQUEST_CHANGES는 `--report` 없이 통과(경량 reject 경로):
 ```
 node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" review record --episode <checker_episode_id> --workstream <workstream_id> --point <review_point> --verdict <APPROVE|REQUEST_CHANGES|CONCERN> --report <review-report-path> --owner <run_id> --generation <n>
 ```
