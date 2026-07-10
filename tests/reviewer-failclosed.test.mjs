@@ -65,6 +65,15 @@ test('P1: deep-review alias canonicalizes to deep-review-loop (no inline-review 
   assert.equal(r.descriptor.skill, 'deep-review:deep-review-loop');
 });
 
+// ── P1 ②-b 네임스페이스 canonicalize는 문서화된 정확히 한 형식만(codex r1) — 임의 `deep-review:*`
+//    prefix-strip은 `deep-review:standalone` 류를 더 약한 checker로 통과시키는 또 다른 침묵 경로 ──
+test('P1: other deep-review-namespaced ids are rejected, not prefix-stripped', () => {
+  for (const bad of ['deep-review:standalone', 'deep-review:subagent-checker', 'deep-review:codex-cross']) {
+    const { root, runId } = seedRun({ reviewer: bad });
+    assert.throws(() => resolveReviewer(readState(root, runId).data, { 'deep-review': true }), /REVIEWER_UNRECOGNIZED/, bad);
+  }
+});
+
 // ── P1 ③ 미인식 reviewer — inline-review fallback 대신 fail-closed, checker episode 미생성 ──
 test('P1: unrecognized reviewer fails closed and creates no checker episode', () => {
   const { root, runId, f } = seedRun({ reviewer: 'totally-unknown-reviewer' });
@@ -132,13 +141,67 @@ test('P2: hill-climb run dispatch fails closed without materialized contract (no
   assert.equal(episodeCount(root, runId), before, 'no checker episode without contract');
 });
 
-test('P2: hill-climb run dispatch succeeds after contract is materialized from tracked source', () => {
+// 게이트 위치 = 소비처(codex r1) — checker는 worktree cwd에서 deep-review를 실행하므로 계약은
+// worktree-local `.deep-review/contracts/`에 있어야 한다. project-root 사본만으로는 통과 불가.
+function materializeContract(root, worktreeRel) {
+  mkdirSync(join(root, worktreeRel, '.deep-review', 'contracts'), { recursive: true });
+  copyFileSync(TRACKED_CONTRACT, join(root, worktreeRel, '.deep-review', 'contracts', 'HILLCLIMB-001.yaml'));
+}
+
+test('P2: hill-climb run dispatch succeeds after contract is materialized into the workstream worktree', () => {
+  const { root, runId, f } = seedRun({ reviewer: 'deep-review-loop', flags: ['--contract', '--codex-only'], recipe: 'harness-hill-climb' });
+  const ws = doneMakerOn(root, runId, f);
+  materializeContract(root, '.claude/worktrees/w-design');
+  const r = dispatchReview(root, runId, { point: 'design', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
+  assert.equal(r.descriptor.skill, 'deep-review:deep-review-loop');
+  // criterion (a) 결정론 근거 — hill-climb 디스크립터는 evidence 키를 항상 실어준다(검증 insights 부재 시 null)
+  assert.ok('evidence' in r.descriptor, 'hill-climb descriptor carries kernel-verified insights evidence');
+  assert.equal(r.descriptor.evidence, null, 'fresh test run has no verified insights — evidence is null');
+});
+
+test('P2: project-root-only contract copy does NOT satisfy the worktree-local gate', () => {
   const { root, runId, f } = seedRun({ reviewer: 'deep-review-loop', flags: ['--contract', '--codex-only'], recipe: 'harness-hill-climb' });
   const ws = doneMakerOn(root, runId, f);
   mkdirSync(join(root, '.deep-review', 'contracts'), { recursive: true });
   copyFileSync(TRACKED_CONTRACT, join(root, '.deep-review', 'contracts', 'HILLCLIMB-001.yaml'));
-  const r = dispatchReview(root, runId, { point: 'design', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
-  assert.equal(r.descriptor.skill, 'deep-review:deep-review-loop');
+  assert.throws(
+    () => dispatchReview(root, runId, { point: 'design', workstreamId: ws, detected: { 'deep-review': true }, fence: f }),
+    /REVIEW_CONTRACT_MISSING/);
+});
+
+// 내용 검증(codex r1) — `status: active` 문자열만 있는 stale/변조 사본은 tracked 소스와 byte-identical이
+// 아니므로 거부된다 (빈 criteria 사본이면 deep-review가 계약 검증을 skip — 무계약 APPROVE 재개방 경로).
+test('P2: tampered materialized contract (status active but altered) fails closed', () => {
+  const { root, runId, f } = seedRun({ reviewer: 'deep-review-loop', flags: ['--contract', '--codex-only'], recipe: 'harness-hill-climb' });
+  const ws = doneMakerOn(root, runId, f);
+  const dir = join(root, '.claude/worktrees/w-design', '.deep-review', 'contracts');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'HILLCLIMB-001.yaml'), 'slice: HILLCLIMB-001\nstatus: active\ncriteria: []\n');
+  assert.throws(
+    () => dispatchReview(root, runId, { point: 'design', workstreamId: ws, detected: { 'deep-review': true }, fence: f }),
+    /REVIEW_CONTRACT_MISSING/);
+});
+
+// 계약-소비 가능 reviewer 강제(codex r1) — subagent/codex-cross/standalone은 HILLCLIMB-001.yaml을 읽지
+// 않으므로 계약 파일이 있어도 무계약 APPROVE가 된다. --contract 플래그 부재도 동일(첫 시리즈 재-init #2 실측).
+test('P2: hill-climb run with a non-contract-capable reviewer fails closed (no episode)', () => {
+  const { root, runId, f } = seedRun({ reviewer: 'subagent-checker', flags: [], recipe: 'harness-hill-climb', detected: { codex: false } });
+  const ws = doneMakerOn(root, runId, f);
+  materializeContract(root, '.claude/worktrees/w-design');
+  const before = episodeCount(root, runId);
+  assert.throws(
+    () => dispatchReview(root, runId, { point: 'design', workstreamId: ws, detected: { codex: false }, fence: f }),
+    /REVIEW_CONTRACT_UNENFORCEABLE/);
+  assert.equal(episodeCount(root, runId), before, 'no checker episode for a contract-incapable reviewer');
+});
+
+test('P2: hill-climb run without the --contract flag fails closed', () => {
+  const { root, runId, f } = seedRun({ reviewer: 'deep-review-loop', flags: ['--codex-only'], recipe: 'harness-hill-climb' });
+  const ws = doneMakerOn(root, runId, f);
+  materializeContract(root, '.claude/worktrees/w-design');
+  assert.throws(
+    () => dispatchReview(root, runId, { point: 'design', workstreamId: ws, detected: { 'deep-review': true }, fence: f }),
+    /REVIEW_CONTRACT_UNENFORCEABLE/);
 });
 
 // ── P2 스코프 한정 — hill-climb이 아닌 recipe는 계약 게이트 비대상(무회귀) ──

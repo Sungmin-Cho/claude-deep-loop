@@ -102,7 +102,11 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" episode new \
 
 ### 3.4 checker 계약 (deep-review `--contract` + 본 문서) — 하나라도 실패 시 REQUEST_CHANGES
 
-**계약 소스는 tracked 파일이다:** `skills/deep-loop-workflow/references/contracts/HILLCLIMB-001.yaml` (deep-review contract-schema 파리티 — `slice`/`title`/`status`/`criteria`). `.deep-review/`는 gitignored라 fresh checkout에는 계약이 없다 — hill-climb run의 리뷰 dispatch 전에 tracked 소스를 `.deep-review/contracts/HILLCLIMB-001.yaml`로 **그대로 복사(materialize)** 한다. 커널 `dispatchReview`는 hill-climb recipe run에서 이 파일이 없거나 `status: active`가 아니면 `REVIEW_CONTRACT_MISSING`으로 fail-closed한다(checker episode 미생성) — 무-contract skip으로 계약 미강제 APPROVE가 생기는 경로를 봉합(P2). run-특정 값(인용 emit id·sha256·지표)은 계약 파일이 아니라 checker 리뷰 요청 본문으로 전달한다 — 계약 파일은 run-불변.
+**계약 소스는 tracked 파일이다:** `skills/deep-loop-workflow/references/contracts/HILLCLIMB-001.yaml` (deep-review contract-schema 파리티 — `slice`/`title`/`status`/`criteria`). `.deep-review/`는 gitignored라 fresh checkout에는 계약이 없다 — hill-climb run의 리뷰 dispatch 전에 tracked 소스를 **workstream worktree의** `<worktree>/.deep-review/contracts/HILLCLIMB-001.yaml`로 **그대로 복사(materialize)** 한다(checker는 worktree를 cwd로 deep-review를 실행하고 deep-review는 cwd의 `.deep-review/`를 읽는다 — 게이트 위치 = 소비처). 커널 `dispatchReview`는 hill-climb recipe run에서 다음을 전부 fail-closed로 강제한다(모두 checker episode 생성 전 throw):
+
+- reviewer가 `deep-review-loop`이고 flags에 `--contract`가 있어야 한다 — 아니면 `REVIEW_CONTRACT_UNENFORCEABLE`(subagent/codex-cross/standalone은 계약 파일을 읽지 않으므로 계약 미강제 APPROVE가 된다).
+- worktree-local 계약 사본이 존재하고 tracked 소스와 **byte-identical**이어야 한다 — 아니면 `REVIEW_CONTRACT_MISSING`(`status: active` 문자열만으론 stale/변조 사본 — 예: criteria 비움 — 이 통과한다; 계약은 run-불변이므로 "그대로 복사"가 곧 판정 기준).
+- 통과 시 디스크립터에 `evidence`(커널-검증 `latestInsights`의 경로·emit run id·후보 — 부재 시 `null`)를 실어 checker가 파일 파싱 없이 criterion (a)의 인용 지표를 대조하게 한다. run-특정 값은 계약 파일이 아니라 이 evidence + 리뷰 요청 본문으로 전달한다 — 계약 파일은 run-불변.
 
 **phase 적용성:** (a)(b)(c)(e)는 모든 review point(design/plan/implementation)에 적용하되 design/plan에서는 문서 수준으로 적용한다. **(d)(f)는 implementation checker 전용**이다 — diff/ledger가 존재하지 않는 design/plan phase에 일괄 적용하면 구조적으로 승인 불가가 된다(첫 실사용 run r5 W 실측).
 

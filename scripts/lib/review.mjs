@@ -1,5 +1,7 @@
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { latestInsights } from './insights.mjs';
 import { readState } from './state.mjs';
 import { appendAnchored } from './integrity.mjs';
 import { newEpisode } from './episode.mjs';
@@ -68,10 +70,17 @@ export function rejectionResolved(loop, e) {
 // (subagent-checker + codex 감지 → codex-cross)뿐이다.
 const KNOWN_REVIEWERS = ['deep-review-loop', 'codex-cross', 'subagent-checker', 'standalone'];
 
+// P2: hill-climb checker 계약의 tracked 소스 — 커널과 함께 배포되는 파일이므로 install 레이아웃
+// (repo checkout / plugin cache) 어디서든 kernel 상대 경로가 결정론적으로 해석된다.
+const TRACKED_CONTRACT_PATH = fileURLToPath(new URL('../../skills/deep-loop-workflow/references/contracts/HILLCLIMB-001.yaml', import.meta.url));
+
 export function resolveReviewer(loop, detected = {}) {
   const r = loop.review || {};
   let reviewer = r.reviewer || 'subagent-checker';
-  if (typeof reviewer === 'string' && reviewer.startsWith('deep-review:')) reviewer = reviewer.slice('deep-review:'.length);
+  // 네임스페이스 canonicalize는 문서화된 정확히 한 형식만 — 임의 `deep-review:*` prefix-strip은
+  // `deep-review:standalone` 류를 KNOWN으로 통과시켜 더 약한 checker로 새는 또 다른 침묵 경로가
+  // 된다(codex r1). 그 외 네임스페이스 값은 아래 !KNOWN 분기에서 fail-closed.
+  if (reviewer === 'deep-review:deep-review-loop') reviewer = 'deep-review-loop';
   if (reviewer === 'deep-review' || reviewer === 'deep-review-loop') {
     if (!pluginPresent(detected, 'deep-review')) {
       throw new Error(`REVIEWER_DEPENDENCY_MISSING: reviewer '${r.reviewer}' requires the deep-review plugin (silent downgrade removed — install deep-review or re-init with another reviewer)`);
@@ -134,18 +143,41 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
   if (!targetMakerEp) throw new Error('REVIEW_NO_ELIGIBLE_MAKER: no done maker to review for ' + point + '/' + workstreamId);
   const targetMaker = targetMakerEp.id;
   const { reviewer, flags, mode } = resolveReviewer(data, detected);
-  // P2 (hillclimb-ledger 2026-07-10, release-blocking): hill-climb run은 checker 계약(HILLCLIMB-001) 없이 checker를
-  // 만들 수 없다. `.deep-review/`는 gitignored라 fresh checkout에는 계약이 없고, deep-review는 무-contract일 때
-  // 계약 미강제로 리뷰를 진행한다 — 그 APPROVE는 hill-climbing 방벽 ③이 요구하는 계약-강제 리뷰가 아니다.
-  // tracked 소스(skills/deep-loop-workflow/references/contracts/HILLCLIMB-001.yaml)를 materialize한 뒤 dispatch해야
-  // 한다. preCheck 순서상 newEpisode 전에 throw — checker episode가 생성되지 않는다.
+  // P2 (hillclimb-ledger 2026-07-10, release-blocking): hill-climb run은 checker 계약(HILLCLIMB-001)이 실제로
+  // 강제되는 리뷰만 만들 수 있다. `.deep-review/`는 gitignored라 fresh checkout에는 계약이 없고, deep-review는
+  // 무-contract일 때 계약 미강제로 리뷰를 진행한다 — 그 APPROVE는 hill-climbing 방벽 ③이 요구하는 계약-강제
+  // 리뷰가 아니다. preCheck 순서상 전부 newEpisode 전에 throw — checker episode가 생성되지 않는다. (codex r1)
+  let evidence;
   if (data.recipe?.id === 'harness-hill-climb') {
-    const contractPath = resolve(root, '.deep-review', 'contracts', 'HILLCLIMB-001.yaml');
-    let active = false;
-    if (existsSync(contractPath)) {
-      try { active = /^status:\s*active\s*$/m.test(readFileSync(contractPath, 'utf8')); } catch { active = false; }
+    // ① 계약을 소비할 수 있는 reviewer만 — subagent/codex-cross/standalone은 HILLCLIMB-001.yaml을 읽지
+    //    않으므로 계약 파일이 존재해도 무계약 APPROVE가 된다. --contract 플래그 부재는 첫 실사용 시리즈의
+    //    재-init #2가 실측한 동일 결함.
+    if (reviewer !== 'deep-review-loop' || !flags.includes('--contract')) {
+      throw new Error(`REVIEW_CONTRACT_UNENFORCEABLE: hill-climb run requires reviewer 'deep-review-loop' with the --contract flag (got '${reviewer}', flags [${flags.join(', ')}]) — re-init the run with a contract-capable review config`);
     }
-    if (!active) throw new Error('REVIEW_CONTRACT_MISSING: hill-climb run requires an active .deep-review/contracts/HILLCLIMB-001.yaml — materialize it from skills/deep-loop-workflow/references/contracts/HILLCLIMB-001.yaml before dispatching review');
+    // ② 게이트 위치 = 소비처. checker는 workstream worktree를 cwd로 deep-review를 실행하고 deep-review는
+    //    cwd의 `.deep-review/contracts/`를 읽는다 — project-root의 사본을 게이트하면 "게이트는 통과했는데
+    //    checker는 계약을 못 보는" 창이 생긴다.
+    // ③ 내용 검증 = tracked 소스와 byte-identical. `status: active` 문자열 매칭만으로는 stale/변조된 사본
+    //    (예: criteria 비움 — deep-review는 빈 criteria면 계약 검증을 skip)이 통과한다. 계약은 run-불변이므로
+    //    "그대로 복사"가 곧 판정 기준이다.
+    const wsRec = data.workstreams.find(w => w.id === workstreamId);
+    const contractPath = resolve(root, wsRec.worktree, '.deep-review', 'contracts', 'HILLCLIMB-001.yaml');
+    let contractOk = false;
+    try {
+      const tracked = readFileSync(TRACKED_CONTRACT_PATH, 'utf8');
+      contractOk = readFileSync(contractPath, 'utf8') === tracked
+        && /^slice:\s*HILLCLIMB-001\s*$/m.test(tracked) && /^status:\s*active\s*$/m.test(tracked)
+        && /^criteria:/m.test(tracked) && /^\s*-\s+/m.test(tracked);
+    } catch { contractOk = false; }
+    if (!contractOk) {
+      throw new Error(`REVIEW_CONTRACT_MISSING: hill-climb run requires ${wsRec.worktree}/.deep-review/contracts/HILLCLIMB-001.yaml byte-identical to the tracked source (skills/deep-loop-workflow/references/contracts/HILLCLIMB-001.yaml) with status: active — materialize (그대로 복사) before dispatching review`);
+    }
+    // ④ criterion (a)의 결정론 근거 — 커널-검증된 최신 insights(경로·emit run·후보)를 디스크립터에 실어
+    //    checker가 파일 파싱 없이 인용 지표를 대조할 수 있게 한다. 없으면 null(인용할 검증 지표가 없다는
+    //    사실 자체가 checker의 판정 입력).
+    const li = latestInsights(root);
+    evidence = li ? { insights_path: li.path, emit_run_id: li.envelope?.envelope?.run_id ?? null, candidates: li.envelope?.payload?.candidates ?? [] } : null;
   }
   const skillByReviewer = {
     'deep-review-loop': 'deep-review:deep-review-loop',
@@ -159,7 +191,7 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
   const skill = skillByReviewer[reviewer];
   if (!skill) throw new Error(`REVIEWER_UNRECOGNIZED: '${reviewer}' resolved but has no dispatch mapping — KNOWN_REVIEWERS and skillByReviewer are out of sync`);
   const { id } = newEpisode(root, runId, { plugin: reviewer === 'deep-review-loop' ? 'deep-review' : reviewer, role: 'checker', kind: `${point}-review`, point, workstream: workstreamId, targetMaker, fence });
-  const descriptor = { kind: reviewer === 'standalone' ? 'inline' : 'invoke_skill', skill, args: flags.join(' '), mode, review_point: point, workstream: workstreamId };
+  const descriptor = { kind: reviewer === 'standalone' ? 'inline' : 'invoke_skill', skill, args: flags.join(' '), mode, review_point: point, workstream: workstreamId, ...(evidence !== undefined ? { evidence } : {}) };
   return { checkerEpisodeId: id, reviewer, descriptor };
 }
 
