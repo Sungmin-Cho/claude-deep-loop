@@ -1,11 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { readState } from '../scripts/lib/state.mjs';
+import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
+import { canonicalProjectRoot, projectRootDigest } from '../scripts/lib/project-root.mjs';
 
 const CLI = join(process.cwd(), 'scripts', 'deep-loop.mjs');
 function run(root, args) {
@@ -15,6 +16,43 @@ function seed() {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
   const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
   return { root, runId };
+}
+
+function movedCliRun() {
+  const { root: originalRoot, runId } = seed();
+  const storedRoot = readState(originalRoot, runId).data.project.root;
+  const candidateRoot = `${originalRoot}-moved`;
+  renameSync(originalRoot, candidateRoot);
+  return { originalRoot, candidateRoot, runId, storedRoot };
+}
+
+function cliSnapshot(root, runId) {
+  const dir = runDir(root, runId);
+  const eventPath = join(dir, 'event-log.jsonl');
+  return {
+    loop: readFileSync(join(dir, 'loop.json'), 'utf8'),
+    hash: readFileSync(join(dir, '.loop.hash'), 'utf8'),
+    event: existsSync(eventPath) ? readFileSync(eventPath, 'utf8') : null,
+  };
+}
+
+function runResult(root, args) {
+  try { return { code: 0, stdout: run(root, args), stderr: '' }; }
+  catch (e) { return { code: e.status, stdout: String(e.stdout || ''), stderr: String(e.stderr || '') }; }
+}
+
+function validRebindArgs({ candidateRoot, runId, storedRoot }) {
+  return [
+    'root', 'rebind',
+    '--candidate-project-root', candidateRoot,
+    '--run-id', runId,
+    '--owner', runId,
+    '--generation', '1',
+    '--actor', 'human',
+    '--confirm',
+    '--expected-stored-root-digest', projectRootDigest(storedRoot),
+    '--now', '2026-07-11T00:00:00Z',
+  ];
 }
 
 test('next-action prints descriptor JSON (deterministic now)', () => {
@@ -29,6 +67,130 @@ test('next-action honors --now for wallclock hard-stop', () => {
   const out = JSON.parse(run(root, ['next-action', '--json', '--now', '2026-06-30T00:00:00Z'])); // > 24h
   assert.equal(out.action.type, 'handoff');
   assert.equal(out.gate.blocked_by[0], 'budget');
+});
+
+test('root diagnose exits 0 with redacted eligibility for resolvable copies and moved roots', () => {
+  const original = seed();
+  const copyRoot = mkdtempSync(join(tmpdir(), 'dl-root-cli-copy-'));
+  const storedRoot = readState(original.root, original.runId).data.project.root;
+  cpSync(join(original.root, '.deep-loop'), join(copyRoot, '.deep-loop'), { recursive: true });
+
+  const copied = runResult(copyRoot, [
+    'root', 'diagnose', '--candidate-project-root', copyRoot, '--run-id', original.runId,
+  ]);
+  assert.equal(copied.code, 0);
+  assert.deepEqual(JSON.parse(copied.stdout), {
+    mismatch_class: 'fenced', rebind_allowed: false,
+    stored_root_digest: projectRootDigest(storedRoot), owner: original.runId, generation: 1,
+  });
+
+  const moved = movedCliRun();
+  const relocated = runResult(moved.candidateRoot, [
+    'root', 'diagnose', '--candidate-project-root', moved.candidateRoot, '--run-id', moved.runId,
+  ]);
+  assert.equal(relocated.code, 0);
+  assert.deepEqual(JSON.parse(relocated.stdout), {
+    mismatch_class: 'unresolvable', rebind_allowed: true,
+    stored_root_digest: projectRootDigest(moved.storedRoot), owner: moved.runId, generation: 1,
+  });
+});
+
+test('root diagnose rejects a hash mismatch with exit 1 and no mutation', () => {
+  const moved = movedCliRun();
+  const loopPath = join(runDir(moved.candidateRoot, moved.runId), 'loop.json');
+  const loop = JSON.parse(readFileSync(loopPath, 'utf8'));
+  loop.goal = 'tampered';
+  writeFileSync(loopPath, JSON.stringify(loop, null, 2));
+  const before = cliSnapshot(moved.candidateRoot, moved.runId);
+
+  const result = runResult(moved.candidateRoot, [
+    'root', 'diagnose', '--candidate-project-root', moved.candidateRoot, '--run-id', moved.runId,
+  ]);
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /STATE_TAMPERED/);
+  assert.deepEqual(cliSnapshot(moved.candidateRoot, moved.runId), before);
+});
+
+test('root rebind missing required flags or confirm exits 2 with usage errors', () => {
+  const moved = movedCliRun();
+  const base = validRebindArgs(moved);
+  const omitFlag = (name) => {
+    const index = base.indexOf(`--${name}`);
+    const count = name === 'confirm' ? 1 : 2;
+    return [...base.slice(0, index), ...base.slice(index + count)];
+  };
+
+  for (const name of ['candidate-project-root', 'run-id', 'owner', 'generation', 'actor', 'confirm', 'expected-stored-root-digest']) {
+    const result = runResult(moved.candidateRoot, omitFlag(name));
+    assert.equal(result.code, 2, name);
+    assert.match(result.stderr, /(?:USAGE|REQUIRED|CONFIRM_REQUIRED)/, name);
+  }
+});
+
+test('root rebind invalid actor, digest, candidate root, or state exits 1', () => {
+  const moved = movedCliRun();
+  const cases = [
+    ['actor', validRebindArgs(moved).map(value => value === 'human' ? 'agent' : value), /INVALID_ACTOR/],
+    ['digest', validRebindArgs(moved).map(value => value === projectRootDigest(moved.storedRoot) ? 'not-a-digest' : value), /INVALID_STORED_ROOT_DIGEST/],
+    ['root', validRebindArgs({ ...moved, candidateRoot: join(moved.candidateRoot, 'missing') }), /PROJECT_ROOT_UNRESOLVABLE/],
+  ];
+  for (const [label, args, message] of cases) {
+    const result = runResult(moved.candidateRoot, args);
+    assert.equal(result.code, 1, label);
+    assert.match(result.stderr, message, label);
+  }
+
+  const invalidOriginal = seed();
+  const { data } = readState(invalidOriginal.root, invalidOriginal.runId);
+  data.run_id = 'DIFFERENT-RUN-ID';
+  writeState(invalidOriginal.root, invalidOriginal.runId, data);
+  const invalidState = {
+    candidateRoot: `${invalidOriginal.root}-moved`,
+    runId: invalidOriginal.runId,
+    storedRoot: data.project.root,
+  };
+  renameSync(invalidOriginal.root, invalidState.candidateRoot);
+  const stateResult = runResult(invalidState.candidateRoot, validRebindArgs(invalidState));
+  assert.equal(stateResult.code, 1);
+  assert.match(stateResult.stderr, /STATE_INVALID/);
+});
+
+test('root rebind keeps a resolvable stopped copy fenced at exit 3', () => {
+  const original = seed();
+  const { data } = readState(original.root, original.runId);
+  data.status = 'stopped';
+  writeState(original.root, original.runId, data);
+  const candidateRoot = mkdtempSync(join(tmpdir(), 'dl-root-cli-stopped-copy-'));
+  cpSync(join(original.root, '.deep-loop'), join(candidateRoot, '.deep-loop'), { recursive: true });
+  const fixture = { candidateRoot, runId: original.runId, storedRoot: data.project.root };
+  const before = cliSnapshot(candidateRoot, original.runId);
+
+  const result = runResult(candidateRoot, validRebindArgs(fixture));
+  assert.equal(result.code, 3);
+  assert.match(result.stderr, /PROJECT_ROOT_FENCED/);
+  assert.deepEqual(cliSnapshot(candidateRoot, original.runId), before);
+});
+
+test('root rebind stale owner or generation exits 3 and changes no durable file', () => {
+  for (const [flag, value] of [['--owner', 'stale-owner'], ['--generation', '9']]) {
+    const moved = movedCliRun();
+    const args = validRebindArgs(moved);
+    args[args.indexOf(flag) + 1] = value;
+    const before = cliSnapshot(moved.candidateRoot, moved.runId);
+    const result = runResult(moved.candidateRoot, args);
+    assert.equal(result.code, 3, flag);
+    assert.match(result.stderr, /LEASE_FENCED/, flag);
+    assert.deepEqual(cliSnapshot(moved.candidateRoot, moved.runId), before, flag);
+  }
+});
+
+test('root rebind CLI relocates once and restores ordinary strict state access', () => {
+  const moved = movedCliRun();
+  const result = runResult(moved.candidateRoot, validRebindArgs(moved));
+  assert.equal(result.code, 0);
+  assert.deepEqual(JSON.parse(result.stdout), { ok: true });
+  const { data } = readState(moved.candidateRoot, moved.runId);
+  assert.equal(data.project.root, canonicalProjectRoot(moved.candidateRoot));
 });
 
 test('workstream new + set via CLI with lease', () => {

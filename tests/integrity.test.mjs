@@ -1,12 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cpSync, mkdtempSync, mkdirSync, appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, mkdirSync, appendFileSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { appendEvent, verifyLog, recomputeSpent } from '../scripts/lib/integrity.mjs';
 import { readState, runDir } from '../scripts/lib/state.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { recordCost } from '../scripts/lib/budget.mjs';
+import { projectRootDigest } from '../scripts/lib/project-root.mjs';
+
+const recoveryApiPromise = import('../scripts/lib/project-root-recovery.mjs').catch(() => ({}));
 
 function fresh() {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
@@ -73,6 +76,47 @@ test('appendAnchored rechecks project-root binding in-lock before precheck, even
   assert.equal(preCheckRan, false, 'root binding must reject before caller preCheck runs');
   assert.equal(readFileSync(eventPath, 'utf8'), beforeEvent, 'root-fenced mutation must emit no event');
   assert.equal(readFileSync(hashPath, 'utf8'), beforeHash, 'root-fenced mutation must not change the loop hash');
+});
+
+test('root rebind fails closed on log corruption before event, hash, or state mutation', async () => {
+  const parent = mkdtempSync(join(tmpdir(), 'dl-root-integrity-rebind-'));
+  const originalRoot = join(parent, 'original');
+  const candidateRoot = join(parent, 'candidate');
+  mkdirSync(originalRoot);
+  const { runId } = initRun(originalRoot, { runtime: 'claude', goal: 'g', now: new Date('2026-07-11T00:00:00Z') });
+  appendAnchored(originalRoot, runId, { type: 'seed-event', data: {} }, () => {});
+  const storedRoot = readState(originalRoot, runId).data.project.root;
+  renameSync(originalRoot, candidateRoot);
+
+  const dir = runDir(candidateRoot, runId);
+  const eventPath = join(dir, 'event-log.jsonl');
+  const loopPath = join(dir, 'loop.json');
+  const hashPath = join(dir, '.loop.hash');
+  const lines = readFileSync(eventPath, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line));
+  lines[0].data = { corrupted: true }; // keep the old checksum: verifyLog must reject it
+  writeFileSync(eventPath, lines.map(line => JSON.stringify(line)).join('\n') + '\n');
+  const before = {
+    event: readFileSync(eventPath, 'utf8'),
+    loop: readFileSync(loopPath, 'utf8'),
+    hash: readFileSync(hashPath, 'utf8'),
+  };
+  const api = await recoveryApiPromise;
+  assert.equal(typeof api.rebindProjectRoot, 'function', 'rebindProjectRoot must be exported');
+
+  assert.throws(
+    () => api.rebindProjectRoot(candidateRoot, runId, {
+      actor: 'human', confirm: true,
+      expectedStoredRootDigest: projectRootDigest(storedRoot),
+      fence: { owner: runId, generation: 1 },
+      now: Date.parse('2026-07-11T01:00:00Z'),
+    }),
+    /LOG_TAMPERED/
+  );
+  assert.deepEqual({
+    event: readFileSync(eventPath, 'utf8'),
+    loop: readFileSync(loopPath, 'utf8'),
+    hash: readFileSync(hashPath, 'utf8'),
+  }, before);
 });
 
 // ── v1.6 appendAnchored gateway terminal gate (spec §2.1.5/§4-1b) ────────────

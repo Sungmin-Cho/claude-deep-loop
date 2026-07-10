@@ -27,6 +27,7 @@ import { finishRun } from './lib/finish.mjs';
 import { detectAndPersist } from './lib/detect-terminal.mjs';
 import { recoverRun } from './lib/recover.mjs';
 import { computeInsights, emitInsights, latestInsights, validateLedger } from './lib/insights.mjs';
+import { diagnoseProjectRoot, rebindProjectRoot } from './lib/project-root-recovery.mjs';
 
 function parseFlags(argv) {
   const f = {};
@@ -111,6 +112,9 @@ function classifyKernelError(e) {
   if (/^(?:INVALID_NOW|INVALID_RUNTIME(?:_STATE)?|PROJECT_ROOT_UNRESOLVABLE)(?::|$)/.test(message)) {
     return { code: 1, message };
   }
+  if (/^(?:INVALID_ACTOR|INVALID_GENERATION|INVALID_STORED_ROOT_DIGEST|PROJECT_ROOT_REBIND_NOT_ALLOWED|RUN_ID_INVALID|STATE_INVALID)(?::|$)/.test(message)) {
+    return { code: 1, message };
+  }
   return null;
 }
 function requireLease(root, runId, f, intent = 'business') {
@@ -164,6 +168,49 @@ const handlers = {
     const f = parseFlags(a); const root = rootOf(f);
     try { json(matchRecipe(f.goal || '', detectPlugins(root))); return 0; }
     catch (e) { error(String(e?.message || e)); return 1; }   // NO_VALID_RECIPES (degraded bundle) → exit 1, no raw stack
+  },
+  root: async (a) => {
+    const [verb, ...rest] = a;
+    const f = parseFlags(rest);
+    if (verb !== 'diagnose' && verb !== 'rebind') { error(`unknown root verb: ${verb}`); return 2; }
+    const candidateRoot = reqStr(f, 'candidate-project-root');
+    if (!candidateRoot) { error('USAGE: --candidate-project-root ROOT is required'); return 2; }
+    const runId = reqStr(f, 'run-id');
+    if (!runId) { error('USAGE: --run-id RUN_ID is required'); return 2; }
+
+    if (verb === 'diagnose') {
+      json(diagnoseProjectRoot(candidateRoot, runId));
+      return 0;
+    }
+
+    const owner = reqStr(f, 'owner');
+    if (!owner) { error('USAGE: --owner OWNER is required'); return 2; }
+    if (f.generation === undefined || f.generation === true) {
+      error('USAGE: --generation N is required'); return 2;
+    }
+    if (typeof f.generation !== 'string' || !/^\d+$/.test(f.generation)
+      || !Number.isSafeInteger(Number(f.generation))) {
+      throw new Error('INVALID_GENERATION: must be a non-negative safe integer');
+    }
+    const actor = reqStr(f, 'actor');
+    if (!actor) { error('USAGE: --actor human is required'); return 2; }
+    if (f.confirm !== true && f.confirm !== 'true') {
+      error('CONFIRM_REQUIRED: root rebind requires --confirm'); return 2;
+    }
+    const expectedStoredRootDigest = reqStr(f, 'expected-stored-root-digest');
+    if (!expectedStoredRootDigest) {
+      error('USAGE: --expected-stored-root-digest SHA256 is required'); return 2;
+    }
+
+    const result = rebindProjectRoot(candidateRoot, runId, {
+      actor,
+      confirm: true,
+      expectedStoredRootDigest,
+      fence: { owner, generation: Number(f.generation) },
+      now: parseNow(f),
+    });
+    json(result);
+    return 0;
   },
   'init-run': async (a) => {
     const f = parseFlags(a);
