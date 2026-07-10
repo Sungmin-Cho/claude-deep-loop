@@ -109,12 +109,13 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field recipe.id
 **결과가 `"harness-hill-climb"`이면 dispatch 전에 checker 계약을 materialize한다** (P2 — 커널이 fail-closed로 강제; 전체 규약은 `Read("../deep-loop-workflow/references/hill-climbing.md")` §3.4):
 
 ```bash
-mkdir -p "<ORIG_ROOT>/<workstream.worktree>/.deep-review/contracts"
+# $PROJECT_ROOT는 §1.5에서 state get --field project.root로 캡처한 값 ($ORIG_ROOT는 fresh/resumed 세션에 없음)
+mkdir -p "$PROJECT_ROOT/<workstream.worktree>/.deep-review/contracts"
 cp "${CLAUDE_PLUGIN_ROOT}/skills/deep-loop-workflow/references/contracts/HILLCLIMB-001.yaml" \
-   "<ORIG_ROOT>/<workstream.worktree>/.deep-review/contracts/HILLCLIMB-001.yaml"
+   "$PROJECT_ROOT/<workstream.worktree>/.deep-review/contracts/HILLCLIMB-001.yaml"
 ```
 
-tracked 소스를 **그대로 복사**한다(byte-identical — 커널이 대조; 수정본은 `REVIEW_CONTRACT_MISSING`으로 거부). 계약-비소비 reviewer(subagent/codex-cross/standalone)나 `--contract` 플래그 부재는 `REVIEW_CONTRACT_UNENFORCEABLE` — run의 review 설정을 사람과 함께 재구성해야 한다.
+tracked 소스를 **그대로 복사**한다(byte-identical — 커널이 대조; 수정본은 `REVIEW_CONTRACT_MISSING`으로 거부). 대상 경로가 symlink여서 worktree/project-root 밖을 가리키면 커널이 realpath containment로 거부한다(사본은 실제 worktree 디렉터리 안에 있어야 함). 계약-비소비 reviewer(subagent/codex-cross/standalone)나 `--contract` 플래그 부재/타-slice selector는 `REVIEW_CONTRACT_UNENFORCEABLE` — run의 review 설정을 사람과 함께 재구성해야 한다.
 
 ```
 node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" review dispatch --point <review_point> --workstream <workstream_id> --owner <run_id> --generation <n>

@@ -8,12 +8,13 @@
 //   무-contract skip으로 계약 미강제 APPROVE가 가능 — tracked 소스 + dispatch 시 부재 fail-closed.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, copyFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, copyFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { readState } from '../scripts/lib/state.mjs';
+import { readState, writeState } from '../scripts/lib/state.mjs';
+import { finishProofState } from '../scripts/lib/finish.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { resolveReviewer, dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
@@ -236,11 +237,19 @@ test('P2: hill-climb run without the --contract flag fails closed', () => {
     /REVIEW_CONTRACT_UNENFORCEABLE/);
 });
 
-// codex r5: `--contract <selector>`가 다른 slice를 지정하면 deep-review는 그 slice만 로드 —
-// 토큰 존재 체크만으로는 HILLCLIMB-001 미평가 APPROVE 우회가 된다. selector는 생략 또는 정확히
-// HILLCLIMB-001만 허용.
-test('P2: --contract with a different slice selector fails closed; HILLCLIMB-001 selector passes', () => {
-  for (const flags of [['--contract', 'SLICE-999', '--codex-only'], ['--contract=SLICE-999', '--codex-only']]) {
+// codex r5/r6: `--contract <selector>`가 다른 slice를 지정하면 deep-review는 그 slice만 로드 —
+// 토큰 존재 체크만으로는 HILLCLIMB-001 미평가 APPROVE 우회가 된다. `=` 형태는 downstream 파서
+// (공백 형태만 소비)에 안 보여 무-contract로 새므로 전부 거부, 중복 발생은 뒤 selector가 이길 수
+// 있어 거부. 허용: 정확히 1회의 공백-형 `--contract` + selector 생략 또는 HILLCLIMB-001.
+test('P2: contract selector is normalized — other slices, = forms, and duplicates fail closed', () => {
+  const bad = [
+    ['--contract', 'SLICE-999', '--codex-only'],
+    ['--contract=SLICE-999', '--codex-only'],
+    ['--contract=HILLCLIMB-001'],                                   // = 형태는 downstream이 소비하지 않음
+    ['--contract=HILLCLIMB-001', '--contract', 'SLICE-999'],        // 중복 — 뒤 selector가 이김
+    ['--contract', 'HILLCLIMB-001', '--contract', 'SLICE-999'],
+  ];
+  for (const flags of bad) {
     const { root, runId, f } = seedRun({ reviewer: 'deep-review-loop', flags, recipe: 'harness-hill-climb' });
     const ws = doneMakerOn(root, runId, f);
     materializeContract(root, '.claude/worktrees/w-design');
@@ -248,13 +257,28 @@ test('P2: --contract with a different slice selector fails closed; HILLCLIMB-001
       () => dispatchReview(root, runId, { point: 'design', workstreamId: ws, detected: { 'deep-review': true }, fence: f }),
       /REVIEW_CONTRACT_UNENFORCEABLE/, flags.join(' '));
   }
-  for (const flags of [['--contract', 'HILLCLIMB-001', '--codex-only'], ['--contract=HILLCLIMB-001'], ['--contract', '--codex-only']]) {
+  for (const flags of [['--contract', 'HILLCLIMB-001', '--codex-only'], ['--contract', '--codex-only'], ['--contract']]) {
     const { root, runId, f } = seedRun({ reviewer: 'deep-review-loop', flags, recipe: 'harness-hill-climb' });
     const ws = doneMakerOn(root, runId, f);
     materializeContract(root, '.claude/worktrees/w-design');
     const r = dispatchReview(root, runId, { point: 'design', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
     assert.equal(r.descriptor.skill, 'deep-review:deep-review-loop', flags.join(' '));
   }
+});
+
+// codex r6: `.deep-review`가 worktree 밖을 가리키는 symlink면 lexical resolve는 외부 사본을 valid로
+// 수용한다 — realpath containment(root+worktree)로 거부되어야 한다.
+test('P2: contract behind a symlink escaping the worktree fails closed', () => {
+  const { root, runId, f } = seedRun({ reviewer: 'deep-review-loop', flags: ['--contract', '--codex-only'], recipe: 'harness-hill-climb' });
+  const ws = doneMakerOn(root, runId, f);
+  const outside = mkdtempSync(join(tmpdir(), 'dl-outside-'));
+  mkdirSync(join(outside, 'contracts'), { recursive: true });
+  copyFileSync(TRACKED_CONTRACT, join(outside, 'contracts', 'HILLCLIMB-001.yaml'));
+  mkdirSync(join(root, '.claude/worktrees/w-design'), { recursive: true });
+  symlinkSync(outside, join(root, '.claude/worktrees/w-design', '.deep-review'));
+  assert.throws(
+    () => dispatchReview(root, runId, { point: 'design', workstreamId: ws, detected: { 'deep-review': true }, fence: f }),
+    /REVIEW_CONTRACT_MISSING/);
 });
 
 // ── P2 codex r3: 계약 identity가 checker에 durable 기록되고, record 시점에 재검증된다(TOCTOU 봉합) ──
@@ -319,6 +343,25 @@ test('P2: legacy hill-climb checker without pinned contract cannot record a pass
   // REQUEST_CHANGES는 경량 reject 경로 유지 — legacy checker도 정상 reject 가능
   const out = recordReviewOutcome(root, runId, { episodeId: checkerId, workstreamId: ws, point: 'design', verdict: 'REQUEST_CHANGES', proof: {}, fence: f });
   assert.equal(out.terminal, 'rejected');
+});
+
+// ── P2 codex r6: legacy approved checker(contract 미pin)는 record 게이트를 재통과하지 않으므로
+//    finish proof에서 막는다 — 마이그레이션은 abandon + 새 커널 re-dispatch ──
+test('P2: legacy approved checker without pinned contract blocks hill-climb finish proof', () => {
+  const { root, runId, f } = seedRun({ reviewer: 'deep-review-loop', flags: ['--contract', '--codex-only'], recipe: 'harness-hill-climb' });
+  const ws = doneMakerOn(root, runId, f);
+  const makerId = readState(root, runId).data.episodes.find(e => e.role === 'maker').id;
+  const { id: checkerId } = newEpisode(root, runId, { plugin: 'deep-review', role: 'checker', kind: 'design-review', point: 'design', workstream: ws, targetMaker: makerId, fence: f });
+  // pre-patch 커널이 남긴 approved 상태 재현 (fixture 전용 raw 전이 — 정상 경로로는 record 게이트가 막음)
+  const d = readState(root, runId).data;
+  d.episodes.find(e => e.id === checkerId).status = 'approved';
+  writeState(root, runId, d);
+  assert.ok(finishProofState(readState(root, runId).data).missing.includes('hillclimb-contract-unpinned'));
+  // 대조: 같은 상태에서 contract가 pin되어 있으면 이 마커는 사라진다
+  const d2 = readState(root, runId).data;
+  d2.episodes.find(e => e.id === checkerId).contract = { slice: 'HILLCLIMB-001', path: '.claude/worktrees/w-design/.deep-review/contracts/HILLCLIMB-001.yaml', sha256: 'a'.repeat(64) };
+  writeState(root, runId, d2);
+  assert.ok(!finishProofState(readState(root, runId).data).missing.includes('hillclimb-contract-unpinned'));
 });
 
 // ── P2 스코프 한정 — hill-climb이 아닌 recipe는 계약 게이트 비대상(무회귀) ──
