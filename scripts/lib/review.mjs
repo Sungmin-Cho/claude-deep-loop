@@ -76,7 +76,12 @@ const TRACKED_CONTRACT_PATH = fileURLToPath(new URL('../../skills/deep-loop-work
 
 export function resolveReviewer(loop, detected = {}) {
   const r = loop.review || {};
-  let reviewer = r.reviewer || 'subagent-checker';
+  // 기본값은 필드 **부재**에만 적용한다 — `""`/`null` 같은 명시적 무효값을 `|| 'subagent-checker'`로
+  // 재작성하면 아래 allowlist 이전에 유효화되어(+codex 감지 시 codex-cross 승격) 침묵 강등이 남는다(codex r4).
+  let reviewer = r.reviewer === undefined ? 'subagent-checker' : r.reviewer;
+  if (typeof reviewer !== 'string' || !reviewer.length) {
+    throw new Error(`REVIEWER_UNRECOGNIZED: review.reviewer is present but not a non-empty string (${JSON.stringify(r.reviewer)}) — omit the field for the default or set a known reviewer`);
+  }
   // 네임스페이스 canonicalize는 문서화된 정확히 한 형식만 — 임의 `deep-review:*` prefix-strip은
   // `deep-review:standalone` 류를 KNOWN으로 통과시켜 더 약한 checker로 새는 또 다른 침묵 경로가
   // 된다(codex r1). 그 외 네임스페이스 값은 아래 !KNOWN 분기에서 fail-closed.
@@ -284,14 +289,20 @@ export function recordReviewOutcome(root, runId, { episodeId, workstreamId, poin
       if (passed && !reportBoundToWorktree(root, realReport, wsForReport.worktree)) {
         throw new Error('REVIEW_NO_EVIDENCE: passing verdict requires proof.report — a real file under the reviewed workstream worktree');
       }
-      // P2 codex r3: dispatch가 계약을 검증해 checker에 기록했다면(hill-climb), passing verdict 시점에 같은
-      // 파일을 재검증한다 — dispatch~record 사이 삭제/변조(TOCTOU) 시 deep-review는 무-contract를 조용히
-      // skip하므로, 그 창에서 나온 APPROVE가 계약-강제 리뷰로 기록되는 것을 record 게이트가 막는다.
-      // REQUEST_CHANGES는 경량 reject 경로 유지(passing만 finish proof를 연다).
-      if (passed && tgt.contract) {
+      // P2 codex r3/r4: hill-climb run의 passing verdict는 계약-강제 리뷰 proof다 — recipe를 기준으로
+      // 게이트한다(체커 필드 유무가 아니라). pre-patch dispatch로 만들어진 legacy pending checker는
+      // contract 필드가 없으므로 tgt.contract 조건만으로는 무계약 APPROVE가 통과한다(r4). 기록된
+      // identity가 있으면 같은 파일을 record 시점에 재검증한다 — dispatch~record 사이 삭제/변조(TOCTOU)
+      // 시 deep-review는 무-contract를 조용히 skip하므로 그 창의 APPROVE를 거부한다. 복구는 재-dispatch가
+      // 아니라(제 checker가 pending으로 남아 중복 checker + next-action 정체를 만든다) tracked 소스
+      // 재-materialize 후 **같은 checker**로 리뷰 재실행·재기록이다. REQUEST_CHANGES는 경량 reject 유지.
+      if (passed && loop.recipe?.id === 'harness-hill-climb') {
+        if (!tgt.contract?.sha256 || !tgt.contract?.path) {
+          throw new Error('REVIEW_CONTRACT_MISSING: hill-climb passing verdict requires a contract-pinned checker (this checker was dispatched without a recorded contract — abandon it and re-dispatch after materializing the tracked contract)');
+        }
         let stillValid = false;
         try { stillValid = contentHash(readFileSync(resolve(root, tgt.contract.path), 'utf8')) === tgt.contract.sha256; } catch { stillValid = false; }
-        if (!stillValid) throw new Error(`REVIEW_CONTRACT_MISSING: contract ${tgt.contract.path} was removed or altered since dispatch (recorded sha256 mismatch) — re-materialize the tracked contract and re-dispatch the review`);
+        if (!stillValid) throw new Error(`REVIEW_CONTRACT_MISSING: contract ${tgt.contract.path} was removed or altered since dispatch (recorded sha256 mismatch) — re-materialize the tracked contract (그대로 복사), re-run the review, and record this SAME checker episode (it stays pending; do NOT dispatch a second checker)`);
       }
     }, { floor: MUTATION_TURN_FLOOR });
   // REQUEST_CHANGES → checker='rejected'. nextAction returns fix_episode and Execution creates the fix maker.

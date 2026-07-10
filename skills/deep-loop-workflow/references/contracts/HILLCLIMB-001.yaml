@@ -1,19 +1,51 @@
 # harness-hill-climb checker 계약 — TRACKED 소스 (P2, hillclimb-ledger 2026-07-10 release-blocking).
-# `.deep-review/`는 gitignored라 fresh checkout에는 계약이 없다 — hill-climb run의 dispatch는 이 파일을
-# `.deep-review/contracts/HILLCLIMB-001.yaml`로 materialize(그대로 복사)한 뒤에만 통과한다(커널 fail-closed 게이트).
-# run-특정 값(인용 emit id·지표)은 계약이 아니라 checker 입력(리뷰 요청 본문)으로 전달한다 — 이 파일은 run-불변이다.
-# 형식: deep-review contract-schema.md 파리티(slice/title/status/criteria) — 실사용 run 01KX5PRPGEE9KN1Y6DEWH3K35T의
-# 검증된 계약(run 아카이브 review-archive/HILLCLIMB-001.yaml)과 동일 구조. 계약 SSOT: hill-climbing.md §3.4.
+# `.deep-review/`는 gitignored라 fresh checkout에는 계약이 없다 — hill-climb run의 리뷰 dispatch는 이 파일을
+# workstream worktree의 `.deep-review/contracts/HILLCLIMB-001.yaml`로 materialize(그대로 복사)한 뒤에만 통과한다
+# (커널 fail-closed 게이트 — byte-identical 대조 + record 시점 재검증).
+# run-특정 값(인용 emit id·sha256·지표)은 계약이 아니라 checker request의 kernel-verified evidence로 전달한다
+# — 이 파일은 run-불변이다. criteria 형태: deep-review contract-schema.md의 소비자 스키마
+# (id/description/verification/prerequisites/status/evidence — Evaluator가 status/evidence를 채운다).
+# 계약 SSOT: skills/deep-loop-workflow/references/hill-climbing.md §3.4.
 slice: HILLCLIMB-001
 title: "harness-hill-climb checker 계약 (a)~(f) — hill-climbing.md §3.4"
 status: active
 criteria:
-  - "(a) 인용 지표가 insights latest 검증을 통과한 insights 파일에 실존한다 (emit id·sha256·지표 값은 리뷰 요청 본문에 명시 — 파일 직접 파싱 금지, 커널 CLI 출력만 사용)"
-  - "(b) 변경이 인용 후보를 실제로 겨냥한다 (addressed 주장은 '선언+proposal'로 한정 — 후보 재발행 자체는 어떤 판정의 증거도 아님)"
-  - "(c) 반증 조건이 관측 가능한 미래 신호다 (post-change per_run 지표 · non-null 샘플 · 대상 recipe/seed 값 한정 — ratio 분모 확대류 metric gaming 금지)"
-  - "(d) [implementation 전용] maker 자율 diff가 Tier 1(recipes/*.json, recipes/automation/*.yml) 안이다 — Tier 2 파일 diff 발견 = 즉시 REQUEST_CHANGES (사람-승인 별도 커밋은 자율 diff 아님)"
-  - "(e) 변경이 어떤 파일의 안전 게이트 준수 지시문도 삭제·약화하지 않는다 (user-only 확정 · proposal-only · fail-closed prose)"
-  - "(f) [implementation 전용] ledger 항목이 append되었고 validateLedger 스키마에 맞으며 diff가 순수 append다 (기존 항목 수정·삭제·재배열 = 즉시 REQUEST_CHANGES)"
+  - id: A
+    description: "(a) 인용 지표가 insights latest 검증을 통과한 insights 파일에 실존한다 — checker request의 kernel-verified evidence(insights_path·emit_ulid·sha256·candidates)와 maker 인용(ledger insights_ref/insights_sha256, design/plan은 문서 인용)을 대조하고 mismatch는 위반이다. 파일 직접 파싱 금지, 커널 CLI 출력/evidence만 사용"
+    verification: auto
+    prerequisites: []
+    status: null
+    evidence: null
+  - id: B
+    description: "(b) 변경이 인용 후보를 실제로 겨냥한다 — addressed 주장은 '선언+proposal'로 한정, 후보 재발행 자체는 어떤 판정의 증거도 아니다"
+    verification: auto
+    prerequisites: []
+    status: null
+    evidence: null
+  - id: C
+    description: "(c) 반증 조건이 관측 가능한 미래 신호다 — post-change per_run 지표 · non-null 샘플 · 대상 recipe/seed 값 한정, ratio 분모 확대류 metric gaming 금지"
+    verification: auto
+    prerequisites: []
+    status: null
+    evidence: null
+  - id: D
+    description: "(d) [implementation 전용 — design/plan 리뷰에서는 SKIP] maker 자율 diff가 Tier 1(recipes/*.json, recipes/automation/*.yml) 안이다 — Tier 2 파일 diff 발견 = 즉시 REQUEST_CHANGES (사람-승인 별도 커밋은 자율 diff 아님)"
+    verification: auto
+    prerequisites: []
+    status: null
+    evidence: null
+  - id: E
+    description: "(e) 변경이 어떤 파일의 안전 게이트 준수 지시문도 삭제·약화하지 않는다 — user-only 확정 · proposal-only · fail-closed prose"
+    verification: auto
+    prerequisites: []
+    status: null
+    evidence: null
+  - id: F
+    description: "(f) [implementation 전용 — design/plan 리뷰에서는 SKIP] ledger 항목이 append되었고 validateLedger 스키마에 맞으며 diff가 순수 append다 — 기존 항목 수정·삭제·재배열 = 즉시 REQUEST_CHANGES"
+    verification: auto
+    prerequisites: []
+    status: null
+    evidence: null
 notes: >
   design/plan checker는 (a)(b)(c)(e)를 문서 수준으로 적용한다. (d)(f)는 diff/ledger가
   존재하는 implementation checker 전용이다 (r5 W — 전-phase 일괄 적용 시 design/plan이

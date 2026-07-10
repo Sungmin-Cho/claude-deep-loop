@@ -108,6 +108,19 @@ test('P1: configured deep-review reviewer with plugin absent fails closed (codex
     /REVIEWER_DEPENDENCY_MISSING/);
 });
 
+// ── P1 codex r4: 명시적 무효값(빈 문자열·null)은 기본값 재작성 없이 거부 — `|| 'subagent-checker'`가
+//    무효값을 유효화한 뒤 codex-cross로 승격되는 침묵 강등 잔여 경로 ──
+test('P1: explicitly empty or null reviewer is rejected, not defaulted', () => {
+  // resolveReviewer는 loop에 대한 순수 함수 — 명시적 무효값은 synthetic loop로 직접 검사한다
+  // (seedRun은 falsy reviewer를 기본 review로 대체해 이 경로를 재현할 수 없다).
+  for (const bad of ['', null, 42]) {
+    assert.throws(() => resolveReviewer({ review: { reviewer: bad } }, { codex: true }), /REVIEWER_UNRECOGNIZED/, JSON.stringify(bad));
+  }
+  // 필드/review 부재는 기본값 유지(무회귀)
+  assert.equal(resolveReviewer({ review: {} }, { codex: false }).reviewer, 'subagent-checker');
+  assert.equal(resolveReviewer({}, { codex: false }).reviewer, 'subagent-checker');
+});
+
 // ── P1 보존 — 강등이 아닌 승격(subagent-checker → codex-cross)과 정상 경로는 유지 ──
 test('P1: subagent-checker promotion to codex-cross and normal paths are preserved', () => {
   const { root, runId } = seedRun({ reviewer: 'subagent-checker' });
@@ -118,13 +131,18 @@ test('P1: subagent-checker promotion to codex-cross and normal paths are preserv
   assert.equal(resolveReviewer(readState(dr.root, dr.runId).data, { 'deep-review': true }).reviewer, 'deep-review-loop');
 });
 
-// ── P2 tracked 계약 소스 — repo에 존재 + 필수 형태 (parity) ──
-test('P2: tracked HILLCLIMB-001 contract exists with required shape', () => {
+// ── P2 tracked 계약 소스 — repo에 존재 + 소비자(deep-review contract-schema) 형태 (codex r4) ──
+test('P2: tracked HILLCLIMB-001 contract exists with consumer-schema shape', () => {
   assert.ok(existsSync(TRACKED_CONTRACT), 'tracked contract yaml must exist in references/contracts/');
   const y = readFileSync(TRACKED_CONTRACT, 'utf8');
   assert.match(y, /^slice:\s*HILLCLIMB-001/m);
   assert.match(y, /^status:\s*active/m);
   assert.match(y, /^criteria:/m);
+  // deep-review contract-schema.md 파리티 — criteria는 스칼라 문자열이 아니라 id/description/verification
+  // 매핑이어야 소비자(deep-review Evaluator)가 평가 가능하다(codex r4). 6개 criterion 전부.
+  for (const cid of ['A', 'B', 'C', 'D', 'E', 'F']) assert.match(y, new RegExp(`^  - id: ${cid}$`, 'm'), `criterion ${cid}`);
+  assert.equal((y.match(/^\s+verification: auto$/gm) || []).length, 6, 'every criterion declares verification');
+  assert.equal((y.match(/^\s+description: /gm) || []).length, 6, 'every criterion has a description');
   // phase-적용성 parity: (d)(f)가 implementation 전용으로 마킹되어 있어야 §3.4와 정합
   assert.match(y, /\(d\).*implementation/i);
   assert.match(y, /\(f\).*implementation/i);
@@ -261,6 +279,25 @@ test('P2: contract altered between dispatch and record — sha mismatch fails cl
   copyFileSync(TRACKED_CONTRACT, cPath);
   const out = recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'design', verdict: 'APPROVE', proof: { report }, fence: f });
   assert.equal(out.terminal, 'approved');
+});
+
+// ── P2 codex r4: hill-climb passing verdict 게이트는 recipe 기준 — pre-patch dispatch로 만들어진
+//    legacy pending checker(contract 필드 없음)의 무계약 APPROVE도 거부된다 ──
+test('P2: legacy hill-climb checker without pinned contract cannot record a passing verdict', () => {
+  const { root, runId, f } = seedRun({ reviewer: 'deep-review-loop', flags: ['--contract', '--codex-only'], recipe: 'harness-hill-climb' });
+  const ws = doneMakerOn(root, runId, f);
+  // pre-patch dispatchReview 동형 — contract 미기록 checker를 직접 생성(legacy 재현)
+  const makerId = readState(root, runId).data.episodes.find(e => e.role === 'maker').id;
+  const { id: checkerId } = newEpisode(root, runId, { plugin: 'deep-review', role: 'checker', kind: 'design-review', point: 'design', workstream: ws, targetMaker: makerId, fence: f });
+  materializeContract(root, '.claude/worktrees/w-design');   // 파일이 있어도 checker에 pin이 없으면 거부
+  const report = join('.claude/worktrees/w-design', 'review-report.md');
+  writeFileSync(join(root, report), '# review report\nAPPROVE');
+  assert.throws(
+    () => recordReviewOutcome(root, runId, { episodeId: checkerId, workstreamId: ws, point: 'design', verdict: 'APPROVE', proof: { report }, fence: f }),
+    /REVIEW_CONTRACT_MISSING/);
+  // REQUEST_CHANGES는 경량 reject 경로 유지 — legacy checker도 정상 reject 가능
+  const out = recordReviewOutcome(root, runId, { episodeId: checkerId, workstreamId: ws, point: 'design', verdict: 'REQUEST_CHANGES', proof: {}, fence: f });
+  assert.equal(out.terminal, 'rejected');
 });
 
 // ── P2 스코프 한정 — hill-climb이 아닌 recipe는 계약 게이트 비대상(무회귀) ──

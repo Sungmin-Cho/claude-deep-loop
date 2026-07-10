@@ -100,7 +100,13 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" episode record --id <episode_
 
 ### dispatch_checker
 
-**hill-climb recipe run(`recipe.id === "harness-hill-climb"`)이면 dispatch 전에 checker 계약을 materialize한다** (P2 — 커널이 fail-closed로 강제; 전체 규약은 `Read("../deep-loop-workflow/references/hill-climbing.md")` §3.4):
+먼저 recipe를 **상태에서** 읽는다(이전 대화 컨텍스트를 가정하지 말 것 — 이 값이 아래 분기의 유일한 근거다):
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field recipe.id
+```
+
+**결과가 `"harness-hill-climb"`이면 dispatch 전에 checker 계약을 materialize한다** (P2 — 커널이 fail-closed로 강제; 전체 규약은 `Read("../deep-loop-workflow/references/hill-climbing.md")` §3.4):
 
 ```bash
 mkdir -p "<ORIG_ROOT>/<workstream.worktree>/.deep-review/contracts"
