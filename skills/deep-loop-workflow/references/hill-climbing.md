@@ -102,12 +102,16 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" episode new \
 
 ### 3.4 checker 계약 (deep-review `--contract` + 본 문서) — 하나라도 실패 시 REQUEST_CHANGES
 
+**계약 소스는 tracked 파일이다:** `skills/deep-loop-workflow/references/contracts/HILLCLIMB-001.yaml` (deep-review contract-schema 파리티 — `slice`/`title`/`status`/`criteria`). `.deep-review/`는 gitignored라 fresh checkout에는 계약이 없다 — hill-climb run의 리뷰 dispatch 전에 tracked 소스를 `.deep-review/contracts/HILLCLIMB-001.yaml`로 **그대로 복사(materialize)** 한다. 커널 `dispatchReview`는 hill-climb recipe run에서 이 파일이 없거나 `status: active`가 아니면 `REVIEW_CONTRACT_MISSING`으로 fail-closed한다(checker episode 미생성) — 무-contract skip으로 계약 미강제 APPROVE가 생기는 경로를 봉합(P2). run-특정 값(인용 emit id·sha256·지표)은 계약 파일이 아니라 checker 리뷰 요청 본문으로 전달한다 — 계약 파일은 run-불변.
+
+**phase 적용성:** (a)(b)(c)(e)는 모든 review point(design/plan/implementation)에 적용하되 design/plan에서는 문서 수준으로 적용한다. **(d)(f)는 implementation checker 전용**이다 — diff/ledger가 존재하지 않는 design/plan phase에 일괄 적용하면 구조적으로 승인 불가가 된다(첫 실사용 run r5 W 실측).
+
 - (a) 인용 지표가 `insights latest` 검증을 통과한 insights 파일에 실존하는지
 - (b) 변경이 인용 후보를 실제로 겨냥하는지
 - (c) 반증 조건이 관측 가능한 미래 신호인지
-- (d) **diff가 Tier 1 안인지** (Tier 2 파일 diff 발견 = 즉시 REQUEST_CHANGES)
+- (d) **[implementation 전용]** **diff가 Tier 1 안인지** (Tier 2 파일 diff 발견 = 즉시 REQUEST_CHANGES)
 - (e) 변경이 어떤 파일의 안전 게이트 준수 지시문도 삭제·약화하지 않는지 (Tier 1 내 파일에도 적용 — 벨트 앤 서스펜더)
-- (f) ledger 항목이 append되었고 schema에 맞으며, **ledger diff가 순수 append인지 — 기존 항목의 수정·삭제·재배열이 diff에 보이면 즉시 REQUEST_CHANGES**
+- (f) **[implementation 전용]** ledger 항목이 append되었고 schema에 맞으며, **ledger diff가 순수 append인지 — 기존 항목의 수정·삭제·재배열이 diff에 보이면 즉시 REQUEST_CHANGES**
 
 **방벽 요약:** ① Tier 2 자율 편집 원천 금지(구조적) ② 마커 테스트(삭제 결정론 방어) ③ checker 계약 (d)(e)(f) ④ 사람 머지. auto-merge가 없으므로 최종 방벽은 항상 사람이다 — "stay the engineer" 철학과 일치한다.
 

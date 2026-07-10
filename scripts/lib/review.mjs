@@ -1,4 +1,4 @@
-import { readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
 import { readState } from './state.mjs';
 import { appendAnchored } from './integrity.mjs';
@@ -59,13 +59,28 @@ export function rejectionResolved(loop, e) {
   return true;   // unbound → neutral (see comment above)
 }
 
+// P1 (hillclimb-ledger 2026-07-10, release-blocking): reviewer 해석은 fail-closed다.
+// 이전 동작 — 미인식 id는 그대로 통과 후 dispatch에서 inline-review로, deep-review 부재는
+// codex-cross/subagent-checker로 — 는 전부 "조용한 리뷰 게이트 강등"이었다: recordReviewOutcome이
+// report producer를 검증하지 않으므로 강등된 checker의 APPROVE도 finish proof를 만족한다.
+// 문서화된 형식(`deep-review:deep-review-loop`)과 인식 alias(`deep-review`)는 canonicalize하고,
+// 그 밖의 모든 침묵 경로는 명시 에러로 막는다. 유일하게 남는 자동 치환은 강등이 아닌 승격
+// (subagent-checker + codex 감지 → codex-cross)뿐이다.
+const KNOWN_REVIEWERS = ['deep-review-loop', 'codex-cross', 'subagent-checker', 'standalone'];
+
 export function resolveReviewer(loop, detected = {}) {
   const r = loop.review || {};
   let reviewer = r.reviewer || 'subagent-checker';
-  if ((reviewer === 'deep-review-loop' || reviewer === 'deep-review') && !pluginPresent(detected, 'deep-review')) {
-    reviewer = pluginPresent(detected, 'codex') ? 'codex-cross' : 'subagent-checker';
+  if (typeof reviewer === 'string' && reviewer.startsWith('deep-review:')) reviewer = reviewer.slice('deep-review:'.length);
+  if (reviewer === 'deep-review' || reviewer === 'deep-review-loop') {
+    if (!pluginPresent(detected, 'deep-review')) {
+      throw new Error(`REVIEWER_DEPENDENCY_MISSING: reviewer '${r.reviewer}' requires the deep-review plugin (silent downgrade removed — install deep-review or re-init with another reviewer)`);
+    }
+    reviewer = 'deep-review-loop';
   } else if (reviewer === 'subagent-checker' && pluginPresent(detected, 'codex')) {
     reviewer = 'codex-cross';
+  } else if (!KNOWN_REVIEWERS.includes(reviewer)) {
+    throw new Error(`REVIEWER_UNRECOGNIZED: '${r.reviewer}' is not a known reviewer (${KNOWN_REVIEWERS.join('|')}) — refusing inline-review fallback`);
   }
   return { reviewer, flags: r.flags || [], mode: r.mode || 'cross-model' };
 }
@@ -119,14 +134,32 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
   if (!targetMakerEp) throw new Error('REVIEW_NO_ELIGIBLE_MAKER: no done maker to review for ' + point + '/' + workstreamId);
   const targetMaker = targetMakerEp.id;
   const { reviewer, flags, mode } = resolveReviewer(data, detected);
-  const { id } = newEpisode(root, runId, { plugin: reviewer === 'deep-review-loop' ? 'deep-review' : reviewer, role: 'checker', kind: `${point}-review`, point, workstream: workstreamId, targetMaker, fence });
+  // P2 (hillclimb-ledger 2026-07-10, release-blocking): hill-climb run은 checker 계약(HILLCLIMB-001) 없이 checker를
+  // 만들 수 없다. `.deep-review/`는 gitignored라 fresh checkout에는 계약이 없고, deep-review는 무-contract일 때
+  // 계약 미강제로 리뷰를 진행한다 — 그 APPROVE는 hill-climbing 방벽 ③이 요구하는 계약-강제 리뷰가 아니다.
+  // tracked 소스(skills/deep-loop-workflow/references/contracts/HILLCLIMB-001.yaml)를 materialize한 뒤 dispatch해야
+  // 한다. preCheck 순서상 newEpisode 전에 throw — checker episode가 생성되지 않는다.
+  if (data.recipe?.id === 'harness-hill-climb') {
+    const contractPath = resolve(root, '.deep-review', 'contracts', 'HILLCLIMB-001.yaml');
+    let active = false;
+    if (existsSync(contractPath)) {
+      try { active = /^status:\s*active\s*$/m.test(readFileSync(contractPath, 'utf8')); } catch { active = false; }
+    }
+    if (!active) throw new Error('REVIEW_CONTRACT_MISSING: hill-climb run requires an active .deep-review/contracts/HILLCLIMB-001.yaml — materialize it from skills/deep-loop-workflow/references/contracts/HILLCLIMB-001.yaml before dispatching review');
+  }
   const skillByReviewer = {
     'deep-review-loop': 'deep-review:deep-review-loop',
     'codex-cross': 'codex:rescue',
     'subagent-checker': 'Task(code-reviewer)',
     'standalone': 'inline-review',
   };
-  const descriptor = { kind: reviewer === 'standalone' ? 'inline' : 'invoke_skill', skill: skillByReviewer[reviewer] || 'inline-review', args: flags.join(' '), mode, review_point: point, workstream: workstreamId };
+  // P1 방어-심층: resolveReviewer가 fail-closed라 여기 도달한 reviewer는 항상 맵에 있지만, 두 목록이 어긋나게
+  // 수정되는 회귀에서 inline-review로 조용히 강등되는 대신 명시 에러로 죽는다. newEpisode 전에 확인 — 미매핑
+  // reviewer로 episode를 만들지 않는다.
+  const skill = skillByReviewer[reviewer];
+  if (!skill) throw new Error(`REVIEWER_UNRECOGNIZED: '${reviewer}' resolved but has no dispatch mapping — KNOWN_REVIEWERS and skillByReviewer are out of sync`);
+  const { id } = newEpisode(root, runId, { plugin: reviewer === 'deep-review-loop' ? 'deep-review' : reviewer, role: 'checker', kind: `${point}-review`, point, workstream: workstreamId, targetMaker, fence });
+  const descriptor = { kind: reviewer === 'standalone' ? 'inline' : 'invoke_skill', skill, args: flags.join(' '), mode, review_point: point, workstream: workstreamId };
   return { checkerEpisodeId: id, reviewer, descriptor };
 }
 
