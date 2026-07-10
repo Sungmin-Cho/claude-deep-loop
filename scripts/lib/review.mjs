@@ -1,4 +1,4 @@
-import { readFileSync, realpathSync } from 'node:fs';
+import { readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { latestInsights } from './insights.mjs';
@@ -74,6 +74,18 @@ const KNOWN_REVIEWERS = ['deep-review-loop', 'codex-cross', 'subagent-checker', 
 // (repo checkout / plugin cache) 어디서든 kernel 상대 경로가 결정론적으로 해석된다.
 const TRACKED_CONTRACT_PATH = fileURLToPath(new URL('../../skills/deep-loop-workflow/references/contracts/HILLCLIMB-001.yaml', import.meta.url));
 
+// P2 codex r7: bare `--contract`(deep-review 파서가 selector를 소비하는 유일 신뢰 형태가 없음 —
+// SLICE-NNN 전용이라 HILLCLIMB-001을 지정할 수 없다)는 디렉터리의 모든 active 계약을 로드한다.
+// 따라서 "HILLCLIMB-001만 평가된다"는 contracts 디렉터리에 그 파일 외 다른 계약 yaml이 없어야
+// 성립한다 — dispatch·record 양쪽에서 확인한다.
+function contractsDirSolo(realContract) {
+  try {
+    const dir = realContract.slice(0, realContract.lastIndexOf(sep));
+    const self = realContract.slice(realContract.lastIndexOf(sep) + 1);
+    return readdirSync(dir).filter(f => /\.ya?ml$/i.test(f) && f !== self).length === 0;
+  } catch { return false; }
+}
+
 export function resolveReviewer(loop, detected = {}) {
   const r = loop.review || {};
   // 기본값은 필드 **부재**에만 적용한다 — `""`/`null` 같은 명시적 무효값을 `|| 'subagent-checker'`로
@@ -130,10 +142,21 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
   if (!workstreamId || !data.workstreams.find(w => w.id === workstreamId)) throw new Error(`WORKSTREAM_NOT_FOUND: ${workstreamId}`);
   // Derive the target maker: the latest done maker for this (workstreamId, point) that does NOT already have a bound terminal checker.
   const eps = data.episodes || [];
+  // P2 codex r7: hill-climb 마이그레이션 특례 — pre-patch 커널이 approve한 checker(contract 미pin)에 묶인
+  // maker는 makerReviewed=true라 재리뷰 불가, abandonEpisode는 terminal checker를 거부 → finish의
+  // hillclimb-contract-unpinned와 함께 사면초가가 된다. latest bound checker가 "approved인데 unpinned"인
+  // maker만 재적격으로 되돌린다(새 계약-pinned checker가 최신이 되면 finish 통과). rejected는 fix 경로 유지.
+  const legacyUnpinned = (m) => {
+    if (data.recipe?.id !== 'harness-hill-climb') return false;
+    const cs = eps.filter(e => e.role === 'checker' && e.target_maker === m.id && (e.status === 'approved' || e.status === 'rejected'));
+    if (!cs.length) return false;
+    const latest = cs.reduce((a, b) => (epOrder(a.id, b.id) >= 0 ? a : b));
+    return latest.status === 'approved' && !latest.contract?.sha256;
+  };
   const eligibleMakers = eps.filter(e =>
     e.role === 'maker' && e.status === 'done' &&
     e.workstream_id === workstreamId && e.point === point &&
-    !makerReviewed(data, e)
+    (!makerReviewed(data, e) || legacyUnpinned(e))
   );
   // Pick the latest episode via epOrder (hybrid numeric/string). Naive string `>` is WRONG here: ids are
   // zero-padded to only 3 digits, so '1000-x' < '999-x' lexicographically — at the 999→1000 boundary it
@@ -156,20 +179,17 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
   if (data.recipe?.id === 'harness-hill-climb') {
     // ① 계약을 소비할 수 있는 reviewer만 — subagent/codex-cross/standalone은 HILLCLIMB-001.yaml을 읽지
     //    않으므로 계약 파일이 존재해도 무계약 APPROVE가 된다. --contract 플래그 부재는 첫 실사용 시리즈의
-    //    재-init #2가 실측한 동일 결함. selector까지 검증한다(codex r5/r6): deep-review 문법상
-    //    `--contract SLICE-NNN`(공백 형태만 — `=` 형태는 downstream 파서가 소비하지 않아 무-contract로
-    //    새므로 전부 거부)은 그 slice만 로드하므로, 다른 selector는 토큰 존재 체크를 통과하면서
-    //    HILLCLIMB-001을 평가하지 않는 우회가 된다. 발생은 정확히 1회여야 하고(중복 발생 시 뒤의
-    //    selector가 이길 수 있다 — r6), selector는 생략(단독 `--contract` — materialize된 유일한 active
-    //    계약이 HILLCLIMB-001)이거나 정확히 HILLCLIMB-001이어야 한다.
+    //    재-init #2가 실측한 동일 결함. selector 검증(codex r5/r6/r7): deep-review 파서는
+    //    `--contract SLICE-[0-9]+`(공백 형태)만 selector로 소비한다 — `HILLCLIMB-001`은 selector로
+    //    파싱되지 않아(bare 취급 + 잔여 토큰 오염) 어떤 명시 selector도 신뢰할 수 없고, `=` 형태는
+    //    아예 소비되지 않아 무-contract로 새고, 중복 발생은 뒤 selector가 이길 수 있다. 따라서 허용은
+    //    **정확히 1회의 bare `--contract`뿐**이다 — "무엇이 로드되는가"는 아래 ②′의 contracts 디렉터리
+    //    유일성(HILLCLIMB-001.yaml 단독)이 결정론으로 보장한다.
     const cIdx = flags.reduce((acc, fl, i) => (fl === '--contract' || String(fl).startsWith('--contract=') ? [...acc, i] : acc), []);
-    let selectorOk = false;
-    if (cIdx.length === 1 && flags[cIdx[0]] === '--contract') {
-      const nxt = cIdx[0] + 1 < flags.length ? String(flags[cIdx[0] + 1]) : null;
-      selectorOk = nxt === null || nxt.startsWith('--') || nxt === 'HILLCLIMB-001';
-    }
-    if (reviewer !== 'deep-review-loop' || !selectorOk) {
-      throw new Error(`REVIEW_CONTRACT_UNENFORCEABLE: hill-climb run requires reviewer 'deep-review-loop' with exactly one space-form --contract flag selecting HILLCLIMB-001 (or no selector) (got '${reviewer}', flags [${flags.join(', ')}]) — re-init the run with a contract-capable review config`);
+    const bareOnly = cIdx.length === 1 && flags[cIdx[0]] === '--contract'
+      && (cIdx[0] + 1 >= flags.length || String(flags[cIdx[0] + 1]).startsWith('--'));
+    if (reviewer !== 'deep-review-loop' || !bareOnly) {
+      throw new Error(`REVIEW_CONTRACT_UNENFORCEABLE: hill-climb run requires reviewer 'deep-review-loop' with exactly one bare --contract flag (no selector — the deep-review parser only consumes SLICE-NNN selectors, so an explicit selector cannot pin HILLCLIMB-001) (got '${reviewer}', flags [${flags.join(', ')}]) — re-init the run with a contract-capable review config`);
     }
     // ② 게이트 위치 = 소비처. checker는 workstream worktree를 cwd로 deep-review를 실행하고 deep-review는
     //    cwd의 `.deep-review/contracts/`를 읽는다 — project-root의 사본을 게이트하면 "게이트는 통과했는데
@@ -188,7 +208,10 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
       contractOk = !!realContract && reportBoundToWorktree(root, realContract, wsRec.worktree)
         && readFileSync(realContract, 'utf8') === tracked
         && /^slice:\s*HILLCLIMB-001\s*$/m.test(tracked) && /^status:\s*active\s*$/m.test(tracked)
-        && /^criteria:/m.test(tracked) && /^\s*-\s+/m.test(tracked);
+        && /^criteria:/m.test(tracked) && /^\s*-\s+/m.test(tracked)
+        // ②′ 유일성(codex r7): bare `--contract`는 디렉터리의 모든 active 계약을 로드하므로,
+        //    "HILLCLIMB-001만 로드됨"은 contracts 디렉터리에 다른 계약 파일이 없어야 성립한다.
+        && contractsDirSolo(realContract);
       if (contractOk) trackedHash = contentHash(tracked);
     } catch { contractOk = false; }
     if (!contractOk) {
@@ -319,7 +342,8 @@ export function recordReviewOutcome(root, runId, { episodeId, workstreamId, poin
         try {
           const realC = containedRealFile(resolve(root), tgt.contract.path);   // symlink-escape 재검증 (r6)
           stillValid = !!realC && reportBoundToWorktree(root, realC, wsForReport.worktree)
-            && contentHash(readFileSync(realC, 'utf8')) === tgt.contract.sha256;
+            && contentHash(readFileSync(realC, 'utf8')) === tgt.contract.sha256
+            && contractsDirSolo(realC);   // dispatch~record 창에 다른 계약이 추가되면 bare --contract가 함께 로드 (r7)
         } catch { stillValid = false; }
         if (!stillValid) throw new Error(`REVIEW_CONTRACT_MISSING: contract ${tgt.contract.path} was removed or altered since dispatch (recorded sha256 mismatch) — re-materialize the tracked contract (그대로 복사), re-run the review, and record this SAME checker episode (it stays pending; do NOT dispatch a second checker)`);
       }

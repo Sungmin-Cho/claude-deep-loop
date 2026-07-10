@@ -237,17 +237,17 @@ test('P2: hill-climb run without the --contract flag fails closed', () => {
     /REVIEW_CONTRACT_UNENFORCEABLE/);
 });
 
-// codex r5/r6: `--contract <selector>`가 다른 slice를 지정하면 deep-review는 그 slice만 로드 —
-// 토큰 존재 체크만으로는 HILLCLIMB-001 미평가 APPROVE 우회가 된다. `=` 형태는 downstream 파서
-// (공백 형태만 소비)에 안 보여 무-contract로 새므로 전부 거부, 중복 발생은 뒤 selector가 이길 수
-// 있어 거부. 허용: 정확히 1회의 공백-형 `--contract` + selector 생략 또는 HILLCLIMB-001.
-test('P2: contract selector is normalized — other slices, = forms, and duplicates fail closed', () => {
+// codex r5/r6/r7: deep-review 파서는 `--contract SLICE-[0-9]+`(공백 형태)만 selector로 소비한다 —
+// 명시 selector(타-slice는 우회, HILLCLIMB-001은 파싱 불가로 bare 취급+토큰 오염), `=` 형태(아예
+// 미소비 → 무-contract), 중복(뒤 selector가 이김)은 전부 거부. 허용: 정확히 1회의 bare `--contract`.
+test('P2: contract flag must be exactly one bare --contract — any selector, = form, or duplicate fails closed', () => {
   const bad = [
     ['--contract', 'SLICE-999', '--codex-only'],
     ['--contract=SLICE-999', '--codex-only'],
     ['--contract=HILLCLIMB-001'],                                   // = 형태는 downstream이 소비하지 않음
+    ['--contract', 'HILLCLIMB-001', '--codex-only'],                // downstream이 selector로 파싱 못 함 (r7)
     ['--contract=HILLCLIMB-001', '--contract', 'SLICE-999'],        // 중복 — 뒤 selector가 이김
-    ['--contract', 'HILLCLIMB-001', '--contract', 'SLICE-999'],
+    ['--contract', '--contract'],                                    // 중복 bare
   ];
   for (const flags of bad) {
     const { root, runId, f } = seedRun({ reviewer: 'deep-review-loop', flags, recipe: 'harness-hill-climb' });
@@ -257,13 +257,54 @@ test('P2: contract selector is normalized — other slices, = forms, and duplica
       () => dispatchReview(root, runId, { point: 'design', workstreamId: ws, detected: { 'deep-review': true }, fence: f }),
       /REVIEW_CONTRACT_UNENFORCEABLE/, flags.join(' '));
   }
-  for (const flags of [['--contract', 'HILLCLIMB-001', '--codex-only'], ['--contract', '--codex-only'], ['--contract']]) {
+  for (const flags of [['--contract', '--codex-only'], ['--contract']]) {
     const { root, runId, f } = seedRun({ reviewer: 'deep-review-loop', flags, recipe: 'harness-hill-climb' });
     const ws = doneMakerOn(root, runId, f);
     materializeContract(root, '.claude/worktrees/w-design');
     const r = dispatchReview(root, runId, { point: 'design', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
     assert.equal(r.descriptor.skill, 'deep-review:deep-review-loop', flags.join(' '));
   }
+});
+
+// codex r7: bare --contract는 모든 active 계약을 로드 — contracts 디렉터리에 다른 계약 yaml이 있으면
+// HILLCLIMB-001 단독 평가가 보장되지 않는다. dispatch·record 양쪽 fail-closed.
+test('P2: a second contract yaml in the contracts dir fails closed at dispatch and at record', () => {
+  const { root, runId, f } = seedRun({ reviewer: 'deep-review-loop', flags: ['--contract', '--codex-only'], recipe: 'harness-hill-climb' });
+  const ws = doneMakerOn(root, runId, f);
+  materializeContract(root, '.claude/worktrees/w-design');
+  const dir = join(root, '.claude/worktrees/w-design', '.deep-review', 'contracts');
+  writeFileSync(join(dir, 'SLICE-001.yaml'), 'slice: SLICE-001\nstatus: active\ncriteria: []\n');
+  assert.throws(
+    () => dispatchReview(root, runId, { point: 'design', workstreamId: ws, detected: { 'deep-review': true }, fence: f }),
+    /REVIEW_CONTRACT_MISSING/);
+  // dispatch 후 record 전에 추가된 경우 — record가 막는다
+  rmSync(join(dir, 'SLICE-001.yaml'));
+  const r = dispatchReview(root, runId, { point: 'design', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
+  writeFileSync(join(dir, 'SLICE-001.yaml'), 'slice: SLICE-001\nstatus: active\ncriteria: []\n');
+  const report = join('.claude/worktrees/w-design', 'review-report.md');
+  writeFileSync(join(root, report), '# review report\nAPPROVE');
+  assert.throws(
+    () => recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'design', verdict: 'APPROVE', proof: { report }, fence: f }),
+    /REVIEW_CONTRACT_MISSING/);
+});
+
+// codex r7: legacy approved(unpinned) maker는 재리뷰 재적격 — 새 계약-pinned checker가 최신이 되면
+// finish의 hillclimb-contract-unpinned가 해소된다(사면초가 마이그레이션 경로).
+test('P2: legacy unpinned-approved maker is re-review eligible and finish unblocks after pinned approval', () => {
+  const { root, runId, f } = seedRun({ reviewer: 'deep-review-loop', flags: ['--contract', '--codex-only'], recipe: 'harness-hill-climb' });
+  const ws = doneMakerOn(root, runId, f);
+  const makerId = readState(root, runId).data.episodes.find(e => e.role === 'maker').id;
+  const { id: legacyId } = newEpisode(root, runId, { plugin: 'deep-review', role: 'checker', kind: 'design-review', point: 'design', workstream: ws, targetMaker: makerId, fence: f });
+  const d = readState(root, runId).data;
+  d.episodes.find(e => e.id === legacyId).status = 'approved';   // pre-patch 커널 잔재 재현 (contract 미pin)
+  writeState(root, runId, d);
+  assert.ok(finishProofState(readState(root, runId).data).missing.includes('hillclimb-contract-unpinned'));
+  materializeContract(root, '.claude/worktrees/w-design');
+  const r = dispatchReview(root, runId, { point: 'design', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
+  const report = join('.claude/worktrees/w-design', 'review-report.md');
+  writeFileSync(join(root, report), '# review report\nAPPROVE');
+  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'design', verdict: 'APPROVE', proof: { report }, fence: f });
+  assert.ok(!finishProofState(readState(root, runId).data).missing.includes('hillclimb-contract-unpinned'));
 });
 
 // codex r6: `.deep-review`가 worktree 밖을 가리키는 symlink면 lexical resolve는 외부 사본을 valid로
