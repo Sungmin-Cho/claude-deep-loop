@@ -276,7 +276,7 @@ test('emitHandoff: lease stolen before call → fenced at reserve, new owner lea
   const CHILD2 = 'CHILD2-ACTOR';
   // Lease is released and taken by another actor (generation bumps to 2)
   releaseLease(root, runId, { owner: runId, generation: 1 });
-  acquireLease(root, runId, { owner: CHILD2, expectGeneration: 1, now });
+  acquireLease(root, runId, { owner: CHILD2, expectGeneration: 1, runtime: 'claude', now });
   // emitHandoff with stale expect (original owner/gen=1) → fenced at reserveHandoff (generation mismatch)
   const r = emitHandoff(root, runId, { trigger: 'milestone', now, expect: { owner: runId, generation: 1 } });
   assert.equal(r.ok, false);

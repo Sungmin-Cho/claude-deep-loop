@@ -28,7 +28,7 @@ test('newWorkstream with stale fence throws LEASE_FENCED', () => {
   // Simulate child takeover: release gen1, acquire gen2
   releaseLease(root, runId, { owner, generation: gen1 });
   const newOwner = 'child-run-id-01';
-  acquireLease(root, runId, { owner: newOwner, expectGeneration: gen1 });
+  acquireLease(root, runId, { owner: newOwner, expectGeneration: gen1, runtime: 'claude' });
 
   // Old parent tries to mutate with stale fence (gen1) — must throw LEASE_FENCED
   assert.throws(
@@ -58,7 +58,7 @@ test('setWorkstreamStatus with stale fence throws LEASE_FENCED', () => {
 
   // Simulate child takeover
   releaseLease(root, runId, { owner, generation: gen1 });
-  acquireLease(root, runId, { owner: 'child-run-002', expectGeneration: gen1 });
+  acquireLease(root, runId, { owner: 'child-run-002', expectGeneration: gen1, runtime: 'claude' });
 
   assert.throws(
     () => setWorkstreamStatus(root, runId, id, 'in_progress', { fence: { owner, generation: gen1, intent: 'business' } }),
@@ -76,7 +76,7 @@ test('recordWorkstreamTerminal with stale fence throws LEASE_FENCED', () => {
 
   // Simulate child takeover
   releaseLease(root, runId, { owner, generation: gen1 });
-  acquireLease(root, runId, { owner: 'child-run-003', expectGeneration: gen1 });
+  acquireLease(root, runId, { owner: 'child-run-003', expectGeneration: gen1, runtime: 'claude' });
 
   assert.throws(
     () => recordWorkstreamTerminal(root, runId, id, { status: 'abandoned', proof: { reason: 'x' }, fence: { owner, generation: gen1, intent: 'business' } }),
@@ -92,7 +92,7 @@ test('newEpisode with stale fence throws LEASE_FENCED', () => {
 
   // Simulate child takeover
   releaseLease(root, runId, { owner, generation: gen1 });
-  acquireLease(root, runId, { owner: 'child-run-004', expectGeneration: gen1 });
+  acquireLease(root, runId, { owner: 'child-run-004', expectGeneration: gen1, runtime: 'claude' });
 
   assert.throws(
     () => newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation', fence: { owner, generation: gen1, intent: 'business' } }),
@@ -110,7 +110,7 @@ test('recordEpisode with stale fence throws LEASE_FENCED', () => {
 
   // Simulate child takeover
   releaseLease(root, runId, { owner, generation: gen1 });
-  acquireLease(root, runId, { owner: 'child-run-005', expectGeneration: gen1 });
+  acquireLease(root, runId, { owner: 'child-run-005', expectGeneration: gen1, runtime: 'claude' });
 
   assert.throws(
     () => recordEpisode(root, runId, id, { status: 'in_progress', fence: { owner, generation: gen1, intent: 'business' } }),
@@ -134,7 +134,7 @@ test('recordReviewOutcome with stale fence throws LEASE_FENCED', () => {
 
   // Simulate child takeover
   releaseLease(root, runId, { owner, generation: gen1 });
-  acquireLease(root, runId, { owner: 'child-run-006', expectGeneration: gen1 });
+  acquireLease(root, runId, { owner: 'child-run-006', expectGeneration: gen1, runtime: 'claude' });
 
   assert.throws(
     () => recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'plan', verdict: 'APPROVE', fence: { owner, generation: gen1, intent: 'business' } }),

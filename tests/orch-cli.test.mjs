@@ -110,7 +110,7 @@ test('handoff emit via CLI sets releasing', () => {
 test('lease acquire --owner (valueless) exits with code 3', () => {
   const { root, runId } = seed();
   let code = 0;
-  try { run(root, ['lease', 'acquire', '--owner', '--generation', '1', '--run-id', runId]); }
+  try { run(root, ['lease', 'acquire', '--owner', '--generation', '1', '--runtime', 'claude', '--run-id', runId]); }
   catch (e) { code = e.status; }
   assert.equal(code, 3);
 });
@@ -119,7 +119,7 @@ test('lease acquire --owner (valueless) exits with code 3', () => {
 test('lease acquire (missing --owner) exits with code 3', () => {
   const { root, runId } = seed();
   let code = 0;
-  try { run(root, ['lease', 'acquire', '--generation', '1', '--run-id', runId]); }
+  try { run(root, ['lease', 'acquire', '--generation', '1', '--runtime', 'claude', '--run-id', runId]); }
   catch (e) { code = e.status; }
   assert.equal(code, 3);
 });

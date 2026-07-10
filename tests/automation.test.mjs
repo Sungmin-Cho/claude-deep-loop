@@ -63,7 +63,7 @@ test('driveHeadless resumes pending handoff with measured resume command', () =>
       assert.ok(argStr.includes('deep-loop-resume'), 'resume command must reference deep-loop-resume');
       assert.ok(entry.argv.includes('--output-format'), 'must include --output-format flag for measurement');
       // Simulate child calling /deep-loop-resume → acquires lease (generation+1)
-      acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, now: NOW1 });
+      acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, runtime: 'claude', now: NOW1 });
       return { ok: true, usage: { num_turns: 2, tokens: 50 } };
     },
   });
@@ -79,7 +79,7 @@ test('driveHeadless commits measured usage to budget on success', () => {
     now: NOW1,
     spawnFn: () => {
       // Simulate child calling /deep-loop-resume → acquires lease (generation+1)
-      acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, now: NOW1 });
+      acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, runtime: 'claude', now: NOW1 });
       return { ok: true, usage: { num_turns: 2, tokens: 50 } };
     },
   });
@@ -141,7 +141,7 @@ test('driveHeadless is idempotent — second call returns no-pending-handoff aft
   const spawnFn = () => {
     spawnCount++;
     // Child acquires the lease (generation+1) so the second call sees no pending handoff.
-    acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, now: NOW1 });
+    acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, runtime: 'claude', now: NOW1 });
     return { ok: true, usage: { num_turns: 3, tokens: 60 } };
   };
 
@@ -181,7 +181,7 @@ test('driveHeadless does not throw when post-resume lease fenced (child acquired
     now: NOW1,
     spawnFn: () => {
       // Child acquires the lease (generation+1) — leaseMovedForward=true → proceed to record.
-      acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, now: NOW1 });
+      acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, runtime: 'claude', now: NOW1 });
       return { ok: true, usage: { num_turns: 4, tokens: 100 } };
     },
   });
@@ -198,7 +198,7 @@ test('driveHeadless fails closed (pauses) when measurement fails after the child
   const r = driveHeadless({ root, now: NOW1, spawnFn: () => {
     // Simulate: the resume child takes over the releasing lease (generation+1), then the process
     // times out / is unmeasurable — spawnFn returns {ok:false} after the child already acquired.
-    acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, now: NOW1 });
+    acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, runtime: 'claude', now: NOW1 });
     return { ok: false, reason: 'unmeasurable-fail-closed' };
   }});
   assert.equal(r.ok, false);
@@ -271,7 +271,7 @@ test('driveHeadless resumes headless-intended handoff (resume_policy=headless)',
       spawnCalled = true;
       assert.ok(entry.argv.join(' ').includes('deep-loop-resume'), 'must invoke resume command');
       // Simulate child calling /deep-loop-resume → acquires lease (generation+1)
-      acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, now: NOW1 });
+      acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, runtime: 'claude', now: NOW1 });
       return { ok: true, usage: { num_turns: 1, tokens: 10 } };
     },
   });
@@ -329,7 +329,7 @@ test('handoff emit derives resume_policy=headless from spawn_style without --hea
     now: NOW1,
     spawnFn: () => {
       // Simulate child calling /deep-loop-resume → acquires lease (generation+1)
-      acquireLease(root, runId, { owner: childRunId2, expectGeneration: 1, now: NOW1 });
+      acquireLease(root, runId, { owner: childRunId2, expectGeneration: 1, runtime: 'claude', now: NOW1 });
       return { ok: true, usage: { num_turns: 1, tokens: 10 } };
     },
   });
@@ -346,7 +346,7 @@ test('driveHeadless: fail-closed-terminal when spawn fails and run reached compl
   const { root, runId, childRunId } = seedRunWithHandoff();
   const r = driveHeadless({ root, now: NOW1, spawnFn: () => {
     // Child acquires the lease (generation bumps to 2)
-    acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, now: NOW1 });
+    acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, runtime: 'claude', now: NOW1 });
     // Then the run reaches terminal status (completed)
     const { data } = readState(root, runId);
     data.status = 'completed';
@@ -366,7 +366,7 @@ test('driveHeadless: fresh-fence pause when spawn fails, child acquired, run non
   const { root, runId, childRunId } = seedRunWithHandoff();
   const r = driveHeadless({ root, now: NOW1, spawnFn: () => {
     // Child acquires the lease (generation bumps to 2), run stays 'running'
-    acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, now: NOW1 });
+    acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, runtime: 'claude', now: NOW1 });
     return { ok: false, reason: 'unmeasurable-fail-closed' };
   }});
   assert.equal(r.ok, false);
@@ -403,7 +403,7 @@ test('driveHeadless: resumed with cost when child acquires lease (acquisition pr
     root, now: NOW1,
     spawnFn: () => {
       // Child calls /deep-loop-resume → acquires the lease (generation+1)
-      acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, now: NOW1 });
+      acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, runtime: 'claude', now: NOW1 });
       return { ok: true, usage: { num_turns: 2, tokens: 50 } };
     },
   });
@@ -433,7 +433,7 @@ function seedRun2ndGenHandoff() {
 
   // child1 acquires the lease (simulates /deep-loop-resume in the child session).
   // After this: owner_run_id=child1, generation=2, handoff_phase='acquired'.
-  const acq = acquireLease(root, runId, { owner: child1RunId, expectGeneration: 1, now: NOW1 });
+  const acq = acquireLease(root, runId, { owner: child1RunId, expectGeneration: 1, runtime: 'claude', now: NOW1 });
   assert.ok(acq.ok, `child1 acquireLease must succeed: ${acq.reason}`);
   assert.equal(acq.generation, 2);
 
@@ -495,7 +495,7 @@ test('driveHeadless: 2nd-gen child2 acquires → action:resumed + cost recorded 
     root, now: NOW1 + 2000,
     spawnFn: () => {
       // child2 calls /deep-loop-resume → acquires the lease (generation 2→3).
-      const acq = acquireLease(root, runId, { owner: child2RunId, expectGeneration: 2, now: NOW1 + 3000 });
+      const acq = acquireLease(root, runId, { owner: child2RunId, expectGeneration: 2, runtime: 'claude', now: NOW1 + 3000 });
       assert.ok(acq.ok, `child2 acquireLease must succeed: ${acq.reason}`);
       assert.equal(acq.generation, 3, 'generation must bump to 3 after child2 acquisition');
       return { ok: true, usage: { num_turns: 3, tokens: 75 } };
@@ -516,7 +516,7 @@ test('driveHeadless: child finishes the run → recordCost swallowed via LEASE_F
     now: NOW1,
     spawnFn: () => {
       // 자식이 acquire 후 작업을 끝내고 run을 terminal로 전이시킨 시나리오
-      acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, now: NOW1 });
+      acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, runtime: 'claude', now: NOW1 });
       const { data } = readState(root, runId);
       data.status = 'completed';
       writeState(root, runId, data);

@@ -34,6 +34,18 @@ test('leaseCheck passes for current owner+generation, rejects mismatch; active o
   assert.equal(leaseCheck(data, { owner: runId, generation: 1 }).ok, true);
 });
 
+test('leaseCheck optionally fences a mismatched runtime before owner/generation and preserves matching semantics', () => {
+  const { root, runId } = seed();
+  const { data } = readState(root, runId);
+  assert.deepEqual(
+    leaseCheck(data, { owner: 'OTHER', generation: 99, runtime: 'codex' }),
+    { ok: false, reason: 'RUNTIME_FENCED', expected: 'claude', actual: 'codex' },
+  );
+  assert.equal(leaseCheck(data, { owner: 'OTHER', generation: 1, runtime: 'claude' }).reason, 'owner-mismatch');
+  assert.equal(leaseCheck(data, { owner: runId, generation: 2, runtime: 'claude' }).reason, 'generation-mismatch');
+  assert.equal(leaseCheck(data, { owner: runId, generation: 1, runtime: 'claude' }).ok, true);
+});
+
 test('reserveHandoff dedups concurrent triggers (PreCompact no-op after Decide)', () => {
   const { root, runId } = seed();
   const decide = reserveHandoff(root, runId, { trigger: 'milestone' });
@@ -63,8 +75,8 @@ test('acquireLease: child takes over released lease, generation+1; stale generat
   // parent releases (after spawning a child)
   releaseLease(root, runId, { owner: runId, generation: 1 });
   // wrong expectGeneration → fenced
-  assert.equal(acquireLease(root, runId, { owner: 'CHILD', expectGeneration: 5 }).ok, false);
-  const ok = acquireLease(root, runId, { owner: 'CHILD', expectGeneration: 1 });
+  assert.equal(acquireLease(root, runId, { owner: 'CHILD', expectGeneration: 5, runtime: 'claude' }).ok, false);
+  const ok = acquireLease(root, runId, { owner: 'CHILD', expectGeneration: 1, runtime: 'claude' });
   assert.equal(ok.ok, true);
   assert.equal(ok.generation, 2);
   const lease = readState(root, runId).data.session_chain.lease;
@@ -77,16 +89,16 @@ test('acquireLease: child takes over released lease, generation+1; stale generat
 test('acquireLease: active lease is never stolen (even past expires_at); released is takeable', () => {
   const { root, runId } = seed();
   // active → not takeable by another owner
-  assert.equal(acquireLease(root, runId, { owner: 'CHILD', expectGeneration: 1 }).ok, false);
+  assert.equal(acquireLease(root, runId, { owner: 'CHILD', expectGeneration: 1, runtime: 'claude' }).ok, false);
   // 심지어 active 에 과거 expires_at 이 있어도 탈취 불가 (active 는 deadline 없음 — Codex r2 🔴2)
   const { data } = readState(root, runId);
   data.session_chain.lease.expires_at = new Date(Date.parse('2026-06-24T00:00:00Z') + 1000).toISOString();
   writeState(root, runId, data);
   const future = Date.parse('2026-06-24T01:00:00Z');
-  assert.equal(acquireLease(root, runId, { owner: 'CHILD', expectGeneration: 1, now: future }).ok, false);
+  assert.equal(acquireLease(root, runId, { owner: 'CHILD', expectGeneration: 1, runtime: 'claude', now: future }).ok, false);
   // released → takeable, generation+1
   releaseLease(root, runId, { owner: runId, generation: 1 });
-  const ok = acquireLease(root, runId, { owner: 'CHILD', expectGeneration: 1, now: future });
+  const ok = acquireLease(root, runId, { owner: 'CHILD', expectGeneration: 1, runtime: 'claude', now: future });
   assert.equal(ok.ok, true);
   assert.equal(ok.generation, 2);
   assert.equal(readState(root, runId).data.session_chain.lease.expires_at, null);  // active = no deadline
@@ -114,9 +126,9 @@ test('emitted sets expires_at → child can take over after stale TTL without ex
   assert.equal(lease.state, 'releasing');
   assert.ok(lease.expires_at, 'expires_at must be set on emitted');
   // 부모가 releaseLease 를 못 하고 죽음. TTL(900s) 경과 전: 인수 불가(releasing 은 takeable 아님)
-  assert.equal(acquireLease(root, runId, { owner: 'CHILD', expectGeneration: 1, now: now0 + 1000 }).ok, false);
+  assert.equal(acquireLease(root, runId, { owner: 'CHILD', expectGeneration: 1, runtime: 'claude', now: now0 + 1000 }).ok, false);
   // TTL 경과 후: stale → 인수 가능
-  const ok = acquireLease(root, runId, { owner: 'CHILD', expectGeneration: 1, now: now0 + 901 * 1000 });
+  const ok = acquireLease(root, runId, { owner: 'CHILD', expectGeneration: 1, runtime: 'claude', now: now0 + 901 * 1000 });
   assert.equal(ok.ok, true);
   assert.equal(ok.generation, 2);
 });
@@ -192,7 +204,7 @@ test('reserved child acquiring a preserve-paused run unpauses it (R14-RR)', () =
   seedPreservePaused(root, runId, 'C');
   const now0 = Date.parse('2026-06-24T12:00:00Z');
 
-  const r = acquireLease(root, runId, { owner: 'C', expectGeneration: 1, now: now0 });
+  const r = acquireLease(root, runId, { owner: 'C', expectGeneration: 1, runtime: 'claude', now: now0 });
   assert.equal(r.ok, true);
   assert.equal(r.generation, 2);
   const { data } = readState(root, runId);
@@ -206,7 +218,7 @@ test('non-reserved owner still cannot acquire preserve-paused run (expires_at=nu
   const { root, runId } = seed();
   seedPreservePaused(root, runId, 'C');
   // expires_at=null → expired=false → only reserved child 'C' is takeable; 'OTHER' is not
-  const r = acquireLease(root, runId, { owner: 'OTHER', expectGeneration: 1, now: Date.parse('2099-01-01T00:00:00Z') });
+  const r = acquireLease(root, runId, { owner: 'OTHER', expectGeneration: 1, runtime: 'claude', now: Date.parse('2099-01-01T00:00:00Z') });
   assert.equal(r.ok, false);
   // status must remain paused (no spurious change)
   assert.equal(readState(root, runId).data.status, 'paused');
@@ -231,7 +243,7 @@ test('recover round-trip: released-paused run acquired by fresh owner unpauses (
   };
   writeState(root, runId, d0);
 
-  const r = acquireLease(root, runId, { owner: 'FRESH', expectGeneration: 1 });
+  const r = acquireLease(root, runId, { owner: 'FRESH', expectGeneration: 1, runtime: 'claude' });
   assert.equal(r.ok, true);
   const { data } = readState(root, runId);
   assert.equal(data.status, 'running');
@@ -246,7 +258,7 @@ test('terminal guard: stopped run rejects acquireLease with run-terminal', () =>
   d0.status = 'stopped';
   writeState(root, runId, d0);
 
-  const r = acquireLease(root, runId, { owner: 'NEW', expectGeneration: 1 });
+  const r = acquireLease(root, runId, { owner: 'NEW', expectGeneration: 1, runtime: 'claude' });
   assert.equal(r.ok, false);
   assert.equal(r.reason, 'run-terminal');
 });
@@ -258,7 +270,7 @@ test('terminal guard: completed run rejects acquireLease with run-terminal', () 
   d0.status = 'completed';
   writeState(root, runId, d0);
 
-  const r = acquireLease(root, runId, { owner: 'NEW', expectGeneration: 1 });
+  const r = acquireLease(root, runId, { owner: 'NEW', expectGeneration: 1, runtime: 'claude' });
   assert.equal(r.ok, false);
   assert.equal(r.reason, 'run-terminal');
 });
@@ -266,7 +278,7 @@ test('terminal guard: completed run rejects acquireLease with run-terminal', () 
 test('regression: non-paused run acquire leaves status running, no spurious pause_reason write', () => {
   const { root, runId } = seed();
   releaseLease(root, runId, { owner: runId, generation: 1 });
-  const r = acquireLease(root, runId, { owner: 'CHILD', expectGeneration: 1 });
+  const r = acquireLease(root, runId, { owner: 'CHILD', expectGeneration: 1, runtime: 'claude' });
   assert.equal(r.ok, true);
   const { data } = readState(root, runId);
   assert.equal(data.status, 'running');
@@ -287,7 +299,7 @@ test('releaseLease on paused run returns RUN_PAUSED; lease NOT released; acquire
   assert.equal(lease.state, 'active');
   assert.equal(lease.owner_run_id, runId);
   // acquireLease by a new owner must still be blocked (run is paused, lease not released → not takeable)
-  const acq = acquireLease(root, runId, { owner: 'BYPASS', expectGeneration: 1 });
+  const acq = acquireLease(root, runId, { owner: 'BYPASS', expectGeneration: 1, runtime: 'claude' });
   assert.equal(acq.ok, false);
   assert.ok(acq.reason !== 'acquired', 'paused run must not be re-acquired via bypassed release');
   // run status remains paused
@@ -351,12 +363,73 @@ test('acquireLease: active-terminal rejects with run-terminal; generation fence-
   const gen = data.session_chain.lease.generation;
   makeTerminal(root, runId, 'completed');   // lease는 active 그대로 (정상 finish 상태)
   // ① same-owner acquire → already-owned 위장 금지
-  assert.equal(acquireLease(root, runId, { owner, expectGeneration: gen }).reason, 'run-terminal');
+  assert.equal(acquireLease(root, runId, { owner, expectGeneration: gen, runtime: 'claude' }).reason, 'run-terminal');
   // ② 타-owner + 올바른 generation → run-terminal
-  assert.equal(acquireLease(root, runId, { owner: 'other-run', expectGeneration: gen }).reason, 'run-terminal');
+  assert.equal(acquireLease(root, runId, { owner: 'other-run', expectGeneration: gen, runtime: 'claude' }).reason, 'run-terminal');
   // ③ 타-owner + stale generation → generation-mismatch 우선 (fence-first)
-  assert.equal(acquireLease(root, runId, { owner: 'other-run', expectGeneration: gen + 9 }).reason, 'generation-mismatch');
+  assert.equal(acquireLease(root, runId, { owner: 'other-run', expectGeneration: gen + 9, runtime: 'claude' }).reason, 'generation-mismatch');
   // 비terminal 회귀: same-owner active 멱등 불변
   const { root: r2, runId: run2 } = seed();
-  assert.equal(acquireLease(r2, run2, { owner: run2, expectGeneration: 1 }).reason, 'already-owned');
+  assert.equal(acquireLease(r2, run2, { owner: run2, expectGeneration: 1, runtime: 'claude' }).reason, 'already-owned');
+});
+
+test('acquireLease checks runtime before same-owner idempotency', () => {
+  const { root, runId } = seed();
+  assert.deepEqual(
+    acquireLease(root, runId, { owner: runId, expectGeneration: 1, runtime: 'codex' }),
+    { ok: false, reason: 'RUNTIME_FENCED', expected: 'claude', actual: 'codex' },
+  );
+  assert.equal(
+    acquireLease(root, runId, { owner: runId, expectGeneration: 1, runtime: 'claude' }).reason,
+    'already-owned',
+  );
+});
+
+test('acquireLease checks runtime before stale generation and paused unpause without mutating state', () => {
+  const { root, runId } = seed();
+  const { data } = readState(root, runId);
+  data.status = 'paused';
+  data.pause_reason = 'recovered:awaiting-resume';
+  data.session_chain.lease.state = 'released';
+  data.session_chain.lease.resume_policy = 'human';
+  writeState(root, runId, data);
+  const before = structuredClone(readState(root, runId).data);
+
+  assert.deepEqual(
+    acquireLease(root, runId, { owner: 'FRESH', expectGeneration: 99, runtime: 'codex' }),
+    { ok: false, reason: 'RUNTIME_FENCED', expected: 'claude', actual: 'codex' },
+  );
+  const afterMismatch = readState(root, runId).data;
+  assert.deepEqual(afterMismatch, before);
+  assert.equal(afterMismatch.session_chain.lease.generation, before.session_chain.lease.generation);
+  assert.equal(afterMismatch.status, before.status);
+  assert.equal(afterMismatch.pause_reason, before.pause_reason);
+  assert.equal(afterMismatch.session_chain.lease.resume_policy, before.session_chain.lease.resume_policy);
+
+  assert.equal(
+    acquireLease(root, runId, { owner: 'FRESH', expectGeneration: 99, runtime: 'claude' }).reason,
+    'generation-mismatch',
+  );
+  assert.equal(readState(root, runId).data.status, 'paused');
+
+  const acquired = acquireLease(root, runId, { owner: 'FRESH', expectGeneration: 1, runtime: 'claude' });
+  assert.equal(acquired.reason, 'acquired');
+  assert.equal(readState(root, runId).data.status, 'running');
+});
+
+test('acquireLease treats only Claude as matching legacy runtime state', () => {
+  const { root, runId } = seed();
+  const { data } = readState(root, runId);
+  delete data.autonomy.session_runtime;
+  delete data.autonomy.runtime_source;
+  writeState(root, runId, data);
+
+  assert.deepEqual(
+    acquireLease(root, runId, { owner: runId, expectGeneration: 1, runtime: 'codex' }),
+    { ok: false, reason: 'RUNTIME_FENCED', expected: 'claude', actual: 'codex' },
+  );
+  assert.equal(
+    acquireLease(root, runId, { owner: runId, expectGeneration: 1, runtime: 'claude' }).reason,
+    'already-owned',
+  );
 });

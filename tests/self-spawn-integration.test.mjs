@@ -165,7 +165,7 @@ test('(R14-RR) no-launcher attended round-trip: respawn no-launcher → pauseRun
   assert.equal(dPaused.session_chain.lease.handoff_child_run_id, h.childRunId, 'reserved child intact after preserve pause');
 
   // Step 5: reserved child (/deep-loop-resume) calls acquireLease — succeeds and UNPAUSES the run
-  const acq = acquireLease(root, runId, { owner: h.childRunId, expectGeneration: 1, now: NOW1 + 5000 });
+  const acq = acquireLease(root, runId, { owner: h.childRunId, expectGeneration: 1, runtime: 'claude', now: NOW1 + 5000 });
   assert.equal(acq.ok, true, 'reserved child must be able to acquire the releasing lease');
   assert.equal(acq.generation, 2, 'generation must advance to 2 on acquire');
 
@@ -240,7 +240,7 @@ test('(R12-LL) gate-blocked rollback: budget exhausted → rollback + paused, ol
 
   // Step 4: old child (invalidated) tries acquireLease → REJECTED
   // Lease is active (not releasing/released) and owner is the parent → not takeable by the old child.
-  const rejectAcq = acquireLease(root, runId, { owner: h.childRunId, expectGeneration: 1, now: NOW1 + 5000 });
+  const rejectAcq = acquireLease(root, runId, { owner: h.childRunId, expectGeneration: 1, runtime: 'claude', now: NOW1 + 5000 });
   assert.equal(rejectAcq.ok, false, 'invalidated child must NOT be able to acquire the rolled-back lease');
   assert.equal(rejectAcq.reason, 'lease-not-takeable', `expected lease-not-takeable, got: ${rejectAcq.reason}`);
   // Run remains paused (no side-effect from the failed acquire attempt)

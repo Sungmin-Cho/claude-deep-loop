@@ -191,7 +191,7 @@ test('#3(Fix1): a later session budget record does not absorb an earlier session
   assert.equal(readState(root, runId).data.budget.spent, 3 * MUTATION_TURN_FLOOR);
   // advance the lease: release gen 1, a child acquires (gen 2)
   releaseLease(root, runId, { owner: runId, generation: 1 });
-  acquireLease(root, runId, { owner: 'CHILD-ACTOR', expectGeneration: 1, now });
+  acquireLease(root, runId, { owner: 'CHILD-ACTOR', expectGeneration: 1, runtime: 'claude', now });
   // gen 2 reports 5 turns — its own tick floor is 0, so it must NOT absorb the gen-1 floors
   recordCost(root, runId, { turns: 5, tokens: 0, fence: { owner: 'CHILD-ACTOR', generation: 2, intent: 'business' } });
   assert.equal(readState(root, runId).data.budget.spent, 3 * MUTATION_TURN_FLOOR + 5, 'gen-1 floors survive; gen-2 report adds max(5, 0)=5 on top');

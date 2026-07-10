@@ -103,6 +103,16 @@ function strArg(f, name) {
   if (typeof v !== 'string' || v.length === 0) { error('INVALID_' + name.toUpperCase().replace(/-/g, '_') + ': must be a non-empty string'); process.exit(3); }
   return v;
 }
+function classifyKernelError(e) {
+  const message = String(e?.message || e);
+  if (/^(?:LEASE_FENCED|FENCE_REQUIRED|RUNTIME_FENCED|PROJECT_ROOT_FENCED)(?::|$)/.test(message)) {
+    return { code: 3, message };
+  }
+  if (/^(?:INVALID_NOW|INVALID_RUNTIME(?:_STATE)?|PROJECT_ROOT_UNRESOLVABLE)(?::|$)/.test(message)) {
+    return { code: 1, message };
+  }
+  return null;
+}
 function requireLease(root, runId, f, intent = 'business') {
   strArg(f, 'owner');
   const generation = intArg(f, 'generation');
@@ -176,11 +186,21 @@ const handlers = {
     const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
     if (verb === 'check') { const { data } = readState(root, runId); json(leaseCheck(data, { owner: strArg(f, 'owner'), generation: intArg(f, 'generation') })); return 0; }
     if (verb === 'acquire') {
-      const r = acquireLease(root, runId, { owner: strArg(f, 'owner'), expectGeneration: intArg(f, f['expect-generation'] !== undefined ? 'expect-generation' : 'generation') });
+      const owner = strArg(f, 'owner');
+      const expectGeneration = intArg(f, f['expect-generation'] !== undefined ? 'expect-generation' : 'generation');
+      const runtime = reqStr(f, 'runtime');
+      if (!runtime) { error('USAGE: --runtime <claude|codex> is required'); return 2; }
+      let r;
+      try { r = acquireLease(root, runId, { owner, expectGeneration, runtime }); }
+      catch (e) {
+        const classified = classifyKernelError(e);
+        if (!classified) throw e;
+        error(classified.message); return classified.code;
+      }
       json(r);
-      // v1.6 (spec §2.3-6 CLI 매핑): terminal 거부만 exit 3 — resume의 소유권 인수 경계에서 성공-모양(exit 0)
-      // 프로세스로 위장 금지 (respawn outcome:'terminal'→3과 동일 채널). 그 외 ok:false는 기존 exit 0 + JSON 유지.
-      return (r.ok === false && r.reason === 'run-terminal') ? 3 : 0;
+      // terminal/runtime fence는 exit 3 — resume의 소유권 인수 경계에서 성공-모양(exit 0)으로 위장 금지.
+      // 그 외 ok:false(generation/takeability)는 기존 exit 0 + JSON 계약을 유지한다.
+      return (r.ok === false && (r.reason === 'run-terminal' || r.reason === 'RUNTIME_FENCED')) ? 3 : 0;
     }
     if (verb === 'release') { json(releaseLease(root, runId, { owner: strArg(f, 'owner'), generation: intArg(f, 'generation') })); return 0; }
     error(`unknown lease verb: ${verb}`); return 2;
@@ -618,11 +638,12 @@ const handlers = {
 
 const fn = handlers[sub];
 if (!fn) { error(`unknown subcommand: ${sub ?? '<none>'}`); process.exit(2); }
-// INVALID_NOW만 exit 1로 변환하는 좁은 catch — 그 외 예외는 기존 fail-stop(uncaught) 그대로 재-throw
+// 명시적으로 분류된 커널 계약 오류만 변환하는 좁은 catch — 그 외 예외는 기존 fail-stop(uncaught) 그대로 재-throw
 // (integrity 등의 detect-and-fail-stop 모델을 넓은 catch로 삼키지 않는다).
 try {
   process.exit(await fn(rest));
 } catch (e) {
-  if (String(e?.message || '').startsWith('INVALID_NOW')) { error(e.message); process.exit(1); }
+  const classified = classifyKernelError(e);
+  if (classified) { error(classified.message); process.exit(classified.code); }
   throw e;
 }

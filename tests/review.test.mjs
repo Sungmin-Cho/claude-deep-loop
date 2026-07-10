@@ -210,7 +210,7 @@ test('recordReviewOutcome: stale fence throws LEASE_FENCED; breaker and review_p
   const breakerBefore = readState(root, runId).data.circuit_breaker.consecutive_request_changes;
   // Now advance the lease generation: release + child acquires (gen bumps to 2)
   releaseLease(root, runId, { owner: runId, generation: 1 });
-  acquireLease(root, runId, { owner: 'CHILD-ACTOR', expectGeneration: 1, now });
+  acquireLease(root, runId, { owner: 'CHILD-ACTOR', expectGeneration: 1, runtime: 'claude', now });
   // recordReviewOutcome with stale fence must throw LEASE_FENCED somewhere in the chain
   assert.throws(
     () => recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'plan', verdict: 'APPROVE', fence: staleFence }),
