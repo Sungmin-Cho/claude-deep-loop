@@ -305,10 +305,22 @@ export function deriveCandidates(perRunMap, { integrityFailed = [] } = {}) {
 function defaultSleep(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
 const TERMINAL_RUN = new Set(['completed', 'stopped']);
 
-// (b) finish-edge 인접성의 예외는 auto-floor cost(appendAnchored 자동 계상, data.auto_floor===true)뿐이다.
-// 명시 budget record cost(auto_floor 부재, budget.mjs recordCost)는 non-exempt (spec §3, r1 리뷰 P2):
+// (b) finish-edge 인접성의 예외는 auto-floor cost와, 종료한 Codex child의 측정 결과를 프로세스 exit 후
+// 정산하는 좁은 terminal-maker receipt뿐이다. 후자는 finish 직전 생성된 insights가 의도적으로 그 마지막
+// 프로세스 사용량을 포함하지 않는 pre-finish snapshot이라는 계약이다. source+64-hex accounting key+정확한
+// one-turn shape를 모두 요구해 일반 post-finish cost가 이 예외로 위장하지 못하게 한다.
+// 명시 budget record cost(둘 다 아닌 cost)는 non-exempt (spec §3, r1 리뷰 P2):
 // emit→finish 사이에 끼면 payload가 최종 turns/tokens를 놓쳐 budget_overrun 후보가 억제되므로 재-emit을 요구한다.
-const nonExemptEvent = (e) => !(e.type === 'cost' && e.data?.auto_floor === true);
+const terminalMakerReceipt = e => e.type === 'cost'
+  && e.data?.terminal_process === 'codex-maker'
+  && e.data?.source === 'terminal-maker-measured'
+  && /^[a-f0-9]{64}$/.test(e.data?.accounting_key || '')
+  && e.data?.reported_turns === 1
+  && Number.isFinite(e.data?.reported_tokens) && e.data.reported_tokens >= 0
+  && Number.isFinite(e.data?.turns) && e.data.turns >= 0
+  && Number.isFinite(e.data?.tokens) && e.data.tokens >= 0;
+const nonExemptEvent = e => !(e.type === 'cost'
+  && (e.data?.auto_floor === true || terminalMakerReceipt(e)));
 
 function listRunIds(root) {
   const dir = join(root, '.deep-loop', 'runs');

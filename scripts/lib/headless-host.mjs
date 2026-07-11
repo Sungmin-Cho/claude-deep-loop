@@ -16,7 +16,7 @@ import {
 import { createHash, randomUUID } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { findRoot, pauseRun, readState, runDir, withLock } from './state.mjs';
-import { recordCost, isMeasuredOneTurnUsage } from './budget.mjs';
+import { recordCost, isMeasuredOneTurnUsage, settleTerminalCodexMakerCost } from './budget.mjs';
 import { respawn, respawnGate, resolveSpawnMode } from './respawn.mjs';
 import { headlessSpawn } from './spawn-driver.mjs';
 import { ensureCodexPreflight } from './codex-preflight.mjs';
@@ -251,6 +251,16 @@ function accountingFailureReason(error) {
   throw error;
 }
 
+function terminalAccountingFailureReason(error) {
+  const message = String(error?.message || error);
+  if (message.startsWith('LOG_TAMPERED')) return 'log-tampered';
+  if (message.startsWith('LEASE_FENCED')) return 'fenced';
+  if (message.startsWith('RUNTIME_FENCED')) return 'runtime-fenced';
+  if (message.startsWith('TERMINAL_ACCOUNTING_MISMATCH')) return 'usage-mismatch';
+  if (message.startsWith('TERMINAL_ACCOUNTING_DUPLICATE')) return 'duplicate-receipt';
+  return 'settlement-invalid';
+}
+
 function pauseWithFreshFence(root, runId, { reason, expect, now }) {
   const attempt = (fence) => pauseRun(root, runId, {
     reason,
@@ -300,6 +310,7 @@ function driveIndependentChecker({
   runtime,
   parentFence,
   now,
+  clock,
   timeoutMs,
   env,
   deepLoopRoot,
@@ -318,6 +329,7 @@ function driveIndependentChecker({
   revalidateClaimFn,
   attemptIdFactory,
 }) {
+  let actionNow = now;
   const stranded = inProgressIndependentChecker(initialLoop);
   if (stranded) {
     return {
@@ -346,7 +358,7 @@ function driveIndependentChecker({
         episodeId: pending.id,
         fence: { owner: parentOwner, generation: parentGeneration, intent: 'business' },
         attemptIdFactory,
-        now,
+        now: actionNow,
       });
     } catch (error) {
       const message = String(error?.message || error);
@@ -362,7 +374,7 @@ function driveIndependentChecker({
         };
       }
       const pauseOutcome = pauseWithOriginalFence(projectRoot, runId, {
-        reason: 'checker-claim-failed', expect: parentFence, now,
+        reason: 'checker-claim-failed', expect: parentFence, now: actionNow,
       });
       return {
         ok: false,
@@ -405,12 +417,12 @@ function driveIndependentChecker({
     }
   };
 
-  const preliminaryGate = respawnGate(initialLoop, { now });
+  const preliminaryGate = respawnGate(initialLoop, { now: actionNow });
   if (!preliminaryGate.ok) {
     const pauseOutcome = pauseWithOriginalFence(projectRoot, runId, {
       reason: `checker-gate:${preliminaryGate.reason}`,
       expect: parentFence,
-      now,
+      now: actionNow,
     });
     return {
       ok: false,
@@ -442,7 +454,7 @@ function driveIndependentChecker({
     executable = revalidateExecutable(initialApproval);
   } catch {
     const pauseOutcome = pauseWithOriginalFence(projectRoot, runId, {
-      reason: 'checker-executable-invalid', expect: parentFence, now,
+      reason: 'checker-executable-invalid', expect: parentFence, now: actionNow,
     });
     return { ok: false, action: pauseOutcome === 'fenced' ? 'fenced' : 'preflight-failed', reason: 'executable-invalid' };
   }
@@ -465,7 +477,7 @@ function driveIndependentChecker({
     nodeSnapshot = inspectResumeSkill(process.execPath, { maxBytes: TRUSTED_NODE_MAX_BYTES });
   } catch {
     const pauseOutcome = pauseWithOriginalFence(projectRoot, runId, {
-      reason: 'checker-isolation-invalid', expect: parentFence, now,
+      reason: 'checker-isolation-invalid', expect: parentFence, now: actionNow,
     });
     return { ok: false, action: pauseOutcome === 'fenced' ? 'fenced' : 'preflight-failed', reason: 'checker-isolation-invalid' };
   }
@@ -508,14 +520,14 @@ function driveIndependentChecker({
         && preflight.pause_mode === 'preserve' && preflight.measured_usage.length <= 2);
   if (!validPreflight) {
     const pauseOutcome = pauseWithOriginalFence(projectRoot, runId, {
-      reason: 'checker-preflight-invalid', expect: parentFence, now,
+      reason: 'checker-preflight-invalid', expect: parentFence, now: actionNow,
     });
     return { ok: false, action: pauseOutcome === 'fenced' ? 'fenced' : 'preflight-failed', reason: 'preflight-invalid' };
   }
   for (const usage of preflight.measured_usage) {
     if (!isMeasuredOneTurnUsage(usage)) {
       const pauseOutcome = pauseWithOriginalFence(projectRoot, runId, {
-        reason: 'checker-preflight-usage-invalid', expect: parentFence, now,
+        reason: 'checker-preflight-usage-invalid', expect: parentFence, now: actionNow,
       });
       return { ok: false, action: pauseOutcome === 'fenced' ? 'fenced' : 'preflight-failed', reason: 'preflight-usage-invalid' };
     }
@@ -531,7 +543,7 @@ function driveIndependentChecker({
   }
   if (!preflight.ok) {
     const pauseOutcome = pauseWithOriginalFence(projectRoot, runId, {
-      reason: preflight.reason, expect: parentFence, now,
+      reason: preflight.reason, expect: parentFence, now: actionNow,
     });
     return { ok: false, action: pauseOutcome === 'fenced' ? 'fenced' : 'preflight-failed', reason: preflight.reason };
   }
@@ -542,10 +554,11 @@ function driveIndependentChecker({
     || sessionRuntime(postCostLoop) !== 'codex' || canonicalProjectRoot(postCostLoop.project.root) !== projectRoot) {
     return { ok: false, action: 'fenced', reason: 'checker-post-cost-fenced' };
   }
-  const postGate = respawnGate(postCostLoop, { now });
+  actionNow = clock();
+  const postGate = respawnGate(postCostLoop, { now: actionNow });
   if (!postGate.ok) {
     const pauseOutcome = pauseWithOriginalFence(projectRoot, runId, {
-      reason: `checker-gate:${postGate.reason}`, expect: parentFence, now,
+      reason: `checker-gate:${postGate.reason}`, expect: parentFence, now: actionNow,
     });
     return { ok: false, action: pauseOutcome === 'fenced' ? 'fenced' : 'gate-blocked', reason: postGate.reason };
   }
@@ -556,7 +569,7 @@ function driveIndependentChecker({
       episodeId: pending.id,
       fence: { owner: parentOwner, generation: parentGeneration, intent: 'business' },
       attemptIdFactory,
-      now,
+      now: actionNow,
     });
   } catch (error) {
     const message = String(error?.message || error);
@@ -571,7 +584,7 @@ function driveIndependentChecker({
       };
     }
     const pauseOutcome = pauseWithOriginalFence(projectRoot, runId, {
-      reason: 'checker-claim-failed', expect: parentFence, now,
+      reason: 'checker-claim-failed', expect: parentFence, now: actionNow,
     });
     return {
       ok: false,
@@ -611,7 +624,7 @@ function driveIndependentChecker({
     let pauseOutcome = null;
     if (blocked.action === 'checker-stranded') {
       pauseOutcome = pauseWithOriginalFence(projectRoot, runId, {
-        reason, expect: parentFence, now,
+        reason, expect: parentFence, now: actionNow,
       });
     }
     let recorded = false;
@@ -766,7 +779,7 @@ function driveIndependentChecker({
         headless: true,
         resumePolicy: 'headless',
         expect: { owner: parentOwner, generation: parentGeneration },
-        now,
+        now: actionNow,
         env,
       });
       continuation = handoff?.ok === true;
@@ -778,7 +791,7 @@ function driveIndependentChecker({
       const pauseOutcome = pauseWithOriginalFence(projectRoot, runId, {
         reason: 'independent-review-continuation-failed',
         expect: parentFence,
-        now,
+        now: actionNow,
       });
       if (pauseOutcome === 'terminal') continuationFailure = 'terminal';
       else if (pauseOutcome === 'fenced') continuationFailure = 'fenced';
@@ -813,7 +826,8 @@ function driveIndependentChecker({
 function driveHeadlessRunLocked({
   root,
   runId,
-  now = Date.now(),
+  now,
+  clock = null,
   timeoutMs,
   env = process.env,
   expect = null,
@@ -823,6 +837,7 @@ function driveHeadlessRunLocked({
   spawnFn = headlessSpawn,
   preflightFn = ensureCodexPreflight,
   recordCostFn = recordCost,
+  settleTerminalCostFn = settleTerminalCodexMakerCost,
   respawnFn = respawn,
   revalidateExecutable = revalidateTrustedRuntimeExecutable,
   resolveCodexHome = resolveAuthenticatedCodexHome,
@@ -837,6 +852,8 @@ function driveHeadlessRunLocked({
   revalidateClaimFn = revalidateIndependentReviewClaim,
   attemptIdFactory,
 } = {}) {
+  const sampleNow = typeof clock === 'function' ? clock : (now === undefined ? Date.now : () => now);
+  const entryNow = now === undefined ? sampleNow() : now;
   const { data: initialLoop } = readState(root, runId);
   const runtime = sessionRuntime(initialLoop);
   const projectRoot = canonicalProjectRoot(initialLoop.project.root);
@@ -863,7 +880,8 @@ function driveHeadlessRunLocked({
     projectRoot,
     runtime,
     parentFence,
-    now,
+    now: entryNow,
+    clock: sampleNow,
     timeoutMs,
     env,
     deepLoopRoot,
@@ -901,7 +919,7 @@ function driveHeadlessRunLocked({
     const pauseOutcome = pauseWithFreshFence(projectRoot, runId, {
       reason: 'headless-child-did-not-acquire',
       expect: parentFence,
-      now,
+      now: entryNow,
     });
     if (pauseOutcome === 'terminal') return { ok: true, action: 'already-spawned' };
     return {
@@ -924,12 +942,12 @@ function driveHeadlessRunLocked({
   const child = (initialLoop.session_chain?.sessions || []).find((session) => session.run_id === childRunId);
   const handoffRel = child?.handoff_rel || '';
   const resumeSkillPath = join(deepLoopRoot, 'skills', 'deep-loop-resume', 'SKILL.md');
-  const preliminaryGate = respawnGate(initialLoop, { now });
+  const preliminaryGate = respawnGate(initialLoop, { now: entryNow });
   const failPreflight = (reason) => {
     const pauseOutcome = pauseWithOriginalFence(projectRoot, runId, {
       reason,
       expect: { owner: parentOwner, generation: parentGeneration },
-      now,
+      now: entryNow,
     });
     if (pauseOutcome === 'terminal') return { ok: false, action: 'fail-closed-terminal', reason };
     if (pauseOutcome === 'fenced') return { ok: false, action: 'fenced', reason };
@@ -1026,7 +1044,7 @@ function driveHeadlessRunLocked({
         const pauseOutcome = pauseWithOriginalFence(projectRoot, runId, {
           reason: 'preflight-accounting-failed',
           expect: parentFence,
-          now,
+          now: entryNow,
         });
         return {
           ok: false,
@@ -1151,12 +1169,14 @@ function driveHeadlessRunLocked({
     return captured;
   };
 
+  const respawnNow = preliminaryGate.ok ? sampleNow() : entryNow;
+
   const result = respawnFn(projectRoot, runId, {
     childRunId,
     key,
     handoffRel,
     headless,
-    now,
+    now: respawnNow,
     env,
     spawnFn: preliminaryGate.ok
       ? measuredSpawn
@@ -1173,7 +1193,7 @@ function driveHeadlessRunLocked({
     const pauseOutcome = pauseWithFreshFence(projectRoot, runId, {
       reason: 'headless-child-did-not-acquire',
       expect: parentFence,
-      now,
+      now: respawnNow,
     });
     if (pauseOutcome === 'terminal') return { ok: true, action: 'already-spawned' };
     return {
@@ -1190,7 +1210,7 @@ function driveHeadlessRunLocked({
     const pauseOutcome = pauseWithFreshFence(projectRoot, runId, {
       reason: 'headless-unmeasurable',
       expect: parentFence,
-      now,
+      now: respawnNow,
     });
     if (pauseOutcome === 'terminal') return { ok: false, action: 'fail-closed-terminal', reason };
     return {
@@ -1218,7 +1238,7 @@ function driveHeadlessRunLocked({
     const pauseOutcome = pauseWithFreshFence(projectRoot, runId, {
       reason: 'headless-child-did-not-acquire',
       expect: parentFence,
-      now,
+      now: respawnNow,
     });
     if (pauseOutcome === 'terminal') {
       return { ok: true, action: 'resumed', usage: captured.usage, recorded, ...capturedDiagnostic() };
@@ -1242,13 +1262,37 @@ function driveHeadlessRunLocked({
   let recorded = false;
   if (captured?.usage) {
     try {
-      recordCostFn(projectRoot, runId, {
-        turns: captured.usage.num_turns || 0,
-        tokens: captured.usage.tokens || 0,
-        fence: { owner: childRunId, generation: parentGeneration + 1, intent: 'accounting' },
-      });
-      recorded = true;
+      const accountingFence = { owner: childRunId, generation: parentGeneration + 1, intent: 'accounting' };
+      if (runtime === 'codex' && terminal(freshLoop) && childAcquired) {
+        const settlement = settleTerminalCostFn(projectRoot, runId, {
+          usage: captured.usage,
+          fence: accountingFence,
+          handoffKey: key,
+        });
+        if (settlement?.ok !== true || !['recorded', 'already-recorded'].includes(settlement.reason)) {
+          throw new Error('TERMINAL_ACCOUNTING_PROTOCOL_INVALID');
+        }
+        recorded = true;
+      } else {
+        recordCostFn(projectRoot, runId, {
+          turns: captured.usage.num_turns || 0,
+          tokens: captured.usage.tokens || 0,
+          fence: accountingFence,
+        });
+        recorded = true;
+      }
     } catch (error) {
+      if (runtime === 'codex' && terminal(freshLoop) && childAcquired) {
+        return {
+          ok: false,
+          action: 'terminal-accounting-failed',
+          reason: 'terminal-accounting-failed',
+          usage: captured.usage,
+          recorded: false,
+          accounting_reason: terminalAccountingFailureReason(error),
+          ...capturedDiagnostic(),
+        };
+      }
       if (!String(error?.message || error).startsWith('LEASE_FENCED')) throw error;
     }
   }

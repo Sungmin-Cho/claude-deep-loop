@@ -540,7 +540,7 @@ test('driveHeadless: 2nd-gen child2 acquires → action:resumed + cost recorded 
 });
 
 // ── v1.6 terminal 회귀 (spec §2.4 / §4-5·5c) ────────────────────────────────
-test('driveHeadless: child finishes the run → recordCost swallowed via LEASE_FENCED channel, recorded:false', () => {
+test('driveHeadless: terminal Claude child keeps the legacy terminal fence and records no post-terminal cost', () => {
   const { root, runId, childRunId } = seedRunWithHandoff();
   const r = driveHeadless({
     root,
@@ -554,7 +554,7 @@ test('driveHeadless: child finishes the run → recordCost swallowed via LEASE_F
       return { ok: true, usage: { num_turns: 3, tokens: 70 } };
     },
   });
-  // 가드 후에도 드라이버는 graceful: LEASE_FENCED: RUN_TERMINAL을 기존 catch가 swallow → recorded:false
+  // Claude usage has no exact Codex one-turn receipt/handoff binding, so the generic terminal fence remains closed.
   assert.equal(r.ok, true);
   assert.equal(r.action, 'resumed');
   assert.equal(r.recorded, false);

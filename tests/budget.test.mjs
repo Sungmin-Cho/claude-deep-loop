@@ -8,15 +8,17 @@ import {
   isMeasuredOneTurnUsage,
   recordCost,
   reconcileBudget,
+  settleTerminalCodexMakerCost,
   MUTATION_TURN_FLOOR,
 } from '../scripts/lib/budget.mjs';
-import { appendAnchored, verifyLog, verifyHead } from '../scripts/lib/integrity.mjs';
+import { appendAnchored, readLines, verifyLog, verifyHead } from '../scripts/lib/integrity.mjs';
 import { writeState, readState, runDir, patch } from '../scripts/lib/state.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { newEpisode } from '../scripts/lib/episode.mjs';
 import { newWorkstream, setWorkstreamStatus } from '../scripts/lib/workspace.mjs';
 import { nextAction } from '../scripts/lib/next-action.mjs';
 import { releaseLease, acquireLease } from '../scripts/lib/lease.mjs';
+import { finishRun } from '../scripts/lib/finish.mjs';
 
 function floorRun() {
   const root = mkdtempSync(join(tmpdir(), 'dl-floor-'));
@@ -269,4 +271,145 @@ test('recordCost: terminal run — fenced call LEASE_FENCED channel, fence-less 
   // fence-less 직접 호출 → 자체 가드
   assert.throws(() => recordCost(root, runId, { turns: 1, tokens: 0 }), /RUN_TERMINAL: recordCost/);
   assert.equal(readState(root, runId).data.budget.spent, 0);
+});
+
+function terminalCodexChildRun() {
+  const root = mkdtempSync(join(tmpdir(), 'dl-terminal-cost-'));
+  const { runId } = initRun(root, {
+    runtime: 'codex', goal: 'g', now: new Date('2026-07-11T00:00:00Z'),
+  });
+  const childRunId = '01JTERMINALCHILD0000000000';
+  const handoffKey = 'a'.repeat(16);
+  appendAnchored(root, runId, {
+    type: 'handoff-emitted',
+    data: { child_run_id: childRunId, reason: 'fixture', key: handoffKey },
+  }, (data) => {
+    data.session_chain.sessions.push({
+      run_id: childRunId, started_at: null, ended_at: null,
+      turns: 0, outcome: null, superseded_by: null,
+    });
+    data.session_chain.lease = {
+      ...data.session_chain.lease,
+      state: 'releasing',
+      handoff_phase: 'spawned',
+      handoff_idempotency_key: handoffKey,
+      handoff_child_run_id: childRunId,
+    };
+  });
+  assert.equal(acquireLease(root, runId, {
+    owner: childRunId, expectGeneration: 1, runtime: 'codex',
+    now: Date.parse('2026-07-11T00:01:00Z'),
+  }).ok, true);
+  const finishFence = { owner: childRunId, generation: 2, intent: 'business' };
+  finishRun(root, runId, {
+    status: 'stopped', confirm: true, proof: { human_reason: 'terminal accounting fixture' },
+    fence: finishFence, now: Date.parse('2026-07-11T00:02:00Z'),
+  });
+  return { root, runId, childRunId, handoffKey };
+}
+
+test('terminal Codex maker settlement absorbs the finish floor exactly once and is idempotent', () => {
+  const { root, runId, childRunId, handoffKey } = terminalCodexChildRun();
+  const usage = { num_turns: 1, input_tokens: 5, output_tokens: 7, tokens: 12 };
+  const fence = { owner: childRunId, generation: 2, intent: 'accounting' };
+
+  const reorderedUsage = { tokens: 12, output_tokens: 7, input_tokens: 5, num_turns: 1 };
+  assert.deepEqual(settleTerminalCodexMakerCost(root, runId, { usage: reorderedUsage, fence, handoffKey }), {
+    ok: true, recorded: true, reason: 'recorded',
+  });
+  let state = readState(root, runId).data;
+  assert.equal(state.status, 'stopped');
+  assert.equal(state.budget.spent, 1, 'the explicit one-turn report must absorb the finish floor');
+  assert.equal(state.budget.tokens_spent, 12);
+  assert.equal(state.session_chain.sessions.find(s => s.run_id === childRunId).turns, 1);
+  let costs = readLines(root, runId).filter(event => event.type === 'cost');
+  assert.equal(costs.length, 2);
+  assert.equal(costs[1].data.terminal_process, 'codex-maker');
+  assert.equal(costs[1].data.reported_turns, 1);
+  assert.equal(costs[1].data.reported_tokens, 12);
+  assert.equal(costs[1].data.turns, 0);
+  assert.doesNotThrow(() => reconcileBudget(root, runId));
+
+  assert.deepEqual(settleTerminalCodexMakerCost(root, runId, { usage, fence, handoffKey }), {
+    ok: true, recorded: false, reason: 'already-recorded',
+  });
+  state = readState(root, runId).data;
+  costs = readLines(root, runId).filter(event => event.type === 'cost');
+  assert.equal(costs.length, 2, 'an identical retry must not append a second process cost');
+  assert.equal(state.budget.spent, 1);
+  const statePath = join(runDir(root, runId), 'loop.json');
+  const logPath = join(runDir(root, runId), 'event-log.jsonl');
+  const stateBeforeConflict = readFileSync(statePath, 'utf8');
+  const logBeforeConflict = readFileSync(logPath, 'utf8');
+  assert.throws(() => settleTerminalCodexMakerCost(root, runId, {
+    usage: { ...usage, output_tokens: 8, tokens: 13 }, fence, handoffKey,
+  }), /TERMINAL_ACCOUNTING_MISMATCH/);
+  assert.equal(readFileSync(statePath, 'utf8'), stateBeforeConflict);
+  assert.equal(readFileSync(logPath, 'utf8'), logBeforeConflict);
+});
+
+test('terminal Codex maker settlement remains narrow to an exact acquired child and kernel finish proof', () => {
+  const { root, runId, childRunId, handoffKey } = terminalCodexChildRun();
+  const usage = { num_turns: 1, input_tokens: 5, output_tokens: 7, tokens: 12 };
+  assert.throws(() => settleTerminalCodexMakerCost(root, runId, {
+    usage, fence: { owner: 'OTHER', generation: 2, intent: 'accounting' }, handoffKey,
+  }), /LEASE_FENCED: owner-mismatch/);
+  assert.throws(() => settleTerminalCodexMakerCost(root, runId, {
+    usage, fence: { owner: childRunId, generation: 3, intent: 'accounting' }, handoffKey,
+  }), /LEASE_FENCED: generation-mismatch/);
+  assert.throws(() => settleTerminalCodexMakerCost(root, runId, {
+    usage, fence: { owner: childRunId, generation: 2, intent: 'accounting' }, handoffKey: 'b'.repeat(16),
+  }), /TERMINAL_ACCOUNTING_PROOF_MISSING/);
+
+  const { data } = readState(root, runId);
+  data.status = 'running';
+  writeState(root, runId, data);
+  assert.throws(() => settleTerminalCodexMakerCost(root, runId, {
+    usage, fence: { owner: childRunId, generation: 2, intent: 'accounting' }, handoffKey,
+  }), /RUN_NOT_TERMINAL/);
+});
+
+test('terminal Codex maker settlement rejects malformed session, runtime, proof, and log anchors without appending', () => {
+  const usage = { num_turns: 1, input_tokens: 5, output_tokens: 7, tokens: 12 };
+  const invoke = fixture => settleTerminalCodexMakerCost(fixture.root, fixture.runId, {
+    usage,
+    fence: { owner: fixture.childRunId, generation: 2, intent: 'accounting' },
+    handoffKey: fixture.handoffKey,
+  });
+
+  {
+    const fixture = terminalCodexChildRun();
+    const { data } = readState(fixture.root, fixture.runId);
+    data.session_chain.sessions.find(s => s.run_id === fixture.childRunId).turns = '1';
+    writeState(fixture.root, fixture.runId, data);
+    assert.throws(() => invoke(fixture), /TERMINAL_ACCOUNTING_SESSION_INVALID/);
+  }
+  {
+    const fixture = terminalCodexChildRun();
+    const { data } = readState(fixture.root, fixture.runId);
+    data.autonomy.session_runtime = 'claude';
+    writeState(fixture.root, fixture.runId, data);
+    assert.throws(() => invoke(fixture), /RUNTIME_FENCED/);
+  }
+  {
+    const fixture = terminalCodexChildRun();
+    const { data } = readState(fixture.root, fixture.runId);
+    delete data.termination.finished_at;
+    writeState(fixture.root, fixture.runId, data);
+    assert.throws(() => invoke(fixture), /TERMINAL_ACCOUNTING_PROOF_MISSING/);
+  }
+  {
+    const fixture = terminalCodexChildRun();
+    const { data } = readState(fixture.root, fixture.runId);
+    data.event_log_head = { seq: 0, checksum: 'GENESIS' };
+    writeState(fixture.root, fixture.runId, data);
+    assert.throws(() => invoke(fixture), /LOG_TAMPERED/);
+  }
+  {
+    const fixture = terminalCodexChildRun();
+    const logPath = join(runDir(fixture.root, fixture.runId), 'event-log.jsonl');
+    const before = readFileSync(logPath, 'utf8');
+    writeFileSync(logPath, before.replace('"reason":"fixture"', '"reason":"tampered"'));
+    assert.throws(() => invoke(fixture), /LOG_TAMPERED/);
+  }
 });

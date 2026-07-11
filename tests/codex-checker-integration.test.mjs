@@ -306,6 +306,39 @@ test('headless host drives an unclaimed checker before no-pending-handoff and em
   assert.equal(explicitCosts.length, 1);
 });
 
+test('checker samples an injectable clock again after preflight and blocks at a crossed wallclock boundary', () => {
+  const f = seed();
+  const deps = hostDeps(f);
+  const state = readState(f.root, f.runId).data;
+  const createdAt = Date.parse(state.created_at);
+  state.budget.max_wallclock_sec = 3_601;
+  writeState(f.root, f.runId, state);
+  let clockCalls = 0;
+  let preflightCalls = 0;
+  let checkerCalls = 0;
+
+  const result = driveHeadlessRun({
+    root: f.root,
+    runId: f.runId,
+    ...deps,
+    now: createdAt + 3_600_999,
+    clock: () => { clockCalls += 1; return createdAt + 3_601_001; },
+    preflightFn: () => {
+      preflightCalls += 1;
+      return { ok: true, cache_hit: true, measured_usage: [] };
+    },
+    checkerRunFn: () => { checkerCalls += 1; throw new Error('wallclock gate must block before checker spawn'); },
+  });
+
+  assert.deepEqual(result, { ok: false, action: 'gate-blocked', reason: 'wallclock' });
+  assert.equal(clockCalls, 1, 'the CLI-shaped live clock must be sampled after preflight');
+  assert.equal(preflightCalls, 1, 'the boundary must be crossed during preflight');
+  assert.equal(checkerCalls, 0);
+  const after = readState(f.root, f.runId).data;
+  assert.equal(after.status, 'paused');
+  assert.equal(after.episodes.find(e => e.id === f.checkerId).status, 'pending');
+});
+
 test('an in-progress independent checker blocks every pending maker handoff and is never respawned', () => {
   const f = seed(); approveCodexRuntime(f); claim(f, 'stranded-attempt');
   emitHandoff(f.root, f.runId, {

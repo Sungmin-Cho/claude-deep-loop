@@ -11,6 +11,7 @@ import { acquireLease, advanceHandoffPhase } from '../scripts/lib/lease.mjs';
 import { recordCost } from '../scripts/lib/budget.mjs';
 import { readLines } from '../scripts/lib/integrity.mjs';
 import { respawn } from '../scripts/lib/respawn.mjs';
+import { finishRun } from '../scripts/lib/finish.mjs';
 
 const NOW0 = new Date('2026-07-11T00:00:00Z');
 const NOW1 = Date.parse('2026-07-11T00:01:00Z');
@@ -90,6 +91,19 @@ function codexHostDeps(root, runId) {
     executable,
     codexHome,
   };
+}
+
+function prepareCompletableCodexRun(root, runId) {
+  const state = readState(root, runId).data;
+  state.review.points = ['implementation'];
+  state.episodes = [
+    { id: '001-maker', role: 'maker', plugin: 'deep-work', point: 'implementation', workstream_id: 'ws', status: 'done' },
+    { id: '002-checker', role: 'checker', plugin: 'deep-review', point: 'implementation', workstream_id: 'ws', status: 'approved', target_maker: '001-maker' },
+  ];
+  state.workstreams = [{ id: 'ws', status: 'ready', review_points_done: ['implementation'] }];
+  state.active_workstreams = [];
+  writeState(root, runId, state);
+  writeFileSync(join(runDir(root, runId), 'final-report.md'), '# complete');
 }
 
 test('cache miss records two preflight turns before one post-CAS maker turn', () => {
@@ -177,6 +191,86 @@ test('cache hit has no smoke usage to replay and still runs the maker exactly on
   assert.equal(makerCalls, 1);
   const costs = readLines(root, runId).filter((event) => event.type === 'cost');
   assert.deepEqual(costs.map((event) => event.data.reported_tokens), [31]);
+});
+
+test('terminal Codex maker usage is settled once after the acquired child completes the run', () => {
+  const { root, runId, childRunId } = seedCodexHandoff();
+  const deps = codexHostDeps(root, runId);
+  prepareCompletableCodexRun(root, runId);
+
+  const result = driveHeadlessRun({
+    root,
+    runId,
+    now: NOW1 + 1_000,
+    ...deps,
+    preflightFn: () => ({ ok: true, cache_hit: true, measured_usage: [] }),
+    spawnFn: () => {
+      const acquired = acquireLease(root, runId, {
+        owner: childRunId, expectGeneration: 1, runtime: 'codex', now: NOW1 + 2_000,
+      });
+      assert.equal(acquired.ok, true);
+      finishRun(root, runId, {
+        status: 'completed', reportRel: 'final-report.md',
+        fence: { owner: childRunId, generation: 2, intent: 'business' }, now: NOW1 + 3_000,
+      });
+      return { ok: true, usage: measuredUsage(30) };
+    },
+  });
+
+  assert.deepEqual(result, {
+    ok: true, action: 'resumed', usage: measuredUsage(30), recorded: true,
+  });
+  const after = readState(root, runId).data;
+  assert.equal(after.status, 'completed');
+  assert.equal(after.budget.spent, 1, 'the one measured maker turn must absorb the finish mutation floor');
+  assert.equal(after.budget.tokens_spent, 31);
+  const terminalCosts = readLines(root, runId).filter(
+    event => event.type === 'cost' && event.data.terminal_process === 'codex-maker',
+  );
+  assert.equal(terminalCosts.length, 1);
+  assert.equal(terminalCosts[0].data.reported_turns, 1);
+  assert.equal(terminalCosts[0].data.reported_tokens, 31);
+});
+
+test('terminal Codex maker settlement failure is explicit and never reported as a successful resume', () => {
+  const { root, runId, childRunId } = seedCodexHandoff();
+  const deps = codexHostDeps(root, runId);
+  prepareCompletableCodexRun(root, runId);
+
+  const result = driveHeadlessRun({
+    root,
+    runId,
+    now: NOW1 + 1_000,
+    ...deps,
+    preflightFn: () => ({ ok: true, cache_hit: true, measured_usage: [] }),
+    settleTerminalCostFn: () => { throw new Error('LOG_TAMPERED: injected terminal settlement failure'); },
+    spawnFn: () => {
+      acquireLease(root, runId, {
+        owner: childRunId, expectGeneration: 1, runtime: 'codex', now: NOW1 + 2_000,
+      });
+      finishRun(root, runId, {
+        status: 'completed', reportRel: 'final-report.md',
+        fence: { owner: childRunId, generation: 2, intent: 'business' }, now: NOW1 + 3_000,
+      });
+      return { ok: true, usage: measuredUsage(30) };
+    },
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    action: 'terminal-accounting-failed',
+    reason: 'terminal-accounting-failed',
+    usage: measuredUsage(30),
+    recorded: false,
+    accounting_reason: 'log-tampered',
+  });
+  const after = readState(root, runId).data;
+  assert.equal(after.status, 'completed');
+  assert.equal(after.budget.spent, 1);
+  assert.equal(after.budget.tokens_spent, 0);
+  assert.equal(readLines(root, runId).some(
+    event => event.type === 'cost' && event.data.terminal_process === 'codex-maker',
+  ), false);
 });
 
 test('invalid preflight usage cardinality fails closed before accounting or maker', () => {
@@ -398,6 +492,42 @@ test('preflight cost can flip the authoritative respawn gate and block the maker
   );
   const costs = readLines(root, runId).filter((event) => event.type === 'cost');
   assert.deepEqual(costs.map((event) => event.data.reported_tokens), [11, 21]);
+});
+
+test('maker samples an injectable clock again after preflight and blocks at a crossed wallclock boundary', () => {
+  const { root, runId, childRunId } = seedCodexHandoff();
+  const deps = codexHostDeps(root, runId);
+  const { data } = readState(root, runId);
+  data.budget.max_wallclock_sec = 62;
+  writeState(root, runId, data);
+  let clockCalls = 0;
+  let preflightCalls = 0;
+  let makerCalls = 0;
+
+  const result = driveHeadlessRun({
+    root,
+    runId,
+    ...deps,
+    now: NOW0.getTime() + 61_999,
+    clock: () => { clockCalls += 1; return NOW0.getTime() + 62_001; },
+    preflightFn: () => {
+      preflightCalls += 1;
+      return { ok: true, cache_hit: true, measured_usage: [] };
+    },
+    spawnFn: () => { makerCalls += 1; return { ok: true, usage: measuredUsage(30) }; },
+  });
+
+  assert.deepEqual(result, { ok: false, action: 'gate-blocked', reason: 'wallclock' });
+  assert.equal(clockCalls, 1, 'the CLI-shaped live clock must be sampled after preflight');
+  assert.equal(preflightCalls, 1, 'the boundary must be crossed during preflight');
+  assert.equal(makerCalls, 0);
+  const after = readState(root, runId).data;
+  assert.equal(after.status, 'paused');
+  assert.equal(after.session_chain.lease.handoff_phase, 'idle');
+  assert.equal(
+    after.session_chain.sessions.find((session) => session.run_id === childRunId).outcome,
+    'failed_launch',
+  );
 });
 
 test('Codex approval and CODEX_HOME authentication failures preserve-pause before preflight', () => {

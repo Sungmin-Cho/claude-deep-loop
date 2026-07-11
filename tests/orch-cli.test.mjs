@@ -551,6 +551,11 @@ test('explicit CLI Codex --headless overrides visible handoff intent and cannot 
     readFileSync(CLI, 'utf8').includes("from './lib/headless-host.mjs'"),
     true,
   );
+  assert.match(
+    readFileSync(CLI, 'utf8'),
+    /clock:\s*f\.now === undefined \? Date\.now : null/,
+    'normal CLI headless runs must refresh wallclock after preflight while explicit --now stays deterministic',
+  );
 });
 
 test('CLI respawn threads an explicit --timeout-ms into the shared headless host', () => {

@@ -111,6 +111,22 @@ function businessEventFixture(root, runId) {
   writeState(root, runId, d);
 }
 
+function terminalMakerReceiptFixture(root, runId) {
+  appendEvent(root, runId, {
+    type: 'cost',
+    data: {
+      turns: 0, tokens: 12, reported_turns: 1, reported_tokens: 12,
+      input_tokens: 5, output_tokens: 7, owner: runId, generation: 1,
+      terminal_process: 'codex-maker', source: 'terminal-maker-measured',
+      accounting_key: 'a'.repeat(64),
+    },
+  });
+  const d = readState(root, runId).data;
+  d.event_log_head = lastLogHead(root, runId);
+  d.budget.tokens_spent = 12;
+  writeState(root, runId, d);
+}
+
 test('computeInsights: 터미널 + self만 집계, self_snapshot 표기, loop_sha256 기록', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-ins-'));
   const { runId: rA } = initRun(root, { runtime: 'claude', goal: 'a', now: FIXED });        // running (self)
@@ -505,6 +521,19 @@ test('v1.5 (b): finish 후 non-exempt 이벤트(post-finish mutation) → skip (
   finishFixture(root, runId);
   businessEventFixture(root, runId);
   assert.equal(latestInsights(root), null);
+});
+
+test('terminal Codex maker receipt is completion bookkeeping, not a dirty post-finish mutation', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-fe-terminal-cost-'));
+  const { runId } = initRun(root, { runtime: 'codex', goal: 'g', now: FIXED });
+  const fence = { owner: runId, generation: 1, intent: 'business' };
+  const emitted = emitInsights(root, runId, { fence, now: FIXED.getTime(), rnd: () => 0.5 });
+  finishFixture(root, runId);
+  terminalMakerReceiptFixture(root, runId);
+
+  assert.equal(latestInsights(root).path, emitted.path);
+  const out = computeInsights(root, { selfRunId: runId, now: FIXED.getTime(), sleepFn: NOSLEEP });
+  assert.deepEqual(out.post_finish_mutated, []);
 });
 
 test('v1.5 (b): finish 이벤트 부재(status만 terminal) → skip', () => {

@@ -466,6 +466,8 @@ const handlers = {
       const r = mode === 'headless'
         ? driveHeadlessRun({
           root, runId, expect, headless, now, timeoutMs, env: process.env,
+          // An explicit --now pins deterministic tests/diagnosis; ordinary CLI runs refresh after preflight.
+          clock: f.now === undefined ? Date.now : null,
           overrideVisiblePolicy: headless,
         })
         : respawn(root, runId, {
