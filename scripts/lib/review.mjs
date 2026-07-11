@@ -1,5 +1,7 @@
-import { readFileSync, realpathSync } from 'node:fs';
+import { readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { latestInsights } from './insights.mjs';
 import { readState } from './state.mjs';
 import { appendAnchored } from './integrity.mjs';
 import { newEpisode } from './episode.mjs';
@@ -59,13 +61,52 @@ export function rejectionResolved(loop, e) {
   return true;   // unbound → neutral (see comment above)
 }
 
+// P1 (hillclimb-ledger 2026-07-10, release-blocking): reviewer 해석은 fail-closed다.
+// 이전 동작 — 미인식 id는 그대로 통과 후 dispatch에서 inline-review로, deep-review 부재는
+// codex-cross/subagent-checker로 — 는 전부 "조용한 리뷰 게이트 강등"이었다: recordReviewOutcome이
+// report producer를 검증하지 않으므로 강등된 checker의 APPROVE도 finish proof를 만족한다.
+// 문서화된 형식(`deep-review:deep-review-loop`)과 인식 alias(`deep-review`)는 canonicalize하고,
+// 그 밖의 모든 침묵 경로는 명시 에러로 막는다. 유일하게 남는 자동 치환은 강등이 아닌 승격
+// (subagent-checker + codex 감지 → codex-cross)뿐이다.
+const KNOWN_REVIEWERS = ['deep-review-loop', 'codex-cross', 'subagent-checker', 'standalone'];
+
+// P2: hill-climb checker 계약의 tracked 소스 — 커널과 함께 배포되는 파일이므로 install 레이아웃
+// (repo checkout / plugin cache) 어디서든 kernel 상대 경로가 결정론적으로 해석된다.
+const TRACKED_CONTRACT_PATH = fileURLToPath(new URL('../../skills/deep-loop-workflow/references/contracts/HILLCLIMB-001.yaml', import.meta.url));
+
+// P2 codex r7: bare `--contract`(deep-review 파서가 selector를 소비하는 유일 신뢰 형태가 없음 —
+// SLICE-NNN 전용이라 HILLCLIMB-001을 지정할 수 없다)는 디렉터리의 모든 active 계약을 로드한다.
+// 따라서 "HILLCLIMB-001만 평가된다"는 contracts 디렉터리에 그 파일 외 다른 계약 yaml이 없어야
+// 성립한다 — dispatch·record 양쪽에서 확인한다.
+function contractsDirSolo(realContract) {
+  try {
+    const dir = realContract.slice(0, realContract.lastIndexOf(sep));
+    const self = realContract.slice(realContract.lastIndexOf(sep) + 1);
+    return readdirSync(dir).filter(f => /\.ya?ml$/i.test(f) && f !== self).length === 0;
+  } catch { return false; }
+}
+
 export function resolveReviewer(loop, detected = {}) {
   const r = loop.review || {};
-  let reviewer = r.reviewer || 'subagent-checker';
-  if ((reviewer === 'deep-review-loop' || reviewer === 'deep-review') && !pluginPresent(detected, 'deep-review')) {
-    reviewer = pluginPresent(detected, 'codex') ? 'codex-cross' : 'subagent-checker';
+  // 기본값은 필드 **부재**에만 적용한다 — `""`/`null` 같은 명시적 무효값을 `|| 'subagent-checker'`로
+  // 재작성하면 아래 allowlist 이전에 유효화되어(+codex 감지 시 codex-cross 승격) 침묵 강등이 남는다(codex r4).
+  let reviewer = r.reviewer === undefined ? 'subagent-checker' : r.reviewer;
+  if (typeof reviewer !== 'string' || !reviewer.length) {
+    throw new Error(`REVIEWER_UNRECOGNIZED: review.reviewer is present but not a non-empty string (${JSON.stringify(r.reviewer)}) — omit the field for the default or set a known reviewer`);
+  }
+  // 네임스페이스 canonicalize는 문서화된 정확히 한 형식만 — 임의 `deep-review:*` prefix-strip은
+  // `deep-review:standalone` 류를 KNOWN으로 통과시켜 더 약한 checker로 새는 또 다른 침묵 경로가
+  // 된다(codex r1). 그 외 네임스페이스 값은 아래 !KNOWN 분기에서 fail-closed.
+  if (reviewer === 'deep-review:deep-review-loop') reviewer = 'deep-review-loop';
+  if (reviewer === 'deep-review' || reviewer === 'deep-review-loop') {
+    if (!pluginPresent(detected, 'deep-review')) {
+      throw new Error(`REVIEWER_DEPENDENCY_MISSING: reviewer '${r.reviewer}' requires the deep-review plugin (silent downgrade removed — install deep-review or re-init with another reviewer)`);
+    }
+    reviewer = 'deep-review-loop';
   } else if (reviewer === 'subagent-checker' && pluginPresent(detected, 'codex')) {
     reviewer = 'codex-cross';
+  } else if (!KNOWN_REVIEWERS.includes(reviewer)) {
+    throw new Error(`REVIEWER_UNRECOGNIZED: '${r.reviewer}' is not a known reviewer (${KNOWN_REVIEWERS.join('|')}) — refusing inline-review fallback`);
   }
   return { reviewer, flags: r.flags || [], mode: r.mode || 'cross-model' };
 }
@@ -101,10 +142,21 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
   if (!workstreamId || !data.workstreams.find(w => w.id === workstreamId)) throw new Error(`WORKSTREAM_NOT_FOUND: ${workstreamId}`);
   // Derive the target maker: the latest done maker for this (workstreamId, point) that does NOT already have a bound terminal checker.
   const eps = data.episodes || [];
+  // P2 codex r7: hill-climb 마이그레이션 특례 — pre-patch 커널이 approve한 checker(contract 미pin)에 묶인
+  // maker는 makerReviewed=true라 재리뷰 불가, abandonEpisode는 terminal checker를 거부 → finish의
+  // hillclimb-contract-unpinned와 함께 사면초가가 된다. latest bound checker가 "approved인데 unpinned"인
+  // maker만 재적격으로 되돌린다(새 계약-pinned checker가 최신이 되면 finish 통과). rejected는 fix 경로 유지.
+  const legacyUnpinned = (m) => {
+    if (data.recipe?.id !== 'harness-hill-climb') return false;
+    const cs = eps.filter(e => e.role === 'checker' && e.target_maker === m.id && (e.status === 'approved' || e.status === 'rejected'));
+    if (!cs.length) return false;
+    const latest = cs.reduce((a, b) => (epOrder(a.id, b.id) >= 0 ? a : b));
+    return latest.status === 'approved' && !latest.contract?.sha256;
+  };
   const eligibleMakers = eps.filter(e =>
     e.role === 'maker' && e.status === 'done' &&
     e.workstream_id === workstreamId && e.point === point &&
-    !makerReviewed(data, e)
+    (!makerReviewed(data, e) || legacyUnpinned(e))
   );
   // Pick the latest episode via epOrder (hybrid numeric/string). Naive string `>` is WRONG here: ids are
   // zero-padded to only 3 digits, so '1000-x' < '999-x' lexicographically — at the 999→1000 boundary it
@@ -119,14 +171,85 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
   if (!targetMakerEp) throw new Error('REVIEW_NO_ELIGIBLE_MAKER: no done maker to review for ' + point + '/' + workstreamId);
   const targetMaker = targetMakerEp.id;
   const { reviewer, flags, mode } = resolveReviewer(data, detected);
-  const { id } = newEpisode(root, runId, { plugin: reviewer === 'deep-review-loop' ? 'deep-review' : reviewer, role: 'checker', kind: `${point}-review`, point, workstream: workstreamId, targetMaker, fence });
+  // P2 (hillclimb-ledger 2026-07-10, release-blocking): hill-climb run은 checker 계약(HILLCLIMB-001)이 실제로
+  // 강제되는 리뷰만 만들 수 있다. `.deep-review/`는 gitignored라 fresh checkout에는 계약이 없고, deep-review는
+  // 무-contract일 때 계약 미강제로 리뷰를 진행한다 — 그 APPROVE는 hill-climbing 방벽 ③이 요구하는 계약-강제
+  // 리뷰가 아니다. preCheck 순서상 전부 newEpisode 전에 throw — checker episode가 생성되지 않는다. (codex r1)
+  let evidence, contract;
+  if (data.recipe?.id === 'harness-hill-climb') {
+    // ① 계약을 소비할 수 있는 reviewer만 — subagent/codex-cross/standalone은 HILLCLIMB-001.yaml을 읽지
+    //    않으므로 계약 파일이 존재해도 무계약 APPROVE가 된다. --contract 플래그 부재는 첫 실사용 시리즈의
+    //    재-init #2가 실측한 동일 결함. selector 검증(codex r5/r6/r7): deep-review 파서는
+    //    `--contract SLICE-[0-9]+`(공백 형태)만 selector로 소비한다 — `HILLCLIMB-001`은 selector로
+    //    파싱되지 않아(bare 취급 + 잔여 토큰 오염) 어떤 명시 selector도 신뢰할 수 없고, `=` 형태는
+    //    아예 소비되지 않아 무-contract로 새고, 중복 발생은 뒤 selector가 이길 수 있다. 따라서 허용은
+    //    **정확히 1회의 bare `--contract`뿐**이다 — "무엇이 로드되는가"는 아래 ②′의 contracts 디렉터리
+    //    유일성(HILLCLIMB-001.yaml 단독)이 결정론으로 보장한다.
+    const cIdx = flags.reduce((acc, fl, i) => (fl === '--contract' || String(fl).startsWith('--contract=') ? [...acc, i] : acc), []);
+    const bareOnly = cIdx.length === 1 && flags[cIdx[0]] === '--contract'
+      && (cIdx[0] + 1 >= flags.length || String(flags[cIdx[0] + 1]).startsWith('--'));
+    if (reviewer !== 'deep-review-loop' || !bareOnly) {
+      throw new Error(`REVIEW_CONTRACT_UNENFORCEABLE: hill-climb run requires reviewer 'deep-review-loop' with exactly one bare --contract flag (no selector — the deep-review parser only consumes SLICE-NNN selectors, so an explicit selector cannot pin HILLCLIMB-001) (got '${reviewer}', flags [${flags.join(', ')}]) — re-init the run with a contract-capable review config`);
+    }
+    // ② 게이트 위치 = 소비처. checker는 workstream worktree를 cwd로 deep-review를 실행하고 deep-review는
+    //    cwd의 `.deep-review/contracts/`를 읽는다 — project-root의 사본을 게이트하면 "게이트는 통과했는데
+    //    checker는 계약을 못 보는" 창이 생긴다.
+    // ③ 내용 검증 = tracked 소스와 byte-identical. `status: active` 문자열 매칭만으로는 stale/변조된 사본
+    //    (예: criteria 비움 — deep-review는 빈 criteria면 계약 검증을 skip)이 통과한다. 계약은 run-불변이므로
+    //    "그대로 복사"가 곧 판정 기준이다.
+    const wsRec = data.workstreams.find(w => w.id === workstreamId);
+    const contractRel = `${wsRec.worktree}/.deep-review/contracts/HILLCLIMB-001.yaml`;
+    let contractOk = false, trackedHash = null;
+    try {
+      const tracked = readFileSync(TRACKED_CONTRACT_PATH, 'utf8');
+      // realpath containment (codex r6): lexical resolve만으로는 `.deep-review`(또는 worktree)가 외부를
+      // 가리키는 symlink여도 통과한다 — report proof와 동일 규약으로 realpath가 root+worktree 안이어야 한다.
+      const realContract = containedRealFile(resolve(root), contractRel);
+      contractOk = !!realContract && reportBoundToWorktree(root, realContract, wsRec.worktree)
+        && readFileSync(realContract, 'utf8') === tracked
+        && /^slice:\s*HILLCLIMB-001\s*$/m.test(tracked) && /^status:\s*active\s*$/m.test(tracked)
+        && /^criteria:/m.test(tracked) && /^\s*-\s+/m.test(tracked)
+        // ②′ 유일성(codex r7): bare `--contract`는 디렉터리의 모든 active 계약을 로드하므로,
+        //    "HILLCLIMB-001만 로드됨"은 contracts 디렉터리에 다른 계약 파일이 없어야 성립한다.
+        && contractsDirSolo(realContract);
+      if (contractOk) trackedHash = contentHash(tracked);
+    } catch { contractOk = false; }
+    if (!contractOk) {
+      throw new Error(`REVIEW_CONTRACT_MISSING: hill-climb run requires ${contractRel} byte-identical to the tracked source (skills/deep-loop-workflow/references/contracts/HILLCLIMB-001.yaml) with status: active — materialize (그대로 복사) before dispatching review`);
+    }
+    // ⑤ codex r3: 검증된 계약 identity를 checker episode에 durable 기록(anchored loop.json) —
+    //    recordReviewOutcome이 passing verdict 시점에 같은 파일을 재검증해 dispatch~record 사이
+    //    삭제/변조(TOCTOU — deep-review는 무-contract면 조용히 skip) 창을 닫는다.
+    contract = { slice: 'HILLCLIMB-001', path: contractRel, sha256: trackedHash };
+    // ④ criterion (a)의 결정론 근거 — 커널-검증된 최신 insights를 디스크립터 + checker request.md에 실어
+    //    checker가 파일 파싱 없이 인용 지표를 대조할 수 있게 한다. 없으면 null(인용할 검증 지표가 없다는
+    //    사실 자체가 checker의 판정 입력). emit_ulid는 artifact 파일명의 emit ULID(envelope.run_id는
+    //    producer run — 별도 필드), sha256은 anchored 이벤트 값(codex r2). 바인딩: dispatch 시점 latest가
+    //    maker가 인용한 emit과 다를 수 있다 — checker는 evidence의 sha256/emit_ulid를 maker 인용
+    //    (ledger 항목의 insights_ref/insights_sha256, design/plan은 문서의 인용)과 대조하고 mismatch를
+    //    criterion (a) 위반으로 판정한다(v1 바인딩 메커니즘 — 커널은 T1 ledger를 파싱하지 않는다).
+    const li = latestInsights(root);
+    evidence = li ? {
+      insights_path: li.path,
+      emit_ulid: li.path.replace(/^.*\//, '').replace(/-insights\.json$/, ''),
+      producer_run_id: li.envelope?.envelope?.run_id ?? null,
+      sha256: li.sha256 ?? null,
+      candidates: li.envelope?.payload?.candidates ?? [],
+    } : null;
+  }
   const skillByReviewer = {
     'deep-review-loop': 'deep-review:deep-review-loop',
     'codex-cross': 'codex:rescue',
     'subagent-checker': 'Task(code-reviewer)',
     'standalone': 'inline-review',
   };
-  const descriptor = { kind: reviewer === 'standalone' ? 'inline' : 'invoke_skill', skill: skillByReviewer[reviewer] || 'inline-review', args: flags.join(' '), mode, review_point: point, workstream: workstreamId };
+  // P1 방어-심층: resolveReviewer가 fail-closed라 여기 도달한 reviewer는 항상 맵에 있지만, 두 목록이 어긋나게
+  // 수정되는 회귀에서 inline-review로 조용히 강등되는 대신 명시 에러로 죽는다. newEpisode 전에 확인 — 미매핑
+  // reviewer로 episode를 만들지 않는다.
+  const skill = skillByReviewer[reviewer];
+  if (!skill) throw new Error(`REVIEWER_UNRECOGNIZED: '${reviewer}' resolved but has no dispatch mapping — KNOWN_REVIEWERS and skillByReviewer are out of sync`);
+  const { id } = newEpisode(root, runId, { plugin: reviewer === 'deep-review-loop' ? 'deep-review' : reviewer, role: 'checker', kind: `${point}-review`, point, workstream: workstreamId, targetMaker, evidence, contract, fence });
+  const descriptor = { kind: reviewer === 'standalone' ? 'inline' : 'invoke_skill', skill, args: flags.join(' '), mode, review_point: point, workstream: workstreamId, ...(evidence !== undefined ? { evidence } : {}) };
   return { checkerEpisodeId: id, reviewer, descriptor };
 }
 
@@ -203,6 +326,26 @@ export function recordReviewOutcome(root, runId, { episodeId, workstreamId, poin
       // workstream's worktree (an unrelated file like README.md at root is refused). Kernel-authoritative (CLI-bypass safe).
       if (passed && !reportBoundToWorktree(root, realReport, wsForReport.worktree)) {
         throw new Error('REVIEW_NO_EVIDENCE: passing verdict requires proof.report — a real file under the reviewed workstream worktree');
+      }
+      // P2 codex r3/r4: hill-climb run의 passing verdict는 계약-강제 리뷰 proof다 — recipe를 기준으로
+      // 게이트한다(체커 필드 유무가 아니라). pre-patch dispatch로 만들어진 legacy pending checker는
+      // contract 필드가 없으므로 tgt.contract 조건만으로는 무계약 APPROVE가 통과한다(r4). 기록된
+      // identity가 있으면 같은 파일을 record 시점에 재검증한다 — dispatch~record 사이 삭제/변조(TOCTOU)
+      // 시 deep-review는 무-contract를 조용히 skip하므로 그 창의 APPROVE를 거부한다. 복구는 재-dispatch가
+      // 아니라(제 checker가 pending으로 남아 중복 checker + next-action 정체를 만든다) tracked 소스
+      // 재-materialize 후 **같은 checker**로 리뷰 재실행·재기록이다. REQUEST_CHANGES는 경량 reject 유지.
+      if (passed && loop.recipe?.id === 'harness-hill-climb') {
+        if (!tgt.contract?.sha256 || !tgt.contract?.path) {
+          throw new Error('REVIEW_CONTRACT_MISSING: hill-climb passing verdict requires a contract-pinned checker (this checker was dispatched without a recorded contract — abandon it and re-dispatch after materializing the tracked contract)');
+        }
+        let stillValid = false;
+        try {
+          const realC = containedRealFile(resolve(root), tgt.contract.path);   // symlink-escape 재검증 (r6)
+          stillValid = !!realC && reportBoundToWorktree(root, realC, wsForReport.worktree)
+            && contentHash(readFileSync(realC, 'utf8')) === tgt.contract.sha256
+            && contractsDirSolo(realC);   // dispatch~record 창에 다른 계약이 추가되면 bare --contract가 함께 로드 (r7)
+        } catch { stillValid = false; }
+        if (!stillValid) throw new Error(`REVIEW_CONTRACT_MISSING: contract ${tgt.contract.path} was removed or altered since dispatch (recorded sha256 mismatch) — re-materialize the tracked contract (그대로 복사), re-run the review, and record this SAME checker episode (it stays pending; do NOT dispatch a second checker)`);
       }
     }, { floor: MUTATION_TURN_FLOOR });
   // REQUEST_CHANGES → checker='rejected'. nextAction returns fix_episode and Execution creates the fix maker.

@@ -102,12 +102,20 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" episode new \
 
 ### 3.4 checker 계약 (deep-review `--contract` + 본 문서) — 하나라도 실패 시 REQUEST_CHANGES
 
+**계약 소스는 tracked 파일이다:** `skills/deep-loop-workflow/references/contracts/HILLCLIMB-001.yaml` (deep-review contract-schema 파리티 — `slice`/`title`/`status`/`criteria`). `.deep-review/`는 gitignored라 fresh checkout에는 계약이 없다 — hill-climb run의 리뷰 dispatch 전에 tracked 소스를 **workstream worktree의** `<worktree>/.deep-review/contracts/HILLCLIMB-001.yaml`로 **그대로 복사(materialize)** 한다(checker는 worktree를 cwd로 deep-review를 실행하고 deep-review는 cwd의 `.deep-review/`를 읽는다 — 게이트 위치 = 소비처). 커널 `dispatchReview`는 hill-climb recipe run에서 다음을 전부 fail-closed로 강제한다(모두 checker episode 생성 전 throw):
+
+- reviewer가 `deep-review-loop`이고 flags에 **정확히 1회의 bare `--contract`**(selector 금지 — deep-review 파서는 `SLICE-NNN`만 selector로 소비하므로 HILLCLIMB-001을 명시 지정할 수 없고, `=` 형태·중복·타-slice는 전부 우회 경로)가 있어야 한다 — 아니면 `REVIEW_CONTRACT_UNENFORCEABLE`(subagent/codex-cross/standalone은 계약 파일을 읽지 않으므로 계약 미강제 APPROVE가 된다). bare `--contract`는 모든 active 계약을 로드하므로 worktree contracts 디렉터리에는 HILLCLIMB-001.yaml **외 다른 계약 yaml이 없어야** 한다(커널이 dispatch·record 양쪽에서 유일성 검증).
+- worktree-local 계약 사본이 존재하고 tracked 소스와 **byte-identical**이어야 한다 — 아니면 `REVIEW_CONTRACT_MISSING`(`status: active` 문자열만으론 stale/변조 사본 — 예: criteria 비움 — 이 통과한다; 계약은 run-불변이므로 "그대로 복사"가 곧 판정 기준). 검증된 계약 identity(slice·path·sha256)는 checker episode에 durable 기록되고, `review record`의 passing verdict는 **같은 파일을 record 시점에 재검증**한다 — dispatch~record 사이 삭제/변조(deep-review는 무-contract를 조용히 skip)로 나온 APPROVE는 `REVIEW_CONTRACT_MISSING`으로 거부된다.
+- 통과 시 `evidence`(커널-검증 `latestInsights`의 경로·emit_ulid·producer run·sha256·후보 — 부재 시 `null`)를 디스크립터에 싣고 **checker episode의 `request.md`에도 durable 기록**한다. 스킬은 이 evidence를 checker 리뷰 요청 본문에 그대로 포함하고, checker는 maker 인용(ledger `insights_ref`/`insights_sha256`, design/plan은 문서 인용)과 대조해 mismatch를 criterion (a) 위반으로 판정한다. run-특정 값은 계약 파일이 아니라 이 evidence로 전달한다 — 계약 파일은 run-불변.
+
+**phase 적용성:** (a)(b)(c)(e)는 모든 review point(design/plan/implementation)에 적용하되 design/plan에서는 문서 수준으로 적용한다. **(d)(f)는 implementation checker 전용**이다 — diff/ledger가 존재하지 않는 design/plan phase에 일괄 적용하면 구조적으로 승인 불가가 된다(첫 실사용 run r5 W 실측).
+
 - (a) 인용 지표가 `insights latest` 검증을 통과한 insights 파일에 실존하는지
 - (b) 변경이 인용 후보를 실제로 겨냥하는지
 - (c) 반증 조건이 관측 가능한 미래 신호인지
-- (d) **diff가 Tier 1 안인지** (Tier 2 파일 diff 발견 = 즉시 REQUEST_CHANGES)
+- (d) **[implementation 전용]** **diff가 Tier 1 안인지** (Tier 2 파일 diff 발견 = 즉시 REQUEST_CHANGES)
 - (e) 변경이 어떤 파일의 안전 게이트 준수 지시문도 삭제·약화하지 않는지 (Tier 1 내 파일에도 적용 — 벨트 앤 서스펜더)
-- (f) ledger 항목이 append되었고 schema에 맞으며, **ledger diff가 순수 append인지 — 기존 항목의 수정·삭제·재배열이 diff에 보이면 즉시 REQUEST_CHANGES**
+- (f) **[implementation 전용]** ledger 항목이 append되었고 schema에 맞으며, **ledger diff가 순수 append인지 — 기존 항목의 수정·삭제·재배열이 diff에 보이면 즉시 REQUEST_CHANGES**
 
 **방벽 요약:** ① Tier 2 자율 편집 원천 금지(구조적) ② 마커 테스트(삭제 결정론 방어) ③ checker 계약 (d)(e)(f) ④ 사람 머지. auto-merge가 없으므로 최종 방벽은 항상 사람이다 — "stay the engineer" 철학과 일치한다.
 
