@@ -43,8 +43,10 @@ export function finishProofState(loop) {
   const allPointsConverged = [...latestByPoint.values()].every(m => boundLatestApproved(m.id));
   // P2 codex r6: hill-climb run의 review proof는 계약-강제 리뷰여야 한다 — proof를 만족시키는 각 latest
   // APPROVED checker에 dispatch가 pin한 contract(sha256)가 있어야 한다. pre-patch 커널로 approved된
-  // legacy checker는 record-시점 게이트를 다시 거치지 않으므로 finish에서 막는다(마이그레이션: 사람이
-  // legacy checker를 abandon하고 새 커널로 re-dispatch → 계약-강제 리뷰 → record).
+  // legacy checker는 record-시점 게이트를 다시 거치지 않으므로 finish에서 막는다. 마이그레이션(r7,
+  // abandon 불필요 — terminal checker는 abandon 불가): dispatchReview의 legacyUnpinned 특례가 해당
+  // maker를 재리뷰 재적격으로 되돌리므로, 사람이 `review dispatch`를 다시 실행해 계약-pinned checker가
+  // 최신이 되면 이 게이트가 해소된다.
   const hillClimb = loop.recipe?.id === 'harness-hill-climb';
   const contractPinned = !hillClimb || [...latestByPoint.values()].every(m => {
     const c = latestBoundChecker(m.id);
