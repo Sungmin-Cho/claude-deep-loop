@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
@@ -13,6 +13,7 @@ import {
 } from '../scripts/lib/review.mjs';
 import { releaseLease, acquireLease } from '../scripts/lib/lease.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
+import { createFileSymlinkOrSkip } from './helpers/fs-fixtures.mjs';
 
 function eventLog(root, runId) {
   return readFileSync(join(runDir(root, runId), 'event-log.jsonl'), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l));
@@ -588,13 +589,13 @@ test('#2(d): report outside root or absent is refused', () => {
 // #2(e): a SYMLINK under the ws worktree pointing OUTSIDE the project must be refused (realpath deref containment) —
 // isAbsolute/'..'+existsSync alone would pass it (design-R3 #6). Placed under the worktree so the ONLY failure
 // reason is the escape (not the Fix-4 worktree binding).
-test('#2(e): a symlink under the ws worktree escaping the project is refused (realpath containment)', () => {
+test('#2(e): a symlink under the ws worktree escaping the project is refused (realpath containment)', (t) => {
   const { root, runId, fence } = freshRun();
   const { ws, checkerId, worktree } = boundChecker(root, runId, fence, 'plan');
   const outside = mkdtempSync(join(tmpdir(), 'dl-outside-'));
   writeFileSync(join(outside, 'secret.md'), '# outside the project');
   mkdirSync(join(root, worktree), { recursive: true });
-  symlinkSync(join(outside, 'secret.md'), join(root, worktree, 'link.md'));   // under-worktree name, escaping target
+  if (!createFileSymlinkOrSkip(t, join(outside, 'secret.md'), join(root, worktree, 'link.md'))) return;
   assert.throws(() => recordReviewOutcome(root, runId, { episodeId: checkerId, verdict: 'APPROVE', proof: { report: join(worktree, 'link.md') }, fence }), /REVIEW_NO_EVIDENCE/);
 });
 

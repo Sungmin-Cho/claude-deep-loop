@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { cpSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync, readFileSync as _rfRoot } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname as _dn } from 'node:path';
+import { join, dirname as _dn, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readState, writeState, patch, withLock, runDir, findRoot } from '../scripts/lib/state.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
@@ -221,6 +221,40 @@ test('findRoot: nested convention worktrees resolves to outer root with .deep-lo
   mkdirSync(nested, { recursive: true });
   // inner base <root>/.claude/worktrees/a has no .deep-loop/current — should NOT stop here
   assert.equal(findRoot(nested), root, 'nested convention: inner base without marker continues to outer root');
+});
+
+function findVirtualWindowsRoot(startDir, marker) {
+  return findRoot(startDir, {
+    pathApi: win32,
+    existsSync: candidate => win32.normalize(candidate).toLowerCase() === win32.normalize(marker).toLowerCase(),
+  });
+}
+
+test('findRoot preserves a Windows drive root instead of reducing it to drive-relative C:', () => {
+  assert.equal(
+    findVirtualWindowsRoot('C:\\.worktrees\\ws-drive\\src', 'C:\\.deep-loop\\current'),
+    'C:\\',
+  );
+});
+
+test('findRoot preserves the outer project root through nested Windows convention worktrees', () => {
+  assert.equal(
+    findVirtualWindowsRoot(
+      'C:\\repo\\.claude\\worktrees\\outer\\.worktrees\\inner\\src',
+      'C:\\repo\\.deep-loop\\current',
+    ),
+    'C:\\repo',
+  );
+});
+
+test('findRoot preserves a UNC share root while walking convention ancestors', () => {
+  assert.equal(
+    findVirtualWindowsRoot(
+      '\\\\server\\share\\.claude\\worktrees\\ws-unc\\src',
+      '\\\\server\\share\\.deep-loop\\current',
+    ),
+    '\\\\server\\share\\',
+  );
 });
 
 const _R = _dn(_dn(fileURLToPath(import.meta.url)));   // repo root (tests/..)

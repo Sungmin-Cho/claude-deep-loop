@@ -1,23 +1,24 @@
 import { readFileSync, writeFileSync, mkdirSync, rmdirSync, existsSync, statSync } from 'node:fs';
-import { join, resolve, sep } from 'node:path';
+import path, { join } from 'node:path';
 import { contentHash, atomicWrite } from './envelope.mjs';
 import { validate } from './schema.mjs';
 import { leaseCheck } from './lease.mjs';
 import { appendAnchored, MUTATION_TURN_FLOOR } from './integrity.mjs';
 import { assertProjectRootBinding } from './project-root.mjs';
+import { ancestorPaths } from './path-portable.mjs';
 
 // R5 high-2: 상향탐색을 worktree 컨벤션(.claude/worktrees | .worktrees)으로 **한정**한다.
 // 무한정 walk 는 부모 run 밑의 nested repo/submodule 을 부모 run 에 잘못 바인딩(격리 회귀)시킨다.
 // cwd 가 <root>/.claude/worktrees/<slug>/... (또는 .worktrees) 안일 때만 그 부모 <root>(.deep-loop/current 보유)를 반환;
 // 그 외에는 startDir 그대로(기존 process.cwd() 동작과 동일 — 하위호환).
-export function findRoot(startDir) {
-  const parts = resolve(startDir).split(sep);
-  for (let i = parts.length - 1; i >= 1; i--) {
-    const isClaudeWt = parts[i - 1] === '.claude' && parts[i] === 'worktrees';
-    const isPlainWt = parts[i] === '.worktrees';
+export function findRoot(startDir, { pathApi = path, existsSync: markerExists = existsSync } = {}) {
+  for (const current of ancestorPaths(startDir, { pathApi })) {
+    const parent = pathApi.dirname(current);
+    const isClaudeWt = pathApi.basename(parent) === '.claude' && pathApi.basename(current) === 'worktrees';
+    const isPlainWt = pathApi.basename(current) === '.worktrees';
     if (isClaudeWt || isPlainWt) {
-      const base = parts.slice(0, isClaudeWt ? i - 1 : i).join(sep) || sep;
-      if (existsSync(join(base, '.deep-loop', 'current'))) return base;
+      const base = isClaudeWt ? pathApi.dirname(parent) : parent;
+      if (markerExists(pathApi.join(base, '.deep-loop', 'current'))) return base;
       // FIX H: 첫 번째 컨벤션 매치에 마커 없어도 break하지 말고 계속 탐색 — 중첩 컨벤션 경로에서 외부 run을 찾을 수 있음.
       // 어떤 컨벤션 세그먼트도 마커를 가진 base를 제공하지 못하면 루프 종료 후 startDir 반환.
       // continue

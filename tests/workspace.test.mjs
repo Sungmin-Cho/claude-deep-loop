@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
@@ -9,6 +9,7 @@ import {
   newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal,
   inheritWorkstreams, integrationOrder,
 } from '../scripts/lib/workspace.mjs';
+import { createDirectoryJunction, fixtureDir } from './helpers/fs-fixtures.mjs';
 
 function seed() {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
@@ -247,11 +248,11 @@ test('newWorkstream allows worktree under convention dirs (.claude/worktrees/ or
   assert.ok(newWorkstream(root, runId, { title: 'WtAbs', branch: 'b7', worktree: join(root, '.worktrees/ws4'), fence: fence(runId) }).id);
 });
 
-test('newWorkstream rejects symlinked worktree parent escaping root (R5 P2-2)', () => {
+test('newWorkstream rejects a junction/reparse-like worktree parent escaping root', () => {
   const { root, runId } = seed();
-  const outside = mkdtempSync(join(tmpdir(), 'dl-outside-'));   // 프로젝트 밖 실제 디렉터리
+  const outside = fixtureDir('dl-outside-junction-');   // 프로젝트 밖 실제 디렉터리
   mkdirSync(join(root, '.claude'), { recursive: true });
-  symlinkSync(outside, join(root, '.claude', 'worktrees'));      // .claude/worktrees -> outside (symlink)
+  createDirectoryJunction(outside, join(root, '.claude', 'worktrees'));
   mkdirSync(join(outside, 'ws'), { recursive: true });           // 실제 worktree 는 outside/ws
   // lexical 로는 root 밑처럼 보이나 realpath 는 outside → 거부돼야 함.
   assert.throws(
@@ -265,8 +266,11 @@ test('newWorkstream rejects symlinked worktree parent escaping root (R5 P2-2)', 
 test('newWorkstream rejects dangling symlink worktree component (FIX M)', () => {
   const { root, runId } = seed();
   mkdirSync(join(root, '.claude'), { recursive: true });
-  // Dangling symlink: .claude/worktrees → /nonexistent/target (target does NOT exist)
-  symlinkSync('/nonexistent/dl-outside-target', join(root, '.claude', 'worktrees'));
+  // Create a privilege-free Windows junction (directory symlink elsewhere), then remove its target so the
+  // component is dangling on every host without blanket-skipping the containment assertion.
+  const target = fixtureDir('dl-dangling-target-');
+  createDirectoryJunction(target, join(root, '.claude', 'worktrees'));
+  rmSync(target, { recursive: true, force: true });
   assert.throws(
     () => newWorkstream(root, runId, { title: 'Dangle', branch: 'bd', worktree: '.claude/worktrees/ws', fence: fence(runId) }),
     /WORKSTREAM_WORKTREE_ESCAPE/, 'dangling symlink component must be rejected');
@@ -300,4 +304,15 @@ test('newWorkstream normalizes absolute worktree input to root-relative in store
   newWorkstream(root, runId, { title: 'Rel', branch: 'b-rel', worktree: '.claude/worktrees/ws-rel', fence: f });
   const ws3 = readState(root, runId).data.workstreams.find(w => w.branch === 'b-rel');
   assert.equal(ws3.worktree, '.claude/worktrees/ws-rel', 'relative input stored as-is (already root-relative)');
+});
+
+test('newWorkstream stores backslash relative input as a slash-normalized durable path', () => {
+  const { root, runId } = seed();
+  const f = fence(runId);
+  newWorkstream(root, runId, {
+    title: 'Windows Relative', branch: 'b-win-rel',
+    worktree: '.claude\\worktrees\\windows-relative', fence: f,
+  });
+  const ws = readState(root, runId).data.workstreams.find(w => w.branch === 'b-win-rel');
+  assert.equal(ws.worktree, '.claude/worktrees/windows-relative');
 });

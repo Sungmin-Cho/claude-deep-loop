@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, mkdirSync, symlinkSync, readFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
@@ -9,6 +9,7 @@ import { newWorkstream, recordWorkstreamTerminal } from '../scripts/lib/workspac
 import { newEpisode, recordEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
 import { dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
 import { finishRun, finishProofState } from '../scripts/lib/finish.mjs';
+import { createFileSymlinkOrSkip } from './helpers/fs-fixtures.mjs';
 
 // Codex r2 should-fix-2: review.points 를 ['implementation'] 한 개로 시드해야 recordWorkstreamTerminal('ready')
 // 의 "전 review point done" 게이트(workspace.mjs:77-82, 기본 [design,plan,implementation])를 한 번의 approve 로 충족한다.
@@ -284,12 +285,12 @@ test('finish completed rejects runDir itself or a directory as the report', () =
 
 // impl-R1 Fix 2: a runDir-relative SYMLINK whose target is OUTSIDE the project must be refused — realpath deref
 // containment (containedRealFile). resolve+startsWith+statSync(follow) would have accepted it.
-test('finish completed rejects a runDir-relative symlink escaping the project (realpath containment)', () => {
+test('finish completed rejects a runDir-relative symlink escaping the project (realpath containment)', (t) => {
   const { root, runId, fence } = seed();
   buildSettledRun(root, runId, fence);
   const outside = mkdtempSync(join(tmpdir(), 'dl-fin-outside-'));
   writeFileSync(join(outside, 'report.md'), '# report outside the project');
-  symlinkSync(join(outside, 'report.md'), join(runDir(root, runId), 'final-report.md'));   // escaping symlink under runDir
+  if (!createFileSymlinkOrSkip(t, join(outside, 'report.md'), join(runDir(root, runId), 'final-report.md'))) return;
   assert.throws(() => finishRun(root, runId, { status: 'completed', reportRel: 'final-report.md', proof: {}, fence }), /final-report-missing|FINISH_PROOF_UNMET/);
 });
 
