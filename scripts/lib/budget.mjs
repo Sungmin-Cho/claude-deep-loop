@@ -6,6 +6,23 @@ import { leaseCheck } from './lease.mjs';
 // while state.mjs imports it directly from integrity.mjs (no state↔budget cycle).
 export { MUTATION_TURN_FLOOR } from './integrity.mjs';
 
+function safeTokenCount(value) {
+  return Number.isSafeInteger(value) && value >= 0;
+}
+
+// A Codex process is billable preflight evidence only when the streaming parser proved one complete turn
+// with a non-overflowing input+output total. Optional cached/reasoning fields are non-additive breakdowns.
+export function isMeasuredOneTurnUsage(usage) {
+  if (usage == null || typeof usage !== 'object' || Array.isArray(usage)
+    || usage.num_turns !== 1
+    || !safeTokenCount(usage.input_tokens) || !safeTokenCount(usage.output_tokens)
+    || !safeTokenCount(usage.tokens)
+    || !safeTokenCount(usage.input_tokens + usage.output_tokens)
+    || usage.tokens !== usage.input_tokens + usage.output_tokens) return false;
+  return ['cached_input_tokens', 'reasoning_output_tokens']
+    .every((field) => !Object.hasOwn(usage, field) || safeTokenCount(usage[field]));
+}
+
 export function checkBudget(loop, { now = Date.now(), sessionStart, measurable = true } = {}) {
   const b = loop.budget;
   if (!measurable && b.enforcement !== 'best-effort-interactive' && b.on_unmeasurable_usage === 'fail-closed') {

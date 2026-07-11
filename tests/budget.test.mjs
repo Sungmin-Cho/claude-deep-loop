@@ -3,7 +3,13 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { checkBudget, recordCost, reconcileBudget, MUTATION_TURN_FLOOR } from '../scripts/lib/budget.mjs';
+import {
+  checkBudget,
+  isMeasuredOneTurnUsage,
+  recordCost,
+  reconcileBudget,
+  MUTATION_TURN_FLOOR,
+} from '../scripts/lib/budget.mjs';
 import { appendAnchored, verifyLog, verifyHead } from '../scripts/lib/integrity.mjs';
 import { writeState, readState, runDir, patch } from '../scripts/lib/state.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
@@ -69,6 +75,38 @@ test('soft stop demotes tier', () => {
 test('headless unmeasurable → fail-closed', () => {
   const l = base(); l.budget.enforcement = 'hard'; l.budget.spent = 1;
   assert.equal(checkBudget(l, { now: 0, sessionStart: 0, measurable: false }).ok, false);
+});
+
+test('isMeasuredOneTurnUsage accepts only an exact safe Codex one-turn measurement', () => {
+  assert.equal(isMeasuredOneTurnUsage({
+    num_turns: 1,
+    tokens: 12,
+    input_tokens: 5,
+    output_tokens: 7,
+    cached_input_tokens: 2,
+    reasoning_output_tokens: 3,
+  }), true);
+  assert.equal(isMeasuredOneTurnUsage({
+    num_turns: 1,
+    tokens: 12,
+    input_tokens: 5,
+    output_tokens: 7,
+  }), true);
+
+  const invalid = [
+    null,
+    {},
+    { num_turns: 2, tokens: 12, input_tokens: 5, output_tokens: 7 },
+    { num_turns: 1, tokens: 11, input_tokens: 5, output_tokens: 7 },
+    { num_turns: 1, tokens: -1, input_tokens: 0, output_tokens: 0 },
+    { num_turns: 1, tokens: 1.5, input_tokens: 1, output_tokens: 0.5 },
+    { num_turns: 1, tokens: Number.MAX_SAFE_INTEGER + 1, input_tokens: Number.MAX_SAFE_INTEGER, output_tokens: 1 },
+    { num_turns: 1, tokens: 1, input_tokens: 1 },
+    { num_turns: 1, tokens: 1, output_tokens: 1 },
+    { num_turns: 1, tokens: 2, input_tokens: 1, output_tokens: 1, cached_input_tokens: -1 },
+    { num_turns: 1, tokens: 2, input_tokens: 1, output_tokens: 1, reasoning_output_tokens: 0.5 },
+  ];
+  for (const usage of invalid) assert.equal(isMeasuredOneTurnUsage(usage), false, JSON.stringify(usage));
 });
 
 test('recordCost syncs kernel-derived spent from event-log', () => {

@@ -43,13 +43,23 @@ function absoluteExecutable(value) {
   return value;
 }
 
-export function buildCodexExecEntry({ executable, projectRoot, prompt, model = null, effort = null } = {}) {
+export function buildCodexExecEntry({
+  executable,
+  projectRoot,
+  prompt,
+  model = null,
+  effort = null,
+  sandbox = 'workspace-write',
+} = {}) {
   const bin = absoluteExecutable(executable);
   if (typeof projectRoot !== 'string' || projectRoot.length === 0 || (!posix.isAbsolute(projectRoot) && !win32.isAbsolute(projectRoot))) {
     throw Object.assign(new Error('INVALID_CODEX_PROJECT_ROOT: expected absolute path'), { code: 'INVALID_CODEX_PROJECT_ROOT' });
   }
   if (typeof prompt !== 'string' || prompt.length === 0) {
     throw Object.assign(new Error('INVALID_CODEX_PROMPT: expected non-empty string'), { code: 'INVALID_CODEX_PROMPT' });
+  }
+  if (sandbox !== 'workspace-write' && sandbox !== 'read-only') {
+    throw Object.assign(new Error('INVALID_CODEX_SANDBOX: expected workspace-write or read-only'), { code: 'INVALID_CODEX_SANDBOX' });
   }
   const profile = validateRuntimeProfile('codex', { model, effort });
   const modelArgs = profile.model == null ? [] : ['--model', profile.model];
@@ -64,7 +74,7 @@ export function buildCodexExecEntry({ executable, projectRoot, prompt, model = n
       '--disable', 'browser_use', '--disable', 'browser_use_external',
       '--disable', 'computer_use', '--disable', 'image_generation',
       '--disable', 'in_app_browser',
-      '--sandbox', 'workspace-write',
+      '--sandbox', sandbox,
       ...modelArgs,
       ...effortArgs,
       '-c', 'approval_policy="never"',

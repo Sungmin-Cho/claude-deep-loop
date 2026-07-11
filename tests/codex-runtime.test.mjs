@@ -50,6 +50,26 @@ test('buildCodexExecEntry maps model and supported effort without weakening isol
   }
 });
 
+test('buildCodexExecEntry permits only the explicit read-only preflight sandbox override', () => {
+  const readOnly = buildCodexExecEntry({
+    executable: BIN,
+    projectRoot: '/repo',
+    prompt: PROMPT,
+    sandbox: 'read-only',
+  });
+  assert.equal(readOnly.argv[readOnly.argv.indexOf('--sandbox') + 1], 'read-only');
+  assert.ok(readOnly.argv.includes('sandbox_workspace_write.network_access=false'));
+  assert.equal(readOnly.shell, false);
+
+  for (const sandbox of ['', 'danger-full-access', 'workspace-read', null]) {
+    assert.throws(
+      () => buildCodexExecEntry({ executable: BIN, projectRoot: '/repo', prompt: PROMPT, sandbox }),
+      /INVALID_CODEX_SANDBOX/,
+      String(sandbox),
+    );
+  }
+});
+
 test('buildCodexExecEntry fails closed for Codex max effort and non-absolute executables', () => {
   assert.throws(
     () => buildCodexExecEntry({ executable: BIN, projectRoot: '/repo', prompt: PROMPT, effort: 'max' }),
