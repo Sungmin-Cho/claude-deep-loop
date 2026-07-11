@@ -8,8 +8,12 @@ export function validateSessionRuntime(value) {
 }
 
 export function sessionRuntime(loop) {
-  const stored = loop?.autonomy?.session_runtime;
-  const source = loop?.autonomy?.runtime_source;
+  const autonomy = loop?.autonomy;
+  if (autonomy === null || typeof autonomy !== 'object' || Array.isArray(autonomy)) {
+    throw new Error('INVALID_RUNTIME_STATE: autonomy must be object');
+  }
+  const stored = autonomy.session_runtime;
+  const source = autonomy.runtime_source;
   if (stored === undefined && source === undefined) return 'claude';
   if (stored === undefined) {
     throw new Error('INVALID_RUNTIME_STATE: runtime_source requires session_runtime');

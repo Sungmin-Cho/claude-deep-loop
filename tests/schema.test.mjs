@@ -17,6 +17,23 @@ test('valid loop.json passes', () => {
   assert.equal(validate(minimalValid()).ok, true);
 });
 
+test('autonomy must be a non-null, non-array object', () => {
+  const cases = [
+    ['null', null], ['array', []], ['string', 'invalid'], ['number', 1], ['boolean', true],
+  ];
+  const accepted = [];
+  const missingStableError = [];
+  for (const [label, autonomy] of cases) {
+    const loop = minimalValid();
+    loop.autonomy = autonomy;
+    const result = validate(loop);
+    if (result.ok) accepted.push(label);
+    if (!result.errors.includes('autonomy must be object')) missingStableError.push(label);
+  }
+  assert.deepEqual(accepted, []);
+  assert.deepEqual(missingStableError, []);
+});
+
 test('runtime_source cannot exist without session_runtime', () => {
   const loop = minimalValid();
   loop.autonomy.runtime_source = 'skill-asserted';

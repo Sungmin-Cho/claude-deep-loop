@@ -17,9 +17,34 @@ test('session runtime allowlist is immutable and validation returns the asserted
   assert.throws(() => validateSessionRuntime('other'), /INVALID_RUNTIME/);
 });
 
-test('sessionRuntime maps state with both runtime fields absent to legacy claude', () => {
+test('sessionRuntime maps a valid autonomy object with both runtime fields absent to legacy claude', () => {
   assert.equal(sessionRuntime({ autonomy: {} }), 'claude');
-  assert.equal(sessionRuntime({}), 'claude');
+});
+
+test('sessionRuntime and runtimeFence reject missing or malformed autonomy containers', () => {
+  const cases = [
+    ['missing', undefined], ['null', null], ['array', []], ['string', 'invalid'],
+    ['number', 1], ['boolean', true],
+  ];
+  const acceptedBySessionRuntime = [];
+  const acceptedByRuntimeFence = [];
+  for (const [label, autonomy] of cases) {
+    const loop = autonomy === undefined ? {} : { autonomy };
+    try {
+      sessionRuntime(loop);
+      acceptedBySessionRuntime.push(label);
+    } catch (error) {
+      assert.match(error.message, /INVALID_RUNTIME_STATE: autonomy must be object/);
+    }
+    try {
+      runtimeFence(loop, 'claude');
+      acceptedByRuntimeFence.push(label);
+    } catch (error) {
+      assert.match(error.message, /INVALID_RUNTIME_STATE: autonomy must be object/);
+    }
+  }
+  assert.deepEqual(acceptedBySessionRuntime, []);
+  assert.deepEqual(acceptedByRuntimeFence, []);
 });
 
 test('sessionRuntime rejects runtime_source without session_runtime', () => {

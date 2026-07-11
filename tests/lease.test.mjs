@@ -1,19 +1,27 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { contentHash } from '../scripts/lib/envelope.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { readState, writeState } from '../scripts/lib/state.mjs';
+import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import {
   deriveIdempotencyKey, leaseCheck, acquireLease, releaseLease,
   reserveHandoff, advanceHandoffPhase, rollbackHandoff,
 } from '../scripts/lib/lease.mjs';
 
-function seed() {
+function seed(runtime = 'claude') {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
-  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime, goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
   return { root, runId };
+}
+
+function writeHashValidState(root, runId, data) {
+  const raw = JSON.stringify(data, null, 2);
+  const dir = runDir(root, runId);
+  writeFileSync(join(dir, 'loop.json'), raw);
+  writeFileSync(join(dir, '.loop.hash'), contentHash(raw));
 }
 
 test('deriveIdempotencyKey is deterministic and trigger-sensitive', () => {
@@ -417,19 +425,54 @@ test('acquireLease checks runtime before stale generation and paused unpause wit
   assert.equal(readState(root, runId).data.status, 'running');
 });
 
-test('acquireLease treats only Claude as matching legacy runtime state', () => {
+test('acquireLease treats only Claude as matching a valid legacy runtime state', () => {
   const { root, runId } = seed();
   const { data } = readState(root, runId);
   delete data.autonomy.session_runtime;
   delete data.autonomy.runtime_source;
   writeState(root, runId, data);
+  releaseLease(root, runId, { owner: runId, generation: 1 });
 
   assert.deepEqual(
-    acquireLease(root, runId, { owner: runId, expectGeneration: 1, runtime: 'codex' }),
+    acquireLease(root, runId, { owner: 'FRESH', expectGeneration: 1, runtime: 'codex' }),
     { ok: false, reason: 'RUNTIME_FENCED', expected: 'claude', actual: 'codex' },
   );
-  assert.equal(
-    acquireLease(root, runId, { owner: runId, expectGeneration: 1, runtime: 'claude' }).reason,
-    'already-owned',
-  );
+  const acquired = acquireLease(root, runId, {
+    owner: 'FRESH', expectGeneration: 1, runtime: 'claude',
+  });
+  assert.equal(acquired.reason, 'acquired');
+  assert.equal(readState(root, runId).data.session_chain.lease.owner_run_id, 'FRESH');
+});
+
+test('acquireLease rejects hash-valid malformed autonomy before a wrong-runtime takeover and mutates nothing', () => {
+  for (const autonomy of [null, [], 'invalid', 1, true]) {
+    const { root, runId } = seed('codex');
+    releaseLease(root, runId, { owner: runId, generation: 1 });
+    const { data } = readState(root, runId);
+    data.autonomy = autonomy;
+    writeHashValidState(root, runId, data);
+
+    const dir = runDir(root, runId);
+    const beforeLoop = readFileSync(join(dir, 'loop.json'), 'utf8');
+    const beforeHash = readFileSync(join(dir, '.loop.hash'), 'utf8');
+    const eventPath = join(dir, 'event-log.jsonl');
+    const beforeEvents = existsSync(eventPath) ? readFileSync(eventPath, 'utf8') : null;
+
+    assert.throws(
+      () => acquireLease(root, runId, {
+        owner: 'CLAUDE-OWNER', expectGeneration: 1, runtime: 'claude',
+      }),
+      /INVALID_RUNTIME_STATE: autonomy must be object/,
+      `acquireLease accepted autonomy=${JSON.stringify(autonomy)}`,
+    );
+    const afterLoop = readFileSync(join(dir, 'loop.json'), 'utf8');
+    assert.equal(afterLoop, beforeLoop);
+    assert.equal(readFileSync(join(dir, '.loop.hash'), 'utf8'), beforeHash);
+    assert.equal(existsSync(eventPath) ? readFileSync(eventPath, 'utf8') : null, beforeEvents);
+    const after = JSON.parse(afterLoop);
+    assert.equal(after.session_chain.lease.owner_run_id, runId);
+    assert.equal(after.session_chain.lease.generation, 1);
+    assert.equal(after.session_chain.lease.state, 'released');
+    assert.equal(after.status, 'running');
+  }
 });

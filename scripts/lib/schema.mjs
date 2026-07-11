@@ -36,11 +36,14 @@ export function validate(loopJson, schema = loadSchema()) {
   }
   // schema.properties is not read by this validator, so custom optional-field contracts live here.
   // session_effort/session_runtime/runtime_source enum membership is enforced by the loop above.
-  if (loopJson.autonomy) {
-    const sm = loopJson.autonomy.session_model;
+  const autonomy = loopJson.autonomy;
+  const autonomyIsObject = autonomy !== null && typeof autonomy === 'object' && !Array.isArray(autonomy);
+  if (autonomy !== undefined && !autonomyIsObject) errors.push('autonomy must be object');
+  if (autonomyIsObject) {
+    const sm = autonomy.session_model;
     if (sm !== undefined && typeof sm !== 'string') errors.push('autonomy.session_model must be string');
-    const runtime = loopJson.autonomy.session_runtime;
-    const source = loopJson.autonomy.runtime_source;
+    const runtime = autonomy.session_runtime;
+    const source = autonomy.runtime_source;
     if (runtime === undefined && source !== undefined) {
       errors.push('autonomy.runtime_source requires autonomy.session_runtime');
     }

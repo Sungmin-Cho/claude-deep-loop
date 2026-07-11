@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { contentHash } from '../scripts/lib/envelope.mjs';
@@ -11,9 +11,9 @@ import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 
 const CLI = join(process.cwd(), 'scripts', 'deep-loop.mjs');
 
-function seedTerminal(status, mutate) {
+function seedTerminal(status, mutate, runtime = 'claude') {
   const root = mkdtempSync(join(tmpdir(), 'dl-term-'));
-  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-07-09T00:00:00Z') });
+  const { runId } = initRun(root, { runtime, goal: 'g', now: new Date('2026-07-09T00:00:00Z') });
   const { data } = readState(root, runId);
   data.status = status;
   if (mutate) mutate(data);
@@ -116,6 +116,33 @@ test('CLI lease acquire classifies an invalid runtime enum or stored runtime sta
   assert.equal(invalidState.status, 1, invalidState.stdout + invalidState.stderr);
   assert.match(invalidState.stderr, /INVALID_RUNTIME_STATE/);
   assert.doesNotMatch(invalidState.stderr, /\n\s+at /, 'classified runtime-state errors must not leak a stack');
+});
+
+test('CLI lease acquire rejects malformed autonomy without a wrong-runtime takeover or durable mutation', () => {
+  const { root, runId, gen } = seedTerminal('running', (data) => {
+    data.session_chain.lease.state = 'released';
+  }, 'codex');
+  const { data } = readState(root, runId);
+  data.autonomy = [];
+  const raw = JSON.stringify(data, null, 2);
+  const dir = runDir(root, runId);
+  writeFileSync(join(dir, 'loop.json'), raw);
+  writeFileSync(join(dir, '.loop.hash'), contentHash(raw));
+
+  const beforeLoop = readFileSync(join(dir, 'loop.json'), 'utf8');
+  const beforeHash = readFileSync(join(dir, '.loop.hash'), 'utf8');
+  const eventPath = join(dir, 'event-log.jsonl');
+  const beforeEvents = existsSync(eventPath) ? readFileSync(eventPath, 'utf8') : null;
+  const result = run(root, [
+    'lease', 'acquire', '--owner', 'CLAUDE-OWNER', '--generation', String(gen), '--runtime', 'claude',
+  ]);
+
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /INVALID_RUNTIME_STATE: autonomy must be object/);
+  assert.doesNotMatch(result.stderr, /\n\s+at /, 'classified runtime-state errors must not leak a stack');
+  assert.equal(readFileSync(join(dir, 'loop.json'), 'utf8'), beforeLoop);
+  assert.equal(readFileSync(join(dir, '.loop.hash'), 'utf8'), beforeHash);
+  assert.equal(existsSync(eventPath) ? readFileSync(eventPath, 'utf8') : null, beforeEvents);
 });
 
 test('CLI lease acquire runtime mismatch exits 3 with structured RUNTIME_FENCED and mutates nothing', () => {
