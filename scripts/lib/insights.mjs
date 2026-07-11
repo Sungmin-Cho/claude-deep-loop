@@ -1,8 +1,8 @@
-import { readdirSync, readFileSync, existsSync, renameSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { runDir, readState } from './state.mjs';
 import { readLines, verifyLines, verifyHeadLines, appendAnchored, MUTATION_TURN_FLOOR } from './integrity.mjs';
-import { contentHash, wrap, unwrap, ulid, atomicWrite } from './envelope.mjs';
+import { contentHash, wrap, unwrap, ulid, atomicWrite, renameAtomicWithRetry } from './envelope.mjs';
 import { leaseCheck } from './lease.mjs';
 
 export const INSIGHTS_SCHEMA_VERSION = 1;
@@ -415,7 +415,9 @@ export function computeInsights(root, { selfRunId = null, now = Date.now(), retr
 const insightsDir = (root) => join(root, '.deep-loop', 'insights');
 export const relInsightsPath = (name) => `.deep-loop/insights/${name}`;
 
-export function emitInsights(root, runId, { fence, now = Date.now(), rnd = Math.random, renameFn = renameSync, sleepFn } = {}) {
+export function emitInsights(root, runId, {
+  fence, now = Date.now(), rnd = Math.random, platform, monotonicNowFn, renameFn, sleepFn,
+} = {}) {
   // lib 진입점 fence 필수 — shape까지 episode.mjs:26-27/finish.mjs 동형(owner 문자열 + generation 정수, r2 리뷰 정정)
   if (!fence || typeof fence.owner !== 'string' || !fence.owner.length || !Number.isInteger(fence.generation)) {
     throw new Error('FENCE_REQUIRED: emitInsights requires {owner: string, generation: integer}');
@@ -442,7 +444,8 @@ export function emitInsights(root, runId, { fence, now = Date.now(), rnd = Math.
     undefined,
     (l) => { if (fence) { const r = leaseCheck(l, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); } },
     { floor: MUTATION_TURN_FLOOR });
-  renameFn(tmp, join(insightsDir(root), finalName));                 // ③ 공개
+  renameAtomicWithRetry(tmp, join(insightsDir(root), finalName),
+    { platform, monotonicNowFn, renameFn, sleepFn });                // ③ 공개
   // candidates를 반환에 포함 — finish 스킬이 파일을 직접 파싱하지 않고 CLI 출력만으로 제안 블록을 구성(§9, 2-plane).
   // v1.5: 신뢰 라벨 2배열도 함께 노출 — payload에만 있으면 stdout-만 읽는 소비자에게 영원히 안 보인다 (plan-r2).
   return { ok: true, path: rel, sha256, candidates_count: payload.candidates.length, candidates: payload.candidates,

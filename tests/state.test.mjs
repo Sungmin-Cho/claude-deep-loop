@@ -2,10 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { cpSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync, readFileSync as _rfRoot } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname as _dn, win32 } from 'node:path';
+import { basename, join, dirname as _dn, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readState, writeState, patch, withLock, runDir, findRoot } from '../scripts/lib/state.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
+
+const atomicApiPromise = import('../scripts/lib/atomic-write.mjs').catch(() => ({}));
 
 function seed() {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
@@ -124,8 +126,33 @@ test('stale lock is reclaimed after TTL', () => {
   const old = new Date(Date.now() - 60000);
   utimesSync(lock, old, old);                    // 60s old > 30s TTL
   let ran = false;
-  withLock(root, runId, () => { ran = true; }, { ttlMs: 30000, retries: 5, backoffMs: 1 });
+  withLock(root, runId, () => { ran = true; }, { retries: 5, backoffMs: 1 });
   assert.equal(ran, true);
+});
+
+test('lock and rename timing constants pin the two-replacement transaction budget', async () => {
+  const stateApi = await import('../scripts/lib/state.mjs');
+  const atomicApi = await atomicApiPromise;
+  assert.equal(stateApi.LOCK_STALE_TTL_MS, 30_000);
+  assert.equal(atomicApi.RENAME_RETRY_MAX_ELAPSED_MS, 1_000);
+  assert.ok(2 * atomicApi.RENAME_RETRY_MAX_ELAPSED_MS < stateApi.LOCK_STALE_TTL_MS / 10);
+});
+
+test('writeState performs exactly the loop and hash atomic replacements', () => {
+  const { root, runId } = seed();
+  const data = readState(root, runId).data;
+  const replacements = [];
+  writeState(root, runId, data, {
+    atomicWriteFn: (path, contents) => { replacements.push({ path, contents }); },
+  });
+  assert.deepEqual(replacements.map(({ path }) => basename(path)), ['loop.json', '.loop.hash']);
+});
+
+test('a live directory lock remains busy before the default stale TTL', () => {
+  const { root, runId } = seed();
+  const lock = join(runDir(root, runId), '.lock');
+  mkdirSync(lock);
+  assert.throws(() => withLock(root, runId, () => {}, { retries: 1, backoffMs: 0 }), /LOCK_BUSY/);
 });
 
 // Codex impl r12 🔴: runId must be a safe single path segment — a '../' (or slash) runId would let runDir

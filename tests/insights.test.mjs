@@ -353,9 +353,91 @@ test('emit: fence 누락/불완전은 FENCE_REQUIRED, 불일치는 LEASE_FENCED 
 
 test('emit: rename 실패(②↔③ 창) → 이벤트만 존재, latest는 null (파일 부재 탈락)', () => {
   const { root, runId, fence } = emitFixture();
-  assert.throws(() => emitInsights(root, runId, { fence, now: FIXED.getTime(), renameFn: () => { throw new Error('EIO'); } }), /EIO/);
+  let attempts = 0;
+  let sleeps = 0;
+  assert.throws(() => emitInsights(root, runId, {
+    fence,
+    now: FIXED.getTime(),
+    platform: 'win32',
+    monotonicNowFn: () => 0,
+    sleepFn: () => { sleeps++; },
+    renameFn: () => { attempts++; throw Object.assign(new Error('EIO'), { code: 'EIO' }); },
+  }), /EIO/);
+  assert.equal(attempts, 1, 'nonretryable publish error is single-shot');
+  assert.equal(sleeps, 0);
   assert.ok(readLines(root, runId).some(e => e.type === 'insights-emitted'));   // 이벤트는 anchored
   assert.equal(latestInsights(root), null);                                      // 신뢰 파일 없음 + .tmp- 제외
+});
+
+test('emit: transient Windows publish retries only rename and anchors once before success', () => {
+  const { root, runId, fence } = emitFixture();
+  const calls = [];
+  const sleeps = [];
+  let now = 0;
+  const result = emitInsights(root, runId, {
+    fence,
+    now: FIXED.getTime(),
+    platform: 'win32',
+    monotonicNowFn: () => now,
+    sleepFn: (ms) => { sleeps.push(ms); now += ms; },
+    renameFn: (src, dst) => {
+      calls.push([src, dst]);
+      if (calls.length < 3) throw Object.assign(new Error('shared'), { code: 'EACCES' });
+      renameSync(src, dst);
+    },
+  });
+  assert.equal(calls.length, 3);
+  assert.equal(sleeps.length, 2);
+  assert.ok(calls.every(([src, dst]) => src === calls[0][0] && dst === calls[0][1]));
+  assert.equal(readLines(root, runId).filter(e => e.type === 'insights-emitted').length, 1);
+  assert.equal(existsSync(join(root, result.path)), true);
+  assert.equal(readdirSync(join(root, '.deep-loop', 'insights')).filter(name => name.startsWith('.tmp-')).length, 0);
+});
+
+test('emit: exhausted Windows publish leaves one anchor and designated hidden tmp in a fresh root', () => {
+  const { root, runId, fence } = emitFixture();
+  const expected = Object.assign(new Error('still shared'), { code: 'EBUSY' });
+  let now = 0;
+  let attempts = 0;
+  let sleeps = 0;
+  assert.throws(() => emitInsights(root, runId, {
+    fence,
+    now: FIXED.getTime(),
+    platform: 'win32',
+    monotonicNowFn: () => now,
+    sleepFn: (ms) => { sleeps++; now += ms; },
+    renameFn: () => { attempts++; throw expected; },
+  }), error => error === expected);
+  assert.ok(attempts > 1);
+  assert.equal(attempts, sleeps + 1);
+  assert.equal(readLines(root, runId).filter(e => e.type === 'insights-emitted').length, 1);
+  const entries = readdirSync(join(root, '.deep-loop', 'insights'));
+  assert.equal(entries.filter(name => name.startsWith('.tmp-')).length, 1);
+  assert.equal(entries.filter(name => name.endsWith('-insights.json')).length, 0);
+  assert.equal(latestInsights(root), null, 'fresh root has no older trusted insights artifact');
+});
+
+test('a failed newer publish does not hide an older trusted insights artifact', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-emit-older-'));
+  const { runId: older } = initRun(root, { runtime: 'claude', goal: 'older', now: FIXED });
+  const olderFence = { owner: older, generation: 1, intent: 'business' };
+  const trusted = emitInsights(root, older, { fence: olderFence, now: FIXED.getTime(), rnd: () => 0.1 });
+  finishFixture(root, older);
+
+  const later = new Date(FIXED.getTime() + 60_000);
+  const { runId: newer } = initRun(root, { runtime: 'claude', goal: 'newer', now: later });
+  const newerFence = { owner: newer, generation: 1, intent: 'business' };
+  const expected = Object.assign(new Error('still shared'), { code: 'EACCES' });
+  let now = 0;
+  assert.throws(() => emitInsights(root, newer, {
+    fence: newerFence,
+    now: later.getTime(),
+    platform: 'win32',
+    monotonicNowFn: () => now,
+    sleepFn: (ms) => { now += ms; },
+    renameFn: () => { throw expected; },
+  }), error => error === expected);
+  assert.equal(latestInsights(root).path, trusted.path);
 });
 
 test('latest: 정상 emit → 검증 통과 최신 반환', () => {

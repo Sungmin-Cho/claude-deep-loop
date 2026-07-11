@@ -1,6 +1,6 @@
-import { createHash, randomBytes } from 'node:crypto';
-import { writeFileSync, renameSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { createHash } from 'node:crypto';
+
+export { atomicWrite, renameAtomicWithRetry, RENAME_RETRY_MAX_ELAPSED_MS } from './atomic-write.mjs';
 
 const B32 = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'; // Crockford
 
@@ -14,12 +14,6 @@ export function ulid(now = Date.now(), rnd = Math.random) {
     rand += B32[Math.floor(r * 32) % 32];
   }
   return ts + rand;
-}
-
-export function atomicWrite(path, contents) {
-  const tmp = join(dirname(path), `.tmp-${process.pid}-${Date.now()}-${randomBytes(4).toString('hex')}`);
-  writeFileSync(tmp, contents);
-  renameSync(tmp, path);
 }
 
 export function contentHash(str) {

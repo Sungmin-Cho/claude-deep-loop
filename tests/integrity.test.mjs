@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import { cpSync, mkdtempSync, mkdirSync, appendFileSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { appendEvent, verifyLog, recomputeSpent } from '../scripts/lib/integrity.mjs';
+import { appendEvent, verifyLog, recomputeSpent, readLines } from '../scripts/lib/integrity.mjs';
 import { readState, runDir } from '../scripts/lib/state.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { recordCost } from '../scripts/lib/budget.mjs';
 import { projectRootDigest } from '../scripts/lib/project-root.mjs';
+import { atomicWrite } from '../scripts/lib/envelope.mjs';
 
 const recoveryApiPromise = import('../scripts/lib/project-root-recovery.mjs').catch(() => ({}));
 
@@ -164,4 +165,47 @@ test('appendAnchored: non-terminal finish transition + auto-floor cost still com
   const { data } = readState(root, runId);
   assert.equal(data.status, 'stopped');   // 전이 자체는 mutate 단계 — preCheck 시점 non-terminal이라 통과
   assert.ok(readFileSync(join(runDir(root, runId), 'event-log.jsonl'), 'utf8').includes('auto_floor'));
+});
+
+function transientRenameOptions(renameFn) {
+  let now = 0;
+  return {
+    platform: 'win32',
+    monotonicNowFn: () => now,
+    sleepFn: (ms) => { now += ms; },
+    renameFn,
+  };
+}
+
+test('a transient state rename retry leaves one anchored event rather than replaying it', () => {
+  const { root, runId } = seededRun();
+  appendAnchored(root, runId, { type: 'one-business-event', data: {} }, () => {});
+  const before = readFileSync(join(runDir(root, runId), 'event-log.jsonl'), 'utf8');
+  const data = readState(root, runId).data;
+  let attempts = 0;
+  writeState(root, runId, data, {
+    atomicWriteFn: (path, contents) => atomicWrite(path, contents, transientRenameOptions((src, dst) => {
+      attempts++;
+      if (attempts === 1) throw Object.assign(new Error('shared'), { code: 'EACCES' });
+      renameSync(src, dst);
+    })),
+  });
+  assert.equal(attempts, 3, 'first replacement retries once; second replacement runs once');
+  assert.equal(readFileSync(join(runDir(root, runId), 'event-log.jsonl'), 'utf8'), before);
+  assert.equal(readLines(root, runId).filter(event => event.type === 'one-business-event').length, 1);
+});
+
+test('exhausted state rename fails closed without replaying the anchored transaction', () => {
+  const { root, runId } = seededRun();
+  appendAnchored(root, runId, { type: 'one-fail-stop-event', data: {} }, () => {});
+  const eventPath = join(runDir(root, runId), 'event-log.jsonl');
+  const before = readFileSync(eventPath, 'utf8');
+  const data = readState(root, runId).data;
+  const expected = Object.assign(new Error('still shared'), { code: 'EBUSY' });
+  assert.throws(() => writeState(root, runId, data, {
+    atomicWriteFn: (path, contents) => atomicWrite(path, contents, transientRenameOptions(() => { throw expected; })),
+  }), error => error === expected);
+  assert.equal(readFileSync(eventPath, 'utf8'), before);
+  assert.equal(readLines(root, runId).filter(event => event.type === 'one-fail-stop-event').length, 1);
+  assert.doesNotThrow(() => readState(root, runId), 'failed first replacement must leave the prior state/hash pair readable');
 });

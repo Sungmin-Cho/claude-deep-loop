@@ -7,6 +7,8 @@ import { appendAnchored, MUTATION_TURN_FLOOR } from './integrity.mjs';
 import { assertProjectRootBinding } from './project-root.mjs';
 import { ancestorPaths } from './path-portable.mjs';
 
+export const LOCK_STALE_TTL_MS = 30_000;
+
 // R5 high-2: 상향탐색을 worktree 컨벤션(.claude/worktrees | .worktrees)으로 **한정**한다.
 // 무한정 walk 는 부모 run 밑의 nested repo/submodule 을 부모 run 에 잘못 바인딩(격리 회귀)시킨다.
 // cwd 가 <root>/.claude/worktrees/<slug>/... (또는 .worktrees) 안일 때만 그 부모 <root>(.deep-loop/current 보유)를 반환;
@@ -94,14 +96,14 @@ export function readState(root, runId) {
   return state;
 }
 
-export function writeState(root, runId, data) {
+export function writeState(root, runId, data, { atomicWriteFn = atomicWrite } = {}) {
   assertProjectRootBinding(root, data);
   const v = validate(data);
   if (!v.ok) throw new Error(`SCHEMA_INVALID: ${v.errors.join('; ')}`);
   data.updated_at = new Date().toISOString();
   const raw = JSON.stringify(data, null, 2);
-  atomicWrite(loopPath(root, runId), raw);
-  atomicWrite(hashPath(root, runId), contentHash(raw));
+  atomicWriteFn(loopPath(root, runId), raw);
+  atomicWriteFn(hashPath(root, runId), contentHash(raw));
 }
 
 const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
@@ -147,7 +149,7 @@ export function patch(root, runId, field, value, { fence } = {}) {
 
 function sleepMs(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
 
-export function withLock(root, runId, fn, { ttlMs = 30000, retries = 100, backoffMs = 5 } = {}) {
+export function withLock(root, runId, fn, { ttlMs = LOCK_STALE_TTL_MS, retries = 100, backoffMs = 5 } = {}) {
   const lock = join(runDir(root, runId), '.lock');
   let acquired = false;
   for (let i = 0; i < retries && !acquired; i++) {
