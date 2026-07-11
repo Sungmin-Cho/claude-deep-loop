@@ -94,3 +94,16 @@ test('initRun rejects missing and invalid runtime before creating files', () => 
     assert.equal(existsSync(join(root, '.deep-loop')), false, `${label} runtime must not create .deep-loop`);
   }
 });
+
+test('new runs reject the legacy standalone reviewer before creating durable state', () => {
+  assert.throws(
+    () => buildInitialLoop({ runtime: 'claude', runId: 'legacy-reviewer', goal: 'g', recipe: {}, review: { reviewer: 'standalone' }, now: new Date('2026-07-11T00:00:00Z'), env: noSignalEnv, platform: noSignalPlatform, run: noOpRun }),
+    /REVIEWER_STANDALONE_INVALID/
+  );
+  const root = mkdtempSync(join(tmpdir(), 'dl-legacy-reviewer-'));
+  assert.throws(
+    () => initRun(root, { runtime: 'claude', goal: 'g', review: { reviewer: 'standalone' }, now: new Date('2026-07-11T00:00:00Z'), env: noSignalEnv, platform: noSignalPlatform, run: noOpRun }),
+    /REVIEWER_STANDALONE_INVALID/
+  );
+  assert.equal(existsSync(join(root, '.deep-loop')), false);
+});

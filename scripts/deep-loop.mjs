@@ -323,7 +323,8 @@ const handlers = {
     if (verb === 'dispatch') {
       const point = reqStr(f, 'point'); if (!point) { error('MISSING_POINT'); return 2; }
       const workstream = reqStr(f, 'workstream'); if (!workstream) { error('MISSING_WORKSTREAM'); return 2; }
-      json(dispatchReview(root, runId, { point, workstreamId: workstream, detected: detectPlugins(root), fence })); return 0;
+      const independentSubagent = f['independent-subagent'] === true || f['independent-subagent'] === 'true';
+      json(dispatchReview(root, runId, { point, workstreamId: workstream, detected: detectPlugins(root), independentSubagent, fence })); return 0;
     }
     // verdict 기록 → checker 터미널 파생 + breaker/comprehension/review_points (Codex r1 🔴6: CLI 경계로 노출)
     if (verb === 'record') {

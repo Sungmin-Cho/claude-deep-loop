@@ -1,6 +1,6 @@
 {
   "protocol": "standalone",
-  "dispatch": { "kind": "inline", "skill": null, "args_template": "<task>" },
+  "dispatch": { "kind": "inline", "role": "maker", "explicit_fallback": true, "skill": null, "args_template": "<task>" },
   "await": { "kind": "inline", "path_template": null, "done_when": { "inline": true } },
   "read": { "receipt_path_template": null, "producer": "deep-loop", "artifact_kind": "minimal-receipt" },
   "implementer_verb": "dispatch"

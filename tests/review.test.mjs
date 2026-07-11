@@ -57,7 +57,7 @@ function doneMaker(root, runId, ws, point, f, file) {
 test('resolveReviewer falls back when deep-review absent', () => {
   const { root, runId } = seed({ 'deep-review': false, codex: true });
   const { data } = readState(root, runId);
-  assert.equal(resolveReviewer(data, { 'deep-review': false, codex: true }).reviewer, 'codex-cross');
+  assert.equal(resolveReviewer(data, { 'deep-review': false, codex: true }).reviewer, 'subagent-checker');
   assert.equal(resolveReviewer(data, { 'deep-review': false, codex: false }).reviewer, 'subagent-checker');
 });
 
@@ -76,7 +76,10 @@ test('dispatchReview creates checker episode + returns descriptor (no call)', ()
   const makerId = doneMaker(root, runId, ws, 'implementation', f);   // checker must bind to a real done maker
   const r = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
   assert.equal(r.reviewer, 'deep-review-loop');
-  assert.equal(r.descriptor.kind, 'invoke_skill');
+  assert.equal(r.descriptor.kind, 'skill');
+  assert.equal(r.descriptor.role, 'checker');
+  assert.equal(r.descriptor.skill, 'deep-review:deep-review-loop');
+  assert.equal(r.descriptor.requires_independent_session, true);
   const ep = readState(root, runId).data.episodes.find(e => e.id === r.checkerEpisodeId);
   assert.equal(ep.role, 'checker');
   assert.equal(ep.kind, 'implementation-review');
@@ -363,14 +366,84 @@ test('recordReviewOutcome: bound approve increments episodes_agent_reviewed by 1
 test('C2: resolveReviewer downgrades a configured deep-review reviewer when not present (object shape)', () => {
   const { root, runId } = seed({ 'deep-review': { present: true } });   // → review.reviewer = 'deep-review-loop'
   const { data } = readState(root, runId);
-  // deep-review absent, codex present → codex-cross
-  assert.equal(resolveReviewer(data, { 'deep-review': { present: false }, codex: { present: true } }).reviewer, 'codex-cross');
+  // deep-review absent, codex present → neutral subagent checker (Codex presence is not a capability)
+  assert.equal(resolveReviewer(data, { 'deep-review': { present: false }, codex: { present: true } }).reviewer, 'subagent-checker');
   // neither present → subagent-checker
   assert.equal(resolveReviewer(data, { 'deep-review': { present: false }, codex: { present: false } }).reviewer, 'subagent-checker');
   // deep-review present → stays deep-review-loop
   assert.equal(resolveReviewer(data, { 'deep-review': { present: true } }).reviewer, 'deep-review-loop');
   // installed-but-uninitialized (original Problem C) → present:true → stays deep-review-loop
   assert.equal(resolveReviewer(data, { 'deep-review': { installed: true, initialized: false, present: true } }).reviewer, 'deep-review-loop');
+});
+
+test('subagent checker descriptor is runtime-neutral and Codex presence does not change it', () => {
+  const { root, runId } = seed({ 'deep-review': false, codex: true });
+  const f = fence(runId);
+  const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: '.claude/worktrees/w', fence: f }).id;
+  doneMaker(root, runId, ws, 'implementation', f);
+  const r = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws, detected: { 'deep-review': false, codex: true }, fence: f });
+  assert.equal(r.reviewer, 'subagent-checker');
+  assert.equal(r.descriptor.kind, 'agent');
+  assert.equal(r.descriptor.role, 'checker');
+  assert.equal(r.descriptor.agent_role, 'code-reviewer');
+  assert.equal(r.descriptor.requires_independent_session, true);
+  assert.equal('skill' in r.descriptor, false);
+  assert.equal(JSON.stringify(r.descriptor).includes('Task('), false);
+});
+
+test('legacy standalone reviewer upgrades only with an explicit independent-subagent assertion and records the decision', () => {
+  const { root, runId } = seed({ 'deep-review': false, codex: false });
+  const f = fence(runId);
+  const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: '.claude/worktrees/w', fence: f }).id;
+  const makerId = doneMaker(root, runId, ws, 'plan', f);
+  const { data } = readState(root, runId);
+  data.review.reviewer = 'standalone';
+  writeState(root, runId, data);
+
+  const r = dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { codex: true }, independentSubagent: true, fence: f });
+  assert.equal(r.reviewer, 'subagent-checker');
+  assert.equal(r.descriptor.kind, 'agent');
+  const ep = readState(root, runId).data.episodes.find(e => e.id === r.checkerEpisodeId);
+  assert.equal(ep.status, 'pending');
+  assert.equal(ep.target_maker, makerId);
+  assert.deepEqual(ep.reviewer_resolution, {
+    legacy_reviewer: 'standalone',
+    decision: 'upgraded',
+    reviewer: 'subagent-checker',
+    asserted_capability: 'independent-subagent',
+  });
+});
+
+test('legacy standalone reviewer without an independent assertion creates a blocked needs-human checker and cannot become proof', () => {
+  const { root, runId } = seed({ 'deep-review': false, codex: true });
+  const f = fence(runId);
+  const worktree = '.claude/worktrees/w';
+  const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree, fence: f }).id;
+  const makerId = doneMaker(root, runId, ws, 'plan', f);
+  const { data } = readState(root, runId);
+  data.review.reviewer = 'standalone';
+  writeState(root, runId, data);
+
+  const r = dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { codex: true }, fence: f });
+  assert.equal(r.reviewer, 'standalone');
+  assert.equal(r.descriptor.kind, 'blocked');
+  assert.equal(r.descriptor.role, 'checker');
+  assert.equal(r.descriptor.needs_human, true);
+  assert.equal(r.descriptor.reason, 'legacy-inline-checker-unsupported');
+  const ep = readState(root, runId).data.episodes.find(e => e.id === r.checkerEpisodeId);
+  assert.equal(ep.status, 'blocked');
+  assert.equal(ep.target_maker, makerId);
+  assert.equal(ep.block_reason, 'legacy-inline-checker-unsupported');
+  assert.deepEqual(ep.reviewer_resolution, {
+    legacy_reviewer: 'standalone',
+    decision: 'blocked',
+    reason: 'legacy-inline-checker-unsupported',
+  });
+  assert.throws(
+    () => recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'plan', verdict: 'REQUEST_CHANGES', fence: f }),
+    /REVIEW_CHECKER_BLOCKED/
+  );
+  assert.equal(readState(root, runId).data.episodes.find(e => e.id === r.checkerEpisodeId).status, 'blocked');
 });
 
 // ── #2: a passing verdict needs a REAL, project-root-contained review report (maker symmetry) ──

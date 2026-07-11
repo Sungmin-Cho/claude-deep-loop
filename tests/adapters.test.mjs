@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { wrap } from '../scripts/lib/envelope.mjs';
@@ -14,9 +14,55 @@ test('loadProtocol reads declarative protocol', () => {
 test('dispatch verb fills template + returns descriptor (no call)', () => {
   const a = resolveAdapter('deep-work');
   const d = a.dispatch({ task: 'auth-core' });
-  assert.equal(d.kind, 'invoke_skill');
+  assert.equal(d.kind, 'skill');
+  assert.equal(d.role, 'maker');
   assert.equal(d.skill, 'deep-work:deep-work-orchestrator');
   assert.match(d.args, /auth-core/);
+});
+
+test('protocol dispatch descriptors are runtime-neutral and standalone alone declares maker-inline fallback', () => {
+  for (const name of ['deep-work', 'superpowers']) {
+    const protocol = loadProtocol(name);
+    assert.equal(protocol.dispatch.kind, 'skill', name);
+    assert.equal(protocol.dispatch.role, 'maker', name);
+    assert.notEqual(protocol.dispatch.explicit_fallback, true, name);
+  }
+  const standalone = loadProtocol('standalone').dispatch;
+  assert.equal(standalone.kind, 'inline');
+  assert.equal(standalone.role, 'maker');
+  assert.equal(standalone.explicit_fallback, true);
+});
+
+test('adapter checker descriptors are neutral and require an independent session', () => {
+  const adapter = resolveAdapter('deep-work');
+  const deepReview = adapter.checker({ point: 'implementation' }, { reviewer: 'deep-review-loop' });
+  assert.equal(deepReview.kind, 'skill');
+  assert.equal(deepReview.role, 'checker');
+  assert.equal(deepReview.skill, 'deep-review:deep-review-loop');
+  assert.equal(deepReview.requires_independent_session, true);
+
+  const subagent = adapter.checker({ point: 'implementation' }, { reviewer: 'subagent-checker' });
+  assert.equal(subagent.kind, 'agent');
+  assert.equal(subagent.role, 'checker');
+  assert.equal(subagent.agent_role, 'code-reviewer');
+  assert.equal(subagent.requires_independent_session, true);
+});
+
+test('dispatch implementation sources contain no runtime-specific or inline checker fallback spellings', () => {
+  const sources = [
+    'protocols/deep-work.json',
+    'protocols/superpowers.json',
+    'protocols/standalone.json',
+    'scripts/lib/adapters.mjs',
+    'scripts/lib/review.mjs',
+    'scripts/lib/episode.mjs',
+    'scripts/lib/initrun.mjs',
+    'scripts/deep-loop.mjs',
+  ].map((path) => [path, readFileSync(join(process.cwd(), path), 'utf8')]);
+  const forbidden = ['codex:' + 'rescue', 'Task(' + 'code-reviewer)', 'inline-' + 'review'];
+  for (const [path, source] of sources) {
+    for (const spelling of forbidden) assert.equal(source.includes(spelling), false, `${path}: ${spelling}`);
+  }
 });
 
 test('awaitResult returns poll descriptor with concrete path', () => {

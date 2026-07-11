@@ -69,6 +69,33 @@ test('next-action honors --now for wallclock hard-stop', () => {
   assert.equal(out.gate.blocked_by[0], 'budget');
 });
 
+test('init-run rejects the legacy standalone reviewer with invalid-value exit semantics', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-cli-legacy-reviewer-'));
+  const result = runResult(root, ['init-run', '--runtime', 'claude', '--goal', 'g', '--review', JSON.stringify({ reviewer: 'standalone' })]);
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /REVIEWER_STANDALONE_INVALID/);
+  assert.equal(existsSync(join(root, '.deep-loop')), false);
+});
+
+test('review dispatch accepts --independent-subagent and records a neutral legacy upgrade', () => {
+  const { root, runId } = seed();
+  const { data } = readState(root, runId);
+  data.review.reviewer = 'standalone';
+  writeState(root, runId, data);
+  const ws = JSON.parse(run(root, ['workstream', 'new', '--title', 'A', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--owner', runId, '--generation', '1']));
+  writeFileSync(join(root, 'plan.txt'), 'artifact');
+  const maker = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'plan', '--point', 'plan', '--workstream', ws.id, '--artifacts', '["plan.txt"]', '--owner', runId, '--generation', '1']));
+  run(root, ['episode', 'record', '--id', maker.id, '--status', 'done', '--artifacts', '["plan.txt"]', '--owner', runId, '--generation', '1']);
+
+  const dispatched = JSON.parse(run(root, ['review', 'dispatch', '--point', 'plan', '--workstream', ws.id, '--independent-subagent', '--owner', runId, '--generation', '1']));
+  assert.equal(dispatched.reviewer, 'subagent-checker');
+  assert.equal(dispatched.descriptor.kind, 'agent');
+  assert.equal(dispatched.descriptor.agent_role, 'code-reviewer');
+  assert.equal(dispatched.descriptor.requires_independent_session, true);
+  const checker = readState(root, runId).data.episodes.find(e => e.id === dispatched.checkerEpisodeId);
+  assert.equal(checker.reviewer_resolution.asserted_capability, 'independent-subagent');
+});
+
 test('root diagnose exits 0 with redacted eligibility for resolvable copies and moved roots', () => {
   const original = seed();
   const copyRoot = mkdtempSync(join(tmpdir(), 'dl-root-cli-copy-'));

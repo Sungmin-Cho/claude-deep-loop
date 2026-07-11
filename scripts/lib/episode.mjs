@@ -23,14 +23,20 @@ function requestSkeleton({ id, plugin, role, kind, point, workstream, expectedAr
   ].join('\n');
 }
 
-export function newEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker, fence } = {}) {
-  if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: newEpisode');
+function createEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker, reviewerResolution, initialStatus = 'pending', blockReason, fence, operation } = {}) {
+  if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error(`FENCE_REQUIRED: ${operation}`);
   // Fix 3: validate required non-fence args before any state write
   if (!plugin || typeof plugin !== 'string' || !plugin.length) throw new Error('EPISODE_INPUT_INVALID: plugin');
   if (!role || typeof role !== 'string' || !role.length) throw new Error('EPISODE_INPUT_INVALID: role');
   if (!['maker', 'checker'].includes(role)) throw new Error('EPISODE_INPUT_INVALID: role');
   if (!kind || typeof kind !== 'string' || !kind.length) throw new Error('EPISODE_INPUT_INVALID: kind');
   if (!point || typeof point !== 'string' || !point.length) throw new Error('EPISODE_INPUT_INVALID: point');
+  if (!['pending', 'blocked'].includes(initialStatus)) throw new Error('EPISODE_INPUT_INVALID: initialStatus');
+  if (initialStatus === 'blocked' && role !== 'checker') throw new Error('EPISODE_INPUT_INVALID: only checker episodes may start blocked');
+  if (initialStatus === 'blocked' && (!blockReason || typeof blockReason !== 'string')) throw new Error('EPISODE_INPUT_INVALID: blockReason');
+  if (reviewerResolution !== undefined && (role !== 'checker' || reviewerResolution === null || typeof reviewerResolution !== 'object' || Array.isArray(reviewerResolution))) {
+    throw new Error('EPISODE_INPUT_INVALID: reviewerResolution');
+  }
   // Codex impl r7 🔴: expectedArtifacts must be an array of strings (a null/non-array would throw in the
   // loop below; though that is before appendAnchored, give a clean error rather than a raw TypeError).
   if (!Array.isArray(expectedArtifacts) || !expectedArtifacts.every(a => typeof a === 'string')) throw new Error('EPISODE_INPUT_INVALID: expectedArtifacts must be an array of strings');
@@ -40,17 +46,27 @@ export function newEpisode(root, runId, { plugin, role, kind, point, workstream 
   }
   let id, requestPath, dir;
   const safePlugin = slugify(plugin) || 'plugin';
-  appendAnchored(root, runId, { type: 'episode-new', data: { plugin, role, kind, point } }, (loop) => {
+  appendAnchored(root, runId, { type: 'episode-new', data: {
+    plugin, role, kind, point,
+    ...(initialStatus === 'blocked' ? { status: initialStatus, block_reason: blockReason } : {}),
+    ...(reviewerResolution ? { reviewer_resolution: reviewerResolution } : {}),
+  } }, (loop) => {
     const n = String(loop.episodes.length + 1).padStart(3, '0');
     id = `${n}-${safePlugin}`;
     dir = join(runDir(root, runId), 'episodes', id);
     requestPath = join(dir, 'request.md');
     const epObj = {
-      id, plugin, role, kind, point, workstream_id: workstream, status: 'pending',
+      id, plugin, role, kind, point, workstream_id: workstream, status: initialStatus,
       request_path: requestPath, expected_artifacts: expectedArtifacts,
       verification: { checker_episode_required: role === 'maker', checker_plugin: 'deep-review', review_point: point, proof_required: expectedArtifacts },
     };
     if (targetMaker && typeof targetMaker === 'string' && targetMaker.length) epObj.target_maker = targetMaker;
+    if (role === 'checker') epObj.requires_independent_session = true;
+    if (reviewerResolution) epObj.reviewer_resolution = reviewerResolution;
+    if (initialStatus === 'blocked') {
+      epObj.block_reason = blockReason;
+      epObj.needs_human = true;
+    }
     loop.episodes.push(epObj);
     loop.current_episode = id;
     if (role === 'maker') loop.comprehension.episodes_total = (loop.comprehension.episodes_total || 0) + 1;
@@ -71,6 +87,19 @@ export function newEpisode(root, runId, { plugin, role, kind, point, workstream 
   mkdirSync(dir, { recursive: true });
   atomicWrite(requestPath, requestSkeleton({ id, plugin, role, kind, point, workstream, expectedArtifacts }));
   return { id, requestPath };
+}
+
+export function newEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker, reviewerResolution, fence } = {}) {
+  return createEpisode(root, runId, { plugin, role, kind, point, workstream, expectedArtifacts, targetMaker, reviewerResolution, fence, operation: 'newEpisode' });
+}
+
+// Fail-closed compatibility path only: a checker with no independent dispatch capability is born blocked.
+// Keeping this separate from newEpisode prevents makers (or arbitrary callers) from selecting an initial blocked state.
+export function newBlockedCheckerEpisode(root, runId, { plugin, kind, point, workstream = null, targetMaker, reason, reviewerResolution, fence } = {}) {
+  return createEpisode(root, runId, {
+    plugin, role: 'checker', kind, point, workstream, targetMaker, reviewerResolution,
+    initialStatus: 'blocked', blockReason: reason, fence, operation: 'newBlockedCheckerEpisode',
+  });
 }
 
 // Human-gated escape hatch — settles a stranded non-terminal episode as abandoned.

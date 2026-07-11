@@ -12,6 +12,7 @@ import { canonicalProjectRoot } from './project-root.mjs';
 
 export function buildInitialLoop({ runtime, goal, protocol, recipe, detected = {}, review, now = new Date(), runId, git = {}, env = process.env, platform = process.platform, run = defaultProbeRun, pid = process.pid, model = null, effort = null }) {
   validateSessionRuntime(runtime);
+  if (review?.reviewer === 'standalone') throw new Error('REVIEWER_STANDALONE_INVALID: standalone reviewer is supported only for legacy-state resolution');
   const iso = now.toISOString();
   return {
     schema_version: '0.2.0', run_id: runId, goal, status: 'running',

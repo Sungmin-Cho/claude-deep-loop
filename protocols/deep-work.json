@@ -1,6 +1,6 @@
 {
   "protocol": "deep-work",
-  "dispatch": { "kind": "invoke_skill", "skill": "deep-work:deep-work-orchestrator", "args_template": "\"<task>\" --tdd=strict" },
+  "dispatch": { "kind": "skill", "role": "maker", "skill": "deep-work:deep-work-orchestrator", "args_template": "\"<task>\" --tdd=strict" },
   "await": { "kind": "poll_file", "path_template": ".deep-work/<task>/session-receipt.json", "done_when": { "field": "current_phase", "equals": "idle" } },
   "read": { "receipt_path_template": ".deep-work/<task>/session-receipt.json", "producer": "deep-work", "artifact_kind": "session-receipt" },
   "implementer_verb": "dispatch"

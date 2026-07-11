@@ -19,7 +19,8 @@ function seed() {
 test('adapter resolve returns a normalized 4-verb descriptor', () => {
   const { root } = seed();
   const out = JSON.parse(run(root, ['adapter', 'resolve', '--protocol', 'deep-work', '--task', 'Add auth']));
-  assert.equal(out.dispatch.kind, 'invoke_skill');
+  assert.equal(out.dispatch.kind, 'skill');
+  assert.equal(out.dispatch.role, 'maker');
   assert.equal(out.dispatch.skill, 'deep-work:deep-work-orchestrator');
   assert.match(out.dispatch.args, /Add auth/);
   assert.equal(out.await.kind, 'poll_file');

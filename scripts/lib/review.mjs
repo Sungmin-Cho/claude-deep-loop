@@ -2,9 +2,10 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
 import { readState } from './state.mjs';
 import { appendAnchored } from './integrity.mjs';
-import { newEpisode } from './episode.mjs';
+import { newBlockedCheckerEpisode, newEpisode } from './episode.mjs';
 import { leaseCheck } from './lease.mjs';
 import { pluginPresent } from './detect.mjs';
+import { checkerDescriptor } from './adapters.mjs';
 import { containedRealFile } from './fs-safe.mjs';
 import { contentHash } from './envelope.mjs';
 import { MUTATION_TURN_FLOOR } from './budget.mjs';
@@ -59,15 +60,37 @@ export function rejectionResolved(loop, e) {
   return true;   // unbound → neutral (see comment above)
 }
 
-export function resolveReviewer(loop, detected = {}) {
+const LEGACY_INLINE_BLOCK_REASON = 'legacy-inline-checker-unsupported';
+
+export function resolveReviewer(loop, detected = {}, { independentSubagent = false } = {}) {
   const r = loop.review || {};
   let reviewer = r.reviewer || 'subagent-checker';
-  if ((reviewer === 'deep-review-loop' || reviewer === 'deep-review') && !pluginPresent(detected, 'deep-review')) {
-    reviewer = pluginPresent(detected, 'codex') ? 'codex-cross' : 'subagent-checker';
-  } else if (reviewer === 'subagent-checker' && pluginPresent(detected, 'codex')) {
-    reviewer = 'codex-cross';
+  let reviewerResolution;
+  let blockedReason;
+  if (reviewer === 'standalone') {
+    if (independentSubagent === true) {
+      reviewer = 'subagent-checker';
+      reviewerResolution = {
+        legacy_reviewer: 'standalone',
+        decision: 'upgraded',
+        reviewer,
+        asserted_capability: 'independent-subagent',
+      };
+    } else {
+      blockedReason = LEGACY_INLINE_BLOCK_REASON;
+      reviewerResolution = {
+        legacy_reviewer: 'standalone',
+        decision: 'blocked',
+        reason: blockedReason,
+      };
+    }
   }
-  return { reviewer, flags: r.flags || [], mode: r.mode || 'cross-model' };
+  if ((reviewer === 'deep-review-loop' || reviewer === 'deep-review') && !pluginPresent(detected, 'deep-review')) {
+    reviewer = 'subagent-checker';
+  } else if (!['deep-review-loop', 'deep-review', 'subagent-checker', 'standalone'].includes(reviewer)) {
+    blockedReason = 'checker-capability-unsupported';
+  }
+  return { reviewer, flags: r.flags || [], mode: r.mode || 'cross-model', reviewerResolution, blockedReason };
 }
 
 export function parseVerdict(text) {
@@ -90,7 +113,7 @@ export function makerReviewed(loop, maker) {
 }
 
 // checker episode 생성 + dispatch 디스크립터 반환 — 커널은 sibling을 호출하지 않음 (spec §1.1·§6).
-export function dispatchReview(root, runId, { point, workstreamId, detected = {}, fence } = {}) {
+export function dispatchReview(root, runId, { point, workstreamId, detected = {}, independentSubagent = false, fence } = {}) {
   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: dispatchReview');
   // Fix 3: validate point before any state read/write
   if (!point || typeof point !== 'string' || !point.length) throw new Error('REVIEW_INPUT_INVALID: point');
@@ -118,15 +141,15 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
   // source, so every checker is ALWAYS bound going forward. (preCheck — thrown before newEpisode: no episode created.)
   if (!targetMakerEp) throw new Error('REVIEW_NO_ELIGIBLE_MAKER: no done maker to review for ' + point + '/' + workstreamId);
   const targetMaker = targetMakerEp.id;
-  const { reviewer, flags, mode } = resolveReviewer(data, detected);
-  const { id } = newEpisode(root, runId, { plugin: reviewer === 'deep-review-loop' ? 'deep-review' : reviewer, role: 'checker', kind: `${point}-review`, point, workstream: workstreamId, targetMaker, fence });
-  const skillByReviewer = {
-    'deep-review-loop': 'deep-review:deep-review-loop',
-    'codex-cross': 'codex:rescue',
-    'subagent-checker': 'Task(code-reviewer)',
-    'standalone': 'inline-review',
+  const { reviewer, flags, mode, reviewerResolution, blockedReason } = resolveReviewer(data, detected, { independentSubagent });
+  const episodeInput = {
+    plugin: reviewer === 'deep-review-loop' || reviewer === 'deep-review' ? 'deep-review' : reviewer,
+    kind: `${point}-review`, point, workstream: workstreamId, targetMaker, reviewerResolution, fence,
   };
-  const descriptor = { kind: reviewer === 'standalone' ? 'inline' : 'invoke_skill', skill: skillByReviewer[reviewer] || 'inline-review', args: flags.join(' '), mode, review_point: point, workstream: workstreamId };
+  const { id } = blockedReason
+    ? newBlockedCheckerEpisode(root, runId, { ...episodeInput, reason: blockedReason })
+    : newEpisode(root, runId, { ...episodeInput, role: 'checker' });
+  const descriptor = checkerDescriptor(reviewer, { point, workstreamId, flags, mode, reason: blockedReason });
   return { checkerEpisodeId: id, reviewer, descriptor };
 }
 
@@ -194,6 +217,7 @@ export function recordReviewOutcome(root, runId, { episodeId, workstreamId, poin
       // checker (no target_maker — reviewed no maker). Blocks any legacy pending unbound checker from being
       // terminalized, so no NEW unbound terminal (rejected/approved) checker can arise.
       if (!tgt.target_maker) throw new Error('REVIEW_UNBOUND_CHECKER: cannot record a verdict on a checker bound to no maker: ' + episodeId);
+      if (tgt.status === 'blocked') throw new Error('REVIEW_CHECKER_BLOCKED: independent checker capability is required: ' + episodeId);
       const REVIEW_TERMINAL = ['done', 'approved', 'rejected', 'abandoned'];
       if (REVIEW_TERMINAL.includes(tgt.status)) throw new Error('REVIEW_ALREADY_RECORDED: ' + episodeId);
       const wsForReport = loop.workstreams.find(w => w.id === tgt.workstream_id);

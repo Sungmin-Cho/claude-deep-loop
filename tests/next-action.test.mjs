@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildInitialLoop, initRun } from '../scripts/lib/initrun.mjs';
-import { readState } from '../scripts/lib/state.mjs';
+import { readState, writeState } from '../scripts/lib/state.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
@@ -177,6 +177,27 @@ test('in-progress→await_result, blocked→await_human, checker in_progress not
   l.episodes = [{ id: '002-deep-review', role: 'checker', status: 'in_progress', point: 'plan' }];
   l.current_episode = '002-deep-review';
   assert.equal(nextAction(l, { now: 0 }).action.type, 'await_result');
+});
+
+test('unsupported legacy inline checker dispatch becomes blocked and nextAction routes to needs-human', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-legacy-checker-'));
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', detected: {}, now: new Date('2026-06-24T00:00:00Z') });
+  const f = { owner: runId, generation: 1, intent: 'business' };
+  const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: '.claude/worktrees/w', fence: f }).id;
+  writeFileSync(join(root, 'plan.txt'), 'artifact');
+  const { id: makerId } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'plan', point: 'plan', workstream: ws, expectedArtifacts: ['plan.txt'], fence: f });
+  recordEpisode(root, runId, makerId, { status: 'done', artifacts: ['plan.txt'], proof: {}, fence: f });
+  const { data } = readState(root, runId);
+  data.review.reviewer = 'standalone';
+  writeState(root, runId, data);
+
+  const dispatched = dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { codex: true }, fence: f });
+  const after = readState(root, runId).data;
+  assert.equal(after.episodes.find(e => e.id === dispatched.checkerEpisodeId).status, 'blocked');
+  const action = nextAction(after, { now: Date.parse('2026-06-24T00:00:01Z') }).action;
+  assert.equal(action.type, 'await_human');
+  assert.equal(action.episode_id, dispatched.checkerEpisodeId);
+  assert.equal(action.reason, 'episode-blocked');
 });
 
 // Codex r2 🔴7 / r3 🔴4: finish 는 active workstream 0 + done maker 가 리뷰 통과일 때만.
