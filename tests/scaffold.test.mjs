@@ -14,6 +14,11 @@ test('package.json is module type with node>=20', () => {
   assert.match(pkg.engines.node, />=20/);
 });
 
+test('package.json uses portable Node test discovery without a shell glob', () => {
+  const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+  assert.equal(pkg.scripts.test, 'node --test');
+});
+
 // Regression: the Claude Code plugin installer validates `.claude-plugin/plugin.json`
 // against a schema where `repository` MUST be a string URL. An object form
 // ({ type, url }) — valid in npm package.json — makes the manifest UNINSTALLABLE

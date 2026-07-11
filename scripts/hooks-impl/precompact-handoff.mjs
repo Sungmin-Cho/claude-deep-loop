@@ -1,5 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { readBoundedText } from '../lib/bounded-input.mjs';
+import { detectMain } from '../lib/detect-main.mjs';
 import { readState, findRoot } from '../lib/state.mjs';
 import { emitHandoff } from '../lib/handoff.mjs';
 import { respawnGate, resolveSpawnMode, rollbackAndPause } from '../lib/respawn.mjs';
@@ -62,14 +64,23 @@ export async function runPreCompactHandoff(input = {}, {
 }
 
 // CLI 진입 — best-effort, 절대 compaction 차단 안 함.
-if (import.meta.url === `file://${process.argv[1]}`) {
-  (async () => {
-    let input = {};
-    try {
-      const chunks = []; for await (const c of process.stdin) chunks.push(c);
-      if (chunks.length) input = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-    } catch { /* ignore */ }
-    try { await runPreCompactHandoff(input, { root: findRoot(input.cwd || process.cwd()) }); } catch { /* swallow */ }
-    process.exit(0);
-  })();
+export async function main() {
+  try {
+    const raw = await readBoundedText(process.stdin);
+    const input = raw.length === 0 ? {} : JSON.parse(raw);
+    if (input === null || Array.isArray(input) || typeof input !== 'object') throw new Error('input-invalid');
+    const cwd = input.cwd ?? process.cwd();
+    if (typeof cwd !== 'string' || cwd.length === 0) throw new Error('root-invalid');
+    const response = await runPreCompactHandoff(input, { root: findRoot(cwd) });
+    if (!response?.ok) throw new Error('driver-failed');
+  } catch {
+    process.stderr.write('deep-loop: precompact hook failed\n');
+  }
+}
+
+const { isMain, diagnostic } = detectMain(import.meta.url, process.argv[1]);
+if (diagnostic) {
+  process.stderr.write(`${diagnostic}\n`);
+} else if (isMain) {
+  await main();
 }
