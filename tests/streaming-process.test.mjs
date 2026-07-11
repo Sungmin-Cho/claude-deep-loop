@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -70,6 +71,77 @@ test('runStreamingProcess discards valid usage after timeout or non-zero exit', 
   assert.deepEqual(nonzero, { ok: false, reason: 'exit-7' });
   assert.equal(timedOut.usage, undefined);
   assert.equal(nonzero.usage, undefined);
+});
+
+test('streaming process APIs reject invalid timeouts before spawning runtime or worker', async () => {
+  const { runStreamingProcess, runStreamingProcessSync } = await streamingModule();
+  const invalidTimeouts = [NaN, Infinity, -Infinity, -1, 1.5, 2_147_483_648];
+
+  for (const timeoutMs of invalidTimeouts) {
+    let runtimeSpawns = 0;
+    const asyncResult = await runStreamingProcess({ bin: process.execPath, argv: [] }, {
+      timeoutMs,
+      spawnImpl: () => {
+        runtimeSpawns += 1;
+        throw new Error('invalid timeout must not spawn runtime');
+      },
+    });
+    let workerSpawns = 0;
+    const syncResult = runStreamingProcessSync({ bin: process.execPath, argv: [] }, {
+      timeoutMs,
+      spawnSyncImpl: () => {
+        workerSpawns += 1;
+        throw new Error('invalid timeout must not spawn worker');
+      },
+    });
+
+    assert.deepEqual(asyncResult, { ok: false, reason: 'invalid-timeout' }, String(timeoutMs));
+    assert.deepEqual(syncResult, { ok: false, reason: 'invalid-timeout' }, String(timeoutMs));
+    assert.equal(runtimeSpawns, 0, String(timeoutMs));
+    assert.equal(workerSpawns, 0, String(timeoutMs));
+  }
+});
+
+function controlledChild() {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.stdin = new EventEmitter();
+  child.stdin.destroy = () => {};
+  child.stdin.end = (_payload, callback) => {
+    child.completeStdin = callback;
+  };
+  child.kill = () => true;
+  return child;
+}
+
+test('non-empty stdin requires flush completion before a zero-exit child can succeed', async () => {
+  const { runStreamingProcess } = await streamingModule();
+  const child = controlledChild();
+  const pending = runStreamingProcess({
+    bin: process.execPath,
+    argv: [],
+    stdin: 'request',
+    usageOutputKind: 'claude-json',
+  }, { timeoutMs: 2_000, spawnImpl: () => child });
+  child.stdout.emit('data', Buffer.from('{"num_turns":1}'));
+  child.emit('close', 0);
+
+  assert.deepEqual(await pending, { ok: false, reason: 'stdin-error' });
+});
+
+test('empty stdin can succeed even when no flush callback arrives before child close', async () => {
+  const { runStreamingProcess } = await streamingModule();
+  const child = controlledChild();
+  const pending = runStreamingProcess({
+    bin: process.execPath,
+    argv: [],
+    usageOutputKind: 'claude-json',
+  }, { timeoutMs: 2_000, spawnImpl: () => child });
+  child.stdout.emit('data', Buffer.from('{"num_turns":1}'));
+  child.emit('close', 0);
+
+  assert.deepEqual(await pending, { ok: true, usage: { num_turns: 1, tokens: null } });
 });
 
 test('runStreamingProcess fails closed when a non-empty stdin request is not delivered', async () => {

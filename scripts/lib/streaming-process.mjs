@@ -6,7 +6,12 @@ const WORKER_REQUEST_BYTES = 2 * 1024 * 1024;
 const WORKER_RESULT_BYTES = 512 * 1024;
 const RUNTIME_KILL_GRACE_MS = 250;
 const WORKER_TIMEOUT_GRACE_MS = RUNTIME_KILL_GRACE_MS + 1_000;
+const NODE_TIMER_MAX_MS = 2_147_483_647;
 const workerPath = fileURLToPath(new URL('../workers/streaming-child.mjs', import.meta.url));
+
+function validTimeout(timeoutMs) {
+  return Number.isInteger(timeoutMs) && timeoutMs >= 0 && timeoutMs <= NODE_TIMER_MAX_MS;
+}
 
 function appendBounded(chunks, chunk, retainedBytes, limit) {
   const remaining = limit - retainedBytes;
@@ -43,6 +48,9 @@ export function runStreamingProcess(entry, {
   timeoutMs = 30 * 60 * 1000,
   spawnImpl = spawn,
 } = {}) {
+  if (!validTimeout(timeoutMs)) {
+    return Promise.resolve({ ok: false, reason: 'invalid-timeout' });
+  }
   if (!entry || typeof entry.bin !== 'string' || !Array.isArray(entry.argv)) {
     return Promise.resolve({ ok: false, reason: 'invalid-entry' });
   }
@@ -82,21 +90,20 @@ export function runStreamingProcess(entry, {
     let timedOut = false;
     let spawnError = null;
     let stdinError = null;
+    let stdinDelivered = !stdinRequired;
     let settled = false;
     let forceKillTimer = null;
     const codexParser = usageKind === 'codex-jsonl' ? createCodexJsonlParser() : null;
 
-    const timer = Number.isFinite(timeoutMs) && timeoutMs >= 0
-      ? setTimeout(() => {
-          timedOut = true;
-          try { child.kill(); } catch { /* close/error settles the result */ }
-          forceKillTimer = setTimeout(() => {
-            if (!settled) {
-              try { child.kill('SIGKILL'); } catch { /* outer worker bound remains the backstop */ }
-            }
-          }, RUNTIME_KILL_GRACE_MS);
-        }, timeoutMs)
-      : null;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try { child.kill(); } catch { /* close/error settles the result */ }
+      forceKillTimer = setTimeout(() => {
+        if (!settled) {
+          try { child.kill('SIGKILL'); } catch { /* outer worker bound remains the backstop */ }
+        }
+      }, RUNTIME_KILL_GRACE_MS);
+    }, timeoutMs);
     timer?.unref?.();
 
     child.stdout.on('data', (chunk) => {
@@ -142,7 +149,7 @@ export function runStreamingProcess(entry, {
         resolve(diagnostic({ ok: false, reason: `exit-${code}` }));
         return;
       }
-      if (stdinError) {
+      if (stdinError || !stdinDelivered) {
         resolve(diagnostic({ ok: false, reason: 'stdin-error' }));
         return;
       }
@@ -164,7 +171,9 @@ export function runStreamingProcess(entry, {
 
     try {
       child.stdin.end(stdinPayload, (error) => {
-        if (stdinRequired && error && stdinError == null) stdinError = error;
+        if (!stdinRequired) return;
+        if (error && stdinError == null) stdinError = error;
+        else if (!error) stdinDelivered = true;
       });
     } catch (error) {
       if (stdinRequired) stdinError = error;
@@ -223,6 +232,7 @@ export function runStreamingProcessSync(entry, {
   timeoutMs = 30 * 60 * 1000,
   spawnSyncImpl = spawnSync,
 } = {}) {
+  if (!validTimeout(timeoutMs)) return { ok: false, reason: 'invalid-timeout' };
   let request;
   try {
     request = JSON.stringify({ version: 1, entry: workerEntry(entry), timeoutMs });
@@ -233,9 +243,7 @@ export function runStreamingProcessSync(entry, {
     return { ok: false, reason: 'worker-request-overflow' };
   }
 
-  const workerTimeoutMs = Number.isFinite(timeoutMs) && timeoutMs >= 0
-    ? Math.min(timeoutMs + WORKER_TIMEOUT_GRACE_MS, 2_147_483_647)
-    : WORKER_TIMEOUT_GRACE_MS;
+  const workerTimeoutMs = timeoutMs + WORKER_TIMEOUT_GRACE_MS;
   let out;
   try {
     out = spawnSyncImpl(process.execPath, [workerPath], {
