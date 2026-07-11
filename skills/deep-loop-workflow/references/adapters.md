@@ -16,7 +16,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" adapter resolve --protocol <p
 반환 형태 (예시):
 ```
 {
-  dispatch.kind = "invoke_skill",
+  dispatch.kind = "skill",
   dispatch.skill = "deep-work:deep-work-orchestrator",
   dispatch.then = "superpowers:subagent-driven-development",
   await.kind = "poll_file",
@@ -34,7 +34,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" adapter resolve --protocol <p
 
 ### Invoke (runtime별)
 
-- `dispatch.kind === 'invoke_skill'`이면 descriptor의 qualified skill id와 args를 그대로 사용한다.
+- `dispatch.kind === 'skill'`이면 descriptor의 qualified skill id와 args를 그대로 사용한다.
   - Claude: `Skill({ skill: descriptor.skill, args: descriptor.args })`
   - Codex: `$<descriptor.skill>` 뒤에 `descriptor.args`를 전달한다(qualified dollar invocation).
 - **read-only tier**: `guard.planning_only === true`이면 `dispatch.skill`(planning)만 실행하고, `dispatch.then`(implementer)은 null이라 건너뛴다.
@@ -50,15 +50,19 @@ deep-work 예시: `.deep-work/<task>/session-receipt.json`의 `current_phase=idl
 
 ### Review Episode 생성
 
+`--independent-subagent`는 현재 runtime에 fresh `code-reviewer` subagent를 만드는 cooperative capability가 **실제로 있을 때만** 전달한다. 그 capability가 없으면 이 flag를 전달하지 않는다(특히 Codex CLI 존재만으로 capability를 추정하지 않음). 이 assertion이 있을 때만 legacy `standalone` reviewer가 `agent` descriptor로 upgrade될 수 있다.
+
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" review dispatch --point <review_point> --workstream <workstream_id> --owner <run_id> --generation <n>
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" review dispatch --point <review_point> --workstream <workstream_id> [--independent-subagent] --owner <run_id> --generation <n>
 ```
 
 반환된 `checkerEpisodeId`와 checker 스킬 디스크립터를 저장한다.
 
-### Checker 스킬 Invoke
+### Checker descriptor routing
 
-동일한 runtime별 규칙(Claude `Skill()`, Codex `$<descriptor.skill>`)으로 디스크립터의 checker skill을 invoke한다.
+- `checker.kind === 'skill'`: `requires_independent_session === true`를 확인하고 **독립 fresh session**에서 실행한다. Claude는 `Skill({ skill: checker.skill, args: checker.args })`, Codex는 `$<checker.skill>`에 `checker.args`를 전달한다. 같은 maker task의 inline 실행은 proof가 아니다.
+- `checker.kind === 'agent'`: 현재 runtime의 cooperative subagent 기능으로 **fresh `code-reviewer` subagent**를 spawn한다(`agent_role` 확인). 실행 plane에 그 기능이 실제 없으면 inline으로 대체하거나 proof를 만들지 말고 `needs-human`으로 보고한다.
+- `checker.kind === 'blocked'`: `needs_human === true`와 reason을 `needs-human`으로 보고하고 dispatch를 중단한다. checker를 invoke하거나 APPROVE/CONCERN **proof를 기록하지 않는다**.
 
 ### Verdict 기록
 

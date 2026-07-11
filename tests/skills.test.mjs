@@ -422,14 +422,19 @@ test('continue: worktree-entry ordering — §1.5 entry must precede §2 dispatc
     'continue: worktree-entry (§1.5) must appear BEFORE dispatch (§2) — file work must run in the correct worktree');
 });
 
-// handoff-respawn.md: documents post-verify worktree entry + --project-root rationale
-test('handoff-respawn.md: documents post-verify worktree entry and --project-root rationale', () => {
+// Task 1.6 follow-up: fresh resume must use descriptor-bound root/run/runtime;
+// only per-action worktree entry remains delegated to continue.
+test('handoff-respawn resume contract uses descriptor root/run/runtime and delegates worktree routing', () => {
   const refPath = join(ROOT, 'skills', 'deep-loop-workflow', 'references', 'handoff-respawn.md');
   const src = readFileSync(refPath, 'utf8');
-  assert.ok(src.includes('진입'),
-    'handoff-respawn.md must document worktree entry (진입)');
-  assert.ok(src.includes('--project-root'),
-    'handoff-respawn.md must document the --project-root rationale (rootOf 상향탐색으로 불필요)');
+  assert.match(src, /Resume 흐름[\s\S]{0,800}--project-root <canonical_project_root>[\s\S]{0,240}--run-id <run_id>/,
+    'resume flow must consume the descriptor canonical root and logical run id');
+  assert.match(src, /lease acquire[^\n]*--runtime <claude\|codex>[^\n]*--project-root <canonical_project_root>[^\n]*--run-id <run_id>/,
+    'resume lease acquisition must assert runtime and explicit root/run identity');
+  assert.doesNotMatch(src, /--project-root[^\n]{0,100}(?:불필요|unnecessary)/i,
+    'resume reference must not claim explicit --project-root is unnecessary');
+  assert.match(src, /worktree[\s\S]{0,240}\/deep-loop-continue/,
+    'per-action worktree routing must remain delegated to deep-loop-continue');
 });
 
 // FIX D: continue skill must document ORIG_ROOT-relative, worktree-prefixed artifact paths.
@@ -732,10 +737,23 @@ test('handoff execution docs preserve runtime-correct resume tokens and Codex fa
   }
 });
 
-test('adapter execution reference distinguishes Claude Skill invocation from Codex qualified dollar invocation', () => {
+test('runtime-neutral adapter reference routes exact skill/agent/blocked descriptors and capability flag', () => {
   const body = readFileSync(new URL('../skills/deep-loop-workflow/references/adapters.md', import.meta.url), 'utf8');
+  assert.match(body, /dispatch\.kind = "skill"/, 'maker descriptor example must use production kind=skill');
+  assert.match(body, /dispatch\.kind === 'skill'/, 'maker branch must route production kind=skill');
+  assert.doesNotMatch(body, /invoke_skill/, 'stale invoke_skill must not remain active in the reference');
   assert.match(body, /Claude[\s\S]{0,240}Skill\(/);
   assert.match(body, /Codex[\s\S]{0,240}\$<descriptor\.skill>/);
+  assert.match(body, /checker\.kind === 'skill'[\s\S]{0,260}(?:independent|독립)/,
+    'skill checker must run in an independent session');
+  assert.match(body, /checker\.kind === 'agent'[\s\S]{0,260}(?:fresh|새)[\s\S]{0,160}code-reviewer/,
+    'agent checker must spawn a fresh code-reviewer subagent');
+  assert.match(body, /checker\.kind === 'blocked'[\s\S]{0,260}needs-human[\s\S]{0,180}(?:proof|증명)/,
+    'blocked checker must route needs-human without proof');
+  assert.match(body, /--independent-subagent[\s\S]{0,260}(?:실제로 있을 때만|only when)/,
+    'independent-subagent assertion must be capability-gated');
+  assert.match(body, /(?:없으면|without)[^\n]{0,180}(?:전달하지|omit)/,
+    'reference must omit the flag when cooperative capability is absent');
 });
 
 // Task 9 (spec §8.2): 게이트-크리티컬 마커 — 위치-독립 '존재' 단언, 삭제-회귀만 결정론 방어.
