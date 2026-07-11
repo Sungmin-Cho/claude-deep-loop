@@ -28,13 +28,29 @@ import { buildMinimalCodexEnv } from './codex-runtime.mjs';
 import { buildLaunchCommand } from './runtime-descriptor.mjs';
 import { sessionRuntime } from './runtime.mjs';
 import { canonicalProjectRoot } from './project-root.mjs';
+import {
+  blockIndependentReview,
+  claimIndependentReview,
+  findPendingIndependentChecker,
+  revalidateIndependentReviewClaim,
+} from './review.mjs';
+import {
+  importReviewViaCli,
+  resolveTrustedCheckerSkill,
+  runIndependentCodexChecker,
+  sameCheckerIdentity,
+} from './codex-checker.mjs';
+import { emitHandoff } from './handoff.mjs';
+import { STREAM_LIMITS } from './usage-parser.mjs';
 
 const DEFAULT_DEEP_LOOP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const RESUME_SKILL_MAX_BYTES = 4 * 1024 * 1024;
+const TRUSTED_NODE_MAX_BYTES = 256 * 1024 * 1024;
 const DEFAULT_PROCESS_TIMEOUT_MS = 30 * 60 * 1000;
 const HOST_LOCK_GRACE_MS = 15 * 60 * 1000;
 const HOST_LOCK_CRASH_GRACE_MS = 30 * 1000;
 const NODE_TIMER_MAX_MS = 2_147_483_647;
+const CHECKER_IMPORT_TIMEOUT_MS = 30_000;
 
 function sameFileIdentity(left, right) {
   return left.dev === right.dev && left.ino === right.ino && left.mode === right.mode
@@ -60,11 +76,11 @@ function inspectDirectoryNode(path) {
   };
 }
 
-function inspectRegularFileIdentity(path) {
+function inspectRegularFileIdentity(path, { maxBytes = RESUME_SKILL_MAX_BYTES } = {}) {
   const lexical = resolve(path);
   const before = lstatSync(lexical, { bigint: true });
   if (before.isSymbolicLink() || !before.isFile() || (before.mode & 0o444n) === 0n
-    || before.size > BigInt(RESUME_SKILL_MAX_BYTES)) {
+    || before.size > BigInt(maxBytes)) {
     throw new Error('file must be a bounded readable non-symlink');
   }
   const canonical = (realpathSync.native || realpathSync)(lexical);
@@ -215,6 +231,26 @@ function pendingHandoff(loop) {
     && lease.handoff_child_run_id.length > 0;
 }
 
+function inProgressIndependentChecker(loop) {
+  return (loop.episodes || []).find(episode => episode?.role === 'checker'
+    && episode.status === 'in_progress'
+    && episode.requires_independent_session === true) || null;
+}
+
+function checkerCapabilityReason(error) {
+  const message = String(error?.message || error);
+  if (message.includes('checker-skill-ambiguous')) return 'checker-skill-ambiguous';
+  if (message.includes('checker-skill-unavailable')) return 'checker-skill-unavailable';
+  return 'checker-skill-invalid';
+}
+
+function accountingFailureReason(error) {
+  const message = String(error?.message || error);
+  if (message.includes('RUN_TERMINAL')) return 'terminal';
+  if (message.includes('LEASE_FENCED')) return 'fenced';
+  throw error;
+}
+
 function pauseWithFreshFence(root, runId, { reason, expect, now }) {
   const attempt = (fence) => pauseRun(root, runId, {
     reason,
@@ -256,6 +292,505 @@ function pauseWithOriginalFence(root, runId, { reason, expect, now }) {
   }
 }
 
+function driveIndependentChecker({
+  root,
+  runId,
+  initialLoop,
+  projectRoot,
+  runtime,
+  parentFence,
+  now,
+  timeoutMs,
+  env,
+  deepLoopRoot,
+  preflightFn,
+  recordCostFn,
+  revalidateExecutable,
+  resolveCodexHome,
+  inspectDirectory,
+  inspectResumeSkill,
+  resolveCheckerSkill,
+  checkerRunFn,
+  checkerImportFn,
+  emitHandoffFn,
+  claimReviewFn,
+  blockReviewFn,
+  revalidateClaimFn,
+  attemptIdFactory,
+}) {
+  const stranded = inProgressIndependentChecker(initialLoop);
+  if (stranded) {
+    return {
+      ok: false,
+      action: 'checker-in-progress',
+      reason: 'needs-human-no-retry',
+      checkerEpisodeId: stranded.id,
+      attemptId: stranded.attempt_id ?? null,
+    };
+  }
+  const pending = findPendingIndependentChecker(initialLoop);
+  if (!pending || runtime !== 'codex') return null;
+  if (initialLoop.session_chain?.lease?.resume_policy === 'human') {
+    return { ok: true, skipped: true, reason: 'human-resume-policy' };
+  }
+  if (initialLoop.status !== 'running') {
+    return { ok: false, action: 'terminal', reason: initialLoop.status };
+  }
+
+  const parentOwner = parentFence.owner;
+  const parentGeneration = parentFence.generation;
+  const claimAndBlock = (reason) => {
+    let claimed;
+    try {
+      claimed = claimReviewFn(projectRoot, runId, {
+        episodeId: pending.id,
+        fence: { owner: parentOwner, generation: parentGeneration, intent: 'business' },
+        attemptIdFactory,
+        now,
+      });
+    } catch (error) {
+      const message = String(error?.message || error);
+      if (message.includes('LEASE_FENCED') || message.includes('RUN_TERMINAL')) {
+        return { ok: false, action: message.includes('RUN_TERMINAL') ? 'terminal' : 'fenced', reason };
+      }
+      const { data: raceLoop } = readState(projectRoot, runId);
+      const raced = inProgressIndependentChecker(raceLoop);
+      if (raced) {
+        return {
+          ok: false, action: 'checker-in-progress', reason: 'needs-human-no-retry',
+          checkerEpisodeId: raced.id, attemptId: raced.attempt_id ?? null,
+        };
+      }
+      const pauseOutcome = pauseWithOriginalFence(projectRoot, runId, {
+        reason: 'checker-claim-failed', expect: parentFence, now,
+      });
+      return {
+        ok: false,
+        action: pauseOutcome === 'fenced' ? 'fenced' : (pauseOutcome === 'terminal' ? 'terminal' : 'checker-claim-failed'),
+        reason: 'checker-claim-failed',
+      };
+    }
+    if (!claimed?.ok) {
+      return {
+        ok: false,
+        action: 'checker-in-progress',
+        reason: 'needs-human-no-retry',
+        checkerEpisodeId: pending.id,
+        attemptId: null,
+      };
+    }
+    try {
+      blockReviewFn(projectRoot, runId, {
+        episodeId: pending.id,
+        attemptId: claimed.attemptId,
+        reason,
+        fence: { owner: parentOwner, generation: parentGeneration, intent: 'business' },
+      });
+      return {
+        ok: false,
+        action: 'checker-blocked',
+        reason,
+        checkerEpisodeId: pending.id,
+        attemptId: claimed.attemptId,
+      };
+    } catch (error) {
+      const message = String(error?.message || error);
+      if (message.includes('RUN_TERMINAL')) {
+        return { ok: false, action: 'terminal', reason, recorded: false };
+      }
+      if (message.includes('LEASE_FENCED') || message.includes('REVIEW_BLOCK_CLAIM_MISMATCH')) {
+        return { ok: false, action: 'checker-stranded', reason, recorded: false };
+      }
+      throw error;
+    }
+  };
+
+  const preliminaryGate = respawnGate(initialLoop, { now });
+  if (!preliminaryGate.ok) {
+    const pauseOutcome = pauseWithOriginalFence(projectRoot, runId, {
+      reason: `checker-gate:${preliminaryGate.reason}`,
+      expect: parentFence,
+      now,
+    });
+    return {
+      ok: false,
+      action: pauseOutcome === 'fenced' ? 'fenced' : (pauseOutcome === 'terminal' ? 'terminal' : 'gate-blocked'),
+      reason: preliminaryGate.reason,
+    };
+  }
+
+  // A generic subagent descriptor remains valid for attended/manual review, but has no
+  // trusted unattended Codex skill. Claim once so future host ticks cannot retry it.
+  if (pending.plugin === 'subagent-checker') return claimAndBlock('checker-capability-unsupported');
+  if (pending.plugin !== 'deep-review') return claimAndBlock('checker-capability-unsupported');
+
+  const initialApproval = initialLoop.autonomy?.runtime_executable_approval;
+  const outputSchemaPath = join(deepLoopRoot, 'schemas', 'review-import.schema.json');
+  const kernelPath = join(deepLoopRoot, 'scripts', 'deep-loop.mjs');
+  const resumeSkillPath = join(deepLoopRoot, 'skills', 'deep-loop-resume', 'SKILL.md');
+  let executable;
+  let codexHome;
+  let checkerEnv;
+  let projectDirectorySnapshot;
+  let pluginDirectorySnapshot;
+  let resumeSkillSnapshot;
+  let outputSchemaSnapshot;
+  let kernelSnapshot;
+  let nodeSnapshot;
+  let checkerSkillSnapshot;
+  try {
+    executable = revalidateExecutable(initialApproval);
+  } catch {
+    const pauseOutcome = pauseWithOriginalFence(projectRoot, runId, {
+      reason: 'checker-executable-invalid', expect: parentFence, now,
+    });
+    return { ok: false, action: pauseOutcome === 'fenced' ? 'fenced' : 'preflight-failed', reason: 'executable-invalid' };
+  }
+  try {
+    codexHome = resolveCodexHome({ env, platform: executable.platform });
+    checkerEnv = buildMinimalCodexEnv({
+      platform: executable.platform,
+      sourceEnv: env,
+      codexHome: codexHome.canonical_path,
+      runId,
+      projectRoot,
+      owner: pending.id,
+      generation: parentGeneration,
+    });
+    projectDirectorySnapshot = inspectDirectory(projectRoot);
+    pluginDirectorySnapshot = inspectDirectory(deepLoopRoot);
+    resumeSkillSnapshot = inspectResumeSkill(resumeSkillPath);
+    outputSchemaSnapshot = inspectResumeSkill(outputSchemaPath);
+    kernelSnapshot = inspectResumeSkill(kernelPath);
+    nodeSnapshot = inspectResumeSkill(process.execPath, { maxBytes: TRUSTED_NODE_MAX_BYTES });
+  } catch {
+    const pauseOutcome = pauseWithOriginalFence(projectRoot, runId, {
+      reason: 'checker-isolation-invalid', expect: parentFence, now,
+    });
+    return { ok: false, action: pauseOutcome === 'fenced' ? 'fenced' : 'preflight-failed', reason: 'checker-isolation-invalid' };
+  }
+  try {
+    checkerSkillSnapshot = resolveCheckerSkill({ codexHome: codexHome.canonical_path });
+  } catch (error) {
+    return claimAndBlock(checkerCapabilityReason(error));
+  }
+
+  let preflight;
+  try {
+    preflight = preflightFn({
+      projectRoot,
+      runId,
+      executableIdentity: initialApproval,
+      codexHomeIdentity: codexHome,
+      deepLoopRoot,
+      resumeSkillPath,
+      sourceEnv: env,
+      owner: parentOwner,
+      generation: parentGeneration,
+      model: initialLoop.autonomy?.session_model ?? null,
+      effort: initialLoop.autonomy?.session_effort ?? null,
+      timeoutMs,
+      revalidateExecutable,
+      resolveCodexHome,
+    });
+  } catch {
+    preflight = null;
+  }
+  const validPreflight = preflight != null
+    && typeof preflight === 'object'
+    && !Array.isArray(preflight)
+    && typeof preflight.ok === 'boolean'
+    && Array.isArray(preflight.measured_usage)
+    && (preflight.ok
+      ? typeof preflight.cache_hit === 'boolean'
+        && (preflight.cache_hit ? preflight.measured_usage.length === 0 : preflight.measured_usage.length === 2)
+      : typeof preflight.reason === 'string' && preflight.reason.length > 0
+        && preflight.pause_mode === 'preserve' && preflight.measured_usage.length <= 2);
+  if (!validPreflight) {
+    const pauseOutcome = pauseWithOriginalFence(projectRoot, runId, {
+      reason: 'checker-preflight-invalid', expect: parentFence, now,
+    });
+    return { ok: false, action: pauseOutcome === 'fenced' ? 'fenced' : 'preflight-failed', reason: 'preflight-invalid' };
+  }
+  for (const usage of preflight.measured_usage) {
+    if (!isMeasuredOneTurnUsage(usage)) {
+      const pauseOutcome = pauseWithOriginalFence(projectRoot, runId, {
+        reason: 'checker-preflight-usage-invalid', expect: parentFence, now,
+      });
+      return { ok: false, action: pauseOutcome === 'fenced' ? 'fenced' : 'preflight-failed', reason: 'preflight-usage-invalid' };
+    }
+    try {
+      recordCostFn(projectRoot, runId, {
+        turns: usage.num_turns,
+        tokens: usage.tokens,
+        fence: { owner: parentOwner, generation: parentGeneration, intent: 'accounting' },
+      });
+    } catch (error) {
+      return { ok: false, action: accountingFailureReason(error), reason: 'preflight-accounting-failed' };
+    }
+  }
+  if (!preflight.ok) {
+    const pauseOutcome = pauseWithOriginalFence(projectRoot, runId, {
+      reason: preflight.reason, expect: parentFence, now,
+    });
+    return { ok: false, action: pauseOutcome === 'fenced' ? 'fenced' : 'preflight-failed', reason: preflight.reason };
+  }
+
+  const { data: postCostLoop } = readState(projectRoot, runId);
+  const postLease = postCostLoop.session_chain?.lease || {};
+  if (postLease.owner_run_id !== parentOwner || postLease.generation !== parentGeneration
+    || sessionRuntime(postCostLoop) !== 'codex' || canonicalProjectRoot(postCostLoop.project.root) !== projectRoot) {
+    return { ok: false, action: 'fenced', reason: 'checker-post-cost-fenced' };
+  }
+  const postGate = respawnGate(postCostLoop, { now });
+  if (!postGate.ok) {
+    const pauseOutcome = pauseWithOriginalFence(projectRoot, runId, {
+      reason: `checker-gate:${postGate.reason}`, expect: parentFence, now,
+    });
+    return { ok: false, action: pauseOutcome === 'fenced' ? 'fenced' : 'gate-blocked', reason: postGate.reason };
+  }
+
+  let claimed;
+  try {
+    claimed = claimReviewFn(projectRoot, runId, {
+      episodeId: pending.id,
+      fence: { owner: parentOwner, generation: parentGeneration, intent: 'business' },
+      attemptIdFactory,
+      now,
+    });
+  } catch (error) {
+    const message = String(error?.message || error);
+    if (message.includes('LEASE_FENCED')) return { ok: false, action: 'fenced', reason: 'checker-claim-failed' };
+    if (message.includes('RUN_TERMINAL')) return { ok: false, action: 'terminal', reason: 'checker-claim-failed' };
+    const { data: raceLoop } = readState(projectRoot, runId);
+    const raced = inProgressIndependentChecker(raceLoop);
+    if (raced) {
+      return {
+        ok: false, action: 'checker-in-progress', reason: 'needs-human-no-retry',
+        checkerEpisodeId: raced.id, attemptId: raced.attempt_id ?? null,
+      };
+    }
+    const pauseOutcome = pauseWithOriginalFence(projectRoot, runId, {
+      reason: 'checker-claim-failed', expect: parentFence, now,
+    });
+    return {
+      ok: false,
+      action: pauseOutcome === 'fenced' ? 'fenced' : (pauseOutcome === 'terminal' ? 'terminal' : 'checker-claim-failed'),
+      reason: 'checker-claim-failed',
+    };
+  }
+  if (!claimed?.ok) {
+    return {
+      ok: false, action: 'checker-in-progress', reason: 'needs-human-no-retry',
+      checkerEpisodeId: pending.id, attemptId: null,
+    };
+  }
+  const blockClaim = (reason) => {
+    try {
+      blockReviewFn(projectRoot, runId, {
+        episodeId: pending.id,
+        attemptId: claimed.attemptId,
+        reason,
+        fence: { owner: parentOwner, generation: parentGeneration, intent: 'business' },
+      });
+      return {
+        ok: false, action: 'checker-blocked', reason,
+        checkerEpisodeId: pending.id, attemptId: claimed.attemptId,
+      };
+    } catch (error) {
+      const message = String(error?.message || error);
+      if (message.includes('RUN_TERMINAL')) return { ok: false, action: 'terminal', reason, recorded: false };
+      if (message.includes('LEASE_FENCED') || message.includes('REVIEW_BLOCK_CLAIM_MISMATCH')) {
+        return { ok: false, action: 'checker-stranded', reason, recorded: false };
+      }
+      throw error;
+    }
+  };
+
+  const identityFresh = () => {
+    try {
+      const { data: freshLoop } = readState(projectRoot, runId);
+      const freshLease = freshLoop.session_chain?.lease || {};
+      const freshExecutable = revalidateExecutable(freshLoop.autonomy?.runtime_executable_approval);
+      const freshHome = resolveCodexHome({ env, expectedIdentity: codexHome, platform: freshExecutable.platform });
+      const freshEnv = buildMinimalCodexEnv({
+        platform: freshExecutable.platform,
+        sourceEnv: env,
+        codexHome: freshHome.canonical_path,
+        runId,
+        projectRoot,
+        owner: pending.id,
+        generation: parentGeneration,
+      });
+      const freshCheckerSkill = resolveCheckerSkill({ codexHome: freshHome.canonical_path });
+      const freshClaim = revalidateClaimFn(projectRoot, runId, {
+        episodeId: pending.id,
+        attemptId: claimed.attemptId,
+        fence: { owner: parentOwner, generation: parentGeneration, intent: 'business' },
+      });
+      const checker = freshLoop.episodes.find(episode => episode.id === pending.id);
+      return sessionRuntime(freshLoop) === 'codex'
+        && canonicalProjectRoot(freshLoop.project.root) === projectRoot
+        && freshLease.owner_run_id === parentOwner
+        && freshLease.generation === parentGeneration
+        && checker?.status === 'in_progress'
+        && checker.attempt_id === claimed.attemptId
+        && sameValue(checker.review_claim, claimed.claim)
+        && sameValue(freshClaim.claim, claimed.claim)
+        && sameValue(freshLoop.autonomy?.runtime_executable_approval, initialApproval)
+        && sameValue(freshExecutable, executable)
+        && freshLoop.autonomy?.session_model === initialLoop.autonomy?.session_model
+        && freshLoop.autonomy?.session_effort === initialLoop.autonomy?.session_effort
+        && sameValue(freshEnv, checkerEnv)
+        && sameValue(inspectDirectory(projectRoot), projectDirectorySnapshot)
+        && sameValue(inspectDirectory(deepLoopRoot), pluginDirectorySnapshot)
+        && sameValue(inspectResumeSkill(resumeSkillPath), resumeSkillSnapshot)
+        && sameValue(inspectResumeSkill(outputSchemaPath), outputSchemaSnapshot)
+        && sameValue(inspectResumeSkill(kernelPath), kernelSnapshot)
+        && sameValue(inspectResumeSkill(process.execPath, { maxBytes: TRUSTED_NODE_MAX_BYTES }), nodeSnapshot)
+        && sameCheckerIdentity(freshCheckerSkill, checkerSkillSnapshot);
+    } catch {
+      return false;
+    }
+  };
+  if (!identityFresh()) return blockClaim('checker-identity-drift');
+
+  let checkerResult;
+  try {
+    checkerResult = checkerRunFn({
+      executable: executable.canonical_path,
+      projectRoot,
+      checkerSkillPath: checkerSkillSnapshot.skill.canonical_path,
+      outputSchemaPath,
+      contract: {
+        schema_version: '1.0',
+        reviewer_id: claimed.claim.reviewer_id,
+        checker_episode_id: claimed.claim.checker_episode_id,
+        target_maker: claimed.claim.target_maker,
+        attempt_id: claimed.attemptId,
+        workstream_id: claimed.claim.workstream_id,
+        point: claimed.claim.point,
+        project_root: claimed.claim.project_root,
+        artifacts: claimed.claim.artifacts,
+      },
+      env: checkerEnv,
+      model: initialLoop.autonomy?.session_model ?? null,
+      effort: initialLoop.autonomy?.session_effort ?? null,
+      timeoutMs,
+    });
+  } catch {
+    checkerResult = { ok: false, reason: 'checker-process-error' };
+  }
+  if (!checkerResult || checkerResult.ok !== true
+    || !isMeasuredOneTurnUsage(checkerResult.usage)
+    || !Buffer.isBuffer(checkerResult.finalMessage)
+    || checkerResult.finalMessage.length === 0
+    || checkerResult.finalMessage.length > STREAM_LIMITS.finalMessageBytes) {
+    return blockClaim('checker-process-failed');
+  }
+  if (!identityFresh()) return blockClaim('checker-identity-drift');
+
+  let imported;
+  try {
+    imported = checkerImportFn({
+      processExecutable: process.execPath,
+      kernelPath,
+      projectRoot,
+      runId,
+      owner: parentOwner,
+      generation: parentGeneration,
+      timeoutMs: CHECKER_IMPORT_TIMEOUT_MS,
+      env: checkerEnv,
+    }, checkerResult.finalMessage);
+  } catch {
+    imported = { ok: false, reason: 'checker-import-failed' };
+  }
+  if (imported?.ok) {
+    try {
+      const { data: proofLoop } = readState(projectRoot, runId);
+      const proofChecker = proofLoop.episodes.find(episode => episode.id === pending.id);
+      if (!['approved', 'rejected'].includes(proofChecker?.status)
+        || proofChecker.review_source !== 'imported-stdin'
+        || proofChecker.attempt_id !== claimed.attemptId
+        || !sameValue(proofChecker.review_claim, claimed.claim)) {
+        imported = { ok: false, reason: 'checker-import-proof-missing' };
+      }
+    } catch {
+      imported = { ok: false, reason: 'checker-import-proof-missing' };
+    }
+  }
+  if (!imported?.ok) {
+    let recorded = false;
+    let accountingReason = null;
+    try {
+      recordCostFn(projectRoot, runId, {
+        turns: checkerResult.usage.num_turns,
+        tokens: checkerResult.usage.tokens,
+        fence: { owner: parentOwner, generation: parentGeneration, intent: 'accounting' },
+      });
+      recorded = true;
+    } catch (error) {
+      accountingReason = accountingFailureReason(error);
+    }
+    const blocked = blockClaim('checker-import-failed');
+    return { ...blocked, recorded, ...(accountingReason ? { accounting_reason: accountingReason } : {}) };
+  }
+
+  let continuation = false;
+  let continuationFailure = null;
+  const { data: afterImport } = readState(projectRoot, runId);
+  if (afterImport.status === 'running') {
+    try {
+      const handoff = emitHandoffFn(projectRoot, runId, {
+        reason: 'independent-review-complete',
+        trigger: `independent-review-complete:${pending.id}:${claimed.attemptId}`,
+        headless: true,
+        resumePolicy: 'headless',
+        expect: { owner: parentOwner, generation: parentGeneration },
+        now,
+        env,
+      });
+      continuation = handoff?.ok === true;
+      if (!continuation) continuationFailure = handoff?.reason || 'handoff-not-emitted';
+    } catch (error) {
+      continuationFailure = String(error?.message || error || 'handoff-error').slice(0, 128);
+    }
+    if (continuationFailure) {
+      const pauseOutcome = pauseWithOriginalFence(projectRoot, runId, {
+        reason: 'independent-review-continuation-failed',
+        expect: parentFence,
+        now,
+      });
+      if (pauseOutcome === 'terminal') continuationFailure = 'terminal';
+      else if (pauseOutcome === 'fenced') continuationFailure = 'fenced';
+    }
+  }
+
+  let recorded = false;
+  let accountingReason = null;
+  try {
+    recordCostFn(projectRoot, runId, {
+      turns: checkerResult.usage.num_turns,
+      tokens: checkerResult.usage.tokens,
+      fence: { owner: parentOwner, generation: parentGeneration, intent: 'accounting' },
+    });
+    recorded = true;
+  } catch (error) {
+    accountingReason = accountingFailureReason(error);
+  }
+  return {
+    ok: continuationFailure == null,
+    action: continuationFailure == null ? 'checker-complete' : 'continuation-failed',
+    checkerEpisodeId: pending.id,
+    attemptId: claimed.attemptId,
+    continuation,
+    usage: checkerResult.usage,
+    recorded,
+    ...(continuationFailure ? { reason: continuationFailure } : {}),
+    ...(accountingReason ? { accounting_reason: accountingReason } : {}),
+  };
+}
+
 function driveHeadlessRunLocked({
   root,
   runId,
@@ -274,6 +809,14 @@ function driveHeadlessRunLocked({
   resolveCodexHome = resolveAuthenticatedCodexHome,
   inspectDirectory = inspectDirectoryNode,
   inspectResumeSkill = inspectRegularFileIdentity,
+  resolveCheckerSkill = resolveTrustedCheckerSkill,
+  checkerRunFn = runIndependentCodexChecker,
+  checkerImportFn = importReviewViaCli,
+  emitHandoffFn = emitHandoff,
+  claimReviewFn = claimIndependentReview,
+  blockReviewFn = blockIndependentReview,
+  revalidateClaimFn = revalidateIndependentReviewClaim,
+  attemptIdFactory,
 } = {}) {
   const { data: initialLoop } = readState(root, runId);
   const runtime = sessionRuntime(initialLoop);
@@ -293,8 +836,35 @@ function driveHeadlessRunLocked({
   const key = initialLease.handoff_idempotency_key;
   const initialApproval = initialLoop.autonomy?.runtime_executable_approval;
 
-  if (!pendingHandoff(initialLoop)) return { ok: true, action: 'no-pending-handoff' };
   if (terminal(initialLoop)) return { ok: false, action: 'terminal', reason: 'RUN_TERMINAL' };
+  const checkerResult = driveIndependentChecker({
+    root,
+    runId,
+    initialLoop,
+    projectRoot,
+    runtime,
+    parentFence,
+    now,
+    timeoutMs,
+    env,
+    deepLoopRoot,
+    preflightFn,
+    recordCostFn,
+    revalidateExecutable,
+    resolveCodexHome,
+    inspectDirectory,
+    inspectResumeSkill,
+    resolveCheckerSkill,
+    checkerRunFn,
+    checkerImportFn,
+    emitHandoffFn,
+    claimReviewFn,
+    blockReviewFn,
+    revalidateClaimFn,
+    attemptIdFactory,
+  });
+  if (checkerResult) return checkerResult;
+  if (!pendingHandoff(initialLoop)) return { ok: true, action: 'no-pending-handoff' };
   if (initialLease.resume_policy === 'human') {
     return { ok: true, skipped: true, reason: 'human-resume-policy' };
   }

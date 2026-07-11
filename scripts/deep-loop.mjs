@@ -387,7 +387,7 @@ const handlers = {
     }
     // verdict 기록 → checker 터미널 파생 + breaker/comprehension/review_points (Codex r1 🔴6: CLI 경계로 노출)
     if (verb === 'record') {
-      for (const key of ['source', 'workstream', 'workstream-id', 'workstream_id', 'point', 'target-maker', 'target_maker', 'reviewer-id', 'reviewer_id', 'review-source', 'review_source', 'runtime']) {
+      for (const key of ['source', 'workstream', 'workstream-id', 'workstream_id', 'point', 'target-maker', 'target_maker', 'reviewer-id', 'reviewer_id', 'review-source', 'review_source', 'runtime', 'attempt-id', 'attempt_id', 'attemptId']) {
         if (Object.hasOwn(f, key)) { error(`REVIEW_METADATA_FORBIDDEN: review record derives ${key}`); return 1; }
       }
       const episode = reqStr(f, 'episode'); if (!episode) { error('MISSING_EPISODE'); return 2; }
@@ -404,7 +404,7 @@ const handlers = {
       }
     }
     if (verb === 'import') {
-      for (const key of ['source', 'workstream', 'workstream-id', 'workstream_id', 'point', 'target-maker', 'target_maker', 'reviewer-id', 'reviewer_id', 'review-source', 'review_source', 'runtime']) {
+      for (const key of ['source', 'workstream', 'workstream-id', 'workstream_id', 'point', 'target-maker', 'target_maker', 'reviewer-id', 'reviewer_id', 'review-source', 'review_source', 'runtime', 'attempt-id', 'attempt_id', 'attemptId']) {
         if (Object.hasOwn(f, key)) { error(`REVIEW_METADATA_FORBIDDEN: review import derives ${key}`); return 1; }
       }
       if (f.stdin !== true) { error('STDIN_REQUIRED: review import requires --stdin'); return 2; }

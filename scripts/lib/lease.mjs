@@ -29,8 +29,11 @@ export function leaseCheck(loop, { owner, generation, runtime, intent = 'busines
   // Codex r2 🔴2: expires_at 로 active 소유자를 fence 하지 않는다 — 살아있는 소유자가 TTL(15분) 후 자기 write 에서
   // 죽으면 안 됨. stale 소유자(자식이 인수해 generation 이 올라간 경우)는 generation-mismatch 로 이미 펜싱된다.
   // expires_at 는 오직 acquireLease 의 takeover 판단(releasing 크래시)에만 쓰인다.
-  // RUN_PAUSED: paused 상태 → 업무 write 차단. 인간 전용 recover/resume/breaker-reset intent 만 통과.
-  if (loop.status === 'paused' && intent !== 'recover' && intent !== 'resume' && intent !== 'breaker-reset') {
+  // RUN_PAUSED: paused 상태 → 업무/lease write 차단. 인간 전용 경로 외에, 이미 소비된
+  // checker turn을 최종 import 후 기록하는 matching accounting만 허용한다. 상단 owner/generation,
+  // terminal, released/releasing 가드를 모두 통과해야 하므로 소유권이나 업무 권한은 넓어지지 않는다.
+  if (loop.status === 'paused' && intent !== 'accounting'
+    && intent !== 'recover' && intent !== 'resume' && intent !== 'breaker-reset') {
     return { ok: false, reason: 'RUN_PAUSED' };
   }
   return { ok: true, reason: 'ok' };

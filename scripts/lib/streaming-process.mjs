@@ -3,7 +3,9 @@ import { fileURLToPath } from 'node:url';
 import { createCodexJsonlParser, parseClaudeUsage, STREAM_LIMITS } from './usage-parser.mjs';
 
 const WORKER_REQUEST_BYTES = 2 * 1024 * 1024;
-const WORKER_RESULT_BYTES = 512 * 1024;
+// 256 KiB final-message bytes become ~350 KiB canonical base64; add the independently
+// bounded 64 KiB stderr diagnostic plus JSON overhead without permitting unbounded output.
+const WORKER_RESULT_BYTES = 1024 * 1024;
 const RUNTIME_KILL_GRACE_MS = 250;
 const WORKER_TIMEOUT_GRACE_MS = RUNTIME_KILL_GRACE_MS + 1_000;
 const NODE_TIMER_MAX_MS = 2_147_483_647;
@@ -93,7 +95,9 @@ export function runStreamingProcess(entry, {
     let stdinDelivered = !stdinRequired;
     let settled = false;
     let forceKillTimer = null;
-    const codexParser = usageKind === 'codex-jsonl' ? createCodexJsonlParser() : null;
+    const codexParser = usageKind === 'codex-jsonl'
+      ? createCodexJsonlParser({ captureFinalMessage: entry.captureFinalMessage === true })
+      : null;
 
     const timer = setTimeout(() => {
       timedOut = true;
@@ -156,7 +160,13 @@ export function runStreamingProcess(entry, {
 
       if (codexParser) {
         const parsed = codexParser.end();
-        resolve(diagnostic(parsed.ok ? { ok: true, usage: parsed.usage } : parsed));
+        resolve(diagnostic(parsed.ok
+          ? {
+              ok: true,
+              usage: parsed.usage,
+              ...(Buffer.isBuffer(parsed.finalMessage) ? { finalMessage: parsed.finalMessage } : {}),
+            }
+          : parsed));
         return;
       }
       if (claudeTotalBytes > STREAM_LIMITS.claudeOutputBytes) {
@@ -193,6 +203,7 @@ function workerEntry(entry) {
     ...(entry && Object.hasOwn(entry, 'env') ? { env: entry.env } : {}),
     shell: entry?.shell ?? false,
     usageOutputKind: entry?.usageOutputKind ?? 'claude-json',
+    captureFinalMessage: entry?.captureFinalMessage === true,
     stdin,
   };
 }
@@ -204,7 +215,7 @@ function decodeWorkerResult(stdout) {
   } catch {
     return { ok: false, reason: 'worker-protocol-invalid' };
   }
-  const allowedKeys = new Set(['ok', 'reason', 'usage', 'stderr', 'stderrTruncated']);
+  const allowedKeys = new Set(['ok', 'reason', 'usage', 'stderr', 'stderrTruncated', 'finalMessageBase64']);
   if (result == null || typeof result !== 'object' || Array.isArray(result)
     || typeof result.ok !== 'boolean'
     || Object.keys(result).some((key) => !allowedKeys.has(key))
@@ -215,7 +226,8 @@ function decodeWorkerResult(stdout) {
     return { ok: false, reason: 'worker-protocol-invalid' };
   }
   if (result.ok === false) {
-    if (typeof result.reason !== 'string' || Object.hasOwn(result, 'usage')) {
+    if (typeof result.reason !== 'string' || Object.hasOwn(result, 'usage')
+      || Object.hasOwn(result, 'finalMessageBase64')) {
       return { ok: false, reason: 'worker-protocol-invalid' };
     }
     return result;
@@ -224,6 +236,19 @@ function decodeWorkerResult(stdout) {
     || Array.isArray(result.usage)
     || (!Number.isFinite(result.usage.num_turns) && !Number.isFinite(result.usage.tokens))) {
     return { ok: false, reason: 'worker-protocol-invalid' };
+  }
+  if (Object.hasOwn(result, 'finalMessageBase64')) {
+    if (typeof result.finalMessageBase64 !== 'string'
+      || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(result.finalMessageBase64)) {
+      return { ok: false, reason: 'worker-protocol-invalid' };
+    }
+    const finalMessage = Buffer.from(result.finalMessageBase64, 'base64');
+    if (finalMessage.length > STREAM_LIMITS.finalMessageBytes
+      || finalMessage.toString('base64') !== result.finalMessageBase64) {
+      return { ok: false, reason: 'worker-protocol-invalid' };
+    }
+    const { finalMessageBase64: _encoded, ...rest } = result;
+    return { ...rest, finalMessage };
   }
   return result;
 }

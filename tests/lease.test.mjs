@@ -148,6 +148,18 @@ test('leaseCheck allows accounting during releasing for matching owner/generatio
   assert.equal(leaseCheck(loop, { owner: 'r', generation: 3, intent: 'accounting' }).ok, false);  // generation 불일치 거부
 });
 
+test('leaseCheck allows only matching accounting on a nonterminal paused run', () => {
+  const loop = {
+    status: 'paused',
+    session_chain: { lease: { owner_run_id: 'r', generation: 2, state: 'active' } },
+  };
+  assert.deepEqual(leaseCheck(loop, { owner: 'r', generation: 2, intent: 'accounting' }), { ok: true, reason: 'ok' });
+  assert.equal(leaseCheck(loop, { owner: 'r', generation: 2, intent: 'business' }).reason, 'RUN_PAUSED');
+  assert.equal(leaseCheck(loop, { owner: 'r', generation: 2, intent: 'lease' }).reason, 'RUN_PAUSED');
+  assert.equal(leaseCheck(loop, { owner: 'other', generation: 2, intent: 'accounting' }).reason, 'owner-mismatch');
+  assert.equal(leaseCheck(loop, { owner: 'r', generation: 3, intent: 'accounting' }).reason, 'generation-mismatch');
+});
+
 // Fix A: reserveHandoff with stale expect is fenced (generation-mismatch); without expect is unchanged
 test('reserveHandoff: stale expect fences without mutating; no expect is unchanged', () => {
   const { root, runId } = seed();

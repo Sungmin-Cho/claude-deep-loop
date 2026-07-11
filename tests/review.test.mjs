@@ -161,6 +161,7 @@ test('recordReviewOutcome rejects caller-supplied source/workstream/point metada
   const repA = wsReport(root, '.claude/worktrees/wa', 'a-review.md');
   for (const forbidden of [
     { workstreamId: wsA }, { point: 'plan' }, { source: 'deep-review-approve' }, { reviewSource: 'recorded-path' },
+    { attemptId: 'caller-spoof' }, { attempt_id: 'caller-spoof' }, { 'attempt-id': 'caller-spoof' },
   ]) {
     assert.throws(() => recordReviewOutcome(root, runId, {
       episodeId: r.checkerEpisodeId, verdict: 'APPROVE', proof: { report: repA }, fence: f, ...forbidden,
@@ -504,6 +505,7 @@ test('proof-capable checker identity: import rejects a pending legacy standalone
     reviewer_id: 'standalone',
     checker_episode_id: f.checkerEpisodeId,
     target_maker: f.makerId,
+    attempt_id: 'legacy-attempt',
     verdict: 'APPROVE',
     report_body: '# legacy inline review\n\nAPPROVE',
     artifacts: [{

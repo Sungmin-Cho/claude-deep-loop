@@ -1,7 +1,7 @@
 import { runStreamingProcess } from '../lib/streaming-process.mjs';
 
 const WORKER_REQUEST_BYTES = 2 * 1024 * 1024;
-const WORKER_RESULT_BYTES = 512 * 1024;
+const WORKER_RESULT_BYTES = 1024 * 1024;
 
 async function readRequest() {
   const chunks = [];
@@ -37,6 +37,7 @@ function decodeEntry(value) {
     ...(Object.hasOwn(value, 'env') ? { env: value.env } : {}),
     shell: value.shell,
     usageOutputKind: value.usageOutputKind,
+    captureFinalMessage: value.captureFinalMessage === true,
     stdin: decodedStdin,
   };
 }
@@ -56,7 +57,13 @@ try {
   result = { ok: false, reason: boundedMessage(error) };
 }
 
-let encoded = JSON.stringify(result);
+const transportResult = result?.ok === true && Buffer.isBuffer(result.finalMessage)
+  ? { ...result, finalMessage: undefined, finalMessageBase64: result.finalMessage.toString('base64') }
+  : result;
+if (transportResult && Object.hasOwn(transportResult, 'finalMessage') && transportResult.finalMessage === undefined) {
+  delete transportResult.finalMessage;
+}
+let encoded = JSON.stringify(transportResult);
 if (Buffer.byteLength(encoded, 'utf8') > WORKER_RESULT_BYTES) {
   encoded = JSON.stringify({ ok: false, reason: 'worker-result-overflow' });
 }

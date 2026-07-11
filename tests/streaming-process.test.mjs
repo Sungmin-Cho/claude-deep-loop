@@ -207,6 +207,78 @@ test('runStreamingProcess feeds Codex JSONL incrementally without returning raw 
   assert.equal(Object.hasOwn(result, 'stdout'), false);
 });
 
+test('streaming async and sync paths opt into exact Codex final-message bytes', async () => {
+  const { runStreamingProcess, runStreamingProcessSync } = await streamingModule();
+  const entry = {
+    bin: process.execPath,
+    argv: [fixture, 'codex-final-message'],
+    usageOutputKind: 'codex-jsonl',
+    captureFinalMessage: true,
+    shell: false,
+  };
+  const expected = Buffer.from('  exact review bytes: 한글🙂\n');
+  const asyncResult = await runStreamingProcess(entry, { timeoutMs: 2_000 });
+  const syncResult = runStreamingProcessSync(entry, { timeoutMs: 2_000 });
+
+  for (const result of [asyncResult, syncResult]) {
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(Buffer.isBuffer(result.finalMessage), true);
+    assert.equal(result.finalMessage.equals(expected), true);
+    assert.deepEqual(result.usage, {
+      num_turns: 1,
+      tokens: 12,
+      input_tokens: 5,
+      output_tokens: 7,
+    });
+  }
+});
+
+test('sync worker rejects non-canonical or malformed final-message transport', async () => {
+  const { runStreamingProcessSync } = await streamingModule();
+  const base = { status: 0, signal: null, stderr: '' };
+  const usage = { num_turns: 1, tokens: 2, input_tokens: 1, output_tokens: 1 };
+  for (const stdout of [
+    JSON.stringify({ ok: true, usage, finalMessageBase64: '@@@' }),
+    JSON.stringify({ ok: true, usage, finalMessageBase64: Buffer.from('x').toString('base64'), finalMessage: 'spoof' }),
+  ]) {
+    const result = runStreamingProcessSync({
+      bin: process.execPath,
+      argv: [],
+      usageOutputKind: 'codex-jsonl',
+      captureFinalMessage: true,
+    }, { spawnSyncImpl: () => ({ ...base, stdout }) });
+    assert.deepEqual(result, { ok: false, reason: 'worker-protocol-invalid' });
+  }
+});
+
+test('sync worker bound accommodates the maximum final message plus maximum stderr diagnostic', async () => {
+  const { runStreamingProcessSync } = await streamingModule();
+  const finalMessage = Buffer.alloc(STREAM_LIMITS.finalMessageBytes, 0x61);
+  const stderr = 'e'.repeat(STREAM_LIMITS.stderrBytes);
+  const result = runStreamingProcessSync({
+    bin: process.execPath,
+    argv: [],
+    usageOutputKind: 'codex-jsonl',
+    captureFinalMessage: true,
+  }, {
+    spawnSyncImpl: () => ({
+      status: 0,
+      signal: null,
+      stderr: '',
+      stdout: JSON.stringify({
+        ok: true,
+        usage: { num_turns: 1, tokens: 2, input_tokens: 1, output_tokens: 1 },
+        finalMessageBase64: finalMessage.toString('base64'),
+        stderr,
+        stderrTruncated: true,
+      }),
+    }),
+  });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.finalMessage.equals(finalMessage), true);
+  assert.equal(Buffer.byteLength(result.stderr), STREAM_LIMITS.stderrBytes);
+});
+
 test('runStreamingProcessSync uses one dedicated Node worker and one runtime spawn', async () => {
   const { runStreamingProcessSync } = await streamingModule();
   assert.equal(typeof runStreamingProcessSync, 'function');
@@ -322,7 +394,7 @@ test('runStreamingProcessSync bounds worker request and result protocols before 
     spawnSyncImpl: () => ({
       status: 0,
       signal: null,
-      stdout: 'x'.repeat(513 * 1024),
+      stdout: 'x'.repeat(1025 * 1024),
       stderr: '',
     }),
   });

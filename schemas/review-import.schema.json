@@ -4,12 +4,13 @@
   "title": "deep-loop bounded independent review import",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "reviewer_id", "checker_episode_id", "target_maker", "verdict", "report_body", "artifacts"],
+  "required": ["schema_version", "reviewer_id", "checker_episode_id", "target_maker", "attempt_id", "verdict", "report_body", "artifacts"],
   "properties": {
     "schema_version": { "const": "1.0" },
     "reviewer_id": { "type": "string", "minLength": 1 },
     "checker_episode_id": { "type": "string", "minLength": 1 },
     "target_maker": { "type": "string", "minLength": 1 },
+    "attempt_id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" },
     "verdict": { "type": "string", "enum": ["APPROVE", "REQUEST_CHANGES", "CONCERN"] },
     "report_body": { "type": "string", "maxLength": 262144 },
     "artifacts": {

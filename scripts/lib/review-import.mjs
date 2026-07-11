@@ -10,18 +10,21 @@ import {
 } from './fs-safe.mjs';
 import { runDir } from './state.mjs';
 import { REVIEW_IMPORT_MAX_BYTES } from './bounded-input.mjs';
+import { canonicalProjectRoot } from './project-root.mjs';
+import { sessionRuntime } from './runtime.mjs';
 
 export const REVIEW_REPORT_BODY_MAX_BYTES = 262_144;
 export const REVIEW_IMPORT_MAX_ARTIFACTS = 256;
 
 const TOP_LEVEL_KEYS = Object.freeze([
   'schema_version', 'reviewer_id', 'checker_episode_id', 'target_maker',
-  'verdict', 'report_body', 'artifacts',
+  'attempt_id', 'verdict', 'report_body', 'artifacts',
 ]);
 const ARTIFACT_KEYS = Object.freeze(['path', 'sha256']);
 const REVIEWERS = new Set(['deep-review', 'subagent-checker']);
 const VERDICTS = new Set(['APPROVE', 'REQUEST_CHANGES', 'CONCERN']);
 const SHA256 = /^[0-9a-f]{64}$/;
+export const REVIEW_ATTEMPT_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 // Closed proof identity set shared by record/import, routing, and finish.
 // Legacy `standalone` (and unknown plugins) may remain in persisted history, but can never create proof.
@@ -68,6 +71,7 @@ export function parseReviewImport(raw) {
   if (!nonEmptyString(value.reviewer_id)) throw new Error('REVIEW_IMPORT_REVIEWER_INVALID: reviewer_id must be a non-empty string');
   if (!nonEmptyString(value.checker_episode_id)) throw new Error('REVIEW_IMPORT_CHECKER_INVALID: checker_episode_id must be a non-empty string');
   if (!nonEmptyString(value.target_maker)) throw new Error('REVIEW_IMPORT_TARGET_INVALID: target_maker must be a non-empty string');
+  if (!REVIEW_ATTEMPT_ID.test(value.attempt_id || '')) throw new Error('REVIEW_IMPORT_ATTEMPT_INVALID: attempt_id must be a bounded safe identifier');
   if (!VERDICTS.has(value.verdict)) throw new Error(`REVIEW_IMPORT_VERDICT_INVALID: ${String(value.verdict)}`);
   if (typeof value.report_body !== 'string') throw new Error('REVIEW_IMPORT_BODY_INVALID: report_body must be a string');
   if (Buffer.byteLength(value.report_body, 'utf8') > REVIEW_REPORT_BODY_MAX_BYTES) {
@@ -110,6 +114,41 @@ function normalizedMakerArtifacts(maker) {
   return normalized;
 }
 
+export function deriveReviewArtifactContract(root, maker, workstream) {
+  const recorded = normalizedMakerArtifacts(maker).sort();
+  if (recorded.length > REVIEW_IMPORT_MAX_ARTIFACTS) {
+    throw new Error(`REVIEW_IMPORT_MAKER_ARTIFACT_INVALID: artifacts exceeds ${REVIEW_IMPORT_MAX_ARTIFACTS}`);
+  }
+  const worktree = normalizePortableRelativePath(workstream?.worktree);
+  if (!worktree) throw new Error('REVIEW_IMPORT_ARTIFACT_CONTAINMENT: reviewed worktree binding is invalid');
+  const worktreeAbs = resolve(root, worktree);
+  return recorded.map((path) => {
+    const real = containedRealFileWithin(root, path, worktreeAbs);
+    if (!real) throw new Error(`REVIEW_IMPORT_ARTIFACT_CONTAINMENT: ${path}`);
+    return { path, sha256: sha256File(real) };
+  });
+}
+
+const canonicalArtifacts = (artifacts) => {
+  if (!Array.isArray(artifacts) || artifacts.length > REVIEW_IMPORT_MAX_ARTIFACTS) {
+    throw new Error('REVIEW_IMPORT_CLAIM_ARTIFACT_INVALID: persisted claim artifacts are invalid');
+  }
+  const seen = new Set();
+  const result = artifacts.map((artifact) => {
+    if (artifact == null || typeof artifact !== 'object' || Array.isArray(artifact)
+      || !exactKeys(artifact, ARTIFACT_KEYS)) {
+      throw new Error('REVIEW_IMPORT_CLAIM_ARTIFACT_INVALID: persisted claim artifact shape is invalid');
+    }
+    const path = normalizePortableRelativePath(artifact.path);
+    if (!path || seen.has(path) || !SHA256.test(artifact.sha256 || '')) {
+      throw new Error('REVIEW_IMPORT_CLAIM_ARTIFACT_INVALID: persisted claim artifact identity is invalid');
+    }
+    seen.add(path);
+    return { path, sha256: artifact.sha256 };
+  });
+  return result.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
+};
+
 export function validateImportedEvidence(root, loop, input, { checker, maker, workstream } = {}) {
   if (!isProofCapableChecker(checker)) throw new Error(`REVIEW_IMPORT_REVIEWER_INVALID: unsupported checker plugin ${String(checker?.plugin)}`);
   if (input.reviewer_id !== checker.plugin) throw new Error(`REVIEW_IMPORT_REVIEWER_MISMATCH: ${input.reviewer_id} != ${checker.plugin}`);
@@ -118,24 +157,53 @@ export function validateImportedEvidence(root, loop, input, { checker, maker, wo
     throw new Error(`REVIEW_IMPORT_TARGET_MISMATCH: ${input.target_maker} != ${checker.target_maker}`);
   }
 
-  const recorded = normalizedMakerArtifacts(maker);
-  const imported = input.artifacts.map(artifact => artifact.path);
-  if (recorded.length !== imported.length || recorded.some(path => !imported.includes(path))) {
-    throw new Error('REVIEW_IMPORT_ARTIFACT_SET_MISMATCH: imported artifacts must equal the terminal maker artifact set');
+  const claim = checker.review_claim;
+  if (checker.status !== 'in_progress' || claim == null || typeof claim !== 'object' || Array.isArray(claim)) {
+    throw new Error('REVIEW_IMPORT_CHECKER_NOT_CLAIMED: checker must carry an in-progress host claim');
+  }
+  if (input.attempt_id !== checker.attempt_id || input.attempt_id !== claim.attempt_id) {
+    throw new Error(`REVIEW_IMPORT_ATTEMPT_MISMATCH: ${input.attempt_id} != ${String(checker.attempt_id)}`);
+  }
+  if (claim.run_id !== loop.run_id || claim.reviewer_id !== checker.plugin
+    || claim.checker_episode_id !== checker.id || claim.target_maker !== maker.id
+    || claim.workstream_id !== checker.workstream_id || claim.point !== checker.point) {
+    throw new Error('REVIEW_IMPORT_CLAIM_BINDING_MISMATCH: persisted checker binding changed');
+  }
+  if (claim.project_root !== canonicalProjectRoot(root)
+    || claim.project_root !== canonicalProjectRoot(loop.project?.root)) {
+    throw new Error('REVIEW_IMPORT_CLAIM_ROOT_MISMATCH: canonical project root changed');
+  }
+  if (claim.runtime !== sessionRuntime(loop)) {
+    throw new Error('REVIEW_IMPORT_CLAIM_RUNTIME_MISMATCH: durable runtime changed');
+  }
+  const lease = loop.session_chain?.lease || {};
+  if (claim.lease_owner !== lease.owner_run_id || claim.lease_generation !== lease.generation) {
+    throw new Error('REVIEW_IMPORT_CLAIM_LEASE_MISMATCH: claim lease changed');
   }
 
-  const worktreeAbs = resolve(root, workstream.worktree);
+  const currentContract = deriveReviewArtifactContract(root, maker, workstream);
+  const importedContract = canonicalArtifacts(input.artifacts);
+  const claimContract = canonicalArtifacts(Array.isArray(claim.artifacts) ? claim.artifacts : []);
+  const paths = values => values.map(value => value.path);
+  if (JSON.stringify(paths(currentContract)) !== JSON.stringify(paths(importedContract))
+    || JSON.stringify(paths(claimContract)) !== JSON.stringify(paths(importedContract))) {
+    throw new Error('REVIEW_IMPORT_ARTIFACT_SET_MISMATCH: imported artifacts must equal the terminal maker artifact set');
+  }
+  if (JSON.stringify(currentContract) !== JSON.stringify(importedContract)
+    || JSON.stringify(claimContract) !== JSON.stringify(importedContract)) {
+    throw new Error('REVIEW_IMPORT_ARTIFACT_HASH_MISMATCH: imported artifacts changed after claim');
+  }
+
   for (const artifact of input.artifacts) {
-    const real = containedRealFileWithin(root, artifact.path, worktreeAbs);
-    if (!real) throw new Error(`REVIEW_IMPORT_ARTIFACT_CONTAINMENT: ${artifact.path}`);
-    const actual = sha256File(real);
-    if (actual !== artifact.sha256) throw new Error(`REVIEW_IMPORT_ARTIFACT_HASH_MISMATCH: ${artifact.path}`);
+    const current = currentContract.find(value => value.path === artifact.path);
+    if (!current || current.sha256 !== artifact.sha256) throw new Error(`REVIEW_IMPORT_ARTIFACT_HASH_MISMATCH: ${artifact.path}`);
   }
   return {
     reviewerId: checker.plugin,
     checkerEpisodeId: checker.id,
     targetMaker: maker.id,
-    artifacts: input.artifacts.map(artifact => ({ ...artifact })),
+    attemptId: checker.attempt_id,
+    artifacts: claimContract,
   };
 }
 
@@ -184,6 +252,7 @@ export function materializeImportedReview(root, runId, input, binding, { now } =
         reviewer_id: binding.reviewerId,
         checker_episode_id: binding.checkerEpisodeId,
         target_maker: binding.targetMaker,
+        attempt_id: binding.attemptId,
         artifacts: binding.artifacts.map(artifact => ({ ...artifact })),
       },
     },
@@ -239,6 +308,7 @@ export function verifyImportedEnvelope(root, runId, evidence, lockedBinding) {
       || binding?.reviewer_id !== lockedBinding.reviewerId
       || binding?.checker_episode_id !== lockedBinding.checkerEpisodeId
       || binding?.target_maker !== lockedBinding.targetMaker
+      || binding?.attempt_id !== lockedBinding.attemptId
       || !sameArtifacts(binding?.artifacts, lockedBinding.artifacts)
       || opened.payload?.verdict !== evidence.input.verdict
       || opened.payload?.report_body !== evidence.input.report_body) {

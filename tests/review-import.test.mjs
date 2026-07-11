@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
-import { dispatchReview, importReviewOutcome, recordReviewOutcome } from '../scripts/lib/review.mjs';
+import { claimIndependentReview, dispatchReview, importReviewOutcome, recordReviewOutcome } from '../scripts/lib/review.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import { REVIEW_IMPORT_MAX_BYTES } from '../scripts/lib/bounded-input.mjs';
@@ -40,6 +40,7 @@ function validImport(overrides = {}) {
     reviewer_id: 'deep-review',
     checker_episode_id: '002-deep-review',
     target_maker: '001-deep-work',
+    attempt_id: 'attempt-01',
     verdict: 'APPROVE',
     report_body: '# independent review\n\nAPPROVE',
     artifacts: [{ path: '.claude/worktrees/w/artifact.txt', sha256: SHA0 }],
@@ -47,7 +48,7 @@ function validImport(overrides = {}) {
   };
 }
 
-function fixture({ runtime = 'codex', detected = { 'deep-review': true }, artifactRel = '.claude/worktrees/w/artifact.txt', artifactBytes = Buffer.from('maker artifact') } = {}) {
+function fixture({ runtime = 'codex', detected = { 'deep-review': true }, artifactRel = '.claude/worktrees/w/artifact.txt', artifactBytes = Buffer.from('maker artifact'), claim = true } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'dl-review-import-'));
   const { runId } = initRun(root, { runtime, goal: 'g', detected, now: new Date('2026-07-10T00:00:00Z') });
   const fence = { owner: runId, generation: 1, intent: 'business' };
@@ -64,10 +65,13 @@ function fixture({ runtime = 'codex', detected = { 'deep-review': true }, artifa
   const checkerId = dispatchReview(root, runId, {
     point: 'implementation', workstreamId: ws, detected, independentSubagent: detected['deep-review'] !== true, fence,
   }).checkerEpisodeId;
+  if (claim) claimIndependentReview(root, runId, {
+    episodeId: checkerId, fence, attemptIdFactory: () => 'attempt-01', now: FIXED_NOW,
+  });
   const reviewerId = readState(root, runId).data.episodes.find(e => e.id === checkerId).plugin;
   const input = {
     schema_version: '1.0', reviewer_id: reviewerId, checker_episode_id: checkerId,
-    target_maker: makerId, verdict: 'APPROVE', report_body: '# independent review\n\nAPPROVE',
+    target_maker: makerId, attempt_id: 'attempt-01', verdict: 'APPROVE', report_body: '# independent review\n\nAPPROVE',
     artifacts: [{ path: artifactRel.replaceAll('\\', '/'), sha256: sha256(artifactBytes) }],
   };
   return { root, runId, fence, worktree, ws, makerId, checkerId, artifactRel, input };
@@ -77,7 +81,9 @@ test('review import schema artifact is exact and closed', () => {
   const schema = JSON.parse(readFileSync(join(HERE, '..', 'schemas', 'review-import.schema.json'), 'utf8'));
   assert.equal(schema.type, 'object');
   assert.equal(schema.additionalProperties, false);
-  assert.deepEqual(schema.required, ['schema_version', 'reviewer_id', 'checker_episode_id', 'target_maker', 'verdict', 'report_body', 'artifacts']);
+  assert.deepEqual(schema.required, ['schema_version', 'reviewer_id', 'checker_episode_id', 'target_maker', 'attempt_id', 'verdict', 'report_body', 'artifacts']);
+  assert.equal(schema.properties.attempt_id.maxLength, 128);
+  assert.equal(schema.properties.attempt_id.pattern, '^[A-Za-z0-9][A-Za-z0-9._-]*$');
   assert.equal(schema.properties.schema_version.const, '1.0');
   assert.deepEqual(schema.properties.verdict.enum, ['APPROVE', 'REQUEST_CHANGES', 'CONCERN']);
   assert.equal(schema.properties.report_body.maxLength, REVIEW_REPORT_BODY_MAX_BYTES);
@@ -113,6 +119,7 @@ test('parseReviewImport manually enforces exact keys, schema, types, enums, and 
     ['reviewer', JSON.stringify(validImport({ reviewer_id: '' })), /REVIEW_IMPORT_REVIEWER_INVALID/],
     ['checker', JSON.stringify(validImport({ checker_episode_id: 1 })), /REVIEW_IMPORT_CHECKER_INVALID/],
     ['maker', JSON.stringify(validImport({ target_maker: null })), /REVIEW_IMPORT_TARGET_INVALID/],
+    ['attempt', JSON.stringify(validImport({ attempt_id: '../bad' })), /REVIEW_IMPORT_ATTEMPT_INVALID/],
     ['verdict', JSON.stringify(validImport({ verdict: 'approved' })), /REVIEW_IMPORT_VERDICT_INVALID/],
     ['body', JSON.stringify(validImport({ report_body: 1 })), /REVIEW_IMPORT_BODY_INVALID/],
     ['artifacts', JSON.stringify(validImport({ artifacts: null })), /REVIEW_IMPORT_ARTIFACTS_INVALID/],
@@ -152,6 +159,7 @@ test('importReviewOutcome materializes a content-addressed M3 envelope and commi
   assert.equal(envelope.envelope.generated_at, FIXED_NOW);
   assert.deepEqual(envelope.envelope.provenance.review_binding, {
     reviewer_id: 'deep-review', checker_episode_id: f.checkerId, target_maker: f.makerId,
+    attempt_id: 'attempt-01',
     artifacts: f.input.artifacts,
   });
   assert.deepEqual(envelope.payload, { verdict: 'APPROVE', report_body: f.input.report_body });
@@ -168,6 +176,7 @@ test('importReviewOutcome materializes a content-addressed M3 envelope and commi
   assert.deepEqual(outcomes[0].data, {
     episodeId: f.checkerId, verdict: 'APPROVE', workstream_id: f.ws, point: 'implementation',
     target_maker: f.makerId, reviewer_id: 'deep-review', review_source: 'imported-stdin',
+    attempt_id: 'attempt-01',
     report: result.report, report_sha256: result.report_sha256,
   });
   assert.throws(() => importReviewOutcome(f.root, f.runId, { raw: JSON.stringify(f.input), fence: f.fence, now: FIXED_NOW }), /REVIEW_ALREADY_RECORDED/);
@@ -207,7 +216,7 @@ test('import rejects checker/target/maker parity and exact artifact set/hash mis
     const f = fixture();
     const before = eventLog(f.root, f.runId).length;
     assert.throws(() => importReviewOutcome(f.root, f.runId, { raw: JSON.stringify(change(f)), fence: f.fence, now: FIXED_NOW }), error, label);
-    assert.equal(readState(f.root, f.runId).data.episodes.find(e => e.id === f.checkerId).status, 'pending', label);
+    assert.equal(readState(f.root, f.runId).data.episodes.find(e => e.id === f.checkerId).status, 'in_progress', label);
     assert.equal(eventLog(f.root, f.runId).length, before, label);
   }
 
@@ -218,7 +227,7 @@ test('import rejects checker/target/maker parity and exact artifact set/hash mis
   assert.throws(() => importReviewOutcome(parity.root, parity.runId, { raw: JSON.stringify(parity.input), fence: parity.fence, now: FIXED_NOW }), /REVIEW_MAKER_BINDING_MISMATCH/);
 });
 
-test('import requires a done maker and a pending, unblocked, target-bound checker', () => {
+test('import requires a done maker and an in-progress claimed, unblocked, target-bound checker', () => {
   for (const [label, mutate, error] of [
     ['maker role', (s, f) => { s.episodes.find(e => e.id === f.makerId).role = 'checker'; }, /REVIEW_TARGET_MAKER_INVALID/],
     ['maker status', (s, f) => { s.episodes.find(e => e.id === f.makerId).status = 'in_progress'; }, /REVIEW_TARGET_MAKER_NOT_DONE/],
@@ -231,8 +240,7 @@ test('import requires a done maker and a pending, unblocked, target-bound checke
 });
 
 test('import rejects artifact files outside the reviewed worktree and symlink escapes', () => {
-  const outside = fixture({ artifactRel: 'outside.txt' });
-  assert.throws(() => importReviewOutcome(outside.root, outside.runId, { raw: JSON.stringify(outside.input), fence: outside.fence, now: FIXED_NOW }), /REVIEW_IMPORT_ARTIFACT_CONTAINMENT/);
+  assert.throws(() => fixture({ artifactRel: 'outside.txt' }), /REVIEW_IMPORT_ARTIFACT_CONTAINMENT/);
 
   const root = mkdtempSync(join(tmpdir(), 'dl-review-symlink-'));
   const external = join(mkdtempSync(join(tmpdir(), 'dl-review-external-')), 'secret.txt');
@@ -245,8 +253,9 @@ test('import rejects artifact files outside the reviewed worktree and symlink es
   const makerId = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws, expectedArtifacts: [artifactRel], fence }).id;
   recordEpisode(root, runId, makerId, { status: 'done', artifacts: [artifactRel], fence });
   const checkerId = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws, detected: { 'deep-review': true }, fence }).checkerEpisodeId;
-  const input = validImport({ reviewer_id: 'deep-review', checker_episode_id: checkerId, target_maker: makerId, artifacts: [{ path: artifactRel, sha256: sha256('secret') }] });
-  assert.throws(() => importReviewOutcome(root, runId, { raw: JSON.stringify(input), fence, now: FIXED_NOW }), /REVIEW_IMPORT_ARTIFACT_CONTAINMENT/);
+  assert.throws(() => claimIndependentReview(root, runId, {
+    episodeId: checkerId, fence, attemptIdFactory: () => 'attempt-01',
+  }), /REVIEW_IMPORT_ARTIFACT_CONTAINMENT/);
 });
 
 test('import refuses a symlinked run/reviews directory before atomic materialization', () => {
@@ -291,7 +300,7 @@ test('stale lease leaves at most an unreferenced envelope and never checker proo
   assert.throws(() => importReviewOutcome(f.root, f.runId, {
     raw: JSON.stringify(f.input), fence: { ...f.fence, generation: 9 }, now: FIXED_NOW,
   }), /LEASE_FENCED/);
-  assert.equal(readState(f.root, f.runId).data.episodes.find(e => e.id === f.checkerId).status, 'pending');
+  assert.equal(readState(f.root, f.runId).data.episodes.find(e => e.id === f.checkerId).status, 'in_progress');
   assert.equal(eventLog(f.root, f.runId).length, before);
   assert.equal(readdirSync(join(runDir(f.root, f.runId), 'reviews')).filter(n => n.endsWith('.json')).length, 1);
 });
@@ -312,7 +321,7 @@ test('locked error order keeps runtime/lease fencing ahead of source and termina
 
 test('record and import have exact terminal/breaker/point/comprehension parity and closed review sources', () => {
   for (const verdict of ['APPROVE', 'CONCERN', 'REQUEST_CHANGES']) {
-    const recorded = fixture();
+    const recorded = fixture({ claim: false });
     const imported = fixture();
     const report = `${recorded.worktree}/review.md`;
     writeFileSync(join(recorded.root, report), '# recorded review');
@@ -373,7 +382,7 @@ test('locked commit reopens the exact envelope and rejects post-materialization 
   const result = await proc.done;
   assert.equal(result.code, 1);
   assert.match(result.stderr, /REVIEW_REPORT_HASH_MISMATCH/);
-  assert.equal(readState(f.root, f.runId).data.episodes.find(e => e.id === f.checkerId).status, 'pending');
+  assert.equal(readState(f.root, f.runId).data.episodes.find(e => e.id === f.checkerId).status, 'in_progress');
 });
 
 test('locked commit runtime snapshot is fenced if stored runtime changes after envelope creation', async () => {
@@ -387,7 +396,7 @@ test('locked commit runtime snapshot is fenced if stored runtime changes after e
   const result = await proc.done;
   assert.equal(result.code, 3);
   assert.match(result.stderr, /RUNTIME_FENCED/);
-  assert.equal(readState(f.root, f.runId).data.episodes.find(e => e.id === f.checkerId).status, 'pending');
+  assert.equal(readState(f.root, f.runId).data.episodes.find(e => e.id === f.checkerId).status, 'in_progress');
 });
 
 test('appendAnchored root-bound read fences a copied-root identity change before review proof', async () => {
@@ -405,12 +414,12 @@ test('appendAnchored root-bound read fences a copied-root identity change before
   assert.equal(result.code, 3);
   assert.match(result.stderr, /PROJECT_ROOT_FENCED/);
   const persisted = JSON.parse(readFileSync(loopPath, 'utf8'));
-  assert.equal(persisted.episodes.find(e => e.id === f.checkerId).status, 'pending');
+  assert.equal(persisted.episodes.find(e => e.id === f.checkerId).status, 'in_progress');
 });
 
 test('CLI import requires --stdin, rejects caller metadata/runtime, and classifies invalid/fence errors', async () => {
   for (const extra of [
-    ['--source', 'spoof'], ['--workstream', 'spoof'], ['--point', 'spoof'], ['--runtime', 'codex'],
+    ['--source', 'spoof'], ['--workstream', 'spoof'], ['--point', 'spoof'], ['--runtime', 'codex'], ['--attempt-id', 'spoof'],
   ]) {
     const f = fixture();
     const result = await spawnImport(f.root, f.runId, JSON.stringify(f.input), extra).done;

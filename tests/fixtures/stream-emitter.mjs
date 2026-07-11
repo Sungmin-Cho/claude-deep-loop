@@ -66,6 +66,16 @@ if (mode === 'close-stdin-valid') {
       await new Promise((resolve) => setImmediate(resolve));
     }
   }
+} else if (mode === 'codex-final-message') {
+  const message = '  exact review bytes: 한글🙂\n';
+  const events = [
+    `${JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: message } })}\n`,
+    `${JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 5, output_tokens: 7 } })}\n`,
+  ];
+  const bytes = Buffer.from(events.join(''));
+  for (let offset = 0; offset < bytes.length; offset += 3) {
+    if (!process.stdout.write(bytes.subarray(offset, offset + 3))) await once(process.stdout, 'drain');
+  }
 } else if (mode === 'count-once') {
   const [counterPath] = args;
   appendFileSync(counterPath, 'spawned\n');

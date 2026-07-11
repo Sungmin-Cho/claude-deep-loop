@@ -131,6 +131,25 @@ test('recordCost rejects negative / non-finite values', () => {
   assert.throws(() => recordCost(root, 'R', { turns: 1, tokens: Infinity }), /INVALID_COST/);
 });
 
+test('recordCost records one known checker turn on a paused run only through the matching accounting fence', () => {
+  const { root, runId } = floorRun();
+  const { data } = readState(root, runId);
+  data.status = 'paused';
+  data.pause_reason = 'consecutive-request-changes';
+  writeState(root, runId, data);
+  assert.doesNotThrow(() => recordCost(root, runId, {
+    turns: 1,
+    tokens: 12,
+    fence: { owner: runId, generation: 1, intent: 'accounting' },
+  }));
+  assert.equal(readState(root, runId).data.budget.spent, 1);
+  assert.throws(() => recordCost(root, runId, {
+    turns: 1,
+    tokens: 12,
+    fence: { owner: runId, generation: 1, intent: 'business' },
+  }), /LEASE_FENCED: RUN_PAUSED/);
+});
+
 test('reconcileBudget detects event-log suffix truncation', () => {
   const root = seedRun();
   recordCost(root, 'R', { turns: 2, tokens: 0 });
