@@ -13,12 +13,18 @@ export function createDirectoryJunction(target, link, {
   symlink(target, link, platform === 'win32' ? 'junction' : 'dir');
 }
 
+export function createFileSymlink(target, link, {
+  symlink = symlinkSync,
+} = {}) {
+  symlink(target, link, 'file');
+}
+
 export function createFileSymlinkOrSkip(testContext, target, link, {
   platform = process.platform,
   symlink = symlinkSync,
 } = {}) {
   try {
-    symlink(target, link, 'file');
+    createFileSymlink(target, link, { symlink });
     return true;
   } catch (error) {
     if (platform === 'win32' && error?.code === 'EPERM') {

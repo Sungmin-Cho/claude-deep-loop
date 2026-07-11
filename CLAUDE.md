@@ -25,7 +25,7 @@ The kernel **never calls sibling skills as functions** — it returns descriptor
 - `scripts/deep-loop.mjs` — CLI dispatcher (the **only** state-change boundary). Subcommands: `validate · detect-plugins · recipe-match · init-run · state get/patch · next-action · tick · lease · workstream · episode (+ abandon) · review · handoff · respawn · session-profile set · adapter resolve · budget · comprehension · breaker · finish`.
 - `scripts/lib/*.mjs` (23 modules) — `state · integrity · budget · breaker · comprehension · schema · envelope · slug · detect · recipes · initrun · log · lease · workspace · episode · review · adapters · next-action · handoff · respawn · finish · spawn-driver · session-profile`.
 - `scripts/hooks-impl/{precompact-handoff,drive-headless}.mjs` — hook glue + headless cron driver (the only lib importers outside the kernel).
-- `hooks/hooks.json` + `hooks/scripts/precompact-handoff.sh` — PreCompact safety-net (Bash 3.2).
+- `hooks/hooks.json` (static shell-free Node bootstrap) → `scripts/hooks-impl/precompact-handoff.mjs`; headless driver: `scripts/hooks-impl/drive-headless.mjs`.
 - `skills/deep-loop*/SKILL.md` (10) + `skills/deep-loop-workflow/references/*.md` — Execution plane.
 - `protocols/*.json` (deep-work/superpowers/standalone declarative adapters) · `recipes/*.json` (+ `automation/*.yml`) · `schemas/{loop-run,review-import}.schema.json`.
 - `tests/*.test.mjs` (`node --test`) · `docs/` · `integration/deep-suite.patch.md`.
@@ -50,7 +50,7 @@ node --test tests/<x>.test.mjs   # single file
 ```
 
 - **Determinism:** time-sensitive code takes an injectable `now` (ms or ISO). Tests pass a fixed `now` — never rely on `Date.now()` in a test that also seeds a fixed `created_at` (that was the original `orch-cli` date-flake).
-- **No external deps.** Durable state is JSON (no YAML parser). Hooks are Bash 3.2 (`set -Eeuo pipefail`; no `declare -A` / `${var,,}`).
+- **No external deps.** Durable state is JSON (no YAML parser). The PreCompact hook bootstrap is static, shell-free Node.
 - Add a failing test first; keep `npm test` green; one focused commit per change. Commit trailer: `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
 
 ## Conventions

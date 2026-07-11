@@ -1,11 +1,14 @@
 import {
   mkdirSync,
   rmSync,
-  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
 import { makeCodexPreflightReceipt } from '../../scripts/lib/budget.mjs';
+import {
+  createDirectoryJunction,
+  createFileSymlink,
+} from '../helpers/fs-fixtures.mjs';
 
 const WRITE_PROBE_PREFIX = 'DEEP_LOOP_CODEX_WRITE_PROBE=';
 
@@ -46,7 +49,7 @@ function materializeWriteProbe(probe, mode, outsideRoot) {
     case 'symlink': {
       const outside = join(outsideRoot, 'outside-sentinel');
       writeFileSync(outside, probe.nonce);
-      symlinkSync(outside, sentinel, 'file');
+      createFileSymlink(outside, sentinel);
       break;
     }
     case 'escape': {
@@ -54,7 +57,7 @@ function materializeWriteProbe(probe, mode, outsideRoot) {
       mkdirSync(outside, { recursive: true });
       writeFileSync(join(outside, probe.sentinel), probe.nonce);
       rmSync(probe.workspace, { recursive: true, force: true });
-      symlinkSync(outside, probe.workspace, 'dir');
+      createDirectoryJunction(outside, probe.workspace);
       break;
     }
     default:

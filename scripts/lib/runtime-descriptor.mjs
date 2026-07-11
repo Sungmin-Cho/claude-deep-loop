@@ -17,6 +17,7 @@ function escApple(s) { return String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\
 
 // PowerShell single-quote escaping: ' → '' (doubling).
 function psq(s) { return String(s).replace(/'/g, "''"); }
+function psArg(s) { return `'${psq(s)}'`; }
 
 function meArgv(model, effort) {
   const argv = [];
@@ -201,7 +202,7 @@ function buildClaudeEntries({
         platform: 'win32', bin: wtBin,
         argv: ['-d', root, runtimeBin, '-n', inner, resumePrompt, ...meArgv(model, effort)],
         nativeExecutableArgvIndices: [2], shell: false,
-        display: `${q(wtBin)} -d ${q(root)} ${q(runtimeBin)} -n ${inner} "${resumePrompt}"${meSh(q, model, effort)}`,
+        display: `& ${psArg(wtBin)} -d ${psArg(root)} ${psArg(runtimeBin)} -n ${psArg(inner)} ${psArg(resumePrompt)}${meSh(psArg, model, effort)}`,
       }
       : unavailableEntry('wt', 'trusted-native-identity-unavailable');
     const headless = runtimeBin

@@ -1,15 +1,30 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync, realpathSync } from 'node:fs';
-import { join, win32 } from 'node:path';
+import { mkdirSync, readFileSync, readdirSync, writeFileSync, realpathSync } from 'node:fs';
+import { dirname, join, relative, win32 } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { containedRealFile, normalizePortableRelativePath, pathWithin } from '../scripts/lib/fs-safe.mjs';
-import {
+import * as fsFixtures from './helpers/fs-fixtures.mjs';
+
+const {
   createDirectoryJunction,
   createFileSymlinkOrSkip,
   fixtureDir,
-} from './helpers/fs-fixtures.mjs';
+} = fsFixtures;
+
+const TESTS_ROOT = dirname(fileURLToPath(import.meta.url));
 
 function base() { return fixtureDir('dl-fss-'); }
+
+function discoveredTestFiles(directory) {
+  const paths = [];
+  for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) paths.push(...discoveredTestFiles(path));
+    else if (entry.isFile() && entry.name.endsWith('.test.mjs')) paths.push(path);
+  }
+  return paths;
+}
 
 test('containedRealFile returns the canonical path of an existing contained regular file', () => {
   const b = base();
@@ -86,4 +101,47 @@ test('file-symlink fixture skips only native Windows EPERM and rethrows every ot
   assert.throws(() => createFileSymlinkOrSkip(context, 'target', 'link', {
     platform: 'darwin', symlink: throwing(eperm),
   }), error => error === eperm);
+});
+
+test('base file-symlink fixture always requests a file link and propagates every failure', () => {
+  assert.equal(typeof fsFixtures.createFileSymlink, 'function');
+  let call = null;
+  fsFixtures.createFileSymlink('target', 'link', {
+    symlink(...args) { call = args; },
+  });
+  assert.deepEqual(call, ['target', 'link', 'file']);
+
+  const failure = Object.assign(new Error('denied'), { code: 'EPERM' });
+  assert.throws(() => fsFixtures.createFileSymlink('target', 'link', {
+    symlink() { throw failure; },
+  }), error => error === failure);
+});
+
+test('directory fixture requests a junction on Windows and a directory link elsewhere', () => {
+  const calls = [];
+  for (const platform of ['win32', 'linux']) {
+    createDirectoryJunction('target', 'link', {
+      platform,
+      symlink(...args) { calls.push(args); },
+    });
+  }
+  assert.deepEqual(calls, [
+    ['target', 'link', 'junction'],
+    ['target', 'link', 'dir'],
+  ]);
+});
+
+test('portable discovered tests centralize every symlink fixture syscall', () => {
+  const directSymlinkCall = new RegExp(`\\b${['symlink', 'Sync'].join('')}\\s*\\(`);
+  const paths = [
+    ...discoveredTestFiles(TESTS_ROOT),
+    join(TESTS_ROOT, 'fixtures', 'fake-codex-native.mjs'),
+  ];
+  const violations = [];
+  for (const path of paths) {
+    readFileSync(path, 'utf8').split('\n').forEach((line, index) => {
+      if (directSymlinkCall.test(line)) violations.push(`${relative(TESTS_ROOT, path)}:${index + 1}`);
+    });
+  }
+  assert.deepEqual(violations, []);
 });

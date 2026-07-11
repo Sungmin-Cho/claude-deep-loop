@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 const R = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SKILL_CMDS = ['/deep-loop', '/deep-loop-discover', '/deep-loop-triage', '/deep-loop-continue',
   '/deep-loop-handoff', '/deep-loop-resume', '/deep-loop-status', '/deep-loop-ack', '/deep-loop-finish'];
+const LIVE_SURFACE_DOCS = ['README.md', 'AGENTS.md', 'CLAUDE.md'];
 
 test('README lists all commands + architecture + safety', () => {
   const s = readFileSync(join(R, 'README.md'), 'utf8');
@@ -18,6 +19,20 @@ test('README lists all commands + architecture + safety', () => {
 test('README.ko mirrors commands', () => {
   const s = readFileSync(join(R, 'README.ko.md'), 'utf8');
   for (const c of SKILL_CMDS) assert.ok(s.includes(c), `README.ko missing ${c}`);
+});
+
+test('live-surface docs name the shell-free PreCompact implementation and never the deleted Bash wrapper', () => {
+  const staleWrapperReferences = [];
+  const missingImplementationReferences = [];
+  for (const path of LIVE_SURFACE_DOCS) {
+    const source = readFileSync(join(R, path), 'utf8');
+    if (source.includes('hooks/scripts/precompact-handoff.sh')) staleWrapperReferences.push(path);
+    if (!source.includes('scripts/hooks-impl/precompact-handoff.mjs')) missingImplementationReferences.push(path);
+  }
+  assert.deepEqual({ staleWrapperReferences, missingImplementationReferences }, {
+    staleWrapperReferences: [],
+    missingImplementationReferences: [],
+  });
 });
 
 test('CHANGELOG has a 0.1.0 entry', () => {

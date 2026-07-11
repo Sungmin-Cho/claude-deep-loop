@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync as rf, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync as rf, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -9,6 +9,7 @@ import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { runPreCompactHandoff } from '../scripts/hooks-impl/precompact-handoff.mjs';
 import { rollbackAndPause } from '../scripts/lib/respawn.mjs';
+import { createDirectoryJunction } from './helpers/fs-fixtures.mjs';
 const PROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PRECOMPACT_HOOK = join(PROOT, 'scripts', 'hooks-impl', 'precompact-handoff.mjs');
 const DRIVE_HOOK = join(PROOT, 'scripts', 'hooks-impl', 'drive-headless.mjs');
@@ -154,18 +155,10 @@ test('hooks.json contains exactly one exact static Node bootstrap and no shell e
   assert.doesNotMatch(command, /bash|\.sh\b|\$\{|\$\(|`/);
 });
 
-test('static bootstrap imports a root containing spaces through either root variable, including a symlink', (t) => {
+test('static bootstrap imports a root containing spaces through either root variable, including a symlink', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-bootstrap-'));
   const linkedRoot = join(root, 'plugin root with spaces');
-  try {
-    symlinkSync(PROOT, linkedRoot, process.platform === 'win32' ? 'junction' : 'dir');
-  } catch (error) {
-    if (process.platform === 'win32' && error?.code === 'EPERM') {
-      t.skip('Windows symlink privilege unavailable');
-      return;
-    }
-    throw error;
-  }
+  createDirectoryJunction(PROOT, linkedRoot);
 
   for (const rootName of ['CLAUDE_PLUGIN_ROOT', 'PLUGIN_ROOT']) {
     const result = runNode(['-e', BOOTSTRAP_SOURCE], {

@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import {
   existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
-  renameSync, rmdirSync, symlinkSync, writeFileSync,
+  renameSync, rmdirSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -21,6 +21,10 @@ import {
   REVIEW_REPORT_BODY_MAX_BYTES,
   parseReviewImport,
 } from '../scripts/lib/review-import.mjs';
+import {
+  createDirectoryJunction,
+  createFileSymlinkOrSkip,
+} from './helpers/fs-fixtures.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLI = join(HERE, '..', 'scripts', 'deep-loop.mjs');
@@ -239,9 +243,11 @@ test('import requires a done maker and an in-progress claimed, unblocked, target
   }
 });
 
-test('import rejects artifact files outside the reviewed worktree and symlink escapes', () => {
+test('import rejects artifact files outside the reviewed worktree', () => {
   assert.throws(() => fixture({ artifactRel: 'outside.txt' }), /REVIEW_IMPORT_ARTIFACT_CONTAINMENT/);
+});
 
+test('import rejects file-symlink escapes from the reviewed worktree', (t) => {
   const root = mkdtempSync(join(tmpdir(), 'dl-review-symlink-'));
   const external = join(mkdtempSync(join(tmpdir(), 'dl-review-external-')), 'secret.txt');
   writeFileSync(external, 'secret');
@@ -249,7 +255,8 @@ test('import rejects artifact files outside the reviewed worktree and symlink es
   const fence = { owner: runId, generation: 1, intent: 'business' };
   const worktree = '.claude/worktrees/w'; mkdirSync(join(root, worktree), { recursive: true });
   const ws = newWorkstream(root, runId, { title: 'w', branch: 'b', worktree, fence }).id;
-  const artifactRel = `${worktree}/link.txt`; symlinkSync(external, join(root, artifactRel));
+  const artifactRel = `${worktree}/link.txt`;
+  if (!createFileSymlinkOrSkip(t, external, join(root, artifactRel))) return;
   const makerId = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws, expectedArtifacts: [artifactRel], fence }).id;
   recordEpisode(root, runId, makerId, { status: 'done', artifacts: [artifactRel], fence });
   const checkerId = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws, detected: { 'deep-review': true }, fence }).checkerEpisodeId;
@@ -264,19 +271,19 @@ test('import refuses a symlinked run/reviews directory before atomic materializa
   const externalParent = mkdtempSync(join(tmpdir(), 'dl-review-run-external-'));
   const movedRun = join(externalParent, 'run');
   renameSync(originalRun, movedRun);
-  symlinkSync(movedRun, originalRun, 'dir');
+  createDirectoryJunction(movedRun, originalRun);
   assert.throws(() => importReviewOutcome(f.root, f.runId, { raw: JSON.stringify(f.input), fence: f.fence, now: FIXED_NOW }), /REVIEW_IMPORT_DIRECTORY_UNSAFE/);
 
   const g = fixture();
   const reviews = join(runDir(g.root, g.runId), 'reviews');
-  symlinkSync(mkdtempSync(join(tmpdir(), 'dl-review-dir-external-')), reviews, 'dir');
+  createDirectoryJunction(mkdtempSync(join(tmpdir(), 'dl-review-dir-external-')), reviews);
   assert.throws(() => importReviewOutcome(g.root, g.runId, { raw: JSON.stringify(g.input), fence: g.fence, now: FIXED_NOW }), /REVIEW_IMPORT_DIRECTORY_UNSAFE/);
 });
 
 test('import preserves canonical project-root binding through a symlink alias', () => {
   const f = fixture();
   const alias = `${f.root}-alias`;
-  symlinkSync(f.root, alias, 'dir');
+  createDirectoryJunction(f.root, alias);
   const result = importReviewOutcome(alias, f.runId, { raw: JSON.stringify(f.input), fence: f.fence, now: FIXED_NOW });
   assert.equal(result.terminal, 'approved');
   assert.equal(existsSync(join(f.root, result.report)), true);

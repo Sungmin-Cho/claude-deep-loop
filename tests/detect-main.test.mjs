@@ -6,12 +6,15 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
-  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import {
+  createDirectoryJunction,
+  createFileSymlinkOrSkip,
+} from './helpers/fs-fixtures.mjs';
 
 const PROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DETECTOR = join(PROOT, 'scripts', 'lib', 'detect-main.mjs');
@@ -46,35 +49,26 @@ function assertRunsMainOnce(result) {
   assert.deepEqual(result.stdout.trim().split('\n').filter(Boolean), ['main']);
 }
 
-function symlinkOrSkip(t, target, linkPath, type) {
-  try {
-    symlinkSync(target, linkPath, type);
-    return true;
-  } catch (error) {
-    if (process.platform === 'win32' && error?.code === 'EPERM') {
-      t.skip('Windows symlink privilege unavailable');
-      return false;
-    }
-    throw error;
-  }
-}
-
 test('detectMain runs a direct entrypoint under a plugin path containing spaces exactly once', () => {
   const root = mkdtempSync(join(tmpdir(), 'deep loop plugin '));
   const entrypoint = writeDetectorEntrypoint(join(root, 'plugin root with spaces'));
   assertRunsMainOnce(spawnSync(process.execPath, [entrypoint], { encoding: 'utf8' }));
 });
 
-test('detectMain canonicalizes a symlinked directory and entrypoint and runs exactly once', (t) => {
+test('detectMain canonicalizes a symlinked directory and runs exactly once', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-main-link-'));
   const realDirectory = join(root, 'real-plugin');
-  const entrypoint = writeDetectorEntrypoint(realDirectory);
+  writeDetectorEntrypoint(realDirectory);
   const linkedDirectory = join(root, 'linked plugin');
-  if (!symlinkOrSkip(t, realDirectory, linkedDirectory, process.platform === 'win32' ? 'junction' : 'dir')) return;
+  createDirectoryJunction(realDirectory, linkedDirectory);
   assertRunsMainOnce(spawnSync(process.execPath, [join(linkedDirectory, 'entrypoint.mjs')], { encoding: 'utf8' }));
+});
 
+test('detectMain canonicalizes a symlinked entrypoint and runs exactly once', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-main-file-link-'));
+  const entrypoint = writeDetectorEntrypoint(join(root, 'real-plugin'));
   const linkedEntrypoint = join(root, 'linked-entrypoint.mjs');
-  if (!symlinkOrSkip(t, entrypoint, linkedEntrypoint, 'file')) return;
+  if (!createFileSymlinkOrSkip(t, entrypoint, linkedEntrypoint)) return;
   assertRunsMainOnce(spawnSync(process.execPath, [linkedEntrypoint], { encoding: 'utf8' }));
 });
 
@@ -82,7 +76,7 @@ test('detectMain honors --preserve-symlinks-main and runs a symlinked main exact
   const root = mkdtempSync(join(tmpdir(), 'dl-main-preserve-'));
   const entrypoint = writeDetectorEntrypoint(join(root, 'real'));
   const linkedEntrypoint = join(root, 'preserved-main.mjs');
-  if (!symlinkOrSkip(t, entrypoint, linkedEntrypoint, 'file')) return;
+  if (!createFileSymlinkOrSkip(t, entrypoint, linkedEntrypoint)) return;
   assertRunsMainOnce(spawnSync(process.execPath, ['--preserve-symlinks-main', linkedEntrypoint], { encoding: 'utf8' }));
 });
 

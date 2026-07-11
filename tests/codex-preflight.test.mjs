@@ -11,7 +11,6 @@ import {
   realpathSync,
   renameSync,
   rmSync,
-  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -28,6 +27,10 @@ import {
   measuredUsage,
   parseWriteProbePrompt,
 } from './fixtures/fake-codex-native.mjs';
+import {
+  createDirectoryJunction,
+  createFileSymlinkOrSkip,
+} from './helpers/fs-fixtures.mjs';
 
 const EXECUTABLE = Object.freeze({
   runtime: 'codex',
@@ -74,6 +77,18 @@ function cacheFiles(cacheDir) {
   return existsSync(cacheDir)
     ? readdirSync(cacheDir).filter((name) => name.endsWith('.json')).sort()
     : [];
+}
+
+function fileSymlinksAvailableOrSkip(testContext) {
+  const root = mkdtempSync(join(tmpdir(), 'dl-codex-preflight-file-link-'));
+  const target = join(root, 'target');
+  const link = join(root, 'link');
+  writeFileSync(target, 'probe');
+  try {
+    return createFileSymlinkOrSkip(testContext, target, link);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 }
 
 function harness({ readResult, writeResult, writeMode = 'exact' } = {}) {
@@ -482,12 +497,11 @@ test('a different valid provisional record racing the same cache key is never ad
   assert.equal(existsSync(cachePath), false, 'no active authority may bind the in-memory competing receipts');
 });
 
-test('write probe accepts only one exact regular contained nonce sentinel', () => {
+test('write probe rejects missing, wrong, extra, and directory-escape sentinels', () => {
   const cases = [
     ['missing', 'sentinel-missing'],
     ['wrong', 'sentinel-wrong-bytes'],
     ['extra', 'sentinel-extra-artifact'],
-    ['symlink', 'sentinel-symlink'],
     ['escape', 'sentinel-containment-escape'],
   ];
 
@@ -508,6 +522,22 @@ test('write probe accepts only one exact regular contained nonce sentinel', () =
         `${writeMode}: failed workspaces must still be removed`,
       );
     }
+  }
+});
+
+test('write probe rejects a file-symlink sentinel when file links are supported', (t) => {
+  if (!fileSymlinksAvailableOrSkip(t)) return;
+  const h = harness({ writeMode: 'symlink' });
+  const result = h.call();
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'sentinel-symlink');
+  assert.deepEqual(result.measured_usage, [
+    measuredUsage(2, 3).usage,
+    measuredUsage(5, 7).usage,
+  ]);
+  assert.deepEqual(cacheFiles(h.cacheDir), []);
+  if (existsSync(h.preflightRoot)) {
+    assert.equal(readdirSync(h.preflightRoot).some((name) => name.startsWith('probe-')), false);
   }
 });
 
@@ -628,14 +658,14 @@ test('corrupt cache fails cache-invalid without rerun, deletion, or overwrite', 
   assert.equal(readFileSync(cachePath, 'utf8'), corrupt, 'corrupt authority must not be repaired or overwritten');
 });
 
-test('symlinked cache file fails cache-invalid even when its target contains valid bytes', () => {
+test('symlinked cache file fails cache-invalid even when its target contains valid bytes', (t) => {
   const h = harness();
   const first = h.call();
   const cachePath = join(h.cacheDir, `${first.cache_key}.json`);
   const outside = join(h.projectRoot, 'outside-cache.json');
   writeFileSync(outside, readFileSync(cachePath));
   rmSync(cachePath);
-  symlinkSync(outside, cachePath, 'file');
+  if (!createFileSymlinkOrSkip(t, outside, cachePath)) return;
 
   const result = h.call();
   assert.equal(result.ok, false);
@@ -652,11 +682,11 @@ test('symlinked cache directory and escaped preflight directory are never cache 
     if (attack === 'cache-directory-symlink') {
       const outside = join(h.projectRoot, 'outside-cache-directory');
       renameSync(h.cacheDir, outside);
-      symlinkSync(outside, h.cacheDir, 'dir');
+      createDirectoryJunction(outside, h.cacheDir);
     } else {
       const outside = join(h.projectRoot, 'outside-preflight-directory');
       renameSync(h.preflightRoot, outside);
-      symlinkSync(outside, h.preflightRoot, 'dir');
+      createDirectoryJunction(outside, h.preflightRoot);
     }
 
     const result = h.call();
@@ -693,7 +723,7 @@ test('resume skill must be absolute, readable, contained, regular, and non-symli
   assert.equal(unreadable.runner.calls.length, 0);
 });
 
-test('cache hit revalidation fails closed on executable drift and resume-skill replacement', () => {
+test('cache hit revalidation fails closed on executable drift and unreadable resume skill', () => {
   const executableDrift = harness();
   assert.equal(executableDrift.call().ok, true);
   writeFileSync(executableDrift.executable, 'replaced executable bytes');
@@ -702,17 +732,6 @@ test('cache hit revalidation fails closed on executable drift and resume-skill r
   assert.equal(result.reason, 'executable-invalid');
   assert.deepEqual(result.measured_usage, []);
   assert.equal(executableDrift.runner.calls.length, 2);
-
-  const skillDrift = harness();
-  assert.equal(skillDrift.call().ok, true);
-  const replacementTarget = `${skillDrift.resumeSkillPath}.replacement`;
-  renameSync(skillDrift.resumeSkillPath, replacementTarget);
-  symlinkSync(replacementTarget, skillDrift.resumeSkillPath, 'file');
-  result = skillDrift.call();
-  assert.equal(result.ok, false);
-  assert.equal(result.reason, 'resume-skill-invalid');
-  assert.deepEqual(result.measured_usage, []);
-  assert.equal(skillDrift.runner.calls.length, 2);
 
   const unreadableHit = harness();
   assert.equal(unreadableHit.call().ok, true);
@@ -725,6 +744,20 @@ test('cache hit revalidation fails closed on executable drift and resume-skill r
   assert.equal(result.reason, 'resume-skill-invalid');
   assert.deepEqual(result.measured_usage, []);
   assert.equal(unreadableHit.runner.calls.length, 2);
+});
+
+test('cache hit revalidation rejects a resume skill replaced by a file symlink', (t) => {
+  const skillDrift = harness();
+  assert.equal(skillDrift.call().ok, true);
+  const replacementTarget = `${skillDrift.resumeSkillPath}.replacement`;
+  renameSync(skillDrift.resumeSkillPath, replacementTarget);
+  if (!createFileSymlinkOrSkip(t, replacementTarget, skillDrift.resumeSkillPath)) return;
+
+  const result = skillDrift.call();
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'resume-skill-invalid');
+  assert.deepEqual(result.measured_usage, []);
+  assert.equal(skillDrift.runner.calls.length, 2);
 });
 
 test('stored executable platform and architecture are checked against the actual host before any smoke', () => {
@@ -803,7 +836,7 @@ test('preflight parent replacement during the read smoke is rejected before any 
       const out = h.runner.runSync(entry, options);
       if (h.runner.calls.length === 1) {
         renameSync(h.preflightRoot, join(h.projectRoot, 'original-preflight'));
-        symlinkSync(redirected, h.preflightRoot, 'dir');
+        createDirectoryJunction(redirected, h.preflightRoot);
       }
       return out;
     },

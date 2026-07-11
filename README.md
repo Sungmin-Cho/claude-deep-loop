@@ -143,12 +143,9 @@ The spawn is **attended-only**: the parent session must have been launched inter
 
 ## PreCompact Hook
 
-deep-loop registers a `PreCompact` hook that emits a clean handoff before Claude Code compacts context. In unattended mode, it also triggers a headless respawn. The hook never blocks compaction (always exits 0).
+deep-loop registers a `PreCompact` hook that emits a clean handoff before Claude Code compacts context. The hook is emit-only; unattended continuation is handled later by the measured `scripts/hooks-impl/drive-headless.mjs` driver. The hook never blocks compaction (always exits 0).
 
-```json
-// hooks/hooks.json
-{ "hooks": { "PreCompact": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/precompact-handoff.sh" }] }] } }
-```
+`hooks/hooks.json` uses a static, shell-free Node bootstrap that resolves `CLAUDE_PLUGIN_ROOT` (or `PLUGIN_ROOT`), imports `scripts/hooks-impl/precompact-handoff.mjs` through a file URL, and invokes its `main()` export. The bootstrap does not depend on a Bash wrapper or shell expansion.
 
 ## License
 

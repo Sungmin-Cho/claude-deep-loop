@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cpSync, mkdirSync, mkdtempSync, existsSync, readFileSync, symlinkSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
@@ -8,6 +8,7 @@ import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { reserveHandoff, releaseLease, acquireLease } from '../scripts/lib/lease.mjs';
 import { emitHandoff, buildLaunchCommand } from '../scripts/lib/handoff.mjs';
 import { newEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
+import { createDirectoryJunction } from './helpers/fs-fixtures.mjs';
 
 // Inject deterministic env so detectTerminal never probes real cmux/osascript.
 function seed(runtime = 'claude') {
@@ -188,6 +189,31 @@ test('Windows Terminal descriptor uses verified absolute wt.exe and nested nativ
   assert.equal(c.wt.argv[2], claude.canonical_path);
   assert.equal(c.wt.argv.filter(value => value === claude.canonical_path).length, 1);
   assert.ok(!c.wt.argv.includes('claude'));
+});
+
+test('Windows Terminal display is a copy-pasteable PowerShell command with every dynamic argument protected', () => {
+  const claude = executableIdentity('claude', "C:\\Program Files & O'Brien\\Claude\\claude native.exe");
+  const wt = launcherIdentity('wt', "C:\\Program Files & O'Brien\\Windows Terminal\\wt.exe");
+  const root = "C:\\repo & O'Brien";
+  const c = buildLaunchCommand({
+    runtime: 'claude', platform: 'win32', root, parentRunId: 'P', childRunId: 'C',
+    handoffRel: 'handoffs/x.md', launcher: 'wt', runtimeExecutableIdentity: claude,
+    launcherIdentity: wt, model: 'claude-opus-4-8[1m]', effort: 'xhigh',
+  });
+
+  assert.deepEqual(c.wt.argv, [
+    '-d', root, claude.canonical_path, '-n', 'deep-loop-C',
+    'Read .deep-loop/runs/P/handoffs/x.md first; then run /deep-loop-resume',
+    '--model', 'claude-opus-4-8[1m]', '--effort', 'xhigh',
+  ]);
+  assert.deepEqual(c.wt.nativeExecutableArgvIndices, [2]);
+  assert.equal(c.wt.shell, false);
+  assert.equal(c.wt.display,
+    "& 'C:\\Program Files & O''Brien\\Windows Terminal\\wt.exe' -d 'C:\\repo & O''Brien' "
+    + "'C:\\Program Files & O''Brien\\Claude\\claude native.exe' -n 'deep-loop-C' "
+    + "'Read .deep-loop/runs/P/handoffs/x.md first; then run /deep-loop-resume' "
+    + "--model 'claude-opus-4-8[1m]' --effort 'xhigh'",
+  );
 });
 
 test('Windows PowerShell descriptor uses verified launcher and encodes verified native Claude path, never a bare name', () => {
@@ -430,7 +456,7 @@ test('handoff descriptor records canonical project root and explicit logical run
   const canonicalRoot = join(parent, 'canonical');
   const aliasRoot = join(parent, 'alias');
   mkdirSync(canonicalRoot);
-  symlinkSync(canonicalRoot, aliasRoot, 'dir');
+  createDirectoryJunction(canonicalRoot, aliasRoot);
   const { runId } = initRun(aliasRoot, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z'), env: {}, platform: 'linux', run: () => ({ code: 1 }) });
   const storedRoot = readState(aliasRoot, runId).data.project.root;
   const r = emitHandoff(aliasRoot, runId, { now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId) });

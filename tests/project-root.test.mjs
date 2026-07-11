@@ -8,7 +8,6 @@ import {
   readFileSync,
   readdirSync,
   renameSync,
-  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -28,6 +27,7 @@ import {
   classifyProjectRootBinding,
   projectRootDigest,
 } from '../scripts/lib/project-root.mjs';
+import { createDirectoryJunction } from './helpers/fs-fixtures.mjs';
 
 const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const FIXED_NOW = new Date('2026-07-11T00:00:00.000Z');
@@ -91,7 +91,7 @@ test('init through a symlink stores the canonical project root', () => {
   const realRoot = join(parent, 'real');
   const aliasRoot = join(parent, 'alias');
   mkdirSync(realRoot);
-  symlinkSync(realRoot, aliasRoot, 'dir');
+  createDirectoryJunction(realRoot, aliasRoot);
 
   const { runId, loop } = init(aliasRoot);
   assert.equal(loop.project.root, canonicalProjectRoot(realRoot));
@@ -103,7 +103,7 @@ test('pre-change symlink aliases remain readable when both roots resolve to one 
   const realRoot = join(parent, 'real');
   const aliasRoot = join(parent, 'legacy-alias');
   mkdirSync(realRoot);
-  symlinkSync(realRoot, aliasRoot, 'dir');
+  createDirectoryJunction(realRoot, aliasRoot);
 
   const { runId } = init(realRoot);
   const { data } = readState(realRoot, runId);

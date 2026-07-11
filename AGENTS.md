@@ -11,7 +11,7 @@ To check the current version: `node -e "console.log(require('./.claude-plugin/pl
 - Claude Code manifest: `.claude-plugin/plugin.json` · Codex manifest: `.codex-plugin/plugin.json`
 - Control plane (Node, the only state-change boundary): `scripts/deep-loop.mjs` (CLI) + `scripts/lib/*.mjs` (22 modules)
 - Execution plane (skills): `skills/deep-loop/SKILL.md` (entry) + 9 more + `skills/deep-loop-workflow/references/*.md`
-- Hook + headless: `hooks/hooks.json` + `hooks/scripts/precompact-handoff.sh` → `scripts/hooks-impl/{precompact-handoff,drive-headless}.mjs`
+- Hook + headless: `hooks/hooks.json` (static shell-free Node bootstrap) → `scripts/hooks-impl/precompact-handoff.mjs`; unattended driver: `scripts/hooks-impl/drive-headless.mjs`
 - Declarative: `protocols/*.json` · `recipes/*.json` (+ `automation/*.yml`) · `schemas/loop-run.schema.json`
 - Durable state (runtime, git-ignored): `<project-root>/.deep-loop/runs/<run-id>/`
 
@@ -20,7 +20,7 @@ To check the current version: `node -e "console.log(require('./.claude-plugin/pl
 ```bash
 npm run preflight   # = npm run validate (schema + builder self-test) && npm test (node --test tests/*.test.mjs)
 ```
-Must pass before release. No external deps. Time-sensitive tests inject a fixed `now` (no `Date.now()` flakes). Hooks are Bash 3.2 safe (`set -Eeuo pipefail`; no `declare -A` / `${var,,}`).
+Must pass before release. No external deps. Time-sensitive tests inject a fixed `now` (no `Date.now()` flakes). The PreCompact hook uses a static shell-free Node bootstrap.
 
 ## Non-negotiable invariants (see CLAUDE.md for detail)
 

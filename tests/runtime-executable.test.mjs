@@ -8,7 +8,6 @@ import {
   readFileSync,
   realpathSync,
   renameSync,
-  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -23,6 +22,10 @@ import {
 } from '../scripts/lib/runtime-executable.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState } from '../scripts/lib/state.mjs';
+import {
+  createDirectoryJunction,
+  createFileSymlinkOrSkip,
+} from './helpers/fs-fixtures.mjs';
 
 const TARGETS = Object.freeze({
   'darwin:arm64': {
@@ -109,26 +112,35 @@ function resolveFixture(fixture, extra = {}) {
   });
 }
 
-test('collectRuntimeExecutableCandidates ignores cwd/relative PATH shadows and keeps absolute candidates only', () => {
-  const fixture = officialCodexFixture();
+test('collectRuntimeExecutableCandidates ignores cwd and relative PATH shadows', () => {
   const cwd = mkdtempSync(join(tmpdir(), 'dl-runtime-shadow-cwd-'));
   writeFileSync(join(cwd, 'codex'), 'shadow');
-  const absoluteBin = mkdtempSync(join(tmpdir(), 'dl-runtime-shadow-path-'));
-  symlinkSync(fixture.wrapper, join(absoluteBin, 'codex'));
 
   const candidates = collectRuntimeExecutableCandidates('codex', {
-    env: { PATH: `${join(cwd, 'relative-bin')}::${absoluteBin}` },
+    env: { PATH: `${join(cwd, 'relative-bin')}::` },
     cwd,
     platform: 'darwin',
   });
 
-  assert.deepEqual(candidates.map(candidate => candidate.path), [join(absoluteBin, 'codex')]);
-  assert.ok(candidates.every(candidate => candidate.source === 'path-search'));
+  assert.deepEqual(candidates, []);
   assert.ok(!candidates.some(candidate => candidate.path === join(cwd, 'codex')));
   assert.throws(
     () => collectRuntimeExecutableCandidates('codex', { explicitPath: './codex', cwd, platform: 'darwin' }),
     /RUNTIME_EXECUTABLE_PATH_INVALID/,
   );
+});
+
+test('collectRuntimeExecutableCandidates keeps an absolute PATH file-symlink candidate', (t) => {
+  const fixture = officialCodexFixture();
+  const absoluteBin = mkdtempSync(join(tmpdir(), 'dl-runtime-shadow-path-'));
+  const link = join(absoluteBin, 'codex');
+  if (!createFileSymlinkOrSkip(t, fixture.wrapper, link)) return;
+
+  const candidates = collectRuntimeExecutableCandidates('codex', {
+    env: { PATH: absoluteBin }, cwd: fixture.root, platform: 'darwin',
+  });
+  assert.deepEqual(candidates.map(candidate => candidate.path), [link]);
+  assert.ok(candidates.every(candidate => candidate.source === 'path-search'));
 });
 
 for (const [key, target] of Object.entries(TARGETS)) {
@@ -318,19 +330,24 @@ test('resolver fails closed on official package metadata and containment mismatc
         os: [fixture.platform], cpu: ['x64'],
       });
     }],
-    ['native containment', fixture => {
-      const outside = join(fixture.root, 'outside-codex');
-      writeFileSync(outside, 'outside');
-      const native = fixture.native;
-      renameSync(native, `${native}.old`);
-      symlinkSync(outside, native);
-    }],
   ]) {
     const fixture = officialCodexFixture();
     mutate(fixture);
     assert.throws(() => resolveFixture(fixture), /RUNTIME_EXECUTABLE_UNTRUSTED/, label);
     assert.equal(fixture.calls.length, 0, `${label}: no mismatched candidate may execute`);
   }
+});
+
+test('resolver fails closed on a native binary replaced by a file symlink', (t) => {
+  const fixture = officialCodexFixture();
+  const outside = join(fixture.root, 'outside-codex');
+  writeFileSync(outside, 'outside');
+  const native = fixture.native;
+  renameSync(native, `${native}.old`);
+  if (!createFileSymlinkOrSkip(t, outside, native)) return;
+
+  assert.throws(() => resolveFixture(fixture), /RUNTIME_EXECUTABLE_UNTRUSTED/);
+  assert.equal(fixture.calls.length, 0, 'the escaped native candidate must never execute');
 });
 
 test('bounded version failure and metadata/version disagreement fail closed', () => {
@@ -521,7 +538,7 @@ test('authenticated CODEX_HOME requires an absolute existing non-symlink directo
   writeFileSync(file, 'not a directory');
   assert.throws(() => resolveAuthenticatedCodexHome({ path: file }), /CODEX_HOME_INVALID/);
   const link = join(parent, 'link');
-  symlinkSync(home, link, 'dir');
+  createDirectoryJunction(home, link);
   assert.throws(() => resolveAuthenticatedCodexHome({ path: link }), /CODEX_HOME_INVALID/);
 });
 
