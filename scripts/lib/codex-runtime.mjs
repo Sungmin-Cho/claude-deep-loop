@@ -45,8 +45,8 @@ function absoluteExecutable(value) {
 
 export function buildCodexExecEntry({ executable, projectRoot, prompt, model = null, effort = null } = {}) {
   const bin = absoluteExecutable(executable);
-  if (typeof projectRoot !== 'string' || projectRoot.length === 0) {
-    throw Object.assign(new Error('INVALID_CODEX_PROJECT_ROOT: expected non-empty string'), { code: 'INVALID_CODEX_PROJECT_ROOT' });
+  if (typeof projectRoot !== 'string' || projectRoot.length === 0 || (!posix.isAbsolute(projectRoot) && !win32.isAbsolute(projectRoot))) {
+    throw Object.assign(new Error('INVALID_CODEX_PROJECT_ROOT: expected absolute path'), { code: 'INVALID_CODEX_PROJECT_ROOT' });
   }
   if (typeof prompt !== 'string' || prompt.length === 0) {
     throw Object.assign(new Error('INVALID_CODEX_PROMPT: expected non-empty string'), { code: 'INVALID_CODEX_PROMPT' });

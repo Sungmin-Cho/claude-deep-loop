@@ -68,6 +68,16 @@ test('buildCodexExecEntry fails closed for Codex max effort and non-absolute exe
   );
 });
 
+test('buildCodexExecEntry rejects non-absolute project roots', () => {
+  for (const projectRoot of ['relative/repo', './repo', 'C:relative', '']) {
+    assert.throws(
+      () => buildCodexExecEntry({ executable: BIN, projectRoot, prompt: PROMPT }),
+      /INVALID_CODEX_PROJECT_ROOT/,
+      JSON.stringify(projectRoot),
+    );
+  }
+});
+
 test('buildMinimalCodexEnv keeps only POSIX core variables and overrides hostile required fields', () => {
   const env = buildMinimalCodexEnv({
     platform: 'linux',
