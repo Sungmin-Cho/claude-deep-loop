@@ -20,21 +20,28 @@ import {
   resolve,
   sep,
 } from 'node:path';
-import { isMeasuredOneTurnUsage } from './budget.mjs';
+import { isMeasuredOneTurnUsage, makeCodexPreflightReceipt } from './budget.mjs';
 import { buildCodexExecEntry, buildMinimalCodexEnv } from './codex-runtime.mjs';
 import {
   resolveAuthenticatedCodexHome,
   revalidateTrustedRuntimeExecutable,
 } from './runtime-executable.mjs';
+import {
+  listPreflightUsageReceipts,
+  readPreflightUsageReceipt,
+  validatePreflightUsageReceiptDescriptor,
+} from './preflight-receipt-journal.mjs';
 import { runStreamingProcessSync } from './streaming-process.mjs';
 import { runDir } from './state.mjs';
 import { tomlQuotedKeySegment } from './toml-safe.mjs';
 
 const CACHE_KEY_CONTRACT = 'deep-loop-codex-preflight-key-v1';
 const CACHE_RECORD_CONTRACT = 'deep-loop-codex-preflight-result-v1';
+const ACCOUNTING_RECORD_CONTRACT = 'deep-loop-codex-preflight-accounting-v1';
 const ENVIRONMENT_POLICY_CONTRACT = 'buildMinimalCodexEnv-core-allowlist-v1';
 const WRITE_PROBE_PREFIX = 'DEEP_LOOP_CODEX_WRITE_PROBE=';
 const CACHE_RECORD_MAX_BYTES = 8 * 1024;
+const ACCOUNTING_RECORD_MAX_BYTES = 16 * 1024;
 const RESUME_SKILL_MAX_BYTES = 4 * 1024 * 1024;
 const MAX_TIMEOUT_MS = 2_147_483_647;
 const NORMALIZED_PROBE_ROOT = '/__deep_loop_codex_preflight_probe__';
@@ -44,6 +51,7 @@ const schemaPath = fileURLToPath(new URL('../../schemas/loop-run.schema.json', i
 const budgetPath = fileURLToPath(new URL('./budget.mjs', import.meta.url));
 const codexRuntimePath = fileURLToPath(new URL('./codex-runtime.mjs', import.meta.url));
 const runtimeExecutablePath = fileURLToPath(new URL('./runtime-executable.mjs', import.meta.url));
+const preflightReceiptJournalPath = fileURLToPath(new URL('./preflight-receipt-journal.mjs', import.meta.url));
 const streamingProcessPath = fileURLToPath(new URL('./streaming-process.mjs', import.meta.url));
 const streamingWorkerPath = fileURLToPath(new URL('../workers/streaming-child.mjs', import.meta.url));
 const usageParserPath = fileURLToPath(new URL('./usage-parser.mjs', import.meta.url));
@@ -245,11 +253,12 @@ function environmentPolicyContract(readEnv, writeEnv, platform) {
   };
 }
 
-function cacheRecord(cacheKey, executable, resumeSkill) {
+function cacheRecord(cacheKey, executable, resumeSkill, receiptIds) {
   return {
     contract: CACHE_RECORD_CONTRACT,
     cache_key: cacheKey,
     proof: 'read-only-terminal+maker-write-sentinel',
+    accounting_receipts: receiptIds,
     executable: {
       sha256: executable.sha256,
       version: executable.version,
@@ -268,8 +277,123 @@ function cacheRecord(cacheKey, executable, resumeSkill) {
   };
 }
 
+function accountingRecord({ cacheKey, runId, attemptId, owner, generation, receipts }) {
+  return {
+    contract: ACCOUNTING_RECORD_CONTRACT,
+    cache_key: cacheKey,
+    run_id: runId,
+    attempt_id: attemptId,
+    origin: { owner, generation },
+    receipts,
+  };
+}
+
 function cacheRecordBytes(record) {
   return Buffer.from(`${canonicalJson(record)}\n`, 'utf8');
+}
+
+function validateAccountingRecord(record, { root, runId, cacheKey }) {
+  if (record == null || typeof record !== 'object' || Array.isArray(record)
+    || record.contract !== ACCOUNTING_RECORD_CONTRACT
+    || record.cache_key !== cacheKey || record.run_id !== runId
+    || typeof record.attempt_id !== 'string' || !/^[0-9a-f]{32,64}$/.test(record.attempt_id)
+    || record.origin == null || typeof record.origin !== 'object' || Array.isArray(record.origin)
+    || typeof record.origin.owner !== 'string' || record.origin.owner.length === 0
+    || !Number.isInteger(record.origin.generation) || record.origin.generation < 0
+    || !Array.isArray(record.receipts) || record.receipts.length !== 2) return null;
+  const [storedRead, storedWrite] = record.receipts;
+  if (storedRead == null || typeof storedRead !== 'object' || Array.isArray(storedRead)
+    || storedWrite == null || typeof storedWrite !== 'object' || Array.isArray(storedWrite)
+    || storedRead.usage == null || storedWrite.usage == null) return null;
+  try {
+    const expectedRead = makeCodexPreflightReceipt({
+      root,
+      runId,
+      cacheKey,
+      smokeKind: 'read',
+      attemptId: record.attempt_id,
+      predecessorReceiptId: null,
+      owner: record.origin.owner,
+      generation: record.origin.generation,
+      usage: storedRead.usage,
+    });
+    const expectedWrite = makeCodexPreflightReceipt({
+      root,
+      runId,
+      cacheKey,
+      smokeKind: 'write',
+      attemptId: record.attempt_id,
+      predecessorReceiptId: expectedRead.receipt_id,
+      owner: record.origin.owner,
+      generation: record.origin.generation,
+      usage: storedWrite.usage,
+    });
+    const expected = accountingRecord({
+      cacheKey,
+      runId,
+      attemptId: record.attempt_id,
+      owner: record.origin.owner,
+      generation: record.origin.generation,
+      receipts: [expectedRead, expectedWrite],
+    });
+    return canonicalJson(record) === canonicalJson(expected) ? expected : null;
+  } catch {
+    return null;
+  }
+}
+
+function inspectAccountingRecord(accountingDir, accountingPath, preflightRoot, context) {
+  let directory;
+  try {
+    directory = trustedDirectory(accountingDir, { parent: preflightRoot });
+  } catch {
+    return { status: 'invalid' };
+  }
+  const before = lstatMaybe(accountingPath);
+  if (before == null) return { status: 'miss' };
+  if (before.isSymbolicLink() || !before.isFile()
+    || before.size > BigInt(ACCOUNTING_RECORD_MAX_BYTES)) return { status: 'invalid' };
+  try {
+    const canonical = canonicalRealpath(accountingPath);
+    const canonicalStat = lstatSync(canonical, { bigint: true });
+    if (canonical !== accountingPath || !contained(directory.canonical_path, canonical)
+      || canonicalStat.isSymbolicLink() || !canonicalStat.isFile()
+      || !sameFileIdentity(before, canonicalStat)) return { status: 'invalid' };
+    const bytes = readFileSync(canonical);
+    const after = lstatSync(canonical, { bigint: true });
+    if (!sameFileIdentity(canonicalStat, after)) return { status: 'invalid' };
+    const record = validateAccountingRecord(JSON.parse(bytes.toString('utf8')), context);
+    if (record == null || !bytes.equals(cacheRecordBytes(record))) return { status: 'invalid' };
+    return { status: 'hit', record };
+  } catch {
+    return { status: 'invalid' };
+  }
+}
+
+function writeImmutableRecord(directory, path, parent, bytes, inspect) {
+  let created = false;
+  let fd;
+  try {
+    trustedDirectory(directory, { parent });
+    const existing = lstatMaybe(path);
+    if (existing != null) return inspect().status === 'hit';
+    fd = openSync(path, 'wx', 0o600);
+    created = true;
+    writeFileSync(fd, bytes);
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = undefined;
+    return inspect().status === 'hit';
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) {
+      try { closeSync(fd); } catch { /* fail-closed result below */ }
+    }
+    if (created && inspect().status !== 'hit') {
+      try { rmSync(path, { force: true }); } catch { /* partial material remains non-authoritative */ }
+    }
+  }
 }
 
 function inspectCacheAuthority(cacheDir, cachePath, preflightRoot, expectedBytes) {
@@ -302,28 +426,8 @@ function inspectCacheAuthority(cacheDir, cachePath, preflightRoot, expectedBytes
 }
 
 function writeCacheRecord(cacheDir, cachePath, preflightRoot, expectedBytes) {
-  let created = false;
-  let fd;
-  try {
-    trustedDirectory(cacheDir, { parent: preflightRoot });
-    if (lstatMaybe(cachePath) != null) return false;
-    fd = openSync(cachePath, 'wx', 0o600);
-    created = true;
-    writeFileSync(fd, expectedBytes);
-    fsyncSync(fd);
-    closeSync(fd);
-    fd = undefined;
-    return inspectCacheAuthority(cacheDir, cachePath, preflightRoot, expectedBytes).status === 'hit';
-  } catch {
-    return false;
-  } finally {
-    if (fd !== undefined) {
-      try { closeSync(fd); } catch { /* fail-closed result below */ }
-    }
-    if (created && inspectCacheAuthority(cacheDir, cachePath, preflightRoot, expectedBytes).status !== 'hit') {
-      try { rmSync(cachePath, { force: true }); } catch { /* partial material remains non-authoritative */ }
-    }
-  }
+  const inspect = () => inspectCacheAuthority(cacheDir, cachePath, preflightRoot, expectedBytes);
+  return writeImmutableRecord(cacheDir, cachePath, preflightRoot, expectedBytes, inspect);
 }
 
 function sanitizedUsage(usage) {
@@ -337,26 +441,92 @@ function sanitizedUsage(usage) {
   };
 }
 
-function runSmoke(kind, entry, runSync, timeoutMs) {
+function runSmoke(kind, entry, runSync, timeoutMs, usageReceipt) {
   let result;
   try {
-    result = runSync(entry, { timeoutMs });
+    result = runSync(entry, { timeoutMs, usageReceipt });
   } catch {
-    return { ok: false, reason: `${kind}-smoke:spawn-error` };
+    result = { ok: false, reason: 'spawn-error' };
+  }
+  let durableReceipt;
+  try {
+    durableReceipt = readPreflightUsageReceipt(usageReceipt);
+  } catch {
+    // A parent-directory identity race can make the canonical journal path unreadable
+    // after the worker durably wrote and returned its exact receipt. Preserve that
+    // measured evidence for the caller's receipt-managed boundary failure; never
+    // manufacture evidence when the returned worker protocol itself is not exact.
+    if (result != null && typeof result === 'object' && result.ok === true
+      && isMeasuredOneTurnUsage(result.usage)) {
+      const usage = sanitizedUsage(result.usage);
+      try {
+        const returnedReceipt = makeCodexPreflightReceipt({ ...usageReceipt, usage });
+        if (JSON.stringify(result.usageReceipt) === JSON.stringify(returnedReceipt)) {
+          return {
+            ok: false,
+            reason: `${kind}-smoke:usage-receipt-invalid`,
+            receipt: returnedReceipt,
+            usage,
+          };
+        }
+      } catch { /* invalid returned evidence remains untrusted */ }
+    }
+    return { ok: false, reason: `${kind}-smoke:usage-receipt-invalid` };
   }
   if (result == null || typeof result !== 'object' || typeof result.then === 'function') {
-    return { ok: false, reason: `${kind}-smoke:sync-worker-required` };
+    return {
+      ok: false,
+      reason: `${kind}-smoke:sync-worker-required`,
+      ...(durableReceipt == null ? {} : { receipt: durableReceipt, usage: durableReceipt.usage }),
+    };
   }
   if (result.ok !== true) {
     const reason = typeof result.reason === 'string' && result.reason.length > 0
       ? result.reason
       : 'worker-protocol-invalid';
-    return { ok: false, reason: `${kind}-smoke:${reason}` };
+    return {
+      ok: false,
+      reason: `${kind}-smoke:${reason}`,
+      ...(durableReceipt == null ? {} : { receipt: durableReceipt, usage: durableReceipt.usage }),
+    };
   }
   if (!isMeasuredOneTurnUsage(result.usage)) {
-    return { ok: false, reason: `${kind}-smoke:unmeasured-usage` };
+    return {
+      ok: false,
+      reason: `${kind}-smoke:unmeasured-usage`,
+      ...(durableReceipt == null ? {} : { receipt: durableReceipt, usage: durableReceipt.usage }),
+    };
   }
-  return { ok: true, usage: sanitizedUsage(result.usage) };
+  const usage = sanitizedUsage(result.usage);
+  let expectedReceipt;
+  try {
+    expectedReceipt = makeCodexPreflightReceipt({ ...usageReceipt, usage });
+  } catch {
+    return {
+      ok: false,
+      reason: `${kind}-smoke:usage-receipt-invalid`,
+      ...(durableReceipt == null ? {} : { receipt: durableReceipt, usage: durableReceipt.usage }),
+    };
+  }
+  if (durableReceipt == null
+    || JSON.stringify(result.usageReceipt) !== JSON.stringify(expectedReceipt)
+    || JSON.stringify(durableReceipt) !== JSON.stringify(expectedReceipt)) {
+    if (durableReceipt == null
+      && JSON.stringify(result.usageReceipt) === JSON.stringify(expectedReceipt)) {
+      return {
+        ok: false,
+        reason: `${kind}-smoke:usage-receipt-invalid`,
+        receipt: expectedReceipt,
+        usage,
+      };
+    }
+    return {
+      ok: false,
+      reason: `${kind}-smoke:usage-receipt-invalid`,
+      ...(durableReceipt == null ? {} : { receipt: durableReceipt, usage: durableReceipt.usage }),
+    };
+  }
+  return { ok: true, usage, receipt: durableReceipt };
 }
 
 function inspectSentinel(workspace, initialWorkspace, preflightRoot, sentinelName, nonce) {
@@ -434,6 +604,8 @@ export function ensureCodexPreflight({
   resolveCodexHome = resolveAuthenticatedCodexHome,
   inspectResumeSkill = inspectResumeSkillIdentity,
   removeWorkspace = (path) => rmSync(path, { recursive: true, force: true }),
+  settleAccountingReceipt,
+  settleOrphanAccountingReceipt,
 } = {}) {
   const measuredUsage = [];
   if (typeof runSync !== 'function' || typeof nonceFactory !== 'function'
@@ -488,9 +660,13 @@ export function ensureCodexPreflight({
   let runDirectory;
   let preflightDirectory;
   let cacheDirectory;
+  let accountingDirectory;
+  let processReceiptDirectory;
   let canonicalRun;
   let preflightRoot;
   let cacheDir;
+  let accountingDir;
+  let processReceiptDir;
   try {
     runDirectory = trustedDirectory(runDir(canonicalProject, runId), { parent: canonicalProject });
     canonicalRun = runDirectory.canonical_path;
@@ -499,6 +675,10 @@ export function ensureCodexPreflight({
     preflightRoot = preflightDirectory.canonical_path;
     cacheDir = join(preflightRoot, 'cache');
     cacheDirectory = ensureTrustedDirectory(cacheDir, preflightRoot);
+    accountingDir = join(preflightRoot, 'accounting');
+    accountingDirectory = ensureTrustedDirectory(accountingDir, preflightRoot);
+    processReceiptDir = join(preflightRoot, 'process-receipts');
+    processReceiptDirectory = ensureTrustedDirectory(processReceiptDir, preflightRoot);
   } catch {
     return fail('cache-invalid');
   }
@@ -544,12 +724,16 @@ export function ensureCodexPreflight({
       const freshRun = trustedDirectory(canonicalRun, { parent: canonicalProject });
       const freshPreflight = trustedDirectory(preflightRoot, { parent: canonicalRun });
       const freshCache = trustedDirectory(cacheDir, { parent: preflightRoot });
+      const freshAccounting = trustedDirectory(accountingDir, { parent: preflightRoot });
+      const freshProcessReceipts = trustedDirectory(processReceiptDir, { parent: preflightRoot });
       const pairs = [
         [projectDirectory, freshProject],
         [deepLoopDirectory, freshDeepLoop],
         [runDirectory, freshRun],
         [preflightDirectory, freshPreflight],
         [cacheDirectory, freshCache],
+        [accountingDirectory, freshAccounting],
+        [processReceiptDirectory, freshProcessReceipts],
       ];
       if (pairs.some(([expected, fresh]) => expected.canonical_path !== fresh.canonical_path
         || !sameDirectoryNode(expected.stat, fresh.stat))) throw new Error('drift');
@@ -584,7 +768,7 @@ export function ensureCodexPreflight({
   let writeEntry;
   let cacheKey;
   let cachePath;
-  let expectedCacheBytes;
+  let accountingPath;
   try {
     const readEnv = buildMinimalCodexEnv({
       platform: executable.platform,
@@ -631,11 +815,14 @@ export function ensureCodexPreflight({
     };
     const schemaContract = durableSchemaContract
       ?? fileContract('loop-run.schema.json', schemaPath);
-    const parserContract = usageParserContract ?? {
-      jsonl_parser: fileContract('codex-jsonl-parser', usageParserPath),
-      sync_facade: fileContract('streaming-process', streamingProcessPath),
-      sync_worker: fileContract('streaming-child', streamingWorkerPath),
-      one_turn_validator: fileContract('budget-one-turn-validator', budgetPath),
+    const parserContract = {
+      usage: usageParserContract ?? {
+        jsonl_parser: fileContract('codex-jsonl-parser', usageParserPath),
+        sync_facade: fileContract('streaming-process', streamingProcessPath),
+        sync_worker: fileContract('streaming-child', streamingWorkerPath),
+        one_turn_validator: fileContract('budget-one-turn-validator', budgetPath),
+      },
+      process_receipt_journal: fileContract('preflight-receipt-journal', preflightReceiptJournalPath),
     };
     cacheKey = codexPreflightCacheKey({
       executableIdentity: executableKeyIdentity(executable),
@@ -659,55 +846,251 @@ export function ensureCodexPreflight({
       normalize: { projectRoot: workspace, prompt: writePrompt },
     });
     cachePath = join(cacheDir, `${cacheKey}.json`);
-    expectedCacheBytes = cacheRecordBytes(cacheRecord(cacheKey, executable, resumeSkill));
+    accountingPath = join(accountingDir, `${cacheKey}.json`);
   } catch {
     return fail('preflight-invalid');
   }
 
-  let authority;
+  const accountingContext = { root: canonicalProject, runId, cacheKey };
+  const inspectAccounting = () => inspectAccountingRecord(
+    accountingDir,
+    accountingPath,
+    preflightRoot,
+    accountingContext,
+  );
+  const validSettlement = result => result != null
+    && typeof result === 'object'
+    && !Array.isArray(result)
+    && result.ok === true
+    && typeof result.recorded === 'boolean'
+    && ['recorded', 'already-recorded'].includes(result.reason)
+    && (result.recorded ? result.reason === 'recorded' : result.reason === 'already-recorded');
+  const receiptDescriptor = receipt => validatePreflightUsageReceiptDescriptor({
+    journalPath: join(processReceiptDir, `${receipt.attempt_id}-${receipt.smoke_kind}.json`),
+    root: canonicalProject,
+    runId,
+    cacheKey: receipt.cache_key,
+    smokeKind: receipt.smoke_kind,
+    attemptId: receipt.attempt_id,
+    predecessorReceiptId: receipt.predecessor_receipt_id,
+    owner: receipt.owner,
+    generation: receipt.generation,
+  });
+  const removeExactRawReceipts = (receipts, { strict = false } = {}) => {
+    try {
+      // Remove write before read so an interrupted cleanup never strands a write without
+      // the raw predecessor required by the next deterministic journal scan.
+      for (const receipt of [...receipts].reverse()) {
+        const descriptor = receiptDescriptor(receipt);
+        const stored = readPreflightUsageReceipt(descriptor);
+        if (stored == null) continue;
+        if (stored.receipt_id !== receipt.receipt_id) throw new Error('raw receipt changed');
+        rmSync(descriptor.journalPath);
+        if (lstatMaybe(descriptor.journalPath) != null) throw new Error('raw receipt remained');
+      }
+      return true;
+    } catch {
+      return !strict;
+    }
+  };
+  const settleRecord = (record) => {
+    const receiptIds = record.receipts.map(receipt => receipt.receipt_id);
+    if (typeof settleAccountingReceipt !== 'function') {
+      return { ok: false, receiptIds };
+    }
+    try {
+      for (const receipt of record.receipts) {
+        const result = settleAccountingReceipt(structuredClone(receipt));
+        if (!validSettlement(result)) {
+          throw new Error('preflight accounting settlement protocol invalid');
+        }
+      }
+      return { ok: true, receiptIds };
+    } catch {
+      return { ok: false, receiptIds };
+    }
+  };
+  const accountingFailure = (measured = [], receiptIds = []) => ({
+    ...fail('preflight-accounting-failed', measured),
+    accounting_settled: false,
+    accounting_receipts: receiptIds,
+  });
+  const receiptManagedFailure = (reason, measured, receipts, settled = false) => ({
+    ...fail(reason, measured),
+    accounting_settled: settled,
+    accounting_receipts: receipts.map(receipt => receipt.receipt_id),
+  });
+  const activateRecord = (record, { recovered }) => {
+    const settled = settleRecord(record);
+    if (!settled.ok) return accountingFailure([], settled.receiptIds);
+    const drift = revalidateBoundary();
+    if (drift != null) {
+      return {
+        ...fail(drift),
+        accounting_settled: true,
+        accounting_receipts: settled.receiptIds,
+      };
+    }
+    const expectedCacheBytes = cacheRecordBytes(cacheRecord(
+      cacheKey,
+      executable,
+      resumeSkill,
+      settled.receiptIds,
+    ));
+    const authority = inspectCacheAuthority(cacheDir, cachePath, preflightRoot, expectedCacheBytes);
+    if (authority.status === 'invalid') {
+      return receiptManagedFailure('cache-invalid', [], record.receipts, true);
+    }
+    if (authority.status === 'miss'
+      && !writeCacheRecord(cacheDir, cachePath, preflightRoot, expectedCacheBytes)) {
+      return {
+        ...fail('cache-write-failed'),
+        accounting_settled: true,
+        accounting_receipts: settled.receiptIds,
+      };
+    }
+    const activated = {
+      ok: true,
+      cache_hit: recovered,
+      cache_key: cacheKey,
+      measured_usage: [],
+      accounting_settled: true,
+      accounting_receipts: settled.receiptIds,
+    };
+    removeExactRawReceipts(record.receipts);
+    return activated;
+  };
+
+  let provisional;
   try {
-    authority = inspectCacheAuthority(cacheDir, cachePath, preflightRoot, expectedCacheBytes);
+    provisional = inspectAccounting();
   } catch {
     return fail('cache-invalid');
   }
-  if (authority.status === 'invalid') return fail('cache-invalid');
-  if (authority.status === 'hit') {
+  if (provisional.status === 'invalid') return fail('cache-invalid');
+  let rawReceipts;
+  try {
+    rawReceipts = listPreflightUsageReceipts({
+      root: canonicalProject,
+      runId,
+      journalDir: processReceiptDir,
+    });
+  } catch {
+    return fail('cache-invalid');
+  }
+  const provisionalIds = new Set(provisional.status === 'hit'
+    ? provisional.record.receipts.map(receipt => receipt.receipt_id)
+    : []);
+  const orphanReceipts = rawReceipts.filter(item => !provisionalIds.has(item.receipt.receipt_id));
+  if (orphanReceipts.length > 0) {
+    if (typeof settleOrphanAccountingReceipt !== 'function') {
+      return fail('preflight-accounting-failed');
+    }
+    try {
+      for (const { receipt } of orphanReceipts) {
+        const result = settleOrphanAccountingReceipt(structuredClone(receipt));
+        if (!validSettlement(result)) throw new Error('orphan accounting settlement protocol invalid');
+      }
+    } catch {
+      return fail('preflight-accounting-failed');
+    }
+    if (!removeExactRawReceipts(orphanReceipts.map(item => item.receipt), { strict: true })) {
+      return fail('preflight-accounting-receipt-cleanup-failed');
+    }
+  }
+  if (provisional.status === 'hit') {
+    const receiptIds = provisional.record.receipts.map(receipt => receipt.receipt_id);
+    const expectedCacheBytes = cacheRecordBytes(cacheRecord(cacheKey, executable, resumeSkill, receiptIds));
+    const authority = inspectCacheAuthority(cacheDir, cachePath, preflightRoot, expectedCacheBytes);
+    if (authority.status === 'invalid') return fail('cache-invalid');
     const drift = revalidateBoundary();
     if (drift != null) return fail(drift);
-    return { ok: true, cache_hit: true, cache_key: cacheKey, measured_usage: [] };
+    return activateRecord(provisional.record, { recovered: true });
+  }
+  if (lstatMaybe(cachePath) != null) {
+    return fail('cache-invalid');
   }
 
+  const currentReceipts = [];
+  const failCurrent = reason => {
+    if (currentReceipts.length === 0) return fail(reason, measuredUsage);
+    const settled = settleRecord({ receipts: currentReceipts });
+    if (settled.ok) removeExactRawReceipts(currentReceipts);
+    return receiptManagedFailure(reason, measuredUsage, currentReceipts, settled.ok);
+  };
+  let readUsageReceipt;
+  try {
+    readUsageReceipt = validatePreflightUsageReceiptDescriptor({
+      journalPath: join(processReceiptDir, `${nonce}-read.json`),
+      root: canonicalProject,
+      runId,
+      cacheKey,
+      smokeKind: 'read',
+      attemptId: nonce,
+      predecessorReceiptId: null,
+      owner,
+      generation,
+    });
+  } catch {
+    return fail('preflight-invalid');
+  }
   let drift = revalidateBoundary();
   if (drift != null) return fail(drift, measuredUsage);
-  const readResult = runSmoke('read', readEntry, runSync, timeoutMs);
-  if (!readResult.ok) return fail(readResult.reason, measuredUsage);
-  measuredUsage.push(readResult.usage);
+  const readResult = runSmoke('read', readEntry, runSync, timeoutMs, readUsageReceipt);
+  if (readResult.receipt != null) {
+    currentReceipts.push(readResult.receipt);
+    measuredUsage.push(readResult.usage);
+  }
+  if (!readResult.ok) {
+    const boundaryFailure = revalidateBoundary();
+    return failCurrent(boundaryFailure ?? readResult.reason);
+  }
 
   drift = revalidateBoundary();
-  if (drift != null) return fail(drift, measuredUsage);
+  if (drift != null) return failCurrent(drift);
+
+  let writeUsageReceipt;
+  try {
+    writeUsageReceipt = validatePreflightUsageReceiptDescriptor({
+      journalPath: join(processReceiptDir, `${nonce}-write.json`),
+      root: canonicalProject,
+      runId,
+      cacheKey,
+      smokeKind: 'write',
+      attemptId: nonce,
+      predecessorReceiptId: readResult.receipt.receipt_id,
+      owner,
+      generation,
+    });
+  } catch {
+    return failCurrent('preflight-accounting-record-failed');
+  }
 
   let initialWorkspace;
   try {
-    if (lstatMaybe(workspace) != null) return fail('probe-collision', measuredUsage);
+    if (lstatMaybe(workspace) != null) return failCurrent('probe-collision');
     mkdirSync(workspace, { mode: 0o700 });
     initialWorkspace = trustedDirectory(workspace, { parent: preflightRoot });
   } catch {
     try {
       if (lstatMaybe(workspace) != null && !cleanupWorkspace(workspace, removeWorkspace)) {
-        return fail('cleanup-failed', measuredUsage);
+        return failCurrent('cleanup-failed');
       }
     } catch {
-      return fail('cleanup-failed', measuredUsage);
+      return failCurrent('cleanup-failed');
     }
-    return fail('probe-setup-failed', measuredUsage);
+    return failCurrent('probe-setup-failed');
   }
 
-  const writeResult = runSmoke('write', writeEntry, runSync, timeoutMs);
+  const writeResult = runSmoke('write', writeEntry, runSync, timeoutMs, writeUsageReceipt);
   let failureReason = null;
+  if (writeResult.receipt != null) {
+    currentReceipts.push(writeResult.receipt);
+    measuredUsage.push(writeResult.usage);
+  }
   if (!writeResult.ok) {
     failureReason = writeResult.reason;
   } else {
-    measuredUsage.push(writeResult.usage);
     failureReason = inspectSentinel(
       workspace,
       initialWorkspace,
@@ -717,12 +1100,74 @@ export function ensureCodexPreflight({
     );
   }
 
-  if (!cleanupWorkspace(workspace, removeWorkspace)) return fail('cleanup-failed', measuredUsage);
-  if (failureReason != null) return fail(failureReason, measuredUsage);
+  if (!cleanupWorkspace(workspace, removeWorkspace)) return failCurrent('cleanup-failed');
+  if (failureReason != null) return failCurrent(failureReason);
   drift = revalidateBoundary();
-  if (drift != null) return fail(drift, measuredUsage);
-  if (!writeCacheRecord(cacheDir, cachePath, preflightRoot, expectedCacheBytes)) {
-    return fail('cache-write-failed', measuredUsage);
+  if (drift != null) return failCurrent(drift);
+
+  let record;
+  try {
+    if (currentReceipts.length !== 2
+      || currentReceipts[0].smoke_kind !== 'read'
+      || currentReceipts[1].smoke_kind !== 'write'
+      || currentReceipts[1].predecessor_receipt_id !== currentReceipts[0].receipt_id) {
+      throw new Error('receipt pair invalid');
+    }
+    record = accountingRecord({
+      cacheKey,
+      runId,
+      attemptId: nonce,
+      owner,
+      generation,
+      receipts: currentReceipts,
+    });
+  } catch {
+    return failCurrent('preflight-accounting-record-failed');
   }
-  return { ok: true, cache_hit: false, cache_key: cacheKey, measured_usage: measuredUsage };
+  const recordBytes = cacheRecordBytes(record);
+  const inspectExactAccounting = () => {
+    const inspected = inspectAccounting();
+    if (inspected.status === 'hit'
+      && canonicalJson(inspected.record) !== canonicalJson(record)) {
+      return { status: 'invalid' };
+    }
+    return inspected;
+  };
+  if (!writeImmutableRecord(
+    accountingDir,
+    accountingPath,
+    preflightRoot,
+    recordBytes,
+    inspectExactAccounting,
+  )) {
+    return failCurrent('preflight-accounting-record-failed');
+  }
+  const settled = settleRecord(record);
+  if (!settled.ok) return accountingFailure(measuredUsage, settled.receiptIds);
+  drift = revalidateBoundary();
+  if (drift != null) {
+    return {
+      ...fail(drift, measuredUsage),
+      accounting_settled: true,
+      accounting_receipts: settled.receiptIds,
+    };
+  }
+  const expectedCacheBytes = cacheRecordBytes(cacheRecord(cacheKey, executable, resumeSkill, settled.receiptIds));
+  if (!writeCacheRecord(cacheDir, cachePath, preflightRoot, expectedCacheBytes)) {
+    return {
+      ...fail('cache-write-failed', measuredUsage),
+      accounting_settled: true,
+      accounting_receipts: settled.receiptIds,
+    };
+  }
+  const activated = {
+    ok: true,
+    cache_hit: false,
+    cache_key: cacheKey,
+    measured_usage: measuredUsage,
+    accounting_settled: true,
+    accounting_receipts: settled.receiptIds,
+  };
+  removeExactRawReceipts(record.receipts);
+  return activated;
 }

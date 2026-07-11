@@ -16,7 +16,14 @@ import {
 import { createHash, randomUUID } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { findRoot, pauseRun, readState, runDir, withLock } from './state.mjs';
-import { recordCost, isMeasuredOneTurnUsage, settleTerminalCodexMakerCost } from './budget.mjs';
+import {
+  codexCheckerClaimHash,
+  recordCost,
+  isMeasuredOneTurnUsage,
+  settleCodexProcessCost,
+  settleCodexPreflightCost,
+  settleTerminalCodexMakerCost,
+} from './budget.mjs';
 import { respawn, respawnGate, resolveSpawnMode } from './respawn.mjs';
 import { headlessSpawn } from './spawn-driver.mjs';
 import { ensureCodexPreflight } from './codex-preflight.mjs';
@@ -42,6 +49,11 @@ import {
 } from './codex-checker.mjs';
 import { emitHandoff } from './handoff.mjs';
 import { STREAM_LIMITS } from './usage-parser.mjs';
+import {
+  listProcessUsageReceipts,
+  makeProcessUsageReceiptDescriptor,
+  removeProcessUsageReceipt,
+} from './preflight-receipt-journal.mjs';
 
 const DEFAULT_DEEP_LOOP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const RESUME_SKILL_MAX_BYTES = 4 * 1024 * 1024;
@@ -251,6 +263,29 @@ function accountingFailureReason(error) {
   throw error;
 }
 
+function preflightAccountingMode(preflight) {
+  const hasSettled = Object.hasOwn(preflight, 'accounting_settled');
+  const hasReceipts = Object.hasOwn(preflight, 'accounting_receipts');
+  if (!hasSettled && !hasReceipts) return 'legacy';
+  if (!hasSettled || !hasReceipts || typeof preflight.accounting_settled !== 'boolean'
+    || !Array.isArray(preflight.accounting_receipts)
+    || preflight.accounting_receipts.some(id => typeof id !== 'string' || !/^[0-9a-f]{64}$/.test(id))
+    || (preflight.ok
+      ? preflight.accounting_receipts.length !== 2
+      : ![1, 2].includes(preflight.accounting_receipts.length))
+    || (preflight.ok && !preflight.accounting_settled)) return 'invalid';
+  return 'receipts';
+}
+
+function preflightAccountingEvidence(mode, preflight, settledReceiptIds) {
+  if (mode === 'legacy') return settledReceiptIds.length === 0;
+  if (mode !== 'receipts' || settledReceiptIds.length > preflight.accounting_receipts.length) return false;
+  if (settledReceiptIds.some((id, index) => id !== preflight.accounting_receipts[index])) return false;
+  return preflight.accounting_settled
+    ? settledReceiptIds.length === preflight.accounting_receipts.length
+    : true;
+}
+
 function terminalAccountingFailureReason(error) {
   const message = String(error?.message || error);
   if (message.startsWith('LOG_TAMPERED')) return 'log-tampered';
@@ -258,6 +293,23 @@ function terminalAccountingFailureReason(error) {
   if (message.startsWith('RUNTIME_FENCED')) return 'runtime-fenced';
   if (message.startsWith('TERMINAL_ACCOUNTING_MISMATCH')) return 'usage-mismatch';
   if (message.startsWith('TERMINAL_ACCOUNTING_DUPLICATE')) return 'duplicate-receipt';
+  return 'settlement-invalid';
+}
+
+function validReceiptSettlement(result) {
+  return result != null && typeof result === 'object' && !Array.isArray(result)
+    && result.ok === true && typeof result.recorded === 'boolean'
+    && (result.recorded ? result.reason === 'recorded' : result.reason === 'already-recorded');
+}
+
+function processAccountingFailureReason(error) {
+  const message = String(error?.message || error);
+  if (message.startsWith('LOG_TAMPERED')) return 'log-tampered';
+  if (message.startsWith('LEASE_FENCED')) return 'fenced';
+  if (message.startsWith('RUNTIME_FENCED')) return 'runtime-fenced';
+  if (message.includes('DUPLICATE')) return 'duplicate-receipt';
+  if (message.includes('MISMATCH')) return 'receipt-mismatch';
+  if (message.includes('CLEANUP')) return 'receipt-cleanup-failed';
   return 'settlement-invalid';
 }
 
@@ -316,6 +368,10 @@ function driveIndependentChecker({
   deepLoopRoot,
   preflightFn,
   recordCostFn,
+  settlePreflightCostFn,
+  settleProcessCostFn,
+  makeProcessReceiptDescriptorFn,
+  removeProcessReceiptFn,
   revalidateExecutable,
   resolveCodexHome,
   inspectDirectory,
@@ -488,6 +544,7 @@ function driveIndependentChecker({
   }
 
   let preflight;
+  const settledReceiptIds = [];
   try {
     preflight = preflightFn({
       projectRoot,
@@ -504,15 +561,32 @@ function driveIndependentChecker({
       timeoutMs,
       revalidateExecutable,
       resolveCodexHome,
+      settleAccountingReceipt: receipt => {
+        const result = settlePreflightCostFn(projectRoot, runId, {
+          receipt,
+          fence: { owner: parentOwner, generation: parentGeneration, intent: 'accounting' },
+        });
+        if (result?.ok === true) settledReceiptIds.push(receipt?.receipt_id);
+        return result;
+      },
+      settleOrphanAccountingReceipt: receipt => settlePreflightCostFn(projectRoot, runId, {
+        receipt,
+        fence: { owner: parentOwner, generation: parentGeneration, intent: 'accounting' },
+      }),
     });
   } catch {
     preflight = null;
   }
+  const accountingMode = preflight != null && typeof preflight === 'object' && !Array.isArray(preflight)
+    ? preflightAccountingMode(preflight)
+    : 'invalid';
   const validPreflight = preflight != null
     && typeof preflight === 'object'
     && !Array.isArray(preflight)
     && typeof preflight.ok === 'boolean'
     && Array.isArray(preflight.measured_usage)
+    && accountingMode !== 'invalid'
+    && preflightAccountingEvidence(accountingMode, preflight, settledReceiptIds)
     && (preflight.ok
       ? typeof preflight.cache_hit === 'boolean'
         && (preflight.cache_hit ? preflight.measured_usage.length === 0 : preflight.measured_usage.length === 2)
@@ -524,13 +598,13 @@ function driveIndependentChecker({
     });
     return { ok: false, action: pauseOutcome === 'fenced' ? 'fenced' : 'preflight-failed', reason: 'preflight-invalid' };
   }
-  for (const usage of preflight.measured_usage) {
-    if (!isMeasuredOneTurnUsage(usage)) {
-      const pauseOutcome = pauseWithOriginalFence(projectRoot, runId, {
-        reason: 'checker-preflight-usage-invalid', expect: parentFence, now: actionNow,
-      });
-      return { ok: false, action: pauseOutcome === 'fenced' ? 'fenced' : 'preflight-failed', reason: 'preflight-usage-invalid' };
-    }
+  if (preflight.measured_usage.some(usage => !isMeasuredOneTurnUsage(usage))) {
+    const pauseOutcome = pauseWithOriginalFence(projectRoot, runId, {
+      reason: 'checker-preflight-usage-invalid', expect: parentFence, now: actionNow,
+    });
+    return { ok: false, action: pauseOutcome === 'fenced' ? 'fenced' : 'preflight-failed', reason: 'preflight-usage-invalid' };
+  }
+  for (const usage of accountingMode === 'legacy' ? preflight.measured_usage : []) {
     try {
       recordCostFn(projectRoot, runId, {
         turns: usage.num_turns,
@@ -619,7 +693,7 @@ function driveIndependentChecker({
       throw error;
     }
   };
-  const settleMeasuredFailure = (reason, usage) => {
+  const settleMeasuredFailure = (reason, usage, usageReceipt = null) => {
     const blocked = blockClaim(reason);
     let pauseOutcome = null;
     if (blocked.action === 'checker-stranded') {
@@ -630,14 +704,26 @@ function driveIndependentChecker({
     let recorded = false;
     let accountingReason = null;
     try {
-      recordCostFn(projectRoot, runId, {
-        turns: usage.num_turns,
-        tokens: usage.tokens,
-        fence: { owner: parentOwner, generation: parentGeneration, intent: 'accounting' },
-      });
-      recorded = true;
+      if (usageReceipt != null) {
+        const settlement = settleProcessCostFn(projectRoot, runId, {
+          receipt: usageReceipt,
+          fence: { owner: parentOwner, generation: parentGeneration, intent: 'accounting' },
+        });
+        if (!validReceiptSettlement(settlement)) throw new Error('PROCESS_ACCOUNTING_PROTOCOL_INVALID');
+        recorded = true;
+        removeProcessReceiptFn({ receipt: usageReceipt, descriptor: checkerUsageReceiptDescriptor });
+      } else {
+        recordCostFn(projectRoot, runId, {
+          turns: usage.num_turns,
+          tokens: usage.tokens,
+          fence: { owner: parentOwner, generation: parentGeneration, intent: 'accounting' },
+        });
+        recorded = true;
+      }
     } catch (error) {
-      accountingReason = accountingFailureReason(error);
+      accountingReason = usageReceipt == null
+        ? accountingFailureReason(error)
+        : processAccountingFailureReason(error);
     }
     return {
       ...blocked,
@@ -696,6 +782,25 @@ function driveIndependentChecker({
   };
   if (!identityFresh()) return blockClaim('checker-identity-drift');
 
+  let checkerUsageReceiptDescriptor;
+  try {
+    checkerUsageReceiptDescriptor = makeProcessReceiptDescriptorFn({
+      root: projectRoot,
+      runId,
+      processKind: 'checker',
+      context: {
+        origin_owner: parentOwner,
+        origin_generation: parentGeneration,
+        checker_episode_id: pending.id,
+        attempt_id: claimed.attemptId,
+        target_maker: claimed.claim.target_maker,
+        claim_hash: codexCheckerClaimHash(claimed.claim),
+      },
+    });
+  } catch {
+    return blockClaim('checker-accounting-receipt-invalid');
+  }
+
   let checkerResult;
   try {
     checkerResult = checkerRunFn({
@@ -718,13 +823,18 @@ function driveIndependentChecker({
       model: initialLoop.autonomy?.session_model ?? null,
       effort: initialLoop.autonomy?.session_effort ?? null,
       timeoutMs,
+      usageReceipt: checkerUsageReceiptDescriptor,
     });
   } catch {
     checkerResult = { ok: false, reason: 'checker-process-error' };
   }
   if (checkerResult?.reason === 'checker-final-message-invalid'
     && isMeasuredOneTurnUsage(checkerResult.usage)) {
-    return settleMeasuredFailure('checker-process-failed', checkerResult.usage);
+    return settleMeasuredFailure(
+      'checker-process-failed',
+      checkerResult.usage,
+      checkerResult.usageReceipt ?? null,
+    );
   }
   if (!checkerResult || checkerResult.ok !== true
     || !isMeasuredOneTurnUsage(checkerResult.usage)
@@ -733,7 +843,13 @@ function driveIndependentChecker({
     || checkerResult.finalMessage.length > STREAM_LIMITS.finalMessageBytes) {
     return blockClaim('checker-process-failed');
   }
-  if (!identityFresh()) return settleMeasuredFailure('checker-identity-drift', checkerResult.usage);
+  if (!identityFresh()) {
+    return settleMeasuredFailure(
+      'checker-identity-drift',
+      checkerResult.usage,
+      checkerResult.usageReceipt ?? null,
+    );
+  }
 
   let imported;
   try {
@@ -765,7 +881,11 @@ function driveIndependentChecker({
     }
   }
   if (!imported?.ok) {
-    return settleMeasuredFailure('checker-import-failed', checkerResult.usage);
+    return settleMeasuredFailure(
+      'checker-import-failed',
+      checkerResult.usage,
+      checkerResult.usageReceipt ?? null,
+    );
   }
 
   let continuation = false;
@@ -801,14 +921,29 @@ function driveIndependentChecker({
   let recorded = false;
   let accountingReason = null;
   try {
-    recordCostFn(projectRoot, runId, {
-      turns: checkerResult.usage.num_turns,
-      tokens: checkerResult.usage.tokens,
-      fence: { owner: parentOwner, generation: parentGeneration, intent: 'accounting' },
-    });
-    recorded = true;
+    if (checkerResult.usageReceipt != null) {
+      const settlement = settleProcessCostFn(projectRoot, runId, {
+        receipt: checkerResult.usageReceipt,
+        fence: { owner: parentOwner, generation: parentGeneration, intent: 'accounting' },
+      });
+      if (!validReceiptSettlement(settlement)) throw new Error('PROCESS_ACCOUNTING_PROTOCOL_INVALID');
+      recorded = true;
+      removeProcessReceiptFn({
+        receipt: checkerResult.usageReceipt,
+        descriptor: checkerUsageReceiptDescriptor,
+      });
+    } else {
+      recordCostFn(projectRoot, runId, {
+        turns: checkerResult.usage.num_turns,
+        tokens: checkerResult.usage.tokens,
+        fence: { owner: parentOwner, generation: parentGeneration, intent: 'accounting' },
+      });
+      recorded = true;
+    }
   } catch (error) {
-    accountingReason = accountingFailureReason(error);
+    accountingReason = checkerResult.usageReceipt == null
+      ? accountingFailureReason(error)
+      : processAccountingFailureReason(error);
   }
   return {
     ok: continuationFailure == null,
@@ -837,7 +972,12 @@ function driveHeadlessRunLocked({
   spawnFn = headlessSpawn,
   preflightFn = ensureCodexPreflight,
   recordCostFn = recordCost,
+  settlePreflightCostFn = settleCodexPreflightCost,
+  settleProcessCostFn = settleCodexProcessCost,
   settleTerminalCostFn = settleTerminalCodexMakerCost,
+  listProcessReceiptsFn = listProcessUsageReceipts,
+  makeProcessReceiptDescriptorFn = makeProcessUsageReceiptDescriptor,
+  removeProcessReceiptFn = removeProcessUsageReceipt,
   respawnFn = respawn,
   revalidateExecutable = revalidateTrustedRuntimeExecutable,
   resolveCodexHome = resolveAuthenticatedCodexHome,
@@ -854,7 +994,7 @@ function driveHeadlessRunLocked({
 } = {}) {
   const sampleNow = typeof clock === 'function' ? clock : (now === undefined ? Date.now : () => now);
   const entryNow = now === undefined ? sampleNow() : now;
-  const { data: initialLoop } = readState(root, runId);
+  let { data: initialLoop } = readState(root, runId);
   const runtime = sessionRuntime(initialLoop);
   const projectRoot = canonicalProjectRoot(initialLoop.project.root);
   const initialLease = initialLoop.session_chain?.lease || {};
@@ -872,6 +1012,39 @@ function driveHeadlessRunLocked({
   const key = initialLease.handoff_idempotency_key;
   const initialApproval = initialLoop.autonomy?.runtime_executable_approval;
 
+  if (runtime === 'codex') {
+    let pendingReceipts;
+    try {
+      pendingReceipts = listProcessReceiptsFn({ root: projectRoot, runId });
+      for (const item of pendingReceipts) {
+        const settlement = settleProcessCostFn(projectRoot, runId, {
+          receipt: item.receipt,
+          fence: { owner: parentOwner, generation: parentGeneration, intent: 'accounting' },
+        });
+        if (!validReceiptSettlement(settlement)) {
+          throw new Error('PROCESS_ACCOUNTING_PROTOCOL_INVALID');
+        }
+      }
+      // Settle the complete bounded snapshot first, then clean it. A crash during cleanup leaves only
+      // already-recorded immutable receipts for the next host, never a partially unaccounted suffix.
+      const cleanupOrder = [...pendingReceipts].sort((left, right) => {
+        const leftRank = left.receipt?.smoke_kind === 'write' ? 0
+          : left.receipt?.smoke_kind === 'read' ? 2 : 1;
+        const rightRank = right.receipt?.smoke_kind === 'write' ? 0
+          : right.receipt?.smoke_kind === 'read' ? 2 : 1;
+        return leftRank - rightRank || left.journalPath.localeCompare(right.journalPath);
+      });
+      for (const item of cleanupOrder) removeProcessReceiptFn(item);
+      if (pendingReceipts.length > 0) initialLoop = readState(projectRoot, runId).data;
+    } catch (error) {
+      return {
+        ok: false,
+        action: 'process-accounting-failed',
+        reason: processAccountingFailureReason(error),
+      };
+    }
+  }
+
   if (terminal(initialLoop)) return { ok: false, action: 'terminal', reason: 'RUN_TERMINAL' };
   const checkerResult = driveIndependentChecker({
     root,
@@ -887,6 +1060,10 @@ function driveHeadlessRunLocked({
     deepLoopRoot,
     preflightFn,
     recordCostFn,
+    settlePreflightCostFn,
+    settleProcessCostFn,
+    makeProcessReceiptDescriptorFn,
+    removeProcessReceiptFn,
     revalidateExecutable,
     resolveCodexHome,
     inspectDirectory,
@@ -996,6 +1173,7 @@ function driveHeadlessRunLocked({
       return failPreflight('resume-skill-invalid');
     }
     let preflight;
+    const settledReceiptIds = [];
     try {
       preflight = preflightFn({
         projectRoot,
@@ -1012,25 +1190,44 @@ function driveHeadlessRunLocked({
         timeoutMs,
         revalidateExecutable,
         resolveCodexHome,
+        settleAccountingReceipt: receipt => {
+          const result = settlePreflightCostFn(projectRoot, runId, {
+            receipt,
+            fence: { owner: parentOwner, generation: parentGeneration, intent: 'accounting' },
+          });
+          if (result?.ok === true) settledReceiptIds.push(receipt?.receipt_id);
+          return result;
+        },
+        settleOrphanAccountingReceipt: receipt => settlePreflightCostFn(projectRoot, runId, {
+          receipt,
+          fence: { owner: parentOwner, generation: parentGeneration, intent: 'accounting' },
+        }),
       });
     } catch {
       return failPreflight('preflight-error');
     }
+    const accountingMode = preflight != null && typeof preflight === 'object' && !Array.isArray(preflight)
+      ? preflightAccountingMode(preflight)
+      : 'invalid';
     const validPreflight = preflight != null
       && typeof preflight === 'object'
       && !Array.isArray(preflight)
       && typeof preflight.ok === 'boolean'
       && Array.isArray(preflight.measured_usage)
+      && accountingMode !== 'invalid'
+      && preflightAccountingEvidence(accountingMode, preflight, settledReceiptIds)
       && (preflight.ok
         ? typeof preflight.cache_hit === 'boolean'
           && (preflight.cache_hit ? preflight.measured_usage.length === 0 : preflight.measured_usage.length === 2)
         : typeof preflight.reason === 'string' && preflight.reason.length > 0
           && preflight.pause_mode === 'preserve' && preflight.measured_usage.length <= 2);
     if (!validPreflight) return failPreflight('preflight-invalid');
-    const measuredUsage = preflight.measured_usage;
+    if (preflight.measured_usage.some(usage => !isMeasuredOneTurnUsage(usage))) {
+      return failPreflight('preflight-usage-invalid');
+    }
+    const measuredUsage = accountingMode === 'legacy' ? preflight.measured_usage : [];
     let preflightRecorded = 0;
     for (const usage of measuredUsage) {
-      if (!isMeasuredOneTurnUsage(usage)) return failPreflight('preflight-usage-invalid');
       try {
         recordCostFn(projectRoot, runId, {
           turns: usage.num_turns,
@@ -1059,6 +1256,7 @@ function driveHeadlessRunLocked({
   }
 
   let captured = null;
+  let makerUsageReceiptDescriptor = null;
   let spawnCalls = 0;
   const capturedDiagnostic = () => ({
     ...(typeof captured?.stderr === 'string'
@@ -1146,12 +1344,29 @@ function driveHeadlessRunLocked({
           env: freshMakerEnv,
           usageOutputKind: 'codex-jsonl',
         };
+        makerUsageReceiptDescriptor = makeProcessReceiptDescriptorFn({
+          root: projectRoot,
+          runId,
+          processKind: 'maker',
+          context: {
+            parent_owner: parentOwner,
+            parent_generation: parentGeneration,
+            child_run_id: childRunId,
+            child_generation: parentGeneration + 1,
+            handoff_key: key,
+            handoff_rel: handoffRel,
+          },
+        });
       } catch {
         return { ok: false, reason: 'post-cas-identity-drift' };
       }
     }
     try {
-      captured = spawnFn(enriched, { timeoutMs });
+      captured = spawnFn(enriched, {
+        timeoutMs,
+        ...(makerUsageReceiptDescriptor == null
+          ? {} : { usageReceipt: makerUsageReceiptDescriptor }),
+      });
     } catch (error) {
       captured = { ok: false, reason: `spawn-error: ${error?.message || error}` };
     }
@@ -1222,17 +1437,35 @@ function driveHeadlessRunLocked({
   }
   if (captured?.ok === true && !terminal(freshLoop) && !childAcquired) {
     let recorded = false;
+    let accountingReason = null;
     if (runtime === 'codex' && captured.usage) {
       try {
-        recordCostFn(projectRoot, runId, {
-          turns: captured.usage.num_turns,
-          tokens: captured.usage.tokens,
-          fence: { owner: parentOwner, generation: parentGeneration, intent: 'accounting' },
-        });
-        recorded = true;
+        if (captured.usageReceipt != null) {
+          const settlement = settleProcessCostFn(projectRoot, runId, {
+            receipt: captured.usageReceipt,
+            fence: { owner: parentOwner, generation: parentGeneration, intent: 'accounting' },
+          });
+          if (!validReceiptSettlement(settlement)) throw new Error('PROCESS_ACCOUNTING_PROTOCOL_INVALID');
+          recorded = true;
+          removeProcessReceiptFn({
+            receipt: captured.usageReceipt,
+            descriptor: makerUsageReceiptDescriptor,
+          });
+        } else {
+          recordCostFn(projectRoot, runId, {
+            turns: captured.usage.num_turns,
+            tokens: captured.usage.tokens,
+            fence: { owner: parentOwner, generation: parentGeneration, intent: 'accounting' },
+          });
+          recorded = true;
+        }
       } catch (error) {
-        const message = String(error?.message || error);
-        if (!message.startsWith('LEASE_FENCED') && !message.startsWith('RUN_TERMINAL')) throw error;
+        if (captured.usageReceipt != null) accountingReason = processAccountingFailureReason(error);
+        else {
+          const message = String(error?.message || error);
+          if (!message.startsWith('LEASE_FENCED') && !message.startsWith('RUN_TERMINAL')) throw error;
+          accountingReason = message.startsWith('RUN_TERMINAL') ? 'terminal' : 'fenced';
+        }
       }
     }
     const pauseOutcome = pauseWithFreshFence(projectRoot, runId, {
@@ -1241,13 +1474,21 @@ function driveHeadlessRunLocked({
       now: respawnNow,
     });
     if (pauseOutcome === 'terminal') {
-      return { ok: true, action: 'resumed', usage: captured.usage, recorded, ...capturedDiagnostic() };
+      return {
+        ok: true, action: 'resumed', usage: captured.usage, recorded,
+        ...(accountingReason ? { accounting_reason: accountingReason } : {}),
+        ...capturedDiagnostic(),
+      };
     }
     return {
       ok: false,
       action: pauseOutcome === 'raced' ? 'fail-closed-raced' : 'resumed-unconfirmed',
       reason: 'child-did-not-acquire',
-      ...(runtime === 'codex' ? { usage: captured.usage, recorded } : {}),
+      ...(runtime === 'codex' ? {
+        usage: captured.usage,
+        recorded,
+        ...(accountingReason ? { accounting_reason: accountingReason } : {}),
+      } : {}),
       ...capturedDiagnostic(),
     };
   }
@@ -1263,7 +1504,18 @@ function driveHeadlessRunLocked({
   if (captured?.usage) {
     try {
       const accountingFence = { owner: childRunId, generation: parentGeneration + 1, intent: 'accounting' };
-      if (runtime === 'codex' && terminal(freshLoop) && childAcquired) {
+      if (runtime === 'codex' && captured.usageReceipt != null) {
+        const settlement = settleProcessCostFn(projectRoot, runId, {
+          receipt: captured.usageReceipt,
+          fence: accountingFence,
+        });
+        if (!validReceiptSettlement(settlement)) throw new Error('PROCESS_ACCOUNTING_PROTOCOL_INVALID');
+        recorded = true;
+        removeProcessReceiptFn({
+          receipt: captured.usageReceipt,
+          descriptor: makerUsageReceiptDescriptor,
+        });
+      } else if (runtime === 'codex' && terminal(freshLoop) && childAcquired) {
         const settlement = settleTerminalCostFn(projectRoot, runId, {
           usage: captured.usage,
           fence: accountingFence,
@@ -1282,6 +1534,17 @@ function driveHeadlessRunLocked({
         recorded = true;
       }
     } catch (error) {
+      if (captured.usageReceipt != null) {
+        return {
+          ok: false,
+          action: terminal(freshLoop) ? 'terminal-accounting-failed' : 'process-accounting-failed',
+          reason: terminal(freshLoop) ? 'terminal-accounting-failed' : 'process-accounting-failed',
+          usage: captured.usage,
+          recorded,
+          accounting_reason: processAccountingFailureReason(error),
+          ...capturedDiagnostic(),
+        };
+      }
       if (runtime === 'codex' && terminal(freshLoop) && childAcquired) {
         return {
           ok: false,

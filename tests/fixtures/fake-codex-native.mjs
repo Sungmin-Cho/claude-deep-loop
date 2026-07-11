@@ -4,7 +4,8 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
+import { makeCodexPreflightReceipt } from '../../scripts/lib/budget.mjs';
 
 const WRITE_PROBE_PREFIX = 'DEEP_LOOP_CODEX_WRITE_PROBE=';
 
@@ -61,6 +62,21 @@ function materializeWriteProbe(probe, mode, outsideRoot) {
   }
 }
 
+function materializeUsageReceipt(result, descriptor) {
+  if (result?.ok !== true || descriptor == null) return result;
+  try {
+    if (typeof descriptor !== 'object' || Array.isArray(descriptor)
+      || typeof descriptor.journalPath !== 'string' || !isAbsolute(descriptor.journalPath)) {
+      throw new Error('invalid receipt descriptor');
+    }
+    const receipt = makeCodexPreflightReceipt({ ...descriptor, usage: result.usage });
+    writeFileSync(descriptor.journalPath, `${JSON.stringify(receipt)}\n`, { flag: 'wx', mode: 0o600 });
+    return { ...result, usageReceipt: receipt };
+  } catch {
+    return { ok: false, reason: 'usage-receipt-write-failed' };
+  }
+}
+
 export function createFakeCodexRunner({
   readResult = measuredUsage(2, 3),
   writeResult = measuredUsage(5, 7),
@@ -71,12 +87,16 @@ export function createFakeCodexRunner({
   const runSync = (entry, options) => {
     calls.push({ entry: structuredClone(entry), options: structuredClone(options) });
     const probe = parseWriteProbePrompt(entry.stdin);
-    if (probe == null) return typeof readResult === 'function' ? readResult(entry, options) : readResult;
+    if (probe == null) {
+      const result = typeof readResult === 'function' ? readResult(entry, options) : readResult;
+      return materializeUsageReceipt(result, options?.usageReceipt);
+    }
     if (writeResult?.ok === true) {
       mkdirSync(dirname(probe.workspace), { recursive: true });
       materializeWriteProbe(probe, writeMode, outsideRoot ?? dirname(probe.workspace));
     }
-    return typeof writeResult === 'function' ? writeResult(entry, options) : writeResult;
+    const result = typeof writeResult === 'function' ? writeResult(entry, options) : writeResult;
+    return materializeUsageReceipt(result, options?.usageReceipt);
   };
   return { calls, runSync };
 }

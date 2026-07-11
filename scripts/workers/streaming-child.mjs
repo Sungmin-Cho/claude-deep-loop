@@ -1,4 +1,8 @@
 import { runStreamingProcess } from '../lib/streaming-process.mjs';
+import {
+  validateProcessUsageReceiptDescriptor,
+  writeProcessUsageReceipt,
+} from '../lib/preflight-receipt-journal.mjs';
 
 const WORKER_REQUEST_BYTES = 2 * 1024 * 1024;
 const WORKER_RESULT_BYTES = 1024 * 1024;
@@ -49,12 +53,32 @@ function boundedMessage(error) {
 let result;
 try {
   const request = await readRequest();
-  if (request?.version !== 1 || !Number.isFinite(request.timeoutMs) || request.timeoutMs < 0) {
+  const allowedKeys = new Set(['version', 'entry', 'timeoutMs', 'usageReceipt']);
+  if (request?.version !== 1 || !Number.isFinite(request.timeoutMs) || request.timeoutMs < 0
+    || request == null || typeof request !== 'object' || Array.isArray(request)
+    || Object.keys(request).some(key => !allowedKeys.has(key))) {
     throw new Error('worker-request-invalid');
   }
+  const usageReceipt = Object.hasOwn(request, 'usageReceipt')
+    ? validateProcessUsageReceiptDescriptor(request.usageReceipt)
+    : null;
   result = await runStreamingProcess(decodeEntry(request.entry), { timeoutMs: request.timeoutMs });
+  if (result?.ok === true && usageReceipt != null) {
+    try {
+      const receipt = writeProcessUsageReceipt(usageReceipt, result.usage);
+      result = { ...result, usageReceipt: receipt };
+    } catch {
+      result = { ok: false, reason: 'usage-receipt-write-failed' };
+    }
+  }
 } catch (error) {
-  result = { ok: false, reason: boundedMessage(error) };
+  const message = boundedMessage(error);
+  result = {
+    ok: false,
+    reason: message.includes('USAGE_RECEIPT_')
+      ? 'usage-receipt-write-failed'
+      : message,
+  };
 }
 
 const transportResult = result?.ok === true && Buffer.isBuffer(result.finalMessage)

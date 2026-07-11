@@ -226,6 +226,7 @@ export function runIndependentCodexChecker({
   model = null,
   effort = null,
   timeoutMs,
+  usageReceipt = null,
   runProcess = runStreamingProcessSync,
 } = {}) {
   const root = absolutePath(projectRoot, 'checker-project-root-invalid');
@@ -247,14 +248,27 @@ export function runIndependentCodexChecker({
   entry.env = env;
   entry.usageOutputKind = 'codex-jsonl';
   entry.captureFinalMessage = true;
-  const result = runProcess(entry, { timeoutMs });
+  const result = runProcess(entry, {
+    timeoutMs,
+    ...(usageReceipt == null ? {} : { usageReceipt }),
+  });
   if (!result || result.ok !== true) return result || { ok: false, reason: 'checker-worker-invalid' };
   if (!isMeasuredOneTurnUsage(result.usage)) return { ok: false, reason: 'checker-usage-invalid' };
   if (!Buffer.isBuffer(result.finalMessage) || result.finalMessage.length === 0
     || result.finalMessage.length > STREAM_LIMITS.finalMessageBytes) {
-    return { ok: false, reason: 'checker-final-message-invalid', usage: result.usage };
+    return {
+      ok: false,
+      reason: 'checker-final-message-invalid',
+      usage: result.usage,
+      ...(result.usageReceipt != null ? { usageReceipt: result.usageReceipt } : {}),
+    };
   }
-  return { ok: true, usage: result.usage, finalMessage: Buffer.from(result.finalMessage) };
+  return {
+    ok: true,
+    usage: result.usage,
+    finalMessage: Buffer.from(result.finalMessage),
+    ...(result.usageReceipt != null ? { usageReceipt: result.usageReceipt } : {}),
+  };
 }
 
 export function importReviewViaCli({

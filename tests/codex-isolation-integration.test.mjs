@@ -9,6 +9,8 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  renameSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -16,10 +18,12 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { ensureCodexPreflight } from '../scripts/lib/codex-preflight.mjs';
+import { settleCodexPreflightCost } from '../scripts/lib/budget.mjs';
 import { importReviewViaCli, runIndependentCodexChecker } from '../scripts/lib/codex-checker.mjs';
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { driveHeadlessRun } from '../scripts/lib/headless-host.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
+import { finishRun } from '../scripts/lib/finish.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { advanceHandoffPhase } from '../scripts/lib/lease.mjs';
 import { resolveAuthenticatedCodexHome } from '../scripts/lib/runtime-executable.mjs';
@@ -31,6 +35,7 @@ import { dispatchReview } from '../scripts/lib/review.mjs';
 import { STREAM_LIMITS } from '../scripts/lib/usage-parser.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { tomlQuotedKeySegment } from '../scripts/lib/toml-safe.mjs';
+import { removeProcessUsageReceipt } from '../scripts/lib/preflight-receipt-journal.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DEEP_LOOP_ROOT = realpathSync(join(HERE, '..'));
@@ -290,7 +295,10 @@ test('hostile maker transport crosses the real worker once and preserves only bo
   assert.deepEqual(h.entries.map(entry => entry.env.DEEP_LOOP_OWNER), [h.runId, h.runId, h.handoff.childRunId]);
   assert.deepEqual(h.entries.map(entry => entry.env.DEEP_LOOP_GENERATION), ['1', '1', '2']);
   assert.equal(existsSync(h.markerDir), false, 'hostile hooks/MCP/apps/web/network capabilities must remain inactive');
-  assert.deepEqual(Object.keys(makerResult).sort(), ['ok', 'stderr', 'stderrTruncated', 'usage']);
+  assert.deepEqual(Object.keys(makerResult).sort(), [
+    'ok', 'stderr', 'stderrTruncated', 'usage', 'usageReceipt',
+  ]);
+  assert.equal(makerResult.usageReceipt.process_kind, 'maker');
   assert.equal(Buffer.byteLength(makerResult.stderr, 'utf8'), STREAM_LIMITS.stderrBytes);
   assert.equal(makerResult.stderrTruncated, true);
   assert.deepEqual(makerResult.usage, {
@@ -414,6 +422,10 @@ test('preflight cache binds profile and security contracts while identity drift 
     revalidateExecutable: () => h.executable,
     resolveCodexHome: resolveAuthenticatedCodexHome,
     nonceFactory: () => 'fedcba9876543210fedcba9876543210',
+    settleAccountingReceipt: receipt => settleCodexPreflightCost(h.root, h.runId, {
+      receipt,
+      fence: { owner: h.runId, generation: 1, intent: 'accounting' },
+    }),
   };
 
   const miss = ensureCodexPreflight(base);
@@ -463,6 +475,634 @@ test('preflight cache binds profile and security contracts while identity drift 
   assert.equal(h.calls().length, callsBeforeDrift);
   assert.deepEqual(readdirSync(cacheDir).sort(), cacheBeforeDrift);
   assert.equal(existsSync(h.markerDir), false);
+});
+
+test('durable preflight receipts recover zero or partial accounting without replaying a real smoke', () => {
+  for (const interruptAfter of [0, 1]) {
+    const h = createHostHarness();
+    const codexHomeIdentity = resolveAuthenticatedCodexHome({ path: h.codexHome });
+    const fence = { owner: h.runId, generation: 1, intent: 'accounting' };
+    const base = {
+      projectRoot: h.root,
+      runId: h.runId,
+      executableIdentity: h.executable,
+      codexHomeIdentity,
+      deepLoopRoot: DEEP_LOOP_ROOT,
+      resumeSkillPath: join(DEEP_LOOP_ROOT, 'skills', 'deep-loop-resume', 'SKILL.md'),
+      sourceEnv: h.env,
+      owner: h.runId,
+      generation: 1,
+      model: 'gpt-5.4',
+      effort: 'xhigh',
+      timeoutMs: 5_000,
+      runSync: h.runThroughWorker,
+      revalidateExecutable: () => h.executable,
+      resolveCodexHome: resolveAuthenticatedCodexHome,
+      nonceFactory: () => interruptAfter === 0
+        ? '11111111111111111111111111111111'
+        : '22222222222222222222222222222222',
+    };
+    let calls = 0;
+    const interrupted = ensureCodexPreflight({
+      ...base,
+      settleAccountingReceipt: receipt => {
+        if (calls === interruptAfter) {
+          calls += 1;
+          throw new Error('INJECTED_ACCOUNTING_INTERRUPTION');
+        }
+        calls += 1;
+        return settleCodexPreflightCost(h.root, h.runId, { receipt, fence });
+      },
+    });
+    assert.equal(interrupted.ok, false, `interruptAfter=${interruptAfter}`);
+    assert.equal(interrupted.reason, 'preflight-accounting-failed', `interruptAfter=${interruptAfter}`);
+    assert.equal(h.calls().length, 2, `interruptAfter=${interruptAfter}`);
+    assert.deepEqual(
+      readLines(h.root, h.runId)
+        .filter(event => event.data?.source === 'codex-preflight-measured')
+        .map(event => event.data.reported_tokens),
+      interruptAfter === 0 ? [] : [5],
+      `interruptAfter=${interruptAfter}`,
+    );
+
+    const recovered = ensureCodexPreflight({
+      ...base,
+      settleAccountingReceipt: receipt => settleCodexPreflightCost(
+        h.root,
+        h.runId,
+        { receipt, fence },
+      ),
+    });
+    assert.equal(recovered.ok, true, JSON.stringify(recovered));
+    assert.equal(recovered.cache_hit, true);
+    assert.equal(h.calls().length, 2, 'recovery must use the durable proof instead of a new process');
+    assert.deepEqual(
+      readLines(h.root, h.runId)
+        .filter(event => event.data?.source === 'codex-preflight-measured')
+        .map(event => event.data.reported_tokens),
+      [5, 12],
+      `interruptAfter=${interruptAfter}`,
+    );
+  }
+});
+
+test('a throw after the real read worker returns settles its known receipt before retry smokes', () => {
+  const h = createHostHarness();
+  const codexHomeIdentity = resolveAuthenticatedCodexHome({ path: h.codexHome });
+  const fence = { owner: h.runId, generation: 1, intent: 'accounting' };
+  const timeline = [];
+  const nonces = [
+    '33333333333333333333333333333333',
+    '44444444444444444444444444444444',
+  ];
+  let nonceAt = 0;
+  let workerReturns = 0;
+  const runSync = (entry, options) => {
+    const result = h.runThroughWorker(entry, options);
+    workerReturns += 1;
+    timeline.push(`worker:${result.usage?.tokens ?? 'unmeasured'}`);
+    if (workerReturns === 1) throw new Error('INJECTED_CRASH_AFTER_READ_WORKER_RETURN');
+    return result;
+  };
+  const settle = (kind, receipt) => {
+    timeline.push(`${kind}:${receipt.usage.tokens}`);
+    return settleCodexPreflightCost(h.root, h.runId, { receipt, fence });
+  };
+  const base = {
+    projectRoot: h.root,
+    runId: h.runId,
+    executableIdentity: h.executable,
+    codexHomeIdentity,
+    deepLoopRoot: DEEP_LOOP_ROOT,
+    resumeSkillPath: join(DEEP_LOOP_ROOT, 'skills', 'deep-loop-resume', 'SKILL.md'),
+    sourceEnv: h.env,
+    owner: h.runId,
+    generation: 1,
+    model: 'gpt-5.4',
+    effort: 'xhigh',
+    timeoutMs: 5_000,
+    runSync,
+    revalidateExecutable: () => h.executable,
+    resolveCodexHome: resolveAuthenticatedCodexHome,
+    nonceFactory: () => nonces[nonceAt++],
+    settleAccountingReceipt: receipt => settle('normal', receipt),
+    settleOrphanAccountingReceipt: receipt => settle('orphan', receipt),
+  };
+
+  const interrupted = ensureCodexPreflight(base);
+  assert.equal(interrupted.ok, false);
+  assert.equal(interrupted.reason, 'read-smoke:spawn-error');
+  assert.deepEqual(interrupted.measured_usage.map(usage => usage.tokens), [5]);
+  const cacheDir = join(runDir(h.root, h.runId), 'preflight', 'cache');
+  assert.deepEqual(readdirSync(cacheDir).filter(name => name.endsWith('.json')), []);
+  assert.deepEqual(readLines(h.root, h.runId).filter(
+    event => event.data?.source === 'codex-preflight-measured',
+  ).map(event => event.data.reported_tokens), [5], 'the current parent settles known evidence before returning');
+
+  const recovered = ensureCodexPreflight(base);
+  assert.equal(recovered.ok, true, JSON.stringify(recovered));
+  assert.equal(recovered.cache_hit, false, 'orphan accounting cannot authorize an old capability proof');
+  assert.deepEqual(h.calls().map(call => call.kind), [
+    'preflight-read', 'preflight-read', 'preflight-write',
+  ]);
+  const settledReadAt = timeline.indexOf('normal:5');
+  assert.ok(
+    settledReadAt >= 0 && settledReadAt < timeline.lastIndexOf('worker:5'),
+    `the first read must settle before the retry read: ${timeline.join(',')}`,
+  );
+  const costs = readLines(h.root, h.runId).filter(
+    event => event.data?.source === 'codex-preflight-measured',
+  );
+  assert.deepEqual(costs.map(event => event.data.reported_tokens), [5, 5, 12]);
+  assert.equal(new Set(costs.map(event => event.data.preflight_receipt_id)).size, 3);
+  assert.equal(timeline.filter(item => item === 'normal:5').length, 2, 'retry read is a distinct receipt');
+  assert.equal(timeline.filter(item => item.startsWith('orphan:')).length, 0);
+});
+
+test('a throw after the real write worker returns settles both known receipts before retry smokes', () => {
+  const h = createHostHarness();
+  const codexHomeIdentity = resolveAuthenticatedCodexHome({ path: h.codexHome });
+  const fence = { owner: h.runId, generation: 1, intent: 'accounting' };
+  const timeline = [];
+  const nonces = [
+    '55555555555555555555555555555555',
+    '66666666666666666666666666666666',
+  ];
+  let nonceAt = 0;
+  let workerReturns = 0;
+  const runSync = (entry, options) => {
+    const result = h.runThroughWorker(entry, options);
+    workerReturns += 1;
+    timeline.push(`worker:${result.usage?.tokens ?? 'unmeasured'}`);
+    if (workerReturns === 2) throw new Error('INJECTED_CRASH_AFTER_WRITE_WORKER_RETURN');
+    return result;
+  };
+  const settle = (kind, receipt) => {
+    timeline.push(`${kind}:${receipt.usage.tokens}`);
+    return settleCodexPreflightCost(h.root, h.runId, { receipt, fence });
+  };
+  const base = {
+    projectRoot: h.root,
+    runId: h.runId,
+    executableIdentity: h.executable,
+    codexHomeIdentity,
+    deepLoopRoot: DEEP_LOOP_ROOT,
+    resumeSkillPath: join(DEEP_LOOP_ROOT, 'skills', 'deep-loop-resume', 'SKILL.md'),
+    sourceEnv: h.env,
+    owner: h.runId,
+    generation: 1,
+    model: 'gpt-5.4',
+    effort: 'xhigh',
+    timeoutMs: 5_000,
+    runSync,
+    revalidateExecutable: () => h.executable,
+    resolveCodexHome: resolveAuthenticatedCodexHome,
+    nonceFactory: () => nonces[nonceAt++],
+    settleAccountingReceipt: receipt => settle('normal', receipt),
+    settleOrphanAccountingReceipt: receipt => settle('orphan', receipt),
+  };
+
+  const interrupted = ensureCodexPreflight(base);
+  assert.equal(interrupted.ok, false);
+  assert.equal(interrupted.reason, 'write-smoke:spawn-error');
+  assert.deepEqual(interrupted.measured_usage.map(usage => usage.tokens), [5, 12]);
+  const cacheDir = join(runDir(h.root, h.runId), 'preflight', 'cache');
+  assert.deepEqual(readdirSync(cacheDir).filter(name => name.endsWith('.json')), []);
+  assert.deepEqual(readLines(h.root, h.runId).filter(
+    event => event.data?.source === 'codex-preflight-measured',
+  ).map(event => event.data.reported_tokens), [5, 12], 'both known receipts settle before returning');
+
+  const recovered = ensureCodexPreflight(base);
+  assert.equal(recovered.ok, true, JSON.stringify(recovered));
+  assert.equal(recovered.cache_hit, false, 'orphan accounting cannot authorize an old capability proof');
+  assert.deepEqual(h.calls().map(call => call.kind), [
+    'preflight-read', 'preflight-write', 'preflight-read', 'preflight-write',
+  ]);
+  const retryReadAt = timeline.lastIndexOf('worker:5');
+  const settledReadAt = timeline.indexOf('normal:5');
+  const settledWriteAt = timeline.indexOf('normal:12');
+  assert.ok(settledReadAt >= 0 && settledReadAt < retryReadAt, timeline.join(','));
+  assert.ok(settledWriteAt >= 0 && settledWriteAt < retryReadAt, timeline.join(','));
+  const costs = readLines(h.root, h.runId).filter(
+    event => event.data?.source === 'codex-preflight-measured',
+  );
+  assert.deepEqual(costs.map(event => event.data.reported_tokens), [5, 12, 5, 12]);
+  assert.equal(new Set(costs.map(event => event.data.preflight_receipt_id)).size, 4);
+  assert.equal(timeline.filter(item => item === 'normal:5').length, 2);
+  assert.equal(timeline.filter(item => item === 'normal:12').length, 2);
+  assert.equal(timeline.filter(item => item.startsWith('orphan:')).length, 0);
+});
+
+test('the actual host settles a real read receipt before preserve-pausing and a human-policy tick cannot replay it', () => {
+  const h = createHostHarness();
+  let workerReturns = 0;
+  let makerCalls = 0;
+  const first = driveHeadlessRun({
+    ...h.baseOptions,
+    expect: { owner: h.runId, generation: 1 },
+    now: NOW1 + 7_000,
+    timeoutMs: 20_000,
+    preflightFn: options => ensureCodexPreflight({
+      ...options,
+      runSync: (entry, workerOptions) => {
+        const result = h.runThroughWorker(entry, workerOptions);
+        workerReturns += 1;
+        if (workerReturns === 1) throw new Error('INJECTED_AFTER_REAL_READ_WORKER_RETURN');
+        return result;
+      },
+      revalidateExecutable: h.baseOptions.revalidateExecutable,
+      resolveCodexHome: h.baseOptions.resolveCodexHome,
+      nonceFactory: () => '77777777777777777777777777777777',
+    }),
+    spawnFn: () => {
+      makerCalls += 1;
+      throw new Error('preflight failure must not spawn the maker');
+    },
+  });
+
+  assert.equal(first.action, 'preflight-failed', JSON.stringify(first));
+  assert.equal(first.reason, 'read-smoke:spawn-error');
+  assert.equal(makerCalls, 0);
+  assert.deepEqual(h.calls().map(call => call.kind), ['preflight-read']);
+  assert.deepEqual(
+    readLines(h.root, h.runId)
+      .filter(event => event.data?.source === 'codex-preflight-measured')
+      .map(event => event.data.reported_tokens),
+    [5],
+    'the known durable receipt must settle before the host installs human resume policy',
+  );
+
+  let forbiddenSideEffects = 0;
+  const second = driveHeadlessRun({
+    ...h.baseOptions,
+    expect: { owner: h.runId, generation: 1 },
+    now: NOW1 + 8_000,
+    timeoutMs: 20_000,
+    preflightFn: () => {
+      forbiddenSideEffects += 1;
+      throw new Error('human-policy retry must not rerun preflight');
+    },
+    spawnFn: () => {
+      forbiddenSideEffects += 1;
+      throw new Error('human-policy retry must not run the maker');
+    },
+  });
+  assert.deepEqual(second, { ok: true, skipped: true, reason: 'human-resume-policy' });
+  assert.equal(forbiddenSideEffects, 0);
+  assert.deepEqual(h.calls().map(call => call.kind), ['preflight-read']);
+  assert.equal(
+    readLines(h.root, h.runId).filter(
+      event => event.data?.source === 'codex-preflight-measured',
+    ).length,
+    1,
+    'the second host tick must not double-record the read',
+  );
+});
+
+test('an exact returned receipt never falls back to generic accounting across a journal identity race', () => {
+  const h = createHostHarness();
+  let swapped = false;
+  let receiptDirectory;
+  let hiddenReceiptDirectory;
+  const preflightFn = options => {
+    let result;
+    try {
+      result = ensureCodexPreflight({
+        ...options,
+        runSync: (entry, workerOptions) => {
+          const workerResult = h.runThroughWorker(entry, workerOptions);
+          if (!swapped) {
+            receiptDirectory = dirname(workerOptions.usageReceipt.journalPath);
+            hiddenReceiptDirectory = `${receiptDirectory}-identity-race`;
+            renameSync(receiptDirectory, hiddenReceiptDirectory);
+            writeFileSync(receiptDirectory, 'temporarily-not-a-directory');
+            swapped = true;
+          }
+          return workerResult;
+        },
+        revalidateExecutable: h.baseOptions.revalidateExecutable,
+        resolveCodexHome: h.baseOptions.resolveCodexHome,
+        nonceFactory: () => '88888888888888888888888888888888',
+      });
+    } finally {
+      if (swapped) {
+        rmSync(receiptDirectory, { force: true });
+        renameSync(hiddenReceiptDirectory, receiptDirectory);
+      }
+    }
+    return result;
+  };
+
+  const first = driveHeadlessRun({
+    ...h.baseOptions,
+    expect: { owner: h.runId, generation: 1 },
+    now: NOW1 + 9_000,
+    timeoutMs: 20_000,
+    preflightFn,
+    spawnFn: () => { throw new Error('identity-raced preflight must fail before maker'); },
+  });
+  assert.equal(first.action, 'preflight-failed', JSON.stringify(first));
+  assert.equal(first.reason, 'cache-invalid');
+
+  const afterFirst = readLines(h.root, h.runId).filter(event => event.type === 'cost');
+  assert.equal(afterFirst.filter(event => event.data?.source === 'codex-preflight-measured').length, 1);
+  assert.equal(
+    afterFirst.filter(event => event.data?.source == null && event.data?.reported_tokens === 5).length,
+    0,
+    'a trusted returned receipt must suppress the generic usage path',
+  );
+
+  const second = driveHeadlessRun({
+    ...h.baseOptions,
+    expect: { owner: h.runId, generation: 1 },
+    now: NOW1 + 10_000,
+    timeoutMs: 20_000,
+    preflightFn: () => { throw new Error('human-policy tick must not re-enter preflight'); },
+    spawnFn: () => { throw new Error('human-policy tick must not spawn'); },
+  });
+  assert.deepEqual(second, { ok: true, skipped: true, reason: 'human-resume-policy' });
+  const exactCosts = readLines(h.root, h.runId).filter(
+    event => event.data?.source === 'codex-preflight-measured',
+  );
+  assert.equal(exactCosts.length, 1, 'the restored raw receipt may only settle idempotently');
+  assert.deepEqual(h.calls().map(call => call.kind), ['preflight-read']);
+});
+
+test('recovery settles the full raw snapshot and removes write before read across cleanup interruption', () => {
+  const h = createHostHarness();
+  const codexHomeIdentity = resolveAuthenticatedCodexHome({ path: h.codexHome });
+  const interrupted = ensureCodexPreflight({
+    projectRoot: h.root,
+    runId: h.runId,
+    executableIdentity: h.executable,
+    codexHomeIdentity,
+    deepLoopRoot: DEEP_LOOP_ROOT,
+    resumeSkillPath: join(DEEP_LOOP_ROOT, 'skills', 'deep-loop-resume', 'SKILL.md'),
+    sourceEnv: h.env,
+    owner: h.runId,
+    generation: 1,
+    model: 'gpt-5.4',
+    effort: 'xhigh',
+    timeoutMs: 5_000,
+    runSync: h.runThroughWorker,
+    revalidateExecutable: () => h.executable,
+    resolveCodexHome: resolveAuthenticatedCodexHome,
+    nonceFactory: () => '99999999999999999999999999999999',
+    settleAccountingReceipt: () => { throw new Error('LEAVE_BOTH_RAW_RECEIPTS'); },
+  });
+  assert.equal(interrupted.reason, 'preflight-accounting-failed');
+  const receiptDir = join(runDir(h.root, h.runId), 'preflight', 'process-receipts');
+  assert.deepEqual(readdirSync(receiptDir).sort(), [
+    `${'9'.repeat(32)}-read.json`,
+    `${'9'.repeat(32)}-write.json`,
+  ]);
+
+  const cleanupOrder = [];
+  const firstRecovery = driveHeadlessRun({
+    ...h.baseOptions,
+    expect: { owner: h.runId, generation: 1 },
+    now: NOW1 + 10_500,
+    timeoutMs: 20_000,
+    removeProcessReceiptFn: item => {
+      cleanupOrder.push(item.receipt.smoke_kind);
+      const result = removeProcessUsageReceipt(item);
+      if (cleanupOrder.length === 1) throw new Error('INJECTED_CLEANUP_INTERRUPTION');
+      return result;
+    },
+  });
+  assert.equal(firstRecovery.action, 'process-accounting-failed', JSON.stringify(firstRecovery));
+  assert.equal(firstRecovery.reason, 'receipt-cleanup-failed');
+  assert.deepEqual(cleanupOrder, ['write'], 'write must disappear before its raw predecessor');
+  assert.deepEqual(readdirSync(receiptDir), [`${'9'.repeat(32)}-read.json`]);
+
+  const secondRecovery = driveHeadlessRun({
+    ...h.baseOptions,
+    expect: { owner: h.runId, generation: 1 },
+    now: NOW1 + 10_600,
+    timeoutMs: 20_000,
+    preflightFn: () => ({
+      ok: false,
+      reason: 'stop-after-recovery',
+      pause_mode: 'preserve',
+      measured_usage: [],
+    }),
+    spawnFn: () => { throw new Error('cleanup recovery must not reach maker'); },
+  });
+  assert.equal(secondRecovery.action, 'preflight-failed', JSON.stringify(secondRecovery));
+  assert.deepEqual(readdirSync(receiptDir), []);
+  assert.deepEqual(h.calls().map(call => call.kind), ['preflight-read', 'preflight-write']);
+  assert.deepEqual(
+    readLines(h.root, h.runId).filter(
+      event => event.data?.source === 'codex-preflight-measured',
+    ).map(event => event.data.reported_tokens),
+    [5, 12],
+    'cleanup retries are exact accounting no-ops',
+  );
+});
+
+test('a real maker receipt survives a host crash after worker return and settles before no-handoff exit', () => {
+  const h = createHostHarness();
+  let makerWorkers = 0;
+  const first = driveHeadlessRun({
+    ...h.baseOptions,
+    expect: { owner: h.runId, generation: 1 },
+    now: NOW1 + 11_000,
+    timeoutMs: 20_000,
+    spawnFn: (entry, options) => {
+      const result = headlessSpawn(entry, { ...options, runSync: h.runThroughWorker });
+      makerWorkers += 1;
+      assert.equal(result.ok, true, JSON.stringify(result));
+      throw new Error('INJECTED_HOST_CRASH_AFTER_MAKER_WORKER_RETURN');
+    },
+  });
+  assert.equal(first.ok, false, JSON.stringify(first));
+  assert.equal(makerWorkers, 1);
+  assert.deepEqual(h.calls().map(call => call.kind), [
+    'preflight-read', 'preflight-write', 'maker',
+  ]);
+  assert.deepEqual(
+    readLines(h.root, h.runId).filter(event => event.type === 'cost')
+      .map(event => event.data.reported_tokens),
+    [5, 12],
+    'the injected crash precedes host-side maker settlement',
+  );
+
+  let respawns = 0;
+  const second = driveHeadlessRun({
+    ...h.baseOptions,
+    expect: { owner: h.handoff.childRunId, generation: 2 },
+    now: NOW1 + 12_000,
+    timeoutMs: 20_000,
+    spawnFn: () => {
+      respawns += 1;
+      throw new Error('a durable maker receipt must never trigger a process retry');
+    },
+  });
+  assert.equal(second.action, 'no-pending-handoff', JSON.stringify(second));
+  assert.equal(respawns, 0);
+  assert.equal(h.calls().filter(call => call.kind === 'maker').length, 1);
+  const costs = readLines(h.root, h.runId).filter(event => event.type === 'cost');
+  assert.deepEqual(costs.map(event => event.data.reported_tokens), [5, 12, 24]);
+  assert.equal(costs.filter(event => event.data?.process_kind === 'maker').length, 1);
+});
+
+test('a crash-returned maker that never acquires is recovered against the parent session without retry', () => {
+  const h = createHostHarness({ makerMode: 'no-acquire' });
+  let makerWorkers = 0;
+  const first = driveHeadlessRun({
+    ...h.baseOptions,
+    expect: { owner: h.runId, generation: 1 },
+    now: NOW1 + 12_500,
+    timeoutMs: 20_000,
+    spawnFn: (entry, options) => {
+      const result = headlessSpawn(entry, { ...options, runSync: h.runThroughWorker });
+      makerWorkers += 1;
+      assert.equal(result.ok, true, JSON.stringify(result));
+      throw new Error('INJECTED_HOST_CRASH_AFTER_NO_ACQUIRE_MAKER_RETURN');
+    },
+  });
+  assert.equal(first.ok, false, JSON.stringify(first));
+  assert.equal(makerWorkers, 1);
+  const afterCrash = readState(h.root, h.runId).data;
+  assert.equal(afterCrash.session_chain.lease.owner_run_id, h.runId);
+  assert.equal(afterCrash.session_chain.lease.generation, 1);
+  assert.equal(afterCrash.session_chain.sessions.find(
+    session => session.run_id === h.handoff.childRunId,
+  ).outcome, 'failed_launch');
+
+  let retries = 0;
+  const second = driveHeadlessRun({
+    ...h.baseOptions,
+    expect: { owner: h.runId, generation: 1 },
+    now: NOW1 + 12_600,
+    timeoutMs: 20_000,
+    spawnFn: () => {
+      retries += 1;
+      throw new Error('a no-acquire receipt must not rerun its process');
+    },
+  });
+  assert.equal(second.action, 'no-pending-handoff', JSON.stringify(second));
+  assert.equal(retries, 0);
+  assert.equal(h.calls().filter(call => call.kind === 'maker').length, 1);
+  const makerCost = readLines(h.root, h.runId).find(
+    event => event.data?.process_kind === 'maker',
+  );
+  assert.equal(makerCost.data.owner, h.runId);
+  assert.equal(makerCost.data.generation, 1);
+  assert.equal(makerCost.data.reported_tokens, 24);
+  assert.deepEqual(
+    readLines(h.root, h.runId).filter(
+      event => event.type === 'cost' && event.data?.reported_turns === 1,
+    ).map(event => event.data.reported_tokens),
+    [5, 12, 24],
+  );
+});
+
+test('a real checker receipt survives a host crash after worker return and settles before in-progress exit', () => {
+  const h = createHostHarness();
+  assert.equal(h.runMaker().result.action, 'resumed');
+  const review = seedIndependentChecker(h);
+  let checkerWorkers = 0;
+  assert.throws(() => driveHeadlessRun({
+    ...h.baseOptions,
+    expect: { owner: h.handoff.childRunId, generation: 2 },
+    now: NOW1 + 13_000,
+    timeoutMs: 20_000,
+    attemptIdFactory: () => 'attempt-process-receipt-crash',
+    checkerRunFn: options => {
+      const result = runIndependentCodexChecker({ ...options, runProcess: h.runThroughWorker });
+      checkerWorkers += 1;
+      assert.equal(result.ok, true, JSON.stringify(result));
+      return new Proxy(result, {
+        get(target, property, receiver) {
+          if (property === 'reason') throw new Error('INJECTED_HOST_CRASH_AFTER_CHECKER_WORKER_RETURN');
+          return Reflect.get(target, property, receiver);
+        },
+      });
+    },
+  }), /INJECTED_HOST_CRASH_AFTER_CHECKER_WORKER_RETURN/);
+  assert.equal(checkerWorkers, 1);
+  assert.equal(readState(h.root, h.runId).data.episodes.find(
+    episode => episode.id === review.checkerId,
+  ).status, 'in_progress');
+  assert.equal(readLines(h.root, h.runId).filter(event => event.type === 'review-outcome').length, 0);
+  assert.deepEqual(
+    readLines(h.root, h.runId).filter(
+      event => event.type === 'cost' && event.data?.reported_turns === 1,
+    )
+      .map(event => event.data.reported_tokens),
+    [5, 12, 24],
+    'the injected crash precedes checker accounting',
+  );
+
+  let checkerRetries = 0;
+  const second = driveHeadlessRun({
+    ...h.baseOptions,
+    expect: { owner: h.handoff.childRunId, generation: 2 },
+    now: NOW1 + 14_000,
+    timeoutMs: 20_000,
+    checkerRunFn: () => {
+      checkerRetries += 1;
+      throw new Error('an in-progress checker is never retried');
+    },
+  });
+  assert.equal(second.action, 'checker-in-progress', JSON.stringify(second));
+  assert.equal(checkerRetries, 0);
+  assert.equal(h.calls().filter(call => call.kind === 'checker').length, 1);
+  const costs = readLines(h.root, h.runId).filter(
+    event => event.type === 'cost' && event.data?.reported_turns === 1,
+  );
+  assert.deepEqual(costs.map(event => event.data.reported_tokens), [5, 12, 24, 36]);
+  assert.equal(costs.filter(event => event.data?.process_kind === 'checker').length, 1);
+  const state = readState(h.root, h.runId).data;
+  assert.equal(state.episodes.find(episode => episode.id === review.checkerId).status, 'in_progress');
+  assert.equal(readLines(h.root, h.runId).filter(event => event.type === 'review-outcome').length, 0);
+});
+
+test('a real checker receipt settles after an exact imported review is terminally stopped at the accounting boundary', () => {
+  const h = createHostHarness();
+  assert.equal(h.runMaker().result.action, 'resumed');
+  seedIndependentChecker(h);
+  const result = driveHeadlessRun({
+    ...h.baseOptions,
+    expect: { owner: h.handoff.childRunId, generation: 2 },
+    now: NOW1 + 15_000,
+    timeoutMs: 20_000,
+    attemptIdFactory: () => 'attempt-terminal-checker-receipt',
+    checkerRunFn: options => runIndependentCodexChecker({
+      ...options,
+      runProcess: h.runThroughWorker,
+    }),
+    checkerImportFn: (options, bytes) => {
+      const imported = importReviewViaCli(options, bytes);
+      assert.equal(imported.ok, true, JSON.stringify(imported));
+      finishRun(h.root, h.runId, {
+        status: 'stopped',
+        confirm: true,
+        proof: { human_reason: 'terminal checker accounting race fixture' },
+        fence: { owner: h.handoff.childRunId, generation: 2, intent: 'business' },
+        now: NOW1 + 15_500,
+      });
+      return imported;
+    },
+  });
+
+  assert.equal(result.action, 'checker-complete', JSON.stringify(result));
+  assert.equal(result.recorded, true, JSON.stringify(result));
+  assert.equal(result.continuation, false);
+  const state = readState(h.root, h.runId).data;
+  assert.equal(state.status, 'stopped');
+  const checkerCost = readLines(h.root, h.runId).find(
+    event => event.data?.process_kind === 'checker',
+  );
+  assert.equal(checkerCost.data.reported_tokens, 36);
+  assert.equal(checkerCost.data.owner, h.handoff.childRunId);
+  assert.deepEqual(
+    readLines(h.root, h.runId).filter(
+      event => event.type === 'cost' && event.data?.reported_turns === 1,
+    ).map(event => event.data.reported_tokens),
+    [5, 12, 24, 36],
+  );
 });
 
 test('post-preflight executable or authenticated-home drift rolls back before a production maker spawn', () => {

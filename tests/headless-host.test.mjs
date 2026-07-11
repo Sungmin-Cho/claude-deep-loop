@@ -193,6 +193,52 @@ test('cache hit has no smoke usage to replay and still runs the maker exactly on
   assert.deepEqual(costs.map((event) => event.data.reported_tokens), [31]);
 });
 
+test('receipt-settled preflight is accounted through the injected kernel settler and never replayed generically', () => {
+  const { root, runId, childRunId } = seedCodexHandoff();
+  const deps = codexHostDeps(root, runId);
+  const receiptIds = ['a'.repeat(64), 'b'.repeat(64)];
+  const settled = [];
+  let genericRecords = 0;
+  const result = driveHeadlessRun({
+    root,
+    runId,
+    now: NOW1 + 1_000,
+    ...deps,
+    settlePreflightCostFn: (projectRoot, id, { receipt, fence }) => {
+      assert.equal(projectRoot, root);
+      assert.equal(id, runId);
+      assert.deepEqual(fence, { owner: runId, generation: 1, intent: 'accounting' });
+      settled.push(receipt.receipt_id);
+      return { ok: true, recorded: true, reason: 'recorded' };
+    },
+    preflightFn: (options) => {
+      assert.equal(typeof options.settleAccountingReceipt, 'function');
+      for (const receipt_id of receiptIds) options.settleAccountingReceipt({ receipt_id });
+      return {
+        ok: true,
+        cache_hit: false,
+        measured_usage: [measuredUsage(10), measuredUsage(20)],
+        accounting_settled: true,
+        accounting_receipts: receiptIds,
+      };
+    },
+    recordCostFn: (...args) => {
+      genericRecords += 1;
+      return recordCost(...args);
+    },
+    spawnFn: () => {
+      acquireLease(root, runId, {
+        owner: childRunId, expectGeneration: 1, runtime: 'codex', now: NOW1 + 2_000,
+      });
+      return { ok: true, usage: measuredUsage(30) };
+    },
+  });
+
+  assert.equal(result.action, 'resumed');
+  assert.deepEqual(settled, receiptIds);
+  assert.equal(genericRecords, 1, 'only the maker usage uses the generic post-process recorder');
+});
+
 test('terminal Codex maker usage is settled once after the acquired child completes the run', () => {
   const { root, runId, childRunId } = seedCodexHandoff();
   const deps = codexHostDeps(root, runId);
@@ -274,7 +320,7 @@ test('terminal Codex maker settlement failure is explicit and never reported as 
 });
 
 test('invalid preflight usage cardinality fails closed before accounting or maker', () => {
-  for (const { label, result: preflightResult } of [
+  for (const { label, result: preflightResult, reason, invokeReceipts } of [
     { label: 'miss-zero', result: { ok: true, cache_hit: false, measured_usage: [] } },
     { label: 'miss-one', result: { ok: true, cache_hit: false, measured_usage: [measuredUsage(10)] } },
     {
@@ -282,6 +328,28 @@ test('invalid preflight usage cardinality fails closed before accounting or make
       result: { ok: true, cache_hit: false, measured_usage: [measuredUsage(10), measuredUsage(20), measuredUsage(30)] },
     },
     { label: 'hit-one', result: { ok: true, cache_hit: true, measured_usage: [measuredUsage(10)] } },
+    {
+      label: 'receipt-mode-invalid-usage',
+      result: {
+        ok: true,
+        cache_hit: false,
+        measured_usage: [measuredUsage(10), { num_turns: 2, input_tokens: 1, output_tokens: 1, tokens: 2 }],
+        accounting_settled: true,
+        accounting_receipts: ['a'.repeat(64), 'b'.repeat(64)],
+      },
+      reason: 'preflight-usage-invalid',
+      invokeReceipts: true,
+    },
+    {
+      label: 'receipt-mode-without-settlement-evidence',
+      result: {
+        ok: true,
+        cache_hit: false,
+        measured_usage: [measuredUsage(10), measuredUsage(20)],
+        accounting_settled: true,
+        accounting_receipts: ['c'.repeat(64), 'd'.repeat(64)],
+      },
+    },
     {
       label: 'failure-three',
       result: {
@@ -291,7 +359,7 @@ test('invalid preflight usage cardinality fails closed before accounting or make
         measured_usage: [measuredUsage(10), measuredUsage(20), measuredUsage(30)],
       },
     },
-  ]) {
+  ].map(item => ({ reason: 'preflight-invalid', invokeReceipts: false, ...item }))) {
     const { root, runId } = seedCodexHandoff();
     const deps = codexHostDeps(root, runId);
     let makerCalls = 0;
@@ -301,14 +369,22 @@ test('invalid preflight usage cardinality fails closed before accounting or make
       expect: { owner: runId, generation: 1 },
       now: NOW1 + 1_000,
       ...deps,
-      preflightFn: () => preflightResult,
+      preflightFn: (options) => {
+        if (invokeReceipts) {
+          for (const receipt_id of preflightResult.accounting_receipts) {
+            options.settleAccountingReceipt({ receipt_id });
+          }
+        }
+        return preflightResult;
+      },
+      settlePreflightCostFn: () => ({ ok: true, recorded: true, reason: 'recorded' }),
       spawnFn: () => { makerCalls += 1; return { ok: true, usage: measuredUsage(40) }; },
     });
 
     assert.deepEqual(result, {
       ok: false,
       action: 'preflight-failed',
-      reason: 'preflight-invalid',
+      reason,
     }, label);
     assert.equal(makerCalls, 0, label);
     assert.equal(readState(root, runId).data.status, 'paused', label);

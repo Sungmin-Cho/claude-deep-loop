@@ -65,6 +65,7 @@ function compactHeadlessResult(out) {
   return {
     ok: true,
     usage: out.usage,
+    ...(out.usageReceipt != null ? { usageReceipt: out.usageReceipt } : {}),
     ...(typeof out.stderr === 'string' && out.stderr.length > 0 ? { stderr: out.stderr } : {}),
     ...(out.stderrTruncated === true ? { stderrTruncated: true } : {}),
   };
@@ -74,6 +75,7 @@ export function headlessSpawn(entry, {
   timeoutMs = 30 * 60 * 1000,
   run,
   runSync = runStreamingProcessSync,
+  usageReceipt = null,
 } = {}) {
   let out;
   try {
@@ -81,7 +83,7 @@ export function headlessSpawn(entry, {
       out = run(entry.bin, entry.argv, { timeoutMs, cwd: entry.cwd });
       return parseLegacyHeadlessResult(entry, out);
     }
-    out = runSync(entry, { timeoutMs });
+    out = runSync(entry, { timeoutMs, ...(usageReceipt == null ? {} : { usageReceipt }) });
   } catch (e) {
     return { ok: false, reason: `spawn-error: ${e.message || e}` };
   }

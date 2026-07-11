@@ -5,9 +5,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   checkBudget,
+  codexCheckerClaimHash,
+  makeCodexProcessReceipt,
   isMeasuredOneTurnUsage,
+  makeCodexPreflightReceipt,
   recordCost,
   reconcileBudget,
+  settleCodexPreflightCost,
+  settleCodexProcessCost,
   settleTerminalCodexMakerCost,
   MUTATION_TURN_FLOOR,
 } from '../scripts/lib/budget.mjs';
@@ -19,6 +24,7 @@ import { newWorkstream, setWorkstreamStatus } from '../scripts/lib/workspace.mjs
 import { nextAction } from '../scripts/lib/next-action.mjs';
 import { releaseLease, acquireLease } from '../scripts/lib/lease.mjs';
 import { finishRun } from '../scripts/lib/finish.mjs';
+import { emitHandoff } from '../scripts/lib/handoff.mjs';
 
 function floorRun() {
   const root = mkdtempSync(join(tmpdir(), 'dl-floor-'));
@@ -109,6 +115,796 @@ test('isMeasuredOneTurnUsage accepts only an exact safe Codex one-turn measureme
     { num_turns: 1, tokens: 2, input_tokens: 1, output_tokens: 1, reasoning_output_tokens: 0.5 },
   ];
   for (const usage of invalid) assert.equal(isMeasuredOneTurnUsage(usage), false, JSON.stringify(usage));
+});
+
+function preflightReceiptFixture() {
+  const root = mkdtempSync(join(tmpdir(), 'dl-preflight-receipt-'));
+  const { runId } = initRun(root, {
+    runtime: 'codex', goal: 'g', now: new Date('2026-07-12T00:00:00Z'),
+  });
+  const fence = { owner: runId, generation: 1, intent: 'accounting' };
+  const cacheKey = 'a'.repeat(64);
+  const attemptId = 'b'.repeat(32);
+  const read = makeCodexPreflightReceipt({
+    root, runId, cacheKey, smokeKind: 'read', attemptId,
+    predecessorReceiptId: null, owner: runId, generation: 1,
+    usage: { num_turns: 1, input_tokens: 2, output_tokens: 3, tokens: 5 },
+  });
+  const write = makeCodexPreflightReceipt({
+    root, runId, cacheKey, smokeKind: 'write', attemptId,
+    predecessorReceiptId: read.receipt_id, owner: runId, generation: 1,
+    usage: { num_turns: 1, input_tokens: 5, output_tokens: 7, tokens: 12 },
+  });
+  return { root, runId, fence, read, write };
+}
+
+test('Codex preflight receipts settle read/write exactly once and survive a later valid lease', () => {
+  const fixture = preflightReceiptFixture();
+  assert.deepEqual(settleCodexPreflightCost(fixture.root, fixture.runId, {
+    receipt: fixture.read, fence: fixture.fence,
+  }), { ok: true, recorded: true, reason: 'recorded' });
+  assert.deepEqual(settleCodexPreflightCost(fixture.root, fixture.runId, {
+    receipt: fixture.write, fence: fixture.fence,
+  }), { ok: true, recorded: true, reason: 'recorded' });
+
+  const statePath = join(runDir(fixture.root, fixture.runId), 'loop.json');
+  const logPath = join(runDir(fixture.root, fixture.runId), 'event-log.jsonl');
+  const beforeState = readFileSync(statePath, 'utf8');
+  const beforeLog = readFileSync(logPath, 'utf8');
+  releaseLease(fixture.root, fixture.runId, { owner: fixture.runId, generation: 1 });
+  assert.equal(acquireLease(fixture.root, fixture.runId, {
+    owner: 'RECOVERY-OWNER', expectGeneration: 1, runtime: 'codex',
+    now: Date.parse('2026-07-12T00:01:00Z'),
+  }).ok, true);
+  const recoveryFence = { owner: 'RECOVERY-OWNER', generation: 2, intent: 'accounting' };
+  const afterLeaseState = readFileSync(statePath, 'utf8');
+  const afterLeaseLog = readFileSync(logPath, 'utf8');
+
+  assert.deepEqual(settleCodexPreflightCost(fixture.root, fixture.runId, {
+    receipt: fixture.read, fence: recoveryFence,
+  }), { ok: true, recorded: false, reason: 'already-recorded' });
+  assert.deepEqual(settleCodexPreflightCost(fixture.root, fixture.runId, {
+    receipt: fixture.write, fence: recoveryFence,
+  }), { ok: true, recorded: false, reason: 'already-recorded' });
+  assert.equal(readFileSync(statePath, 'utf8'), afterLeaseState, 'exact retries must not rewrite state');
+  assert.equal(readFileSync(logPath, 'utf8'), afterLeaseLog, 'exact retries must not append events');
+  assert.notEqual(afterLeaseState, beforeState, 'the fixture must really advance the lease');
+  assert.equal(afterLeaseLog, beforeLog, 'lease-only transitions do not append cost receipts');
+
+  const costs = readLines(fixture.root, fixture.runId).filter(
+    event => event.type === 'cost' && event.data?.source === 'codex-preflight-measured',
+  );
+  assert.deepEqual(costs.map(event => event.data.reported_tokens), [5, 12]);
+  assert.deepEqual(costs.map(event => event.data.preflight_smoke), ['read', 'write']);
+  assert.equal(new Set(costs.map(event => event.data.preflight_receipt_id)).size, 2);
+  assert.equal(readState(fixture.root, fixture.runId).data.budget.tokens_spent, 17);
+});
+
+test('Codex preflight receipt validation rejects altered usage and write-before-read without writes', () => {
+  const mismatch = preflightReceiptFixture();
+  const mismatchState = join(runDir(mismatch.root, mismatch.runId), 'loop.json');
+  const stateBefore = readFileSync(mismatchState, 'utf8');
+  assert.throws(() => settleCodexPreflightCost(mismatch.root, mismatch.runId, {
+    receipt: { ...mismatch.read, usage: { ...mismatch.read.usage, output_tokens: 4, tokens: 6 } },
+    fence: mismatch.fence,
+  }), /PREFLIGHT_ACCOUNTING_RECEIPT_INVALID/);
+  assert.equal(readFileSync(mismatchState, 'utf8'), stateBefore);
+  assert.deepEqual(readLines(mismatch.root, mismatch.runId), []);
+
+  const predecessor = preflightReceiptFixture();
+  assert.throws(() => settleCodexPreflightCost(predecessor.root, predecessor.runId, {
+    receipt: predecessor.write, fence: predecessor.fence,
+  }), /PREFLIGHT_ACCOUNTING_PREDECESSOR_MISSING/);
+  assert.equal(readLines(predecessor.root, predecessor.runId).filter(
+    event => event.data?.preflight_receipt_id,
+  ).length, 0);
+});
+
+test('Codex preflight settlement rejects a conflicting or duplicated durable receipt event', () => {
+  const conflict = preflightReceiptFixture();
+  appendAnchored(conflict.root, conflict.runId, {
+    type: 'cost',
+    data: {
+      turns: 1,
+      tokens: 6,
+      reported_turns: 1,
+      reported_tokens: 6,
+      input_tokens: 2,
+      output_tokens: 4,
+      owner: conflict.read.owner,
+      generation: conflict.read.generation,
+      source: 'codex-preflight-measured',
+      preflight_receipt_id: conflict.read.receipt_id,
+      preflight_cache_key: conflict.read.cache_key,
+      preflight_smoke: 'read',
+      preflight_attempt_id: conflict.read.attempt_id,
+      predecessor_receipt_id: null,
+    },
+  });
+  assert.throws(() => settleCodexPreflightCost(conflict.root, conflict.runId, {
+    receipt: conflict.read, fence: conflict.fence,
+  }), /PREFLIGHT_ACCOUNTING_MISMATCH/);
+
+  const duplicate = preflightReceiptFixture();
+  settleCodexPreflightCost(duplicate.root, duplicate.runId, {
+    receipt: duplicate.read, fence: duplicate.fence,
+  });
+  const exactData = structuredClone(readLines(duplicate.root, duplicate.runId).find(
+    event => event.data?.preflight_receipt_id === duplicate.read.receipt_id,
+  ).data);
+  appendAnchored(duplicate.root, duplicate.runId, { type: 'cost', data: exactData });
+  const statePath = join(runDir(duplicate.root, duplicate.runId), 'loop.json');
+  const logPath = join(runDir(duplicate.root, duplicate.runId), 'event-log.jsonl');
+  const stateBefore = readFileSync(statePath, 'utf8');
+  const logBefore = readFileSync(logPath, 'utf8');
+  assert.throws(() => settleCodexPreflightCost(duplicate.root, duplicate.runId, {
+    receipt: duplicate.read, fence: duplicate.fence,
+  }), /PREFLIGHT_ACCOUNTING_DUPLICATE/);
+  assert.equal(readFileSync(statePath, 'utf8'), stateBefore);
+  assert.equal(readFileSync(logPath, 'utf8'), logBefore);
+});
+
+test('Codex preflight read/write receipts preserve the existing per-session max-rule', () => {
+  const fixture = preflightReceiptFixture();
+  newEpisode(fixture.root, fixture.runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'k', point: 'implementation',
+    fence: { ...fixture.fence, intent: 'business' },
+  });
+  settleCodexPreflightCost(fixture.root, fixture.runId, {
+    receipt: fixture.read, fence: fixture.fence,
+  });
+  settleCodexPreflightCost(fixture.root, fixture.runId, {
+    receipt: fixture.write, fence: fixture.fence,
+  });
+  const state = readState(fixture.root, fixture.runId).data;
+  assert.equal(state.budget.spent, 2, 'read absorbs the existing one-turn floor; write adds one turn');
+  assert.equal(state.budget.tokens_spent, 17);
+  assert.equal(state.session_chain.sessions.find(session => session.run_id === fixture.runId).turns, 2);
+  assert.doesNotThrow(() => reconcileBudget(fixture.root, fixture.runId));
+});
+
+test('an exact recorded preflight receipt remains a write-free no-op under its current terminal fence', () => {
+  const fixture = preflightReceiptFixture();
+  settleCodexPreflightCost(fixture.root, fixture.runId, {
+    receipt: fixture.read,
+    fence: fixture.fence,
+  });
+  finishRun(fixture.root, fixture.runId, {
+    status: 'stopped',
+    confirm: true,
+    proof: { human_reason: 'terminal preflight receipt cleanup fixture' },
+    fence: { owner: fixture.runId, generation: 1, intent: 'business' },
+    now: Date.parse('2026-07-12T00:04:00.000Z'),
+  });
+  const statePath = join(runDir(fixture.root, fixture.runId), 'loop.json');
+  const logPath = join(runDir(fixture.root, fixture.runId), 'event-log.jsonl');
+  const stateBefore = readFileSync(statePath, 'utf8');
+  const logBefore = readFileSync(logPath, 'utf8');
+  assert.deepEqual(settleCodexPreflightCost(fixture.root, fixture.runId, {
+    receipt: fixture.read,
+    fence: fixture.fence,
+  }), { ok: true, recorded: false, reason: 'already-recorded' });
+  assert.equal(readFileSync(statePath, 'utf8'), stateBefore);
+  assert.equal(readFileSync(logPath, 'utf8'), logBefore);
+  assert.throws(() => settleCodexPreflightCost(fixture.root, fixture.runId, {
+    receipt: fixture.read,
+    fence: { owner: 'WRONG', generation: 1, intent: 'accounting' },
+  }), /LEASE_FENCED: owner-mismatch/);
+  assert.throws(() => settleCodexPreflightCost(fixture.root, fixture.runId, {
+    receipt: fixture.read,
+    fence: { owner: fixture.runId, generation: 2, intent: 'accounting' },
+  }), /LEASE_FENCED: generation-mismatch/);
+});
+
+test('terminal preflight retry still rejects a missing or mismatched receipt event', () => {
+  const missing = preflightReceiptFixture();
+  settleCodexPreflightCost(missing.root, missing.runId, {
+    receipt: missing.read,
+    fence: missing.fence,
+  });
+  finishRun(missing.root, missing.runId, {
+    status: 'stopped',
+    confirm: true,
+    proof: { human_reason: 'missing terminal receipt fixture' },
+    fence: { owner: missing.runId, generation: 1, intent: 'business' },
+    now: Date.parse('2026-07-12T00:04:00.000Z'),
+  });
+  assert.throws(() => settleCodexPreflightCost(missing.root, missing.runId, {
+    receipt: missing.write,
+    fence: missing.fence,
+  }), /LEASE_FENCED: RUN_TERMINAL/);
+
+  const mismatch = preflightReceiptFixture();
+  appendAnchored(mismatch.root, mismatch.runId, {
+    type: 'cost',
+    data: {
+      turns: 1,
+      tokens: mismatch.read.usage.tokens,
+      reported_turns: mismatch.read.usage.num_turns,
+      reported_tokens: mismatch.read.usage.tokens,
+      input_tokens: mismatch.read.usage.input_tokens,
+      output_tokens: mismatch.read.usage.output_tokens,
+      owner: mismatch.read.owner,
+      generation: mismatch.read.generation,
+      source: 'forged-preflight-source',
+      preflight_receipt_id: mismatch.read.receipt_id,
+      preflight_cache_key: mismatch.read.cache_key,
+      preflight_smoke: mismatch.read.smoke_kind,
+      preflight_attempt_id: mismatch.read.attempt_id,
+      predecessor_receipt_id: null,
+    },
+  });
+  finishRun(mismatch.root, mismatch.runId, {
+    status: 'stopped',
+    confirm: true,
+    proof: { human_reason: 'mismatched terminal receipt fixture' },
+    fence: { owner: mismatch.runId, generation: 1, intent: 'business' },
+    now: Date.parse('2026-07-12T00:04:00.000Z'),
+  });
+  assert.throws(() => settleCodexPreflightCost(mismatch.root, mismatch.runId, {
+    receipt: mismatch.read,
+    fence: mismatch.fence,
+  }), /PREFLIGHT_ACCOUNTING_MISMATCH/);
+});
+
+test('preflight receipt idempotency rejects semantic event-data extras', () => {
+  const fixture = preflightReceiptFixture();
+  appendAnchored(fixture.root, fixture.runId, {
+    type: 'cost',
+    data: {
+      turns: fixture.read.usage.num_turns,
+      tokens: fixture.read.usage.tokens,
+      reported_turns: fixture.read.usage.num_turns,
+      reported_tokens: fixture.read.usage.tokens,
+      input_tokens: fixture.read.usage.input_tokens,
+      output_tokens: fixture.read.usage.output_tokens,
+      owner: fixture.read.owner,
+      generation: fixture.read.generation,
+      source: 'codex-preflight-measured',
+      preflight_receipt_id: fixture.read.receipt_id,
+      preflight_cache_key: fixture.read.cache_key,
+      preflight_smoke: fixture.read.smoke_kind,
+      preflight_attempt_id: fixture.read.attempt_id,
+      predecessor_receipt_id: null,
+      auto_floor: true,
+      for: 'smuggled-preflight-floor',
+    },
+  });
+  assert.throws(() => settleCodexPreflightCost(fixture.root, fixture.runId, {
+    receipt: fixture.read,
+    fence: fixture.fence,
+  }), /PREFLIGHT_ACCOUNTING_MISMATCH/);
+});
+
+test('preflight process identity rejects a second rehashed receipt with altered usage', () => {
+  const fixture = preflightReceiptFixture();
+  settleCodexPreflightCost(fixture.root, fixture.runId, {
+    receipt: fixture.read,
+    fence: fixture.fence,
+  });
+  const altered = makeCodexPreflightReceipt({
+    root: fixture.root,
+    runId: fixture.runId,
+    cacheKey: fixture.read.cache_key,
+    smokeKind: fixture.read.smoke_kind,
+    attemptId: fixture.read.attempt_id,
+    predecessorReceiptId: fixture.read.predecessor_receipt_id,
+    owner: fixture.read.owner,
+    generation: fixture.read.generation,
+    usage: { num_turns: 1, input_tokens: 2, output_tokens: 4, tokens: 6 },
+  });
+  assert.notEqual(altered.receipt_id, fixture.read.receipt_id);
+  const statePath = join(runDir(fixture.root, fixture.runId), 'loop.json');
+  const logPath = join(runDir(fixture.root, fixture.runId), 'event-log.jsonl');
+  const stateBefore = readFileSync(statePath, 'utf8');
+  const logBefore = readFileSync(logPath, 'utf8');
+  assert.throws(() => settleCodexPreflightCost(fixture.root, fixture.runId, {
+    receipt: altered,
+    fence: fixture.fence,
+  }), /PREFLIGHT_ACCOUNTING_MISMATCH/);
+  assert.equal(readFileSync(statePath, 'utf8'), stateBefore);
+  assert.equal(readFileSync(logPath, 'utf8'), logBefore);
+});
+
+test('an exact preflight write receipt still requires its unique read predecessor', () => {
+  const fixture = preflightReceiptFixture();
+  appendAnchored(fixture.root, fixture.runId, {
+    type: 'cost',
+    data: {
+      turns: fixture.write.usage.num_turns,
+      tokens: fixture.write.usage.tokens,
+      reported_turns: fixture.write.usage.num_turns,
+      reported_tokens: fixture.write.usage.tokens,
+      input_tokens: fixture.write.usage.input_tokens,
+      output_tokens: fixture.write.usage.output_tokens,
+      owner: fixture.write.owner,
+      generation: fixture.write.generation,
+      source: 'codex-preflight-measured',
+      preflight_receipt_id: fixture.write.receipt_id,
+      preflight_cache_key: fixture.write.cache_key,
+      preflight_smoke: fixture.write.smoke_kind,
+      preflight_attempt_id: fixture.write.attempt_id,
+      predecessor_receipt_id: fixture.write.predecessor_receipt_id,
+    },
+  });
+  assert.throws(() => settleCodexPreflightCost(fixture.root, fixture.runId, {
+    receipt: fixture.write,
+    fence: fixture.fence,
+  }), /PREFLIGHT_ACCOUNTING_PREDECESSOR_MISSING/);
+});
+
+test('a preflight write rejects multiple read receipts for the same raw-journal attempt', () => {
+  const fixture = preflightReceiptFixture();
+  settleCodexPreflightCost(fixture.root, fixture.runId, {
+    receipt: fixture.read,
+    fence: fixture.fence,
+  });
+  const conflictingRead = makeCodexPreflightReceipt({
+    root: fixture.root,
+    runId: fixture.runId,
+    cacheKey: fixture.read.cache_key,
+    smokeKind: 'read',
+    attemptId: fixture.read.attempt_id,
+    predecessorReceiptId: null,
+    owner: fixture.read.owner,
+    generation: fixture.read.generation,
+    usage: { num_turns: 1, input_tokens: 2, output_tokens: 4, tokens: 6 },
+  });
+  appendAnchored(fixture.root, fixture.runId, {
+    type: 'cost',
+    data: {
+      turns: conflictingRead.usage.num_turns,
+      tokens: conflictingRead.usage.tokens,
+      reported_turns: conflictingRead.usage.num_turns,
+      reported_tokens: conflictingRead.usage.tokens,
+      input_tokens: conflictingRead.usage.input_tokens,
+      output_tokens: conflictingRead.usage.output_tokens,
+      owner: conflictingRead.owner,
+      generation: conflictingRead.generation,
+      source: 'codex-preflight-measured',
+      preflight_receipt_id: conflictingRead.receipt_id,
+      preflight_cache_key: conflictingRead.cache_key,
+      preflight_smoke: conflictingRead.smoke_kind,
+      preflight_attempt_id: conflictingRead.attempt_id,
+      predecessor_receipt_id: null,
+    },
+  });
+  assert.throws(() => settleCodexPreflightCost(fixture.root, fixture.runId, {
+    receipt: fixture.write,
+    fence: fixture.fence,
+  }), /PREFLIGHT_ACCOUNTING_DUPLICATE/);
+});
+
+test('an exact preflight receipt still requires a durable origin session', () => {
+  const fixture = preflightReceiptFixture();
+  const receipt = makeCodexPreflightReceipt({
+    root: fixture.root,
+    runId: fixture.runId,
+    cacheKey: fixture.read.cache_key,
+    smokeKind: 'read',
+    attemptId: 'c'.repeat(32),
+    predecessorReceiptId: null,
+    owner: 'MISSING-ORIGIN',
+    generation: 1,
+    usage: fixture.read.usage,
+  });
+  appendAnchored(fixture.root, fixture.runId, {
+    type: 'cost',
+    data: {
+      turns: receipt.usage.num_turns,
+      tokens: receipt.usage.tokens,
+      reported_turns: receipt.usage.num_turns,
+      reported_tokens: receipt.usage.tokens,
+      input_tokens: receipt.usage.input_tokens,
+      output_tokens: receipt.usage.output_tokens,
+      owner: receipt.owner,
+      generation: receipt.generation,
+      source: 'codex-preflight-measured',
+      preflight_receipt_id: receipt.receipt_id,
+      preflight_cache_key: receipt.cache_key,
+      preflight_smoke: receipt.smoke_kind,
+      preflight_attempt_id: receipt.attempt_id,
+      predecessor_receipt_id: null,
+    },
+  });
+  assert.throws(() => settleCodexPreflightCost(fixture.root, fixture.runId, {
+    receipt,
+    fence: fixture.fence,
+  }), /PREFLIGHT_ACCOUNTING_ORIGIN_INVALID/);
+});
+
+function makerProcessReceiptFixture({ acquire = false } = {}) {
+  const root = mkdtempSync(join(tmpdir(), 'dl-maker-process-receipt-'));
+  const now = Date.parse('2026-07-12T00:00:00.000Z');
+  const { runId } = initRun(root, { runtime: 'codex', goal: 'g', now: new Date(now) });
+  const handoff = emitHandoff(root, runId, {
+    trigger: 'maker-process-receipt',
+    headless: true,
+    resumePolicy: 'headless',
+    expect: { owner: runId, generation: 1 },
+    now: now + 1_000,
+  });
+  assert.equal(handoff.ok, true);
+  if (acquire) {
+    assert.equal(acquireLease(root, runId, {
+      owner: handoff.childRunId,
+      expectGeneration: 1,
+      runtime: 'codex',
+      now: now + 2_000,
+    }).ok, true);
+  }
+  const receipt = makeCodexProcessReceipt({
+    root,
+    runId,
+    processKind: 'maker',
+    context: {
+      parent_owner: runId,
+      parent_generation: 1,
+      child_run_id: handoff.childRunId,
+      child_generation: 2,
+      handoff_key: handoff.key,
+      handoff_rel: handoff.handoffRel,
+    },
+    usage: { num_turns: 1, input_tokens: 2, output_tokens: 3, tokens: 5 },
+  });
+  const fence = acquire
+    ? { owner: handoff.childRunId, generation: 2, intent: 'accounting' }
+    : { owner: runId, generation: 1, intent: 'accounting' };
+  return { root, runId, handoff, receipt, fence };
+}
+
+test('maker process receipts derive parent versus acquired-child origin and retry as an exact no-op', () => {
+  for (const acquire of [false, true]) {
+    const fixture = makerProcessReceiptFixture({ acquire });
+    assert.deepEqual(settleCodexProcessCost(fixture.root, fixture.runId, {
+      receipt: fixture.receipt,
+      fence: fixture.fence,
+    }), { ok: true, recorded: true, reason: 'recorded' });
+    const statePath = join(runDir(fixture.root, fixture.runId), 'loop.json');
+    const logPath = join(runDir(fixture.root, fixture.runId), 'event-log.jsonl');
+    const stateBeforeRetry = readFileSync(statePath, 'utf8');
+    const logBeforeRetry = readFileSync(logPath, 'utf8');
+    assert.deepEqual(settleCodexProcessCost(fixture.root, fixture.runId, {
+      receipt: fixture.receipt,
+      fence: fixture.fence,
+    }), { ok: true, recorded: false, reason: 'already-recorded' });
+    assert.equal(readFileSync(statePath, 'utf8'), stateBeforeRetry);
+    assert.equal(readFileSync(logPath, 'utf8'), logBeforeRetry);
+
+    const cost = readLines(fixture.root, fixture.runId).find(
+      event => event.data?.process_receipt_id === fixture.receipt.receipt_id,
+    );
+    const expectedOwner = acquire ? fixture.handoff.childRunId : fixture.runId;
+    assert.equal(cost.data.owner, expectedOwner);
+    assert.equal(cost.data.generation, acquire ? 2 : 1);
+    assert.equal(cost.data.reported_tokens, 5);
+    assert.equal(readState(fixture.root, fixture.runId).data.session_chain.sessions.find(
+      session => session.run_id === expectedOwner,
+    ).turns >= 1, true);
+    assert.doesNotThrow(() => reconcileBudget(fixture.root, fixture.runId));
+  }
+});
+
+test('an acquired maker process receipt has only the existing handoff-and-finish-bound terminal carve-out', () => {
+  const fixture = makerProcessReceiptFixture({ acquire: true });
+  finishRun(fixture.root, fixture.runId, {
+    status: 'stopped',
+    confirm: true,
+    proof: { human_reason: 'generic terminal process receipt fixture' },
+    fence: { owner: fixture.handoff.childRunId, generation: 2, intent: 'business' },
+    now: Date.parse('2026-07-12T00:03:00.000Z'),
+  });
+  assert.deepEqual(settleCodexProcessCost(fixture.root, fixture.runId, {
+    receipt: fixture.receipt,
+    fence: fixture.fence,
+  }), { ok: true, recorded: true, reason: 'recorded' });
+  const state = readState(fixture.root, fixture.runId).data;
+  assert.equal(state.status, 'stopped');
+  const event = readLines(fixture.root, fixture.runId).find(
+    item => item.data?.process_receipt_id === fixture.receipt.receipt_id,
+  );
+  assert.equal(event.data.terminal_process, 'codex-maker');
+  assert.equal(event.data.turns, 0, 'the terminal receipt absorbs the kernel finish floor');
+  assert.equal(state.session_chain.sessions.find(
+    session => session.run_id === fixture.handoff.childRunId,
+  ).turns, 1);
+  assert.doesNotThrow(() => reconcileBudget(fixture.root, fixture.runId));
+});
+
+function appendExactishMakerReceiptEvent(fixture, {
+  owner,
+  generation,
+  turns = 1,
+  tokens = 5,
+  processContext = fixture.receipt.context,
+  extraData = {},
+} = {}) {
+  appendAnchored(fixture.root, fixture.runId, {
+    type: 'cost',
+    data: {
+      turns,
+      tokens,
+      reported_turns: fixture.receipt.usage.num_turns,
+      reported_tokens: fixture.receipt.usage.tokens,
+      input_tokens: fixture.receipt.usage.input_tokens,
+      output_tokens: fixture.receipt.usage.output_tokens,
+      owner,
+      generation,
+      source: 'codex-maker-measured',
+      process_receipt_id: fixture.receipt.receipt_id,
+      process_kind: 'maker',
+      process_context: processContext,
+      ...extraData,
+    },
+  });
+}
+
+test('acquired maker idempotency rejects a pre-existing receipt event charged to the parent', () => {
+  const fixture = makerProcessReceiptFixture({ acquire: true });
+  appendExactishMakerReceiptEvent(fixture, {
+    owner: fixture.runId,
+    generation: 1,
+  });
+  assert.throws(() => settleCodexProcessCost(fixture.root, fixture.runId, {
+    receipt: fixture.receipt,
+    fence: fixture.fence,
+  }), /PROCESS_ACCOUNTING_MISMATCH/);
+});
+
+test('process receipt idempotency rejects wrong adjusted turns and tokens for the derived origin', () => {
+  const fixture = makerProcessReceiptFixture({ acquire: true });
+  newEpisode(fixture.root, fixture.runId, {
+    plugin: 'deep-work',
+    role: 'maker',
+    kind: 'fixture-floor',
+    point: 'implementation',
+    fence: { owner: fixture.handoff.childRunId, generation: 2, intent: 'business' },
+  });
+  appendExactishMakerReceiptEvent(fixture, {
+    owner: fixture.handoff.childRunId,
+    generation: 2,
+    turns: 1,
+    tokens: 4,
+  });
+  assert.throws(() => settleCodexProcessCost(fixture.root, fixture.runId, {
+    receipt: fixture.receipt,
+    fence: fixture.fence,
+  }), /PROCESS_ACCOUNTING_MISMATCH/);
+});
+
+test('process receipt idempotency rejects a normalized context with an extra property', () => {
+  const fixture = makerProcessReceiptFixture();
+  appendExactishMakerReceiptEvent(fixture, {
+    owner: fixture.runId,
+    generation: 1,
+    processContext: { ...fixture.receipt.context, ignored_extra: true },
+  });
+  assert.throws(() => settleCodexProcessCost(fixture.root, fixture.runId, {
+    receipt: fixture.receipt,
+    fence: fixture.fence,
+  }), /PROCESS_ACCOUNTING_MISMATCH/);
+});
+
+test('process receipt idempotency rejects semantic event-data extras', () => {
+  const fixture = makerProcessReceiptFixture();
+  appendExactishMakerReceiptEvent(fixture, {
+    owner: fixture.runId,
+    generation: 1,
+    extraData: { auto_floor: true, for: 'smuggled-process-floor' },
+  });
+  assert.throws(() => settleCodexProcessCost(fixture.root, fixture.runId, {
+    receipt: fixture.receipt,
+    fence: fixture.fence,
+  }), /PROCESS_ACCOUNTING_MISMATCH/);
+});
+
+test('maker process identity rejects a second rehashed receipt with altered usage', () => {
+  const fixture = makerProcessReceiptFixture();
+  settleCodexProcessCost(fixture.root, fixture.runId, {
+    receipt: fixture.receipt,
+    fence: fixture.fence,
+  });
+  const altered = makeCodexProcessReceipt({
+    root: fixture.root,
+    runId: fixture.runId,
+    processKind: fixture.receipt.process_kind,
+    context: fixture.receipt.context,
+    usage: { num_turns: 1, input_tokens: 2, output_tokens: 4, tokens: 6 },
+  });
+  assert.notEqual(altered.receipt_id, fixture.receipt.receipt_id);
+  const statePath = join(runDir(fixture.root, fixture.runId), 'loop.json');
+  const logPath = join(runDir(fixture.root, fixture.runId), 'event-log.jsonl');
+  const stateBefore = readFileSync(statePath, 'utf8');
+  const logBefore = readFileSync(logPath, 'utf8');
+  assert.throws(() => settleCodexProcessCost(fixture.root, fixture.runId, {
+    receipt: altered,
+    fence: fixture.fence,
+  }), /PROCESS_ACCOUNTING_MISMATCH/);
+  assert.equal(readFileSync(statePath, 'utf8'), stateBefore);
+  assert.equal(readFileSync(logPath, 'utf8'), logBefore);
+});
+
+test('maker process receipt alteration, mismatched events, and duplicate events fail closed', () => {
+  for (const mutate of [
+    receipt => { receipt.context.handoff_key = 'f'.repeat(16); },
+    receipt => { receipt.usage.output_tokens += 1; receipt.usage.tokens += 1; },
+  ]) {
+    const fixture = makerProcessReceiptFixture();
+    const altered = structuredClone(fixture.receipt);
+    mutate(altered);
+    const statePath = join(runDir(fixture.root, fixture.runId), 'loop.json');
+    const logPath = join(runDir(fixture.root, fixture.runId), 'event-log.jsonl');
+    const beforeState = readFileSync(statePath, 'utf8');
+    const beforeLog = readFileSync(logPath, 'utf8');
+    assert.throws(() => settleCodexProcessCost(fixture.root, fixture.runId, {
+      receipt: altered,
+      fence: fixture.fence,
+    }), /PROCESS_ACCOUNTING_RECEIPT_INVALID/);
+    assert.equal(readFileSync(statePath, 'utf8'), beforeState);
+    assert.equal(readFileSync(logPath, 'utf8'), beforeLog);
+  }
+
+  const mismatch = makerProcessReceiptFixture();
+  appendAnchored(mismatch.root, mismatch.runId, {
+    type: 'cost',
+    data: {
+      turns: 1,
+      tokens: 5,
+      reported_turns: 1,
+      reported_tokens: 5,
+      input_tokens: 2,
+      output_tokens: 3,
+      owner: mismatch.runId,
+      generation: 1,
+      source: 'forged',
+      process_receipt_id: mismatch.receipt.receipt_id,
+      process_kind: 'maker',
+      process_context: mismatch.receipt.context,
+    },
+  });
+  assert.throws(() => settleCodexProcessCost(mismatch.root, mismatch.runId, {
+    receipt: mismatch.receipt,
+    fence: mismatch.fence,
+  }), /PROCESS_ACCOUNTING_MISMATCH/);
+
+  const duplicate = makerProcessReceiptFixture();
+  settleCodexProcessCost(duplicate.root, duplicate.runId, {
+    receipt: duplicate.receipt,
+    fence: duplicate.fence,
+  });
+  const exactData = structuredClone(readLines(duplicate.root, duplicate.runId).find(
+    event => event.data?.process_receipt_id === duplicate.receipt.receipt_id,
+  ).data);
+  appendAnchored(duplicate.root, duplicate.runId, { type: 'cost', data: exactData });
+  assert.throws(() => settleCodexProcessCost(duplicate.root, duplicate.runId, {
+    receipt: duplicate.receipt,
+    fence: duplicate.fence,
+  }), /PROCESS_ACCOUNTING_DUPLICATE/);
+});
+
+function checkerProcessReceiptFixture({ originOwner, originGeneration } = {}) {
+  const root = mkdtempSync(join(tmpdir(), 'dl-checker-process-origin-'));
+  const { runId } = initRun(root, {
+    runtime: 'codex', goal: 'g', now: new Date('2026-07-12T00:00:00Z'),
+  });
+  const claim = {
+    run_id: runId,
+    reviewer_id: 'deep-review',
+    checker_episode_id: 'checker-1',
+    target_maker: 'maker-1',
+    attempt_id: 'attempt-1',
+    workstream_id: 'ws-1',
+    point: 'implementation',
+    project_root: root,
+    runtime: 'codex',
+    lease_owner: runId,
+    lease_generation: 1,
+    artifacts: [],
+  };
+  const { data } = readState(root, runId);
+  data.episodes.push({
+    id: claim.checker_episode_id,
+    role: 'checker',
+    status: 'in_progress',
+    attempt_id: claim.attempt_id,
+    target_maker: claim.target_maker,
+    review_claim: claim,
+  });
+  data.session_chain.sessions.push({
+    run_id: 'OTHER-SESSION',
+    started_at: '2026-07-12T00:00:01.000Z',
+    ended_at: null,
+    turns: 0,
+    outcome: null,
+    superseded_by: null,
+  });
+  writeState(root, runId, data);
+  const receipt = makeCodexProcessReceipt({
+    root,
+    runId,
+    processKind: 'checker',
+    context: {
+      origin_owner: originOwner ?? claim.lease_owner,
+      origin_generation: originGeneration ?? claim.lease_generation,
+      checker_episode_id: claim.checker_episode_id,
+      attempt_id: claim.attempt_id,
+      target_maker: claim.target_maker,
+      claim_hash: codexCheckerClaimHash(claim),
+    },
+    usage: { num_turns: 1, input_tokens: 2, output_tokens: 3, tokens: 5 },
+  });
+  return {
+    root,
+    runId,
+    claim,
+    receipt,
+    fence: { owner: runId, generation: 1, intent: 'accounting' },
+  };
+}
+
+test('checker process receipt origin must equal the immutable review claim lease', () => {
+  const fixture = checkerProcessReceiptFixture({
+    originOwner: 'OTHER-SESSION',
+    originGeneration: 2,
+  });
+  const { root, runId, receipt } = fixture;
+  const statePath = join(runDir(root, runId), 'loop.json');
+  const stateBefore = readFileSync(statePath, 'utf8');
+  const logBefore = readLines(root, runId);
+  assert.throws(() => settleCodexProcessCost(root, runId, {
+    receipt,
+    fence: fixture.fence,
+  }), /PROCESS_ACCOUNTING_CONTEXT_MISMATCH/);
+  assert.equal(readFileSync(statePath, 'utf8'), stateBefore);
+  assert.deepEqual(readLines(root, runId), logBefore);
+});
+
+test('an exact checker receipt remains a write-free no-op after lease advance and terminal finish', () => {
+  const fixture = checkerProcessReceiptFixture();
+  assert.deepEqual(settleCodexProcessCost(fixture.root, fixture.runId, {
+    receipt: fixture.receipt,
+    fence: fixture.fence,
+  }), { ok: true, recorded: true, reason: 'recorded' });
+  const handoff = emitHandoff(fixture.root, fixture.runId, {
+    trigger: 'checker-receipt-cleanup-fixture',
+    headless: true,
+    resumePolicy: 'headless',
+    expect: { owner: fixture.runId, generation: 1 },
+    now: Date.parse('2026-07-12T00:01:00.000Z'),
+  });
+  assert.equal(handoff.ok, true);
+  assert.equal(acquireLease(fixture.root, fixture.runId, {
+    owner: handoff.childRunId,
+    expectGeneration: 1,
+    runtime: 'codex',
+    now: Date.parse('2026-07-12T00:02:00.000Z'),
+  }).ok, true);
+  finishRun(fixture.root, fixture.runId, {
+    status: 'stopped',
+    confirm: true,
+    proof: { human_reason: 'terminal checker receipt cleanup fixture' },
+    fence: { owner: handoff.childRunId, generation: 2, intent: 'business' },
+    now: Date.parse('2026-07-12T00:03:00.000Z'),
+  });
+  const statePath = join(runDir(fixture.root, fixture.runId), 'loop.json');
+  const logPath = join(runDir(fixture.root, fixture.runId), 'event-log.jsonl');
+  const stateBefore = readFileSync(statePath, 'utf8');
+  const logBefore = readFileSync(logPath, 'utf8');
+  const currentFence = { owner: handoff.childRunId, generation: 2, intent: 'accounting' };
+  assert.deepEqual(settleCodexProcessCost(fixture.root, fixture.runId, {
+    receipt: fixture.receipt,
+    fence: currentFence,
+  }), { ok: true, recorded: false, reason: 'already-recorded' });
+  assert.equal(readFileSync(statePath, 'utf8'), stateBefore);
+  assert.equal(readFileSync(logPath, 'utf8'), logBefore);
+  assert.throws(() => settleCodexProcessCost(fixture.root, fixture.runId, {
+    receipt: fixture.receipt,
+    fence: fixture.fence,
+  }), /LEASE_FENCED: owner-mismatch/);
+  assert.throws(() => settleCodexProcessCost(fixture.root, fixture.runId, {
+    receipt: fixture.receipt,
+    fence: { owner: handoff.childRunId, generation: 3, intent: 'accounting' },
+  }), /LEASE_FENCED: generation-mismatch/);
 });
 
 test('recordCost syncs kernel-derived spent from event-log', () => {

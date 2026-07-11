@@ -2,11 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { STREAM_LIMITS } from '../scripts/lib/usage-parser.mjs';
+import { makeCodexPreflightReceipt } from '../scripts/lib/budget.mjs';
 
 const fixture = fileURLToPath(new URL('./fixtures/stream-emitter.mjs', import.meta.url));
 
@@ -312,6 +313,90 @@ test('runStreamingProcessSync uses one dedicated Node worker and one runtime spa
   assert.equal(workerArgv.includes('worker-only stdin'), false, 'runtime stdin must not appear in worker argv');
   assert.equal(Buffer.from(workerInput).includes(Buffer.from('worker-only stdin')), true);
   assert.equal(Object.hasOwn(result, 'stdout'), false, 'worker protocol must not expose raw runtime stdout');
+});
+
+test('runStreamingProcessSync durably journals and returns an exact worker-owned usage receipt before success', async () => {
+  const { runStreamingProcessSync } = await streamingModule();
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'deep-loop-stream-receipt-')));
+  const runId = 'RUN-RECEIPT';
+  const attemptId = 'b'.repeat(32);
+  const journalDir = join(root, '.deep-loop', 'runs', runId, 'preflight', 'process-receipts');
+  const journalPath = join(journalDir, `${attemptId}-read.json`);
+  mkdirSync(journalDir, { recursive: true });
+  const descriptor = {
+    journalPath,
+    root,
+    runId,
+    cacheKey: 'a'.repeat(64),
+    smokeKind: 'read',
+    attemptId,
+    predecessorReceiptId: null,
+    owner: 'RUN-RECEIPT',
+    generation: 1,
+  };
+  const usage = {
+    num_turns: 1,
+    tokens: 24,
+    input_tokens: 11,
+    output_tokens: 13,
+    cached_input_tokens: 4,
+    reasoning_output_tokens: 3,
+  };
+  const expectedReceipt = makeCodexPreflightReceipt({ ...descriptor, usage });
+  const result = runStreamingProcessSync({
+    bin: process.execPath,
+    argv: [fixture, 'codex-stream'],
+    usageOutputKind: 'codex-jsonl',
+  }, { timeoutMs: 2_000, usageReceipt: descriptor });
+
+  assert.deepEqual(result, { ok: true, usage, usageReceipt: expectedReceipt });
+  assert.equal(
+    readFileSync(journalPath, 'utf8'),
+    `${JSON.stringify(expectedReceipt)}\n`,
+    'the facade may return success only after the worker has published the exact immutable receipt bytes',
+  );
+});
+
+test('runStreamingProcessSync fails closed without usage when its receipt journal is invalid or unwritable', async () => {
+  const { runStreamingProcessSync } = await streamingModule();
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'deep-loop-stream-receipt-fail-')));
+  const runId = 'RUN-RECEIPT';
+  const journalDir = join(root, '.deep-loop', 'runs', runId, 'preflight', 'process-receipts');
+  mkdirSync(journalDir, { recursive: true });
+  const base = {
+    root,
+    runId,
+    cacheKey: 'c'.repeat(64),
+    smokeKind: 'read',
+    attemptId: 'd'.repeat(32),
+    predecessorReceiptId: null,
+    owner: 'RUN-RECEIPT',
+    generation: 1,
+  };
+  const occupied = join(journalDir, `${base.attemptId}-read.json`);
+  const original = '{"immutable":"existing"}\n';
+  writeFileSync(occupied, original);
+  const cases = [
+    ['relative journal', { ...base, journalPath: 'relative-receipt.json' }],
+    ['missing journal parent', {
+      ...base,
+      attemptId: 'e'.repeat(32),
+      journalPath: join(root, '.deep-loop', 'runs', 'OTHER', 'preflight', 'process-receipts', `${'e'.repeat(32)}-read.json`),
+    }],
+    ['occupied immutable journal', { ...base, journalPath: occupied }],
+  ];
+
+  for (const [label, usageReceipt] of cases) {
+    const result = runStreamingProcessSync({
+      bin: process.execPath,
+      argv: [fixture, 'codex-stream'],
+      usageOutputKind: 'codex-jsonl',
+    }, { timeoutMs: 2_000, usageReceipt });
+    assert.deepEqual(result, { ok: false, reason: 'usage-receipt-write-failed' }, label);
+    assert.equal(Object.hasOwn(result, 'usage'), false, label);
+    assert.equal(Object.hasOwn(result, 'usageReceipt'), false, label);
+  }
+  assert.equal(readFileSync(occupied, 'utf8'), original, 'an existing journal is immutable');
 });
 
 test('runStreamingProcessSync preserves timeout/non-zero precedence across the worker boundary', async () => {

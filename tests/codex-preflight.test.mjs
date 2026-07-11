@@ -17,6 +17,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { buildCodexExecEntry } from '../scripts/lib/codex-runtime.mjs';
+import { makeCodexPreflightReceipt } from '../scripts/lib/budget.mjs';
 import {
   codexPreflightCacheKey,
   ensureCodexPreflight,
@@ -81,6 +82,8 @@ function harness({ readResult, writeResult, writeMode = 'exact' } = {}) {
   const runRoot = join(projectRoot, '.deep-loop', 'runs', runId);
   const preflightRoot = join(runRoot, 'preflight');
   const cacheDir = join(preflightRoot, 'cache');
+  const accountingDir = join(preflightRoot, 'accounting');
+  const processReceiptDir = join(preflightRoot, 'process-receipts');
   mkdirSync(runRoot, { recursive: true });
 
   const executable = join(projectRoot, 'fake-codex-native');
@@ -107,6 +110,18 @@ function harness({ readResult, writeResult, writeMode = 'exact' } = {}) {
     outsideRoot: projectRoot,
   });
   let versionProbeCalls = 0;
+  const settledReceipts = new Map();
+  const settlementCalls = [];
+  const settleAccountingReceipt = (receipt) => {
+    settlementCalls.push(structuredClone(receipt));
+    const prior = settledReceipts.get(receipt.receipt_id);
+    if (prior) {
+      assert.deepEqual(receipt, prior, 'a receipt id may never change payload');
+      return { ok: true, recorded: false, reason: 'already-recorded' };
+    }
+    settledReceipts.set(receipt.receipt_id, structuredClone(receipt));
+    return { ok: true, recorded: true, reason: 'recorded' };
+  };
   const options = {
     projectRoot,
     runId,
@@ -131,6 +146,7 @@ function harness({ readResult, writeResult, writeMode = 'exact' } = {}) {
       return { status: 0, signal: null, stdout: 'codex-cli 0.144.1\n', stderr: '' };
     },
     runSync: runner.runSync,
+    settleAccountingReceipt,
   };
   return {
     projectRoot,
@@ -138,6 +154,8 @@ function harness({ readResult, writeResult, writeMode = 'exact' } = {}) {
     runRoot,
     preflightRoot,
     cacheDir,
+    accountingDir,
+    processReceiptDir,
     executable,
     deepLoopRoot,
     resumeSkillPath,
@@ -148,6 +166,9 @@ function harness({ readResult, writeResult, writeMode = 'exact' } = {}) {
     runner,
     options,
     versionProbeCalls: () => versionProbeCalls,
+    settlementCalls,
+    settledReceipts,
+    settleAccountingReceipt,
     call(overrides = {}) {
       return ensureCodexPreflight({ ...options, ...overrides });
     },
@@ -242,6 +263,9 @@ test('cache miss runs distinct synchronous read-only and production-equivalent w
     measuredUsage(2, 3).usage,
     measuredUsage(5, 7).usage,
   ]);
+  assert.equal(result.accounting_settled, true);
+  assert.equal(result.accounting_receipts.length, 2);
+  assert.equal(h.settlementCalls.length, 2, 'both receipts settle before cache activation');
   assert.equal(h.runner.calls.length, 2);
 
   const [readCall, writeCall] = h.runner.calls;
@@ -249,7 +273,8 @@ test('cache miss runs distinct synchronous read-only and production-equivalent w
     assert.equal(call.entry.bin, h.executable, 'the trusted native executable must be used directly');
     assert.equal(call.entry.shell, false);
     assert.equal(call.entry.usageOutputKind, 'codex-jsonl');
-    assert.deepEqual(call.options, { timeoutMs: 1_234 });
+    assert.equal(call.options.timeoutMs, 1_234);
+    assert.equal(typeof call.options.usageReceipt, 'object', 'each physical smoke owns its durable receipt');
     assert.equal(Object.hasOwn(call.entry.env, 'OPENAI_API_KEY'), false);
     assert.equal(Object.hasOwn(call.entry.env, 'DEEP_LOOP_TEST_SECRET'), false);
     assert.ok(call.entry.argv.includes('--strict-config'));
@@ -260,6 +285,57 @@ test('cache miss runs distinct synchronous read-only and production-equivalent w
     assert.ok(call.entry.argv.includes('sandbox_workspace_write.network_access=false'));
     assert.ok(call.entry.argv.includes('projects.' + JSON.stringify(call.entry.cwd) + '.trust_level="untrusted"'));
   }
+  const readReceiptDescriptor = readCall.options.usageReceipt;
+  const writeReceiptDescriptor = writeCall.options.usageReceipt;
+  const expectedReadReceipt = makeCodexPreflightReceipt({
+    ...readReceiptDescriptor,
+    usage: measuredUsage(2, 3).usage,
+  });
+  assert.deepEqual({ ...readReceiptDescriptor, journalPath: undefined }, {
+    journalPath: undefined,
+    root: h.projectRoot,
+    runId: h.runId,
+    cacheKey: result.cache_key,
+    smokeKind: 'read',
+    attemptId: NONCE,
+    predecessorReceiptId: null,
+    owner: 'OWNER-1',
+    generation: 7,
+  });
+  assert.deepEqual({ ...writeReceiptDescriptor, journalPath: undefined }, {
+    journalPath: undefined,
+    root: h.projectRoot,
+    runId: h.runId,
+    cacheKey: result.cache_key,
+    smokeKind: 'write',
+    attemptId: NONCE,
+    predecessorReceiptId: expectedReadReceipt.receipt_id,
+    owner: 'OWNER-1',
+    generation: 7,
+  });
+  for (const descriptor of [readReceiptDescriptor, writeReceiptDescriptor]) {
+    assert.equal(dirname(descriptor.journalPath), h.processReceiptDir);
+  }
+  assert.notEqual(readReceiptDescriptor.journalPath, writeReceiptDescriptor.journalPath);
+  const expectedWriteReceipt = makeCodexPreflightReceipt({
+    ...writeReceiptDescriptor,
+    usage: measuredUsage(5, 7).usage,
+  });
+  assert.equal(
+    existsSync(readReceiptDescriptor.journalPath),
+    false,
+    'the active accounting record supersedes the raw read journal',
+  );
+  assert.equal(
+    existsSync(writeReceiptDescriptor.journalPath),
+    false,
+    'the active accounting record supersedes the raw write journal',
+  );
+  const durableAccounting = JSON.parse(
+    readFileSync(join(h.accountingDir, `${result.cache_key}.json`), 'utf8'),
+  );
+  assert.deepEqual(durableAccounting.receipts, [expectedReadReceipt, expectedWriteReceipt]);
+  assert.deepEqual(result.accounting_receipts, [expectedReadReceipt.receipt_id, expectedWriteReceipt.receipt_id]);
   assert.equal(readCall.entry.argv[readCall.entry.argv.indexOf('--sandbox') + 1], 'read-only');
   assert.equal(writeCall.entry.argv[writeCall.entry.argv.indexOf('--sandbox') + 1], 'workspace-write');
 
@@ -291,13 +367,119 @@ test('cache miss runs distinct synchronous read-only and production-equivalent w
   const hit = h.call();
   assert.equal(hit.ok, true, JSON.stringify(hit));
   assert.equal(hit.cache_hit, true);
+  assert.equal(hit.accounting_settled, true);
+  assert.deepEqual(hit.accounting_receipts, result.accounting_receipts);
   assert.deepEqual(hit.measured_usage, [], 'cached process usage must never be replayed');
+  assert.equal(h.settlementCalls.length, 4, 'a hit must idempotently verify both durable receipts');
   assert.equal(h.runner.calls.length, 2, 'cache hit must not run either smoke again');
   assert.equal(
     h.versionProbeCalls(),
-    6,
-    'the executable must be checked initially, at each process/cache boundary, and again on the hit',
+    8,
+    'the executable must be checked initially, at each process, receipt-settlement/cache-activation boundary, and again on the hit',
   );
+});
+
+test('zero-receipt accounting interruption leaves only a provisional record and retry activates without rerunning', () => {
+  const h = harness();
+  let failures = 0;
+  const interrupted = h.call({
+    settleAccountingReceipt: () => {
+      failures += 1;
+      throw new Error('INJECTED_BEFORE_FIRST_RECEIPT');
+    },
+  });
+  assert.equal(interrupted.ok, false);
+  assert.equal(interrupted.reason, 'preflight-accounting-failed');
+  assert.equal(interrupted.accounting_settled, false);
+  assert.equal(failures, 1);
+  assert.deepEqual(cacheFiles(h.cacheDir), [], 'an unsettled provisional record is never active authority');
+  assert.equal(readdirSync(h.accountingDir).filter(name => name.endsWith('.json')).length, 1);
+  assert.equal(h.runner.calls.length, 2);
+
+  const recovered = h.call();
+  assert.equal(recovered.ok, true, JSON.stringify(recovered));
+  assert.equal(recovered.cache_hit, true, 'recovery activates the already-proved capability');
+  assert.equal(recovered.accounting_settled, true);
+  assert.equal(h.runner.calls.length, 2, 'recovery must not replay either physical smoke');
+  assert.deepEqual(cacheFiles(h.cacheDir), [`${recovered.cache_key}.json`]);
+  assert.equal(h.settledReceipts.size, 2);
+});
+
+test('partial receipt accounting retry no-ops the first and settles only the missing second before activation', () => {
+  const h = harness();
+  let calls = 0;
+  const interrupted = h.call({
+    settleAccountingReceipt: (receipt) => {
+      calls += 1;
+      if (calls === 2) throw new Error('INJECTED_BEFORE_SECOND_RECEIPT');
+      return h.settleAccountingReceipt(receipt);
+    },
+  });
+  assert.equal(interrupted.ok, false);
+  assert.equal(interrupted.reason, 'preflight-accounting-failed');
+  assert.equal(h.settledReceipts.size, 1);
+  assert.deepEqual(cacheFiles(h.cacheDir), []);
+  assert.equal(h.runner.calls.length, 2);
+
+  const recovered = h.call();
+  assert.equal(recovered.ok, true, JSON.stringify(recovered));
+  assert.equal(recovered.cache_hit, true);
+  assert.equal(h.runner.calls.length, 2);
+  assert.equal(h.settledReceipts.size, 2);
+  const ids = h.settlementCalls.map(receipt => receipt.receipt_id);
+  assert.equal(ids.filter(id => id === ids[0]).length, 2, 'the first receipt is verified, not appended twice');
+});
+
+test('active cache without its exact durable accounting record fails closed before an empty hit', () => {
+  for (const mode of ['missing', 'corrupt']) {
+    const h = harness();
+    const first = h.call();
+    assert.equal(first.ok, true);
+    const receiptPath = join(h.accountingDir, `${first.cache_key}.json`);
+    if (mode === 'missing') rmSync(receiptPath);
+    else writeFileSync(receiptPath, '{"contract":"forged"}\n');
+
+    const result = h.call();
+    assert.equal(result.ok, false, mode);
+    assert.equal(result.reason, 'cache-invalid', mode);
+    assert.deepEqual(result.measured_usage, [], mode);
+    assert.equal(h.runner.calls.length, 2, `${mode}: no smoke may rerun behind an active cache`);
+  }
+});
+
+test('a different valid provisional record racing the same cache key is never adopted or activated', () => {
+  const h = harness();
+  const first = h.call();
+  assert.equal(first.ok, true);
+  const accountingPath = join(h.accountingDir, `${first.cache_key}.json`);
+  const cachePath = join(h.cacheDir, `${first.cache_key}.json`);
+  const priorRecord = readFileSync(accountingPath);
+  rmSync(accountingPath);
+  rmSync(cachePath);
+
+  const result = h.call({
+    nonceFactory: () => 'f'.repeat(32),
+    runSync: (entry, options) => {
+      const output = h.runner.runSync(entry, options);
+      if (h.runner.calls.length === 4) writeFileSync(accountingPath, priorRecord);
+      return output;
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'preflight-accounting-record-failed');
+  assert.deepEqual(result.measured_usage, [measuredUsage(2, 3).usage, measuredUsage(5, 7).usage]);
+  assert.equal(result.accounting_settled, true, 'known durable receipts settle even when cache publication loses its race');
+  assert.deepEqual(
+    result.accounting_receipts,
+    h.runner.calls.slice(-2).map(call => call.options.usageReceipt).map((descriptor, index) => (
+      makeCodexPreflightReceipt({
+        ...descriptor,
+        usage: index === 0 ? measuredUsage(2, 3).usage : measuredUsage(5, 7).usage,
+      }).receipt_id
+    )),
+  );
+  assert.deepEqual(readFileSync(accountingPath), priorRecord, 'the raced durable record is never overwritten');
+  assert.equal(existsSync(cachePath), false, 'no active authority may bind the in-memory competing receipts');
 });
 
 test('write probe accepts only one exact regular contained nonce sentinel', () => {
@@ -410,7 +592,7 @@ test('ok:true runner output is not measured unless it is exactly one safe Codex 
   const read = harness({ readResult: invalid });
   let result = read.call();
   assert.equal(result.ok, false);
-  assert.equal(result.reason, 'read-smoke:unmeasured-usage');
+  assert.equal(result.reason, 'read-smoke:usage-receipt-write-failed');
   assert.deepEqual(result.measured_usage, []);
   assert.deepEqual(cacheFiles(read.cacheDir), []);
 
@@ -425,7 +607,7 @@ test('ok:true runner output is not measured unless it is exactly one safe Codex 
   } });
   result = write.call();
   assert.equal(result.ok, false);
-  assert.equal(result.reason, 'write-smoke:unmeasured-usage');
+  assert.equal(result.reason, 'write-smoke:usage-receipt-write-failed');
   assert.deepEqual(result.measured_usage, [measuredUsage(2, 3).usage]);
   assert.deepEqual(cacheFiles(write.cacheDir), []);
 });

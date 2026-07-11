@@ -1,6 +1,10 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createCodexJsonlParser, parseClaudeUsage, STREAM_LIMITS } from './usage-parser.mjs';
+import {
+  readProcessUsageReceipt,
+  validateProcessUsageReceiptDescriptor,
+} from './preflight-receipt-journal.mjs';
 
 const WORKER_REQUEST_BYTES = 2 * 1024 * 1024;
 // 256 KiB final-message bytes become ~350 KiB canonical base64; add the independently
@@ -208,14 +212,31 @@ function workerEntry(entry) {
   };
 }
 
-function decodeWorkerResult(stdout) {
+function sameUsage(left, right) {
+  if (left == null || typeof left !== 'object' || Array.isArray(left)
+    || right == null || typeof right !== 'object' || Array.isArray(right)) return false;
+  const leftKeys = Object.keys(left).sort();
+  const rightKeys = Object.keys(right).sort();
+  return leftKeys.length === rightKeys.length
+    && leftKeys.every((key, index) => key === rightKeys[index] && left[key] === right[key]);
+}
+
+function decodeWorkerResult(stdout, usageReceiptDescriptor = null) {
   let result;
   try {
     result = JSON.parse(stdout);
   } catch {
     return { ok: false, reason: 'worker-protocol-invalid' };
   }
-  const allowedKeys = new Set(['ok', 'reason', 'usage', 'stderr', 'stderrTruncated', 'finalMessageBase64']);
+  const allowedKeys = new Set([
+    'ok',
+    'reason',
+    'usage',
+    'usageReceipt',
+    'stderr',
+    'stderrTruncated',
+    'finalMessageBase64',
+  ]);
   if (result == null || typeof result !== 'object' || Array.isArray(result)
     || typeof result.ok !== 'boolean'
     || Object.keys(result).some((key) => !allowedKeys.has(key))
@@ -227,7 +248,7 @@ function decodeWorkerResult(stdout) {
   }
   if (result.ok === false) {
     if (typeof result.reason !== 'string' || Object.hasOwn(result, 'usage')
-      || Object.hasOwn(result, 'finalMessageBase64')) {
+      || Object.hasOwn(result, 'usageReceipt') || Object.hasOwn(result, 'finalMessageBase64')) {
       return { ok: false, reason: 'worker-protocol-invalid' };
     }
     return result;
@@ -236,6 +257,26 @@ function decodeWorkerResult(stdout) {
     || Array.isArray(result.usage)
     || (!Number.isFinite(result.usage.num_turns) && !Number.isFinite(result.usage.tokens))) {
     return { ok: false, reason: 'worker-protocol-invalid' };
+  }
+  if (usageReceiptDescriptor == null) {
+    if (Object.hasOwn(result, 'usageReceipt')) {
+      return { ok: false, reason: 'worker-protocol-invalid' };
+    }
+  } else {
+    if (result.usageReceipt == null || typeof result.usageReceipt !== 'object'
+      || Array.isArray(result.usageReceipt)) {
+      return { ok: false, reason: 'worker-protocol-invalid' };
+    }
+    try {
+      const durable = readProcessUsageReceipt(usageReceiptDescriptor);
+      if (durable == null || JSON.stringify(result.usageReceipt) !== JSON.stringify(durable)
+        || !sameUsage(result.usage, durable.usage)) {
+        return { ok: false, reason: 'worker-protocol-invalid' };
+      }
+      result.usageReceipt = durable;
+    } catch {
+      return { ok: false, reason: 'worker-protocol-invalid' };
+    }
   }
   if (Object.hasOwn(result, 'finalMessageBase64')) {
     if (typeof result.finalMessageBase64 !== 'string'
@@ -256,11 +297,26 @@ function decodeWorkerResult(stdout) {
 export function runStreamingProcessSync(entry, {
   timeoutMs = 30 * 60 * 1000,
   spawnSyncImpl = spawnSync,
+  usageReceipt = null,
 } = {}) {
   if (!validTimeout(timeoutMs)) return { ok: false, reason: 'invalid-timeout' };
+  let normalizedUsageReceipt = null;
+  if (usageReceipt != null) {
+    try {
+      if (entry?.usageOutputKind !== 'codex-jsonl') throw new Error('usage receipt requires Codex JSONL');
+      normalizedUsageReceipt = validateProcessUsageReceiptDescriptor(usageReceipt);
+    } catch {
+      return { ok: false, reason: 'usage-receipt-write-failed' };
+    }
+  }
   let request;
   try {
-    request = JSON.stringify({ version: 1, entry: workerEntry(entry), timeoutMs });
+    request = JSON.stringify({
+      version: 1,
+      entry: workerEntry(entry),
+      timeoutMs,
+      ...(normalizedUsageReceipt == null ? {} : { usageReceipt: normalizedUsageReceipt }),
+    });
   } catch {
     return { ok: false, reason: 'worker-request-invalid' };
   }
@@ -292,5 +348,5 @@ export function runStreamingProcessSync(entry, {
   if (Buffer.byteLength(out.stdout || '', 'utf8') > WORKER_RESULT_BYTES) {
     return { ok: false, reason: 'worker-result-overflow' };
   }
-  return decodeWorkerResult(out.stdout || '');
+  return decodeWorkerResult(out.stdout || '', normalizedUsageReceipt);
 }

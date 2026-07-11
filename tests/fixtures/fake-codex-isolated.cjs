@@ -125,6 +125,10 @@ function main() {
       process.stdout.write('{"type":"turn.completed"\n');
       return;
     }
+    if (control.makerMode === 'no-acquire') {
+      emitTerminal(11, 13);
+      return;
+    }
     emitLargeMakerItem();
     writeRepeated(2, 'e', LARGE_STDERR_BYTES);
     const expectedGeneration = String(Number(process.env.DEEP_LOOP_GENERATION) - 1);
