@@ -48,17 +48,70 @@ export function createCodexJsonlParser({ captureFinalMessage = false } = {}) {
   let failure = null;
   let ended = false;
   let result = null;
+  let utf8Remaining = 0;
+  let utf8Min = 0x80;
+  let utf8Max = 0xbf;
+
+  function resetCurrentLine() {
+    line = '';
+    lineBytes = 0;
+    decoder = new StringDecoder('utf8');
+    utf8Remaining = 0;
+    utf8Min = 0x80;
+    utf8Max = 0xbf;
+  }
 
   function fail(reason) {
-    failure ??= reason;
+    if (failure != null) return;
+    failure = reason;
+    resetCurrentLine();
+    terminal = null;
+    finalMessage = null;
+  }
+
+  function validUtf8(segment) {
+    for (const byte of segment) {
+      if (utf8Remaining > 0) {
+        if (byte < utf8Min || byte > utf8Max) return false;
+        utf8Remaining -= 1;
+        utf8Min = 0x80;
+        utf8Max = 0xbf;
+        continue;
+      }
+      if (byte <= 0x7f) continue;
+      if (byte >= 0xc2 && byte <= 0xdf) {
+        utf8Remaining = 1;
+      } else if (byte === 0xe0) {
+        utf8Remaining = 2;
+        utf8Min = 0xa0;
+      } else if ((byte >= 0xe1 && byte <= 0xec) || (byte >= 0xee && byte <= 0xef)) {
+        utf8Remaining = 2;
+      } else if (byte === 0xed) {
+        utf8Remaining = 2;
+        utf8Max = 0x9f;
+      } else if (byte === 0xf0) {
+        utf8Remaining = 3;
+        utf8Min = 0x90;
+      } else if (byte >= 0xf1 && byte <= 0xf3) {
+        utf8Remaining = 3;
+      } else if (byte === 0xf4) {
+        utf8Remaining = 3;
+        utf8Max = 0x8f;
+      } else {
+        return false;
+      }
+    }
+    return true;
   }
 
   function consumeLine() {
     const text = line.endsWith('\r') ? line.slice(0, -1) : line;
-    line = '';
-    lineBytes = 0;
-    decoder = new StringDecoder('utf8');
-    if (text.length === 0 || failure != null) return;
+    resetCurrentLine();
+    if (failure != null) return;
+    if (text.length === 0) {
+      fail('codex-malformed-json');
+      return;
+    }
 
     let event;
     try {
@@ -95,8 +148,9 @@ export function createCodexJsonlParser({ captureFinalMessage = false } = {}) {
       return;
     }
     const usage = event.usage;
-    const breakdownsValid = ['cached_input_tokens', 'reasoning_output_tokens']
-      .every((field) => usage?.[field] == null || safeTokenCount(usage[field]));
+    const breakdownsValid = usage != null && typeof usage === 'object'
+      && ['cached_input_tokens', 'reasoning_output_tokens']
+        .every((field) => !Object.hasOwn(usage, field) || safeTokenCount(usage[field]));
     const tokens = usage?.input_tokens + usage?.output_tokens;
     if (!safeTokenCount(usage?.input_tokens) || !safeTokenCount(usage?.output_tokens)
       || !safeTokenCount(tokens) || !breakdownsValid) {
@@ -108,8 +162,8 @@ export function createCodexJsonlParser({ captureFinalMessage = false } = {}) {
       tokens,
       input_tokens: usage.input_tokens,
       output_tokens: usage.output_tokens,
-      ...(usage.cached_input_tokens == null ? {} : { cached_input_tokens: usage.cached_input_tokens }),
-      ...(usage.reasoning_output_tokens == null ? {} : { reasoning_output_tokens: usage.reasoning_output_tokens }),
+      ...(Object.hasOwn(usage, 'cached_input_tokens') ? { cached_input_tokens: usage.cached_input_tokens } : {}),
+      ...(Object.hasOwn(usage, 'reasoning_output_tokens') ? { reasoning_output_tokens: usage.reasoning_output_tokens } : {}),
     };
   }
 
@@ -129,8 +183,16 @@ export function createCodexJsonlParser({ captureFinalMessage = false } = {}) {
           fail('codex-line-overflow');
           return;
         }
+        if (!validUtf8(segment)) {
+          fail('codex-invalid-utf8');
+          return;
+        }
         line += decoder.write(segment);
         if (newline === -1) return;
+        if (utf8Remaining !== 0) {
+          fail('codex-invalid-utf8');
+          return;
+        }
         line += decoder.end();
         consumeLine();
         if (failure != null) return;
@@ -142,8 +204,12 @@ export function createCodexJsonlParser({ captureFinalMessage = false } = {}) {
       if (result != null) return result;
       ended = true;
       if (failure == null && lineBytes > 0) {
-        line += decoder.end();
-        consumeLine();
+        if (utf8Remaining !== 0) {
+          fail('codex-invalid-utf8');
+        } else {
+          line += decoder.end();
+          consumeLine();
+        }
       }
       result = failure != null
         ? { ok: false, reason: failure }

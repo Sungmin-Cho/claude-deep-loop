@@ -118,6 +118,47 @@ test('Codex usage requires safe non-negative integer totals and breakdowns', () 
   }
 });
 
+test('Codex usage rejects explicitly null token breakdowns while allowing absent breakdowns', () => {
+  for (const field of ['cached_input_tokens', 'reasoning_output_tokens']) {
+    assert.deepEqual(parseCodex([completed({
+      input_tokens: 1,
+      output_tokens: 2,
+      [field]: null,
+    })]), { ok: false, reason: 'codex-invalid-usage' }, field);
+  }
+
+  assert.equal(parseCodex([completed({ input_tokens: 1, output_tokens: 2 })]).ok, true);
+});
+
+test('Codex JSONL treats a blank record as malformed but permits one normal trailing newline', () => {
+  const trailing = createCodexJsonlParser();
+  trailing.write(Buffer.from(`${completed()}\n`));
+  assert.equal(trailing.end().ok, true);
+
+  const blank = createCodexJsonlParser();
+  blank.write(Buffer.from(`{"type":"turn.started"}\n\n${completed()}\n`));
+  assert.deepEqual(blank.end(), { ok: false, reason: 'codex-malformed-json' });
+});
+
+test('Codex JSONL rejects malformed UTF-8 incrementally with a distinct reason', () => {
+  const invalidSequences = [
+    Buffer.from([0x80]),
+    Buffer.from([0xc0, 0xaf]),
+    Buffer.from([0xe0, 0x80, 0x80]),
+    Buffer.from([0xed, 0xa0, 0x80]),
+    Buffer.from([0xf4, 0x90, 0x80, 0x80]),
+    Buffer.from([0xe2, 0x82]),
+  ];
+
+  for (const invalid of invalidSequences) {
+    const parser = createCodexJsonlParser();
+    parser.write(Buffer.from('{"type":"item.completed","item":{"type":"agent_message","text":"'));
+    for (const byte of invalid) parser.write(Buffer.from([byte]));
+    parser.write(Buffer.from(`"}}\n${completed()}\n`));
+    assert.deepEqual(parser.end(), { ok: false, reason: 'codex-invalid-utf8' }, invalid.toString('hex'));
+  }
+});
+
 test('Codex cached and reasoning tokens are optional non-additive breakdowns', () => {
   assert.deepEqual(parseCodex([completed({
     input_tokens: 11,
