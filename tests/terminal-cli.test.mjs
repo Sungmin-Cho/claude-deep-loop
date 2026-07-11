@@ -32,7 +32,8 @@ const VERBS = (o, g) => [
   ['episode', 'record', '--id', 'e', '--status', 'done'],
   ['episode', 'abandon', '--id', 'e', '--reason', 'r', '--confirm'],
   ['review', 'dispatch', '--point', 'design', '--workstream', 'ws-x'],
-  ['review', 'record', '--episode', 'e', '--workstream', 'ws-x', '--point', 'design', '--verdict', 'APPROVE'],
+  ['review', 'record', '--episode', 'e', '--verdict', 'APPROVE'],
+  ['review', 'import', '--stdin'],
   ['state', 'patch', '--field', 'discovered_items', '--value', '[]'],   // classifyPatch 화이트리스트 필드
   ['budget', 'record', '--turns', '1'],
   ['comprehension', 'ack', '--episode', 'e'],

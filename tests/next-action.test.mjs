@@ -249,7 +249,7 @@ test('#1: recordReviewOutcome(APPROVE) marks the maker agent-reviewed; comprehen
   const r = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
   mkdirSync(join(root, '.claude/worktrees/w'), { recursive: true });
   writeFileSync(join(root, '.claude/worktrees/w/review.md'), '# review report');   // #2+Fix4: report under the reviewed ws worktree
-  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'implementation', verdict: 'APPROVE', proof: { report: '.claude/worktrees/w/review.md' }, fence: f });
+  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, verdict: 'APPROVE', proof: { report: '.claude/worktrees/w/review.md' }, fence: f });
   const { data } = readState(root, runId);
   const maker = data.episodes.find(e => e.role === 'maker' && e.point === 'implementation');
   assert.ok(!maker.human_reviewed, 'machine review must NOT mark the maker human_reviewed');
@@ -275,7 +275,7 @@ test('dispatchReview → recordReviewOutcome(RC) → nextAction returns fix_epis
   const { id: makerId } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'plan', workstream: ws, expectedArtifacts: ['art.txt'], fence: f });
   recordEpisode(root, runId, makerId, { status: 'done', artifacts: ['art.txt'], proof: {}, fence: f });
   const r = dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
-  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'plan', verdict: 'REQUEST_CHANGES', fence: f });
+  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, verdict: 'REQUEST_CHANGES', fence: f });
   const { data } = readState(root, runId);
   assert.equal(nextAction(data, { now: Date.parse('2026-06-24T00:00:00Z') }).action.type, 'fix_episode');
 });

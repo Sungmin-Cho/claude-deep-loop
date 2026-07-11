@@ -11,7 +11,8 @@ import { readState, writeState, patch as patchState, pauseRun, runDir, findRoot 
 import { leaseCheck, acquireLease, releaseLease } from './lib/lease.mjs';
 import { newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal } from './lib/workspace.mjs';
 import { newEpisode, recordEpisode, abandonEpisode } from './lib/episode.mjs';
-import { dispatchReview, recordReviewOutcome } from './lib/review.mjs';
+import { dispatchReview, importReviewOutcome, recordReviewOutcome } from './lib/review.mjs';
+import { readBoundedText } from './lib/bounded-input.mjs';
 import { nextAction } from './lib/next-action.mjs';
 import { emitHandoff } from './lib/handoff.mjs';
 import { respawn, respawnGate, resolveSpawnMode, isHeadlessInvocation } from './lib/respawn.mjs';
@@ -328,16 +329,36 @@ const handlers = {
     }
     // verdict 기록 → checker 터미널 파생 + breaker/comprehension/review_points (Codex r1 🔴6: CLI 경계로 노출)
     if (verb === 'record') {
+      for (const key of ['source', 'workstream', 'workstream-id', 'workstream_id', 'point', 'target-maker', 'target_maker', 'reviewer-id', 'reviewer_id', 'review-source', 'review_source', 'runtime']) {
+        if (Object.hasOwn(f, key)) { error(`REVIEW_METADATA_FORBIDDEN: review record derives ${key}`); return 1; }
+      }
       const episode = reqStr(f, 'episode'); if (!episode) { error('MISSING_EPISODE'); return 2; }
-      const workstream = reqStr(f, 'workstream'); if (!workstream) { error('MISSING_WORKSTREAM'); return 2; }
-      const point = reqStr(f, 'point'); if (!point) { error('MISSING_POINT'); return 2; }
       const verdict = reqStr(f, 'verdict'); if (!verdict) { error('MISSING_VERDICT'); return 2; }
       // --report (required for a passing verdict) / --findings (optional aux). The CLI does NOT pre-gate by
       // verdict — the lib decides (CLI-bypass safe); a missing report on APPROVE/CONCERN surfaces REVIEW_NO_EVIDENCE.
       const report = f.report && f.report !== true ? String(f.report) : undefined;
       const findings = f.findings && f.findings !== true ? String(f.findings) : undefined;
-      try { json(recordReviewOutcome(root, runId, { episodeId: episode, workstreamId: workstream, point, verdict, source: f.source || 'deep-review-approve', proof: { report, findings }, fence })); return 0; }
-      catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }   // REVIEW_NO_EVIDENCE → exit 1
+      try { json(recordReviewOutcome(root, runId, { episodeId: episode, verdict, proof: { report, findings }, fence })); return 0; }
+      catch (e) {
+        const classified = classifyKernelError(e);
+        if (classified) { error(classified.message); return classified.code; }
+        error(e.message); return 1;
+      }
+    }
+    if (verb === 'import') {
+      for (const key of ['source', 'workstream', 'workstream-id', 'workstream_id', 'point', 'target-maker', 'target_maker', 'reviewer-id', 'reviewer_id', 'review-source', 'review_source', 'runtime']) {
+        if (Object.hasOwn(f, key)) { error(`REVIEW_METADATA_FORBIDDEN: review import derives ${key}`); return 1; }
+      }
+      if (f.stdin !== true) { error('STDIN_REQUIRED: review import requires --stdin'); return 2; }
+      try {
+        const raw = await readBoundedText(process.stdin);
+        json(importReviewOutcome(root, runId, { raw, fence, now: parseNow(f) }));
+        return 0;
+      } catch (e) {
+        const classified = classifyKernelError(e);
+        if (classified) { error(classified.message); return classified.code; }
+        error(e.message); return 1;
+      }
     }
     error(`unknown review verb: ${verb}`); return 2;
   },

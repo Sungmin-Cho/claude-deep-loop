@@ -10,7 +10,7 @@ import { acquireLease, releaseLease } from '../scripts/lib/lease.mjs';
 import { detectAndPersist } from '../scripts/lib/detect-terminal.mjs';
 import { newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal } from '../scripts/lib/workspace.mjs';
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
-import { dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
+import { dispatchReview, importReviewOutcome, recordReviewOutcome } from '../scripts/lib/review.mjs';
 
 function seed() {
   const root = mkdtempSync(join(tmpdir(), 'dl-fence-'));
@@ -150,7 +150,7 @@ test('recordReviewOutcome with stale fence throws LEASE_FENCED', () => {
   acquireLease(root, runId, { owner: 'child-run-006', expectGeneration: gen1, runtime: 'claude' });
 
   assert.throws(
-    () => recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'plan', verdict: 'APPROVE', fence: { owner, generation: gen1, intent: 'business' } }),
+    () => recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, verdict: 'APPROVE', fence: { owner, generation: gen1, intent: 'business' } }),
     /LEASE_FENCED/
   );
 });
@@ -191,6 +191,11 @@ test('all mutators without fence param throw FENCE_REQUIRED (fence is now mandat
   // recordReviewOutcome
   assert.throws(
     () => recordReviewOutcome(root, runId, { episodeId: 'ep-id', verdict: 'APPROVE' }),
+    /FENCE_REQUIRED/
+  );
+  // importReviewOutcome
+  assert.throws(
+    () => importReviewOutcome(root, runId, { raw: '{}' }),
     /FENCE_REQUIRED/
   );
 });

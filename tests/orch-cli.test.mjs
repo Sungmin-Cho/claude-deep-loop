@@ -259,8 +259,28 @@ test('workstream terminal (abandoned) + review record reach kernel via CLI', () 
   // #2+Fix4: a passing verdict via CLI must carry --report — a real file under the reviewed ws worktree (.claude/worktrees/w2).
   mkdirSync(join(root, '.claude/worktrees/w2'), { recursive: true });
   writeFileSync(join(root, '.claude/worktrees/w2/plan-review.md'), '# plan review');
-  run(root, ['review', 'record', '--episode', disp.checkerEpisodeId, '--workstream', ws2.id, '--point', 'plan', '--verdict', 'APPROVE', '--report', '.claude/worktrees/w2/plan-review.md', '--owner', runId, '--generation', '1']);
+  run(root, ['review', 'record', '--episode', disp.checkerEpisodeId, '--verdict', 'APPROVE', '--report', '.claude/worktrees/w2/plan-review.md', '--owner', runId, '--generation', '1']);
   assert.equal(readState(root, runId).data.episodes.find(e => e.id === disp.checkerEpisodeId).status, 'approved');
+});
+
+test('review record derives proof metadata and rejects legacy caller source/workstream/point flags', () => {
+  for (const [name, value] of [['source', 'spoof'], ['workstream', 'ws-spoof'], ['point', 'plan']]) {
+    const { root, runId } = seed();
+    const result = runResult(root, ['review', 'record', '--episode', 'checker', '--verdict', 'REQUEST_CHANGES', `--${name}`, value, '--owner', runId, '--generation', '1']);
+    assert.equal(result.code, 1, name);
+    assert.match(result.stderr, /REVIEW_METADATA_FORBIDDEN/, name);
+  }
+});
+
+test('review record missing episode or verdict remains usage exit 2', () => {
+  for (const args of [
+    ['review', 'record', '--verdict', 'REQUEST_CHANGES'],
+    ['review', 'record', '--episode', 'checker'],
+  ]) {
+    const { root, runId } = seed();
+    const result = runResult(root, [...args, '--owner', runId, '--generation', '1']);
+    assert.equal(result.code, 2, args.join(' '));
+  }
 });
 
 // Fix 1: episode record --status approved/rejected exits nonzero (status 1 — invalid value, not a fence violation)
