@@ -8,11 +8,11 @@ import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { readFileSync } from 'node:fs';
 import { reserveHandoff } from '../scripts/lib/lease.mjs';
-import { EFFORT_LEVELS, validateEffort, validateModel, setSessionProfile } from '../scripts/lib/session-profile.mjs';
+import { EFFORT_LEVELS, validateEffort, validateModel, validateRuntimeProfile, setSessionProfile } from '../scripts/lib/session-profile.mjs';
 
-function seed() {
+function seed(runtime = 'claude') {
   const root = mkdtempSync(join(tmpdir(), 'dl-sp-'));
-  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', detected: {}, now: new Date('2026-07-02T00:00:00Z'), env: {}, platform: 'linux', run: () => ({ code: 1 }) });
+  const { runId } = initRun(root, { runtime, goal: 'g', detected: {}, now: new Date('2026-07-02T00:00:00Z'), env: {}, platform: 'linux', run: () => ({ code: 1 }) });
   return { root, runId };
 }
 const expect_ = (runId) => ({ owner: runId, generation: 1 });
@@ -28,6 +28,29 @@ test('validateEffort accepts allowlist, rejects others', () => {
 test('validateModel accepts real ids/aliases, rejects injection', () => {
   for (const m of ['claude-opus-4-8[1m]', 'claude-sonnet-5', 'opus', 'claude-haiku-4-5-20251001']) assert.equal(validateModel(m), m);
   for (const bad of ['-p', '--model', 'a b', 'a;b', "a'b", 'a`b', '', 'a'.repeat(129), '.leading']) assert.throws(() => validateModel(bad), /INVALID_MODEL/, `should reject ${JSON.stringify(bad)}`);
+});
+
+test('validateRuntimeProfile preserves runtime-specific model/effort and rejects Codex max', () => {
+  assert.deepEqual(
+    validateRuntimeProfile('claude', { model: 'claude-opus-4-8[1m]', effort: 'max' }),
+    { model: 'claude-opus-4-8[1m]', effort: 'max' },
+  );
+  for (const effort of ['low', 'medium', 'high', 'xhigh']) {
+    assert.deepEqual(validateRuntimeProfile('codex', { model: 'gpt-5.4', effort }), { model: 'gpt-5.4', effort });
+  }
+  assert.throws(() => validateRuntimeProfile('codex', { model: 'gpt-5.4', effort: 'max' }), /UNSUPPORTED_RUNTIME_EFFORT/);
+  assert.throws(() => validateRuntimeProfile('other', { model: 'gpt-5.4', effort: 'high' }), /INVALID_RUNTIME/);
+});
+
+test('setSessionProfile rejects Codex max before mutation', () => {
+  const { root, runId } = seed('codex');
+  const seq0 = readState(root, runId).data.event_log_head.seq;
+  assert.throws(
+    () => setSessionProfile(root, runId, { effort: 'max', expect: expect_(runId), now: 1 }),
+    /UNSUPPORTED_RUNTIME_EFFORT/,
+  );
+  assert.equal(readState(root, runId).data.event_log_head.seq, seq0);
+  assert.equal(readState(root, runId).data.autonomy.session_effort, undefined);
 });
 
 test('setSessionProfile persists both fields + one event, fenced', () => {

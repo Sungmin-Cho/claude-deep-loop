@@ -1,6 +1,9 @@
 import { existsSync } from 'node:fs';
+import { posix, win32 } from 'node:path';
 import { isTrustedPsBin, trustedPsCandidates } from './detect-terminal.mjs';
 import { validateSessionRuntime } from './runtime.mjs';
+import { buildCodexExecEntry } from './codex-runtime.mjs';
+import { validateRuntimeProfile } from './session-profile.mjs';
 
 const CODEX_TRANSPORT_UNAVAILABLE = 'codex-transport-not-activated';
 
@@ -55,16 +58,28 @@ function resumeInvocation(runtime, root, runId) {
   return `${resumeSkillToken(runtime)} --project-root ${JSON.stringify(root)} --run-id ${JSON.stringify(runId)}`;
 }
 
-function buildCodexEntries({ root, parentRunId, childRunId, handoffRel }) {
+function absolutePath(value) {
+  return typeof value === 'string' && value.length > 0 && (posix.isAbsolute(value) || win32.isAbsolute(value));
+}
+
+function pathFor(root, ...segments) {
+  return win32.isAbsolute(root) ? win32.join(root, ...segments) : posix.join(root, ...segments);
+}
+
+function buildCodexEntries({
+  root, parentRunId, childRunId, handoffRel,
+  model = null, effort = null, codexExecutable = null, deepLoopRoot = null,
+}) {
+  validateRuntimeProfile('codex', { model, effort });
   const invocation = resumeInvocation('codex', root, parentRunId);
-  const handoffPath = `${root}/.deep-loop/runs/${parentRunId}/${handoffRel}`;
+  const handoffPath = pathFor(root, '.deep-loop', 'runs', parentRunId, handoffRel);
   const manualPrompt = `Read ${JSON.stringify(handoffPath)} first; then run ${invocation}`;
   const unavailable = (surface) => ({
     unavailable: true,
     reason: CODEX_TRANSPORT_UNAVAILABLE,
     display: `# ${surface}: unavailable (${CODEX_TRANSPORT_UNAVAILABLE})`,
   });
-  return {
+  const entries = {
     cmux: unavailable('cmux'),
     iterm2: unavailable('iterm2'),
     'terminal-app': unavailable('terminal-app'),
@@ -82,6 +97,16 @@ function buildCodexEntries({ root, parentRunId, childRunId, handoffRel }) {
       display: `# Codex CLI (manual): open a new task at ${JSON.stringify(root)}; ${manualPrompt}`,
     },
   };
+  if (codexExecutable != null) {
+    if (!absolutePath(deepLoopRoot)) throw new Error('INVALID_DEEP_LOOP_ROOT: explicit absolute deep-loop root required');
+    const skillPath = pathFor(deepLoopRoot, 'skills', 'deep-loop-resume', 'SKILL.md');
+    const prompt = `Read ${JSON.stringify(handoffPath)} first. Then read ${JSON.stringify(skillPath)} and execute that workflow inline for project root ${JSON.stringify(root)} and run id ${JSON.stringify(parentRunId)}.`;
+    entries.headless = {
+      ...buildCodexExecEntry({ executable: codexExecutable, projectRoot: root, prompt, model, effort }),
+      display: `# Codex CLI headless: ${JSON.stringify(codexExecutable)} (isolated descriptor; prompt via stdin)`,
+    };
+  }
+  return entries;
 }
 
 function buildClaudeEntries({
@@ -175,8 +200,10 @@ export function buildRuntimeResumeDescriptor({
   launcher, launcherBin, launcherSocket,
   platform = process.platform, desktopTarget = null, exists = existsSync,
   model = null, effort = null,
+  codexExecutable = null, deepLoopRoot = null,
 } = {}) {
   const selectedRuntime = validateSessionRuntime(runtime);
+  validateRuntimeProfile(selectedRuntime, { model, effort });
   validateSpawnArgs({ parentRunId, childRunId, handoffRel });
   const invocation = resumeInvocation(selectedRuntime, root, parentRunId);
   const resumePrompt = selectedRuntime === 'claude'
@@ -184,7 +211,7 @@ export function buildRuntimeResumeDescriptor({
     : `Read ${JSON.stringify(`${root}/.deep-loop/runs/${parentRunId}/${handoffRel}`)} first; then run ${invocation}`;
   const entries = selectedRuntime === 'claude'
     ? buildClaudeEntries({ root, parentRunId, childRunId, handoffRel, launcher, launcherBin, launcherSocket, platform, desktopTarget, exists, model, effort })
-    : buildCodexEntries({ root, parentRunId, childRunId, handoffRel });
+    : buildCodexEntries({ root, parentRunId, childRunId, handoffRel, model, effort, codexExecutable, deepLoopRoot });
   return {
     runtime: selectedRuntime,
     projectRoot: root,

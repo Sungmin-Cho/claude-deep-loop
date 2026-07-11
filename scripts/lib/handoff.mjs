@@ -8,6 +8,7 @@ import { defaultDesktopProbe } from './desktop-target.mjs';
 import { sessionRuntime } from './runtime.mjs';
 import { canonicalProjectRoot } from './project-root.mjs';
 import { buildRuntimeResumeDescriptor } from './runtime-descriptor.mjs';
+import { validateRuntimeProfile } from './session-profile.mjs';
 
 export { buildLaunchCommand } from './runtime-descriptor.mjs';
 
@@ -27,7 +28,7 @@ function handoffMarkdown(loop, childRunId, reason, descriptor) {
     `- effort: ${loop.autonomy?.session_effort || '(미지정 — CLI 기본값)'}`,
     descriptor.runtime === 'claude'
       ? `> desktop transport는 URL로 model/effort를 전달할 수 없으니, desktop 재개 시 이 값으로 세션을 맞추세요.`
-      : `> Codex Slice 1은 수동 CLI/App resume만 제공하며 runtime-specific model/effort flag 매핑은 후속 slice에서 활성화한다.`, '',
+      : `> Codex model과 low/medium/high/xhigh effort 매핑은 격리 descriptor에 고정되며 max effort는 fail-closed다. 실행은 별도 executable 승인·preflight 전까지 비활성이다.`, '',
     `## Episodes`, `- completed: ${doneEp}`, `- abandoned: ${abandonedEp}`, `- current: ${loop.current_episode || '(none)'}`, '',
     `## Workstreams`, wsLines, '',
     `## Triage`, `- actionable: ${(loop.triage?.actionable || []).length}, needs_human: ${(loop.triage?.needs_human || []).length}`, '',
@@ -50,7 +51,11 @@ export function emitHandoff(root, runId, {
   // Resolve runtime and canonical root from root-bound durable state. This read
   // fences copied roots and malformed runtime state before reservation or files.
   const { data: initialLoop } = readState(root, runId);
-  sessionRuntime(initialLoop);
+  const initialRuntime = sessionRuntime(initialLoop);
+  validateRuntimeProfile(initialRuntime, {
+    model: initialLoop.autonomy?.session_model ?? null,
+    effort: initialLoop.autonomy?.session_effort ?? null,
+  });
   const canonicalRoot = canonicalProjectRoot(initialLoop.project.root);
   const res = reserveHandoff(canonicalRoot, runId, { trigger, now, expect });
   if (!res.ok) {

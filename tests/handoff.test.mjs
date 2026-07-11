@@ -252,6 +252,38 @@ test('Codex handoff emits qualified manual resume descriptors and no Claude proc
   assert.ok(!launch.includes('--effort'));
 });
 
+test('Codex headless descriptor is runnable only with an explicit absolute executable', () => {
+  const c = buildLaunchCommand({
+    runtime: 'codex', root: 'C:\\repo', parentRunId: 'PARENT', childRunId: 'CHILD', handoffRel: 'handoffs/x.md',
+    codexExecutable: 'C:\\trusted\\codex.exe', deepLoopRoot: 'C:\\deep-loop', model: 'gpt-5.4', effort: 'xhigh',
+  });
+  assert.equal(c.headless.bin, 'C:\\trusted\\codex.exe');
+  assert.equal(c.headless.shell, false);
+  assert.equal(c.headless.stdin.includes(JSON.stringify('C:\\deep-loop\\skills\\deep-loop-resume\\SKILL.md')), true);
+  assert.equal(c.headless.argv.includes(c.headless.stdin), false, 'resume prompt must stay off argv');
+  assert.deepEqual(c.headless.argv.slice(-3), ['-C', 'C:\\repo', '-']);
+  assert.ok(c.headless.argv.includes('model_reasoning_effort="xhigh"'));
+  assert.ok(!c.headless.argv.includes('--profile'));
+  assert.ok(!c.headless.argv.includes('--add-dir'));
+});
+
+test('Codex max effort fails before handoff reservation or artifact writes', () => {
+  const { root, runId } = seed('codex');
+  const { data } = readState(root, runId);
+  data.autonomy.session_effort = 'max';
+  writeState(root, runId, data);
+
+  assert.throws(
+    () => emitHandoff(root, runId, { now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId) }),
+    /UNSUPPORTED_RUNTIME_EFFORT/,
+  );
+  const after = readState(root, runId).data;
+  assert.equal(after.session_chain.lease.handoff_phase, 'idle');
+  assert.equal(after.session_chain.lease.handoff_child_run_id ?? null, null);
+  assert.equal(existsSync(join(runDir(root, runId), 'handoffs')), false);
+  assert.equal(existsSync(join(runDir(root, runId), 'terminal')), false);
+});
+
 test('handoff descriptor records canonical project root and explicit logical run id', () => {
   const parent = mkdtempSync(join(tmpdir(), 'dl-alias-'));
   const canonicalRoot = join(parent, 'canonical');
