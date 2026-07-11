@@ -7,6 +7,10 @@ import { buildLaunchCommand } from './runtime-descriptor.mjs';
 import { defaultDesktopProbe } from './desktop-target.mjs';
 import { sessionRuntime } from './runtime.mjs';
 import { canonicalProjectRoot } from './project-root.mjs';
+import {
+  revalidateTrustedLauncherExecutable,
+  revalidateTrustedRuntimeExecutable,
+} from './runtime-executable.mjs';
 
 // 게이트 순서: budget → breaker → max_sessions → wallclock → auto_handoff (spec §9). 순수.
 export function respawnGate(loop, { now = Date.now() } = {}) {
@@ -170,6 +174,10 @@ export function respawn(root, runId, {
   platform = process.platform, desktopProbe = defaultDesktopProbe,
   codexExecutable = null, deepLoopRoot = null,
   expect = null, expectedMode = null,
+  revalidateRuntimeExecutable = revalidateTrustedRuntimeExecutable,
+  revalidateLauncherExecutable = revalidateTrustedLauncherExecutable,
+  runtimeRevalidationOptions = {},
+  launcherRevalidationOptions = {},
 } = {}) {
   reconcileBudget(root, runId);                       // 무결성 fail-stop (탐지 시 throw)
   const { data: loop } = readState(root, runId);
@@ -257,6 +265,35 @@ export function respawn(root, runId, {
     return { ok: false, outcome: 'no-launcher', reason: 'no-auto-launcher', childRunId };
   }
   const isHeadless = mode === 'headless';
+  let runtimeExecutableIdentity = null;
+  let launcherIdentity = null;
+  if (platform === 'win32') {
+    const requiresRuntime = mode !== 'desktop';
+    const requiresLauncher = mode === 'wt' || mode === 'powershell' || mode === 'desktop';
+    let identityStage = requiresRuntime ? 'runtime' : 'launcher';
+    try {
+      if (requiresRuntime) {
+        const stored = loop.autonomy?.runtime_executable_approval;
+        runtimeExecutableIdentity = revalidateRuntimeExecutable(stored, { ...runtimeRevalidationOptions, platform });
+        if (!runtimeExecutableIdentity || runtimeExecutableIdentity.runtime !== runtime
+          || runtimeExecutableIdentity.canonical_path !== stored?.canonical_path) throw new Error('runtime identity mismatch');
+      }
+      if (requiresLauncher) {
+        identityStage = 'launcher';
+        const stored = loop.session_spawn?.launcher_identity;
+        launcherIdentity = revalidateLauncherExecutable(stored, { ...launcherRevalidationOptions, platform });
+        const expectedKind = mode === 'wt' ? 'wt' : 'powershell';
+        if (!launcherIdentity || launcherIdentity.kind !== expectedKind
+          || launcherIdentity.canonical_path !== stored?.canonical_path) throw new Error('launcher identity mismatch');
+      }
+    } catch {
+      const reason = `${identityStage}-identity-unavailable`;
+      const res = preservePause(root, runId, { childRunId, parentOwner, generation, pauseReason: reason });
+      if (res.terminal) return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };
+      if (res.fenced) return { ok: false, outcome: 'fenced', reason: 'lease-changed-before-pause', childRunId };
+      return { ok: false, outcome: 'no-launcher', reason, childRunId };
+    }
+  }
   // Codex r3 🔴3: derive effHandoffRel + construct/validate the launch entry BEFORE the spawned CAS.
   // buildLaunchCommand can throw UNSAFE_SPAWN_ARG (or cmds[mode] undefined for an unrecognised mode).
   // A throw here leaves the lease in 'emitted' (no CAS yet → not stranded). Only command CONSTRUCTION
@@ -279,6 +316,7 @@ export function respawn(root, runId, {
       platform, desktopTarget: dt && dt.ok ? dt.argvTarget : null,
       model: loop.autonomy?.session_model ?? null, effort: loop.autonomy?.session_effort ?? null,
       codexExecutable, deepLoopRoot,
+      runtimeExecutableIdentity, launcherIdentity,
     });
     _entry = _cmds[mode];
   } catch (buildErr) {
@@ -305,6 +343,46 @@ export function respawn(root, runId, {
     return { ok: false, outcome: 'no-launcher', reason: unavailableReason, childRunId };
   }
 
+  const revalidateWindowsStage = (sourceLoop) => {
+    if (platform !== 'win32') return null;
+    if (runtimeExecutableIdentity != null) {
+      try {
+        const stored = sourceLoop.autonomy?.runtime_executable_approval;
+        if (JSON.stringify(stored) !== JSON.stringify(loop.autonomy?.runtime_executable_approval)) {
+          return 'runtime-identity-drift';
+        }
+        const fresh = revalidateRuntimeExecutable(stored, { ...runtimeRevalidationOptions, platform });
+        if (JSON.stringify(fresh) !== JSON.stringify(runtimeExecutableIdentity)) return 'runtime-identity-drift';
+      } catch {
+        return 'runtime-identity-drift';
+      }
+    }
+    if (launcherIdentity != null) {
+      try {
+        const stored = sourceLoop.session_spawn?.launcher_identity;
+        if (JSON.stringify(stored) !== JSON.stringify(loop.session_spawn?.launcher_identity)) {
+          return 'launcher-identity-drift';
+        }
+        const fresh = revalidateLauncherExecutable(stored, { ...launcherRevalidationOptions, platform });
+        if (JSON.stringify(fresh) !== JSON.stringify(launcherIdentity)) return 'launcher-identity-drift';
+      } catch {
+        return 'launcher-identity-drift';
+      }
+    }
+    return null;
+  };
+
+  // Fresh durable identity + direct version/hash checks immediately before the CAS may authorize spawn.
+  const preClaimIdentityFailure = revalidateWindowsStage(readState(root, runId).data);
+  if (preClaimIdentityFailure) {
+    const res = preservePause(root, runId, {
+      childRunId, parentOwner, generation, pauseReason: preClaimIdentityFailure,
+    });
+    if (res.terminal) return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };
+    if (res.fenced) return { ok: false, outcome: 'fenced', reason: 'lease-changed-before-pause', childRunId };
+    return { ok: false, outcome: 'no-launcher', reason: preClaimIdentityFailure, childRunId };
+  }
+
   // Codex r2 🔴3: 외부 spawn **이전에** emitted→spawned 를 원자적(withLock CAS)으로 클레임 (이중 외부 spawn 차단).
   // Command is already validated above; only the CAS + spawnFn call remain below.
   const claim = advanceHandoffPhase(root, runId, { key, toPhase: 'spawned', now, expect: { owner: parentOwner, generation } });
@@ -318,6 +396,19 @@ export function respawn(root, runId, {
 
   // Codex impl r8 🟡: entry is already built + validated before the CAS above.
   const entry = _entry;
+  if (platform === 'win32') {
+    const identityFailure = revalidateWindowsStage(readState(root, runId).data);
+    if (identityFailure) {
+      const res = rollbackAndPause(root, runId, {
+        childRunId, parentOwner, generation,
+        eventData: { child_run_id: childRunId, error: identityFailure },
+        pauseReason: 'launch-failed',
+      });
+      if (res.terminal) return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };
+      if (res.fenced) return { ok: false, outcome: 'fenced', reason: 'lease-changed-before-failure-record', childRunId };
+      return { ok: false, outcome: 'failed_launch', reason: identityFailure, childRunId };
+    }
+  }
   try {
     const res = spawnFn(entry);
     if (res && res.ok === false) throw new Error(res.reason || 'spawn-returned-false');

@@ -62,6 +62,20 @@ function absolutePath(value) {
   return typeof value === 'string' && value.length > 0 && (posix.isAbsolute(value) || win32.isAbsolute(value));
 }
 
+function windowsNativePath(identity, { runtime = null, kind = null } = {}) {
+  const path = identity?.canonical_path;
+  if (!identity || typeof identity !== 'object' || identity.platform !== 'win32'
+    || typeof path !== 'string' || !win32.isAbsolute(path) || path.startsWith('\\\\')
+    || /\.(?:cmd|bat|ps1|js|mjs|cjs)$/i.test(path)
+    || (runtime != null && identity.runtime !== runtime)
+    || (kind != null && identity.kind !== kind)) return null;
+  return path;
+}
+
+function unavailableEntry(surface, reason) {
+  return { unavailable: true, reason, display: `# ${surface}: manual (${reason})` };
+}
+
 function pathFor(root, ...segments) {
   return win32.isAbsolute(root) ? win32.join(root, ...segments) : posix.join(root, ...segments);
 }
@@ -69,6 +83,7 @@ function pathFor(root, ...segments) {
 function buildCodexEntries({
   root, parentRunId, childRunId, handoffRel,
   model = null, effort = null, codexExecutable = null, deepLoopRoot = null,
+  platform = process.platform, runtimeExecutableIdentity = null,
 }) {
   validateRuntimeProfile('codex', { model, effort });
   const invocation = resumeInvocation('codex', root, parentRunId);
@@ -97,13 +112,17 @@ function buildCodexEntries({
       display: `# Codex CLI (manual): open a new task at ${JSON.stringify(root)}; ${manualPrompt}`,
     },
   };
-  if (codexExecutable != null) {
+  const effectiveExecutable = platform === 'win32'
+    ? windowsNativePath(runtimeExecutableIdentity, { runtime: 'codex' })
+    : codexExecutable;
+  if (effectiveExecutable != null) {
     if (!absolutePath(deepLoopRoot)) throw new Error('INVALID_DEEP_LOOP_ROOT: explicit absolute deep-loop root required');
     const skillPath = pathFor(deepLoopRoot, 'skills', 'deep-loop-resume', 'SKILL.md');
     const prompt = `Read ${JSON.stringify(handoffPath)} first. Then read ${JSON.stringify(skillPath)} and execute that workflow inline for project root ${JSON.stringify(root)} and run id ${JSON.stringify(parentRunId)}.`;
     entries.headless = {
-      ...buildCodexExecEntry({ executable: codexExecutable, projectRoot: root, prompt, model, effort }),
-      display: `# Codex CLI headless: ${JSON.stringify(codexExecutable)} (isolated descriptor; prompt via stdin)`,
+      ...buildCodexExecEntry({ executable: effectiveExecutable, projectRoot: root, prompt, model, effort }),
+      ...(platform === 'win32' ? { platform: 'win32', shell: false } : {}),
+      display: `# Codex CLI headless: ${JSON.stringify(effectiveExecutable)} (isolated descriptor; prompt via stdin)`,
     };
   }
   return entries;
@@ -114,6 +133,7 @@ function buildClaudeEntries({
   launcherBin, launcherSocket,
   platform = process.platform, desktopTarget = null, exists = existsSync,
   model = null, effort = null,
+  runtimeExecutableIdentity = null, launcherIdentity = null,
 }) {
   const resumePrompt = `Read .deep-loop/runs/${parentRunId}/${handoffRel} first; then run /deep-loop-resume`;
   const inner = `deep-loop-${childRunId}`;
@@ -125,10 +145,10 @@ function buildClaudeEntries({
   if (desktopTarget && desktopTarget.kind === 'macos-app' && platform === 'darwin') {
     desktopEntry = { bin: '/usr/bin/open', argv: ['-a', desktopTarget.appPath, desktopUrl], available: true };
   } else if (desktopTarget && desktopTarget.kind === 'win-exe' && platform === 'win32') {
-    const psBin = trustedPsCandidates(exists)[0];
+    const psBin = windowsNativePath(launcherIdentity, { kind: 'powershell' });
     if (psBin) {
       const psCmd = `Start-Process -FilePath '${psq(desktopTarget.exePath)}' -ArgumentList '${psq(desktopUrl)}'`;
-      desktopEntry = { bin: psBin, argv: ['-NoProfile', '-Command', psCmd], available: true };
+      desktopEntry = { bin: psBin, argv: ['-NoProfile', '-NonInteractive', '-Command', psCmd], available: true, platform: 'win32', shell: false };
     } else {
       desktopEntry = { unavailable: true };
     }
@@ -150,8 +170,8 @@ function buildClaudeEntries({
   if (isTrustedPsBin(launcherBin)) {
     const innerPS = `Set-Location -LiteralPath '${psq(root)}'; & claude -n '${psq(inner)}' '${psq(resumePrompt)}'${meSh((x) => `'${psq(x)}'`, model, effort)}`;
     const b64 = Buffer.from(innerPS, 'utf16le').toString('base64');
-    const psCmd = `Start-Process '${psq(launcherBin)}' -ArgumentList '-NoExit','-EncodedCommand','${b64}'`;
-    powershellEntry = { bin: launcherBin, argv: ['-Command', psCmd], display: `& '${psq(launcherBin)}' -Command "${psCmd}"` };
+    const psCmd = `Start-Process '${psq(launcherBin)}' -ArgumentList '-NoProfile','-NoExit','-EncodedCommand','${b64}'`;
+    powershellEntry = { bin: launcherBin, argv: ['-NoProfile', '-NonInteractive', '-Command', psCmd], display: `& '${psq(launcherBin)}' -NoProfile -NonInteractive -Command "${psCmd}"` };
   } else {
     powershellEntry = { bin: null, argv: null, unavailable: true, display: '# powershell: unavailable (no trusted launcher_bin)' };
   }
@@ -159,6 +179,49 @@ function buildClaudeEntries({
   const headlessDisplay = `cd ${q(root)} && claude -p "${resumePrompt}"${meSh(q, model, effort)} --output-format json --permission-mode acceptEdits`;
   const interactiveDisplay = `cd ${q(root)} && claude -n ${inner} "${resumePrompt}"${meSh(q, model, effort)}`;
   const cmuxDisplay = `${effectiveBin}${launcherSocket ? ` --socket ${q(launcherSocket)}` : ''} new-workspace --cwd ${q(root)} --command ${q(cmuxCmdStr)} --focus true`;
+
+  if (platform === 'win32') {
+    const runtimeBin = windowsNativePath(runtimeExecutableIdentity, { runtime: 'claude' });
+    const wtBin = windowsNativePath(launcherIdentity, { kind: 'wt' });
+    const psBin = windowsNativePath(launcherIdentity, { kind: 'powershell' });
+    const manual = `# Claude CLI (manual): open a native Claude session at ${JSON.stringify(root)}; then run /deep-loop-resume`;
+    let windowsPs = unavailableEntry('powershell', 'trusted-native-identity-unavailable');
+    if (runtimeBin && psBin) {
+      const innerPS = `Set-Location -LiteralPath '${psq(root)}'; & '${psq(runtimeBin)}' -n '${psq(inner)}' '${psq(resumePrompt)}'${meSh((x) => `'${psq(x)}'`, model, effort)}`;
+      const b64 = Buffer.from(innerPS, 'utf16le').toString('base64');
+      const psCmd = `Start-Process '${psq(psBin)}' -ArgumentList '-NoProfile','-NoExit','-EncodedCommand','${b64}'`;
+      windowsPs = {
+        platform: 'win32', bin: psBin, argv: ['-NoProfile', '-NonInteractive', '-Command', psCmd], shell: false,
+        nativeExecutableTargets: [runtimeBin],
+        display: `& '${psq(psBin)}' -NoProfile -NonInteractive -Command "${psCmd}"`,
+      };
+    }
+    const wt = runtimeBin && wtBin
+      ? {
+        platform: 'win32', bin: wtBin,
+        argv: ['-d', root, runtimeBin, '-n', inner, resumePrompt, ...meArgv(model, effort)],
+        nativeExecutableArgvIndices: [2], shell: false,
+        display: `${q(wtBin)} -d ${q(root)} ${q(runtimeBin)} -n ${inner} "${resumePrompt}"${meSh(q, model, effort)}`,
+      }
+      : unavailableEntry('wt', 'trusted-native-identity-unavailable');
+    const headless = runtimeBin
+      ? {
+        platform: 'win32', bin: runtimeBin,
+        argv: ['-p', resumePrompt, ...meArgv(model, effort), '--output-format', 'json', '--permission-mode', 'acceptEdits'],
+        cwd: root, shell: false, display: `# Claude CLI headless: ${JSON.stringify(runtimeBin)} (trusted native identity)`,
+      }
+      : unavailableEntry('headless', 'trusted-native-runtime-unavailable');
+    return {
+      cmux: unavailableEntry('cmux', 'native-windows-launcher-unavailable'),
+      iterm2: unavailableEntry('iterm2', 'unsupported-on-win32'),
+      'terminal-app': unavailableEntry('terminal-app', 'unsupported-on-win32'),
+      wt,
+      powershell: windowsPs,
+      desktop: desktopEntry,
+      headless,
+      interactive: { manual: true, display: manual },
+    };
+  }
 
   return {
     cmux: {
@@ -201,6 +264,7 @@ export function buildRuntimeResumeDescriptor({
   platform = process.platform, desktopTarget = null, exists = existsSync,
   model = null, effort = null,
   codexExecutable = null, deepLoopRoot = null,
+  runtimeExecutableIdentity = null, launcherIdentity = null,
 } = {}) {
   const selectedRuntime = validateSessionRuntime(runtime);
   validateRuntimeProfile(selectedRuntime, { model, effort });
@@ -210,8 +274,8 @@ export function buildRuntimeResumeDescriptor({
     ? `Read .deep-loop/runs/${parentRunId}/${handoffRel} first; then run /deep-loop-resume`
     : `Read ${JSON.stringify(`${root}/.deep-loop/runs/${parentRunId}/${handoffRel}`)} first; then run ${invocation}`;
   const entries = selectedRuntime === 'claude'
-    ? buildClaudeEntries({ root, parentRunId, childRunId, handoffRel, launcher, launcherBin, launcherSocket, platform, desktopTarget, exists, model, effort })
-    : buildCodexEntries({ root, parentRunId, childRunId, handoffRel, model, effort, codexExecutable, deepLoopRoot });
+    ? buildClaudeEntries({ root, parentRunId, childRunId, handoffRel, launcher, launcherBin, launcherSocket, platform, desktopTarget, exists, model, effort, runtimeExecutableIdentity, launcherIdentity })
+    : buildCodexEntries({ root, parentRunId, childRunId, handoffRel, model, effort, codexExecutable, deepLoopRoot, platform, runtimeExecutableIdentity });
   return {
     runtime: selectedRuntime,
     projectRoot: root,

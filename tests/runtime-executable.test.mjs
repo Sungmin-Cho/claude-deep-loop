@@ -15,11 +15,14 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
   collectRuntimeExecutableCandidates,
+  approveRuntimeExecutable,
   diagnoseRuntimeExecutable,
   resolveAuthenticatedCodexHome,
   resolveTrustedRuntimeExecutable,
   revalidateTrustedRuntimeExecutable,
 } from '../scripts/lib/runtime-executable.mjs';
+import { initRun } from '../scripts/lib/initrun.mjs';
+import { readState } from '../scripts/lib/state.mjs';
 
 const TARGETS = Object.freeze({
   'darwin:arm64': {
@@ -42,6 +45,18 @@ const TARGETS = Object.freeze({
     suffix: 'linux-x64',
     triple: 'x86_64-unknown-linux-musl',
   },
+  'win32:x64': {
+    alias: '@openai/codex-win32-x64',
+    suffix: 'win32-x64',
+    triple: 'x86_64-pc-windows-msvc',
+    executable: 'codex.exe',
+  },
+  'win32:arm64': {
+    alias: '@openai/codex-win32-arm64',
+    suffix: 'win32-arm64',
+    triple: 'aarch64-pc-windows-msvc',
+    executable: 'codex.exe',
+  },
 });
 
 function json(path, value) {
@@ -55,7 +70,7 @@ function officialCodexFixture({ platform = 'darwin', arch = 'arm64', version = '
   const wrapperRoot = join(root, 'node_modules', '@openai', 'codex');
   const wrapper = join(wrapperRoot, 'bin', 'codex.js');
   const optionalRoot = join(wrapperRoot, 'node_modules', ...target.alias.split('/'));
-  const native = join(optionalRoot, 'vendor', target.triple, 'bin', 'codex');
+  const native = join(optionalRoot, 'vendor', target.triple, 'bin', target.executable || 'codex');
   const optionalSpec = `npm:@openai/codex@${version}-${target.suffix}`;
 
   json(join(wrapperRoot, 'package.json'), {
@@ -178,6 +193,93 @@ test('resolver skips a PATH/cwd shadow and does not trust discovery ordering', (
   assert.equal(fixture.calls.length, 1, 'an untrusted shadow must never be executed for a version probe');
 });
 
+test('Windows npm shim is locator-only: resolver derives and executes only wrapper-adjacent codex.exe', () => {
+  const fixture = officialCodexFixture({ platform: 'win32', arch: 'x64' });
+  const shim = join(fixture.root, 'codex.cmd');
+  writeFileSync(shim, '@echo off\r\nnode node_modules\\@openai\\codex\\bin\\codex.js %*\r\n');
+
+  const identity = resolveTrustedRuntimeExecutable('codex', {
+    candidatePaths: [shim], platform: 'win32', arch: 'x64', runVersion: fixture.runVersion,
+  });
+
+  assert.equal(identity.canonical_path, fixture.native);
+  assert.equal(fixture.calls.length, 1);
+  assert.equal(fixture.calls[0].bin, fixture.native);
+  assert.notEqual(fixture.calls[0].bin, shim, 'the cmd shim is never executed');
+  assert.equal(fixture.calls[0].options.shell, false);
+});
+
+test('Windows candidate collection uses semicolon PATH and collects shims only as absolute candidates', () => {
+  const first = realpathSync(mkdtempSync(join(tmpdir(), 'dl-win-path-a-')));
+  const second = realpathSync(mkdtempSync(join(tmpdir(), 'dl-win-path-b-')));
+  writeFileSync(join(first, 'codex.cmd'), 'shim');
+  writeFileSync(join(second, 'codex.exe'), 'shadow');
+
+  const candidates = collectRuntimeExecutableCandidates('codex', {
+    platform: 'win32', env: { Path: `relative;;${first};${second}` },
+  });
+
+  assert.deepEqual(candidates.map(candidate => candidate.path), [join(first, 'codex.cmd'), join(second, 'codex.exe')]);
+  assert.ok(candidates.every(candidate => candidate.source === 'path-search'));
+});
+
+test('multiple distinct verified Windows npm installations are ambiguous regardless of candidate ordering', () => {
+  const a = officialCodexFixture({ platform: 'win32', arch: 'arm64' });
+  const b = officialCodexFixture({ platform: 'win32', arch: 'arm64' });
+  const runVersion = (bin, argv, options) => {
+    assert.deepEqual(argv, ['--version']);
+    assert.equal(options.shell, false);
+    return { status: 0, signal: null, stdout: `codex-cli ${a.version}\n`, stderr: '' };
+  };
+  assert.throws(
+    () => resolveTrustedRuntimeExecutable('codex', {
+      candidatePaths: [b.wrapper, a.wrapper], platform: 'win32', arch: 'arm64', runVersion,
+    }),
+    /RUNTIME_EXECUTABLE_AMBIGUOUS/,
+  );
+});
+
+test('Windows Authenticode observation is normalized and an explicit signer/thumbprint policy is enforced', () => {
+  const fixture = officialCodexFixture({ platform: 'win32', arch: 'x64' });
+  const authenticodeProbe = (path, options) => {
+    assert.equal(path, fixture.native);
+    assert.ok(options.timeoutMs > 0 && options.timeoutMs <= 5_000);
+    return { status: 'Valid', signer: 'OpenAI, L.L.C.', thumbprint: 'AA BB CC 11' };
+  };
+  const identity = resolveFixture(fixture, {
+    authenticodeProbe,
+    authenticodePolicy: { signer: 'OpenAI, L.L.C.', thumbprint: 'aabbcc11' },
+  });
+  assert.deepEqual(identity.authenticode, {
+    status: 'valid', signer: 'OpenAI, L.L.C.', thumbprint: 'aabbcc11',
+  });
+
+  assert.throws(
+    () => resolveFixture(officialCodexFixture({ platform: 'win32', arch: 'x64' }), {
+      authenticodeProbe: () => ({ status: 'valid', signer: 'Unexpected', thumbprint: '00' }),
+      authenticodePolicy: { signer: 'OpenAI, L.L.C.', thumbprint: 'aabbcc11' },
+    }),
+    /RUNTIME_EXECUTABLE_AUTHENTICODE_INVALID/,
+  );
+  assert.throws(
+    () => resolveFixture(officialCodexFixture({ platform: 'win32', arch: 'x64' }), {
+      authenticodeProbe: () => { throw new Error('probe unavailable'); },
+      authenticodePolicy: { signer: 'OpenAI, L.L.C.' },
+    }),
+    /RUNTIME_EXECUTABLE_AUTHENTICODE_INVALID/,
+  );
+});
+
+test('Windows has no guessed signer pin: absent observation remains null and still requires human approval', () => {
+  const fixture = officialCodexFixture({ platform: 'win32', arch: 'x64' });
+  const diagnosed = diagnoseRuntimeExecutable('codex', {
+    explicitPath: fixture.wrapper, platform: 'win32', arch: 'x64', runVersion: fixture.runVersion,
+  });
+  assert.equal(diagnosed.approval_required, true);
+  assert.equal(diagnosed.identity.authenticode, null);
+  assert.equal(Object.hasOwn(diagnosed.identity, 'trusted_signer'), false);
+});
+
 test('resolver fails closed on official package metadata and containment mismatches', () => {
   for (const [label, mutate] of [
     ['wrapper name', fixture => {
@@ -285,6 +387,106 @@ test('human-explicit identity revalidates exact path/hash/version and detects re
     /RUNTIME_EXECUTABLE_DRIFT/,
   );
   assert.equal(calls.length, 1, 'hash drift must be rejected before executing the replacement');
+});
+
+test('human-explicit native Claude on Windows revalidates exact path/hash/version with no shell or argv splitting', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-runtime-claude win & meta-')));
+  const executable = join(root, 'claude native & signed.exe');
+  writeFileSync(executable, 'claude native bytes');
+  const identity = {
+    runtime: 'claude', canonical_path: executable,
+    sha256: createHash('sha256').update(readFileSync(executable)).digest('hex'),
+    version: '2.1.0', platform: 'win32', arch: 'x64',
+    source: 'human-explicit', package: null, authenticode: null,
+    approved_by: 'human', approved_at: '2026-07-11T08:00:00.000Z',
+  };
+  const calls = [];
+  const runVersion = (bin, argv, options) => {
+    calls.push({ bin, argv, options });
+    return { status: 0, signal: null, stdout: '2.1.0 (Claude Code)\r\n', stderr: '' };
+  };
+
+  assert.deepEqual(revalidateTrustedRuntimeExecutable(identity, { platform: 'win32', arch: 'x64', runVersion }), identity);
+  assert.deepEqual(calls.map(call => call.bin), [executable]);
+  assert.deepEqual(calls[0].argv, ['--version']);
+  assert.equal(calls[0].options.shell, false);
+});
+
+test('human exact path+SHA approval accepts native Claude.exe and persists the bounded direct identity', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-runtime-claude-approve-')));
+  const executable = join(root, 'Claude Native.exe');
+  writeFileSync(executable, 'approved claude native bytes');
+  const sha256 = createHash('sha256').update(readFileSync(executable)).digest('hex');
+  const { runId } = initRun(root, {
+    runtime: 'claude', goal: 'g', now: new Date('2026-07-11T08:00:00.000Z'),
+    env: {}, platform: 'linux', run: () => ({ code: 1 }),
+  });
+  const calls = [];
+  const result = approveRuntimeExecutable(root, runId, {
+    runtime: 'claude', candidatePath: executable, expectedCanonicalPath: executable, expectedSha256: sha256,
+    actor: 'human', confirm: true, fence: { owner: runId, generation: 1 },
+    now: Date.parse('2026-07-11T08:01:00.000Z'), platform: 'win32', arch: 'x64',
+    runVersion: (bin, argv, options) => {
+      calls.push({ bin, argv, options });
+      return { status: 0, signal: null, stdout: '2.1.0 (Claude Code)\r\n', stderr: '' };
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.approval.runtime, 'claude');
+  assert.equal(result.approval.canonical_path, executable);
+  assert.equal(result.approval.sha256, sha256);
+  assert.equal(result.approval.version, '2.1.0');
+  assert.equal(result.approval.platform, 'win32');
+  assert.equal(result.approval.source, 'human-explicit');
+  assert.equal(result.approval.authenticode, null);
+  assert.deepEqual(readState(root, runId).data.autonomy.runtime_executable_approval, result.approval);
+  assert.ok(calls.length >= 2, 'approval performs initial and fresh in-lock direct probes');
+  assert.ok(calls.every(call => call.bin === executable && call.options.shell === false));
+});
+
+test('official Windows approval persists the observed Authenticode identity and repeats the pinned probe in-lock', () => {
+  const fixture = officialCodexFixture({ platform: 'win32', arch: 'x64' });
+  const policy = { signer: 'OpenAI, L.L.C.', thumbprint: 'aabbcc11' };
+  const observation = { status: 'Valid', signer: 'OpenAI, L.L.C.', thumbprint: 'AA BB CC 11' };
+  const diagnosed = resolveFixture(fixture, {
+    authenticodeProbe: () => observation, authenticodePolicy: policy,
+  });
+  const { runId } = initRun(fixture.root, {
+    runtime: 'codex', goal: 'g', now: new Date('2026-07-11T08:00:00.000Z'),
+    env: {}, platform: 'linux', run: () => ({ code: 1 }),
+  });
+  let signerProbes = 0;
+  const result = approveRuntimeExecutable(fixture.root, runId, {
+    runtime: 'codex', candidatePath: fixture.wrapper,
+    expectedCanonicalPath: diagnosed.canonical_path, expectedSha256: diagnosed.sha256,
+    actor: 'human', confirm: true, fence: { owner: runId, generation: 1 },
+    now: Date.parse('2026-07-11T08:01:00.000Z'), platform: 'win32', arch: 'x64',
+    runVersion: fixture.runVersion,
+    authenticodeProbe: (path, options) => {
+      signerProbes++;
+      assert.equal(path, fixture.native);
+      assert.equal(options.shell, false);
+      return observation;
+    },
+    authenticodePolicy: policy,
+  });
+  assert.deepEqual(result.approval.authenticode, {
+    status: 'valid', signer: 'OpenAI, L.L.C.', thumbprint: 'aabbcc11',
+  });
+  assert.equal(signerProbes, 2, 'approval and fresh in-lock verification must both observe the signer');
+  assert.deepEqual(readState(fixture.root, runId).data.autonomy.runtime_executable_approval, result.approval);
+});
+
+test('Claude shim-only Windows installs are never diagnosable or revalidatable as native executables', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-runtime-claude-shim-')));
+  for (const extension of ['cmd', 'bat', 'ps1', 'js']) {
+    const shim = join(root, `claude.${extension}`);
+    writeFileSync(shim, 'shim');
+    assert.throws(
+      () => diagnoseRuntimeExecutable('claude', { explicitPath: shim, platform: 'win32', arch: 'x64' }),
+      /RUNTIME_EXECUTABLE_UNTRUSTED/,
+    );
+  }
 });
 
 test('diagnose never presents script or shell shims as human-approvable native executables', () => {

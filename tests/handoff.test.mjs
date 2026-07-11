@@ -126,8 +126,9 @@ test('escApple doubles backslash AND escapes double-quote (root with both)', () 
 const TRUSTED_PS_BIN = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
 test('powershell uses -EncodedCommand of psq-escaped inner', () => {
   const c = buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'powershell', launcherBin: TRUSTED_PS_BIN });
-  assert.equal(c.powershell.argv[0], '-Command');
-  const cmdStr = c.powershell.argv[1];
+  assert.deepEqual(c.powershell.argv.slice(0, 3), ['-NoProfile', '-NonInteractive', '-Command']);
+  const cmdStr = c.powershell.argv[c.powershell.argv.indexOf('-Command') + 1];
+  assert.match(cmdStr, /-ArgumentList '-NoProfile','-NoExit','-EncodedCommand'/);
   const b64 = cmdStr.match(/-EncodedCommand','([A-Za-z0-9+/=]+)'/)[1];
   const decoded = Buffer.from(b64, 'base64').toString('utf16le');
   assert.match(decoded, /Set-Location -LiteralPath '\/p'/);
@@ -135,11 +136,76 @@ test('powershell uses -EncodedCommand of psq-escaped inner', () => {
 
 test('powershell: root with single-quote is doubled (psq escaping)', () => {
   const c = buildLaunchCommand({ root: "/p'q", parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'powershell', launcherBin: TRUSTED_PS_BIN });
-  const cmdStr = c.powershell.argv[1];
+  const cmdStr = c.powershell.argv[c.powershell.argv.indexOf('-Command') + 1];
   const b64 = cmdStr.match(/-EncodedCommand','([A-Za-z0-9+/=]+)'/)[1];
   const decoded = Buffer.from(b64, 'base64').toString('utf16le');
   // psq("/p'q") = "/p''q" — single-quote doubled
   assert.match(decoded, /Set-Location -LiteralPath '\/p''q'/);
+});
+
+function executableIdentity(runtime, canonicalPath, overrides = {}) {
+  return {
+    runtime,
+    canonical_path: canonicalPath,
+    sha256: 'a'.repeat(64),
+    version: runtime === 'claude' ? '2.1.0' : '0.144.1',
+    platform: 'win32', arch: 'x64', source: 'human-explicit', package: null,
+    authenticode: null, approved_by: 'human', approved_at: '2026-07-11T08:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function launcherIdentity(kind, canonicalPath) {
+  return {
+    kind, canonical_path: canonicalPath, sha256: 'b'.repeat(64), version: '1.0.0',
+    platform: 'win32', arch: 'x64', source: 'verified-native', authenticode: null,
+  };
+}
+
+test('Windows Claude descriptors without trusted runtime and launcher identities stay manual/unavailable', () => {
+  const c = buildLaunchCommand({
+    runtime: 'claude', platform: 'win32', root: 'C:\\repo', parentRunId: 'P', childRunId: 'C',
+    handoffRel: 'handoffs/x.md', launcher: 'wt', launcherBin: 'wt.exe',
+  });
+  assert.equal(c.wt.unavailable, true);
+  assert.equal(c.wt.bin, undefined);
+  assert.equal(c.headless.unavailable, true);
+  assert.equal(c.headless.bin, undefined);
+  assert.match(c.interactive.display, /manual/i);
+  assert.ok(!Object.values(c).some(entry => entry?.bin === 'wt.exe' || entry?.bin === 'claude'));
+});
+
+test('Windows Terminal descriptor uses verified absolute wt.exe and nested native Claude as single argv elements', () => {
+  const claude = executableIdentity('claude', 'C:\\Program Files & Tools\\Claude\\claude native.exe');
+  const wt = launcherIdentity('wt', 'C:\\Program Files\\WindowsApps\\wt.exe');
+  const c = buildLaunchCommand({
+    runtime: 'claude', platform: 'win32', root: 'C:\\repo & work', parentRunId: 'P', childRunId: 'C',
+    handoffRel: 'handoffs/x.md', launcher: 'wt', runtimeExecutableIdentity: claude, launcherIdentity: wt,
+  });
+  assert.equal(c.wt.bin, wt.canonical_path);
+  assert.equal(c.wt.shell, false);
+  assert.equal(c.wt.argv[1], 'C:\\repo & work');
+  assert.equal(c.wt.argv[2], claude.canonical_path);
+  assert.equal(c.wt.argv.filter(value => value === claude.canonical_path).length, 1);
+  assert.ok(!c.wt.argv.includes('claude'));
+});
+
+test('Windows PowerShell descriptor uses verified launcher and encodes verified native Claude path, never a bare name', () => {
+  const claude = executableIdentity('claude', "C:\\Program Files\\Claude & Co\\claude's native.exe");
+  const ps = launcherIdentity('powershell', 'C:\\Program Files\\PowerShell\\7\\pwsh.exe');
+  const c = buildLaunchCommand({
+    runtime: 'claude', platform: 'win32', root: 'C:\\repo', parentRunId: 'P', childRunId: 'C',
+    handoffRel: 'handoffs/x.md', launcher: 'powershell', runtimeExecutableIdentity: claude, launcherIdentity: ps,
+  });
+  assert.equal(c.powershell.bin, ps.canonical_path);
+  assert.equal(c.powershell.shell, false);
+  assert.deepEqual(c.powershell.argv.slice(0, 3), ['-NoProfile', '-NonInteractive', '-Command']);
+  const command = c.powershell.argv.at(-1);
+  assert.match(command, /-ArgumentList '-NoProfile','-NoExit','-EncodedCommand'/);
+  const encoded = command.match(/EncodedCommand','([A-Za-z0-9+/=]+)'/)[1];
+  const decoded = Buffer.from(encoded, 'base64').toString('utf16le');
+  assert.ok(decoded.includes("& 'C:\\Program Files\\Claude & Co\\claude''s native.exe'"));
+  assert.ok(!/(^|[;&]\s*)claude(?:\s|$)/i.test(decoded));
 });
 
 test('display strings use q(root) for paths with apostrophes and semicolons', () => {
@@ -265,6 +331,18 @@ test('Codex headless descriptor is runnable only with an explicit absolute execu
   assert.ok(c.headless.argv.includes('model_reasoning_effort="xhigh"'));
   assert.ok(!c.headless.argv.includes('--profile'));
   assert.ok(!c.headless.argv.includes('--add-dir'));
+});
+
+test('Codex native Windows headless descriptor accepts a revalidated identity and never a bare runtime', () => {
+  const codex = executableIdentity('codex', 'C:\\Program Files & Tools\\Codex\\codex.exe');
+  const c = buildLaunchCommand({
+    runtime: 'codex', platform: 'win32', root: 'C:\\repo', parentRunId: 'PARENT', childRunId: 'CHILD',
+    handoffRel: 'handoffs/x.md', runtimeExecutableIdentity: codex, deepLoopRoot: 'C:\\deep-loop',
+    model: 'gpt-5.4', effort: 'xhigh',
+  });
+  assert.equal(c.headless.bin, codex.canonical_path);
+  assert.equal(c.headless.shell, false);
+  assert.ok(!c.headless.argv.includes('codex'));
 });
 
 test('Codex max effort fails before handoff reservation or artifact writes', () => {
@@ -468,7 +546,7 @@ test('B3: powershell entry uses absolute trusted launcherBin as bin (not bare po
 test('B3: powershell display is PS-pasteable (call operator) for a path with spaces — plan-ADV2', () => {
   const cmds = buildLaunchCommand({ ...baseArgs, launcher: 'powershell', launcherBin: PS7BIN });
   assert.match(cmds.powershell.display, /^& '/);
-  assert.match(cmds.powershell.display, /pwsh\.exe' -Command /);
+  assert.match(cmds.powershell.display, /pwsh\.exe' -NoProfile -NonInteractive -Command /);
   assert.ok(!/^'C:\\/.test(cmds.powershell.display), 'display must not be a bare quoted-path literal');
 });
 
@@ -529,12 +607,13 @@ test('unverified desktopTarget → unavailable entry', () => {
 test('windows desktop entry: verified win-exe target + trusted PS available → non-blocking Start-Process launcher', () => {
   const trustedPs = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe';
   const exePath = 'C:\\Program Files\\Claude\\Claude.exe';
-  const exists = (p) => p === trustedPs;
   const cmds = buildLaunchCommand(desktopArgs({
-    platform: 'win32', desktopTarget: { kind: 'win-exe', exePath }, exists,
+    platform: 'win32', desktopTarget: { kind: 'win-exe', exePath },
+    launcherIdentity: launcherIdentity('powershell', trustedPs),
   }));
   assert.equal(cmds.desktop.available, true);
   assert.equal(cmds.desktop.bin, trustedPs);
+  assert.deepEqual(cmds.desktop.argv.slice(0, 3), ['-NoProfile', '-NonInteractive', '-Command']);
   const joined = cmds.desktop.argv.join(' ');
   assert.match(joined, /Start-Process -FilePath '/);
   assert.ok(joined.includes(exePath), 'argv must target the verified exe path');
@@ -550,9 +629,8 @@ test('windows desktop entry: verified win-exe target + trusted PS available → 
 
 test('windows desktop entry: no trusted PS bin found → unavailable (fail-closed)', () => {
   const exePath = 'C:\\Program Files\\Claude\\Claude.exe';
-  const exists = () => false;   // simulates no trusted PowerShell present on the Windows host
   const cmds = buildLaunchCommand(desktopArgs({
-    platform: 'win32', desktopTarget: { kind: 'win-exe', exePath }, exists,
+    platform: 'win32', desktopTarget: { kind: 'win-exe', exePath }, launcherIdentity: null,
   }));
   assert.equal(cmds.desktop.unavailable, true);
 });

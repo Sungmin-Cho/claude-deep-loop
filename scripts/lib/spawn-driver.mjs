@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { createCodexJsonlParser, parseClaudeUsage } from './usage-parser.mjs';
 import { runStreamingProcessSync } from './streaming-process.mjs';
+import { win32 } from 'node:path';
 
 // Codex r2 sf-4: budget 을 강제하려면 enforceable metric(turns 또는 tokens)이 최소 1개 finite 여야 한다.
 // total_cost_usd 만 있는 출력은 turns/tokens 로 budget 게이트를 못 거니 측정 불가(null) → fail-closed.
@@ -16,14 +17,40 @@ export function defaultVisibleRun(bin, argv, { timeoutMs, cwd } = {}) {
 // Backward-compatible name for external tests/callers that injected the old visible runner.
 export const defaultRun = defaultVisibleRun;
 
+function trustedWindowsNativePath(path) {
+  return typeof path === 'string' && win32.isAbsolute(path) && !path.startsWith('\\\\')
+    && !/\.(?:cmd|bat|ps1|js|mjs|cjs)$/i.test(path);
+}
+
+function validateWindowsSpawnEntry(entry) {
+  if (entry?.platform !== 'win32') return null;
+  if (entry.shell !== false || !trustedWindowsNativePath(entry.bin)) return 'untrusted-windows-executable';
+  if (entry.nativeExecutableArgvIndices !== undefined) {
+    if (!Array.isArray(entry.nativeExecutableArgvIndices)
+      || entry.nativeExecutableArgvIndices.some(index => !Number.isInteger(index)
+        || index < 0 || !trustedWindowsNativePath(entry.argv?.[index]))) {
+      return 'untrusted-windows-nested-executable';
+    }
+  }
+  if (entry.nativeExecutableTargets !== undefined) {
+    if (!Array.isArray(entry.nativeExecutableTargets)
+      || entry.nativeExecutableTargets.some(path => !trustedWindowsNativePath(path))) {
+      return 'untrusted-windows-nested-executable';
+    }
+  }
+  return null;
+}
+
 // visibleSpawn: launcher-agnostic best-effort launch for interactive (visible) sessions.
 // entry shape: { bin: string, argv: string[], cwd?: string }
 // launcher: informational tag only (tmux|wezterm|cmux|…); actual dispatch is entry.bin/argv.
 // Returns {ok:true} on exit 0 — this only means "launch command accepted by the multiplexer",
 // NOT that the child session succeeded (readiness is verified later by respawn's handshake in Task 9).
 export function visibleSpawn(entry, { launcher, timeoutMs = 30000, run = defaultVisibleRun } = {}) {
+  const invalid = validateWindowsSpawnEntry(entry);
+  if (invalid) return { ok: false, reason: invalid };
   let out;
-  try { out = run(entry.bin, entry.argv, { timeoutMs, cwd: entry.cwd }); } catch (e) { return { ok: false, reason: `spawn-error: ${e.message || e}` }; }
+  try { out = run(entry.bin, entry.argv, { timeoutMs, cwd: entry.cwd, shell: false }); } catch (e) { return { ok: false, reason: `spawn-error: ${e.message || e}` }; }
   if (out.timedOut) return { ok: false, reason: 'launch-timeout' };
   if ((out.code ?? null) !== 0) return { ok: false, reason: `launch-exit-${out.code}` };
   return { ok: true };
@@ -77,10 +104,12 @@ export function headlessSpawn(entry, {
   runSync = runStreamingProcessSync,
   usageReceipt = null,
 } = {}) {
+  const invalid = validateWindowsSpawnEntry(entry);
+  if (invalid) return { ok: false, reason: invalid };
   let out;
   try {
     if (typeof run === 'function') {
-      out = run(entry.bin, entry.argv, { timeoutMs, cwd: entry.cwd });
+      out = run(entry.bin, entry.argv, { timeoutMs, cwd: entry.cwd, shell: false });
       return parseLegacyHeadlessResult(entry, out);
     }
     out = runSync(entry, { timeoutMs, ...(usageReceipt == null ? {} : { usageReceipt }) });

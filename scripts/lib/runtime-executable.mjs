@@ -21,6 +21,7 @@ import {
   relative,
   resolve,
   sep,
+  win32,
 } from 'node:path';
 import { validateSessionRuntime } from './runtime.mjs';
 import { leaseCheck } from './lease.mjs';
@@ -45,6 +46,12 @@ const CODEX_TARGETS = Object.freeze({
   }),
   'linux:x64': Object.freeze({
     alias: '@openai/codex-linux-x64', suffix: 'linux-x64', triple: 'x86_64-unknown-linux-musl', executable: 'codex',
+  }),
+  'win32:x64': Object.freeze({
+    alias: '@openai/codex-win32-x64', suffix: 'win32-x64', triple: 'x86_64-pc-windows-msvc', executable: 'codex.exe',
+  }),
+  'win32:arm64': Object.freeze({
+    alias: '@openai/codex-win32-arm64', suffix: 'win32-arm64', triple: 'aarch64-pc-windows-msvc', executable: 'codex.exe',
   }),
 });
 
@@ -252,23 +259,98 @@ function probeExplicitCodexVersion(executable, runVersion = spawnSync, expectedV
   return match[1];
 }
 
+function probeExplicitClaudeVersion(executable, runVersion = spawnSync, expectedVersion = null) {
+  const result = runVersion(executable, ['--version'], {
+    encoding: 'utf8', shell: false, timeout: VERSION_TIMEOUT_MS, maxBuffer: VERSION_MAX_BUFFER,
+    windowsHide: true, env: {},
+  });
+  if (!result || result.error || result.status !== 0 || result.signal) {
+    throw runtimeError('RUNTIME_EXECUTABLE_VERSION_INVALID', 'bounded direct --version probe failed');
+  }
+  const stdout = typeof result.stdout === 'string' ? result.stdout : String(result.stdout || '');
+  const stderr = typeof result.stderr === 'string' ? result.stderr : String(result.stderr || '');
+  const normalized = stdout.replace(/\r\n/g, '\n').trimEnd();
+  const match = /^(\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?)(?: \(Claude Code\))?$/.exec(normalized);
+  if (!match || normalized.includes('\n') || stderr.trim() !== ''
+    || Buffer.byteLength(stdout) > 1024 || Buffer.byteLength(stderr) > 1024
+    || (expectedVersion !== null && match[1] !== expectedVersion)) {
+    throw runtimeError('RUNTIME_EXECUTABLE_VERSION_INVALID', 'version output is not a matching bounded Claude line');
+  }
+  return match[1];
+}
+
+function probeExplicitRuntimeVersion(runtime, executable, runVersion = spawnSync, expectedVersion = null) {
+  return runtime === 'claude'
+    ? probeExplicitClaudeVersion(executable, runVersion, expectedVersion)
+    : probeExplicitCodexVersion(executable, runVersion, expectedVersion);
+}
+
+function normalizeAuthenticode(executable, { platform, authenticodeProbe, authenticodePolicy } = {}) {
+  if (platform !== 'win32') return null;
+  if (authenticodeProbe == null) {
+    if (authenticodePolicy != null) {
+      throw runtimeError('RUNTIME_EXECUTABLE_AUTHENTICODE_INVALID', 'configured policy requires an Authenticode observation');
+    }
+    return null;
+  }
+  if (typeof authenticodeProbe !== 'function') {
+    throw runtimeError('RUNTIME_EXECUTABLE_AUTHENTICODE_INVALID', 'Authenticode probe must be a function');
+  }
+  let observed;
+  try {
+    observed = authenticodeProbe(executable, { timeoutMs: VERSION_TIMEOUT_MS, shell: false });
+  } catch {
+    throw runtimeError('RUNTIME_EXECUTABLE_AUTHENTICODE_INVALID', 'Authenticode signer probe failed');
+  }
+  if (observed == null) {
+    if (authenticodePolicy != null) {
+      throw runtimeError('RUNTIME_EXECUTABLE_AUTHENTICODE_INVALID', 'configured policy requires an Authenticode observation');
+    }
+    return null;
+  }
+  const status = typeof observed.status === 'string' ? observed.status.trim().toLowerCase() : '';
+  const signer = typeof observed.signer === 'string' ? observed.signer.trim() : '';
+  const thumbprint = typeof observed.thumbprint === 'string'
+    ? observed.thumbprint.replace(/[\s:]/g, '').toLowerCase()
+    : '';
+  if (status !== 'valid' || !signer || signer.length > 512 || !/^[0-9a-f]+$/.test(thumbprint) || thumbprint.length > 256) {
+    throw runtimeError('RUNTIME_EXECUTABLE_AUTHENTICODE_INVALID', 'Authenticode observation is invalid');
+  }
+  if (authenticodePolicy != null) {
+    if (!authenticodePolicy || typeof authenticodePolicy !== 'object' || Array.isArray(authenticodePolicy)) {
+      throw runtimeError('RUNTIME_EXECUTABLE_AUTHENTICODE_INVALID', 'Authenticode policy is invalid');
+    }
+    const expectedSigner = authenticodePolicy.signer;
+    const expectedThumbprint = typeof authenticodePolicy.thumbprint === 'string'
+      ? authenticodePolicy.thumbprint.replace(/[\s:]/g, '').toLowerCase()
+      : null;
+    if ((expectedSigner != null && signer !== expectedSigner)
+      || (expectedThumbprint != null && thumbprint !== expectedThumbprint)) {
+      throw runtimeError('RUNTIME_EXECUTABLE_AUTHENTICODE_INVALID', 'Authenticode signer policy mismatch');
+    }
+  }
+  return { status, signer, thumbprint };
+}
+
 function assertApprovableNativePath(path) {
   if (/\.(?:cmd|bat|ps1|js|mjs|cjs)$/i.test(path)) {
     throw runtimeError('RUNTIME_EXECUTABLE_UNTRUSTED', 'script and shell shim executables cannot be approved');
   }
 }
 
-function inspectHumanApprovedExecutable(runtime, candidatePath, { platform, arch, expectedSha256, runVersion }) {
-  if (runtime !== 'codex') {
-    throw runtimeError('RUNTIME_EXECUTABLE_UNTRUSTED', `${runtime} explicit executable support is not implemented on this platform slice`);
-  }
+function inspectHumanApprovedExecutable(runtime, candidatePath, {
+  platform, arch, expectedSha256, runVersion, authenticodeProbe, authenticodePolicy,
+}) {
   const candidate = regularFile(candidatePath);
   assertApprovableNativePath(candidate.canonical);
   const sha256 = hashRegularFile(candidate.canonical, candidate.stat);
   if (!/^[0-9a-f]{64}$/.test(expectedSha256 || '') || sha256 !== expectedSha256) {
     throw runtimeError('RUNTIME_EXECUTABLE_HASH_MISMATCH', 'exact lowercase SHA-256 does not match the canonical executable');
   }
-  const version = probeExplicitCodexVersion(candidate.canonical, runVersion);
+  const version = probeExplicitRuntimeVersion(runtime, candidate.canonical, runVersion);
+  const authenticode = normalizeAuthenticode(candidate.canonical, {
+    platform, authenticodeProbe, authenticodePolicy,
+  });
   return {
     runtime,
     canonical_path: candidate.canonical,
@@ -278,14 +360,28 @@ function inspectHumanApprovedExecutable(runtime, candidatePath, { platform, arch
     arch,
     source: 'human-explicit',
     package: null,
-    authenticode: null,
+    authenticode,
   };
 }
 
-function resolveOfficialCodex(candidatePath, { platform, arch, runVersion }) {
+function officialWrapperCandidate(candidatePath, platform) {
+  const candidate = regularFile(candidatePath, { allowFinalSymlink: true });
+  if (basename(candidate.canonical) === 'codex.js' && basename(dirname(candidate.canonical)) === 'bin') {
+    return candidate.canonical;
+  }
+  if (platform !== 'win32' || !/^codex\.(?:cmd|bat|ps1)$/i.test(basename(candidate.canonical))) {
+    throw runtimeError('RUNTIME_EXECUTABLE_UNTRUSTED', 'candidate is not the official JavaScript wrapper entrypoint');
+  }
+  const adjacent = join(dirname(candidate.canonical), 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
+  return regularFile(adjacent, { allowFinalSymlink: true }).canonical;
+}
+
+function resolveOfficialCodex(candidatePath, {
+  platform, arch, runVersion, authenticodeProbe, authenticodePolicy,
+}) {
   const target = CODEX_TARGETS[`${platform}:${arch}`];
   if (!target) throw runtimeError('RUNTIME_EXECUTABLE_UNTRUSTED', `unsupported Codex target ${platform}/${arch}`);
-  const wrapper = regularFile(candidatePath, { allowFinalSymlink: true });
+  const wrapper = regularFile(officialWrapperCandidate(candidatePath, platform), { allowFinalSymlink: true });
   if (basename(wrapper.canonical) !== 'codex.js' || basename(dirname(wrapper.canonical)) !== 'bin') {
     throw runtimeError('RUNTIME_EXECUTABLE_UNTRUSTED', 'candidate is not the official JavaScript wrapper entrypoint');
   }
@@ -317,6 +413,9 @@ function resolveOfficialCodex(candidatePath, { platform, arch, runVersion }) {
   }
   const sha256 = hashRegularFile(native.canonical, native.stat);
   const version = probeVersion(native.canonical, wrapperPackage.version, runVersion);
+  const authenticode = normalizeAuthenticode(native.canonical, {
+    platform, authenticodeProbe, authenticodePolicy,
+  });
   return {
     runtime: 'codex',
     canonical_path: native.canonical,
@@ -337,7 +436,7 @@ function resolveOfficialCodex(candidatePath, { platform, arch, runVersion }) {
       os: [...nativePackage.os],
       cpu: [...nativePackage.cpu],
     },
-    authenticode: null,
+    authenticode,
   };
 }
 
@@ -396,11 +495,17 @@ export function collectRuntimeExecutableCandidates(runtime, options = {}) {
 
   const env = options.env ?? process.env;
   const pathValue = platform === 'win32' ? (env.Path ?? env.PATH ?? '') : (env.PATH ?? '');
-  for (const entry of String(pathValue).split(delimiter)) {
+  const pathDelimiter = platform === 'win32' ? ';' : delimiter;
+  const names = platform === 'win32'
+    ? [`${executableName}.cmd`, `${executableName}.exe`, `${executableName}.bat`, `${executableName}.ps1`, executableName]
+    : [executableName];
+  for (const entry of String(pathValue).split(pathDelimiter)) {
     // Empty/relative entries resolve through cwd and are therefore shadow candidates, never authority.
     if (!entry || !isAbsolute(entry)) continue;
-    const candidate = join(entry, executableName);
-    if (existsSync(candidate)) add(candidate, 'path-search');
+    for (const name of names) {
+      const candidate = join(entry, name);
+      if (existsSync(candidate)) add(candidate, 'path-search');
+    }
   }
   return candidates;
 }
@@ -423,7 +528,13 @@ export function resolveTrustedRuntimeExecutable(runtime, options = {}) {
   const failures = [];
   for (const candidate of candidates) {
     try {
-      const identity = resolveOfficialCodex(candidate.path, { platform, arch, runVersion: options.runVersion ?? spawnSync });
+      const identity = resolveOfficialCodex(candidate.path, {
+        platform,
+        arch,
+        runVersion: options.runVersion ?? spawnSync,
+        authenticodeProbe: options.authenticodeProbe,
+        authenticodePolicy: options.authenticodePolicy,
+      });
       resolved.set(identity.canonical_path, identity);
     } catch (error) {
       failures.push(String(error?.message || error));
@@ -456,12 +567,21 @@ export function revalidateTrustedRuntimeExecutable(identity, options = {}) {
         platform,
         arch,
         runVersion: options.runVersion ?? spawnSync,
+        authenticodeProbe: options.authenticodeProbe,
+        authenticodePolicy: options.authenticodePolicy,
       });
     } else if (identity.source === 'human-explicit' && identity.package === null) {
-      const version = probeExplicitCodexVersion(
-        executable.canonical, options.runVersion ?? spawnSync, identity.version,
+      const version = probeExplicitRuntimeVersion(
+        identity.runtime, executable.canonical, options.runVersion ?? spawnSync, identity.version,
       );
-      current = { ...securityIdentity(identity), version };
+      const authenticode = identity.authenticode == null && options.authenticodePolicy == null
+        ? null
+        : normalizeAuthenticode(executable.canonical, {
+          platform,
+          authenticodeProbe: options.authenticodeProbe,
+          authenticodePolicy: options.authenticodePolicy,
+        });
+      current = { ...securityIdentity(identity), version, authenticode };
     } else {
       throw runtimeError('RUNTIME_EXECUTABLE_DRIFT', 'unsupported identity source');
     }
@@ -472,6 +592,170 @@ export function revalidateTrustedRuntimeExecutable(identity, options = {}) {
   } catch (error) {
     if (String(error?.message || error).startsWith('RUNTIME_EXECUTABLE_DRIFT:')) throw error;
     throw runtimeError('RUNTIME_EXECUTABLE_DRIFT', String(error?.message || error));
+  }
+}
+
+const WINDOWS_POWERSHELL_CANDIDATES = Object.freeze([
+  'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
+  'C:\\Program Files (x86)\\PowerShell\\7\\pwsh.exe',
+  'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+]);
+
+function launcherIdentityShape(identity) {
+  if (!identity || typeof identity !== 'object' || Array.isArray(identity)
+    || !['wt', 'powershell'].includes(identity.kind)) {
+    throw runtimeError('LAUNCHER_EXECUTABLE_IDENTITY_INVALID', 'launcher identity is invalid');
+  }
+  absolutePath(identity.canonical_path, 'LAUNCHER_EXECUTABLE_IDENTITY_INVALID');
+  if (!/^[0-9a-f]{64}$/.test(identity.sha256 || '') || typeof identity.version !== 'string'
+    || identity.version.length === 0 || identity.platform !== 'win32'
+    || typeof identity.arch !== 'string' || identity.source !== 'verified-native') {
+    throw runtimeError('LAUNCHER_EXECUTABLE_IDENTITY_INVALID', 'launcher identity fields are invalid');
+  }
+}
+
+function launcherSecurityIdentity(identity) {
+  return {
+    kind: identity.kind,
+    canonical_path: identity.canonical_path,
+    sha256: identity.sha256,
+    version: identity.version,
+    platform: identity.platform,
+    arch: identity.arch,
+    source: identity.source,
+    authenticode: identity.authenticode ?? null,
+  };
+}
+
+function assertExpectedLauncherName(kind, path) {
+  const name = basename(path).toLowerCase();
+  if ((kind === 'wt' && name !== 'wt.exe')
+    || (kind === 'powershell' && name !== 'pwsh.exe' && name !== 'powershell.exe')) {
+    throw runtimeError('LAUNCHER_EXECUTABLE_UNTRUSTED', 'unexpected native launcher filename');
+  }
+  if (/^(?:\\\\|\/\/)/.test(path)) {
+    throw runtimeError('LAUNCHER_EXECUTABLE_UNTRUSTED', 'UNC launcher targets are not trusted');
+  }
+  assertApprovableNativePath(path);
+}
+
+function probeLauncherVersion(kind, executable, runVersion = spawnSync, expectedVersion = null) {
+  const isWindowsPowerShell = kind === 'powershell' && basename(executable).toLowerCase() === 'powershell.exe';
+  const argv = kind === 'wt'
+    ? ['--version']
+    : (isWindowsPowerShell
+      ? ['-NoProfile', '-NonInteractive', '-Command', '$PSVersionTable.PSVersion.ToString()']
+      : ['--version']);
+  const result = runVersion(executable, argv, {
+    encoding: 'utf8', shell: false, timeout: VERSION_TIMEOUT_MS, maxBuffer: VERSION_MAX_BUFFER,
+    windowsHide: true, env: {},
+  });
+  if (!result || result.error || result.status !== 0 || result.signal) {
+    throw runtimeError('LAUNCHER_EXECUTABLE_VERSION_INVALID', 'bounded direct version probe failed');
+  }
+  const stdout = typeof result.stdout === 'string' ? result.stdout : String(result.stdout || '');
+  const stderr = typeof result.stderr === 'string' ? result.stderr : String(result.stderr || '');
+  const normalized = stdout.replace(/\r\n/g, '\n').trimEnd();
+  let version;
+  if (kind === 'wt') version = /^Windows Terminal ([0-9]+(?:\.[0-9]+)+)$/.exec(normalized)?.[1] ?? null;
+  else version = /^(?:PowerShell )?([0-9]+(?:\.[0-9]+)+)$/.exec(normalized)?.[1] ?? null;
+  if (!version || normalized.includes('\n') || stderr.trim() !== ''
+    || Buffer.byteLength(stdout) > 1024 || Buffer.byteLength(stderr) > 1024
+    || (expectedVersion !== null && version !== expectedVersion)) {
+    throw runtimeError('LAUNCHER_EXECUTABLE_VERSION_INVALID', 'version output is not a matching bounded launcher line');
+  }
+  return version;
+}
+
+function collectLauncherCandidates(kind, options) {
+  if (options.candidatePaths !== undefined) {
+    if (!Array.isArray(options.candidatePaths)) {
+      throw runtimeError('LAUNCHER_EXECUTABLE_PATH_INVALID', 'candidatePaths must be an array');
+    }
+    return options.candidatePaths.map(path => absolutePath(path, 'LAUNCHER_EXECUTABLE_PATH_INVALID'));
+  }
+  const candidates = [];
+  const add = (path) => {
+    try {
+      const absolute = absolutePath(path, 'LAUNCHER_EXECUTABLE_PATH_INVALID');
+      if (existsSync(absolute) && !candidates.includes(absolute)) candidates.push(absolute);
+    } catch {
+      // Candidate discovery is not authority.
+    }
+  };
+  if (kind === 'powershell') for (const candidate of WINDOWS_POWERSHELL_CANDIDATES) add(candidate);
+  const env = options.env ?? process.env;
+  const names = kind === 'wt' ? ['wt.exe'] : ['pwsh.exe', 'powershell.exe'];
+  for (const entry of String(env.Path ?? env.PATH ?? '').split(';')) {
+    if (!entry || !(isAbsolute(entry) || win32.isAbsolute(entry))) continue;
+    for (const name of names) add(join(entry, name));
+  }
+  return candidates;
+}
+
+export function resolveTrustedLauncherExecutable(kind, options = {}) {
+  if (!['wt', 'powershell'].includes(kind)) {
+    throw runtimeError('LAUNCHER_EXECUTABLE_UNTRUSTED', 'unsupported Windows launcher');
+  }
+  if (options.approval !== undefined) return revalidateTrustedLauncherExecutable(options.approval, options);
+  const platform = options.platform ?? process.platform;
+  const arch = options.arch ?? process.arch;
+  if (platform !== 'win32') throw runtimeError('LAUNCHER_EXECUTABLE_UNTRUSTED', 'Windows launcher requires win32');
+  const resolved = new Map();
+  const failures = [];
+  for (const candidatePath of collectLauncherCandidates(kind, options)) {
+    try {
+      const candidate = regularFile(candidatePath);
+      assertExpectedLauncherName(kind, candidate.canonical);
+      const sha256 = hashRegularFile(candidate.canonical, candidate.stat);
+      const version = probeLauncherVersion(kind, candidate.canonical, options.runVersion ?? spawnSync);
+      const authenticode = normalizeAuthenticode(candidate.canonical, {
+        platform, authenticodeProbe: options.authenticodeProbe, authenticodePolicy: options.authenticodePolicy,
+      });
+      const identity = {
+        kind, canonical_path: candidate.canonical, sha256, version, platform, arch,
+        source: 'verified-native', authenticode,
+      };
+      resolved.set(identity.canonical_path, identity);
+    } catch (error) {
+      failures.push(String(error?.message || error));
+    }
+  }
+  if (resolved.size === 1) return [...resolved.values()][0];
+  if (resolved.size > 1) throw runtimeError('LAUNCHER_EXECUTABLE_AMBIGUOUS', 'multiple launcher identities were found');
+  throw runtimeError('LAUNCHER_EXECUTABLE_UNTRUSTED', failures[0] || 'no verified launcher candidate was found');
+}
+
+export function revalidateTrustedLauncherExecutable(identity, options = {}) {
+  launcherIdentityShape(identity);
+  const platform = options.platform ?? process.platform;
+  const arch = options.arch ?? process.arch;
+  if (platform !== identity.platform || arch !== identity.arch) {
+    throw runtimeError('LAUNCHER_EXECUTABLE_DRIFT', 'launcher platform or architecture changed');
+  }
+  try {
+    const candidate = regularFile(identity.canonical_path);
+    assertExpectedLauncherName(identity.kind, candidate.canonical);
+    if (candidate.canonical !== identity.canonical_path
+      || hashRegularFile(candidate.canonical, candidate.stat) !== identity.sha256) {
+      throw runtimeError('LAUNCHER_EXECUTABLE_DRIFT', 'launcher canonical path or hash changed');
+    }
+    const version = probeLauncherVersion(
+      identity.kind, candidate.canonical, options.runVersion ?? spawnSync, identity.version,
+    );
+    const authenticode = identity.authenticode == null && options.authenticodePolicy == null
+      ? null
+      : normalizeAuthenticode(candidate.canonical, {
+        platform, authenticodeProbe: options.authenticodeProbe, authenticodePolicy: options.authenticodePolicy,
+      });
+    const current = { ...launcherSecurityIdentity(identity), version, authenticode };
+    if (JSON.stringify(current) !== JSON.stringify(launcherSecurityIdentity(identity))) {
+      throw runtimeError('LAUNCHER_EXECUTABLE_DRIFT', 'launcher identity changed');
+    }
+    return identity;
+  } catch (error) {
+    if (String(error?.message || error).startsWith('LAUNCHER_EXECUTABLE_DRIFT:')) throw error;
+    throw runtimeError('LAUNCHER_EXECUTABLE_DRIFT', String(error?.message || error));
   }
 }
 
@@ -539,6 +823,8 @@ export function approveRuntimeExecutable(root, runId, {
   platform = process.platform,
   arch = process.arch,
   runVersion = spawnSync,
+  authenticodeProbe,
+  authenticodePolicy,
 } = {}) {
   validateSessionRuntime(runtime);
   if (actor !== 'human') throw runtimeError('INVALID_ACTOR', 'runtime executable approval requires actor human');
@@ -553,11 +839,11 @@ export function approveRuntimeExecutable(root, runId, {
   let identity;
   try {
     identity = resolveTrustedRuntimeExecutable(runtime, {
-      explicitPath: candidatePath, platform, arch, runVersion,
+      explicitPath: candidatePath, platform, arch, runVersion, authenticodeProbe, authenticodePolicy,
     });
   } catch (officialError) {
     identity = inspectHumanApprovedExecutable(runtime, candidatePath, {
-      platform, arch, expectedSha256, runVersion,
+      platform, arch, expectedSha256, runVersion, authenticodeProbe, authenticodePolicy,
     });
   }
   if (identity.canonical_path !== expectedPath) {
@@ -594,11 +880,11 @@ export function approveRuntimeExecutable(root, runId, {
       let fresh;
       try {
         fresh = resolveTrustedRuntimeExecutable(runtime, {
-          explicitPath: candidatePath, platform, arch, runVersion,
+          explicitPath: candidatePath, platform, arch, runVersion, authenticodeProbe, authenticodePolicy,
         });
       } catch {
         fresh = inspectHumanApprovedExecutable(runtime, candidatePath, {
-          platform, arch, expectedSha256, runVersion,
+          platform, arch, expectedSha256, runVersion, authenticodeProbe, authenticodePolicy,
         });
       }
       if (JSON.stringify(securityIdentity(fresh)) !== JSON.stringify(securityIdentity(identity))

@@ -772,6 +772,137 @@ test('B3: powershell launcher with null launcher_bin → no-launcher (preserve),
   assert.equal(after.session_chain.lease.resume_policy, 'human');
 });
 
+function windowsRuntimeIdentity(runtime = 'claude') {
+  return {
+    runtime, canonical_path: `C:\\Program Files & Tools\\${runtime}\\${runtime}.exe`,
+    sha256: 'a'.repeat(64), version: runtime === 'claude' ? '2.1.0' : '0.144.1',
+    platform: 'win32', arch: 'x64', source: 'human-explicit', package: null, authenticode: null,
+    approved_by: 'human', approved_at: '2026-07-11T08:00:00.000Z',
+  };
+}
+
+function windowsLauncherIdentity(kind = 'wt') {
+  return {
+    kind, canonical_path: kind === 'wt'
+      ? 'C:\\Program Files\\WindowsApps\\wt.exe'
+      : 'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
+    sha256: 'b'.repeat(64), version: '1.0.0', platform: 'win32', arch: 'x64',
+    source: 'verified-native', authenticode: null,
+  };
+}
+
+function seedWindowsLauncher(kind = 'wt') {
+  const runtimeIdentity = windowsRuntimeIdentity();
+  const launcherIdentity = windowsLauncherIdentity(kind);
+  const seeded = seed((data) => {
+    data.autonomy.spawn_style = 'visible';
+    data.autonomy.runtime_executable_approval = runtimeIdentity;
+    data.session_spawn = {
+      platform: 'win32', launcher: kind, launcher_bin: launcherIdentity.canonical_path,
+      launcher_identity: launcherIdentity, launcher_socket: null,
+      surface: kind === 'wt' ? 'tab' : 'window', reachable: true, visible: true,
+      signals: {}, probe: null, reason: null, fallback: 'launch-command-file',
+      detected_at: '2026-06-24T00:00:00Z',
+    };
+  });
+  return { ...seeded, runtimeIdentity, launcherIdentity };
+}
+
+test('native Windows respawn passes only revalidated absolute launcher/runtime targets with shell false', () => {
+  const { root, runId, runtimeIdentity, launcherIdentity } = seedWindowsLauncher('wt');
+  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId), platform: 'win32' });
+  const checks = [];
+  const runtimeProbe = () => ({ status: 'valid', signer: 'Runtime Signer', thumbprint: 'aa' });
+  const launcherProbe = () => ({ status: 'valid', signer: 'Launcher Signer', thumbprint: 'bb' });
+  const runtimePolicy = { signer: 'Runtime Signer', thumbprint: 'aa' };
+  const launcherPolicy = { signer: 'Launcher Signer', thumbprint: 'bb' };
+  let entry;
+  const r = respawn(root, runId, {
+    childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
+    attended: true, env: {}, now: NOW1, platform: 'win32',
+    runtimeRevalidationOptions: { authenticodeProbe: runtimeProbe, authenticodePolicy: runtimePolicy },
+    launcherRevalidationOptions: { authenticodeProbe: launcherProbe, authenticodePolicy: launcherPolicy },
+    revalidateRuntimeExecutable: (identity, options) => {
+      checks.push('runtime'); assert.deepEqual(identity, runtimeIdentity);
+      assert.strictEqual(options.authenticodeProbe, runtimeProbe);
+      assert.strictEqual(options.authenticodePolicy, runtimePolicy);
+      return identity;
+    },
+    revalidateLauncherExecutable: (identity, options) => {
+      checks.push('launcher'); assert.deepEqual(identity, launcherIdentity);
+      assert.strictEqual(options.authenticodeProbe, launcherProbe);
+      assert.strictEqual(options.authenticodePolicy, launcherPolicy);
+      return identity;
+    },
+    spawnFn: (value) => { entry = value; return { ok: true }; },
+    pollLease: seq([
+      { state: 'releasing', owner_run_id: runId, generation: 1 },
+      { state: 'active', handoff_phase: 'acquired', owner_run_id: h.childRunId, generation: 2 },
+    ]),
+    sleep: noSleep,
+  });
+  assert.equal(r.ok, true);
+  assert.equal(entry.bin, launcherIdentity.canonical_path);
+  assert.equal(entry.shell, false);
+  assert.equal(entry.argv[2], runtimeIdentity.canonical_path);
+  assert.deepEqual(entry.nativeExecutableArgvIndices, [2]);
+  assert.ok(checks.filter(value => value === 'runtime').length >= 3, 'runtime identity is checked for build, from fresh state before CAS, and immediately before spawn');
+  assert.ok(checks.filter(value => value === 'launcher').length >= 3, 'launcher identity is checked for build, from fresh state before CAS, and immediately before spawn');
+});
+
+test('native Windows identity drift before CAS blocks spawn, preserve-pauses, and never falls back to a bare name', () => {
+  for (const drift of ['runtime', 'launcher']) {
+    const { root, runId } = seedWindowsLauncher('wt');
+    const h = emitHandoff(root, runId, { trigger: `milestone-${drift}`, now: NOW1, expect: expect_(runId), platform: 'win32' });
+    let spawned = 0;
+    const r = respawn(root, runId, {
+      childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
+      attended: true, env: {}, now: NOW1, platform: 'win32',
+      revalidateRuntimeExecutable: (identity) => {
+        if (drift === 'runtime') throw new Error('RUNTIME_EXECUTABLE_DRIFT');
+        return identity;
+      },
+      revalidateLauncherExecutable: (identity) => {
+        if (drift === 'launcher') throw new Error('LAUNCHER_EXECUTABLE_DRIFT');
+        return identity;
+      },
+      spawnFn: () => { spawned++; return { ok: true }; }, sleep: noSleep,
+    });
+    assert.equal(r.ok, false, drift);
+    assert.equal(r.outcome, 'no-launcher', drift);
+    assert.equal(spawned, 0, drift);
+    const after = readState(root, runId).data;
+    assert.equal(after.status, 'paused', drift);
+    assert.equal(after.session_chain.lease.handoff_phase, 'emitted', drift);
+  }
+});
+
+test('native Windows identity drift after CAS but before process call rolls back and pauses without spawn', () => {
+  const { root, runId } = seedWindowsLauncher('wt');
+  const h = emitHandoff(root, runId, { trigger: 'milestone-post-cas-drift', now: NOW1, expect: expect_(runId), platform: 'win32' });
+  let runtimeChecks = 0;
+  let spawned = 0;
+  const r = respawn(root, runId, {
+    childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
+    attended: true, env: {}, now: NOW1, platform: 'win32',
+    revalidateRuntimeExecutable: (identity) => {
+      runtimeChecks++;
+      if (runtimeChecks === 3) throw new Error('RUNTIME_EXECUTABLE_DRIFT');
+      return identity;
+    },
+    revalidateLauncherExecutable: (identity) => identity,
+    spawnFn: () => { spawned++; return { ok: true }; }, sleep: noSleep,
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.outcome, 'failed_launch');
+  assert.equal(r.reason, 'runtime-identity-drift');
+  assert.equal(spawned, 0);
+  const after = readState(root, runId).data;
+  assert.equal(after.status, 'paused');
+  assert.equal(after.session_chain.lease.handoff_phase, 'idle');
+  assert.equal(after.session_chain.lease.handoff_child_run_id, null);
+});
+
 // ── Task 3: unavailable-entry guard generalized (any mode, not just powershell) ──
 // NOTE: post-Task-5b, respawn's desktopProbe defaults to defaultDesktopProbe (a REAL host query) —
 // this test explicitly injects a stub `desktopProbe` returning unverified so its outcome stays

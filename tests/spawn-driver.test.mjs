@@ -66,7 +66,8 @@ test('headlessSpawn passes entry.bin, entry.argv, entry.cwd to run (no bash -c)'
   assert.equal(calledBin, 'claude');
   assert.deepEqual(calledArgv, ['-p', 'hello', '--output-format', 'json']);
   assert.equal(calledOpts.cwd, '/work');
-  assert.deepEqual(Object.keys(calledOpts).sort(), ['cwd', 'timeoutMs'], 'legacy run injection shape must stay exact');
+  assert.deepEqual(Object.keys(calledOpts).sort(), ['cwd', 'shell', 'timeoutMs'], 'legacy run injection must pin shell:false');
+  assert.equal(calledOpts.shell, false);
   assert.notEqual(calledBin, 'bash');
 });
 
@@ -77,6 +78,41 @@ test('headlessSpawn passes entry.bin, entry.argv, entry.cwd to run (no bash -c)'
 test('visibleSpawn returns ok:true on exit 0', () => {
   const r = visibleSpawn({ bin: 'cmux', argv: ['new-workspace'] }, { launcher: 'cmux', run: () => ({ code: 0 }) });
   assert.deepEqual(r, { ok: true });
+});
+
+test('visibleSpawn rejects bare or shim Windows process targets before the runner is called', () => {
+  for (const bin of ['wt.exe', 'powershell', 'C:\\tmp\\launcher.cmd', 'C:\\tmp\\launcher.ps1']) {
+    let called = false;
+    const r = visibleSpawn({ platform: 'win32', bin, argv: [], shell: false }, {
+      run: () => { called = true; return { code: 0 }; },
+    });
+    assert.equal(r.ok, false, bin);
+    assert.equal(r.reason, 'untrusted-windows-executable', bin);
+    assert.equal(called, false, bin);
+  }
+});
+
+test('visibleSpawn preserves Windows spaces/metacharacters as argv with shell false and validates nested executable targets', () => {
+  const entry = {
+    platform: 'win32', bin: 'C:\\Program Files\\WindowsApps\\wt.exe', shell: false,
+    argv: ['-d', 'C:\\repo & work', 'C:\\Program Files & Tools\\Claude\\claude.exe', '--flag'],
+    nativeExecutableArgvIndices: [2],
+  };
+  let captured;
+  const r = visibleSpawn(entry, {
+    run: (bin, argv, options) => { captured = { bin, argv, options }; return { code: 0 }; },
+  });
+  assert.deepEqual(r, { ok: true });
+  assert.equal(captured.bin, entry.bin);
+  assert.deepEqual(captured.argv, entry.argv);
+  assert.equal(captured.options.shell, false);
+
+  let called = false;
+  const bad = visibleSpawn({ ...entry, argv: ['-d', 'C:\\repo', 'claude'], nativeExecutableArgvIndices: [2] }, {
+    run: () => { called = true; return { code: 0 }; },
+  });
+  assert.equal(bad.reason, 'untrusted-windows-nested-executable');
+  assert.equal(called, false);
 });
 
 test('visibleSpawn returns ok:false on nonzero exit', () => {
@@ -212,4 +248,21 @@ test('headlessSpawn default path sends runtime stdin through one worker-owned sp
   assert.deepEqual(result, { ok: true, usage: { num_turns: 1, tokens: 12 } });
   assert.equal(readFileSync(counterPath, 'utf8'), 'spawned\n');
   assert.equal(Object.hasOwn(result, 'stdout'), false);
+});
+
+test('headlessSpawn rejects bare and shell-enabled Windows runtimes before either execution path', () => {
+  for (const entry of [
+    { platform: 'win32', bin: 'claude', argv: [], shell: false },
+    { platform: 'win32', bin: 'C:\\tools\\claude.cmd', argv: [], shell: false },
+    { platform: 'win32', bin: 'C:\\tools\\claude.exe', argv: [], shell: true },
+  ]) {
+    let calls = 0;
+    const r = headlessSpawn(entry, {
+      run: () => { calls++; return { code: 0, stdout: '{"num_turns":1}', stderr: '', timedOut: false }; },
+      runSync: () => { calls++; return { ok: true, usage: { num_turns: 1 } }; },
+    });
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'untrusted-windows-executable');
+    assert.equal(calls, 0);
+  }
 });
