@@ -23,6 +23,10 @@ const REVIEWERS = new Set(['deep-review', 'subagent-checker']);
 const VERDICTS = new Set(['APPROVE', 'REQUEST_CHANGES', 'CONCERN']);
 const SHA256 = /^[0-9a-f]{64}$/;
 
+// Closed proof identity set shared by record/import, routing, and finish.
+// Legacy `standalone` (and unknown plugins) may remain in persisted history, but can never create proof.
+export const isProofCapableChecker = checker => checker?.role === 'checker' && REVIEWERS.has(checker.plugin);
+
 const exactKeys = (value, keys) => {
   const actual = Object.keys(value).sort();
   const expected = [...keys].sort();
@@ -107,7 +111,7 @@ function normalizedMakerArtifacts(maker) {
 }
 
 export function validateImportedEvidence(root, loop, input, { checker, maker, workstream } = {}) {
-  if (!REVIEWERS.has(checker?.plugin)) throw new Error(`REVIEW_IMPORT_REVIEWER_INVALID: unsupported checker plugin ${String(checker?.plugin)}`);
+  if (!isProofCapableChecker(checker)) throw new Error(`REVIEW_IMPORT_REVIEWER_INVALID: unsupported checker plugin ${String(checker?.plugin)}`);
   if (input.reviewer_id !== checker.plugin) throw new Error(`REVIEW_IMPORT_REVIEWER_MISMATCH: ${input.reviewer_id} != ${checker.plugin}`);
   if (input.checker_episode_id !== checker.id) throw new Error(`REVIEW_IMPORT_CHECKER_MISMATCH: ${input.checker_episode_id} != ${checker.id}`);
   if (input.target_maker !== maker.id || input.target_maker !== checker.target_maker) {

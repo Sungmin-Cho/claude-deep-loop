@@ -1,13 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { newEpisode, recordEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
-import { resolveReviewer, dispatchReview, parseVerdict, recordReviewOutcome, unsatisfiedReviewPoints } from '../scripts/lib/review.mjs';
+import {
+  resolveReviewer, dispatchReview, importReviewOutcome, makerReviewed, parseVerdict,
+  recordReviewOutcome, unsatisfiedReviewPoints,
+} from '../scripts/lib/review.mjs';
 import { releaseLease, acquireLease } from '../scripts/lib/lease.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 
@@ -52,6 +55,23 @@ function doneMaker(root, runId, ws, point, f, file) {
   const { id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: point, point, workstream: ws, expectedArtifacts: [art], fence: f });
   recordEpisode(root, runId, id, { status: 'done', artifacts: [art], proof: {}, fence: f });
   return id;
+}
+
+function legacyStandaloneChecker() {
+  const { root, runId } = seed();
+  const f = fence(runId);
+  const worktree = '.claude/worktrees/legacy-review';
+  mkdirSync(join(root, worktree), { recursive: true });
+  const ws = newWorkstream(root, runId, { title: 'legacy', branch: 'legacy', worktree, fence: f }).id;
+  const artifact = `${worktree}/plan-artifact.txt`;
+  const makerId = doneMaker(root, runId, ws, 'plan', f, artifact);
+  const { checkerEpisodeId } = dispatchReview(root, runId, {
+    point: 'plan', workstreamId: ws, detected: { 'deep-review': true }, fence: f,
+  });
+  const state = readState(root, runId).data;
+  state.episodes.find(e => e.id === checkerEpisodeId).plugin = 'standalone';
+  writeState(root, runId, state);
+  return { root, runId, f, worktree, ws, artifact, makerId, checkerEpisodeId };
 }
 
 test('resolveReviewer falls back when deep-review absent', () => {
@@ -275,7 +295,7 @@ test('recordReviewOutcome throws REVIEW_UNBOUND_CHECKER on a checker with no tar
   const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: '.claude/worktrees/w', fence: f }).id;
   // Inject a legacy unbound pending checker directly (dispatchReview can no longer create one) to prove the guard.
   const data = readState(root, runId).data;
-  data.episodes.push({ id: '001-deep-review', role: 'checker', status: 'pending', point: 'plan', workstream_id: ws, kind: 'plan-review' });
+  data.episodes.push({ id: '001-deep-review', role: 'checker', plugin: 'subagent-checker', status: 'pending', point: 'plan', workstream_id: ws, kind: 'plan-review' });
   writeState(root, runId, data);
   assert.throws(
     () => recordReviewOutcome(root, runId, { episodeId: '001-deep-review', verdict: 'APPROVE', fence: f }),
@@ -415,6 +435,13 @@ test('legacy standalone reviewer upgrades only with an explicit independent-suba
     reviewer: 'subagent-checker',
     asserted_capability: 'independent-subagent',
   });
+  const report = wsReport(root, '.claude/worktrees/w', 'upgraded-review.md');
+  recordReviewOutcome(root, runId, {
+    episodeId: r.checkerEpisodeId, verdict: 'APPROVE', proof: { report }, fence: f,
+  });
+  const approved = readState(root, runId).data;
+  assert.equal(approved.episodes.find(e => e.id === r.checkerEpisodeId).status, 'approved');
+  assert.equal(makerReviewed(approved, approved.episodes.find(e => e.id === makerId)), true);
 });
 
 test('legacy standalone reviewer without an independent assertion creates a blocked needs-human checker and cannot become proof', () => {
@@ -447,6 +474,54 @@ test('legacy standalone reviewer without an independent assertion creates a bloc
     /REVIEW_CHECKER_BLOCKED/
   );
   assert.equal(readState(root, runId).data.episodes.find(e => e.id === r.checkerEpisodeId).status, 'blocked');
+});
+
+test('proof-capable checker identity: record rejects a target-bound pending legacy standalone checker atomically', () => {
+  const f = legacyStandaloneChecker();
+  const report = wsReport(f.root, f.worktree, 'legacy-standalone-review.md');
+  const beforeHash = readFileSync(join(runDir(f.root, f.runId), '.loop.hash'), 'utf8');
+  const beforeEvents = eventLog(f.root, f.runId).length;
+
+  assert.throws(() => recordReviewOutcome(f.root, f.runId, {
+    episodeId: f.checkerEpisodeId,
+    verdict: 'APPROVE',
+    proof: { report },
+    fence: f.f,
+  }), /REVIEW_CHECKER_IDENTITY_UNSUPPORTED/);
+
+  const after = readState(f.root, f.runId).data;
+  assert.equal(after.episodes.find(e => e.id === f.checkerEpisodeId).status, 'pending');
+  assert.equal(Boolean(after.episodes.find(e => e.id === f.makerId).agent_reviewed), false);
+  assert.deepEqual(after.workstreams.find(w => w.id === f.ws).review_points_done, []);
+  assert.equal(eventLog(f.root, f.runId).length, beforeEvents);
+  assert.equal(readFileSync(join(runDir(f.root, f.runId), '.loop.hash'), 'utf8'), beforeHash);
+});
+
+test('proof-capable checker identity: import rejects a pending legacy standalone checker without materializing proof', () => {
+  const f = legacyStandaloneChecker();
+  const raw = JSON.stringify({
+    schema_version: '1.0',
+    reviewer_id: 'standalone',
+    checker_episode_id: f.checkerEpisodeId,
+    target_maker: f.makerId,
+    verdict: 'APPROVE',
+    report_body: '# legacy inline review\n\nAPPROVE',
+    artifacts: [{
+      path: f.artifact,
+      sha256: contentHash(readFileSync(join(f.root, f.artifact))),
+    }],
+  });
+  const beforeHash = readFileSync(join(runDir(f.root, f.runId), '.loop.hash'), 'utf8');
+  const beforeEvents = eventLog(f.root, f.runId).length;
+
+  assert.throws(() => importReviewOutcome(f.root, f.runId, {
+    raw, fence: f.f, now: '2026-07-11T04:00:00.000Z',
+  }), /REVIEW_IMPORT_REVIEWER_INVALID/);
+
+  assert.equal(readState(f.root, f.runId).data.episodes.find(e => e.id === f.checkerEpisodeId).status, 'pending');
+  assert.equal(eventLog(f.root, f.runId).length, beforeEvents);
+  assert.equal(readFileSync(join(runDir(f.root, f.runId), '.loop.hash'), 'utf8'), beforeHash);
+  assert.equal(existsSync(join(runDir(f.root, f.runId), 'reviews')), false);
 });
 
 // ── #2: a passing verdict needs a REAL, project-root-contained review report (maker symmetry) ──

@@ -51,16 +51,41 @@ test('finishProofState blocks when there is no independent review proof', () => 
 test('finishProofState passes only with settled + reviewed + terminal', () => {
   const loop = { episodes: [
       { id: 'm', role: 'maker', point: 'implementation', workstream_id: 'w', status: 'done' },
-      { id: 'c', role: 'checker', point: 'implementation', workstream_id: 'w', status: 'approved', target_maker: 'm' }],
+      { id: 'c', role: 'checker', plugin: 'subagent-checker', point: 'implementation', workstream_id: 'w', status: 'approved', target_maker: 'm' }],
     workstreams: [{ id: 'w', status: 'ready', review_points_done: ['implementation'] }], active_workstreams: [] };
   assert.deepEqual(finishProofState(loop).missing, []);
+});
+
+test('proof-capable checker identity: approved legacy standalone proof cannot satisfy finish', () => {
+  const loop = { episodes: [
+      { id: 'm', role: 'maker', plugin: 'deep-work', point: 'implementation', workstream_id: 'w', status: 'done' },
+      { id: 'c', role: 'checker', plugin: 'standalone', point: 'implementation', workstream_id: 'w', status: 'approved', target_maker: 'm' }],
+    workstreams: [{ id: 'w', status: 'ready', review_points_done: ['implementation'] }], active_workstreams: [] };
+  const ps = finishProofState(loop);
+  assert.equal(ps.settled, true, 'legacy terminal checker may be settled');
+  assert.equal(ps.allMakersReviewed, false);
+  assert.equal(ps.reviewedProof, false);
+  assert.ok(ps.missing.includes('unreviewed-maker'));
+  assert.ok(ps.missing.includes('no-independent-review'));
+});
+
+test('proof-capable checker identity: rejected legacy standalone proof is neutral', () => {
+  const loop = { episodes: [
+      { id: 'm', role: 'maker', plugin: 'deep-work', point: 'implementation', workstream_id: 'w', status: 'done' },
+      { id: 'c', role: 'checker', plugin: 'standalone', point: 'implementation', workstream_id: 'w', status: 'rejected', target_maker: 'm' }],
+    workstreams: [{ id: 'w', status: 'ready', review_points_done: [] }], active_workstreams: [] };
+  const ps = finishProofState(loop);
+  assert.equal(ps.settled, true, 'invalid rejected proof must not strand settlement');
+  assert.equal(ps.allMakersReviewed, false);
+  assert.ok(ps.missing.includes('no-independent-review'));
+  assert.equal(ps.missing.includes('unsettled-episodes'), false);
 });
 
 // Codex r6 critical-1: 한 maker 는 리뷰됐지만 다른 done maker 는 미리뷰면 completed 차단.
 test('finishProofState blocks when any one done maker is unreviewed', () => {
   const loop = { episodes: [
       { id: 'm1', role: 'maker', point: 'implementation', workstream_id: 'w', status: 'done' },
-      { id: 'c1', role: 'checker', point: 'implementation', workstream_id: 'w', status: 'approved' },
+      { id: 'c1', role: 'checker', plugin: 'subagent-checker', point: 'implementation', workstream_id: 'w', status: 'approved' },
       { id: 'm2', role: 'maker', point: 'plan', workstream_id: 'w', status: 'done' }],   // 'plan' 리뷰 없음
     workstreams: [{ id: 'w', status: 'ready', review_points_done: ['implementation'] }], active_workstreams: [] };
   assert.ok(finishProofState(loop).missing.includes('unreviewed-maker'));
@@ -71,7 +96,7 @@ test('finishProofState blocks two done makers sharing one approved checker (anom
   const loop = { episodes: [
       { id: 'm1', role: 'maker', point: 'implementation', workstream_id: 'w', status: 'done' },
       { id: 'm2', role: 'maker', point: 'implementation', workstream_id: 'w', status: 'done' },
-      { id: 'c1', role: 'checker', point: 'implementation', workstream_id: 'w', status: 'approved' }],
+      { id: 'c1', role: 'checker', plugin: 'subagent-checker', point: 'implementation', workstream_id: 'w', status: 'approved' }],
     workstreams: [{ id: 'w', status: 'ready', review_points_done: ['implementation'] }], active_workstreams: [] };
   assert.ok(finishProofState(loop).missing.includes('unreviewed-maker'));
 });
@@ -82,8 +107,8 @@ test('finishProofState blocks when two checkers are both bound to maker1 but mak
   const loop = { episodes: [
       { id: 'm1', role: 'maker', point: 'implementation', workstream_id: 'w', status: 'done' },
       { id: 'm2', role: 'maker', point: 'implementation', workstream_id: 'w', status: 'done' },
-      { id: 'c1', role: 'checker', point: 'implementation', workstream_id: 'w', status: 'rejected', target_maker: 'm1' },
-      { id: 'c2', role: 'checker', point: 'implementation', workstream_id: 'w', status: 'approved', target_maker: 'm1' }],
+      { id: 'c1', role: 'checker', plugin: 'subagent-checker', point: 'implementation', workstream_id: 'w', status: 'rejected', target_maker: 'm1' },
+      { id: 'c2', role: 'checker', plugin: 'subagent-checker', point: 'implementation', workstream_id: 'w', status: 'approved', target_maker: 'm1' }],
     workstreams: [{ id: 'w', status: 'ready', review_points_done: ['implementation'] }], active_workstreams: [] };
   assert.ok(finishProofState(loop).missing.includes('unreviewed-maker'));
 });
@@ -93,8 +118,8 @@ test('finishProofState blocks when two checkers are both bound to maker1 but mak
 test('finishProofState blocks: bound-rejected checker on maker1 + unbound approved checker (no target_maker) on same point', () => {
   const loop = { episodes: [
       { id: 'm1', role: 'maker', point: 'implementation', workstream_id: 'w', status: 'done' },
-      { id: 'c1', role: 'checker', point: 'implementation', workstream_id: 'w', status: 'rejected', target_maker: 'm1' },
-      { id: 'c2', role: 'checker', point: 'implementation', workstream_id: 'w', status: 'approved' }],   // no target_maker
+      { id: 'c1', role: 'checker', plugin: 'subagent-checker', point: 'implementation', workstream_id: 'w', status: 'rejected', target_maker: 'm1' },
+      { id: 'c2', role: 'checker', plugin: 'subagent-checker', point: 'implementation', workstream_id: 'w', status: 'approved' }],   // no target_maker
     workstreams: [{ id: 'w', status: 'ready', review_points_done: [] }], active_workstreams: [] };
   assert.ok(finishProofState(loop).missing.includes('no-independent-review'));
 });
@@ -104,8 +129,8 @@ test('finishProofState passes for a fix-loop (maker1+rejected-checker, maker2+ap
   const loop = { episodes: [
       { id: 'm1', role: 'maker', point: 'implementation', workstream_id: 'w', status: 'done' },
       { id: 'm2', role: 'maker', point: 'implementation', workstream_id: 'w', status: 'done' },
-      { id: 'c1', role: 'checker', point: 'implementation', workstream_id: 'w', status: 'rejected', target_maker: 'm1' },
-      { id: 'c2', role: 'checker', point: 'implementation', workstream_id: 'w', status: 'approved', target_maker: 'm2' }],
+      { id: 'c1', role: 'checker', plugin: 'subagent-checker', point: 'implementation', workstream_id: 'w', status: 'rejected', target_maker: 'm1' },
+      { id: 'c2', role: 'checker', plugin: 'subagent-checker', point: 'implementation', workstream_id: 'w', status: 'approved', target_maker: 'm2' }],
     workstreams: [{ id: 'w', status: 'ready', review_points_done: ['implementation'] }], active_workstreams: [] };
   assert.deepEqual(finishProofState(loop).missing, []);
 });
@@ -117,8 +142,8 @@ test('finishProofState passes for a fix-loop (maker1+rejected-checker, maker2+ap
 test('finishProofState blocks when a maker\'s LATEST bound checker is rejected (older approve, newer reject)', () => {
   const loop = { episodes: [
       { id: '001', role: 'maker', point: 'plan', workstream_id: 'w', status: 'done' },
-      { id: '002', role: 'checker', point: 'plan', workstream_id: 'w', status: 'approved', target_maker: '001' },
-      { id: '003', role: 'checker', point: 'plan', workstream_id: 'w', status: 'rejected', target_maker: '001' }],
+      { id: '002', role: 'checker', plugin: 'subagent-checker', point: 'plan', workstream_id: 'w', status: 'approved', target_maker: '001' },
+      { id: '003', role: 'checker', plugin: 'subagent-checker', point: 'plan', workstream_id: 'w', status: 'rejected', target_maker: '001' }],
     workstreams: [{ id: 'w', status: 'ready', review_points_done: ['plan'] }], active_workstreams: [] };
   const ps = finishProofState(loop);
   assert.ok(ps.missing.includes('no-independent-review'), ps.missing.join(','));
@@ -130,9 +155,9 @@ test('finishProofState blocks when a maker\'s LATEST bound checker is rejected (
 test('finishProofState: 999 approved + 1000 rejected for same (ws,point) is NOT complete (999→1000 order)', () => {
   const loop = { episodes: [
       { id: '999-x', role: 'maker', point: 'implementation', workstream_id: 'w', status: 'done' },
-      { id: '0998-c', role: 'checker', point: 'implementation', workstream_id: 'w', status: 'approved', target_maker: '999-x' },
+      { id: '0998-c', role: 'checker', plugin: 'subagent-checker', point: 'implementation', workstream_id: 'w', status: 'approved', target_maker: '999-x' },
       { id: '1000-x', role: 'maker', point: 'implementation', workstream_id: 'w', status: 'done' },
-      { id: '1001-c', role: 'checker', point: 'implementation', workstream_id: 'w', status: 'rejected', target_maker: '1000-x' }],
+      { id: '1001-c', role: 'checker', plugin: 'subagent-checker', point: 'implementation', workstream_id: 'w', status: 'rejected', target_maker: '1000-x' }],
     workstreams: [{ id: 'w', status: 'ready', review_points_done: ['implementation'] }], active_workstreams: [] };
   const ps = finishProofState(loop);
   assert.notEqual(ps.missing.length, 0, 'rejected newest maker (1000-x) must keep finishProofState NON-complete');
@@ -142,7 +167,7 @@ test('finishProofState: unmet review.points -> review-point-unsatisfied', () => 
   const loop = { review: { points: ['design', 'implementation'] },
     episodes: [
       { id: 'm', role: 'maker', point: 'design', workstream_id: 'w', status: 'done' },
-      { id: 'c', role: 'checker', point: 'design', workstream_id: 'w', status: 'approved', target_maker: 'm' }],
+      { id: 'c', role: 'checker', plugin: 'subagent-checker', point: 'design', workstream_id: 'w', status: 'approved', target_maker: 'm' }],
     workstreams: [{ id: 'w', status: 'ready', review_points_done: ['design'] }], active_workstreams: [] };
   assert.ok(finishProofState(loop).missing.includes('review-point-unsatisfied'));
 });
@@ -151,7 +176,7 @@ test('finishProofState: done maker not bound to existing workstream -> unbound-p
   const loop = { review: { points: [] },
     episodes: [
       { id: 'm', role: 'maker', point: 'implementation', workstream_id: null, status: 'done' },
-      { id: 'c', role: 'checker', point: 'implementation', workstream_id: null, status: 'approved', target_maker: 'm' }],
+      { id: 'c', role: 'checker', plugin: 'subagent-checker', point: 'implementation', workstream_id: null, status: 'approved', target_maker: 'm' }],
     workstreams: [], active_workstreams: [] };
   assert.ok(finishProofState(loop).missing.includes('unbound-proof-episode'));
 });
@@ -160,7 +185,7 @@ test('finishProofState: abandoned episode counts as settled', () => {
   const loop = { review: { points: ['implementation'] },
     episodes: [
       { id: 'm', role: 'maker', point: 'implementation', workstream_id: 'w', status: 'done' },
-      { id: 'c', role: 'checker', point: 'implementation', workstream_id: 'w', status: 'approved', target_maker: 'm' },
+      { id: 'c', role: 'checker', plugin: 'subagent-checker', point: 'implementation', workstream_id: 'w', status: 'approved', target_maker: 'm' },
       { id: 'x', role: 'maker', point: 'implementation', workstream_id: 'w', status: 'abandoned' }],
     workstreams: [{ id: 'w', status: 'ready', review_points_done: ['implementation'] }], active_workstreams: [] };
   const ps = finishProofState(loop);
@@ -176,8 +201,8 @@ test('finishProofState treats a legacy unbound rejected checker as neutral (no u
   const loop = { review: { points: ['plan'] },
     episodes: [
       { id: '001', role: 'maker', point: 'plan', workstream_id: 'w', status: 'done' },
-      { id: '002', role: 'checker', point: 'plan', workstream_id: 'w', status: 'approved', target_maker: '001' },
-      { id: '003', role: 'checker', point: 'plan', workstream_id: 'w', status: 'rejected' }],   // NEWER, unbound (legacy)
+      { id: '002', role: 'checker', plugin: 'subagent-checker', point: 'plan', workstream_id: 'w', status: 'approved', target_maker: '001' },
+      { id: '003', role: 'checker', plugin: 'subagent-checker', point: 'plan', workstream_id: 'w', status: 'rejected' }],   // NEWER, unbound (legacy)
     workstreams: [{ id: 'w', status: 'ready', review_points_done: ['plan'] }], active_workstreams: [] };
   const ps = finishProofState(loop);
   assert.ok(!ps.missing.includes('unsettled-episodes'), ps.missing.join(','));
@@ -190,8 +215,8 @@ test('finishProofState passes a RESOLVED unbound rejected checker (older reject,
   const loop = { review: { points: ['plan'] },
     episodes: [
       { id: '001', role: 'maker', point: 'plan', workstream_id: 'w', status: 'done' },
-      { id: '002', role: 'checker', point: 'plan', workstream_id: 'w', status: 'rejected' },   // unbound, OLDER
-      { id: '003', role: 'checker', point: 'plan', workstream_id: 'w', status: 'approved', target_maker: '001' }],
+      { id: '002', role: 'checker', plugin: 'subagent-checker', point: 'plan', workstream_id: 'w', status: 'rejected' },   // unbound, OLDER
+      { id: '003', role: 'checker', plugin: 'subagent-checker', point: 'plan', workstream_id: 'w', status: 'approved', target_maker: '001' }],
     workstreams: [{ id: 'w', status: 'ready', review_points_done: ['plan'] }], active_workstreams: [] };
   assert.deepEqual(finishProofState(loop).missing, []);
 });

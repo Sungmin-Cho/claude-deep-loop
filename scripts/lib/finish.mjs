@@ -1,7 +1,7 @@
 import { appendAnchored } from './integrity.mjs';
 import { leaseCheck } from './lease.mjs';
 import { runDir } from './state.mjs';
-import { makerReviewed, unsatisfiedReviewPoints, epOrder, rejectionResolved } from './review.mjs';
+import { isProofCapableChecker, makerReviewed, unsatisfiedReviewPoints, epOrder, rejectionResolved } from './review.mjs';
 import { MUTATION_TURN_FLOOR } from './budget.mjs';
 import { containedRealFile } from './fs-safe.mjs';
 
@@ -36,7 +36,7 @@ export function finishProofState(loop) {
   // followed by a newer reject (same target_maker) must NOT mask the rejection (a plain any-approved test would,
   // diverging from nextAction which routes to fix_episode). An unbound checker has no target_maker so cannot count.
   const boundLatestApproved = (mid) => {
-    const cs = (loop.episodes || []).filter(e => e.role === 'checker' && e.target_maker === mid && (e.status === 'approved' || e.status === 'rejected'));
+    const cs = (loop.episodes || []).filter(e => isProofCapableChecker(e) && e.target_maker === mid && (e.status === 'approved' || e.status === 'rejected'));
     if (!cs.length) return false;
     const latest = cs.reduce((a, b) => (epOrder(a.id, b.id) >= 0 ? a : b));
     return latest.status === 'approved';

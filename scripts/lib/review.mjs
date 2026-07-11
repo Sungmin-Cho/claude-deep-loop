@@ -11,12 +11,15 @@ import { MUTATION_TURN_FLOOR } from './budget.mjs';
 import { sessionRuntime } from './runtime.mjs';
 import { validate } from './schema.mjs';
 import {
+  isProofCapableChecker,
   materializeImportedReview,
   parseReviewImport,
   sha256File,
   validateImportedEvidence,
   verifyImportedEnvelope,
 } from './review-import.mjs';
+
+export { isProofCapableChecker };
 
 // impl-R2 Fix 4: a passing verdict's report must be BOUND to the reviewed workstream — its realpath must sit under
 // the workstream's worktree directory. This stops an unrelated stale file (README.md, another ws's report) from
@@ -60,8 +63,10 @@ export const epOrder = (a, b) => {
 //     approval) AND strand (a terminal unbound checker can neither be abandoned nor re-recorded).
 export function rejectionResolved(loop, e) {
   const eps = loop.episodes || [];
+  // Unsupported/legacy checker proof is neutral history: it cannot demand a fix and cannot strand finish.
+  if (!isProofCapableChecker(e)) return true;
   if (e.target_maker) {
-    const reApprovedNewer = eps.some(c => c.role === 'checker' && c.target_maker === e.target_maker && c.status === 'approved' && epOrder(c.id, e.id) > 0);
+    const reApprovedNewer = eps.some(c => isProofCapableChecker(c) && c.target_maker === e.target_maker && c.status === 'approved' && epOrder(c.id, e.id) > 0);
     const laterDoneMaker = eps.some(m => m.role === 'maker' && m.status === 'done' && m.workstream_id === e.workstream_id && m.point === e.point && epOrder(m.id, e.target_maker) > 0);
     return reApprovedNewer || laterDoneMaker;
   }
@@ -115,7 +120,7 @@ export function parseVerdict(text) {
 // A maker is reviewed if there is a terminal checker bound to it (via target_maker) with approved/rejected status.
 export function makerReviewed(loop, maker) {
   return (loop.episodes || []).some(e =>
-    e.role === 'checker' && e.target_maker === maker.id &&
+    isProofCapableChecker(e) && e.target_maker === maker.id &&
     (e.status === 'approved' || e.status === 'rejected')
   );
 }
@@ -177,13 +182,17 @@ function snapshotContext(loop, episodeId) {
   };
 }
 
-function checkedContext(loop, episodeId) {
+function checkedContext(loop, episodeId, { reviewSource } = {}) {
   const context = snapshotContext(loop, episodeId);
   const checker = context.checker;
   if (!checker) throw new Error(`EPISODE_NOT_FOUND: ${episodeId}`);
   if (checker.role !== 'checker') throw new Error('REVIEW_TARGET_NOT_CHECKER: ' + episodeId);
   if (checker.status === 'blocked') throw new Error('REVIEW_CHECKER_BLOCKED: independent checker capability is required: ' + episodeId);
   if (REVIEW_TERMINAL.has(checker.status)) throw new Error('REVIEW_ALREADY_RECORDED: ' + episodeId);
+  if (!isProofCapableChecker(checker)) {
+    const code = reviewSource === 'imported-stdin' ? 'REVIEW_IMPORT_REVIEWER_INVALID' : 'REVIEW_CHECKER_IDENTITY_UNSUPPORTED';
+    throw new Error(`${code}: unsupported checker plugin ${String(checker.plugin)}`);
+  }
   if (!checker.target_maker) throw new Error('REVIEW_UNBOUND_CHECKER: cannot record a verdict on a checker bound to no maker: ' + episodeId);
   const maker = context.maker;
   if (!maker || maker.role !== 'maker') throw new Error('REVIEW_TARGET_MAKER_INVALID: ' + checker.target_maker);
@@ -265,7 +274,7 @@ function commitReviewOutcome(root, runId, {
     (loop) => {
       const checkedFence = leaseCheck(loop, { ...fence, runtime });
       if (!checkedFence.ok) throw new Error('LEASE_FENCED: ' + checkedFence.reason);
-      lockedContext = checkedContext(loop, episodeId);
+      lockedContext = checkedContext(loop, episodeId, { reviewSource });
       if (lockedContext.workstreamId !== snapshot.workstreamId
           || lockedContext.point !== snapshot.point
           || lockedContext.targetMaker !== snapshot.targetMaker
@@ -343,7 +352,7 @@ export function importReviewOutcome(root, runId, options = {}) {
   const snapshot = snapshotContext(preState, input.checker_episode_id);
   let evidence;
   try {
-    const checked = checkedContext(preState, input.checker_episode_id);
+    const checked = checkedContext(preState, input.checker_episode_id, { reviewSource: 'imported-stdin' });
     const binding = validateImportedEvidence(root, preState, input, checked);
     evidence = materializeImportedReview(root, runId, input, binding, { now });
   } catch (preparationError) {
