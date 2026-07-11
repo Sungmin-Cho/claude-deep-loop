@@ -606,6 +606,34 @@ function driveIndependentChecker({
       throw error;
     }
   };
+  const settleMeasuredFailure = (reason, usage) => {
+    const blocked = blockClaim(reason);
+    let pauseOutcome = null;
+    if (blocked.action === 'checker-stranded') {
+      pauseOutcome = pauseWithOriginalFence(projectRoot, runId, {
+        reason, expect: parentFence, now,
+      });
+    }
+    let recorded = false;
+    let accountingReason = null;
+    try {
+      recordCostFn(projectRoot, runId, {
+        turns: usage.num_turns,
+        tokens: usage.tokens,
+        fence: { owner: parentOwner, generation: parentGeneration, intent: 'accounting' },
+      });
+      recorded = true;
+    } catch (error) {
+      accountingReason = accountingFailureReason(error);
+    }
+    return {
+      ...blocked,
+      ...(pauseOutcome === 'terminal' ? { action: 'terminal' }
+        : pauseOutcome === 'fenced' ? { action: 'fenced' } : {}),
+      recorded,
+      ...(accountingReason ? { accounting_reason: accountingReason } : {}),
+    };
+  };
 
   const identityFresh = () => {
     try {
@@ -688,7 +716,7 @@ function driveIndependentChecker({
     || checkerResult.finalMessage.length > STREAM_LIMITS.finalMessageBytes) {
     return blockClaim('checker-process-failed');
   }
-  if (!identityFresh()) return blockClaim('checker-identity-drift');
+  if (!identityFresh()) return settleMeasuredFailure('checker-identity-drift', checkerResult.usage);
 
   let imported;
   try {
@@ -720,20 +748,7 @@ function driveIndependentChecker({
     }
   }
   if (!imported?.ok) {
-    let recorded = false;
-    let accountingReason = null;
-    try {
-      recordCostFn(projectRoot, runId, {
-        turns: checkerResult.usage.num_turns,
-        tokens: checkerResult.usage.tokens,
-        fence: { owner: parentOwner, generation: parentGeneration, intent: 'accounting' },
-      });
-      recorded = true;
-    } catch (error) {
-      accountingReason = accountingFailureReason(error);
-    }
-    const blocked = blockClaim('checker-import-failed');
-    return { ...blocked, recorded, ...(accountingReason ? { accounting_reason: accountingReason } : {}) };
+    return settleMeasuredFailure('checker-import-failed', checkerResult.usage);
   }
 
   let continuation = false;
@@ -1023,6 +1038,13 @@ function driveHeadlessRunLocked({
 
   let captured = null;
   let spawnCalls = 0;
+  const capturedDiagnostic = () => ({
+    ...(typeof captured?.stderr === 'string'
+      && Buffer.byteLength(captured.stderr, 'utf8') <= STREAM_LIMITS.stderrBytes
+      ? { stderr: captured.stderr }
+      : {}),
+    ...(captured?.stderrTruncated === true ? { stderrTruncated: true } : {}),
+  });
   const measuredSpawn = (entry) => {
     spawnCalls += 1;
     if (spawnCalls !== 1) return { ok: false, reason: 'maker-spawn-reentry' };
@@ -1159,8 +1181,8 @@ function driveHeadlessRunLocked({
   }
   if (captured?.ok === false) {
     const reason = captured.reason || result.reason;
-    if (terminal(freshLoop)) return { ok: false, action: 'fail-closed-terminal', reason };
-    if (result.outcome === 'failed_launch') return { ok: false, action: 'fail-closed', reason };
+    if (terminal(freshLoop)) return { ok: false, action: 'fail-closed-terminal', reason, ...capturedDiagnostic() };
+    if (result.outcome === 'failed_launch') return { ok: false, action: 'fail-closed', reason, ...capturedDiagnostic() };
     const pauseOutcome = pauseWithFreshFence(projectRoot, runId, {
       reason: 'headless-unmeasurable',
       expect: parentFence,
@@ -1171,6 +1193,7 @@ function driveHeadlessRunLocked({
       ok: false,
       action: pauseOutcome === 'raced' ? 'fail-closed-raced' : 'fail-closed',
       reason,
+      ...capturedDiagnostic(),
     };
   }
   if (captured?.ok === true && !terminal(freshLoop) && !childAcquired) {
@@ -1194,13 +1217,14 @@ function driveHeadlessRunLocked({
       now,
     });
     if (pauseOutcome === 'terminal') {
-      return { ok: true, action: 'resumed', usage: captured.usage, recorded };
+      return { ok: true, action: 'resumed', usage: captured.usage, recorded, ...capturedDiagnostic() };
     }
     return {
       ok: false,
       action: pauseOutcome === 'raced' ? 'fail-closed-raced' : 'resumed-unconfirmed',
       reason: 'child-did-not-acquire',
       ...(runtime === 'codex' ? { usage: captured.usage, recorded } : {}),
+      ...capturedDiagnostic(),
     };
   }
 
@@ -1224,7 +1248,7 @@ function driveHeadlessRunLocked({
       if (!String(error?.message || error).startsWith('LEASE_FENCED')) throw error;
     }
   }
-  return { ok: true, action: 'resumed', usage: captured?.usage, recorded };
+  return { ok: true, action: 'resumed', usage: captured?.usage, recorded, ...capturedDiagnostic() };
 }
 
 export function driveHeadlessRun(options = {}) {
