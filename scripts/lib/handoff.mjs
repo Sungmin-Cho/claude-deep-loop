@@ -1,5 +1,6 @@
 import { mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { readState, runDir } from './state.mjs';
 import { appendAnchored } from './integrity.mjs';
 import { wrap, atomicWrite } from './envelope.mjs';
@@ -12,6 +13,8 @@ import { validateRuntimeProfile } from './session-profile.mjs';
 import { resolveSpawnMode } from './respawn.mjs';
 
 export { buildLaunchCommand } from './runtime-descriptor.mjs';
+
+const DEFAULT_DEEP_LOOP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 function tsName(now) { return new Date(now).toISOString().replace(/[:.]/g, '-'); }
 
@@ -47,6 +50,7 @@ function handoffMarkdown(loop, childRunId, reason, descriptor) {
 export function emitHandoff(root, runId, {
   reason = 'milestone', trigger = 'milestone', now = Date.now(), headless = false, resumePolicy, expect,
   platform = process.platform, desktopProbe = defaultDesktopProbe, env = process.env,
+  deepLoopRoot = DEFAULT_DEEP_LOOP_ROOT,
 } = {}) {
   if (!expect || typeof expect.owner !== 'string' || !Number.isInteger(expect.generation)) throw new Error('FENCE_REQUIRED: emitHandoff');
   // Resolve runtime and canonical root from root-bound durable state. This read
@@ -88,8 +92,6 @@ export function emitHandoff(root, runId, {
   const childRunId = res.childRunId;
   const dir = join(runDir(canonicalRoot, runId), 'handoffs');
   const termDir = join(runDir(canonicalRoot, runId), 'terminal');
-  mkdirSync(dir, { recursive: true });
-  mkdirSync(termDir, { recursive: true });
   const stamp = tsName(now);
   const mdName = `${stamp}-next-session.md`;
   const csName = `${stamp}-compaction-state.json`;
@@ -102,17 +104,27 @@ export function emitHandoff(root, runId, {
   if (runtime === 'claude' && loop.autonomy?.spawn_style === 'desktop') {
     try { dt = desktopProbe({ platform }); } catch { dt = null; }
   }
-  const descriptor = buildRuntimeResumeDescriptor({
-    runtime, root: canonicalRoot, parentRunId: runId, childRunId, handoffRel,
-    launcher: loop.session_spawn?.launcher,
-    launcherBin: loop.session_spawn?.launcher_bin,
-    launcherSocket: loop.session_spawn?.launcher_socket,
-    platform, desktopTarget: dt && dt.ok ? dt.argvTarget : null,
-    model: loop.autonomy?.session_model ?? null, effort: loop.autonomy?.session_effort ?? null,
-    runtimeExecutableIdentity: loop.autonomy?.runtime_executable_approval ?? null,
-    launcherIdentity: loop.session_spawn?.launcher_identity ?? null,
-  });
+  let descriptor;
+  try {
+    descriptor = buildRuntimeResumeDescriptor({
+      runtime, root: canonicalRoot, parentRunId: runId, childRunId, handoffRel,
+      launcher: loop.session_spawn?.launcher,
+      launcherBin: loop.session_spawn?.launcher_bin,
+      launcherSocket: loop.session_spawn?.launcher_socket,
+      platform, desktopTarget: dt && dt.ok ? dt.argvTarget : null,
+      model: loop.autonomy?.session_model ?? null, effort: loop.autonomy?.session_effort ?? null,
+      deepLoopRoot,
+      runtimeExecutableIdentity: loop.autonomy?.runtime_executable_approval ?? null,
+      launcherIdentity: loop.session_spawn?.launcher_identity ?? null,
+    });
+  } catch (error) {
+    try { rollbackHandoff(canonicalRoot, runId, { owner: expect.owner, generation: expect.generation }); } catch { /* preserve original descriptor error */ }
+    throw error;
+  }
   const cmds = descriptor.entries;
+
+  mkdirSync(dir, { recursive: true });
+  mkdirSync(termDir, { recursive: true });
 
   atomicWrite(handoffPath, handoffMarkdown(loop, childRunId, reason, descriptor));
   const compaction = wrap({

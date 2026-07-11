@@ -345,6 +345,69 @@ test('Codex native Windows headless descriptor accepts a revalidated identity an
   assert.ok(!c.headless.argv.includes('codex'));
 });
 
+test('emitHandoff: approved native Windows Codex uses injected deep-loop root and emits one child', () => {
+  const { root, runId } = seed('codex');
+  const codex = executableIdentity('codex', 'C:\\Program Files & Tools\\Codex\\codex.exe');
+  const deepLoopRoot = 'C:\\Injected Deep Loop';
+  const { data } = readState(root, runId);
+  data.autonomy.runtime_executable_approval = codex;
+  writeState(root, runId, data);
+
+  let emitted;
+  let constructionError = null;
+  try {
+    emitted = emitHandoff(root, runId, {
+      now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId),
+      platform: 'win32', deepLoopRoot,
+    });
+  } catch (error) {
+    constructionError = error;
+  }
+  const after = readState(root, runId).data;
+  const lease = after.session_chain.lease;
+  assert.equal(
+    constructionError,
+    null,
+    `approved Codex descriptor threw ${constructionError?.message}; phase=${lease.handoff_phase}; child=${lease.handoff_child_run_id}; handoffs=${existsSync(join(runDir(root, runId), 'handoffs'))}; terminal=${existsSync(join(runDir(root, runId), 'terminal'))}`,
+  );
+  assert.equal(emitted.ok, true);
+  assert.equal(emitted.reason, 'emitted');
+  assert.equal(lease.handoff_phase, 'emitted');
+  assert.equal(lease.state, 'releasing');
+  const children = after.session_chain.sessions.filter(session => session.run_id !== runId);
+  assert.equal(children.length, 1);
+  assert.equal(children[0].run_id, emitted.childRunId);
+
+  const entries = buildLaunchCommand({
+    runtime: 'codex', platform: 'win32', root, parentRunId: runId,
+    childRunId: emitted.childRunId, handoffRel: emitted.handoffRel,
+    runtimeExecutableIdentity: codex, deepLoopRoot,
+  });
+  const resumeSkillPath = 'C:\\Injected Deep Loop\\skills\\deep-loop-resume\\SKILL.md';
+  assert.ok(entries.headless.stdin.includes(JSON.stringify(resumeSkillPath)));
+});
+
+test('emitHandoff: invalid relative deepLoopRoot rolls back reservation before artifacts and rethrows original error', () => {
+  const { root, runId } = seed('codex');
+  const { data } = readState(root, runId);
+  data.autonomy.runtime_executable_approval = executableIdentity('codex', 'C:\\trusted\\codex.exe');
+  writeState(root, runId, data);
+
+  assert.throws(
+    () => emitHandoff(root, runId, {
+      now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId),
+      platform: 'win32', deepLoopRoot: 'relative/deep-loop',
+    }),
+    (error) => error?.message === 'INVALID_DEEP_LOOP_ROOT: explicit absolute deep-loop root required',
+  );
+  const lease = readState(root, runId).data.session_chain.lease;
+  assert.equal(lease.handoff_phase, 'idle');
+  assert.equal(lease.handoff_idempotency_key, null);
+  assert.equal(lease.handoff_child_run_id, null);
+  assert.equal(existsSync(join(runDir(root, runId), 'handoffs')), false);
+  assert.equal(existsSync(join(runDir(root, runId), 'terminal')), false);
+});
+
 test('Codex max effort fails before handoff reservation or artifact writes', () => {
   const { root, runId } = seed('codex');
   const { data } = readState(root, runId);
