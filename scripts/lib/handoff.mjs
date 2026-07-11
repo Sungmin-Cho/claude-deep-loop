@@ -9,6 +9,7 @@ import { sessionRuntime } from './runtime.mjs';
 import { canonicalProjectRoot } from './project-root.mjs';
 import { buildRuntimeResumeDescriptor } from './runtime-descriptor.mjs';
 import { validateRuntimeProfile } from './session-profile.mjs';
+import { resolveSpawnMode } from './respawn.mjs';
 
 export { buildLaunchCommand } from './runtime-descriptor.mjs';
 
@@ -44,14 +45,16 @@ function handoffMarkdown(loop, childRunId, reason, descriptor) {
 }
 
 export function emitHandoff(root, runId, {
-  reason = 'milestone', trigger = 'milestone', now = Date.now(), headless = false, resumePolicy = 'visible', expect,
-  platform = process.platform, desktopProbe = defaultDesktopProbe,
+  reason = 'milestone', trigger = 'milestone', now = Date.now(), headless = false, resumePolicy, expect,
+  platform = process.platform, desktopProbe = defaultDesktopProbe, env = process.env,
 } = {}) {
   if (!expect || typeof expect.owner !== 'string' || !Number.isInteger(expect.generation)) throw new Error('FENCE_REQUIRED: emitHandoff');
   // Resolve runtime and canonical root from root-bound durable state. This read
   // fences copied roots and malformed runtime state before reservation or files.
   const { data: initialLoop } = readState(root, runId);
   const initialRuntime = sessionRuntime(initialLoop);
+  const effectiveResumePolicy = resumePolicy
+    ?? (resolveSpawnMode(initialLoop, { headless, env }) === 'headless' ? 'headless' : 'visible');
   validateRuntimeProfile(initialRuntime, {
     model: initialLoop.autonomy?.session_model ?? null,
     effort: initialLoop.autonomy?.session_effort ?? null,
@@ -160,7 +163,7 @@ export function emitHandoff(root, runId, {
     if (cur) cur.superseded_by = childRunId;
     const lease = l.session_chain.lease;
     if (lease.handoff_phase === 'reserved') {   // 부모 carve-out 시작 + stale TTL (Codex r1 🔴4)
-      l.session_chain.lease = { ...lease, handoff_phase: 'emitted', state: 'releasing', expires_at: new Date(now + ttlMs).toISOString(), resume_policy: resumePolicy };
+      l.session_chain.lease = { ...lease, handoff_phase: 'emitted', state: 'releasing', expires_at: new Date(now + ttlMs).toISOString(), resume_policy: effectiveResumePolicy };
     }
   }, (l) => {
     if (l.status === 'paused') throw new Error('RUN_PAUSED: emitHandoff');

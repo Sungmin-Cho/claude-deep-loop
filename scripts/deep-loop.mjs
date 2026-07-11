@@ -15,8 +15,9 @@ import { dispatchReview, importReviewOutcome, recordReviewOutcome } from './lib/
 import { readBoundedText } from './lib/bounded-input.mjs';
 import { nextAction } from './lib/next-action.mjs';
 import { emitHandoff } from './lib/handoff.mjs';
-import { respawn, respawnGate, resolveSpawnMode, isHeadlessInvocation } from './lib/respawn.mjs';
-import { headlessSpawn, visibleSpawn } from './lib/spawn-driver.mjs';
+import { respawn, respawnGate, resolveSpawnMode } from './lib/respawn.mjs';
+import { visibleSpawn } from './lib/spawn-driver.mjs';
+import { driveHeadlessRun } from './lib/headless-host.mjs';
 import { resolveAdapter, guardTierProtocol, loadProtocol } from './lib/adapters.mjs';
 import { recordCost, checkBudget } from './lib/budget.mjs';
 import { computeDebt, ack as ackComprehension } from './lib/comprehension.mjs';
@@ -424,18 +425,17 @@ const handlers = {
     const data = requireLease(root, runId, f, 'lease');
     const expect = { owner: f.owner, generation: intArg(f, 'generation') };
     if (verb === 'emit') {
-      const h = f.headless === true || f.headless === 'true' || data.autonomy?.spawn_style === 'headless' || isHeadlessInvocation(process.env);
+      const h = f.headless === true || f.headless === 'true';
       // v1.6 (spec §2.3-2 CLI 매핑): 기존 RUN_PAUSED/HANDOFF_KEY_MISMATCH throw의 uncaught stack 해소 —
       // respawn/pause/recover 핸들러와 동일 패턴. RUN_TERMINAL은 보상 롤백 후 반환 계약(JSON ok:false)이라 여기 안 걸린다.
-      try { json(emitHandoff(root, runId, { reason: f.reason, trigger: f.trigger || f.reason || 'milestone', headless: h, resumePolicy: h ? 'headless' : 'visible', expect })); return 0; }
+      try { json(emitHandoff(root, runId, { reason: f.reason, trigger: f.trigger || f.reason || 'milestone', headless: h, expect, env: process.env })); return 0; }
       catch (e) { const m = String(e?.message || e); if (m.startsWith('LEASE_FENCED')) { error(m); return 3; } error(m); return 1; }
     }
     error(`unknown handoff verb: ${verb}`); return 2;
   },
   // respawn --owner <id> --generation <n> [--attended] [--headless]
-  // Resolves the spawn mode FIRST (R2-plan), then injects the matching spawnFn (headless→headlessSpawn measured,
-  // visible launcher→visibleSpawn best-effort) — a headless entry must NEVER run through visibleSpawn. The fence
-  // (--owner/--generation) is required (exit 3) and re-checked in-lock by respawn's appendAnchored preChecks (R11-II).
+  // Resolve the spawn mode first: headless routes through the shared measured host; visible/desktop routes through
+  // respawn + visibleSpawn. The caller fence is carried into either path and checked again before CAS.
   respawn: async (a) => {
     const f = parseFlags(a); const root = rootOf(f); const runId = runIdOf(root, f);
     if (!runId) { error('MISSING_RUN_ID'); return 2; }
@@ -445,18 +445,36 @@ const handlers = {
     requireLease(root, runId, f, 'lease');
     const headless = f.headless === true || f.headless === 'true';
     const attended = f.attended === true || f.attended === 'true';
+    let timeoutMs;
+    if (Object.hasOwn(f, 'timeout-ms')) {
+      timeoutMs = optInt(f, 'timeout-ms');
+      if (timeoutMs == null || !Number.isSafeInteger(timeoutMs) || timeoutMs > 2_147_483_647) {
+        error('INVALID_TIMEOUT_MS: --timeout-ms must be an integer from 0 through 2147483647');
+        return 1;
+      }
+    }
     const mode = resolveSpawnMode(data, { headless, attended, env: process.env });
-    const spawnFn = mode === 'headless' ? headlessSpawn : visibleSpawn;
     const lease = data.session_chain?.lease || {};
     const childRunId = lease.handoff_child_run_id;
     const key = lease.handoff_idempotency_key;
     const cs = (data.session_chain?.sessions || []).find(s => s.run_id === childRunId);
     const handoffRel = cs && cs.handoff_rel;
     const pollLease = () => readState(root, runId).data.session_chain.lease;
+    const expect = { owner: f.owner, generation: intArg(f, 'generation') };
+    const now = parseNow(f);
     try {
-      const r = respawn(root, runId, { childRunId, key, handoffRel, headless, attended, now: parseNow(f), spawnFn, pollLease, env: process.env });
+      const r = mode === 'headless'
+        ? driveHeadlessRun({
+          root, runId, expect, headless, now, timeoutMs, env: process.env,
+          overrideVisiblePolicy: headless,
+        })
+        : respawn(root, runId, {
+          childRunId, key, handoffRel, headless, attended, now,
+          spawnFn: visibleSpawn, pollLease, env: process.env,
+          expect, expectedMode: mode,
+        });
       json({ mode, ...r });
-      return r.ok ? 0 : (r.outcome === 'fenced' || r.outcome === 'terminal' ? 3 : 0);   // v1.6: terminal 거부는 fence 채널 — soft error(0) 위장 금지 (spec §2.3-5)
+      return r.ok ? 0 : (r.outcome === 'fenced' || r.outcome === 'terminal' || r.action === 'fenced' || r.action === 'terminal' ? 3 : 0);   // v1.6: terminal 거부는 fence 채널 — soft error(0) 위장 금지 (spec §2.3-5)
     } catch (e) {
       const msg = String(e?.message || e);
       if (msg.startsWith('LEASE_FENCED') || msg.startsWith('RESPAWN_FENCED')) { error(msg); return 3; }

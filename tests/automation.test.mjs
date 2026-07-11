@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, existsSync, mkdtempSync } from 'node:fs';
+import { readFileSync, existsSync, mkdtempSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -230,16 +230,16 @@ test('driveHeadless skips handoff with resume_policy=human (spawnFn must NOT be 
   assert.equal(r.reason, 'human-resume-policy');
 });
 
-test('driveHeadless skips visible-intended handoff (resume_policy null — not-headless-intended)', () => {
+test('driveHeadless skips visible-intended handoff (resume_policy visible — not-headless-intended)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-auto-'));
   const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
   const em = emitHandoff(root, runId, {
-    reason: 'pre-compact', trigger: 'pre-compact', headless: true,
+    reason: 'pre-compact', trigger: 'pre-compact', headless: true, resumePolicy: 'visible',
     expect: { owner: runId, generation: 1 },
     now: NOW1,
   });
   assert.ok(em.ok, `emitHandoff must succeed: ${em.reason}`);
-  // resume_policy stays null (Task 11 not yet applied) — driveHeadless must skip
+  // Explicit visible intent must not be degraded into an unattended resume.
 
   const r = driveHeadless({
     root, now: NOW1,
@@ -286,6 +286,15 @@ test('cron template calls the fail-closed driver (not raw claude -p)', () => {
   assert.match(s, /cron|schedule|\d+\s+\d+\s+\*/i);
   assert.match(s, /drive-headless\.mjs/);                 // 드라이버 경유
   assert.match(s, /fail-closed|budget|proposal-only/i);
+});
+
+test('cron hook is thin glue over the shared headless host core', () => {
+  const hook = join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'hooks-impl', 'drive-headless.mjs');
+  const source = readFileSync(hook, 'utf8');
+  assert.match(source, /lib\/headless-host\.mjs/);
+  assert.doesNotMatch(source, /lib\/respawn\.mjs/);
+  assert.doesNotMatch(source, /lib\/spawn-driver\.mjs/);
+  assert.doesNotMatch(source, /recordCost\s*\(/);
 });
 
 test('github-actions template is a scheduled workflow calling the driver', () => {
@@ -335,6 +344,28 @@ test('handoff emit derives resume_policy=headless from spawn_style without --hea
   });
   assert.equal(r.action, 'resumed',
     `driveHeadless must resume, not skip: ${JSON.stringify(r)}`);
+});
+
+test('Codex handoff intent ignores CLAUDE_CODE_ENTRYPOINT and honors only durable or driver-owned headless signals', () => {
+  for (const { env, expected } of [
+    { env: { CLAUDE_CODE_ENTRYPOINT: 'print' }, expected: 'visible' },
+    { env: { DEEP_LOOP_HEADLESS: '1', CLAUDE_CODE_ENTRYPOINT: 'cli' }, expected: 'headless' },
+    { env: { DEEP_LOOP_UNATTENDED: 'true', CLAUDE_CODE_ENTRYPOINT: 'cli' }, expected: 'headless' },
+  ]) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-auto-codex-intent-')));
+    const { runId } = initRun(root, {
+      runtime: 'codex', goal: 'g', now: new Date('2026-07-11T00:00:00Z'),
+      env: {}, platform: 'linux', run: () => ({ code: 1 }),
+    });
+    const emitted = emitHandoff(root, runId, {
+      trigger: 'milestone',
+      expect: { owner: runId, generation: 1 },
+      env,
+      now: Date.parse('2026-07-11T00:01:00Z'),
+    });
+    assert.equal(emitted.ok, true);
+    assert.equal(readState(root, runId).data.session_chain.lease.resume_policy, expected);
+  }
 });
 
 // ── Codex-R5B: terminal guard + fresh-fence regression tests ─────────────────

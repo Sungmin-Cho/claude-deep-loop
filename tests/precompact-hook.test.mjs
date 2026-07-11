@@ -8,11 +8,12 @@ import { dirname, join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { runPreCompactHandoff } from '../scripts/hooks-impl/precompact-handoff.mjs';
+import { rollbackAndPause } from '../scripts/lib/respawn.mjs';
 const PROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
-function seed() {
+function seed(runtime = 'claude') {
   const root = mkdtempSync(join(tmpdir(), 'dl-pc-'));
-  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime, goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
   return { root, runId };
 }
 
@@ -87,6 +88,42 @@ test('env DEEP_LOOP_UNATTENDED=1 with spawn_style visible → headless true (isH
   assert.equal(r.headless, true);
 });
 
+test('Codex ignores the Claude entrypoint heuristic when deriving precompact resume policy', async () => {
+  const { root, runId } = seed('codex');
+  const r = await runPreCompactHandoff({}, {
+    root,
+    now: Date.parse('2026-06-24T00:01:00Z'),
+    env: { CLAUDE_CODE_ENTRYPOINT: 'print' },
+  });
+  assert.equal(r.action, 'emitted');
+  assert.equal(r.headless, false);
+  assert.equal(readState(root, runId).data.session_chain.lease.resume_policy, 'visible');
+});
+
+test('Codex still honors an explicit driver marker in precompact mode derivation', async () => {
+  const { root, runId } = seed('codex');
+  const r = await runPreCompactHandoff({}, {
+    root,
+    now: Date.parse('2026-06-24T00:01:00Z'),
+    env: { CLAUDE_CODE_ENTRYPOINT: 'print', DEEP_LOOP_HEADLESS: '1' },
+  });
+  assert.equal(r.action, 'emitted');
+  assert.equal(r.headless, true);
+  assert.equal(readState(root, runId).data.session_chain.lease.resume_policy, 'headless');
+});
+
+test('Codex still honors explicit unattended input in precompact mode derivation', async () => {
+  const { root, runId } = seed('codex');
+  const r = await runPreCompactHandoff({ unattended: true }, {
+    root,
+    now: Date.parse('2026-06-24T00:01:00Z'),
+    env: { CLAUDE_CODE_ENTRYPOINT: 'print' },
+  });
+  assert.equal(r.action, 'emitted');
+  assert.equal(r.headless, true);
+  assert.equal(readState(root, runId).data.session_chain.lease.resume_policy, 'headless');
+});
+
 test('hooks.json declares PreCompact → precompact-handoff.sh', () => {
   const h = JSON.parse(rf(join(PROOT, 'hooks', 'hooks.json'), 'utf8'));
   assert.ok(h.hooks.PreCompact, 'PreCompact event present');
@@ -148,6 +185,31 @@ test('gate-blocked precompact ROLLBACK: reserved child invalidated, respawn-fail
   const events = parseLog(logPath);
   const respawnFailed = events.find(e => e.type === 'respawn-failed');
   assert.ok(respawnFailed, 'event log must contain a respawn-failed event');
+});
+
+test('gate-blocked precompact propagates a terminal rollback race without changing terminal state', async () => {
+  const { root, runId } = seed();
+  const { data } = readState(root, runId);
+  data.circuit_breaker.tripped = true;
+  writeState(root, runId, data);
+
+  let terminalSnapshot;
+  const rollbackFn = (rollbackRoot, rollbackRunId, options) => {
+    const raced = readState(rollbackRoot, rollbackRunId).data;
+    raced.status = 'completed';
+    writeState(rollbackRoot, rollbackRunId, raced);
+    terminalSnapshot = structuredClone(readState(rollbackRoot, rollbackRunId).data);
+    return rollbackAndPause(rollbackRoot, rollbackRunId, options);
+  };
+
+  const r = await runPreCompactHandoff({ unattended: true }, {
+    root,
+    now: Date.parse('2026-06-24T00:01:00Z'),
+    env: {},
+    rollbackFn,
+  });
+  assert.deepEqual(r, { ok: false, action: 'terminal', reason: 'RUN_TERMINAL' });
+  assert.deepEqual(readState(root, runId).data, terminalSnapshot);
 });
 
 function parseLog(path) {

@@ -16,9 +16,9 @@ function eventLog(root, runId) {
   return readFileSync(join(runDir(root, runId), 'event-log.jsonl'), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l));
 }
 
-function freshRun() {
+function freshRun(runtime = 'claude') {
   const root = mkdtempSync(join(tmpdir(), 'dl-comp-'));
-  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime, goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
   const fence = { owner: runId, generation: 1, intent: 'business' };
   return { root, runId, fence };
 }
@@ -171,6 +171,34 @@ test('#1(c): headless + actor=human → ack-rejected event, counter untouched, n
   assert.ok(rej, 'a comprehension-ack-rejected event must be appended (post-audit)');
   assert.equal(rej.data.reason, 'headless-human-ack-forbidden');
   assert.equal(verifyLog(root, runId).ok, true);
+});
+
+test('#1(c): Codex human ack ignores the Claude entrypoint heuristic', () => {
+  const { root, runId, fence } = freshRun('codex');
+  const { id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', expectedArtifacts: ['a'], fence });
+  const r = ack(root, runId, id, {
+    actor: 'human',
+    confirm: true,
+    env: { CLAUDE_CODE_ENTRYPOINT: 'print' },
+    fence,
+  });
+  assert.equal(r.ok, true);
+  assert.equal(readState(root, runId).data.comprehension.episodes_human_reviewed, 1);
+  assert.ok(!eventLog(root, runId).some(e => e.type === 'comprehension-ack-rejected'));
+});
+
+test('#1(c): Codex human ack still rejects an explicit driver marker', () => {
+  const { root, runId, fence } = freshRun('codex');
+  const { id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', expectedArtifacts: ['a'], fence });
+  const r = ack(root, runId, id, {
+    actor: 'human',
+    confirm: true,
+    env: { CLAUDE_CODE_ENTRYPOINT: 'print', DEEP_LOOP_HEADLESS: '1' },
+    fence,
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.rejected, true);
+  assert.equal(readState(root, runId).data.comprehension.episodes_human_reviewed, 0);
 });
 
 // #1(f) (plan-R1 Fix 1): the lib itself enforces confirm/actor BEFORE any mutation, so a CLI-bypass direct call

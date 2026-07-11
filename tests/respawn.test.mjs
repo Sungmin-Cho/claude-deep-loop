@@ -83,6 +83,25 @@ test('isHeadlessInvocation: concrete markers true; interactive/markerless false'
   assert.equal(isHeadlessInvocation(null), false);
 });
 
+test('Codex ignores CLAUDE_CODE_ENTRYPOINT while preserving driver-owned headless markers', () => {
+  assert.equal(isHeadlessInvocation({ CLAUDE_CODE_ENTRYPOINT: 'sdk-py' }, 'codex'), false);
+  assert.equal(isHeadlessInvocation({ CLAUDE_CODE_ENTRYPOINT: 'print' }, 'codex'), false);
+  assert.equal(isHeadlessInvocation({ DEEP_LOOP_UNATTENDED: '1', CLAUDE_CODE_ENTRYPOINT: 'cli' }, 'codex'), true);
+  assert.equal(isHeadlessInvocation({ DEEP_LOOP_HEADLESS: 'true', CLAUDE_CODE_ENTRYPOINT: 'cli' }, 'codex'), true);
+
+  const { root, runId } = seedLauncher({ spawn_style: 'visible', launcher: 'cmux', runtime: 'codex' });
+  const loop = readState(root, runId).data;
+  assert.equal(
+    resolveSpawnMode(loop, { attended: true, env: { CLAUDE_CODE_ENTRYPOINT: 'print' } }),
+    'cmux',
+  );
+  loop.autonomy.spawn_style = 'headless';
+  assert.equal(
+    resolveSpawnMode(loop, { attended: true, env: { CLAUDE_CODE_ENTRYPOINT: 'cli' } }),
+    'headless',
+  );
+});
+
 test('resolveSpawnMode: precedence (headless flag / spawn_style / invocation > visible launcher > interactive)', () => {
   const vis = readState(...Object.values(seedLauncher({ spawn_style: 'visible', launcher: 'cmux' }))).data;
   // explicit headless flag wins
@@ -115,6 +134,53 @@ test('desktop requires attended; else interactive', () => {
 test('existing visible launcher path unchanged', () => {
   const loop = { autonomy: { spawn_style: 'visible' }, session_spawn: { launcher: 'iterm2' } };
   assert.equal(resolveSpawnMode(loop, { attended: true, env: {} }), 'iterm2');
+});
+
+test('respawn rejects an outer/inner mode mismatch before CAS or spawn', () => {
+  const { root, runId } = seedLauncher({ spawn_style: 'headless', launcher: 'cmux' });
+  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });
+  let spawned = 0;
+  const r = respawn(root, runId, {
+    childRunId: h.childRunId,
+    key: h.key,
+    handoffRel: h.handoffRel,
+    attended: true,
+    env: {},
+    expectedMode: 'cmux',
+    now: NOW1,
+    spawnFn: () => { spawned += 1; return { ok: true }; },
+  });
+  assert.deepEqual(r, {
+    ok: false,
+    outcome: 'mode-changed',
+    reason: 'spawn-mode-changed:cmux->headless',
+    childRunId: h.childRunId,
+  });
+  assert.equal(spawned, 0);
+  assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'emitted');
+});
+
+test('respawn rejects a stale caller parent fence before gate, CAS, or spawn', () => {
+  const { root, runId } = seedLauncher({ spawn_style: 'headless', launcher: 'cmux' });
+  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });
+  let spawned = 0;
+  const r = respawn(root, runId, {
+    childRunId: h.childRunId,
+    key: h.key,
+    handoffRel: h.handoffRel,
+    headless: true,
+    expect: { owner: 'STALE', generation: 0 },
+    now: NOW1,
+    spawnFn: () => { spawned += 1; return { ok: true }; },
+  });
+  assert.deepEqual(r, {
+    ok: false,
+    outcome: 'fenced',
+    reason: 'caller-parent-fence-mismatch',
+    childRunId: h.childRunId,
+  });
+  assert.equal(spawned, 0);
+  assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'emitted');
 });
 
 test('spawn_style!=visible → no visible spawn even with launcher present (mode interactive → no-launcher)', () => {

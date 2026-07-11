@@ -2,6 +2,7 @@ import { readState, writeState, withLock } from './state.mjs';
 import { appendAnchored, MUTATION_TURN_FLOOR } from './integrity.mjs';
 import { isHeadlessInvocation } from './respawn.mjs';
 import { leaseCheck } from './lease.mjs';
+import { sessionRuntime } from './runtime.mjs';
 
 export function computeDebt(loop) {
   const c = loop.comprehension || {};
@@ -27,7 +28,8 @@ export function ack(root, runId, episodeId, { actor = 'agent', confirm = false, 
   // lib-authoritative guards — BEFORE any append/counter change (형제 abandonEpisode:78 동형).
   if (!['human', 'agent'].includes(actor)) throw new Error('INVALID_ACTOR: actor must be human|agent');
   if (actor === 'human' && confirm !== true) throw new Error('CONFIRM_REQUIRED: human ack requires confirm (human-only)');
-  const headless = isHeadlessInvocation(env);
+  const runtime = sessionRuntime(readState(root, runId).data);
+  const headless = isHeadlessInvocation(env, runtime);
   const isHuman = actor === 'human';
   if (isHuman && headless) {
     // fail-closed: a headless session cannot self-assert a human review. Append the rejection (never a counter

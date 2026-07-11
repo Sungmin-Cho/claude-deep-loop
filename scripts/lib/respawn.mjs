@@ -32,12 +32,14 @@ export function respawnGate(loop, { now = Date.now() } = {}) {
 // `headless:true`. PROVISIONAL signal (spec §14-5 open question): the exact `CLAUDE_CODE_ENTRYPOINT` value for
 // `claude -p` print mode is not yet pinned, so we recognize the concrete markers we DO control —
 // `DEEP_LOOP_UNATTENDED` (set by the headless driver on the child process) / `DEEP_LOOP_HEADLESS` — plus a
-// conservative entrypoint heuristic (sdk*/print/headless/non-interactive). FAIL-OPEN to false when
-// indeterminate: false + no positive launcher → mode 'interactive' → no-launcher → pause (fail-closed).
-export function isHeadlessInvocation(env = process.env) {
+// Claude-only conservative entrypoint heuristic (sdk*/print/headless/non-interactive). Codex ignores that
+// Claude-owned variable. FAIL-OPEN to false when indeterminate: false + no positive launcher → mode
+// 'interactive' → no-launcher → pause (fail-closed).
+export function isHeadlessInvocation(env = process.env, runtime = 'claude') {
   if (!env || typeof env !== 'object') return false;
   const truthy = (v) => v === '1' || v === 'true' || v === true;
   if (truthy(env.DEEP_LOOP_UNATTENDED) || truthy(env.DEEP_LOOP_HEADLESS)) return true;
+  if (runtime === 'codex') return false;
   const ep = String(env.CLAUDE_CODE_ENTRYPOINT || '').toLowerCase();
   if (!ep || ep === 'cli') return false;   // interactive TUI (or unset) → not headless
   if (ep.startsWith('sdk') || ep.includes('print') || ep.includes('headless') || ep.includes('noninteractive') || ep.includes('non-interactive')) return true;
@@ -50,7 +52,8 @@ export function isHeadlessInvocation(env = process.env) {
 // attended===true (Claude Desktop deeplink transport). A visible launcher mode requires spawn_style==='visible'
 // AND attended===true AND a real (non-'none') detected launcher; otherwise 'interactive'.
 export function resolveSpawnMode(loop, { headless = false, attended = false, env = process.env } = {}) {
-  if (headless || loop?.autonomy?.spawn_style === 'headless' || isHeadlessInvocation(env)) return 'headless';
+  const runtime = sessionRuntime(loop);
+  if (headless || loop?.autonomy?.spawn_style === 'headless' || isHeadlessInvocation(env, runtime)) return 'headless';
   if (loop?.autonomy?.spawn_style === 'desktop' && attended === true) return 'desktop';
   const launcher = loop?.session_spawn?.launcher;
   if (loop?.autonomy?.spawn_style === 'visible' && attended === true && launcher && launcher !== 'none') return launcher;
@@ -58,8 +61,8 @@ export function resolveSpawnMode(loop, { headless = false, attended = false, env
 }
 
 function defaultSpawn() {
-  // 실제 spawn은 spawn-driver 의 visibleSpawn/headlessSpawn. 단위 테스트는 spawnFn 주입.
-  throw new Error('SPAWN_NOT_WIRED: provide spawnFn (visible=visibleSpawn, headless=headlessSpawn)');
+  // Production callers inject either visibleSpawn or the shared headless host's measured closure.
+  throw new Error('SPAWN_NOT_WIRED: provide a synchronous spawnFn');
 }
 function defaultSleep(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
 
@@ -165,6 +168,8 @@ export function respawn(root, runId, {
   now = Date.now(), spawnFn = defaultSpawn, pollLease, env = process.env,
   sleep = defaultSleep, pollIntervalMs = 1500,
   platform = process.platform, desktopProbe = defaultDesktopProbe,
+  codexExecutable = null, deepLoopRoot = null,
+  expect = null, expectedMode = null,
 } = {}) {
   reconcileBudget(root, runId);                       // 무결성 fail-stop (탐지 시 throw)
   const { data: loop } = readState(root, runId);
@@ -174,6 +179,10 @@ export function respawn(root, runId, {
   const generation = lease.generation;
   const parentOwner = lease.owner_run_id;
   const poll = pollLease || (() => readState(root, runId).data.session_chain.lease);
+
+  if (expect && (lease.owner_run_id !== expect.owner || lease.generation !== expect.generation)) {
+    return { ok: false, outcome: 'fenced', reason: 'caller-parent-fence-mismatch', childRunId };
+  }
 
   // v1.6 (spec §2.3-5, r5 P2-a): terminal fast-return — 모든 분기(특히 spawned 재진입 :Codex r5 A)보다 앞.
   // legacy terminal+spawned는 재진입 분기가 already-spawned 성공/preservePause(paused 강등)로 새고,
@@ -200,6 +209,9 @@ export function respawn(root, runId, {
     //     is the normal idempotent-retry / concurrent double-spawn-guard contract — keep the plain no-op (no
     //     spurious pause). An already-paused run was handled by a prior preserve → idempotent no-op too.
     const reMode = resolveSpawnMode(loop, { headless, attended, env });
+    if (expectedMode != null && reMode !== expectedMode) {
+      return { ok: false, outcome: 'mode-changed', reason: `spawn-mode-changed:${expectedMode}->${reMode}`, childRunId };
+    }
     if (reMode === 'headless' || reMode === 'interactive' || loop.status === 'paused') {
       return { ok: true, outcome: 'already-spawned', reason: 'idempotent', childRunId };
     }
@@ -235,6 +247,9 @@ export function respawn(root, runId, {
 
   // ── mode selection (spec §7) ────────────────────────────────────────────────
   const mode = resolveSpawnMode(loop, { headless, attended, env });
+  if (expectedMode != null && mode !== expectedMode) {
+    return { ok: false, outcome: 'mode-changed', reason: `spawn-mode-changed:${expectedMode}->${mode}`, childRunId };
+  }
   if (mode === 'interactive') {
     // No auto-spawn possible; gate already passed → PRESERVE the emitted handoff (do NOT rollback) — the
     // skill pauses via `deep-loop pause --mode preserve`, keeping the reserved child for a human/visible-continue
@@ -263,6 +278,7 @@ export function respawn(root, runId, {
       launcherSocket: loop.session_spawn?.launcher_socket,
       platform, desktopTarget: dt && dt.ok ? dt.argvTarget : null,
       model: loop.autonomy?.session_model ?? null, effort: loop.autonomy?.session_effort ?? null,
+      codexExecutable, deepLoopRoot,
     });
     _entry = _cmds[mode];
   } catch (buildErr) {

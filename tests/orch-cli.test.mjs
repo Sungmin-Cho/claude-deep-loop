@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import { canonicalProjectRoot, projectRootDigest } from '../scripts/lib/project-root.mjs';
+import { emitHandoff } from '../scripts/lib/handoff.mjs';
 
 const CLI = join(process.cwd(), 'scripts', 'deep-loop.mjs');
 function run(root, args) {
@@ -509,6 +510,53 @@ test('respawn --dry-run returns JSON with ok field', () => {
   const { root } = seed();
   const out = JSON.parse(run(root, ['respawn', '--dry-run']));
   assert.ok('ok' in out);
+});
+
+test('explicit CLI Codex --headless overrides visible handoff intent and cannot bypass preflight', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-cli-headless-host-')));
+  const { runId } = initRun(root, {
+    runtime: 'codex', goal: 'g', now: new Date('2026-07-11T00:00:00Z'),
+    env: {}, platform: 'linux', run: () => ({ code: 1 }),
+  });
+  const { data } = readState(root, runId);
+  data.autonomy.spawn_style = 'visible';
+  writeState(root, runId, data);
+  const handoff = emitHandoff(root, runId, {
+    trigger: 'milestone',
+    resumePolicy: 'visible',
+    expect: { owner: runId, generation: 1 },
+    now: Date.parse('2026-07-11T00:01:00Z'),
+  });
+  assert.equal(handoff.ok, true);
+
+  const output = JSON.parse(run(root, [
+    'respawn',
+    '--headless',
+    '--owner', runId,
+    '--generation', '1',
+    '--now', '2026-07-11T00:02:00Z',
+  ]));
+  assert.deepEqual(output, {
+    mode: 'headless',
+    ok: false,
+    action: 'preflight-failed',
+    reason: 'executable-invalid',
+  });
+  const after = readState(root, runId).data;
+  assert.equal(after.status, 'paused');
+  assert.equal(after.pause_reason, 'executable-invalid');
+  assert.equal(after.session_chain.lease.handoff_phase, 'emitted');
+  assert.equal(after.session_chain.lease.handoff_child_run_id, handoff.childRunId);
+  assert.equal(
+    readFileSync(CLI, 'utf8').includes("from './lib/headless-host.mjs'"),
+    true,
+  );
+});
+
+test('CLI respawn threads an explicit --timeout-ms into the shared headless host', () => {
+  const source = readFileSync(CLI, 'utf8');
+  assert.match(source, /['"]timeout-ms['"]/);
+  assert.match(source, /driveHeadlessRun\(\{[^}]*timeoutMs/s);
 });
 
 // Fix 6: workstream new with --generation flag but no value exits nonzero (status 3)
