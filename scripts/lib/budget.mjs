@@ -1,4 +1,13 @@
-import { appendEvent, lastLogHead, readLines, recomputeSpent, verifyLog, verifyHead, validCost } from './integrity.mjs';
+import {
+  appendEvent,
+  lastLogHead,
+  MUTATION_TURN_FLOOR,
+  readLines,
+  recomputeSpent,
+  verifyLog,
+  verifyHead,
+  validCost,
+} from './integrity.mjs';
 import { readState, writeState, withLock } from './state.mjs';
 import { leaseCheck } from './lease.mjs';
 import { sessionRuntime } from './runtime.mjs';
@@ -7,7 +16,7 @@ import { canonicalProjectRoot, projectRootDigest } from './project-root.mjs';
 
 // #3: re-exported from integrity.mjs (the floor mechanism's home) so call sites/tests can import it from budget.mjs
 // while state.mjs imports it directly from integrity.mjs (no state↔budget cycle).
-export { MUTATION_TURN_FLOOR } from './integrity.mjs';
+export { MUTATION_TURN_FLOOR };
 
 function safeTokenCount(value) {
   return Number.isSafeInteger(value) && value >= 0;
@@ -43,6 +52,13 @@ function hasCanonicalEventData(data, requiredKeys) {
   for (const key of OPTIONAL_MEASURED_EVENT_KEYS) {
     if (Object.hasOwn(data, key)) expected.add(key);
   }
+  const actual = Object.keys(data);
+  return actual.length === expected.size && actual.every(key => expected.has(key));
+}
+
+function hasExactEventData(data, requiredKeys) {
+  if (data == null || typeof data !== 'object' || Array.isArray(data)) return false;
+  const expected = new Set(requiredKeys);
   const actual = Object.keys(data);
   return actual.length === expected.size && actual.every(key => expected.has(key));
 }
@@ -548,6 +564,16 @@ function sameProcessIdentity(event, exact) {
     && JSON.stringify(event.data?.process_context) === JSON.stringify(exact.context);
 }
 
+// An exact event admitted by this writer leaves the stored budget reconciled with the verified cost log.
+// This durable footprint distinguishes idempotent history from an append-only lookalike without trusting clocks.
+function storedBudgetMatchesLines(loop, lines) {
+  const spent = lines.filter(event => event.type === 'cost').reduce((total, event) => ({
+    turns: total.turns + event.data.turns,
+    tokens: total.tokens + event.data.tokens,
+  }), { turns: 0, tokens: 0 });
+  return loop.budget?.spent === spent.turns && loop.budget?.tokens_spent === spent.tokens;
+}
+
 function exactSession(loop, owner) {
   const session = (loop.session_chain?.sessions || []).find(item => item.run_id === owner);
   if (!session || !Number.isSafeInteger(session.turns) || session.turns < 0) {
@@ -556,7 +582,7 @@ function exactSession(loop, owner) {
   return session;
 }
 
-function makerOrigin(loop, exact, lines) {
+function makerContext(loop, exact, lines) {
   const context = exact.context;
   const parent = exactSession(loop, context.parent_owner);
   const child = exactSession(loop, context.child_run_id);
@@ -567,6 +593,10 @@ function makerOrigin(loop, exact, lines) {
     && event.data?.child_run_id === context.child_run_id
     && event.data?.key === context.handoff_key);
   if (handoffs.length !== 1) throw new Error('PROCESS_ACCOUNTING_CONTEXT_MISMATCH');
+  return { context, parent, child };
+}
+
+function acquiredMakerContext(context, parent, child) {
   const acquired = typeof child.started_at === 'string'
     && Number.isFinite(Date.parse(child.started_at))
     && child.outcome !== 'failed_launch'
@@ -578,9 +608,40 @@ function makerOrigin(loop, exact, lines) {
     || (parent.superseded_by !== context.child_run_id && child.outcome !== 'failed_launch'))) {
     throw new Error('PROCESS_ACCOUNTING_CONTEXT_MISMATCH');
   }
+  return acquired;
+}
+
+function makerOrigin(loop, exact, lines) {
+  const { context, parent, child } = makerContext(loop, exact, lines);
+  const acquired = acquiredMakerContext(context, parent, child);
   return acquired
     ? { session: child, owner: context.child_run_id, generation: context.child_generation, acquired: true }
     : { session: parent, owner: context.parent_owner, generation: context.parent_generation, acquired: false };
+}
+
+function historicalMakerOrigin(loop, exact, event, lines) {
+  const { context, parent, child } = makerContext(loop, exact, lines);
+  const acquired = acquiredMakerContext(context, parent, child);
+  if (event.data?.owner === context.parent_owner
+    && event.data?.generation === context.parent_generation) {
+    return {
+      session: parent,
+      owner: context.parent_owner,
+      generation: context.parent_generation,
+      acquired: false,
+    };
+  }
+  if (event.data?.owner === context.child_run_id
+    && event.data?.generation === context.child_generation) {
+    if (!acquired) throw new Error('PROCESS_ACCOUNTING_MISMATCH');
+    return {
+      session: child,
+      owner: context.child_run_id,
+      generation: context.child_generation,
+      acquired: true,
+    };
+  }
+  throw new Error('PROCESS_ACCOUNTING_MISMATCH');
 }
 
 function checkerOrigin(loop, exact) {
@@ -668,10 +729,107 @@ function verifyTerminalCheckerSettlement(loop, exact, origin, lines) {
   if (forbidden) throw new Error('PROCESS_ACCOUNTING_TERMINAL_PROOF_MISSING');
 }
 
+function verifyStoppedPreImportCheckerSettlement(loop, exact, origin, lines) {
+  const context = exact.context;
+  const lease = loop.session_chain?.lease || {};
+  const checker = (loop.episodes || []).find(
+    episode => episode.id === context.checker_episode_id,
+  );
+  const claim = checker?.review_claim;
+  if (loop.status !== 'stopped'
+    || lease.owner_run_id !== origin.owner || lease.generation !== origin.generation
+    || lease.state !== 'active'
+    || checker?.status !== 'in_progress' || checker.review_source != null
+    || !hasExactEventData(claim, [
+      'run_id',
+      'reviewer_id',
+      'checker_episode_id',
+      'target_maker',
+      'attempt_id',
+      'workstream_id',
+      'point',
+      'project_root',
+      'runtime',
+      'lease_owner',
+      'lease_generation',
+      'artifacts',
+    ])
+    || claim.run_id !== loop.run_id
+    || claim.runtime !== 'codex'
+    || claim.project_root !== exact.__root
+    || claim.checker_episode_id !== context.checker_episode_id
+    || claim.target_maker !== context.target_maker
+    || claim.attempt_id !== context.attempt_id
+    || claim.lease_owner !== origin.owner
+    || claim.lease_generation !== origin.generation
+    || !Array.isArray(claim.artifacts)) {
+    throw new Error('PROCESS_ACCOUNTING_TERMINAL_PROOF_MISSING');
+  }
+
+  const claimIdentityEvents = lines.filter(event => event.type === 'independent-review-claimed'
+    && event.data?.episode_id === context.checker_episode_id
+    && event.data?.attempt_id === context.attempt_id);
+  const claimEvent = claimIdentityEvents[0];
+  if (claimIdentityEvents.length !== 1
+    || !hasExactEventData(claimEvent?.data, [
+      'episode_id',
+      'attempt_id',
+      'reviewer_id',
+      'target_maker',
+      'workstream_id',
+      'point',
+      'artifacts',
+    ])
+    || claimEvent.data.reviewer_id !== claim.reviewer_id
+    || claimEvent.data.target_maker !== claim.target_maker
+    || claimEvent.data.workstream_id !== claim.workstream_id
+    || claimEvent.data.point !== claim.point
+    || JSON.stringify(claimEvent.data.artifacts) !== JSON.stringify(claim.artifacts)) {
+    throw new Error('PROCESS_ACCOUNTING_TERMINAL_PROOF_MISSING');
+  }
+
+  const finishes = lines.filter(event => event.type === 'finish');
+  const finish = finishes[0];
+  const finalReport = Object.hasOwn(loop.termination || {}, 'final_report')
+    ? loop.termination.final_report : null;
+  if (finishes.length !== 1
+    || !hasExactEventData(finish?.data, ['status', 'reportRel'])
+    || finish.data.status !== 'stopped'
+    || finish.data.reportRel !== finalReport
+    || claimEvent.seq >= finish.seq
+    || typeof loop.termination?.finished_at !== 'string'
+    || !Number.isFinite(Date.parse(loop.termination.finished_at))) {
+    throw new Error('PROCESS_ACCOUNTING_TERMINAL_PROOF_MISSING');
+  }
+
+  const finishFloor = lines.find(event => event.seq === finish.seq + 1);
+  if (finishFloor?.type !== 'cost'
+    || !hasExactEventData(finishFloor.data, [
+      'turns', 'tokens', 'auto_floor', 'for', 'owner', 'generation',
+    ])
+    || finishFloor.data.turns !== MUTATION_TURN_FLOOR
+    || finishFloor.data.tokens !== 0
+    || finishFloor.data.auto_floor !== true
+    || finishFloor.data.for !== 'finish'
+    || finishFloor.data.owner !== origin.owner
+    || finishFloor.data.generation !== origin.generation) {
+    throw new Error('PROCESS_ACCOUNTING_TERMINAL_PROOF_MISSING');
+  }
+
+  const outcomes = lines.filter(event => event.type === 'review-outcome'
+    && event.data?.episodeId === context.checker_episode_id
+    && event.data?.attempt_id === context.attempt_id);
+  const forbiddenAfterFinish = lines.some(event => event.seq > finish.seq
+    && event !== finishFloor);
+  if (outcomes.length !== 0 || forbiddenAfterFinish) {
+    throw new Error('PROCESS_ACCOUNTING_TERMINAL_PROOF_MISSING');
+  }
+}
+
 // Worker-owned maker/checker receipts are immutable before the trusted sync facade can return success.
 // Settlement is authorized by the current accounting fence, but charges the context-derived origin session.
-// The only terminal exception remains the exact acquired maker with the same handoff + finish proof as the
-// legacy terminal path. This function cannot alter proof, status, lease, or any caller-selected event shape.
+// Terminal exceptions are limited to the exact acquired maker with handoff + finish proof and the exact stopped,
+// pre-import checker with claim + finish proof. Neither branch can alter proof, status, lease, or event shape.
 export function settleCodexProcessCost(root, runId, { receipt, fence } = {}) {
   if (receipt?.contract === CODEX_PREFLIGHT_RECEIPT_CONTRACT) {
     return settleCodexPreflightCost(root, runId, { receipt, fence });
@@ -695,9 +853,6 @@ export function settleCodexProcessCost(root, runId, { receipt, fence } = {}) {
     const anchored = verifyHead(root, runId, loop.event_log_head);
     if (!anchored.ok) throw new Error(`LOG_TAMPERED: ${anchored.errors.join('; ')}`);
     const lines = readLines(root, runId);
-    const origin = exact.process_kind === 'maker'
-      ? makerOrigin(loop, exact, lines)
-      : checkerOrigin(loop, exact);
     const receiptEvents = lines.filter(event => event.type === 'cost'
       && event.data?.process_receipt_id === exact.receipt_id);
     const identityEvents = lines.filter(event => sameProcessIdentity(event, exact));
@@ -706,6 +861,12 @@ export function settleCodexProcessCost(root, runId, { receipt, fence } = {}) {
       throw new Error('PROCESS_ACCOUNTING_DUPLICATE');
     }
     if (receiptEvents.length === 1) {
+      if (!storedBudgetMatchesLines(loop, lines)) {
+        throw new Error('PROCESS_ACCOUNTING_MISMATCH');
+      }
+      const origin = exact.process_kind === 'maker'
+        ? historicalMakerOrigin(loop, exact, receiptEvents[0], lines)
+        : checkerOrigin(loop, exact);
       if (identityEvents[0] !== receiptEvents[0]
         || !exactProcessCostEvent(receiptEvents[0], exact, origin, lines)) {
         throw new Error('PROCESS_ACCOUNTING_MISMATCH');
@@ -714,13 +875,26 @@ export function settleCodexProcessCost(root, runId, { receipt, fence } = {}) {
     }
     if (identityEvents.length === 1) throw new Error('PROCESS_ACCOUNTING_MISMATCH');
 
+    const origin = exact.process_kind === 'maker'
+      ? makerOrigin(loop, exact, lines)
+      : checkerOrigin(loop, exact);
+
     const authorized = leaseCheck(loop, fence);
     if (!authorized.ok) {
       if (authorized.reason !== 'RUN_TERMINAL') {
         throw new Error(`LEASE_FENCED: ${authorized.reason}`);
       }
       if (exact.process_kind === 'maker') verifyTerminalMakerSettlement(loop, exact, origin, lines);
-      else if (exact.process_kind === 'checker') verifyTerminalCheckerSettlement(loop, exact, origin, lines);
+      else if (exact.process_kind === 'checker') {
+        const checker = (loop.episodes || []).find(
+          episode => episode.id === exact.context.checker_episode_id,
+        );
+        if (loop.status === 'stopped' && checker?.status === 'in_progress') {
+          verifyStoppedPreImportCheckerSettlement(loop, exact, origin, lines);
+        } else {
+          verifyTerminalCheckerSettlement(loop, exact, origin, lines);
+        }
+      }
       else throw new Error(`LEASE_FENCED: ${authorized.reason}`);
     }
     const { tf, tk } = trailingFloor(lines, origin.owner, origin.generation);

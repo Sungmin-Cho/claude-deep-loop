@@ -18,7 +18,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { ensureCodexPreflight } from '../scripts/lib/codex-preflight.mjs';
-import { settleCodexPreflightCost } from '../scripts/lib/budget.mjs';
+import { settleCodexPreflightCost, settleCodexProcessCost } from '../scripts/lib/budget.mjs';
 import { importReviewViaCli, runIndependentCodexChecker } from '../scripts/lib/codex-checker.mjs';
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { driveHeadlessRun } from '../scripts/lib/headless-host.mjs';
@@ -1057,6 +1057,83 @@ test('a real checker receipt survives a host crash after worker return and settl
   const state = readState(h.root, h.runId).data;
   assert.equal(state.episodes.find(episode => episode.id === review.checkerId).status, 'in_progress');
   assert.equal(readLines(h.root, h.runId).filter(event => event.type === 'review-outcome').length, 0);
+});
+
+test('a pre-import checker receipt settles after a human stopped finish without proof or respawn', () => {
+  const h = createHostHarness();
+  assert.equal(h.runMaker().result.action, 'resumed');
+  const review = seedIndependentChecker(h);
+  let checkerWorkers = 0;
+  assert.throws(() => driveHeadlessRun({
+    ...h.baseOptions,
+    expect: { owner: h.handoff.childRunId, generation: 2 },
+    now: NOW1 + 14_100,
+    timeoutMs: 20_000,
+    attemptIdFactory: () => 'attempt-pre-import-checker-stopped',
+    checkerRunFn: options => {
+      const result = runIndependentCodexChecker({ ...options, runProcess: h.runThroughWorker });
+      checkerWorkers += 1;
+      assert.equal(result.ok, true, JSON.stringify(result));
+      return new Proxy(result, {
+        get(target, property, receiver) {
+          if (property === 'reason') throw new Error('INJECTED_CRASH_BEFORE_CHECKER_IMPORT');
+          return Reflect.get(target, property, receiver);
+        },
+      });
+    },
+  }), /INJECTED_CRASH_BEFORE_CHECKER_IMPORT/);
+  assert.equal(checkerWorkers, 1);
+  const afterCrash = readState(h.root, h.runId).data;
+  const crashedChecker = afterCrash.episodes.find(episode => episode.id === review.checkerId);
+  assert.equal(crashedChecker.status, 'in_progress');
+  assert.equal(crashedChecker.review_source, undefined);
+  assert.equal(readLines(h.root, h.runId).filter(event => event.type === 'review-outcome').length, 0);
+  const receiptDir = join(runDir(h.root, h.runId), 'preflight', 'process-receipts');
+  assert.equal(readdirSync(receiptDir).filter(name => name.endsWith('-checker.json')).length, 1);
+
+  finishRun(h.root, h.runId, {
+    status: 'stopped',
+    confirm: true,
+    proof: { human_reason: 'stop after durable pre-import checker receipt' },
+    fence: { owner: h.handoff.childRunId, generation: 2, intent: 'business' },
+    now: NOW1 + 14_200,
+  });
+
+  let checkerRetries = 0;
+  let accountingError = null;
+  const recovered = driveHeadlessRun({
+    ...h.baseOptions,
+    expect: { owner: h.handoff.childRunId, generation: 2 },
+    now: NOW1 + 14_300,
+    timeoutMs: 20_000,
+    settleProcessCostFn: (...args) => {
+      try {
+        return settleCodexProcessCost(...args);
+      } catch (error) {
+        accountingError = String(error?.message || error);
+        throw error;
+      }
+    },
+    checkerRunFn: () => {
+      checkerRetries += 1;
+      throw new Error('a stopped pre-import checker must never respawn');
+    },
+  });
+
+  assert.equal(accountingError, null, accountingError);
+  assert.deepEqual(recovered, { ok: false, action: 'terminal', reason: 'RUN_TERMINAL' });
+  assert.equal(checkerRetries, 0);
+  assert.equal(h.calls().filter(call => call.kind === 'checker').length, 1);
+  assert.equal(readdirSync(receiptDir).filter(name => name.endsWith('-checker.json')).length, 0);
+  const state = readState(h.root, h.runId).data;
+  const checker = state.episodes.find(episode => episode.id === review.checkerId);
+  assert.equal(state.status, 'stopped');
+  assert.equal(checker.status, 'in_progress');
+  assert.equal(checker.review_source, undefined);
+  assert.equal(readLines(h.root, h.runId).filter(event => event.type === 'review-outcome').length, 0);
+  assert.equal(readLines(h.root, h.runId).filter(
+    event => event.data?.process_kind === 'checker',
+  ).length, 1);
 });
 
 test('a real checker receipt settles after an exact imported review is terminally stopped at the accounting boundary', () => {

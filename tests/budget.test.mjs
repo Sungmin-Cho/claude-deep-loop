@@ -585,6 +585,89 @@ test('maker process receipts derive parent versus acquired-child origin and retr
   }
 });
 
+test('maker process receipt retry remains an exact no-op after late acquisition', () => {
+  const fixture = makerProcessReceiptFixture();
+  assert.deepEqual(settleCodexProcessCost(fixture.root, fixture.runId, {
+    receipt: fixture.receipt,
+    fence: fixture.fence,
+  }), { ok: true, recorded: true, reason: 'recorded' });
+  const initialProcessCosts = readLines(fixture.root, fixture.runId).filter(
+    event => event.data?.process_receipt_id === fixture.receipt.receipt_id,
+  );
+  assert.equal(initialProcessCosts.length, 1);
+  assert.equal(initialProcessCosts[0].data.owner, fixture.runId);
+  assert.equal(initialProcessCosts[0].data.generation, 1);
+
+  assert.equal(acquireLease(fixture.root, fixture.runId, {
+    owner: fixture.handoff.childRunId,
+    expectGeneration: 1,
+    runtime: 'codex',
+    now: Date.parse(initialProcessCosts[0].ts) + 1,
+  }).ok, true);
+  const statePath = join(runDir(fixture.root, fixture.runId), 'loop.json');
+  const logPath = join(runDir(fixture.root, fixture.runId), 'event-log.jsonl');
+  const stateBeforeRetry = readFileSync(statePath, 'utf8');
+  const logBeforeRetry = readFileSync(logPath, 'utf8');
+  const currentFence = {
+    owner: fixture.handoff.childRunId,
+    generation: 2,
+    intent: 'accounting',
+  };
+
+  assert.deepEqual(settleCodexProcessCost(fixture.root, fixture.runId, {
+    receipt: fixture.receipt,
+    fence: currentFence,
+  }), { ok: true, recorded: false, reason: 'already-recorded' });
+  assert.equal(readFileSync(statePath, 'utf8'), stateBeforeRetry);
+  assert.equal(readFileSync(logPath, 'utf8'), logBeforeRetry);
+  const processCosts = readLines(fixture.root, fixture.runId).filter(
+    event => event.data?.process_receipt_id === fixture.receipt.receipt_id,
+  );
+  assert.equal(processCosts.length, 1);
+  assert.equal(processCosts[0].data.owner, fixture.runId);
+  assert.equal(processCosts[0].data.generation, 1);
+  assert.throws(() => settleCodexProcessCost(fixture.root, fixture.runId, {
+    receipt: fixture.receipt,
+    fence: fixture.fence,
+  }), /LEASE_FENCED: owner-mismatch/);
+});
+
+test('maker process receipt retry remains exact after a backdated late acquisition', () => {
+  const fixture = makerProcessReceiptFixture();
+  assert.deepEqual(settleCodexProcessCost(fixture.root, fixture.runId, {
+    receipt: fixture.receipt,
+    fence: fixture.fence,
+  }), { ok: true, recorded: true, reason: 'recorded' });
+  const processCost = readLines(fixture.root, fixture.runId).find(
+    event => event.data?.process_receipt_id === fixture.receipt.receipt_id,
+  );
+  assert.equal(processCost.data.owner, fixture.runId);
+  assert.equal(acquireLease(fixture.root, fixture.runId, {
+    owner: fixture.handoff.childRunId,
+    expectGeneration: 1,
+    runtime: 'codex',
+    now: Date.parse(processCost.ts) - 60_000,
+  }).ok, true);
+  const statePath = join(runDir(fixture.root, fixture.runId), 'loop.json');
+  const logPath = join(runDir(fixture.root, fixture.runId), 'event-log.jsonl');
+  const stateBeforeRetry = readFileSync(statePath, 'utf8');
+  const logBeforeRetry = readFileSync(logPath, 'utf8');
+
+  assert.deepEqual(settleCodexProcessCost(fixture.root, fixture.runId, {
+    receipt: fixture.receipt,
+    fence: {
+      owner: fixture.handoff.childRunId,
+      generation: 2,
+      intent: 'accounting',
+    },
+  }), { ok: true, recorded: false, reason: 'already-recorded' });
+  assert.equal(readFileSync(statePath, 'utf8'), stateBeforeRetry);
+  assert.equal(readFileSync(logPath, 'utf8'), logBeforeRetry);
+  assert.equal(readLines(fixture.root, fixture.runId).filter(
+    event => event.data?.process_receipt_id === fixture.receipt.receipt_id,
+  ).length, 1);
+});
+
 test('an acquired maker process receipt has only the existing handoff-and-finish-bound terminal carve-out', () => {
   const fixture = makerProcessReceiptFixture({ acquire: true });
   finishRun(fixture.root, fixture.runId, {
@@ -795,7 +878,7 @@ function checkerProcessReceiptFixture({ originOwner, originGeneration } = {}) {
     attempt_id: 'attempt-1',
     workstream_id: 'ws-1',
     point: 'implementation',
-    project_root: root,
+    project_root: readState(root, runId).data.project.root,
     runtime: 'codex',
     lease_owner: runId,
     lease_generation: 1,
@@ -842,6 +925,87 @@ function checkerProcessReceiptFixture({ originOwner, originGeneration } = {}) {
   };
 }
 
+function checkerClaimEventData(claim) {
+  return {
+    episode_id: claim.checker_episode_id,
+    attempt_id: claim.attempt_id,
+    reviewer_id: claim.reviewer_id,
+    target_maker: claim.target_maker,
+    workstream_id: claim.workstream_id,
+    point: claim.point,
+    artifacts: claim.artifacts,
+  };
+}
+
+function appendCheckerClaimEvent(fixture, overrides = {}) {
+  appendAnchored(fixture.root, fixture.runId, {
+    type: 'independent-review-claimed',
+    data: { ...checkerClaimEventData(fixture.claim), ...overrides },
+  });
+}
+
+function stopPreImportCheckerFixture({ claimEvents = 1, originOwner, originGeneration } = {}) {
+  const fixture = checkerProcessReceiptFixture({ originOwner, originGeneration });
+  for (let i = 0; i < claimEvents; i += 1) appendCheckerClaimEvent(fixture);
+  finishRun(fixture.root, fixture.runId, {
+    status: 'stopped',
+    confirm: true,
+    proof: { human_reason: 'stopped pre-import checker fixture' },
+    fence: { owner: fixture.runId, generation: 1, intent: 'business' },
+    now: Date.parse('2026-07-12T00:03:00.000Z'),
+  });
+  return fixture;
+}
+
+function setManualTerminal(fixture, {
+  status = 'stopped',
+  finishFloor = 'correct',
+  postFinishEvent = null,
+  claimAfterFinish = false,
+} = {}) {
+  appendAnchored(fixture.root, fixture.runId, {
+    type: 'finish',
+    data: { status, reportRel: null },
+  }, undefined, undefined, finishFloor === 'correct' ? { floor: MUTATION_TURN_FLOOR } : {});
+  if (finishFloor === 'wrong') {
+    appendAnchored(fixture.root, fixture.runId, {
+      type: 'cost',
+      data: {
+        turns: MUTATION_TURN_FLOOR,
+        tokens: 0,
+        auto_floor: true,
+        for: 'finish',
+        owner: 'OTHER-SESSION',
+        generation: 1,
+      },
+    });
+  }
+  if (claimAfterFinish) appendCheckerClaimEvent(fixture);
+  if (postFinishEvent) appendAnchored(fixture.root, fixture.runId, postFinishEvent);
+  const { data } = readState(fixture.root, fixture.runId);
+  data.status = status;
+  data.termination.finished_at = '2026-07-12T00:03:00.000Z';
+  if (finishFloor === 'wrong') {
+    data.budget.spent += MUTATION_TURN_FLOOR;
+    data.session_chain.sessions.find(session => session.run_id === 'OTHER-SESSION').turns += MUTATION_TURN_FLOOR;
+  }
+  writeState(fixture.root, fixture.runId, data);
+  return fixture;
+}
+
+function assertProcessSettlementRejectsWithoutWrites(fixture, error, fence = fixture.fence) {
+  const statePath = join(runDir(fixture.root, fixture.runId), 'loop.json');
+  const logPath = join(runDir(fixture.root, fixture.runId), 'event-log.jsonl');
+  const stateBefore = readFileSync(statePath, 'utf8');
+  const logBefore = readFileSync(logPath, 'utf8');
+  assert.throws(() => settleCodexProcessCost(fixture.root, fixture.runId, {
+    receipt: fixture.receipt,
+    fence,
+  }), error);
+  assert.equal(readFileSync(statePath, 'utf8'), stateBefore);
+  assert.equal(readFileSync(logPath, 'utf8'), logBefore);
+}
+
 test('checker process receipt origin must equal the immutable review claim lease', () => {
   const fixture = checkerProcessReceiptFixture({
     originOwner: 'OTHER-SESSION',
@@ -857,6 +1021,179 @@ test('checker process receipt origin must equal the immutable review claim lease
   }), /PROCESS_ACCOUNTING_CONTEXT_MISMATCH/);
   assert.equal(readFileSync(statePath, 'utf8'), stateBefore);
   assert.deepEqual(readLines(root, runId), logBefore);
+});
+
+test('stopped pre-import checker settlement rejects malformed claim, attempt, target, and origin', () => {
+  for (const [label, fixture, mutate] of [
+    ['claim', stopPreImportCheckerFixture(), checker => { checker.review_claim.point = 'changed'; }],
+    ['attempt', stopPreImportCheckerFixture(), checker => { checker.attempt_id = 'attempt-other'; }],
+    ['target', stopPreImportCheckerFixture(), checker => { checker.target_maker = 'maker-other'; }],
+    ['origin', stopPreImportCheckerFixture({
+      originOwner: 'OTHER-SESSION', originGeneration: 1,
+    }), () => {}],
+  ]) {
+    const { data } = readState(fixture.root, fixture.runId);
+    mutate(data.episodes.find(episode => episode.id === fixture.claim.checker_episode_id));
+    writeState(fixture.root, fixture.runId, data);
+    assertProcessSettlementRejectsWithoutWrites(
+      fixture,
+      /PROCESS_ACCOUNTING_CONTEXT_MISMATCH/,
+    );
+    assert.equal(readState(fixture.root, fixture.runId).data.status, 'stopped', label);
+  }
+});
+
+test('stopped pre-import checker settlement requires exactly one matching claim before finish', () => {
+  for (const [label, fixture] of [
+    ['missing', stopPreImportCheckerFixture({ claimEvents: 0 })],
+    ['duplicate', stopPreImportCheckerFixture({ claimEvents: 2 })],
+    ['after-finish', setManualTerminal(checkerProcessReceiptFixture(), { claimAfterFinish: true })],
+  ]) {
+    assertProcessSettlementRejectsWithoutWrites(
+      fixture,
+      /PROCESS_ACCOUNTING_TERMINAL_PROOF_MISSING/,
+    );
+    assert.equal(readState(fixture.root, fixture.runId).data.status, 'stopped', label);
+  }
+});
+
+test('stopped pre-import checker settlement rejects non-stopped or ambiguous finish proof', () => {
+  const completed = checkerProcessReceiptFixture();
+  appendCheckerClaimEvent(completed);
+  setManualTerminal(completed, { status: 'completed' });
+
+  const multiple = checkerProcessReceiptFixture();
+  appendCheckerClaimEvent(multiple);
+  appendAnchored(multiple.root, multiple.runId, {
+    type: 'finish', data: { status: 'stopped', reportRel: 'unrelated' },
+  });
+  finishRun(multiple.root, multiple.runId, {
+    status: 'stopped',
+    confirm: true,
+    proof: { human_reason: 'multiple finish fixture' },
+    fence: { owner: multiple.runId, generation: 1, intent: 'business' },
+    now: Date.parse('2026-07-12T00:03:00.000Z'),
+  });
+
+  for (const [label, fixture] of [['completed', completed], ['multiple', multiple]]) {
+    assertProcessSettlementRejectsWithoutWrites(
+      fixture,
+      /PROCESS_ACCOUNTING_TERMINAL_PROOF_MISSING/,
+    );
+    assert.equal(readState(fixture.root, fixture.runId).data.status, label === 'completed' ? 'completed' : 'stopped');
+  }
+});
+
+test('stopped pre-import checker settlement requires the exact adjacent finish floor', () => {
+  for (const finishFloor of ['missing', 'wrong']) {
+    const fixture = checkerProcessReceiptFixture();
+    appendCheckerClaimEvent(fixture);
+    setManualTerminal(fixture, { finishFloor });
+    assertProcessSettlementRejectsWithoutWrites(
+      fixture,
+      /PROCESS_ACCOUNTING_TERMINAL_PROOF_MISSING/,
+    );
+  }
+});
+
+test('stopped pre-import checker settlement rejects review outcome or unrelated post-finish event', () => {
+  const outcome = checkerProcessReceiptFixture();
+  appendCheckerClaimEvent(outcome);
+  appendAnchored(outcome.root, outcome.runId, {
+    type: 'review-outcome',
+    data: {
+      episodeId: outcome.claim.checker_episode_id,
+      attempt_id: outcome.claim.attempt_id,
+      target_maker: outcome.claim.target_maker,
+      review_source: 'imported-stdin',
+    },
+  });
+  finishRun(outcome.root, outcome.runId, {
+    status: 'stopped',
+    confirm: true,
+    proof: { human_reason: 'outcome fixture' },
+    fence: { owner: outcome.runId, generation: 1, intent: 'business' },
+    now: Date.parse('2026-07-12T00:03:00.000Z'),
+  });
+
+  const postFinish = checkerProcessReceiptFixture();
+  appendCheckerClaimEvent(postFinish);
+  setManualTerminal(postFinish, {
+    postFinishEvent: { type: 'decision', data: { note: 'unrelated-after-finish' } },
+  });
+  for (const fixture of [outcome, postFinish]) {
+    assertProcessSettlementRejectsWithoutWrites(
+      fixture,
+      /PROCESS_ACCOUNTING_TERMINAL_PROOF_MISSING/,
+    );
+  }
+});
+
+test('stopped pre-import checker settlement enforces the exact current fence', () => {
+  const fixture = stopPreImportCheckerFixture();
+  assertProcessSettlementRejectsWithoutWrites(
+    fixture,
+    /LEASE_FENCED: owner-mismatch/,
+    { owner: 'OTHER-SESSION', generation: 1, intent: 'accounting' },
+  );
+  assertProcessSettlementRejectsWithoutWrites(
+    fixture,
+    /LEASE_FENCED: generation-mismatch/,
+    { owner: fixture.runId, generation: 2, intent: 'accounting' },
+  );
+});
+
+test('stopped pre-import checker settlement records once and exact retry is write-free', () => {
+  const fixture = stopPreImportCheckerFixture();
+  assert.deepEqual(settleCodexProcessCost(fixture.root, fixture.runId, {
+    receipt: fixture.receipt,
+    fence: fixture.fence,
+  }), { ok: true, recorded: true, reason: 'recorded' });
+  const statePath = join(runDir(fixture.root, fixture.runId), 'loop.json');
+  const logPath = join(runDir(fixture.root, fixture.runId), 'event-log.jsonl');
+  const stateBeforeRetry = readFileSync(statePath, 'utf8');
+  const logBeforeRetry = readFileSync(logPath, 'utf8');
+  assert.deepEqual(settleCodexProcessCost(fixture.root, fixture.runId, {
+    receipt: fixture.receipt,
+    fence: fixture.fence,
+  }), { ok: true, recorded: false, reason: 'already-recorded' });
+  assert.equal(readFileSync(statePath, 'utf8'), stateBeforeRetry);
+  assert.equal(readFileSync(logPath, 'utf8'), logBeforeRetry);
+  const state = readState(fixture.root, fixture.runId).data;
+  assert.equal(state.status, 'stopped');
+  assert.equal(state.episodes.find(
+    episode => episode.id === fixture.claim.checker_episode_id,
+  ).status, 'in_progress');
+  assert.equal(readLines(fixture.root, fixture.runId).filter(
+    event => event.type === 'review-outcome',
+  ).length, 0);
+  const receiptEvents = readLines(fixture.root, fixture.runId).filter(
+    event => event.data?.process_receipt_id === fixture.receipt.receipt_id,
+  );
+  assert.equal(receiptEvents.length, 1);
+  assert.deepEqual(Object.keys(receiptEvents[0].data).sort(), [
+    'generation',
+    'input_tokens',
+    'output_tokens',
+    'owner',
+    'process_context',
+    'process_kind',
+    'process_receipt_id',
+    'reported_tokens',
+    'reported_turns',
+    'source',
+    'tokens',
+    'turns',
+  ]);
+  assert.equal(receiptEvents[0].data.turns, 0);
+  assert.equal(receiptEvents[0].data.tokens, fixture.receipt.usage.tokens);
+  assert.equal(receiptEvents[0].data.owner, fixture.runId);
+  assert.equal(receiptEvents[0].data.generation, 1);
+  assert.equal(state.budget.spent, MUTATION_TURN_FLOOR);
+  assert.equal(state.budget.tokens_spent, fixture.receipt.usage.tokens);
+  assert.equal(state.session_chain.sessions.find(
+    session => session.run_id === fixture.runId,
+  ).turns, MUTATION_TURN_FLOOR);
 });
 
 test('an exact checker receipt remains a write-free no-op after lease advance and terminal finish', () => {
