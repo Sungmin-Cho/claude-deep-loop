@@ -1,6 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { headlessSpawn, parseUsage, visibleSpawn } from '../scripts/lib/spawn-driver.mjs';
+
+const streamFixture = fileURLToPath(new URL('./fixtures/stream-emitter.mjs', import.meta.url));
 
 // Mock run functions: signature is (bin, argv, {timeoutMs, cwd}) — return shape unchanged.
 const okRun = () => ({ code: 0, stdout: '{"num_turns":3,"usage":{"input_tokens":10}}', stderr: '', timedOut: false });
@@ -60,6 +66,7 @@ test('headlessSpawn passes entry.bin, entry.argv, entry.cwd to run (no bash -c)'
   assert.equal(calledBin, 'claude');
   assert.deepEqual(calledArgv, ['-p', 'hello', '--output-format', 'json']);
   assert.equal(calledOpts.cwd, '/work');
+  assert.deepEqual(Object.keys(calledOpts).sort(), ['cwd', 'timeoutMs'], 'legacy run injection shape must stay exact');
   assert.notEqual(calledBin, 'bash');
 });
 
@@ -162,4 +169,47 @@ test('headlessSpawn discards valid Codex usage after timeout or non-zero exit', 
   assert.deepEqual(nonzero, { ok: false, reason: 'exit-7' });
   assert.equal(timedOut.usage, undefined);
   assert.equal(nonzero.usage, undefined);
+});
+
+test('spawn driver exports a dedicated synchronous visible launcher runner', async () => {
+  const module = await import('../scripts/lib/spawn-driver.mjs');
+  assert.equal(typeof module.defaultVisibleRun, 'function');
+  const out = module.defaultVisibleRun(process.execPath, ['-e', 'process.exit(0)'], { timeoutMs: 2_000 });
+  assert.equal(out.code, 0);
+  assert.equal(out.timedOut, false);
+});
+
+test('headlessSpawn delegates synchronously to the compact worker facade', () => {
+  const entry = { bin: '/runtime/not-called-directly', argv: ['--flag'], stdin: 'secret prompt', shell: false };
+  let calls = 0;
+  const result = headlessSpawn(entry, {
+    timeoutMs: 321,
+    runSync: (receivedEntry, options) => {
+      calls += 1;
+      assert.strictEqual(receivedEntry, entry);
+      assert.deepEqual(options, { timeoutMs: 321 });
+      return { ok: true, usage: { num_turns: 1, tokens: 9 } };
+    },
+  });
+
+  assert.equal(calls, 1);
+  assert.deepEqual(result, { ok: true, usage: { num_turns: 1, tokens: 9 } });
+  assert.equal(typeof result?.then, 'undefined', 'respawn requires a synchronous plain result');
+});
+
+test('headlessSpawn default path sends runtime stdin through one worker-owned spawn', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'deep-loop-headless-worker-'));
+  const counterPath = join(dir, 'runtime-spawns.txt');
+  const result = headlessSpawn({
+    bin: process.execPath,
+    argv: [streamFixture, 'count-once', counterPath],
+    stdin: 'worker-only stdin',
+    env: {},
+    shell: false,
+    usageOutputKind: 'claude-json',
+  }, { timeoutMs: 2_000 });
+
+  assert.deepEqual(result, { ok: true, usage: { num_turns: 1, tokens: 12 } });
+  assert.equal(readFileSync(counterPath, 'utf8'), 'spawned\n');
+  assert.equal(Object.hasOwn(result, 'stdout'), false);
 });
