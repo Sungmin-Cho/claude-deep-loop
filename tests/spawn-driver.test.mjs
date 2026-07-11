@@ -10,6 +10,11 @@ const costOnlyRun = () => ({ code: 0, stdout: '{"total_cost_usd":0.12}', stderr:
 
 // Minimal valid entry shape for headlessSpawn.
 const okEntry = { bin: 'claude', argv: ['-p', 'x'], cwd: '/p' };
+const codexEntry = { bin: '/trusted/codex', argv: ['exec', '--json', '-'], cwd: '/p', usageOutputKind: 'codex-jsonl' };
+
+function codexStdout(usage = { input_tokens: 10, cached_input_tokens: 4, output_tokens: 7, reasoning_output_tokens: 3 }) {
+  return `${JSON.stringify({ type: 'thread.started', thread_id: 'thread-1' })}\n${JSON.stringify({ type: 'turn.completed', usage })}\n`;
+}
 
 test('headlessSpawn ok when usage measurable', () => {
   const r = headlessSpawn(okEntry, { run: okRun });
@@ -110,4 +115,51 @@ test('headlessSpawn reason is exact string unmeasurable-fail-closed', () => {
   );
   assert.equal(r.ok, false);
   assert.equal(r.reason, 'unmeasurable-fail-closed');
+});
+
+test('headlessSpawn selects bounded Codex JSONL usage from the entry descriptor', () => {
+  const r = headlessSpawn(codexEntry, {
+    run: () => ({ code: 0, stdout: codexStdout(), stderr: '', timedOut: false }),
+  });
+
+  assert.deepEqual(r, {
+    ok: true,
+    usage: {
+      num_turns: 1,
+      tokens: 17,
+      input_tokens: 10,
+      output_tokens: 7,
+      cached_input_tokens: 4,
+      reasoning_output_tokens: 3,
+    },
+  });
+});
+
+test('headlessSpawn never applies Claude text fallback to Codex output', () => {
+  const r = headlessSpawn(codexEntry, {
+    run: () => ({ code: 0, stdout: 'prefix "num_turns": 9 suffix', stderr: '', timedOut: false }),
+  });
+  assert.deepEqual(r, { ok: false, reason: 'codex-malformed-json' });
+});
+
+test('headlessSpawn propagates distinct Codex parser failures', () => {
+  const r = headlessSpawn(codexEntry, {
+    run: () => ({ code: 0, stdout: '{"type":"turn.failed","error":{"message":"boom"}}\n', stderr: '', timedOut: false }),
+  });
+  assert.deepEqual(r, { ok: false, reason: 'codex-turn-failed' });
+});
+
+test('headlessSpawn discards valid Codex usage after timeout or non-zero exit', () => {
+  const stdout = codexStdout();
+  const timedOut = headlessSpawn(codexEntry, {
+    run: () => ({ code: 0, stdout, stderr: '', timedOut: true }),
+  });
+  const nonzero = headlessSpawn(codexEntry, {
+    run: () => ({ code: 7, stdout, stderr: '', timedOut: false }),
+  });
+
+  assert.deepEqual(timedOut, { ok: false, reason: 'timeout' });
+  assert.deepEqual(nonzero, { ok: false, reason: 'exit-7' });
+  assert.equal(timedOut.usage, undefined);
+  assert.equal(nonzero.usage, undefined);
 });

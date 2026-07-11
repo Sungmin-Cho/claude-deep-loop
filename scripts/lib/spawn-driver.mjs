@@ -1,22 +1,9 @@
 import { spawnSync } from 'node:child_process';
+import { createCodexJsonlParser, parseClaudeUsage } from './usage-parser.mjs';
 
 // Codex r2 sf-4: budget 을 강제하려면 enforceable metric(turns 또는 tokens)이 최소 1개 finite 여야 한다.
 // total_cost_usd 만 있는 출력은 turns/tokens 로 budget 게이트를 못 거니 측정 불가(null) → fail-closed.
-export function parseUsage(stdout) {
-  const s = String(stdout || '');
-  let turns = null, tokens = null;
-  try {
-    const j = JSON.parse(s);
-    if (j) {
-      if (Number.isFinite(j.num_turns)) turns = j.num_turns;
-      const inT = j.usage?.input_tokens, outT = j.usage?.output_tokens;
-      if (Number.isFinite(inT) || Number.isFinite(outT)) tokens = (Number.isFinite(inT) ? inT : 0) + (Number.isFinite(outT) ? outT : 0);
-    }
-  } catch { /* not json */ }
-  if (turns == null) { const m = s.match(/"(?:num_turns|turns)"\s*:\s*(\d+)/); if (m) turns = Number(m[1]); }
-  if (!Number.isFinite(turns) && !Number.isFinite(tokens)) return null;   // 측정 불가 → fail-closed
-  return { num_turns: turns, tokens };
-}
+export const parseUsage = parseClaudeUsage;
 
 // Direct spawnSync (no bash -c): bin and argv are passed directly to the OS.
 export function defaultRun(bin, argv, { timeoutMs, cwd } = {}) {
@@ -45,7 +32,15 @@ export function headlessSpawn(entry, { timeoutMs = 30 * 60 * 1000, run = default
   try { out = run(entry.bin, entry.argv, { timeoutMs, cwd: entry.cwd }); } catch (e) { return { ok: false, reason: `spawn-error: ${e.message || e}` }; }
   if (out.timedOut) return { ok: false, reason: 'timeout' };
   if (out.code !== 0) return { ok: false, reason: `exit-${out.code}` };
-  const usage = parseUsage(out.stdout);
+  const usageKind = entry?.usageOutputKind ?? 'claude-json';
+  if (usageKind === 'codex-jsonl') {
+    const parser = createCodexJsonlParser();
+    parser.write(Buffer.isBuffer(out.stdout) ? out.stdout : Buffer.from(String(out.stdout || ''), 'utf8'));
+    const parsed = parser.end();
+    return parsed.ok ? { ok: true, usage: parsed.usage } : parsed;
+  }
+  if (usageKind !== 'claude-json') return { ok: false, reason: 'unsupported-usage-kind' };
+  const usage = parseClaudeUsage(out.stdout);
   if (usage == null) return { ok: false, reason: 'unmeasurable-fail-closed' };   // 트랩 F7
   return { ok: true, usage };
 }
