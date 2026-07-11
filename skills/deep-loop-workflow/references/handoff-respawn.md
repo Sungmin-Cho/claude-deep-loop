@@ -64,6 +64,8 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field autonomy
 
 **unattended** (커널 `isHeadlessInvocation(env)` 마커 전용 — `DEEP_LOOP_UNATTENDED`/`DEEP_LOOP_HEADLESS`/드라이버 entrypoint 휴리스틱; **non-tty는 신호가 아니다**. **가장 먼저 판정** — desktop/visible보다 우선): 드라이버가 처리. tty 유무만으로는 이 분기에 들어가지 않는다 — Claude Desktop Code 탭처럼 사람이 지켜보는 non-tty GUI 세션은 마커가 없으면 아래 desktop/visible/else 분기로 흐른다(§init의 "attended" 정의와 동일 기준). **이 마커가 하나라도 있으면 durable `autonomy.spawn_style`이 `desktop`이든 `visible`이든 무조건 이 분기가 우선한다** — desktop opt-in한 run이라도 현재 호출이 headless라면(예: drive-headless 사이클 도중) 아래 desktop 분기로 새지 않는다(커널 `resolveSpawnMode`의 headless-preempts-desktop, 불변식 #6). **스킬은 여기서 `respawn`을 직접 호출하지 않는다** — drive-headless 래퍼 없이 직접 호출하면 측정 usage가 계상되지 않아 예산/fail-closed 모델이 깨진다.
 
+> **Slice 1 Codex:** `codex-jsonl`은 descriptor metadata일 뿐 live driver routing이 아니다. visible/headless/App process entry는 `codex-transport-not-activated`로 CAS 전에 거부되어 preserve-pause하고, Claude transport로 대체하지 않는다. 사람에게 수동 Codex CLI/App descriptor와 `$deep-loop:deep-loop-resume`을 제시한다.
+
 **desktop** (`spawn_style==='desktop'` — init 시 opt-in한 Claude Desktop 딥링크 재시작, `launcher===none`이어도 유효. **위 unattended 마커가 없을 때만** 해당):
 
 ```
@@ -145,7 +147,7 @@ respawn이 내부적으로 평가하는 순서:
 
 ## Resume 흐름
 
-새 세션 시작 시 `/deep-loop-resume`:
+새 세션 시작 시 Claude는 `/deep-loop-resume`, Codex는 `$deep-loop:deep-loop-resume`:
 1. `handoffs/<latest>-next-session.md` + `state get` 읽기(이전 대화 가정 금지)
 2. `lease acquire`로 세션 lease CAS 인수 — reserved child acquire가 run을 un-pause한다(커널 처리, Task 8)
 3. active workstream worktree 경로 무결성 확인(existsSync → 소실 시 needs-human)
@@ -160,7 +162,7 @@ respawn이 내부적으로 평가하는 순서:
 node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" recover --confirm --owner <run_id> --generation <n>
 ```
 
-stale handoff 상태를 정리하여 새 `lease acquire`가 가능하도록 한다. 이후 `/deep-loop-resume`으로 인수.
+stale handoff 상태를 정리하여 새 `lease acquire`가 가능하도록 한다. 이후 runtime에 맞는 `/deep-loop-resume` 또는 `$deep-loop:deep-loop-resume`으로 인수.
 autonomous tick이 스스로 `recover --confirm`을 발행하지 않는다.
 
 **desktop opt-in 전용 복구 (round-6 part c):** `recover --confirm`은 handoff/lease 상태만 정리할 뿐 `autonomy.spawn_style`은 건드리지 않는다(generic `state patch`는 `autonomy.spawn_style`을 forbid — classifyPatch). 확인됐던 desktop 핸들러가 이후 깨져 매 handoff가 `HANDLER_UNVERIFIED`(prospectively, 위 desktop 분기 참고)로 preserve-pause를 반복하면, 사람이 별도로:

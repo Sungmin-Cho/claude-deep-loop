@@ -3,8 +3,10 @@ import { appendAnchored } from './integrity.mjs';
 import { checkBudget, reconcileBudget } from './budget.mjs';
 import { checkBreaker } from './breaker.mjs';
 import { advanceHandoffPhase } from './lease.mjs';
-import { buildLaunchCommand } from './handoff.mjs';
+import { buildLaunchCommand } from './runtime-descriptor.mjs';
 import { defaultDesktopProbe } from './desktop-target.mjs';
+import { sessionRuntime } from './runtime.mjs';
+import { canonicalProjectRoot } from './project-root.mjs';
 
 // 게이트 순서: budget → breaker → max_sessions → wallclock → auto_handoff (spec §9). 순수.
 export function respawnGate(loop, { now = Date.now() } = {}) {
@@ -166,6 +168,8 @@ export function respawn(root, runId, {
 } = {}) {
   reconcileBudget(root, runId);                       // 무결성 fail-stop (탐지 시 throw)
   const { data: loop } = readState(root, runId);
+  const runtime = sessionRuntime(loop);
+  const canonicalRoot = canonicalProjectRoot(loop.project.root);
   const lease = loop.session_chain.lease;
   const generation = lease.generation;
   const parentOwner = lease.owner_run_id;
@@ -244,16 +248,16 @@ export function respawn(root, runId, {
   // moves above the CAS; spawnFn call and its try/catch remain below, unchanged.
   const childSession = loop.session_chain.sessions.find(s => s.run_id === childRunId);
   const effHandoffRel = (childSession && childSession.handoff_rel) || handoffRel;
-  // Task 5b: only a 'desktop' mode spawn probes the real (or injected) handler-verification target —
-  // other modes never touch it. A verified target's argvTarget threads through as `desktopTarget`; an
+  // Task 5b: only a Claude 'desktop' mode spawn probes the real (or injected) handler-verification target —
+  // Codex and other modes never touch it. A verified target's argvTarget threads through as `desktopTarget`; an
   // unverified/failed probe (dt.ok===false) yields null → buildLaunchCommand's unavailable entry →
   // the generalized unavailable-entry guard below preserve-pauses (never a rollback/fenced-target spawn).
-  const dt = mode === 'desktop' ? desktopProbe({ platform }) : null;
+  const dt = runtime === 'claude' && mode === 'desktop' ? desktopProbe({ platform }) : null;
   let _cmds, _entry;
   try {
     // launcherBin + launcherSocket threading (R3/R7-plan): cmux requires the absolute bundled bin + verified socket.
     _cmds = buildLaunchCommand({
-      root, parentRunId: runId, childRunId, handoffRel: effHandoffRel,
+      runtime, root: canonicalRoot, parentRunId: runId, childRunId, handoffRel: effHandoffRel,
       launcher: loop.session_spawn?.launcher,
       launcherBin: loop.session_spawn?.launcher_bin,
       launcherSocket: loop.session_spawn?.launcher_socket,
@@ -268,19 +272,21 @@ export function respawn(root, runId, {
 
   // Fail closed: ANY visible/desktop mode with an unavailable entry (no trusted launcher_bin — e.g. a
   // stale/migrated launcher='powershell' run — or an unverified desktop target, or (win32 only) a
-  // verified win-exe target with no trusted PowerShell bin resolvable — see handoff.mjs's win32
+  // verified win-exe target with no trusted PowerShell bin resolvable — see runtime-descriptor.mjs's win32
   // branch, which otherwise builds a runnable non-blocking `Start-Process` entry) — must NOT spawn.
   // `interactive` never reaches here (it returns above, before `_cmds` is
-  // built); `headless`'s entry always carries `bin:'claude'` (guard never fires); a valid launcher entry
+  // built); Claude `headless` carries `bin:'claude'`, while Slice 1 Codex headless is deliberately
+  // unavailable and is caught here before CAS; a valid launcher entry
   // always has a `bin` (guard never fires). Unlike the interactive no-launcher path (which the else/none
   // skill branch preserve-pauses), this is reached via the VISIBLE/DESKTOP skill branch (launcher!=='none'
   // → `respawn --attended`), which does NOT inspect the outcome — so respawn must preserve-pause ITSELF here, or
   // the handoff is left emitted/releasing, unpaused, with no child spawned (stranded). Mirrors gate-blocked self-pause.
   if (!_entry || _entry.unavailable || !_entry.bin) {
-    const res = preservePause(root, runId, { childRunId, parentOwner, generation, pauseReason: `${mode}-launcher-unavailable` });
+    const unavailableReason = _entry?.reason || `${mode}-launcher-unavailable`;
+    const res = preservePause(root, runId, { childRunId, parentOwner, generation, pauseReason: unavailableReason });
     if (res.terminal) return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };   // v1.6
     if (res.fenced) return { ok: false, outcome: 'fenced', reason: 'lease-changed-before-pause', childRunId };
-    return { ok: false, outcome: 'no-launcher', reason: `${mode}-launcher-unavailable`, childRunId };
+    return { ok: false, outcome: 'no-launcher', reason: unavailableReason, childRunId };
   }
 
   // Codex r2 🔴3: 외부 spawn **이전에** emitted→spawned 를 원자적(withLock CAS)으로 클레임 (이중 외부 spawn 차단).

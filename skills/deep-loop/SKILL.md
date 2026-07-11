@@ -88,6 +88,8 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" insights latest --json
 
 ### 2-4.5. 세션 model/effort 관측 (자동, 무프롬프트)
 
+먼저 현재 실행 호스트를 **직접** 판정해 `<claude|codex>`에 `claude` 또는 `codex`를 넣는다. 환경 변수 마커는 권위가 아니며, Claude에서는 slash skill, Codex에서는 qualified dollar skill로 실제 실행 중인 호스트를 기준으로 assertion한다. 이 runtime 값은 run 생성 후 변경하지 않는다.
+
 respawn이 자식 세션을 부모와 같은 model/effort로 띄우도록, init 시 현재 세션 값을 캡처한다(이 값이 durable "init seed" — 첫 handoff가 PreCompact/headless여도 fallback이 된다):
 
 ```bash
@@ -104,6 +106,7 @@ CLAUDE_EFFORT_VAL=$(node -e "process.stdout.write(process.env.CLAUDE_EFFORT||'')
 
 ```
 node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" init-run \
+  --runtime <claude|codex> \
   --goal "<goal>" \
   --protocol <protocol> \
   --recipe <recipe_id> \
@@ -118,6 +121,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" init-run \
 ### 2-5-1. Desktop 딥링크 재시작 opt-in 제안 (선택적, 최초 1회)
 
 `init-run` 직후, 이번 run에서 **딱 한 번만** 실행한다(선택은 durable — 이후 handoff/continue에서 재질문하지 않는다).
+이 절차는 asserted runtime이 `claude`일 때만 수행한다. `codex`이면 Codex App 자동 task 생성 URL을 추측하지 않고 handoff의 수동 `$deep-loop:deep-loop-resume` descriptor를 사용한다.
 
 터미널 상태를 감지한다:
 

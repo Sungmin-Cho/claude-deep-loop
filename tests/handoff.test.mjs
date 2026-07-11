@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, existsSync, readFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, existsSync, readFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
@@ -10,9 +10,9 @@ import { emitHandoff, buildLaunchCommand } from '../scripts/lib/handoff.mjs';
 import { newEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
 
 // Inject deterministic env so detectTerminal never probes real cmux/osascript.
-function seed() {
+function seed(runtime = 'claude') {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
-  const { runId } = initRun(root, { runtime: 'claude', goal: '인증 기능 구현', detected: { 'deep-work': true }, now: new Date('2026-06-24T00:00:00Z'), env: {}, platform: 'linux', run: () => ({ code: 1 }) });
+  const { runId } = initRun(root, { runtime, goal: '인증 기능 구현', detected: { 'deep-work': true }, now: new Date('2026-06-24T00:00:00Z'), env: {}, platform: 'linux', run: () => ({ code: 1 }) });
   return { root, runId };
 }
 
@@ -219,6 +219,78 @@ test('emitHandoff writes md + compaction-state(M3) + launch-command, chains sess
   const md = readFileSync(r.handoffPath, 'utf8');
   assert.match(md, /이전 대화/);
   assert.match(md, /\/deep-loop-resume/);
+});
+
+test('legacy runtime handoff remains Claude-compatible', () => {
+  const { root, runId } = seed();
+  const { data } = readState(root, runId);
+  delete data.autonomy.session_runtime;
+  delete data.autonomy.runtime_source;
+  writeState(root, runId, data);
+  const r = emitHandoff(root, runId, { now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId) });
+  assert.equal(r.ok, true);
+  const launch = readFileSync(join(runDir(root, runId), 'terminal', 'launch-command.txt'), 'utf8');
+  assert.match(launch, /claude -p/);
+  assert.match(launch, /\/deep-loop-resume/);
+  assert.ok(!launch.includes('$deep-loop:deep-loop-resume'));
+});
+
+test('Codex handoff emits qualified manual resume descriptors and no Claude process command', () => {
+  const { root, runId } = seed('codex');
+  const { data } = readState(root, runId);
+  data.autonomy.session_model = 'claude-opus-4-8[1m]';
+  data.autonomy.session_effort = 'xhigh';
+  writeState(root, runId, data);
+  const r = emitHandoff(root, runId, { now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId) });
+  assert.equal(r.ok, true);
+  const launch = readFileSync(join(runDir(root, runId), 'terminal', 'launch-command.txt'), 'utf8');
+  assert.match(launch, /\$deep-loop:deep-loop-resume/);
+  assert.match(launch, /codex-transport-not-activated/);
+  assert.ok(!/\bclaude\s+(?:-p|-n)\b/.test(launch), 'Codex handoff must not emit a Claude process command');
+  assert.ok(!launch.includes('claude://'), 'Codex App handoff must not emit a private URL');
+  assert.ok(!launch.includes('--model'));
+  assert.ok(!launch.includes('--effort'));
+});
+
+test('handoff descriptor records canonical project root and explicit logical run id', () => {
+  const parent = mkdtempSync(join(tmpdir(), 'dl-alias-'));
+  const canonicalRoot = join(parent, 'canonical');
+  const aliasRoot = join(parent, 'alias');
+  mkdirSync(canonicalRoot);
+  symlinkSync(canonicalRoot, aliasRoot, 'dir');
+  const { runId } = initRun(aliasRoot, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z'), env: {}, platform: 'linux', run: () => ({ code: 1 }) });
+  const storedRoot = readState(aliasRoot, runId).data.project.root;
+  const r = emitHandoff(aliasRoot, runId, { now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId) });
+  assert.equal(r.ok, true);
+  assert.ok(r.handoffPath.startsWith(storedRoot), 'artifact path must use the stored canonical root');
+  const md = readFileSync(r.handoffPath, 'utf8');
+  assert.ok(md.includes(storedRoot), 'handoff must carry canonical project root');
+  assert.ok(md.includes(runId), 'handoff must carry explicit logical run id');
+  const launch = readFileSync(join(runDir(storedRoot, runId), 'terminal', 'launch-command.txt'), 'utf8');
+  assert.ok(launch.includes(storedRoot), 'launch descriptor must use the canonical root');
+  assert.ok(!launch.includes(aliasRoot), 'launch descriptor must not preserve the symlink alias');
+});
+
+test('copied-root handoff is fenced before any descriptor file is written', () => {
+  const { root, runId } = seed();
+  const copyParent = mkdtempSync(join(tmpdir(), 'dl-copy-'));
+  const copyRoot = join(copyParent, 'copy');
+  cpSync(root, copyRoot, { recursive: true });
+  const copiedRunDir = runDir(copyRoot, runId);
+  const copiedLaunch = join(runDir(copyRoot, runId), 'terminal', 'launch-command.txt');
+  const copiedHandoffs = join(copiedRunDir, 'handoffs');
+  const beforeLoop = readFileSync(join(copiedRunDir, 'loop.json'), 'utf8');
+  const beforeHash = readFileSync(join(copiedRunDir, '.loop.hash'), 'utf8');
+  assert.equal(existsSync(copiedLaunch), false);
+  assert.equal(existsSync(copiedHandoffs), false);
+  assert.throws(
+    () => emitHandoff(copyRoot, runId, { now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId) }),
+    /PROJECT_ROOT_FENCED/,
+  );
+  assert.equal(existsSync(copiedLaunch), false, 'root fence must precede descriptor writes');
+  assert.equal(existsSync(copiedHandoffs), false, 'root fence must precede handoff artifact directory creation');
+  assert.equal(readFileSync(join(copiedRunDir, 'loop.json'), 'utf8'), beforeLoop, 'copied durable state must remain byte-identical');
+  assert.equal(readFileSync(join(copiedRunDir, '.loop.hash'), 'utf8'), beforeHash, 'copied state anchor must remain byte-identical');
 });
 
 test('emitHandoff dedups: second trigger while in-flight is a no-op', () => {

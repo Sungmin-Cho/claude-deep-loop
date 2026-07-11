@@ -78,6 +78,8 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field autonomy
 
 **분기 (커널 `resolveSpawnMode` 우선순위 headless > desktop > visible > interactive와 동일 순서로 먼저 판정):**
 
+> **Slice 1 Codex:** visible/headless/App 자동 process transport는 아직 활성화하지 않는다. 커널이 `codex-transport-not-activated`로 spawned CAS 전에 거부하고 preserve-pause하며, Claude process로 대체하지 않는다. `terminal/launch-command.txt`의 수동 Codex CLI/App descriptor를 사용한다.
+
 ### Unattended (커널 `isHeadlessInvocation(env)` 마커 전용 — non-tty 아님. **가장 먼저 판정** — Desktop/Visible보다 우선)
 
 **판단 기준은 오직 커널의 `isHeadlessInvocation(env)`뿐이다** — `DEEP_LOOP_UNATTENDED`/`DEEP_LOOP_HEADLESS` 또는 드라이버 entrypoint 휴리스틱(`CLAUDE_CODE_ENTRYPOINT`가 sdk*/print/headless/non-interactive) 중 하나가 참일 때만 unattended로 판정한다. **tty 유무는 신호가 아니다** — Claude Desktop Code 탭은 사람이 지켜보는 GUI이지만 tty가 없다(§init의 "attended" 정의와 동일 기준). **이 마커가 하나라도 있으면 durable `autonomy.spawn_style`이 `desktop`이든 `visible`이든 무조건 이 분기가 우선한다** — desktop opt-in한 run이라도 현재 호출이 headless라면(예: drive-headless 사이클 도중) 아래 Desktop 분기로 새지 않는다(커널 `resolveSpawnMode`의 headless-preempts-desktop, 불변식 #6). 마커가 하나도 없으면 아래 Desktop/Visible/Else 분기로 진행한다(non-tty만으로 여기서 멈추지 않는다).
@@ -128,4 +130,4 @@ respawn의 `outcome`에 따라 분기:
 
 ## 다음 세션
 
-새 세션에서 `/deep-loop-resume`을 실행해 handoff.md를 읽고 lease를 인수한다.
+새 세션에서 Claude는 `/deep-loop-resume`, Codex는 `$deep-loop:deep-loop-resume`을 실행해 handoff.md를 읽고 lease를 인수한다.

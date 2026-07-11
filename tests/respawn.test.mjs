@@ -17,15 +17,15 @@ const NOW1 = Date.parse('2026-06-24T01:00:00Z');
 const noOpRun = () => ({ code: 1 });
 
 // 자기완결 seed: run 생성 후 mutate(loop)로 필요한 필드만 조정하고 writeState.
-function seed(mutate) {
+function seed(mutate, runtime = 'claude') {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
-  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: NOW0, env: {}, platform: 'linux', run: noOpRun });
+  const { runId } = initRun(root, { runtime, goal: 'g', now: NOW0, env: {}, platform: 'linux', run: noOpRun });
   if (mutate) { const { data } = readState(root, runId); mutate(data); writeState(root, runId, data); }
   return { root, runId };
 }
 
 // seed a run with a concrete visible launcher (cmux by default) + spawn_style.
-function seedLauncher({ spawn_style = 'visible', launcher = 'cmux' } = {}) {
+function seedLauncher({ spawn_style = 'visible', launcher = 'cmux', runtime = 'claude' } = {}) {
   return seed((d) => {
     d.autonomy.spawn_style = spawn_style;
     d.session_spawn = {
@@ -34,7 +34,7 @@ function seedLauncher({ spawn_style = 'visible', launcher = 'cmux' } = {}) {
       surface: 'multiplexer', reachable: true, visible: true, signals: {}, probe: null,
       reason: 'detected', fallback: 'launch-command-file', detected_at: '2026-06-24T00:00:00Z',
     };
-  });
+  }, runtime);
 }
 
 function expect_(runId) { return { owner: runId, generation: 1 }; }
@@ -546,6 +546,64 @@ test('respawn: buildLaunchCommand throw (unsafe handoffRel) must not advance lea
   assert.equal(lease.state, 'releasing', 'lease must stay releasing (emitted, re-tryable)');
   assert.equal(lease.handoff_phase, 'emitted', 'lease must stay emitted when build throws before CAS');
   assert.equal(r.ok, false, 'respawn must return ok:false on build error');
+});
+
+test('Codex visible transport is rejected before spawned CAS and preserve-pauses with the exact reason', () => {
+  const { root, runId } = seedLauncher({ runtime: 'codex', spawn_style: 'visible', launcher: 'cmux' });
+  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });
+  let spawned = false;
+  const r = respawn(root, runId, {
+    childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
+    attended: true, env: {}, now: NOW1,
+    spawnFn: () => { spawned = true; return { ok: true }; },
+    sleep: noSleep,
+  });
+  assert.equal(spawned, false, 'Codex must never route visible continuation through a Claude process');
+  assert.equal(r.ok, false);
+  assert.equal(r.outcome, 'no-launcher');
+  assert.equal(r.reason, 'codex-transport-not-activated');
+  const after = readState(root, runId).data;
+  assert.equal(after.status, 'paused');
+  assert.equal(after.pause_reason, 'codex-transport-not-activated');
+  assert.equal(after.session_chain.lease.handoff_phase, 'emitted', 'unavailable transport must be rejected before spawned CAS');
+  assert.equal(after.session_chain.lease.state, 'releasing');
+  assert.equal(after.session_chain.lease.handoff_child_run_id, h.childRunId, 'logical reservation remains available for manual resume');
+});
+
+test('Codex headless transport is rejected before spawned CAS and never reaches spawnFn', () => {
+  const { root, runId } = seed(undefined, 'codex');
+  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });
+  let spawned = false;
+  const r = respawn(root, runId, {
+    childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
+    headless: true, now: NOW1,
+    spawnFn: () => { spawned = true; return { ok: true }; },
+  });
+  assert.equal(spawned, false);
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'codex-transport-not-activated');
+  const after = readState(root, runId).data;
+  assert.equal(after.status, 'paused');
+  assert.equal(after.pause_reason, 'codex-transport-not-activated');
+  assert.equal(after.session_chain.lease.handoff_phase, 'emitted');
+});
+
+test('Codex App manual continuation never probes the Claude Desktop handler', () => {
+  const { root, runId } = seed((data) => {
+    data.autonomy.spawn_style = 'desktop';
+  }, 'codex');
+  const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });
+  let probed = false;
+  const r = respawn(root, runId, {
+    childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
+    attended: true, env: {}, now: NOW1,
+    desktopProbe: () => { probed = true; throw new Error('Claude Desktop probe must not run for Codex'); },
+    spawnFn: () => { throw new Error('Codex App continuation is manual'); },
+  });
+  assert.equal(probed, false);
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'codex-transport-not-activated');
+  assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'emitted');
 });
 
 // RUN_PAUSED gate: respawn on a paused run returns {ok:false, outcome:'paused'} (Task 6).

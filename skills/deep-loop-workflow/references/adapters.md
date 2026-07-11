@@ -32,9 +32,11 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" adapter resolve --protocol <p
 - `guard.ok === false`이면 **dispatch 중단** → `await_human`(tier × protocol 모순) 보고.
 - `guard.ok === true`이면 진행.
 
-### Invoke
+### Invoke (runtime별)
 
-- `dispatch.kind === 'invoke_skill'`이면 `Skill({ skill, args })`로 sibling invoke.
+- `dispatch.kind === 'invoke_skill'`이면 descriptor의 qualified skill id와 args를 그대로 사용한다.
+  - Claude: `Skill({ skill: descriptor.skill, args: descriptor.args })`
+  - Codex: `$<descriptor.skill>` 뒤에 `descriptor.args`를 전달한다(qualified dollar invocation).
 - **read-only tier**: `guard.planning_only === true`이면 `dispatch.skill`(planning)만 실행하고, `dispatch.then`(implementer)은 null이라 건너뛴다.
 - `kind === 'inline'`이면 직접 도구 사용.
 
@@ -56,7 +58,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" review dispatch --point <revi
 
 ### Checker 스킬 Invoke
 
-디스크립터의 `skill`을 `Skill()`로 invoke한다.
+동일한 runtime별 규칙(Claude `Skill()`, Codex `$<descriptor.skill>`)으로 디스크립터의 checker skill을 invoke한다.
 
 ### Verdict 기록
 

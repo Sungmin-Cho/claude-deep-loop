@@ -704,6 +704,40 @@ test('deep-loop init skill observes + seeds session model/effort into init-run (
   assert.match(body, /init-run[\s\S]*--model[\s\S]*--effort/, 'init skill threads --model/--effort into init-run');
 });
 
+test('runtime-facing skills assert runtime and carry explicit resume root/run identity', () => {
+  const entry = readFileSync(new URL('../skills/deep-loop/SKILL.md', import.meta.url), 'utf8');
+  assert.match(entry, /init-run[\s\S]{0,500}--runtime\s+<claude\|codex>/, 'new runs must record the asserted host runtime');
+
+  const resume = readFileSync(new URL('../skills/deep-loop-resume/SKILL.md', import.meta.url), 'utf8');
+  assert.match(resume, /\$deep-loop:deep-loop-resume/, 'Codex resume must use the qualified dollar skill token');
+  assert.match(resume, /--project-root\s+<canonical_project_root>/, 'resume must accept the canonical project root from the descriptor');
+  assert.match(resume, /--run-id\s+<run_id>/, 'resume must accept the explicit logical run id from the descriptor');
+  const acquire = resume.split('\n').find((line) => /lease acquire/.test(line)) || '';
+  assert.match(acquire, /--runtime\s+<claude\|codex>/, 'lease acquisition must assert the actual host runtime');
+  assert.match(acquire, /--project-root\s+<canonical_project_root>/);
+  assert.match(acquire, /--run-id\s+<run_id>/);
+});
+
+test('handoff execution docs preserve runtime-correct resume tokens and Codex fail-closed reason', () => {
+  const paths = [
+    '../skills/deep-loop-continue/SKILL.md',
+    '../skills/deep-loop-handoff/SKILL.md',
+    '../skills/deep-loop-workflow/references/handoff-respawn.md',
+  ];
+  for (const path of paths) {
+    const body = readFileSync(new URL(path, import.meta.url), 'utf8');
+    assert.match(body, /\/deep-loop-resume/, `${path} must retain the Claude resume token`);
+    assert.match(body, /\$deep-loop:deep-loop-resume/, `${path} must document the Codex resume token`);
+    assert.match(body, /codex-transport-not-activated/, `${path} must surface the exact Slice 1 unavailable reason`);
+  }
+});
+
+test('adapter execution reference distinguishes Claude Skill invocation from Codex qualified dollar invocation', () => {
+  const body = readFileSync(new URL('../skills/deep-loop-workflow/references/adapters.md', import.meta.url), 'utf8');
+  assert.match(body, /Claude[\s\S]{0,240}Skill\(/);
+  assert.match(body, /Codex[\s\S]{0,240}\$<descriptor\.skill>/);
+});
+
 // Task 9 (spec §8.2): 게이트-크리티컬 마커 — 위치-독립 '존재' 단언, 삭제-회귀만 결정론 방어.
 // 마커 선정 기준: budget/breaker/comprehension 검사 지시, fence 플래그(--owner/--generation/--expect-generation),
 // human-only confirm(--confirm/--actor human/recover --confirm), proposal-only 선언 등 "게이트 의미"를 담은
