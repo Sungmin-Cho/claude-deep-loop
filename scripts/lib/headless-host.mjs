@@ -709,6 +709,10 @@ function driveIndependentChecker({
   } catch {
     checkerResult = { ok: false, reason: 'checker-process-error' };
   }
+  if (checkerResult?.reason === 'checker-final-message-invalid'
+    && isMeasuredOneTurnUsage(checkerResult.usage)) {
+    return settleMeasuredFailure('checker-process-failed', checkerResult.usage);
+  }
   if (!checkerResult || checkerResult.ok !== true
     || !isMeasuredOneTurnUsage(checkerResult.usage)
     || !Buffer.isBuffer(checkerResult.finalMessage)

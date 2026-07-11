@@ -384,6 +384,29 @@ test('checker process failure blocks and pauses once without proof or fabricated
   assert.equal(events(f.root, f.runId).some(event => event.type === 'review-outcome'), false);
 });
 
+test('a measured checker turn with no final message is charged once while proof stays blocked', () => {
+  const f = seed();
+  const deps = hostDeps(f);
+  const result = driveHeadlessRun({
+    root: f.root, runId: f.runId, now: Date.parse(FIXED_NOW), ...deps,
+    checkerRunFn: () => ({ ok: false, reason: 'checker-final-message-invalid', usage: measuredUsage() }),
+    checkerImportFn: () => { throw new Error('missing final bytes must never reach import'); },
+  });
+
+  assert.equal(result.action, 'checker-blocked');
+  assert.equal(result.reason, 'checker-process-failed');
+  assert.equal(result.recorded, true);
+  const state = readState(f.root, f.runId).data;
+  assert.equal(state.status, 'paused');
+  assert.equal(state.episodes.find(e => e.id === f.checkerId).status, 'blocked');
+  assert.equal(events(f.root, f.runId).some(event => event.type === 'review-outcome'), false);
+  assert.deepEqual(
+    events(f.root, f.runId).filter(event => event.type === 'cost' && event.data.reported_turns === 1)
+      .map(event => event.data.reported_tokens),
+    [12],
+  );
+});
+
 test('third REQUEST_CHANGES pauses without continuation but still records the consumed checker turn', () => {
   const f = seed();
   const state = readState(f.root, f.runId).data;

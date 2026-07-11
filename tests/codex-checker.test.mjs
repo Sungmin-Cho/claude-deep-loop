@@ -97,6 +97,29 @@ test('runIndependentCodexChecker builds one fresh read-only schema-bound shell-f
   assert.equal(result.finalMessage.equals(expectedFinal), true);
 });
 
+test('runIndependentCodexChecker preserves an exact measured turn when the final message is missing', async () => {
+  const { runIndependentCodexChecker } = await checkerModule();
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-checker-missing-final-')));
+  const skillPath = join(root, 'SKILL.md');
+  const schemaPath = join(root, 'review-import.schema.json');
+  writeFileSync(skillPath, '---\nname: deep-review-loop\n---\n');
+  writeFileSync(schemaPath, '{}');
+  const usage = { num_turns: 1, tokens: 12, input_tokens: 5, output_tokens: 7 };
+
+  const result = runIndependentCodexChecker({
+    executable: '/opt/codex/bin/codex',
+    projectRoot: root,
+    checkerSkillPath: skillPath,
+    outputSchemaPath: schemaPath,
+    contract: contract(root),
+    env: { CODEX_HOME: '/home/test/.codex' },
+    timeoutMs: 1_234,
+    runProcess: () => ({ ok: true, usage }),
+  });
+
+  assert.deepEqual(result, { ok: false, reason: 'checker-final-message-invalid', usage });
+});
+
 test('importReviewViaCli forwards the identical Buffer through trusted Node argv with bounded shell-free IO', async () => {
   const { importReviewViaCli } = await checkerModule();
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-checker-import-')));

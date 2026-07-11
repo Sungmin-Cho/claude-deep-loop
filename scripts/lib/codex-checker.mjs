@@ -252,7 +252,7 @@ export function runIndependentCodexChecker({
   if (!isMeasuredOneTurnUsage(result.usage)) return { ok: false, reason: 'checker-usage-invalid' };
   if (!Buffer.isBuffer(result.finalMessage) || result.finalMessage.length === 0
     || result.finalMessage.length > STREAM_LIMITS.finalMessageBytes) {
-    return { ok: false, reason: 'checker-final-message-invalid' };
+    return { ok: false, reason: 'checker-final-message-invalid', usage: result.usage };
   }
   return { ok: true, usage: result.usage, finalMessage: Buffer.from(result.finalMessage) };
 }
