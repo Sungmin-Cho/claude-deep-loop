@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { validate } from '../scripts/lib/schema.mjs';
 import { buildInitialLoop } from '../scripts/lib/initrun.mjs';
+import { classifyPatch } from '../scripts/lib/state.mjs';
 
 function minimalValid() {
   return {
@@ -145,4 +146,62 @@ test('autonomy.session_effort enum + session_model type (WS1, optional)', () => 
   const v = validate(base);
   assert.equal(v.ok, false);
   assert.ok(v.errors.some((e) => /session_model/.test(e)));
+});
+
+function validRuntimeApproval() {
+  return {
+    runtime: 'codex',
+    canonical_path: '/opt/codex/vendor/aarch64-apple-darwin/bin/codex',
+    sha256: 'a'.repeat(64),
+    version: '0.144.1',
+    platform: 'darwin',
+    arch: 'arm64',
+    source: 'official-npm-native',
+    package: {
+      wrapper_path: '/opt/codex/bin/codex.js',
+      wrapper_name: '@openai/codex',
+      wrapper_version: '0.144.1',
+      optional_name: '@openai/codex-darwin-arm64',
+      optional_spec: 'npm:@openai/codex@0.144.1-darwin-arm64',
+      native_name: '@openai/codex',
+      native_version: '0.144.1-darwin-arm64',
+      target_triple: 'aarch64-apple-darwin',
+      os: ['darwin'],
+      cpu: ['arm64'],
+    },
+    authenticode: null,
+    approved_by: 'human',
+    approved_at: '2026-07-11T08:00:00.000Z',
+  };
+}
+
+test('new runs initialize a null immutable runtime executable approval and valid approval state passes', () => {
+  const loop = buildInitialLoop({ runtime: 'codex', goal: 'g', protocol: 'standalone', recipe: {}, runId: 'r1', now: new Date('2026-07-11T00:00:00Z') });
+  assert.equal(loop.autonomy.runtime_executable_approval, null);
+  assert.equal(validate(loop).ok, true, validate(loop).errors.join('; '));
+
+  loop.autonomy.runtime_executable_approval = validRuntimeApproval();
+  assert.equal(validate(loop).ok, true, validate(loop).errors.join('; '));
+  assert.equal(classifyPatch('autonomy.runtime_executable_approval', validRuntimeApproval()), 'forbid');
+});
+
+test('runtime executable approval schema rejects malformed identity, authority, and runtime drift', () => {
+  const mutations = [
+    ['not object', () => 'approved'],
+    ['wrong runtime', approval => ({ ...approval, runtime: 'claude' })],
+    ['bad hash', approval => ({ ...approval, sha256: 'A'.repeat(64) })],
+    ['empty path', approval => ({ ...approval, canonical_path: '' })],
+    ['wrong source', approval => ({ ...approval, source: 'path-first' })],
+    ['not human', approval => ({ ...approval, approved_by: 'agent' })],
+    ['bad timestamp', approval => ({ ...approval, approved_at: 'today' })],
+    ['bad package', approval => ({ ...approval, package: { wrapper_name: '@openai/codex' } })],
+    ['authenticode primitive', approval => ({ ...approval, authenticode: 'signed' })],
+  ];
+  for (const [label, mutate] of mutations) {
+    const loop = buildInitialLoop({ runtime: 'codex', goal: 'g', protocol: 'standalone', recipe: {}, runId: 'r1', now: new Date('2026-07-11T00:00:00Z') });
+    loop.autonomy.runtime_executable_approval = mutate(validRuntimeApproval());
+    const result = validate(loop);
+    assert.equal(result.ok, false, label);
+    assert.ok(result.errors.some(error => /runtime_executable_approval/.test(error)), `${label}: ${result.errors.join('; ')}`);
+  }
 });

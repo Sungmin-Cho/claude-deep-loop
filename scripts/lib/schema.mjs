@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, win32 } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
 export function loadSchema() {
@@ -9,6 +9,70 @@ export function loadSchema() {
 
 function get(obj, path) {
   return path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj);
+}
+
+function portableAbsolute(path) {
+  return typeof path === 'string' && path.length > 0 && (isAbsolute(path) || win32.isAbsolute(path));
+}
+
+const APPROVAL_PACKAGE_KEYS = Object.freeze([
+  'wrapper_path', 'wrapper_name', 'wrapper_version', 'optional_name', 'optional_spec',
+  'native_name', 'native_version', 'target_triple', 'os', 'cpu',
+]);
+
+function validateRuntimeExecutableApproval(approval, autonomy, errors) {
+  const fail = detail => errors.push(`autonomy.runtime_executable_approval ${detail}`);
+  if (approval === undefined || approval === null) return;
+  if (typeof approval !== 'object' || Array.isArray(approval)) { fail('must be object or null'); return; }
+
+  const runtime = approval.runtime;
+  const storedRuntime = autonomy.session_runtime ?? 'claude';
+  if (!['claude', 'codex'].includes(runtime)) fail('runtime must be claude or codex');
+  else if (runtime !== storedRuntime) fail('runtime must match immutable autonomy.session_runtime');
+  if (!portableAbsolute(approval.canonical_path)) fail('canonical_path must be absolute');
+  if (!/^[0-9a-f]{64}$/.test(approval.sha256 || '')) fail('sha256 must be lowercase 64-hex');
+  for (const field of ['version', 'platform', 'arch', 'source']) {
+    if (typeof approval[field] !== 'string' || approval[field].length === 0 || /[\0\r\n]/.test(approval[field])) {
+      fail(`${field} must be a non-empty safe string`);
+    }
+  }
+  if (!['official-npm-native', 'human-explicit'].includes(approval.source)) fail('source is invalid');
+  if (approval.approved_by !== 'human') fail('approved_by must be human');
+  if (typeof approval.approved_at !== 'string') fail('approved_at must be canonical ISO-8601');
+  else {
+    const timestamp = new Date(approval.approved_at);
+    if (!Number.isFinite(timestamp.getTime()) || timestamp.toISOString() !== approval.approved_at) {
+      fail('approved_at must be canonical ISO-8601');
+    }
+  }
+  if (approval.authenticode !== null && (typeof approval.authenticode !== 'object' || Array.isArray(approval.authenticode))) {
+    fail('authenticode must be object or null');
+  }
+
+  if (approval.source === 'human-explicit') {
+    if (approval.package !== null) fail('human-explicit package must be null');
+    return;
+  }
+  const pkg = approval.package;
+  if (!pkg || typeof pkg !== 'object' || Array.isArray(pkg)) { fail('package must be an object'); return; }
+  const keys = Object.keys(pkg).sort();
+  if (keys.length !== APPROVAL_PACKAGE_KEYS.length
+    || !APPROVAL_PACKAGE_KEYS.every(key => keys.includes(key))) {
+    fail('package fields are incomplete or unknown');
+    return;
+  }
+  for (const field of APPROVAL_PACKAGE_KEYS.filter(field => !['os', 'cpu'].includes(field))) {
+    if (typeof pkg[field] !== 'string' || pkg[field].length === 0 || /[\0\r\n]/.test(pkg[field])) {
+      fail(`package.${field} must be a non-empty safe string`);
+    }
+  }
+  if (!portableAbsolute(pkg.wrapper_path)) fail('package.wrapper_path must be absolute');
+  if (!Array.isArray(pkg.os) || pkg.os.length !== 1 || pkg.os[0] !== approval.platform) {
+    fail('package.os must exactly match platform');
+  }
+  if (!Array.isArray(pkg.cpu) || pkg.cpu.length !== 1 || pkg.cpu[0] !== approval.arch) {
+    fail('package.cpu must exactly match arch');
+  }
 }
 
 export function validate(loopJson, schema = loadSchema()) {
@@ -50,6 +114,7 @@ export function validate(loopJson, schema = loadSchema()) {
     if (runtime !== undefined && source !== 'skill-asserted') {
       errors.push('autonomy.session_runtime requires autonomy.runtime_source skill-asserted');
     }
+    validateRuntimeExecutableApproval(autonomy.runtime_executable_approval, autonomy, errors);
   }
   // episode/workstream item status는 (skill ∪ kernel) 도메인 안에 있어야 함
   const epAllowed = [...(schema.episode_status?.skill || []), ...(schema.episode_status?.kernel || [])];

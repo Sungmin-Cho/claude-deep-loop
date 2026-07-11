@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { chmodSync, cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
@@ -16,6 +17,53 @@ function seed() {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
   const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
   return { root, runId };
+}
+
+const CODEX_TARGET = Object.freeze({
+  'darwin:arm64': ['@openai/codex-darwin-arm64', 'darwin-arm64', 'aarch64-apple-darwin'],
+  'darwin:x64': ['@openai/codex-darwin-x64', 'darwin-x64', 'x86_64-apple-darwin'],
+  'linux:arm64': ['@openai/codex-linux-arm64', 'linux-arm64', 'aarch64-unknown-linux-musl'],
+  'linux:x64': ['@openai/codex-linux-x64', 'linux-x64', 'x86_64-unknown-linux-musl'],
+});
+
+function runtimeExecutableCliFixture({ runRuntime = 'codex' } = {}) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-runtime-cli-')));
+  const { runId } = initRun(root, { runtime: runRuntime, goal: 'g', now: new Date('2026-07-11T00:00:00Z') });
+  const [alias, suffix, triple] = CODEX_TARGET[`${process.platform}:${process.arch}`];
+  const version = '0.144.1';
+  const wrapperRoot = join(root, 'tool', 'node_modules', '@openai', 'codex');
+  const wrapper = join(wrapperRoot, 'bin', 'codex.js');
+  const optionalRoot = join(wrapperRoot, 'node_modules', ...alias.split('/'));
+  const native = join(optionalRoot, 'vendor', triple, 'bin', 'codex');
+  mkdirSync(join(wrapperRoot, 'bin'), { recursive: true });
+  writeFileSync(wrapper, '#!/usr/bin/env node\n');
+  writeFileSync(join(wrapperRoot, 'package.json'), JSON.stringify({
+    name: '@openai/codex', version, bin: { codex: 'bin/codex.js' },
+    optionalDependencies: { [alias]: `npm:@openai/codex@${version}-${suffix}` },
+  }));
+  mkdirSync(join(optionalRoot, 'vendor', triple, 'bin'), { recursive: true });
+  writeFileSync(join(optionalRoot, 'package.json'), JSON.stringify({
+    name: '@openai/codex', version: `${version}-${suffix}`, os: [process.platform], cpu: [process.arch],
+  }));
+  writeFileSync(native, `#!/bin/sh\nprintf 'codex-cli ${version}\\n'\n`);
+  chmodSync(native, 0o755);
+  const sha256 = createHash('sha256').update(readFileSync(native)).digest('hex');
+  return { root, runId, wrapper, native, sha256, version };
+}
+
+function validRuntimeApprovalArgs(fixture) {
+  return [
+    'runtime-executable', 'approve',
+    '--runtime', 'codex',
+    '--path', fixture.wrapper,
+    '--canonical-path', fixture.native,
+    '--sha256', fixture.sha256,
+    '--actor', 'human',
+    '--confirm',
+    '--owner', fixture.runId,
+    '--generation', '1',
+    '--now', '2026-07-11T08:00:00Z',
+  ];
 }
 
 function movedCliRun() {
@@ -218,6 +266,169 @@ test('root rebind CLI relocates once and restores ordinary strict state access',
   assert.deepEqual(JSON.parse(result.stdout), { ok: true });
   const { data } = readState(moved.candidateRoot, moved.runId);
   assert.equal(data.project.root, canonicalProjectRoot(moved.candidateRoot));
+});
+
+test('runtime-executable diagnose is read-only and reports the canonical native identity, never the wrapper', () => {
+  const fixture = runtimeExecutableCliFixture();
+  const before = cliSnapshot(fixture.root, fixture.runId);
+  const result = runResult(fixture.root, [
+    'runtime-executable', 'diagnose', '--runtime', 'codex', '--path', fixture.wrapper,
+  ]);
+  assert.equal(result.code, 0, result.stderr);
+  const diagnosed = JSON.parse(result.stdout);
+  assert.equal(diagnosed.approval_required, true);
+  assert.equal(diagnosed.identity.runtime, 'codex');
+  assert.equal(diagnosed.identity.canonical_path, fixture.native);
+  assert.equal(diagnosed.identity.sha256, fixture.sha256);
+  assert.equal(diagnosed.identity.source, 'official-npm-native');
+  assert.deepEqual(cliSnapshot(fixture.root, fixture.runId), before);
+});
+
+test('runtime-executable approve missing required flags or confirmation exits 2 without mutation', () => {
+  for (const name of ['runtime', 'path', 'canonical-path', 'sha256', 'actor', 'confirm', 'owner', 'generation']) {
+    const fixture = runtimeExecutableCliFixture();
+    const args = validRuntimeApprovalArgs(fixture);
+    const index = args.indexOf(`--${name}`);
+    const count = name === 'confirm' ? 1 : 2;
+    args.splice(index, count);
+    const before = cliSnapshot(fixture.root, fixture.runId);
+    const result = runResult(fixture.root, args);
+    assert.equal(result.code, 2, `${name}: ${result.stderr}`);
+    assert.match(result.stderr, /(?:USAGE|CONFIRM_REQUIRED)/, name);
+    assert.deepEqual(cliSnapshot(fixture.root, fixture.runId), before, name);
+  }
+});
+
+test('runtime-executable approve invalid actor, hash, path, or runtime exits 1 without mutation', () => {
+  for (const [label, flag, value, message] of [
+    ['actor', '--actor', 'agent', /INVALID_ACTOR/],
+    ['hash', '--sha256', 'A'.repeat(64), /RUNTIME_EXECUTABLE_HASH_INVALID/],
+    ['path', '--canonical-path', '/not/the/diagnosed/native', /RUNTIME_EXECUTABLE_PATH_MISMATCH/],
+    ['runtime', '--runtime', 'other', /INVALID_RUNTIME/],
+  ]) {
+    const fixture = runtimeExecutableCliFixture();
+    const args = validRuntimeApprovalArgs(fixture);
+    args[args.indexOf(flag) + 1] = value;
+    const before = cliSnapshot(fixture.root, fixture.runId);
+    const result = runResult(fixture.root, args);
+    assert.equal(result.code, 1, `${label}: ${result.stderr}`);
+    assert.match(result.stderr, message, label);
+    assert.deepEqual(cliSnapshot(fixture.root, fixture.runId), before, label);
+  }
+});
+
+test('runtime-executable approve freshly fences stored runtime, owner, and generation at exit 3', () => {
+  for (const [label, fixtureOptions, flag, value, message] of [
+    ['runtime', { runRuntime: 'claude' }, null, null, /RUNTIME_FENCED/],
+    ['owner', {}, '--owner', 'stale-owner', /LEASE_FENCED/],
+    ['generation', {}, '--generation', '9', /LEASE_FENCED/],
+  ]) {
+    const fixture = runtimeExecutableCliFixture(fixtureOptions);
+    const args = validRuntimeApprovalArgs(fixture);
+    if (flag) args[args.indexOf(flag) + 1] = value;
+    const before = cliSnapshot(fixture.root, fixture.runId);
+    const result = runResult(fixture.root, args);
+    assert.equal(result.code, 3, `${label}: ${result.stderr}`);
+    assert.match(result.stderr, message, label);
+    assert.deepEqual(cliSnapshot(fixture.root, fixture.runId), before, label);
+  }
+});
+
+test('runtime-executable approve writes one fenced anchored approval with exact human path and hash', () => {
+  const fixture = runtimeExecutableCliFixture();
+  const result = runResult(fixture.root, validRuntimeApprovalArgs(fixture));
+  assert.equal(result.code, 0, result.stderr);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.ok, true);
+  assert.equal(output.approval.canonical_path, fixture.native);
+  assert.equal(output.approval.sha256, fixture.sha256);
+  assert.equal(output.approval.approved_by, 'human');
+  assert.equal(output.approval.approved_at, '2026-07-11T08:00:00.000Z');
+
+  const { data } = readState(fixture.root, fixture.runId);
+  assert.deepEqual(data.autonomy.runtime_executable_approval, output.approval);
+  const events = readFileSync(join(runDir(fixture.root, fixture.runId), 'event-log.jsonl'), 'utf8')
+    .trim().split('\n').map(line => JSON.parse(line));
+  const approvals = events.filter(event => event.type === 'runtime-executable-approved');
+  assert.equal(approvals.length, 1);
+  assert.deepEqual(approvals[0].data, {
+    runtime: 'codex', canonical_path: fixture.native, sha256: fixture.sha256,
+    version: fixture.version, source: 'official-npm-native', actor: 'human',
+  });
+});
+
+test('runtime-executable approval can repair a paused run without unpausing or changing its lease', () => {
+  const fixture = runtimeExecutableCliFixture();
+  const { data } = readState(fixture.root, fixture.runId);
+  data.status = 'paused';
+  data.pause_reason = 'runtime-executable-approval-required';
+  const leaseBefore = structuredClone(data.session_chain.lease);
+  writeState(fixture.root, fixture.runId, data);
+
+  const result = runResult(fixture.root, validRuntimeApprovalArgs(fixture));
+  assert.equal(result.code, 0, result.stderr);
+  const after = readState(fixture.root, fixture.runId).data;
+  assert.equal(after.status, 'paused');
+  assert.equal(after.pause_reason, 'runtime-executable-approval-required');
+  assert.deepEqual(after.session_chain.lease, leaseBefore);
+  assert.equal(after.autonomy.runtime_executable_approval.sha256, fixture.sha256);
+});
+
+test('runtime-executable approval rejects a terminal run as invalid state, not as a fence', () => {
+  const fixture = runtimeExecutableCliFixture();
+  const { data } = readState(fixture.root, fixture.runId);
+  data.status = 'completed';
+  writeState(fixture.root, fixture.runId, data);
+  const before = cliSnapshot(fixture.root, fixture.runId);
+
+  const result = runResult(fixture.root, validRuntimeApprovalArgs(fixture));
+  assert.equal(result.code, 1, result.stderr);
+  assert.match(result.stderr, /RUNTIME_EXECUTABLE_STATE_INVALID.*RUN_TERMINAL/);
+  assert.deepEqual(cliSnapshot(fixture.root, fixture.runId), before);
+});
+
+test('runtime-executable approval rejects replacement after diagnosis without appending an event', () => {
+  const fixture = runtimeExecutableCliFixture();
+  const before = cliSnapshot(fixture.root, fixture.runId);
+  writeFileSync(fixture.native, `#!/bin/sh\nprintf 'codex-cli ${fixture.version}\\n'\n# replacement\n`);
+  chmodSync(fixture.native, 0o755);
+  const result = runResult(fixture.root, validRuntimeApprovalArgs(fixture));
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /RUNTIME_EXECUTABLE_HASH_MISMATCH/);
+  assert.deepEqual(cliSnapshot(fixture.root, fixture.runId), before);
+});
+
+test('explicit native executable is hashed without execution during diagnose and runs only after exact human approval', () => {
+  const fixture = runtimeExecutableCliFixture();
+  const custom = join(fixture.root, 'custom-codex');
+  const marker = join(fixture.root, 'custom-executed');
+  writeFileSync(custom, `#!/bin/sh\nprintf 'x' >> '${marker}'\nprintf 'codex-cli 7.8.9\\n'\n`);
+  chmodSync(custom, 0o755);
+  const customFixture = {
+    ...fixture,
+    wrapper: custom,
+    native: custom,
+    sha256: createHash('sha256').update(readFileSync(custom)).digest('hex'),
+    version: '7.8.9',
+  };
+
+  const diagnosed = runResult(fixture.root, [
+    'runtime-executable', 'diagnose', '--runtime', 'codex', '--path', custom,
+  ]);
+  assert.equal(diagnosed.code, 0, diagnosed.stderr);
+  const diagnosis = JSON.parse(diagnosed.stdout);
+  assert.equal(diagnosis.identity.source, 'human-explicit');
+  assert.equal(diagnosis.identity.version, null);
+  assert.equal(diagnosis.identity.sha256, customFixture.sha256);
+  assert.equal(existsSync(marker), false, 'unapproved custom code must not run during diagnosis');
+
+  const approved = runResult(fixture.root, validRuntimeApprovalArgs(customFixture));
+  assert.equal(approved.code, 0, approved.stderr);
+  const approval = JSON.parse(approved.stdout).approval;
+  assert.equal(approval.source, 'human-explicit');
+  assert.equal(approval.version, '7.8.9');
+  assert.equal(approval.package, null);
+  assert.equal(readFileSync(marker, 'utf8'), 'xx', 'approval revalidates once inside the locked transaction');
 });
 
 test('workstream new + set via CLI with lease', () => {
