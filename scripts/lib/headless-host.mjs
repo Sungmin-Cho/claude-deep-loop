@@ -1326,6 +1326,8 @@ function driveHeadlessRunLocked({
           model: initialLoop.autonomy?.session_model ?? null,
           effort: initialLoop.autonomy?.session_effort ?? null,
           codexExecutable: executable.canonical_path,
+          platform: freshExecutable.platform,
+          runtimeExecutableIdentity: freshExecutable,
           deepLoopRoot,
         }).headless;
         if (!sameValue(entry, expectedEntry)) return { ok: false, reason: 'post-cas-entry-mismatch' };

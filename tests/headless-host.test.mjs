@@ -193,6 +193,138 @@ test('cache hit has no smoke usage to replay and still runs the maker exactly on
   assert.deepEqual(costs.map((event) => event.data.reported_tokens), [31]);
 });
 
+test('native Windows Codex handoff preserves its revalidated descriptor through post-CAS spawn', () => {
+  const { root, runId, childRunId } = seedCodexHandoff();
+  const nativeExecutable = {
+    runtime: 'codex',
+    canonical_path: 'C:\\Program Files\\Codex\\codex.exe',
+    sha256: 'b'.repeat(64),
+    version: '0.144.1',
+    platform: 'win32',
+    arch: 'x64',
+    source: 'human-explicit',
+    package: null,
+    authenticode: { status: 'Valid', signer: 'OpenAI, L.L.C.' },
+    approved_by: 'human',
+    approved_at: '2026-07-11T00:00:00.000Z',
+  };
+  const codexHome = {
+    canonical_path: 'C:\\Users\\tester\\.codex',
+    device: 'volume-1',
+    inode: 'file-2',
+    birthtime_ns: '3',
+    platform: 'win32',
+  };
+  const sourceEnv = {
+    PATH: 'C:\\Windows\\System32',
+    SystemRoot: 'C:\\Windows',
+    ComSpec: 'C:\\Windows\\System32\\cmd.exe',
+    PATHEXT: '.COM;.EXE;.BAT;.CMD',
+    TEMP: 'C:\\Temp',
+    TMP: 'C:\\Tmp',
+    USERPROFILE: 'C:\\Users\\tester',
+    HOMEDRIVE: 'C:',
+    HOMEPATH: '\\Users\\tester',
+    SECRET_THAT_MUST_NOT_LEAK: 'secret',
+  };
+  const { data } = readState(root, runId);
+  data.autonomy.runtime_executable_approval = nativeExecutable;
+  writeState(root, runId, data);
+
+  let hostRevalidations = 0;
+  let respawnRevalidations = 0;
+  let makerCalls = 0;
+  const result = driveHeadlessRun({
+    root,
+    runId,
+    expect: { owner: runId, generation: 1 },
+    now: NOW1 + 1_000,
+    env: sourceEnv,
+    revalidateExecutable: (stored) => {
+      hostRevalidations += 1;
+      assert.deepEqual(stored, nativeExecutable);
+      return { ...nativeExecutable };
+    },
+    resolveCodexHome: ({ platform, expectedIdentity }) => {
+      assert.equal(platform, 'win32');
+      if (expectedIdentity !== undefined) assert.deepEqual(expectedIdentity, codexHome);
+      return { ...codexHome };
+    },
+    preflightFn: ({ executableIdentity, codexHomeIdentity }) => {
+      assert.deepEqual(executableIdentity, nativeExecutable);
+      assert.deepEqual(codexHomeIdentity, codexHome);
+      return { ok: true, cache_hit: true, measured_usage: [] };
+    },
+    respawnFn: (projectRoot, id, options) => respawn(projectRoot, id, {
+      ...options,
+      platform: 'win32',
+      revalidateRuntimeExecutable: (stored, revalidationOptions) => {
+        respawnRevalidations += 1;
+        assert.equal(revalidationOptions.platform, 'win32');
+        assert.deepEqual(stored, nativeExecutable);
+        return { ...nativeExecutable };
+      },
+    }),
+    spawnFn: (entry) => {
+      makerCalls += 1;
+      assert.equal(entry.bin, nativeExecutable.canonical_path);
+      assert.equal(entry.platform, 'win32');
+      assert.equal(entry.shell, false);
+      assert.equal(entry.cwd, root);
+      assert.equal(entry.usageOutputKind, 'codex-jsonl');
+      assert.deepEqual(entry.env, {
+        Path: sourceEnv.PATH,
+        SystemRoot: sourceEnv.SystemRoot,
+        ComSpec: sourceEnv.ComSpec,
+        PATHEXT: sourceEnv.PATHEXT,
+        TEMP: sourceEnv.TEMP,
+        TMP: sourceEnv.TMP,
+        USERPROFILE: sourceEnv.USERPROFILE,
+        HOMEDRIVE: sourceEnv.HOMEDRIVE,
+        HOMEPATH: sourceEnv.HOMEPATH,
+        CODEX_HOME: codexHome.canonical_path,
+        DEEP_LOOP_RUN_ID: runId,
+        DEEP_LOOP_PROJECT_ROOT: root,
+        DEEP_LOOP_OWNER: childRunId,
+        DEEP_LOOP_UNATTENDED: '1',
+        DEEP_LOOP_HEADLESS: '1',
+        DEEP_LOOP_GENERATION: '2',
+      });
+      const acquired = acquireLease(root, runId, {
+        owner: childRunId,
+        expectGeneration: 1,
+        runtime: 'codex',
+        now: NOW1 + 2_000,
+      });
+      assert.equal(acquired.ok, true);
+      return { ok: true, usage: measuredUsage(30) };
+    },
+  });
+
+  const after = readState(root, runId).data;
+  const redDiagnostic = JSON.stringify({
+    result,
+    makerCalls,
+    status: after.status,
+    pauseReason: after.pause_reason,
+    handoffPhase: after.session_chain.lease.handoff_phase,
+    childOutcome: after.session_chain.sessions.find((session) => session.run_id === childRunId)?.outcome,
+  });
+  assert.equal(makerCalls, 1, redDiagnostic);
+  assert.equal(hostRevalidations, 2);
+  assert.equal(respawnRevalidations, 3);
+  assert.deepEqual(result, {
+    ok: true,
+    action: 'resumed',
+    usage: measuredUsage(30),
+    recorded: true,
+  });
+  assert.equal(after.status, 'running');
+  assert.equal(after.session_chain.lease.owner_run_id, childRunId);
+  assert.equal(after.session_chain.lease.generation, 2);
+  assert.ok(after.session_chain.sessions.find((session) => session.run_id === childRunId)?.started_at);
+});
+
 test('receipt-settled preflight is accounted through the injected kernel settler and never replayed generically', () => {
   const { root, runId, childRunId } = seedCodexHandoff();
   const deps = codexHostDeps(root, runId);
