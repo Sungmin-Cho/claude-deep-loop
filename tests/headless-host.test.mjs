@@ -18,6 +18,16 @@ import { canonicalRealpath } from './helpers/fs-fixtures.mjs';
 const NOW0 = new Date('2026-07-11T00:00:00Z');
 const NOW1 = Date.parse('2026-07-11T00:01:00Z');
 const WINDOWS_TARGET_ROOT = 'C:\\Fixture Project';
+const WINDOWS_DEEP_LOOP_ROOT = 'C:\\Fixture Deep Loop';
+
+function buildPosixLaunchCommand(options) {
+  return buildLaunchCommand({
+    ...options,
+    platform: 'linux',
+    root: '/fixture-project',
+    deepLoopRoot: '/fixture-deep-loop',
+  });
+}
 
 function defaultTestRespawn(projectRoot, runId, options) {
   const loop = readState(projectRoot, runId).data;
@@ -33,7 +43,11 @@ function defaultTestRespawn(projectRoot, runId, options) {
       },
     });
   }
-  return respawn(projectRoot, runId, { ...options, platform: 'linux' });
+  return respawn(projectRoot, runId, {
+    ...options,
+    platform: 'linux',
+    launchCommandBuilder: buildPosixLaunchCommand,
+  });
 }
 
 function driveHeadlessRun(options = {}) {
@@ -687,7 +701,7 @@ test('preliminary gate failure keeps a non-launching closure if the authoritativ
       const { data: fresh } = readState(projectRoot, id);
       fresh.circuit_breaker.tripped = false;
       writeState(projectRoot, id, fresh);
-      return respawn(projectRoot, id, options);
+      return defaultTestRespawn(projectRoot, id, options);
     },
     spawnFn: () => {
       makerCalls += 1;
@@ -1548,7 +1562,7 @@ test('post-CAS validation rejects project or plugin directory node replacement b
       runId,
       expect: { owner: runId, generation: 1 },
       now: NOW1 + 1_000,
-      deepLoopRoot: '/opt/deep-loop-plugin',
+      deepLoopRoot: process.platform === 'win32' ? WINDOWS_DEEP_LOOP_ROOT : '/opt/deep-loop-plugin',
       ...deps,
       inspectDirectory: (path) => {
         const count = (callsByPath.get(path) || 0) + 1;

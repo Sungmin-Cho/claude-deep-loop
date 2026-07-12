@@ -55,13 +55,13 @@ function respawn(root, runId, options = {}) {
 function driveHeadlessRun(options = {}) {
   return driveHeadlessRunImpl({
     ...options,
+    launchCommandBuilder: options.launchCommandBuilder ?? buildPosixLaunchCommand,
     respawnFn: options.respawnFn ?? ((root, runId, respawnOptions) => {
       const identity = readState(root, runId).data.autonomy.runtime_executable_approval;
-      return respawnImpl(root, runId, {
+      return respawn(root, runId, {
         ...respawnOptions,
-        platform: identity.platform,
         revalidateRuntimeExecutable: stored => stored,
-        runtimeRevalidationOptions: { platform: identity.platform, arch: identity.arch },
+        runtimeRevalidationOptions: { platform: 'linux', arch: identity.arch },
       });
     }),
   });
@@ -394,7 +394,7 @@ test('Codex emitted handoff stays on the shared measured host path through prefl
   });
   const executable = {
     runtime: 'codex', canonical_path: '/opt/codex/bin/codex', sha256: 'a'.repeat(64),
-    version: '0.144.1', platform: process.platform, arch: process.arch,
+    version: '0.144.1', platform: 'linux', arch: process.arch,
     source: 'human-explicit', package: null, authenticode: null,
     approved_by: 'human', approved_at: NOW0.toISOString(),
   };
@@ -416,7 +416,7 @@ test('Codex emitted handoff stays on the shared measured host path through prefl
     revalidateExecutable: () => executable,
     resolveCodexHome: () => ({
       canonical_path: '/authenticated/codex-home', device: '1', inode: '2',
-      birthtime_ns: '3', platform: process.platform,
+      birthtime_ns: '3', platform: 'linux',
     }),
     preflightFn: () => {
       order.push('preflight');
