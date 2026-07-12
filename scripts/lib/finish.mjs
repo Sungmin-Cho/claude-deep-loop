@@ -35,14 +35,24 @@ export function finishProofState(loop) {
   // A maker converges only when its LATEST bound terminal checker (by epOrder) is APPROVED. An older approve
   // followed by a newer reject (same target_maker) must NOT mask the rejection (a plain any-approved test would,
   // diverging from nextAction which routes to fix_episode). An unbound checker has no target_maker so cannot count.
-  const boundLatestApproved = (mid) => {
+  const latestBoundChecker = (mid) => {
     const cs = (loop.episodes || []).filter(e => isProofCapableChecker(e) && e.target_maker === mid && (e.status === 'approved' || e.status === 'rejected'));
-    if (!cs.length) return false;
-    const latest = cs.reduce((a, b) => (epOrder(a.id, b.id) >= 0 ? a : b));
-    return latest.status === 'approved';
+    return cs.length ? cs.reduce((a, b) => (epOrder(a.id, b.id) >= 0 ? a : b)) : null;
   };
+  const boundLatestApproved = (mid) => latestBoundChecker(mid)?.status === 'approved';
   const allPointsConverged = [...latestByPoint.values()].every(m => boundLatestApproved(m.id));
-  const reviewedProof = doneMakers.length > 0 && allMakersReviewed && allPointsConverged;
+  // P2 codex r6: hill-climb run의 review proof는 계약-강제 리뷰여야 한다 — proof를 만족시키는 각 latest
+  // APPROVED checker에 dispatch가 pin한 contract(sha256)가 있어야 한다. pre-patch 커널로 approved된
+  // legacy checker는 record-시점 게이트를 다시 거치지 않으므로 finish에서 막는다. 마이그레이션(r7,
+  // abandon 불필요 — terminal checker는 abandon 불가): dispatchReview의 legacyUnpinned 특례가 해당
+  // maker를 재리뷰 재적격으로 되돌리므로, 사람이 `review dispatch`를 다시 실행해 계약-pinned checker가
+  // 최신이 되면 이 게이트가 해소된다.
+  const hillClimb = loop.recipe?.id === 'harness-hill-climb';
+  const contractPinned = !hillClimb || [...latestByPoint.values()].every(m => {
+    const c = latestBoundChecker(m.id);
+    return !c || c.status !== 'approved' || !!c.contract?.sha256;
+  });
+  const reviewedProof = doneMakers.length > 0 && allMakersReviewed && allPointsConverged && contractPinned;
   const unboundDoneMaker = doneMakers.some(m => !m.workstream_id || !(loop.workstreams || []).some(w => w.id === m.workstream_id));
   const missing = [];
   if (!hasWork) missing.push('no-proof-of-work');                  // 최소 1 episode 필요 (Array.every 공허-통과 방지)
@@ -51,6 +61,7 @@ export function finishProofState(loop) {
   if (!wsAll) missing.push('non-terminal-workstreams');
   if (!allMakersReviewed) missing.push('unreviewed-maker');        // 미리뷰 done maker 차단
   if (hasWork && !reviewedProof) missing.push('no-independent-review');
+  if (hasWork && !contractPinned) missing.push('hillclimb-contract-unpinned');   // legacy approved checker — contract materialize 후 fresh pinned review 필요
   if (unsatisfiedReviewPoints(loop).length) missing.push('review-point-unsatisfied');
   if (unboundDoneMaker) missing.push('unbound-proof-episode');
   return { hasWork, settled, noActiveWs, allWsTerminal: wsAll, allMakersReviewed, reviewedProof, missing };

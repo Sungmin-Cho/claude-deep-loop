@@ -417,6 +417,34 @@ test('checker process failure blocks and pauses once without proof or fabricated
   assert.equal(events(f.root, f.runId).some(event => event.type === 'review-outcome'), false);
 });
 
+test('headless checker immutable prompt carries anchored contract and evidence from the durable claim', () => {
+  const f = seed();
+  const evidence = { insights_path: '.deep-loop/insights/x.json', emit_ulid: '01TEST', sha256: 'a'.repeat(64), candidates: [] };
+  const contract = { slice: 'HILLCLIMB-001', path: `${f.worktree}/.deep-review/contracts/HILLCLIMB-001.yaml`, sha256: 'b'.repeat(64) };
+  const state = readState(f.root, f.runId).data;
+  const checker = state.episodes.find(episode => episode.id === f.checkerId);
+  checker.evidence = evidence;
+  checker.contract = contract;
+  writeState(f.root, f.runId, state);
+
+  const deps = hostDeps(f);
+  let immutableContract;
+  const result = driveHeadlessRun({
+    root: f.root, runId: f.runId, now: Date.parse(FIXED_NOW), ...deps,
+    checkerRunFn: options => {
+      immutableContract = options.contract;
+      return { ok: false, reason: 'timeout' };
+    },
+  });
+
+  assert.equal(result.action, 'checker-blocked');
+  assert.deepEqual(immutableContract.evidence, evidence);
+  assert.deepEqual(immutableContract.contract, contract);
+  const claimed = readState(f.root, f.runId).data.episodes.find(episode => episode.id === f.checkerId).review_claim;
+  assert.deepEqual(claimed.evidence, evidence);
+  assert.deepEqual(claimed.contract, contract);
+});
+
 test('a measured checker turn with no final message is charged once while proof stays blocked', () => {
   const f = seed();
   const deps = hostDeps(f);

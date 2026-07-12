@@ -499,7 +499,9 @@ export function latestInsights(root) {
         process.stderr.write(`[deep-loop:warn] insights ${f}: no clean finish edge after emit (non-exempt after: ${after.length ? after.map(e => e.type).join(',') : 'none'}) — skipped\n`);
         continue;
       }
-      return { path: rel, envelope: obj };
+      // sha256: anchored insights-emitted 이벤트에 기록된 값(위에서 contentHash(raw) 일치 검증 완료) —
+      // 소비자(dispatchReview evidence 등)가 artifact 동일성을 재검증 없이 인용할 수 있게 노출한다 (codex r2).
+      return { path: rel, envelope: obj, sha256: ev.data.sha256 };
     } catch (e) {
       process.stderr.write(`[deep-loop:warn] insights ${f}: ${String(e?.message || e)} — skipped\n`);   // fail-soft
     }

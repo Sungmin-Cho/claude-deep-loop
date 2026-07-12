@@ -448,6 +448,8 @@ test('latest: 정상 emit → 검증 통과 최신 반환', () => {
   const got = latestInsights(root);
   assert.equal(got.path, r2.path);                          // ULID 최신 + finish-인접
   assert.equal(got.envelope.envelope.run_id, runId);
+  // codex r2 (P2 evidence): anchored 이벤트의 sha256을 소비자용으로 노출 — artifact 내용과 일치해야 한다
+  assert.equal(got.sha256, contentHash(readFileSync(join(root, r2.path), 'utf8')));
 });
 
 // ── Phase6 ITEM-4 (adversarial): finish는 proof 검증 이전에 insights emit을 실행하므로, proof 미충족

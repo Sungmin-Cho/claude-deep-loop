@@ -75,7 +75,9 @@ function legacyStandaloneChecker() {
   return { root, runId, f, worktree, ws, artifact, makerId, checkerEpisodeId };
 }
 
-test('resolveReviewer falls back when deep-review absent', () => {
+// deep-review가 init 때부터 부재 → 기본 reviewer는 subagent-checker(초기화-시점 기본값, 강등 아님).
+// Codex 감지는 durable reviewer identity를 바꾸지 않는다. 구성된 deep-review가 이후 사라지면 fail-closed다.
+test('resolveReviewer keeps the init-time default subagent runtime-neutral', () => {
   const { root, runId } = seed({ 'deep-review': false, codex: true });
   const { data } = readState(root, runId);
   assert.equal(resolveReviewer(data, { 'deep-review': false, codex: true }).reviewer, 'subagent-checker');
@@ -344,7 +346,7 @@ test('recordReviewOutcome: rejects recording on an abandoned checker', () => {
   writeFileSync(join(root, 'art.txt'), 'x');
   const m = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws.id, expectedArtifacts: ['art.txt'], fence });
   recordEpisode(root, runId, m.id, { status: 'done', artifacts: ['art.txt'], proof: {}, fence });
-  const dr = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws.id, detected: {}, fence });
+  const dr = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws.id, detected: { 'deep-review': true }, fence });
   abandonEpisode(root, runId, dr.checkerEpisodeId, { reason: 'stale checker', confirm: true, fence });
   assert.throws(() => recordReviewOutcome(root, runId, { episodeId: dr.checkerEpisodeId, verdict: 'APPROVE', fence }), /REVIEW_ALREADY_RECORDED/);
   // review point 오염 없음
@@ -358,7 +360,7 @@ test('recordReviewOutcome: rejects recording on a done checker (defensive)', () 
   writeFileSync(join(root, 'art.txt'), 'x');
   const m = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws.id, expectedArtifacts: ['art.txt'], fence });
   recordEpisode(root, runId, m.id, { status: 'done', artifacts: ['art.txt'], proof: {}, fence });
-  const dr = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws.id, detected: {}, fence });
+  const dr = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws.id, detected: { 'deep-review': true }, fence });
   // checker 를 'done' 으로 강제(정상 경로로는 도달 불가 — 방어적 가드 확인)
   const data = readState(root, runId).data; data.episodes.find(e => e.id === dr.checkerEpisodeId).status = 'done'; writeState(root, runId, data);
   assert.throws(() => recordReviewOutcome(root, runId, { episodeId: dr.checkerEpisodeId, verdict: 'APPROVE', fence }), /REVIEW_ALREADY_RECORDED/);
@@ -387,14 +389,15 @@ test('recordReviewOutcome: bound approve increments episodes_agent_reviewed by 1
   assert.equal(cAfter.episodes_human_reviewed || 0, cBefore.episodes_human_reviewed || 0, 'machine review must not touch the human gate counter');
 });
 
-// ── C2: object-shape routing — resolveReviewer downgrades on present (installed‖initialized) ───
-test('C2: resolveReviewer downgrades a configured deep-review reviewer when not present (object shape)', () => {
+// ── C2: object-shape routing — P1 의도 변경: 구성된 deep-review reviewer의 부재는 강등이 아니라 fail-closed.
+// (구 동작은 codex-cross/subagent-checker로 조용히 대체 — recordReviewOutcome이 report producer를 검증하지
+// 않으므로 대체된 checker의 APPROVE도 finish proof를 만족한다. 전체 fail-closed 경로는 reviewer-failclosed.test.mjs.)
+test('C2: resolveReviewer fails closed for a configured deep-review reviewer when not present (object shape)', () => {
   const { root, runId } = seed({ 'deep-review': { present: true } });   // → review.reviewer = 'deep-review-loop'
   const { data } = readState(root, runId);
-  // deep-review absent, codex present → neutral subagent checker (Codex presence is not a capability)
-  assert.equal(resolveReviewer(data, { 'deep-review': { present: false }, codex: { present: true } }).reviewer, 'subagent-checker');
-  // neither present → subagent-checker
-  assert.equal(resolveReviewer(data, { 'deep-review': { present: false }, codex: { present: false } }).reviewer, 'subagent-checker');
+  // deep-review absent → fail-closed, codex 유무 무관 (조용한 대체 제거)
+  assert.throws(() => resolveReviewer(data, { 'deep-review': { present: false }, codex: { present: true } }), /REVIEWER_DEPENDENCY_MISSING/);
+  assert.throws(() => resolveReviewer(data, { 'deep-review': { present: false }, codex: { present: false } }), /REVIEWER_DEPENDENCY_MISSING/);
   // deep-review present → stays deep-review-loop
   assert.equal(resolveReviewer(data, { 'deep-review': { present: true } }).reviewer, 'deep-review-loop');
   // installed-but-uninitialized (original Problem C) → present:true → stays deep-review-loop

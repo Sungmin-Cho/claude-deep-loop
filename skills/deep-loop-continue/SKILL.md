@@ -111,7 +111,21 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode record --id <episode_id> --s
 
 ### dispatch_checker
 
-어떤 `review dispatch`보다 먼저 `references/adapters.md`의 **상호 배타 checker routing** Route A–D를 그대로 적용한다. 현재 host에서 아래 독립 경로 중 하나가 실제로 성립하는지 먼저 확정한다.
+먼저 `references/adapters.md`의 **상호 배타 checker routing** Route A–D 중 실제 가능한 경로를 선택하되 아직 dispatch하지 않는다. Route D이면 `needs-human`으로 중단하며 계약 파일도 쓰지 않는다. Route A/B/C일 때만 아래 계약 준비를 수행한 뒤 선택한 경로로 dispatch한다.
+
+먼저 recipe를 **상태에서** 읽는다(이전 대화 컨텍스트를 가정하지 말 것 — 이 값이 아래 분기의 유일한 근거다):
+
+```
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field recipe.id --project-root "<canonical_project_root>" --run-id <run_id>
+```
+
+**결과가 `"harness-hill-climb"`이면 dispatch 전에 checker 계약을 materialize한다** (P2 — 커널이 fail-closed로 강제; 전체 규약은 `Read("../deep-loop-workflow/references/hill-climbing.md")` §3.4):
+
+§1.5에서 확정한 absolute worktree에 대해 host의 native path/file API로 `DEEP_LOOP_ROOT/skills/deep-loop-workflow/references/contracts/HILLCLIMB-001.yaml`을 `<absolute_worktree>/.deep-review/contracts/HILLCLIMB-001.yaml`로 복사한다. mkdir/copy **전** canonical worktree containment를 확인하고, `.deep-review`, `contracts`, 대상 파일 중 존재하는 경로 성분이 symlink/reparse-point이면 중단한다. POSIX `cp`/`mkdir` 셸 문법을 가정하지 말고 현재 host에서 안전한 파일 API를 사용한다.
+
+tracked 소스를 **그대로 복사**한다(byte-identical — 커널이 대조; 수정본은 `REVIEW_CONTRACT_MISSING`으로 거부). 커널도 realpath containment + contracts 디렉터리 유일성(HILLCLIMB-001.yaml 외 다른 계약 yaml 금지 — bare `--contract`는 모든 active 계약을 로드하므로)을 fail-closed로 재검증한다. 계약-비소비 reviewer나 `--contract` 플래그 부재/명시 selector(`--contract SLICE-NNN` 등 — deep-review 파서는 SLICE-NNN만 selector로 소비하므로 HILLCLIMB-001을 지정할 수 없다)는 `REVIEW_CONTRACT_UNENFORCEABLE` — run의 review 설정을 사람과 함께 재구성해야 한다.
+
+Route A/B/C 모두 hill-climb dispatch 응답의 `descriptor.evidence`(커널-검증 insights 경로·emit ULID·sha256·후보)를 fresh checker의 리뷰 요청 본문에 그대로 포함하여 maker 인용과 대조하게 한다. checker episode의 `request.md`에도 같은 evidence 사본이 durable 기록되며, Codex measured host는 anchored claim의 evidence/contract를 immutable prompt contract로 전달한다.
 
 - **Route A — cooperative fresh subagent:** host에 fresh `code-reviewer`를 만드는 cooperative tool이 실제로 있을 때만 다음 명령을 실행한다. configured reviewer가 agent인데 이 capability가 없으면 Route D로 가며 dispatch하지 않는다.
 

@@ -818,6 +818,8 @@ function driveIndependentChecker({
         point: claimed.claim.point,
         project_root: claimed.claim.project_root,
         artifacts: claimed.claim.artifacts,
+        ...(claimed.claim.evidence !== undefined ? { evidence: claimed.claim.evidence } : {}),
+        ...(claimed.claim.contract !== undefined ? { contract: claimed.claim.contract } : {}),
       },
       env: checkerEnv,
       model: initialLoop.autonomy?.session_model ?? null,
