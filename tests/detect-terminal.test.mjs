@@ -42,11 +42,27 @@ test('darwin tmux → none multiplexer-v1-unsupported (TERM_PROGRAM stale)', () 
   assert.equal(d.launcher, 'none'); assert.equal(d.reason, 'multiplexer-v1-unsupported');
 });
 test('darwin iTerm2 installed → iterm2; not installed → none', () => {
-  assert.equal(detectTerminal({ env:{ TERM_PROGRAM:'iTerm.app' }, platform:'darwin', run: ok, now: NOW }).launcher, 'iterm2');
+  let captured = null;
+  const detected = detectTerminal({
+    env:{ TERM_PROGRAM:'iTerm.app' }, platform:'darwin',
+    run: (bin, argv) => { captured = { bin, argv }; return { code: 0 }; }, now: NOW,
+  });
+  assert.equal(detected.launcher, 'iterm2');
+  assert.equal(detected.launcher_bin, '/usr/bin/osascript');
+  assert.equal(captured.bin, '/usr/bin/osascript');
+  assert.deepEqual(captured.argv, ['-e', 'id of application "iTerm"']);
   assert.equal(detectTerminal({ env:{ TERM_PROGRAM:'iTerm.app' }, platform:'darwin', run: fail, now: NOW }).launcher, 'none');
 });
 test('darwin Apple_Terminal id ok → terminal-app', () => {
-  assert.equal(detectTerminal({ env:{ TERM_PROGRAM:'Apple_Terminal' }, platform:'darwin', run: ok, now: NOW }).launcher, 'terminal-app');
+  let captured = null;
+  const detected = detectTerminal({
+    env:{ TERM_PROGRAM:'Apple_Terminal' }, platform:'darwin',
+    run: (bin, argv) => { captured = { bin, argv }; return { code: 0 }; }, now: NOW,
+  });
+  assert.equal(detected.launcher, 'terminal-app');
+  assert.equal(detected.launcher_bin, '/usr/bin/osascript');
+  assert.equal(captured.bin, '/usr/bin/osascript');
+  assert.deepEqual(captured.argv, ['-e', 'id of application "Terminal"']);
 });
 test('win32 WT_SESSION without an independently verified identity → none/manual and no process call', () => {
   let calls = 0;

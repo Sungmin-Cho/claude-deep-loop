@@ -886,6 +886,12 @@ test('handoff execution docs preserve runtime-correct resume tokens and current 
     assert.match(body, /codex-transport-not-activated/, `${path} must retain the fail-closed reason for unsupported Codex paths`);
     assert.match(body, /native Windows|네이티브 Windows/i,
       `${path} must distinguish the activated native-Windows Codex path`);
+    assert.match(body, /macOS\/Linux[\s\S]{0,360}cmux/i,
+      `${path} must document approved Codex visible cmux continuation on POSIX`);
+    assert.match(body, /macOS[\s\S]{0,360}(?:iTerm2|Terminal\.app)/i,
+      `${path} must bind Darwin Codex continuation to the detected Apple terminal`);
+    assert.match(body, /runtime-identity-unavailable/,
+      `${path} must name the missing approved-runtime fail-closed reason`);
     assert.match(body, /trusted|승인된|검증된/i,
       `${path} must bind native-Windows transport to trusted executable identities`);
     assert.match(body, /Codex App[\s\S]{0,240}(?:manual|수동)/i,

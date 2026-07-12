@@ -98,6 +98,20 @@ test('visible fallback documents the runtime-correct manual resume command for b
   }
 });
 
+test('Codex POSIX visible docs bind approved runtime and exact detected launcher authority', () => {
+  for (const path of USER_DOCS) {
+    const source = readFileSync(join(R, path), 'utf8');
+    assert.match(source, /Codex POSIX[\s\S]{0,500}approved[\s\S]{0,240}runtime/i,
+      `${path} must require the durable approved Codex runtime on POSIX`);
+    assert.match(source, /Codex POSIX[\s\S]{0,700}cmux[\s\S]{0,300}(?:absolute|절대)[\s\S]{0,180}(?:socket|소켓)/i,
+      `${path} must bind cmux to the detected absolute binary and exact socket`);
+    assert.match(source, /Codex POSIX[\s\S]{0,1000}\/usr\/bin\/osascript[\s\S]{0,260}(?:iTerm2|Terminal\.app)/i,
+      `${path} must bind the selected Darwin launcher to fixed osascript`);
+    assert.match(source, /runtime-identity-unavailable/,
+      `${path} must name the missing-runtime fail-closed outcome`);
+  }
+});
+
 test('user docs define exact-hook trust and durable fallback without granting isolated children plugins', () => {
   for (const path of USER_DOCS) {
     const source = readFileSync(join(R, path), 'utf8');

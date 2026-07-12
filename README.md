@@ -100,11 +100,13 @@ Codex App install/discovery and in-task skill execution are supported by the plu
 | Codex CLI, native Windows | Full | Trusted Windows Terminal/PowerShell launcher | Isolated trusted `codex.exe`; otherwise fail-closed | Exact-definition-trusted direct Node hook |
 | Codex App | Install/discovery and in-task execution | Manual new task only | Optional isolated `codex exec` driver | Lifecycle supported; App smoke pending external evidence |
 
+**Codex POSIX visible authority:** macOS/Linux automatic visible continuation requires the durable human-approved Codex runtime identity. `cmux` is runnable only when detection bound the same absolute bundled executable to the exact socket with a successful ping. On macOS, the fixed `/usr/bin/osascript` may launch only the positively detected iTerm2 or Terminal.app entry; finding that system binary alone never activates both launchers. Missing runtime approval returns `runtime-identity-unavailable`, identity or launcher drift fails closed around the spawned CAS, and no path substitutes a bare `codex` or a Claude process.
+
 Native Windows means the Node control plane runs directly on win32 and the documented native commands use **PowerShell**; Windows Terminal and PowerShell remain separate approved launcher kinds. **WSL follows Linux behavior and is not native Windows**; a WSL executable or path is not authority for a native-Windows spawn. **Native Windows CI: pending external evidence** until the repository's Windows job actually runs after an approved push.
 
-## Executable Trust on Native Windows
+## Executable Trust and Native Windows Launchers
 
-Automatic continuation never trusts command lookup alone. Substitute the installed plugin's canonical absolute root for `<absolute-deep-loop-root>` and run exactly one read-only diagnosis for the selected identity:
+Automatic continuation never trusts command lookup alone. Runtime executable diagnosis/approval applies to the selected runtime on every supported OS; launcher executable approval is the additional native-Windows WT/PowerShell boundary. Substitute the installed plugin's canonical absolute root for `<absolute-deep-loop-root>` and run exactly one read-only diagnosis for the selected identity:
 
 ```text
 node "<absolute-deep-loop-root>/scripts/deep-loop.mjs" runtime-executable diagnose --runtime <claude|codex> --path "<human-supplied-absolute-exe>"

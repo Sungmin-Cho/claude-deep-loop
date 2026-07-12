@@ -623,7 +623,7 @@ test('respawn: buildLaunchCommand throw self-pauses emitted handoff without adva
   assert.equal(lease.handoff_child_run_id, h.childRunId, 'preserve-pause keeps the reserved child recoverable');
 });
 
-test('Codex visible transport is rejected before spawned CAS and preserve-pauses with the exact reason', () => {
+test('Codex visible transport without durable runtime approval preserves before spawned CAS', () => {
   const { root, runId } = seedLauncher({ runtime: 'codex', spawn_style: 'visible', launcher: 'cmux' });
   const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });
   let spawned = false;
@@ -633,13 +633,13 @@ test('Codex visible transport is rejected before spawned CAS and preserve-pauses
     spawnFn: () => { spawned = true; return { ok: true }; },
     sleep: noSleep,
   });
-  assert.equal(spawned, false, 'Codex must never route visible continuation through a Claude process');
+  assert.equal(spawned, false, 'Codex must never auto-launch without approved runtime authority');
   assert.equal(r.ok, false);
   assert.equal(r.outcome, 'no-launcher');
-  assert.equal(r.reason, 'codex-transport-not-activated');
+  assert.equal(r.reason, 'runtime-identity-unavailable');
   const after = readState(root, runId).data;
   assert.equal(after.status, 'paused');
-  assert.equal(after.pause_reason, 'codex-transport-not-activated');
+  assert.equal(after.pause_reason, 'runtime-identity-unavailable');
   assert.equal(after.session_chain.lease.handoff_phase, 'emitted', 'unavailable transport must be rejected before spawned CAS');
   assert.equal(after.session_chain.lease.state, 'releasing');
   assert.equal(after.session_chain.lease.handoff_child_run_id, h.childRunId, 'logical reservation remains available for manual resume');

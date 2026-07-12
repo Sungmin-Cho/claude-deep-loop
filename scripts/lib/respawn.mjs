@@ -1,5 +1,6 @@
 import { readState } from './state.mjs';
-import { dirname, resolve } from 'node:path';
+import { existsSync } from 'node:fs';
+import { dirname, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { appendAnchored } from './integrity.mjs';
@@ -40,6 +41,44 @@ function currentLauncherAuthority(loop, expectedKind, { allowDetachedDurable = f
   const durable = durableLauncherAuthority(loop, expectedKind);
   if (durable == null || !isDeepStrictEqual(sessionIdentity, durable.identity)) return null;
   return durable;
+}
+
+function currentPosixCodexLauncher(loop, expectedMode, platform) {
+  if (!['linux', 'darwin'].includes(platform) || !['cmux', 'iterm2', 'terminal-app'].includes(expectedMode)) return null;
+  const session = loop.session_spawn;
+  if (!session || typeof session !== 'object' || Array.isArray(session)
+    || session.platform !== platform || session.launcher !== expectedMode
+    || session.reachable !== true || session.visible !== true) return null;
+  if (expectedMode === 'cmux') {
+    if (session.surface !== 'workspace'
+      || typeof session.launcher_bin !== 'string' || !posix.isAbsolute(session.launcher_bin)
+      || typeof session.launcher_socket !== 'string' || session.launcher_socket.length === 0) return null;
+    const expectedProbe = {
+      cmd: [session.launcher_bin, '--socket', session.launcher_socket, 'ping'],
+      code: 0,
+    };
+    if (!isDeepStrictEqual(session.probe, expectedProbe)) return null;
+  } else if (platform !== 'darwin' || session.surface !== 'window'
+    || session.launcher_bin !== '/usr/bin/osascript' || session.launcher_socket != null) {
+    return null;
+  } else {
+    const app = expectedMode === 'iterm2' ? 'iTerm' : 'Terminal';
+    const expectedProbe = {
+      cmd: ['/usr/bin/osascript', '-e', `id of application "${app}"`],
+      code: 0,
+    };
+    if (!isDeepStrictEqual(session.probe, expectedProbe)) return null;
+  }
+  return {
+    platform: session.platform,
+    launcher: session.launcher,
+    launcher_bin: session.launcher_bin ?? null,
+    launcher_socket: session.launcher_socket ?? null,
+    surface: session.surface ?? null,
+    reachable: session.reachable,
+    visible: session.visible,
+    probe: session.probe,
+  };
 }
 
 // 게이트 순서: budget → breaker → max_sessions → wallclock → auto_handoff (spec §9). 순수.
@@ -203,6 +242,7 @@ export function respawn(root, runId, {
   sleep = defaultSleep, pollIntervalMs = 1500,
   platform = process.platform, desktopProbe = defaultDesktopProbe,
   codexExecutable = null, deepLoopRoot = DEFAULT_DEEP_LOOP_ROOT,
+  descriptorExists = existsSync,
   expect = null, expectedMode = null,
   revalidateRuntimeExecutable = revalidateTrustedRuntimeExecutable,
   revalidateLauncherExecutable = revalidateTrustedLauncherExecutable,
@@ -298,19 +338,27 @@ export function respawn(root, runId, {
   let runtimeExecutableIdentity = null;
   let launcherIdentity = null;
   let launcherAuthoritySnapshot = null;
-  if (platform === 'win32') {
-    const requiresRuntime = mode !== 'desktop';
-    const requiresLauncher = mode === 'wt' || mode === 'powershell'
-      || (runtime === 'claude' && mode === 'desktop');
+  let posixLauncherSnapshot = null;
+  const requiresPosixCodexLauncher = ['linux', 'darwin'].includes(platform) && runtime === 'codex'
+    && ['cmux', 'iterm2', 'terminal-app'].includes(mode);
+  // The shared headless host owns Codex executable preflight and post-CAS
+  // revalidation. This local authority path is for auto-visible continuation;
+  // Windows keeps its existing direct runtime requirement for every non-App mode.
+  const requiresRuntime = (platform === 'win32' && mode !== 'desktop')
+    || requiresPosixCodexLauncher;
+  const requiresWindowsLauncher = platform === 'win32'
+    && (mode === 'wt' || mode === 'powershell' || (runtime === 'claude' && mode === 'desktop'));
+  if (requiresRuntime || requiresWindowsLauncher || requiresPosixCodexLauncher) {
     let identityStage = requiresRuntime ? 'runtime' : 'launcher';
     try {
       if (requiresRuntime) {
         const stored = loop.autonomy?.runtime_executable_approval;
         runtimeExecutableIdentity = revalidateRuntimeExecutable(stored, { ...runtimeRevalidationOptions, platform });
         if (!runtimeExecutableIdentity || runtimeExecutableIdentity.runtime !== runtime
-          || runtimeExecutableIdentity.canonical_path !== stored?.canonical_path) throw new Error('runtime identity mismatch');
+          || runtimeExecutableIdentity.canonical_path !== stored?.canonical_path
+          || !isDeepStrictEqual(runtimeExecutableIdentity, stored)) throw new Error('runtime identity mismatch');
       }
-      if (requiresLauncher) {
+      if (requiresWindowsLauncher) {
         identityStage = 'launcher';
         const expectedKind = mode === 'wt' ? 'wt' : 'powershell';
         launcherAuthoritySnapshot = currentLauncherAuthority(loop, expectedKind, {
@@ -321,6 +369,11 @@ export function respawn(root, runId, {
         launcherIdentity = revalidateLauncherExecutable(stored, { ...launcherRevalidationOptions, platform });
         if (!launcherIdentity || launcherIdentity.kind !== expectedKind
           || !isDeepStrictEqual(launcherIdentity, stored)) throw new Error('launcher identity mismatch');
+      }
+      if (requiresPosixCodexLauncher) {
+        identityStage = 'launcher';
+        posixLauncherSnapshot = currentPosixCodexLauncher(loop, mode, platform);
+        if (posixLauncherSnapshot == null) throw new Error('launcher session unavailable');
       }
     } catch {
       const reason = `${identityStage}-identity-unavailable`;
@@ -350,6 +403,7 @@ export function respawn(root, runId, {
       launcherBin: loop.session_spawn?.launcher_bin,
       launcherSocket: loop.session_spawn?.launcher_socket,
       platform, desktopTarget: dt && dt.ok ? dt.argvTarget : null,
+      exists: descriptorExists,
       model: loop.autonomy?.session_model ?? null, effort: loop.autonomy?.session_effort ?? null,
       codexExecutable, deepLoopRoot,
       runtimeExecutableIdentity, launcherIdentity,
@@ -388,21 +442,20 @@ export function respawn(root, runId, {
     return { ok: false, outcome: 'no-launcher', reason: unavailableReason, childRunId };
   }
 
-  const revalidateWindowsStage = (sourceLoop) => {
-    if (platform !== 'win32') return null;
+  const revalidateIdentityStage = (sourceLoop) => {
     if (runtimeExecutableIdentity != null) {
       try {
         const stored = sourceLoop.autonomy?.runtime_executable_approval;
-        if (JSON.stringify(stored) !== JSON.stringify(loop.autonomy?.runtime_executable_approval)) {
+        if (!isDeepStrictEqual(stored, loop.autonomy?.runtime_executable_approval)) {
           return 'runtime-identity-drift';
         }
         const fresh = revalidateRuntimeExecutable(stored, { ...runtimeRevalidationOptions, platform });
-        if (JSON.stringify(fresh) !== JSON.stringify(runtimeExecutableIdentity)) return 'runtime-identity-drift';
+        if (!isDeepStrictEqual(fresh, runtimeExecutableIdentity)) return 'runtime-identity-drift';
       } catch {
         return 'runtime-identity-drift';
       }
     }
-    if (launcherIdentity != null) {
+    if (platform === 'win32' && launcherIdentity != null) {
       try {
         const expectedKind = mode === 'wt' ? 'wt' : 'powershell';
         const authority = currentLauncherAuthority(sourceLoop, expectedKind, {
@@ -419,11 +472,15 @@ export function respawn(root, runId, {
         return 'launcher-identity-drift';
       }
     }
+    if (posixLauncherSnapshot != null) {
+      const fresh = currentPosixCodexLauncher(sourceLoop, mode, platform);
+      if (!isDeepStrictEqual(fresh, posixLauncherSnapshot)) return 'launcher-identity-drift';
+    }
     return null;
   };
 
   // Fresh durable identity + direct version/hash checks immediately before the CAS may authorize spawn.
-  const preClaimIdentityFailure = revalidateWindowsStage(readState(root, runId).data);
+  const preClaimIdentityFailure = revalidateIdentityStage(readState(root, runId).data);
   if (preClaimIdentityFailure) {
     const res = preservePause(root, runId, {
       childRunId, parentOwner, generation, pauseReason: preClaimIdentityFailure,
@@ -446,18 +503,16 @@ export function respawn(root, runId, {
 
   // Codex impl r8 🟡: entry is already built + validated before the CAS above.
   const entry = _entry;
-  if (platform === 'win32') {
-    const identityFailure = revalidateWindowsStage(readState(root, runId).data);
-    if (identityFailure) {
-      const res = rollbackAndPause(root, runId, {
-        childRunId, parentOwner, generation,
-        eventData: { child_run_id: childRunId, error: identityFailure },
-        pauseReason: 'launch-failed',
-      });
-      if (res.terminal) return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };
-      if (res.fenced) return { ok: false, outcome: 'fenced', reason: 'lease-changed-before-failure-record', childRunId };
-      return { ok: false, outcome: 'failed_launch', reason: identityFailure, childRunId };
-    }
+  const identityFailure = revalidateIdentityStage(readState(root, runId).data);
+  if (identityFailure) {
+    const res = rollbackAndPause(root, runId, {
+      childRunId, parentOwner, generation,
+      eventData: { child_run_id: childRunId, error: identityFailure },
+      pauseReason: 'launch-failed',
+    });
+    if (res.terminal) return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };
+    if (res.fenced) return { ok: false, outcome: 'fenced', reason: 'lease-changed-before-failure-record', childRunId };
+    return { ok: false, outcome: 'failed_launch', reason: identityFailure, childRunId };
   }
   try {
     const res = spawnFn(entry);

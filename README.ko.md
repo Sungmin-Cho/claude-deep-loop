@@ -90,11 +90,13 @@ Windows의 결합 경로는 `%USERPROFILE%\.codex\plugins\deep-loop`와 `%USERPR
 | Codex CLI, native Windows | 전체 | 신뢰된 Windows Terminal/PowerShell 런처 | 격리·신뢰 `codex.exe`, 아니면 fail-closed | exact-definition 신뢰를 거친 direct Node hook |
 | Codex App | install/discovery와 in-task execution | 수동 새 task만 | 선택적 격리 `codex exec` 드라이버 | lifecycle 지원, App smoke pending external evidence |
 
+**Codex POSIX visible authority:** macOS/Linux 자동 visible continuation에는 durable human-approved Codex runtime identity가 필요합니다. `cmux`는 양성 감지가 같은 absolute bundled executable과 exact socket을 성공한 ping으로 묶었을 때만 실행됩니다. macOS에서는 고정 `/usr/bin/osascript`를 통해 양성 감지된 iTerm2 또는 Terminal.app 하나만 실행되며, system binary의 존재만으로 두 런처를 활성화하지 않습니다. runtime 승인이 없으면 `runtime-identity-unavailable`, identity 또는 launcher drift는 spawned CAS 전후에 fail-closed하며 bare `codex`나 Claude process로 대체하지 않습니다.
+
 Native Windows에서는 Node control plane을 win32에서 직접 실행하고 문서의 native command는 **PowerShell** 문법을 사용합니다. Windows Terminal과 PowerShell은 서로 다른 승인 launcher kind입니다. **WSL follows Linux behavior and is not native Windows**이므로 WSL의 실행 파일·경로는 native Windows spawn의 권위가 아닙니다. **Native Windows CI: pending external evidence** — 승인된 push 뒤 저장소의 Windows job이 실제 실행되기 전까지 통과를 주장하지 않습니다.
 
-## 네이티브 Windows 실행 파일 신뢰
+## 실행 파일 신뢰와 네이티브 Windows 런처
 
-자동 연속 실행은 command lookup을 권위로 사용하지 않습니다. `<absolute-deep-loop-root>`를 설치 플러그인의 canonical absolute root로 치환하고, 선택한 identity에 해당하는 read-only 진단 한 줄만 실행합니다.
+자동 연속 실행은 command lookup을 권위로 사용하지 않습니다. Runtime executable 진단/승인은 모든 지원 OS에서 선택한 runtime에 적용되고, launcher executable 승인은 native Windows WT/PowerShell에 추가되는 경계입니다. `<absolute-deep-loop-root>`를 설치 플러그인의 canonical absolute root로 치환하고, 선택한 identity에 해당하는 read-only 진단 한 줄만 실행합니다.
 
 ```text
 node "<absolute-deep-loop-root>/scripts/deep-loop.mjs" runtime-executable diagnose --runtime <claude|codex> --path "<human-supplied-absolute-exe>"

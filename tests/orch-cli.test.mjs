@@ -488,6 +488,76 @@ runtimeExecutableCliTest('runtime-executable approve writes one fenced anchored 
   });
 });
 
+runtimeExecutableCliTest('POSIX Codex CLI visible respawn consumes durable approval and exact cmux authority', () => {
+  const fixture = runtimeExecutableCliFixture();
+  JSON.parse(run(fixture.root, validRuntimeApprovalArgs(fixture)));
+
+  const cmux = join(fixture.root, 'tool', 'cmux-test');
+  const launchLog = join(fixture.root, '.deep-loop', 'cmux-launch-argv.txt');
+  writeFileSync(cmux, [
+    '#!/bin/sh',
+    ': "${DEEP_LOOP_TEST_LAUNCH_LOG:?}"',
+    'printf \'%s\\n\' "$@" > "$DEEP_LOOP_TEST_LAUNCH_LOG"',
+    'exit 0',
+    '',
+  ].join('\n'));
+  chmodSync(cmux, 0o755);
+
+  const { data } = readState(fixture.root, fixture.runId);
+  data.autonomy.spawn_style = 'visible';
+  data.autonomy.child_ready_timeout_sec = 0;
+  data.session_spawn = {
+    platform: process.platform,
+    launcher: 'cmux',
+    launcher_bin: cmux,
+    launcher_socket: '/tmp/deep-loop-cmux-test.sock',
+    surface: 'workspace',
+    reachable: true,
+    visible: true,
+    signals: {},
+    probe: { cmd: [cmux, '--socket', '/tmp/deep-loop-cmux-test.sock', 'ping'], code: 0 },
+    reason: null,
+    fallback: 'launch-command-file',
+    detected_at: '2026-07-11T08:01:00.000Z',
+  };
+  writeState(fixture.root, fixture.runId, data);
+
+  const emitted = JSON.parse(run(fixture.root, [
+    'handoff', 'emit', '--owner', fixture.runId, '--generation', '1', '--run-id', fixture.runId,
+    '--now', '2026-07-11T08:02:00Z',
+  ]));
+  assert.equal(emitted.ok, true);
+
+  const launched = spawnSync(process.execPath, [
+    CLI, 'respawn', '--owner', fixture.runId, '--generation', '1', '--attended',
+    '--project-root', fixture.root, '--run-id', fixture.runId, '--now', '2026-07-11T08:03:00Z',
+  ], {
+    encoding: 'utf8',
+    shell: false,
+    env: { ...process.env, DEEP_LOOP_TEST_LAUNCH_LOG: launchLog },
+  });
+  assert.equal(launched.status, 0, launched.stderr);
+  const result = JSON.parse(launched.stdout);
+  assert.equal(result.mode, 'cmux');
+  assert.equal(result.outcome, 'child-timeout-awaiting');
+
+  const argv = readFileSync(launchLog, 'utf8').trimEnd().split('\n');
+  assert.deepEqual(argv.slice(0, 4), [
+    '--socket', '/tmp/deep-loop-cmux-test.sock', 'new-workspace', '--cwd',
+  ]);
+  const command = argv[argv.indexOf('--command') + 1];
+  assert.ok(command.includes(`'${fixture.native}'`));
+  assert.equal(/(^|[;&]\s*)codex(?:\s|$)/.test(command), false);
+  assert.equal(command.includes('claude'), false);
+
+  const launchArtifact = readFileSync(join(runDir(fixture.root, fixture.runId), 'terminal', 'launch-command.txt'), 'utf8');
+  assert.ok(launchArtifact.includes(fixture.native));
+  assert.ok(launchArtifact.includes(cmux));
+  const after = readState(fixture.root, fixture.runId).data;
+  assert.equal(after.status, 'paused');
+  assert.equal(after.session_chain.lease.handoff_phase, 'spawned');
+});
+
 runtimeExecutableCliTest('runtime-executable approval can repair a paused run without unpausing or changing its lease', () => {
   const fixture = runtimeExecutableCliFixture();
   const { data } = readState(fixture.root, fixture.runId);

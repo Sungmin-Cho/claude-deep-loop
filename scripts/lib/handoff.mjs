@@ -1,4 +1,4 @@
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readState, runDir } from './state.mjs';
@@ -67,7 +67,7 @@ function handoffMarkdown(loop, childRunId, reason, descriptor) {
 export function emitHandoff(root, runId, {
   reason = 'milestone', trigger = 'milestone', now = Date.now(), headless = false, resumePolicy, expect,
   platform = process.platform, desktopProbe = defaultDesktopProbe, env = process.env,
-  deepLoopRoot = DEFAULT_DEEP_LOOP_ROOT,
+  deepLoopRoot = DEFAULT_DEEP_LOOP_ROOT, exists = existsSync,
 } = {}) {
   if (!expect || typeof expect.owner !== 'string' || !Number.isInteger(expect.generation)) throw new Error('FENCE_REQUIRED: emitHandoff');
   // Resolve runtime and canonical root from root-bound durable state. This read
@@ -129,6 +129,7 @@ export function emitHandoff(root, runId, {
       launcherBin: loop.session_spawn?.launcher_bin,
       launcherSocket: loop.session_spawn?.launcher_socket,
       platform, desktopTarget: dt && dt.ok ? dt.argvTarget : null,
+      exists,
       model: loop.autonomy?.session_model ?? null, effort: loop.autonomy?.session_effort ?? null,
       deepLoopRoot,
       runtimeExecutableIdentity: loop.autonomy?.runtime_executable_approval ?? null,

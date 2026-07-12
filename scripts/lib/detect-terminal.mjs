@@ -187,14 +187,15 @@ export function detectTerminal({
   // ── 2. macOS / darwin ───────────────────────────────────────────────────────
   if (platform === 'darwin') {
     const term_program = env.TERM_PROGRAM;
+    const osascript = '/usr/bin/osascript';
 
     if (term_program === 'iTerm.app') {
       const argv  = ['-e', 'id of application "iTerm"'];
-      const pr    = run('osascript', argv, { timeoutMs: 5000 });
-      const probe = { cmd: ['osascript', ...argv], code: pr.code };
+      const pr    = run(osascript, argv, { timeoutMs: 5000 });
+      const probe = { cmd: [osascript, ...argv], code: pr.code };
       if (pr.code === 0) {
         return {
-          platform, launcher: 'iterm2', launcher_bin: null, launcher_socket: null,
+          platform, launcher: 'iterm2', launcher_bin: osascript, launcher_socket: null,
           surface: 'window', reachable: true, visible: true,
           signals, probe, reason: null, fallback: 'launch-command-file', detected_at,
         };
@@ -204,11 +205,11 @@ export function detectTerminal({
 
     if (term_program === 'Apple_Terminal') {
       const argv  = ['-e', 'id of application "Terminal"'];
-      const pr    = run('osascript', argv, { timeoutMs: 5000 });
-      const probe = { cmd: ['osascript', ...argv], code: pr.code };
+      const pr    = run(osascript, argv, { timeoutMs: 5000 });
+      const probe = { cmd: [osascript, ...argv], code: pr.code };
       if (pr.code === 0) {
         return {
-          platform, launcher: 'terminal-app', launcher_bin: null, launcher_socket: null,
+          platform, launcher: 'terminal-app', launcher_bin: osascript, launcher_socket: null,
           surface: 'window', reachable: true, visible: true,
           signals, probe, reason: null, fallback: 'launch-command-file', detected_at,
         };

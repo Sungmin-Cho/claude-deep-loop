@@ -60,8 +60,13 @@ function resumeInvocation(runtime, root, runId) {
   return `${resumeSkillToken(runtime)} --project-root ${JSON.stringify(root)} --run-id ${JSON.stringify(runId)}`;
 }
 
-function absolutePath(value) {
-  return typeof value === 'string' && value.length > 0 && (posix.isAbsolute(value) || win32.isAbsolute(value));
+function targetPathApi(platform) {
+  return platform === 'win32' ? win32 : posix;
+}
+
+function targetAbsolutePath(value, platform) {
+  if (typeof value !== 'string' || value.length === 0 || /[\0\r\n]/.test(value)) return false;
+  return platform === 'win32' ? win32.isAbsolute(value) : posix.isAbsolute(value);
 }
 
 function windowsNativePath(identity, { runtime = null, kind = null } = {}) {
@@ -78,8 +83,48 @@ function unavailableEntry(surface, reason) {
   return { unavailable: true, reason, display: `# ${surface}: manual (${reason})` };
 }
 
-function pathFor(root, ...segments) {
-  return win32.isAbsolute(root) ? win32.join(root, ...segments) : posix.join(root, ...segments);
+function pathFor(platform, root, ...segments) {
+  const api = targetPathApi(platform);
+  if (!targetAbsolutePath(root, platform)) {
+    throw Object.assign(
+      new Error(`INVALID_TARGET_PATH: expected an absolute ${platform === 'win32' ? 'Windows' : 'POSIX'} path`),
+      { code: 'INVALID_TARGET_PATH' },
+    );
+  }
+  return api.join(root, ...segments);
+}
+
+function posixRuntimePath(identity, { runtime, platform }) {
+  const path = identity?.canonical_path;
+  if (!identity || typeof identity !== 'object' || platform === 'win32'
+    || identity.platform !== platform || identity.runtime !== runtime
+    || typeof path !== 'string' || !posix.isAbsolute(path) || /[\0\r\n]/.test(path)) return null;
+  return path;
+}
+
+function codexExecutablePath({ platform, runtimeExecutableIdentity, codexExecutable }) {
+  if (platform === 'win32') {
+    return windowsNativePath(runtimeExecutableIdentity, { runtime: 'codex' });
+  }
+  if (runtimeExecutableIdentity != null) {
+    return posixRuntimePath(runtimeExecutableIdentity, { runtime: 'codex', platform });
+  }
+  if (codexExecutable == null) return null;
+  if (!targetAbsolutePath(codexExecutable, platform) || /[\0\r\n]/.test(codexExecutable)) {
+    throw Object.assign(
+      new Error('INVALID_CODEX_EXECUTABLE: executable must be absolute in the target platform namespace'),
+      { code: 'INVALID_CODEX_EXECUTABLE' },
+    );
+  }
+  return codexExecutable;
+}
+
+function codexVisibleExecutablePath(platform, runtimeExecutableIdentity) {
+  if (platform === 'win32') {
+    return windowsNativePath(runtimeExecutableIdentity, { runtime: 'codex' });
+  }
+  if (!['linux', 'darwin'].includes(platform)) return null;
+  return posixRuntimePath(runtimeExecutableIdentity, { runtime: 'codex', platform });
 }
 
 function codexInteractiveArgv(root, prompt, model, effort) {
@@ -102,12 +147,13 @@ function codexInteractivePsArgs(root, prompt, model, effort) {
 
 function buildCodexEntries({
   root, parentRunId, childRunId, handoffRel,
+  launcher, launcherBin, launcherSocket, exists = existsSync,
   model = null, effort = null, codexExecutable = null, deepLoopRoot = null,
   platform = process.platform, runtimeExecutableIdentity = null, launcherIdentity = null,
 }) {
   validateRuntimeProfile('codex', { model, effort });
   const invocation = resumeInvocation('codex', root, parentRunId);
-  const handoffPath = pathFor(root, '.deep-loop', 'runs', parentRunId, handoffRel);
+  const handoffPath = pathFor(platform, root, '.deep-loop', 'runs', parentRunId, handoffRel);
   const manualPrompt = `Read ${JSON.stringify(handoffPath)} first; then run ${invocation}`;
   const unavailable = (surface) => ({
     unavailable: true,
@@ -132,12 +178,11 @@ function buildCodexEntries({
       display: `# Codex CLI (manual): open a new task at ${JSON.stringify(root)}; ${manualPrompt}`,
     },
   };
-  const effectiveExecutable = platform === 'win32'
-    ? windowsNativePath(runtimeExecutableIdentity, { runtime: 'codex' })
-    : codexExecutable;
+  const effectiveExecutable = codexExecutablePath({ platform, runtimeExecutableIdentity, codexExecutable });
+  const visibleExecutable = codexVisibleExecutablePath(platform, runtimeExecutableIdentity);
   if (effectiveExecutable != null) {
-    if (!absolutePath(deepLoopRoot)) throw new Error('INVALID_DEEP_LOOP_ROOT: explicit absolute deep-loop root required');
-    const skillPath = pathFor(deepLoopRoot, 'skills', 'deep-loop-resume', 'SKILL.md');
+    if (!targetAbsolutePath(deepLoopRoot, platform)) throw new Error('INVALID_DEEP_LOOP_ROOT: explicit absolute deep-loop root required');
+    const skillPath = pathFor(platform, deepLoopRoot, 'skills', 'deep-loop-resume', 'SKILL.md');
     const prompt = `Read ${JSON.stringify(handoffPath)} first. Then read ${JSON.stringify(skillPath)} and execute that workflow inline for project root ${JSON.stringify(root)} and run id ${JSON.stringify(parentRunId)}.`;
     entries.headless = {
       ...buildCodexExecEntry({ executable: effectiveExecutable, projectRoot: root, prompt, model, effort }),
@@ -170,6 +215,52 @@ function buildCodexEntries({
       } else {
         entries.powershell = unavailableEntry('powershell', 'trusted-native-identity-unavailable');
       }
+    } else if (visibleExecutable != null) {
+      const interactiveArgv = codexInteractiveArgv(root, manualPrompt, model, effort);
+      const interactiveCommand = [visibleExecutable, ...interactiveArgv].map(q).join(' ');
+      if (launcher === 'cmux' && typeof launcherBin === 'string' && posix.isAbsolute(launcherBin)
+        && typeof launcherSocket === 'string' && launcherSocket.length > 0) {
+        const cmuxArgv = [
+          '--socket', launcherSocket,
+          'new-workspace', '--cwd', root,
+          '--command', interactiveCommand,
+          '--focus', 'true',
+        ];
+        entries.cmux = {
+          bin: launcherBin,
+          argv: cmuxArgv,
+          shell: false,
+          display: `${q(launcherBin)} --socket ${q(launcherSocket)} new-workspace --cwd ${q(root)} --command ${q(interactiveCommand)} --focus true`,
+        };
+      } else {
+        entries.cmux = unavailableEntry('cmux', 'trusted-posix-launcher-unavailable');
+      }
+
+      const osascript = '/usr/bin/osascript';
+      if (platform === 'darwin' && exists(osascript)) {
+        const innerSh = `cd ${q(root)} && exec ${interactiveCommand}`;
+        const iterm2Script = `tell application "iTerm" to create window with default profile command "${escApple(innerSh)}"`;
+        const terminalScript = `tell application "Terminal" to do script "${escApple(innerSh)}"`;
+        entries.iterm2 = launcher === 'iterm2'
+          ? {
+            bin: osascript,
+            argv: ['-e', iterm2Script],
+            shell: false,
+            display: `${q(osascript)} -e ${q(iterm2Script)}`,
+          }
+          : unavailableEntry('iterm2', 'launcher-not-selected');
+        entries['terminal-app'] = launcher === 'terminal-app'
+          ? {
+            bin: osascript,
+            argv: ['-e', terminalScript],
+            shell: false,
+            display: `${q(osascript)} -e ${q(terminalScript)}`,
+          }
+          : unavailableEntry('terminal-app', 'launcher-not-selected');
+      } else {
+        entries.iterm2 = unavailableEntry('iterm2', `unsupported-on-${platform}`);
+        entries['terminal-app'] = unavailableEntry('terminal-app', `unsupported-on-${platform}`);
+      }
     }
   }
   return entries;
@@ -177,7 +268,7 @@ function buildCodexEntries({
 
 function buildClaudeEntries({
   root, parentRunId, childRunId, handoffRel,
-  launcherBin, launcherSocket,
+  launcher, launcherBin, launcherSocket,
   platform = process.platform, desktopTarget = null, exists = existsSync,
   model = null, effort = null,
   runtimeExecutableIdentity = null, launcherIdentity = null,
@@ -207,7 +298,7 @@ function buildClaudeEntries({
   const cmuxArgv = launcherSocket
     ? ['--socket', launcherSocket, 'new-workspace', '--cwd', root, '--command', cmuxCmdStr, '--focus', 'true']
     : ['new-workspace', '--cwd', root, '--command', cmuxCmdStr, '--focus', 'true'];
-  const effectiveBin = launcherBin || 'cmux';
+  const effectiveBin = (launcher == null || launcher === 'cmux') && launcherBin ? launcherBin : 'cmux';
 
   const innerSh = `cd ${q(root)} && claude -n ${inner} "${resumePrompt}"${meSh(q, model, effort)}`;
   const iterm2Script = `tell application "iTerm" to create window with default profile command "${escApple(innerSh)}"`;
@@ -319,10 +410,10 @@ export function buildRuntimeResumeDescriptor({
   const invocation = resumeInvocation(selectedRuntime, root, parentRunId);
   const resumePrompt = selectedRuntime === 'claude'
     ? `Read .deep-loop/runs/${parentRunId}/${handoffRel} first; then run /deep-loop-resume`
-    : `Read ${JSON.stringify(`${root}/.deep-loop/runs/${parentRunId}/${handoffRel}`)} first; then run ${invocation}`;
+    : `Read ${JSON.stringify(pathFor(platform, root, '.deep-loop', 'runs', parentRunId, handoffRel))} first; then run ${invocation}`;
   const entries = selectedRuntime === 'claude'
     ? buildClaudeEntries({ root, parentRunId, childRunId, handoffRel, launcher, launcherBin, launcherSocket, platform, desktopTarget, exists, model, effort, runtimeExecutableIdentity, launcherIdentity })
-    : buildCodexEntries({ root, parentRunId, childRunId, handoffRel, model, effort, codexExecutable, deepLoopRoot, platform, runtimeExecutableIdentity, launcherIdentity });
+    : buildCodexEntries({ root, parentRunId, childRunId, handoffRel, launcher, launcherBin, launcherSocket, exists, model, effort, codexExecutable, deepLoopRoot, platform, runtimeExecutableIdentity, launcherIdentity });
   return {
     runtime: selectedRuntime,
     projectRoot: root,
