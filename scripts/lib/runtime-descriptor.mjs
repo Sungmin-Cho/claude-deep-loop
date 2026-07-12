@@ -4,6 +4,7 @@ import { isTrustedPsBin, trustedPsCandidates } from './detect-terminal.mjs';
 import { validateSessionRuntime } from './runtime.mjs';
 import { buildCodexExecEntry } from './codex-runtime.mjs';
 import { validateRuntimeProfile } from './session-profile.mjs';
+import { tomlBasicString } from './toml-safe.mjs';
 
 const CODEX_TRANSPORT_UNAVAILABLE = 'codex-transport-not-activated';
 
@@ -81,10 +82,28 @@ function pathFor(root, ...segments) {
   return win32.isAbsolute(root) ? win32.join(root, ...segments) : posix.join(root, ...segments);
 }
 
+function codexInteractiveArgv(root, prompt, model, effort) {
+  return [
+    '-C', root,
+    ...(model == null ? [] : ['--model', model]),
+    ...(effort == null ? [] : ['-c', `model_reasoning_effort=${tomlBasicString(effort)}`]),
+    prompt,
+  ];
+}
+
+function codexInteractivePsArgs(root, prompt, model, effort) {
+  return [
+    `-C ${psArg(root)}`,
+    ...(model == null ? [] : [`--model ${psArg(model)}`]),
+    ...(effort == null ? [] : [`-c ${psArg(`model_reasoning_effort=${tomlBasicString(effort)}`)}`]),
+    psArg(prompt),
+  ].join(' ');
+}
+
 function buildCodexEntries({
   root, parentRunId, childRunId, handoffRel,
   model = null, effort = null, codexExecutable = null, deepLoopRoot = null,
-  platform = process.platform, runtimeExecutableIdentity = null,
+  platform = process.platform, runtimeExecutableIdentity = null, launcherIdentity = null,
 }) {
   validateRuntimeProfile('codex', { model, effort });
   const invocation = resumeInvocation('codex', root, parentRunId);
@@ -125,6 +144,33 @@ function buildCodexEntries({
       ...(platform === 'win32' ? { platform: 'win32', shell: false } : {}),
       display: `# Codex CLI headless: ${JSON.stringify(effectiveExecutable)} (isolated descriptor; prompt via stdin)`,
     };
+    if (platform === 'win32') {
+      const wtBin = windowsNativePath(launcherIdentity, { kind: 'wt' });
+      const psBin = windowsNativePath(launcherIdentity, { kind: 'powershell' });
+      const interactiveArgv = codexInteractiveArgv(root, manualPrompt, model, effort);
+      const interactivePsArgs = codexInteractivePsArgs(root, manualPrompt, model, effort);
+      entries.wt = wtBin
+        ? {
+          platform: 'win32', bin: wtBin,
+          argv: ['-d', root, effectiveExecutable, ...interactiveArgv],
+          nativeExecutableArgvIndices: [2], shell: false,
+          display: `& ${psArg(wtBin)} -d ${psArg(root)} ${psArg(effectiveExecutable)} ${interactivePsArgs}`,
+        }
+        : unavailableEntry('wt', 'trusted-native-identity-unavailable');
+      if (psBin) {
+        const innerPS = `Set-Location -LiteralPath ${psArg(root)}; & ${psArg(effectiveExecutable)} ${interactivePsArgs}`;
+        const b64 = Buffer.from(innerPS, 'utf16le').toString('base64');
+        const psCmd = `Start-Process ${psArg(psBin)} -ArgumentList '-NoProfile','-NoExit','-EncodedCommand','${b64}'`;
+        entries.powershell = {
+          platform: 'win32', bin: psBin,
+          argv: ['-NoProfile', '-NonInteractive', '-Command', psCmd], shell: false,
+          nativeExecutableTargets: [effectiveExecutable],
+          display: `& ${psArg(psBin)} -NoProfile -NonInteractive -Command ${psArg(psCmd)}`,
+        };
+      } else {
+        entries.powershell = unavailableEntry('powershell', 'trusted-native-identity-unavailable');
+      }
+    }
   }
   return entries;
 }
@@ -276,7 +322,7 @@ export function buildRuntimeResumeDescriptor({
     : `Read ${JSON.stringify(`${root}/.deep-loop/runs/${parentRunId}/${handoffRel}`)} first; then run ${invocation}`;
   const entries = selectedRuntime === 'claude'
     ? buildClaudeEntries({ root, parentRunId, childRunId, handoffRel, launcher, launcherBin, launcherSocket, platform, desktopTarget, exists, model, effort, runtimeExecutableIdentity, launcherIdentity })
-    : buildCodexEntries({ root, parentRunId, childRunId, handoffRel, model, effort, codexExecutable, deepLoopRoot, platform, runtimeExecutableIdentity });
+    : buildCodexEntries({ root, parentRunId, childRunId, handoffRel, model, effort, codexExecutable, deepLoopRoot, platform, runtimeExecutableIdentity, launcherIdentity });
   return {
     runtime: selectedRuntime,
     projectRoot: root,

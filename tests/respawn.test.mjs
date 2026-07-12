@@ -598,8 +598,10 @@ test('child can acquire the releasing lease after a headless respawn via handsha
   assert.equal(acq.ok, true); assert.equal(acq.generation, 2);
 });
 
-// Codex r3 🔴3: buildLaunchCommand throw must happen BEFORE spawned CAS — lease stays emitted.
-test('respawn: buildLaunchCommand throw (unsafe handoffRel) must not advance lease to spawned (codex-medium)', () => {
+// Descriptor construction still happens before the spawned CAS, but a visible/headless caller cannot be
+// relied on to preserve-pause after a soft build-error result. respawn therefore preserves the emitted
+// reservation itself under the original fence and returns the original bounded construction reason.
+test('respawn: buildLaunchCommand throw self-pauses emitted handoff without advancing to spawned', () => {
   const { root, runId } = seed();
   const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });
   // Blank the child session's handoff_rel so effHandoffRel falls back to the respawn arg.
@@ -607,11 +609,18 @@ test('respawn: buildLaunchCommand throw (unsafe handoffRel) must not advance lea
   // Pass unsafe/empty handoffRel (fails SAFE_HANDOFF_REL → buildLaunchCommand throws UNSAFE_SPAWN_ARG).
   const r = respawn(root, runId, { childRunId: h.childRunId, key: h.key, handoffRel: '', headless: true, now: NOW1, spawnFn: () => { throw new Error('must not reach spawnFn'); } });
   // Lease MUST NOT have advanced to 'spawned' (must be emitted/releasing — re-tryable, not stranded).
-  const lease = readState(root, runId).data.session_chain.lease;
+  const after = readState(root, runId).data;
+  const lease = after.session_chain.lease;
   assert.notEqual(lease.handoff_phase, 'spawned', 'buildLaunchCommand throw must happen before spawned CAS');
   assert.equal(lease.state, 'releasing', 'lease must stay releasing (emitted, re-tryable)');
   assert.equal(lease.handoff_phase, 'emitted', 'lease must stay emitted when build throws before CAS');
   assert.equal(r.ok, false, 'respawn must return ok:false on build error');
+  assert.equal(r.outcome, 'build-error');
+  assert.match(r.reason, /^UNSAFE_SPAWN_ARG:/);
+  assert.equal(after.status, 'paused', 'descriptor build failure must never leave running+emitted');
+  assert.equal(after.pause_reason, r.reason, 'the original bounded build reason must be preserved');
+  assert.equal(lease.resume_policy, 'human');
+  assert.equal(lease.handoff_child_run_id, h.childRunId, 'preserve-pause keeps the reserved child recoverable');
 });
 
 test('Codex visible transport is rejected before spawned CAS and preserve-pauses with the exact reason', () => {
@@ -791,8 +800,8 @@ function windowsLauncherIdentity(kind = 'wt') {
   };
 }
 
-function seedWindowsLauncher(kind = 'wt') {
-  const runtimeIdentity = windowsRuntimeIdentity();
+function seedWindowsLauncher(kind = 'wt', runtime = 'claude') {
+  const runtimeIdentity = windowsRuntimeIdentity(runtime);
   const launcherIdentity = windowsLauncherIdentity(kind);
   const seeded = seed((data) => {
     data.autonomy.spawn_style = 'visible';
@@ -804,7 +813,7 @@ function seedWindowsLauncher(kind = 'wt') {
       signals: {}, probe: null, reason: null, fallback: 'launch-command-file',
       detected_at: '2026-06-24T00:00:00Z',
     };
-  });
+  }, runtime);
   return { ...seeded, runtimeIdentity, launcherIdentity };
 }
 
@@ -901,6 +910,154 @@ test('native Windows identity drift after CAS but before process call rolls back
   assert.equal(after.status, 'paused');
   assert.equal(after.session_chain.lease.handoff_phase, 'idle');
   assert.equal(after.session_chain.lease.handoff_child_run_id, null);
+});
+
+test('native Windows Codex WT production-shaped visible respawn defaults the plugin root and waits for child acquisition', () => {
+  const { root, runId, runtimeIdentity, launcherIdentity } = seedWindowsLauncher('wt', 'codex');
+  const h = emitHandoff(root, runId, {
+    trigger: 'codex-wt-default-root', now: NOW1, expect: expect_(runId), platform: 'win32',
+  });
+  const checks = { runtime: 0, launcher: 0 };
+  let spawns = 0;
+  let polls = 0;
+  const poll = seq([
+    { state: 'releasing', owner_run_id: runId, generation: 1 },
+    { state: 'active', handoff_phase: 'acquired', owner_run_id: h.childRunId, generation: 2 },
+  ]);
+  const r = respawn(root, runId, {
+    childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
+    attended: true, env: {}, now: NOW1, platform: 'win32',
+    revalidateRuntimeExecutable: (identity) => { checks.runtime++; assert.deepEqual(identity, runtimeIdentity); return identity; },
+    revalidateLauncherExecutable: (identity) => { checks.launcher++; assert.deepEqual(identity, launcherIdentity); return identity; },
+    spawnFn: (entry) => {
+      spawns++;
+      assert.equal(entry.bin, launcherIdentity.canonical_path);
+      assert.equal(entry.argv[2], runtimeIdentity.canonical_path);
+      assert.deepEqual(entry.nativeExecutableArgvIndices, [2]);
+      assert.equal(entry.shell, false);
+      return { ok: true };
+    },
+    pollLease: () => { polls++; return poll(); },
+    sleep: noSleep,
+  });
+  const after = readState(root, runId).data;
+  assert.equal(
+    spawns,
+    1,
+    `outcome=${r.outcome} reason=${r.reason} status=${after.status} phase=${after.session_chain.lease.handoff_phase} state=${after.session_chain.lease.state}`,
+  );
+  assert.equal(r.ok, true);
+  assert.equal(r.outcome, 'spawned');
+  assert.equal(r.reason, 'child-acquired');
+  assert.equal(polls, 2, 'launcher exit is not readiness proof; exact child acquisition is required');
+  assert.deepEqual(checks, { runtime: 3, launcher: 3 }, 'runtime and matching launcher are checked at build, pre-CAS, and post-CAS');
+});
+
+test('native Windows Codex PowerShell visible respawn uses trusted targets and waits for child acquisition', () => {
+  const { root, runId, runtimeIdentity, launcherIdentity } = seedWindowsLauncher('powershell', 'codex');
+  const h = emitHandoff(root, runId, {
+    trigger: 'codex-powershell', now: NOW1, expect: expect_(runId), platform: 'win32',
+  });
+  const checks = { runtime: 0, launcher: 0 };
+  let spawns = 0;
+  let polls = 0;
+  const poll = seq([
+    { state: 'releasing', owner_run_id: runId, generation: 1 },
+    { state: 'active', handoff_phase: 'acquired', owner_run_id: h.childRunId, generation: 2 },
+  ]);
+  const r = respawn(root, runId, {
+    childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
+    attended: true, env: {}, now: NOW1, platform: 'win32', deepLoopRoot: 'C:\\Deep Loop',
+    revalidateRuntimeExecutable: (identity) => { checks.runtime++; assert.deepEqual(identity, runtimeIdentity); return identity; },
+    revalidateLauncherExecutable: (identity) => { checks.launcher++; assert.deepEqual(identity, launcherIdentity); return identity; },
+    spawnFn: (entry) => {
+      spawns++;
+      assert.equal(entry.bin, launcherIdentity.canonical_path);
+      assert.deepEqual(entry.nativeExecutableTargets, [runtimeIdentity.canonical_path]);
+      assert.equal(entry.shell, false);
+      return { ok: true };
+    },
+    pollLease: () => { polls++; return poll(); },
+    sleep: noSleep,
+  });
+  assert.equal(spawns, 1, `outcome=${r.outcome} reason=${r.reason}`);
+  assert.equal(r.ok, true);
+  assert.equal(r.outcome, 'spawned');
+  assert.equal(r.reason, 'child-acquired');
+  assert.equal(polls, 2, 'launcher exit is not readiness proof; exact child acquisition is required');
+  assert.deepEqual(checks, { runtime: 3, launcher: 3 }, 'runtime and matching launcher are checked at build, pre-CAS, and post-CAS');
+});
+
+test('native Windows Codex pre-CAS runtime or launcher drift preserve-pauses without spawning', () => {
+  for (const [kind, drift] of [['wt', 'runtime'], ['powershell', 'launcher']]) {
+    const { root, runId } = seedWindowsLauncher(kind, 'codex');
+    const h = emitHandoff(root, runId, {
+      trigger: `codex-pre-cas-${kind}-${drift}`, now: NOW1, expect: expect_(runId), platform: 'win32',
+    });
+    const checks = { runtime: 0, launcher: 0 };
+    let spawns = 0;
+    const r = respawn(root, runId, {
+      childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
+      attended: true, env: {}, now: NOW1, platform: 'win32', deepLoopRoot: 'C:\\Deep Loop',
+      revalidateRuntimeExecutable: (identity) => {
+        checks.runtime++;
+        if (drift === 'runtime' && checks.runtime === 2) throw new Error('RUNTIME_EXECUTABLE_DRIFT');
+        return identity;
+      },
+      revalidateLauncherExecutable: (identity) => {
+        checks.launcher++;
+        if (drift === 'launcher' && checks.launcher === 2) throw new Error('LAUNCHER_EXECUTABLE_DRIFT');
+        return identity;
+      },
+      spawnFn: () => { spawns++; return { ok: true }; }, sleep: noSleep,
+    });
+    assert.equal(spawns, 0, `${kind}/${drift}`);
+    assert.equal(r.ok, false, `${kind}/${drift}`);
+    assert.equal(r.outcome, 'no-launcher', `${kind}/${drift}`);
+    assert.equal(r.reason, `${drift}-identity-drift`, `${kind}/${drift}`);
+    const after = readState(root, runId).data;
+    assert.equal(after.status, 'paused', `${kind}/${drift}`);
+    assert.equal(after.pause_reason, `${drift}-identity-drift`, `${kind}/${drift}`);
+    assert.equal(after.session_chain.lease.handoff_phase, 'emitted', `${kind}/${drift}`);
+    assert.equal(after.session_chain.lease.handoff_child_run_id, h.childRunId, `${kind}/${drift}`);
+    assert.notEqual(after.session_chain.sessions.find(session => session.run_id === h.childRunId)?.outcome, 'failed_launch', `${kind}/${drift}`);
+  }
+});
+
+test('native Windows Codex post-CAS runtime or launcher drift rolls back, pauses, and marks failed launch', () => {
+  for (const [kind, drift] of [['wt', 'runtime'], ['powershell', 'launcher']]) {
+    const { root, runId } = seedWindowsLauncher(kind, 'codex');
+    const h = emitHandoff(root, runId, {
+      trigger: `codex-post-cas-${kind}-${drift}`, now: NOW1, expect: expect_(runId), platform: 'win32',
+    });
+    const checks = { runtime: 0, launcher: 0 };
+    let spawns = 0;
+    const r = respawn(root, runId, {
+      childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
+      attended: true, env: {}, now: NOW1, platform: 'win32', deepLoopRoot: 'C:\\Deep Loop',
+      revalidateRuntimeExecutable: (identity) => {
+        checks.runtime++;
+        if (drift === 'runtime' && checks.runtime === 3) throw new Error('RUNTIME_EXECUTABLE_DRIFT');
+        return identity;
+      },
+      revalidateLauncherExecutable: (identity) => {
+        checks.launcher++;
+        if (drift === 'launcher' && checks.launcher === 3) throw new Error('LAUNCHER_EXECUTABLE_DRIFT');
+        return identity;
+      },
+      spawnFn: () => { spawns++; return { ok: true }; }, sleep: noSleep,
+    });
+    assert.equal(spawns, 0, `${kind}/${drift}`);
+    assert.equal(r.ok, false, `${kind}/${drift}`);
+    assert.equal(r.outcome, 'failed_launch', `${kind}/${drift}`);
+    assert.equal(r.reason, `${drift}-identity-drift`, `${kind}/${drift}`);
+    const after = readState(root, runId).data;
+    assert.equal(after.status, 'paused', `${kind}/${drift}`);
+    assert.equal(after.pause_reason, 'launch-failed', `${kind}/${drift}`);
+    assert.equal(after.session_chain.lease.handoff_phase, 'idle', `${kind}/${drift}`);
+    assert.equal(after.session_chain.lease.handoff_child_run_id, null, `${kind}/${drift}`);
+    assert.equal(after.session_chain.sessions.find(session => session.run_id === h.childRunId)?.outcome, 'failed_launch', `${kind}/${drift}`);
+  }
 });
 
 // ── Task 3: unavailable-entry guard generalized (any mode, not just powershell) ──

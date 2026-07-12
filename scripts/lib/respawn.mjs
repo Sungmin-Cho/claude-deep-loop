@@ -1,4 +1,6 @@
 import { readState } from './state.mjs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { appendAnchored } from './integrity.mjs';
 import { checkBudget, reconcileBudget } from './budget.mjs';
 import { checkBreaker } from './breaker.mjs';
@@ -11,6 +13,8 @@ import {
   revalidateTrustedLauncherExecutable,
   revalidateTrustedRuntimeExecutable,
 } from './runtime-executable.mjs';
+
+const DEFAULT_DEEP_LOOP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 // 게이트 순서: budget → breaker → max_sessions → wallclock → auto_handoff (spec §9). 순수.
 export function respawnGate(loop, { now = Date.now() } = {}) {
@@ -172,7 +176,7 @@ export function respawn(root, runId, {
   now = Date.now(), spawnFn = defaultSpawn, pollLease, env = process.env,
   sleep = defaultSleep, pollIntervalMs = 1500,
   platform = process.platform, desktopProbe = defaultDesktopProbe,
-  codexExecutable = null, deepLoopRoot = null,
+  codexExecutable = null, deepLoopRoot = DEFAULT_DEEP_LOOP_ROOT,
   expect = null, expectedMode = null,
   revalidateRuntimeExecutable = revalidateTrustedRuntimeExecutable,
   revalidateLauncherExecutable = revalidateTrustedLauncherExecutable,
@@ -320,8 +324,17 @@ export function respawn(root, runId, {
     });
     _entry = _cmds[mode];
   } catch (buildErr) {
-    // Throw happened while lease is still 'emitted' — no CAS yet, not stranded. Return clear error.
-    return { ok: false, outcome: 'build-error', reason: String(buildErr.message || buildErr), childRunId };
+    // A visible caller does not inspect soft outcomes before returning, so even a pre-CAS descriptor error
+    // must preserve-pause here. Keep the emitted reservation recoverable and retain the bounded original
+    // construction reason rather than replacing it with a generic marker.
+    const buildReason = String(buildErr.message || buildErr).slice(0, 512);
+    const res = preservePause(root, runId, {
+      childRunId, parentOwner, generation, pauseReason: buildReason,
+    });
+    if (res.acquired) return { ok: true, outcome: 'spawned', reason: 'child-acquired-during-build-error', childRunId };
+    if (res.terminal) return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };
+    if (res.fenced) return { ok: false, outcome: 'fenced', reason: 'lease-changed-before-pause', childRunId };
+    return { ok: false, outcome: 'build-error', reason: buildReason, childRunId };
   }
 
   // Fail closed: ANY visible/desktop mode with an unavailable entry (no trusted launcher_bin — e.g. a

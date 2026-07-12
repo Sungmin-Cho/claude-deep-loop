@@ -406,6 +406,106 @@ test('Codex native Windows headless descriptor accepts a revalidated identity an
   assert.ok(!c.headless.argv.includes('codex'));
 });
 
+test('Codex native Windows Terminal descriptor pins trusted machine argv and literal-safe PowerShell display', () => {
+  const root = "C:\\repo $env $(Get-Date) & O'Brien`Work";
+  const runtimePath = "C:\\Runtime $env $(Get-Date) & O'Brien`Host\\codex.exe";
+  const launcherPath = "C:\\Terminal $env $(Get-Date) & O'Brien`Host\\wt.exe";
+  const codex = executableIdentity('codex', runtimePath);
+  const wt = launcherIdentity('wt', launcherPath);
+  const c = buildLaunchCommand({
+    runtime: 'codex', platform: 'win32', root, parentRunId: 'PARENT', childRunId: 'CHILD',
+    handoffRel: 'handoffs/x.md', runtimeExecutableIdentity: codex, launcherIdentity: wt,
+    deepLoopRoot: 'C:\\Deep Loop', model: 'gpt-5.4', effort: 'xhigh',
+  });
+  const prompt = `Read ${JSON.stringify(`${root}\\.deep-loop\\runs\\PARENT\\handoffs\\x.md`)} first; then run $deep-loop:deep-loop-resume --project-root ${JSON.stringify(root)} --run-id ${JSON.stringify('PARENT')}`;
+  const effortConfig = 'model_reasoning_effort="xhigh"';
+
+  assert.equal(c.wt.unavailable, undefined, 'trusted Codex+WT identities with an explicit valid deep-loop root must activate WT');
+  assert.deepEqual({
+    platform: c.wt.platform,
+    bin: c.wt.bin,
+    argv: c.wt.argv,
+    nativeExecutableArgvIndices: c.wt.nativeExecutableArgvIndices,
+    shell: c.wt.shell,
+  }, {
+    platform: 'win32',
+    bin: launcherPath,
+    argv: ['-d', root, runtimePath, '-C', root, '--model', 'gpt-5.4', '-c', effortConfig, prompt],
+    nativeExecutableArgvIndices: [2],
+    shell: false,
+  });
+  assert.equal(
+    c.wt.display,
+    `& '${launcherPath.replaceAll("'", "''")}' -d '${root.replaceAll("'", "''")}' `
+      + `'${runtimePath.replaceAll("'", "''")}' -C '${root.replaceAll("'", "''")}' `
+      + `--model 'gpt-5.4' -c '${effortConfig}' '${prompt.replaceAll("'", "''")}'`,
+  );
+  assert.equal(c.powershell.unavailable, true, 'a WT identity must not authorize PowerShell');
+  assert.ok(!c.wt.argv.includes('codex'), 'the nested runtime must never be a bare name');
+});
+
+test('Codex native Windows PowerShell descriptor pins encoded trusted invocation and hostile literal safety', () => {
+  const root = "C:\\repo $env $(Get-Date) & O'Brien`Work";
+  const runtimePath = "C:\\Runtime $env $(Get-Date) & O'Brien`Host\\codex.exe";
+  const launcherPath = "C:\\Power $env $(Get-Date) & O'Brien`Host\\pwsh.exe";
+  const codex = executableIdentity('codex', runtimePath);
+  const ps = launcherIdentity('powershell', launcherPath);
+  const c = buildLaunchCommand({
+    runtime: 'codex', platform: 'win32', root, parentRunId: 'PARENT', childRunId: 'CHILD',
+    handoffRel: 'handoffs/x.md', runtimeExecutableIdentity: codex, launcherIdentity: ps,
+    deepLoopRoot: 'C:\\Deep Loop', model: 'gpt-5.4', effort: 'xhigh',
+  });
+  const prompt = `Read ${JSON.stringify(`${root}\\.deep-loop\\runs\\PARENT\\handoffs\\x.md`)} first; then run $deep-loop:deep-loop-resume --project-root ${JSON.stringify(root)} --run-id ${JSON.stringify('PARENT')}`;
+  const effortConfig = 'model_reasoning_effort="xhigh"';
+  const quote = (value) => `'${String(value).replaceAll("'", "''")}'`;
+  const inner = `Set-Location -LiteralPath ${quote(root)}; & ${quote(runtimePath)} -C ${quote(root)} --model ${quote('gpt-5.4')} -c ${quote(effortConfig)} ${quote(prompt)}`;
+  const encoded = Buffer.from(inner, 'utf16le').toString('base64');
+  const psCmd = `Start-Process ${quote(launcherPath)} -ArgumentList '-NoProfile','-NoExit','-EncodedCommand','${encoded}'`;
+
+  assert.equal(c.powershell.unavailable, undefined, 'trusted Codex+PowerShell identities with an explicit valid deep-loop root must activate PowerShell');
+  assert.deepEqual({
+    platform: c.powershell.platform,
+    bin: c.powershell.bin,
+    argv: c.powershell.argv,
+    nativeExecutableTargets: c.powershell.nativeExecutableTargets,
+    shell: c.powershell.shell,
+  }, {
+    platform: 'win32',
+    bin: launcherPath,
+    argv: ['-NoProfile', '-NonInteractive', '-Command', psCmd],
+    nativeExecutableTargets: [runtimePath],
+    shell: false,
+  });
+  assert.equal(Buffer.from(encoded, 'base64').toString('utf16le'), inner);
+  assert.equal(
+    c.powershell.display,
+    `& ${quote(launcherPath)} -NoProfile -NonInteractive -Command ${quote(psCmd)}`,
+  );
+  assert.equal(c.wt.unavailable, true, 'a PowerShell identity must not authorize WT');
+  assert.ok(!/(^|[;&]\s*)codex(?:\s|$)/i.test(inner), 'the encoded invocation must never use a bare runtime');
+});
+
+test('Codex native Windows visible descriptors reject bare, UNC, and mismatched executable identities', () => {
+  const base = {
+    runtime: 'codex', platform: 'win32', root: 'C:\\repo', parentRunId: 'PARENT', childRunId: 'CHILD',
+    handoffRel: 'handoffs/x.md', deepLoopRoot: 'C:\\Deep Loop',
+  };
+  for (const [label, runtimePath, launcher] of [
+    ['bare runtime', 'codex.exe', launcherIdentity('wt', 'C:\\Windows\\wt.exe')],
+    ['UNC runtime', '\\\\server\\share\\codex.exe', launcherIdentity('wt', 'C:\\Windows\\wt.exe')],
+    ['UNC launcher', 'C:\\Runtime\\codex.exe', launcherIdentity('wt', '\\\\server\\share\\wt.exe')],
+    ['mismatched launcher', 'C:\\Runtime\\codex.exe', launcherIdentity('powershell', 'C:\\PowerShell\\pwsh.exe')],
+  ]) {
+    const c = buildLaunchCommand({
+      ...base,
+      runtimeExecutableIdentity: executableIdentity('codex', runtimePath),
+      launcherIdentity: launcher,
+    });
+    assert.equal(c.wt.unavailable, true, label);
+    assert.equal(c.wt.bin, undefined, label);
+  }
+});
+
 test('emitHandoff: approved native Windows Codex uses injected deep-loop root and emits one child', () => {
   const { root, runId } = seed('codex');
   const codex = executableIdentity('codex', 'C:\\Program Files & Tools\\Codex\\codex.exe');
