@@ -19,10 +19,15 @@ function seed(runtime = 'claude') {
 
 function expect_(runId) { return { owner: runId, generation: 1 }; }
 
+const POSIX_PLATFORM = 'linux';
+function buildPosixLaunchCommand(options) {
+  return buildLaunchCommand({ ...options, platform: POSIX_PLATFORM });
+}
+
 // ── Entry map shape tests ────────────────────────────────────────────────────
 
 test('buildLaunchCommand produces per-OS entry map referencing child run + resume', () => {
-  const c = buildLaunchCommand({ root: '/p', parentRunId: 'PARENT', childRunId: 'CHILD', handoffRel: 'handoffs/x.md' });
+  const c = buildPosixLaunchCommand({ root: '/p', parentRunId: 'PARENT', childRunId: 'CHILD', handoffRel: 'handoffs/x.md' });
   // interactive has display only
   assert.match(c.interactive.display, /claude -n/);
   assert.match(c.interactive.display, /deep-loop-resume/);
@@ -35,7 +40,7 @@ test('buildLaunchCommand produces per-OS entry map referencing child run + resum
 });
 
 test('cmux entry: --command quotes only dynamic args, bin=launcherBin', () => {
-  const c = buildLaunchCommand({ root: '/p a', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'cmux', launcherBin: '/a/cmux' });
+  const c = buildPosixLaunchCommand({ root: '/p a', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'cmux', launcherBin: '/a/cmux' });
   assert.equal(c.cmux.bin, '/a/cmux');
   // No launcherSocket → argv starts with new-workspace (no --socket prefix)
   assert.deepEqual(c.cmux.argv.slice(0, 4), ['new-workspace', '--cwd', '/p a', '--command']);
@@ -44,12 +49,12 @@ test('cmux entry: --command quotes only dynamic args, bin=launcherBin', () => {
 });
 
 test('cmux entry: --socket prepended when launcherSocket provided', () => {
-  const c = buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'cmux', launcherBin: '/a/cmux', launcherSocket: '/var/run/cmux.sock' });
+  const c = buildPosixLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'cmux', launcherBin: '/a/cmux', launcherSocket: '/var/run/cmux.sock' });
   assert.deepEqual(c.cmux.argv.slice(0, 4), ['--socket', '/var/run/cmux.sock', 'new-workspace', '--cwd']);
 });
 
 test('headless entry has no bash; uses cwd=root, bin=claude', () => {
-  const c = buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'none' });
+  const c = buildPosixLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'none' });
   assert.equal(c.headless.bin, 'claude');
   assert.equal(c.headless.cwd, '/p');
   assert.ok(!c.headless.argv.includes('-c'), 'no bash -c');
@@ -57,7 +62,7 @@ test('headless entry has no bash; uses cwd=root, bin=claude', () => {
 });
 
 test('buildLaunchCommand headless entry requests metric-bearing output', () => {
-  const cmds = buildLaunchCommand({ root: '/r', parentRunId: 'p', childRunId: 'c', handoffRel: 'handoffs/x.md' });
+  const cmds = buildPosixLaunchCommand({ root: '/r', parentRunId: 'p', childRunId: 'c', handoffRel: 'handoffs/x.md' });
   assert.ok(cmds.headless.argv.includes('--output-format'), 'headless must request output format');
   assert.ok(cmds.headless.argv.includes('json'), 'headless must request json format');
   assert.ok(cmds.headless.argv.includes('--permission-mode'), 'headless must specify permission mode');
@@ -65,7 +70,7 @@ test('buildLaunchCommand headless entry requests metric-bearing output', () => {
 });
 
 test('iterm2 entry: bin=osascript, argv=["-e", ...]', () => {
-  const c = buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'iterm2' });
+  const c = buildPosixLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'iterm2' });
   assert.equal(c.iterm2.bin, 'osascript');
   assert.equal(c.iterm2.argv[0], '-e');
   assert.match(c.iterm2.argv[1], /iTerm/);
@@ -73,7 +78,7 @@ test('iterm2 entry: bin=osascript, argv=["-e", ...]', () => {
 });
 
 test('terminal-app entry: bin=osascript, argv=["-e", ...]', () => {
-  const c = buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'terminal-app' });
+  const c = buildPosixLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'terminal-app' });
   assert.equal(c['terminal-app'].bin, 'osascript');
   assert.equal(c['terminal-app'].argv[0], '-e');
   assert.match(c['terminal-app'].argv[1], /Terminal/);
@@ -81,7 +86,7 @@ test('terminal-app entry: bin=osascript, argv=["-e", ...]', () => {
 });
 
 test('wt entry: bin=wt.exe, argv structure correct', () => {
-  const c = buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'wt' });
+  const c = buildPosixLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'wt' });
   assert.equal(c.wt.bin, 'wt.exe');
   assert.equal(c.wt.argv[0], '-d');
   assert.equal(c.wt.argv[1], '/p');
@@ -93,7 +98,7 @@ test('wt entry: bin=wt.exe, argv structure correct', () => {
 });
 
 test('interactive entry has display string only (no bin/argv)', () => {
-  const c = buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md' });
+  const c = buildPosixLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md' });
   assert.ok(typeof c.interactive.display === 'string');
   assert.equal(c.interactive.bin, undefined);
   assert.equal(c.interactive.argv, undefined);
@@ -102,7 +107,7 @@ test('interactive entry has display string only (no bin/argv)', () => {
 // ── Escaping tests ───────────────────────────────────────────────────────────
 
 test('osascript inner cd uses q(root) + escApple backslash-doubling — apostrophe root safe', () => {
-  const c = buildLaunchCommand({ root: "/p's", parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'terminal-app' });
+  const c = buildPosixLaunchCommand({ root: "/p's", parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'terminal-app' });
   assert.equal(c['terminal-app'].bin, 'osascript');
   // q("/p's") = '/p'\''s' (one literal backslash). escApple DOUBLES it (\ → \\) so AppleScript's
   // string-literal parser decodes it back to a single backslash and the shell receives the
@@ -117,7 +122,7 @@ test('osascript inner cd uses q(root) + escApple backslash-doubling — apostrop
 });
 
 test('escApple doubles backslash AND escapes double-quote (root with both)', () => {
-  const c = buildLaunchCommand({ root: '/a\\b"c', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'iterm2' });
+  const c = buildPosixLaunchCommand({ root: '/a\\b"c', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'iterm2' });
   const script = c.iterm2.argv[1];
   // root /a\b"c → q() (no apostrophes) = '/a\b"c'. escApple: backslash → \\, then " → \".
   // So the AppleScript string literal must contain '/a\\b\"c' (doubled backslash + escaped quote).
@@ -126,7 +131,7 @@ test('escApple doubles backslash AND escapes double-quote (root with both)', () 
 
 const TRUSTED_PS_BIN = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
 test('powershell uses -EncodedCommand of psq-escaped inner', () => {
-  const c = buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'powershell', launcherBin: TRUSTED_PS_BIN });
+  const c = buildPosixLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'powershell', launcherBin: TRUSTED_PS_BIN });
   assert.deepEqual(c.powershell.argv.slice(0, 3), ['-NoProfile', '-NonInteractive', '-Command']);
   const cmdStr = c.powershell.argv[c.powershell.argv.indexOf('-Command') + 1];
   assert.match(cmdStr, /-ArgumentList '-NoProfile','-NoExit','-EncodedCommand'/);
@@ -136,7 +141,7 @@ test('powershell uses -EncodedCommand of psq-escaped inner', () => {
 });
 
 test('powershell: root with single-quote is doubled (psq escaping)', () => {
-  const c = buildLaunchCommand({ root: "/p'q", parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'powershell', launcherBin: TRUSTED_PS_BIN });
+  const c = buildPosixLaunchCommand({ root: "/p'q", parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'powershell', launcherBin: TRUSTED_PS_BIN });
   const cmdStr = c.powershell.argv[c.powershell.argv.indexOf('-Command') + 1];
   const b64 = cmdStr.match(/-EncodedCommand','([A-Za-z0-9+/=]+)'/)[1];
   const decoded = Buffer.from(b64, 'base64').toString('utf16le');
@@ -271,7 +276,7 @@ test('native Windows PowerShell display single-quotes the complete command argum
 
 test('display strings use q(root) for paths with apostrophes and semicolons', () => {
   const specialRoot = "/p 's;x";
-  const c = buildLaunchCommand({ root: specialRoot, parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcherBin: 'cmux', launcherSocket: '/sock x' });
+  const c = buildPosixLaunchCommand({ root: specialRoot, parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcherBin: 'cmux', launcherSocket: '/sock x' });
   const display = c.interactive.display;
   // The raw unescaped root must not appear verbatim — if it did, ';x' would be a separate shell command.
   assert.ok(!display.includes(specialRoot), 'raw unescaped root must not appear verbatim in interactive display');
@@ -292,35 +297,35 @@ test('display strings use q(root) for paths with apostrophes and semicolons', ()
 
 test('UNSAFE_SPAWN_ARG: childRunId with illegal chars throws', () => {
   assert.throws(
-    () => buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'bad$id', handoffRel: 'handoffs/x.md' }),
+    () => buildPosixLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'bad$id', handoffRel: 'handoffs/x.md' }),
     /UNSAFE_SPAWN_ARG/
   );
 });
 
 test('UNSAFE_SPAWN_ARG: parentRunId with illegal chars throws', () => {
   assert.throws(
-    () => buildLaunchCommand({ root: '/p', parentRunId: 'P;evil', childRunId: 'C', handoffRel: 'handoffs/x.md' }),
+    () => buildPosixLaunchCommand({ root: '/p', parentRunId: 'P;evil', childRunId: 'C', handoffRel: 'handoffs/x.md' }),
     /UNSAFE_SPAWN_ARG/
   );
 });
 
 test('UNSAFE_SPAWN_ARG: parentRunId with shell-injection chars throws', () => {
   assert.throws(
-    () => buildLaunchCommand({ root: '/p', parentRunId: 'P$(inject)', childRunId: 'C', handoffRel: 'handoffs/x.md' }),
+    () => buildPosixLaunchCommand({ root: '/p', parentRunId: 'P$(inject)', childRunId: 'C', handoffRel: 'handoffs/x.md' }),
     /UNSAFE_SPAWN_ARG/
   );
 });
 
 test('UNSAFE_SPAWN_ARG: handoffRel with path traversal throws', () => {
   assert.throws(
-    () => buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/../evil.md' }),
+    () => buildPosixLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/../evil.md' }),
     /UNSAFE_SPAWN_ARG/
   );
 });
 
 test('UNSAFE_SPAWN_ARG: handoffRel not starting with handoffs/ throws', () => {
   assert.throws(
-    () => buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'other/x.md' }),
+    () => buildPosixLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'other/x.md' }),
     /UNSAFE_SPAWN_ARG/
   );
 });
@@ -354,7 +359,7 @@ test('legacy runtime handoff remains Claude-compatible', () => {
   delete data.autonomy.session_runtime;
   delete data.autonomy.runtime_source;
   writeState(root, runId, data);
-  const r = emitHandoff(root, runId, { now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId) });
+  const r = emitHandoff(root, runId, { now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId), platform: POSIX_PLATFORM });
   assert.equal(r.ok, true);
   const launch = readFileSync(join(runDir(root, runId), 'terminal', 'launch-command.txt'), 'utf8');
   assert.match(launch, /claude -p/);
@@ -368,7 +373,7 @@ test('Codex handoff emits qualified manual resume descriptors and no Claude proc
   data.autonomy.session_model = 'claude-opus-4-8[1m]';
   data.autonomy.session_effort = 'xhigh';
   writeState(root, runId, data);
-  const r = emitHandoff(root, runId, { now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId) });
+  const r = emitHandoff(root, runId, { now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId), platform: POSIX_PLATFORM });
   assert.equal(r.ok, true);
   const launch = readFileSync(join(runDir(root, runId), 'terminal', 'launch-command.txt'), 'utf8');
   assert.match(launch, /\$deep-loop:deep-loop-resume/);
@@ -380,7 +385,7 @@ test('Codex handoff emits qualified manual resume descriptors and no Claude proc
 });
 
 test('Codex headless descriptor is runnable only with an explicit absolute executable', () => {
-  const c = buildLaunchCommand({
+  const c = buildPosixLaunchCommand({
     runtime: 'codex', root: 'C:\\repo', parentRunId: 'PARENT', childRunId: 'CHILD', handoffRel: 'handoffs/x.md',
     codexExecutable: 'C:\\trusted\\codex.exe', deepLoopRoot: 'C:\\deep-loop', model: 'gpt-5.4', effort: 'xhigh',
   });
@@ -594,7 +599,7 @@ test('handoff descriptor records canonical project root and explicit logical run
   createDirectoryJunction(canonicalRoot, aliasRoot);
   const { runId } = initRun(aliasRoot, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z'), env: {}, platform: 'linux', run: () => ({ code: 1 }) });
   const storedRoot = readState(aliasRoot, runId).data.project.root;
-  const r = emitHandoff(aliasRoot, runId, { now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId) });
+  const r = emitHandoff(aliasRoot, runId, { now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId), platform: POSIX_PLATFORM });
   assert.equal(r.ok, true);
   assert.ok(r.handoffPath.startsWith(storedRoot), 'artifact path must use the stored canonical root');
   const md = readFileSync(r.handoffPath, 'utf8');
@@ -654,7 +659,7 @@ test('emitHandoff same-trigger re-entry is idempotent (one child, no duplicate s
 
 // launch 명령이 **부모** run 경로의 handoff 파일을 가리키는지 (Codex r1 🔴3)
 test('launch command references parent run dir handoff path', () => {
-  const c = buildLaunchCommand({ root: '/p', parentRunId: 'PARENT', childRunId: 'CHILD', handoffRel: 'handoffs/x.md' });
+  const c = buildPosixLaunchCommand({ root: '/p', parentRunId: 'PARENT', childRunId: 'CHILD', handoffRel: 'handoffs/x.md' });
   assert.match(c.interactive.display, /\.deep-loop\/runs\/PARENT\/handoffs\/x\.md/);
   assert.match(c.headless.display, /\.deep-loop\/runs\/PARENT\/handoffs\/x\.md/);
   assert.match(c.interactive.display, /deep-loop-CHILD/);
@@ -761,21 +766,21 @@ const baseArgs = { root: '/p', parentRunId: '01PARENT', childRunId: '01CHILD', h
 const PS7BIN = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe';
 
 test('B3: powershell entry uses absolute trusted launcherBin as bin (not bare powershell)', () => {
-  const cmds = buildLaunchCommand({ ...baseArgs, launcher: 'powershell', launcherBin: PS7BIN });
+  const cmds = buildPosixLaunchCommand({ ...baseArgs, launcher: 'powershell', launcherBin: PS7BIN });
   assert.equal(cmds.powershell.bin, PS7BIN);
   assert.notEqual(cmds.powershell.bin, 'powershell');
   assert.ok(!cmds.powershell.unavailable);
 });
 
 test('B3: powershell display is PS-pasteable (call operator) for a path with spaces — plan-ADV2', () => {
-  const cmds = buildLaunchCommand({ ...baseArgs, launcher: 'powershell', launcherBin: PS7BIN });
+  const cmds = buildPosixLaunchCommand({ ...baseArgs, launcher: 'powershell', launcherBin: PS7BIN });
   assert.match(cmds.powershell.display, /^& '/);
   assert.match(cmds.powershell.display, /pwsh\.exe' -NoProfile -NonInteractive -Command /);
   assert.ok(!/^'C:\\/.test(cmds.powershell.display), 'display must not be a bare quoted-path literal');
 });
 
 test('B3: launcher=powershell + launcherBin null → unavailable entry, no bare bin', () => {
-  const cmds = buildLaunchCommand({ ...baseArgs, launcher: 'powershell', launcherBin: null });
+  const cmds = buildPosixLaunchCommand({ ...baseArgs, launcher: 'powershell', launcherBin: null });
   assert.equal(cmds.powershell.unavailable, true);
   assert.equal(cmds.powershell.bin, null);
   assert.equal(typeof cmds.powershell.display, 'string');   // still has a display for launch-command.txt
@@ -783,7 +788,7 @@ test('B3: launcher=powershell + launcherBin null → unavailable entry, no bare 
 
 test('B3: untrusted absolute / UNC launcherBin → unavailable (not runnable) — plan-ADV3', () => {
   for (const bad of ['C:\\repo\\powershell.exe', '\\\\server\\share\\pwsh.exe', 'C:\\Users\\me\\powershell.exe']) {
-    const cmds = buildLaunchCommand({ ...baseArgs, launcher: 'powershell', launcherBin: bad });
+    const cmds = buildPosixLaunchCommand({ ...baseArgs, launcher: 'powershell', launcherBin: bad });
     assert.equal(cmds.powershell.unavailable, true, `untrusted ${bad} must be unavailable`);
     assert.equal(cmds.powershell.bin, null);
   }
@@ -791,7 +796,7 @@ test('B3: untrusted absolute / UNC launcherBin → unavailable (not runnable) �
 
 test('B3: non-PowerShell launcher + launcherBin null → buildLaunchCommand does not throw, builds all entries', () => {
   assert.doesNotThrow(() => {
-    const cmds = buildLaunchCommand({ ...baseArgs, launcher: 'terminal-app', launcherBin: null });
+    const cmds = buildPosixLaunchCommand({ ...baseArgs, launcher: 'terminal-app', launcherBin: null });
     assert.equal(typeof cmds.powershell.display, 'string');  // unavailable placeholder, not a throw
     assert.ok(cmds['terminal-app'].display);                 // the actual launcher entry is intact
   });
@@ -955,7 +960,7 @@ function writeStateWith(root, runId, mutate) {
 
 test('buildLaunchCommand threads --model/--effort into every transport', () => {
   const m = 'claude-opus-4-8[1m]';
-  const c = buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'cmux', launcherBin: '/a/cmux', model: m, effort: 'xhigh' });
+  const c = buildPosixLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'cmux', launcherBin: '/a/cmux', model: m, effort: 'xhigh' });
   assert.ok(c.headless.argv.includes('--model') && c.headless.argv.includes(m));
   assert.ok(c.headless.argv.includes('--effort') && c.headless.argv.includes('xhigh'));
   assert.ok(c.wt.argv.includes('--model') && c.wt.argv.includes(m));
@@ -967,7 +972,7 @@ test('buildLaunchCommand threads --model/--effort into every transport', () => {
 });
 
 test('buildLaunchCommand omits flags when model/effort absent (backward compat)', () => {
-  const c = buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md' });
+  const c = buildPosixLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md' });
   assert.ok(!c.headless.argv.includes('--model'));
   assert.ok(!c.headless.argv.includes('--effort'));
   assert.ok(!c.wt.argv.includes('--model'));
@@ -978,7 +983,7 @@ test('buildLaunchCommand omits flags when model/effort absent (backward compat)'
 
 test('powershell entry threads --model/--effort with psq quoting', () => {
   const psBin = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
-  const c = buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'powershell', launcherBin: psBin, model: 'claude-sonnet-5', effort: 'high' });
+  const c = buildPosixLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'powershell', launcherBin: psBin, model: 'claude-sonnet-5', effort: 'high' });
   assert.ok(!c.powershell.unavailable, 'trusted PS bin → runnable entry');
   const psCmd = c.powershell.argv[c.powershell.argv.indexOf('-Command') + 1];
   const enc = psCmd.match(/EncodedCommand','([A-Za-z0-9+/=]+)'/)[1];
@@ -989,7 +994,7 @@ test('powershell entry threads --model/--effort with psq quoting', () => {
 test('emitHandoff threads state model/effort into launch-command.txt + continuity note', () => {
   const { root, runId } = seed();
   writeStateWith(root, runId, (d) => { d.autonomy.session_model = 'claude-opus-4-8[1m]'; d.autonomy.session_effort = 'xhigh'; });
-  const r = emitHandoff(root, runId, { now: 1, expect: expect_(runId) });
+  const r = emitHandoff(root, runId, { now: 1, expect: expect_(runId), platform: POSIX_PLATFORM });
   assert.equal(r.ok, true);
   const lc = readFileSync(join(runDir(root, runId), 'terminal', 'launch-command.txt'), 'utf8');
   assert.match(lc, /--model 'claude-opus-4-8\[1m\]' --effort 'xhigh'/);

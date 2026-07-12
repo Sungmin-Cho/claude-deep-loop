@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -110,6 +111,50 @@ function resolveFixture(fixture, extra = {}) {
     runVersion: fixture.runVersion,
     ...extra,
   });
+}
+
+const WINDOWS_NAMESPACE_REJECTION = 'RUNTIME_EXECUTABLE_UNTRUSTED: Windows UNC/device namespace runtime candidates are not trusted';
+const WINDOWS_NAMESPACE_PATHS = Object.freeze([
+  {
+    label: 'backslash UNC',
+    native: String.raw`\\server\share\codex.exe`,
+    wrapper: String.raw`\\server\share\codex.cmd`,
+  },
+  {
+    label: 'slash UNC',
+    native: '//server/share/codex.exe',
+    wrapper: '//server/share/codex.cmd',
+  },
+  {
+    label: 'extended UNC',
+    native: String.raw`\\?\UNC\server\share\codex.exe`,
+    wrapper: String.raw`\\?\UNC\server\share\codex.cmd`,
+  },
+  {
+    label: 'local-device namespace',
+    native: String.raw`\\.\C:\tools\codex.exe`,
+    wrapper: String.raw`\\.\C:\tools\codex.cmd`,
+  },
+  {
+    label: 'extended drive namespace',
+    native: String.raw`\\?\C:\tools\codex.exe`,
+    wrapper: String.raw`\\?\C:\tools\codex.cmd`,
+  },
+]);
+
+function assertWindowsNamespaceRejected(callback, label) {
+  assert.throws(callback, error => {
+    assert.equal(String(error?.message || error), WINDOWS_NAMESPACE_REJECTION, label);
+    return true;
+  }, label);
+}
+
+function durableApprovalBytes(root, runId) {
+  const dir = join(root, '.deep-loop', 'runs', runId);
+  return Object.fromEntries(['loop.json', '.loop.hash', 'event-log.jsonl'].map(name => {
+    const path = join(dir, name);
+    return [name, existsSync(path) ? readFileSync(path) : null];
+  }));
 }
 
 test('collectRuntimeExecutableCandidates ignores cwd and relative PATH shadows', () => {
@@ -233,6 +278,151 @@ test('Windows candidate collection uses semicolon PATH and collects shims only a
 
   assert.deepEqual(candidates.map(candidate => candidate.path), [join(first, 'codex.cmd'), join(second, 'codex.exe')]);
   assert.ok(candidates.every(candidate => candidate.source === 'path-search'));
+});
+
+test('Windows official resolver rejects UNC/device wrapper candidates before version or Authenticode probes', () => {
+  let versionCalls = 0;
+  let signerCalls = 0;
+  for (const { label, wrapper } of WINDOWS_NAMESPACE_PATHS) {
+    assertWindowsNamespaceRejected(
+      () => resolveTrustedRuntimeExecutable('codex', {
+        candidatePaths: [wrapper],
+        platform: 'win32',
+        arch: 'x64',
+        runVersion: () => {
+          versionCalls++;
+          throw new Error('version probe must be unreachable');
+        },
+        authenticodeProbe: () => {
+          signerCalls++;
+          throw new Error('Authenticode probe must be unreachable');
+        },
+        authenticodePolicy: { signer: 'OpenAI, L.L.C.', thumbprint: 'aa' },
+      }),
+      label,
+    );
+  }
+  assert.equal(versionCalls, 0);
+  assert.equal(signerCalls, 0);
+});
+
+test('Windows diagnosis rejects UNC/device human-explicit candidates before hashing or probes', () => {
+  let versionCalls = 0;
+  let signerCalls = 0;
+  for (const { label, native } of WINDOWS_NAMESPACE_PATHS) {
+    assertWindowsNamespaceRejected(
+      () => diagnoseRuntimeExecutable('codex', {
+        explicitPath: native,
+        platform: 'win32',
+        arch: 'x64',
+        runVersion: () => {
+          versionCalls++;
+          throw new Error('version probe must be unreachable');
+        },
+        authenticodeProbe: () => {
+          signerCalls++;
+          throw new Error('Authenticode probe must be unreachable');
+        },
+        authenticodePolicy: { signer: 'OpenAI, L.L.C.', thumbprint: 'aa' },
+      }),
+      label,
+    );
+  }
+  assert.equal(versionCalls, 0);
+  assert.equal(signerCalls, 0);
+});
+
+test('Windows approval rejects UNC/device candidates before probes or durable append', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-runtime-unc-approve-')));
+  const { runId } = initRun(root, {
+    runtime: 'codex', goal: 'g', now: new Date('2026-07-11T08:00:00.000Z'),
+    env: {}, platform: 'linux', run: () => ({ code: 1 }),
+  });
+  const before = durableApprovalBytes(root, runId);
+  let versionCalls = 0;
+  let signerCalls = 0;
+  for (const { label, native, wrapper } of WINDOWS_NAMESPACE_PATHS) {
+    for (const [kind, candidatePath] of [['human-explicit', native], ['official-wrapper', wrapper]]) {
+      assertWindowsNamespaceRejected(
+        () => approveRuntimeExecutable(root, runId, {
+          runtime: 'codex',
+          candidatePath,
+          expectedCanonicalPath: join(root, 'expected-codex.exe'),
+          expectedSha256: '0'.repeat(64),
+          actor: 'human',
+          confirm: true,
+          fence: { owner: runId, generation: 1 },
+          now: Date.parse('2026-07-11T08:01:00.000Z'),
+          platform: 'win32',
+          arch: 'x64',
+          runVersion: () => {
+            versionCalls++;
+            throw new Error('version probe must be unreachable');
+          },
+          authenticodeProbe: () => {
+            signerCalls++;
+            throw new Error('Authenticode probe must be unreachable');
+          },
+          authenticodePolicy: { signer: 'OpenAI, L.L.C.', thumbprint: 'aa' },
+        }),
+        `${label} ${kind}`,
+      );
+    }
+  }
+  assert.equal(versionCalls, 0);
+  assert.equal(signerCalls, 0);
+  assert.deepEqual(durableApprovalBytes(root, runId), before, 'approval state/event bytes must remain unchanged');
+});
+
+test('Windows revalidation rejects UNC/device pinned and wrapper paths before hashing or probes', () => {
+  let versionCalls = 0;
+  let signerCalls = 0;
+  const options = {
+    platform: 'win32',
+    arch: 'x64',
+    runVersion: () => {
+      versionCalls++;
+      throw new Error('version probe must be unreachable');
+    },
+    authenticodeProbe: () => {
+      signerCalls++;
+      throw new Error('Authenticode probe must be unreachable');
+    },
+    authenticodePolicy: { signer: 'OpenAI, L.L.C.', thumbprint: 'aa' },
+  };
+  for (const { label, native } of WINDOWS_NAMESPACE_PATHS) {
+    const identity = {
+      runtime: 'codex',
+      canonical_path: native,
+      sha256: '0'.repeat(64),
+      version: '1.2.3',
+      platform: 'win32',
+      arch: 'x64',
+      source: 'human-explicit',
+      package: null,
+      authenticode: { status: 'valid', signer: 'OpenAI, L.L.C.', thumbprint: 'aa' },
+      approved_by: 'human',
+      approved_at: '2026-07-11T08:00:00.000Z',
+    };
+    assertWindowsNamespaceRejected(
+      () => revalidateTrustedRuntimeExecutable(identity, options),
+      `${label} pinned path`,
+    );
+  }
+
+  const fixture = officialCodexFixture({ platform: 'win32', arch: 'x64' });
+  const official = resolveFixture(fixture);
+  for (const { label, wrapper } of WINDOWS_NAMESPACE_PATHS) {
+    assertWindowsNamespaceRejected(
+      () => revalidateTrustedRuntimeExecutable({
+        ...official,
+        package: { ...official.package, wrapper_path: wrapper },
+      }, options),
+      `${label} stored wrapper path`,
+    );
+  }
+  assert.equal(versionCalls, 0);
+  assert.equal(signerCalls, 0);
 });
 
 test('multiple distinct verified Windows npm installations are ambiguous regardless of candidate ordering', () => {

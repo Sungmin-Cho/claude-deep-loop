@@ -20,22 +20,45 @@ function seed() {
   return { root, runId };
 }
 
-const CODEX_TARGET = Object.freeze({
-  'darwin:arm64': ['@openai/codex-darwin-arm64', 'darwin-arm64', 'aarch64-apple-darwin'],
-  'darwin:x64': ['@openai/codex-darwin-x64', 'darwin-x64', 'x86_64-apple-darwin'],
-  'linux:arm64': ['@openai/codex-linux-arm64', 'linux-arm64', 'aarch64-unknown-linux-musl'],
-  'linux:x64': ['@openai/codex-linux-x64', 'linux-x64', 'x86_64-unknown-linux-musl'],
+const CODEX_TARGET_LAYOUT = Object.freeze({
+  'darwin:arm64': { alias: '@openai/codex-darwin-arm64', suffix: 'darwin-arm64', triple: 'aarch64-apple-darwin', executable: 'codex' },
+  'darwin:x64': { alias: '@openai/codex-darwin-x64', suffix: 'darwin-x64', triple: 'x86_64-apple-darwin', executable: 'codex' },
+  'linux:arm64': { alias: '@openai/codex-linux-arm64', suffix: 'linux-arm64', triple: 'aarch64-unknown-linux-musl', executable: 'codex' },
+  'linux:x64': { alias: '@openai/codex-linux-x64', suffix: 'linux-x64', triple: 'x86_64-unknown-linux-musl', executable: 'codex' },
+  'win32:arm64': { alias: '@openai/codex-win32-arm64', suffix: 'win32-arm64', triple: 'aarch64-pc-windows-msvc', executable: 'codex.exe' },
+  'win32:x64': { alias: '@openai/codex-win32-x64', suffix: 'win32-x64', triple: 'x86_64-pc-windows-msvc', executable: 'codex.exe' },
 });
 
-function runtimeExecutableCliFixture({ runRuntime = 'codex' } = {}) {
+const RUNTIME_EXECUTABLE_CLI_FIXTURE_UNAVAILABLE =
+  'runtime executable CLI integration fixture requires a real native Windows executable; '
+  + 'a generated or checked-in fake PE is intentionally not fabricated';
+
+function canMaterializeRuntimeExecutableCliFixture(platform = process.platform) {
+  return platform !== 'win32';
+}
+
+function runtimeExecutableCliTest(name, fn) {
+  return test(name, {
+    skip: canMaterializeRuntimeExecutableCliFixture() ? false : RUNTIME_EXECUTABLE_CLI_FIXTURE_UNAVAILABLE,
+  }, fn);
+}
+
+function runtimeExecutableCliFixture({
+  runRuntime = 'codex', platform = process.platform, arch = process.arch,
+} = {}) {
+  if (!canMaterializeRuntimeExecutableCliFixture(platform)) {
+    throw new Error(RUNTIME_EXECUTABLE_CLI_FIXTURE_UNAVAILABLE);
+  }
+  const target = CODEX_TARGET_LAYOUT[`${platform}:${arch}`];
+  if (!target) throw new Error(`unsupported runtime executable CLI fixture target: ${platform}:${arch}`);
+  const { alias, suffix, triple, executable } = target;
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-runtime-cli-')));
   const { runId } = initRun(root, { runtime: runRuntime, goal: 'g', now: new Date('2026-07-11T00:00:00Z') });
-  const [alias, suffix, triple] = CODEX_TARGET[`${process.platform}:${process.arch}`];
   const version = '0.144.1';
   const wrapperRoot = join(root, 'tool', 'node_modules', '@openai', 'codex');
   const wrapper = join(wrapperRoot, 'bin', 'codex.js');
   const optionalRoot = join(wrapperRoot, 'node_modules', ...alias.split('/'));
-  const native = join(optionalRoot, 'vendor', triple, 'bin', 'codex');
+  const native = join(optionalRoot, 'vendor', triple, 'bin', executable);
   mkdirSync(join(wrapperRoot, 'bin'), { recursive: true });
   writeFileSync(wrapper, '#!/usr/bin/env node\n');
   writeFileSync(join(wrapperRoot, 'package.json'), JSON.stringify({
@@ -44,13 +67,34 @@ function runtimeExecutableCliFixture({ runRuntime = 'codex' } = {}) {
   }));
   mkdirSync(join(optionalRoot, 'vendor', triple, 'bin'), { recursive: true });
   writeFileSync(join(optionalRoot, 'package.json'), JSON.stringify({
-    name: '@openai/codex', version: `${version}-${suffix}`, os: [process.platform], cpu: [process.arch],
+    name: '@openai/codex', version: `${version}-${suffix}`, os: [platform], cpu: [arch],
   }));
   writeFileSync(native, `#!/bin/sh\nprintf 'codex-cli ${version}\\n'\n`);
   chmodSync(native, 0o755);
   const sha256 = createHash('sha256').update(readFileSync(native)).digest('hex');
   return { root, runId, wrapper, native, sha256, version };
 }
+
+test('runtime executable CLI fixture contract: declares native Windows target layouts', () => {
+  assert.deepEqual(CODEX_TARGET_LAYOUT['win32:x64'], {
+    alias: '@openai/codex-win32-x64', suffix: 'win32-x64',
+    triple: 'x86_64-pc-windows-msvc', executable: 'codex.exe',
+  });
+  assert.deepEqual(CODEX_TARGET_LAYOUT['win32:arm64'], {
+    alias: '@openai/codex-win32-arm64', suffix: 'win32-arm64',
+    triple: 'aarch64-pc-windows-msvc', executable: 'codex.exe',
+  });
+});
+
+test('runtime executable CLI fixture contract: refuses to fabricate a native Windows executable', () => {
+  assert.equal(canMaterializeRuntimeExecutableCliFixture('win32'), false);
+  assert.equal(canMaterializeRuntimeExecutableCliFixture('darwin'), true);
+  assert.equal(canMaterializeRuntimeExecutableCliFixture('linux'), true);
+  assert.throws(
+    () => runtimeExecutableCliFixture({ platform: 'win32', arch: 'x64' }),
+    /runtime executable CLI integration fixture requires a real native Windows executable/,
+  );
+});
 
 function validRuntimeApprovalArgs(fixture) {
   return [
@@ -269,7 +313,7 @@ test('root rebind CLI relocates once and restores ordinary strict state access',
   assert.equal(data.project.root, canonicalProjectRoot(moved.candidateRoot));
 });
 
-test('runtime-executable diagnose is read-only and reports the canonical native identity, never the wrapper', () => {
+runtimeExecutableCliTest('runtime-executable diagnose is read-only and reports the canonical native identity, never the wrapper', () => {
   const fixture = runtimeExecutableCliFixture();
   const before = cliSnapshot(fixture.root, fixture.runId);
   const result = runResult(fixture.root, [
@@ -285,7 +329,7 @@ test('runtime-executable diagnose is read-only and reports the canonical native 
   assert.deepEqual(cliSnapshot(fixture.root, fixture.runId), before);
 });
 
-test('runtime-executable approve missing required flags or confirmation exits 2 without mutation', () => {
+runtimeExecutableCliTest('runtime-executable approve missing required flags or confirmation exits 2 without mutation', () => {
   for (const name of ['runtime', 'path', 'canonical-path', 'sha256', 'actor', 'confirm', 'owner', 'generation']) {
     const fixture = runtimeExecutableCliFixture();
     const args = validRuntimeApprovalArgs(fixture);
@@ -300,7 +344,7 @@ test('runtime-executable approve missing required flags or confirmation exits 2 
   }
 });
 
-test('runtime-executable approve invalid actor, hash, path, or runtime exits 1 without mutation', () => {
+runtimeExecutableCliTest('runtime-executable approve invalid actor, hash, path, or runtime exits 1 without mutation', () => {
   for (const [label, flag, value, message] of [
     ['actor', '--actor', 'agent', /INVALID_ACTOR/],
     ['hash', '--sha256', 'A'.repeat(64), /RUNTIME_EXECUTABLE_HASH_INVALID/],
@@ -318,7 +362,7 @@ test('runtime-executable approve invalid actor, hash, path, or runtime exits 1 w
   }
 });
 
-test('runtime-executable approve freshly fences stored runtime, owner, and generation at exit 3', () => {
+runtimeExecutableCliTest('runtime-executable approve freshly fences stored runtime, owner, and generation at exit 3', () => {
   for (const [label, fixtureOptions, flag, value, message] of [
     ['runtime', { runRuntime: 'claude' }, null, null, /RUNTIME_FENCED/],
     ['owner', {}, '--owner', 'stale-owner', /LEASE_FENCED/],
@@ -335,7 +379,7 @@ test('runtime-executable approve freshly fences stored runtime, owner, and gener
   }
 });
 
-test('runtime-executable approve writes one fenced anchored approval with exact human path and hash', () => {
+runtimeExecutableCliTest('runtime-executable approve writes one fenced anchored approval with exact human path and hash', () => {
   const fixture = runtimeExecutableCliFixture();
   const result = runResult(fixture.root, validRuntimeApprovalArgs(fixture));
   assert.equal(result.code, 0, result.stderr);
@@ -358,7 +402,7 @@ test('runtime-executable approve writes one fenced anchored approval with exact 
   });
 });
 
-test('runtime-executable approval can repair a paused run without unpausing or changing its lease', () => {
+runtimeExecutableCliTest('runtime-executable approval can repair a paused run without unpausing or changing its lease', () => {
   const fixture = runtimeExecutableCliFixture();
   const { data } = readState(fixture.root, fixture.runId);
   data.status = 'paused';
@@ -375,7 +419,7 @@ test('runtime-executable approval can repair a paused run without unpausing or c
   assert.equal(after.autonomy.runtime_executable_approval.sha256, fixture.sha256);
 });
 
-test('runtime-executable approval rejects a terminal run as invalid state, not as a fence', () => {
+runtimeExecutableCliTest('runtime-executable approval rejects a terminal run as invalid state, not as a fence', () => {
   const fixture = runtimeExecutableCliFixture();
   const { data } = readState(fixture.root, fixture.runId);
   data.status = 'completed';
@@ -388,7 +432,7 @@ test('runtime-executable approval rejects a terminal run as invalid state, not a
   assert.deepEqual(cliSnapshot(fixture.root, fixture.runId), before);
 });
 
-test('runtime-executable approval rejects replacement after diagnosis without appending an event', () => {
+runtimeExecutableCliTest('runtime-executable approval rejects replacement after diagnosis without appending an event', () => {
   const fixture = runtimeExecutableCliFixture();
   const before = cliSnapshot(fixture.root, fixture.runId);
   writeFileSync(fixture.native, `#!/bin/sh\nprintf 'codex-cli ${fixture.version}\\n'\n# replacement\n`);
@@ -399,7 +443,7 @@ test('runtime-executable approval rejects replacement after diagnosis without ap
   assert.deepEqual(cliSnapshot(fixture.root, fixture.runId), before);
 });
 
-test('explicit native executable is hashed without execution during diagnose and runs only after exact human approval', () => {
+runtimeExecutableCliTest('explicit native executable is hashed without execution during diagnose and runs only after exact human approval', () => {
   const fixture = runtimeExecutableCliFixture();
   const custom = join(fixture.root, 'custom-codex');
   const marker = join(fixture.root, 'custom-executed');

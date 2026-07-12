@@ -59,6 +59,20 @@ function runtimeError(code, detail) {
   return new Error(`${code}: ${detail}`);
 }
 
+function isWindowsUntrustedRuntimeNamespace(path, platform) {
+  return platform === 'win32' && typeof path === 'string'
+    && (/^[\\/]{2}/.test(path) || /^[\\/](?:\?\?|device)[\\/]/i.test(path));
+}
+
+function assertTrustedRuntimeNamespace(path, platform) {
+  if (isWindowsUntrustedRuntimeNamespace(path, platform)) {
+    throw runtimeError(
+      'RUNTIME_EXECUTABLE_UNTRUSTED',
+      'Windows UNC/device namespace runtime candidates are not trusted',
+    );
+  }
+}
+
 function canonicalRealpath(path) {
   const realpath = realpathSync.native || realpathSync;
   return realpath(path);
@@ -341,7 +355,9 @@ function assertApprovableNativePath(path) {
 function inspectHumanApprovedExecutable(runtime, candidatePath, {
   platform, arch, expectedSha256, runVersion, authenticodeProbe, authenticodePolicy,
 }) {
+  assertTrustedRuntimeNamespace(candidatePath, platform);
   const candidate = regularFile(candidatePath);
+  assertTrustedRuntimeNamespace(candidate.canonical, platform);
   assertApprovableNativePath(candidate.canonical);
   const sha256 = hashRegularFile(candidate.canonical, candidate.stat);
   if (!/^[0-9a-f]{64}$/.test(expectedSha256 || '') || sha256 !== expectedSha256) {
@@ -365,7 +381,9 @@ function inspectHumanApprovedExecutable(runtime, candidatePath, {
 }
 
 function officialWrapperCandidate(candidatePath, platform) {
+  assertTrustedRuntimeNamespace(candidatePath, platform);
   const candidate = regularFile(candidatePath, { allowFinalSymlink: true });
+  assertTrustedRuntimeNamespace(candidate.canonical, platform);
   if (basename(candidate.canonical) === 'codex.js' && basename(dirname(candidate.canonical)) === 'bin') {
     return candidate.canonical;
   }
@@ -373,15 +391,20 @@ function officialWrapperCandidate(candidatePath, platform) {
     throw runtimeError('RUNTIME_EXECUTABLE_UNTRUSTED', 'candidate is not the official JavaScript wrapper entrypoint');
   }
   const adjacent = join(dirname(candidate.canonical), 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
-  return regularFile(adjacent, { allowFinalSymlink: true }).canonical;
+  assertTrustedRuntimeNamespace(adjacent, platform);
+  const wrapper = regularFile(adjacent, { allowFinalSymlink: true });
+  assertTrustedRuntimeNamespace(wrapper.canonical, platform);
+  return wrapper.canonical;
 }
 
 function resolveOfficialCodex(candidatePath, {
   platform, arch, runVersion, authenticodeProbe, authenticodePolicy,
 }) {
+  assertTrustedRuntimeNamespace(candidatePath, platform);
   const target = CODEX_TARGETS[`${platform}:${arch}`];
   if (!target) throw runtimeError('RUNTIME_EXECUTABLE_UNTRUSTED', `unsupported Codex target ${platform}/${arch}`);
   const wrapper = regularFile(officialWrapperCandidate(candidatePath, platform), { allowFinalSymlink: true });
+  assertTrustedRuntimeNamespace(wrapper.canonical, platform);
   if (basename(wrapper.canonical) !== 'codex.js' || basename(dirname(wrapper.canonical)) !== 'bin') {
     throw runtimeError('RUNTIME_EXECUTABLE_UNTRUSTED', 'candidate is not the official JavaScript wrapper entrypoint');
   }
@@ -398,6 +421,7 @@ function resolveOfficialCodex(candidatePath, {
   }
 
   const optionalRoot = locateOptionalPackage(wrapperRoot, target.alias);
+  assertTrustedRuntimeNamespace(optionalRoot, platform);
   const nativePackage = readJsonFile(join(optionalRoot, 'package.json'), 'native');
   const expectedNativeVersion = `${wrapperPackage.version}-${target.suffix}`;
   if (nativePackage?.name !== '@openai/codex' || nativePackage?.version !== expectedNativeVersion
@@ -407,7 +431,9 @@ function resolveOfficialCodex(candidatePath, {
   }
 
   const nativeLexical = join(optionalRoot, 'vendor', target.triple, 'bin', target.executable);
+  assertTrustedRuntimeNamespace(nativeLexical, platform);
   const native = regularFile(nativeLexical);
+  assertTrustedRuntimeNamespace(native.canonical, platform);
   if (!contained(optionalRoot, native.canonical)) {
     throw runtimeError('RUNTIME_EXECUTABLE_UNTRUSTED', 'native executable escapes its optional package');
   }
@@ -473,7 +499,9 @@ export function collectRuntimeExecutableCandidates(runtime, options = {}) {
   const executableName = runtime === 'codex' ? 'codex' : 'claude';
   const candidates = [];
   const add = (path, source) => {
+    assertTrustedRuntimeNamespace(path, platform);
     const absolute = absolutePath(path);
+    assertTrustedRuntimeNamespace(absolute, platform);
     if (!candidates.some(candidate => candidate.path === absolute)) candidates.push({ path: absolute, source });
   };
 
@@ -501,9 +529,12 @@ export function collectRuntimeExecutableCandidates(runtime, options = {}) {
     : [executableName];
   for (const entry of String(pathValue).split(pathDelimiter)) {
     // Empty/relative entries resolve through cwd and are therefore shadow candidates, never authority.
-    if (!entry || !isAbsolute(entry)) continue;
+    if (!entry) continue;
+    assertTrustedRuntimeNamespace(entry, platform);
+    if (!isAbsolute(entry)) continue;
     for (const name of names) {
       const candidate = join(entry, name);
+      assertTrustedRuntimeNamespace(candidate, platform);
       if (existsSync(candidate)) add(candidate, 'path-search');
     }
   }
@@ -548,14 +579,17 @@ export function resolveTrustedRuntimeExecutable(runtime, options = {}) {
 }
 
 export function revalidateTrustedRuntimeExecutable(identity, options = {}) {
-  assertIdentityShape(identity);
   const platform = options.platform ?? process.platform;
   const arch = options.arch ?? process.arch;
+  assertTrustedRuntimeNamespace(identity?.canonical_path, platform);
+  assertTrustedRuntimeNamespace(identity?.package?.wrapper_path, platform);
+  assertIdentityShape(identity);
   if (identity.platform !== platform || identity.arch !== arch) {
     throw runtimeError('RUNTIME_EXECUTABLE_DRIFT', 'platform or architecture changed');
   }
   try {
     const executable = regularFile(identity.canonical_path);
+    assertTrustedRuntimeNamespace(executable.canonical, platform);
     if (executable.canonical !== identity.canonical_path
       || hashRegularFile(executable.canonical, executable.stat) !== identity.sha256) {
       throw runtimeError('RUNTIME_EXECUTABLE_DRIFT', 'canonical path or hash changed');
@@ -785,12 +819,14 @@ export function diagnoseRuntimeExecutable(runtime, options = {}) {
   validateSessionRuntime(runtime);
   const platform = options.platform ?? process.platform;
   const arch = options.arch ?? process.arch;
+  assertTrustedRuntimeNamespace(options.explicitPath, platform);
   try {
     const identity = resolveTrustedRuntimeExecutable(runtime, options);
     return { approval_required: true, identity };
   } catch (officialError) {
     if (options.explicitPath === undefined) throw officialError;
     const candidate = regularFile(options.explicitPath);
+    assertTrustedRuntimeNamespace(candidate.canonical, platform);
     assertApprovableNativePath(candidate.canonical);
     const sha256 = hashRegularFile(candidate.canonical, candidate.stat);
     return {
@@ -829,6 +865,8 @@ export function approveRuntimeExecutable(root, runId, {
   validateSessionRuntime(runtime);
   if (actor !== 'human') throw runtimeError('INVALID_ACTOR', 'runtime executable approval requires actor human');
   if (confirm !== true) throw runtimeError('CONFIRM_REQUIRED', 'runtime executable approval requires confirmation');
+  assertTrustedRuntimeNamespace(candidatePath, platform);
+  assertTrustedRuntimeNamespace(expectedCanonicalPath, platform);
   const expectedPath = absolutePath(expectedCanonicalPath, 'RUNTIME_EXECUTABLE_PATH_INVALID');
   if (!/^[0-9a-f]{64}$/.test(expectedSha256 || '')) {
     throw runtimeError('RUNTIME_EXECUTABLE_HASH_INVALID', 'exact lowercase SHA-256 is required');
