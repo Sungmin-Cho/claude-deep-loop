@@ -723,7 +723,7 @@ launcherExecutableCliTest('launcher-executable approval repairs paused active st
   assert.deepEqual(cliSnapshot(terminal.root, terminalRunId), before);
 });
 
-launcherExecutableCliTest('actual win32 CLI runs init -> launcher approval -> detect -> runtime approval -> handoff -> one WT launch -> fail-closed pause', () => {
+launcherExecutableCliTest('forced-win32 POSIX CLI fixture never becomes runnable native launcher authority', () => {
   const fixture = nativeWin32LauncherCliFixture();
   const runId = initWin32LauncherRun(fixture);
 
@@ -784,16 +784,14 @@ launcherExecutableCliTest('actual win32 CLI runs init -> launcher approval -> de
   const outcome = JSON.parse(respawned.stdout);
   assert.equal(outcome.mode, 'wt');
   assert.equal(outcome.ok, false);
-  assert.equal(outcome.outcome, 'child-timeout-awaiting');
-  assert.equal(outcome.reason, 'readiness-timeout-preserve');
+  assert.equal(outcome.outcome, 'no-launcher');
+  assert.equal(outcome.reason, 'trusted-native-identity-unavailable');
 
-  const launches = readFileSync(fixture.launches, 'utf8').trim().split('\n');
-  assert.equal(launches.length, 1, 'respawn invokes the approved launcher exactly once');
-  assert.match(launches[0], new RegExp(fixture.runtime.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.equal(existsSync(fixture.launches), false, 'a POSIX fixture path must never be invoked as native Windows authority');
   const finalState = readState(fixture.root, runId).data;
   assert.equal(finalState.status, 'paused');
-  assert.equal(finalState.pause_reason, 'child-timeout-awaiting');
-  assert.equal(finalState.session_chain.lease.handoff_phase, 'spawned');
+  assert.equal(finalState.pause_reason, 'trusted-native-identity-unavailable');
+  assert.equal(finalState.session_chain.lease.handoff_phase, 'emitted');
 });
 
 test('workstream new + set via CLI with lease', () => {

@@ -68,6 +68,7 @@ export function emitHandoff(root, runId, {
   reason = 'milestone', trigger = 'milestone', now = Date.now(), headless = false, resumePolicy, expect,
   platform = process.platform, desktopProbe = defaultDesktopProbe, env = process.env,
   deepLoopRoot = DEFAULT_DEEP_LOOP_ROOT, exists = existsSync,
+  descriptorBuilder = buildRuntimeResumeDescriptor,
 } = {}) {
   if (!expect || typeof expect.owner !== 'string' || !Number.isInteger(expect.generation)) throw new Error('FENCE_REQUIRED: emitHandoff');
   // Resolve runtime and canonical root from root-bound durable state. This read
@@ -123,7 +124,10 @@ export function emitHandoff(root, runId, {
   }
   let descriptor;
   try {
-    descriptor = buildRuntimeResumeDescriptor({
+    // Foreign-platform tests inject only the pure descriptor builder so their
+    // physical fixture root never masquerades as a target-platform path. The
+    // production CLI always uses the canonical state root through the default.
+    descriptor = descriptorBuilder({
       runtime, root: canonicalRoot, parentRunId: runId, childRunId, handoffRel,
       launcher: loop.session_spawn?.launcher,
       launcherBin: loop.session_spawn?.launcher_bin,

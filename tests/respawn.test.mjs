@@ -6,15 +6,51 @@ import { join } from 'node:path';
 import { runDir } from '../scripts/lib/state.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState } from '../scripts/lib/state.mjs';
-import { emitHandoff } from '../scripts/lib/handoff.mjs';
+import { emitHandoff as emitHandoffImpl } from '../scripts/lib/handoff.mjs';
 import { acquireLease, advanceHandoffPhase, releaseLease } from '../scripts/lib/lease.mjs';
-import { respawn, respawnGate, resolveSpawnMode, isHeadlessInvocation } from '../scripts/lib/respawn.mjs';
+import { respawn as respawnImpl, respawnGate, resolveSpawnMode, isHeadlessInvocation } from '../scripts/lib/respawn.mjs';
+import { buildLaunchCommand, buildRuntimeResumeDescriptor } from '../scripts/lib/runtime-descriptor.mjs';
+import { sessionRuntime } from '../scripts/lib/runtime.mjs';
 
 const NOW0 = new Date('2026-06-24T00:00:00Z');
 const NOW1 = Date.parse('2026-06-24T01:00:00Z');
+const WINDOWS_TARGET_ROOT = 'C:\\Fixture Project';
+const WINDOWS_DEEP_LOOP_ROOT = 'C:\\Fixture Deep Loop';
 
 // Inject no-signal env + no-op run so detect-terminal is deterministic regardless of ambient env.
 const noOpRun = () => ({ code: 1 });
+
+function windowsDescriptorOptions(options) {
+  const deepLoopRoot = /^[A-Za-z]:[\\/]/.test(options.deepLoopRoot || '')
+    ? options.deepLoopRoot
+    : WINDOWS_DEEP_LOOP_ROOT;
+  return { ...options, root: WINDOWS_TARGET_ROOT, deepLoopRoot };
+}
+
+function buildWindowsDescriptor(options) {
+  return buildRuntimeResumeDescriptor(windowsDescriptorOptions(options));
+}
+
+function buildWindowsLaunchCommand(options) {
+  return buildLaunchCommand(windowsDescriptorOptions(options));
+}
+
+function isForeignWindowsCodexFixture(root, runId, options) {
+  return process.platform !== 'win32' && options?.platform === 'win32'
+    && sessionRuntime(readState(root, runId).data) === 'codex';
+}
+
+function emitHandoff(root, runId, options = {}) {
+  return emitHandoffImpl(root, runId, isForeignWindowsCodexFixture(root, runId, options)
+    ? { ...options, descriptorBuilder: options.descriptorBuilder ?? buildWindowsDescriptor }
+    : options);
+}
+
+function respawn(root, runId, options = {}) {
+  return respawnImpl(root, runId, isForeignWindowsCodexFixture(root, runId, options)
+    ? { ...options, launchCommandBuilder: options.launchCommandBuilder ?? buildWindowsLaunchCommand }
+    : options);
+}
 
 // 자기완결 seed: run 생성 후 mutate(loop)로 필요한 필드만 조정하고 writeState.
 function seed(mutate, runtime = 'claude') {

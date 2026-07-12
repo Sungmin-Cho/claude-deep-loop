@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, posix } from 'node:path';
+import { join, posix, win32 } from 'node:path';
 import { buildRuntimeResumeDescriptor } from '../scripts/lib/runtime-descriptor.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
@@ -130,6 +130,54 @@ test('target platform rejects roots from a different path namespace', () => {
     }),
     /INVALID_TARGET_PATH/,
   );
+
+  const win32Options = {
+    runtime: 'codex',
+    platform: 'win32',
+    parentRunId: 'PARENT',
+    childRunId: 'CHILD',
+    handoffRel: 'handoffs/next.md',
+    runtimeExecutableIdentity: runtimeIdentity({
+      platform: 'win32', canonicalPath: 'C:\\Runtime\\codex.exe',
+    }),
+    deepLoopRoot: 'C:\\Deep Loop',
+  };
+  for (const root of [
+    '/tmp/project', '\\tmp\\project', 'C:relative-project',
+    '\\\\?\\C:\\project', '\\\\.\\C:\\project', '\\\\server',
+  ]) {
+    assert.throws(
+      () => buildRuntimeResumeDescriptor({ ...win32Options, root }),
+      /INVALID_TARGET_PATH/,
+      root,
+    );
+  }
+});
+
+test('win32 target accepts only fully qualified drive or UNC project roots', () => {
+  const common = {
+    runtime: 'codex',
+    platform: 'win32',
+    parentRunId: 'PARENT',
+    childRunId: 'CHILD',
+    handoffRel: 'handoffs/next.md',
+    runtimeExecutableIdentity: runtimeIdentity({
+      platform: 'win32', canonicalPath: 'C:\\Runtime\\codex.exe',
+    }),
+    deepLoopRoot: 'C:\\Deep Loop',
+  };
+  for (const root of ['C:\\repo', 'C:/repo', '\\\\server\\share\\repo', '//server/share/repo']) {
+    const descriptor = buildRuntimeResumeDescriptor({ ...common, root });
+    assert.equal(descriptor.projectRoot, root);
+    assert.equal(descriptor.entries.headless.unavailable, undefined, root);
+    assert.ok(descriptor.entries.headless.argv.includes(root), `${root}: exact -C root`);
+    assert.ok(
+      descriptor.entries.headless.stdin.includes(JSON.stringify(
+        win32.join(root, '.deep-loop', 'runs', 'PARENT', 'handoffs/next.md'),
+      )),
+      `${root}: target-namespace handoff path`,
+    );
+  }
 });
 
 test('Darwin Codex descriptor activates exact osascript launchers and Linux does not', () => {

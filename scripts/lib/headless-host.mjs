@@ -979,6 +979,7 @@ function driveHeadlessRunLocked({
   makeProcessReceiptDescriptorFn = makeProcessUsageReceiptDescriptor,
   removeProcessReceiptFn = removeProcessUsageReceipt,
   respawnFn = respawn,
+  launchCommandBuilder = buildLaunchCommand,
   revalidateExecutable = revalidateTrustedRuntimeExecutable,
   resolveCodexHome = resolveAuthenticatedCodexHome,
   inspectDirectory = inspectDirectoryNode,
@@ -1317,7 +1318,7 @@ function driveHeadlessRunLocked({
         if (!sameValue(freshMakerEnv, makerEnvSnapshot)) {
           return { ok: false, reason: 'post-cas-env-drift' };
         }
-        const expectedEntry = buildLaunchCommand({
+        const expectedEntry = launchCommandBuilder({
           runtime: 'codex',
           root: projectRoot,
           parentRunId: runId,
@@ -1400,6 +1401,7 @@ function driveHeadlessRunLocked({
       : () => ({ ok: false, reason: `preliminary-gate:${preliminaryGate.reason}` }),
     codexExecutable: executable?.canonical_path ?? null,
     deepLoopRoot,
+    launchCommandBuilder,
     expect: parentFence,
     expectedMode: 'headless',
   });

@@ -11,10 +11,12 @@ import { acquireLease, advanceHandoffPhase } from '../scripts/lib/lease.mjs';
 import { recordCost } from '../scripts/lib/budget.mjs';
 import { readLines } from '../scripts/lib/integrity.mjs';
 import { respawn } from '../scripts/lib/respawn.mjs';
+import { buildLaunchCommand } from '../scripts/lib/runtime-descriptor.mjs';
 import { finishRun } from '../scripts/lib/finish.mjs';
 
 const NOW0 = new Date('2026-07-11T00:00:00Z');
 const NOW1 = Date.parse('2026-07-11T00:01:00Z');
+const WINDOWS_TARGET_ROOT = 'C:\\Fixture Project';
 
 function measuredUsage(inputTokens) {
   return {
@@ -240,6 +242,13 @@ test('native Windows Codex handoff preserves its revalidated descriptor through 
     expect: { owner: runId, generation: 1 },
     now: NOW1 + 1_000,
     env: sourceEnv,
+    launchCommandBuilder: process.platform === 'win32'
+      ? buildLaunchCommand
+      : descriptorOptions => buildLaunchCommand({
+        ...descriptorOptions,
+        root: WINDOWS_TARGET_ROOT,
+        deepLoopRoot: 'C:\\Fixture Deep Loop',
+      }),
     revalidateExecutable: (stored) => {
       hostRevalidations += 1;
       assert.deepEqual(stored, nativeExecutable);
@@ -270,7 +279,7 @@ test('native Windows Codex handoff preserves its revalidated descriptor through 
       assert.equal(entry.bin, nativeExecutable.canonical_path);
       assert.equal(entry.platform, 'win32');
       assert.equal(entry.shell, false);
-      assert.equal(entry.cwd, root);
+      assert.equal(entry.cwd, root, 'the host restores its physical fixture cwd after validating the target descriptor');
       assert.equal(entry.usageOutputKind, 'codex-jsonl');
       assert.deepEqual(entry.env, {
         Path: sourceEnv.PATH,

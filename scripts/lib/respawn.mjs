@@ -243,6 +243,7 @@ export function respawn(root, runId, {
   platform = process.platform, desktopProbe = defaultDesktopProbe,
   codexExecutable = null, deepLoopRoot = DEFAULT_DEEP_LOOP_ROOT,
   descriptorExists = existsSync,
+  launchCommandBuilder = buildLaunchCommand,
   expect = null, expectedMode = null,
   revalidateRuntimeExecutable = revalidateTrustedRuntimeExecutable,
   revalidateLauncherExecutable = revalidateTrustedLauncherExecutable,
@@ -397,7 +398,10 @@ export function respawn(root, runId, {
   let _cmds, _entry;
   try {
     // launcherBin + launcherSocket threading (R3/R7-plan): cmux requires the absolute bundled bin + verified socket.
-    _cmds = buildLaunchCommand({
+    // The default binds production descriptors to the canonical state root.
+    // Foreign-platform tests may inject the pure builder to keep a physical
+    // POSIX fixture distinct from a simulated fully-qualified Windows target.
+    _cmds = launchCommandBuilder({
       runtime, root: canonicalRoot, parentRunId: runId, childRunId, handoffRel: effHandoffRel,
       launcher: loop.session_spawn?.launcher,
       launcherBin: loop.session_spawn?.launcher_bin,

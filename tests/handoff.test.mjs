@@ -7,6 +7,7 @@ import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { reserveHandoff, releaseLease, acquireLease } from '../scripts/lib/lease.mjs';
 import { emitHandoff, buildLaunchCommand } from '../scripts/lib/handoff.mjs';
+import { buildRuntimeResumeDescriptor } from '../scripts/lib/runtime-descriptor.mjs';
 import { newEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
 import { createDirectoryJunction } from './helpers/fs-fixtures.mjs';
 
@@ -20,8 +21,12 @@ function seed(runtime = 'claude') {
 function expect_(runId) { return { owner: runId, generation: 1 }; }
 
 const POSIX_PLATFORM = 'linux';
+const WINDOWS_TARGET_ROOT = 'C:\\Fixture Project';
 function buildPosixLaunchCommand(options) {
   return buildLaunchCommand({ ...options, platform: POSIX_PLATFORM });
+}
+function buildWindowsDescriptor(options) {
+  return buildRuntimeResumeDescriptor({ ...options, root: WINDOWS_TARGET_ROOT });
 }
 
 // ── Entry map shape tests ────────────────────────────────────────────────────
@@ -497,7 +502,9 @@ test('Codex native Windows visible descriptors reject bare, UNC, and mismatched 
   };
   for (const [label, runtimePath, launcher] of [
     ['bare runtime', 'codex.exe', launcherIdentity('wt', 'C:\\Windows\\wt.exe')],
+    ['root-relative runtime', '/tmp/codex.exe', launcherIdentity('wt', 'C:\\Windows\\wt.exe')],
     ['UNC runtime', '\\\\server\\share\\codex.exe', launcherIdentity('wt', 'C:\\Windows\\wt.exe')],
+    ['root-relative launcher', 'C:\\Runtime\\codex.exe', launcherIdentity('wt', '\\tmp\\wt.exe')],
     ['UNC launcher', 'C:\\Runtime\\codex.exe', launcherIdentity('wt', '\\\\server\\share\\wt.exe')],
     ['mismatched launcher', 'C:\\Runtime\\codex.exe', launcherIdentity('powershell', 'C:\\PowerShell\\pwsh.exe')],
   ]) {
@@ -511,8 +518,31 @@ test('Codex native Windows visible descriptors reject bare, UNC, and mismatched 
   }
 });
 
+test('emitHandoff: forced win32 rejects a physical POSIX fixture root and rolls back cleanly', {
+  skip: process.platform === 'win32' ? 'native Windows temp roots are already drive-qualified' : false,
+}, () => {
+  const { root, runId } = seed('codex');
+  const { data } = readState(root, runId);
+  data.autonomy.runtime_executable_approval = executableIdentity('codex', 'C:\\Runtime\\codex.exe');
+  writeState(root, runId, data);
+
+  assert.throws(
+    () => emitHandoff(root, runId, {
+      now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId),
+      platform: 'win32', deepLoopRoot: 'C:\\Deep Loop',
+    }),
+    /INVALID_TARGET_PATH/,
+  );
+  const lease = readState(root, runId).data.session_chain.lease;
+  assert.equal(lease.handoff_phase, 'idle');
+  assert.equal(lease.handoff_child_run_id, null);
+  assert.equal(existsSync(join(runDir(root, runId), 'handoffs')), false);
+  assert.equal(existsSync(join(runDir(root, runId), 'terminal')), false);
+});
+
 test('emitHandoff: approved native Windows Codex uses injected deep-loop root and emits one child', () => {
   const { root, runId } = seed('codex');
+  const targetRoot = process.platform === 'win32' ? root : WINDOWS_TARGET_ROOT;
   const codex = executableIdentity('codex', 'C:\\Program Files & Tools\\Codex\\codex.exe');
   const deepLoopRoot = 'C:\\Injected Deep Loop';
   const { data } = readState(root, runId);
@@ -525,6 +555,7 @@ test('emitHandoff: approved native Windows Codex uses injected deep-loop root an
     emitted = emitHandoff(root, runId, {
       now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId),
       platform: 'win32', deepLoopRoot,
+      descriptorBuilder: process.platform === 'win32' ? buildRuntimeResumeDescriptor : buildWindowsDescriptor,
     });
   } catch (error) {
     constructionError = error;
@@ -545,12 +576,15 @@ test('emitHandoff: approved native Windows Codex uses injected deep-loop root an
   assert.equal(children[0].run_id, emitted.childRunId);
 
   const entries = buildLaunchCommand({
-    runtime: 'codex', platform: 'win32', root, parentRunId: runId,
+    runtime: 'codex', platform: 'win32', root: targetRoot, parentRunId: runId,
     childRunId: emitted.childRunId, handoffRel: emitted.handoffRel,
     runtimeExecutableIdentity: codex, deepLoopRoot,
   });
   const resumeSkillPath = 'C:\\Injected Deep Loop\\skills\\deep-loop-resume\\SKILL.md';
   assert.ok(entries.headless.stdin.includes(JSON.stringify(resumeSkillPath)));
+  if (process.platform !== 'win32') {
+    assert.equal(entries.headless.stdin.includes(root), false, 'physical POSIX fixture root must not leak into the Windows descriptor');
+  }
 });
 
 test('emitHandoff: invalid relative deepLoopRoot rolls back reservation before artifacts and rethrows original error', () => {
@@ -562,7 +596,7 @@ test('emitHandoff: invalid relative deepLoopRoot rolls back reservation before a
   assert.throws(
     () => emitHandoff(root, runId, {
       now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId),
-      platform: 'win32', deepLoopRoot: 'relative/deep-loop',
+      platform: 'win32', deepLoopRoot: 'relative/deep-loop', descriptorBuilder: buildWindowsDescriptor,
     }),
     (error) => error?.message === 'INVALID_DEEP_LOOP_ROOT: explicit absolute deep-loop root required',
   );

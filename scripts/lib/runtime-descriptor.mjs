@@ -64,15 +64,24 @@ function targetPathApi(platform) {
   return platform === 'win32' ? win32 : posix;
 }
 
+function windowsFullyQualifiedPath(value, { allowUnc = true } = {}) {
+  if (typeof value !== 'string' || value.length === 0 || /[\0\r\n]/.test(value)) return false;
+  const normalized = value.replaceAll('/', '\\');
+  if (/^[A-Za-z]:\\/.test(normalized)) return true;
+  if (!allowUnc || !normalized.startsWith('\\\\') || /^\\\\[?.](?:\\|$)/.test(normalized)) return false;
+  const [server, share] = normalized.slice(2).split('\\');
+  return Boolean(server && share && !['.', '..'].includes(server) && !['.', '..'].includes(share));
+}
+
 function targetAbsolutePath(value, platform) {
   if (typeof value !== 'string' || value.length === 0 || /[\0\r\n]/.test(value)) return false;
-  return platform === 'win32' ? win32.isAbsolute(value) : posix.isAbsolute(value);
+  return platform === 'win32' ? windowsFullyQualifiedPath(value) : posix.isAbsolute(value);
 }
 
 function windowsNativePath(identity, { runtime = null, kind = null } = {}) {
   const path = identity?.canonical_path;
   if (!identity || typeof identity !== 'object' || identity.platform !== 'win32'
-    || typeof path !== 'string' || !win32.isAbsolute(path) || path.startsWith('\\\\')
+    || !windowsFullyQualifiedPath(path, { allowUnc: false })
     || /\.(?:cmd|bat|ps1|js|mjs|cjs)$/i.test(path)
     || (runtime != null && identity.runtime !== runtime)
     || (kind != null && identity.kind !== kind)) return null;
