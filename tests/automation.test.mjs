@@ -16,6 +16,7 @@ import { driveHeadless } from '../scripts/hooks-impl/drive-headless.mjs';
 import { pauseRun } from '../scripts/lib/state.mjs';
 
 const A = join(dirname(fileURLToPath(import.meta.url)), '..', 'recipes', 'automation');
+const HANDOFF_REFERENCE = join(dirname(fileURLToPath(import.meta.url)), '..', 'skills', 'deep-loop-workflow', 'references', 'handoff-respawn.md');
 
 // Deterministic "now" within the run's wallclock window so respawnGate does not wallclock-block.
 const NOW1 = Date.parse('2026-06-24T00:01:00Z');
@@ -286,6 +287,25 @@ test('cron template calls the fail-closed driver (not raw claude -p)', () => {
   assert.match(s, /cron|schedule|\d+\s+\d+\s+\*/i);
   assert.match(s, /drive-headless\.mjs/);                 // 드라이버 경유
   assert.match(s, /fail-closed|budget|proposal-only/i);
+});
+
+test('execution-plane automation is root-portable and delegates to the runtime-selected trusted measured driver', () => {
+  const source = readFileSync(HANDOFF_REFERENCE, 'utf8');
+  assert.match(source, /loaded SKILL\.md path|로드된 `?SKILL\.md`? 경로/i,
+    'automation reference derives the plugin root from the loaded skill path');
+  assert.match(source, /literal[\s\S]{0,160}DEEP_LOOP_ROOT[\s\S]{0,200}(?:never|금지|않)/i,
+    'literal placeholder is never passed to Node');
+  assert.doesNotMatch(source, /\$\{(?:CLAUDE_PLUGIN_ROOT|PLUGIN_ROOT)\}/,
+    'automation docs must not depend on POSIX environment expansion');
+  for (const line of source.split('\n').filter((entry) => /deep-loop\.mjs/.test(entry))) {
+    assert.match(line, /^\s*node "DEEP_LOOP_ROOT\/scripts\/deep-loop\.mjs"(?:\s|$)/,
+      `non-portable automation kernel command: ${line}`);
+  }
+  assert.match(source, /immutable runtime|불변 runtime/i, 'stored runtime selects the driver');
+  assert.match(source, /trusted|승인된|검증된/i, 'driver executable identity stays trusted');
+  assert.match(source, /measured|계측/i, 'driver usage remains measured');
+  assert.match(source, /no cross-runtime fallback|교차 런타임[^\n]{0,120}(?:fallback|폴백)[^\n]{0,80}(?:없|금지|하지)/i,
+    'automation must not fall back to a different runtime');
 });
 
 test('cron hook is thin glue over the shared headless host core', () => {

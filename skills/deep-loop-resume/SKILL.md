@@ -10,16 +10,24 @@ user-invocable: true
 > **handoff.md + loop.json만 읽는다** — 이전 대화 컨텍스트를 절대 가정하지 말 것.
 > **비가역 외부 행동(push/PR/publish/merge/delete)은 proposal-only**, 항상 사람 승인(human approval)을 받는다.
 
+## 실행 루트와 호스트 호출
+
+로드된 `SKILL.md` 경로에서 이 플러그인의 absolute(절대) 루트를 계산하고, 아래 argv 템플릿의 `DEEP_LOOP_ROOT`를 실행 전에 그 절대 경로로 치환한다. literal `DEEP_LOOP_ROOT` 문자열을 Node에 전달하는 것은 금지한다. 환경 변수나 셸 확장으로 루트를 만들지 않는다.
+
+호출은 Claude에서 `/deep-loop-resume`, Codex에서 `$deep-loop:deep-loop-resume` 형식을 사용한다.
+
 ## 개요
 
-Claude에서는 `/deep-loop-resume`, Codex에서는 `$deep-loop:deep-loop-resume` — 리스폰된 새 세션의 진입점이다. handoff descriptor가 넘긴 `--project-root <canonical_project_root> --run-id <run_id>`를 필수 입력으로 사용하고, 현재 실제 호스트를 `<claude|codex>`로 assertion한다(환경 마커로 추론하지 않음). handoff.md와 loop.json을 읽고 세션 lease를 CAS 인수한 뒤 active worktree를 확인한다.
+Claude에서는 `/deep-loop-resume`, Codex에서는 `$deep-loop:deep-loop-resume` — 리스폰된 새 세션의 진입점이다. handoff descriptor가 넘긴 `--project-root "<canonical_project_root>" --run-id <run_id>`를 필수 입력으로 사용하고, 현재 실제 호스트를 `<claude|codex>`로 assertion한다(환경 마커로 추론하지 않음). handoff.md와 loop.json을 읽고 세션 lease를 CAS 인수한 뒤 active worktree를 확인한다.
+
+descriptor의 `<run_id>`는 논리적(logical) loop run id이며 owner 세션이 바뀌어도 run 수명 동안 불변(immutable)이다. `<child_run_id>`는 이번 acquire에만 쓰는 새 owner 후보이며 둘을 합치지 않는다.
 
 ## 단계 1: Handoff 문서 읽기
 
 이전 대화 컨텍스트를 **가정하지 않는다**. 항상 handoff 문서에서 시작한다.
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field session_chain.sessions --project-root <canonical_project_root> --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field session_chain.sessions --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
 마지막 세션 항목의 `handoff_rel` 또는 `handoff_path`에서 handoff.md 경로를 확인한다 (런 디렉터리 기준).
@@ -30,22 +38,27 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field session_cha
 handoff에서 `child_run_id`와 현재 `generation`을 확인한다.
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" lease acquire --owner <child_run_id> --generation <new_generation> --expect-generation <current_generation> --runtime <claude|codex> --project-root <canonical_project_root> --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" lease acquire --owner <child_run_id> --generation <new_generation> --expect-generation <current_generation> --runtime <claude|codex> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
 - **반환 JSON의 `ok:true`를 확인한 후에만 진행한다.** `reason:'run-terminal'`(exit 3)이면 run이 이미 종결(completed/stopped)된 것 — 인수를 중단하고 사람에게 보고한다(v1.6 terminal guard).
-- 성공 시: 이 세션이 새 owner. `generation`이 +1 증가.
+- 성공 시: 이 세션이 새 owner. `<owner_run_id> = <child_run_id>`, `<generation> = <new_generation>`. 성공한 CAS 뒤 이 값들은 각각 현재 `session_chain.lease.owner_run_id`와 `session_chain.lease.generation`이며, 논리 `<run_id>`는 그대로 유지한다.
 - 실패(다른 세션이 이미 인수): 에러 보고 후 종료.
 
 ## 단계 2.5: 세션 model/effort refresh (acquire 직후)
 
 lease를 인수해 이 세션이 owner가 된 직후, 자기 실제 model/effort를 durable state에 갱신한다 — 부모가 `--model`/`--effort`로 정확히 띄웠어도, desktop transport(URL은 flag 못 실음)나 사람의 `/model` 변경으로 이 세션의 실제 값이 state와 다를 수 있으므로:
 
-```bash
-CLAUDE_EFFORT_VAL=$(node -e "process.stdout.write(process.env.CLAUDE_EFFORT||'')")
-SP_ARGS=(session-profile set --model "<이 세션의 모델 ID>" --owner <child_run_id> --generation <new_generation> --project-root <canonical_project_root> --run-id <run_id>)
-[ -n "$CLAUDE_EFFORT_VAL" ] && SP_ARGS+=(--effort "$CLAUDE_EFFORT_VAL")   # 빈 effort는 생략
-node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" "${SP_ARGS[@]}"
+현재 호스트가 알려 준 model과 effort를 직접 관측한다. 둘 다 있으면 다음 완전한 명령을 사용한다:
+
+```
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" session-profile set --model "<session_model>" --effort "<session_effort>" --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>
+```
+
+effort를 관측하지 못했으면 `--effort`를 넣지 않은 다음 완전한 명령을 사용한다:
+
+```
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" session-profile set --model "<session_model>" --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
 acquire가 owner를 이 세션으로 바꾸고 generation을 올리며 paused run을 running으로 되돌리므로, 이 setter는 새 owner/generation + `intent:'lease'`로 통과한다. 실패(예: 여전히 paused)하면 best-effort로 건너뛰고 다음 `/deep-loop-continue` §0.5가 갱신한다.
@@ -53,7 +66,7 @@ acquire가 owner를 이 세션으로 바꾸고 generation을 올리며 paused ru
 ## 단계 3: Active Worktree 확인
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field workstreams --project-root <canonical_project_root> --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field workstreams --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
 각 active workstream의 worktree 경로 무결성을 확인한다. 경로 소실 시 조용히 재생성하지 않는다 — `needs-human`으로 표시하고 사람에게 보고한다.
@@ -76,8 +89,14 @@ Claude에서는 `/deep-loop-continue`, Codex에서는 `$deep-loop:deep-loop-cont
 
 `preserve-paused` 상태이거나 respawn 게이트가 차단된 run이 stuck(교착 상태)이면 사람이 직접 복구할 수 있다:
 
+recover 대상 descriptor/current run의 불변 `<run_id>`로 현재 lease를 먼저 읽고, `<owner_run_id>`는 `session_chain.lease.owner_run_id`, `<generation>`은 `session_chain.lease.generation`으로 새로 설정한다:
+
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" recover --confirm --owner <run_id> --generation <n> --project-root <canonical_project_root> --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field session_chain.lease --project-root "<canonical_project_root>" --run-id <run_id>
+```
+
+```
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" recover --confirm --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
 이 명령은 stale handoff 상태를 정리하여 새 `lease acquire`(CAS 인수)가 가능하도록 한다. 커널이 un-pause를 처리하며, 다음 세션에서 runtime에 맞는 `/deep-loop-resume` 또는 `$deep-loop:deep-loop-resume`으로 lease를 인수한다.

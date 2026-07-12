@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const skillPath = (dir) => join(ROOT, 'skills', dir, 'SKILL.md');
 const _rf = readFileSync;
+const WORKFLOW_REFS = ['adapters.md', 'review-strategy.md', 'handoff-respawn.md', 'hill-climbing.md'];
 
 // Portable recursive .md walk (no reliance on Node ≥20.12 Dirent.parentPath) — Node ≥20 (engines) safe.
 function walkMdFiles(dir) {
@@ -32,6 +33,15 @@ const SKILLS = [
   ['deep-loop-ack', 'deep-loop-ack', true, ['/deep-loop-ack', 'ack', '검토'], true],
   ['deep-loop-finish', 'deep-loop-finish', true, ['/deep-loop-finish', 'finish', '종료'], true],
 ];
+
+const EXECUTION_DOCS = [
+  ...SKILLS.map(([dir]) => skillPath(dir)),
+  ...WORKFLOW_REFS.map((name) => join(ROOT, 'skills', 'deep-loop-workflow', 'references', name)),
+];
+
+function kernelCommandLines(src) {
+  return src.split('\n').filter((line) => /deep-loop\.mjs/.test(line));
+}
 
 function frontmatter(src) {
   const m = src.match(/^---\n([\s\S]*?)\n---/);
@@ -90,7 +100,7 @@ function worktreeWriteOutsideRoot(src) {
     // R5 P2-1: git 옵션(-C 등)이 git 과 worktree add 사이에 와도 매칭.
     if (!/\bgit\b[^\n]*\bworktree\s+add\b/.test(line)) return false;
     if (/\.\.(\/|\\)/.test(line)) return true;                                    // '..' escape
-    const origRootAnchored = /\$\{?ORIG_ROOT\}?\/[^"'\s]*\.(claude\/worktrees|worktrees)\//.test(line);
+    const origRootAnchored = /(?:\$\{?ORIG_ROOT\}?|<canonical_project_root>)\/[^"'\s]*\.(claude\/worktrees|worktrees)\//.test(line);
     const mentionsWtPath = /\.(claude\/worktrees|worktrees)\//.test(line);
     if (mentionsWtPath && !origRootAnchored) return true;                         // bare/cwd-relative worktrees path
     const hasForeignAbs = /\s["']?\/(?!\/)/.test(line) || /\s["']?[A-Za-z]:\\/.test(line);
@@ -105,6 +115,7 @@ test('boundary: worktree-write guard flags root-escape/bare-relative/git-options
   assert.ok(worktreeWriteOutsideRoot('git worktree add .claude/worktrees/ws -b x base'), 'bare-relative worktrees flagged (R3 high-3)');
   assert.ok(worktreeWriteOutsideRoot('git -C "$ORIG_ROOT" worktree add /tmp/wt -b x base'), 'git -C option + /tmp flagged (R5 P2-1)');
   assert.ok(!worktreeWriteOutsideRoot('git worktree add -b worktree-ws "$ORIG_ROOT/.claude/worktrees/ws" "$BASE_REF"'), 'ORIG_ROOT-anchored allowed');
+  assert.ok(!worktreeWriteOutsideRoot('git worktree add -b "worktree-ws" "<canonical_project_root>/.claude/worktrees/ws" "<base_ref>"'), 'portable canonical-root placeholder allowed');
   assert.ok(!worktreeWriteOutsideRoot('git worktree add \\\n  -b w "$ORIG_ROOT/.claude/worktrees/ws" "$BASE_REF"'), 'ORIG_ROOT-anchored multiline allowed');
   assert.ok(!worktreeWriteOutsideRoot('이미 worktree 안이면 재사용 (산문)'), 'prose without git-worktree-add ignored');
 });
@@ -156,6 +167,90 @@ test('mutatingFenced requires both fence flags on mutating CLI lines (fixtures)'
   assert.ok(mutatingFenced('episode record --status done --owner $R --generation 1'));   // shorthand fenced OK
 });
 
+// Task 4.1: the execution plane is copied between Claude Code, Codex CLI/App, POSIX,
+// PowerShell, and cmd.exe.  Command examples therefore describe argv, never a shell program.
+test('portable command contract: every entry derives and substitutes an absolute DEEP_LOOP_ROOT', () => {
+  for (const file of EXECUTION_DOCS) {
+    const src = readFileSync(file, 'utf8');
+    assert.match(src, /loaded SKILL\.md path|로드된 `?SKILL\.md`? 경로/i,
+      `${file}: root derivation must start from the loaded SKILL.md path`);
+    assert.match(src, /DEEP_LOOP_ROOT[\s\S]{0,360}(?:absolute|절대)/i,
+      `${file}: DEEP_LOOP_ROOT must be an absolute derived root`);
+    assert.match(src, /(?:replace|substitut|치환)[\s\S]{0,240}DEEP_LOOP_ROOT|DEEP_LOOP_ROOT[\s\S]{0,240}(?:replace|substitut|치환)/i,
+      `${file}: the placeholder must be replaced before execution`);
+    assert.match(src, /literal[\s\S]{0,160}DEEP_LOOP_ROOT[\s\S]{0,200}(?:never|금지|않)/i,
+      `${file}: literal DEEP_LOOP_ROOT must never reach Node`);
+  }
+});
+
+test('portable command contract: kernel examples are one-line canonical argv templates', () => {
+  for (const file of EXECUTION_DOCS) {
+    const src = readFileSync(file, 'utf8');
+    const commands = kernelCommandLines(src);
+    for (const line of commands) {
+      assert.match(line, /^\s*node "DEEP_LOOP_ROOT\/scripts\/deep-loop\.mjs"(?:\s|$)/,
+        `${file}: non-canonical or non-one-line kernel command: ${line}`);
+      assert.doesNotMatch(line, /\$\{(?:CLAUDE_PLUGIN_ROOT|PLUGIN_ROOT)\}|%(?:CLAUDE_PLUGIN_ROOT|PLUGIN_ROOT)%|\$env:(?:CLAUDE_PLUGIN_ROOT|PLUGIN_ROOT)/i,
+        `${file}: command depends on an ambient plugin-root expansion`);
+      assert.doesNotMatch(line, /\\\s*$/, `${file}: command uses backslash continuation`);
+    }
+  }
+});
+
+test('portable command contract: execution docs contain no shell-only construction', () => {
+  const forbidden = [
+    [/\$\(/, 'command substitution'],
+    [/\b[A-Z][A-Z0-9_]*\s*=\s*\(/, 'Bash array'],
+    [/\$\{[A-Z][A-Z0-9_]*\[@\]\}/, 'Bash array expansion'],
+    [/^\s*[A-Z][A-Z0-9_]*=\S+(?:\s+[A-Z][A-Z0-9_]*=\S+)*\s+\S+/m, 'POSIX env-prefix assignment'],
+    [/^\s*\[[^\n]*\]\s*(?:&&|\|\|)/m, 'Bash test/chaining'],
+    [/(?:&&|\|\|)/, 'shell command chaining'],
+    [/\\\s*$/m, 'backslash continuation'],
+  ];
+  for (const file of EXECUTION_DOCS) {
+    const src = readFileSync(file, 'utf8');
+    for (const [pattern, label] of forbidden) {
+      assert.doesNotMatch(src, pattern, `${file}: ${label} is not host-neutral`);
+    }
+  }
+});
+
+test('portable command contract: runtime and resumed mutation identity are explicit', () => {
+  const init = kernelCommandLines(readFileSync(skillPath('deep-loop'), 'utf8'))
+    .find((line) => /\binit-run\b/.test(line)) || '';
+  assert.match(init, /--runtime\s+<claude\|codex>/, 'init-run must carry the asserted current runtime');
+  assert.match(init, /--project-root\s+"<canonical_project_root>"/, 'init-run must pin the canonical root');
+
+  for (const file of EXECUTION_DOCS) {
+    const src = readFileSync(file, 'utf8');
+    for (const line of kernelCommandLines(src)) {
+      if (/\blease acquire\b/.test(line)) {
+        assert.match(line, /--runtime\s+<claude\|codex>/, `${file}: lease acquire must assert runtime`);
+      }
+      if (/--project-root\b/.test(line)) {
+        assert.match(line, /--project-root\s+"<canonical_project_root>"/,
+          `${file}: project-root placeholder must be quoted`);
+      }
+      if (MUTATING_SUB.test(line) && /--owner\b/.test(line)) {
+        assert.match(line, /--project-root\s+"<canonical_project_root>"/,
+          `${file}: resumed mutation must pin project root`);
+        assert.match(line, /--run-id\s+<run_id>/,
+          `${file}: resumed mutation must pin logical run id`);
+        assert.match(line, /--generation\b/, `${file}: resumed mutation must retain generation fence`);
+      }
+    }
+  }
+});
+
+test('portable host invocation contract: every user entry names Claude slash and Codex qualified dollar forms', () => {
+  for (const [dir, name, invocable] of SKILLS) {
+    if (!invocable) continue;
+    const src = readFileSync(skillPath(dir), 'utf8');
+    assert.match(src, new RegExp(`/${name}\\b`), `${dir}: Claude slash invocation missing`);
+    assert.match(src, new RegExp(`\\$deep-loop:${name}\\b`), `${dir}: Codex qualified dollar invocation missing`);
+  }
+});
+
 // Task 4: deep-loop §2-6 worktree creation discipline
 const dlSkill = () => _rf(skillPath('deep-loop'), 'utf8');
 
@@ -184,12 +279,15 @@ test('deep-loop §2-6: gitignore proposal-only + check-ignore precedes add', () 
   assert.match(s, /proposal-only|제안|승인 시에만/, 'gitignore proposal-only');
 });
 
-test('deep-loop §2-6: worktree creation never escapes root + no --project-root on command lines', () => {
+test('deep-loop §2-6: worktree creation never escapes root + post-init mutations pin root/run', () => {
   const s = dlSkill();
   assert.ok(!worktreeWriteOutsideRoot(s), 'no root-escaping git worktree add');
-  // R4 medium: 산문의 "`--project-root` 불필요" 멘션은 허용 — deep-loop.mjs **명령 라인**에만 없어야 한다.
-  const projRootCmd = s.split('\n').some(l => /deep-loop\.mjs/.test(l) && /--project-root/.test(l));
-  assert.ok(!projRootCmd, 'no --project-root on deep-loop.mjs command lines (rootOf handles it)');
+  const resumedMutations = kernelCommandLines(s).filter((line) => MUTATING_SUB.test(line) && /--owner\b/.test(line));
+  assert.ok(resumedMutations.length > 0, 'post-init mutation examples exist');
+  for (const line of resumedMutations) {
+    assert.match(line, /--project-root\s+"<canonical_project_root>"/);
+    assert.match(line, /--run-id\s+<run_id>/);
+  }
   assert.ok(mutatingFenced(s), 'mutating CLI still fenced');
 });
 
@@ -427,9 +525,9 @@ test('continue: worktree-entry ordering — §1.5 entry must precede §2 dispatc
 test('handoff-respawn resume contract uses descriptor root/run/runtime and delegates worktree routing', () => {
   const refPath = join(ROOT, 'skills', 'deep-loop-workflow', 'references', 'handoff-respawn.md');
   const src = readFileSync(refPath, 'utf8');
-  assert.match(src, /Resume 흐름[\s\S]{0,800}--project-root <canonical_project_root>[\s\S]{0,240}--run-id <run_id>/,
+  assert.match(src, /Resume 흐름[\s\S]{0,800}--project-root "<canonical_project_root>"[\s\S]{0,240}--run-id <run_id>/,
     'resume flow must consume the descriptor canonical root and logical run id');
-  assert.match(src, /lease acquire[^\n]*--runtime <claude\|codex>[^\n]*--project-root <canonical_project_root>[^\n]*--run-id <run_id>/,
+  assert.match(src, /lease acquire[^\n]*--runtime <claude\|codex>[^\n]*--project-root "<canonical_project_root>"[^\n]*--run-id <run_id>/,
     'resume lease acquisition must assert runtime and explicit root/run identity');
   assert.doesNotMatch(src, /--project-root[^\n]{0,100}(?:불필요|unnecessary)/i,
     'resume reference must not claim explicit --project-root is unnecessary');
@@ -720,8 +818,8 @@ test('runtime-facing launcher recovery docs diagnose read-only, require explicit
       assert.match(line, /--owner\b/);
       assert.match(line, /--generation\b/);
     }
-    assert.match(body, /\$\{(?:CLAUDE_PLUGIN_ROOT|PLUGIN_ROOT)\}/,
-      `${file}: launcher commands must retain runtime-neutral plugin-root expansion`);
+    assert.match(body, /node "DEEP_LOOP_ROOT\/scripts\/deep-loop\.mjs"/,
+      `${file}: launcher commands must use the canonical root placeholder`);
   }
 });
 
@@ -734,7 +832,7 @@ test('launcher approval recovery runs before handoff emit enters the releasing l
   for (const file of files) {
     const body = _rf(file, 'utf8');
     const approval = body.indexOf('launcher-executable approve');
-    const emit = body.indexOf('node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" handoff emit');
+    const emit = body.indexOf('node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" handoff emit');
     assert.ok(approval !== -1 && emit !== -1 && approval < emit,
       `${file}: human launcher approval must complete before handoff emit changes the lease to releasing`);
     assert.match(body.slice(Math.max(0, approval - 1400), emit), /handoff emit[\s\S]{0,240}(?:before|이전|전)/i,
@@ -767,11 +865,11 @@ test('runtime-facing skills assert runtime and carry explicit resume root/run id
 
   const resume = readFileSync(new URL('../skills/deep-loop-resume/SKILL.md', import.meta.url), 'utf8');
   assert.match(resume, /\$deep-loop:deep-loop-resume/, 'Codex resume must use the qualified dollar skill token');
-  assert.match(resume, /--project-root\s+<canonical_project_root>/, 'resume must accept the canonical project root from the descriptor');
+  assert.match(resume, /--project-root\s+"<canonical_project_root>"/, 'resume must accept the canonical project root from the descriptor');
   assert.match(resume, /--run-id\s+<run_id>/, 'resume must accept the explicit logical run id from the descriptor');
   const acquire = resume.split('\n').find((line) => /lease acquire/.test(line)) || '';
   assert.match(acquire, /--runtime\s+<claude\|codex>/, 'lease acquisition must assert the actual host runtime');
-  assert.match(acquire, /--project-root\s+<canonical_project_root>/);
+  assert.match(acquire, /--project-root\s+"<canonical_project_root>"/);
   assert.match(acquire, /--run-id\s+<run_id>/);
 });
 
@@ -849,6 +947,182 @@ test('runtime-neutral adapter reference routes exact skill/agent/blocked descrip
     'independent-subagent assertion must be capability-gated');
   assert.match(body, /(?:없으면|without)[^\n]{0,180}(?:전달하지|omit)/,
     'reference must omit the flag when cooperative capability is absent');
+});
+
+test('checker routing contract is explicit, mutually exclusive, and closes every independent execution path', () => {
+  const adapters = readFileSync(new URL('../skills/deep-loop-workflow/references/adapters.md', import.meta.url), 'utf8');
+  const cont = readFileSync(new URL('../skills/deep-loop-continue/SKILL.md', import.meta.url), 'utf8');
+
+  assert.match(adapters, /상호 배타|mutually exclusive/i, 'checker routes must be mutually exclusive');
+
+  const cooperative = adapters.match(/### Route A[\s\S]*?(?=\n### Route B)/)?.[0] || '';
+  assert.match(cooperative, /cooperative[\s\S]{0,240}(?:실제로 사용 가능|actually available)/i);
+  assert.match(cooperative, /--independent-subagent/);
+  assert.match(cooperative, /fresh `?code-reviewer`?[\s\S]{0,240}(?:host tool|호스트 도구)/i);
+  assert.ok(cooperative.indexOf('실제로 사용 가능') < cooperative.indexOf('review dispatch'),
+    'cooperative capability must be asserted before review dispatch');
+
+  const unattended = adapters.match(/### Route B[\s\S]*?(?=\n### Route C)/)?.[0] || '';
+  assert.match(unattended, /Codex[\s\S]{0,160}unattended[\s\S]{0,300}host-owned/i);
+  assert.match(unattended, /isolated[\s\S]{0,120}read-only[\s\S]{0,180}(?:second|두 번째) `?codex exec`?/i);
+  assert.match(unattended, /claim[\s\S]{0,240}import[\s\S]{0,240}accounting/i);
+  assert.match(unattended, /execution skill[\s\S]{0,180}review record[\s\S]{0,120}(?:않|never)/i,
+    'host-owned checker path must not be recorded by the execution skill');
+
+  const interactive = adapters.match(/### Route C[\s\S]*?(?=\n### Route D)/)?.[0] || '';
+  assert.match(interactive, /interactive[\s\S]{0,260}(?:distinct|별도)[\s\S]{0,160}(?:fresh session|fresh task|새 세션|새 task)/i);
+  assert.match(interactive, /reviewed worktree|리뷰 대상 worktree/i);
+  assert.match(interactive, /Claude[\s\S]{0,180}Skill\([\s\S]{0,300}Codex[\s\S]{0,180}\$<checker\.skill>/i);
+  assert.match(interactive, /Codex[\s\S]{0,260}(?:manual|수동)[\s\S]{0,220}(?:task|세션)/i);
+  assert.match(interactive, /contained report|containment[\s\S]{0,160}report|포함[\s\S]{0,160}리포트/i);
+  assert.match(interactive, /original execution session|원래 execution session/i);
+  assert.match(interactive, /same-task|같은 task[\s\S]{0,200}\$<checker\.skill>[\s\S]{0,180}(?:proof|증명)[\s\S]{0,80}(?:금지|아님)/i);
+
+  const blocked = adapters.match(/### Route D[\s\S]*?(?=\n### Verdict 기록)/)?.[0] || '';
+  assert.match(blocked, /needs-human/);
+  assert.match(blocked, /review dispatch[\s\S]{0,160}(?:하지|금지|never)/i);
+  assert.match(blocked, /review record[\s\S]{0,160}(?:하지|금지|never)/i);
+  assert.match(blocked, /fabricat|날조|proof[\s\S]{0,80}(?:만들지|금지)/i);
+  assert.match(blocked, /checker\.kind === 'agent'[\s\S]{0,260}cooperative[\s\S]{0,220}(?:before|이전|전에)[\s\S]{0,180}review dispatch/i);
+
+  const branch = cont.indexOf('상호 배타 checker routing');
+  const record = cont.indexOf('review record', branch);
+  assert.ok(branch !== -1 && record > branch,
+    'continue must defer to the checker routing contract before review record');
+});
+
+test('review strategy separates durable reviewer enums from host invocation skill ids', () => {
+  const strategy = readFileSync(new URL('../skills/deep-loop-workflow/references/review-strategy.md', import.meta.url), 'utf8');
+  const entry = readFileSync(new URL('../skills/deep-loop/SKILL.md', import.meta.url), 'utf8');
+
+  for (const [name, body] of [['review strategy', strategy], ['entry skill', entry]]) {
+    assert.match(body, /deep-review[\s\S]{0,500}durable[\s\S]{0,260}"reviewer"\s*:\s*"deep-review-loop"/i,
+      `${name}: deep-review selection must store the accepted durable enum`);
+    assert.match(body, /subagent[\s\S]{0,500}durable[\s\S]{0,260}"reviewer"\s*:\s*"subagent-checker"/i,
+      `${name}: cooperative subagent selection must store subagent-checker`);
+    assert.match(body, /descriptor[\s\S]{0,300}deep-review:deep-review-loop/i,
+      `${name}: only the returned descriptor uses the qualified invocation id`);
+    assert.doesNotMatch(body, /"reviewer"\s*:\s*"deep-review:deep-review-loop"/,
+      `${name}: qualified invocation id must never enter durable review JSON`);
+  }
+});
+
+test('init review JSON is one exact cross-POSIX/PowerShell single-quoted argv argument', () => {
+  const entry = readFileSync(new URL('../skills/deep-loop/SKILL.md', import.meta.url), 'utf8');
+  const initCommands = kernelCommandLines(entry).filter((line) => /\binit-run\b/.test(line));
+  assert.ok(initCommands.length >= 3, 'all documented model/effort variants remain explicit');
+  for (const line of initCommands) {
+    assert.match(line, /--review\s+'<review_json_compact>'(?:\s|$)/,
+      `init-run review JSON must be one single-quoted argv argument: ${line}`);
+    assert.doesNotMatch(line, /--review\s+"<review_json_compact>"/);
+  }
+  assert.match(entry, /<review_json_compact>[\s\S]{0,360}(?:compact JSON|압축 JSON)[\s\S]{0,240}(?:JSON double quotes|JSON 이중 따옴표)/i,
+    'placeholder substitution must preserve JSON double quotes inside the single-quoted argument');
+});
+
+test('portable command contract: free-form reason placeholders remain one argv value', () => {
+  for (const file of EXECUTION_DOCS) {
+    for (const line of kernelCommandLines(readFileSync(file, 'utf8')).filter((candidate) => /--reason\b/.test(candidate))) {
+      assert.match(line, /--reason\s+"[^"]*<[^>]+>[^"]*"(?:\s|$)/,
+        `${file}: free-form reason placeholder must be double-quoted: ${line}`);
+    }
+  }
+});
+
+test('lease-fenced argv keeps the immutable logical run id separate from the current lease owner', () => {
+  for (const file of EXECUTION_DOCS) {
+    const body = readFileSync(file, 'utf8');
+    assert.doesNotMatch(body, /--owner\s+<run_id>/,
+      `${file}: logical run id must never be used as the lease owner`);
+
+    for (const line of kernelCommandLines(body).filter((candidate) => /--owner\b/.test(candidate))) {
+      assert.match(line, /--run-id\s+<run_id>/,
+        `${file}: every fenced command must retain the immutable logical run id: ${line}`);
+      if (/\blease acquire\b/.test(line)) {
+        assert.match(line, /--owner\s+<child_run_id>/,
+          `${file}: lease acquire alone uses the reserved child owner: ${line}`);
+        assert.match(line, /--generation\s+<new_generation>/,
+          `${file}: lease acquire uses the requested next generation: ${line}`);
+      } else {
+        assert.match(line, /--owner\s+<owner_run_id>/,
+          `${file}: non-acquire commands use the freshly read lease owner: ${line}`);
+        assert.match(line, /--generation\s+<(?:generation|n)>/,
+          `${file}: non-acquire commands use the current lease generation placeholder: ${line}`);
+      }
+    }
+  }
+});
+
+test('entry, resume, and continue preserve logical identity across lease ownership transitions', () => {
+  const entry = readFileSync(skillPath('deep-loop'), 'utf8');
+  assert.match(entry, /<run_id>[\s\S]{0,240}(?:logical|논리)[\s\S]{0,160}(?:immutable|불변)/i,
+    'entry must define run_id as the immutable logical loop id');
+  assert.match(entry, /<owner_run_id>\s*=\s*<run_id>[\s\S]{0,120}<generation>\s*=\s*1/,
+    'after init the initial owner equals, but remains distinct from, the logical run id');
+
+  const resume = readFileSync(skillPath('deep-loop-resume'), 'utf8');
+  const acquire = kernelCommandLines(resume).find((line) => /\blease acquire\b/.test(line)) || '';
+  assert.match(acquire, /--owner\s+<child_run_id>[\s\S]*--run-id\s+<run_id>/,
+    'lease acquire must bind the reserved child to the immutable logical run');
+  assert.match(resume, /<owner_run_id>\s*=\s*<child_run_id>[\s\S]{0,160}<generation>\s*=\s*<new_generation>/,
+    'successful acquire must promote the child and returned generation to current fence variables');
+  const postAcquire = resume.slice(resume.indexOf('## 단계 2.5'));
+  for (const line of kernelCommandLines(postAcquire).filter((candidate) => /--owner\b/.test(candidate))) {
+    assert.match(line, /--owner\s+<owner_run_id>/,
+      `post-acquire resume command must use current owner_run_id: ${line}`);
+    assert.match(line, /--run-id\s+<run_id>/,
+      `post-acquire resume command must preserve logical run_id: ${line}`);
+  }
+
+  const cont = readFileSync(skillPath('deep-loop-continue'), 'utf8');
+  assert.match(cont, /<run_id>[\s\S]{0,240}(?:logical|논리)[\s\S]{0,160}(?:immutable|불변)/i,
+    'continue must preserve the descriptor/current-run logical id');
+  assert.match(cont, /<owner_run_id>\s*=\s*(?:`)?lease\.owner_run_id(?:`)?[\s\S]{0,160}<generation>\s*=\s*(?:`)?lease\.generation(?:`)?/,
+    'continue must bind fence variables from the freshly read lease');
+  assert.doesNotMatch(cont, /(?:<run_id>|(?<!owner_)run_id)(?:`)?\s*=\s*(?:`)?lease\.owner_run_id(?:`)?/,
+    'continue must never rebind the logical run id to the session owner');
+});
+
+test('mutation entry skills and shared references source fresh fence identity without conflating state keys', () => {
+  const freshLeaseSkills = [
+    'deep-loop-ack',
+    'deep-loop-continue',
+    'deep-loop-discover',
+    'deep-loop-finish',
+    'deep-loop-handoff',
+    'deep-loop-status',
+    'deep-loop-triage',
+  ];
+  for (const dir of freshLeaseSkills) {
+    const body = readFileSync(skillPath(dir), 'utf8');
+    const leaseRead = body.indexOf('state get --field session_chain.lease');
+    const firstFencedCommand = kernelCommandLines(body).findIndex((line) => /--owner\b/.test(line));
+    const firstFencedOffset = firstFencedCommand === -1
+      ? -1
+      : body.indexOf(kernelCommandLines(body)[firstFencedCommand]);
+    assert.ok(leaseRead !== -1 && firstFencedOffset !== -1 && leaseRead < firstFencedOffset,
+      `${dir}: read session_chain.lease before the first fenced mutation`);
+    assert.match(body, /<owner_run_id>[\s\S]{0,240}session_chain\.lease\.owner_run_id/,
+      `${dir}: owner_run_id must come from the fresh lease state`);
+    assert.match(body, /<generation>[\s\S]{0,240}session_chain\.lease\.generation/,
+      `${dir}: generation must come from the fresh lease state`);
+  }
+
+  const sharedDocs = [
+    skillPath('deep-loop-workflow'),
+    join(ROOT, 'skills', 'deep-loop-workflow', 'references', 'adapters.md'),
+    join(ROOT, 'skills', 'deep-loop-workflow', 'references', 'handoff-respawn.md'),
+    join(ROOT, 'skills', 'deep-loop-workflow', 'references', 'hill-climbing.md'),
+  ];
+  for (const file of sharedDocs) {
+    const body = readFileSync(file, 'utf8');
+    assert.match(body, /<run_id>[\s\S]{0,240}(?:logical|논리)[\s\S]{0,160}(?:immutable|불변)/i,
+      `${file}: shared contract must name immutable logical run identity`);
+    assert.match(body, /<owner_run_id>[\s\S]{0,240}session_chain\.lease\.owner_run_id/,
+      `${file}: shared contract must source the current owner from lease state`);
+    assert.match(body, /<generation>[\s\S]{0,240}session_chain\.lease\.generation/,
+      `${file}: shared contract must source the current generation from lease state`);
+  }
 });
 
 // Task 9 (spec §8.2): 게이트-크리티컬 마커 — 위치-독립 '존재' 단언, 삭제-회귀만 결정론 방어.

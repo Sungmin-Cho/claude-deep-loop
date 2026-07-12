@@ -11,15 +11,31 @@ user-invocable: true
 > **비가역 외부 행동(push/PR/publish/merge/delete)은 proposal-only**, 항상 사람 승인(human approval)을 받는다.
 > **이 스킬은 사람 검토(human ack)의 진입점** — comprehension 게이트(사람 감독)를 해제하는 유일한 경로다. 따라서 `--actor human --confirm`을 쓴다. **autonomous/headless tick은 이 커맨드를 사람으로 발행하지 않는다** — 커널이 headless 마커를 감지하면 `comprehension-ack-rejected`를 event-log에 남기고 fail-closed 거부한다(사후 감사 대상).
 
+## 실행 루트와 호스트 호출
+
+로드된 `SKILL.md` 경로에서 이 플러그인의 absolute(절대) 루트를 계산하고, 아래 argv 템플릿의 `DEEP_LOOP_ROOT`를 실행 전에 그 절대 경로로 치환한다. literal `DEEP_LOOP_ROOT` 문자열을 Node에 전달하는 것은 금지한다. 환경 변수나 셸 확장으로 루트를 만들지 않는다.
+
+호출은 Claude에서 `/deep-loop-ack`, Codex에서 `$deep-loop:deep-loop-ack` 형식을 사용한다.
+
 ## 개요
 
 `/deep-loop-ack` — 사람이 검토(ack)한 episode를 사람 자격으로 표시해 comprehension debt를 줄인다. debt가 줄면 루프가 새 작업을 fan-out할 수 있다. checker의 기계 리뷰(APPROVE)는 agent 카운터(`episodes_agent_reviewed`)로만 계상되어 debt를 **줄이지 않는다** — 사람 검토(이 스킬)만 게이트를 연다.
 
+## 단계 0: Lease identity 확인
+
+descriptor/current run의 `<run_id>`는 논리적(logical) loop run id이며 run 수명 동안 불변(immutable)이다. mutation 전에 현재 lease를 새로 읽는다:
+
+```
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field session_chain.lease --project-root "<canonical_project_root>" --run-id <run_id>
+```
+
+`<owner_run_id>`는 `session_chain.lease.owner_run_id`, `<generation>`은 `session_chain.lease.generation`에서 가져온다. ack 명령은 이 current fence와 불변 `<run_id>`를 함께 전달한다.
+
 ## 단계 1: 미검토 Episode 확인
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" comprehension status
-node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field episodes
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" comprehension status --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field episodes --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
 `human_reviewed: false`인 episode 목록을 확인한다.
@@ -29,7 +45,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field episodes
 사람이 검토한 episode ID를 받아 (**사람 검토이므로 `--actor human --confirm` 필수**):
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" comprehension ack --episode <episode_id> --actor human --confirm --owner <run_id> --generation <n>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" comprehension ack --episode <episode_id> --actor human --confirm --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
 - 성공 시 `{ ok: true, debt_ratio }` 반환.
