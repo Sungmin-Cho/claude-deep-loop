@@ -33,6 +33,22 @@ test('buildInitialLoop records explicit claude and codex runtime', () => {
   }
 });
 
+test('native win32 WT initialization stays manual until a launcher is durably approved', () => {
+  let processCalls = 0;
+  const loop = buildInitialLoop({
+    runtime: 'claude', runId: 'win32-unapproved', goal: 'g', recipe: {},
+    now: new Date('2026-07-12T00:00:00Z'), env: { WT_SESSION: 'session-1' }, platform: 'win32',
+    run: () => { processCalls++; return { code: 0 }; },
+  });
+
+  assert.deepEqual(loop.autonomy.launcher_executable_approvals, { wt: null, powershell: null });
+  assert.equal(loop.session_spawn.launcher, 'none');
+  assert.equal(loop.session_spawn.reason, 'windows-terminal-unverified');
+  assert.equal(loop.session_spawn.reachable, false);
+  assert.equal(loop.session_spawn.fallback, 'launch-command-file');
+  assert.equal(processCalls, 0, 'unapproved launcher code and PATH probes must remain unreachable');
+});
+
 test('explicit codex runtime wins when both Claude and Codex markers exist', () => {
   const env = { CLAUDE_CODE_ENTRYPOINT: 'sdk-py', CODEX_THREAD_ID: 'thread-1' };
   const loop = buildInitialLoop({ runtime: 'codex', runId: 'runtime-codex', goal: 'g', recipe: {}, now: new Date('2026-06-27T00:00:00Z'), env, platform: noSignalPlatform, run: noOpRun });

@@ -21,8 +21,11 @@ import {
   resolveTrustedRuntimeExecutable,
   revalidateTrustedRuntimeExecutable,
 } from '../scripts/lib/runtime-executable.mjs';
+import * as runtimeExecutable from '../scripts/lib/runtime-executable.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { readState } from '../scripts/lib/state.mjs';
+import { readState, writeState } from '../scripts/lib/state.mjs';
+import { contentHash } from '../scripts/lib/envelope.mjs';
+import { detectAndPersist } from '../scripts/lib/detect-terminal.mjs';
 import {
   createDirectoryJunction,
   createFileSymlinkOrSkip,
@@ -155,6 +158,43 @@ function durableApprovalBytes(root, runId) {
     const path = join(dir, name);
     return [name, existsSync(path) ? readFileSync(path) : null];
   }));
+}
+
+function launcherApprovalFixture({ kind = 'wt', name = kind === 'wt' ? 'wt.exe' : 'pwsh.exe' } = {}) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-launcher-approval-')));
+  const executable = join(root, name);
+  writeFileSync(executable, `${kind} native launcher bytes`);
+  chmodSync(executable, 0o755);
+  const sha256 = createHash('sha256').update(readFileSync(executable)).digest('hex');
+  const version = kind === 'wt' ? '1.22.10352.0' : '7.5.2';
+  const versionLine = kind === 'wt' ? `Windows Terminal ${version}` : `PowerShell ${version}`;
+  const calls = [];
+  const runVersion = (bin, argv, options) => {
+    calls.push({ bin, argv, options });
+    return { status: 0, signal: null, stdout: `${versionLine}\r\n`, stderr: '' };
+  };
+  const { runId } = initRun(root, {
+    runtime: 'claude', goal: 'g', now: new Date('2026-07-12T00:00:00.000Z'),
+    env: {}, platform: 'linux', run: () => ({ code: 1 }),
+  });
+  return { root, runId, kind, executable, sha256, version, versionLine, calls, runVersion };
+}
+
+function launcherApprovalOptions(fixture, overrides = {}) {
+  return {
+    kind: fixture.kind,
+    candidatePath: fixture.executable,
+    expectedCanonicalPath: fixture.executable,
+    expectedSha256: fixture.sha256,
+    actor: 'human',
+    confirm: true,
+    fence: { owner: fixture.runId, generation: 1 },
+    now: Date.parse('2026-07-12T01:00:00.000Z'),
+    platform: 'win32',
+    arch: 'x64',
+    runVersion: fixture.runVersion,
+    ...overrides,
+  };
 }
 
 test('collectRuntimeExecutableCandidates ignores cwd and relative PATH shadows', () => {
@@ -707,6 +747,272 @@ test('diagnose never presents script or shell shims as human-approvable native e
       extension,
     );
   }
+});
+
+test('launcher diagnosis hashes one explicit native path without executing it; approval performs fresh fenced verification once', () => {
+  const fixture = launcherApprovalFixture();
+  const before = durableApprovalBytes(fixture.root, fixture.runId);
+
+  const diagnosed = runtimeExecutable.diagnoseLauncherExecutable('wt', {
+    explicitPath: fixture.executable, platform: 'win32', arch: 'x64', runVersion: fixture.runVersion,
+  });
+  assert.equal(diagnosed.approval_required, true);
+  assert.deepEqual(diagnosed.identity, {
+    kind: 'wt', canonical_path: fixture.executable, sha256: fixture.sha256, version: null,
+    platform: 'win32', arch: 'x64', source: 'human-explicit', authenticode: null,
+    version_probe: 'deferred-until-human-approval',
+  });
+  assert.equal(fixture.calls.length, 0, 'diagnosis must never execute unapproved launcher code');
+  assert.deepEqual(durableApprovalBytes(fixture.root, fixture.runId), before, 'diagnosis is read-only');
+
+  const result = runtimeExecutable.approveLauncherExecutable(
+    fixture.root, fixture.runId, launcherApprovalOptions(fixture),
+  );
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.approval, {
+    kind: 'wt', canonical_path: fixture.executable, sha256: fixture.sha256,
+    version: fixture.version, platform: 'win32', arch: 'x64', source: 'human-explicit',
+    authenticode: null, approved_by: 'human', approved_at: '2026-07-12T01:00:00.000Z',
+  });
+  assert.equal(fixture.calls.length, 2, 'the confirmed in-lock identity is observed then revalidated for drift');
+  assert.ok(fixture.calls.every(call => call.bin === fixture.executable && call.options.shell === false));
+
+  const state = readState(fixture.root, fixture.runId).data;
+  assert.deepEqual(state.autonomy.launcher_executable_approvals, {
+    wt: result.approval, powershell: null,
+  });
+  const events = readFileSync(join(fixture.root, '.deep-loop', 'runs', fixture.runId, 'event-log.jsonl'), 'utf8')
+    .trim().split('\n').map(line => JSON.parse(line));
+  const approvals = events.filter(event => event.type === 'launcher-executable-approved');
+  assert.equal(approvals.length, 1);
+  assert.deepEqual(approvals[0].data, {
+    kind: 'wt', canonical_path: fixture.executable, sha256: fixture.sha256,
+    version: fixture.version, source: 'human-explicit', actor: 'human',
+  });
+});
+
+test('launcher approval rejects missing authority, unsafe targets, and version failure without probing or appending', () => {
+  const cases = [
+    ['kind', () => launcherApprovalFixture(), fixture => ({ ...launcherApprovalOptions(fixture), kind: undefined }), /LAUNCHER_EXECUTABLE_KIND_INVALID/],
+    ['actor', () => launcherApprovalFixture(), fixture => ({ ...launcherApprovalOptions(fixture), actor: undefined }), /INVALID_ACTOR/],
+    ['confirm', () => launcherApprovalFixture(), fixture => ({ ...launcherApprovalOptions(fixture), confirm: false }), /CONFIRM_REQUIRED/],
+    ['fence', () => launcherApprovalFixture(), fixture => ({ ...launcherApprovalOptions(fixture), fence: undefined }), /FENCE_REQUIRED/],
+    ['path', () => launcherApprovalFixture(), fixture => ({ ...launcherApprovalOptions(fixture), candidatePath: undefined }), /LAUNCHER_EXECUTABLE_PATH_INVALID/],
+    ['hash', () => launcherApprovalFixture(), fixture => ({ ...launcherApprovalOptions(fixture), expectedSha256: 'A'.repeat(64) }), /LAUNCHER_EXECUTABLE_HASH_INVALID/],
+    ['bare', () => launcherApprovalFixture(), fixture => ({ ...launcherApprovalOptions(fixture), candidatePath: 'wt.exe' }), /LAUNCHER_EXECUTABLE_PATH_INVALID/],
+    ['relative', () => launcherApprovalFixture(), fixture => ({ ...launcherApprovalOptions(fixture), candidatePath: '.\\wt.exe' }), /LAUNCHER_EXECUTABLE_PATH_INVALID/],
+    ['UNC', () => launcherApprovalFixture(), fixture => ({ ...launcherApprovalOptions(fixture), candidatePath: String.raw`\\server\share\wt.exe` }), /LAUNCHER_EXECUTABLE_UNTRUSTED/],
+    ['device', () => launcherApprovalFixture(), fixture => ({ ...launcherApprovalOptions(fixture), candidatePath: String.raw`\\?\C:\tools\wt.exe` }), /LAUNCHER_EXECUTABLE_UNTRUSTED/],
+    ['script', () => launcherApprovalFixture({ name: 'wt.ps1' }), fixture => launcherApprovalOptions(fixture), /LAUNCHER_EXECUTABLE_UNTRUSTED/],
+    ['version', () => launcherApprovalFixture(), fixture => ({ ...launcherApprovalOptions(fixture), runVersion: () => ({ status: 1, signal: null, stdout: '', stderr: 'failed' }) }), /LAUNCHER_EXECUTABLE_VERSION_INVALID/],
+  ];
+
+  for (const [label, makeFixture, makeOptions, expected] of cases) {
+    const fixture = makeFixture();
+    const before = durableApprovalBytes(fixture.root, fixture.runId);
+    assert.throws(
+      () => runtimeExecutable.approveLauncherExecutable(fixture.root, fixture.runId, makeOptions(fixture)),
+      expected,
+      label,
+    );
+    assert.deepEqual(durableApprovalBytes(fixture.root, fixture.runId), before, label);
+    if (!['version'].includes(label)) assert.equal(fixture.calls.length, 0, `${label}: rejected authority must not execute`);
+  }
+});
+
+test('launcher approval fence, terminal state, candidate replacement, and security drift fail closed with no append', () => {
+  for (const [label, prepare, overrides, expected] of [
+    ['owner fence', () => {}, { fence: { owner: 'stale-owner', generation: 1 } }, /LEASE_FENCED/],
+    ['generation fence', () => {}, { fence: { owner: null, generation: 9 } }, /LEASE_FENCED/],
+    ['terminal', fixture => {
+      const { data } = readState(fixture.root, fixture.runId);
+      data.status = 'completed';
+      writeState(fixture.root, fixture.runId, data);
+    }, {}, /LAUNCHER_EXECUTABLE_STATE_INVALID.*RUN_TERMINAL/],
+    ['candidate replacement', fixture => {
+      writeFileSync(fixture.executable, 'replacement launcher bytes');
+    }, {}, /LAUNCHER_EXECUTABLE_HASH_MISMATCH/],
+  ]) {
+    const fixture = launcherApprovalFixture();
+    prepare(fixture);
+    const resolvedOverrides = label === 'generation fence'
+      ? { ...overrides, fence: { owner: fixture.runId, generation: 9 } }
+      : overrides;
+    const before = durableApprovalBytes(fixture.root, fixture.runId);
+    assert.throws(
+      () => runtimeExecutable.approveLauncherExecutable(
+        fixture.root, fixture.runId, launcherApprovalOptions(fixture, resolvedOverrides),
+      ),
+      expected,
+      label,
+    );
+    assert.deepEqual(durableApprovalBytes(fixture.root, fixture.runId), before, label);
+    if (label !== 'candidate replacement') assert.equal(fixture.calls.length, 0, `${label}: fence/state must win before execution`);
+  }
+
+  const drift = launcherApprovalFixture();
+  let signerCalls = 0;
+  const before = durableApprovalBytes(drift.root, drift.runId);
+  assert.throws(
+    () => runtimeExecutable.approveLauncherExecutable(drift.root, drift.runId, launcherApprovalOptions(drift, {
+      authenticodeProbe: () => ({
+        status: 'valid', signer: signerCalls++ === 0 ? 'Expected Signer' : 'Replacement Signer', thumbprint: 'aabb',
+      }),
+    })),
+    /LAUNCHER_EXECUTABLE_DRIFT/,
+  );
+  assert.equal(signerCalls, 2);
+  assert.deepEqual(durableApprovalBytes(drift.root, drift.runId), before);
+});
+
+test('launcher candidate ambiguity is never authority and cannot mutate durable state', () => {
+  const run = launcherApprovalFixture();
+  const other = launcherApprovalFixture();
+  const before = durableApprovalBytes(run.root, run.runId);
+  assert.throws(
+    () => runtimeExecutable.resolveTrustedLauncherExecutable('wt', {
+      candidatePaths: [run.executable, other.executable], platform: 'win32', arch: 'x64',
+      runVersion: run.runVersion,
+    }),
+    /LAUNCHER_EXECUTABLE_AMBIGUOUS/,
+  );
+  assert.deepEqual(durableApprovalBytes(run.root, run.runId), before);
+});
+
+test('launcher approval rejects a present malformed approval map instead of repairing it', () => {
+  const fixture = launcherApprovalFixture();
+  const { data } = readState(fixture.root, fixture.runId);
+  data.autonomy.launcher_executable_approvals = null;
+  const dir = join(fixture.root, '.deep-loop', 'runs', fixture.runId);
+  const raw = JSON.stringify(data, null, 2);
+  writeFileSync(join(dir, 'loop.json'), raw);
+  writeFileSync(join(dir, '.loop.hash'), contentHash(raw));
+  const before = durableApprovalBytes(fixture.root, fixture.runId);
+  assert.throws(
+    () => runtimeExecutable.approveLauncherExecutable(
+      fixture.root, fixture.runId, launcherApprovalOptions(fixture),
+    ),
+    /STATE_INVALID.*launcher_executable_approvals/,
+  );
+  assert.equal(fixture.calls.length, 0, 'malformed durable state must fail before executing a candidate');
+  assert.deepEqual(durableApprovalBytes(fixture.root, fixture.runId), before);
+});
+
+test('launcher approval rejects a running releasing handoff before candidate execution', () => {
+  const fixture = launcherApprovalFixture();
+  const { data } = readState(fixture.root, fixture.runId);
+  data.session_chain.lease.state = 'releasing';
+  data.session_chain.lease.handoff_phase = 'emitted';
+  data.session_chain.lease.handoff_idempotency_key = 'test-key';
+  data.session_chain.lease.handoff_child_run_id = 'reserved-child';
+  writeState(fixture.root, fixture.runId, data);
+  const before = durableApprovalBytes(fixture.root, fixture.runId);
+  assert.throws(
+    () => runtimeExecutable.approveLauncherExecutable(
+      fixture.root, fixture.runId, launcherApprovalOptions(fixture),
+    ),
+    /LAUNCHER_EXECUTABLE_STATE_INVALID.*lease-releasing-carveout/,
+  );
+  assert.equal(fixture.calls.length, 0, 'releasing fence must win before unapproved code execution');
+  assert.deepEqual(durableApprovalBytes(fixture.root, fixture.runId), before);
+});
+
+test('launcher public diagnose and approve APIs use launcher-specific unavailable errors', () => {
+  const fixture = launcherApprovalFixture();
+  const missing = join(fixture.root, 'missing', 'wt.exe');
+  assert.throws(
+    () => runtimeExecutable.diagnoseLauncherExecutable('wt', {
+      explicitPath: missing, platform: 'win32', arch: 'x64',
+    }),
+    error => String(error?.message || error).startsWith('LAUNCHER_EXECUTABLE_UNTRUSTED:'),
+  );
+
+  const before = durableApprovalBytes(fixture.root, fixture.runId);
+  assert.throws(
+    () => runtimeExecutable.approveLauncherExecutable(fixture.root, fixture.runId, launcherApprovalOptions(fixture, {
+      candidatePath: missing,
+      expectedCanonicalPath: missing,
+    })),
+    error => String(error?.message || error).startsWith('LAUNCHER_EXECUTABLE_UNTRUSTED:'),
+  );
+  assert.equal(fixture.calls.length, 0);
+  assert.deepEqual(durableApprovalBytes(fixture.root, fixture.runId), before);
+
+  assert.throws(
+    () => runtimeExecutable.approveLauncherExecutable(fixture.root, fixture.runId, launcherApprovalOptions(fixture, {
+      authenticodeProbe: () => ({ status: 'invalid', signer: 'Unknown', thumbprint: 'aa' }),
+    })),
+    error => String(error?.message || error).startsWith('LAUNCHER_EXECUTABLE_AUTHENTICODE_INVALID:'),
+  );
+  assert.deepEqual(durableApprovalBytes(fixture.root, fixture.runId), before);
+});
+
+test('fresh exact human re-approval replaces a launcher atomically and requires terminal re-detection', () => {
+  const fixture = launcherApprovalFixture();
+  const first = runtimeExecutable.approveLauncherExecutable(
+    fixture.root, fixture.runId, launcherApprovalOptions(fixture),
+  ).approval;
+  assert.equal(readState(fixture.root, fixture.runId).data.session_spawn.launcher, 'none');
+  const firstDescriptor = detectAndPersist(fixture.root, fixture.runId, {
+    owner: fixture.runId, generation: 1, env: { WT_SESSION: 'session-1' },
+    platform: 'win32', arch: 'x64', now: '2026-07-12T01:01:00.000Z',
+    launcherRevalidationOptions: { runVersion: fixture.runVersion },
+  });
+  assert.equal(firstDescriptor.launcher, 'wt');
+  assert.equal(firstDescriptor.launcher_bin, first.canonical_path);
+
+  const replacementDir = join(fixture.root, 'replacement');
+  mkdirSync(replacementDir);
+  const replacement = join(replacementDir, 'wt.exe');
+  writeFileSync(replacement, 'replacement native launcher bytes');
+  const replacementSha256 = createHash('sha256').update(readFileSync(replacement)).digest('hex');
+  const replacementCalls = [];
+  const replacementRunVersion = (bin, argv, options) => {
+    replacementCalls.push({ bin, argv, options });
+    return { status: 0, signal: null, stdout: `Windows Terminal ${fixture.version}\r\n`, stderr: '' };
+  };
+  const replacementOptions = launcherApprovalOptions(fixture, {
+    candidatePath: replacement,
+    expectedCanonicalPath: replacement,
+    expectedSha256: replacementSha256,
+    now: Date.parse('2026-07-12T02:00:00.000Z'),
+    runVersion: replacementRunVersion,
+  });
+
+  const beforeFailedReplacement = durableApprovalBytes(fixture.root, fixture.runId);
+  assert.throws(
+    () => runtimeExecutable.approveLauncherExecutable(fixture.root, fixture.runId, {
+      ...replacementOptions, expectedSha256: first.sha256,
+    }),
+    /LAUNCHER_EXECUTABLE_HASH_MISMATCH/,
+  );
+  assert.deepEqual(durableApprovalBytes(fixture.root, fixture.runId), beforeFailedReplacement);
+  assert.deepEqual(readState(fixture.root, fixture.runId).data.autonomy.launcher_executable_approvals.wt, first);
+
+  const second = runtimeExecutable.approveLauncherExecutable(
+    fixture.root, fixture.runId, replacementOptions,
+  ).approval;
+  assert.equal(second.canonical_path, replacement);
+  assert.equal(second.sha256, replacementSha256);
+  assert.equal(second.approved_at, '2026-07-12T02:00:00.000Z');
+  const pendingDetection = readState(fixture.root, fixture.runId).data.session_spawn;
+  assert.equal(pendingDetection.launcher, 'none',
+    'fresh approval must invalidate the old runnable descriptor until detection binds the new authority');
+  assert.equal(pendingDetection.launcher_bin, null);
+  assert.equal(pendingDetection.launcher_identity, undefined);
+  assert.equal(pendingDetection.reason, 'launcher-reapproval-pending-detection');
+  const events = readFileSync(join(fixture.root, '.deep-loop', 'runs', fixture.runId, 'event-log.jsonl'), 'utf8')
+    .trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(events.filter(event => event.type === 'launcher-executable-approved').length, 2);
+
+  const descriptor = detectAndPersist(fixture.root, fixture.runId, {
+    owner: fixture.runId, generation: 1, env: { WT_SESSION: 'session-2' },
+    platform: 'win32', arch: 'x64', now: '2026-07-12T02:01:00.000Z',
+    launcherRevalidationOptions: { runVersion: replacementRunVersion },
+  });
+  assert.equal(descriptor.launcher, 'wt');
+  assert.equal(descriptor.launcher_bin, replacement);
+  assert.deepEqual(descriptor.launcher_identity, second);
 });
 
 test('authenticated CODEX_HOME requires an absolute existing non-symlink directory and records directory identity', () => {

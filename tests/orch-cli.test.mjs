@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmodSync, cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -11,6 +11,7 @@ import { canonicalProjectRoot, projectRootDigest } from '../scripts/lib/project-
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
 
 const CLI = join(process.cwd(), 'scripts', 'deep-loop.mjs');
+const FORCE_WIN32 = join(process.cwd(), 'tests', 'helpers', 'force-win32.mjs');
 function run(root, args) {
   return execFileSync('node', [CLI, ...args, '--project-root', root], { encoding: 'utf8' });
 }
@@ -32,6 +33,9 @@ const CODEX_TARGET_LAYOUT = Object.freeze({
 const RUNTIME_EXECUTABLE_CLI_FIXTURE_UNAVAILABLE =
   'runtime executable CLI integration fixture requires a real native Windows executable; '
   + 'a generated or checked-in fake PE is intentionally not fabricated';
+const LAUNCHER_EXECUTABLE_CLI_FIXTURE_UNAVAILABLE =
+  'launcher executable CLI integration fixture requires real native Windows PE executables; '
+  + 'POSIX shebang fixtures are never executed on native win32';
 
 function canMaterializeRuntimeExecutableCliFixture(platform = process.platform) {
   return platform !== 'win32';
@@ -40,6 +44,12 @@ function canMaterializeRuntimeExecutableCliFixture(platform = process.platform) 
 function runtimeExecutableCliTest(name, fn) {
   return test(name, {
     skip: canMaterializeRuntimeExecutableCliFixture() ? false : RUNTIME_EXECUTABLE_CLI_FIXTURE_UNAVAILABLE,
+  }, fn);
+}
+
+function launcherExecutableCliTest(name, fn) {
+  return test(name, {
+    skip: process.platform === 'win32' ? LAUNCHER_EXECUTABLE_CLI_FIXTURE_UNAVAILABLE : false,
   }, fn);
 }
 
@@ -132,6 +142,82 @@ function cliSnapshot(root, runId) {
 function runResult(root, args) {
   try { return { code: 0, stdout: run(root, args), stderr: '' }; }
   catch (e) { return { code: e.status, stdout: String(e.stdout || ''), stderr: String(e.stderr || '') }; }
+}
+
+function win32RunResult(root, args, extraEnv = {}) {
+  const result = spawnSync(process.execPath, [CLI, ...args, '--project-root', root], {
+    encoding: 'utf8',
+    shell: false,
+    env: {
+      ...process.env,
+      ...extraEnv,
+      NODE_OPTIONS: `--import=${FORCE_WIN32}`,
+    },
+  });
+  return {
+    code: result.status ?? 1,
+    stdout: typeof result.stdout === 'string' ? result.stdout : '',
+    stderr: typeof result.stderr === 'string' ? result.stderr : String(result.error?.message || ''),
+  };
+}
+
+function nativeWin32LauncherCliFixture() {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-win32-launcher-cli-')));
+  const binDir = join(root, 'native fixtures');
+  mkdirSync(binDir);
+  const launcher = join(binDir, 'wt.exe');
+  const runtime = join(binDir, 'claude.exe');
+  const launches = join(root, 'launcher-invocations.log');
+  writeFileSync(launcher, [
+    '#!/bin/sh',
+    'if [ "$1" = "--version" ]; then',
+    "  printf 'Windows Terminal 1.22.10352.0\\n'",
+    '  exit 0',
+    'fi',
+    `printf '%s\\n' "$*" >> '${launches}'`,
+    'exit 0',
+    '',
+  ].join('\n'));
+  writeFileSync(runtime, [
+    '#!/bin/sh',
+    'if [ "$1" = "--version" ]; then',
+    "  printf '2.1.0 (Claude Code)\\n'",
+    '  exit 0',
+    'fi',
+    'exit 9',
+    '',
+  ].join('\n'));
+  chmodSync(launcher, 0o755);
+  chmodSync(runtime, 0o755);
+  return {
+    root, launcher, runtime, launches,
+    launcherSha256: createHash('sha256').update(readFileSync(launcher)).digest('hex'),
+    runtimeSha256: createHash('sha256').update(readFileSync(runtime)).digest('hex'),
+    env: { WT_SESSION: 'deterministic-test-session' },
+  };
+}
+
+function validLauncherApprovalArgs(fixture, runId) {
+  return [
+    'launcher-executable', 'approve',
+    '--kind', 'wt',
+    '--path', fixture.launcher,
+    '--canonical-path', fixture.launcher,
+    '--sha256', fixture.launcherSha256,
+    '--actor', 'human',
+    '--confirm',
+    '--owner', runId,
+    '--generation', '1',
+    '--now', '2026-07-12T01:00:00Z',
+  ];
+}
+
+function initWin32LauncherRun(fixture) {
+  const result = win32RunResult(fixture.root, [
+    'init-run', '--runtime', 'claude', '--goal', 'native launcher CLI integration',
+  ], fixture.env);
+  assert.equal(result.code, 0, result.stderr);
+  return JSON.parse(result.stdout).run_id;
 }
 
 function validRebindArgs({ candidateRoot, runId, storedRoot }) {
@@ -474,6 +560,170 @@ runtimeExecutableCliTest('explicit native executable is hashed without execution
   assert.equal(approval.version, '7.8.9');
   assert.equal(approval.package, null);
   assert.equal(readFileSync(marker, 'utf8'), 'xx', 'approval revalidates once inside the locked transaction');
+});
+
+launcherExecutableCliTest('launcher-executable diagnose is read-only and approve requires every human/fence field', () => {
+  const fixture = nativeWin32LauncherCliFixture();
+  const runId = initWin32LauncherRun(fixture);
+  const initial = readState(fixture.root, runId).data;
+  assert.equal(initial.session_spawn.launcher, 'none');
+  assert.equal(initial.session_spawn.reason, 'windows-terminal-unverified');
+  assert.deepEqual(initial.autonomy.launcher_executable_approvals, { wt: null, powershell: null });
+
+  const before = cliSnapshot(fixture.root, runId);
+  const diagnosed = win32RunResult(fixture.root, [
+    'launcher-executable', 'diagnose', '--kind', 'wt', '--path', fixture.launcher,
+  ], fixture.env);
+  assert.equal(diagnosed.code, 0, diagnosed.stderr);
+  const diagnosis = JSON.parse(diagnosed.stdout);
+  assert.equal(diagnosis.identity.canonical_path, fixture.launcher);
+  assert.equal(diagnosis.identity.sha256, fixture.launcherSha256);
+  assert.equal(diagnosis.identity.version, null);
+  assert.equal(existsSync(fixture.launches), false, 'diagnosis must not launch the candidate');
+  assert.deepEqual(cliSnapshot(fixture.root, runId), before);
+
+  for (const name of ['kind', 'path', 'canonical-path', 'sha256', 'actor', 'confirm', 'owner', 'generation']) {
+    const args = validLauncherApprovalArgs(fixture, runId);
+    const index = args.indexOf(`--${name}`);
+    args.splice(index, name === 'confirm' ? 1 : 2);
+    const snapshot = cliSnapshot(fixture.root, runId);
+    const result = win32RunResult(fixture.root, args, fixture.env);
+    assert.equal(result.code, 2, `${name}: ${result.stderr}`);
+    assert.match(result.stderr, /(?:USAGE|CONFIRM_REQUIRED)/, name);
+    assert.deepEqual(cliSnapshot(fixture.root, runId), snapshot, name);
+  }
+});
+
+launcherExecutableCliTest('launcher-executable approve maps invalid values to exit 1 and stale fences to exit 3 without append', () => {
+  for (const [label, flag, value, expectedCode, message] of [
+    ['kind', '--kind', 'cmd', 1, /LAUNCHER_EXECUTABLE_KIND_INVALID/],
+    ['actor', '--actor', 'agent', 1, /INVALID_ACTOR/],
+    ['hash', '--sha256', 'A'.repeat(64), 1, /LAUNCHER_EXECUTABLE_HASH_INVALID/],
+    ['path', '--canonical-path', '/different/wt.exe', 1, /LAUNCHER_EXECUTABLE_PATH_MISMATCH/],
+    ['owner', '--owner', 'stale-owner', 3, /LEASE_FENCED/],
+    ['generation', '--generation', '9', 3, /LEASE_FENCED/],
+  ]) {
+    const fixture = nativeWin32LauncherCliFixture();
+    const runId = initWin32LauncherRun(fixture);
+    const args = validLauncherApprovalArgs(fixture, runId);
+    args[args.indexOf(flag) + 1] = value;
+    const before = cliSnapshot(fixture.root, runId);
+    const result = win32RunResult(fixture.root, args, fixture.env);
+    assert.equal(result.code, expectedCode, `${label}: ${result.stderr}`);
+    assert.match(result.stderr, message, label);
+    assert.deepEqual(cliSnapshot(fixture.root, runId), before, label);
+  }
+
+  const ambiguous = nativeWin32LauncherCliFixture();
+  const runId = initWin32LauncherRun(ambiguous);
+  const before = cliSnapshot(ambiguous.root, runId);
+  const args = validLauncherApprovalArgs(ambiguous, runId);
+  args.splice(4, 0, '--path', join(ambiguous.root, 'other', 'wt.exe'));
+  const result = win32RunResult(ambiguous.root, args, ambiguous.env);
+  assert.equal(result.code, 1, result.stderr);
+  assert.match(result.stderr, /LAUNCHER_EXECUTABLE_AMBIGUOUS/);
+  assert.deepEqual(cliSnapshot(ambiguous.root, runId), before);
+});
+
+launcherExecutableCliTest('launcher-executable approval repairs paused active state but rejects terminal state without changing lease', () => {
+  const paused = nativeWin32LauncherCliFixture();
+  const pausedRunId = initWin32LauncherRun(paused);
+  const { data: pausedState } = readState(paused.root, pausedRunId);
+  pausedState.status = 'paused';
+  pausedState.pause_reason = 'launcher-executable-approval-required';
+  const leaseBefore = structuredClone(pausedState.session_chain.lease);
+  writeState(paused.root, pausedRunId, pausedState);
+  const repaired = win32RunResult(paused.root, validLauncherApprovalArgs(paused, pausedRunId), paused.env);
+  assert.equal(repaired.code, 0, repaired.stderr);
+  const after = readState(paused.root, pausedRunId).data;
+  assert.equal(after.status, 'paused');
+  assert.equal(after.pause_reason, 'launcher-executable-approval-required');
+  assert.deepEqual(after.session_chain.lease, leaseBefore);
+  assert.equal(after.autonomy.launcher_executable_approvals.wt.sha256, paused.launcherSha256);
+
+  const terminal = nativeWin32LauncherCliFixture();
+  const terminalRunId = initWin32LauncherRun(terminal);
+  const { data: terminalState } = readState(terminal.root, terminalRunId);
+  terminalState.status = 'completed';
+  writeState(terminal.root, terminalRunId, terminalState);
+  const before = cliSnapshot(terminal.root, terminalRunId);
+  const rejected = win32RunResult(terminal.root, validLauncherApprovalArgs(terminal, terminalRunId), terminal.env);
+  assert.equal(rejected.code, 1, rejected.stderr);
+  assert.match(rejected.stderr, /LAUNCHER_EXECUTABLE_STATE_INVALID.*RUN_TERMINAL/);
+  assert.deepEqual(cliSnapshot(terminal.root, terminalRunId), before);
+});
+
+launcherExecutableCliTest('actual win32 CLI runs init -> launcher approval -> detect -> runtime approval -> handoff -> one WT launch -> fail-closed pause', () => {
+  const fixture = nativeWin32LauncherCliFixture();
+  const runId = initWin32LauncherRun(fixture);
+
+  const launcherDiagnosis = win32RunResult(fixture.root, [
+    'launcher-executable', 'diagnose', '--kind', 'wt', '--path', fixture.launcher,
+  ], fixture.env);
+  assert.equal(launcherDiagnosis.code, 0, launcherDiagnosis.stderr);
+  const diagnosedLauncher = JSON.parse(launcherDiagnosis.stdout).identity;
+  assert.equal(diagnosedLauncher.canonical_path, fixture.launcher);
+  assert.equal(diagnosedLauncher.sha256, fixture.launcherSha256);
+  assert.equal(existsSync(fixture.launches), false);
+
+  const launcherApproval = win32RunResult(
+    fixture.root, validLauncherApprovalArgs(fixture, runId), fixture.env,
+  );
+  assert.equal(launcherApproval.code, 0, launcherApproval.stderr);
+
+  const detected = win32RunResult(fixture.root, [
+    'detect-terminal', '--owner', runId, '--generation', '1',
+  ], fixture.env);
+  assert.equal(detected.code, 0, detected.stderr);
+  const descriptor = JSON.parse(detected.stdout);
+  assert.equal(descriptor.launcher, 'wt');
+  assert.equal(descriptor.launcher_bin, fixture.launcher);
+  assert.equal(descriptor.launcher_identity.sha256, fixture.launcherSha256);
+
+  const runtimeDiagnosis = win32RunResult(fixture.root, [
+    'runtime-executable', 'diagnose', '--runtime', 'claude', '--path', fixture.runtime,
+  ], fixture.env);
+  assert.equal(runtimeDiagnosis.code, 0, runtimeDiagnosis.stderr);
+  const diagnosedRuntime = JSON.parse(runtimeDiagnosis.stdout).identity;
+  assert.equal(diagnosedRuntime.canonical_path, fixture.runtime);
+  assert.equal(diagnosedRuntime.sha256, fixture.runtimeSha256);
+
+  const runtimeApproval = win32RunResult(fixture.root, [
+    'runtime-executable', 'approve', '--runtime', 'claude',
+    '--path', fixture.runtime, '--canonical-path', fixture.runtime,
+    '--sha256', fixture.runtimeSha256, '--actor', 'human', '--confirm',
+    '--owner', runId, '--generation', '1', '--now', '2026-07-12T01:01:00Z',
+  ], fixture.env);
+  assert.equal(runtimeApproval.code, 0, runtimeApproval.stderr);
+
+  const { data } = readState(fixture.root, runId);
+  data.autonomy.child_ready_timeout_sec = 0;
+  writeState(fixture.root, runId, data);
+  const emitted = win32RunResult(fixture.root, [
+    'handoff', 'emit', '--reason', 'milestone', '--trigger', 'milestone',
+    '--owner', runId, '--generation', '1',
+  ], fixture.env);
+  assert.equal(emitted.code, 0, emitted.stderr);
+  assert.equal(JSON.parse(emitted.stdout).ok, true);
+
+  const respawned = win32RunResult(fixture.root, [
+    'respawn', '--attended', '--timeout-ms', '0',
+    '--owner', runId, '--generation', '1',
+  ], fixture.env);
+  assert.equal(respawned.code, 0, respawned.stderr);
+  const outcome = JSON.parse(respawned.stdout);
+  assert.equal(outcome.mode, 'wt');
+  assert.equal(outcome.ok, false);
+  assert.equal(outcome.outcome, 'child-timeout-awaiting');
+  assert.equal(outcome.reason, 'readiness-timeout-preserve');
+
+  const launches = readFileSync(fixture.launches, 'utf8').trim().split('\n');
+  assert.equal(launches.length, 1, 'respawn invokes the approved launcher exactly once');
+  assert.match(launches[0], new RegExp(fixture.runtime.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  const finalState = readState(fixture.root, runId).data;
+  assert.equal(finalState.status, 'paused');
+  assert.equal(finalState.pause_reason, 'child-timeout-awaiting');
+  assert.equal(finalState.session_chain.lease.handoff_phase, 'spawned');
 });
 
 test('workstream new + set via CLI with lease', () => {

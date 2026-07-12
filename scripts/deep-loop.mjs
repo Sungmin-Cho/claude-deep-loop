@@ -30,7 +30,12 @@ import { detectAndPersist } from './lib/detect-terminal.mjs';
 import { recoverRun } from './lib/recover.mjs';
 import { computeInsights, emitInsights, latestInsights, validateLedger } from './lib/insights.mjs';
 import { diagnoseProjectRoot, rebindProjectRoot } from './lib/project-root-recovery.mjs';
-import { approveRuntimeExecutable, diagnoseRuntimeExecutable } from './lib/runtime-executable.mjs';
+import {
+  approveLauncherExecutable,
+  approveRuntimeExecutable,
+  diagnoseLauncherExecutable,
+  diagnoseRuntimeExecutable,
+} from './lib/runtime-executable.mjs';
 
 function parseFlags(argv) {
   const f = {};
@@ -46,6 +51,11 @@ function parseFlags(argv) {
     f[body] = v;
   }
   return f;
+}
+
+function flagOccurrences(argv, name) {
+  const flag = `--${name}`;
+  return argv.filter(token => token === flag || token.startsWith(`${flag}=`)).length;
 }
 
 // --now 관례(v1.5.0, spec §4): 미지정 → Date.now() 폴백. 지정 시 화이트리스트 — ① 순수 정수(epoch ms)
@@ -118,7 +128,7 @@ function classifyKernelError(e) {
   if (/^(?:INVALID_ACTOR|INVALID_GENERATION|INVALID_STORED_ROOT_DIGEST|PROJECT_ROOT_REBIND_NOT_ALLOWED|RUN_ID_INVALID|STATE_INVALID)(?::|$)/.test(message)) {
     return { code: 1, message };
   }
-  if (/^(?:RUNTIME_EXECUTABLE_|CODEX_HOME_)(?:[A-Z_]+)(?::|$)/.test(message)) {
+  if (/^(?:RUNTIME_EXECUTABLE_|LAUNCHER_EXECUTABLE_|CODEX_HOME_)(?:[A-Z_]+)(?::|$)/.test(message)) {
     return { code: 1, message };
   }
   return null;
@@ -260,6 +270,62 @@ const handlers = {
     if (!runId) { error('USAGE: --run-id RUN_ID or .deep-loop/current is required'); return 2; }
     const result = approveRuntimeExecutable(root, runId, {
       runtime,
+      candidatePath,
+      expectedCanonicalPath,
+      expectedSha256,
+      actor,
+      confirm: true,
+      fence: { owner, generation: Number(f.generation) },
+      now: parseNow(f),
+    });
+    json(result);
+    return 0;
+  },
+  'launcher-executable': async (a) => {
+    const [verb, ...rest] = a;
+    const f = parseFlags(rest);
+    if (verb !== 'diagnose' && verb !== 'approve') {
+      error(`unknown launcher-executable verb: ${verb ?? '<none>'}`);
+      return 2;
+    }
+    if (flagOccurrences(rest, 'path') > 1) {
+      throw new Error('LAUNCHER_EXECUTABLE_AMBIGUOUS: exactly one explicit candidate path is required');
+    }
+    const kind = reqStr(f, 'kind');
+    if (!kind) { error('USAGE: --kind <wt|powershell> is required'); return 2; }
+    const candidatePath = reqStr(f, 'path');
+    if (!candidatePath) { error('USAGE: --path ABSOLUTE_NATIVE_LAUNCHER is required'); return 2; }
+
+    if (verb === 'diagnose') {
+      json(diagnoseLauncherExecutable(kind, { explicitPath: candidatePath }));
+      return 0;
+    }
+
+    const expectedCanonicalPath = reqStr(f, 'canonical-path');
+    if (!expectedCanonicalPath) { error('USAGE: --canonical-path ABSOLUTE_NATIVE_LAUNCHER is required'); return 2; }
+    const expectedSha256 = reqStr(f, 'sha256');
+    if (!expectedSha256) { error('USAGE: --sha256 LOWERCASE_SHA256 is required'); return 2; }
+    const actor = reqStr(f, 'actor');
+    if (!actor) { error('USAGE: --actor human is required'); return 2; }
+    if (f.confirm !== true && f.confirm !== 'true') {
+      error('CONFIRM_REQUIRED: launcher executable approval requires --confirm');
+      return 2;
+    }
+    const owner = reqStr(f, 'owner');
+    if (!owner) { error('USAGE: --owner OWNER is required'); return 2; }
+    if (f.generation === undefined || f.generation === true) {
+      error('USAGE: --generation N is required');
+      return 2;
+    }
+    if (typeof f.generation !== 'string' || !/^(?:0|[1-9]\d*)$/.test(f.generation)
+      || !Number.isSafeInteger(Number(f.generation))) {
+      throw new Error('INVALID_GENERATION: must be a non-negative safe integer');
+    }
+    const root = rootOf(f);
+    const runId = runIdOf(root, f);
+    if (!runId) { error('USAGE: --run-id RUN_ID or .deep-loop/current is required'); return 2; }
+    const result = approveLauncherExecutable(root, runId, {
+      kind,
       candidatePath,
       expectedCanonicalPath,
       expectedSha256,

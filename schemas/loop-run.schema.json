@@ -21,7 +21,8 @@
     "autonomy.session_model": { "type": "string" },
     "autonomy.session_runtime": { "type": "string" },
     "autonomy.runtime_source": { "type": "string" },
-    "autonomy.runtime_executable_approval": { "type": ["object", "null"] }
+    "autonomy.runtime_executable_approval": { "type": ["object", "null"] },
+    "autonomy.launcher_executable_approvals": { "type": "object" }
   },
   "episode_status": { "skill": ["pending","in_progress","blocked"], "kernel": ["done","approved","rejected","abandoned"] },
   "workstream_status": { "skill": ["planned","in_progress","in_review","parked"], "kernel": ["ready","merged","abandoned"] }

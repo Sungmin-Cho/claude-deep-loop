@@ -151,6 +151,30 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field session_cha
 
 `lease.handoff_phase === 'emitted'`이면 reserved child가 이미 존재한다 — **re-emit 금지**, 4c로 바로 이동.
 
+### 4a.5. Windows launcher 승인 preflight (handoff emit 전에, handoff_phase=idle인 경우만)
+
+launcher 승인은 `intent:recover` fence를 사용하므로 `handoff emit`이 lease를 `releasing`으로 바꾸기 **전에** 끝내야 한다. 이미 `emitted`/`spawned`이면 승인을 시도하지 말고 4c의 수동 fallback/respawn 분기로 간다.
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" detect-terminal --owner <run_id> --generation <n>
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field session_spawn
+```
+
+Windows에서 reason이 `windows-terminal-unverified` 또는 `powershell-unverified`이면 PATH·고정 경로를 추측하지 말고, 사람이 제공한 절대 `.exe` 하나를 실행하지 않는 read-only 진단에 사용한다:
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" launcher-executable diagnose --kind <wt|powershell> --path "<human_supplied_absolute_exe>"
+```
+
+반환된 `canonical_path`와 lowercase `sha256`을 그대로 보여 주고 `AskUserQuestion`으로 명시적 사람 승인을 받는다. `--confirm` 자동 생성/auto-confirm은 금지한다. 사람이 동일 path/SHA를 확인한 경우에만 실행한다:
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" launcher-executable approve --kind <wt|powershell> --path "<same_absolute_exe>" --canonical-path "<diagnosed_canonical_path>" --sha256 "<diagnosed_lowercase_sha256>" --actor human --confirm --owner <run_id> --generation <n>
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" detect-terminal --owner <run_id> --generation <n>
+```
+
+경로 미제공, 진단 실패, 승인 거절이면 durable 상태를 바꾸지 않고 수동 fallback을 유지한다. 스킬은 상태 파일을 직접 쓰지 않는다.
+
 ### 4b. 핸드오프 Emit (handoff_phase=idle인 경우)
 
 ```
@@ -172,7 +196,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field autonomy
 
 **분기 (커널 `resolveSpawnMode` 우선순위 headless > desktop > visible > interactive와 동일 순서로 먼저 판정):**
 
-> **Slice 1 Codex:** visible/headless/App 자동 process transport는 아직 활성화하지 않는다. 커널이 `codex-transport-not-activated`로 CAS 전에 거부하고 handoff를 preserve-pause하므로 Claude process를 대신 띄우지 않는다. `terminal/launch-command.txt`의 수동 Codex CLI/App descriptor와 `$deep-loop:deep-loop-resume`을 제시한다.
+> **현재 Codex transport 경계:** 승인된 native runtime이 있으면 measured headless continuation을 사용할 수 있고, 네이티브 Windows에서는 승인된 runtime + WT/PowerShell launcher identity가 있을 때 shell-free visible continuation도 활성화된다. 승인 identity가 없거나 지원되지 않는 visible 경로는 `codex-transport-not-activated`로 CAS 전에 preserve-pause하며 Claude process로 대체하지 않는다. **Codex App의 자동 새 task 생성은 지원하지 않으므로 수동 App resume을 유지한다.**
 
 **1. unattended** (커널 `isHeadlessInvocation(env)` 마커 전용 — non-tty 아님. **가장 먼저 판정** — desktop/visible보다 우선):
 

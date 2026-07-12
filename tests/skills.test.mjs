@@ -66,10 +66,10 @@ function violatesBoundary(src) {
 
 // Codex r3 sf-4: deep-loop.mjs 를 실제 호출하는 라인 중 mutating subcommand 는 --owner 와 --generation 을 **둘 다** 가져야 한다.
 // Task 8: insights emit 도 mutating (lease-fenced) — MUTATING_SUB/MUTATING_CMD 둘 다 확장.
-const MUTATING_SUB = /(state\s+patch|episode\s+(?:new|record|abandon)|workstream\s+(?:new|set|terminal)|review\s+(?:dispatch|record)|handoff\s+emit|budget\s+record|comprehension\s+ack|breaker\s+reset|session-profile\s+set|lease\s+(?:acquire|release)|finish\b|insights\s+emit)/;
+const MUTATING_SUB = /(state\s+patch|episode\s+(?:new|record|abandon)|workstream\s+(?:new|set|terminal)|review\s+(?:dispatch|record)|handoff\s+emit|budget\s+record|comprehension\s+ack|breaker\s+reset|session-profile\s+set|launcher-executable\s+approve|lease\s+(?:acquire|release)|finish\b|insights\s+emit)/;
 // Codex r5 sf-3: shorthand 명령(예: `episode record --status done`, `finish --status completed`)도 잡는다.
 // "command 라인" = deep-loop.mjs 호출이거나, mutating sub 뒤에 CLI 플래그(--xxx)가 오는 경우. 순수 산문 멘션은 무시.
-const MUTATING_CMD = /(?:state\s+patch|episode\s+(?:new|record|abandon)|workstream\s+(?:new|set|terminal)|review\s+(?:dispatch|record)|handoff\s+emit|budget\s+record|comprehension\s+ack|breaker\s+reset|session-profile\s+set|lease\s+(?:acquire|release)|finish|insights\s+emit)\b[^\n]*\s--\w/;
+const MUTATING_CMD = /(?:state\s+patch|episode\s+(?:new|record|abandon)|workstream\s+(?:new|set|terminal)|review\s+(?:dispatch|record)|handoff\s+emit|budget\s+record|comprehension\s+ack|breaker\s+reset|session-profile\s+set|launcher-executable\s+approve|lease\s+(?:acquire|release)|finish|insights\s+emit)\b[^\n]*\s--\w/;
 function mutatingFenced(text) {
   // Codex r4 sf-2: 셸 라인 연속(\ 로 끝나는 줄)을 논리 명령으로 먼저 합친다 — multi-line unfenced 명령 회피 차단.
   const joined = text.replace(/\\\n\s*/g, ' ');
@@ -690,6 +690,58 @@ test('deep-loop SKILL.md: init opt-in offer gated on launcher===none + attended 
   }
 });
 
+test('runtime-facing launcher recovery docs diagnose read-only, require explicit human approval, then re-detect', () => {
+  const files = [
+    skillPath('deep-loop'),
+    skillPath('deep-loop-continue'),
+    skillPath('deep-loop-handoff'),
+    join(ROOT, 'skills', 'deep-loop-workflow', 'references', 'handoff-respawn.md'),
+  ];
+  for (const file of files) {
+    const body = _rf(file, 'utf8');
+    assert.match(body, /windows-terminal-unverified/, `${file}: WT fail-closed reason must branch to recovery`);
+    assert.match(body, /powershell-unverified/, `${file}: PowerShell fail-closed reason must branch to recovery`);
+    const diagnose = body.indexOf('launcher-executable diagnose');
+    const approve = body.indexOf('launcher-executable approve');
+    const redetect = body.indexOf('detect-terminal', approve);
+    assert.ok(diagnose !== -1 && approve > diagnose && redetect > approve,
+      `${file}: required order is diagnose -> explicit approve -> detect-terminal`);
+    assert.match(body.slice(Math.max(0, diagnose - 500), approve), /read-only|읽기 전용/i,
+      `${file}: diagnosis must be described as read-only`);
+    assert.match(body.slice(Math.max(0, approve - 900), approve + 500), /AskUserQuestion|explicit human|명시적.*사람/i,
+      `${file}: approval must be offered to a human, never inferred`);
+    assert.match(body.slice(Math.max(0, approve - 900), approve + 500), /auto-confirm|자동.*confirm|자동 확인/i,
+      `${file}: docs must explicitly prohibit auto-confirmation`);
+    const approvalLines = body.split('\n').filter(line => /launcher-executable\s+approve/.test(line));
+    assert.ok(approvalLines.length > 0, `${file}: approval command example is required`);
+    for (const line of approvalLines) {
+      assert.match(line, /--actor\s+human/);
+      assert.match(line, /--confirm\b/);
+      assert.match(line, /--owner\b/);
+      assert.match(line, /--generation\b/);
+    }
+    assert.match(body, /\$\{(?:CLAUDE_PLUGIN_ROOT|PLUGIN_ROOT)\}/,
+      `${file}: launcher commands must retain runtime-neutral plugin-root expansion`);
+  }
+});
+
+test('launcher approval recovery runs before handoff emit enters the releasing lease', () => {
+  const files = [
+    skillPath('deep-loop-continue'),
+    skillPath('deep-loop-handoff'),
+    join(ROOT, 'skills', 'deep-loop-workflow', 'references', 'handoff-respawn.md'),
+  ];
+  for (const file of files) {
+    const body = _rf(file, 'utf8');
+    const approval = body.indexOf('launcher-executable approve');
+    const emit = body.indexOf('node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" handoff emit');
+    assert.ok(approval !== -1 && emit !== -1 && approval < emit,
+      `${file}: human launcher approval must complete before handoff emit changes the lease to releasing`);
+    assert.match(body.slice(Math.max(0, approval - 1400), emit), /handoff emit[\s\S]{0,240}(?:before|이전|전)/i,
+      `${file}: ordering rationale must explicitly name the pre-emit fence boundary`);
+  }
+});
+
 test('continue/handoff/resume skills + shared reference wire session-profile refresh (WS1)', () => {
   const paths = [
     '../skills/deep-loop-continue/SKILL.md',
@@ -723,7 +775,7 @@ test('runtime-facing skills assert runtime and carry explicit resume root/run id
   assert.match(acquire, /--run-id\s+<run_id>/);
 });
 
-test('handoff execution docs preserve runtime-correct resume tokens and Codex fail-closed reason', () => {
+test('handoff execution docs preserve runtime-correct resume tokens and current Codex transport boundaries', () => {
   const paths = [
     '../skills/deep-loop-continue/SKILL.md',
     '../skills/deep-loop-handoff/SKILL.md',
@@ -733,7 +785,15 @@ test('handoff execution docs preserve runtime-correct resume tokens and Codex fa
     const body = readFileSync(new URL(path, import.meta.url), 'utf8');
     assert.match(body, /\/deep-loop-resume/, `${path} must retain the Claude resume token`);
     assert.match(body, /\$deep-loop:deep-loop-resume/, `${path} must document the Codex resume token`);
-    assert.match(body, /codex-transport-not-activated/, `${path} must surface the exact Slice 1 unavailable reason`);
+    assert.match(body, /codex-transport-not-activated/, `${path} must retain the fail-closed reason for unsupported Codex paths`);
+    assert.match(body, /native Windows|네이티브 Windows/i,
+      `${path} must distinguish the activated native-Windows Codex path`);
+    assert.match(body, /trusted|승인된|검증된/i,
+      `${path} must bind native-Windows transport to trusted executable identities`);
+    assert.match(body, /Codex App[\s\S]{0,240}(?:manual|수동)/i,
+      `${path} must keep Codex App new-task continuation manual`);
+    assert.doesNotMatch(body, /visible\/headless\/App 자동 process transport는 아직 활성화하지 않는다/,
+      `${path} must not retain the obsolete blanket Slice 1 transport claim`);
   }
 });
 

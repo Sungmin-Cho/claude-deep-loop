@@ -22,6 +22,30 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" "${SP_ARGS[@]}"
 - 관측된 값만 플래그로 포함(빈 effort 생략). 값이 그대로면 no-op(이벤트 안 쌓임). observation 실패 시 건너뛴다(기존 state로 진행).
 - `lease.handoff_phase`가 `emitted`/`spawned`이면(PreCompact 안전망이 이미 emit) business write는 releasing carve-out으로 fence되므로, 정상 tick 작업을 건너뛰고 곧장 respawn 분기로 간다. phase `emitted`는 respawn이 갱신된 state로 launch를 빌드(self-heal 완결), phase `spawned`는 이미 뜬 자식이 `/deep-loop-resume`의 refresh로 다음 handoff에 교정한다.
 
+## Windows launcher 승인 preflight (Handoff Emit 전에, handoff_phase=idle인 경우만)
+
+launcher 승인은 `intent:recover` fence를 사용하므로 `handoff emit`이 lease를 `releasing`으로 바꾸기 **전에** 끝내야 한다. 이미 `emitted`/`spawned`이면 승인을 시도하지 말고 수동 fallback/respawn 분기로 간다.
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" detect-terminal --owner <run_id> --generation <n>
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field session_spawn
+```
+
+Windows에서 reason이 `windows-terminal-unverified` 또는 `powershell-unverified`이면 PATH·고정 경로를 추측하지 말고 사람이 제공한 절대 `.exe` 하나로 read-only 진단한다:
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" launcher-executable diagnose --kind <wt|powershell> --path "<human_supplied_absolute_exe>"
+```
+
+반환된 `canonical_path`와 lowercase `sha256`을 그대로 보여 주고 `AskUserQuestion`으로 명시적 사람 승인을 받는다. `--confirm` 자동 생성/auto-confirm은 금지한다. 사람이 동일 path/SHA를 확인한 경우에만 실행한다:
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" launcher-executable approve --kind <wt|powershell> --path "<same_absolute_exe>" --canonical-path "<diagnosed_canonical_path>" --sha256 "<diagnosed_lowercase_sha256>" --actor human --confirm --owner <run_id> --generation <n>
+node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" detect-terminal --owner <run_id> --generation <n>
+```
+
+경로 미제공, 진단 실패, 승인 거절이면 durable 상태를 바꾸지 않고 수동 fallback을 유지한다. 스킬은 상태 파일을 직접 쓰지 않는다.
+
 ## Handoff Emit
 
 ```
@@ -64,7 +88,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field autonomy
 
 **unattended** (커널 `isHeadlessInvocation(env)` 마커 전용 — `DEEP_LOOP_UNATTENDED`/`DEEP_LOOP_HEADLESS`/드라이버 entrypoint 휴리스틱; **non-tty는 신호가 아니다**. **가장 먼저 판정** — desktop/visible보다 우선): 드라이버가 처리. tty 유무만으로는 이 분기에 들어가지 않는다 — Claude Desktop Code 탭처럼 사람이 지켜보는 non-tty GUI 세션은 마커가 없으면 아래 desktop/visible/else 분기로 흐른다(§init의 "attended" 정의와 동일 기준). **이 마커가 하나라도 있으면 durable `autonomy.spawn_style`이 `desktop`이든 `visible`이든 무조건 이 분기가 우선한다** — desktop opt-in한 run이라도 현재 호출이 headless라면(예: drive-headless 사이클 도중) 아래 desktop 분기로 새지 않는다(커널 `resolveSpawnMode`의 headless-preempts-desktop, 불변식 #6). **스킬은 여기서 `respawn`을 직접 호출하지 않는다** — drive-headless 래퍼 없이 직접 호출하면 측정 usage가 계상되지 않아 예산/fail-closed 모델이 깨진다.
 
-> **Slice 1 Codex:** `codex-jsonl`은 descriptor metadata일 뿐 live driver routing이 아니다. visible/headless/App process entry는 `codex-transport-not-activated`로 CAS 전에 거부되어 preserve-pause하고, Claude transport로 대체하지 않는다. 사람에게 수동 Codex CLI/App descriptor와 `$deep-loop:deep-loop-resume`을 제시한다.
+> **현재 Codex transport 경계:** 승인된 native runtime이 있으면 measured `codex-jsonl` headless continuation을 사용할 수 있고, 네이티브 Windows에서는 승인된 runtime + WT/PowerShell launcher identity가 있을 때 shell-free visible continuation도 활성화된다. 승인 identity가 없거나 지원되지 않는 visible 경로는 `codex-transport-not-activated`로 CAS 전에 preserve-pause하며 Claude transport로 대체하지 않는다. **Codex App의 자동 새 task 생성은 지원하지 않으므로 수동 App resume을 제시한다.**
 
 **desktop** (`spawn_style==='desktop'` — init 시 opt-in한 Claude Desktop 딥링크 재시작, `launcher===none`이어도 유효. **위 unattended 마커가 없을 때만** 해당):
 

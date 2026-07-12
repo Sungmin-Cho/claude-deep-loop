@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { detectAndPersist, detectTerminal } from '../scripts/lib/detect-terminal.mjs';
 import * as runtimeExecutable from '../scripts/lib/runtime-executable.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { readState } from '../scripts/lib/state.mjs';
+import { readState, writeState } from '../scripts/lib/state.mjs';
 const ok = () => ({ code: 0 }); const fail = () => ({ code: 1 });
 const NOW = '2026-06-27T00:00:00Z';
 
@@ -176,6 +176,75 @@ test('verified absolute Windows Terminal identity enables wt and persists the co
   assert.equal(d.launcher_bin, identity.canonical_path);
   assert.deepEqual(d.launcher_identity, identity);
   assert.equal(fixture.calls[0].options.shell, false);
+});
+
+test('detectAndPersist consumes the durable human launcher approval without identity injection', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-terminal-durable-approval-'));
+  const fixture = launcherFixture('wt.exe', 'Windows Terminal 1.22.10352.0');
+  const { runId } = initRun(root, {
+    runtime: 'claude', goal: 'g', now: new Date('2026-07-12T00:00:00Z'),
+    env: { WT_SESSION: 'session-1' }, platform: 'win32',
+    run: () => { throw new Error('unapproved init must not probe'); },
+  });
+  const diagnosis = runtimeExecutable.diagnoseLauncherExecutable('wt', {
+    explicitPath: fixture.executable, platform: 'win32', arch: 'x64',
+  });
+  const approved = runtimeExecutable.approveLauncherExecutable(root, runId, {
+    kind: 'wt', candidatePath: fixture.executable,
+    expectedCanonicalPath: diagnosis.identity.canonical_path,
+    expectedSha256: diagnosis.identity.sha256,
+    actor: 'human', confirm: true, fence: { owner: runId, generation: 1 },
+    now: Date.parse('2026-07-12T01:00:00Z'), platform: 'win32', arch: 'x64',
+    runVersion: fixture.runVersion,
+  });
+
+  const descriptor = detectAndPersist(root, runId, {
+    owner: runId, generation: 1, env: { WT_SESSION: 'session-1' },
+    platform: 'win32', arch: 'x64', now: NOW,
+    launcherRevalidationOptions: { runVersion: fixture.runVersion },
+    run: () => { throw new Error('WT detection must not execute PATH or bare launcher probes'); },
+  });
+  assert.equal(descriptor.launcher, 'wt');
+  assert.equal(descriptor.launcher_bin, approved.approval.canonical_path);
+  assert.deepEqual(descriptor.launcher_identity, approved.approval);
+  assert.deepEqual(readState(root, runId).data.session_spawn, descriptor);
+});
+
+test('durable launcher approval is authoritative while legacy stored session identity remains compatible', () => {
+  const durableFixture = launcherFixture('wt.exe', 'Windows Terminal 1.22.10352.0');
+  const root = mkdtempSync(join(tmpdir(), 'dl-terminal-authority-'));
+  const { runId } = initRun(root, {
+    runtime: 'claude', goal: 'g', now: new Date('2026-07-12T00:00:00Z'),
+    env: {}, platform: 'linux', run: () => ({ code: 1 }),
+  });
+  const diagnosis = runtimeExecutable.diagnoseLauncherExecutable('wt', {
+    explicitPath: durableFixture.executable, platform: 'win32', arch: 'x64',
+  });
+  const approval = runtimeExecutable.approveLauncherExecutable(root, runId, {
+    kind: 'wt', candidatePath: durableFixture.executable,
+    expectedCanonicalPath: diagnosis.identity.canonical_path, expectedSha256: diagnosis.identity.sha256,
+    actor: 'human', confirm: true, fence: { owner: runId, generation: 1 },
+    now: Date.parse('2026-07-12T01:00:00Z'), platform: 'win32', arch: 'x64',
+    runVersion: durableFixture.runVersion,
+  }).approval;
+  const injected = { ...approval, canonical_path: '/tmp/replacement/wt.exe', sha256: 'f'.repeat(64) };
+  const authoritative = detectAndPersist(root, runId, {
+    owner: runId, generation: 1, env: { WT_SESSION: 'session-1' }, platform: 'win32', arch: 'x64', now: NOW,
+    windowsLauncherIdentities: { wt: injected },
+    launcherRevalidationOptions: { runVersion: durableFixture.runVersion },
+  });
+  assert.deepEqual(authoritative.launcher_identity, approval, 'test injection cannot replace durable authority');
+
+  const { data } = readState(root, runId);
+  delete data.autonomy.launcher_executable_approvals;
+  data.session_spawn = { ...authoritative, launcher_identity: { ...approval, source: 'verified-native' } };
+  writeState(root, runId, data);
+  const legacy = detectAndPersist(root, runId, {
+    owner: runId, generation: 1, env: { WT_SESSION: 'session-1' }, platform: 'win32', arch: 'x64', now: NOW,
+    revalidateLauncher: identity => identity,
+  });
+  assert.equal(legacy.launcher, 'wt');
+  assert.equal(legacy.launcher_identity.source, 'verified-native');
 });
 
 test('verified PowerShell identity is the only ancestry probe target; PATH/fixed strings are not authority', () => {

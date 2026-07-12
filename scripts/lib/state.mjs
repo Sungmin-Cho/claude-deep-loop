@@ -14,10 +14,13 @@ export const LOCK_STALE_TTL_MS = 30_000;
 // cwd 가 <root>/.claude/worktrees/<slug>/... (또는 .worktrees) 안일 때만 그 부모 <root>(.deep-loop/current 보유)를 반환;
 // 그 외에는 startDir 그대로(기존 process.cwd() 동작과 동일 — 하위호환).
 export function findRoot(startDir, { pathApi = path, existsSync: markerExists = existsSync } = {}) {
+  const conventionComponent = value => pathApi.sep === '\\' ? value.toLowerCase() : value;
   for (const current of ancestorPaths(startDir, { pathApi })) {
     const parent = pathApi.dirname(current);
-    const isClaudeWt = pathApi.basename(parent) === '.claude' && pathApi.basename(current) === 'worktrees';
-    const isPlainWt = pathApi.basename(current) === '.worktrees';
+    const currentName = conventionComponent(pathApi.basename(current));
+    const parentName = conventionComponent(pathApi.basename(parent));
+    const isClaudeWt = parentName === '.claude' && currentName === 'worktrees';
+    const isPlainWt = currentName === '.worktrees';
     if (isClaudeWt || isPlainWt) {
       const base = isClaudeWt ? pathApi.dirname(parent) : parent;
       if (markerExists(pathApi.join(base, '.deep-loop', 'current'))) return base;

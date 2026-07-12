@@ -280,10 +280,19 @@ export function detectAndPersist(root, runId, {
   const { data: loop } = readState(root, runId);
   const persistedLauncher = loop.session_spawn?.launcher;
   const persistedIdentity = loop.session_spawn?.launcher_identity;
-  const effectiveWindowsIdentities = persistedIdentity != null
-    && (persistedLauncher === 'wt' || persistedLauncher === 'powershell')
-    ? { ...windowsLauncherIdentities, [persistedLauncher]: persistedIdentity }
-    : windowsLauncherIdentities;
+  // Authority order: durable human approval > legacy persisted session identity > explicit test fallback.
+  // Production callers do not inject windowsLauncherIdentities; keeping it last preserves focused tests without
+  // turning PATH/fixed candidates into authority. Legacy states may omit the new approval map entirely.
+  const effectiveWindowsIdentities = { ...windowsLauncherIdentities };
+  if (persistedIdentity != null && (persistedLauncher === 'wt' || persistedLauncher === 'powershell')) {
+    effectiveWindowsIdentities[persistedLauncher] = persistedIdentity;
+  }
+  const durableApprovals = loop.autonomy?.launcher_executable_approvals;
+  if (durableApprovals && typeof durableApprovals === 'object' && !Array.isArray(durableApprovals)) {
+    for (const kind of ['wt', 'powershell']) {
+      if (durableApprovals[kind] != null) effectiveWindowsIdentities[kind] = durableApprovals[kind];
+    }
+  }
   const d = detectTerminal({
     env, platform, run, now, pid, arch, windowsLauncherIdentities: effectiveWindowsIdentities,
     revalidateLauncher, launcherRevalidationOptions,

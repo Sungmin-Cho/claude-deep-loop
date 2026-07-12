@@ -175,6 +175,21 @@ function validRuntimeApproval() {
   };
 }
 
+function validLauncherApproval(kind = 'wt') {
+  return {
+    kind,
+    canonical_path: kind === 'wt' ? 'C:\\Program Files\\WindowsApps\\wt.exe' : 'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
+    sha256: 'b'.repeat(64),
+    version: kind === 'wt' ? '1.22.10352.0' : '7.5.2',
+    platform: 'win32',
+    arch: 'x64',
+    source: 'human-explicit',
+    authenticode: { status: 'valid', signer: 'Observed Publisher', thumbprint: 'aabbcc11' },
+    approved_by: 'human',
+    approved_at: '2026-07-12T01:00:00.000Z',
+  };
+}
+
 test('new runs initialize a null immutable runtime executable approval and valid approval state passes', () => {
   const loop = buildInitialLoop({ runtime: 'codex', goal: 'g', protocol: 'standalone', recipe: {}, runId: 'r1', now: new Date('2026-07-11T00:00:00Z') });
   assert.equal(loop.autonomy.runtime_executable_approval, null);
@@ -203,5 +218,56 @@ test('runtime executable approval schema rejects malformed identity, authority, 
     const result = validate(loop);
     assert.equal(result.ok, false, label);
     assert.ok(result.errors.some(error => /runtime_executable_approval/.test(error)), `${label}: ${result.errors.join('; ')}`);
+  }
+});
+
+test('launcher approval map is initialized, legacy-safe when absent, valid when exact, and never generic-patchable', () => {
+  const loop = buildInitialLoop({ runtime: 'claude', goal: 'g', protocol: 'standalone', recipe: {}, runId: 'r1', now: new Date('2026-07-12T00:00:00Z') });
+  assert.deepEqual(loop.autonomy.launcher_executable_approvals, { wt: null, powershell: null });
+  assert.equal(validate(loop).ok, true, validate(loop).errors.join('; '));
+
+  loop.autonomy.launcher_executable_approvals = {
+    wt: validLauncherApproval('wt'), powershell: validLauncherApproval('powershell'),
+  };
+  assert.equal(validate(loop).ok, true, validate(loop).errors.join('; '));
+  assert.equal(classifyPatch('autonomy.launcher_executable_approvals', loop.autonomy.launcher_executable_approvals), 'forbid');
+  assert.equal(classifyPatch('autonomy.launcher_executable_approvals.wt', validLauncherApproval()), 'forbid');
+
+  delete loop.autonomy.launcher_executable_approvals;
+  assert.equal(validate(loop).ok, true, 'legacy state with no launcher approval map must remain valid');
+});
+
+test('launcher approval schema rejects malformed maps, identities, Authenticode, audit fields, and unknown keys', () => {
+  const mutations = [
+    ['map null', () => null],
+    ['map array', () => []],
+    ['unknown map key', map => ({ ...map, terminal: null })],
+    ['primitive slot', map => ({ ...map, wt: 'approved' })],
+    ['kind mismatch', map => ({ ...map, wt: { ...map.wt, kind: 'powershell' } })],
+    ['bad kind', map => ({ ...map, wt: { ...map.wt, kind: 'cmd' } })],
+    ['relative path', map => ({ ...map, wt: { ...map.wt, canonical_path: 'wt.exe' } })],
+    ['UNC path', map => ({ ...map, wt: { ...map.wt, canonical_path: String.raw`\\server\share\wt.exe` } })],
+    ['script path', map => ({ ...map, wt: { ...map.wt, canonical_path: 'C:\\tools\\wt.ps1' } })],
+    ['uppercase hash', map => ({ ...map, wt: { ...map.wt, sha256: 'B'.repeat(64) } })],
+    ['empty version', map => ({ ...map, wt: { ...map.wt, version: '' } })],
+    ['wrong platform', map => ({ ...map, wt: { ...map.wt, platform: 'linux' } })],
+    ['empty arch', map => ({ ...map, wt: { ...map.wt, arch: '' } })],
+    ['wrong source', map => ({ ...map, wt: { ...map.wt, source: 'verified-native' } })],
+    ['auth primitive', map => ({ ...map, wt: { ...map.wt, authenticode: 'signed' } })],
+    ['auth status', map => ({ ...map, wt: { ...map.wt, authenticode: { ...map.wt.authenticode, status: 'invalid' } } })],
+    ['auth signer', map => ({ ...map, wt: { ...map.wt, authenticode: { ...map.wt.authenticode, signer: '' } } })],
+    ['auth thumbprint', map => ({ ...map, wt: { ...map.wt, authenticode: { ...map.wt.authenticode, thumbprint: 'AA BB' } } })],
+    ['auth unknown key', map => ({ ...map, wt: { ...map.wt, authenticode: { ...map.wt.authenticode, trusted: true } } })],
+    ['not human', map => ({ ...map, wt: { ...map.wt, approved_by: 'agent' } })],
+    ['bad timestamp', map => ({ ...map, wt: { ...map.wt, approved_at: 'today' } })],
+    ['unknown approval field', map => ({ ...map, wt: { ...map.wt, trusted: true } })],
+  ];
+  for (const [label, mutate] of mutations) {
+    const loop = buildInitialLoop({ runtime: 'claude', goal: 'g', protocol: 'standalone', recipe: {}, runId: 'r1', now: new Date('2026-07-12T00:00:00Z') });
+    const map = { wt: validLauncherApproval('wt'), powershell: null };
+    loop.autonomy.launcher_executable_approvals = mutate(map);
+    const result = validate(loop);
+    assert.equal(result.ok, false, label);
+    assert.ok(result.errors.some(error => /launcher_executable_approvals/.test(error)), `${label}: ${result.errors.join('; ')}`);
   }
 });

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { cpSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync, readFileSync as _rfRoot } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, join, dirname as _dn, win32 } from 'node:path';
+import { basename, join, dirname as _dn, posix, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readState, writeState, patch, withLock, runDir, findRoot } from '../scripts/lib/state.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
@@ -281,6 +281,59 @@ test('findRoot preserves a UNC share root while walking convention ancestors', (
       '\\\\server\\share\\.deep-loop\\current',
     ),
     '\\\\server\\share\\',
+  );
+});
+
+test('findRoot matches mixed-case .claude/worktrees components under Windows drive-root semantics', () => {
+  assert.equal(
+    findVirtualWindowsRoot('C:\\.ClAuDe\\WoRkTrEeS\\ws-drive\\src', 'C:\\.deep-loop\\current'),
+    'C:\\',
+  );
+});
+
+test('findRoot matches a mixed-case .worktrees component under Windows drive-root semantics', () => {
+  assert.equal(
+    findVirtualWindowsRoot('D:\\.WoRkTrEeS\\ws-drive\\src', 'D:\\.deep-loop\\current'),
+    'D:\\',
+  );
+});
+
+test('findRoot matches mixed-case convention components under Windows UNC semantics', () => {
+  assert.equal(
+    findVirtualWindowsRoot(
+      '\\\\ServerCase\\ShareCase\\.ClAuDe\\WoRkTrEeS\\ws-unc\\src',
+      '\\\\servercase\\sharecase\\.deep-loop\\current',
+    ),
+    '\\\\ServerCase\\ShareCase\\',
+  );
+});
+
+test('findRoot continues past a markerless inner mixed-case Windows convention and preserves outer base spelling', () => {
+  assert.equal(
+    findVirtualWindowsRoot(
+      'C:\\RepoCase\\.ClAuDe\\WoRkTrEeS\\outer\\.WoRkTrEeS\\inner\\src',
+      'c:\\repocase\\.deep-loop\\current',
+    ),
+    'C:\\RepoCase',
+  );
+});
+
+test('findRoot rejects a non-convention sibling spelling despite Windows case-insensitive semantics', () => {
+  const startDir = 'C:\\RepoCase\\.WoRkTrEeS-sibling\\ws\\src';
+  assert.equal(
+    findVirtualWindowsRoot(startDir, 'C:\\RepoCase\\.deep-loop\\current'),
+    startDir,
+  );
+});
+
+test('findRoot keeps convention component matching case-sensitive under POSIX semantics', () => {
+  const startDir = '/repo/.CLAUDE/WORKTREES/ws/src';
+  assert.equal(
+    findRoot(startDir, {
+      pathApi: posix,
+      existsSync: candidate => posix.normalize(candidate) === '/repo/.deep-loop/current',
+    }),
+    startDir,
   );
 });
 

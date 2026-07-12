@@ -73,6 +73,69 @@ function assertTrustedRuntimeNamespace(path, platform) {
   }
 }
 
+function assertTrustedLauncherNamespace(path, platform) {
+  if (isWindowsUntrustedRuntimeNamespace(path, platform)) {
+    throw runtimeError(
+      'LAUNCHER_EXECUTABLE_UNTRUSTED',
+      'Windows UNC/device namespace launcher candidates are not trusted',
+    );
+  }
+}
+
+function launcherAbsolutePath(value, platform) {
+  assertTrustedLauncherNamespace(value, platform);
+  const path = absolutePath(value, 'LAUNCHER_EXECUTABLE_PATH_INVALID');
+  assertTrustedLauncherNamespace(path, platform);
+  return path;
+}
+
+function launcherRegularFile(path, options) {
+  try {
+    return regularFile(path, options);
+  } catch (error) {
+    const message = String(error?.message || error);
+    if (message.startsWith('LAUNCHER_EXECUTABLE_')) throw error;
+    if (message.startsWith('RUNTIME_EXECUTABLE_DRIFT:')) {
+      throw runtimeError('LAUNCHER_EXECUTABLE_DRIFT', message.slice(message.indexOf(':') + 1).trim());
+    }
+    if (message.startsWith('RUNTIME_EXECUTABLE_')) {
+      throw runtimeError('LAUNCHER_EXECUTABLE_UNTRUSTED', message.slice(message.indexOf(':') + 1).trim());
+    }
+    throw error;
+  }
+}
+
+function hashLauncherFile(path, expectedStat = null) {
+  try {
+    return hashRegularFile(path, expectedStat);
+  } catch (error) {
+    const message = String(error?.message || error);
+    if (message.startsWith('LAUNCHER_EXECUTABLE_')) throw error;
+    if (message.startsWith('RUNTIME_EXECUTABLE_DRIFT:')) {
+      throw runtimeError('LAUNCHER_EXECUTABLE_DRIFT', message.slice(message.indexOf(':') + 1).trim());
+    }
+    if (message.startsWith('RUNTIME_EXECUTABLE_')) {
+      throw runtimeError('LAUNCHER_EXECUTABLE_UNTRUSTED', message.slice(message.indexOf(':') + 1).trim());
+    }
+    throw error;
+  }
+}
+
+function normalizeLauncherAuthenticode(executable, options) {
+  try {
+    return normalizeAuthenticode(executable, options);
+  } catch (error) {
+    const message = String(error?.message || error);
+    if (message.startsWith('RUNTIME_EXECUTABLE_AUTHENTICODE_INVALID:')) {
+      throw runtimeError(
+        'LAUNCHER_EXECUTABLE_AUTHENTICODE_INVALID',
+        message.slice(message.indexOf(':') + 1).trim(),
+      );
+    }
+    throw error;
+  }
+}
+
 function canonicalRealpath(path) {
   const realpath = realpathSync.native || realpathSync;
   return realpath(path);
@@ -640,11 +703,18 @@ function launcherIdentityShape(identity) {
     || !['wt', 'powershell'].includes(identity.kind)) {
     throw runtimeError('LAUNCHER_EXECUTABLE_IDENTITY_INVALID', 'launcher identity is invalid');
   }
-  absolutePath(identity.canonical_path, 'LAUNCHER_EXECUTABLE_IDENTITY_INVALID');
+  launcherAbsolutePath(identity.canonical_path, identity.platform);
   if (!/^[0-9a-f]{64}$/.test(identity.sha256 || '') || typeof identity.version !== 'string'
     || identity.version.length === 0 || identity.platform !== 'win32'
-    || typeof identity.arch !== 'string' || identity.source !== 'verified-native') {
+    || typeof identity.arch !== 'string' || !['verified-native', 'human-explicit'].includes(identity.source)) {
     throw runtimeError('LAUNCHER_EXECUTABLE_IDENTITY_INVALID', 'launcher identity fields are invalid');
+  }
+  if (identity.source === 'human-explicit') {
+    const approvedAt = new Date(identity.approved_at);
+    if (identity.approved_by !== 'human' || typeof identity.approved_at !== 'string'
+      || !Number.isFinite(approvedAt.getTime()) || approvedAt.toISOString() !== identity.approved_at) {
+      throw runtimeError('LAUNCHER_EXECUTABLE_IDENTITY_INVALID', 'human launcher approval audit is invalid');
+    }
   }
 }
 
@@ -662,6 +732,7 @@ function launcherSecurityIdentity(identity) {
 }
 
 function assertExpectedLauncherName(kind, path) {
+  assertTrustedLauncherNamespace(path, 'win32');
   const name = basename(path).toLowerCase();
   if ((kind === 'wt' && name !== 'wt.exe')
     || (kind === 'powershell' && name !== 'pwsh.exe' && name !== 'powershell.exe')) {
@@ -791,6 +862,192 @@ export function revalidateTrustedLauncherExecutable(identity, options = {}) {
     if (String(error?.message || error).startsWith('LAUNCHER_EXECUTABLE_DRIFT:')) throw error;
     throw runtimeError('LAUNCHER_EXECUTABLE_DRIFT', String(error?.message || error));
   }
+}
+
+function validateLauncherKind(kind) {
+  if (!['wt', 'powershell'].includes(kind)) {
+    throw runtimeError('LAUNCHER_EXECUTABLE_KIND_INVALID', 'kind must be wt or powershell');
+  }
+  return kind;
+}
+
+function inspectHumanApprovedLauncher(kind, candidatePath, {
+  platform, arch, expectedSha256, runVersion, authenticodeProbe, authenticodePolicy,
+}) {
+  validateLauncherKind(kind);
+  if (platform !== 'win32') {
+    throw runtimeError('LAUNCHER_EXECUTABLE_UNTRUSTED', 'Windows launcher approval requires win32');
+  }
+  const selected = launcherAbsolutePath(candidatePath, platform);
+  const candidate = launcherRegularFile(selected);
+  assertTrustedLauncherNamespace(candidate.canonical, platform);
+  assertExpectedLauncherName(kind, candidate.canonical);
+  const sha256 = hashLauncherFile(candidate.canonical, candidate.stat);
+  if (!/^[0-9a-f]{64}$/.test(expectedSha256 || '') || sha256 !== expectedSha256) {
+    throw runtimeError('LAUNCHER_EXECUTABLE_HASH_MISMATCH', 'exact lowercase SHA-256 does not match the canonical launcher');
+  }
+  const version = probeLauncherVersion(kind, candidate.canonical, runVersion);
+  const authenticode = normalizeLauncherAuthenticode(candidate.canonical, {
+    platform, authenticodeProbe, authenticodePolicy,
+  });
+  const after = launcherRegularFile(selected);
+  if (after.canonical !== candidate.canonical
+    || hashLauncherFile(after.canonical, after.stat) !== sha256) {
+    throw runtimeError('LAUNCHER_EXECUTABLE_DRIFT', 'launcher changed during approval verification');
+  }
+  return {
+    kind,
+    canonical_path: candidate.canonical,
+    sha256,
+    version,
+    platform,
+    arch,
+    source: 'human-explicit',
+    authenticode,
+  };
+}
+
+export function diagnoseLauncherExecutable(kind, options = {}) {
+  validateLauncherKind(kind);
+  const platform = options.platform ?? process.platform;
+  const arch = options.arch ?? process.arch;
+  if (platform !== 'win32') {
+    throw runtimeError('LAUNCHER_EXECUTABLE_UNTRUSTED', 'Windows launcher diagnosis requires win32');
+  }
+  const selected = launcherAbsolutePath(options.explicitPath, platform);
+  const candidate = launcherRegularFile(selected);
+  assertTrustedLauncherNamespace(candidate.canonical, platform);
+  assertExpectedLauncherName(kind, candidate.canonical);
+  const sha256 = hashLauncherFile(candidate.canonical, candidate.stat);
+  return {
+    approval_required: true,
+    identity: {
+      kind,
+      canonical_path: candidate.canonical,
+      sha256,
+      version: null,
+      platform,
+      arch,
+      source: 'human-explicit',
+      authenticode: null,
+      version_probe: 'deferred-until-human-approval',
+    },
+  };
+}
+
+function applyLauncherApproval(loop, kind, approval) {
+  const current = loop.autonomy.launcher_executable_approvals;
+  loop.autonomy.launcher_executable_approvals = {
+    ...(current && typeof current === 'object' && !Array.isArray(current) ? current : {}),
+    [kind]: approval,
+  };
+  if (loop.session_spawn?.launcher === kind) {
+    loop.session_spawn = {
+      ...loop.session_spawn,
+      launcher: 'none',
+      launcher_bin: null,
+      launcher_socket: null,
+      surface: null,
+      reachable: false,
+      visible: false,
+      probe: null,
+      reason: 'launcher-reapproval-pending-detection',
+    };
+    delete loop.session_spawn.launcher_identity;
+  }
+}
+
+export function approveLauncherExecutable(root, runId, {
+  kind,
+  candidatePath,
+  expectedCanonicalPath,
+  expectedSha256,
+  actor,
+  confirm,
+  fence,
+  now = Date.now(),
+  platform = process.platform,
+  arch = process.arch,
+  runVersion = spawnSync,
+  authenticodeProbe,
+  authenticodePolicy,
+} = {}) {
+  validateLauncherKind(kind);
+  if (actor !== 'human') throw runtimeError('INVALID_ACTOR', 'launcher executable approval requires actor human');
+  if (confirm !== true) throw runtimeError('CONFIRM_REQUIRED', 'launcher executable approval requires confirmation');
+  if (!fence || typeof fence.owner !== 'string' || fence.owner.length === 0
+    || !Number.isSafeInteger(fence.generation) || fence.generation < 0) {
+    throw runtimeError('FENCE_REQUIRED', 'launcher executable approval requires owner and generation');
+  }
+  const selected = launcherAbsolutePath(candidatePath, platform);
+  const expectedPath = launcherAbsolutePath(expectedCanonicalPath, platform);
+  if (!/^[0-9a-f]{64}$/.test(expectedSha256 || '')) {
+    throw runtimeError('LAUNCHER_EXECUTABLE_HASH_INVALID', 'exact lowercase SHA-256 is required');
+  }
+  const approvedAt = new Date(now);
+  if (!Number.isFinite(approvedAt.getTime())) throw runtimeError('INVALID_NOW', 'launcher executable approval timestamp');
+
+  let approval;
+  const eventData = {};
+  appendAnchored(
+    root,
+    runId,
+    { type: 'launcher-executable-approved', data: eventData },
+    (loop) => { applyLauncherApproval(loop, kind, approval); },
+    (loop) => {
+      const lease = leaseCheck(loop, { ...fence, intent: 'recover' });
+      if (!lease.ok) {
+        if (lease.reason === 'RUN_TERMINAL' || lease.reason === 'no-lease'
+          || lease.reason === 'RUN_PAUSED' || lease.reason === 'lease-released'
+          || lease.reason === 'lease-releasing-carveout') {
+          throw runtimeError('LAUNCHER_EXECUTABLE_STATE_INVALID', lease.reason);
+        }
+        throw runtimeError('LEASE_FENCED', lease.reason);
+      }
+      const approvalMap = loop.autonomy?.launcher_executable_approvals;
+      if (approvalMap !== undefined
+        && (approvalMap === null || typeof approvalMap !== 'object' || Array.isArray(approvalMap))) {
+        throw runtimeError('STATE_INVALID', 'autonomy.launcher_executable_approvals is malformed');
+      }
+      const identity = inspectHumanApprovedLauncher(kind, selected, {
+        platform, arch, expectedSha256, runVersion, authenticodeProbe, authenticodePolicy,
+      });
+      if (identity.canonical_path !== expectedPath) {
+        throw runtimeError('LAUNCHER_EXECUTABLE_PATH_MISMATCH', 'diagnosed canonical path does not match approval');
+      }
+      if (identity.sha256 !== expectedSha256) {
+        throw runtimeError('LAUNCHER_EXECUTABLE_HASH_MISMATCH', 'diagnosed SHA-256 does not match approval');
+      }
+      const approvalCandidate = {
+        ...identity,
+        approved_by: 'human',
+        approved_at: approvedAt.toISOString(),
+      };
+      const revalidated = revalidateTrustedLauncherExecutable(approvalCandidate, {
+        platform, arch, runVersion, authenticodeProbe, authenticodePolicy,
+      });
+      if (JSON.stringify(launcherSecurityIdentity(revalidated)) !== JSON.stringify(launcherSecurityIdentity(identity))) {
+        throw runtimeError('LAUNCHER_EXECUTABLE_DRIFT', 'launcher security identity changed during approval');
+      }
+      approval = approvalCandidate;
+      Object.assign(eventData, {
+        kind: approval.kind,
+        canonical_path: approval.canonical_path,
+        sha256: approval.sha256,
+        version: approval.version,
+        source: approval.source,
+        actor: 'human',
+      });
+      const candidateLoop = structuredClone(loop);
+      applyLauncherApproval(candidateLoop, kind, approval);
+      const validation = validateLoop(candidateLoop);
+      if (!validation.ok) {
+        throw runtimeError('STATE_INVALID', `launcher executable approval would violate schema (${validation.errors.join('; ')})`);
+      }
+    },
+    { floor: MUTATION_TURN_FLOOR },
+  );
+  return { ok: true, approval };
 }
 
 export function resolveAuthenticatedCodexHome(options = {}) {
