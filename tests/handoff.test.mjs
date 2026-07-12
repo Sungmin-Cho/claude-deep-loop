@@ -1,27 +1,41 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, existsSync, readFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { reserveHandoff, releaseLease, acquireLease } from '../scripts/lib/lease.mjs';
 import { emitHandoff, buildLaunchCommand } from '../scripts/lib/handoff.mjs';
+import { buildRuntimeResumeDescriptor } from '../scripts/lib/runtime-descriptor.mjs';
 import { newEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
+import { createDirectoryJunction } from './helpers/fs-fixtures.mjs';
 
 // Inject deterministic env so detectTerminal never probes real cmux/osascript.
-function seed() {
+function seed(runtime = 'claude') {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
-  const { runId } = initRun(root, { goal: '인증 기능 구현', detected: { 'deep-work': true }, now: new Date('2026-06-24T00:00:00Z'), env: {}, platform: 'linux', run: () => ({ code: 1 }) });
+  const { runId } = initRun(root, { runtime, goal: '인증 기능 구현', detected: { 'deep-work': true }, now: new Date('2026-06-24T00:00:00Z'), env: {}, platform: 'linux', run: () => ({ code: 1 }) });
   return { root, runId };
 }
 
 function expect_(runId) { return { owner: runId, generation: 1 }; }
 
+const POSIX_PLATFORM = 'linux';
+const WINDOWS_TARGET_ROOT = 'C:\\Fixture Project';
+function buildPosixLaunchCommand(options) {
+  return buildLaunchCommand({ ...options, platform: POSIX_PLATFORM });
+}
+function buildPosixDescriptor(options) {
+  return buildRuntimeResumeDescriptor({ ...options, root: '/fixture-project', platform: POSIX_PLATFORM });
+}
+function buildWindowsDescriptor(options) {
+  return buildRuntimeResumeDescriptor({ ...options, root: WINDOWS_TARGET_ROOT });
+}
+
 // ── Entry map shape tests ────────────────────────────────────────────────────
 
 test('buildLaunchCommand produces per-OS entry map referencing child run + resume', () => {
-  const c = buildLaunchCommand({ root: '/p', parentRunId: 'PARENT', childRunId: 'CHILD', handoffRel: 'handoffs/x.md' });
+  const c = buildPosixLaunchCommand({ root: '/p', parentRunId: 'PARENT', childRunId: 'CHILD', handoffRel: 'handoffs/x.md' });
   // interactive has display only
   assert.match(c.interactive.display, /claude -n/);
   assert.match(c.interactive.display, /deep-loop-resume/);
@@ -34,7 +48,7 @@ test('buildLaunchCommand produces per-OS entry map referencing child run + resum
 });
 
 test('cmux entry: --command quotes only dynamic args, bin=launcherBin', () => {
-  const c = buildLaunchCommand({ root: '/p a', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'cmux', launcherBin: '/a/cmux' });
+  const c = buildPosixLaunchCommand({ root: '/p a', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'cmux', launcherBin: '/a/cmux' });
   assert.equal(c.cmux.bin, '/a/cmux');
   // No launcherSocket → argv starts with new-workspace (no --socket prefix)
   assert.deepEqual(c.cmux.argv.slice(0, 4), ['new-workspace', '--cwd', '/p a', '--command']);
@@ -43,12 +57,12 @@ test('cmux entry: --command quotes only dynamic args, bin=launcherBin', () => {
 });
 
 test('cmux entry: --socket prepended when launcherSocket provided', () => {
-  const c = buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'cmux', launcherBin: '/a/cmux', launcherSocket: '/var/run/cmux.sock' });
+  const c = buildPosixLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'cmux', launcherBin: '/a/cmux', launcherSocket: '/var/run/cmux.sock' });
   assert.deepEqual(c.cmux.argv.slice(0, 4), ['--socket', '/var/run/cmux.sock', 'new-workspace', '--cwd']);
 });
 
 test('headless entry has no bash; uses cwd=root, bin=claude', () => {
-  const c = buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'none' });
+  const c = buildPosixLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'none' });
   assert.equal(c.headless.bin, 'claude');
   assert.equal(c.headless.cwd, '/p');
   assert.ok(!c.headless.argv.includes('-c'), 'no bash -c');
@@ -56,7 +70,7 @@ test('headless entry has no bash; uses cwd=root, bin=claude', () => {
 });
 
 test('buildLaunchCommand headless entry requests metric-bearing output', () => {
-  const cmds = buildLaunchCommand({ root: '/r', parentRunId: 'p', childRunId: 'c', handoffRel: 'handoffs/x.md' });
+  const cmds = buildPosixLaunchCommand({ root: '/r', parentRunId: 'p', childRunId: 'c', handoffRel: 'handoffs/x.md' });
   assert.ok(cmds.headless.argv.includes('--output-format'), 'headless must request output format');
   assert.ok(cmds.headless.argv.includes('json'), 'headless must request json format');
   assert.ok(cmds.headless.argv.includes('--permission-mode'), 'headless must specify permission mode');
@@ -64,7 +78,7 @@ test('buildLaunchCommand headless entry requests metric-bearing output', () => {
 });
 
 test('iterm2 entry: bin=osascript, argv=["-e", ...]', () => {
-  const c = buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'iterm2' });
+  const c = buildPosixLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'iterm2' });
   assert.equal(c.iterm2.bin, 'osascript');
   assert.equal(c.iterm2.argv[0], '-e');
   assert.match(c.iterm2.argv[1], /iTerm/);
@@ -72,7 +86,7 @@ test('iterm2 entry: bin=osascript, argv=["-e", ...]', () => {
 });
 
 test('terminal-app entry: bin=osascript, argv=["-e", ...]', () => {
-  const c = buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'terminal-app' });
+  const c = buildPosixLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'terminal-app' });
   assert.equal(c['terminal-app'].bin, 'osascript');
   assert.equal(c['terminal-app'].argv[0], '-e');
   assert.match(c['terminal-app'].argv[1], /Terminal/);
@@ -80,7 +94,7 @@ test('terminal-app entry: bin=osascript, argv=["-e", ...]', () => {
 });
 
 test('wt entry: bin=wt.exe, argv structure correct', () => {
-  const c = buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'wt' });
+  const c = buildPosixLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'wt' });
   assert.equal(c.wt.bin, 'wt.exe');
   assert.equal(c.wt.argv[0], '-d');
   assert.equal(c.wt.argv[1], '/p');
@@ -92,7 +106,7 @@ test('wt entry: bin=wt.exe, argv structure correct', () => {
 });
 
 test('interactive entry has display string only (no bin/argv)', () => {
-  const c = buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md' });
+  const c = buildPosixLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md' });
   assert.ok(typeof c.interactive.display === 'string');
   assert.equal(c.interactive.bin, undefined);
   assert.equal(c.interactive.argv, undefined);
@@ -101,7 +115,7 @@ test('interactive entry has display string only (no bin/argv)', () => {
 // ── Escaping tests ───────────────────────────────────────────────────────────
 
 test('osascript inner cd uses q(root) + escApple backslash-doubling — apostrophe root safe', () => {
-  const c = buildLaunchCommand({ root: "/p's", parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'terminal-app' });
+  const c = buildPosixLaunchCommand({ root: "/p's", parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'terminal-app' });
   assert.equal(c['terminal-app'].bin, 'osascript');
   // q("/p's") = '/p'\''s' (one literal backslash). escApple DOUBLES it (\ → \\) so AppleScript's
   // string-literal parser decodes it back to a single backslash and the shell receives the
@@ -116,7 +130,7 @@ test('osascript inner cd uses q(root) + escApple backslash-doubling — apostrop
 });
 
 test('escApple doubles backslash AND escapes double-quote (root with both)', () => {
-  const c = buildLaunchCommand({ root: '/a\\b"c', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'iterm2' });
+  const c = buildPosixLaunchCommand({ root: '/a\\b"c', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'iterm2' });
   const script = c.iterm2.argv[1];
   // root /a\b"c → q() (no apostrophes) = '/a\b"c'. escApple: backslash → \\, then " → \".
   // So the AppleScript string literal must contain '/a\\b\"c' (doubled backslash + escaped quote).
@@ -125,26 +139,152 @@ test('escApple doubles backslash AND escapes double-quote (root with both)', () 
 
 const TRUSTED_PS_BIN = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
 test('powershell uses -EncodedCommand of psq-escaped inner', () => {
-  const c = buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'powershell', launcherBin: TRUSTED_PS_BIN });
-  assert.equal(c.powershell.argv[0], '-Command');
-  const cmdStr = c.powershell.argv[1];
+  const c = buildPosixLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'powershell', launcherBin: TRUSTED_PS_BIN });
+  assert.deepEqual(c.powershell.argv.slice(0, 3), ['-NoProfile', '-NonInteractive', '-Command']);
+  const cmdStr = c.powershell.argv[c.powershell.argv.indexOf('-Command') + 1];
+  assert.match(cmdStr, /-ArgumentList '-NoProfile','-NoExit','-EncodedCommand'/);
   const b64 = cmdStr.match(/-EncodedCommand','([A-Za-z0-9+/=]+)'/)[1];
   const decoded = Buffer.from(b64, 'base64').toString('utf16le');
   assert.match(decoded, /Set-Location -LiteralPath '\/p'/);
 });
 
 test('powershell: root with single-quote is doubled (psq escaping)', () => {
-  const c = buildLaunchCommand({ root: "/p'q", parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'powershell', launcherBin: TRUSTED_PS_BIN });
-  const cmdStr = c.powershell.argv[1];
+  const c = buildPosixLaunchCommand({ root: "/p'q", parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'powershell', launcherBin: TRUSTED_PS_BIN });
+  const cmdStr = c.powershell.argv[c.powershell.argv.indexOf('-Command') + 1];
   const b64 = cmdStr.match(/-EncodedCommand','([A-Za-z0-9+/=]+)'/)[1];
   const decoded = Buffer.from(b64, 'base64').toString('utf16le');
   // psq("/p'q") = "/p''q" — single-quote doubled
   assert.match(decoded, /Set-Location -LiteralPath '\/p''q'/);
 });
 
+function executableIdentity(runtime, canonicalPath, overrides = {}) {
+  return {
+    runtime,
+    canonical_path: canonicalPath,
+    sha256: 'a'.repeat(64),
+    version: runtime === 'claude' ? '2.1.0' : '0.144.1',
+    platform: 'win32', arch: 'x64', source: 'human-explicit', package: null,
+    authenticode: null, approved_by: 'human', approved_at: '2026-07-11T08:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function launcherIdentity(kind, canonicalPath) {
+  return {
+    kind, canonical_path: canonicalPath, sha256: 'b'.repeat(64), version: '1.0.0',
+    platform: 'win32', arch: 'x64', source: 'verified-native', authenticode: null,
+  };
+}
+
+test('Windows Claude descriptors without trusted runtime and launcher identities stay manual/unavailable', () => {
+  const c = buildLaunchCommand({
+    runtime: 'claude', platform: 'win32', root: 'C:\\repo', parentRunId: 'P', childRunId: 'C',
+    handoffRel: 'handoffs/x.md', launcher: 'wt', launcherBin: 'wt.exe',
+  });
+  assert.equal(c.wt.unavailable, true);
+  assert.equal(c.wt.bin, undefined);
+  assert.equal(c.headless.unavailable, true);
+  assert.equal(c.headless.bin, undefined);
+  assert.match(c.interactive.display, /manual/i);
+  assert.ok(!Object.values(c).some(entry => entry?.bin === 'wt.exe' || entry?.bin === 'claude'));
+});
+
+test('Windows Terminal descriptor uses verified absolute wt.exe and nested native Claude as single argv elements', () => {
+  const claude = executableIdentity('claude', 'C:\\Program Files & Tools\\Claude\\claude native.exe');
+  const wt = launcherIdentity('wt', 'C:\\Program Files\\WindowsApps\\wt.exe');
+  const c = buildLaunchCommand({
+    runtime: 'claude', platform: 'win32', root: 'C:\\repo & work', parentRunId: 'P', childRunId: 'C',
+    handoffRel: 'handoffs/x.md', launcher: 'wt', runtimeExecutableIdentity: claude, launcherIdentity: wt,
+  });
+  assert.equal(c.wt.bin, wt.canonical_path);
+  assert.equal(c.wt.shell, false);
+  assert.equal(c.wt.argv[1], 'C:\\repo & work');
+  assert.equal(c.wt.argv[2], claude.canonical_path);
+  assert.equal(c.wt.argv.filter(value => value === claude.canonical_path).length, 1);
+  assert.ok(!c.wt.argv.includes('claude'));
+});
+
+test('Windows Terminal display is a copy-pasteable PowerShell command with every dynamic argument protected', () => {
+  const claude = executableIdentity('claude', "C:\\Program Files & O'Brien\\Claude\\claude native.exe");
+  const wt = launcherIdentity('wt', "C:\\Program Files & O'Brien\\Windows Terminal\\wt.exe");
+  const root = "C:\\repo & O'Brien";
+  const c = buildLaunchCommand({
+    runtime: 'claude', platform: 'win32', root, parentRunId: 'P', childRunId: 'C',
+    handoffRel: 'handoffs/x.md', launcher: 'wt', runtimeExecutableIdentity: claude,
+    launcherIdentity: wt, model: 'claude-opus-4-8[1m]', effort: 'xhigh',
+  });
+
+  assert.deepEqual(c.wt.argv, [
+    '-d', root, claude.canonical_path, '-n', 'deep-loop-C',
+    'Read .deep-loop/runs/P/handoffs/x.md first; then run /deep-loop-resume',
+    '--model', 'claude-opus-4-8[1m]', '--effort', 'xhigh',
+  ]);
+  assert.deepEqual(c.wt.nativeExecutableArgvIndices, [2]);
+  assert.equal(c.wt.shell, false);
+  assert.equal(c.wt.display,
+    "& 'C:\\Program Files & O''Brien\\Windows Terminal\\wt.exe' -d 'C:\\repo & O''Brien' "
+    + "'C:\\Program Files & O''Brien\\Claude\\claude native.exe' -n 'deep-loop-C' "
+    + "'Read .deep-loop/runs/P/handoffs/x.md first; then run /deep-loop-resume' "
+    + "--model 'claude-opus-4-8[1m]' --effort 'xhigh'",
+  );
+});
+
+test('Windows PowerShell descriptor uses verified launcher and encodes verified native Claude path, never a bare name', () => {
+  const claude = executableIdentity('claude', "C:\\Program Files\\Claude & Co\\claude's native.exe");
+  const ps = launcherIdentity('powershell', 'C:\\Program Files\\PowerShell\\7\\pwsh.exe');
+  const c = buildLaunchCommand({
+    runtime: 'claude', platform: 'win32', root: 'C:\\repo', parentRunId: 'P', childRunId: 'C',
+    handoffRel: 'handoffs/x.md', launcher: 'powershell', runtimeExecutableIdentity: claude, launcherIdentity: ps,
+  });
+  assert.equal(c.powershell.bin, ps.canonical_path);
+  assert.equal(c.powershell.shell, false);
+  assert.deepEqual(c.powershell.argv.slice(0, 3), ['-NoProfile', '-NonInteractive', '-Command']);
+  const command = c.powershell.argv.at(-1);
+  assert.match(command, /-ArgumentList '-NoProfile','-NoExit','-EncodedCommand'/);
+  const encoded = command.match(/EncodedCommand','([A-Za-z0-9+/=]+)'/)[1];
+  const decoded = Buffer.from(encoded, 'base64').toString('utf16le');
+  assert.ok(decoded.includes("& 'C:\\Program Files\\Claude & Co\\claude''s native.exe'"));
+  assert.ok(!/(^|[;&]\s*)claude(?:\s|$)/i.test(decoded));
+});
+
+test('native Windows PowerShell display single-quotes the complete command argument', () => {
+  const runtimePath = "C:\\Runtime $env $(Get-Date)\\O'Brien`Host\\claude.exe";
+  const launcherPath = "C:\\Power $env $(Get-Date)\\O'Brien`Host\\pwsh.exe";
+  const claude = executableIdentity('claude', runtimePath);
+  const ps = launcherIdentity('powershell', launcherPath);
+  const c = buildLaunchCommand({
+    runtime: 'claude', platform: 'win32', root: 'C:\\repo', parentRunId: 'P', childRunId: 'C',
+    handoffRel: 'handoffs/x.md', launcher: 'powershell', runtimeExecutableIdentity: claude, launcherIdentity: ps,
+  });
+  const innerPS = "Set-Location -LiteralPath 'C:\\repo'; & 'C:\\Runtime $env $(Get-Date)\\O''Brien`Host\\claude.exe' "
+    + "-n 'deep-loop-C' 'Read .deep-loop/runs/P/handoffs/x.md first; then run /deep-loop-resume'";
+  const encoded = Buffer.from(innerPS, 'utf16le').toString('base64');
+  const psCmd = "Start-Process 'C:\\Power $env $(Get-Date)\\O''Brien`Host\\pwsh.exe' "
+    + `-ArgumentList '-NoProfile','-NoExit','-EncodedCommand','${encoded}'`;
+
+  assert.deepEqual({
+    platform: c.powershell.platform,
+    bin: c.powershell.bin,
+    argv: c.powershell.argv,
+    shell: c.powershell.shell,
+    nativeExecutableTargets: c.powershell.nativeExecutableTargets,
+  }, {
+    platform: 'win32',
+    bin: launcherPath,
+    argv: ['-NoProfile', '-NonInteractive', '-Command', psCmd],
+    shell: false,
+    nativeExecutableTargets: [runtimePath],
+  });
+  assert.equal(
+    c.powershell.display,
+    `& 'C:\\Power $env $(Get-Date)\\O''Brien\`Host\\pwsh.exe' -NoProfile -NonInteractive -Command '${psCmd.replaceAll("'", "''")}'`,
+  );
+  assert.ok(!c.powershell.display.includes('-Command "'), 'complete command must not use an outer double-quoted region');
+});
+
 test('display strings use q(root) for paths with apostrophes and semicolons', () => {
   const specialRoot = "/p 's;x";
-  const c = buildLaunchCommand({ root: specialRoot, parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcherBin: 'cmux', launcherSocket: '/sock x' });
+  const c = buildPosixLaunchCommand({ root: specialRoot, parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcherBin: 'cmux', launcherSocket: '/sock x' });
   const display = c.interactive.display;
   // The raw unescaped root must not appear verbatim — if it did, ';x' would be a separate shell command.
   assert.ok(!display.includes(specialRoot), 'raw unescaped root must not appear verbatim in interactive display');
@@ -165,35 +305,35 @@ test('display strings use q(root) for paths with apostrophes and semicolons', ()
 
 test('UNSAFE_SPAWN_ARG: childRunId with illegal chars throws', () => {
   assert.throws(
-    () => buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'bad$id', handoffRel: 'handoffs/x.md' }),
+    () => buildPosixLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'bad$id', handoffRel: 'handoffs/x.md' }),
     /UNSAFE_SPAWN_ARG/
   );
 });
 
 test('UNSAFE_SPAWN_ARG: parentRunId with illegal chars throws', () => {
   assert.throws(
-    () => buildLaunchCommand({ root: '/p', parentRunId: 'P;evil', childRunId: 'C', handoffRel: 'handoffs/x.md' }),
+    () => buildPosixLaunchCommand({ root: '/p', parentRunId: 'P;evil', childRunId: 'C', handoffRel: 'handoffs/x.md' }),
     /UNSAFE_SPAWN_ARG/
   );
 });
 
 test('UNSAFE_SPAWN_ARG: parentRunId with shell-injection chars throws', () => {
   assert.throws(
-    () => buildLaunchCommand({ root: '/p', parentRunId: 'P$(inject)', childRunId: 'C', handoffRel: 'handoffs/x.md' }),
+    () => buildPosixLaunchCommand({ root: '/p', parentRunId: 'P$(inject)', childRunId: 'C', handoffRel: 'handoffs/x.md' }),
     /UNSAFE_SPAWN_ARG/
   );
 });
 
 test('UNSAFE_SPAWN_ARG: handoffRel with path traversal throws', () => {
   assert.throws(
-    () => buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/../evil.md' }),
+    () => buildPosixLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/../evil.md' }),
     /UNSAFE_SPAWN_ARG/
   );
 });
 
 test('UNSAFE_SPAWN_ARG: handoffRel not starting with handoffs/ throws', () => {
   assert.throws(
-    () => buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'other/x.md' }),
+    () => buildPosixLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'other/x.md' }),
     /UNSAFE_SPAWN_ARG/
   );
 });
@@ -219,6 +359,320 @@ test('emitHandoff writes md + compaction-state(M3) + launch-command, chains sess
   const md = readFileSync(r.handoffPath, 'utf8');
   assert.match(md, /이전 대화/);
   assert.match(md, /\/deep-loop-resume/);
+});
+
+test('legacy runtime handoff remains Claude-compatible', () => {
+  const { root, runId } = seed();
+  const { data } = readState(root, runId);
+  delete data.autonomy.session_runtime;
+  delete data.autonomy.runtime_source;
+  writeState(root, runId, data);
+  const r = emitHandoff(root, runId, {
+    now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId), platform: POSIX_PLATFORM,
+    descriptorBuilder: buildPosixDescriptor,
+  });
+  assert.equal(r.ok, true);
+  const launch = readFileSync(join(runDir(root, runId), 'terminal', 'launch-command.txt'), 'utf8');
+  assert.match(launch, /claude -p/);
+  assert.match(launch, /\/deep-loop-resume/);
+  assert.ok(!launch.includes('$deep-loop:deep-loop-resume'));
+});
+
+test('Codex handoff emits qualified manual resume descriptors and no Claude process command', () => {
+  const { root, runId } = seed('codex');
+  const { data } = readState(root, runId);
+  data.autonomy.session_model = 'claude-opus-4-8[1m]';
+  data.autonomy.session_effort = 'xhigh';
+  writeState(root, runId, data);
+  const r = emitHandoff(root, runId, {
+    now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId), platform: POSIX_PLATFORM,
+    descriptorBuilder: buildPosixDescriptor,
+  });
+  assert.equal(r.ok, true);
+  const launch = readFileSync(join(runDir(root, runId), 'terminal', 'launch-command.txt'), 'utf8');
+  assert.match(launch, /\$deep-loop:deep-loop-resume/);
+  assert.match(launch, /codex-transport-not-activated/);
+  assert.ok(!/\bclaude\s+(?:-p|-n)\b/.test(launch), 'Codex handoff must not emit a Claude process command');
+  assert.ok(!launch.includes('claude://'), 'Codex App handoff must not emit a private URL');
+  assert.ok(!launch.includes('--model'));
+  assert.ok(!launch.includes('--effort'));
+});
+
+test('Codex headless descriptor is runnable only with an explicit absolute executable', () => {
+  const c = buildPosixLaunchCommand({
+    runtime: 'codex', root: '/repo', parentRunId: 'PARENT', childRunId: 'CHILD', handoffRel: 'handoffs/x.md',
+    codexExecutable: '/trusted/codex', deepLoopRoot: '/deep-loop', model: 'gpt-5.4', effort: 'xhigh',
+  });
+  assert.equal(c.headless.bin, '/trusted/codex');
+  assert.equal(c.headless.shell, false);
+  assert.equal(c.headless.stdin.includes(JSON.stringify('/deep-loop/skills/deep-loop-resume/SKILL.md')), true);
+  assert.equal(c.headless.argv.includes(c.headless.stdin), false, 'resume prompt must stay off argv');
+  assert.deepEqual(c.headless.argv.slice(-3), ['-C', '/repo', '-']);
+  assert.ok(c.headless.argv.includes('model_reasoning_effort="xhigh"'));
+  assert.ok(!c.headless.argv.includes('--profile'));
+  assert.ok(!c.headless.argv.includes('--add-dir'));
+});
+
+test('Codex native Windows headless descriptor accepts a revalidated identity and never a bare runtime', () => {
+  const codex = executableIdentity('codex', 'C:\\Program Files & Tools\\Codex\\codex.exe');
+  const c = buildLaunchCommand({
+    runtime: 'codex', platform: 'win32', root: 'C:\\repo', parentRunId: 'PARENT', childRunId: 'CHILD',
+    handoffRel: 'handoffs/x.md', runtimeExecutableIdentity: codex, deepLoopRoot: 'C:\\deep-loop',
+    model: 'gpt-5.4', effort: 'xhigh',
+  });
+  assert.equal(c.headless.bin, codex.canonical_path);
+  assert.equal(c.headless.shell, false);
+  assert.ok(!c.headless.argv.includes('codex'));
+});
+
+test('Codex native Windows Terminal descriptor pins trusted machine argv and literal-safe PowerShell display', () => {
+  const root = "C:\\repo $env $(Get-Date) & O'Brien`Work";
+  const runtimePath = "C:\\Runtime $env $(Get-Date) & O'Brien`Host\\codex.exe";
+  const launcherPath = "C:\\Terminal $env $(Get-Date) & O'Brien`Host\\wt.exe";
+  const codex = executableIdentity('codex', runtimePath);
+  const wt = launcherIdentity('wt', launcherPath);
+  const c = buildLaunchCommand({
+    runtime: 'codex', platform: 'win32', root, parentRunId: 'PARENT', childRunId: 'CHILD',
+    handoffRel: 'handoffs/x.md', runtimeExecutableIdentity: codex, launcherIdentity: wt,
+    deepLoopRoot: 'C:\\Deep Loop', model: 'gpt-5.4', effort: 'xhigh',
+  });
+  const prompt = `Read ${JSON.stringify(`${root}\\.deep-loop\\runs\\PARENT\\handoffs\\x.md`)} first; then run $deep-loop:deep-loop-resume --project-root ${JSON.stringify(root)} --run-id ${JSON.stringify('PARENT')}`;
+  const effortConfig = 'model_reasoning_effort="xhigh"';
+
+  assert.equal(c.wt.unavailable, undefined, 'trusted Codex+WT identities with an explicit valid deep-loop root must activate WT');
+  assert.deepEqual({
+    platform: c.wt.platform,
+    bin: c.wt.bin,
+    argv: c.wt.argv,
+    nativeExecutableArgvIndices: c.wt.nativeExecutableArgvIndices,
+    shell: c.wt.shell,
+  }, {
+    platform: 'win32',
+    bin: launcherPath,
+    argv: ['-d', root, runtimePath, '-C', root, '--model', 'gpt-5.4', '-c', effortConfig, prompt],
+    nativeExecutableArgvIndices: [2],
+    shell: false,
+  });
+  assert.equal(
+    c.wt.display,
+    `& '${launcherPath.replaceAll("'", "''")}' -d '${root.replaceAll("'", "''")}' `
+      + `'${runtimePath.replaceAll("'", "''")}' -C '${root.replaceAll("'", "''")}' `
+      + `--model 'gpt-5.4' -c '${effortConfig}' '${prompt.replaceAll("'", "''")}'`,
+  );
+  assert.equal(c.powershell.unavailable, true, 'a WT identity must not authorize PowerShell');
+  assert.ok(!c.wt.argv.includes('codex'), 'the nested runtime must never be a bare name');
+});
+
+test('Codex native Windows PowerShell descriptor pins encoded trusted invocation and hostile literal safety', () => {
+  const root = "C:\\repo $env $(Get-Date) & O'Brien`Work";
+  const runtimePath = "C:\\Runtime $env $(Get-Date) & O'Brien`Host\\codex.exe";
+  const launcherPath = "C:\\Power $env $(Get-Date) & O'Brien`Host\\pwsh.exe";
+  const codex = executableIdentity('codex', runtimePath);
+  const ps = launcherIdentity('powershell', launcherPath);
+  const c = buildLaunchCommand({
+    runtime: 'codex', platform: 'win32', root, parentRunId: 'PARENT', childRunId: 'CHILD',
+    handoffRel: 'handoffs/x.md', runtimeExecutableIdentity: codex, launcherIdentity: ps,
+    deepLoopRoot: 'C:\\Deep Loop', model: 'gpt-5.4', effort: 'xhigh',
+  });
+  const prompt = `Read ${JSON.stringify(`${root}\\.deep-loop\\runs\\PARENT\\handoffs\\x.md`)} first; then run $deep-loop:deep-loop-resume --project-root ${JSON.stringify(root)} --run-id ${JSON.stringify('PARENT')}`;
+  const effortConfig = 'model_reasoning_effort="xhigh"';
+  const quote = (value) => `'${String(value).replaceAll("'", "''")}'`;
+  const inner = `Set-Location -LiteralPath ${quote(root)}; & ${quote(runtimePath)} -C ${quote(root)} --model ${quote('gpt-5.4')} -c ${quote(effortConfig)} ${quote(prompt)}`;
+  const encoded = Buffer.from(inner, 'utf16le').toString('base64');
+  const psCmd = `Start-Process ${quote(launcherPath)} -ArgumentList '-NoProfile','-NoExit','-EncodedCommand','${encoded}'`;
+
+  assert.equal(c.powershell.unavailable, undefined, 'trusted Codex+PowerShell identities with an explicit valid deep-loop root must activate PowerShell');
+  assert.deepEqual({
+    platform: c.powershell.platform,
+    bin: c.powershell.bin,
+    argv: c.powershell.argv,
+    nativeExecutableTargets: c.powershell.nativeExecutableTargets,
+    shell: c.powershell.shell,
+  }, {
+    platform: 'win32',
+    bin: launcherPath,
+    argv: ['-NoProfile', '-NonInteractive', '-Command', psCmd],
+    nativeExecutableTargets: [runtimePath],
+    shell: false,
+  });
+  assert.equal(Buffer.from(encoded, 'base64').toString('utf16le'), inner);
+  assert.equal(
+    c.powershell.display,
+    `& ${quote(launcherPath)} -NoProfile -NonInteractive -Command ${quote(psCmd)}`,
+  );
+  assert.equal(c.wt.unavailable, true, 'a PowerShell identity must not authorize WT');
+  assert.ok(!/(^|[;&]\s*)codex(?:\s|$)/i.test(inner), 'the encoded invocation must never use a bare runtime');
+});
+
+test('Codex native Windows visible descriptors reject bare, UNC, and mismatched executable identities', () => {
+  const base = {
+    runtime: 'codex', platform: 'win32', root: 'C:\\repo', parentRunId: 'PARENT', childRunId: 'CHILD',
+    handoffRel: 'handoffs/x.md', deepLoopRoot: 'C:\\Deep Loop',
+  };
+  for (const [label, runtimePath, launcher] of [
+    ['bare runtime', 'codex.exe', launcherIdentity('wt', 'C:\\Windows\\wt.exe')],
+    ['root-relative runtime', '/tmp/codex.exe', launcherIdentity('wt', 'C:\\Windows\\wt.exe')],
+    ['UNC runtime', '\\\\server\\share\\codex.exe', launcherIdentity('wt', 'C:\\Windows\\wt.exe')],
+    ['root-relative launcher', 'C:\\Runtime\\codex.exe', launcherIdentity('wt', '\\tmp\\wt.exe')],
+    ['UNC launcher', 'C:\\Runtime\\codex.exe', launcherIdentity('wt', '\\\\server\\share\\wt.exe')],
+    ['mismatched launcher', 'C:\\Runtime\\codex.exe', launcherIdentity('powershell', 'C:\\PowerShell\\pwsh.exe')],
+  ]) {
+    const c = buildLaunchCommand({
+      ...base,
+      runtimeExecutableIdentity: executableIdentity('codex', runtimePath),
+      launcherIdentity: launcher,
+    });
+    assert.equal(c.wt.unavailable, true, label);
+    assert.equal(c.wt.bin, undefined, label);
+  }
+});
+
+test('emitHandoff: forced win32 rejects a physical POSIX fixture root and rolls back cleanly', {
+  skip: process.platform === 'win32' ? 'native Windows temp roots are already drive-qualified' : false,
+}, () => {
+  const { root, runId } = seed('codex');
+  const { data } = readState(root, runId);
+  data.autonomy.runtime_executable_approval = executableIdentity('codex', 'C:\\Runtime\\codex.exe');
+  writeState(root, runId, data);
+
+  assert.throws(
+    () => emitHandoff(root, runId, {
+      now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId),
+      platform: 'win32', deepLoopRoot: 'C:\\Deep Loop',
+    }),
+    /INVALID_TARGET_PATH/,
+  );
+  const lease = readState(root, runId).data.session_chain.lease;
+  assert.equal(lease.handoff_phase, 'idle');
+  assert.equal(lease.handoff_child_run_id, null);
+  assert.equal(existsSync(join(runDir(root, runId), 'handoffs')), false);
+  assert.equal(existsSync(join(runDir(root, runId), 'terminal')), false);
+});
+
+test('emitHandoff: approved native Windows Codex uses injected deep-loop root and emits one child', () => {
+  const { root, runId } = seed('codex');
+  const targetRoot = process.platform === 'win32' ? root : WINDOWS_TARGET_ROOT;
+  const codex = executableIdentity('codex', 'C:\\Program Files & Tools\\Codex\\codex.exe');
+  const deepLoopRoot = 'C:\\Injected Deep Loop';
+  const { data } = readState(root, runId);
+  data.autonomy.runtime_executable_approval = codex;
+  writeState(root, runId, data);
+
+  let emitted;
+  let constructionError = null;
+  try {
+    emitted = emitHandoff(root, runId, {
+      now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId),
+      platform: 'win32', deepLoopRoot,
+      descriptorBuilder: process.platform === 'win32' ? buildRuntimeResumeDescriptor : buildWindowsDescriptor,
+    });
+  } catch (error) {
+    constructionError = error;
+  }
+  const after = readState(root, runId).data;
+  const lease = after.session_chain.lease;
+  assert.equal(
+    constructionError,
+    null,
+    `approved Codex descriptor threw ${constructionError?.message}; phase=${lease.handoff_phase}; child=${lease.handoff_child_run_id}; handoffs=${existsSync(join(runDir(root, runId), 'handoffs'))}; terminal=${existsSync(join(runDir(root, runId), 'terminal'))}`,
+  );
+  assert.equal(emitted.ok, true);
+  assert.equal(emitted.reason, 'emitted');
+  assert.equal(lease.handoff_phase, 'emitted');
+  assert.equal(lease.state, 'releasing');
+  const children = after.session_chain.sessions.filter(session => session.run_id !== runId);
+  assert.equal(children.length, 1);
+  assert.equal(children[0].run_id, emitted.childRunId);
+
+  const entries = buildLaunchCommand({
+    runtime: 'codex', platform: 'win32', root: targetRoot, parentRunId: runId,
+    childRunId: emitted.childRunId, handoffRel: emitted.handoffRel,
+    runtimeExecutableIdentity: codex, deepLoopRoot,
+  });
+  const resumeSkillPath = 'C:\\Injected Deep Loop\\skills\\deep-loop-resume\\SKILL.md';
+  assert.ok(entries.headless.stdin.includes(JSON.stringify(resumeSkillPath)));
+  if (process.platform !== 'win32') {
+    assert.equal(entries.headless.stdin.includes(root), false, 'physical POSIX fixture root must not leak into the Windows descriptor');
+  }
+});
+
+test('emitHandoff: invalid relative deepLoopRoot rolls back reservation before artifacts and rethrows original error', () => {
+  const { root, runId } = seed('codex');
+  const { data } = readState(root, runId);
+  data.autonomy.runtime_executable_approval = executableIdentity('codex', 'C:\\trusted\\codex.exe');
+  writeState(root, runId, data);
+
+  assert.throws(
+    () => emitHandoff(root, runId, {
+      now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId),
+      platform: 'win32', deepLoopRoot: 'relative/deep-loop', descriptorBuilder: buildWindowsDescriptor,
+    }),
+    (error) => error?.message === 'INVALID_DEEP_LOOP_ROOT: explicit absolute deep-loop root required',
+  );
+  const lease = readState(root, runId).data.session_chain.lease;
+  assert.equal(lease.handoff_phase, 'idle');
+  assert.equal(lease.handoff_idempotency_key, null);
+  assert.equal(lease.handoff_child_run_id, null);
+  assert.equal(existsSync(join(runDir(root, runId), 'handoffs')), false);
+  assert.equal(existsSync(join(runDir(root, runId), 'terminal')), false);
+});
+
+test('Codex max effort fails before handoff reservation or artifact writes', () => {
+  const { root, runId } = seed('codex');
+  const { data } = readState(root, runId);
+  data.autonomy.session_effort = 'max';
+  writeState(root, runId, data);
+
+  assert.throws(
+    () => emitHandoff(root, runId, { now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId) }),
+    /UNSUPPORTED_RUNTIME_EFFORT/,
+  );
+  const after = readState(root, runId).data;
+  assert.equal(after.session_chain.lease.handoff_phase, 'idle');
+  assert.equal(after.session_chain.lease.handoff_child_run_id ?? null, null);
+  assert.equal(existsSync(join(runDir(root, runId), 'handoffs')), false);
+  assert.equal(existsSync(join(runDir(root, runId), 'terminal')), false);
+});
+
+test('handoff descriptor records canonical project root and explicit logical run id', () => {
+  const parent = mkdtempSync(join(tmpdir(), 'dl-alias-'));
+  const canonicalRoot = join(parent, 'canonical');
+  const aliasRoot = join(parent, 'alias');
+  mkdirSync(canonicalRoot);
+  createDirectoryJunction(canonicalRoot, aliasRoot);
+  const { runId } = initRun(aliasRoot, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z'), env: {}, platform: 'linux', run: () => ({ code: 1 }) });
+  const storedRoot = readState(aliasRoot, runId).data.project.root;
+  const r = emitHandoff(aliasRoot, runId, { now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId), platform: POSIX_PLATFORM });
+  assert.equal(r.ok, true);
+  assert.ok(r.handoffPath.startsWith(storedRoot), 'artifact path must use the stored canonical root');
+  const md = readFileSync(r.handoffPath, 'utf8');
+  assert.ok(md.includes(storedRoot), 'handoff must carry canonical project root');
+  assert.ok(md.includes(runId), 'handoff must carry explicit logical run id');
+  const launch = readFileSync(join(runDir(storedRoot, runId), 'terminal', 'launch-command.txt'), 'utf8');
+  assert.ok(launch.includes(storedRoot), 'launch descriptor must use the canonical root');
+  assert.ok(!launch.includes(aliasRoot), 'launch descriptor must not preserve the symlink alias');
+});
+
+test('copied-root handoff is fenced before any descriptor file is written', () => {
+  const { root, runId } = seed();
+  const copyParent = mkdtempSync(join(tmpdir(), 'dl-copy-'));
+  const copyRoot = join(copyParent, 'copy');
+  cpSync(root, copyRoot, { recursive: true });
+  const copiedRunDir = runDir(copyRoot, runId);
+  const copiedLaunch = join(runDir(copyRoot, runId), 'terminal', 'launch-command.txt');
+  const copiedHandoffs = join(copiedRunDir, 'handoffs');
+  const beforeLoop = readFileSync(join(copiedRunDir, 'loop.json'), 'utf8');
+  const beforeHash = readFileSync(join(copiedRunDir, '.loop.hash'), 'utf8');
+  assert.equal(existsSync(copiedLaunch), false);
+  assert.equal(existsSync(copiedHandoffs), false);
+  assert.throws(
+    () => emitHandoff(copyRoot, runId, { now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId) }),
+    /PROJECT_ROOT_FENCED/,
+  );
+  assert.equal(existsSync(copiedLaunch), false, 'root fence must precede descriptor writes');
+  assert.equal(existsSync(copiedHandoffs), false, 'root fence must precede handoff artifact directory creation');
+  assert.equal(readFileSync(join(copiedRunDir, 'loop.json'), 'utf8'), beforeLoop, 'copied durable state must remain byte-identical');
+  assert.equal(readFileSync(join(copiedRunDir, '.loop.hash'), 'utf8'), beforeHash, 'copied state anchor must remain byte-identical');
 });
 
 test('emitHandoff dedups: second trigger while in-flight is a no-op', () => {
@@ -248,7 +702,7 @@ test('emitHandoff same-trigger re-entry is idempotent (one child, no duplicate s
 
 // launch 명령이 **부모** run 경로의 handoff 파일을 가리키는지 (Codex r1 🔴3)
 test('launch command references parent run dir handoff path', () => {
-  const c = buildLaunchCommand({ root: '/p', parentRunId: 'PARENT', childRunId: 'CHILD', handoffRel: 'handoffs/x.md' });
+  const c = buildPosixLaunchCommand({ root: '/p', parentRunId: 'PARENT', childRunId: 'CHILD', handoffRel: 'handoffs/x.md' });
   assert.match(c.interactive.display, /\.deep-loop\/runs\/PARENT\/handoffs\/x\.md/);
   assert.match(c.headless.display, /\.deep-loop\/runs\/PARENT\/handoffs\/x\.md/);
   assert.match(c.interactive.display, /deep-loop-CHILD/);
@@ -276,7 +730,7 @@ test('emitHandoff: lease stolen before call → fenced at reserve, new owner lea
   const CHILD2 = 'CHILD2-ACTOR';
   // Lease is released and taken by another actor (generation bumps to 2)
   releaseLease(root, runId, { owner: runId, generation: 1 });
-  acquireLease(root, runId, { owner: CHILD2, expectGeneration: 1, now });
+  acquireLease(root, runId, { owner: CHILD2, expectGeneration: 1, runtime: 'claude', now });
   // emitHandoff with stale expect (original owner/gen=1) → fenced at reserveHandoff (generation mismatch)
   const r = emitHandoff(root, runId, { trigger: 'milestone', now, expect: { owner: runId, generation: 1 } });
   assert.equal(r.ok, false);
@@ -355,21 +809,21 @@ const baseArgs = { root: '/p', parentRunId: '01PARENT', childRunId: '01CHILD', h
 const PS7BIN = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe';
 
 test('B3: powershell entry uses absolute trusted launcherBin as bin (not bare powershell)', () => {
-  const cmds = buildLaunchCommand({ ...baseArgs, launcher: 'powershell', launcherBin: PS7BIN });
+  const cmds = buildPosixLaunchCommand({ ...baseArgs, launcher: 'powershell', launcherBin: PS7BIN });
   assert.equal(cmds.powershell.bin, PS7BIN);
   assert.notEqual(cmds.powershell.bin, 'powershell');
   assert.ok(!cmds.powershell.unavailable);
 });
 
 test('B3: powershell display is PS-pasteable (call operator) for a path with spaces — plan-ADV2', () => {
-  const cmds = buildLaunchCommand({ ...baseArgs, launcher: 'powershell', launcherBin: PS7BIN });
+  const cmds = buildPosixLaunchCommand({ ...baseArgs, launcher: 'powershell', launcherBin: PS7BIN });
   assert.match(cmds.powershell.display, /^& '/);
-  assert.match(cmds.powershell.display, /pwsh\.exe' -Command /);
+  assert.match(cmds.powershell.display, /pwsh\.exe' -NoProfile -NonInteractive -Command /);
   assert.ok(!/^'C:\\/.test(cmds.powershell.display), 'display must not be a bare quoted-path literal');
 });
 
 test('B3: launcher=powershell + launcherBin null → unavailable entry, no bare bin', () => {
-  const cmds = buildLaunchCommand({ ...baseArgs, launcher: 'powershell', launcherBin: null });
+  const cmds = buildPosixLaunchCommand({ ...baseArgs, launcher: 'powershell', launcherBin: null });
   assert.equal(cmds.powershell.unavailable, true);
   assert.equal(cmds.powershell.bin, null);
   assert.equal(typeof cmds.powershell.display, 'string');   // still has a display for launch-command.txt
@@ -377,7 +831,7 @@ test('B3: launcher=powershell + launcherBin null → unavailable entry, no bare 
 
 test('B3: untrusted absolute / UNC launcherBin → unavailable (not runnable) — plan-ADV3', () => {
   for (const bad of ['C:\\repo\\powershell.exe', '\\\\server\\share\\pwsh.exe', 'C:\\Users\\me\\powershell.exe']) {
-    const cmds = buildLaunchCommand({ ...baseArgs, launcher: 'powershell', launcherBin: bad });
+    const cmds = buildPosixLaunchCommand({ ...baseArgs, launcher: 'powershell', launcherBin: bad });
     assert.equal(cmds.powershell.unavailable, true, `untrusted ${bad} must be unavailable`);
     assert.equal(cmds.powershell.bin, null);
   }
@@ -385,7 +839,7 @@ test('B3: untrusted absolute / UNC launcherBin → unavailable (not runnable) �
 
 test('B3: non-PowerShell launcher + launcherBin null → buildLaunchCommand does not throw, builds all entries', () => {
   assert.doesNotThrow(() => {
-    const cmds = buildLaunchCommand({ ...baseArgs, launcher: 'terminal-app', launcherBin: null });
+    const cmds = buildPosixLaunchCommand({ ...baseArgs, launcher: 'terminal-app', launcherBin: null });
     assert.equal(typeof cmds.powershell.display, 'string');  // unavailable placeholder, not a throw
     assert.ok(cmds['terminal-app'].display);                 // the actual launcher entry is intact
   });
@@ -425,12 +879,13 @@ test('unverified desktopTarget → unavailable entry', () => {
 test('windows desktop entry: verified win-exe target + trusted PS available → non-blocking Start-Process launcher', () => {
   const trustedPs = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe';
   const exePath = 'C:\\Program Files\\Claude\\Claude.exe';
-  const exists = (p) => p === trustedPs;
   const cmds = buildLaunchCommand(desktopArgs({
-    platform: 'win32', desktopTarget: { kind: 'win-exe', exePath }, exists,
+    platform: 'win32', desktopTarget: { kind: 'win-exe', exePath },
+    launcherIdentity: launcherIdentity('powershell', trustedPs),
   }));
   assert.equal(cmds.desktop.available, true);
   assert.equal(cmds.desktop.bin, trustedPs);
+  assert.deepEqual(cmds.desktop.argv.slice(0, 3), ['-NoProfile', '-NonInteractive', '-Command']);
   const joined = cmds.desktop.argv.join(' ');
   assert.match(joined, /Start-Process -FilePath '/);
   assert.ok(joined.includes(exePath), 'argv must target the verified exe path');
@@ -446,9 +901,8 @@ test('windows desktop entry: verified win-exe target + trusted PS available → 
 
 test('windows desktop entry: no trusted PS bin found → unavailable (fail-closed)', () => {
   const exePath = 'C:\\Program Files\\Claude\\Claude.exe';
-  const exists = () => false;   // simulates no trusted PowerShell present on the Windows host
   const cmds = buildLaunchCommand(desktopArgs({
-    platform: 'win32', desktopTarget: { kind: 'win-exe', exePath }, exists,
+    platform: 'win32', desktopTarget: { kind: 'win-exe', exePath }, launcherIdentity: null,
   }));
   assert.equal(cmds.desktop.unavailable, true);
 });
@@ -492,6 +946,41 @@ test('emitHandoff: spawn_style=desktop invokes the injected desktopProbe (probe 
   assert.equal(r.ok, true);
   assert.equal(calls, 1, 'desktop spawn_style must invoke the injected desktopProbe exactly once');
   assert.equal(seenPlatform, 'darwin', 'the platform passed to emitHandoff must be forwarded to desktopProbe');
+});
+
+test('emitHandoff: Windows desktop artifact uses durable PowerShell approval with launcher none', () => {
+  const { root, runId } = seed();
+  const powerShell = {
+    ...launcherIdentity('powershell', 'C:\\Program Files\\PowerShell\\7\\pwsh.exe'),
+    source: 'human-explicit',
+    approved_by: 'human',
+    approved_at: '2026-07-12T03:00:00.000Z',
+  };
+  const { data } = readState(root, runId);
+  data.autonomy.spawn_style = 'desktop';
+  data.autonomy.launcher_executable_approvals = { wt: null, powershell: powerShell };
+  data.session_spawn = {
+    platform: 'win32', launcher: 'none', launcher_bin: null, launcher_socket: null,
+    surface: 'window', reachable: true, visible: true, signals: {}, probe: null,
+    reason: null, fallback: 'launch-command-file', detected_at: '2026-07-12T03:00:00.000Z',
+  };
+  writeState(root, runId, data);
+
+  const result = emitHandoff(root, runId, {
+    trigger: 'windows-desktop-artifact', now: Date.parse('2026-07-12T03:01:00.000Z'),
+    expect: expect_(runId), platform: 'win32',
+    desktopProbe: () => ({
+      ok: true,
+      argvTarget: { kind: 'win-exe', exePath: 'C:\\Program Files\\Claude\\Claude.exe' },
+    }),
+  });
+  assert.equal(result.ok, true);
+  const txt = readFileSync(join(runDir(root, runId), 'terminal', 'launch-command.txt'), 'utf8');
+  const lines = txt.split('\n');
+  const desktopLine = lines[lines.indexOf('# desktop') + 1];
+  assert.match(desktopLine, /\/deep-loop-resume/);
+  assert.doesNotMatch(desktopLine, /unavailable/);
+  assert.ok(!/claude:\/\//.test(txt), 'raw desktop URL remains machine-only');
 });
 
 test('emitHandoff: non-desktop spawn_style (default visible) never invokes desktopProbe', () => {
@@ -549,7 +1038,7 @@ function writeStateWith(root, runId, mutate) {
 
 test('buildLaunchCommand threads --model/--effort into every transport', () => {
   const m = 'claude-opus-4-8[1m]';
-  const c = buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'cmux', launcherBin: '/a/cmux', model: m, effort: 'xhigh' });
+  const c = buildPosixLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'cmux', launcherBin: '/a/cmux', model: m, effort: 'xhigh' });
   assert.ok(c.headless.argv.includes('--model') && c.headless.argv.includes(m));
   assert.ok(c.headless.argv.includes('--effort') && c.headless.argv.includes('xhigh'));
   assert.ok(c.wt.argv.includes('--model') && c.wt.argv.includes(m));
@@ -561,7 +1050,7 @@ test('buildLaunchCommand threads --model/--effort into every transport', () => {
 });
 
 test('buildLaunchCommand omits flags when model/effort absent (backward compat)', () => {
-  const c = buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md' });
+  const c = buildPosixLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md' });
   assert.ok(!c.headless.argv.includes('--model'));
   assert.ok(!c.headless.argv.includes('--effort'));
   assert.ok(!c.wt.argv.includes('--model'));
@@ -572,7 +1061,7 @@ test('buildLaunchCommand omits flags when model/effort absent (backward compat)'
 
 test('powershell entry threads --model/--effort with psq quoting', () => {
   const psBin = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
-  const c = buildLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'powershell', launcherBin: psBin, model: 'claude-sonnet-5', effort: 'high' });
+  const c = buildPosixLaunchCommand({ root: '/p', parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcher: 'powershell', launcherBin: psBin, model: 'claude-sonnet-5', effort: 'high' });
   assert.ok(!c.powershell.unavailable, 'trusted PS bin → runnable entry');
   const psCmd = c.powershell.argv[c.powershell.argv.indexOf('-Command') + 1];
   const enc = psCmd.match(/EncodedCommand','([A-Za-z0-9+/=]+)'/)[1];
@@ -583,7 +1072,7 @@ test('powershell entry threads --model/--effort with psq quoting', () => {
 test('emitHandoff threads state model/effort into launch-command.txt + continuity note', () => {
   const { root, runId } = seed();
   writeStateWith(root, runId, (d) => { d.autonomy.session_model = 'claude-opus-4-8[1m]'; d.autonomy.session_effort = 'xhigh'; });
-  const r = emitHandoff(root, runId, { now: 1, expect: expect_(runId) });
+  const r = emitHandoff(root, runId, { now: 1, expect: expect_(runId), platform: POSIX_PLATFORM });
   assert.equal(r.ok, true);
   const lc = readFileSync(join(runDir(root, runId), 'terminal', 'launch-command.txt'), 'utf8');
   assert.match(lc, /--model 'claude-opus-4-8\[1m\]' --effort 'xhigh'/);

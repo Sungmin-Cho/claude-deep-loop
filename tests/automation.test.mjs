@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, existsSync, mkdtempSync } from 'node:fs';
+import { readFileSync, existsSync, mkdtempSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -10,22 +10,37 @@ const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'deep
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState } from '../scripts/lib/state.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
-import { respawn } from '../scripts/lib/respawn.mjs';
+import { respawn as respawnImpl } from '../scripts/lib/respawn.mjs';
 import { acquireLease } from '../scripts/lib/lease.mjs';
-import { driveHeadless } from '../scripts/hooks-impl/drive-headless.mjs';
+import { driveHeadless as driveHeadlessImpl } from '../scripts/hooks-impl/drive-headless.mjs';
 import { pauseRun } from '../scripts/lib/state.mjs';
 
 const A = join(dirname(fileURLToPath(import.meta.url)), '..', 'recipes', 'automation');
+const HANDOFF_REFERENCE = join(dirname(fileURLToPath(import.meta.url)), '..', 'skills', 'deep-loop-workflow', 'references', 'handoff-respawn.md');
 
 // Deterministic "now" within the run's wallclock window so respawnGate does not wallclock-block.
 const NOW1 = Date.parse('2026-06-24T00:01:00Z');
+
+// These legacy driver tests exercise the POSIX Claude transport. Native-Windows
+// executable authority has dedicated coverage in runtime/respawn integration tests.
+function respawn(root, runId, options = {}) {
+  return respawnImpl(root, runId, { ...options, platform: 'linux' });
+}
+
+function driveHeadless(options = {}) {
+  return driveHeadlessImpl({
+    ...options,
+    respawnFn: options.respawnFn
+      ?? ((root, runId, respawnOptions) => respawn(root, runId, respawnOptions)),
+  });
+}
 
 // Seed a run AND emit a handoff so there is a pending handoff with a reserved child.
 // Returns { root, runId, em, childRunId } where em is the emitHandoff result and
 // childRunId is the reserved child run id (from lease.handoff_child_run_id).
 function seedRunWithHandoff() {
   const root = mkdtempSync(join(tmpdir(), 'dl-auto-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
   const em = emitHandoff(root, runId, {
     reason: 'pre-compact', trigger: 'pre-compact', headless: true,
     expect: { owner: runId, generation: 1 },
@@ -43,7 +58,7 @@ function seedRunWithHandoff() {
 
 function seedRun() {
   const root = mkdtempSync(join(tmpdir(), 'dl-auto-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
   return { root, runId };
 }
 
@@ -63,7 +78,7 @@ test('driveHeadless resumes pending handoff with measured resume command', () =>
       assert.ok(argStr.includes('deep-loop-resume'), 'resume command must reference deep-loop-resume');
       assert.ok(entry.argv.includes('--output-format'), 'must include --output-format flag for measurement');
       // Simulate child calling /deep-loop-resume → acquires lease (generation+1)
-      acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, now: NOW1 });
+      acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, runtime: 'claude', now: NOW1 });
       return { ok: true, usage: { num_turns: 2, tokens: 50 } };
     },
   });
@@ -79,7 +94,7 @@ test('driveHeadless commits measured usage to budget on success', () => {
     now: NOW1,
     spawnFn: () => {
       // Simulate child calling /deep-loop-resume → acquires lease (generation+1)
-      acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, now: NOW1 });
+      acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, runtime: 'claude', now: NOW1 });
       return { ok: true, usage: { num_turns: 2, tokens: 50 } };
     },
   });
@@ -106,7 +121,7 @@ test('driveHeadless fails closed when usage unmeasurable/timeout', () => {
 // gate-blocked: budget.total=0 forces budget gate block; spawnFn must NOT be called; status=paused.
 test('driveHeadless returns gate-blocked and pauses run when respawnGate blocks', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-auto-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
   // Emit handoff first so there is a pending handoff to attempt.
   const em = emitHandoff(root, runId, {
     reason: 'pre-compact', trigger: 'pre-compact', headless: true,
@@ -141,7 +156,7 @@ test('driveHeadless is idempotent — second call returns no-pending-handoff aft
   const spawnFn = () => {
     spawnCount++;
     // Child acquires the lease (generation+1) so the second call sees no pending handoff.
-    acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, now: NOW1 });
+    acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, runtime: 'claude', now: NOW1 });
     return { ok: true, usage: { num_turns: 3, tokens: 60 } };
   };
 
@@ -181,7 +196,7 @@ test('driveHeadless does not throw when post-resume lease fenced (child acquired
     now: NOW1,
     spawnFn: () => {
       // Child acquires the lease (generation+1) — leaseMovedForward=true → proceed to record.
-      acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, now: NOW1 });
+      acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, runtime: 'claude', now: NOW1 });
       return { ok: true, usage: { num_turns: 4, tokens: 100 } };
     },
   });
@@ -198,7 +213,7 @@ test('driveHeadless fails closed (pauses) when measurement fails after the child
   const r = driveHeadless({ root, now: NOW1, spawnFn: () => {
     // Simulate: the resume child takes over the releasing lease (generation+1), then the process
     // times out / is unmeasurable — spawnFn returns {ok:false} after the child already acquired.
-    acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, now: NOW1 });
+    acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, runtime: 'claude', now: NOW1 });
     return { ok: false, reason: 'unmeasurable-fail-closed' };
   }});
   assert.equal(r.ok, false);
@@ -210,7 +225,7 @@ test('driveHeadless fails closed (pauses) when measurement fails after the child
 
 test('driveHeadless skips handoff with resume_policy=human (spawnFn must NOT be called)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-auto-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
   const em = emitHandoff(root, runId, {
     reason: 'pre-compact', trigger: 'pre-compact', headless: true,
     expect: { owner: runId, generation: 1 },
@@ -230,16 +245,16 @@ test('driveHeadless skips handoff with resume_policy=human (spawnFn must NOT be 
   assert.equal(r.reason, 'human-resume-policy');
 });
 
-test('driveHeadless skips visible-intended handoff (resume_policy null — not-headless-intended)', () => {
+test('driveHeadless skips visible-intended handoff (resume_policy visible — not-headless-intended)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-auto-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
   const em = emitHandoff(root, runId, {
-    reason: 'pre-compact', trigger: 'pre-compact', headless: true,
+    reason: 'pre-compact', trigger: 'pre-compact', headless: true, resumePolicy: 'visible',
     expect: { owner: runId, generation: 1 },
     now: NOW1,
   });
   assert.ok(em.ok, `emitHandoff must succeed: ${em.reason}`);
-  // resume_policy stays null (Task 11 not yet applied) — driveHeadless must skip
+  // Explicit visible intent must not be degraded into an unattended resume.
 
   const r = driveHeadless({
     root, now: NOW1,
@@ -251,7 +266,7 @@ test('driveHeadless skips visible-intended handoff (resume_policy null — not-h
 
 test('driveHeadless resumes headless-intended handoff (resume_policy=headless)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-auto-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
   const em = emitHandoff(root, runId, {
     reason: 'pre-compact', trigger: 'pre-compact', headless: true,
     expect: { owner: runId, generation: 1 },
@@ -271,7 +286,7 @@ test('driveHeadless resumes headless-intended handoff (resume_policy=headless)',
       spawnCalled = true;
       assert.ok(entry.argv.join(' ').includes('deep-loop-resume'), 'must invoke resume command');
       // Simulate child calling /deep-loop-resume → acquires lease (generation+1)
-      acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, now: NOW1 });
+      acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, runtime: 'claude', now: NOW1 });
       return { ok: true, usage: { num_turns: 1, tokens: 10 } };
     },
   });
@@ -288,6 +303,34 @@ test('cron template calls the fail-closed driver (not raw claude -p)', () => {
   assert.match(s, /fail-closed|budget|proposal-only/i);
 });
 
+test('execution-plane automation is root-portable and delegates to the runtime-selected trusted measured driver', () => {
+  const source = readFileSync(HANDOFF_REFERENCE, 'utf8');
+  assert.match(source, /loaded SKILL\.md path|로드된 `?SKILL\.md`? 경로/i,
+    'automation reference derives the plugin root from the loaded skill path');
+  assert.match(source, /literal[\s\S]{0,160}DEEP_LOOP_ROOT[\s\S]{0,200}(?:never|금지|않)/i,
+    'literal placeholder is never passed to Node');
+  assert.doesNotMatch(source, /\$\{(?:CLAUDE_PLUGIN_ROOT|PLUGIN_ROOT)\}/,
+    'automation docs must not depend on POSIX environment expansion');
+  for (const line of source.split('\n').filter((entry) => /deep-loop\.mjs/.test(entry))) {
+    assert.match(line, /^\s*node "DEEP_LOOP_ROOT\/scripts\/deep-loop\.mjs"(?:\s|$)/,
+      `non-portable automation kernel command: ${line}`);
+  }
+  assert.match(source, /immutable runtime|불변 runtime/i, 'stored runtime selects the driver');
+  assert.match(source, /trusted|승인된|검증된/i, 'driver executable identity stays trusted');
+  assert.match(source, /measured|계측/i, 'driver usage remains measured');
+  assert.match(source, /no cross-runtime fallback|교차 런타임[^\n]{0,120}(?:fallback|폴백)[^\n]{0,80}(?:없|금지|하지)/i,
+    'automation must not fall back to a different runtime');
+});
+
+test('cron hook is thin glue over the shared headless host core', () => {
+  const hook = join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'hooks-impl', 'drive-headless.mjs');
+  const source = readFileSync(hook, 'utf8');
+  assert.match(source, /lib\/headless-host\.mjs/);
+  assert.doesNotMatch(source, /lib\/respawn\.mjs/);
+  assert.doesNotMatch(source, /lib\/spawn-driver\.mjs/);
+  assert.doesNotMatch(source, /recordCost\s*\(/);
+});
+
 test('github-actions template is a scheduled workflow calling the driver', () => {
   const f = join(A, 'github-actions-loop.yml'); assert.ok(existsSync(f));
   const s = readFileSync(f, 'utf8');
@@ -302,7 +345,7 @@ test('github-actions template is a scheduled workflow calling the driver', () =>
 // Fix: symmetric derivation (spawn_style + isHeadlessInvocation), same as precompact-handoff.mjs.
 test('handoff emit derives resume_policy=headless from spawn_style without --headless flag (CLI regression)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-auto-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
   // Seed spawn_style='headless' so autonomous driver knows this run is headless.
   const { data } = readState(root, runId);
   data.autonomy.spawn_style = 'headless';
@@ -329,12 +372,34 @@ test('handoff emit derives resume_policy=headless from spawn_style without --hea
     now: NOW1,
     spawnFn: () => {
       // Simulate child calling /deep-loop-resume → acquires lease (generation+1)
-      acquireLease(root, runId, { owner: childRunId2, expectGeneration: 1, now: NOW1 });
+      acquireLease(root, runId, { owner: childRunId2, expectGeneration: 1, runtime: 'claude', now: NOW1 });
       return { ok: true, usage: { num_turns: 1, tokens: 10 } };
     },
   });
   assert.equal(r.action, 'resumed',
     `driveHeadless must resume, not skip: ${JSON.stringify(r)}`);
+});
+
+test('Codex handoff intent ignores CLAUDE_CODE_ENTRYPOINT and honors only durable or driver-owned headless signals', () => {
+  for (const { env, expected } of [
+    { env: { CLAUDE_CODE_ENTRYPOINT: 'print' }, expected: 'visible' },
+    { env: { DEEP_LOOP_HEADLESS: '1', CLAUDE_CODE_ENTRYPOINT: 'cli' }, expected: 'headless' },
+    { env: { DEEP_LOOP_UNATTENDED: 'true', CLAUDE_CODE_ENTRYPOINT: 'cli' }, expected: 'headless' },
+  ]) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-auto-codex-intent-')));
+    const { runId } = initRun(root, {
+      runtime: 'codex', goal: 'g', now: new Date('2026-07-11T00:00:00Z'),
+      env: {}, platform: 'linux', run: () => ({ code: 1 }),
+    });
+    const emitted = emitHandoff(root, runId, {
+      trigger: 'milestone',
+      expect: { owner: runId, generation: 1 },
+      env,
+      now: Date.parse('2026-07-11T00:01:00Z'),
+    });
+    assert.equal(emitted.ok, true);
+    assert.equal(readState(root, runId).data.session_chain.lease.resume_policy, expected);
+  }
 });
 
 // ── Codex-R5B: terminal guard + fresh-fence regression tests ─────────────────
@@ -346,7 +411,7 @@ test('driveHeadless: fail-closed-terminal when spawn fails and run reached compl
   const { root, runId, childRunId } = seedRunWithHandoff();
   const r = driveHeadless({ root, now: NOW1, spawnFn: () => {
     // Child acquires the lease (generation bumps to 2)
-    acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, now: NOW1 });
+    acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, runtime: 'claude', now: NOW1 });
     // Then the run reaches terminal status (completed)
     const { data } = readState(root, runId);
     data.status = 'completed';
@@ -366,7 +431,7 @@ test('driveHeadless: fresh-fence pause when spawn fails, child acquired, run non
   const { root, runId, childRunId } = seedRunWithHandoff();
   const r = driveHeadless({ root, now: NOW1, spawnFn: () => {
     // Child acquires the lease (generation bumps to 2), run stays 'running'
-    acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, now: NOW1 });
+    acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, runtime: 'claude', now: NOW1 });
     return { ok: false, reason: 'unmeasurable-fail-closed' };
   }});
   assert.equal(r.ok, false);
@@ -403,7 +468,7 @@ test('driveHeadless: resumed with cost when child acquires lease (acquisition pr
     root, now: NOW1,
     spawnFn: () => {
       // Child calls /deep-loop-resume → acquires the lease (generation+1)
-      acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, now: NOW1 });
+      acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, runtime: 'claude', now: NOW1 });
       return { ok: true, usage: { num_turns: 2, tokens: 50 } };
     },
   });
@@ -420,7 +485,7 @@ test('driveHeadless: resumed with cost when child acquires lease (acquisition pr
 // Returns { root, runId, child1RunId, child2RunId }.
 function seedRun2ndGenHandoff() {
   const root = mkdtempSync(join(tmpdir(), 'dl-auto-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
 
   // 1st handoff: top-level runId emits, child1 is reserved then acquired.
   const em1 = emitHandoff(root, runId, {
@@ -433,7 +498,7 @@ function seedRun2ndGenHandoff() {
 
   // child1 acquires the lease (simulates /deep-loop-resume in the child session).
   // After this: owner_run_id=child1, generation=2, handoff_phase='acquired'.
-  const acq = acquireLease(root, runId, { owner: child1RunId, expectGeneration: 1, now: NOW1 });
+  const acq = acquireLease(root, runId, { owner: child1RunId, expectGeneration: 1, runtime: 'claude', now: NOW1 });
   assert.ok(acq.ok, `child1 acquireLease must succeed: ${acq.reason}`);
   assert.equal(acq.generation, 2);
 
@@ -495,7 +560,7 @@ test('driveHeadless: 2nd-gen child2 acquires → action:resumed + cost recorded 
     root, now: NOW1 + 2000,
     spawnFn: () => {
       // child2 calls /deep-loop-resume → acquires the lease (generation 2→3).
-      const acq = acquireLease(root, runId, { owner: child2RunId, expectGeneration: 2, now: NOW1 + 3000 });
+      const acq = acquireLease(root, runId, { owner: child2RunId, expectGeneration: 2, runtime: 'claude', now: NOW1 + 3000 });
       assert.ok(acq.ok, `child2 acquireLease must succeed: ${acq.reason}`);
       assert.equal(acq.generation, 3, 'generation must bump to 3 after child2 acquisition');
       return { ok: true, usage: { num_turns: 3, tokens: 75 } };
@@ -509,21 +574,21 @@ test('driveHeadless: 2nd-gen child2 acquires → action:resumed + cost recorded 
 });
 
 // ── v1.6 terminal 회귀 (spec §2.4 / §4-5·5c) ────────────────────────────────
-test('driveHeadless: child finishes the run → recordCost swallowed via LEASE_FENCED channel, recorded:false', () => {
+test('driveHeadless: terminal Claude child keeps the legacy terminal fence and records no post-terminal cost', () => {
   const { root, runId, childRunId } = seedRunWithHandoff();
   const r = driveHeadless({
     root,
     now: NOW1,
     spawnFn: () => {
       // 자식이 acquire 후 작업을 끝내고 run을 terminal로 전이시킨 시나리오
-      acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, now: NOW1 });
+      acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, runtime: 'claude', now: NOW1 });
       const { data } = readState(root, runId);
       data.status = 'completed';
       writeState(root, runId, data);
       return { ok: true, usage: { num_turns: 3, tokens: 70 } };
     },
   });
-  // 가드 후에도 드라이버는 graceful: LEASE_FENCED: RUN_TERMINAL을 기존 catch가 swallow → recorded:false
+  // Claude usage has no exact Codex one-turn receipt/handoff binding, so the generic terminal fence remains closed.
   assert.equal(r.ok, true);
   assert.equal(r.action, 'resumed');
   assert.equal(r.recorded, false);

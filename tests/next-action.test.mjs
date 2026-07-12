@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildInitialLoop, initRun } from '../scripts/lib/initrun.mjs';
-import { readState } from '../scripts/lib/state.mjs';
+import { readState, writeState } from '../scripts/lib/state.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
@@ -13,7 +13,7 @@ import { finishProofState } from '../scripts/lib/finish.mjs';
 import { computeDebt, ack } from '../scripts/lib/comprehension.mjs';
 
 function loop(over = {}) {
-  const l = buildInitialLoop({ goal: 'g', protocol: 'deep-work', recipe: { id: 'r', name: 'r', reason: '' }, runId: 'R', now: new Date('2026-06-24T00:00:00Z') });
+  const l = buildInitialLoop({ runtime: 'claude', goal: 'g', protocol: 'deep-work', recipe: { id: 'r', name: 'r', reason: '' }, runId: 'R', now: new Date('2026-06-24T00:00:00Z') });
   return Object.assign(l, over);
 }
 
@@ -55,6 +55,36 @@ test('done maker at review point → dispatch_checker', () => {
   l.episodes = [{ id: '001-deep-work', role: 'maker', status: 'done', point: 'implementation', workstream_id: 'ws-01' }];
   l.current_episode = '001-deep-work';
   assert.equal(nextAction(l, { now: 0 }).action.type, 'dispatch_checker');
+});
+
+test('proof-capable checker identity: approved legacy standalone routes its maker to a fresh checker', () => {
+  const l = loop();
+  l.review.points = ['plan'];
+  l.workstreams = [{ id: 'ws-01', status: 'ready', review_points_done: ['plan'], episodes: [], depends_on: [] }];
+  l.active_workstreams = [];
+  l.episodes = [
+    { id: '001-deep-work', role: 'maker', plugin: 'deep-work', status: 'done', point: 'plan', workstream_id: 'ws-01' },
+    { id: '002-standalone', role: 'checker', plugin: 'standalone', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
+  ];
+  l.current_episode = '002-standalone';
+  const r = nextAction(l, { now: 0 });
+  assert.equal(r.action.type, 'dispatch_checker');
+  assert.equal(r.action.episode_id, '001-deep-work');
+});
+
+test('proof-capable checker identity: rejected legacy standalone is neutral and routes a fresh checker', () => {
+  const l = loop();
+  l.review.points = ['plan'];
+  l.workstreams = [{ id: 'ws-01', status: 'ready', review_points_done: [], episodes: [], depends_on: [] }];
+  l.active_workstreams = [];
+  l.episodes = [
+    { id: '001-deep-work', role: 'maker', plugin: 'deep-work', status: 'done', point: 'plan', workstream_id: 'ws-01' },
+    { id: '002-standalone', role: 'checker', plugin: 'standalone', status: 'rejected', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
+  ];
+  l.current_episode = '002-standalone';
+  const r = nextAction(l, { now: 0 });
+  assert.equal(r.action.type, 'dispatch_checker');
+  assert.equal(r.action.episode_id, '001-deep-work');
 });
 
 // Finish-path robustness (repro-009): a PROOF-IMPOSSIBLE ORPHAN maker — expected_artifacts is an explicit empty
@@ -159,7 +189,7 @@ test('checker rejected → fix_episode; checker approved → finish (no fall-thr
   l.active_workstreams = [];
   l.episodes = [
     { id: '001-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
-    { id: '002-deep-review', role: 'checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' }];
+    { id: '002-deep-review', role: 'checker', plugin: 'subagent-checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' }];
   l.current_episode = '002-deep-review';
   assert.equal(nextAction(l, { now: 0 }).action.type, 'fix_episode');
   l.episodes[1].status = 'approved';
@@ -174,9 +204,30 @@ test('in-progress→await_result, blocked→await_human, checker in_progress not
   assert.equal(nextAction(l, { now: 0 }).action.type, 'await_result');
   l.episodes[0].status = 'blocked';
   assert.equal(nextAction(l, { now: 0 }).action.type, 'await_human');
-  l.episodes = [{ id: '002-deep-review', role: 'checker', status: 'in_progress', point: 'plan' }];
+  l.episodes = [{ id: '002-deep-review', role: 'checker', plugin: 'subagent-checker', status: 'in_progress', point: 'plan' }];
   l.current_episode = '002-deep-review';
   assert.equal(nextAction(l, { now: 0 }).action.type, 'await_result');
+});
+
+test('unsupported legacy inline checker dispatch becomes blocked and nextAction routes to needs-human', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-legacy-checker-'));
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', detected: {}, now: new Date('2026-06-24T00:00:00Z') });
+  const f = { owner: runId, generation: 1, intent: 'business' };
+  const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: '.claude/worktrees/w', fence: f }).id;
+  writeFileSync(join(root, 'plan.txt'), 'artifact');
+  const { id: makerId } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'plan', point: 'plan', workstream: ws, expectedArtifacts: ['plan.txt'], fence: f });
+  recordEpisode(root, runId, makerId, { status: 'done', artifacts: ['plan.txt'], proof: {}, fence: f });
+  const { data } = readState(root, runId);
+  data.review.reviewer = 'standalone';
+  writeState(root, runId, data);
+
+  const dispatched = dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { codex: true }, fence: f });
+  const after = readState(root, runId).data;
+  assert.equal(after.episodes.find(e => e.id === dispatched.checkerEpisodeId).status, 'blocked');
+  const action = nextAction(after, { now: Date.parse('2026-06-24T00:00:01Z') }).action;
+  assert.equal(action.type, 'await_human');
+  assert.equal(action.episode_id, dispatched.checkerEpisodeId);
+  assert.equal(action.reason, 'episode-blocked');
 });
 
 // Codex r2 🔴7 / r3 🔴4: finish 는 active workstream 0 + done maker 가 리뷰 통과일 때만.
@@ -189,7 +240,7 @@ test('finish gated on review of done makers AND zero active workstreams', () => 
   // 리뷰 안 된 done maker → finish 가 아니라 checker dispatch (리뷰 게이트)
   assert.equal(nextAction(l, { now: 0 }).action.type, 'dispatch_checker');
   // 리뷰 통과 처리: add a bound approved checker (target_maker binds to the maker id)
-  l.episodes.push({ id: '002-deep-review', role: 'checker', status: 'approved', point: 'implementation', workstream_id: 'ws-01', target_maker: '001-deep-work' });
+  l.episodes.push({ id: '002-deep-review', role: 'checker', plugin: 'subagent-checker', status: 'approved', point: 'implementation', workstream_id: 'ws-01', target_maker: '001-deep-work' });
   l.workstreams[0].review_points_done = ['implementation'];
   l.active_workstreams = ['ws-01'];                            // 그러나 active workstream 잔존 → finish 금지
   assert.equal(nextAction(l, { now: 0 }).action.type, 'await_human');
@@ -208,7 +259,7 @@ test('comprehension-debt blocks discover but not the fix flow', () => {
   // The fix flow is driven by a BOUND rejected checker (target_maker set). debt must not block it.
   l.episodes = [
     { id: '001-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
-    { id: '002-deep-review', role: 'checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' }];
+    { id: '002-deep-review', role: 'checker', plugin: 'subagent-checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' }];
   l.current_episode = '002-deep-review';
   assert.equal(nextAction(l, { now: 0 }).action.type, 'fix_episode');  // debt 무관
 });
@@ -217,7 +268,7 @@ test('comprehension-debt blocks discover but not the fix flow', () => {
 // gate stays blocked until a real human ack releases it. Setup: maker 'done' so dispatchReview binds the checker.
 test('#1: recordReviewOutcome(APPROVE) marks the maker agent-reviewed; comprehension gate stays until human ack', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
-  const { runId } = initRun(root, { goal: 'g', detected: { 'deep-review': true }, now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', detected: { 'deep-review': true }, now: new Date('2026-06-24T00:00:00Z') });
   const f = { owner: runId, generation: 1, intent: 'business' };
   const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: '.claude/worktrees/w', fence: f }).id;
   // Maker must be 'done' so dispatchReview binds the checker to it (target_maker set).
@@ -228,7 +279,7 @@ test('#1: recordReviewOutcome(APPROVE) marks the maker agent-reviewed; comprehen
   const r = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
   mkdirSync(join(root, '.claude/worktrees/w'), { recursive: true });
   writeFileSync(join(root, '.claude/worktrees/w/review.md'), '# review report');   // #2+Fix4: report under the reviewed ws worktree
-  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'implementation', verdict: 'APPROVE', proof: { report: '.claude/worktrees/w/review.md' }, fence: f });
+  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, verdict: 'APPROVE', proof: { report: '.claude/worktrees/w/review.md' }, fence: f });
   const { data } = readState(root, runId);
   const maker = data.episodes.find(e => e.role === 'maker' && e.point === 'implementation');
   assert.ok(!maker.human_reviewed, 'machine review must NOT mark the maker human_reviewed');
@@ -246,7 +297,7 @@ test('#1: recordReviewOutcome(APPROVE) marks the maker agent-reviewed; comprehen
 // rejected checker reviews no specific maker and must NOT route to fix (its settlement is the finish gate's job).
 test('dispatchReview → recordReviewOutcome(RC) → nextAction returns fix_episode (end-to-end)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
-  const { runId } = initRun(root, { goal: 'g', detected: { 'deep-review': true }, now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', detected: { 'deep-review': true }, now: new Date('2026-06-24T00:00:00Z') });
   const f = { owner: runId, generation: 1, intent: 'business' };
   const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: '.claude/worktrees/w', fence: f }).id;
   // A done maker so dispatchReview binds the checker to it (target_maker set) — the realistic review flow.
@@ -254,7 +305,7 @@ test('dispatchReview → recordReviewOutcome(RC) → nextAction returns fix_epis
   const { id: makerId } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'plan', workstream: ws, expectedArtifacts: ['art.txt'], fence: f });
   recordEpisode(root, runId, makerId, { status: 'done', artifacts: ['art.txt'], proof: {}, fence: f });
   const r = dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
-  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'plan', verdict: 'REQUEST_CHANGES', fence: f });
+  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, verdict: 'REQUEST_CHANGES', fence: f });
   const { data } = readState(root, runId);
   assert.equal(nextAction(data, { now: Date.parse('2026-06-24T00:00:00Z') }).action.type, 'fix_episode');
 });
@@ -270,9 +321,9 @@ test('superseded rejected checker (review_points_done satisfied) does not block 
     episodes: [
       { id: '001-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
       // OLD rejected checker bound to 001 …
-      { id: '002-deep-review', role: 'checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
+      { id: '002-deep-review', role: 'checker', plugin: 'subagent-checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
       // … but 001 was later re-reviewed and APPROVED → the rejected checker is genuinely superseded.
-      { id: '003-deep-review', role: 'checker', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
+      { id: '003-deep-review', role: 'checker', plugin: 'subagent-checker', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
     ],
     current_episode: null,
   });
@@ -291,10 +342,10 @@ test('later rejected maker on an already-review_points_done point → fix_episod
     episodes: [
       // earlier maker, APPROVED → set review_points_done=['plan']
       { id: '001-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
-      { id: '002-deep-review', role: 'checker', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
+      { id: '002-deep-review', role: 'checker', plugin: 'subagent-checker', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
       // LATER done maker for the SAME point, REJECTED by a bound checker → must route to fix
       { id: '003-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
-      { id: '004-deep-review', role: 'checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01', target_maker: '003-deep-work' },
+      { id: '004-deep-review', role: 'checker', plugin: 'subagent-checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01', target_maker: '003-deep-work' },
     ],
     current_episode: null,
   });
@@ -311,7 +362,7 @@ test('two done makers same point: one reviewed, one unreviewed → dispatch_chec
     active_workstreams: [],
     episodes: [
       { id: '001-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
-      { id: '002-deep-review', role: 'checker', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
+      { id: '002-deep-review', role: 'checker', plugin: 'subagent-checker', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
       { id: '003-deep-work-fix', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
       // 003-deep-work-fix has NO bound checker → must trigger dispatch_checker
     ],
@@ -331,9 +382,9 @@ test('unbound approved checker does not satisfy rejected checker convergence (fi
     episodes: [
       { id: '001-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
       // bound rejected checker (target_maker set → this is a real checker for 001-deep-work)
-      { id: '002-deep-review-rejected', role: 'checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
+      { id: '002-deep-review-rejected', role: 'checker', plugin: 'subagent-checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
       // unbound approved checker (no target_maker → should NOT satisfy reviewSatisfied for the rejected checker)
-      { id: '003-deep-review-approved-unbound', role: 'checker', status: 'approved', point: 'plan', workstream_id: 'ws-01' },
+      { id: '003-deep-review-approved-unbound', role: 'checker', plugin: 'subagent-checker', status: 'approved', point: 'plan', workstream_id: 'ws-01' },
     ],
     current_episode: null,
   });
@@ -358,7 +409,7 @@ test('await_result action carries episode workstream_id (maker in_progress, curr
 
 test('await_result action carries episode workstream_id (checker in_progress, current_episode set)', () => {
   const l = loop();
-  l.episodes = [{ id: '002-deep-review', role: 'checker', status: 'in_progress', point: 'plan', workstream_id: 'ws-99' }];
+  l.episodes = [{ id: '002-deep-review', role: 'checker', plugin: 'subagent-checker', status: 'in_progress', point: 'plan', workstream_id: 'ws-99' }];
   l.current_episode = '002-deep-review';
   const r = nextAction(l, { now: 0 });
   assert.equal(r.action.type, 'await_result');
@@ -384,8 +435,8 @@ test('superseded rejected checker + done reviewed maker + no active ws → finis
     active_workstreams: [],
     episodes: [
       { id: '001-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
-      { id: '002-deep-review-old', role: 'checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
-      { id: '003-deep-review-new', role: 'checker', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
+      { id: '002-deep-review-old', role: 'checker', plugin: 'subagent-checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
+      { id: '003-deep-review-new', role: 'checker', plugin: 'subagent-checker', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
     ],
     current_episode: null,
   });
@@ -404,9 +455,9 @@ test('older bound approved checker does NOT supersede a newer bound rejected che
     episodes: [
       { id: '001-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
       // OLDER bound approved checker …
-      { id: '002-deep-review', role: 'checker', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
+      { id: '002-deep-review', role: 'checker', plugin: 'subagent-checker', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
       // … NEWER bound rejected checker for the SAME maker → must drive a fix (older approval cannot mask it).
-      { id: '003-deep-review', role: 'checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
+      { id: '003-deep-review', role: 'checker', plugin: 'subagent-checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
     ],
     current_episode: null,
   });
@@ -424,9 +475,9 @@ test('999 approved + 1000 rejected (same ws,point) → nextAction NOT finish (nu
     active_workstreams: [],
     episodes: [
       { id: '999-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
-      { id: '0998-deep-review', role: 'checker', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '999-deep-work' },
+      { id: '0998-deep-review', role: 'checker', plugin: 'subagent-checker', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '999-deep-work' },
       { id: '1000-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
-      { id: '1001-deep-review', role: 'checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01', target_maker: '1000-deep-work' },
+      { id: '1001-deep-review', role: 'checker', plugin: 'subagent-checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01', target_maker: '1000-deep-work' },
     ],
     current_episode: null,
   });
@@ -444,9 +495,9 @@ test('unsatisfied review.point (planned ws) -> await_human(review-point-unsatisf
   l.active_workstreams = [];
   l.episodes = [
     { id: '001', role: 'maker', status: 'done', point: 'design', workstream_id: 'ws-01' },
-    { id: '002', role: 'checker', status: 'approved', point: 'design', workstream_id: 'ws-01', target_maker: '001' },
+    { id: '002', role: 'checker', plugin: 'subagent-checker', status: 'approved', point: 'design', workstream_id: 'ws-01', target_maker: '001' },
     { id: '003', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
-    { id: '004', role: 'checker', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '003' }];
+    { id: '004', role: 'checker', plugin: 'subagent-checker', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '003' }];
   l.current_episode = null;
   const r = nextAction(l, { now: 0 });
   assert.notEqual(r.action.type, 'finish');
@@ -467,7 +518,7 @@ test('pending checker -> await_human(pending-checker-unresolved), not dispatch_c
   const l = loop();
   l.workstreams = [{ id: 'ws-01', status: 'in_progress', review_points_done: [], episodes: [], depends_on: [] }];
   l.active_workstreams = ['ws-01'];
-  l.episodes = [{ id: '009', role: 'checker', status: 'pending', point: 'implementation', workstream_id: 'ws-01' }];
+  l.episodes = [{ id: '009', role: 'checker', plugin: 'subagent-checker', status: 'pending', point: 'implementation', workstream_id: 'ws-01' }];
   l.current_episode = null;
   assert.equal(nextAction(l, { now: 0 }).action.reason, 'pending-checker-unresolved');
   // current_episode 경로도 동일 (auto-dispatch 가 중복 checker 를 만들지 않도록)
@@ -481,7 +532,7 @@ test('planned workstream with all review points done -> await_human(active-work-
   l.active_workstreams = [];
   l.episodes = [
     { id: '001', role: 'maker', status: 'done', point: 'design', workstream_id: 'ws-01' },
-    { id: '002', role: 'checker', status: 'approved', point: 'design', workstream_id: 'ws-01', target_maker: '001' }];
+    { id: '002', role: 'checker', plugin: 'subagent-checker', status: 'approved', point: 'design', workstream_id: 'ws-01', target_maker: '001' }];
   l.current_episode = null;
   const r = nextAction(l, { now: 0 });
   assert.notEqual(r.action.type, 'finish');         // ws 미터미널 → finishProofState.missing=['non-terminal-workstreams']
@@ -494,7 +545,7 @@ test('abandoned maker does not block finish (settled)', () => {
   l.active_workstreams = [];
   l.episodes = [
     { id: '001', role: 'maker', status: 'done', point: 'implementation', workstream_id: 'ws-01' },
-    { id: '002', role: 'checker', status: 'approved', point: 'implementation', workstream_id: 'ws-01', target_maker: '001' },
+    { id: '002', role: 'checker', plugin: 'subagent-checker', status: 'approved', point: 'implementation', workstream_id: 'ws-01', target_maker: '001' },
     { id: '009', role: 'maker', status: 'abandoned', point: 'implementation', workstream_id: 'ws-01' }];
   l.current_episode = null;
   assert.equal(nextAction(l, { now: 0 }).action.type, 'finish');
@@ -513,9 +564,9 @@ test('[ROOT] legacy unbound rejected checker after an approved point → finish 
     active_workstreams: [],
     episodes: [
       { id: '001-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
-      { id: '002-deep-review', role: 'checker', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
+      { id: '002-deep-review', role: 'checker', plugin: 'subagent-checker', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
       // NEWER unbound rejected checker (003 > 002, no target_maker) — a LEGACY degenerate that is now neutral.
-      { id: '003-deep-review-unbound', role: 'checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01' },
+      { id: '003-deep-review-unbound', role: 'checker', plugin: 'subagent-checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01' },
     ],
     current_episode: null,
   });
@@ -536,8 +587,8 @@ test('[ROOT] legacy unbound rejected checker AS current_episode → finish (fall
     active_workstreams: [],
     episodes: [
       { id: '001-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
-      { id: '002-deep-review', role: 'checker', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
-      { id: '003-deep-review-unbound', role: 'checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01' },
+      { id: '002-deep-review', role: 'checker', plugin: 'subagent-checker', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
+      { id: '003-deep-review-unbound', role: 'checker', plugin: 'subagent-checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01' },
     ],
     current_episode: '003-deep-review-unbound',   // points AT the (neutral) unbound rejected checker
   });
@@ -556,9 +607,9 @@ test('resolved unbound rejected checker (newer approval) → finish (not await_h
     episodes: [
       { id: '001-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
       // UNBOUND rejected checker FIRST …
-      { id: '002-deep-review-unbound', role: 'checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01' },
+      { id: '002-deep-review-unbound', role: 'checker', plugin: 'subagent-checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01' },
       // … then a NEWER bound APPROVAL for the same point resolves it.
-      { id: '003-deep-review', role: 'checker', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
+      { id: '003-deep-review', role: 'checker', plugin: 'subagent-checker', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
     ],
     current_episode: null,
   });
@@ -579,8 +630,8 @@ test('invariant: finishProofState.missing empty IMPLIES nextAction === finish', 
       active_workstreams: [],
       episodes: [
         { id: '001-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
-        { id: '002-deep-review-unbound', role: 'checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01' },
-        { id: '003-deep-review', role: 'checker', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
+        { id: '002-deep-review-unbound', role: 'checker', plugin: 'subagent-checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01' },
+        { id: '003-deep-review', role: 'checker', plugin: 'subagent-checker', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
       ],
       current_episode: null,
     }),
@@ -591,8 +642,8 @@ test('invariant: finishProofState.missing empty IMPLIES nextAction === finish', 
       active_workstreams: [],
       episodes: [
         { id: '001-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
-        { id: '002-deep-review-unbound', role: 'checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01' },
-        { id: '003-deep-review', role: 'checker', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
+        { id: '002-deep-review-unbound', role: 'checker', plugin: 'subagent-checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01' },
+        { id: '003-deep-review', role: 'checker', plugin: 'subagent-checker', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
       ],
       current_episode: '002-deep-review-unbound',
     }),
@@ -602,8 +653,8 @@ test('invariant: finishProofState.missing empty IMPLIES nextAction === finish', 
       active_workstreams: [],
       episodes: [
         { id: '001-deep-work', role: 'maker', status: 'done', point: 'plan', workstream_id: 'ws-01' },
-        { id: '002-deep-review-old', role: 'checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
-        { id: '003-deep-review-new', role: 'checker', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
+        { id: '002-deep-review-old', role: 'checker', plugin: 'subagent-checker', status: 'rejected', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
+        { id: '003-deep-review-new', role: 'checker', plugin: 'subagent-checker', status: 'approved', point: 'plan', workstream_id: 'ws-01', target_maker: '001-deep-work' },
       ],
       current_episode: null,
     }); l.review.points = ['plan']; return l; })(),

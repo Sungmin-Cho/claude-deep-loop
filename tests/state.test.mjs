@@ -1,11 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync, readFileSync as _rfRoot } from 'node:fs';
+import { cpSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync, readFileSync as _rfRoot } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname as _dn } from 'node:path';
+import { basename, join, dirname as _dn, posix, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readState, writeState, patch, withLock, runDir, findRoot } from '../scripts/lib/state.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
+
+const atomicApiPromise = import('../scripts/lib/atomic-write.mjs').catch(() => ({}));
 
 function seed() {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
@@ -14,7 +16,7 @@ function seed() {
   mkdirSync(dir, { recursive: true });
   const data = {
     schema_version: '0.2.0', run_id: runId, goal: 'g', status: 'running',
-    project: {}, routing: { protocol: 'deep-work' }, review: { points: ['design'] },
+    project: { root }, routing: { protocol: 'deep-work' }, review: { points: ['design'] },
     autonomy: { tier: 'recommend', spawn_style: 'interactive' }, budget: { unit: 'turns', spent: 5 },
     comprehension: {}, circuit_breaker: { tripped: false }, session_chain: { lease: { state: 'active', handoff_phase: 'idle' }, sessions: [] },
     workstreams: [{ id: 'ws-1', status: 'in_progress', depends_on: [] }], active_workstreams: ['ws-1'],
@@ -62,6 +64,15 @@ test('tampered hash detected on read', () => {
   const { root, runId } = seed();
   writeFileSync(join(runDir(root, runId), 'loop.json'), '{"goal":"hacked"}'); // direct write, hash unchanged
   assert.throws(() => readState(root, runId), /STATE_TAMPERED/);
+});
+
+test('copied-root reads verify the loop hash before checking project-root binding', () => {
+  const originalRoot = mkdtempSync(join(tmpdir(), 'dl-hash-first-original-'));
+  const candidateRoot = mkdtempSync(join(tmpdir(), 'dl-hash-first-copy-'));
+  const { runId } = initRun(originalRoot, { runtime: 'claude', goal: 'g', now: new Date('2026-07-11T00:00:00Z') });
+  cpSync(join(originalRoot, '.deep-loop'), join(candidateRoot, '.deep-loop'), { recursive: true });
+  writeFileSync(join(runDir(candidateRoot, runId), 'loop.json'), '{"goal":"tampered-copy"}');
+  assert.throws(() => readState(candidateRoot, runId), /STATE_TAMPERED/);
 });
 
 test('whole-object array patch bypass is forbidden', () => {
@@ -115,8 +126,33 @@ test('stale lock is reclaimed after TTL', () => {
   const old = new Date(Date.now() - 60000);
   utimesSync(lock, old, old);                    // 60s old > 30s TTL
   let ran = false;
-  withLock(root, runId, () => { ran = true; }, { ttlMs: 30000, retries: 5, backoffMs: 1 });
+  withLock(root, runId, () => { ran = true; }, { retries: 5, backoffMs: 1 });
   assert.equal(ran, true);
+});
+
+test('lock and rename timing constants pin the two-replacement transaction budget', async () => {
+  const stateApi = await import('../scripts/lib/state.mjs');
+  const atomicApi = await atomicApiPromise;
+  assert.equal(stateApi.LOCK_STALE_TTL_MS, 30_000);
+  assert.equal(atomicApi.RENAME_RETRY_MAX_ELAPSED_MS, 1_000);
+  assert.ok(2 * atomicApi.RENAME_RETRY_MAX_ELAPSED_MS < stateApi.LOCK_STALE_TTL_MS / 10);
+});
+
+test('writeState performs exactly the loop and hash atomic replacements', () => {
+  const { root, runId } = seed();
+  const data = readState(root, runId).data;
+  const replacements = [];
+  writeState(root, runId, data, {
+    atomicWriteFn: (path, contents) => { replacements.push({ path, contents }); },
+  });
+  assert.deepEqual(replacements.map(({ path }) => basename(path)), ['loop.json', '.loop.hash']);
+});
+
+test('a live directory lock remains busy before the default stale TTL', () => {
+  const { root, runId } = seed();
+  const lock = join(runDir(root, runId), '.lock');
+  mkdirSync(lock);
+  assert.throws(() => withLock(root, runId, () => {}, { retries: 1, backoffMs: 0 }), /LOCK_BUSY/);
 });
 
 // Codex impl r12 🔴: runId must be a safe single path segment — a '../' (or slash) runId would let runDir
@@ -132,7 +168,7 @@ test('runDir rejects unsafe run-id path segments', () => {
 
 test('patch enforces fence inside the lock', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-pf-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
   patch(root, runId, 'discovered_items', ['a'], { fence: { owner: runId, generation: 1, intent: 'business' } });
   assert.deepEqual(readState(root, runId).data.discovered_items, ['a']);
   assert.throws(() => patch(root, runId, 'discovered_items', ['b'], { fence: { owner: runId, generation: 9, intent: 'business' } }), /LEASE_FENCED/);
@@ -212,6 +248,93 @@ test('findRoot: nested convention worktrees resolves to outer root with .deep-lo
   mkdirSync(nested, { recursive: true });
   // inner base <root>/.claude/worktrees/a has no .deep-loop/current — should NOT stop here
   assert.equal(findRoot(nested), root, 'nested convention: inner base without marker continues to outer root');
+});
+
+function findVirtualWindowsRoot(startDir, marker) {
+  return findRoot(startDir, {
+    pathApi: win32,
+    existsSync: candidate => win32.normalize(candidate).toLowerCase() === win32.normalize(marker).toLowerCase(),
+  });
+}
+
+test('findRoot preserves a Windows drive root instead of reducing it to drive-relative C:', () => {
+  assert.equal(
+    findVirtualWindowsRoot('C:\\.worktrees\\ws-drive\\src', 'C:\\.deep-loop\\current'),
+    'C:\\',
+  );
+});
+
+test('findRoot preserves the outer project root through nested Windows convention worktrees', () => {
+  assert.equal(
+    findVirtualWindowsRoot(
+      'C:\\repo\\.claude\\worktrees\\outer\\.worktrees\\inner\\src',
+      'C:\\repo\\.deep-loop\\current',
+    ),
+    'C:\\repo',
+  );
+});
+
+test('findRoot preserves a UNC share root while walking convention ancestors', () => {
+  assert.equal(
+    findVirtualWindowsRoot(
+      '\\\\server\\share\\.claude\\worktrees\\ws-unc\\src',
+      '\\\\server\\share\\.deep-loop\\current',
+    ),
+    '\\\\server\\share\\',
+  );
+});
+
+test('findRoot matches mixed-case .claude/worktrees components under Windows drive-root semantics', () => {
+  assert.equal(
+    findVirtualWindowsRoot('C:\\.ClAuDe\\WoRkTrEeS\\ws-drive\\src', 'C:\\.deep-loop\\current'),
+    'C:\\',
+  );
+});
+
+test('findRoot matches a mixed-case .worktrees component under Windows drive-root semantics', () => {
+  assert.equal(
+    findVirtualWindowsRoot('D:\\.WoRkTrEeS\\ws-drive\\src', 'D:\\.deep-loop\\current'),
+    'D:\\',
+  );
+});
+
+test('findRoot matches mixed-case convention components under Windows UNC semantics', () => {
+  assert.equal(
+    findVirtualWindowsRoot(
+      '\\\\ServerCase\\ShareCase\\.ClAuDe\\WoRkTrEeS\\ws-unc\\src',
+      '\\\\servercase\\sharecase\\.deep-loop\\current',
+    ),
+    '\\\\ServerCase\\ShareCase\\',
+  );
+});
+
+test('findRoot continues past a markerless inner mixed-case Windows convention and preserves outer base spelling', () => {
+  assert.equal(
+    findVirtualWindowsRoot(
+      'C:\\RepoCase\\.ClAuDe\\WoRkTrEeS\\outer\\.WoRkTrEeS\\inner\\src',
+      'c:\\repocase\\.deep-loop\\current',
+    ),
+    'C:\\RepoCase',
+  );
+});
+
+test('findRoot rejects a non-convention sibling spelling despite Windows case-insensitive semantics', () => {
+  const startDir = 'C:\\RepoCase\\.WoRkTrEeS-sibling\\ws\\src';
+  assert.equal(
+    findVirtualWindowsRoot(startDir, 'C:\\RepoCase\\.deep-loop\\current'),
+    startDir,
+  );
+});
+
+test('findRoot keeps convention component matching case-sensitive under POSIX semantics', () => {
+  const startDir = '/repo/.CLAUDE/WORKTREES/ws/src';
+  assert.equal(
+    findRoot(startDir, {
+      pathApi: posix,
+      existsSync: candidate => posix.normalize(candidate) === '/repo/.deep-loop/current',
+    }),
+    startDir,
+  );
 });
 
 const _R = _dn(_dn(fileURLToPath(import.meta.url)));   // repo root (tests/..)

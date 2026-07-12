@@ -1,15 +1,183 @@
 import { readFileSync, readdirSync, realpathSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { latestInsights } from './insights.mjs';
 import { readState } from './state.mjs';
 import { appendAnchored } from './integrity.mjs';
-import { newEpisode } from './episode.mjs';
+import { newBlockedCheckerEpisode, newEpisode } from './episode.mjs';
 import { leaseCheck } from './lease.mjs';
 import { pluginPresent } from './detect.mjs';
+import { checkerDescriptor } from './adapters.mjs';
 import { containedRealFile } from './fs-safe.mjs';
-import { contentHash } from './envelope.mjs';
 import { MUTATION_TURN_FLOOR } from './budget.mjs';
+import { sessionRuntime } from './runtime.mjs';
+import { canonicalProjectRoot } from './project-root.mjs';
+import { validate } from './schema.mjs';
+import {
+  isProofCapableChecker,
+  deriveReviewArtifactContract,
+  materializeImportedReview,
+  parseReviewImport,
+  sha256File,
+  validateImportedEvidence,
+  verifyImportedEnvelope,
+  REVIEW_ATTEMPT_ID,
+} from './review-import.mjs';
+
+export { isProofCapableChecker };
+
+export function findPendingIndependentChecker(loop) {
+  const eligible = episode => episode?.role === 'checker'
+    && episode.status === 'pending'
+    && episode.requires_independent_session === true;
+  const current = (loop?.episodes || []).find(episode => episode.id === loop?.current_episode);
+  if (eligible(current)) return current;
+  return (loop?.episodes || []).find(eligible) || null;
+}
+
+function boundedBlockReason(value) {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value)) {
+    throw new Error('REVIEW_BLOCK_REASON_INVALID: bounded safe reason required');
+  }
+  return value;
+}
+
+function sameJson(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function checkIndependentReviewFence(loop, fence) {
+  const runtime = sessionRuntime(loop);
+  const checkedFence = leaseCheck(loop, { ...fence, runtime });
+  if (!checkedFence.ok) throw new Error('LEASE_FENCED: ' + checkedFence.reason);
+  return runtime;
+}
+
+function claimedContext(root, loop, episodeId, attemptId, fence) {
+  const runtime = checkIndependentReviewFence(loop, fence);
+  const context = snapshotContext(loop, episodeId);
+  const checker = context.checker;
+  if (!checker) throw new Error(`EPISODE_NOT_FOUND: ${episodeId}`);
+  if (checker.role !== 'checker' || checker.requires_independent_session !== true) {
+    throw new Error('REVIEW_CLAIM_TARGET_INVALID: independent checker required');
+  }
+  if (!isProofCapableChecker(checker)) throw new Error('REVIEW_CLAIM_REVIEWER_INVALID: proof-capable checker required');
+  if (!context.maker || context.maker.role !== 'maker' || context.maker.status !== 'done') {
+    throw new Error('REVIEW_CLAIM_MAKER_INVALID: bound done maker required');
+  }
+  if (!context.workstream || checker.workstream_id !== context.maker.workstream_id
+    || checker.point !== context.maker.point) throw new Error('REVIEW_CLAIM_BINDING_INVALID');
+  const artifacts = deriveReviewArtifactContract(root, context.maker, context.workstream);
+  const lease = loop.session_chain?.lease || {};
+  const claim = {
+    run_id: loop.run_id,
+    reviewer_id: checker.plugin,
+    checker_episode_id: checker.id,
+    target_maker: context.maker.id,
+    attempt_id: attemptId,
+    workstream_id: checker.workstream_id,
+    point: checker.point,
+    project_root: canonicalProjectRoot(root),
+    runtime,
+    lease_owner: lease.owner_run_id,
+    lease_generation: lease.generation,
+    artifacts,
+    ...(checker.evidence !== undefined ? { evidence: checker.evidence } : {}),
+    ...(checker.contract !== undefined ? { contract: checker.contract } : {}),
+  };
+  return { ...context, runtime, claim };
+}
+
+export function claimIndependentReview(root, runId, options = {}) {
+  if (options == null || typeof options !== 'object' || Array.isArray(options)) throw new Error('REVIEW_CLAIM_INPUT_INVALID');
+  for (const key of ['attemptId', 'attempt_id', 'reviewer_id', 'target_maker', 'runtime', 'project_root', 'artifacts', 'evidence', 'contract']) {
+    if (Object.hasOwn(options, key)) throw new Error(`REVIEW_METADATA_FORBIDDEN: claim derives ${key}`);
+  }
+  const { episodeId, fence, attemptIdFactory = randomUUID } = options;
+  validFence(fence, 'claimIndependentReview');
+  if (typeof episodeId !== 'string' || episodeId.length === 0) throw new Error('REVIEW_CLAIM_INPUT_INVALID: episodeId');
+  if (typeof attemptIdFactory !== 'function') throw new Error('REVIEW_CLAIM_INPUT_INVALID: attemptIdFactory');
+  const attemptId = attemptIdFactory();
+  if (!REVIEW_ATTEMPT_ID.test(attemptId || '')) throw new Error('REVIEW_CLAIM_ATTEMPT_INVALID');
+  const eventData = { episode_id: episodeId, attempt_id: attemptId };
+  let context;
+  let alreadyClaimed = false;
+  try {
+    appendAnchored(root, runId, { type: 'independent-review-claimed', data: eventData }, (loop) => {
+      const checker = loop.episodes.find(episode => episode.id === episodeId);
+      checker.status = 'in_progress';
+      checker.attempt_id = attemptId;
+      checker.review_claim = context.claim;
+    }, (loop) => {
+      checkIndependentReviewFence(loop, fence);
+      const checker = loop.episodes.find(episode => episode.id === episodeId);
+      if (checker?.status === 'in_progress' && checker.review_claim) {
+        alreadyClaimed = true;
+        throw Object.assign(new Error('REVIEW_ALREADY_CLAIMED'), { alreadyClaimed: true });
+      }
+      if (loop.status !== 'running') throw new Error('REVIEW_CLAIM_RUN_NOT_RUNNING');
+      if (checker?.status !== 'pending') throw new Error('REVIEW_CLAIM_NOT_PENDING');
+      context = claimedContext(root, loop, episodeId, attemptId, fence);
+      Object.assign(eventData, {
+        reviewer_id: context.claim.reviewer_id,
+        target_maker: context.claim.target_maker,
+        workstream_id: context.claim.workstream_id,
+        point: context.claim.point,
+        artifacts: context.claim.artifacts,
+      });
+    });
+  } catch (error) {
+    if (error?.alreadyClaimed === true || alreadyClaimed) return { ok: false, reason: 'already-claimed' };
+    throw error;
+  }
+  return { ok: true, checkerEpisodeId: episodeId, attemptId, claim: context.claim };
+}
+
+export function blockIndependentReview(root, runId, options = {}) {
+  if (options == null || typeof options !== 'object' || Array.isArray(options)) throw new Error('REVIEW_BLOCK_INPUT_INVALID');
+  const { episodeId, attemptId, reason, fence } = options;
+  validFence(fence, 'blockIndependentReview');
+  if (!REVIEW_ATTEMPT_ID.test(attemptId || '')) throw new Error('REVIEW_BLOCK_ATTEMPT_INVALID');
+  const safeReason = boundedBlockReason(reason);
+  let locked;
+  appendAnchored(root, runId, { type: 'independent-review-blocked', data: {
+    episode_id: episodeId, attempt_id: attemptId, reason: safeReason,
+  } }, (loop) => {
+    const checker = locked.checker;
+    checker.status = 'blocked';
+    checker.block_reason = safeReason;
+    checker.needs_human = true;
+    loop.status = 'paused';
+    loop.pause_reason = `independent-review:${safeReason}`;
+    loop.session_chain.lease.resume_policy = 'human';
+    loop.session_chain.lease.expires_at = null;
+  }, (loop) => {
+    checkIndependentReviewFence(loop, fence);
+    const checker = loop.episodes.find(episode => episode.id === episodeId);
+    if (checker?.status !== 'in_progress' || checker.attempt_id !== attemptId || !checker.review_claim) {
+      throw new Error('REVIEW_BLOCK_CLAIM_MISMATCH');
+    }
+    locked = claimedContext(root, loop, episodeId, attemptId, fence);
+    if (!sameJson(checker.review_claim, locked.claim)) throw new Error('REVIEW_BLOCK_CLAIM_MISMATCH');
+  });
+  return { ok: true, status: 'blocked', reason: safeReason };
+}
+
+export function revalidateIndependentReviewClaim(root, runId, options = {}) {
+  if (options == null || typeof options !== 'object' || Array.isArray(options)) throw new Error('REVIEW_CLAIM_INPUT_INVALID');
+  const { episodeId, attemptId, fence } = options;
+  validFence(fence, 'revalidateIndependentReviewClaim');
+  if (!REVIEW_ATTEMPT_ID.test(attemptId || '')) throw new Error('REVIEW_CLAIM_ATTEMPT_INVALID');
+  const { data: loop } = readState(root, runId);
+  const checker = loop.episodes.find(episode => episode.id === episodeId);
+  if (checker?.status !== 'in_progress' || checker.attempt_id !== attemptId || !checker.review_claim) {
+    throw new Error('REVIEW_CLAIM_MISMATCH');
+  }
+  const fresh = claimedContext(root, loop, episodeId, attemptId, fence);
+  if (!sameJson(checker.review_claim, fresh.claim)) throw new Error('REVIEW_CLAIM_MISMATCH');
+  return { ok: true, claim: fresh.claim };
+}
 
 // impl-R2 Fix 4: a passing verdict's report must be BOUND to the reviewed workstream — its realpath must sit under
 // the workstream's worktree directory. This stops an unrelated stale file (README.md, another ws's report) from
@@ -53,62 +221,70 @@ export const epOrder = (a, b) => {
 //     approval) AND strand (a terminal unbound checker can neither be abandoned nor re-recorded).
 export function rejectionResolved(loop, e) {
   const eps = loop.episodes || [];
+  // Unsupported/legacy checker proof is neutral history: it cannot demand a fix and cannot strand finish.
+  if (!isProofCapableChecker(e)) return true;
   if (e.target_maker) {
-    const reApprovedNewer = eps.some(c => c.role === 'checker' && c.target_maker === e.target_maker && c.status === 'approved' && epOrder(c.id, e.id) > 0);
+    const reApprovedNewer = eps.some(c => isProofCapableChecker(c) && c.target_maker === e.target_maker && c.status === 'approved' && epOrder(c.id, e.id) > 0);
     const laterDoneMaker = eps.some(m => m.role === 'maker' && m.status === 'done' && m.workstream_id === e.workstream_id && m.point === e.point && epOrder(m.id, e.target_maker) > 0);
     return reApprovedNewer || laterDoneMaker;
   }
   return true;   // unbound → neutral (see comment above)
 }
 
-// P1 (hillclimb-ledger 2026-07-10, release-blocking): reviewer 해석은 fail-closed다.
-// 이전 동작 — 미인식 id는 그대로 통과 후 dispatch에서 inline-review로, deep-review 부재는
-// codex-cross/subagent-checker로 — 는 전부 "조용한 리뷰 게이트 강등"이었다: recordReviewOutcome이
-// report producer를 검증하지 않으므로 강등된 checker의 APPROVE도 finish proof를 만족한다.
-// 문서화된 형식(`deep-review:deep-review-loop`)과 인식 alias(`deep-review`)는 canonicalize하고,
-// 그 밖의 모든 침묵 경로는 명시 에러로 막는다. 유일하게 남는 자동 치환은 강등이 아닌 승격
-// (subagent-checker + codex 감지 → codex-cross)뿐이다.
-const KNOWN_REVIEWERS = ['deep-review-loop', 'codex-cross', 'subagent-checker', 'standalone'];
+const LEGACY_INLINE_BLOCK_REASON = 'legacy-inline-checker-unsupported';
 
-// P2: hill-climb checker 계약의 tracked 소스 — 커널과 함께 배포되는 파일이므로 install 레이아웃
-// (repo checkout / plugin cache) 어디서든 kernel 상대 경로가 결정론적으로 해석된다.
+// Reviewer resolution is fail-closed. Only the documented deep-review namespace is canonicalized;
+// unknown ids and a configured-but-missing deep-review dependency never fall back to weaker proof.
+const KNOWN_REVIEWERS = ['deep-review-loop', 'subagent-checker', 'standalone'];
+
+// Tracked source for the hill-climb checker contract. The workstream-local materialized copy must
+// remain byte-identical to this file at both dispatch and passing-verdict commit.
 const TRACKED_CONTRACT_PATH = fileURLToPath(new URL('../../skills/deep-loop-workflow/references/contracts/HILLCLIMB-001.yaml', import.meta.url));
 
-// P2 codex r7: bare `--contract`(deep-review 파서가 selector를 소비하는 유일 신뢰 형태가 없음 —
-// SLICE-NNN 전용이라 HILLCLIMB-001을 지정할 수 없다)는 디렉터리의 모든 active 계약을 로드한다.
-// 따라서 "HILLCLIMB-001만 평가된다"는 contracts 디렉터리에 그 파일 외 다른 계약 yaml이 없어야
-// 성립한다 — dispatch·record 양쪽에서 확인한다.
 function contractsDirSolo(realContract) {
   try {
     const dir = realContract.slice(0, realContract.lastIndexOf(sep));
     const self = realContract.slice(realContract.lastIndexOf(sep) + 1);
-    return readdirSync(dir).filter(f => /\.ya?ml$/i.test(f) && f !== self).length === 0;
+    return readdirSync(dir).filter(file => /\.ya?ml$/i.test(file) && file !== self).length === 0;
   } catch { return false; }
 }
 
-export function resolveReviewer(loop, detected = {}) {
+export function resolveReviewer(loop, detected = {}, { independentSubagent = false } = {}) {
   const r = loop.review || {};
-  // 기본값은 필드 **부재**에만 적용한다 — `""`/`null` 같은 명시적 무효값을 `|| 'subagent-checker'`로
-  // 재작성하면 아래 allowlist 이전에 유효화되어(+codex 감지 시 codex-cross 승격) 침묵 강등이 남는다(codex r4).
   let reviewer = r.reviewer === undefined ? 'subagent-checker' : r.reviewer;
-  if (typeof reviewer !== 'string' || !reviewer.length) {
+  if (typeof reviewer !== 'string' || reviewer.length === 0) {
     throw new Error(`REVIEWER_UNRECOGNIZED: review.reviewer is present but not a non-empty string (${JSON.stringify(r.reviewer)}) — omit the field for the default or set a known reviewer`);
   }
-  // 네임스페이스 canonicalize는 문서화된 정확히 한 형식만 — 임의 `deep-review:*` prefix-strip은
-  // `deep-review:standalone` 류를 KNOWN으로 통과시켜 더 약한 checker로 새는 또 다른 침묵 경로가
-  // 된다(codex r1). 그 외 네임스페이스 값은 아래 !KNOWN 분기에서 fail-closed.
   if (reviewer === 'deep-review:deep-review-loop') reviewer = 'deep-review-loop';
-  if (reviewer === 'deep-review' || reviewer === 'deep-review-loop') {
+  let reviewerResolution;
+  let blockedReason;
+  if (reviewer === 'standalone') {
+    if (independentSubagent === true) {
+      reviewer = 'subagent-checker';
+      reviewerResolution = {
+        legacy_reviewer: 'standalone',
+        decision: 'upgraded',
+        reviewer,
+        asserted_capability: 'independent-subagent',
+      };
+    } else {
+      blockedReason = LEGACY_INLINE_BLOCK_REASON;
+      reviewerResolution = {
+        legacy_reviewer: 'standalone',
+        decision: 'blocked',
+        reason: blockedReason,
+      };
+    }
+  }
+  if (reviewer === 'deep-review-loop' || reviewer === 'deep-review') {
     if (!pluginPresent(detected, 'deep-review')) {
       throw new Error(`REVIEWER_DEPENDENCY_MISSING: reviewer '${r.reviewer}' requires the deep-review plugin (silent downgrade removed — install deep-review or re-init with another reviewer)`);
     }
     reviewer = 'deep-review-loop';
-  } else if (reviewer === 'subagent-checker' && pluginPresent(detected, 'codex')) {
-    reviewer = 'codex-cross';
   } else if (!KNOWN_REVIEWERS.includes(reviewer)) {
-    throw new Error(`REVIEWER_UNRECOGNIZED: '${r.reviewer}' is not a known reviewer (${KNOWN_REVIEWERS.join('|')}) — refusing inline-review fallback`);
+    throw new Error(`REVIEWER_UNRECOGNIZED: '${r.reviewer}' is not a known reviewer (${KNOWN_REVIEWERS.join('|')}) — refusing blocked/inline fallback`);
   }
-  return { reviewer, flags: r.flags || [], mode: r.mode || 'cross-model' };
+  return { reviewer, flags: r.flags || [], mode: r.mode || 'cross-model', reviewerResolution, blockedReason };
 }
 
 export function parseVerdict(text) {
@@ -125,13 +301,13 @@ export function parseVerdict(text) {
 // A maker is reviewed if there is a terminal checker bound to it (via target_maker) with approved/rejected status.
 export function makerReviewed(loop, maker) {
   return (loop.episodes || []).some(e =>
-    e.role === 'checker' && e.target_maker === maker.id &&
+    isProofCapableChecker(e) && e.target_maker === maker.id &&
     (e.status === 'approved' || e.status === 'rejected')
   );
 }
 
 // checker episode 생성 + dispatch 디스크립터 반환 — 커널은 sibling을 호출하지 않음 (spec §1.1·§6).
-export function dispatchReview(root, runId, { point, workstreamId, detected = {}, fence } = {}) {
+export function dispatchReview(root, runId, { point, workstreamId, detected = {}, independentSubagent = false, fence } = {}) {
   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: dispatchReview');
   // Fix 3: validate point before any state read/write
   if (!point || typeof point !== 'string' || !point.length) throw new Error('REVIEW_INPUT_INVALID: point');
@@ -170,14 +346,14 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
   // source, so every checker is ALWAYS bound going forward. (preCheck — thrown before newEpisode: no episode created.)
   if (!targetMakerEp) throw new Error('REVIEW_NO_ELIGIBLE_MAKER: no done maker to review for ' + point + '/' + workstreamId);
   const targetMaker = targetMakerEp.id;
-  const { reviewer, flags, mode } = resolveReviewer(data, detected);
+  const { reviewer, flags, mode, reviewerResolution, blockedReason } = resolveReviewer(data, detected, { independentSubagent });
   // P2 (hillclimb-ledger 2026-07-10, release-blocking): hill-climb run은 checker 계약(HILLCLIMB-001)이 실제로
   // 강제되는 리뷰만 만들 수 있다. `.deep-review/`는 gitignored라 fresh checkout에는 계약이 없고, deep-review는
   // 무-contract일 때 계약 미강제로 리뷰를 진행한다 — 그 APPROVE는 hill-climbing 방벽 ③이 요구하는 계약-강제
   // 리뷰가 아니다. preCheck 순서상 전부 newEpisode 전에 throw — checker episode가 생성되지 않는다. (codex r1)
   let evidence, contract;
   if (data.recipe?.id === 'harness-hill-climb') {
-    // ① 계약을 소비할 수 있는 reviewer만 — subagent/codex-cross/standalone은 HILLCLIMB-001.yaml을 읽지
+    // ① 계약을 소비할 수 있는 reviewer만 — generic subagent/standalone은 HILLCLIMB-001.yaml을 읽지
     //    않으므로 계약 파일이 존재해도 무계약 APPROVE가 된다. --contract 플래그 부재는 첫 실사용 시리즈의
     //    재-init #2가 실측한 동일 결함. selector 검증(codex r5/r6/r7): deep-review 파서는
     //    `--contract SLICE-[0-9]+`(공백 형태)만 selector로 소비한다 — `HILLCLIMB-001`은 selector로
@@ -212,7 +388,7 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
         // ②′ 유일성(codex r7): bare `--contract`는 디렉터리의 모든 active 계약을 로드하므로,
         //    "HILLCLIMB-001만 로드됨"은 contracts 디렉터리에 다른 계약 파일이 없어야 성립한다.
         && contractsDirSolo(realContract);
-      if (contractOk) trackedHash = contentHash(tracked);
+      if (contractOk) trackedHash = sha256File(realContract);
     } catch { contractOk = false; }
     if (!contractOk) {
       throw new Error(`REVIEW_CONTRACT_MISSING: hill-climb run requires ${contractRel} byte-identical to the tracked source (skills/deep-loop-workflow/references/contracts/HILLCLIMB-001.yaml) with status: active — materialize (그대로 복사) before dispatching review`);
@@ -237,95 +413,175 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
       candidates: li.envelope?.payload?.candidates ?? [],
     } : null;
   }
-  const skillByReviewer = {
-    'deep-review-loop': 'deep-review:deep-review-loop',
-    'codex-cross': 'codex:rescue',
-    'subagent-checker': 'Task(code-reviewer)',
-    'standalone': 'inline-review',
+  const episodeInput = {
+    plugin: reviewer === 'deep-review-loop' || reviewer === 'deep-review' ? 'deep-review' : reviewer,
+    kind: `${point}-review`, point, workstream: workstreamId, targetMaker,
+    reviewerResolution, evidence, contract, fence,
   };
-  // P1 방어-심층: resolveReviewer가 fail-closed라 여기 도달한 reviewer는 항상 맵에 있지만, 두 목록이 어긋나게
-  // 수정되는 회귀에서 inline-review로 조용히 강등되는 대신 명시 에러로 죽는다. newEpisode 전에 확인 — 미매핑
-  // reviewer로 episode를 만들지 않는다.
-  const skill = skillByReviewer[reviewer];
-  if (!skill) throw new Error(`REVIEWER_UNRECOGNIZED: '${reviewer}' resolved but has no dispatch mapping — KNOWN_REVIEWERS and skillByReviewer are out of sync`);
-  const { id } = newEpisode(root, runId, { plugin: reviewer === 'deep-review-loop' ? 'deep-review' : reviewer, role: 'checker', kind: `${point}-review`, point, workstream: workstreamId, targetMaker, evidence, contract, fence });
-  const descriptor = { kind: reviewer === 'standalone' ? 'inline' : 'invoke_skill', skill, args: flags.join(' '), mode, review_point: point, workstream: workstreamId, ...(evidence !== undefined ? { evidence } : {}) };
+  const { id } = blockedReason
+    ? newBlockedCheckerEpisode(root, runId, { ...episodeInput, reason: blockedReason })
+    : newEpisode(root, runId, { ...episodeInput, role: 'checker' });
+  const descriptor = {
+    ...checkerDescriptor(reviewer, { point, workstreamId, flags, mode, reason: blockedReason }),
+    ...(evidence !== undefined ? { evidence } : {}),
+  };
   return { checkerEpisodeId: id, reviewer, descriptor };
 }
 
-export function recordReviewOutcome(root, runId, { episodeId, workstreamId, point, verdict, source = 'deep-review-approve', proof = {}, fence } = {}) {
-  if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: recordReviewOutcome');
-  // Codex impl r10 🔴: the ENTIRE review outcome (checker terminal + breaker + review_points_done + comprehension)
-  // must be ONE atomic appendAnchored transaction. A multi-lock version could half-commit if a handoff sets the
-  // lease to `releasing` between locks (checker terminalized, but breaker/review_points throw LEASE_FENCED, with
-  // no repair path because the checker is now terminal). Single preCheck + single mutate = all-or-nothing.
-  if (!['APPROVE', 'CONCERN', 'REQUEST_CHANGES'].includes(verdict)) throw new Error(`REVIEW_VERDICT_INVALID: ${verdict}`);
+const REVIEW_TERMINAL = new Set(['done', 'approved', 'rejected', 'abandoned']);
+const REVIEW_SOURCES = new Set(['recorded-path', 'imported-stdin']);
+
+function snapshotContext(loop, episodeId) {
+  const checker = loop?.episodes?.find(e => e.id === episodeId) || null;
+  const maker = checker?.target_maker ? loop.episodes.find(e => e.id === checker.target_maker) || null : null;
+  const workstream = checker?.workstream_id ? loop.workstreams.find(w => w.id === checker.workstream_id) || null : null;
+  return {
+    checker, maker, workstream,
+    workstreamId: checker?.workstream_id,
+    point: checker?.point,
+    targetMaker: checker?.target_maker,
+    reviewerId: checker?.plugin,
+  };
+}
+
+function checkedContext(loop, episodeId, { reviewSource } = {}) {
+  const context = snapshotContext(loop, episodeId);
+  const checker = context.checker;
+  if (!checker) throw new Error(`EPISODE_NOT_FOUND: ${episodeId}`);
+  if (checker.role !== 'checker') throw new Error('REVIEW_TARGET_NOT_CHECKER: ' + episodeId);
+  if (checker.status === 'blocked') throw new Error('REVIEW_CHECKER_BLOCKED: independent checker capability is required: ' + episodeId);
+  if (REVIEW_TERMINAL.has(checker.status)) throw new Error('REVIEW_ALREADY_RECORDED: ' + episodeId);
+  if (!isProofCapableChecker(checker)) {
+    const code = reviewSource === 'imported-stdin' ? 'REVIEW_IMPORT_REVIEWER_INVALID' : 'REVIEW_CHECKER_IDENTITY_UNSUPPORTED';
+    throw new Error(`${code}: unsupported checker plugin ${String(checker.plugin)}`);
+  }
+  if (reviewSource === 'imported-stdin' && (checker.status !== 'in_progress' || !checker.review_claim)) {
+    throw new Error('REVIEW_IMPORT_CHECKER_NOT_CLAIMED: checker must carry an in-progress host claim');
+  }
+  if (reviewSource === 'imported-stdin'
+      && ((checker.contract !== undefined && !sameJson(checker.review_claim.contract, checker.contract))
+        || (checker.evidence !== undefined && !sameJson(checker.review_claim.evidence, checker.evidence)))) {
+    throw new Error('REVIEW_IMPORT_CLAIM_BINDING_MISMATCH: checker contract/evidence changed after claim');
+  }
+  if (reviewSource === 'recorded-path' && checker.review_claim) {
+    throw new Error('REVIEW_CLAIM_REQUIRES_IMPORT: a host claim can be completed only by review import');
+  }
+  if (!checker.target_maker) throw new Error('REVIEW_UNBOUND_CHECKER: cannot record a verdict on a checker bound to no maker: ' + episodeId);
+  const maker = context.maker;
+  if (!maker || maker.role !== 'maker') throw new Error('REVIEW_TARGET_MAKER_INVALID: ' + checker.target_maker);
+  if (maker.status !== 'done') throw new Error('REVIEW_TARGET_MAKER_NOT_DONE: ' + maker.id);
+  if (checker.workstream_id !== maker.workstream_id || checker.point !== maker.point) {
+    throw new Error('REVIEW_MAKER_BINDING_MISMATCH: checker and maker workstream/point differ');
+  }
+  if (!context.workstream) throw new Error(`WORKSTREAM_NOT_FOUND: ${checker.workstream_id}`);
+  return context;
+}
+
+function rejectCallerMetadata(options, operation) {
+  for (const key of ['source', 'workstreamId', 'workstream_id', 'workstream', 'point', 'targetMaker', 'target_maker', 'reviewer_id', 'reviewSource', 'review_source', 'runtime', 'attemptId', 'attempt_id', 'attempt-id', 'evidence', 'contract']) {
+    if (Object.hasOwn(options, key)) throw new Error(`REVIEW_METADATA_FORBIDDEN: ${operation} derives ${key}`);
+  }
+}
+
+function validFence(fence, operation) {
+  if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) {
+    throw new Error(`FENCE_REQUIRED: ${operation}`);
+  }
+}
+
+function validVerdict(verdict) {
+  if (!['APPROVE', 'CONCERN', 'REQUEST_CHANGES'].includes(verdict)) {
+    throw new Error(`REVIEW_VERDICT_INVALID: ${verdict}`);
+  }
+}
+
+// Sole proof transaction for both adapters. appendAnchored performs the root-bound fresh read first; this
+// preCheck then applies runtime/lease, checker/maker, and source-evidence checks in the locked order.
+function commitReviewOutcome(root, runId, {
+  episodeId, verdict, reviewSource, evidence, fence, runtime, snapshot,
+}) {
   const passed = verdict === 'APPROVE' || verdict === 'CONCERN';
-  // #2: a passing verdict (APPROVE/CONCERN) must be backed by a REAL review-report artifact contained under the
-  // project root — symmetric with the maker's done-needs-existing-artifacts contract (episode.mjs). realpath
-  // containment (fs-safe) blocks a root-relative symlink escaping the project. The report's content hash is
-  // recorded in the event so a completed run's "independent review passed" claim is auditable + tamper-evident.
-  // Inline `findings` is only auxiliary metadata (forgeable) — it can never stand in for the report. REQUEST_CHANGES
-  // stays lightweight (reject reason only; only the passing path opens finish proof).
-  const realReport = passed ? containedRealFile(resolve(root), proof.report) : null;
-  const reportHash = realReport ? contentHash(readFileSync(realReport, 'utf8')) : null;
-  const findings = (proof.findings != null && String(proof.findings).length) ? String(proof.findings).slice(0, 2000) : null;
+  if (!REVIEW_SOURCES.has(reviewSource)) throw new Error(`REVIEW_SOURCE_INVALID: ${reviewSource}`);
+  const eventData = {
+    episodeId, verdict,
+    workstream_id: snapshot.workstreamId,
+    point: snapshot.point,
+    target_maker: snapshot.targetMaker,
+    reviewer_id: snapshot.reviewerId,
+    review_source: reviewSource,
+    ...(reviewSource === 'imported-stdin' ? { attempt_id: evidence.input?.attempt_id } : {}),
+    ...(evidence.report ? { report: evidence.report, report_sha256: evidence.reportSha256 } : {}),
+    ...(evidence.findings ? { findings: evidence.findings } : {}),
+  };
+  let lockedContext;
   let result;
-  appendAnchored(root, runId, { type: 'review-outcome', data: { episodeId, verdict,
-      ...(realReport ? { report: proof.report, report_sha256: reportHash } : {}),
-      ...(findings ? { findings } : {}) } },
+  appendAnchored(root, runId, { type: 'review-outcome', data: eventData },
     (loop) => {
-      // mutate — all in-memory on the single locked loop, written once (atomic)
-      const tgt = loop.episodes.find(e => e.id === episodeId);
-      const wsId = tgt.workstream_id;   // Codex r2 🔴: derive authoritatively from the checker episode
-      const pt = tgt.point;
-      tgt.status = passed ? 'approved' : 'rejected';   // checker terminal derived from verdict proof
-      // breaker counter + fail-stop latch (mirrors breaker.recordReviewVerdict)
-      const cb = loop.circuit_breaker || { consecutive_request_changes: 0 };
+      const checker = lockedContext.checker;
+      const maker = lockedContext.maker;
+      const workstream = lockedContext.workstream;
+      checker.status = passed ? 'approved' : 'rejected';
+      checker.review_source = reviewSource;
+      const breaker = loop.circuit_breaker;
       if (verdict === 'REQUEST_CHANGES') {
-        cb.consecutive_request_changes = (cb.consecutive_request_changes || 0) + 1;
-        if (cb.consecutive_request_changes >= BREAKER_THRESHOLD && !cb.tripped) {
-          cb.tripped = true; cb.trip_reason = 'consecutive-request-changes'; loop.status = 'paused';
+        breaker.consecutive_request_changes = (breaker.consecutive_request_changes || 0) + 1;
+        if (breaker.consecutive_request_changes >= BREAKER_THRESHOLD && !breaker.tripped) {
+          breaker.tripped = true;
+          breaker.trip_reason = 'consecutive-request-changes';
+          loop.status = 'paused';
         }
       } else {
-        cb.consecutive_request_changes = 0;   // counter resets; tripped stays latched (human-reset only)
+        breaker.consecutive_request_changes = 0;
       }
-      loop.circuit_breaker = cb;
       if (passed) {
-        // FIX 1: only mark review_points_done when the passing checker is bound to a maker (unbound checkers reviewed no maker).
-        const ws = loop.workstreams.find(w => w.id === wsId);
-        if (ws && tgt.target_maker && !ws.review_points_done.includes(pt)) ws.review_points_done.push(pt);
-        // FIX(#1): a machine review (checker APPROVE/CONCERN) accrues to the AGENT comprehension counter only —
-        // it must NEVER mark the maker human_reviewed nor lower comprehension debt (computeDebt reads only
-        // episodes_human_reviewed). The old require_human_ack gate is removed: no config lets a machine review
-        // grant human credit — only /deep-loop-ack --actor human --confirm releases the human gate.
-        const target = loop.episodes.find(e => e.id === tgt.target_maker);
-        if (target && target.role === 'maker' && !target.human_reviewed && !target.agent_reviewed) {
-          target.agent_reviewed = true;
+        if (!workstream.review_points_done.includes(checker.point)) workstream.review_points_done.push(checker.point);
+        if (!maker.human_reviewed && !maker.agent_reviewed) {
+          maker.agent_reviewed = true;
           loop.comprehension.episodes_agent_reviewed = (loop.comprehension.episodes_agent_reviewed || 0) + 1;
         }
       }
-      result = { verdict, passed, terminal: tgt.status };
+      result = {
+        verdict, passed, terminal: checker.status, review_source: reviewSource,
+        ...(evidence.report ? { report: evidence.report, report_sha256: evidence.reportSha256 } : {}),
+      };
     },
     (loop) => {
-      // preCheck — runs on the fresh loop before the event append; throws here never stale the anchor
-      if (fence) { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
-      const tgt = loop.episodes.find(e => e.id === episodeId);
-      if (!tgt) throw new Error(`EPISODE_NOT_FOUND: ${episodeId}`);
-      if (tgt.role !== 'checker') throw new Error('REVIEW_TARGET_NOT_CHECKER: ' + episodeId);
-      // Defense-in-depth (mirrors dispatchReview's REVIEW_NO_ELIGIBLE_MAKER): never record a verdict on an UNBOUND
-      // checker (no target_maker — reviewed no maker). Blocks any legacy pending unbound checker from being
-      // terminalized, so no NEW unbound terminal (rejected/approved) checker can arise.
-      if (!tgt.target_maker) throw new Error('REVIEW_UNBOUND_CHECKER: cannot record a verdict on a checker bound to no maker: ' + episodeId);
-      const REVIEW_TERMINAL = ['done', 'approved', 'rejected', 'abandoned'];
-      if (REVIEW_TERMINAL.includes(tgt.status)) throw new Error('REVIEW_ALREADY_RECORDED: ' + episodeId);
-      const wsForReport = loop.workstreams.find(w => w.id === tgt.workstream_id);
-      if (!wsForReport) throw new Error(`WORKSTREAM_NOT_FOUND: ${tgt.workstream_id}`);
-      // #2 + impl-R2 Fix 4 evidence gate — LAST (so fence/checker/terminal errors still fire first). A passing
-      // verdict needs a real report BOUND to THIS review: an existing file whose realpath sits under the reviewed
-      // workstream's worktree (an unrelated file like README.md at root is refused). Kernel-authoritative (CLI-bypass safe).
-      if (passed && !reportBoundToWorktree(root, realReport, wsForReport.worktree)) {
-        throw new Error('REVIEW_NO_EVIDENCE: passing verdict requires proof.report — a real file under the reviewed workstream worktree');
+      const checkedFence = leaseCheck(loop, { ...fence, runtime });
+      if (!checkedFence.ok) throw new Error('LEASE_FENCED: ' + checkedFence.reason);
+      lockedContext = checkedContext(loop, episodeId, { reviewSource });
+      if (lockedContext.workstreamId !== snapshot.workstreamId
+          || lockedContext.point !== snapshot.point
+          || lockedContext.targetMaker !== snapshot.targetMaker
+          || lockedContext.reviewerId !== snapshot.reviewerId) {
+        throw new Error('REVIEW_CONTEXT_FENCED: checker binding changed before commit');
+      }
+      const breaker = loop.circuit_breaker;
+      const comprehension = loop.comprehension;
+      if (breaker === null || typeof breaker !== 'object' || Array.isArray(breaker)
+          || !Number.isInteger(breaker.consecutive_request_changes) || breaker.consecutive_request_changes < 0
+          || typeof breaker.tripped !== 'boolean'
+          || !Array.isArray(lockedContext.workstream.review_points_done)
+          || comprehension === null || typeof comprehension !== 'object' || Array.isArray(comprehension)
+          || !Number.isInteger(comprehension.episodes_agent_reviewed) || comprehension.episodes_agent_reviewed < 0) {
+        throw new Error('STATE_INVALID: review outcome mutation structures');
+      }
+      const stateValidation = validate(loop);
+      if (!stateValidation.ok) throw new Error(`STATE_INVALID: ${stateValidation.errors.join('; ')}`);
+      if (reviewSource === 'recorded-path') {
+        if (passed) {
+          const reopened = containedRealFile(resolve(root), evidence.report);
+          if (!reopened || reopened !== evidence.realReport
+              || !reportBoundToWorktree(root, reopened, lockedContext.workstream.worktree)) {
+            throw new Error('REVIEW_NO_EVIDENCE: passing verdict requires proof.report — a real file under the reviewed workstream worktree');
+          }
+          if (sha256File(reopened) !== evidence.reportSha256) {
+            throw new Error('REVIEW_REPORT_HASH_MISMATCH: recorded report bytes changed');
+          }
+        }
+      } else {
+        if (evidence.preparationError) throw evidence.preparationError;
+        const binding = validateImportedEvidence(root, loop, evidence.input, lockedContext);
+        verifyImportedEnvelope(root, runId, evidence, binding);
       }
       // P2 codex r3/r4: hill-climb run의 passing verdict는 계약-강제 리뷰 proof다 — recipe를 기준으로
       // 게이트한다(체커 필드 유무가 아니라). pre-patch dispatch로 만들어진 legacy pending checker는
@@ -335,21 +591,80 @@ export function recordReviewOutcome(root, runId, { episodeId, workstreamId, poin
       // 아니라(제 checker가 pending으로 남아 중복 checker + next-action 정체를 만든다) tracked 소스
       // 재-materialize 후 **같은 checker**로 리뷰 재실행·재기록이다. REQUEST_CHANGES는 경량 reject 유지.
       if (passed && loop.recipe?.id === 'harness-hill-climb') {
-        if (!tgt.contract?.sha256 || !tgt.contract?.path) {
-          throw new Error('REVIEW_CONTRACT_MISSING: hill-climb passing verdict requires a contract-pinned checker (this checker was dispatched without a recorded contract — abandon it and re-dispatch after materializing the tracked contract)');
+        const checker = lockedContext.checker;
+        const workstream = lockedContext.workstream;
+        if (!checker.contract?.sha256 || !checker.contract?.path) {
+          throw new Error('REVIEW_CONTRACT_MISSING: hill-climb passing verdict requires a contract-pinned checker — materialize the tracked contract and dispatch a new contract-pinned review');
         }
         let stillValid = false;
         try {
-          const realC = containedRealFile(resolve(root), tgt.contract.path);   // symlink-escape 재검증 (r6)
-          stillValid = !!realC && reportBoundToWorktree(root, realC, wsForReport.worktree)
-            && contentHash(readFileSync(realC, 'utf8')) === tgt.contract.sha256
+          const realC = containedRealFile(resolve(root), checker.contract.path);   // symlink-escape 재검증 (r6)
+          stillValid = !!realC && reportBoundToWorktree(root, realC, workstream.worktree)
+            && sha256File(realC) === checker.contract.sha256
             && contractsDirSolo(realC);   // dispatch~record 창에 다른 계약이 추가되면 bare --contract가 함께 로드 (r7)
         } catch { stillValid = false; }
-        if (!stillValid) throw new Error(`REVIEW_CONTRACT_MISSING: contract ${tgt.contract.path} was removed or altered since dispatch (recorded sha256 mismatch) — re-materialize the tracked contract (그대로 복사), re-run the review, and record this SAME checker episode (it stays pending; do NOT dispatch a second checker)`);
+        if (!stillValid) throw new Error(`REVIEW_CONTRACT_MISSING: contract ${checker.contract.path} was removed or altered since dispatch (recorded sha256 mismatch) — re-materialize the tracked contract (그대로 복사), re-run the review, and record this SAME checker episode (it stays pending; do NOT dispatch a second checker)`);
       }
     }, { floor: MUTATION_TURN_FLOOR });
-  // REQUEST_CHANGES → checker='rejected'. nextAction returns fix_episode and Execution creates the fix maker.
   return result;
+}
+
+export function recordReviewOutcome(root, runId, options = {}) {
+  if (options === null || typeof options !== 'object' || Array.isArray(options)) {
+    throw new Error('REVIEW_INPUT_INVALID: options');
+  }
+  rejectCallerMetadata(options, 'recordReviewOutcome');
+  const { episodeId, verdict, proof = {}, fence } = options;
+  validFence(fence, 'recordReviewOutcome');
+  validVerdict(verdict);
+  if (proof === null || typeof proof !== 'object' || Array.isArray(proof)) throw new Error('REVIEW_INPUT_INVALID: proof');
+  rejectCallerMetadata(proof, 'recordReviewOutcome proof');
+  const preState = readState(root, runId).data;
+  const runtime = sessionRuntime(preState);
+  const snapshot = snapshotContext(preState, episodeId);
+  const passed = verdict === 'APPROVE' || verdict === 'CONCERN';
+  const realReport = passed ? containedRealFile(resolve(root), proof.report) : null;
+  const evidence = {
+    realReport,
+    report: realReport ? proof.report : null,
+    reportSha256: realReport ? sha256File(realReport) : null,
+    findings: proof.findings != null && String(proof.findings).length ? String(proof.findings).slice(0, 2000) : null,
+  };
+  return commitReviewOutcome(root, runId, {
+    episodeId, verdict, reviewSource: 'recorded-path', evidence, fence, runtime, snapshot,
+  });
+}
+
+export function importReviewOutcome(root, runId, options = {}) {
+  if (options === null || typeof options !== 'object' || Array.isArray(options)) {
+    throw new Error('REVIEW_INPUT_INVALID: options');
+  }
+  rejectCallerMetadata(options, 'importReviewOutcome');
+  const { raw, fence, now } = options;
+  validFence(fence, 'importReviewOutcome');
+  const input = parseReviewImport(raw);
+  const preState = readState(root, runId).data;
+  const runtime = sessionRuntime(preState);
+  const snapshot = snapshotContext(preState, input.checker_episode_id);
+  let evidence;
+  try {
+    const checked = checkedContext(preState, input.checker_episode_id, { reviewSource: 'imported-stdin' });
+    const binding = validateImportedEvidence(root, preState, input, checked);
+    evidence = materializeImportedReview(root, runId, input, binding, { now });
+  } catch (preparationError) {
+    // Preserve the authoritative locked error order. Invalid/stale source material never receives proof,
+    // but the commit preCheck still gets to report root/runtime/lease/checker fences first.
+    evidence = { input, preparationError, report: null, reportSha256: null };
+  }
+  return commitReviewOutcome(root, runId, {
+    episodeId: input.checker_episode_id,
+    verdict: input.verdict,
+    reviewSource: 'imported-stdin',
+    evidence,
+    fence,
+    runtime,
+    snapshot,
+  });
 }
 
 // review.points = run-level 계약. 충족은 workstream review_points_done(bound approved checker가 채움)이 단일 출처.

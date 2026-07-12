@@ -41,7 +41,9 @@ function seed(overrides = {}) {
   const root = mkdtempSync(join(tmpdir(), 'dl-pause-'));
   const runId = OWNER;
   mkdirSync(runDir(root, runId), { recursive: true });
-  writeState(root, runId, baseData(overrides));
+  const data = baseData(overrides);
+  data.project.root = root;
+  writeState(root, runId, data);
   return { root, runId };
 }
 
@@ -180,7 +182,7 @@ test('RUN_PAUSED gate: recordReviewOutcome on paused run throws LEASE_FENCED RUN
   });
   const fence = { owner: OWNER, generation: GEN, intent: 'business' };
   assert.throws(
-    () => recordReviewOutcome(root, runId, { episodeId: '002-checker', workstreamId: 'ws-01-test', point: 'design', verdict: 'APPROVE', fence }),
+    () => recordReviewOutcome(root, runId, { episodeId: '002-checker', verdict: 'APPROVE', fence }),
     /LEASE_FENCED.*RUN_PAUSED|RUN_PAUSED/
   );
   // Checker episode must still be pending

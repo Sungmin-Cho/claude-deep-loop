@@ -1,17 +1,19 @@
 import { spawnSync } from 'node:child_process';
 import { isAbsolute } from 'node:path';
 import { existsSync } from 'node:fs';
+import { isDeepStrictEqual } from 'node:util';
 import { appendAnchored } from './integrity.mjs';
 import { readState } from './state.mjs';
 import { reconcileBudget } from './budget.mjs';
+import { revalidateTrustedLauncherExecutable } from './runtime-executable.mjs';
 
 /** Non-invasive probe runner — never opens a window. capture:true returns stdout. */
 export function defaultProbeRun(bin, argv, { timeoutMs = 5000, capture = false } = {}) {
   if (capture) {
-    const r = spawnSync(bin, argv, { timeout: timeoutMs, encoding: 'utf8' });
+    const r = spawnSync(bin, argv, { timeout: timeoutMs, encoding: 'utf8', shell: false });
     return { code: r.status ?? 1, stdout: typeof r.stdout === 'string' ? r.stdout : '' };
   }
-  const r = spawnSync(bin, argv, { timeout: timeoutMs, stdio: 'ignore' });
+  const r = spawnSync(bin, argv, { timeout: timeoutMs, stdio: 'ignore', shell: false });
   return { code: r.status ?? 1 };
 }
 
@@ -32,6 +34,36 @@ export function trustedPsCandidates(exists) {
 // persisted launcher_bin against the SAME canonical set. Exact membership: a stale/hand-edited
 // 'C:\repo\powershell.exe' or UNC '\\srv\share\pwsh.exe' is rejected → fail-closed.
 export function isTrustedPsBin(p) { return TRUSTED_PS.includes(p); }
+
+function sameAuthenticodeIdentity(left, right) {
+  if (left == null || right == null) return left == null && right == null;
+  if (typeof left !== 'object' || Array.isArray(left) || typeof right !== 'object' || Array.isArray(right)) return false;
+  const expectedKeys = ['signer', 'status', 'thumbprint'];
+  if (Object.keys(left).sort().join(',') !== expectedKeys.join(',')
+    || Object.keys(right).sort().join(',') !== expectedKeys.join(',')) return false;
+  return left.status === right.status && left.signer === right.signer && left.thumbprint === right.thumbprint;
+}
+
+function sameLauncherSecurityIdentity(left, right) {
+  if (!left || typeof left !== 'object' || !right || typeof right !== 'object') return false;
+  return ['kind', 'canonical_path', 'sha256', 'version', 'platform', 'arch', 'source']
+    .every(field => left[field] === right[field])
+    && sameAuthenticodeIdentity(left.authenticode ?? null, right.authenticode ?? null);
+}
+
+function launcherAuthority(loop, kind) {
+  const approvals = loop.autonomy?.launcher_executable_approvals;
+  if (approvals === undefined) {
+    const session = loop.session_spawn;
+    if (session?.launcher !== kind || !session.launcher_identity
+      || typeof session.launcher_identity !== 'object' || Array.isArray(session.launcher_identity)) return null;
+    return session.launcher_identity;
+  }
+  if (!approvals || typeof approvals !== 'object' || Array.isArray(approvals)
+    || !Object.hasOwn(approvals, kind) || !approvals[kind]
+    || typeof approvals[kind] !== 'object' || Array.isArray(approvals[kind])) return null;
+  return approvals[kind];
+}
 
 // Bounded parent-process ancestry walk. The PS one-liner outputs 3-valued PS/NO/UNKNOWN
 // (only a true top-reach is authoritative NO; CIM failure/exhaustion → UNKNOWN). MEASURED-PS-ONLY:
@@ -66,6 +98,10 @@ export function detectTerminal({
   now,
   pid = (typeof process !== 'undefined' ? process.pid : 0),
   exists = (p) => { try { return existsSync(p); } catch { return false; } },
+  arch = process.arch,
+  windowsLauncherIdentities = {},
+  revalidateLauncher = revalidateTrustedLauncherExecutable,
+  launcherRevalidationOptions = {},
 } = {}) {
   // detected_at is an ISO string passed in; do NOT call .toISOString() on it.
   const detected_at = now;
@@ -151,14 +187,15 @@ export function detectTerminal({
   // ── 2. macOS / darwin ───────────────────────────────────────────────────────
   if (platform === 'darwin') {
     const term_program = env.TERM_PROGRAM;
+    const osascript = '/usr/bin/osascript';
 
     if (term_program === 'iTerm.app') {
       const argv  = ['-e', 'id of application "iTerm"'];
-      const pr    = run('osascript', argv, { timeoutMs: 5000 });
-      const probe = { cmd: ['osascript', ...argv], code: pr.code };
+      const pr    = run(osascript, argv, { timeoutMs: 5000 });
+      const probe = { cmd: [osascript, ...argv], code: pr.code };
       if (pr.code === 0) {
         return {
-          platform, launcher: 'iterm2', launcher_bin: null, launcher_socket: null,
+          platform, launcher: 'iterm2', launcher_bin: osascript, launcher_socket: null,
           surface: 'window', reachable: true, visible: true,
           signals, probe, reason: null, fallback: 'launch-command-file', detected_at,
         };
@@ -168,11 +205,11 @@ export function detectTerminal({
 
     if (term_program === 'Apple_Terminal') {
       const argv  = ['-e', 'id of application "Terminal"'];
-      const pr    = run('osascript', argv, { timeoutMs: 5000 });
-      const probe = { cmd: ['osascript', ...argv], code: pr.code };
+      const pr    = run(osascript, argv, { timeoutMs: 5000 });
+      const probe = { cmd: [osascript, ...argv], code: pr.code };
       if (pr.code === 0) {
         return {
-          platform, launcher: 'terminal-app', launcher_bin: null, launcher_socket: null,
+          platform, launcher: 'terminal-app', launcher_bin: osascript, launcher_socket: null,
           surface: 'window', reachable: true, visible: true,
           signals, probe, reason: null, fallback: 'launch-command-file', detected_at,
         };
@@ -186,27 +223,43 @@ export function detectTerminal({
   // ── 3. Windows / win32 ──────────────────────────────────────────────────────
   if (platform === 'win32') {
     if (env.WT_SESSION) {
-      const pr    = run('where', ['wt.exe'], { timeoutMs: 5000 });
-      const probe = { cmd: ['where', 'wt.exe'], code: pr.code };
-      if (pr.code === 0) {
-        return {
-          platform, launcher: 'wt', launcher_bin: null, launcher_socket: null,
-          surface: 'tab', reachable: true, visible: true,
-          signals, probe, reason: null, fallback: 'launch-command-file', detected_at,
-        };
+      let identity;
+      try {
+        const stored = windowsLauncherIdentities?.wt;
+        if (stored == null) throw new Error('missing');
+        identity = revalidateLauncher(stored, { ...launcherRevalidationOptions, platform, arch });
+        if (!sameLauncherSecurityIdentity(identity, stored) || identity.kind !== 'wt') {
+          throw new Error('mismatch');
+        }
+      } catch {
+        return noneDescriptor('windows-terminal-unverified');
       }
-      return noneDescriptor('no-host-signal', probe);
+      return {
+        platform, launcher: 'wt', launcher_bin: identity.canonical_path,
+        launcher_identity: identity, launcher_socket: null,
+        surface: 'tab', reachable: true, visible: true,
+        signals, probe: null, reason: null, fallback: 'launch-command-file', detected_at,
+      };
     }
 
-    // No WT_SESSION: PowerShell host detection (no opt-in). launcher_bin resolves ONLY from the
-    // fixed TRUSTED_PS system paths (no where/PATH/cwd/env-derived roots); host is decided by a
-    // measured parent-process ancestry walk run via the trusted bin.
-    const candidates = trustedPsCandidates(exists);
-    if (candidates.length === 0) return noneDescriptor('no-host-signal');
-    const { host, bin } = detectPsHost({ run, pid, candidates });
+    // Fixed paths and PATH hits are only candidates. Automatic launch requires a separately
+    // verified and revalidated native identity; otherwise preserve a manual fallback.
+    let identity;
+    try {
+      const stored = windowsLauncherIdentities?.powershell;
+      if (stored == null) throw new Error('missing');
+      identity = revalidateLauncher(stored, { ...launcherRevalidationOptions, platform, arch });
+      if (!sameLauncherSecurityIdentity(identity, stored) || identity.kind !== 'powershell') {
+        throw new Error('mismatch');
+      }
+    } catch {
+      return noneDescriptor('powershell-unverified');
+    }
+    const { host, bin } = detectPsHost({ run, pid, candidates: [identity.canonical_path] });
     if (host) {
       return {
         platform, launcher: 'powershell', launcher_bin: bin, launcher_socket: null,
+        launcher_identity: identity,
         surface: 'window', reachable: true, visible: true,
         signals, probe: null, reason: null, fallback: 'launch-command-file', detected_at,
       };
@@ -221,9 +274,10 @@ export function detectTerminal({
 /**
  * Fenced, releasing-safe: detect the terminal and persist the descriptor.
  *
- * Releasing-safe (R11-HH): the preCheck compares owner/generation ONLY — it does
- * NOT apply the leaseCheck releasing-carve-out so detect-terminal succeeds even
- * while the parent lease is in `state: 'releasing'` (post-handoff-emit metadata).
+ * Releasing-safe (R11-HH): the lease portion of preCheck compares owner/generation
+ * without applying the leaseCheck releasing carve-out, so detect-terminal succeeds
+ * while the parent is `releasing`. A separate in-lock guard binds any runnable
+ * Windows launcher descriptor to the current durable/legacy authority.
  *
  * Returns the descriptor so the CLI can print it.
  */
@@ -234,10 +288,34 @@ export function detectAndPersist(root, runId, {
   run = defaultProbeRun,
   now,
   pid = (typeof process !== 'undefined' ? process.pid : 0),
+  arch = process.arch,
+  windowsLauncherIdentities = {},
+  revalidateLauncher = revalidateTrustedLauncherExecutable,
+  launcherRevalidationOptions = {},
 } = {}) {
   reconcileBudget(root, runId);
   const { data: loop } = readState(root, runId);
-  const d = detectTerminal({ env, platform, run, now, pid });
+  const persistedLauncher = loop.session_spawn?.launcher;
+  const persistedIdentity = loop.session_spawn?.launcher_identity;
+  // Authority order: durable human approval > legacy persisted session identity > explicit test fallback.
+  // Production callers do not inject windowsLauncherIdentities; keeping it last preserves focused tests without
+  // turning PATH/fixed candidates into authority. Legacy states may omit the new approval map entirely.
+  const durableApprovals = loop.autonomy?.launcher_executable_approvals;
+  const hasDurableApprovalMap = durableApprovals !== undefined;
+  const effectiveWindowsIdentities = hasDurableApprovalMap ? {} : { ...windowsLauncherIdentities };
+  if (!hasDurableApprovalMap && persistedIdentity != null
+    && (persistedLauncher === 'wt' || persistedLauncher === 'powershell')) {
+    effectiveWindowsIdentities[persistedLauncher] = persistedIdentity;
+  }
+  if (hasDurableApprovalMap && durableApprovals && typeof durableApprovals === 'object' && !Array.isArray(durableApprovals)) {
+    for (const kind of ['wt', 'powershell']) {
+      if (durableApprovals[kind] != null) effectiveWindowsIdentities[kind] = durableApprovals[kind];
+    }
+  }
+  const d = detectTerminal({
+    env, platform, run, now, pid, arch, windowsLauncherIdentities: effectiveWindowsIdentities,
+    revalidateLauncher, launcherRevalidationOptions,
+  });
   appendAnchored(
     root, runId,
     { type: 'terminal-detected', data: { launcher: d.launcher } },
@@ -253,6 +331,12 @@ export function detectAndPersist(root, runId, {
       // 호출은 외곽을 안 거친다 — 이 in-lock이 권위.
       if (l.status === 'completed' || l.status === 'stopped') {
         throw new Error('RUN_TERMINAL: detect-terminal');
+      }
+      if (platform === 'win32' && (d.launcher === 'wt' || d.launcher === 'powershell')) {
+        const authority = launcherAuthority(l, d.launcher);
+        if (authority == null || !isDeepStrictEqual(d.launcher_identity, authority)) {
+          throw new Error('LAUNCHER_EXECUTABLE_DRIFT: detect-terminal authority changed');
+        }
       }
     }
   );

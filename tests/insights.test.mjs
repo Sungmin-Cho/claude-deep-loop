@@ -111,10 +111,26 @@ function businessEventFixture(root, runId) {
   writeState(root, runId, d);
 }
 
+function terminalMakerReceiptFixture(root, runId) {
+  appendEvent(root, runId, {
+    type: 'cost',
+    data: {
+      turns: 0, tokens: 12, reported_turns: 1, reported_tokens: 12,
+      input_tokens: 5, output_tokens: 7, owner: runId, generation: 1,
+      terminal_process: 'codex-maker', source: 'terminal-maker-measured',
+      accounting_key: 'a'.repeat(64),
+    },
+  });
+  const d = readState(root, runId).data;
+  d.event_log_head = lastLogHead(root, runId);
+  d.budget.tokens_spent = 12;
+  writeState(root, runId, d);
+}
+
 test('computeInsights: 터미널 + self만 집계, self_snapshot 표기, loop_sha256 기록', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-ins-'));
-  const { runId: rA } = initRun(root, { goal: 'a', now: FIXED });        // running (self)
-  const { runId: rB } = initRun(root, { goal: 'b', now: FIXED });
+  const { runId: rA } = initRun(root, { runtime: 'claude', goal: 'a', now: FIXED });        // running (self)
+  const { runId: rB } = initRun(root, { runtime: 'claude', goal: 'b', now: FIXED });
   toTerminal(root, rB);
   const out = computeInsights(root, { selfRunId: rA, now: FIXED.getTime(), sleepFn: NOSLEEP });
   assert.deepEqual(out.excluded_active, []);                              // rA는 self라 포함
@@ -126,8 +142,8 @@ test('computeInsights: 터미널 + self만 집계, self_snapshot 표기, loop_sh
 
 test('computeInsights: 비터미널 타 run은 excluded_active, raw parse 실패는 unreadable(후보 없음)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-ins2-'));
-  const { runId: self } = initRun(root, { goal: 'self', now: FIXED });
-  const { runId: other } = initRun(root, { goal: 'other', now: FIXED }); // running 타 run
+  const { runId: self } = initRun(root, { runtime: 'claude', goal: 'self', now: FIXED });
+  const { runId: other } = initRun(root, { runtime: 'claude', goal: 'other', now: FIXED }); // running 타 run
   mkdirSync(join(root, '.deep-loop', 'runs', 'BROKEN'), { recursive: true });
   writeFileSync(join(root, '.deep-loop', 'runs', 'BROKEN', 'loop.json'), '{not json');
   const out = computeInsights(root, { selfRunId: self, now: FIXED.getTime(), sleepFn: NOSLEEP });
@@ -139,8 +155,8 @@ test('computeInsights: 비터미널 타 run은 excluded_active, raw parse 실패
 
 test('computeInsights: 터미널 검증 실패(해시 불일치) → 재시도 후 재실패만 integrity_failed', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-ins3-'));
-  const { runId: self } = initRun(root, { goal: 'self', now: FIXED });
-  const { runId: bad } = initRun(root, { goal: 'bad', now: FIXED });
+  const { runId: self } = initRun(root, { runtime: 'claude', goal: 'self', now: FIXED });
+  const { runId: bad } = initRun(root, { runtime: 'claude', goal: 'bad', now: FIXED });
   toTerminal(root, bad);
   const lp = join(runDirOf(root, bad), 'loop.json');
   writeFileSync(lp, readFileSync(lp, 'utf8').replace('"bad"', '"BAD"'));   // hash 불일치 유발
@@ -150,8 +166,8 @@ test('computeInsights: 터미널 검증 실패(해시 불일치) → 재시도 �
 
 test('computeInsights: 전이 race — 재시도가 성공하면 정상 승격 (integrity_failed ❌)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-ins4-'));
-  const { runId: self } = initRun(root, { goal: 'self', now: FIXED });
-  const { runId: racy } = initRun(root, { goal: 'racy', now: FIXED });
+  const { runId: self } = initRun(root, { runtime: 'claude', goal: 'self', now: FIXED });
+  const { runId: racy } = initRun(root, { runtime: 'claude', goal: 'racy', now: FIXED });
   toTerminal(root, racy);
   const lp = join(runDirOf(root, racy), 'loop.json');
   const good = readFileSync(lp, 'utf8');
@@ -166,7 +182,7 @@ test('computeInsights: 전이 race — 재시도가 성공하면 정상 승격 (
 // r2 리뷰 정정(opus S1): initRun은 event-log에 아무 이벤트도 남기지 않는다(event_log_head=GENESIS) —
 // 변조 fixture는 tamper 전에 **실제 anchored 이벤트**를 먼저 생성해야 한다. newWorkstream이 이벤트+floor cost를 남긴다.
 function seedTamperable(root, goal) {
-  const { runId } = initRun(root, { goal, now: FIXED });
+  const { runId } = initRun(root, { runtime: 'claude', goal, now: FIXED });
   newWorkstream(root, runId, { title: 't', branch: 'b', worktree: '.claude/worktrees/x',
     fence: { owner: runId, generation: 1, intent: 'business' } });   // 이벤트 2줄(workstream-new + cost) 생성
   toTerminal(root, runId);
@@ -175,7 +191,7 @@ function seedTamperable(root, goal) {
 
 test('computeInsights: 터미널 run의 event-log 변조(JSON-valid, checksum 불변)는 verifyLog로 integrity_failed', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-ins5-'));
-  const { runId: self } = initRun(root, { goal: 'self', now: FIXED });
+  const { runId: self } = initRun(root, { runtime: 'claude', goal: 'self', now: FIXED });
   const tam = seedTamperable(root, 'tam');
   const ep = join(runDirOf(root, tam), 'event-log.jsonl');
   const lines = readFileSync(ep, 'utf8').trim().split('\n');
@@ -187,7 +203,7 @@ test('computeInsights: 터미널 run의 event-log 변조(JSON-valid, checksum �
 
 test('computeInsights: suffix truncation(체인 유효, head anchor stale)은 verifyHead로 integrity_failed', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-ins6-'));
-  const { runId: self } = initRun(root, { goal: 'self', now: FIXED });
+  const { runId: self } = initRun(root, { runtime: 'claude', goal: 'self', now: FIXED });
   const tr = seedTamperable(root, 'tr');
   const ep = join(runDirOf(root, tr), 'event-log.jsonl');
   const lines = readFileSync(ep, 'utf8').trim().split('\n');
@@ -231,11 +247,11 @@ test('v1.5 (a): isSuspiciousActive 판정 표 — 위에서 아래 첫 매치', 
 
 test('v1.5 (a): computeInsights suspicious_active — excluded 부분집합, 집계 미포함, version 1', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-susp-'));
-  const { runId: self } = initRun(root, { goal: 'self', now: FIXED });
-  const { runId: dead } = initRun(root, { goal: 'dead', now: FIXED });      // running + lease released → suspicious
+  const { runId: self } = initRun(root, { runtime: 'claude', goal: 'self', now: FIXED });
+  const { runId: dead } = initRun(root, { runtime: 'claude', goal: 'dead', now: FIXED });      // running + lease released → suspicious
   { const d = readState(root, dead).data; d.session_chain.lease.state = 'released'; writeState(root, dead, d); }
-  const { runId: healthy } = initRun(root, { goal: 'healthy', now: FIXED }); // running + lease active → 비suspicious
-  const { runId: pausedR } = initRun(root, { goal: 'paused', now: FIXED });  // paused + releasing+만료 → 비suspicious (preserve-pause)
+  const { runId: healthy } = initRun(root, { runtime: 'claude', goal: 'healthy', now: FIXED }); // running + lease active → 비suspicious
+  const { runId: pausedR } = initRun(root, { runtime: 'claude', goal: 'paused', now: FIXED });  // paused + releasing+만료 → 비suspicious (preserve-pause)
   { const d = readState(root, pausedR).data; d.status = 'paused';
     d.session_chain.lease = { ...d.session_chain.lease, state: 'releasing', expires_at: iso(T0 - 1000) };
     writeState(root, pausedR, d); }
@@ -307,7 +323,7 @@ test('candidates: budget_overrun — ratio ≥ soft_stop_ratio 발행, 미만/nu
 
 function emitFixture() {
   const root = mkdtempSync(join(tmpdir(), 'dl-emit-'));
-  const { runId } = initRun(root, { goal: 'g', now: FIXED });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: FIXED });
   return { root, runId, fence: { owner: runId, generation: 1, intent: 'business' } };
 }
 
@@ -337,9 +353,91 @@ test('emit: fence 누락/불완전은 FENCE_REQUIRED, 불일치는 LEASE_FENCED 
 
 test('emit: rename 실패(②↔③ 창) → 이벤트만 존재, latest는 null (파일 부재 탈락)', () => {
   const { root, runId, fence } = emitFixture();
-  assert.throws(() => emitInsights(root, runId, { fence, now: FIXED.getTime(), renameFn: () => { throw new Error('EIO'); } }), /EIO/);
+  let attempts = 0;
+  let sleeps = 0;
+  assert.throws(() => emitInsights(root, runId, {
+    fence,
+    now: FIXED.getTime(),
+    platform: 'win32',
+    monotonicNowFn: () => 0,
+    sleepFn: () => { sleeps++; },
+    renameFn: () => { attempts++; throw Object.assign(new Error('EIO'), { code: 'EIO' }); },
+  }), /EIO/);
+  assert.equal(attempts, 1, 'nonretryable publish error is single-shot');
+  assert.equal(sleeps, 0);
   assert.ok(readLines(root, runId).some(e => e.type === 'insights-emitted'));   // 이벤트는 anchored
   assert.equal(latestInsights(root), null);                                      // 신뢰 파일 없음 + .tmp- 제외
+});
+
+test('emit: transient Windows publish retries only rename and anchors once before success', () => {
+  const { root, runId, fence } = emitFixture();
+  const calls = [];
+  const sleeps = [];
+  let now = 0;
+  const result = emitInsights(root, runId, {
+    fence,
+    now: FIXED.getTime(),
+    platform: 'win32',
+    monotonicNowFn: () => now,
+    sleepFn: (ms) => { sleeps.push(ms); now += ms; },
+    renameFn: (src, dst) => {
+      calls.push([src, dst]);
+      if (calls.length < 3) throw Object.assign(new Error('shared'), { code: 'EACCES' });
+      renameSync(src, dst);
+    },
+  });
+  assert.equal(calls.length, 3);
+  assert.equal(sleeps.length, 2);
+  assert.ok(calls.every(([src, dst]) => src === calls[0][0] && dst === calls[0][1]));
+  assert.equal(readLines(root, runId).filter(e => e.type === 'insights-emitted').length, 1);
+  assert.equal(existsSync(join(root, result.path)), true);
+  assert.equal(readdirSync(join(root, '.deep-loop', 'insights')).filter(name => name.startsWith('.tmp-')).length, 0);
+});
+
+test('emit: exhausted Windows publish leaves one anchor and designated hidden tmp in a fresh root', () => {
+  const { root, runId, fence } = emitFixture();
+  const expected = Object.assign(new Error('still shared'), { code: 'EBUSY' });
+  let now = 0;
+  let attempts = 0;
+  let sleeps = 0;
+  assert.throws(() => emitInsights(root, runId, {
+    fence,
+    now: FIXED.getTime(),
+    platform: 'win32',
+    monotonicNowFn: () => now,
+    sleepFn: (ms) => { sleeps++; now += ms; },
+    renameFn: () => { attempts++; throw expected; },
+  }), error => error === expected);
+  assert.ok(attempts > 1);
+  assert.equal(attempts, sleeps + 1);
+  assert.equal(readLines(root, runId).filter(e => e.type === 'insights-emitted').length, 1);
+  const entries = readdirSync(join(root, '.deep-loop', 'insights'));
+  assert.equal(entries.filter(name => name.startsWith('.tmp-')).length, 1);
+  assert.equal(entries.filter(name => name.endsWith('-insights.json')).length, 0);
+  assert.equal(latestInsights(root), null, 'fresh root has no older trusted insights artifact');
+});
+
+test('a failed newer publish does not hide an older trusted insights artifact', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-emit-older-'));
+  const { runId: older } = initRun(root, { runtime: 'claude', goal: 'older', now: FIXED });
+  const olderFence = { owner: older, generation: 1, intent: 'business' };
+  const trusted = emitInsights(root, older, { fence: olderFence, now: FIXED.getTime(), rnd: () => 0.1 });
+  finishFixture(root, older);
+
+  const later = new Date(FIXED.getTime() + 60_000);
+  const { runId: newer } = initRun(root, { runtime: 'claude', goal: 'newer', now: later });
+  const newerFence = { owner: newer, generation: 1, intent: 'business' };
+  const expected = Object.assign(new Error('still shared'), { code: 'EACCES' });
+  let now = 0;
+  assert.throws(() => emitInsights(root, newer, {
+    fence: newerFence,
+    now: later.getTime(),
+    platform: 'win32',
+    monotonicNowFn: () => now,
+    sleepFn: (ms) => { now += ms; },
+    renameFn: () => { throw expected; },
+  }), error => error === expected);
+  assert.equal(latestInsights(root).path, trusted.path);
 });
 
 test('latest: 정상 emit → 검증 통과 최신 반환', () => {
@@ -403,14 +501,14 @@ test('latest: 상위 insights_schema_version 파일은 skip하고 더 오래된 
   // finish-edge를 전부 통과하고 **오직 schema 검사에서만** skip되도록 만든다.
   const root = mkdtempSync(join(tmpdir(), 'dl-schema-'));
   // run A — 폴백으로 반환될 rOld (자기 finish에 인접)
-  const { runId: runA } = initRun(root, { goal: 'a', now: FIXED });
+  const { runId: runA } = initRun(root, { runtime: 'claude', goal: 'a', now: FIXED });
   const rOld = emitInsights(root, runA, { fence: { owner: runA, generation: 1, intent: 'business' },
     now: FIXED.getTime(), rnd: () => 0.5 });
   finishFixture(root, runA);                                 // rOld의 after = [finish] → finish-edge 통과
   // run B — future-schema 소재. r0B는 ULID가 rOld보다 작도록 과거 now로 emit.
   // ⚠ 순회 순서는 now의 60초 갭(ULID 타임스탬프 접두)이 결정한다 — rnd(0.5/0.1)는 장식이다.
   //   두 emit을 같은 now로 "단순화"하면 순서가 조용히 뒤집힌다 (v1.6 Minor (b)1).
-  const { runId: runB } = initRun(root, { goal: 'b', now: FIXED });
+  const { runId: runB } = initRun(root, { runtime: 'claude', goal: 'b', now: FIXED });
   const r0B = emitInsights(root, runB, { fence: { owner: runB, generation: 1, intent: 'business' },
     now: FIXED.getTime() - 60000, rnd: () => 0.1 });
   // r2 리뷰 정정(codex S2): 미래 파일을 path-binding/sha까지 **통과**하도록 만들어 schema 분기만 고립 검증한다 —
@@ -455,7 +553,7 @@ test('latest: 참조 run의 event-log 체인 변조(checksum 불변) → 파일 
 // ── v1.5.0 (b): finish-edge — 앵커 이후 non-exempt 이벤트가 정확히 finish 하나여야 신뢰 (spec §3) ───
 test('v1.5 (b): 정상 emit→auto-floor→finish 인접 → 신뢰', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-fe1-'));
-  const { runId } = initRun(root, { goal: 'g', now: FIXED });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: FIXED });
   const fence = { owner: runId, generation: 1, intent: 'business' };
   const r = emitInsights(root, runId, { fence, now: FIXED.getTime(), rnd: () => 0.5 });
   finishFixture(root, runId);
@@ -465,7 +563,7 @@ test('v1.5 (b): 정상 emit→auto-floor→finish 인접 → 신뢰', () => {
 
 test('v1.5 (b): mid-run emit(뒤에 business 이벤트) → skip — finish-인접 emit만 신뢰 (2-emit 재시도, r3 앵커 회귀)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-fe2-'));
-  const { runId } = initRun(root, { goal: 'g', now: FIXED });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: FIXED });
   const fence = { owner: runId, generation: 1, intent: 'business' };
   const rMid = emitInsights(root, runId, { fence, now: FIXED.getTime(), rnd: () => 0.1 });
   businessEventFixture(root, runId);
@@ -479,7 +577,7 @@ test('v1.5 (b): mid-run emit(뒤에 business 이벤트) → skip — finish-인�
 
 test('v1.5 (b): 동일 path 매칭 insights-emitted 이벤트 2개 → fail-closed skip (r3)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-fe6-'));
-  const { runId } = initRun(root, { goal: 'g', now: FIXED });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: FIXED });
   const fence = { owner: runId, generation: 1, intent: 'business' };
   const r = emitInsights(root, runId, { fence, now: FIXED.getTime(), rnd: () => 0.5 });
   // 같은 path·sha를 가리키는 중복 insights-emitted 이벤트(규약 밖 — 정상 경로에서 ULID 파일명은 유일)
@@ -491,7 +589,7 @@ test('v1.5 (b): 동일 path 매칭 insights-emitted 이벤트 2개 → fail-clos
 
 test('v1.5 (b): emit→finish 사이 명시 budget record cost(auto_floor 부재) → skip (r1 P2)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-fe3-'));
-  const { runId } = initRun(root, { goal: 'g', now: FIXED });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: FIXED });
   const fence = { owner: runId, generation: 1, intent: 'business' };
   emitInsights(root, runId, { fence, now: FIXED.getTime(), rnd: () => 0.5 });
   recordCost(root, runId, { turns: 3, tokens: 0, fence: { owner: runId, generation: 1 } });
@@ -501,7 +599,7 @@ test('v1.5 (b): emit→finish 사이 명시 budget record cost(auto_floor 부재
 
 test('v1.5 (b): finish 후 non-exempt 이벤트(post-finish mutation) → skip (r2 🔴)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-fe4-'));
-  const { runId } = initRun(root, { goal: 'g', now: FIXED });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: FIXED });
   const fence = { owner: runId, generation: 1, intent: 'business' };
   emitInsights(root, runId, { fence, now: FIXED.getTime(), rnd: () => 0.5 });
   finishFixture(root, runId);
@@ -509,9 +607,22 @@ test('v1.5 (b): finish 후 non-exempt 이벤트(post-finish mutation) → skip (
   assert.equal(latestInsights(root), null);
 });
 
+test('terminal Codex maker receipt is completion bookkeeping, not a dirty post-finish mutation', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-fe-terminal-cost-'));
+  const { runId } = initRun(root, { runtime: 'codex', goal: 'g', now: FIXED });
+  const fence = { owner: runId, generation: 1, intent: 'business' };
+  const emitted = emitInsights(root, runId, { fence, now: FIXED.getTime(), rnd: () => 0.5 });
+  finishFixture(root, runId);
+  terminalMakerReceiptFixture(root, runId);
+
+  assert.equal(latestInsights(root).path, emitted.path);
+  const out = computeInsights(root, { selfRunId: runId, now: FIXED.getTime(), sleepFn: NOSLEEP });
+  assert.deepEqual(out.post_finish_mutated, []);
+});
+
 test('v1.5 (b): finish 이벤트 부재(status만 terminal) → skip', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-fe5-'));
-  const { runId } = initRun(root, { goal: 'g', now: FIXED });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: FIXED });
   const fence = { owner: runId, generation: 1, intent: 'business' };
   emitInsights(root, runId, { fence, now: FIXED.getTime(), rnd: () => 0.5 });
   toTerminal(root, runId);                                       // finish 이벤트 없이 status만 전이(레거시/드리프트)
@@ -521,11 +632,11 @@ test('v1.5 (b): finish 이벤트 부재(status만 terminal) → skip', () => {
 // ── v1.5.0 (b′): post_finish_mutated 라벨 — 집계 유지 + 노출 (spec §3, r5 리뷰 라벨 방식) ───
 test('v1.5 (b′): finish 후 이벤트 낀 terminal run → post_finish_mutated 라벨 + per_run 유지', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-pfm-'));
-  const { runId: self } = initRun(root, { goal: 'self', now: FIXED });
-  const { runId: tainted } = initRun(root, { goal: 'tainted', now: FIXED });
+  const { runId: self } = initRun(root, { runtime: 'claude', goal: 'self', now: FIXED });
+  const { runId: tainted } = initRun(root, { runtime: 'claude', goal: 'tainted', now: FIXED });
   finishFixture(root, tainted);
   businessEventFixture(root, tainted);                          // post-finish mutation (커널이 현재 막지 않음 — r2 판정)
-  const { runId: clean } = initRun(root, { goal: 'clean', now: FIXED });
+  const { runId: clean } = initRun(root, { runtime: 'claude', goal: 'clean', now: FIXED });
   finishFixture(root, clean);
   const out = computeInsights(root, { selfRunId: self, now: FIXED.getTime(), sleepFn: NOSLEEP });
   assert.deepEqual(out.post_finish_mutated, [tainted]);
@@ -536,9 +647,9 @@ test('v1.5 (b′): finish 후 이벤트 낀 terminal run → post_finish_mutated
 
 test('v1.5 (b′): emitInsights 반환 JSON에 라벨 2배열 포함 — finish 스킬 소비 배선 (plan-r2)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-pfm3-'));
-  const { runId: dead } = initRun(root, { goal: 'dead', now: FIXED });     // suspicious 대상
+  const { runId: dead } = initRun(root, { runtime: 'claude', goal: 'dead', now: FIXED });     // suspicious 대상
   { const d = readState(root, dead).data; d.session_chain.lease.state = 'released'; writeState(root, dead, d); }
-  const { runId } = initRun(root, { goal: 'self', now: FIXED });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'self', now: FIXED });
   const fence = { owner: runId, generation: 1, intent: 'business' };
   const r = emitInsights(root, runId, { fence, now: FIXED.getTime() });
   assert.deepEqual(r.suspicious_active, [dead]);                // CLI 반환으로 노출 — 2-plane: 소비자는 stdout만 읽는다
@@ -547,8 +658,8 @@ test('v1.5 (b′): emitInsights 반환 JSON에 라벨 2배열 포함 — finish 
 
 test('v1.5 (b′): finish 이벤트 없는 terminal 로그(레거시)는 판정 불가 → 라벨 없음', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-pfm2-'));
-  const { runId: self } = initRun(root, { goal: 'self', now: FIXED });
-  const { runId: legacy } = initRun(root, { goal: 'legacy', now: FIXED });
+  const { runId: self } = initRun(root, { runtime: 'claude', goal: 'self', now: FIXED });
+  const { runId: legacy } = initRun(root, { runtime: 'claude', goal: 'legacy', now: FIXED });
   toTerminal(root, legacy);                                     // finish 이벤트 없이 status만 terminal
   const out = computeInsights(root, { selfRunId: self, now: FIXED.getTime(), sleepFn: NOSLEEP });
   assert.deepEqual(out.post_finish_mutated, []);
@@ -713,8 +824,8 @@ test('computeRunMetrics/deriveCandidates: __proto__ point·kind가 프로토타�
 // ── v1.6 Minor (b)2: double-finish 명시 회귀 — raw 픽스처 (plan Task 11) ─────
 test('post_finish_mutated: legacy double-finish log is labeled (raw fixture — guard-era APIs cannot create this)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-dfin-'));
-  const { runId: self } = initRun(root, { goal: 'self', now: FIXED });
-  const { runId: doubled } = initRun(root, { goal: 'doubled', now: FIXED });
+  const { runId: self } = initRun(root, { runtime: 'claude', goal: 'self', now: FIXED });
+  const { runId: doubled } = initRun(root, { runtime: 'claude', goal: 'doubled', now: FIXED });
   finishFixture(root, doubled);                       // 정상 first finish (앵커)
   // 둘째 finish는 v1.6 가드(leaseCheck·관문·FINISH_ALREADY_TERMINAL)가 전부 막으므로 커널 API로는
   // 재현 불가 — 구버전(가드 이전) 로그를 raw로 직조한다: appendEvent(체인 checksum 유지) + head 앵커 재계산.

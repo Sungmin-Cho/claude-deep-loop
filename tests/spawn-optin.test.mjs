@@ -63,6 +63,7 @@ function seedFreshRun({ spawn_style } = {}) {
   const runId = OWNER;
   mkdirSync(runDir(root, runId), { recursive: true });
   const data = baseData();
+  data.project.root = root;
   if (spawn_style) data.autonomy.spawn_style = spawn_style;
   writeState(root, runId, data);
   return { root, runId, expect: { owner: OWNER, generation: GEN } };
@@ -99,6 +100,7 @@ function seedPausedReleasingDesktop() {
       ],
     },
   });
+  data.project.root = root;
   writeState(root, runId, data);
   return { root, runId, expect: { owner: OWNER, generation: GEN } };
 }
@@ -412,6 +414,7 @@ function seedDesktopWith({ status = 'running', leaseState = 'active', handoffPha
       sessions: [{ run_id: OWNER, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: null }],
     },
   });
+  data.project.root = root;
   writeState(root, runId, data);
   return { root, runId, expect: { owner: OWNER, generation: GEN } };
 }

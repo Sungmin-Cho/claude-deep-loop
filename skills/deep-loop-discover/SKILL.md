@@ -10,16 +10,27 @@ user-invocable: true
 > **loop.json + handoff 파일이 source of truth** — 이전 대화 컨텍스트를 가정하지 말 것.
 > **비가역 외부 행동(push/PR/publish/merge/delete)은 proposal-only**, 항상 사람 승인(human approval)을 받는다.
 
+## 실행 루트와 호스트 호출
+
+로드된 `SKILL.md` 경로에서 이 플러그인의 absolute(절대) 루트를 계산하고, 아래 argv 템플릿의 `DEEP_LOOP_ROOT`를 실행 전에 그 절대 경로로 치환한다. literal `DEEP_LOOP_ROOT` 문자열을 Node에 전달하는 것은 금지한다. 환경 변수나 셸 확장으로 루트를 만들지 않는다.
+
+호출은 Claude에서 `/deep-loop-discover`, Codex에서 `$deep-loop:deep-loop-discover` 형식을 사용한다.
+
 ## 개요
 
 `/deep-loop-discover` — 저장소, git 상태, sibling artifact, 기존 loop 상태를 스캔해 후보 작업 항목을 발견(discover)하고 영속한다.
 
+descriptor/current run의 `<run_id>`는 논리적(logical) loop run id이며 run 수명 동안 불변(immutable)이다. mutation fence는 아래 fresh lease read에서 분리해 얻는다.
+
 ## 단계 1: 현재 Loop 상태 확인
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get
-node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" comprehension status
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field session_chain.lease --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" comprehension status --project-root "<canonical_project_root>" --run-id <run_id>
 ```
+
+`<owner_run_id>`는 `session_chain.lease.owner_run_id`, `<generation>`은 `session_chain.lease.generation`에서 새로 읽는다. 이후 state patch는 이 current fence와 불변 `<run_id>`를 함께 쓴다.
 
 comprehension debt(`debt_ratio`)가 임계치(보통 0.5)를 초과하면 새 fan-out 자제 — 사람 검토(`/deep-loop-ack --actor human`)를 먼저 요청한다. 기계 리뷰(checker APPROVE)는 debt를 줄이지 않으므로 사람 ack만 새 fan-out을 해제한다.
 
@@ -45,7 +56,7 @@ comprehension debt(`debt_ratio`)가 임계치(보통 0.5)를 초과하면 새 fa
 ## 단계 4: 영속
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state patch --field discovered_items --value '<json_array>' --owner <run_id> --generation <n>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state patch --field discovered_items --value '<json_array>' --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
 ## 단계 5: 다음 단계 안내

@@ -1,18 +1,40 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, existsSync } from 'node:fs';
-import { readFileSync as rf } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync as rf, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { runPreCompactHandoff } from '../scripts/hooks-impl/precompact-handoff.mjs';
+import { rollbackAndPause } from '../scripts/lib/respawn.mjs';
+import { createDirectoryJunction } from './helpers/fs-fixtures.mjs';
 const PROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const PRECOMPACT_HOOK = join(PROOT, 'scripts', 'hooks-impl', 'precompact-handoff.mjs');
+const DRIVE_HOOK = join(PROOT, 'scripts', 'hooks-impl', 'drive-headless.mjs');
+const EXPECTED_BOOTSTRAP = `node -e "const{join}=require('node:path');const{pathToFileURL}=require('node:url');const r=process.env.CLAUDE_PLUGIN_ROOT||process.env.PLUGIN_ROOT;if(!r){console.error('deep-loop: plugin root unavailable')}else{import(pathToFileURL(join(r,'scripts','hooks-impl','precompact-handoff.mjs')).href).then(m=>m.main()).catch(()=>console.error('deep-loop: precompact hook failed'))}"`;
+const BOOTSTRAP_SOURCE = EXPECTED_BOOTSTRAP.slice('node -e "'.length, -1);
 
-function seed() {
+function events(root, runId) {
+  return parseLog(join(runDir(root, runId), 'event-log.jsonl'));
+}
+
+function runNode(args, options = {}) {
+  return spawnSync(process.execPath, args, { encoding: 'utf8', ...options });
+}
+
+function bootstrapEnv(rootName, root) {
+  const env = { ...process.env };
+  delete env.CLAUDE_PLUGIN_ROOT;
+  delete env.PLUGIN_ROOT;
+  if (rootName) env[rootName] = root;
+  return env;
+}
+
+function seed(runtime = 'claude') {
   const root = mkdtempSync(join(tmpdir(), 'dl-pc-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime, goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
   return { root, runId };
 }
 
@@ -87,20 +109,170 @@ test('env DEEP_LOOP_UNATTENDED=1 with spawn_style visible → headless true (isH
   assert.equal(r.headless, true);
 });
 
-test('hooks.json declares PreCompact → precompact-handoff.sh', () => {
-  const h = JSON.parse(rf(join(PROOT, 'hooks', 'hooks.json'), 'utf8'));
-  assert.ok(h.hooks.PreCompact, 'PreCompact event present');
-  const cmd = h.hooks.PreCompact[0].hooks[0].command;
-  assert.match(cmd, /precompact-handoff\.sh/);
-  assert.match(cmd, /\$\{CLAUDE_PLUGIN_ROOT\}/);
+test('Codex ignores the Claude entrypoint heuristic when deriving precompact resume policy', async () => {
+  const { root, runId } = seed('codex');
+  const r = await runPreCompactHandoff({}, {
+    root,
+    now: Date.parse('2026-06-24T00:01:00Z'),
+    env: { CLAUDE_CODE_ENTRYPOINT: 'print' },
+  });
+  assert.equal(r.action, 'emitted');
+  assert.equal(r.headless, false);
+  assert.equal(readState(root, runId).data.session_chain.lease.resume_policy, 'visible');
 });
 
-test('precompact-handoff.sh is Bash 3.2 safe', () => {
-  const sh = rf(join(PROOT, 'hooks', 'scripts', 'precompact-handoff.sh'), 'utf8');
-  assert.match(sh, /set -Eeuo pipefail/);
-  assert.ok(!/declare -A/.test(sh), 'no associative arrays');
-  assert.ok(!/\$\{[A-Za-z_]+,,\}/.test(sh), 'no ${var,,} lowercasing');
-  assert.match(sh, /precompact-handoff\.mjs/);
+test('Codex still honors an explicit driver marker in precompact mode derivation', async () => {
+  const { root, runId } = seed('codex');
+  const r = await runPreCompactHandoff({}, {
+    root,
+    now: Date.parse('2026-06-24T00:01:00Z'),
+    env: { CLAUDE_CODE_ENTRYPOINT: 'print', DEEP_LOOP_HEADLESS: '1' },
+  });
+  assert.equal(r.action, 'emitted');
+  assert.equal(r.headless, true);
+  assert.equal(readState(root, runId).data.session_chain.lease.resume_policy, 'headless');
+});
+
+test('Codex still honors explicit unattended input in precompact mode derivation', async () => {
+  const { root, runId } = seed('codex');
+  const r = await runPreCompactHandoff({ unattended: true }, {
+    root,
+    now: Date.parse('2026-06-24T00:01:00Z'),
+    env: { CLAUDE_CODE_ENTRYPOINT: 'print' },
+  });
+  assert.equal(r.action, 'emitted');
+  assert.equal(r.headless, true);
+  assert.equal(readState(root, runId).data.session_chain.lease.resume_policy, 'headless');
+});
+
+test('hooks.json contains exactly one exact static Node bootstrap and no shell expansion', () => {
+  const h = JSON.parse(rf(join(PROOT, 'hooks', 'hooks.json'), 'utf8'));
+  assert.ok(h.hooks.PreCompact, 'PreCompact event present');
+  assert.equal(h.hooks.PreCompact.length, 1);
+  assert.equal(h.hooks.PreCompact[0].hooks.length, 1);
+  const command = h.hooks.PreCompact[0].hooks[0].command;
+  assert.equal(command, EXPECTED_BOOTSTRAP);
+  assert.doesNotMatch(command, /bash|\.sh\b|\$\{|\$\(|`/);
+});
+
+test('static bootstrap imports a root containing spaces through either root variable, including a symlink', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-bootstrap-'));
+  const linkedRoot = join(root, 'plugin root with spaces');
+  createDirectoryJunction(PROOT, linkedRoot);
+
+  for (const rootName of ['CLAUDE_PLUGIN_ROOT', 'PLUGIN_ROOT']) {
+    const result = runNode(['-e', BOOTSTRAP_SOURCE], {
+      cwd: root,
+      env: bootstrapEnv(rootName, linkedRoot),
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, '');
+    assert.equal(result.stderr, '');
+  }
+});
+
+test('static bootstrap missing-root and import-error paths exit zero with only fixed bounded diagnostics', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-bootstrap-fail-'));
+  const missingRoot = runNode(['-e', BOOTSTRAP_SOURCE], { cwd: root, env: bootstrapEnv(null) });
+  assert.equal(missingRoot.status, 0);
+  assert.equal(missingRoot.stdout, '');
+  assert.equal(missingRoot.stderr, 'deep-loop: plugin root unavailable\n');
+
+  const importError = runNode(['-e', BOOTSTRAP_SOURCE], {
+    cwd: root,
+    env: bootstrapEnv('CLAUDE_PLUGIN_ROOT', join(root, 'does-not-exist')),
+  });
+  assert.equal(importError.status, 0);
+  assert.equal(importError.stdout, '');
+  assert.equal(importError.stderr, 'deep-loop: precompact hook failed\n');
+});
+
+test('the Bash wrapper is absent', () => {
+  assert.equal(existsSync(join(PROOT, 'hooks', 'scripts', 'precompact-handoff.sh')), false);
+});
+
+test('precompact direct execution runs main exactly once while imports with missing or mismatched argv stay inert', () => {
+  const direct = seed();
+  const directResult = runNode([PRECOMPACT_HOOK], { cwd: direct.root, input: '{}' });
+  assert.equal(directResult.status, 0, directResult.stderr);
+  assert.equal(directResult.stdout, '');
+  assert.equal(directResult.stderr, '');
+  assert.equal(events(direct.root, direct.runId).filter(event => event.type === 'handoff-emitted').length, 1);
+
+  for (const extraArgs of [[], [DRIVE_HOOK]]) {
+    const imported = seed();
+    const code = `await import(${JSON.stringify(pathToFileURL(PRECOMPACT_HOOK).href)})`;
+    const result = runNode(['--input-type=module', '--eval', code, ...extraArgs], { cwd: imported.root });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, '');
+    assert.equal(result.stderr, '');
+    assert.equal(events(imported.root, imported.runId).filter(event => event.type === 'handoff-emitted').length, 0);
+  }
+});
+
+test('drive-headless direct execution writes one JSON result and imports with missing or mismatched argv stay inert', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-drive-main-'));
+  const direct = runNode([DRIVE_HOOK], { cwd: root });
+  assert.equal(direct.status, 0, direct.stderr);
+  assert.equal(direct.stderr, '');
+  assert.equal(direct.stdout.trim().split('\n').length, 1);
+  assert.deepEqual(JSON.parse(direct.stdout), { ok: true, action: 'no-run' });
+
+  for (const extraArgs of [[], [PRECOMPACT_HOOK]]) {
+    const code = `await import(${JSON.stringify(pathToFileURL(DRIVE_HOOK).href)})`;
+    const result = runNode(['--input-type=module', '--eval', code, ...extraArgs], { cwd: root });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, '');
+    assert.equal(result.stderr, '');
+  }
+});
+
+test('precompact invalid JSON exits zero with one fixed bounded diagnostic', () => {
+  const result = runNode([PRECOMPACT_HOOK], { cwd: mkdtempSync(join(tmpdir(), 'dl-pc-json-')), input: '{' });
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout, '');
+  assert.equal(result.stderr, 'deep-loop: precompact hook failed\n');
+});
+
+test('precompact invalid input root exits zero with one fixed bounded diagnostic', () => {
+  const result = runNode([PRECOMPACT_HOOK], {
+    cwd: mkdtempSync(join(tmpdir(), 'dl-pc-root-')),
+    input: JSON.stringify({ cwd: 42 }),
+  });
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout, '');
+  assert.equal(result.stderr, 'deep-loop: precompact hook failed\n');
+});
+
+test('precompact driver failure exits zero with one fixed bounded diagnostic', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-pc-driver-'));
+  mkdirSync(join(root, '.deep-loop'), { recursive: true });
+  writeFileSync(join(root, '.deep-loop', 'current'), 'missing-run');
+  const result = runNode([PRECOMPACT_HOOK], { cwd: root, input: '{}' });
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout, '');
+  assert.equal(result.stderr, 'deep-loop: precompact hook failed\n');
+});
+
+test('precompact stdin is bounded and overflow exits zero with one fixed diagnostic', () => {
+  const oversizedValidJson = Buffer.concat([
+    Buffer.from('{}'),
+    Buffer.alloc(1_048_577, 0x20),
+  ]);
+  const result = runNode([PRECOMPACT_HOOK], {
+    cwd: mkdtempSync(join(tmpdir(), 'dl-pc-bound-')),
+    input: oversizedValidJson,
+    maxBuffer: 2_097_152,
+  });
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout, '');
+  assert.equal(result.stderr, 'deep-loop: precompact hook failed\n');
+});
+
+test('precompact exported main does not call process.exit', () => {
+  const source = rf(PRECOMPACT_HOOK, 'utf8');
+  assert.match(source, /export\s+async\s+function\s+main\s*\(/);
+  assert.doesNotMatch(source, /process\.exit\s*\(/);
 });
 
 // R12-LL regression: gate-blocked precompact MUST rollback the reserved child (invalidate it),
@@ -148,6 +320,31 @@ test('gate-blocked precompact ROLLBACK: reserved child invalidated, respawn-fail
   const events = parseLog(logPath);
   const respawnFailed = events.find(e => e.type === 'respawn-failed');
   assert.ok(respawnFailed, 'event log must contain a respawn-failed event');
+});
+
+test('gate-blocked precompact propagates a terminal rollback race without changing terminal state', async () => {
+  const { root, runId } = seed();
+  const { data } = readState(root, runId);
+  data.circuit_breaker.tripped = true;
+  writeState(root, runId, data);
+
+  let terminalSnapshot;
+  const rollbackFn = (rollbackRoot, rollbackRunId, options) => {
+    const raced = readState(rollbackRoot, rollbackRunId).data;
+    raced.status = 'completed';
+    writeState(rollbackRoot, rollbackRunId, raced);
+    terminalSnapshot = structuredClone(readState(rollbackRoot, rollbackRunId).data);
+    return rollbackAndPause(rollbackRoot, rollbackRunId, options);
+  };
+
+  const r = await runPreCompactHandoff({ unattended: true }, {
+    root,
+    now: Date.parse('2026-06-24T00:01:00Z'),
+    env: {},
+    rollbackFn,
+  });
+  assert.deepEqual(r, { ok: false, action: 'terminal', reason: 'RUN_TERMINAL' });
+  assert.deepEqual(readState(root, runId).data, terminalSnapshot);
 });
 
 function parseLog(path) {

@@ -20,7 +20,10 @@ function baseData(overrides = {}) {
     schema_version: '0.2.0', run_id: OWNER, goal: 'g', status: 'paused',
     pause_reason: 'preserve-handoff',
     project: {}, routing: { protocol: 'deep-work' }, review: { points: ['design'] },
-    autonomy: { tier: 'recommend', spawn_style: 'interactive' },
+    autonomy: {
+      tier: 'recommend', spawn_style: 'interactive',
+      session_runtime: 'claude', runtime_source: 'skill-asserted',
+    },
     budget: { unit: 'turns', spent: 0 },
     comprehension: {}, circuit_breaker: { tripped: false },
     session_chain: {
@@ -45,7 +48,9 @@ function seed(overrides = {}) {
   const root = mkdtempSync(join(tmpdir(), 'dl-recover-'));
   const runId = OWNER;
   mkdirSync(runDir(root, runId), { recursive: true });
-  writeState(root, runId, baseData(overrides));
+  const data = baseData(overrides);
+  data.project.root = root;
+  writeState(root, runId, data);
   return { root, runId };
 }
 

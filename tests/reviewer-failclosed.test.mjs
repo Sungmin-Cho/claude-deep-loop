@@ -8,7 +8,7 @@
 //   무-contract skip으로 계약 미강제 APPROVE가 가능 — tracked 소스 + dispatch 시 부재 fail-closed.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, copyFileSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, copyFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,6 +18,7 @@ import { finishProofState } from '../scripts/lib/finish.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { resolveReviewer, dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
+import { createDirectoryJunction } from './helpers/fs-fixtures.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const TRACKED_CONTRACT = join(here, '..', 'skills', 'deep-loop-workflow', 'references', 'contracts', 'HILLCLIMB-001.yaml');
@@ -29,7 +30,7 @@ function seedRun({ reviewer, flags = [], recipe, detected = { 'deep-review': tru
   const review = reviewer
     ? { points: ['design', 'plan', 'implementation'], reviewer, mode: 'cross-model', flags, converge: true, max_review_rounds: 5, require_human_ack: true }
     : undefined;
-  const { runId } = initRun(root, { goal: recipe === 'harness-hill-climb' ? '하네스 개선' : 'g', recipe, review, detected, now: new Date('2026-07-10T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: recipe === 'harness-hill-climb' ? '하네스 개선' : 'g', recipe, review, detected, now: new Date('2026-07-10T00:00:00Z') });
   return { root, runId, f: fence(runId) };
 }
 
@@ -122,12 +123,13 @@ test('P1: explicitly empty or null reviewer is rejected, not defaulted', () => {
   assert.equal(resolveReviewer({}, { codex: false }).reviewer, 'subagent-checker');
 });
 
-// ── P1 보존 — 강등이 아닌 승격(subagent-checker → codex-cross)과 정상 경로는 유지 ──
-test('P1: subagent-checker promotion to codex-cross and normal paths are preserved', () => {
+// ── P1 보존 — runtime-neutral subagent identity와 정상 경로는 유지 ──
+test('P1: subagent-checker remains runtime-neutral and normal paths are preserved', () => {
   const { root, runId } = seedRun({ reviewer: 'subagent-checker' });
   const data = readState(root, runId).data;
-  assert.equal(resolveReviewer(data, { codex: true }).reviewer, 'codex-cross');
+  assert.equal(resolveReviewer(data, { codex: true }).reviewer, 'subagent-checker');
   assert.equal(resolveReviewer(data, { codex: false }).reviewer, 'subagent-checker');
+  assert.throws(() => resolveReviewer({ review: { reviewer: 'codex-cross' } }, { codex: true }), /REVIEWER_UNRECOGNIZED/);
   const dr = seedRun({ reviewer: 'deep-review-loop' });
   assert.equal(resolveReviewer(readState(dr.root, dr.runId).data, { 'deep-review': true }).reviewer, 'deep-review-loop');
 });
@@ -284,7 +286,7 @@ test('P2: a second contract yaml in the contracts dir fails closed at dispatch a
   const report = join('.claude/worktrees/w-design', 'review-report.md');
   writeFileSync(join(root, report), '# review report\nAPPROVE');
   assert.throws(
-    () => recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'design', verdict: 'APPROVE', proof: { report }, fence: f }),
+    () => recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, verdict: 'APPROVE', proof: { report }, fence: f }),
     /REVIEW_CONTRACT_MISSING/);
 });
 
@@ -303,7 +305,7 @@ test('P2: legacy unpinned-approved maker is re-review eligible and finish unbloc
   const r = dispatchReview(root, runId, { point: 'design', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
   const report = join('.claude/worktrees/w-design', 'review-report.md');
   writeFileSync(join(root, report), '# review report\nAPPROVE');
-  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'design', verdict: 'APPROVE', proof: { report }, fence: f });
+  recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, verdict: 'APPROVE', proof: { report }, fence: f });
   assert.ok(!finishProofState(readState(root, runId).data).missing.includes('hillclimb-contract-unpinned'));
 });
 
@@ -316,7 +318,7 @@ test('P2: contract behind a symlink escaping the worktree fails closed', () => {
   mkdirSync(join(outside, 'contracts'), { recursive: true });
   copyFileSync(TRACKED_CONTRACT, join(outside, 'contracts', 'HILLCLIMB-001.yaml'));
   mkdirSync(join(root, '.claude/worktrees/w-design'), { recursive: true });
-  symlinkSync(outside, join(root, '.claude/worktrees/w-design', '.deep-review'));
+  createDirectoryJunction(outside, join(root, '.claude/worktrees/w-design', '.deep-review'));
   assert.throws(
     () => dispatchReview(root, runId, { point: 'design', workstreamId: ws, detected: { 'deep-review': true }, fence: f }),
     /REVIEW_CONTRACT_MISSING/);
@@ -344,7 +346,7 @@ test('P2: contract removed between dispatch and record — passing verdict fails
   writeFileSync(join(root, report), '# review report\nAPPROVE');
   rmSync(join(root, '.claude/worktrees/w-design', '.deep-review', 'contracts', 'HILLCLIMB-001.yaml'));
   assert.throws(
-    () => recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'design', verdict: 'APPROVE', proof: { report }, fence: f }),
+    () => recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, verdict: 'APPROVE', proof: { report }, fence: f }),
     /REVIEW_CONTRACT_MISSING/);
   assert.equal(readState(root, runId).data.episodes.find(e => e.id === r.checkerEpisodeId).status, 'pending');
 });
@@ -359,11 +361,11 @@ test('P2: contract altered between dispatch and record — sha mismatch fails cl
   const cPath = join(root, '.claude/worktrees/w-design', '.deep-review', 'contracts', 'HILLCLIMB-001.yaml');
   writeFileSync(cPath, readFileSync(cPath, 'utf8').replace('status: active', 'status: archived'));
   assert.throws(
-    () => recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'design', verdict: 'APPROVE', proof: { report }, fence: f }),
+    () => recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, verdict: 'APPROVE', proof: { report }, fence: f }),
     /REVIEW_CONTRACT_MISSING/);
   // 복원(그대로 복사) 후에는 통과 — pending checker에 재기록 가능
   copyFileSync(TRACKED_CONTRACT, cPath);
-  const out = recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'design', verdict: 'APPROVE', proof: { report }, fence: f });
+  const out = recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, verdict: 'APPROVE', proof: { report }, fence: f });
   assert.equal(out.terminal, 'approved');
 });
 
@@ -379,10 +381,10 @@ test('P2: legacy hill-climb checker without pinned contract cannot record a pass
   const report = join('.claude/worktrees/w-design', 'review-report.md');
   writeFileSync(join(root, report), '# review report\nAPPROVE');
   assert.throws(
-    () => recordReviewOutcome(root, runId, { episodeId: checkerId, workstreamId: ws, point: 'design', verdict: 'APPROVE', proof: { report }, fence: f }),
+    () => recordReviewOutcome(root, runId, { episodeId: checkerId, verdict: 'APPROVE', proof: { report }, fence: f }),
     /REVIEW_CONTRACT_MISSING/);
   // REQUEST_CHANGES는 경량 reject 경로 유지 — legacy checker도 정상 reject 가능
-  const out = recordReviewOutcome(root, runId, { episodeId: checkerId, workstreamId: ws, point: 'design', verdict: 'REQUEST_CHANGES', proof: {}, fence: f });
+  const out = recordReviewOutcome(root, runId, { episodeId: checkerId, verdict: 'REQUEST_CHANGES', proof: {}, fence: f });
   assert.equal(out.terminal, 'rejected');
 });
 

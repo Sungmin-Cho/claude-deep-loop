@@ -1,10 +1,85 @@
 import { readState } from './state.mjs';
+import { existsSync } from 'node:fs';
+import { dirname, posix, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 import { appendAnchored } from './integrity.mjs';
 import { checkBudget, reconcileBudget } from './budget.mjs';
 import { checkBreaker } from './breaker.mjs';
 import { advanceHandoffPhase } from './lease.mjs';
-import { buildLaunchCommand } from './handoff.mjs';
+import { buildLaunchCommand } from './runtime-descriptor.mjs';
 import { defaultDesktopProbe } from './desktop-target.mjs';
+import { sessionRuntime } from './runtime.mjs';
+import { canonicalProjectRoot } from './project-root.mjs';
+import {
+  revalidateTrustedLauncherExecutable,
+  revalidateTrustedRuntimeExecutable,
+} from './runtime-executable.mjs';
+
+const DEFAULT_DEEP_LOOP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+function durableLauncherAuthority(loop, expectedKind) {
+  const approvals = loop.autonomy?.launcher_executable_approvals;
+  if (!approvals || typeof approvals !== 'object' || Array.isArray(approvals)
+    || !Object.hasOwn(approvals, expectedKind) || !approvals[expectedKind]
+    || typeof approvals[expectedKind] !== 'object' || Array.isArray(approvals[expectedKind])) return null;
+  return { source: 'durable-approval', identity: approvals[expectedKind] };
+}
+
+function currentLauncherAuthority(loop, expectedKind, { allowDetachedDurable = false } = {}) {
+  const approvals = loop.autonomy?.launcher_executable_approvals;
+  // A desktop handoff is app-native rather than terminal-native: on Windows its
+  // shell-free Start-Process wrapper needs the exact durable PowerShell approval,
+  // but it does not require a currently active PowerShell terminal session.
+  if (allowDetachedDurable && approvals !== undefined) {
+    return durableLauncherAuthority(loop, expectedKind);
+  }
+  const sessionIdentity = loop.session_spawn?.launcher_identity;
+  if (!sessionIdentity || typeof sessionIdentity !== 'object' || Array.isArray(sessionIdentity)
+    || loop.session_spawn?.launcher !== expectedKind) return null;
+  if (approvals === undefined) return { source: 'legacy-session', identity: sessionIdentity };
+  const durable = durableLauncherAuthority(loop, expectedKind);
+  if (durable == null || !isDeepStrictEqual(sessionIdentity, durable.identity)) return null;
+  return durable;
+}
+
+function currentPosixCodexLauncher(loop, expectedMode, platform) {
+  if (!['linux', 'darwin'].includes(platform) || !['cmux', 'iterm2', 'terminal-app'].includes(expectedMode)) return null;
+  const session = loop.session_spawn;
+  if (!session || typeof session !== 'object' || Array.isArray(session)
+    || session.platform !== platform || session.launcher !== expectedMode
+    || session.reachable !== true || session.visible !== true) return null;
+  if (expectedMode === 'cmux') {
+    if (session.surface !== 'workspace'
+      || typeof session.launcher_bin !== 'string' || !posix.isAbsolute(session.launcher_bin)
+      || typeof session.launcher_socket !== 'string' || session.launcher_socket.length === 0) return null;
+    const expectedProbe = {
+      cmd: [session.launcher_bin, '--socket', session.launcher_socket, 'ping'],
+      code: 0,
+    };
+    if (!isDeepStrictEqual(session.probe, expectedProbe)) return null;
+  } else if (platform !== 'darwin' || session.surface !== 'window'
+    || session.launcher_bin !== '/usr/bin/osascript' || session.launcher_socket != null) {
+    return null;
+  } else {
+    const app = expectedMode === 'iterm2' ? 'iTerm' : 'Terminal';
+    const expectedProbe = {
+      cmd: ['/usr/bin/osascript', '-e', `id of application "${app}"`],
+      code: 0,
+    };
+    if (!isDeepStrictEqual(session.probe, expectedProbe)) return null;
+  }
+  return {
+    platform: session.platform,
+    launcher: session.launcher,
+    launcher_bin: session.launcher_bin ?? null,
+    launcher_socket: session.launcher_socket ?? null,
+    surface: session.surface ?? null,
+    reachable: session.reachable,
+    visible: session.visible,
+    probe: session.probe,
+  };
+}
 
 // 게이트 순서: budget → breaker → max_sessions → wallclock → auto_handoff (spec §9). 순수.
 export function respawnGate(loop, { now = Date.now() } = {}) {
@@ -30,12 +105,14 @@ export function respawnGate(loop, { now = Date.now() } = {}) {
 // `headless:true`. PROVISIONAL signal (spec §14-5 open question): the exact `CLAUDE_CODE_ENTRYPOINT` value for
 // `claude -p` print mode is not yet pinned, so we recognize the concrete markers we DO control —
 // `DEEP_LOOP_UNATTENDED` (set by the headless driver on the child process) / `DEEP_LOOP_HEADLESS` — plus a
-// conservative entrypoint heuristic (sdk*/print/headless/non-interactive). FAIL-OPEN to false when
-// indeterminate: false + no positive launcher → mode 'interactive' → no-launcher → pause (fail-closed).
-export function isHeadlessInvocation(env = process.env) {
+// Claude-only conservative entrypoint heuristic (sdk*/print/headless/non-interactive). Codex ignores that
+// Claude-owned variable. FAIL-OPEN to false when indeterminate: false + no positive launcher → mode
+// 'interactive' → no-launcher → pause (fail-closed).
+export function isHeadlessInvocation(env = process.env, runtime = 'claude') {
   if (!env || typeof env !== 'object') return false;
   const truthy = (v) => v === '1' || v === 'true' || v === true;
   if (truthy(env.DEEP_LOOP_UNATTENDED) || truthy(env.DEEP_LOOP_HEADLESS)) return true;
+  if (runtime === 'codex') return false;
   const ep = String(env.CLAUDE_CODE_ENTRYPOINT || '').toLowerCase();
   if (!ep || ep === 'cli') return false;   // interactive TUI (or unset) → not headless
   if (ep.startsWith('sdk') || ep.includes('print') || ep.includes('headless') || ep.includes('noninteractive') || ep.includes('non-interactive')) return true;
@@ -48,7 +125,8 @@ export function isHeadlessInvocation(env = process.env) {
 // attended===true (Claude Desktop deeplink transport). A visible launcher mode requires spawn_style==='visible'
 // AND attended===true AND a real (non-'none') detected launcher; otherwise 'interactive'.
 export function resolveSpawnMode(loop, { headless = false, attended = false, env = process.env } = {}) {
-  if (headless || loop?.autonomy?.spawn_style === 'headless' || isHeadlessInvocation(env)) return 'headless';
+  const runtime = sessionRuntime(loop);
+  if (headless || loop?.autonomy?.spawn_style === 'headless' || isHeadlessInvocation(env, runtime)) return 'headless';
   if (loop?.autonomy?.spawn_style === 'desktop' && attended === true) return 'desktop';
   const launcher = loop?.session_spawn?.launcher;
   if (loop?.autonomy?.spawn_style === 'visible' && attended === true && launcher && launcher !== 'none') return launcher;
@@ -56,8 +134,8 @@ export function resolveSpawnMode(loop, { headless = false, attended = false, env
 }
 
 function defaultSpawn() {
-  // 실제 spawn은 spawn-driver 의 visibleSpawn/headlessSpawn. 단위 테스트는 spawnFn 주입.
-  throw new Error('SPAWN_NOT_WIRED: provide spawnFn (visible=visibleSpawn, headless=headlessSpawn)');
+  // Production callers inject either visibleSpawn or the shared headless host's measured closure.
+  throw new Error('SPAWN_NOT_WIRED: provide a synchronous spawnFn');
 }
 function defaultSleep(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
 
@@ -163,13 +241,27 @@ export function respawn(root, runId, {
   now = Date.now(), spawnFn = defaultSpawn, pollLease, env = process.env,
   sleep = defaultSleep, pollIntervalMs = 1500,
   platform = process.platform, desktopProbe = defaultDesktopProbe,
+  codexExecutable = null, deepLoopRoot = DEFAULT_DEEP_LOOP_ROOT,
+  descriptorExists = existsSync,
+  launchCommandBuilder = buildLaunchCommand,
+  expect = null, expectedMode = null,
+  revalidateRuntimeExecutable = revalidateTrustedRuntimeExecutable,
+  revalidateLauncherExecutable = revalidateTrustedLauncherExecutable,
+  runtimeRevalidationOptions = {},
+  launcherRevalidationOptions = {},
 } = {}) {
   reconcileBudget(root, runId);                       // 무결성 fail-stop (탐지 시 throw)
   const { data: loop } = readState(root, runId);
+  const runtime = sessionRuntime(loop);
+  const canonicalRoot = canonicalProjectRoot(loop.project.root);
   const lease = loop.session_chain.lease;
   const generation = lease.generation;
   const parentOwner = lease.owner_run_id;
   const poll = pollLease || (() => readState(root, runId).data.session_chain.lease);
+
+  if (expect && (lease.owner_run_id !== expect.owner || lease.generation !== expect.generation)) {
+    return { ok: false, outcome: 'fenced', reason: 'caller-parent-fence-mismatch', childRunId };
+  }
 
   // v1.6 (spec §2.3-5, r5 P2-a): terminal fast-return — 모든 분기(특히 spawned 재진입 :Codex r5 A)보다 앞.
   // legacy terminal+spawned는 재진입 분기가 already-spawned 성공/preservePause(paused 강등)로 새고,
@@ -196,6 +288,9 @@ export function respawn(root, runId, {
     //     is the normal idempotent-retry / concurrent double-spawn-guard contract — keep the plain no-op (no
     //     spurious pause). An already-paused run was handled by a prior preserve → idempotent no-op too.
     const reMode = resolveSpawnMode(loop, { headless, attended, env });
+    if (expectedMode != null && reMode !== expectedMode) {
+      return { ok: false, outcome: 'mode-changed', reason: `spawn-mode-changed:${expectedMode}->${reMode}`, childRunId };
+    }
     if (reMode === 'headless' || reMode === 'interactive' || loop.status === 'paused') {
       return { ok: true, outcome: 'already-spawned', reason: 'idempotent', childRunId };
     }
@@ -231,6 +326,9 @@ export function respawn(root, runId, {
 
   // ── mode selection (spec §7) ────────────────────────────────────────────────
   const mode = resolveSpawnMode(loop, { headless, attended, env });
+  if (expectedMode != null && mode !== expectedMode) {
+    return { ok: false, outcome: 'mode-changed', reason: `spawn-mode-changed:${expectedMode}->${mode}`, childRunId };
+  }
   if (mode === 'interactive') {
     // No auto-spawn possible; gate already passed → PRESERVE the emitted handoff (do NOT rollback) — the
     // skill pauses via `deep-loop pause --mode preserve`, keeping the reserved child for a human/visible-continue
@@ -238,49 +336,162 @@ export function respawn(root, runId, {
     return { ok: false, outcome: 'no-launcher', reason: 'no-auto-launcher', childRunId };
   }
   const isHeadless = mode === 'headless';
+  let runtimeExecutableIdentity = null;
+  let launcherIdentity = null;
+  let launcherAuthoritySnapshot = null;
+  let posixLauncherSnapshot = null;
+  const requiresPosixCodexLauncher = ['linux', 'darwin'].includes(platform) && runtime === 'codex'
+    && ['cmux', 'iterm2', 'terminal-app'].includes(mode);
+  // The shared headless host owns Codex executable preflight and post-CAS
+  // revalidation. This local authority path is for auto-visible continuation;
+  // Windows keeps its existing direct runtime requirement for every non-App mode.
+  const requiresRuntime = (platform === 'win32' && mode !== 'desktop')
+    || requiresPosixCodexLauncher;
+  const requiresWindowsLauncher = platform === 'win32'
+    && (mode === 'wt' || mode === 'powershell' || (runtime === 'claude' && mode === 'desktop'));
+  if (requiresRuntime || requiresWindowsLauncher || requiresPosixCodexLauncher) {
+    let identityStage = requiresRuntime ? 'runtime' : 'launcher';
+    try {
+      if (requiresRuntime) {
+        const stored = loop.autonomy?.runtime_executable_approval;
+        runtimeExecutableIdentity = revalidateRuntimeExecutable(stored, { ...runtimeRevalidationOptions, platform });
+        if (!runtimeExecutableIdentity || runtimeExecutableIdentity.runtime !== runtime
+          || runtimeExecutableIdentity.canonical_path !== stored?.canonical_path
+          || !isDeepStrictEqual(runtimeExecutableIdentity, stored)) throw new Error('runtime identity mismatch');
+      }
+      if (requiresWindowsLauncher) {
+        identityStage = 'launcher';
+        const expectedKind = mode === 'wt' ? 'wt' : 'powershell';
+        launcherAuthoritySnapshot = currentLauncherAuthority(loop, expectedKind, {
+          allowDetachedDurable: mode === 'desktop',
+        });
+        const stored = launcherAuthoritySnapshot?.identity;
+        if (stored == null) throw new Error('launcher authority unavailable');
+        launcherIdentity = revalidateLauncherExecutable(stored, { ...launcherRevalidationOptions, platform });
+        if (!launcherIdentity || launcherIdentity.kind !== expectedKind
+          || !isDeepStrictEqual(launcherIdentity, stored)) throw new Error('launcher identity mismatch');
+      }
+      if (requiresPosixCodexLauncher) {
+        identityStage = 'launcher';
+        posixLauncherSnapshot = currentPosixCodexLauncher(loop, mode, platform);
+        if (posixLauncherSnapshot == null) throw new Error('launcher session unavailable');
+      }
+    } catch {
+      const reason = `${identityStage}-identity-unavailable`;
+      const res = preservePause(root, runId, { childRunId, parentOwner, generation, pauseReason: reason });
+      if (res.terminal) return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };
+      if (res.fenced) return { ok: false, outcome: 'fenced', reason: 'lease-changed-before-pause', childRunId };
+      return { ok: false, outcome: 'no-launcher', reason, childRunId };
+    }
+  }
   // Codex r3 🔴3: derive effHandoffRel + construct/validate the launch entry BEFORE the spawned CAS.
   // buildLaunchCommand can throw UNSAFE_SPAWN_ARG (or cmds[mode] undefined for an unrecognised mode).
   // A throw here leaves the lease in 'emitted' (no CAS yet → not stranded). Only command CONSTRUCTION
   // moves above the CAS; spawnFn call and its try/catch remain below, unchanged.
   const childSession = loop.session_chain.sessions.find(s => s.run_id === childRunId);
   const effHandoffRel = (childSession && childSession.handoff_rel) || handoffRel;
-  // Task 5b: only a 'desktop' mode spawn probes the real (or injected) handler-verification target —
-  // other modes never touch it. A verified target's argvTarget threads through as `desktopTarget`; an
+  // Task 5b: only a Claude 'desktop' mode spawn probes the real (or injected) handler-verification target —
+  // Codex and other modes never touch it. A verified target's argvTarget threads through as `desktopTarget`; an
   // unverified/failed probe (dt.ok===false) yields null → buildLaunchCommand's unavailable entry →
   // the generalized unavailable-entry guard below preserve-pauses (never a rollback/fenced-target spawn).
-  const dt = mode === 'desktop' ? desktopProbe({ platform }) : null;
+  const dt = runtime === 'claude' && mode === 'desktop' ? desktopProbe({ platform }) : null;
   let _cmds, _entry;
   try {
     // launcherBin + launcherSocket threading (R3/R7-plan): cmux requires the absolute bundled bin + verified socket.
-    _cmds = buildLaunchCommand({
-      root, parentRunId: runId, childRunId, handoffRel: effHandoffRel,
+    // The default binds production descriptors to the canonical state root.
+    // Foreign-platform tests may inject the pure builder to keep a physical
+    // POSIX fixture distinct from a simulated fully-qualified Windows target.
+    _cmds = launchCommandBuilder({
+      runtime, root: canonicalRoot, parentRunId: runId, childRunId, handoffRel: effHandoffRel,
       launcher: loop.session_spawn?.launcher,
       launcherBin: loop.session_spawn?.launcher_bin,
       launcherSocket: loop.session_spawn?.launcher_socket,
       platform, desktopTarget: dt && dt.ok ? dt.argvTarget : null,
+      exists: descriptorExists,
       model: loop.autonomy?.session_model ?? null, effort: loop.autonomy?.session_effort ?? null,
+      codexExecutable, deepLoopRoot,
+      runtimeExecutableIdentity, launcherIdentity,
     });
     _entry = _cmds[mode];
   } catch (buildErr) {
-    // Throw happened while lease is still 'emitted' — no CAS yet, not stranded. Return clear error.
-    return { ok: false, outcome: 'build-error', reason: String(buildErr.message || buildErr), childRunId };
+    // A visible caller does not inspect soft outcomes before returning, so even a pre-CAS descriptor error
+    // must preserve-pause here. Keep the emitted reservation recoverable and retain the bounded original
+    // construction reason rather than replacing it with a generic marker.
+    const buildReason = String(buildErr.message || buildErr).slice(0, 512);
+    const res = preservePause(root, runId, {
+      childRunId, parentOwner, generation, pauseReason: buildReason,
+    });
+    if (res.acquired) return { ok: true, outcome: 'spawned', reason: 'child-acquired-during-build-error', childRunId };
+    if (res.terminal) return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };
+    if (res.fenced) return { ok: false, outcome: 'fenced', reason: 'lease-changed-before-pause', childRunId };
+    return { ok: false, outcome: 'build-error', reason: buildReason, childRunId };
   }
 
   // Fail closed: ANY visible/desktop mode with an unavailable entry (no trusted launcher_bin — e.g. a
   // stale/migrated launcher='powershell' run — or an unverified desktop target, or (win32 only) a
-  // verified win-exe target with no trusted PowerShell bin resolvable — see handoff.mjs's win32
+  // verified win-exe target with no trusted PowerShell bin resolvable — see runtime-descriptor.mjs's win32
   // branch, which otherwise builds a runnable non-blocking `Start-Process` entry) — must NOT spawn.
   // `interactive` never reaches here (it returns above, before `_cmds` is
-  // built); `headless`'s entry always carries `bin:'claude'` (guard never fires); a valid launcher entry
+  // built); headless carries a runtime-selected measured Claude or approved Codex entry, while an
+  // unsupported Codex transport remains unavailable and is caught here before CAS; a valid launcher entry
   // always has a `bin` (guard never fires). Unlike the interactive no-launcher path (which the else/none
   // skill branch preserve-pauses), this is reached via the VISIBLE/DESKTOP skill branch (launcher!=='none'
   // → `respawn --attended`), which does NOT inspect the outcome — so respawn must preserve-pause ITSELF here, or
   // the handoff is left emitted/releasing, unpaused, with no child spawned (stranded). Mirrors gate-blocked self-pause.
   if (!_entry || _entry.unavailable || !_entry.bin) {
-    const res = preservePause(root, runId, { childRunId, parentOwner, generation, pauseReason: `${mode}-launcher-unavailable` });
+    const unavailableReason = _entry?.reason || `${mode}-launcher-unavailable`;
+    const res = preservePause(root, runId, { childRunId, parentOwner, generation, pauseReason: unavailableReason });
     if (res.terminal) return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };   // v1.6
     if (res.fenced) return { ok: false, outcome: 'fenced', reason: 'lease-changed-before-pause', childRunId };
-    return { ok: false, outcome: 'no-launcher', reason: `${mode}-launcher-unavailable`, childRunId };
+    return { ok: false, outcome: 'no-launcher', reason: unavailableReason, childRunId };
+  }
+
+  const revalidateIdentityStage = (sourceLoop) => {
+    if (runtimeExecutableIdentity != null) {
+      try {
+        const stored = sourceLoop.autonomy?.runtime_executable_approval;
+        if (!isDeepStrictEqual(stored, loop.autonomy?.runtime_executable_approval)) {
+          return 'runtime-identity-drift';
+        }
+        const fresh = revalidateRuntimeExecutable(stored, { ...runtimeRevalidationOptions, platform });
+        if (!isDeepStrictEqual(fresh, runtimeExecutableIdentity)) return 'runtime-identity-drift';
+      } catch {
+        return 'runtime-identity-drift';
+      }
+    }
+    if (platform === 'win32' && launcherIdentity != null) {
+      try {
+        const expectedKind = mode === 'wt' ? 'wt' : 'powershell';
+        const authority = currentLauncherAuthority(sourceLoop, expectedKind, {
+          allowDetachedDurable: mode === 'desktop',
+        });
+        if (authority == null || launcherAuthoritySnapshot == null
+          || authority.source !== launcherAuthoritySnapshot.source
+          || !isDeepStrictEqual(authority.identity, launcherAuthoritySnapshot.identity)) {
+          return 'launcher-identity-drift';
+        }
+        const fresh = revalidateLauncherExecutable(authority.identity, { ...launcherRevalidationOptions, platform });
+        if (!isDeepStrictEqual(fresh, launcherIdentity)) return 'launcher-identity-drift';
+      } catch {
+        return 'launcher-identity-drift';
+      }
+    }
+    if (posixLauncherSnapshot != null) {
+      const fresh = currentPosixCodexLauncher(sourceLoop, mode, platform);
+      if (!isDeepStrictEqual(fresh, posixLauncherSnapshot)) return 'launcher-identity-drift';
+    }
+    return null;
+  };
+
+  // Fresh durable identity + direct version/hash checks immediately before the CAS may authorize spawn.
+  const preClaimIdentityFailure = revalidateIdentityStage(readState(root, runId).data);
+  if (preClaimIdentityFailure) {
+    const res = preservePause(root, runId, {
+      childRunId, parentOwner, generation, pauseReason: preClaimIdentityFailure,
+    });
+    if (res.terminal) return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };
+    if (res.fenced) return { ok: false, outcome: 'fenced', reason: 'lease-changed-before-pause', childRunId };
+    return { ok: false, outcome: 'no-launcher', reason: preClaimIdentityFailure, childRunId };
   }
 
   // Codex r2 🔴3: 외부 spawn **이전에** emitted→spawned 를 원자적(withLock CAS)으로 클레임 (이중 외부 spawn 차단).
@@ -296,6 +507,17 @@ export function respawn(root, runId, {
 
   // Codex impl r8 🟡: entry is already built + validated before the CAS above.
   const entry = _entry;
+  const identityFailure = revalidateIdentityStage(readState(root, runId).data);
+  if (identityFailure) {
+    const res = rollbackAndPause(root, runId, {
+      childRunId, parentOwner, generation,
+      eventData: { child_run_id: childRunId, error: identityFailure },
+      pauseReason: 'launch-failed',
+    });
+    if (res.terminal) return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };
+    if (res.fenced) return { ok: false, outcome: 'fenced', reason: 'lease-changed-before-failure-record', childRunId };
+    return { ok: false, outcome: 'failed_launch', reason: identityFailure, childRunId };
+  }
   try {
     const res = spawnFn(entry);
     if (res && res.ok === false) throw new Error(res.reason || 'spawn-returned-false');

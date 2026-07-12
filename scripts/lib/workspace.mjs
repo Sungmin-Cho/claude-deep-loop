@@ -1,10 +1,11 @@
 import { existsSync, realpathSync, lstatSync } from 'node:fs';
-import { isAbsolute, join, resolve, relative, sep, dirname, basename } from 'node:path';
+import { isAbsolute, join, resolve, relative, dirname, basename } from 'node:path';
 import { readState, writeState, withLock } from './state.mjs';
 import { appendAnchored } from './integrity.mjs';
 import { slugify } from './slug.mjs';
 import { leaseCheck } from './lease.mjs';
 import { MUTATION_TURN_FLOOR } from './budget.mjs';
+import { normalizePortableRelativePath, pathWithin } from './fs-safe.mjs';
 
 const NON_TERMINAL = ['planned', 'in_progress', 'in_review', 'parked'];
 const TERMINAL = ['ready', 'merged', 'abandoned'];
@@ -36,26 +37,36 @@ export function newWorkstream(root, runId, { title, branch, worktree, baseCommit
       if (st.isSymbolicLink()) throw new Error('WORKSTREAM_WORKTREE_ESCAPE: dangling symlink component: ' + abs);
     } catch (e) {
       if (e.message.startsWith('WORKSTREAM_WORKTREE_ESCAPE')) throw e;
-      // ENOENT (or other) → truly absent leaf; continue walking up
+      if (e?.code !== 'ENOENT') {
+        throw new Error('WORKSTREAM_WORKTREE_ESCAPE: unresolved worktree component: ' + abs, { cause: e });
+      }
+      // ENOENT → truly absent leaf; continue walking up
     }
     const par = dirname(abs);
     if (par === abs) return abs; // filesystem root — can't walk further
     return join(_resolveDeep(par), basename(abs));
   }
-  const _wtBase = isAbsolute(worktree) ? worktree : join(_rootResolved, worktree);
+  const _absoluteInput = isAbsolute(worktree);
+  const _portableInput = _absoluteInput ? null : normalizePortableRelativePath(worktree);
+  if (!_absoluteInput && !_portableInput) {
+    throw new Error('WORKSTREAM_WORKTREE_ESCAPE: invalid relative worktree path: ' + worktree);
+  }
+  const _wtBase = _absoluteInput ? worktree : join(_rootResolved, _portableInput);
   const _wtResolved = _resolveDeep(_wtBase);
   // Convention prefixes are lexical (rooted at resolved root) — do NOT resolve the convention dirs
   // themselves, so a symlinked .claude/worktrees pointing outside root is still rejected.
-  const _conv1 = _rootResolved + sep + '.claude' + sep + 'worktrees' + sep;
-  const _conv2 = _rootResolved + sep + '.worktrees' + sep;
-  const _underConvention = _wtResolved.startsWith(_conv1) || _wtResolved.startsWith(_conv2);
+  const _conv1 = join(_rootResolved, '.claude', 'worktrees');
+  const _conv2 = join(_rootResolved, '.worktrees');
+  const _underConvention = [_conv1, _conv2].some(base =>
+    pathWithin(base, _wtResolved) && relative(base, _wtResolved) !== '');
   if (worktree.split(/[/\\]/).includes('..') || !_underConvention) {
     throw new Error('WORKSTREAM_WORKTREE_ESCAPE: worktree must resolve under project root: ' + worktree);
   }
   // FIX Q: normalize stored worktree to root-relative form regardless of whether caller passed an
   // absolute or relative path — stored value must be root-relative so artifact prefixes derived from
   // it stay root-relative and pass episode.mjs containment (absolute/.. paths are rejected there).
-  const _storedWorktree = relative(_rootResolved, _wtResolved);  // e.g. '.claude/worktrees/<slug>'
+  const _storedWorktree = normalizePortableRelativePath(relative(_rootResolved, _wtResolved));
+  if (!_storedWorktree) throw new Error('WORKSTREAM_WORKTREE_ESCAPE: worktree is not durably relative: ' + worktree);
   let id;
   appendAnchored(root, runId, { type: 'workstream-new', data: { title } }, (loop) => {
     const n = String(loop.workstreams.length + 1).padStart(2, '0');

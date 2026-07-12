@@ -1,7 +1,7 @@
 // Codex r3 FIX 1: atomic lease fencing tests — library-level interleaving scenarios
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
@@ -10,13 +10,26 @@ import { acquireLease, releaseLease } from '../scripts/lib/lease.mjs';
 import { detectAndPersist } from '../scripts/lib/detect-terminal.mjs';
 import { newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal } from '../scripts/lib/workspace.mjs';
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
-import { dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
+import { dispatchReview, importReviewOutcome, recordReviewOutcome } from '../scripts/lib/review.mjs';
 
 function seed() {
   const root = mkdtempSync(join(tmpdir(), 'dl-fence-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
   return { root, runId };
 }
+
+test('direct writeState replacement is fenced at a copied project root', () => {
+  const { root: originalRoot, runId } = seed();
+  const candidateRoot = mkdtempSync(join(tmpdir(), 'dl-fence-copy-'));
+  const { data } = readState(originalRoot, runId);
+  cpSync(join(originalRoot, '.deep-loop'), join(candidateRoot, '.deep-loop'), { recursive: true });
+  const hashPath = join(runDir(candidateRoot, runId), '.loop.hash');
+  const beforeHash = readFileSync(hashPath, 'utf8');
+
+  data.discovered_items = ['must-not-write'];
+  assert.throws(() => writeState(candidateRoot, runId, data), /PROJECT_ROOT_FENCED/);
+  assert.equal(readFileSync(hashPath, 'utf8'), beforeHash);
+});
 
 // FIX 1: stale parent (gen 1) loses lease → child acquires gen 2 → parent's mutator throws LEASE_FENCED
 test('newWorkstream with stale fence throws LEASE_FENCED', () => {
@@ -28,7 +41,7 @@ test('newWorkstream with stale fence throws LEASE_FENCED', () => {
   // Simulate child takeover: release gen1, acquire gen2
   releaseLease(root, runId, { owner, generation: gen1 });
   const newOwner = 'child-run-id-01';
-  acquireLease(root, runId, { owner: newOwner, expectGeneration: gen1 });
+  acquireLease(root, runId, { owner: newOwner, expectGeneration: gen1, runtime: 'claude' });
 
   // Old parent tries to mutate with stale fence (gen1) — must throw LEASE_FENCED
   assert.throws(
@@ -58,7 +71,7 @@ test('setWorkstreamStatus with stale fence throws LEASE_FENCED', () => {
 
   // Simulate child takeover
   releaseLease(root, runId, { owner, generation: gen1 });
-  acquireLease(root, runId, { owner: 'child-run-002', expectGeneration: gen1 });
+  acquireLease(root, runId, { owner: 'child-run-002', expectGeneration: gen1, runtime: 'claude' });
 
   assert.throws(
     () => setWorkstreamStatus(root, runId, id, 'in_progress', { fence: { owner, generation: gen1, intent: 'business' } }),
@@ -76,7 +89,7 @@ test('recordWorkstreamTerminal with stale fence throws LEASE_FENCED', () => {
 
   // Simulate child takeover
   releaseLease(root, runId, { owner, generation: gen1 });
-  acquireLease(root, runId, { owner: 'child-run-003', expectGeneration: gen1 });
+  acquireLease(root, runId, { owner: 'child-run-003', expectGeneration: gen1, runtime: 'claude' });
 
   assert.throws(
     () => recordWorkstreamTerminal(root, runId, id, { status: 'abandoned', proof: { reason: 'x' }, fence: { owner, generation: gen1, intent: 'business' } }),
@@ -92,7 +105,7 @@ test('newEpisode with stale fence throws LEASE_FENCED', () => {
 
   // Simulate child takeover
   releaseLease(root, runId, { owner, generation: gen1 });
-  acquireLease(root, runId, { owner: 'child-run-004', expectGeneration: gen1 });
+  acquireLease(root, runId, { owner: 'child-run-004', expectGeneration: gen1, runtime: 'claude' });
 
   assert.throws(
     () => newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation', fence: { owner, generation: gen1, intent: 'business' } }),
@@ -110,7 +123,7 @@ test('recordEpisode with stale fence throws LEASE_FENCED', () => {
 
   // Simulate child takeover
   releaseLease(root, runId, { owner, generation: gen1 });
-  acquireLease(root, runId, { owner: 'child-run-005', expectGeneration: gen1 });
+  acquireLease(root, runId, { owner: 'child-run-005', expectGeneration: gen1, runtime: 'claude' });
 
   assert.throws(
     () => recordEpisode(root, runId, id, { status: 'in_progress', fence: { owner, generation: gen1, intent: 'business' } }),
@@ -134,10 +147,10 @@ test('recordReviewOutcome with stale fence throws LEASE_FENCED', () => {
 
   // Simulate child takeover
   releaseLease(root, runId, { owner, generation: gen1 });
-  acquireLease(root, runId, { owner: 'child-run-006', expectGeneration: gen1 });
+  acquireLease(root, runId, { owner: 'child-run-006', expectGeneration: gen1, runtime: 'claude' });
 
   assert.throws(
-    () => recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, workstreamId: ws, point: 'plan', verdict: 'APPROVE', fence: { owner, generation: gen1, intent: 'business' } }),
+    () => recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, verdict: 'APPROVE', fence: { owner, generation: gen1, intent: 'business' } }),
     /LEASE_FENCED/
   );
 });
@@ -180,6 +193,11 @@ test('all mutators without fence param throw FENCE_REQUIRED (fence is now mandat
     () => recordReviewOutcome(root, runId, { episodeId: 'ep-id', verdict: 'APPROVE' }),
     /FENCE_REQUIRED/
   );
+  // importReviewOutcome
+  assert.throws(
+    () => importReviewOutcome(root, runId, { raw: '{}' }),
+    /FENCE_REQUIRED/
+  );
 });
 
 // ── Task 3: detectAndPersist fencing + releasing-safe tests ─────────────────
@@ -195,7 +213,7 @@ function readLog(root, runId) {
 
 test('detectAndPersist: wrong owner throws LEASE_FENCED', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-dt-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-28T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-28T00:00:00Z') });
   assert.throws(
     () => detectAndPersist(root, runId, { owner: 'wrong-owner', generation: 1, env: {}, platform: 'linux', run: noOpRun, now: DT_NOW }),
     /LEASE_FENCED/
@@ -204,7 +222,7 @@ test('detectAndPersist: wrong owner throws LEASE_FENCED', () => {
 
 test('detectAndPersist: wrong generation throws LEASE_FENCED', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-dt-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-28T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-28T00:00:00Z') });
   const { data } = readState(root, runId);
   const owner = data.session_chain.lease.owner_run_id;
   assert.throws(
@@ -215,7 +233,7 @@ test('detectAndPersist: wrong generation throws LEASE_FENCED', () => {
 
 test('detectAndPersist: success writes session_spawn and terminal-detected event atomically', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-dt-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-28T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-28T00:00:00Z') });
   const { data } = readState(root, runId);
   const owner = data.session_chain.lease.owner_run_id;
   const generation = data.session_chain.lease.generation;
@@ -237,7 +255,7 @@ test('detectAndPersist: success writes session_spawn and terminal-detected event
 
 test('detectAndPersist: re-detect overwrites session_spawn (idempotent)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-dt-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-28T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-28T00:00:00Z') });
   const { data } = readState(root, runId);
   const owner = data.session_chain.lease.owner_run_id;
   const generation = data.session_chain.lease.generation;
@@ -254,7 +272,7 @@ test('detectAndPersist: re-detect overwrites session_spawn (idempotent)', () => 
 
 test('detectAndPersist: works when lease.state === releasing (releasing-safe R11-HH)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-dt-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-28T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-28T00:00:00Z') });
   const { data } = readState(root, runId);
   const owner = data.session_chain.lease.owner_run_id;
   const generation = data.session_chain.lease.generation;
@@ -275,7 +293,7 @@ test('detectAndPersist: works when lease.state === releasing (releasing-safe R11
 // ── v1.6: detectAndPersist terminal 가드 (spec §2.3-4 / §4-5b) ───────────────
 test('detectAndPersist: terminal run throws RUN_TERMINAL (releasing-safe preserved)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-dt-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-07-09T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-07-09T00:00:00Z') });
   const { data } = readState(root, runId);
   const owner = data.session_chain.lease.owner_run_id;
   // terminal → 유효 fence여도 in-lock 가드가 거부 (외곽 requireLease 없이 lib 직접 — in-lock이 권위)

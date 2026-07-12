@@ -9,7 +9,7 @@ import { readState } from '../scripts/lib/state.mjs';
 
 function seed() {
   const root = mkdtempSync(join(tmpdir(), 'dl-breaker-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
   return { root, runId };
 }
 
@@ -51,7 +51,7 @@ test('recordReviewVerdict APPROVE after latch resets counter but keeps tripped l
 
 test('resetBreaker clears a tripped latch under valid fence; wrong gen throws', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-rb-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
   const fence = { owner: runId, generation: 1, intent: 'business' };
   recordReviewVerdict(root, runId, 'REQUEST_CHANGES', fence);
   recordReviewVerdict(root, runId, 'REQUEST_CHANGES', fence);
@@ -70,7 +70,7 @@ import { writeState } from '../scripts/lib/state.mjs';
 
 function terminalSeed(status = 'completed') {
   const root = mkdtempSync(join(tmpdir(), 'dl-brk-t-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-07-09T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-07-09T00:00:00Z') });
   const { data } = readState(root, runId);
   data.status = status;
   writeState(root, runId, data);

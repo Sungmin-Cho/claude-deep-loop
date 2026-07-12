@@ -1,4 +1,5 @@
 import { contentHash, ulid } from './envelope.mjs';
+import { runtimeFence } from './runtime.mjs';
 import { readState, writeState, withLock } from './state.mjs';
 
 const PHASE_ORDER = { idle: 0, reserved: 1, emitted: 2, spawned: 3, acquired: 4 };
@@ -9,7 +10,11 @@ export function deriveIdempotencyKey(ownerRunId, ownerGeneration, triggerReason)
 
 // 펜싱 가드 — 읽기를 제외한 모든 커널 mutating 경로가 진입 전에 호출 (spec §9.1).
 // RUN_PAUSED gate: paused 상태에서 업무 write 거부. 예외 intent: 'recover', 'resume', 'breaker-reset'.
-export function leaseCheck(loop, { owner, generation, intent = 'business' } = {}) {
+export function leaseCheck(loop, { owner, generation, runtime, intent = 'business' } = {}) {
+  if (runtime !== undefined) {
+    const fence = runtimeFence(loop, runtime);
+    if (!fence.ok) return fence;
+  }
   const lease = loop?.session_chain?.lease;
   if (!lease) return { ok: false, reason: 'no-lease' };
   if (lease.owner_run_id !== owner) return { ok: false, reason: 'owner-mismatch' };
@@ -24,18 +29,23 @@ export function leaseCheck(loop, { owner, generation, intent = 'business' } = {}
   // Codex r2 🔴2: expires_at 로 active 소유자를 fence 하지 않는다 — 살아있는 소유자가 TTL(15분) 후 자기 write 에서
   // 죽으면 안 됨. stale 소유자(자식이 인수해 generation 이 올라간 경우)는 generation-mismatch 로 이미 펜싱된다.
   // expires_at 는 오직 acquireLease 의 takeover 판단(releasing 크래시)에만 쓰인다.
-  // RUN_PAUSED: paused 상태 → 업무 write 차단. 인간 전용 recover/resume/breaker-reset intent 만 통과.
-  if (loop.status === 'paused' && intent !== 'recover' && intent !== 'resume' && intent !== 'breaker-reset') {
+  // RUN_PAUSED: paused 상태 → 업무/lease write 차단. 인간 전용 경로 외에, 이미 소비된
+  // checker turn을 최종 import 후 기록하는 matching accounting만 허용한다. 상단 owner/generation,
+  // terminal, released/releasing 가드를 모두 통과해야 하므로 소유권이나 업무 권한은 넓어지지 않는다.
+  if (loop.status === 'paused' && intent !== 'accounting'
+    && intent !== 'recover' && intent !== 'resume' && intent !== 'breaker-reset') {
     return { ok: false, reason: 'RUN_PAUSED' };
   }
   return { ok: true, reason: 'ok' };
 }
 
-// CAS 인수: released 또는 stale(expired)만, generation === expectGeneration 펜싱. 성공 시 generation+1.
-export function acquireLease(root, runId, { owner, expectGeneration, now = Date.now() }) {
+// Runtime-fenced CAS 인수: released 또는 stale(expired)만, generation === expectGeneration. 성공 시 generation+1.
+export function acquireLease(root, runId, { owner, expectGeneration, runtime, now = Date.now() }) {
   if (typeof owner !== 'string' || owner.length === 0) throw new Error('INVALID_OWNER');
   return withLock(root, runId, () => {
     const { data } = readState(root, runId);
+    const runtimeResult = runtimeFence(data, runtime);
+    if (!runtimeResult.ok) return runtimeResult;
     const lease = data.session_chain.lease;
     // 같은 owner 가 이미 active 면 멱등 (active 는 만료 deadline 이 없다 — Codex r2 🔴2)
     if (lease.owner_run_id === owner && lease.state === 'active') {

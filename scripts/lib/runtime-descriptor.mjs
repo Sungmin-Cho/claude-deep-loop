@@ -1,0 +1,444 @@
+import { existsSync } from 'node:fs';
+import { posix, win32 } from 'node:path';
+import { isTrustedPsBin, trustedPsCandidates } from './detect-terminal.mjs';
+import { validateSessionRuntime } from './runtime.mjs';
+import { buildCodexExecEntry } from './codex-runtime.mjs';
+import { validateRuntimeProfile } from './session-profile.mjs';
+import { tomlBasicString } from './toml-safe.mjs';
+
+const CODEX_TRANSPORT_UNAVAILABLE = 'codex-transport-not-activated';
+
+// POSIX single-quote wrap: embed s safely in a single-quoted shell argument.
+// ' → '\'' (close-quote, literal-quote, reopen-quote).
+function q(s) { return "'" + String(s).replace(/'/g, "'\\''") + "'"; }
+
+// Escape for an AppleScript double-quoted string literal. Backslashes must be
+// doubled before quotes are escaped so shell quoting survives AppleScript.
+function escApple(s) { return String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"'); }
+
+// PowerShell single-quote escaping: ' → '' (doubling).
+function psq(s) { return String(s).replace(/'/g, "''"); }
+function psArg(s) { return `'${psq(s)}'`; }
+
+function meArgv(model, effort) {
+  const argv = [];
+  if (model) argv.push('--model', model);
+  if (effort) argv.push('--effort', effort);
+  return argv;
+}
+
+function meSh(quote, model, effort) {
+  return `${model ? ` --model ${quote(model)}` : ''}${effort ? ` --effort ${quote(effort)}` : ''}`;
+}
+
+const SAFE_ID = /^[A-Za-z0-9_-]+$/;
+const SAFE_HANDOFF_REL = /^handoffs\/[A-Za-z0-9._-]+$/;
+
+function validateSpawnArgs({ parentRunId, childRunId, handoffRel }) {
+  if (!SAFE_ID.test(String(parentRunId))) {
+    throw Object.assign(new Error(`UNSAFE_SPAWN_ARG: parentRunId=${parentRunId}`), { code: 'UNSAFE_SPAWN_ARG' });
+  }
+  if (!SAFE_ID.test(String(childRunId))) {
+    throw Object.assign(new Error(`UNSAFE_SPAWN_ARG: childRunId=${childRunId}`), { code: 'UNSAFE_SPAWN_ARG' });
+  }
+  if (!SAFE_HANDOFF_REL.test(String(handoffRel))) {
+    throw Object.assign(new Error(`UNSAFE_SPAWN_ARG: handoffRel=${handoffRel}`), { code: 'UNSAFE_SPAWN_ARG' });
+  }
+}
+
+export function resumeSkillToken(runtime = 'claude') {
+  return validateSessionRuntime(runtime) === 'codex'
+    ? '$deep-loop:deep-loop-resume'
+    : '/deep-loop-resume';
+}
+
+export function usageOutputKind(runtime = 'claude') {
+  return validateSessionRuntime(runtime) === 'codex' ? 'codex-jsonl' : 'claude-json';
+}
+
+function resumeInvocation(runtime, root, runId) {
+  return `${resumeSkillToken(runtime)} --project-root ${JSON.stringify(root)} --run-id ${JSON.stringify(runId)}`;
+}
+
+function targetPathApi(platform) {
+  return platform === 'win32' ? win32 : posix;
+}
+
+function windowsFullyQualifiedPath(value, { allowUnc = true } = {}) {
+  if (typeof value !== 'string' || value.length === 0 || /[\0\r\n]/.test(value)) return false;
+  const normalized = value.replaceAll('/', '\\');
+  if (/^[A-Za-z]:\\/.test(normalized)) return true;
+  if (!allowUnc || !normalized.startsWith('\\\\') || /^\\\\[?.](?:\\|$)/.test(normalized)) return false;
+  const [server, share] = normalized.slice(2).split('\\');
+  return Boolean(server && share && !['.', '..'].includes(server) && !['.', '..'].includes(share));
+}
+
+function targetAbsolutePath(value, platform) {
+  if (typeof value !== 'string' || value.length === 0 || /[\0\r\n]/.test(value)) return false;
+  return platform === 'win32' ? windowsFullyQualifiedPath(value) : posix.isAbsolute(value);
+}
+
+function windowsNativePath(identity, { runtime = null, kind = null } = {}) {
+  const path = identity?.canonical_path;
+  if (!identity || typeof identity !== 'object' || identity.platform !== 'win32'
+    || !windowsFullyQualifiedPath(path, { allowUnc: false })
+    || /\.(?:cmd|bat|ps1|js|mjs|cjs)$/i.test(path)
+    || (runtime != null && identity.runtime !== runtime)
+    || (kind != null && identity.kind !== kind)) return null;
+  return path;
+}
+
+function unavailableEntry(surface, reason) {
+  return { unavailable: true, reason, display: `# ${surface}: manual (${reason})` };
+}
+
+function pathFor(platform, root, ...segments) {
+  const api = targetPathApi(platform);
+  if (!targetAbsolutePath(root, platform)) {
+    throw Object.assign(
+      new Error(`INVALID_TARGET_PATH: expected an absolute ${platform === 'win32' ? 'Windows' : 'POSIX'} path`),
+      { code: 'INVALID_TARGET_PATH' },
+    );
+  }
+  return api.join(root, ...segments);
+}
+
+function posixRuntimePath(identity, { runtime, platform }) {
+  const path = identity?.canonical_path;
+  if (!identity || typeof identity !== 'object' || platform === 'win32'
+    || identity.platform !== platform || identity.runtime !== runtime
+    || typeof path !== 'string' || !posix.isAbsolute(path) || /[\0\r\n]/.test(path)) return null;
+  return path;
+}
+
+function codexExecutablePath({ platform, runtimeExecutableIdentity, codexExecutable }) {
+  if (platform === 'win32') {
+    return windowsNativePath(runtimeExecutableIdentity, { runtime: 'codex' });
+  }
+  if (runtimeExecutableIdentity != null) {
+    return posixRuntimePath(runtimeExecutableIdentity, { runtime: 'codex', platform });
+  }
+  if (codexExecutable == null) return null;
+  if (!targetAbsolutePath(codexExecutable, platform) || /[\0\r\n]/.test(codexExecutable)) {
+    throw Object.assign(
+      new Error('INVALID_CODEX_EXECUTABLE: executable must be absolute in the target platform namespace'),
+      { code: 'INVALID_CODEX_EXECUTABLE' },
+    );
+  }
+  return codexExecutable;
+}
+
+function codexVisibleExecutablePath(platform, runtimeExecutableIdentity) {
+  if (platform === 'win32') {
+    return windowsNativePath(runtimeExecutableIdentity, { runtime: 'codex' });
+  }
+  if (!['linux', 'darwin'].includes(platform)) return null;
+  return posixRuntimePath(runtimeExecutableIdentity, { runtime: 'codex', platform });
+}
+
+function codexInteractiveArgv(root, prompt, model, effort) {
+  return [
+    '-C', root,
+    ...(model == null ? [] : ['--model', model]),
+    ...(effort == null ? [] : ['-c', `model_reasoning_effort=${tomlBasicString(effort)}`]),
+    prompt,
+  ];
+}
+
+function codexInteractivePsArgs(root, prompt, model, effort) {
+  return [
+    `-C ${psArg(root)}`,
+    ...(model == null ? [] : [`--model ${psArg(model)}`]),
+    ...(effort == null ? [] : [`-c ${psArg(`model_reasoning_effort=${tomlBasicString(effort)}`)}`]),
+    psArg(prompt),
+  ].join(' ');
+}
+
+function buildCodexEntries({
+  root, parentRunId, childRunId, handoffRel,
+  launcher, launcherBin, launcherSocket, exists = existsSync,
+  model = null, effort = null, codexExecutable = null, deepLoopRoot = null,
+  platform = process.platform, runtimeExecutableIdentity = null, launcherIdentity = null,
+}) {
+  validateRuntimeProfile('codex', { model, effort });
+  const invocation = resumeInvocation('codex', root, parentRunId);
+  const handoffPath = pathFor(platform, root, '.deep-loop', 'runs', parentRunId, handoffRel);
+  const manualPrompt = `Read ${JSON.stringify(handoffPath)} first; then run ${invocation}`;
+  const unavailable = (surface) => ({
+    unavailable: true,
+    reason: CODEX_TRANSPORT_UNAVAILABLE,
+    display: `# ${surface}: unavailable (${CODEX_TRANSPORT_UNAVAILABLE})`,
+  });
+  const entries = {
+    cmux: unavailable('cmux'),
+    iterm2: unavailable('iterm2'),
+    'terminal-app': unavailable('terminal-app'),
+    wt: unavailable('wt'),
+    powershell: unavailable('powershell'),
+    desktop: {
+      unavailable: true,
+      reason: CODEX_TRANSPORT_UNAVAILABLE,
+      manual: true,
+      display: `# Codex App (manual): open a new task at ${JSON.stringify(root)}; then enter ${invocation}`,
+    },
+    headless: unavailable('headless'),
+    interactive: {
+      manual: true,
+      display: `# Codex CLI (manual): open a new task at ${JSON.stringify(root)}; ${manualPrompt}`,
+    },
+  };
+  const effectiveExecutable = codexExecutablePath({ platform, runtimeExecutableIdentity, codexExecutable });
+  const visibleExecutable = codexVisibleExecutablePath(platform, runtimeExecutableIdentity);
+  if (effectiveExecutable != null) {
+    if (!targetAbsolutePath(deepLoopRoot, platform)) throw new Error('INVALID_DEEP_LOOP_ROOT: explicit absolute deep-loop root required');
+    const skillPath = pathFor(platform, deepLoopRoot, 'skills', 'deep-loop-resume', 'SKILL.md');
+    const prompt = `Read ${JSON.stringify(handoffPath)} first. Then read ${JSON.stringify(skillPath)} and execute that workflow inline for project root ${JSON.stringify(root)} and run id ${JSON.stringify(parentRunId)}.`;
+    entries.headless = {
+      ...buildCodexExecEntry({ executable: effectiveExecutable, projectRoot: root, prompt, model, effort }),
+      ...(platform === 'win32' ? { platform: 'win32', shell: false } : {}),
+      display: `# Codex CLI headless: ${JSON.stringify(effectiveExecutable)} (isolated descriptor; prompt via stdin)`,
+    };
+    if (platform === 'win32') {
+      const wtBin = windowsNativePath(launcherIdentity, { kind: 'wt' });
+      const psBin = windowsNativePath(launcherIdentity, { kind: 'powershell' });
+      const interactiveArgv = codexInteractiveArgv(root, manualPrompt, model, effort);
+      const interactivePsArgs = codexInteractivePsArgs(root, manualPrompt, model, effort);
+      entries.wt = wtBin
+        ? {
+          platform: 'win32', bin: wtBin,
+          argv: ['-d', root, effectiveExecutable, ...interactiveArgv],
+          nativeExecutableArgvIndices: [2], shell: false,
+          display: `& ${psArg(wtBin)} -d ${psArg(root)} ${psArg(effectiveExecutable)} ${interactivePsArgs}`,
+        }
+        : unavailableEntry('wt', 'trusted-native-identity-unavailable');
+      if (psBin) {
+        const innerPS = `Set-Location -LiteralPath ${psArg(root)}; & ${psArg(effectiveExecutable)} ${interactivePsArgs}`;
+        const b64 = Buffer.from(innerPS, 'utf16le').toString('base64');
+        const psCmd = `Start-Process ${psArg(psBin)} -ArgumentList '-NoProfile','-NoExit','-EncodedCommand','${b64}'`;
+        entries.powershell = {
+          platform: 'win32', bin: psBin,
+          argv: ['-NoProfile', '-NonInteractive', '-Command', psCmd], shell: false,
+          nativeExecutableTargets: [effectiveExecutable],
+          display: `& ${psArg(psBin)} -NoProfile -NonInteractive -Command ${psArg(psCmd)}`,
+        };
+      } else {
+        entries.powershell = unavailableEntry('powershell', 'trusted-native-identity-unavailable');
+      }
+    } else if (visibleExecutable != null) {
+      const interactiveArgv = codexInteractiveArgv(root, manualPrompt, model, effort);
+      const interactiveCommand = [visibleExecutable, ...interactiveArgv].map(q).join(' ');
+      if (launcher === 'cmux' && typeof launcherBin === 'string' && posix.isAbsolute(launcherBin)
+        && typeof launcherSocket === 'string' && launcherSocket.length > 0) {
+        const cmuxArgv = [
+          '--socket', launcherSocket,
+          'new-workspace', '--cwd', root,
+          '--command', interactiveCommand,
+          '--focus', 'true',
+        ];
+        entries.cmux = {
+          bin: launcherBin,
+          argv: cmuxArgv,
+          shell: false,
+          display: `${q(launcherBin)} --socket ${q(launcherSocket)} new-workspace --cwd ${q(root)} --command ${q(interactiveCommand)} --focus true`,
+        };
+      } else {
+        entries.cmux = unavailableEntry('cmux', 'trusted-posix-launcher-unavailable');
+      }
+
+      const osascript = '/usr/bin/osascript';
+      if (platform === 'darwin' && exists(osascript)) {
+        const innerSh = `cd ${q(root)} && exec ${interactiveCommand}`;
+        const iterm2Script = `tell application "iTerm" to create window with default profile command "${escApple(innerSh)}"`;
+        const terminalScript = `tell application "Terminal" to do script "${escApple(innerSh)}"`;
+        entries.iterm2 = launcher === 'iterm2'
+          ? {
+            bin: osascript,
+            argv: ['-e', iterm2Script],
+            shell: false,
+            display: `${q(osascript)} -e ${q(iterm2Script)}`,
+          }
+          : unavailableEntry('iterm2', 'launcher-not-selected');
+        entries['terminal-app'] = launcher === 'terminal-app'
+          ? {
+            bin: osascript,
+            argv: ['-e', terminalScript],
+            shell: false,
+            display: `${q(osascript)} -e ${q(terminalScript)}`,
+          }
+          : unavailableEntry('terminal-app', 'launcher-not-selected');
+      } else {
+        entries.iterm2 = unavailableEntry('iterm2', `unsupported-on-${platform}`);
+        entries['terminal-app'] = unavailableEntry('terminal-app', `unsupported-on-${platform}`);
+      }
+    }
+  }
+  return entries;
+}
+
+function buildClaudeEntries({
+  root, parentRunId, childRunId, handoffRel,
+  launcher, launcherBin, launcherSocket,
+  platform = process.platform, desktopTarget = null, exists = existsSync,
+  model = null, effort = null,
+  runtimeExecutableIdentity = null, launcherIdentity = null,
+}) {
+  const resumePrompt = `Read .deep-loop/runs/${parentRunId}/${handoffRel} first; then run /deep-loop-resume`;
+  const inner = `deep-loop-${childRunId}`;
+
+  // Desktop URLs remain a Claude-only machine argv detail. No URL is ever put
+  // in a human-readable display field.
+  const desktopUrl = `claude://code/new?folder=${encodeURIComponent(root)}&q=${encodeURIComponent(resumePrompt)}`;
+  let desktopEntry;
+  if (desktopTarget && desktopTarget.kind === 'macos-app' && platform === 'darwin') {
+    desktopEntry = { bin: '/usr/bin/open', argv: ['-a', desktopTarget.appPath, desktopUrl], available: true };
+  } else if (desktopTarget && desktopTarget.kind === 'win-exe' && platform === 'win32') {
+    const psBin = windowsNativePath(launcherIdentity, { kind: 'powershell' });
+    if (psBin) {
+      const psCmd = `Start-Process -FilePath '${psq(desktopTarget.exePath)}' -ArgumentList '${psq(desktopUrl)}'`;
+      desktopEntry = { bin: psBin, argv: ['-NoProfile', '-NonInteractive', '-Command', psCmd], available: true, platform: 'win32', shell: false };
+    } else {
+      desktopEntry = { unavailable: true };
+    }
+  } else {
+    desktopEntry = { unavailable: true };
+  }
+
+  const cmuxCmdStr = `claude -n ${q(inner)} ${q(resumePrompt)}${meSh(q, model, effort)}`;
+  const cmuxArgv = launcherSocket
+    ? ['--socket', launcherSocket, 'new-workspace', '--cwd', root, '--command', cmuxCmdStr, '--focus', 'true']
+    : ['new-workspace', '--cwd', root, '--command', cmuxCmdStr, '--focus', 'true'];
+  const effectiveBin = (launcher == null || launcher === 'cmux') && launcherBin ? launcherBin : 'cmux';
+
+  const innerSh = `cd ${q(root)} && claude -n ${inner} "${resumePrompt}"${meSh(q, model, effort)}`;
+  const iterm2Script = `tell application "iTerm" to create window with default profile command "${escApple(innerSh)}"`;
+  const terminalScript = `tell application "Terminal" to do script "${escApple(innerSh)}"`;
+
+  let powershellEntry;
+  if (isTrustedPsBin(launcherBin)) {
+    const innerPS = `Set-Location -LiteralPath '${psq(root)}'; & claude -n '${psq(inner)}' '${psq(resumePrompt)}'${meSh((x) => `'${psq(x)}'`, model, effort)}`;
+    const b64 = Buffer.from(innerPS, 'utf16le').toString('base64');
+    const psCmd = `Start-Process '${psq(launcherBin)}' -ArgumentList '-NoProfile','-NoExit','-EncodedCommand','${b64}'`;
+    powershellEntry = { bin: launcherBin, argv: ['-NoProfile', '-NonInteractive', '-Command', psCmd], display: `& '${psq(launcherBin)}' -NoProfile -NonInteractive -Command "${psCmd}"` };
+  } else {
+    powershellEntry = { bin: null, argv: null, unavailable: true, display: '# powershell: unavailable (no trusted launcher_bin)' };
+  }
+
+  const headlessDisplay = `cd ${q(root)} && claude -p "${resumePrompt}"${meSh(q, model, effort)} --output-format json --permission-mode acceptEdits`;
+  const interactiveDisplay = `cd ${q(root)} && claude -n ${inner} "${resumePrompt}"${meSh(q, model, effort)}`;
+  const cmuxDisplay = `${effectiveBin}${launcherSocket ? ` --socket ${q(launcherSocket)}` : ''} new-workspace --cwd ${q(root)} --command ${q(cmuxCmdStr)} --focus true`;
+
+  if (platform === 'win32') {
+    const runtimeBin = windowsNativePath(runtimeExecutableIdentity, { runtime: 'claude' });
+    const wtBin = windowsNativePath(launcherIdentity, { kind: 'wt' });
+    const psBin = windowsNativePath(launcherIdentity, { kind: 'powershell' });
+    const manual = `# Claude CLI (manual): open a native Claude session at ${JSON.stringify(root)}; then run /deep-loop-resume`;
+    let windowsPs = unavailableEntry('powershell', 'trusted-native-identity-unavailable');
+    if (runtimeBin && psBin) {
+      const innerPS = `Set-Location -LiteralPath '${psq(root)}'; & '${psq(runtimeBin)}' -n '${psq(inner)}' '${psq(resumePrompt)}'${meSh((x) => `'${psq(x)}'`, model, effort)}`;
+      const b64 = Buffer.from(innerPS, 'utf16le').toString('base64');
+      const psCmd = `Start-Process '${psq(psBin)}' -ArgumentList '-NoProfile','-NoExit','-EncodedCommand','${b64}'`;
+      windowsPs = {
+        platform: 'win32', bin: psBin, argv: ['-NoProfile', '-NonInteractive', '-Command', psCmd], shell: false,
+        nativeExecutableTargets: [runtimeBin],
+        display: `& '${psq(psBin)}' -NoProfile -NonInteractive -Command ${psArg(psCmd)}`,
+      };
+    }
+    const wt = runtimeBin && wtBin
+      ? {
+        platform: 'win32', bin: wtBin,
+        argv: ['-d', root, runtimeBin, '-n', inner, resumePrompt, ...meArgv(model, effort)],
+        nativeExecutableArgvIndices: [2], shell: false,
+        display: `& ${psArg(wtBin)} -d ${psArg(root)} ${psArg(runtimeBin)} -n ${psArg(inner)} ${psArg(resumePrompt)}${meSh(psArg, model, effort)}`,
+      }
+      : unavailableEntry('wt', 'trusted-native-identity-unavailable');
+    const headless = runtimeBin
+      ? {
+        platform: 'win32', bin: runtimeBin,
+        argv: ['-p', resumePrompt, ...meArgv(model, effort), '--output-format', 'json', '--permission-mode', 'acceptEdits'],
+        cwd: root, shell: false, display: `# Claude CLI headless: ${JSON.stringify(runtimeBin)} (trusted native identity)`,
+      }
+      : unavailableEntry('headless', 'trusted-native-runtime-unavailable');
+    return {
+      cmux: unavailableEntry('cmux', 'native-windows-launcher-unavailable'),
+      iterm2: unavailableEntry('iterm2', 'unsupported-on-win32'),
+      'terminal-app': unavailableEntry('terminal-app', 'unsupported-on-win32'),
+      wt,
+      powershell: windowsPs,
+      desktop: desktopEntry,
+      headless,
+      interactive: { manual: true, display: manual },
+    };
+  }
+
+  return {
+    cmux: {
+      bin: effectiveBin,
+      argv: cmuxArgv,
+      display: cmuxDisplay,
+    },
+    iterm2: {
+      bin: 'osascript',
+      argv: ['-e', iterm2Script],
+      display: `osascript -e '${iterm2Script}'`,
+    },
+    'terminal-app': {
+      bin: 'osascript',
+      argv: ['-e', terminalScript],
+      display: `osascript -e '${terminalScript}'`,
+    },
+    wt: {
+      bin: 'wt.exe',
+      argv: ['-d', root, 'claude', '-n', inner, resumePrompt, ...meArgv(model, effort)],
+      display: `wt.exe -d ${q(root)} claude -n ${inner} "${resumePrompt}"${meSh(q, model, effort)}`,
+    },
+    powershell: powershellEntry,
+    desktop: desktopEntry,
+    headless: {
+      bin: 'claude',
+      argv: ['-p', resumePrompt, ...meArgv(model, effort), '--output-format', 'json', '--permission-mode', 'acceptEdits'],
+      cwd: root,
+      display: headlessDisplay,
+    },
+    interactive: {
+      display: interactiveDisplay,
+    },
+  };
+}
+
+export function buildRuntimeResumeDescriptor({
+  runtime = 'claude', root, parentRunId, childRunId, handoffRel,
+  launcher, launcherBin, launcherSocket,
+  platform = process.platform, desktopTarget = null, exists = existsSync,
+  model = null, effort = null,
+  codexExecutable = null, deepLoopRoot = null,
+  runtimeExecutableIdentity = null, launcherIdentity = null,
+} = {}) {
+  const selectedRuntime = validateSessionRuntime(runtime);
+  validateRuntimeProfile(selectedRuntime, { model, effort });
+  validateSpawnArgs({ parentRunId, childRunId, handoffRel });
+  const invocation = resumeInvocation(selectedRuntime, root, parentRunId);
+  const resumePrompt = selectedRuntime === 'claude'
+    ? `Read .deep-loop/runs/${parentRunId}/${handoffRel} first; then run /deep-loop-resume`
+    : `Read ${JSON.stringify(pathFor(platform, root, '.deep-loop', 'runs', parentRunId, handoffRel))} first; then run ${invocation}`;
+  const entries = selectedRuntime === 'claude'
+    ? buildClaudeEntries({ root, parentRunId, childRunId, handoffRel, launcher, launcherBin, launcherSocket, platform, desktopTarget, exists, model, effort, runtimeExecutableIdentity, launcherIdentity })
+    : buildCodexEntries({ root, parentRunId, childRunId, handoffRel, launcher, launcherBin, launcherSocket, exists, model, effort, codexExecutable, deepLoopRoot, platform, runtimeExecutableIdentity, launcherIdentity });
+  return {
+    runtime: selectedRuntime,
+    projectRoot: root,
+    runId: parentRunId,
+    childRunId,
+    handoffRel,
+    resumeSkillToken: resumeSkillToken(selectedRuntime),
+    usageOutputKind: usageOutputKind(selectedRuntime),
+    resumeInvocation: invocation,
+    resumePrompt,
+    entries,
+  };
+}
+
+// Compatibility surface: callers historically imported this from handoff.mjs
+// and expect the launcher entry map directly.
+export function buildLaunchCommand(options = {}) {
+  return buildRuntimeResumeDescriptor(options).entries;
+}

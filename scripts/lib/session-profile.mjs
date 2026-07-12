@@ -1,6 +1,7 @@
 import { appendAnchored } from './integrity.mjs';
 import { leaseCheck } from './lease.mjs';
 import { readState, withLock } from './state.mjs';
+import { sessionRuntime, validateSessionRuntime } from './runtime.mjs';
 
 // Session model/effort continuity (WS1). Validation is the write-boundary defense (init-run + this setter);
 // buildLaunchCommand later threads already-validated strings into child --model/--effort argv.
@@ -17,6 +18,16 @@ export function validateEffort(effort) {
 export function validateModel(model) {
   if (typeof model !== 'string' || !MODEL_RE.test(model)) throw Object.assign(new Error(`INVALID_MODEL: ${model}`), { code: 'INVALID_MODEL' });
   return model;
+}
+
+export function validateRuntimeProfile(runtime, { model = null, effort = null } = {}) {
+  const selectedRuntime = validateSessionRuntime(runtime);
+  if (model != null) validateModel(model);
+  if (effort != null) validateEffort(effort);
+  if (selectedRuntime === 'codex' && effort === 'max') {
+    throw Object.assign(new Error('UNSUPPORTED_RUNTIME_EFFORT: codex max'), { code: 'UNSUPPORTED_RUNTIME_EFFORT' });
+  }
+  return { model, effort };
 }
 
 // Refresh the durable session profile. Fenced with intent:'lease' so it works while a handoff is in-flight
@@ -41,6 +52,10 @@ export function setSessionProfile(root, runId, { model, effort, expect, now = Da
     const { data } = readState(root, runId);
     const lc = leaseCheck(data, { owner: expect.owner, generation: expect.generation, intent: 'lease' });
     if (!lc.ok) throw new Error('LEASE_FENCED: ' + lc.reason);   // in-lock authoritative fence (even for no-op)
+    validateRuntimeProfile(sessionRuntime(data), {
+      model: model ?? data.autonomy?.session_model ?? null,
+      effort: effort ?? data.autonomy?.session_effort ?? null,
+    });
     const sameModel = model == null || data.autonomy?.session_model === model;
     const sameEffort = effort == null || data.autonomy?.session_effort === effort;
     needsWrite = !(sameModel && sameEffort);
@@ -57,6 +72,10 @@ export function setSessionProfile(root, runId, { model, effort, expect, now = Da
     (l) => {
       const lc = leaseCheck(l, { owner: expect.owner, generation: expect.generation, intent: 'lease' });
       if (!lc.ok) throw new Error('LEASE_FENCED: ' + lc.reason);
+      validateRuntimeProfile(sessionRuntime(l), {
+        model: model ?? l.autonomy?.session_model ?? null,
+        effort: effort ?? l.autonomy?.session_effort ?? null,
+      });
     });
   return { ok: true, changed: true };
 }

@@ -2,6 +2,8 @@ import { readFileSync, appendFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { contentHash } from './envelope.mjs';
 import { runDir, readState, writeState, withLock } from './state.mjs';
+import { assertProjectRootBinding, canonicalProjectRoot, projectRootDigest } from './project-root.mjs';
+import { validate } from './schema.mjs';
 
 const logPath = (root, runId) => join(runDir(root, runId), 'event-log.jsonl');
 
@@ -20,13 +22,20 @@ function checksumFor(seq, ts, type, data, prev) {
   return contentHash(`${seq}|${ts}|${type}|${JSON.stringify(data)}|${prev}`);
 }
 
-export function appendEvent(root, runId, { type, data }) {
-  const lines = readLines(root, runId);
+function nextEvent(lines, { type, data, now }) {
   const prev = lines.length ? lines[lines.length - 1].checksum : 'GENESIS';
   const seq = lines.length + 1;
-  const ts = new Date().toISOString();
+  const date = now === undefined ? new Date() : new Date(now);
+  if (!Number.isFinite(date.getTime())) throw new Error('INVALID_NOW: event timestamp');
+  const ts = date.toISOString();
   const checksum = checksumFor(seq, ts, type, data, prev);
-  appendFileSync(logPath(root, runId), JSON.stringify({ seq, ts, type, data, checksum }) + '\n');
+  return { seq, ts, type, data, checksum };
+}
+
+export function appendEvent(root, runId, { type, data, now }) {
+  const event = nextEvent(readLines(root, runId), { type, data, now });
+  appendFileSync(logPath(root, runId), JSON.stringify(event) + '\n');
+  return event;
 }
 
 // line-based 검증 — 호출자가 이미 읽어둔 in-memory 배열을 검증한다. "검증한 배열 == 분석하는 배열"이
@@ -95,6 +104,9 @@ export function verifyHead(root, runId, expected) {
 export function appendAnchored(root, runId, { type, data }, mutate, preCheck, opts = {}) {
   return withLock(root, runId, () => {
     const { data: loop } = readState(root, runId);
+    // Defense in depth at the shared mutation gateway: this check stays inside the existing lock and precedes
+    // caller guards and event writes. readState is already strict, so no unbound reader is exposed here.
+    assertProjectRootBinding(root, loop);
     if (preCheck) preCheck(loop);              // throws BEFORE append → anchor stays consistent
     // v1.6 gateway terminal gate (spec §2.1.5): 반드시 caller preCheck **뒤** — fence-first 보존
     // (LEASE_FENCED/RESPAWN_FENCED/RUN_TERMINAL:emitHandoff 등 특정-에러 경로가 먼저 발화해야 한다).
@@ -131,4 +143,45 @@ export function appendAnchored(root, runId, { type, data }, mutate, preCheck, op
     if (mutate) mutate(loop, spent);
     writeState(root, runId, loop);
   });
+}
+
+// Root relocation is the sole mutation that cannot enter appendAnchored: the old lexical root is intentionally
+// unresolvable, while appendAnchored performs a strict bound read and owns its own non-reentrant lock. The caller
+// already owns the candidate run lock. This fixed commit accepts neither a caller-selected event nor a mutation
+// callback; all validation completes before its single hard-coded append.
+export function commitProjectRootRebindUnderLock(root, runId, loop, { oldRootDigest, newRoot, now }) {
+  if (!loop || typeof loop !== 'object' || loop.run_id !== runId) {
+    throw new Error('STATE_INVALID: loop.run_id mismatch');
+  }
+  if (!/^[0-9a-f]{64}$/.test(oldRootDigest || '') || projectRootDigest(loop.project?.root) !== oldRootDigest) {
+    throw new Error('INVALID_STORED_ROOT_DIGEST: stored root changed');
+  }
+  let canonicalRoot;
+  try {
+    canonicalRoot = canonicalProjectRoot(root);
+    if (canonicalProjectRoot(newRoot) !== canonicalRoot || newRoot !== canonicalRoot) {
+      throw new Error('PROJECT_ROOT_UNRESOLVABLE: candidate root identity changed');
+    }
+  } catch (error) {
+    if (String(error?.message || error) === 'PROJECT_ROOT_UNRESOLVABLE: candidate root identity changed') throw error;
+    throw new Error('PROJECT_ROOT_UNRESOLVABLE: candidate root', { cause: error });
+  }
+
+  const lines = readLines(root, runId);
+  const verified = verifyLines(lines);
+  if (!verified.ok) throw new Error(`LOG_TAMPERED: ${verified.errors.join('; ')}`);
+  const anchored = verifyHeadLines(lines, loop.event_log_head);
+  if (!anchored.ok) throw new Error(`LOG_TAMPERED: ${anchored.errors.join('; ')}`);
+
+  const data = { old_root_digest: oldRootDigest, new_root: canonicalRoot };
+  const event = nextEvent(lines, { type: 'project-root-rebound', data, now });
+  const candidate = structuredClone(loop);
+  candidate.project.root = canonicalRoot;
+  candidate.event_log_head = { seq: event.seq, checksum: event.checksum };
+  const stateValidation = validate(candidate);
+  if (!stateValidation.ok) throw new Error(`STATE_INVALID: ${stateValidation.errors.join('; ')}`);
+
+  appendFileSync(logPath(root, runId), JSON.stringify(event) + '\n');
+  writeState(root, runId, candidate);
+  return { ok: true };
 }

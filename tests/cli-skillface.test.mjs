@@ -11,7 +11,7 @@ function run(root, args) { return execFileSync('node', [CLI, ...args, '--project
 function runFail(root, args) { try { run(root, args); return 0; } catch (e) { return e.status; } }
 function seed() {
   const root = mkdtempSync(join(tmpdir(), 'dl-sf-'));
-  const { runId } = initRun(root, { goal: 'g', protocol: 'deep-work', now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', protocol: 'deep-work', now: new Date('2026-06-24T00:00:00Z') });
   return { root, runId };
 }
 
@@ -19,7 +19,8 @@ function seed() {
 test('adapter resolve returns a normalized 4-verb descriptor', () => {
   const { root } = seed();
   const out = JSON.parse(run(root, ['adapter', 'resolve', '--protocol', 'deep-work', '--task', 'Add auth']));
-  assert.equal(out.dispatch.kind, 'invoke_skill');
+  assert.equal(out.dispatch.kind, 'skill');
+  assert.equal(out.dispatch.role, 'maker');
   assert.equal(out.dispatch.skill, 'deep-work:deep-work-orchestrator');
   assert.match(out.dispatch.args, /Add auth/);
   assert.equal(out.await.kind, 'poll_file');

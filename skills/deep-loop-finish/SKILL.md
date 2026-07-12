@@ -11,9 +11,25 @@ user-invocable: true
 > **비가역 외부 행동(push/PR/publish/merge/delete)은 proposal-only**, 항상 사람 승인(human approval)을 받는다.
 > **artifacts 삭제 ❌** — 생성된 artifact 파일을 절대 삭제하거나 덮어쓰지 않는다.
 
+## 실행 루트와 호스트 호출
+
+로드된 `SKILL.md` 경로에서 이 플러그인의 absolute(절대) 루트를 계산하고, 아래 argv 템플릿의 `DEEP_LOOP_ROOT`를 실행 전에 그 절대 경로로 치환한다. literal `DEEP_LOOP_ROOT` 문자열을 Node에 전달하는 것은 금지한다. 환경 변수나 셸 확장으로 루트를 만들지 않는다.
+
+호출은 Claude에서 `/deep-loop-finish`, Codex에서 `$deep-loop:deep-loop-finish` 형식을 사용한다.
+
 ## 개요
 
 `/deep-loop-finish` — 작업 종료: final report 작성 → proof-gated `completed` 전이 (또는 `stopped`) → deep-memory / deep-wiki 위임.
+
+## 단계 0: Lease identity 확인
+
+descriptor/current run의 `<run_id>`는 논리적(logical) loop run id이며 run 수명 동안 불변(immutable)이다. 종료 관련 mutation 전에 current lease를 새로 읽는다:
+
+```
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field session_chain.lease --project-root "<canonical_project_root>" --run-id <run_id>
+```
+
+`<owner_run_id>`는 `session_chain.lease.owner_run_id`, `<generation>`은 `session_chain.lease.generation`에서 얻는다. insights emit과 finish는 이 current fence와 불변 `<run_id>`를 함께 전달한다.
 
 ## 단계 1: Final Report 작성
 
@@ -25,9 +41,10 @@ user-invocable: true
 > `state get --field project.root`는 JSON-인코딩된 문자열(예: `"/repo"`)을 출력한다 — 따옴표를 제거해야 한다.
 
 ```
-PROJECT_ROOT=$(node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field project.root \
-  | node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0,"utf8")))')
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field project.root --project-root "<canonical_project_root>" --run-id <run_id>
 ```
+
+반환 JSON 문자열을 `JSON.parse`로 해석해 따옴표가 제거된 절대 `project.root` 값을 얻는다. 셸 변수나 파이프라인은 사용하지 않는다.
 
 `<project-root>/.deep-loop/runs/<run_id>/final-report.md`에 **절대 경로**로 final report를 작성한다:
 
@@ -35,7 +52,7 @@ PROJECT_ROOT=$(node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --fi
 Write({ file_path: "<project-root>/.deep-loop/runs/<run_id>/final-report.md", content: report })
 ```
 
-여기서 `<project-root>`는 위에서 읽은 `PROJECT_ROOT` 값(절대 경로)으로 대체한다.
+여기서 `<project-root>`는 위에서 읽은 `project.root` 값(절대 경로)으로 대체한다.
 
 report 내용:
 - **목표 & 결과**: 달성된 goal 요약
@@ -44,7 +61,7 @@ report 내용:
 - **Maker-Checker 흐름**: episode별 maker/checker 결과
 - **Worktree 사용 현황**: 브랜치 & 병합 상태
   - `merged`/`abandoned` worktree 정리 제안: native `ExitWorktree` 우선, 없으면 `git worktree remove` — proposal-only(자동 삭제 ❌, 사람 승인)
-  - reconcile audit: `$ORIG_ROOT/.claude/worktrees/`(및 `.worktrees/`) 밑에서 기록에 없는(어떤 workstream에도 매핑 안 된) 디렉터리를 고아 후보로 surface(proposal-only); root-밖 native worktree는 audit 대상 아님(Step 1a가 애초에 생성 안 함)
+  - reconcile audit: `<canonical_project_root>/.claude/worktrees/`(및 `.worktrees/`) 밑에서 기록에 없는(어떤 workstream에도 매핑 안 된) 디렉터리를 고아 후보로 surface(proposal-only); root-밖 native worktree는 audit 대상 아님(Step 1a가 애초에 생성 안 함)
 - **Heartbeat & 검증 결과**: budget 소비, comprehension debt
 - **통합 여부**: PR/브랜치 병합 상태(proposal-only — 실제 push는 사람이)
 - **남은 TODO**: 미완료 항목 목록
@@ -57,7 +74,7 @@ report 내용:
 final report 작성 직후, 이 run의 트레이스를 결정론 마이닝해 하네스 개선 신호를 durable하게 남긴다:
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" insights emit --owner <run_id> --generation <n>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" insights emit --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
 - **실패는 비치명이다** — `insights emit`이 실패해도(디스크 오류 등) finish는 계속 진행한다. 실패 시 그 사실을 로그에 명시하고 final report에도 기록한다(재시도 불필요 — 다음 run의 emit이 다시 시도된다).
@@ -67,7 +84,8 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" insights emit --owner <run_id
 
   ```
   하네스 개선 후보 N건 발견: <candidate.id 목록>
-  다음 명령: /deep-loop "하네스 개선"
+  Claude 다음 호출: /deep-loop "하네스 개선"
+  Codex 다음 호출: $deep-loop:deep-loop "하네스 개선"
   ```
 
   **제안 명령의 goal은 고정 문구 그대로 쓴다 — candidate id를 goal에 넣지 않는다.** id(`fix_cycles_high:implementation` 등)는 "fix"/"implement" 같은 다른 recipe 트리거를 부분문자열로 포함해 recipe-match(첫 매치 substring 라우팅)가 비결정적으로 샐 수 있기 때문이다. 새 hill-climb run의 design maker는 후보를 goal이 아니라 `insights --json`/`insights latest --json`에서 읽는다(§2 흐름).
@@ -79,8 +97,8 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" insights emit --owner <run_id
 `completed` 전이 전에 proof를 확인한다:
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field episodes
-node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" state get --field workstreams
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field episodes --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field workstreams --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
 proof 요건:
@@ -95,7 +113,7 @@ proof 요건:
 ### completed (proof 충족 시)
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" finish --status completed --report final-report.md --proof '{}' --owner <run_id> --generation <n>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" finish --status completed --report final-report.md --proof '{}' --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
 `FINISH_PROOF_UNMET` 에러 시 무엇이 빠졌는지 보고하고 사람이 결정하도록 한다.
@@ -105,28 +123,32 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" finish --status completed --r
 `stopped`는 completed proof(리뷰·workstream 터미널·리포트)를 **우회하는 일방 종료 경로**이므로 형제 human-only 조작(abandon/recover/breaker reset)과 동형으로 **`--confirm`이 필수**다(누락 시 `CONFIRM_REQUIRED`, exit 2). **autonomous/headless tick은 이 커맨드를 스스로 발행하지 않는다** — 사람이 명시적으로 중단을 승인할 때만 쓴다:
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" finish --status stopped --confirm --proof '{"human_reason":"사람이 명시적으로 중단 요청"}' --owner <run_id> --generation <n>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" finish --status stopped --confirm --proof '{"human_reason":"사람이 명시적으로 중단 요청"}' --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
 ## 단계 4: Deep-memory 위임 (감지 시)
 
-deep-memory 플러그인이 설치된 경우:
+deep-memory 플러그인이 설치된 경우 runtime에 맞게 위임한다. Claude는 다음 host invocation을 사용한다:
 
 ```javascript
 Skill({ skill: "deep-memory:deep-memory-harvest" })
 ```
+
+Codex는 qualified `$deep-memory:deep-memory-harvest` invocation을 사용한다.
 
 핵심 결정 사항을 `deep-memory-save`로 저장한다.
 **deep-loop이 `~/.deep-memory`를 직접 쓰지 않는다** — deep-memory 자체 스킬에 위임한다.
 
 ## 단계 5: Deep-wiki 위임 (감지 시)
 
-deep-wiki 플러그인이 설치된 경우:
+deep-wiki 플러그인이 설치된 경우 runtime에 맞게 위임한다. Claude는 다음 host invocation을 사용한다:
 
 ```javascript
 Skill({ skill: "deep-wiki:wiki-ingest", args: "<project-root>/.deep-loop/runs/<run_id>/final-report.md" })
 ```
 
-`<project-root>`는 단계 1에서 읽은 `PROJECT_ROOT` 절대 경로 값이다.
+Codex는 qualified `$deep-wiki:wiki-ingest`에 `"<project-root>/.deep-loop/runs/<run_id>/final-report.md"` 인자를 전달한다.
+
+`<project-root>`는 단계 1에서 읽은 `project.root` 절대 경로 값이다.
 
 미감지 시 스킵하고 명시적으로 로그에 기록한다.

@@ -1,12 +1,12 @@
 {
   "name": "deep-loop",
-  "version": "0.2.0",
+  "version": "1.8.0",
   "type": "module",
   "description": "Loop Engineering control plane over the deep-suite",
   "license": "MIT",
   "engines": { "node": ">=20" },
   "scripts": {
-    "test": "node --test tests/*.test.mjs",
+    "test": "node --test",
     "validate": "node scripts/deep-loop.mjs validate",
     "preflight": "npm run validate && npm test"
   }

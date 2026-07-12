@@ -1,12 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, mkdirSync, appendFileSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { appendEvent, verifyLog, recomputeSpent } from '../scripts/lib/integrity.mjs';
+import { appendEvent, verifyLog, recomputeSpent, readLines } from '../scripts/lib/integrity.mjs';
 import { readState, runDir } from '../scripts/lib/state.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { recordCost } from '../scripts/lib/budget.mjs';
+import { projectRootDigest } from '../scripts/lib/project-root.mjs';
+import { atomicWrite } from '../scripts/lib/envelope.mjs';
+
+const recoveryApiPromise = import('../scripts/lib/project-root-recovery.mjs').catch(() => ({}));
 
 function fresh() {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
@@ -41,7 +45,7 @@ test('tampered event breaks chain', () => {
 // so the stale anchor is preserved (reconcile can still detect the loss) rather than overwritten.
 test('appendAnchored fails closed on a truncated event log (no launder)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
   recordCost(root, runId, { turns: 1, tokens: 10 });
   recordCost(root, runId, { turns: 1, tokens: 10 });
   const anchorBefore = readState(root, runId).data.event_log_head;
@@ -53,13 +57,76 @@ test('appendAnchored fails closed on a truncated event log (no launder)', () => 
   assert.deepEqual(readState(root, runId).data.event_log_head, anchorBefore);
 });
 
+test('appendAnchored rechecks project-root binding in-lock before precheck, event, or hash writes', () => {
+  const originalRoot = mkdtempSync(join(tmpdir(), 'dl-root-gateway-original-'));
+  const candidateRoot = mkdtempSync(join(tmpdir(), 'dl-root-gateway-copy-'));
+  const { runId } = initRun(originalRoot, { runtime: 'claude', goal: 'g', now: new Date('2026-07-11T00:00:00Z') });
+  appendAnchored(originalRoot, runId, { type: 'seed-event', data: {} }, () => {});
+  cpSync(join(originalRoot, '.deep-loop'), join(candidateRoot, '.deep-loop'), { recursive: true });
+
+  const eventPath = join(runDir(candidateRoot, runId), 'event-log.jsonl');
+  const hashPath = join(runDir(candidateRoot, runId), '.loop.hash');
+  const beforeEvent = readFileSync(eventPath, 'utf8');
+  const beforeHash = readFileSync(hashPath, 'utf8');
+  let preCheckRan = false;
+
+  assert.throws(
+    () => appendAnchored(candidateRoot, runId, { type: 'must-not-append', data: {} }, () => {}, () => { preCheckRan = true; }),
+    /PROJECT_ROOT_FENCED/
+  );
+  assert.equal(preCheckRan, false, 'root binding must reject before caller preCheck runs');
+  assert.equal(readFileSync(eventPath, 'utf8'), beforeEvent, 'root-fenced mutation must emit no event');
+  assert.equal(readFileSync(hashPath, 'utf8'), beforeHash, 'root-fenced mutation must not change the loop hash');
+});
+
+test('root rebind fails closed on log corruption before event, hash, or state mutation', async () => {
+  const parent = mkdtempSync(join(tmpdir(), 'dl-root-integrity-rebind-'));
+  const originalRoot = join(parent, 'original');
+  const candidateRoot = join(parent, 'candidate');
+  mkdirSync(originalRoot);
+  const { runId } = initRun(originalRoot, { runtime: 'claude', goal: 'g', now: new Date('2026-07-11T00:00:00Z') });
+  appendAnchored(originalRoot, runId, { type: 'seed-event', data: {} }, () => {});
+  const storedRoot = readState(originalRoot, runId).data.project.root;
+  renameSync(originalRoot, candidateRoot);
+
+  const dir = runDir(candidateRoot, runId);
+  const eventPath = join(dir, 'event-log.jsonl');
+  const loopPath = join(dir, 'loop.json');
+  const hashPath = join(dir, '.loop.hash');
+  const lines = readFileSync(eventPath, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line));
+  lines[0].data = { corrupted: true }; // keep the old checksum: verifyLog must reject it
+  writeFileSync(eventPath, lines.map(line => JSON.stringify(line)).join('\n') + '\n');
+  const before = {
+    event: readFileSync(eventPath, 'utf8'),
+    loop: readFileSync(loopPath, 'utf8'),
+    hash: readFileSync(hashPath, 'utf8'),
+  };
+  const api = await recoveryApiPromise;
+  assert.equal(typeof api.rebindProjectRoot, 'function', 'rebindProjectRoot must be exported');
+
+  assert.throws(
+    () => api.rebindProjectRoot(candidateRoot, runId, {
+      actor: 'human', confirm: true,
+      expectedStoredRootDigest: projectRootDigest(storedRoot),
+      fence: { owner: runId, generation: 1 },
+      now: Date.parse('2026-07-11T01:00:00Z'),
+    }),
+    /LOG_TAMPERED/
+  );
+  assert.deepEqual({
+    event: readFileSync(eventPath, 'utf8'),
+    loop: readFileSync(loopPath, 'utf8'),
+    hash: readFileSync(hashPath, 'utf8'),
+  }, before);
+});
+
 // ── v1.6 appendAnchored gateway terminal gate (spec §2.1.5/§4-1b) ────────────
 import { appendAnchored } from '../scripts/lib/integrity.mjs';
 import { writeState, patch } from '../scripts/lib/state.mjs';
 
 function seededRun() {
   const root = mkdtempSync(join(tmpdir(), 'dl-gw-'));
-  const { runId } = initRun(root, { goal: 'g', now: new Date('2026-07-09T00:00:00Z') });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-07-09T00:00:00Z') });
   return { root, runId };
 }
 function makeTerminal(root, runId, status = 'completed') {
@@ -98,4 +165,47 @@ test('appendAnchored: non-terminal finish transition + auto-floor cost still com
   const { data } = readState(root, runId);
   assert.equal(data.status, 'stopped');   // 전이 자체는 mutate 단계 — preCheck 시점 non-terminal이라 통과
   assert.ok(readFileSync(join(runDir(root, runId), 'event-log.jsonl'), 'utf8').includes('auto_floor'));
+});
+
+function transientRenameOptions(renameFn) {
+  let now = 0;
+  return {
+    platform: 'win32',
+    monotonicNowFn: () => now,
+    sleepFn: (ms) => { now += ms; },
+    renameFn,
+  };
+}
+
+test('a transient state rename retry leaves one anchored event rather than replaying it', () => {
+  const { root, runId } = seededRun();
+  appendAnchored(root, runId, { type: 'one-business-event', data: {} }, () => {});
+  const before = readFileSync(join(runDir(root, runId), 'event-log.jsonl'), 'utf8');
+  const data = readState(root, runId).data;
+  let attempts = 0;
+  writeState(root, runId, data, {
+    atomicWriteFn: (path, contents) => atomicWrite(path, contents, transientRenameOptions((src, dst) => {
+      attempts++;
+      if (attempts === 1) throw Object.assign(new Error('shared'), { code: 'EACCES' });
+      renameSync(src, dst);
+    })),
+  });
+  assert.equal(attempts, 3, 'first replacement retries once; second replacement runs once');
+  assert.equal(readFileSync(join(runDir(root, runId), 'event-log.jsonl'), 'utf8'), before);
+  assert.equal(readLines(root, runId).filter(event => event.type === 'one-business-event').length, 1);
+});
+
+test('exhausted state rename fails closed without replaying the anchored transaction', () => {
+  const { root, runId } = seededRun();
+  appendAnchored(root, runId, { type: 'one-fail-stop-event', data: {} }, () => {});
+  const eventPath = join(runDir(root, runId), 'event-log.jsonl');
+  const before = readFileSync(eventPath, 'utf8');
+  const data = readState(root, runId).data;
+  const expected = Object.assign(new Error('still shared'), { code: 'EBUSY' });
+  assert.throws(() => writeState(root, runId, data, {
+    atomicWriteFn: (path, contents) => atomicWrite(path, contents, transientRenameOptions(() => { throw expected; })),
+  }), error => error === expected);
+  assert.equal(readFileSync(eventPath, 'utf8'), before);
+  assert.equal(readLines(root, runId).filter(event => event.type === 'one-fail-stop-event').length, 1);
+  assert.doesNotThrow(() => readState(root, runId), 'failed first replacement must leave the prior state/hash pair readable');
 });

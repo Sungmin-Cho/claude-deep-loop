@@ -1,22 +1,29 @@
 import { readFileSync, writeFileSync, mkdirSync, rmdirSync, existsSync, statSync } from 'node:fs';
-import { join, resolve, sep } from 'node:path';
+import path, { join } from 'node:path';
 import { contentHash, atomicWrite } from './envelope.mjs';
 import { validate } from './schema.mjs';
 import { leaseCheck } from './lease.mjs';
 import { appendAnchored, MUTATION_TURN_FLOOR } from './integrity.mjs';
+import { assertProjectRootBinding } from './project-root.mjs';
+import { ancestorPaths } from './path-portable.mjs';
+
+export const LOCK_STALE_TTL_MS = 30_000;
 
 // R5 high-2: 상향탐색을 worktree 컨벤션(.claude/worktrees | .worktrees)으로 **한정**한다.
 // 무한정 walk 는 부모 run 밑의 nested repo/submodule 을 부모 run 에 잘못 바인딩(격리 회귀)시킨다.
 // cwd 가 <root>/.claude/worktrees/<slug>/... (또는 .worktrees) 안일 때만 그 부모 <root>(.deep-loop/current 보유)를 반환;
 // 그 외에는 startDir 그대로(기존 process.cwd() 동작과 동일 — 하위호환).
-export function findRoot(startDir) {
-  const parts = resolve(startDir).split(sep);
-  for (let i = parts.length - 1; i >= 1; i--) {
-    const isClaudeWt = parts[i - 1] === '.claude' && parts[i] === 'worktrees';
-    const isPlainWt = parts[i] === '.worktrees';
+export function findRoot(startDir, { pathApi = path, existsSync: markerExists = existsSync } = {}) {
+  const conventionComponent = value => pathApi.sep === '\\' ? value.toLowerCase() : value;
+  for (const current of ancestorPaths(startDir, { pathApi })) {
+    const parent = pathApi.dirname(current);
+    const currentName = conventionComponent(pathApi.basename(current));
+    const parentName = conventionComponent(pathApi.basename(parent));
+    const isClaudeWt = parentName === '.claude' && currentName === 'worktrees';
+    const isPlainWt = currentName === '.worktrees';
     if (isClaudeWt || isPlainWt) {
-      const base = parts.slice(0, isClaudeWt ? i - 1 : i).join(sep) || sep;
-      if (existsSync(join(base, '.deep-loop', 'current'))) return base;
+      const base = isClaudeWt ? pathApi.dirname(parent) : parent;
+      if (markerExists(pathApi.join(base, '.deep-loop', 'current'))) return base;
       // FIX H: 첫 번째 컨벤션 매치에 마커 없어도 break하지 말고 계속 탐색 — 중첩 컨벤션 경로에서 외부 run을 찾을 수 있음.
       // 어떤 컨벤션 세그먼트도 마커를 가진 base를 제공하지 못하면 루프 종료 후 startDir 반환.
       // continue
@@ -69,7 +76,7 @@ export function classifyPatch(field, value) {
   return 'forbid';
 }
 
-export function readState(root, runId) {
+function readHashVerifiedState(root, runId) {
   const raw = readFileSync(loopPath(root, runId), 'utf8');
   // loop.json이 있는데 hash anchor가 없으면 = anchor 제거 공격/손상 → fail-closed (Codex impl 🔴1)
   if (!existsSync(hashPath(root, runId))) {
@@ -82,13 +89,24 @@ export function readState(root, runId) {
   return { data: JSON.parse(raw), hash: stored };
 }
 
-export function writeState(root, runId, data) {
+export function readStateForRootRecovery(root, runId) {
+  return readHashVerifiedState(root, runId);
+}
+
+export function readState(root, runId) {
+  const state = readHashVerifiedState(root, runId);
+  assertProjectRootBinding(root, state.data);
+  return state;
+}
+
+export function writeState(root, runId, data, { atomicWriteFn = atomicWrite } = {}) {
+  assertProjectRootBinding(root, data);
   const v = validate(data);
   if (!v.ok) throw new Error(`SCHEMA_INVALID: ${v.errors.join('; ')}`);
   data.updated_at = new Date().toISOString();
   const raw = JSON.stringify(data, null, 2);
-  atomicWrite(loopPath(root, runId), raw);
-  atomicWrite(hashPath(root, runId), contentHash(raw));
+  atomicWriteFn(loopPath(root, runId), raw);
+  atomicWriteFn(hashPath(root, runId), contentHash(raw));
 }
 
 const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
@@ -134,7 +152,7 @@ export function patch(root, runId, field, value, { fence } = {}) {
 
 function sleepMs(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
 
-export function withLock(root, runId, fn, { ttlMs = 30000, retries = 100, backoffMs = 5 } = {}) {
+export function withLock(root, runId, fn, { ttlMs = LOCK_STALE_TTL_MS, retries = 100, backoffMs = 5 } = {}) {
   const lock = join(runDir(root, runId), '.lock');
   let acquired = false;
   for (let i = 0; i < retries && !acquired; i++) {

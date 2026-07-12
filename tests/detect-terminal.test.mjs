@@ -1,5 +1,11 @@
 import { test } from 'node:test'; import assert from 'node:assert/strict';
-import { detectTerminal } from '../scripts/lib/detect-terminal.mjs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { detectAndPersist, detectTerminal } from '../scripts/lib/detect-terminal.mjs';
+import * as runtimeExecutable from '../scripts/lib/runtime-executable.mjs';
+import { initRun } from '../scripts/lib/initrun.mjs';
+import { readState, writeState } from '../scripts/lib/state.mjs';
 const ok = () => ({ code: 0 }); const fail = () => ({ code: 1 });
 const NOW = '2026-06-27T00:00:00Z';
 
@@ -36,14 +42,34 @@ test('darwin tmux → none multiplexer-v1-unsupported (TERM_PROGRAM stale)', () 
   assert.equal(d.launcher, 'none'); assert.equal(d.reason, 'multiplexer-v1-unsupported');
 });
 test('darwin iTerm2 installed → iterm2; not installed → none', () => {
-  assert.equal(detectTerminal({ env:{ TERM_PROGRAM:'iTerm.app' }, platform:'darwin', run: ok, now: NOW }).launcher, 'iterm2');
+  let captured = null;
+  const detected = detectTerminal({
+    env:{ TERM_PROGRAM:'iTerm.app' }, platform:'darwin',
+    run: (bin, argv) => { captured = { bin, argv }; return { code: 0 }; }, now: NOW,
+  });
+  assert.equal(detected.launcher, 'iterm2');
+  assert.equal(detected.launcher_bin, '/usr/bin/osascript');
+  assert.equal(captured.bin, '/usr/bin/osascript');
+  assert.deepEqual(captured.argv, ['-e', 'id of application "iTerm"']);
   assert.equal(detectTerminal({ env:{ TERM_PROGRAM:'iTerm.app' }, platform:'darwin', run: fail, now: NOW }).launcher, 'none');
 });
 test('darwin Apple_Terminal id ok → terminal-app', () => {
-  assert.equal(detectTerminal({ env:{ TERM_PROGRAM:'Apple_Terminal' }, platform:'darwin', run: ok, now: NOW }).launcher, 'terminal-app');
+  let captured = null;
+  const detected = detectTerminal({
+    env:{ TERM_PROGRAM:'Apple_Terminal' }, platform:'darwin',
+    run: (bin, argv) => { captured = { bin, argv }; return { code: 0 }; }, now: NOW,
+  });
+  assert.equal(detected.launcher, 'terminal-app');
+  assert.equal(detected.launcher_bin, '/usr/bin/osascript');
+  assert.equal(captured.bin, '/usr/bin/osascript');
+  assert.deepEqual(captured.argv, ['-e', 'id of application "Terminal"']);
 });
-test('win32 WT_SESSION → wt (regression)', () => {
-  assert.equal(detectTerminal({ env:{ WT_SESSION:'x' }, platform:'win32', run: ok, now: NOW }).launcher, 'wt');
+test('win32 WT_SESSION without an independently verified identity → none/manual and no process call', () => {
+  let calls = 0;
+  const d = detectTerminal({ env:{ WT_SESSION:'x' }, platform:'win32', run: () => { calls++; return { code: 0 }; }, now: NOW });
+  assert.equal(d.launcher, 'none');
+  assert.equal(d.reason, 'windows-terminal-unverified');
+  assert.equal(calls, 0);
 });
 test('linux / no signal → none', () => {
   assert.equal(detectTerminal({ env:{}, platform:'linux', run: ok, now: NOW }).launcher, 'none');
@@ -81,6 +107,10 @@ test('B1: defaultProbeRun without capture returns code only (no stdout field)', 
 // ── B2: PowerShell host detection (trusted-path ancestry walk, measured-PS-only) ──
 const PS7 = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe';
 const PS51 = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+const psIdentity = (canonical_path) => ({
+  kind: 'powershell', canonical_path, sha256: 'b'.repeat(64), version: '7.5.2',
+  platform: 'win32', arch: 'x64', source: 'verified-native', authenticode: null,
+});
 const mkRun = ({ probe = {}, whereWt = 0 } = {}) => (bin, argv) => {
   if (bin === 'where') return { code: argv[0] === 'wt.exe' ? whereWt : 1, stdout: '' };
   if (probe[bin]) return probe[bin];            // ancestry probe for a TRUSTED_PS bin
@@ -88,16 +118,17 @@ const mkRun = ({ probe = {}, whereWt = 0 } = {}) => (bin, argv) => {
 };
 const existsOf = (set) => (p) => set.has(p);
 
-test('B2: WT_SESSION → wt (ancestry not run)', () => {
+test('B2: WT_SESSION without verified wt identity → none (ancestry and bare where not run)', () => {
   const d = detectTerminal({ env:{ WT_SESSION:'x' }, platform:'win32', run: mkRun({ whereWt:0 }), now: NOW, pid: 100, exists: existsOf(new Set([PS51])) });
-  assert.equal(d.launcher, 'wt');
+  assert.equal(d.launcher, 'none');
+  assert.equal(d.reason, 'windows-terminal-unverified');
 });
-test('B2: no WT + PS7 exists + ancestry PS → powershell with PS7 launcher_bin', () => {
-  const d = detectTerminal({ env:{}, platform:'win32', run: mkRun({ probe: { [PS7]: { code:0, stdout:'PS' } } }), now: NOW, pid: 100, exists: existsOf(new Set([PS7, PS51])) });
-  assert.equal(d.launcher, 'powershell');
-  assert.equal(d.launcher_bin, PS7);
-  assert.equal(d.visible, true);
-  assert.equal(d.surface, 'window');
+test('B2: fixed-path PowerShell existence alone is only a candidate, never authority', () => {
+  let calls = 0;
+  const d = detectTerminal({ env:{}, platform:'win32', run: () => { calls++; return { code:0, stdout:'PS' }; }, now: NOW, pid: 100, exists: existsOf(new Set([PS7, PS51])) });
+  assert.equal(d.launcher, 'none');
+  assert.equal(d.reason, 'powershell-unverified');
+  assert.equal(calls, 0);
 });
 test('B2: cmd guard — PSModulePath present but ancestry NO → none', () => {
   const env = { PSModulePath: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules' };
@@ -105,12 +136,14 @@ test('B2: cmd guard — PSModulePath present but ancestry NO → none', () => {
   assert.equal(d.launcher, 'none');
 });
 test('B2: 5.1 only (no channel) ancestry PS → powershell with 5.1 bin', () => {
-  const d = detectTerminal({ env:{}, platform:'win32', run: mkRun({ probe: { [PS51]: { code:0, stdout:'PS' } } }), now: NOW, pid: 100, exists: existsOf(new Set([PS51])) });
+  const d = detectTerminal({ env:{}, platform:'win32', run: mkRun({ probe: { [PS51]: { code:0, stdout:'PS' } } }), now: NOW, pid: 100,
+    windowsLauncherIdentities: { powershell: psIdentity(PS51) }, revalidateLauncher: value => value });
   assert.equal(d.launcher, 'powershell');
   assert.equal(d.launcher_bin, PS51);
 });
 test('B2: ordered fallback — PS7 probe broken, 5.1 PS → powershell with 5.1 bin', () => {
-  const d = detectTerminal({ env:{}, platform:'win32', run: mkRun({ probe: { [PS7]: { code:1, stdout:'' }, [PS51]: { code:0, stdout:'PS' } } }), now: NOW, pid: 100, exists: existsOf(new Set([PS7, PS51])) });
+  const d = detectTerminal({ env:{}, platform:'win32', run: mkRun({ probe: { [PS7]: { code:1, stdout:'' }, [PS51]: { code:0, stdout:'PS' } } }), now: NOW, pid: 100,
+    windowsLauncherIdentities: { powershell: psIdentity(PS51) }, revalidateLauncher: value => value });
   assert.equal(d.launcher, 'powershell');
   assert.equal(d.launcher_bin, PS51);
 });
@@ -130,4 +163,280 @@ test('B2: cwd-shadow C:\\repo\\powershell.exe is never a candidate', () => {
   const shadow = 'C:\\repo\\powershell.exe';
   const d = detectTerminal({ env:{}, platform:'win32', run: mkRun({ probe: { [shadow]: { code:0, stdout:'PS' } } }), now: NOW, pid: 100, exists: existsOf(new Set([shadow])) });
   assert.equal(d.launcher, 'none');
+});
+
+function launcherFixture(name, versionLine) {
+  const root = mkdtempSync(join(tmpdir(), 'dl-win-launcher-'));
+  const executable = join(root, name);
+  writeFileSync(executable, `${name} native bytes`);
+  const calls = [];
+  const runVersion = (bin, argv, options) => {
+    calls.push({ bin, argv, options });
+    return { status: 0, signal: null, stdout: `${versionLine}\r\n`, stderr: '' };
+  };
+  return { executable, calls, runVersion };
+}
+
+test('verified absolute Windows Terminal identity enables wt and persists the complete identity', () => {
+  const fixture = launcherFixture('wt.exe', 'Windows Terminal 1.22.10352.0');
+  const identity = runtimeExecutable.resolveTrustedLauncherExecutable('wt', {
+    candidatePaths: [fixture.executable], platform: 'win32', arch: 'x64', runVersion: fixture.runVersion,
+  });
+  const d = detectTerminal({
+    env: { WT_SESSION: 'x' }, platform: 'win32', arch: 'x64', now: NOW,
+    windowsLauncherIdentities: { wt: identity },
+    launcherRevalidationOptions: { runVersion: fixture.runVersion },
+    run: () => { throw new Error('WT detection must not execute where.exe or a bare launcher'); },
+  });
+  assert.equal(d.launcher, 'wt');
+  assert.equal(d.launcher_bin, identity.canonical_path);
+  assert.deepEqual(d.launcher_identity, identity);
+  assert.equal(fixture.calls[0].options.shell, false);
+});
+
+test('detectAndPersist consumes the durable human launcher approval without identity injection', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-terminal-durable-approval-'));
+  const fixture = launcherFixture('wt.exe', 'Windows Terminal 1.22.10352.0');
+  const { runId } = initRun(root, {
+    runtime: 'claude', goal: 'g', now: new Date('2026-07-12T00:00:00Z'),
+    env: { WT_SESSION: 'session-1' }, platform: 'win32',
+    run: () => { throw new Error('unapproved init must not probe'); },
+  });
+  const diagnosis = runtimeExecutable.diagnoseLauncherExecutable('wt', {
+    explicitPath: fixture.executable, platform: 'win32', arch: 'x64',
+  });
+  const approved = runtimeExecutable.approveLauncherExecutable(root, runId, {
+    kind: 'wt', candidatePath: fixture.executable,
+    expectedCanonicalPath: diagnosis.identity.canonical_path,
+    expectedSha256: diagnosis.identity.sha256,
+    actor: 'human', confirm: true, fence: { owner: runId, generation: 1 },
+    now: Date.parse('2026-07-12T01:00:00Z'), platform: 'win32', arch: 'x64',
+    runVersion: fixture.runVersion,
+  });
+
+  const descriptor = detectAndPersist(root, runId, {
+    owner: runId, generation: 1, env: { WT_SESSION: 'session-1' },
+    platform: 'win32', arch: 'x64', now: NOW,
+    launcherRevalidationOptions: { runVersion: fixture.runVersion },
+    run: () => { throw new Error('WT detection must not execute PATH or bare launcher probes'); },
+  });
+  assert.equal(descriptor.launcher, 'wt');
+  assert.equal(descriptor.launcher_bin, approved.approval.canonical_path);
+  assert.deepEqual(descriptor.launcher_identity, approved.approval);
+  assert.deepEqual(readState(root, runId).data.session_spawn, descriptor);
+});
+
+test('durable launcher approval is authoritative while legacy stored session identity remains compatible', () => {
+  const durableFixture = launcherFixture('wt.exe', 'Windows Terminal 1.22.10352.0');
+  const root = mkdtempSync(join(tmpdir(), 'dl-terminal-authority-'));
+  const { runId } = initRun(root, {
+    runtime: 'claude', goal: 'g', now: new Date('2026-07-12T00:00:00Z'),
+    env: {}, platform: 'linux', run: () => ({ code: 1 }),
+  });
+  const diagnosis = runtimeExecutable.diagnoseLauncherExecutable('wt', {
+    explicitPath: durableFixture.executable, platform: 'win32', arch: 'x64',
+  });
+  const approval = runtimeExecutable.approveLauncherExecutable(root, runId, {
+    kind: 'wt', candidatePath: durableFixture.executable,
+    expectedCanonicalPath: diagnosis.identity.canonical_path, expectedSha256: diagnosis.identity.sha256,
+    actor: 'human', confirm: true, fence: { owner: runId, generation: 1 },
+    now: Date.parse('2026-07-12T01:00:00Z'), platform: 'win32', arch: 'x64',
+    runVersion: durableFixture.runVersion,
+  }).approval;
+  const injected = { ...approval, canonical_path: '/tmp/replacement/wt.exe', sha256: 'f'.repeat(64) };
+  const authoritative = detectAndPersist(root, runId, {
+    owner: runId, generation: 1, env: { WT_SESSION: 'session-1' }, platform: 'win32', arch: 'x64', now: NOW,
+    windowsLauncherIdentities: { wt: injected },
+    launcherRevalidationOptions: { runVersion: durableFixture.runVersion },
+  });
+  assert.deepEqual(authoritative.launcher_identity, approval, 'test injection cannot replace durable authority');
+
+  const { data } = readState(root, runId);
+  delete data.autonomy.launcher_executable_approvals;
+  data.session_spawn = { ...authoritative, launcher_identity: { ...approval, source: 'verified-native' } };
+  writeState(root, runId, data);
+  const legacy = detectAndPersist(root, runId, {
+    owner: runId, generation: 1, env: { WT_SESSION: 'session-1' }, platform: 'win32', arch: 'x64', now: NOW,
+    revalidateLauncher: identity => identity,
+  });
+  assert.equal(legacy.launcher, 'wt');
+  assert.equal(legacy.launcher_identity.source, 'verified-native');
+});
+
+test('detectAndPersist cannot overwrite a concurrent human launcher re-approval with its stale descriptor', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-terminal-reapproval-race-'));
+  const oldFixture = launcherFixture('wt.exe', 'Windows Terminal 1.22.10352.0');
+  const freshFixture = launcherFixture('wt.exe', 'Windows Terminal 1.22.10353.0');
+  const { runId } = initRun(root, {
+    runtime: 'claude', goal: 'g', now: new Date('2026-07-12T00:00:00Z'),
+    env: {}, platform: 'linux', run: () => ({ code: 1 }),
+  });
+  const approve = (fixture, at) => {
+    const diagnosis = runtimeExecutable.diagnoseLauncherExecutable('wt', {
+      explicitPath: fixture.executable, platform: 'win32', arch: 'x64',
+    });
+    return runtimeExecutable.approveLauncherExecutable(root, runId, {
+      kind: 'wt', candidatePath: fixture.executable,
+      expectedCanonicalPath: diagnosis.identity.canonical_path,
+      expectedSha256: diagnosis.identity.sha256,
+      actor: 'human', confirm: true, fence: { owner: runId, generation: 1 },
+      now: Date.parse(at), platform: 'win32', arch: 'x64', runVersion: fixture.runVersion,
+    }).approval;
+  };
+  const oldApproval = approve(oldFixture, '2026-07-12T01:00:00.000Z');
+  let freshApproval;
+  let raced = false;
+
+  assert.throws(
+    () => detectAndPersist(root, runId, {
+      owner: runId, generation: 1, env: { WT_SESSION: 'session-old' },
+      platform: 'win32', arch: 'x64', now: NOW,
+      revalidateLauncher: (identity) => {
+        assert.deepEqual(identity, oldApproval);
+        if (!raced) {
+          raced = true;
+          freshApproval = approve(freshFixture, '2026-07-12T02:00:00.000Z');
+        }
+        return identity;
+      },
+    }),
+    (error) => {
+      assert.match(error.message, /^LAUNCHER_EXECUTABLE_DRIFT: detect-terminal authority changed$/);
+      assert.doesNotMatch(error.message, /LAUNCHER_AUTHORITY_DRIFT/);
+      return true;
+    },
+  );
+
+  const after = readState(root, runId).data;
+  assert.deepEqual(after.autonomy.launcher_executable_approvals.wt, freshApproval);
+  assert.equal(after.session_spawn.launcher, 'none');
+  assert.equal(after.session_spawn.launcher_bin, null);
+  assert.notEqual(after.session_spawn.reason, null);
+  assert.equal(after.session_spawn.launcher_identity, undefined);
+});
+
+test('a present durable approval map never falls back to a stale session identity or injected identity', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-terminal-present-map-'));
+  const { runId } = initRun(root, {
+    runtime: 'claude', goal: 'g', now: new Date('2026-07-12T00:00:00Z'),
+    env: {}, platform: 'linux', run: () => ({ code: 1 }),
+  });
+  const stale = {
+    kind: 'wt', canonical_path: 'C:\\Old\\wt.exe', sha256: 'a'.repeat(64),
+    version: '1.0.0', platform: 'win32', arch: 'x64', source: 'human-explicit',
+    authenticode: null, approved_by: 'human', approved_at: '2026-07-12T01:00:00.000Z',
+  };
+  const { data } = readState(root, runId);
+  data.autonomy.launcher_executable_approvals = { powershell: null };
+  data.session_spawn = {
+    platform: 'win32', launcher: 'wt', launcher_bin: stale.canonical_path,
+    launcher_identity: stale, launcher_socket: null, surface: 'tab', reachable: true,
+    visible: true, signals: {}, probe: null, reason: null,
+    fallback: 'launch-command-file', detected_at: NOW,
+  };
+  writeState(root, runId, data);
+
+  let revalidations = 0;
+  const descriptor = detectAndPersist(root, runId, {
+    owner: runId, generation: 1, env: { WT_SESSION: 'session-new' },
+    platform: 'win32', arch: 'x64', now: NOW,
+    windowsLauncherIdentities: { wt: stale },
+    revalidateLauncher: identity => { revalidations++; return identity; },
+  });
+  assert.equal(descriptor.launcher, 'none');
+  assert.equal(descriptor.reason, 'windows-terminal-unverified');
+  assert.equal(revalidations, 0, 'present durable state is authoritative even when its selected slot is absent');
+  assert.equal(readState(root, runId).data.session_spawn.launcher, 'none');
+});
+
+test('verified PowerShell identity is the only ancestry probe target; PATH/fixed strings are not authority', () => {
+  const fixture = launcherFixture('pwsh.exe', 'PowerShell 7.5.2');
+  const identity = runtimeExecutable.resolveTrustedLauncherExecutable('powershell', {
+    candidatePaths: [fixture.executable], platform: 'win32', arch: 'x64', runVersion: fixture.runVersion,
+  });
+  const ancestryCalls = [];
+  const d = detectTerminal({
+    env: { Path: `C:\\repo;${fixture.executable}` }, platform: 'win32', arch: 'x64', now: NOW, pid: 10,
+    windowsLauncherIdentities: { powershell: identity },
+    launcherRevalidationOptions: { runVersion: fixture.runVersion },
+    run: (bin, argv, options) => {
+      ancestryCalls.push({ bin, argv, options });
+      return { code: 0, stdout: 'PS' };
+    },
+  });
+  assert.equal(d.launcher, 'powershell');
+  assert.equal(d.launcher_bin, identity.canonical_path);
+  assert.deepEqual(d.launcher_identity, identity);
+  assert.deepEqual(ancestryCalls.map(call => call.bin), [identity.canonical_path]);
+});
+
+test('launcher identity replacement fails closed before terminal probing and never falls back to another candidate', () => {
+  const fixture = launcherFixture('wt.exe', 'Windows Terminal 1.22.10352.0');
+  const identity = runtimeExecutable.resolveTrustedLauncherExecutable('wt', {
+    candidatePaths: [fixture.executable], platform: 'win32', arch: 'x64', runVersion: fixture.runVersion,
+  });
+  writeFileSync(fixture.executable, 'replacement');
+  let processCalls = 0;
+  const d = detectTerminal({
+    env: { WT_SESSION: 'x' }, platform: 'win32', arch: 'x64', now: NOW,
+    windowsLauncherIdentities: { wt: identity },
+    run: () => { processCalls++; return { code: 0 }; },
+  });
+  assert.equal(d.launcher, 'none');
+  assert.equal(d.reason, 'windows-terminal-unverified');
+  assert.equal(processCalls, 0);
+});
+
+test('launcher revalidation options cannot override authoritative win32 platform or host architecture', () => {
+  const stored = {
+    kind: 'wt', canonical_path: 'C:\\Program Files\\WindowsApps\\wt.exe',
+    sha256: 'a'.repeat(64), version: '1.22.10352.0', platform: 'win32', arch: 'x64',
+    source: 'verified-native', authenticode: null,
+  };
+  let seenOptions;
+  const d = detectTerminal({
+    env: { WT_SESSION: 'x' }, platform: 'win32', arch: 'x64', now: NOW,
+    windowsLauncherIdentities: { wt: stored },
+    launcherRevalidationOptions: { platform: 'linux', arch: 'arm64', marker: 'kept' },
+    revalidateLauncher: (identity, options) => {
+      assert.strictEqual(identity, stored);
+      seenOptions = options;
+      return identity;
+    },
+  });
+  assert.equal(d.launcher, 'wt');
+  assert.equal(seenOptions.platform, 'win32');
+  assert.equal(seenOptions.arch, 'x64');
+  assert.equal(seenOptions.marker, 'kept');
+});
+
+test('same kind/path with altered hash version or Authenticode is rejected and never persisted', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-terminal-identity-drift-'));
+  const { runId } = initRun(root, {
+    runtime: 'claude', goal: 'g', now: new Date('2026-06-27T00:00:00Z'),
+    env: {}, platform: 'linux', run: () => ({ code: 1 }),
+  });
+  const stored = {
+    kind: 'wt', canonical_path: 'C:\\Program Files\\WindowsApps\\wt.exe',
+    sha256: 'a'.repeat(64), version: '1.22.10352.0', platform: 'win32', arch: 'x64',
+    source: 'verified-native',
+    authenticode: { status: 'valid', signer: 'Expected Signer', thumbprint: 'aabb' },
+  };
+  const altered = {
+    ...stored,
+    sha256: 'b'.repeat(64),
+    version: '9.9.9',
+    authenticode: { status: 'valid', signer: 'Replacement Signer', thumbprint: 'ccdd' },
+  };
+  const result = detectAndPersist(root, runId, {
+    owner: runId, generation: 1, env: { WT_SESSION: 'x' }, platform: 'win32', arch: 'x64', now: NOW,
+    windowsLauncherIdentities: { wt: stored },
+    revalidateLauncher: () => altered,
+  });
+  assert.equal(result.launcher, 'none');
+  assert.equal(result.reason, 'windows-terminal-unverified');
+  const persisted = readState(root, runId).data.session_spawn;
+  assert.equal(persisted.launcher, 'none');
+  assert.equal(persisted.launcher_identity, undefined);
+  assert.notDeepEqual(persisted.launcher_identity, altered);
 });

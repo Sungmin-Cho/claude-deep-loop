@@ -1,9 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { runDir } from '../scripts/lib/state.mjs';
 
@@ -14,6 +15,27 @@ function runValidate(args = []) {
   } catch (e) { return e.status ?? 1; }
 }
 
+const CLI = fileURLToPath(new URL('../scripts/deep-loop.mjs', import.meta.url));
+function runCli(args) {
+  return spawnSync('node', [CLI, ...args], { encoding: 'utf8' });
+}
+
+test('CLI init-run missing runtime exits 2 and creates no run', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-runtime-cli-'));
+  const result = runCli(['init-run', '--goal', 'g', '--project-root', root]);
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, /runtime/i);
+  assert.equal(existsSync(join(root, '.deep-loop')), false);
+});
+
+test('CLI init-run invalid runtime exits 1 and creates no run', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-runtime-cli-'));
+  const result = runCli(['init-run', '--goal', 'g', '--runtime', 'other', '--project-root', root]);
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /INVALID_RUNTIME/);
+  assert.equal(existsSync(join(root, '.deep-loop')), false);
+});
+
 test('validate exits 0 with no run (schema+builder self-test)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
   assert.equal(runValidate(['--project-root', root]), 0);
@@ -21,13 +43,13 @@ test('validate exits 0 with no run (schema+builder self-test)', () => {
 
 test('validate exits 0 for a freshly initialized run', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
-  const { runId } = initRun(root, { goal: 'x', detected: {}, now: new Date() });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'x', detected: {}, now: new Date() });
   assert.equal(runValidate(['--project-root', root, '--run-id', runId]), 0);
 });
 
 test('validate exits nonzero when loop.json is corrupted (hash anchor fires)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
-  const { runId } = initRun(root, { goal: 'x', detected: {}, now: new Date() });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'x', detected: {}, now: new Date() });
   writeFileSync(join(runDir(root, runId), 'loop.json'), '{"goal":"hacked"}'); // hash mismatch
   assert.notEqual(runValidate(['--project-root', root, '--run-id', runId]), 0);
 });

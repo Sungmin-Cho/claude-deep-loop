@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "deep-loop/review-import.schema.json",
+  "title": "deep-loop bounded independent review import",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "reviewer_id", "checker_episode_id", "target_maker", "attempt_id", "verdict", "report_body", "artifacts"],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "reviewer_id": { "type": "string", "minLength": 1 },
+    "checker_episode_id": { "type": "string", "minLength": 1 },
+    "target_maker": { "type": "string", "minLength": 1 },
+    "attempt_id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" },
+    "verdict": { "type": "string", "enum": ["APPROVE", "REQUEST_CHANGES", "CONCERN"] },
+    "report_body": { "type": "string", "maxLength": 262144 },
+    "artifacts": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "sha256"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+        }
+      }
+    }
+  }
+}

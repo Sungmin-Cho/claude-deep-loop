@@ -1,8 +1,8 @@
-import { readdirSync, readFileSync, existsSync, renameSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { runDir, readState } from './state.mjs';
 import { readLines, verifyLines, verifyHeadLines, appendAnchored, MUTATION_TURN_FLOOR } from './integrity.mjs';
-import { contentHash, wrap, unwrap, ulid, atomicWrite } from './envelope.mjs';
+import { contentHash, wrap, unwrap, ulid, atomicWrite, renameAtomicWithRetry } from './envelope.mjs';
 import { leaseCheck } from './lease.mjs';
 
 export const INSIGHTS_SCHEMA_VERSION = 1;
@@ -305,10 +305,22 @@ export function deriveCandidates(perRunMap, { integrityFailed = [] } = {}) {
 function defaultSleep(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
 const TERMINAL_RUN = new Set(['completed', 'stopped']);
 
-// (b) finish-edge 인접성의 예외는 auto-floor cost(appendAnchored 자동 계상, data.auto_floor===true)뿐이다.
-// 명시 budget record cost(auto_floor 부재, budget.mjs recordCost)는 non-exempt (spec §3, r1 리뷰 P2):
+// (b) finish-edge 인접성의 예외는 auto-floor cost와, 종료한 Codex child의 측정 결과를 프로세스 exit 후
+// 정산하는 좁은 terminal-maker receipt뿐이다. 후자는 finish 직전 생성된 insights가 의도적으로 그 마지막
+// 프로세스 사용량을 포함하지 않는 pre-finish snapshot이라는 계약이다. source+64-hex accounting key+정확한
+// one-turn shape를 모두 요구해 일반 post-finish cost가 이 예외로 위장하지 못하게 한다.
+// 명시 budget record cost(둘 다 아닌 cost)는 non-exempt (spec §3, r1 리뷰 P2):
 // emit→finish 사이에 끼면 payload가 최종 turns/tokens를 놓쳐 budget_overrun 후보가 억제되므로 재-emit을 요구한다.
-const nonExemptEvent = (e) => !(e.type === 'cost' && e.data?.auto_floor === true);
+const terminalMakerReceipt = e => e.type === 'cost'
+  && e.data?.terminal_process === 'codex-maker'
+  && e.data?.source === 'terminal-maker-measured'
+  && /^[a-f0-9]{64}$/.test(e.data?.accounting_key || '')
+  && e.data?.reported_turns === 1
+  && Number.isFinite(e.data?.reported_tokens) && e.data.reported_tokens >= 0
+  && Number.isFinite(e.data?.turns) && e.data.turns >= 0
+  && Number.isFinite(e.data?.tokens) && e.data.tokens >= 0;
+const nonExemptEvent = e => !(e.type === 'cost'
+  && (e.data?.auto_floor === true || terminalMakerReceipt(e)));
 
 function listRunIds(root) {
   const dir = join(root, '.deep-loop', 'runs');
@@ -403,7 +415,9 @@ export function computeInsights(root, { selfRunId = null, now = Date.now(), retr
 const insightsDir = (root) => join(root, '.deep-loop', 'insights');
 export const relInsightsPath = (name) => `.deep-loop/insights/${name}`;
 
-export function emitInsights(root, runId, { fence, now = Date.now(), rnd = Math.random, renameFn = renameSync, sleepFn } = {}) {
+export function emitInsights(root, runId, {
+  fence, now = Date.now(), rnd = Math.random, platform, monotonicNowFn, renameFn, sleepFn,
+} = {}) {
   // lib 진입점 fence 필수 — shape까지 episode.mjs:26-27/finish.mjs 동형(owner 문자열 + generation 정수, r2 리뷰 정정)
   if (!fence || typeof fence.owner !== 'string' || !fence.owner.length || !Number.isInteger(fence.generation)) {
     throw new Error('FENCE_REQUIRED: emitInsights requires {owner: string, generation: integer}');
@@ -430,7 +444,8 @@ export function emitInsights(root, runId, { fence, now = Date.now(), rnd = Math.
     undefined,
     (l) => { if (fence) { const r = leaseCheck(l, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); } },
     { floor: MUTATION_TURN_FLOOR });
-  renameFn(tmp, join(insightsDir(root), finalName));                 // ③ 공개
+  renameAtomicWithRetry(tmp, join(insightsDir(root), finalName),
+    { platform, monotonicNowFn, renameFn, sleepFn });                // ③ 공개
   // candidates를 반환에 포함 — finish 스킬이 파일을 직접 파싱하지 않고 CLI 출력만으로 제안 블록을 구성(§9, 2-plane).
   // v1.5: 신뢰 라벨 2배열도 함께 노출 — payload에만 있으면 stdout-만 읽는 소비자에게 영원히 안 보인다 (plan-r2).
   return { ok: true, path: rel, sha256, candidates_count: payload.candidates.length, candidates: payload.candidates,

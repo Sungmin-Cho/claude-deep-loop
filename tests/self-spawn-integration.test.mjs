@@ -18,10 +18,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { initRun } from '../scripts/lib/initrun.mjs';
+import { recordCost } from '../scripts/lib/budget.mjs';
+import { driveHeadlessRun as driveHeadlessRunImpl } from '../scripts/lib/headless-host.mjs';
+import { readLines } from '../scripts/lib/integrity.mjs';
 import { readState, writeState, pauseRun, patch } from '../scripts/lib/state.mjs';
 import { emitHandoff, buildLaunchCommand } from '../scripts/lib/handoff.mjs';
 import { acquireLease } from '../scripts/lib/lease.mjs';
-import { respawn } from '../scripts/lib/respawn.mjs';
+import { respawn as respawnImpl } from '../scripts/lib/respawn.mjs';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -32,12 +35,44 @@ const NOW1 = Date.parse('2026-06-24T01:00:00Z');
 const noOpRun = () => ({ code: 1 });
 const noSleep = () => {};
 
+function buildPosixLaunchCommand(options) {
+  return buildLaunchCommand({
+    ...options,
+    platform: 'linux',
+    root: '/fixture-project',
+    deepLoopRoot: '/fixture-deep-loop',
+  });
+}
+
+function respawn(root, runId, options = {}) {
+  return respawnImpl(root, runId, {
+    ...options,
+    platform: 'linux',
+    launchCommandBuilder: options.launchCommandBuilder ?? buildPosixLaunchCommand,
+  });
+}
+
+function driveHeadlessRun(options = {}) {
+  return driveHeadlessRunImpl({
+    ...options,
+    launchCommandBuilder: options.launchCommandBuilder ?? buildPosixLaunchCommand,
+    respawnFn: options.respawnFn ?? ((root, runId, respawnOptions) => {
+      const identity = readState(root, runId).data.autonomy.runtime_executable_approval;
+      return respawn(root, runId, {
+        ...respawnOptions,
+        revalidateRuntimeExecutable: stored => stored,
+        runtimeRevalidationOptions: { platform: 'linux', arch: identity.arch },
+      });
+    }),
+  });
+}
+
 // ── Seed helpers ──────────────────────────────────────────────────────────────
 
 /** Seed a run. initRun with no-signal env so launcher is always 'none'. */
 function seed(mutate) {
   const root = mkdtempSync(join(tmpdir(), 'dl-int-'));
-  const { runId } = initRun(root, { goal: 'g', now: NOW0, env: {}, platform: 'linux', run: noOpRun });
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: NOW0, env: {}, platform: 'linux', run: noOpRun });
   if (mutate) {
     const { data } = readState(root, runId);
     mutate(data);
@@ -165,7 +200,7 @@ test('(R14-RR) no-launcher attended round-trip: respawn no-launcher → pauseRun
   assert.equal(dPaused.session_chain.lease.handoff_child_run_id, h.childRunId, 'reserved child intact after preserve pause');
 
   // Step 5: reserved child (/deep-loop-resume) calls acquireLease — succeeds and UNPAUSES the run
-  const acq = acquireLease(root, runId, { owner: h.childRunId, expectGeneration: 1, now: NOW1 + 5000 });
+  const acq = acquireLease(root, runId, { owner: h.childRunId, expectGeneration: 1, runtime: 'claude', now: NOW1 + 5000 });
   assert.equal(acq.ok, true, 'reserved child must be able to acquire the releasing lease');
   assert.equal(acq.generation, 2, 'generation must advance to 2 on acquire');
 
@@ -240,7 +275,7 @@ test('(R12-LL) gate-blocked rollback: budget exhausted → rollback + paused, ol
 
   // Step 4: old child (invalidated) tries acquireLease → REJECTED
   // Lease is active (not releasing/released) and owner is the parent → not takeable by the old child.
-  const rejectAcq = acquireLease(root, runId, { owner: h.childRunId, expectGeneration: 1, now: NOW1 + 5000 });
+  const rejectAcq = acquireLease(root, runId, { owner: h.childRunId, expectGeneration: 1, runtime: 'claude', now: NOW1 + 5000 });
   assert.equal(rejectAcq.ok, false, 'invalidated child must NOT be able to acquire the rolled-back lease');
   assert.equal(rejectAcq.reason, 'lease-not-takeable', `expected lease-not-takeable, got: ${rejectAcq.reason}`);
   // Run remains paused (no side-effect from the failed acquire attempt)
@@ -312,6 +347,7 @@ test('(markerless) positive launcher + not attended → mode=interactive → no-
 test('(R5-R) cmux --command POSIX-tokenize: first token is claude', () => {
   // Build cmux launch command directly (no run state needed)
   const cmds = buildLaunchCommand({
+    platform: 'linux',
     root: '/test/project',
     parentRunId: 'PARENT01',
     childRunId: 'CHILD01',
@@ -348,4 +384,82 @@ test('(R5-R) cmux --command POSIX-tokenize: first token is claude', () => {
   assert.ok(tokens[3].startsWith('Read '), `resume prompt must start with 'Read ', got: ${JSON.stringify(tokens[3].slice(0, 30))}`);
   assert.ok(tokens[3].includes('PARENT01'), 'resume prompt must reference parentRunId');
   assert.ok(tokens[3].includes('/deep-loop-resume'), 'resume prompt must include /deep-loop-resume');
+});
+
+test('Codex emitted handoff stays on the shared measured host path through preflight, CAS, and accounting', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-self-spawn-codex-'));
+  const { runId } = initRun(root, {
+    runtime: 'codex', goal: 'shared host round-trip', now: NOW0,
+    env: {}, platform: 'linux', run: noOpRun,
+  });
+  const executable = {
+    runtime: 'codex', canonical_path: '/opt/codex/bin/codex', sha256: 'a'.repeat(64),
+    version: '0.144.1', platform: 'linux', arch: process.arch,
+    source: 'human-explicit', package: null, authenticode: null,
+    approved_by: 'human', approved_at: NOW0.toISOString(),
+  };
+  const seeded = readState(root, runId).data;
+  seeded.autonomy.spawn_style = 'headless';
+  seeded.autonomy.runtime_executable_approval = executable;
+  writeState(root, runId, seeded);
+  const handoff = emitHandoff(root, runId, {
+    trigger: 'shared-measured-host', headless: true, resumePolicy: 'headless',
+    expect: { owner: runId, generation: 1 }, now: NOW1,
+  });
+
+  const order = [];
+  const measured = inputTokens => ({
+    num_turns: 1, input_tokens: inputTokens, output_tokens: 1, tokens: inputTokens + 1,
+  });
+  const deps = {
+    env: { PATH: '/usr/bin', CODEX_HOME: '/authenticated/codex-home' },
+    revalidateExecutable: () => executable,
+    resolveCodexHome: () => ({
+      canonical_path: '/authenticated/codex-home', device: '1', inode: '2',
+      birthtime_ns: '3', platform: 'linux',
+    }),
+    preflightFn: () => {
+      order.push('preflight');
+      return { ok: true, cache_hit: false, measured_usage: [measured(10), measured(20)] };
+    },
+    recordCostFn: (projectRoot, id, options) => {
+      order.push(`cost:${options.tokens}`);
+      return recordCost(projectRoot, id, options);
+    },
+    spawnFn: (entry) => {
+      order.push('maker');
+      assert.equal(entry.shell, false);
+      assert.equal(entry.usageOutputKind, 'codex-jsonl');
+      assert.equal(entry.env.DEEP_LOOP_OWNER, handoff.childRunId);
+      acquireLease(root, runId, {
+        owner: handoff.childRunId, expectGeneration: 1, runtime: 'codex', now: NOW1 + 1_000,
+      });
+      return { ok: true, usage: measured(30) };
+    },
+  };
+  const first = driveHeadlessRun({
+    root, runId, expect: { owner: runId, generation: 1 }, now: NOW1 + 500, ...deps,
+  });
+
+  assert.equal(first.action, 'resumed', JSON.stringify(first));
+  assert.equal(first.recorded, true);
+  assert.deepEqual(order, ['preflight', 'cost:11', 'cost:21', 'maker', 'cost:31']);
+  assert.deepEqual(
+    readLines(root, runId).filter(event => event.type === 'cost' && event.data.reported_turns === 1)
+      .map(event => event.data.reported_tokens),
+    [11, 21, 31],
+  );
+  const after = readState(root, runId).data;
+  assert.equal(after.session_chain.lease.owner_run_id, handoff.childRunId);
+  assert.equal(after.session_chain.lease.generation, 2);
+
+  const beforeSecondTick = order.length;
+  const second = driveHeadlessRun({
+    root, runId, now: NOW1 + 2_000,
+    ...deps,
+    preflightFn: () => { throw new Error('completed shared host path must not repeat preflight'); },
+    spawnFn: () => { throw new Error('completed shared host path must not repeat maker'); },
+  });
+  assert.equal(second.action, 'no-pending-handoff');
+  assert.equal(order.length, beforeSecondTick);
 });

@@ -5,6 +5,22 @@ All notable changes to deep-loop are documented in this file.
 > Note: the `[1.1.0]`/`[1.2.0]` entries pre-date this changelog file (a known lag between
 > `plugin.json.version` and the changelog); this release does not retro-fill them.
 
+## [1.8.0] — 2026-07-12
+
+Dual-runtime and native Windows compatibility release.
+
+### Added
+- **Claude Code + Codex execution surfaces** — the same plugin now exposes portable skills and
+  invocation contracts for Claude Code, Codex CLI, and Codex App while preserving the deterministic
+  kernel boundary and independent checker gates.
+- **Native Windows runtime support** — process execution, runtime discovery, handoff descriptors,
+  and respawn paths now support Windows directly, including fail-closed executable authority and
+  explicit desktop continuation behavior.
+
+### Changed
+- Synchronized the Claude and Codex plugin manifests and npm package at release version `1.8.0`;
+  the durable loop-state schema remains independently pinned at `0.2.0`.
+
 ## [1.4.0] — 2026-07-07
 
 Autonomous hill-climbing feedback loop — the kernel mines its own run history into deterministic

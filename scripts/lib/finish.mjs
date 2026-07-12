@@ -1,7 +1,7 @@
 import { appendAnchored } from './integrity.mjs';
 import { leaseCheck } from './lease.mjs';
 import { runDir } from './state.mjs';
-import { makerReviewed, unsatisfiedReviewPoints, epOrder, rejectionResolved } from './review.mjs';
+import { isProofCapableChecker, makerReviewed, unsatisfiedReviewPoints, epOrder, rejectionResolved } from './review.mjs';
 import { MUTATION_TURN_FLOOR } from './budget.mjs';
 import { containedRealFile } from './fs-safe.mjs';
 
@@ -36,7 +36,7 @@ export function finishProofState(loop) {
   // followed by a newer reject (same target_maker) must NOT mask the rejection (a plain any-approved test would,
   // diverging from nextAction which routes to fix_episode). An unbound checker has no target_maker so cannot count.
   const latestBoundChecker = (mid) => {
-    const cs = (loop.episodes || []).filter(e => e.role === 'checker' && e.target_maker === mid && (e.status === 'approved' || e.status === 'rejected'));
+    const cs = (loop.episodes || []).filter(e => isProofCapableChecker(e) && e.target_maker === mid && (e.status === 'approved' || e.status === 'rejected'));
     return cs.length ? cs.reduce((a, b) => (epOrder(a.id, b.id) >= 0 ? a : b)) : null;
   };
   const boundLatestApproved = (mid) => latestBoundChecker(mid)?.status === 'approved';
@@ -61,7 +61,7 @@ export function finishProofState(loop) {
   if (!wsAll) missing.push('non-terminal-workstreams');
   if (!allMakersReviewed) missing.push('unreviewed-maker');        // 미리뷰 done maker 차단
   if (hasWork && !reviewedProof) missing.push('no-independent-review');
-  if (hasWork && !contractPinned) missing.push('hillclimb-contract-unpinned');   // legacy approved checker — abandon 후 re-dispatch 필요
+  if (hasWork && !contractPinned) missing.push('hillclimb-contract-unpinned');   // legacy approved checker — contract materialize 후 fresh pinned review 필요
   if (unsatisfiedReviewPoints(loop).length) missing.push('review-point-unsatisfied');
   if (unboundDoneMaker) missing.push('unbound-proof-episode');
   return { hasWork, settled, noActiveWs, allWsTerminal: wsAll, allMakersReviewed, reviewedProof, missing };
