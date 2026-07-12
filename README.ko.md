@@ -100,6 +100,8 @@ DEEP_LOOP_UNATTENDED=1 node scripts/hooks-impl/drive-headless.mjs
 # cron/GitHub Actions 템플릿은 recipes/automation/ 참조
 ```
 
+**Claude** 경로는 bounded `claude -p --output-format json` 출력을 파싱합니다. 승인된 **Codex** runtime은 인증된 격리 `CODEX_HOME`, shell-free `codex exec --json`, incremental JSONL 파싱을 사용합니다. 두 경로 모두 정확히 한 turn의 측정 usage를 기록하며 timeout, non-zero exit, malformed output, 측정불가 usage에서 fail-closed합니다. 교차 런타임 fallback은 하지 않으며, Codex App의 새 task 자동 생성은 지원하지 않아 App 연속성은 수동 resume입니다.
+
 ## deep-suite 연동
 
 deep-suite 내에서 사용 시, deep-loop는 오케스트레이션 백본으로 동작:
@@ -129,7 +131,7 @@ deep-suite 내에서 사용 시, deep-loop는 오케스트레이션 백본으로
 
 ## PreCompact Hook
 
-deep-loop는 Claude Code 컨텍스트 컴팩션 직전에 clean handoff를 방출하는 `PreCompact` hook을 등록합니다. 무인 모드에서는 headless respawn도 트리거합니다. hook은 컴팩션을 절대 막지 않습니다(항상 exit 0).
+deep-loop는 Claude Code 컨텍스트 컴팩션 직전에 clean handoff를 방출하는 `PreCompact` hook을 등록합니다. hook은 **emit-only(방출 전용)**이며, 무인 연속 실행은 이후 측정 가능한 `scripts/hooks-impl/drive-headless.mjs` 드라이버가 담당합니다. hook은 컴팩션을 절대 막지 않습니다(항상 exit 0).
 
 ## 라이센스
 

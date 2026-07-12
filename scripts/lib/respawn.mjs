@@ -1,6 +1,7 @@
 import { readState } from './state.mjs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 import { appendAnchored } from './integrity.mjs';
 import { checkBudget, reconcileBudget } from './budget.mjs';
 import { checkBreaker } from './breaker.mjs';
@@ -15,6 +16,19 @@ import {
 } from './runtime-executable.mjs';
 
 const DEFAULT_DEEP_LOOP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+function currentLauncherAuthority(loop, expectedKind) {
+  const sessionIdentity = loop.session_spawn?.launcher_identity;
+  if (!sessionIdentity || typeof sessionIdentity !== 'object' || Array.isArray(sessionIdentity)
+    || loop.session_spawn?.launcher !== expectedKind) return null;
+  const approvals = loop.autonomy?.launcher_executable_approvals;
+  if (approvals === undefined) return { source: 'legacy-session', identity: sessionIdentity };
+  if (!approvals || typeof approvals !== 'object' || Array.isArray(approvals)
+    || !Object.hasOwn(approvals, expectedKind) || !approvals[expectedKind]
+    || typeof approvals[expectedKind] !== 'object' || Array.isArray(approvals[expectedKind])
+    || !isDeepStrictEqual(sessionIdentity, approvals[expectedKind])) return null;
+  return { source: 'durable-approval', identity: approvals[expectedKind] };
+}
 
 // 게이트 순서: budget → breaker → max_sessions → wallclock → auto_handoff (spec §9). 순수.
 export function respawnGate(loop, { now = Date.now() } = {}) {
@@ -271,6 +285,7 @@ export function respawn(root, runId, {
   const isHeadless = mode === 'headless';
   let runtimeExecutableIdentity = null;
   let launcherIdentity = null;
+  let launcherAuthoritySnapshot = null;
   if (platform === 'win32') {
     const requiresRuntime = mode !== 'desktop';
     const requiresLauncher = mode === 'wt' || mode === 'powershell' || mode === 'desktop';
@@ -284,11 +299,13 @@ export function respawn(root, runId, {
       }
       if (requiresLauncher) {
         identityStage = 'launcher';
-        const stored = loop.session_spawn?.launcher_identity;
-        launcherIdentity = revalidateLauncherExecutable(stored, { ...launcherRevalidationOptions, platform });
         const expectedKind = mode === 'wt' ? 'wt' : 'powershell';
+        launcherAuthoritySnapshot = currentLauncherAuthority(loop, expectedKind);
+        const stored = launcherAuthoritySnapshot?.identity;
+        if (stored == null) throw new Error('launcher authority unavailable');
+        launcherIdentity = revalidateLauncherExecutable(stored, { ...launcherRevalidationOptions, platform });
         if (!launcherIdentity || launcherIdentity.kind !== expectedKind
-          || launcherIdentity.canonical_path !== stored?.canonical_path) throw new Error('launcher identity mismatch');
+          || !isDeepStrictEqual(launcherIdentity, stored)) throw new Error('launcher identity mismatch');
       }
     } catch {
       const reason = `${identityStage}-identity-unavailable`;
@@ -342,8 +359,8 @@ export function respawn(root, runId, {
   // verified win-exe target with no trusted PowerShell bin resolvable — see runtime-descriptor.mjs's win32
   // branch, which otherwise builds a runnable non-blocking `Start-Process` entry) — must NOT spawn.
   // `interactive` never reaches here (it returns above, before `_cmds` is
-  // built); Claude `headless` carries `bin:'claude'`, while Slice 1 Codex headless is deliberately
-  // unavailable and is caught here before CAS; a valid launcher entry
+  // built); headless carries a runtime-selected measured Claude or approved Codex entry, while an
+  // unsupported Codex transport remains unavailable and is caught here before CAS; a valid launcher entry
   // always has a `bin` (guard never fires). Unlike the interactive no-launcher path (which the else/none
   // skill branch preserve-pauses), this is reached via the VISIBLE/DESKTOP skill branch (launcher!=='none'
   // → `respawn --attended`), which does NOT inspect the outcome — so respawn must preserve-pause ITSELF here, or
@@ -372,12 +389,15 @@ export function respawn(root, runId, {
     }
     if (launcherIdentity != null) {
       try {
-        const stored = sourceLoop.session_spawn?.launcher_identity;
-        if (JSON.stringify(stored) !== JSON.stringify(loop.session_spawn?.launcher_identity)) {
+        const expectedKind = mode === 'wt' ? 'wt' : 'powershell';
+        const authority = currentLauncherAuthority(sourceLoop, expectedKind);
+        if (authority == null || launcherAuthoritySnapshot == null
+          || authority.source !== launcherAuthoritySnapshot.source
+          || !isDeepStrictEqual(authority.identity, launcherAuthoritySnapshot.identity)) {
           return 'launcher-identity-drift';
         }
-        const fresh = revalidateLauncherExecutable(stored, { ...launcherRevalidationOptions, platform });
-        if (JSON.stringify(fresh) !== JSON.stringify(launcherIdentity)) return 'launcher-identity-drift';
+        const fresh = revalidateLauncherExecutable(authority.identity, { ...launcherRevalidationOptions, platform });
+        if (!isDeepStrictEqual(fresh, launcherIdentity)) return 'launcher-identity-drift';
       } catch {
         return 'launcher-identity-drift';
       }

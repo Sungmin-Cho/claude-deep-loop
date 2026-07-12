@@ -197,6 +197,15 @@ function launcherApprovalOptions(fixture, overrides = {}) {
   };
 }
 
+function assertLauncherOnlyError(callback, primaryCode, label) {
+  assert.throws(callback, error => {
+    const message = String(error?.message || error);
+    assert.ok(message.startsWith(`${primaryCode}:`), `${label}: ${message}`);
+    assert.doesNotMatch(message, /RUNTIME_EXECUTABLE_/, `${label}: ${message}`);
+    return true;
+  }, label);
+}
+
 test('collectRuntimeExecutableCandidates ignores cwd and relative PATH shadows', () => {
   const cwd = mkdtempSync(join(tmpdir(), 'dl-runtime-shadow-cwd-'));
   writeFileSync(join(cwd, 'codex'), 'shadow');
@@ -938,13 +947,143 @@ test('launcher public diagnose and approve APIs use launcher-specific unavailabl
   assert.equal(fixture.calls.length, 0);
   assert.deepEqual(durableApprovalBytes(fixture.root, fixture.runId), before);
 
-  assert.throws(
+  assertLauncherOnlyError(
     () => runtimeExecutable.approveLauncherExecutable(fixture.root, fixture.runId, launcherApprovalOptions(fixture, {
       authenticodeProbe: () => ({ status: 'invalid', signer: 'Unknown', thumbprint: 'aa' }),
     })),
-    error => String(error?.message || error).startsWith('LAUNCHER_EXECUTABLE_AUTHENTICODE_INVALID:'),
+    'LAUNCHER_EXECUTABLE_AUTHENTICODE_INVALID',
+    'approve invalid Authenticode',
   );
   assert.deepEqual(durableApprovalBytes(fixture.root, fixture.runId), before);
+});
+
+test('launcher resolution sanitizes a missing candidate without changing its unavailable primary code', () => {
+  const missingFixture = launcherApprovalFixture();
+  const missing = join(missingFixture.root, 'missing', 'wt.exe');
+  assertLauncherOnlyError(
+    () => runtimeExecutable.resolveTrustedLauncherExecutable('wt', {
+      candidatePaths: [missing], platform: 'win32', arch: 'x64',
+      runVersion: missingFixture.runVersion,
+    }),
+    'LAUNCHER_EXECUTABLE_UNTRUSTED',
+    'resolve missing launcher',
+  );
+});
+
+test('launcher diagnosis and approval keep missing candidates in the launcher namespace', () => {
+  const missingFixture = launcherApprovalFixture();
+  const missing = join(missingFixture.root, 'missing', 'wt.exe');
+  assertLauncherOnlyError(
+    () => runtimeExecutable.diagnoseLauncherExecutable('wt', {
+      explicitPath: missing, platform: 'win32', arch: 'x64',
+    }),
+    'LAUNCHER_EXECUTABLE_UNTRUSTED',
+    'diagnose missing launcher',
+  );
+  assertLauncherOnlyError(
+    () => runtimeExecutable.approveLauncherExecutable(
+      missingFixture.root,
+      missingFixture.runId,
+      launcherApprovalOptions(missingFixture, {
+        candidatePath: missing,
+        expectedCanonicalPath: missing,
+      }),
+    ),
+    'LAUNCHER_EXECUTABLE_UNTRUSTED',
+    'approve missing launcher',
+  );
+});
+
+test('launcher revalidation preserves drift while sanitizing a missing approved candidate', () => {
+  const approvedFixture = launcherApprovalFixture();
+  const approved = runtimeExecutable.approveLauncherExecutable(
+    approvedFixture.root,
+    approvedFixture.runId,
+    launcherApprovalOptions(approvedFixture),
+  ).approval;
+  renameSync(approvedFixture.executable, `${approvedFixture.executable}.removed`);
+  assertLauncherOnlyError(
+    () => runtimeExecutable.revalidateTrustedLauncherExecutable(approved, {
+      platform: 'win32', arch: 'x64', runVersion: approvedFixture.runVersion,
+    }),
+    'LAUNCHER_EXECUTABLE_DRIFT',
+    'revalidate missing launcher',
+  );
+});
+
+test('all public launcher paths reject scripts without leaking the runtime namespace', () => {
+  for (const operation of ['resolve', 'diagnose', 'approve', 'revalidate']) {
+    const fixture = launcherApprovalFixture({ name: 'wt.ps1' });
+    const scriptIdentity = {
+      kind: 'wt', canonical_path: fixture.executable, sha256: fixture.sha256,
+      version: fixture.version, platform: 'win32', arch: 'x64', source: 'verified-native',
+      authenticode: null,
+    };
+    const invoke = {
+      resolve: () => runtimeExecutable.resolveTrustedLauncherExecutable('wt', {
+        candidatePaths: [fixture.executable], platform: 'win32', arch: 'x64',
+        runVersion: fixture.runVersion,
+      }),
+      diagnose: () => runtimeExecutable.diagnoseLauncherExecutable('wt', {
+        explicitPath: fixture.executable, platform: 'win32', arch: 'x64',
+      }),
+      approve: () => runtimeExecutable.approveLauncherExecutable(
+        fixture.root, fixture.runId, launcherApprovalOptions(fixture),
+      ),
+      revalidate: () => runtimeExecutable.revalidateTrustedLauncherExecutable(scriptIdentity, {
+        platform: 'win32', arch: 'x64', runVersion: fixture.runVersion,
+      }),
+    }[operation];
+    assertLauncherOnlyError(
+      invoke,
+      operation === 'revalidate' ? 'LAUNCHER_EXECUTABLE_DRIFT' : 'LAUNCHER_EXECUTABLE_UNTRUSTED',
+      `${operation} script launcher`,
+    );
+  }
+});
+
+test('launcher resolution sanitizes invalid Authenticode without changing its unavailable primary code', () => {
+  const resolveFixture = launcherApprovalFixture();
+  assertLauncherOnlyError(
+    () => runtimeExecutable.resolveTrustedLauncherExecutable('wt', {
+      candidatePaths: [resolveFixture.executable], platform: 'win32', arch: 'x64',
+      runVersion: resolveFixture.runVersion,
+      authenticodeProbe: () => ({ status: 'invalid', signer: 'Unknown', thumbprint: 'aa' }),
+    }),
+    'LAUNCHER_EXECUTABLE_UNTRUSTED',
+    'resolve invalid Authenticode',
+  );
+});
+
+test('launcher revalidation sanitizes hashing and Authenticode drift without changing its primary code', () => {
+  const driftFixture = launcherApprovalFixture();
+  const approved = runtimeExecutable.approveLauncherExecutable(
+    driftFixture.root,
+    driftFixture.runId,
+    launcherApprovalOptions(driftFixture, {
+      authenticodeProbe: () => ({ status: 'valid', signer: 'Expected', thumbprint: 'aa' }),
+    }),
+  ).approval;
+
+  writeFileSync(driftFixture.executable, 'hash drift after approval');
+  assertLauncherOnlyError(
+    () => runtimeExecutable.revalidateTrustedLauncherExecutable(approved, {
+      platform: 'win32', arch: 'x64', runVersion: driftFixture.runVersion,
+      authenticodeProbe: () => ({ status: 'valid', signer: 'Expected', thumbprint: 'aa' }),
+    }),
+    'LAUNCHER_EXECUTABLE_DRIFT',
+    'revalidate hash drift',
+  );
+
+  writeFileSync(driftFixture.executable, `${driftFixture.kind} native launcher bytes`);
+  assertLauncherOnlyError(
+    () => runtimeExecutable.revalidateTrustedLauncherExecutable(approved, {
+      platform: 'win32', arch: 'x64', runVersion: driftFixture.runVersion,
+      authenticodeProbe: () => ({ status: 'invalid', signer: 'Unknown', thumbprint: 'aa' }),
+    }),
+    'LAUNCHER_EXECUTABLE_DRIFT',
+    'revalidate invalid Authenticode',
+  );
 });
 
 test('fresh exact human re-approval replaces a launcher atomically and requires terminal re-detection', () => {

@@ -797,6 +797,41 @@ test('handoff execution docs preserve runtime-correct resume tokens and current 
   }
 });
 
+test('runtime-facing headless docs describe both measured drivers without a cross-runtime fallback', () => {
+  const shared = readFileSync(
+    new URL('../skills/deep-loop-workflow/references/handoff-respawn.md', import.meta.url),
+    'utf8',
+  );
+  const headlessStart = shared.indexOf('### Headless /');
+  const headlessEnd = shared.indexOf('## Respawn 게이트', headlessStart);
+  assert.ok(headlessStart !== -1 && headlessEnd > headlessStart,
+    'shared reference must retain a bounded later Headless section');
+  const headless = shared.slice(headlessStart, headlessEnd);
+
+  const documents = [
+    ['shared handoff reference', headless],
+    ['English README', readFileSync(new URL('../README.md', import.meta.url), 'utf8')],
+    ['Korean README', readFileSync(new URL('../README.ko.md', import.meta.url), 'utf8')],
+    ['CLAUDE project guide', readFileSync(new URL('../CLAUDE.md', import.meta.url), 'utf8')],
+  ];
+  for (const [name, body] of documents) {
+    assert.match(body, /Claude[\s\S]{0,500}claude -p/i,
+      `${name}: Claude headless driver must remain explicit`);
+    assert.match(body, /Codex[\s\S]{0,500}codex exec --json/i,
+      `${name}: measured Codex JSONL driver must be explicit`);
+    assert.match(body, /JSONL/i, `${name}: Codex transport must name its JSONL accounting format`);
+    assert.match(body, /(?:no cross-runtime fallback|교차 런타임[^\n]{0,120}(?:fallback|폴백)[^\n]{0,80}(?:없|금지|하지))/i,
+      `${name}: docs must prohibit fallback to the other runtime`);
+  }
+
+  assert.doesNotMatch(documents[1][1], /headless driver wraps `claude -p`/i,
+    'English README must not describe the runtime-selected driver as Claude-only');
+  assert.doesNotMatch(documents[2][1], /무인 모드에서는 headless respawn도 트리거/i,
+    'Korean README must keep PreCompact emit-only');
+  assert.match(documents[2][1], /PreCompact[\s\S]{0,300}(?:emit-only|방출 전용)[\s\S]{0,300}drive-headless/i,
+    'Korean README must assign unattended continuation to the measured driver');
+});
+
 test('runtime-neutral adapter reference routes exact skill/agent/blocked descriptors and capability flag', () => {
   const body = readFileSync(new URL('../skills/deep-loop-workflow/references/adapters.md', import.meta.url), 'utf8');
   assert.match(body, /dispatch\.kind = "skill"/, 'maker descriptor example must use production kind=skill');

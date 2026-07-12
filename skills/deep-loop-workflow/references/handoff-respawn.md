@@ -106,7 +106,7 @@ visible과 동일한 명령 — 커널이 검증된 desktop 엔트리(`open -a`/
 node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" respawn --owner <run_id> --generation <n> --attended
 ```
 
-커널이 자동으로 새 세션을 시작한다. 스킬이 직접 `claude -p`를 실행하지 않는다(§9).
+커널이 자동으로 새 세션을 시작한다. 스킬이 직접 `claude -p`나 `codex exec --json`을 실행하지 않는다(§9).
 
 **else** (`launcher=none` / visible 아님 / legacy interactive — 예: desktop opt-in을 거절/억제한 attended non-tty 세션):
 
@@ -144,9 +144,9 @@ respawn은 드라이버만 수행한다 (스킬이 직접 spawn하지 않음).
 ### Headless / 미감시 자율
 
 커널 `isHeadlessInvocation(env)`가 참(`DEEP_LOOP_UNATTENDED`/`DEEP_LOOP_HEADLESS` set, 또는 드라이버 entrypoint 휴리스틱)이거나 `autonomy.spawn_style==='headless'`이면 headless 강제 — **non-tty는 신호가 아니다**(resolveSpawnMode, `scripts/lib/respawn.mjs`).
-드라이버(`drive-headless.mjs`)가 `claude -p --output-format json --permission-mode acceptEdits`로 spawn한다.
+드라이버(`drive-headless.mjs`)는 run의 immutable runtime을 선택한다. **Claude**는 bounded `claude -p --output-format json --permission-mode acceptEdits` JSON을 파싱하고, 승인된 **Codex**는 인증된 격리 `CODEX_HOME`과 shell-free `codex exec --json`의 incremental JSONL을 파싱해 각각 정확한 한 turn usage를 기록한다.
 
-미감시 자율은 **headless 강제** — `headlessSpawn`이 timeout + usage 파싱으로 하드 강제한다.
+두 경로 모두 timeout/non-zero/측정불가 usage에서 fail-closed하며 다른 runtime으로 대체하지 않는다(**교차 런타임 fallback은 하지 않는다**). 미감시 자율은 **headless 강제**이고, Codex App의 자동 새 task 생성은 지원하지 않으므로 App 연속성은 수동 resume이다.
 
 ## Respawn 게이트 순서
 

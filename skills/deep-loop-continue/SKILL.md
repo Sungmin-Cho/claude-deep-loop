@@ -218,7 +218,7 @@ visible과 동일한 명령이다 — 커널이 검증된 desktop 엔트리(`ope
 node "${CLAUDE_PLUGIN_ROOT}/scripts/deep-loop.mjs" respawn --owner <run_id> --generation <n> --attended
 ```
 
-커널이 자동으로 새 세션을 시작한다. 이 스킬은 직접 `claude -p`를 실행하지 않는다(§9).
+커널이 자동으로 새 세션을 시작한다. 이 스킬은 직접 `claude -p`나 `codex exec --json`을 실행하지 않는다(§9).
 
 **4. else** (`launcher=none` / visible 아님 / legacy interactive):
 

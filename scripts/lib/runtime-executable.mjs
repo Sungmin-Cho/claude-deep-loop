@@ -59,6 +59,12 @@ function runtimeError(code, detail) {
   return new Error(`${code}: ${detail}`);
 }
 
+function launcherSafeDetail(error) {
+  return String(error?.message || error)
+    .replace(/RUNTIME_EXECUTABLE_[A-Z0-9_]+\s*:\s*/g, '')
+    .replace(/RUNTIME_EXECUTABLE_[A-Z0-9_]+/g, 'runtime executable failure');
+}
+
 function isWindowsUntrustedRuntimeNamespace(path, platform) {
   return platform === 'win32' && typeof path === 'string'
     && (/^[\\/]{2}/.test(path) || /^[\\/](?:\?\?|device)[\\/]/i.test(path));
@@ -94,14 +100,18 @@ function launcherRegularFile(path, options) {
     return regularFile(path, options);
   } catch (error) {
     const message = String(error?.message || error);
-    if (message.startsWith('LAUNCHER_EXECUTABLE_')) throw error;
+    if (message.startsWith('LAUNCHER_EXECUTABLE_')) {
+      if (!message.includes('RUNTIME_EXECUTABLE_')) throw error;
+      const separator = message.indexOf(':');
+      throw runtimeError(message.slice(0, separator), launcherSafeDetail(message.slice(separator + 1)));
+    }
     if (message.startsWith('RUNTIME_EXECUTABLE_DRIFT:')) {
-      throw runtimeError('LAUNCHER_EXECUTABLE_DRIFT', message.slice(message.indexOf(':') + 1).trim());
+      throw runtimeError('LAUNCHER_EXECUTABLE_DRIFT', launcherSafeDetail(error));
     }
     if (message.startsWith('RUNTIME_EXECUTABLE_')) {
-      throw runtimeError('LAUNCHER_EXECUTABLE_UNTRUSTED', message.slice(message.indexOf(':') + 1).trim());
+      throw runtimeError('LAUNCHER_EXECUTABLE_UNTRUSTED', launcherSafeDetail(error));
     }
-    throw error;
+    throw runtimeError('LAUNCHER_EXECUTABLE_UNTRUSTED', launcherSafeDetail(error));
   }
 }
 
@@ -110,14 +120,18 @@ function hashLauncherFile(path, expectedStat = null) {
     return hashRegularFile(path, expectedStat);
   } catch (error) {
     const message = String(error?.message || error);
-    if (message.startsWith('LAUNCHER_EXECUTABLE_')) throw error;
+    if (message.startsWith('LAUNCHER_EXECUTABLE_')) {
+      if (!message.includes('RUNTIME_EXECUTABLE_')) throw error;
+      const separator = message.indexOf(':');
+      throw runtimeError(message.slice(0, separator), launcherSafeDetail(message.slice(separator + 1)));
+    }
     if (message.startsWith('RUNTIME_EXECUTABLE_DRIFT:')) {
-      throw runtimeError('LAUNCHER_EXECUTABLE_DRIFT', message.slice(message.indexOf(':') + 1).trim());
+      throw runtimeError('LAUNCHER_EXECUTABLE_DRIFT', launcherSafeDetail(error));
     }
     if (message.startsWith('RUNTIME_EXECUTABLE_')) {
-      throw runtimeError('LAUNCHER_EXECUTABLE_UNTRUSTED', message.slice(message.indexOf(':') + 1).trim());
+      throw runtimeError('LAUNCHER_EXECUTABLE_UNTRUSTED', launcherSafeDetail(error));
     }
-    throw error;
+    throw runtimeError('LAUNCHER_EXECUTABLE_UNTRUSTED', launcherSafeDetail(error));
   }
 }
 
@@ -129,10 +143,11 @@ function normalizeLauncherAuthenticode(executable, options) {
     if (message.startsWith('RUNTIME_EXECUTABLE_AUTHENTICODE_INVALID:')) {
       throw runtimeError(
         'LAUNCHER_EXECUTABLE_AUTHENTICODE_INVALID',
-        message.slice(message.indexOf(':') + 1).trim(),
+        launcherSafeDetail(error),
       );
     }
-    throw error;
+    if (message.startsWith('LAUNCHER_EXECUTABLE_') && !message.includes('RUNTIME_EXECUTABLE_')) throw error;
+    throw runtimeError('LAUNCHER_EXECUTABLE_AUTHENTICODE_INVALID', launcherSafeDetail(error));
   }
 }
 
@@ -741,7 +756,11 @@ function assertExpectedLauncherName(kind, path) {
   if (/^(?:\\\\|\/\/)/.test(path)) {
     throw runtimeError('LAUNCHER_EXECUTABLE_UNTRUSTED', 'UNC launcher targets are not trusted');
   }
-  assertApprovableNativePath(path);
+  try {
+    assertApprovableNativePath(path);
+  } catch (error) {
+    throw runtimeError('LAUNCHER_EXECUTABLE_UNTRUSTED', launcherSafeDetail(error));
+  }
 }
 
 function probeLauncherVersion(kind, executable, runVersion = spawnSync, expectedVersion = null) {
@@ -751,10 +770,15 @@ function probeLauncherVersion(kind, executable, runVersion = spawnSync, expected
     : (isWindowsPowerShell
       ? ['-NoProfile', '-NonInteractive', '-Command', '$PSVersionTable.PSVersion.ToString()']
       : ['--version']);
-  const result = runVersion(executable, argv, {
-    encoding: 'utf8', shell: false, timeout: VERSION_TIMEOUT_MS, maxBuffer: VERSION_MAX_BUFFER,
-    windowsHide: true, env: {},
-  });
+  let result;
+  try {
+    result = runVersion(executable, argv, {
+      encoding: 'utf8', shell: false, timeout: VERSION_TIMEOUT_MS, maxBuffer: VERSION_MAX_BUFFER,
+      windowsHide: true, env: {},
+    });
+  } catch {
+    throw runtimeError('LAUNCHER_EXECUTABLE_VERSION_INVALID', 'bounded direct version probe failed');
+  }
   if (!result || result.error || result.status !== 0 || result.signal) {
     throw runtimeError('LAUNCHER_EXECUTABLE_VERSION_INVALID', 'bounded direct version probe failed');
   }
@@ -773,16 +797,17 @@ function probeLauncherVersion(kind, executable, runVersion = spawnSync, expected
 }
 
 function collectLauncherCandidates(kind, options) {
+  const platform = options.platform ?? process.platform;
   if (options.candidatePaths !== undefined) {
     if (!Array.isArray(options.candidatePaths)) {
       throw runtimeError('LAUNCHER_EXECUTABLE_PATH_INVALID', 'candidatePaths must be an array');
     }
-    return options.candidatePaths.map(path => absolutePath(path, 'LAUNCHER_EXECUTABLE_PATH_INVALID'));
+    return options.candidatePaths.map(path => launcherAbsolutePath(path, platform));
   }
   const candidates = [];
   const add = (path) => {
     try {
-      const absolute = absolutePath(path, 'LAUNCHER_EXECUTABLE_PATH_INVALID');
+      const absolute = launcherAbsolutePath(path, platform);
       if (existsSync(absolute) && !candidates.includes(absolute)) candidates.push(absolute);
     } catch {
       // Candidate discovery is not authority.
@@ -810,11 +835,11 @@ export function resolveTrustedLauncherExecutable(kind, options = {}) {
   const failures = [];
   for (const candidatePath of collectLauncherCandidates(kind, options)) {
     try {
-      const candidate = regularFile(candidatePath);
+      const candidate = launcherRegularFile(candidatePath);
       assertExpectedLauncherName(kind, candidate.canonical);
-      const sha256 = hashRegularFile(candidate.canonical, candidate.stat);
+      const sha256 = hashLauncherFile(candidate.canonical, candidate.stat);
       const version = probeLauncherVersion(kind, candidate.canonical, options.runVersion ?? spawnSync);
-      const authenticode = normalizeAuthenticode(candidate.canonical, {
+      const authenticode = normalizeLauncherAuthenticode(candidate.canonical, {
         platform, authenticodeProbe: options.authenticodeProbe, authenticodePolicy: options.authenticodePolicy,
       });
       const identity = {
@@ -823,7 +848,7 @@ export function resolveTrustedLauncherExecutable(kind, options = {}) {
       };
       resolved.set(identity.canonical_path, identity);
     } catch (error) {
-      failures.push(String(error?.message || error));
+      failures.push(launcherSafeDetail(error));
     }
   }
   if (resolved.size === 1) return [...resolved.values()][0];
@@ -839,10 +864,10 @@ export function revalidateTrustedLauncherExecutable(identity, options = {}) {
     throw runtimeError('LAUNCHER_EXECUTABLE_DRIFT', 'launcher platform or architecture changed');
   }
   try {
-    const candidate = regularFile(identity.canonical_path);
+    const candidate = launcherRegularFile(identity.canonical_path);
     assertExpectedLauncherName(identity.kind, candidate.canonical);
     if (candidate.canonical !== identity.canonical_path
-      || hashRegularFile(candidate.canonical, candidate.stat) !== identity.sha256) {
+      || hashLauncherFile(candidate.canonical, candidate.stat) !== identity.sha256) {
       throw runtimeError('LAUNCHER_EXECUTABLE_DRIFT', 'launcher canonical path or hash changed');
     }
     const version = probeLauncherVersion(
@@ -850,7 +875,7 @@ export function revalidateTrustedLauncherExecutable(identity, options = {}) {
     );
     const authenticode = identity.authenticode == null && options.authenticodePolicy == null
       ? null
-      : normalizeAuthenticode(candidate.canonical, {
+      : normalizeLauncherAuthenticode(candidate.canonical, {
         platform, authenticodeProbe: options.authenticodeProbe, authenticodePolicy: options.authenticodePolicy,
       });
     const current = { ...launcherSecurityIdentity(identity), version, authenticode };
@@ -859,8 +884,9 @@ export function revalidateTrustedLauncherExecutable(identity, options = {}) {
     }
     return identity;
   } catch (error) {
-    if (String(error?.message || error).startsWith('LAUNCHER_EXECUTABLE_DRIFT:')) throw error;
-    throw runtimeError('LAUNCHER_EXECUTABLE_DRIFT', String(error?.message || error));
+    const message = String(error?.message || error);
+    if (message.startsWith('LAUNCHER_EXECUTABLE_DRIFT:') && !message.includes('RUNTIME_EXECUTABLE_')) throw error;
+    throw runtimeError('LAUNCHER_EXECUTABLE_DRIFT', launcherSafeDetail(error));
   }
 }
 

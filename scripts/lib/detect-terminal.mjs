@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { isAbsolute } from 'node:path';
 import { existsSync } from 'node:fs';
+import { isDeepStrictEqual } from 'node:util';
 import { appendAnchored } from './integrity.mjs';
 import { readState } from './state.mjs';
 import { reconcileBudget } from './budget.mjs';
@@ -48,6 +49,20 @@ function sameLauncherSecurityIdentity(left, right) {
   return ['kind', 'canonical_path', 'sha256', 'version', 'platform', 'arch', 'source']
     .every(field => left[field] === right[field])
     && sameAuthenticodeIdentity(left.authenticode ?? null, right.authenticode ?? null);
+}
+
+function launcherAuthority(loop, kind) {
+  const approvals = loop.autonomy?.launcher_executable_approvals;
+  if (approvals === undefined) {
+    const session = loop.session_spawn;
+    if (session?.launcher !== kind || !session.launcher_identity
+      || typeof session.launcher_identity !== 'object' || Array.isArray(session.launcher_identity)) return null;
+    return session.launcher_identity;
+  }
+  if (!approvals || typeof approvals !== 'object' || Array.isArray(approvals)
+    || !Object.hasOwn(approvals, kind) || !approvals[kind]
+    || typeof approvals[kind] !== 'object' || Array.isArray(approvals[kind])) return null;
+  return approvals[kind];
 }
 
 // Bounded parent-process ancestry walk. The PS one-liner outputs 3-valued PS/NO/UNKNOWN
@@ -258,9 +273,10 @@ export function detectTerminal({
 /**
  * Fenced, releasing-safe: detect the terminal and persist the descriptor.
  *
- * Releasing-safe (R11-HH): the preCheck compares owner/generation ONLY — it does
- * NOT apply the leaseCheck releasing-carve-out so detect-terminal succeeds even
- * while the parent lease is in `state: 'releasing'` (post-handoff-emit metadata).
+ * Releasing-safe (R11-HH): the lease portion of preCheck compares owner/generation
+ * without applying the leaseCheck releasing carve-out, so detect-terminal succeeds
+ * while the parent is `releasing`. A separate in-lock guard binds any runnable
+ * Windows launcher descriptor to the current durable/legacy authority.
  *
  * Returns the descriptor so the CLI can print it.
  */
@@ -283,12 +299,14 @@ export function detectAndPersist(root, runId, {
   // Authority order: durable human approval > legacy persisted session identity > explicit test fallback.
   // Production callers do not inject windowsLauncherIdentities; keeping it last preserves focused tests without
   // turning PATH/fixed candidates into authority. Legacy states may omit the new approval map entirely.
-  const effectiveWindowsIdentities = { ...windowsLauncherIdentities };
-  if (persistedIdentity != null && (persistedLauncher === 'wt' || persistedLauncher === 'powershell')) {
+  const durableApprovals = loop.autonomy?.launcher_executable_approvals;
+  const hasDurableApprovalMap = durableApprovals !== undefined;
+  const effectiveWindowsIdentities = hasDurableApprovalMap ? {} : { ...windowsLauncherIdentities };
+  if (!hasDurableApprovalMap && persistedIdentity != null
+    && (persistedLauncher === 'wt' || persistedLauncher === 'powershell')) {
     effectiveWindowsIdentities[persistedLauncher] = persistedIdentity;
   }
-  const durableApprovals = loop.autonomy?.launcher_executable_approvals;
-  if (durableApprovals && typeof durableApprovals === 'object' && !Array.isArray(durableApprovals)) {
+  if (hasDurableApprovalMap && durableApprovals && typeof durableApprovals === 'object' && !Array.isArray(durableApprovals)) {
     for (const kind of ['wt', 'powershell']) {
       if (durableApprovals[kind] != null) effectiveWindowsIdentities[kind] = durableApprovals[kind];
     }
@@ -312,6 +330,12 @@ export function detectAndPersist(root, runId, {
       // 호출은 외곽을 안 거친다 — 이 in-lock이 권위.
       if (l.status === 'completed' || l.status === 'stopped') {
         throw new Error('RUN_TERMINAL: detect-terminal');
+      }
+      if (platform === 'win32' && (d.launcher === 'wt' || d.launcher === 'powershell')) {
+        const authority = launcherAuthority(l, d.launcher);
+        if (authority == null || !isDeepStrictEqual(d.launcher_identity, authority)) {
+          throw new Error('LAUNCHER_EXECUTABLE_DRIFT: detect-terminal authority changed');
+        }
       }
     }
   );

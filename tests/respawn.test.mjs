@@ -796,7 +796,19 @@ function windowsLauncherIdentity(kind = 'wt') {
       ? 'C:\\Program Files\\WindowsApps\\wt.exe'
       : 'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
     sha256: 'b'.repeat(64), version: '1.0.0', platform: 'win32', arch: 'x64',
-    source: 'verified-native', authenticode: null,
+    source: 'human-explicit', authenticode: null,
+    approved_by: 'human', approved_at: '2026-07-11T08:00:00.000Z',
+  };
+}
+
+function replacementWindowsLauncherIdentity(kind = 'wt') {
+  const identity = windowsLauncherIdentity(kind);
+  return {
+    ...identity,
+    canonical_path: kind === 'wt'
+      ? 'C:\\Fresh\\WindowsTerminal\\wt.exe'
+      : 'C:\\Fresh\\PowerShell\\pwsh.exe',
+    sha256: 'c'.repeat(64), version: '2.0.0', approved_at: '2026-07-12T08:00:00.000Z',
   };
 }
 
@@ -806,6 +818,10 @@ function seedWindowsLauncher(kind = 'wt', runtime = 'claude') {
   const seeded = seed((data) => {
     data.autonomy.spawn_style = 'visible';
     data.autonomy.runtime_executable_approval = runtimeIdentity;
+    data.autonomy.launcher_executable_approvals = {
+      wt: kind === 'wt' ? launcherIdentity : null,
+      powershell: kind === 'powershell' ? launcherIdentity : null,
+    };
     data.session_spawn = {
       platform: 'win32', launcher: kind, launcher_bin: launcherIdentity.canonical_path,
       launcher_identity: launcherIdentity, launcher_socket: null,
@@ -816,6 +832,152 @@ function seedWindowsLauncher(kind = 'wt', runtime = 'claude') {
   }, runtime);
   return { ...seeded, runtimeIdentity, launcherIdentity };
 }
+
+function replaceDurableLauncherAuthority(root, runId, kind, identity) {
+  const { data } = readState(root, runId);
+  data.autonomy.launcher_executable_approvals[kind] = identity;
+  writeState(root, runId, data);
+}
+
+test('native Windows respawn rejects a session launcher identity superseded by durable approval before initial revalidation', () => {
+  const { root, runId } = seedWindowsLauncher('wt', 'codex');
+  const fresh = replacementWindowsLauncherIdentity('wt');
+  replaceDurableLauncherAuthority(root, runId, 'wt', fresh);
+  const h = emitHandoff(root, runId, {
+    trigger: 'initial-launcher-authority-mismatch', now: NOW1, expect: expect_(runId), platform: 'win32',
+  });
+  let spawned = 0;
+  let revalidated = 0;
+  const r = respawn(root, runId, {
+    childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
+    attended: true, env: {}, now: NOW1, platform: 'win32',
+    revalidateRuntimeExecutable: identity => identity,
+    revalidateLauncherExecutable: identity => { revalidated++; return identity; },
+    spawnFn: () => { spawned++; return { ok: true }; },
+    pollLease: () => ({ state: 'active', handoff_phase: 'acquired', owner_run_id: h.childRunId, generation: 2 }),
+    sleep: noSleep,
+  });
+  assert.equal(spawned, 0);
+  assert.equal(revalidated, 0, 'mismatched durable/session authority must fail before probing either launcher');
+  assert.equal(r.ok, false);
+  assert.equal(r.outcome, 'no-launcher');
+  assert.equal(r.reason, 'launcher-identity-unavailable');
+  const after = readState(root, runId).data;
+  assert.equal(after.status, 'paused');
+  assert.equal(after.session_chain.lease.handoff_phase, 'emitted');
+});
+
+test('native Windows respawn pre-CAS revalidation observes a concurrent durable launcher replacement', () => {
+  const { root, runId, launcherIdentity } = seedWindowsLauncher('wt', 'codex');
+  const fresh = replacementWindowsLauncherIdentity('wt');
+  const h = emitHandoff(root, runId, {
+    trigger: 'pre-cas-launcher-authority-race', now: NOW1, expect: expect_(runId), platform: 'win32',
+  });
+  let launcherChecks = 0;
+  let spawned = 0;
+  const r = respawn(root, runId, {
+    childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
+    attended: true, env: {}, now: NOW1, platform: 'win32',
+    revalidateRuntimeExecutable: identity => identity,
+    revalidateLauncherExecutable: identity => {
+      launcherChecks++;
+      assert.deepEqual(identity, launcherIdentity);
+      if (launcherChecks === 1) replaceDurableLauncherAuthority(root, runId, 'wt', fresh);
+      return identity;
+    },
+    spawnFn: () => { spawned++; return { ok: true }; },
+    pollLease: () => ({ state: 'active', handoff_phase: 'acquired', owner_run_id: h.childRunId, generation: 2 }),
+    sleep: noSleep,
+  });
+  assert.equal(spawned, 0);
+  assert.equal(launcherChecks, 1, 'fresh authority mismatch must fail before revalidating the superseded launcher again');
+  assert.equal(r.ok, false);
+  assert.equal(r.outcome, 'no-launcher');
+  assert.equal(r.reason, 'launcher-identity-drift');
+  const after = readState(root, runId).data;
+  assert.deepEqual(after.autonomy.launcher_executable_approvals.wt, fresh);
+  assert.equal(after.status, 'paused');
+  assert.equal(after.session_chain.lease.handoff_phase, 'emitted');
+  assert.equal(after.session_chain.sessions.find(session => session.run_id === h.childRunId)?.outcome, null);
+});
+
+test('native Windows respawn post-CAS revalidation observes a launcher replacement that lands during the pre-CAS probe', () => {
+  const { root, runId, launcherIdentity } = seedWindowsLauncher('wt', 'codex');
+  const fresh = replacementWindowsLauncherIdentity('wt');
+  const h = emitHandoff(root, runId, {
+    trigger: 'post-cas-launcher-authority-race', now: NOW1, expect: expect_(runId), platform: 'win32',
+  });
+  let launcherChecks = 0;
+  let spawned = 0;
+  const r = respawn(root, runId, {
+    childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
+    attended: true, env: {}, now: NOW1, platform: 'win32',
+    revalidateRuntimeExecutable: identity => identity,
+    revalidateLauncherExecutable: identity => {
+      launcherChecks++;
+      assert.deepEqual(identity, launcherIdentity);
+      if (launcherChecks === 2) replaceDurableLauncherAuthority(root, runId, 'wt', fresh);
+      return identity;
+    },
+    spawnFn: () => { spawned++; return { ok: true }; }, sleep: noSleep,
+  });
+  assert.equal(spawned, 0);
+  assert.equal(launcherChecks, 2, 'post-CAS authority mismatch must fail before a third stale launcher probe');
+  assert.equal(r.ok, false);
+  assert.equal(r.outcome, 'failed_launch');
+  assert.equal(r.reason, 'launcher-identity-drift');
+  const after = readState(root, runId).data;
+  assert.deepEqual(after.autonomy.launcher_executable_approvals.wt, fresh);
+  assert.equal(after.status, 'paused');
+  assert.equal(after.session_chain.lease.handoff_phase, 'idle');
+  assert.equal(after.session_chain.sessions.find(session => session.run_id === h.childRunId)?.outcome, 'failed_launch');
+});
+
+test('native Windows respawn treats a present approval map with no selected authority as unavailable', () => {
+  const { root, runId } = seedWindowsLauncher('wt', 'codex');
+  const { data } = readState(root, runId);
+  data.autonomy.launcher_executable_approvals = { powershell: null };
+  writeState(root, runId, data);
+  const h = emitHandoff(root, runId, {
+    trigger: 'malformed-launcher-authority', now: NOW1, expect: expect_(runId), platform: 'win32',
+  });
+  let spawned = 0;
+  const r = respawn(root, runId, {
+    childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
+    attended: true, env: {}, now: NOW1, platform: 'win32',
+    revalidateRuntimeExecutable: identity => identity,
+    revalidateLauncherExecutable: identity => identity,
+    spawnFn: () => { spawned++; return { ok: true }; }, sleep: noSleep,
+  });
+  assert.equal(spawned, 0);
+  assert.equal(r.outcome, 'no-launcher');
+  assert.equal(r.reason, 'launcher-identity-unavailable');
+});
+
+test('native Windows respawn keeps the legacy session-identity boundary only when the approval map is absent', () => {
+  const { root, runId, launcherIdentity } = seedWindowsLauncher('wt', 'codex');
+  const { data } = readState(root, runId);
+  delete data.autonomy.launcher_executable_approvals;
+  writeState(root, runId, data);
+  const h = emitHandoff(root, runId, {
+    trigger: 'legacy-launcher-authority', now: NOW1, expect: expect_(runId), platform: 'win32',
+  });
+  let launcherChecks = 0;
+  let spawned = 0;
+  const r = respawn(root, runId, {
+    childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
+    attended: true, env: {}, now: NOW1, platform: 'win32',
+    revalidateRuntimeExecutable: identity => identity,
+    revalidateLauncherExecutable: identity => { launcherChecks++; assert.deepEqual(identity, launcherIdentity); return identity; },
+    spawnFn: () => { spawned++; return { ok: true }; },
+    pollLease: () => ({ state: 'active', handoff_phase: 'acquired', owner_run_id: h.childRunId, generation: 2 }),
+    sleep: noSleep,
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.outcome, 'spawned');
+  assert.equal(spawned, 1);
+  assert.equal(launcherChecks, 3);
+});
 
 test('native Windows respawn passes only revalidated absolute launcher/runtime targets with shell false', () => {
   const { root, runId, runtimeIdentity, launcherIdentity } = seedWindowsLauncher('wt');

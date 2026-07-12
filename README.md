@@ -110,7 +110,7 @@ DEEP_LOOP_UNATTENDED=1 node scripts/hooks-impl/drive-headless.mjs
 # See recipes/automation/ for cron and GitHub Actions templates
 ```
 
-The headless driver wraps `claude -p` with timeout + usage measurement. If usage cannot be measured (no `num_turns`/tokens in output), it **fails closed** — never silently continuing past budget.
+For **Claude**, the headless driver parses bounded `claude -p --output-format json` output. For an approved **Codex** runtime, it uses an authenticated isolated `CODEX_HOME`, shell-free `codex exec --json`, and incremental JSONL parsing. Each path records exactly one measured turn; timeout, non-zero exit, malformed output, or unmeasurable usage **fails closed**. There is no cross-runtime fallback, and automatic creation of a new Codex App task remains manual.
 
 ## deep-suite Integration
 
