@@ -234,6 +234,41 @@ test('Windows PowerShell descriptor uses verified launcher and encodes verified 
   assert.ok(!/(^|[;&]\s*)claude(?:\s|$)/i.test(decoded));
 });
 
+test('native Windows PowerShell display single-quotes the complete command argument', () => {
+  const runtimePath = "C:\\Runtime $env $(Get-Date)\\O'Brien`Host\\claude.exe";
+  const launcherPath = "C:\\Power $env $(Get-Date)\\O'Brien`Host\\pwsh.exe";
+  const claude = executableIdentity('claude', runtimePath);
+  const ps = launcherIdentity('powershell', launcherPath);
+  const c = buildLaunchCommand({
+    runtime: 'claude', platform: 'win32', root: 'C:\\repo', parentRunId: 'P', childRunId: 'C',
+    handoffRel: 'handoffs/x.md', launcher: 'powershell', runtimeExecutableIdentity: claude, launcherIdentity: ps,
+  });
+  const innerPS = "Set-Location -LiteralPath 'C:\\repo'; & 'C:\\Runtime $env $(Get-Date)\\O''Brien`Host\\claude.exe' "
+    + "-n 'deep-loop-C' 'Read .deep-loop/runs/P/handoffs/x.md first; then run /deep-loop-resume'";
+  const encoded = Buffer.from(innerPS, 'utf16le').toString('base64');
+  const psCmd = "Start-Process 'C:\\Power $env $(Get-Date)\\O''Brien`Host\\pwsh.exe' "
+    + `-ArgumentList '-NoProfile','-NoExit','-EncodedCommand','${encoded}'`;
+
+  assert.deepEqual({
+    platform: c.powershell.platform,
+    bin: c.powershell.bin,
+    argv: c.powershell.argv,
+    shell: c.powershell.shell,
+    nativeExecutableTargets: c.powershell.nativeExecutableTargets,
+  }, {
+    platform: 'win32',
+    bin: launcherPath,
+    argv: ['-NoProfile', '-NonInteractive', '-Command', psCmd],
+    shell: false,
+    nativeExecutableTargets: [runtimePath],
+  });
+  assert.equal(
+    c.powershell.display,
+    `& 'C:\\Power $env $(Get-Date)\\O''Brien\`Host\\pwsh.exe' -NoProfile -NonInteractive -Command '${psCmd.replaceAll("'", "''")}'`,
+  );
+  assert.ok(!c.powershell.display.includes('-Command "'), 'complete command must not use an outer double-quoted region');
+});
+
 test('display strings use q(root) for paths with apostrophes and semicolons', () => {
   const specialRoot = "/p 's;x";
   const c = buildLaunchCommand({ root: specialRoot, parentRunId: 'P', childRunId: 'C', handoffRel: 'handoffs/x.md', launcherBin: 'cmux', launcherSocket: '/sock x' });

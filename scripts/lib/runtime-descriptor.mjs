@@ -194,7 +194,7 @@ function buildClaudeEntries({
       windowsPs = {
         platform: 'win32', bin: psBin, argv: ['-NoProfile', '-NonInteractive', '-Command', psCmd], shell: false,
         nativeExecutableTargets: [runtimeBin],
-        display: `& '${psq(psBin)}' -NoProfile -NonInteractive -Command "${psCmd}"`,
+        display: `& '${psq(psBin)}' -NoProfile -NonInteractive -Command ${psArg(psCmd)}`,
       };
     }
     const wt = runtimeBin && wtBin

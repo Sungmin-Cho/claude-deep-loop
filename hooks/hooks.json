@@ -1,5 +1,5 @@
 {
-  "description": "deep-loop autonomous handoff safety net — emit a clean handoff (and headless respawn when unattended) just before context compaction.",
+  "description": "deep-loop autonomous handoff safety net — emit-only clean handoff before context compaction; unattended continuation is deferred to the measured driveHeadless driver.",
   "hooks": {
     "PreCompact": [
       {
