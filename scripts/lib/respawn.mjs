@@ -17,17 +17,29 @@ import {
 
 const DEFAULT_DEEP_LOOP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
-function currentLauncherAuthority(loop, expectedKind) {
+function durableLauncherAuthority(loop, expectedKind) {
+  const approvals = loop.autonomy?.launcher_executable_approvals;
+  if (!approvals || typeof approvals !== 'object' || Array.isArray(approvals)
+    || !Object.hasOwn(approvals, expectedKind) || !approvals[expectedKind]
+    || typeof approvals[expectedKind] !== 'object' || Array.isArray(approvals[expectedKind])) return null;
+  return { source: 'durable-approval', identity: approvals[expectedKind] };
+}
+
+function currentLauncherAuthority(loop, expectedKind, { allowDetachedDurable = false } = {}) {
+  const approvals = loop.autonomy?.launcher_executable_approvals;
+  // A desktop handoff is app-native rather than terminal-native: on Windows its
+  // shell-free Start-Process wrapper needs the exact durable PowerShell approval,
+  // but it does not require a currently active PowerShell terminal session.
+  if (allowDetachedDurable && approvals !== undefined) {
+    return durableLauncherAuthority(loop, expectedKind);
+  }
   const sessionIdentity = loop.session_spawn?.launcher_identity;
   if (!sessionIdentity || typeof sessionIdentity !== 'object' || Array.isArray(sessionIdentity)
     || loop.session_spawn?.launcher !== expectedKind) return null;
-  const approvals = loop.autonomy?.launcher_executable_approvals;
   if (approvals === undefined) return { source: 'legacy-session', identity: sessionIdentity };
-  if (!approvals || typeof approvals !== 'object' || Array.isArray(approvals)
-    || !Object.hasOwn(approvals, expectedKind) || !approvals[expectedKind]
-    || typeof approvals[expectedKind] !== 'object' || Array.isArray(approvals[expectedKind])
-    || !isDeepStrictEqual(sessionIdentity, approvals[expectedKind])) return null;
-  return { source: 'durable-approval', identity: approvals[expectedKind] };
+  const durable = durableLauncherAuthority(loop, expectedKind);
+  if (durable == null || !isDeepStrictEqual(sessionIdentity, durable.identity)) return null;
+  return durable;
 }
 
 // 게이트 순서: budget → breaker → max_sessions → wallclock → auto_handoff (spec §9). 순수.
@@ -288,7 +300,8 @@ export function respawn(root, runId, {
   let launcherAuthoritySnapshot = null;
   if (platform === 'win32') {
     const requiresRuntime = mode !== 'desktop';
-    const requiresLauncher = mode === 'wt' || mode === 'powershell' || mode === 'desktop';
+    const requiresLauncher = mode === 'wt' || mode === 'powershell'
+      || (runtime === 'claude' && mode === 'desktop');
     let identityStage = requiresRuntime ? 'runtime' : 'launcher';
     try {
       if (requiresRuntime) {
@@ -300,7 +313,9 @@ export function respawn(root, runId, {
       if (requiresLauncher) {
         identityStage = 'launcher';
         const expectedKind = mode === 'wt' ? 'wt' : 'powershell';
-        launcherAuthoritySnapshot = currentLauncherAuthority(loop, expectedKind);
+        launcherAuthoritySnapshot = currentLauncherAuthority(loop, expectedKind, {
+          allowDetachedDurable: mode === 'desktop',
+        });
         const stored = launcherAuthoritySnapshot?.identity;
         if (stored == null) throw new Error('launcher authority unavailable');
         launcherIdentity = revalidateLauncherExecutable(stored, { ...launcherRevalidationOptions, platform });
@@ -390,7 +405,9 @@ export function respawn(root, runId, {
     if (launcherIdentity != null) {
       try {
         const expectedKind = mode === 'wt' ? 'wt' : 'powershell';
-        const authority = currentLauncherAuthority(sourceLoop, expectedKind);
+        const authority = currentLauncherAuthority(sourceLoop, expectedKind, {
+          allowDetachedDurable: mode === 'desktop',
+        });
         if (authority == null || launcherAuthoritySnapshot == null
           || authority.source !== launcherAuthoritySnapshot.source
           || !isDeepStrictEqual(authority.identity, launcherAuthoritySnapshot.identity)) {

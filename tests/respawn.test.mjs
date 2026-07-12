@@ -833,38 +833,63 @@ function seedWindowsLauncher(kind = 'wt', runtime = 'claude') {
   return { ...seeded, runtimeIdentity, launcherIdentity };
 }
 
+function seedWindowsDesktop(runtime = 'claude') {
+  const launcherIdentity = windowsLauncherIdentity('powershell');
+  const seeded = seed((data) => {
+    data.autonomy.spawn_style = 'desktop';
+    data.autonomy.launcher_executable_approvals = {
+      wt: null,
+      powershell: launcherIdentity,
+    };
+    data.session_spawn = {
+      platform: 'win32', launcher: 'none', launcher_bin: null, launcher_socket: null,
+      surface: 'window', reachable: true, visible: true,
+      signals: {}, probe: null, reason: null, fallback: 'launch-command-file',
+      detected_at: '2026-06-24T00:00:00Z',
+    };
+  }, runtime);
+  return { ...seeded, launcherIdentity };
+}
+
+const windowsDesktopTarget = {
+  ok: true,
+  argvTarget: { kind: 'win-exe', exePath: 'C:\\Program Files\\Claude\\Claude.exe' },
+};
+
 function replaceDurableLauncherAuthority(root, runId, kind, identity) {
   const { data } = readState(root, runId);
   data.autonomy.launcher_executable_approvals[kind] = identity;
   writeState(root, runId, data);
 }
 
-test('native Windows respawn rejects a session launcher identity superseded by durable approval before initial revalidation', () => {
-  const { root, runId } = seedWindowsLauncher('wt', 'codex');
-  const fresh = replacementWindowsLauncherIdentity('wt');
-  replaceDurableLauncherAuthority(root, runId, 'wt', fresh);
-  const h = emitHandoff(root, runId, {
-    trigger: 'initial-launcher-authority-mismatch', now: NOW1, expect: expect_(runId), platform: 'win32',
-  });
-  let spawned = 0;
-  let revalidated = 0;
-  const r = respawn(root, runId, {
-    childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
-    attended: true, env: {}, now: NOW1, platform: 'win32',
-    revalidateRuntimeExecutable: identity => identity,
-    revalidateLauncherExecutable: identity => { revalidated++; return identity; },
-    spawnFn: () => { spawned++; return { ok: true }; },
-    pollLease: () => ({ state: 'active', handoff_phase: 'acquired', owner_run_id: h.childRunId, generation: 2 }),
-    sleep: noSleep,
-  });
-  assert.equal(spawned, 0);
-  assert.equal(revalidated, 0, 'mismatched durable/session authority must fail before probing either launcher');
-  assert.equal(r.ok, false);
-  assert.equal(r.outcome, 'no-launcher');
-  assert.equal(r.reason, 'launcher-identity-unavailable');
-  const after = readState(root, runId).data;
-  assert.equal(after.status, 'paused');
-  assert.equal(after.session_chain.lease.handoff_phase, 'emitted');
+test('native Windows visible respawn rejects a session launcher identity superseded by durable approval before initial revalidation', () => {
+  for (const kind of ['wt', 'powershell']) {
+    const { root, runId } = seedWindowsLauncher(kind, 'codex');
+    const fresh = replacementWindowsLauncherIdentity(kind);
+    replaceDurableLauncherAuthority(root, runId, kind, fresh);
+    const h = emitHandoff(root, runId, {
+      trigger: `initial-${kind}-authority-mismatch`, now: NOW1, expect: expect_(runId), platform: 'win32',
+    });
+    let spawned = 0;
+    let revalidated = 0;
+    const r = respawn(root, runId, {
+      childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
+      attended: true, env: {}, now: NOW1, platform: 'win32',
+      revalidateRuntimeExecutable: identity => identity,
+      revalidateLauncherExecutable: identity => { revalidated++; return identity; },
+      spawnFn: () => { spawned++; return { ok: true }; },
+      pollLease: () => ({ state: 'active', handoff_phase: 'acquired', owner_run_id: h.childRunId, generation: 2 }),
+      sleep: noSleep,
+    });
+    assert.equal(spawned, 0, kind);
+    assert.equal(revalidated, 0, `${kind}: mismatched durable/session authority must fail before probing either launcher`);
+    assert.equal(r.ok, false, kind);
+    assert.equal(r.outcome, 'no-launcher', kind);
+    assert.equal(r.reason, 'launcher-identity-unavailable', kind);
+    const after = readState(root, runId).data;
+    assert.equal(after.status, 'paused', kind);
+    assert.equal(after.session_chain.lease.handoff_phase, 'emitted', kind);
+  }
 });
 
 test('native Windows respawn pre-CAS revalidation observes a concurrent durable launcher replacement', () => {
@@ -954,29 +979,214 @@ test('native Windows respawn treats a present approval map with no selected auth
   assert.equal(r.reason, 'launcher-identity-unavailable');
 });
 
-test('native Windows respawn keeps the legacy session-identity boundary only when the approval map is absent', () => {
-  const { root, runId, launcherIdentity } = seedWindowsLauncher('wt', 'codex');
-  const { data } = readState(root, runId);
-  delete data.autonomy.launcher_executable_approvals;
-  writeState(root, runId, data);
+test('native Windows visible respawn keeps the legacy session-identity boundary only when the approval map is absent', () => {
+  for (const kind of ['wt', 'powershell']) {
+    const { root, runId, launcherIdentity } = seedWindowsLauncher(kind, 'codex');
+    const { data } = readState(root, runId);
+    delete data.autonomy.launcher_executable_approvals;
+    writeState(root, runId, data);
+    const h = emitHandoff(root, runId, {
+      trigger: `legacy-${kind}-authority`, now: NOW1, expect: expect_(runId), platform: 'win32',
+    });
+    let launcherChecks = 0;
+    let spawned = 0;
+    const r = respawn(root, runId, {
+      childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
+      attended: true, env: {}, now: NOW1, platform: 'win32',
+      revalidateRuntimeExecutable: identity => identity,
+      revalidateLauncherExecutable: identity => { launcherChecks++; assert.deepEqual(identity, launcherIdentity); return identity; },
+      spawnFn: () => { spawned++; return { ok: true }; },
+      pollLease: () => ({ state: 'active', handoff_phase: 'acquired', owner_run_id: h.childRunId, generation: 2 }),
+      sleep: noSleep,
+    });
+    assert.equal(r.ok, true, kind);
+    assert.equal(r.outcome, 'spawned', kind);
+    assert.equal(spawned, 1, kind);
+    assert.equal(launcherChecks, 3, kind);
+  }
+});
+
+test('native Windows Claude desktop uses exact durable PowerShell authority without an active terminal session', () => {
+  const { root, runId, launcherIdentity } = seedWindowsDesktop();
   const h = emitHandoff(root, runId, {
-    trigger: 'legacy-launcher-authority', now: NOW1, expect: expect_(runId), platform: 'win32',
+    trigger: 'windows-desktop-durable-powershell', now: NOW1, expect: expect_(runId), platform: 'win32',
+    desktopProbe: () => windowsDesktopTarget,
   });
-  let launcherChecks = 0;
-  let spawned = 0;
+  const checks = { runtime: 0, launcher: 0 };
+  let spawns = 0;
+  let entry = null;
   const r = respawn(root, runId, {
     childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
     attended: true, env: {}, now: NOW1, platform: 'win32',
-    revalidateRuntimeExecutable: identity => identity,
-    revalidateLauncherExecutable: identity => { launcherChecks++; assert.deepEqual(identity, launcherIdentity); return identity; },
-    spawnFn: () => { spawned++; return { ok: true }; },
-    pollLease: () => ({ state: 'active', handoff_phase: 'acquired', owner_run_id: h.childRunId, generation: 2 }),
+    desktopProbe: () => windowsDesktopTarget,
+    revalidateRuntimeExecutable: identity => { checks.runtime++; return identity; },
+    revalidateLauncherExecutable: identity => {
+      checks.launcher++;
+      assert.deepEqual(identity, launcherIdentity);
+      return identity;
+    },
+    spawnFn: value => { spawns++; entry = value; return { ok: true }; },
+    pollLease: seq([
+      { state: 'releasing', owner_run_id: runId, generation: 1 },
+      { state: 'active', handoff_phase: 'acquired', owner_run_id: h.childRunId, generation: 2 },
+    ]),
     sleep: noSleep,
   });
+  assert.equal(spawns, 1, `outcome=${r.outcome} reason=${r.reason}`);
   assert.equal(r.ok, true);
   assert.equal(r.outcome, 'spawned');
-  assert.equal(spawned, 1);
-  assert.equal(launcherChecks, 3);
+  assert.equal(r.reason, 'child-acquired');
+  assert.equal(entry.bin, launcherIdentity.canonical_path);
+  assert.equal(entry.shell, false);
+  assert.deepEqual(entry.argv.slice(0, 3), ['-NoProfile', '-NonInteractive', '-Command']);
+  assert.match(entry.argv[3], /Start-Process -FilePath '/);
+  assert.ok(entry.argv[3].includes(windowsDesktopTarget.argvTarget.exePath));
+  assert.match(entry.argv[3], /claude:\/\/code\/new\?folder=/);
+  assert.deepEqual(checks, { runtime: 0, launcher: 3 });
+});
+
+test('native Windows Claude desktop fails closed on absent, incomplete, or initially drifted durable PowerShell authority', () => {
+  const cases = [
+    ['absent-map', data => { delete data.autonomy.launcher_executable_approvals; }, identity => identity, 0],
+    ['incomplete-map', data => { data.autonomy.launcher_executable_approvals = { wt: null }; }, identity => identity, 0],
+    ['initial-file-replacement', () => {}, identity => ({ ...identity, sha256: 'c'.repeat(64) }), 1],
+  ];
+  for (const [name, mutate, revalidate, expectedChecks] of cases) {
+    const { root, runId } = seedWindowsDesktop();
+    const { data } = readState(root, runId);
+    mutate(data);
+    writeState(root, runId, data);
+    const h = emitHandoff(root, runId, {
+      trigger: `desktop-initial-${name}`, now: NOW1, expect: expect_(runId), platform: 'win32',
+      desktopProbe: () => windowsDesktopTarget,
+    });
+    let launcherChecks = 0;
+    let spawns = 0;
+    const r = respawn(root, runId, {
+      childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
+      attended: true, env: {}, now: NOW1, platform: 'win32',
+      desktopProbe: () => windowsDesktopTarget,
+      revalidateLauncherExecutable: identity => { launcherChecks++; return revalidate(identity); },
+      spawnFn: () => { spawns++; return { ok: true }; }, sleep: noSleep,
+    });
+    assert.equal(spawns, 0, name);
+    assert.equal(launcherChecks, expectedChecks, name);
+    assert.equal(r.ok, false, name);
+    assert.equal(r.outcome, 'no-launcher', name);
+    assert.equal(r.reason, 'launcher-identity-unavailable', name);
+    const after = readState(root, runId).data;
+    assert.equal(after.status, 'paused', name);
+    assert.equal(after.session_chain.lease.handoff_phase, 'emitted', name);
+  }
+});
+
+test('native Windows Claude desktop pre-CAS authority removal, malformed replacement, or exact reapproval preserve-pauses', () => {
+  const mutations = [
+    ['missing', data => { data.autonomy.launcher_executable_approvals.powershell = null; }],
+    ['malformed', data => { data.autonomy.launcher_executable_approvals = { wt: null }; }],
+    ['replaced', data => { data.autonomy.launcher_executable_approvals.powershell = replacementWindowsLauncherIdentity('powershell'); }],
+  ];
+  for (const [name, mutate] of mutations) {
+    const { root, runId, launcherIdentity } = seedWindowsDesktop();
+    const h = emitHandoff(root, runId, {
+      trigger: `desktop-pre-cas-${name}`, now: NOW1, expect: expect_(runId), platform: 'win32',
+      desktopProbe: () => windowsDesktopTarget,
+    });
+    let launcherChecks = 0;
+    let spawns = 0;
+    const r = respawn(root, runId, {
+      childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
+      attended: true, env: {}, now: NOW1, platform: 'win32',
+      desktopProbe: () => windowsDesktopTarget,
+      revalidateLauncherExecutable: identity => {
+        launcherChecks++;
+        assert.deepEqual(identity, launcherIdentity, name);
+        if (launcherChecks === 1) {
+          const { data } = readState(root, runId);
+          mutate(data);
+          writeState(root, runId, data);
+        }
+        return identity;
+      },
+      spawnFn: () => { spawns++; return { ok: true }; }, sleep: noSleep,
+    });
+    assert.equal(spawns, 0, name);
+    assert.equal(launcherChecks, 1, name);
+    assert.equal(r.outcome, 'no-launcher', name);
+    assert.equal(r.reason, 'launcher-identity-drift', name);
+    const after = readState(root, runId).data;
+    assert.equal(after.status, 'paused', name);
+    assert.equal(after.session_chain.lease.handoff_phase, 'emitted', name);
+    assert.notEqual(after.session_chain.sessions.find(session => session.run_id === h.childRunId)?.outcome, 'failed_launch', name);
+  }
+});
+
+test('native Windows Claude desktop post-CAS authority removal, malformed replacement, or exact reapproval rolls back', () => {
+  const mutations = [
+    ['missing', data => { data.autonomy.launcher_executable_approvals.powershell = null; }],
+    ['malformed', data => { data.autonomy.launcher_executable_approvals = { wt: null }; }],
+    ['replaced', data => { data.autonomy.launcher_executable_approvals.powershell = replacementWindowsLauncherIdentity('powershell'); }],
+  ];
+  for (const [name, mutate] of mutations) {
+    const { root, runId, launcherIdentity } = seedWindowsDesktop();
+    const h = emitHandoff(root, runId, {
+      trigger: `desktop-post-cas-${name}`, now: NOW1, expect: expect_(runId), platform: 'win32',
+      desktopProbe: () => windowsDesktopTarget,
+    });
+    let launcherChecks = 0;
+    let spawns = 0;
+    const r = respawn(root, runId, {
+      childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
+      attended: true, env: {}, now: NOW1, platform: 'win32',
+      desktopProbe: () => windowsDesktopTarget,
+      revalidateLauncherExecutable: identity => {
+        launcherChecks++;
+        assert.deepEqual(identity, launcherIdentity, name);
+        if (launcherChecks === 2) {
+          const { data } = readState(root, runId);
+          mutate(data);
+          writeState(root, runId, data);
+        }
+        return identity;
+      },
+      spawnFn: () => { spawns++; return { ok: true }; }, sleep: noSleep,
+    });
+    assert.equal(spawns, 0, name);
+    assert.equal(launcherChecks, 2, name);
+    assert.equal(r.outcome, 'failed_launch', name);
+    assert.equal(r.reason, 'launcher-identity-drift', name);
+    const after = readState(root, runId).data;
+    assert.equal(after.status, 'paused', name);
+    assert.equal(after.session_chain.lease.handoff_phase, 'idle', name);
+    assert.equal(after.session_chain.sessions.find(session => session.run_id === h.childRunId)?.outcome, 'failed_launch', name);
+  }
+});
+
+test('native Windows Codex App desktop continuation remains manual and does not consume PowerShell authority', () => {
+  const { root, runId } = seedWindowsDesktop('codex');
+  const { data } = readState(root, runId);
+  data.autonomy.launcher_executable_approvals = { wt: null, powershell: null };
+  writeState(root, runId, data);
+  let desktopProbes = 0;
+  const h = emitHandoff(root, runId, {
+    trigger: 'codex-app-manual', now: NOW1, expect: expect_(runId), platform: 'win32',
+    desktopProbe: () => { desktopProbes++; return windowsDesktopTarget; },
+  });
+  let launcherChecks = 0;
+  let spawns = 0;
+  const r = respawn(root, runId, {
+    childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
+    attended: true, env: {}, now: NOW1, platform: 'win32',
+    desktopProbe: () => { desktopProbes++; return windowsDesktopTarget; },
+    revalidateLauncherExecutable: identity => { launcherChecks++; return identity; },
+    spawnFn: () => { spawns++; return { ok: true }; }, sleep: noSleep,
+  });
+  assert.equal(desktopProbes, 0, 'Codex App must not probe the Claude desktop handler');
+  assert.equal(launcherChecks, 0, 'manual Codex App continuation must not require PowerShell authority');
+  assert.equal(spawns, 0);
+  assert.equal(r.outcome, 'no-launcher');
+  assert.equal(r.reason, 'codex-transport-not-activated');
+  assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'emitted');
 });
 
 test('native Windows respawn passes only revalidated absolute launcher/runtime targets with shell false', () => {

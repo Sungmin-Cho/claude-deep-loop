@@ -16,6 +16,23 @@ export { buildLaunchCommand } from './runtime-descriptor.mjs';
 
 const DEFAULT_DEEP_LOOP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
+function descriptorLauncherIdentity(loop, runtime, platform) {
+  const sessionIdentity = loop.session_spawn?.launcher_identity ?? null;
+  if (runtime !== 'claude' || platform !== 'win32' || loop.autonomy?.spawn_style !== 'desktop') {
+    return sessionIdentity;
+  }
+  const approvals = loop.autonomy?.launcher_executable_approvals;
+  // A present durable map is authoritative. Legacy states that truly predate the
+  // map retain their prior session-identity artifact behavior; normal desktop
+  // opt-in has launcher:none and consumes the durable PowerShell approval.
+  if (approvals === undefined) return sessionIdentity;
+  if (!approvals || typeof approvals !== 'object' || Array.isArray(approvals)) return null;
+  const powerShell = approvals.powershell;
+  return powerShell && typeof powerShell === 'object' && !Array.isArray(powerShell)
+    ? powerShell
+    : null;
+}
+
 function tsName(now) { return new Date(now).toISOString().replace(/[:.]/g, '-'); }
 
 function handoffMarkdown(loop, childRunId, reason, descriptor) {
@@ -115,7 +132,7 @@ export function emitHandoff(root, runId, {
       model: loop.autonomy?.session_model ?? null, effort: loop.autonomy?.session_effort ?? null,
       deepLoopRoot,
       runtimeExecutableIdentity: loop.autonomy?.runtime_executable_approval ?? null,
-      launcherIdentity: loop.session_spawn?.launcher_identity ?? null,
+      launcherIdentity: descriptorLauncherIdentity(loop, runtime, platform),
     });
   } catch (error) {
     try { rollbackHandoff(canonicalRoot, runId, { owner: expect.owner, generation: expect.generation }); } catch { /* preserve original descriptor error */ }

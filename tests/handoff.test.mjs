@@ -905,6 +905,41 @@ test('emitHandoff: spawn_style=desktop invokes the injected desktopProbe (probe 
   assert.equal(seenPlatform, 'darwin', 'the platform passed to emitHandoff must be forwarded to desktopProbe');
 });
 
+test('emitHandoff: Windows desktop artifact uses durable PowerShell approval with launcher none', () => {
+  const { root, runId } = seed();
+  const powerShell = {
+    ...launcherIdentity('powershell', 'C:\\Program Files\\PowerShell\\7\\pwsh.exe'),
+    source: 'human-explicit',
+    approved_by: 'human',
+    approved_at: '2026-07-12T03:00:00.000Z',
+  };
+  const { data } = readState(root, runId);
+  data.autonomy.spawn_style = 'desktop';
+  data.autonomy.launcher_executable_approvals = { wt: null, powershell: powerShell };
+  data.session_spawn = {
+    platform: 'win32', launcher: 'none', launcher_bin: null, launcher_socket: null,
+    surface: 'window', reachable: true, visible: true, signals: {}, probe: null,
+    reason: null, fallback: 'launch-command-file', detected_at: '2026-07-12T03:00:00.000Z',
+  };
+  writeState(root, runId, data);
+
+  const result = emitHandoff(root, runId, {
+    trigger: 'windows-desktop-artifact', now: Date.parse('2026-07-12T03:01:00.000Z'),
+    expect: expect_(runId), platform: 'win32',
+    desktopProbe: () => ({
+      ok: true,
+      argvTarget: { kind: 'win-exe', exePath: 'C:\\Program Files\\Claude\\Claude.exe' },
+    }),
+  });
+  assert.equal(result.ok, true);
+  const txt = readFileSync(join(runDir(root, runId), 'terminal', 'launch-command.txt'), 'utf8');
+  const lines = txt.split('\n');
+  const desktopLine = lines[lines.indexOf('# desktop') + 1];
+  assert.match(desktopLine, /\/deep-loop-resume/);
+  assert.doesNotMatch(desktopLine, /unavailable/);
+  assert.ok(!/claude:\/\//.test(txt), 'raw desktop URL remains machine-only');
+});
+
 test('emitHandoff: non-desktop spawn_style (default visible) never invokes desktopProbe', () => {
   const { root, runId } = seed();   // seed()'s initRun leaves autonomy.spawn_style at its default ('visible')
   assert.equal(readState(root, runId).data.autonomy.spawn_style, 'visible');
