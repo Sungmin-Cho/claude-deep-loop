@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { posix, win32 } from 'node:path';
 import { validateRuntimeProfile } from './session-profile.mjs';
-import { tomlBasicString, tomlQuotedKeySegment } from './toml-safe.mjs';
+import { tomlBasicString } from './toml-safe.mjs';
 
 const POSIX_CORE_ENV = Object.freeze([
   ['PATH', ['PATH']],
@@ -82,7 +82,6 @@ export function buildCodexExecEntry({
       '-c', 'sandbox_workspace_write.network_access=false',
       '-c', 'features.skill_mcp_dependency_install=false',
       '-c', 'shell_environment_policy.inherit="core"',
-      '-c', `projects.${tomlQuotedKeySegment(projectRoot)}.trust_level="untrusted"`,
       '-C', projectRoot, '-',
     ],
     stdin: prompt,

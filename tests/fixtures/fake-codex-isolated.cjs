@@ -53,7 +53,7 @@ function requiredIsolationPresent(argv) {
     && argv.includes('sandbox_workspace_write.network_access=false')
     && argv.includes('features.skill_mcp_dependency_install=false')
     && argv.includes('shell_environment_policy.inherit="core"')
-    && argv.some(value => /^projects\.".*"\.trust_level="untrusted"$/.test(value));
+    && !argv.some(value => value.startsWith('projects.'));
 }
 
 function parseWriteProbe(prompt) {

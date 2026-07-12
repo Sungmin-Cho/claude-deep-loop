@@ -28,7 +28,6 @@ test('buildCodexExecEntry returns the exact isolated stdin-only descriptor', () 
       '-c', 'sandbox_workspace_write.network_access=false',
       '-c', 'features.skill_mcp_dependency_install=false',
       '-c', 'shell_environment_policy.inherit="core"',
-      '-c', 'projects."C:\\\\Work Trees\\\\repo.v1".trust_level="untrusted"',
       '-C', ROOT, '-',
     ],
     stdin: PROMPT,
@@ -37,6 +36,11 @@ test('buildCodexExecEntry returns the exact isolated stdin-only descriptor', () 
   assert.ok(!entry.argv.includes(PROMPT), 'prompt must only be supplied on stdin');
   assert.ok(!entry.argv.includes('--profile'), 'named profiles are forbidden');
   assert.ok(!entry.argv.includes('--add-dir'), 'additional writable roots are forbidden');
+  assert.equal(
+    entry.argv.some(value => typeof value === 'string' && value.startsWith('projects.')),
+    false,
+    'Codex 0.144.1 strict config rejects projects.<path>.trust_level command-line overrides',
+  );
 });
 
 test('buildCodexExecEntry maps model and supported effort without weakening isolation', () => {

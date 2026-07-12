@@ -34,7 +34,6 @@ import { readLines } from '../scripts/lib/integrity.mjs';
 import { dispatchReview } from '../scripts/lib/review.mjs';
 import { STREAM_LIMITS } from '../scripts/lib/usage-parser.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
-import { tomlQuotedKeySegment } from '../scripts/lib/toml-safe.mjs';
 import { removeProcessUsageReceipt } from '../scripts/lib/preflight-receipt-journal.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -282,7 +281,11 @@ test('hostile maker transport crosses the real worker once and preserves only bo
     assert.ok(entry.argv.includes('shell_environment_policy.inherit="core"'));
     const projectAt = entry.argv.indexOf('-C');
     assert.ok(projectAt > 0);
-    assert.ok(entry.argv.includes(`projects.${tomlQuotedKeySegment(entry.argv[projectAt + 1])}.trust_level="untrusted"`));
+    assert.equal(
+      entry.argv.some(value => typeof value === 'string' && value.startsWith('projects.')),
+      false,
+      'strict Codex config must not receive an unsupported project trust override',
+    );
     assert.deepEqual(Object.keys(entry.env).sort(), expectedChildEnvKeys(h.env));
     assert.equal(entry.env.CODEX_HOME, h.codexHome);
     assert.equal(Object.hasOwn(entry.env, 'OPENAI_API_KEY'), false);

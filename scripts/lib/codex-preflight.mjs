@@ -33,7 +33,6 @@ import {
 } from './preflight-receipt-journal.mjs';
 import { runStreamingProcessSync } from './streaming-process.mjs';
 import { runDir } from './state.mjs';
-import { tomlQuotedKeySegment } from './toml-safe.mjs';
 
 const CACHE_KEY_CONTRACT = 'deep-loop-codex-preflight-key-v1';
 const CACHE_RECORD_CONTRACT = 'deep-loop-codex-preflight-result-v1';
@@ -74,8 +73,7 @@ function normalizeProbeValue(value, projectRoot, prompt) {
   if (typeof value === 'string') {
     if (value === projectRoot) return NORMALIZED_PROBE_ROOT;
     if (value === prompt) return NORMALIZED_PROBE_PROMPT;
-    const quotedRoot = tomlQuotedKeySegment(projectRoot);
-    return value.split(quotedRoot).join(tomlQuotedKeySegment(NORMALIZED_PROBE_ROOT));
+    return value;
   }
   if (Array.isArray(value)) return value.map((item) => normalizeProbeValue(item, projectRoot, prompt));
   if (value !== null && typeof value === 'object') {

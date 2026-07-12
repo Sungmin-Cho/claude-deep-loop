@@ -298,7 +298,11 @@ test('cache miss runs distinct synchronous read-only and production-equivalent w
     assert.ok(call.entry.argv.includes('approval_policy="never"'));
     assert.ok(call.entry.argv.includes('web_search="disabled"'));
     assert.ok(call.entry.argv.includes('sandbox_workspace_write.network_access=false'));
-    assert.ok(call.entry.argv.includes('projects.' + JSON.stringify(call.entry.cwd) + '.trust_level="untrusted"'));
+    assert.equal(
+      call.entry.argv.some(value => typeof value === 'string' && value.startsWith('projects.')),
+      false,
+      'strict Codex config rejects project trust as a command-line override',
+    );
   }
   const readReceiptDescriptor = readCall.options.usageReceipt;
   const writeReceiptDescriptor = writeCall.options.usageReceipt;
