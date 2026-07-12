@@ -1,9 +1,13 @@
-import { mkdtempSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, realpathSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 export function fixtureDir(prefix = 'dl-fixture-') {
   return mkdtempSync(join(tmpdir(), prefix));
+}
+
+export function canonicalRealpath(path) {
+  return (realpathSync.native || realpathSync)(path);
 }
 
 export function createDirectoryJunction(target, link, {

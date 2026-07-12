@@ -1,8 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { canonicalRealpath } from './helpers/fs-fixtures.mjs';
 
 async function checkerModule() {
   try {
@@ -28,7 +29,7 @@ function contract(root) {
 
 test('buildCodexCheckerPrompt narrows the installed skill to one immutable read-only review contract', async () => {
   const { buildCodexCheckerPrompt } = await checkerModule();
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-checker-prompt-')));
+  const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-checker-prompt-')));
   const skillPath = join(root, 'SKILL.md');
   writeFileSync(skillPath, '---\nname: deep-review-loop\n---\n');
   const prompt = buildCodexCheckerPrompt({ ...contract(root), checker_skill_path: skillPath });
@@ -44,7 +45,7 @@ test('buildCodexCheckerPrompt narrows the installed skill to one immutable read-
 
 test('checker prompt canonicalizes contract JSON independent of caller property order', async () => {
   const { buildCodexCheckerPrompt } = await checkerModule();
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-checker-canonical-')));
+  const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-checker-canonical-')));
   const skillPath = join(root, 'SKILL.md');
   writeFileSync(skillPath, '---\nname: deep-review-loop\n---\n');
   const original = { ...contract(root), checker_skill_path: skillPath };
@@ -54,7 +55,7 @@ test('checker prompt canonicalizes contract JSON independent of caller property 
 
 test('runIndependentCodexChecker builds one fresh read-only schema-bound shell-free Codex entry', async () => {
   const { runIndependentCodexChecker } = await checkerModule();
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-checker-entry-')));
+  const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-checker-entry-')));
   const skillPath = join(root, 'SKILL.md');
   const schemaPath = join(root, 'review-import.schema.json');
   writeFileSync(skillPath, '---\nname: deep-review-loop\n---\n');
@@ -99,7 +100,7 @@ test('runIndependentCodexChecker builds one fresh read-only schema-bound shell-f
 
 test('runIndependentCodexChecker preserves an exact measured turn when the final message is missing', async () => {
   const { runIndependentCodexChecker } = await checkerModule();
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-checker-missing-final-')));
+  const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-checker-missing-final-')));
   const skillPath = join(root, 'SKILL.md');
   const schemaPath = join(root, 'review-import.schema.json');
   writeFileSync(skillPath, '---\nname: deep-review-loop\n---\n');
@@ -122,7 +123,7 @@ test('runIndependentCodexChecker preserves an exact measured turn when the final
 
 test('importReviewViaCli forwards the identical Buffer through trusted Node argv with bounded shell-free IO', async () => {
   const { importReviewViaCli } = await checkerModule();
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-checker-import-')));
+  const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-checker-import-')));
   const kernelPath = join(root, 'deep-loop.mjs');
   writeFileSync(kernelPath, '');
   const raw = Buffer.from('  {"multibyte":"한글"}\n');
@@ -158,7 +159,7 @@ test('importReviewViaCli forwards the identical Buffer through trusted Node argv
 
 test('trusted checker skill resolution accepts one exact cache candidate and rejects missing or ambiguous candidates', async () => {
   const { resolveTrustedCheckerSkill } = await checkerModule();
-  const home = realpathSync(mkdtempSync(join(tmpdir(), 'dl-checker-home-')));
+  const home = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-checker-home-')));
   const cache = join(home, 'plugins', 'cache');
   mkdirSync(cache, { recursive: true });
   assert.throws(() => resolveTrustedCheckerSkill({ codexHome: home }), /checker-skill-unavailable/);

@@ -10,9 +10,9 @@ const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'deep
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState } from '../scripts/lib/state.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
-import { respawn } from '../scripts/lib/respawn.mjs';
+import { respawn as respawnImpl } from '../scripts/lib/respawn.mjs';
 import { acquireLease } from '../scripts/lib/lease.mjs';
-import { driveHeadless } from '../scripts/hooks-impl/drive-headless.mjs';
+import { driveHeadless as driveHeadlessImpl } from '../scripts/hooks-impl/drive-headless.mjs';
 import { pauseRun } from '../scripts/lib/state.mjs';
 
 const A = join(dirname(fileURLToPath(import.meta.url)), '..', 'recipes', 'automation');
@@ -20,6 +20,20 @@ const HANDOFF_REFERENCE = join(dirname(fileURLToPath(import.meta.url)), '..', 's
 
 // Deterministic "now" within the run's wallclock window so respawnGate does not wallclock-block.
 const NOW1 = Date.parse('2026-06-24T00:01:00Z');
+
+// These legacy driver tests exercise the POSIX Claude transport. Native-Windows
+// executable authority has dedicated coverage in runtime/respawn integration tests.
+function respawn(root, runId, options = {}) {
+  return respawnImpl(root, runId, { ...options, platform: 'linux' });
+}
+
+function driveHeadless(options = {}) {
+  return driveHeadlessImpl({
+    ...options,
+    respawnFn: options.respawnFn
+      ?? ((root, runId, respawnOptions) => respawn(root, runId, respawnOptions)),
+  });
+}
 
 // Seed a run AND emit a handoff so there is a pending handoff with a reserved child.
 // Returns { root, runId, em, childRunId } where em is the emitHandoff result and

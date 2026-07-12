@@ -25,6 +25,9 @@ const WINDOWS_TARGET_ROOT = 'C:\\Fixture Project';
 function buildPosixLaunchCommand(options) {
   return buildLaunchCommand({ ...options, platform: POSIX_PLATFORM });
 }
+function buildPosixDescriptor(options) {
+  return buildRuntimeResumeDescriptor({ ...options, root: '/fixture-project', platform: POSIX_PLATFORM });
+}
 function buildWindowsDescriptor(options) {
   return buildRuntimeResumeDescriptor({ ...options, root: WINDOWS_TARGET_ROOT });
 }
@@ -364,7 +367,10 @@ test('legacy runtime handoff remains Claude-compatible', () => {
   delete data.autonomy.session_runtime;
   delete data.autonomy.runtime_source;
   writeState(root, runId, data);
-  const r = emitHandoff(root, runId, { now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId), platform: POSIX_PLATFORM });
+  const r = emitHandoff(root, runId, {
+    now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId), platform: POSIX_PLATFORM,
+    descriptorBuilder: buildPosixDescriptor,
+  });
   assert.equal(r.ok, true);
   const launch = readFileSync(join(runDir(root, runId), 'terminal', 'launch-command.txt'), 'utf8');
   assert.match(launch, /claude -p/);
@@ -378,7 +384,10 @@ test('Codex handoff emits qualified manual resume descriptors and no Claude proc
   data.autonomy.session_model = 'claude-opus-4-8[1m]';
   data.autonomy.session_effort = 'xhigh';
   writeState(root, runId, data);
-  const r = emitHandoff(root, runId, { now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId), platform: POSIX_PLATFORM });
+  const r = emitHandoff(root, runId, {
+    now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId), platform: POSIX_PLATFORM,
+    descriptorBuilder: buildPosixDescriptor,
+  });
   assert.equal(r.ok, true);
   const launch = readFileSync(join(runDir(root, runId), 'terminal', 'launch-command.txt'), 'utf8');
   assert.match(launch, /\$deep-loop:deep-loop-resume/);

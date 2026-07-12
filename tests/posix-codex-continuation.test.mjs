@@ -6,13 +6,30 @@ import { join, posix, win32 } from 'node:path';
 import { buildRuntimeResumeDescriptor } from '../scripts/lib/runtime-descriptor.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
-import { respawn } from '../scripts/lib/respawn.mjs';
+import { respawn as respawnImpl } from '../scripts/lib/respawn.mjs';
 import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
 
 const NOW0 = new Date('2026-06-24T00:00:00Z');
 const NOW1 = Date.parse('2026-06-24T01:00:00Z');
 const noOpRun = () => ({ code: 1 });
 const noSleep = () => {};
+const POSIX_FIXTURE_ROOT = '/tmp/deep-loop-posix-fixture';
+
+function targetPosixRoot(root) {
+  return process.platform === 'win32' ? POSIX_FIXTURE_ROOT : root;
+}
+
+function buildPosixDescriptor(options) {
+  return buildRuntimeResumeDescriptor({ ...options, root: targetPosixRoot(options.root) });
+}
+
+function respawn(root, runId, options = {}) {
+  return respawnImpl(root, runId, {
+    ...options,
+    launchCommandBuilder: options.launchCommandBuilder
+      ?? (descriptorOptions => buildPosixDescriptor(descriptorOptions).entries),
+  });
+}
 
 function runtimeIdentity({
   platform = 'linux',
@@ -72,6 +89,7 @@ function emitVisible(root, runId, { platform = 'linux' } = {}) {
     platform,
     deepLoopRoot: '/opt/deep-loop',
     exists: path => path === '/usr/bin/osascript',
+    descriptorBuilder: buildPosixDescriptor,
   });
 }
 
@@ -268,7 +286,7 @@ test('POSIX Codex headless respawn sends exact target-platform paths to the proc
     deepLoopRoot: '/opt/deep-loop',
     spawnFn: entry => { captured = entry; return { ok: true }; },
   });
-  const canonicalRoot = readState(root, runId).data.project.root;
+  const canonicalRoot = targetPosixRoot(readState(root, runId).data.project.root);
   const expectedHandoff = posix.join(canonicalRoot, '.deep-loop', 'runs', runId, handoff.handoffRel);
   const expectedSkill = '/opt/deep-loop/skills/deep-loop-resume/SKILL.md';
   const expectedPrompt = `Read ${JSON.stringify(expectedHandoff)} first. Then read ${JSON.stringify(expectedSkill)} and execute that workflow inline for project root ${JSON.stringify(canonicalRoot)} and run id ${JSON.stringify(runId)}.`;

@@ -19,12 +19,12 @@ import { join } from 'node:path';
 
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { recordCost } from '../scripts/lib/budget.mjs';
-import { driveHeadlessRun } from '../scripts/lib/headless-host.mjs';
+import { driveHeadlessRun as driveHeadlessRunImpl } from '../scripts/lib/headless-host.mjs';
 import { readLines } from '../scripts/lib/integrity.mjs';
 import { readState, writeState, pauseRun, patch } from '../scripts/lib/state.mjs';
 import { emitHandoff, buildLaunchCommand } from '../scripts/lib/handoff.mjs';
 import { acquireLease } from '../scripts/lib/lease.mjs';
-import { respawn } from '../scripts/lib/respawn.mjs';
+import { respawn as respawnImpl } from '../scripts/lib/respawn.mjs';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -34,6 +34,38 @@ const NOW1 = Date.parse('2026-06-24T01:00:00Z');
 // No-op run: detectTerminal probes always fail → launcher='none'. No subprocess launched.
 const noOpRun = () => ({ code: 1 });
 const noSleep = () => {};
+
+function buildPosixLaunchCommand(options) {
+  return buildLaunchCommand({
+    ...options,
+    platform: 'linux',
+    root: '/fixture-project',
+    deepLoopRoot: '/fixture-deep-loop',
+  });
+}
+
+function respawn(root, runId, options = {}) {
+  return respawnImpl(root, runId, {
+    ...options,
+    platform: 'linux',
+    launchCommandBuilder: options.launchCommandBuilder ?? buildPosixLaunchCommand,
+  });
+}
+
+function driveHeadlessRun(options = {}) {
+  return driveHeadlessRunImpl({
+    ...options,
+    respawnFn: options.respawnFn ?? ((root, runId, respawnOptions) => {
+      const identity = readState(root, runId).data.autonomy.runtime_executable_approval;
+      return respawnImpl(root, runId, {
+        ...respawnOptions,
+        platform: identity.platform,
+        revalidateRuntimeExecutable: stored => stored,
+        runtimeRevalidationOptions: { platform: identity.platform, arch: identity.arch },
+      });
+    }),
+  });
+}
 
 // ── Seed helpers ──────────────────────────────────────────────────────────────
 
@@ -315,6 +347,7 @@ test('(markerless) positive launcher + not attended → mode=interactive → no-
 test('(R5-R) cmux --command POSIX-tokenize: first token is claude', () => {
   // Build cmux launch command directly (no run state needed)
   const cmds = buildLaunchCommand({
+    platform: 'linux',
     root: '/test/project',
     parentRunId: 'PARENT01',
     childRunId: 'CHILD01',
@@ -408,7 +441,7 @@ test('Codex emitted handoff stays on the shared measured host path through prefl
     root, runId, expect: { owner: runId, generation: 1 }, now: NOW1 + 500, ...deps,
   });
 
-  assert.equal(first.action, 'resumed');
+  assert.equal(first.action, 'resumed', JSON.stringify(first));
   assert.equal(first.recorded, true);
   assert.deepEqual(order, ['preflight', 'cost:11', 'cost:21', 'maker', 'cost:31']);
   assert.deepEqual(

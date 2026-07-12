@@ -96,8 +96,8 @@ test('detectMain treats import mismatch and missing, non-string, or empty argv a
 
 test('detectMain returns stable path-free diagnostics for every canonicalization failure with no lexical fallback', async () => {
   const detectMain = await loadDetector();
-  const moduleUrl = 'file:///same/path.mjs';
-  const argvPath = '/same/path.mjs';
+  const argvPath = join(tmpdir(), 'same', 'path.mjs');
+  const moduleUrl = pathToFileURL(argvPath).href;
   const cases = [
     ['https://example.invalid/main.mjs', argvPath, {}, 'DEEP_LOOP_MAIN_NON_FILE_URL'],
     [moduleUrl, argvPath, { fileURLToPath: () => { throw new Error('/secret/file-url'); } }, 'DEEP_LOOP_MAIN_FILE_URL_FAILED'],

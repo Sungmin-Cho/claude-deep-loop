@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative } from 'node:path';
+import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { initRun } from '../scripts/lib/initrun.mjs';
@@ -33,6 +33,7 @@ const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const FIXED_NOW = new Date('2026-07-11T00:00:00.000Z');
 const recoveryReaderReferencePattern = /\breadStateForRootRecovery\b/;
 const recoveryCommitReferencePattern = /\bcommitProjectRootRebindUnderLock\b/;
+const portableRelative = (from, to) => relative(from, to).split(sep).join('/');
 const genericRootBypassPattern = /\b(?:(?:skip|bypass|disable|ignore)(?:Project)?Root(?:Check|Binding)?|(?:skip|bypass|disable|ignore)[_-](?:project[_-])?root(?:[_-](?:check|binding))?)\b/i;
 const recoveryApiPromise = import('../scripts/lib/project-root-recovery.mjs').catch(() => ({}));
 
@@ -407,7 +408,7 @@ test('source guard detects generic root-check bypass spellings', () => {
 test('only the state export and dedicated recovery module may reference readStateForRootRecovery', () => {
   const violations = [];
   for (const path of sourceFiles(join(REPO_ROOT, 'scripts'))) {
-    const rel = relative(REPO_ROOT, path);
+    const rel = portableRelative(REPO_ROOT, path);
     const source = readFileSync(path, 'utf8');
     const references = source.match(/\breadStateForRootRecovery\b/g) || [];
     if (rel === 'scripts/lib/state.mjs') {
@@ -427,7 +428,7 @@ test('only integrity and the dedicated recovery module may reference the fixed r
   let integrityDefinitions = 0;
   let recoveryReferences = 0;
   for (const path of sourceFiles(join(REPO_ROOT, 'scripts'))) {
-    const rel = relative(REPO_ROOT, path);
+    const rel = portableRelative(REPO_ROOT, path);
     const source = readFileSync(path, 'utf8');
     const references = source.match(/\bcommitProjectRootRebindUnderLock\b/g) || [];
     if (rel === 'scripts/lib/integrity.mjs') {

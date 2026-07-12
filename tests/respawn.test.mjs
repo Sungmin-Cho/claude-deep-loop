@@ -16,6 +16,8 @@ const NOW0 = new Date('2026-06-24T00:00:00Z');
 const NOW1 = Date.parse('2026-06-24T01:00:00Z');
 const WINDOWS_TARGET_ROOT = 'C:\\Fixture Project';
 const WINDOWS_DEEP_LOOP_ROOT = 'C:\\Fixture Deep Loop';
+const POSIX_TARGET_ROOT = '/fixture-project';
+const POSIX_DEEP_LOOP_ROOT = '/fixture-deep-loop';
 
 // Inject no-signal env + no-op run so detect-terminal is deterministic regardless of ambient env.
 const noOpRun = () => ({ code: 1 });
@@ -35,21 +37,50 @@ function buildWindowsLaunchCommand(options) {
   return buildLaunchCommand(windowsDescriptorOptions(options));
 }
 
+function posixDescriptorOptions(options) {
+  return { ...options, root: POSIX_TARGET_ROOT, deepLoopRoot: POSIX_DEEP_LOOP_ROOT };
+}
+
+function buildPosixDescriptor(options) {
+  return buildRuntimeResumeDescriptor(posixDescriptorOptions(options));
+}
+
+function buildPosixLaunchCommand(options) {
+  return buildLaunchCommand(posixDescriptorOptions(options));
+}
+
 function isForeignWindowsCodexFixture(root, runId, options) {
   return process.platform !== 'win32' && options?.platform === 'win32'
     && sessionRuntime(readState(root, runId).data) === 'codex';
 }
 
+function targetPlatform(root, runId, options) {
+  return options?.platform ?? readState(root, runId).data.session_spawn?.platform ?? 'linux';
+}
+
+function isForeignPosixCodexFixture(root, runId, options) {
+  return process.platform === 'win32' && targetPlatform(root, runId, options) !== 'win32'
+    && sessionRuntime(readState(root, runId).data) === 'codex';
+}
+
 function emitHandoff(root, runId, options = {}) {
-  return emitHandoffImpl(root, runId, isForeignWindowsCodexFixture(root, runId, options)
-    ? { ...options, descriptorBuilder: options.descriptorBuilder ?? buildWindowsDescriptor }
-    : options);
+  const normalized = { ...options, platform: targetPlatform(root, runId, options) };
+  if (isForeignWindowsCodexFixture(root, runId, normalized)) {
+    normalized.descriptorBuilder ??= buildWindowsDescriptor;
+  } else if (isForeignPosixCodexFixture(root, runId, normalized)) {
+    normalized.descriptorBuilder ??= buildPosixDescriptor;
+  }
+  return emitHandoffImpl(root, runId, normalized);
 }
 
 function respawn(root, runId, options = {}) {
-  return respawnImpl(root, runId, isForeignWindowsCodexFixture(root, runId, options)
-    ? { ...options, launchCommandBuilder: options.launchCommandBuilder ?? buildWindowsLaunchCommand }
-    : options);
+  const normalized = { ...options, platform: targetPlatform(root, runId, options) };
+  if (isForeignWindowsCodexFixture(root, runId, normalized)) {
+    normalized.launchCommandBuilder ??= buildWindowsLaunchCommand;
+  } else if (isForeignPosixCodexFixture(root, runId, normalized)) {
+    normalized.launchCommandBuilder ??= buildPosixLaunchCommand;
+  }
+  return respawnImpl(root, runId, normalized);
 }
 
 // 자기완결 seed: run 생성 후 mutate(loop)로 필요한 필드만 조정하고 writeState.

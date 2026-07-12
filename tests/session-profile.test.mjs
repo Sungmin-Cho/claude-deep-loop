@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
@@ -108,7 +109,7 @@ test('setSessionProfile invalid value throws and does not mutate', () => {
   assert.equal(readState(root, runId).data.event_log_head.seq, seq0);
 });
 
-const CLI = new URL('../scripts/deep-loop.mjs', import.meta.url).pathname;
+const CLI = fileURLToPath(new URL('../scripts/deep-loop.mjs', import.meta.url));
 function cli(root, args) {
   return spawnSync('node', [CLI, ...args, '--project-root', root], { encoding: 'utf8' });
 }

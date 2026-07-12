@@ -8,7 +8,6 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
-  realpathSync,
   renameSync,
   rmSync,
   writeFileSync,
@@ -21,7 +20,7 @@ import { ensureCodexPreflight } from '../scripts/lib/codex-preflight.mjs';
 import { settleCodexPreflightCost, settleCodexProcessCost } from '../scripts/lib/budget.mjs';
 import { importReviewViaCli, runIndependentCodexChecker } from '../scripts/lib/codex-checker.mjs';
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
-import { driveHeadlessRun } from '../scripts/lib/headless-host.mjs';
+import { driveHeadlessRun as driveHeadlessRunImpl } from '../scripts/lib/headless-host.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
 import { finishRun } from '../scripts/lib/finish.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
@@ -35,15 +34,32 @@ import { dispatchReview } from '../scripts/lib/review.mjs';
 import { STREAM_LIMITS } from '../scripts/lib/usage-parser.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { removeProcessUsageReceipt } from '../scripts/lib/preflight-receipt-journal.mjs';
+import { respawn } from '../scripts/lib/respawn.mjs';
+import { canonicalRealpath } from './helpers/fs-fixtures.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const DEEP_LOOP_ROOT = realpathSync(join(HERE, '..'));
+const DEEP_LOOP_ROOT = canonicalRealpath(join(HERE, '..'));
 const FIXTURE = join(HERE, 'fixtures', 'fake-codex-isolated.cjs');
 const NOW0 = new Date('2026-07-11T00:00:00.000Z');
 const NOW1 = Date.parse('2026-07-11T00:01:00.000Z');
 
 const sha256File = path => createHash('sha256').update(readFileSync(path)).digest('hex');
 const PROCESS_EXECUTABLE_SHA256 = sha256File(process.execPath);
+
+function driveHeadlessRun(options = {}) {
+  return driveHeadlessRunImpl({
+    ...options,
+    respawnFn: options.respawnFn ?? ((projectRoot, runId, respawnOptions) => {
+      const identity = readState(projectRoot, runId).data.autonomy.runtime_executable_approval;
+      return respawn(projectRoot, runId, {
+        ...respawnOptions,
+        platform: identity.platform,
+        revalidateRuntimeExecutable: stored => stored,
+        runtimeRevalidationOptions: { platform: identity.platform, arch: identity.arch },
+      });
+    }),
+  });
+}
 
 function materializedRunSync(entry, options) {
   copyFileSync(FIXTURE, join(entry.cwd, 'exec'));
@@ -94,7 +110,7 @@ function invocationLog(path) {
 }
 
 function createHostHarness({ makerMode = 'success', model = 'gpt-5.4', effort = 'xhigh' } = {}) {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-codex-isolation-')));
+  const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-codex-isolation-')));
   const codexHome = join(root, 'codex-home');
   const markerDir = join(root, 'markers');
   const logPath = join(codexHome, 'invocations.jsonl');

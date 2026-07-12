@@ -7,7 +7,7 @@ import {
   renameSync, rmdirSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
@@ -153,7 +153,7 @@ test('importReviewOutcome materializes a content-addressed M3 envelope and commi
   const reportAbs = join(f.root, result.report);
   const reportRaw = readFileSync(reportAbs);
   assert.equal(sha256(reportRaw), result.report_sha256);
-  assert.equal(reportAbs.endsWith(`/${result.report_sha256}.json`), true);
+  assert.equal(basename(reportAbs), `${result.report_sha256}.json`);
   const envelope = JSON.parse(reportRaw.toString('utf8'));
   assert.equal(envelope.schema_version, '1.0');
   assert.equal(envelope.envelope.producer, 'deep-loop');

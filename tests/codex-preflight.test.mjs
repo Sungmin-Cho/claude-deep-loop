@@ -8,7 +8,6 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
-  realpathSync,
   renameSync,
   rmSync,
   writeFileSync,
@@ -28,6 +27,7 @@ import {
   parseWriteProbePrompt,
 } from './fixtures/fake-codex-native.mjs';
 import {
+  canonicalRealpath,
   createDirectoryJunction,
   createFileSymlinkOrSkip,
 } from './helpers/fs-fixtures.mjs';
@@ -60,10 +60,11 @@ function sha256(bytes) {
 }
 
 function executableIdentity(path, version = '0.144.1') {
+  const canonicalPath = canonicalRealpath(path);
   return {
     runtime: 'codex',
-    canonical_path: path,
-    sha256: sha256(readFileSync(path)),
+    canonical_path: canonicalPath,
+    sha256: sha256(readFileSync(canonicalPath)),
     version,
     platform: process.platform,
     arch: process.arch,
@@ -92,7 +93,7 @@ function fileSymlinksAvailableOrSkip(testContext) {
 }
 
 function harness({ readResult, writeResult, writeMode = 'exact' } = {}) {
-  const projectRoot = realpathSync(mkdtempSync(join(tmpdir(), 'dl-codex-preflight-')));
+  const projectRoot = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-codex-preflight-')));
   const runId = 'RUN-1';
   const runRoot = join(projectRoot, '.deep-loop', 'runs', runId);
   const preflightRoot = join(runRoot, 'preflight');

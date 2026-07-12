@@ -2,12 +2,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { STREAM_LIMITS } from '../scripts/lib/usage-parser.mjs';
 import { makeCodexPreflightReceipt } from '../scripts/lib/budget.mjs';
+import { canonicalRealpath } from './helpers/fs-fixtures.mjs';
 
 const fixture = fileURLToPath(new URL('./fixtures/stream-emitter.mjs', import.meta.url));
 
@@ -317,7 +318,7 @@ test('runStreamingProcessSync uses one dedicated Node worker and one runtime spa
 
 test('runStreamingProcessSync durably journals and returns an exact worker-owned usage receipt before success', async () => {
   const { runStreamingProcessSync } = await streamingModule();
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'deep-loop-stream-receipt-')));
+  const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'deep-loop-stream-receipt-')));
   const runId = 'RUN-RECEIPT';
   const attemptId = 'b'.repeat(32);
   const journalDir = join(root, '.deep-loop', 'runs', runId, 'preflight', 'process-receipts');
@@ -359,7 +360,7 @@ test('runStreamingProcessSync durably journals and returns an exact worker-owned
 
 test('runStreamingProcessSync fails closed without usage when its receipt journal is invalid or unwritable', async () => {
   const { runStreamingProcessSync } = await streamingModule();
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'deep-loop-stream-receipt-fail-')));
+  const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'deep-loop-stream-receipt-fail-')));
   const runId = 'RUN-RECEIPT';
   const journalDir = join(root, '.deep-loop', 'runs', runId, 'preflight', 'process-receipts');
   mkdirSync(journalDir, { recursive: true });

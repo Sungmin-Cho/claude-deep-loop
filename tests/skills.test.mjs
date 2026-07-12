@@ -44,7 +44,7 @@ function kernelCommandLines(src) {
 }
 
 function frontmatter(src) {
-  const m = src.match(/^---\n([\s\S]*?)\n---/);
+  const m = src.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
   assert.ok(m, 'frontmatter block present');
   return m[1];
 }
@@ -82,7 +82,7 @@ const MUTATING_SUB = /(state\s+patch|episode\s+(?:new|record|abandon)|workstream
 const MUTATING_CMD = /(?:state\s+patch|episode\s+(?:new|record|abandon)|workstream\s+(?:new|set|terminal)|review\s+(?:dispatch|record)|handoff\s+emit|budget\s+record|comprehension\s+ack|breaker\s+reset|session-profile\s+set|launcher-executable\s+approve|lease\s+(?:acquire|release)|finish|insights\s+emit)\b[^\n]*\s--\w/;
 function mutatingFenced(text) {
   // Codex r4 sf-2: 셸 라인 연속(\ 로 끝나는 줄)을 논리 명령으로 먼저 합친다 — multi-line unfenced 명령 회피 차단.
-  const joined = text.replace(/\\\n\s*/g, ' ');
+  const joined = text.replace(/\r\n?/g, '\n').replace(/\\\n\s*/g, ' ');
   return joined.split('\n').every(line => {
     if (!MUTATING_SUB.test(line)) return true;                       // mutating sub 언급 없음 → OK
     const isCommand = /deep-loop\.mjs/.test(line) || MUTATING_CMD.test(line);
@@ -95,7 +95,7 @@ function mutatingFenced(text) {
 // 안전 조건을 강화: worktree 경로가 등장하면 반드시 $ORIG_ROOT 절대 앵커여야 한다. '..'·foreign-abs·bare-relative 모두 flag.
 // 산문 오탐 회피: worktrees 경로 토큰이나 foreign 절대경로가 없는 순수 멘션 라인은 무시.
 function worktreeWriteOutsideRoot(src) {
-  const joined = src.replace(/\\\n\s*/g, ' ');   // 백슬래시 연속줄 join (mutatingFenced 패턴)
+  const joined = src.replace(/\r\n?/g, '\n').replace(/\\\n\s*/g, ' ');   // 백슬래시 연속줄 join (mutatingFenced 패턴)
   return joined.split('\n').some(line => {
     // R5 P2-1: git 옵션(-C 등)이 git 과 worktree add 사이에 와도 매칭.
     if (!/\bgit\b[^\n]*\bworktree\s+add\b/.test(line)) return false;
@@ -160,6 +160,7 @@ test('mutatingFenced requires both fence flags on mutating CLI lines (fixtures)'
   assert.ok(mutatingFenced('record the result via `episode record`'));    // 산문(플래그 없음) → 무시
   // Codex r4 sf-2: 셸 연속줄로 fence 를 분리해 회피하는 시도 차단.
   assert.ok(!mutatingFenced('node x/deep-loop.mjs \\\n  state patch --field discovered_items --value "[]"'));
+  assert.ok(!mutatingFenced('node x/deep-loop.mjs \\\r\n  state patch --field discovered_items --value "[]"'));
   assert.ok(mutatingFenced('node x/deep-loop.mjs \\\n  state patch --field x --value "[]" --owner $R --generation 1'));
   // Codex r5 sf-3: deep-loop.mjs 프리픽스 없는 shorthand mutating 명령도 fence 필요.
   assert.ok(!mutatingFenced('episode record --status done --artifacts \'["a"]\''));   // shorthand unfenced
@@ -327,7 +328,7 @@ for (const [dir, name, invocable, triggers, refsCLI] of SKILLS) {
     assert.match(fm, new RegExp(`user-invocable:\\s*${invocable}`));
     assert.match(fm, /description:/);
     // 허용 키만 (다른 top-level 키 금지)
-    const keys = fm.split('\n').filter(l => /^[a-z-]+:/.test(l)).map(l => l.split(':')[0]);
+    const keys = fm.split(/\r?\n/).filter(l => /^[a-z-]+:/.test(l)).map(l => l.split(':')[0]);
     for (const k of keys) assert.ok(['name', 'description', 'user-invocable'].includes(k), `unexpected key ${k} in ${dir}`);
   });
   test(`skill ${dir}: triggers present (en+ko)`, () => {

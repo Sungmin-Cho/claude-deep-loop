@@ -11,6 +11,7 @@ async function descriptorModule() {
 
 const base = {
   root: '/repo with space',
+  platform: 'linux',
   parentRunId: '01PARENT',
   childRunId: '01CHILD',
   handoffRel: 'handoffs/next.md',

@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { driveHeadless, driveHeadlessRun } from '../scripts/lib/headless-host.mjs';
+import { driveHeadless as driveHeadlessImpl, driveHeadlessRun as driveHeadlessRunImpl } from '../scripts/lib/headless-host.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
@@ -13,10 +13,42 @@ import { readLines } from '../scripts/lib/integrity.mjs';
 import { respawn } from '../scripts/lib/respawn.mjs';
 import { buildLaunchCommand } from '../scripts/lib/runtime-descriptor.mjs';
 import { finishRun } from '../scripts/lib/finish.mjs';
+import { canonicalRealpath } from './helpers/fs-fixtures.mjs';
 
 const NOW0 = new Date('2026-07-11T00:00:00Z');
 const NOW1 = Date.parse('2026-07-11T00:01:00Z');
 const WINDOWS_TARGET_ROOT = 'C:\\Fixture Project';
+
+function defaultTestRespawn(projectRoot, runId, options) {
+  const loop = readState(projectRoot, runId).data;
+  const identity = loop.autonomy?.runtime_executable_approval;
+  if (loop.autonomy?.session_runtime === 'codex') {
+    return respawn(projectRoot, runId, {
+      ...options,
+      platform: identity?.platform ?? process.platform,
+      revalidateRuntimeExecutable: (stored) => stored,
+      runtimeRevalidationOptions: {
+        platform: identity?.platform ?? process.platform,
+        arch: identity?.arch ?? process.arch,
+      },
+    });
+  }
+  return respawn(projectRoot, runId, { ...options, platform: 'linux' });
+}
+
+function driveHeadlessRun(options = {}) {
+  return driveHeadlessRunImpl({
+    ...options,
+    respawnFn: options.respawnFn ?? defaultTestRespawn,
+  });
+}
+
+function driveHeadless(options = {}) {
+  return driveHeadlessImpl({
+    ...options,
+    driveRun: options.driveRun ?? ((runOptions) => driveHeadlessRun(runOptions)),
+  });
+}
 
 function measuredUsage(inputTokens) {
   return {
@@ -28,7 +60,7 @@ function measuredUsage(inputTokens) {
 }
 
 function seedCodexHandoff() {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-headless-host-')));
+  const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-headless-host-')));
   const { runId } = initRun(root, {
     runtime: 'codex', goal: 'g', now: NOW0, env: {}, platform: 'linux',
     run: () => ({ code: 1 }),
@@ -37,7 +69,7 @@ function seedCodexHandoff() {
   data.autonomy.spawn_style = 'headless';
   data.autonomy.runtime_executable_approval = {
     runtime: 'codex',
-    canonical_path: '/opt/codex/bin/codex',
+    canonical_path: process.platform === 'win32' ? canonicalRealpath(process.execPath) : '/opt/codex/bin/codex',
     sha256: 'a'.repeat(64),
     version: '0.144.1',
     platform: process.platform,
@@ -61,7 +93,7 @@ function seedCodexHandoff() {
 }
 
 function seedClaudeHandoff() {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-headless-host-claude-')));
+  const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-headless-host-claude-')));
   const { runId } = initRun(root, {
     runtime: 'claude', goal: 'g', now: NOW0, env: {}, platform: 'linux',
     run: () => ({ code: 1 }),
@@ -83,7 +115,7 @@ function seedClaudeHandoff() {
 function codexHostDeps(root, runId) {
   const executable = readState(root, runId).data.autonomy.runtime_executable_approval;
   const codexHome = {
-    canonical_path: '/home/test/.codex', device: '1', inode: '2',
+    canonical_path: process.platform === 'win32' ? join(tmpdir(), 'codex-home') : '/home/test/.codex', device: '1', inode: '2',
     birthtime_ns: '3', platform: process.platform,
   };
   return {
@@ -1125,7 +1157,7 @@ test('driveHeadless is a current-run compatibility wrapper over the injected cor
   assert.equal(captured.now, NOW1 + 1_000);
   assert.equal(captured.timeoutMs, 9876);
 
-  const emptyRoot = realpathSync(mkdtempSync(join(tmpdir(), 'dl-headless-host-empty-')));
+  const emptyRoot = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-headless-host-empty-')));
   let called = false;
   assert.deepEqual(driveHeadless({
     root: emptyRoot,

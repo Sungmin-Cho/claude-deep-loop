@@ -7,7 +7,6 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  realpathSync,
   renameSync,
   writeFileSync,
 } from 'node:fs';
@@ -27,6 +26,7 @@ import { readState, writeState } from '../scripts/lib/state.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { detectAndPersist } from '../scripts/lib/detect-terminal.mjs';
 import {
+  canonicalRealpath,
   createDirectoryJunction,
   createFileSymlinkOrSkip,
 } from './helpers/fs-fixtures.mjs';
@@ -73,7 +73,7 @@ function json(path, value) {
 
 function officialCodexFixture({ platform = 'darwin', arch = 'arm64', version = '0.144.1' } = {}) {
   const target = TARGETS[`${platform}:${arch}`];
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-runtime-executable-')));
+  const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-runtime-executable-')));
   const wrapperRoot = join(root, 'node_modules', '@openai', 'codex');
   const wrapper = join(wrapperRoot, 'bin', 'codex.js');
   const optionalRoot = join(wrapperRoot, 'node_modules', ...target.alias.split('/'));
@@ -161,7 +161,7 @@ function durableApprovalBytes(root, runId) {
 }
 
 function launcherApprovalFixture({ kind = 'wt', name = kind === 'wt' ? 'wt.exe' : 'pwsh.exe' } = {}) {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-launcher-approval-')));
+  const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-launcher-approval-')));
   const executable = join(root, name);
   writeFileSync(executable, `${kind} native launcher bytes`);
   chmodSync(executable, 0o755);
@@ -316,8 +316,8 @@ test('Windows npm shim is locator-only: resolver derives and executes only wrapp
 });
 
 test('Windows candidate collection uses semicolon PATH and collects shims only as absolute candidates', () => {
-  const first = realpathSync(mkdtempSync(join(tmpdir(), 'dl-win-path-a-')));
-  const second = realpathSync(mkdtempSync(join(tmpdir(), 'dl-win-path-b-')));
+  const first = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-win-path-a-')));
+  const second = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-win-path-b-')));
   writeFileSync(join(first, 'codex.cmd'), 'shim');
   writeFileSync(join(second, 'codex.exe'), 'shadow');
 
@@ -382,7 +382,7 @@ test('Windows diagnosis rejects UNC/device human-explicit candidates before hash
 });
 
 test('Windows approval rejects UNC/device candidates before probes or durable append', () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-runtime-unc-approve-')));
+  const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-runtime-unc-approve-')));
   const { runId } = initRun(root, {
     runtime: 'codex', goal: 'g', now: new Date('2026-07-11T08:00:00.000Z'),
     env: {}, platform: 'linux', run: () => ({ code: 1 }),
@@ -618,7 +618,7 @@ test('revalidation detects post-pin replacement before a spawn can use it', () =
 });
 
 test('human-explicit identity revalidates exact path/hash/version and detects replacement before execution', () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-runtime-human-revalidate-')));
+  const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-runtime-human-revalidate-')));
   const executable = join(root, 'custom-codex');
   writeFileSync(executable, 'custom native bytes');
   chmodSync(executable, 0o755);
@@ -646,7 +646,7 @@ test('human-explicit identity revalidates exact path/hash/version and detects re
 });
 
 test('human-explicit native Claude on Windows revalidates exact path/hash/version with no shell or argv splitting', () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-runtime-claude win & meta-')));
+  const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-runtime-claude win & meta-')));
   const executable = join(root, 'claude native & signed.exe');
   writeFileSync(executable, 'claude native bytes');
   const identity = {
@@ -669,7 +669,7 @@ test('human-explicit native Claude on Windows revalidates exact path/hash/versio
 });
 
 test('human exact path+SHA approval accepts native Claude.exe and persists the bounded direct identity', () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-runtime-claude-approve-')));
+  const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-runtime-claude-approve-')));
   const executable = join(root, 'Claude Native.exe');
   writeFileSync(executable, 'approved claude native bytes');
   const sha256 = createHash('sha256').update(readFileSync(executable)).digest('hex');
@@ -734,7 +734,7 @@ test('official Windows approval persists the observed Authenticode identity and 
 });
 
 test('Claude shim-only Windows installs are never diagnosable or revalidatable as native executables', () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-runtime-claude-shim-')));
+  const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-runtime-claude-shim-')));
   for (const extension of ['cmd', 'bat', 'ps1', 'js']) {
     const shim = join(root, `claude.${extension}`);
     writeFileSync(shim, 'shim');
@@ -746,7 +746,7 @@ test('Claude shim-only Windows installs are never diagnosable or revalidatable a
 });
 
 test('diagnose never presents script or shell shims as human-approvable native executables', () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-runtime-shim-diagnose-')));
+  const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-runtime-shim-diagnose-')));
   for (const extension of ['js', 'mjs', 'cjs', 'cmd', 'bat', 'ps1']) {
     const shim = join(root, `codex.${extension}`);
     writeFileSync(shim, 'shim');
@@ -1155,7 +1155,7 @@ test('fresh exact human re-approval replaces a launcher atomically and requires 
 });
 
 test('authenticated CODEX_HOME requires an absolute existing non-symlink directory and records directory identity', () => {
-  const parent = realpathSync(mkdtempSync(join(tmpdir(), 'dl-codex-home-')));
+  const parent = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-codex-home-')));
   const home = join(parent, 'auth-home');
   mkdirSync(home);
   const identity = resolveAuthenticatedCodexHome({ path: home });
@@ -1178,7 +1178,7 @@ test('authenticated CODEX_HOME requires an absolute existing non-symlink directo
 });
 
 test('authenticated CODEX_HOME revalidation detects directory replacement', () => {
-  const parent = realpathSync(mkdtempSync(join(tmpdir(), 'dl-codex-home-drift-')));
+  const parent = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-codex-home-drift-')));
   const home = join(parent, 'auth-home');
   mkdirSync(home);
   const identity = resolveAuthenticatedCodexHome({ path: home });

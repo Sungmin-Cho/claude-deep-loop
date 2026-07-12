@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
@@ -19,6 +19,7 @@ import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import { driveHeadlessRun } from '../scripts/lib/headless-host.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
 import { recordCost } from '../scripts/lib/budget.mjs';
+import { canonicalRealpath } from './helpers/fs-fixtures.mjs';
 
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const FIXED_NOW = '2026-07-11T01:00:00.000Z';
@@ -30,7 +31,7 @@ function events(root, runId) {
 }
 
 function seed({ reviewer = 'deep-review' } = {}) {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-checker-int-')));
+  const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-checker-int-')));
   const detected = reviewer === 'deep-review' ? { 'deep-review': true } : { 'deep-review': false };
   const { runId } = initRun(root, {
     runtime: 'codex', goal: 'g', detected, now: new Date('2026-07-11T00:00:00Z'),

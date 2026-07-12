@@ -4,6 +4,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { runDir } from '../scripts/lib/state.mjs';
 
@@ -14,7 +15,7 @@ function runValidate(args = []) {
   } catch (e) { return e.status ?? 1; }
 }
 
-const CLI = new URL('../scripts/deep-loop.mjs', import.meta.url).pathname;
+const CLI = fileURLToPath(new URL('../scripts/deep-loop.mjs', import.meta.url));
 function runCli(args) {
   return spawnSync('node', [CLI, ...args], { encoding: 'utf8' });
 }
