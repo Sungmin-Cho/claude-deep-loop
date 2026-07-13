@@ -4,5 +4,10 @@
   "triggers": ["hill-climb", "hill climbing", "하네스 개선", "루프 개선", "환류"],
   "protocol_hint": "standalone",
   "flow": ["insights", "standalone:maker", "deep-review:checker", "ship-proposal", "archive"],
-  "expected_artifacts": [".deep-loop/insights/*.json", "harness diff (Tier 1)", "recipes/hillclimb-ledger.json", ".deep-review/reports/*.md"]
+  "expected_artifacts": [".deep-loop/insights/*.json", "harness diff (Tier 1)", "recipes/hillclimb-ledger.json", ".deep-review/reports/*.md"],
+  "review_hints": {
+    "max_review_rounds": 7,
+    "rationale": "fix_cycles_avg design 5.25 / plan 5.0 (emit 01KX5YP2M4X75FC7WBDMJTP6J3) — 기본 5 초과 실측. 발굴은 adversarial, 수렴 판정은 표준 review로 분리(사이클 1 학습 #2)",
+    "consumed_by_kernel": false
+  }
 }
