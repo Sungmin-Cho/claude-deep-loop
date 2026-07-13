@@ -15,7 +15,7 @@ Status: PASS
 - Original checkout: `/Users/sungmin/Dev/claude-plugins/deep-loop`
 - Original branch: `main`
 - Fetched `origin/main`: `c38a96137f8f4f0099c35e893860930e8ee4cf73`
-- Branch base / implementation HEAD: `c38a96137f8f4f0099c35e893860930e8ee4cf73`
+- Branch base / pre-bootstrap HEAD: `c38a96137f8f4f0099c35e893860930e8ee4cf73`
 - Implementation branch: `codex/codex-app-native-task-continuation`
 - Plugin version: `1.8.2`
 - Node: `v26.0.0` (repository minimum: Node 20)
@@ -29,6 +29,72 @@ Status: PASS
   - Test duration reported by Node: 34,282.955 ms
 
 Main-agent judgment: the fetched remote base, version, test count, and user-owned untracked state match the handoff baseline. There is no baseline failure or drift to resolve, so Gate 1 research/design may begin after this bootstrap evidence is committed.
+
+## Gate 1 — research and design
+
+Status: DESIGN DRAFT COMPLETE; OPUS/XHIGH REVIEW PENDING
+
+Design target: `docs/superpowers/specs/2026-07-13-codex-app-native-task-continuation-design.md`
+
+### Repository and kernel evidence
+
+- Runtime is currently run-level `claude|codex`; there is no durable host-surface axis (`scripts/lib/runtime.mjs`).
+- `emitHandoff` already commits child-session creation, parent supersession, and `reserved→emitted/releasing` in one `appendAnchored` transaction (`scripts/lib/handoff.mjs:187-211`).
+- Current `acquireLease` lets the reserved child acquire a releasing lease without checking handoff phase, host surface, App attempt, or launch confirmation (`scripts/lib/lease.mjs:43-98`). Therefore an App binding added only after emit would be bypassable; the design binds transport and attempt in the final emit transaction and uses a dedicated confirmed acquire.
+- Existing respawn performs the hard gates in the required order and advances `emitted→spawned` before external launch, but its spawned re-entry is transport-agnostic (`scripts/lib/respawn.mjs:84-101,266-307`). Headless re-entry is also transport-agnostic (`scripts/lib/headless-host.mjs:1084-1111`). The design requires an early App-transport guard in both paths.
+- Generic handoff phase/acquire helpers use direct locked state writes. App metadata transitions therefore use dedicated anchored APIs rather than extending those writes with unanchored event-relevant state (`scripts/lib/lease.mjs:43-98,149-176`; `scripts/lib/integrity.mjs:96-151`).
+- `rootOf()` may fold a conventional worktree cwd to the outer run root; App routing must separately bind the actual invocation cwd (`scripts/deep-loop.mjs:103-107`; `scripts/lib/state.mjs:12-32`).
+- Recorded worktrees are already constrained to `.claude/worktrees/` or `.worktrees/`, realpath checked, and stored root-relative (`scripts/lib/workspace.mjs:23-69`). The design reuses this authority and requires exactly one active record whose canonical worktree equals the calling cwd.
+- `session_spawn.surface` already means terminal surface (`workspace|window|tab`). The new product-host axis is named `host_surface`, not an overload of that field (`scripts/lib/detect-terminal.mjs`).
+- The current validator performs manual semantic checks and does not generically enforce all nested JSON Schema properties. App correlation/length/opaque-ID rules must be implemented in `schema.mjs`, not only the declarative schema (`scripts/lib/schema.mjs:164-207`).
+- Current Codex App runtime descriptor is intentionally manual with reason `codex-transport-not-activated` (`scripts/lib/runtime-descriptor.mjs:157-189`); legacy absence/manual behavior remains unchanged.
+
+### Current host and App contract evidence
+
+- Current task exposes first-party Codex App provenance with callable `list_projects`, `create_thread`, `fork_thread`, and `send_message_to_thread` contracts. This is positive App-host evidence for the current session; environment variables and process paths are not adopted as durable authority.
+- Read-only `list_projects` returned a local project whose `projectId` and `path` both exactly identify `/Users/sungmin/Dev/claude-plugins/deep-loop`. Optional/missing project paths, non-local projects, and duplicate exact matches are excluded by design.
+- `create_thread` local project target is `{type:'project', projectId, environment:{type:'local'}}`. Read-only inspection of the currently installed App implementation indicates a local result carrying `threadId`, but its exposed declaration is `Promise<unknown>` rather than a stable public success schema. Therefore a bounded opaque `threadId` parser is fail-closed/provisional until approved smoke verifies the actual receipt. A worktree/client-thread-only result is intentionally not used.
+- `fork_thread` uses `{type:'same-directory'}` without scraping or passing a source thread ID. It inherits completed history only; the active turn and unfinished response are not copied.
+- `send_message_to_thread` also exposes `Promise<unknown>` without a guaranteed ID echo. The current installed implementation appears to return the target thread ID, but the design relies only on successful host-tool completion as the dispatch receipt; if an ID is present it must exactly match the forked thread. Model/thinking are omitted so host defaults/current child settings remain authoritative.
+- Host failures are text/dynamic and may timeout or return no receipt. Raw host errors are not durable; they map to bounded internal codes and no automatic retry.
+- `fork_thread(same-directory)` preserves the calling App task directory, not an arbitrary shell tool workdir. The design therefore records the host-provided task cwd and requires it, kernel `process.cwd()`, and the selected root/worktree to identify the same filesystem directory before any task call.
+- Claude Desktop bundle inspection showed that its local-agent launch injects `CLAUDE_CODE_ENTRYPOINT=local-agent` and `CLAUDE_CODE_IS_COWORK=1`. The installed Claude Code 2.1.207 binary independently materializes an unset direct invocation entrypoint as `cli`, preserves `local-agent`, maps `cli/default` to `claude_code_cli`, and maps `local-agent` to `claude_code_local_agent`. Combined with execution-plane host assertion, this is the positive current-surface discriminator required by the operating contract. Conflicts remain null/manual; the environment values alone never enable Codex App automation.
+- Current installed Claude CLI: `/Users/sungmin/.local/bin/claude`, version `2.1.207`; help supports `--model opus --effort xhigh`.
+- Current Codex App process adapter was probed read-only with non-secret canaries. A non-PTY long-running process returned a session handle but `write_stdin` failed with `stdin is closed`; a default PTY echoed the canary in tool output; a PTY whose Node reader successfully called `process.stdin.setRawMode(true)` before emitting `READY` accepted the canary with zero echo and returned only its byte count. The design therefore records `pty-raw-noecho` only after a live canary handshake and requires every real input process to emit an exact no-echo READY before any host-derived value is written. No credential, task ID, project ID, or durable state was used or changed by this probe.
+- Coupled Codex personal install/restart research matches the existing README contract: copy/place the candidate at `~/.codex/plugins/deep-loop`, bind `~/.agents/plugins/marketplace.json` with `source.path: "./.codex/plugins/deep-loop"`, select it under Work or Codex → Plugins, restart the App, then start a new task. On this machine the enabled install is currently cached `deep-loop@claude-deep-suite` 1.8.1 and the personal coupled path/file do not exist, so the future smoke requires an exact creation/backup/recovery proposal and separate approval; no install or restart was performed during Gate 1.
+
+### Design selection and approval record
+
+- Selected: transport-bound App attempt on the existing handoff lease, with a dedicated `app-task` state machine and CLI.
+- Rejected: kernel invocation of App tools (2-plane violation), skill-only state (no durable at-most-once), and generic optional acquire flags (confirmation bypass/transport collision).
+- User instruction on 2026-07-13: make the optimal judgment and continue autonomously to completion. This delegates design choice/approval; irreversible push/PR/merge and post-merge sync remain separately approval-gated by the operating contract.
+- Main-agent design disposition for Claude surface evidence: the independent first-party launcher/classifier evidence above resolves direct Code vs Desktop local-agent. Conflicting/unsupported observations remain null/manual; Claude surfaces cannot enable Codex App automation.
+
+### Pre-Opus adversarial design audit
+
+These checks were independent Codex subagent audits used to harden the design before the required native Opus/xhigh gate. They do not replace Gate 1, and no receipt was reused after its target changed.
+
+- Early draft prefixes `568ff1…`, `20858…`, and `b15dc…` were rejected in sequence for failure-phase ambiguity, raw thread-ID argv exposure, revoke/state-read leakage, missing live PTY no-echo READY proof, consent-question ordering, mode authority, init response-loss, and respawn precedence. Each finding was dispositioned in the next draft; the shortened hashes are recorded as historical prefixes only, not as review receipts.
+- Exact `44c82c93aaca4d1f7d1248ffaff8ca72dc04600c18865ba43c9ed51276bb5f20`: rejected. The three audits found that the new App init did not share the real public `init-run`/exported `initRun` writer, status did not prove the exact request, a purported read-only status acquired a writing lock, no pre-question kernel cwd guard existed, and a state-only crash allowed another genesis.
+- Exact intermediate `129d9d2558aead14b38901336a964a31fa18b9880739ad13cad049a26eb38d05` and `adab60f71defbd60616607cb9f29c1d49bd73f382bd7493e3630e28e20901fad`: review attempts were explicitly aborted when main-agent consistency fixes changed the target. No verdict was claimed.
+- Exact `ddb70d53fab63380974934a41d629aa8f5af2291f51a19428fbd066cc9b7caba`: rejected. The audits identified the real `loop.json`→`.loop.hash` two-file crash window, unsafe TTL-only root lock semantics, a missing post-pending `already-initialized` path, and omitted git/plugin/session-spawn request projections.
+- Exact `fa60b9c5f466a1862d3cc3e8f18e638eab622a1c2ca2b60fb0b1455be418cfbf`: review was stopped after additional consistency findings on atomic-write temp debris, root-lock candidate lifecycle, and committed-attempt precedence in the presence of a later foreign pending reservation.
+- Exact `1732657373ac7aee2459583479c95f4489351eb01ce6f570270a7034a6d243db`: rejected. State audit found that acquire response-loss could misread a later released/recovered lease as current acquisition and that the initial generic-release wording broke the existing valid terminal cleanup contract. Contract audit separately found a two-reclaimer ABA race in automatic stale-lock deletion.
+- Exact intermediate `8736a917af41090e8d8ec2303546cfb8ab4304288d5deef337fe46801be0b067`: review was aborted after the main agent found and corrected a paused-guard wording inconsistency; no verdict was claimed.
+- Exact semantic candidate `943e0cb4e93e376d43a735f7a895588c5692ead7980ca6a6b88250f7dc787a5a`: three independent full-document, read-only audits converged without modifying the target.
+  - `design_state_review`: APPROVE; Red 0, Yellow 0, Info 0; natural convergence. Rechecked init/pending/hash publication, exact acquire response-loss projection, public release precedence, recover/terminal/historical provenance, and current code.
+  - `design_host_review`: READY; Red 0, Yellow 0, Info 0; natural convergence. Rechecked App READY/PTY raw-noecho behavior, raw ID/argv boundaries, public init compatibility, state publication, and release/acquire changes.
+  - `design_contract_review`: APPROVE; Red 0, Yellow 0, Info 0; natural convergence. Rechecked every prior finding, fixed-lock `stale-manual` fail-closed semantics, two-stale-observer safety, accepted limit, and handoff/current-code compatibility.
+- Staging hygiene then removed exactly two ASCII spaces from each of design lines 3–5 so `git diff --check` would pass. This changed the exact target and invalidated the prior byte receipt even though it did not change meaning.
+- Exact committed-review target `6326be15b332ab3892633705138a91a0c47516460a6feddc22abe6c784e22a41` (100,329 bytes): all three auditors independently verified that adding those exact six `0x20` bytes in memory reproduces `943e0cb4…` (100,335 bytes), with no insertion, substitution, or other deletion. Each reissued APPROVE/READY with Red 0, Yellow 0, Info 0 and natural convergence for the new exact target. The reviewers did not modify either file or the index.
+
+Main-agent judgment: all material pre-gate findings are represented in the final design and its explicit tests. In particular, all production genesis writers share one request/current transaction; genesis state publishes hash-first/state-last; the fixed authority lock has no unsafe automatic stale reclaim; exact response-loss status binds attempt, previous current, request, and observation; and App acquire/release idempotency preserves existing terminal cleanup behavior. The final exact design hash is `6326be15b332ab3892633705138a91a0c47516460a6feddc22abe6c784e22a41`; `git diff --check` passes. This is sufficient to commit the target for the required native Opus/xhigh Gate 1 review, not to pass Gate 1 itself.
+
+### Planned Gate 1 review evidence
+
+- Required invocation: native Claude session launched with literal `--model opus --effort xhigh`, then `/deep-review-loop --no-codex --no-agy --max=5 --contract`.
+- The design must be force-added and committed before review because `docs/` is ignored and `--no-codex` disables ignored-file session inference.
+- Pass requires actual Opus reviewer evidence, final `APPROVE`, Red 0, Yellow 0, natural convergence, no max/degraded/timeout/failure, report/summary hashes, and independent main-agent verification.
 
 ## Review receipt template
 
