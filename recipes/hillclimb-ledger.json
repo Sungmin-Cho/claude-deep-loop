@@ -43,5 +43,25 @@
     ],
     "release_notes": "v1.7.1 릴리스 게이트 사후 판정: ①(P1+P2=07b0746)·③(parity 1.7.1==1.7.1, preflight 897/0) 이행 확인(PR #21 머지-코멘트 receipt 정본 재대조). ②는 미충족 발견 — receipt의 sign-off가 세션 대행(사용자 위임·투명 기록)으로, ledger #1이 요구하는 사람 직접 파일-sha 대조 sign-off가 아님. 시정은 human_proposals의 P11 항 참조. v1.8.0(PR #22, 56e7373)로 활성화 경계 갱신 — post-v1.8.0 run만 새 환경 샘플.",
     "falsification": "[fix_cycles 대응(max 7 + 발굴/수렴 분리)] 이 항목 머지 후 그 구성이 적용된 hill-climb terminal run 3개에서 design·plan fix_cycles 평균이 baseline(5.25/5.0) 대비 비감소면 대응 실패로 판정하고 review_hints revert를 제안한다(3개 미확보 = 판정 불가, 성공 주장 금지). 단일-run 조기 신호: 어느 (ws,point)든 fix_cycles > 7이면 outer 한도 미작동 증거로 P4를 최상향한다. [review_hints] P3가 main에 랜딩된 뒤 2개 hill-climb run 내에 커널 소비 경로가 이 필드를 읽지 않으면 inert 데이터로 판정, 제거를 제안한다. [bootstrap] ledger #1의 P5 절 유지 — P5·P6 랜딩 후 non-null 샘플 3개 전부 true면 무효 판정·재설계. [P13] 다음 hill-climb run 시점에 required check가 여전히 미구성이면 재표면화한다. [릴리스 게이트 ②] 다음 hill-climb run 시점에 ② 시정(사람 직접 대조 기록의 PR #21 receipt 보강 또는 P11 기계 검증 랜딩) 미이행이면 재표면화한다. [활성화 경계] 각 절의 샘플은 해당 변경 main 머지 이후의 same-recipe terminal run만; 후보 재발행은 어떤 판정의 증거도 아니다(spec §2.4)."
+  },
+  {
+    "date": "2026-07-13",
+    "insights_ref": ".deep-loop/insights/01KXCTZWDV1X9ZY4MHE04GAMRA-insights.json",
+    "insights_sha256": "93ff0b7e7ad4d8d2c4941796c58e54b8175695fc675d94a6e9b2407ad507a17d",
+    "cited_metrics": "fix_cycles_avg design 4.6 / plan 4.0 (01KX541R 17/18RC 지배 — 최근 정상 run 실측: 사이클2 design 2·plan 0·impl 0, v1.5·v1.6 전부 0) · bootstrap_ack_friction count 3 + 본 run(01KXCZ3GS2GMTHD36RFTB0CS3J) 5번째 실측 재현(design phase: episode-new → await_human(comprehension-debt) → comprehension-ack(human) → episode-record in_progress가 event-log에 ack seq < dispatch seq로 durable; 동일 run plan phase(003 조기-ack)에서도 재현) · budget_overrun 1.07 (v1.4 214/200 역사 누적, 이후 신규 발생 없음: 0.11/0.095/0.355) — emit 01KXCTZWDV1X9ZY4MHE04GAMRA, runs_analyzed 8",
+    "candidates_addressed": [
+      "fix_cycles_high:design",
+      "fix_cycles_high:plan",
+      "bootstrap_ack_friction",
+      "budget_overrun"
+    ],
+    "changes": [],
+    "human_proposals": [
+      "HP-1(최우선): P13 재표면화 — main branch protection required status check 여전히 미구성(gh api repos/{owner}/{repo}/branches/main/protection 404 재실측 2026-07-13). GitHub 설정 작업이라 코드 diff 없이 사람 액션 1회로 완결 가능 — 접근 카운트다운(2/3 소진) 해소의 최단 경로 (전문은 ledger #2 P13 항)",
+      "HP-2(최상향 유지): P5+P6 — 부트스트랩 조기-ack 마찰 5번째 실측(발생률 5/5, 측정 가능 run 기준). 본 run event-log가 최소 재현 시퀀스를 durable하게 담음; P5의 proof-bearing(done) 계상 + 조기-ack 거부가 정확히 이 시퀀스를 제거(ack가 리뷰할 산출물이 생긴 뒤로 이동) (전문은 ledger #1 P5·P6 항)",
+      "HP-3(유지): P4 차상향(outer 리뷰 라운드 커널 강제 — fix_cycles 판정 창의 조기 신호 감시와 짝) · P3(recipe defaults 커널 read-only 노출 + init 병렬 표시 — 사이클 3 init에서 review_hints가 실행-plane 수동 파일-읽기로만 표면화되고 사람이 rounds 5로 override, consumed_by_kernel false 갭 재확인) · P7·P9·P10·P11 우선순위 유지(P11은 릴리스 게이트 ② 종결과 무관하게 구조 개선으로 존속)"
+    ],
+    "release_notes": "사후 판정(design §2): [릴리스 게이트 ②] PR #21 보강 코멘트(2026-07-13, 사용자 Sungmin-Cho 직접 파일-SHA 대조 sign-off)로 시정 완료 실측 — 종결, ledger #2 재표면화 절 해소(구조적 해소 P11은 별도 존속). [fix_cycles 3-run 창] 활성화 경계 v1.8.1(f406f5f) 이후 same-recipe terminal run 0/3 — 판정 불가(성공 주장 금지), 조기 신호(fix_cycles > 7) 없음. [review_hints inert 판정] P3 미랜딩으로 활성화 전. [bootstrap P5·P6] 미랜딩 — non-null 샘플 조건 활성화 전, 단 본 run이 마찰을 5번째로 실측 재현. [접근 카운트다운] 본 사이클 종결 시 2/3 소진 — open proposal 랜딩 0. 본 사이클 T1 diff는 이 항목 append 단건 — recipe 추가 개입 없음(판정 창 오염 방지 · P8 규율 · bootstrap은 T2). 릴리스 판단(semver·bump·머지)은 전부 사람 소관.",
+    "falsification": "[HP-1/P13] 다음 hill-climb run 시점 gh api repos/{owner}/{repo}/branches/main/protection이 여전히 404이거나 required check에 preflight가 없으면 미이행 재표면화 — 3회째 표면화(사이클 2·3·4)가 되면 재표면화만으로는 실효 없음으로 판정하고 제안 형식을 재설계한다(예: 릴리스 게이트 선행 조건화 제안). [HP-2/P5+P6] ledger #1 절 유지 — 랜딩 후 P6 반영 non-null 샘플 3개 전부 true면 무효 판정·재설계(3개 미확보 = 판정 불가, 성공 주장 금지). [fix_cycles 3-run 창] ledger #2 절 그대로 존속 — 본 사이클은 개입을 추가하지 않았으므로 판정 창은 오염 없이 유지; 단일-run 조기 신호(어느 (ws,point)든 fix_cycles > 7)는 계속 감시; 본 run(rounds 5 override)은 창 판정 시 '적용 구성 상이(5≠7)' 샘플로 분리 표기한다 — 동일-구성 3개 확보 전 평균 혼합 금지. [접근 전체] ledger #1 절대 조항 유지 — 사이클 4 종결 시점까지 머지-시점 open proposal(파생 집합) 중 하나도 main에 랜딩되지 않으면 진단-중심 접근 재설계. [활성화 경계] 각 절의 샘플은 해당 변경 main 머지 이후의 same-recipe terminal run만; 후보 재발행은 어떤 판정의 증거도 아니다(역사 누적)."
   }
 ]
