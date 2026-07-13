@@ -144,13 +144,22 @@ function runResult(root, args) {
   catch (e) { return { code: e.status, stdout: String(e.stdout || ''), stderr: String(e.stderr || '') }; }
 }
 
+// detect-terminal이 소비하는 host 터미널 신호는 forced-win32 fixture로 새면 안 된다 —
+// cmux 분기가 fixture의 WT_SESSION 기대를 선점한다(실 cmux host에서 재현). fixture 의도 값은
+// extraEnv로만 주입한다.
+function hermeticTerminalEnv(extraEnv) {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith('CMUX_')) delete env[key];
+  for (const key of ['TERM_PROGRAM', 'TMUX', 'STY', 'WT_SESSION']) delete env[key];
+  return { ...env, ...extraEnv };
+}
+
 function win32RunResult(root, args, extraEnv = {}) {
   const result = spawnSync(process.execPath, [CLI, ...args, '--project-root', root], {
     encoding: 'utf8',
     shell: false,
     env: {
-      ...process.env,
-      ...extraEnv,
+      ...hermeticTerminalEnv(extraEnv),
       NODE_OPTIONS: `--import=${FORCE_WIN32}`,
     },
   });
@@ -630,6 +639,31 @@ runtimeExecutableCliTest('explicit native executable is hashed without execution
   assert.equal(approval.version, '7.8.9');
   assert.equal(approval.package, null);
   assert.equal(readFileSync(marker, 'utf8'), 'xx', 'approval revalidates once inside the locked transaction');
+});
+
+launcherExecutableCliTest('forced-win32 fixture is hermetic to host terminal signals (cmux/tmux leak)', () => {
+  // detect-terminal은 cmux 신호를 wt보다 먼저 소비하므로, host 터미널 identity가 fixture
+  // subprocess로 새면 forced-win32 기대(windows-terminal-unverified)가 host 값으로 대체된다.
+  const fakes = {
+    CMUX_BUNDLED_CLI_PATH: join(tmpdir(), 'dl-nonexistent-cmux-leak'),
+    CMUX_SOCKET_PATH: join(tmpdir(), 'dl-nonexistent-cmux-leak.sock'),
+    CMUX_WORKSPACE_ID: 'host-leak-workspace',
+    CMUX_SURFACE_ID: 'host-leak-surface',
+    TERM_PROGRAM: 'host-leak-terminal',
+    TMUX: '/nonexistent/tmux-leak,1,0',
+    STY: 'host-leak-screen',
+  };
+  const saved = Object.fromEntries(Object.keys(fakes).map(k => [k, process.env[k]]));
+  for (const [k, v] of Object.entries(fakes)) process.env[k] = v;
+  try {
+    const fixture = nativeWin32LauncherCliFixture();
+    const runId = initWin32LauncherRun(fixture);
+    const initial = readState(fixture.root, runId).data;
+    assert.equal(initial.session_spawn.launcher, 'none');
+    assert.equal(initial.session_spawn.reason, 'windows-terminal-unverified');
+  } finally {
+    for (const [k, v] of Object.entries(saved)) { if (v == null) delete process.env[k]; else process.env[k] = v; }
+  }
 });
 
 launcherExecutableCliTest('launcher-executable diagnose is read-only and approve requires every human/fence field', () => {
