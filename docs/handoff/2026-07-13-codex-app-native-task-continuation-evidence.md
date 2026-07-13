@@ -32,7 +32,7 @@ Main-agent judgment: the fetched remote base, version, test count, and user-owne
 
 ## Gate 1 — research and design
 
-Status: DESIGN DRAFT COMPLETE; OPUS/XHIGH REVIEW PENDING
+Status: PASS
 
 Design target: `docs/superpowers/specs/2026-07-13-codex-app-native-task-continuation-design.md`
 
@@ -90,11 +90,28 @@ These checks were independent Codex subagent audits used to harden the design be
 
 Main-agent judgment: all material pre-gate findings are represented in the final design and its explicit tests. In particular, all production genesis writers share one request/current transaction; genesis state publishes hash-first/state-last; the fixed authority lock has no unsafe automatic stale reclaim; exact response-loss status binds attempt, previous current, request, and observation; and App acquire/release idempotency preserves existing terminal cleanup behavior. The final exact design hash is `6326be15b332ab3892633705138a91a0c47516460a6feddc22abe6c784e22a41`; `git diff --check` passes. This is sufficient to commit the target for the required native Opus/xhigh Gate 1 review, not to pass Gate 1 itself.
 
-### Planned Gate 1 review evidence
+### Official Gate 1 review receipt
 
-- Required invocation: native Claude session launched with literal `--model opus --effort xhigh`, then `/deep-review-loop --no-codex --no-agy --max=5 --contract`.
-- The design must be force-added and committed before review because `docs/` is ignored and `--no-codex` disables ignored-file session inference.
-- Pass requires actual Opus reviewer evidence, final `APPROVE`, Red 0, Yellow 0, natural convergence, no max/degraded/timeout/failure, report/summary hashes, and independent main-agent verification.
+- gate: Gate 1 — research and design
+- artifact/scope: `docs/superpowers/specs/2026-07-13-codex-app-native-task-continuation-design.md` was the primary artifact; the operating handoff and this evidence log were context. No implementation code was in scope.
+- base/head or content hash: base `c38a96137f8f4f0099c35e893860930e8ee4cf73`; reviewed head `4fd9c256fd07a65ffe6812081f9c692a039cdc7b`; exact design SHA-256 `6326be15b332ab3892633705138a91a0c47516460a6feddc22abe6c784e22a41`.
+- invocation: native interactive Claude session `b64a75d8-1324-42e8-a2ec-5a737c1b5fc6` (`deep-loop-gate1-design-review`) launched as `/Users/sungmin/.local/bin/claude --session-id b64a75d8-1324-42e8-a2ec-5a737c1b5fc6 --name deep-loop-gate1-design-review --model opus --effort xhigh`, followed by `/deep-review-loop --no-codex --no-agy --max=5 --contract`.
+- reviewer actual: one `deep-review:code-reviewer` reviewer, agent ID `a5693a65d86aa013d`; `N_planned = N_actual = 1`; Codex and agy were disabled.
+- model/effort evidence: the native TUI banner showed `Opus 4.8 with xhigh effort · Claude Max`; both the parent and reviewer transcript records identify `message.model` as `claude-opus-4-8`. Xhigh is evidenced by the literal native launcher argument and TUI banner, not inferred from a bridge or wrapper.
+- verdict: `APPROVE` (single-reviewer)
+- red/yellow/info: `0 / 0 / 2`
+- termination: §3.A.1 natural convergence after round 1 of 5. There was no max-round, degraded, timeout, reviewer failure, or orchestration-failure termination; the native session then exited normally with status 0.
+- report path: `.deep-review/reports/2026-07-14-024859-review.md`, SHA-256 `f44ab5576c8046fc036fa05527ea409652cb24d48bdb892c521c0b218f245aec`.
+- loop summary path: `.deep-review/responses/2026-07-14-024922-loop-summary.md`, SHA-256 `b6a3104f4db4749c94c67ab224b9f038f7702f4e5566d29026bea0216304e18c`.
+- verification commands: `shasum -a 256` over the design, report, and loop summary; `jq -c 'select((.message.model? // "") != "") | {type,model:.message.model}'` over the parent and reviewer JSONL transcripts; `git status --short --branch`; and direct reads of the report, summary, cited current source, and final design.
+
+### Gate 1 advisory dispositions
+
+1. `architecture/scope` — **ACCEPTED AND TRACKED.** The genesis transaction rewrite is explicitly in scope because response-loss-safe stdin initialization and one public initialization writer require it. Gate 3A will remain an isolated strict-TDD slice centered on `scripts/lib/init-transaction.mjs` and `tests/init-transaction.test.mjs`, with legacy byte/semantic compatibility coverage. It will not be co-batched with App host transport work.
+2. `doc-accuracy/verification-note` — **ACCEPTED AND GATE-5-BLOCKING.** The `create_thread` and `send_message_to_thread` success parsers remain provisional and fail closed. Fixture tests cannot close this contract; Gate 5 cannot claim a verified happy path without the separately approved real Codex App create/send smoke and its actual receipts.
+3. conceptual continuity carve-out — **ACCEPTED.** Under the user's explicit instruction to make the optimal design judgment and proceed autonomously, consent-gated App task creation is classified as respawn-style continuation, not an irreversible external action. The per-run consent boundary remains mandatory. Archive/delete, push/PR/merge, publish, marketplace/deep-suite synchronization, personal plugin installation, App restart, and real smoke remain separately approval-gated where the operating contract requires them.
+
+Main-agent judgment: I independently re-read the final report and loop summary, checked the cited current source and transcript model fields, and rehashed the exact design after the native review. The review's two advisory findings are accurate and fully dispositioned above; the conceptual carve-out is consistent with the operating contract and the user's delegated design judgment. The reviewed artifact remained byte-identical at `6326be15b332ab3892633705138a91a0c47516460a6feddc22abe6c784e22a41`. Gate 1 therefore passes and Gate 2 planning may begin.
 
 ## Review receipt template
 
