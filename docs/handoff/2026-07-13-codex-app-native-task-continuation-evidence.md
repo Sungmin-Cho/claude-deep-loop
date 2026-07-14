@@ -6,7 +6,7 @@
 >
 > Implementation worktree: `/Users/sungmin/Dev/claude-plugins/deep-loop/.claude/worktrees/codex-app-native-task-continuation`
 
-This is the durable evidence log for the gated implementation and release of Codex App native task continuation. A quality gate is not passed by green tests alone. Each gate must also satisfy the Opus-only, xhigh, naturally-converged review contract from the operating handoff, followed by an independent main-agent check.
+This is the durable evidence log for the gated implementation and release of Codex App native task continuation. A quality gate is not passed by green tests alone. The user's latest reviewer instruction on 2026-07-15 supersedes only the operating handoff's Opus/xhigh reviewer selection: each new gate must use Codex-only `gpt-5.6-sol` at `high`, naturally converge, and be followed by an independent main-agent check. Historical Opus receipts remain evidence only for their exact old target bytes.
 
 ## Gate 0 — bootstrap, isolation, baseline
 
@@ -32,7 +32,7 @@ Main-agent judgment: the fetched remote base, version, test count, and user-owne
 
 ## Gate 1 — research and design
 
-Status: PASS
+Status: REVIEW INVALIDATED — replacement review pending
 
 Design target: `docs/superpowers/specs/2026-07-13-codex-app-native-task-continuation-design.md`
 
@@ -112,6 +112,60 @@ Main-agent judgment: all material pre-gate findings are represented in the final
 3. conceptual continuity carve-out — **ACCEPTED.** Under the user's explicit instruction to make the optimal design judgment and proceed autonomously, consent-gated App task creation is classified as respawn-style continuation, not an irreversible external action. The per-run consent boundary remains mandatory. Archive/delete, push/PR/merge, publish, marketplace/deep-suite synchronization, personal plugin installation, App restart, and real smoke remain separately approval-gated where the operating contract requires them.
 
 Main-agent judgment: I independently re-read the final report and loop summary, checked the cited current source and transcript model fields, and rehashed the exact design after the native review. The review's two advisory findings are accurate and fully dispositioned above; the conceptual carve-out is consistent with the operating contract and the user's delegated design judgment. The reviewed artifact remained byte-identical at `6326be15b332ab3892633705138a91a0c47516460a6feddc22abe6c784e22a41`. Gate 1 therefore passes and Gate 2 planning may begin.
+
+### Gate 1 target invalidation — 2026-07-14
+
+The official receipt above remains historical evidence for exact design SHA-256
+`6326be15b332ab3892633705138a91a0c47516460a6feddc22abe6c784e22a41`, but it is no longer a current
+gate pass. Subsequent plan self-audit found that a generic same-owner lease reacquire could advance
+the lease generation while leaving a previously positive host surface able to authorize App work.
+The design was therefore changed to add kernel-owned `observed_generation`, generation-bound
+re-attestation, stale-surface human-only fallback, current-generation live-binding validation, and
+host-observation event/state cross-log proof. Per the gate contract, any design-byte change
+invalidates the prior receipt regardless of whether it strengthens the design. A fresh Codex-only
+`gpt-5.6-sol`/high naturally converged review of the new exact hash is required before Gate 1 can return
+to PASS; Gate 2's prior review, if any, is likewise unusable after the corresponding plan changes.
+Continued pre-review audit also added a single verified-snapshot boundary, global finish/recovery
+correlation, and a continuous generic/App lease-acquisition lineage so raw generation changes,
+same-generation owner swaps, disconnected edges, and pre-proof acquire events cannot historicalize
+live failure/recovery authority. These bytes are part of the same replacement Gate 1 target and have
+no inherited approval from the historical receipt.
+
+### Replacement Gate 1 candidate preparation — 2026-07-15
+
+- review contract override: the user's latest instruction replaces the old Opus/xhigh reviewer choice
+  with Codex-only `gpt-5.6-sol` at `high`. The deep-review-loop remains bounded at five Review rounds
+  and passes only on natural `APPROVE` with Red 0 and Yellow 0. No global Codex configuration was
+  changed.
+- model/effort preflight: `/opt/homebrew/bin/codex exec --ephemeral --ignore-user-config
+  --ignore-rules -s read-only -m gpt-5.6-sol -c 'model_reasoning_effort="high"' --json ...`
+  exited 0 in thread `019f6131-6cd5-7373-8b7f-fa3c109d2cca` and returned exactly
+  `MODEL_EFFORT_OK`. The live Codex App tool declarations independently list `gpt-5.6-sol` with
+  supported efforts including `high`.
+- target base/head before the review-target commit: base
+  `c38a96137f8f4f0099c35e893860930e8ee4cf73`; current head
+  `c2a5bc1a36514d370f855386a3b8afa4b2c80173`; branch
+  `codex/codex-app-native-task-continuation`; ahead 3 and behind 0 relative to `origin/main`.
+- exact Gate 1 design SHA-256: `02dcb8e896d5b31abab396e65b36cdee695703499dab19916ca4b4b5469382f3`.
+- exact Gate 2 plan SHA-256 for audit context only (the plan is not part of the Gate 1 review target):
+  `d7961afaaf2b4769b548f069394740c7323f65775ea713bbc5dbde519a690f00`.
+- full repository verification: `npm run preflight` exited 0; validation returned `ok`; Node reported
+  1,463 tests, 1,463 pass, 0 fail, 0 cancelled, 0 skipped, 0 todo.
+- executable plan validator: PASS with 45 tasks and exact fence counts `text=9`, `js=154`,
+  `bash=61`, `diff=63`, `json=4`, `markdown=12`, `yaml=1`. `git diff --check` and the ignored
+  plan's no-index whitespace check both passed.
+- behavioral verifier probes: extracted `verifyAppEventCorrelation` accepted genesis, valid generic
+  lineage, mixed generic-to-App lineage, current recovery, recovery followed by a real acquire, and
+  exact finish. It rejected a raw numeric generation bump, same-generation owner swap, disconnected
+  edge, missing App immediate parent, acquire-before-recovery laundering, and acquire after finish.
+- live App contract revalidation: `list_projects` remains the discovery prerequisite for local
+  `create_thread`; local/project work requires a local or worktree target; `fork_thread` defaults to
+  same-directory and copies completed history only; `send_message_to_thread` preserves child settings
+  when model/thinking are omitted. No task tool was called during this read-only contract check.
+- pre-review main-agent audit: the design/plan now agree on one verified snapshot boundary, global
+  finish/recovery correlation, exact generic/App lease-acquisition lineage, shared terminal fixture
+  migration, and the Task 7B-before-7C writer ordering. Outstanding P0/P1 findings: 0. This prepares
+  an exact review target; it does not pass Gate 1.
 
 ## Review receipt template
 
