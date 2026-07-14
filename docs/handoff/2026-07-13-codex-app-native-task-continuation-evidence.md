@@ -304,6 +304,76 @@ no inherited approval from the historical receipt.
 - gate state: still not PASS. The changed exact bytes require a fresh Codex-only
   `gpt-5.6-sol`/high review round and independent main-agent verification.
 
+### Replacement Gate 1 deep-review-loop — round 3
+
+- gate: Gate 1 — research and design, replacement review round 3.
+- artifact/scope: primary target
+  `docs/superpowers/specs/2026-07-13-codex-app-native-task-continuation-design.md`; operating
+  handoff, this evidence log, ignored implementation plan, and cited current kernel writers were
+  context.
+- base/head or content hash: base
+  `c38a96137f8f4f0099c35e893860930e8ee4cf73`; reviewed head
+  `dcf55b1207395e78bb96839c2c73c8beacbfd5f5`; the design and plan changed during Respond, so this
+  round is historical and cannot be reused. Reviewed design SHA-256 was
+  `4cff02cf93aa9f9b465351f9371e6169daf6db284fbbc6b05c1283935e20adb0`; reviewed ignored-plan
+  SHA-256 was `0cfc3170388fd7dd779bef784d488f8b73c7c3c6df29043d0bff69a057c16d66`.
+- invocation: two fresh direct read-only Codex processes, one standard
+  `codex exec ... review --base origin/main` and one separately prompted adversarial design/plan
+  audit; both used `--ephemeral --ignore-user-config --ignore-rules -s read-only -m gpt-5.6-sol
+  -c 'model_reasoning_effort="high"'`.
+- reviewer actual: standard thread `019f617f-ceae-7e80-9b6f-a0c4636107fd` returned 1 finding;
+  the adversarial ephemeral receipt did not surface a task/thread ID and returned 5 findings plus 6
+  confirmations; `N_planned = N_actual = 2`; both exited 0 and terminated naturally. Local process
+  session `3799` is retained only as missing-ID diagnostic evidence and is not review identity.
+- model/effort evidence: exact invocation arguments above; no global Codex configuration changed.
+- verdict: `REQUEST_CHANGES`.
+- red/yellow/info: `1 / 4 / 6`. The complete-public-mutation recovery defect was independently found
+  by both reviewers and classified Red; the four independently reproduced adversarial findings were
+  Yellow.
+- termination: Respond required after round 3; this is neither convergence nor max-round success.
+- report path: `.deep-review/reports/2026-07-15-015901-review.md`, SHA-256
+  `1debe2c374de48c9c8b9abe04650757c1caf0d32c80f450416c55b4dbfca6805`.
+- verification commands: direct report/reviewer-output reads, exact plan/design reads, mutation-entry
+  search, embedded-validator reproduction, and branch-range/current diff checks.
+- main-agent judgment: all five actionable findings were concrete and accepted. Public App retries
+  entered the recovery gateway after a marker-rejecting read; Task 7B forward-referenced future App
+  APIs; Task 3B's valid fixtures had an empty projection; Task 7G used prose where executable work
+  was required and its validator allowed that; and message-unconfirmed verification permitted an
+  extra raw receipt field.
+
+### Replacement Gate 1 round 3 Respond
+
+- disposition: accepted 5, rejected 0, deferred 0. The receiving-review workflow used its documented
+  `main_fallback` because the Phase 6 Agent dispatch surface was unavailable; the user's standing
+  instruction already authorized autonomous continuation.
+- recovery response: `withVerifiedMutationLock` now compares explicit caller and operation intent
+  before raw recovery, rejects same-caller/different-intent entries without writes, and gives the
+  complete operation an active-only lock-owned read/append context. Emit, prepare, confirm, fail,
+  sweep, bounded await polls, acquire, recover, and finish enter it before their first canonical read.
+- task-order response: Task 7B's worker is limited to its already-existing generic append/acquire and
+  finish operations. Task 10D, after every App mutation exists, owns the nine-operation real-public
+  crash matrix and worker extension.
+- projection response: Task 3B defines and uses a complete local exact 12-key projection for every
+  initialized valid fixture; it has no dependency on Task 4A's future normalizer.
+- publisher response: Task 7G Step 1 and Step 3 now contain executable JavaScript tests and
+  journalized lease/breaker implementations. Its validator accepts only executable-language or diff
+  fences for those code-producing steps.
+- privacy response: every failed-event subtype has an exact key set. A hash-valid event rewrite that
+  adds raw `unconfirmed_thread_id` is rejected while canonical bytes remain unchanged.
+- exact response candidate hashes: handoff
+  `1523907bf1931793b765ed8a5fac2d678a6ae1aa303cfef6e2c89f2e6f150fd9`; design
+  `fbb7bf4e9153b6ba34c5e628e29acc2c03c8513808a915f7a8eb50072b073210`; ignored plan
+  `7c3ca2dc7a47a7b8e1979840da33eb97f47b098e5bc118fae16fd118f84a6d44`.
+- response record: `.deep-review/responses/2026-07-15-022154-response.md`, SHA-256
+  `6c242bd071977b82e440436d1b2ca5704e8228c71b5db70b4be0955500ff151a`.
+- verification: the exact embedded validator passed 46 tasks and 313 closed fences
+  (`bash=63`, `diff=64`, `js=159`, `json=4`, `markdown=12`, `text=10`, `yaml=1`) with syntax,
+  strict-diff, task path/anchor, gate-token, ULID, banned-prose, and whitespace checks.
+  `git diff --check` and `git diff --cached --check` passed. `npm run preflight` passed validation
+  and all 1,463 tests with 0 failures, 0 cancelled, and 0 skipped.
+- gate state: still not PASS. The changed exact bytes require a fresh Codex-only
+  `gpt-5.6-sol`/high review round and independent main-agent verification.
+
 ## Review receipt template
 
 Each reviewed gate will add a receipt with all of these fields:

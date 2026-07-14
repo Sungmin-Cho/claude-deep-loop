@@ -2,7 +2,7 @@
 
 작성일: 2026-07-13
 운영 계약: `docs/handoff/2026-07-13-codex-app-native-task-continuation-goal-handoff.md`
-상태: Gate 1 round 2 Respond 반영 중; gpt-5.6-sol/high 자연 수렴 전
+상태: Gate 1 round 3 Respond 반영 중; gpt-5.6-sol/high 자연 수렴 전
 기준: `main@c38a96137f8f4f0099c35e893860930e8ee4cf73`, deep-loop `1.8.2`
 
 > source of truth: 이 문서 + 운영 계약 + 현재 저장소 + `git log`. 이전 대화 컨텍스트를 가정하지 말라.
@@ -389,7 +389,7 @@ Schema validator에 correlation을 직접 추가한다. 현재 validator가 JSON
 - emitted 이상에는 `emitted_at`과 fixed `prepare_deadline` required. Kernel의 non-configurable `APP_PREPARE_TIMEOUT_MS=300_000` 상수를 final emit transaction에서 한 번 적용하고 재진입으로 연장하지 않는다.
 - prepared 이상에는 fixed `confirmation_deadline` required. Kernel의 non-configurable `APP_CONFIRMATION_TIMEOUT_MS=120_000` 상수를 prepare claim에서 한 번 적용하고 재진입으로 연장하지 않는다.
 - state validator는 strict instant와 safe-integer arithmetic으로 `prepare_deadline = emitted_at + APP_PREPARE_TIMEOUT_MS`, `confirmation_deadline = prepared_at + APP_CONFIRMATION_TIMEOUT_MS`를 exact 검증한다. 상수는 state/config/generic patch 입력이 아니다.
-- cross-log semantic verifier는 exact attempt/child를 가진 `handoff-emitted`, `app-task-prepared`, `app-task-confirmed`, `app-task-acquired` event의 `ts`가 각각 state의 `emitted_at`, `prepared_at`, `confirmed_at`, `acquired_at`과 byte-exact인지 검증하고 acquire event의 immutable `observation_digest`를 child surface facts와 결합한다. `app-task-confirmed`는 raw ID를 event에 넣지 않고 `receipt_digest=SHA256("confirmed-thread\\0" || UTF8(thread_id))`를 기록하며 verifier가 durable `thread_id`로 재계산해 exact 결합한다. `message-unconfirmed`의 `app-task-failed`도 별도 domain `SHA256("unconfirmed-thread\\0" || UTF8(unconfirmed_thread_id))`를 기록한다. Domain과 digest는 fixed lowercase SHA-256이고 다른 failure에는 해당 field가 없어야 한다. 따라서 raw opaque ID 또는 colocated state hash만 바꾼 hash-valid rewrite는 이미 기록된 receipt proof와 불일치한다. Strict genesis와 exact App-acquire event는 각각 generation 1과 acquired_generation의 immutable baseline이다. 이후 re-attestation은 이 baseline보다 큰 generation의 exact `host-surface-observed(outcome=reattested)`를 요구하며 현재 stamp가 바뀌어도 baseline event digest drift를 숨길 수 없다. 그 외 durable host surface에도 exact logical run/owner/generation/kind/outcome/observation-digest를 가진 latest observation event가 하나 존재하고 그 `ts`가 `observed_at`과 byte-exact여야 한다. 모든 observation event timestamp는 strict canonical instant다. Duplicate generation, wrong owner/generation/outcome/timestamp/digest, orphan observation event, arbitrary event-free legacy surface를 거부한다. `validate(loopJson)` 단독으로 event log를 볼 수 있다고 가정하지 않는다.
+- cross-log semantic verifier는 exact attempt/child를 가진 `handoff-emitted`, `app-task-prepared`, `app-task-confirmed`, `app-task-acquired` event의 `ts`가 각각 state의 `emitted_at`, `prepared_at`, `confirmed_at`, `acquired_at`과 byte-exact인지 검증하고 acquire event의 immutable `observation_digest`를 child surface facts와 결합한다. `app-task-confirmed`는 raw ID를 event에 넣지 않고 `receipt_digest=SHA256("confirmed-thread\\0" || UTF8(thread_id))`를 기록하며 verifier가 durable `thread_id`로 재계산해 exact 결합한다. `message-unconfirmed`의 `app-task-failed`도 별도 domain `SHA256("unconfirmed-thread\\0" || UTF8(unconfirmed_thread_id))`를 기록한다. Domain과 digest는 fixed lowercase SHA-256이다. Confirmed event와 모든 failure subtype은 각자의 fixed exact key set을 검증하며, `message-unconfirmed` 외 failure에는 digest가 없고 어떤 subtype에도 raw `thread_id|unconfirmed_thread_id` 또는 추가 receipt-like field가 있을 수 없다. 따라서 raw opaque ID 또는 colocated state hash만 바꾼 hash-valid rewrite는 이미 기록된 receipt proof나 exact-key proof와 불일치한다. Strict genesis와 exact App-acquire event는 각각 generation 1과 acquired_generation의 immutable baseline이다. 이후 re-attestation은 이 baseline보다 큰 generation의 exact `host-surface-observed(outcome=reattested)`를 요구하며 현재 stamp가 바뀌어도 baseline event digest drift를 숨길 수 없다. 그 외 durable host surface에도 exact logical run/owner/generation/kind/outcome/observation-digest를 가진 latest observation event가 하나 존재하고 그 `ts`가 `observed_at`과 byte-exact여야 한다. 모든 observation event timestamp는 strict canonical instant다. Duplicate generation, wrong owner/generation/outcome/timestamp/digest, orphan observation event, arbitrary event-free legacy surface를 거부한다. `validate(loopJson)` 단독으로 event log를 볼 수 있다고 가정하지 않는다.
 - failed는 bounded failure_code와 exact `failure_binding={owner_run_id,generation}`이 required이고 그 외 phase에서는 `failure_binding=null`이다. Binding은 실패를 승인한 기존 non-child parent session과 positive/non-future generation을 가리킨다. 아직 live인 failed projection에서는 binding이 현재 lease owner/generation과도 exact해야 한다. `app-task-failed|app-task-swept` event는 같은 owner/generation을 기록하고 cross-log verifier가 attempt/child/code/binding을 exact 결합한다. Recover/release/generic acquire는 이 감사 provenance를 수정하지 않는다. Recovered failed child의 `recovery_binding`은 그 `failure_binding`과 exact해야 한다.
 - 새 형식 run에서 실제로 `abandoned_recover`가 된 App/generic child는 non-self existing parent를 가리키는 `recovery_binding={owner_run_id,generation}`을 반드시 가진다. 같은 `run-recovered` event는 exact child/owner/generation을 함께 기록하고 verifier가 event↔session binding을 양방향 exactly-one으로 결합한다. App recovery는 attempt/failure code도 함께 결합한다. 따라서 state-only/event-only binding 변경으로 stale child를 현재 recovery authority로 되살릴 수 없다. 실제 child가 없는 새 형식 no-child 또는 exact pre-emit reservation-only recovery는 child binding 대신 event에 current owner/generation을 기록한다. `data={}`는 initialization 없는 legacy에만 허용한다. 후속 `took_over`는 이미 고정된 binding과 단일 event를 역사 provenance로 보존한다.
 - Generation을 증가시키는 generic lease acquire는 exact
@@ -605,9 +605,13 @@ Marker가 존재하는 동안 read-only status는 파일을 고치거나 busines
 mutation API는 owner/generation caller binding을 명시적으로 받아 journal gateway에 전달하며, gateway는 현재
 lease에서 binding을 추론하거나 fallback하지 않는다. Run lock 직후, canonical `readState`, state hash/root,
 event chain/head 또는 business precheck보다 **먼저** pending marker의 strict bytes를 읽는다. Marker caller
-binding과 API가 전달한 binding이 다르면 기존 fence error와 byte 무변경이다. Exact binding이면 staged
-before/after proof만으로 `recoverAnchoredTransactionUnderLock`을 완결한 뒤, 원 public API를 최대 한 번
-bounded restart한다. Restart는 fresh state/hash/log/head를 다시 읽고 동일 intent digest의 idempotency
+binding과 API가 전달한 binding이 다르면 기존 fence error와 byte 무변경이다. Binding은 같지만 marker의
+intent digest와 진입 API의 operation-level intent digest가 다르면 pending을 유지하고 byte 무변경이다.
+Exact binding+intent이면 staged before/after proof만으로 `recoverAnchoredTransactionUnderLock`을 완결한 뒤,
+원 public API를 최대 한 번 bounded restart한다. Gateway callback은 run-lock 수명에 결합된 opaque
+`readVerifiedState/appendAnchored` context만 받으며 callback 종료 뒤 사용할 수 없다. 첫 canonical read,
+response-loss/idempotency 판정, 최종 candidate commit까지 complete public mutation이 이 callback 안에서
+실행되고 public lock-owning reader/publisher를 중첩 호출하지 않는다. Restart는 fresh state/hash/log/head를 다시 읽고 동일 intent digest의 idempotency
 projection을 재평가한다. Recovery 성공 자체는 business success가 아니며 duplicate event/descriptor/external
 action을 만들지 않는다. Marker가 없을 때만 normal canonical read/verification을 시작한다. 따라서 partial
 event suffix나 state-before-hash crash가 canonical verifier에 먼저 막혀 recovery가 unreachable해지는 일이
@@ -622,7 +626,8 @@ probe를 실행해 exact matching retry 1회 수렴, duplicate event 0, external
 0을 증명한다. 같은 generic publisher test는 나머지 event+state writer가 동일 crash table을 상속함을 확인한다.
 
 `integrity.mjs`는 동일한 pure `verifyRunSnapshot(loop,lines)`와 lock-owning
-`readVerifiedState(root,runId,{fenceCheck?})`를 제공한다. Optional read fence는 hash/root read 직후,
+`readVerifiedState(root,runId,{fenceCheck?})`를 제공한다. 이 public reader는 read-only 전용이며 pending을
+복구하지 않는다. Mutating API는 반드시 앞 문단의 operation context reader를 사용한다. Optional read fence는 hash/root read 직후,
 semantic proof 전에 실행하므로 mutating entry의 wrong-caller precedence를 보존한다. 순수
 status/read-only projection만 fence 없이 verified snapshot을 읽는다. Confirm/fail/await/acquire의 response-loss
 no-op 또는 bounded-convergence entry read는 phase-aware identity-only fence를 사용한다. Live prepared/confirmed는 exact
