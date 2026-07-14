@@ -231,6 +231,79 @@ no inherited approval from the historical receipt.
   migration boundaries as one cross-cutting contract rather than isolated prose patches.
 - gate state: still not PASS. Any modified target requires a fresh exact-byte review round.
 
+### Replacement Gate 1 deep-review-loop — round 2
+
+- gate: Gate 1 — research and design, replacement review round 2.
+- artifact/scope: primary target
+  `docs/superpowers/specs/2026-07-13-codex-app-native-task-continuation-design.md`; operating
+  handoff, this evidence log, ignored implementation plan, and cited current kernel writers were
+  context.
+- base/head or content hash: base
+  `c38a96137f8f4f0099c35e893860930e8ee4cf73`; reviewed head
+  `e2fca99376393369eef4110867bbdf7949d8879c`; the design and plan changed during Respond, so this
+  round is historical and cannot be reused.
+- invocation: two fresh direct read-only Codex processes, one standard
+  `codex exec ... review --base origin/main` and one separately prompted adversarial design/plan
+  audit; both used `--ephemeral --ignore-user-config --ignore-rules -s read-only -m gpt-5.6-sol
+  -c 'model_reasoning_effort="high"'`.
+- reviewer actual: standard thread `019f6152-fefa-7d82-b12e-f2080c89194f` returned 1 finding;
+  adversarial thread `019f6152-ecdb-7712-ad5f-b3b85a21f815` returned 5 findings and 2 confirmations;
+  `N_planned = N_actual = 2`; both exited 0 and terminated naturally.
+- model/effort evidence: exact invocation arguments above; no global Codex configuration changed.
+- verdict: `CONCERN`.
+- red/yellow/info: `0 / 6 / 2`; no actionable finding was duplicated by both reviewers, so the
+  synthesis classified each as partial-confidence Yellow.
+- termination: Respond required after round 2; this is neither convergence nor max-round success.
+- report path: `.deep-review/reports/2026-07-15-005810-review.md`, SHA-256
+  `6a22fe95d121b1b50e500b114703f2eafd383850b600cf691ecfad7a4e01f3f2`.
+- recurring export: run `01KXGNPJKQXS1PSZ3JC7YHAEAJ`; architecture occurrence 6.
+- verification commands: direct report/reviewer-output reads, current design/plan/kernel reads,
+  46-vs-45 embedded-validator reproduction, `git diff --check origin/main`, and recurring-findings
+  export.
+- main-agent judgment: all six findings were concrete and accepted. Receipt IDs lacked cross-log
+  binding; projection+digest paired rewrite bypassed the colocated check; canonical reads could
+  preempt crash recovery and binding was inferred; checkpoint insertion was prose-only; Task 8A
+  reopened Task 7G raw writers; and the exact embedded validator still omitted Task 7G.
+
+### Replacement Gate 1 round 2 Respond
+
+- disposition: accepted 6, rejected 0, deferred 0. The receiving-review workflow used its documented
+  `main_fallback` because the Phase 6 Agent dispatch surface was unavailable; the user's standing
+  instruction already authorized autonomous continuation.
+- receipt response: confirmation and message-uncertainty events now carry fixed domain-separated
+  SHA-256 digests recomputed from durable opaque IDs; raw IDs never enter events or output.
+- genesis response: schema enforces exact 12-key bounded projection shape and the single sequence-1
+  `run-initialized` event binds request/host-surface digests and clock. Paired projection+digest
+  state rewrites and production-init sequence regressions have explicit tests; initialization-absent
+  fixtures retain sequence 0.
+- recovery response: `withVerifiedMutationLock` requires explicit caller binding and intent, reads
+  and resolves the strict marker immediately after lock acquisition, refuses foreign binding without
+  writes, and only then performs one bounded fresh API restart. No current-lease fallback remains.
+- legacy response: private `legacyCheckpointSpec` performs closed eligibility checks and
+  `commitVerifiedEventsUnderLock` prepends the checkpoint while preserving business-event callback
+  indexing.
+- publisher response: Task 8A is written against post-Task-7G journalized lease APIs and reruns the
+  publisher-closure test; it does not restore `writeState` or raw event append.
+- validator correction: the Round 1 statement above that an executable validator had already passed
+  the exact 46-task plan was inaccurate. It referred to an external simplified checker while the
+  embedded validator still expected 45 tasks and omitted 7G. The exact embedded validator now ran
+  and printed `ok:true`, `tasks:46`, with fence counts `text=12`, `js=156`, `bash=63`, `diff=64`,
+  `json=4`, `markdown=12`, `yaml=1` (312 total). This is the authoritative replacement result; the
+  earlier line remains only as an auditable historical error.
+- exact response candidate hashes: handoff
+  `1523907bf1931793b765ed8a5fac2d678a6ae1aa303cfef6e2c89f2e6f150fd9`; design
+  `4cff02cf93aa9f9b465351f9371e6169daf6db284fbbc6b05c1283935e20adb0`; ignored plan
+  `0cfc3170388fd7dd779bef784d488f8b73c7c3c6df29043d0bff69a057c16d66`.
+- response record: `.deep-review/responses/2026-07-15-013513-response.md`, SHA-256
+  `9bab3b7836b47a51f90e0e4af7e97415bfbbfe84a1eb12e0d2f4144759b2518d`.
+- verification: exact embedded validator passed the inventory, task path/anchor multisets,
+  seven-step contracts, all JavaScript/Bash/JSON/YAML and strict unified-diff fences, gate tokens,
+  ULIDs, banned prose, and no-index whitespace. `git diff --check` and
+  `git diff --cached --check` passed. `npm run preflight` passed validation and all 1,463 tests with
+  0 failures, 0 cancelled, and 0 skipped.
+- gate state: still not PASS. The changed exact bytes require a fresh Codex-only
+  `gpt-5.6-sol`/high review round and independent main-agent verification.
+
 ## Review receipt template
 
 Each reviewed gate will add a receipt with all of these fields:
