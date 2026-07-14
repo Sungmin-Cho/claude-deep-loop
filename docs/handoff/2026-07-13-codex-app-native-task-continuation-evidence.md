@@ -789,6 +789,62 @@ no inherited approval from the historical receipt.
 - gate state: still open. Changed bytes require fresh cycle 2 round 5 with both reviewers pinned to
   `gpt-5.6-sol`/high; this Respond is not a Gate 1 pass.
 
+### Gate 1 fresh cycle 2 round 5 review (`max_reached`)
+
+- gate/artifact: Gate 1 design plus final 46-task plan, goal handoff, evidence, round-4 report/response,
+  and current repository code/tests.
+- base/head: `c38a96137f8f4f0099c35e893860930e8ee4cf73..0579768452f9edd29367682c118188b2f0c27e4a`;
+  worktree clean at reviewer start.
+- invocation: one standard `codex exec ... review --base c38a961...` and one direct adversarial audit;
+  both counted reviewers used ephemeral/ignore-config/ignore-rules/read-only execution with exact
+  `gpt-5.6-sol` and `model_reasoning_effort=high`.
+- reviewer actual: standard thread `019f6282-75ab-7101-8a31-88d01e0167cd` returned 1 P1 and 1 P3;
+  adversarial thread `019f6282-72bd-7921-bb23-89ec0afd83a6` returned 2 Red and 2 Yellow with
+  `REQUEST_CHANGES`. `N_planned=N_actual=2`; both counted processes terminated naturally with exit 0.
+- model/effort evidence: both process headers confirmed exact `gpt-5.6-sol`, `high`, ephemeral,
+  ignored user config/rules, and read-only sandbox. No global Codex setting changed.
+- verdict: `REQUEST_CHANGES`; cycle termination `max_reached`, which is not approval.
+- red/yellow/info: `1 / 3 / 3`; marker-backed acquire recovery was corroborated as blocking,
+  the stale checkpoint was corroborated as Yellow, and the two solo concerns were independently traced.
+- termination: cycle 2 reached configured round 5 without natural convergence. Gate 1 remains open.
+- report path: `.deep-review/reports/2026-07-15-062925-review.md`, SHA-256
+  `c1687b916b279343abea362fbc47401be0f31cf326d903599e1cd4396ebbce35`.
+- raw output bindings: standard SHA-256
+  `73797168441364f5ae2adb439763633e6ce1b3f831c09f306bb0a2937abbc318`; adversarial SHA-256
+  `8dd200f65ae15f15d86a46ff879e934541be03c76e7100b47e8373a92d33d49c`.
+- main-agent judgment: accepted all four actionable findings. The auth-only public read made exact
+  acquire recovery unreachable; later cards reintroduced digest-less appends; App crash tests did not
+  prove fixed replacement scratch cleanup; and the source-of-truth header named the wrong round.
+
+### Gate 1 fresh cycle 2 round 5 Respond (`max_reached`, no Gate pass)
+
+- disposition: accepted 4, rejected 0, deferred 0. `execution_path=main_fallback`; the specialized
+  Phase 6 Agent surface was unavailable, so the documented main-agent fallback was used without an
+  unspecialized substitute.
+- acquire response: Task 7B adds marker-aware authentication-only
+  `authenticateVerifiedMutationCaller`. It authenticates caller/runtime against an exact marker
+  before/after state image without recovering; Task 10A uses it before observation/path work, and only
+  the later complete-intent gateway may recover and re-fence.
+- intent response: host observe/revoke retain bounded intent plus structured recovery while Task 7D
+  adds its identity fence. Independent-review claim/block now bind request-distinguishing intents and
+  validate exact recovered response projections.
+- cleanup/checkpoint response: both App crash branches require an empty fixed journal inventory after
+  recovery. The design header/body record cycle 2 round 5 `max_reached`, no pass, and fresh cycle 3.
+- exact corrected candidate hashes: handoff
+  `1523907bf1931793b765ed8a5fac2d678a6ae1aa303cfef6e2c89f2e6f150fd9`; design
+  `84449be65cf42e1822e5c4183fe3aa93d72c31bf0cdafaae32c7fcc1e0ba61d9`; ignored plan
+  `b0023e2b0838993b2673777d46a13b0dfe11fd8beb3dfc295264a257b4178dd8`.
+- response record: `.deep-review/responses/2026-07-15-063904-response.md`, SHA-256
+  `71ecbaf7a707211649b19785658760714ab782a3f64b477ad50fdb175d30a9ba`.
+- recurring alerts: export run `01KXH8P94AXHB72M0294MQZF0X`; architecture critical 25,
+  test-coverage warning 17, error-handling critical 12, security critical 9.
+- verification: embedded validator passed `ok:true` for 46 tasks and 322 fences
+  (`bash=63`, `diff=65`, `js=167`, `json=4`, `markdown=12`, `text=10`, `yaml=1`).
+  The independent marker/intent/recovery/cleanup/checkpoint probe passed 11/11; `git diff --check`
+  passed; `npm run preflight` passed validation and the unchanged 1,463-test product suite.
+- gate state: still open. Cycle 2's `max_reached` receipt is not inherited; changed bytes require
+  a new cycle 3 round 1 with both reviewers pinned to exact `gpt-5.6-sol`/high.
+
 ## Review receipt template
 
 Each reviewed gate will add a receipt with all of these fields:

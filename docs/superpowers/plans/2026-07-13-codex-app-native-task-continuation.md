@@ -232,6 +232,9 @@ export function verifyAppEventCorrelation(loop, lines);
 export function verifyRunSnapshot(loop, lines);
 export function assertVerifiedRunSnapshot(root, runId, loop, { lines } = {});
 export function readVerifiedState(root, runId, { fenceCheck } = {});
+export function authenticateVerifiedMutationCaller(root, runId, {
+  callerBinding, fenceCheck, fenceError,
+});
 export function withVerifiedMutationLock(root, runId, {
   callerBinding, intentDigest, fenceError, intentConflictError,
 }, body);
@@ -9647,7 +9650,8 @@ git commit -m "feat: validate App event correlations" -m "Co-Authored-By: Claude
 - Consumes: Task 7A's pure `verifyAppEventCorrelation`, existing state hash/root binding,
   `verifyLines`/`verifyHeadLines`, and caller-specific owner/generation/runtime fences.
 - Produces: `verifyRunSnapshot(loop,lines)`, `assertVerifiedRunSnapshot(root,runId,loop)`,
-  lock-owning `readVerifiedState(root,runId,{fenceCheck?})`, explicit-binding
+  lock-owning `readVerifiedState(root,runId,{fenceCheck?})`, marker-aware authentication-only
+  `authenticateVerifiedMutationCaller(root,runId,{callerBinding,fenceCheck,fenceError})`, explicit-binding
   `withVerifiedMutationLock(root,runId,{callerBinding,intentDigest,fenceError,intentConflictError},body)`, whose body
   receives an opaque active-only `{readVerifiedState,appendAnchored}` mutation context, and the narrowly exported lock-owned
   `commitVerifiedEventsUnderLock`. The latter owns `.anchored-pending.json` plus strict state/event
@@ -10902,6 +10906,45 @@ function readVerifiedStateUnderLock(root, runId, { fenceCheck } = {}) {
   return { data: structuredClone(state.data), hash: state.hash };
 }
 
+function pendingAuthenticationStateUnderLock(root, runId, marker) {
+  const stateBytes = readExactBytes(join(runDir(root, runId), 'loop.json'),
+    'pending authentication state');
+  const matches = [marker.before, marker.after].some(snapshot =>
+    stateBytes.length === snapshot.state_bytes
+      && digestBytes(stateBytes) === snapshot.state_digest);
+  if (!matches) {
+    throw new Error('ANCHORED_TRANSACTION_CORRUPT: authentication state');
+  }
+  let loop;
+  try { loop = JSON.parse(stateBytes.toString('utf8')); }
+  catch { throw new Error('ANCHORED_TRANSACTION_CORRUPT: authentication state json'); }
+  assertProjectRootBinding(root, loop);
+  return loop;
+}
+
+export function authenticateVerifiedMutationCaller(root, runId, {
+  callerBinding, fenceCheck, fenceError = 'LEASE_FENCED: mutation-authentication',
+} = {}) {
+  const binding = requireCallerBinding(callerBinding);
+  if (typeof fenceCheck !== 'function') throw new Error('INVALID_FENCE_CHECK');
+  return withLock(root, runId, () => {
+    const marker = readAnchoredMarkerUnderLock(root, runId);
+    if (marker !== null) {
+      if (marker.caller.owner !== binding.owner
+          || marker.caller.generation !== binding.generation) {
+        throw new Error(fenceError);
+      }
+      // Authentication only: a pending transaction may leave the canonical state at either the
+      // exact before or exact after image. The final intent-aware gateway alone may recover it.
+      const loop = pendingAuthenticationStateUnderLock(root, runId, marker);
+      fenceCheck(loop);
+      return Object.freeze({ pending: true });
+    }
+    readVerifiedStateUnderLock(root, runId, { fenceCheck });
+    return Object.freeze({ pending: false });
+  });
+}
+
 export function readVerifiedState(root, runId, options = {}) {
   return withLock(root, runId, () => {
     if (readAnchoredMarkerUnderLock(root, runId) !== null) {
@@ -11217,6 +11260,9 @@ function appMutationIntentProjection(input, operation) {
   const base = { operation, owner: input.owner, generation: input.generation,
     attempt_id: input.attemptId ?? null };
   const byOperation = {
+    'host-observe': { runtime: input.runtime ?? null,
+      reader_mode: input.readerMode ?? null,
+      observation_digest: intentField('host-observe-raw', input.observation) },
     'handoff-emit': { trigger_digest: intentField('emit-trigger', input.trigger),
       reason_digest: intentField('emit-reason', input.reason), app_intent: input.appIntent,
       observation_digest: input.observationDigest ?? null,
@@ -11251,16 +11297,30 @@ function appMutationIntentProjection(input, operation) {
   return Object.freeze({ ...base, ...byOperation[operation] });
 }
 
+function appMutationIntentDigest(input, operation) {
+  return contentHash(JSON.stringify(appMutationIntentProjection(input, operation)));
+}
+
 function withAppMutation(root, runId, input, operation, body) {
   const callerBinding = { owner: input.owner, generation: input.generation };
-  const intentDigest = contentHash(JSON.stringify(
-    appMutationIntentProjection(input, operation)));
+  const intentDigest = appMutationIntentDigest(input, operation);
   const intentConflictError = ['app-confirm', 'app-fail'].includes(operation)
     ? 'APP_RECEIPT_FENCED' : `APP_TASK_FENCED:${operation}`;
   return withVerifiedMutationLock(root, runId, { callerBinding, intentDigest,
     fenceError: `LEASE_FENCED: ${operation}`, intentConflictError }, body);
 }
 ```
+
+The mechanical migration in this task also updates the already-produced `observeHostSurface` and
+`revokeAppTaskContinuation` public calls before the Task 7B test run. At each function entry it
+defines `callerBinding = { owner: input.owner, generation: input.generation }` and
+`intentDigest = appMutationIntentDigest(input, 'host-observe'|'app-revoke')`, captures the public
+`appendAnchored` return, and returns its structured `onRecovered` projection before reading mutable
+outer locals. Observe recovery returns `{ok:true,outcome:'already-observed'}`; revoke recovery returns
+`{ok:true,outcome:'already-revoked'}`. Their option objects contain `callerBinding`, `intentDigest`,
+the existing clock/crash probe, and the existing operation-specific `fenceError`. Task 7D's later
+exact diff starts from those migrated option objects and adds only the split identity fence; it must
+not replace them with a digest-less pre-Task-7B form.
 
 The four generic intent helpers above are exports of `integrity.mjs`. Wire the two redacted-event
 callers to them in this task with these exact changes. Compute `workstream-new` intent only after the
@@ -12498,19 +12558,20 @@ diff --git a/scripts/lib/app-task-continuation.mjs b/scripts/lib/app-task-contin
 @@ -1,2 +1,1 @@
 -import { readState } from './state.mjs';
  import { resolve } from 'node:path';
-@@ -1,2 +1,5 @@ export function observeHostSurface(root, runId, input, deps) {
--    }, { nowFn: deps.nowFn ?? Date.now });
-+    }, { nowFn: deps.nowFn ?? Date.now, fenceCheck: loop =>
-+      assertAppCommandIdentity(loop, input, 'HOST_SURFACE_FENCED'),
-+      callerBinding: { owner: input.owner, generation: input.generation },
-+      fenceError: 'HOST_SURFACE_FENCED' });
+@@ -1,6 +1,6 @@ export function observeHostSurface(root, runId, input, deps) {
+     }, { nowFn: deps.nowFn ?? Date.now,
+-      fenceCheck: loop => assertAppParentIdentity(loop, input),
++      fenceCheck: loop => assertAppCommandIdentity(loop, input, 'HOST_SURFACE_FENCED'),
+       callerBinding, intentDigest,
+       fenceError: 'HOST_SURFACE_FENCED', crashProbe: deps.crashProbe,
+       onRecovered: () => ({ ok: true, outcome: 'already-observed' }) });
      return { ok: true, outcome: eventData.outcome };
-@@ -1,2 +1,5 @@ export function revokeAppTaskContinuation(root, runId, input, deps = {}) {
--    }, { nowFn: deps.nowFn ?? Date.now });
+@@ -1,4 +1,5 @@ export function revokeAppTaskContinuation(root, runId, input, deps = {}) {
+-    }, { nowFn: deps.nowFn ?? Date.now, callerBinding, intentDigest,
 +    }, { nowFn: deps.nowFn ?? Date.now, fenceCheck: loop =>
-+      assertAppCommandIdentity(loop, input, 'APP_TASK_FENCED'),
-+      callerBinding: { owner: input.owner, generation: input.generation },
-+      fenceError: 'APP_TASK_FENCED' });
++      assertAppCommandIdentity(loop, input, 'APP_TASK_FENCED'), callerBinding, intentDigest,
+       fenceError: 'APP_TASK_FENCED',
+       onRecovered: () => ({ ok: true, outcome: 'already-revoked' }) });
      return { ok: true, outcome: 'revoked' };
 @@ -1,2 +1,2 @@ export function statusAppTask(root, runId, { attempt = null } = {}) {
 -  const loop = readState(root, runId).data;
@@ -14022,7 +14083,7 @@ export function claimIndependentReview(root, runId, options = {}) {
   let alreadyClaimed = false;
   const identityFence = reviewIdentityFence(fence, 'claimIndependentReview');
   try {
-    appendAnchored(root, runId,
+    const recovered = appendAnchored(root, runId,
       { type: 'independent-review-claimed', data: eventData }, loop => {
         const checker = loop.episodes.find(episode => episode.id === episodeId);
         checker.status = 'in_progress';
@@ -14049,7 +14110,19 @@ export function claimIndependentReview(root, runId, options = {}) {
           point: context.claim.point, artifacts: context.claim.artifacts });
       }, { fenceCheck: identityFence,
         callerBinding: { owner: fence.owner, generation: fence.generation },
+        intentDigest: reviewIntentDigest(fence, 'claim-independent-review',
+          { episode_id: episodeId }),
+        onRecovered: loop => {
+          const checker = loop.episodes.find(episode => episode.id === episodeId);
+          if (checker?.status !== 'in_progress' || !checker.review_claim
+              || !REVIEW_ATTEMPT_ID.test(checker.attempt_id || '')) {
+            throw new Error('REVIEW_RECOVERY_PROJECTION_MISMATCH');
+          }
+          return { ok: true, checkerEpisodeId: episodeId,
+            attemptId: checker.attempt_id, claim: checker.review_claim };
+        },
         fenceError: 'REVIEW_FENCED: claimIndependentReview' });
+    if (recovered !== undefined) return recovered;
   } catch (error) {
     if (error?.alreadyClaimed === true || alreadyClaimed) {
       return { ok: false, reason: 'already-claimed' };
@@ -14070,7 +14143,7 @@ export function blockIndependentReview(root, runId, options = {}) {
   }
   const safeReason = boundedBlockReason(reason);
   let locked;
-  appendAnchored(root, runId, { type: 'independent-review-blocked', data: {
+  const recovered = appendAnchored(root, runId, { type: 'independent-review-blocked', data: {
     episode_id: episodeId, attempt_id: attemptId, reason: safeReason,
   } }, loop => {
     const checker = locked.checker;
@@ -14092,7 +14165,18 @@ export function blockIndependentReview(root, runId, options = {}) {
     }
   }, { fenceCheck: reviewIdentityFence(fence, 'blockIndependentReview'),
     callerBinding: { owner: fence.owner, generation: fence.generation },
+    intentDigest: reviewIntentDigest(fence, 'block-independent-review',
+      { episode_id: episodeId, attempt_id: attemptId, reason: safeReason }),
+    onRecovered: loop => {
+      const checker = loop.episodes.find(episode => episode.id === episodeId);
+      if (checker?.status !== 'blocked' || checker.attempt_id !== attemptId
+          || checker.block_reason !== safeReason || loop.status !== 'paused') {
+        throw new Error('REVIEW_RECOVERY_PROJECTION_MISMATCH');
+      }
+      return { ok: true, status: 'blocked', reason: safeReason };
+    },
     fenceError: 'REVIEW_FENCED: blockIndependentReview' });
+  if (recovered !== undefined) return recovered;
   return { ok: true, status: 'blocked', reason: safeReason };
 }
 
@@ -18469,7 +18553,8 @@ Expected: FAIL because `acquireAppTask` does not exist.
 - [ ] **Step 3: Implement the confirmation-only acquire transaction**
 
 `normalizeHostObservation` is already imported by Task 6C and `sameNativeDirectory` by Task 8A.
-Do not add another import or redeclare either binding; add this complete implementation to
+Extend the existing integrity import with `authenticateVerifiedMutationCaller`; do not add another
+host-surface import or redeclare either binding. Add this complete implementation to
 `app-task-continuation.mjs`:
 
 ```js
@@ -18554,10 +18639,15 @@ function applyAppAcquire(loop, input, observation, clock) {
 }
 
 export function acquireAppTask(root, runId, input, deps = {}) {
-  // This first lock is authentication-only. It closes before any caller observation is parsed and
-  // before cwd/native-path dependencies can execute. The final gateway below independently re-fences.
-  readVerifiedState(root, runId,
-    { fenceCheck: loop => assertAppAcquireEntryIdentity(loop, input) });
+  // This first lock is authentication-only. It validates either the verified canonical state or a
+  // marker-authenticated exact before/after state without recovering the marker, then closes before
+  // any caller observation is parsed or cwd/native-path dependency can execute. The final gateway
+  // independently matches the complete intent, recovers if exact, and re-fences.
+  authenticateVerifiedMutationCaller(root, runId, {
+    callerBinding: { owner: input.owner, generation: input.generation },
+    fenceCheck: loop => assertAppAcquireEntryIdentity(loop, input),
+    fenceError: 'LEASE_FENCED: app-acquire-entry',
+  });
   const rawObservation = exactAcquireObservationInput(input.observation);
   const pathDeps = deps.pathDeps ?? appNativePathDeps();
   // After authenticated entry, canonicalize only against the observation's own directory identity.
@@ -19818,7 +19908,7 @@ function mutationCase10d(operation) {
     generation: 1, attemptId: fixture.attemptId, stdinMode: 'pty-raw-noecho',
   });
   const invoke = ({ different = false, foreign = false, wrongMode = false,
-    wrongRuntime = false, equivalentObservation = false } = {}) => {
+    wrongRuntime = false, equivalentObservation = false, pathDeps } = {}) => {
     const input = parent(different, foreign);
     if (operation === 'emit') return emitHandoff(fixture.root, fixture.runId, {
       trigger: 'crash-emit', reason: different ? 'different' : 'same', appIntent: true,
@@ -19862,7 +19952,9 @@ function mutationCase10d(operation) {
           structured_stdin_mode: 'pipe-open-noecho' }
           : equivalentObservation ? { ...fixture.acquireInput.observation,
             host_task_cwd: `${fixture.root}/.` } : fixture.acquireInput.observation },
-      { cwdFn: () => fixture.root,
+      { cwdFn: pathDeps === undefined ? () => fixture.root
+        : () => assert.fail('pending acquire identity fence must precede cwd callback'),
+        ...(pathDeps === undefined ? {} : { pathDeps }),
         nowFn: () => Date.parse('2026-07-13T00:00:04.000Z') });
     if (operation === 'recover') return recoverRun(fixture.root, fixture.runId,
       { expect: { owner: input.owner, generation: input.generation }, confirm: true,
@@ -19961,15 +20053,23 @@ function assertPublicMutationCrashRecovery10d({ operation, crashPoint, worker })
     assert.deepEqual(canonicalBytes10d(fixture.root, fixture.runId), canonicalBefore,
       `${operation}/${crashPoint} changed canonical bytes before marker publication`);
     invoke();
-    assert.equal(Object.keys(journalBytes10d(fixture.root, fixture.runId))
-      .some(name => name.startsWith('.anchored-')), false);
+    assert.deepEqual(fixedJournalInventory10d(fixture.root, fixture.runId), [],
+      `${operation}/${crashPoint} exact post-recovery cleanup`);
     assert.equal(readLines(fixture.root, fixture.runId)
       .filter(event => event.type === PUBLIC_MUTATION_EVENT10D[operation]).length, 1);
     return;
   }
-  const variants = [{ foreign: true }, { different: true },
+  const noAcquirePathCallbacks = Object.freeze({ platform: process.platform,
+    exists: () => assert.fail('pending acquire identity fence must precede exists callback'),
+    realpath: () => assert.fail('pending acquire identity fence must precede realpath callback'),
+    stat: () => assert.fail('pending acquire identity fence must precede stat callback'),
+    sameFile: () => assert.fail('pending acquire identity fence must precede sameFile callback') });
+  const variants = [operation === 'acquire'
+    ? { foreign: true, pathDeps: noAcquirePathCallbacks } : { foreign: true },
+  { different: true },
     ...(operation === 'confirm' ? [{ wrongMode: true }] : []),
-    ...(operation === 'acquire' ? [{ wrongRuntime: true }] : [])];
+    ...(operation === 'acquire'
+      ? [{ wrongRuntime: true, pathDeps: noAcquirePathCallbacks }] : [])];
   for (const variant of variants) {
     let result;
     try { result = invoke(variant); }
@@ -19979,8 +20079,8 @@ function assertPublicMutationCrashRecovery10d({ operation, crashPoint, worker })
       `${operation}/${crashPoint} divergent retry changed bytes`);
   }
   invoke();
-  assert.equal(Object.keys(journalBytes10d(fixture.root, fixture.runId))
-    .some(name => name.startsWith('.anchored-')), false);
+  assert.deepEqual(fixedJournalInventory10d(fixture.root, fixture.runId), [],
+    `${operation}/${crashPoint} exact post-recovery cleanup`);
   assert.equal(readLines(fixture.root, fixture.runId)
     .filter(event => event.type === PUBLIC_MUTATION_EVENT10D[operation]).length, 1);
 }
@@ -28729,6 +28829,7 @@ for (const task of taskMatches) {
     for (const symbol of ['readAnchoredMarkerUnderLock', 'assertNoAnchoredMarkerUnderLock',
       'assertKnownAnchoredArtifactsUnderLock', 'readCurrentRunIdUnderLock',
       'recoverAnchoredTransactionUnderLock', 'publishAnchoredCandidateUnderLock',
+      'pendingAuthenticationStateUnderLock', 'authenticateVerifiedMutationCaller',
       'runAnchoredCrashWorker', 'dispatchAnchoredCrash']) {
       if (!new RegExp(`function\\s+${symbol}\\s*\\(`).test(card)) {
         fail(`Task 7B missing literal journal helper ${symbol}`);
@@ -28756,12 +28857,23 @@ for (const task of taskMatches) {
       "test6b('anchored crash parent matrix preserves orphans pending bytes and exact retry convergence'",
       'function expectedJournalInventory7b(', 'read-only status changed journal bytes',
       "if (mutation.recovered)", 'onRecovered: loop =>',
+      'ANCHORED_TRANSACTION_CORRUPT: authentication state',
+      'The final intent-aware gateway alone may recover it',
       "'app-confirm': { receipt_digest:", "'app-fail': { failure_code:",
       'stdin_mode: input.stdinMode ?? null, runtime: input.runtime ?? null',
       'registerAnchoredCrashExtension(', "from './durable-file.mjs'",
       "regularFileIfPresent(eventPath, 'canonical event log')",
       "intentConflictError = 'ANCHORED_TRANSACTION_PENDING'"]) {
       if (!card.includes(token)) fail(`Task 7B missing recovery/intent token ${token}`);
+    }
+  }
+  if (task[1] === '7D') {
+    for (const token of ['callerBinding, intentDigest',
+      "onRecovered: () => ({ ok: true, outcome: 'already-observed' })",
+      "onRecovered: () => ({ ok: true, outcome: 'already-revoked' })",
+      "assertAppCommandIdentity(loop, input, 'HOST_SURFACE_FENCED')",
+      "assertAppCommandIdentity(loop, input, 'APP_TASK_FENCED')"]) {
+      if (!card.includes(token)) fail(`Task 7D missing composed App intent token ${token}`);
     }
   }
   if (task[1] === '5B') {
@@ -28783,7 +28895,8 @@ for (const task of taskMatches) {
     }
   }
   if (task[1] === '10A') {
-    for (const token of ['readVerifiedState(root, runId,',
+    for (const token of ['authenticateVerifiedMutationCaller(root, runId, {',
+      "fenceError: 'LEASE_FENCED: app-acquire-entry'",
       'assertAppAcquireEntryIdentity(loop, input)',
       'const intentObservation = normalizeAcquireObservation(',
       'input, pathDeps,', 'rawObservation.host_task_cwd',
@@ -28820,6 +28933,11 @@ for (const task of taskMatches) {
       'dangling journal symlink is corruption and never cleanup authority',
       'published confirm marker plus a different receipt is the public App fence']) {
       if (!card.includes(token)) fail(`Task 10D missing executable crash token ${token}`);
+    }
+    for (const token of ['exact post-recovery cleanup',
+      'pending acquire identity fence must precede cwd callback',
+      'pending acquire identity fence must precede realpath callback']) {
+      if (!card.includes(token)) fail(`Task 10D missing exact recovery cleanup token ${token}`);
     }
   }
   if (task[1] === '11B') {
@@ -28885,9 +29003,14 @@ for (const task of taskMatches) {
       fail('Task 12B RED/GREEN commands do not execute the same composition test');
     }
   }
-  if (task[1] === '7F'
-      && !card.includes('function finishRecoveredInsightsArtifact(')) {
-    fail('Task 7F missing literal insights artifact recovery');
+  if (task[1] === '7F') {
+    for (const token of ['function finishRecoveredInsightsArtifact(',
+      "intentDigest: reviewIntentDigest(fence, 'claim-independent-review'",
+      "intentDigest: reviewIntentDigest(fence, 'block-independent-review'",
+      'REVIEW_RECOVERY_PROJECTION_MISMATCH',
+      'if (recovered !== undefined) return recovered']) {
+      if (!card.includes(token)) fail(`Task 7F missing review recovery token ${token}`);
+    }
   }
   if (!/Expected:\s*FAIL/i.test(stepBodies[1])) fail(`Task ${task[1]} Step 2 is not deterministic FAIL`);
   if (!/Expected:\s*PASS/i.test(stepBodies[3])) fail(`Task ${task[1]} Step 4 is not PASS`);
