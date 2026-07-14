@@ -442,6 +442,83 @@ no inherited approval from the historical receipt.
 - gate state: still not PASS. The changed exact bytes require the fifth and final bounded fresh
   Codex-only `gpt-5.6-sol`/high review round and independent main-agent verification.
 
+### Replacement Gate 1 deep-review-loop — round 5 (`max_reached`)
+
+- gate: Gate 1 — research and design, replacement review round 5.
+- artifact/scope: primary target
+  `docs/superpowers/specs/2026-07-13-codex-app-native-task-continuation-design.md`; operating
+  handoff, this evidence log, ignored implementation plan, and cited current kernel writers were
+  context.
+- base/head or content hash: base
+  `c38a96137f8f4f0099c35e893860930e8ee4cf73`; reviewed head
+  `e8f130a8b46fb6f8e39a652ccff44b3eb704f906`. Reviewed handoff SHA-256 was
+  `1523907bf1931793b765ed8a5fac2d678a6ae1aa303cfef6e2c89f2e6f150fd9`; reviewed design SHA-256
+  was `eb574b44560743f64b5080a8e5feb1df63e1c9b92b5a6d3d5052c8acdfeaa5c5`; reviewed ignored-plan
+  SHA-256 was `686c92a134b7cfa76d8bc85bc1340bc83b437f53456109b43112dac8a602b221`.
+- invocation: two fresh direct read-only Codex processes, one standard
+  `codex exec ... review --base origin/main` and one separately prompted adversarial design/plan
+  audit; both used `--ephemeral --ignore-user-config --ignore-rules -s read-only -m gpt-5.6-sol
+  -c 'model_reasoning_effort="high"'`.
+- reviewer actual: standard thread `019f61d5-53d5-7c10-823c-3c30badd9ae0` returned 3 P1 findings;
+  adversarial thread `019f61d5-53ca-7b60-96b8-e1edfa293977` returned 4 Red, 2 Yellow, and 6
+  confirmations; `N_planned = N_actual = 2`; both exited 0 and terminated naturally.
+- model/effort evidence: exact invocation arguments above; no global Codex configuration changed.
+- verdict: `REQUEST_CHANGES`.
+- red/yellow/info: `6 / 2 / 6` after deduplication and independent main-agent verification. Journal
+  recovery was independently corroborated by both reviewers; main verification added the valid-marker
+  plus unknown-artifact corruption path.
+- termination: `max_reached`. This is the fifth allowed Review call, is not convergence, and cannot
+  pass Gate 1.
+- report path: `.deep-review/reports/2026-07-15-032919-review.md`, SHA-256
+  `349fc19794fb36c053379b12a56db1645c74c070c88241038c2dbf1b81d6df4a`.
+- verification commands: exact reviewer-output reads; direct plan/design/current-code reads; journal,
+  generic-intent, emit-scope, callback-lock, insights-artifact, finish-key, task-order, and worker-entry
+  traces; pre-review exact embedded-validator reproduction; `git diff --check`; and full repository
+  preflight.
+- main-agent judgment: all eight actionable findings are concrete. The journal must recover an absent
+  legacy log and inner replace debris while rejecting unknown artifacts; generic public intents must
+  bind all behavior inputs; emit has a lexical `ReferenceError`; four race seams are lock-held;
+  insights recovery can orphan its artifact; finish accepts extra keys; and the 7B/worker checkpoints
+  are not executable in literal task order. Gate 2 and implementation must not begin.
+- reviewer sandbox note: broad test/embedded-validator attempts inside the reviewers' read-only macOS
+  sandbox encountered temp/cache `EPERM`; both review processes still exited 0 naturally. The same
+  immutable target had already passed the exact embedded validator, `git diff --check`, and
+  `npm run preflight` outside those reviewer sandboxes.
+
+### Replacement Gate 1 round 5 Respond (`max_reached`, no Gate pass)
+
+- disposition: accepted 8, rejected 0, deferred 0. The receiving-review workflow used its documented
+  `main_fallback` because the Phase 6 Agent dispatch surface was unavailable; the user's standing
+  instruction already authorized autonomous continuation.
+- journal response: exact recovery now supports an absent zero-length legacy event log, rejects
+  unknown/symlinked journal names before canonical mutation, durably handles fixed canonical replace
+  debris, and exercises create/fsync/rename-before-directory-fsync seams for state and hash.
+- intent/locking response: the generic gateway has no event-only fallback; type-tagged patch values and
+  the complete normalized workstream request are wired into the actual public append calls. The
+  missing revoke intent is closed. Emit's identity fence is lexically shared, while prepare, confirm,
+  revoke, and sweep use snapshot/outside-callback/fresh-commit phases with a reentrant-reader test.
+- artifact/privacy response: recovered insights finish or validate the exact staged/final artifact
+  before success. Generic and App-bound finish events use global exact-key enforcement with raw-field
+  negatives.
+- executable-order response: Task 7B owns only its staged inventory; Task 11B owns the final literal
+  41-entry inventory. The crash worker is a complete top-level module with strict argv/environment,
+  extension registration, queued dispatch, state-patch/workstream intent cases, and all inner replace
+  probes.
+- exact corrected candidate hashes: handoff
+  `1523907bf1931793b765ed8a5fac2d678a6ae1aa303cfef6e2c89f2e6f150fd9`; design
+  `b974829503f1b537cdf1317b0a7aa8e5202341074123d6fcf8d53f13590b9358`; ignored plan
+  `987d982d9c3c1107a7c5dc17d12b4e434a81c5cc8d651e2341ff9d1be7299067`.
+- response record: `.deep-review/responses/2026-07-15-035104-response.md`, SHA-256
+  `4599386b500b17bc3e770e5f571a2eb6020df3e2f23f3f683a752c716697ff7e`.
+- verification: the exact embedded validator passed 46 tasks and 320 closed fences
+  (`bash=63`, `diff=65`, `js=165`, `json=4`, `markdown=12`, `text=10`, `yaml=1`) with syntax,
+  strict-diff, task order/path/anchor, crash-worker, staged/final inventory, callback, artifact,
+  Gate-token, ULID, banned-prose, and whitespace checks. `git diff --check` passed. Full repository
+  preflight passed validation and all 1,463 tests with 0 failures, 0 cancelled, and 0 skipped.
+- gate state: still `REQUEST_CHANGES / max_reached`. These corrected bytes have not been reviewed by a
+  sixth call and cannot be represented as Gate 1 PASS. Gate 2 and implementation remain closed unless
+  a separately authorized fresh quality-gate procedure is established.
+
 ## Review receipt template
 
 Each reviewed gate will add a receipt with all of these fields:

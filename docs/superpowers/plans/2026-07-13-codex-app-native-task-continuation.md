@@ -3455,7 +3455,7 @@ import {
   existsSync, lstatSync, mkdirSync, readFileSync, readdirSync,
   unlinkSync, writeFileSync,
 } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { canonicalRealpath, createDirectoryJunction,
@@ -8431,6 +8431,11 @@ test7b('App recovery and finish controls bind exact identity code and terminal p
     assert7b.equal(verify7b(projectionDrift, valid.lines).ok, false,
       `${type} terminal projection is exact`);
 
+    const rawExtra = structuredClone(valid.lines);
+    rawExtra[1].data.thread_id = 'raw-host-receipt';
+    assert7b.equal(verify7b(valid.loop, rawExtra).ok, false,
+      `${type} rejects an extra raw receipt key`);
+
     if (type === 'run-recovered') {
       assert7b.equal(verify7b(valid.loop, valid.lines.slice(0, 1)).ok, false,
         'state-only recovery binding has no causal authority');
@@ -8457,6 +8462,21 @@ test7b('App recovery and finish controls bind exact identity code and terminal p
         'a later takeover preserves the exact event-backed recovery binding as history');
     }
   }
+
+  const genericAt = '2026-07-13T00:00:03.000Z';
+  const generic = { status: 'stopped', termination: { finished_at: genericAt },
+    session_chain: { lease: { owner_run_id: parent, generation: 1,
+      state: 'released', handoff_phase: 'idle', handoff_transport: null,
+      handoff_attempt_id: null, handoff_child_run_id: null,
+      handoff_idempotency_key: null, resume_policy: null, expires_at: null },
+    sessions: [{ run_id: parent, host_surface: null, superseded_by: null }] } };
+  const genericLines = [{ type: 'finish', ts: genericAt,
+    data: { status: 'stopped', reportRel: null } }];
+  assert7b.deepEqual(verify7b(generic, genericLines), { ok: true, errors: [] });
+  const genericRawExtra = structuredClone(genericLines);
+  genericRawExtra[0].data.thread_id = 'raw-host-receipt';
+  assert7b.equal(verify7b(generic, genericRawExtra).ok, false,
+    'generic finish rejects an extra raw receipt key');
 });
 
 test7b('generic recovery binding and event are bidirectionally exact', () => {
@@ -8800,6 +8820,10 @@ const APP_CONTROL_EXACT_KEYS = Object.freeze({
     'generation', 'owner_run_id']],
   'app-task-preserved': [['attempt_id', 'child_run_id', 'failure_code']],
   'app-task-await-timeout': [['attempt_id', 'child_run_id', 'failure_code']],
+  finish: [
+    ['reportRel', 'status'],
+    ['attempt_id', 'child_run_id', 'failure_code', 'reportRel', 'status'],
+  ],
 });
 
 function hostObservationSeed(loop, session, index, events) {
@@ -9235,6 +9259,10 @@ export function verifyAppEventCorrelation(loop, lines) {
     errors.push(`finish global count=${finishEvents.length}`);
   } else if (terminalStatus) {
     const finish = finishEvents[0];
+    const finishKeys = Object.keys(finish.data ?? {}).sort();
+    const exactFinishKeys = APP_CONTROL_EXACT_KEYS.finish.some(keys =>
+      JSON.stringify(finishKeys) === JSON.stringify([...keys].sort()));
+    if (!exactFinishKeys) errors.push('finish global exact keys invalid');
     if (strictMs(finish.ts) === null
         || finish.data?.status !== loop.status
         || finish.data?.reportRel !== (loop?.termination?.final_report ?? null)
@@ -9801,28 +9829,20 @@ test6b('writeState and cold fresh-process imports enforce the same verified boun
 });
 
 const PUBLIC_MUTATION_INVENTORY7B = Object.freeze({
-  'comprehension.mjs': ['ack', 'recordReviewed'],
+  'comprehension.mjs': ['ack'],
   'episode.mjs': ['newEpisode', 'newBlockedCheckerEpisode', 'abandonEpisode', 'recordEpisode'],
   'workspace.mjs': ['newWorkstream', 'setWorkstreamStatus', 'recordWorkstreamTerminal'],
   'state.mjs': ['patch', 'pauseRun'],
   'session-profile.mjs': ['setSessionProfile'],
   'insights.mjs': ['emitInsights'],
-  'review.mjs': ['claimIndependentReview', 'blockIndependentReview', 'dispatchReview',
-    'recordReviewOutcome', 'importReviewOutcome'],
-  'detect-terminal.mjs': ['detectAndPersist'],
   'recover.mjs': ['recoverRun'],
   'finish.mjs': ['finishRun'],
-  'lease.mjs': ['acquireLease', 'releaseLease', 'reserveHandoff',
-    'advanceHandoffPhase', 'rollbackHandoff'],
-  'budget.mjs': ['recordCost', 'settleCodexPreflightCost', 'settleCodexProcessCost',
-    'settleTerminalCodexMakerCost'],
-  'breaker.mjs': ['tripBreaker', 'resetBreaker', 'recordReviewVerdict'],
-  'respawn.mjs': ['rollbackAndPause', 'respawn'],
+  'lease.mjs': ['acquireLease'],
   'runtime-executable.mjs': ['approveLauncherExecutable', 'approveRuntimeExecutable'],
   'spawn-optin.mjs': ['offerDesktop', 'confirmDesktop', 'declineDesktop', 'resetDesktop'],
 });
 
-test6b('closed public mutation inventory enters recovery before any canonical read', () => {
+test6b('Task 7B staged mutation inventory enters recovery before any canonical read', () => {
   const canonicalRead = /\b(?:readState|readVerifiedState|reconcileBudget)\s*\(/;
   const recoveryEntry = /\b(?:withVerifiedMutationLock|appendAnchored|newEpisode|newBlockedCheckerEpisode|commitReviewOutcome|appendTransition|respawnOperation)\s*\(/;
   for (const [file, exports] of Object.entries(PUBLIC_MUTATION_INVENTORY7B)) {
@@ -10033,7 +10053,123 @@ rg -n "rawHashValid(State|History)|seedCorrelatedTerminal" tests
 Add the post-genesis crash table to `tests/integrity.test.mjs` and the process-exit harness to
 `tests/helpers/anchored-crash-worker.mjs`. The worker accepts only
 `<root> <run-id> <operation> <crash-point>` where operation is
-`generic-append|generic-acquire|finish` and crash point is one of this closed enum:
+`generic-append|generic-acquire|finish|state-patch|workstream-new` and crash point is one of this
+closed enum. Create the worker with this complete executable module; later Tasks 7G and 10D register
+their extensions through the exported registry, and the queued main invocation runs only after the
+entire module has evaluated:
+
+```js
+import { isAbsolute } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { contentHash } from '../../scripts/lib/envelope.mjs';
+import { finishRun } from '../../scripts/lib/finish.mjs';
+import { appendAnchored } from '../../scripts/lib/integrity.mjs';
+import { acquireLease } from '../../scripts/lib/lease.mjs';
+import { patch } from '../../scripts/lib/state.mjs';
+import { newWorkstream } from '../../scripts/lib/workspace.mjs';
+
+const EXTENSIONS = [];
+const RUN_ID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+const BASE_POINTS = new Set([
+  'state-stage-after-rename', 'event-stage-after-rename', 'pending-after-rename',
+  'event-after-partial-append', 'event-after-full-append', 'state-after-rename',
+  'hash-after-rename', 'before-cleanup', 'state-replace-after-create',
+  'state-replace-after-fsync', 'state-replace-after-rename-before-dir-fsync',
+  'hash-replace-after-create', 'hash-replace-after-fsync',
+  'hash-replace-after-rename-before-dir-fsync',
+]);
+
+function exactObject(value, keys) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...keys].sort());
+}
+
+function parseInput(raw, keys) {
+  let value;
+  try { value = JSON.parse(raw); } catch { throw new Error('CRASH_INPUT_INVALID'); }
+  if (!exactObject(value, keys)) throw new Error('CRASH_INPUT_INVALID');
+  return value;
+}
+
+export function registerAnchoredCrashExtension(dispatch) {
+  if (typeof dispatch !== 'function') throw new Error('CRASH_EXTENSION_INVALID');
+  EXTENSIONS.push(dispatch);
+}
+
+const generic = Object.freeze({
+  'generic-append': ({ root, runId, owner, generation, point }) => appendAnchored(
+    root, runId, { type: 'anchored-crash-probe', data: { owner, generation } }, undefined,
+    undefined, { callerBinding: { owner, generation },
+      intentDigest: contentHash(JSON.stringify(
+        { operation: 'anchored-crash-probe', owner, generation })),
+      crashProbe: reached => { if (reached === point) process.exit(91); } }),
+  'generic-acquire': ({ root, runId, owner, generation, point, rawInput }) => {
+    const input = parseInput(rawInput, ['childOwner']);
+    return acquireLease(root, runId, { owner: input.childOwner,
+      expectGeneration: generation, runtime: 'codex',
+      crashProbe: reached => { if (reached === point) process.exit(91); } });
+  },
+  finish: ({ root, runId, owner, generation, point }) => finishRun(root, runId, {
+    status: 'completed', reportRel: 'final.md', proof: { human_reason: 'crash-worker' },
+    fence: { owner, generation, runtime: 'codex', intent: 'business' },
+    crashProbe: reached => { if (reached === point) process.exit(91); },
+  }),
+  'state-patch': ({ root, runId, owner, generation, point, rawInput }) => {
+    const input = parseInput(rawInput, ['field', 'value']);
+    return patch(root, runId, input.field, input.value,
+      { fence: { owner, generation },
+        crashProbe: reached => { if (reached === point) process.exit(91); } });
+  },
+  'workstream-new': ({ root, runId, owner, generation, point, rawInput }) => {
+    const input = parseInput(rawInput,
+      ['baseCommit', 'branch', 'dependsOn', 'title', 'worktree']);
+    return newWorkstream(root, runId, { ...input, fence: { owner, generation },
+      crashProbe: reached => { if (reached === point) process.exit(91); } });
+  },
+});
+
+export function dispatchAnchoredCrash(request) {
+  if (Object.hasOwn(generic, request.operation)) return generic[request.operation](request);
+  for (const dispatch of EXTENSIONS) if (dispatch(request) === true) return;
+  throw new Error('CRASH_OPERATION_INVALID');
+}
+
+export function runAnchoredCrashWorker(argv = process.argv.slice(2), env = process.env) {
+  if (argv.length !== 4) throw new Error('CRASH_USAGE_INVALID');
+  const [root, runId, operation, point] = argv;
+  if (!isAbsolute(root) || !RUN_ID.test(runId) || !BASE_POINTS.has(point)
+      || typeof env.DEEP_LOOP_CRASH_OWNER !== 'string'
+      || !/^[1-9]\d*$/.test(env.DEEP_LOOP_CRASH_GENERATION || '')) {
+    throw new Error('CRASH_INPUT_INVALID');
+  }
+  dispatchAnchoredCrash({ root, runId, operation, point,
+    owner: env.DEEP_LOOP_CRASH_OWNER,
+    generation: Number(env.DEEP_LOOP_CRASH_GENERATION),
+    rawInput: env.DEEP_LOOP_CRASH_INPUT ?? '{}',
+  });
+  throw new Error('CRASH_POINT_NOT_REACHED');
+}
+
+if (process.argv[1]
+    && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  queueMicrotask(() => {
+    try { runAnchoredCrashWorker(); }
+    catch (error) {
+      process.stderr.write(`${String(error?.message || error)}\n`);
+      process.exitCode = 1;
+    }
+  });
+}
+```
+
+`patch` and `newWorkstream` add the shown test-only `crashProbe` option and pass it to their final
+journal append. Their production callers never receive it. The parent generic-intent test crashes
+after marker publication, then retries `state-patch` with a different value and `workstream-new`
+with the same title but a different branch/worktree/dependency projection. Both different retries
+must return `ANCHORED_TRANSACTION_PENDING` without changing any byte; the exact original retry then
+recovers once.
+
+The closed crash-point enum is:
 
 ```text
 state-stage-after-rename
@@ -10044,6 +10180,12 @@ event-after-full-append
 state-after-rename
 hash-after-rename
 before-cleanup
+state-replace-after-create
+state-replace-after-fsync
+state-replace-after-rename-before-dir-fsync
+hash-replace-after-create
+hash-replace-after-fsync
+hash-replace-after-rename-before-dir-fsync
 ```
 
 All three operations already exist when Task 7B begins. For each operation the parent test seeds the
@@ -10056,11 +10198,19 @@ exact precondition, launches the worker, requires exit
    and converge to the operation's normal idempotent result with one business event, one optional
    paired cost, no second descriptor/external-action authorization, and no pending/stage file.
 
+The six inner-replace probes kill the real canonical state/hash publisher after fixed scratch
+creation, after scratch fsync, and after rename but before directory fsync. The exact retry must
+discard only a regular fixed-name scratch file, republish from authenticated stage bytes, and
+converge; a symlink at either scratch name is corruption. The legacy generation-3 fixture starts
+without `event-log.jsonl`, and its `pending-after-rename` retry must create the first log rather than
+calling `truncateSync` on an absent path.
+
 The partial-append probe writes a strict non-empty prefix of the staged suffix before exit. Recovery
 must prove the canonical log prefix/head and suffix-prefix bytes, truncate back to the recorded before
 length, and append the full staged suffix once. Add negative fixtures for divergent partial bytes,
 extra bytes after the expected suffix, missing stage with old canonical state, new hash with old
-state, symlink/unknown stage names, and marker caller-binding drift; every one returns
+state, symlink/unknown stage names both with and without a valid marker, canonical replace symlinks,
+and marker caller-binding drift; every one returns
 `ANCHORED_TRANSACTION_CORRUPT` without repair. Read-only `readVerifiedState`/status sees a valid
 marker as bounded `ANCHORED_TRANSACTION_PENDING`, performs no cleanup, and never returns an
 actionable descriptor.
@@ -10105,7 +10255,7 @@ diff --git a/scripts/lib/integrity.mjs b/scripts/lib/integrity.mjs
 -import { readFileSync, appendFileSync, existsSync } from 'node:fs';
 +import { appendFileSync, closeSync, existsSync, fsyncSync, lstatSync, openSync,
 +  readFileSync, readdirSync, renameSync, truncateSync, unlinkSync, writeFileSync } from 'node:fs';
-+import { dirname, join } from 'node:path';
++import { basename, dirname, join } from 'node:path';
 -import { join } from 'node:path';
  import { contentHash } from './envelope.mjs';
 @@ -5,2 +5,3 @@
@@ -10201,14 +10351,36 @@ function readExactBytes(path, label) {
   return readFileSync(path);
 }
 
-function durableReplace(path, bytes) {
-  const temporary = `${path}.replace`;
-  writeFileSync(temporary, bytes, { flag: 'wx', mode: 0o600 });
-  const descriptor = openSync(temporary, 'r');
-  try { fsyncSync(descriptor); } finally { closeSync(descriptor); }
-  renameSync(temporary, path);
+function syncDirectory(path) {
   const directory = openSync(dirname(path), 'r');
   try { fsyncSync(directory); } finally { closeSync(directory); }
+}
+
+function syncFile(path) {
+  const descriptor = openSync(path, 'r');
+  try { fsyncSync(descriptor); } finally { closeSync(descriptor); }
+}
+
+function durableUnlink(path) {
+  if (!existsSync(path)) return;
+  regularFile(path, 'durable unlink target');
+  unlinkSync(path);
+  syncDirectory(path);
+}
+
+function durableReplace(path, bytes, { crashProbe = () => {}, label = 'file' } = {}) {
+  const temporary = `${path}.replace`;
+  // A killed prior exact retry may have left a partial or complete fixed-name scratch file.
+  // It is never authority: the marker plus the authenticated stage bytes are authority.
+  durableUnlink(temporary);
+  writeFileSync(temporary, bytes, { flag: 'wx', mode: 0o600 });
+  crashProbe(`${label}-replace-after-create`);
+  const descriptor = openSync(temporary, 'r');
+  try { fsyncSync(descriptor); } finally { closeSync(descriptor); }
+  crashProbe(`${label}-replace-after-fsync`);
+  renameSync(temporary, path);
+  crashProbe(`${label}-replace-after-rename-before-dir-fsync`);
+  syncDirectory(path);
 }
 
 function strictSnapshot(value) {
@@ -10253,8 +10425,19 @@ function assertNoAnchoredMarkerUnderLock(root, runId) {
     if (!knownOrphans.has(path)) {
       throw new Error('ANCHORED_TRANSACTION_CORRUPT: unknown journal artifact');
     }
-    regularFile(path, 'orphan stage');
-    unlinkSync(path);
+    durableUnlink(path);
+  }
+}
+
+function assertKnownAnchoredArtifactsUnderLock(root, runId, paths) {
+  const known = new Set(Object.values(paths).map(path => basename(path)));
+  for (const name of readdirSync(runDir(root, runId))) {
+    if (!name.startsWith('.anchored-')) continue;
+    const path = join(runDir(root, runId), name);
+    if (!known.has(name)) {
+      throw new Error('ANCHORED_TRANSACTION_CORRUPT: unknown journal artifact');
+    }
+    regularFile(path, 'journal artifact');
   }
 }
 
@@ -10284,12 +10467,14 @@ function assertSnapshotBytes(snapshot, events, state, hash, label) {
 
 function removeJournal(paths) {
   for (const key of ['marker', 'events', 'state', 'hash']) {
-    if (existsSync(paths[key])) unlinkSync(paths[key]);
+    durableUnlink(paths[key]);
   }
 }
 
 function recoverAnchoredTransactionUnderLock(root, runId, marker) {
   const paths = journalPaths(root, runId);
+  // Reject unknown or symlinked journal names before reading or changing canonical bytes.
+  assertKnownAnchoredArtifactsUnderLock(root, runId, paths);
   const stagedEvents = readExactBytes(paths.events, 'events stage');
   const stagedState = readExactBytes(paths.state, 'state stage');
   const stagedHash = readExactBytes(paths.hash, 'hash stage');
@@ -10324,9 +10509,18 @@ function recoverAnchoredTransactionUnderLock(root, runId, marker) {
   const hashAfter = canonicalHash.length === marker.after.hash_bytes
     && digestBytes(canonicalHash) === marker.after.hash_digest;
   const fullyAppended = partial.length === stagedEvents.length;
+  // These fixed scratch names may be partial after a real process death. They carry no authority;
+  // a matching marker retry discards them and republishes from the authenticated stages.
+  durableUnlink(`${statePath}.replace`);
+  durableUnlink(`${hashPath}.replace`);
   if (stateBefore && hashBefore) {
-    truncateSync(eventPath, beforeLength);
+    if (existsSync(eventPath)) truncateSync(eventPath, beforeLength);
+    else if (beforeLength !== 0) {
+      throw new Error('ANCHORED_TRANSACTION_CORRUPT: missing event prefix');
+    }
     appendFileSync(eventPath, stagedEvents);
+    syncFile(eventPath);
+    syncDirectory(eventPath);
     durableReplace(statePath, stagedState);
     durableReplace(hashPath, stagedHash);
   } else if (stateAfter && hashBefore && fullyAppended) {
@@ -10373,11 +10567,15 @@ function publishAnchoredCandidateUnderLock(root, runId, {
   crashProbe('pending-after-rename');
   const split = Math.max(1, Math.floor(stagedEvents.length / 2));
   appendFileSync(eventPath, stagedEvents.subarray(0, split));
+  syncFile(eventPath); syncDirectory(eventPath);
   crashProbe('event-after-partial-append');
   appendFileSync(eventPath, stagedEvents.subarray(split));
+  syncFile(eventPath);
   crashProbe('event-after-full-append');
-  durableReplace(statePath, stagedState); crashProbe('state-after-rename');
-  durableReplace(hashPath, stagedHash); crashProbe('hash-after-rename');
+  durableReplace(statePath, stagedState, { crashProbe, label: 'state' });
+  crashProbe('state-after-rename');
+  durableReplace(hashPath, stagedHash, { crashProbe, label: 'hash' });
+  crashProbe('hash-after-rename');
   crashProbe('before-cleanup'); removeJournal(paths);
 }
 
@@ -10631,7 +10829,12 @@ function appendAnchoredUnderLock(root, runId, { type, data }, mutate, preCheck, 
 
 export function appendAnchored(root, runId, event, mutate, preCheck, opts = {}) {
   const binding = requireCallerBinding(opts.callerBinding);
-  const intentDigest = contentHash(JSON.stringify({ type: event.type, data: event.data }));
+  const intentDigest = opts.intentDigest;
+  // There is deliberately no event-only fallback: event payloads may redact or omit business
+  // inputs. Every public mutation must bind its complete request before lock acquisition.
+  if (!/^[0-9a-f]{64}$/.test(intentDigest || '')) {
+    throw new Error('MUTATION_INTENT_REQUIRED');
+  }
   return withVerifiedMutationLock(root, runId, {
     callerBinding: binding, intentDigest,
     fenceError: opts.fenceError ?? 'LEASE_FENCED: append',
@@ -10645,9 +10848,47 @@ intent is computed only from bounded raw-free input available before the lock; i
 the public lock-owning variants from inside the callback:
 
 ```js
-function intentField(domain, value) {
-  return value == null ? null : contentHash(`${domain}\0${
-    typeof value === 'string' ? value : JSON.stringify(value)}`);
+export function intentField(domain, value) {
+  if (typeof domain !== 'string' || domain.length === 0) {
+    throw new Error('MUTATION_INTENT_REQUIRED');
+  }
+  let encoded;
+  try {
+    encoded = value === undefined
+      ? JSON.stringify({ kind: 'undefined' })
+      : JSON.stringify({ kind: value === null ? 'null' : typeof value, value });
+  } catch { throw new Error('MUTATION_INTENT_REQUIRED'); }
+  if (typeof encoded !== 'string') throw new Error('MUTATION_INTENT_REQUIRED');
+  return contentHash(`${domain}\0${encoded}`);
+}
+
+export function mutationIntentDigest(operation, callerBinding, projection) {
+  if (typeof operation !== 'string' || operation.length === 0
+      || projection === null || typeof projection !== 'object' || Array.isArray(projection)) {
+    throw new Error('MUTATION_INTENT_REQUIRED');
+  }
+  const binding = requireCallerBinding(callerBinding);
+  return contentHash(JSON.stringify({ ...projection, operation,
+    owner: binding.owner, generation: binding.generation }));
+}
+
+// These two redaction-sensitive examples are mandatory shapes, not illustrative fallbacks.
+// The state-patch event omits value and workstream-new omits most business inputs, so the request
+// intent must carry bounded digests for every omitted behavior input.
+export function statePatchIntent(fence, field, value) {
+  return mutationIntentDigest('state-patch', fence,
+    { field, value_digest: intentField('state-patch-value', value) });
+}
+
+export function workstreamNewIntent(fence,
+  { title, branch, worktree, baseCommit, dependsOn }) {
+  return mutationIntentDigest('workstream-new', fence, {
+    title_digest: intentField('workstream-title', title),
+    branch_digest: intentField('workstream-branch', branch),
+    worktree_digest: intentField('workstream-path', worktree),
+    base_commit_digest: intentField('workstream-base', baseCommit),
+    depends_on_digest: intentField('workstream-dependencies', dependsOn),
+  });
 }
 
 function appMutationIntentProjection(input, operation) {
@@ -10666,6 +10907,7 @@ function appMutationIntentProjection(input, operation) {
     'app-fail': { failure_code: input.code,
       reason_digest: intentField('failure-reason', input.reason),
       unconfirmed_receipt_digest: intentField('unconfirmed-thread', input.unconfirmedThreadId) },
+    'app-revoke': { runtime: input.runtime ?? null },
     'app-sweep': { deadline_digest: intentField('sweep-deadline', input.deadline) },
     'app-await': { timeout_ms: input.timeoutMs, interval_ms: input.intervalMs,
       deadline_digest: intentField('await-deadline', input.deadline) },
@@ -10694,28 +10936,110 @@ function withAppMutation(root, runId, input, operation, body) {
 }
 ```
 
+The four generic intent helpers above are exports of `integrity.mjs`. Wire the two redacted-event
+callers to them in this task with these exact changes. Compute `workstream-new` intent only after the
+existing containment logic has produced `_storedWorktree`, so equivalent absolute/relative aliases
+bind the same durable request while branch/base/dependencies remain distinguishing inputs:
+
+```diff
+diff --git a/scripts/lib/state.mjs b/scripts/lib/state.mjs
+--- a/scripts/lib/state.mjs
++++ b/scripts/lib/state.mjs
+@@ -7,3 +7,4 @@
+ import { leaseCheck } from './lease.mjs';
+-import { appendAnchored, MUTATION_TURN_FLOOR } from './integrity.mjs';
++import { appendAnchored, MUTATION_TURN_FLOOR,
++  statePatchIntent } from './integrity.mjs';
+ import { assertProjectRootBinding } from './project-root.mjs';
+@@ -120,4 +121,8 @@
+-export function patch(root, runId, field, value, { fence } = {}) {
++export function patch(root, runId, field, value, { fence, crashProbe } = {}) {
++  if (!fence || typeof fence.owner !== 'string'
++      || !Number.isSafeInteger(fence.generation) || fence.generation < 1) {
++    throw new Error('FENCE_REQUIRED: patch');
++  }
+   if (classifyPatch(field, value) !== 'allow') throw new Error(`FIELD_FORBIDDEN: ${field}`);
+   // #3 (R1 Fix 2): route through appendAnchored so a whitelisted patch (which can flip active_workstreams — a
+   // finish proof input — and non-terminal episode/workstream status — a next-action routing input) is BOTH
+@@ -127,3 +133,5 @@
+   // (may be large/sensitive) — only the field path. All throwing guards live in preCheck (fresh loop, pre-append).
++  const callerBinding = { owner: fence.owner, generation: fence.generation };
++  const intentDigest = statePatchIntent(callerBinding, field, value);
+   return appendAnchored(root, runId, { type: 'state-patch', data: { field } },
+     (loop) => { setPath(loop, field, value); },
+@@ -151,4 +160,5 @@
+       if (!sv.ok) throw new Error(`SCHEMA_INVALID: ${sv.errors.join('; ')}`);
+     },
+-    { floor: MUTATION_TURN_FLOOR });
++    { floor: MUTATION_TURN_FLOOR, callerBinding, intentDigest,
++      fenceError: 'LEASE_FENCED: patch', crashProbe });
+ }
+diff --git a/scripts/lib/workspace.mjs b/scripts/lib/workspace.mjs
+--- a/scripts/lib/workspace.mjs
++++ b/scripts/lib/workspace.mjs
+@@ -2,4 +2,4 @@
+ import { isAbsolute, join, resolve, relative, dirname, basename } from 'node:path';
+ import { readState, writeState, withLock } from './state.mjs';
+-import { appendAnchored } from './integrity.mjs';
++import { appendAnchored, workstreamNewIntent } from './integrity.mjs';
+ import { slugify } from './slug.mjs';
+@@ -13,3 +14,4 @@
+-export function newWorkstream(root, runId, { title, branch, worktree, baseCommit = null, dependsOn = [], fence } = {}) {
++export function newWorkstream(root, runId, { title, branch, worktree, baseCommit = null,
++  dependsOn = [], fence, crashProbe } = {}) {
+   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: newWorkstream');
+   if (typeof title !== 'string' || title.length === 0 ||
+@@ -67,4 +69,7 @@
+   const _storedWorktree = normalizePortableRelativePath(relative(_rootResolved, _wtResolved));
+   if (!_storedWorktree) throw new Error('WORKSTREAM_WORKTREE_ESCAPE: worktree is not durably relative: ' + worktree);
++  const callerBinding = { owner: fence.owner, generation: fence.generation };
++  const intentDigest = workstreamNewIntent(callerBinding,
++    { title, branch, worktree: _storedWorktree, baseCommit, dependsOn });
+   let id;
+   appendAnchored(root, runId, { type: 'workstream-new', data: { title } }, (loop) => {
+@@ -76,6 +83,8 @@
+       dirty_on_handoff: false, pr: { intended: true, state: 'none', url: null },
+       episodes: [], review_points_done: [], depends_on: dependsOn,
+     });
+-  }, fence ? (loop) => { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); } : undefined, { floor: MUTATION_TURN_FLOOR });
++  }, (loop) => { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); },
++  { floor: MUTATION_TURN_FLOOR, callerBinding, intentDigest,
++    fenceError: 'LEASE_FENCED: newWorkstream', crashProbe });
+   return { id };
+ }
+```
+
 Task 7B mechanically wraps every then-current mutating export that performs a verified pre-read.
-The closed inventory is `ack|recordReviewed`; `newEpisode|newBlockedCheckerEpisode|abandonEpisode|
-recordEpisode`; `newWorkstream|setWorkstreamStatus|recordWorkstreamTerminal`; `patch|pauseRun`;
-`setSessionProfile`; `emitInsights`; `claimIndependentReview|blockIndependentReview|dispatchReview|
-recordReviewOutcome|importReviewOutcome`; `detectAndPersist`; `recoverRun`; `finishRun`;
-`acquireLease|releaseLease|reserveHandoff|advanceHandoffPhase|rollbackHandoff`;
-`recordCost|settleCodexPreflightCost|settleCodexProcessCost|settleTerminalCodexMakerCost`;
-`tripBreaker|resetBreaker|recordReviewVerdict`; `respawn|rollbackAndPause`;
+The public `appendAnchored` gateway accepts no event-only default: every direct caller passes an
+explicit `opts.intentDigest`, while every operation wrapper passes the same digest to all of its
+short contexts. Each projection contains every caller-controlled or environment-derived input that
+can alter the candidate, idempotency result, artifact name/content, external action, or return value;
+large or sensitive values use a domain-separated digest. `patch` uses `statePatchIntent` and
+`newWorkstream` uses `workstreamNewIntent` exactly. The Task 7B worker adds `state-patch` and
+`workstream-new` same-caller/different-input crashes: the different retry receives
+`ANCHORED_TRANSACTION_PENDING` and leaves marker, stages, and canonical bytes unchanged.
+
+The Task 7B staged inventory is only the exports this card actually migrates: `ack`;
+`newEpisode|newBlockedCheckerEpisode|abandonEpisode|recordEpisode`;
+`newWorkstream|setWorkstreamStatus|recordWorkstreamTerminal`; `patch|pauseRun`;
+`setSessionProfile`; `emitInsights`; `recoverRun`; `finishRun`; `acquireLease`;
 `approveRuntimeExecutable|approveLauncherExecutable`; and
-`offerDesktop|confirmDesktop|declineDesktop|resetDesktop`. The Step 1 literal source inventory and
-the embedded validator carry this same set, so adding a new mutating export without classifying it
-fails the plan before implementation. Each public entry reaches a recovery-aware context before its first
-canonical read; read-only `status|check|inheritWorkstreams|latestInsights` remain marker-rejecting.
-Tasks 8A–10D use this helper for `emitHandoff`, prepare, confirm, fail, sweep, each await poll that
-may time out, acquire, recover, and finish. Their displayed business bodies execute inside the
-wrapper, all initial reads are `mutation.readVerifiedState`, and all commits are
-`mutation.appendAnchored`. Holding the context across sleep, a host call, or any external action is
-forbidden. `emitHandoff` uses separate short contexts with the same public-operation intent for
-reservation and final emit. It releases the first before descriptor callbacks, Desktop probes,
-artifact writes, `beforeFinalAppendFn`, or any compensation; the final context re-proves the exact
-reservation and fresh bounded host facts. Await likewise releases the context before sleeping and
-opens a new same-intent context for the next bounded poll.
+`offerDesktop|confirmDesktop|declineDesktop|resetDesktop`. It deliberately excludes the direct
+accounting, breaker, remaining lease, review/artifact, terminal-detection, comprehension-review, and
+respawn entries whose executable migrations occur in Tasks 7C, 7E, 7F, 7G, and 11B. Each later card
+adds its focused source/runtime checks; Task 11B adds the final closed 41-entry generic inventory.
+Thus Task 7B's own full-suite checkpoint can be green at its actual commit boundary instead of
+asserting future work.
+
+Tasks 8A–10D use the same helper for `emitHandoff`, prepare, confirm, fail, sweep, each await poll
+that may time out, acquire, recover, and finish. Their displayed business bodies execute inside
+short wrappers, all initial reads are `mutation.readVerifiedState`, and all commits are
+`mutation.appendAnchored`. Holding the context across sleep, a host call, a callback, or any external
+action is forbidden. `emitHandoff` uses separate short contexts with the same public-operation
+intent for reservation and final emit. It releases the first before descriptor callbacks, Desktop
+probes, artifact writes, `beforeFinalAppendFn`, or any compensation; the final context re-proves the
+exact reservation and fresh bounded host facts. Await likewise releases the context before sleeping
+and opens a new same-intent context for the next bounded poll.
 
 Temporarily add the following semantic guard to `writeState` for fixture migration and intermediate
 slices. It is **not** the production durable publisher: `commitVerifiedEventsUnderLock` now calls the
@@ -10750,7 +11074,7 @@ diff --git a/scripts/lib/finish.mjs b/scripts/lib/finish.mjs
 @@ -70,3 +70,4 @@
 -export function finishRun(root, runId, { status, reportRel, proof = {}, confirm, fence, now = Date.now() } = {}) {
 +export function finishRun(root, runId, { status, reportRel, proof = {}, confirm, fence, now,
-+  nowFn = now === undefined ? Date.now : () => now } = {}) {
++  nowFn = now === undefined ? Date.now : () => now, crashProbe } = {}) {
    // Codex r3 sf-3: fence 는 lib 레벨에서 **필수** (CLI 우회 호출도 fence 강제). newEpisode/recordEpisode 와 동일 규약.
    if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: finishRun');
 @@ -74,7 +75,7 @@ export function finishRun(root, runId, { status, reportRel, proof = {}, confirm, fence, now = Date.now() } = {}) {
@@ -10771,7 +11095,7 @@ diff --git a/scripts/lib/finish.mjs b/scripts/lib/finish.mjs
 -    }, { floor: MUTATION_TURN_FLOOR });
 +    }, { floor: MUTATION_TURN_FLOOR, nowFn,
 +      callerBinding: { owner: fence.owner, generation: fence.generation },
-+      fenceError: 'LEASE_FENCED: finishRun' });
++      fenceError: 'LEASE_FENCED: finishRun', crashProbe });
 ```
 
 Route the successful generic lease acquire through the prospective commit **in this task**. First
@@ -10803,7 +11127,10 @@ its exact hash for the possible legacy checkpoint:
 diff --git a/scripts/lib/lease.mjs b/scripts/lib/lease.mjs
 --- a/scripts/lib/lease.mjs
 +++ b/scripts/lib/lease.mjs
-@@ -43,3 +43,7 @@ export function acquireLease(root, runId, { owner, expectGeneration, runtime, now = Date.now() }) {
+@@ -43,5 +43,10 @@
+-export function acquireLease(root, runId, { owner, expectGeneration, runtime, now = Date.now() }) {
++export function acquireLease(root, runId, { owner, expectGeneration, runtime,
++  now = Date.now(), crashProbe } = {}) {
 -  return withLock(root, runId, () => {
 -    const { data } = readState(root, runId);
 +  const callerBinding = { owner, generation: expectGeneration };
@@ -10813,6 +11140,7 @@ diff --git a/scripts/lib/lease.mjs b/scripts/lib/lease.mjs
 +    fenceError: 'LEASE_FENCED: acquireLease' }, () => {
 +    const { data, hash: baseStateHash } = readState(root, runId);
      const runtimeResult = runtimeFence(data, runtime);
+     if (!runtimeResult.ok) return runtimeResult;
 ```
 
 Replace the successful generic-acquire mutation from its `const iso` declaration through its return.
@@ -10864,7 +11192,7 @@ diff --git a/scripts/lib/lease.mjs b/scripts/lib/lease.mjs
 +        const parentEntry = candidate.session_chain.sessions
 +          .find(session => session.superseded_by === owner);
 +        if (parentEntry) parentEntry.outcome = 'took_over';
-+      }, { baseLines: lines, baseStateHash, callerBinding, intentDigest });
++      }, { baseLines: lines, baseStateHash, callerBinding, intentDigest, crashProbe });
 -    return { ok: true, generation: expectGeneration + 1, reason: 'acquired' };
 +    return { ok: true, generation, reason: 'acquired' };
    });
@@ -12982,6 +13310,34 @@ test7f('detect-terminal fences and proves before launcher revalidation or probe'
 });
 ```
 
+Append this literal response-loss case to `tests/insights.test.mjs`:
+
+```js
+import { emitInsights as emitRecovery7f } from '../scripts/lib/insights.mjs';
+import { contentHash as hashInsights7f } from '../scripts/lib/envelope.mjs';
+import { verifiedAppRun as insightsRun7f } from './fixtures/verified-app-run.mjs';
+
+test('recovered insights commit publishes or validates its referenced artifact before success', () => {
+  const fixture = insightsRun7f('dl-insights-recovery-');
+  const fence = { owner: fixture.owner, generation: fixture.generation };
+  const options = { fence, now: Date.parse('2026-07-13T00:00:10.000Z'), rnd: () => 0 };
+  assert.throws(() => emitRecovery7f(fixture.root, fixture.runId, {
+    ...options,
+    crashProbe: point => { if (point === 'hash-after-rename') throw new Error('TEST_CRASH'); },
+  }), /TEST_CRASH/);
+  const directory = join(fixture.root, '.deep-loop', 'insights');
+  assert.equal(readdirSync(directory).some(name => name.startsWith('.tmp-')), true);
+  assert.equal(readdirSync(directory).some(name => name.endsWith('-insights.json')), false);
+  const recovered = emitRecovery7f(fixture.root, fixture.runId, options);
+  assert.equal(recovered.recovered, true);
+  const finalPath = join(fixture.root, recovered.path);
+  assert.equal(hashInsights7f(readFileSync(finalPath, 'utf8')), recovered.sha256);
+  assert.equal(readdirSync(directory).some(name => name.startsWith('.tmp-')), false);
+  assert.equal(readLines(fixture.root, fixture.runId)
+    .filter(event => event.type === 'insights-emitted').length, 1);
+});
+```
+
 - [ ] **Step 2: Run focused tests and verify RED**
 
 ```bash
@@ -13002,7 +13358,7 @@ diff --git a/scripts/lib/insights.mjs b/scripts/lib/insights.mjs
 --- a/scripts/lib/insights.mjs
 +++ b/scripts/lib/insights.mjs
 @@ -1,6 +1,7 @@
- import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
+ import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, unlinkSync } from 'node:fs';
  import { join } from 'node:path';
 -import { runDir, readState } from './state.mjs';
 -import { readLines, verifyLines, verifyHeadLines, appendAnchored, MUTATION_TURN_FLOOR } from './integrity.mjs';
@@ -13088,8 +13444,39 @@ export function computeInsights(root, {
   return out;
 }
 
+function finishRecoveredInsightsArtifact(root, recovered,
+  { platform, monotonicNowFn, renameFn, sleepFn } = {}) {
+  const prefix = '.deep-loop/insights/';
+  if (typeof recovered?.path !== 'string' || !recovered.path.startsWith(prefix)
+      || !/^[0-7][0-9A-HJKMNP-TV-Z]{25}-insights\.json$/.test(
+        recovered.path.slice(prefix.length))
+      || !/^[0-9a-f]{64}$/.test(recovered.sha256 || '')) {
+    throw new Error('INSIGHTS_RECOVERY_PROJECTION_INVALID');
+  }
+  const finalName = recovered.path.slice(prefix.length);
+  const fileUlid = finalName.slice(0, 26);
+  const finalPath = join(insightsDir(root), finalName);
+  const tmp = join(insightsDir(root), `.tmp-${fileUlid}`);
+  const matches = path => existsSync(path)
+    && contentHash(readFileSync(path, 'utf8')) === recovered.sha256;
+  if (existsSync(finalPath)) {
+    if (!matches(finalPath)) throw new Error('INSIGHTS_RECOVERY_ARTIFACT_INVALID');
+    if (existsSync(tmp)) {
+      if (!matches(tmp)) throw new Error('INSIGHTS_RECOVERY_ARTIFACT_INVALID');
+      unlinkSync(tmp);
+    }
+    return recovered;
+  }
+  if (!matches(tmp)) throw new Error('INSIGHTS_RECOVERY_ARTIFACT_MISSING');
+  renameAtomicWithRetry(tmp, finalPath,
+    { platform, monotonicNowFn, renameFn, sleepFn });
+  if (!matches(finalPath)) throw new Error('INSIGHTS_RECOVERY_ARTIFACT_INVALID');
+  return recovered;
+}
+
 export function emitInsights(root, runId, {
   fence, now = Date.now(), rnd = Math.random, platform, monotonicNowFn, renameFn, sleepFn,
+  crashProbe,
 } = {}) {
   if (!fence || typeof fence.owner !== 'string' || !fence.owner.length
       || !Number.isInteger(fence.generation)) {
@@ -13115,7 +13502,10 @@ export function emitInsights(root, runId, {
       sha256: event.data.sha256, candidates_count: event.data.candidates_count,
       recovered: true } };
   });
-  if (entry.recovered) return entry.recovered;
+  if (entry.recovered) {
+    return finishRecoveredInsightsArtifact(root, entry.recovered,
+      { platform, monotonicNowFn, renameFn, sleepFn });
+  }
   const authority = entry.authority;
   const authorized = leaseCheck(authority, fence);
   if (!authorized.ok) throw new Error('LEASE_FENCED: ' + authorized.reason);
@@ -13139,7 +13529,7 @@ export function emitInsights(root, runId, {
     loop => {
       const checked = leaseCheck(loop, fence);
       if (!checked.ok) throw new Error('LEASE_FENCED: ' + checked.reason);
-    }, { floor: MUTATION_TURN_FLOOR, fenceCheck: identityFence }));
+    }, { floor: MUTATION_TURN_FLOOR, fenceCheck: identityFence, crashProbe }));
   renameAtomicWithRetry(tmp, join(insightsDir(root), finalName),
     { platform, monotonicNowFn, renameFn, sleepFn });
   return { ok: true, path: rel, sha256, candidates_count: payload.candidates.length,
@@ -13952,6 +14342,12 @@ export function dispatchPublisherCrash7g({ root, runId, operation, point, owner,
   return publisher7g[operation]({ root, runId, owner, generation,
     crashProbe: reached => { if (reached === point) process.exit(91); } });
 }
+
+registerAnchoredCrashExtension(request => {
+  if (!Object.hasOwn(publisher7g, request.operation)) return false;
+  dispatchPublisherCrash7g(request);
+  return true;
+});
 ```
 
 - [ ] **Step 2: Run the closure tests and verify RED**
@@ -14802,13 +15198,13 @@ diff --git a/scripts/lib/handoff.mjs b/scripts/lib/handoff.mjs
 +    app_intent: appIntent }));
 +  const withEmitMutation = body => withVerifiedMutationLock(root, runId,
 +    { callerBinding, intentDigest, fenceError: 'LEASE_FENCED: handoff-emit' }, body);
-+  const reservationPhase = withEmitMutation(mutation => {
 +  const emitFence = loop => {
 +    const lease = loop?.session_chain?.lease;
 +    if (lease?.owner_run_id !== expect.owner || lease?.generation !== expect.generation) {
 +      throw new Error('LEASE_FENCED: handoff-emit');
 +    }
 +  };
++  const reservationPhase = withEmitMutation(mutation => {
 +  let initialLoop;
 +  try {
 +    ({ data: initialLoop } = mutation.readVerifiedState({ fenceCheck: emitFence }));
@@ -19189,6 +19585,10 @@ test('every real App mutation recovers its own journal before its first canonica
     'state-stage-after-rename', 'event-stage-after-rename', 'pending-after-rename',
     'event-after-partial-append', 'event-after-full-append', 'state-after-rename',
     'hash-after-rename', 'before-cleanup',
+    'state-replace-after-create', 'state-replace-after-fsync',
+    'state-replace-after-rename-before-dir-fsync',
+    'hash-replace-after-create', 'hash-replace-after-fsync',
+    'hash-replace-after-rename-before-dir-fsync',
   ];
   for (const operation of operations) {
     for (const crashPoint of crashPoints) {
@@ -19259,7 +19659,11 @@ export function dispatchPublicMutationCrash10d({ root, runId, operation, point, 
   if (!Object.hasOwn(publicMutation10d, operation)) throw new Error('CRASH_OPERATION_INVALID');
   const points = new Set(['state-stage-after-rename', 'event-stage-after-rename',
     'pending-after-rename', 'event-after-partial-append', 'event-after-full-append',
-    'state-after-rename', 'hash-after-rename', 'before-cleanup']);
+    'state-after-rename', 'hash-after-rename', 'before-cleanup',
+    'state-replace-after-create', 'state-replace-after-fsync',
+    'state-replace-after-rename-before-dir-fsync',
+    'hash-replace-after-create', 'hash-replace-after-fsync',
+    'hash-replace-after-rename-before-dir-fsync']);
   if (!points.has(point)) throw new Error('CRASH_POINT_INVALID');
   const input = JSON.parse(rawInput);
   if (JSON.stringify(Object.keys(input).sort())
@@ -19269,6 +19673,12 @@ export function dispatchPublicMutationCrash10d({ root, runId, operation, point, 
   return publicMutation10d[operation]({ root, runId, input,
     crashProbe: reached => { if (reached === point) process.exit(91); } });
 }
+
+registerAnchoredCrashExtension(request => {
+  if (!Object.hasOwn(publicMutation10d, request.operation)) return false;
+  dispatchPublicMutationCrash10d(request);
+  return true;
+});
 ```
 
 In `tests/terminal-cli.test.mjs`, remove the existing `finish` row from the `VERBS` table whose
@@ -19426,7 +19836,7 @@ function applyFinish(loop, { status, reportRel, binding, clock }) {
 
 export function finishRun(root, runId,
   { status, reportRel, proof = {}, confirm, fence, now,
-    nowFn = now === undefined ? Date.now : () => now } = {}) {
+    nowFn = now === undefined ? Date.now : () => now, crashProbe } = {}) {
   if (!fence || typeof fence.owner !== 'string'
       || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: finishRun');
   const fenceCheck = finishIdentityFence(fence);
@@ -19494,7 +19904,7 @@ export function finishRun(root, runId,
       applyFinish(candidate, { status, reportRel, binding: freshBinding, clock });
       const checked = validate(candidate);
       if (!checked.ok) throw new Error(`STATE_INVALID: ${checked.errors.join('; ')}`);
-    }, { floor: MUTATION_TURN_FLOOR, nowFn, fenceCheck });
+    }, { floor: MUTATION_TURN_FLOOR, nowFn, fenceCheck, crashProbe });
     return result;
   });
 }
@@ -20950,7 +21360,7 @@ test('respawn CLI fences wrong corrupt callers and proves matching and dry-run r
 Run:
 
 ```bash
-node --test --test-name-pattern='respawn fences then proves|respawn caller fence precedes|headless skips live App|headless fences a wrong caller|post-CAS maker snapshot|never adopts the acquired child fence|PreCompact exact App|PreCompact revoked App|PreCompact proves initial|revoked App origin|respawn CLI fences' tests/respawn.test.mjs tests/headless-host.test.mjs tests/precompact-hook.test.mjs tests/self-spawn-integration.test.mjs tests/orch-cli.test.mjs
+node --test --test-name-pattern='respawn fences then proves|respawn caller fence precedes|headless skips live App|headless fences a wrong caller|post-CAS maker snapshot|never adopts the acquired child fence|PreCompact exact App|PreCompact revoked App|PreCompact proves initial|revoked App origin|respawn CLI fences|final generic mutation inventory' tests/respawn.test.mjs tests/headless-host.test.mjs tests/precompact-hook.test.mjs tests/self-spawn-integration.test.mjs tests/orch-cli.test.mjs
 ```
 
 Expected: FAIL because respawn/headless/PreCompact/CLI still use plain authority reads, App guards do
@@ -21902,6 +22312,56 @@ derived from explicit CLI flags plus that same snapshot inside `respawn`.
 `RUN_SNAPSHOT_INVALID` maps through the existing handler catch/global dispatcher to exit 1; only the
 identity/business fence remains exit 3.
 
+Finally append the closed generic mutation inventory to `tests/orch-cli.test.mjs`. This test belongs
+here, after every generic migration it names exists; it must not be moved back to Task 7B:
+
+```js
+import { readFileSync as readMutationSource11b } from 'node:fs';
+import { fileURLToPath as mutationFile11b } from 'node:url';
+
+const PUBLIC_MUTATION_INVENTORY11B = Object.freeze({
+  'comprehension.mjs': ['ack', 'recordReviewed'],
+  'episode.mjs': ['newEpisode', 'newBlockedCheckerEpisode', 'abandonEpisode', 'recordEpisode'],
+  'workspace.mjs': ['newWorkstream', 'setWorkstreamStatus', 'recordWorkstreamTerminal'],
+  'state.mjs': ['patch', 'pauseRun'],
+  'session-profile.mjs': ['setSessionProfile'],
+  'insights.mjs': ['emitInsights'],
+  'review.mjs': ['claimIndependentReview', 'blockIndependentReview', 'dispatchReview',
+    'recordReviewOutcome', 'importReviewOutcome'],
+  'detect-terminal.mjs': ['detectAndPersist'],
+  'recover.mjs': ['recoverRun'],
+  'finish.mjs': ['finishRun'],
+  'lease.mjs': ['acquireLease', 'releaseLease', 'reserveHandoff',
+    'advanceHandoffPhase', 'rollbackHandoff'],
+  'budget.mjs': ['recordCost', 'settleCodexPreflightCost', 'settleCodexProcessCost',
+    'settleTerminalCodexMakerCost'],
+  'breaker.mjs': ['tripBreaker', 'resetBreaker', 'recordReviewVerdict'],
+  'respawn.mjs': ['rollbackAndPause', 'respawn'],
+  'runtime-executable.mjs': ['approveLauncherExecutable', 'approveRuntimeExecutable'],
+  'spawn-optin.mjs': ['offerDesktop', 'confirmDesktop', 'declineDesktop', 'resetDesktop'],
+});
+
+test('final generic mutation inventory enters recovery before any canonical read', () => {
+  const canonicalRead = /\b(?:readState|readVerifiedState|reconcileBudget)\s*\(/;
+  const recoveryEntry = /\b(?:withVerifiedMutationLock|appendAnchored|newEpisode|newBlockedCheckerEpisode|commitReviewOutcome|appendTransition|respawnOperation)\s*\(/;
+  for (const [file, exports] of Object.entries(PUBLIC_MUTATION_INVENTORY11B)) {
+    const source = readMutationSource11b(
+      mutationFile11b(new URL(`../scripts/lib/${file}`, import.meta.url)), 'utf8');
+    for (const name of exports) {
+      const start = source.indexOf(`export function ${name}`);
+      assert.notEqual(start, -1, `${file}:${name} missing from closed inventory`);
+      const next = source.indexOf('\nexport function ', start + 1);
+      const body = source.slice(start, next < 0 ? source.length : next);
+      const entry = body.search(recoveryEntry);
+      const read = body.search(canonicalRead);
+      assert.notEqual(entry, -1, `${file}:${name} has no recovery-aware entry`);
+      assert.ok(read < 0 || entry < read,
+        `${file}:${name} performs a canonical read before journal recovery`);
+    }
+  }
+});
+```
+
 - [ ] **Step 4: Run the focused tests and verify GREEN**
 
 Run the exact focused command from Step 2.
@@ -22118,13 +22578,14 @@ import { existsSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { readLines, verifyLog } from '../scripts/lib/integrity.mjs';
+import { readLines, readVerifiedState, verifyLog } from '../scripts/lib/integrity.mjs';
 import { readState } from '../scripts/lib/state.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
 import { validate } from '../scripts/lib/schema.mjs';
 import { acquireAppTask, awaitAppTask, confirmAppTask,
-  prepareAppTask, revokeAppTaskContinuation } from '../scripts/lib/app-task-continuation.mjs';
+  prepareAppTask, revokeAppTaskContinuation,
+  sweepUnconfirmedAppTask } from '../scripts/lib/app-task-continuation.mjs';
 
 function appSeed11c() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-app-race-')));
@@ -22293,6 +22754,55 @@ async function raceAfterInitialSnapshots(left, right) {
 const eventCount = (root, runId, type) => readLines(root, runId)
   .filter(event => event.type === type).length;
 const assertAnchored = fixture => assert.equal(verifyLog(fixture.root, fixture.runId).ok, true);
+
+function reentrantVerifiedRead(fixture, operation) {
+  let calls = 0;
+  return { seam: ({ operation: actual }) => {
+    assert.equal(actual, operation);
+    const snapshot = readVerifiedState(fixture.root, fixture.runId).data;
+    assert.equal(snapshot.run_id, fixture.runId);
+    calls += 1;
+  }, assertCalled: () => assert.equal(calls, 1, `${operation} outside-lock callback count`) };
+}
+
+test('prepare confirm revoke and sweep callbacks can reenter the verified reader outside the lock', () => {
+  {
+    const fixture = emitted8b(); const probe = reentrantVerifiedRead(fixture, 'prepare');
+    prepareAppTask(fixture.root, fixture.runId, { owner: fixture.runId, generation: 1,
+      stdinMode: 'pipe-open-noecho', hostInput: { currentHostTaskCwd: fixture.root,
+        projects: [{ projectId: 'race-project', projectKind: 'local', path: fixture.root }] } }, {
+      cwdFn: () => fixture.root, nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'),
+      descriptorBuilder: () => ({ tool: 'create_thread', target: { type: 'project',
+        projectId: 'race-project', environment: { type: 'local' } }, prompt: 'race prompt' }),
+      reconcileBudgetFn: () => {}, gateFn: () => ({ ok: true, blocked_by: [] }),
+      beforeAppendFn: probe.seam });
+    probe.assertCalled(); assertAnchored(fixture);
+  }
+  {
+    const fixture = prepared9a(); const probe = reentrantVerifiedRead(fixture, 'confirm');
+    confirmAppTask(fixture.root, fixture.runId, { owner: fixture.runId, generation: 1,
+      attemptId: fixture.attemptId, stdinMode: 'pipe-open-noecho', threadId: 'race-thread' },
+    { cwdFn: () => fixture.root, nowFn: () => Date.parse('2026-07-13T00:00:03.000Z'),
+      beforeAppendFn: probe.seam });
+    probe.assertCalled(); assertAnchored(fixture);
+  }
+  {
+    const fixture = emitted8b(); const probe = reentrantVerifiedRead(fixture, 'revoke');
+    revokeAppTaskContinuation(fixture.root, fixture.runId,
+      { owner: fixture.runId, generation: 1, runtime: 'codex' },
+      { nowFn: () => Date.parse('2026-07-13T00:00:03.000Z'), beforeAppendFn: probe.seam });
+    probe.assertCalled(); assertAnchored(fixture);
+  }
+  {
+    const fixture = emitted8b(); const probe = reentrantVerifiedRead(fixture, 'sweep');
+    sweepUnconfirmedAppTask(fixture.root, fixture.runId,
+      { owner: fixture.runId, generation: 1, attemptId: fixture.attemptId,
+        deadline: '2026-07-13T00:05:01.000Z' },
+      { cwdFn: () => fixture.root, nowFn: () => Date.parse('2026-07-13T00:05:01.001Z'),
+        beforeAppendFn: probe.seam });
+    probe.assertCalled(); assertAnchored(fixture);
+  }
+});
 
 test('race worker rejects process close before READY and leaves no live child', async () => {
   const fixture = emitted8b();
@@ -22606,12 +23116,35 @@ of this focused RED command.
 
 - [ ] **Step 3: Fix the reproduced CAS defects and add test-only pre-append seams**
 
-Immediately before each function's `appendAnchored` call, after its named snapshot and every
-read-only precheck have completed, call the injected no-op-by-default seam exactly as follows. The
-prepare, confirm, and sweep snapshots already exist. For revoke, first perform the same verified,
-identity-fenced authority read required by Task 7D; a test seam must never reopen a plain authority
-read. The seam runs outside the lock and has no production default, so it can prove two processes
-retained the same pre-CAS state without deadlocking the in-lock validator:
+First split `prepareAppTask`, `confirmAppTask`, `revokeAppTaskContinuation`, and
+`sweepUnconfirmedAppTask` into two short `withAppMutation` calls with the same operation intent.
+The first context performs only the recovery-aware verified snapshot read, identity fence, and
+write-free idempotency/precheck projection, then returns a structured clone. It closes before any
+descriptor builder, budget reconciliation, callback, barrier, artifact I/O, or external work. The
+second context performs a fresh verified read and the final `mutation.appendAnchored` CAS; it reruns
+every business predicate against that fresh state and never trusts the first snapshot as authority.
+No mutation context or context-owned method escapes either callback.
+
+Add these literal private helpers and use them for all four operations:
+
+```js
+function appSnapshotPhase(root, runId, input, operation, read) {
+  return withAppMutation(root, runId, input, operation, mutation =>
+    structuredClone(read(mutation)));
+}
+
+function appCommitPhase(root, runId, input, operation, commit) {
+  return withAppMutation(root, runId, input, operation, mutation => commit(mutation));
+}
+```
+
+Each operation's final shape is exactly `snapshot phase → outside-lock derivation/callback → commit
+phase`. `prepare` performs descriptor construction and its outer gate outside the contexts, then its
+commit phase reconciles through the active context and re-derives the route/gate before append.
+`confirm`, `revoke`, and `sweep` perform their no-op/default seam outside, then the commit phase
+re-proves phase, exact attempt, deadline/consent, cwd/runtime, and candidate validity. Call the
+injected no-op-by-default seam only after the first context has returned and before opening the
+second:
 
 ```js
 deps.beforeAppendFn?.({ operation: 'prepare', snapshot });
@@ -22620,14 +23153,23 @@ deps.beforeAppendFn?.({ operation: 'revoke', snapshot });
 deps.beforeAppendFn?.({ operation: 'sweep', snapshot });
 ```
 
-Insert this exact revoke prelude before its seam and `appendAnchored` call:
+Use this exact revoke snapshot phase before its seam; do not use the marker-rejecting public reader:
 
 ```js
-const snapshot = readVerifiedState(root, runId, {
-  fenceCheck: loop => assertAppCommandIdentity(loop, input, 'APP_TASK_FENCED'),
-}).data;
+const snapshot = appSnapshotPhase(root, runId, input, 'app-revoke', mutation =>
+  mutation.readVerifiedState({
+    fenceCheck: loop => assertAppCommandIdentity(loop, input, 'APP_TASK_FENCED'),
+  }).data);
 deps.beforeAppendFn?.({ operation: 'revoke', snapshot });
 ```
+
+Immediately after each seam, open `appCommitPhase` and move that operation's complete existing
+`mutation.appendAnchored` block into its callback. Its first statement is a fresh
+`mutation.readVerifiedState` with the same identity fence; replace every authorization captured from
+the first snapshot with the fresh value. This is a relocation of the four complete bodies already
+specified in Tasks 6D/8B/9A/9B, not a new helper or omitted pseudo-code. The race test's two workers
+must both create their barrier marker before either final commit context starts, proving the
+callbacks are actually outside the non-reentrant lock.
 
 Then apply this exact await diff over Task 9B's final implementation. The validator throws before
 event append, so the loser writes neither state nor event. `catchReadStateFn` is consulted only for
@@ -27047,12 +27589,50 @@ for (const task of taskMatches) {
   }
   if (task[1] === '7B') {
     for (const symbol of ['readAnchoredMarkerUnderLock', 'assertNoAnchoredMarkerUnderLock',
-      'readCurrentRunIdUnderLock', 'recoverAnchoredTransactionUnderLock',
-      'publishAnchoredCandidateUnderLock']) {
+      'assertKnownAnchoredArtifactsUnderLock', 'readCurrentRunIdUnderLock',
+      'recoverAnchoredTransactionUnderLock', 'publishAnchoredCandidateUnderLock',
+      'runAnchoredCrashWorker', 'dispatchAnchoredCrash']) {
       if (!new RegExp(`function\\s+${symbol}\\s*\\(`).test(card)) {
         fail(`Task 7B missing literal journal helper ${symbol}`);
       }
     }
+    const publicMutations = ['ack', 'newEpisode',
+      'newBlockedCheckerEpisode', 'abandonEpisode', 'recordEpisode', 'newWorkstream',
+      'setWorkstreamStatus', 'recordWorkstreamTerminal', 'patch', 'pauseRun',
+      'setSessionProfile', 'emitInsights', 'recoverRun', 'finishRun', 'acquireLease',
+      'approveLauncherExecutable', 'approveRuntimeExecutable', 'offerDesktop',
+      'confirmDesktop', 'declineDesktop', 'resetDesktop'];
+    if (!card.includes('const PUBLIC_MUTATION_INVENTORY7B = Object.freeze({')) {
+      fail('Task 7B missing literal public mutation inventory');
+    }
+    for (const symbol of publicMutations) {
+      if (!new RegExp(`['"]${symbol}['"]`).test(card)) {
+        fail(`Task 7B public mutation inventory omits ${symbol}`);
+      }
+    }
+    for (const token of ['MUTATION_INTENT_REQUIRED', 'statePatchIntent(',
+      'workstreamNewIntent(', 'state-replace-after-create',
+      'hash-replace-after-rename-before-dir-fsync', 'queueMicrotask(',
+      'registerAnchoredCrashExtension(']) {
+      if (!card.includes(token)) fail(`Task 7B missing recovery/intent token ${token}`);
+    }
+  }
+  if (task[1] === '7G') {
+    for (const token of ['function assertRemainingPublisherCrash7g(',
+      'export function dispatchPublisherCrash7g(', 'lease-release', 'handoff-reserve',
+      'breaker-trip', 'breaker-verdict', 'registerAnchoredCrashExtension(request =>']) {
+      if (!card.includes(token)) fail(`Task 7G missing executable crash token ${token}`);
+    }
+  }
+  if (task[1] === '10D') {
+    for (const token of ['function assertPublicMutationCrashRecovery10d(',
+      'export function dispatchPublicMutationCrash10d(', 'emit:', 'prepare:', 'confirm:',
+      'fail:', 'sweep:', "'await-timeout':", 'acquire:', 'recover:', 'finish:',
+      'registerAnchoredCrashExtension(request =>']) {
+      if (!card.includes(token)) fail(`Task 10D missing executable crash token ${token}`);
+    }
+  }
+  if (task[1] === '11B') {
     const publicMutations = ['ack', 'recordReviewed', 'newEpisode',
       'newBlockedCheckerEpisode', 'abandonEpisode', 'recordEpisode', 'newWorkstream',
       'setWorkstreamStatus', 'recordWorkstreamTerminal', 'patch', 'pauseRun',
@@ -27065,28 +27645,28 @@ for (const task of taskMatches) {
       'resetBreaker', 'recordReviewVerdict', 'rollbackAndPause', 'respawn',
       'approveLauncherExecutable', 'approveRuntimeExecutable', 'offerDesktop',
       'confirmDesktop', 'declineDesktop', 'resetDesktop'];
-    if (!card.includes('const PUBLIC_MUTATION_INVENTORY7B = Object.freeze({')) {
-      fail('Task 7B missing literal public mutation inventory');
+    if (!card.includes('const PUBLIC_MUTATION_INVENTORY11B = Object.freeze({')) {
+      fail('Task 11B missing final literal public mutation inventory');
     }
     for (const symbol of publicMutations) {
       if (!new RegExp(`['"]${symbol}['"]`).test(card)) {
-        fail(`Task 7B public mutation inventory omits ${symbol}`);
+        fail(`Task 11B public mutation inventory omits ${symbol}`);
       }
     }
   }
-  if (task[1] === '7G') {
-    for (const token of ['function assertRemainingPublisherCrash7g(',
-      'export function dispatchPublisherCrash7g(', 'lease-release', 'handoff-reserve',
-      'breaker-trip', 'breaker-verdict']) {
-      if (!card.includes(token)) fail(`Task 7G missing executable crash token ${token}`);
+  if (task[1] === '11C') {
+    for (const token of ['function appSnapshotPhase(', 'function appCommitPhase(',
+      "deps.beforeAppendFn?.({ operation: 'prepare', snapshot });",
+      "deps.beforeAppendFn?.({ operation: 'confirm', snapshot });",
+      "deps.beforeAppendFn?.({ operation: 'revoke', snapshot });",
+      "deps.beforeAppendFn?.({ operation: 'sweep', snapshot });",
+      'callbacks can reenter the verified reader outside the lock']) {
+      if (!card.includes(token)) fail(`Task 11C missing outside-lock race token ${token}`);
     }
   }
-  if (task[1] === '10D') {
-    for (const token of ['function assertPublicMutationCrashRecovery10d(',
-      'export function dispatchPublicMutationCrash10d(', 'emit:', 'prepare:', 'confirm:',
-      'fail:', 'sweep:', "'await-timeout':", 'acquire:', 'recover:', 'finish:']) {
-      if (!card.includes(token)) fail(`Task 10D missing executable crash token ${token}`);
-    }
+  if (task[1] === '7F'
+      && !card.includes('function finishRecoveredInsightsArtifact(')) {
+    fail('Task 7F missing literal insights artifact recovery');
   }
   if (!/Expected:\s*FAIL/i.test(stepBodies[1])) fail(`Task ${task[1]} Step 2 is not deterministic FAIL`);
   if (!/Expected:\s*PASS/i.test(stepBodies[3])) fail(`Task ${task[1]} Step 4 is not PASS`);
@@ -27228,7 +27808,7 @@ for (const fence of fenceRecords) {
   }
 }
 const PLAN_EXPECTED_COUNTS = Object.freeze({
-  bash: 63, diff: 64, js: 161, json: 4, markdown: 12, text: 10, yaml: 1,
+  bash: 63, diff: 65, js: 165, json: 4, markdown: 12, text: 10, yaml: 1,
 });
 const orderedCounts = value => Object.fromEntries(Object.entries(value)
   .sort(([left], [right]) => left.localeCompare(right)));
