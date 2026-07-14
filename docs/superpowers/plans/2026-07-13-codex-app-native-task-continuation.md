@@ -139,14 +139,14 @@ These are the narrow baseline `Modify` anchors required by the execution tasks; 
 | 6A–6E | Produced `scripts/lib/app-task-continuation.mjs` consent/observe/revoke/status/redaction exports; `scripts/deep-loop.mjs:40-141,340-365`; `scripts/lib/initrun.mjs:13-58`; `scripts/lib/integrity.mjs:96-187`; `scripts/lib/lease.mjs:13-199`; `scripts/lib/schema.mjs:164-216`; created `tests/app-task-continuation.test.mjs`; `tests/orch-cli.test.mjs:246-286,831-1005`; `tests/cli-skillface.test.mjs:66-99,192-265`; `tests/integrity.test.mjs:123-211`; `tests/lease.test.mjs:27-490`; `tests/schema.test.mjs:17-273`; created `tests/helpers/fixed-init-crash-worker.mjs`. |
 | 7A | `scripts/lib/schema.mjs:164-216`; `scripts/deep-loop.mjs:120-180`; `tests/schema.test.mjs:17-273`; `tests/validate-cli.test.mjs:39-84`. |
 | 7B | `scripts/lib/comprehension.mjs`; `scripts/lib/detect-terminal.mjs`; produced `scripts/lib/durable-file.mjs`; `scripts/lib/episode.mjs`; `scripts/lib/finish.mjs:70-107`; `scripts/lib/handoff.mjs`; `scripts/lib/insights.mjs`; `scripts/lib/integrity.mjs:21-187`; `scripts/lib/lease.mjs:43-103`; `scripts/lib/recover.mjs`; `scripts/lib/respawn.mjs`; `scripts/lib/review.mjs`; `scripts/lib/runtime-executable.mjs`; `scripts/lib/session-profile.mjs`; `scripts/lib/spawn-optin.mjs`; `scripts/lib/state.mjs:79-115`; `scripts/lib/workspace.mjs`; `tests/automation.test.mjs`; `tests/breaker.test.mjs`; `tests/budget.test.mjs`; `tests/codex-checker-integration.test.mjs`; `tests/comprehension.test.mjs`; `tests/detect-terminal.test.mjs`; produced `tests/durable-file.test.mjs`; `tests/episode.test.mjs`; `tests/fencing.test.mjs`; `tests/finish.test.mjs`; produced `tests/fixtures/verified-app-run.mjs`; `tests/handoff.test.mjs`; `tests/headless-host.test.mjs`; `tests/insights.test.mjs`; `tests/integrity.test.mjs`; `tests/lease.test.mjs`; `tests/orch-cli.test.mjs`; `tests/pause.test.mjs`; `tests/precompact-hook.test.mjs`; `tests/project-root.test.mjs`; `tests/recover.test.mjs`; `tests/respawn.test.mjs`; `tests/review.test.mjs`; `tests/runtime-executable.test.mjs`; `tests/session-profile.test.mjs`; `tests/spawn-optin.test.mjs`; `tests/state.test.mjs`; `tests/terminal-cli.test.mjs`; `tests/workspace.test.mjs`; created `tests/helpers/anchored-crash-worker.mjs`. |
-| 7C | `scripts/lib/lease.mjs:43-199`; `scripts/lib/budget.mjs:279-1048`; `tests/lease.test.mjs`; `tests/budget.test.mjs`; `tests/integrity.test.mjs`; `tests/project-root.test.mjs`. |
+| 7C | `scripts/lib/lease.mjs:43-199`; `scripts/lib/budget.mjs:279-1048`; produced `tests/helpers/anchored-crash-worker.mjs`; `tests/lease.test.mjs`; `tests/budget.test.mjs`; `tests/integrity.test.mjs`; `tests/project-root.test.mjs`. |
 | 7D | Produced `scripts/lib/init-transaction.mjs` strict current/genesis proof; produced `scripts/lib/app-task-continuation.mjs` observe/revoke/status boundaries; produced `tests/fixtures/verified-app-run.mjs`; produced `tests/init-transaction.test.mjs`; produced `tests/app-task-continuation.test.mjs`; `tests/cli-skillface.test.mjs`. |
 | 7G | `scripts/lib/lease.mjs:102-199`; `scripts/lib/breaker.mjs:1-62`; `scripts/lib/state.mjs:102-110`; `tests/lease.test.mjs`; `tests/breaker.test.mjs`; `tests/project-root.test.mjs`; `tests/integrity.test.mjs`; produced `tests/helpers/anchored-crash-worker.mjs`. |
 | 7E–7F | `scripts/lib/session-profile.mjs:44-80`; `scripts/lib/comprehension.mjs:27-92`; `scripts/lib/project-root-recovery.mjs:20-51`; `scripts/lib/budget.mjs:1053-1067`; `scripts/lib/insights.mjs:357-509`; `scripts/lib/review.mjs:50-179,310-668`; `scripts/lib/workspace.mjs:141-153`; `scripts/lib/detect-terminal.mjs:284-343`; `scripts/deep-loop.mjs:120-180,340-710`; `tests/session-profile.test.mjs`; `tests/comprehension.test.mjs`; `tests/project-root.test.mjs`; `tests/budget.test.mjs`; `tests/cli-skillface.test.mjs`; `tests/insights.test.mjs`; `tests/review-import.test.mjs`; `tests/reviewer-failclosed.test.mjs`; `tests/workspace.test.mjs`; `tests/detect-terminal.test.mjs`. |
 | 8A–8B | Produced `scripts/lib/app-task-continuation.mjs` `prepareAppTask`; `scripts/lib/handoff.mjs:38-224` (`handoffMarkdown`, `emitHandoff`); `scripts/lib/lease.mjs:121-205` (`reserveHandoff`, `rollbackHandoff`); `scripts/lib/schema.mjs:164-216`; `tests/handoff.test.mjs:343-789,1107-1163`; produced `tests/app-task-continuation.test.mjs` prepare cases; created `tests/fixtures/app-prepare-worker.mjs`. |
 | 9A–9B | Produced `scripts/lib/app-task-continuation.mjs` `confirmAppTask`, `failAppTask`, `sweepUnconfirmedAppTask`, `statusAppTask`, `awaitAppTask`; `scripts/deep-loop.mjs:489-616`; produced `tests/app-task-continuation.test.mjs` receipt/readiness cases; `tests/orch-cli.test.mjs:246-286,831-1005`; `tests/schema.test.mjs:17-273`. |
 | 10A–10D | Produced `scripts/lib/app-task-continuation.mjs` acquire/recovery/finish helpers; `scripts/lib/lease.mjs:13-199`; `scripts/lib/recover.mjs:1-47`; `scripts/lib/state.mjs:51-79,120-211`; `scripts/lib/finish.mjs:13-107`; `scripts/deep-loop.mjs:120-141,489-616,834-861`; produced `tests/app-task-continuation.test.mjs` acquire/history cases; `tests/lease.test.mjs:27-490`; `tests/recover.test.mjs:65-231`; `tests/finish.test.mjs:1-335`; `tests/terminal-cli.test.mjs:1-192`; `tests/orch-cli.test.mjs:246-286,831-1005`; produced `tests/integrity.test.mjs` crash matrix; produced `tests/helpers/anchored-crash-worker.mjs`. |
-| 11A–11C | `scripts/deep-loop.mjs:489-616`; produced `scripts/lib/app-task-continuation.mjs` final await validator; `scripts/lib/respawn.mjs:85-571`; `scripts/lib/headless-host.mjs:230-1596`; `scripts/hooks-impl/precompact-handoff.mjs:20-86`; produced `tests/app-task-continuation.test.mjs` CLI cases; `tests/orch-cli.test.mjs:246-286,831-1005`; `tests/cli-skillface.test.mjs:66-99,192-265`; `tests/respawn.test.mjs:1-1641`; `tests/headless-host.test.mjs:1-1898`; `tests/precompact-hook.test.mjs:1-367`; `tests/self-spawn-integration.test.mjs:1-465`; created `tests/fixtures/app-transition-worker.mjs`; created `tests/app-task-race.test.mjs`. |
+| 11A–11C | `scripts/deep-loop.mjs:489-616`; produced `scripts/lib/app-task-continuation.mjs` final await validator; `scripts/lib/respawn.mjs:85-571`; `scripts/lib/headless-host.mjs:230-1596`; `scripts/hooks-impl/precompact-handoff.mjs:20-86`; produced `tests/app-task-continuation.test.mjs` CLI cases; produced `tests/helpers/anchored-crash-worker.mjs`; `tests/orch-cli.test.mjs:246-286,831-1005`; `tests/cli-skillface.test.mjs:66-99,192-265`; `tests/respawn.test.mjs:1-1641`; `tests/headless-host.test.mjs:1-1898`; `tests/precompact-hook.test.mjs:1-367`; `tests/self-spawn-integration.test.mjs:1-465`; created `tests/fixtures/app-transition-worker.mjs`; created `tests/app-task-race.test.mjs`. |
 | 12A–12B | `scripts/lib/runtime-descriptor.mjs:37-81,408-444`; produced `scripts/lib/app-task-continuation.mjs` prepare action builder call; `tests/runtime-descriptor.test.mjs:1-99`; produced `tests/app-task-continuation.test.mjs` descriptor cases; `tests/orch-cli.test.mjs:246-286,831-1005`. |
 | 13A–13C | `skills/deep-loop/SKILL.md:14-20,118-213`; `skills/deep-loop-continue/SKILL.md:14-20,184-289`; `skills/deep-loop-handoff/SKILL.md:13-19,83-171`; `skills/deep-loop-resume/SKILL.md:13-104`; `skills/deep-loop-status/SKILL.md:9-90`; `skills/deep-loop-discover/SKILL.md:13-64`; `skills/deep-loop-workflow/references/handoff-respawn.md:1-224`; `skills/deep-loop-workflow/references/adapters.md:1-127`; `tests/skills.test.mjs:1-1176`; `tests/cli-skillface.test.mjs:1-265`. |
 | 14A–14C | Created `tests/helpers/fake-app-host.mjs`; created `tests/codex-app-task-continuation-integration.test.mjs` fake-host/lifecycle/failure cases. |
@@ -10067,6 +10067,105 @@ test6b('every direct append caller has literal request authority before the mand
     }
   }
 });
+
+const DIRECT_CALLER_AFTER_IMAGES7B = Object.freeze([
+  ['comprehension.mjs', 'ack', [
+    "directMutationOptions('comprehension-ack-human', fence, { episodeId, actor, confirm, humanApproved }",
+    "directMutationOptions('comprehension-ack-agent', fence, { episodeId, actor, confirm, humanApproved }",
+  ]],
+  ['detect-terminal.mjs', 'detectAndPersist', [
+    "directMutationOptions('terminal-detect-persist', fence, { observationDigest, detectedStatus }",
+  ]],
+  ['episode.mjs', 'createEpisode', [
+    'directMutationOptions(operation, fence, { plugin, role, kind, point, workstream, expectedArtifacts, targetMaker, reviewerResolution, evidence, contract, initialStatus, blockReason }',
+  ]],
+  ['episode.mjs', 'abandonEpisode', [
+    "directMutationOptions('episode-abandon', fence, { episodeId, reason, confirm }",
+  ]],
+  ['episode.mjs', 'recordEpisode', [
+    "directMutationOptions('episode-record', fence, { episodeId, status, artifacts, proof }",
+  ]],
+  ['handoff.mjs', 'emitHandoff', [
+    "directMutationOptions('handoff-emit-generic', expect, { reason, trigger, headless, appIntent, childRunId, key, authorityDigest }",
+  ]],
+  ['insights.mjs', 'emitInsights', [
+    "directMutationOptions('insights-emit', fence, { inputDigest: intentField('insights-input', completeInput) }",
+  ]],
+  ['recover.mjs', 'recoverRun', [
+    "directMutationOptions('recover-run', expect, { confirm, now }",
+  ]],
+  ['respawn.mjs', 'rollbackAndPause', [
+    "directMutationOptions('respawn-rollback-pause', { owner: parentOwner, generation }, { childRunId, eventData, pauseReason }",
+  ]],
+  ['respawn.mjs', 'preservePause', [
+    "directMutationOptions('respawn-timeout-preserve', { owner: parentOwner, generation }, { childRunId, pauseReason }",
+  ]],
+  ['respawn.mjs', 'respawn', [
+    "directMutationOptions('respawn-spawned', { owner: parentOwner, generation }, { childRunId, key, handoffRel, headless, attended, expectedMode }",
+  ]],
+  ['review.mjs', 'claimIndependentReview', [
+    "directMutationOptions('review-claim', fence, { resolution, point, targetMaker, evidence }",
+  ]],
+  ['review.mjs', 'blockIndependentReview', [
+    "directMutationOptions('review-block', fence, { resolution, point, targetMaker, reason }",
+  ]],
+  ['review.mjs', 'commitReviewOutcome', [
+    "directMutationOptions('review-outcome', fence, { targetMaker, verdict, evidence, artifacts, reviewerResolution }",
+  ]],
+  ['runtime-executable.mjs', 'approveLauncherExecutable', [
+    "directMutationOptions('launcher-executable-approve', fence, { candidate, approvalReceipt, runtime, confirm }",
+  ]],
+  ['runtime-executable.mjs', 'approveRuntimeExecutable', [
+    "directMutationOptions('runtime-executable-approve', fence, { candidate, approvalReceipt, runtime, confirm }",
+  ]],
+  ['session-profile.mjs', 'setSessionProfile', [
+    "directMutationOptions('session-profile-set', expect, { model, effort, now }",
+  ]],
+  ['spawn-optin.mjs', 'offerDesktop', [
+    "directMutationOptions('desktop-offer', expect, { now, ttlSec, nonce: issued }",
+  ]],
+  ['spawn-optin.mjs', 'confirmDesktop', [
+    "directMutationOptions('desktop-confirm', expect, { now, nonce, platform, probeDigest }",
+  ]],
+  ['spawn-optin.mjs', 'declineDesktop', [
+    "directMutationOptions('desktop-decline', expect, { now }",
+  ]],
+  ['spawn-optin.mjs', 'resetDesktop', [
+    "directMutationOptions('desktop-reset', expect, { now }",
+  ]],
+  ['state.mjs', 'patch', [
+    "directMutationOptions('state-patch', fence, { field, value_digest: intentField('state-patch-value', value) }",
+  ]],
+  ['state.mjs', 'pauseRun', [
+    "directMutationOptions('run-pause', expect, { reason, mode, now }",
+  ]],
+  ['workspace.mjs', 'newWorkstream', [
+    "directMutationOptions('workstream-new', fence, { title, branch, worktree: _storedWorktree, baseCommit, dependsOn }",
+  ]],
+  ['workspace.mjs', 'setWorkstreamStatus', [
+    "directMutationOptions('workstream-status', fence, { wsId, status }",
+  ]],
+  ['workspace.mjs', 'recordWorkstreamTerminal', [
+    "directMutationOptions('workstream-terminal', fence, { wsId, status, proofDigest }",
+  ]],
+  ['finish.mjs', 'finishRun', [
+    "directMutationOptions('finish-run', fence, { status, confirm, runtime, terminalIntent, proofDigest, reportDigest }",
+  ]],
+]);
+
+test6b('closed direct caller after-images bind every complete request in production source', () => {
+  for (const [file, name, afterImages] of DIRECT_CALLER_AFTER_IMAGES7B) {
+    const source = readSource7b(new URL(`../scripts/lib/${file}`, import.meta.url), 'utf8');
+    const match = new RegExp(`(?:export\\s+)?function\\s+${name}\\s*\\(`).exec(source);
+    assert6b.ok(match, `${file}:${name} missing`);
+    const next = source.indexOf('\nexport function ', match.index + match[0].length);
+    const body = source.slice(match.index, next < 0 ? source.length : next);
+    for (const afterImage of afterImages) {
+      assert6b.ok(body.includes(afterImage),
+        `${file}:${name} missing exact caller after-image: ${afterImage}`);
+    }
+  }
+});
 ```
 
 In the existing root-rebind corruption test, replace the legacy error expectation so it asserts the
@@ -10617,20 +10716,23 @@ is held so callers cannot mutate an unlocked shared reference:
 diff --git a/scripts/lib/integrity.mjs b/scripts/lib/integrity.mjs
 --- a/scripts/lib/integrity.mjs
 +++ b/scripts/lib/integrity.mjs
-@@ -1,3 +1,4 @@
+@@ -1,8 +1,12 @@
 -import { readFileSync, appendFileSync, existsSync } from 'node:fs';
 +import { appendFileSync, existsSync, lstatSync, readFileSync, readdirSync,
 +  truncateSync } from 'node:fs';
 +import { basename, join } from 'node:path';
 -import { join } from 'node:path';
  import { contentHash } from './envelope.mjs';
-@@ -5,2 +5,5 @@
+ import { runDir, readState, writeState, withLock } from './state.mjs';
  import { assertProjectRootBinding, canonicalProjectRoot, projectRootDigest } from './project-root.mjs';
 -import { validate } from './schema.mjs';
 +import { validate, verifyAppEventCorrelation } from './schema.mjs';
 +import { initializationRequestDigest } from './init-transaction.mjs';
 +import { replaceFileDurably, syncParentDirectory, syncRegularFile,
 +  unlinkRegularFile } from './durable-file.mjs';
+-
++
+ const logPath = (root, runId) => join(runDir(root, runId), 'event-log.jsonl');
 @@ -55,6 +55,3 @@
  export function recomputeSpent(root, runId) {
 -  return readLines(root, runId).filter(e => e.type === 'cost').reduce((acc, e) => {
@@ -10897,7 +10999,11 @@ function recoverAnchoredTransactionUnderLock(root, runId, marker) {
   const finalState = readFileSync(statePath);
   const finalHash = readFileSync(hashPath);
   assertSnapshotBytes(marker.after, finalEvents, finalState, finalHash, 'recovered candidate');
+  const recoveredEvents = stagedEvents.toString('utf8').split('\n').filter(Boolean)
+    .map(line => JSON.parse(line));
   removeJournal(paths);
+  return Object.freeze({ events: Object.freeze(recoveredEvents.map(event =>
+    Object.freeze(structuredClone(event)))) });
 }
 
 function publishAnchoredCandidateUnderLock(root, runId, {
@@ -10977,6 +11083,7 @@ export function authenticateVerifiedMutationCaller(root, runId, {
   if (typeof fenceCheck !== 'function') throw new Error('INVALID_FENCE_CHECK');
   return withLock(root, runId, () => {
     const marker = readAnchoredMarkerUnderLock(root, runId);
+    let recovered = null;
     if (marker !== null) {
       if (marker.caller.owner !== binding.owner
           || marker.caller.generation !== binding.generation) {
@@ -11042,7 +11149,7 @@ export function withVerifiedMutationLock(root, runId,
         throw new Error(intentConflictError);
       }
       // Uses raw exact before/after bytes recorded by the marker, not canonical public readers.
-      recoverAnchoredTransactionUnderLock(root, runId, marker);
+      recovered = recoverAnchoredTransactionUnderLock(root, runId, marker);
     }
     // Logical restart: the complete public operation begins its normal read/idempotency path only now.
     let active = true;
@@ -11050,7 +11157,7 @@ export function withVerifiedMutationLock(root, runId,
       if (!active) throw new Error('MUTATION_CONTEXT_EXPIRED');
     };
     const context = Object.freeze({
-      recovered: marker !== null,
+      recovered,
       readVerifiedState(options = {}) {
         assertActive();
         return readVerifiedStateUnderLock(root, runId, options);
@@ -11166,7 +11273,7 @@ helper is private, non-caller-selectable, and preserves callback event indexing 
 prepended event from `committed`.
 
 In this same task, install the mandatory gateway **only after** applying the closed caller migration
-below. “Mechanically update every” is not an implementation instruction and is forbidden here. Every
+below. Blanket migration prose is forbidden here. Every
 row names the exact complete request projection passed to `directMutationOptions`; the projection is
 hashed before it enters an event, marker, error, or response. Each call spreads the returned object
 into its existing final options object, after existing `floor|nowFn|crashProbe|fenceCheck` fields, and
@@ -11414,10 +11521,11 @@ bind the same durable request while branch/base/dependencies remain distinguishi
 diff --git a/scripts/lib/state.mjs b/scripts/lib/state.mjs
 --- a/scripts/lib/state.mjs
 +++ b/scripts/lib/state.mjs
-@@ -7,3 +7,4 @@
+@@ -6,4 +6,4 @@
  import { leaseCheck } from './lease.mjs';
--import { appendAnchored, MUTATION_TURN_FLOOR } from './integrity.mjs';
-+import { appendAnchored, MUTATION_TURN_FLOOR,
+-import { appendAnchored, assertVerifiedRunSnapshot,
+-  MUTATION_TURN_FLOOR } from './integrity.mjs';
++import { appendAnchored, assertVerifiedRunSnapshot, MUTATION_TURN_FLOOR,
 +  statePatchIntent } from './integrity.mjs';
  import { assertProjectRootBinding } from './project-root.mjs';
 @@ -120,4 +121,8 @@
@@ -11525,7 +11633,7 @@ evidence for crash safety:
 diff --git a/scripts/lib/state.mjs b/scripts/lib/state.mjs
 --- a/scripts/lib/state.mjs
 +++ b/scripts/lib/state.mjs
-@@ -102,5 +102,7 @@
+@@ -102,6 +102,8 @@
 -export function writeState(root, runId, data, { atomicWriteFn = atomicWrite } = {}) {
 +export function writeState(root, runId, data,
 +  { atomicWriteFn = atomicWrite, stampUpdatedAt = true } = {}) {
@@ -11535,6 +11643,7 @@ diff --git a/scripts/lib/state.mjs b/scripts/lib/state.mjs
    const v = validate(data);
    if (!v.ok) throw new Error(`SCHEMA_INVALID: ${v.errors.join('; ')}`);
 -  data.updated_at = new Date().toISOString();
+   const raw = JSON.stringify(data, null, 2);
 ```
 
 Synchronize the pre-App `finishRun` implementation with the same anchored clock now, because the
@@ -11549,13 +11658,12 @@ diff --git a/scripts/lib/finish.mjs b/scripts/lib/finish.mjs
 -import { appendAnchored } from './integrity.mjs';
 +import { appendAnchored, intentField, mutationIntentDigest } from './integrity.mjs';
  import { leaseCheck } from './lease.mjs';
-@@ -70,3 +70,4 @@
+@@ -70,5 +70,13 @@
 -export function finishRun(root, runId, { status, reportRel, proof = {}, confirm, fence, now = Date.now() } = {}) {
 +export function finishRun(root, runId, { status, reportRel, proof = {}, confirm, fence, now,
 +  nowFn = now === undefined ? Date.now : () => now, crashProbe } = {}) {
    // Codex r3 sf-3: fence 는 lib 레벨에서 **필수** (CLI 우회 호출도 fence 강제). newEpisode/recordEpisode 와 동일 규약.
    if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: finishRun');
-@@ -73,1 +74,8 @@
    let result;
 +  const callerBinding = { owner: fence.owner, generation: fence.generation };
 +  const intentDigest = mutationIntentDigest('finish-run', callerBinding, {
@@ -11564,8 +11672,8 @@ diff --git a/scripts/lib/finish.mjs b/scripts/lib/finish.mjs
 +    proof_digest: intentField('finish-proof', proof),
 +    report_digest: intentField('finish-report', reportRel),
 +  });
-@@ -74,7 +75,7 @@ export function finishRun(root, runId, { status, reportRel, proof = {}, confirm, fence, now = Date.now() } = {}) {
    appendAnchored(root, runId, { type: 'finish', data: { status, reportRel: reportRel || null } },
+@@ -75,6 +83,6 @@ export function finishRun(root, runId, { status, reportRel, proof = {}, confirm, fence, now = Date.now() } = {}) {
 -    (loop) => {
 +    (loop, _spent, clock) => {
        loop.status = status;
@@ -11574,7 +11682,7 @@ diff --git a/scripts/lib/finish.mjs b/scripts/lib/finish.mjs
 +      loop.termination.finished_at = clock.iso;
        if (reportRel) loop.termination.final_report = reportRel;
        result = { ok: true, status };
-@@ -101,5 +102,11 @@ export function finishRun(root, runId, { status, reportRel, proof = {}, confirm, fence, now = Date.now() } = {}) {
+@@ -101,6 +109,12 @@ export function finishRun(root, runId, { status, reportRel, proof = {}, confirm, fence, now = Date.now() } = {}) {
        const ps = finishProofState(loop);
        const real = reportRel ? containedRealFile(runDir(root, runId), reportRel) : null;
        if (!real) ps.missing.push('final-report-missing');
@@ -11587,6 +11695,7 @@ diff --git a/scripts/lib/finish.mjs b/scripts/lib/finish.mjs
 +        if (loop.status !== status) throw new Error('FINISH_RESPONSE_PROJECTION_CHANGED');
 +        result = { ok: true, status };
 +      } });
+   return result;
 ```
 
 Route the successful generic lease acquire through the prospective commit **in this task**. First
@@ -11597,17 +11706,21 @@ success-class no-op paths:
 diff --git a/scripts/lib/lease.mjs b/scripts/lib/lease.mjs
 --- a/scripts/lib/lease.mjs
 +++ b/scripts/lib/lease.mjs
-@@ -1,3 +1,5 @@
+@@ -1,5 +1,7 @@
  import { contentHash, ulid } from './envelope.mjs';
  import { runtimeFence } from './runtime.mjs';
  import { readState, writeState, withLock } from './state.mjs';
+-
 +import { commitVerifiedEventsUnderLock, readLines,
 +  withVerifiedMutationLock } from './integrity.mjs';
-@@ -59,3 +60,4 @@ export function acquireLease(root, runId, { owner, expectGeneration, runtime, now = Date.now() }) {
++
+ const PHASE_ORDER = { idle: 0, reserved: 1, emitted: 2, spawned: 3, acquired: 4 };
+@@ -59,4 +61,5 @@ export function acquireLease(root, runId, { owner, expectGeneration, runtime, now = Date.now() }) {
      if (lease.generation !== expectGeneration) {
        return { ok: false, generation: lease.generation, reason: 'generation-mismatch' };
      }
 +    const lines = readLines(root, runId);
+     // v1.6 (spec §2.3-6): generation CAS 직후·takeable 체크 앞 — stale expectGeneration은 위에서
 ```
 
 Replace `acquireLease`'s outer lock entry before applying the success-tail patch. The request intent
@@ -11618,12 +11731,14 @@ its exact hash for the possible legacy checkpoint:
 diff --git a/scripts/lib/lease.mjs b/scripts/lib/lease.mjs
 --- a/scripts/lib/lease.mjs
 +++ b/scripts/lib/lease.mjs
-@@ -43,5 +43,10 @@
+@@ -43,6 +43,11 @@
 -export function acquireLease(root, runId, { owner, expectGeneration, runtime, now = Date.now() }) {
-+export function acquireLease(root, runId, { owner, expectGeneration, runtime,
-+  now = Date.now(), crashProbe } = {}) {
+-  if (typeof owner !== 'string' || owner.length === 0) throw new Error('INVALID_OWNER');
 -  return withLock(root, runId, () => {
 -    const { data } = readState(root, runId);
++export function acquireLease(root, runId, { owner, expectGeneration, runtime,
++  now = Date.now(), crashProbe } = {}) {
++  if (typeof owner !== 'string' || owner.length === 0) throw new Error('INVALID_OWNER');
 +  const callerBinding = { owner, generation: expectGeneration };
 +  const intentDigest = contentHash(JSON.stringify({ operation: 'lease-acquire',
 +    owner, expectGeneration, runtime }));
@@ -11642,14 +11757,17 @@ candidate uses the exact event timestamp already proved in memory:
 diff --git a/scripts/lib/lease.mjs b/scripts/lib/lease.mjs
 --- a/scripts/lib/lease.mjs
 +++ b/scripts/lib/lease.mjs
-@@ -79,20 +81,27 @@ export function acquireLease(root, runId, { owner, expectGeneration, runtime, now = Date.now() }) {
+@@ -78,23 +78,28 @@ export function acquireLease(root, runId, { owner, expectGeneration, runtime, now = Date.now() }) {
+     const waspaused = data.status === 'paused';
 -    const iso = new Date(now).toISOString();
 -    data.session_chain.lease = {
 -      ...lease, owner_run_id: owner, generation: expectGeneration + 1,
--      acquired_at: iso, expires_at: null,
--      state: 'active', handoff_phase: 'acquired', handoff_idempotency_key: null,
--      handoff_child_run_id: null,
+-      acquired_at: iso, expires_at: null,   // active 소유자는 deadline 없음 → 무기한 write (renewal 불필요)
+-      state: 'active', handoff_phase: 'acquired', handoff_idempotency_key: null, handoff_child_run_id: null,
 -    };
+-    // Unpause (same transaction): covers BOTH preserve-resume (releasing+reserved-child) AND
+-    // recover-resume (released, no reserved child). This is the acquire-resume path that is
+-    // exempt from the RUN_PAUSED gate (Task 6 / leaseCheck intent='resume').
 -    if (waspaused) {
 -      data.status = 'running';
 -      data.pause_reason = null;
@@ -11815,6 +11933,7 @@ git commit -m "feat: verify semantic run snapshots" -m "Co-Authored-By: Claude O
 - Modify: `tests/budget.test.mjs`.
 - Modify: `tests/integrity.test.mjs`.
 - Modify: `tests/project-root.test.mjs`.
+- Modify: `tests/helpers/anchored-crash-worker.mjs` (four accounting hard-crash operations).
 
 **Interfaces:**
 - Consumes: Task 7B's `assertVerifiedRunSnapshot`, `readLines`, lock-owned
@@ -11968,6 +12087,138 @@ test('accounting fence precedes semantic proof and a correct caller cannot laund
 });
 ```
 
+Append this hard-process accounting recovery matrix to `tests/budget.test.mjs`. It reuses the exact
+fixture constructors already defined in that file and kills only after the authenticated marker is
+durable. Each public retry consumes `mutation.recovered.events`, proves its exact request-correlated
+cost, and returns without executing `commitMeasuredCost` again:
+
+```js
+import { spawnSync as spawnAccounting7c } from 'node:child_process';
+import { fileURLToPath as fileAccounting7c } from 'node:url';
+
+const ACCOUNTING_CRASH_POINTS7C = Object.freeze([
+  'pending-after-rename', 'event-after-partial-append', 'event-after-full-append',
+  'state-after-rename', 'hash-after-rename', 'before-cleanup',
+]);
+
+function accountingCrashCase7c(operation) {
+  if (operation === 'accounting-record') {
+    const fixture = floorRun();
+    const input = { turns: 3, tokens: 17, intent: fixture.fence.intent };
+    return { ...fixture, input,
+      retry: crashProbe => recordCost(fixture.root, fixture.runId,
+        { ...input, fence: fixture.fence, crashProbe }),
+      match: event => event.data?.reported_turns === input.turns
+        && event.data?.reported_tokens === input.tokens };
+  }
+  if (operation === 'accounting-preflight') {
+    const fixture = preflightReceiptFixture();
+    const input = { receipt: fixture.read };
+    return { ...fixture, input,
+      retry: crashProbe => settleCodexPreflightCost(fixture.root, fixture.runId,
+        { receipt: fixture.read, fence: fixture.fence, crashProbe }),
+      match: event => event.data?.preflight_receipt_id === fixture.read.receipt_id };
+  }
+  if (operation === 'accounting-process') {
+    const fixture = makerProcessReceiptFixture();
+    const input = { receipt: fixture.receipt };
+    return { ...fixture, input,
+      retry: crashProbe => settleCodexProcessCost(fixture.root, fixture.runId,
+        { receipt: fixture.receipt, fence: fixture.fence, crashProbe }),
+      match: event => event.data?.process_receipt_id === fixture.receipt.receipt_id };
+  }
+  const fixture = terminalCodexChildRun();
+  const usage = { num_turns: 1, input_tokens: 5, output_tokens: 7, tokens: 12 };
+  const fence = { owner: fixture.childRunId, generation: 2, intent: 'accounting' };
+  const input = { usage, handoffKey: fixture.handoffKey, intent: fence.intent };
+  return { ...fixture, fence, input,
+    retry: crashProbe => settleTerminalCodexMakerCost(fixture.root, fixture.runId,
+      { usage, fence, handoffKey: fixture.handoffKey, crashProbe }),
+    match: event => event.data?.terminal_process === 'codex-maker'
+      && event.data?.source === 'terminal-maker-measured' };
+}
+
+function assertAccountingCrash7c(operation, point) {
+  const fixture = accountingCrashCase7c(operation);
+  const before = readState(fixture.root, fixture.runId).data;
+  const child = spawnAccounting7c(process.execPath,
+    [fileAccounting7c(new URL('./helpers/anchored-crash-worker.mjs', import.meta.url)),
+      fixture.root, fixture.runId, operation, point], {
+      shell: false, encoding: 'utf8', timeout: 10_000,
+      env: { ...process.env, DEEP_LOOP_CRASH_OWNER: fixture.fence.owner,
+        DEEP_LOOP_CRASH_GENERATION: String(fixture.fence.generation),
+        DEEP_LOOP_CRASH_INPUT: JSON.stringify(fixture.input) },
+    });
+  assert.notEqual(child.error?.code, 'ETIMEDOUT');
+  assert.equal(child.status, 91, child.stderr || child.stdout || child.error?.message);
+  fixture.retry();
+  const costs = readLines(fixture.root, fixture.runId)
+    .filter(event => event.type === 'cost' && fixture.match(event));
+  assert.equal(costs.length, 1, `${operation}/${point}: duplicate cost`);
+  const after = readState(fixture.root, fixture.runId).data;
+  assert.equal(after.budget.spent - before.budget.spent, costs[0].data.turns);
+  assert.equal(after.budget.tokens_spent - before.budget.tokens_spent,
+    costs[0].data.tokens);
+  const beforeSession = before.session_chain.sessions
+    .find(item => item.run_id === costs[0].data.owner)?.turns ?? 0;
+  const afterSession = after.session_chain.sessions
+    .find(item => item.run_id === costs[0].data.owner)?.turns ?? 0;
+  assert.equal(afterSession - beforeSession, costs[0].data.turns);
+}
+
+test('four accounting writers recover every published marker without double charge', () => {
+  for (const operation of ['accounting-record', 'accounting-preflight',
+    'accounting-process', 'accounting-terminal-maker']) {
+    for (const point of ACCOUNTING_CRASH_POINTS7C) {
+      assertAccountingCrash7c(operation, point);
+    }
+  }
+});
+```
+
+Extend `tests/helpers/anchored-crash-worker.mjs` with the four real public operations. The worker
+passes the same serialized business input and a test-only crash seam; it does not write raw fixture
+bytes or synthesize a recovery result:
+
+```diff
+diff --git a/tests/helpers/anchored-crash-worker.mjs b/tests/helpers/anchored-crash-worker.mjs
+--- a/tests/helpers/anchored-crash-worker.mjs
++++ b/tests/helpers/anchored-crash-worker.mjs
+@@ -6 +6,4 @@
+ import { newWorkstream } from '../../scripts/lib/workspace.mjs';
++import { recordCost, settleCodexPreflightCost, settleCodexProcessCost,
++  settleTerminalCodexMakerCost }
++  from '../../scripts/lib/budget.mjs';
+@@ -20 +23,27 @@ const generic = Object.freeze({
++  'accounting-record': ({ root, runId, owner, generation, point, rawInput }) => {
++    const input = parseInput(rawInput, ['intent', 'tokens', 'turns']);
++    return recordCost(root, runId, { turns: input.turns, tokens: input.tokens,
++      fence: { owner, generation, intent: input.intent },
++      crashProbe: reached => { if (reached === point) process.exit(91); } });
++  },
++  'accounting-preflight': ({ root, runId, owner, generation, point, rawInput }) => {
++    const input = parseInput(rawInput, ['receipt']);
++    return settleCodexPreflightCost(root, runId, { receipt: input.receipt,
++      fence: { owner, generation, intent: 'accounting' },
++      crashProbe: reached => { if (reached === point) process.exit(91); } });
++  },
++  'accounting-process': ({ root, runId, owner, generation, point, rawInput }) => {
++    const input = parseInput(rawInput, ['receipt']);
++    return settleCodexProcessCost(root, runId, { receipt: input.receipt,
++      fence: { owner, generation, intent: 'accounting' },
++      crashProbe: reached => { if (reached === point) process.exit(91); } });
++  },
++  'accounting-terminal-maker': ({ root, runId, owner, generation, point,
++    rawInput }) => {
++    const input = parseInput(rawInput, ['handoffKey', 'intent', 'usage']);
++    return settleTerminalCodexMakerCost(root, runId, { usage: input.usage,
++      handoffKey: input.handoffKey,
++      fence: { owner, generation, intent: input.intent },
++      crashProbe: reached => { if (reached === point) process.exit(91); } });
++  },
+   'generic-append': ({ root, runId, owner, generation, point }) => appendAnchored(
+```
+
 Retrofit the legacy corruption expectations so Task 7C's regression run exercises the unified proof
 instead of expecting old partial-log errors or using production `writeState` as a raw tamper helper:
 
@@ -12005,9 +12256,82 @@ diff --git a/tests/budget.test.mjs b/tests/budget.test.mjs
    }
 ```
 
+Migrate every legitimate fence-less `recordCost` regression in this same task. Invalid numeric input
+still rejects before the fence check; the former fence-less terminal carve-out is replaced by the
+new mandatory-fence contract. No production or test success call remains fence-less:
+
+```diff
+diff --git a/tests/budget.test.mjs b/tests/budget.test.mjs
+--- a/tests/budget.test.mjs
++++ b/tests/budget.test.mjs
+@@ -32,2 +32,9 @@ function ownerSessionTurns(root, runId) {
+ }
++function recordMeasured7c(root, runId, options) {
++  const lease = readState(root, runId).data.session_chain.lease;
++  return recordCost(root, runId, { ...options,
++    fence: { owner: lease.owner_run_id, generation: lease.generation,
++      intent: 'accounting' },
++  });
++}
+ function mk(root, runId, fence, n) {
+@@ -1247,4 +1254,4 @@
+ test('recordCost syncs kernel-derived spent from event-log', () => {
+   const root = seedRun();
+-  recordCost(root, 'R', { turns: 5, tokens: 100 });
+-  recordCost(root, 'R', { turns: 3, tokens: 50 });
++  recordMeasured7c(root, 'R', { turns: 5, tokens: 100 });
++  recordMeasured7c(root, 'R', { turns: 3, tokens: 50 });
+@@ -1256,3 +1263,3 @@
+ test('reconcileBudget throws on stored/log mismatch', () => {
+   const root = seedRun();
+-  recordCost(root, 'R', { turns: 5, tokens: 0 });
++  recordMeasured7c(root, 'R', { turns: 5, tokens: 0 });
+@@ -1288,4 +1295,4 @@
+ test('reconcileBudget detects event-log suffix truncation', () => {
+   const root = seedRun();
+-  recordCost(root, 'R', { turns: 2, tokens: 0 });
+-  recordCost(root, 'R', { turns: 3, tokens: 0 });
++  recordMeasured7c(root, 'R', { turns: 2, tokens: 0 });
++  recordMeasured7c(root, 'R', { turns: 3, tokens: 0 });
+@@ -1304,3 +1311,3 @@
+ test('non-cost anchored append keeps reconcile consistent; its truncation is caught', () => {
+   const root = seedRun();
+-  recordCost(root, 'R', { turns: 2, tokens: 0 });
++  recordMeasured7c(root, 'R', { turns: 2, tokens: 0 });
+@@ -1403,4 +1410,4 @@
+   assert.throws(() => recordCost(root, runId, { turns: 1, tokens: 0, fence: { owner: runId, generation: 1, intent: 'accounting' } }), /LEASE_FENCED: RUN_TERMINAL/);
+-  // fence-less 직접 호출 → 자체 가드
+-  assert.throws(() => recordCost(root, runId, { turns: 1, tokens: 0 }), /RUN_TERMINAL: recordCost/);
++  // fence-less direct entry is no longer a mutation authority.
++  assert.throws(() => recordCost(root, runId, { turns: 1, tokens: 0 }), /BUDGET_ACCOUNTING_FENCE_REQUIRED/);
+   assert.equal(readState(root, runId).data.budget.spent, 0);
+diff --git a/tests/integrity.test.mjs b/tests/integrity.test.mjs
+--- a/tests/integrity.test.mjs
++++ b/tests/integrity.test.mjs
+@@ -43,3 +43,4 @@ test('appendAnchored fails closed on a truncated event log (no launder)', () => {
+   const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+-  recordCost(root, runId, { turns: 1, tokens: 10 });
+-  recordCost(root, runId, { turns: 1, tokens: 10 });
++  const fence = { owner: runId, generation: 1, intent: 'accounting' };
++  recordCost(root, runId, { turns: 1, tokens: 10, fence });
++  recordCost(root, runId, { turns: 1, tokens: 10, fence });
+@@ -55,2 +56,2 @@ test('appendAnchored fails closed on a truncated event log (no launder)', () => {
+-  assert.throws(() => recordCost(root, runId, { turns: 1, tokens: 10 }), /RUN_SNAPSHOT_INVALID/);
++  assert.throws(() => recordCost(root, runId, { turns: 1, tokens: 10, fence }), /RUN_SNAPSHOT_INVALID/);
+   // anchor must NOT have advanced (no laundering of the truncation)
+```
+
+After applying these exact replacements, run the closed call-site audit below. The only fence-less
+hits are the two deliberate invalid-number calls that terminate at `INVALID_COST` before authority;
+all other hits must show a literal `fence` in the same call expression:
+
+```bash
+rg -n -U "recordCost\([^;]+\)" scripts tests
+```
+
 - [ ] **Step 2: Run the direct-writer tests and verify RED**
 
-Run: `node --test --test-name-pattern='lease fences precede|four manual accounting|accounting fence precedes' tests/lease.test.mjs tests/budget.test.mjs`
+Run: `node --test --test-name-pattern='lease fences precede|four manual accounting|accounting fence precedes|four accounting writers recover' tests/lease.test.mjs tests/budget.test.mjs`
 
 Expected: FAIL because lease no-ops and the four accounting transactions do not consume Task 7B's
 proof/prospective APIs.
@@ -12021,33 +12345,42 @@ the first business/no-op decision:
 diff --git a/scripts/lib/lease.mjs b/scripts/lib/lease.mjs
 --- a/scripts/lib/lease.mjs
 +++ b/scripts/lib/lease.mjs
-@@ -1,5 +1,5 @@
+@@ -1,7 +1,7 @@
  import { contentHash, ulid } from './envelope.mjs';
  import { runtimeFence } from './runtime.mjs';
  import { readState, writeState, withLock } from './state.mjs';
 -import { commitVerifiedEventsUnderLock, readLines,
--  withVerifiedMutationLock } from './integrity.mjs';
 +import { assertVerifiedRunSnapshot, commitVerifiedEventsUnderLock, readLines,
-+  withVerifiedMutationLock } from './integrity.mjs';
-@@ -48,5 +49,6 @@ export function acquireLease(root, runId, { owner, expectGeneration, runtime, now = Date.now() }) {
-     const runtimeResult = runtimeFence(data, runtime);
-     if (!runtimeResult.ok) return runtimeResult;
+   withVerifiedMutationLock } from './integrity.mjs';
+-
++
+ const PHASE_ORDER = { idle: 0, reserved: 1, emitted: 2, spawned: 3, acquired: 4 };
+@@ -56,6 +56,7 @@
      const lease = data.session_chain.lease;
+     // 같은 owner 가 이미 active 면 멱등 (active 는 만료 deadline 이 없다 — Codex r2 🔴2)
      if (lease.owner_run_id === owner && lease.state === 'active') {
 +      assertVerifiedRunSnapshot(root, runId, data);
+       // v1.6 (spec §2.3-6, r5 P2-b): terminal+active(정상 finish 상태)에서 멱등 성공(already-owned)으로
+       // 위장 금지 — resume이 소유권 경계에서 명확히 거부되어야 한다.
        if (data.status === 'stopped' || data.status === 'completed') {
-@@ -60,4 +62,5 @@ export function acquireLease(root, runId, { owner, expectGeneration, runtime, now = Date.now() }) {
-     if (lease.generation !== expectGeneration) {
+@@ -67,6 +68,7 @@
        return { ok: false, generation: lease.generation, reason: 'generation-mismatch' };
      }
      const lines = readLines(root, runId);
 +    assertVerifiedRunSnapshot(root, runId, data, { lines });
-@@ -104,3 +107,4 @@ export function releaseLease(root, runId, { owner, generation }) {
+     // v1.6 (spec §2.3-6): generation CAS 직후·takeable 체크 앞 — stale expectGeneration은 위에서
+     // generation-mismatch(fence-first), generation이 맞는 terminal acquire는 여기서 안정적으로 run-terminal
+     // (기존 위치는 takeable 뒤라 terminal+released가 lease-not-takeable/child-not-reserved로 새었다).
+@@ -118,6 +120,7 @@
      const { data } = readState(root, runId);
      const lease = data.session_chain.lease;
      if (lease.owner_run_id !== owner || lease.generation !== generation) return { ok: false, reason: 'fenced' };
 +    assertVerifiedRunSnapshot(root, runId, data);
-@@ -122,12 +126,14 @@ export function reserveHandoff(root, runId, { trigger, now = Date.now(), expect } = {}) {
+     // Codex r3 🔴1: RUN_PAUSED — refuse to release when paused. An owner that got gate-blocked
+     // (rollbackAndPause) must not call releaseLease to bypass the `recover --confirm` audit path.
+     // leaseCheck intent='recover' (human-only) is the only way to resume from a paused run.
+@@ -134,6 +137,12 @@
+ export function reserveHandoff(root, runId, { trigger, now = Date.now(), expect } = {}) {
    return withLock(root, runId, () => {
      const { data } = readState(root, runId);
 +    const lease = data.session_chain.lease;
@@ -12056,9 +12389,10 @@ diff --git a/scripts/lib/lease.mjs b/scripts/lib/lease.mjs
 +        key: lease.handoff_idempotency_key, childRunId: lease.handoff_child_run_id };
 +    }
 +    assertVerifiedRunSnapshot(root, runId, data);
+     // v1.6 (spec §2.3-1): terminal run에는 새 handoff 예약 금지 — RUN_PAUSED 명시 차단과 대칭.
      if (data.status === 'completed' || data.status === 'stopped') {
        return { ok: false, reserved: false, reason: 'RUN_TERMINAL', key: null, childRunId: null };
-     }
+@@ -141,10 +150,6 @@
      if (data.status === 'paused') {
        return { ok: false, reserved: false, reason: 'RUN_PAUSED', key: null, childRunId: null };
      }
@@ -12066,9 +12400,13 @@ diff --git a/scripts/lib/lease.mjs b/scripts/lib/lease.mjs
 -    if (expect && (lease.owner_run_id !== expect.owner || lease.generation !== expect.generation)) {
 -      return { ok: false, reserved: false, reason: 'fenced', key: lease.handoff_idempotency_key, childRunId: lease.handoff_child_run_id };
 -    }
-@@ -154,7 +160,10 @@ export function advanceHandoffPhase(root, runId, { key, toPhase, now = Date.now(), expect } = {}) {
-   return withLock(root, runId, () => {
+     const key = deriveIdempotencyKey(lease.owner_run_id, lease.generation, trigger);
+     if (lease.handoff_phase === 'idle' || lease.handoff_phase === 'acquired') {
+       // Codex r3 🔴1: childRunId 를 **예약 시점에 결정·영속**한다. 동시/재진입 emit 이 같은 child 를 보게 되어
+@@ -164,11 +169,14 @@
      const { data } = readState(root, runId);
+     // v1.6 (spec §2.3-3): terminal run의 handoff 전진 금지 — reserve↔advance 사이 finish 경합 및
+     // 구버전 오염 상태(terminal+emitted 등)에 대한 방어-심층. respawn은 이 reason을 outcome:'terminal'로 전파.
 -    if (data.status === 'completed' || data.status === 'stopped') return { ok: false, reason: 'RUN_TERMINAL' };
      const lease = data.session_chain.lease;
      if (expect && (lease.owner_run_id !== expect.owner || lease.generation !== expect.generation)) {
@@ -12078,11 +12416,18 @@ diff --git a/scripts/lib/lease.mjs b/scripts/lib/lease.mjs
 +    if (data.status === 'completed' || data.status === 'stopped') {
 +      return { ok: false, reason: 'RUN_TERMINAL' };
 +    }
-@@ -181,3 +189,4 @@ export function rollbackHandoff(root, runId, { owner, generation }) {
+     if (lease.handoff_idempotency_key !== key) return { ok: false, reason: 'key-mismatch' };
+     const cur = PHASE_ORDER[lease.handoff_phase];
+     const next = PHASE_ORDER[toPhase];
+@@ -193,7 +201,8 @@
+   return withLock(root, runId, () => {
      const { data } = readState(root, runId);
      const lease = data.session_chain.lease;
      if (lease.owner_run_id !== owner || lease.generation !== generation) return { ok: false, reason: 'fenced' };
 +    assertVerifiedRunSnapshot(root, runId, data);
+     const terminal = data.status === 'completed' || data.status === 'stopped';
+     // terminal + 잔여 없음(idle, key/child null) → write 없는 no-op (plan r2 P1: 정상-finish 후
+     // emitHandoff 거부 경로의 무조건 보상 호출이 idle lease를 다시 쓰지 않도록).
 ```
 
 Do not alter Task 7B's successful generic-acquire mutation in this task. This diff only inserts
@@ -12097,7 +12442,7 @@ The adapter mutates only its clone, so every thrown accounting invariant precede
 diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 --- a/scripts/lib/budget.mjs
 +++ b/scripts/lib/budget.mjs
-@@ -1,11 +1,13 @@
+@@ -1,6 +1,8 @@
  import {
 -  appendEvent,
 -  lastLogHead,
@@ -12108,23 +12453,25 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
    MUTATION_TURN_FLOOR,
    readLines,
    recomputeSpent,
-   verifyLog,
+@@ -8,8 +10,8 @@
    verifyHead,
    validCost,
  } from './integrity.mjs';
 -import { readState, writeState, withLock } from './state.mjs';
 +import { readState, withLock } from './state.mjs';
-@@ -12,3 +12,3 @@
  import { leaseCheck } from './lease.mjs';
 -import { sessionRuntime } from './runtime.mjs';
 +import { runtimeFence, sessionRuntime } from './runtime.mjs';
  import { contentHash } from './envelope.mjs';
-@@ -273,2 +273,15 @@
+ import { canonicalProjectRoot, projectRootDigest } from './project-root.mjs';
+@@ -273,4 +275,34 @@
    return { tf, tk };
  }
+-
 +
 +function commitMeasuredCost(root, runId, loop, lines, baseStateHash, eventData,
-+  { owner, addedTurns, callerBinding, intentDigest, requireSession = true }) {
++  { owner, addedTurns, callerBinding, intentDigest, requireSession = true,
++    crashProbe }) {
 +  return commitVerifiedEventsUnderLock(root, runId, loop,
 +    [{ type: 'cost', data: eventData }], (candidate, spent) => {
 +      candidate.budget.spent = spent.turns;
@@ -12133,8 +12480,26 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 +        .find(item => item.run_id === owner);
 +      if (!session && requireSession) throw new Error('ACCOUNTING_SESSION_INVALID');
 +      if (session) session.turns = (session.turns || 0) + addedTurns;
-+    }, { baseLines: lines, baseStateHash, callerBinding, intentDigest });
++    }, { baseLines: lines, baseStateHash, callerBinding, intentDigest, crashProbe });
 +}
++
++function recoveredCostEvent(root, runId, mutation, predicate) {
++  if (mutation.recovered === null) return false;
++  mutation.readVerifiedState();
++  const recovered = mutation.recovered.events.filter(event =>
++    event.type === 'cost' && predicate(event));
++  if (recovered.length !== 1) {
++    throw new Error('ACCOUNTING_RECOVERY_PROJECTION_MISMATCH');
++  }
++  const durable = readLines(root, runId).filter(event =>
++    event.seq === recovered[0].seq && event.checksum === recovered[0].checksum);
++  if (durable.length !== 1 || !predicate(durable[0])) {
++    throw new Error('ACCOUNTING_RECOVERY_PROJECTION_MISMATCH');
++  }
++  return true;
++}
++
+ // Explicit cost report — its own withLock (needs to read the log to absorb the tick's floor before appending an
 ```
 
 For each of the four public accounting writers, the exact prefix hunks below validate the explicit
@@ -12171,11 +12536,24 @@ business result therefore follows semantic verification:
 diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 --- a/scripts/lib/budget.mjs
 +++ b/scripts/lib/budget.mjs
-@@ -279,4 +279,12 @@
- export function recordCost(root, runId, { turns = 0, tokens = 0, fence } = {}) {
+@@ -308,19 +308,39 @@
+ // Explicit cost report — its own withLock (needs to read the log to absorb the tick's floor before appending an
+ // ADJUSTED cost). Mirrors appendAnchored's verify→append→anchor→reconcile sequence; recomputeSpent stays a PURE
+ // sum so reconcileBudget agrees automatically. Negative/non-finite still rejected (validCost).
+-export function recordCost(root, runId, { turns = 0, tokens = 0, fence } = {}) {
++export function recordCost(root, runId, {
++  turns = 0, tokens = 0, fence, crashProbe,
++} = {}) {
    if (!validCost({ turns, tokens })) throw new Error(`INVALID_COST: turns/tokens must be finite >= 0 (got ${turns}/${tokens})`);
 -  return withLock(root, runId, () => {
 -    const { data: loop } = readState(root, runId);
+-    if (fence) { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
+-    // v1.6 (spec §2.3-7): recordCost는 자체 appendEvent+writeState 경로(appendAnchored 관문 비경유).
+-    // fence가 있으면 위 leaseCheck가 LEASE_FENCED: RUN_TERMINAL로 선착 — drive-headless의 LEASE_FENCED
+-    // swallow 계약 보존(순서가 계약). fence-less 직접 호출만 이 자체 가드가 잡는다.
+-    if (loop.status === 'completed' || loop.status === 'stopped') throw new Error('RUN_TERMINAL: recordCost');
+-    const v = verifyLog(root, runId); if (!v.ok) throw new Error(`LOG_TAMPERED: ${v.errors.join('; ')}`);
+-    const h = verifyHead(root, runId, loop.event_log_head); if (!h.ok) throw new Error(`LOG_TAMPERED: ${h.errors.join('; ')}`);
 +  if (!fence || typeof fence.owner !== 'string'
 +      || !Number.isSafeInteger(fence.generation) || fence.generation < 1) {
 +    throw new Error('BUDGET_ACCOUNTING_FENCE_REQUIRED');
@@ -12184,16 +12562,12 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 +  const intentDigest = mutationIntentDigest('budget-record', callerBinding,
 +    { turns, tokens, runtime: fence.runtime ?? null, intent: fence.intent ?? null });
 +  return withVerifiedMutationLock(root, runId, { callerBinding, intentDigest,
-+    fenceError: 'BUDGET_FENCED: record' }, () => {
++    fenceError: 'BUDGET_FENCED: record' }, mutation => {
++    if (recoveredCostEvent(root, runId, mutation, event =>
++      event.data?.reported_turns === turns && event.data?.reported_tokens === tokens
++      && event.data?.owner === fence.owner
++      && event.data?.generation === fence.generation)) return;
 +    const { data: loop, hash: baseStateHash } = readState(root, runId);
-@@ -283,9 +292,15 @@ export function recordCost(root, runId, { turns = 0, tokens = 0, fence } = {}) {
--    if (fence) { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
--    // v1.6 (spec §2.3-7): recordCost는 자체 appendEvent+writeState 경로(appendAnchored 관문 비경유).
--    // fence가 있으면 위 leaseCheck가 LEASE_FENCED: RUN_TERMINAL로 선착 — drive-headless의 LEASE_FENCED
--    // swallow 계약 보존(순서가 계약). fence-less 직접 호출만 이 자체 가드가 잡는다.
--    if (loop.status === 'completed' || loop.status === 'stopped') throw new Error('RUN_TERMINAL: recordCost');
--    const v = verifyLog(root, runId); if (!v.ok) throw new Error(`LOG_TAMPERED: ${v.errors.join('; ')}`);
--    const h = verifyHead(root, runId, loop.event_log_head); if (!h.ok) throw new Error(`LOG_TAMPERED: ${h.errors.join('; ')}`);
      const lease = loop.session_chain?.lease || {};
 -    const { tf, tk } = trailingFloor(readLines(root, runId), lease.owner_run_id, lease.generation);   // this session's tick floor only
 +    if (fence) {
@@ -12210,7 +12584,20 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 +    }
 +    if (loop.status === 'completed' || loop.status === 'stopped') throw new Error('RUN_TERMINAL: recordCost');
 +    const { tf, tk } = trailingFloor(lines, lease.owner_run_id, lease.generation);   // this session's tick floor only
-@@ -421,3 +436,7 @@ export function settleCodexPreflightCost(root, runId, { receipt, fence } = {}) {
+     const adjTurns = Math.max(0, turns - tf), adjTokens = Math.max(0, tokens - tk);   // tick contribution = max(reported, floor-sum)
+     appendEvent(root, runId, { type: 'cost', data: { turns: adjTurns, tokens: adjTokens, reported_turns: turns, reported_tokens: tokens, owner: lease.owner_run_id, generation: lease.generation } });
+     loop.event_log_head = lastLogHead(root, runId);
+@@ -444,26 +464,32 @@
+ // A successful Codex preflight smoke is represented by an immutable, hash-bound receipt before an active cache
+ // can be published. The current accounting fence authorizes settlement, while the receipt's origin session owns
+ // the charge. An identical retry is a byte-preserving no-op even after the lease has legitimately advanced.
+-export function settleCodexPreflightCost(root, runId, { receipt, fence } = {}) {
++export function settleCodexPreflightCost(root, runId, { receipt, fence, crashProbe } = {}) {
+   const exact = { ...validateCodexPreflightReceipt(root, runId, receipt), __root: canonicalProjectRoot(root) };
+   if (!fence || typeof fence.owner !== 'string' || fence.owner.length === 0
+     || !Number.isInteger(fence.generation) || fence.generation < 1
+     || fence.intent !== 'accounting') {
+     throw new Error('PREFLIGHT_ACCOUNTING_FENCE_REQUIRED');
    }
 -  return withLock(root, runId, () => {
 -    const { data: loop } = readState(root, runId);
@@ -12218,16 +12605,40 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 +  const intentDigest = mutationIntentDigest('budget-preflight-settle', callerBinding,
 +    { receipt_digest: contentHash(JSON.stringify(exact)) });
 +  return withVerifiedMutationLock(root, runId, { callerBinding, intentDigest,
-+    fenceError: 'BUDGET_FENCED: preflight' }, () => {
++    fenceError: 'BUDGET_FENCED: preflight' }, mutation => {
++    if (recoveredCostEvent(root, runId, mutation, event =>
++      event.data?.preflight_receipt_id === exact.receipt_id
++      && event.data?.preflight_cache_key === exact.cache_key)) {
++      return { ok: true, recorded: true, reason: 'recorded' };
++    }
 +    const { data: loop, hash: baseStateHash } = readState(root, runId);
-@@ -430,5 +430,2 @@ export function settleCodexPreflightCost(root, runId, { receipt, fence } = {}) {
+     const lease = loop.session_chain?.lease || {};
+     if (lease.owner_run_id !== fence.owner) throw new Error('LEASE_FENCED: owner-mismatch');
+     if (lease.generation !== fence.generation) throw new Error('LEASE_FENCED: generation-mismatch');
+     if (sessionRuntime(loop) !== 'codex') {
+       throw new Error('RUNTIME_FENCED: preflight accounting requires codex');
+     }
 -    const verified = verifyLog(root, runId);
 -    if (!verified.ok) throw new Error(`LOG_TAMPERED: ${verified.errors.join('; ')}`);
 -    const anchored = verifyHead(root, runId, loop.event_log_head);
 -    if (!anchored.ok) throw new Error(`LOG_TAMPERED: ${anchored.errors.join('; ')}`);
      const lines = readLines(root, runId);
 +    assertVerifiedRunSnapshot(root, runId, loop, { lines });
-@@ -842,3 +856,7 @@ export function settleCodexProcessCost(root, runId, { receipt, fence } = {}) {
+     const originSession = (loop.session_chain?.sessions || [])
+       .find(session => session.run_id === exact.owner);
+     if (!originSession || !Number.isSafeInteger(originSession.turns) || originSession.turns < 0) {
+@@ -862,7 +888,7 @@
+ // Settlement is authorized by the current accounting fence, but charges the context-derived origin session.
+ // Terminal exceptions are limited to the exact acquired maker with handoff + finish proof and the exact stopped,
+ // pre-import checker with claim + finish proof. Neither branch can alter proof, status, lease, or event shape.
+-export function settleCodexProcessCost(root, runId, { receipt, fence } = {}) {
++export function settleCodexProcessCost(root, runId, { receipt, fence, crashProbe } = {}) {
+   if (receipt?.contract === CODEX_PREFLIGHT_RECEIPT_CONTRACT) {
+     return settleCodexPreflightCost(root, runId, { receipt, fence });
+   }
+@@ -872,19 +898,25 @@
+     || fence.intent !== 'accounting') {
+     throw new Error('PROCESS_ACCOUNTING_FENCE_REQUIRED');
    }
 -  return withLock(root, runId, () => {
 -    const { data: loop } = readState(root, runId);
@@ -12235,16 +12646,40 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 +  const intentDigest = mutationIntentDigest('budget-process-settle', callerBinding,
 +    { receipt_digest: contentHash(JSON.stringify(exact)) });
 +  return withVerifiedMutationLock(root, runId, { callerBinding, intentDigest,
-+    fenceError: 'BUDGET_FENCED: process' }, () => {
++    fenceError: 'BUDGET_FENCED: process' }, mutation => {
++    if (recoveredCostEvent(root, runId, mutation, event =>
++      event.data?.process_receipt_id === exact.receipt_id
++      && event.data?.process_kind === exact.process_kind)) {
++      return { ok: true, recorded: true, reason: 'recorded' };
++    }
 +    const { data: loop, hash: baseStateHash } = readState(root, runId);
-@@ -851,5 +848,2 @@ export function settleCodexProcessCost(root, runId, { receipt, fence } = {}) {
+     const lease = loop.session_chain?.lease || {};
+     if (lease.owner_run_id !== fence.owner) throw new Error('LEASE_FENCED: owner-mismatch');
+     if (lease.generation !== fence.generation) throw new Error('LEASE_FENCED: generation-mismatch');
+     if (sessionRuntime(loop) !== 'codex') {
+       throw new Error('RUNTIME_FENCED: process accounting requires codex');
+     }
 -    const verified = verifyLog(root, runId);
 -    if (!verified.ok) throw new Error(`LOG_TAMPERED: ${verified.errors.join('; ')}`);
 -    const anchored = verifyHead(root, runId, loop.event_log_head);
 -    if (!anchored.ok) throw new Error(`LOG_TAMPERED: ${anchored.errors.join('; ')}`);
      const lines = readLines(root, runId);
 +    assertVerifiedRunSnapshot(root, runId, loop, { lines });
-@@ -947,5 +966,9 @@ export function settleTerminalCodexMakerCost(root, runId, { usage, fence, handoffKey } = {}) {
+     const receiptEvents = lines.filter(event => event.type === 'cost'
+       && event.data?.process_receipt_id === exact.receipt_id);
+     const identityEvents = lines.filter(event => sameProcessIdentity(event, exact));
+@@ -971,7 +1003,9 @@
+ // the one narrow settlement path: it accepts only one measured Codex turn, for the exact acquired child lease,
+ // after a kernel-authored matching finish event. It is deliberately not exposed by the CLI and cannot mutate
+ // status, proof, lease, or any caller-selected field/event. An identical retry is a no-write idempotent success.
+-export function settleTerminalCodexMakerCost(root, runId, { usage, fence, handoffKey } = {}) {
++export function settleTerminalCodexMakerCost(root, runId, {
++  usage, fence, handoffKey, crashProbe,
++} = {}) {
+   if (!isMeasuredOneTurnUsage(usage)) throw new Error('TERMINAL_ACCOUNTING_USAGE_INVALID');
+   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)
+     || fence.intent !== 'accounting') {
+@@ -980,13 +1014,28 @@
    if (typeof handoffKey !== 'string' || !/^[a-f0-9]{16}$/.test(handoffKey)) {
      throw new Error('TERMINAL_ACCOUNTING_HANDOFF_INVALID');
    }
@@ -12254,22 +12689,41 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 +  const intentDigest = mutationIntentDigest('budget-terminal-maker-settle', callerBinding,
 +    { usage_digest: contentHash(JSON.stringify(usage)), handoff_key: handoffKey });
 +  return withVerifiedMutationLock(root, runId, { callerBinding, intentDigest,
-+    fenceError: 'BUDGET_FENCED: terminal-maker' }, () => {
++    fenceError: 'BUDGET_FENCED: terminal-maker' }, mutation => {
++    if (recoveredCostEvent(root, runId, mutation, event =>
++      event.data?.terminal_process === 'codex-maker'
++      && event.data?.source === 'terminal-maker-measured'
++      && event.data?.reported_turns === usage.num_turns
++      && event.data?.reported_tokens === usage.tokens
++      && event.data?.owner === fence.owner
++      && event.data?.generation === fence.generation)) {
++      return { ok: true, recorded: true, reason: 'recorded' };
++    }
 +    const { data: loop, hash: baseStateHash } = readState(root, runId);
-@@ -956,2 +950,4 @@ export function settleTerminalCodexMakerCost(root, runId, { usage, fence, handoffKey } = {}) {
+     const lease = loop.session_chain?.lease || {};
+     if (lease.owner_run_id !== fence.owner) throw new Error('LEASE_FENCED: owner-mismatch');
+     if (lease.generation !== fence.generation) throw new Error('LEASE_FENCED: generation-mismatch');
 -    if (loop.status !== 'completed' && loop.status !== 'stopped') throw new Error('RUN_NOT_TERMINAL: terminal maker settlement');
      if (sessionRuntime(loop) !== 'codex') throw new Error('RUNTIME_FENCED: terminal maker settlement requires codex');
 +    const lines = readLines(root, runId);
 +    assertVerifiedRunSnapshot(root, runId, loop, { lines });
 +    if (loop.status !== 'completed' && loop.status !== 'stopped') throw new Error('RUN_NOT_TERMINAL: terminal maker settlement');
-@@ -969,7 +965,2 @@ export function settleTerminalCodexMakerCost(root, runId, { usage, fence, handoffKey } = {}) {
+     if (lease.state !== 'active' || lease.handoff_phase !== 'acquired') {
+       throw new Error('TERMINAL_ACCOUNTING_CHILD_NOT_ACQUIRED');
      }
+@@ -998,12 +1047,6 @@
+     if (!Number.isSafeInteger(session.turns) || session.turns < 0) {
+       throw new Error('TERMINAL_ACCOUNTING_SESSION_INVALID');
+     }
+-
 -    const v = verifyLog(root, runId);
 -    if (!v.ok) throw new Error(`LOG_TAMPERED: ${v.errors.join('; ')}`);
 -    const h = verifyHead(root, runId, loop.event_log_head);
 -    if (!h.ok) throw new Error(`LOG_TAMPERED: ${h.errors.join('; ')}`);
 -    const lines = readLines(root, runId);
      const finishes = lines.filter(event => event.type === 'finish');
+     const finish = finishes[0];
+     if (finishes.length !== 1 || finish.data?.status !== loop.status
 ```
 
 Finally apply these four complete event/candidate tail replacements. Every event field below is the
@@ -12283,7 +12737,7 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
      const adjTurns = Math.max(0, turns - tf), adjTokens = Math.max(0, tokens - tk);   // tick contribution = max(reported, floor-sum)
 -    appendEvent(root, runId, { type: 'cost', data: { turns: adjTurns, tokens: adjTokens, reported_turns: turns, reported_tokens: tokens, owner: lease.owner_run_id, generation: lease.generation } });
 -    loop.event_log_head = lastLogHead(root, runId);
--    const spent = recomputeSpent(root, runId);
+-    const spent = recomputeSpent(root, runId);   // pure sum = prior + floors + adjusted = prior-session floors + max(reported, this-session floors)
 -    loop.budget.spent = spent.turns;
 -    loop.budget.tokens_spent = spent.tokens;
 -    // per_session_turn_cap 판정용 session.turns 도 max-rule을 따른다 — 이 tick 기여분 = tf(이미 floor로 반영) + adjTurns.
@@ -12294,9 +12748,9 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 +      reported_tokens: tokens, owner: lease.owner_run_id, generation: lease.generation };
 +    commitMeasuredCost(root, runId, loop, lines, baseStateHash, eventData,
 +      { owner: lease.owner_run_id, addedTurns: adjTurns, callerBinding, intentDigest,
-+        requireSession: false });
++        requireSession: false, crashProbe });
    });
-@@ -463,30 +458,23 @@ export function settleCodexPreflightCost(root, runId, { receipt, fence } = {}) {
+@@ -463,30 +458,24 @@ export function settleCodexPreflightCost(root, runId, { receipt, fence } = {}) {
 -    appendEvent(root, runId, {
 -      type: 'cost',
 -      data: {
@@ -12329,9 +12783,10 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 -    writeState(root, runId, loop);
 +    };
 +    commitMeasuredCost(root, runId, loop, lines, baseStateHash, eventData,
-+      { owner: exact.owner, addedTurns: adjustedTurns, callerBinding, intentDigest });
++      { owner: exact.owner, addedTurns: adjustedTurns, callerBinding, intentDigest,
++        crashProbe });
      return { ok: true, recorded: true, reason: 'recorded' };
-@@ -903,31 +891,24 @@ export function settleCodexProcessCost(root, runId, { receipt, fence } = {}) {
+@@ -903,31 +891,25 @@ export function settleCodexProcessCost(root, runId, { receipt, fence } = {}) {
 -    appendEvent(root, runId, {
 -      type: 'cost',
 -      data: {
@@ -12365,9 +12820,10 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 -    writeState(root, runId, loop);
 +    };
 +    commitMeasuredCost(root, runId, loop, lines, baseStateHash, eventData,
-+      { owner: origin.owner, addedTurns: adjustedTurns, callerBinding, intentDigest });
++      { owner: origin.owner, addedTurns: adjustedTurns, callerBinding, intentDigest,
++        crashProbe });
      return { ok: true, recorded: true, reason: 'recorded' };
-@@ -1025,25 +1007,18 @@ export function settleTerminalCodexMakerCost(root, runId, { usage, fence, handoffKey } = {}) {
+@@ -1025,25 +1007,19 @@ export function settleTerminalCodexMakerCost(root, runId, { usage, fence, handoffKey } = {}) {
 -    appendEvent(root, runId, {
 -      type: 'cost',
 -      data: {
@@ -12395,13 +12851,14 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 -    writeState(root, runId, loop);
 +    };
 +    commitMeasuredCost(root, runId, loop, lines, baseStateHash, eventData,
-+      { owner: fence.owner, addedTurns: adjTurns, callerBinding, intentDigest });
++      { owner: fence.owner, addedTurns: adjTurns, callerBinding, intentDigest,
++        crashProbe });
      return { ok: true, recorded: true, reason: 'recorded' };
 ```
 
 - [ ] **Step 4: Run the direct-writer tests and verify GREEN**
 
-Run: `node --test --test-name-pattern='lease fences precede|four manual accounting|accounting fence precedes' tests/lease.test.mjs tests/budget.test.mjs`
+Run: `node --test --test-name-pattern='lease fences precede|four manual accounting|accounting fence precedes|four accounting writers recover' tests/lease.test.mjs tests/budget.test.mjs`
 
 Expected: PASS with wrong-caller precedence, proof before every no-op, no raw `appendEvent` in the
 four owned writers, and byte-identical refusal.
@@ -12417,7 +12874,7 @@ Expected: PASS; measured duplicate receipts remain write-free and exact accounti
 Run:
 
 ```bash
-git diff -- scripts/lib/lease.mjs scripts/lib/budget.mjs tests/lease.test.mjs tests/budget.test.mjs tests/integrity.test.mjs tests/project-root.test.mjs
+git diff -- scripts/lib/lease.mjs scripts/lib/budget.mjs tests/helpers/anchored-crash-worker.mjs tests/lease.test.mjs tests/budget.test.mjs tests/integrity.test.mjs tests/project-root.test.mjs
 rg -n "appendEvent\(|commitMeasuredCost|assertVerifiedRunSnapshot|already-" scripts/lib/lease.mjs scripts/lib/budget.mjs
 git diff --check
 ```
@@ -12429,7 +12886,7 @@ event/state byte is written before prospective verification.
 - [ ] **Step 7: Commit the direct-writer slice**
 
 ```bash
-git add scripts/lib/lease.mjs scripts/lib/budget.mjs tests/lease.test.mjs tests/budget.test.mjs tests/integrity.test.mjs tests/project-root.test.mjs
+git add scripts/lib/lease.mjs scripts/lib/budget.mjs tests/helpers/anchored-crash-worker.mjs tests/lease.test.mjs tests/budget.test.mjs tests/integrity.test.mjs tests/project-root.test.mjs
 git commit -m "fix: verify lease and accounting writers" -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
 
@@ -21731,6 +22188,7 @@ git commit -m "feat: complete fenced App task CLI" -m "Co-Authored-By: Claude Op
 - Modify: `tests/precompact-hook.test.mjs` at verified hook authority and App isolation.
 - Modify: `tests/self-spawn-integration.test.mjs` at compatibility-fixture migration.
 - Modify: `tests/orch-cli.test.mjs` at respawn fence/proof precedence.
+- Modify: `tests/helpers/anchored-crash-worker.mjs` at public respawn compensation operations.
 - Reuse without modification: tests/fixtures/verified-app-run.mjs for durableRunBytes and rawHashValidState corruption fixtures.
 
 **Interfaces:**
@@ -22257,12 +22715,76 @@ test('respawn CLI fences wrong corrupt callers and proves matching and dry-run r
 });
 ```
 
+Append these exact source and hard-process tests to `tests/respawn.test.mjs`:
+
+```js
+import { spawnSync as spawnRespawn11b } from 'node:child_process';
+import { fileURLToPath as fileRespawn11b } from 'node:url';
+
+test('public respawn compensation uses one public intent and no private marker operation', () => {
+  const source = readFileSync(new URL('../scripts/lib/respawn.mjs', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /operation:\s*'respawn-(?:rollback-pause|timeout-preserve)'/);
+  assert.match(source, /const rollback = args => runRespawnCompensation\([\s\S]*mutation => rollbackAndPause\([\s\S]*mutation/);
+  assert.match(source, /const preserve = args => runRespawnCompensation\([\s\S]*mutation => preservePause\([\s\S]*mutation/);
+  const publicBody = source.slice(source.indexOf('export function respawn('));
+  assert.equal((publicBody.match(/rollbackAndPause\(/g) || []).length, 1,
+    'only the same-intent rollback closure may name the private helper');
+  assert.equal((publicBody.match(/preservePause\(/g) || []).length, 1,
+    'only the same-intent preserve closure may name the private helper');
+  assert.match(publicBody, /recoveredRespawnCompensation\(mutation, operationInput\)/);
+});
+
+function compensationCrash11b(kind) {
+  const fixture = seedLauncher();
+  const handoff = emitHandoff(fixture.root, fixture.runId,
+    { trigger: `compensation-${kind}`, now: NOW1, expect: expect_(fixture.runId) });
+  const input = { kind, childRunId: handoff.childRunId, key: handoff.key,
+    handoffRel: handoff.handoffRel, attended: true, now: NOW1 };
+  return { ...fixture, handoff, input };
+}
+
+test('public respawn retry recovers rollback and timeout markers without a second spawn', () => {
+  for (const kind of ['rollback', 'timeout']) {
+    for (const point of ['pending-after-rename', 'event-after-partial-append',
+      'state-after-rename', 'hash-after-rename', 'before-cleanup']) {
+      const fixture = compensationCrash11b(kind);
+      const worker = spawnRespawn11b(process.execPath,
+        [fileRespawn11b(new URL('./helpers/anchored-crash-worker.mjs', import.meta.url)),
+          fixture.root, fixture.runId, `respawn-${kind}`, point], {
+          shell: false, encoding: 'utf8', timeout: 10_000,
+          env: { ...process.env, DEEP_LOOP_CRASH_OWNER: fixture.runId,
+            DEEP_LOOP_CRASH_GENERATION: '1',
+            DEEP_LOOP_CRASH_INPUT: JSON.stringify(fixture.input) },
+        });
+      assert.notEqual(worker.error?.code, 'ETIMEDOUT');
+      assert.equal(worker.status, 91, worker.stderr || worker.stdout || worker.error?.message);
+      let spawned = 0;
+      const result = respawn(fixture.root, fixture.runId, { ...fixture.input,
+        expect: expect_(fixture.runId), env: {},
+        spawnFn: () => { spawned += 1; return kind === 'rollback'
+          ? { ok: false, reason: 'launch-exit-1' } : { ok: true }; },
+        pollLease: () => ({ state: 'releasing', owner_run_id: fixture.runId,
+          generation: 1 }), sleep: noSleep,
+        revalidateRuntimeExecutable: identity => identity,
+        revalidateLauncherExecutable: identity => identity });
+      assert.equal(spawned, 0, `${kind}/${point}: recovered retry repeated spawn`);
+      assert.equal(result.outcome,
+        kind === 'rollback' ? 'failed_launch' : 'child-timeout-awaiting');
+      const events = readFileSync(join(runDir(fixture.root, fixture.runId),
+        'event-log.jsonl'), 'utf8').split('\n').filter(Boolean).map(JSON.parse);
+      assert.equal(events.filter(event => event.type ===
+        (kind === 'rollback' ? 'respawn-failed' : 'respawn-timeout')).length, 1);
+    }
+  }
+});
+```
+
 - [ ] **Step 2: Run the focused tests and verify RED**
 
 Run:
 
 ```bash
-node --test --test-name-pattern='respawn fences then proves|respawn caller fence precedes|headless skips live App|headless fences a wrong caller|post-CAS maker snapshot|never adopts the acquired child fence|PreCompact exact App|PreCompact revoked App|PreCompact proves initial|revoked App origin|respawn CLI fences|final generic mutation inventory' tests/respawn.test.mjs tests/headless-host.test.mjs tests/precompact-hook.test.mjs tests/self-spawn-integration.test.mjs tests/orch-cli.test.mjs
+node --test --test-name-pattern='respawn fences then proves|respawn caller fence precedes|public respawn compensation uses one public intent|public respawn retry recovers rollback and timeout|headless skips live App|headless fences a wrong caller|post-CAS maker snapshot|never adopts the acquired child fence|PreCompact exact App|PreCompact revoked App|PreCompact proves initial|revoked App origin|respawn CLI fences|final generic mutation inventory' tests/respawn.test.mjs tests/headless-host.test.mjs tests/precompact-hook.test.mjs tests/self-spawn-integration.test.mjs tests/orch-cli.test.mjs
 ```
 
 Expected: FAIL because respawn/headless/PreCompact/CLI still use plain authority reads, App guards do
@@ -22433,38 +22955,198 @@ Do not rewrite the existing `handoff_phase === 'spawned'` branch: its bounded re
 idempotent no-respawn behavior remain byte-identical, with only the verified `poll` closure above
 feeding it.
 
-Fence and prove the rollback/preserve transactions, including the timeout response-loss projection:
+Fence and prove rollback/preserve inside the **same public respawn intent**. A compensation helper
+called by `respawn()` receives the already-open opaque mutation context; it never creates a private
+operation digest or calls a public lock owner. Standalone test/hook calls still use their Task-7B
+direct helper intent and must be retried through that same standalone API.
+
+Add these complete helpers beside `respawnOperation`:
+
+```js
+function recoveredRespawnCompensation(mutation, input) {
+  if (mutation.recovered === null) return null;
+  const events = mutation.recovered.events.filter(event =>
+    event.type === 'respawn-failed' || event.type === 'respawn-timeout');
+  if (events.length === 0) return null;
+  if (events.length !== 1 || events[0].data?.child_run_id !== input.childRunId) {
+    throw new Error('RESPAWN_RECOVERY_PROJECTION_MISMATCH');
+  }
+  const loop = mutation.readVerifiedState().data;
+  if (loop.status !== 'paused' || loop.pause_reason !== events[0].data?.pause_reason) {
+    throw new Error('RESPAWN_RECOVERY_PROJECTION_MISMATCH');
+  }
+  if (events[0].type === 'respawn-timeout') {
+    const lease = loop.session_chain?.lease;
+    if (lease?.handoff_child_run_id !== input.childRunId
+        || lease.resume_policy !== 'human' || lease.expires_at !== null) {
+      throw new Error('RESPAWN_RECOVERY_PROJECTION_MISMATCH');
+    }
+    return { ok: false, outcome: 'child-timeout-awaiting',
+      reason: events[0].data.pause_reason, childRunId: input.childRunId };
+  }
+  const child = loop.session_chain?.sessions
+    ?.find(session => session.run_id === input.childRunId);
+  const lease = loop.session_chain?.lease;
+  if (child?.outcome !== 'failed_launch' || lease?.state !== 'active'
+      || lease.handoff_phase !== 'idle' || lease.handoff_child_run_id !== null) {
+    throw new Error('RESPAWN_RECOVERY_PROJECTION_MISMATCH');
+  }
+  return { ok: false, outcome: 'failed_launch',
+    reason: events[0].data.error ?? events[0].data.gate ?? 'launch-failed',
+    childRunId: input.childRunId };
+}
+
+function runRespawnCompensation(root, runId, operationInput, settle) {
+  return respawnOperation(root, runId, operationInput, mutation => settle(mutation));
+}
+```
+
+Apply the complete existing-symbol changes below. `appendWithMutation` calls Task 7B's direct
+`appendAnchored` form only for a standalone helper call; every call originating in `respawn()` passes
+the public context and therefore publishes the marker with `respawnIntentProjection(operationInput)`:
 
 ```diff
 diff --git a/scripts/lib/respawn.mjs b/scripts/lib/respawn.mjs
 --- a/scripts/lib/respawn.mjs
 +++ b/scripts/lib/respawn.mjs
-@@ -202,3 +202,8 @@ export function rollbackAndPause(root, runId, { childRunId, parentOwner, generation, eventData, pauseReason }) {
+@@ -158,3 +158,8 @@
+-export function rollbackAndPause(root, runId, { childRunId, parentOwner, generation, eventData, pauseReason }) {
++export function rollbackAndPause(root, runId, { childRunId, parentOwner, generation,
++  eventData, pauseReason, mutation = null, crashProbe }) {
+   try {
+-    appendAnchored(root, runId, { type: 'respawn-failed', data: { ...eventData, pause_reason: pauseReason } }, (l) => {
++    const appendWithMutation = mutation === null
++      ? (event, mutate, preCheck, options) => appendAnchored(
++        root, runId, event, mutate, preCheck, { ...options, crashProbe })
++      : mutation.appendAnchored;
++    appendWithMutation({ type: 'respawn-failed', data: { ...eventData, pause_reason: pauseReason } }, (l) => {
+@@ -171,3 +176,4 @@ export function rollbackAndPause(root, runId, {
        // v1.6 (spec §2.3-5): completed run을 paused로 강등 금지 — 초입 read↔이 append 사이 TOCTOU를 in-lock에서 봉쇄.
        if (l.status === 'completed' || l.status === 'stopped') throw new Error('RUN_TERMINAL: respawn');
 -    });
 +    }, { fenceCheck: respawnIdentityFence(
-+      { owner: parentOwner, generation }, 'RESPAWN_FENCED: rollback-pause'),
-+      callerBinding: { owner: parentOwner, generation },
-+      intentDigest: contentHash(JSON.stringify({ operation: 'respawn-rollback-pause',
-+        parentOwner, generation, childRunId, eventData, pauseReason })),
-+      fenceError: 'RESPAWN_FENCED: rollback-pause' });
-@@ -229,8 +233,13 @@ function preservePause(root, runId, { childRunId, parentOwner, generation, pauseReason = 'child-timeout-awaiting' }) {
++      { owner: parentOwner, generation }, 'RESPAWN_FENCED: rollback-pause'), crashProbe });
+@@ -188,3 +194,8 @@
+-function preservePause(root, runId, { childRunId, parentOwner, generation, pauseReason = 'child-timeout-awaiting' }) {
++function preservePause(root, runId, { childRunId, parentOwner, generation,
++  pauseReason = 'child-timeout-awaiting', mutation = null, crashProbe }) {
+   try {
+-    appendAnchored(root, runId, { type: 'respawn-timeout', data: { child_run_id: childRunId, pause_reason: pauseReason } }, (l) => {
++    const appendWithMutation = mutation === null
++      ? (event, mutate, preCheck, options) => appendAnchored(
++        root, runId, event, mutate, preCheck, { ...options, crashProbe })
++      : mutation.appendAnchored;
++    appendWithMutation({ type: 'respawn-timeout', data: { child_run_id: childRunId, pause_reason: pauseReason } }, (l) => {
+@@ -199,8 +210,9 @@ function preservePause(root, runId, {
        // v1.6 (spec §2.3-5): terminal run은 preserve-pause로도 강등 금지 (readiness-timeout TOCTOU).
        if (l.status === 'completed' || l.status === 'stopped') throw new Error('RUN_TERMINAL: respawn');
 -    });
 +    }, { fenceCheck: respawnIdentityFence(
-+      { owner: parentOwner, generation }, 'RESPAWN_FENCED: timeout-preserve'),
-+      callerBinding: { owner: parentOwner, generation },
-+      intentDigest: contentHash(JSON.stringify({ operation: 'respawn-timeout-preserve',
-+        parentOwner, generation, childRunId, pauseReason })),
-+      fenceError: 'RESPAWN_FENCED: timeout-preserve' });
++      { owner: parentOwner, generation }, 'RESPAWN_FENCED: timeout-preserve'), crashProbe });
    } catch (appendErr) {
      if (String(appendErr.message).startsWith('RUN_TERMINAL')) return { terminal: true };   // v1.6
      if (String(appendErr.message).startsWith('RESPAWN_FENCED')) {
 -      const fresh = readState(root, runId).data.session_chain.lease;
 +      const fresh = readVerifiedState(root, runId).data.session_chain.lease;
        if (fresh.owner_run_id === childRunId && fresh.state === 'active' && fresh.handoff_phase === 'acquired') return { acquired: true };
+```
+
+At public entry, project a recovered compensation before any gate, claim, descriptor, or spawn. A
+recovered `respawn-spawned` event returns `null` here and follows the existing idempotent spawned
+readiness branch; it never calls `spawnFn` again:
+
+```diff
+diff --git a/scripts/lib/respawn.mjs b/scripts/lib/respawn.mjs
+--- a/scripts/lib/respawn.mjs
++++ b/scripts/lib/respawn.mjs
+@@ -306,5 +306,9 @@ export function respawn(root, runId, {
+-    loop = respawnOperation(root, runId, operationInput, mutation => {
++    const entry = respawnOperation(root, runId, operationInput, mutation => {
++      const recovered = recoveredRespawnCompensation(mutation, operationInput);
++      if (recovered !== null) return { recovered };
+       reconcileBudget(root, runId, { mutation });
+-      return mutation.readVerifiedState(
+-        { fenceCheck: respawnIdentityFence(expect) }).data;
++      return { loop: mutation.readVerifiedState(
++        { fenceCheck: respawnIdentityFence(expect) }).data };
+     });
++    if (entry.recovered) return entry.recovered;
++    loop = entry.loop;
+```
+
+Replace every `rollbackAndPause`/`preservePause` call reached from public `respawn` or
+`awaitChildReadiness` with this exact composition, threading `operationInput` through the readiness
+helper. This is executable source, not an operation-name table:
+
+```js
+const rollback = args => runRespawnCompensation(root, runId, operationInput,
+  mutation => rollbackAndPause(root, runId, { ...args, mutation, crashProbe }));
+const preserve = args => runRespawnCompensation(root, runId, operationInput,
+  mutation => preservePause(root, runId, { ...args, mutation, crashProbe }));
+```
+
+Within `respawn`, all eight prior helper calls become `rollback({...})` or `preserve({...})`. Add
+`operationInput`, `rollback`, `preserve`, and `crashProbe` to `awaitChildReadiness`'s explicit input
+object and use only those closures at its two settlement sites. The Step-1 source test requires zero
+direct helper calls in the public function body other than the two closure definitions and requires
+both closures to contain `runRespawnCompensation` plus the passed `mutation`.
+
+Add the test-only seam and closures immediately after `operationInput`:
+
+```diff
+diff --git a/scripts/lib/respawn.mjs b/scripts/lib/respawn.mjs
+--- a/scripts/lib/respawn.mjs
++++ b/scripts/lib/respawn.mjs
+@@ -248,3 +248,4 @@ export function respawn(root, runId, {
+   runtimeRevalidationOptions = {},
+   launcherRevalidationOptions = {},
++  crashProbe,
+ } = {}) {
+@@ -309,3 +310,9 @@ export function respawn(root, runId, {
+   const operationInput = { expect, childRunId, key, handoffRel,
+     headless, attended, expectedMode };
++  const rollback = args => runRespawnCompensation(root, runId, operationInput,
++    mutation => rollbackAndPause(root, runId,
++      { ...args, mutation, crashProbe }));
++  const preserve = args => runRespawnCompensation(root, runId, operationInput,
++    mutation => preservePause(root, runId,
++      { ...args, mutation, crashProbe }));
+   try {
+```
+
+Extend the existing crash worker with two public respawn operations. The worker never invokes
+`rollbackAndPause` or `preservePause` directly, so a passing test proves reachability through the
+actual top-level retry entry:
+
+```diff
+diff --git a/tests/helpers/anchored-crash-worker.mjs b/tests/helpers/anchored-crash-worker.mjs
+--- a/tests/helpers/anchored-crash-worker.mjs
++++ b/tests/helpers/anchored-crash-worker.mjs
+@@ -9 +9,2 @@
+ import { newWorkstream } from '../../scripts/lib/workspace.mjs';
++import { respawn } from '../../scripts/lib/respawn.mjs';
+@@ -24 +25,21 @@ const generic = Object.freeze({
++  'respawn-rollback': ({ root, runId, owner, generation, point, rawInput }) => {
++    const input = parseInput(rawInput,
++      ['attended', 'childRunId', 'handoffRel', 'key', 'kind', 'now']);
++    return respawn(root, runId, { ...input, env: {}, expect: { owner, generation },
++      spawnFn: () => ({ ok: false, reason: 'launch-exit-1' }),
++      revalidateRuntimeExecutable: identity => identity,
++      revalidateLauncherExecutable: identity => identity,
++      crashProbe: reached => { if (reached === point) process.exit(91); } });
++  },
++  'respawn-timeout': ({ root, runId, owner, generation, point, rawInput }) => {
++    const input = parseInput(rawInput,
++      ['attended', 'childRunId', 'handoffRel', 'key', 'kind', 'now']);
++    return respawn(root, runId, { ...input, env: {}, expect: { owner, generation },
++      spawnFn: () => ({ ok: true }),
++      pollLease: () => ({ state: 'releasing', owner_run_id: owner, generation }),
++      sleep: () => {},
++      revalidateRuntimeExecutable: identity => identity,
++      revalidateLauncherExecutable: identity => identity,
++      crashProbe: reached => { if (reached === point) process.exit(91); } });
++  },
+   'generic-append': ({ root, runId, owner, generation, point }) => appendAnchored(
 ```
 
 Replace the proof-free pre-CAS and post-CAS reads with these complete branches. A verified valid
@@ -23292,7 +23974,7 @@ drive-headless wrapper has no diff.
 
 - [ ] **Step 6: Review only the Task 11B diff and run static authority scans**
 
-Run: `git diff -- scripts/lib/respawn.mjs scripts/lib/headless-host.mjs scripts/hooks-impl/precompact-handoff.mjs scripts/deep-loop.mjs tests/respawn.test.mjs tests/headless-host.test.mjs tests/precompact-hook.test.mjs tests/self-spawn-integration.test.mjs tests/orch-cli.test.mjs && git diff --check`
+Run: `git diff -- scripts/lib/respawn.mjs scripts/lib/headless-host.mjs scripts/hooks-impl/precompact-handoff.mjs scripts/deep-loop.mjs tests/helpers/anchored-crash-worker.mjs tests/respawn.test.mjs tests/headless-host.test.mjs tests/precompact-hook.test.mjs tests/self-spawn-integration.test.mjs tests/orch-cli.test.mjs && git diff --check`
 
 Then run the static scans:
 
@@ -23314,7 +23996,7 @@ binding.
 
 ```bash
 git add scripts/lib/respawn.mjs scripts/lib/headless-host.mjs scripts/hooks-impl/precompact-handoff.mjs scripts/deep-loop.mjs
-git add tests/respawn.test.mjs tests/headless-host.test.mjs tests/precompact-hook.test.mjs tests/self-spawn-integration.test.mjs tests/orch-cli.test.mjs
+git add tests/helpers/anchored-crash-worker.mjs tests/respawn.test.mjs tests/headless-host.test.mjs tests/precompact-hook.test.mjs tests/self-spawn-integration.test.mjs tests/orch-cli.test.mjs
 git commit -m "feat: verify App transport isolation" -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
 
@@ -28844,7 +29526,7 @@ operations remain host-portable and do not assume `/dev/null`:
 set -euo pipefail
 
 node --input-type=module <<'NODE'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, posix } from 'node:path';
@@ -29143,11 +29825,17 @@ for (const task of taskMatches) {
     }
     for (const token of ['directMutationOptions(',
       'const DIRECT_APPEND_INVENTORY7B = Object.freeze({',
+      'const DIRECT_CALLER_AFTER_IMAGES7B = Object.freeze([',
+      'closed direct caller after-images bind every complete request in production source',
       'every direct append caller has literal request authority',
       'install the mandatory gateway **only after** applying the closed caller migration']) {
       if (!card.includes(token)) fail(`Task 7B missing closed caller migration token ${token}`);
     }
-    if (card.includes('mechanically update every')) {
+    const literalDirectOptions = (card.match(/directMutationOptions\('/g) ?? []).length;
+    if (literalDirectOptions < 24) {
+      fail(`Task 7B has only ${literalDirectOptions} literal direct caller after-images`);
+    }
+    if (card.toLowerCase().includes('mechanically update every')) {
       fail('Task 7B retains prose-only caller migration');
     }
   }
@@ -29240,7 +29928,11 @@ for (const task of taskMatches) {
       "mutationIntentDigest('budget-process-settle'",
       "mutationIntentDigest('budget-terminal-maker-settle'",
       'hash: baseStateHash', "fenceError: 'BUDGET_FENCED:",
-      'withVerifiedMutationLock(root, runId']) {
+      'withVerifiedMutationLock(root, runId', 'function recoveredCostEvent(',
+      'mutation.recovered.events.filter(', 'ACCOUNTING_RECOVERY_PROJECTION_MISMATCH',
+      'four accounting writers recover every published marker without double charge',
+      "'accounting-record':", "'accounting-preflight':", "'accounting-process':",
+      "'accounting-terminal-maker':", 'recordMeasured7c(']) {
       if (!card.includes(token)) fail(`Task 7C missing complete accounting wrapper token ${token}`);
     }
   }
@@ -29272,9 +29964,16 @@ for (const task of taskMatches) {
         fail(`Task 11B public mutation inventory omits ${symbol}`);
       }
     }
-    for (const token of ["operation: 'respawn-rollback-pause'",
-      "operation: 'respawn-timeout-preserve'", 'intentDigest: contentHash(JSON.stringify({']) {
+    for (const token of ['function recoveredRespawnCompensation(',
+      'function runRespawnCompensation(',
+      'recoveredRespawnCompensation(mutation, operationInput)',
+      'public respawn retry recovers rollback and timeout markers without a second spawn',
+      "'respawn-rollback':", "'respawn-timeout':"]) {
       if (!card.includes(token)) fail(`Task 11B missing respawn intent token ${token}`);
+    }
+    for (const forbidden of ["operation: 'respawn-rollback-pause'",
+      "operation: 'respawn-timeout-preserve'"]) {
+      if (card.includes(forbidden)) fail(`Task 11B retains private respawn marker intent: ${forbidden}`);
     }
   }
   if (task[1] === '11C') {
@@ -29473,8 +30172,37 @@ for (const fence of fenceRecords) {
     fail(`${language} fence line ${line}: ${diagnostic}`);
   }
 }
+
+// Task 7B establishes the verified mutation substrate and Task 7C consumes its exact afterimage.
+// Prove every displayed production-source patch applies in that order to a disposable current-tree copy.
+const sequentialSourceDir = mkdtempSync(join(tmpdir(), 'deep-loop-plan-source-'));
+cpSync('scripts', join(sequentialSourceDir, 'scripts'), { recursive: true });
+cpSync('tests', join(sequentialSourceDir, 'tests'), { recursive: true });
+try {
+  for (const taskId of ['7B', '7C']) {
+    const task = taskMatches.find(match => match[1] === taskId);
+    const nextTask = source.indexOf('\n### Task ', task.index + 1);
+    const card = source.slice(task.index, nextTask < 0 ? source.length : nextTask);
+    const sourceDiffs = [...card.matchAll(/```diff\n([\s\S]*?)\n```/g)]
+      .map(match => match[1])
+      .filter(body => body.includes('diff --git a/scripts/lib/'));
+    for (const [index, body] of sourceDiffs.entries()) {
+      const applied = spawnSync('git', ['apply', '--unsafe-paths', '-'], {
+        cwd: sequentialSourceDir, input: `${body}\n`, encoding: 'utf8',
+        maxBuffer: 8 * 1024 * 1024,
+      });
+      if (applied.error || applied.status !== 0) {
+        const diagnostic = String(applied.error?.message || applied.stderr || applied.stdout)
+          .split('\n')[0];
+        fail(`Task ${taskId} sequential source diff ${index + 1}: ${diagnostic}`);
+      }
+    }
+  }
+} finally {
+  rmSync(sequentialSourceDir, { recursive: true, force: true });
+}
 const PLAN_EXPECTED_COUNTS = Object.freeze({
-  bash: 63, diff: 66, js: 168, json: 4, markdown: 12, text: 10, yaml: 1,
+  bash: 64, diff: 71, js: 172, json: 4, markdown: 12, text: 10, yaml: 1,
 });
 const orderedCounts = value => Object.fromEntries(Object.entries(value)
   .sort(([left], [right]) => left.localeCompare(right)));
@@ -29535,7 +30263,7 @@ git diff --cached -- docs/superpowers/plans/2026-07-13-codex-app-native-task-con
 git status --short --branch
 ```
 
-Expected: the validator prints `ok:true` for the exact 46-card inventory, ordered seven-step semantics, nonempty Files/Interfaces, strict literal path multisets for scoped Step 6/7 commands and exact anchor tokens, the fixed known/nonempty/closed fence inventory and syntax, exact unified-diff hunk counts with no orphan trailing payload, Gate 5/7/8/9 approval/evidence semantics, ULIDs, banned prose, wildcard patterns, and whitespace. The ignored plan is then force-added so staged checks and inspection cover the exact reviewed bytes.
+Expected: the validator prints `ok:true` for the exact 46-card inventory, ordered seven-step semantics, nonempty Files/Interfaces, strict literal path multisets for scoped Step 6/7 commands and exact anchor tokens, the fixed known/nonempty/closed fence inventory and syntax, exact unified-diff hunk counts with no orphan trailing payload, sequential Task 7B→7C production-source patch applicability, Gate 5/7/8/9 approval/evidence semantics, ULIDs, banned prose, wildcard patterns, and whitespace. The ignored plan is then force-added so staged checks and inspection cover the exact reviewed bytes.
 
 ## Execution Handoff
 

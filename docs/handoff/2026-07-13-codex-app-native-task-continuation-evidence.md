@@ -956,6 +956,64 @@ no inherited approval from the historical receipt.
 - gate state: still open. Changed bytes require fresh cycle 3 round 3 with both reviewers pinned to
   exact `gpt-5.6-sol`/high; this Respond is not a Gate 1 pass.
 
+### Gate 1 fresh cycle 3 round 3 review
+
+- gate/artifact: Gate 1 design plus final 46-task plan, goal handoff, evidence, cycle-3 round-2
+  report/response, and current repository code/tests.
+- base/head: `c38a96137f8f4f0099c35e893860930e8ee4cf73..98fb29589bc4c2cce5404e283bf3773bb55586b7`;
+  worktree clean at reviewer start.
+- invocation: one standard `codex exec ... review --base c38a961...` and one direct adversarial audit;
+  both counted reviewers used ephemeral/ignore-config/ignore-rules/read-only execution with exact
+  `gpt-5.6-sol` and `model_reasoning_effort=high`.
+- reviewer actual: standard thread `019f62c1-b775-7bd2-8b08-de3d38ed9f85` returned 2 P1;
+  adversarial thread `019f62c1-b77e-7a41-85df-0193adffa217` returned 2 Red and 2 Yellow with
+  `REQUEST_CHANGES`. `N_planned=N_actual=2`; both counted processes terminated naturally with exit 0.
+- model/effort evidence: both process headers confirmed exact `gpt-5.6-sol`, `high`, ephemeral,
+  ignored user config/rules, and read-only sandbox. No global Codex setting changed.
+- verdict: `REQUEST_CHANGES`.
+- red/yellow/info: `1 / 4 / 3`; the missing literal Task 7B production caller migration was
+  corroborated by both reviewers. The four solo findings were independently reproduced by the main
+  agent and classified Yellow under the two-reviewer synthesis rule.
+- termination: cycle 3 round 3 Respond required; neither convergence nor max reached.
+- report path: `.deep-review/reports/2026-07-15-074252-review.md`, SHA-256
+  `dcfe0763e97c5dee5c7923aaf08f6bae2f7bca8bf896e9276914f8f64048b7ce`.
+- main-agent judgment: accepted all five actionable findings. The caller migration needed executable
+  production after-image assertions; public respawn and all four accounting writers needed exact
+  recovered-event settlement; displayed Task 7B/7C hunks needed literal sequential applicability;
+  and the new accounting fence needed an exact existing-caller migration.
+
+### Gate 1 fresh cycle 3 round 3 Respond
+
+- disposition: accepted 5, rejected 0, deferred 0. `execution_path=main_fallback`; the specialized
+  Phase 6 Agent surface was unavailable, so the documented main-agent fallback was used without an
+  unspecialized substitute.
+- caller response: Task 7B now has a closed `DIRECT_CALLER_AFTER_IMAGES7B` production-source contract
+  for every direct caller and operation projection; it proves literal authority precedes the mandatory
+  gateway and removes the prior mechanical-prose escape.
+- recovery response: public respawn compensation settles inside the enclosing request intent, with
+  private compensation operation markers forbidden. The four accounting writers consume exact
+  recovered event `seq`/`checksum` projections and return without a second append or charge.
+- sequential/fence response: state, finish, lease, and budget hunks were regenerated against current
+  source and preceding-card after-images. The embedded validator now applies every Task 7B/7C
+  production-source diff to a disposable copy in order. `recordMeasured7c` supplies exact current
+  accounting fences to all legitimate existing test callers while preserving invalid-cost ordering.
+- exact corrected candidate hashes: handoff
+  `1523907bf1931793b765ed8a5fac2d678a6ae1aa303cfef6e2c89f2e6f150fd9`; design
+  `ac5de5a0a4e7a75c96d40464f66f193f3edb09084703208787653234bc4b872b`; ignored plan
+  `9bee19d6aa2bbc182b03968d3607aff1c20946c0aba4c3e7357ca97043f2ca74`.
+- response record: `.deep-review/responses/2026-07-15-082753-response.md`, SHA-256
+  `8ca37867de7ea5f935f5c8ff127719921a99fb28802a3fb0f45d9ce7b6301d60`.
+- recurring alerts: export run `01KXHD014CP4JKXB0W2RX6B0BN`; architecture critical 34,
+  test-coverage warning 21, error-handling critical 14, security critical 9.
+- verification: embedded validator passed `ok:true` for 46 tasks and 334 fences
+  (`bash=64`, `diff=71`, `js=172`, `json=4`, `markdown=12`, `text=10`, `yaml=1`) including
+  sequential Task 7B→7C source application. The independent sequential probe passed all 11 source
+  diff fences; `git diff --check` passed; `npm run preflight` passed validation and all 1,463 tests
+  with zero failures, cancellations, or skips.
+- gate state: still open. Changed bytes require fresh cycle 3 round 4 with both reviewers pinned to
+  exact `gpt-5.6-sol`/high; this Respond is not a Gate 1 pass. Per the user's instruction, work pauses
+  here and round 4 is not started.
+
 ## Review receipt template
 
 Each reviewed gate will add a receipt with all of these fields:
