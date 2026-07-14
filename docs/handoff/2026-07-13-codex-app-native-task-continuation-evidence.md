@@ -845,6 +845,59 @@ no inherited approval from the historical receipt.
 - gate state: still open. Cycle 2's `max_reached` receipt is not inherited; changed bytes require
   a new cycle 3 round 1 with both reviewers pinned to exact `gpt-5.6-sol`/high.
 
+### Gate 1 fresh cycle 3 round 1 review
+
+- gate/artifact: Gate 1 design plus final 46-task plan, goal handoff, evidence, cycle-2 round-5
+  report/response, and current repository code/tests.
+- base/head: `c38a96137f8f4f0099c35e893860930e8ee4cf73..e0d1d16016b1e2e6d12b59165278ab802d127cab`;
+  worktree clean at reviewer start.
+- invocation: one standard `codex exec ... review --base c38a961...` and one direct adversarial audit;
+  both counted reviewers used ephemeral/ignore-config/ignore-rules/read-only execution with exact
+  `gpt-5.6-sol` and `model_reasoning_effort=high`.
+- reviewer actual: standard thread `019f6293-510a-71d3-bb8f-0c7e6e1a3995` returned 2 P1;
+  adversarial thread `019f6293-510e-70a0-a6bd-dcb5b8768dcf` returned 1 Red and 1 Yellow with
+  `REQUEST_CHANGES`. `N_planned=N_actual=2`; both counted processes terminated naturally with exit 0.
+- model/effort evidence: both process headers confirmed exact `gpt-5.6-sol`, `high`, ephemeral,
+  ignored user config/rules, and read-only sandbox. No global Codex setting changed.
+- verdict: `REQUEST_CHANGES`.
+- red/yellow/info: `0 / 4 / 3`; each solo finding was independently reproduced by the main agent and
+  classified as partial-confidence Yellow under the two-reviewer synthesis rule.
+- termination: cycle 3 round 1 Respond required; neither convergence nor max reached.
+- report path: `.deep-review/reports/2026-07-15-064938-review.md`, SHA-256
+  `7785aae744eb8e28c9a550a805a8ff4c9b519c0bbf92f9aa7dea399d538e5b7b`.
+- raw output bindings: standard SHA-256
+  `6da4afdd51dd6a62908c17f403a3fc248c605a36aaf707b682b0686d1334f597`; adversarial SHA-256
+  `edcb7bcce8d190bd0e2b717614a687e3350ba345030db58d30b99166eeb6afdb`.
+- main-agent judgment: accepted all four actionable findings. Task 7D did not compose over Task 7B's
+  import, Task 11C used a foreign undefined helper alias, Task 6B's direct callers could not satisfy
+  Task 7B's mandatory mutation gateway, and design ordering contradicted the corrected acquire plan.
+
+### Gate 1 fresh cycle 3 round 1 Respond
+
+- disposition: accepted 4, rejected 0, deferred 0. `execution_path=main_fallback`; the specialized
+  Phase 6 Agent surface was unavailable, so the documented main-agent fallback was used without an
+  unspecialized substitute.
+- sequential composition response: Task 7D's exact diff consumes and preserves Task 7B's
+  `mutationIntentDigest` import with corrected hunk counts. Task 11C imports shared durable bytes as a
+  local alias and uses it consistently.
+- authority/test response: Task 6B's clock probes carry distinct operation intents, caller binding,
+  and a public fence error so both pre- and post-Task-7B checkpoints execute. The design fixes acquire
+  ordering to authentication-only entry before any observation parsing or cwd/native-path callback.
+- exact corrected candidate hashes: handoff
+  `1523907bf1931793b765ed8a5fac2d678a6ae1aa303cfef6e2c89f2e6f150fd9`; design
+  `3e31f847bae8cce047e780cee047b865d495046f648b1cdc4f687dac3afacf38`; ignored plan
+  `25f44eebffaa82e9821952aaaaff7171ef73a6294825a4a78382085a8295da29`.
+- response record: `.deep-review/responses/2026-07-15-065444-response.md`, SHA-256
+  `9bb85298409e77963a484a2fdee1397e824b6bb9f9748510cd8c169f31f6e811`.
+- recurring alerts: export run `01KXH9T4KGBYJTDTV042Y7ANAF`; architecture critical 27,
+  test-coverage warning 19, error-handling critical 12, security critical 9.
+- verification: embedded validator passed `ok:true` for 46 tasks and 322 fences
+  (`bash=63`, `diff=65`, `js=167`, `json=4`, `markdown=12`, `text=10`, `yaml=1`).
+  The independent sequential-composition/authority probe passed 12/12; `git diff --check` passed;
+  `npm run preflight` passed validation and all 1,463 tests with zero failures, cancellations, or skips.
+- gate state: still open. Changed bytes require fresh cycle 3 round 2 with both reviewers pinned to
+  exact `gpt-5.6-sol`/high; this Respond is not a Gate 1 pass.
+
 ## Review receipt template
 
 Each reviewed gate will add a receipt with all of these fields:

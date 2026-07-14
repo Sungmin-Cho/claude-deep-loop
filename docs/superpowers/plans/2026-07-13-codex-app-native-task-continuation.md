@@ -6776,9 +6776,14 @@ import assert6b from 'node:assert/strict';
 import { existsSync as exists6b, mkdtempSync as temp6b } from 'node:fs';
 import { tmpdir as tmp6b } from 'node:os';
 import { join as join6b } from 'node:path';
+import { contentHash as digest6b } from '../scripts/lib/envelope.mjs';
 import { initRun as init6b } from '../scripts/lib/initrun.mjs';
 import { appendAnchored as append6b, readLines as lines6b } from '../scripts/lib/integrity.mjs';
 import { runDir as runDir6b } from '../scripts/lib/state.mjs';
+
+const intent6b = (operation, runId, projection = {}) => digest6b(JSON.stringify({
+  operation, caller: { owner: runId, generation: 1 }, projection,
+}));
 
 test6b('anchored clock is sampled once inside the lock and shared by both events', () => {
   const root = temp6b(join6b(tmp6b(), 'dl-clock-'));
@@ -6795,6 +6800,9 @@ test6b('anchored clock is sampled once inside the lock and shared by both events
         assert6b.equal(exists6b(join6b(runDir6b(root, runId), '.lock')), true);
         return Date.parse('2026-07-13T00:00:04.000Z');
       },
+      callerBinding: { owner: runId, generation: 1 },
+      intentDigest: intent6b('clock-probe', runId, { floor: 1 }),
+      fenceError: 'LEASE_FENCED: test-clock',
     });
   assert6b.equal(samples, 1);
   assert6b.deepEqual(seen, [
@@ -6812,7 +6820,10 @@ test6b('invalid injected clock fails before an event append', () => {
   const before = lines6b(root, runId);
   for (const invalid of [Number.NaN, null, '1783900800000']) {
     assert6b.throws(() => append6b(root, runId, { type: 'never', data: {} }, () => {},
-      () => {}, { nowFn: () => invalid }), /INVALID_NOW/);
+      () => {}, { nowFn: () => invalid,
+        callerBinding: { owner: runId, generation: 1 },
+        intentDigest: intent6b('invalid-clock', runId),
+        fenceError: 'LEASE_FENCED: test-clock' }), /INVALID_NOW/);
     assert6b.deepEqual(lines6b(root, runId), before);
   }
 });
@@ -12323,17 +12334,19 @@ git commit -m "fix: verify lease and accounting writers" -m "Co-Authored-By: Cla
 - [ ] **Step 1: Write failing init/App boundary tests and a correlated history fixture**
 
 Append this helper to `tests/fixtures/verified-app-run.mjs` after extending Task 7B's existing
-integrity and state imports exactly once:
+integrity and state imports exactly once. The preimage deliberately includes Task 7B's
+`mutationIntentDigest`; Task 7D must preserve that binding while adding its own imports:
 
 ```diff
 diff --git a/tests/fixtures/verified-app-run.mjs b/tests/fixtures/verified-app-run.mjs
 --- a/tests/fixtures/verified-app-run.mjs
 +++ b/tests/fixtures/verified-app-run.mjs
-@@ -5,5 +5,5 @@
+@@ -5,5 +5,6 @@
  import { contentHash } from '../../scripts/lib/envelope.mjs';
  import { initRun } from '../../scripts/lib/initrun.mjs';
--import { appendAnchored, appendEvent, lastLogHead }
-+import { appendAnchored, appendEvent, commitVerifiedEventsUnderLock, lastLogHead, readLines }
+-import { appendAnchored, appendEvent, lastLogHead, mutationIntentDigest }
++import { appendAnchored, appendEvent, commitVerifiedEventsUnderLock, lastLogHead,
++  mutationIntentDigest, readLines }
    from '../../scripts/lib/integrity.mjs';
 -import { readState, readStateForRootRecovery, runDir } from '../../scripts/lib/state.mjs';
 +import { readState, readStateForRootRecovery, runDir, withLock } from '../../scripts/lib/state.mjs';
@@ -23326,6 +23339,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { readLines, readVerifiedState, verifyLog } from '../scripts/lib/integrity.mjs';
 import { readState } from '../scripts/lib/state.mjs';
+import { durableRunBytes as bytes11c } from './fixtures/verified-app-run.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
 import { validate } from '../scripts/lib/schema.mjs';
@@ -23552,7 +23566,7 @@ test('prepare confirm revoke and sweep callbacks can reenter the verified reader
 
 test('prepare authorizes deadline and gate with the fresh final-lock clock', () => {
   const fixture = emitted8b();
-  const before = bytes8a(fixture.root, fixture.runId);
+  const before = bytes11c(fixture.root, fixture.runId);
   assert.throws(() => prepareAppTask(fixture.root, fixture.runId,
     { owner: fixture.runId, generation: 1, stdinMode: 'pipe-open-noecho',
       hostInput: { currentHostTaskCwd: fixture.root,
@@ -23564,13 +23578,13 @@ test('prepare authorizes deadline and gate with the fresh final-lock clock', () 
         projectId: 'race-project', environment: { type: 'local' } }, prompt: 'race prompt' }),
       reconcileBudgetFn: () => {}, gateFn: () => ({ ok: true, blocked_by: [] }),
     }), /APP_PREPARE_DEADLINE_EXPIRED/);
-  assert.deepEqual(bytes8a(fixture.root, fixture.runId), before);
+  assert.deepEqual(bytes11c(fixture.root, fixture.runId), before);
 });
 
 test('reentrant final-lock clock and gate seams fail closed without a write', () => {
   for (const seam of ['clock', 'gate']) {
     const fixture = emitted8b();
-    const before = bytes8a(fixture.root, fixture.runId);
+    const before = bytes11c(fixture.root, fixture.runId);
     const reenter = () => readVerifiedState(fixture.root, fixture.runId);
     assert.throws(() => prepareAppTask(fixture.root, fixture.runId,
       { owner: fixture.runId, generation: 1, stdinMode: 'pipe-open-noecho',
@@ -23589,7 +23603,7 @@ test('reentrant final-lock clock and gate seams fail closed without a write', ()
           return { ok: true, blocked_by: [], now: options.now };
         },
       }), /LOCK_BUSY/);
-    assert.deepEqual(bytes8a(fixture.root, fixture.runId), before);
+    assert.deepEqual(bytes11c(fixture.root, fixture.runId), before);
   }
 });
 
@@ -28869,11 +28883,20 @@ for (const task of taskMatches) {
   }
   if (task[1] === '7D') {
     for (const token of ['callerBinding, intentDigest',
+      'mutationIntentDigest, readLines',
       "onRecovered: () => ({ ok: true, outcome: 'already-observed' })",
       "onRecovered: () => ({ ok: true, outcome: 'already-revoked' })",
       "assertAppCommandIdentity(loop, input, 'HOST_SURFACE_FENCED')",
       "assertAppCommandIdentity(loop, input, 'APP_TASK_FENCED')"]) {
       if (!card.includes(token)) fail(`Task 7D missing composed App intent token ${token}`);
+    }
+  }
+  if (task[1] === '6B') {
+    for (const token of ['contentHash as digest6b',
+      "intentDigest: intent6b('clock-probe'",
+      "intentDigest: intent6b('invalid-clock'",
+      "fenceError: 'LEASE_FENCED: test-clock'"]) {
+      if (!card.includes(token)) fail(`Task 6B missing future mandatory-intent token ${token}`);
     }
   }
   if (task[1] === '5B') {
@@ -28963,7 +28986,8 @@ for (const task of taskMatches) {
     }
   }
   if (task[1] === '11C') {
-    for (const token of ['function appSnapshotPhase(', 'function appCommitPhase(',
+    for (const token of ['durableRunBytes as bytes11c', 'bytes11c(fixture.root, fixture.runId)',
+      'function appSnapshotPhase(', 'function appCommitPhase(',
       'export function prepareAppTask(', 'export function confirmAppTask(',
       'export function revokeAppTaskContinuation(',
       'export function sweepUnconfirmedAppTask(', 'APP_CAS_LOST:',
