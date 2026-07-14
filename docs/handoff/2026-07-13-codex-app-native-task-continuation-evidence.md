@@ -898,6 +898,64 @@ no inherited approval from the historical receipt.
 - gate state: still open. Changed bytes require fresh cycle 3 round 2 with both reviewers pinned to
   exact `gpt-5.6-sol`/high; this Respond is not a Gate 1 pass.
 
+### Gate 1 fresh cycle 3 round 2 review
+
+- gate/artifact: Gate 1 design plus final 46-task plan, goal handoff, evidence, cycle-3 round-1
+  report/response, and current repository code/tests.
+- base/head: `c38a96137f8f4f0099c35e893860930e8ee4cf73..1652e6f5878fe4e636d2f62c27e80061156a4f28`;
+  worktree clean at reviewer start.
+- invocation: one standard `codex exec ... review --base c38a961...` and one direct adversarial audit;
+  both counted reviewers used ephemeral/ignore-config/ignore-rules/read-only execution with exact
+  `gpt-5.6-sol` and `model_reasoning_effort=high`.
+- reviewer actual: standard thread `019f62a2-468d-7ee2-a52e-73da8758c273` returned 3 P1;
+  adversarial thread `019f62a2-4659-7352-a44b-44517f40f3b4` returned 1 Red and 3 Yellow with
+  `REQUEST_CHANGES`. `N_planned=N_actual=2`; both counted processes terminated naturally with exit 0.
+- model/effort evidence: both process headers confirmed exact `gpt-5.6-sol`, `high`, ephemeral,
+  ignored user config/rules, and read-only sandbox. No global Codex setting changed.
+- verdict: `REQUEST_CHANGES`.
+- red/yellow/info: `1 / 5 / 3`; Task 7B's general mandatory caller migration and Task 11B's concrete
+  respawn failure were corroborated by both reviewers. The five solo findings were independently
+  reproduced by the main agent and classified Yellow under the two-reviewer synthesis rule.
+- termination: cycle 3 round 2 Respond required; neither convergence nor max reached.
+- report path: `.deep-review/reports/2026-07-15-070754-review.md`, SHA-256
+  `d2f949426b44c29f2e5f58db7432d1c9241659ca5c3d07c7acd64d51682f7373`.
+- raw output bindings: standard SHA-256
+  `86b3729215cc11c9d7cd648ab19565e7f4f5924c465df0c9ef5dad224d23cc3e`; adversarial SHA-256
+  `5fed57fde56744fdeccf5b20c6c6a9fc44794f0f1ce6b107e6b115dc1ae40452`.
+- main-agent judgment: accepted all six actionable findings. Mandatory mutation authority needed a
+  closed caller migration, Task 7C needed sequentially executable imports/wrappers, Task 9B and 12B
+  needed their CLI checkpoint migrations, and injected path callbacks had to leave the final lock.
+
+### Gate 1 fresh cycle 3 round 2 Respond
+
+- disposition: accepted 6, rejected 0, deferred 0. `execution_path=main_fallback`; the specialized
+  Phase 6 Agent surface was unavailable, so the documented main-agent fallback was used without an
+  unspecialized substitute.
+- caller/authority response: Task 7B defines a closed direct-caller migration table, helper, source
+  inventory, and recovered-result projections before enabling the mandatory gateway. Task 11B binds
+  distinct complete request intents to rollback-pause and timeout-preserve compensation.
+- sequential/checkpoint response: Task 7C preserves Task 7B's gateway import and gives all four
+  accounting writers complete verified outer wrappers. Task 9B owns the exact-attempt CLI migration;
+  Task 12B replaces the provisional builder failure with the successful public-action contract.
+- lock response: cwd/native path identity is bound outside the commit context and tied to the snapshot
+  hash; final App mutation callbacks perform pure comparisons only. A reentrant reader test covers
+  both cwd and realpath seams.
+- exact corrected candidate hashes: handoff
+  `1523907bf1931793b765ed8a5fac2d678a6ae1aa303cfef6e2c89f2e6f150fd9`; design
+  `a1a91a87d5b261078545dc04aa0c945595db7e3ce89e6aae48671936e3d9f707`; ignored plan
+  `9f318b386689993a8685af424fdfe6a41c1b5245b55440e2770d5a595c4339c5`.
+- response record: `.deep-review/responses/2026-07-15-072715-response.md`, SHA-256
+  `0f2599413d92fe0063a0075c8b0cb82b679aaa5bb5db5e1c4b3097dd2178ceec`.
+- recurring alerts: export run `01KXHAW4K85T10WZ7V0ZSB0V3B`; architecture critical 32,
+  test-coverage warning 20, error-handling critical 12, security critical 9.
+- verification: embedded validator passed `ok:true` for 46 tasks and 324 fences
+  (`bash=63`, `diff=66`, `js=168`, `json=4`, `markdown=12`, `text=10`, `yaml=1`).
+  The independent caller/import/wrapper/CLI/lock-boundary probe passed 15/15; `git diff --check`
+  passed; `npm run preflight` passed validation and all 1,463 tests with zero failures,
+  cancellations, or skips.
+- gate state: still open. Changed bytes require fresh cycle 3 round 3 with both reviewers pinned to
+  exact `gpt-5.6-sol`/high; this Respond is not a Gate 1 pass.
+
 ## Review receipt template
 
 Each reviewed gate will add a receipt with all of these fields:

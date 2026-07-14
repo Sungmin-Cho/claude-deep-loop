@@ -144,10 +144,10 @@ These are the narrow baseline `Modify` anchors required by the execution tasks; 
 | 7G | `scripts/lib/lease.mjs:102-199`; `scripts/lib/breaker.mjs:1-62`; `scripts/lib/state.mjs:102-110`; `tests/lease.test.mjs`; `tests/breaker.test.mjs`; `tests/project-root.test.mjs`; `tests/integrity.test.mjs`; produced `tests/helpers/anchored-crash-worker.mjs`. |
 | 7E–7F | `scripts/lib/session-profile.mjs:44-80`; `scripts/lib/comprehension.mjs:27-92`; `scripts/lib/project-root-recovery.mjs:20-51`; `scripts/lib/budget.mjs:1053-1067`; `scripts/lib/insights.mjs:357-509`; `scripts/lib/review.mjs:50-179,310-668`; `scripts/lib/workspace.mjs:141-153`; `scripts/lib/detect-terminal.mjs:284-343`; `scripts/deep-loop.mjs:120-180,340-710`; `tests/session-profile.test.mjs`; `tests/comprehension.test.mjs`; `tests/project-root.test.mjs`; `tests/budget.test.mjs`; `tests/cli-skillface.test.mjs`; `tests/insights.test.mjs`; `tests/review-import.test.mjs`; `tests/reviewer-failclosed.test.mjs`; `tests/workspace.test.mjs`; `tests/detect-terminal.test.mjs`. |
 | 8A–8B | Produced `scripts/lib/app-task-continuation.mjs` `prepareAppTask`; `scripts/lib/handoff.mjs:38-224` (`handoffMarkdown`, `emitHandoff`); `scripts/lib/lease.mjs:121-205` (`reserveHandoff`, `rollbackHandoff`); `scripts/lib/schema.mjs:164-216`; `tests/handoff.test.mjs:343-789,1107-1163`; produced `tests/app-task-continuation.test.mjs` prepare cases; created `tests/fixtures/app-prepare-worker.mjs`. |
-| 9A–9B | Produced `scripts/lib/app-task-continuation.mjs` `confirmAppTask`, `failAppTask`, `sweepUnconfirmedAppTask`, `statusAppTask`, `awaitAppTask`; produced `tests/app-task-continuation.test.mjs` receipt/readiness cases; `tests/schema.test.mjs:17-273`. |
+| 9A–9B | Produced `scripts/lib/app-task-continuation.mjs` `confirmAppTask`, `failAppTask`, `sweepUnconfirmedAppTask`, `statusAppTask`, `awaitAppTask`; `scripts/deep-loop.mjs:489-616`; produced `tests/app-task-continuation.test.mjs` receipt/readiness cases; `tests/orch-cli.test.mjs:246-286,831-1005`; `tests/schema.test.mjs:17-273`. |
 | 10A–10D | Produced `scripts/lib/app-task-continuation.mjs` acquire/recovery/finish helpers; `scripts/lib/lease.mjs:13-199`; `scripts/lib/recover.mjs:1-47`; `scripts/lib/state.mjs:51-79,120-211`; `scripts/lib/finish.mjs:13-107`; `scripts/deep-loop.mjs:120-141,489-616,834-861`; produced `tests/app-task-continuation.test.mjs` acquire/history cases; `tests/lease.test.mjs:27-490`; `tests/recover.test.mjs:65-231`; `tests/finish.test.mjs:1-335`; `tests/terminal-cli.test.mjs:1-192`; `tests/orch-cli.test.mjs:246-286,831-1005`; produced `tests/integrity.test.mjs` crash matrix; produced `tests/helpers/anchored-crash-worker.mjs`. |
 | 11A–11C | `scripts/deep-loop.mjs:489-616`; produced `scripts/lib/app-task-continuation.mjs` final await validator; `scripts/lib/respawn.mjs:85-571`; `scripts/lib/headless-host.mjs:230-1596`; `scripts/hooks-impl/precompact-handoff.mjs:20-86`; produced `tests/app-task-continuation.test.mjs` CLI cases; `tests/orch-cli.test.mjs:246-286,831-1005`; `tests/cli-skillface.test.mjs:66-99,192-265`; `tests/respawn.test.mjs:1-1641`; `tests/headless-host.test.mjs:1-1898`; `tests/precompact-hook.test.mjs:1-367`; `tests/self-spawn-integration.test.mjs:1-465`; created `tests/fixtures/app-transition-worker.mjs`; created `tests/app-task-race.test.mjs`. |
-| 12A–12B | `scripts/lib/runtime-descriptor.mjs:37-81,408-444`; produced `scripts/lib/app-task-continuation.mjs` prepare action builder call; `tests/runtime-descriptor.test.mjs:1-99`; produced `tests/app-task-continuation.test.mjs` descriptor cases. |
+| 12A–12B | `scripts/lib/runtime-descriptor.mjs:37-81,408-444`; produced `scripts/lib/app-task-continuation.mjs` prepare action builder call; `tests/runtime-descriptor.test.mjs:1-99`; produced `tests/app-task-continuation.test.mjs` descriptor cases; `tests/orch-cli.test.mjs:246-286,831-1005`. |
 | 13A–13C | `skills/deep-loop/SKILL.md:14-20,118-213`; `skills/deep-loop-continue/SKILL.md:14-20,184-289`; `skills/deep-loop-handoff/SKILL.md:13-19,83-171`; `skills/deep-loop-resume/SKILL.md:13-104`; `skills/deep-loop-status/SKILL.md:9-90`; `skills/deep-loop-discover/SKILL.md:13-64`; `skills/deep-loop-workflow/references/handoff-respawn.md:1-224`; `skills/deep-loop-workflow/references/adapters.md:1-127`; `tests/skills.test.mjs:1-1176`; `tests/cli-skillface.test.mjs:1-265`. |
 | 14A–14C | Created `tests/helpers/fake-app-host.mjs`; created `tests/codex-app-task-continuation-integration.test.mjs` fake-host/lifecycle/failure cases. |
 | 15A | Produced `tests/host-surface.test.mjs` platform cases; produced `tests/codex-app-task-continuation-integration.test.mjs` omission/boundary cases; created `tests/platform-durability.test.mjs` real genesis/journal mutation; `tests/ci.test.mjs:1-109`; `.github/workflows/preflight.yml:1-25`. |
@@ -10030,6 +10030,43 @@ test6b('Task 7B staged mutation inventory enters recovery before any canonical r
     }
   }
 });
+
+const DIRECT_APPEND_INVENTORY7B = Object.freeze({
+  'comprehension.mjs': ['ack'],
+  'detect-terminal.mjs': ['detectAndPersist'],
+  'episode.mjs': ['createEpisode', 'abandonEpisode', 'recordEpisode'],
+  'handoff.mjs': ['emitHandoff'],
+  'insights.mjs': ['emitInsights'],
+  'recover.mjs': ['recoverRun'],
+  'respawn.mjs': ['rollbackAndPause', 'preservePause', 'respawn'],
+  'review.mjs': ['claimIndependentReview', 'blockIndependentReview',
+    'commitReviewOutcome'],
+  'runtime-executable.mjs': ['approveLauncherExecutable', 'approveRuntimeExecutable'],
+  'session-profile.mjs': ['setSessionProfile'],
+  'spawn-optin.mjs': ['offerDesktop', 'confirmDesktop', 'declineDesktop', 'resetDesktop'],
+  'state.mjs': ['patch', 'pauseRun'],
+  'workspace.mjs': ['newWorkstream', 'setWorkstreamStatus', 'recordWorkstreamTerminal'],
+  'finish.mjs': ['finishRun'],
+});
+
+test6b('every direct append caller has literal request authority before the mandatory gateway', () => {
+  for (const [file, functions] of Object.entries(DIRECT_APPEND_INVENTORY7B)) {
+    const source = readSource7b(new URL(`../scripts/lib/${file}`, import.meta.url), 'utf8');
+    for (const name of functions) {
+      const signature = new RegExp(`(?:export\\s+)?function\\s+${name}\\s*\\(`);
+      const match = signature.exec(source);
+      assert6b.ok(match, `${file}:${name} missing from direct append inventory`);
+      const next = source.indexOf('\nexport function ', match.index + match[0].length);
+      const body = source.slice(match.index, next < 0 ? source.length : next);
+      const append = body.indexOf('appendAnchored(');
+      const authority = body.indexOf('directMutationOptions(');
+      assert6b.ok(append >= 0 && authority >= 0 && authority < append,
+        `${file}:${name} lacks literal pre-append request authority`);
+      assert6b.match(body, /callerBinding|fence|expect|parentOwner/,
+        `${file}:${name} lacks an explicit caller binding source`);
+    }
+  }
+});
 ```
 
 In the existing root-rebind corruption test, replace the legacy error expectation so it asserts the
@@ -11128,16 +11165,38 @@ writes; only the exact original API retry may recover it. The checkpoint
 helper is private, non-caller-selectable, and preserves callback event indexing by excluding its
 prepended event from `committed`.
 
-In this same task, mechanically update every then-current production `appendAnchored` call before
-running the suite. Each call passes `{callerBinding:{owner,generation},fenceError}` from the API's
-already-required `fence|expect|owner+generation`; none reads the lease to synthesize a missing
-binding. APIs that previously allowed a fence-less mutation (`ack`, `newEpisode`, `recordEpisode`,
-`newWorkstream`, generic `state patch`, and equivalent internal wrappers) now require the fence and
-all CLI/internal callers propagate it. Runtime-executable approval uses its existing human approval
-fence, spawn opt-in uses `expect`, recover uses `expect`, respawn uses the parent binding, and review
-uses its checker fence. Add a source inventory assertion and one direct missing-binding test per
-module; `CALLER_BINDING_REQUIRED` must occur before lock acquisition. Tasks 7C–7G refine proof and
-publication but must not reintroduce an optional binding.
+In this same task, install the mandatory gateway **only after** applying the closed caller migration
+below. “Mechanically update every” is not an implementation instruction and is forbidden here. Every
+row names the exact complete request projection passed to `directMutationOptions`; the projection is
+hashed before it enters an event, marker, error, or response. Each call spreads the returned object
+into its existing final options object, after existing `floor|nowFn|crashProbe|fenceCheck` fields, and
+supplies the listed exact `onRecovered` projection when its public return depends on mutated locals.
+No row may read the current lease to synthesize a missing binding.
+
+| File / call | Operation | Explicit binding | Complete request projection | Exact recovered projection |
+|---|---|---|---|---|
+| `comprehension.mjs` `ack` human/agent appends | `comprehension-ack-human|comprehension-ack-agent` | required `fence` | `{episodeId,actor,confirm,humanApproved:env.DEEP_LOOP_HUMAN_APPROVED==='1'}` | derive `out` from the exact episode's `abandoned|human_reviewed|agent_reviewed` flags |
+| `detect-terminal.mjs` `detectAndPersist` | `terminal-detect-persist` | required `fence` | `{observationDigest:intentField('terminal-observation',observation),detectedStatus}` | re-project the exact stored terminal result |
+| `episode.mjs` create/abandon/record appends | `episode-new|episode-abandon|episode-record` | required `fence` | digest every function argument, including role/kind/point/workstream/targetMaker/reviewer/evidence/contract or episodeId/reason/confirm or status/artifacts/proof | locate the exact request-correlated episode and set the existing `id|out` local; mismatch throws `EPISODE_RESPONSE_PROJECTION_CHANGED` |
+| `handoff.mjs` `emitHandoff` | `handoff-emit-generic` | required `expect` | `{reason,trigger,headless,appIntent,childRunId,key,authorityDigest}` | return the exact already-emitted key/child projection |
+| `insights.mjs` `emitInsights` | `insights-emit` | required `fence` | `{inputDigest:intentField('insights-input',completeInput)}` | return the exact stored insight artifact/result projection |
+| `recover.mjs` `recoverRun` | `recover-run` | required `expect` | `{confirm,now}` | `{ok:true}` only when the exact recovered event/state projection exists |
+| `respawn.mjs` rollback/preserve/spawned appends | `respawn-rollback-pause|respawn-timeout-preserve|respawn-spawned` | `{owner:parentOwner,generation}` | `{childRunId,eventData,pauseReason}` / `{childRunId,pauseReason}` / `{childRunId,key,handoffRel,headless,attended,expectedMode}` | exact rollback/preserve/spawned result already projected by the enclosing respawn operation |
+| `review.mjs` claim/block/outcome appends | `review-claim|review-block|review-outcome` | required checker `fence` | digest the complete reviewer resolution, point, target maker, reason, verdict, evidence and artifact inputs | exact stored review/episode projection or `REVIEW_RECOVERY_PROJECTION_MISMATCH` |
+| `runtime-executable.mjs` launcher/runtime approval appends | `launcher-executable-approve|runtime-executable-approve` | existing human approval `fence` | digest the complete normalized candidate, approval receipt, runtime and confirmation inputs | exact approved digest/result projection |
+| `session-profile.mjs` `setSessionProfile` | `session-profile-set` | required `expect` | `{model,effort,now}` | `{ok:true,changed:false}` only when both requested fields equal durable state |
+| `spawn-optin.mjs` offer/confirm/decline/reset appends | `desktop-offer|desktop-confirm|desktop-decline|desktop-reset` | required `expect` | `{now,ttlSec,nonce}` / `{now,nonce,platform,probeDigest}` / `{now}` / `{now}` | exact durable pending/style projection, including the offered nonce |
+| `state.mjs` patch/pause appends | `state-patch|run-pause` | required `fence|expect` | `statePatchIntent` / `{reason,mode,now}` | exact requested field digest or paused projection; mismatch throws `STATE_RESPONSE_PROJECTION_CHANGED` |
+| `workspace.mjs` new/status/terminal appends | `workstream-new|workstream-status|workstream-terminal` | required `fence` | `workstreamNewIntent` / `{wsId,status}` / `{wsId,status,proofDigest}` | exact workstream id/status/proof projection |
+| `finish.mjs` `finishRun` | `finish-run` | required `fence` | `{status,confirm,runtime,terminalIntent,proofDigest,reportDigest}` | exact terminal status projection |
+
+The three direct accounting writers and terminal maker settlement do not call `appendAnchored`; Task
+7C gives them literal verified-wrapper prefixes. Remaining lease/breaker/review wrapper refinements in
+Tasks 7C–7G consume the authority bytes installed here rather than starting from pre-migration calls.
+All CLI/internal callers propagate the named fence in this card. `CALLER_BINDING_REQUIRED` and
+`MUTATION_INTENT_REQUIRED` occur before lock acquisition, and the Step-1 source test below proves
+that every direct production `appendAnchored` caller has a preceding `directMutationOptions` call and
+an explicit `onRecovered` token when the closed table requires one.
 
 Extend the schema import with `verifyAppEventCorrelation`, replace `recomputeSpent` with
 `return spentOfLines(readLines(root,runId))`, and replace the complete `appendAnchored` export with
@@ -11246,6 +11305,19 @@ export function mutationIntentDigest(operation, callerBinding, projection) {
   const binding = requireCallerBinding(callerBinding);
   return contentHash(JSON.stringify({ ...projection, operation,
     owner: binding.owner, generation: binding.generation }));
+}
+
+export function directMutationOptions(operation, callerBinding, completeRequest,
+  fenceError, { onRecovered, ...extra } = {}) {
+  if (typeof fenceError !== 'string' || fenceError.length === 0) {
+    throw new Error('MUTATION_FENCE_ERROR_REQUIRED');
+  }
+  const binding = requireCallerBinding(callerBinding);
+  const intentDigest = mutationIntentDigest(operation, binding, {
+    request_digest: intentField(`${operation}-request`, completeRequest),
+  });
+  return Object.freeze({ ...extra, callerBinding: binding, intentDigest, fenceError,
+    ...(onRecovered === undefined ? {} : { onRecovered }) });
 }
 
 // These two redaction-sensitive examples are mandatory shapes, not illustrative fallbacks.
@@ -11425,17 +11497,13 @@ large or sensitive values use a domain-separated digest. `patch` uses `statePatc
 `workstream-new` same-caller/different-input crashes: the different retry receives
 `ANCHORED_TRANSACTION_PENDING` and leaves marker, stages, and canonical bytes unchanged.
 
-The Task 7B staged inventory is only the exports this card actually migrates: `ack`;
-`newEpisode|newBlockedCheckerEpisode|abandonEpisode|recordEpisode`;
-`newWorkstream|setWorkstreamStatus|recordWorkstreamTerminal`; `patch|pauseRun`;
-`setSessionProfile`; `emitInsights`; `recoverRun`; `finishRun`; `acquireLease`;
-`approveRuntimeExecutable|approveLauncherExecutable`; and
-`offerDesktop|confirmDesktop|declineDesktop|resetDesktop`. It deliberately excludes the direct
-accounting, breaker, remaining lease, review/artifact, terminal-detection, comprehension-review, and
-respawn entries whose executable migrations occur in Tasks 7C, 7E, 7F, 7G, and 11B. Each later card
-adds its focused source/runtime checks; Task 11B adds the final closed 41-entry generic inventory.
-Thus Task 7B's own full-suite checkpoint can be green at its actual commit boundary instead of
-asserting future work.
+The Task 7B staged inventory is the complete then-current direct `appendAnchored` set in the closed
+table above, including terminal detection, review, handoff, and respawn compensation. Tasks 7C–7G
+and 11B may replace a direct call with a stronger operation wrapper, but their exact preimages must
+include and preserve the Task-7B authority object until that replacement is complete. Task 11B's
+41-entry final inventory additionally covers non-`appendAnchored` direct writers and proves there is
+no leftover transitional surface. Thus Task 7B's own full-suite checkpoint is green at its actual
+commit boundary and no later card is asked to repair a caller already broken by the mandatory gateway.
 
 Tasks 8A–10D use the same helper for `emitHandoff`, prepare, confirm, fail, sweep, each await poll
 that may time out, acquire, recover, and finish. Their displayed business bodies execute inside
@@ -11953,13 +12021,14 @@ the first business/no-op decision:
 diff --git a/scripts/lib/lease.mjs b/scripts/lib/lease.mjs
 --- a/scripts/lib/lease.mjs
 +++ b/scripts/lib/lease.mjs
-@@ -1,4 +1,5 @@
+@@ -1,5 +1,5 @@
  import { contentHash, ulid } from './envelope.mjs';
  import { runtimeFence } from './runtime.mjs';
  import { readState, writeState, withLock } from './state.mjs';
--import { commitVerifiedEventsUnderLock, readLines } from './integrity.mjs';
-+import { assertVerifiedRunSnapshot, commitVerifiedEventsUnderLock, readLines }
-+  from './integrity.mjs';
+-import { commitVerifiedEventsUnderLock, readLines,
+-  withVerifiedMutationLock } from './integrity.mjs';
++import { assertVerifiedRunSnapshot, commitVerifiedEventsUnderLock, readLines,
++  withVerifiedMutationLock } from './integrity.mjs';
 @@ -48,5 +49,6 @@ export function acquireLease(root, runId, { owner, expectGeneration, runtime, now = Date.now() }) {
      const runtimeResult = runtimeFence(data, runtime);
      if (!runtimeResult.ok) return runtimeResult;
@@ -12028,12 +12097,13 @@ The adapter mutates only its clone, so every thrown accounting invariant precede
 diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 --- a/scripts/lib/budget.mjs
 +++ b/scripts/lib/budget.mjs
-@@ -1,11 +1,12 @@
+@@ -1,11 +1,13 @@
  import {
 -  appendEvent,
 -  lastLogHead,
 +  assertVerifiedRunSnapshot,
 +  commitVerifiedEventsUnderLock,
++  mutationIntentDigest,
 +  withVerifiedMutationLock,
    MUTATION_TURN_FLOOR,
    readLines,
@@ -12067,11 +12137,14 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 +}
 ```
 
-For each of the four public accounting writers, validate the explicit `fence`, compute a raw-free
-request `intentDigest`, and enter `withVerifiedMutationLock(...,{fenceError:'BUDGET_FENCED'},...)`
-before `readState` or `readLines`. The body destructures `{data: loop, hash: baseStateHash}`, performs
-the existing runtime/receipt/idempotency checks, and passes the same `callerBinding`, `intentDigest`,
-and `baseStateHash` to `commitMeasuredCost`. No accounting path may retain a bare `withLock` entry.
+For each of the four public accounting writers, the exact prefix hunks below validate the explicit
+`fence`, compute a raw-free request `intentDigest`, and enter
+`withVerifiedMutationLock(...,{fenceError:'BUDGET_FENCED'},...)` before `readState` or `readLines`.
+The body destructures `{data: loop, hash: baseStateHash}`, performs the existing
+runtime/receipt/idempotency checks, and passes the same `callerBinding`, `intentDigest`, and
+`baseStateHash` to `commitMeasuredCost`. No accounting path retains a bare `withLock` entry, and the
+closing `});` already present at each complete export closes this displayed wrapper rather than an
+unstated outer function.
 
 Extend Task 7B's closed-reference test with the newly authorized adapter import/call:
 
@@ -12098,8 +12171,22 @@ business result therefore follows semantic verification:
 diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 --- a/scripts/lib/budget.mjs
 +++ b/scripts/lib/budget.mjs
-@@ -282,10 +282,16 @@ export function recordCost(root, runId, { turns = 0, tokens = 0, fence } = {}) {
-     const { data: loop } = readState(root, runId);
+@@ -279,4 +279,12 @@
+ export function recordCost(root, runId, { turns = 0, tokens = 0, fence } = {}) {
+   if (!validCost({ turns, tokens })) throw new Error(`INVALID_COST: turns/tokens must be finite >= 0 (got ${turns}/${tokens})`);
+-  return withLock(root, runId, () => {
+-    const { data: loop } = readState(root, runId);
++  if (!fence || typeof fence.owner !== 'string'
++      || !Number.isSafeInteger(fence.generation) || fence.generation < 1) {
++    throw new Error('BUDGET_ACCOUNTING_FENCE_REQUIRED');
++  }
++  const callerBinding = { owner: fence.owner, generation: fence.generation };
++  const intentDigest = mutationIntentDigest('budget-record', callerBinding,
++    { turns, tokens, runtime: fence.runtime ?? null, intent: fence.intent ?? null });
++  return withVerifiedMutationLock(root, runId, { callerBinding, intentDigest,
++    fenceError: 'BUDGET_FENCED: record' }, () => {
++    const { data: loop, hash: baseStateHash } = readState(root, runId);
+@@ -283,9 +292,15 @@ export function recordCost(root, runId, { turns = 0, tokens = 0, fence } = {}) {
 -    if (fence) { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
 -    // v1.6 (spec §2.3-7): recordCost는 자체 appendEvent+writeState 경로(appendAnchored 관문 비경유).
 -    // fence가 있으면 위 leaseCheck가 LEASE_FENCED: RUN_TERMINAL로 선착 — drive-headless의 LEASE_FENCED
@@ -12123,6 +12210,16 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 +    }
 +    if (loop.status === 'completed' || loop.status === 'stopped') throw new Error('RUN_TERMINAL: recordCost');
 +    const { tf, tk } = trailingFloor(lines, lease.owner_run_id, lease.generation);   // this session's tick floor only
+@@ -421,3 +436,7 @@ export function settleCodexPreflightCost(root, runId, { receipt, fence } = {}) {
+   }
+-  return withLock(root, runId, () => {
+-    const { data: loop } = readState(root, runId);
++  const callerBinding = { owner: fence.owner, generation: fence.generation };
++  const intentDigest = mutationIntentDigest('budget-preflight-settle', callerBinding,
++    { receipt_digest: contentHash(JSON.stringify(exact)) });
++  return withVerifiedMutationLock(root, runId, { callerBinding, intentDigest,
++    fenceError: 'BUDGET_FENCED: preflight' }, () => {
++    const { data: loop, hash: baseStateHash } = readState(root, runId);
 @@ -430,5 +430,2 @@ export function settleCodexPreflightCost(root, runId, { receipt, fence } = {}) {
 -    const verified = verifyLog(root, runId);
 -    if (!verified.ok) throw new Error(`LOG_TAMPERED: ${verified.errors.join('; ')}`);
@@ -12130,6 +12227,16 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 -    if (!anchored.ok) throw new Error(`LOG_TAMPERED: ${anchored.errors.join('; ')}`);
      const lines = readLines(root, runId);
 +    assertVerifiedRunSnapshot(root, runId, loop, { lines });
+@@ -842,3 +856,7 @@ export function settleCodexProcessCost(root, runId, { receipt, fence } = {}) {
+   }
+-  return withLock(root, runId, () => {
+-    const { data: loop } = readState(root, runId);
++  const callerBinding = { owner: fence.owner, generation: fence.generation };
++  const intentDigest = mutationIntentDigest('budget-process-settle', callerBinding,
++    { receipt_digest: contentHash(JSON.stringify(exact)) });
++  return withVerifiedMutationLock(root, runId, { callerBinding, intentDigest,
++    fenceError: 'BUDGET_FENCED: process' }, () => {
++    const { data: loop, hash: baseStateHash } = readState(root, runId);
 @@ -851,5 +848,2 @@ export function settleCodexProcessCost(root, runId, { receipt, fence } = {}) {
 -    const verified = verifyLog(root, runId);
 -    if (!verified.ok) throw new Error(`LOG_TAMPERED: ${verified.errors.join('; ')}`);
@@ -12137,6 +12244,18 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 -    if (!anchored.ok) throw new Error(`LOG_TAMPERED: ${anchored.errors.join('; ')}`);
      const lines = readLines(root, runId);
 +    assertVerifiedRunSnapshot(root, runId, loop, { lines });
+@@ -947,5 +966,9 @@ export function settleTerminalCodexMakerCost(root, runId, { usage, fence, handoffKey } = {}) {
+   if (typeof handoffKey !== 'string' || !/^[a-f0-9]{16}$/.test(handoffKey)) {
+     throw new Error('TERMINAL_ACCOUNTING_HANDOFF_INVALID');
+   }
+-  return withLock(root, runId, () => {
+-    const { data: loop } = readState(root, runId);
++  const callerBinding = { owner: fence.owner, generation: fence.generation };
++  const intentDigest = mutationIntentDigest('budget-terminal-maker-settle', callerBinding,
++    { usage_digest: contentHash(JSON.stringify(usage)), handoff_key: handoffKey });
++  return withVerifiedMutationLock(root, runId, { callerBinding, intentDigest,
++    fenceError: 'BUDGET_FENCED: terminal-maker' }, () => {
++    const { data: loop, hash: baseStateHash } = readState(root, runId);
 @@ -956,2 +950,4 @@ export function settleTerminalCodexMakerCost(root, runId, { usage, fence, handoffKey } = {}) {
 -    if (loop.status !== 'completed' && loop.status !== 'stopped') throw new Error('RUN_NOT_TERMINAL: terminal maker settlement');
      if (sessionRuntime(loop) !== 'codex') throw new Error('RUNTIME_FENCED: terminal maker settlement requires codex');
@@ -17589,7 +17708,9 @@ git commit -m "feat: confirm App task receipts" -m "Co-Authored-By: Claude Opus 
 
 **Files:**
 - Modify: `scripts/lib/app-task-continuation.mjs` at produced `sweepUnconfirmedAppTask`, `statusAppTask`, and `awaitAppTask` exports.
+- Modify: `scripts/deep-loop.mjs` at the Task 6E `app-task status` caller.
 - Modify: `tests/app-task-continuation.test.mjs` after Task 9A receipt cases.
+- Modify: `tests/orch-cli.test.mjs` with the exact-attempt forwarding guard.
 
 **Interfaces:**
 - Consumes: exact parent fence/attempt and Task 6B lock-inside clock; mutating sweep/await paths
@@ -17618,6 +17739,7 @@ import { awaitAppTask as await9b, confirmAppTask as confirm9b,
   revokeAppTaskContinuation as revoke9b,
   statusAppTask as status9b, sweepUnconfirmedAppTask as sweep9b } from '../scripts/lib/app-task-continuation.mjs';
 import { readState as state9b } from '../scripts/lib/state.mjs';
+import { readFileSync as readSource9b } from 'node:fs';
 
 function acquiredProjection9b(fixture, source = state9b(fixture.root, fixture.runId).data) {
   const acquired = structuredClone(source);
@@ -17772,6 +17894,14 @@ test9b('status rejects unsafe App-history handoff paths', () => {
     assert9b.equal(projected.history.at(-1).handoff_rel, null);
     assert9b.equal(JSON.stringify(projected).includes(invalid), false);
   }
+});
+
+test9b('status CLI forwards the exact attempt under the final API name', () => {
+  const source = readSource9b(new URL('../scripts/deep-loop.mjs', import.meta.url), 'utf8');
+  assert9b.match(source,
+    /statusAppTask\(root, runId, \{ attemptId: f\.attempt \?\? null \}\)/);
+  assert9b.doesNotMatch(source,
+    /statusAppTask\(root, runId, \{ attempt: f\.attempt \?\? null \}\)/);
 });
 
 test9b('acquire-before-await exact projection succeeds before stale parent fence', () => {
@@ -17998,6 +18128,19 @@ Add `exactAppReadiness`, `exactAwaitTimeoutProjection`, `sweepUnconfirmedAppTask
 `awaitAppTask` from this complete block to `app-task-continuation.mjs`. Replace Task 6D's
 earlier `statusAppTask` export with the `statusAppTask({ attemptId })` implementation in this
 block; do not leave two declarations or retain the provisional `{ attempt }` parameter name:
+
+In the same card, migrate the already-public CLI caller before running either GREEN checkpoint:
+
+```diff
+diff --git a/scripts/deep-loop.mjs b/scripts/deep-loop.mjs
+--- a/scripts/deep-loop.mjs
++++ b/scripts/deep-loop.mjs
+@@ -1,3 +1,3 @@
+-    json(statusAppTask(root, runId, { attempt: f.attempt ?? null }));
++    json(statusAppTask(root, runId, { attemptId: f.attempt ?? null }));
+     return 0;
+   }
+```
 
 ```js
 function exactAppReadiness(loop, input) {
@@ -18300,7 +18443,7 @@ Sweep accepts only the two literal phases/deadlines above. Await derives the exp
 
 - [ ] **Step 4: Run the sweep/readiness tests and verify GREEN**
 
-Run: `node --test --test-name-pattern='sweep|status|await|deadline|late child|foreign lease' tests/app-task-continuation.test.mjs`
+Run: `node --test --test-name-pattern='sweep|status|await|deadline|late child|foreign lease' tests/app-task-continuation.test.mjs tests/orch-cli.test.mjs`
 
 Expected: PASS for strict `>` expiry, duplicate no-op, raw-ID-free status, exclusive generic/recovery
 authority projections, exact acquired success, foreign fence, timeout preserve, exact timeout-state
@@ -18309,13 +18452,13 @@ append failures.
 
 - [ ] **Step 5: Run state-machine regressions**
 
-Run: `node --test tests/recover.test.mjs tests/pause.test.mjs tests/terminal-cli.test.mjs tests/integrity.test.mjs tests/schema.test.mjs`
+Run: `node --test tests/recover.test.mjs tests/pause.test.mjs tests/terminal-cli.test.mjs tests/integrity.test.mjs tests/schema.test.mjs tests/orch-cli.test.mjs`
 
 Expected: PASS; terminal one-way and legacy pause/recover behavior remain intact.
 
 - [ ] **Step 6: Review only the 9B diff**
 
-Run: `git diff -- scripts/lib/app-task-continuation.mjs tests/app-task-continuation.test.mjs && git diff --check`
+Run: `git diff -- scripts/lib/app-task-continuation.mjs scripts/deep-loop.mjs tests/app-task-continuation.test.mjs tests/orch-cli.test.mjs && git diff --check`
 
 Confirm status performs no mutation or raw receipt projection, only projects root-contained bounded
 handoff paths, never derives recovery authority from an arbitrary old App `current`, deadline
@@ -18324,7 +18467,7 @@ authorization samples under the mutation lock, and timeout preserves rather than
 - [ ] **Step 7: Commit the sweep/readiness slice**
 
 ```bash
-git add scripts/lib/app-task-continuation.mjs tests/app-task-continuation.test.mjs
+git add scripts/lib/app-task-continuation.mjs scripts/deep-loop.mjs tests/app-task-continuation.test.mjs tests/orch-cli.test.mjs
 git commit -m "feat: await App child readiness safely" -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
 
@@ -22296,21 +22439,25 @@ Fence and prove the rollback/preserve transactions, including the timeout respon
 diff --git a/scripts/lib/respawn.mjs b/scripts/lib/respawn.mjs
 --- a/scripts/lib/respawn.mjs
 +++ b/scripts/lib/respawn.mjs
-@@ -202,3 +202,6 @@ export function rollbackAndPause(root, runId, { childRunId, parentOwner, generation, eventData, pauseReason }) {
+@@ -202,3 +202,8 @@ export function rollbackAndPause(root, runId, { childRunId, parentOwner, generation, eventData, pauseReason }) {
        // v1.6 (spec §2.3-5): completed run을 paused로 강등 금지 — 초입 read↔이 append 사이 TOCTOU를 in-lock에서 봉쇄.
        if (l.status === 'completed' || l.status === 'stopped') throw new Error('RUN_TERMINAL: respawn');
 -    });
 +    }, { fenceCheck: respawnIdentityFence(
 +      { owner: parentOwner, generation }, 'RESPAWN_FENCED: rollback-pause'),
 +      callerBinding: { owner: parentOwner, generation },
++      intentDigest: contentHash(JSON.stringify({ operation: 'respawn-rollback-pause',
++        parentOwner, generation, childRunId, eventData, pauseReason })),
 +      fenceError: 'RESPAWN_FENCED: rollback-pause' });
-@@ -229,8 +231,11 @@ function preservePause(root, runId, { childRunId, parentOwner, generation, pauseReason = 'child-timeout-awaiting' }) {
+@@ -229,8 +233,13 @@ function preservePause(root, runId, { childRunId, parentOwner, generation, pauseReason = 'child-timeout-awaiting' }) {
        // v1.6 (spec §2.3-5): terminal run은 preserve-pause로도 강등 금지 (readiness-timeout TOCTOU).
        if (l.status === 'completed' || l.status === 'stopped') throw new Error('RUN_TERMINAL: respawn');
 -    });
 +    }, { fenceCheck: respawnIdentityFence(
 +      { owner: parentOwner, generation }, 'RESPAWN_FENCED: timeout-preserve'),
 +      callerBinding: { owner: parentOwner, generation },
++      intentDigest: contentHash(JSON.stringify({ operation: 'respawn-timeout-preserve',
++        parentOwner, generation, childRunId, pauseReason })),
 +      fenceError: 'RESPAWN_FENCED: timeout-preserve' });
    } catch (appendErr) {
      if (String(appendErr.message).startsWith('RUN_TERMINAL')) return { terminal: true };   // v1.6
@@ -23344,7 +23491,7 @@ import { initRun } from '../scripts/lib/initrun.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
 import { validate } from '../scripts/lib/schema.mjs';
 import { acquireAppTask, awaitAppTask, confirmAppTask,
-  prepareAppTask, revokeAppTaskContinuation,
+  appNativePathDeps, prepareAppTask, revokeAppTaskContinuation,
   sweepUnconfirmedAppTask } from '../scripts/lib/app-task-continuation.mjs';
 
 function appSeed11c() {
@@ -23604,6 +23751,38 @@ test('reentrant final-lock clock and gate seams fail closed without a write', ()
         },
       }), /LOCK_BUSY/);
     assert.deepEqual(bytes11c(fixture.root, fixture.runId), before);
+  }
+});
+
+test('reentrant cwd and native-path callbacks finish before the final mutation lock', () => {
+  for (const seam of ['cwd', 'realpath']) {
+    const fixture = emitted8b();
+    const native = appNativePathDeps();
+    let callbackCalls = 0;
+    const reenter = value => {
+      callbackCalls += 1;
+      readVerifiedState(fixture.root, fixture.runId);
+      return value;
+    };
+    const deps = {
+      cwdFn: () => seam === 'cwd' ? reenter(fixture.root) : fixture.root,
+      pathDeps: { ...native,
+        realpath: value => seam === 'realpath'
+          ? reenter(native.realpath(value)) : native.realpath(value) },
+      precheckNowFn: () => Date.parse('2026-07-13T00:00:02.000Z'),
+      nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'),
+      descriptorBuilder: () => ({ tool: 'create_thread', target: { type: 'project',
+        projectId: 'race-project', environment: { type: 'local' } }, prompt: 'race prompt' }),
+      reconcileBudgetFn: () => {}, gateFn: () => ({ ok: true, blocked_by: [] }),
+    };
+    const result = prepareAppTask(fixture.root, fixture.runId,
+      { owner: fixture.runId, generation: 1, stdinMode: 'pipe-open-noecho',
+        hostInput: { currentHostTaskCwd: fixture.root,
+          projects: [{ projectId: 'race-project', projectKind: 'local',
+            path: fixture.root }] } }, deps);
+    assert.equal(result.outcome, 'prepared');
+    assert.ok(callbackCalls > 0, `${seam} callback did not run`);
+    assertAnchored(fixture);
   }
 });
 
@@ -23949,10 +24128,45 @@ function appCommitPhase(root, runId, input, operation, expectedHash, read, commi
     return commit(mutation, fresh.data);
   });
 }
+
+function bindAppParentRouteOutsideLock(loop, root, input, deps = {}) {
+  const authority = assertAppParentRoute(loop, root, input, deps);
+  const attemptId = input.attemptId ?? loop.session_chain.lease.handoff_attempt_id;
+  const parent = loop.session_chain.sessions.find(session => session.run_id === input.owner);
+  const { continuation } = findAppAttempt(loop, attemptId);
+  return Object.freeze({ attemptId, route: authority.route,
+    contextMode: authority.contextMode, targetCwd: authority.targetCwd,
+    workstreamId: authority.workstreamId,
+    hostTaskCwdDigest: authority.hostTaskCwdDigest,
+    stdinMode: input.stdinMode === undefined
+      ? undefined : parent?.host_surface?.structured_stdin_mode,
+    continuationPhase: continuation.phase });
+}
+
+function assertBoundAppParentMutationFence(loop, input, phases, routeBinding) {
+  const bound = assertAppParentFence(loop, input, phases);
+  const parent = loop.session_chain.sessions.find(session => session.run_id === input.owner);
+  const continuation = bound.continuation;
+  if (bound.attemptId !== routeBinding.attemptId
+      || continuation.route !== routeBinding.route
+      || continuation.context_mode !== routeBinding.contextMode
+      || continuation.target_cwd !== routeBinding.targetCwd
+      || continuation.workstream_id !== routeBinding.workstreamId
+      || continuation.host_task_cwd_digest !== routeBinding.hostTaskCwdDigest
+      || (routeBinding.stdinMode !== undefined
+        && parent?.host_surface?.structured_stdin_mode !== routeBinding.stdinMode)) {
+    throw new Error('APP_ROUTE_UNCONFIRMED:parent-authority');
+  }
+  return bound;
+}
 ```
 
 Each operation's final shape is executable below. Potentially reentrant injected functions
-`descriptorBuilder`, `reconcileBudgetFn`, and `beforeAppendFn` run between contexts. `nowFn` and
+`descriptorBuilder`, `reconcileBudgetFn`, `beforeAppendFn`, `cwdFn`, and every native-path dependency
+run between contexts. `bindAppParentRouteOutsideLock` freezes their route result against the first
+snapshot; the final hash CAS authorizes that exact snapshot and
+`assertBoundAppParentMutationFence` performs only plain object/string comparisons under the lock.
+No injected cwd/path function is reachable from a final precheck. `nowFn` and
 `gateFn` are trusted synchronous pure kernel seams: prepare may sample them for an advisory decision
 outside the lock, but the final precheck samples both again under the final lock and authorizes only
 that fresh result. Neither seam is exposed through CLI or user input.
@@ -24047,6 +24261,7 @@ export function prepareAppTask(root, runId, input, deps = {}) {
       throw new Error('RUN_PAUSED: app-prepare');
     }
     assertAppParentDirectoryIdentity(loop, root, input, deps);
+    const routeBinding = bindAppParentRouteOutsideLock(loop, root, input, deps);
     let route = null; let failureCode = null; let preserve = false;
     try { route = resolvePrepareRoute(loop, root, input, deps); }
     catch (error) {
@@ -24091,7 +24306,7 @@ export function prepareAppTask(root, runId, input, deps = {}) {
               result = { ok: false, outcome: preserve ? 'manual-preserve' : 'gate-blocked',
                 do_not_call: true, attempt_id: bound.attemptId, reason: failureCode };
             }, (candidate, clock) => {
-              assertAppParentMutationFence(candidate, root, input, ['emitted'], deps);
+              assertBoundAppParentMutationFence(candidate, input, ['emitted'], routeBinding);
               if (route !== null) {
                 const freshGate = gateFor(candidate, { now: clock.ms });
                 const freshFailure = freshGate.ok ? null
@@ -24120,7 +24335,7 @@ export function prepareAppTask(root, runId, input, deps = {}) {
               attempt_id: bound.attemptId, route: route.kind,
               context_mode: bound.continuation.context_mode, action };
           }, (candidate, clock) => {
-            assertAppParentMutationFence(candidate, root, input, ['emitted'], deps);
+            assertBoundAppParentMutationFence(candidate, input, ['emitted'], routeBinding);
             const freshGate = gateFor(candidate, { now: clock.ms });
             const freshFailure = freshGate.ok ? null
               : `gate-${freshGate.blocked_by[0].replaceAll('_', '-')}`;
@@ -24164,6 +24379,7 @@ export function confirmAppTask(root, runId, input, deps = {}) {
         ? 'already-complete' : 'already-confirmed', attempt_id: input.attemptId };
     }
     assertAppParentFence(snapshot.data, input, ['prepared']);
+    const routeBinding = bindAppParentRouteOutsideLock(snapshot.data, root, input, deps);
     if (casAttempt === 0) deps.beforeAppendFn?.({ operation: 'confirm', snapshot: snapshot.data });
     try {
       return appCommitPhase(root, runId, input, 'app-confirm', snapshot.hash,
@@ -24180,7 +24396,8 @@ export function confirmAppTask(root, runId, input, deps = {}) {
             next.phase = 'confirmed'; next.thread_id = threadId; next.confirmed_at = clock.iso;
             result = { ok: true, outcome: 'confirmed', attempt_id: input.attemptId };
           }, (candidate, clock) => {
-            const next = assertAppParentMutationFence(candidate, root, input, ['prepared'], deps)
+            const next = assertBoundAppParentMutationFence(candidate, input,
+              ['prepared'], routeBinding)
               .continuation;
             assertRecordedReaderMode(candidate, input);
             if (clock.ms > Date.parse(next.confirmation_deadline)) {
@@ -24253,6 +24470,7 @@ export function sweepUnconfirmedAppTask(root, runId, input, deps = {}) {
         failure_code: historical.continuation.failure_code };
     }
     const existing = assertAppParentFence(snapshot.data, input, ['emitted', 'prepared']);
+    const routeBinding = bindAppParentRouteOutsideLock(snapshot.data, root, input, deps);
     const code = existing.continuation.phase === 'emitted'
       ? 'app-prepare-unattended' : 'app-launch-unconfirmed';
     if (casAttempt === 0) deps.beforeAppendFn?.({ operation: 'sweep', snapshot: snapshot.data });
@@ -24281,8 +24499,8 @@ export function sweepUnconfirmedAppTask(root, runId, input, deps = {}) {
             result = { ok: true, outcome: 'swept', attempt_id: input.attemptId,
               failure_code: code };
           }, (candidate, clock) => {
-            const next = assertAppParentMutationFence(candidate, root, input,
-              [existing.continuation.phase], deps).continuation;
+            const next = assertBoundAppParentMutationFence(candidate, input,
+              [existing.continuation.phase], routeBinding).continuation;
             const freshDeadline = next.phase === 'emitted'
               ? next.prepare_deadline : next.confirmation_deadline;
             if (clock.ms <= Date.parse(freshDeadline)) throw new Error('APP_NOT_EXPIRED');
@@ -24631,6 +24849,7 @@ git commit -m "feat: build bounded App resume prompts" -m "Co-Authored-By: Claud
 - Modify: `scripts/lib/app-task-continuation.mjs` at produced `prepareAppTask` descriptor-builder selection
 - Modify: `tests/runtime-descriptor.test.mjs` at Task 12A App cases
 - Modify: `tests/app-task-continuation.test.mjs` at produced prepare descriptor cases
+- Modify: `tests/orch-cli.test.mjs` at Task 11A's provisional prepare-builder failure case
 
 **Interfaces:**
 - Consumes: Task 12A prompt input plus optional opaque `projectId`; `appTaskDescriptorInput({projectRoot,platform,runId,owner,generation,route,continuation,childSession})` owns the exact conversion from Task 8's real child-session record (`run_id`, `handoff_rel`, and nested `continuation`).
@@ -24757,7 +24976,7 @@ test8b('throwing or recursively extra descriptor is write free', () => {
 
 - [ ] **Step 2: Run tests to verify RED**
 
-Run: `node --test --test-name-pattern='App action|snapshot wrapper composes|builder failure' tests/runtime-descriptor.test.mjs tests/app-task-continuation.test.mjs`
+Run: `node --test --test-name-pattern='App action|snapshot wrapper composes|builder failure|public create action' tests/runtime-descriptor.test.mjs tests/app-task-continuation.test.mjs tests/orch-cli.test.mjs`
 
 Expected: FAIL because `buildAppTaskAction` is absent and the provisional Task 8B test contract has
 not yet been replaced by this card.
@@ -24899,21 +25118,61 @@ if (route !== null) {
 
 Pass the completed `action` and `descriptorDigest` into the transaction. The explicit injected builder retains Task 8's `{loop,route,child,attemptId}` test seam; only its absence selects the production public-action builder. Remove Task 8's provisional injected-action validation/digest expression so this is the single validation path. No builder, validator, JSON serialization, or digest operation may occur in `appendAnchored`'s `mutate` callback, so a throw cannot append an event ahead of state. Do not add an `appIntent` object parameter to `handoff.mjs`: Task 11's only public switch is boolean `--app-intent`, and Task 8 owns kernel-side route/cwd/attempt derivation in the final emit transaction.
 
+Exact-replace Task 11A's complete provisional
+`app-task prepare projects snake_case stdin then fails closed before Task 12 builder` test with this
+Task-12B checkpoint contract. It retains the same hostile opaque project ID solely in the first
+action response, proves READY ordering, and advances exactly one durable prepared transition:
+
+```js
+test('app-task prepare projects snake_case stdin into one public create action', async () => {
+  const fixture = appCliSeed11a();
+  const args = ['app-task', 'prepare', '--project-root', fixture.root, '--run-id', fixture.runId,
+    '--owner', fixture.runId, '--generation', '1', '--stdin-mode', 'pipe-open-noecho',
+    '--app-host-input-stdin'];
+  const ready = `DEEP_LOOP_STDIN_READY:v1:app-prepare:${fixture.runId}.1:pipe-open-noecho`;
+  const projectId = ' p$`\\id ';
+  const result = await runReady11a(fixture, args, { host_task_cwd: fixture.root,
+    projects: [{ projectId, projectKind: 'local', path: fixture.root }] }, ready);
+  assert.equal(result.code, 0, result.stderr);
+  const lines = result.stdout.split('\n').filter(Boolean);
+  assert.equal(lines[0], ready);
+  assert.equal(lines.length, 2, 'READY plus one JSON response only');
+  const response = JSON.parse(lines[1]);
+  assert.deepEqual(Object.keys(response).sort(),
+    ['action', 'attempt_id', 'context_mode', 'do_not_call', 'ok', 'outcome', 'route'].sort());
+  assert.equal(response.ok, true);
+  assert.equal(response.outcome, 'prepared');
+  assert.equal(response.do_not_call, false);
+  assert.equal(response.attempt_id, fixture.attemptId);
+  assert.equal(response.route, 'create');
+  assert.equal(response.context_mode, 'fresh');
+  assert.equal(response.action.tool, 'create_thread');
+  assert.deepEqual(response.action.target,
+    { type: 'project', projectId, environment: { type: 'local' } });
+  assert.equal(typeof response.action.prompt, 'string');
+  const loop = readState(fixture.root, fixture.runId).data;
+  const child = loop.session_chain.sessions.find(item => item.run_id === fixture.childRunId);
+  assert.equal(child.continuation.phase, 'prepared');
+  assert.equal(readLines(fixture.root, fixture.runId)
+    .filter(event => event.type === 'app-task-prepared').length, 1);
+});
+```
+
 - [ ] **Step 4: Run targeted tests to verify GREEN**
 
-Run: `node --test --test-name-pattern='App action|snapshot wrapper composes|builder failure' tests/runtime-descriptor.test.mjs tests/app-task-continuation.test.mjs`
+Run: `node --test --test-name-pattern='App action|snapshot wrapper composes|builder failure|public create action' tests/runtime-descriptor.test.mjs tests/app-task-continuation.test.mjs tests/orch-cli.test.mjs`
 
 Expected: PASS with one actionable response and a redacted retry.
 
 - [ ] **Step 5: Run related regression tests**
 
-Run: `node --test tests/runtime-descriptor.test.mjs tests/app-task-continuation.test.mjs tests/desktop-handler.test.mjs tests/posix-codex-continuation.test.mjs`
+Run: `node --test tests/runtime-descriptor.test.mjs tests/app-task-continuation.test.mjs tests/orch-cli.test.mjs tests/desktop-handler.test.mjs tests/posix-codex-continuation.test.mjs`
 
 Expected: PASS; legacy Claude/Codex manual descriptors and handoff artifacts retain their prior behavior.
 
 - [ ] **Step 6: Review the diff**
 
-Run: `git diff -- scripts/lib/runtime-descriptor.mjs scripts/lib/app-task-continuation.mjs tests/runtime-descriptor.test.mjs tests/app-task-continuation.test.mjs && git diff --check`
+Run: `git diff -- scripts/lib/runtime-descriptor.mjs scripts/lib/app-task-continuation.mjs tests/runtime-descriptor.test.mjs tests/app-task-continuation.test.mjs tests/orch-cli.test.mjs && git diff --check`
 
 Search: `rg -n "projectId|threadId|clientThreadId|model|thinking|claude://|appIntent" scripts/lib/runtime-descriptor.mjs scripts/lib/app-task-continuation.mjs`
 
@@ -24922,7 +25181,7 @@ Confirm raw project ID occurs only in the first create action, retry output has 
 - [ ] **Step 7: Commit the action/wiring slice**
 
 ```bash
-git add scripts/lib/runtime-descriptor.mjs scripts/lib/app-task-continuation.mjs tests/runtime-descriptor.test.mjs tests/app-task-continuation.test.mjs
+git add scripts/lib/runtime-descriptor.mjs scripts/lib/app-task-continuation.mjs tests/runtime-descriptor.test.mjs tests/app-task-continuation.test.mjs tests/orch-cli.test.mjs
 git commit -m "feat: emit public App task actions" -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
 
@@ -28849,10 +29108,12 @@ for (const task of taskMatches) {
         fail(`Task 7B missing literal journal helper ${symbol}`);
       }
     }
-    const publicMutations = ['ack', 'newEpisode',
+    const publicMutations = ['ack', 'detectAndPersist', 'newEpisode',
       'newBlockedCheckerEpisode', 'abandonEpisode', 'recordEpisode', 'newWorkstream',
       'setWorkstreamStatus', 'recordWorkstreamTerminal', 'patch', 'pauseRun',
-      'setSessionProfile', 'emitInsights', 'recoverRun', 'finishRun', 'acquireLease',
+      'setSessionProfile', 'emitInsights', 'claimIndependentReview',
+      'blockIndependentReview', 'commitReviewOutcome', 'emitHandoff', 'rollbackAndPause',
+      'respawn', 'recoverRun', 'finishRun', 'acquireLease',
       'approveLauncherExecutable', 'approveRuntimeExecutable', 'offerDesktop',
       'confirmDesktop', 'declineDesktop', 'resetDesktop'];
     if (!card.includes('const PUBLIC_MUTATION_INVENTORY7B = Object.freeze({')) {
@@ -28879,6 +29140,15 @@ for (const task of taskMatches) {
       "regularFileIfPresent(eventPath, 'canonical event log')",
       "intentConflictError = 'ANCHORED_TRANSACTION_PENDING'"]) {
       if (!card.includes(token)) fail(`Task 7B missing recovery/intent token ${token}`);
+    }
+    for (const token of ['directMutationOptions(',
+      'const DIRECT_APPEND_INVENTORY7B = Object.freeze({',
+      'every direct append caller has literal request authority',
+      'install the mandatory gateway **only after** applying the closed caller migration']) {
+      if (!card.includes(token)) fail(`Task 7B missing closed caller migration token ${token}`);
+    }
+    if (card.includes('mechanically update every')) {
+      fail('Task 7B retains prose-only caller migration');
     }
   }
   if (task[1] === '7D') {
@@ -28963,6 +29233,24 @@ for (const task of taskMatches) {
       if (!card.includes(token)) fail(`Task 10D missing exact recovery cleanup token ${token}`);
     }
   }
+  if (task[1] === '7C') {
+    for (const token of ['withVerifiedMutationLock } from',
+      "mutationIntentDigest('budget-record'",
+      "mutationIntentDigest('budget-preflight-settle'",
+      "mutationIntentDigest('budget-process-settle'",
+      "mutationIntentDigest('budget-terminal-maker-settle'",
+      'hash: baseStateHash', "fenceError: 'BUDGET_FENCED:",
+      'withVerifiedMutationLock(root, runId']) {
+      if (!card.includes(token)) fail(`Task 7C missing complete accounting wrapper token ${token}`);
+    }
+  }
+  if (task[1] === '9B') {
+    for (const token of ['scripts/deep-loop.mjs', 'tests/orch-cli.test.mjs',
+      '{ attemptId: f.attempt ?? null }',
+      'status CLI forwards the exact attempt under the final API name']) {
+      if (!card.includes(token)) fail(`Task 9B missing exact-attempt CLI migration token ${token}`);
+    }
+  }
   if (task[1] === '11B') {
     const publicMutations = ['ack', 'recordReviewed', 'newEpisode',
       'newBlockedCheckerEpisode', 'abandonEpisode', 'recordEpisode', 'newWorkstream',
@@ -28984,6 +29272,10 @@ for (const task of taskMatches) {
         fail(`Task 11B public mutation inventory omits ${symbol}`);
       }
     }
+    for (const token of ["operation: 'respawn-rollback-pause'",
+      "operation: 'respawn-timeout-preserve'", 'intentDigest: contentHash(JSON.stringify({']) {
+      if (!card.includes(token)) fail(`Task 11B missing respawn intent token ${token}`);
+    }
   }
   if (task[1] === '11C') {
     for (const token of ['durableRunBytes as bytes11c', 'bytes11c(fixture.root, fixture.runId)',
@@ -28998,6 +29290,10 @@ for (const task of taskMatches) {
       'APP_PREPARE_DECISION_CHANGED',
       'prepare authorizes deadline and gate with the fresh final-lock clock',
       'reentrant final-lock clock and gate seams fail closed without a write',
+      'function bindAppParentRouteOutsideLock(',
+      'function assertBoundAppParentMutationFence(',
+      'reentrant cwd and native-path callbacks finish before the final mutation lock',
+      'assertBoundAppParentMutationFence(candidate, input',
       'crashProbe: deps.crashProbe',
       'callbacks can reenter the verified reader outside the lock']) {
       if (!card.includes(token)) fail(`Task 11C missing outside-lock race token ${token}`);
@@ -29015,14 +29311,16 @@ for (const task of taskMatches) {
       "'route-null never invokes the production builder'",
       "test8b('throwing or recursively extra descriptor is write free'",
       'APP_PREPARED_ACTION_INVALID', 'if (route !== null)',
-      'action = completed.action', 'descriptorDigest = completed.descriptorDigest']) {
+      'action = completed.action', 'descriptorDigest = completed.descriptorDigest',
+      'app-task prepare projects snake_case stdin into one public create action',
+      'READY plus one JSON response only', 'tests/orch-cli.test.mjs']) {
       if (!card.includes(token)) fail(`Task 12B missing unwrapped snapshot token ${token}`);
     }
     for (const forbidden of ['snapshot.project.root', 'loop: snapshot',
       'const { action, descriptorDigest }', 'APP_DESCRIPTOR_BUILDER_REQUIRED']) {
       if (card.includes(forbidden)) fail(`Task 12B dereferences snapshot wrapper: ${forbidden}`);
     }
-    const composedPattern = "'App action|snapshot wrapper composes|builder failure'";
+    const composedPattern = "'App action|snapshot wrapper composes|builder failure|public create action'";
     if (!stepBodies[1].includes(composedPattern) || !stepBodies[3].includes(composedPattern)) {
       fail('Task 12B RED/GREEN commands do not execute the same composition test');
     }
@@ -29176,7 +29474,7 @@ for (const fence of fenceRecords) {
   }
 }
 const PLAN_EXPECTED_COUNTS = Object.freeze({
-  bash: 63, diff: 65, js: 167, json: 4, markdown: 12, text: 10, yaml: 1,
+  bash: 63, diff: 66, js: 168, json: 4, markdown: 12, text: 10, yaml: 1,
 });
 const orderedCounts = value => Object.fromEntries(Object.entries(value)
   .sort(([left], [right]) => left.localeCompare(right)));
