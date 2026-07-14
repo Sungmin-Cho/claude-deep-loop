@@ -519,6 +519,23 @@ no inherited approval from the historical receipt.
   sixth call and cannot be represented as Gate 1 PASS. Gate 2 and implementation remain closed unless
   a separately authorized fresh quality-gate procedure is established.
 
+### Codex-only loop closure and active-goal completion audit
+
+- loop-summary: `.deep-review/responses/2026-07-15-035915-loop-summary.md`, SHA-256
+  `7c8757819518fc640681a09ec8d48aad2b57a66580b4294c3dc12d8199e3606a`.
+- cycle identity: the five-call Codex-only `gpt-5.6-sol`/high cycle is exactly the Review reports
+  `003014`, `005810`, `015901`, `023339`, and `032919` plus their exact response records. The earlier
+  `2026-07-14-024922-loop-summary.md` is the superseded single-Opus cycle and is not reused.
+- hard-stop evidence: `deep-review-loop` §3.A.2 says Review count `>= --max` immediately forbids another
+  round. Round 5 reached `5/5`; a sixth Review cannot be initiated inside this cycle.
+- completion audit: Gate 0 is proven complete. Gate 1 has complete research/design/plan artifacts but
+  lacks the required natural-convergence review receipt. Gate 2 is therefore closed, and Gates 3A–9
+  are incomplete and were not started. No push/PR/merge/publish/delete, local install/restart/App smoke,
+  deep-suite pin, cleanup, or wiki action was executed.
+- safe next boundary: a human must either authorize a separately scoped fresh quality-gate cycle for
+  the corrected candidate with a new bounded review budget, or explicitly defer/stop the active goal.
+  This record neither asks a sixth reviewer nor treats the Round 5 response as approval.
+
 ## Review receipt template
 
 Each reviewed gate will add a receipt with all of these fields:
