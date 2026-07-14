@@ -238,7 +238,7 @@ export function withVerifiedMutationLock(root, runId, {
 export function commitVerifiedEventsUnderLock(root, runId, loop, eventSpecs, mutate,
   { baseLines, baseStateHash, callerBinding, intentDigest, crashProbe } = {});
 export function appendAnchored(root, runId, event, mutate, preCheck, {
-  floor, nowFn, fenceCheck, callerBinding, fenceError, crashProbe,
+  floor, nowFn, fenceCheck, callerBinding, intentDigest, fenceError, crashProbe, allowTerminal,
 });
 
 // callerBinding is required on every production mutation. The gateway never infers it from
@@ -4907,11 +4907,13 @@ test('durable helper syncs a POSIX parent after same-directory rename', () => {
 test('durable helper never opens a Windows directory fd and retries sharing errors boundedly', () => {
   const regular = { isFile: () => true, isSymbolicLink: () => false };
   let attempts = 0;
+  const opens = [];
   const clock = [0, 0, 50, 50, 100, 100];
   renamePreparedFile('C:\\run\\.tmp-a', 'C:\\run\\loop.json', {}, {
     platform: 'win32', lstat: () => regular,
-    open: path => {
+    open: (path, flags) => {
       assert.notEqual(path, 'C:\\run', 'Windows must not open a directory for fsync');
+      opens.push([path, flags]);
       return path;
     }, fsync: () => {}, close: () => {},
     rename: () => {
@@ -4920,6 +4922,8 @@ test('durable helper never opens a Windows directory fd and retries sharing erro
     }, monotonicNowFn: () => clock.shift() ?? 100, sleepFn: () => {},
   });
   assert.equal(attempts, 3);
+  assert.deepEqual(opens, [['C:\\run\\.tmp-a', 'r+']],
+    'Windows FlushFileBuffers requires a write-capable, non-truncating handle');
 });
 ```
 
@@ -4958,7 +4962,9 @@ export function syncRegularFile(path, deps = {}) {
   if (!regularIfPresent(path, deps, 'DURABLE_FILE_INVALID')) {
     throw new Error('DURABLE_FILE_MISSING');
   }
-  const descriptor = (deps.open ?? durableOpenSync)(path, 'r');
+  // Windows FlushFileBuffers requires GENERIC_WRITE. `r+` is write-capable without truncation
+  // and is also valid for the POSIX fsync path. Never reopen a staged file with read-only `r`.
+  const descriptor = (deps.open ?? durableOpenSync)(path, 'r+');
   try { (deps.fsync ?? durableFsyncSync)(descriptor); }
   finally { (deps.close ?? durableCloseSync)(descriptor); }
 }
@@ -7326,7 +7332,8 @@ export function observeHostSurface(root, runId, input, deps) {
       materialized = { ...normalized, observed_generation: input.generation };
       eventData.observation_digest = hostSurfaceFactsDigest(materialized);
     }, { nowFn: deps.nowFn ?? Date.now,
-      fenceCheck: loop => assertAppParentIdentity(loop, input) });
+      fenceCheck: loop => assertAppParentIdentity(loop, input),
+      crashProbe: deps.crashProbe });
     return { ok: true, outcome: eventData.outcome };
   } catch (error) {
     if (error.message === 'HOST_SURFACE_ALREADY') return { ok: true, outcome: 'already-observed' };
@@ -11024,10 +11031,12 @@ function appMutationIntentProjection(input, operation) {
       route_digest: intentField('prepare-route', input.route),
       host_input_digest: input.hostInputDigest
         ?? intentField('prepare-host-input', input.hostInput) },
-    'app-confirm': { receipt_digest: intentField('confirmed-thread', input.threadId) },
+    'app-confirm': { receipt_digest: intentField('confirmed-thread', input.threadId),
+      stdin_mode: input.stdinMode ?? null },
     'app-fail': { failure_code: input.code,
       reason_digest: intentField('failure-reason', input.reason),
-      unconfirmed_receipt_digest: intentField('unconfirmed-thread', input.unconfirmedThreadId) },
+      unconfirmed_receipt_digest: intentField('unconfirmed-thread', input.unconfirmedThreadId),
+      stdin_mode: input.stdinMode ?? null },
     'app-revoke': { runtime: input.runtime ?? null },
     'app-sweep': { deadline_digest: intentField('sweep-deadline', input.deadline) },
     'app-await': { timeout_ms: input.timeoutMs, interval_ms: input.intervalMs,
@@ -11035,7 +11044,7 @@ function appMutationIntentProjection(input, operation) {
     'app-acquire': { child_run_id: input.childRunId,
       observation_digest: input.observationDigest
         ?? intentField('acquire-observation', input.observation),
-      stdin_mode: input.stdinMode ?? null },
+      stdin_mode: input.stdinMode ?? null, runtime: input.runtime ?? null },
     'recover-run': { confirm: input.confirm === true,
       recovery_digest: input.recoveryDigest ?? null },
     'finish-run': { status: input.status,
@@ -15306,7 +15315,7 @@ diff --git a/scripts/lib/handoff.mjs b/scripts/lib/handoff.mjs
    deepLoopRoot = DEFAULT_DEEP_LOOP_ROOT, exists = existsSync,
    descriptorBuilder = buildRuntimeResumeDescriptor,
 +  appIntent = false, cwdFn = process.cwd, nowFn = Date.now,
-+  attemptIdFactory = () => ulid(), beforeFinalAppendFn = () => {},
++  attemptIdFactory = () => ulid(), beforeFinalAppendFn = () => {}, crashProbe,
  } = {}) {
    if (!expect || typeof expect.owner !== 'string' || !Number.isInteger(expect.generation)) throw new Error('FENCE_REQUIRED: emitHandoff');
    // Resolve runtime and canonical root from root-bound durable state. This read
@@ -15629,7 +15638,7 @@ diff --git a/scripts/lib/handoff.mjs b/scripts/lib/handoff.mjs
 +        applyFinalEmit(candidate, clock);
 +        const checked = validate(candidate);
 +        if (!checked.ok) throw new Error(`STATE_INVALID: ${checked.errors.join('; ')}`);
-+      }, { ...(appIntent ? { nowFn } : {}), fenceCheck: emitFence }));
++      }, { ...(appIntent ? { nowFn } : {}), fenceCheck: emitFence, crashProbe }));
 +  } catch (error) {
 +    try { rollbackReservedHandoff(canonicalRoot, runId, { owner: expect.owner,
 +      generation: expect.generation, key: res.key, childRunId: res.childRunId }); }
@@ -16529,7 +16538,8 @@ export function prepareAppTask(root, runId, input, deps = {}) {
       applyPrepared(candidate, existing.attemptId, route, descriptorDigest, clock);
       validateAppCandidate(candidate);
     }, { nowFn: authoritativeNow,
-      fenceCheck: loop => assertAppParentIdentity(loop, input) });
+      fenceCheck: loop => assertAppParentIdentity(loop, input),
+      crashProbe: deps.crashProbe });
   } catch (error) {
     if (String(error?.message || error) === 'APP_PREPARE_CAS_LOST') {
       const current = mutation.readVerifiedState().data;
@@ -17149,7 +17159,8 @@ export function confirmAppTask(root, runId, input, deps = {}) {
     next.phase = 'confirmed'; next.thread_id = threadId; next.confirmed_at = clock.iso;
     validateAppCandidate(candidate);
   }, { nowFn: deps.nowFn ?? Date.now,
-    fenceCheck: loop => assertAppParentIdentity(loop, input) });
+    fenceCheck: loop => assertAppParentIdentity(loop, input),
+    crashProbe: deps.crashProbe });
   return result;
   });
 }
@@ -17218,7 +17229,8 @@ export function failAppTask(root, runId, input, deps = {}) {
     applyAppFailure(candidate, input, input.code, receipt);
     validateAppCandidate(candidate);
   }, { nowFn: deps.nowFn ?? Date.now,
-    fenceCheck: loop => assertAppParentIdentity(loop, input) });
+    fenceCheck: loop => assertAppParentIdentity(loop, input),
+    crashProbe: deps.crashProbe });
   return result;
   });
 }
@@ -17787,7 +17799,8 @@ export function sweepUnconfirmedAppTask(root, runId, input, deps = {}) {
       candidate.session_chain.lease.expires_at = null;
       validateAppCandidate(candidate);
     }, { nowFn: deps.nowFn ?? Date.now,
-      fenceCheck: loop => assertAppParentIdentity(loop, input) });
+      fenceCheck: loop => assertAppParentIdentity(loop, input),
+      crashProbe: deps.crashProbe });
   } catch (error) {
     if (String(error?.message || error) === 'APP_NOT_EXPIRED') {
       return { ok: true, outcome: 'not-expired', attempt_id: input.attemptId };
@@ -17936,7 +17949,8 @@ export function awaitAppTask(root, runId, input, deps = {}) {
       candidate.session_chain.lease.expires_at = null;
       validateAppCandidate(candidate);
     }, { nowFn: authoritativeNow,
-      fenceCheck: loop => assertAppParentIdentity(loop, input) }));
+      fenceCheck: loop => assertAppParentIdentity(loop, input),
+      crashProbe: deps.crashProbe }));
   } catch (error) {
     const message = String(error?.message || error);
     const convergence = ['APP_READY_ACQUIRED', 'APP_READY_CHANGED'].includes(message)
@@ -18381,6 +18395,7 @@ export function acquireAppTask(root, runId, input, deps = {}) {
         throw new Error('LEASE_FENCED: app-acquire');
       }
     },
+    crashProbe: deps.crashProbe,
   });
   return result;
   });
@@ -19459,6 +19474,7 @@ git commit -m "feat: recover App attempts phase safely" -m "Co-Authored-By: Clau
 - Modify: `scripts/deep-loop.mjs:489-616,834-861` (finish dispatch and exit precedence).
 - Modify: `scripts/lib/app-task-continuation.mjs` internal failure enum (`run-finished`).
 - Modify: `tests/finish.test.mjs` after proof-valid finish cases.
+- Modify: `tests/app-task-continuation.test.mjs` after Task 9A receipt crash cases.
 - Modify: `tests/terminal-cli.test.mjs` and `tests/orch-cli.test.mjs` at finish precedence cases.
 - Modify: `tests/integrity.test.mjs` at the Task 7B crash matrix.
 - Modify: `tests/helpers/anchored-crash-worker.mjs` at its closed operation dispatch.
@@ -19560,7 +19576,8 @@ function mutationCase10d(operation) {
     owner: foreign ? '01JAPPF0R00000000000000000' : fixture.runId,
     generation: 1, attemptId: fixture.attemptId, stdinMode: 'pty-raw-noecho',
   });
-  const invoke = ({ different = false, foreign = false } = {}) => {
+  const invoke = ({ different = false, foreign = false, wrongMode = false,
+    wrongRuntime = false } = {}) => {
     const input = parent(different, foreign);
     if (operation === 'emit') return emitHandoff(fixture.root, fixture.runId, {
       trigger: 'crash-emit', reason: different ? 'different' : 'same', appIntent: true,
@@ -19573,12 +19590,15 @@ function mutationCase10d(operation) {
         hostInput: different ? { ...fixture.request.hostInput,
           currentHostTaskCwd: `${fixture.root}-different` } : fixture.request.hostInput }, fixture.deps);
     if (operation === 'confirm') return confirmAppTask(fixture.root, fixture.runId,
-      { ...input, threadId: different ? 'different-thread' : 'confirmed-thread' },
+      { ...input, stdinMode: wrongMode ? 'pipe-open-noecho' : input.stdinMode,
+        threadId: different ? 'different-thread' : 'confirmed-thread' },
       { cwdFn: () => fixture.root,
         nowFn: () => Date.parse('2026-07-13T00:00:03.000Z') });
     if (operation === 'fail') return failAppTask(fixture.root, fixture.runId,
-      { ...input, code: different ? 'message-unconfirmed' : 'host-call-failed',
-        ...(different ? { unconfirmedThreadId: 'different-thread' } : {}) },
+      { owner: input.owner, generation: input.generation, attemptId: input.attemptId,
+        code: different ? 'message-unconfirmed' : 'host-call-failed',
+        ...(different ? { stdinMode: wrongMode ? 'pipe-open-noecho' : input.stdinMode,
+          unconfirmedThreadId: 'different-thread' } : {}) },
       { cwdFn: () => fixture.root,
         nowFn: () => Date.parse('2026-07-13T00:00:03.000Z') });
     if (operation === 'sweep') return sweepUnconfirmedAppTask(fixture.root, fixture.runId,
@@ -19593,6 +19613,7 @@ function mutationCase10d(operation) {
         pollIntervalMs: 1, sleepFn: () => {} });
     if (operation === 'acquire') return acquireAppTask(fixture.root, fixture.runId,
       { ...fixture.acquireInput, owner: foreign ? input.owner : fixture.childRunId,
+        runtime: wrongRuntime ? 'claude' : fixture.acquireInput.runtime,
         observation: different ? { ...fixture.acquireInput.observation,
           structured_stdin_mode: 'pipe-open-noecho' } : fixture.acquireInput.observation },
       { cwdFn: () => fixture.root,
@@ -19628,12 +19649,18 @@ function assertPublicMutationCrashRecovery10d({ operation, crashPoint, worker })
   const child = spawn10d(process.execPath,
     [fileURLToPath(worker), fixture.root, fixture.runId, operation, crashPoint], {
       shell: false, encoding: 'utf8', env: { ...process.env,
+        DEEP_LOOP_CRASH_OWNER: fixture.runId,
+        DEEP_LOOP_CRASH_GENERATION: '1',
         DEEP_LOOP_CRASH_INPUT: JSON.stringify({ owner: fixture.runId, generation: 1,
           attemptId: fixture.attemptId, childRunId: fixture.childRunId }) },
     });
   assert.equal(child.status, 91, child.stderr || child.stdout);
   const pending = journalBytes10d(fixture.root, fixture.runId);
-  for (const variant of [{ foreign: true }, { different: true }]) {
+  assert.ok(Object.hasOwn(pending, '.anchored-pending.json'));
+  const variants = [{ foreign: true }, { different: true },
+    ...(operation === 'confirm' ? [{ wrongMode: true }] : []),
+    ...(operation === 'acquire' ? [{ wrongRuntime: true }] : [])];
+  for (const variant of variants) {
     let result;
     try { result = invoke(variant); }
     catch (error) { assert.match(String(error?.message || error), /FENCED|PENDING/i); }
@@ -19738,6 +19765,8 @@ test('same-length staged-event corruption is rejected before any canonical mutat
   const child = spawn10d(process.execPath,
     [fileURLToPath(worker), fixture.root, fixture.runId, 'confirm', 'pending-after-rename'], {
       shell: false, encoding: 'utf8', env: { ...process.env,
+        DEEP_LOOP_CRASH_OWNER: fixture.runId,
+        DEEP_LOOP_CRASH_GENERATION: '1',
         DEEP_LOOP_CRASH_INPUT: JSON.stringify({ owner: fixture.runId, generation: 1,
           attemptId: fixture.attemptId, childRunId: fixture.childRunId }) },
     });
@@ -19768,6 +19797,8 @@ test('published confirm marker plus a different receipt is the public App fence'
   const child = spawn10d(process.execPath,
     [fileURLToPath(worker), fixture.root, fixture.runId, 'confirm', 'pending-after-rename'], {
       shell: false, encoding: 'utf8', env: { ...process.env,
+        DEEP_LOOP_CRASH_OWNER: fixture.runId,
+        DEEP_LOOP_CRASH_GENERATION: '1',
         DEEP_LOOP_CRASH_INPUT: JSON.stringify({ owner: fixture.runId, generation: 1,
           attemptId: fixture.attemptId, childRunId: fixture.childRunId }) },
     });
@@ -19776,6 +19807,48 @@ test('published confirm marker plus a different receipt is the public App fence'
   assert.throws(() => invoke({ different: true }), /APP_RECEIPT_FENCED/);
   assert.deepEqual(journalBytes10d(fixture.root, fixture.runId), pending);
   invoke();
+});
+```
+
+In `tests/app-task-continuation.test.mjs`, add these imports and the receipt-mode crash case. It uses
+the Task 9A fork fixture so the worker's `message-unconfirmed` transition is a real valid public
+mutation before the injected crash:
+
+```js
+import { spawnSync as spawn10dApp } from 'node:child_process';
+import { fileURLToPath as file10dApp } from 'node:url';
+
+function journalBytes10dApp(root, runId) {
+  const directory = runDir9a(root, runId);
+  return Object.fromEntries(['.anchored-pending.json', '.anchored-events.stage',
+    '.anchored-state.stage', '.anchored-hash.stage', 'event-log.jsonl', 'loop.json', '.loop.hash']
+    .map(name => [name, read9a(join9a(directory, name))]));
+}
+
+test9a('published message-unconfirmed marker fences a wrong stdin mode before recovery', () => {
+  const fixture = prepared9a({ route: 'fork' });
+  const worker = file10dApp(new URL('./helpers/anchored-crash-worker.mjs', import.meta.url));
+  const child = spawn10dApp(process.execPath,
+    [worker, fixture.root, fixture.runId, 'fail', 'pending-after-rename'], {
+      shell: false, encoding: 'utf8', env: { ...process.env,
+        DEEP_LOOP_CRASH_OWNER: fixture.runId,
+        DEEP_LOOP_CRASH_GENERATION: '1',
+        DEEP_LOOP_CRASH_INPUT: JSON.stringify({ owner: fixture.runId, generation: 1,
+          attemptId: fixture.attemptId, childRunId: fixture.childRunId,
+          messageFailure: true, messageCwd: fixture.worktree }) },
+    });
+  assert9a.equal(child.status, 91, child.stderr || child.stdout);
+  const pending = journalBytes10dApp(fixture.root, fixture.runId);
+  assert9a.throws(() => fail9a(fixture.root, fixture.runId,
+    { owner: fixture.runId, generation: 1, attemptId: fixture.attemptId,
+      code: 'message-unconfirmed', stdinMode: 'pipe-open-noecho',
+      unconfirmedThreadId: 'known-message-thread' }), /APP_RECEIPT_FENCED/);
+  assert9a.deepEqual(journalBytes10dApp(fixture.root, fixture.runId), pending);
+  const recovered = fail9a(fixture.root, fixture.runId,
+    { owner: fixture.runId, generation: 1, attemptId: fixture.attemptId,
+      code: 'message-unconfirmed', stdinMode: 'pty-raw-noecho',
+      unconfirmedThreadId: 'known-message-thread' });
+  assert9a.equal(recovered.outcome, 'already-failed');
 });
 ```
 
@@ -19815,13 +19888,23 @@ const publicMutation10d = Object.freeze({
     { owner: input.owner, generation: input.generation, stdinMode: 'pty-raw-noecho',
       hostInput: { currentHostTaskCwd: root,
         projects: [{ projectId: 'p', projectKind: 'local', path: root }] } },
-    { cwdFn: () => root, descriptorBuilder: workerPrepareDescriptor10d, crashProbe }),
+    { cwdFn: () => root, descriptorBuilder: workerPrepareDescriptor10d,
+      nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'),
+      precheckNowFn: () => Date.parse('2026-07-13T00:00:02.000Z'),
+      reconcileBudgetFn: () => {}, gateFn: () => ({ ok: true, blocked_by: [] }), crashProbe }),
   confirm: ({ root, runId, input, crashProbe }) => confirmAppTask(root, runId,
     { ...input, stdinMode: 'pty-raw-noecho', threadId: 'confirmed-thread' },
-    { cwdFn: () => root, crashProbe }),
+    { cwdFn: () => root,
+      nowFn: () => Date.parse('2026-07-13T00:00:03.000Z'), crashProbe }),
   fail: ({ root, runId, input, crashProbe }) => failAppTask(root, runId,
-    { ...input, stdinMode: 'pty-raw-noecho', code: 'host-call-failed' },
-    { cwdFn: () => root, crashProbe }),
+    input.messageFailure === true
+      ? { owner: input.owner, generation: input.generation, attemptId: input.attemptId,
+        code: 'message-unconfirmed', stdinMode: 'pty-raw-noecho',
+        unconfirmedThreadId: 'known-message-thread' }
+      : { owner: input.owner, generation: input.generation, attemptId: input.attemptId,
+        code: 'host-call-failed' },
+    { cwdFn: () => input.messageCwd ?? root,
+      nowFn: () => Date.parse('2026-07-13T00:00:03.000Z'), crashProbe }),
   sweep: ({ root, runId, input, crashProbe }) => sweepUnconfirmedAppTask(root, runId,
     { ...input, deadline: '2026-07-13T00:05:00.000Z' },
     { cwdFn: () => root, nowFn: () => Date.parse('2026-07-13T00:05:01.001Z'), crashProbe }),
@@ -19831,7 +19914,8 @@ const publicMutation10d = Object.freeze({
       pollIntervalMs: 1, sleepFn: () => {}, crashProbe }),
   acquire: ({ root, runId, input, crashProbe }) => acquireAppTask(root, runId,
     { ...input, owner: input.childRunId, runtime: 'codex', stdinMode: 'pty-raw-noecho',
-      observation: workerObservation10d(root) }, { cwdFn: () => root, crashProbe }),
+      observation: workerObservation10d(root) }, { cwdFn: () => root,
+      nowFn: () => Date.parse('2026-07-13T00:00:04.000Z'), crashProbe }),
   recover: ({ root, runId, input, crashProbe }) => recoverRun(root, runId,
     { expect: { owner: input.owner, generation: input.generation }, confirm: true,
       recoveryDigest: 'a'.repeat(64), crashProbe }),
@@ -19852,8 +19936,14 @@ export function dispatchPublicMutationCrash10d({ root, runId, operation, point, 
     'hash-replace-after-rename-before-dir-fsync']);
   if (!points.has(point)) throw new Error('CRASH_POINT_INVALID');
   const input = JSON.parse(rawInput);
-  if (JSON.stringify(Object.keys(input).sort())
-      !== JSON.stringify(['attemptId', 'childRunId', 'generation', 'owner'])) {
+  const inputKeys = Object.keys(input).sort();
+  const baseKeys = ['attemptId', 'childRunId', 'generation', 'owner'];
+  const messageKeys = [...baseKeys, 'messageCwd', 'messageFailure'].sort();
+  if (JSON.stringify(inputKeys) !== JSON.stringify(baseKeys)
+      && JSON.stringify(inputKeys) !== JSON.stringify(messageKeys)
+      || input.messageFailure !== undefined && input.messageFailure !== true
+      || input.messageFailure === true
+        && (typeof input.messageCwd !== 'string' || input.messageCwd.length === 0)) {
     throw new Error('CRASH_INPUT_INVALID');
   }
   return publicMutation10d[operation]({ root, runId, input,
@@ -19945,7 +20035,7 @@ test('finish CLI requires the exact App runtime and then settles the bound attem
 
 - [ ] **Step 2: Run the finish matrix and verify RED**
 
-Run: `node --test --test-name-pattern='finish settles every App phase|finish CLI|finish is fenced|lease release on terminal run' tests/finish.test.mjs tests/terminal-cli.test.mjs tests/orch-cli.test.mjs`
+Run: `node --test --test-name-pattern='finish settles every App phase|published message-unconfirmed marker|finish CLI|finish is fenced|lease release on terminal run' tests/finish.test.mjs tests/app-task-continuation.test.mjs tests/terminal-cli.test.mjs tests/orch-cli.test.mjs`
 
 Expected: FAIL because `leaseCheck` treats the releasing/paused App binding as a business-write rejection and no terminal App cleanup exists.
 
@@ -20141,26 +20231,26 @@ async function handleFinish(a) {
 
 - [ ] **Step 4: Run the finish matrix and verify GREEN**
 
-Run: `node --test --test-name-pattern='finish settles every App phase|real App mutation recovers|finish is fenced|lease release on terminal run|exit 3' tests/finish.test.mjs tests/terminal-cli.test.mjs tests/orch-cli.test.mjs tests/integrity.test.mjs`
+Run: `node --test --test-name-pattern='finish settles every App phase|published message-unconfirmed marker|real App mutation recovers|finish is fenced|lease release on terminal run|exit 3' tests/finish.test.mjs tests/app-task-continuation.test.mjs tests/terminal-cli.test.mjs tests/orch-cli.test.mjs tests/integrity.test.mjs`
 
 Expected: PASS with one anchored finish event and exact phase/binding cleanup.
 
 - [ ] **Step 5: Run terminal/proof regressions**
 
-Run: `node --test tests/finish.test.mjs tests/terminal-cli.test.mjs tests/review.test.mjs tests/workspace.test.mjs tests/lease.test.mjs tests/integrity.test.mjs`
+Run: `node --test tests/finish.test.mjs tests/app-task-continuation.test.mjs tests/terminal-cli.test.mjs tests/review.test.mjs tests/workspace.test.mjs tests/lease.test.mjs tests/integrity.test.mjs`
 
 Expected: PASS; completion proof, stopped confirmation, terminal one-way behavior, and valid terminal no-live release remain unchanged.
 
 - [ ] **Step 6: Review only the 10D diff**
 
-Run: `git diff -- scripts/lib/finish.mjs scripts/lib/app-task-continuation.mjs scripts/deep-loop.mjs tests/finish.test.mjs tests/terminal-cli.test.mjs tests/orch-cli.test.mjs tests/integrity.test.mjs tests/helpers/anchored-crash-worker.mjs && git diff --check`
+Run: `git diff -- scripts/lib/finish.mjs scripts/lib/app-task-continuation.mjs scripts/deep-loop.mjs tests/finish.test.mjs tests/app-task-continuation.test.mjs tests/terminal-cli.test.mjs tests/orch-cli.test.mjs tests/integrity.test.mjs tests/helpers/anchored-crash-worker.mjs && git diff --check`
 
 Confirm cleanup occurs inside the finish transaction after fence/proof candidate validation, definitive failure history is preserved, and CLI never turns a valid-fence terminal failure into exit 3.
 
 - [ ] **Step 7: Commit the terminal slice**
 
 ```bash
-git add scripts/lib/finish.mjs scripts/lib/app-task-continuation.mjs scripts/deep-loop.mjs tests/finish.test.mjs tests/terminal-cli.test.mjs tests/orch-cli.test.mjs tests/integrity.test.mjs tests/helpers/anchored-crash-worker.mjs
+git add scripts/lib/finish.mjs scripts/lib/app-task-continuation.mjs scripts/deep-loop.mjs tests/finish.test.mjs tests/app-task-continuation.test.mjs tests/terminal-cli.test.mjs tests/orch-cli.test.mjs tests/integrity.test.mjs tests/helpers/anchored-crash-worker.mjs
 git commit -m "fix: settle App attempts on terminal transitions" -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
 
@@ -20456,6 +20546,8 @@ test('confirm CLI maps a published marker with a different receipt to exit 3', a
   const crashed = spawnSync(process.execPath,
     [worker, fixture.root, fixture.runId, 'confirm', 'pending-after-rename'], {
       cwd: fixture.root, encoding: 'utf8', shell: false, env: { ...process.env,
+        DEEP_LOOP_CRASH_OWNER: fixture.runId,
+        DEEP_LOOP_CRASH_GENERATION: '1',
         DEEP_LOOP_CRASH_INPUT: JSON.stringify({ owner: fixture.runId, generation: 1,
           attemptId: fixture.attemptId, childRunId: fixture.childRunId }) },
     });
@@ -23019,6 +23111,49 @@ test('prepare confirm revoke and sweep callbacks can reenter the verified reader
   }
 });
 
+test('prepare authorizes deadline and gate with the fresh final-lock clock', () => {
+  const fixture = emitted8b();
+  const before = bytes8a(fixture.root, fixture.runId);
+  assert.throws(() => prepareAppTask(fixture.root, fixture.runId,
+    { owner: fixture.runId, generation: 1, stdinMode: 'pipe-open-noecho',
+      hostInput: { currentHostTaskCwd: fixture.root,
+        projects: [{ projectId: 'race-project', projectKind: 'local', path: fixture.root }] } }, {
+      cwdFn: () => fixture.root,
+      precheckNowFn: () => Date.parse('2026-07-13T00:00:02.000Z'),
+      nowFn: () => Date.parse('2026-07-13T00:06:00.000Z'),
+      descriptorBuilder: () => ({ tool: 'create_thread', target: { type: 'project',
+        projectId: 'race-project', environment: { type: 'local' } }, prompt: 'race prompt' }),
+      reconcileBudgetFn: () => {}, gateFn: () => ({ ok: true, blocked_by: [] }),
+    }), /APP_PREPARE_DEADLINE_EXPIRED/);
+  assert.deepEqual(bytes8a(fixture.root, fixture.runId), before);
+});
+
+test('reentrant final-lock clock and gate seams fail closed without a write', () => {
+  for (const seam of ['clock', 'gate']) {
+    const fixture = emitted8b();
+    const before = bytes8a(fixture.root, fixture.runId);
+    const reenter = () => readVerifiedState(fixture.root, fixture.runId);
+    assert.throws(() => prepareAppTask(fixture.root, fixture.runId,
+      { owner: fixture.runId, generation: 1, stdinMode: 'pipe-open-noecho',
+        hostInput: { currentHostTaskCwd: fixture.root,
+          projects: [{ projectId: 'race-project', projectKind: 'local', path: fixture.root }] } }, {
+        cwdFn: () => fixture.root,
+        precheckNowFn: () => Date.parse('2026-07-13T00:00:02.000Z'),
+        nowFn: () => {
+          if (seam === 'clock') reenter();
+          return Date.parse('2026-07-13T00:00:02.000Z');
+        },
+        descriptorBuilder: () => ({ tool: 'create_thread', target: { type: 'project',
+          projectId: 'race-project', environment: { type: 'local' } }, prompt: 'race prompt' }),
+        reconcileBudgetFn: () => {}, gateFn: (_loop, options) => {
+          if (seam === 'gate') reenter();
+          return { ok: true, blocked_by: [], now: options.now };
+        },
+      }), /LOCK_BUSY/);
+    assert.deepEqual(bytes8a(fixture.root, fixture.runId), before);
+  }
+});
+
 test('race worker rejects process close before READY and leaves no live child', async () => {
   const fixture = emitted8b();
   const operation = childOperation({ op: 'invalid', root: fixture.root,
@@ -23334,12 +23469,15 @@ of this focused RED command.
 Split `prepareAppTask`, `confirmAppTask`, `revokeAppTaskContinuation`, and
 `sweepUnconfirmedAppTask` into optimistic snapshot/commit phases with the same operation intent.
 The first context performs only recovery-aware proof and returns a cloned `{data,hash}`. It closes
-before any descriptor builder, gate, budget reconciliation, callback, barrier, artifact I/O, or
-external work. The second context performs a fresh verified read and compares the exact state hash
+before any descriptor builder, budget reconciliation, potentially reentrant callback, barrier,
+artifact I/O, or external work. The second context performs a fresh verified read and compares the exact state hash
 before any mutation. A mismatch is a bounded CAS loss: the operation restarts from a new first
 snapshot at most once, with the test seam called only on the first attempt. Thus every callback is
 outside the lock while the callback result is authorized only when the exact snapshot it observed
-is still current. No mutation context or context-owned method escapes either callback.
+is still current. The kernel-owned synchronous clock and gate predicate are the only final-context
+seams: production uses `Date.now` and `respawnGate`; test injection must be pure, non-reentrant,
+non-blocking, and perform no I/O, sleep, read, or mutation. Reentrant clock/gate seams therefore fail
+closed on the run lock. No mutation context or context-owned method escapes either callback.
 
 Add these literal private helpers and use them for all four operations:
 
@@ -23360,11 +23498,14 @@ function appCommitPhase(root, runId, input, operation, expectedHash, read, commi
 }
 ```
 
-Each operation's final shape is executable below. All injected functions, including
-`descriptorBuilder`, `gateFn`, `reconcileBudgetFn`, and `beforeAppendFn`, run between contexts.
+Each operation's final shape is executable below. Potentially reentrant injected functions
+`descriptorBuilder`, `reconcileBudgetFn`, and `beforeAppendFn` run between contexts. `nowFn` and
+`gateFn` are trusted synchronous pure kernel seams: prepare may sample them for an advisory decision
+outside the lock, but the final precheck samples both again under the final lock and authorizes only
+that fresh result. Neither seam is exposed through CLI or user input.
 `prepare` restarts its snapshot after reconciliation, so its descriptor/gate result is tied to the
 post-reconciliation hash. The commit context compares that hash before append and its precheck uses
-only pure kernel predicates plus the already-sampled fixed clock. The other three operations use the
+only the fresh lock-owned clock and pure kernel predicates. The other three operations use the
 same bounded optimistic CAS. These private helpers are the complete shared predicates:
 
 ```js
@@ -23460,7 +23601,7 @@ export function prepareAppTask(root, runId, input, deps = {}) {
       failureCode = 'app-launch-unconfirmed'; preserve = true;
     }
     let action = null; let descriptorDigest = null;
-    const decisionNow = Number((deps.precheckNowFn ?? nowFn)());
+    const advisoryNow = Number((deps.precheckNowFn ?? nowFn)());
     if (route !== null) {
       if (typeof deps.descriptorBuilder !== 'function') {
         throw new Error('APP_DESCRIPTOR_BUILDER_REQUIRED');
@@ -23468,7 +23609,7 @@ export function prepareAppTask(root, runId, input, deps = {}) {
       action = exactPreparedAction(deps.descriptorBuilder({ loop, route,
         child: existing.session, attemptId: existing.attemptId }), route);
       descriptorDigest = contentHash(JSON.stringify(action));
-      const gate = gateFor(loop, { now: decisionNow });
+      const gate = gateFor(loop, { now: advisoryNow });
       if (!gate.ok) failureCode = `gate-${gate.blocked_by[0].replaceAll('_', '-')}`;
     }
     if (!reconciled && failureCode === null) {
@@ -23498,6 +23639,14 @@ export function prepareAppTask(root, runId, input, deps = {}) {
                 do_not_call: true, attempt_id: bound.attemptId, reason: failureCode };
             }, (candidate, clock) => {
               assertAppParentMutationFence(candidate, root, input, ['emitted'], deps);
+              if (route !== null) {
+                const freshGate = gateFor(candidate, { now: clock.ms });
+                const freshFailure = freshGate.ok ? null
+                  : `gate-${freshGate.blocked_by[0].replaceAll('_', '-')}`;
+                if (freshFailure !== failureCode) {
+                  throw new Error('APP_PREPARE_DECISION_CHANGED');
+                }
+              }
               if (clock.ms > Date.parse(bound.continuation.prepare_deadline)) {
                 throw new Error('APP_PREPARE_DEADLINE_EXPIRED');
               }
@@ -23505,8 +23654,9 @@ export function prepareAppTask(root, runId, input, deps = {}) {
               applyPrepareFailure(projected, { ...input, attemptId: bound.attemptId },
                 failureCode, preserve);
               validateAppCandidate(projected);
-            }, { nowFn: () => decisionNow,
-              fenceCheck: candidate => assertAppParentIdentity(candidate, input) });
+            }, { nowFn,
+              fenceCheck: candidate => assertAppParentIdentity(candidate, input),
+              crashProbe: deps.crashProbe });
             return result;
           }
           mutation.appendAnchored({ type: 'app-task-prepared', data: {
@@ -23518,18 +23668,26 @@ export function prepareAppTask(root, runId, input, deps = {}) {
               context_mode: bound.continuation.context_mode, action };
           }, (candidate, clock) => {
             assertAppParentMutationFence(candidate, root, input, ['emitted'], deps);
+            const freshGate = gateFor(candidate, { now: clock.ms });
+            const freshFailure = freshGate.ok ? null
+              : `gate-${freshGate.blocked_by[0].replaceAll('_', '-')}`;
+            if (freshFailure !== failureCode) {
+              throw new Error('APP_PREPARE_DECISION_CHANGED');
+            }
             if (clock.ms > Date.parse(bound.continuation.prepare_deadline)) {
               throw new Error('APP_PREPARE_DEADLINE_EXPIRED');
             }
             const projected = structuredClone(candidate);
             applyPrepared(projected, bound.attemptId, route, descriptorDigest, clock);
             validateAppCandidate(projected);
-          }, { nowFn: () => decisionNow,
-            fenceCheck: candidate => assertAppParentIdentity(candidate, input) });
+          }, { nowFn,
+            fenceCheck: candidate => assertAppParentIdentity(candidate, input),
+            crashProbe: deps.crashProbe });
           return result;
         });
     } catch (error) {
-      if (appCasLost(error, 'app-prepare')) continue;
+      if (appCasLost(error, 'app-prepare')
+          || String(error?.message || error) === 'APP_PREPARE_DECISION_CHANGED') continue;
       throw error;
     }
   }
@@ -23580,7 +23738,8 @@ export function confirmAppTask(root, runId, input, deps = {}) {
             continuation.phase = 'confirmed'; continuation.thread_id = threadId;
             continuation.confirmed_at = clock.iso; validateAppCandidate(projected);
           }, { nowFn: deps.nowFn ?? Date.now,
-            fenceCheck: candidate => assertAppParentIdentity(candidate, input) });
+            fenceCheck: candidate => assertAppParentIdentity(candidate, input),
+            crashProbe: deps.crashProbe });
           return result;
         });
     } catch (error) {
@@ -23616,7 +23775,7 @@ export function revokeAppTaskContinuation(root, runId, input, deps = {}) {
             applyAppRevocation(projected, clock); validateAppCandidate(projected);
           }, { nowFn: deps.nowFn ?? Date.now,
             fenceCheck: candidate => assertAppCommandIdentity(
-              candidate, input, 'APP_TASK_FENCED') });
+              candidate, input, 'APP_TASK_FENCED'), crashProbe: deps.crashProbe });
           return result;
         });
     } catch (error) {
@@ -23683,7 +23842,8 @@ export function sweepUnconfirmedAppTask(root, runId, input, deps = {}) {
             projected.session_chain.lease.resume_policy = 'human';
             projected.session_chain.lease.expires_at = null; validateAppCandidate(projected);
           }, { nowFn: () => now,
-            fenceCheck: candidate => assertAppParentIdentity(candidate, input) });
+            fenceCheck: candidate => assertAppParentIdentity(candidate, input),
+            crashProbe: deps.crashProbe });
           return result;
         });
     } catch (error) {
@@ -23724,11 +23884,10 @@ diff --git a/scripts/lib/app-task-continuation.mjs b/scripts/lib/app-task-contin
        assertAppParentMutationFence(loop, root, input, ['confirmed'], deps);
        if (clock.ms < deadline) throw new Error('APP_AWAIT_NOT_EXPIRED');
        const candidate = structuredClone(loop);
-@@ -235,27 +238,34 @@ export function awaitAppTask(root, runId, input, deps = {}) {
-     }, { nowFn: authoritativeNow,
-       fenceCheck: loop => assertAppParentIdentity(loop, input),
-       callerBinding: { owner: input.owner, generation: input.generation },
-       fenceError: 'LEASE_FENCED: app-await' });
+@@ -235,26 +238,33 @@ export function awaitAppTask(root, runId, input, deps = {}) {
+    }, { nowFn: authoritativeNow,
+      fenceCheck: loop => assertAppParentIdentity(loop, input),
+      crashProbe: deps.crashProbe }));
    } catch (error) {
      const message = String(error?.message || error);
 -    const convergence = ['APP_READY_ACQUIRED', 'APP_READY_CHANGED'].includes(message)
@@ -24055,7 +24214,7 @@ test('App action exposes only the reviewed public create and fork shapes', async
   assert.doesNotMatch(JSON.stringify({ create, fork }), /"(?:model|thinking|clientThreadId)"/);
 });
 
-test('production prepare emits one action and redacts an exact retry', () => {
+test('Task 11C snapshot wrapper composes with production prepare and redacts an exact retry', () => {
   const { descriptorBuilder: _testBuilder, ...productionDeps } = fixedDeps;
   const first = prepareAppTask(root, runId, request, productionDeps);
   assert.equal(first.do_not_call, false);
@@ -24092,7 +24251,7 @@ test('descriptor builder failure leaves emitted state and event log unchanged', 
 
 - [ ] **Step 2: Run tests to verify RED**
 
-Run: `node --test --test-name-pattern='App action|production prepare|builder failure' tests/runtime-descriptor.test.mjs tests/app-task-continuation.test.mjs`
+Run: `node --test --test-name-pattern='App action|snapshot wrapper composes|builder failure' tests/runtime-descriptor.test.mjs tests/app-task-continuation.test.mjs`
 
 Expected: FAIL because `buildAppTaskAction` is absent and production prepare still requires an injected descriptor builder.
 
@@ -24194,11 +24353,15 @@ function finalizePreparedAppAction(candidate, route) {
 }
 ```
 
-At the produced `prepareAppTask` descriptor claim, use its already-read `snapshot` binding and resolve the real Task 8 record with `const childSession = snapshot.session_chain.sessions.find(session => session.run_id === snapshot.session_chain.lease.handoff_child_run_id);` and `const continuation = childSession?.continuation;`. Insert this exact local block before entering `appendAnchored`; builder/action validation and descriptor digest computation must finish before any event append:
+At the produced `prepareAppTask` descriptor claim, use Task 11C's already-unwrapped
+`loop = snapshot.data` binding and resolve the real Task 8 record with
+`const childSession = loop.session_chain.sessions.find(session => session.run_id === loop.session_chain.lease.handoff_child_run_id);`
+and `const continuation = childSession?.continuation;`. Insert this exact local block before entering
+`appendAnchored`; builder/action validation and descriptor digest computation must finish before any event append:
 
 ```js
 const descriptorInput = appTaskDescriptorInput({
-  projectRoot: snapshot.project.root,
+  projectRoot: loop.project.root,
   platform: deps.platform ?? process.platform,
   runId,
   owner: input.owner,
@@ -24211,7 +24374,7 @@ const { action, descriptorDigest } = finalizePreparedAppAction(
   deps.descriptorBuilder === undefined
     ? buildAppTaskAction(descriptorInput)
     : deps.descriptorBuilder({
-      loop: snapshot, route, child: childSession, attemptId: continuation.attempt_id,
+      loop, route, child: childSession, attemptId: continuation.attempt_id,
     }),
   route,
 );
@@ -28001,6 +28164,14 @@ if (smokeSteps.join('') !== '1234567') {
 const requireTokens = (name, body, tokens) => {
   for (const token of tokens) if (!body.includes(token)) fail(`${name} missing: ${token}`);
 };
+const fixedStart = source.indexOf('## Fixed Internal Interfaces');
+const fixedEnd = fixedStart < 0 ? -1 : source.indexOf('\n## ', fixedStart + 3);
+const fixedInterfaces = fixedStart < 0 ? ''
+  : source.slice(fixedStart, fixedEnd < 0 ? undefined : fixedEnd);
+requireTokens('Fixed Internal Interfaces', fixedInterfaces, [
+  'callerBinding, intentDigest, fenceError, intentConflictError',
+  'callerBinding, intentDigest, fenceError, crashProbe, allowTerminal',
+]);
 const smokeStepMatches = [...smokeBody.matchAll(/^- \[ \] \*\*Step ([1-7]):[^\n]*\*\*$/gm)];
 const smokeStepBodies = smokeStepMatches.map((step, index) =>
   smokeBody.slice(step.index, smokeStepMatches[index + 1]?.index ?? smokeBody.length));
@@ -28177,6 +28348,9 @@ for (const task of taskMatches) {
     for (const token of ['MUTATION_INTENT_REQUIRED', 'statePatchIntent(',
       'workstreamNewIntent(', 'state-replace-after-create',
       'hash-replace-after-rename-before-dir-fsync', 'queueMicrotask(',
+      'opts.allowTerminal',
+      "'app-confirm': { receipt_digest:", "'app-fail': { failure_code:",
+      'stdin_mode: input.stdinMode ?? null, runtime: input.runtime ?? null',
       'registerAnchoredCrashExtension(', "from './durable-file.mjs'",
       "regularFileIfPresent(eventPath, 'canonical event log')",
       "intentConflictError = 'ANCHORED_TRANSACTION_PENDING'"]) {
@@ -28187,7 +28361,8 @@ for (const task of taskMatches) {
     for (const token of ['export function syncRegularFile(',
       'export function syncParentDirectory(', 'export function renamePreparedFile(',
       'export function unlinkRegularFile(', 'export function replaceFileDurably(',
-      'renameAtomicWithRetry(', "=== 'win32'", 'tests/durable-file.test.mjs']) {
+      'renameAtomicWithRetry(', "=== 'win32'", "(deps.open ?? durableOpenSync)(path, 'r+')",
+      'GENERIC_WRITE', 'tests/durable-file.test.mjs']) {
       if (!card.includes(token)) fail(`Task 5B missing platform durability token ${token}`);
     }
   }
@@ -28208,6 +28383,11 @@ for (const task of taskMatches) {
       "from '../../scripts/lib/handoff.mjs'",
       "from '../../scripts/lib/app-task-continuation.mjs'",
       "from '../../scripts/lib/recover.mjs'",
+      'DEEP_LOOP_CRASH_OWNER', 'DEEP_LOOP_CRASH_GENERATION',
+      'wrongMode', 'wrongRuntime', "Object.hasOwn(pending, '.anchored-pending.json')",
+      "nowFn: () => Date.parse('2026-07-13T00:00:02.000Z')",
+      'published message-unconfirmed marker fences a wrong stdin mode before recovery',
+      'messageFailure: true', "input.messageCwd ?? root",
       'same-length staged-event corruption is rejected before any canonical mutation',
       'dangling journal symlink is corruption and never cleanup authority',
       'published confirm marker plus a different receipt is the public App fence']) {
@@ -28245,12 +28425,26 @@ for (const task of taskMatches) {
       "deps.beforeAppendFn?.({ operation: 'confirm'",
       "deps.beforeAppendFn?.({ operation: 'revoke'",
       "deps.beforeAppendFn?.({ operation: 'sweep'",
+      'APP_PREPARE_DECISION_CHANGED',
+      'prepare authorizes deadline and gate with the fresh final-lock clock',
+      'reentrant final-lock clock and gate seams fail closed without a write',
+      'crashProbe: deps.crashProbe',
       'callbacks can reenter the verified reader outside the lock']) {
       if (!card.includes(token)) fail(`Task 11C missing outside-lock race token ${token}`);
     }
     for (const forbidden of ['move that operation', 'relocation of the four complete bodies',
       'complete existing mutation.appendAnchored block']) {
       if (card.includes(forbidden)) fail(`Task 11C retains prose-only implementation: ${forbidden}`);
+    }
+  }
+  if (task[1] === '12B') {
+    for (const token of ['loop = snapshot.data', 'projectRoot: loop.project.root',
+      'loop, route, child: childSession',
+      'Task 11C snapshot wrapper composes with production prepare']) {
+      if (!card.includes(token)) fail(`Task 12B missing unwrapped snapshot token ${token}`);
+    }
+    for (const forbidden of ['snapshot.project.root', 'loop: snapshot']) {
+      if (card.includes(forbidden)) fail(`Task 12B dereferences snapshot wrapper: ${forbidden}`);
     }
   }
   if (task[1] === '7F'
@@ -28397,7 +28591,7 @@ for (const fence of fenceRecords) {
   }
 }
 const PLAN_EXPECTED_COUNTS = Object.freeze({
-  bash: 63, diff: 65, js: 165, json: 4, markdown: 12, text: 10, yaml: 1,
+  bash: 63, diff: 65, js: 166, json: 4, markdown: 12, text: 10, yaml: 1,
 });
 const orderedCounts = value => Object.fromEntries(Object.entries(value)
   .sort(([left], [right]) => left.localeCompare(right)));

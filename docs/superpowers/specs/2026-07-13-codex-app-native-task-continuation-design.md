@@ -2,7 +2,7 @@
 
 작성일: 2026-07-13
 운영 계약: `docs/handoff/2026-07-13-codex-app-native-task-continuation-goal-handoff.md`
-상태: Gate 1 fresh cycle 2 round 1 Respond 완료; gpt-5.6-sol/high fresh round 2 필요
+상태: Gate 1 fresh cycle 2 round 2 Respond 완료; gpt-5.6-sol/high fresh round 3 필요
 기준: `main@c38a96137f8f4f0099c35e893860930e8ee4cf73`, deep-loop `1.8.2`
 
 > source of truth: 이 문서 + 운영 계약 + 현재 저장소 + `git log`. 이전 대화 컨텍스트를 가정하지 말라.
@@ -551,7 +551,7 @@ Revoke와의 선형화 지점은 step 6의 spawned/descriptor commit이다. App 
 
 둘 다 exact parent fence + transport + attempt + reserved child + matching phase/deadline을 lock 안에서 다시 확인하고 한 anchored transaction으로 `status=paused`, `resume_policy=human`, `expires_at=null`을 기록한다. Duplicate emit/prepare는 deadline을 연장하거나 조기 pause하지 않는다. continue/handoff execution plane과 headless driver는 expired App attempt를 발견하면 이 kernel 전이를 실행할 수 있지만 host task tool은 호출하지 않는다. `deep-loop-status`와 `app-task status`는 계속 read-only로 상태와 recover/manual 절차만 제시한다. 다음 process tick 자체가 전혀 없으면 state는 deadline-expired emitted/prepared로 남되 generic acquire/respawn이 계속 차단된다.
 
-첫 confirm의 confirmation-deadline 판정, 두 sweep case, `await`의 readiness-timeout commit도 동일하게 각 anchored transaction의 lock 안에서 injectable `nowFn`을 호출한다. CLI 진입 전에 계산한 stale clock value로 authorize하지 않는다. 이미 confirmed/acquired인 exact idempotent no-op는 first-confirm deadline 판정보다 먼저 분기하지만 어떤 mutation도 하지 않는다.
+첫 confirm의 confirmation-deadline 판정, 두 sweep case, `await`의 readiness-timeout commit도 동일하게 각 anchored transaction의 lock 안에서 kernel-owned clock source를 호출한다. 이 source는 synchronous·pure·non-reentrant이며 production에서는 `Date.now`이고, test injection도 I/O, sleep, verified read, mutation을 호출할 수 없다. CLI 진입 또는 외부 descriptor/gate 작업 전에 계산한 stale clock value로 authorize하지 않는다. 이미 confirmed/acquired인 exact idempotent no-op는 first-confirm deadline 판정보다 먼저 분기하지만 어떤 mutation도 하지 않는다.
 
 이를 위해 `appendAnchored`는 additive `opts.nowFn`과 `opts.fenceCheck` 계약을 가진다. `withLock`
 획득과 fresh hash/root-bound state read 뒤 App caller는 owner/generation/runtime 같은 identity fence만
@@ -635,7 +635,8 @@ intent digest와 진입 API의 operation-level intent digest가 다르면 pendin
 receipt는 marker publish 뒤에도 `APP_RECEIPT_FENCED` exit 3이며 generic
 `ANCHORED_TRANSACTION_PENDING` exit 1로 새지 않는다.
 Operation intent는 owner/generation/attempt만으로 축약하지 않는다. Confirm/unconfirmed receipt는 각각
-domain-separated digest, acquire/prepare는 normalized observation/host-input digest와 stdin mode, emit은
+domain-separated digest와 recorded stdin mode, acquire는 normalized observation digest, stdin mode, runtime,
+prepare는 normalized host-input digest와 stdin mode, emit은
 trigger/reason/App intent/관측 cwd digest, finish는 status/runtime/proof/report digest를 결합한다. Raw receipt,
 cwd, host payload는 marker에 쓰지 않는다. 같은 caller/operation이라도 이 projection 중 하나가 다르면
 다른 intent이며 원 transaction을 복구할 수 없다. Generic gateway도 event type/data만 digest하는 fallback을
@@ -654,11 +655,13 @@ context를 여러 번 열되 모든 외부 구간 전에 context를 닫는다. E
 probe/artifact/hook을 수행하고 final-emit context에서 exact reservation을 재증명한다. Respawn은 entry/
 claim을 transaction context에서 처리한 뒤 spawn 전에 닫고, settlement를 새 same-intent context에서 처리한다.
 App `prepare`, `confirm`, `revoke`, `sweep-unconfirmed`도 각각 snapshot/claim context를 닫고 descriptor builder,
-receipt validation, recovery callback, clock/sleep 같은 caller-provided callback을 lock 밖에서 실행한 뒤 새
-commit context에서 owner/generation, consent, attempt, phase/deadline과 intent를 다시 증명한다. Callback이
+receipt validation, recovery callback, sleep 같은 potentially reentrant caller-provided callback을 lock 밖에서 실행한 뒤 새
+commit context에서 owner/generation, consent, attempt, phase/deadline과 intent를 다시 증명한다. Lock-fresh
+clock과 gate는 caller callback이 아니라 위에서 정의한 synchronous·pure·non-reentrant kernel source/predicate이며
+final context 안에서 다시 표본화/평가한다. Callback이
 재진입 mutation을 호출해도 비재진입 lock을 중첩 획득하지 않으며, callback 뒤 경합은 stale snapshot을
 commit하지 않고 current projection에서 재판정한다.
-어떤 mutation lock도 callback, subprocess, host call, sleep을 가로질러 유지하지 않는다. Restart는 fresh state/hash/log/head를 다시 읽고 동일 intent digest의 idempotency
+어떤 mutation lock도 potentially reentrant callback, subprocess, host call, sleep을 가로질러 유지하지 않는다. Pure clock/gate source가 재진입하거나 I/O를 시도하면 fail-closed하며 canonical bytes는 바뀌지 않는다. Restart는 fresh state/hash/log/head를 다시 읽고 동일 intent digest의 idempotency
 projection을 재평가한다. Recovery 성공 자체는 business success가 아니며 duplicate event/descriptor/external
 action을 만들지 않는다. Marker가 없을 때만 normal canonical read/verification을 시작한다. 따라서 partial
 event suffix나 state-before-hash crash가 canonical verifier에 먼저 막혀 recovery가 unreachable해지는 일이

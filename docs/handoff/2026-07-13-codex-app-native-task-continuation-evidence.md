@@ -604,6 +604,71 @@ no inherited approval from the historical receipt.
 - gate state: still open. Changed bytes require fresh cycle 2 round 2 with both reviewers pinned to
   `gpt-5.6-sol`/high; this Respond is not a Gate 1 pass.
 
+### Gate 1 fresh cycle 2 deep-review-loop — round 2
+
+- gate: Gate 1 — research/design/plan, fresh cycle 2 round 2.
+- artifact/scope: design was primary; goal handoff, 46-task plan, evidence ledger, current kernel
+  surfaces, and the round-1 response commit were context.
+- base/head or content hash: base `c38a96137f8f4f0099c35e893860930e8ee4cf73`; reviewed head
+  `ce3418fe1a4e46917568257e3fc3118b637ff044`. Reviewed handoff/design/plan SHA-256 values were
+  `1523907bf1931793b765ed8a5fac2d678a6ae1aa303cfef6e2c89f2e6f150fd9`,
+  `b8cec4d1d96e05b61492e9115d9f008a303e405e89a630a90970e9cfaf4539be`, and
+  `42c7ef58c4faadc7fb28bfa7a327f562272e068a635dd069a5e03786b6d43722`.
+- invocation: two fresh direct read-only Codex processes. Standard used
+  `codex exec --ephemeral --ignore-user-config --ignore-rules -s read-only -m gpt-5.6-sol
+  -c 'model_reasoning_effort="high"' ... review --base c38a961...`; adversarial used the same
+  isolation/model/effort with an immutable design/plan audit prompt.
+- reviewer actual: standard thread `019f6225-19ae-7cc0-85e1-31b68ab74d81` returned 3 P1 and 2 P2;
+  adversarial thread `019f6225-19d2-7953-a577-45950866b0cb` returned 1 Red and 2 Yellow with
+  `REQUEST_CHANGES`. `N_planned=N_actual=2`; both terminated naturally with exit 0.
+- model/effort evidence: both process headers confirmed exact `gpt-5.6-sol`, `high`, ephemeral,
+  ignored user config/rules, and read-only sandbox. No global Codex setting changed.
+- verdict: `REQUEST_CHANGES`.
+- red/yellow/info: `1 / 6 / 3`; the lock-fresh clock defect was corroborated by both reviewers, and
+  the six solo concerns were independently traced by the main agent.
+- termination: round 2 Respond required; neither convergence nor max reached.
+- report path: `.deep-review/reports/2026-07-15-045245-review.md`, SHA-256
+  `c944daaeef2c383fa447a8bd6886c661bf7cdca2b41fe4d2e5742dc12ec788a1`.
+- verification commands: reviewer header/output reads, source/plan/design traces, Microsoft and Node
+  Windows handle-contract verification, an 18-predicate independent plan probe, set-difference proof
+  of one fresh report, embedded plan validation, diff checks, and full repository preflight.
+- main-agent judgment: accepted all seven actionable findings. Lock-fresh clock authority, Windows
+  write-capable flush, Task 11C-to-12B composition, receipt-mode/acquire-runtime recovery intents,
+  executable public crash workers, and the fixed append interface all required correction.
+
+### Gate 1 fresh cycle 2 round 2 Respond
+
+- disposition: accepted 7, rejected 0, deferred 0. `execution_path=main_fallback`; the specialized
+  Phase 6 Agent surface was unavailable, so the documented main-agent fallback was used without an
+  unspecialized substitute.
+- clock response: prepare now treats the pre-lock sample as advisory, samples a pure kernel clock
+  under the final lock, recomputes the gate there, and boundedly restarts on decision drift. Deadline
+  crossing and reentrant clock/gate tests prove fail-closed byte invariance.
+- durability/composition response: regular-file fsync uses non-truncating `r+`; Windows policy and
+  real CI paths retain the handle contract. Task 12B consumes `loop = snapshot.data`, and a named
+  production runtime test plus validator forbids wrapper dereference regressions.
+- recovery response: receipt intents bind stdin mode and acquire binds runtime. Crash-after-marker
+  wrong-mode confirm, real fork `message-unconfirmed`, and wrong-runtime acquire retries prove public
+  fencing and byte invariance before exact recovery.
+- worker/interface response: every spawn supplies owner/generation environment, every worker mutation
+  has deterministic clock/gate dependencies, every App append forwards the crash probe, and exit 91
+  plus a real pending marker is required. The fixed append declaration includes `intentDigest` and
+  `allowTerminal`, with validator coverage.
+- exact corrected candidate hashes: handoff
+  `1523907bf1931793b765ed8a5fac2d678a6ae1aa303cfef6e2c89f2e6f150fd9`; design
+  `f8c4f7f8c07f75e033d0a0e2ca843809911ce026801f9fc1d46704c4db6c535d`; ignored plan
+  `7479b4c2b849da7713d42bfb2ee2f6ed37065d152f02ec02921d38dad17907f9`.
+- response record: `.deep-review/responses/2026-07-15-051255-response.md`, SHA-256
+  `39fdbf81c8da92d9184cefad7c073c9091434736c64f13d39dc731a6cea039e2`.
+- recurring alerts: export run `01KXH36NA7RZ8HGNF0STA8085D`; architecture critical 21,
+  test-coverage warning 12, error-handling critical 9, security critical 7.
+- verification: embedded validator passed `ok:true` for 46 tasks and 321 fences
+  (`bash=63`, `diff=65`, `js=166`, `json=4`, `markdown=12`, `text=10`, `yaml=1`).
+  `git diff --check` and cached check passed. `npm run preflight` passed validation and all 1,463
+  tests with 0 failures, 0 cancelled, and 0 skipped.
+- gate state: still open. Changed bytes require fresh cycle 2 round 3 with both reviewers pinned to
+  `gpt-5.6-sol`/high; this Respond is not a Gate 1 pass.
+
 ## Review receipt template
 
 Each reviewed gate will add a receipt with all of these fields:
