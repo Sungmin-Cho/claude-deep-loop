@@ -669,6 +669,65 @@ no inherited approval from the historical receipt.
 - gate state: still open. Changed bytes require fresh cycle 2 round 3 with both reviewers pinned to
   `gpt-5.6-sol`/high; this Respond is not a Gate 1 pass.
 
+### Gate 1 fresh cycle 2 round 3 review
+
+- gate/artifact: Gate 1 design plus final 46-task plan, goal handoff, evidence, round-2 report/response,
+  and current repository code/tests.
+- base/head: `c38a96137f8f4f0099c35e893860930e8ee4cf73..d162be0b842e242cb323cff48477b01b7ab88bdf`;
+  worktree clean at reviewer start.
+- invocation: one standard `codex exec ... review --base c38a961...` and one direct adversarial audit;
+  both counted reviewers used ephemeral/ignore-config/ignore-rules/read-only execution with exact
+  `gpt-5.6-sol` and `model_reasoning_effort=high`.
+- reviewer actual: standard thread `019f6246-912a-7bc2-b9b9-892523fe7cdd` returned 2 P1;
+  adversarial thread `019f6254-b94b-7391-bc5e-4f6a1e98c3b9` returned 2 Red and 2 Yellow with
+  `REQUEST_CHANGES`. `N_planned=N_actual=2`; both counted processes terminated naturally with exit 0.
+  An earlier adversarial PTY launcher remained in stdin `read_to_end` without starting analysis; it was
+  terminated, not counted, and replaced once with the same immutable review through closed stdin.
+- model/effort evidence: both counted process headers confirmed exact `gpt-5.6-sol`, `high`, ephemeral,
+  ignored user config/rules, and read-only sandbox. No global Codex setting changed.
+- verdict: `REQUEST_CHANGES`.
+- red/yellow/info: `1 / 4 / 3`; pre-marker orphan handling was corroborated by both reviewers, and the
+  four solo concerns were independently traced by the main agent.
+- termination: round 3 Respond required; neither convergence nor max reached.
+- report path: `.deep-review/reports/2026-07-15-054107-review.md`, SHA-256
+  `c07e498e32a275d89bc421a05c9a5478a24259f21a12b7a8eb0d920f371c0b1f`.
+- verification commands: raw reviewer output/header checks, publisher-order and task-composition traces,
+  set-difference proof of one fresh report, recurring-envelope validation, exact embedded plan validator,
+  a 10-predicate independent composition/liveness/intent probe, diff checks, and full preflight.
+- main-agent judgment: accepted all five actionable findings. Markerless orphan recovery, bounded await
+  worker progress, Task 11C-to-12B code/test composition, and normalized acquire intent all required
+  correction.
+
+### Gate 1 fresh cycle 2 round 3 Respond
+
+- disposition: accepted 5, rejected 0, deferred 0. `execution_path=main_fallback`; the specialized
+  Phase 6 Agent surface was unavailable, so the documented main-agent fallback was used without an
+  unspecialized substitute.
+- crash response: Task 7B/10D split the two pre-marker orphan points from marker-backed recovery,
+  preserve canonical bytes until an exact retry, clean only known regular stages, and require exactly
+  one business event. All Task 10D crash workers have a 10-second timeout; await advances an injected
+  poll clock and uses a post-deadline mutation clock.
+- composition response: Task 12B exact-replaces the provisional non-null route branch, assigns the
+  existing descriptor locals, replaces the obsolete Task 8B test, and runs the same named composition
+  test in RED and GREEN commands. Validator checks reject the prior redeclaration and skipped test.
+- intent response: acquire canonicalizes raw observation facts for the marker intent without consulting
+  current cwd, then after the entry fence normalizes against actual cwd and requires the same digest.
+  A published-marker same-file alias recovers; genuinely changed observation/runtime remains fenced.
+- exact corrected candidate hashes: handoff
+  `1523907bf1931793b765ed8a5fac2d678a6ae1aa303cfef6e2c89f2e6f150fd9`; design
+  `8b17d993c2958b5e6668c086bb3ad805e15a9290a68473f6d8f1fe719799dc52`; ignored plan
+  `66e704f22cb72cb107e3bd3edc774f2ee334abbdada07deb7e17b8bb795ea4d9`.
+- response record: `.deep-review/responses/2026-07-15-055036-response.md`, SHA-256
+  `3ab4c955874abb9f7e24f963c95a8f3b78d899a756fd5f5e2c2cf36985028af1`.
+- recurring alerts: export run `01KXH5XQJVYQ4V1MFWGKR7FJJV`; architecture critical 22,
+  test-coverage warning 14, error-handling critical 10, security critical 8.
+- verification: embedded validator passed `ok:true` for 46 tasks and 321 fences
+  (`bash=63`, `diff=65`, `js=166`, `json=4`, `markdown=12`, `text=10`, `yaml=1`).
+  The independent composition/liveness/intent probe passed 10/10; `git diff --check` passed;
+  `npm run preflight` passed validation and all 1,463 tests with 0 failures, 0 cancelled, and 0 skipped.
+- gate state: still open. Changed bytes require fresh cycle 2 round 4 with both reviewers pinned to
+  `gpt-5.6-sol`/high; this Respond is not a Gate 1 pass.
+
 ## Review receipt template
 
 Each reviewed gate will add a receipt with all of these fields:

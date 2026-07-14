@@ -10318,11 +10318,19 @@ hash-replace-after-rename-before-dir-fsync
 ```
 
 All three operations already exist when Task 7B begins. For each operation the parent test seeds the
-exact precondition, launches the worker, requires exit
-91 at the selected point, snapshots marker/stage/canonical bytes, and then runs both retries:
+exact precondition, launches the worker, requires exit 91 at the selected point, and snapshots
+stage/canonical bytes. The first two probes are explicitly pre-marker:
+`state-stage-after-rename` leaves only the state stage, while `event-stage-after-rename` leaves state
+and event stages. Neither has `.anchored-pending.json`, caller binding, or operation intent authority.
+Their canonical bytes remain unchanged until the exact public retry removes only the known regular
+orphan stages under the lock, restarts the normal operation, and commits exactly one business event.
+Do not apply foreign/different-intent byte-invariance assertions to these markerless orphans.
 
-1. a foreign owner/generation retry must return the existing fence channel and leave every byte,
-   including pending/stages, unchanged;
+From `pending-after-rename` onward the parent snapshots marker/stage/canonical bytes and runs both
+marker-backed retries:
+
+1. a foreign owner/generation or same-caller/different-intent retry must return the existing fence or
+   pending channel and leave every byte, including pending/stages, unchanged;
 2. the exact caller retry must recover under the run lock, restart from a fresh verified snapshot,
    and converge to the operation's normal idempotent result with one business event, one optional
    paired cost, no second descriptor/external-action authorization, and no pending/stage file.
@@ -18325,27 +18333,38 @@ function applyAppAcquire(loop, input, observation, clock) {
 
 export function acquireAppTask(root, runId, input, deps = {}) {
   const rawObservation = exactAcquireObservationInput(input.observation);
-  return withAppMutation(root, runId, input, 'app-acquire', mutation => {
+  const pathDeps = deps.pathDeps ?? appNativePathDeps();
+  // Intent canonicalization uses only the raw observation's own directory identity. It does not
+  // consult the current cwd before the in-lock entry fence. The post-fence normalization below must
+  // produce the same immutable facts before the candidate can commit.
+  const intentObservation = normalizeAcquireObservation(rawObservation,
+    { ...input, runtime: 'codex' }, pathDeps,
+    rawObservation.host_task_cwd, 'APP_CHILD_OBSERVATION_INVALID');
+  const observationDigest = hostSurfaceFactsDigest(intentObservation);
+  const intentInput = Object.freeze({ ...input, observationDigest });
+  return withAppMutation(root, runId, intentInput, 'app-acquire', mutation => {
   const snapshot = mutation.readVerifiedState(
     { fenceCheck: loop => assertAppAcquireEntryIdentity(loop, input) }).data;
   const historical = findAppAttempt(snapshot, input.attemptId);
-  const pathDeps = deps.pathDeps ?? appNativePathDeps();
   const actualCwd = (deps.cwdFn ?? process.cwd)();
+  const normalizedObservation = normalizeAcquireObservation(rawObservation, input, pathDeps, actualCwd,
+    'APP_CHILD_OBSERVATION_FENCED');
+  if (hostSurfaceFactsDigest(normalizedObservation) !== observationDigest) {
+    throw new Error('APP_CHILD_OBSERVATION_FENCED');
+  }
   if (historical.continuation.phase === 'acquired') {
     if (input.stdinMode !== historical.session.host_surface?.structured_stdin_mode) {
       throw new Error('APP_STDIN_MODE_FENCED');
     }
-    const retryObservation = normalizeAcquireObservation(rawObservation, input, pathDeps, actualCwd,
-      'APP_ACQUIRE_PROJECTION_CHANGED');
-    if (exactAcquiredProjection(snapshot, input, retryObservation)) {
+    if (exactAcquiredProjection(snapshot, input, normalizedObservation)) {
       return { ok: true, outcome: 'already-acquired', generation: input.generation + 1 };
     }
     throw new Error('APP_ACQUIRE_PROJECTION_CHANGED');
   }
-  let observation;
+  const observation = normalizedObservation;
   let result;
   const eventData = { attempt_id: input.attemptId,
-    child_run_id: historical.session.run_id, observation_digest: null };
+    child_run_id: historical.session.run_id, observation_digest: observationDigest };
   deps.beforeAppendFn?.();
   mutation.appendAnchored({ type: 'app-task-acquired', data: eventData },
   (loop, _spent, clock) => {
@@ -18368,9 +18387,6 @@ export function acquireAppTask(root, runId, input, deps = {}) {
         || continuation.phase !== 'confirmed') throw new Error('APP_CONFIRMATION_REQUIRED');
     if (consent?.mode !== 'auto' || consent?.authority !== 'human-confirmed'
         || consent.revoked_at != null) throw new Error('APP_CONSENT_FENCED');
-    observation = normalizeAcquireObservation(rawObservation, input, pathDeps, actualCwd,
-      'APP_CHILD_OBSERVATION_FENCED');
-    eventData.observation_digest = hostSurfaceFactsDigest(observation);
     if (observation.kind !== 'codex-app'
         || !['codex-app-host-context', 'codex-app-tool-provenance'].includes(observation.source)
         || observation.structured_stdin_mode !== input.stdinMode
@@ -19577,7 +19593,7 @@ function mutationCase10d(operation) {
     generation: 1, attemptId: fixture.attemptId, stdinMode: 'pty-raw-noecho',
   });
   const invoke = ({ different = false, foreign = false, wrongMode = false,
-    wrongRuntime = false } = {}) => {
+    wrongRuntime = false, equivalentObservation = false } = {}) => {
     const input = parent(different, foreign);
     if (operation === 'emit') return emitHandoff(fixture.root, fixture.runId, {
       trigger: 'crash-emit', reason: different ? 'different' : 'same', appIntent: true,
@@ -19615,7 +19631,9 @@ function mutationCase10d(operation) {
       { ...fixture.acquireInput, owner: foreign ? input.owner : fixture.childRunId,
         runtime: wrongRuntime ? 'claude' : fixture.acquireInput.runtime,
         observation: different ? { ...fixture.acquireInput.observation,
-          structured_stdin_mode: 'pipe-open-noecho' } : fixture.acquireInput.observation },
+          structured_stdin_mode: 'pipe-open-noecho' }
+          : equivalentObservation ? { ...fixture.acquireInput.observation,
+            host_task_cwd: `${fixture.root}/.` } : fixture.acquireInput.observation },
       { cwdFn: () => fixture.root,
         nowFn: () => Date.parse('2026-07-13T00:00:04.000Z') });
     if (operation === 'recover') return recoverRun(fixture.root, fixture.runId,
@@ -19644,8 +19662,26 @@ function canonicalBytes10d(root, runId) {
     .map(name => [name, read10d(join(directory, name))]));
 }
 
+const CRASH_WORKER_TIMEOUT_MS10D = 10_000;
+const PRE_MARKER_CRASH_POINTS10D = new Set([
+  'state-stage-after-rename', 'event-stage-after-rename',
+]);
+const PUBLIC_MUTATION_EVENT10D = Object.freeze({
+  emit: 'handoff-emitted', prepare: 'app-task-prepared', confirm: 'app-task-confirmed',
+  fail: 'app-task-failed', sweep: 'app-task-swept',
+  'await-timeout': 'app-task-await-timeout', acquire: 'app-task-acquired',
+  recover: 'run-recovered', finish: 'finish',
+});
+
+function assertCrashWorkerExit10d(child) {
+  assert.notEqual(child.error?.code, 'ETIMEDOUT',
+    `crash worker exceeded ${CRASH_WORKER_TIMEOUT_MS10D}ms`);
+  assert.equal(child.status, 91, child.stderr || child.stdout || child.error?.message);
+}
+
 function assertPublicMutationCrashRecovery10d({ operation, crashPoint, worker }) {
   const { fixture, invoke } = mutationCase10d(operation);
+  const canonicalBefore = canonicalBytes10d(fixture.root, fixture.runId);
   const child = spawn10d(process.execPath,
     [fileURLToPath(worker), fixture.root, fixture.runId, operation, crashPoint], {
       shell: false, encoding: 'utf8', env: { ...process.env,
@@ -19653,10 +19689,22 @@ function assertPublicMutationCrashRecovery10d({ operation, crashPoint, worker })
         DEEP_LOOP_CRASH_GENERATION: '1',
         DEEP_LOOP_CRASH_INPUT: JSON.stringify({ owner: fixture.runId, generation: 1,
           attemptId: fixture.attemptId, childRunId: fixture.childRunId }) },
+      timeout: CRASH_WORKER_TIMEOUT_MS10D,
     });
-  assert.equal(child.status, 91, child.stderr || child.stdout);
+  assertCrashWorkerExit10d(child);
   const pending = journalBytes10d(fixture.root, fixture.runId);
-  assert.ok(Object.hasOwn(pending, '.anchored-pending.json'));
+  const markerBacked = !PRE_MARKER_CRASH_POINTS10D.has(crashPoint);
+  assert.equal(Object.hasOwn(pending, '.anchored-pending.json'), markerBacked);
+  if (!markerBacked) {
+    assert.deepEqual(canonicalBytes10d(fixture.root, fixture.runId), canonicalBefore,
+      `${operation}/${crashPoint} changed canonical bytes before marker publication`);
+    invoke();
+    assert.equal(Object.keys(journalBytes10d(fixture.root, fixture.runId))
+      .some(name => name.startsWith('.anchored-')), false);
+    assert.equal(readLines(fixture.root, fixture.runId)
+      .filter(event => event.type === PUBLIC_MUTATION_EVENT10D[operation]).length, 1);
+    return;
+  }
   const variants = [{ foreign: true }, { different: true },
     ...(operation === 'confirm' ? [{ wrongMode: true }] : []),
     ...(operation === 'acquire' ? [{ wrongRuntime: true }] : [])];
@@ -19671,6 +19719,8 @@ function assertPublicMutationCrashRecovery10d({ operation, crashPoint, worker })
   invoke();
   assert.equal(Object.keys(journalBytes10d(fixture.root, fixture.runId))
     .some(name => name.startsWith('.anchored-')), false);
+  assert.equal(readLines(fixture.root, fixture.runId)
+    .filter(event => event.type === PUBLIC_MUTATION_EVENT10D[operation]).length, 1);
 }
 
 test('finish settles every App phase without weakening proof or fence', () => {
@@ -19769,8 +19819,9 @@ test('same-length staged-event corruption is rejected before any canonical mutat
         DEEP_LOOP_CRASH_GENERATION: '1',
         DEEP_LOOP_CRASH_INPUT: JSON.stringify({ owner: fixture.runId, generation: 1,
           attemptId: fixture.attemptId, childRunId: fixture.childRunId }) },
+      timeout: CRASH_WORKER_TIMEOUT_MS10D,
     });
-  assert.equal(child.status, 91, child.stderr || child.stdout);
+  assertCrashWorkerExit10d(child);
   const canonicalBefore = canonicalBytes10d(fixture.root, fixture.runId);
   const stagePath = join(runDir(fixture.root, fixture.runId), '.anchored-events.stage');
   const corrupted = Buffer.from(read10d(stagePath));
@@ -19801,12 +19852,32 @@ test('published confirm marker plus a different receipt is the public App fence'
         DEEP_LOOP_CRASH_GENERATION: '1',
         DEEP_LOOP_CRASH_INPUT: JSON.stringify({ owner: fixture.runId, generation: 1,
           attemptId: fixture.attemptId, childRunId: fixture.childRunId }) },
+      timeout: CRASH_WORKER_TIMEOUT_MS10D,
     });
-  assert.equal(child.status, 91, child.stderr || child.stdout);
+  assertCrashWorkerExit10d(child);
   const pending = journalBytes10d(fixture.root, fixture.runId);
   assert.throws(() => invoke({ different: true }), /APP_RECEIPT_FENCED/);
   assert.deepEqual(journalBytes10d(fixture.root, fixture.runId), pending);
   invoke();
+});
+
+test('published acquire marker accepts an equivalent normalized observation intent', () => {
+  const { fixture, invoke } = mutationCase10d('acquire');
+  const worker = new URL('./helpers/anchored-crash-worker.mjs', import.meta.url);
+  const child = spawn10d(process.execPath,
+    [fileURLToPath(worker), fixture.root, fixture.runId, 'acquire', 'pending-after-rename'], {
+      shell: false, encoding: 'utf8', env: { ...process.env,
+        DEEP_LOOP_CRASH_OWNER: fixture.runId,
+        DEEP_LOOP_CRASH_GENERATION: '1',
+        DEEP_LOOP_CRASH_INPUT: JSON.stringify({ owner: fixture.runId, generation: 1,
+          attemptId: fixture.attemptId, childRunId: fixture.childRunId }) },
+      timeout: CRASH_WORKER_TIMEOUT_MS10D,
+    });
+  assertCrashWorkerExit10d(child);
+  const result = invoke({ equivalentObservation: true });
+  assert.equal(result.outcome, 'already-acquired');
+  assert.equal(Object.keys(journalBytes10d(fixture.root, fixture.runId))
+    .some(name => name.startsWith('.anchored-')), false);
 });
 ```
 
@@ -19836,7 +19907,9 @@ test9a('published message-unconfirmed marker fences a wrong stdin mode before re
         DEEP_LOOP_CRASH_INPUT: JSON.stringify({ owner: fixture.runId, generation: 1,
           attemptId: fixture.attemptId, childRunId: fixture.childRunId,
           messageFailure: true, messageCwd: fixture.worktree }) },
+      timeout: 10_000,
     });
+  assert9a.notEqual(child.error?.code, 'ETIMEDOUT', 'message failure crash worker timed out');
   assert9a.equal(child.status, 91, child.stderr || child.stdout);
   const pending = journalBytes10dApp(fixture.root, fixture.runId);
   assert9a.throws(() => fail9a(fixture.root, fixture.runId,
@@ -19908,10 +19981,14 @@ const publicMutation10d = Object.freeze({
   sweep: ({ root, runId, input, crashProbe }) => sweepUnconfirmedAppTask(root, runId,
     { ...input, deadline: '2026-07-13T00:05:00.000Z' },
     { cwdFn: () => root, nowFn: () => Date.parse('2026-07-13T00:05:01.001Z'), crashProbe }),
-  'await-timeout': ({ root, runId, input, crashProbe }) => awaitAppTask(root, runId,
-    { ...input, timeoutMs: 1, intervalMs: 1 }, { cwdFn: () => root,
-      pollNowFn: () => Date.parse('2026-07-13T00:02:00.000Z'),
-      pollIntervalMs: 1, sleepFn: () => {}, crashProbe }),
+  'await-timeout': ({ root, runId, input, crashProbe }) => {
+    let pollNow = Date.parse('2026-07-13T00:00:03.000Z');
+    return awaitAppTask(root, runId, { ...input, timeoutMs: 1, intervalMs: 1 }, {
+      cwdFn: () => root, pollNowFn: () => pollNow,
+      pollIntervalMs: 1_000, sleepFn: ms => { pollNow += ms; },
+      nowFn: () => pollNow + 1, crashProbe,
+    });
+  },
   acquire: ({ root, runId, input, crashProbe }) => acquireAppTask(root, runId,
     { ...input, owner: input.childRunId, runtime: 'codex', stdinMode: 'pty-raw-noecho',
       observation: workerObservation10d(root) }, { cwdFn: () => root,
@@ -24185,7 +24262,10 @@ git commit -m "feat: build bounded App resume prompts" -m "Co-Authored-By: Claud
 
 - [ ] **Step 1: Write the failing action and wiring tests**
 
-Append the first case to `tests/runtime-descriptor.test.mjs` and the remaining two cases beside the produced prepare tests in `tests/app-task-continuation.test.mjs`:
+Append the first case to `tests/runtime-descriptor.test.mjs` and the next two cases beside the produced
+prepare tests in `tests/app-task-continuation.test.mjs`. Exact-replace Task 8B's complete
+`missing throwing or recursively extra descriptor is write free` test with the fourth body below;
+do not leave its absent-builder row or `APP_DESCRIPTOR_INVALID` expectation in the composed suite:
 
 ```js
 test('App action exposes only the reviewed public create and fork shapes', async () => {
@@ -24247,13 +24327,37 @@ test('descriptor builder failure leaves emitted state and event log unchanged', 
   }
 });
 
+test8b('throwing or recursively extra descriptor is write free', () => {
+  for (const [builder, error] of [
+    [() => { throw new Error('BUILDER_BOOM'); }, /BUILDER_BOOM/],
+    [() => ({ tool: 'create_thread', target: { type: 'project', projectId: 'project $`\\',
+      environment: { type: 'local', model: 'forbidden' } }, prompt: 'prompt' }),
+      /APP_PREPARED_ACTION_INVALID/],
+  ]) {
+    const fixture = emitted8b();
+    const before = { state: structuredClone(read8b(fixture.root, fixture.runId).data),
+      events: structuredClone(lines8b(fixture.root, fixture.runId)) };
+    assert8b.throws(() => prepare8b(fixture.root, fixture.runId,
+      { owner: fixture.runId, generation: 1, stdinMode: 'pty-raw-noecho',
+        hostInput: fixture.hostInput }, {
+        nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'), cwdFn: () => fixture.root,
+        descriptorBuilder: builder,
+        reconcileBudgetFn: () => assert8b.fail('builder failure precedes reconcile'),
+        gateFn: () => ({ ok: true, blocked_by: [] }),
+      }), error);
+    assert8b.deepEqual(read8b(fixture.root, fixture.runId).data, before.state);
+    assert8b.deepEqual(lines8b(fixture.root, fixture.runId), before.events);
+  }
+});
+
 ```
 
 - [ ] **Step 2: Run tests to verify RED**
 
 Run: `node --test --test-name-pattern='App action|snapshot wrapper composes|builder failure' tests/runtime-descriptor.test.mjs tests/app-task-continuation.test.mjs`
 
-Expected: FAIL because `buildAppTaskAction` is absent and production prepare still requires an injected descriptor builder.
+Expected: FAIL because `buildAppTaskAction` is absent and the provisional Task 8B test contract has
+not yet been replaced by this card.
 
 - [ ] **Step 3: Implement the exact action and wire the single prompt builder**
 
@@ -24353,38 +24457,48 @@ function finalizePreparedAppAction(candidate, route) {
 }
 ```
 
-At the produced `prepareAppTask` descriptor claim, use Task 11C's already-unwrapped
-`loop = snapshot.data` binding and resolve the real Task 8 record with
-`const childSession = loop.session_chain.sessions.find(session => session.run_id === loop.session_chain.lease.handoff_child_run_id);`
-and `const continuation = childSession?.continuation;`. Insert this exact local block before entering
-`appendAnchored`; builder/action validation and descriptor digest computation must finish before any event append:
+At the produced `prepareAppTask` descriptor claim, exact-replace Task 11C's provisional
+`if (route !== null)` block, including its injected builder and gate calculation, with the complete
+block below. It uses Task 11C's already-unwrapped `loop = snapshot.data` binding, resolves the real
+Task 8 child record, assigns the existing outer `action`/`descriptorDigest` locals, and never enters
+descriptor conversion on the `route === null` preserve path. Builder/action validation and digest
+computation must finish before any event append:
 
 ```js
-const descriptorInput = appTaskDescriptorInput({
-  projectRoot: loop.project.root,
-  platform: deps.platform ?? process.platform,
-  runId,
-  owner: input.owner,
-  generation: input.generation,
-  route,
-  continuation,
-  childSession,
-});
-const { action, descriptorDigest } = finalizePreparedAppAction(
-  deps.descriptorBuilder === undefined
-    ? buildAppTaskAction(descriptorInput)
-    : deps.descriptorBuilder({
-      loop, route, child: childSession, attemptId: continuation.attempt_id,
-    }),
-  route,
-);
+if (route !== null) {
+  const childSession = loop.session_chain.sessions.find(session =>
+    session.run_id === loop.session_chain.lease.handoff_child_run_id);
+  const continuation = childSession?.continuation;
+  const descriptorInput = appTaskDescriptorInput({
+    projectRoot: loop.project.root,
+    platform: deps.platform ?? process.platform,
+    runId,
+    owner: input.owner,
+    generation: input.generation,
+    route,
+    continuation,
+    childSession,
+  });
+  const completed = finalizePreparedAppAction(
+    deps.descriptorBuilder === undefined
+      ? buildAppTaskAction(descriptorInput)
+      : deps.descriptorBuilder({
+        loop, route, child: childSession, attemptId: continuation.attempt_id,
+      }),
+    route,
+  );
+  action = completed.action;
+  descriptorDigest = completed.descriptorDigest;
+  const gate = gateFor(loop, { now: advisoryNow });
+  if (!gate.ok) failureCode = `gate-${gate.blocked_by[0].replaceAll('_', '-')}`;
+}
 ```
 
 Pass the completed `action` and `descriptorDigest` into the transaction. The explicit injected builder retains Task 8's `{loop,route,child,attemptId}` test seam; only its absence selects the production public-action builder. Remove Task 8's provisional injected-action validation/digest expression so this is the single validation path. No builder, validator, JSON serialization, or digest operation may occur in `appendAnchored`'s `mutate` callback, so a throw cannot append an event ahead of state. Do not add an `appIntent` object parameter to `handoff.mjs`: Task 11's only public switch is boolean `--app-intent`, and Task 8 owns kernel-side route/cwd/attempt derivation in the final emit transaction.
 
 - [ ] **Step 4: Run targeted tests to verify GREEN**
 
-Run: `node --test --test-name-pattern='App action|production prepare|builder failure' tests/runtime-descriptor.test.mjs tests/app-task-continuation.test.mjs`
+Run: `node --test --test-name-pattern='App action|snapshot wrapper composes|builder failure' tests/runtime-descriptor.test.mjs tests/app-task-continuation.test.mjs`
 
 Expected: PASS with one actionable response and a redacted retry.
 
@@ -28375,6 +28489,16 @@ for (const task of taskMatches) {
       if (!card.includes(token)) fail(`Task 7G missing executable crash token ${token}`);
     }
   }
+  if (task[1] === '10A') {
+    for (const token of ['const intentObservation = normalizeAcquireObservation(',
+      "{ ...input, runtime: 'codex' }", 'rawObservation.host_task_cwd',
+      'const observationDigest = hostSurfaceFactsDigest(intentObservation)',
+      'const intentInput = Object.freeze({ ...input, observationDigest })',
+      "withAppMutation(root, runId, intentInput, 'app-acquire'",
+      'hostSurfaceFactsDigest(normalizedObservation) !== observationDigest']) {
+      if (!card.includes(token)) fail(`Task 10A missing normalized acquire intent token ${token}`);
+    }
+  }
   if (task[1] === '10D') {
     for (const token of ['function assertPublicMutationCrashRecovery10d(',
       'export function dispatchPublicMutationCrash10d(', 'emit:', 'prepare:', 'confirm:',
@@ -28385,6 +28509,10 @@ for (const task of taskMatches) {
       "from '../../scripts/lib/recover.mjs'",
       'DEEP_LOOP_CRASH_OWNER', 'DEEP_LOOP_CRASH_GENERATION',
       'wrongMode', 'wrongRuntime', "Object.hasOwn(pending, '.anchored-pending.json')",
+      'PRE_MARKER_CRASH_POINTS10D', 'CRASH_WORKER_TIMEOUT_MS10D',
+      "child.error?.code, 'ETIMEDOUT'", 'PUBLIC_MUTATION_EVENT10D',
+      'published acquire marker accepts an equivalent normalized observation intent',
+      'equivalentObservation', "sleepFn: ms => { pollNow += ms; }",
       "nowFn: () => Date.parse('2026-07-13T00:00:02.000Z')",
       'published message-unconfirmed marker fences a wrong stdin mode before recovery',
       'messageFailure: true', "input.messageCwd ?? root",
@@ -28440,11 +28568,19 @@ for (const task of taskMatches) {
   if (task[1] === '12B') {
     for (const token of ['loop = snapshot.data', 'projectRoot: loop.project.root',
       'loop, route, child: childSession',
-      'Task 11C snapshot wrapper composes with production prepare']) {
+      'Task 11C snapshot wrapper composes with production prepare',
+      "test8b('throwing or recursively extra descriptor is write free'",
+      'APP_PREPARED_ACTION_INVALID', 'if (route !== null)',
+      'action = completed.action', 'descriptorDigest = completed.descriptorDigest']) {
       if (!card.includes(token)) fail(`Task 12B missing unwrapped snapshot token ${token}`);
     }
-    for (const forbidden of ['snapshot.project.root', 'loop: snapshot']) {
+    for (const forbidden of ['snapshot.project.root', 'loop: snapshot',
+      'const { action, descriptorDigest }', 'APP_DESCRIPTOR_BUILDER_REQUIRED']) {
       if (card.includes(forbidden)) fail(`Task 12B dereferences snapshot wrapper: ${forbidden}`);
+    }
+    const composedPattern = "'App action|snapshot wrapper composes|builder failure'";
+    if (!stepBodies[1].includes(composedPattern) || !stepBodies[3].includes(composedPattern)) {
+      fail('Task 12B RED/GREEN commands do not execute the same composition test');
     }
   }
   if (task[1] === '7F'
