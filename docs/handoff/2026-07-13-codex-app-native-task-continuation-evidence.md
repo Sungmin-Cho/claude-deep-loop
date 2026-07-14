@@ -167,6 +167,70 @@ no inherited approval from the historical receipt.
   migration, and the Task 7B-before-7C writer ordering. Outstanding P0/P1 findings: 0. This prepares
   an exact review target; it does not pass Gate 1.
 
+### Replacement Gate 1 deep-review-loop — round 1
+
+- gate: Gate 1 — research and design, replacement review round 1.
+- artifact/scope: primary target
+  `docs/superpowers/specs/2026-07-13-codex-app-native-task-continuation-design.md`; operating
+  handoff, evidence log, ignored implementation plan, and cited current kernel writers were context.
+- base/head or content hash: base
+  `c38a96137f8f4f0099c35e893860930e8ee4cf73`; reviewed head
+  `5fe48de8b2e162f069be1a4f9ead1a0985625f9a`; the target changed during Respond, so the reviewed
+  design hash is historical for round 1 and is not reusable.
+- invocation: two fresh direct read-only Codex processes, one standard
+  `codex exec ... review --base origin/main` and one separately prompted adversarial design audit;
+  both used `--ephemeral --ignore-user-config --ignore-rules -s read-only -m gpt-5.6-sol
+  -c 'model_reasoning_effort="high"'`.
+- reviewer actual: standard thread `019f6135-5912-7d92-bbb0-834b23dee0ed` returned 2 findings;
+  adversarial thread `019f6135-591e-7c82-ae67-ecf65ee032b3` returned 3 findings;
+  `N_planned = N_actual = 2`; both exited 0.
+- model/effort evidence: exact invocation arguments above plus successful preflight thread
+  `019f6131-6cd5-7373-8b7f-fa3c109d2cca`, which returned exactly `MODEL_EFFORT_OK` under the same
+  model/effort override. No global configuration changed.
+- verdict: `CONCERN`.
+- red/yellow/info: `0 / 5 / 0`; each finding was reported by one of two independent reviewers and
+  therefore classified as partial-confidence Yellow.
+- termination: Respond required after round 1; this is neither convergence nor max-round success.
+- report path: `.deep-review/reports/2026-07-15-003014-review.md`, SHA-256
+  `61b4cb9c1941d5c322dc77fef40768f4ef982f714f2e23790a07523118e78e88`.
+- verification commands: direct report/output reads, current-code reads, `git diff --check
+  origin/main`, exact report-set delta, and recurring-findings export.
+- main-agent judgment: all five findings were concrete and accepted. The handoff/model and whitespace
+  findings contradicted the live operating contract; the immutable-genesis, legacy-lineage, and
+  half-commit findings were confirmed against `session-profile.mjs`, `project-root-recovery.mjs`,
+  `lease.mjs`, `integrity.mjs`, and `state.mjs`.
+
+### Replacement Gate 1 round 1 Respond
+
+- disposition: accepted 5, rejected 0, deferred 0. The receiving-review workflow used its documented
+  `main_fallback` because the Phase 6 Agent dispatch surface was unavailable; the user's standing
+  instruction already authorized autonomous continuation.
+- handoff response: every live reviewer instruction now pins Codex-only `gpt-5.6-sol`/high, forbids
+  Opus fallback, and requires branch-range whitespace verification. The three committed hard-break
+  spaces were removed.
+- immutable initialization response: genesis stores bounded raw-free
+  `initialization.request_projection`; runtime verification hashes that stored immutable projection,
+  while root/profile/consent mutations retain separate anchored proofs.
+- legacy response: first matching post-upgrade mutation may add exactly one fenced
+  `lease-lineage-baselined` checkpoint in the same transaction; it proves only forward lineage and
+  cannot authorize App/auto behavior.
+- crash response: all production post-genesis publications use a caller-bound pending/stage journal,
+  exact suffix recovery, hash commit marker, read-only pending refusal, foreign-fence no-write, and
+  injected crash matrices. Task 7G closes remaining lease/breaker raw publishers.
+- exact response candidate hashes: handoff
+  `1523907bf1931793b765ed8a5fac2d678a6ae1aa303cfef6e2c89f2e6f150fd9`; design
+  `44d065d99249df44e56ebeb1549621101476b130f036047997747869ac55fb2f`; ignored plan
+  `977a7be4f9975aee151a9c4257864ba8786c1baf71d5bfd9dee50596ed306154`.
+- response record: `.deep-review/responses/2026-07-15-004729-response.md`, SHA-256
+  `b5b8c98a14760eec80f086fc60bbcb07f5a40e518dc23dd819c2cbd5cb06a579`.
+- verification: executable plan validator passed 46 tasks and 309 closed fences with JavaScript,
+  Bash, and JSON syntax checks; `git diff --check`, `git diff --check origin/main`, ignored-plan
+  no-index whitespace check, and conflict-marker scan passed; `npm run preflight` passed validation
+  and all 1,463 tests with 0 failures and 0 skipped.
+- recurring alert: architecture reached 3 occurrences. The response treats immutable authority and
+  migration boundaries as one cross-cutting contract rather than isolated prose patches.
+- gate state: still not PASS. Any modified target requires a fresh exact-byte review round.
+
 ## Review receipt template
 
 Each reviewed gate will add a receipt with all of these fields:
