@@ -135,13 +135,13 @@ These are the narrow baseline `Modify` anchors required by the execution tasks; 
 | 2A–2B | `scripts/lib/bounded-input.mjs:1-31` (`REVIEW_IMPORT_MAX_BYTES`, `readBoundedText`); `tests/bounded-input.test.mjs:1-35`; `tests/cli-skillface.test.mjs:1-18,192-265` (CLI harness and strict CLI-shape tail). |
 | 3A–3B | Created `scripts/lib/app-task-continuation.mjs` genesis defaults/deadline exports; `scripts/lib/initrun.mjs:13-58` (`buildInitialLoop`, `initRun`); `scripts/lib/schema.mjs:1-216` (`loadSchema`, `validate`); `schemas/loop-run.schema.json:1-29`; `tests/initrun.test.mjs:15-125`; `tests/schema.test.mjs:17-273`. |
 | 4A–4C | Created `scripts/lib/init-transaction.mjs` exports `hostObservationDigest` through `statusInitialization`; created `tests/init-transaction.test.mjs` projection/preflight/status cases. |
-| 5A–5C | Produced `scripts/lib/init-transaction.mjs` symbols `withInitLock`, `publishGenesisState`, `commitPreparedInit`; `scripts/lib/initrun.mjs:42-58` (`initRun`); produced `tests/init-transaction.test.mjs` lock/publisher/contention cases; `tests/initrun.test.mjs:59-125`; `tests/session-profile.test.mjs`; `tests/insights.test.mjs`; `tests/project-root.test.mjs`; created `tests/helpers/init-contention-worker.mjs`. |
+| 5A–5C | Created `scripts/lib/durable-file.mjs` exports `syncRegularFile`, `syncParentDirectory`, `renamePreparedFile`, `unlinkRegularFile`, and `replaceFileDurably`; produced `scripts/lib/init-transaction.mjs` symbols `withInitLock`, `publishGenesisState`, `commitPreparedInit`; `scripts/lib/initrun.mjs:42-58` (`initRun`); created `tests/durable-file.test.mjs` POSIX/Windows durability cases; produced `tests/init-transaction.test.mjs` lock/publisher/contention cases; `tests/initrun.test.mjs:59-125`; `tests/session-profile.test.mjs`; `tests/insights.test.mjs`; `tests/project-root.test.mjs`; created `tests/helpers/init-contention-worker.mjs`. |
 | 6A–6E | Produced `scripts/lib/app-task-continuation.mjs` consent/observe/revoke/status/redaction exports; `scripts/deep-loop.mjs:40-141,340-365`; `scripts/lib/initrun.mjs:13-58`; `scripts/lib/integrity.mjs:96-187`; `scripts/lib/lease.mjs:13-199`; `scripts/lib/schema.mjs:164-216`; created `tests/app-task-continuation.test.mjs`; `tests/orch-cli.test.mjs:246-286,831-1005`; `tests/cli-skillface.test.mjs:66-99,192-265`; `tests/integrity.test.mjs:123-211`; `tests/lease.test.mjs:27-490`; `tests/schema.test.mjs:17-273`; created `tests/helpers/fixed-init-crash-worker.mjs`. |
 | 7A | `scripts/lib/schema.mjs:164-216`; `scripts/deep-loop.mjs:120-180`; `tests/schema.test.mjs:17-273`; `tests/validate-cli.test.mjs:39-84`. |
-| 7B | `scripts/lib/comprehension.mjs`; `scripts/lib/detect-terminal.mjs`; `scripts/lib/episode.mjs`; `scripts/lib/finish.mjs:70-107`; `scripts/lib/handoff.mjs`; `scripts/lib/insights.mjs`; `scripts/lib/integrity.mjs:21-187`; `scripts/lib/lease.mjs:43-103`; `scripts/lib/recover.mjs`; `scripts/lib/respawn.mjs`; `scripts/lib/review.mjs`; `scripts/lib/runtime-executable.mjs`; `scripts/lib/session-profile.mjs`; `scripts/lib/spawn-optin.mjs`; `scripts/lib/state.mjs:79-115`; `scripts/lib/workspace.mjs`; `tests/automation.test.mjs`; `tests/breaker.test.mjs`; `tests/budget.test.mjs`; `tests/codex-checker-integration.test.mjs`; `tests/comprehension.test.mjs`; `tests/detect-terminal.test.mjs`; `tests/episode.test.mjs`; `tests/fencing.test.mjs`; `tests/finish.test.mjs`; produced `tests/fixtures/verified-app-run.mjs`; `tests/handoff.test.mjs`; `tests/headless-host.test.mjs`; `tests/insights.test.mjs`; `tests/integrity.test.mjs`; `tests/lease.test.mjs`; `tests/orch-cli.test.mjs`; `tests/pause.test.mjs`; `tests/precompact-hook.test.mjs`; `tests/project-root.test.mjs`; `tests/recover.test.mjs`; `tests/respawn.test.mjs`; `tests/review.test.mjs`; `tests/runtime-executable.test.mjs`; `tests/session-profile.test.mjs`; `tests/spawn-optin.test.mjs`; `tests/state.test.mjs`; `tests/terminal-cli.test.mjs`; `tests/workspace.test.mjs`; created `tests/helpers/anchored-crash-worker.mjs`. |
+| 7B | `scripts/lib/comprehension.mjs`; `scripts/lib/detect-terminal.mjs`; produced `scripts/lib/durable-file.mjs`; `scripts/lib/episode.mjs`; `scripts/lib/finish.mjs:70-107`; `scripts/lib/handoff.mjs`; `scripts/lib/insights.mjs`; `scripts/lib/integrity.mjs:21-187`; `scripts/lib/lease.mjs:43-103`; `scripts/lib/recover.mjs`; `scripts/lib/respawn.mjs`; `scripts/lib/review.mjs`; `scripts/lib/runtime-executable.mjs`; `scripts/lib/session-profile.mjs`; `scripts/lib/spawn-optin.mjs`; `scripts/lib/state.mjs:79-115`; `scripts/lib/workspace.mjs`; `tests/automation.test.mjs`; `tests/breaker.test.mjs`; `tests/budget.test.mjs`; `tests/codex-checker-integration.test.mjs`; `tests/comprehension.test.mjs`; `tests/detect-terminal.test.mjs`; produced `tests/durable-file.test.mjs`; `tests/episode.test.mjs`; `tests/fencing.test.mjs`; `tests/finish.test.mjs`; produced `tests/fixtures/verified-app-run.mjs`; `tests/handoff.test.mjs`; `tests/headless-host.test.mjs`; `tests/insights.test.mjs`; `tests/integrity.test.mjs`; `tests/lease.test.mjs`; `tests/orch-cli.test.mjs`; `tests/pause.test.mjs`; `tests/precompact-hook.test.mjs`; `tests/project-root.test.mjs`; `tests/recover.test.mjs`; `tests/respawn.test.mjs`; `tests/review.test.mjs`; `tests/runtime-executable.test.mjs`; `tests/session-profile.test.mjs`; `tests/spawn-optin.test.mjs`; `tests/state.test.mjs`; `tests/terminal-cli.test.mjs`; `tests/workspace.test.mjs`; created `tests/helpers/anchored-crash-worker.mjs`. |
 | 7C | `scripts/lib/lease.mjs:43-199`; `scripts/lib/budget.mjs:279-1048`; `tests/lease.test.mjs`; `tests/budget.test.mjs`; `tests/integrity.test.mjs`; `tests/project-root.test.mjs`. |
 | 7D | Produced `scripts/lib/init-transaction.mjs` strict current/genesis proof; produced `scripts/lib/app-task-continuation.mjs` observe/revoke/status boundaries; produced `tests/fixtures/verified-app-run.mjs`; produced `tests/init-transaction.test.mjs`; produced `tests/app-task-continuation.test.mjs`; `tests/cli-skillface.test.mjs`. |
-| 7G | `scripts/lib/lease.mjs:102-199`; `scripts/lib/breaker.mjs:1-62`; `scripts/lib/state.mjs:102-110`; `tests/lease.test.mjs`; `tests/breaker.test.mjs`; `tests/project-root.test.mjs`; `tests/integrity.test.mjs`. |
+| 7G | `scripts/lib/lease.mjs:102-199`; `scripts/lib/breaker.mjs:1-62`; `scripts/lib/state.mjs:102-110`; `tests/lease.test.mjs`; `tests/breaker.test.mjs`; `tests/project-root.test.mjs`; `tests/integrity.test.mjs`; produced `tests/helpers/anchored-crash-worker.mjs`. |
 | 7E–7F | `scripts/lib/session-profile.mjs:44-80`; `scripts/lib/comprehension.mjs:27-92`; `scripts/lib/project-root-recovery.mjs:20-51`; `scripts/lib/budget.mjs:1053-1067`; `scripts/lib/insights.mjs:357-509`; `scripts/lib/review.mjs:50-179,310-668`; `scripts/lib/workspace.mjs:141-153`; `scripts/lib/detect-terminal.mjs:284-343`; `scripts/deep-loop.mjs:120-180,340-710`; `tests/session-profile.test.mjs`; `tests/comprehension.test.mjs`; `tests/project-root.test.mjs`; `tests/budget.test.mjs`; `tests/cli-skillface.test.mjs`; `tests/insights.test.mjs`; `tests/review-import.test.mjs`; `tests/reviewer-failclosed.test.mjs`; `tests/workspace.test.mjs`; `tests/detect-terminal.test.mjs`. |
 | 8A–8B | Produced `scripts/lib/app-task-continuation.mjs` `prepareAppTask`; `scripts/lib/handoff.mjs:38-224` (`handoffMarkdown`, `emitHandoff`); `scripts/lib/lease.mjs:121-205` (`reserveHandoff`, `rollbackHandoff`); `scripts/lib/schema.mjs:164-216`; `tests/handoff.test.mjs:343-789,1107-1163`; produced `tests/app-task-continuation.test.mjs` prepare cases; created `tests/fixtures/app-prepare-worker.mjs`. |
 | 9A–9B | Produced `scripts/lib/app-task-continuation.mjs` `confirmAppTask`, `failAppTask`, `sweepUnconfirmedAppTask`, `statusAppTask`, `awaitAppTask`; produced `tests/app-task-continuation.test.mjs` receipt/readiness cases; `tests/schema.test.mjs:17-273`. |
@@ -150,7 +150,7 @@ These are the narrow baseline `Modify` anchors required by the execution tasks; 
 | 12A–12B | `scripts/lib/runtime-descriptor.mjs:37-81,408-444`; produced `scripts/lib/app-task-continuation.mjs` prepare action builder call; `tests/runtime-descriptor.test.mjs:1-99`; produced `tests/app-task-continuation.test.mjs` descriptor cases. |
 | 13A–13C | `skills/deep-loop/SKILL.md:14-20,118-213`; `skills/deep-loop-continue/SKILL.md:14-20,184-289`; `skills/deep-loop-handoff/SKILL.md:13-19,83-171`; `skills/deep-loop-resume/SKILL.md:13-104`; `skills/deep-loop-status/SKILL.md:9-90`; `skills/deep-loop-discover/SKILL.md:13-64`; `skills/deep-loop-workflow/references/handoff-respawn.md:1-224`; `skills/deep-loop-workflow/references/adapters.md:1-127`; `tests/skills.test.mjs:1-1176`; `tests/cli-skillface.test.mjs:1-265`. |
 | 14A–14C | Created `tests/helpers/fake-app-host.mjs`; created `tests/codex-app-task-continuation-integration.test.mjs` fake-host/lifecycle/failure cases. |
-| 15A | Produced `tests/host-surface.test.mjs` platform cases; produced `tests/codex-app-task-continuation-integration.test.mjs` omission/boundary cases; `tests/ci.test.mjs:1-109`; `.github/workflows/preflight.yml:1-25`. |
+| 15A | Produced `tests/host-surface.test.mjs` platform cases; produced `tests/codex-app-task-continuation-integration.test.mjs` omission/boundary cases; created `tests/platform-durability.test.mjs` real genesis/journal mutation; `tests/ci.test.mjs:1-109`; `.github/workflows/preflight.yml:1-25`. |
 | 17A–17B | `README.md:7-189`; `README.ko.md:7-179`; `CLAUDE.md:9-64`; `AGENTS.md:9-36`; `integration/deep-suite.patch.md:1-87`; `tests/docs.test.mjs:13-216`; `.claude-plugin/plugin.json:1-9`; `.codex-plugin/plugin.json:1-19`; `package.json:1-13`; `CHANGELOG.md:1-159`; `tests/scaffold.test.mjs:15-99`. |
 
 ## Fixed Internal Interfaces
@@ -199,6 +199,13 @@ export function commitPreparedInit(root, input, deps);
 export function normalizeFixedReview(value): object | null;
 export function buildFixedInitializationRequest(input, deps);
 
+// scripts/lib/durable-file.mjs
+export function syncRegularFile(path, deps);
+export function syncParentDirectory(path, deps);
+export function renamePreparedFile(source, destination, options, deps);
+export function unlinkRegularFile(path, deps);
+export function replaceFileDurably(path, bytes, options, deps);
+
 // scripts/lib/app-task-continuation.mjs
 export declare const APP_PREPARE_TIMEOUT_MS: number;
 export declare const APP_CONFIRMATION_TIMEOUT_MS: number;
@@ -226,7 +233,7 @@ export function verifyRunSnapshot(loop, lines);
 export function assertVerifiedRunSnapshot(root, runId, loop, { lines } = {});
 export function readVerifiedState(root, runId, { fenceCheck } = {});
 export function withVerifiedMutationLock(root, runId, {
-  callerBinding, intentDigest, fenceError,
+  callerBinding, intentDigest, fenceError, intentConflictError,
 }, body);
 export function commitVerifiedEventsUnderLock(root, runId, loop, eventSpecs, mutate,
   { baseLines, baseStateHash, callerBinding, intentDigest, crashProbe } = {});
@@ -4683,17 +4690,20 @@ git commit -m "feat: add owner-safe init root lock" -m "Co-Authored-By: Claude O
 ### Task 5B: Crash-Safe Pending Reservation and Genesis Publisher
 
 **Files:**
+- Create: `scripts/lib/durable-file.mjs` as the single platform-aware durable replace/unlink helper.
+- Create: `tests/durable-file.test.mjs` with real policy tests for POSIX and Windows branches.
 - Modify: produced `scripts/lib/init-transaction.mjs` with `publishGenesisState` and `commitPreparedInit`.
 - Modify: produced `tests/init-transaction.test.mjs`.
 
 **Interfaces:**
-- Consumes: an exact prepare binding, the raw-free canonical request plus full observation only at commit, Task 4A's deterministic builder, fixed lock, strict current/pending/state/hash readers, and injected crash probes.
-- Produces: root-contained strict-name temp/write/rename cleanup, hash-first/loop-last genesis publication, pending-before-state/current CAS, exact retry outcomes, and no repair of malformed/symlink/foreign artifacts.
+- Consumes: an exact prepare binding, the raw-free canonical request plus full observation only at commit, Task 4A's deterministic builder, fixed lock, strict current/pending/state/hash readers, Task 0B's bounded Windows rename helper, and injected crash probes.
+- Produces: one shared platform-aware durability boundary, root-contained strict-name temp/write/rename cleanup, hash-first/loop-last genesis publication, pending-before-state/current CAS, exact retry outcomes, and no repair of malformed/symlink/foreign artifacts. POSIX durability is file `fsync` + same-directory rename + parent-directory `fsync`; Windows durability is file flush + bounded sharing-error rename + journal/exact-retry recovery, with no directory-fd open or `fsync`.
 
 - [ ] **Step 1: Write complete pending/publisher tests**
 
-Add `renameSync` to the `node:fs` import in the implementation, add
-`publishGenesisState` and `commitPreparedInit` to the transaction test import, and append:
+Add `publishGenesisState` and `commitPreparedInit` to the transaction test import. Create
+`tests/durable-file.test.mjs` with explicit POSIX parent-sync and Windows no-directory-fd/bounded-
+retry cases, then append the transaction tests below:
 
 ```js
 function commitInput(root, attempt, requestDigest, previous = 'NONE') {
@@ -4876,6 +4886,41 @@ test('exact pending retry cleans only strict own temp debris and rejects symlink
     commitInput(escaped, attempt, escapedRequest), escapedDeps),
   /INIT_ROOT_CONTAINMENT_INVALID/);
 });
+
+// tests/durable-file.test.mjs — these are policy tests, not platform mocks hidden in genesis tests.
+test('durable helper syncs a POSIX parent after same-directory rename', () => {
+  const calls = [];
+  const regular = { isFile: () => true, isSymbolicLink: () => false };
+  renamePreparedFile('/run/.tmp-a', '/run/loop.json', {}, {
+    platform: 'linux', lstat: () => regular,
+    open: path => (calls.push(['open', path]), path),
+    fsync: fd => calls.push(['fsync', fd]), close: fd => calls.push(['close', fd]),
+    rename: (from, to) => calls.push(['rename', from, to]),
+    monotonicNowFn: () => 0, sleepFn: () => assert.fail('POSIX rename is not retried'),
+  });
+  assert.deepEqual(calls.filter(call => call[0] === 'rename'),
+    [['rename', '/run/.tmp-a', '/run/loop.json']]);
+  assert.deepEqual(calls.at(-3), ['open', '/run']);
+  assert.deepEqual(calls.at(-2), ['fsync', '/run']);
+});
+
+test('durable helper never opens a Windows directory fd and retries sharing errors boundedly', () => {
+  const regular = { isFile: () => true, isSymbolicLink: () => false };
+  let attempts = 0;
+  const clock = [0, 0, 50, 50, 100, 100];
+  renamePreparedFile('C:\\run\\.tmp-a', 'C:\\run\\loop.json', {}, {
+    platform: 'win32', lstat: () => regular,
+    open: path => {
+      assert.notEqual(path, 'C:\\run', 'Windows must not open a directory for fsync');
+      return path;
+    }, fsync: () => {}, close: () => {},
+    rename: () => {
+      attempts += 1;
+      if (attempts < 3) throw Object.assign(new Error('sharing'), { code: 'EPERM' });
+    }, monotonicNowFn: () => clock.shift() ?? 100, sleepFn: () => {},
+  });
+  assert.equal(attempts, 3);
+});
 ```
 
 - [ ] **Step 2: Run publisher tests to verify RED**
@@ -4886,16 +4931,90 @@ Expected: FAIL because publisher/commit exports do not exist and state has no ge
 
 - [ ] **Step 3: Implement reservation, publication, and CAS**
 
-Replace the `node:fs` and `node:path` imports with these complete lists, then append the
-transaction below. It uses its own reviewed genesis atomic writer; the post-genesis
-`atomicWrite` implementation is deliberately not reused.
+Create the shared helper first, then replace the `node:fs` and `node:path` imports with the complete
+transaction lists below. Genesis and the Task 7B journal must both call this helper; neither may
+embed a raw `renameSync` or unconditional directory-fd `fsync` path.
 
 ```js
+// scripts/lib/durable-file.mjs — complete file
+import { closeSync as durableCloseSync, fsyncSync as durableFsyncSync,
+  lstatSync as durableLstatSync, openSync as durableOpenSync,
+  unlinkSync as durableUnlinkSync, writeFileSync as durableWriteFileSync } from 'node:fs';
+import { dirname as durableDirname } from 'node:path';
+import { renameAtomicWithRetry } from './atomic-write.mjs';
+
+function regularIfPresent(path, deps, label) {
+  let stat;
+  try { stat = (deps.lstat ?? durableLstatSync)(path); }
+  catch (error) {
+    if (error?.code === 'ENOENT') return false;
+    throw error;
+  }
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`${label}: non-regular path`);
+  return true;
+}
+
+export function syncRegularFile(path, deps = {}) {
+  if (!regularIfPresent(path, deps, 'DURABLE_FILE_INVALID')) {
+    throw new Error('DURABLE_FILE_MISSING');
+  }
+  const descriptor = (deps.open ?? durableOpenSync)(path, 'r');
+  try { (deps.fsync ?? durableFsyncSync)(descriptor); }
+  finally { (deps.close ?? durableCloseSync)(descriptor); }
+}
+
+export function syncParentDirectory(path, deps = {}) {
+  if ((deps.platform ?? process.platform) === 'win32') return;
+  const directory = (deps.open ?? durableOpenSync)(durableDirname(path), 'r');
+  try { (deps.fsync ?? durableFsyncSync)(directory); }
+  finally { (deps.close ?? durableCloseSync)(directory); }
+}
+
+export function renamePreparedFile(source, destination, {
+  crashProbe = () => {}, renamedPoint = 'file-after-rename-before-dir-fsync',
+  sourceAlreadySynced = false,
+} = {}, deps = {}) {
+  if (!sourceAlreadySynced) syncRegularFile(source, deps);
+  if (regularIfPresent(destination, deps, 'DURABLE_DESTINATION_INVALID') === false) {
+    // Absence is valid. A live or dangling symlink is rejected by lstat above.
+  }
+  renameAtomicWithRetry(source, destination, {
+    platform: deps.platform ?? process.platform,
+    monotonicNowFn: deps.monotonicNowFn, sleepFn: deps.sleepFn,
+    renameFn: deps.rename,
+  });
+  crashProbe(renamedPoint);
+  syncParentDirectory(destination, deps);
+}
+
+export function unlinkRegularFile(path, deps = {}) {
+  if (!regularIfPresent(path, deps, 'DURABLE_UNLINK_INVALID')) return false;
+  (deps.unlink ?? durableUnlinkSync)(path);
+  syncParentDirectory(path, deps);
+  return true;
+}
+
+export function replaceFileDurably(path, bytes, {
+  crashProbe = () => {}, label = 'file', mode = 0o600,
+} = {}, deps = {}) {
+  const temporary = `${path}.replace`;
+  unlinkRegularFile(temporary, deps);
+  (deps.writeFile ?? durableWriteFileSync)(temporary, bytes, { flag: 'wx', mode });
+  crashProbe(`${label}-replace-after-create`);
+  syncRegularFile(temporary, deps);
+  crashProbe(`${label}-replace-after-fsync`);
+  renamePreparedFile(temporary, path, { crashProbe, sourceAlreadySynced: true,
+    renamedPoint: `${label}-replace-after-rename-before-dir-fsync` }, deps);
+}
+
+// scripts/lib/init-transaction.mjs — complete replacement imports plus transaction body
 import {
   existsSync, linkSync, lstatSync, mkdirSync, readFileSync, readdirSync,
-  realpathSync, renameSync, statSync, unlinkSync, writeFileSync,
+  realpathSync, statSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { renamePreparedFile as renameGenesisFile,
+  unlinkRegularFile as unlinkGenesisFile } from './durable-file.mjs';
 
 const GENESIS_TEMP_NONCE = /^[A-Za-z0-9_-]{16,128}$/;
 
@@ -5053,8 +5172,8 @@ function writeGenesisArtifact(path, attempt, slot, bytes, deps) {
     (deps.writeFile ?? writeFileSync)(temp, bytes, { flag: 'wx' });
     probe(`${slot}-after-write`);
     probe(`${slot}-before-rename`);
-    (deps.rename ?? renameSync)(temp, path);
-    probe(`${slot}-after-rename`);
+    renameGenesisFile(temp, path,
+      { crashProbe: probe, renamedPoint: `${slot}-after-rename` }, deps);
   } finally {
     removeOwnTemp(temp, deps);
   }
@@ -5063,7 +5182,7 @@ function writeGenesisArtifact(path, attempt, slot, bytes, deps) {
 function deletePending(path, deps) {
   const probe = deps.crashProbe ?? (() => {});
   probe('pending-delete-before');
-  (deps.unlink ?? unlinkSync)(path);
+  if (!unlinkGenesisFile(path, deps)) throw new Error('INIT_PENDING_CONFLICT');
   probe('pending-delete-after');
 }
 
@@ -5237,20 +5356,20 @@ Expected: PASS for the full crash table, exact retries, completed-marker cleanup
 
 - [ ] **Step 5: Run state regressions**
 
-Run: node --test tests/init-transaction.test.mjs tests/state.test.mjs tests/schema.test.mjs tests/project-root.test.mjs tests/fs-safe.test.mjs tests/atomic-write.test.mjs
+Run: node --test tests/durable-file.test.mjs tests/init-transaction.test.mjs tests/state.test.mjs tests/schema.test.mjs tests/project-root.test.mjs tests/fs-safe.test.mjs tests/atomic-write.test.mjs
 
 Expected: PASS; post-genesis state writes retain their anchored per-run contract.
 
 - [ ] **Step 6: Review only publisher files**
 
-Run: git diff -- scripts/lib/init-transaction.mjs tests/init-transaction.test.mjs && git diff --check
+Run: git diff -- scripts/lib/durable-file.mjs scripts/lib/init-transaction.mjs tests/durable-file.test.mjs tests/init-transaction.test.mjs && git diff --check
 
 Confirm pending precedes state, hash precedes loop, loop is the state marker, current is CASed after state proof, exact pending alone is deleted, symlink/unknown/corrupt artifacts are never repaired, and all writes remain root-contained.
 
 - [ ] **Step 7: Commit the publisher slice**
 
 ```bash
-git add scripts/lib/init-transaction.mjs tests/init-transaction.test.mjs
+git add scripts/lib/durable-file.mjs scripts/lib/init-transaction.mjs tests/durable-file.test.mjs tests/init-transaction.test.mjs
 git commit -m "feat: publish genesis state crash safely" -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
 
@@ -9464,6 +9583,8 @@ git commit -m "feat: validate App event correlations" -m "Co-Authored-By: Claude
 ### Task 7B: Enforce One Fence-First Verified Snapshot Boundary
 
 **Files:**
+- Modify: produced `scripts/lib/durable-file.mjs` only if journal-specific error mapping requires a
+  shared option; all platform policy remains centralized in its Task 5B exports.
 - Modify: `scripts/lib/integrity.mjs:21-187` (pure snapshot verifier, verified read,
   prospective event/state commit, legacy lineage checkpoint, `appendAnchored` split fence,
   run-scoped journal recovery, and root-rebind guard).
@@ -9491,6 +9612,7 @@ git commit -m "feat: validate App event correlations" -m "Co-Authored-By: Claude
 - Modify: `tests/workspace.test.mjs` required binding propagation and precedence cases.
 - Add: `tests/fixtures/verified-app-run.mjs` (test-only hash-valid tamper and byte snapshot).
 - Modify: `tests/integrity.test.mjs`.
+- Modify: produced `tests/durable-file.test.mjs` with journal-label and dangling-symlink cases.
 - Modify: `tests/state.test.mjs`.
 - Modify: `tests/project-root.test.mjs`.
 - Modify: `tests/automation.test.mjs`.
@@ -9519,7 +9641,7 @@ git commit -m "feat: validate App event correlations" -m "Co-Authored-By: Claude
   `verifyLines`/`verifyHeadLines`, and caller-specific owner/generation/runtime fences.
 - Produces: `verifyRunSnapshot(loop,lines)`, `assertVerifiedRunSnapshot(root,runId,loop)`,
   lock-owning `readVerifiedState(root,runId,{fenceCheck?})`, explicit-binding
-  `withVerifiedMutationLock(root,runId,{callerBinding,intentDigest,fenceError},body)`, whose body
+  `withVerifiedMutationLock(root,runId,{callerBinding,intentDigest,fenceError,intentConflictError},body)`, whose body
   receives an opaque active-only `{readVerifiedState,appendAnchored}` mutation context, and the narrowly exported lock-owned
   `commitVerifiedEventsUnderLock`. The latter owns `.anchored-pending.json` plus strict state/event
   stage files, recovers an exact matching pending transaction before reevaluating the caller, and
@@ -10253,16 +10375,18 @@ diff --git a/scripts/lib/integrity.mjs b/scripts/lib/integrity.mjs
 +++ b/scripts/lib/integrity.mjs
 @@ -1,3 +1,4 @@
 -import { readFileSync, appendFileSync, existsSync } from 'node:fs';
-+import { appendFileSync, closeSync, existsSync, fsyncSync, lstatSync, openSync,
-+  readFileSync, readdirSync, renameSync, truncateSync, unlinkSync, writeFileSync } from 'node:fs';
-+import { basename, dirname, join } from 'node:path';
++import { appendFileSync, existsSync, lstatSync, readFileSync, readdirSync,
++  truncateSync } from 'node:fs';
++import { basename, join } from 'node:path';
 -import { join } from 'node:path';
  import { contentHash } from './envelope.mjs';
-@@ -5,2 +5,3 @@
+@@ -5,2 +5,5 @@
  import { assertProjectRootBinding, canonicalProjectRoot, projectRootDigest } from './project-root.mjs';
 -import { validate } from './schema.mjs';
 +import { validate, verifyAppEventCorrelation } from './schema.mjs';
 +import { initializationRequestDigest } from './init-transaction.mjs';
++import { replaceFileDurably, syncParentDirectory, syncRegularFile,
++  unlinkRegularFile } from './durable-file.mjs';
 @@ -55,6 +55,3 @@
  export function recomputeSpent(root, runId) {
 -  return readLines(root, runId).filter(e => e.type === 'cost').reduce((acc, e) => {
@@ -10331,10 +10455,22 @@ function journalPaths(root, runId) {
     .map(([key, name]) => [key, join(dir, name)]));
 }
 
-function regularFile(path, label) {
-  const stat = lstatSync(path);
+function regularFileIfPresent(path, label) {
+  let stat;
+  try { stat = lstatSync(path); }
+  catch (error) {
+    if (error?.code === 'ENOENT') return false;
+    throw error;
+  }
   if (!stat.isFile() || stat.isSymbolicLink()) {
     throw new Error(`ANCHORED_TRANSACTION_CORRUPT: ${label}`);
+  }
+  return true;
+}
+
+function regularFile(path, label) {
+  if (!regularFileIfPresent(path, label)) {
+    throw new Error(`ANCHORED_TRANSACTION_CORRUPT: missing ${label}`);
   }
 }
 
@@ -10346,41 +10482,24 @@ function exactKeys(value, keys) {
 function digestBytes(bytes) { return contentHash(Buffer.from(bytes).toString('base64')); }
 
 function readExactBytes(path, label) {
-  if (!existsSync(path)) throw new Error(`ANCHORED_TRANSACTION_CORRUPT: missing ${label}`);
   regularFile(path, label);
   return readFileSync(path);
 }
 
-function syncDirectory(path) {
-  const directory = openSync(dirname(path), 'r');
-  try { fsyncSync(directory); } finally { closeSync(directory); }
-}
-
-function syncFile(path) {
-  const descriptor = openSync(path, 'r');
-  try { fsyncSync(descriptor); } finally { closeSync(descriptor); }
-}
+function syncDirectory(path) { syncParentDirectory(path); }
+function syncFile(path) { syncRegularFile(path); }
 
 function durableUnlink(path) {
-  if (!existsSync(path)) return;
-  regularFile(path, 'durable unlink target');
-  unlinkSync(path);
-  syncDirectory(path);
+  try { unlinkRegularFile(path); }
+  catch { throw new Error('ANCHORED_TRANSACTION_CORRUPT: durable unlink target'); }
 }
 
-function durableReplace(path, bytes, { crashProbe = () => {}, label = 'file' } = {}) {
-  const temporary = `${path}.replace`;
-  // A killed prior exact retry may have left a partial or complete fixed-name scratch file.
-  // It is never authority: the marker plus the authenticated stage bytes are authority.
-  durableUnlink(temporary);
-  writeFileSync(temporary, bytes, { flag: 'wx', mode: 0o600 });
-  crashProbe(`${label}-replace-after-create`);
-  const descriptor = openSync(temporary, 'r');
-  try { fsyncSync(descriptor); } finally { closeSync(descriptor); }
-  crashProbe(`${label}-replace-after-fsync`);
-  renameSync(temporary, path);
-  crashProbe(`${label}-replace-after-rename-before-dir-fsync`);
-  syncDirectory(path);
+function durableReplace(path, bytes, options = {}) {
+  try { replaceFileDurably(path, bytes, options); }
+  catch (error) {
+    if (String(error?.message || error).startsWith('ANCHORED_TRANSACTION_')) throw error;
+    throw new Error(`ANCHORED_TRANSACTION_CORRUPT: durable replace: ${error?.message || error}`);
+  }
 }
 
 function strictSnapshot(value) {
@@ -10394,8 +10513,7 @@ function strictSnapshot(value) {
 
 function readAnchoredMarkerUnderLock(root, runId) {
   const path = journalPaths(root, runId).marker;
-  if (!existsSync(path)) return null;
-  regularFile(path, 'marker');
+  if (!regularFileIfPresent(path, 'marker')) return null;
   let marker;
   try { marker = JSON.parse(readFileSync(path, 'utf8')); }
   catch { throw new Error('ANCHORED_TRANSACTION_CORRUPT: marker json'); }
@@ -10443,8 +10561,7 @@ function assertKnownAnchoredArtifactsUnderLock(root, runId, paths) {
 
 function readCurrentRunIdUnderLock(root) {
   const current = join(root, '.deep-loop', 'current');
-  if (!existsSync(current)) return null;
-  regularFile(current, 'current pointer');
+  if (!regularFileIfPresent(current, 'current pointer')) return null;
   const value = readFileSync(current, 'utf8').trim();
   if (!/^[0-9A-HJKMNP-TV-Z]{26}$/.test(value)) {
     throw new Error('CURRENT_RUN_ID_INVALID');
@@ -10481,12 +10598,10 @@ function recoverAnchoredTransactionUnderLock(root, runId, marker) {
   const eventPath = logPath(root, runId);
   const statePath = join(runDir(root, runId), 'loop.json');
   const hashPath = join(runDir(root, runId), '.loop.hash');
-  const canonicalEvents = existsSync(eventPath) ? readFileSync(eventPath) : Buffer.alloc(0);
+  const canonicalEvents = regularFileIfPresent(eventPath, 'canonical event log')
+    ? readFileSync(eventPath) : Buffer.alloc(0);
   const canonicalState = readExactBytes(statePath, 'canonical state');
   const canonicalHash = readExactBytes(hashPath, 'canonical hash');
-  assertSnapshotBytes({ ...marker.after, events_bytes: stagedEvents.length,
-    events_digest: digestBytes(stagedEvents) }, stagedEvents, stagedState, stagedHash,
-  'stage digest');
   const beforeLength = marker.before.events_bytes;
   if (canonicalEvents.length < beforeLength
       || canonicalEvents.length > beforeLength + stagedEvents.length) {
@@ -10496,6 +10611,10 @@ function recoverAnchoredTransactionUnderLock(root, runId, marker) {
   if (digestBytes(canonicalPrefix) !== marker.before.events_digest) {
     throw new Error('ANCHORED_TRANSACTION_CORRUPT: event prefix');
   }
+  // Authenticate the complete after image before changing any canonical byte. Never replace the
+  // marker's event digest with a digest recomputed from the untrusted stage itself.
+  const stagedAfterEvents = Buffer.concat([canonicalPrefix, stagedEvents]);
+  assertSnapshotBytes(marker.after, stagedAfterEvents, stagedState, stagedHash, 'stage digest');
   const partial = canonicalEvents.subarray(beforeLength);
   if (!stagedEvents.subarray(0, partial.length).equals(partial)) {
     throw new Error('ANCHORED_TRANSACTION_CORRUPT: event suffix');
@@ -10514,7 +10633,7 @@ function recoverAnchoredTransactionUnderLock(root, runId, marker) {
   durableUnlink(`${statePath}.replace`);
   durableUnlink(`${hashPath}.replace`);
   if (stateBefore && hashBefore) {
-    if (existsSync(eventPath)) truncateSync(eventPath, beforeLength);
+    if (regularFileIfPresent(eventPath, 'canonical event log')) truncateSync(eventPath, beforeLength);
     else if (beforeLength !== 0) {
       throw new Error('ANCHORED_TRANSACTION_CORRUPT: missing event prefix');
     }
@@ -10545,7 +10664,8 @@ function publishAnchoredCandidateUnderLock(root, runId, {
   const eventPath = logPath(root, runId);
   const statePath = join(runDir(root, runId), 'loop.json');
   const hashPath = join(runDir(root, runId), '.loop.hash');
-  const beforeEvents = existsSync(eventPath) ? readFileSync(eventPath) : Buffer.alloc(0);
+  const beforeEvents = regularFileIfPresent(eventPath, 'canonical event log')
+    ? readFileSync(eventPath) : Buffer.alloc(0);
   const beforeState = readExactBytes(statePath, 'canonical state');
   const beforeHash = readExactBytes(hashPath, 'canonical hash');
   const allEvents = Buffer.from(prospective.map(event => `${JSON.stringify(event)}\n`).join(''));
@@ -10618,7 +10738,8 @@ function requireCallerBinding(binding) {
 }
 
 export function withVerifiedMutationLock(root, runId,
-  { callerBinding, intentDigest, fenceError }, body) {
+  { callerBinding, intentDigest, fenceError,
+    intentConflictError = 'ANCHORED_TRANSACTION_PENDING' }, body) {
   const binding = requireCallerBinding(callerBinding);
   if (!/^[0-9a-f]{64}$/.test(intentDigest || '') || typeof body !== 'function') {
     throw new Error('MUTATION_INTENT_REQUIRED');
@@ -10635,7 +10756,7 @@ export function withVerifiedMutationLock(root, runId,
         throw new Error(fenceError);
       }
       if (marker.intent_digest !== intentDigest) {
-        throw new Error('ANCHORED_TRANSACTION_PENDING');
+        throw new Error(intentConflictError);
       }
       // Uses raw exact before/after bytes recorded by the marker, not canonical public readers.
       recoverAnchoredTransactionUnderLock(root, runId, marker);
@@ -10931,8 +11052,10 @@ function withAppMutation(root, runId, input, operation, body) {
   const callerBinding = { owner: input.owner, generation: input.generation };
   const intentDigest = contentHash(JSON.stringify(
     appMutationIntentProjection(input, operation)));
+  const intentConflictError = ['app-confirm', 'app-fail'].includes(operation)
+    ? 'APP_RECEIPT_FENCED' : `APP_TASK_FENCED:${operation}`;
   return withVerifiedMutationLock(root, runId, { callerBinding, intentDigest,
-    fenceError: `LEASE_FENCED: ${operation}` }, body);
+    fenceError: `LEASE_FENCED: ${operation}`, intentConflictError }, body);
 }
 ```
 
@@ -11295,7 +11418,7 @@ Run:
 rg -n "commitVerifiedEventsUnderLock|appendEvent\(|writeState\(" scripts/lib scripts/hooks-impl scripts/deep-loop.mjs
 rg -n -C 3 "status\s*=\s*['\"](?:completed|stopped)['\"]|status:\s*['\"](?:completed|stopped)['\"]" tests
 rg -n "appendEvent\(|contentHash\(raw\)|writeHashValid|loop\.json.*writeFileSync|writeFileSync.*loop\.json" tests
-git diff -- scripts/lib/comprehension.mjs scripts/lib/detect-terminal.mjs scripts/lib/episode.mjs scripts/lib/finish.mjs scripts/lib/handoff.mjs scripts/lib/insights.mjs scripts/lib/integrity.mjs scripts/lib/lease.mjs scripts/lib/recover.mjs scripts/lib/respawn.mjs scripts/lib/review.mjs scripts/lib/runtime-executable.mjs scripts/lib/session-profile.mjs scripts/lib/spawn-optin.mjs scripts/lib/state.mjs scripts/lib/workspace.mjs tests/automation.test.mjs tests/breaker.test.mjs tests/budget.test.mjs tests/codex-checker-integration.test.mjs tests/comprehension.test.mjs tests/detect-terminal.test.mjs tests/episode.test.mjs tests/fencing.test.mjs tests/finish.test.mjs tests/fixtures/verified-app-run.mjs tests/handoff.test.mjs tests/headless-host.test.mjs tests/helpers/anchored-crash-worker.mjs tests/insights.test.mjs tests/integrity.test.mjs tests/lease.test.mjs tests/orch-cli.test.mjs tests/pause.test.mjs tests/precompact-hook.test.mjs tests/project-root.test.mjs tests/recover.test.mjs tests/respawn.test.mjs tests/review.test.mjs tests/runtime-executable.test.mjs tests/session-profile.test.mjs tests/spawn-optin.test.mjs tests/state.test.mjs tests/terminal-cli.test.mjs tests/workspace.test.mjs
+git diff -- scripts/lib/comprehension.mjs scripts/lib/detect-terminal.mjs scripts/lib/durable-file.mjs scripts/lib/episode.mjs scripts/lib/finish.mjs scripts/lib/handoff.mjs scripts/lib/insights.mjs scripts/lib/integrity.mjs scripts/lib/lease.mjs scripts/lib/recover.mjs scripts/lib/respawn.mjs scripts/lib/review.mjs scripts/lib/runtime-executable.mjs scripts/lib/session-profile.mjs scripts/lib/spawn-optin.mjs scripts/lib/state.mjs scripts/lib/workspace.mjs tests/automation.test.mjs tests/breaker.test.mjs tests/budget.test.mjs tests/codex-checker-integration.test.mjs tests/comprehension.test.mjs tests/detect-terminal.test.mjs tests/durable-file.test.mjs tests/episode.test.mjs tests/fencing.test.mjs tests/finish.test.mjs tests/fixtures/verified-app-run.mjs tests/handoff.test.mjs tests/headless-host.test.mjs tests/helpers/anchored-crash-worker.mjs tests/insights.test.mjs tests/integrity.test.mjs tests/lease.test.mjs tests/orch-cli.test.mjs tests/pause.test.mjs tests/precompact-hook.test.mjs tests/project-root.test.mjs tests/recover.test.mjs tests/respawn.test.mjs tests/review.test.mjs tests/runtime-executable.test.mjs tests/session-profile.test.mjs tests/spawn-optin.test.mjs tests/state.test.mjs tests/terminal-cli.test.mjs tests/workspace.test.mjs
 git diff --check
 ```
 
@@ -11309,7 +11432,7 @@ inventory and disposition in the evidence row.
 - [ ] **Step 7: Commit the verified-snapshot slice**
 
 ```bash
-git add scripts/lib/comprehension.mjs scripts/lib/detect-terminal.mjs scripts/lib/episode.mjs scripts/lib/finish.mjs scripts/lib/handoff.mjs scripts/lib/insights.mjs scripts/lib/integrity.mjs scripts/lib/lease.mjs scripts/lib/recover.mjs scripts/lib/respawn.mjs scripts/lib/review.mjs scripts/lib/runtime-executable.mjs scripts/lib/session-profile.mjs scripts/lib/spawn-optin.mjs scripts/lib/state.mjs scripts/lib/workspace.mjs tests/automation.test.mjs tests/breaker.test.mjs tests/budget.test.mjs tests/codex-checker-integration.test.mjs tests/comprehension.test.mjs tests/detect-terminal.test.mjs tests/episode.test.mjs tests/fencing.test.mjs tests/finish.test.mjs tests/fixtures/verified-app-run.mjs tests/handoff.test.mjs tests/headless-host.test.mjs tests/helpers/anchored-crash-worker.mjs tests/insights.test.mjs tests/integrity.test.mjs tests/lease.test.mjs tests/orch-cli.test.mjs tests/pause.test.mjs tests/precompact-hook.test.mjs tests/project-root.test.mjs tests/recover.test.mjs tests/respawn.test.mjs tests/review.test.mjs tests/runtime-executable.test.mjs tests/session-profile.test.mjs tests/spawn-optin.test.mjs tests/state.test.mjs tests/terminal-cli.test.mjs tests/workspace.test.mjs
+git add scripts/lib/comprehension.mjs scripts/lib/detect-terminal.mjs scripts/lib/durable-file.mjs scripts/lib/episode.mjs scripts/lib/finish.mjs scripts/lib/handoff.mjs scripts/lib/insights.mjs scripts/lib/integrity.mjs scripts/lib/lease.mjs scripts/lib/recover.mjs scripts/lib/respawn.mjs scripts/lib/review.mjs scripts/lib/runtime-executable.mjs scripts/lib/session-profile.mjs scripts/lib/spawn-optin.mjs scripts/lib/state.mjs scripts/lib/workspace.mjs tests/automation.test.mjs tests/breaker.test.mjs tests/budget.test.mjs tests/codex-checker-integration.test.mjs tests/comprehension.test.mjs tests/detect-terminal.test.mjs tests/durable-file.test.mjs tests/episode.test.mjs tests/fencing.test.mjs tests/finish.test.mjs tests/fixtures/verified-app-run.mjs tests/handoff.test.mjs tests/headless-host.test.mjs tests/helpers/anchored-crash-worker.mjs tests/insights.test.mjs tests/integrity.test.mjs tests/lease.test.mjs tests/orch-cli.test.mjs tests/pause.test.mjs tests/precompact-hook.test.mjs tests/project-root.test.mjs tests/recover.test.mjs tests/respawn.test.mjs tests/review.test.mjs tests/runtime-executable.test.mjs tests/session-profile.test.mjs tests/spawn-optin.test.mjs tests/state.test.mjs tests/terminal-cli.test.mjs tests/workspace.test.mjs
 git commit -m "feat: verify semantic run snapshots" -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
 
@@ -14084,6 +14207,8 @@ git commit -m "fix: verify authority before external actions" -m "Co-Authored-By
 - Modify: `tests/breaker.test.mjs`.
 - Modify: `tests/project-root.test.mjs`.
 - Modify: `tests/integrity.test.mjs`.
+- Modify: produced `tests/helpers/anchored-crash-worker.mjs` with literal lease/breaker imports and
+  the closed Task 7G dispatch.
 
 **Interfaces:**
 - Consumes: Task 7B `commitVerifiedEventsUnderLock` and run-scoped journal, Task 7C fence-first
@@ -14321,6 +14446,9 @@ dispatch; the existing generic operations remain unchanged and `crashProbe` is i
 test worker:
 
 ```js
+import { releaseLease, reserveHandoff } from '../../scripts/lib/lease.mjs';
+import { recordReviewVerdict, tripBreaker } from '../../scripts/lib/breaker.mjs';
+
 const publisher7g = Object.freeze({
   'lease-release': ({ root, runId, owner, generation, crashProbe }) =>
     releaseLease(root, runId, { owner, generation, crashProbe }),
@@ -14611,7 +14739,7 @@ Expected: PASS with legacy return/error contracts preserved.
 ```bash
 rg -n "\bwriteState\(|\bappendEvent\(|appendFileSync\(" scripts/lib scripts/hooks-impl scripts/deep-loop.mjs
 rg -n "lease-released|handoff-reserved|handoff-phase-advanced|handoff-rolled-back|breaker-tripped|breaker-reset|breaker-review-verdict" scripts/lib tests
-git diff -- scripts/lib/lease.mjs scripts/lib/breaker.mjs scripts/lib/state.mjs tests/lease.test.mjs tests/breaker.test.mjs tests/project-root.test.mjs tests/integrity.test.mjs
+git diff -- scripts/lib/lease.mjs scripts/lib/breaker.mjs scripts/lib/state.mjs tests/lease.test.mjs tests/breaker.test.mjs tests/project-root.test.mjs tests/integrity.test.mjs tests/helpers/anchored-crash-worker.mjs
 git diff --check
 git diff --check origin/main
 ```
@@ -14622,7 +14750,7 @@ and every production post-genesis mutation reaches the same pending/stage/hash c
 - [ ] **Step 7: Commit the publisher-closure slice**
 
 ```bash
-git add scripts/lib/lease.mjs scripts/lib/breaker.mjs scripts/lib/state.mjs tests/lease.test.mjs tests/breaker.test.mjs tests/project-root.test.mjs tests/integrity.test.mjs
+git add scripts/lib/lease.mjs scripts/lib/breaker.mjs scripts/lib/state.mjs tests/lease.test.mjs tests/breaker.test.mjs tests/project-root.test.mjs tests/integrity.test.mjs tests/helpers/anchored-crash-worker.mjs
 git commit -m "fix: journal every post-genesis publisher" -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 git diff --check origin/main..HEAD
 ```
@@ -19350,7 +19478,8 @@ file's `buildSettledRun` proof builder:
 ```js
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
 import { spawnSync as spawn10d } from 'node:child_process';
-import { readdirSync as list10d, readFileSync as read10d } from 'node:fs';
+import { readdirSync as list10d, readFileSync as read10d, symlinkSync as symlink10d,
+  writeFileSync as write10d } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { acquireAppTask, awaitAppTask, confirmAppTask, failAppTask, prepareAppTask,
   revokeAppTaskContinuation, sweepUnconfirmedAppTask }
@@ -19430,7 +19559,6 @@ function mutationCase10d(operation) {
   const parent = (different = false, foreign = false) => ({
     owner: foreign ? '01JAPPF0R00000000000000000' : fixture.runId,
     generation: 1, attemptId: fixture.attemptId, stdinMode: 'pty-raw-noecho',
-    ...(different ? { reason: 'different-request' } : {}),
   });
   const invoke = ({ different = false, foreign = false } = {}) => {
     const input = parent(different, foreign);
@@ -19486,6 +19614,12 @@ function journalBytes10d(root, runId) {
   return Object.fromEntries(list10d(directory).sort()
     .filter(name => name.startsWith('.anchored-') || name === 'loop.json'
       || name === '.loop.hash' || name === 'event-log.jsonl')
+    .map(name => [name, read10d(join(directory, name))]));
+}
+
+function canonicalBytes10d(root, runId) {
+  const directory = runDir(root, runId);
+  return Object.fromEntries(['event-log.jsonl', 'loop.json', '.loop.hash']
     .map(name => [name, read10d(join(directory, name))]));
 }
 
@@ -19597,6 +19731,52 @@ test('every real App mutation recovers its own journal before its first canonica
     }
   }
 });
+
+test('same-length staged-event corruption is rejected before any canonical mutation', () => {
+  const { fixture, invoke } = mutationCase10d('confirm');
+  const worker = new URL('./helpers/anchored-crash-worker.mjs', import.meta.url);
+  const child = spawn10d(process.execPath,
+    [fileURLToPath(worker), fixture.root, fixture.runId, 'confirm', 'pending-after-rename'], {
+      shell: false, encoding: 'utf8', env: { ...process.env,
+        DEEP_LOOP_CRASH_INPUT: JSON.stringify({ owner: fixture.runId, generation: 1,
+          attemptId: fixture.attemptId, childRunId: fixture.childRunId }) },
+    });
+  assert.equal(child.status, 91, child.stderr || child.stdout);
+  const canonicalBefore = canonicalBytes10d(fixture.root, fixture.runId);
+  const stagePath = join(runDir(fixture.root, fixture.runId), '.anchored-events.stage');
+  const corrupted = Buffer.from(read10d(stagePath));
+  corrupted[0] = corrupted[0] === 0x7b ? 0x5b : 0x7b;
+  write10d(stagePath, corrupted);
+  assert.throws(() => invoke(), /ANCHORED_TRANSACTION_CORRUPT: stage digest/);
+  assert.deepEqual(canonicalBytes10d(fixture.root, fixture.runId), canonicalBefore,
+    'untrusted same-length stage bytes cannot change canonical event/state/hash bytes');
+});
+
+test('dangling journal symlink is corruption and never cleanup authority',
+  { skip: process.platform === 'win32' }, () => {
+    const { fixture, invoke } = mutationCase10d('confirm');
+    const canonicalBefore = canonicalBytes10d(fixture.root, fixture.runId);
+    symlink10d(join(fixture.root, 'missing-stage-target'),
+      join(runDir(fixture.root, fixture.runId), '.anchored-events.stage'));
+    assert.throws(() => invoke(), /ANCHORED_TRANSACTION_CORRUPT/);
+    assert.deepEqual(canonicalBytes10d(fixture.root, fixture.runId), canonicalBefore);
+  });
+
+test('published confirm marker plus a different receipt is the public App fence', () => {
+  const { fixture, invoke } = mutationCase10d('confirm');
+  const worker = new URL('./helpers/anchored-crash-worker.mjs', import.meta.url);
+  const child = spawn10d(process.execPath,
+    [fileURLToPath(worker), fixture.root, fixture.runId, 'confirm', 'pending-after-rename'], {
+      shell: false, encoding: 'utf8', env: { ...process.env,
+        DEEP_LOOP_CRASH_INPUT: JSON.stringify({ owner: fixture.runId, generation: 1,
+          attemptId: fixture.attemptId, childRunId: fixture.childRunId }) },
+    });
+  assert.equal(child.status, 91, child.stderr || child.stdout);
+  const pending = journalBytes10d(fixture.root, fixture.runId);
+  assert.throws(() => invoke({ different: true }), /APP_RECEIPT_FENCED/);
+  assert.deepEqual(journalBytes10d(fixture.root, fixture.runId), pending);
+  invoke();
+});
 ```
 
 The helper is literal above. In Step 3, extend the worker with the following literal closed dispatch.
@@ -19604,6 +19784,12 @@ Each listed public API accepts `crashProbe` only through its already-injected te
 the CLI never exposes it, and the worker never calls a private recovery helper:
 
 ```js
+import { emitHandoff } from '../../scripts/lib/handoff.mjs';
+import { acquireAppTask, awaitAppTask, confirmAppTask, failAppTask, prepareAppTask,
+  sweepUnconfirmedAppTask } from '../../scripts/lib/app-task-continuation.mjs';
+import { recoverRun } from '../../scripts/lib/recover.mjs';
+// `finishRun` remains in the base worker import introduced in Task 7B.
+
 function workerDescriptor10d({ runtime, root: projectRoot, parentRunId, childRunId }) {
   return { runtime, projectRoot, runId: parentRunId, usageOutputKind: 'json',
     resumeInvocation: childRunId, entries: Object.fromEntries(['interactive', 'headless',
@@ -20003,6 +20189,7 @@ import { structuredReadyToken } from '../scripts/lib/bounded-input.mjs';
 import { confirmAppTask, prepareAppTask } from '../scripts/lib/app-task-continuation.mjs';
 import { finishRun as finish11a } from '../scripts/lib/finish.mjs';
 import { readLines } from '../scripts/lib/integrity.mjs';
+import { fileURLToPath as file11a } from 'node:url';
 
 test('App READY grammar is exact and purpose-separated', () => {
   assert.equal(structuredReadyToken({ purpose: 'app-prepare',
@@ -20261,6 +20448,34 @@ test('confirm accepts one raw bounded receipt only after exact pipe READY', asyn
     .find(item => item.run_id === fixture.childRunId).continuation;
   assert.equal(continuation.phase, 'confirmed');
   assert.equal(continuation.thread_id, receipt);
+});
+
+test('confirm CLI maps a published marker with a different receipt to exit 3', async () => {
+  const fixture = preparedCliSeed11a();
+  const worker = file11a(new URL('./helpers/anchored-crash-worker.mjs', import.meta.url));
+  const crashed = spawnSync(process.execPath,
+    [worker, fixture.root, fixture.runId, 'confirm', 'pending-after-rename'], {
+      cwd: fixture.root, encoding: 'utf8', shell: false, env: { ...process.env,
+        DEEP_LOOP_CRASH_INPUT: JSON.stringify({ owner: fixture.runId, generation: 1,
+          attemptId: fixture.attemptId, childRunId: fixture.childRunId }) },
+    });
+  assert.equal(crashed.status, 91, crashed.stderr || crashed.stdout);
+  const directory = join(fixture.root, '.deep-loop', 'runs', fixture.runId);
+  const journalNames = ['.anchored-pending.json', '.anchored-events.stage',
+    '.anchored-state.stage', '.anchored-hash.stage', 'event-log.jsonl', 'loop.json', '.loop.hash'];
+  const pending = Object.fromEntries(journalNames.map(name =>
+    [name, readFileSync(join(directory, name))]));
+  const ready = `DEEP_LOOP_STDIN_READY:v1:app-confirm:${fixture.attemptId}:pipe-open-noecho`;
+  const args = ['app-task', 'confirm', '--project-root', fixture.root,
+    '--run-id', fixture.runId, '--owner', fixture.runId, '--generation', '1',
+    '--attempt', fixture.attemptId, '--stdin-mode', 'pipe-open-noecho', '--receipt-stdin'];
+  const different = await runReady11a(fixture, args, 'different-thread', ready);
+  assert.equal(different.code, 3, different.stderr);
+  assert.match(different.stderr, /APP_RECEIPT_FENCED/);
+  assert.deepEqual(Object.fromEntries(journalNames.map(name =>
+    [name, readFileSync(join(directory, name))])), pending);
+  const exact = await runReady11a(fixture, args, 'confirmed-thread', ready);
+  assert.equal(exact.code, 0, exact.stderr);
 });
 
 test('ordinary fail has no stdin mode, receipt flag, or READY', () => {
@@ -23116,60 +23331,376 @@ of this focused RED command.
 
 - [ ] **Step 3: Fix the reproduced CAS defects and add test-only pre-append seams**
 
-First split `prepareAppTask`, `confirmAppTask`, `revokeAppTaskContinuation`, and
-`sweepUnconfirmedAppTask` into two short `withAppMutation` calls with the same operation intent.
-The first context performs only the recovery-aware verified snapshot read, identity fence, and
-write-free idempotency/precheck projection, then returns a structured clone. It closes before any
-descriptor builder, budget reconciliation, callback, barrier, artifact I/O, or external work. The
-second context performs a fresh verified read and the final `mutation.appendAnchored` CAS; it reruns
-every business predicate against that fresh state and never trusts the first snapshot as authority.
-No mutation context or context-owned method escapes either callback.
+Split `prepareAppTask`, `confirmAppTask`, `revokeAppTaskContinuation`, and
+`sweepUnconfirmedAppTask` into optimistic snapshot/commit phases with the same operation intent.
+The first context performs only recovery-aware proof and returns a cloned `{data,hash}`. It closes
+before any descriptor builder, gate, budget reconciliation, callback, barrier, artifact I/O, or
+external work. The second context performs a fresh verified read and compares the exact state hash
+before any mutation. A mismatch is a bounded CAS loss: the operation restarts from a new first
+snapshot at most once, with the test seam called only on the first attempt. Thus every callback is
+outside the lock while the callback result is authorized only when the exact snapshot it observed
+is still current. No mutation context or context-owned method escapes either callback.
 
 Add these literal private helpers and use them for all four operations:
 
 ```js
 function appSnapshotPhase(root, runId, input, operation, read) {
-  return withAppMutation(root, runId, input, operation, mutation =>
-    structuredClone(read(mutation)));
+  return withAppMutation(root, runId, input, operation, mutation => {
+    const snapshot = read(mutation);
+    return Object.freeze({ data: structuredClone(snapshot.data), hash: snapshot.hash });
+  });
 }
 
-function appCommitPhase(root, runId, input, operation, commit) {
-  return withAppMutation(root, runId, input, operation, mutation => commit(mutation));
+function appCommitPhase(root, runId, input, operation, expectedHash, read, commit) {
+  return withAppMutation(root, runId, input, operation, mutation => {
+    const fresh = read(mutation);
+    if (fresh.hash !== expectedHash) throw new Error(`APP_CAS_LOST:${operation}`);
+    return commit(mutation, fresh.data);
+  });
 }
 ```
 
-Each operation's final shape is exactly `snapshot phase → outside-lock derivation/callback → commit
-phase`. `prepare` performs descriptor construction and its outer gate outside the contexts, then its
-commit phase reconciles through the active context and re-derives the route/gate before append.
-`confirm`, `revoke`, and `sweep` perform their no-op/default seam outside, then the commit phase
-re-proves phase, exact attempt, deadline/consent, cwd/runtime, and candidate validity. Call the
-injected no-op-by-default seam only after the first context has returned and before opening the
-second:
+Each operation's final shape is executable below. All injected functions, including
+`descriptorBuilder`, `gateFn`, `reconcileBudgetFn`, and `beforeAppendFn`, run between contexts.
+`prepare` restarts its snapshot after reconciliation, so its descriptor/gate result is tied to the
+post-reconciliation hash. The commit context compares that hash before append and its precheck uses
+only pure kernel predicates plus the already-sampled fixed clock. The other three operations use the
+same bounded optimistic CAS. These private helpers are the complete shared predicates:
 
 ```js
-deps.beforeAppendFn?.({ operation: 'prepare', snapshot });
-deps.beforeAppendFn?.({ operation: 'confirm', snapshot });
-deps.beforeAppendFn?.({ operation: 'revoke', snapshot });
-deps.beforeAppendFn?.({ operation: 'sweep', snapshot });
+const appCasLost = (error, operation) =>
+  String(error?.message || error) === `APP_CAS_LOST:${operation}`;
+
+function readParentSnapshot(mutation, input, options = {}) {
+  return mutation.readVerifiedState({ fenceCheck: loop =>
+    assertAppParentEntryIdentity(loop, input, options) });
+}
+
+function revokeProjection(loop, input, clockMs = null) {
+  const fence = leaseCheck(loop, { owner: input.owner, generation: input.generation,
+    runtime: input.runtime, intent: 'app-revoke' });
+  if (!fence.ok) {
+    if (fence.reason === 'RUN_TERMINAL') throw new Error('APP_TASK_TERMINAL');
+    throw new Error('APP_TASK_FENCED');
+  }
+  const consent = loop.autonomy.app_task_continuation;
+  if (consent.mode === 'manual' && consent.authority === 'human-confirmed'
+      && consent.revoked_at !== null) return { outcome: 'already-revoked' };
+  if (consent.mode === 'manual') return { outcome: 'not-auto' };
+  if (consent.mode !== 'auto' || consent.authority !== 'human-confirmed'
+      || consent.revoked_at !== null || !strictInstant(consent.confirmed_at)
+      || clockMs !== null && clockMs < Date.parse(consent.confirmed_at)) {
+    throw new Error('APP_TASK_CONSENT_INVALID');
+  }
+  const lease = loop.session_chain.lease;
+  const live = loop.session_chain.sessions.filter(session =>
+    ['emitted', 'prepared', 'confirmed'].includes(session.continuation?.phase));
+  const exact = loop.session_chain.sessions.filter(session =>
+    session.run_id === lease.handoff_child_run_id
+    && session.continuation?.attempt_id === lease.handoff_attempt_id
+    && session.continuation?.transport === 'codex-app');
+  if ((lease.handoff_transport === 'codex-app' && exact.length !== 1)
+      || (lease.handoff_transport !== 'codex-app'
+        && (lease.handoff_attempt_id !== null || live.length !== 0))
+      || live.length > 0 && (live.length !== 1 || exact[0] !== live[0])) {
+    throw new Error('APP_TASK_FENCED');
+  }
+  const bound = exact[0] ?? null;
+  return { outcome: 'revoke', eventData: { owner_run_id: input.owner,
+    generation: input.generation, attempt_id: bound?.continuation.attempt_id ?? null,
+    child_run_id: bound?.run_id ?? null,
+    failure_code: bound && live.includes(bound) ? 'consent-revoked' : null } };
+}
+
+function applyAppRevocation(loop, clock) {
+  const consent = loop.autonomy.app_task_continuation;
+  consent.mode = 'manual'; consent.revoked_at = clock.iso;
+  const lease = loop.session_chain.lease;
+  const bound = loop.session_chain.sessions.find(session =>
+    session.run_id === lease.handoff_child_run_id
+    && session.continuation?.attempt_id === lease.handoff_attempt_id
+    && session.continuation?.transport === 'codex-app');
+  if (bound && ['emitted', 'prepared', 'confirmed'].includes(bound.continuation.phase)) {
+    bound.continuation.phase = 'abandoned';
+    bound.continuation.failure_code = 'consent-revoked';
+    lease.resume_policy = 'human'; lease.expires_at = null;
+    loop.status = 'paused'; loop.pause_reason = 'app-task-human-preserve';
+  }
+}
 ```
 
-Use this exact revoke snapshot phase before its seam; do not use the marker-rejecting public reader:
+Replace the four prior exports with these complete final implementations. They do not call the
+marker-rejecting public reader and never reuse a context after its callback returns:
 
 ```js
-const snapshot = appSnapshotPhase(root, runId, input, 'app-revoke', mutation =>
-  mutation.readVerifiedState({
-    fenceCheck: loop => assertAppCommandIdentity(loop, input, 'APP_TASK_FENCED'),
-  }).data);
-deps.beforeAppendFn?.({ operation: 'revoke', snapshot });
+export function prepareAppTask(root, runId, input, deps = {}) {
+  const reconcile = deps.reconcileBudgetFn ?? reconcileBudget;
+  const gateFor = deps.gateFn ?? respawnGate;
+  const nowFn = deps.nowFn ?? Date.now;
+  let reconciled = false;
+  for (let casAttempt = 0; casAttempt < 3; casAttempt += 1) {
+    const snapshot = appSnapshotPhase(root, runId, input, 'app-prepare', mutation =>
+      mutation.readVerifiedState({ fenceCheck: loop => assertAppParentIdentity(loop, input) }));
+    const loop = snapshot.data;
+    const existing = assertAppParentFence(loop, input, ['emitted', 'prepared']);
+    if (existing.continuation.phase === 'prepared') {
+      if (loop.session_chain.lease.handoff_phase !== 'spawned'
+          || loop.session_chain.lease.state !== 'releasing') throw new Error('APP_ATTEMPT_FENCED');
+      return { ok: true, outcome: 'already-prepared', do_not_call: true,
+        attempt_id: existing.attemptId };
+    }
+    if (loop.status !== 'running' || loop.session_chain.lease.resume_policy !== 'app') {
+      throw new Error('RUN_PAUSED: app-prepare');
+    }
+    assertAppParentDirectoryIdentity(loop, root, input, deps);
+    let route = null; let failureCode = null; let preserve = false;
+    try { route = resolvePrepareRoute(loop, root, input, deps); }
+    catch (error) {
+      if (!String(error?.message || error).startsWith('APP_ROUTE_UNCONFIRMED')) throw error;
+      failureCode = 'app-launch-unconfirmed'; preserve = true;
+    }
+    let action = null; let descriptorDigest = null;
+    const decisionNow = Number((deps.precheckNowFn ?? nowFn)());
+    if (route !== null) {
+      if (typeof deps.descriptorBuilder !== 'function') {
+        throw new Error('APP_DESCRIPTOR_BUILDER_REQUIRED');
+      }
+      action = exactPreparedAction(deps.descriptorBuilder({ loop, route,
+        child: existing.session, attemptId: existing.attemptId }), route);
+      descriptorDigest = contentHash(JSON.stringify(action));
+      const gate = gateFor(loop, { now: decisionNow });
+      if (!gate.ok) failureCode = `gate-${gate.blocked_by[0].replaceAll('_', '-')}`;
+    }
+    if (!reconciled && failureCode === null) {
+      reconcile(root, runId, { owner: input.owner, generation: input.generation });
+      reconciled = true;
+      continue; // re-prove the post-reconciliation hash before returning an action
+    }
+    if (casAttempt === 0 || reconciled && casAttempt === 1) {
+      deps.beforeAppendFn?.({ operation: 'prepare', snapshot: loop });
+    }
+    try {
+      return appCommitPhase(root, runId, input, 'app-prepare', snapshot.hash,
+        mutation => mutation.readVerifiedState(
+          { fenceCheck: fresh => assertAppParentIdentity(fresh, input) }),
+        (mutation, fresh) => {
+          const bound = assertAppParentFence(fresh, input, ['emitted']);
+          let result;
+          if (failureCode !== null) {
+            mutation.appendAnchored({ type: preserve ? 'app-task-preserved' : 'app-task-abandoned',
+              data: { attempt_id: bound.attemptId, child_run_id: bound.session.run_id,
+                failure_code: failureCode,
+                ...(preserve ? {} : { owner_run_id: input.owner,
+                  generation: input.generation }) } }, candidate => {
+              applyPrepareFailure(candidate, { ...input, attemptId: bound.attemptId },
+                failureCode, preserve);
+              result = { ok: false, outcome: preserve ? 'manual-preserve' : 'gate-blocked',
+                do_not_call: true, attempt_id: bound.attemptId, reason: failureCode };
+            }, (candidate, clock) => {
+              assertAppParentMutationFence(candidate, root, input, ['emitted'], deps);
+              if (clock.ms > Date.parse(bound.continuation.prepare_deadline)) {
+                throw new Error('APP_PREPARE_DEADLINE_EXPIRED');
+              }
+              const projected = structuredClone(candidate);
+              applyPrepareFailure(projected, { ...input, attemptId: bound.attemptId },
+                failureCode, preserve);
+              validateAppCandidate(projected);
+            }, { nowFn: () => decisionNow,
+              fenceCheck: candidate => assertAppParentIdentity(candidate, input) });
+            return result;
+          }
+          mutation.appendAnchored({ type: 'app-task-prepared', data: {
+            attempt_id: bound.attemptId, child_run_id: bound.session.run_id } },
+          (candidate, _spent, clock) => {
+            applyPrepared(candidate, bound.attemptId, route, descriptorDigest, clock);
+            result = { ok: true, outcome: 'prepared', do_not_call: false,
+              attempt_id: bound.attemptId, route: route.kind,
+              context_mode: bound.continuation.context_mode, action };
+          }, (candidate, clock) => {
+            assertAppParentMutationFence(candidate, root, input, ['emitted'], deps);
+            if (clock.ms > Date.parse(bound.continuation.prepare_deadline)) {
+              throw new Error('APP_PREPARE_DEADLINE_EXPIRED');
+            }
+            const projected = structuredClone(candidate);
+            applyPrepared(projected, bound.attemptId, route, descriptorDigest, clock);
+            validateAppCandidate(projected);
+          }, { nowFn: () => decisionNow,
+            fenceCheck: candidate => assertAppParentIdentity(candidate, input) });
+          return result;
+        });
+    } catch (error) {
+      if (appCasLost(error, 'app-prepare')) continue;
+      throw error;
+    }
+  }
+  throw new Error('APP_PREPARE_CAS_EXHAUSTED');
+}
+
+export function confirmAppTask(root, runId, input, deps = {}) {
+  const threadId = validateOpaqueId(input.threadId, { label: 'thread-id' });
+  for (let casAttempt = 0; casAttempt < 2; casAttempt += 1) {
+    const snapshot = appSnapshotPhase(root, runId, input, 'app-confirm', mutation =>
+      readParentSnapshot(mutation, input, { allowAcquired: true }));
+    const existing = findAppAttempt(snapshot.data, input.attemptId);
+    if (['confirmed', 'acquired'].includes(existing.continuation.phase)) {
+      assertRecordedReaderMode(snapshot.data, input);
+      if (existing.continuation.thread_id !== threadId) throw new Error('APP_RECEIPT_FENCED');
+      const exact = existing.continuation.phase === 'acquired'
+        ? exactImmediateAppAcquiredProjection(snapshot.data, input)
+        : exactConfirmedResponseProjection(snapshot.data, input);
+      if (!exact) throw new Error('APP_RESPONSE_PROJECTION_CHANGED');
+      return { ok: true, outcome: existing.continuation.phase === 'acquired'
+        ? 'already-complete' : 'already-confirmed', attempt_id: input.attemptId };
+    }
+    assertAppParentFence(snapshot.data, input, ['prepared']);
+    if (casAttempt === 0) deps.beforeAppendFn?.({ operation: 'confirm', snapshot: snapshot.data });
+    try {
+      return appCommitPhase(root, runId, input, 'app-confirm', snapshot.hash,
+        mutation => readParentSnapshot(mutation, input, { allowAcquired: true }),
+        (mutation, fresh) => {
+          const bound = assertAppParentFence(fresh, input, ['prepared']);
+          assertRecordedReaderMode(fresh, input);
+          let result;
+          mutation.appendAnchored({ type: 'app-task-confirmed', data: {
+            attempt_id: input.attemptId, child_run_id: bound.session.run_id,
+            receipt_digest: contentHash('confirmed-thread\0' + threadId) } },
+          (candidate, _spent, clock) => {
+            const next = findAppAttempt(candidate, input.attemptId).continuation;
+            next.phase = 'confirmed'; next.thread_id = threadId; next.confirmed_at = clock.iso;
+            result = { ok: true, outcome: 'confirmed', attempt_id: input.attemptId };
+          }, (candidate, clock) => {
+            const next = assertAppParentMutationFence(candidate, root, input, ['prepared'], deps)
+              .continuation;
+            assertRecordedReaderMode(candidate, input);
+            if (clock.ms > Date.parse(next.confirmation_deadline)) {
+              throw new Error('APP_ATTEMPT_FENCED');
+            }
+            const projected = structuredClone(candidate);
+            const continuation = findAppAttempt(projected, input.attemptId).continuation;
+            continuation.phase = 'confirmed'; continuation.thread_id = threadId;
+            continuation.confirmed_at = clock.iso; validateAppCandidate(projected);
+          }, { nowFn: deps.nowFn ?? Date.now,
+            fenceCheck: candidate => assertAppParentIdentity(candidate, input) });
+          return result;
+        });
+    } catch (error) {
+      if (appCasLost(error, 'app-confirm')) continue;
+      throw error;
+    }
+  }
+  throw new Error('APP_CONFIRM_CAS_EXHAUSTED');
+}
+
+export function revokeAppTaskContinuation(root, runId, input, deps = {}) {
+  for (let casAttempt = 0; casAttempt < 2; casAttempt += 1) {
+    const snapshot = appSnapshotPhase(root, runId, input, 'app-revoke', mutation =>
+      mutation.readVerifiedState({ fenceCheck: loop =>
+        assertAppCommandIdentity(loop, input, 'APP_TASK_FENCED') }));
+    const projection = revokeProjection(snapshot.data, input);
+    if (projection.outcome !== 'revoke') return { ok: true, outcome: projection.outcome };
+    if (casAttempt === 0) deps.beforeAppendFn?.({ operation: 'revoke', snapshot: snapshot.data });
+    try {
+      return appCommitPhase(root, runId, input, 'app-revoke', snapshot.hash,
+        mutation => mutation.readVerifiedState({ fenceCheck: loop =>
+          assertAppCommandIdentity(loop, input, 'APP_TASK_FENCED') }),
+        (mutation, fresh) => {
+          let result;
+          mutation.appendAnchored({ type: 'app-task-consent-revoked',
+            data: revokeProjection(fresh, input).eventData },
+          (candidate, _spent, clock) => {
+            applyAppRevocation(candidate, clock);
+            result = { ok: true, outcome: 'revoked' };
+          }, (candidate, clock) => {
+            revokeProjection(candidate, input, clock.ms);
+            const projected = structuredClone(candidate);
+            applyAppRevocation(projected, clock); validateAppCandidate(projected);
+          }, { nowFn: deps.nowFn ?? Date.now,
+            fenceCheck: candidate => assertAppCommandIdentity(
+              candidate, input, 'APP_TASK_FENCED') });
+          return result;
+        });
+    } catch (error) {
+      if (appCasLost(error, 'app-revoke')) continue;
+      throw error;
+    }
+  }
+  throw new Error('APP_REVOKE_CAS_EXHAUSTED');
+}
+
+export function sweepUnconfirmedAppTask(root, runId, input, deps = {}) {
+  for (let casAttempt = 0; casAttempt < 2; casAttempt += 1) {
+    const snapshot = appSnapshotPhase(root, runId, input, 'app-sweep', mutation =>
+      readParentSnapshot(mutation, input, { allowFailed: true }));
+    const historical = findAppAttempt(snapshot.data, input.attemptId);
+    if (historical.continuation.phase === 'failed'
+        && ['app-prepare-unattended', 'app-launch-unconfirmed']
+          .includes(historical.continuation.failure_code)
+        && exactFailedResponseProjection(snapshot.data,
+          { ...input, code: historical.continuation.failure_code }, null)) {
+      return { ok: true, outcome: 'already-swept', attempt_id: input.attemptId,
+        failure_code: historical.continuation.failure_code };
+    }
+    const existing = assertAppParentFence(snapshot.data, input, ['emitted', 'prepared']);
+    const code = existing.continuation.phase === 'emitted'
+      ? 'app-prepare-unattended' : 'app-launch-unconfirmed';
+    if (casAttempt === 0) deps.beforeAppendFn?.({ operation: 'sweep', snapshot: snapshot.data });
+    try {
+      return appCommitPhase(root, runId, input, 'app-sweep', snapshot.hash,
+        mutation => readParentSnapshot(mutation, input, { allowFailed: true }),
+        (mutation, fresh) => {
+          const bound = assertAppParentFence(fresh, input, [existing.continuation.phase]);
+          const deadline = bound.continuation.phase === 'emitted'
+            ? bound.continuation.prepare_deadline : bound.continuation.confirmation_deadline;
+          const now = Number((deps.nowFn ?? Date.now)());
+          if (now <= Date.parse(deadline)) {
+            return { ok: true, outcome: 'not-expired', attempt_id: input.attemptId };
+          }
+          let result;
+          mutation.appendAnchored({ type: 'app-task-swept', data: {
+            attempt_id: input.attemptId, child_run_id: bound.session.run_id,
+            failure_code: code, owner_run_id: input.owner, generation: input.generation } },
+          candidate => {
+            const next = findAppAttempt(candidate, input.attemptId).continuation;
+            next.phase = 'failed'; next.failure_code = code;
+            next.failure_binding = { owner_run_id: input.owner, generation: input.generation };
+            candidate.status = 'paused'; candidate.pause_reason = code;
+            candidate.session_chain.lease.resume_policy = 'human';
+            candidate.session_chain.lease.expires_at = null;
+            result = { ok: true, outcome: 'swept', attempt_id: input.attemptId,
+              failure_code: code };
+          }, (candidate, clock) => {
+            const next = assertAppParentMutationFence(candidate, root, input,
+              [existing.continuation.phase], deps).continuation;
+            const freshDeadline = next.phase === 'emitted'
+              ? next.prepare_deadline : next.confirmation_deadline;
+            if (clock.ms <= Date.parse(freshDeadline)) throw new Error('APP_NOT_EXPIRED');
+            const projected = structuredClone(candidate);
+            const continuation = findAppAttempt(projected, input.attemptId).continuation;
+            continuation.phase = 'failed'; continuation.failure_code = code;
+            continuation.failure_binding = { owner_run_id: input.owner,
+              generation: input.generation };
+            projected.status = 'paused'; projected.pause_reason = code;
+            projected.session_chain.lease.resume_policy = 'human';
+            projected.session_chain.lease.expires_at = null; validateAppCandidate(projected);
+          }, { nowFn: () => now,
+            fenceCheck: candidate => assertAppParentIdentity(candidate, input) });
+          return result;
+        });
+    } catch (error) {
+      if (appCasLost(error, 'app-sweep')) continue;
+      if (String(error?.message || error) === 'APP_NOT_EXPIRED') {
+        return { ok: true, outcome: 'not-expired', attempt_id: input.attemptId };
+      }
+      throw error;
+    }
+  }
+  throw new Error('APP_SWEEP_CAS_EXHAUSTED');
+}
 ```
 
-Immediately after each seam, open `appCommitPhase` and move that operation's complete existing
-`mutation.appendAnchored` block into its callback. Its first statement is a fresh
-`mutation.readVerifiedState` with the same identity fence; replace every authorization captured from
-the first snapshot with the fresh value. This is a relocation of the four complete bodies already
-specified in Tasks 6D/8B/9A/9B, not a new helper or omitted pseudo-code. The race test's two workers
-must both create their barrier marker before either final commit context starts, proving the
-callbacks are actually outside the non-reentrant lock.
+The race test's two workers must both create their barrier marker before either final commit context
+starts. The exact hash comparison and bounded restart are asserted directly; the validator rejects
+the former prose-only stubs and requires all four final export bodies plus every outside-lock seam.
 
 Then apply this exact await diff over Task 9B's final implementation. The validator throws before
 event append, so the loser writes neither state nor event. `catchReadStateFn` is consulted only for
@@ -26486,12 +27017,13 @@ Apply the Gate Receipt and Artifact Preservation Protocol. Independently inspect
 **Files:**
 - Modify: `tests/host-surface.test.mjs` at produced identity/route tables
 - Modify: `tests/codex-app-task-continuation-integration.test.mjs` at Task 14B lifecycle cases
+- Create: `tests/platform-durability.test.mjs` using real filesystem genesis and journal publication
 - Modify: `tests/ci.test.mjs:74-109` (matrix and job count assertions)
 - Modify: `.github/workflows/preflight.yml:1-25` (matrix only)
 
 **Interfaces:**
-- Consumes: `selectAppContinuationRoute(input,deps)`, Task 14 fake lifecycle, and the current workflow's exact three OS values plus Node 20/24.
-- Produces: deterministic POSIX/Windows/UNC/path-escape fixtures, production-CLI proof that omitted capabilities map to exact `[]` and omitted paired surface/source map to `null/null`, and exactly nine CI jobs over OS `ubuntu-latest|macos-latest|windows-latest` × Node `20|22|24`; local fixtures are not described as real Windows or host smoke.
+- Consumes: `selectAppContinuationRoute(input,deps)`, Task 14 fake lifecycle, Task 5B's real genesis durability helper, Task 7B's real journal publisher, and the current workflow's exact three OS values plus Node 20/24.
+- Produces: deterministic POSIX/Windows/UNC/path-escape fixtures, one real-filesystem genesis plus post-genesis journal mutation in every CI cell, production-CLI proof that omitted capabilities map to exact `[]` and omitted paired surface/source map to `null/null`, and exactly nine CI jobs over OS `ubuntu-latest|macos-latest|windows-latest` × Node `20|22|24`; local fixtures are not described as real Windows or host smoke, while the Windows CI execution is explicitly real Windows product evidence after Gate 7 verifies the exact run.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -26594,6 +27126,38 @@ test('manual enum omission preserves exact empty capabilities and paired-null su
   assert.doesNotMatch(`${attempted.stdout}\n${attempted.stderr}`,
     /"action"|create_thread|fork_thread|send_message_to_thread/);
 });
+
+// tests/platform-durability.test.mjs — complete real-filesystem test, run by every preflight cell.
+import testDurability from 'node:test';
+import assertDurability from 'node:assert/strict';
+import { mkdtempSync as mkdtempDurability, readdirSync as listDurability }
+  from 'node:fs';
+import { tmpdir as tmpDurability } from 'node:os';
+import { join as joinDurability } from 'node:path';
+import { initRun as initDurability } from '../scripts/lib/initrun.mjs';
+import { patch as patchDurability, readState as stateDurability,
+  runDir as runDirDurability } from '../scripts/lib/state.mjs';
+import { readLines as linesDurability, verifyLog as verifyDurability }
+  from '../scripts/lib/integrity.mjs';
+
+testDurability('real platform publishes durable genesis and one anchored journal mutation', () => {
+  const root = mkdtempDurability(joinDurability(tmpDurability(), 'dl-platform-durable-'));
+  const { runId } = initDurability(root, { runtime: 'codex', goal: 'platform durability',
+    protocol: 'standalone', recipe: 'default',
+    now: new Date('2026-07-13T00:00:00.000Z') });
+  const genesis = stateDurability(root, runId).data;
+  assertDurability.equal(linesDurability(root, runId)
+    .filter(event => event.type === 'run-initialized').length, 1);
+  patchDurability(root, runId, 'discovered_items', ['real-platform-journal'], {
+    fence: { owner: runId, generation: 1, intent: 'business' },
+  });
+  const final = stateDurability(root, runId).data;
+  assertDurability.deepEqual(final.discovered_items, ['real-platform-journal']);
+  assertDurability.notEqual(final.event_log_head, genesis.event_log_head);
+  assertDurability.equal(verifyDurability(root, runId).ok, true);
+  assertDurability.deepEqual(listDurability(runDirDurability(root, runId)).sort()
+    .filter(name => name.startsWith('.anchored-') || name.endsWith('.replace')), []);
+});
 ```
 
 Replace the Node-matrix assertions at `tests/ci.test.mjs:74-86` with this complete test body:
@@ -26617,7 +27181,7 @@ At `tests/ci.test.mjs:102`, replace the exact title `all six jobs run the same s
 
 - [ ] **Step 2: Run tests to verify RED**
 
-Run: `node --test tests/host-surface.test.mjs tests/codex-app-task-continuation-integration.test.mjs tests/ci.test.mjs`
+Run: `node --test tests/host-surface.test.mjs tests/codex-app-task-continuation-integration.test.mjs tests/platform-durability.test.mjs tests/ci.test.mjs`
 
 Expected: FAIL because CI still lists only 20/24 and the full platform/surface/manual-omission cases are absent.
 
@@ -26657,26 +27221,26 @@ Do not add include/exclude, install/cache steps, an OS-specific shell, or write 
 
 - [ ] **Step 4: Run targeted tests to verify GREEN**
 
-Run: `node --test tests/host-surface.test.mjs tests/codex-app-task-continuation-integration.test.mjs tests/ci.test.mjs`
+Run: `node --test tests/host-surface.test.mjs tests/codex-app-task-continuation-integration.test.mjs tests/platform-durability.test.mjs tests/ci.test.mjs`
 
-Expected: PASS for all injected identities/surfaces, platform-invariant 512/513 UTF-8 receipt bounds, exact empty-capability/paired-null manual initialization, and the exact 3×3 workflow contract.
+Expected: PASS for all injected identities/surfaces, the real host filesystem genesis/journal mutation, platform-invariant 512/513 UTF-8 receipt bounds, exact empty-capability/paired-null manual initialization, and the exact 3×3 workflow contract. In a verified `windows-latest` Gate 7 cell, this test must execute without a skip directive and is the real Windows genesis/journal evidence.
 
 - [ ] **Step 5: Run the related CI and isolation regressions**
 
-Run: `node --test tests/ci.test.mjs tests/skills.test.mjs tests/precompact-hook.test.mjs tests/headless-host.test.mjs`
+Run: `node --test tests/platform-durability.test.mjs tests/ci.test.mjs tests/skills.test.mjs tests/precompact-hook.test.mjs tests/headless-host.test.mjs`
 
 Expected: PASS with the exact nine-job contract and zero App task tool in non-App/hook/headless paths.
 
 - [ ] **Step 6: Review the diff and surface claims**
 
-Run: `git diff -- tests/host-surface.test.mjs tests/codex-app-task-continuation-integration.test.mjs tests/ci.test.mjs .github/workflows/preflight.yml && git diff --check && git status --short`
+Run: `git diff -- tests/host-surface.test.mjs tests/codex-app-task-continuation-integration.test.mjs tests/platform-durability.test.mjs tests/ci.test.mjs .github/workflows/preflight.yml && git diff --check && git status --short`
 
 Confirm no test/CI substitution is described as an actual unavailable host/OS result, the 512-byte receipt case is accepted while 513 bytes are rejected by byte count, and the paired-null manual fixture persisted `host_surface=null` with no App history or action authority.
 
 - [ ] **Step 7: Commit the platform/CI slice**
 
 ```bash
-git add tests/host-surface.test.mjs tests/codex-app-task-continuation-integration.test.mjs tests/ci.test.mjs .github/workflows/preflight.yml
+git add tests/host-surface.test.mjs tests/codex-app-task-continuation-integration.test.mjs tests/platform-durability.test.mjs tests/ci.test.mjs .github/workflows/preflight.yml
 git commit -m "test: expand App continuation platform matrix" -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
 
@@ -26684,7 +27248,7 @@ git commit -m "test: expand App continuation platform matrix" -m "Co-Authored-By
 
 This is an operational checkpoint, not a code task. It cannot change feature files.
 
-1. Run `node --test tests/host-surface.test.mjs tests/codex-app-task-continuation-integration.test.mjs tests/ci.test.mjs` and `npm run preflight` from the exact candidate commit.
+1. Run `node --test tests/host-surface.test.mjs tests/codex-app-task-continuation-integration.test.mjs tests/platform-durability.test.mjs tests/ci.test.mjs` and `npm run preflight` from the exact candidate commit.
 2. Record the actual command, exit code, pass/fail/cancel/skip and TAP-directive counts, duration, candidate SHA, and test-file SHA-256 values. Do not copy baseline counts.
 3. Append an evidence row that labels macOS/Linux/Windows path cases as injected fixtures, Node 20/22/24 as local only for the actually installed Node, and the 3×3 workflow as pending real CI until Gate 7.
 4. Run `git diff --check`, force-add only `docs/handoff/2026-07-13-codex-app-native-task-continuation-evidence.md`, inspect `git diff --cached`, and commit `docs: record App continuation verification` with the required trailer.
@@ -27613,14 +28177,26 @@ for (const task of taskMatches) {
     for (const token of ['MUTATION_INTENT_REQUIRED', 'statePatchIntent(',
       'workstreamNewIntent(', 'state-replace-after-create',
       'hash-replace-after-rename-before-dir-fsync', 'queueMicrotask(',
-      'registerAnchoredCrashExtension(']) {
+      'registerAnchoredCrashExtension(', "from './durable-file.mjs'",
+      "regularFileIfPresent(eventPath, 'canonical event log')",
+      "intentConflictError = 'ANCHORED_TRANSACTION_PENDING'"]) {
       if (!card.includes(token)) fail(`Task 7B missing recovery/intent token ${token}`);
+    }
+  }
+  if (task[1] === '5B') {
+    for (const token of ['export function syncRegularFile(',
+      'export function syncParentDirectory(', 'export function renamePreparedFile(',
+      'export function unlinkRegularFile(', 'export function replaceFileDurably(',
+      'renameAtomicWithRetry(', "=== 'win32'", 'tests/durable-file.test.mjs']) {
+      if (!card.includes(token)) fail(`Task 5B missing platform durability token ${token}`);
     }
   }
   if (task[1] === '7G') {
     for (const token of ['function assertRemainingPublisherCrash7g(',
       'export function dispatchPublisherCrash7g(', 'lease-release', 'handoff-reserve',
-      'breaker-trip', 'breaker-verdict', 'registerAnchoredCrashExtension(request =>']) {
+      'breaker-trip', 'breaker-verdict', 'registerAnchoredCrashExtension(request =>',
+      "from '../../scripts/lib/lease.mjs'", "from '../../scripts/lib/breaker.mjs'",
+      'tests/helpers/anchored-crash-worker.mjs']) {
       if (!card.includes(token)) fail(`Task 7G missing executable crash token ${token}`);
     }
   }
@@ -27628,7 +28204,13 @@ for (const task of taskMatches) {
     for (const token of ['function assertPublicMutationCrashRecovery10d(',
       'export function dispatchPublicMutationCrash10d(', 'emit:', 'prepare:', 'confirm:',
       'fail:', 'sweep:', "'await-timeout':", 'acquire:', 'recover:', 'finish:',
-      'registerAnchoredCrashExtension(request =>']) {
+      'registerAnchoredCrashExtension(request =>',
+      "from '../../scripts/lib/handoff.mjs'",
+      "from '../../scripts/lib/app-task-continuation.mjs'",
+      "from '../../scripts/lib/recover.mjs'",
+      'same-length staged-event corruption is rejected before any canonical mutation',
+      'dangling journal symlink is corruption and never cleanup authority',
+      'published confirm marker plus a different receipt is the public App fence']) {
       if (!card.includes(token)) fail(`Task 10D missing executable crash token ${token}`);
     }
   }
@@ -27656,12 +28238,19 @@ for (const task of taskMatches) {
   }
   if (task[1] === '11C') {
     for (const token of ['function appSnapshotPhase(', 'function appCommitPhase(',
-      "deps.beforeAppendFn?.({ operation: 'prepare', snapshot });",
-      "deps.beforeAppendFn?.({ operation: 'confirm', snapshot });",
-      "deps.beforeAppendFn?.({ operation: 'revoke', snapshot });",
-      "deps.beforeAppendFn?.({ operation: 'sweep', snapshot });",
+      'export function prepareAppTask(', 'export function confirmAppTask(',
+      'export function revokeAppTaskContinuation(',
+      'export function sweepUnconfirmedAppTask(', 'APP_CAS_LOST:',
+      "deps.beforeAppendFn?.({ operation: 'prepare'",
+      "deps.beforeAppendFn?.({ operation: 'confirm'",
+      "deps.beforeAppendFn?.({ operation: 'revoke'",
+      "deps.beforeAppendFn?.({ operation: 'sweep'",
       'callbacks can reenter the verified reader outside the lock']) {
       if (!card.includes(token)) fail(`Task 11C missing outside-lock race token ${token}`);
+    }
+    for (const forbidden of ['move that operation', 'relocation of the four complete bodies',
+      'complete existing mutation.appendAnchored block']) {
+      if (card.includes(forbidden)) fail(`Task 11C retains prose-only implementation: ${forbidden}`);
     }
   }
   if (task[1] === '7F'

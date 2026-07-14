@@ -536,6 +536,74 @@ no inherited approval from the historical receipt.
   the corrected candidate with a new bounded review budget, or explicitly defer/stop the active goal.
   This record neither asks a sixth reviewer nor treats the Round 5 response as approval.
 
+### Gate 1 fresh cycle 2 deep-review-loop — round 1
+
+- gate: Gate 1 — research/design/plan, fresh cycle 2 round 1.
+- artifact/scope: design was primary; goal handoff, implementation plan, evidence ledger,
+  prior-cycle summary, and current durability/App mutation surfaces were context.
+- base/head or content hash: base `c38a96137f8f4f0099c35e893860930e8ee4cf73`; reviewed head
+  `113e64df40ea8f7a31a1681e1773bbd5083e6b36`. Reviewed handoff/design/plan SHA-256 values were
+  `1523907bf1931793b765ed8a5fac2d678a6ae1aa303cfef6e2c89f2e6f150fd9`,
+  `b974829503f1b537cdf1317b0a7aa8e5202341074123d6fcf8d53f13590b9358`, and
+  `987d982d9c3c1107a7c5dc17d12b4e434a81c5cc8d651e2341ff9d1be7299067`.
+- invocation: fresh Codex-only bounded cycle, two independent direct read-only processes. Standard
+  used `codex exec --ephemeral --ignore-user-config --ignore-rules -s read-only -m gpt-5.6-sol
+  -c 'model_reasoning_effort="high"' ... review --base c38a961...`; adversarial used the same
+  model/effort/isolation with an immutable design/plan audit prompt.
+- reviewer actual: standard thread `019f6203-091c-7a42-bec0-68e8300a194f` returned 3 P1 and 3 P2;
+  adversarial thread `019f6202-e326-7461-bcdc-5acceaed55a4` returned 2 Red and 2 Yellow with
+  `REQUEST_CHANGES`. `N_planned=N_actual=2`; both completed naturally with exit 0. One earlier
+  unsupported standard CLI shape failed argument parsing with exit 2 before any model run and is not
+  counted as a Review call.
+- model/effort evidence: both completed process headers and exact argv confirmed `gpt-5.6-sol`,
+  `high`, ephemeral, ignored user config/rules, and read-only sandbox.
+- verdict: `REQUEST_CHANGES`.
+- red/yellow/info: `1 / 8 / 3`; Windows durability was corroborated, and all eight solo findings
+  were independently reproduced or traced by the main agent.
+- termination: round 1 Respond required; neither convergence nor max reached.
+- report path: `.deep-review/reports/2026-07-15-041133-review.md`, SHA-256
+  `c02571e974a942082c459d23de14624077b62aee39ce86d16768420b27e43859`.
+- verification commands: reviewer output/header reads; exact plan/design/source traces; dangling-link
+  filesystem probe; task path/import/git-tree checks; and set-difference proof that exactly one fresh
+  report was created.
+- main-agent judgment: accepted all nine actionable items. Universal Windows durability, immutable
+  stage authentication, dangling-link rejection, composed crash-worker imports/checkpoints, audit
+  artifact preservation, accurate cycle status, executable four-operation lock splitting, and
+  operation-specific marker conflict mapping all required response.
+
+### Gate 1 fresh cycle 2 round 1 Respond
+
+- disposition: accepted 9, rejected 0, deferred 0. `execution_path=main_fallback`; the specialized
+  Phase 6 Agent surface was unavailable, so the documented main-agent fallback was used without
+  substituting an unspecialized agent.
+- durability response: Task 5B defines one platform-aware helper with file fsync, bounded Windows
+  sharing-error rename retry, POSIX parent-directory fsync, and Windows no-directory-fd behavior.
+  Task 7B reuses it; Task 15A runs real genesis plus journal mutation in every CI cell.
+- recovery response: the immutable full after-event image is authenticated before any canonical
+  mutation. `lstat` with `ENOENT` distinguishes absence from dangling links. Same-length stage
+  corruption and dangling symlinks have literal no-canonical-write tests.
+- execution response: Task 7G/10D contain their extension imports; Task 7G scopes and stages the
+  worker. Task 11C contains complete prepare/confirm/revoke/sweep optimistic-CAS implementations,
+  external callbacks outside contexts, exact hash validation, and bounded restart.
+- contract/audit response: marker intent conflicts map to operation-specific App fences; a spawned
+  CLI test requires `APP_RECEIPT_FENCED` exit 3 for a different pending receipt. The stale design
+  status is corrected. The exact four prior Round 1/2 report/response artifacts are preserved for
+  force-add with this response commit.
+- exact corrected candidate hashes: handoff
+  `1523907bf1931793b765ed8a5fac2d678a6ae1aa303cfef6e2c89f2e6f150fd9`; design
+  `b8cec4d1d96e05b61492e9115d9f008a303e405e89a630a90970e9cfaf4539be`; plan
+  `42c7ef58c4faadc7fb28bfa7a327f562272e068a635dd069a5e03786b6d43722`.
+- response record: `.deep-review/responses/2026-07-15-043544-response.md`, SHA-256
+  `6774a923ff0ca37dd8db154c1f0fc29d2c9b98f1f24ad5a768a140f7dbd146f2`.
+- recurring alerts: export run `01KXH0ST3AFN4V44N0W67N52EJ`; architecture critical 17,
+  test-coverage warning 11, error-handling critical 9, security critical 5.
+- verification: embedded validator passed `ok:true` for 46 tasks and 320 fences
+  (`bash=63`, `diff=65`, `js=165`, `json=4`, `markdown=12`, `text=10`, `yaml=1`).
+  `git diff --check` and cached check passed. `npm run preflight` passed validation and all 1,463
+  tests with 0 failures, 0 cancelled, and 0 skipped.
+- gate state: still open. Changed bytes require fresh cycle 2 round 2 with both reviewers pinned to
+  `gpt-5.6-sol`/high; this Respond is not a Gate 1 pass.
+
 ## Review receipt template
 
 Each reviewed gate will add a receipt with all of these fields:

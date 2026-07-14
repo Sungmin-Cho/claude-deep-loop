@@ -2,7 +2,7 @@
 
 작성일: 2026-07-13
 운영 계약: `docs/handoff/2026-07-13-codex-app-native-task-continuation-goal-handoff.md`
-상태: Gate 1 round 3 Respond 반영 중; gpt-5.6-sol/high 자연 수렴 전
+상태: Gate 1 fresh cycle 2 round 1 Respond 완료; gpt-5.6-sol/high fresh round 2 필요
 기준: `main@c38a96137f8f4f0099c35e893860930e8ee4cf73`, deep-loop `1.8.2`
 
 > source of truth: 이 문서 + 운영 계약 + 현재 저장소 + `git log`. 이전 대화 컨텍스트를 가정하지 말라.
@@ -584,8 +584,11 @@ run lock 안에서 strict filenames만 사용한다.
 
 1. 기존 canonical state/hash/log/head를 verified read하고 candidate state bytes, candidate hash, exact event
    suffix bytes를 메모리에서 완성한다. State stage와 event-suffix stage를 각각 atomic temp+rename으로
-   완전히 쓰고 다시 hash/size 검증한다. Marker 전 crash의 strict-name orphan stage는 다음 matching
-   mutating lock holder만 bounded sweep할 수 있고 read-only path는 지우지 않는다.
+   완전히 쓴다. Recovery는 canonical before-event prefix와 staged suffix를 결합한 **전체 after event
+   image**의 hash/size가 marker의 immutable after snapshot과 exact인지 canonical unlink/truncate/append/
+   replace보다 먼저 검증한다. Stage가 자기 hash/size를 다시 계산해 자기 자신을 인증하는 비교는
+   금지한다. Marker 전 crash의 strict-name orphan stage는 다음 matching mutating lock holder만 bounded
+   sweep할 수 있고 read-only path는 지우지 않는다.
 2. `.anchored-pending.json`을 마지막으로 atomic publish한다. Marker는 exact version, caller
    owner-generation binding, raw-free intent digest, before/after state/hash/event byte length와 digest를
    담는다. Stage 이름은 위 세 fixed basename이라 marker input으로 선택할 수 없다. Marker가 보인 뒤 error path는
@@ -593,7 +596,9 @@ run lock 안에서 strict filenames만 사용한다.
 3. Event log가 before length이면 staged suffix를 append한다. Partial append이면 before prefix의 chain/head와
    trailing bytes가 staged suffix의 exact prefix인지 확인한 뒤 before length로 truncate하고 full suffix를
    다시 append한다. Exact after suffix면 no-op한다. Extra/divergent bytes, wrong before head/length/hash는
-   자동 repair하지 않고 `ANCHORED_TRANSACTION_CORRUPT`다. Legacy run에서 canonical event log가 아직
+   자동 repair하지 않고 `ANCHORED_TRANSACTION_CORRUPT`다. Same-length staged suffix corruption도 전체
+   after-image digest가 canonical mutation 전에 실패해야 하고 모든 canonical byte가 그대로 남아야 한다.
+   Legacy run에서 canonical event log가 아직
    생성되지 않은 경우는 marker의 before event length가 정확히 0일 때만 empty before image로 인정한다.
 4. Event suffix가 exact한 뒤 staged candidate를 `loop.json`에 atomic replace한다. 그 다음
    `.loop.hash`를 after hash로 atomic replace해 **최종 commit marker**로 삼는다. 이 순서 밖의
@@ -602,10 +607,16 @@ run lock 안에서 strict filenames만 사용한다.
    recovery가 staged hash만 교체해 commit을 완결한다.
 5. Exact after log/state/hash가 모두 확인된 뒤 pending marker와 stage를 제거한다. Hash commit 뒤 cleanup
    전 crash는 matching recovery가 cleanup만 수행한다. Cleanup 뒤 응답 유실은 일반 idempotent API retry가
-   exact after projection을 읽어 수렴한다.
+   exact after projection을 읽어 수렴한다. File publication은 shared platform-aware helper 하나를 사용한다:
+   temp file을 file-fsync한 뒤 Windows sharing 오류에 bounded rename retry를 적용하고, POSIX에서는 rename/
+   unlink 뒤 parent directory fsync를 수행한다. Node가 native Windows에서 제공하지 않는 directory-fd fsync를
+   호출하지 않으며, Windows의 best-available contract는 file flush + same-volume atomic rename + journal
+   recovery다. 이 제한과 crash recovery가 실제 Windows genesis/journal mutation CI에서 검증되지 않으면
+   Windows 지원을 주장하지 않는다.
 
 Marker가 존재하면 recovery는 canonical byte를 읽거나 바꾸기 **전에** run directory의 모든
-`.anchored-*` 이름을 열거한다. Fixed marker/stage 네 이름 이외의 artifact 또는 그 어느 이름의 symlink도
+`.anchored-*` 이름을 열거하고 `lstat`-with-`ENOENT`로 존재를 판정한다. Fixed marker/stage 네 이름 이외의
+artifact 또는 그 어느 이름의 live/dangling symlink도
 corruption이며 자동 삭제하지 않는다. Marker가 증명하는 fixed stage만 authority이고, canonical
 `loop.json.replace`/`.loop.hash.replace`는 authority 없는 scratch debris로만 취급한다. Recovery는 이 두
 fixed scratch가 regular file인지 확인해 제거한 뒤 authenticated stage에서 다시 publish한다. Canonical
@@ -620,6 +631,9 @@ lease에서 binding을 추론하거나 fallback하지 않는다. Run lock 직후
 event chain/head 또는 business precheck보다 **먼저** pending marker의 strict bytes를 읽는다. Marker caller
 binding과 API가 전달한 binding이 다르면 기존 fence error와 byte 무변경이다. Binding은 같지만 marker의
 intent digest와 진입 API의 operation-level intent digest가 다르면 pending을 유지하고 byte 무변경이다.
+이 conflict가 App CLI에 도달할 때는 operation별 public fence code로 변환한다. 특히 confirm/fail의 다른
+receipt는 marker publish 뒤에도 `APP_RECEIPT_FENCED` exit 3이며 generic
+`ANCHORED_TRANSACTION_PENDING` exit 1로 새지 않는다.
 Operation intent는 owner/generation/attempt만으로 축약하지 않는다. Confirm/unconfirmed receipt는 각각
 domain-separated digest, acquire/prepare는 normalized observation/host-input digest와 stdin mode, emit은
 trigger/reason/App intent/관측 cwd digest, finish는 status/runtime/proof/report digest를 결합한다. Raw receipt,
