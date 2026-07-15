@@ -1567,6 +1567,43 @@ no inherited approval from the historical receipt.
 - gate state: still open. Changed bytes require fresh cycle 5 round 3 with both reviewers pinned to
   exact `gpt-5.6-sol`/high; this Respond is not a Gate 1 pass.
 
+### Gate 1 fresh cycle 5 round 3 review
+
+- gate/artifact: Gate 1 design plus final 46-task plan, goal handoff, evidence, cycle-5 round-2
+  report/response, and current repository code/tests.
+- base/head: `c38a96137f8f4f0099c35e893860930e8ee4cf73..01efb8e36009d1f71d6660e31c5862184161e586`;
+  worktree clean at counted reviewer start.
+- invocation: one built-in `codex exec ... review --base c38a961...` and one direct adversarial audit;
+  both counted reviewers used `--ephemeral --ignore-user-config --ignore-rules -s read-only` with
+  exact `-m gpt-5.6-sol -c 'model_reasoning_effort="high"'`.
+- reviewer actual: standard thread `019f656e-418e-7b61-866f-c5fe54a7a019` returned 2 P1 and 1 P2;
+  adversarial thread `019f656e-4154-7b02-8c77-e70c082d3f53` returned 1 Red, 3 Yellow, and 2 Info
+  with `REQUEST_CHANGES`. `N_planned=N_actual=2`; both processes terminated naturally with exit 0.
+- verdict: `REQUEST_CHANGES`; synthesized Red/Yellow/Info = `2 / 2 / 2`.
+- main-agent judgment: accepted all four actionable findings. Request publication gained one
+  authenticated recoverable boundary; legacy active arrays normalize at the checkpoint; final
+  no-fallback lifecycle executes; crash workers are scalar-only; workstream creation is same-ID
+  idempotent after marker cleanup.
+- report path: `.deep-review/reports/2026-07-15-201151-review.md`, SHA-256
+  `b88ae810c4a13a8b8a50f076edceebae8e6c7950b724bbd75198e17c0c929a9c`.
+
+### Gate 1 fresh cycle 5 round 3 Respond
+
+- disposition: accepted 4 actionable findings, rejected 0, deferred 0;
+  `execution_path=main_fallback` under the session's no-subagent contract.
+- exact corrected candidate hashes: handoff
+  `1523907bf1931793b765ed8a5fac2d678a6ae1aa303cfef6e2c89f2e6f150fd9`; design
+  `1cd675712c60c9c5d345bdb3d86d3dd5c39bf7a7a4c65309419ebd0409208a8a`; plan
+  `2cda13e084985d9e0b56ba2707c854f3fceede13cebbd1e685213c31bb312822`.
+- response record: `.deep-review/responses/2026-07-15-224705-response.md`, SHA-256
+  `b8288e715d7995255a8db6e388b50068d3ed94be12c993ad30aedb03ba122aab`.
+- verification: embedded validator passed `ok:true` for 46 tasks and 368 fences
+  (`bash=64`, `diff=91`, `js=185`, `json=4`, `markdown=12`, `text=11`, `yaml=1`);
+  `git diff --check`, cached/origin-main checks, and `npm run preflight` passed validation and all
+  1,463 tests with zero failures, cancellations, skips, or todo.
+- gate state: still open. Changed bytes require fresh cycle 5 round 4 with both reviewers pinned to
+  exact `gpt-5.6-sol`/high; this Respond is not a Gate 1 pass.
+
 ## Review receipt template
 
 Each reviewed gate will add a receipt with all of these fields:

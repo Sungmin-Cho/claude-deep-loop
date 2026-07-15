@@ -411,11 +411,19 @@ Schema validator에 correlation을 직접 추가한다. 현재 validator가 JSON
   `commitVerifiedEventsUnderLock`가 business event **앞에** exactly one
   `lease-lineage-baselined` event를 같은 prospective anchored transaction으로 추가한다. Checkpoint의 exact
   key set은 `{owner_run_id,generation,lease_state,acquired_at,legacy_episode_count,
-  legacy_workstream_count,legacy_proof_origins,legacy_authority_digest}`다. `legacy_proof_origins`는 checkpoint
+  legacy_workstream_count,legacy_active_workstreams,legacy_proof_origins,legacy_authority_digest}`다.
+  1.8.2의 generic state patch가 허용했던 duplicate/unknown/non-string active entry는 checkpoint 전 legacy
+  snapshot에만 입력 호환으로 허용한다. 첫 verified mutation은 business mutator보다 먼저 같은 candidate에서
+  기존 workstream ID의 첫 string occurrence만 원래 순서대로 남기고 나머지를 버린다. 그 exact normalized
+  array를 checkpoint와 candidate에 함께 기록한다. Initialized run, 이미 checkpoint된 run, 또는 checkpoint
+  transaction 뒤 candidate의 duplicate/unknown/non-string entry는 계속 corruption이다. Normalization과
+  business event는 하나의 journal transaction이므로 invalid legacy state를 중간 canonical image로 공개하지
+  않는다. `legacy_proof_origins`는 checkpoint
   시점의 모든 existing episode/workstream을 stable `kind:id` 순서로 canonicalize한
   `[{kind,id,digest}]`이며, episode digest는 complete proof record에서
   `human_reviewed`/`agent_reviewed` comprehension marker만 제외하고 workstream digest는
-  `{id,status,review_points_done,active,active_workstreams}`를 포함한다. Exact active array를 모든 workstream
+  `{id,status,review_points_done,active,active_workstreams}`를 포함한다. Checkpoint의
+  `legacy_active_workstreams`와 exact active array를 모든 workstream
   projection에 결합하고 schema가 그 배열의 unique/existing-ID contract를 보장하므로 duplicate, unknown,
   reorder, addition, removal은 모두 proof change다. `legacy_authority_digest`는 finish authority가 읽는
   immutable `review` contract와 `recipe.id`의 domain-separated digest다. 임의의 well-formed caller digest는
@@ -732,28 +740,40 @@ raw opaque ID와 추가 receipt-like key를 거부한다.
 
 Episode request는 교체 가능한 `episodes/` 또는 per-episode directory를 publication parent로 사용하지 않는다.
 새 episode의 editable skeleton은 canonical run directory에 직접 놓인 regular sibling
-`episode-request-<episode-id>.md` 하나이며 `request_path`도 그 exact path다. Canonical run directory는 이미
-state/hash/event/journal이 사용하는 verified run identity boundary이고, episode publisher는 그 경계 아래에
-추가 replaceable parent를 만들거나 따라가지 않는다. `episode-new` transaction은 lock 안에서 immutable
-`{episode_id,request_path,skeleton_bytes,skeleton_digest}` work item만 만들고 state/event를 먼저 commit한다.
-`request_path`는 transaction 안에서 `realpath(canonical run directory)`로 한 번 도출해 state, event, work
-item, materializer가 모두 같은 canonical byte string을 사용한다. Project root가 symlink나 다른 valid alias로
-들어와도 noncanonical `runDir(root,runId)` string을 state에 저장하지 않는다.
-`withVerifiedMutationLock`가 반환해 run lock이 닫힌 뒤 public wrapper가 그 work item을
-`createFileDurablyIfAbsent`로 materialize한다. 이 helper는 canonical run directory의 private regular sibling
-temp를 flush한 뒤 atomic no-replace link로 같은 directory의 final regular file만 공개하며, 기존 winner는
-regular/non-symlink/exact parent/content ownership policy를 validation-only로 확인한다. Execution-plane이
-수정한 valid winner는 덮어쓰지 않는다. Materialization 전 `beforeMaterialize` test hook과 filesystem I/O는
-모두 lock 밖이다. Journal hard-crash injection은 exported mutation option이나 function callback이 아니다.
-Test worker가 allowlisted scalar `DEEP_LOOP_TEST_CRASH_AT`과 `NODE_ENV=test`를 주면 gateway의 private
-`crashIfScheduled(stage)`가 exact point에서 직접 exit할 뿐 arbitrary code를 호출하지 않는다. Production API는
-`crashProbe`, hook, function capability를 받지 않는다. Reentrant `readVerifiedState`와 competing mutation이 hook에서 성공해도 committed episode의
-immutable creation projection은 바뀌지 않으므로 stale artifact가 publish되지 않는다. 경합 뒤 current episode
-projection/digest가 work item과 다르면 file write 전에 fail closed하고, missing exact request만 동일 work
-item으로 rematerialize한다. POSIX/Windows race tests는 공격자가 옛 `episodes` path를 staging 직전과 final
-publish 직전에 symlink/junction으로 바꿔도 그 path와 외부 directory inventory/bytes가 변하지 않음을
-증명한다. Canonical run directory identity 자체를 바꾸는 공격은 모든 state writer의 공통 trust boundary
-위반이며 episode 전용 helper가 별도 pathname trust를 확장하지 않는다.
+`episode-request-<episode-id>.md` 하나이며 `request_path`도 그 exact path다. Canonical run directory는 state,
+hash, event, journal, sidecar가 공유하는 verified run identity boundary이고 episode writer는 그 경계 아래에
+추가 replaceable parent를 만들거나 따라가지 않는다. Public entry는 run lock 전에 canonical project/run
+identity를 한 번 bind해 immutable scalar로 만들며 final lock에서는 그 scalar를 현재 verified run binding과
+비교할 뿐 `realpath`, cwd callback, caller hook, 또는 caller-selected path를 실행하지 않는다.
+
+`episode-new`는 request skeleton을 journal-authenticated sidecar로 같은 anchored transaction에 포함한다.
+Gateway가 받는 sidecar는 fixed basename, exact bytes, SHA-256 digest, `create-if-absent` policy로 이루어진 closed
+record 하나이고 caller callback/function을 포함하지 않는다. State/event stage와 함께 sidecar stage를 먼저
+flush하고 pending marker가 그 basename/bytes/digest/policy를 인증한다. Marker 뒤 recovery는 canonical run
+identity 아래 fixed regular stage/final만 다루며, sidecar를 state/hash commit 전에 publish한다. Final winner가
+없으면 atomic no-replace로 skeleton을 공개하고, exact regular winner가 있으면 byte-identical skeleton일 때만
+no-op한다. State/hash commit과 cleanup이 끝난 뒤 request는 execution-plane editable 파일이므로 marker-free
+same-request-ID replay는 durable episode projection과 regular exact-parent winner만 검증하고 기존 edited bytes를
+덮어쓰지 않는다. Marker-backed recovery만 original skeleton bytes를 요구한다.
+
+Pending marker는 sidecar stage가 없거나 symlink이거나 digest가 다르면 canonical state/event/request 어느 것도
+고치기 전에 corruption을 반환한다. Marker publish 뒤 sidecar publish 전 hard crash와 sidecar publish 뒤 state
+replace 전 hard crash를 실제 child worker가 만들고, exact public retry가 one episode, one request path, one
+business event로 수렴함을 증명한다. Run-directory alias/replacement 공격은 bound identity mismatch로 첫 stage
+write 전에 실패하고 외부 inventory를 바꾸지 않는다. Journal hard-crash injection은 exported mutation option이나
+function callback이 아니다. Test worker가 allowlisted scalar `DEEP_LOOP_TEST_CRASH_AT`과 `NODE_ENV=test`를 주면
+gateway의 private `crashIfScheduled(stage)`가 exact point에서 직접 exit할 뿐 arbitrary code를 호출하지 않는다.
+Production API, helper worker, and test caller는 `crashProbe`, hook, function capability를 전달하지 않는다.
+
+`workstream new`도 caller가 최초 호출 전에 정한 bounded request ID를 필수로 받는다. Kernel은 raw ID 대신
+`SHA256("workstream-create-request-id\0" || canonical-id-value)`와 title/branch/canonical worktree/base/
+ordered dependencies의 complete request digest를 `workstream-create-v1` object/event에 함께 저장한다. 같은
+ID의 exact retry는 pending marker 유무와 무관하게 전체 workstream inventory에서 exactly one durable record를
+찾아 원래 ID를 반환하고 event나 budget floor를 추가하지 않는다. 같은 ID의 changed payload, duplicate ID
+digest, object/event digest mismatch는 conflict/corruption이며 새 sequential ID를 할당하지 않는다. CLI와
+execution-plane은 ID를 한 번 정해 response loss에서만 재사용하고 intentional new workstream에는 새 ID를
+사용한다. Legacy checkpoint 이전의 unversioned workstream만 checkpoint origin으로 허용하며 이후 생성은
+discriminator와 양방향 event/object correlation이 필수다.
 
 `integrity.mjs`는 동일한 pure `verifyRunSnapshot(loop,lines)`와 lock-owning
 `readVerifiedState(root,runId,{fenceCheck?})`를 제공한다. 이 public reader는 read-only 전용이며 pending을
@@ -1246,6 +1266,23 @@ entity를 빠짐없이 결합한다. Cycle 4 round 5 report/response와 cycle 5 
 무관하게 force-add해
 fresh checkout에서 evidence ledger를 재현 가능하게 한다. 변경된 byte는 cycle 5 round 1 receipt를 상속하지
 않으며 Gate 1/2는 fresh cycle 5 round 2 이후 exact `gpt-5.6-sol`/`high`의 자연 수렴으로만 닫힌다.
+
+Gate 1 fresh cycle 5 round 3도 `REQUEST_CHANGES`였다. 두 reviewer는 episode request의 post-lock
+publication이 verified run-directory replacement에 노출되고, accepted 1.8.2 active-workstream 배열이
+checkpoint 전에 거부되는 결함을 함께 재현했다. Respond는 function-valued crash worker와 marker-free
+workstream retry의 두 solo finding도 실제 afterimage에서 재현해 모두 수용한다. Episode request는 after-lock
+materializer가 아니라 state/event/hash와 같은 pending marker가 인증하는 fixed run-sibling sidecar가 된다.
+Marker-backed retry는 skeleton bytes까지 복구하고, fully cleaned commit의 same-ID retry는 durable creation
+projection과 regular exact-parent winner만 검증해 execution-plane edits를 보존한다. Legacy checkpoint는
+business mutation 전에 accepted old active array를 deterministic first-valid-occurrence 순서로 normalize하고
+그 exact array를 checkpoint/origin/candidate에 함께 결합한다. `newWorkstream`은 bounded caller request ID,
+domain-separated ID digest, complete request digest, `workstream-create-v1` discriminator를 event/object에
+저장하고 marker-free exact retry는 같은 ID를 반환하며 changed reuse는 conflict다. 모든 public mutation과
+worker는 scalar `DEEP_LOOP_TEST_CRASH_AT`만 사용하고 function crash seam을 받지 않는다. Disposable validator는
+Task 11B의 no-fallback afterimage와 final workspace new/status/terminal writers를 설치한 뒤 duplicate/unknown
+legacy fixture를 record maker, dispatch/record checker, review completion, terminal workstream, finish까지 실제
+실행한다. 변경된 bytes는 round 3 receipt를 상속하지 않으며 Gate 1/2는 fresh cycle 5 round 4 이후 exact
+`gpt-5.6-sol`/`high`의 자연 수렴으로만 닫힌다.
 
 구현 순서:
 

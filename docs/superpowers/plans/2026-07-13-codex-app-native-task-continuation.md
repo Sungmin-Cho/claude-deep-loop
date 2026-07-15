@@ -148,7 +148,7 @@ These are the narrow baseline `Modify` anchors required by the execution tasks; 
 | 7C | `scripts/lib/lease.mjs:43-199`; `scripts/lib/budget.mjs:279-1048`; `scripts/lib/headless-host.mjs`; `scripts/deep-loop.mjs:650-670`; `skills/deep-loop-continue/SKILL.md:173-182`; `skills/deep-loop-workflow/references/handoff-respawn.md:179-187`; produced `tests/helpers/anchored-crash-worker.mjs`; `tests/lease.test.mjs`; `tests/budget.test.mjs`; `tests/headless-host.test.mjs`; `tests/skills.test.mjs`; `tests/cli-skillface.test.mjs`; `tests/insights.test.mjs`; `tests/integrity.test.mjs`; `tests/project-root.test.mjs`. |
 | 7D | Produced `scripts/lib/init-transaction.mjs` strict current/genesis proof; produced `scripts/lib/app-task-continuation.mjs` observe/revoke/status boundaries; produced `tests/fixtures/verified-app-run.mjs`; produced `tests/init-transaction.test.mjs`; produced `tests/app-task-continuation.test.mjs`; `tests/cli-skillface.test.mjs`. |
 | 7G | `scripts/lib/lease.mjs:102-199`; `scripts/lib/breaker.mjs:1-62`; `scripts/lib/state.mjs:102-110`; `scripts/deep-loop.mjs:694-703`; `README.md:68-75`; `skills/deep-loop-status/SKILL.md`; `skills/deep-loop-continue/SKILL.md`; `tests/lease.test.mjs`; `tests/breaker.test.mjs`; `tests/cli-skillface.test.mjs`; `tests/project-root.test.mjs`; `tests/integrity.test.mjs`; produced `tests/helpers/anchored-crash-worker.mjs`. |
-| 7E–7F | `scripts/lib/session-profile.mjs:44-80`; `scripts/lib/comprehension.mjs:27-92`; `scripts/lib/project-root-recovery.mjs:20-51`; `scripts/lib/budget.mjs:1053-1067`; `scripts/lib/episode.mjs:25-220`; `scripts/lib/insights.mjs:357-509`; `scripts/lib/review.mjs:50-179,310-668`; `scripts/lib/workspace.mjs:80-153`; `scripts/lib/state.mjs:51-160`; `scripts/lib/detect-terminal.mjs:284-343`; `scripts/deep-loop.mjs:120-180,340-710`; `skills/deep-loop/SKILL.md`; `skills/deep-loop-continue/SKILL.md`; `skills/deep-loop-workflow/references/adapters.md`; `skills/deep-loop-workflow/references/hill-climbing.md`; `tests/helpers/episode-request.mjs`; `tests/helpers/review-request.mjs`; `tests/session-profile.test.mjs`; `tests/comprehension.test.mjs`; `tests/project-root.test.mjs`; `tests/budget.test.mjs`; `tests/cli-skillface.test.mjs`; `tests/codex-checker-integration.test.mjs`; `tests/codex-isolation-integration.test.mjs`; `tests/episode.test.mjs`; `tests/fencing.test.mjs`; `tests/finish.test.mjs`; `tests/handoff.test.mjs`; `tests/next-action.test.mjs`; `tests/orch-cli.test.mjs`; `tests/pause.test.mjs`; `tests/review.test.mjs`; `tests/insights.test.mjs`; `tests/review-import.test.mjs`; `tests/reviewer-failclosed.test.mjs`; `tests/workspace.test.mjs`; `tests/detect-terminal.test.mjs`. |
+| 7E–7F | `scripts/lib/session-profile.mjs:44-80`; `scripts/lib/comprehension.mjs:27-92`; `scripts/lib/project-root-recovery.mjs:20-51`; `scripts/lib/budget.mjs:1053-1067`; `scripts/lib/episode.mjs:25-220`; `scripts/lib/schema.mjs`; `scripts/lib/insights.mjs:357-509`; `scripts/lib/review.mjs:50-179,310-668`; `scripts/lib/workspace.mjs:80-153`; `scripts/lib/state.mjs:51-160`; `scripts/lib/detect-terminal.mjs:284-343`; `scripts/deep-loop.mjs:120-180,340-710`; `skills/deep-loop/SKILL.md`; `skills/deep-loop-continue/SKILL.md`; `skills/deep-loop-workflow/references/adapters.md`; `skills/deep-loop-workflow/references/hill-climbing.md`; `tests/helpers/episode-request.mjs`; `tests/helpers/review-request.mjs`; `tests/helpers/workstream-request.mjs`; `tests/session-profile.test.mjs`; `tests/comprehension.test.mjs`; `tests/project-root.test.mjs`; `tests/budget.test.mjs`; `tests/cli-skillface.test.mjs`; `tests/codex-checker-integration.test.mjs`; `tests/codex-isolation-integration.test.mjs`; `tests/episode.test.mjs`; `tests/fencing.test.mjs`; `tests/finish.test.mjs`; `tests/handoff.test.mjs`; `tests/next-action.test.mjs`; `tests/orch-cli.test.mjs`; `tests/pause.test.mjs`; `tests/review.test.mjs`; `tests/insights.test.mjs`; `tests/review-import.test.mjs`; `tests/reviewer-failclosed.test.mjs`; `tests/workspace.test.mjs`; `tests/detect-terminal.test.mjs`. |
 | 8A–8B | Produced `scripts/lib/app-task-continuation.mjs` `prepareAppTask`; `scripts/lib/handoff.mjs:38-224` (`handoffMarkdown`, `emitHandoff`); `scripts/lib/lease.mjs:121-205` (`reserveHandoff`, `rollbackHandoff`); `scripts/lib/schema.mjs:164-216`; `tests/handoff.test.mjs:343-789,1107-1163`; produced `tests/app-task-continuation.test.mjs` prepare cases; created `tests/fixtures/app-prepare-worker.mjs`. |
 | 9A–9B | Produced `scripts/lib/app-task-continuation.mjs` `confirmAppTask`, `failAppTask`, `sweepUnconfirmedAppTask`, `statusAppTask`, `awaitAppTask`; `scripts/deep-loop.mjs:489-616`; produced `tests/app-task-continuation.test.mjs` receipt/readiness cases; `tests/orch-cli.test.mjs:246-286,831-1005`; `tests/schema.test.mjs:17-273`. |
 | 10A–10D | Produced `scripts/lib/app-task-continuation.mjs` acquire/recovery/finish helpers; `scripts/lib/lease.mjs:13-199`; `scripts/lib/recover.mjs:1-47`; `scripts/lib/state.mjs:51-79,120-211`; `scripts/lib/finish.mjs:13-107`; `scripts/deep-loop.mjs:120-141,489-616,834-861`; produced `tests/app-task-continuation.test.mjs` acquire/history cases; `tests/lease.test.mjs:27-490`; `tests/recover.test.mjs:65-231`; `tests/finish.test.mjs:1-335`; `tests/terminal-cli.test.mjs:1-192`; `tests/orch-cli.test.mjs:246-286,831-1005`; produced `tests/integrity.test.mjs` crash matrix; produced `tests/helpers/anchored-crash-worker.mjs`. |
@@ -234,7 +234,9 @@ export function acquireAppTask(root, runId, input, deps);
 export declare const APP_PREPARE_TIMEOUT_MS: number;
 export declare const APP_CONFIRMATION_TIMEOUT_MS: number;
 export function episodeProofProjection(episode): object;
+export function episodeRequestMarkdown(input): string;
 export function workstreamProofProjection(loop, workstream): object;
+export function normalizeLegacyActiveWorkstreams(loop): string[];
 export function legacyProofOrigins(loop, episodeCount, workstreamCount):
   Array<{kind:'episode'|'workstream',id:string,digest:string}>;
 export function legacyAuthorityDigest(loop): string;
@@ -242,6 +244,7 @@ export function verifyAppEventCorrelation(loop, lines);
 
 // scripts/lib/integrity.mjs
 export function verifyRunSnapshot(loop, lines);
+export function verifyWorkstreamCreationCorrelation(loop, lines);
 export function proofEntityDigest(kind, value, loop = null): string;
 export function proofTransitionsForCandidate(beforeLoop, candidateLoop, entityKeys = null): object[];
 export function verifyProofTransitionCorrelation(loop, lines);
@@ -256,16 +259,14 @@ export function withVerifiedMutationLock(root, runId, {
 export function commitVerifiedEventsUnderLock(root, runId, loop, eventSpecs, mutate,
   { baseLines, baseStateHash, callerBinding, intentDigest } = {});
 export function appendAnchored(root, runId, event, mutate, preCheck, {
-  floor, nowFn, fenceCheck, callerBinding, intentDigest, fenceError, crashProbe, allowTerminal,
+  floor, nowFn, fenceCheck, callerBinding, intentDigest, fenceError, allowTerminal,
 });
 
 // callerBinding is required on every production mutation. The gateway never infers it from
 // current/post-mutation lease state. Pending-journal recovery precedes canonical state/log reads.
 
 // scripts/lib/episode.mjs
-export function episodeMaterializationWork(episode): object;
-export function materializeEpisodeRequest(root, runId, workItem,
-  { beforeMaterialize, beforePublish } = {}): { id: string, requestPath: string };
+export function episodeRequestDigest(input): string;
 
 // scripts/lib/handoff.mjs — `appIntent` itself is boolean-only; other members are existing
 // handoff arguments or injected library-test seams, never caller-supplied App authority.
@@ -2333,6 +2334,11 @@ Replace `schemas/loop-run.schema.json` with this complete declarative document (
     "initialization": {
       "type": "object",
       "required": ["attempt_id","request_digest","previous_current_digest","host_observation_digest","host_surface_digest"],
+      "additionalProperties": false
+    },
+    "legacy_lineage": {
+      "type": "object",
+      "required": ["active_workstreams"],
       "additionalProperties": false
     },
     "session_spawn": { "type": "object" },
@@ -5001,6 +5007,18 @@ import { closeSync as durableCloseSync, fsyncSync as durableFsyncSync,
 import { dirname as durableDirname } from 'node:path';
 import { renameAtomicWithRetry } from './atomic-write.mjs';
 
+const DURABLE_TEST_CRASH_POINT = /^(?:[a-z0-9-]+-(?:before-write|after-write|before-rename|after-rename(?:-before-dir-fsync)?|replace-after-create|replace-after-fsync|replace-after-rename-before-dir-fsync)|pending-delete-(?:before|after))$/;
+
+function crashDurableIfScheduled(point) {
+  const selected = process.env.NODE_ENV === 'test'
+    ? process.env.DEEP_LOOP_TEST_CRASH_AT : undefined;
+  if (selected === undefined || selected !== point) return;
+  if (!DURABLE_TEST_CRASH_POINT.test(selected)) {
+    throw new Error('DURABLE_TEST_CRASH_POINT_INVALID');
+  }
+  process.exit(91);
+}
+
 function regularIfPresent(path, deps, label) {
   let stat;
   try { stat = (deps.lstat ?? durableLstatSync)(path); }
@@ -5031,7 +5049,7 @@ export function syncParentDirectory(path, deps = {}) {
 }
 
 export function renamePreparedFile(source, destination, {
-  crashProbe = () => {}, renamedPoint = 'file-after-rename-before-dir-fsync',
+  renamedPoint = 'file-after-rename-before-dir-fsync',
   sourceAlreadySynced = false,
 } = {}, deps = {}) {
   if (!sourceAlreadySynced) syncRegularFile(source, deps);
@@ -5043,7 +5061,7 @@ export function renamePreparedFile(source, destination, {
     monotonicNowFn: deps.monotonicNowFn, sleepFn: deps.sleepFn,
     renameFn: deps.rename,
   });
-  crashProbe(renamedPoint);
+  crashDurableIfScheduled(renamedPoint);
   syncParentDirectory(destination, deps);
 }
 
@@ -5086,15 +5104,15 @@ export function createFileDurablyIfAbsent(path, bytes, {
 }
 
 export function replaceFileDurably(path, bytes, {
-  crashProbe = () => {}, label = 'file', mode = 0o600,
+  label = 'file', mode = 0o600,
 } = {}, deps = {}) {
   const temporary = `${path}.replace`;
   unlinkRegularFile(temporary, deps);
   (deps.writeFile ?? durableWriteFileSync)(temporary, bytes, { flag: 'wx', mode });
-  crashProbe(`${label}-replace-after-create`);
+  crashDurableIfScheduled(`${label}-replace-after-create`);
   syncRegularFile(temporary, deps);
-  crashProbe(`${label}-replace-after-fsync`);
-  renamePreparedFile(temporary, path, { crashProbe, sourceAlreadySynced: true,
+  crashDurableIfScheduled(`${label}-replace-after-fsync`);
+  renamePreparedFile(temporary, path, { sourceAlreadySynced: true,
     renamedPoint: `${label}-replace-after-rename-before-dir-fsync` }, deps);
 }
 
@@ -5246,6 +5264,18 @@ function strictTempPaths(directory, deps) {
   return paths;
 }
 
+const GENESIS_TEST_CRASH_POINT = /^(?:[a-z0-9-]+-(?:before-write|after-write|before-rename)|pending-delete-(?:before|after))$/;
+
+function crashGenesisIfScheduled(point) {
+  const selected = process.env.NODE_ENV === 'test'
+    ? process.env.DEEP_LOOP_TEST_CRASH_AT : undefined;
+  if (selected === undefined || selected !== point) return;
+  if (!GENESIS_TEST_CRASH_POINT.test(selected)) {
+    throw new Error('GENESIS_TEST_CRASH_POINT_INVALID');
+  }
+  process.exit(91);
+}
+
 function writeGenesisArtifact(path, attempt, slot, bytes, deps) {
   const nonce = (deps.tempNonce ?? (() => randomUUID().replace(/-/g, '')))();
   const pid = deps.pid ?? process.pid;
@@ -5257,24 +5287,22 @@ function writeGenesisArtifact(path, attempt, slot, bytes, deps) {
   }
   const name = `.tmp-${pid}-${nowMs}-${nonce}`;
   const temp = join(dirname(path), name);
-  const probe = deps.crashProbe ?? (() => {});
   try {
-    probe(`${slot}-before-write`);
+    crashGenesisIfScheduled(`${slot}-before-write`);
     (deps.writeFile ?? writeFileSync)(temp, bytes, { flag: 'wx' });
-    probe(`${slot}-after-write`);
-    probe(`${slot}-before-rename`);
+    crashGenesisIfScheduled(`${slot}-after-write`);
+    crashGenesisIfScheduled(`${slot}-before-rename`);
     renameGenesisFile(temp, path,
-      { crashProbe: probe, renamedPoint: `${slot}-after-rename` }, deps);
+      { renamedPoint: `${slot}-after-rename` }, deps);
   } finally {
     removeOwnTemp(temp, deps);
   }
 }
 
 function deletePending(path, deps) {
-  const probe = deps.crashProbe ?? (() => {});
-  probe('pending-delete-before');
+  crashGenesisIfScheduled('pending-delete-before');
   if (!unlinkGenesisFile(path, deps)) throw new Error('INIT_PENDING_CONFLICT');
-  probe('pending-delete-after');
+  crashGenesisIfScheduled('pending-delete-after');
 }
 
 export function publishGenesisState(root, runId, canonical, deps = {}) {
@@ -6166,11 +6194,12 @@ const request = buildFixedInitializationRequest({ root, runtime: 'codex', goal: 
 const prepared = { ok: true, outcome: 'prepared', attempt_id: attempt,
   previous_current_digest: previous, expected_request_digest: requestDigest,
   expected_observation_digest: observationDigest };
+if (crashMode === 'inside-lock') {
+  process.env.NODE_ENV = 'test';
+  process.env.DEEP_LOOP_TEST_CRASH_AT = 'current-after-rename';
+}
 const deps = productionInitDeps(root, request, {
   pid: process.pid, nonce: () => String(process.pid).padStart(16, '0'),
-  crashProbe: stage => {
-    if (crashMode === 'inside-lock' && stage === 'current-after-rename') process.exit(91);
-  },
 });
 commitFixedInitialization(root, { request, observation, prepared }, deps);
 if (crashMode === 'after-commit') process.exit(91);
@@ -8346,7 +8375,7 @@ test7b('legacy lease lineage is opaque before one checkpoint and exact after it'
     ts: '2026-07-13T00:00:03.000Z', data: {
       owner_run_id: 'LEGACY-OWNER', generation: 3, lease_state: 'released',
       acquired_at: '2026-07-13T00:00:02.000Z', legacy_episode_count: 0,
-      legacy_workstream_count: 0,
+      legacy_workstream_count: 0, legacy_active_workstreams: [],
       legacy_proof_origins: origins7b(legacyGeneration3AtCheckpoint(), 0, 0),
       legacy_authority_digest: authority7b(legacyGeneration3AtCheckpoint()),
     } };
@@ -9120,6 +9149,32 @@ export function episodeProofProjection(episode) {
   return projection;
 }
 
+export function episodeRequestMarkdown({ id, plugin, role, kind, point,
+  workstream = null, expectedArtifacts = [], evidence } = {}) {
+  if (typeof id !== 'string' || id.length === 0 || typeof plugin !== 'string'
+      || typeof role !== 'string' || typeof kind !== 'string' || typeof point !== 'string'
+      || !Array.isArray(expectedArtifacts)
+      || !expectedArtifacts.every(artifact => typeof artifact === 'string')) {
+    throw new Error('EPISODE_REQUEST_MARKDOWN_INPUT_INVALID');
+  }
+  return [
+    `# Episode ${id} — request`, '',
+    `- plugin: ${plugin}`, `- role: ${role}`, `- kind: ${kind}`,
+    `- review point: ${point}`, `- workstream: ${workstream || '(none)'}`, '',
+    '## Task', '', '<!-- Execution plane: fill the maker/checker task here -->', '',
+    '## Expected artifacts', '',
+    ...(expectedArtifacts.length
+      ? expectedArtifacts.map(artifact => `- ${artifact}`)
+      : ['- <!-- list proof artifacts -->']), '',
+    ...(evidence !== undefined ? ['## Evidence (kernel-verified insights)', '',
+      '<!-- copy; anchored episodes[].evidence is authoritative -->', '',
+      '```json', JSON.stringify(evidence, null, 2), '```', ''] : []),
+    '## Constraints', '',
+    '- Do not assume prior conversation context. The verified run plus this request are authoritative.',
+    '',
+  ].join('\n');
+}
+
 export function workstreamProofProjection(loop, workstream) {
   return {
     id: workstream.id,
@@ -9128,6 +9183,24 @@ export function workstreamProofProjection(loop, workstream) {
     active: (loop?.active_workstreams ?? []).includes(workstream.id),
     active_workstreams: structuredClone(loop?.active_workstreams ?? []),
   };
+}
+
+// Input compatibility exists only for the first verified mutation of an initialization-absent,
+// checkpoint-free run. Preserve the first occurrence of each existing string ID in source order;
+// old duplicates, unknown IDs, and non-strings are discarded deterministically in memory and the
+// normalized candidate is published only together with the checkpoint/business event.
+export function normalizeLegacyActiveWorkstreams(loop) {
+  const existing = new Set((Array.isArray(loop?.workstreams) ? loop.workstreams : [])
+    .map(workstream => workstream?.id)
+    .filter(id => typeof id === 'string'));
+  const seen = new Set();
+  const normalized = [];
+  for (const id of (Array.isArray(loop?.active_workstreams) ? loop.active_workstreams : [])) {
+    if (typeof id !== 'string' || !existing.has(id) || seen.has(id)) continue;
+    seen.add(id);
+    normalized.push(id);
+  }
+  return normalized;
 }
 
 function legacyOriginDigest(kind, projection) {
@@ -9176,11 +9249,15 @@ export function legacyAuthorityDigest(loop) {
 export function verifyAppEventCorrelation(loop, lines) {
   const errors = [];
   const events = Array.isArray(lines) ? lines : [];
+  const lineageCheckpoints = events.filter(event => event?.type === 'lease-lineage-baselined');
+  const legacyLineage = loop?.legacy_lineage;
+  const preCheckpointLegacy = loop?.initialization === undefined
+    && lineageCheckpoints.length === 0;
   const workstreamIds = (loop?.workstreams ?? []).map(workstream => workstream?.id);
   const activeWorkstreams = loop?.active_workstreams;
-  if (!Array.isArray(activeWorkstreams)
+  if (!preCheckpointLegacy && (!Array.isArray(activeWorkstreams)
       || new Set(activeWorkstreams).size !== activeWorkstreams.length
-      || activeWorkstreams.some(id => typeof id !== 'string' || !workstreamIds.includes(id))) {
+      || activeWorkstreams.some(id => typeof id !== 'string' || !workstreamIds.includes(id)))) {
     errors.push('active_workstreams must be unique existing workstream IDs');
   }
   const identities = new Set();
@@ -9201,19 +9278,24 @@ export function verifyAppEventCorrelation(loop, lines) {
       errors.push('run-initialized genesis binding invalid');
     }
   }
-  const lineageCheckpoints = events.filter(event => event?.type === 'lease-lineage-baselined');
   let checkpointFloor = null;
   if (loop?.initialization !== undefined) {
     if (lineageCheckpoints.length !== 0) {
       errors.push('initialized run cannot declare a legacy lineage checkpoint');
     }
+    if (legacyLineage !== undefined) {
+      errors.push('initialized run cannot declare legacy lineage state');
+    }
   } else if (lineageCheckpoints.length > 1) {
     errors.push('legacy run has duplicate lineage checkpoints');
+  } else if (lineageCheckpoints.length === 0 && legacyLineage !== undefined) {
+    errors.push('pre-checkpoint legacy run cannot declare lineage state');
   } else if (lineageCheckpoints.length === 1) {
     const checkpoint = lineageCheckpoints[0];
     const checkpointIndex = events.indexOf(checkpoint);
     const data = checkpoint.data ?? {};
     const exactKeys = ['acquired_at', 'generation', 'lease_state',
+      'legacy_active_workstreams',
       'legacy_authority_digest', 'legacy_episode_count', 'legacy_proof_origins',
       'legacy_workstream_count', 'owner_run_id'].sort();
     const legacyEpisodes = Array.isArray(loop?.episodes) ? loop.episodes : [];
@@ -9256,6 +9338,17 @@ export function verifyAppEventCorrelation(loop, lines) {
       && legacyCount <= legacyEpisodes.length
       && Number.isSafeInteger(legacyWorkstreamCount) && legacyWorkstreamCount >= 0
       && legacyWorkstreamCount <= legacyWorkstreams.length
+      && Array.isArray(data.legacy_active_workstreams)
+      && data.legacy_active_workstreams.every((id, index, values) =>
+        typeof id === 'string'
+          && workstreamPrefix.some(workstream => workstream?.id === id)
+          && values.indexOf(id) === index)
+      && legacyLineage != null && !Array.isArray(legacyLineage)
+      && JSON.stringify(Object.keys(legacyLineage).sort())
+        === JSON.stringify(['active_workstreams'])
+      && Array.isArray(legacyLineage.active_workstreams)
+      && JSON.stringify(data.legacy_active_workstreams)
+        === JSON.stringify(legacyLineage.active_workstreams)
       && prefixIsUnversioned
       && originsValid
       && /^[0-9a-f]{64}$/.test(data.legacy_authority_digest || '')
@@ -9346,10 +9439,9 @@ export function verifyAppEventCorrelation(loop, lines) {
     }
     if (lineageComplete && lineageFloor.kind === 'checkpoint'
         && currentLease.generation === lineageFloor.generation
-        && (currentLease.state !== lineageFloor.leaseState
-          || currentLease.acquired_at !== lineageFloor.acquiredAt)) {
+        && currentLease.acquired_at !== lineageFloor.acquiredAt) {
       lineageComplete = false;
-      errors.push('legacy lineage checkpoint current lease mismatch');
+      errors.push('legacy lineage checkpoint acquired-at mismatch');
     }
   }
   const isProvenHistorical = (ownerRunId, generation, proofIndex) => lineageComplete
@@ -9935,7 +10027,9 @@ git commit -m "feat: validate App event correlations" -m "Co-Authored-By: Claude
   production candidate is journal-published; raw `writeState` is limited to genesis/test fixtures.
   A migratable initialization-absent legacy snapshot gets exactly one
   `lease-lineage-baselined` event prepended to its first post-upgrade business transaction after the
-  caller fence, and that checkpoint cannot authorize App behavior. The sole root-rebind append and every generation-changing
+  caller fence, and that checkpoint cannot authorize App behavior. Its owner, generation, and
+  immutable `acquired_at` bind the lineage floor; its recorded lifecycle state is audit evidence,
+  not a freeze on later same-generation `active → releasing → released` transitions. The sole root-rebind append and every generation-changing
   generic lease acquire use the same prospective commit in this task; Task 7C adds proof to the
   remaining legacy lease no-op paths and routes the four manual accounting writers, while Task 7D
   routes init/App boundaries. Test-only raw tamper helpers never enter production exports.
@@ -10039,11 +10133,14 @@ export function legacyInProgressProofFixture() {
   const workstreamId = 'ws-01-legacy';
   const makerId = '001-legacy-maker';
   delete loop.initialization;
+  loop.review.points = ['implementation'];
   loop.workstreams = [{ id: workstreamId, title: 'legacy', status: 'in_progress',
     branch: 'legacy', worktree: '.worktrees/legacy', base_commit: null,
     dirty_on_handoff: false, pr: { intended: true, state: 'none', url: null },
     episodes: [makerId], review_points_done: [], depends_on: [] }];
-  loop.active_workstreams = [workstreamId];
+  // 1.8.2 generic state patch accepted duplicate/unknown string IDs. The first verified mutation
+  // must normalize this exact old shape inside the checkpoint transaction.
+  loop.active_workstreams = [workstreamId, workstreamId, 'ws-legacy-unknown'];
   loop.episodes = [{ id: makerId, plugin: 'deep-work', role: 'maker',
     kind: 'implementation', point: 'implementation', workstream_id: workstreamId,
     status: 'in_progress', request_path: join(directory, 'legacy-request.md'),
@@ -10144,8 +10241,8 @@ import { patch as patch7b, readState as state7c, runDir as runDir7b,
 import { durableRunBytes as bytes7c, rawHashValidState as raw7c,
   verifiedAppRun as fixture7c } from './fixtures/verified-app-run.mjs';
 import { spawnSync as spawn7c } from 'node:child_process';
-import { mkdirSync as mkdir7b, readdirSync as list7b,
-  readFileSync as readSource7b } from 'node:fs';
+import { existsSync as existsJournal7b, mkdirSync as mkdir7b, readdirSync as list7b,
+  readFileSync as readSource7b, rmdirSync as rmdir7b } from 'node:fs';
 import { join as join7b } from 'node:path';
 import { fileURLToPath as file7b } from 'node:url';
 import { acquireLease as acquire7b } from '../scripts/lib/lease.mjs';
@@ -10574,7 +10671,7 @@ rg -n "rawHashValid(State|History)|seedCorrelatedTerminal" tests
 Add the post-genesis crash table to `tests/integrity.test.mjs` and the process-exit harness to
 `tests/helpers/anchored-crash-worker.mjs`. The worker accepts only
 `<root> <run-id> <operation> <crash-point>` where operation is
-`generic-append|generic-acquire|finish|state-patch|workstream-new` and crash point is one of this
+`generic-append|generic-acquire|finish|insights-emit|state-patch|workstream-new` and crash point is one of this
 closed enum. Create the worker with this complete executable module; later Tasks 7G and 10D register
 their extensions through the exported registry, and the queued main invocation runs only after the
 entire module has evaluated:
@@ -10585,6 +10682,7 @@ import { pathToFileURL } from 'node:url';
 import { contentHash } from '../../scripts/lib/envelope.mjs';
 import { finishRun } from '../../scripts/lib/finish.mjs';
 import { appendAnchored } from '../../scripts/lib/integrity.mjs';
+import { emitInsights } from '../../scripts/lib/insights.mjs';
 import { acquireLease } from '../../scripts/lib/lease.mjs';
 import { patch } from '../../scripts/lib/state.mjs';
 import { newWorkstream } from '../../scripts/lib/workspace.mjs';
@@ -10630,6 +10728,11 @@ const generic = Object.freeze({
     proof: { human_reason: 'crash-worker' },
     fence: { owner, generation, runtime: 'codex', intent: 'business' },
   }),
+  'insights-emit': ({ root, runId, owner, generation, rawInput }) => {
+    const input = parseInput(rawInput, ['now', 'rnd']);
+    return emitInsights(root, runId, { fence: { owner, generation }, now: input.now,
+      rnd: () => input.rnd, sleepFn: () => {} });
+  },
   'state-patch': ({ root, runId, owner, generation, rawInput }) => {
     const input = parseInput(rawInput, ['field', 'value']);
     return patch(root, runId, input.field, input.value,
@@ -10637,7 +10740,7 @@ const generic = Object.freeze({
   },
   'workstream-new': ({ root, runId, owner, generation, rawInput }) => {
     const input = parseInput(rawInput,
-      ['baseCommit', 'branch', 'dependsOn', 'title', 'worktree']);
+      ['baseCommit', 'branch', 'dependsOn', 'requestId', 'title', 'worktree']);
     return newWorkstream(root, runId, { ...input, fence: { owner, generation } });
   },
 });
@@ -10717,7 +10820,8 @@ function completeJournalBytes7b(root, runId) {
   const names = [...fixedJournalInventory7b(root, runId),
     'event-log.jsonl', 'loop.json', '.loop.hash'];
   return Object.fromEntries(names.map(name =>
-    [name, readSource7b(join7b(directory, name))]));
+    [name, existsJournal7b(join7b(directory, name))
+      ? readSource7b(join7b(directory, name)) : null]));
 }
 
 function genericCrashCase7b(operation) {
@@ -10731,7 +10835,8 @@ function genericCrashCase7b(operation) {
   const fence = { owner: fixture.owner, generation: fixture.generation };
   const patchValue = ['crash-probe'];
   const workstream = { title: 'crash probe', branch: 'codex/crash-probe',
-    worktree: '.worktrees/crash-probe', baseCommit: null, dependsOn: [] };
+    worktree: '.worktrees/crash-probe', baseCommit: null, dependsOn: [],
+    requestId: 'workstream-crash-probe-1' };
   const invoke = ({ foreign = false, different = false } = {}) => {
     const owner = foreign ? '01JAPPF0R00000000000000000' : fixture.owner;
     const caller = { owner, generation: fixture.generation };
@@ -10782,6 +10887,10 @@ function assertGenericCrashRecovery7b(operation, point) {
     });
   assert6b.notEqual(child.error?.code, 'ETIMEDOUT', `${operation}/${point} worker timeout`);
   assert6b.equal(child.status, 91, child.stderr || child.stdout || child.error?.message);
+  // A hard process exit cannot run withLock's finally block. Once spawnSync proves that exact
+  // owner is dead, accelerate the production stale-lock TTL by removing only its orphan lock.
+  // Journal/state recovery remains exclusively owned by the exact public API retry below.
+  rmdir7b(join7b(fixture.root, '.deep-loop', 'runs', fixture.runId, '.lock'));
   assert6b.deepEqual(fixedJournalInventory7b(fixture.root, fixture.runId),
     expectedJournalInventory7b(point), `${operation}/${point} exact journal inventory`);
   const pending = completeJournalBytes7b(fixture.root, fixture.runId);
@@ -10819,8 +10928,11 @@ test6b('anchored crash parent matrix preserves orphans pending bytes and exact r
 });
 ```
 
-`patch` and `newWorkstream` add the shown test-only `crashProbe` option and pass it to their final
-journal append. Their production callers never receive it. The parent generic-intent test crashes
+No public API accepts a function-valued crash hook. The worker selects a closed crash point through
+the private scalar `NODE_ENV=test` + `DEEP_LOOP_TEST_CRASH_AT` seam inside the publisher. Because a
+hard exit cannot run `withLock` cleanup, the parent removes only the proven-dead worker's orphan
+`.lock` directory to accelerate the normal stale-lock TTL; it never edits journal or canonical state.
+The parent generic-intent test crashes
 after marker publication, then retries `state-patch` with a different value and `workstream-new`
 with the same title but a different branch/worktree/dependency projection. Both different retries
 must return `ANCHORED_TRANSACTION_PENDING` without changing any byte; the exact original retry then
@@ -10924,7 +11036,7 @@ is held so callers cannot mutate an unlocked shared reference:
 diff --git a/scripts/lib/integrity.mjs b/scripts/lib/integrity.mjs
 --- a/scripts/lib/integrity.mjs
 +++ b/scripts/lib/integrity.mjs
-@@ -1,8 +1,13 @@
+@@ -1,8 +1,14 @@
 -import { readFileSync, appendFileSync, existsSync } from 'node:fs';
 +import { appendFileSync, existsSync, lstatSync, readFileSync, readdirSync,
 +  truncateSync } from 'node:fs';
@@ -10934,7 +11046,8 @@ diff --git a/scripts/lib/integrity.mjs b/scripts/lib/integrity.mjs
  import { runDir, readState, writeState, withLock } from './state.mjs';
  import { assertProjectRootBinding, canonicalProjectRoot, projectRootDigest } from './project-root.mjs';
 -import { validate } from './schema.mjs';
-+import { episodeProofProjection, legacyAuthorityDigest, legacyProofOrigins, validate,
++import { episodeProofProjection, episodeRequestMarkdown, legacyAuthorityDigest, legacyProofOrigins,
++  normalizeLegacyActiveWorkstreams, validate,
 +  verifyAppEventCorrelation, workstreamProofProjection } from './schema.mjs';
 +import { initializationRequestDigest } from './init-transaction.mjs';
 +import { replaceFileDurably, syncParentDirectory, syncRegularFile,
@@ -11026,6 +11139,7 @@ export function verifyEpisodeCreationCorrelation(loop, lines) {
     } else eventById.set(id, event);
   }
   const episodeById = new Map();
+  const requestIdentityOwners = new Map();
   for (const episode of episodes) {
     if (typeof episode.id !== 'string' || episodeById.has(episode.id)) {
       errors.push(`duplicate or invalid episode object identity ${String(episode.id)}`);
@@ -11050,6 +11164,16 @@ export function verifyEpisodeCreationCorrelation(loop, lines) {
       dispatch_response: structuredClone(episode.dispatch_response ?? null),
     };
     const recomputed = intentField('episode-create-request', projection);
+    let expectedMarkdown = null;
+    try {
+      expectedMarkdown = episodeRequestMarkdown({ id: episode.id,
+        plugin: episode.plugin, role: episode.role, kind: episode.kind, point: episode.point,
+        workstream: episode.workstream_id ?? null,
+        expectedArtifacts: structuredClone(episode.expected_artifacts ?? []),
+        evidence: episode.evidence });
+    } catch { /* the mismatch below is authoritative */ }
+    const markdownDigest = expectedMarkdown == null ? null
+      : intentField('episode-request-markdown', expectedMarkdown);
     if (recomputed !== episode.creation_request_digest
         || recomputed !== event.data.request_digest
         || JSON.stringify(projection) !== JSON.stringify(event.data.request_projection)
@@ -11059,6 +11183,11 @@ export function verifyEpisodeCreationCorrelation(loop, lines) {
           !== (event.data.dispatch_request_id_digest ?? null)
         || (episode.dispatch_request_digest ?? null)
           !== (event.data.dispatch_request_digest ?? null)
+        || episode.request_path !== undefined
+        || episode.request_markdown !== expectedMarkdown
+        || episode.request_markdown_digest !== markdownDigest
+        || event.data.request_markdown !== expectedMarkdown
+        || event.data.request_markdown_digest !== markdownDigest
         || event.data.episode_id !== episode.id) {
       errors.push(`episode ${episode.id} creation projection mismatch`);
     }
@@ -11068,9 +11197,97 @@ export function verifyEpisodeCreationCorrelation(loop, lines) {
         || hasDispatchId !== (episode.dispatch_request_digest != null)) {
       errors.push(`episode ${episode.id} has ambiguous creation identity`);
     }
+    const requestIdentity = hasCallerId
+      ? `caller:${episode.creation_request_id_digest}`
+      : `dispatch:${episode.dispatch_request_id_digest}`;
+    const priorIdentityOwner = requestIdentityOwners.get(requestIdentity);
+    if (priorIdentityOwner !== undefined && priorIdentityOwner !== episode.id) {
+      errors.push(`duplicate episode creation request identity ${requestIdentity}`);
+    } else if (/^(?:caller|dispatch):[0-9a-f]{64}$/.test(requestIdentity)) {
+      requestIdentityOwners.set(requestIdentity, episode.id);
+    }
   }
   for (const id of eventById.keys()) {
     if (!episodeById.has(id)) errors.push(`episode-new ${id} has no episode object`);
+  }
+  return { ok: errors.length === 0, errors };
+}
+
+export function verifyWorkstreamCreationCorrelation(loop, lines) {
+  const errors = [];
+  const allWorkstreams = Array.isArray(loop?.workstreams) ? loop.workstreams : [];
+  const allEvents = lines.filter(event => event.type === 'workstream-new');
+  const baselines = lines.filter(event => event.type === 'lease-lineage-baselined');
+  let legacyCount = 0;
+  let versionedEvents = allEvents;
+  if (loop?.initialization == null) {
+    if (baselines.length === 0) {
+      if (allEvents.some(event => event.data?.creation_contract != null)
+          || allWorkstreams.some(workstream => workstream.creation_contract != null)) {
+        errors.push('legacy run has versioned workstreams without an explicit baseline');
+      }
+      return { ok: errors.length === 0, errors };
+    }
+    if (baselines.length !== 1) {
+      return { ok: false, errors: ['legacy run requires exactly one workstream baseline'] };
+    }
+    const baselineIndex = lines.indexOf(baselines[0]);
+    versionedEvents = lines.slice(baselineIndex + 1)
+      .filter(event => event.type === 'workstream-new');
+    legacyCount = baselines[0].data?.legacy_workstream_count;
+  } else if (baselines.length !== 0) {
+    errors.push('initialized run cannot declare a legacy workstream baseline');
+  }
+  if (!Number.isSafeInteger(legacyCount) || legacyCount < 0
+      || legacyCount > allWorkstreams.length
+      || allWorkstreams.length !== legacyCount + versionedEvents.length) {
+    errors.push('workstream object/event cardinality mismatch');
+    return { ok: false, errors };
+  }
+  for (let index = 0; index < legacyCount; index += 1) {
+    if (allWorkstreams[index]?.creation_contract != null) {
+      errors.push(`legacy workstream baseline contains versioned entry ${index}`);
+    }
+  }
+  const eventById = new Map();
+  for (const event of versionedEvents) {
+    const id = event.data?.id;
+    if (typeof id !== 'string' || eventById.has(id)) {
+      errors.push(`duplicate or invalid workstream-new identity ${String(id)}`);
+    } else eventById.set(id, event);
+  }
+  const objectById = new Map();
+  const requestIdentityOwners = new Map();
+  for (const workstream of allWorkstreams.slice(legacyCount)) {
+    if (typeof workstream.id !== 'string' || objectById.has(workstream.id)) {
+      errors.push(`duplicate or invalid workstream object identity ${String(workstream.id)}`);
+      continue;
+    }
+    objectById.set(workstream.id, workstream);
+    const event = eventById.get(workstream.id);
+    const projection = { title: workstream.title, branch: workstream.branch,
+      worktree: workstream.worktree, baseCommit: workstream.base_commit,
+      dependsOn: structuredClone(workstream.depends_on ?? []) };
+    const digest = intentField('workstream-create-request', projection);
+    const requestIdentity = workstream.creation_request_id_digest;
+    const priorIdentityOwner = requestIdentityOwners.get(requestIdentity);
+    if (priorIdentityOwner !== undefined && priorIdentityOwner !== workstream.id) {
+      errors.push(`duplicate workstream creation request identity ${requestIdentity}`);
+    } else if (/^[0-9a-f]{64}$/.test(requestIdentity || '')) {
+      requestIdentityOwners.set(requestIdentity, workstream.id);
+    }
+    if (!event || workstream.creation_contract !== 'workstream-create-v1'
+        || event.data?.creation_contract !== 'workstream-create-v1'
+        || workstream.creation_request_digest !== digest
+        || event.data?.creation_request_digest !== digest
+        || workstream.creation_request_id_digest !== event.data?.creation_request_id_digest
+        || !/^[0-9a-f]{64}$/.test(workstream.creation_request_id_digest || '')
+        || JSON.stringify(event.data?.request_projection) !== JSON.stringify(projection)) {
+      errors.push(`workstream ${workstream.id} creation projection mismatch`);
+    }
+  }
+  for (const id of eventById.keys()) {
+    if (!objectById.has(id)) errors.push(`workstream-new ${id} has no workstream object`);
   }
   return { ok: errors.length === 0, errors };
 }
@@ -11307,6 +11524,10 @@ export function verifyRunSnapshot(loop, lines) {
   if (!episodeCreation.ok) {
     errors.push(...episodeCreation.errors.map(error => `episode creation: ${error}`));
   }
+  const workstreamCreation = verifyWorkstreamCreationCorrelation(loop, lines);
+  if (!workstreamCreation.ok) {
+    errors.push(...workstreamCreation.errors.map(error => `workstream creation: ${error}`));
+  }
   const proofTransitions = verifyProofTransitionCorrelation(loop, lines);
   if (!proofTransitions.ok) {
     errors.push(...proofTransitions.errors.map(error => `proof transition: ${error}`));
@@ -11330,7 +11551,9 @@ const JOURNAL_NAMES = Object.freeze({
   marker: '.anchored-pending.json', events: '.anchored-events.stage',
   state: '.anchored-state.stage', hash: '.anchored-hash.stage',
 });
-const MARKER_KEYS = Object.freeze(['after', 'before', 'caller', 'intent_digest', 'version']);
+const MARKER_KEYS = Object.freeze([
+  'after', 'before', 'caller', 'intent_digest', 'version',
+]);
 const SNAPSHOT_KEYS = Object.freeze(['events_bytes', 'events_digest', 'hash_bytes',
   'hash_digest', 'state_bytes', 'state_digest']);
 
@@ -11760,6 +11983,7 @@ function legacyCheckpointSpec(root, runId, loop, lines,
     lease_state: lease.state, acquired_at: lease.acquired_at,
     legacy_episode_count: legacyEpisodeCount,
     legacy_workstream_count: legacyWorkstreamCount,
+    legacy_active_workstreams: structuredClone(loop.active_workstreams),
     legacy_proof_origins: legacyProofOrigins(
       loop, legacyEpisodeCount, legacyWorkstreamCount),
     legacy_authority_digest: legacyAuthorityDigest(loop),
@@ -11770,7 +11994,7 @@ function legacyCheckpointSpec(root, runId, loop, lines,
 // generic lease/accounting writers, and the fixed root-rebind commit may import this export.
 export function commitVerifiedEventsUnderLock(root, runId, loop, eventSpecs, mutate,
   options = {}) {
-  if (typeof options.crashProbe === 'function') {
+  if (Object.values(options).some(value => typeof value === 'function')) {
     throw new Error('LOCK_HELD_CALLBACK_FORBIDDEN');
   }
   const { baseLines, baseStateHash, callerBinding, intentDigest } = options;
@@ -11789,7 +12013,16 @@ export function commitVerifiedEventsUnderLock(root, runId, loop, eventSpecs, mut
   if (loop?.run_id !== runId) throw new Error('RUN_SNAPSHOT_INVALID: run_id mismatch');
   const lines = baseLines;
   requireVerifiedSnapshot(loop, lines);
-  const checkpoint = legacyCheckpointSpec(root, runId, loop, lines, {
+  const preCheckpointLegacy = loop.initialization === undefined
+    && !lines.some(event => event?.type === 'lease-lineage-baselined');
+  const proofBefore = structuredClone(loop);
+  if (preCheckpointLegacy) {
+    proofBefore.active_workstreams = normalizeLegacyActiveWorkstreams(loop);
+    proofBefore.legacy_lineage = {
+      active_workstreams: structuredClone(proofBefore.active_workstreams),
+    };
+  }
+  const checkpoint = legacyCheckpointSpec(root, runId, proofBefore, lines, {
     callerBinding: binding, now: eventSpecs[0].now,
   });
   const preparedSpecs = structuredClone(
@@ -11807,7 +12040,7 @@ export function commitVerifiedEventsUnderLock(root, runId, loop, eventSpecs, mut
   // The mutator may consume only stable seq/ts/type/data from draft business events. Checksums and
   // event-log head are rebuilt after the candidate-derived proof transitions are attached.
   const draftBusiness = checkpoint === null ? draftCommitted : draftCommitted.slice(1);
-  const candidate = structuredClone(loop);
+  const candidate = structuredClone(proofBefore);
   candidate.event_log_head = headOfLines(draftProspective);
   const draftSpent = spentOfLines(draftProspective);
   if (mutate) mutate(candidate, draftSpent, draftBusiness);
@@ -11815,7 +12048,7 @@ export function commitVerifiedEventsUnderLock(root, runId, loop, eventSpecs, mut
 
   const finalSpecs = draftCommitted.map(event => ({ type: event.type,
     data: structuredClone(event.data), now: event.ts }));
-  attachCandidateProofTransitions(loop, candidate, finalSpecs);
+  attachCandidateProofTransitions(proofBefore, candidate, finalSpecs);
   const prospective = [...lines];
   const allCommitted = [];
   for (const spec of finalSpecs) {
@@ -11835,7 +12068,8 @@ export function commitVerifiedEventsUnderLock(root, runId, loop, eventSpecs, mut
 ```
 
 The literal private helpers above are the complete Task 7B journal implementation, not
-caller-selectable adapters. They implement the exact marker/stage order from the crash contract;
+caller-selectable adapters. They implement the exact state/event/hash marker/stage order from the
+crash contract and deliberately accept no auxiliary pathname publication;
 `readAnchoredMarkerUnderLock` reads only the strict marker and recovery uses raw exact-byte access
 before any canonical public state/log reader. The publisher itself writes a strict non-empty prefix,
 exposes `event-after-partial-append`, then appends the remainder; the seam therefore exercises the
@@ -11945,8 +12179,7 @@ function appendAnchoredUnderLock(root, runId, { type, data }, mutate, preCheck, 
         }
         if (mutate) mutate(candidate, spent, clock);
       }, { baseLines: lines, baseStateHash,
-        callerBinding: binding, intentDigest,
-        });
+        callerBinding: binding, intentDigest });
 }
 
 function transitionalDirectIntent(event) {
@@ -12163,7 +12396,7 @@ diff --git a/scripts/lib/state.mjs b/scripts/lib/state.mjs
  import { assertProjectRootBinding } from './project-root.mjs';
 @@ -120,4 +121,8 @@
 -export function patch(root, runId, field, value, { fence } = {}) {
-+export function patch(root, runId, field, value, { fence, crashProbe } = {}) {
++export function patch(root, runId, field, value, { fence } = {}) {
 +  if (!fence || typeof fence.owner !== 'string'
 +      || !Number.isSafeInteger(fence.generation) || fence.generation < 1) {
 +    throw new Error('FENCE_REQUIRED: patch');
@@ -12182,7 +12415,7 @@ diff --git a/scripts/lib/state.mjs b/scripts/lib/state.mjs
      },
 -    { floor: MUTATION_TURN_FLOOR });
 +    { floor: MUTATION_TURN_FLOOR, callerBinding, intentDigest,
-+      fenceError: 'LEASE_FENCED: patch', crashProbe });
++      fenceError: 'LEASE_FENCED: patch' });
  }
 diff --git a/scripts/lib/workspace.mjs b/scripts/lib/workspace.mjs
 --- a/scripts/lib/workspace.mjs
@@ -12196,7 +12429,7 @@ diff --git a/scripts/lib/workspace.mjs b/scripts/lib/workspace.mjs
 @@ -13,3 +14,4 @@
 -export function newWorkstream(root, runId, { title, branch, worktree, baseCommit = null, dependsOn = [], fence } = {}) {
 +export function newWorkstream(root, runId, { title, branch, worktree, baseCommit = null,
-+  dependsOn = [], fence, crashProbe } = {}) {
++  dependsOn = [], fence } = {}) {
    if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: newWorkstream');
    if (typeof title !== 'string' || title.length === 0 ||
 @@ -67,4 +69,7 @@
@@ -12214,7 +12447,7 @@ diff --git a/scripts/lib/workspace.mjs b/scripts/lib/workspace.mjs
 -  }, fence ? (loop) => { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); } : undefined, { floor: MUTATION_TURN_FLOOR });
 +  }, (loop) => { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); },
 +  { floor: MUTATION_TURN_FLOOR, callerBinding, intentDigest,
-+    fenceError: 'LEASE_FENCED: newWorkstream', crashProbe,
++    fenceError: 'LEASE_FENCED: newWorkstream',
 +    onRecovered: loop => {
 +      const recovered = loop.workstreams.at(-1);
 +      if (!recovered || recovered.title !== title || recovered.branch !== branch
@@ -12292,7 +12525,7 @@ diff --git a/scripts/lib/finish.mjs b/scripts/lib/finish.mjs
 @@ -70,5 +70,13 @@
 -export function finishRun(root, runId, { status, reportRel, proof = {}, confirm, fence, now = Date.now() } = {}) {
 +export function finishRun(root, runId, { status, reportRel, proof = {}, confirm, fence, now,
-+  nowFn = now === undefined ? Date.now : () => now, crashProbe } = {}) {
++  nowFn = now === undefined ? Date.now : () => now } = {}) {
    // Codex r3 sf-3: fence 는 lib 레벨에서 **필수** (CLI 우회 호출도 fence 강제). newEpisode/recordEpisode 와 동일 규약.
    if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: finishRun');
    let result;
@@ -12321,7 +12554,7 @@ diff --git a/scripts/lib/finish.mjs b/scripts/lib/finish.mjs
 -    }, { floor: MUTATION_TURN_FLOOR });
 +    }, { floor: MUTATION_TURN_FLOOR, nowFn,
 +      callerBinding, intentDigest,
-+      fenceError: 'LEASE_FENCED: finishRun', crashProbe,
++      fenceError: 'LEASE_FENCED: finishRun',
 +      onRecovered: loop => {
 +        if (loop.status !== status) throw new Error('FINISH_RESPONSE_PROJECTION_CHANGED');
 +        result = { ok: true, status };
@@ -12368,7 +12601,7 @@ diff --git a/scripts/lib/lease.mjs b/scripts/lib/lease.mjs
 -  return withLock(root, runId, () => {
 -    const { data } = readState(root, runId);
 +export function acquireLease(root, runId, { owner, expectGeneration, runtime,
-+  now = Date.now(), crashProbe } = {}) {
++  now = Date.now() } = {}) {
 +  if (typeof owner !== 'string' || owner.length === 0) throw new Error('INVALID_OWNER');
 +  const callerBinding = { owner, generation: expectGeneration };
 +  const intentDigest = contentHash(JSON.stringify({ operation: 'lease-acquire',
@@ -12432,7 +12665,7 @@ diff --git a/scripts/lib/lease.mjs b/scripts/lib/lease.mjs
 +        const parentEntry = candidate.session_chain.sessions
 +          .find(session => session.superseded_by === owner);
 +        if (parentEntry) parentEntry.outcome = 'took_over';
-+      }, { baseLines: lines, baseStateHash, callerBinding, intentDigest, crashProbe });
++      }, { baseLines: lines, baseStateHash, callerBinding, intentDigest });
 -    return { ok: true, generation: expectGeneration + 1, reason: 'acquired' };
 +    return { ok: true, generation, reason: 'acquired' };
    });
@@ -12770,6 +13003,8 @@ cost, and returns without executing `commitMeasuredCost` again:
 
 ```js
 import { spawnSync as spawnAccounting7c } from 'node:child_process';
+import { rmdirSync as rmdirAccounting7c } from 'node:fs';
+import { join as joinAccounting7c } from 'node:path';
 import { fileURLToPath as fileAccounting7c } from 'node:url';
 
 const ACCOUNTING_CRASH_POINTS7C = Object.freeze([
@@ -12783,8 +13018,8 @@ function accountingCrashCase7c(operation) {
     const input = { turns: 3, tokens: 17, intent: fixture.fence.intent,
       requestId: 'accounting-crash-record-1' };
     return { ...fixture, input,
-      retry: crashProbe => recordCost(fixture.root, fixture.runId,
-        { ...input, fence: fixture.fence, crashProbe }),
+      retry: () => recordCost(fixture.root, fixture.runId,
+        { ...input, fence: fixture.fence }),
       match: event => event.data?.reported_turns === input.turns
         && event.data?.reported_tokens === input.tokens };
   }
@@ -12792,16 +13027,16 @@ function accountingCrashCase7c(operation) {
     const fixture = preflightReceiptFixture();
     const input = { receipt: fixture.read };
     return { ...fixture, input,
-      retry: crashProbe => settleCodexPreflightCost(fixture.root, fixture.runId,
-        { receipt: fixture.read, fence: fixture.fence, crashProbe }),
+      retry: () => settleCodexPreflightCost(fixture.root, fixture.runId,
+        { receipt: fixture.read, fence: fixture.fence }),
       match: event => event.data?.preflight_receipt_id === fixture.read.receipt_id };
   }
   if (operation === 'accounting-process') {
     const fixture = makerProcessReceiptFixture();
     const input = { receipt: fixture.receipt };
     return { ...fixture, input,
-      retry: crashProbe => settleCodexProcessCost(fixture.root, fixture.runId,
-        { receipt: fixture.receipt, fence: fixture.fence, crashProbe }),
+      retry: () => settleCodexProcessCost(fixture.root, fixture.runId,
+        { receipt: fixture.receipt, fence: fixture.fence }),
       match: event => event.data?.process_receipt_id === fixture.receipt.receipt_id };
   }
   const fixture = terminalCodexChildRun();
@@ -12809,8 +13044,8 @@ function accountingCrashCase7c(operation) {
   const fence = { owner: fixture.childRunId, generation: 2, intent: 'accounting' };
   const input = { usage, handoffKey: fixture.handoffKey, intent: fence.intent };
   return { ...fixture, fence, input,
-    retry: crashProbe => settleTerminalCodexMakerCost(fixture.root, fixture.runId,
-      { usage, fence, handoffKey: fixture.handoffKey, crashProbe }),
+    retry: () => settleTerminalCodexMakerCost(fixture.root, fixture.runId,
+      { usage, fence, handoffKey: fixture.handoffKey }),
     match: event => event.data?.terminal_process === 'codex-maker'
       && event.data?.source === 'terminal-maker-measured' };
 }
@@ -12828,6 +13063,9 @@ function assertAccountingCrash7c(operation, point) {
     });
   assert.notEqual(child.error?.code, 'ETIMEDOUT');
   assert.equal(child.status, 91, child.stderr || child.stdout || child.error?.message);
+  // The exact child is now proven dead. Accelerate only its orphan lock's stale TTL; the public
+  // accounting retry remains the sole recovery authority for journal and canonical bytes.
+  rmdirAccounting7c(joinAccounting7c(fixture.root, '.deep-loop', 'runs', fixture.runId, '.lock'));
   fixture.retry();
   const costs = readLines(fixture.root, fixture.runId)
     .filter(event => event.type === 'cost' && fixture.match(event));
@@ -12951,28 +13189,28 @@ diff --git a/tests/helpers/anchored-crash-worker.mjs b/tests/helpers/anchored-cr
 +    const input = parseInput(rawInput, ['intent', 'requestId', 'tokens', 'turns']);
 +    return recordCost(root, runId, { turns: input.turns, tokens: input.tokens,
 +      requestId: input.requestId,
-+      fence: { owner, generation, intent: input.intent },
-+      crashProbe: reached => { if (reached === point) process.exit(91); } });
++      fence: { owner, generation, intent: input.intent } });
++    // Crash selection is scalar-only via the worker environment.
 +  },
 +  'accounting-preflight': ({ root, runId, owner, generation, point, rawInput }) => {
 +    const input = parseInput(rawInput, ['receipt']);
 +    return settleCodexPreflightCost(root, runId, { receipt: input.receipt,
-+      fence: { owner, generation, intent: 'accounting' },
-+      crashProbe: reached => { if (reached === point) process.exit(91); } });
++      fence: { owner, generation, intent: 'accounting' } });
++    // Crash selection is scalar-only via the worker environment.
 +  },
 +  'accounting-process': ({ root, runId, owner, generation, point, rawInput }) => {
 +    const input = parseInput(rawInput, ['receipt']);
 +    return settleCodexProcessCost(root, runId, { receipt: input.receipt,
-+      fence: { owner, generation, intent: 'accounting' },
-+      crashProbe: reached => { if (reached === point) process.exit(91); } });
++      fence: { owner, generation, intent: 'accounting' } });
++    // Crash selection is scalar-only via the worker environment.
 +  },
 +  'accounting-terminal-maker': ({ root, runId, owner, generation, point,
 +    rawInput }) => {
 +    const input = parseInput(rawInput, ['handoffKey', 'intent', 'usage']);
 +    return settleTerminalCodexMakerCost(root, runId, { usage: input.usage,
 +      handoffKey: input.handoffKey,
-+      fence: { owner, generation, intent: input.intent },
-+      crashProbe: reached => { if (reached === point) process.exit(91); } });
++      fence: { owner, generation, intent: input.intent } });
++    // Crash selection is scalar-only via the worker environment.
 +  },
    'generic-append': ({ root, runId, owner, generation, point }) => appendAnchored(
 ```
@@ -13621,8 +13859,8 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 -
 +
 +function commitMeasuredCost(root, runId, loop, lines, baseStateHash, eventData,
-+  { owner, addedTurns, callerBinding, intentDigest, requireSession = true,
-+    crashProbe }) {
++  { owner, addedTurns, callerBinding, intentDigest, requireSession = true }) {
++  // Crash stage selection is private to integrity.mjs and the process environment.
 +  return commitVerifiedEventsUnderLock(root, runId, loop,
 +    [{ type: 'cost', data: eventData }], (candidate, spent) => {
 +      candidate.budget.spent = spent.turns;
@@ -13631,7 +13869,7 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 +        .find(item => item.run_id === owner);
 +      if (!session && requireSession) throw new Error('ACCOUNTING_SESSION_INVALID');
 +      if (session) session.turns = (session.turns || 0) + addedTurns;
-+    }, { baseLines: lines, baseStateHash, callerBinding, intentDigest, crashProbe });
++    }, { baseLines: lines, baseStateHash, callerBinding, intentDigest });
 +}
 +
 +function accountingReplayFence(fence, {
@@ -13864,7 +14102,7 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
  // sum so reconcileBudget agrees automatically. Negative/non-finite still rejected (validCost).
 -export function recordCost(root, runId, { turns = 0, tokens = 0, fence } = {}) {
 +export function recordCost(root, runId, {
-+  turns = 0, tokens = 0, requestId, fence, crashProbe,
++  turns = 0, tokens = 0, requestId, fence,
 +} = {}) {
    if (!validCost({ turns, tokens })) throw new Error(`INVALID_COST: turns/tokens must be finite >= 0 (got ${turns}/${tokens})`);
 +  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(requestId || '')) {
@@ -13926,7 +14164,7 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
  // can be published. The current accounting fence authorizes settlement, while the receipt's origin session owns
  // the charge. An identical retry is a byte-preserving no-op even after the lease has legitimately advanced.
 -export function settleCodexPreflightCost(root, runId, { receipt, fence } = {}) {
-+export function settleCodexPreflightCost(root, runId, { receipt, fence, crashProbe } = {}) {
++export function settleCodexPreflightCost(root, runId, { receipt, fence } = {}) {
    const exact = { ...validateCodexPreflightReceipt(root, runId, receipt), __root: canonicalProjectRoot(root) };
    if (!fence || typeof fence.owner !== 'string' || fence.owner.length === 0
      || !Number.isInteger(fence.generation) || fence.generation < 1
@@ -13970,7 +14208,7 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
  // Terminal exceptions are limited to the exact acquired maker with handoff + finish proof and the exact stopped,
  // pre-import checker with claim + finish proof. Neither branch can alter proof, status, lease, or event shape.
 -export function settleCodexProcessCost(root, runId, { receipt, fence } = {}) {
-+export function settleCodexProcessCost(root, runId, { receipt, fence, crashProbe } = {}) {
++export function settleCodexProcessCost(root, runId, { receipt, fence } = {}) {
    if (receipt?.contract === CODEX_PREFLIGHT_RECEIPT_CONTRACT) {
      return settleCodexPreflightCost(root, runId, { receipt, fence });
    }
@@ -14016,7 +14254,7 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
  // status, proof, lease, or any caller-selected field/event. An identical retry is a no-write idempotent success.
 -export function settleTerminalCodexMakerCost(root, runId, { usage, fence, handoffKey } = {}) {
 +export function settleTerminalCodexMakerCost(root, runId, {
-+  usage, fence, handoffKey, crashProbe,
++  usage, fence, handoffKey,
 +} = {}) {
    if (!isMeasuredOneTurnUsage(usage)) throw new Error('TERMINAL_ACCOUNTING_USAGE_INVALID');
    if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)
@@ -14101,7 +14339,7 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 +      accounting_request_digest: requestDigest };
 +    commitMeasuredCost(root, runId, loop, lines, baseStateHash, eventData,
 +      { owner: lease.owner_run_id, addedTurns: adjTurns, callerBinding, intentDigest,
-+        requireSession: false, crashProbe });
++        requireSession: false });
    });
 @@ -463,30 +458,24 @@ export function settleCodexPreflightCost(root, runId, { receipt, fence } = {}) {
 -    appendEvent(root, runId, {
@@ -14137,7 +14375,7 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 +    };
 +    commitMeasuredCost(root, runId, loop, lines, baseStateHash, eventData,
 +      { owner: exact.owner, addedTurns: adjustedTurns, callerBinding, intentDigest,
-+        crashProbe });
++        requireSession: true });
      return { ok: true, recorded: true, reason: 'recorded' };
 @@ -903,31 +891,25 @@ export function settleCodexProcessCost(root, runId, { receipt, fence } = {}) {
 -    appendEvent(root, runId, {
@@ -14174,7 +14412,7 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 +    };
 +    commitMeasuredCost(root, runId, loop, lines, baseStateHash, eventData,
 +      { owner: origin.owner, addedTurns: adjustedTurns, callerBinding, intentDigest,
-+        crashProbe });
++        requireSession: true });
      return { ok: true, recorded: true, reason: 'recorded' };
 @@ -1025,25 +1007,19 @@ export function settleTerminalCodexMakerCost(root, runId, { usage, fence, handoffKey } = {}) {
 -    appendEvent(root, runId, {
@@ -14205,7 +14443,7 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 +    };
 +    commitMeasuredCost(root, runId, loop, lines, baseStateHash, eventData,
 +      { owner: fence.owner, addedTurns: adjTurns, callerBinding, intentDigest,
-+        crashProbe });
++        requireSession: true });
      return { ok: true, recorded: true, reason: 'recorded' };
 ```
 
@@ -15257,10 +15495,9 @@ git commit -m "fix: verify success-class state authority" -m "Co-Authored-By: Cl
 
 **Files:**
 - Modify: `scripts/lib/episode.mjs:25-220` (public direct authority plus the review operation's
-  already-open mutation context and exact recovered episode projection).
-- Consume: produced `scripts/lib/durable-file.mjs` `createFileDurablyIfAbsent`. Episode request
-  publication uses a canonical-run regular sibling and `tests/reviewer-failclosed.test.mjs` proves
-  that the obsolete `episodes` path is never a publication parent in either race window.
+  already-open mutation context and exact recovered inline-request projection).
+- Modify: `scripts/lib/schema.mjs` (one pure canonical Markdown builder shared by creation and
+  semantic verification). Versioned episodes publish no request pathname or sidecar.
 - Modify: `scripts/lib/insights.mjs:357-509` (compute/emit/latest verified selection).
 - Modify: `scripts/lib/review.mjs:50-179,310-668` (dispatch, claim/block/revalidate, outcomes).
 - Modify: `scripts/lib/workspace.mjs:80-153` (literal status/terminal direct authority plus
@@ -15275,6 +15512,7 @@ git commit -m "fix: verify success-class state authority" -m "Co-Authored-By: Cl
 - Modify: `skills/deep-loop-workflow/references/hill-climbing.md`.
 - Create: `tests/helpers/episode-request.mjs` (test-only unique request-ID adapter).
 - Create: `tests/helpers/review-request.mjs` (test-only unique review dispatch-ID adapter).
+- Create: `tests/helpers/workstream-request.mjs` (test-only unique workstream creation-ID adapter).
 - Modify: `tests/budget.test.mjs`.
 - Modify: `tests/cli-skillface.test.mjs`.
 - Modify: `tests/codex-checker-integration.test.mjs`.
@@ -15315,6 +15553,13 @@ git commit -m "fix: verify success-class state authority" -m "Co-Authored-By: Cl
   dispatch and is not caller-stable retry identity. `beforeFinalLock` is test-only and is never
   accepted by the CLI. Production and skill callers allocate once and reuse on response loss;
   tests share one adapter and pass an explicit ID only when a logical retry is under test.
+  Versioned episode requests are exact anchored `request_markdown` plus a domain-separated digest;
+  same-ID retry returns those bytes and never materializes a file. `workstream new` independently
+  requires a bounded logical `--request-id`; the object and
+  event store `workstream-create-v1`, the request-ID digest, and the complete normalized creation
+  digest. Marker-backed and fully cleaned exact retries return the original ID, while changed reuse
+  is `WORKSTREAM_REQUEST_CONFLICT`. Test setup callers use one adapter; production/skill callers
+  allocate once and never receive an implicit ID.
   Every `episode-new`, `episode-record`, `episode-abandon`, `independent-review-*`,
   `review-outcome`, `workstream-new`, `workstream-status`, `workstream-terminal`, and `state-patch`
   event also carries an exact canonical
@@ -15485,7 +15730,8 @@ function corruptDispatchFixture7f({ corrupt = true, hillClimb = true } = {}) {
   const worktree = '.claude/worktrees/design';
   mkdir7f(join7f(root, worktree), { recursive: true });
   const ws = workstream7f(root, runId,
-    { title: 'design', branch: 'design', worktree, fence }).id;
+    { title: 'design', branch: 'design', worktree,
+      requestId: 'review-dispatch-workstream', fence }).id;
   const artifact = `${worktree}/design.md`;
   write7f(join7f(root, artifact), '# design');
   const maker = episode7f(root, runId, { plugin: 'deep-work', role: 'maker',
@@ -15502,53 +15748,41 @@ function corruptDispatchFixture7f({ corrupt = true, hillClimb = true } = {}) {
   return { root, runId, ws, maker, fence };
 }
 
-test7f('obsolete episodes parent swaps cannot redirect first write or final publication', () => {
-  for (const window of ['before-first-write', 'before-final-link']) {
-    const fixture = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
-    const external = realpath7f(temp7f(join7f(tmp7f(), 'dl-episode-swap-external-')));
-    write7f(join7f(external, 'sentinel'), 'outside-bytes');
-    const run = runDirDispatch7f(fixture.root, fixture.runId);
-    const obsolete = join7f(run, 'episodes');
-    const swap = () => symlink7f(external, obsolete,
-      process.platform === 'win32' ? 'junction' : 'dir');
-    const result = episode7f(fixture.root, fixture.runId, {
-      plugin: 'deep-work', role: 'maker', kind: 'fix', point: 'design',
-      workstream: fixture.ws, fence: fixture.fence,
-      requestId: `episode-obsolete-parent-${window}`,
-      ...(window === 'before-first-write'
-        ? { beforeMaterialize: swap } : { beforePublish: swap }),
-    });
-    assert7f.equal(result.requestPath,
-      join7f(run, `episode-request-${result.id}.md`));
-    assert7f.match(readDispatch7f(result.requestPath, 'utf8'), /Execution plane/);
-    assert7f.equal(readDispatch7f(join7f(external, 'sentinel'), 'utf8'), 'outside-bytes');
-    assert7f.deepEqual(readdirDispatch7f(external), ['sentinel']);
-    assert7f.deepEqual(readdirDispatch7f(obsolete), ['sentinel'],
-      'attacker-controlled obsolete parent is never written');
-    assert7f.deepEqual(readdirDispatch7f(run)
-      .filter(name => name.includes('.create-')), []);
-  }
-});
-
-test7f('episode materialization hook re-enters verified read and survives a competing mutation', () => {
+test7f('versioned episode request is anchored inline and creates no request sidecar', () => {
   const fixture = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
-  let hookReads = 0;
+  const run = runDirDispatch7f(fixture.root, fixture.runId);
+  const beforeNames = readdirDispatch7f(run).sort();
   const result = episode7f(fixture.root, fixture.runId, {
     plugin: 'deep-work', role: 'maker', kind: 'fix', point: 'design',
     workstream: fixture.ws, fence: fixture.fence,
-    requestId: 'episode-unlocked-materialization',
-    beforeMaterialize: work => {
-      assert7f.equal(verifiedDispatch7f(fixture.root, fixture.runId).data
-        .episodes.some(episode => episode.id === work.id), true);
-      hookReads += 1;
-      record7f(fixture.root, fixture.runId, work.id,
-        { status: 'in_progress', fence: fixture.fence });
-    },
+    requestId: 'episode-inline-request',
   });
-  assert7f.equal(hookReads, 1);
-  assert7f.equal(verifiedDispatch7f(fixture.root, fixture.runId).data.episodes
-    .find(episode => episode.id === result.id).status, 'in_progress');
-  assert7f.match(readDispatch7f(result.requestPath, 'utf8'), /Execution plane/);
+  const state = verifiedDispatch7f(fixture.root, fixture.runId).data;
+  const episode = state.episodes.find(item => item.id === result.id);
+  const event = lines7f(fixture.root, fixture.runId)
+    .find(item => item.type === 'episode-new' && item.data.episode_id === result.id);
+  assert7f.equal(episode.request_path, undefined);
+  assert7f.equal(result.requestMarkdown, episode.request_markdown);
+  assert7f.equal(result.requestMarkdownDigest, episode.request_markdown_digest);
+  assert7f.equal(event.data.request_markdown, result.requestMarkdown);
+  assert7f.equal(event.data.request_markdown_digest, result.requestMarkdownDigest);
+  assert7f.match(result.requestMarkdown, /Execution plane: fill/);
+  assert7f.deepEqual(readdirDispatch7f(run).sort(), beforeNames,
+    'the anchored state/event commit creates no request pathname');
+});
+
+test7f('episode exact retry returns the same inline request without another write', () => {
+  const fixture = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
+  const input = { plugin: 'deep-work', role: 'maker', kind: 'fix', point: 'design',
+    workstream: fixture.ws, fence: fixture.fence,
+    requestId: 'episode-inline-retry' };
+  const first = episode7f(fixture.root, fixture.runId, input);
+  const committed = bytes7f(fixture.root, fixture.runId);
+  const second = episode7f(fixture.root, fixture.runId, input);
+  assert7f.deepEqual(second, first);
+  assert7f.deepEqual(bytes7f(fixture.root, fixture.runId), committed);
+  assert7f.equal(lines7f(fixture.root, fixture.runId).filter(event =>
+    event.type === 'episode-new' && event.data.episode_id === first.id).length, 1);
 });
 
 function materializeHillContract7f(fixture) {
@@ -15586,12 +15820,15 @@ test7f('review dispatch exact retry after marker cleanup reuses one checker', ()
   const first = dispatch7f(fixture.root, fixture.runId, input);
   const firstEpisode = stateDispatch7f(fixture.root, fixture.runId).data.episodes
     .find(episode => episode.id === first.checkerEpisodeId);
-  write7f(firstEpisode.request_path, '# execution-plane edited request\n');
+  const requestMarkdown = firstEpisode.request_markdown;
+  const requestMarkdownDigest = firstEpisode.request_markdown_digest;
   const committed = bytes7f(fixture.root, fixture.runId);
   const second = dispatch7f(fixture.root, fixture.runId, input);
   assert7f.equal(second.checkerEpisodeId, first.checkerEpisodeId);
-  assert7f.equal(readDispatch7f(firstEpisode.request_path, 'utf8'),
-    '# execution-plane edited request\n');
+  const replayedEpisode = stateDispatch7f(fixture.root, fixture.runId).data.episodes
+    .find(episode => episode.id === first.checkerEpisodeId);
+  assert7f.equal(replayedEpisode.request_markdown, requestMarkdown);
+  assert7f.equal(replayedEpisode.request_markdown_digest, requestMarkdownDigest);
   assert7f.deepEqual(bytes7f(fixture.root, fixture.runId), committed,
     'post-cleanup exact dispatch retry must be byte-identical');
   const state = stateDispatch7f(fixture.root, fixture.runId).data;
@@ -15599,11 +15836,9 @@ test7f('review dispatch exact retry after marker cleanup reuses one checker', ()
     && episode.target_maker === fixture.maker).length, 1);
   assert7f.equal(lines7f(fixture.root, fixture.runId).filter(event =>
     event.type === 'episode-new' && event.data?.role === 'checker').length, 1);
-  removeDispatch7f(firstEpisode.request_path);
   assert7f.equal(dispatch7f(fixture.root, fixture.runId, input).checkerEpisodeId,
     first.checkerEpisodeId);
-  assert7f.match(readDispatch7f(firstEpisode.request_path, 'utf8'),
-    /Execution plane: fill/);
+  assert7f.match(requestMarkdown, /Execution plane: fill/);
 });
 
 test7f('hill-climb same-ID replay bypasses mutable contract and evidence derivation', () => {
@@ -15639,33 +15874,23 @@ test7f('hill-climb same-ID replay bypasses mutable contract and evidence derivat
   assert7f.deepEqual(bytes7f(fixture.root, fixture.runId), committed);
 });
 
-test7f('episode request rematerialization rejects symlink file and directory winners', () => {
-  for (const winner of ['file', 'directory']) {
-    const fixture = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
-    const input = { point: 'design', workstreamId: fixture.ws,
-      detected: { 'deep-review': true, codex: true },
-      requestId: `symlink-winner-${winner}`, fence: fixture.fence };
-    const first = dispatch7f(fixture.root, fixture.runId, input);
-    const checker = stateDispatch7f(fixture.root, fixture.runId).data.episodes
-      .find(episode => episode.id === first.checkerEpisodeId);
-    const outside = join7f(fixture.root, `outside-${winner}`);
-    if (winner === 'file') {
-      removeDispatch7f(checker.request_path);
-      write7f(outside, 'external winner');
-      symlink7f(outside, checker.request_path);
-    } else {
-      const directory = dirname7f(checker.request_path);
-      removeDispatch7f(directory, { recursive: true, force: true });
-      mkdir7f(outside);
-      write7f(join7f(outside, 'marker'), 'external directory');
-      symlink7f(outside, directory, 'dir');
-    }
-    assert7f.throws(() => dispatch7f(fixture.root, fixture.runId, input),
-      /DURABLE_EXISTING_INVALID|EPISODE_DIRECTORY_INVALID/);
-    const marker = winner === 'file' ? outside : join7f(outside, 'marker');
-    assert7f.equal(readDispatch7f(marker, 'utf8'),
-      winner === 'file' ? 'external winner' : 'external directory');
-  }
+test7f('paired state and event request Markdown tampering is rejected semantically', () => {
+  const fixture = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
+  const input = { point: 'design', workstreamId: fixture.ws,
+    detected: { 'deep-review': true, codex: true },
+    requestId: 'inline-request-tamper', fence: fixture.fence };
+  const first = dispatch7f(fixture.root, fixture.runId, input);
+  rewriteEpisodeCreationEvent7f(fixture, data => {
+    data.request_markdown = '# forged request';
+    data.request_markdown_digest = hashDispatch7f('sha256').update('forged').digest('hex');
+  });
+  raw7f(fixture.root, fixture.runId, loop => {
+    const checker = loop.episodes.find(episode => episode.id === first.checkerEpisodeId);
+    checker.request_markdown = '# forged request';
+    checker.request_markdown_digest = hashDispatch7f('sha256').update('forged').digest('hex');
+  });
+  assert7f.throws(() => verifiedDispatch7f(fixture.root, fixture.runId),
+    /episode creation/);
 });
 
 function rewriteEpisodeCreationEvent7f(fixture, mutate) {
@@ -16068,16 +16293,21 @@ Append this literal response-loss case to `tests/insights.test.mjs`:
 ```js
 import { emitInsights as emitRecovery7f } from '../scripts/lib/insights.mjs';
 import { contentHash as hashInsights7f } from '../scripts/lib/envelope.mjs';
+import { spawnSync as spawnInsights7f } from 'node:child_process';
+import { fileURLToPath as fileInsights7f } from 'node:url';
 import { verifiedAppRun as insightsRun7f } from './fixtures/verified-app-run.mjs';
 
 test('recovered insights commit publishes or validates its referenced artifact before success', () => {
   const fixture = insightsRun7f('dl-insights-recovery-');
   const fence = { owner: fixture.owner, generation: fixture.generation };
   const options = { fence, now: Date.parse('2026-07-13T00:00:10.000Z'), rnd: () => 0 };
-  assert.throws(() => emitRecovery7f(fixture.root, fixture.runId, {
-    ...options,
-    crashProbe: point => { if (point === 'hash-after-rename') throw new Error('TEST_CRASH'); },
-  }), /TEST_CRASH/);
+  const crashed = spawnInsights7f(process.execPath, [fileInsights7f(new URL(
+    './helpers/anchored-crash-worker.mjs', import.meta.url)), fixture.root, fixture.runId,
+  'insights-emit', 'hash-after-rename'], { encoding: 'utf8', env: { ...process.env,
+    DEEP_LOOP_CRASH_OWNER: fixture.owner,
+    DEEP_LOOP_CRASH_GENERATION: String(fixture.generation),
+    DEEP_LOOP_CRASH_INPUT: JSON.stringify({ now: options.now, rnd: 0 }) } });
+  assert.equal(crashed.status, 91, crashed.stderr);
   const directory = join(fixture.root, '.deep-loop', 'insights');
   assert.equal(readdirSync(directory).some(name => name.startsWith('.tmp-')), true);
   assert.equal(readdirSync(directory).some(name => name.endsWith('-insights.json')), false);
@@ -16229,7 +16459,6 @@ function finishRecoveredInsightsArtifact(root, recovered,
 
 export function emitInsights(root, runId, {
   fence, now = Date.now(), rnd = Math.random, platform, monotonicNowFn, renameFn, sleepFn,
-  crashProbe,
 } = {}) {
   if (!fence || typeof fence.owner !== 'string' || !fence.owner.length
       || !Number.isInteger(fence.generation)) {
@@ -16282,7 +16511,7 @@ export function emitInsights(root, runId, {
     loop => {
       const checked = leaseCheck(loop, fence);
       if (!checked.ok) throw new Error('LEASE_FENCED: ' + checked.reason);
-    }, { floor: MUTATION_TURN_FLOOR, fenceCheck: identityFence, crashProbe }));
+    }, { floor: MUTATION_TURN_FLOOR, fenceCheck: identityFence }));
   renameAtomicWithRetry(tmp, join(insightsDir(root), finalName),
     { platform, monotonicNowFn, renameFn, sleepFn });
   return { ok: true, path: rel, sha256, candidates_count: payload.candidates.length,
@@ -16343,7 +16572,7 @@ Apply this exact import diff to `scripts/lib/review.mjs`:
 diff --git a/scripts/lib/review.mjs b/scripts/lib/review.mjs
 --- a/scripts/lib/review.mjs
 +++ b/scripts/lib/review.mjs
-@@ -5,5 +5,7 @@
+@@ -5,5 +5,8 @@
  import { latestInsights } from './insights.mjs';
 -import { readState } from './state.mjs';
 -import { appendAnchored } from './integrity.mjs';
@@ -16351,8 +16580,9 @@ diff --git a/scripts/lib/review.mjs b/scripts/lib/review.mjs
 +  withVerifiedMutationLock } from './integrity.mjs';
 +import { contentHash } from './envelope.mjs';
 -import { newBlockedCheckerEpisode, newEpisode } from './episode.mjs';
-+import { episodeMaterializationWork, episodeRequestDigest,
-+  materializeEpisodeRequest, newBlockedCheckerEpisode, newEpisode } from './episode.mjs';
++import { episodeRequestDigest, newBlockedCheckerEpisode,
++  newEpisode } from './episode.mjs';
++
  import { leaseCheck } from './lease.mjs';
 ```
 
@@ -16596,6 +16826,19 @@ diff --git a/scripts/lib/review.mjs b/scripts/lib/review.mjs
 -  appendAnchored(root, runId, { type: 'review-outcome', data: eventData },
 +  mutation.appendAnchored({ type: 'review-outcome', data: eventData },
      (loop) => {
+@@ -518,6 +530,9 @@
+-      const checker = lockedContext.checker;
+-      const maker = lockedContext.maker;
+-      const workstream = lockedContext.workstream;
++      // preCheck validates the source snapshot; mutate must resolve records again from the
++      // gateway-owned candidate clone rather than mutate captured source-snapshot references.
++      const candidateContext = snapshotContext(loop, episodeId);
++      const checker = candidateContext.checker;
++      const maker = candidateContext.maker;
++      const workstream = candidateContext.workstream;
+       checker.status = passed ? 'approved' : 'rejected';
+       checker.review_source = reviewSource;
+       const breaker = loop.circuit_breaker;
 @@ -606,4 +618,5 @@
          if (!stillValid) throw new Error(`REVIEW_CONTRACT_MISSING: contract ${checker.contract.path} was removed or altered since dispatch (recorded sha256 mismatch) — re-materialize the tracked contract (그대로 복사), re-run the review, and record this SAME checker episode (it stays pending; do NOT dispatch a second checker)`);
        }
@@ -16706,15 +16949,15 @@ diff --git a/scripts/lib/episode.mjs b/scripts/lib/episode.mjs
 +++ b/scripts/lib/episode.mjs
 @@ -1,7 +1,8 @@
 -import { mkdirSync, existsSync } from 'node:fs';
-+import { existsSync, lstatSync, realpathSync } from 'node:fs';
++import { existsSync } from 'node:fs';
 -import { isAbsolute, join, resolve, sep } from 'node:path';
-+import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
++import { isAbsolute, join, resolve, sep } from 'node:path';
  import { readState, writeState, withLock, runDir } from './state.mjs';
 -import { appendAnchored } from './integrity.mjs';
 +import { appendAnchored, directMutationOptions, intentField, readVerifiedState,
 +  withVerifiedMutationLock } from './integrity.mjs';
 -import { atomicWrite } from './envelope.mjs';
-+import { createFileDurablyIfAbsent } from './durable-file.mjs';
++import { episodeRequestMarkdown } from './schema.mjs';
  import { slugify } from './slug.mjs';
  import { leaseCheck } from './lease.mjs';
 @@ -28,5 +29,90 @@ function requestSkeleton({ id, plugin, role, kind, point, workstream, expectedArtifacts, evidence }) {
@@ -16885,24 +17128,24 @@ diff --git a/scripts/lib/episode.mjs b/scripts/lib/episode.mjs
 +} = {}) {
 +  return createEpisode(root, runId, { plugin, role, kind, point, workstream,
 +    expectedArtifacts, targetMaker, reviewerResolution, evidence, contract, fence,
-+    mutation, crashProbe, operation: 'newEpisode' });
++    mutation, operation: 'newEpisode' });
  }
 @@ -150,2 +192,3 @@ export function newBlockedCheckerEpisode(root, runId, { plugin, kind, point, workstream = null, targetMaker, reason, reviewerResolution, fence } = {}) {
 -export function newBlockedCheckerEpisode(root, runId, { plugin, kind, point, workstream = null, targetMaker, reason, reviewerResolution, fence } = {}) {
 +export function newBlockedCheckerEpisode(root, runId, { plugin, kind, point,
-+  workstream = null, targetMaker, reason, reviewerResolution, fence, mutation, crashProbe } = {}) {
++  workstream = null, targetMaker, reason, reviewerResolution, fence, mutation } = {}) {
    return createEpisode(root, runId, {
 @@ -158,4 +201,5 @@ export function newBlockedCheckerEpisode(root, runId, { plugin, kind, point, workstream = null, targetMaker, reason, reviewerResolution, fence } = {}) {
      plugin, role: 'checker', kind, point, workstream, targetMaker, reviewerResolution,
 -    initialStatus: 'blocked', blockReason: reason, fence, operation: 'newBlockedCheckerEpisode',
-+    initialStatus: 'blocked', blockReason: reason, fence, mutation, crashProbe,
++    initialStatus: 'blocked', blockReason: reason, fence, mutation,
 +    operation: 'newBlockedCheckerEpisode',
    });
  }
 @@ -164,2 +208,3 @@ export function newBlockedCheckerEpisode(root, runId, { plugin, kind, point, workstream = null, targetMaker, reason, reviewerResolution, fence } = {}) {
 -export function abandonEpisode(root, runId, episodeId, { reason, confirm, fence } = {}) {
 +export function abandonEpisode(root, runId, episodeId, {
-+  reason, confirm, fence, crashProbe } = {}) {
++  reason, confirm, fence } = {}) {
    if (confirm !== true) throw new Error('CONFIRM_REQUIRED: pass --confirm (human-only)');
 @@ -197,7 +242,16 @@ export function abandonEpisode(root, runId, episodeId, { reason, confirm, fence } = {}) {
      if (!ep) throw new Error(`EPISODE_NOT_FOUND: ${episodeId}`);
@@ -16910,7 +17153,7 @@ diff --git a/scripts/lib/episode.mjs b/scripts/lib/episode.mjs
 -  }, { floor: MUTATION_TURN_FLOOR });
 +  }, directMutationOptions('episode-abandon', fence,
 +    { episodeId, reason, confirm }, 'LEASE_FENCED: abandonEpisode', {
-+      floor: MUTATION_TURN_FLOOR, crashProbe, onRecovered: loop => {
++      floor: MUTATION_TURN_FLOOR, onRecovered: loop => {
 +        const episode = loop.episodes.find(item => item.id === episodeId);
 +        if (episode?.status !== 'abandoned' || episode.abandon_reason !== reason) {
 +          throw new Error('EPISODE_RESPONSE_PROJECTION_CHANGED');
@@ -16922,7 +17165,7 @@ diff --git a/scripts/lib/episode.mjs b/scripts/lib/episode.mjs
 +
 -export function recordEpisode(root, runId, episodeId, { status, artifacts = [], proof = {}, fence } = {}) {
 +export function recordEpisode(root, runId, episodeId, {
-+  status, artifacts = [], proof = {}, fence, crashProbe } = {}) {
++  status, artifacts = [], proof = {}, fence } = {}) {
    if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: recordEpisode');
 @@ -211,2 +265,3 @@ export function recordEpisode(root, runId, episodeId, { status, artifacts = [], proof = {}, fence } = {}) {
    if (proof === null || typeof proof !== 'object' || Array.isArray(proof)) throw new Error('EPISODE_INPUT_INVALID: proof must be an object');
@@ -16934,7 +17177,7 @@ diff --git a/scripts/lib/episode.mjs b/scripts/lib/episode.mjs
 -  }, { floor: MUTATION_TURN_FLOOR });
 +  }, directMutationOptions('episode-record', fence,
 +    { episodeId, status, artifacts, proofDigest }, 'LEASE_FENCED: recordEpisode', {
-+      floor: MUTATION_TURN_FLOOR, crashProbe, onRecovered: loop => {
++      floor: MUTATION_TURN_FLOOR, onRecovered: loop => {
 +        const episode = loop.episodes.find(item => item.id === episodeId);
 +        if (episode?.status !== status
 +            || JSON.stringify(episode.artifacts ?? []) !== JSON.stringify(artifacts)) {
@@ -16960,7 +17203,7 @@ An existing regular exact-parent request is validation-only and execution-plane 
 `beforeMaterialize` is the only public test hook for this phase and always runs after lock release;
 the journal uses only the private scalar worker schedule and invokes no function under the lock.
 
-```diff
+```text
 diff --git a/scripts/lib/episode.mjs b/scripts/lib/episode.mjs
 index c567221..8bf9718 100644
 --- a/scripts/lib/episode.mjs
@@ -17235,6 +17478,11 @@ index c567221..8bf9718 100644
      operation: 'newBlockedCheckerEpisode',
    });
  }
+```
+
+The executable review half of that correction remains a real patch:
+
+```diff
 diff --git a/scripts/lib/review.mjs b/scripts/lib/review.mjs
 index 730e203..aa1cf72 100644
 --- a/scripts/lib/review.mjs
@@ -17297,7 +17545,7 @@ index 730e203..aa1cf72 100644
    const eps = data.episodes || [];
    // P2 codex r7: hill-climb 마이그레이션 특례 — pre-patch 커널이 approve한 checker(contract 미pin)에 묶인
    // maker는 makerReviewed=true라 재리뷰 불가, abandonEpisode는 terminal checker를 거부 → finish의
-@@ -340,16 +343,31 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
+@@ -340,16 +343,30 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
      const latest = cs.reduce((a, b) => (epOrder(a.id, b.id) >= 0 ? a : b));
      return latest.status === 'approved' && !latest.contract?.sha256;
    };
@@ -17319,8 +17567,7 @@ index 730e203..aa1cf72 100644
 +    throw new Error('REVIEW_RECOVERY_PROJECTION_MISMATCH');
 +  }
 +  if (dispatchMatches.length === 1) {
-+    materializeEpisodeRequest(root, runId,
-+      episodeMaterializationWork(dispatchMatches[0]));
++    if (typeof dispatchMatches[0].request_markdown !== 'string') throw new Error('REVIEW_RECOVERY_PROJECTION_MISMATCH');
 +    return replayReviewDispatch(dispatchMatches[0]);
 +  }
 +  const candidateMakers = eps.filter(e =>
@@ -17354,7 +17601,7 @@ index 730e203..aa1cf72 100644
    const { reviewer, flags, mode, reviewerResolution, blockedReason } = resolveReviewer(data, detected, { independentSubagent });
    // P2 (hillclimb-ledger 2026-07-10, release-blocking): hill-climb run은 checker 계약(HILLCLIMB-001)이 실제로
    // 강제되는 리뷰만 만들 수 있다. `.deep-review/`는 gitignored라 fresh checkout에는 계약이 없고, deep-review는
-@@ -427,20 +483,69 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
+@@ -427,20 +483,73 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
    const episodeInput = {
      plugin: reviewer === 'deep-review-loop' || reviewer === 'deep-review' ? 'deep-review' : reviewer,
      kind: `${point}-review`, point, workstream: workstreamId, targetMaker,
@@ -17372,6 +17619,7 @@ index 730e203..aa1cf72 100644
 -  const episodeProjection = { ...projection,
 -    episode_request_digest: episodeRequestDigest(episodeCreationInput) };
 +  if (typeof beforeFinalLock === 'function') beforeFinalLock();
++  // The nested episode transaction commits its request Markdown inline.
 -  const { id } = withReviewMutation(root, runId, fence,
 +  const committed = withReviewMutation(root, runId, fence,
 -    'dispatch-review-episode', episodeProjection,
@@ -17419,20 +17667,261 @@ index 730e203..aa1cf72 100644
 +        ? newBlockedCheckerEpisode(root, runId,
 +          { ...episodeInput, reason: blockedReason, mutation })
 +        : newEpisode(root, runId, { ...episodeInput, role: 'checker', mutation });
-+      return { id: created.id, replayed: null,
-+        deferred_materialization: created.deferred_materialization };
++
++      return { id: created.id, replayed: null };
 +    });
 +  if (committed.replayed !== null) {
-+    const checker = readVerifiedState(root, runId).data.episodes
-+      .find(episode => episode.id === committed.id);
-+    materializeEpisodeRequest(root, runId, episodeMaterializationWork(checker));
 +    return committed.replayed;
 +  }
-+  materializeEpisodeRequest(root, runId, committed.deferred_materialization);
++  const checker = readVerifiedState(root, runId).data.episodes
++    .find(episode => episode.id === committed.id);
++  if (checker == null || typeof checker.request_markdown !== 'string') {
++    throw new Error('REVIEW_RECOVERY_PROJECTION_MISMATCH');
++  }
++
++
 +  const id = committed.id;
    const descriptor = {
      ...checkerDescriptor(reviewer, { point, workstreamId, flags, mode, reason: blockedReason }),
      ...(evidence !== undefined ? { evidence } : {}),
+```
+
+The preceding episode diffs document the incremental RED-to-GREEN path. Before running any Task 7F
+test, replace their request helper/create range with this complete final afterimage. It removes the
+after-lock materializer, request pathname, sidecar publication, and every function-valued crash hook.
+The exact self-contained Markdown and its domain-separated digest are part of the versioned episode
+object and `episode-new` event, so the central anchored journal publishes them only as state/event
+bytes. Response-loss replay reconstructs the returned Markdown from that authenticated record and
+never touches a caller-selected or replaceable filesystem path:
+
+```js
+// PLAN_REPLACE_RANGE: scripts/lib/episode.mjs final episode request/create range
+function episodeRequestProjection({ plugin, role, kind, point, workstream = null,
+  expectedArtifacts = [], targetMaker, reviewerResolution, evidence, contract,
+  initialStatus = 'pending', blockReason, creationRequestIdDigest,
+  dispatchRequestIdDigest, dispatchRequestDigest, dispatchResponse } = {}) {
+  return { plugin, role, kind, point, workstream, expectedArtifacts,
+    targetMaker: targetMaker ?? null,
+    reviewerResolution: reviewerResolution ?? null,
+    evidence_digest: intentField('episode-evidence', evidence),
+    contract_digest: intentField('episode-contract', contract),
+    initialStatus, blockReason: blockReason ?? null,
+    creation_request_id_digest: creationRequestIdDigest ?? null,
+    dispatch_request_id_digest: dispatchRequestIdDigest ?? null,
+    dispatch_request_digest: dispatchRequestDigest ?? null,
+    dispatch_response: structuredClone(dispatchResponse ?? null) };
+}
+
+export function episodeRequestDigest(input) {
+  return intentField('episode-create-request', episodeRequestProjection(input));
+}
+
+const EPISODE_REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
+function episodeRequestIdDigest(requestId, dispatchRequestIdDigest) {
+  if (dispatchRequestIdDigest != null) {
+    if (requestId != null) throw new Error('EPISODE_REQUEST_ID_CONFLICT');
+    return null;
+  }
+  if (!EPISODE_REQUEST_ID.test(requestId || '')) {
+    throw new Error('EPISODE_REQUEST_ID_REQUIRED');
+  }
+  return intentField('episode-create-request-id', requestId);
+}
+
+function episodeAppend(root, runId, mutation, event, mutate, preCheck, options,
+  buildResponse) {
+  const execute = context => {
+    const snapshot = context.readVerifiedState();
+    preCheck(snapshot.data);
+    if (context.recovered !== null) {
+      options.onRecovered(snapshot.data, context.recovered);
+      return buildResponse();
+    }
+    const existing = options.onExisting(snapshot.data);
+    if (existing !== null) return buildResponse();
+    context.appendAnchored(event, mutate, preCheck, options);
+    return buildResponse();
+  };
+  if (mutation !== null) return execute(mutation);
+  const { callerBinding, intentDigest, fenceError } = options;
+  return withVerifiedMutationLock(root, runId,
+    { callerBinding, intentDigest, fenceError }, execute);
+}
+
+function createEpisode(root, runId, {
+  plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker,
+  reviewerResolution, evidence, contract, initialStatus = 'pending', blockReason,
+  fence, operation, mutation = null, requestId, dispatchRequestIdDigest,
+  dispatchRequestDigest, dispatchResponse,
+} = {}) {
+  if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) {
+    throw new Error(`FENCE_REQUIRED: ${operation}`);
+  }
+  if (!plugin || typeof plugin !== 'string' || !plugin.length) {
+    throw new Error('EPISODE_INPUT_INVALID: plugin');
+  }
+  if (!role || typeof role !== 'string' || !role.length) {
+    throw new Error('EPISODE_INPUT_INVALID: role');
+  }
+  if (!kind || typeof kind !== 'string' || !kind.length
+      || !point || typeof point !== 'string' || !point.length
+      || !Array.isArray(expectedArtifacts)
+      || !expectedArtifacts.every(item => typeof item === 'string')) {
+    throw new Error('EPISODE_INPUT_INVALID');
+  }
+  const safePlugin = slugify(plugin) || 'plugin';
+  const creationRequestIdDigest = episodeRequestIdDigest(
+    requestId, dispatchRequestIdDigest);
+  const completeRequest = episodeRequestProjection({ plugin, role, kind, point,
+    workstream, expectedArtifacts, targetMaker, reviewerResolution, evidence, contract,
+    initialStatus, blockReason, creationRequestIdDigest,
+    dispatchRequestIdDigest, dispatchRequestDigest, dispatchResponse });
+  const requestDigest = episodeRequestDigest({ plugin, role, kind, point, workstream,
+    expectedArtifacts, targetMaker, reviewerResolution, evidence, contract,
+    initialStatus, blockReason, creationRequestIdDigest,
+    dispatchRequestIdDigest, dispatchRequestDigest, dispatchResponse });
+  let id = null;
+  let requestMarkdown = null;
+  let requestMarkdownDigest = null;
+  let initialEpisode = null;
+  const recoverExact = (loop, recoveredTransaction = null) => {
+    const recoveredEvents = recoveredTransaction?.events?.filter(event =>
+      event.type === 'episode-new' && event.data?.creation_contract === 'episode-create-v1'
+        && event.data?.request_digest === requestDigest) ?? [];
+    if (recoveredTransaction !== null && recoveredEvents.length !== 1) {
+      throw new Error('EPISODE_RESPONSE_PROJECTION_CHANGED');
+    }
+    const matches = recoveredTransaction !== null
+      ? loop.episodes.filter(episode => episode.id === recoveredEvents[0].data.episode_id)
+      : loop.episodes.filter(episode => dispatchRequestIdDigest != null
+        ? episode.dispatch_request_id_digest === dispatchRequestIdDigest
+        : episode.creation_request_id_digest === creationRequestIdDigest);
+    if (matches.length !== 1) throw new Error('EPISODE_RESPONSE_PROJECTION_CHANGED');
+    const [recovered] = matches;
+    if (recovered.plugin !== plugin || recovered.role !== role
+        || recovered.kind !== kind || recovered.point !== point
+        || recovered.workstream_id !== workstream
+        || JSON.stringify(recovered.expected_artifacts) !== JSON.stringify(expectedArtifacts)
+        || (recovered.target_maker ?? null) !== (targetMaker ?? null)
+        || JSON.stringify(recovered.reviewer_resolution ?? null)
+          !== JSON.stringify(reviewerResolution ?? null)
+        || JSON.stringify(recovered.evidence) !== JSON.stringify(evidence)
+        || JSON.stringify(recovered.contract) !== JSON.stringify(contract)
+        || recovered.creation_initial_status !== initialStatus
+        || (recovered.creation_block_reason ?? null) !== (blockReason ?? null)
+        || (recovered.creation_request_id_digest ?? null)
+          !== (creationRequestIdDigest ?? null)
+        || (recovered.dispatch_request_id_digest ?? null)
+          !== (dispatchRequestIdDigest ?? null)
+        || (recovered.dispatch_request_digest ?? null) !== (dispatchRequestDigest ?? null)
+        || JSON.stringify(recovered.dispatch_response ?? null)
+          !== JSON.stringify(dispatchResponse ?? null)
+        || recovered.creation_contract !== 'episode-create-v1'
+        || recovered.creation_request_digest !== requestDigest) {
+      throw new Error(dispatchRequestIdDigest == null
+        && recovered.creation_request_id_digest === creationRequestIdDigest
+        ? 'EPISODE_REQUEST_CONFLICT' : 'EPISODE_RESPONSE_PROJECTION_CHANGED');
+    }
+    id = recovered.id;
+    requestMarkdown = episodeRequestMarkdown({ id, plugin, role, kind, point,
+      workstream, expectedArtifacts, evidence });
+    requestMarkdownDigest = intentField('episode-request-markdown', requestMarkdown);
+    if (recovered.request_path !== undefined
+        || recovered.request_markdown !== requestMarkdown
+        || recovered.request_markdown_digest !== requestMarkdownDigest) {
+      throw new Error('EPISODE_RESPONSE_PROJECTION_CHANGED');
+    }
+    return recovered;
+  };
+  const onExisting = loop => loop.episodes.some(episode => dispatchRequestIdDigest != null
+    ? episode.dispatch_request_id_digest === dispatchRequestIdDigest
+    : episode.creation_request_id_digest === creationRequestIdDigest)
+    ? recoverExact(loop) : null;
+  const event = { type: 'episode-new', data: {
+    plugin, role, kind, point, creation_contract: 'episode-create-v1',
+    request_digest: requestDigest,
+    creation_request_id_digest: creationRequestIdDigest,
+    dispatch_request_id_digest: dispatchRequestIdDigest ?? null,
+    dispatch_request_digest: dispatchRequestDigest ?? null,
+    request_projection: completeRequest,
+    ...(initialStatus === 'blocked'
+      ? { status: initialStatus, block_reason: blockReason } : {}),
+    ...(reviewerResolution ? { reviewer_resolution: reviewerResolution } : {}),
+  } };
+  const preCheck = loop => {
+    const checked = leaseCheck(loop, fence);
+    if (!checked.ok) throw new Error(`LEASE_FENCED: ${checked.reason}`);
+    if (workstream && !loop.workstreams.find(item => item.id === workstream)) {
+      throw new Error(`WORKSTREAM_NOT_FOUND: ${workstream}`);
+    }
+    if (id !== null) return;
+    const n = String(loop.episodes.length + 1).padStart(3, '0');
+    id = `${n}-${safePlugin}`;
+    requestMarkdown = episodeRequestMarkdown({ id, plugin, role, kind, point,
+      workstream, expectedArtifacts, evidence });
+    requestMarkdownDigest = intentField('episode-request-markdown', requestMarkdown);
+    event.data.episode_id = id;
+    event.data.request_markdown = requestMarkdown;
+    event.data.request_markdown_digest = requestMarkdownDigest;
+    initialEpisode = {
+      id, plugin, role, kind, point, workstream_id: workstream, status: initialStatus,
+      request_markdown: requestMarkdown,
+      request_markdown_digest: requestMarkdownDigest,
+      expected_artifacts: structuredClone(expectedArtifacts),
+      creation_request_digest: requestDigest, creation_initial_status: initialStatus,
+      creation_block_reason: blockReason ?? null, creation_contract: 'episode-create-v1',
+      creation_request_id_digest: creationRequestIdDigest,
+      dispatch_request_id_digest: dispatchRequestIdDigest ?? null,
+      dispatch_request_digest: dispatchRequestDigest ?? null,
+      dispatch_response: structuredClone(dispatchResponse ?? null),
+      verification: { checker_episode_required: role === 'maker',
+        checker_plugin: 'deep-review', review_point: point,
+        proof_required: structuredClone(expectedArtifacts) },
+      ...(targetMaker ? { target_maker: targetMaker } : {}),
+      ...(role === 'checker' ? { requires_independent_session: true } : {}),
+      ...(reviewerResolution ? { reviewer_resolution: reviewerResolution } : {}),
+      ...(evidence !== undefined ? { evidence: structuredClone(evidence) } : {}),
+      ...(contract !== undefined ? { contract: structuredClone(contract) } : {}),
+      ...(initialStatus === 'blocked'
+        ? { block_reason: blockReason, needs_human: true } : {}),
+    };
+  };
+  const buildResponse = () => Object.freeze({ id,
+    requestMarkdown, requestMarkdownDigest });
+  const options = mutation !== null
+    ? { floor: MUTATION_TURN_FLOOR, onRecovered: recoverExact, onExisting }
+    : directMutationOptions(operation, fence, completeRequest,
+      `LEASE_FENCED: ${operation}`,
+      { floor: MUTATION_TURN_FLOOR, onRecovered: recoverExact, onExisting });
+  return episodeAppend(root, runId, mutation, event, loop => {
+    const episode = structuredClone(initialEpisode);
+    loop.episodes.push(episode);
+    if (workstream) loop.workstreams.find(item => item.id === workstream).episodes.push(id);
+  }, preCheck, options, buildResponse);
+}
+
+export function newEpisode(root, runId, {
+  plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker,
+  reviewerResolution, evidence, contract, fence, mutation = null, requestId,
+  dispatchRequestIdDigest, dispatchRequestDigest, dispatchResponse,
+} = {}) {
+  return createEpisode(root, runId, { plugin, role, kind, point, workstream,
+    expectedArtifacts, targetMaker, reviewerResolution, evidence, contract, fence,
+    mutation, requestId, dispatchRequestIdDigest, dispatchRequestDigest,
+    dispatchResponse, operation: 'newEpisode' });
+}
+
+export function newBlockedCheckerEpisode(root, runId, {
+  plugin, kind, point, workstream = null, targetMaker, reason, reviewerResolution,
+  fence, mutation = null, requestId, dispatchRequestIdDigest, dispatchRequestDigest,
+  dispatchResponse,
+} = {}) {
+  return createEpisode(root, runId, { plugin, role: 'checker', kind, point, workstream,
+    targetMaker, reviewerResolution, initialStatus: 'blocked', blockReason: reason,
+    fence, mutation, requestId, dispatchRequestIdDigest, dispatchRequestDigest,
+    dispatchResponse, operation: 'newBlockedCheckerEpisode' });
+}
 ```
 
 The proof-transition retrofit is already complete in Task 7B's installable integrity afterimage;
@@ -17452,7 +17941,7 @@ before the business mutator and restores the same ID on response-loss recovery:
 ```js
 // PLAN_REPLACE_EXPORT: scripts/lib/workspace.mjs newWorkstream
 export function newWorkstream(root, runId, {
-  title, branch, worktree, baseCommit = null, dependsOn = [], fence,
+  title, branch, worktree, baseCommit = null, dependsOn = [], requestId, fence,
 } = {}) {
   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) {
     throw new Error('FENCE_REQUIRED: newWorkstream');
@@ -17465,6 +17954,9 @@ export function newWorkstream(root, runId, {
   if (!Array.isArray(dependsOn)
       || dependsOn.some(dependency => typeof dependency !== 'string' || dependency.length === 0)) {
     throw new Error('WORKSTREAM_INPUT_INVALID: dependsOn must be an array of strings');
+  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(requestId || '')) {
+    throw new Error('WORKSTREAM_REQUEST_ID_REQUIRED');
   }
   const rootResolved = realpathSync(root);
   function resolveDeep(path) {
@@ -17503,37 +17995,56 @@ export function newWorkstream(root, runId, {
     throw new Error(`WORKSTREAM_WORKTREE_ESCAPE: worktree is not durably relative: ${worktree}`);
   }
   const callerBinding = { owner: fence.owner, generation: fence.generation };
+  const requestProjection = { title, branch, worktree: storedWorktree,
+    baseCommit, dependsOn: structuredClone(dependsOn) };
+  const requestIdDigest = intentField('workstream-create-request-id', requestId);
+  const requestDigest = intentField('workstream-create-request', requestProjection);
   const intentDigest = workstreamNewIntent(callerBinding,
-    { title, branch, worktree: storedWorktree, baseCommit, dependsOn });
-  let id;
-  const event = { type: 'workstream-new', data: { title, id: null } };
-  appendAnchored(root, runId, event, loop => {
-    loop.workstreams.push({
-      id, title, status: 'planned', branch, worktree: storedWorktree,
-      base_commit: baseCommit, dirty_on_handoff: false,
-      pr: { intended: true, state: 'none', url: null }, episodes: [],
-      review_points_done: [], depends_on: dependsOn,
-    });
-  }, loop => {
+    { ...requestProjection, requestIdDigest, requestDigest });
+  const fenceCheck = loop => {
     const result = leaseCheck(loop, fence);
     if (!result.ok) throw new Error(`LEASE_FENCED: ${result.reason}`);
-    if (id == null) {
-      const number = String(loop.workstreams.length + 1).padStart(2, '0');
-      id = `ws-${number}-${slugify(title) || 'ws'}`;
-      event.data.id = id;
-    }
-  }, { floor: MUTATION_TURN_FLOOR, callerBinding, intentDigest,
-    fenceError: 'LEASE_FENCED: newWorkstream',
-    onRecovered: loop => {
-      const recovered = loop.workstreams.at(-1);
-      if (!recovered || recovered.title !== title || recovered.branch !== branch
-          || recovered.worktree !== storedWorktree || recovered.base_commit !== baseCommit
-          || JSON.stringify(recovered.depends_on) !== JSON.stringify(dependsOn)) {
-        throw new Error('WORKSTREAM_RESPONSE_PROJECTION_CHANGED');
+  };
+  return withVerifiedMutationLock(root, runId, { callerBinding, intentDigest,
+    fenceError: 'LEASE_FENCED: newWorkstream' }, mutation => {
+    const loop = mutation.readVerifiedState({ fenceCheck }).data;
+    const matches = loop.workstreams.filter(workstreamRecord =>
+      workstreamRecord.creation_request_id_digest === requestIdDigest);
+    if (matches.length > 1) throw new Error('WORKSTREAM_RESPONSE_PROJECTION_CHANGED');
+    if (matches.length === 1) {
+      const [existing] = matches;
+      if (existing.creation_contract !== 'workstream-create-v1'
+          || existing.creation_request_digest !== requestDigest
+          || existing.title !== title || existing.branch !== branch
+          || existing.worktree !== storedWorktree || existing.base_commit !== baseCommit
+          || JSON.stringify(existing.depends_on) !== JSON.stringify(dependsOn)) {
+        throw new Error('WORKSTREAM_REQUEST_CONFLICT');
       }
-      id = recovered.id;
-    } });
-  return { id };
+      return { id: existing.id };
+    }
+    if (mutation.recovered !== null) {
+      throw new Error('WORKSTREAM_RESPONSE_PROJECTION_CHANGED');
+    }
+    const number = String(loop.workstreams.length + 1).padStart(2, '0');
+    const id = `ws-${number}-${slugify(title) || 'ws'}`;
+    const event = { type: 'workstream-new', data: { id, title,
+      creation_contract: 'workstream-create-v1',
+      creation_request_id_digest: requestIdDigest,
+      creation_request_digest: requestDigest,
+      request_projection: requestProjection } };
+    mutation.appendAnchored(event, candidate => {
+      candidate.workstreams.push({
+        id, title, status: 'planned', branch, worktree: storedWorktree,
+        base_commit: baseCommit, dirty_on_handoff: false,
+        pr: { intended: true, state: 'none', url: null }, episodes: [],
+        review_points_done: [], depends_on: structuredClone(dependsOn),
+        creation_contract: 'workstream-create-v1',
+        creation_request_id_digest: requestIdDigest,
+        creation_request_digest: requestDigest,
+      });
+    }, undefined, { floor: MUTATION_TURN_FLOOR });
+    return { id };
+  });
 }
 ```
 
@@ -17543,19 +18054,22 @@ episode, review, workspace, and state writers, not validator-local models:
 ```js
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { attachCandidateProofTransitions, readLines, readVerifiedState,
-  proofEntityDigest, verifyProofTransitionCorrelation }
+  intentField, proofEntityDigest, verifyProofTransitionCorrelation,
+  verifyWorkstreamCreationCorrelation }
   from '../scripts/lib/integrity.mjs';
 import { newEpisode, recordEpisode } from './helpers/episode-request.mjs';
 import { newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal }
-  from '../scripts/lib/workspace.mjs';
+  from './helpers/workstream-request.mjs';
 import { patch } from '../scripts/lib/state.mjs';
 import { legacyInProgressProofFixture } from './fixtures/verified-app-run.mjs';
+import { dispatchReview, recordReviewOutcome } from './helpers/review-request.mjs';
+import { finishRun } from '../scripts/lib/finish.mjs';
 
 const ROOT = () => mkdtempSync(join(tmpdir(), 'deep-loop-proof-transitions-'));
 const FENCE = runId => ({ owner: runId, generation: 1, runtime: 'codex' });
@@ -17638,6 +18152,32 @@ test('central gateway owns every proof-event entity mapping', () => {
   assert.equal(events[0].data.proof_transitions, undefined);
 });
 
+test('workstream creation identities are globally unique across distinct entity IDs', () => {
+  const requestIdentity = 'a'.repeat(64);
+  const projections = [
+    { title: 'first', branch: 'first', worktree: '.worktrees/first',
+      baseCommit: null, dependsOn: [] },
+    { title: 'second', branch: 'second', worktree: '.worktrees/second',
+      baseCommit: null, dependsOn: [] },
+  ];
+  const workstreams = projections.map((projection, index) => ({
+    id: `ws-0${index + 1}`, title: projection.title, branch: projection.branch,
+    worktree: projection.worktree, base_commit: null, depends_on: [],
+    creation_contract: 'workstream-create-v1',
+    creation_request_id_digest: requestIdentity,
+    creation_request_digest: intentField('workstream-create-request', projection),
+  }));
+  const lines = workstreams.map((workstream, index) => ({
+    type: 'workstream-new', data: { id: workstream.id,
+      creation_contract: workstream.creation_contract,
+      creation_request_id_digest: requestIdentity,
+      creation_request_digest: workstream.creation_request_digest,
+      request_projection: projections[index] },
+  }));
+  assert.equal(verifyWorkstreamCreationCorrelation(
+    { initialization: {}, workstreams }, lines).ok, false);
+});
+
 test('transition reducer rejects digest and multi-entity event tampering', () => {
   const empty = { initialization: {}, episodes: [], workstreams: [], active_workstreams: [] };
   const created = { initialization: {}, episodes: [
@@ -17682,9 +18222,9 @@ test('gateway derives exact episode workstream and active-array transitions', ()
     cwdFn: () => root, now: new Date('2026-07-13T00:00:00.000Z') });
   const fence = FENCE(runId);
   const first = newWorkstream(root, runId, { title: 'first', branch: 'first',
-    worktree: '.worktrees/first', fence });
+    worktree: '.worktrees/first', requestId: 'proof-workstream-first', fence });
   const second = newWorkstream(root, runId, { title: 'second', branch: 'second',
-    worktree: '.worktrees/second', fence });
+    worktree: '.worktrees/second', requestId: 'proof-workstream-second', fence });
   setWorkstreamStatus(root, runId, first.id, 'in_progress', { fence });
   setWorkstreamStatus(root, runId, second.id, 'in_progress', { fence });
   const maker = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker',
@@ -17706,14 +18246,34 @@ test('pre-checkpoint legacy proof history is opaque and existing entities advanc
   // The fixture is the checked-in 1.8.2 raw-hash-valid builder used by Task 7B. It contains an
   // in-progress maker and workstream plus old episode/workstream events without proof_transitions.
   const { root, runId, makerId, workstreamId, fence } = legacyInProgressProofFixture();
-  assert.doesNotThrow(() => readVerifiedState(root, runId));
+  assert.deepEqual(readVerifiedState(root, runId).data.active_workstreams,
+    [workstreamId, workstreamId, 'ws-legacy-unknown']);
   writeFileSync(join(root, 'legacy.md'), 'legacy result\n');
   recordEpisode(root, runId, makerId, { status: 'done', artifacts: ['legacy.md'], fence });
+  assert.deepEqual(readVerifiedState(root, runId).data.active_workstreams, [workstreamId]);
   setWorkstreamStatus(root, runId, workstreamId, 'in_review', { fence });
+  const review = dispatchReview(root, runId, { point: 'implementation', workstreamId,
+    detected: { 'deep-review': true }, requestId: 'legacy-dispatch-1', fence });
+  mkdirSync(join(root, '.worktrees', 'legacy'), { recursive: true });
+  writeFileSync(join(root, '.worktrees', 'legacy', 'review.md'), '# approved\n');
+  recordReviewOutcome(root, runId, { episodeId: review.checkerEpisodeId,
+    verdict: 'APPROVE', proof: { report: '.worktrees/legacy/review.md' }, fence });
+  recordWorkstreamTerminal(root, runId, workstreamId, { status: 'ready', proof: {}, fence });
+  writeFileSync(join(root, '.deep-loop', 'runs', runId, 'final-report.md'),
+    '# legacy completed\n');
+  assert.equal(finishRun(root, runId, { status: 'completed', reportRel: 'final-report.md',
+    proof: {}, fence }).ok, true);
   const lines = readLines(root, runId);
   const baseline = lines.find(event => event.type === 'lease-lineage-baselined');
   assert.equal(baseline.data.legacy_proof_origins.length, 2);
-  assert.equal(verifyProofTransitionCorrelation(readVerifiedState(root, runId).data, lines).ok, true);
+  assert.deepEqual(baseline.data.legacy_active_workstreams, [workstreamId]);
+  const completed = readVerifiedState(root, runId).data;
+  assert.deepEqual(completed.legacy_lineage,
+    { active_workstreams: [workstreamId] });
+  assert.equal(completed.status, 'completed');
+  assert.equal(completed.workstreams[0].status, 'ready');
+  assert.equal(completed.episodes.find(episode => episode.role === 'checker').status, 'approved');
+  assert.equal(verifyProofTransitionCorrelation(completed, lines).ok, true);
 });
 
 test('hash-valid proof and exact active-array rewrites fail closed', () => {
@@ -17747,7 +18307,7 @@ proof fixture asserts byte-identical no-write failure from `finishRun`.
 Append this complete canonical-alias case to `tests/episode.test.mjs`:
 
 ```js
-import { existsSync as existsAlias7f, mkdtempSync as tempAlias7f,
+import { mkdtempSync as tempAlias7f, readdirSync as readDirAlias7f,
   realpathSync as realAlias7f, symlinkSync as symlinkAlias7f } from 'node:fs';
 import { tmpdir as tmpAlias7f } from 'node:os';
 import { join as joinAlias7f } from 'node:path';
@@ -17755,7 +18315,7 @@ import { initRun as initAlias7f } from '../scripts/lib/initrun.mjs';
 import { readVerifiedState as readAlias7f } from '../scripts/lib/integrity.mjs';
 import { newEpisode as newAlias7f } from './helpers/episode-request.mjs';
 
-test('episode request path is canonical before a symlink-root transaction commits',
+test('episode inline request is identical through a symlink-root transaction',
   { skip: process.platform === 'win32' }, () => {
     const parent = realAlias7f(tempAlias7f(joinAlias7f(tmpAlias7f(), 'dl-episode-alias-')));
     const canonical = joinAlias7f(parent, 'canonical');
@@ -17768,16 +18328,17 @@ test('episode request path is canonical before a symlink-root transaction commit
       kind: 'implementation', point: 'implementation', requestId: 'canonical-alias-1',
       fence: { owner: runId, generation: 1, runtime: 'codex' } });
     const episode = readAlias7f(canonical, runId).data.episodes[0];
-    assert.equal(episode.request_path, result.requestPath);
-    assert.equal(episode.request_path,
-      joinAlias7f(realAlias7f(joinAlias7f(canonical, '.deep-loop', 'runs', runId)),
-        `episode-request-${episode.id}.md`));
-    assert.equal(existsAlias7f(episode.request_path), true);
+    assert.equal(episode.request_path, undefined);
+    assert.equal(episode.request_markdown, result.requestMarkdown);
+    assert.equal(episode.request_markdown_digest, result.requestMarkdownDigest);
+    assert.equal(readDirAlias7f(joinAlias7f(canonical, '.deep-loop', 'runs', runId))
+      .some(name => name.startsWith('episode-request-')), false);
   });
 ```
 
 Reuse the file's existing `mkdirSync`, `test`, and `assert` bindings; the aliased root is used for the
-actual public mutation, while every persisted/returned path must be the canonical run sibling.
+actual public mutation while the returned request remains the exact anchored Markdown and no request
+pathname is published.
 
 The direct episode API now requires one bounded caller-generated logical request ID. The execution
 plane chooses it once before the first call, reuses it after response loss, and rotates it only for
@@ -17790,14 +18351,20 @@ diff --git a/scripts/deep-loop.mjs b/scripts/deep-loop.mjs
 index b47cf2c..0385970 100644
 --- a/scripts/deep-loop.mjs
 +++ b/scripts/deep-loop.mjs
-@@ -419 +419,6 @@ const handlers = {
+@@ -395 +395,3 @@ const handlers = {
+-      const r = newWorkstream(root, runId, { title, branch, worktree, dependsOn, fence }); json(r); return 0;
++      const requestId = reqStr(f, 'request-id');
++      if (!requestId) { error('MISSING_REQUIRED_OPTION: --request-id'); return 2; }
++      const r = newWorkstream(root, runId, { title, branch, worktree, dependsOn, requestId, fence }); json(r); return 0;
+@@ -419 +419,7 @@ const handlers = {
 -      const r = newEpisode(root, runId, { plugin, role, kind, point, workstream: f.workstream, expectedArtifacts: f.artifacts ? JSON.parse(f.artifacts) : [], fence }); json({ id: r.id, request_path: r.requestPath }); return 0;
 +      const requestId = reqStr(f, 'request-id');
 +      if (!requestId) { error('MISSING_REQUIRED_OPTION: --request-id'); return 2; }
 +      const r = newEpisode(root, runId, { plugin, role, kind, point,
 +        workstream: f.workstream, expectedArtifacts: f.artifacts ? JSON.parse(f.artifacts) : [],
 +        fence, requestId });
-+      json({ id: r.id, request_path: r.requestPath }); return 0;
++      json({ id: r.id, request_markdown: r.requestMarkdown,
++        request_markdown_digest: r.requestMarkdownDigest }); return 0;
 @@ -448,5 +453,8 @@ const handlers = {
      if (verb === 'dispatch') {
        const point = reqStr(f, 'point'); if (!point) { error('MISSING_POINT'); return 2; }
@@ -17812,6 +18379,16 @@ diff --git a/skills/deep-loop/SKILL.md b/skills/deep-loop/SKILL.md
 index 177f497..d812012 100644
 --- a/skills/deep-loop/SKILL.md
 +++ b/skills/deep-loop/SKILL.md
+@@ -299 +299 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" workstream new --title "<workstream
+-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" workstream new --title "<workstream title>" --branch "<actual-branch>" --worktree ".claude/worktrees/<ws-slug>" --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>
++node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" workstream new --title "<workstream title>" --branch "<actual-branch>" --worktree ".claude/worktrees/<ws-slug>" --request-id <workstream_request_id> --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>
+@@ -305 +305 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" workstream new --title "<workstream
+-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" workstream new --title "<workstream title>" --branch "<actual-branch>" --worktree ".claude/worktrees/<ws-slug>" --depends-on '["ws-id-1"]' --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>
++node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" workstream new --title "<workstream title>" --branch "<actual-branch>" --worktree ".claude/worktrees/<ws-slug>" --depends-on '["ws-id-1"]' --request-id <workstream_request_id> --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>
+@@ -305,0 +306,3 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" workstream new --title "<workstream
++`<workstream_request_id>`는 logical workstream 생성 전에 한 번 정해 response-loss retry에는
++재사용하고, intentional new workstream에서만 새 ID를 사용한다. 같은 ID로 payload를 바꾸지 않는다.
++
 @@ -323 +323 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" workstream new --title "<workstream
 -node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin <maker_plugin> --role maker --kind implementation --point design --workstream <workstream_id> --artifacts '[".claude/worktrees/<ws-slug>/expected-output.md"]' --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>
 +node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin <maker_plugin> --role maker --kind implementation --point design --workstream <workstream_id> --artifacts '[".claude/worktrees/<ws-slug>/expected-output.md"]' --request-id <episode_request_id> --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>
@@ -17823,6 +18400,9 @@ diff --git a/skills/deep-loop-continue/SKILL.md b/skills/deep-loop-continue/SKIL
 index 2898ca4..54ae473 100644
 --- a/skills/deep-loop-continue/SKILL.md
 +++ b/skills/deep-loop-continue/SKILL.md
+@@ -128 +128 @@
+-Route A/B/C 모두 hill-climb dispatch 응답의 `descriptor.evidence`(커널-검증 insights 경로·emit ULID·sha256·후보)를 fresh checker의 리뷰 요청 본문에 그대로 포함하여 maker 인용과 대조하게 한다. checker episode의 `request.md`에도 같은 evidence 사본이 durable 기록되며, Codex measured host는 anchored claim의 evidence/contract를 immutable prompt contract로 전달한다.
++Route A/B/C 모두 hill-climb dispatch 응답의 `descriptor.evidence`(커널-검증 insights 경로·emit ULID·sha256·후보)를 fresh checker의 리뷰 요청 본문에 그대로 포함하여 maker 인용과 대조하게 한다. checker episode의 anchored `request_markdown`에도 같은 evidence 사본이 durable 기록되며 별도 request pathname은 만들지 않는다. Codex measured host는 anchored claim의 evidence/contract를 immutable prompt contract로 전달한다.
 @@ -133 +133 @@
 -node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review dispatch --point <review_point> --workstream <workstream_id> --independent-subagent --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
 +node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review dispatch --point <review_point> --workstream <workstream_id> --request-id <review_dispatch_request_id> --independent-subagent --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
@@ -17871,6 +18451,9 @@ index e88606e..ffebcd3 100644
 +`<episode_request_id>`는 이 hill-climb maker 생성 전에 한 번 정하고 response-loss retry에는
 +그대로 재사용한다. 다음 intentional maker만 새 ID를 사용한다.
 +
+@@ -119 +122 @@
+-- 통과 시 `evidence`(커널-검증 `latestInsights`의 경로·emit_ulid·producer run·sha256·후보 — 부재 시 `null`)를 디스크립터에 싣고 **checker episode의 `request.md`에도 durable 기록**한다. 스킬은 이 evidence를 checker 리뷰 요청 본문에 그대로 포함하고, checker는 maker 인용(ledger `insights_ref`/`insights_sha256`, design/plan은 문서 인용)과 대조해 mismatch를 criterion (a) 위반으로 판정한다. run-특정 값은 계약 파일이 아니라 이 evidence로 전달한다 — 계약 파일은 run-불변.
++- 통과 시 `evidence`(커널-검증 `latestInsights`의 경로·emit_ulid·producer run·sha256·후보 — 부재 시 `null`)를 디스크립터와 **checker episode의 anchored `request_markdown`에 durable 기록**하며 별도 request pathname은 만들지 않는다. 스킬은 이 evidence를 checker 리뷰 요청 본문에 그대로 포함하고, checker는 maker 인용(ledger `insights_ref`/`insights_sha256`, design/plan은 문서 인용)과 대조해 mismatch를 criterion (a) 위반으로 판정한다. run-특정 값은 계약 파일이 아니라 이 evidence로 전달한다 — 계약 파일은 run-불변.
 diff --git a/tests/budget.test.mjs b/tests/budget.test.mjs
 index f7c2304..5faf6b2 100644
 --- a/tests/budget.test.mjs
@@ -17925,9 +18508,57 @@ diff --git a/tests/episode.test.mjs b/tests/episode.test.mjs
 index 201f495..d8d5875 100644
 --- a/tests/episode.test.mjs
 +++ b/tests/episode.test.mjs
+@@ -3,5 +3,5 @@ import test from 'node:test';
+-import { mkdtempSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
++import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
+ import { tmpdir } from 'node:os';
+-import { join, resolve } from 'node:path';
++import { join } from 'node:path';
+ import { initRun } from '../scripts/lib/initrun.mjs';
+-import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
++import { readState, writeState } from '../scripts/lib/state.mjs';
 @@ -9 +9 @@ import { reconcileBudget } from '../scripts/lib/budget.mjs';
 -import { newEpisode, recordEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
 +import { newEpisode, recordEpisode, abandonEpisode } from './helpers/episode-request.mjs';
+@@ -20,11 +20,14 @@ function freshRun() { const { root, runId } = seed(); return { root, runId, fence
+-test('newEpisode scaffolds request.md, bumps episodes_total, sets current', () => {
++test('newEpisode anchors inline request Markdown, bumps episodes_total, sets current', () => {
+   const { root, runId } = seed();
+-  const { id, requestPath } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', fence: fence(runId) });
++  const { id, requestMarkdown, requestMarkdownDigest } = newEpisode(root, runId,
++    { plugin: 'deep-work', role: 'maker', kind: 'implementation',
++      point: 'implementation', fence: fence(runId) });
+   assert.match(id, /^001-deep-work$/);
+-  assert.ok(existsSync(requestPath));
+   const { data } = readState(root, runId);
+   assert.equal(data.comprehension.episodes_total, 1);
+   assert.equal(data.current_episode, id);
+   assert.equal(data.episodes[0].status, 'pending');
+   assert.equal(data.episodes[0].verification.checker_episode_required, true);
++  assert.equal(data.episodes[0].request_markdown, requestMarkdown);
++  assert.equal(data.episodes[0].request_markdown_digest, requestMarkdownDigest);
+ });
+@@ -51,12 +54,13 @@ test('recordEpisode done requires expected artifacts to exist', () => {
+-// Fix 3: path-traversal plugin name produces safe id and file is inside episodes dir
+-test('newEpisode with path-traversal plugin name produces safe id and contained path', () => {
++// A path-traversal plugin name produces only a safe logical ID and inline request.
++test('newEpisode with path-traversal plugin name produces safe id and no pathname', () => {
+   const { root, runId } = seed();
+-  const { id, requestPath } = newEpisode(root, runId, { plugin: '../../../../etc/evil', role: 'maker', kind: 'x', point: 'implementation', fence: fence(runId) });
++  const { id, requestMarkdown } = newEpisode(root, runId, { plugin: '../../../../etc/evil',
++    role: 'maker', kind: 'x', point: 'implementation', fence: fence(runId) });
+   // id must not contain path separators
+   assert.match(id, /^001-[a-z0-9-]+$/);
+   assert.ok(!/[/\\]/.test(id), 'id must not contain path separators');
+-  // request file must exist and be under runDir/episodes
+-  assert.ok(existsSync(requestPath));
+-  const base = resolve(runDir(root, runId), 'episodes');
+-  assert.ok(requestPath.startsWith(base), `requestPath ${requestPath} must start with ${base}`);
++  assert.match(requestMarkdown, /Execution plane: fill/);
++  const episode = readState(root, runId).data.episodes[0];
++  assert.equal(episode.request_path, undefined);
++  assert.equal(episode.request_markdown, requestMarkdown);
+ });
 diff --git a/tests/fencing.test.mjs b/tests/fencing.test.mjs
 index 07a4642..36bec42 100644
 --- a/tests/fencing.test.mjs
@@ -17960,21 +18591,57 @@ diff --git a/tests/orch-cli.test.mjs b/tests/orch-cli.test.mjs
 index e449792..b19a37f 100644
 --- a/tests/orch-cli.test.mjs
 +++ b/tests/orch-cli.test.mjs
-@@ -275 +275 @@ test('review dispatch accepts --independent-subagent and records a neutral legac
+@@ -273,4 +273,4 @@ test('review dispatch accepts --independent-subagent and records a neutral legac
+-  const ws = JSON.parse(run(root, ['workstream', 'new', '--title', 'A', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--owner', runId, '--generation', '1']));
++  const ws = JSON.parse(run(root, ['workstream', 'new', '--title', 'A', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--request-id', 'cli-review-workstream', '--owner', runId, '--generation', '1']));
+   writeFileSync(join(root, 'plan.txt'), 'artifact');
 -  const maker = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'plan', '--point', 'plan', '--workstream', ws.id, '--artifacts', '["plan.txt"]', '--owner', runId, '--generation', '1']));
 +  const maker = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'plan', '--point', 'plan', '--workstream', ws.id, '--artifacts', '["plan.txt"]', '--request-id', 'finish-proof-maker', '--owner', runId, '--generation', '1']));
+   run(root, ['episode', 'record', '--id', maker.id, '--status', 'done', '--artifacts', '["plan.txt"]', '--owner', runId, '--generation', '1']);
 @@ -278 +278 @@ test('review dispatch accepts --independent-subagent and records a neutral legac
 -  const dispatched = JSON.parse(run(root, ['review', 'dispatch', '--point', 'plan', '--workstream', ws.id, '--independent-subagent', '--owner', runId, '--generation', '1']));
 +  const dispatched = JSON.parse(run(root, ['review', 'dispatch', '--point', 'plan', '--workstream', ws.id, '--request-id', 'cli-review-round-1', '--independent-subagent', '--owner', runId, '--generation', '1']));
-@@ -848 +848 @@ test('episode new creates request + episode via CLI', () => {
+@@ -833 +833 @@ test('workstream new + set via CLI with lease', () => {
+-  const ws = JSON.parse(run(root, ['workstream', 'new', '--title', 'Auth', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--owner', runId, '--generation', '1']));
++  const ws = JSON.parse(run(root, ['workstream', 'new', '--title', 'Auth', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--request-id', 'cli-workstream-auth', '--owner', runId, '--generation', '1']));
+@@ -841 +841 @@ test('mutating command with wrong generation is fenced (exit 3)', () => {
+-  try { run(root, ['workstream', 'new', '--title', 'X', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--owner', runId, '--generation', '9']); }
++  try { run(root, ['workstream', 'new', '--title', 'X', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--request-id', 'cli-workstream-wrong-generation', '--owner', runId, '--generation', '9']); }
+@@ -846,6 +846,8 @@ test('mutating command with wrong generation is fenced (exit 3)', () => {
+-test('episode new creates request + episode via CLI', () => {
++test('episode new returns anchored inline request + episode via CLI', () => {
+   const { root, runId } = seed();
 -  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'impl', '--point', 'implementation', '--owner', runId, '--generation', '1']));
 +  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'impl', '--point', 'implementation', '--request-id', 'cli-episode-create', '--owner', runId, '--generation', '1']));
-@@ -864 +864 @@ test('workstream terminal (abandoned) + review record reach kernel via CLI', ()
+   assert.match(ep.id, /^001-deep-work$/);
++  assert.match(ep.request_markdown, /Execution plane: fill/);
++  assert.match(ep.request_markdown_digest, /^[0-9a-f]{64}$/);
+   assert.equal(readState(root, runId).data.episodes.length, 1);
+ });
+@@ -857,10 +857,10 @@ test('workstream terminal (abandoned) + review record reach kernel via CLI', ()
+-  const ws = JSON.parse(run(root, ['workstream', 'new', '--title', 'A', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--owner', runId, '--generation', '1']));
++  const ws = JSON.parse(run(root, ['workstream', 'new', '--title', 'A', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--request-id', 'cli-workstream-terminal-a', '--owner', runId, '--generation', '1']));
+   run(root, ['workstream', 'set', '--id', ws.id, '--status', 'in_progress', '--owner', runId, '--generation', '1']);
+   run(root, ['workstream', 'terminal', '--id', ws.id, '--status', 'abandoned', '--proof', '{"reason":"superseded"}', '--owner', runId, '--generation', '1']);
+   assert.equal(readState(root, runId).data.workstreams[0].status, 'abandoned');
+   // review record: a done maker (so the checker binds — dispatchReview refuses unbound), then dispatch + record.
+-  const ws2 = JSON.parse(run(root, ['workstream', 'new', '--title', 'B', '--branch', 'b2', '--worktree', '.claude/worktrees/w2', '--owner', runId, '--generation', '1']));
++  const ws2 = JSON.parse(run(root, ['workstream', 'new', '--title', 'B', '--branch', 'b2', '--worktree', '.claude/worktrees/w2', '--request-id', 'cli-workstream-terminal-b', '--owner', runId, '--generation', '1']));
+   writeFileSync(join(root, 'plan-art.txt'), 'artifact');
 -  const maker = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'plan', '--point', 'plan', '--workstream', ws2.id, '--artifacts', '["plan-art.txt"]', '--owner', runId, '--generation', '1']));
 +  const maker = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'plan', '--point', 'plan', '--workstream', ws2.id, '--artifacts', '["plan-art.txt"]', '--request-id', 'cli-review-maker', '--owner', runId, '--generation', '1']));
+   run(root, ['episode', 'record', '--id', maker.id, '--status', 'done', '--artifacts', '["plan-art.txt"]', '--owner', runId, '--generation', '1']);
+-  const disp = JSON.parse(run(root, ['review', 'dispatch', '--point', 'plan', '--workstream', ws2.id, '--owner', runId, '--generation', '1']));
++  const disp = JSON.parse(run(root, ['review', 'dispatch', '--point', 'plan', '--workstream', ws2.id, '--request-id', 'cli-review-terminal-flow', '--owner', runId, '--generation', '1']));
 @@ -897 +897 @@ test('episode record --status approved exits with code 1', () => {
 -  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'checker', '--kind', 'impl-review', '--point', 'implementation', '--owner', runId, '--generation', '1']));
 +  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'checker', '--kind', 'impl-review', '--point', 'implementation', '--request-id', 'cli-review-checker', '--owner', runId, '--generation', '1']));
+@@ -967 +967 @@ test('workstream new with valueless --generation flag exits with code 3', () => {
+-  try { run(root, ['workstream', 'new', '--title', 'X', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--owner', runId, '--generation']); }
++  try { run(root, ['workstream', 'new', '--title', 'X', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--request-id', 'cli-workstream-missing-generation-value', '--owner', runId, '--generation']); }
+@@ -1000 +1000 @@ test('workstream new missing --title exits with code 2', () => {
+-  try { run(root, ['workstream', 'new', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--owner', runId, '--generation', '1']); }
++  try { run(root, ['workstream', 'new', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--request-id', 'cli-workstream-missing-title', '--owner', runId, '--generation', '1']); }
 @@ -1013 +1013 @@ function setupRunWithPendingMaker() {
 -  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'impl', '--point', 'implementation', '--owner', runId, '--generation', '1']));
 +  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'impl', '--point', 'implementation', '--request-id', 'cli-abandon-maker', '--owner', runId, '--generation', '1']));
@@ -18006,6 +18673,25 @@ index 9002b0e..913e348 100644
 @@ -19 +19 @@ import { newWorkstream } from '../scripts/lib/workspace.mjs';
 -import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 +import { newEpisode, recordEpisode } from './helpers/episode-request.mjs';
+@@ -181,5 +181,5 @@ test('P2: hill-climb run dispatch succeeds after contract is materialized into t
+-  // codex r2: evidence는 디스크립터(휘발)만이 아니라 checker request.md에 durable 기록되어야 한다
++  // Evidence is durable in the checker episode's anchored inline request.
+   const ep = readState(root, runId).data.episodes.find(e => e.id === r.checkerEpisodeId);
+-  const req = readFileSync(ep.request_path, 'utf8');
++  const req = ep.request_markdown;
+   assert.match(req, /## Evidence \(kernel-verified insights\)/);
+   assert.match(req, /```json\nnull\n```/);
+@@ -188,8 +188,8 @@ test('P2: hill-climb run dispatch succeeds after contract is materialized into t
+-test('P2: non-hill-climb checker request has no evidence section (undefined omits it)', () => {
++test('P2: non-hill-climb inline checker request omits evidence', () => {
+   const { root, runId, f } = seedRun({ reviewer: 'deep-review-loop' });
+   const ws = doneMakerOn(root, runId, f);
+   const r = dispatchReview(root, runId, { point: 'design', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
+   assert.ok(!('evidence' in r.descriptor), 'non-hill-climb descriptor has no evidence key');
+   const ep = readState(root, runId).data.episodes.find(e => e.id === r.checkerEpisodeId);
+-  assert.doesNotMatch(readFileSync(ep.request_path, 'utf8'), /## Evidence/);
++  assert.doesNotMatch(ep.request_markdown, /## Evidence/);
+ });
 ```
 
 Create `tests/helpers/episode-request.mjs` with this complete test-only adapter. Production callers
@@ -18045,6 +18731,163 @@ export function dispatchReview(root, runId, input = {}) {
     requestId: input.requestId ?? `test-review-${nextReviewRequest}`,
   });
 }
+```
+
+Create `tests/helpers/workstream-request.mjs` with this complete test-only adapter. Existing unit
+fixtures receive distinct IDs, while retry tests can pass one explicit stable ID. Production and skill
+callers never receive an auto-generated ID:
+
+```js
+import { newWorkstream as createWorkstream } from '../../scripts/lib/workspace.mjs';
+
+export * from '../../scripts/lib/workspace.mjs';
+
+let nextWorkstreamRequest = 0;
+
+export function newWorkstream(root, runId, input = {}) {
+  nextWorkstreamRequest += 1;
+  return createWorkstream(root, runId, {
+    ...input,
+    requestId: input.requestId ?? `test-workstream-${nextWorkstreamRequest}`,
+  });
+}
+```
+
+Migrate existing test setup imports through the adapter. `tests/workspace.test.mjs` additionally keeps
+one aliased production import for the explicit missing-ID/conflict/retry contract below:
+
+```diff
+diff --git a/tests/budget.test.mjs b/tests/budget.test.mjs
+--- a/tests/budget.test.mjs
++++ b/tests/budget.test.mjs
+@@ -22,3 +22,3 @@
+ import { newEpisode } from './helpers/episode-request.mjs';
+-import { newWorkstream, setWorkstreamStatus } from '../scripts/lib/workspace.mjs';
++import { newWorkstream, setWorkstreamStatus } from './helpers/workstream-request.mjs';
+ import { nextAction } from '../scripts/lib/next-action.mjs';
+diff --git a/tests/codex-checker-integration.test.mjs b/tests/codex-checker-integration.test.mjs
+--- a/tests/codex-checker-integration.test.mjs
++++ b/tests/codex-checker-integration.test.mjs
+@@ -7,3 +7,3 @@
+ import { initRun } from '../scripts/lib/initrun.mjs';
+-import { newWorkstream } from '../scripts/lib/workspace.mjs';
++import { newWorkstream } from './helpers/workstream-request.mjs';
+ import { newEpisode, recordEpisode } from './helpers/episode-request.mjs';
+diff --git a/tests/codex-isolation-integration.test.mjs b/tests/codex-isolation-integration.test.mjs
+--- a/tests/codex-isolation-integration.test.mjs
++++ b/tests/codex-isolation-integration.test.mjs
+@@ -34,3 +34,3 @@
+ import { STREAM_LIMITS } from '../scripts/lib/usage-parser.mjs';
+-import { newWorkstream } from '../scripts/lib/workspace.mjs';
++import { newWorkstream } from './helpers/workstream-request.mjs';
+ import { removeProcessUsageReceipt } from '../scripts/lib/preflight-receipt-journal.mjs';
+diff --git a/tests/fencing.test.mjs b/tests/fencing.test.mjs
+--- a/tests/fencing.test.mjs
++++ b/tests/fencing.test.mjs
+@@ -10,3 +10,3 @@
+ import { detectAndPersist } from '../scripts/lib/detect-terminal.mjs';
+-import { newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal } from '../scripts/lib/workspace.mjs';
++import { newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal } from './helpers/workstream-request.mjs';
+ import { newEpisode, recordEpisode } from './helpers/episode-request.mjs';
+diff --git a/tests/finish.test.mjs b/tests/finish.test.mjs
+--- a/tests/finish.test.mjs
++++ b/tests/finish.test.mjs
+@@ -7,3 +7,3 @@
+ import { readState, runDir } from '../scripts/lib/state.mjs';
+-import { newWorkstream, recordWorkstreamTerminal } from '../scripts/lib/workspace.mjs';
++import { newWorkstream, recordWorkstreamTerminal } from './helpers/workstream-request.mjs';
+ import { newEpisode, recordEpisode, abandonEpisode } from './helpers/episode-request.mjs';
+diff --git a/tests/insights.test.mjs b/tests/insights.test.mjs
+--- a/tests/insights.test.mjs
++++ b/tests/insights.test.mjs
+@@ -11,3 +11,3 @@
+ import { initRun } from '../scripts/lib/initrun.mjs';
+-import { newWorkstream } from '../scripts/lib/workspace.mjs';
++import { newWorkstream } from './helpers/workstream-request.mjs';
+ import { contentHash } from '../scripts/lib/envelope.mjs';
+diff --git a/tests/next-action.test.mjs b/tests/next-action.test.mjs
+--- a/tests/next-action.test.mjs
++++ b/tests/next-action.test.mjs
+@@ -7,3 +7,3 @@
+ import { readState, writeState } from '../scripts/lib/state.mjs';
+-import { newWorkstream } from '../scripts/lib/workspace.mjs';
++import { newWorkstream } from './helpers/workstream-request.mjs';
+ import { newEpisode, recordEpisode } from './helpers/episode-request.mjs';
+diff --git a/tests/review.test.mjs b/tests/review.test.mjs
+--- a/tests/review.test.mjs
++++ b/tests/review.test.mjs
+@@ -7,3 +7,3 @@
+ import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
+-import { newWorkstream } from '../scripts/lib/workspace.mjs';
++import { newWorkstream } from './helpers/workstream-request.mjs';
+ import { newEpisode, recordEpisode, abandonEpisode } from './helpers/episode-request.mjs';
+diff --git a/tests/review-import.test.mjs b/tests/review-import.test.mjs
+--- a/tests/review-import.test.mjs
++++ b/tests/review-import.test.mjs
+@@ -12,3 +12,3 @@
+ import { initRun } from '../scripts/lib/initrun.mjs';
+-import { newWorkstream } from '../scripts/lib/workspace.mjs';
++import { newWorkstream } from './helpers/workstream-request.mjs';
+ import { newEpisode, recordEpisode } from './helpers/episode-request.mjs';
+diff --git a/tests/reviewer-failclosed.test.mjs b/tests/reviewer-failclosed.test.mjs
+--- a/tests/reviewer-failclosed.test.mjs
++++ b/tests/reviewer-failclosed.test.mjs
+@@ -17,3 +17,3 @@
+ import { finishProofState } from '../scripts/lib/finish.mjs';
+-import { newWorkstream } from '../scripts/lib/workspace.mjs';
++import { newWorkstream } from './helpers/workstream-request.mjs';
+ import { newEpisode, recordEpisode } from './helpers/episode-request.mjs';
+diff --git a/tests/workspace.test.mjs b/tests/workspace.test.mjs
+--- a/tests/workspace.test.mjs
++++ b/tests/workspace.test.mjs
+@@ -7,6 +7,8 @@ import { initRun } from '../scripts/lib/initrun.mjs';
+ import { readState, writeState } from '../scripts/lib/state.mjs';
++import { readLines } from '../scripts/lib/integrity.mjs';
++import { newWorkstream as productionNewWorkstream } from '../scripts/lib/workspace.mjs';
+ import {
+   newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal,
+   inheritWorkstreams, integrationOrder,
+-} from '../scripts/lib/workspace.mjs';
++} from './helpers/workstream-request.mjs';
+ import { createDirectoryJunction, fixtureDir } from './helpers/fs-fixtures.mjs';
+```
+
+Append the public response-loss contract to `tests/workspace.test.mjs`:
+
+```diff
+diff --git a/tests/workspace.test.mjs b/tests/workspace.test.mjs
+--- a/tests/workspace.test.mjs
++++ b/tests/workspace.test.mjs
+@@ -318,3 +318,29 @@ test('newWorkstream stores backslash relative input as a slash-normalized durabl
+   const ws = readState(root, runId).data.workstreams.find(w => w.branch === 'b-win-rel');
+   assert.equal(ws.worktree, '.claude/worktrees/windows-relative');
+ });
++
++test('production newWorkstream requires a stable bounded request ID', () => {
++  const { root, runId } = seed();
++  assert.throws(() => productionNewWorkstream(root, runId, {
++    title: 'Missing ID', branch: 'missing-id', worktree: '.worktrees/missing-id',
++    fence: fence(runId),
++  }), /WORKSTREAM_REQUEST_ID_REQUIRED/);
++});
++
++test('workstream creation retry after marker cleanup reuses one ID and changed reuse conflicts', () => {
++  const { root, runId } = seed();
++  const request = { title: 'Stable', branch: 'stable', worktree: '.worktrees/stable',
++    requestId: 'workstream-stable-1', fence: fence(runId) };
++  const first = productionNewWorkstream(root, runId, request);
++  const eventCount = readLines(root, runId)
++    .filter(event => event.type === 'workstream-new').length;
++  const second = productionNewWorkstream(root, runId, request);
++  assert.deepEqual(second, first);
++  assert.equal(readState(root, runId).data.workstreams.length, 1);
++  assert.equal(readLines(root, runId)
++    .filter(event => event.type === 'workstream-new').length, eventCount);
++  assert.throws(() => productionNewWorkstream(root, runId, {
++    ...request, branch: 'changed',
++  }), /WORKSTREAM_REQUEST_CONFLICT/);
++  assert.equal(readState(root, runId).data.workstreams.length, 1);
++});
 ```
 
 Migrate every test-suite import of `dispatchReview` through that one adapter:
@@ -18117,62 +18960,97 @@ sixth argument while still scanning every remaining bare production call.
 Extend the Task 7B workspace import and link both remaining direct callers. The status/proof
 projection is the actual sixth argument, and recovery validates the requested durable result:
 
-```diff
-diff --git a/scripts/lib/workspace.mjs b/scripts/lib/workspace.mjs
---- a/scripts/lib/workspace.mjs
-+++ b/scripts/lib/workspace.mjs
-@@ -2,4 +2,5 @@ import { existsSync, realpathSync, lstatSync } from 'node:fs';
- import { isAbsolute, join, resolve, relative, dirname, basename } from 'node:path';
- import { readState, writeState, withLock } from './state.mjs';
--import { appendAnchored, workstreamNewIntent } from './integrity.mjs';
-+import { appendAnchored, directMutationOptions, intentField,
-+  workstreamNewIntent } from './integrity.mjs';
- import { slugify } from './slug.mjs';
-@@ -82,2 +83,3 @@ export function newWorkstream(root, runId, { title, branch, worktree, baseCommit = null, dependsOn = [], fence } = {}) {
--export function setWorkstreamStatus(root, runId, wsId, status, opts = {}) {
-+export function setWorkstreamStatus(root, runId, wsId, status,
-+  { fence, crashProbe } = {}) {
-   if (TERMINAL.includes(status)) throw new Error(`WORKSTREAM_TERMINAL_NO_PROOF: ${status} is kernel-derived (use recordWorkstreamTerminal)`);
-@@ -91,2 +93,1 @@ export function setWorkstreamStatus(root, runId, wsId, status, opts = {}) {
--  const { fence } = opts;
-   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: setWorkstreamStatus');
-@@ -113,7 +114,15 @@ export function setWorkstreamStatus(root, runId, wsId, status, opts = {}) {
-         if (loop.active_workstreams.length >= cap) throw new Error(`MAX_PARALLEL_EXCEEDED: ${loop.active_workstreams.length}/${cap}`);
-       }
-     },
--    { floor: MUTATION_TURN_FLOOR });
-+    directMutationOptions('workstream-status', fence, { wsId, status },
-+      'LEASE_FENCED: setWorkstreamStatus', {
-+        floor: MUTATION_TURN_FLOOR, crashProbe, onRecovered: loop => {
-+          if (loop.workstreams.find(item => item.id === wsId)?.status !== status) {
-+            throw new Error('WORKSTREAM_RESPONSE_PROJECTION_CHANGED');
-+          }
-+        },
-+      }));
- }
--
-+
--export function recordWorkstreamTerminal(root, runId, wsId, { status, proof = {}, fence } = {}) {
-+export function recordWorkstreamTerminal(root, runId, wsId, {
-+  status, proof = {}, fence, crashProbe } = {}) {
-@@ -127,3 +135,4 @@ export function recordWorkstreamTerminal(root, runId, wsId, { status, proof = {}, fence } = {}) {
-   if (!TERMINAL.includes(status)) throw new Error(`WORKSTREAM_STATUS_INVALID: ${status} is not terminal`);
-   if (!proof || typeof proof !== 'object' || Array.isArray(proof)) throw new Error(`WORKSTREAM_TERMINAL_NO_PROOF: ${wsId} requires proof object`);
-+  const proofDigest = intentField('workstream-terminal-proof', proof);
-   appendAnchored(root, runId, { type: 'workstream-terminal', data: { id: wsId, status, proof } }, (loop) => {
-@@ -152,4 +161,11 @@ export function recordWorkstreamTerminal(root, runId, wsId, { status, proof = {}, fence } = {}) {
-       status === 'abandoned' ? (typeof proof.reason === 'string' && proof.reason.length > 0) : false;
-     if (!ok) throw new Error(`WORKSTREAM_TERMINAL_NO_PROOF: ${wsId} -> ${status} proof insufficient`);
--  }, { floor: MUTATION_TURN_FLOOR });
-+  }, directMutationOptions('workstream-terminal', fence,
-+    { wsId, status, proofDigest }, 'LEASE_FENCED: recordWorkstreamTerminal', {
-+      floor: MUTATION_TURN_FLOOR, crashProbe, onRecovered: loop => {
-+        if (loop.workstreams.find(item => item.id === wsId)?.status !== status) {
-+          throw new Error('WORKSTREAM_RESPONSE_PROJECTION_CHANGED');
-+        }
-+      },
-+    }));
- }
+```js
+// PLAN_REPLACE_RANGE: scripts/lib/workspace.mjs setWorkstreamStatus through inheritWorkstreams
+export function setWorkstreamStatus(root, runId, wsId, status,
+  { fence } = {}) {
+  if (TERMINAL.includes(status)) throw new Error(`WORKSTREAM_TERMINAL_NO_PROOF: ${status} is kernel-derived (use recordWorkstreamTerminal)`);
+  if (!NON_TERMINAL.includes(status)) throw new Error(`WORKSTREAM_STATUS_INVALID: ${status}`);
+  if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: setWorkstreamStatus');
+  appendAnchored(root, runId, { type: 'workstream-status', data: { id: wsId, status } },
+    loop => {
+      if (status === 'in_progress' && !loop.active_workstreams.includes(wsId)) {
+        loop.active_workstreams.push(wsId);
+      }
+      if (status === 'parked') {
+        loop.active_workstreams = loop.active_workstreams.filter(id => id !== wsId);
+      }
+      loop.workstreams.find(workstream => workstream.id === wsId).status = status;
+    },
+    loop => {
+      const authorized = leaseCheck(loop, fence);
+      if (!authorized.ok) throw new Error('LEASE_FENCED: ' + authorized.reason);
+      const workstream = loop.workstreams.find(item => item.id === wsId);
+      if (!workstream) throw new Error(`WORKSTREAM_NOT_FOUND: ${wsId}`);
+      if (TERMINAL.includes(workstream.status)) {
+        throw new Error(`WORKSTREAM_TERMINAL_LOCKED: ${wsId} is ${workstream.status}`);
+      }
+      if (status === 'in_progress' && !loop.active_workstreams.includes(wsId)) {
+        const cap = loop.autonomy?.max_parallel ?? 2;
+        if (loop.active_workstreams.length >= cap) {
+          throw new Error(`MAX_PARALLEL_EXCEEDED: ${loop.active_workstreams.length}/${cap}`);
+        }
+      }
+    },
+    directMutationOptions('workstream-status', fence, { wsId, status },
+      'LEASE_FENCED: setWorkstreamStatus', {
+        floor: MUTATION_TURN_FLOOR, onRecovered: loop => {
+          if (loop.workstreams.find(item => item.id === wsId)?.status !== status) {
+            throw new Error('WORKSTREAM_RESPONSE_PROJECTION_CHANGED');
+          }
+        },
+      }));
+}
+
+export function recordWorkstreamTerminal(root, runId, wsId, {
+  status, proof = {}, fence } = {}) {
+  if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) {
+    throw new Error('FENCE_REQUIRED: recordWorkstreamTerminal');
+  }
+  if (!TERMINAL.includes(status)) {
+    throw new Error(`WORKSTREAM_STATUS_INVALID: ${status} is not terminal`);
+  }
+  if (!proof || typeof proof !== 'object' || Array.isArray(proof)) {
+    throw new Error(`WORKSTREAM_TERMINAL_NO_PROOF: ${wsId} requires proof object`);
+  }
+  const proofDigest = intentField('workstream-terminal-proof', proof);
+  appendAnchored(root, runId,
+    { type: 'workstream-terminal', data: { id: wsId, status, proof } }, loop => {
+      const workstream = loop.workstreams.find(item => item.id === wsId);
+      if (!workstream) throw new Error(`WORKSTREAM_NOT_FOUND: ${wsId}`);
+      workstream.status = status;
+      loop.active_workstreams = loop.active_workstreams.filter(id => id !== wsId);
+    }, loop => {
+      const authorized = leaseCheck(loop, fence);
+      if (!authorized.ok) throw new Error('LEASE_FENCED: ' + authorized.reason);
+      const workstream = loop.workstreams.find(item => item.id === wsId);
+      if (!workstream) throw new Error(`WORKSTREAM_NOT_FOUND: ${wsId}`);
+      if (TERMINAL.includes(workstream.status)
+          && !(workstream.status === 'ready' && status === 'merged')) {
+        throw new Error('WORKSTREAM_TERMINAL_LOCKED: ' + wsId + ' '
+          + workstream.status + '->' + status + ' not allowed');
+      }
+      const reviewPoints = loop.review?.points || [];
+      const sufficient = status === 'ready'
+        ? reviewPoints.length > 0
+          && reviewPoints.every(point =>
+            (workstream.review_points_done || []).includes(point))
+        : status === 'merged'
+          ? typeof proof.merge_commit === 'string' && proof.human_approved === true
+          : status === 'abandoned'
+            ? typeof proof.reason === 'string' && proof.reason.length > 0 : false;
+      if (!sufficient) {
+        throw new Error(`WORKSTREAM_TERMINAL_NO_PROOF: ${wsId} -> ${status} proof insufficient`);
+      }
+    }, directMutationOptions('workstream-terminal', fence,
+      { wsId, status, proofDigest }, 'LEASE_FENCED: recordWorkstreamTerminal', {
+        floor: MUTATION_TURN_FLOOR, onRecovered: loop => {
+          if (loop.workstreams.find(item => item.id === wsId)?.status !== status) {
+            throw new Error('WORKSTREAM_RESPONSE_PROJECTION_CHANGED');
+          }
+        },
+      }));
+}
 ```
 
 Apply this exact import diff and complete replacement in `scripts/lib/workspace.mjs`:
@@ -18181,14 +19059,13 @@ Apply this exact import diff and complete replacement in `scripts/lib/workspace.
 diff --git a/scripts/lib/workspace.mjs b/scripts/lib/workspace.mjs
 --- a/scripts/lib/workspace.mjs
 +++ b/scripts/lib/workspace.mjs
-@@ -1,6 +1,5 @@
+@@ -1,5 +1,5 @@
  import { existsSync, realpathSync, lstatSync } from 'node:fs';
  import { isAbsolute, join, resolve, relative, dirname, basename } from 'node:path';
 -import { readState, writeState, withLock } from './state.mjs';
--import { appendAnchored, directMutationOptions, intentField,
--  workstreamNewIntent } from './integrity.mjs';
+-import { appendAnchored, workstreamNewIntent } from './integrity.mjs';
 +import { appendAnchored, directMutationOptions, intentField, readVerifiedState,
-+  workstreamNewIntent } from './integrity.mjs';
++  withVerifiedMutationLock, workstreamNewIntent } from './integrity.mjs';
  import { slugify } from './slug.mjs';
 ```
 
@@ -18324,7 +19201,7 @@ terminal detection still works.
 - [ ] **Step 6: Audit only the pre-action authority slice**
 
 ```bash
-git diff -- scripts/lib/episode.mjs scripts/lib/insights.mjs scripts/lib/review.mjs scripts/lib/workspace.mjs scripts/lib/state.mjs scripts/lib/detect-terminal.mjs scripts/deep-loop.mjs skills/deep-loop/SKILL.md skills/deep-loop-continue/SKILL.md skills/deep-loop-workflow/references/adapters.md skills/deep-loop-workflow/references/hill-climbing.md tests/helpers/episode-request.mjs tests/helpers/review-request.mjs tests/budget.test.mjs tests/cli-skillface.test.mjs tests/codex-checker-integration.test.mjs tests/codex-isolation-integration.test.mjs tests/comprehension.test.mjs tests/episode.test.mjs tests/fencing.test.mjs tests/finish.test.mjs tests/handoff.test.mjs tests/next-action.test.mjs tests/orch-cli.test.mjs tests/pause.test.mjs tests/review.test.mjs tests/insights.test.mjs tests/review-import.test.mjs tests/reviewer-failclosed.test.mjs tests/workspace.test.mjs tests/detect-terminal.test.mjs
+git diff -- scripts/lib/episode.mjs scripts/lib/schema.mjs scripts/lib/insights.mjs scripts/lib/review.mjs scripts/lib/workspace.mjs scripts/lib/state.mjs scripts/lib/detect-terminal.mjs scripts/deep-loop.mjs skills/deep-loop/SKILL.md skills/deep-loop-continue/SKILL.md skills/deep-loop-workflow/references/adapters.md skills/deep-loop-workflow/references/hill-climbing.md tests/helpers/episode-request.mjs tests/helpers/review-request.mjs tests/helpers/workstream-request.mjs tests/budget.test.mjs tests/cli-skillface.test.mjs tests/codex-checker-integration.test.mjs tests/codex-isolation-integration.test.mjs tests/comprehension.test.mjs tests/episode.test.mjs tests/fencing.test.mjs tests/finish.test.mjs tests/handoff.test.mjs tests/next-action.test.mjs tests/orch-cli.test.mjs tests/pause.test.mjs tests/review.test.mjs tests/insights.test.mjs tests/review-import.test.mjs tests/reviewer-failclosed.test.mjs tests/workspace.test.mjs tests/detect-terminal.test.mjs
 rg -n "readState\(|readVerifiedState|assertVerifiedRunSnapshot|appendAnchored|proof_transitions|fenceCheck|attemptIdFactory|materializeImportedReview|detectTerminal\(" scripts/lib/insights.mjs scripts/lib/review.mjs scripts/lib/workspace.mjs scripts/lib/state.mjs scripts/lib/detect-terminal.mjs
 git diff --check
 ```
@@ -18335,7 +19212,7 @@ has no unverified pre-read, and no probe/materialization/random callback precede
 - [ ] **Step 7: Commit the pre-action authority slice**
 
 ```bash
-git add scripts/lib/episode.mjs scripts/lib/insights.mjs scripts/lib/review.mjs scripts/lib/workspace.mjs scripts/lib/state.mjs scripts/lib/detect-terminal.mjs scripts/deep-loop.mjs skills/deep-loop/SKILL.md skills/deep-loop-continue/SKILL.md skills/deep-loop-workflow/references/adapters.md skills/deep-loop-workflow/references/hill-climbing.md tests/helpers/episode-request.mjs tests/helpers/review-request.mjs tests/budget.test.mjs tests/cli-skillface.test.mjs tests/codex-checker-integration.test.mjs tests/codex-isolation-integration.test.mjs tests/comprehension.test.mjs tests/episode.test.mjs tests/fencing.test.mjs tests/finish.test.mjs tests/handoff.test.mjs tests/next-action.test.mjs tests/orch-cli.test.mjs tests/pause.test.mjs tests/review.test.mjs tests/insights.test.mjs tests/review-import.test.mjs tests/reviewer-failclosed.test.mjs tests/workspace.test.mjs tests/detect-terminal.test.mjs
+git add scripts/lib/episode.mjs scripts/lib/schema.mjs scripts/lib/insights.mjs scripts/lib/review.mjs scripts/lib/workspace.mjs scripts/lib/state.mjs scripts/lib/detect-terminal.mjs scripts/deep-loop.mjs skills/deep-loop/SKILL.md skills/deep-loop-continue/SKILL.md skills/deep-loop-workflow/references/adapters.md skills/deep-loop-workflow/references/hill-climbing.md tests/helpers/episode-request.mjs tests/helpers/review-request.mjs tests/helpers/workstream-request.mjs tests/budget.test.mjs tests/cli-skillface.test.mjs tests/codex-checker-integration.test.mjs tests/codex-isolation-integration.test.mjs tests/comprehension.test.mjs tests/episode.test.mjs tests/fencing.test.mjs tests/finish.test.mjs tests/handoff.test.mjs tests/next-action.test.mjs tests/orch-cli.test.mjs tests/pause.test.mjs tests/review.test.mjs tests/insights.test.mjs tests/review-import.test.mjs tests/reviewer-failclosed.test.mjs tests/workspace.test.mjs tests/detect-terminal.test.mjs
 git commit -m "fix: verify authority before external actions" -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
 
@@ -18613,7 +19490,8 @@ Reuse `anchored-crash-worker.mjs` at
 import test7g from 'node:test';
 import assert7g from 'node:assert/strict';
 import { spawnSync as spawn7g } from 'node:child_process';
-import { readFileSync as read7g, readdirSync as list7g, statSync as stat7g }
+import { readFileSync as read7g, readdirSync as list7g, rmdirSync as rmdir7g,
+  statSync as stat7g }
   from 'node:fs';
 import { join as join7g, relative as relative7g } from 'node:path';
 import { fileURLToPath as file7g } from 'node:url';
@@ -18773,6 +19651,9 @@ function assertRemainingPublisherCrash7g({ operation, point }) {
         DEEP_LOOP_CRASH_GENERATION: String(fixture.generation) },
     });
   assert7g.equal(child.status, 91, child.stderr || child.stdout);
+  // The exact worker is dead. Remove only its orphan run lock to accelerate the production stale
+  // TTL; the foreign and exact public retries below remain the only journal recovery attempts.
+  rmdir7g(join7g(fixture.root, '.deep-loop', 'runs', fixture.runId, '.lock'));
   const pending = journalBytes7g(fixture.root, fixture.runId);
   let foreign;
   try { foreign = retryPublisher7g(operation, fixture, true); }
@@ -19004,26 +19885,27 @@ test7g('review verdict replay authenticates intervening review-outcome transitio
 ```
 
 The helper is literal above. Extend `tests/helpers/anchored-crash-worker.mjs` with this closed
-dispatch; the existing generic operations remain unchanged and `crashProbe` is injected only by this
-test worker:
+dispatch; the existing generic operations remain unchanged. The worker selects only the private
+scalar `NODE_ENV=test` + `DEEP_LOOP_TEST_CRASH_AT` point already established by Task 7B; no public
+function-valued crash hook is introduced:
 
 ```js
 import { releaseLease, reserveHandoff } from '../../scripts/lib/lease.mjs';
 import { recordReviewVerdict, tripBreaker } from '../../scripts/lib/breaker.mjs';
 
 const publisher7g = Object.freeze({
-  'lease-release': ({ root, runId, owner, generation, crashProbe }) =>
-    releaseLease(root, runId, { owner, generation, crashProbe }),
-  'handoff-reserve': ({ root, runId, owner, generation, crashProbe }) =>
+  'lease-release': ({ root, runId, owner, generation }) =>
+    releaseLease(root, runId, { owner, generation }),
+  'handoff-reserve': ({ root, runId, owner, generation }) =>
     reserveHandoff(root, runId, { trigger: 'crash-7g',
-      now: Date.parse('2026-07-13T00:00:10.000Z'), expect: { owner, generation }, crashProbe }),
-  'breaker-trip': ({ root, runId, owner, generation, crashProbe }) =>
+      now: Date.parse('2026-07-13T00:00:10.000Z'), expect: { owner, generation } }),
+  'breaker-trip': ({ root, runId, owner, generation }) =>
     tripBreaker(root, runId, 'crash-7g', { fence: { owner, generation },
-      requestId: 'crash-7g-trip', crashProbe }),
-  'breaker-verdict': ({ root, runId, owner, generation, crashProbe }) =>
+      requestId: 'crash-7g-trip' }),
+  'breaker-verdict': ({ root, runId, owner, generation }) =>
     recordReviewVerdict(root, runId, 'REQUEST_CHANGES',
-      { owner, generation, runtime: 'claude' },
-      { requestId: 'crash-7g-verdict', crashProbe }),
+      { owner, generation, runtime: 'codex' },
+      { requestId: 'crash-7g-verdict' }),
 });
 
 export function dispatchPublisherCrash7g({ root, runId, operation, point, owner, generation }) {
@@ -19031,8 +19913,7 @@ export function dispatchPublisherCrash7g({ root, runId, operation, point, owner,
   const points = new Set(['pending-after-rename', 'event-after-partial-append',
     'state-after-rename', 'hash-after-rename', 'before-cleanup']);
   if (!points.has(point)) throw new Error('CRASH_POINT_INVALID');
-  return publisher7g[operation]({ root, runId, owner, generation,
-    crashProbe: reached => { if (reached === point) process.exit(91); } });
+  return publisher7g[operation]({ root, runId, owner, generation });
 }
 
 registerAnchoredCrashExtension(request => {
@@ -19089,7 +19970,7 @@ function exactLeaseFence(owner, generation) {
 }
 
 export function releaseLease(root, runId,
-  { owner, generation, mutation = null, crashProbe } = {}) {
+  { owner, generation, mutation = null } = {}) {
   if (typeof owner !== 'string' || owner.length === 0) throw new Error('INVALID_OWNER');
   return runLeaseJournal(root, runId,
     { owner, generation, operation: 'lease-release', mutation }, context => {
@@ -19109,13 +19990,13 @@ export function releaseLease(root, runId,
         data: { owner_run_id: owner, generation } }, candidate => {
         candidate.session_chain.lease = { ...candidate.session_chain.lease, state: 'released' };
       }, undefined, { allowTerminal: terminal && !liveAppBinding,
-        fenceCheck: exactLeaseFence(owner, generation), crashProbe });
+        fenceCheck: exactLeaseFence(owner, generation) });
       return { ok: true, reason: 'released' };
     });
 }
 
 export function reserveHandoff(root, runId,
-  { trigger, now = Date.now(), expect, mutation = null, crashProbe } = {}) {
+  { trigger, now = Date.now(), expect, mutation = null } = {}) {
   if (!expect || typeof expect.owner !== 'string' || !Number.isSafeInteger(expect.generation)) {
     throw new Error('FENCE_REQUIRED: reserveHandoff');
   }
@@ -19151,7 +20032,7 @@ export function reserveHandoff(root, runId,
         handoff_phase: 'reserved', handoff_idempotency_key: key,
         handoff_child_run_id: childRunId };
     }, undefined, { nowFn: () => now,
-      fenceCheck: exactLeaseFence(expect.owner, expect.generation), crashProbe });
+      fenceCheck: exactLeaseFence(expect.owner, expect.generation) });
     return { ok: true, reserved: true, key, childRunId, reason: 'reserved' };
   });
 }
@@ -19342,7 +20223,7 @@ function recoveredReviewVerdict(root, runId, context, data,
 }
 
 export function tripBreaker(root, runId, reason,
-  { fence, requestId, crashProbe } = {}) {
+  { fence, requestId } = {}) {
   if (typeof fence?.owner !== 'string' || !Number.isSafeInteger(fence?.generation)) {
     throw new Error('FENCE_REQUIRED: breaker-trip');
   }
@@ -19371,12 +20252,12 @@ export function tripBreaker(root, runId, reason,
         candidate.circuit_breaker = { ...candidate.circuit_breaker,
           tripped: true, trip_reason: reason };
         candidate.status = 'paused';
-      }, undefined, { crashProbe });
+      });
       return { ok: true, changed };
     });
 }
 
-export function resetBreaker(root, runId, { fence, requestId, crashProbe } = {}) {
+export function resetBreaker(root, runId, { fence, requestId } = {}) {
   if (typeof fence?.owner !== 'string' || !Number.isSafeInteger(fence?.generation)) {
     throw new Error('FENCE_REQUIRED: breaker-reset');
   }
@@ -19410,13 +20291,13 @@ export function resetBreaker(root, runId, { fence, requestId, crashProbe } = {})
         candidate.circuit_breaker = {
           consecutive_request_changes: 0, tripped: false, trip_reason: null };
         if (wasBreaker) candidate.status = 'running';
-      }, undefined, { allowTerminal: false, crashProbe });
+      }, undefined, { allowTerminal: false });
       return { ok: true, changed, status: nextStatus };
     });
 }
 
 export function recordReviewVerdict(root, runId, verdict, fence,
-  { requestId, crashProbe } = {}) {
+  { requestId } = {}) {
   if (typeof fence?.owner !== 'string' || !Number.isSafeInteger(fence?.generation)) {
     throw new Error('FENCE_REQUIRED: breaker-review-verdict');
   }
@@ -19464,7 +20345,7 @@ export function recordReviewVerdict(root, runId, verdict, fence,
           breaker.consecutive_request_changes = 0;
         }
         candidate.circuit_breaker = breaker;
-      }, undefined, { crashProbe });
+      });
       return { ok: true, changed };
     });
 }
@@ -20082,7 +20963,7 @@ diff --git a/scripts/lib/handoff.mjs b/scripts/lib/handoff.mjs
    deepLoopRoot = DEFAULT_DEEP_LOOP_ROOT, exists = existsSync,
    descriptorBuilder = buildRuntimeResumeDescriptor,
 +  appIntent = false, cwdFn = process.cwd, nowFn = Date.now,
-+  attemptIdFactory = () => ulid(), beforeFinalAppendFn = () => {}, crashProbe,
++  attemptIdFactory = () => ulid(), beforeFinalAppendFn = () => {},
  } = {}) {
    if (!expect || typeof expect.owner !== 'string' || !Number.isInteger(expect.generation)) throw new Error('FENCE_REQUIRED: emitHandoff');
    // Resolve runtime and canonical root from root-bound durable state. This read
@@ -20405,7 +21286,7 @@ diff --git a/scripts/lib/handoff.mjs b/scripts/lib/handoff.mjs
 +        applyFinalEmit(candidate, clock);
 +        const checked = validate(candidate);
 +        if (!checked.ok) throw new Error(`STATE_INVALID: ${checked.errors.join('; ')}`);
-+      }, { ...(appIntent ? { nowFn } : {}), fenceCheck: emitFence, crashProbe }));
++      }, { ...(appIntent ? { nowFn } : {}), fenceCheck: emitFence }));
 +  } catch (error) {
 +    try { rollbackReservedHandoff(canonicalRoot, runId, { owner: expect.owner,
 +      generation: expect.generation, key: res.key, childRunId: res.childRunId }); }
@@ -21306,7 +22187,7 @@ export function prepareAppTask(root, runId, input, deps = {}) {
       validateAppCandidate(candidate);
     }, { nowFn: authoritativeNow,
       fenceCheck: loop => assertAppParentIdentity(loop, input),
-      crashProbe: deps.crashProbe });
+      });
   } catch (error) {
     if (String(error?.message || error) === 'APP_PREPARE_CAS_LOST') {
       const current = mutation.readVerifiedState().data;
@@ -21927,7 +22808,7 @@ export function confirmAppTask(root, runId, input, deps = {}) {
     validateAppCandidate(candidate);
   }, { nowFn: deps.nowFn ?? Date.now,
     fenceCheck: loop => assertAppParentIdentity(loop, input),
-    crashProbe: deps.crashProbe });
+    });
   return result;
   });
 }
@@ -21997,7 +22878,7 @@ export function failAppTask(root, runId, input, deps = {}) {
     validateAppCandidate(candidate);
   }, { nowFn: deps.nowFn ?? Date.now,
     fenceCheck: loop => assertAppParentIdentity(loop, input),
-    crashProbe: deps.crashProbe });
+    });
   return result;
   });
 }
@@ -22610,7 +23491,7 @@ export function sweepUnconfirmedAppTask(root, runId, input, deps = {}) {
       validateAppCandidate(candidate);
     }, { nowFn: deps.nowFn ?? Date.now,
       fenceCheck: loop => assertAppParentIdentity(loop, input),
-      crashProbe: deps.crashProbe });
+      });
   } catch (error) {
     if (String(error?.message || error) === 'APP_NOT_EXPIRED') {
       return { ok: true, outcome: 'not-expired', attempt_id: input.attemptId };
@@ -22760,7 +23641,7 @@ export function awaitAppTask(root, runId, input, deps = {}) {
       validateAppCandidate(candidate);
     }, { nowFn: authoritativeNow,
       fenceCheck: loop => assertAppParentIdentity(loop, input),
-      crashProbe: deps.crashProbe }));
+      }));
   } catch (error) {
     const message = String(error?.message || error);
     const convergence = ['APP_READY_ACQUIRED', 'APP_READY_CHANGED'].includes(message)
@@ -23232,7 +24113,7 @@ export function acquireAppTask(root, runId, input, deps = {}) {
         throw new Error('LEASE_FENCED: app-acquire');
       }
     },
-    crashProbe: deps.crashProbe,
+    // Hard-crash selection is private scalar process state in the anchored publisher.
   });
   return result;
   });
@@ -23599,7 +24480,7 @@ diff --git a/scripts/lib/state.mjs b/scripts/lib/state.mjs
 -export function pauseRun(root, runId, { reason, mode = 'preserve', expect, now = Date.now() } = {}) {
 -  return appendAnchored(root, runId, { type: 'run-paused', data: { reason: reason || 'fail-closed', mode } },
 +export function pauseRun(root, runId, {
-+  reason, mode = 'preserve', expect, now = Date.now(), crashProbe,
++  reason, mode = 'preserve', expect, now = Date.now(),
 +} = {}) {
 +  if (!expect || typeof expect.owner !== 'string'
 +      || !Number.isSafeInteger(expect.generation)) throw new Error('FENCE_REQUIRED: pauseRun');
@@ -23613,7 +24494,7 @@ diff --git a/scripts/lib/state.mjs b/scripts/lib/state.mjs
 +      if (appTransportBinding(loop)) throw new Error('APP_TRANSPORT_OWNED: pauseRun');
 +    }, directMutationOptions('run-pause', expect,
 +      { reason: reason || 'fail-closed', mode, now }, 'LEASE_FENCED: pauseRun', {
-+        crashProbe, onRecovered: loop => {
++        onRecovered: loop => {
 +          const lease = loop.session_chain?.lease;
 +          const exactLease = mode === 'rollback'
 +            ? lease?.state === 'active' && lease.handoff_phase === 'idle'
@@ -25099,7 +25980,7 @@ function applyFinish(loop, { status, reportRel, binding, clock }) {
 
 export function finishRun(root, runId,
   { status, reportRel, proof = {}, confirm, fence, now,
-    nowFn = now === undefined ? Date.now : () => now, crashProbe } = {}) {
+    nowFn = now === undefined ? Date.now : () => now } = {}) {
   if (!fence || typeof fence.owner !== 'string'
       || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: finishRun');
   const fenceCheck = finishIdentityFence(fence);
@@ -25167,7 +26048,7 @@ export function finishRun(root, runId,
       applyFinish(candidate, { status, reportRel, binding: freshBinding, clock });
       const checked = validate(candidate);
       if (!checked.ok) throw new Error(`STATE_INVALID: ${checked.errors.join('; ')}`);
-    }, { floor: MUTATION_TURN_FLOOR, nowFn, fenceCheck, crashProbe });
+    }, { floor: MUTATION_TURN_FLOOR, nowFn, fenceCheck });
     return result;
   });
 }
@@ -26889,66 +27770,36 @@ adopts a fresh fence, and CLI injects its own plain readiness poll.
 - [ ] **Step 3: Implement the ordered verified boundary and transport guards**
 
 After applying every literal caller migration named by the closure table below, delete the Task 7B
-transition and make missing or partial authority fail before lock acquisition. This is the exact
-final gateway diff; apply it only after the linked-call test's source preconditions are green:
+transition and make missing or partial authority fail before lock acquisition. Replace the exact
+range from `function transitionalDirectIntent(` through the byte immediately before
+`// Root relocation is the sole mutation` with this complete afterimage, but only after the
+linked-call test's source preconditions are green:
 
-```diff
-diff --git a/scripts/lib/integrity.mjs b/scripts/lib/integrity.mjs
---- a/scripts/lib/integrity.mjs
-+++ b/scripts/lib/integrity.mjs
-@@ -394,51 +394,6 @@ function appendAnchoredUnderLock(root, runId, { type, data }, mutate, preCheck, opts,
-   });
- }
--
-+
--function transitionalDirectIntent(event) {
--  if (typeof event?.type !== 'string' || event.type.length === 0) {
--    throw new Error('MUTATION_INTENT_REQUIRED');
--  }
--  return contentHash(JSON.stringify({ operation: 'transitional-direct-append',
--    type: event.type, data: event.data }));
--}
--
--function appendTransitionalDirect(root, runId, event, mutate, preCheck, opts) {
--  const intentDigest = transitionalDirectIntent(event);
--  return withLock(root, runId, () => {
--    const marker = readAnchoredMarkerUnderLock(root, runId);
--    if (marker !== null) {
--      if (marker.intent_digest !== intentDigest) {
--        throw new Error('ANCHORED_TRANSACTION_PENDING');
--      }
--      const pending = pendingAuthenticationStateUnderLock(root, runId, marker);
--      const lease = pending.session_chain?.lease;
--      if (lease?.owner_run_id !== marker.caller.owner
--          || lease?.generation !== marker.caller.generation) {
--        throw new Error('ANCHORED_TRANSACTION_PENDING');
--      }
--      if (typeof opts.fenceCheck === 'function') opts.fenceCheck(pending);
--      else if (preCheck) preCheck(pending);
--      const recovered = recoverAnchoredTransactionUnderLock(root, runId, marker);
--      const verified = readVerifiedStateUnderLock(root, runId);
--      return typeof opts.onRecovered === 'function'
--        ? opts.onRecovered(verified.data, recovered) : undefined;
--    }
--    const verified = readVerifiedStateUnderLock(root, runId,
--      typeof opts.fenceCheck === 'function' ? { fenceCheck: opts.fenceCheck } : {});
--    const lease = verified.data.session_chain?.lease;
--    const callerBinding = requireCallerBinding({ owner: lease?.owner_run_id,
--      generation: lease?.generation });
--    return appendAnchoredUnderLock(root, runId, event, mutate, preCheck, opts,
--      { callerBinding, intentDigest });
--  });
--}
--
- export function appendAnchored(root, runId, event, mutate, preCheck, opts = {}) {
--  const hasBinding = opts.callerBinding !== undefined;
--  const hasIntent = opts.intentDigest !== undefined;
--  if (!hasBinding && !hasIntent) {
--    return appendTransitionalDirect(root, runId, event, mutate, preCheck, opts);
--  }
--  if (hasBinding !== hasIntent) throw new Error('MUTATION_AUTHORITY_INCOMPLETE');
-   const binding = requireCallerBinding(opts.callerBinding);
-   const intentDigest = opts.intentDigest;
+```js
+// PLAN_REPLACE_RANGE: scripts/lib/integrity.mjs transitionalDirectIntent through root relocation
+export function appendAnchored(root, runId, event, mutate, preCheck, opts = {}) {
+  const binding = requireCallerBinding(opts.callerBinding);
+  const intentDigest = opts.intentDigest;
+  // There is deliberately no event-only fallback: event payloads may redact or omit business
+  // inputs. Every public mutation must bind its complete request before lock acquisition.
+  if (!/^[0-9a-f]{64}$/.test(intentDigest || '')) {
+    throw new Error('MUTATION_INTENT_REQUIRED');
+  }
+  return withVerifiedMutationLock(root, runId, {
+    callerBinding: binding, intentDigest,
+    fenceError: opts.fenceError ?? 'LEASE_FENCED: append',
+  }, mutation => {
+    // An exact marker retry has already durably committed this direct append. Prove the recovered
+    // snapshot, but never execute mutate/preCheck a second time or append a duplicate business event.
+    // Operation wrappers that owe a structured response derive it from this proved snapshot.
+    if (mutation.recovered) {
+      const recovered = mutation.readVerifiedState();
+      return typeof opts.onRecovered === 'function'
+        ? opts.onRecovered(recovered.data, mutation.recovered) : undefined;
+    }
+    return mutation.appendAnchored(event, mutate, preCheck, opts);
+  });
+}
 ```
 
 The closure order is literal and source-backed: Task 7B owns `patch`, `newWorkstream`, `finishRun`,
@@ -26984,7 +27835,7 @@ any file drift after approval.
 export function approveLauncherExecutable(root, runId, {
   kind, candidatePath, expectedCanonicalPath, expectedSha256, actor, confirm, fence,
   now = Date.now(), platform = process.platform, arch = process.arch,
-  runVersion = spawnSync, authenticodeProbe, authenticodePolicy, crashProbe,
+  runVersion = spawnSync, authenticodeProbe, authenticodePolicy,
 } = {}) {
   validateLauncherKind(kind);
   if (actor !== 'human') throw runtimeError('INVALID_ACTOR',
@@ -27063,7 +27914,7 @@ export function approveLauncherExecutable(root, runId, {
       approval_digest: intentField('launcher-approval', approval),
       policy_digest: intentField('launcher-authenticode-policy', authenticodePolicy),
     }, 'LEASE_FENCED: approveLauncherExecutable', {
-      floor: MUTATION_TURN_FLOOR, crashProbe, onRecovered: loop => {
+      floor: MUTATION_TURN_FLOOR, onRecovered: loop => {
         const durable = loop.autonomy?.launcher_executable_approvals?.[kind];
         if (!durable || JSON.stringify(durable) !== JSON.stringify(approval)) {
           throw new Error('LAUNCHER_APPROVAL_RESPONSE_PROJECTION_CHANGED');
@@ -27079,7 +27930,7 @@ export function approveLauncherExecutable(root, runId, {
 export function approveRuntimeExecutable(root, runId, {
   runtime, candidatePath, expectedCanonicalPath, expectedSha256, actor, confirm, fence,
   now = Date.now(), platform = process.platform, arch = process.arch,
-  runVersion = spawnSync, authenticodeProbe, authenticodePolicy, crashProbe,
+  runVersion = spawnSync, authenticodeProbe, authenticodePolicy,
 } = {}) {
   validateSessionRuntime(runtime);
   if (actor !== 'human') throw runtimeError('INVALID_ACTOR',
@@ -27153,7 +28004,7 @@ export function approveRuntimeExecutable(root, runId, {
       approval_digest: intentField('runtime-approval', approval),
       policy_digest: intentField('runtime-authenticode-policy', authenticodePolicy),
     }, 'LEASE_FENCED: approveRuntimeExecutable', {
-      floor: MUTATION_TURN_FLOOR, crashProbe, onRecovered: loop => {
+      floor: MUTATION_TURN_FLOOR, onRecovered: loop => {
         const durable = loop.autonomy?.runtime_executable_approval;
         if (!durable || JSON.stringify(durable) !== JSON.stringify(approval)) {
           throw new Error('RUNTIME_APPROVAL_RESPONSE_PROJECTION_CHANGED');
@@ -27186,7 +28037,7 @@ diff --git a/scripts/lib/spawn-optin.mjs b/scripts/lib/spawn-optin.mjs
  // persisted anchor → LOG_TAMPERED on every subsequent op. Fail closed BEFORE any append instead.
 -export function offerDesktop(root, runId, { expect, now = Date.now(), ttlSec = 600, nonce } = {}) {
 +export function offerDesktop(root, runId, {
-+  expect, now = Date.now(), ttlSec = 600, nonce, crashProbe } = {}) {
++  expect, now = Date.now(), ttlSec = 600, nonce } = {}) {
    assertFenceShape(expect, 'offerDesktop');
 @@ -39,4 +41,4 @@ export function offerDesktop(root, runId, { expect, now = Date.now(), ttlSec = 600, nonce } = {}) {
    catch { return { ok: false, reason: 'INVALID_TTL_SEC' }; }
@@ -27200,7 +28051,7 @@ diff --git a/scripts/lib/spawn-optin.mjs b/scripts/lib/spawn-optin.mjs
 -    });
 +    }, directMutationOptions('desktop-offer', expect,
 +      { now, ttlSec, nonce: issued, expiresAt }, 'LEASE_FENCED: offerDesktop', {
-+        crashProbe, onRecovered: loop => {
++        onRecovered: loop => {
 +          const pending = loop.autonomy?.spawn_style_optin_pending;
 +          if (pending?.nonce !== issued || pending.expires_at !== expiresAt) {
 +            throw new Error('DESKTOP_OFFER_RESPONSE_PROJECTION_CHANGED');
@@ -27217,7 +28068,7 @@ diff --git a/scripts/lib/spawn-optin.mjs b/scripts/lib/spawn-optin.mjs
 -export function confirmDesktop(root, runId, { expect, now = Date.now(), nonce, platform = process.platform, desktopProbe = defaultDesktopProbe } = {}) {
 +export function confirmDesktop(root, runId, {
 +  expect, now = Date.now(), nonce, platform = process.platform,
-+  desktopProbe = defaultDesktopProbe, crashProbe } = {}) {
++  desktopProbe = defaultDesktopProbe } = {}) {
    assertFenceShape(expect, 'confirmDesktop');
 @@ -85,5 +99,5 @@ export function confirmDesktop(root, runId, { expect, now = Date.now(), nonce, platform = process.platform, desktopProbe = defaultDesktopProbe } = {}) {
    let probeResult;
@@ -27232,7 +28083,7 @@ diff --git a/scripts/lib/spawn-optin.mjs b/scripts/lib/spawn-optin.mjs
 -      });
 +      }, directMutationOptions('desktop-confirm', expect, { now, nonce, platform,
 +        probe_digest: intentField('desktop-confirm-probe', probeResult) },
-+      'LEASE_FENCED: confirmDesktop', { crashProbe, onRecovered: loop => {
++      'LEASE_FENCED: confirmDesktop', { onRecovered: loop => {
 +        if (loop.autonomy?.spawn_style !== 'desktop'
 +            || loop.autonomy?.spawn_style_optin_pending !== undefined) {
 +          throw new Error('DESKTOP_CONFIRM_RESPONSE_PROJECTION_CHANGED');
@@ -27247,7 +28098,7 @@ diff --git a/scripts/lib/spawn-optin.mjs b/scripts/lib/spawn-optin.mjs
  // downgrading an already-durable 'desktop' opt-in, see resetDesktop below.
 -export function declineDesktop(root, runId, { expect, now = Date.now() } = {}) {
 +export function declineDesktop(root, runId, {
-+  expect, now = Date.now(), crashProbe } = {}) {
++  expect, now = Date.now() } = {}) {
    assertFenceShape(expect, 'declineDesktop');
 -  appendAnchored(root, runId, { type: 'spawn-style-desktop-declined', data: {} },
 +  const recovered = appendAnchored(root, runId, { type: 'spawn-style-desktop-declined', data: {} },
@@ -27256,7 +28107,7 @@ diff --git a/scripts/lib/spawn-optin.mjs b/scripts/lib/spawn-optin.mjs
        if (!lc.ok) throw new Error('LEASE_FENCED: ' + lc.reason);
 -    });
 +    }, directMutationOptions('desktop-decline', expect, { now },
-+      'LEASE_FENCED: declineDesktop', { crashProbe, onRecovered: loop => {
++      'LEASE_FENCED: declineDesktop', { onRecovered: loop => {
 +        if (loop.autonomy?.spawn_style_optin_pending !== undefined) {
 +          throw new Error('DESKTOP_DECLINE_RESPONSE_PROJECTION_CHANGED');
 +        }
@@ -27271,7 +28122,7 @@ diff --git a/scripts/lib/spawn-optin.mjs b/scripts/lib/spawn-optin.mjs
  // a fresh acquireLease, so a human can still audit before resuming.
 -export function resetDesktop(root, runId, { expect, now = Date.now() } = {}) {
 +export function resetDesktop(root, runId, {
-+  expect, now = Date.now(), crashProbe } = {}) {
++  expect, now = Date.now() } = {}) {
    assertFenceShape(expect, 'resetDesktop');
    try {
 -    appendAnchored(root, runId, { type: 'spawn-style-desktop-reset', data: {} },
@@ -27281,7 +28132,7 @@ diff --git a/scripts/lib/spawn-optin.mjs b/scripts/lib/spawn-optin.mjs
          if (cur !== 'desktop') throw new Error('SOURCE_INVALID: resetDesktop');
 -      });
 +      }, directMutationOptions('desktop-reset', expect, { now },
-+      'LEASE_FENCED: resetDesktop', { crashProbe, onRecovered: loop => {
++      'LEASE_FENCED: resetDesktop', { onRecovered: loop => {
 +        if (loop.autonomy?.spawn_style !== 'visible'
 +            || loop.autonomy?.spawn_style_optin_pending !== undefined) {
 +          throw new Error('DESKTOP_RESET_RESPONSE_PROJECTION_CHANGED');
@@ -27568,7 +28419,7 @@ diff --git a/scripts/lib/respawn.mjs b/scripts/lib/respawn.mjs
 +  reason = eventData?.reason ?? eventData?.error ?? eventData?.gate ?? pauseReason,
 +  requestDigest = contentHash(JSON.stringify(['respawn-rollback-pause',
 +    childRunId, parentOwner, generation, eventData, pauseReason, outcome, reason])),
-+  mutation = null, crashProbe }) {
++  mutation = null }) {
    try {
 -    appendAnchored(root, runId, { type: 'respawn-failed', data: { ...eventData, pause_reason: pauseReason } }, (l) => {
 +    const appendWithMutation = mutation === null
@@ -27577,7 +28428,7 @@ diff --git a/scripts/lib/respawn.mjs b/scripts/lib/respawn.mjs
 +        directMutationOptions('respawn-rollback-pause',
 +          { owner: parentOwner, generation },
 +          { childRunId, eventData, pauseReason, outcome, reason },
-+          'RESPAWN_FENCED: rollback-pause', { ...options, crashProbe,
++          'RESPAWN_FENCED: rollback-pause', { ...options,
 +            onRecovered: loop => validateStandaloneRespawnRecovery(root, runId, loop, {
 +              eventType: 'respawn-failed', requestDigest, childRunId,
 +              pauseReason, outcome, reason,
@@ -27591,7 +28442,7 @@ diff --git a/scripts/lib/respawn.mjs b/scripts/lib/respawn.mjs
        if (l.status === 'completed' || l.status === 'stopped') throw new Error('RUN_TERMINAL: respawn');
 -    });
 +    }, undefined, { fenceCheck: respawnIdentityFence(
-+      { owner: parentOwner, generation }, 'RESPAWN_FENCED: rollback-pause'), crashProbe });
++      { owner: parentOwner, generation }, 'RESPAWN_FENCED: rollback-pause') });
 @@ -188,3 +194,23 @@
 -function preservePause(root, runId, { childRunId, parentOwner, generation, pauseReason = 'child-timeout-awaiting' }) {
 +function preservePause(root, runId, { childRunId, parentOwner, generation,
@@ -27599,7 +28450,7 @@ diff --git a/scripts/lib/respawn.mjs b/scripts/lib/respawn.mjs
 +  reason = pauseReason,
 +  requestDigest = contentHash(JSON.stringify(['respawn-timeout-preserve',
 +    childRunId, parentOwner, generation, pauseReason, outcome, reason])),
-+  mutation = null, crashProbe }) {
++  mutation = null }) {
    try {
 -    appendAnchored(root, runId, { type: 'respawn-timeout', data: { child_run_id: childRunId, pause_reason: pauseReason } }, (l) => {
 +    const appendWithMutation = mutation === null
@@ -27609,7 +28460,7 @@ diff --git a/scripts/lib/respawn.mjs b/scripts/lib/respawn.mjs
 +          { owner: parentOwner, generation },
 +          { childRunId, pauseReason, outcome, reason },
 +          'RESPAWN_FENCED: timeout-preserve',
-+          { ...options, crashProbe,
++          { ...options,
 +            onRecovered: loop => validateStandaloneRespawnRecovery(root, runId, loop, {
 +              eventType: 'respawn-timeout', requestDigest, childRunId,
 +              pauseReason, outcome, reason,
@@ -27623,7 +28474,7 @@ diff --git a/scripts/lib/respawn.mjs b/scripts/lib/respawn.mjs
        if (l.status === 'completed' || l.status === 'stopped') throw new Error('RUN_TERMINAL: respawn');
 -    });
 +    }, undefined, { fenceCheck: respawnIdentityFence(
-+      { owner: parentOwner, generation }, 'RESPAWN_FENCED: timeout-preserve'), crashProbe });
++      { owner: parentOwner, generation }, 'RESPAWN_FENCED: timeout-preserve') });
    } catch (appendErr) {
      if (String(appendErr.message).startsWith('RUN_TERMINAL')) return { terminal: true };   // v1.6
      if (String(appendErr.message).startsWith('RESPAWN_FENCED')) {
@@ -27662,9 +28513,9 @@ helper. This is executable source, not an operation-name table:
 
 ```js
 const rollback = args => runRespawnCompensation(root, runId, operationInput,
-  mutation => rollbackAndPause(root, runId, { ...args, mutation, crashProbe }));
+  mutation => rollbackAndPause(root, runId, { ...args, mutation }));
 const preserve = args => runRespawnCompensation(root, runId, operationInput,
-  mutation => preservePause(root, runId, { ...args, mutation, crashProbe }));
+  mutation => preservePause(root, runId, { ...args, mutation }));
 ```
 
 The complete caller migration is literal. Every public settlement supplies the exact response
@@ -27756,7 +28607,7 @@ diff --git a/scripts/lib/respawn.mjs b/scripts/lib/respawn.mjs
 @@ -248,3 +248,4 @@ export function respawn(root, runId, {
    runtimeRevalidationOptions = {},
    launcherRevalidationOptions = {},
-+  crashProbe,
++
  } = {}) {
 @@ -309,3 +310,11 @@ export function respawn(root, runId, {
    const operationInput = { expect, childRunId, key, handoffRel,
@@ -27765,10 +28616,10 @@ diff --git a/scripts/lib/respawn.mjs b/scripts/lib/respawn.mjs
 +    respawnIntentProjection(operationInput)));
 +  const rollback = args => runRespawnCompensation(root, runId, operationInput,
 +    mutation => rollbackAndPause(root, runId,
-+      { ...args, requestDigest, mutation, crashProbe }));
++      { ...args, requestDigest, mutation }));
 +  const preserve = args => runRespawnCompensation(root, runId, operationInput,
 +    mutation => preservePause(root, runId,
-+      { ...args, requestDigest, mutation, crashProbe }));
++      { ...args, requestDigest, mutation }));
    try {
 ```
 
@@ -27787,22 +28638,22 @@ diff --git a/tests/helpers/anchored-crash-worker.mjs b/tests/helpers/anchored-cr
 +  'respawn-rollback': ({ root, runId, owner, generation, point, rawInput }) => {
 +    const input = parseInput(rawInput,
 +      ['attended', 'childRunId', 'handoffRel', 'key', 'kind', 'now']);
-+    return respawn(root, runId, { ...input, env: {}, expect: { owner, generation },
++    return (process.env.DEEP_LOOP_TEST_CRASH_AT = point, respawn(root, runId,
++      { ...input, env: {}, expect: { owner, generation },
 +      spawnFn: () => ({ ok: false, reason: 'launch-exit-1' }),
 +      revalidateRuntimeExecutable: identity => identity,
-+      revalidateLauncherExecutable: identity => identity,
-+      crashProbe: reached => { if (reached === point) process.exit(91); } });
++      revalidateLauncherExecutable: identity => identity }));
 +  },
 +  'respawn-timeout': ({ root, runId, owner, generation, point, rawInput }) => {
 +    const input = parseInput(rawInput,
 +      ['attended', 'childRunId', 'handoffRel', 'key', 'kind', 'now']);
-+    return respawn(root, runId, { ...input, env: {}, expect: { owner, generation },
++    return (process.env.DEEP_LOOP_TEST_CRASH_AT = point, respawn(root, runId,
++      { ...input, env: {}, expect: { owner, generation },
 +      spawnFn: () => ({ ok: true }),
 +      pollLease: () => ({ state: 'releasing', owner_run_id: owner, generation }),
 +      sleep: () => {},
 +      revalidateRuntimeExecutable: identity => identity,
-+      revalidateLauncherExecutable: identity => identity,
-+      crashProbe: reached => { if (reached === point) process.exit(91); } });
++      revalidateLauncherExecutable: identity => identity }));
 +  },
    'generic-append': ({ root, runId, owner, generation, point }) => appendAnchored(
 ```
@@ -28680,6 +29531,9 @@ git commit -m "feat: verify App transport isolation" -m "Co-Authored-By: Claude 
   await/await loser observes the stored timeout projection without writing; catch-only barriers prove
   acquire/revoke convergence from the sentinel catch; and `verifyLog(root,runId).ok===true` after every
   interleaving.
+
+Every installed afterimage in this card uses the process-private scalar crash selector owned by the
+anchored publisher; no public option or worker payload carries a function-valued crash capability.
 
 - [ ] **Step 1: Add the complete worker and process-race tests**
 
@@ -29666,7 +30520,7 @@ export function prepareAppTask(root, runId, input, deps = {}) {
               validateAppCandidate(projected);
             }, { nowFn,
               fenceCheck: candidate => assertAppParentIdentity(candidate, input),
-              crashProbe: deps.crashProbe });
+              });
             return result;
           }
           mutation.appendAnchored({ type: 'app-task-prepared', data: {
@@ -29692,7 +30546,7 @@ export function prepareAppTask(root, runId, input, deps = {}) {
             validateAppCandidate(projected);
           }, { nowFn,
             fenceCheck: candidate => assertAppParentIdentity(candidate, input),
-            crashProbe: deps.crashProbe });
+            });
           return result;
         });
     } catch (error) {
@@ -29751,7 +30605,7 @@ export function confirmAppTask(root, runId, input, deps = {}) {
             continuation.confirmed_at = clock.iso; validateAppCandidate(projected);
           }, { nowFn: deps.nowFn ?? Date.now,
             fenceCheck: candidate => assertAppParentIdentity(candidate, input),
-            crashProbe: deps.crashProbe });
+            });
           return result;
         });
     } catch (error) {
@@ -29787,7 +30641,7 @@ export function revokeAppTaskContinuation(root, runId, input, deps = {}) {
             applyAppRevocation(projected, clock); validateAppCandidate(projected);
           }, { nowFn: deps.nowFn ?? Date.now,
             fenceCheck: candidate => assertAppCommandIdentity(
-              candidate, input, 'APP_TASK_FENCED'), crashProbe: deps.crashProbe });
+              candidate, input, 'APP_TASK_FENCED') });
           return result;
         });
     } catch (error) {
@@ -29856,7 +30710,7 @@ export function sweepUnconfirmedAppTask(root, runId, input, deps = {}) {
             projected.session_chain.lease.expires_at = null; validateAppCandidate(projected);
           }, { nowFn: () => now,
             fenceCheck: candidate => assertAppParentIdentity(candidate, input),
-            crashProbe: deps.crashProbe });
+            });
           return result;
         });
     } catch (error) {
@@ -29900,7 +30754,7 @@ diff --git a/scripts/lib/app-task-continuation.mjs b/scripts/lib/app-task-contin
 @@ -235,26 +238,33 @@ export function awaitAppTask(root, runId, input, deps = {}) {
     }, { nowFn: authoritativeNow,
       fenceCheck: loop => assertAppParentIdentity(loop, input),
-      crashProbe: deps.crashProbe }));
+      }));
    } catch (error) {
      const message = String(error?.message || error);
 -    const convergence = ['APP_READY_ACQUIRED', 'APP_READY_CHANGED'].includes(message)
@@ -34289,7 +35143,7 @@ const fixedInterfaces = fixedStart < 0 ? ''
   : source.slice(fixedStart, fixedEnd < 0 ? undefined : fixedEnd);
 requireTokens('Fixed Internal Interfaces', fixedInterfaces, [
   'callerBinding, intentDigest, fenceError, intentConflictError',
-  'callerBinding, intentDigest, fenceError, crashProbe, allowTerminal',
+  'callerBinding, intentDigest, fenceError, allowTerminal',
   'type AppTaskStatusResult = {',
   "resume_policy: 'app' | 'human' | null",
 ]);
@@ -34673,10 +35527,10 @@ for (const task of taskMatches) {
       'dispatch_request_id_digest: dispatchRequestIdDigest ?? null',
       'dispatch_request_digest: dispatchRequestDigest ?? null',
       'request_projection: completeRequest',
-      'createFileDurablyIfAbsent(expectedPath, workItem.bytes',
-      'deferred_materialization',
-      'beforeMaterialize?.(workItem)',
-      'canonicalEpisodeRequestPath(root, runId, id)',
+      'episodeRequestMarkdown({ id, plugin, role, kind, point',
+      'request_markdown: requestMarkdown',
+      'request_markdown_digest: requestMarkdownDigest',
+      "intentField('episode-request-markdown', requestMarkdown)",
       'PLAN_REPLACE_EXPORT: scripts/lib/workspace.mjs newWorkstream',
       'central gateway owns every proof-event entity mapping',
       'episodeProofProjection', 'workstreamProofProjection',
@@ -34694,7 +35548,7 @@ for (const task of taskMatches) {
       '--request-id <episode_request_id>',
       'review dispatch exact retry after marker cleanup reuses one checker',
       'review dispatch separates retry identity, later rounds, and final-lock checker CAS',
-      '# execution-plane edited request',
+      'episode exact retry returns the same inline request without another write',
       'two intentional direct creations with equal content and different IDs remain distinct',
       'an exact direct retry with the same request ID reuses its episode',
       'episode creation identity is state-event correlated and status-independent',
@@ -34704,10 +35558,9 @@ for (const task of taskMatches) {
       'same-ID replay bypasses mutable contract and evidence derivation',
       'fresh detector drift cannot alter a durable same-ID response',
       'real claim-to-block transition pauses before same-ID dispatch replay',
-      'obsolete episodes parent swaps cannot redirect first write or final publication',
-      'episode materialization hook re-enters verified read and survives a competing mutation',
+      'versioned episode request is anchored inline and creates no request sidecar',
       'materialize changed latest insights',
-      'episode request rematerialization rejects symlink file and directory winners',
+      'paired state and event request Markdown tampering is rejected semantically',
       'paired state/event discriminator removal cannot downgrade initialized proof',
       'an initialized run rejects an unversioned episode with no creation event']) {
       if (!card.includes(token)) fail(`Task 7F missing literal caller migration token ${token}`);
@@ -34801,7 +35654,7 @@ for (const task of taskMatches) {
       'function assertBoundAppParentMutationFence(',
       'reentrant cwd and native-path callbacks finish before the final mutation lock',
       'assertBoundAppParentMutationFence(candidate, input',
-      'crashProbe: deps.crashProbe',
+      'process-private scalar crash selector',
       'callbacks can reenter the verified reader outside the lock']) {
       if (!card.includes(token)) fail(`Task 11C missing outside-lock race token ${token}`);
     }
@@ -35183,6 +36036,7 @@ import { legacyAuthorityDigest, legacyProofOrigins,
 
 const generation3 = () => ({ run_id: 'LEGACY-RUN', status: 'running', episodes: [],
   workstreams: [], active_workstreams: [],
+  legacy_lineage: { active_workstreams: [] },
   session_chain: {
     sessions: [{ run_id: 'LEGACY-OWNER', host_surface: null }],
     lease: { owner_run_id: 'LEGACY-OWNER', generation: 3, state: 'released',
@@ -35199,7 +36053,7 @@ const baseline = { type: 'lease-lineage-baselined',
   ts: '2026-07-13T00:00:03.000Z', data: {
     owner_run_id: 'LEGACY-OWNER', generation: 3, lease_state: 'released',
     acquired_at: '2026-07-13T00:00:02.000Z', legacy_episode_count: 0,
-    legacy_workstream_count: 0,
+    legacy_workstream_count: 0, legacy_active_workstreams: [],
     legacy_proof_origins: legacyProofOrigins(generation3(), 0, 0),
     legacy_authority_digest: legacyAuthorityDigest(generation3()),
   } };
@@ -35224,6 +36078,7 @@ proofState.review = { points: ['design'], reviewer: 'deep-review-loop', mode: 'c
 proofState.recipe = { id: 'legacy-recipe' };
 const proofBaseline = { ...baseline, data: { ...baseline.data,
   legacy_episode_count: 1, legacy_workstream_count: 1,
+  legacy_active_workstreams: [],
   legacy_proof_origins: legacyProofOrigins(proofState, 1, 1),
   legacy_authority_digest: legacyAuthorityDigest(proofState) } };
 assert.equal(verifyAppEventCorrelation(proofState, [proofBaseline]).ok, true);
@@ -35339,22 +36194,35 @@ assert.equal(verifyAppEventCorrelation(mutableProof, [proofBaseline]).ok, true,
     const card = source.slice(task.index, nextTask < 0 ? source.length : nextTask);
     const afterimage = [...card.matchAll(/```js\n([\s\S]*?)\n```/g)].map(match => match[1])
       .find(body => body.startsWith('// PLAN_REPLACE_EXPORT: scripts/lib/workspace.mjs newWorkstream'));
+    const statusAfterimage = [...card.matchAll(/```js\n([\s\S]*?)\n```/g)]
+      .map(match => match[1])
+      .find(body => body.startsWith(
+        '// PLAN_REPLACE_RANGE: scripts/lib/workspace.mjs setWorkstreamStatus'));
     const path = join(sequentialSourceDir, 'scripts/lib/workspace.mjs');
-    const installed = readFileSync(path, 'utf8');
-    const start = installed.indexOf('export function newWorkstream(');
-    const end = installed.indexOf('\nexport function setWorkstreamStatus(', start);
-    if (afterimage == null || start < 0 || end < 0) {
-      fail('Task 7F complete newWorkstream afterimage or anchors missing');
+    let installed = readFileSync(path, 'utf8');
+    const newStart = installed.indexOf('export function newWorkstream(');
+    const newEnd = installed.indexOf('\nexport function setWorkstreamStatus(', newStart);
+    if (afterimage == null || statusAfterimage == null || newStart < 0 || newEnd < 0) {
+      fail('Task 7F complete workspace afterimages or anchors missing');
     } else {
-      const body = afterimage.split('\n').slice(1).join('\n').trimEnd();
-      writeFileSync(path, `${installed.slice(0, start)}${body}\n${installed.slice(end + 1)}`);
+      const newBody = afterimage.split('\n').slice(1).join('\n').trimEnd();
+      installed = `${installed.slice(0, newStart)}${newBody}\n${installed.slice(newEnd + 1)}`;
+      const statusStart = installed.indexOf('export function setWorkstreamStatus(');
+      const statusEnd = installed.indexOf('// respawn 인수:', statusStart);
+      if (statusStart < 0 || statusEnd < 0) {
+        fail('Task 7F status/terminal replacement anchors missing');
+      } else {
+        const statusBody = statusAfterimage.split('\n').slice(1).join('\n').trimEnd();
+        installed = `${installed.slice(0, statusStart)}${statusBody}\n\n${installed.slice(statusEnd)}`;
+      }
+      writeFileSync(path, installed);
       const checked = spawnSync(process.execPath, ['--check', path], {
         cwd: sequentialSourceDir, encoding: 'utf8',
       });
       if (checked.error || checked.status !== 0) {
         const diagnostic = String(checked.error?.message || checked.stderr || checked.stdout)
           .split('\n')[0];
-        fail(`Task 7F installed newWorkstream afterimage syntax: ${diagnostic}`);
+        fail(`Task 7F installed workspace afterimage syntax: ${diagnostic}`);
       }
     }
   }
@@ -35369,6 +36237,111 @@ assert.equal(verifyAppEventCorrelation(mutableProof, [proofBaseline]).ok, true,
       .map(match => match[1]).filter(body => pathPattern.test(body));
     for (const [index, body] of selected.entries()) {
       applySequentialDiff(`Task ${taskId} selected source diff ${index + 1}`, body);
+    }
+  }
+  {
+    const task = taskMatches.find(match => match[1] === '7F');
+    const nextTask = source.indexOf('\n### Task ', task.index + 1);
+    const card = source.slice(task.index, nextTask < 0 ? source.length : nextTask);
+    const units = [...card.matchAll(/```js\n([\s\S]*?)\n```/g)].map(match => match[1]);
+    const helpers = units.find(body => body.includes('function reviewIdentityFence(')
+      && body.includes('function recoveredReviewOutcome('));
+    const path = join(sequentialSourceDir, 'scripts/lib/review.mjs');
+    const installed = readFileSync(path, 'utf8');
+    const anchor = installed.indexOf('function sameJson(');
+    const end = anchor < 0 ? -1 : installed.indexOf('\n}\n', anchor);
+    if (helpers == null || anchor < 0 || end < 0) {
+      fail('Task 7F review mutation helpers or sameJson anchor missing');
+    } else {
+      writeFileSync(path, `${installed.slice(0, end + 3)}\n${helpers}\n`
+        + installed.slice(end + 3));
+    }
+  }
+  {
+    const path = join(sequentialSourceDir, 'scripts/lib/workspace.mjs');
+    let installed = readFileSync(path, 'utf8');
+    const stateBefore = "import { readState, writeState, withLock } from './state.mjs';";
+    const integrityBefore = "import { appendAnchored, workstreamNewIntent } from './integrity.mjs';";
+    const after = "import { appendAnchored, directMutationOptions, intentField, readVerifiedState,\n  withVerifiedMutationLock, workstreamNewIntent } from './integrity.mjs';";
+    if (!installed.includes(stateBefore) || !installed.includes(integrityBefore)) {
+      fail('Task 7F final workspace import anchors missing');
+    } else {
+      installed = installed.replace(`${stateBefore}\n${integrityBefore}`, after);
+      writeFileSync(path, installed);
+    }
+  }
+  {
+    const task = taskMatches.find(match => match[1] === '7F');
+    const nextTask = source.indexOf('\n### Task ', task.index + 1);
+    const card = source.slice(task.index, nextTask < 0 ? source.length : nextTask);
+    const units = [...card.matchAll(/```js\n([\s\S]*?)\n```/g)].map(match => match[1]);
+    const body = units.find(unit => unit.startsWith('export function recordReviewOutcome(')
+      && unit.includes('export function importReviewOutcome(')
+      && unit.includes("withReviewMutation(root, runId, fence, 'recordReviewOutcome'"));
+    const path = join(sequentialSourceDir, 'scripts/lib/review.mjs');
+    const installed = readFileSync(path, 'utf8');
+    const start = installed.indexOf('export function recordReviewOutcome(');
+    const end = installed.indexOf('export function unsatisfiedReviewPoints(', start);
+    if (body == null || start < 0 || end < 0) {
+      fail('Task 7F final review outcome afterimage or anchors missing');
+    } else {
+      writeFileSync(path, `${installed.slice(0, start)}${body}\n\n${installed.slice(end)}`);
+      const checked = spawnSync(process.execPath, ['--check', path], {
+        cwd: sequentialSourceDir, encoding: 'utf8',
+      });
+      if (checked.error || checked.status !== 0) {
+        const diagnostic = String(checked.error?.message || checked.stderr || checked.stdout)
+          .split('\n')[0];
+        fail(`Task 7F installed final review outcome syntax: ${diagnostic}`);
+      }
+    }
+  }
+  {
+    const task = taskMatches.find(match => match[1] === '7F');
+    const nextTask = source.indexOf('\n### Task ', task.index + 1);
+    const card = source.slice(task.index, nextTask < 0 ? source.length : nextTask);
+    const helpers = [...card.matchAll(/```js\n([\s\S]*?)\n```/g)]
+      .map(match => match[1])
+      .filter(body => body.includes('dispatchReview as productionDispatchReview')
+        && body.includes('test-review-${nextReviewRequest}'));
+    if (helpers.length !== 1) {
+      fail(`Task 7F early review request helper count: ${helpers.length}`);
+    } else {
+      const path = join(sequentialSourceDir, 'tests/helpers/review-request.mjs');
+      writeFileSync(path, `${helpers[0]}\n`);
+      const checked = spawnSync(process.execPath, ['--check', path], {
+        cwd: sequentialSourceDir, encoding: 'utf8',
+      });
+      if (checked.error || checked.status !== 0) {
+        const diagnostic = String(checked.error?.message || checked.stderr || checked.stdout)
+          .split('\n')[0];
+        fail(`Task 7F early review request helper syntax: ${diagnostic}`);
+      }
+    }
+  }
+  {
+    const task = taskMatches.find(match => match[1] === '7F');
+    const nextTask = source.indexOf('\n### Task ', task.index + 1);
+    const card = source.slice(task.index, nextTask < 0 ? source.length : nextTask);
+    const units = [...card.matchAll(/```js\n([\s\S]*?)\n```/g)].map(match => match[1]);
+    const body = units.find(unit => unit.startsWith(
+      '// PLAN_REPLACE_RANGE: scripts/lib/episode.mjs final episode request/create range'));
+    const path = join(sequentialSourceDir, 'scripts/lib/episode.mjs');
+    const installed = readFileSync(path, 'utf8');
+    const start = installed.indexOf('function validateRequestWinner(');
+    const end = installed.indexOf('export function abandonEpisode(', start);
+    if (body == null || start < 0 || end < 0) {
+      fail('Task 7F final episode request/create afterimage or anchors missing');
+    } else {
+      writeFileSync(path, `${installed.slice(0, start)}${body}\n\n${installed.slice(end)}`);
+      const checked = spawnSync(process.execPath, ['--check', path], {
+        cwd: sequentialSourceDir, encoding: 'utf8',
+      });
+      if (checked.error || checked.status !== 0) {
+        const diagnostic = String(checked.error?.message || checked.stderr || checked.stdout)
+          .split('\n')[0];
+        fail(`Task 7F installed final episode afterimage syntax: ${diagnostic}`);
+      }
     }
   }
   {
@@ -35398,10 +36371,33 @@ assert.equal(verifyAppEventCorrelation(mutableProof, [proofBaseline]).ok, true,
     const task = taskMatches.find(match => match[1] === '7F');
     const nextTask = source.indexOf('\n### Task ', task.index + 1);
     const card = source.slice(task.index, nextTask < 0 ? source.length : nextTask);
+    const helpers = [...card.matchAll(/```js\n([\s\S]*?)\n```/g)]
+      .map(match => match[1])
+      .filter(body => body.includes('newWorkstream as createWorkstream')
+        && body.includes('test-workstream-${nextWorkstreamRequest}'));
+    if (helpers.length !== 1) {
+      fail(`Task 7F workstream request helper count: ${helpers.length}`);
+    } else {
+      const path = join(sequentialSourceDir, 'tests/helpers/workstream-request.mjs');
+      writeFileSync(path, `${helpers[0]}\n`);
+      const checked = spawnSync(process.execPath, ['--check', path], {
+        cwd: sequentialSourceDir, encoding: 'utf8',
+      });
+      if (checked.error || checked.status !== 0) {
+        const diagnostic = String(checked.error?.message || checked.stderr || checked.stdout)
+          .split('\n')[0];
+        fail(`Task 7F installed workstream request helper syntax: ${diagnostic}`);
+      }
+    }
+  }
+  {
+    const task = taskMatches.find(match => match[1] === '7F');
+    const nextTask = source.indexOf('\n### Task ', task.index + 1);
+    const card = source.slice(task.index, nextTask < 0 ? source.length : nextTask);
     const units = [...card.matchAll(/```js\n([\s\S]*?)\n```/g)].map(match => match[1]);
     const proofTest = units.find(body => body.includes("test('central gateway owns every proof-event entity mapping'")
       && body.includes("test('pre-checkpoint legacy proof history is opaque"));
-    const aliasTest = units.find(body => body.includes("test('episode request path is canonical before a symlink-root transaction commits'"));
+    const aliasTest = units.find(body => body.includes("test('episode inline request is identical through a symlink-root transaction'"));
     if (proofTest == null || aliasTest == null) {
       fail('Task 7F complete proof/canonical-alias tests missing');
     } else {
@@ -35421,7 +36417,7 @@ assert.equal(verifyAppEventCorrelation(mutableProof, [proofBaseline]).ok, true,
         }
       }
       const executed = spawnSync(process.execPath, ['--test',
-        '--test-name-pattern=central gateway|transition reducer|gateway derives|pre-checkpoint legacy|hash-valid proof|episode request path is canonical',
+        '--test-name-pattern=central gateway|transition reducer|gateway derives|pre-checkpoint legacy|hash-valid proof|workstream creation identities|episode inline request is identical',
         'tests/proof-transitions.test.mjs', 'tests/episode.test.mjs'], {
         cwd: sequentialSourceDir, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024,
       });
@@ -35471,6 +36467,58 @@ assert.equal(verifyAppEventCorrelation(mutableProof, [proofBaseline]).ok, true,
         if (line.includes('review dispatch --point') && !line.includes('--request-id')) {
           fail(`Task 7F skill review dispatch lacks request ID: ${path}:${index + 1}`);
         }
+      }
+    }
+  }
+  {
+    const task = taskMatches.find(match => match[1] === '7B');
+    const nextTask = source.indexOf('\n### Task ', task.index + 1);
+    const card = source.slice(task.index, nextTask < 0 ? source.length : nextTask);
+    const units = [...card.matchAll(/```js\n([\s\S]*?)\n```/g)]
+      .map(match => match[1]);
+    const genericSupport = units.find(body =>
+      body.includes('const probeIntent7c =')
+        && body.includes("test6b('immutable genesis event rejects"));
+    const baseWorker = units.find(body =>
+      body.includes('export function registerAnchoredCrashExtension(')
+        && body.includes('export function runAnchoredCrashWorker('));
+    const genericTest = units.find(body => body.includes(
+        "test6b('anchored crash parent matrix preserves orphans pending bytes and exact retry convergence'"));
+    const integrityPath = join(sequentialSourceDir, 'tests/integrity.test.mjs');
+    if (genericSupport == null || baseWorker == null || genericTest == null) {
+      fail(`Task 7B scalar generic crash support/worker/parent selection: `
+        + `${genericSupport == null ? 0 : 1}/${baseWorker == null ? 0 : 1}/`
+        + `${genericTest == null ? 0 : 1}`);
+    } else {
+      const supportPrefix = genericSupport.slice(0, genericSupport.indexOf('test6b('));
+      const workerPath = join(sequentialSourceDir,
+        'tests/helpers/anchored-crash-worker.mjs');
+      mkdirSync(join(sequentialSourceDir, 'tests/helpers'), { recursive: true });
+      writeFileSync(workerPath, `${baseWorker.trimEnd()}\n`);
+      writeFileSync(integrityPath,
+        `${readFileSync(integrityPath, 'utf8').trimEnd()}\n\n`
+          + `import { test as test6b } from 'node:test';\n`
+          + `import assert6b from 'node:assert/strict';\n`
+          + `${supportPrefix.trimEnd()}\n\n${genericTest.trimEnd()}\n`);
+      for (const path of [workerPath, integrityPath]) {
+        const checked = spawnSync(process.execPath, ['--check', path], {
+          cwd: sequentialSourceDir, encoding: 'utf8',
+        });
+        if (checked.error || checked.status !== 0) {
+          const diagnostic = String(checked.error?.message || checked.stderr || checked.stdout)
+            .split('\n')[0];
+          fail(`Task 7B scalar generic crash syntax ${path}: ${diagnostic}`);
+        }
+      }
+      const executed = spawnSync(process.execPath, ['--test',
+        '--test-name-pattern=anchored crash parent matrix preserves orphans pending bytes and exact retry convergence',
+        'tests/integrity.test.mjs'], {
+        cwd: sequentialSourceDir, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024,
+      });
+      if (executed.error || executed.status !== 0) {
+        const diagnostic = String(executed.error?.message
+          || executed.stderr || executed.stdout).split('\n').slice(0, 60).join(' | ');
+        fail(`Task 7B scalar generic crash behavior: ${diagnostic}`);
       }
     }
   }
@@ -35529,6 +36577,121 @@ assert.equal(verifyAppEventCorrelation(mutableProof, [proofBaseline]).ok, true,
         .test(body));
     for (const [index, body] of testDiffs.entries()) {
       applySequentialDiff(`Task 7C sequential accounting caller test diff ${index + 1}`, body);
+    }
+  }
+  {
+    const task = taskMatches.find(match => match[1] === '7C');
+    const nextTask = source.indexOf('\n### Task ', task.index + 1);
+    const card = source.slice(task.index, nextTask < 0 ? source.length : nextTask);
+    const task7b = taskMatches.find(match => match[1] === '7B');
+    const next7b = source.indexOf('\n### Task ', task7b.index + 1);
+    const card7b = source.slice(task7b.index, next7b < 0 ? source.length : next7b);
+    const baseWorker = [...card7b.matchAll(/```js\n([\s\S]*?)\n```/g)]
+      .map(match => match[1])
+      .find(body => body.includes('export function registerAnchoredCrashExtension(')
+        && body.includes('export function runAnchoredCrashWorker('));
+    const workerDiffs = [...card.matchAll(/```diff\n([\s\S]*?)\n```/g)]
+      .map(match => match[1])
+      .filter(body => body.includes(
+        'diff --git a/tests/helpers/anchored-crash-worker.mjs'));
+    const accountingTest = [...card.matchAll(/```js\n([\s\S]*?)\n```/g)]
+      .map(match => match[1])
+      .find(body => body.includes(
+        "test('four accounting writers recover every published marker without double charge'"));
+    if (baseWorker == null || workerDiffs.length !== 1 || accountingTest == null) {
+      fail(`Task 7C scalar crash worker/test selection: ${workerDiffs.length}/`
+        + `${accountingTest == null ? 0 : 1}`);
+    } else {
+      const workerPath = join(sequentialSourceDir,
+        'tests/helpers/anchored-crash-worker.mjs');
+      mkdirSync(join(sequentialSourceDir, 'tests/helpers'), { recursive: true });
+      let installedWorker = `${baseWorker.trimEnd()}\n`;
+      const workerHunks = workerDiffs[0].split(/^@@[^\n]*\n/m).slice(1);
+      const imports = workerHunks[0].split('\n')
+        .filter(line => line.startsWith('+')).map(line => line.slice(1)).join('\n');
+      const operations = workerHunks[1].split('\n')
+        .filter(line => line.startsWith('+')).map(line => line.slice(1)).join('\n');
+      const importAnchor = "import { newWorkstream } from '../../scripts/lib/workspace.mjs';\n";
+      const operationAnchor = 'const generic = Object.freeze({\n';
+      if (!installedWorker.includes(importAnchor) || !installedWorker.includes(operationAnchor)
+          || !imports.includes('settleTerminalCodexMakerCost')
+          || !operations.includes("'accounting-terminal-maker'")) {
+        fail('Task 7C scalar accounting worker hunk extraction invalid');
+      } else {
+        installedWorker = installedWorker.replace(importAnchor,
+          `${importAnchor}${imports}\n`);
+        installedWorker = installedWorker.replace(operationAnchor,
+          `${operationAnchor}${operations}\n`);
+      }
+      writeFileSync(workerPath, installedWorker);
+      const budgetPath = join(sequentialSourceDir, 'tests/budget.test.mjs');
+      writeFileSync(budgetPath,
+        `${readFileSync(budgetPath, 'utf8').trimEnd()}\n\n${accountingTest.trimEnd()}\n`);
+      for (const path of [budgetPath, workerPath]) {
+        const checked = spawnSync(process.execPath, ['--check', path], {
+          cwd: sequentialSourceDir, encoding: 'utf8',
+        });
+        if (checked.error || checked.status !== 0) {
+          const diagnostic = String(checked.error?.message || checked.stderr || checked.stdout)
+            .split('\n')[0];
+          fail(`Task 7C scalar crash syntax ${path}: ${diagnostic}`);
+        }
+      }
+      const executed = spawnSync(process.execPath, ['--test',
+        '--test-name-pattern=four accounting writers recover every published marker',
+        'tests/budget.test.mjs'], {
+        cwd: sequentialSourceDir, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024,
+      });
+      if (executed.error || executed.status !== 0) {
+        const diagnostic = String(executed.error?.message
+          || executed.stderr || executed.stdout).split('\n').slice(0, 60).join(' | ');
+        fail(`Task 7C scalar accounting crash behavior: ${diagnostic}`);
+      }
+    }
+  }
+  {
+    const task = taskMatches.find(match => match[1] === '7G');
+    const nextTask = source.indexOf('\n### Task ', task.index + 1);
+    const card = source.slice(task.index, nextTask < 0 ? source.length : nextTask);
+    const units = [...card.matchAll(/```js\n([\s\S]*?)\n```/g)]
+      .map(match => match[1]);
+    const workerExtension = units.find(body =>
+      body.includes('export function dispatchPublisherCrash7g(')
+        && body.includes('registerAnchoredCrashExtension(request =>'));
+    const publisherTest = units.find(body =>
+      body.includes('function assertRemainingPublisherCrash7g(')
+        && body.includes("test7g('remaining publisher crash recovery uses real public APIs'"));
+    const workerPath = join(sequentialSourceDir,
+      'tests/helpers/anchored-crash-worker.mjs');
+    if (workerExtension == null || publisherTest == null || !existsSync(workerPath)) {
+      fail(`Task 7G scalar publisher worker/test selection: `
+        + `${workerExtension == null ? 0 : 1}/${publisherTest == null ? 0 : 1}`);
+    } else {
+      writeFileSync(workerPath,
+        `${readFileSync(workerPath, 'utf8').trimEnd()}\n\n${workerExtension.trimEnd()}\n`);
+      const integrityPath = join(sequentialSourceDir, 'tests/integrity.test.mjs');
+      writeFileSync(integrityPath,
+        `${readFileSync(integrityPath, 'utf8').trimEnd()}\n\n${publisherTest.trimEnd()}\n`);
+      for (const path of [workerPath, integrityPath]) {
+        const checked = spawnSync(process.execPath, ['--check', path], {
+          cwd: sequentialSourceDir, encoding: 'utf8',
+        });
+        if (checked.error || checked.status !== 0) {
+          const diagnostic = String(checked.error?.message || checked.stderr || checked.stdout)
+            .split('\n')[0];
+          fail(`Task 7G scalar publisher crash syntax ${path}: ${diagnostic}`);
+        }
+      }
+      const executed = spawnSync(process.execPath, ['--test',
+        '--test-name-pattern=remaining publisher crash recovery uses real public APIs',
+        'tests/integrity.test.mjs'], {
+        cwd: sequentialSourceDir, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024,
+      });
+      if (executed.error || executed.status !== 0) {
+        const diagnostic = String(executed.error?.message
+          || executed.stderr || executed.stdout).split('\n').slice(0, 60).join(' | ');
+        fail(`Task 7G scalar publisher crash behavior: ${diagnostic}`);
+      }
     }
   }
   for (const [taskId, requiredPath] of [
@@ -35667,11 +36830,140 @@ test('installed breaker afterimage executes stable IDs and current lease policy'
       fail(`Task 7G installed afterimage behavior: ${diagnostic}`);
     }
   }
+  {
+    const task = taskMatches.find(match => match[1] === '11B');
+    const nextTask = source.indexOf('\n### Task ', task.index + 1);
+    const card = source.slice(task.index, nextTask < 0 ? source.length : nextTask);
+    const closures = [...card.matchAll(/```js\n([\s\S]*?)\n```/g)]
+      .map(match => match[1])
+      .filter(body => body.startsWith(
+        '// PLAN_REPLACE_RANGE: scripts/lib/integrity.mjs transitionalDirectIntent'));
+    if (closures.length !== 1) {
+      fail(`Task 11B final gateway closure afterimage count: ${closures.length}`);
+    } else {
+      const integrityPath = join(sequentialSourceDir, 'scripts/lib/integrity.mjs');
+      const before = readFileSync(integrityPath, 'utf8');
+      const start = before.indexOf('function transitionalDirectIntent(');
+      const end = before.indexOf('// Root relocation is the sole mutation', start);
+      if (start < 0 || end < 0 || end <= start) {
+        fail('Task 11B final gateway closure anchors missing or reversed');
+      } else {
+        const [, ...body] = closures[0].split('\n');
+        writeFileSync(integrityPath,
+          `${before.slice(0, start)}${body.join('\n').trimEnd()}\n\n${before.slice(end)}`);
+      }
+      const installed = readFileSync(integrityPath, 'utf8');
+      if (/appendTransitionalDirect|transitionalDirectIntent/u.test(installed)
+          || /const hasBinding = opts\.callerBinding/u.test(installed)) {
+        fail('Task 11B final gateway still contains current-lease fallback authority');
+      }
+      const checked = spawnSync(process.execPath, ['--check', integrityPath], {
+        cwd: sequentialSourceDir, encoding: 'utf8',
+      });
+      if (checked.error || checked.status !== 0) {
+        const diagnostic = String(checked.error?.message || checked.stderr || checked.stdout)
+          .split('\n')[0];
+        fail(`Task 11B final gateway syntax: ${diagnostic}`);
+      }
+      const executed = spawnSync(process.execPath, ['--test',
+        '--test-name-pattern=central gateway owns every proof-event entity mapping|pre-checkpoint legacy proof history is opaque|workstream creation identities are globally unique',
+        'tests/proof-transitions.test.mjs'], {
+        cwd: sequentialSourceDir, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024,
+      });
+      if (executed.error || executed.status !== 0) {
+        const diagnostic = String(executed.error?.message
+          || executed.stderr || executed.stdout).split('\n').slice(0, 60).join(' | ');
+        fail(`Task 11B no-fallback legacy lifecycle behavior: ${diagnostic}`);
+      }
+    }
+  }
+  {
+    // The concrete Task 7 substrate is scanned only after the Task 11B final gateway closure.
+    // Tasks 8A–11C are then closed inductively: every later card must expose its complete owned
+    // production surface and no complete afterimage, retained source line, added source line, or
+    // worker may reintroduce the removed function-valued crash capability.
+    const finalSurfaceInventory = new Map([
+      ['8A', ['deriveAppEmitAuthority', 'rollbackReservedHandoff',
+        'export function emitHandoff']],
+      ['8B', ['export function prepareAppTask']],
+      ['9A', ['export function confirmAppTask', 'export function failAppTask']],
+      ['9B', ['export function sweepUnconfirmedAppTask', 'export function statusAppTask',
+        'export function awaitAppTask']],
+      ['10A', ['export function acquireAppTask']],
+      ['10B', ['export function appTransportBinding', "directMutationOptions('run-pause'"]],
+      ['10C', ['export function recoverRun']],
+      ['10D', ['export function finishRun', 'dispatchPublicMutationCrash10d']],
+      ['11A', ['async function handleAppTask', 'async function handleHandoff']],
+      ['11B', ['export function approveLauncherExecutable',
+        'export function approveRuntimeExecutable', 'validateStandaloneRespawnRecovery',
+        'diff --git a/scripts/lib/respawn.mjs',
+        'diff --git a/scripts/lib/headless-host.mjs',
+        'diff --git a/scripts/hooks-impl/precompact-handoff.mjs',
+        'process.env.DEEP_LOOP_TEST_CRASH_AT = point']],
+      ['11C', ['export function prepareAppTask', 'export function confirmAppTask',
+        'export function revokeAppTaskContinuation',
+        'export function sweepUnconfirmedAppTask',
+        '@@ -221,8 +221,11 @@ export function awaitAppTask']],
+    ]);
+    for (const [taskId, requiredTokens] of finalSurfaceInventory) {
+      const task = taskMatches.find(match => match[1] === taskId);
+      const nextTask = source.indexOf('\n### Task ', task.index + 1);
+      const card = source.slice(task.index, nextTask < 0 ? source.length : nextTask);
+      for (const token of requiredTokens) {
+        if (!card.includes(token)) fail(`Task ${taskId} final source coverage omits ${token}`);
+      }
+      if (/\bcrashProbe\b/u.test(card)) {
+        fail(`Task ${taskId} reintroduces a function-valued crash capability`);
+      }
+      const sourceDiffs = [...card.matchAll(/```diff\n([\s\S]*?)\n```/g)]
+        .map(match => match[1]);
+      for (const [index, body] of sourceDiffs.entries()) {
+        const sourceSections = body.split(/(?=^diff --git a\/)/m)
+          .filter(section => /^diff --git a\/(?:scripts\/|scripts\/hooks-impl\/)/u.test(section));
+        for (const section of sourceSections) {
+          const retainedOrAdded = section.split('\n')
+            .filter(line => (line.startsWith('+') && !line.startsWith('+++ '))
+              || line.startsWith(' '))
+            .join('\n');
+          if (/\bcrashProbe\b/u.test(retainedOrAdded)) {
+            fail(`Task ${taskId} source diff ${index + 1} retains a crash callback`);
+          }
+        }
+      }
+    }
+
+    const walkSources = directory => readdirSync(directory, { withFileTypes: true })
+      .flatMap(entry => entry.isDirectory()
+        ? walkSources(join(directory, entry.name)) : [join(directory, entry.name)]);
+    const allowedScalar = new Set([
+      'scripts/lib/durable-file.mjs',
+      'scripts/lib/init-transaction.mjs',
+      'scripts/lib/integrity.mjs',
+    ]);
+    for (const path of walkSources(join(sequentialSourceDir, 'scripts'))
+      .filter(value => value.endsWith('.mjs'))) {
+      const relativePath = path.slice(sequentialSourceDir.length + 1).replaceAll('\\', '/');
+      const installed = readFileSync(path, 'utf8');
+      if (installed.includes('crashProbe')) {
+        fail(`final production substrate retains function-valued crash hook: ${relativePath}`);
+      }
+      if (installed.includes('DEEP_LOOP_TEST_CRASH_AT') && !allowedScalar.has(relativePath)) {
+        fail(`final production substrate exposes scalar selector outside private publishers: ${relativePath}`);
+      }
+    }
+    const workerPath = join(sequentialSourceDir,
+      'tests/helpers/anchored-crash-worker.mjs');
+    const worker = readFileSync(workerPath, 'utf8');
+    if (worker.includes('crashProbe')
+        || !worker.includes("process.env.DEEP_LOOP_TEST_CRASH_AT = point")) {
+      fail('final hard-crash worker does not use only the private scalar selector');
+    }
+  }
 } finally {
   rmSync(sequentialSourceDir, { recursive: true, force: true });
 }
 const PLAN_EXPECTED_COUNTS = Object.freeze({
-  bash: 64, diff: 91, js: 181, json: 4, markdown: 12, text: 10, yaml: 1,
+  bash: 64, diff: 91, js: 185, json: 4, markdown: 12, text: 11, yaml: 1,
 });
 const orderedCounts = value => Object.fromEntries(Object.entries(value)
   .sort(([left], [right]) => left.localeCompare(right)));
@@ -35732,7 +37024,7 @@ git diff --cached -- docs/superpowers/plans/2026-07-13-codex-app-native-task-con
 git status --short --branch
 ```
 
-Expected: the validator prints `ok:true` for the exact 46-card inventory, ordered seven-step semantics, nonempty Files/Interfaces, strict literal path multisets for scoped Step 6/7 commands and exact anchor tokens, the fixed known/nonempty/closed fence inventory and syntax, exact unified-diff hunk counts with no orphan trailing payload, sequential Task 7B→7C production-source patch applicability, Gate 5/7/8/9 approval/evidence semantics, ULIDs, banned prose, wildcard patterns, and whitespace. The ignored plan is then force-added so staged checks and inspection cover the exact reviewed bytes.
+Expected: the validator prints `ok:true` for the exact 46-card inventory, ordered seven-step semantics, nonempty Files/Interfaces, strict literal path multisets for scoped Step 6/7 commands and exact anchor tokens, the fixed known/nonempty/closed fence inventory and syntax, exact unified-diff hunk counts with no orphan trailing payload, sequential Task 7B→7G concrete substrate through the Task 11B gateway closure, inductive Task 8A→11C final-source/crash-capability closure, Gate 5/7/8/9 approval/evidence semantics, ULIDs, banned prose, wildcard patterns, and whitespace. The ignored plan is then force-added so staged checks and inspection cover the exact reviewed bytes.
 
 ## Execution Handoff
 
