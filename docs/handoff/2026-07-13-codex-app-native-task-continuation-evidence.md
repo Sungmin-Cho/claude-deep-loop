@@ -1199,6 +1199,71 @@ no inherited approval from the historical receipt.
 - gate state: still open. Changed bytes require fresh cycle 4 round 2 with both reviewers pinned to
   exact `gpt-5.6-sol`/high; this Respond is not a Gate 1 pass.
 
+### Gate 1 fresh cycle 4 round 2 review
+
+- gate/artifact: Gate 1 design plus final 46-task plan, goal handoff, evidence, cycle-4 round-1
+  report/response, and current repository code/tests.
+- base/head: `c38a96137f8f4f0099c35e893860930e8ee4cf73..d2f0dcfb5198361f83f20f72bb40af20c6412521`;
+  worktree clean at counted reviewer start.
+- invocation: one built-in `codex exec ... review --base c38a961...` and one direct adversarial audit;
+  both counted reviewers used ephemeral/ignore-config/ignore-rules/read-only execution with exact
+  `gpt-5.6-sol` and `model_reasoning_effort=high`. One earlier standard command combined a custom
+  prompt with `review --base`, was rejected by argument validation with exit 2 before reviewer start,
+  and was excluded.
+- reviewer actual: standard thread `019f640d-00f0-7f21-9110-d1c7eb78f2a2` returned 2 P1 and 2 P2;
+  adversarial thread `019f640c-9c78-74c0-8226-aed2a8bc120c` returned 4 Red and 3 Yellow with
+  `REQUEST_CHANGES`. `N_planned=N_actual=2`; both counted processes terminated naturally with exit 0.
+- model/effort evidence: both process headers confirmed exact `gpt-5.6-sol`, `high`, ephemeral,
+  ignored user config/rules, and read-only sandbox. No global Codex setting changed.
+- verdict: `REQUEST_CHANGES`.
+- red/yellow/info: `1 / 9 / 0`; editable `request.md` overwrite was corroborated by both reviewers.
+  Nine solo defects were independently reproduced by the main agent and classified Yellow under the
+  two-reviewer synthesis rule.
+- termination: fresh cycle 4 round 2 Respond required; neither convergence nor max reached.
+- report path: `.deep-review/reports/2026-07-15-134303-review.md`, SHA-256
+  `e6855337744d7be4aa05f43dfa5b0aa6c2e6ce88ee5a75a35d9e19b956cb1c5b`.
+- raw output bindings: standard SHA-256
+  `98f75740fe1f39e7c88735a32b1c053a834c456b87060876988d8cce70bf3aaf`; adversarial SHA-256
+  `29de3a1a79a22b930cf85fac93a26ad3f6a01dcb88cb2bdec43403a8626bf352`.
+- recurring export: run `01KXJ1G6Z9HP6ZDH7R1FXXNZFY`; architecture critical 43,
+  test-coverage critical 27, error-handling critical 25, security critical 14 (109 total).
+- main-agent judgment: accepted all ten actionable findings. The plan needed stable caller episode
+  IDs, in-lock request preservation/rematerialization, terminal checker receipt/current-child proof,
+  review-outcome breaker lineage, one public review-dispatch intent, installable per-module publisher
+  afterimages, terminal reset precedence, request identity for all breaker operations, state/event
+  episode correlation, and status-independent delayed dispatch replay.
+
+### Gate 1 fresh cycle 4 round 2 Respond
+
+- disposition: accepted 10, rejected 0, deferred 0. `execution_path=main_fallback`; the specialized
+  Phase 6 Agent surface was unavailable, so the documented main-agent fallback was used without an
+  unspecialized substitute.
+- episode/review response: direct episode creation now carries a domain-separated logical request ID
+  plus full payload digest; exact retry reuses one episode, changed reuse conflicts, and intentional
+  same-content creation rotates the ID. Review dispatch uses one complete `dispatch-review` intent,
+  replays across every checker status, and correlates state/event identity. Existing editable request
+  bytes survive retry; an actually missing request is rematerialized under the run lock.
+- accounting/breaker response: terminal checker replay separates immutable parent receipt origin from
+  current acquired-child authority. Breaker trip/reset/verdict all persist stable request receipts;
+  reset enforces current terminal policy before replay, and verdict recovery includes intervening
+  `review-outcome` transitions.
+- executable-plan response: Task 7G lease/breaker afterimages are separate module-local units. The
+  embedded validator sequentially applies Task 7B→7C, corrected Task 7F production plus complete
+  CLI/skill/test migration, installs the test helper, installs both Task 7G afterimages, and
+  syntax-checks their exact installed bytes.
+- exact corrected candidate hashes: handoff
+  `1523907bf1931793b765ed8a5fac2d678a6ae1aa303cfef6e2c89f2e6f150fd9`; design
+  `0966f081bad2f2a604c1780155d26f3b45e51fef21a87efd9a73b57e430c80ee`; ignored plan
+  `52e7b7747560dd2e5db663ce21d61502854c643bada3e55f623e3c1191a2639f`.
+- response record: `.deep-review/responses/2026-07-15-143353-response.md`, SHA-256
+  `93b65289ec8496b0e2e3fd3072870f8ab38bb92bd09bac4a0b2ff58244be100e`.
+- verification: embedded validator passed `ok:true` for 46 tasks and 356 fences
+  (`bash=64`, `diff=89`, `js=177`, `json=4`, `markdown=12`, `text=10`, `yaml=1`).
+  `git diff --check` passed; `npm run preflight` passed validation and all 1,463 tests with zero
+  failures, cancellations, or skips.
+- gate state: still open. Changed bytes require fresh cycle 4 round 3 with both reviewers pinned to
+  exact `gpt-5.6-sol`/high; this Respond is not a Gate 1 pass.
+
 ## Review receipt template
 
 Each reviewed gate will add a receipt with all of these fields:

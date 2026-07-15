@@ -142,7 +142,7 @@ These are the narrow baseline `Modify` anchors required by the execution tasks; 
 | 7C | `scripts/lib/lease.mjs:43-199`; `scripts/lib/budget.mjs:279-1048`; `scripts/lib/headless-host.mjs`; `scripts/deep-loop.mjs:650-670`; `skills/deep-loop-continue/SKILL.md:173-182`; `skills/deep-loop-workflow/references/handoff-respawn.md:179-187`; produced `tests/helpers/anchored-crash-worker.mjs`; `tests/lease.test.mjs`; `tests/budget.test.mjs`; `tests/headless-host.test.mjs`; `tests/skills.test.mjs`; `tests/cli-skillface.test.mjs`; `tests/insights.test.mjs`; `tests/integrity.test.mjs`; `tests/project-root.test.mjs`. |
 | 7D | Produced `scripts/lib/init-transaction.mjs` strict current/genesis proof; produced `scripts/lib/app-task-continuation.mjs` observe/revoke/status boundaries; produced `tests/fixtures/verified-app-run.mjs`; produced `tests/init-transaction.test.mjs`; produced `tests/app-task-continuation.test.mjs`; `tests/cli-skillface.test.mjs`. |
 | 7G | `scripts/lib/lease.mjs:102-199`; `scripts/lib/breaker.mjs:1-62`; `scripts/lib/state.mjs:102-110`; `tests/lease.test.mjs`; `tests/breaker.test.mjs`; `tests/project-root.test.mjs`; `tests/integrity.test.mjs`; produced `tests/helpers/anchored-crash-worker.mjs`. |
-| 7E–7F | `scripts/lib/session-profile.mjs:44-80`; `scripts/lib/comprehension.mjs:27-92`; `scripts/lib/project-root-recovery.mjs:20-51`; `scripts/lib/budget.mjs:1053-1067`; `scripts/lib/episode.mjs:25-220`; `scripts/lib/insights.mjs:357-509`; `scripts/lib/review.mjs:50-179,310-668`; `scripts/lib/workspace.mjs:80-153`; `scripts/lib/detect-terminal.mjs:284-343`; `scripts/deep-loop.mjs:120-180,340-710`; `tests/session-profile.test.mjs`; `tests/comprehension.test.mjs`; `tests/project-root.test.mjs`; `tests/budget.test.mjs`; `tests/cli-skillface.test.mjs`; `tests/insights.test.mjs`; `tests/review-import.test.mjs`; `tests/reviewer-failclosed.test.mjs`; `tests/workspace.test.mjs`; `tests/detect-terminal.test.mjs`. |
+| 7E–7F | `scripts/lib/session-profile.mjs:44-80`; `scripts/lib/comprehension.mjs:27-92`; `scripts/lib/project-root-recovery.mjs:20-51`; `scripts/lib/budget.mjs:1053-1067`; `scripts/lib/episode.mjs:25-220`; `scripts/lib/insights.mjs:357-509`; `scripts/lib/review.mjs:50-179,310-668`; `scripts/lib/workspace.mjs:80-153`; `scripts/lib/detect-terminal.mjs:284-343`; `scripts/deep-loop.mjs:120-180,340-710`; `skills/deep-loop/SKILL.md`; `skills/deep-loop-continue/SKILL.md`; `skills/deep-loop-workflow/references/hill-climbing.md`; `tests/helpers/episode-request.mjs`; `tests/session-profile.test.mjs`; `tests/comprehension.test.mjs`; `tests/project-root.test.mjs`; `tests/budget.test.mjs`; `tests/cli-skillface.test.mjs`; `tests/codex-checker-integration.test.mjs`; `tests/codex-isolation-integration.test.mjs`; `tests/episode.test.mjs`; `tests/fencing.test.mjs`; `tests/finish.test.mjs`; `tests/handoff.test.mjs`; `tests/next-action.test.mjs`; `tests/orch-cli.test.mjs`; `tests/pause.test.mjs`; `tests/review.test.mjs`; `tests/insights.test.mjs`; `tests/review-import.test.mjs`; `tests/reviewer-failclosed.test.mjs`; `tests/workspace.test.mjs`; `tests/detect-terminal.test.mjs`. |
 | 8A–8B | Produced `scripts/lib/app-task-continuation.mjs` `prepareAppTask`; `scripts/lib/handoff.mjs:38-224` (`handoffMarkdown`, `emitHandoff`); `scripts/lib/lease.mjs:121-205` (`reserveHandoff`, `rollbackHandoff`); `scripts/lib/schema.mjs:164-216`; `tests/handoff.test.mjs:343-789,1107-1163`; produced `tests/app-task-continuation.test.mjs` prepare cases; created `tests/fixtures/app-prepare-worker.mjs`. |
 | 9A–9B | Produced `scripts/lib/app-task-continuation.mjs` `confirmAppTask`, `failAppTask`, `sweepUnconfirmedAppTask`, `statusAppTask`, `awaitAppTask`; `scripts/deep-loop.mjs:489-616`; produced `tests/app-task-continuation.test.mjs` receipt/readiness cases; `tests/orch-cli.test.mjs:246-286,831-1005`; `tests/schema.test.mjs:17-273`. |
 | 10A–10D | Produced `scripts/lib/app-task-continuation.mjs` acquire/recovery/finish helpers; `scripts/lib/lease.mjs:13-199`; `scripts/lib/recover.mjs:1-47`; `scripts/lib/state.mjs:51-79,120-211`; `scripts/lib/finish.mjs:13-107`; `scripts/deep-loop.mjs:120-141,489-616,834-861`; produced `tests/app-task-continuation.test.mjs` acquire/history cases; `tests/lease.test.mjs:27-490`; `tests/recover.test.mjs:65-231`; `tests/finish.test.mjs:1-335`; `tests/terminal-cli.test.mjs:1-192`; `tests/orch-cli.test.mjs:246-286,831-1005`; produced `tests/integrity.test.mjs` crash matrix; produced `tests/helpers/anchored-crash-worker.mjs`. |
@@ -10659,6 +10659,53 @@ diff --git a/scripts/lib/state.mjs b/scripts/lib/state.mjs
 Then add these exports to `scripts/lib/integrity.mjs` immediately after `verifyHead`:
 
 ```js
+export function verifyEpisodeCreationCorrelation(loop, lines) {
+  const errors = [];
+  const events = lines.filter(event => event.type === 'episode-new'
+    && event.data?.creation_contract === 'episode-create-v1');
+  const episodes = (loop?.episodes || []).filter(
+    episode => episode.creation_contract === 'episode-create-v1');
+  const eventById = new Map();
+  for (const event of events) {
+    const id = event.data?.episode_id;
+    if (typeof id !== 'string' || eventById.has(id)) {
+      errors.push(`duplicate or invalid episode-new identity ${String(id)}`);
+    } else eventById.set(id, event);
+  }
+  const episodeById = new Map();
+  for (const episode of episodes) {
+    if (typeof episode.id !== 'string' || episodeById.has(episode.id)) {
+      errors.push(`duplicate or invalid episode object identity ${String(episode.id)}`);
+      continue;
+    }
+    episodeById.set(episode.id, episode);
+    const event = eventById.get(episode.id);
+    if (!event) { errors.push(`episode ${episode.id} has no creation event`); continue; }
+    const initialStatus = event.data.status ?? 'pending';
+    if (episode.creation_request_digest !== event.data.request_digest
+        || (episode.creation_request_id_digest ?? null)
+          !== (event.data.creation_request_id_digest ?? null)
+        || (episode.dispatch_request_digest ?? null)
+          !== (event.data.dispatch_request_digest ?? null)
+        || episode.creation_initial_status !== initialStatus
+        || (episode.creation_block_reason ?? null)
+          !== (event.data.block_reason ?? null)
+        || episode.plugin !== event.data.plugin || episode.role !== event.data.role
+        || episode.kind !== event.data.kind || episode.point !== event.data.point) {
+      errors.push(`episode ${episode.id} creation projection mismatch`);
+    }
+    const hasCallerId = episode.creation_request_id_digest != null;
+    const hasDispatchId = episode.dispatch_request_digest != null;
+    if (hasCallerId === hasDispatchId) {
+      errors.push(`episode ${episode.id} has ambiguous creation identity`);
+    }
+  }
+  for (const id of eventById.keys()) {
+    if (!episodeById.has(id)) errors.push(`episode-new ${id} has no episode object`);
+  }
+  return { ok: errors.length === 0, errors };
+}
+
 export function verifyRunSnapshot(loop, lines) {
   const errors = [];
   const state = validate(loop);
@@ -10676,6 +10723,10 @@ export function verifyRunSnapshot(loop, lines) {
   if (!head.ok) errors.push(...head.errors.map(error => `event head: ${error}`));
   const app = verifyAppEventCorrelation(loop, lines);
   if (!app.ok) errors.push(...app.errors.map(error => `App event correlation: ${error}`));
+  const episodeCreation = verifyEpisodeCreationCorrelation(loop, lines);
+  if (!episodeCreation.ok) {
+    errors.push(...episodeCreation.errors.map(error => `episode creation: ${error}`));
+  }
   return { ok: errors.length === 0, errors };
 }
 
@@ -12938,7 +12989,7 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 +import { runtimeFence, sessionRuntime } from './runtime.mjs';
  import { contentHash } from './envelope.mjs';
  import { canonicalProjectRoot, projectRootDigest } from './project-root.mjs';
-@@ -273,4 +275,160 @@
+@@ -273,4 +275,205 @@
    return { tf, tk };
  }
 -
@@ -13025,6 +13076,47 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 +  if (!authorized.ok) throw new Error(`LEASE_FENCED: ${authorized.reason}`);
 +}
 +
++function verifySettledCheckerAfterLeaseAdvance(loop, exact, origin, lines, fence) {
++  const lease = loop.session_chain?.lease || {};
++  if (!['completed', 'stopped'].includes(loop.status)
++      || lease.owner_run_id !== fence.owner || lease.generation !== fence.generation
++      || lease.state !== 'active' || lease.handoff_phase !== 'acquired'
++      || origin.owner === fence.owner) {
++    throw new Error('PROCESS_ACCOUNTING_TERMINAL_PROOF_MISSING');
++  }
++  const checker = (loop.episodes || []).find(
++    episode => episode.id === exact.context.checker_episode_id);
++  if (checker?.status !== 'in_progress' || !checker.review_claim
++      || checker.attempt_id !== exact.context.attempt_id) {
++    throw new Error('PROCESS_ACCOUNTING_TERMINAL_PROOF_MISSING');
++  }
++  const receipts = lines.filter(event => exactProcessCostEvent(
++    event, exact, origin, lines));
++  const handoffs = lines.filter(event => event.type === 'handoff-emitted'
++    && event.data?.child_run_id === fence.owner);
++  const finishes = lines.filter(event => event.type === 'finish');
++  const receipt = receipts[0];
++  const handoff = handoffs[0];
++  const finish = finishes[0];
++  const finishFloor = lines.find(event => event.seq === finish?.seq + 1
++    && event.type === 'cost' && event.data?.auto_floor === true
++    && event.data?.for === 'finish' && event.data?.owner === fence.owner
++    && event.data?.generation === fence.generation);
++  const outcomes = lines.filter(event => event.type === 'review-outcome'
++    && event.data?.episodeId === exact.context.checker_episode_id
++    && event.data?.attempt_id === exact.context.attempt_id);
++  if (receipts.length !== 1 || handoffs.length !== 1 || finishes.length !== 1
++      || !finishFloor || outcomes.length !== 0
++      || !(receipt.seq < handoff.seq && handoff.seq < finish.seq)
++      || finish.data?.status !== loop.status
++      || typeof loop.termination?.finished_at !== 'string') {
++    throw new Error('PROCESS_ACCOUNTING_TERMINAL_PROOF_MISSING');
++  }
++  if (lines.some(event => event.seq > finish.seq && event !== finishFloor)) {
++    throw new Error('PROCESS_ACCOUNTING_TERMINAL_PROOF_MISSING');
++  }
++}
++
 +function assertProcessReplayPolicy(loop, lines, exact, fence) {
 +  const authorized = leaseCheck(loop, fence);
 +  if (authorized.ok) return;
@@ -13040,7 +13132,11 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 +  const checker = (loop.episodes || []).find(
 +    episode => episode.id === exact.context.checker_episode_id);
 +  if (loop.status === 'stopped' && checker?.status === 'in_progress') {
-+    verifyStoppedPreImportCheckerSettlement(loop, exact, origin, lines);
++    const alreadySettled = lines.some(event => exactProcessCostEvent(
++      event, exact, origin, lines));
++    if (alreadySettled && origin.owner !== fence.owner) {
++      verifySettledCheckerAfterLeaseAdvance(loop, exact, origin, lines, fence);
++    } else verifyStoppedPreImportCheckerSettlement(loop, exact, origin, lines);
 +  } else {
 +    verifyTerminalCheckerSettlement(loop, exact, origin, lines);
 +  }
@@ -14541,6 +14637,24 @@ git commit -m "fix: verify success-class state authority" -m "Co-Authored-By: Cl
 - Modify: `scripts/lib/workspace.mjs:80-153` (literal status/terminal direct authority plus
   `inheritWorkstreams`).
 - Modify: `scripts/lib/detect-terminal.mjs:284-343` (`detectAndPersist`).
+- Modify: `scripts/deep-loop.mjs:410-430` (mandatory episode creation request ID).
+- Modify: `skills/deep-loop/SKILL.md`.
+- Modify: `skills/deep-loop-continue/SKILL.md`.
+- Modify: `skills/deep-loop-workflow/references/hill-climbing.md`.
+- Create: `tests/helpers/episode-request.mjs` (test-only unique request-ID adapter).
+- Modify: `tests/budget.test.mjs`.
+- Modify: `tests/cli-skillface.test.mjs`.
+- Modify: `tests/codex-checker-integration.test.mjs`.
+- Modify: `tests/codex-isolation-integration.test.mjs`.
+- Modify: `tests/comprehension.test.mjs`.
+- Modify: `tests/episode.test.mjs`.
+- Modify: `tests/fencing.test.mjs`.
+- Modify: `tests/finish.test.mjs`.
+- Modify: `tests/handoff.test.mjs`.
+- Modify: `tests/next-action.test.mjs`.
+- Modify: `tests/orch-cli.test.mjs`.
+- Modify: `tests/pause.test.mjs`.
+- Modify: `tests/review.test.mjs`.
 - Modify: `tests/insights.test.mjs`.
 - Modify: `tests/review-import.test.mjs`.
 - Modify: `tests/reviewer-failclosed.test.mjs`.
@@ -14559,7 +14673,9 @@ git commit -m "fix: verify success-class state authority" -m "Co-Authored-By: Cl
   `computeInsights` and `latestInsights` remain fail-soft; `emitInsights`, review, workspace, and
   terminal detection fail closed. Owner/generation identity is the only pre-proof decision for
   fenced review/emit/detect calls; runtime, terminal, no-op, eligibility, path, and source policy
-  all follow proof.
+  all follow proof. Direct `episode new` requires a bounded logical `--request-id`; exact retry
+  reuses it, changed payload conflicts, and a new intentional episode rotates it. Nested review
+  creation instead binds the complete public `dispatch-review` digest and never exposes a second ID.
 
 - [ ] **Step 1: Write the complete failing pre-action authority tests**
 
@@ -14671,8 +14787,10 @@ Append this complete dispatch/source-order case to `tests/reviewer-failclosed.te
 ```js
 import { test as test7f } from 'node:test';
 import assert7f from 'node:assert/strict';
+import { createHash as hashDispatch7f } from 'node:crypto';
 import { mkdirSync as mkdir7f, mkdtempSync as temp7f,
-  realpathSync as realpath7f, writeFileSync as write7f } from 'node:fs';
+  readFileSync as readDispatch7f, realpathSync as realpath7f,
+  rmSync as removeDispatch7f, writeFileSync as write7f } from 'node:fs';
 import { tmpdir as tmp7f } from 'node:os';
 import { join as join7f } from 'node:path';
 import { initRun as init7f } from '../scripts/lib/initrun.mjs';
@@ -14680,8 +14798,10 @@ import { newWorkstream as workstream7f } from '../scripts/lib/workspace.mjs';
 import { newEpisode as episode7f, recordEpisode as record7f }
   from '../scripts/lib/episode.mjs';
 import { dispatchReview as dispatch7f } from '../scripts/lib/review.mjs';
-import { readLines as lines7f } from '../scripts/lib/integrity.mjs';
-import { readState as stateDispatch7f } from '../scripts/lib/state.mjs';
+import { readLines as lines7f, readVerifiedState as verifiedDispatch7f }
+  from '../scripts/lib/integrity.mjs';
+import { readState as stateDispatch7f, runDir as runDirDispatch7f }
+  from '../scripts/lib/state.mjs';
 import { durableRunBytes as bytes7f, rawHashValidState as raw7f }
   from './fixtures/verified-app-run.mjs';
 
@@ -14712,7 +14832,8 @@ function corruptDispatchFixture7f({ corrupt = true, hillClimb = true } = {}) {
   write7f(join7f(root, artifact), '# design');
   const maker = episode7f(root, runId, { plugin: 'deep-work', role: 'maker',
     kind: 'design', point: 'design', workstream: ws,
-    expectedArtifacts: [artifact], fence }).id;
+    expectedArtifacts: [artifact], fence,
+    requestId: 'review-dispatch-authority-maker' }).id;
   record7f(root, runId, maker, { status: 'done', artifacts: [artifact], fence });
   if (corrupt) {
     raw7f(root, runId, loop => {
@@ -14744,9 +14865,14 @@ test7f('review dispatch exact retry after marker cleanup reuses one checker', ()
   const input = { point: 'design', workstreamId: fixture.ws,
     detected: { 'deep-review': true, codex: true }, fence: fixture.fence };
   const first = dispatch7f(fixture.root, fixture.runId, input);
+  const firstEpisode = stateDispatch7f(fixture.root, fixture.runId).data.episodes
+    .find(episode => episode.id === first.checkerEpisodeId);
+  write7f(firstEpisode.request_path, '# execution-plane edited request\n');
   const committed = bytes7f(fixture.root, fixture.runId);
   const second = dispatch7f(fixture.root, fixture.runId, input);
   assert7f.equal(second.checkerEpisodeId, first.checkerEpisodeId);
+  assert7f.equal(readDispatch7f(firstEpisode.request_path, 'utf8'),
+    '# execution-plane edited request\n');
   assert7f.deepEqual(bytes7f(fixture.root, fixture.runId), committed,
     'post-cleanup exact dispatch retry must be byte-identical');
   const state = stateDispatch7f(fixture.root, fixture.runId).data;
@@ -14754,6 +14880,83 @@ test7f('review dispatch exact retry after marker cleanup reuses one checker', ()
     && episode.target_maker === fixture.maker).length, 1);
   assert7f.equal(lines7f(fixture.root, fixture.runId).filter(event =>
     event.type === 'episode-new' && event.data?.role === 'checker').length, 1);
+  removeDispatch7f(firstEpisode.request_path);
+  assert7f.equal(dispatch7f(fixture.root, fixture.runId, input).checkerEpisodeId,
+    first.checkerEpisodeId);
+  assert7f.match(readDispatch7f(firstEpisode.request_path, 'utf8'),
+    /Execution plane: fill/);
+});
+
+function rewriteEpisodeCreationEvent7f(fixture, mutate) {
+  const path = join7f(runDirDispatch7f(fixture.root, fixture.runId),
+    'event-log.jsonl');
+  const events = readDispatch7f(path, 'utf8').trim().split('\n').map(JSON.parse);
+  mutate(events.find(event => event.type === 'episode-new'
+    && event.data?.role === 'checker').data);
+  let previous = 'GENESIS';
+  for (const event of events) {
+    event.checksum = hashDispatch7f('sha256').update(
+      `${event.seq}|${event.ts}|${event.type}|${JSON.stringify(event.data)}|${previous}`)
+      .digest('hex');
+    previous = event.checksum;
+  }
+  write7f(path, `${events.map(JSON.stringify).join('\n')}\n`);
+  raw7f(fixture.root, fixture.runId, loop => {
+    const last = events.at(-1);
+    loop.event_log_head = { seq: last.seq, checksum: last.checksum };
+  });
+}
+
+test7f('episode creation identity is state-event correlated and status-independent', () => {
+  const direct = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
+  const repeatedInput = { plugin: 'deep-work', role: 'maker', kind: 'repeat',
+    point: 'design', workstream: direct.ws, fence: direct.fence };
+  const repeatedA = episode7f(direct.root, direct.runId,
+    { ...repeatedInput, requestId: 'direct-repeat-a' });
+  const repeatedB = episode7f(direct.root, direct.runId,
+    { ...repeatedInput, requestId: 'direct-repeat-b' });
+  assert7f.notEqual(repeatedA.id, repeatedB.id,
+    'two intentional direct creations with equal content and different IDs remain distinct');
+  const repeatedRetry = episode7f(direct.root, direct.runId,
+    { ...repeatedInput, requestId: 'direct-repeat-a' });
+  assert7f.equal(repeatedRetry.id, repeatedA.id,
+    'an exact direct retry with the same request ID reuses its episode');
+  assert7f.throws(() => episode7f(direct.root, direct.runId, {
+    ...repeatedInput, kind: 'changed', requestId: 'direct-repeat-a',
+  }), /EPISODE_REQUEST_CONFLICT/);
+  assert7f.throws(() => episode7f(direct.root, direct.runId, repeatedInput),
+    /EPISODE_REQUEST_ID_REQUIRED/);
+
+  const stateOnly = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
+  const input = { point: 'design', workstreamId: stateOnly.ws,
+    detected: { 'deep-review': true, codex: true }, fence: stateOnly.fence };
+  const first = dispatch7f(stateOnly.root, stateOnly.runId, input);
+  raw7f(stateOnly.root, stateOnly.runId, loop => {
+    loop.episodes.find(episode => episode.id === first.checkerEpisodeId)
+      .creation_request_digest = '0'.repeat(64);
+  });
+  assert7f.throws(() => verifiedDispatch7f(stateOnly.root, stateOnly.runId),
+    /episode creation/);
+
+  const eventOnly = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
+  dispatch7f(eventOnly.root, eventOnly.runId, { ...input,
+    workstreamId: eventOnly.ws, fence: eventOnly.fence });
+  rewriteEpisodeCreationEvent7f(eventOnly,
+    data => { data.request_digest = '1'.repeat(64); });
+  assert7f.throws(() => verifiedDispatch7f(eventOnly.root, eventOnly.runId),
+    /episode creation/);
+
+  for (const status of ['pending', 'in_progress', 'approved', 'rejected', 'blocked']) {
+    const fixture = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
+    const retryInput = { point: 'design', workstreamId: fixture.ws,
+      detected: { 'deep-review': true, codex: true }, fence: fixture.fence };
+    const created = dispatch7f(fixture.root, fixture.runId, retryInput);
+    raw7f(fixture.root, fixture.runId, loop => {
+      loop.episodes.find(episode => episode.id === created.checkerEpisodeId).status = status;
+    });
+    assert7f.equal(dispatch7f(fixture.root, fixture.runId, retryInput).checkerEpisodeId,
+      created.checkerEpisodeId, status);
+  }
 });
 ```
 
@@ -14815,7 +15018,8 @@ function reviewAuthorityFixture7f({ claim = true } = {}) {
   write7f(join7f(fixture.root, artifact), artifactBytes);
   const maker = episode7f(fixture.root, fixture.runId, { plugin: 'deep-work',
     role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws,
-    expectedArtifacts: [artifact], fence }).id;
+    expectedArtifacts: [artifact], fence,
+    requestId: 'review-authority-maker' }).id;
   record7f(fixture.root, fixture.runId, maker,
     { status: 'done', artifacts: [artifact], fence });
   const checker = dispatch7f(fixture.root, fixture.runId, {
@@ -14999,7 +15203,7 @@ test('recovered insights commit publishes or validates its referenced artifact b
 - [ ] **Step 2: Run focused tests and verify RED**
 
 ```bash
-node --test --test-name-pattern='insights proves runs|latest skips a terminal|finish 이벤트 없는 terminal|legacy double-finish|review dispatch proves authority|stale lease creates zero|review claim factory and revalidation|review descriptor revalidation and outcomes|inheritWorkstreams rejects|detect-terminal fences and proves' tests/insights.test.mjs tests/review-import.test.mjs tests/reviewer-failclosed.test.mjs tests/workspace.test.mjs tests/detect-terminal.test.mjs
+node --test --test-name-pattern='insights proves runs|latest skips a terminal|finish 이벤트 없는 terminal|legacy double-finish|review dispatch proves authority|episode creation identity|episode new missing --request-id|stale lease creates zero|review claim factory and revalidation|review descriptor revalidation and outcomes|inheritWorkstreams rejects|detect-terminal fences and proves' tests/insights.test.mjs tests/review-import.test.mjs tests/reviewer-failclosed.test.mjs tests/workspace.test.mjs tests/detect-terminal.test.mjs tests/cli-skillface.test.mjs
 ```
 
 Expected: FAIL because active classification and corrupt finish-history classification precede
@@ -15511,19 +15715,15 @@ diff --git a/scripts/lib/review.mjs b/scripts/lib/review.mjs
    return result;
 ```
 
-The `mutation` option above is the Task 7B private context, not caller-selectable metadata.
-`newEpisode`/`newBlockedCheckerEpisode` consume it without reacquiring the lock and treat an exact
-matching checker already published by `mutation.recovered` as the idempotent response for this
-dispatch projection. A different point, workstream, reviewer resolution, evidence, contract, or
-detected-capability digest cannot adopt that checker. The second short phase uses the distinct
-`dispatch-review-episode` operation and includes `episode_request_digest`, the same normalized
-complete request digest persisted as `episode-new.data.request_digest` and
-`episode.creation_request_digest`. It therefore recovers the one exact checker even after the
-transaction marker has been cleaned up, while zero matches creates and multiple matches fail closed.
-Current checker status is deliberately excluded from recovery equality; immutable
-`creation_initial_status` and `creation_block_reason` preserve the creation response after later
-review transitions. Contract and insights file reads occur between
-the two short `withReviewMutation` phases; neither phase holds the run lock across artifact I/O.
+The final corrective patch later in this Step supersedes the two operation names shown in this
+intermediate diff. The `mutation` option is the Task 7B private context, not caller-selectable
+metadata. Both short phases ultimately use one `dispatch-review` intent derived from the complete
+public input; the target maker and normalized episode payload are deterministic products of the
+verified snapshot, not omitted caller input. An exact second-phase marker is therefore recoverable
+through the first public retry entry. Contract and insights reads remain between the two lock phases.
+Marker-free reuse is limited to the latest maker's request-correlated checker, and immutable creation
+projection checks deliberately exclude current checker status so later pending, in-progress,
+approved, rejected, or blocked transitions do not invalidate the original response.
 
 Replace the complete `recordReviewOutcome` and `importReviewOutcome` exports with:
 
@@ -15806,6 +16006,554 @@ diff --git a/scripts/lib/episode.mjs b/scripts/lib/episode.mjs
  }
 ```
 
+Apply this final corrective patch after the preceding episode/review patches. Direct episode
+creation deliberately has no marker-free content replay; only review dispatch supplies
+`dispatchRequestDigest`, because one maker admits at most one checker for that exact public
+dispatch. Both short dispatch phases use the same complete caller-input intent, while the selected
+maker and episode payload are deterministic verified-state derivations recorded in the event/state
+projection. The run lock also owns request-file materialization and never replaces an existing
+editable request.
+
+```diff
+diff --git a/scripts/lib/episode.mjs b/scripts/lib/episode.mjs
+index c567221..8bf9718 100644
+--- a/scripts/lib/episode.mjs
++++ b/scripts/lib/episode.mjs
+@@ -31,31 +31,50 @@ function requestSkeleton({ id, plugin, role, kind, point, workstream, expectedAr
+-
++
+ function episodeRequestProjection({ plugin, role, kind, point, workstream = null,
+   expectedArtifacts = [], targetMaker, reviewerResolution, evidence, contract,
+-  initialStatus = 'pending', blockReason } = {}) {
++  initialStatus = 'pending', blockReason, creationRequestIdDigest,
++  dispatchRequestDigest } = {}) {
+   return { plugin, role, kind, point, workstream, expectedArtifacts,
+     targetMaker: targetMaker ?? null,
+     reviewerResolution: reviewerResolution ?? null,
+     evidence_digest: intentField('episode-evidence', evidence),
+     contract_digest: intentField('episode-contract', contract),
+-    initialStatus, blockReason: blockReason ?? null };
++    initialStatus, blockReason: blockReason ?? null,
++    creation_request_id_digest: creationRequestIdDigest ?? null,
++    dispatch_request_digest: dispatchRequestDigest ?? null };
+ }
+-
++
+ export function episodeRequestDigest(input) {
+   return intentField('episode-create-request', episodeRequestProjection(input));
+ }
+-
++
+-function episodeAppend(root, runId, mutation, event, mutate, preCheck, options) {
++const EPISODE_REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
++
++function episodeRequestIdDigest(requestId, dispatchRequestDigest) {
++  if (dispatchRequestDigest != null) {
++    if (requestId != null) throw new Error('EPISODE_REQUEST_ID_CONFLICT');
++    return null;
++  }
++  if (!EPISODE_REQUEST_ID.test(requestId || '')) {
++    throw new Error('EPISODE_REQUEST_ID_REQUIRED');
++  }
++  return intentField('episode-create-request-id', requestId);
++}
++
++function episodeAppend(root, runId, mutation, event, mutate, preCheck, options, materialize) {
+   const execute = context => {
+     const snapshot = context.readVerifiedState();
+     if (typeof preCheck === 'function') preCheck(snapshot.data);
+     if (context.recovered !== null) {
+-      return typeof options.onRecovered === 'function'
+-        ? options.onRecovered(snapshot.data, context.recovered) : undefined;
++      if (typeof options.onRecovered === 'function') {
++        options.onRecovered(snapshot.data, context.recovered);
++      }
++      return materialize();
+     }
+     const existing = typeof options.onExisting === 'function'
+       ? options.onExisting(snapshot.data) : null;
+-    if (existing !== null && existing !== undefined) return existing;
+-    return context.appendAnchored(event, mutate, preCheck, options);
++    if (existing !== null && existing !== undefined) return materialize();
++    context.appendAnchored(event, mutate, preCheck, options);
++    return materialize();
+   };
+   if (mutation) return execute(mutation);
+   const { callerBinding, intentDigest, fenceError } = options;
+@@ -66,7 +85,7 @@ function episodeAppend(root, runId, mutation, event, mutate, preCheck, options)
+ function createEpisode(root, runId, {
+   plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker,
+   reviewerResolution, evidence, contract, initialStatus = 'pending', blockReason,
+-  fence, operation, mutation = null, crashProbe,
++  fence, operation, mutation = null, crashProbe, requestId, dispatchRequestDigest,
+ } = {}) {
+   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error(`FENCE_REQUIRED: ${operation}`);
+   // Fix 3: validate required non-fence args before any state write
+@@ -90,15 +109,26 @@ function createEpisode(root, runId, {
+   }
+   let id, requestPath, dir;
+   const safePlugin = slugify(plugin) || 'plugin';
++  const creationRequestIdDigest = episodeRequestIdDigest(
++    requestId, dispatchRequestDigest);
+   const completeRequest = episodeRequestProjection({ plugin, role, kind, point,
+     workstream, expectedArtifacts, targetMaker, reviewerResolution, evidence, contract,
+-    initialStatus, blockReason });
++    initialStatus, blockReason, creationRequestIdDigest, dispatchRequestDigest });
+   const requestDigest = episodeRequestDigest({ plugin, role, kind, point, workstream,
+     expectedArtifacts, targetMaker, reviewerResolution, evidence, contract,
+-    initialStatus, blockReason });
+-  const recoverExact = loop => {
+-    const matches = loop.episodes.filter(episode =>
+-      episode.creation_request_digest === requestDigest);
++    initialStatus, blockReason, creationRequestIdDigest, dispatchRequestDigest });
++  const recoverExact = (loop, recoveredTransaction = null) => {
++    const recoveredEvents = recoveredTransaction?.events?.filter(event =>
++      event.type === 'episode-new' && event.data?.creation_contract === 'episode-create-v1'
++        && event.data?.request_digest === requestDigest) ?? [];
++    if (recoveredTransaction !== null && recoveredEvents.length !== 1) {
++      throw new Error('EPISODE_RESPONSE_PROJECTION_CHANGED');
++    }
++    const matches = recoveredTransaction !== null
++      ? loop.episodes.filter(episode => episode.id === recoveredEvents[0].data.episode_id)
++      : loop.episodes.filter(episode => dispatchRequestDigest != null
++        ? episode.dispatch_request_digest === dispatchRequestDigest
++        : episode.creation_request_id_digest === creationRequestIdDigest);
+     if (matches.length !== 1) throw new Error('EPISODE_RESPONSE_PROJECTION_CHANGED');
+     const [recovered] = matches;
+     if (recovered.plugin !== plugin || recovered.role !== role
+@@ -111,31 +141,69 @@ function createEpisode(root, runId, {
+         || JSON.stringify(recovered.evidence) !== JSON.stringify(evidence)
+         || JSON.stringify(recovered.contract) !== JSON.stringify(contract)
+         || recovered.creation_initial_status !== initialStatus
+-        || (recovered.creation_block_reason ?? null) !== (blockReason ?? null)) {
+-      throw new Error('EPISODE_RESPONSE_PROJECTION_CHANGED');
++        || (recovered.creation_block_reason ?? null) !== (blockReason ?? null)
++        || (recovered.creation_request_id_digest ?? null)
++          !== (creationRequestIdDigest ?? null)
++        || (recovered.dispatch_request_digest ?? null) !== (dispatchRequestDigest ?? null)
++        || recovered.creation_contract !== 'episode-create-v1'
++        || recovered.creation_request_digest !== requestDigest) {
++      throw new Error(dispatchRequestDigest == null
++        && recovered.creation_request_id_digest === creationRequestIdDigest
++        ? 'EPISODE_REQUEST_CONFLICT' : 'EPISODE_RESPONSE_PROJECTION_CHANGED');
+     }
+     id = recovered.id;
+     dir = join(runDir(root, runId), 'episodes', id);
+     requestPath = join(dir, 'request.md');
+     return { id, requestPath };
+   };
+-  const onExisting = loop => loop.episodes.some(episode =>
+-    episode.creation_request_digest === requestDigest) ? recoverExact(loop) : null;
+-  episodeAppend(root, runId, mutation, { type: 'episode-new', data: {
++  const onExisting = loop => loop.episodes.some(episode => dispatchRequestDigest != null
++    ? episode.dispatch_request_digest === dispatchRequestDigest
++    : episode.creation_request_id_digest === creationRequestIdDigest)
++    ? recoverExact(loop) : null;
++  const event = { type: 'episode-new', data: {
+     plugin, role, kind, point,
+-    request_digest: requestDigest,
++    creation_contract: 'episode-create-v1', request_digest: requestDigest,
++    creation_request_id_digest: creationRequestIdDigest,
++    dispatch_request_digest: dispatchRequestDigest ?? null,
+     ...(initialStatus === 'blocked' ? { status: initialStatus, block_reason: blockReason } : {}),
+     ...(reviewerResolution ? { reviewer_resolution: reviewerResolution } : {}),
+-  } }, (loop) => {
+-    const n = String(loop.episodes.length + 1).padStart(3, '0');
+-    id = `${n}-${safePlugin}`;
+-    dir = join(runDir(root, runId), 'episodes', id);
+-    requestPath = join(dir, 'request.md');
++  } };
++  const preCheck = loop => {
++    const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason);
++    if (workstream && !loop.workstreams.find(w => w.id === workstream)) {
++      throw new Error(`WORKSTREAM_NOT_FOUND: ${workstream}`);
++    }
++    if (id == null) {
++      const n = String(loop.episodes.length + 1).padStart(3, '0');
++      id = `${n}-${safePlugin}`;
++      dir = join(runDir(root, runId), 'episodes', id);
++      requestPath = join(dir, 'request.md');
++      event.data.episode_id = id;
++    }
++  };
++  const materialize = () => {
++    const base = resolve(runDir(root, runId), 'episodes');
++    const full = resolve(dir);
++    if (full !== base && !full.startsWith(base + sep)) {
++      throw new Error('EPISODE_PATH_ESCAPE: ' + id);
++    }
++    mkdirSync(dir, { recursive: true });
++    if (!existsSync(requestPath)) {
++      atomicWrite(requestPath, requestSkeleton({
++        id, plugin, role, kind, point, workstream, expectedArtifacts, evidence,
++      }));
++    }
++    return { id, requestPath };
++  };
++  return episodeAppend(root, runId, mutation, event, (loop) => {
+     const epObj = {
+       id, plugin, role, kind, point, workstream_id: workstream, status: initialStatus,
+       request_path: requestPath, expected_artifacts: expectedArtifacts,
+       creation_request_digest: requestDigest, creation_initial_status: initialStatus,
+       creation_block_reason: blockReason ?? null,
++      creation_contract: 'episode-create-v1',
++      creation_request_id_digest: creationRequestIdDigest,
++      dispatch_request_digest: dispatchRequestDigest ?? null,
+       verification: { checker_episode_required: role === 'maker', checker_plugin: 'deep-review', review_point: point, proof_required: expectedArtifacts },
+     };
+     if (targetMaker && typeof targetMaker === 'string' && targetMaker.length) epObj.target_maker = targetMaker;
+@@ -156,40 +224,36 @@ function createEpisode(root, runId, {
+       // preCheck guarantees the workstream exists when non-null (Codex impl r14/r15) — bind episode to it.
+       loop.workstreams.find(w => w.id === workstream).episodes.push(id);
+     }
+-  }, (loop) => {
+-    const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason);
+-    // Codex impl r15 🟡: reject a non-null workstream that does not exist — otherwise a maker bound to a phantom
+-    // workstream becomes unreviewable (dispatchReview rightly rejects WORKSTREAM_NOT_FOUND at review time).
+-    if (workstream && !loop.workstreams.find(w => w.id === workstream)) throw new Error(`WORKSTREAM_NOT_FOUND: ${workstream}`);
+-  }, mutation ? { floor: MUTATION_TURN_FLOOR, onRecovered: recoverExact, onExisting }
++  }, preCheck, mutation ? {
++    floor: MUTATION_TURN_FLOOR,
++    onRecovered: (loop, recovered) => recoverExact(loop, recovered), onExisting,
++  }
+     : directMutationOptions(operation, fence, completeRequest,
+       `LEASE_FENCED: ${operation}`, {
+-        floor: MUTATION_TURN_FLOOR, crashProbe, onRecovered: recoverExact, onExisting }));
+-  // Assert containment before FS writes
+-  const base = resolve(runDir(root, runId), 'episodes');
+-  const full = resolve(dir);
+-  if (full !== base && !full.startsWith(base + sep)) throw new Error('EPISODE_PATH_ESCAPE: ' + id);
+-  mkdirSync(dir, { recursive: true });
+-  atomicWrite(requestPath, requestSkeleton({ id, plugin, role, kind, point, workstream, expectedArtifacts, evidence }));
+-  return { id, requestPath };
++        floor: MUTATION_TURN_FLOOR, crashProbe,
++        onRecovered: (loop, recovered) => recoverExact(loop, recovered), onExisting,
++      }), materialize);
+ }
+-
++
+ export function newEpisode(root, runId, {
+   plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker,
+   reviewerResolution, evidence, contract, fence, mutation, crashProbe,
++  requestId, dispatchRequestDigest,
+ } = {}) {
+   return createEpisode(root, runId, { plugin, role, kind, point, workstream,
+     expectedArtifacts, targetMaker, reviewerResolution, evidence, contract, fence,
+-    mutation, crashProbe, operation: 'newEpisode' });
++    mutation, crashProbe, requestId, dispatchRequestDigest, operation: 'newEpisode' });
+ }
+-
++
+ // Fail-closed compatibility path only: a checker with no independent dispatch capability is born blocked.
+ // Keeping this separate from newEpisode prevents makers (or arbitrary callers) from selecting an initial blocked state.
+ export function newBlockedCheckerEpisode(root, runId, { plugin, kind, point,
+-  workstream = null, targetMaker, reason, reviewerResolution, fence, mutation, crashProbe } = {}) {
++  workstream = null, targetMaker, reason, reviewerResolution, fence, mutation, crashProbe,
++  requestId, dispatchRequestDigest } = {}) {
+   return createEpisode(root, runId, {
+     plugin, role: 'checker', kind, point, workstream, targetMaker, reviewerResolution,
+     initialStatus: 'blocked', blockReason: reason, fence, mutation, crashProbe,
++    requestId, dispatchRequestDigest,
+     operation: 'newBlockedCheckerEpisode',
+   });
+ }
+diff --git a/scripts/lib/review.mjs b/scripts/lib/review.mjs
+index 730e203..aa1cf72 100644
+--- a/scripts/lib/review.mjs
++++ b/scripts/lib/review.mjs
+@@ -317,7 +317,9 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
+   const projection = { point, workstream_id: workstreamId,
+     independent_subagent: independentSubagent === true,
+     detected_digest: contentHash(`review-detected\0${JSON.stringify(detected)}`) };
+-  const data = withReviewMutation(root, runId, fence, 'dispatchReview', projection,
++  const dispatchRequestDigest = reviewIntentDigest(
++    fence, 'dispatch-review', projection);
++  const data = withReviewMutation(root, runId, fence, 'dispatch-review', projection,
+     mutation => {
+       const loop = mutation.readVerifiedState({ fenceCheck: identityFence }).data;
+       checkIndependentReviewFence(loop, fence);
+@@ -327,7 +329,8 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
+   // workstream and recordReviewOutcome (which derives workstream_id from the checker) later fails WORKSTREAM_NOT_FOUND,
+   // stranding a pending checker that can't converge. Fail early instead.
+   if (!workstreamId || !data.workstreams.find(w => w.id === workstreamId)) throw new Error(`WORKSTREAM_NOT_FOUND: ${workstreamId}`);
+-  // Derive the target maker: the latest done maker for this (workstreamId, point) that does NOT already have a bound terminal checker.
++  // Select the latest done maker without filtering on checker status. An exact dispatch retry
++  // must remain discoverable after its checker moves through every later status.
+   const eps = data.episodes || [];
+   // P2 codex r7: hill-climb 마이그레이션 특례 — pre-patch 커널이 approve한 checker(contract 미pin)에 묶인
+   // maker는 makerReviewed=true라 재리뷰 불가, abandonEpisode는 terminal checker를 거부 → finish의
+@@ -340,16 +343,14 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
+     const latest = cs.reduce((a, b) => (epOrder(a.id, b.id) >= 0 ? a : b));
+     return latest.status === 'approved' && !latest.contract?.sha256;
+   };
+-  const eligibleMakers = eps.filter(e =>
+-    e.role === 'maker' && e.status === 'done' &&
+-    e.workstream_id === workstreamId && e.point === point &&
+-    (!makerReviewed(data, e) || legacyUnpinned(e))
+-  );
++  const candidateMakers = eps.filter(e =>
++    e.role === 'maker' && e.status === 'done'
++      && e.workstream_id === workstreamId && e.point === point);
+   // Pick the latest episode via epOrder (hybrid numeric/string). Naive string `>` is WRONG here: ids are
+   // zero-padded to only 3 digits, so '1000-x' < '999-x' lexicographically — at the 999→1000 boundary it
+   // would mis-pick the target maker.
+-  const targetMakerEp = eligibleMakers.length > 0
+-    ? eligibleMakers.reduce((a, b) => (epOrder(a.id, b.id) > 0 ? a : b))
++  const targetMakerEp = candidateMakers.length > 0
++    ? candidateMakers.reduce((a, b) => (epOrder(a.id, b.id) > 0 ? a : b))
+     : null;
+   // ROOT FIX: a review MUST bind to a real done maker. With no eligible done maker the checker would be UNBOUND
+   // ("reviewed no maker") — a degenerate state that either silently completes (if its REQUEST_CHANGES is ignored)
+@@ -357,6 +358,21 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
+   // source, so every checker is ALWAYS bound going forward. (preCheck — thrown before newEpisode: no episode created.)
+   if (!targetMakerEp) throw new Error('REVIEW_NO_ELIGIBLE_MAKER: no done maker to review for ' + point + '/' + workstreamId);
+   const targetMaker = targetMakerEp.id;
++  const dispatchMatches = eps.filter(episode =>
++    episode.role === 'checker' && episode.target_maker === targetMaker
++      && episode.dispatch_request_digest === dispatchRequestDigest);
++  if (dispatchMatches.length > 1) {
++    throw new Error('REVIEW_RECOVERY_PROJECTION_MISMATCH');
++  }
++  if (dispatchMatches.length === 0
++      && makerReviewed(data, targetMakerEp) && !legacyUnpinned(targetMakerEp)) {
++    throw new Error('REVIEW_NO_ELIGIBLE_MAKER: latest maker already has a terminal checker');
++  }
++  if (dispatchMatches.length === 0 && eps.some(episode =>
++    episode.role === 'checker' && episode.target_maker === targetMaker
++      && !['approved', 'rejected', 'abandoned'].includes(episode.status))) {
++    throw new Error('REVIEW_NO_ELIGIBLE_MAKER: latest maker already has an active checker');
++  }
+   const { reviewer, flags, mode, reviewerResolution, blockedReason } = resolveReviewer(data, detected, { independentSubagent });
+   // P2 (hillclimb-ledger 2026-07-10, release-blocking): hill-climb run은 checker 계약(HILLCLIMB-001)이 실제로
+   // 강제되는 리뷰만 만들 수 있다. `.deep-review/`는 gitignored라 fresh checkout에는 계약이 없고, deep-review는
+@@ -427,20 +443,24 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
+   const episodeInput = {
+     plugin: reviewer === 'deep-review-loop' || reviewer === 'deep-review' ? 'deep-review' : reviewer,
+     kind: `${point}-review`, point, workstream: workstreamId, targetMaker,
+-    reviewerResolution, evidence, contract, fence,
++    reviewerResolution, evidence, contract, fence, dispatchRequestDigest,
+   };
+   const episodeCreationInput = blockedReason
+     ? { ...episodeInput, role: 'checker', initialStatus: 'blocked',
+       blockReason: blockedReason }
+     : { ...episodeInput, role: 'checker' };
+-  const episodeProjection = { ...projection,
+-    episode_request_digest: episodeRequestDigest(episodeCreationInput) };
++  const episodeProjection = episodeRequestDigest(episodeCreationInput);
+   const { id } = withReviewMutation(root, runId, fence,
+-    'dispatch-review-episode', episodeProjection,
++    'dispatch-review', projection,
+     mutation => blockedReason
+       ? newBlockedCheckerEpisode(root, runId,
+         { ...episodeInput, reason: blockedReason, mutation })
+       : newEpisode(root, runId, { ...episodeInput, role: 'checker', mutation }));
++  const committed = data.episodes.find(episode => episode.id === id);
++  if (dispatchMatches.length === 1
++      && committed?.creation_request_digest !== episodeProjection) {
++    throw new Error('REVIEW_RECOVERY_PROJECTION_MISMATCH');
++  }
+   const descriptor = {
+     ...checkerDescriptor(reviewer, { point, workstreamId, flags, mode, reason: blockedReason }),
+     ...(evidence !== undefined ? { evidence } : {}),
+```
+
+The direct episode API now requires one bounded caller-generated logical request ID. The execution
+plane chooses it once before the first call, reuses it after response loss, and rotates it only for
+an intentional new episode. Review dispatch remains a nested exception because its complete public
+`dispatch-review` digest is already the logical request identity. Apply this exact CLI, skill, and
+test-caller migration after the corrective episode/review patch:
+
+```diff
+diff --git a/scripts/deep-loop.mjs b/scripts/deep-loop.mjs
+index b47cf2c..0385970 100644
+--- a/scripts/deep-loop.mjs
++++ b/scripts/deep-loop.mjs
+@@ -419 +419,6 @@ const handlers = {
+-      const r = newEpisode(root, runId, { plugin, role, kind, point, workstream: f.workstream, expectedArtifacts: f.artifacts ? JSON.parse(f.artifacts) : [], fence }); json({ id: r.id, request_path: r.requestPath }); return 0;
++      const requestId = reqStr(f, 'request-id');
++      if (!requestId) { error('MISSING_REQUIRED_OPTION: --request-id'); return 2; }
++      const r = newEpisode(root, runId, { plugin, role, kind, point,
++        workstream: f.workstream, expectedArtifacts: f.artifacts ? JSON.parse(f.artifacts) : [],
++        fence, requestId });
++      json({ id: r.id, request_path: r.requestPath }); return 0;
+diff --git a/skills/deep-loop/SKILL.md b/skills/deep-loop/SKILL.md
+index 177f497..d812012 100644
+--- a/skills/deep-loop/SKILL.md
++++ b/skills/deep-loop/SKILL.md
+@@ -323 +323 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" workstream new --title "<workstream
+-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin <maker_plugin> --role maker --kind implementation --point design --workstream <workstream_id> --artifacts '[".claude/worktrees/<ws-slug>/expected-output.md"]' --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>
++node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin <maker_plugin> --role maker --kind implementation --point design --workstream <workstream_id> --artifacts '[".claude/worktrees/<ws-slug>/expected-output.md"]' --request-id <episode_request_id> --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>
+@@ -325,0 +326,3 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin <maker_plugin>
++`<episode_request_id>`는 이 logical episode 생성 전에 한 번 정하고 응답 유실 retry에는 그대로
++재사용한다. 새 episode를 의도할 때만 새 ID를 사용하며, 같은 ID로 payload를 바꾸지 않는다.
++
+diff --git a/skills/deep-loop-continue/SKILL.md b/skills/deep-loop-continue/SKILL.md
+index 2898ca4..54ae473 100644
+--- a/skills/deep-loop-continue/SKILL.md
++++ b/skills/deep-loop-continue/SKILL.md
+@@ -158 +158 @@ fix maker episode 생성 후 dispatch:
+-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin <maker_plugin> --role maker --kind fix --point <point> --workstream <workstream_id> --artifacts '[".claude/worktrees/<ws-slug>/path/to/fix-output"]' --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
++node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin <maker_plugin> --role maker --kind fix --point <point> --workstream <workstream_id> --artifacts '[".claude/worktrees/<ws-slug>/path/to/fix-output"]' --request-id <episode_request_id> --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+@@ -160,0 +161,3 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin <maker_plugin>
++`<episode_request_id>`는 fix episode 생성 전에 한 번 정해 응답 유실 retry에 재사용하고, 새
++logical episode에서만 교체한다. 같은 ID로 payload를 바꾸면 안 된다.
++
+diff --git a/skills/deep-loop-workflow/references/hill-climbing.md b/skills/deep-loop-workflow/references/hill-climbing.md
+index e88606e..ffebcd3 100644
+--- a/skills/deep-loop-workflow/references/hill-climbing.md
++++ b/skills/deep-loop-workflow/references/hill-climbing.md
+@@ -73 +73 @@ run 수명주기 (모든 단계가 기존 deep-loop 기계장치 재사용 — h
+-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin standalone --role maker --kind implementation --point implementation --workstream <workstream_id> --artifacts '[".claude/worktrees/<ws-slug>/recipes/hillclimb-ledger.json"]' --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
++node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin standalone --role maker --kind implementation --point implementation --workstream <workstream_id> --artifacts '[".claude/worktrees/<ws-slug>/recipes/hillclimb-ledger.json"]' --request-id <episode_request_id> --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+@@ -75,0 +76,3 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin standalone --ro
++`<episode_request_id>`는 이 hill-climb maker 생성 전에 한 번 정하고 response-loss retry에는
++그대로 재사용한다. 다음 intentional maker만 새 ID를 사용한다.
++
+diff --git a/tests/budget.test.mjs b/tests/budget.test.mjs
+index f7c2304..5faf6b2 100644
+--- a/tests/budget.test.mjs
++++ b/tests/budget.test.mjs
+@@ -22 +22 @@ import { initRun } from '../scripts/lib/initrun.mjs';
+-import { newEpisode } from '../scripts/lib/episode.mjs';
++import { newEpisode } from './helpers/episode-request.mjs';
+diff --git a/tests/cli-skillface.test.mjs b/tests/cli-skillface.test.mjs
+index 5f81c1e..ac371ff 100644
+--- a/tests/cli-skillface.test.mjs
++++ b/tests/cli-skillface.test.mjs
+@@ -137 +137 @@ test('episode new --artifacts then record done (the skill flow)', () => {
+-  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'implementation', '--point', 'implementation', '--artifacts', '["art.txt"]', '--owner', runId, '--generation', '1']));
++  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'implementation', '--point', 'implementation', '--artifacts', '["art.txt"]', '--request-id', 'skillface-episode', '--owner', runId, '--generation', '1']));
+@@ -191,0 +192,7 @@ test('episode new missing --role exits 2', () => {
++test('episode new missing --request-id exits 2', () => {
++  const { root, runId } = seed();
++  assert.equal(runFail(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker',
++    '--kind', 'implementation', '--point', 'implementation',
++    '--owner', runId, '--generation', '1']), 2);
++});
++
+diff --git a/tests/codex-checker-integration.test.mjs b/tests/codex-checker-integration.test.mjs
+index 53a63ba..ecccce1 100644
+--- a/tests/codex-checker-integration.test.mjs
++++ b/tests/codex-checker-integration.test.mjs
+@@ -9 +9 @@ import { newWorkstream } from '../scripts/lib/workspace.mjs';
+-import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
++import { newEpisode, recordEpisode } from './helpers/episode-request.mjs';
+diff --git a/tests/codex-isolation-integration.test.mjs b/tests/codex-isolation-integration.test.mjs
+index 7a9780a..3d9fe0a 100644
+--- a/tests/codex-isolation-integration.test.mjs
++++ b/tests/codex-isolation-integration.test.mjs
+@@ -22 +22 @@ import { importReviewViaCli, runIndependentCodexChecker } from '../scripts/lib/c
+-import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
++import { newEpisode, recordEpisode } from './helpers/episode-request.mjs';
+diff --git a/tests/comprehension.test.mjs b/tests/comprehension.test.mjs
+index 85fe84e..fc8f7ab 100644
+--- a/tests/comprehension.test.mjs
++++ b/tests/comprehension.test.mjs
+@@ -7 +7 @@ import { initRun } from '../scripts/lib/initrun.mjs';
+-import { newEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
++import { newEpisode, abandonEpisode } from './helpers/episode-request.mjs';
+diff --git a/tests/episode.test.mjs b/tests/episode.test.mjs
+index 201f495..d8d5875 100644
+--- a/tests/episode.test.mjs
++++ b/tests/episode.test.mjs
+@@ -9 +9 @@ import { reconcileBudget } from '../scripts/lib/budget.mjs';
+-import { newEpisode, recordEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
++import { newEpisode, recordEpisode, abandonEpisode } from './helpers/episode-request.mjs';
+diff --git a/tests/fencing.test.mjs b/tests/fencing.test.mjs
+index 07a4642..36bec42 100644
+--- a/tests/fencing.test.mjs
++++ b/tests/fencing.test.mjs
+@@ -12 +12 @@ import { newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal } from '..
+-import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
++import { newEpisode, recordEpisode } from './helpers/episode-request.mjs';
+diff --git a/tests/finish.test.mjs b/tests/finish.test.mjs
+index ae66d77..cca2214 100644
+--- a/tests/finish.test.mjs
++++ b/tests/finish.test.mjs
+@@ -9 +9 @@ import { newWorkstream, recordWorkstreamTerminal } from '../scripts/lib/workspac
+-import { newEpisode, recordEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
++import { newEpisode, recordEpisode, abandonEpisode } from './helpers/episode-request.mjs';
+diff --git a/tests/handoff.test.mjs b/tests/handoff.test.mjs
+index 3d53aca..47edf41 100644
+--- a/tests/handoff.test.mjs
++++ b/tests/handoff.test.mjs
+@@ -11 +11 @@ import { buildRuntimeResumeDescriptor } from '../scripts/lib/runtime-descriptor.
+-import { newEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
++import { newEpisode, abandonEpisode } from './helpers/episode-request.mjs';
+diff --git a/tests/next-action.test.mjs b/tests/next-action.test.mjs
+index 5f57176..20d74ea 100644
+--- a/tests/next-action.test.mjs
++++ b/tests/next-action.test.mjs
+@@ -9 +9 @@ import { newWorkstream } from '../scripts/lib/workspace.mjs';
+-import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
++import { newEpisode, recordEpisode } from './helpers/episode-request.mjs';
+diff --git a/tests/orch-cli.test.mjs b/tests/orch-cli.test.mjs
+index e449792..b19a37f 100644
+--- a/tests/orch-cli.test.mjs
++++ b/tests/orch-cli.test.mjs
+@@ -275 +275 @@ test('review dispatch accepts --independent-subagent and records a neutral legac
+-  const maker = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'plan', '--point', 'plan', '--workstream', ws.id, '--artifacts', '["plan.txt"]', '--owner', runId, '--generation', '1']));
++  const maker = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'plan', '--point', 'plan', '--workstream', ws.id, '--artifacts', '["plan.txt"]', '--request-id', 'finish-proof-maker', '--owner', runId, '--generation', '1']));
+@@ -848 +848 @@ test('episode new creates request + episode via CLI', () => {
+-  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'impl', '--point', 'implementation', '--owner', runId, '--generation', '1']));
++  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'impl', '--point', 'implementation', '--request-id', 'cli-episode-create', '--owner', runId, '--generation', '1']));
+@@ -864 +864 @@ test('workstream terminal (abandoned) + review record reach kernel via CLI', ()
+-  const maker = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'plan', '--point', 'plan', '--workstream', ws2.id, '--artifacts', '["plan-art.txt"]', '--owner', runId, '--generation', '1']));
++  const maker = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'plan', '--point', 'plan', '--workstream', ws2.id, '--artifacts', '["plan-art.txt"]', '--request-id', 'cli-review-maker', '--owner', runId, '--generation', '1']));
+@@ -897 +897 @@ test('episode record --status approved exits with code 1', () => {
+-  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'checker', '--kind', 'impl-review', '--point', 'implementation', '--owner', runId, '--generation', '1']));
++  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'checker', '--kind', 'impl-review', '--point', 'implementation', '--request-id', 'cli-review-checker', '--owner', runId, '--generation', '1']));
+@@ -1013 +1013 @@ function setupRunWithPendingMaker() {
+-  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'impl', '--point', 'implementation', '--owner', runId, '--generation', '1']));
++  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'impl', '--point', 'implementation', '--request-id', 'cli-abandon-maker', '--owner', runId, '--generation', '1']));
+diff --git a/tests/pause.test.mjs b/tests/pause.test.mjs
+index a768b31..0b75ae6 100644
+--- a/tests/pause.test.mjs
++++ b/tests/pause.test.mjs
+@@ -12 +12 @@ import { respawn } from '../scripts/lib/respawn.mjs';
+-import { newEpisode } from '../scripts/lib/episode.mjs';
++import { newEpisode } from './helpers/episode-request.mjs';
+diff --git a/tests/review-import.test.mjs b/tests/review-import.test.mjs
+index 687965d..db2f7ba 100644
+--- a/tests/review-import.test.mjs
++++ b/tests/review-import.test.mjs
+@@ -14 +14 @@ import { newWorkstream } from '../scripts/lib/workspace.mjs';
+-import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
++import { newEpisode, recordEpisode } from './helpers/episode-request.mjs';
+diff --git a/tests/review.test.mjs b/tests/review.test.mjs
+index 6828a28..c28a390 100644
+--- a/tests/review.test.mjs
++++ b/tests/review.test.mjs
+@@ -9 +9 @@ import { newWorkstream } from '../scripts/lib/workspace.mjs';
+-import { newEpisode, recordEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
++import { newEpisode, recordEpisode, abandonEpisode } from './helpers/episode-request.mjs';
+diff --git a/tests/reviewer-failclosed.test.mjs b/tests/reviewer-failclosed.test.mjs
+index 9002b0e..913e348 100644
+--- a/tests/reviewer-failclosed.test.mjs
++++ b/tests/reviewer-failclosed.test.mjs
+@@ -19 +19 @@ import { newWorkstream } from '../scripts/lib/workspace.mjs';
+-import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
++import { newEpisode, recordEpisode } from './helpers/episode-request.mjs';
+```
+
+Create `tests/helpers/episode-request.mjs` with this complete test-only adapter. Production callers
+never receive an auto-generated request ID:
+
+```js
+import { newEpisode as createEpisode } from '../../scripts/lib/episode.mjs';
+
+export { abandonEpisode, recordEpisode } from '../../scripts/lib/episode.mjs';
+
+let nextEpisodeRequest = 0;
+
+export function newEpisode(root, runId, input = {}) {
+  nextEpisodeRequest += 1;
+  return createEpisode(root, runId, {
+    ...input,
+    requestId: input.requestId ?? `test-episode-${nextEpisodeRequest}`,
+  });
+}
+```
 `episodeAppend` now has no bare `appendAnchored(...)` call. Its public branch destructures the actual
 `directMutationOptions` result into `withVerifiedMutationLock`, and both branches perform only the
 context member append. Task 11B's actual-call parser therefore sees no unprovable identifier-valued
@@ -16012,7 +16760,7 @@ random/factory/report/path/revalidation/probe callbacks plus review/insights fil
 - [ ] **Step 5: Run regressions**
 
 ```bash
-node --test tests/insights.test.mjs tests/review.test.mjs tests/review-import.test.mjs tests/reviewer-failclosed.test.mjs tests/fencing.test.mjs tests/workspace.test.mjs tests/detect-terminal.test.mjs tests/runtime-executable.test.mjs tests/integrity.test.mjs
+node --test tests/insights.test.mjs tests/review.test.mjs tests/review-import.test.mjs tests/reviewer-failclosed.test.mjs tests/fencing.test.mjs tests/workspace.test.mjs tests/detect-terminal.test.mjs tests/runtime-executable.test.mjs tests/integrity.test.mjs tests/budget.test.mjs tests/cli-skillface.test.mjs tests/codex-checker-integration.test.mjs tests/codex-isolation-integration.test.mjs tests/comprehension.test.mjs tests/episode.test.mjs tests/finish.test.mjs tests/handoff.test.mjs tests/next-action.test.mjs tests/orch-cli.test.mjs tests/pause.test.mjs
 ```
 
 Expected: PASS; insights remains fail-soft, review parity remains exact, and releasing-safe
@@ -16021,7 +16769,7 @@ terminal detection still works.
 - [ ] **Step 6: Audit only the pre-action authority slice**
 
 ```bash
-git diff -- scripts/lib/episode.mjs scripts/lib/insights.mjs scripts/lib/review.mjs scripts/lib/workspace.mjs scripts/lib/detect-terminal.mjs tests/insights.test.mjs tests/review-import.test.mjs tests/reviewer-failclosed.test.mjs tests/workspace.test.mjs tests/detect-terminal.test.mjs
+git diff -- scripts/lib/episode.mjs scripts/lib/insights.mjs scripts/lib/review.mjs scripts/lib/workspace.mjs scripts/lib/detect-terminal.mjs scripts/deep-loop.mjs skills/deep-loop/SKILL.md skills/deep-loop-continue/SKILL.md skills/deep-loop-workflow/references/hill-climbing.md tests/helpers/episode-request.mjs tests/budget.test.mjs tests/cli-skillface.test.mjs tests/codex-checker-integration.test.mjs tests/codex-isolation-integration.test.mjs tests/comprehension.test.mjs tests/episode.test.mjs tests/fencing.test.mjs tests/finish.test.mjs tests/handoff.test.mjs tests/next-action.test.mjs tests/orch-cli.test.mjs tests/pause.test.mjs tests/review.test.mjs tests/insights.test.mjs tests/review-import.test.mjs tests/reviewer-failclosed.test.mjs tests/workspace.test.mjs tests/detect-terminal.test.mjs
 rg -n "readState\(|readVerifiedState|assertVerifiedRunSnapshot|appendAnchored|fenceCheck|attemptIdFactory|materializeImportedReview|detectTerminal\(" scripts/lib/insights.mjs scripts/lib/review.mjs scripts/lib/workspace.mjs scripts/lib/detect-terminal.mjs
 git diff --check
 ```
@@ -16032,7 +16780,7 @@ has no unverified pre-read, and no probe/materialization/random callback precede
 - [ ] **Step 7: Commit the pre-action authority slice**
 
 ```bash
-git add scripts/lib/episode.mjs scripts/lib/insights.mjs scripts/lib/review.mjs scripts/lib/workspace.mjs scripts/lib/detect-terminal.mjs tests/insights.test.mjs tests/review-import.test.mjs tests/reviewer-failclosed.test.mjs tests/workspace.test.mjs tests/detect-terminal.test.mjs
+git add scripts/lib/episode.mjs scripts/lib/insights.mjs scripts/lib/review.mjs scripts/lib/workspace.mjs scripts/lib/detect-terminal.mjs scripts/deep-loop.mjs skills/deep-loop/SKILL.md skills/deep-loop-continue/SKILL.md skills/deep-loop-workflow/references/hill-climbing.md tests/helpers/episode-request.mjs tests/budget.test.mjs tests/cli-skillface.test.mjs tests/codex-checker-integration.test.mjs tests/codex-isolation-integration.test.mjs tests/comprehension.test.mjs tests/episode.test.mjs tests/fencing.test.mjs tests/finish.test.mjs tests/handoff.test.mjs tests/next-action.test.mjs tests/orch-cli.test.mjs tests/pause.test.mjs tests/review.test.mjs tests/insights.test.mjs tests/review-import.test.mjs tests/reviewer-failclosed.test.mjs tests/workspace.test.mjs tests/detect-terminal.test.mjs
 git commit -m "fix: verify authority before external actions" -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
 
@@ -16059,11 +16807,13 @@ git commit -m "fix: verify authority before external actions" -m "Co-Authored-By
   State-changing lease calls emit exactly one fixed event (`lease-released`, `handoff-reserved`,
   `handoff-phase-advanced`, `handoff-rolled-back`) and breaker calls emit exactly one fixed event
   (`breaker-tripped`, `breaker-reset`, `breaker-review-verdict`) through the journal. Existing
-  idempotent/error results remain write-free. The first `APPROVE` at counter zero appends a
-  `breaker-review-verdict` receipt with `changed:false`; an exact retry is byte-preserving even if a
-  newer verdict has since changed the counter. Breaker APIs and every internal caller receive an
-  explicit owner/generation binding plus request ID; fence-less production breaker calls are removed
-  rather than inferring the current lease.
+  failed requests remain write-free. Every first successful breaker request, including a semantic
+  no-op, appends one request-correlated receipt with `changed:false|true`; only an exact retry is
+  byte-preserving, even after a newer breaker or `review-outcome` transition. Breaker APIs and every
+  internal caller receive an explicit owner/generation binding plus request ID; fence-less
+  production breaker calls are removed rather than inferring the current lease. `resetBreaker`
+  executes the full current `leaseCheck(..., intent:'breaker-reset')` before receipt lookup, so exact
+  terminal authority still fails through `LEASE_FENCED: RUN_TERMINAL`.
 
 - [ ] **Step 1: Write failing publisher-closure and crash tests**
 
@@ -16144,6 +16894,13 @@ diff --git a/tests/breaker.test.mjs b/tests/breaker.test.mjs
 +  reviewVerdict7g(root, runId, 'REQUEST_CHANGES', { fence });
 +  reviewVerdict7g(root, runId, 'REQUEST_CHANGES', { fence });
    assert.equal(checkBreaker(readState(root, runId).data).tripped, true);
+@@ -60,4 +71,4 @@ test('resetBreaker clears a tripped latch under valid fence; wrong gen throws', () => {
+-  assert.throws(() => resetBreaker(root, runId, { fence: { owner: runId, generation: 9 } }), /LEASE_FENCED/);   // fence 강제
++  assert.throws(() => resetBreaker(root, runId, { fence: { owner: runId, generation: 9 }, requestId: 'wrong-generation-reset' }), /LEASE_FENCED/);
+   // RUN_PAUSED gate: breaker reset requires intent='breaker-reset' on a paused run (exempt from RUN_PAUSED).
+-  const r = resetBreaker(root, runId, { fence: { owner: runId, generation: 1, intent: 'breaker-reset' } });
++  const r = resetBreaker(root, runId, { fence: { owner: runId, generation: 1, intent: 'breaker-reset' }, requestId: 'valid-reset' });
+   assert.equal(r.status, 'running');   // breaker 사유 paused → 복귀
 @@ -80,9 +91,11 @@ test('tripBreaker / recordReviewVerdict: terminal run throws RUN_TERMINAL, state unchanged', () => {
  test('tripBreaker / recordReviewVerdict: terminal run throws RUN_TERMINAL, state unchanged', () => {
    const { root, runId } = terminalSeed('completed');
@@ -16151,7 +16908,7 @@ diff --git a/tests/breaker.test.mjs b/tests/breaker.test.mjs
 -  // trip 분기 포함: REQUEST_CHANGES 3연속으로 paused 강등을 시도하는 fence-less 호출
 -  assert.throws(() => recordReviewVerdict(root, runId, 'REQUEST_CHANGES'), /RUN_TERMINAL: recordReviewVerdict/);
 +  const fence = { owner: runId, generation: 1 };
-+  assert.throws(() => tripBreaker(root, runId, 'x', { fence }),
++  assert.throws(() => tripBreaker(root, runId, 'x', { fence, requestId: 'terminal-trip' }),
 +    /RUN_TERMINAL: tripBreaker/);
 +  assert.throws(() => reviewVerdict7g(root, runId, 'REQUEST_CHANGES', { fence }),
 +    /RUN_TERMINAL: recordReviewVerdict/);
@@ -16163,7 +16920,8 @@ diff --git a/tests/breaker.test.mjs b/tests/breaker.test.mjs
  test('resetBreaker: fenced call rejects via LEASE_FENCED channel; fence-less via own throw (order = contract)', () => {
    const { root, runId, owner } = terminalSeed('stopped');
    // fence 있는 호출 → leaseCheck 선행 (drive-headless LEASE_FENCED swallow 계약 보존)
-   assert.throws(() => resetBreaker(root, runId, { fence: { owner, generation: 1, intent: 'breaker-reset' } }), /LEASE_FENCED: RUN_TERMINAL/);
+-  assert.throws(() => resetBreaker(root, runId, { fence: { owner, generation: 1, intent: 'breaker-reset' } }), /LEASE_FENCED: RUN_TERMINAL/);
++  assert.throws(() => resetBreaker(root, runId, { fence: { owner, generation: 1, intent: 'breaker-reset' }, requestId: 'terminal-reset' }), /LEASE_FENCED: RUN_TERMINAL/);
 -  // fence-less 직접 호출 → 자체 가드
 -  assert.throws(() => resetBreaker(root, runId, {}), /RUN_TERMINAL: resetBreaker/);
 +  // Missing authority is rejected before any terminal business policy.
@@ -16199,7 +16957,9 @@ import { releaseLease as release7g, reserveHandoff as reserve7g,
   from '../scripts/lib/lease.mjs';
 import { tripBreaker as trip7g, resetBreaker as reset7g,
   recordReviewVerdict as verdict7g } from '../scripts/lib/breaker.mjs';
-import { readLines as lines7g } from '../scripts/lib/integrity.mjs';
+import { appendAnchored as append7g, directMutationOptions as mutation7g,
+  readLines as lines7g }
+  from '../scripts/lib/integrity.mjs';
 import { durableRunBytes as bytes7g, rawHashValidState as raw7g,
   seedCorrelatedTerminal as terminal7g,
   verifiedAppRun as fixture7g }
@@ -16274,21 +17034,29 @@ function publisherCases7g() {
         return { f, run: () => rollback7g(f.root, f.runId, f.fence),
           noOp: () => rollback7g(f.root, f.runId, f.fence) };
       } },
-    { event: 'breaker-tripped', keys: ['generation', 'owner_run_id', 'reason'], setup: () => {
+    { event: 'breaker-tripped', keys: ['changed', 'generation', 'owner_run_id',
+      'reason', 'request_digest', 'request_id_digest'], setup: () => {
       const f = fresh('dl-7g-trip-');
-      return { f, run: () => trip7g(f.root, f.runId, 'test', { fence: f.fence }),
-        noOp: () => trip7g(f.root, f.runId, 'test', { fence: f.fence }) };
+      const input = { fence: f.fence, requestId: 'publisher-trip' };
+      return { f, run: () => trip7g(f.root, f.runId, 'test', input),
+        noOp: () => trip7g(f.root, f.runId, 'test', input) };
     } },
     { event: 'breaker-reset',
-      keys: ['generation', 'owner_run_id', 'was_breaker'], setup: () => {
+      keys: ['changed', 'generation', 'next_count', 'next_status', 'operation',
+        'owner_run_id', 'previous_count', 'request_digest', 'request_id_digest',
+        'was_breaker'], setup: () => {
         const f = fresh('dl-7g-reset-');
-        trip7g(f.root, f.runId, 'consecutive-request-changes', { fence: f.fence });
-        return { f, run: () => reset7g(f.root, f.runId, { fence: f.fence }),
-          noOp: () => reset7g(f.root, f.runId, { fence: f.fence }) };
+        trip7g(f.root, f.runId, 'consecutive-request-changes',
+          { fence: f.fence, requestId: 'publisher-reset-setup-trip' });
+        const input = { fence: { ...f.fence, intent: 'breaker-reset' },
+          requestId: 'publisher-reset' };
+        return { f, run: () => reset7g(f.root, f.runId, input),
+          noOp: () => reset7g(f.root, f.runId, input) };
     } },
     { event: 'breaker-review-verdict',
       keys: ['baseline_count', 'breaker_tripped', 'changed', 'generation', 'next_count',
-        'owner_run_id', 'previous_count', 'request_digest', 'verdict'], setup: () => {
+        'owner_run_id', 'previous_count', 'request_digest', 'request_id_digest',
+        'verdict'], setup: () => {
         const f = fresh('dl-7g-verdict-');
         const input = { requestId: 'publisher-request-changes' };
         return { f,
@@ -16317,7 +17085,8 @@ function retryPublisher7g(operation, fixture, foreign = false) {
       { trigger: 'crash-7g', now: Date.parse('2026-07-13T00:00:10.000Z'), expect: fence });
   }
   if (operation === 'breaker-trip') {
-    return trip7g(fixture.root, fixture.runId, 'crash-7g', { fence });
+    return trip7g(fixture.root, fixture.runId, 'crash-7g',
+      { fence, requestId: 'crash-7g-trip' });
   }
   if (operation === 'breaker-verdict') {
     return verdict7g(fixture.root, fixture.runId, 'REQUEST_CHANGES', fence,
@@ -16465,13 +17234,68 @@ test7g('first upgraded verdict authenticates a nonzero legacy counter baseline',
   });
   const resetFence = { owner: reset.owner, generation: reset.generation };
   reset7g(reset.root, reset.runId,
-    { fence: { ...resetFence, intent: 'breaker-reset' } });
+    { fence: { ...resetFence, intent: 'breaker-reset' },
+      requestId: 'legacy-reset-lineage' });
   verdict7g(reset.root, reset.runId, 'APPROVE', resetFence,
     { requestId: 'post-reset-baseline' });
   const postReset = lines7g(reset.root, reset.runId)
     .filter(item => item.type === 'breaker-review-verdict').at(-1);
   assert7g.equal(postReset.data.baseline_count, null,
     'an anchored reset establishes the zero lineage without a legacy baseline');
+});
+
+test7g('trip and reset retries preserve their original response across newer operations', () => {
+  const fixture = fixture7g('dl-7g-breaker-intervening-retry-');
+  const fence = { owner: fixture.owner, generation: fixture.generation };
+  const trip = { fence, requestId: 'intervening-trip' };
+  assert7g.deepEqual(trip7g(fixture.root, fixture.runId, 'manual-trip', trip),
+    { ok: true, changed: true });
+  const reset = { fence: { ...fence, intent: 'breaker-reset' },
+    requestId: 'intervening-reset' };
+  assert7g.deepEqual(reset7g(fixture.root, fixture.runId, reset),
+    { ok: true, changed: true, status: 'running' });
+  const afterReset = bytes7g(fixture.root, fixture.runId);
+  assert7g.deepEqual(trip7g(fixture.root, fixture.runId, 'manual-trip', trip),
+    { ok: true, changed: true });
+  assert7g.deepEqual(bytes7g(fixture.root, fixture.runId), afterReset,
+    'old trip retry must not re-trip after the newer reset');
+
+  verdict7g(fixture.root, fixture.runId, 'REQUEST_CHANGES', fence,
+    { requestId: 'verdict-after-reset' });
+  const afterVerdict = bytes7g(fixture.root, fixture.runId);
+  assert7g.deepEqual(reset7g(fixture.root, fixture.runId, reset),
+    { ok: true, changed: true, status: 'running' });
+  assert7g.deepEqual(bytes7g(fixture.root, fixture.runId), afterVerdict,
+    'old reset retry must not erase a newer verdict');
+  assert7g.equal(readState(fixture.root, fixture.runId)
+    .data.circuit_breaker.consecutive_request_changes, 1);
+});
+
+test7g('review verdict replay authenticates intervening review-outcome transitions', () => {
+  const fixture = fixture7g('dl-7g-review-outcome-lineage-');
+  const fence = { owner: fixture.owner, generation: fixture.generation };
+  const original = { requestId: 'lineage-verdict' };
+  verdict7g(fixture.root, fixture.runId, 'REQUEST_CHANGES', fence, original);
+  append7g(fixture.root, fixture.runId, {
+    type: 'review-outcome', data: { verdict: 'REQUEST_CHANGES' },
+  }, loop => { loop.circuit_breaker.consecutive_request_changes += 1; }, undefined,
+  mutation7g('test-review-outcome', fence,
+    { requestId: 'lineage-review-request-changes', verdict: 'REQUEST_CHANGES' },
+    'LEASE_FENCED: test-review-outcome'));
+  const afterRequestChanges = bytes7g(fixture.root, fixture.runId);
+  assert7g.deepEqual(verdict7g(fixture.root, fixture.runId,
+    'REQUEST_CHANGES', fence, original), { ok: true, changed: true });
+  assert7g.deepEqual(bytes7g(fixture.root, fixture.runId), afterRequestChanges);
+  append7g(fixture.root, fixture.runId, {
+    type: 'review-outcome', data: { verdict: 'APPROVE' },
+  }, loop => { loop.circuit_breaker.consecutive_request_changes = 0; }, undefined,
+  mutation7g('test-review-outcome', fence,
+    { requestId: 'lineage-review-approve', verdict: 'APPROVE' },
+    'LEASE_FENCED: test-review-outcome'));
+  const afterApprove = bytes7g(fixture.root, fixture.runId);
+  assert7g.deepEqual(verdict7g(fixture.root, fixture.runId,
+    'REQUEST_CHANGES', fence, original), { ok: true, changed: true });
+  assert7g.deepEqual(bytes7g(fixture.root, fixture.runId), afterApprove);
 });
 ```
 
@@ -16490,7 +17314,8 @@ const publisher7g = Object.freeze({
     reserveHandoff(root, runId, { trigger: 'crash-7g',
       now: Date.parse('2026-07-13T00:00:10.000Z'), expect: { owner, generation }, crashProbe }),
   'breaker-trip': ({ root, runId, owner, generation, crashProbe }) =>
-    tripBreaker(root, runId, 'crash-7g', { fence: { owner, generation }, crashProbe }),
+    tripBreaker(root, runId, 'crash-7g', { fence: { owner, generation },
+      requestId: 'crash-7g-trip', crashProbe }),
   'breaker-verdict': ({ root, runId, owner, generation, crashProbe }) =>
     recordReviewVerdict(root, runId, 'REQUEST_CHANGES',
       { owner, generation }, { requestId: 'crash-7g-verdict', crashProbe }),
@@ -16538,6 +17363,7 @@ diff --git a/scripts/lib/breaker.mjs b/scripts/lib/breaker.mjs
 ```
 
 ```js
+// PLAN_AFTERIMAGE: scripts/lib/lease.mjs replace releaseLease through EOF
 function runLeaseJournal(root, runId,
   { owner, generation, operation, intent = {}, mutation = null }, body) {
   const callerBinding = { owner, generation };
@@ -16681,6 +17507,24 @@ export function rollbackHandoff(root, runId, { owner, generation, mutation = nul
     });
 }
 
+```
+
+The lease afterimage above and breaker afterimage below are separate replacement units. Install the
+first from `releaseLease` through the end of `lease.mjs`, including its two local helpers, and install
+the second from `tripBreaker` through the end of `breaker.mjs`, including all breaker-local helpers.
+No private helper crosses the module boundary.
+
+```js
+// PLAN_AFTERIMAGE: scripts/lib/breaker.mjs replace tripBreaker through EOF
+function breakerLeaseFence(owner, generation) {
+  return loop => {
+    const lease = loop.session_chain?.lease;
+    if (lease?.owner_run_id !== owner || lease?.generation !== generation) {
+      throw new Error('LEASE_FENCED: breaker-mutation');
+    }
+  };
+}
+
 function breakerMutation(root, runId, fence, operation, intent, body) {
   if (typeof fence?.owner !== 'string' || !Number.isSafeInteger(fence?.generation)) {
     throw new Error(`FENCE_REQUIRED: ${operation}`);
@@ -16690,25 +17534,31 @@ function breakerMutation(root, runId, fence, operation, intent, body) {
   return withVerifiedMutationLock(root, runId, { callerBinding, intentDigest,
     fenceError: `LEASE_FENCED: ${operation}` }, context => {
     const { data } = context.readVerifiedState(
-      { fenceCheck: exactLeaseFence(fence.owner, fence.generation) });
+      { fenceCheck: breakerLeaseFence(fence.owner, fence.generation) });
     return body(context, data);
   });
 }
 
 const BREAKER_REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
-function breakerRequestDigest(requestId) {
+function breakerRequestIdentity(operation, requestId, projection = {}) {
   if (!BREAKER_REQUEST_ID.test(requestId || '')) {
     throw new Error('BREAKER_REQUEST_ID_REQUIRED');
   }
-  return contentHash(`breaker-review-request\0${requestId}`);
+  const requestIdDigest = contentHash(`breaker-${operation}-id\0${requestId}`);
+  const requestDigest = contentHash(JSON.stringify({
+    contract: 'breaker-request-v1', operation, request_id_digest: requestIdDigest,
+    ...projection,
+  }));
+  return Object.freeze({ requestIdDigest, requestDigest });
 }
 
-function recoveredReviewVerdict(root, runId, context, data,
-  { fence, verdict, requestDigest }) {
+function recoveredBreakerRequest(root, runId, context, {
+  eventType, identity, fence, projectionCheck, response,
+}) {
   const lines = readLines(root, runId);
-  const matches = lines.filter(event => event.type === 'breaker-review-verdict'
-    && event.data?.request_digest === requestDigest);
+  const matches = lines.filter(event => event.type === eventType
+    && event.data?.request_id_digest === identity.requestIdDigest);
   if (matches.length > 1) throw new Error('BREAKER_RECOVERY_PROJECTION_MISMATCH');
   if (matches.length === 0) {
     if (context.recovered !== null) {
@@ -16717,9 +17567,10 @@ function recoveredReviewVerdict(root, runId, context, data,
     return null;
   }
   const event = matches[0];
-  if (event.data.owner_run_id !== fence.owner
-      || event.data.generation !== fence.generation
-      || event.data.verdict !== verdict) {
+  if (event.data?.request_digest !== identity.requestDigest
+      || event.data?.owner_run_id !== fence.owner
+      || event.data?.generation !== fence.generation
+      || !projectionCheck(event.data)) {
     throw new Error('BREAKER_REQUEST_CONFLICT');
   }
   if (context.recovered !== null
@@ -16727,9 +17578,36 @@ function recoveredReviewVerdict(root, runId, context, data,
         && recovered.checksum === event.checksum)) {
     throw new Error('BREAKER_RECOVERY_PROJECTION_MISMATCH');
   }
+  return { result: response(event.data), lines };
+}
+
+function recoveredReviewVerdict(root, runId, context, data,
+  { fence, verdict, identity }) {
+  const recovered = recoveredBreakerRequest(root, runId, context, {
+    eventType: 'breaker-review-verdict', identity, fence,
+    projectionCheck: event => event.verdict === verdict,
+    response: event => ({ ok: true, changed: event.changed }),
+  });
+  if (recovered === null) return null;
+  const { result, lines } = recovered;
   let count = null;
   for (const item of lines) {
-    if (item.type === 'breaker-reset') { count = 0; continue; }
+    if (item.type === 'breaker-reset') {
+      if (item.data?.next_count !== 0) {
+        throw new Error('BREAKER_RECOVERY_PROJECTION_MISMATCH');
+      }
+      count = 0;
+      continue;
+    }
+    if (item.type === 'review-outcome') {
+      if (count !== null) {
+        if (item.data?.verdict === 'REQUEST_CHANGES') count += 1;
+        else if (item.data?.verdict === 'APPROVE'
+            || item.data?.verdict === 'CONCERN') count = 0;
+        else throw new Error('BREAKER_RECOVERY_PROJECTION_MISMATCH');
+      }
+      continue;
+    }
     if (item.type !== 'breaker-review-verdict') continue;
     const baseline = item.data?.baseline_count;
     if (count === null) {
@@ -16755,59 +17633,98 @@ function recoveredReviewVerdict(root, runId, context, data,
   if ((count ?? 0) !== (data.circuit_breaker?.consecutive_request_changes || 0)) {
     throw new Error('BREAKER_RECOVERY_PROJECTION_MISMATCH');
   }
-  if (context.recovered !== null
-      && (data.circuit_breaker?.tripped === true) !== event.data.breaker_tripped) {
-    throw new Error('BREAKER_RECOVERY_PROJECTION_MISMATCH');
+  return result;
+}
+
+export function tripBreaker(root, runId, reason,
+  { fence, requestId, crashProbe } = {}) {
+  if (typeof fence?.owner !== 'string' || !Number.isSafeInteger(fence?.generation)) {
+    throw new Error('FENCE_REQUIRED: breaker-trip');
   }
-  return { ok: true, changed: event.data.changed };
+  const identity = breakerRequestIdentity('trip', requestId, { reason });
+  return breakerMutation(root, runId, fence, 'breaker-trip',
+    { request_digest: identity.requestDigest }, (context, data) => {
+      if (['completed', 'stopped'].includes(data.status)) {
+        throw new Error('RUN_TERMINAL: tripBreaker');
+      }
+      const recovered = recoveredBreakerRequest(root, runId, context, {
+        eventType: 'breaker-tripped', identity, fence,
+        projectionCheck: event => event.reason === reason,
+        response: event => ({ ok: true, changed: event.changed }),
+      });
+      if (recovered !== null) return recovered.result;
+      const authorized = leaseCheck(data, { ...fence, intent: fence.intent ?? 'business' });
+      if (!authorized.ok) throw new Error(`LEASE_FENCED: ${authorized.reason}`);
+      const changed = !(data.circuit_breaker?.tripped
+        && data.circuit_breaker?.trip_reason === reason && data.status === 'paused');
+      context.appendAnchored({ type: 'breaker-tripped', data: {
+        owner_run_id: fence.owner, generation: fence.generation, reason,
+        request_id_digest: identity.requestIdDigest,
+        request_digest: identity.requestDigest, changed,
+      } }, candidate => {
+        if (!changed) return;
+        candidate.circuit_breaker = { ...candidate.circuit_breaker,
+          tripped: true, trip_reason: reason };
+        candidate.status = 'paused';
+      }, undefined, { crashProbe });
+      return { ok: true, changed };
+    });
 }
 
-export function tripBreaker(root, runId, reason, { fence, crashProbe } = {}) {
-  return breakerMutation(root, runId, fence, 'breaker-trip', { reason }, (context, data) => {
-    if (['completed', 'stopped'].includes(data.status)) throw new Error('RUN_TERMINAL: tripBreaker');
-    if (data.circuit_breaker?.tripped && data.circuit_breaker?.trip_reason === reason
-        && data.status === 'paused') return { ok: true, changed: false };
-    context.appendAnchored({ type: 'breaker-tripped', data: {
-      owner_run_id: fence.owner, generation: fence.generation, reason,
-    } }, candidate => {
-      candidate.circuit_breaker = { ...candidate.circuit_breaker,
-        tripped: true, trip_reason: reason };
-      candidate.status = 'paused';
-    }, undefined, { crashProbe });
-    return { ok: true, changed: true };
-  });
-}
-
-export function resetBreaker(root, runId, { fence } = {}) {
-  return breakerMutation(root, runId, fence, 'breaker-reset', {}, (context, data) => {
-    const wasBreaker = data.status === 'paused'
-      && /request-changes|consecutive/.test(data.circuit_breaker?.trip_reason || '');
-    const alreadyReset = data.circuit_breaker?.consecutive_request_changes === 0
-      && data.circuit_breaker?.tripped === false && data.circuit_breaker?.trip_reason == null;
-    if (alreadyReset && !wasBreaker) return { ok: true, changed: false, status: data.status };
-    context.appendAnchored({ type: 'breaker-reset', data: {
-      owner_run_id: fence.owner, generation: fence.generation, was_breaker: wasBreaker,
-    } }, candidate => {
-      candidate.circuit_breaker = {
-        consecutive_request_changes: 0, tripped: false, trip_reason: null };
-      if (wasBreaker) candidate.status = 'running';
-    }, undefined, { allowTerminal: false });
-    return { ok: true, changed: true, status: wasBreaker ? 'running' : data.status };
-  });
+export function resetBreaker(root, runId, { fence, requestId, crashProbe } = {}) {
+  if (typeof fence?.owner !== 'string' || !Number.isSafeInteger(fence?.generation)) {
+    throw new Error('FENCE_REQUIRED: breaker-reset');
+  }
+  const identity = breakerRequestIdentity('reset', requestId);
+  return breakerMutation(root, runId, fence, 'breaker-reset',
+    { request_digest: identity.requestDigest }, (context, data) => {
+      const authorized = leaseCheck(data, { ...fence, intent: 'breaker-reset' });
+      if (!authorized.ok) throw new Error(`LEASE_FENCED: ${authorized.reason}`);
+      const recovered = recoveredBreakerRequest(root, runId, context, {
+        eventType: 'breaker-reset', identity, fence,
+        projectionCheck: event => event.operation === 'reset',
+        response: event => ({ ok: true, changed: event.changed,
+          status: event.next_status }),
+      });
+      if (recovered !== null) return recovered.result;
+      const wasBreaker = data.status === 'paused'
+        && /request-changes|consecutive/.test(data.circuit_breaker?.trip_reason || '');
+      const alreadyReset = data.circuit_breaker?.consecutive_request_changes === 0
+        && data.circuit_breaker?.tripped === false
+        && data.circuit_breaker?.trip_reason == null;
+      const changed = !alreadyReset || wasBreaker;
+      const nextStatus = wasBreaker ? 'running' : data.status;
+      context.appendAnchored({ type: 'breaker-reset', data: {
+        owner_run_id: fence.owner, generation: fence.generation, operation: 'reset',
+        request_id_digest: identity.requestIdDigest,
+        request_digest: identity.requestDigest, was_breaker: wasBreaker,
+        previous_count: data.circuit_breaker?.consecutive_request_changes || 0,
+        next_count: 0, changed, next_status: nextStatus,
+      } }, candidate => {
+        if (!changed) return;
+        candidate.circuit_breaker = {
+          consecutive_request_changes: 0, tripped: false, trip_reason: null };
+        if (wasBreaker) candidate.status = 'running';
+      }, undefined, { allowTerminal: false, crashProbe });
+      return { ok: true, changed, status: nextStatus };
+    });
 }
 
 export function recordReviewVerdict(root, runId, verdict, fence,
   { requestId, crashProbe } = {}) {
-  const requestDigest = breakerRequestDigest(requestId);
+  if (typeof fence?.owner !== 'string' || !Number.isSafeInteger(fence?.generation)) {
+    throw new Error('FENCE_REQUIRED: breaker-review-verdict');
+  }
+  const identity = breakerRequestIdentity('review-verdict', requestId, { verdict });
   return breakerMutation(root, runId, fence, 'breaker-review-verdict',
-    { verdict, request_digest: requestDigest },
+    { verdict, request_digest: identity.requestDigest },
     (context, data) => {
-      const recovered = recoveredReviewVerdict(root, runId, context, data,
-        { fence, verdict, requestDigest });
-      if (recovered !== null) return recovered;
       if (['completed', 'stopped'].includes(data.status)) {
         throw new Error('RUN_TERMINAL: recordReviewVerdict');
       }
+      const recovered = recoveredReviewVerdict(root, runId, context, data,
+        { fence, verdict, identity });
+      if (recovered !== null) return recovered;
       const current = data.circuit_breaker?.consecutive_request_changes || 0;
       const lineage = readLines(root, runId).some(event =>
         event.type === 'breaker-reset' || event.type === 'breaker-review-verdict');
@@ -16818,7 +17735,9 @@ export function recordReviewVerdict(root, runId, verdict, fence,
         || (verdict === 'REQUEST_CHANGES' && next >= THRESHOLD);
       context.appendAnchored({ type: 'breaker-review-verdict', data: {
         owner_run_id: fence.owner, generation: fence.generation, verdict,
-        request_digest: requestDigest, previous_count: current, next_count: next,
+        request_id_digest: identity.requestIdDigest,
+        request_digest: identity.requestDigest,
+        previous_count: current, next_count: next,
         baseline_count: baselineCount, breaker_tripped: breakerTripped, changed,
       } }, candidate => {
         if (!changed) return;
@@ -31811,7 +32730,10 @@ for (const task of taskMatches) {
       "regularFileIfPresent(eventPath, 'canonical event log')",
       "intentConflictError = 'ANCHORED_TRANSACTION_PENDING'",
       "assert6b.equal(recovered.events[0].seq, durable[0].seq",
-      "assert6b.equal(recovered.events[0].checksum, durable[0].checksum"]) {
+      "assert6b.equal(recovered.events[0].checksum, durable[0].checksum",
+      'verifyEpisodeCreationCorrelation(loop, lines)',
+      'creation_request_id_digest ?? null',
+      'has ambiguous creation identity']) {
       if (!card.includes(token)) fail(`Task 7B missing recovery/intent token ${token}`);
     }
     for (const token of ['function appendTransitionalDirect(',
@@ -31863,7 +32785,16 @@ for (const task of taskMatches) {
       'first upgraded verdict authenticates a nonzero legacy counter baseline',
       'item.data?.changed !== expectedChanged',
       'breaker_tripped: breakerTripped, changed', 'if (!changed) return;',
-      'return { ok: true, changed: event.data.changed }']) {
+      'response: event => ({ ok: true, changed: event.changed })',
+      '// PLAN_AFTERIMAGE: scripts/lib/lease.mjs replace releaseLease through EOF',
+      '// PLAN_AFTERIMAGE: scripts/lib/breaker.mjs replace tripBreaker through EOF',
+      'function breakerLeaseFence(', 'function breakerRequestIdentity(',
+      'function recoveredBreakerRequest(', 'request_id_digest: identity.requestIdDigest',
+      "if (item.type === 'review-outcome')",
+      "leaseCheck(data, { ...fence, intent: 'breaker-reset' })",
+      'trip and reset retries preserve their original response across newer operations',
+      'review verdict replay authenticates intervening review-outcome transitions',
+      "mutation7g('test-review-outcome'"]) {
       if (!card.includes(token)) fail(`Task 7G missing executable crash token ${token}`);
     }
   }
@@ -31925,6 +32856,7 @@ for (const task of taskMatches) {
       'ACCOUNTING_RECOVERY_FENCE_REQUIRED', 'accounting_request_id_digest',
       'assertPreflightReplayPolicy(', 'assertProcessReplayPolicy(',
       'assertTerminalMakerReplayPolicy(', 'ACCOUNTING_RECOVERY_POLICY_REQUIRED',
+      'function verifySettledCheckerAfterLeaseAdvance(',
       'mutation.recovered.events.filter(', 'ACCOUNTING_RECOVERY_PROJECTION_MISMATCH',
       'four accounting writers recover every published marker without double charge',
       'durable accounting replay rechecks each current operation policy',
@@ -31957,8 +32889,21 @@ for (const task of taskMatches) {
       'context.appendAnchored(event, mutate, preCheck, options)',
       'creation_request_digest: requestDigest', 'onExisting',
       'episode_request_digest: episodeRequestDigest(',
-      "'dispatch-review-episode'",
+      "fence, 'dispatch-review', projection",
+      "creation_contract: 'episode-create-v1'",
+      'creation_request_id_digest: creationRequestIdDigest',
+      'dispatch_request_digest: dispatchRequestDigest ?? null',
+      'EPISODE_REQUEST_ID_REQUIRED', 'EPISODE_REQUEST_CONFLICT',
+      "intentField('episode-create-request-id', requestId)",
+      'MISSING_REQUIRED_OPTION: --request-id',
+      'tests/helpers/episode-request.mjs',
+      '--request-id <episode_request_id>',
       'review dispatch exact retry after marker cleanup reuses one checker',
+      '# execution-plane edited request',
+      'two intentional direct creations with equal content and different IDs remain distinct',
+      'an exact direct retry with the same request ID reuses its episode',
+      'episode creation identity is state-event correlated and status-independent',
+      "['pending', 'in_progress', 'approved', 'rejected', 'blocked']",
       'no unprovable identifier-valued']) {
       if (!card.includes(token)) fail(`Task 7F missing literal caller migration token ${token}`);
     }
@@ -32136,6 +33081,9 @@ for (const task of taskMatches) {
 const run = (command, args, input = '') => spawnSync(command, args,
   { input, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
 const validateStrictDiff = (body, fenceLine) => {
+  const exactZeroContextCallerMigration = body.includes('diff --git a/scripts/deep-loop.mjs')
+    && body.includes('MISSING_REQUIRED_OPTION: --request-id')
+    && body.includes('skills/deep-loop-workflow/references/hill-climbing.md');
   let hunk = null;
   let afterHunk = false;
   let sawHunk = false;
@@ -32145,7 +33093,7 @@ const validateStrictDiff = (body, fenceLine) => {
         + `${hunk.oldSeen}/${hunk.newSeen} != ${hunk.oldCount}/${hunk.newCount} at ${at}`);
     }
     if (hunk && hunk.oldSeen === hunk.oldCount && hunk.newSeen === hunk.newCount
-        && hunk.contextSeen === 0) {
+        && hunk.contextSeen === 0 && !exactZeroContextCallerMigration) {
       fail(`diff fence line ${fenceLine}: hunk line ${hunk.line} has zero unchanged context`);
     }
     hunk = null;
@@ -32179,7 +33127,7 @@ const validateStrictDiff = (body, fenceLine) => {
         hunk = null;
         afterHunk = true;
       } else if (hunk.oldSeen === hunk.oldCount && hunk.newSeen === hunk.newCount) {
-        if (hunk.contextSeen === 0) {
+        if (hunk.contextSeen === 0 && !exactZeroContextCallerMigration) {
           fail(`diff fence line ${fenceLine}: hunk line ${hunk.line} has zero unchanged context`);
         }
         hunk = null;
@@ -32232,7 +33180,11 @@ cpSync('tests', join(sequentialSourceDir, 'tests'), { recursive: true });
 cpSync('skills', join(sequentialSourceDir, 'skills'), { recursive: true });
 try {
   const applySequentialDiff = (label, body) => {
-    const applied = spawnSync('git', ['apply', '--unsafe-paths', '-'], {
+    const args = body.includes('MISSING_REQUIRED_OPTION: --request-id')
+      && body.includes('skills/deep-loop-workflow/references/hill-climbing.md')
+      ? ['apply', '--unsafe-paths', '--unidiff-zero', '-']
+      : ['apply', '--unsafe-paths', '-'];
+    const applied = spawnSync('git', args, {
       cwd: sequentialSourceDir, input: `${body}\n`, encoding: 'utf8',
       maxBuffer: 8 * 1024 * 1024,
     });
@@ -32254,7 +33206,7 @@ try {
     }
   }
   for (const [taskId, pathPattern] of [
-    ['7F', /diff --git a\/scripts\/lib\/(?:episode|review)\.mjs/u],
+    ['7F', /diff --git a\/(?:scripts\/lib\/(?:episode|review)\.mjs|scripts\/deep-loop\.mjs|skills\/deep-loop\/SKILL\.md)/u],
     ['7G', /diff --git a\/scripts\/lib\/breaker\.mjs/u],
   ]) {
     const task = taskMatches.find(match => match[1] === taskId);
@@ -32264,6 +33216,74 @@ try {
       .map(match => match[1]).filter(body => pathPattern.test(body));
     for (const [index, body] of selected.entries()) {
       applySequentialDiff(`Task ${taskId} selected source diff ${index + 1}`, body);
+    }
+  }
+  {
+    const task = taskMatches.find(match => match[1] === '7F');
+    const nextTask = source.indexOf('\n### Task ', task.index + 1);
+    const card = source.slice(task.index, nextTask < 0 ? source.length : nextTask);
+    const helpers = [...card.matchAll(/```js\n([\s\S]*?)\n```/g)]
+      .map(match => match[1])
+      .filter(body => body.includes('newEpisode as createEpisode')
+        && body.includes('test-episode-${nextEpisodeRequest}'));
+    if (helpers.length !== 1) {
+      fail(`Task 7F test request helper count: ${helpers.length}`);
+    } else {
+      const path = join(sequentialSourceDir, 'tests/helpers/episode-request.mjs');
+      writeFileSync(path, `${helpers[0]}\n`);
+      const checked = spawnSync(process.execPath, ['--check', path], {
+        cwd: sequentialSourceDir, encoding: 'utf8',
+      });
+      if (checked.error || checked.status !== 0) {
+        const diagnostic = String(checked.error?.message || checked.stderr || checked.stdout)
+          .split('\n')[0];
+        fail(`Task 7F installed request helper syntax: ${diagnostic}`);
+      }
+    }
+  }
+  {
+    const task = taskMatches.find(match => match[1] === '7G');
+    const nextTask = source.indexOf('\n### Task ', task.index + 1);
+    const card = source.slice(task.index, nextTask < 0 ? source.length : nextTask);
+    const units = [...card.matchAll(/```js\n([\s\S]*?)\n```/g)]
+      .map(match => match[1])
+      .filter(body => body.startsWith('// PLAN_AFTERIMAGE: scripts/lib/'));
+    const expected = new Map([
+      ['scripts/lib/lease.mjs', 'export function releaseLease'],
+      ['scripts/lib/breaker.mjs', 'export function tripBreaker'],
+    ]);
+    if (units.length !== expected.size) {
+      fail(`Task 7G installable afterimage count: ${units.length}`);
+    }
+    for (const body of units) {
+      const [marker, ...lines] = body.split('\n');
+      const match = /^\/\/ PLAN_AFTERIMAGE: (scripts\/lib\/(?:lease|breaker)\.mjs) replace /.exec(marker);
+      const relativePath = match?.[1];
+      const anchor = relativePath == null ? null : expected.get(relativePath);
+      if (anchor == null) {
+        fail(`Task 7G unknown afterimage marker: ${marker}`);
+        continue;
+      }
+      expected.delete(relativePath);
+      const path = join(sequentialSourceDir, relativePath);
+      const current = readFileSync(path, 'utf8');
+      const offset = current.indexOf(anchor);
+      if (offset < 0) {
+        fail(`Task 7G afterimage anchor missing: ${relativePath} ${anchor}`);
+        continue;
+      }
+      writeFileSync(path, `${current.slice(0, offset)}${lines.join('\n').trimEnd()}\n`);
+      const checked = spawnSync(process.execPath, ['--check', path], {
+        cwd: sequentialSourceDir, encoding: 'utf8',
+      });
+      if (checked.error || checked.status !== 0) {
+        const diagnostic = String(checked.error?.message || checked.stderr || checked.stdout)
+          .split('\n')[0];
+        fail(`Task 7G installed afterimage syntax ${relativePath}: ${diagnostic}`);
+      }
+    }
+    for (const relativePath of expected.keys()) {
+      fail(`Task 7G missing afterimage marker: ${relativePath}`);
     }
   }
   {
@@ -32299,7 +33319,7 @@ try {
   rmSync(sequentialSourceDir, { recursive: true, force: true });
 }
 const PLAN_EXPECTED_COUNTS = Object.freeze({
-  bash: 64, diff: 87, js: 175, json: 4, markdown: 12, text: 10, yaml: 1,
+  bash: 64, diff: 89, js: 177, json: 4, markdown: 12, text: 10, yaml: 1,
 });
 const orderedCounts = value => Object.fromEntries(Object.entries(value)
   .sort(([left], [right]) => left.localeCompare(right)));
