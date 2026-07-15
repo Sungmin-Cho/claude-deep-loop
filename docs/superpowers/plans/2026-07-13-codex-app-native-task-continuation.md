@@ -139,7 +139,7 @@ These are the narrow baseline `Modify` anchors required by the execution tasks; 
 | 6A–6E | Produced `scripts/lib/app-task-continuation.mjs` consent/observe/revoke/status/redaction exports; `scripts/deep-loop.mjs:40-141,340-365`; `scripts/lib/initrun.mjs:13-58`; `scripts/lib/integrity.mjs:96-187`; `scripts/lib/lease.mjs:13-199`; `scripts/lib/schema.mjs:164-216`; created `tests/app-task-continuation.test.mjs`; `tests/orch-cli.test.mjs:246-286,831-1005`; `tests/cli-skillface.test.mjs:66-99,192-265`; `tests/integrity.test.mjs:123-211`; `tests/lease.test.mjs:27-490`; `tests/schema.test.mjs:17-273`; created `tests/helpers/fixed-init-crash-worker.mjs`. |
 | 7A | `scripts/lib/schema.mjs:164-216`; `scripts/deep-loop.mjs:120-180`; `tests/schema.test.mjs:17-273`; `tests/validate-cli.test.mjs:39-84`. |
 | 7B | produced `scripts/lib/durable-file.mjs`; `scripts/lib/finish.mjs:70-107`; `scripts/lib/integrity.mjs:21-187`; `scripts/lib/lease.mjs:43-103`; `scripts/lib/state.mjs:79-115`; `scripts/lib/workspace.mjs`; `tests/automation.test.mjs`; `tests/breaker.test.mjs`; `tests/budget.test.mjs`; `tests/codex-checker-integration.test.mjs`; `tests/comprehension.test.mjs`; `tests/detect-terminal.test.mjs`; produced `tests/durable-file.test.mjs`; `tests/episode.test.mjs`; `tests/fencing.test.mjs`; `tests/finish.test.mjs`; produced `tests/fixtures/verified-app-run.mjs`; `tests/handoff.test.mjs`; `tests/headless-host.test.mjs`; `tests/insights.test.mjs`; `tests/integrity.test.mjs`; `tests/lease.test.mjs`; `tests/orch-cli.test.mjs`; `tests/pause.test.mjs`; `tests/precompact-hook.test.mjs`; `tests/project-root.test.mjs`; `tests/recover.test.mjs`; `tests/respawn.test.mjs`; `tests/review.test.mjs`; `tests/runtime-executable.test.mjs`; `tests/session-profile.test.mjs`; `tests/spawn-optin.test.mjs`; `tests/state.test.mjs`; `tests/terminal-cli.test.mjs`; `tests/workspace.test.mjs`; created `tests/helpers/anchored-crash-worker.mjs`. |
-| 7C | `scripts/lib/lease.mjs:43-199`; `scripts/lib/budget.mjs:279-1048`; `scripts/lib/headless-host.mjs`; `scripts/deep-loop.mjs:650-670`; produced `tests/helpers/anchored-crash-worker.mjs`; `tests/lease.test.mjs`; `tests/budget.test.mjs`; `tests/headless-host.test.mjs`; `tests/integrity.test.mjs`; `tests/project-root.test.mjs`. |
+| 7C | `scripts/lib/lease.mjs:43-199`; `scripts/lib/budget.mjs:279-1048`; `scripts/lib/headless-host.mjs`; `scripts/deep-loop.mjs:650-670`; `skills/deep-loop-continue/SKILL.md:173-182`; `skills/deep-loop-workflow/references/handoff-respawn.md:179-187`; produced `tests/helpers/anchored-crash-worker.mjs`; `tests/lease.test.mjs`; `tests/budget.test.mjs`; `tests/headless-host.test.mjs`; `tests/skills.test.mjs`; `tests/cli-skillface.test.mjs`; `tests/integrity.test.mjs`; `tests/project-root.test.mjs`. |
 | 7D | Produced `scripts/lib/init-transaction.mjs` strict current/genesis proof; produced `scripts/lib/app-task-continuation.mjs` observe/revoke/status boundaries; produced `tests/fixtures/verified-app-run.mjs`; produced `tests/init-transaction.test.mjs`; produced `tests/app-task-continuation.test.mjs`; `tests/cli-skillface.test.mjs`. |
 | 7G | `scripts/lib/lease.mjs:102-199`; `scripts/lib/breaker.mjs:1-62`; `scripts/lib/state.mjs:102-110`; `tests/lease.test.mjs`; `tests/breaker.test.mjs`; `tests/project-root.test.mjs`; `tests/integrity.test.mjs`; produced `tests/helpers/anchored-crash-worker.mjs`. |
 | 7E–7F | `scripts/lib/session-profile.mjs:44-80`; `scripts/lib/comprehension.mjs:27-92`; `scripts/lib/project-root-recovery.mjs:20-51`; `scripts/lib/budget.mjs:1053-1067`; `scripts/lib/episode.mjs:25-220`; `scripts/lib/insights.mjs:357-509`; `scripts/lib/review.mjs:50-179,310-668`; `scripts/lib/workspace.mjs:80-153`; `scripts/lib/detect-terminal.mjs:284-343`; `scripts/deep-loop.mjs:120-180,340-710`; `tests/session-profile.test.mjs`; `tests/comprehension.test.mjs`; `tests/project-root.test.mjs`; `tests/budget.test.mjs`; `tests/cli-skillface.test.mjs`; `tests/insights.test.mjs`; `tests/review-import.test.mjs`; `tests/reviewer-failclosed.test.mjs`; `tests/workspace.test.mjs`; `tests/detect-terminal.test.mjs`. |
@@ -9985,6 +9985,13 @@ test6b('verified mutation gateway exposes null before a commit and exact proof a
   assert6b.equal(recovered.events.length, 1);
   assert6b.equal(recovered.events[0].type, 'gateway-recovery-probe');
   assert6b.deepEqual(recovered.events[0].data, { request: 'pending' });
+  const durable = lines7c(pending.root, pending.runId)
+    .filter(event => event.type === 'gateway-recovery-probe');
+  assert6b.equal(durable.length, 1);
+  assert6b.equal(recovered.events[0].seq, durable[0].seq,
+    'recovery exposes the exact durable event sequence');
+  assert6b.equal(recovered.events[0].checksum, durable[0].checksum,
+    'recovery exposes the exact durable event checksum');
 });
 
 test6b('prospective commit persists the exact proved event timestamp', () => {
@@ -11879,9 +11886,16 @@ git commit -m "feat: verify semantic run snapshots" -m "Co-Authored-By: Claude O
 - Modify: `scripts/lib/headless-host.mjs` (every receipt-less legacy accounting fallback derives a
   durable-purpose request ID and reuses it across response loss).
 - Modify: `scripts/deep-loop.mjs:650-670` (`cost record` requires the caller's stable request ID).
+- Modify: `skills/deep-loop-continue/SKILL.md` (attended tick allocates one request ID and reuses it
+  for every retry of that tick's self-report).
+- Modify: `skills/deep-loop-workflow/references/handoff-respawn.md` (canonical interactive command
+  carries the same stable per-tick request ID).
 - Modify: `tests/lease.test.mjs`.
 - Modify: `tests/budget.test.mjs`.
 - Modify: `tests/headless-host.test.mjs` (closed production request-ID linkage inventory).
+- Modify: `tests/skills.test.mjs` (both shipped attended templates require and explain request-ID
+  reuse).
+- Modify: `tests/cli-skillface.test.mjs` (missing and valueless request IDs are usage exit 2).
 - Modify: `tests/integrity.test.mjs`.
 - Modify: `tests/project-root.test.mjs`.
 - Modify: `tests/helpers/anchored-crash-worker.mjs` (four accounting hard-crash operations).
@@ -11894,6 +11908,9 @@ git commit -m "feat: verify semantic run snapshots" -m "Co-Authored-By: Claude O
   duplicate success all require a verified snapshot. The Task 7B generic-acquire writer remains
   byte-for-byte unchanged; an already-owned retry proves the snapshot and emits no second edge. All
   four budget events are constructed and candidate-accounted in memory before their first append.
+  Durable replay lookup is allowed only after the caller's current owner/generation/runtime/policy
+  fence. Attended CLI callers allocate one request ID per tick, reuse it after response loss, and
+  receive usage exit 2 for a missing or valueless ID.
 
 - [ ] **Step 1: Write failing direct-writer and ordering tests**
 
@@ -12140,6 +12157,17 @@ test('recordCost request identity survives cleanup and distinguishes equal repor
   recordCost(fixture.root, fixture.runId, input);
   assert.deepEqual(bytes7c(fixture.root, fixture.runId), committed,
     'post-cleanup exact retry must not charge again');
+  for (const [label, fence, expected] of [
+    ['owner', { ...fixture.fence, owner: '01JAPPF0R00000000000000000' }, /owner-mismatch/],
+    ['generation', { ...fixture.fence, generation: fixture.fence.generation + 1 },
+      /generation-mismatch/],
+    ['runtime', { ...fixture.fence, runtime: 'codex' }, /RUNTIME_FENCED/],
+  ]) {
+    assert.throws(() => recordCost(fixture.root, fixture.runId,
+      { ...input, fence }), expected, `${label} must fence before durable request lookup`);
+    assert.deepEqual(bytes7c(fixture.root, fixture.runId), committed,
+      `${label} retry changed durable accounting bytes`);
+  }
   assert.throws(() => recordCost(fixture.root, fixture.runId,
     { ...input, tokens: 18 }), /ACCOUNTING_REQUEST_CONFLICT/);
   assert.deepEqual(bytes7c(fixture.root, fixture.runId), committed);
@@ -12151,6 +12179,13 @@ test('recordCost request identity survives cleanup and distinguishes equal repor
       && event.data?.reported_turns === input.turns
       && event.data?.reported_tokens === input.tokens).length, 2,
   'a distinct request id preserves a legitimate equal-valued report');
+
+  terminal7b(fixture.root, fixture.runId, { status: 'stopped' });
+  const terminalBytes = bytes7c(fixture.root, fixture.runId);
+  assert.throws(() => recordCost(fixture.root, fixture.runId, input),
+    /LEASE_FENCED: RUN_TERMINAL/,
+    'terminal policy must precede post-cleanup durable request lookup');
+  assert.deepEqual(bytes7c(fixture.root, fixture.runId), terminalBytes);
 });
 ```
 
@@ -12333,14 +12368,172 @@ reuse their own request ID across a retry:
 diff --git a/scripts/deep-loop.mjs b/scripts/deep-loop.mjs
 --- a/scripts/deep-loop.mjs
 +++ b/scripts/deep-loop.mjs
-@@ -658,5 +658,6 @@ const handlers = {
+@@ -658,5 +658,9 @@ const handlers = {
        const turns = optInt(f, 'turns'); const tokens = optInt(f, 'tokens');
        if (turns === null || tokens === null) { error('INVALID_COST: --turns/--tokens must be non-negative integers'); return 1; }
-+      const requestId = strArg(f, 'request-id');
-      const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'accounting' };
++      const requestId = reqStr(f, 'request-id');
++      if (requestId === null) {
++        error('MISSING_REQUIRED_OPTION: --request-id'); return 2;
++      }
+-      const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'business' };
++      const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'accounting' };
 -      try { recordCost(root, runId, { turns, tokens, fence }); }
 +      try { recordCost(root, runId, { turns, tokens, requestId, fence }); }
        catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }
+```
+
+The attended execution plane owns the request identity. At the start of one interactive tick it
+allocates one bounded `<accounting_request_id>` and keeps that value in the tick context; every retry
+of that tick's self-report reuses the same value. It never regenerates the ID after an ambiguous CLI
+response and never reuses it for a later tick. Apply both shipped caller migrations:
+
+```diff
+diff --git a/skills/deep-loop-continue/SKILL.md b/skills/deep-loop-continue/SKILL.md
+--- a/skills/deep-loop-continue/SKILL.md
++++ b/skills/deep-loop-continue/SKILL.md
+@@ -176,3 +176,5 @@ Interactive tick은 best-effort로 self-report:
++이 tick을 시작할 때 `[A-Za-z0-9][A-Za-z0-9._:-]{0,127}`을 만족하는 `interactive-<uuid>` 형태의 `<accounting_request_id>`를 한 번 생성하고 tick context에 보존한다.
++응답 유실을 포함한 같은 self-report 재시도에는 반드시 같은 값을 재사용하고 다음 tick에는 새 값을 사용한다.
+ ```
+-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" budget record --turns <n> --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
++node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" budget record --turns <n> --request-id <accounting_request_id> --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+ ```
+diff --git a/skills/deep-loop-workflow/references/handoff-respawn.md b/skills/deep-loop-workflow/references/handoff-respawn.md
+--- a/skills/deep-loop-workflow/references/handoff-respawn.md
++++ b/skills/deep-loop-workflow/references/handoff-respawn.md
+@@ -183,5 +183,6 @@
+ **PreCompact respawn**은 세션 연속을 위한 안전망이라 spawnFn의 measured usage를 기록하지 않고 버린다 — 인수한 **자식 세션이 자기 drive 사이클에서 자기 비용을 회계**한다(이중계상 방지).
+-
++
+-**Interactive tick**은 best-effort로 `budget record --turns <n> --owner <owner_run_id> --generation <n>` 자기보고. `DEEP_LOOP_UNATTENDED` set 시 자기보고를 생략한다 — drive-headless가 측정 usage를 권위있게 기록하므로 이중계상 방지.
++**Interactive tick**은 시작 시 `[A-Za-z0-9][A-Za-z0-9._:-]{0,127}`을 만족하는 `interactive-<uuid>` 형태의 `<accounting_request_id>`를 한 번 만들고 tick context에 보존한 뒤 best-effort로 `budget record --turns <n> --request-id <accounting_request_id> --owner <owner_run_id> --generation <n>` 자기보고. 응답이 모호해 같은 tick을 재시도하면 같은 request ID를 재사용하고, 다음 tick에는 새 ID를 사용한다.
++`DEEP_LOOP_UNATTENDED` set 시 자기보고를 생략한다 — drive-headless가 측정 usage를 권위있게 기록하므로 이중계상 방지.
+-
++
+ **커널 경계 자동 floor (#3)**: self-report와 무관하게, 커널은 각 business mutation(`episode new/record/abandon`·`review record/import`·`workstream new/set/terminal`·`state patch`·`comprehension ack`·`finish`)마다 최소 1 turn을 `appendAnchored`로 **자동 계상**한다(생략 불가). 명시 `budget record`는 그 tick의 floor를 **대체**한다(max 규칙 — 보고값과 floor 합 중 큰 값, 합산 아님). 따라서 self-report는 best-effort 보정일 뿐이고, **`max_wallclock_sec`(default 86400s)이 self-report와 무관한 authoritative hard bound**다. 예산 시맨틱 = best-effort self-report + 커널 자동 floor + wallclock hard bound.
+```
+
+Append this contract test to `tests/skills.test.mjs`; it proves both executable templates and their
+same-tick retry rule rather than accepting request-ID prose in an unrelated document:
+
+```js
+test('interactive budget record templates carry one stable per-tick request identity', () => {
+  const continueSkill = readFileSync(skillPath('deep-loop-continue'), 'utf8');
+  const handoffReference = readFileSync(
+    join(ROOT, 'skills', 'deep-loop-workflow', 'references', 'handoff-respawn.md'), 'utf8');
+  for (const [name, source] of [
+    ['deep-loop-continue', continueSkill], ['handoff-respawn', handoffReference],
+  ]) {
+    assert.match(source,
+      /budget record[^\n]*--turns <n>[^\n]*--request-id <accounting_request_id>[^\n]*--owner <owner_run_id>[^\n]*--generation <n>/,
+      `${name}: attended accounting command lacks the stable request identity`);
+    assert.match(source, /같은[^\n]*(?:재시도|retry)[^\n]*같은[^\n]*(?:request ID|값)/i,
+      `${name}: response-loss retry does not require request-ID reuse`);
+    assert.match(source, /다음 tick[^\n]*(?:새 ID|새 값)/,
+      `${name}: later ticks are not required to allocate a new request identity`);
+    assert.match(source, /\[A-Za-z0-9\]\[A-Za-z0-9\._:-\]\{0,127\}/,
+      `${name}: request identity does not publish the kernel's bounded ASCII grammar`);
+  }
+});
+```
+
+Apply the complete CLI regression migration. Existing successful/fenced/value tests receive distinct
+stable IDs; the two new usage tests prove that neither an omitted nor a valueless request ID can
+fall through `strArg`'s fence-only exit channel:
+
+```diff
+diff --git a/tests/cli-skillface.test.mjs b/tests/cli-skillface.test.mjs
+--- a/tests/cli-skillface.test.mjs
++++ b/tests/cli-skillface.test.mjs
+@@ -97,37 +97,53 @@ test('state patch forbids terminal episode status (exit 1)', () => {
+ });
+-
++
+-test('budget record accrues turns/tokens via event log with fence', () => {
+-  const { root, runId } = seed();
+-  const r = JSON.parse(run(root, ['budget', 'record', '--turns', '3', '--tokens', '1000', '--owner', runId, '--generation', '1']));
+-  assert.equal(r.ok, true);
+-  const spent = JSON.parse(run(root, ['state', 'get', '--field', 'budget.spent']));
+-  assert.equal(spent, 3);
+-});
+-
+-test('budget record is fenced (exit 3)', () => {
+-  const { root, runId } = seed();
+-  assert.equal(runFail(root, ['budget', 'record', '--turns', '1', '--owner', runId, '--generation', '9']), 3);
+-});
+-
+-// Codex r4 sf-4: 값 없는 --turns 는 1 로 오기록하지 말고 거부(exit 1).
+-test('budget record rejects a valueless --turns (exit 1)', () => {
+-  const { root, runId } = seed();
+-  assert.equal(runFail(root, ['budget', 'record', '--turns', '--owner', runId, '--generation', '1']), 1);
+-});
+-
+-test('budget check is read-only and reports ok', () => {
+-  const { root } = seed();
+-  const r = JSON.parse(run(root, ['budget', 'check', '--now', '2026-06-24T00:00:01Z']));
+-  assert.equal(r.ok, true);
+-});
+-
+-// Codex r3 critical-1: budget record 가 세션 turns 를 증가시켜 per_session_turn_cap 마일스톤을 실제로 구동.
+-test('budget record drives per_session_turn_cap → next-action handoff', () => {
+-  const { root, runId } = seed();
+-  run(root, ['budget', 'record', '--turns', '40', '--owner', runId, '--generation', '1']);   // == per_session_turn_cap(40)
+-  const na = JSON.parse(run(root, ['next-action', '--json', '--now', '2026-06-24T00:00:01Z']));
+-  assert.equal(na.action.type, 'handoff');
+-  assert.equal(na.action.reason, 'per_session_turn_cap');
+-});
++test('budget record accrues turns/tokens via event log with fence', () => {
++  const { root, runId } = seed();
++  const r = JSON.parse(run(root, ['budget', 'record', '--turns', '3', '--tokens', '1000',
++    '--request-id', 'cli-budget-record-1', '--owner', runId, '--generation', '1']));
++  assert.equal(r.ok, true);
++  const spent = JSON.parse(run(root, ['state', 'get', '--field', 'budget.spent']));
++  assert.equal(spent, 3);
++});
++
++test('budget record is fenced (exit 3)', () => {
++  const { root, runId } = seed();
++  assert.equal(runFail(root, ['budget', 'record', '--turns', '1',
++    '--request-id', 'cli-budget-fenced-1', '--owner', runId, '--generation', '9']), 3);
++});
++
++// Codex r4 sf-4: 값 없는 --turns 는 1 로 오기록하지 말고 거부(exit 1).
++test('budget record rejects a valueless --turns (exit 1)', () => {
++  const { root, runId } = seed();
++  assert.equal(runFail(root, ['budget', 'record', '--turns',
++    '--request-id', 'cli-budget-invalid-turns-1', '--owner', runId, '--generation', '1']), 1);
++});
++
++test('budget record requires a request id as usage (exit 2)', () => {
++  const { root, runId } = seed();
++  assert.equal(runFail(root, ['budget', 'record', '--turns', '1',
++    '--owner', runId, '--generation', '1']), 2);
++});
++
++test('budget record rejects a valueless request id as usage (exit 2)', () => {
++  const { root, runId } = seed();
++  assert.equal(runFail(root, ['budget', 'record', '--turns', '1', '--request-id',
++    '--owner', runId, '--generation', '1']), 2);
++});
++
++test('budget check is read-only and reports ok', () => {
++  const { root } = seed();
++  const r = JSON.parse(run(root, ['budget', 'check', '--now', '2026-06-24T00:00:01Z']));
++  assert.equal(r.ok, true);
++});
++
++// Codex r3 critical-1: budget record 가 세션 turns 를 증가시켜 per_session_turn_cap 마일스톤을 실제로 구동.
++test('budget record drives per_session_turn_cap → next-action handoff', () => {
++  const { root, runId } = seed();
++  run(root, ['budget', 'record', '--turns', '40', '--request-id',
++    'cli-budget-turn-cap-1', '--owner', runId, '--generation', '1']);
++  const na = JSON.parse(run(root, ['next-action', '--json', '--now', '2026-06-24T00:00:01Z']));
++  assert.equal(na.action.type, 'handoff');
++  assert.equal(na.action.reason, 'per_session_turn_cap');
++});
+-
++
+ // Codex r3 sf-2: 스킬이 쓰는 CLI 경로(episode new --artifacts → record done)가 실제로 통과하는지 통합 검증.
 ```
 
 The receipt-less compatibility paths live in `headless-host.mjs`, not the thin
@@ -12472,7 +12665,7 @@ test('every receipt-less production accounting call links a stable request ID', 
 
 - [ ] **Step 2: Run the direct-writer tests and verify RED**
 
-Run: `node --test --test-name-pattern='lease fences precede|four manual accounting|accounting fence precedes|four accounting writers recover' tests/lease.test.mjs tests/budget.test.mjs`
+Run: `node --test --test-name-pattern='lease fences precede|four manual accounting|accounting fence precedes|four accounting writers recover|recordCost request identity|interactive budget record templates|budget record requires a request id|valueless request id' tests/lease.test.mjs tests/budget.test.mjs tests/skills.test.mjs tests/cli-skillface.test.mjs`
 
 Expected: FAIL because lease no-ops and the four accounting transactions do not consume Task 7B's
 proof/prospective APIs.
@@ -12605,7 +12798,7 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 +import { runtimeFence, sessionRuntime } from './runtime.mjs';
  import { contentHash } from './envelope.mjs';
  import { canonicalProjectRoot, projectRootDigest } from './project-root.mjs';
-@@ -273,4 +275,50 @@
+@@ -273,4 +275,74 @@
    return { tf, tk };
  }
 -
@@ -12624,9 +12817,33 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 +    }, { baseLines: lines, baseStateHash, callerBinding, intentDigest, crashProbe });
 +}
 +
++function accountingReplayFence(fence, {
++  runtime = null, runtimeMessage = null, leasePolicy = false,
++} = {}) {
++  return loop => {
++    const lease = loop.session_chain?.lease || {};
++    if (runtime === null && fence.runtime !== undefined) {
++      const checkedRuntime = runtimeFence(loop, fence.runtime);
++      if (!checkedRuntime.ok) throw new Error(`LEASE_FENCED: ${checkedRuntime.reason}`);
++    }
++    if (lease.owner_run_id !== fence.owner) throw new Error('LEASE_FENCED: owner-mismatch');
++    if (lease.generation !== fence.generation) throw new Error('LEASE_FENCED: generation-mismatch');
++    if (runtime !== null && sessionRuntime(loop) !== runtime) {
++      throw new Error(runtimeMessage);
++    }
++    if (leasePolicy) {
++      const authorized = leaseCheck(loop, fence);
++      if (!authorized.ok) throw new Error(`LEASE_FENCED: ${authorized.reason}`);
++    }
++  };
++}
++
 +function recoveredCostEvent(root, runId, mutation, predicate,
-+  { requestDigest = null } = {}) {
-+  mutation.readVerifiedState();
++  { requestDigest = null, fenceCheck } = {}) {
++  if (typeof fenceCheck !== 'function') {
++    throw new Error('ACCOUNTING_RECOVERY_FENCE_REQUIRED');
++  }
++  mutation.readVerifiedState({ fenceCheck });
 +  const lines = readLines(root, runId);
 +  if (requestDigest !== null) {
 +    const durable = lines.filter(event => event.type === 'cost'
@@ -12693,7 +12910,7 @@ business result therefore follows semantic verification:
 diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 --- a/scripts/lib/budget.mjs
 +++ b/scripts/lib/budget.mjs
-@@ -308,19 +308,45 @@
+@@ -308,19 +308,46 @@
  // Explicit cost report — its own withLock (needs to read the log to absorb the tick's floor before appending an
  // ADJUSTED cost). Mirrors appendAnchored's verify→append→anchor→reconcile sequence; recomputeSpent stays a PURE
  // sum so reconcileBudget agrees automatically. Negative/non-finite still rejected (validCost).
@@ -12723,13 +12940,14 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 +  const intentDigest = mutationIntentDigest('budget-record', callerBinding,
 +    { request_digest: requestDigest, turns, tokens,
 +      runtime: fence.runtime ?? null, intent: fence.intent ?? null });
++  const replayFence = accountingReplayFence(fence, { leasePolicy: true });
 +  return withVerifiedMutationLock(root, runId, { callerBinding, intentDigest,
 +    fenceError: 'BUDGET_FENCED: record' }, mutation => {
 +    if (recoveredCostEvent(root, runId, mutation, event =>
 +      event.data?.reported_turns === turns && event.data?.reported_tokens === tokens
 +      && event.data?.owner === fence.owner
 +      && event.data?.generation === fence.generation,
-+    { requestDigest })) return;
++    { requestDigest, fenceCheck: replayFence })) return;
 +    const { data: loop, hash: baseStateHash } = readState(root, runId);
      const lease = loop.session_chain?.lease || {};
 -    const { tf, tk } = trailingFloor(readLines(root, runId), lease.owner_run_id, lease.generation);   // this session's tick floor only
@@ -12750,7 +12968,7 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
      const adjTurns = Math.max(0, turns - tf), adjTokens = Math.max(0, tokens - tk);   // tick contribution = max(reported, floor-sum)
      appendEvent(root, runId, { type: 'cost', data: { turns: adjTurns, tokens: adjTokens, reported_turns: turns, reported_tokens: tokens, owner: lease.owner_run_id, generation: lease.generation } });
      loop.event_log_head = lastLogHead(root, runId);
-@@ -444,26 +464,32 @@
+@@ -444,26 +464,35 @@
  // A successful Codex preflight smoke is represented by an immutable, hash-bound receipt before an active cache
  // can be published. The current accounting fence authorizes settlement, while the receipt's origin session owns
  // the charge. An identical retry is a byte-preserving no-op even after the lease has legitimately advanced.
@@ -12767,11 +12985,14 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 +  const callerBinding = { owner: fence.owner, generation: fence.generation };
 +  const intentDigest = mutationIntentDigest('budget-preflight-settle', callerBinding,
 +    { receipt_digest: contentHash(JSON.stringify(exact)) });
++  const replayFence = accountingReplayFence(fence, { runtime: 'codex',
++    runtimeMessage: 'RUNTIME_FENCED: preflight accounting requires codex' });
 +  return withVerifiedMutationLock(root, runId, { callerBinding, intentDigest,
 +    fenceError: 'BUDGET_FENCED: preflight' }, mutation => {
 +    if (recoveredCostEvent(root, runId, mutation, event =>
 +      event.data?.preflight_receipt_id === exact.receipt_id
-+      && event.data?.preflight_cache_key === exact.cache_key)) {
++      && event.data?.preflight_cache_key === exact.cache_key,
++    { fenceCheck: replayFence })) {
 +      return { ok: true, recorded: true, reason: 'recorded' };
 +    }
 +    const { data: loop, hash: baseStateHash } = readState(root, runId);
@@ -12799,7 +13020,7 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
    if (receipt?.contract === CODEX_PREFLIGHT_RECEIPT_CONTRACT) {
      return settleCodexPreflightCost(root, runId, { receipt, fence });
    }
-@@ -872,19 +898,25 @@
+@@ -872,19 +898,28 @@
      || fence.intent !== 'accounting') {
      throw new Error('PROCESS_ACCOUNTING_FENCE_REQUIRED');
    }
@@ -12808,11 +13029,14 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 +  const callerBinding = { owner: fence.owner, generation: fence.generation };
 +  const intentDigest = mutationIntentDigest('budget-process-settle', callerBinding,
 +    { receipt_digest: contentHash(JSON.stringify(exact)) });
++  const replayFence = accountingReplayFence(fence, { runtime: 'codex',
++    runtimeMessage: 'RUNTIME_FENCED: process accounting requires codex' });
 +  return withVerifiedMutationLock(root, runId, { callerBinding, intentDigest,
 +    fenceError: 'BUDGET_FENCED: process' }, mutation => {
 +    if (recoveredCostEvent(root, runId, mutation, event =>
 +      event.data?.process_receipt_id === exact.receipt_id
-+      && event.data?.process_kind === exact.process_kind)) {
++      && event.data?.process_kind === exact.process_kind,
++    { fenceCheck: replayFence })) {
 +      return { ok: true, recorded: true, reason: 'recorded' };
 +    }
 +    const { data: loop, hash: baseStateHash } = readState(root, runId);
@@ -12842,7 +13066,7 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
    if (!isMeasuredOneTurnUsage(usage)) throw new Error('TERMINAL_ACCOUNTING_USAGE_INVALID');
    if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)
      || fence.intent !== 'accounting') {
-@@ -980,13 +1014,28 @@
+@@ -980,13 +1014,31 @@
    if (typeof handoffKey !== 'string' || !/^[a-f0-9]{16}$/.test(handoffKey)) {
      throw new Error('TERMINAL_ACCOUNTING_HANDOFF_INVALID');
    }
@@ -12851,6 +13075,8 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 +  const callerBinding = { owner: fence.owner, generation: fence.generation };
 +  const intentDigest = mutationIntentDigest('budget-terminal-maker-settle', callerBinding,
 +    { usage_digest: contentHash(JSON.stringify(usage)), handoff_key: handoffKey });
++  const replayFence = accountingReplayFence(fence, { runtime: 'codex',
++    runtimeMessage: 'RUNTIME_FENCED: terminal maker settlement requires codex' });
 +  return withVerifiedMutationLock(root, runId, { callerBinding, intentDigest,
 +    fenceError: 'BUDGET_FENCED: terminal-maker' }, mutation => {
 +    if (recoveredCostEvent(root, runId, mutation, event =>
@@ -12859,7 +13085,8 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 +      && event.data?.reported_turns === usage.num_turns
 +      && event.data?.reported_tokens === usage.tokens
 +      && event.data?.owner === fence.owner
-+      && event.data?.generation === fence.generation)) {
++      && event.data?.generation === fence.generation,
++    { fenceCheck: replayFence })) {
 +      return { ok: true, recorded: true, reason: 'recorded' };
 +    }
 +    const { data: loop, hash: baseStateHash } = readState(root, runId);
@@ -13029,7 +13256,7 @@ four owned writers, and byte-identical refusal.
 
 - [ ] **Step 5: Run lease/accounting regressions**
 
-Run: `node --test tests/lease.test.mjs tests/budget.test.mjs tests/integrity.test.mjs tests/state.test.mjs tests/headless-host.test.mjs`
+Run: `node --test tests/lease.test.mjs tests/budget.test.mjs tests/integrity.test.mjs tests/state.test.mjs tests/headless-host.test.mjs tests/skills.test.mjs tests/cli-skillface.test.mjs`
 
 Expected: PASS; measured duplicate receipts remain write-free and exact accounting totals are unchanged.
 
@@ -13038,7 +13265,7 @@ Expected: PASS; measured duplicate receipts remain write-free and exact accounti
 Run:
 
 ```bash
-git diff -- scripts/lib/lease.mjs scripts/lib/budget.mjs scripts/lib/headless-host.mjs scripts/deep-loop.mjs tests/helpers/anchored-crash-worker.mjs tests/lease.test.mjs tests/budget.test.mjs tests/headless-host.test.mjs tests/integrity.test.mjs tests/project-root.test.mjs
+git diff -- scripts/lib/lease.mjs scripts/lib/budget.mjs scripts/lib/headless-host.mjs scripts/deep-loop.mjs skills/deep-loop-continue/SKILL.md skills/deep-loop-workflow/references/handoff-respawn.md tests/helpers/anchored-crash-worker.mjs tests/lease.test.mjs tests/budget.test.mjs tests/headless-host.test.mjs tests/skills.test.mjs tests/cli-skillface.test.mjs tests/integrity.test.mjs tests/project-root.test.mjs
 rg -n "appendEvent\(|commitMeasuredCost|assertVerifiedRunSnapshot|already-" scripts/lib/lease.mjs scripts/lib/budget.mjs
 git diff --check
 ```
@@ -13050,7 +13277,7 @@ event/state byte is written before prospective verification.
 - [ ] **Step 7: Commit the direct-writer slice**
 
 ```bash
-git add scripts/lib/lease.mjs scripts/lib/budget.mjs scripts/lib/headless-host.mjs scripts/deep-loop.mjs tests/helpers/anchored-crash-worker.mjs tests/lease.test.mjs tests/budget.test.mjs tests/headless-host.test.mjs tests/integrity.test.mjs tests/project-root.test.mjs
+git add scripts/lib/lease.mjs scripts/lib/budget.mjs scripts/lib/headless-host.mjs scripts/deep-loop.mjs skills/deep-loop-continue/SKILL.md skills/deep-loop-workflow/references/handoff-respawn.md tests/helpers/anchored-crash-worker.mjs tests/lease.test.mjs tests/budget.test.mjs tests/headless-host.test.mjs tests/skills.test.mjs tests/cli-skillface.test.mjs tests/integrity.test.mjs tests/project-root.test.mjs
 git commit -m "fix: verify lease and accounting writers" -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
 
@@ -14000,7 +14227,7 @@ diff --git a/scripts/deep-loop.mjs b/scripts/deep-loop.mjs
 +    if (verb === 'check') { const { data } = readVerifiedState(root, runId); json(checkBudget(data, { now: parseNow(f) })); return 0; }
      if (verb === 'record') {
 @@ -662,5 +684,5 @@ const handlers = {
-       try { recordCost(root, runId, { turns, tokens, fence }); }
+       try { recordCost(root, runId, { turns, tokens, requestId, fence }); }
        catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }
 -      const { data } = readState(root, runId);
 +      const { data } = readVerifiedState(root, runId);
@@ -15114,26 +15341,30 @@ diff --git a/scripts/lib/episode.mjs b/scripts/lib/episode.mjs
  import { isAbsolute, join, resolve, sep } from 'node:path';
  import { readState, writeState, withLock, runDir } from './state.mjs';
 -import { appendAnchored } from './integrity.mjs';
-+import { appendAnchored, directMutationOptions,
-+  intentField } from './integrity.mjs';
++import { appendAnchored, directMutationOptions, intentField,
++  withVerifiedMutationLock } from './integrity.mjs';
  import { atomicWrite } from './envelope.mjs';
  import { slugify } from './slug.mjs';
  import { leaseCheck } from './lease.mjs';
-@@ -25,5 +26,20 @@ function requestSkeleton({ id, plugin, role, kind, point, workstream, expectedArtifacts, evidence }) {
+@@ -25,5 +26,24 @@ function requestSkeleton({ id, plugin, role, kind, point, workstream, expectedArtifacts, evidence }) {
    ].join('\n');
  }
 -
 +
 -function createEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker, reviewerResolution, evidence, contract, initialStatus = 'pending', blockReason, fence, operation } = {}) {
 +function episodeAppend(root, runId, mutation, event, mutate, preCheck, options) {
-+  if (mutation?.recovered) {
-+    const snapshot = mutation.readVerifiedState();
-+    return typeof options.onRecovered === 'function'
-+      ? options.onRecovered(snapshot.data, mutation.recovered) : undefined;
-+  }
-+  return mutation
-+    ? mutation.appendAnchored(event, mutate, preCheck, options)
-+    : appendAnchored(root, runId, event, mutate, preCheck, options);
++  const execute = context => {
++    if (context.recovered !== null) {
++      const snapshot = context.readVerifiedState();
++      return typeof options.onRecovered === 'function'
++        ? options.onRecovered(snapshot.data, context.recovered) : undefined;
++    }
++    return context.appendAnchored(event, mutate, preCheck, options);
++  };
++  if (mutation) return execute(mutation);
++  const { callerBinding, intentDigest, fenceError } = options;
++  return withVerifiedMutationLock(root, runId,
++    { callerBinding, intentDigest, fenceError }, execute);
 +}
 +
 +function createEpisode(root, runId, {
@@ -15254,6 +15485,11 @@ diff --git a/scripts/lib/episode.mjs b/scripts/lib/episode.mjs
 +    }));
  }
 ```
+
+`episodeAppend` now has no bare `appendAnchored(...)` call. Its public branch destructures the actual
+`directMutationOptions` result into `withVerifiedMutationLock`, and both branches perform only the
+context member append. Task 11B's actual-call parser therefore sees no unprovable identifier-valued
+sixth argument while still scanning every remaining bare production call.
 
 Extend the Task 7B workspace import and link both remaining direct callers. The status/proof
 projection is the actual sixth argument, and recovery validates the requested durable result:
@@ -15503,11 +15739,99 @@ git commit -m "fix: verify authority before external actions" -m "Co-Authored-By
   State-changing lease calls emit exactly one fixed event (`lease-released`, `handoff-reserved`,
   `handoff-phase-advanced`, `handoff-rolled-back`) and breaker calls emit exactly one fixed event
   (`breaker-tripped`, `breaker-reset`, `breaker-review-verdict`) through the journal. Existing
-  idempotent/no-op/error results remain write-free. Breaker APIs and every internal caller receive an
-  explicit owner/generation binding; fence-less production breaker calls are removed rather than
-  inferring the current lease.
+  idempotent/error results remain write-free. The first `APPROVE` at counter zero appends a
+  `breaker-review-verdict` receipt with `changed:false`; an exact retry is byte-preserving even if a
+  newer verdict has since changed the counter. Breaker APIs and every internal caller receive an
+  explicit owner/generation binding plus request ID; fence-less production breaker calls are removed
+  rather than inferring the current lease.
 
 - [ ] **Step 1: Write failing publisher-closure and crash tests**
+
+First migrate the complete existing `tests/breaker.test.mjs` caller set. The helper reads only test
+fixture authority and always forwards the explicit production API binding and a unique request ID;
+the terminal validation-order case therefore still reaches the public function with an exact fence.
+There is no current production caller outside `breaker.mjs`; the source closure scan below proves
+that fact, while the crash worker migration later in this card is the remaining non-production
+caller.
+
+```diff
+diff --git a/tests/breaker.test.mjs b/tests/breaker.test.mjs
+--- a/tests/breaker.test.mjs
++++ b/tests/breaker.test.mjs
+@@ -10,7 +10,18 @@
+ function seed() {
+   const root = mkdtempSync(join(tmpdir(), 'dl-breaker-'));
+   const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+   return { root, runId };
+ }
++
++let verdictRequest7g = 0;
++function reviewVerdict7g(root, runId, verdict, { fence = null, requestId = null } = {}) {
++  const lease = readState(root, runId).data.session_chain.lease;
++  const binding = fence ?? {
++    owner: lease.owner_run_id, generation: lease.generation,
++  };
++  verdictRequest7g += 1;
++  return recordReviewVerdict(root, runId, verdict, binding,
++    { requestId: requestId ?? `breaker-test-${verdictRequest7g}` });
++}
+-
++
+ test('not tripped under threshold', () => {
+@@ -27,33 +38,33 @@
+ test('recordReviewVerdict latches breaker at 3 REQUEST_CHANGES', () => {
+   const { root, runId } = seed();
+-  recordReviewVerdict(root, runId, 'REQUEST_CHANGES');
+-  recordReviewVerdict(root, runId, 'REQUEST_CHANGES');
+-  recordReviewVerdict(root, runId, 'REQUEST_CHANGES');
++  reviewVerdict7g(root, runId, 'REQUEST_CHANGES');
++  reviewVerdict7g(root, runId, 'REQUEST_CHANGES');
++  reviewVerdict7g(root, runId, 'REQUEST_CHANGES');
+   const { data } = readState(root, runId);
+   assert.equal(data.circuit_breaker.tripped, true);
+   assert.equal(data.circuit_breaker.trip_reason, 'consecutive-request-changes');
+   assert.equal(data.status, 'paused');
+ });
+-
++
+ test('recordReviewVerdict APPROVE after latch resets counter but keeps tripped latched', () => {
+   const { root, runId } = seed();
+-  recordReviewVerdict(root, runId, 'REQUEST_CHANGES');
+-  recordReviewVerdict(root, runId, 'REQUEST_CHANGES');
+-  recordReviewVerdict(root, runId, 'REQUEST_CHANGES');
++  reviewVerdict7g(root, runId, 'REQUEST_CHANGES');
++  reviewVerdict7g(root, runId, 'REQUEST_CHANGES');
++  reviewVerdict7g(root, runId, 'REQUEST_CHANGES');
+   // Verify latched
+   assert.equal(readState(root, runId).data.circuit_breaker.tripped, true);
+   // Now record APPROVE
+-  recordReviewVerdict(root, runId, 'APPROVE');
++  reviewVerdict7g(root, runId, 'APPROVE');
+   const { data } = readState(root, runId);
+   assert.equal(data.circuit_breaker.consecutive_request_changes, 0, 'counter resets');
+   assert.equal(data.circuit_breaker.tripped, true, 'tripped stays latched (human-reset only)');
+ });
+-
++
+ test('resetBreaker clears a tripped latch under valid fence; wrong gen throws', () => {
+   const root = mkdtempSync(join(tmpdir(), 'dl-rb-'));
+   const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+   const fence = { owner: runId, generation: 1, intent: 'business' };
+-  recordReviewVerdict(root, runId, 'REQUEST_CHANGES', fence);
+-  recordReviewVerdict(root, runId, 'REQUEST_CHANGES', fence);
+-  recordReviewVerdict(root, runId, 'REQUEST_CHANGES', fence);   // 연속 3 → tripped + status=paused
++  reviewVerdict7g(root, runId, 'REQUEST_CHANGES', { fence });
++  reviewVerdict7g(root, runId, 'REQUEST_CHANGES', { fence });
++  reviewVerdict7g(root, runId, 'REQUEST_CHANGES', { fence });
+   assert.equal(checkBreaker(readState(root, runId).data).tripped, true);
+@@ -82,4 +93,5 @@ test('tripBreaker / recordReviewVerdict: terminal run throws RUN_TERMINAL, state unchanged', () => {
+   assert.throws(() => tripBreaker(root, runId, 'x'), /RUN_TERMINAL: tripBreaker/);
+   // trip 분기 포함: REQUEST_CHANGES 3연속으로 paused 강등을 시도하는 fence-less 호출
+-  assert.throws(() => recordReviewVerdict(root, runId, 'REQUEST_CHANGES'), /RUN_TERMINAL: recordReviewVerdict/);
++  assert.throws(() => reviewVerdict7g(root, runId, 'REQUEST_CHANGES'),
++    /RUN_TERMINAL: recordReviewVerdict/);
+   const d = readState(root, runId).data;
+```
 
 Add a static source test that scans `scripts/lib`, `scripts/hooks-impl`, and `scripts/deep-loop.mjs`.
 After Task 5C/7G, `writeState` may appear only in its definition and explicitly named test exports;
@@ -15517,7 +15841,9 @@ fails the test.
 
 For each of the seven fixed event types above, add one success test asserting event identity,
 timestamp, state projection, and unchanged legacy return shape; add one duplicate/no-op test proving
-event count and journal files stay unchanged. Reuse `anchored-crash-worker.mjs` at
+event count and journal files stay unchanged. The exception is a first zero-count `APPROVE`, whose
+durable `changed:false` request receipt is the required event; only its exact retry is write-free.
+Reuse `anchored-crash-worker.mjs` at
 `pending-after-rename`, `event-after-partial-append`, `state-after-rename`, and
 `hash-after-rename` for `lease-released`, `handoff-reserved`, `breaker-tripped`, and
 `breaker-review-verdict`. Foreign marker binding must not recover; exact binding converges once.
@@ -15556,6 +15882,7 @@ test7g('post-genesis raw publisher closure', () => {
     ...sourceFiles7g(join7g(ROOT7G, 'scripts', 'hooks-impl')),
     join7g(ROOT7G, 'scripts', 'deep-loop.mjs'),
   ];
+  const verdictCallers = [];
   for (const path of files) {
     const rel = relative7g(ROOT7G, path).replaceAll('\\', '/');
     const source = read7g(path, 'utf8');
@@ -15568,7 +15895,11 @@ test7g('post-genesis raw publisher closure', () => {
       assert7g.equal(imports.length, 0, `${rel}: raw writer import`);
       assert7g.equal(calls.length, 0, `${rel}: raw writer call`);
     }
+    if (rel !== 'scripts/lib/breaker.mjs'
+        && /\brecordReviewVerdict\s*\(/.test(source)) verdictCallers.push(rel);
   }
+  assert7g.deepEqual(verdictCallers, [],
+    'production review-verdict caller must not bypass the explicit breaker API contract');
 });
 
 function publisherCases7g() {
@@ -15616,17 +15947,15 @@ function publisherCases7g() {
         trip7g(f.root, f.runId, 'consecutive-request-changes', { fence: f.fence });
         return { f, run: () => reset7g(f.root, f.runId, { fence: f.fence }),
           noOp: () => reset7g(f.root, f.runId, { fence: f.fence }) };
-      } },
+    } },
     { event: 'breaker-review-verdict',
-      keys: ['breaker_tripped', 'generation', 'next_count', 'owner_run_id',
+      keys: ['breaker_tripped', 'changed', 'generation', 'next_count', 'owner_run_id',
         'previous_count', 'request_digest', 'verdict'], setup: () => {
         const f = fresh('dl-7g-verdict-');
-        return { f, run: () => verdict7g(f.root, f.runId, 'REQUEST_CHANGES', f.fence,
-          { requestId: 'publisher-request-changes' }),
-          primeNoOp: () => verdict7g(f.root, f.runId, 'APPROVE', f.fence,
-            { requestId: 'publisher-approve-reset' }),
-          noOp: () => verdict7g(f.root, f.runId, 'APPROVE', f.fence,
-            { requestId: 'publisher-approve-noop' }) };
+        const input = { requestId: 'publisher-request-changes' };
+        return { f,
+          run: () => verdict7g(f.root, f.runId, 'REQUEST_CHANGES', f.fence, input),
+          noOp: () => verdict7g(f.root, f.runId, 'REQUEST_CHANGES', f.fence, input) };
       } },
   ];
 }
@@ -15687,12 +16016,11 @@ function assertRemainingPublisherCrash7g({ operation, point }) {
 
 test7g('lease mutation events and breaker mutation events are exact and no-op stable', () => {
   for (const spec of publisherCases7g()) {
-    const { f, run, primeNoOp, noOp } = spec.setup();
+    const { f, run, noOp } = spec.setup();
     run();
     const event = lines7g(f.root, f.runId).filter(item => item.type === spec.event).at(-1);
     assert7g.ok(event, spec.event);
     assert7g.deepEqual(Object.keys(event.data).sort(), [...spec.keys].sort());
-    if (primeNoOp) primeNoOp();
     const before = bytes7g(f.root, f.runId);
     noOp();
     assert7g.deepEqual(bytes7g(f.root, f.runId), before, `${spec.event} no-op wrote`);
@@ -15746,6 +16074,30 @@ test7g('review verdict request identity survives journal cleanup and rejects reu
     'APPROVE', fence, input), /BREAKER_REQUEST_CONFLICT/);
   assert7g.deepEqual(bytes7g(fixture.root, fixture.runId), committed);
 });
+
+test7g('zero-count APPROVE receipt cannot reset a newer verdict after response loss', () => {
+  const fixture = fixture7g('dl-7g-approve-noop-response-loss-');
+  const fence = { owner: fixture.owner, generation: fixture.generation };
+  const approve = { requestId: 'approve-noop-before-newer-verdict' };
+  assert7g.deepEqual(verdict7g(fixture.root, fixture.runId,
+    'APPROVE', fence, approve), { ok: true, changed: false });
+  const receipt = lines7g(fixture.root, fixture.runId).at(-1);
+  assert7g.equal(receipt.type, 'breaker-review-verdict');
+  assert7g.deepEqual({ verdict: receipt.data.verdict, changed: receipt.data.changed,
+    previous: receipt.data.previous_count, next: receipt.data.next_count },
+  { verdict: 'APPROVE', changed: false, previous: 0, next: 0 });
+
+  assert7g.deepEqual(verdict7g(fixture.root, fixture.runId,
+    'REQUEST_CHANGES', fence, { requestId: 'newer-request-changes' }),
+  { ok: true, changed: true });
+  const afterNewerVerdict = bytes7g(fixture.root, fixture.runId);
+  assert7g.deepEqual(verdict7g(fixture.root, fixture.runId,
+    'APPROVE', fence, approve), { ok: true, changed: false });
+  assert7g.deepEqual(bytes7g(fixture.root, fixture.runId), afterNewerVerdict,
+    'retry must recover the old no-op receipt without resetting newer state');
+  assert7g.equal(readState(fixture.root, fixture.runId)
+    .data.circuit_breaker.consecutive_request_changes, 1);
+});
 ```
 
 The helper is literal above. Extend `tests/helpers/anchored-crash-worker.mjs` with this closed
@@ -15787,7 +16139,7 @@ registerAnchoredCrashExtension(request => {
 
 - [ ] **Step 2: Run the closure tests and verify RED**
 
-Run: `node --test --test-name-pattern='post-genesis raw publisher closure|lease mutation events|breaker mutation events|remaining publisher crash recovery' tests/project-root.test.mjs tests/lease.test.mjs tests/breaker.test.mjs tests/integrity.test.mjs`
+Run: `node --test --test-name-pattern='post-genesis raw publisher closure|lease mutation events|breaker mutation events|remaining publisher crash recovery|review verdict request identity|zero-count APPROVE receipt' tests/project-root.test.mjs tests/lease.test.mjs tests/breaker.test.mjs tests/integrity.test.mjs`
 
 Expected: FAIL because lease/breaker still call raw `writeState` and do not emit fixed events.
 
@@ -16007,8 +16359,10 @@ function recoveredReviewVerdict(root, runId, context, data,
     const previous = item.data?.previous_count;
     const next = item.data?.next_count;
     const expected = item.data?.verdict === 'REQUEST_CHANGES' ? count + 1 : 0;
+    const expectedChanged = item.data?.verdict === 'REQUEST_CHANGES' || count !== 0;
     if (!Number.isSafeInteger(previous) || previous !== count
         || !Number.isSafeInteger(next) || next !== expected
+        || item.data?.changed !== expectedChanged
         || typeof item.data?.breaker_tripped !== 'boolean') {
       throw new Error('BREAKER_RECOVERY_PROJECTION_MISMATCH');
     }
@@ -16021,7 +16375,7 @@ function recoveredReviewVerdict(root, runId, context, data,
       && (data.circuit_breaker?.tripped === true) !== event.data.breaker_tripped) {
     throw new Error('BREAKER_RECOVERY_PROJECTION_MISMATCH');
   }
-  return { ok: true, changed: true };
+  return { ok: true, changed: event.data.changed };
 }
 
 export function tripBreaker(root, runId, reason, { fence, crashProbe } = {}) {
@@ -16071,17 +16425,16 @@ export function recordReviewVerdict(root, runId, verdict, fence,
         throw new Error('RUN_TERMINAL: recordReviewVerdict');
       }
       const current = data.circuit_breaker?.consecutive_request_changes || 0;
-      if (verdict !== 'REQUEST_CHANGES' && current === 0) {
-        return { ok: true, changed: false };
-      }
+      const changed = verdict === 'REQUEST_CHANGES' || current !== 0;
       const next = verdict === 'REQUEST_CHANGES' ? current + 1 : 0;
       const breakerTripped = data.circuit_breaker?.tripped === true
         || (verdict === 'REQUEST_CHANGES' && next >= THRESHOLD);
       context.appendAnchored({ type: 'breaker-review-verdict', data: {
         owner_run_id: fence.owner, generation: fence.generation, verdict,
         request_digest: requestDigest, previous_count: current, next_count: next,
-        breaker_tripped: breakerTripped,
+        breaker_tripped: breakerTripped, changed,
       } }, candidate => {
+        if (!changed) return;
         const breaker = { ...candidate.circuit_breaker };
         if (verdict === 'REQUEST_CHANGES') {
           breaker.consecutive_request_changes = next;
@@ -16094,7 +16447,7 @@ export function recordReviewVerdict(root, runId, verdict, fence,
         }
         candidate.circuit_breaker = breaker;
       }, undefined, { crashProbe });
-      return { ok: true, changed: true };
+      return { ok: true, changed };
     });
 }
 ```
@@ -16111,7 +16464,8 @@ missing binding from `loop.session_chain.lease`.
 
 Run the Step 2 command.
 
-Expected: PASS with one event per real mutation, zero event per no-op, and exact crash recovery.
+Expected: PASS with one event per real mutation or first verdict request, zero event per exact retry
+or non-verdict no-op, and exact crash recovery.
 
 - [ ] **Step 5: Run all writer regressions**
 
@@ -23453,6 +23807,15 @@ test('final direct append linkage is actual-call complete and the transition is 
     }
   }
   assert.ok(calls > 0, 'closed direct append scan unexpectedly found no calls');
+  const episode = readFileSync(join(directory, 'episode.mjs'), 'utf8');
+  const helper = episode.slice(episode.indexOf('function episodeAppend('),
+    episode.indexOf('\nfunction createEpisode('));
+  assert.match(helper, /withVerifiedMutationLock\(root, runId,/,
+    'episode public branch does not enter the verified mutation gateway');
+  assert.match(helper, /context\.appendAnchored\(/,
+    'episode helper does not use the authenticated context append');
+  assert.doesNotMatch(helper, /(?<!\.)\bappendAnchored\s*\(/,
+    'episode helper reintroduced a bare append with unresolved options provenance');
   const integrity = readFileSync(join(directory, 'integrity.mjs'), 'utf8');
   assert.doesNotMatch(integrity, /appendTransitionalDirect|transitionalDirectIntent/);
   assert.match(integrity,
@@ -31059,7 +31422,9 @@ for (const task of taskMatches) {
       'stdin_mode: input.stdinMode ?? null, runtime: input.runtime ?? null',
       'registerAnchoredCrashExtension(', "from './durable-file.mjs'",
       "regularFileIfPresent(eventPath, 'canonical event log')",
-      "intentConflictError = 'ANCHORED_TRANSACTION_PENDING'"]) {
+      "intentConflictError = 'ANCHORED_TRANSACTION_PENDING'",
+      "assert6b.equal(recovered.events[0].seq, durable[0].seq",
+      "assert6b.equal(recovered.events[0].checksum, durable[0].checksum"]) {
       if (!card.includes(token)) fail(`Task 7B missing recovery/intent token ${token}`);
     }
     for (const token of ['function appendTransitionalDirect(',
@@ -31104,7 +31469,12 @@ for (const task of taskMatches) {
       'export function dispatchPublisherCrash7g(', 'lease-release', 'handoff-reserve',
       'breaker-trip', 'breaker-verdict', 'registerAnchoredCrashExtension(request =>',
       "from '../../scripts/lib/lease.mjs'", "from '../../scripts/lib/breaker.mjs'",
-      'tests/helpers/anchored-crash-worker.mjs']) {
+      'tests/helpers/anchored-crash-worker.mjs', 'function reviewVerdict7g(',
+      'production review-verdict caller must not bypass',
+      'zero-count APPROVE receipt cannot reset a newer verdict after response loss',
+      'item.data?.changed !== expectedChanged',
+      'breaker_tripped: breakerTripped, changed', 'if (!changed) return;',
+      'return { ok: true, changed: event.data.changed }']) {
       if (!card.includes(token)) fail(`Task 7G missing executable crash token ${token}`);
     }
   }
@@ -31162,10 +31532,15 @@ for (const task of taskMatches) {
       "mutationIntentDigest('budget-terminal-maker-settle'",
       'hash: baseStateHash', "fenceError: 'BUDGET_FENCED:",
       'withVerifiedMutationLock(root, runId', 'function recoveredCostEvent(',
+      'function accountingReplayFence(', 'mutation.readVerifiedState({ fenceCheck })',
+      'ACCOUNTING_RECOVERY_FENCE_REQUIRED', '{ requestDigest, fenceCheck: replayFence }',
       'mutation.recovered.events.filter(', 'ACCOUNTING_RECOVERY_PROJECTION_MISMATCH',
       'four accounting writers recover every published marker without double charge',
       "'accounting-record':", "'accounting-preflight':", "'accounting-process':",
-      "'accounting-terminal-maker':", 'recordMeasured7c(']) {
+      "'accounting-terminal-maker':", 'recordMeasured7c(',
+      'MISSING_REQUIRED_OPTION: --request-id', 'budget record requires a request id as usage',
+      '--request-id <accounting_request_id>',
+      'interactive budget record templates carry one stable per-tick request identity']) {
       if (!card.includes(token)) fail(`Task 7C missing complete accounting wrapper token ${token}`);
     }
     for (const token of ['function legacyAccountingRequestId(',
@@ -31184,7 +31559,9 @@ for (const task of taskMatches) {
       "directMutationOptions('episode-record'",
       "directMutationOptions('workstream-status'",
       "directMutationOptions('workstream-terminal'",
-      'mutation.appendAnchored(event, mutate, preCheck, options)']) {
+      'withVerifiedMutationLock(root, runId,',
+      'context.appendAnchored(event, mutate, preCheck, options)',
+      'no unprovable identifier-valued']) {
       if (!card.includes(token)) fail(`Task 7F missing literal caller migration token ${token}`);
     }
   }
@@ -31453,7 +31830,19 @@ for (const fence of fenceRecords) {
 const sequentialSourceDir = mkdtempSync(join(tmpdir(), 'deep-loop-plan-source-'));
 cpSync('scripts', join(sequentialSourceDir, 'scripts'), { recursive: true });
 cpSync('tests', join(sequentialSourceDir, 'tests'), { recursive: true });
+cpSync('skills', join(sequentialSourceDir, 'skills'), { recursive: true });
 try {
+  const applySequentialDiff = (label, body) => {
+    const applied = spawnSync('git', ['apply', '--unsafe-paths', '-'], {
+      cwd: sequentialSourceDir, input: `${body}\n`, encoding: 'utf8',
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    if (applied.error || applied.status !== 0) {
+      const diagnostic = String(applied.error?.message || applied.stderr || applied.stdout)
+        .split('\n')[0];
+      fail(`${label}: ${diagnostic}`);
+    }
+  };
   for (const taskId of ['7B', '7C']) {
     const task = taskMatches.find(match => match[1] === taskId);
     const nextTask = source.indexOf('\n### Task ', task.index + 1);
@@ -31462,22 +31851,31 @@ try {
       .map(match => match[1])
       .filter(body => body.includes('diff --git a/scripts/lib/'));
     for (const [index, body] of sourceDiffs.entries()) {
-      const applied = spawnSync('git', ['apply', '--unsafe-paths', '-'], {
-        cwd: sequentialSourceDir, input: `${body}\n`, encoding: 'utf8',
-        maxBuffer: 8 * 1024 * 1024,
-      });
-      if (applied.error || applied.status !== 0) {
-        const diagnostic = String(applied.error?.message || applied.stderr || applied.stdout)
-          .split('\n')[0];
-        fail(`Task ${taskId} sequential source diff ${index + 1}: ${diagnostic}`);
-      }
+      applySequentialDiff(`Task ${taskId} sequential source diff ${index + 1}`, body);
     }
+  }
+  for (const [taskId, requiredPath] of [
+    ['7C', 'diff --git a/scripts/deep-loop.mjs'],
+    ['7C', 'diff --git a/skills/deep-loop-continue/SKILL.md'],
+    ['7C', 'diff --git a/tests/cli-skillface.test.mjs'],
+    ['7G', 'diff --git a/tests/breaker.test.mjs'],
+  ]) {
+    const task = taskMatches.find(match => match[1] === taskId);
+    const nextTask = source.indexOf('\n### Task ', task.index + 1);
+    const card = source.slice(task.index, nextTask < 0 ? source.length : nextTask);
+    const matches = [...card.matchAll(/```diff\n([\s\S]*?)\n```/g)]
+      .map(match => match[1]).filter(body => body.includes(requiredPath));
+    if (matches.length !== 1) {
+      fail(`Task ${taskId} sequential caller diff ${requiredPath}: count ${matches.length}`);
+      continue;
+    }
+    applySequentialDiff(`Task ${taskId} sequential caller diff ${requiredPath}`, matches[0]);
   }
 } finally {
   rmSync(sequentialSourceDir, { recursive: true, force: true });
 }
 const PLAN_EXPECTED_COUNTS = Object.freeze({
-  bash: 64, diff: 81, js: 174, json: 4, markdown: 12, text: 10, yaml: 1,
+  bash: 64, diff: 84, js: 175, json: 4, markdown: 12, text: 10, yaml: 1,
 });
 const orderedCounts = value => Object.fromEntries(Object.entries(value)
   .sort(([left], [right]) => left.localeCompare(right)));
