@@ -2,7 +2,7 @@
 
 작성일: 2026-07-13
 운영 계약: `docs/handoff/2026-07-13-codex-app-native-task-continuation-goal-handoff.md`
-상태: Gate 1 fresh cycle 4 round 4 Respond 완료; round 5 필요, Gate 1 미통과
+상태: Gate 1 cycle 4 round 5 Respond 완료; max=5 미수렴, cycle 5 fresh round 1 필요
 기준: `main@c38a96137f8f4f0099c35e893860930e8ee4cf73`, deep-loop `1.8.2`
 
 > source of truth: 이 문서 + 운영 계약 + 현재 저장소 + `git log`. 이전 대화 컨텍스트를 가정하지 말라.
@@ -1143,6 +1143,26 @@ prerequisite/afterimage와 Task 7F/7G production/caller diff를 순차 설치하
 breaker reset 명령은 allocate-once/reuse-on-loss `--request-id`를 포함하고 fixed
 `AppTaskStatusResult`는 `resume_policy`를 명시한다. 변경된 byte는 round 4 receipt를 상속하지 않으며
 Gate 1은 fresh cycle 4 round 5 exact `gpt-5.6-sol`/`high`의 자연 수렴으로만 닫힌다.
+
+Gate 1 fresh cycle 4 round 5도 `REQUEST_CHANGES`였고 configured `max=5`에 도달해 cycle 4는
+미수렴 종료됐다. 두 reviewer는 episode directory 검증 뒤 첫 temporary write 전에 directory를
+symlink로 교체하면 `.deep-loop` 밖에 entry가 생기는 race를 함께 재현했다. Respond는 이 write를
+replaceable episode pathname 안에서 수행하지 않고, verified `episodes` parent의 private staged
+directory를 완성·flush한 뒤 directory rename으로 공개하도록 바꾼다. Existing valid directory는
+읽기만 하고, missing request를 가진 exact empty directory만 `rmdir` 후 staged directory로 복구한다;
+symlink/비어 있지 않은 directory/rename race는 외부 target을 건드리지 않고 fail closed다.
+Legacy `lease-lineage-baselined`는 App verifier와 episode verifier가 공유하는 complete immutable
+episode-prefix digest, exact key set, owner/generation/clock/order를 검증하고 checkpoint generation부터
+현재 lease까지 exact edge만 추적한다. Embedded validator는 설치된 verifier의 실제 duplicate/
+corrupt checkpoint probe를 실행한다. Review dispatch의 caller-stable digest는 point/workstream/
+independent-subagent만 결속하며 plugin detection은 fresh resolution input일 뿐 same-ID conflict input이
+아니다. Durable response는 current `block_reason` 대신 immutable `creation_block_reason`에 결속한다.
+다만 실제 claim→block은 run을 human pause하므로 current lease policy가 replay보다 먼저 거부하며,
+이미 폐기된 external-action descriptor를 재반환하지 않는다. 모든 test caller는 별도 request-ID
+adapter를 사용하고 모든 production/skill CLI example은 allocate-once ID를 명시한다. Final App native
+factory는 BigInt stat을 사용하며 status projection은 최초 도입부터 `resume_policy` exact key와 세 정책
+값을 테스트한다. 변경된 byte는 cycle 4 receipt를 상속하지 않으며 Gate 1은 fresh cycle 5 round 1
+이후 exact `gpt-5.6-sol`/`high`의 자연 수렴으로만 닫힌다.
 
 구현 순서:
 

@@ -135,14 +135,14 @@ These are the narrow baseline `Modify` anchors required by the execution tasks; 
 | 2A–2B | `scripts/lib/bounded-input.mjs:1-31` (`REVIEW_IMPORT_MAX_BYTES`, `readBoundedText`); `tests/bounded-input.test.mjs:1-35`; `tests/cli-skillface.test.mjs:1-18,192-265` (CLI harness and strict CLI-shape tail). |
 | 3A–3B | Created `scripts/lib/app-task-continuation.mjs` genesis defaults/deadline exports; `scripts/lib/initrun.mjs:13-58` (`buildInitialLoop`, `initRun`); `scripts/lib/schema.mjs:1-216` (`loadSchema`, `validate`); `schemas/loop-run.schema.json:1-29`; `tests/initrun.test.mjs:15-125`; `tests/schema.test.mjs:17-273`. |
 | 4A–4C | Created `scripts/lib/init-transaction.mjs` exports `hostObservationDigest` through `statusInitialization`; created `tests/init-transaction.test.mjs` projection/preflight/status cases. |
-| 5A–5C | Created `scripts/lib/durable-file.mjs` exports `syncRegularFile`, `syncParentDirectory`, `renamePreparedFile`, `unlinkRegularFile`, `createFileDurablyIfAbsent`, and `replaceFileDurably`; produced `scripts/lib/init-transaction.mjs` symbols `withInitLock`, `publishGenesisState`, `commitPreparedInit`; `scripts/lib/initrun.mjs:42-58` (`initRun`); created `tests/durable-file.test.mjs` POSIX/Windows durability and no-replace race cases; produced `tests/init-transaction.test.mjs` lock/publisher/contention cases; `tests/initrun.test.mjs:59-125`; `tests/session-profile.test.mjs`; `tests/insights.test.mjs`; `tests/project-root.test.mjs`; created `tests/helpers/init-contention-worker.mjs`. |
+| 5A–5C | Created `scripts/lib/durable-file.mjs` exports `syncRegularFile`, `syncParentDirectory`, `renamePreparedFile`, `unlinkRegularFile`, `createFileDurablyIfAbsent`, `publishDirectoryFileDurably`, and `replaceFileDurably`; produced `scripts/lib/init-transaction.mjs` symbols `withInitLock`, `publishGenesisState`, `commitPreparedInit`; `scripts/lib/initrun.mjs:42-58` (`initRun`); created `tests/durable-file.test.mjs` POSIX/Windows durability, no-replace, and directory-swap cases; produced `tests/init-transaction.test.mjs` lock/publisher/contention cases; `tests/initrun.test.mjs:59-125`; `tests/session-profile.test.mjs`; `tests/insights.test.mjs`; `tests/project-root.test.mjs`; created `tests/helpers/init-contention-worker.mjs`. |
 | 6A–6E | Produced `scripts/lib/app-task-continuation.mjs` consent/observe/revoke/status/redaction exports; `scripts/deep-loop.mjs:40-141,340-365`; `scripts/lib/initrun.mjs:13-58`; `scripts/lib/integrity.mjs:96-187`; `scripts/lib/lease.mjs:13-199`; `scripts/lib/schema.mjs:164-216`; created `tests/app-task-continuation.test.mjs`; `tests/orch-cli.test.mjs:246-286,831-1005`; `tests/cli-skillface.test.mjs:66-99,192-265`; `tests/integrity.test.mjs:123-211`; `tests/lease.test.mjs:27-490`; `tests/schema.test.mjs:17-273`; created `tests/helpers/fixed-init-crash-worker.mjs`. |
 | 7A | `scripts/lib/schema.mjs:164-216`; `scripts/deep-loop.mjs:120-180`; `tests/schema.test.mjs:17-273`; `tests/validate-cli.test.mjs:39-84`. |
 | 7B | produced `scripts/lib/durable-file.mjs`; `scripts/lib/finish.mjs:70-107`; `scripts/lib/integrity.mjs:21-187`; `scripts/lib/lease.mjs:43-103`; `scripts/lib/state.mjs:79-115`; `scripts/lib/workspace.mjs`; `tests/automation.test.mjs`; `tests/breaker.test.mjs`; `tests/budget.test.mjs`; `tests/codex-checker-integration.test.mjs`; `tests/comprehension.test.mjs`; `tests/detect-terminal.test.mjs`; produced `tests/durable-file.test.mjs`; `tests/episode.test.mjs`; `tests/fencing.test.mjs`; `tests/finish.test.mjs`; produced `tests/fixtures/verified-app-run.mjs`; `tests/handoff.test.mjs`; `tests/headless-host.test.mjs`; `tests/insights.test.mjs`; `tests/integrity.test.mjs`; `tests/lease.test.mjs`; `tests/orch-cli.test.mjs`; `tests/pause.test.mjs`; `tests/precompact-hook.test.mjs`; `tests/project-root.test.mjs`; `tests/recover.test.mjs`; `tests/respawn.test.mjs`; `tests/review.test.mjs`; `tests/runtime-executable.test.mjs`; `tests/session-profile.test.mjs`; `tests/spawn-optin.test.mjs`; `tests/state.test.mjs`; `tests/terminal-cli.test.mjs`; `tests/workspace.test.mjs`; created `tests/helpers/anchored-crash-worker.mjs`. |
 | 7C | `scripts/lib/lease.mjs:43-199`; `scripts/lib/budget.mjs:279-1048`; `scripts/lib/headless-host.mjs`; `scripts/deep-loop.mjs:650-670`; `skills/deep-loop-continue/SKILL.md:173-182`; `skills/deep-loop-workflow/references/handoff-respawn.md:179-187`; produced `tests/helpers/anchored-crash-worker.mjs`; `tests/lease.test.mjs`; `tests/budget.test.mjs`; `tests/headless-host.test.mjs`; `tests/skills.test.mjs`; `tests/cli-skillface.test.mjs`; `tests/insights.test.mjs`; `tests/integrity.test.mjs`; `tests/project-root.test.mjs`. |
 | 7D | Produced `scripts/lib/init-transaction.mjs` strict current/genesis proof; produced `scripts/lib/app-task-continuation.mjs` observe/revoke/status boundaries; produced `tests/fixtures/verified-app-run.mjs`; produced `tests/init-transaction.test.mjs`; produced `tests/app-task-continuation.test.mjs`; `tests/cli-skillface.test.mjs`. |
 | 7G | `scripts/lib/lease.mjs:102-199`; `scripts/lib/breaker.mjs:1-62`; `scripts/lib/state.mjs:102-110`; `scripts/deep-loop.mjs:694-703`; `README.md:68-75`; `skills/deep-loop-status/SKILL.md`; `skills/deep-loop-continue/SKILL.md`; `tests/lease.test.mjs`; `tests/breaker.test.mjs`; `tests/cli-skillface.test.mjs`; `tests/project-root.test.mjs`; `tests/integrity.test.mjs`; produced `tests/helpers/anchored-crash-worker.mjs`. |
-| 7E–7F | `scripts/lib/session-profile.mjs:44-80`; `scripts/lib/comprehension.mjs:27-92`; `scripts/lib/project-root-recovery.mjs:20-51`; `scripts/lib/budget.mjs:1053-1067`; `scripts/lib/episode.mjs:25-220`; `scripts/lib/insights.mjs:357-509`; `scripts/lib/review.mjs:50-179,310-668`; `scripts/lib/workspace.mjs:80-153`; `scripts/lib/detect-terminal.mjs:284-343`; `scripts/deep-loop.mjs:120-180,340-710`; `skills/deep-loop/SKILL.md`; `skills/deep-loop-continue/SKILL.md`; `skills/deep-loop-workflow/references/hill-climbing.md`; `tests/helpers/episode-request.mjs`; `tests/session-profile.test.mjs`; `tests/comprehension.test.mjs`; `tests/project-root.test.mjs`; `tests/budget.test.mjs`; `tests/cli-skillface.test.mjs`; `tests/codex-checker-integration.test.mjs`; `tests/codex-isolation-integration.test.mjs`; `tests/episode.test.mjs`; `tests/fencing.test.mjs`; `tests/finish.test.mjs`; `tests/handoff.test.mjs`; `tests/next-action.test.mjs`; `tests/orch-cli.test.mjs`; `tests/pause.test.mjs`; `tests/review.test.mjs`; `tests/insights.test.mjs`; `tests/review-import.test.mjs`; `tests/reviewer-failclosed.test.mjs`; `tests/workspace.test.mjs`; `tests/detect-terminal.test.mjs`. |
+| 7E–7F | `scripts/lib/session-profile.mjs:44-80`; `scripts/lib/comprehension.mjs:27-92`; `scripts/lib/project-root-recovery.mjs:20-51`; `scripts/lib/budget.mjs:1053-1067`; `scripts/lib/episode.mjs:25-220`; `scripts/lib/insights.mjs:357-509`; `scripts/lib/review.mjs:50-179,310-668`; `scripts/lib/workspace.mjs:80-153`; `scripts/lib/detect-terminal.mjs:284-343`; `scripts/deep-loop.mjs:120-180,340-710`; `skills/deep-loop/SKILL.md`; `skills/deep-loop-continue/SKILL.md`; `skills/deep-loop-workflow/references/adapters.md`; `skills/deep-loop-workflow/references/hill-climbing.md`; `tests/helpers/episode-request.mjs`; `tests/helpers/review-request.mjs`; `tests/session-profile.test.mjs`; `tests/comprehension.test.mjs`; `tests/project-root.test.mjs`; `tests/budget.test.mjs`; `tests/cli-skillface.test.mjs`; `tests/codex-checker-integration.test.mjs`; `tests/codex-isolation-integration.test.mjs`; `tests/episode.test.mjs`; `tests/fencing.test.mjs`; `tests/finish.test.mjs`; `tests/handoff.test.mjs`; `tests/next-action.test.mjs`; `tests/orch-cli.test.mjs`; `tests/pause.test.mjs`; `tests/review.test.mjs`; `tests/insights.test.mjs`; `tests/review-import.test.mjs`; `tests/reviewer-failclosed.test.mjs`; `tests/workspace.test.mjs`; `tests/detect-terminal.test.mjs`. |
 | 8A–8B | Produced `scripts/lib/app-task-continuation.mjs` `prepareAppTask`; `scripts/lib/handoff.mjs:38-224` (`handoffMarkdown`, `emitHandoff`); `scripts/lib/lease.mjs:121-205` (`reserveHandoff`, `rollbackHandoff`); `scripts/lib/schema.mjs:164-216`; `tests/handoff.test.mjs:343-789,1107-1163`; produced `tests/app-task-continuation.test.mjs` prepare cases; created `tests/fixtures/app-prepare-worker.mjs`. |
 | 9A–9B | Produced `scripts/lib/app-task-continuation.mjs` `confirmAppTask`, `failAppTask`, `sweepUnconfirmedAppTask`, `statusAppTask`, `awaitAppTask`; `scripts/deep-loop.mjs:489-616`; produced `tests/app-task-continuation.test.mjs` receipt/readiness cases; `tests/orch-cli.test.mjs:246-286,831-1005`; `tests/schema.test.mjs:17-273`. |
 | 10A–10D | Produced `scripts/lib/app-task-continuation.mjs` acquire/recovery/finish helpers; `scripts/lib/lease.mjs:13-199`; `scripts/lib/recover.mjs:1-47`; `scripts/lib/state.mjs:51-79,120-211`; `scripts/lib/finish.mjs:13-107`; `scripts/deep-loop.mjs:120-141,489-616,834-861`; produced `tests/app-task-continuation.test.mjs` acquire/history cases; `tests/lease.test.mjs:27-490`; `tests/recover.test.mjs:65-231`; `tests/finish.test.mjs:1-335`; `tests/terminal-cli.test.mjs:1-192`; `tests/orch-cli.test.mjs:246-286,831-1005`; produced `tests/integrity.test.mjs` crash matrix; produced `tests/helpers/anchored-crash-worker.mjs`. |
@@ -205,6 +205,7 @@ export function syncParentDirectory(path, deps);
 export function renamePreparedFile(source, destination, options, deps);
 export function unlinkRegularFile(path, deps);
 export function createFileDurablyIfAbsent(path, bytes, options, deps): boolean;
+export function publishDirectoryFileDurably(directory, name, bytes, options, deps): boolean;
 export function replaceFileDurably(path, bytes, options, deps);
 
 // scripts/lib/app-task-continuation.mjs
@@ -227,6 +228,7 @@ export function acquireAppTask(root, runId, input, deps);
 // scripts/lib/schema.mjs (definition site; app-task-continuation.mjs re-exports both constants)
 export declare const APP_PREPARE_TIMEOUT_MS: number;
 export declare const APP_CONFIRMATION_TIMEOUT_MS: number;
+export function legacyEpisodeBaselineDigest(episodes): string;
 export function verifyAppEventCorrelation(loop, lines);
 
 // scripts/lib/integrity.mjs
@@ -4721,7 +4723,8 @@ git commit -m "feat: add owner-safe init root lock" -m "Co-Authored-By: Claude O
 
 Add `publishGenesisState` and `commitPreparedInit` to the transaction test import. Create
 `tests/durable-file.test.mjs` with explicit POSIX parent-sync and Windows no-directory-fd/bounded-
-retry cases, then append the transaction tests below:
+retry cases. Import `publishDirectoryFileDurably` from the produced durability module and
+`createDirectoryJunction` from `tests/helpers/fs-fixtures.mjs`, then append the tests below:
 
 ```js
 function commitInput(root, attempt, requestDigest, previous = 'NONE') {
@@ -4956,6 +4959,23 @@ test('durable create-if-absent never replaces a check-to-publish race winner', (
   assert.deepEqual(readdirSync(root), ['request.md'],
     'the losing caller cleans only its own temporary');
 });
+
+test('staged directory publication rejects a target-path swap without external writes', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-durable-directory-swap-'));
+  const episodes = join(root, 'episodes');
+  const external = mkdtempSync(join(tmpdir(), 'dl-durable-directory-external-'));
+  mkdirSync(episodes);
+  writeFileSync(join(external, 'sentinel'), 'outside-bytes');
+  const target = join(episodes, '001-deep-work');
+  assert.throws(() => publishDirectoryFileDurably(target, 'request.md', 'kernel skeleton', {
+    nonce: () => 'directoryswapnonce000000',
+    beforePublish: () => createDirectoryJunction(external, target),
+  }), /DURABLE_EXISTING_DIRECTORY_INVALID/);
+  assert.equal(readFileSync(join(external, 'sentinel'), 'utf8'), 'outside-bytes');
+  assert.deepEqual(readdirSync(external), ['sentinel']);
+  assert.deepEqual(readdirSync(episodes), ['001-deep-work'],
+    'private staging is removed and no request/temp entry appears outside');
+});
 ```
 
 - [ ] **Step 2: Run publisher tests to verify RED**
@@ -4975,8 +4995,11 @@ embed a raw `renameSync` or unconditional directory-fd `fsync` path.
 import { randomBytes as durableRandomBytes } from 'node:crypto';
 import { closeSync as durableCloseSync, fsyncSync as durableFsyncSync,
   linkSync as durableLinkSync, lstatSync as durableLstatSync, openSync as durableOpenSync,
+  mkdirSync as durableMkdirSync, readdirSync as durableReaddirSync,
+  renameSync as durableRenameSync, rmdirSync as durableRmdirSync,
   unlinkSync as durableUnlinkSync, writeFileSync as durableWriteFileSync } from 'node:fs';
-import { dirname as durableDirname } from 'node:path';
+import { basename as durableBasename, dirname as durableDirname,
+  join as durableJoin } from 'node:path';
 import { renameAtomicWithRetry } from './atomic-write.mjs';
 
 function regularIfPresent(path, deps, label) {
@@ -5060,6 +5083,73 @@ export function createFileDurablyIfAbsent(path, bytes, {
   } finally {
     // This invocation owns only `temporary`; a racing destination is never unlinked or renamed.
     unlinkRegularFile(temporary, deps);
+  }
+}
+
+function removeOwnedStagingDirectory(directory, name, deps) {
+  let stat;
+  try { stat = (deps.lstat ?? durableLstatSync)(directory); }
+  catch (error) { if (error?.code === 'ENOENT') return; throw error; }
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new Error('DURABLE_DIRECTORY_STAGE_INVALID');
+  }
+  const entries = (deps.readdir ?? durableReaddirSync)(directory);
+  if (entries.length !== 1 || entries[0] !== name) {
+    throw new Error('DURABLE_DIRECTORY_STAGE_INVALID');
+  }
+  unlinkRegularFile(durableJoin(directory, name), deps);
+  (deps.rmdir ?? durableRmdirSync)(directory);
+  syncParentDirectory(directory, deps);
+}
+
+export function publishDirectoryFileDurably(directory, name, bytes, {
+  beforePublish = () => {}, validateExisting = () => {}, mode = 0o600, nonce,
+} = {}, deps = {}) {
+  if (durableBasename(name) !== name || name === '.' || name === '..') {
+    throw new Error('DURABLE_DIRECTORY_NAME_INVALID');
+  }
+  const parent = durableDirname(directory);
+  const parentStat = (deps.lstat ?? durableLstatSync)(parent);
+  if (!parentStat.isDirectory() || parentStat.isSymbolicLink()) {
+    throw new Error('DURABLE_DIRECTORY_PARENT_INVALID');
+  }
+  const suffix = (nonce ?? (() => durableRandomBytes(12).toString('hex')))();
+  if (!/^[A-Za-z0-9_-]{16,128}$/.test(suffix)) {
+    throw new Error('DURABLE_CREATE_NONCE_INVALID');
+  }
+  const staging = durableJoin(parent,
+    `.publish-${durableBasename(directory)}-${suffix}`);
+  (deps.mkdir ?? durableMkdirSync)(staging, { mode: 0o700 });
+  const stagedFile = durableJoin(staging, name);
+  let published = false;
+  try {
+    (deps.writeFile ?? durableWriteFileSync)(stagedFile, bytes, { flag: 'wx', mode });
+    syncRegularFile(stagedFile, deps);
+    syncParentDirectory(stagedFile, deps);
+    beforePublish();
+    let targetStat = null;
+    try { targetStat = (deps.lstat ?? durableLstatSync)(directory); }
+    catch (error) { if (error?.code !== 'ENOENT') throw error; }
+    if (targetStat !== null) {
+      if (!targetStat.isDirectory() || targetStat.isSymbolicLink()) {
+        throw new Error('DURABLE_EXISTING_DIRECTORY_INVALID');
+      }
+      const entries = (deps.readdir ?? durableReaddirSync)(directory);
+      if (entries.includes(name)) {
+        validateExisting(durableJoin(directory, name));
+        return false;
+      }
+      if (entries.length !== 0) throw new Error('DURABLE_EXISTING_DIRECTORY_INVALID');
+      (deps.rmdir ?? durableRmdirSync)(directory);
+    }
+    // rename never traverses the destination entry. A concurrent symlink can at worst make this
+    // call fail or be replaced as a directory entry; no write is issued through that symlink.
+    (deps.rename ?? durableRenameSync)(staging, directory);
+    published = true;
+    syncParentDirectory(directory, deps);
+    return true;
+  } finally {
+    if (!published) removeOwnedStagingDirectory(staging, name, deps);
   }
 }
 
@@ -7625,9 +7715,10 @@ test('revoke is one anchored write, exact retry is inert, and default manual is 
   const status = statusAppTask(root, runId, {});
   assert.deepEqual(Object.keys(status).sort(), ['current', 'generation', 'generic_current', 'handoff_phase',
     'has_app_history', 'history', 'logical_run_id', 'manual_recovery', 'ok', 'owner_run_id',
-    'recovery_pending']);
+    'recovery_pending', 'resume_policy']);
   assert.equal(status.generic_current, null);
   assert.equal(status.recovery_pending, null);
+  assert.equal(status.resume_policy, null);
   assert.equal(status.manual_recovery, false);
   assert.equal(JSON.stringify(status).includes('thread_id'), false);
   const manual = observedRun();
@@ -7954,6 +8045,7 @@ export function statusAppTask(root, runId, { attempt = null } = {}) {
     generic_current: null, recovery_pending: null, current, history,
     owner_run_id: lease.owner_run_id, generation: lease.generation,
     handoff_phase: lease.handoff_phase,
+    resume_policy: lease.resume_policy ?? null,
     manual_recovery: loop.status === 'paused' && lease.resume_policy === 'human' };
 }
 ```
@@ -8300,11 +8392,29 @@ The legacy matrix in this task must additionally construct a generation-3 1.8.2 
 initialization/acquire events, then prove these exact cases before Task 7B adds the writer:
 
 ```js
+function legacyGeneration3AtCheckpoint() {
+  return { run_id: 'LEGACY-RUN', status: 'running', episodes: [],
+    session_chain: {
+      sessions: [{ run_id: 'LEGACY-OWNER', host_surface: null }],
+      lease: { owner_run_id: 'LEGACY-OWNER', generation: 3, state: 'released',
+        acquired_at: '2026-07-13T00:00:02.000Z' },
+    } };
+}
+
+function legacyGeneration4AfterAcquire() {
+  const loop = legacyGeneration3AtCheckpoint();
+  loop.session_chain.sessions.push({ run_id: 'FRESH-OWNER', host_surface: null });
+  Object.assign(loop.session_chain.lease, { owner_run_id: 'FRESH-OWNER', generation: 4,
+    state: 'active', acquired_at: '2026-07-13T00:00:04.000Z' });
+  return loop;
+}
+
 test7b('legacy lease lineage is opaque before one checkpoint and exact after it', () => {
   const baseline = { type: 'lease-lineage-baselined',
     ts: '2026-07-13T00:00:03.000Z', data: {
       owner_run_id: 'LEGACY-OWNER', generation: 3, lease_state: 'released',
       acquired_at: '2026-07-13T00:00:02.000Z', pre_state_digest: 'a'.repeat(64),
+      legacy_episode_count: 0, legacy_episode_digest: legacyDigest7b([]),
     } };
   const acquire = { type: 'lease-acquired', ts: '2026-07-13T00:00:04.000Z', data: {
     previous_owner_run_id: 'LEGACY-OWNER', previous_generation: 3,
@@ -8314,6 +8424,8 @@ test7b('legacy lease lineage is opaque before one checkpoint and exact after it'
   assert7b.equal(verify7b(legacyGeneration4AfterAcquire(), [baseline, acquire]).ok, true);
   for (const invalid of [
     [baseline, baseline],
+    [{ ...baseline, data: { ...baseline.data,
+      legacy_episode_digest: 'b'.repeat(64) } }],
     [{ ...baseline, data: { ...baseline.data, generation: 2 } }, acquire],
     [baseline, { ...acquire, data: { ...acquire.data, previous_owner_run_id: 'OTHER' } }],
     [baseline, { ...acquire, data: { ...acquire.data, generation: 5 } }],
@@ -8334,7 +8446,8 @@ Append the first complete block to `tests/schema.test.mjs` and the second to `te
 ```js
 import { test as test7b } from 'node:test';
 import assert7b from 'node:assert/strict';
-import { verifyAppEventCorrelation as verify7b } from '../scripts/lib/schema.mjs';
+import { legacyEpisodeBaselineDigest as legacyDigest7b,
+  verifyAppEventCorrelation as verify7b } from '../scripts/lib/schema.mjs';
 import { hostSurfaceFactsDigest as facts7b } from '../scripts/lib/host-surface.mjs';
 import { contentHash as hash7b } from '../scripts/lib/envelope.mjs';
 
@@ -9061,6 +9174,23 @@ function hostObservationSeed(loop, session, index, events) {
   return null;
 }
 
+export function legacyEpisodeBaselineDigest(episodes) {
+  const projection = (episodes ?? []).map(episode => ({
+    id: episode.id, plugin: episode.plugin, role: episode.role, kind: episode.kind,
+    point: episode.point, workstream_id: episode.workstream_id ?? null,
+    request_path: episode.request_path ?? null,
+    expected_artifacts: structuredClone(episode.expected_artifacts ?? []),
+    target_maker: episode.target_maker ?? null,
+    requires_independent_session: episode.requires_independent_session ?? null,
+    reviewer_resolution: structuredClone(episode.reviewer_resolution ?? null),
+    evidence: structuredClone(episode.evidence ?? null),
+    contract: structuredClone(episode.contract ?? null),
+    verification: structuredClone(episode.verification ?? null),
+  }));
+  const encoded = JSON.stringify({ kind: 'object', value: projection });
+  return contentHash(`legacy-episode-baseline\0${encoded}`);
+}
+
 export function verifyAppEventCorrelation(loop, lines) {
   const errors = [];
   const events = Array.isArray(lines) ? lines : [];
@@ -9080,6 +9210,51 @@ export function verifyAppEventCorrelation(loop, lines) {
         || event?.data?.request_digest !== loop.initialization.request_digest
         || event?.data?.host_surface_digest !== loop.initialization.host_surface_digest) {
       errors.push('run-initialized genesis binding invalid');
+    }
+  }
+  const lineageCheckpoints = events.filter(event => event?.type === 'lease-lineage-baselined');
+  let checkpointFloor = null;
+  if (loop?.initialization !== undefined) {
+    if (lineageCheckpoints.length !== 0) {
+      errors.push('initialized run cannot declare a legacy lineage checkpoint');
+    }
+  } else if (lineageCheckpoints.length > 1) {
+    errors.push('legacy run has duplicate lineage checkpoints');
+  } else if (lineageCheckpoints.length === 1) {
+    const checkpoint = lineageCheckpoints[0];
+    const checkpointIndex = events.indexOf(checkpoint);
+    const data = checkpoint.data ?? {};
+    const exactKeys = ['acquired_at', 'generation', 'lease_state',
+      'legacy_episode_count', 'legacy_episode_digest', 'owner_run_id',
+      'pre_state_digest'].sort();
+    const legacyEpisodes = Array.isArray(loop?.episodes) ? loop.episodes : [];
+    const episodeEventsBefore = events.slice(0, checkpointIndex)
+      .filter(event => event?.type === 'episode-new');
+    const legacyCount = data.legacy_episode_count;
+    const prefix = Number.isSafeInteger(legacyCount) && legacyCount >= 0
+      ? legacyEpisodes.slice(0, legacyCount) : [];
+    const prefixIsUnversioned = prefix.every(episode => episode?.creation_contract == null)
+      && episodeEventsBefore.every(event => event?.data?.creation_contract == null);
+    const checkpointValid = checkpointIndex >= 0 && strictMs(checkpoint.ts) !== null
+      && strictMs(data.acquired_at) !== null
+      && strictMs(data.acquired_at) <= strictMs(checkpoint.ts)
+      && JSON.stringify(Object.keys(data).sort()) === JSON.stringify(exactKeys)
+      && typeof data.owner_run_id === 'string' && data.owner_run_id.length > 0
+      && sessions.some(session => session.run_id === data.owner_run_id)
+      && Number.isSafeInteger(data.generation) && data.generation >= 1
+      && ['active', 'releasing', 'released'].includes(data.lease_state)
+      && /^[0-9a-f]{64}$/.test(data.pre_state_digest || '')
+      && Number.isSafeInteger(legacyCount) && legacyCount >= 0
+      && legacyCount <= legacyEpisodes.length
+      && episodeEventsBefore.length === legacyCount
+      && prefixIsUnversioned
+      && data.legacy_episode_digest === legacyEpisodeBaselineDigest(prefix);
+    if (!checkpointValid) {
+      errors.push('legacy lineage checkpoint binding invalid');
+    } else {
+      checkpointFloor = { generation: data.generation, owner: data.owner_run_id,
+        leaseState: data.lease_state, acquiredAt: data.acquired_at,
+        index: checkpointIndex };
     }
   }
   const genericAcquireEvents = events.filter(event => event?.type === 'lease-acquired');
@@ -9122,35 +9297,48 @@ export function verifyAppEventCorrelation(loop, lines) {
   const acquisitionEdges = [...genericEdges, ...appEdges];
   const ownerAtGeneration = new Map();
   const edgeIndexByGeneration = new Map();
-  let lineageComplete = Number.isSafeInteger(currentLease.generation)
-    && currentLease.generation >= 1 && typeof currentLease.owner_run_id === 'string';
+  const lineageFloor = loop?.initialization !== undefined
+    ? { generation: 1, owner: loop.run_id, index: events.indexOf(initializationEvents[0]),
+      kind: 'genesis' }
+    : checkpointFloor === null ? null : { ...checkpointFloor, kind: 'checkpoint' };
+  let lineageComplete = lineageFloor !== null
+    && Number.isSafeInteger(currentLease.generation)
+    && currentLease.generation >= lineageFloor.generation
+    && typeof currentLease.owner_run_id === 'string';
   if (lineageComplete) {
     ownerAtGeneration.set(currentLease.generation, currentLease.owner_run_id);
     let laterIndex = events.length;
-    for (let generation = currentLease.generation; generation >= 2; generation -= 1) {
-      const candidates = acquisitionEdges.filter(edge => edge.generation === generation);
+    for (let generation = currentLease.generation;
+      generation > lineageFloor.generation; generation -= 1) {
+      const candidates = acquisitionEdges.filter(edge => edge.generation === generation
+        && edge.index > lineageFloor.index);
       const edge = candidates.length === 1 ? candidates[0] : null;
       const exact = edge !== null && edge.previousGeneration === generation - 1
         && edge.owner === ownerAtGeneration.get(generation)
-        && edge.index >= 0 && edge.index < laterIndex
+        && edge.index > lineageFloor.index && edge.index < laterIndex
         && strictMs(edge.event?.ts) !== null
         && (generation !== currentLease.generation
           || edge.event.ts === currentLease.acquired_at);
       if (!exact) {
         lineageComplete = false;
-        if (loop?.initialization !== undefined) {
-          errors.push(`lease generation ${generation} acquisition lineage invalid`);
-        }
+        errors.push(`lease generation ${generation} acquisition lineage invalid`);
         break;
       }
       ownerAtGeneration.set(generation - 1, edge.previousOwner);
       edgeIndexByGeneration.set(generation, edge.index);
       laterIndex = edge.index;
     }
-    if (lineageComplete && loop?.initialization !== undefined
-        && ownerAtGeneration.get(1) !== loop?.run_id) {
+    if (lineageComplete
+        && ownerAtGeneration.get(lineageFloor.generation) !== lineageFloor.owner) {
       lineageComplete = false;
-      errors.push('lease acquisition genesis owner mismatch');
+      errors.push(`${lineageFloor.kind} lineage owner mismatch`);
+    }
+    if (lineageComplete && lineageFloor.kind === 'checkpoint'
+        && currentLease.generation === lineageFloor.generation
+        && (currentLease.state !== lineageFloor.leaseState
+          || currentLease.acquired_at !== lineageFloor.acquiredAt)) {
+      lineageComplete = false;
+      errors.push('legacy lineage checkpoint current lease mismatch');
     }
   }
   const isProvenHistorical = (ownerRunId, generation, proofIndex) => lineageComplete
@@ -10683,7 +10871,7 @@ is held so callers cannot mutate an unlocked shared reference:
 diff --git a/scripts/lib/integrity.mjs b/scripts/lib/integrity.mjs
 --- a/scripts/lib/integrity.mjs
 +++ b/scripts/lib/integrity.mjs
-@@ -1,8 +1,12 @@
+@@ -1,8 +1,13 @@
 -import { readFileSync, appendFileSync, existsSync } from 'node:fs';
 +import { appendFileSync, existsSync, lstatSync, readFileSync, readdirSync,
 +  truncateSync } from 'node:fs';
@@ -10693,7 +10881,8 @@ diff --git a/scripts/lib/integrity.mjs b/scripts/lib/integrity.mjs
  import { runDir, readState, writeState, withLock } from './state.mjs';
  import { assertProjectRootBinding, canonicalProjectRoot, projectRootDigest } from './project-root.mjs';
 -import { validate } from './schema.mjs';
-+import { validate, verifyAppEventCorrelation } from './schema.mjs';
++import { legacyEpisodeBaselineDigest, validate,
++  verifyAppEventCorrelation } from './schema.mjs';
 +import { initializationRequestDigest } from './init-transaction.mjs';
 +import { replaceFileDurably, syncParentDirectory, syncRegularFile,
 +  unlinkRegularFile } from './durable-file.mjs';
@@ -10726,15 +10915,6 @@ whole snapshot is legacy/read-only and the first post-upgrade mutation establish
 before its business event:
 
 ```js
-export function legacyEpisodeBaselineDigest(episodes) {
-  return intentField('legacy-episode-baseline', episodes.map(episode => ({
-    id: episode.id, plugin: episode.plugin, role: episode.role, kind: episode.kind,
-    point: episode.point, workstream_id: episode.workstream_id ?? null,
-    expected_artifacts: structuredClone(episode.expected_artifacts ?? []),
-    target_maker: episode.target_maker ?? null,
-  })));
-}
-
 export function verifyEpisodeCreationCorrelation(loop, lines) {
   const errors = [];
   const allEvents = lines.filter(event => event.type === 'episode-new');
@@ -10753,9 +10933,13 @@ export function verifyEpisodeCreationCorrelation(loop, lines) {
       errors.push('legacy run requires exactly one episode baseline');
       return { ok: false, errors };
     }
+    const baselineIndex = lines.indexOf(baselines[0]);
+    const episodeEventsBefore = lines.slice(0, baselineIndex)
+      .filter(event => event.type === 'episode-new');
     legacyCount = baselines[0].data?.legacy_episode_count;
     if (!Number.isSafeInteger(legacyCount) || legacyCount < 0
-        || legacyCount > allEpisodes.length || legacyCount > allEvents.length
+        || legacyCount > allEpisodes.length
+        || episodeEventsBefore.length !== legacyCount
         || baselines[0].data?.legacy_episode_digest
           !== legacyEpisodeBaselineDigest(allEpisodes.slice(0, legacyCount))) {
       errors.push('legacy episode baseline mismatch');
@@ -14766,8 +14950,8 @@ git commit -m "fix: verify success-class state authority" -m "Co-Authored-By: Cl
 **Files:**
 - Modify: `scripts/lib/episode.mjs:25-220` (public direct authority plus the review operation's
   already-open mutation context and exact recovered episode projection).
-- Consume: produced `scripts/lib/durable-file.mjs` `createFileDurablyIfAbsent` and its
-  `tests/durable-file.test.mjs` check-to-publish race proof.
+- Consume: produced `scripts/lib/durable-file.mjs` `publishDirectoryFileDurably` and its
+  `tests/durable-file.test.mjs` check-to-publish directory-swap proof.
 - Modify: `scripts/lib/insights.mjs:357-509` (compute/emit/latest verified selection).
 - Modify: `scripts/lib/review.mjs:50-179,310-668` (dispatch, claim/block/revalidate, outcomes).
 - Modify: `scripts/lib/workspace.mjs:80-153` (literal status/terminal direct authority plus
@@ -14776,8 +14960,10 @@ git commit -m "fix: verify success-class state authority" -m "Co-Authored-By: Cl
 - Modify: `scripts/deep-loop.mjs:410-430` (mandatory episode creation request ID).
 - Modify: `skills/deep-loop/SKILL.md`.
 - Modify: `skills/deep-loop-continue/SKILL.md`.
+- Modify: `skills/deep-loop-workflow/references/adapters.md`.
 - Modify: `skills/deep-loop-workflow/references/hill-climbing.md`.
 - Create: `tests/helpers/episode-request.mjs` (test-only unique request-ID adapter).
+- Create: `tests/helpers/review-request.mjs` (test-only unique review dispatch-ID adapter).
 - Modify: `tests/budget.test.mjs`.
 - Modify: `tests/cli-skillface.test.mjs`.
 - Modify: `tests/codex-checker-integration.test.mjs`.
@@ -14813,8 +14999,10 @@ git commit -m "fix: verify success-class state authority" -m "Co-Authored-By: Cl
   reuses it, changed payload conflicts, and a new intentional episode rotates it. Nested review
   creation instead requires its own bounded logical dispatch request ID. The kernel stores a
   domain-separated ID digest separately from the complete request digest; response-loss retry reuses
-  the ID and each intentional review round rotates it. `beforeFinalLock` is test-only and is never
-  accepted by the CLI.
+  the ID and each intentional review round rotates it. Fresh plugin detection selects only a new
+  dispatch and is not caller-stable retry identity. `beforeFinalLock` is test-only and is never
+  accepted by the CLI. Production and skill callers allocate once and reuse on response loss;
+  tests share one adapter and pass an explicit ID only when a logical retry is under test.
 
 - [ ] **Step 1: Write the complete failing pre-action authority tests**
 
@@ -14928,7 +15116,8 @@ import { test as test7f } from 'node:test';
 import assert7f from 'node:assert/strict';
 import { createHash as hashDispatch7f } from 'node:crypto';
 import { mkdirSync as mkdir7f, mkdtempSync as temp7f,
-  readFileSync as readDispatch7f, realpathSync as realpath7f,
+  readFileSync as readDispatch7f, readdirSync as readdirDispatch7f,
+  realpathSync as realpath7f,
   rmSync as removeDispatch7f, symlinkSync as symlink7f,
   writeFileSync as write7f } from 'node:fs';
 import { tmpdir as tmp7f } from 'node:os';
@@ -14937,7 +15126,7 @@ import { initRun as init7f } from '../scripts/lib/initrun.mjs';
 import { newWorkstream as workstream7f } from '../scripts/lib/workspace.mjs';
 import { newEpisode as episode7f, recordEpisode as record7f }
   from '../scripts/lib/episode.mjs';
-import { dispatchReview as dispatch7f } from '../scripts/lib/review.mjs';
+import { dispatchReview as dispatch7f } from './helpers/review-request.mjs';
 import { emitInsights as emitDispatchInsights7f,
   latestInsights as latestDispatchInsights7f } from '../scripts/lib/insights.mjs';
 import { finishRun as finishDispatchInsights7f } from '../scripts/lib/finish.mjs';
@@ -14986,6 +15175,27 @@ function corruptDispatchFixture7f({ corrupt = true, hillClimb = true } = {}) {
   }
   return { root, runId, ws, maker, fence };
 }
+
+test7f('episode publication rejects a swapped target before any target-path write', () => {
+  const fixture = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
+  const external = realpath7f(temp7f(join7f(tmp7f(), 'dl-episode-swap-external-')));
+  write7f(join7f(external, 'sentinel'), 'outside-bytes');
+  const episodes = join7f(runDirDispatch7f(fixture.root, fixture.runId), 'episodes');
+  const target = join7f(episodes, '002-deep-work');
+  assert7f.throws(() => episode7f(fixture.root, fixture.runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'fix', point: 'design',
+    workstream: fixture.ws, fence: fixture.fence, requestId: 'episode-directory-swap',
+    crashProbe: point => {
+      if (point === 'episode-request-before-directory-publish') {
+        symlink7f(external, target, process.platform === 'win32' ? 'junction' : 'dir');
+      }
+    },
+  }), /DURABLE_EXISTING_DIRECTORY_INVALID/);
+  assert7f.equal(readDispatch7f(join7f(external, 'sentinel'), 'utf8'), 'outside-bytes');
+  assert7f.deepEqual(readdirDispatch7f(external), ['sentinel']);
+  assert7f.deepEqual(readdirDispatch7f(episodes)
+    .filter(name => name.startsWith('.publish-')), []);
+});
 
 function materializeHillContract7f(fixture) {
   const destination = join7f(fixture.root, '.claude', 'worktrees', 'design',
@@ -15249,9 +15459,12 @@ test7f('review dispatch separates retry identity, later rounds, and final-lock c
   assert7f.notEqual(second.checkerEpisodeId, first.checkerEpisodeId);
   assert7f.equal(stateDispatch7f(fixture.root, fixture.runId).data.episodes
     .find(episode => episode.id === second.checkerEpisodeId).target_maker, fixMaker.id);
-  assert7f.throws(() => dispatch7f(fixture.root, fixture.runId, {
+  const detectorDriftReplay = dispatch7f(fixture.root, fixture.runId, {
     ...common, detected: { codex: true }, requestId: 'logical-review-round-2',
-  }), /REVIEW_DISPATCH_REQUEST_CONFLICT/);
+  });
+  assert7f.equal(detectorDriftReplay.checkerEpisodeId, second.checkerEpisodeId);
+  assert7f.deepEqual(detectorDriftReplay.descriptor, second.descriptor,
+    'fresh detector drift cannot alter a durable same-ID response');
 
   const raced = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
   const racedCommon = { point: 'design', workstreamId: raced.ws,
@@ -15306,7 +15519,7 @@ import { newEpisode as episode7f, recordEpisode as record7f }
 import { blockIndependentReview as block7f, claimIndependentReview as claim7f,
   dispatchReview as dispatch7f, importReviewOutcome as import7f,
   recordReviewOutcome as outcome7f,
-  revalidateIndependentReviewClaim as revalidate7f } from '../scripts/lib/review.mjs';
+  revalidateIndependentReviewClaim as revalidate7f } from './helpers/review-request.mjs';
 import { readState as state7f } from '../scripts/lib/state.mjs';
 import { durableRunBytes as bytes7f, rawHashValidState as raw7f,
   verifiedAppRun as fixture7f } from './fixtures/verified-app-run.mjs';
@@ -15354,6 +15567,22 @@ const reviewFiles7f = fixture => {
   const directory = join7f(fixture.root, '.deep-loop', 'runs', fixture.runId, 'reviews');
   return exists7f(directory) ? readdir7f(directory).sort() : [];
 };
+
+test7f('real claim-to-block transition pauses before same-ID dispatch replay', () => {
+  const fixture = reviewAuthorityFixture7f();
+  assert7f.deepEqual(block7f(fixture.root, fixture.runId, {
+    episodeId: fixture.checker, attemptId: 'attempt-01',
+    reason: 'host-unavailable', fence: fixture.fence,
+  }), { ok: true, status: 'blocked', reason: 'host-unavailable' });
+  const before = bytes7f(fixture.root, fixture.runId);
+  assert7f.throws(() => dispatch7f(fixture.root, fixture.runId, {
+    point: 'implementation', workstreamId: fixture.ws, independentSubagent: true,
+    detected: { codex: true }, requestId: 'review-authority-dispatch',
+    fence: fixture.fence,
+  }), /LEASE_FENCED: RUN_PAUSED/);
+  assert7f.deepEqual(bytes7f(fixture.root, fixture.runId), before,
+    'a real human-pause block never reauthorizes an external reviewer action');
+});
 
 test7f('review claim factory and revalidation prove authority before source actions', () => {
   const fixture = reviewAuthorityFixture7f({ claim: false });
@@ -15967,7 +16196,7 @@ Apply these exact dispatch/final-append diffs in `scripts/lib/review.mjs`:
 diff --git a/scripts/lib/review.mjs b/scripts/lib/review.mjs
 --- a/scripts/lib/review.mjs
 +++ b/scripts/lib/review.mjs
-@@ -309,10 +309,19 @@
+@@ -309,10 +309,18 @@
  // checker episode 생성 + dispatch 디스크립터 반환 — 커널은 sibling을 호출하지 않음 (spec §1.1·§6).
  export function dispatchReview(root, runId, { point, workstreamId, detected = {}, independentSubagent = false, fence } = {}) {
    if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: dispatchReview');
@@ -15976,8 +16205,7 @@ diff --git a/scripts/lib/review.mjs b/scripts/lib/review.mjs
 -  const { data } = readState(root, runId);
 +  const identityFence = reviewIdentityFence(fence, 'dispatchReview');
 +  const projection = { point, workstream_id: workstreamId,
-+    independent_subagent: independentSubagent === true,
-+    detected_digest: contentHash(`review-detected\0${JSON.stringify(detected)}`) };
++    independent_subagent: independentSubagent === true };
 +  const data = withReviewMutation(root, runId, fence, 'dispatchReview', projection,
 +    mutation => {
 +      const loop = mutation.readVerifiedState({ fenceCheck: identityFence }).data;
@@ -16126,44 +16354,35 @@ diff --git a/scripts/lib/episode.mjs b/scripts/lib/episode.mjs
 -import { mkdirSync, existsSync } from 'node:fs';
 +import { lstatSync, mkdirSync, realpathSync } from 'node:fs';
 -import { isAbsolute, join, resolve, sep } from 'node:path';
-+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
++import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
  import { readState, writeState, withLock, runDir } from './state.mjs';
 -import { appendAnchored } from './integrity.mjs';
 +import { appendAnchored, directMutationOptions, intentField,
 +  withVerifiedMutationLock } from './integrity.mjs';
 -import { atomicWrite } from './envelope.mjs';
-+import { createFileDurablyIfAbsent } from './durable-file.mjs';
++import { publishDirectoryFileDurably } from './durable-file.mjs';
  import { slugify } from './slug.mjs';
  import { leaseCheck } from './lease.mjs';
-@@ -28,5 +29,77 @@ function requestSkeleton({ id, plugin, role, kind, point, workstream, expectedArtifacts, evidence }) {
+@@ -28,5 +29,68 @@ function requestSkeleton({ id, plugin, role, kind, point, workstream, expectedArtifacts, evidence }) {
    ].join('\n');
  }
 -
 +
-+function ensureEpisodeDirectory(runRoot, target) {
++function ensureEpisodesParent(runRoot) {
 +  const canonicalRun = realpathSync(runRoot);
-+  const rel = relative(canonicalRun, resolve(target));
-+  const parts = rel.split(sep).filter(Boolean);
-+  if (rel === '' || rel === '..' || rel.startsWith(`..${sep}`)
-+      || parts.some(part => part === '.' || part === '..')) {
++  const episodes = join(canonicalRun, 'episodes');
++  try { mkdirSync(episodes); }
++  catch (error) { if (error?.code !== 'EEXIST') throw error; }
++  const stat = lstatSync(episodes);
++  if (!stat.isDirectory() || stat.isSymbolicLink()) {
++    throw new Error('EPISODE_DIRECTORY_INVALID');
++  }
++  const canonical = realpathSync(episodes);
++  if (canonical !== episodes
++      || (canonical !== canonicalRun && !canonical.startsWith(`${canonicalRun}${sep}`))) {
 +    throw new Error('EPISODE_PATH_ESCAPE');
 +  }
-+  let current = canonicalRun;
-+  for (const part of parts) {
-+    const next = join(current, part);
-+    try { mkdirSync(next); }
-+    catch (error) { if (error?.code !== 'EEXIST') throw error; }
-+    const stat = lstatSync(next);
-+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
-+      throw new Error('EPISODE_DIRECTORY_INVALID');
-+    }
-+    const canonical = realpathSync(next);
-+    if (canonical !== canonicalRun && !canonical.startsWith(`${canonicalRun}${sep}`)) {
-+      throw new Error('EPISODE_PATH_ESCAPE');
-+    }
-+    current = canonical;
-+  }
-+  return current;
++  return canonical;
 +}
 +
 +function validateRequestWinner(path, expectedParent) {
@@ -16358,7 +16577,10 @@ checker statuses and makers, while each intentional round rotates its caller ID.
 phases use the same complete caller-input intent, while the selected
 maker and episode payload are deterministic verified-state derivations recorded in the event/state
 projection. The final lock rederives latest-maker/checker eligibility before append. Request-file
-materialization uses an atomic create-if-absent link and never replaces an existing editable request.
+materialization completes and flushes a private sibling staging directory under the verified
+`episodes` parent before any target-path inspection. Publication renames that directory as one entry;
+an existing request is validation-only, and an exact empty request-less directory is the sole
+recoverable replacement. No write ever traverses the replaceable episode pathname.
 
 ```diff
 diff --git a/scripts/lib/episode.mjs b/scripts/lib/episode.mjs
@@ -16472,7 +16694,7 @@ index c567221..8bf9718 100644
      if (matches.length !== 1) throw new Error('EPISODE_RESPONSE_PROJECTION_CHANGED');
      const [recovered] = matches;
      if (recovered.plugin !== plugin || recovered.role !== role
-@@ -111,31 +145,72 @@ function createEpisode(root, runId, {
+@@ -111,31 +145,75 @@ function createEpisode(root, runId, {
          || JSON.stringify(recovered.evidence) !== JSON.stringify(evidence)
          || JSON.stringify(recovered.contract) !== JSON.stringify(contract)
          || recovered.creation_initial_status !== initialStatus
@@ -16534,12 +16756,15 @@ index c567221..8bf9718 100644
 +    }
 +  };
 +  const materialize = () => {
-+    const canonicalDir = ensureEpisodeDirectory(runDir(root, runId), dir);
-+    dir = canonicalDir;
-+    requestPath = join(canonicalDir, 'request.md');
-+    createFileDurablyIfAbsent(requestPath, requestSkeleton({
++    const episodesParent = ensureEpisodesParent(runDir(root, runId));
++    dir = join(episodesParent, id);
++    requestPath = join(dir, 'request.md');
++    publishDirectoryFileDurably(dir, 'request.md', requestSkeleton({
 +      id, plugin, role, kind, point, workstream, expectedArtifacts, evidence,
-+    }), { validateExisting: path => validateRequestWinner(path, canonicalDir) });
++    }), {
++      beforePublish: () => crashProbe?.('episode-request-before-directory-publish'),
++      validateExisting: path => validateRequestWinner(path, dir),
++    });
 +    return { id, requestPath };
 +  };
 +  return episodeAppend(root, runId, mutation, event, (loop) => {
@@ -16617,14 +16842,14 @@ diff --git a/scripts/lib/review.mjs b/scripts/lib/review.mjs
 index 730e203..aa1cf72 100644
 --- a/scripts/lib/review.mjs
 +++ b/scripts/lib/review.mjs
-@@ -312,12 +312,44 @@
+@@ -312,11 +312,45 @@
 +function replayReviewDispatch(checker) {
 +  const stored = checker?.dispatch_response;
 +  if (stored == null || typeof stored !== 'object' || Array.isArray(stored)
 +      || typeof stored.reviewer !== 'string' || !Array.isArray(stored.flags)
 +      || !stored.flags.every(flag => typeof flag === 'string')
 +      || typeof stored.mode !== 'string'
-+      || (stored.reason ?? null) !== (checker.block_reason ?? null)
++      || (stored.reason ?? null) !== (checker.creation_block_reason ?? null)
 +      || (stored.reviewer === 'deep-review-loop' ? checker.plugin !== 'deep-review'
 +        : checker.plugin !== stored.reviewer)
 +      || JSON.stringify(stored.evidence ?? null)
@@ -16651,9 +16876,10 @@ index 730e203..aa1cf72 100644
 +  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(requestId || '')) {
 +    throw new Error('REVIEW_DISPATCH_REQUEST_ID_REQUIRED');
 +  }
++  // Fresh plugin detection selects a reviewer only for a brand-new logical dispatch. It is not
++  // caller-stable request identity and cannot invalidate same-ID response-loss recovery.
    const projection = { point, workstream_id: workstreamId,
-     independent_subagent: independentSubagent === true,
-     detected_digest: contentHash(`review-detected\0${JSON.stringify(detected)}`) };
+     independent_subagent: independentSubagent === true };
 -  const data = withReviewMutation(root, runId, fence, 'dispatchReview', projection,
 +  const dispatchRequestIdDigest = contentHash(`dispatch-review-request-id\0${requestId}`);
 +  const dispatchProjection = { ...projection,
@@ -16853,10 +17079,11 @@ index 2898ca4..54ae473 100644
 @@ -141 +141 @@
 -node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review dispatch --point <review_point> --workstream <workstream_id> --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
 +node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review dispatch --point <review_point> --workstream <workstream_id> --request-id <review_dispatch_request_id> --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
-@@ -143,0 +144,4 @@
+@@ -143,0 +144,5 @@
 +`<review_dispatch_request_id>`는 dispatch 전에 한 번 정해 response-loss retry에는 그대로
 +재사용한다. 다음 intentional review round에서만 새 ID를 사용하며 같은 ID로 point/workstream/
-+detected route/subagent payload를 바꾸지 않는다.
++subagent payload를 바꾸지 않는다. Plugin detection은 새 dispatch의 fresh resolution input이며
++same-ID request identity에는 포함하지 않는다.
 +
 @@ -158 +158 @@ fix maker episode 생성 후 dispatch:
 -node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin <maker_plugin> --role maker --kind fix --point <point> --workstream <workstream_id> --artifacts '[".claude/worktrees/<ws-slug>/path/to/fix-output"]' --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
@@ -16865,6 +17092,24 @@ index 2898ca4..54ae473 100644
 +`<episode_request_id>`는 fix episode 생성 전에 한 번 정해 응답 유실 retry에 재사용하고, 새
 +logical episode에서만 교체한다. 같은 ID로 payload를 바꾸면 안 된다.
 +
+diff --git a/skills/deep-loop-workflow/references/adapters.md b/skills/deep-loop-workflow/references/adapters.md
+--- a/skills/deep-loop-workflow/references/adapters.md
++++ b/skills/deep-loop-workflow/references/adapters.md
+@@ -74 +74 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review dispatch --point <review_point>
+-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review dispatch --point <review_point> --workstream <workstream_id> --independent-subagent --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
++node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review dispatch --point <review_point> --workstream <workstream_id> --request-id <review_dispatch_request_id> --independent-subagent --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+@@ -84 +84 @@ Codex runtime의 unattended run이고 measured host-owned driver가 실행을 소유한 경우다.
+-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review dispatch --point <review_point> --workstream <workstream_id> --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
++node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review dispatch --point <review_point> --workstream <workstream_id> --request-id <review_dispatch_request_id> --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+@@ -94 +94 @@ interactive Claude/Codex에서 `checker.kind === 'skill'`이고, 리뷰 대상 worktree(reviewed worktree)를 root로 쓰는
+-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review dispatch --point <review_point> --workstream <workstream_id> --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
++node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review dispatch --point <review_point> --workstream <workstream_id> --request-id <review_dispatch_request_id> --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+@@ -97,0 +98,4 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review dispatch --point <review_point>
++`<review_dispatch_request_id>`는 Route A/B/C 모두 logical dispatch 직전에 한 번 정하고,
++response-loss retry에는 byte-identical point/workstream/subagent input과 함께 그대로 재사용한다.
++새 intentional review round에서만 새 ID를 사용한다. Plugin detection은 fresh resolution input이지
++same-ID payload가 아니므로 detector 변화만으로 ID를 교체하거나 retry를 충돌시키지 않는다.
+
 diff --git a/skills/deep-loop-workflow/references/hill-climbing.md b/skills/deep-loop-workflow/references/hill-climbing.md
 index e88606e..ffebcd3 100644
 --- a/skills/deep-loop-workflow/references/hill-climbing.md
@@ -17030,6 +17275,89 @@ export function newEpisode(root, runId, input = {}) {
     requestId: input.requestId ?? `test-episode-${nextEpisodeRequest}`,
   });
 }
+```
+
+Create `tests/helpers/review-request.mjs` with this complete test-only adapter. It gives legacy
+unit-test setup calls a unique logical dispatch ID while allowing response-loss cases to pass and
+reuse an explicit ID. Production and skill callers never receive an auto-generated ID:
+
+```js
+import { dispatchReview as productionDispatchReview } from '../../scripts/lib/review.mjs';
+
+export * from '../../scripts/lib/review.mjs';
+
+let nextReviewRequest = 0;
+
+export function dispatchReview(root, runId, input = {}) {
+  nextReviewRequest += 1;
+  return productionDispatchReview(root, runId, {
+    ...input,
+    requestId: input.requestId ?? `test-review-${nextReviewRequest}`,
+  });
+}
+```
+
+Migrate every test-suite import of `dispatchReview` through that one adapter:
+
+```diff
+diff --git a/tests/codex-checker-integration.test.mjs b/tests/codex-checker-integration.test.mjs
+--- a/tests/codex-checker-integration.test.mjs
++++ b/tests/codex-checker-integration.test.mjs
+@@ -10,8 +10,8 @@ import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
+ import {
+   blockIndependentReview,
+   claimIndependentReview,
+   dispatchReview,
+   findPendingIndependentChecker,
+   importReviewOutcome,
+   recordReviewOutcome,
+-} from '../scripts/lib/review.mjs';
++} from './helpers/review-request.mjs';
+diff --git a/tests/codex-isolation-integration.test.mjs b/tests/codex-isolation-integration.test.mjs
+--- a/tests/codex-isolation-integration.test.mjs
++++ b/tests/codex-isolation-integration.test.mjs
+@@ -30,1 +30,1 @@ import { readLines } from '../scripts/lib/integrity.mjs';
+-import { dispatchReview } from '../scripts/lib/review.mjs';
++import { dispatchReview } from './helpers/review-request.mjs';
+diff --git a/tests/finish.test.mjs b/tests/finish.test.mjs
+--- a/tests/finish.test.mjs
++++ b/tests/finish.test.mjs
+@@ -10,1 +10,1 @@ import { newEpisode, recordEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
+-import { dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
++import { dispatchReview, recordReviewOutcome } from './helpers/review-request.mjs';
+diff --git a/tests/fencing.test.mjs b/tests/fencing.test.mjs
+--- a/tests/fencing.test.mjs
++++ b/tests/fencing.test.mjs
+@@ -13,1 +13,1 @@ import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
+-import { dispatchReview, importReviewOutcome, recordReviewOutcome } from '../scripts/lib/review.mjs';
++import { dispatchReview, importReviewOutcome, recordReviewOutcome } from './helpers/review-request.mjs';
+diff --git a/tests/next-action.test.mjs b/tests/next-action.test.mjs
+--- a/tests/next-action.test.mjs
++++ b/tests/next-action.test.mjs
+@@ -10,1 +10,1 @@ import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
+-import { dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
++import { dispatchReview, recordReviewOutcome } from './helpers/review-request.mjs';
+diff --git a/tests/reviewer-failclosed.test.mjs b/tests/reviewer-failclosed.test.mjs
+--- a/tests/reviewer-failclosed.test.mjs
++++ b/tests/reviewer-failclosed.test.mjs
+@@ -20,1 +20,1 @@ import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
+-import { resolveReviewer, dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
++import { resolveReviewer, dispatchReview, recordReviewOutcome } from './helpers/review-request.mjs';
+diff --git a/tests/review-import.test.mjs b/tests/review-import.test.mjs
+--- a/tests/review-import.test.mjs
++++ b/tests/review-import.test.mjs
+@@ -15,1 +15,1 @@ import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
+-import { claimIndependentReview, dispatchReview, importReviewOutcome, recordReviewOutcome } from '../scripts/lib/review.mjs';
++import { claimIndependentReview, dispatchReview, importReviewOutcome, recordReviewOutcome } from './helpers/review-request.mjs';
+diff --git a/tests/review.test.mjs b/tests/review.test.mjs
+--- a/tests/review.test.mjs
++++ b/tests/review.test.mjs
+@@ -10,4 +10,4 @@ import { newEpisode, recordEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
+ import {
+   resolveReviewer, dispatchReview, importReviewOutcome, makerReviewed, parseVerdict,
+   recordReviewOutcome, unsatisfiedReviewPoints,
+-} from '../scripts/lib/review.mjs';
++} from './helpers/review-request.mjs';
 ```
 `episodeAppend` now has no bare `appendAnchored(...)` call. Its public branch destructures the actual
 `directMutationOptions` result into `withVerifiedMutationLock`, and both branches perform only the
@@ -17246,7 +17574,7 @@ terminal detection still works.
 - [ ] **Step 6: Audit only the pre-action authority slice**
 
 ```bash
-git diff -- scripts/lib/episode.mjs scripts/lib/insights.mjs scripts/lib/review.mjs scripts/lib/workspace.mjs scripts/lib/detect-terminal.mjs scripts/deep-loop.mjs skills/deep-loop/SKILL.md skills/deep-loop-continue/SKILL.md skills/deep-loop-workflow/references/hill-climbing.md tests/helpers/episode-request.mjs tests/budget.test.mjs tests/cli-skillface.test.mjs tests/codex-checker-integration.test.mjs tests/codex-isolation-integration.test.mjs tests/comprehension.test.mjs tests/episode.test.mjs tests/fencing.test.mjs tests/finish.test.mjs tests/handoff.test.mjs tests/next-action.test.mjs tests/orch-cli.test.mjs tests/pause.test.mjs tests/review.test.mjs tests/insights.test.mjs tests/review-import.test.mjs tests/reviewer-failclosed.test.mjs tests/workspace.test.mjs tests/detect-terminal.test.mjs
+git diff -- scripts/lib/episode.mjs scripts/lib/insights.mjs scripts/lib/review.mjs scripts/lib/workspace.mjs scripts/lib/detect-terminal.mjs scripts/deep-loop.mjs skills/deep-loop/SKILL.md skills/deep-loop-continue/SKILL.md skills/deep-loop-workflow/references/adapters.md skills/deep-loop-workflow/references/hill-climbing.md tests/helpers/episode-request.mjs tests/helpers/review-request.mjs tests/budget.test.mjs tests/cli-skillface.test.mjs tests/codex-checker-integration.test.mjs tests/codex-isolation-integration.test.mjs tests/comprehension.test.mjs tests/episode.test.mjs tests/fencing.test.mjs tests/finish.test.mjs tests/handoff.test.mjs tests/next-action.test.mjs tests/orch-cli.test.mjs tests/pause.test.mjs tests/review.test.mjs tests/insights.test.mjs tests/review-import.test.mjs tests/reviewer-failclosed.test.mjs tests/workspace.test.mjs tests/detect-terminal.test.mjs
 rg -n "readState\(|readVerifiedState|assertVerifiedRunSnapshot|appendAnchored|fenceCheck|attemptIdFactory|materializeImportedReview|detectTerminal\(" scripts/lib/insights.mjs scripts/lib/review.mjs scripts/lib/workspace.mjs scripts/lib/detect-terminal.mjs
 git diff --check
 ```
@@ -17257,7 +17585,7 @@ has no unverified pre-read, and no probe/materialization/random callback precede
 - [ ] **Step 7: Commit the pre-action authority slice**
 
 ```bash
-git add scripts/lib/episode.mjs scripts/lib/insights.mjs scripts/lib/review.mjs scripts/lib/workspace.mjs scripts/lib/detect-terminal.mjs scripts/deep-loop.mjs skills/deep-loop/SKILL.md skills/deep-loop-continue/SKILL.md skills/deep-loop-workflow/references/hill-climbing.md tests/helpers/episode-request.mjs tests/budget.test.mjs tests/cli-skillface.test.mjs tests/codex-checker-integration.test.mjs tests/codex-isolation-integration.test.mjs tests/comprehension.test.mjs tests/episode.test.mjs tests/fencing.test.mjs tests/finish.test.mjs tests/handoff.test.mjs tests/next-action.test.mjs tests/orch-cli.test.mjs tests/pause.test.mjs tests/review.test.mjs tests/insights.test.mjs tests/review-import.test.mjs tests/reviewer-failclosed.test.mjs tests/workspace.test.mjs tests/detect-terminal.test.mjs
+git add scripts/lib/episode.mjs scripts/lib/insights.mjs scripts/lib/review.mjs scripts/lib/workspace.mjs scripts/lib/detect-terminal.mjs scripts/deep-loop.mjs skills/deep-loop/SKILL.md skills/deep-loop-continue/SKILL.md skills/deep-loop-workflow/references/adapters.md skills/deep-loop-workflow/references/hill-climbing.md tests/helpers/episode-request.mjs tests/helpers/review-request.mjs tests/budget.test.mjs tests/cli-skillface.test.mjs tests/codex-checker-integration.test.mjs tests/codex-isolation-integration.test.mjs tests/comprehension.test.mjs tests/episode.test.mjs tests/fencing.test.mjs tests/finish.test.mjs tests/handoff.test.mjs tests/next-action.test.mjs tests/orch-cli.test.mjs tests/pause.test.mjs tests/review.test.mjs tests/insights.test.mjs tests/review-import.test.mjs tests/reviewer-failclosed.test.mjs tests/workspace.test.mjs tests/detect-terminal.test.mjs
 git commit -m "fix: verify authority before external actions" -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
 
@@ -18475,7 +18803,7 @@ import { tmpdir as tmp8a } from 'node:os';
 import { join as join8a } from 'node:path';
 import { initRun as init8a } from '../scripts/lib/initrun.mjs';
 import { emitHandoff as emit8a } from '../scripts/lib/handoff.mjs';
-import { observeHostSurface as observe8a,
+import { appNativePathDeps as pathDeps8a, observeHostSurface as observe8a,
   revokeAppTaskContinuation as revoke8a } from '../scripts/lib/app-task-continuation.mjs';
 import { finishRun as finish8a } from '../scripts/lib/finish.mjs';
 import { readLines as lines8a } from '../scripts/lib/integrity.mjs';
@@ -18507,6 +18835,24 @@ function appRun8a() {
       confirmed_at: '2026-07-13T00:00:00.000Z', revoked_at: null } });
   return { root, runId };
 }
+
+test8a('final App path factory preserves adjacent BigInt file identities', () => {
+  const identities = new Map([
+    ['/left', { dev: 9n, ino: BigInt(Number.MAX_SAFE_INTEGER) + 1n }],
+    ['/right', { dev: 9n, ino: BigInt(Number.MAX_SAFE_INTEGER) + 2n }],
+  ]);
+  const calls = [];
+  const deps = pathDeps8a((value, options) => {
+    calls.push([value, options]);
+    return identities.get(value);
+  });
+  const left = deps.stat('/left');
+  const right = deps.stat('/right');
+  assert8a.deepEqual(calls, [
+    ['/left', { bigint: true }], ['/right', { bigint: true }],
+  ]);
+  assert8a.equal(deps.sameFile(left, right), false);
+});
 
 test8a('boolean App intent derives and atomically binds every emit authority field', () => {
   const { root, runId } = appRun8a();
@@ -18890,7 +19236,7 @@ test8a('duplicate stale and symlink-mismatched worktree authority never reserves
 
 - [ ] **Step 2: Run the emit test and verify RED**
 
-Run: `node --test --test-name-pattern='boolean App intent|invalid App authority|generic reacquire invalidates|generic emitted handoff|revoke after reserve|released lease cannot reserve|release attempts in descriptor|exact rollback fences|emit caller fence|fork intent|worktree authority' tests/handoff.test.mjs`
+Run: `node --test --test-name-pattern='final App path factory|boolean App intent|invalid App authority|generic reacquire invalidates|generic emitted handoff|revoke after reserve|released lease cannot reserve|release attempts in descriptor|exact rollback fences|emit caller fence|fork intent|worktree authority' tests/handoff.test.mjs`
 
 Expected: FAIL because `emitHandoff` does not accept the boolean intent or derive a kernel-owned attempt/route/cwd binding.
 
@@ -18903,9 +19249,10 @@ import { existsSync, realpathSync, statSync } from 'node:fs';
 import { contentHash } from './envelope.mjs';
 import { appHostTaskCwdDigest, selectAppContinuationRoute } from './host-surface.mjs';
 
-export function appNativePathDeps() {
+export function appNativePathDeps(statFn = statSync) {
   return { platform: process.platform, exists: existsSync, realpath: realpathSync.native,
-    stat: statSync, sameFile: (left, right) => left?.dev === right?.dev && left?.ino === right?.ino };
+    stat: value => statFn(value, { bigint: true }),
+    sameFile: (left, right) => left?.dev === right?.dev && left?.ino === right?.ino };
 }
 
 const hasEvery = (values, required) => required.every(value => values.includes(value));
@@ -21114,6 +21461,25 @@ test9b('await timeout preserves a confirmed attempt and status is raw-ID-free', 
     .continuation.phase, 'abandoned');
   assert9b.equal(revoked.session_chain.sessions.find(item => item.run_id === fixture.childRunId)
     .continuation.failure_code, 'consent-revoked');
+});
+
+test9b('status exposes one exact shape for app, human, and null resume policies', () => {
+  const expectedKeys = ['current', 'generation', 'generic_current', 'handoff_phase',
+    'has_app_history', 'history', 'logical_run_id', 'manual_recovery', 'ok', 'owner_run_id',
+    'recovery_pending', 'resume_policy'];
+  const initial = autoRun();
+  const projections = [status9b(initial.root, initial.runId, {})];
+  const active = emitted8b();
+  projections.push(status9b(active.root, active.runId, { attemptId: active.attemptId }));
+  assert9b.equal(revoke9b(active.root, active.runId,
+    { owner: active.runId, generation: 1, runtime: 'codex' },
+    { nowFn: () => Date.parse('2026-07-13T00:00:02.000Z') }).outcome, 'revoked');
+  projections.push(status9b(active.root, active.runId, { attemptId: active.attemptId }));
+  assert9b.deepEqual(projections.map(projected => projected.resume_policy),
+    [null, 'app', 'human']);
+  for (const projected of projections) {
+    assert9b.deepEqual(Object.keys(projected).sort(), expectedKeys);
+  }
 });
 
 test9b('status rejects unsafe App-history handoff paths', () => {
@@ -33075,7 +33441,8 @@ operations remain host-portable and do not assume `/dev/null`:
 set -euo pipefail
 
 node --input-type=module <<'NODE'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
+  rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, posix } from 'node:path';
@@ -33409,12 +33776,24 @@ for (const task of taskMatches) {
     for (const token of ['export function syncRegularFile(',
       'export function syncParentDirectory(', 'export function renamePreparedFile(',
       'export function unlinkRegularFile(', 'export function createFileDurablyIfAbsent(',
+      'export function publishDirectoryFileDurably(',
       'export function replaceFileDurably(',
       'renameAtomicWithRetry(', "=== 'win32'", "(deps.open ?? durableOpenSync)(path, 'r+')",
       'GENERIC_WRITE', 'never replaces a check-to-publish race winner',
+      'staged directory publication rejects a target-path swap without external writes',
       'tests/durable-file.test.mjs', 'validateExisting = () => {}',
       'DURABLE_EXISTING_INVALID']) {
       if (!card.includes(token)) fail(`Task 5B missing platform durability token ${token}`);
+    }
+  }
+  if (task[1] === '7A') {
+    for (const token of ['export function legacyEpisodeBaselineDigest(',
+      "events.filter(event => event?.type === 'lease-lineage-baselined')",
+      'legacy lineage checkpoint binding invalid',
+      'generation > lineageFloor.generation', 'edge.index > lineageFloor.index',
+      'legacy_episode_count: 0', 'legacy_episode_digest: legacyDigest7b([])',
+      'legacy lease lineage is opaque before one checkpoint and exact after it']) {
+      if (!card.includes(token)) fail(`Task 7A missing lineage checkpoint token ${token}`);
     }
   }
   if (task[1] === '7G') {
@@ -33543,13 +33922,15 @@ for (const task of taskMatches) {
       'creation_request_id_digest: creationRequestIdDigest',
       'dispatch_request_id_digest: dispatchRequestIdDigest ?? null',
       'dispatch_request_digest: dispatchRequestDigest ?? null',
-      'request_projection: completeRequest', 'createFileDurablyIfAbsent(requestPath',
+      'request_projection: completeRequest', 'publishDirectoryFileDurably(dir',
       'EPISODE_REQUEST_ID_REQUIRED', 'EPISODE_REQUEST_CONFLICT',
       'REVIEW_DISPATCH_REQUEST_ID_REQUIRED', 'REVIEW_DISPATCH_REQUEST_CONFLICT',
       'beforeFinalLock',
       "intentField('episode-create-request-id', requestId)",
       'MISSING_REQUIRED_OPTION: --request-id',
       'tests/helpers/episode-request.mjs',
+      'tests/helpers/review-request.mjs',
+      'skills/deep-loop-workflow/references/adapters.md',
       '--request-id <episode_request_id>',
       'review dispatch exact retry after marker cleanup reuses one checker',
       'review dispatch separates retry identity, later rounds, and final-lock checker CAS',
@@ -33561,6 +33942,9 @@ for (const task of taskMatches) {
       'no unprovable identifier-valued', 'function replayReviewDispatch(checker)',
       'dispatch_response: structuredClone(dispatchResponse ?? null)',
       'same-ID replay bypasses mutable contract and evidence derivation',
+      'fresh detector drift cannot alter a durable same-ID response',
+      'real claim-to-block transition pauses before same-ID dispatch replay',
+      'episode publication rejects a swapped target before any target-path write',
       'materialize changed latest insights',
       'episode request rematerialization rejects symlink file and directory winners',
       'paired state/event discriminator removal cannot downgrade initialized proof',
@@ -33579,8 +33963,16 @@ for (const task of taskMatches) {
   if (task[1] === '9B') {
     for (const token of ['scripts/deep-loop.mjs', 'tests/orch-cli.test.mjs',
       '{ attemptId: f.attempt ?? null }',
-      'status CLI forwards the exact attempt under the final API name']) {
+      'status CLI forwards the exact attempt under the final API name',
+      'status exposes one exact shape for app, human, and null resume policies',
+      "[null, 'app', 'human']"]) {
       if (!card.includes(token)) fail(`Task 9B missing exact-attempt CLI migration token ${token}`);
+    }
+  }
+  if (task[1] === '8A') {
+    for (const token of ["stat: value => statFn(value, { bigint: true })",
+      'BigInt', 'Number.MAX_SAFE_INTEGER']) {
+      if (!card.includes(token)) fail(`Task 8A missing BigInt identity token ${token}`);
     }
   }
   if (task[1] === '11B') {
@@ -33744,7 +34136,8 @@ const validateStrictDiff = (body, fenceLine) => {
   const exactZeroContextCallerMigration = body.includes('diff --git a/scripts/deep-loop.mjs')
     && body.includes('MISSING_REQUIRED_OPTION: --request-id')
     && (body.includes('skills/deep-loop-workflow/references/hill-climbing.md')
-      || body.includes('skills/deep-loop-status/SKILL.md'));
+      || body.includes('skills/deep-loop-status/SKILL.md'))
+    || body.includes("from './helpers/review-request.mjs'");
   let hunk = null;
   let afterHunk = false;
   let sawHunk = false;
@@ -33865,6 +34258,36 @@ if (existsSync('README.md')) {
       '// scripts/lib/init-transaction.mjs — complete replacement');
     writeFileSync(join(sequentialSourceDir, 'scripts/lib/durable-file.mjs'),
       `${durableFence.body.slice(start, end).trimEnd()}\n`);
+    const probePath = join(sequentialSourceDir, '.plan-directory-publication-probe.mjs');
+    writeFileSync(probePath, `
+import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync,
+  writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { publishDirectoryFileDurably } from './scripts/lib/durable-file.mjs';
+const root = mkdtempSync(join(tmpdir(), 'plan-directory-publish-'));
+const parent = join(root, 'episodes'); mkdirSync(parent);
+const outside = mkdtempSync(join(tmpdir(), 'plan-directory-outside-'));
+writeFileSync(join(outside, 'sentinel'), 'outside-bytes');
+const target = join(parent, '001-deep-work');
+assert.throws(() => publishDirectoryFileDurably(target, 'request.md', 'kernel', {
+  nonce: () => 'directoryprobe0000000000',
+  beforePublish: () => symlinkSync(outside, target,
+    process.platform === 'win32' ? 'junction' : 'dir'),
+}), /DURABLE_EXISTING_DIRECTORY_INVALID/);
+assert.equal(readFileSync(join(outside, 'sentinel'), 'utf8'), 'outside-bytes');
+assert.deepEqual(readdirSync(outside), ['sentinel']);
+assert.deepEqual(readdirSync(parent).filter(name => name.startsWith('.publish-')), []);
+`);
+    const probed = spawnSync(process.execPath, [probePath], {
+      cwd: sequentialSourceDir, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024,
+    });
+    if (probed.error || probed.status !== 0) {
+      const diagnostic = String(probed.error?.message || probed.stderr || probed.stdout)
+        .split('\n').slice(0, 20).join(' | ');
+      fail(`Task 5B installed directory publication behavior: ${diagnostic}`);
+    }
   }
   const digestFence = fenceRecords.find(record => record.language === 'js'
     && record.body.includes('export function initializationRequestDigest(projection)')
@@ -33882,6 +34305,7 @@ if (existsSync('README.md')) {
 try {
   const applySequentialDiff = (label, body) => {
     const narrowContextMigration = body.includes('diff --git a/tests/breaker.test.mjs')
+      || body.includes("from './helpers/review-request.mjs'")
       || (body.includes('MISSING_REQUIRED_OPTION: --request-id')
         && (body.includes('skills/deep-loop-workflow/references/hill-climbing.md')
           || body.includes('skills/deep-loop-status/SKILL.md')));
@@ -33996,6 +34420,51 @@ try {
             .split('\n')[0];
           fail(`Task 7A installed App correlation verifier syntax: ${diagnostic}`);
         }
+        const probePath = join(sequentialSourceDir, '.plan-lineage-probe.mjs');
+        writeFileSync(probePath, `
+import assert from 'node:assert/strict';
+import { legacyEpisodeBaselineDigest,
+  verifyAppEventCorrelation } from './scripts/lib/schema.mjs';
+
+const generation3 = () => ({ run_id: 'LEGACY-RUN', status: 'running', episodes: [],
+  session_chain: {
+    sessions: [{ run_id: 'LEGACY-OWNER', host_surface: null }],
+    lease: { owner_run_id: 'LEGACY-OWNER', generation: 3, state: 'released',
+      acquired_at: '2026-07-13T00:00:02.000Z' },
+  } });
+const generation4 = () => {
+  const loop = generation3();
+  loop.session_chain.sessions.push({ run_id: 'FRESH-OWNER', host_surface: null });
+  Object.assign(loop.session_chain.lease, { owner_run_id: 'FRESH-OWNER', generation: 4,
+    state: 'active', acquired_at: '2026-07-13T00:00:04.000Z' });
+  return loop;
+};
+const baseline = { type: 'lease-lineage-baselined',
+  ts: '2026-07-13T00:00:03.000Z', data: {
+    owner_run_id: 'LEGACY-OWNER', generation: 3, lease_state: 'released',
+    acquired_at: '2026-07-13T00:00:02.000Z', pre_state_digest: 'a'.repeat(64),
+    legacy_episode_count: 0, legacy_episode_digest: legacyEpisodeBaselineDigest([]),
+  } };
+const acquire = { type: 'lease-acquired', ts: '2026-07-13T00:00:04.000Z', data: {
+  previous_owner_run_id: 'LEGACY-OWNER', previous_generation: 3,
+  owner_run_id: 'FRESH-OWNER', generation: 4,
+} };
+assert.equal(verifyAppEventCorrelation(generation3(), [baseline]).ok, true);
+assert.equal(verifyAppEventCorrelation(generation4(), [baseline, acquire]).ok, true);
+assert.equal(verifyAppEventCorrelation(generation3(), [baseline, baseline]).ok, false);
+assert.equal(verifyAppEventCorrelation(generation3(), [{ ...baseline, data: {
+  ...baseline.data, legacy_episode_digest: 'b'.repeat(64) } }]).ok, false);
+assert.equal(verifyAppEventCorrelation(generation4(), [baseline, { ...acquire, data: {
+  ...acquire.data, previous_owner_run_id: 'OTHER' } }]).ok, false);
+`);
+        const probed = spawnSync(process.execPath, [probePath], {
+          cwd: sequentialSourceDir, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024,
+        });
+        if (probed.error || probed.status !== 0) {
+          const diagnostic = String(probed.error?.message || probed.stderr || probed.stdout)
+            .split('\n').slice(0, 20).join(' | ');
+          fail(`Task 7A installed legacy lineage behavior: ${diagnostic}`);
+        }
       }
     }
   }
@@ -34050,7 +34519,7 @@ try {
     }
   }
   for (const [taskId, pathPattern] of [
-    ['7F', /diff --git a\/(?:scripts\/lib\/(?:episode|review)\.mjs|scripts\/deep-loop\.mjs|skills\/deep-loop\/SKILL\.md)/u],
+    ['7F', /diff --git a\/(?:scripts\/lib\/(?:episode|review)\.mjs|scripts\/deep-loop\.mjs|skills\/deep-loop(?:-continue)?\/SKILL\.md|skills\/deep-loop-workflow\/references\/adapters\.md|tests\/(?:codex-checker-integration|codex-isolation-integration|finish|fencing|next-action|reviewer-failclosed|review-import|review)\.test\.mjs)/u],
     ['7G', /diff --git a\/scripts\/lib\/breaker\.mjs/u],
   ]) {
     const task = taskMatches.find(match => match[1] === taskId);
@@ -34082,6 +34551,48 @@ try {
         const diagnostic = String(checked.error?.message || checked.stderr || checked.stdout)
           .split('\n')[0];
         fail(`Task 7F installed request helper syntax: ${diagnostic}`);
+      }
+    }
+  }
+  {
+    const task = taskMatches.find(match => match[1] === '7F');
+    const nextTask = source.indexOf('\n### Task ', task.index + 1);
+    const card = source.slice(task.index, nextTask < 0 ? source.length : nextTask);
+    const helpers = [...card.matchAll(/```js\n([\s\S]*?)\n```/g)]
+      .map(match => match[1])
+      .filter(body => body.includes('dispatchReview as productionDispatchReview')
+        && body.includes('test-review-${nextReviewRequest}'));
+    if (helpers.length !== 1) {
+      fail(`Task 7F test review helper count: ${helpers.length}`);
+    } else {
+      const path = join(sequentialSourceDir, 'tests/helpers/review-request.mjs');
+      writeFileSync(path, `${helpers[0]}\n`);
+      const checked = spawnSync(process.execPath, ['--check', path], {
+        cwd: sequentialSourceDir, encoding: 'utf8',
+      });
+      if (checked.error || checked.status !== 0) {
+        const diagnostic = String(checked.error?.message || checked.stderr || checked.stdout)
+          .split('\n')[0];
+        fail(`Task 7F installed review request helper syntax: ${diagnostic}`);
+      }
+    }
+    const walk = directory => readdirSync(directory, { withFileTypes: true })
+      .flatMap(entry => entry.isDirectory()
+        ? walk(join(directory, entry.name)) : [join(directory, entry.name)]);
+    const directReviewImport = /import\s*\{[^}]*\bdispatchReview\b[^}]*\}\s*from\s*['"]\.\.\/scripts\/lib\/review\.mjs['"]/u;
+    for (const path of walk(join(sequentialSourceDir, 'tests'))
+      .filter(value => value.endsWith('.mjs'))) {
+      if (directReviewImport.test(readFileSync(path, 'utf8'))) {
+        fail(`Task 7F unmigrated review dispatch import: ${path}`);
+      }
+    }
+    for (const path of walk(join(sequentialSourceDir, 'skills'))
+      .filter(value => value.endsWith('.md'))) {
+      const lines = readFileSync(path, 'utf8').split('\n');
+      for (const [index, line] of lines.entries()) {
+        if (line.includes('review dispatch --point') && !line.includes('--request-id')) {
+          fail(`Task 7F skill review dispatch lacks request ID: ${path}:${index + 1}`);
+        }
       }
     }
   }
@@ -34282,7 +34793,7 @@ test('installed breaker afterimage executes stable IDs and current lease policy'
   rmSync(sequentialSourceDir, { recursive: true, force: true });
 }
 const PLAN_EXPECTED_COUNTS = Object.freeze({
-  bash: 64, diff: 90, js: 177, json: 4, markdown: 12, text: 10, yaml: 1,
+  bash: 64, diff: 91, js: 178, json: 4, markdown: 12, text: 10, yaml: 1,
 });
 const orderedCounts = value => Object.fromEntries(Object.entries(value)
   .sort(([left], [right]) => left.localeCompare(right)));

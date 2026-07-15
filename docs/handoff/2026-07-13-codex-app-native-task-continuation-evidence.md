@@ -1384,6 +1384,74 @@ no inherited approval from the historical receipt.
 - gate state: still open. Changed bytes require fresh cycle 4 round 5 with both reviewers pinned to
   exact `gpt-5.6-sol`/high; this Respond is not a Gate 1 pass.
 
+### Gate 1 fresh cycle 4 round 5 review — max reached
+
+- gate/artifact: Gate 1 design plus final 46-task plan, goal handoff, evidence, cycle-4 round-4
+  report/response, and current repository code/tests.
+- base/head: `c38a96137f8f4f0099c35e893860930e8ee4cf73..be9ce22d050c4ad8fee2c53cc4c960ab7132ea97`;
+  worktree clean at counted reviewer start.
+- invocation: one built-in `codex exec ... review --base c38a961...` and one direct adversarial audit;
+  both counted reviewers used ephemeral/ignore-config/ignore-rules/read-only execution with exact
+  `gpt-5.6-sol` and `model_reasoning_effort=high`.
+- reviewer actual: standard thread `019f64ca-f1da-7092-852b-becf18dff674` returned 2 P1 and 1 P2;
+  adversarial thread `019f64ca-f005-79e0-b6b6-956121ecbf4a` returned 3 Red and 1 Yellow with
+  `REQUEST_CHANGES`. `N_planned=N_actual=2`; both counted processes terminated naturally with exit 0.
+- model/effort evidence: both process headers confirmed exact `gpt-5.6-sol`, `high`, ephemeral,
+  ignored user config/rules, and read-only sandbox. No global Codex setting changed.
+- verdict: `REQUEST_CHANGES`; fresh cycle 4 reached configured `max=5` without convergence.
+- red/yellow/info: `2 / 4 / 0`; the directory replacement containment defect was corroborated by
+  both reviewers. The absent legacy lineage checkpoint remained a solo Red because duplicate or
+  corrupted proof can verify successfully; four independently reproduced solo defects remained
+  Yellow under the two-reviewer synthesis rule.
+- termination: `max_reached`; Gate 1 remains open. This is not an approval receipt and does not
+  authorize Gate 2 or implementation. Corrections must start fresh cycle 5.
+- report path: `.deep-review/reports/2026-07-15-171541-review.md`, SHA-256
+  `8c12f45917507d65961db64ba50a217e09f064e6dfc8257db5f91ddaf0ba378e`.
+- raw output bindings: standard SHA-256
+  `782ca6dea9edae073ff74389d67023ae21ec08403df0ac2e7778730fe1e86416`; adversarial SHA-256
+  `24e5e2db5eb288bf66db10acdbb1681be8c61725bfb7b245eca870a9689ffa7d`.
+- recurring export: run `01KXJDNPNZ75H50PR16CCBGA47`; architecture critical 50,
+  test-coverage critical 31, error-handling critical 29, security critical 20 (130 total), SHA-256
+  `d4c03f8f754e2af35685ad241a29f28bc3982f963eaaf014ed3043caa5072edd`.
+- main-agent judgment: accepted all six unique actionable findings. The plan needs immutable
+  same-ID replay across real block/detection drift, one exact legacy lineage checkpoint shared by
+  App and episode verification, check-to-create directory-swap containment, complete review request
+  ID caller migration, BigInt identity in the final App factory, and final status exact-shape tests.
+- reviewer environment note: the adversarial validator invocation failed at `mkdtemp` with `EPERM`
+  under its enforced read-only sandbox. No correctness conclusion was drawn from that limitation;
+  the validator's installation/execution paths were audited statically.
+
+### Gate 1 fresh cycle 4 round 5 Respond
+
+- disposition: accepted all 6 findings, rejected one unsafe sub-remedy, deferred 0;
+  `execution_path=main_fallback` under the session's no-subagent contract.
+- durability/lineage response: episode request publication writes and flushes only a private sibling
+  staging directory under the verified `episodes` parent before one directory rename. A target swap
+  cannot redirect a write outside the run. The App verifier now validates the exact bounded legacy
+  lineage checkpoint and complete episode-prefix digest, then traces only post-checkpoint edges.
+- replay/caller response: same-ID identity excludes fresh plugin detection and replay reconstructs
+  from immutable creation/dispatch fields before mutable inputs. A real claim→block transition
+  intentionally pauses the run, so current `LEASE_FENCED: RUN_PAUSED` policy rejects the retry
+  without returning a stale external-action descriptor. All test imports and Route A/B/C skill
+  commands use stable review IDs; the installed-tree validator enforces both inventories.
+- identity/status response: the final App path factory uses BigInt stat identities and tests adjacent
+  values above `Number.MAX_SAFE_INTEGER`. The earliest exact-key test and final null/app/human matrix
+  all require the complete `resume_policy` projection.
+- exact corrected candidate hashes: handoff
+  `1523907bf1931793b765ed8a5fac2d678a6ae1aa303cfef6e2c89f2e6f150fd9`; design
+  `e3d5d039b9bfcbcd0fc078f16f54936d0e287f20b69f18276e347894a4b0dc07`; ignored plan
+  `d1668d45738b83362824c980725f18eca15cff9e65e0180e9a9a9493a7608b4a`.
+- response record: `.deep-review/responses/2026-07-15-180219-response.md`, SHA-256
+  `b1c481db30c90195fc4cc1927ab674dcf7d39d776b59d5829965ac33bb4ad009`.
+- verification: embedded validator passed `ok:true` for 46 tasks and 360 fences
+  (`bash=64`, `diff=91`, `js=178`, `json=4`, `markdown=12`, `text=10`, `yaml=1`). It executed the
+  installed directory-swap and legacy-lineage probes, selected Task 7B→7G diffs, request-ID
+  inventories, and real breaker suite. `git diff --check` and cached diff check passed;
+  `npm run preflight` passed validation and all 1,463 tests with zero failures, cancellations,
+  skips, or todo.
+- gate state: still open. Changed bytes require fresh cycle 5 round 1 with both reviewers pinned to
+  exact `gpt-5.6-sol`/high; this Respond is not a Gate 1 pass.
+
 ## Review receipt template
 
 Each reviewed gate will add a receipt with all of these fields:
