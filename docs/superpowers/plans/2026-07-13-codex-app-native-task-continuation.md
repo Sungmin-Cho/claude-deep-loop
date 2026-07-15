@@ -135,13 +135,13 @@ These are the narrow baseline `Modify` anchors required by the execution tasks; 
 | 2A–2B | `scripts/lib/bounded-input.mjs:1-31` (`REVIEW_IMPORT_MAX_BYTES`, `readBoundedText`); `tests/bounded-input.test.mjs:1-35`; `tests/cli-skillface.test.mjs:1-18,192-265` (CLI harness and strict CLI-shape tail). |
 | 3A–3B | Created `scripts/lib/app-task-continuation.mjs` genesis defaults/deadline exports; `scripts/lib/initrun.mjs:13-58` (`buildInitialLoop`, `initRun`); `scripts/lib/schema.mjs:1-216` (`loadSchema`, `validate`); `schemas/loop-run.schema.json:1-29`; `tests/initrun.test.mjs:15-125`; `tests/schema.test.mjs:17-273`. |
 | 4A–4C | Created `scripts/lib/init-transaction.mjs` exports `hostObservationDigest` through `statusInitialization`; created `tests/init-transaction.test.mjs` projection/preflight/status cases. |
-| 5A–5C | Created `scripts/lib/durable-file.mjs` exports `syncRegularFile`, `syncParentDirectory`, `renamePreparedFile`, `unlinkRegularFile`, and `replaceFileDurably`; produced `scripts/lib/init-transaction.mjs` symbols `withInitLock`, `publishGenesisState`, `commitPreparedInit`; `scripts/lib/initrun.mjs:42-58` (`initRun`); created `tests/durable-file.test.mjs` POSIX/Windows durability cases; produced `tests/init-transaction.test.mjs` lock/publisher/contention cases; `tests/initrun.test.mjs:59-125`; `tests/session-profile.test.mjs`; `tests/insights.test.mjs`; `tests/project-root.test.mjs`; created `tests/helpers/init-contention-worker.mjs`. |
+| 5A–5C | Created `scripts/lib/durable-file.mjs` exports `syncRegularFile`, `syncParentDirectory`, `renamePreparedFile`, `unlinkRegularFile`, `createFileDurablyIfAbsent`, and `replaceFileDurably`; produced `scripts/lib/init-transaction.mjs` symbols `withInitLock`, `publishGenesisState`, `commitPreparedInit`; `scripts/lib/initrun.mjs:42-58` (`initRun`); created `tests/durable-file.test.mjs` POSIX/Windows durability and no-replace race cases; produced `tests/init-transaction.test.mjs` lock/publisher/contention cases; `tests/initrun.test.mjs:59-125`; `tests/session-profile.test.mjs`; `tests/insights.test.mjs`; `tests/project-root.test.mjs`; created `tests/helpers/init-contention-worker.mjs`. |
 | 6A–6E | Produced `scripts/lib/app-task-continuation.mjs` consent/observe/revoke/status/redaction exports; `scripts/deep-loop.mjs:40-141,340-365`; `scripts/lib/initrun.mjs:13-58`; `scripts/lib/integrity.mjs:96-187`; `scripts/lib/lease.mjs:13-199`; `scripts/lib/schema.mjs:164-216`; created `tests/app-task-continuation.test.mjs`; `tests/orch-cli.test.mjs:246-286,831-1005`; `tests/cli-skillface.test.mjs:66-99,192-265`; `tests/integrity.test.mjs:123-211`; `tests/lease.test.mjs:27-490`; `tests/schema.test.mjs:17-273`; created `tests/helpers/fixed-init-crash-worker.mjs`. |
 | 7A | `scripts/lib/schema.mjs:164-216`; `scripts/deep-loop.mjs:120-180`; `tests/schema.test.mjs:17-273`; `tests/validate-cli.test.mjs:39-84`. |
 | 7B | produced `scripts/lib/durable-file.mjs`; `scripts/lib/finish.mjs:70-107`; `scripts/lib/integrity.mjs:21-187`; `scripts/lib/lease.mjs:43-103`; `scripts/lib/state.mjs:79-115`; `scripts/lib/workspace.mjs`; `tests/automation.test.mjs`; `tests/breaker.test.mjs`; `tests/budget.test.mjs`; `tests/codex-checker-integration.test.mjs`; `tests/comprehension.test.mjs`; `tests/detect-terminal.test.mjs`; produced `tests/durable-file.test.mjs`; `tests/episode.test.mjs`; `tests/fencing.test.mjs`; `tests/finish.test.mjs`; produced `tests/fixtures/verified-app-run.mjs`; `tests/handoff.test.mjs`; `tests/headless-host.test.mjs`; `tests/insights.test.mjs`; `tests/integrity.test.mjs`; `tests/lease.test.mjs`; `tests/orch-cli.test.mjs`; `tests/pause.test.mjs`; `tests/precompact-hook.test.mjs`; `tests/project-root.test.mjs`; `tests/recover.test.mjs`; `tests/respawn.test.mjs`; `tests/review.test.mjs`; `tests/runtime-executable.test.mjs`; `tests/session-profile.test.mjs`; `tests/spawn-optin.test.mjs`; `tests/state.test.mjs`; `tests/terminal-cli.test.mjs`; `tests/workspace.test.mjs`; created `tests/helpers/anchored-crash-worker.mjs`. |
 | 7C | `scripts/lib/lease.mjs:43-199`; `scripts/lib/budget.mjs:279-1048`; `scripts/lib/headless-host.mjs`; `scripts/deep-loop.mjs:650-670`; `skills/deep-loop-continue/SKILL.md:173-182`; `skills/deep-loop-workflow/references/handoff-respawn.md:179-187`; produced `tests/helpers/anchored-crash-worker.mjs`; `tests/lease.test.mjs`; `tests/budget.test.mjs`; `tests/headless-host.test.mjs`; `tests/skills.test.mjs`; `tests/cli-skillface.test.mjs`; `tests/insights.test.mjs`; `tests/integrity.test.mjs`; `tests/project-root.test.mjs`. |
 | 7D | Produced `scripts/lib/init-transaction.mjs` strict current/genesis proof; produced `scripts/lib/app-task-continuation.mjs` observe/revoke/status boundaries; produced `tests/fixtures/verified-app-run.mjs`; produced `tests/init-transaction.test.mjs`; produced `tests/app-task-continuation.test.mjs`; `tests/cli-skillface.test.mjs`. |
-| 7G | `scripts/lib/lease.mjs:102-199`; `scripts/lib/breaker.mjs:1-62`; `scripts/lib/state.mjs:102-110`; `tests/lease.test.mjs`; `tests/breaker.test.mjs`; `tests/project-root.test.mjs`; `tests/integrity.test.mjs`; produced `tests/helpers/anchored-crash-worker.mjs`. |
+| 7G | `scripts/lib/lease.mjs:102-199`; `scripts/lib/breaker.mjs:1-62`; `scripts/lib/state.mjs:102-110`; `scripts/deep-loop.mjs:694-703`; `skills/deep-loop-status/SKILL.md`; `skills/deep-loop-continue/SKILL.md`; `tests/lease.test.mjs`; `tests/breaker.test.mjs`; `tests/cli-skillface.test.mjs`; `tests/project-root.test.mjs`; `tests/integrity.test.mjs`; produced `tests/helpers/anchored-crash-worker.mjs`. |
 | 7E–7F | `scripts/lib/session-profile.mjs:44-80`; `scripts/lib/comprehension.mjs:27-92`; `scripts/lib/project-root-recovery.mjs:20-51`; `scripts/lib/budget.mjs:1053-1067`; `scripts/lib/episode.mjs:25-220`; `scripts/lib/insights.mjs:357-509`; `scripts/lib/review.mjs:50-179,310-668`; `scripts/lib/workspace.mjs:80-153`; `scripts/lib/detect-terminal.mjs:284-343`; `scripts/deep-loop.mjs:120-180,340-710`; `skills/deep-loop/SKILL.md`; `skills/deep-loop-continue/SKILL.md`; `skills/deep-loop-workflow/references/hill-climbing.md`; `tests/helpers/episode-request.mjs`; `tests/session-profile.test.mjs`; `tests/comprehension.test.mjs`; `tests/project-root.test.mjs`; `tests/budget.test.mjs`; `tests/cli-skillface.test.mjs`; `tests/codex-checker-integration.test.mjs`; `tests/codex-isolation-integration.test.mjs`; `tests/episode.test.mjs`; `tests/fencing.test.mjs`; `tests/finish.test.mjs`; `tests/handoff.test.mjs`; `tests/next-action.test.mjs`; `tests/orch-cli.test.mjs`; `tests/pause.test.mjs`; `tests/review.test.mjs`; `tests/insights.test.mjs`; `tests/review-import.test.mjs`; `tests/reviewer-failclosed.test.mjs`; `tests/workspace.test.mjs`; `tests/detect-terminal.test.mjs`. |
 | 8A–8B | Produced `scripts/lib/app-task-continuation.mjs` `prepareAppTask`; `scripts/lib/handoff.mjs:38-224` (`handoffMarkdown`, `emitHandoff`); `scripts/lib/lease.mjs:121-205` (`reserveHandoff`, `rollbackHandoff`); `scripts/lib/schema.mjs:164-216`; `tests/handoff.test.mjs:343-789,1107-1163`; produced `tests/app-task-continuation.test.mjs` prepare cases; created `tests/fixtures/app-prepare-worker.mjs`. |
 | 9A–9B | Produced `scripts/lib/app-task-continuation.mjs` `confirmAppTask`, `failAppTask`, `sweepUnconfirmedAppTask`, `statusAppTask`, `awaitAppTask`; `scripts/deep-loop.mjs:489-616`; produced `tests/app-task-continuation.test.mjs` receipt/readiness cases; `tests/orch-cli.test.mjs:246-286,831-1005`; `tests/schema.test.mjs:17-273`. |
@@ -204,6 +204,7 @@ export function syncRegularFile(path, deps);
 export function syncParentDirectory(path, deps);
 export function renamePreparedFile(source, destination, options, deps);
 export function unlinkRegularFile(path, deps);
+export function createFileDurablyIfAbsent(path, bytes, options, deps): boolean;
 export function replaceFileDurably(path, bytes, options, deps);
 
 // scripts/lib/app-task-continuation.mjs
@@ -555,6 +556,19 @@ test('POSIX identity requires canonical-byte equality as well as same filesystem
     stat: () => sameInode, sameFile: () => true };
   assert.equal(sameNativeDirectory('/repo', '/repo', posix), true);
   assert.equal(sameNativeDirectory('/repo', '/hard-link-alias', posix), false);
+});
+
+test('native identity retains adjacent filesystem identifiers above Number safe range', () => {
+  const identities = new Map([
+    ['/repo', { dev: 9n, ino: 9_007_199_254_740_992n }],
+    ['/other', { dev: 9n, ino: 9_007_199_254_740_993n }],
+  ]);
+  const exact = { platform: 'win32', realpath: value => value,
+    stat: value => identities.get(value),
+    sameFile: (left, right) => left.dev === right.dev && left.ino === right.ino };
+  assert.equal(sameNativeDirectory('/repo', '/repo', exact), true);
+  assert.equal(sameNativeDirectory('/repo', '/other', exact), false,
+    'adjacent BigInt identities must not collapse through Number rounding');
 });
 
 test('manual surface correlation permits only the raw-free enum-only profile', () => {
@@ -4700,7 +4714,7 @@ git commit -m "feat: add owner-safe init root lock" -m "Co-Authored-By: Claude O
 
 **Interfaces:**
 - Consumes: an exact prepare binding, the raw-free canonical request plus full observation only at commit, Task 4A's deterministic builder, fixed lock, strict current/pending/state/hash readers, Task 0B's bounded Windows rename helper, and injected crash probes.
-- Produces: one shared platform-aware durability boundary, root-contained strict-name temp/write/rename cleanup, hash-first/loop-last genesis publication, pending-before-state/current CAS, exact retry outcomes, and no repair of malformed/symlink/foreign artifacts. POSIX durability is file `fsync` + same-directory rename + parent-directory `fsync`; Windows durability is file flush + bounded sharing-error rename + journal/exact-retry recovery, with no directory-fd open or `fsync`.
+- Produces: one shared platform-aware durability boundary, root-contained strict-name temp/write/rename cleanup, atomic no-replace publication, hash-first/loop-last genesis publication, pending-before-state/current CAS, exact retry outcomes, and no repair of malformed/symlink/foreign artifacts. POSIX durability is file `fsync` + same-directory rename/link + parent-directory `fsync`; Windows durability is file flush + bounded sharing-error rename or atomic hard-link publication + journal/exact-retry recovery, with no directory-fd open or `fsync`.
 
 - [ ] **Step 1: Write complete pending/publisher tests**
 
@@ -4928,6 +4942,19 @@ test('durable helper never opens a Windows directory fd and retries sharing erro
   assert.deepEqual(opens, [['C:\\run\\.tmp-a', 'r+']],
     'Windows FlushFileBuffers requires a write-capable, non-truncating handle');
 });
+
+test('durable create-if-absent never replaces a check-to-publish race winner', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-durable-no-replace-'));
+  const target = join(root, 'request.md');
+  const created = createFileDurablyIfAbsent(target, 'kernel skeleton', {
+    nonce: () => 'callerownednonce0',
+    beforePublish: () => writeFileSync(target, 'execution-plane winner'),
+  });
+  assert.equal(created, false);
+  assert.equal(readFileSync(target, 'utf8'), 'execution-plane winner');
+  assert.deepEqual(readdirSync(root), ['request.md'],
+    'the losing caller cleans only its own temporary');
+});
 ```
 
 - [ ] **Step 2: Run publisher tests to verify RED**
@@ -4944,8 +4971,9 @@ embed a raw `renameSync` or unconditional directory-fd `fsync` path.
 
 ```js
 // scripts/lib/durable-file.mjs — complete file
+import { randomBytes as durableRandomBytes } from 'node:crypto';
 import { closeSync as durableCloseSync, fsyncSync as durableFsyncSync,
-  lstatSync as durableLstatSync, openSync as durableOpenSync,
+  linkSync as durableLinkSync, lstatSync as durableLstatSync, openSync as durableOpenSync,
   unlinkSync as durableUnlinkSync, writeFileSync as durableWriteFileSync } from 'node:fs';
 import { dirname as durableDirname } from 'node:path';
 import { renameAtomicWithRetry } from './atomic-write.mjs';
@@ -5001,6 +5029,31 @@ export function unlinkRegularFile(path, deps = {}) {
   (deps.unlink ?? durableUnlinkSync)(path);
   syncParentDirectory(path, deps);
   return true;
+}
+
+export function createFileDurablyIfAbsent(path, bytes, {
+  beforePublish = () => {}, mode = 0o600, nonce,
+} = {}, deps = {}) {
+  const suffix = (nonce ?? (() => durableRandomBytes(12).toString('hex')))();
+  if (!/^[A-Za-z0-9_-]{16,128}$/.test(suffix)) {
+    throw new Error('DURABLE_CREATE_NONCE_INVALID');
+  }
+  const temporary = `${path}.create-${suffix}`;
+  (deps.writeFile ?? durableWriteFileSync)(temporary, bytes, { flag: 'wx', mode });
+  try {
+    syncRegularFile(temporary, deps);
+    beforePublish();
+    try { (deps.link ?? durableLinkSync)(temporary, path); }
+    catch (error) {
+      if (error?.code === 'EEXIST') return false;
+      throw error;
+    }
+    syncParentDirectory(path, deps);
+    return true;
+  } finally {
+    // This invocation owns only `temporary`; a racing destination is never unlinked or renamed.
+    unlinkRegularFile(temporary, deps);
+  }
 }
 
 export function replaceFileDurably(path, bytes, {
@@ -5600,7 +5653,8 @@ function initialRouteEligibility(root, actualCwd, observation, native) {
 
 function nativeInitObservationDeps(kernelCwd, platform) {
   return { kernelCwd, platform, exists: existsSync,
-    realpath: value => (realpathSync.native || realpathSync)(value), stat: value => statSync(value),
+    realpath: value => (realpathSync.native || realpathSync)(value),
+    stat: value => statSync(value, { bigint: true }),
     sameFile: (left, right) => left.dev === right.dev && left.ino === right.ino };
 }
 
@@ -6387,7 +6441,8 @@ function manualEnumProfile(f, argv, expectedObservation) {
 
 function nativeObservationDeps(kernelCwd) {
   return { platform: process.platform, kernelCwd,
-    realpath: value => (realpathSync.native || realpathSync)(value), stat: value => statSync(value),
+    realpath: value => (realpathSync.native || realpathSync)(value),
+    stat: value => statSync(value, { bigint: true }),
     sameFile: (left, right) => left.dev === right.dev && left.ino === right.ino,
     exists: existsSync };
 }
@@ -7018,7 +7073,8 @@ test('App observe accepts root or one active recorded worktree and rejects escap
   loop.active_workstreams = ['WS1'];
   writeState(accepted.root, accepted.runId, loop);
   const native = cwd => ({ kernelCwd: cwd, platform: process.platform,
-    exists: existsSync, realpath: value => realpathSync(value), stat: value => statSync(value),
+    exists: existsSync, realpath: value => realpathSync(value),
+    stat: value => statSync(value, { bigint: true }),
     sameFile: (left, right) => left.dev === right.dev && left.ino === right.ino,
     nowFn: () => Date.parse('2026-07-13T00:00:01.000Z') });
   const input = { owner: accepted.runId, generation: 1, runtime: 'codex',
@@ -10681,22 +10737,37 @@ export function verifyEpisodeCreationCorrelation(loop, lines) {
     episodeById.set(episode.id, episode);
     const event = eventById.get(episode.id);
     if (!event) { errors.push(`episode ${episode.id} has no creation event`); continue; }
-    const initialStatus = event.data.status ?? 'pending';
-    if (episode.creation_request_digest !== event.data.request_digest
+    const projection = {
+      plugin: episode.plugin, role: episode.role, kind: episode.kind, point: episode.point,
+      workstream: episode.workstream_id ?? null,
+      expectedArtifacts: structuredClone(episode.expected_artifacts ?? []),
+      targetMaker: episode.target_maker ?? null,
+      reviewerResolution: episode.reviewer_resolution ?? null,
+      evidence_digest: intentField('episode-evidence', episode.evidence),
+      contract_digest: intentField('episode-contract', episode.contract),
+      initialStatus: episode.creation_initial_status,
+      blockReason: episode.creation_block_reason ?? null,
+      creation_request_id_digest: episode.creation_request_id_digest ?? null,
+      dispatch_request_id_digest: episode.dispatch_request_id_digest ?? null,
+      dispatch_request_digest: episode.dispatch_request_digest ?? null,
+    };
+    const recomputed = intentField('episode-create-request', projection);
+    if (recomputed !== episode.creation_request_digest
+        || recomputed !== event.data.request_digest
+        || JSON.stringify(projection) !== JSON.stringify(event.data.request_projection)
         || (episode.creation_request_id_digest ?? null)
           !== (event.data.creation_request_id_digest ?? null)
+        || (episode.dispatch_request_id_digest ?? null)
+          !== (event.data.dispatch_request_id_digest ?? null)
         || (episode.dispatch_request_digest ?? null)
           !== (event.data.dispatch_request_digest ?? null)
-        || episode.creation_initial_status !== initialStatus
-        || (episode.creation_block_reason ?? null)
-          !== (event.data.block_reason ?? null)
-        || episode.plugin !== event.data.plugin || episode.role !== event.data.role
-        || episode.kind !== event.data.kind || episode.point !== event.data.point) {
+        || event.data.episode_id !== episode.id) {
       errors.push(`episode ${episode.id} creation projection mismatch`);
     }
     const hasCallerId = episode.creation_request_id_digest != null;
-    const hasDispatchId = episode.dispatch_request_digest != null;
-    if (hasCallerId === hasDispatchId) {
+    const hasDispatchId = episode.dispatch_request_id_digest != null;
+    if (hasCallerId === hasDispatchId
+        || hasDispatchId !== (episode.dispatch_request_digest != null)) {
       errors.push(`episode ${episode.id} has ambiguous creation identity`);
     }
   }
@@ -14632,6 +14703,8 @@ git commit -m "fix: verify success-class state authority" -m "Co-Authored-By: Cl
 **Files:**
 - Modify: `scripts/lib/episode.mjs:25-220` (public direct authority plus the review operation's
   already-open mutation context and exact recovered episode projection).
+- Consume: produced `scripts/lib/durable-file.mjs` `createFileDurablyIfAbsent` and its
+  `tests/durable-file.test.mjs` check-to-publish race proof.
 - Modify: `scripts/lib/insights.mjs:357-509` (compute/emit/latest verified selection).
 - Modify: `scripts/lib/review.mjs:50-179,310-668` (dispatch, claim/block/revalidate, outcomes).
 - Modify: `scripts/lib/workspace.mjs:80-153` (literal status/terminal direct authority plus
@@ -14675,7 +14748,10 @@ git commit -m "fix: verify success-class state authority" -m "Co-Authored-By: Cl
   fenced review/emit/detect calls; runtime, terminal, no-op, eligibility, path, and source policy
   all follow proof. Direct `episode new` requires a bounded logical `--request-id`; exact retry
   reuses it, changed payload conflicts, and a new intentional episode rotates it. Nested review
-  creation instead binds the complete public `dispatch-review` digest and never exposes a second ID.
+  creation instead requires its own bounded logical dispatch request ID. The kernel stores a
+  domain-separated ID digest separately from the complete request digest; response-loss retry reuses
+  the ID and each intentional review round rotates it. `beforeFinalLock` is test-only and is never
+  accepted by the CLI.
 
 - [ ] **Step 1: Write the complete failing pre-action authority tests**
 
@@ -14854,6 +14930,7 @@ test7f('review dispatch proves authority before descriptor and contract source a
     assert7f.throws(() => dispatch7f(fixture.root, fixture.runId, {
       point: 'design', workstreamId: fixture.ws,
       detected: { 'deep-review': true, codex: true },
+      requestId: 'authority-proof-dispatch',
       fence: { ...fixture.fence, owner },
     }), expected);
   }
@@ -14863,7 +14940,8 @@ test7f('review dispatch proves authority before descriptor and contract source a
 test7f('review dispatch exact retry after marker cleanup reuses one checker', () => {
   const fixture = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
   const input = { point: 'design', workstreamId: fixture.ws,
-    detected: { 'deep-review': true, codex: true }, fence: fixture.fence };
+    detected: { 'deep-review': true, codex: true },
+    requestId: 'dispatch-design-round-1', fence: fixture.fence };
   const first = dispatch7f(fixture.root, fixture.runId, input);
   const firstEpisode = stateDispatch7f(fixture.root, fixture.runId).data.episodes
     .find(episode => episode.id === first.checkerEpisodeId);
@@ -14929,7 +15007,8 @@ test7f('episode creation identity is state-event correlated and status-independe
 
   const stateOnly = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
   const input = { point: 'design', workstreamId: stateOnly.ws,
-    detected: { 'deep-review': true, codex: true }, fence: stateOnly.fence };
+    detected: { 'deep-review': true, codex: true },
+    requestId: 'state-correlation-dispatch', fence: stateOnly.fence };
   const first = dispatch7f(stateOnly.root, stateOnly.runId, input);
   raw7f(stateOnly.root, stateOnly.runId, loop => {
     loop.episodes.find(episode => episode.id === first.checkerEpisodeId)
@@ -14937,6 +15016,20 @@ test7f('episode creation identity is state-event correlated and status-independe
   });
   assert7f.throws(() => verifiedDispatch7f(stateOnly.root, stateOnly.runId),
     /episode creation/);
+
+  const semanticOnly = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
+  const semantic = dispatch7f(semanticOnly.root, semanticOnly.runId, {
+    ...input, workstreamId: semanticOnly.ws, fence: semanticOnly.fence,
+    requestId: 'semantic-correlation-dispatch',
+  });
+  raw7f(semanticOnly.root, semanticOnly.runId, loop => {
+    const checker = loop.episodes.find(episode => episode.id === semantic.checkerEpisodeId);
+    checker.target_maker = '999-forged-maker';
+    checker.expected_artifacts = ['forged-output.md'];
+  });
+  assert7f.throws(() => verifiedDispatch7f(semanticOnly.root, semanticOnly.runId),
+    /episode creation/,
+    'copied creation digest cannot authenticate mutated immutable semantic fields');
 
   const eventOnly = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
   dispatch7f(eventOnly.root, eventOnly.runId, { ...input,
@@ -14949,7 +15042,8 @@ test7f('episode creation identity is state-event correlated and status-independe
   for (const status of ['pending', 'in_progress', 'approved', 'rejected', 'blocked']) {
     const fixture = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
     const retryInput = { point: 'design', workstreamId: fixture.ws,
-      detected: { 'deep-review': true, codex: true }, fence: fixture.fence };
+      detected: { 'deep-review': true, codex: true },
+      requestId: `status-retry-${status}`, fence: fixture.fence };
     const created = dispatch7f(fixture.root, fixture.runId, retryInput);
     raw7f(fixture.root, fixture.runId, loop => {
       loop.episodes.find(episode => episode.id === created.checkerEpisodeId).status = status;
@@ -14957,6 +15051,49 @@ test7f('episode creation identity is state-event correlated and status-independe
     assert7f.equal(dispatch7f(fixture.root, fixture.runId, retryInput).checkerEpisodeId,
       created.checkerEpisodeId, status);
   }
+});
+
+test7f('review dispatch separates retry identity, later rounds, and final-lock checker CAS', () => {
+  const fixture = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
+  const common = { point: 'design', workstreamId: fixture.ws,
+    detected: { 'deep-review': true, codex: true }, fence: fixture.fence };
+  const first = dispatch7f(fixture.root, fixture.runId,
+    { ...common, requestId: 'logical-review-round-1' });
+  raw7f(fixture.root, fixture.runId, loop => {
+    loop.episodes.find(episode => episode.id === first.checkerEpisodeId).status = 'rejected';
+  });
+  const artifact = '.claude/worktrees/design/fix.md';
+  write7f(join7f(fixture.root, artifact), '# fixed design');
+  const fixMaker = episode7f(fixture.root, fixture.runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'fix', point: 'design',
+    workstream: fixture.ws, expectedArtifacts: [artifact], fence: fixture.fence,
+    requestId: 'logical-review-fix-maker',
+  });
+  record7f(fixture.root, fixture.runId, fixMaker.id,
+    { status: 'done', artifacts: [artifact], fence: fixture.fence });
+  assert7f.equal(dispatch7f(fixture.root, fixture.runId,
+    { ...common, requestId: 'logical-review-round-1' }).checkerEpisodeId,
+  first.checkerEpisodeId, 'response-loss retry remains bound to its original maker');
+  const second = dispatch7f(fixture.root, fixture.runId,
+    { ...common, requestId: 'logical-review-round-2' });
+  assert7f.notEqual(second.checkerEpisodeId, first.checkerEpisodeId);
+  assert7f.equal(stateDispatch7f(fixture.root, fixture.runId).data.episodes
+    .find(episode => episode.id === second.checkerEpisodeId).target_maker, fixMaker.id);
+  assert7f.throws(() => dispatch7f(fixture.root, fixture.runId, {
+    ...common, detected: { codex: true }, requestId: 'logical-review-round-2',
+  }), /REVIEW_DISPATCH_REQUEST_CONFLICT/);
+
+  const raced = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
+  const racedCommon = { point: 'design', workstreamId: raced.ws,
+    detected: { 'deep-review': true, codex: true }, fence: raced.fence };
+  assert7f.throws(() => dispatch7f(raced.root, raced.runId, {
+    ...racedCommon, requestId: 'cas-loser', beforeFinalLock: () => {
+      dispatch7f(raced.root, raced.runId, { ...racedCommon, requestId: 'cas-winner' });
+    },
+  }), /REVIEW_NO_ELIGIBLE_MAKER/);
+  const checkers = stateDispatch7f(raced.root, raced.runId).data.episodes
+    .filter(episode => episode.role === 'checker' && episode.target_maker === raced.maker);
+  assert7f.equal(checkers.length, 1);
 });
 ```
 
@@ -15024,7 +15161,8 @@ function reviewAuthorityFixture7f({ claim = true } = {}) {
     { status: 'done', artifacts: [artifact], fence });
   const checker = dispatch7f(fixture.root, fixture.runId, {
     point: 'implementation', workstreamId: ws, independentSubagent: true,
-    detected: { 'deep-review': true, codex: true }, fence,
+    detected: { 'deep-review': true, codex: true },
+    requestId: 'review-authority-dispatch', fence,
   }).checkerEpisodeId;
   if (claim) claim7f(fixture.root, fixture.runId,
     { episodeId: checker, fence, attemptIdFactory: () => 'attempt-01' });
@@ -15203,7 +15341,7 @@ test('recovered insights commit publishes or validates its referenced artifact b
 - [ ] **Step 2: Run focused tests and verify RED**
 
 ```bash
-node --test --test-name-pattern='insights proves runs|latest skips a terminal|finish 이벤트 없는 terminal|legacy double-finish|review dispatch proves authority|episode creation identity|episode new missing --request-id|stale lease creates zero|review claim factory and revalidation|review descriptor revalidation and outcomes|inheritWorkstreams rejects|detect-terminal fences and proves' tests/insights.test.mjs tests/review-import.test.mjs tests/reviewer-failclosed.test.mjs tests/workspace.test.mjs tests/detect-terminal.test.mjs tests/cli-skillface.test.mjs
+node --test --test-name-pattern='insights proves runs|latest skips a terminal|finish 이벤트 없는 terminal|legacy double-finish|review dispatch proves authority|review dispatch exact retry|review dispatch separates retry identity|episode creation identity|episode new missing --request-id|review dispatch missing --request-id|durable create-if-absent|stale lease creates zero|review claim factory and revalidation|review descriptor revalidation and outcomes|inheritWorkstreams rejects|detect-terminal fences and proves' tests/insights.test.mjs tests/review-import.test.mjs tests/reviewer-failclosed.test.mjs tests/workspace.test.mjs tests/detect-terminal.test.mjs tests/cli-skillface.test.mjs tests/durable-file.test.mjs
 ```
 
 Expected: FAIL because active classification and corrupt finish-history classification precede
@@ -15815,13 +15953,15 @@ diff --git a/scripts/lib/episode.mjs b/scripts/lib/episode.mjs
 --- a/scripts/lib/episode.mjs
 +++ b/scripts/lib/episode.mjs
 @@ -1,7 +1,8 @@
- import { mkdirSync, existsSync } from 'node:fs';
+-import { mkdirSync, existsSync } from 'node:fs';
++import { mkdirSync } from 'node:fs';
  import { isAbsolute, join, resolve, sep } from 'node:path';
  import { readState, writeState, withLock, runDir } from './state.mjs';
 -import { appendAnchored } from './integrity.mjs';
 +import { appendAnchored, directMutationOptions, intentField,
 +  withVerifiedMutationLock } from './integrity.mjs';
- import { atomicWrite } from './envelope.mjs';
+-import { atomicWrite } from './envelope.mjs';
++import { createFileDurablyIfAbsent } from './durable-file.mjs';
  import { slugify } from './slug.mjs';
  import { leaseCheck } from './lease.mjs';
 @@ -28,5 +29,43 @@ function requestSkeleton({ id, plugin, role, kind, point, workstream, expectedArtifacts, evidence }) {
@@ -16007,26 +16147,27 @@ diff --git a/scripts/lib/episode.mjs b/scripts/lib/episode.mjs
 ```
 
 Apply this final corrective patch after the preceding episode/review patches. Direct episode
-creation deliberately has no marker-free content replay; only review dispatch supplies
-`dispatchRequestDigest`, because one maker admits at most one checker for that exact public
-dispatch. Both short dispatch phases use the same complete caller-input intent, while the selected
+creation deliberately has no marker-free content replay; review dispatch supplies separate
+`dispatchRequestIdDigest` and `dispatchRequestDigest` values. Same-ID replay is global across all
+checker statuses and makers, while each intentional round rotates its caller ID. Both short dispatch
+phases use the same complete caller-input intent, while the selected
 maker and episode payload are deterministic verified-state derivations recorded in the event/state
-projection. The run lock also owns request-file materialization and never replaces an existing
-editable request.
+projection. The final lock rederives latest-maker/checker eligibility before append. Request-file
+materialization uses an atomic create-if-absent link and never replaces an existing editable request.
 
 ```diff
 diff --git a/scripts/lib/episode.mjs b/scripts/lib/episode.mjs
 index c567221..8bf9718 100644
 --- a/scripts/lib/episode.mjs
 +++ b/scripts/lib/episode.mjs
-@@ -31,31 +31,50 @@ function requestSkeleton({ id, plugin, role, kind, point, workstream, expectedAr
+@@ -31,31 +31,51 @@ function requestSkeleton({ id, plugin, role, kind, point, workstream, expectedAr
 -
 +
  function episodeRequestProjection({ plugin, role, kind, point, workstream = null,
    expectedArtifacts = [], targetMaker, reviewerResolution, evidence, contract,
 -  initialStatus = 'pending', blockReason } = {}) {
 +  initialStatus = 'pending', blockReason, creationRequestIdDigest,
-+  dispatchRequestDigest } = {}) {
++  dispatchRequestIdDigest, dispatchRequestDigest } = {}) {
    return { plugin, role, kind, point, workstream, expectedArtifacts,
      targetMaker: targetMaker ?? null,
      reviewerResolution: reviewerResolution ?? null,
@@ -16035,6 +16176,7 @@ index c567221..8bf9718 100644
 -    initialStatus, blockReason: blockReason ?? null };
 +    initialStatus, blockReason: blockReason ?? null,
 +    creation_request_id_digest: creationRequestIdDigest ?? null,
++    dispatch_request_id_digest: dispatchRequestIdDigest ?? null,
 +    dispatch_request_digest: dispatchRequestDigest ?? null };
  }
 -
@@ -16047,8 +16189,8 @@ index c567221..8bf9718 100644
 -function episodeAppend(root, runId, mutation, event, mutate, preCheck, options) {
 +const EPISODE_REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 +
-+function episodeRequestIdDigest(requestId, dispatchRequestDigest) {
-+  if (dispatchRequestDigest != null) {
++function episodeRequestIdDigest(requestId, dispatchRequestIdDigest) {
++  if (dispatchRequestIdDigest != null) {
 +    if (requestId != null) throw new Error('EPISODE_REQUEST_ID_CONFLICT');
 +    return null;
 +  }
@@ -16080,32 +16222,35 @@ index c567221..8bf9718 100644
    };
    if (mutation) return execute(mutation);
    const { callerBinding, intentDigest, fenceError } = options;
-@@ -66,7 +85,7 @@ function episodeAppend(root, runId, mutation, event, mutate, preCheck, options)
+@@ -66,7 +86,8 @@ function episodeAppend(root, runId, mutation, event, mutate, preCheck, options)
  function createEpisode(root, runId, {
    plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker,
    reviewerResolution, evidence, contract, initialStatus = 'pending', blockReason,
 -  fence, operation, mutation = null, crashProbe,
-+  fence, operation, mutation = null, crashProbe, requestId, dispatchRequestDigest,
++  fence, operation, mutation = null, crashProbe, requestId,
++  dispatchRequestIdDigest, dispatchRequestDigest,
  } = {}) {
    if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error(`FENCE_REQUIRED: ${operation}`);
    // Fix 3: validate required non-fence args before any state write
-@@ -90,15 +109,26 @@ function createEpisode(root, runId, {
+@@ -90,15 +111,28 @@ function createEpisode(root, runId, {
    }
    let id, requestPath, dir;
    const safePlugin = slugify(plugin) || 'plugin';
 +  const creationRequestIdDigest = episodeRequestIdDigest(
-+    requestId, dispatchRequestDigest);
++    requestId, dispatchRequestIdDigest);
    const completeRequest = episodeRequestProjection({ plugin, role, kind, point,
      workstream, expectedArtifacts, targetMaker, reviewerResolution, evidence, contract,
 -    initialStatus, blockReason });
-+    initialStatus, blockReason, creationRequestIdDigest, dispatchRequestDigest });
++    initialStatus, blockReason, creationRequestIdDigest,
++    dispatchRequestIdDigest, dispatchRequestDigest });
    const requestDigest = episodeRequestDigest({ plugin, role, kind, point, workstream,
      expectedArtifacts, targetMaker, reviewerResolution, evidence, contract,
 -    initialStatus, blockReason });
 -  const recoverExact = loop => {
 -    const matches = loop.episodes.filter(episode =>
 -      episode.creation_request_digest === requestDigest);
-+    initialStatus, blockReason, creationRequestIdDigest, dispatchRequestDigest });
++    initialStatus, blockReason, creationRequestIdDigest,
++    dispatchRequestIdDigest, dispatchRequestDigest });
 +  const recoverExact = (loop, recoveredTransaction = null) => {
 +    const recoveredEvents = recoveredTransaction?.events?.filter(event =>
 +      event.type === 'episode-new' && event.data?.creation_contract === 'episode-create-v1'
@@ -16115,13 +16260,13 @@ index c567221..8bf9718 100644
 +    }
 +    const matches = recoveredTransaction !== null
 +      ? loop.episodes.filter(episode => episode.id === recoveredEvents[0].data.episode_id)
-+      : loop.episodes.filter(episode => dispatchRequestDigest != null
-+        ? episode.dispatch_request_digest === dispatchRequestDigest
++      : loop.episodes.filter(episode => dispatchRequestIdDigest != null
++        ? episode.dispatch_request_id_digest === dispatchRequestIdDigest
 +        : episode.creation_request_id_digest === creationRequestIdDigest);
      if (matches.length !== 1) throw new Error('EPISODE_RESPONSE_PROJECTION_CHANGED');
      const [recovered] = matches;
      if (recovered.plugin !== plugin || recovered.role !== role
-@@ -111,31 +141,69 @@ function createEpisode(root, runId, {
+@@ -111,31 +145,72 @@ function createEpisode(root, runId, {
          || JSON.stringify(recovered.evidence) !== JSON.stringify(evidence)
          || JSON.stringify(recovered.contract) !== JSON.stringify(contract)
          || recovered.creation_initial_status !== initialStatus
@@ -16130,10 +16275,12 @@ index c567221..8bf9718 100644
 +        || (recovered.creation_block_reason ?? null) !== (blockReason ?? null)
 +        || (recovered.creation_request_id_digest ?? null)
 +          !== (creationRequestIdDigest ?? null)
++        || (recovered.dispatch_request_id_digest ?? null)
++          !== (dispatchRequestIdDigest ?? null)
 +        || (recovered.dispatch_request_digest ?? null) !== (dispatchRequestDigest ?? null)
 +        || recovered.creation_contract !== 'episode-create-v1'
 +        || recovered.creation_request_digest !== requestDigest) {
-+      throw new Error(dispatchRequestDigest == null
++      throw new Error(dispatchRequestIdDigest == null
 +        && recovered.creation_request_id_digest === creationRequestIdDigest
 +        ? 'EPISODE_REQUEST_CONFLICT' : 'EPISODE_RESPONSE_PROJECTION_CHANGED');
      }
@@ -16145,8 +16292,8 @@ index c567221..8bf9718 100644
 -  const onExisting = loop => loop.episodes.some(episode =>
 -    episode.creation_request_digest === requestDigest) ? recoverExact(loop) : null;
 -  episodeAppend(root, runId, mutation, { type: 'episode-new', data: {
-+  const onExisting = loop => loop.episodes.some(episode => dispatchRequestDigest != null
-+    ? episode.dispatch_request_digest === dispatchRequestDigest
++  const onExisting = loop => loop.episodes.some(episode => dispatchRequestIdDigest != null
++    ? episode.dispatch_request_id_digest === dispatchRequestIdDigest
 +    : episode.creation_request_id_digest === creationRequestIdDigest)
 +    ? recoverExact(loop) : null;
 +  const event = { type: 'episode-new', data: {
@@ -16154,7 +16301,9 @@ index c567221..8bf9718 100644
 -    request_digest: requestDigest,
 +    creation_contract: 'episode-create-v1', request_digest: requestDigest,
 +    creation_request_id_digest: creationRequestIdDigest,
++    dispatch_request_id_digest: dispatchRequestIdDigest ?? null,
 +    dispatch_request_digest: dispatchRequestDigest ?? null,
++    request_projection: completeRequest,
      ...(initialStatus === 'blocked' ? { status: initialStatus, block_reason: blockReason } : {}),
      ...(reviewerResolution ? { reviewer_resolution: reviewerResolution } : {}),
 -  } }, (loop) => {
@@ -16183,11 +16332,9 @@ index c567221..8bf9718 100644
 +      throw new Error('EPISODE_PATH_ESCAPE: ' + id);
 +    }
 +    mkdirSync(dir, { recursive: true });
-+    if (!existsSync(requestPath)) {
-+      atomicWrite(requestPath, requestSkeleton({
-+        id, plugin, role, kind, point, workstream, expectedArtifacts, evidence,
-+      }));
-+    }
++    createFileDurablyIfAbsent(requestPath, requestSkeleton({
++      id, plugin, role, kind, point, workstream, expectedArtifacts, evidence,
++    }));
 +    return { id, requestPath };
 +  };
 +  return episodeAppend(root, runId, mutation, event, (loop) => {
@@ -16198,11 +16345,12 @@ index c567221..8bf9718 100644
        creation_block_reason: blockReason ?? null,
 +      creation_contract: 'episode-create-v1',
 +      creation_request_id_digest: creationRequestIdDigest,
++      dispatch_request_id_digest: dispatchRequestIdDigest ?? null,
 +      dispatch_request_digest: dispatchRequestDigest ?? null,
        verification: { checker_episode_required: role === 'maker', checker_plugin: 'deep-review', review_point: point, proof_required: expectedArtifacts },
      };
      if (targetMaker && typeof targetMaker === 'string' && targetMaker.length) epObj.target_maker = targetMaker;
-@@ -156,40 +224,36 @@ function createEpisode(root, runId, {
+@@ -156,40 +231,37 @@ function createEpisode(root, runId, {
        // preCheck guarantees the workstream exists when non-null (Codex impl r14/r15) — bind episode to it.
        loop.workstreams.find(w => w.id === workstream).episodes.push(id);
      }
@@ -16235,12 +16383,13 @@ index c567221..8bf9718 100644
  export function newEpisode(root, runId, {
    plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker,
    reviewerResolution, evidence, contract, fence, mutation, crashProbe,
-+  requestId, dispatchRequestDigest,
++  requestId, dispatchRequestIdDigest, dispatchRequestDigest,
  } = {}) {
    return createEpisode(root, runId, { plugin, role, kind, point, workstream,
      expectedArtifacts, targetMaker, reviewerResolution, evidence, contract, fence,
 -    mutation, crashProbe, operation: 'newEpisode' });
-+    mutation, crashProbe, requestId, dispatchRequestDigest, operation: 'newEpisode' });
++    mutation, crashProbe, requestId, dispatchRequestIdDigest, dispatchRequestDigest,
++    operation: 'newEpisode' });
  }
 -
 +
@@ -16249,11 +16398,11 @@ index c567221..8bf9718 100644
  export function newBlockedCheckerEpisode(root, runId, { plugin, kind, point,
 -  workstream = null, targetMaker, reason, reviewerResolution, fence, mutation, crashProbe } = {}) {
 +  workstream = null, targetMaker, reason, reviewerResolution, fence, mutation, crashProbe,
-+  requestId, dispatchRequestDigest } = {}) {
++  requestId, dispatchRequestIdDigest, dispatchRequestDigest } = {}) {
    return createEpisode(root, runId, {
      plugin, role: 'checker', kind, point, workstream, targetMaker, reviewerResolution,
      initialStatus: 'blocked', blockReason: reason, fence, mutation, crashProbe,
-+    requestId, dispatchRequestDigest,
++    requestId, dispatchRequestIdDigest, dispatchRequestDigest,
      operation: 'newBlockedCheckerEpisode',
    });
  }
@@ -16261,14 +16410,27 @@ diff --git a/scripts/lib/review.mjs b/scripts/lib/review.mjs
 index 730e203..aa1cf72 100644
 --- a/scripts/lib/review.mjs
 +++ b/scripts/lib/review.mjs
-@@ -317,7 +317,9 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
+@@ -312,12 +312,21 @@
+-export function dispatchReview(root, runId, { point, workstreamId, detected = {}, independentSubagent = false, fence } = {}) {
++export function dispatchReview(root, runId, { point, workstreamId, detected = {},
++  independentSubagent = false, requestId, beforeFinalLock, fence } = {}) {
+   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: dispatchReview');
+   // Fix 3: validate point before any state read/write
+   if (!point || typeof point !== 'string' || !point.length) throw new Error('REVIEW_INPUT_INVALID: point');
+   const identityFence = reviewIdentityFence(fence, 'dispatchReview');
++  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(requestId || '')) {
++    throw new Error('REVIEW_DISPATCH_REQUEST_ID_REQUIRED');
++  }
    const projection = { point, workstream_id: workstreamId,
      independent_subagent: independentSubagent === true,
      detected_digest: contentHash(`review-detected\0${JSON.stringify(detected)}`) };
 -  const data = withReviewMutation(root, runId, fence, 'dispatchReview', projection,
++  const dispatchRequestIdDigest = contentHash(`dispatch-review-request-id\0${requestId}`);
++  const dispatchProjection = { ...projection,
++    dispatch_request_id_digest: dispatchRequestIdDigest };
 +  const dispatchRequestDigest = reviewIntentDigest(
-+    fence, 'dispatch-review', projection);
-+  const data = withReviewMutation(root, runId, fence, 'dispatch-review', projection,
++    fence, 'dispatch-review', dispatchProjection);
++  const data = withReviewMutation(root, runId, fence, 'dispatch-review', dispatchProjection,
      mutation => {
        const loop = mutation.readVerifiedState({ fenceCheck: identityFence }).data;
        checkIndependentReviewFence(loop, fence);
@@ -16282,7 +16444,7 @@ index 730e203..aa1cf72 100644
    const eps = data.episodes || [];
    // P2 codex r7: hill-climb 마이그레이션 특례 — pre-patch 커널이 approve한 checker(contract 미pin)에 묶인
    // maker는 makerReviewed=true라 재리뷰 불가, abandonEpisode는 terminal checker를 거부 → finish의
-@@ -340,16 +343,14 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
+@@ -340,16 +343,26 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
      const latest = cs.reduce((a, b) => (epOrder(a.id, b.id) >= 0 ? a : b));
      return latest.status === 'approved' && !latest.contract?.sha256;
    };
@@ -16291,6 +16453,18 @@ index 730e203..aa1cf72 100644
 -    e.workstream_id === workstreamId && e.point === point &&
 -    (!makerReviewed(data, e) || legacyUnpinned(e))
 -  );
++  const dispatchMatches = eps.filter(episode => episode.role === 'checker'
++    && episode.dispatch_request_id_digest === dispatchRequestIdDigest);
++  if (dispatchMatches.length > 1) throw new Error('REVIEW_RECOVERY_PROJECTION_MISMATCH');
++  if (dispatchMatches.length === 1
++      && dispatchMatches[0].dispatch_request_digest !== dispatchRequestDigest) {
++    throw new Error('REVIEW_DISPATCH_REQUEST_CONFLICT');
++  }
++  const replayedMaker = dispatchMatches.length === 1
++    ? eps.find(episode => episode.id === dispatchMatches[0].target_maker) : null;
++  if (dispatchMatches.length === 1 && !replayedMaker) {
++    throw new Error('REVIEW_RECOVERY_PROJECTION_MISMATCH');
++  }
 +  const candidateMakers = eps.filter(e =>
 +    e.role === 'maker' && e.status === 'done'
 +      && e.workstream_id === workstreamId && e.point === point);
@@ -16299,21 +16473,16 @@ index 730e203..aa1cf72 100644
    // would mis-pick the target maker.
 -  const targetMakerEp = eligibleMakers.length > 0
 -    ? eligibleMakers.reduce((a, b) => (epOrder(a.id, b.id) > 0 ? a : b))
-+  const targetMakerEp = candidateMakers.length > 0
+-    : null;
++  const targetMakerEp = replayedMaker ?? (candidateMakers.length > 0
 +    ? candidateMakers.reduce((a, b) => (epOrder(a.id, b.id) > 0 ? a : b))
-     : null;
++    : null);
    // ROOT FIX: a review MUST bind to a real done maker. With no eligible done maker the checker would be UNBOUND
    // ("reviewed no maker") — a degenerate state that either silently completes (if its REQUEST_CHANGES is ignored)
-@@ -357,6 +358,21 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
+@@ -357,6 +369,15 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
    // source, so every checker is ALWAYS bound going forward. (preCheck — thrown before newEpisode: no episode created.)
    if (!targetMakerEp) throw new Error('REVIEW_NO_ELIGIBLE_MAKER: no done maker to review for ' + point + '/' + workstreamId);
    const targetMaker = targetMakerEp.id;
-+  const dispatchMatches = eps.filter(episode =>
-+    episode.role === 'checker' && episode.target_maker === targetMaker
-+      && episode.dispatch_request_digest === dispatchRequestDigest);
-+  if (dispatchMatches.length > 1) {
-+    throw new Error('REVIEW_RECOVERY_PROJECTION_MISMATCH');
-+  }
 +  if (dispatchMatches.length === 0
 +      && makerReviewed(data, targetMakerEp) && !legacyUnpinned(targetMakerEp)) {
 +    throw new Error('REVIEW_NO_ELIGIBLE_MAKER: latest maker already has a terminal checker');
@@ -16326,12 +16495,13 @@ index 730e203..aa1cf72 100644
    const { reviewer, flags, mode, reviewerResolution, blockedReason } = resolveReviewer(data, detected, { independentSubagent });
    // P2 (hillclimb-ledger 2026-07-10, release-blocking): hill-climb run은 checker 계약(HILLCLIMB-001)이 실제로
    // 강제되는 리뷰만 만들 수 있다. `.deep-review/`는 gitignored라 fresh checkout에는 계약이 없고, deep-review는
-@@ -427,20 +443,24 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
+@@ -427,20 +448,61 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
    const episodeInput = {
      plugin: reviewer === 'deep-review-loop' || reviewer === 'deep-review' ? 'deep-review' : reviewer,
      kind: `${point}-review`, point, workstream: workstreamId, targetMaker,
 -    reviewerResolution, evidence, contract, fence,
-+    reviewerResolution, evidence, contract, fence, dispatchRequestDigest,
++    reviewerResolution, evidence, contract, fence,
++    dispatchRequestIdDigest, dispatchRequestDigest,
    };
    const episodeCreationInput = blockedReason
      ? { ...episodeInput, role: 'checker', initialStatus: 'blocked',
@@ -16340,14 +16510,54 @@ index 730e203..aa1cf72 100644
 -  const episodeProjection = { ...projection,
 -    episode_request_digest: episodeRequestDigest(episodeCreationInput) };
 +  const episodeProjection = episodeRequestDigest(episodeCreationInput);
++  if (typeof beforeFinalLock === 'function') beforeFinalLock();
    const { id } = withReviewMutation(root, runId, fence,
 -    'dispatch-review-episode', episodeProjection,
-+    'dispatch-review', projection,
-     mutation => blockedReason
-       ? newBlockedCheckerEpisode(root, runId,
-         { ...episodeInput, reason: blockedReason, mutation })
-       : newEpisode(root, runId, { ...episodeInput, role: 'checker', mutation }));
-+  const committed = data.episodes.find(episode => episode.id === id);
++    'dispatch-review', dispatchProjection,
+-    mutation => blockedReason
+-      ? newBlockedCheckerEpisode(root, runId,
+-        { ...episodeInput, reason: blockedReason, mutation })
+-      : newEpisode(root, runId, { ...episodeInput, role: 'checker', mutation }));
++    mutation => {
++      const finalData = mutation.readVerifiedState({ fenceCheck: identityFence }).data;
++      checkIndependentReviewFence(finalData, fence);
++      const sameId = (finalData.episodes || []).filter(episode => episode.role === 'checker'
++        && episode.dispatch_request_id_digest === dispatchRequestIdDigest);
++      if (sameId.length > 1) throw new Error('REVIEW_RECOVERY_PROJECTION_MISMATCH');
++      if (sameId.length === 1
++          && sameId[0].dispatch_request_digest !== dispatchRequestDigest) {
++        throw new Error('REVIEW_DISPATCH_REQUEST_CONFLICT');
++      }
++      if (sameId.length === 0) {
++        const latest = (finalData.episodes || []).filter(episode => episode.role === 'maker'
++          && episode.status === 'done' && episode.workstream_id === workstreamId
++          && episode.point === point)
++          .reduce((selected, episode) => selected == null
++            || epOrder(episode.id, selected.id) > 0 ? episode : selected, null);
++        if (latest?.id !== targetMaker) {
++          throw new Error('REVIEW_NO_ELIGIBLE_MAKER: latest maker changed before commit');
++        }
++        const bound = (finalData.episodes || []).filter(episode =>
++          isProofCapableChecker(episode) && episode.target_maker === targetMaker);
++        const latestTerminal = bound.filter(episode =>
++          episode.status === 'approved' || episode.status === 'rejected')
++          .reduce((selected, episode) => selected == null
++            || epOrder(episode.id, selected.id) > 0 ? episode : selected, null);
++        const finalLegacyUnpinned = finalData.recipe?.id === 'harness-hill-climb'
++          && latestTerminal?.status === 'approved' && !latestTerminal.contract?.sha256;
++        if ((latestTerminal && !finalLegacyUnpinned)
++            || bound.some(episode => ['pending', 'in_progress', 'blocked'].includes(episode.status))) {
++          throw new Error('REVIEW_NO_ELIGIBLE_MAKER: latest maker already has a checker');
++        }
++      }
++      return blockedReason
++        ? newBlockedCheckerEpisode(root, runId,
++          { ...episodeInput, reason: blockedReason, mutation })
++        : newEpisode(root, runId, { ...episodeInput, role: 'checker', mutation });
++    });
++  const committed = withReviewMutation(root, runId, fence, 'dispatch-review',
++    dispatchProjection, mutation => mutation.readVerifiedState(
++      { fenceCheck: identityFence }).data).episodes.find(episode => episode.id === id);
 +  if (dispatchMatches.length === 1
 +      && committed?.creation_request_digest !== episodeProjection) {
 +    throw new Error('REVIEW_RECOVERY_PROJECTION_MISMATCH');
@@ -16359,9 +16569,9 @@ index 730e203..aa1cf72 100644
 
 The direct episode API now requires one bounded caller-generated logical request ID. The execution
 plane chooses it once before the first call, reuses it after response loss, and rotates it only for
-an intentional new episode. Review dispatch remains a nested exception because its complete public
-`dispatch-review` digest is already the logical request identity. Apply this exact CLI, skill, and
-test-caller migration after the corrective episode/review patch:
+an intentional new episode. Review dispatch independently requires the same allocate-once/reuse-on-
+loss discipline; its ID digest is stable while its full request digest detects changed reuse. Apply
+this exact CLI, skill, and test-caller migration after the corrective episode/review patch:
 
 ```diff
 diff --git a/scripts/deep-loop.mjs b/scripts/deep-loop.mjs
@@ -16376,6 +16586,16 @@ index b47cf2c..0385970 100644
 +        workstream: f.workstream, expectedArtifacts: f.artifacts ? JSON.parse(f.artifacts) : [],
 +        fence, requestId });
 +      json({ id: r.id, request_path: r.requestPath }); return 0;
+@@ -448,5 +453,8 @@ const handlers = {
+     if (verb === 'dispatch') {
+       const point = reqStr(f, 'point'); if (!point) { error('MISSING_POINT'); return 2; }
+       const workstream = reqStr(f, 'workstream'); if (!workstream) { error('MISSING_WORKSTREAM'); return 2; }
++      const requestId = reqStr(f, 'request-id');
++      if (!requestId) { error('MISSING_REQUIRED_OPTION: --request-id'); return 2; }
+       const independentSubagent = f['independent-subagent'] === true || f['independent-subagent'] === 'true';
+-      json(dispatchReview(root, runId, { point, workstreamId: workstream, detected: detectPlugins(root), independentSubagent, fence })); return 0;
++      json(dispatchReview(root, runId, { point, workstreamId: workstream,
++        detected: detectPlugins(root), independentSubagent, requestId, fence })); return 0;
 diff --git a/skills/deep-loop/SKILL.md b/skills/deep-loop/SKILL.md
 index 177f497..d812012 100644
 --- a/skills/deep-loop/SKILL.md
@@ -16391,6 +16611,17 @@ diff --git a/skills/deep-loop-continue/SKILL.md b/skills/deep-loop-continue/SKIL
 index 2898ca4..54ae473 100644
 --- a/skills/deep-loop-continue/SKILL.md
 +++ b/skills/deep-loop-continue/SKILL.md
+@@ -133 +133 @@
+-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review dispatch --point <review_point> --workstream <workstream_id> --independent-subagent --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
++node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review dispatch --point <review_point> --workstream <workstream_id> --request-id <review_dispatch_request_id> --independent-subagent --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+@@ -141 +141 @@
+-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review dispatch --point <review_point> --workstream <workstream_id> --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
++node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review dispatch --point <review_point> --workstream <workstream_id> --request-id <review_dispatch_request_id> --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+@@ -143,0 +144,4 @@
++`<review_dispatch_request_id>`는 dispatch 전에 한 번 정해 response-loss retry에는 그대로
++재사용한다. 다음 intentional review round에서만 새 ID를 사용하며 같은 ID로 point/workstream/
++detected route/subagent payload를 바꾸지 않는다.
++
 @@ -158 +158 @@ fix maker episode 생성 후 dispatch:
 -node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin <maker_plugin> --role maker --kind fix --point <point> --workstream <workstream_id> --artifacts '[".claude/worktrees/<ws-slug>/path/to/fix-output"]' --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
 +node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin <maker_plugin> --role maker --kind fix --point <point> --workstream <workstream_id> --artifacts '[".claude/worktrees/<ws-slug>/path/to/fix-output"]' --request-id <episode_request_id> --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
@@ -16429,6 +16660,13 @@ index 5f81c1e..ac371ff 100644
 +  assert.equal(runFail(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker',
 +    '--kind', 'implementation', '--point', 'implementation',
 +    '--owner', runId, '--generation', '1']), 2);
++});
++
+@@ -195,0 +203,6 @@ test('review dispatch missing --point exits 2', () => {
++test('review dispatch missing --request-id exits 2', () => {
++  const { root, runId } = seed();
++  assert.equal(runFail(root, ['review', 'dispatch', '--point', 'design',
++    '--workstream', 'ws1', '--owner', runId, '--generation', '1']), 2);
 +});
 +
 diff --git a/tests/codex-checker-integration.test.mjs b/tests/codex-checker-integration.test.mjs
@@ -16494,6 +16732,9 @@ index e449792..b19a37f 100644
 @@ -275 +275 @@ test('review dispatch accepts --independent-subagent and records a neutral legac
 -  const maker = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'plan', '--point', 'plan', '--workstream', ws.id, '--artifacts', '["plan.txt"]', '--owner', runId, '--generation', '1']));
 +  const maker = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'plan', '--point', 'plan', '--workstream', ws.id, '--artifacts', '["plan.txt"]', '--request-id', 'finish-proof-maker', '--owner', runId, '--generation', '1']));
+@@ -278 +278 @@ test('review dispatch accepts --independent-subagent and records a neutral legac
+-  const dispatched = JSON.parse(run(root, ['review', 'dispatch', '--point', 'plan', '--workstream', ws.id, '--independent-subagent', '--owner', runId, '--generation', '1']));
++  const dispatched = JSON.parse(run(root, ['review', 'dispatch', '--point', 'plan', '--workstream', ws.id, '--request-id', 'cli-review-round-1', '--independent-subagent', '--owner', runId, '--generation', '1']));
 @@ -848 +848 @@ test('episode new creates request + episode via CLI', () => {
 -  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'impl', '--point', 'implementation', '--owner', runId, '--generation', '1']));
 +  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'impl', '--point', 'implementation', '--request-id', 'cli-episode-create', '--owner', runId, '--generation', '1']));
@@ -16760,7 +17001,7 @@ random/factory/report/path/revalidation/probe callbacks plus review/insights fil
 - [ ] **Step 5: Run regressions**
 
 ```bash
-node --test tests/insights.test.mjs tests/review.test.mjs tests/review-import.test.mjs tests/reviewer-failclosed.test.mjs tests/fencing.test.mjs tests/workspace.test.mjs tests/detect-terminal.test.mjs tests/runtime-executable.test.mjs tests/integrity.test.mjs tests/budget.test.mjs tests/cli-skillface.test.mjs tests/codex-checker-integration.test.mjs tests/codex-isolation-integration.test.mjs tests/comprehension.test.mjs tests/episode.test.mjs tests/finish.test.mjs tests/handoff.test.mjs tests/next-action.test.mjs tests/orch-cli.test.mjs tests/pause.test.mjs
+node --test tests/insights.test.mjs tests/review.test.mjs tests/review-import.test.mjs tests/reviewer-failclosed.test.mjs tests/fencing.test.mjs tests/workspace.test.mjs tests/detect-terminal.test.mjs tests/runtime-executable.test.mjs tests/integrity.test.mjs tests/budget.test.mjs tests/cli-skillface.test.mjs tests/codex-checker-integration.test.mjs tests/codex-isolation-integration.test.mjs tests/comprehension.test.mjs tests/durable-file.test.mjs tests/episode.test.mjs tests/finish.test.mjs tests/handoff.test.mjs tests/next-action.test.mjs tests/orch-cli.test.mjs tests/pause.test.mjs
 ```
 
 Expected: PASS; insights remains fail-soft, review parity remains exact, and releasing-safe
@@ -16793,8 +17034,12 @@ git commit -m "fix: verify authority before external actions" -m "Co-Authored-By
   `recordReviewVerdict`).
 - Modify: `scripts/lib/state.mjs:102-110` (retain raw exact state/hash writer only as an explicit
   genesis/test seam; no production post-genesis importer).
+- Modify: `scripts/deep-loop.mjs:694-703` (human reset requires a stable request ID).
+- Modify: `skills/deep-loop-status/SKILL.md` and `skills/deep-loop-continue/SKILL.md` (allocate-once
+  reset guidance).
 - Modify: `tests/lease.test.mjs`.
 - Modify: `tests/breaker.test.mjs`.
+- Modify: `tests/cli-skillface.test.mjs`.
 - Modify: `tests/project-root.test.mjs`.
 - Modify: `tests/integrity.test.mjs`.
 - Modify: produced `tests/helpers/anchored-crash-worker.mjs` with literal lease/breaker imports and
@@ -16813,7 +17058,9 @@ git commit -m "fix: verify authority before external actions" -m "Co-Authored-By
   internal caller receive an explicit owner/generation binding plus request ID; fence-less
   production breaker calls are removed rather than inferring the current lease. `resetBreaker`
   executes the full current `leaseCheck(..., intent:'breaker-reset')` before receipt lookup, so exact
-  terminal authority still fails through `LEASE_FENCED: RUN_TERMINAL`.
+  terminal authority still fails through `LEASE_FENCED: RUN_TERMINAL`. `recordReviewVerdict`
+  authenticates owner/generation first and then executes the complete current business lease policy
+  (runtime, released, releasing, paused, terminal) before durable replay or fresh append.
 
 - [ ] **Step 1: Write failing publisher-closure and crash tests**
 
@@ -16848,7 +17095,7 @@ diff --git a/tests/breaker.test.mjs b/tests/breaker.test.mjs
 -
 +
  test('not tripped under threshold', () => {
-@@ -27,33 +38,33 @@
+@@ -27,33 +38,35 @@
  test('recordReviewVerdict latches breaker at 3 REQUEST_CHANGES', () => {
    const { root, runId } = seed();
 -  recordReviewVerdict(root, runId, 'REQUEST_CHANGES');
@@ -16864,7 +17111,8 @@ diff --git a/tests/breaker.test.mjs b/tests/breaker.test.mjs
  });
 -
 +
- test('recordReviewVerdict APPROVE after latch resets counter but keeps tripped latched', () => {
+-test('recordReviewVerdict APPROVE after latch resets counter but keeps tripped latched', () => {
++test('recordReviewVerdict rejects a paused lease without mutating the latch', () => {
    const { root, runId } = seed();
 -  recordReviewVerdict(root, runId, 'REQUEST_CHANGES');
 -  recordReviewVerdict(root, runId, 'REQUEST_CHANGES');
@@ -16874,11 +17122,15 @@ diff --git a/tests/breaker.test.mjs b/tests/breaker.test.mjs
 +  reviewVerdict7g(root, runId, 'REQUEST_CHANGES');
    // Verify latched
    assert.equal(readState(root, runId).data.circuit_breaker.tripped, true);
-   // Now record APPROVE
+-  // Now record APPROVE
++  const before = JSON.stringify(readState(root, runId).data);
 -  recordReviewVerdict(root, runId, 'APPROVE');
-+  reviewVerdict7g(root, runId, 'APPROVE');
++  assert.throws(() => reviewVerdict7g(root, runId, 'APPROVE'),
++    /LEASE_FENCED: RUN_PAUSED/);
++  assert.equal(JSON.stringify(readState(root, runId).data), before);
    const { data } = readState(root, runId);
-   assert.equal(data.circuit_breaker.consecutive_request_changes, 0, 'counter resets');
+-  assert.equal(data.circuit_breaker.consecutive_request_changes, 0, 'counter resets');
++  assert.equal(data.circuit_breaker.consecutive_request_changes, 3);
    assert.equal(data.circuit_breaker.tripped, true, 'tripped stays latched (human-reset only)');
  });
 -
@@ -16926,6 +17178,68 @@ diff --git a/tests/breaker.test.mjs b/tests/breaker.test.mjs
 -  assert.throws(() => resetBreaker(root, runId, {}), /RUN_TERMINAL: resetBreaker/);
 +  // Missing authority is rejected before any terminal business policy.
 +  assert.throws(() => resetBreaker(root, runId, {}), /FENCE_REQUIRED: breaker-reset/);
+ });
+```
+
+Make the human CLI allocate the breaker reset ID once and require callers to reuse it after response
+loss. Missing confirmation or request identity is usage exit 2; a supplied request ID never changes
+wrong-fence exit 3 precedence.
+
+```diff
+diff --git a/scripts/deep-loop.mjs b/scripts/deep-loop.mjs
+--- a/scripts/deep-loop.mjs
++++ b/scripts/deep-loop.mjs
+@@ -697,6 +697,8 @@ const handlers = {
+     if (verb === 'reset') {
+       if (f.confirm !== true && f.confirm !== 'true') { error('BREAKER_RESET_REQUIRES_CONFIRM: pass --confirm (human-only)'); return 2; }
++      const requestId = reqStr(f, 'request-id');
++      if (!requestId) { error('MISSING_REQUIRED_OPTION: --request-id'); return 2; }
+       requireLease(root, runId, f, 'breaker-reset');   // Codex r2 critical-1: fence 필수; breaker-reset exempt from RUN_PAUSED gate
+       const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'breaker-reset' };
+-      try { json(resetBreaker(root, runId, { fence })); return 0; }
++      try { json(resetBreaker(root, runId, { fence, requestId })); return 0; }
+       catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }
+diff --git a/skills/deep-loop-status/SKILL.md b/skills/deep-loop-status/SKILL.md
+--- a/skills/deep-loop-status/SKILL.md
++++ b/skills/deep-loop-status/SKILL.md
+@@ -58 +58 @@
+-  node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" breaker reset --confirm --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
++  node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" breaker reset --confirm --request-id <breaker_reset_request_id> --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+@@ -60,0 +61,3 @@
++  `<breaker_reset_request_id>`는 사람이 reset 전에 한 번 정하고 응답 유실 retry에 재사용한다.
++  새 reset 의도에서만 새 ID를 사용한다.
++
+@@ -90 +93 @@
+-- breaker tripped: `breaker reset --confirm --owner <owner_run_id> --generation <n>` (사람 직접 실행)
++- breaker tripped: `breaker reset --confirm --request-id <breaker_reset_request_id> --owner <owner_run_id> --generation <n>` (사람 직접 실행)
+diff --git a/skills/deep-loop-continue/SKILL.md b/skills/deep-loop-continue/SKILL.md
+--- a/skills/deep-loop-continue/SKILL.md
++++ b/skills/deep-loop-continue/SKILL.md
+@@ -64 +64 @@
+-  - **breaker tripped**: `/deep-loop-status`로 상태 확인 후 사람이 `breaker reset --confirm --owner <owner_run_id> --generation <n>` 실행 필요 — **autonomous tick은 스스로 `--confirm`을 주지 않는다.**
++  - **breaker tripped**: `/deep-loop-status`로 상태 확인 후 사람이 한 번 정한 `<breaker_reset_request_id>`로 `breaker reset --confirm --request-id <breaker_reset_request_id> --owner <owner_run_id> --generation <n>` 실행 필요 — 응답 유실 retry에는 같은 ID를 쓰며 **autonomous tick은 스스로 `--confirm`을 주지 않는다.**
+diff --git a/tests/cli-skillface.test.mjs b/tests/cli-skillface.test.mjs
+--- a/tests/cli-skillface.test.mjs
++++ b/tests/cli-skillface.test.mjs
+@@ -165,9 +165,16 @@ test('comprehension ack missing --episode exits 2', () => {
+ test('breaker reset requires --confirm (exit 2)', () => {
+   const { root, runId } = seed();
+-  assert.equal(runFail(root, ['breaker', 'reset', '--owner', runId, '--generation', '1']), 2);   // confirm 없음
++  assert.equal(runFail(root, ['breaker', 'reset', '--request-id', 'reset-without-confirm',
++    '--owner', runId, '--generation', '1']), 2);
+ });
+-
++
++test('breaker reset requires --request-id (exit 2)', () => {
++  const { root, runId } = seed();
++  assert.equal(runFail(root, ['breaker', 'reset', '--confirm',
++    '--owner', runId, '--generation', '1']), 2);
++});
++
+ test('breaker reset with --confirm is still fenced (exit 3)', () => {
+   const { root, runId } = seed();   // Codex r2 critical-1: confirm 만으로는 부족, fence 도 필요
+-  assert.equal(runFail(root, ['breaker', 'reset', '--confirm', '--owner', runId, '--generation', '9']), 3);
++  assert.equal(runFail(root, ['breaker', 'reset', '--confirm', '--request-id', 'wrong-fence-reset', '--owner', runId, '--generation', '9']), 3);
  });
 ```
 
@@ -17182,6 +17496,21 @@ test7g('review verdict request identity survives journal cleanup and rejects reu
   assert7g.deepEqual(bytes7g(fixture.root, fixture.runId), committed);
 });
 
+test7g('review verdict enforces released releasing and paused lease policy before replay', () => {
+  for (const state of ['released', 'releasing', 'paused']) {
+    const fixture = fixture7g(`dl-7g-verdict-${state}-`);
+    const fence = { owner: fixture.owner, generation: fixture.generation };
+    raw7g(fixture.root, fixture.runId, loop => {
+      if (state === 'paused') loop.status = 'paused';
+      else loop.session_chain.lease.state = state;
+    });
+    const before = bytes7g(fixture.root, fixture.runId);
+    assert7g.throws(() => verdict7g(fixture.root, fixture.runId,
+      'REQUEST_CHANGES', fence, { requestId: `verdict-${state}` }), /LEASE_FENCED/);
+    assert7g.deepEqual(bytes7g(fixture.root, fixture.runId), before, state);
+  }
+});
+
 test7g('zero-count APPROVE receipt cannot reset a newer verdict after response loss', () => {
   const fixture = fixture7g('dl-7g-approve-noop-response-loss-');
   const fence = { owner: fixture.owner, generation: fixture.generation };
@@ -17339,7 +17668,7 @@ registerAnchoredCrashExtension(request => {
 
 - [ ] **Step 2: Run the closure tests and verify RED**
 
-Run: `node --test --test-name-pattern='post-genesis raw publisher closure|lease mutation events|breaker mutation events|remaining publisher crash recovery|review verdict request identity|zero-count APPROVE receipt' tests/project-root.test.mjs tests/lease.test.mjs tests/breaker.test.mjs tests/integrity.test.mjs`
+Run: `node --test --test-name-pattern='post-genesis raw publisher closure|lease mutation events|breaker mutation events|remaining publisher crash recovery|review verdict request identity|review verdict enforces released|zero-count APPROVE receipt|breaker reset requires --request-id|breaker reset with --confirm is still fenced' tests/project-root.test.mjs tests/lease.test.mjs tests/breaker.test.mjs tests/integrity.test.mjs tests/cli-skillface.test.mjs`
 
 Expected: FAIL because lease/breaker still call raw `writeState` and do not emit fixed events.
 
@@ -17719,8 +18048,12 @@ export function recordReviewVerdict(root, runId, verdict, fence,
   return breakerMutation(root, runId, fence, 'breaker-review-verdict',
     { verdict, request_digest: identity.requestDigest },
     (context, data) => {
-      if (['completed', 'stopped'].includes(data.status)) {
-        throw new Error('RUN_TERMINAL: recordReviewVerdict');
+      const authorized = leaseCheck(data, { ...fence, intent: fence.intent ?? 'business' });
+      if (!authorized.ok) {
+        if (authorized.reason === 'RUN_TERMINAL') {
+          throw new Error('RUN_TERMINAL: recordReviewVerdict');
+        }
+        throw new Error(`LEASE_FENCED: ${authorized.reason}`);
       }
       const recovered = recoveredReviewVerdict(root, runId, context, data,
         { fence, verdict, identity });
@@ -17784,7 +18117,7 @@ Expected: PASS with legacy return/error contracts preserved.
 ```bash
 rg -n "\bwriteState\(|\bappendEvent\(|appendFileSync\(" scripts/lib scripts/hooks-impl scripts/deep-loop.mjs
 rg -n "lease-released|handoff-reserved|handoff-phase-advanced|handoff-rolled-back|breaker-tripped|breaker-reset|breaker-review-verdict" scripts/lib tests
-git diff -- scripts/lib/lease.mjs scripts/lib/breaker.mjs scripts/lib/state.mjs tests/lease.test.mjs tests/breaker.test.mjs tests/project-root.test.mjs tests/integrity.test.mjs tests/helpers/anchored-crash-worker.mjs
+git diff -- scripts/lib/lease.mjs scripts/lib/breaker.mjs scripts/lib/state.mjs scripts/deep-loop.mjs skills/deep-loop-status/SKILL.md skills/deep-loop-continue/SKILL.md tests/lease.test.mjs tests/breaker.test.mjs tests/cli-skillface.test.mjs tests/project-root.test.mjs tests/integrity.test.mjs tests/helpers/anchored-crash-worker.mjs
 git diff --check
 git diff --check origin/main
 ```
@@ -17795,7 +18128,7 @@ and every production post-genesis mutation reaches the same pending/stage/hash c
 - [ ] **Step 7: Commit the publisher-closure slice**
 
 ```bash
-git add scripts/lib/lease.mjs scripts/lib/breaker.mjs scripts/lib/state.mjs tests/lease.test.mjs tests/breaker.test.mjs tests/project-root.test.mjs tests/integrity.test.mjs tests/helpers/anchored-crash-worker.mjs
+git add scripts/lib/lease.mjs scripts/lib/breaker.mjs scripts/lib/state.mjs scripts/deep-loop.mjs skills/deep-loop-status/SKILL.md skills/deep-loop-continue/SKILL.md tests/lease.test.mjs tests/breaker.test.mjs tests/cli-skillface.test.mjs tests/project-root.test.mjs tests/integrity.test.mjs tests/helpers/anchored-crash-worker.mjs
 git commit -m "fix: journal every post-genesis publisher" -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 git diff --check origin/main..HEAD
 ```
@@ -32441,7 +32774,7 @@ operations remain host-portable and do not assume `/dev/null`:
 set -euo pipefail
 
 node --input-type=module <<'NODE'
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, posix } from 'node:path';
@@ -32733,6 +33066,9 @@ for (const task of taskMatches) {
       "assert6b.equal(recovered.events[0].checksum, durable[0].checksum",
       'verifyEpisodeCreationCorrelation(loop, lines)',
       'creation_request_id_digest ?? null',
+      "const recomputed = intentField('episode-create-request', projection)",
+      'JSON.stringify(event.data.request_projection)',
+      'dispatch_request_id_digest ?? null',
       'has ambiguous creation identity']) {
       if (!card.includes(token)) fail(`Task 7B missing recovery/intent token ${token}`);
     }
@@ -32767,9 +33103,11 @@ for (const task of taskMatches) {
   if (task[1] === '5B') {
     for (const token of ['export function syncRegularFile(',
       'export function syncParentDirectory(', 'export function renamePreparedFile(',
-      'export function unlinkRegularFile(', 'export function replaceFileDurably(',
+      'export function unlinkRegularFile(', 'export function createFileDurablyIfAbsent(',
+      'export function replaceFileDurably(',
       'renameAtomicWithRetry(', "=== 'win32'", "(deps.open ?? durableOpenSync)(path, 'r+')",
-      'GENERIC_WRITE', 'tests/durable-file.test.mjs']) {
+      'GENERIC_WRITE', 'never replaces a check-to-publish race winner',
+      'tests/durable-file.test.mjs']) {
       if (!card.includes(token)) fail(`Task 5B missing platform durability token ${token}`);
     }
   }
@@ -32792,6 +33130,9 @@ for (const task of taskMatches) {
       'function recoveredBreakerRequest(', 'request_id_digest: identity.requestIdDigest',
       "if (item.type === 'review-outcome')",
       "leaseCheck(data, { ...fence, intent: 'breaker-reset' })",
+      "leaseCheck(data, { ...fence, intent: fence.intent ?? 'business' })",
+      'review verdict enforces released releasing and paused lease policy before replay',
+      'breaker reset requires --request-id', '--request-id <breaker_reset_request_id>',
       'trip and reset retries preserve their original response across newer operations',
       'review verdict replay authenticates intervening review-outcome transitions',
       "mutation7g('test-review-outcome'"]) {
@@ -32889,16 +33230,21 @@ for (const task of taskMatches) {
       'context.appendAnchored(event, mutate, preCheck, options)',
       'creation_request_digest: requestDigest', 'onExisting',
       'episode_request_digest: episodeRequestDigest(',
-      "fence, 'dispatch-review', projection",
+      "fence, 'dispatch-review', dispatchProjection",
       "creation_contract: 'episode-create-v1'",
       'creation_request_id_digest: creationRequestIdDigest',
+      'dispatch_request_id_digest: dispatchRequestIdDigest ?? null',
       'dispatch_request_digest: dispatchRequestDigest ?? null',
+      'request_projection: completeRequest', 'createFileDurablyIfAbsent(requestPath',
       'EPISODE_REQUEST_ID_REQUIRED', 'EPISODE_REQUEST_CONFLICT',
+      'REVIEW_DISPATCH_REQUEST_ID_REQUIRED', 'REVIEW_DISPATCH_REQUEST_CONFLICT',
+      'beforeFinalLock',
       "intentField('episode-create-request-id', requestId)",
       'MISSING_REQUIRED_OPTION: --request-id',
       'tests/helpers/episode-request.mjs',
       '--request-id <episode_request_id>',
       'review dispatch exact retry after marker cleanup reuses one checker',
+      'review dispatch separates retry identity, later rounds, and final-lock checker CAS',
       '# execution-plane edited request',
       'two intentional direct creations with equal content and different IDs remain distinct',
       'an exact direct retry with the same request ID reuses its episode',
@@ -33083,7 +33429,8 @@ const run = (command, args, input = '') => spawnSync(command, args,
 const validateStrictDiff = (body, fenceLine) => {
   const exactZeroContextCallerMigration = body.includes('diff --git a/scripts/deep-loop.mjs')
     && body.includes('MISSING_REQUIRED_OPTION: --request-id')
-    && body.includes('skills/deep-loop-workflow/references/hill-climbing.md');
+    && (body.includes('skills/deep-loop-workflow/references/hill-climbing.md')
+      || body.includes('skills/deep-loop-status/SKILL.md'));
   let hunk = null;
   let afterHunk = false;
   let sawHunk = false;
@@ -33181,7 +33528,8 @@ cpSync('skills', join(sequentialSourceDir, 'skills'), { recursive: true });
 try {
   const applySequentialDiff = (label, body) => {
     const args = body.includes('MISSING_REQUIRED_OPTION: --request-id')
-      && body.includes('skills/deep-loop-workflow/references/hill-climbing.md')
+      && (body.includes('skills/deep-loop-workflow/references/hill-climbing.md')
+        || body.includes('skills/deep-loop-status/SKILL.md'))
       ? ['apply', '--unsafe-paths', '--unidiff-zero', '-']
       : ['apply', '--unsafe-paths', '-'];
     const applied = spawnSync('git', args, {
@@ -33303,6 +33651,7 @@ try {
     ['7C', 'diff --git a/skills/deep-loop-continue/SKILL.md'],
     ['7C', 'diff --git a/tests/cli-skillface.test.mjs'],
     ['7G', 'diff --git a/tests/breaker.test.mjs'],
+    ['7G', 'diff --git a/scripts/deep-loop.mjs'],
   ]) {
     const task = taskMatches.find(match => match[1] === taskId);
     const nextTask = source.indexOf('\n### Task ', task.index + 1);
@@ -33315,11 +33664,116 @@ try {
     }
     applySequentialDiff(`Task ${taskId} sequential caller diff ${requiredPath}`, matches[0]);
   }
+  {
+    // Execute the exact installed Task 7G breaker afterimage, not a retyped model. The surrounding
+    // stubs expose only the verified-mutation/lease contracts required by this bounded behavioral
+    // probe, so a missing request identity or a replay-before-current-policy regression fails here.
+    const runtimeDir = join(sequentialSourceDir, '.plan-afterimage-runtime');
+    mkdirSync(runtimeDir, { recursive: true });
+    cpSync(join(sequentialSourceDir, 'scripts/lib/breaker.mjs'),
+      join(runtimeDir, 'breaker.mjs'));
+    writeFileSync(join(runtimeDir, 'package.json'), '{"type":"module"}\n');
+    writeFileSync(join(runtimeDir, 'envelope.mjs'), `
+export const contentHash = value => 'digest:' + String(value);
+`);
+    writeFileSync(join(runtimeDir, 'integrity.mjs'), `
+let current = null;
+export const events = [];
+export function configure(value, { preserveEvents = false } = {}) {
+  current = structuredClone(value);
+  if (!preserveEvents) events.splice(0);
+}
+export function snapshot() { return structuredClone(current); }
+export function readLines() { return structuredClone(events); }
+export function withVerifiedMutationLock(root, runId, options, body) {
+  const context = {
+    recovered: null,
+    readVerifiedState({ fenceCheck } = {}) {
+      if (fenceCheck) fenceCheck(current);
+      return { data: structuredClone(current) };
+    },
+    appendAnchored(event, mutate) {
+      const candidate = structuredClone(current);
+      mutate(candidate);
+      current = candidate;
+      events.push({ ...structuredClone(event), seq: events.length + 1,
+        checksum: 'event-' + String(events.length + 1) });
+    },
+  };
+  return body(context);
+}
+`);
+    writeFileSync(join(runtimeDir, 'lease.mjs'), `
+export function leaseCheck(data, fence) {
+  const lease = data.session_chain?.lease;
+  if (lease?.owner_run_id !== fence?.owner || lease?.generation !== fence?.generation) {
+    return { ok: false, reason: 'owner-generation-mismatch' };
+  }
+  if (data.status === 'completed' || data.status === 'stopped') {
+    return { ok: false, reason: 'RUN_TERMINAL' };
+  }
+  if (lease.state === 'released' || lease.state === 'releasing') {
+    return { ok: false, reason: 'LEASE_' + lease.state.toUpperCase() };
+  }
+  if (data.status === 'paused' && fence.intent !== 'breaker-reset') {
+    return { ok: false, reason: 'RUN_PAUSED' };
+  }
+  return { ok: true };
+}
+`);
+    writeFileSync(join(runtimeDir, 'probe.test.mjs'), `
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { tripBreaker, resetBreaker, recordReviewVerdict } from './breaker.mjs';
+import { configure, events, snapshot } from './integrity.mjs';
+
+const owner = '01JAPPWR0NG000000000000000';
+const active = () => ({ status: 'running', session_chain: { lease: {
+  owner_run_id: owner, generation: 1, state: 'active' } }, circuit_breaker: {
+  consecutive_request_changes: 0, tripped: false, trip_reason: null } });
+
+test('installed breaker afterimage executes stable IDs and current lease policy', () => {
+  configure(active());
+  const fence = { owner, generation: 1 };
+  assert.deepEqual(tripBreaker('/root', 'run', 'consecutive-request-changes',
+    { fence, requestId: 'trip-once' }), { ok: true, changed: true });
+  const tripEvents = events.length;
+  assert.deepEqual(tripBreaker('/root', 'run', 'consecutive-request-changes',
+    { fence, requestId: 'trip-once' }), { ok: true, changed: true });
+  assert.equal(events.length, tripEvents);
+  assert.throws(() => resetBreaker('/root', 'run',
+    { fence: { ...fence, intent: 'breaker-reset' } }), /BREAKER_REQUEST_ID_REQUIRED/);
+  resetBreaker('/root', 'run', {
+    fence: { ...fence, intent: 'breaker-reset' }, requestId: 'reset-once' });
+  assert.deepEqual(recordReviewVerdict('/root', 'run', 'REQUEST_CHANGES', fence,
+    { requestId: 'verdict-once' }), { ok: true, changed: true });
+  const replayEvents = events.length;
+  for (const state of ['released', 'releasing', 'paused']) {
+    const denied = snapshot();
+    if (state === 'paused') denied.status = 'paused';
+    else denied.session_chain.lease.state = state;
+    configure(denied, { preserveEvents: true });
+    assert.throws(() => recordReviewVerdict('/root', 'run', 'REQUEST_CHANGES', fence,
+      { requestId: 'verdict-once' }), /LEASE_FENCED/);
+    assert.equal(events.length, replayEvents, state);
+    configure(active(), { preserveEvents: true });
+  }
+});
+`);
+    const executed = spawnSync(process.execPath, ['--test', 'probe.test.mjs'], {
+      cwd: runtimeDir, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024,
+    });
+    if (executed.error || executed.status !== 0) {
+      const diagnostic = String(executed.error?.message || executed.stderr || executed.stdout)
+        .split('\n').slice(0, 20).join(' | ');
+      fail(`Task 7G installed afterimage behavior: ${diagnostic}`);
+    }
+  }
 } finally {
   rmSync(sequentialSourceDir, { recursive: true, force: true });
 }
 const PLAN_EXPECTED_COUNTS = Object.freeze({
-  bash: 64, diff: 89, js: 177, json: 4, markdown: 12, text: 10, yaml: 1,
+  bash: 64, diff: 90, js: 177, json: 4, markdown: 12, text: 10, yaml: 1,
 });
 const orderedCounts = value => Object.fromEntries(Object.entries(value)
   .sort(([left], [right]) => left.localeCompare(right)));

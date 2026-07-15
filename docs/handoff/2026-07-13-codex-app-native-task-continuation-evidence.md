@@ -32,7 +32,7 @@ Main-agent judgment: the fetched remote base, version, test count, and user-owne
 
 ## Gate 1 — research and design
 
-Status: REVIEW OPEN — fresh cycle 4 round 1 Respond complete; round 2 pending
+Status: REVIEW OPEN — fresh cycle 4 round 3 Respond complete; round 4 pending
 
 Design target: `docs/superpowers/specs/2026-07-13-codex-app-native-task-continuation-design.md`
 
@@ -1262,6 +1262,65 @@ no inherited approval from the historical receipt.
   `git diff --check` passed; `npm run preflight` passed validation and all 1,463 tests with zero
   failures, cancellations, or skips.
 - gate state: still open. Changed bytes require fresh cycle 4 round 3 with both reviewers pinned to
+  exact `gpt-5.6-sol`/high; this Respond is not a Gate 1 pass.
+
+### Gate 1 fresh cycle 4 round 3 review
+
+- gate/artifact: Gate 1 design plus final 46-task plan, goal handoff, evidence, cycle-4 round-2
+  report/response, and current repository code/tests.
+- base/head: `c38a96137f8f4f0099c35e893860930e8ee4cf73..42b8ad3255859d18c3bd562a350e226a1e2f8349`;
+  worktree clean at counted reviewer start.
+- invocation: one built-in `codex exec ... review --base c38a961...` and one direct adversarial audit;
+  both counted reviewers used ephemeral/ignore-config/ignore-rules/read-only execution with exact
+  `gpt-5.6-sol` and `model_reasoning_effort=high`.
+- reviewer actual: standard thread `019f6447-3252-7971-9c7a-c1ef286f3367` returned 3 P1 and 1 P2;
+  adversarial thread `019f6447-2609-7923-b615-b7de6d52dfb0` returned 2 Red, 4 Yellow, and 1 Info
+  with `REQUEST_CHANGES`. `N_planned=N_actual=2`; both processes terminated naturally with exit 0.
+- model/effort evidence: both process headers confirmed exact `gpt-5.6-sol`, `high`, ephemeral,
+  ignored user config/rules, and read-only sandbox. No global Codex setting changed.
+- verdict: `REQUEST_CHANGES`.
+- red/yellow/info: `2 / 6 / 1`; stable review-dispatch identity and immutable episode projection
+  authentication were corroborated by both reviewers. Six solo defects were independently
+  reproduced by the main agent and classified Yellow under the two-reviewer synthesis rule.
+- termination: fresh cycle 4 round 3 Respond required; neither convergence nor max reached.
+- report path: `.deep-review/reports/2026-07-15-145814-review.md`, SHA-256
+  `56c8960c054676a22c6f6ec5775e7d0435bcb4244677c1fdb5dc6460c930c5f4`.
+- raw output bindings: standard SHA-256
+  `12ea7d669cc4a33fd320c773f0cbd466f2f4f5e7416794a7e8bbe1be449b1d92`; adversarial SHA-256
+  `ddecd051e66fbd1854ffc38c18c89a55b29fe519a365e5c184de107f59cf0388`.
+- recurring export: run `01KXJ5VMWKTW3SFGR8MF7ENZY4`; architecture critical 47,
+  test-coverage critical 28, error-handling critical 27, security critical 15 (117 total), SHA-256
+  `dbfb9848c97413ddf448fe39e91b616c19f910283cb1c5a5ae9f7bf99b10f56e`.
+- main-agent judgment: accepted all eight actionable findings and the Info correction. The plan
+  needed stable dispatch IDs distinct from full requests, complete creation-projection
+  recomputation, reset-CLI identity, final-lock eligibility CAS, no-replace request publication,
+  BigInt native identity, executable installed-afterimage validation, and full verdict lease policy.
+
+### Gate 1 fresh cycle 4 round 3 Respond
+
+- disposition: accepted 8, rejected 0, deferred 0; Info corrected. `execution_path=main_fallback`;
+  no specialized Phase 6 Agent surface was available.
+- review/episode response: caller dispatch IDs now have separate ID/full-request digests, global
+  replay precedes maker selection, intentional rounds rotate IDs, and the final lock rechecks latest
+  maker plus all proof-capable checker states. Creation verification reconstructs every immutable
+  semantic field and authenticates the complete event projection.
+- durability/native response: missing request files use flushed temporary plus atomic no-replace link
+  publication; `EEXIST` preserves the execution-plane winner. Production native factories use
+  BigInt stat identity, backed by adjacent identifiers above the safe-integer range.
+- breaker/validator response: human reset CLI and skills carry a stable request ID. Verdict recording
+  executes full current lease policy before replay. The embedded validator executes the installed
+  Task 7G breaker bytes through `node --test` after sequential production/caller installation.
+- exact corrected candidate hashes: handoff
+  `1523907bf1931793b765ed8a5fac2d678a6ae1aa303cfef6e2c89f2e6f150fd9`; design
+  `c2df542ad9c10216226dfbd98532ffcd015a9faf857cd56b77db9ff45271cab0`; ignored plan
+  `562ec50e762946c205c3d1483612ea3c98918eb3e2a28aace6db9f6ef23ba83b`.
+- response record: `.deep-review/responses/2026-07-15-153936-response.md`, SHA-256
+  `927b70dc331d205fa6f5767d8a1cafb43e406d44a4725002ef7f07add2fe71d9`.
+- verification: embedded validator passed `ok:true` for 46 tasks and 358 fences
+  (`bash=64`, `diff=90`, `js=177`, `json=4`, `markdown=12`, `text=10`, `yaml=1`), including the
+  installed afterimage behavior probe. `git diff --check` passed; `npm run preflight` passed
+  validation and all 1,463 tests with zero failures, cancellations, skips, or todo.
+- gate state: still open. Changed bytes require fresh cycle 4 round 4 with both reviewers pinned to
   exact `gpt-5.6-sol`/high; this Respond is not a Gate 1 pass.
 
 ## Review receipt template
