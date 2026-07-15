@@ -1014,6 +1014,67 @@ no inherited approval from the historical receipt.
   exact `gpt-5.6-sol`/high; this Respond is not a Gate 1 pass. Per the user's instruction, work pauses
   here and round 4 is not started.
 
+### Gate 1 fresh cycle 3 round 4 review
+
+- gate/artifact: Gate 1 design plus final 46-task plan, goal handoff, evidence, cycle-3 round-3
+  report/response, and current repository code/tests.
+- base/head: `c38a96137f8f4f0099c35e893860930e8ee4cf73..1205f8c9880920be94f4235d208496751630a2ee`;
+  worktree clean at counted reviewer start.
+- invocation: one successful built-in `codex exec ... review --base c38a961...` and one direct
+  adversarial audit. An earlier unsupported standard command exited 2 before model execution and was
+  excluded. Both counted reviewers used ephemeral/ignore-config/ignore-rules/read-only execution
+  with exact `gpt-5.6-sol` and `model_reasoning_effort=high`.
+- reviewer actual: standard thread `019f635e-e2aa-7102-9b0d-172a012de777` returned 3 P1 and 2 P2;
+  adversarial thread `019f635e-bfa5-75c0-9324-8c3c8e498cdf` returned 4 Red and 1 Info with
+  `REQUEST_CHANGES`. `N_planned=N_actual=2`; both counted processes terminated naturally with exit 0.
+- model/effort evidence: both process headers confirmed exact `gpt-5.6-sol`, `high`, ephemeral,
+  ignored user config/rules, and read-only sandbox. No global Codex setting changed.
+- verdict: `REQUEST_CHANGES`.
+- red/yellow/info: `2 / 4 / 3`; the undeclared gateway local and non-literal caller migration were
+  corroborated by both reviewers. Three solo defects were independently reproduced by the main agent,
+  and the stale design status was corroborated.
+- termination: cycle 3 round 4 Respond required; neither convergence nor max reached.
+- report path: `.deep-review/reports/2026-07-15-103646-review.md`, SHA-256
+  `4012a7316ff9499604fea8800196dd4b357cb64b7846c40dc3326e4bc46cfaa4`.
+- raw output bindings: standard SHA-256
+  `39710d6727750b92698421bd50018a9e298a4530f4e1ffc1258f3ec8df4f09d9`; adversarial SHA-256
+  `a02cdcc19a16b5766495b3571c1661d19894654290a60e7023d48005e25c0020`.
+- recurring export: run `01KXHPW26SJ50JNR6J6JF8V687`; architecture critical 37,
+  test-coverage warning 21, error-handling critical 17, security critical 9 (84 occurrences total).
+- main-agent judgment: accepted all six actionable findings. The gateway local was undeclared;
+  caller authority needed actual linked production options; accounting and breaker retries needed
+  stable durable request identities; respawn replay needed exact subtype projections; and the primary
+  status needed advancement.
+
+### Gate 1 fresh cycle 3 round 4 Respond
+
+- disposition: accepted 6, rejected 0, deferred 0. `execution_path=main_fallback`; the specialized
+  Phase 6 Agent surface was unavailable, so the documented main-agent fallback was used without an
+  unspecialized substitute.
+- gateway/caller response: Task 7B declares and directly tests the recovered gateway state, owns four
+  literal bootstrap callers, and names a bounded transition. Tasks 7C, 7F, 10B, and 11B provide the
+  residual production diffs; Task 11B's balanced parser verifies the actual sixth argument and exact
+  recovered projection before deleting the transition and enforcing strict caller binding.
+- durable retry response: accounting and breaker verdict requests carry stable request IDs/digests in
+  their intents and events, so post-cleanup response loss replays one exact durable result without a
+  second charge or counter increment.
+- respawn/status response: all ten public compensation sites persist their exact returned
+  outcome/reason. Standalone helpers retain direct options with event/state recovery while nested calls
+  reuse the public respawn context. The design records round 4 Respond complete and fresh round 5.
+- exact corrected candidate hashes: handoff
+  `1523907bf1931793b765ed8a5fac2d678a6ae1aa303cfef6e2c89f2e6f150fd9`; design
+  `1dcc4a0c9078fc822c6f6839796c8bedc2f120493f2af89b583cdb9d9bc86195`; ignored plan
+  `63d02a39721799653434843d39fe3435ea653ea06521110639b6ff333d48954d`.
+- response record: `.deep-review/responses/2026-07-15-115023-response.md`, SHA-256
+  `bc77405d79161b27c5be3410ea5e42e614d8c02b901151f7dafbea8ee7ede467`.
+- verification: embedded validator passed `ok:true` for 46 tasks and 346 fences
+  (`bash=64`, `diff=81`, `js=174`, `json=4`, `markdown=12`, `text=10`, `yaml=1`) including
+  strict diff syntax and sequential Task 7B→7C production-source application. `git diff --check` and
+  `git diff --cached --check` passed; `npm run preflight` passed validation and all 1,463 tests with
+  zero failures, cancellations, or skips.
+- gate state: still open. Changed bytes require fresh cycle 3 round 5 with both reviewers pinned to
+  exact `gpt-5.6-sol`/high; this Respond is not a Gate 1 pass.
+
 ## Review receipt template
 
 Each reviewed gate will add a receipt with all of these fields:
