@@ -139,7 +139,7 @@ These are the narrow baseline `Modify` anchors required by the execution tasks; 
 | 6A–6E | Produced `scripts/lib/app-task-continuation.mjs` consent/observe/revoke/status/redaction exports; `scripts/deep-loop.mjs:40-141,340-365`; `scripts/lib/initrun.mjs:13-58`; `scripts/lib/integrity.mjs:96-187`; `scripts/lib/lease.mjs:13-199`; `scripts/lib/schema.mjs:164-216`; created `tests/app-task-continuation.test.mjs`; `tests/orch-cli.test.mjs:246-286,831-1005`; `tests/cli-skillface.test.mjs:66-99,192-265`; `tests/integrity.test.mjs:123-211`; `tests/lease.test.mjs:27-490`; `tests/schema.test.mjs:17-273`; created `tests/helpers/fixed-init-crash-worker.mjs`. |
 | 7A | `scripts/lib/schema.mjs:164-216`; `scripts/deep-loop.mjs:120-180`; `tests/schema.test.mjs:17-273`; `tests/validate-cli.test.mjs:39-84`. |
 | 7B | produced `scripts/lib/durable-file.mjs`; `scripts/lib/finish.mjs:70-107`; `scripts/lib/integrity.mjs:21-187`; `scripts/lib/lease.mjs:43-103`; `scripts/lib/state.mjs:79-115`; `scripts/lib/workspace.mjs`; `tests/automation.test.mjs`; `tests/breaker.test.mjs`; `tests/budget.test.mjs`; `tests/codex-checker-integration.test.mjs`; `tests/comprehension.test.mjs`; `tests/detect-terminal.test.mjs`; produced `tests/durable-file.test.mjs`; `tests/episode.test.mjs`; `tests/fencing.test.mjs`; `tests/finish.test.mjs`; produced `tests/fixtures/verified-app-run.mjs`; `tests/handoff.test.mjs`; `tests/headless-host.test.mjs`; `tests/insights.test.mjs`; `tests/integrity.test.mjs`; `tests/lease.test.mjs`; `tests/orch-cli.test.mjs`; `tests/pause.test.mjs`; `tests/precompact-hook.test.mjs`; `tests/project-root.test.mjs`; `tests/recover.test.mjs`; `tests/respawn.test.mjs`; `tests/review.test.mjs`; `tests/runtime-executable.test.mjs`; `tests/session-profile.test.mjs`; `tests/spawn-optin.test.mjs`; `tests/state.test.mjs`; `tests/terminal-cli.test.mjs`; `tests/workspace.test.mjs`; created `tests/helpers/anchored-crash-worker.mjs`. |
-| 7C | `scripts/lib/lease.mjs:43-199`; `scripts/lib/budget.mjs:279-1048`; `scripts/lib/headless-host.mjs`; `scripts/deep-loop.mjs:650-670`; `skills/deep-loop-continue/SKILL.md:173-182`; `skills/deep-loop-workflow/references/handoff-respawn.md:179-187`; produced `tests/helpers/anchored-crash-worker.mjs`; `tests/lease.test.mjs`; `tests/budget.test.mjs`; `tests/headless-host.test.mjs`; `tests/skills.test.mjs`; `tests/cli-skillface.test.mjs`; `tests/integrity.test.mjs`; `tests/project-root.test.mjs`. |
+| 7C | `scripts/lib/lease.mjs:43-199`; `scripts/lib/budget.mjs:279-1048`; `scripts/lib/headless-host.mjs`; `scripts/deep-loop.mjs:650-670`; `skills/deep-loop-continue/SKILL.md:173-182`; `skills/deep-loop-workflow/references/handoff-respawn.md:179-187`; produced `tests/helpers/anchored-crash-worker.mjs`; `tests/lease.test.mjs`; `tests/budget.test.mjs`; `tests/headless-host.test.mjs`; `tests/skills.test.mjs`; `tests/cli-skillface.test.mjs`; `tests/insights.test.mjs`; `tests/integrity.test.mjs`; `tests/project-root.test.mjs`. |
 | 7D | Produced `scripts/lib/init-transaction.mjs` strict current/genesis proof; produced `scripts/lib/app-task-continuation.mjs` observe/revoke/status boundaries; produced `tests/fixtures/verified-app-run.mjs`; produced `tests/init-transaction.test.mjs`; produced `tests/app-task-continuation.test.mjs`; `tests/cli-skillface.test.mjs`. |
 | 7G | `scripts/lib/lease.mjs:102-199`; `scripts/lib/breaker.mjs:1-62`; `scripts/lib/state.mjs:102-110`; `tests/lease.test.mjs`; `tests/breaker.test.mjs`; `tests/project-root.test.mjs`; `tests/integrity.test.mjs`; produced `tests/helpers/anchored-crash-worker.mjs`. |
 | 7E–7F | `scripts/lib/session-profile.mjs:44-80`; `scripts/lib/comprehension.mjs:27-92`; `scripts/lib/project-root-recovery.mjs:20-51`; `scripts/lib/budget.mjs:1053-1067`; `scripts/lib/episode.mjs:25-220`; `scripts/lib/insights.mjs:357-509`; `scripts/lib/review.mjs:50-179,310-668`; `scripts/lib/workspace.mjs:80-153`; `scripts/lib/detect-terminal.mjs:284-343`; `scripts/deep-loop.mjs:120-180,340-710`; `tests/session-profile.test.mjs`; `tests/comprehension.test.mjs`; `tests/project-root.test.mjs`; `tests/budget.test.mjs`; `tests/cli-skillface.test.mjs`; `tests/insights.test.mjs`; `tests/review-import.test.mjs`; `tests/reviewer-failclosed.test.mjs`; `tests/workspace.test.mjs`; `tests/detect-terminal.test.mjs`. |
@@ -11896,6 +11896,7 @@ git commit -m "feat: verify semantic run snapshots" -m "Co-Authored-By: Claude O
 - Modify: `tests/skills.test.mjs` (both shipped attended templates require and explain request-ID
   reuse).
 - Modify: `tests/cli-skillface.test.mjs` (missing and valueless request IDs are usage exit 2).
+- Modify: `tests/insights.test.mjs` (the explicit cost fixture supplies a stable request ID).
 - Modify: `tests/integrity.test.mjs`.
 - Modify: `tests/project-root.test.mjs`.
 - Modify: `tests/helpers/anchored-crash-worker.mjs` (four accounting hard-crash operations).
@@ -11990,6 +11991,32 @@ test('lease fences precede proof and every success-class direct path proves the 
   assert.deepEqual(bytes7c(terminalIdle.root, terminalIdle.runId), terminalIdleBefore);
 });
 
+```
+
+First migrate the existing preflight replay regression so a durable receipt cannot bypass the
+current terminal policy:
+
+```diff
+diff --git a/tests/budget.test.mjs b/tests/budget.test.mjs
+--- a/tests/budget.test.mjs
++++ b/tests/budget.test.mjs
+@@ -266,4 +266,4 @@
+-test('an exact recorded preflight receipt remains a write-free no-op under its current terminal fence', () => {
++test('an exact recorded preflight receipt cannot bypass current terminal policy', () => {
+   const fixture = preflightReceiptFixture();
+   settleCodexPreflightCost(fixture.root, fixture.runId, {
+     receipt: fixture.read,
+@@ -281,8 +281,8 @@ test('an exact recorded preflight receipt remains a write-free no-op under its current terminal fence', () => {
+   const stateBefore = readFileSync(statePath, 'utf8');
+   const logBefore = readFileSync(logPath, 'utf8');
+-  assert.deepEqual(settleCodexPreflightCost(fixture.root, fixture.runId, {
++  assert.throws(() => settleCodexPreflightCost(fixture.root, fixture.runId, {
+     receipt: fixture.read,
+     fence: fixture.fence,
+-  }), { ok: true, recorded: false, reason: 'already-recorded' });
++  }), /LEASE_FENCED: RUN_TERMINAL/);
+   assert.equal(readFileSync(statePath, 'utf8'), stateBefore);
+   assert.equal(readFileSync(logPath, 'utf8'), logBefore);
 ```
 
 Append this exact block to `tests/budget.test.mjs`:
@@ -12171,6 +12198,15 @@ test('recordCost request identity survives cleanup and distinguishes equal repor
   assert.throws(() => recordCost(fixture.root, fixture.runId,
     { ...input, tokens: 18 }), /ACCOUNTING_REQUEST_CONFLICT/);
   assert.deepEqual(bytes7c(fixture.root, fixture.runId), committed);
+  for (const [label, fence] of [
+    ['runtime', { ...fixture.fence, runtime: 'claude' }],
+    ['intent', { ...fixture.fence, intent: 'accounting' }],
+  ]) {
+    assert.throws(() => recordCost(fixture.root, fixture.runId,
+      { ...input, fence }), /ACCOUNTING_REQUEST_CONFLICT/,
+    `same request ID with changed ${label} must conflict`);
+    assert.deepEqual(bytes7c(fixture.root, fixture.runId), committed);
+  }
 
   recordCost(fixture.root, fixture.runId,
     { ...input, requestId: 'record-response-loss-2' });
@@ -12186,6 +12222,37 @@ test('recordCost request identity survives cleanup and distinguishes equal repor
     /LEASE_FENCED: RUN_TERMINAL/,
     'terminal policy must precede post-cleanup durable request lookup');
   assert.deepEqual(bytes7c(fixture.root, fixture.runId), terminalBytes);
+});
+
+test('durable accounting replay rechecks each current operation policy', () => {
+  const process = makerProcessReceiptFixture();
+  settleCodexProcessCost(process.root, process.runId,
+    { receipt: process.receipt, fence: process.fence });
+  assert.deepEqual(releaseLease(process.root, process.runId,
+    { owner: process.runId, generation: 1 }), { ok: true, reason: 'rolled-back' });
+  finishRun(process.root, process.runId, { status: 'stopped', confirm: true,
+    proof: { human_reason: 'invalidate parent process replay carve' },
+    fence: { owner: process.runId, generation: 1, intent: 'business' },
+    now: Date.parse('2026-07-12T00:04:00.000Z') });
+  const processBytes = bytes7c(process.root, process.runId);
+  assert.throws(() => settleCodexProcessCost(process.root, process.runId,
+    { receipt: process.receipt, fence: process.fence }),
+  /PROCESS_ACCOUNTING_TERMINAL_PROOF_MISSING/);
+  assert.deepEqual(bytes7c(process.root, process.runId), processBytes);
+
+  const terminal = terminalCodexChildRun();
+  const usage = { num_turns: 1, input_tokens: 5, output_tokens: 7, tokens: 12 };
+  const fence = { owner: terminal.childRunId, generation: 2, intent: 'accounting' };
+  settleTerminalCodexMakerCost(terminal.root, terminal.runId,
+    { usage, fence, handoffKey: terminal.handoffKey });
+  assert.deepEqual(releaseLease(terminal.root, terminal.runId,
+    { owner: terminal.childRunId, generation: 2 }),
+  { ok: true, reason: 'rolled-back' });
+  const terminalBytes = bytes7c(terminal.root, terminal.runId);
+  assert.throws(() => settleTerminalCodexMakerCost(terminal.root, terminal.runId,
+    { usage, fence, handoffKey: terminal.handoffKey }),
+  /TERMINAL_ACCOUNTING_CHILD_NOT_ACQUIRED/);
+  assert.deepEqual(bytes7c(terminal.root, terminal.runId), terminalBytes);
 });
 ```
 
@@ -12280,7 +12347,7 @@ new mandatory-fence contract. No production or test success call remains fence-l
 diff --git a/tests/budget.test.mjs b/tests/budget.test.mjs
 --- a/tests/budget.test.mjs
 +++ b/tests/budget.test.mjs
-@@ -32,2 +32,12 @@ function ownerSessionTurns(root, runId) {
+@@ -38,2 +38,12 @@ function ownerSessionTurns(root, runId) {
  }
 +let recordRequest7c = 0;
 +function recordMeasured7c(root, runId, options) {
@@ -12292,32 +12359,88 @@ diff --git a/tests/budget.test.mjs b/tests/budget.test.mjs
 +      intent: 'accounting' },
 +  });
 +}
- function mk(root, runId, fence, n) {
-@@ -1247,4 +1254,4 @@
+ function mk(root, runId, fence, n) {   // n distinct maker episodes (each a business mutation → floor)
+```
+
+Apply the caller replacements against that helper afterimage:
+
+```diff
+diff --git a/tests/budget.test.mjs b/tests/budget.test.mjs
+--- a/tests/budget.test.mjs
++++ b/tests/budget.test.mjs
+@@ -1257,6 +1257,6 @@
  test('recordCost syncs kernel-derived spent from event-log', () => {
    const root = seedRun();
 -  recordCost(root, 'R', { turns: 5, tokens: 100 });
 -  recordCost(root, 'R', { turns: 3, tokens: 50 });
 +  recordMeasured7c(root, 'R', { turns: 5, tokens: 100 });
 +  recordMeasured7c(root, 'R', { turns: 3, tokens: 50 });
-@@ -1256,3 +1263,3 @@
+   const { data } = readState(root, 'R');
+   assert.equal(data.budget.spent, 8);
+@@ -1266,4 +1266,4 @@
  test('reconcileBudget throws on stored/log mismatch', () => {
    const root = seedRun();
 -  recordCost(root, 'R', { turns: 5, tokens: 0 });
 +  recordMeasured7c(root, 'R', { turns: 5, tokens: 0 });
-@@ -1288,4 +1295,4 @@
+   const { data } = readState(root, 'R'); data.budget.spent = 0; writeState(root, 'R', data); // tamper low
+@@ -1279,17 +1279,19 @@
+ test('recordCost records one known checker turn on a paused run only through the matching accounting fence', () => {
+   const { root, runId } = floorRun();
+   const { data } = readState(root, runId);
+   data.status = 'paused';
+   data.pause_reason = 'consecutive-request-changes';
+   writeState(root, runId, data);
+   assert.doesNotThrow(() => recordCost(root, runId, {
+     turns: 1,
+     tokens: 12,
++    requestId: 'paused-accounting-allowed',
+     fence: { owner: runId, generation: 1, intent: 'accounting' },
+   }));
+   assert.equal(readState(root, runId).data.budget.spent, 1);
+   assert.throws(() => recordCost(root, runId, {
+     turns: 1,
+     tokens: 12,
++    requestId: 'paused-accounting-business',
+     fence: { owner: runId, generation: 1, intent: 'business' },
+   }), /LEASE_FENCED: RUN_PAUSED/);
+@@ -1298,5 +1300,5 @@
  test('reconcileBudget detects event-log suffix truncation', () => {
    const root = seedRun();
 -  recordCost(root, 'R', { turns: 2, tokens: 0 });
 -  recordCost(root, 'R', { turns: 3, tokens: 0 });
 +  recordMeasured7c(root, 'R', { turns: 2, tokens: 0 });
 +  recordMeasured7c(root, 'R', { turns: 3, tokens: 0 });
-@@ -1304,3 +1311,3 @@
+   const p = join(runDir(root, 'R'), 'event-log.jsonl');
+@@ -1314,4 +1316,4 @@
  test('non-cost anchored append keeps reconcile consistent; its truncation is caught', () => {
    const root = seedRun();
 -  recordCost(root, 'R', { turns: 2, tokens: 0 });
 +  recordMeasured7c(root, 'R', { turns: 2, tokens: 0 });
-@@ -1403,4 +1410,9 @@
+   appendAnchored(root, 'R', { type: 'decision', data: { note: 'x' } }); // non-cost advances anchor (no floor opt)
+@@ -1339,5 +1341,5 @@
+ test('#3(b): explicit budget record absorbs the tick floor (max-rule, no double count)', () => {
+   const { root, runId, fence } = floorRun();
+   mk(root, runId, fence, 2);   // 2 floors → spent 2, session.turns 2
+-  recordCost(root, runId, { turns: 5, tokens: 0, fence });   // reported 5 > floor-sum 2
++  recordCost(root, runId, { turns: 5, tokens: 0, requestId: 'floor-max-rule', fence });
+   // tick contribution = max(5, 2) = 5, so total spent = 5 (NOT 2 + 5 = 7)
+@@ -1361,5 +1363,5 @@
+ test('#3(d): floor keeps negatives rejected and the log verifiable', () => {
+   const { root, runId, fence } = floorRun();
+   mk(root, runId, fence, 2);
+-  assert.throws(() => recordCost(root, runId, { turns: -1, tokens: 0, fence }), /INVALID_COST/);
++  assert.throws(() => recordCost(root, runId, { turns: -1, tokens: 0, requestId: 'floor-invalid', fence }), /INVALID_COST/);
+   const { data } = readState(root, runId);
+@@ -1394,5 +1396,7 @@
+   releaseLease(root, runId, { owner: runId, generation: 1 });
+   acquireLease(root, runId, { owner: 'CHILD-ACTOR', expectGeneration: 1, runtime: 'claude', now });
+   // gen 2 reports 5 turns — its own tick floor is 0, so it must NOT absorb the gen-1 floors
+-  recordCost(root, runId, { turns: 5, tokens: 0, fence: { owner: 'CHILD-ACTOR', generation: 2, intent: 'business' } });
++  recordCost(root, runId, { turns: 5, tokens: 0,
++    requestId: 'later-session-max-rule',
++    fence: { owner: 'CHILD-ACTOR', generation: 2, intent: 'business' } });
+   assert.equal(readState(root, runId).data.budget.spent, 3 * MUTATION_TURN_FLOOR + 5, 'gen-1 floors survive; gen-2 report adds max(5, 0)=5 on top');
+@@ -1413,4 +1417,9 @@
 -  assert.throws(() => recordCost(root, runId, { turns: 1, tokens: 0, fence: { owner: runId, generation: 1, intent: 'accounting' } }), /LEASE_FENCED: RUN_TERMINAL/);
 +  assert.throws(() => recordCost(root, runId, { turns: 1, tokens: 0,
 +    requestId: 'terminal-fenced',
@@ -12333,7 +12456,7 @@ diff --git a/tests/budget.test.mjs b/tests/budget.test.mjs
 diff --git a/tests/integrity.test.mjs b/tests/integrity.test.mjs
 --- a/tests/integrity.test.mjs
 +++ b/tests/integrity.test.mjs
-@@ -43,3 +43,6 @@ test('appendAnchored fails closed on a truncated event log (no launder)', () => {
+@@ -48,4 +48,7 @@ test('appendAnchored fails closed on a truncated event log (no launder)', () => {
    const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
 -  recordCost(root, runId, { turns: 1, tokens: 10 });
 -  recordCost(root, runId, { turns: 1, tokens: 10 });
@@ -12342,6 +12465,7 @@ diff --git a/tests/integrity.test.mjs b/tests/integrity.test.mjs
 +    { turns: 1, tokens: 10, requestId: 'integrity-cost-1', fence });
 +  recordCost(root, runId,
 +    { turns: 1, tokens: 10, requestId: 'integrity-cost-2', fence });
+   const anchorBefore = readState(root, runId).data.event_log_head;
 @@ -55,4 +58,4 @@ test('appendAnchored fails closed on a truncated event log (no launder)', () => {
 -  assert.throws(() => recordCost(root, runId,
 -    { turns: 1, tokens: 10, requestId: 'integrity-cost-3' }),
@@ -12350,11 +12474,24 @@ diff --git a/tests/integrity.test.mjs b/tests/integrity.test.mjs
 +    { turns: 1, tokens: 10, requestId: 'integrity-cost-3', fence }),
 +  /RUN_SNAPSHOT_INVALID/);
    // anchor must NOT have advanced (no laundering of the truncation)
+diff --git a/tests/insights.test.mjs b/tests/insights.test.mjs
+--- a/tests/insights.test.mjs
++++ b/tests/insights.test.mjs
+@@ -591,7 +591,8 @@ test('v1.5 (b): emit→finish 사이 명시 budget record cost(auto_floor 부재) → skip (r1 P2)', () => {
+   const root = mkdtempSync(join(tmpdir(), 'dl-fe3-'));
+   const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: FIXED });
+   const fence = { owner: runId, generation: 1, intent: 'business' };
+   emitInsights(root, runId, { fence, now: FIXED.getTime(), rnd: () => 0.5 });
+-  recordCost(root, runId, { turns: 3, tokens: 0, fence: { owner: runId, generation: 1 } });
++  recordCost(root, runId, { turns: 3, tokens: 0,
++    requestId: 'insights-explicit-cost', fence: { owner: runId, generation: 1 } });
+   finishFixture(root, runId);
+   assert.equal(latestInsights(root), null);
 ```
 
 After applying these exact replacements, run the closed call-site audit below. The only fence-less
 hits are the two deliberate invalid-number calls that terminate at `INVALID_COST` before authority;
-all other hits must show a literal `fence` in the same call expression:
+all other hits must show both a request ID and a literal `fence` in the same call expression:
 
 ```bash
 rg -n -U "recordCost\([^;]+\)" scripts tests
@@ -12654,10 +12791,13 @@ test('every receipt-less production accounting call links a stable request ID', 
   const calls = [...source.matchAll(/\brecordCostFn\([\s\S]*?\n\s*\}\);/g)]
     .map(match => match[0]);
   assert.equal(calls.length, 6, 'closed legacy accounting call inventory changed');
+  assert.match(source,
+    /const accountingFence = \{ owner: childRunId, generation: parentGeneration \+ 1, intent: 'accounting' \};/,
+    'the variable accounting fence is not derived from the acquired child identity');
   for (const call of calls) {
     assert.match(call, /requestId:\s*legacyAccountingRequestId\(/,
       'recordCostFn call does not receive its stable request identity');
-    assert.match(call, /fence:\s*\{[^}]*owner:/,
+    assert.match(call, /fence:\s*(?:\{[^}]*owner:|accountingFence\b)/,
       'recordCostFn call does not receive its actual accounting fence');
   }
 });
@@ -12798,7 +12938,7 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 +import { runtimeFence, sessionRuntime } from './runtime.mjs';
  import { contentHash } from './envelope.mjs';
  import { canonicalProjectRoot, projectRootDigest } from './project-root.mjs';
-@@ -273,4 +275,74 @@
+@@ -273,4 +275,160 @@
    return { tf, tk };
  }
 -
@@ -12839,17 +12979,24 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 +}
 +
 +function recoveredCostEvent(root, runId, mutation, predicate,
-+  { requestDigest = null, fenceCheck } = {}) {
++  { requestDigest = null, requestIdDigest = null, fenceCheck, policyCheck = null } = {}) {
 +  if (typeof fenceCheck !== 'function') {
 +    throw new Error('ACCOUNTING_RECOVERY_FENCE_REQUIRED');
 +  }
-+  mutation.readVerifiedState({ fenceCheck });
++  if (policyCheck !== null && typeof policyCheck !== 'function') {
++    throw new Error('ACCOUNTING_RECOVERY_POLICY_REQUIRED');
++  }
++  const snapshot = mutation.readVerifiedState({ fenceCheck });
 +  const lines = readLines(root, runId);
-+  if (requestDigest !== null) {
++  if (policyCheck !== null) policyCheck(snapshot.data, lines);
++  if (requestIdDigest !== null) {
 +    const durable = lines.filter(event => event.type === 'cost'
-+      && event.data?.accounting_request_digest === requestDigest);
++      && event.data?.accounting_request_id_digest === requestIdDigest);
 +    if (durable.length > 1) throw new Error('ACCOUNTING_RECOVERY_PROJECTION_MISMATCH');
 +    if (durable.length === 1) {
++      if (durable[0].data?.accounting_request_digest !== requestDigest) {
++        throw new Error('ACCOUNTING_REQUEST_CONFLICT');
++      }
 +      if (!predicate(durable[0])) throw new Error('ACCOUNTING_REQUEST_CONFLICT');
 +      if (mutation.recovered !== null
 +          && !mutation.recovered.events.some(event => event.seq === durable[0].seq
@@ -12871,6 +13018,85 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 +    throw new Error('ACCOUNTING_RECOVERY_PROJECTION_MISMATCH');
 +  }
 +  return true;
++}
++
++function assertPreflightReplayPolicy(loop, fence) {
++  const authorized = leaseCheck(loop, fence);
++  if (!authorized.ok) throw new Error(`LEASE_FENCED: ${authorized.reason}`);
++}
++
++function assertProcessReplayPolicy(loop, lines, exact, fence) {
++  const authorized = leaseCheck(loop, fence);
++  if (authorized.ok) return;
++  if (authorized.reason !== 'RUN_TERMINAL') {
++    throw new Error(`LEASE_FENCED: ${authorized.reason}`);
++  }
++  const origin = exact.process_kind === 'maker'
++    ? makerOrigin(loop, exact, lines) : checkerOrigin(loop, exact);
++  if (exact.process_kind === 'maker') {
++    verifyTerminalMakerSettlement(loop, exact, origin, lines);
++    return;
++  }
++  const checker = (loop.episodes || []).find(
++    episode => episode.id === exact.context.checker_episode_id);
++  if (loop.status === 'stopped' && checker?.status === 'in_progress') {
++    verifyStoppedPreImportCheckerSettlement(loop, exact, origin, lines);
++  } else {
++    verifyTerminalCheckerSettlement(loop, exact, origin, lines);
++  }
++}
++
++function assertTerminalMakerReplayPolicy(loop, lines, { usage, fence, handoffKey }) {
++  const lease = loop.session_chain?.lease || {};
++  if (loop.status !== 'completed' && loop.status !== 'stopped') {
++    throw new Error('RUN_NOT_TERMINAL: terminal maker settlement');
++  }
++  if (lease.state !== 'active' || lease.handoff_phase !== 'acquired') {
++    throw new Error('TERMINAL_ACCOUNTING_CHILD_NOT_ACQUIRED');
++  }
++  const session = (loop.session_chain?.sessions || []).find(item => item.run_id === fence.owner);
++  if (!session || typeof session.started_at !== 'string'
++      || !Number.isFinite(Date.parse(session.started_at))
++      || session.outcome === 'failed_launch'
++      || !Number.isSafeInteger(session.turns) || session.turns < 0) {
++    throw new Error('TERMINAL_ACCOUNTING_SESSION_INVALID');
++  }
++  const finishes = lines.filter(event => event.type === 'finish');
++  const finish = finishes[0];
++  if (finishes.length !== 1 || finish.data?.status !== loop.status
++      || typeof loop.termination?.finished_at !== 'string') {
++    throw new Error('TERMINAL_ACCOUNTING_PROOF_MISSING');
++  }
++  const handoffs = lines.filter(event => event.type === 'handoff-emitted'
++    && event.data?.child_run_id === fence.owner && event.data?.key === handoffKey);
++  const finishFloor = lines.find(event => event.seq === finish.seq + 1
++    && event.type === 'cost' && event.data?.auto_floor === true && event.data?.for === 'finish'
++    && event.data?.owner === fence.owner && event.data?.generation === fence.generation);
++  if (handoffs.length !== 1 || handoffs[0].seq >= finish.seq || !finishFloor) {
++    throw new Error('TERMINAL_ACCOUNTING_PROOF_MISSING');
++  }
++  const accountingKey = contentHash(
++    `${loop.run_id}|${fence.owner}|${fence.generation}|${handoffKey}|${finish.checksum}`);
++  const exactReceipt = event => event.type === 'cost'
++    && event.data?.terminal_process === 'codex-maker'
++    && event.data?.source === 'terminal-maker-measured'
++    && event.data?.accounting_key === accountingKey
++    && event.data?.owner === fence.owner && event.data?.generation === fence.generation;
++  if (lines.some(event => event.seq > finish.seq
++      && event !== finishFloor && !exactReceipt(event))) {
++    throw new Error('TERMINAL_ACCOUNTING_PROOF_MISSING');
++  }
++  const receipts = lines.filter(exactReceipt);
++  if (receipts.length > 1) {
++    throw new Error('TERMINAL_ACCOUNTING_DUPLICATE');
++  }
++  if (receipts.length === 1) {
++    const priorUsage = processUsageFromEvent(receipts[0]);
++    if (!sameMeasuredUsage(priorUsage, usage)) {
++      throw new Error('TERMINAL_ACCOUNTING_MISMATCH');
++    }
++  }
++  return accountingKey;
 +}
 +
  // Explicit cost report — its own withLock (needs to read the log to absorb the tick's floor before appending an
@@ -12910,7 +13136,7 @@ business result therefore follows semantic verification:
 diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 --- a/scripts/lib/budget.mjs
 +++ b/scripts/lib/budget.mjs
-@@ -308,19 +308,46 @@
+@@ -308,19 +308,51 @@
  // Explicit cost report — its own withLock (needs to read the log to absorb the tick's floor before appending an
  // ADJUSTED cost). Mirrors appendAnchored's verify→append→anchor→reconcile sequence; recomputeSpent stays a PURE
  // sum so reconcileBudget agrees automatically. Negative/non-finite still rejected (validCost).
@@ -12936,7 +13162,12 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 +    throw new Error('BUDGET_ACCOUNTING_FENCE_REQUIRED');
 +  }
 +  const callerBinding = { owner: fence.owner, generation: fence.generation };
-+  const requestDigest = contentHash(`budget-record-request\0${requestId}`);
++  const requestIdDigest = contentHash(`budget-record-id\0${requestId}`);
++  const requestDigest = contentHash(JSON.stringify({
++    domain: 'budget-record-request-v1', request_id_digest: requestIdDigest,
++    owner: fence.owner, generation: fence.generation, turns, tokens,
++    runtime: fence.runtime ?? null, intent: fence.intent ?? null,
++  }));
 +  const intentDigest = mutationIntentDigest('budget-record', callerBinding,
 +    { request_digest: requestDigest, turns, tokens,
 +      runtime: fence.runtime ?? null, intent: fence.intent ?? null });
@@ -12947,7 +13178,7 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 +      event.data?.reported_turns === turns && event.data?.reported_tokens === tokens
 +      && event.data?.owner === fence.owner
 +      && event.data?.generation === fence.generation,
-+    { requestDigest, fenceCheck: replayFence })) return;
++    { requestDigest, requestIdDigest, fenceCheck: replayFence })) return;
 +    const { data: loop, hash: baseStateHash } = readState(root, runId);
      const lease = loop.session_chain?.lease || {};
 -    const { tf, tk } = trailingFloor(readLines(root, runId), lease.owner_run_id, lease.generation);   // this session's tick floor only
@@ -12968,7 +13199,7 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
      const adjTurns = Math.max(0, turns - tf), adjTokens = Math.max(0, tokens - tk);   // tick contribution = max(reported, floor-sum)
      appendEvent(root, runId, { type: 'cost', data: { turns: adjTurns, tokens: adjTokens, reported_turns: turns, reported_tokens: tokens, owner: lease.owner_run_id, generation: lease.generation } });
      loop.event_log_head = lastLogHead(root, runId);
-@@ -444,26 +464,35 @@
+@@ -444,26 +469,36 @@
  // A successful Codex preflight smoke is represented by an immutable, hash-bound receipt before an active cache
  // can be published. The current accounting fence authorizes settlement, while the receipt's origin session owns
  // the charge. An identical retry is a byte-preserving no-op even after the lease has legitimately advanced.
@@ -12992,7 +13223,8 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 +    if (recoveredCostEvent(root, runId, mutation, event =>
 +      event.data?.preflight_receipt_id === exact.receipt_id
 +      && event.data?.preflight_cache_key === exact.cache_key,
-+    { fenceCheck: replayFence })) {
++    { fenceCheck: replayFence,
++      policyCheck: loop => assertPreflightReplayPolicy(loop, fence) })) {
 +      return { ok: true, recorded: true, reason: 'recorded' };
 +    }
 +    const { data: loop, hash: baseStateHash } = readState(root, runId);
@@ -13020,7 +13252,7 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
    if (receipt?.contract === CODEX_PREFLIGHT_RECEIPT_CONTRACT) {
      return settleCodexPreflightCost(root, runId, { receipt, fence });
    }
-@@ -872,19 +898,28 @@
+@@ -872,19 +903,29 @@
      || fence.intent !== 'accounting') {
      throw new Error('PROCESS_ACCOUNTING_FENCE_REQUIRED');
    }
@@ -13036,7 +13268,8 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 +    if (recoveredCostEvent(root, runId, mutation, event =>
 +      event.data?.process_receipt_id === exact.receipt_id
 +      && event.data?.process_kind === exact.process_kind,
-+    { fenceCheck: replayFence })) {
++    { fenceCheck: replayFence,
++      policyCheck: (loop, lines) => assertProcessReplayPolicy(loop, lines, exact, fence) })) {
 +      return { ok: true, recorded: true, reason: 'recorded' };
 +    }
 +    const { data: loop, hash: baseStateHash } = readState(root, runId);
@@ -13066,7 +13299,7 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
    if (!isMeasuredOneTurnUsage(usage)) throw new Error('TERMINAL_ACCOUNTING_USAGE_INVALID');
    if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)
      || fence.intent !== 'accounting') {
-@@ -980,13 +1014,31 @@
+@@ -980,13 +1020,37 @@
    if (typeof handoffKey !== 'string' || !/^[a-f0-9]{16}$/.test(handoffKey)) {
      throw new Error('TERMINAL_ACCOUNTING_HANDOFF_INVALID');
    }
@@ -13077,6 +13310,7 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 +    { usage_digest: contentHash(JSON.stringify(usage)), handoff_key: handoffKey });
 +  const replayFence = accountingReplayFence(fence, { runtime: 'codex',
 +    runtimeMessage: 'RUNTIME_FENCED: terminal maker settlement requires codex' });
++  let replayAccountingKey = null;
 +  return withVerifiedMutationLock(root, runId, { callerBinding, intentDigest,
 +    fenceError: 'BUDGET_FENCED: terminal-maker' }, mutation => {
 +    if (recoveredCostEvent(root, runId, mutation, event =>
@@ -13085,8 +13319,13 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 +      && event.data?.reported_turns === usage.num_turns
 +      && event.data?.reported_tokens === usage.tokens
 +      && event.data?.owner === fence.owner
-+      && event.data?.generation === fence.generation,
-+    { fenceCheck: replayFence })) {
++      && event.data?.generation === fence.generation
++      && event.data?.accounting_key === replayAccountingKey,
++    { fenceCheck: replayFence,
++      policyCheck: (loop, lines) => {
++        replayAccountingKey = assertTerminalMakerReplayPolicy(
++          loop, lines, { usage, fence, handoffKey });
++      } })) {
 +      return { ok: true, recorded: true, reason: 'recorded' };
 +    }
 +    const { data: loop, hash: baseStateHash } = readState(root, runId);
@@ -13123,7 +13362,7 @@ exact current contract; no builder stub or omitted spread remains:
 diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 --- a/scripts/lib/budget.mjs
 +++ b/scripts/lib/budget.mjs
-@@ -292,11 +289,8 @@ export function recordCost(root, runId, { turns = 0, tokens = 0, fence } = {}) {
+@@ -292,11 +289,9 @@ export function recordCost(root, runId, { turns = 0, tokens = 0, fence } = {}) {
      const adjTurns = Math.max(0, turns - tf), adjTokens = Math.max(0, tokens - tk);   // tick contribution = max(reported, floor-sum)
 -    appendEvent(root, runId, { type: 'cost', data: { turns: adjTurns, tokens: adjTokens, reported_turns: turns, reported_tokens: tokens, owner: lease.owner_run_id, generation: lease.generation } });
 -    loop.event_log_head = lastLogHead(root, runId);
@@ -13136,6 +13375,7 @@ diff --git a/scripts/lib/budget.mjs b/scripts/lib/budget.mjs
 -    writeState(root, runId, loop);
 +    const eventData = { turns: adjTurns, tokens: adjTokens, reported_turns: turns,
 +      reported_tokens: tokens, owner: lease.owner_run_id, generation: lease.generation,
++      accounting_request_id_digest: requestIdDigest,
 +      accounting_request_digest: requestDigest };
 +    commitMeasuredCost(root, runId, loop, lines, baseStateHash, eventData,
 +      { owner: lease.owner_run_id, addedTurns: adjTurns, callerBinding, intentDigest,
@@ -13256,7 +13496,7 @@ four owned writers, and byte-identical refusal.
 
 - [ ] **Step 5: Run lease/accounting regressions**
 
-Run: `node --test tests/lease.test.mjs tests/budget.test.mjs tests/integrity.test.mjs tests/state.test.mjs tests/headless-host.test.mjs tests/skills.test.mjs tests/cli-skillface.test.mjs`
+Run: `node --test tests/lease.test.mjs tests/budget.test.mjs tests/integrity.test.mjs tests/state.test.mjs tests/headless-host.test.mjs tests/skills.test.mjs tests/cli-skillface.test.mjs tests/insights.test.mjs`
 
 Expected: PASS; measured duplicate receipts remain write-free and exact accounting totals are unchanged.
 
@@ -13265,7 +13505,7 @@ Expected: PASS; measured duplicate receipts remain write-free and exact accounti
 Run:
 
 ```bash
-git diff -- scripts/lib/lease.mjs scripts/lib/budget.mjs scripts/lib/headless-host.mjs scripts/deep-loop.mjs skills/deep-loop-continue/SKILL.md skills/deep-loop-workflow/references/handoff-respawn.md tests/helpers/anchored-crash-worker.mjs tests/lease.test.mjs tests/budget.test.mjs tests/headless-host.test.mjs tests/skills.test.mjs tests/cli-skillface.test.mjs tests/integrity.test.mjs tests/project-root.test.mjs
+git diff -- scripts/lib/lease.mjs scripts/lib/budget.mjs scripts/lib/headless-host.mjs scripts/deep-loop.mjs skills/deep-loop-continue/SKILL.md skills/deep-loop-workflow/references/handoff-respawn.md tests/helpers/anchored-crash-worker.mjs tests/lease.test.mjs tests/budget.test.mjs tests/headless-host.test.mjs tests/skills.test.mjs tests/cli-skillface.test.mjs tests/insights.test.mjs tests/integrity.test.mjs tests/project-root.test.mjs
 rg -n "appendEvent\(|commitMeasuredCost|assertVerifiedRunSnapshot|already-" scripts/lib/lease.mjs scripts/lib/budget.mjs
 git diff --check
 ```
@@ -13277,7 +13517,7 @@ event/state byte is written before prospective verification.
 - [ ] **Step 7: Commit the direct-writer slice**
 
 ```bash
-git add scripts/lib/lease.mjs scripts/lib/budget.mjs scripts/lib/headless-host.mjs scripts/deep-loop.mjs skills/deep-loop-continue/SKILL.md skills/deep-loop-workflow/references/handoff-respawn.md tests/helpers/anchored-crash-worker.mjs tests/lease.test.mjs tests/budget.test.mjs tests/headless-host.test.mjs tests/skills.test.mjs tests/cli-skillface.test.mjs tests/integrity.test.mjs tests/project-root.test.mjs
+git add scripts/lib/lease.mjs scripts/lib/budget.mjs scripts/lib/headless-host.mjs scripts/deep-loop.mjs skills/deep-loop-continue/SKILL.md skills/deep-loop-workflow/references/handoff-respawn.md tests/helpers/anchored-crash-worker.mjs tests/lease.test.mjs tests/budget.test.mjs tests/headless-host.test.mjs tests/skills.test.mjs tests/cli-skillface.test.mjs tests/insights.test.mjs tests/integrity.test.mjs tests/project-root.test.mjs
 git commit -m "fix: verify lease and accounting writers" -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
 
@@ -14440,16 +14680,19 @@ import { newWorkstream as workstream7f } from '../scripts/lib/workspace.mjs';
 import { newEpisode as episode7f, recordEpisode as record7f }
   from '../scripts/lib/episode.mjs';
 import { dispatchReview as dispatch7f } from '../scripts/lib/review.mjs';
+import { readLines as lines7f } from '../scripts/lib/integrity.mjs';
+import { readState as stateDispatch7f } from '../scripts/lib/state.mjs';
 import { durableRunBytes as bytes7f, rawHashValidState as raw7f }
   from './fixtures/verified-app-run.mjs';
 
-function corruptDispatchFixture7f() {
+function corruptDispatchFixture7f({ corrupt = true, hillClimb = true } = {}) {
   const root = realpath7f(temp7f(join7f(tmp7f(), 'dl-review-dispatch-proof-')));
   const observed = '2026-07-13T00:00:00.000Z';
   const { runId } = init7f(root, {
-    runtime: 'codex', goal: '하네스 개선', recipe: 'harness-hill-climb',
+    runtime: 'codex', goal: '하네스 개선',
+    ...(hillClimb ? { recipe: 'harness-hill-climb' } : {}),
     review: { points: ['design'], reviewer: 'deep-review-loop', mode: 'cross-model',
-      flags: ['--contract'], converge: true, max_review_rounds: 5,
+      flags: hillClimb ? ['--contract'] : [], converge: true, max_review_rounds: 5,
       require_human_ack: false },
     detected: { 'deep-review': true, codex: true }, now: new Date(observed),
     cwdFn: () => root,
@@ -14471,11 +14714,13 @@ function corruptDispatchFixture7f() {
     kind: 'design', point: 'design', workstream: ws,
     expectedArtifacts: [artifact], fence }).id;
   record7f(root, runId, maker, { status: 'done', artifacts: [artifact], fence });
-  raw7f(root, runId, loop => {
-    loop.session_chain.sessions[0].host_surface.observed_at =
-      '2026-07-13T00:00:01.000Z';
-  });
-  return { root, runId, ws, fence };
+  if (corrupt) {
+    raw7f(root, runId, loop => {
+      loop.session_chain.sessions[0].host_surface.observed_at =
+        '2026-07-13T00:00:01.000Z';
+    });
+  }
+  return { root, runId, ws, maker, fence };
 }
 
 test7f('review dispatch proves authority before descriptor and contract source actions', () => {
@@ -14492,6 +14737,23 @@ test7f('review dispatch proves authority before descriptor and contract source a
     }), expected);
   }
   assert7f.deepEqual(bytes7f(fixture.root, fixture.runId), before);
+});
+
+test7f('review dispatch exact retry after marker cleanup reuses one checker', () => {
+  const fixture = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
+  const input = { point: 'design', workstreamId: fixture.ws,
+    detected: { 'deep-review': true, codex: true }, fence: fixture.fence };
+  const first = dispatch7f(fixture.root, fixture.runId, input);
+  const committed = bytes7f(fixture.root, fixture.runId);
+  const second = dispatch7f(fixture.root, fixture.runId, input);
+  assert7f.equal(second.checkerEpisodeId, first.checkerEpisodeId);
+  assert7f.deepEqual(bytes7f(fixture.root, fixture.runId), committed,
+    'post-cleanup exact dispatch retry must be byte-identical');
+  const state = stateDispatch7f(fixture.root, fixture.runId).data;
+  assert7f.equal(state.episodes.filter(episode => episode.role === 'checker'
+    && episode.target_maker === fixture.maker).length, 1);
+  assert7f.equal(lines7f(fixture.root, fixture.runId).filter(event =>
+    event.type === 'episode-new' && event.data?.role === 'checker').length, 1);
 });
 ```
 
@@ -14986,14 +15248,16 @@ Apply this exact import diff to `scripts/lib/review.mjs`:
 diff --git a/scripts/lib/review.mjs b/scripts/lib/review.mjs
 --- a/scripts/lib/review.mjs
 +++ b/scripts/lib/review.mjs
-@@ -5,5 +5,6 @@
+@@ -5,5 +5,7 @@
  import { latestInsights } from './insights.mjs';
 -import { readState } from './state.mjs';
--import { appendAnchored, directMutationOptions } from './integrity.mjs';
-+import { appendAnchored, directMutationOptions, readLines, readVerifiedState,
+-import { appendAnchored } from './integrity.mjs';
++import { appendAnchored, readLines, readVerifiedState,
 +  withVerifiedMutationLock } from './integrity.mjs';
 +import { contentHash } from './envelope.mjs';
- import { newBlockedCheckerEpisode, newEpisode } from './episode.mjs';
+-import { newBlockedCheckerEpisode, newEpisode } from './episode.mjs';
++import { episodeRequestDigest, newBlockedCheckerEpisode,
++  newEpisode } from './episode.mjs';
  import { leaseCheck } from './lease.mjs';
 ```
 
@@ -15212,11 +15476,18 @@ diff --git a/scripts/lib/review.mjs b/scripts/lib/review.mjs
    // workstream and recordReviewOutcome (which derives workstream_id from the checker) later fails WORKSTREAM_NOT_FOUND,
    // stranding a pending checker that can't converge. Fail early instead.
    if (!workstreamId || !data.workstreams.find(w => w.id === workstreamId)) throw new Error(`WORKSTREAM_NOT_FOUND: ${workstreamId}`);
-@@ -425,4 +434,6 @@
+@@ -425,4 +434,13 @@
 -  const { id } = blockedReason
 -    ? newBlockedCheckerEpisode(root, runId, { ...episodeInput, reason: blockedReason })
 -    : newEpisode(root, runId, { ...episodeInput, role: 'checker' });
-+  const { id } = withReviewMutation(root, runId, fence, 'dispatchReview', projection,
++  const episodeCreationInput = blockedReason
++    ? { ...episodeInput, role: 'checker', initialStatus: 'blocked',
++      blockReason: blockedReason }
++    : { ...episodeInput, role: 'checker' };
++  const episodeProjection = { ...projection,
++    episode_request_digest: episodeRequestDigest(episodeCreationInput) };
++  const { id } = withReviewMutation(root, runId, fence,
++    'dispatch-review-episode', episodeProjection,
 +    mutation => blockedReason
 +      ? newBlockedCheckerEpisode(root, runId,
 +        { ...episodeInput, reason: blockedReason, mutation })
@@ -15244,7 +15515,14 @@ The `mutation` option above is the Task 7B private context, not caller-selectabl
 `newEpisode`/`newBlockedCheckerEpisode` consume it without reacquiring the lock and treat an exact
 matching checker already published by `mutation.recovered` as the idempotent response for this
 dispatch projection. A different point, workstream, reviewer resolution, evidence, contract, or
-detected-capability digest cannot adopt that checker. Contract and insights file reads occur between
+detected-capability digest cannot adopt that checker. The second short phase uses the distinct
+`dispatch-review-episode` operation and includes `episode_request_digest`, the same normalized
+complete request digest persisted as `episode-new.data.request_digest` and
+`episode.creation_request_digest`. It therefore recovers the one exact checker even after the
+transaction marker has been cleaned up, while zero matches creates and multiple matches fail closed.
+Current checker status is deliberately excluded from recovery equality; immutable
+`creation_initial_status` and `creation_block_reason` preserve the creation response after later
+review transitions. Contract and insights file reads occur between
 the two short `withReviewMutation` phases; neither phase holds the run lock across artifact I/O.
 
 Replace the complete `recordReviewOutcome` and `importReviewOutcome` exports with:
@@ -15346,19 +15624,38 @@ diff --git a/scripts/lib/episode.mjs b/scripts/lib/episode.mjs
  import { atomicWrite } from './envelope.mjs';
  import { slugify } from './slug.mjs';
  import { leaseCheck } from './lease.mjs';
-@@ -25,5 +26,24 @@ function requestSkeleton({ id, plugin, role, kind, point, workstream, expectedArtifacts, evidence }) {
+@@ -28,5 +29,43 @@ function requestSkeleton({ id, plugin, role, kind, point, workstream, expectedArtifacts, evidence }) {
    ].join('\n');
  }
 -
 +
 -function createEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker, reviewerResolution, evidence, contract, initialStatus = 'pending', blockReason, fence, operation } = {}) {
++function episodeRequestProjection({ plugin, role, kind, point, workstream = null,
++  expectedArtifacts = [], targetMaker, reviewerResolution, evidence, contract,
++  initialStatus = 'pending', blockReason } = {}) {
++  return { plugin, role, kind, point, workstream, expectedArtifacts,
++    targetMaker: targetMaker ?? null,
++    reviewerResolution: reviewerResolution ?? null,
++    evidence_digest: intentField('episode-evidence', evidence),
++    contract_digest: intentField('episode-contract', contract),
++    initialStatus, blockReason: blockReason ?? null };
++}
++
++export function episodeRequestDigest(input) {
++  return intentField('episode-create-request', episodeRequestProjection(input));
++}
++
 +function episodeAppend(root, runId, mutation, event, mutate, preCheck, options) {
 +  const execute = context => {
++    const snapshot = context.readVerifiedState();
++    if (typeof preCheck === 'function') preCheck(snapshot.data);
 +    if (context.recovered !== null) {
-+      const snapshot = context.readVerifiedState();
 +      return typeof options.onRecovered === 'function'
 +        ? options.onRecovered(snapshot.data, context.recovered) : undefined;
 +    }
++    const existing = typeof options.onExisting === 'function'
++      ? options.onExisting(snapshot.data) : null;
++    if (existing !== null && existing !== undefined) return existing;
 +    return context.appendAnchored(event, mutate, preCheck, options);
 +  };
 +  if (mutation) return execute(mutation);
@@ -15373,20 +15670,29 @@ diff --git a/scripts/lib/episode.mjs b/scripts/lib/episode.mjs
 +  fence, operation, mutation = null, crashProbe,
 +} = {}) {
    if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error(`FENCE_REQUIRED: ${operation}`);
-@@ -49,6 +64,31 @@ function createEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker, reviewerResolution, evidence, contract, initialStatus = 'pending', blockReason, fence, operation } = {}) {
-     if (isAbsolute(a) || a.split(/[/\\]/).includes('..')) throw new Error('EPISODE_ARTIFACT_UNSAFE: ' + a);
-   }
-   let id, requestPath, dir;
+```
+
+Apply the creation/recovery body and remaining episode callers against that import/helper afterimage:
+
+```diff
+diff --git a/scripts/lib/episode.mjs b/scripts/lib/episode.mjs
+--- a/scripts/lib/episode.mjs
++++ b/scripts/lib/episode.mjs
+@@ -92,5 +92,37 @@ function createEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker, reviewerResolution, evidence, contract, initialStatus = 'pending', blockReason, fence, operation } = {}) {
    const safePlugin = slugify(plugin) || 'plugin';
 -  appendAnchored(root, runId, { type: 'episode-new', data: {
-+  const completeRequest = { plugin, role, kind, point, workstream, expectedArtifacts,
-+    targetMaker: targetMaker ?? null, reviewerResolution: reviewerResolution ?? null,
-+    evidence_digest: intentField('episode-evidence', evidence),
-+    contract_digest: intentField('episode-contract', contract),
-+    initialStatus, blockReason: blockReason ?? null };
-+  const onRecovered = loop => {
-+    const recovered = loop.episodes.at(-1);
-+    if (!recovered || recovered.plugin !== plugin || recovered.role !== role
++  const completeRequest = episodeRequestProjection({ plugin, role, kind, point,
++    workstream, expectedArtifacts, targetMaker, reviewerResolution, evidence, contract,
++    initialStatus, blockReason });
++  const requestDigest = episodeRequestDigest({ plugin, role, kind, point, workstream,
++    expectedArtifacts, targetMaker, reviewerResolution, evidence, contract,
++    initialStatus, blockReason });
++  const recoverExact = loop => {
++    const matches = loop.episodes.filter(episode =>
++      episode.creation_request_digest === requestDigest);
++    if (matches.length !== 1) throw new Error('EPISODE_RESPONSE_PROJECTION_CHANGED');
++    const [recovered] = matches;
++    if (recovered.plugin !== plugin || recovered.role !== role
 +        || recovered.kind !== kind || recovered.point !== point
 +        || recovered.workstream_id !== workstream
 +        || JSON.stringify(recovered.expected_artifacts) !== JSON.stringify(expectedArtifacts)
@@ -15395,8 +15701,8 @@ diff --git a/scripts/lib/episode.mjs b/scripts/lib/episode.mjs
 +          !== JSON.stringify(reviewerResolution ?? null)
 +        || JSON.stringify(recovered.evidence) !== JSON.stringify(evidence)
 +        || JSON.stringify(recovered.contract) !== JSON.stringify(contract)
-+        || recovered.status !== initialStatus
-+        || (recovered.block_reason ?? null) !== (blockReason ?? null)) {
++        || recovered.creation_initial_status !== initialStatus
++        || (recovered.creation_block_reason ?? null) !== (blockReason ?? null)) {
 +      throw new Error('EPISODE_RESPONSE_PROJECTION_CHANGED');
 +    }
 +    id = recovered.id;
@@ -15404,18 +15710,31 @@ diff --git a/scripts/lib/episode.mjs b/scripts/lib/episode.mjs
 +    requestPath = join(dir, 'request.md');
 +    return { id, requestPath };
 +  };
++  const onExisting = loop => loop.episodes.some(episode =>
++    episode.creation_request_digest === requestDigest) ? recoverExact(loop) : null;
 +  episodeAppend(root, runId, mutation, { type: 'episode-new', data: {
      plugin, role, kind, point,
-@@ -91,4 +131,7 @@ function createEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker, reviewerResolution, evidence, contract, initialStatus = 'pending', blockReason, fence, operation } = {}) {
++    request_digest: requestDigest,
+     ...(initialStatus === 'blocked' ? { status: initialStatus, block_reason: blockReason } : {}),
+     ...(reviewerResolution ? { reviewer_resolution: reviewerResolution } : {}),
+@@ -102,5 +134,7 @@ function createEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker, reviewerResolution, evidence, contract, initialStatus = 'pending', blockReason, fence, operation } = {}) {
+     const epObj = {
+       id, plugin, role, kind, point, workstream_id: workstream, status: initialStatus,
+       request_path: requestPath, expected_artifacts: expectedArtifacts,
++      creation_request_digest: requestDigest, creation_initial_status: initialStatus,
++      creation_block_reason: blockReason ?? null,
+       verification: { checker_episode_required: role === 'maker', checker_plugin: 'deep-review', review_point: point, proof_required: expectedArtifacts },
+     };
+@@ -130,4 +164,7 @@ function createEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker, reviewerResolution, evidence, contract, initialStatus = 'pending', blockReason, fence, operation } = {}) {
      // workstream becomes unreviewable (dispatchReview rightly rejects WORKSTREAM_NOT_FOUND at review time).
      if (workstream && !loop.workstreams.find(w => w.id === workstream)) throw new Error(`WORKSTREAM_NOT_FOUND: ${workstream}`);
 -  }, { floor: MUTATION_TURN_FLOOR });
-+  }, mutation ? { floor: MUTATION_TURN_FLOOR, onRecovered }
++  }, mutation ? { floor: MUTATION_TURN_FLOOR, onRecovered: recoverExact, onExisting }
 +    : directMutationOptions(operation, fence, completeRequest,
 +      `LEASE_FENCED: ${operation}`, {
-+        floor: MUTATION_TURN_FLOOR, crashProbe, onRecovered }));
++        floor: MUTATION_TURN_FLOOR, crashProbe, onRecovered: recoverExact, onExisting }));
    // Assert containment before FS writes
-@@ -104,5 +147,10 @@ function createEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker, reviewerResolution, evidence, contract, initialStatus = 'pending', blockReason, fence, operation } = {}) {
+@@ -143,5 +180,10 @@ function createEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker, reviewerResolution, evidence, contract, initialStatus = 'pending', blockReason, fence, operation } = {}) {
  }
 -
 +
@@ -15429,24 +15748,24 @@ diff --git a/scripts/lib/episode.mjs b/scripts/lib/episode.mjs
 +    expectedArtifacts, targetMaker, reviewerResolution, evidence, contract, fence,
 +    mutation, crashProbe, operation: 'newEpisode' });
  }
-@@ -111,2 +159,3 @@ export function newBlockedCheckerEpisode(root, runId, { plugin, kind, point, workstream = null, targetMaker, reason, reviewerResolution, fence } = {}) {
+@@ -150,2 +192,3 @@ export function newBlockedCheckerEpisode(root, runId, { plugin, kind, point, workstream = null, targetMaker, reason, reviewerResolution, fence } = {}) {
 -export function newBlockedCheckerEpisode(root, runId, { plugin, kind, point, workstream = null, targetMaker, reason, reviewerResolution, fence } = {}) {
 +export function newBlockedCheckerEpisode(root, runId, { plugin, kind, point,
 +  workstream = null, targetMaker, reason, reviewerResolution, fence, mutation, crashProbe } = {}) {
    return createEpisode(root, runId, {
-@@ -119,4 +168,5 @@ export function newBlockedCheckerEpisode(root, runId, { plugin, kind, point, workstream = null, targetMaker, reason, reviewerResolution, fence } = {}) {
+@@ -158,4 +201,5 @@ export function newBlockedCheckerEpisode(root, runId, { plugin, kind, point, workstream = null, targetMaker, reason, reviewerResolution, fence } = {}) {
      plugin, role: 'checker', kind, point, workstream, targetMaker, reviewerResolution,
 -    initialStatus: 'blocked', blockReason: reason, fence, operation: 'newBlockedCheckerEpisode',
 +    initialStatus: 'blocked', blockReason: reason, fence, mutation, crashProbe,
 +    operation: 'newBlockedCheckerEpisode',
    });
  }
-@@ -125,2 +175,3 @@ export function newBlockedCheckerEpisode(root, runId, { plugin, kind, point, workstream = null, targetMaker, reason, reviewerResolution, fence } = {}) {
+@@ -164,2 +208,3 @@ export function newBlockedCheckerEpisode(root, runId, { plugin, kind, point, workstream = null, targetMaker, reason, reviewerResolution, fence } = {}) {
 -export function abandonEpisode(root, runId, episodeId, { reason, confirm, fence } = {}) {
 +export function abandonEpisode(root, runId, episodeId, {
 +  reason, confirm, fence, crashProbe } = {}) {
    if (confirm !== true) throw new Error('CONFIRM_REQUIRED: pass --confirm (human-only)');
-@@ -158,6 +209,15 @@ export function abandonEpisode(root, runId, episodeId, { reason, confirm, fence } = {}) {
+@@ -197,7 +242,16 @@ export function abandonEpisode(root, runId, episodeId, { reason, confirm, fence } = {}) {
      if (!ep) throw new Error(`EPISODE_NOT_FOUND: ${episodeId}`);
      if (ALL_TERMINAL.includes(ep.status)) throw new Error('EPISODE_ALREADY_TERMINAL: ' + episodeId);
 -  }, { floor: MUTATION_TURN_FLOOR });
@@ -15465,11 +15784,12 @@ diff --git a/scripts/lib/episode.mjs b/scripts/lib/episode.mjs
 -export function recordEpisode(root, runId, episodeId, { status, artifacts = [], proof = {}, fence } = {}) {
 +export function recordEpisode(root, runId, episodeId, {
 +  status, artifacts = [], proof = {}, fence, crashProbe } = {}) {
-@@ -172,2 +229,3 @@ export function recordEpisode(root, runId, episodeId, { status, artifacts = [], proof = {}, fence } = {}) {
+   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: recordEpisode');
+@@ -211,2 +265,3 @@ export function recordEpisode(root, runId, episodeId, { status, artifacts = [], proof = {}, fence } = {}) {
    if (proof === null || typeof proof !== 'object' || Array.isArray(proof)) throw new Error('EPISODE_INPUT_INVALID: proof must be an object');
 +  const proofDigest = intentField('episode-record-proof', proof);
    appendAnchored(root, runId, { type: 'episode-record', data: { id: episodeId, status, artifacts } }, (loop) => {
-@@ -214,4 +273,13 @@ export function recordEpisode(root, runId, episodeId, { status, artifacts = [], proof = {}, fence } = {}) {
+@@ -253,4 +308,13 @@ export function recordEpisode(root, runId, episodeId, { status, artifacts = [], proof = {}, fence } = {}) {
        }
      }
 -  }, { floor: MUTATION_TURN_FLOOR });
@@ -15824,13 +16144,31 @@ diff --git a/tests/breaker.test.mjs b/tests/breaker.test.mjs
 +  reviewVerdict7g(root, runId, 'REQUEST_CHANGES', { fence });
 +  reviewVerdict7g(root, runId, 'REQUEST_CHANGES', { fence });
    assert.equal(checkBreaker(readState(root, runId).data).tripped, true);
-@@ -82,4 +93,5 @@ test('tripBreaker / recordReviewVerdict: terminal run throws RUN_TERMINAL, state unchanged', () => {
-   assert.throws(() => tripBreaker(root, runId, 'x'), /RUN_TERMINAL: tripBreaker/);
-   // trip 분기 포함: REQUEST_CHANGES 3연속으로 paused 강등을 시도하는 fence-less 호출
+@@ -80,9 +91,11 @@ test('tripBreaker / recordReviewVerdict: terminal run throws RUN_TERMINAL, state unchanged', () => {
+ test('tripBreaker / recordReviewVerdict: terminal run throws RUN_TERMINAL, state unchanged', () => {
+   const { root, runId } = terminalSeed('completed');
+-  assert.throws(() => tripBreaker(root, runId, 'x'), /RUN_TERMINAL: tripBreaker/);
+-  // trip 분기 포함: REQUEST_CHANGES 3연속으로 paused 강등을 시도하는 fence-less 호출
 -  assert.throws(() => recordReviewVerdict(root, runId, 'REQUEST_CHANGES'), /RUN_TERMINAL: recordReviewVerdict/);
-+  assert.throws(() => reviewVerdict7g(root, runId, 'REQUEST_CHANGES'),
++  const fence = { owner: runId, generation: 1 };
++  assert.throws(() => tripBreaker(root, runId, 'x', { fence }),
++    /RUN_TERMINAL: tripBreaker/);
++  assert.throws(() => reviewVerdict7g(root, runId, 'REQUEST_CHANGES', { fence }),
 +    /RUN_TERMINAL: recordReviewVerdict/);
    const d = readState(root, runId).data;
+   assert.equal(d.status, 'completed');
+   assert.equal(d.circuit_breaker?.tripped ?? false, false);
+ });
+@@ -90,7 +103,7 @@ test('resetBreaker: fenced call rejects via LEASE_FENCED channel; fence-less via own throw (order = contract)', () => {
+ test('resetBreaker: fenced call rejects via LEASE_FENCED channel; fence-less via own throw (order = contract)', () => {
+   const { root, runId, owner } = terminalSeed('stopped');
+   // fence 있는 호출 → leaseCheck 선행 (drive-headless LEASE_FENCED swallow 계약 보존)
+   assert.throws(() => resetBreaker(root, runId, { fence: { owner, generation: 1, intent: 'breaker-reset' } }), /LEASE_FENCED: RUN_TERMINAL/);
+-  // fence-less 직접 호출 → 자체 가드
+-  assert.throws(() => resetBreaker(root, runId, {}), /RUN_TERMINAL: resetBreaker/);
++  // Missing authority is rejected before any terminal business policy.
++  assert.throws(() => resetBreaker(root, runId, {}), /FENCE_REQUIRED: breaker-reset/);
+ });
 ```
 
 Add a static source test that scans `scripts/lib`, `scripts/hooks-impl`, and `scripts/deep-loop.mjs`.
@@ -15949,8 +16287,8 @@ function publisherCases7g() {
           noOp: () => reset7g(f.root, f.runId, { fence: f.fence }) };
     } },
     { event: 'breaker-review-verdict',
-      keys: ['breaker_tripped', 'changed', 'generation', 'next_count', 'owner_run_id',
-        'previous_count', 'request_digest', 'verdict'], setup: () => {
+      keys: ['baseline_count', 'breaker_tripped', 'changed', 'generation', 'next_count',
+        'owner_run_id', 'previous_count', 'request_digest', 'verdict'], setup: () => {
         const f = fresh('dl-7g-verdict-');
         const input = { requestId: 'publisher-request-changes' };
         return { f,
@@ -16097,6 +16435,43 @@ test7g('zero-count APPROVE receipt cannot reset a newer verdict after response l
     'retry must recover the old no-op receipt without resetting newer state');
   assert7g.equal(readState(fixture.root, fixture.runId)
     .data.circuit_breaker.consecutive_request_changes, 1);
+});
+
+test7g('first upgraded verdict authenticates a nonzero legacy counter baseline', () => {
+  for (const baseline of [1, 2]) {
+    const fixture = fixture7g(`dl-7g-legacy-breaker-${baseline}-`);
+    raw7g(fixture.root, fixture.runId, loop => {
+      loop.circuit_breaker.consecutive_request_changes = baseline;
+    });
+    const fence = { owner: fixture.owner, generation: fixture.generation };
+    const input = { requestId: `legacy-baseline-${baseline}` };
+    const first = verdict7g(fixture.root, fixture.runId, 'REQUEST_CHANGES', fence, input);
+    assert7g.deepEqual(first, { ok: true, changed: true });
+    const event = lines7g(fixture.root, fixture.runId)
+      .filter(item => item.type === 'breaker-review-verdict').at(-1);
+    assert7g.equal(event.data.baseline_count, baseline);
+    assert7g.equal(event.data.previous_count, baseline);
+    assert7g.equal(event.data.next_count, baseline + 1);
+    const committed = bytes7g(fixture.root, fixture.runId);
+    assert7g.deepEqual(
+      verdict7g(fixture.root, fixture.runId, 'REQUEST_CHANGES', fence, input), first);
+    assert7g.deepEqual(bytes7g(fixture.root, fixture.runId), committed);
+  }
+
+  const reset = fixture7g('dl-7g-legacy-breaker-reset-');
+  raw7g(reset.root, reset.runId, loop => {
+    loop.circuit_breaker = { consecutive_request_changes: 2,
+      tripped: false, trip_reason: null };
+  });
+  const resetFence = { owner: reset.owner, generation: reset.generation };
+  reset7g(reset.root, reset.runId,
+    { fence: { ...resetFence, intent: 'breaker-reset' } });
+  verdict7g(reset.root, reset.runId, 'APPROVE', resetFence,
+    { requestId: 'post-reset-baseline' });
+  const postReset = lines7g(reset.root, reset.runId)
+    .filter(item => item.type === 'breaker-review-verdict').at(-1);
+  assert7g.equal(postReset.data.baseline_count, null,
+    'an anchored reset establishes the zero lineage without a legacy baseline');
 });
 ```
 
@@ -16352,10 +16727,19 @@ function recoveredReviewVerdict(root, runId, context, data,
         && recovered.checksum === event.checksum)) {
     throw new Error('BREAKER_RECOVERY_PROJECTION_MISMATCH');
   }
-  let count = 0;
+  let count = null;
   for (const item of lines) {
-    if (item.type === 'breaker-reset') count = 0;
+    if (item.type === 'breaker-reset') { count = 0; continue; }
     if (item.type !== 'breaker-review-verdict') continue;
+    const baseline = item.data?.baseline_count;
+    if (count === null) {
+      if (!Number.isSafeInteger(baseline) || baseline < 0) {
+        throw new Error('BREAKER_RECOVERY_PROJECTION_MISMATCH');
+      }
+      count = baseline;
+    } else if (baseline !== null) {
+      throw new Error('BREAKER_RECOVERY_PROJECTION_MISMATCH');
+    }
     const previous = item.data?.previous_count;
     const next = item.data?.next_count;
     const expected = item.data?.verdict === 'REQUEST_CHANGES' ? count + 1 : 0;
@@ -16368,7 +16752,7 @@ function recoveredReviewVerdict(root, runId, context, data,
     }
     count = next;
   }
-  if (count !== (data.circuit_breaker?.consecutive_request_changes || 0)) {
+  if ((count ?? 0) !== (data.circuit_breaker?.consecutive_request_changes || 0)) {
     throw new Error('BREAKER_RECOVERY_PROJECTION_MISMATCH');
   }
   if (context.recovered !== null
@@ -16425,6 +16809,9 @@ export function recordReviewVerdict(root, runId, verdict, fence,
         throw new Error('RUN_TERMINAL: recordReviewVerdict');
       }
       const current = data.circuit_breaker?.consecutive_request_changes || 0;
+      const lineage = readLines(root, runId).some(event =>
+        event.type === 'breaker-reset' || event.type === 'breaker-review-verdict');
+      const baselineCount = lineage ? null : current;
       const changed = verdict === 'REQUEST_CHANGES' || current !== 0;
       const next = verdict === 'REQUEST_CHANGES' ? current + 1 : 0;
       const breakerTripped = data.circuit_breaker?.tripped === true
@@ -16432,7 +16819,7 @@ export function recordReviewVerdict(root, runId, verdict, fence,
       context.appendAnchored({ type: 'breaker-review-verdict', data: {
         owner_run_id: fence.owner, generation: fence.generation, verdict,
         request_digest: requestDigest, previous_count: current, next_count: next,
-        breaker_tripped: breakerTripped, changed,
+        baseline_count: baselineCount, breaker_tripped: breakerTripped, changed,
       } }, candidate => {
         if (!changed) return;
         const breaker = { ...candidate.circuit_breaker };
@@ -31472,6 +31859,8 @@ for (const task of taskMatches) {
       'tests/helpers/anchored-crash-worker.mjs', 'function reviewVerdict7g(',
       'production review-verdict caller must not bypass',
       'zero-count APPROVE receipt cannot reset a newer verdict after response loss',
+      'baseline_count', 'let count = null',
+      'first upgraded verdict authenticates a nonzero legacy counter baseline',
       'item.data?.changed !== expectedChanged',
       'breaker_tripped: breakerTripped, changed', 'if (!changed) return;',
       'return { ok: true, changed: event.data.changed }']) {
@@ -31533,9 +31922,13 @@ for (const task of taskMatches) {
       'hash: baseStateHash', "fenceError: 'BUDGET_FENCED:",
       'withVerifiedMutationLock(root, runId', 'function recoveredCostEvent(',
       'function accountingReplayFence(', 'mutation.readVerifiedState({ fenceCheck })',
-      'ACCOUNTING_RECOVERY_FENCE_REQUIRED', '{ requestDigest, fenceCheck: replayFence }',
+      'ACCOUNTING_RECOVERY_FENCE_REQUIRED', 'accounting_request_id_digest',
+      'assertPreflightReplayPolicy(', 'assertProcessReplayPolicy(',
+      'assertTerminalMakerReplayPolicy(', 'ACCOUNTING_RECOVERY_POLICY_REQUIRED',
       'mutation.recovered.events.filter(', 'ACCOUNTING_RECOVERY_PROJECTION_MISMATCH',
       'four accounting writers recover every published marker without double charge',
+      'durable accounting replay rechecks each current operation policy',
+      'same request ID with changed ${label} must conflict',
       "'accounting-record':", "'accounting-preflight':", "'accounting-process':",
       "'accounting-terminal-maker':", 'recordMeasured7c(',
       'MISSING_REQUIRED_OPTION: --request-id', 'budget record requires a request id as usage',
@@ -31553,7 +31946,8 @@ for (const task of taskMatches) {
     }
   }
   if (task[1] === '7F') {
-    for (const token of ['function episodeAppend(',
+    for (const token of ['function episodeRequestProjection(',
+      'export function episodeRequestDigest(', 'function episodeAppend(',
       'directMutationOptions(operation, fence, completeRequest',
       "directMutationOptions('episode-abandon'",
       "directMutationOptions('episode-record'",
@@ -31561,6 +31955,10 @@ for (const task of taskMatches) {
       "directMutationOptions('workstream-terminal'",
       'withVerifiedMutationLock(root, runId,',
       'context.appendAnchored(event, mutate, preCheck, options)',
+      'creation_request_digest: requestDigest', 'onExisting',
+      'episode_request_digest: episodeRequestDigest(',
+      "'dispatch-review-episode'",
+      'review dispatch exact retry after marker cleanup reuses one checker',
       'no unprovable identifier-valued']) {
       if (!card.includes(token)) fail(`Task 7F missing literal caller migration token ${token}`);
     }
@@ -31825,8 +32223,9 @@ for (const fence of fenceRecords) {
   }
 }
 
-// Task 7B establishes the verified mutation substrate and Task 7C consumes its exact afterimage.
-// Prove every displayed production-source patch applies in that order to a disposable current-tree copy.
+// Task 7B establishes the verified mutation substrate; Tasks 7C, 7F, and 7G consume its exact
+// afterimage. Prove every displayed production-source patch applies in that order to a disposable
+// current-tree copy, including the reviewed accounting, episode/review, and breaker slices.
 const sequentialSourceDir = mkdtempSync(join(tmpdir(), 'deep-loop-plan-source-'));
 cpSync('scripts', join(sequentialSourceDir, 'scripts'), { recursive: true });
 cpSync('tests', join(sequentialSourceDir, 'tests'), { recursive: true });
@@ -31854,6 +32253,31 @@ try {
       applySequentialDiff(`Task ${taskId} sequential source diff ${index + 1}`, body);
     }
   }
+  for (const [taskId, pathPattern] of [
+    ['7F', /diff --git a\/scripts\/lib\/(?:episode|review)\.mjs/u],
+    ['7G', /diff --git a\/scripts\/lib\/breaker\.mjs/u],
+  ]) {
+    const task = taskMatches.find(match => match[1] === taskId);
+    const nextTask = source.indexOf('\n### Task ', task.index + 1);
+    const card = source.slice(task.index, nextTask < 0 ? source.length : nextTask);
+    const selected = [...card.matchAll(/```diff\n([\s\S]*?)\n```/g)]
+      .map(match => match[1]).filter(body => pathPattern.test(body));
+    for (const [index, body] of selected.entries()) {
+      applySequentialDiff(`Task ${taskId} selected source diff ${index + 1}`, body);
+    }
+  }
+  {
+    const task = taskMatches.find(match => match[1] === '7C');
+    const nextTask = source.indexOf('\n### Task ', task.index + 1);
+    const card = source.slice(task.index, nextTask < 0 ? source.length : nextTask);
+    const testDiffs = [...card.matchAll(/```diff\n([\s\S]*?)\n```/g)]
+      .map(match => match[1])
+      .filter(body => /diff --git a\/tests\/(?:budget|insights|integrity)\.test\.mjs/u
+        .test(body));
+    for (const [index, body] of testDiffs.entries()) {
+      applySequentialDiff(`Task 7C sequential accounting caller test diff ${index + 1}`, body);
+    }
+  }
   for (const [taskId, requiredPath] of [
     ['7C', 'diff --git a/scripts/deep-loop.mjs'],
     ['7C', 'diff --git a/skills/deep-loop-continue/SKILL.md'],
@@ -31875,7 +32299,7 @@ try {
   rmSync(sequentialSourceDir, { recursive: true, force: true });
 }
 const PLAN_EXPECTED_COUNTS = Object.freeze({
-  bash: 64, diff: 84, js: 175, json: 4, markdown: 12, text: 10, yaml: 1,
+  bash: 64, diff: 87, js: 175, json: 4, markdown: 12, text: 10, yaml: 1,
 });
 const orderedCounts = value => Object.fromEntries(Object.entries(value)
   .sort(([left], [right]) => left.localeCompare(right)));
