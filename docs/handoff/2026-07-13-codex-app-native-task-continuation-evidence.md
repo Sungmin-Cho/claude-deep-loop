@@ -1323,6 +1323,67 @@ no inherited approval from the historical receipt.
 - gate state: still open. Changed bytes require fresh cycle 4 round 4 with both reviewers pinned to
   exact `gpt-5.6-sol`/high; this Respond is not a Gate 1 pass.
 
+### Gate 1 fresh cycle 4 round 4 review
+
+- gate/artifact: Gate 1 design plus final 46-task plan, goal handoff, evidence, cycle-4 round-3
+  report/response, and current repository code/tests.
+- base/head: `c38a96137f8f4f0099c35e893860930e8ee4cf73..9c027707ec016c58b7a3afac69f895dddcbd09df`;
+  worktree clean at counted reviewer start.
+- invocation: one built-in `codex exec ... review --base c38a961...` and one direct adversarial audit;
+  both counted reviewers used ephemeral/ignore-config/ignore-rules/read-only execution with exact
+  `gpt-5.6-sol` and `model_reasoning_effort=high`.
+- reviewer actual: standard thread `019f6486-adf7-7962-8a93-0bbee31d1ca9` returned 3 P2 and 1 P3;
+  adversarial thread `019f6486-aed3-7fe0-b297-1dbdefe8a604` returned 2 Red and 3 Yellow with
+  `REQUEST_CHANGES`. `N_planned=N_actual=2`; both processes terminated naturally with exit 0.
+- model/effort evidence: both process headers confirmed exact `gpt-5.6-sol`, `high`, ephemeral,
+  ignored user config/rules, and read-only sandbox. No global Codex setting changed.
+- verdict: `REQUEST_CHANGES`.
+- red/yellow/info: `2 / 5 / 1`; mutable-input review replay was corroborated by both reviewers. The
+  unversioned episode-proof downgrade was independently reproduced as a solo Red; five solo
+  contract/integration defects remained Yellow under the two-reviewer synthesis rule.
+- termination: fresh cycle 4 round 4 Respond required; neither convergence nor max reached.
+- report path: `.deep-review/reports/2026-07-15-155720-review.md`, SHA-256
+  `6c730497a911ee997633ee5a4792b2a148dd4c4b1927a12a4550abf8f6d77164`.
+- raw output bindings: standard SHA-256
+  `35ef2f5e8cdd3f661c0a72b5fd79d40a19e6c8a921367f7c050a9b1f0d881338`; adversarial SHA-256
+  `708fbec76ab82d4e02cae5d56326cb0ee54982c8e4435068edf4451b5c4376c2`.
+- recurring export: run `01KXJ95F8J0X5D1KDJG1DJGKEY`; architecture critical 49,
+  test-coverage critical 29, error-handling critical 28, security critical 18 (124 total), SHA-256
+  `d99687106477a0e5afbe9520a72d7ecb7c46de2d2dbf678fa754e563d29ca6ca`.
+- main-agent judgment: accepted all seven actionable findings and the Info correction. The plan
+  needed durable-response replay before mutable derivation, mandatory initialized episode proof
+  plus a bounded legacy baseline, symlink-safe no-replace publication, required verdict runtime,
+  real installed-tree test execution, public reset-ID docs, and the exact status response field.
+
+### Gate 1 fresh cycle 4 round 4 Respond
+
+- disposition: accepted 7, rejected 0, deferred 0; Info corrected. `execution_path=main_fallback`;
+  no specialized Phase 6 Agent surface was available.
+- review/episode response: exact same-ID dispatch validates the ID/full-request binding and returns a
+  descriptor reconstructed from durable `dispatch_response` before contract/latest-insights reads.
+  Initialized runs require v1 proof for every episode/event; initialization-absent runs accept only
+  the exact legacy prefix authenticated by one count/digest checkpoint.
+- durability/runtime response: episode directories and request winners must be regular non-symlink
+  objects below the canonical run. Verdict runtime is mandatory and current runtime/lease policy
+  precedes fresh or replay semantics, with wrong-runtime zero-write regressions.
+- executable/docs response: the validator installs exact prerequisite and production afterimages,
+  applies the migrated real caller diff, and executes `tests/breaker.test.mjs` in the disposable
+  tree. README reset guidance now requires an allocate-once request ID, and the fixed App status
+  result includes `resume_policy`.
+- exact corrected candidate hashes: handoff
+  `1523907bf1931793b765ed8a5fac2d678a6ae1aa303cfef6e2c89f2e6f150fd9`; design
+  `74db132581aa6108eb288572a90b0c9f3fafc889baad54eb1a7769beb98f30ae`; ignored plan
+  `53ae860332cd4bde58fd4518a9d1293131009f6b095be45ae576be06de9bf468`.
+- response record: `.deep-review/responses/2026-07-15-165228-response.md`, SHA-256
+  `cd51f983168a92d1b33edd24bfe7b060ccfe50d6a9d13684f4fdfb1a5186ad87`.
+- verification: embedded validator passed `ok:true` for 46 tasks and 358 fences
+  (`bash=64`, `diff=90`, `js=177`, `json=4`, `markdown=12`, `text=10`, `yaml=1`), including the
+  sequential installed real breaker suite (8/8). `git diff --check` and cached diff check passed;
+  `npm run preflight` passed validation and all 1,463 tests with zero failures, cancellations,
+  skips, or todo.
+- gate state: still open. Changed bytes require fresh cycle 4 round 5 with both reviewers pinned to
+  exact `gpt-5.6-sol`/high; this Respond is not a Gate 1 pass.
+
 ## Review receipt template
 
 Each reviewed gate will add a receipt with all of these fields:

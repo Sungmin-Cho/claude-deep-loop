@@ -2,7 +2,7 @@
 
 작성일: 2026-07-13
 운영 계약: `docs/handoff/2026-07-13-codex-app-native-task-continuation-goal-handoff.md`
-상태: Gate 1 fresh cycle 4 round 2 `REQUEST_CHANGES`; Respond 완료, round 3 필요, Gate 1 미통과
+상태: Gate 1 fresh cycle 4 round 4 Respond 완료; round 5 필요, Gate 1 미통과
 기준: `main@c38a96137f8f4f0099c35e893860930e8ee4cf73`, deep-loop `1.8.2`
 
 > source of truth: 이 문서 + 운영 계약 + 현재 저장소 + `git log`. 이전 대화 컨텍스트를 가정하지 말라.
@@ -1126,6 +1126,23 @@ releasing/paused/terminal lease policy를 replay보다 먼저 수행한다. Prod
 identity를 사용하며 disposable afterimage validator는 설치된 breaker bytes를 실제 `node --test`
 probe로 실행한다. 변경된 byte는 round 3 receipt를 상속하지 않으며 Gate 1은 fresh cycle 4 round 4
 이후 exact `gpt-5.6-sol`/`high`의 자연 수렴으로만 닫힌다.
+
+Gate 1 fresh cycle 4 round 4도 `REQUEST_CHANGES`였다. 두 reviewer는 동일 review-dispatch ID의
+response-loss replay가 durable checker를 찾고도 mutable contract/latest-insights를 다시 파생하는
+결함을 함께 재현했다. Respond는 episode creation discriminator를 제거하거나 unversioned object를
+주입해 proof를 우회하는 solo Red와 다섯 Yellow도 모두 수용하고 Info headline을 교정한다. Exact
+same-ID dispatch는 owner/generation과 full-request digest를 검증한 직후 durable
+`dispatch_response`에서 bounded descriptor를 복원해 mutable contract/evidence 경로보다 먼저
+반환한다. Initialized run의 모든 episode object/event는 `episode-create-v1`을 필수로 하며, legacy
+run은 최초 verified mutation이 checkpoint에 고정한 episode prefix count/digest만 무버전으로
+허용한다. Request directory와 `EEXIST` winner는 canonical run 아래 regular non-symlink chain/file로
+검증한다. Review verdict는 runtime을 public authority의 필수 필드로 받아 fresh와 replay 모두 current
+runtime/lease policy를 먼저 적용한다. Embedded validator는 Task 1A, 3B, 4A, 5B, 7A, 7B의 정확한
+prerequisite/afterimage와 Task 7F/7G production/caller diff를 순차 설치하고 migrated real
+`tests/breaker.test.mjs`를 실제 실행하며 retyped probe는 supplemental로만 남긴다. Public README의
+breaker reset 명령은 allocate-once/reuse-on-loss `--request-id`를 포함하고 fixed
+`AppTaskStatusResult`는 `resume_policy`를 명시한다. 변경된 byte는 round 4 receipt를 상속하지 않으며
+Gate 1은 fresh cycle 4 round 5 exact `gpt-5.6-sol`/`high`의 자연 수렴으로만 닫힌다.
 
 구현 순서:
 

@@ -141,7 +141,7 @@ These are the narrow baseline `Modify` anchors required by the execution tasks; 
 | 7B | produced `scripts/lib/durable-file.mjs`; `scripts/lib/finish.mjs:70-107`; `scripts/lib/integrity.mjs:21-187`; `scripts/lib/lease.mjs:43-103`; `scripts/lib/state.mjs:79-115`; `scripts/lib/workspace.mjs`; `tests/automation.test.mjs`; `tests/breaker.test.mjs`; `tests/budget.test.mjs`; `tests/codex-checker-integration.test.mjs`; `tests/comprehension.test.mjs`; `tests/detect-terminal.test.mjs`; produced `tests/durable-file.test.mjs`; `tests/episode.test.mjs`; `tests/fencing.test.mjs`; `tests/finish.test.mjs`; produced `tests/fixtures/verified-app-run.mjs`; `tests/handoff.test.mjs`; `tests/headless-host.test.mjs`; `tests/insights.test.mjs`; `tests/integrity.test.mjs`; `tests/lease.test.mjs`; `tests/orch-cli.test.mjs`; `tests/pause.test.mjs`; `tests/precompact-hook.test.mjs`; `tests/project-root.test.mjs`; `tests/recover.test.mjs`; `tests/respawn.test.mjs`; `tests/review.test.mjs`; `tests/runtime-executable.test.mjs`; `tests/session-profile.test.mjs`; `tests/spawn-optin.test.mjs`; `tests/state.test.mjs`; `tests/terminal-cli.test.mjs`; `tests/workspace.test.mjs`; created `tests/helpers/anchored-crash-worker.mjs`. |
 | 7C | `scripts/lib/lease.mjs:43-199`; `scripts/lib/budget.mjs:279-1048`; `scripts/lib/headless-host.mjs`; `scripts/deep-loop.mjs:650-670`; `skills/deep-loop-continue/SKILL.md:173-182`; `skills/deep-loop-workflow/references/handoff-respawn.md:179-187`; produced `tests/helpers/anchored-crash-worker.mjs`; `tests/lease.test.mjs`; `tests/budget.test.mjs`; `tests/headless-host.test.mjs`; `tests/skills.test.mjs`; `tests/cli-skillface.test.mjs`; `tests/insights.test.mjs`; `tests/integrity.test.mjs`; `tests/project-root.test.mjs`. |
 | 7D | Produced `scripts/lib/init-transaction.mjs` strict current/genesis proof; produced `scripts/lib/app-task-continuation.mjs` observe/revoke/status boundaries; produced `tests/fixtures/verified-app-run.mjs`; produced `tests/init-transaction.test.mjs`; produced `tests/app-task-continuation.test.mjs`; `tests/cli-skillface.test.mjs`. |
-| 7G | `scripts/lib/lease.mjs:102-199`; `scripts/lib/breaker.mjs:1-62`; `scripts/lib/state.mjs:102-110`; `scripts/deep-loop.mjs:694-703`; `skills/deep-loop-status/SKILL.md`; `skills/deep-loop-continue/SKILL.md`; `tests/lease.test.mjs`; `tests/breaker.test.mjs`; `tests/cli-skillface.test.mjs`; `tests/project-root.test.mjs`; `tests/integrity.test.mjs`; produced `tests/helpers/anchored-crash-worker.mjs`. |
+| 7G | `scripts/lib/lease.mjs:102-199`; `scripts/lib/breaker.mjs:1-62`; `scripts/lib/state.mjs:102-110`; `scripts/deep-loop.mjs:694-703`; `README.md:68-75`; `skills/deep-loop-status/SKILL.md`; `skills/deep-loop-continue/SKILL.md`; `tests/lease.test.mjs`; `tests/breaker.test.mjs`; `tests/cli-skillface.test.mjs`; `tests/project-root.test.mjs`; `tests/integrity.test.mjs`; produced `tests/helpers/anchored-crash-worker.mjs`. |
 | 7E–7F | `scripts/lib/session-profile.mjs:44-80`; `scripts/lib/comprehension.mjs:27-92`; `scripts/lib/project-root-recovery.mjs:20-51`; `scripts/lib/budget.mjs:1053-1067`; `scripts/lib/episode.mjs:25-220`; `scripts/lib/insights.mjs:357-509`; `scripts/lib/review.mjs:50-179,310-668`; `scripts/lib/workspace.mjs:80-153`; `scripts/lib/detect-terminal.mjs:284-343`; `scripts/deep-loop.mjs:120-180,340-710`; `skills/deep-loop/SKILL.md`; `skills/deep-loop-continue/SKILL.md`; `skills/deep-loop-workflow/references/hill-climbing.md`; `tests/helpers/episode-request.mjs`; `tests/session-profile.test.mjs`; `tests/comprehension.test.mjs`; `tests/project-root.test.mjs`; `tests/budget.test.mjs`; `tests/cli-skillface.test.mjs`; `tests/codex-checker-integration.test.mjs`; `tests/codex-isolation-integration.test.mjs`; `tests/episode.test.mjs`; `tests/fencing.test.mjs`; `tests/finish.test.mjs`; `tests/handoff.test.mjs`; `tests/next-action.test.mjs`; `tests/orch-cli.test.mjs`; `tests/pause.test.mjs`; `tests/review.test.mjs`; `tests/insights.test.mjs`; `tests/review-import.test.mjs`; `tests/reviewer-failclosed.test.mjs`; `tests/workspace.test.mjs`; `tests/detect-terminal.test.mjs`. |
 | 8A–8B | Produced `scripts/lib/app-task-continuation.mjs` `prepareAppTask`; `scripts/lib/handoff.mjs:38-224` (`handoffMarkdown`, `emitHandoff`); `scripts/lib/lease.mjs:121-205` (`reserveHandoff`, `rollbackHandoff`); `scripts/lib/schema.mjs:164-216`; `tests/handoff.test.mjs:343-789,1107-1163`; produced `tests/app-task-continuation.test.mjs` prepare cases; created `tests/fixtures/app-prepare-worker.mjs`. |
 | 9A–9B | Produced `scripts/lib/app-task-continuation.mjs` `confirmAppTask`, `failAppTask`, `sweepUnconfirmedAppTask`, `statusAppTask`, `awaitAppTask`; `scripts/deep-loop.mjs:489-616`; produced `tests/app-task-continuation.test.mjs` receipt/readiness cases; `tests/orch-cli.test.mjs:246-286,831-1005`; `tests/schema.test.mjs:17-273`. |
@@ -344,6 +344,7 @@ type AppTaskStatusResult = {
   owner_run_id: string,
   generation: number,
   handoff_phase: string,
+  resume_policy: 'app' | 'human' | null,
   manual_recovery: boolean,
 }
 ```
@@ -5032,7 +5033,7 @@ export function unlinkRegularFile(path, deps = {}) {
 }
 
 export function createFileDurablyIfAbsent(path, bytes, {
-  beforePublish = () => {}, mode = 0o600, nonce,
+  beforePublish = () => {}, validateExisting = () => {}, mode = 0o600, nonce,
 } = {}, deps = {}) {
   const suffix = (nonce ?? (() => durableRandomBytes(12).toString('hex')))();
   if (!/^[A-Za-z0-9_-]{16,128}$/.test(suffix)) {
@@ -5045,7 +5046,13 @@ export function createFileDurablyIfAbsent(path, bytes, {
     beforePublish();
     try { (deps.link ?? durableLinkSync)(temporary, path); }
     catch (error) {
-      if (error?.code === 'EEXIST') return false;
+      if (error?.code === 'EEXIST') {
+        if (!regularIfPresent(path, deps, 'DURABLE_EXISTING_INVALID')) {
+          throw new Error('DURABLE_EXISTING_MISSING');
+        }
+        validateExisting(path);
+        return false;
+      }
       throw error;
     }
     syncParentDirectory(path, deps);
@@ -10712,15 +10719,68 @@ diff --git a/scripts/lib/state.mjs b/scripts/lib/state.mjs
  import { assertProjectRootBinding } from './project-root.mjs';
 ```
 
-Then add these exports to `scripts/lib/integrity.mjs` immediately after `verifyHead`:
+Then add these exports to `scripts/lib/integrity.mjs` immediately after `verifyHead`. Initialized
+runs have no legacy allowance. An initialization-absent run may retain only the exact episode prefix
+bound into its one Task 7B `lease-lineage-baselined` checkpoint; until that checkpoint exists the
+whole snapshot is legacy/read-only and the first post-upgrade mutation establishes the count/digest
+before its business event:
 
 ```js
+export function legacyEpisodeBaselineDigest(episodes) {
+  return intentField('legacy-episode-baseline', episodes.map(episode => ({
+    id: episode.id, plugin: episode.plugin, role: episode.role, kind: episode.kind,
+    point: episode.point, workstream_id: episode.workstream_id ?? null,
+    expected_artifacts: structuredClone(episode.expected_artifacts ?? []),
+    target_maker: episode.target_maker ?? null,
+  })));
+}
+
 export function verifyEpisodeCreationCorrelation(loop, lines) {
   const errors = [];
-  const events = lines.filter(event => event.type === 'episode-new'
-    && event.data?.creation_contract === 'episode-create-v1');
-  const episodes = (loop?.episodes || []).filter(
-    episode => episode.creation_contract === 'episode-create-v1');
+  const allEvents = lines.filter(event => event.type === 'episode-new');
+  const allEpisodes = loop?.episodes || [];
+  const baselines = lines.filter(event => event.type === 'lease-lineage-baselined');
+  let legacyCount = 0;
+  if (loop?.initialization == null) {
+    if (baselines.length === 0) {
+      if (allEvents.some(event => event.data?.creation_contract != null)
+          || allEpisodes.some(episode => episode.creation_contract != null)) {
+        errors.push('legacy run has versioned episodes without an explicit baseline');
+      }
+      return { ok: errors.length === 0, errors };
+    }
+    if (baselines.length !== 1) {
+      errors.push('legacy run requires exactly one episode baseline');
+      return { ok: false, errors };
+    }
+    legacyCount = baselines[0].data?.legacy_episode_count;
+    if (!Number.isSafeInteger(legacyCount) || legacyCount < 0
+        || legacyCount > allEpisodes.length || legacyCount > allEvents.length
+        || baselines[0].data?.legacy_episode_digest
+          !== legacyEpisodeBaselineDigest(allEpisodes.slice(0, legacyCount))) {
+      errors.push('legacy episode baseline mismatch');
+      return { ok: false, errors };
+    }
+  } else if (baselines.length !== 0) {
+    errors.push('initialized run cannot declare a legacy episode baseline');
+  }
+  if (allEpisodes.length !== allEvents.length) {
+    errors.push('episode object/event cardinality mismatch');
+  }
+  for (let index = 0; index < legacyCount; index += 1) {
+    if (allEpisodes[index]?.creation_contract != null
+        || allEvents[index]?.data?.creation_contract != null) {
+      errors.push(`legacy episode baseline contains versioned entry ${index}`);
+    }
+  }
+  const episodes = allEpisodes.slice(legacyCount);
+  const events = allEvents.slice(legacyCount);
+  for (let index = 0; index < Math.max(episodes.length, events.length); index += 1) {
+    if (episodes[index]?.creation_contract !== 'episode-create-v1'
+        || events[index]?.data?.creation_contract !== 'episode-create-v1') {
+      errors.push(`episode creation contract missing at index ${legacyCount + index}`);
+    }
+  }
   const eventById = new Map();
   for (const event of events) {
     const id = event.data?.episode_id;
@@ -10750,6 +10810,7 @@ export function verifyEpisodeCreationCorrelation(loop, lines) {
       creation_request_id_digest: episode.creation_request_id_digest ?? null,
       dispatch_request_id_digest: episode.dispatch_request_id_digest ?? null,
       dispatch_request_digest: episode.dispatch_request_digest ?? null,
+      dispatch_response: structuredClone(episode.dispatch_response ?? null),
     };
     const recomputed = intentField('episode-create-request', projection);
     if (recomputed !== episode.creation_request_digest
@@ -11229,6 +11290,8 @@ function legacyCheckpointSpec(root, runId, loop, lines,
     owner_run_id: lease.owner_run_id, generation: lease.generation,
     lease_state: lease.state, acquired_at: lease.acquired_at,
     pre_state_digest: baseStateHash,
+    legacy_episode_count: (loop.episodes || []).length,
+    legacy_episode_digest: legacyEpisodeBaselineDigest(loop.episodes || []),
   } };
 }
 
@@ -14866,14 +14929,18 @@ import assert7f from 'node:assert/strict';
 import { createHash as hashDispatch7f } from 'node:crypto';
 import { mkdirSync as mkdir7f, mkdtempSync as temp7f,
   readFileSync as readDispatch7f, realpathSync as realpath7f,
-  rmSync as removeDispatch7f, writeFileSync as write7f } from 'node:fs';
+  rmSync as removeDispatch7f, symlinkSync as symlink7f,
+  writeFileSync as write7f } from 'node:fs';
 import { tmpdir as tmp7f } from 'node:os';
-import { join as join7f } from 'node:path';
+import { dirname as dirname7f, join as join7f } from 'node:path';
 import { initRun as init7f } from '../scripts/lib/initrun.mjs';
 import { newWorkstream as workstream7f } from '../scripts/lib/workspace.mjs';
 import { newEpisode as episode7f, recordEpisode as record7f }
   from '../scripts/lib/episode.mjs';
 import { dispatchReview as dispatch7f } from '../scripts/lib/review.mjs';
+import { emitInsights as emitDispatchInsights7f,
+  latestInsights as latestDispatchInsights7f } from '../scripts/lib/insights.mjs';
+import { finishRun as finishDispatchInsights7f } from '../scripts/lib/finish.mjs';
 import { readLines as lines7f, readVerifiedState as verifiedDispatch7f }
   from '../scripts/lib/integrity.mjs';
 import { readState as stateDispatch7f, runDir as runDirDispatch7f }
@@ -14920,6 +14987,16 @@ function corruptDispatchFixture7f({ corrupt = true, hillClimb = true } = {}) {
   return { root, runId, ws, maker, fence };
 }
 
+function materializeHillContract7f(fixture) {
+  const destination = join7f(fixture.root, '.claude', 'worktrees', 'design',
+    '.deep-review', 'contracts', 'HILLCLIMB-001.yaml');
+  mkdir7f(dirname7f(destination), { recursive: true });
+  write7f(destination, readDispatch7f(new URL(
+    '../skills/deep-loop-workflow/references/contracts/HILLCLIMB-001.yaml',
+    import.meta.url)));
+  return destination;
+}
+
 test7f('review dispatch proves authority before descriptor and contract source actions', () => {
   const fixture = corruptDispatchFixture7f();
   const before = bytes7f(fixture.root, fixture.runId);
@@ -14963,6 +15040,68 @@ test7f('review dispatch exact retry after marker cleanup reuses one checker', ()
     first.checkerEpisodeId);
   assert7f.match(readDispatch7f(firstEpisode.request_path, 'utf8'),
     /Execution plane: fill/);
+});
+
+test7f('hill-climb same-ID replay bypasses mutable contract and evidence derivation', () => {
+  const fixture = corruptDispatchFixture7f({ corrupt: false, hillClimb: true });
+  const contract = materializeHillContract7f(fixture);
+  const input = { point: 'design', workstreamId: fixture.ws,
+    detected: { 'deep-review': true, codex: true },
+    requestId: 'hill-mutable-replay', fence: fixture.fence };
+  const first = dispatch7f(fixture.root, fixture.runId, input);
+  const committed = bytes7f(fixture.root, fixture.runId);
+  const { runId: insightsRun } = init7f(fixture.root, {
+    runtime: 'claude', goal: 'mutable replay evidence',
+    now: new Date('2026-07-13T00:01:00.000Z'),
+  });
+  const insightsFence = { owner: insightsRun, generation: 1, runtime: 'claude' };
+  emitDispatchInsights7f(fixture.root, insightsRun, {
+    fence: insightsFence, now: Date.parse('2026-07-13T00:01:01.000Z'),
+    rnd: () => 0.25, sleepFn: () => {},
+  });
+  finishDispatchInsights7f(fixture.root, insightsRun, {
+    status: 'stopped', confirm: true,
+    proof: { human_reason: 'materialize changed latest insights' },
+    fence: insightsFence, now: Date.parse('2026-07-13T00:01:02.000Z'),
+  });
+  assert7f.notEqual(latestDispatchInsights7f(fixture.root), null);
+  removeDispatch7f(contract);
+  const replayed = dispatch7f(fixture.root, fixture.runId, {
+    ...input,
+    beforeMutableReviewInputs: () => assert7f.fail(
+      'same-ID replay must precede contract/latest-insights derivation'),
+  });
+  assert7f.deepEqual(replayed, first);
+  assert7f.deepEqual(bytes7f(fixture.root, fixture.runId), committed);
+});
+
+test7f('episode request rematerialization rejects symlink file and directory winners', () => {
+  for (const winner of ['file', 'directory']) {
+    const fixture = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
+    const input = { point: 'design', workstreamId: fixture.ws,
+      detected: { 'deep-review': true, codex: true },
+      requestId: `symlink-winner-${winner}`, fence: fixture.fence };
+    const first = dispatch7f(fixture.root, fixture.runId, input);
+    const checker = stateDispatch7f(fixture.root, fixture.runId).data.episodes
+      .find(episode => episode.id === first.checkerEpisodeId);
+    const outside = join7f(fixture.root, `outside-${winner}`);
+    if (winner === 'file') {
+      removeDispatch7f(checker.request_path);
+      write7f(outside, 'external winner');
+      symlink7f(outside, checker.request_path);
+    } else {
+      const directory = dirname7f(checker.request_path);
+      removeDispatch7f(directory, { recursive: true, force: true });
+      mkdir7f(outside);
+      write7f(join7f(outside, 'marker'), 'external directory');
+      symlink7f(outside, directory, 'dir');
+    }
+    assert7f.throws(() => dispatch7f(fixture.root, fixture.runId, input),
+      /DURABLE_EXISTING_INVALID|EPISODE_DIRECTORY_INVALID/);
+    const marker = winner === 'file' ? outside : join7f(outside, 'marker');
+    assert7f.equal(readDispatch7f(marker, 'utf8'),
+      winner === 'file' ? 'external winner' : 'external directory');
+  }
 });
 
 function rewriteEpisodeCreationEvent7f(fixture, mutate) {
@@ -15038,6 +15177,37 @@ test7f('episode creation identity is state-event correlated and status-independe
     data => { data.request_digest = '1'.repeat(64); });
   assert7f.throws(() => verifiedDispatch7f(eventOnly.root, eventOnly.runId),
     /episode creation/);
+
+  const downgraded = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
+  const downgradedResult = dispatch7f(downgraded.root, downgraded.runId, {
+    ...input, workstreamId: downgraded.ws, fence: downgraded.fence,
+    requestId: 'discriminator-downgrade-dispatch',
+  });
+  raw7f(downgraded.root, downgraded.runId, loop => {
+    delete loop.episodes.find(episode =>
+      episode.id === downgradedResult.checkerEpisodeId).creation_contract;
+  });
+  rewriteEpisodeCreationEvent7f(downgraded,
+    data => { delete data.creation_contract; });
+  assert7f.throws(() => verifiedDispatch7f(downgraded.root, downgraded.runId),
+    /episode creation/,
+    'paired state/event discriminator removal cannot downgrade initialized proof');
+
+  const injected = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
+  const injectedResult = dispatch7f(injected.root, injected.runId, {
+    ...input, workstreamId: injected.ws, fence: injected.fence,
+    requestId: 'unversioned-injection-dispatch',
+  });
+  raw7f(injected.root, injected.runId, loop => {
+    const forged = structuredClone(loop.episodes.find(episode =>
+      episode.id === injectedResult.checkerEpisodeId));
+    forged.id = '999-forged-unversioned';
+    delete forged.creation_contract;
+    loop.episodes.push(forged);
+  });
+  assert7f.throws(() => verifiedDispatch7f(injected.root, injected.runId),
+    /episode creation/,
+    'an initialized run rejects an unversioned episode with no creation event');
 
   for (const status of ['pending', 'in_progress', 'approved', 'rejected', 'blocked']) {
     const fixture = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
@@ -15954,8 +16124,9 @@ diff --git a/scripts/lib/episode.mjs b/scripts/lib/episode.mjs
 +++ b/scripts/lib/episode.mjs
 @@ -1,7 +1,8 @@
 -import { mkdirSync, existsSync } from 'node:fs';
-+import { mkdirSync } from 'node:fs';
- import { isAbsolute, join, resolve, sep } from 'node:path';
++import { lstatSync, mkdirSync, realpathSync } from 'node:fs';
+-import { isAbsolute, join, resolve, sep } from 'node:path';
++import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
  import { readState, writeState, withLock, runDir } from './state.mjs';
 -import { appendAnchored } from './integrity.mjs';
 +import { appendAnchored, directMutationOptions, intentField,
@@ -15964,10 +16135,44 @@ diff --git a/scripts/lib/episode.mjs b/scripts/lib/episode.mjs
 +import { createFileDurablyIfAbsent } from './durable-file.mjs';
  import { slugify } from './slug.mjs';
  import { leaseCheck } from './lease.mjs';
-@@ -28,5 +29,43 @@ function requestSkeleton({ id, plugin, role, kind, point, workstream, expectedArtifacts, evidence }) {
+@@ -28,5 +29,77 @@ function requestSkeleton({ id, plugin, role, kind, point, workstream, expectedArtifacts, evidence }) {
    ].join('\n');
  }
 -
++
++function ensureEpisodeDirectory(runRoot, target) {
++  const canonicalRun = realpathSync(runRoot);
++  const rel = relative(canonicalRun, resolve(target));
++  const parts = rel.split(sep).filter(Boolean);
++  if (rel === '' || rel === '..' || rel.startsWith(`..${sep}`)
++      || parts.some(part => part === '.' || part === '..')) {
++    throw new Error('EPISODE_PATH_ESCAPE');
++  }
++  let current = canonicalRun;
++  for (const part of parts) {
++    const next = join(current, part);
++    try { mkdirSync(next); }
++    catch (error) { if (error?.code !== 'EEXIST') throw error; }
++    const stat = lstatSync(next);
++    if (!stat.isDirectory() || stat.isSymbolicLink()) {
++      throw new Error('EPISODE_DIRECTORY_INVALID');
++    }
++    const canonical = realpathSync(next);
++    if (canonical !== canonicalRun && !canonical.startsWith(`${canonicalRun}${sep}`)) {
++      throw new Error('EPISODE_PATH_ESCAPE');
++    }
++    current = canonical;
++  }
++  return current;
++}
++
++function validateRequestWinner(path, expectedParent) {
++  const stat = lstatSync(path);
++  if (!stat.isFile() || stat.isSymbolicLink()
++      || realpathSync(dirname(path)) !== expectedParent) {
++    throw new Error('EPISODE_REQUEST_WINNER_INVALID');
++  }
++}
 +
 -function createEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker, reviewerResolution, evidence, contract, initialStatus = 'pending', blockReason, fence, operation } = {}) {
 +function episodeRequestProjection({ plugin, role, kind, point, workstream = null,
@@ -16160,14 +16365,14 @@ diff --git a/scripts/lib/episode.mjs b/scripts/lib/episode.mjs
 index c567221..8bf9718 100644
 --- a/scripts/lib/episode.mjs
 +++ b/scripts/lib/episode.mjs
-@@ -31,31 +31,51 @@ function requestSkeleton({ id, plugin, role, kind, point, workstream, expectedAr
+@@ -31,31 +31,52 @@ function requestSkeleton({ id, plugin, role, kind, point, workstream, expectedAr
 -
 +
  function episodeRequestProjection({ plugin, role, kind, point, workstream = null,
    expectedArtifacts = [], targetMaker, reviewerResolution, evidence, contract,
 -  initialStatus = 'pending', blockReason } = {}) {
 +  initialStatus = 'pending', blockReason, creationRequestIdDigest,
-+  dispatchRequestIdDigest, dispatchRequestDigest } = {}) {
++  dispatchRequestIdDigest, dispatchRequestDigest, dispatchResponse } = {}) {
    return { plugin, role, kind, point, workstream, expectedArtifacts,
      targetMaker: targetMaker ?? null,
      reviewerResolution: reviewerResolution ?? null,
@@ -16177,7 +16382,8 @@ index c567221..8bf9718 100644
 +    initialStatus, blockReason: blockReason ?? null,
 +    creation_request_id_digest: creationRequestIdDigest ?? null,
 +    dispatch_request_id_digest: dispatchRequestIdDigest ?? null,
-+    dispatch_request_digest: dispatchRequestDigest ?? null };
++    dispatch_request_digest: dispatchRequestDigest ?? null,
++    dispatch_response: structuredClone(dispatchResponse ?? null) };
  }
 -
 +
@@ -16228,7 +16434,7 @@ index c567221..8bf9718 100644
    reviewerResolution, evidence, contract, initialStatus = 'pending', blockReason,
 -  fence, operation, mutation = null, crashProbe,
 +  fence, operation, mutation = null, crashProbe, requestId,
-+  dispatchRequestIdDigest, dispatchRequestDigest,
++  dispatchRequestIdDigest, dispatchRequestDigest, dispatchResponse,
  } = {}) {
    if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error(`FENCE_REQUIRED: ${operation}`);
    // Fix 3: validate required non-fence args before any state write
@@ -16242,7 +16448,7 @@ index c567221..8bf9718 100644
      workstream, expectedArtifacts, targetMaker, reviewerResolution, evidence, contract,
 -    initialStatus, blockReason });
 +    initialStatus, blockReason, creationRequestIdDigest,
-+    dispatchRequestIdDigest, dispatchRequestDigest });
++    dispatchRequestIdDigest, dispatchRequestDigest, dispatchResponse });
    const requestDigest = episodeRequestDigest({ plugin, role, kind, point, workstream,
      expectedArtifacts, targetMaker, reviewerResolution, evidence, contract,
 -    initialStatus, blockReason });
@@ -16250,7 +16456,7 @@ index c567221..8bf9718 100644
 -    const matches = loop.episodes.filter(episode =>
 -      episode.creation_request_digest === requestDigest);
 +    initialStatus, blockReason, creationRequestIdDigest,
-+    dispatchRequestIdDigest, dispatchRequestDigest });
++    dispatchRequestIdDigest, dispatchRequestDigest, dispatchResponse });
 +  const recoverExact = (loop, recoveredTransaction = null) => {
 +    const recoveredEvents = recoveredTransaction?.events?.filter(event =>
 +      event.type === 'episode-new' && event.data?.creation_contract === 'episode-create-v1'
@@ -16278,6 +16484,8 @@ index c567221..8bf9718 100644
 +        || (recovered.dispatch_request_id_digest ?? null)
 +          !== (dispatchRequestIdDigest ?? null)
 +        || (recovered.dispatch_request_digest ?? null) !== (dispatchRequestDigest ?? null)
++        || JSON.stringify(recovered.dispatch_response ?? null)
++          !== JSON.stringify(dispatchResponse ?? null)
 +        || recovered.creation_contract !== 'episode-create-v1'
 +        || recovered.creation_request_digest !== requestDigest) {
 +      throw new Error(dispatchRequestIdDigest == null
@@ -16326,15 +16534,12 @@ index c567221..8bf9718 100644
 +    }
 +  };
 +  const materialize = () => {
-+    const base = resolve(runDir(root, runId), 'episodes');
-+    const full = resolve(dir);
-+    if (full !== base && !full.startsWith(base + sep)) {
-+      throw new Error('EPISODE_PATH_ESCAPE: ' + id);
-+    }
-+    mkdirSync(dir, { recursive: true });
++    const canonicalDir = ensureEpisodeDirectory(runDir(root, runId), dir);
++    dir = canonicalDir;
++    requestPath = join(canonicalDir, 'request.md');
 +    createFileDurablyIfAbsent(requestPath, requestSkeleton({
 +      id, plugin, role, kind, point, workstream, expectedArtifacts, evidence,
-+    }));
++    }), { validateExisting: path => validateRequestWinner(path, canonicalDir) });
 +    return { id, requestPath };
 +  };
 +  return episodeAppend(root, runId, mutation, event, (loop) => {
@@ -16347,10 +16552,11 @@ index c567221..8bf9718 100644
 +      creation_request_id_digest: creationRequestIdDigest,
 +      dispatch_request_id_digest: dispatchRequestIdDigest ?? null,
 +      dispatch_request_digest: dispatchRequestDigest ?? null,
++      dispatch_response: structuredClone(dispatchResponse ?? null),
        verification: { checker_episode_required: role === 'maker', checker_plugin: 'deep-review', review_point: point, proof_required: expectedArtifacts },
      };
      if (targetMaker && typeof targetMaker === 'string' && targetMaker.length) epObj.target_maker = targetMaker;
-@@ -156,40 +231,37 @@ function createEpisode(root, runId, {
+@@ -156,40 +231,38 @@ function createEpisode(root, runId, {
        // preCheck guarantees the workstream exists when non-null (Codex impl r14/r15) — bind episode to it.
        loop.workstreams.find(w => w.id === workstream).episodes.push(id);
      }
@@ -16383,12 +16589,13 @@ index c567221..8bf9718 100644
  export function newEpisode(root, runId, {
    plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker,
    reviewerResolution, evidence, contract, fence, mutation, crashProbe,
-+  requestId, dispatchRequestIdDigest, dispatchRequestDigest,
++  requestId, dispatchRequestIdDigest, dispatchRequestDigest, dispatchResponse,
  } = {}) {
    return createEpisode(root, runId, { plugin, role, kind, point, workstream,
      expectedArtifacts, targetMaker, reviewerResolution, evidence, contract, fence,
 -    mutation, crashProbe, operation: 'newEpisode' });
 +    mutation, crashProbe, requestId, dispatchRequestIdDigest, dispatchRequestDigest,
++    dispatchResponse,
 +    operation: 'newEpisode' });
  }
 -
@@ -16398,11 +16605,11 @@ index c567221..8bf9718 100644
  export function newBlockedCheckerEpisode(root, runId, { plugin, kind, point,
 -  workstream = null, targetMaker, reason, reviewerResolution, fence, mutation, crashProbe } = {}) {
 +  workstream = null, targetMaker, reason, reviewerResolution, fence, mutation, crashProbe,
-+  requestId, dispatchRequestIdDigest, dispatchRequestDigest } = {}) {
++  requestId, dispatchRequestIdDigest, dispatchRequestDigest, dispatchResponse } = {}) {
    return createEpisode(root, runId, {
      plugin, role: 'checker', kind, point, workstream, targetMaker, reviewerResolution,
      initialStatus: 'blocked', blockReason: reason, fence, mutation, crashProbe,
-+    requestId, dispatchRequestIdDigest, dispatchRequestDigest,
++    requestId, dispatchRequestIdDigest, dispatchRequestDigest, dispatchResponse,
      operation: 'newBlockedCheckerEpisode',
    });
  }
@@ -16410,10 +16617,33 @@ diff --git a/scripts/lib/review.mjs b/scripts/lib/review.mjs
 index 730e203..aa1cf72 100644
 --- a/scripts/lib/review.mjs
 +++ b/scripts/lib/review.mjs
-@@ -312,12 +312,21 @@
+@@ -312,12 +312,44 @@
++function replayReviewDispatch(checker) {
++  const stored = checker?.dispatch_response;
++  if (stored == null || typeof stored !== 'object' || Array.isArray(stored)
++      || typeof stored.reviewer !== 'string' || !Array.isArray(stored.flags)
++      || !stored.flags.every(flag => typeof flag === 'string')
++      || typeof stored.mode !== 'string'
++      || (stored.reason ?? null) !== (checker.block_reason ?? null)
++      || (stored.reviewer === 'deep-review-loop' ? checker.plugin !== 'deep-review'
++        : checker.plugin !== stored.reviewer)
++      || JSON.stringify(stored.evidence ?? null)
++        !== JSON.stringify(checker.evidence ?? null)) {
++    throw new Error('REVIEW_RECOVERY_PROJECTION_MISMATCH');
++  }
++  const descriptor = {
++    ...checkerDescriptor(stored.reviewer, { point: checker.point,
++      workstreamId: checker.workstream_id, flags: stored.flags,
++      mode: stored.mode, reason: stored.reason ?? undefined }),
++    ...(stored.evidence !== undefined ? { evidence: structuredClone(stored.evidence) } : {}),
++  };
++  return { checkerEpisodeId: checker.id, reviewer: stored.reviewer, descriptor };
++}
++
 -export function dispatchReview(root, runId, { point, workstreamId, detected = {}, independentSubagent = false, fence } = {}) {
 +export function dispatchReview(root, runId, { point, workstreamId, detected = {},
-+  independentSubagent = false, requestId, beforeFinalLock, fence } = {}) {
++  independentSubagent = false, requestId, beforeMutableReviewInputs, beforeFinalLock,
++  fence } = {}) {
    if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: dispatchReview');
    // Fix 3: validate point before any state read/write
    if (!point || typeof point !== 'string' || !point.length) throw new Error('REVIEW_INPUT_INVALID: point');
@@ -16444,7 +16674,7 @@ index 730e203..aa1cf72 100644
    const eps = data.episodes || [];
    // P2 codex r7: hill-climb 마이그레이션 특례 — pre-patch 커널이 approve한 checker(contract 미pin)에 묶인
    // maker는 makerReviewed=true라 재리뷰 불가, abandonEpisode는 terminal checker를 거부 → finish의
-@@ -340,16 +343,26 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
+@@ -340,16 +343,29 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
      const latest = cs.reduce((a, b) => (epOrder(a.id, b.id) >= 0 ? a : b));
      return latest.status === 'approved' && !latest.contract?.sha256;
    };
@@ -16465,6 +16695,9 @@ index 730e203..aa1cf72 100644
 +  if (dispatchMatches.length === 1 && !replayedMaker) {
 +    throw new Error('REVIEW_RECOVERY_PROJECTION_MISMATCH');
 +  }
++  if (dispatchMatches.length === 1) {
++    return replayReviewDispatch(dispatchMatches[0]);
++  }
 +  const candidateMakers = eps.filter(e =>
 +    e.role === 'maker' && e.status === 'done'
 +      && e.workstream_id === workstreamId && e.point === point);
@@ -16474,12 +16707,12 @@ index 730e203..aa1cf72 100644
 -  const targetMakerEp = eligibleMakers.length > 0
 -    ? eligibleMakers.reduce((a, b) => (epOrder(a.id, b.id) > 0 ? a : b))
 -    : null;
-+  const targetMakerEp = replayedMaker ?? (candidateMakers.length > 0
++  const targetMakerEp = candidateMakers.length > 0
 +    ? candidateMakers.reduce((a, b) => (epOrder(a.id, b.id) > 0 ? a : b))
-+    : null);
++    : null;
    // ROOT FIX: a review MUST bind to a real done maker. With no eligible done maker the checker would be UNBOUND
    // ("reviewed no maker") — a degenerate state that either silently completes (if its REQUEST_CHANGES is ignored)
-@@ -357,6 +369,15 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
+@@ -357,6 +369,16 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
    // source, so every checker is ALWAYS bound going forward. (preCheck — thrown before newEpisode: no episode created.)
    if (!targetMakerEp) throw new Error('REVIEW_NO_ELIGIBLE_MAKER: no done maker to review for ' + point + '/' + workstreamId);
    const targetMaker = targetMakerEp.id;
@@ -16492,16 +16725,20 @@ index 730e203..aa1cf72 100644
 +      && !['approved', 'rejected', 'abandoned'].includes(episode.status))) {
 +    throw new Error('REVIEW_NO_ELIGIBLE_MAKER: latest maker already has an active checker');
 +  }
++  if (typeof beforeMutableReviewInputs === 'function') beforeMutableReviewInputs();
    const { reviewer, flags, mode, reviewerResolution, blockedReason } = resolveReviewer(data, detected, { independentSubagent });
    // P2 (hillclimb-ledger 2026-07-10, release-blocking): hill-climb run은 checker 계약(HILLCLIMB-001)이 실제로
    // 강제되는 리뷰만 만들 수 있다. `.deep-review/`는 gitignored라 fresh checkout에는 계약이 없고, deep-review는
-@@ -427,20 +448,61 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
+@@ -427,20 +483,62 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
    const episodeInput = {
      plugin: reviewer === 'deep-review-loop' || reviewer === 'deep-review' ? 'deep-review' : reviewer,
      kind: `${point}-review`, point, workstream: workstreamId, targetMaker,
 -    reviewerResolution, evidence, contract, fence,
 +    reviewerResolution, evidence, contract, fence,
 +    dispatchRequestIdDigest, dispatchRequestDigest,
++    dispatchResponse: { reviewer, flags: structuredClone(flags), mode,
++      reason: blockedReason ?? null,
++      ...(evidence !== undefined ? { evidence: structuredClone(evidence) } : {}) },
    };
    const episodeCreationInput = blockedReason
      ? { ...episodeInput, role: 'checker', initialStatus: 'blocked',
@@ -16509,9 +16746,9 @@ index 730e203..aa1cf72 100644
      : { ...episodeInput, role: 'checker' };
 -  const episodeProjection = { ...projection,
 -    episode_request_digest: episodeRequestDigest(episodeCreationInput) };
-+  const episodeProjection = episodeRequestDigest(episodeCreationInput);
 +  if (typeof beforeFinalLock === 'function') beforeFinalLock();
-   const { id } = withReviewMutation(root, runId, fence,
+-  const { id } = withReviewMutation(root, runId, fence,
++  const committed = withReviewMutation(root, runId, fence,
 -    'dispatch-review-episode', episodeProjection,
 +    'dispatch-review', dispatchProjection,
 -    mutation => blockedReason
@@ -16527,6 +16764,9 @@ index 730e203..aa1cf72 100644
 +      if (sameId.length === 1
 +          && sameId[0].dispatch_request_digest !== dispatchRequestDigest) {
 +        throw new Error('REVIEW_DISPATCH_REQUEST_CONFLICT');
++      }
++      if (sameId.length === 1) {
++        return { id: sameId[0].id, replayed: replayReviewDispatch(sameId[0]) };
 +      }
 +      if (sameId.length === 0) {
 +        const latest = (finalData.episodes || []).filter(episode => episode.role === 'maker'
@@ -16550,18 +16790,14 @@ index 730e203..aa1cf72 100644
 +          throw new Error('REVIEW_NO_ELIGIBLE_MAKER: latest maker already has a checker');
 +        }
 +      }
-+      return blockedReason
++      const created = blockedReason
 +        ? newBlockedCheckerEpisode(root, runId,
 +          { ...episodeInput, reason: blockedReason, mutation })
 +        : newEpisode(root, runId, { ...episodeInput, role: 'checker', mutation });
++      return { id: created.id, replayed: null };
 +    });
-+  const committed = withReviewMutation(root, runId, fence, 'dispatch-review',
-+    dispatchProjection, mutation => mutation.readVerifiedState(
-+      { fenceCheck: identityFence }).data).episodes.find(episode => episode.id === id);
-+  if (dispatchMatches.length === 1
-+      && committed?.creation_request_digest !== episodeProjection) {
-+    throw new Error('REVIEW_RECOVERY_PROJECTION_MISMATCH');
-+  }
++  if (committed.replayed !== null) return committed.replayed;
++  const id = committed.id;
    const descriptor = {
      ...checkerDescriptor(reviewer, { point, workstreamId, flags, mode, reason: blockedReason }),
      ...(evidence !== undefined ? { evidence } : {}),
@@ -17035,6 +17271,7 @@ git commit -m "fix: verify authority before external actions" -m "Co-Authored-By
 - Modify: `scripts/lib/state.mjs:102-110` (retain raw exact state/hash writer only as an explicit
   genesis/test seam; no production post-genesis importer).
 - Modify: `scripts/deep-loop.mjs:694-703` (human reset requires a stable request ID).
+- Modify: `README.md:68-75` (public human reset command and allocate-once/reuse guidance).
 - Modify: `skills/deep-loop-status/SKILL.md` and `skills/deep-loop-continue/SKILL.md` (allocate-once
   reset guidance).
 - Modify: `tests/lease.test.mjs`.
@@ -17059,8 +17296,9 @@ git commit -m "fix: verify authority before external actions" -m "Co-Authored-By
   production breaker calls are removed rather than inferring the current lease. `resetBreaker`
   executes the full current `leaseCheck(..., intent:'breaker-reset')` before receipt lookup, so exact
   terminal authority still fails through `LEASE_FENCED: RUN_TERMINAL`. `recordReviewVerdict`
-  authenticates owner/generation first and then executes the complete current business lease policy
-  (runtime, released, releasing, paused, terminal) before durable replay or fresh append.
+  requires the caller's expected `runtime`, authenticates owner/generation first, and then executes
+  the complete current business lease policy (runtime, released, releasing, paused, terminal) before
+  durable replay or fresh append.
 
 - [ ] **Step 1: Write failing publisher-closure and crash tests**
 
@@ -17075,7 +17313,13 @@ caller.
 diff --git a/tests/breaker.test.mjs b/tests/breaker.test.mjs
 --- a/tests/breaker.test.mjs
 +++ b/tests/breaker.test.mjs
-@@ -10,7 +10,18 @@
+@@ -5,4 +5,5 @@
+ import { join } from 'node:path';
+ import { checkBreaker, recordReviewVerdict, resetBreaker } from '../scripts/lib/breaker.mjs';
+ import { initRun } from '../scripts/lib/initrun.mjs';
+ import { readState } from '../scripts/lib/state.mjs';
++import { finishRun } from '../scripts/lib/finish.mjs';
+@@ -10,7 +10,20 @@
  function seed() {
    const root = mkdtempSync(join(tmpdir(), 'dl-breaker-'));
    const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
@@ -17084,10 +17328,12 @@ diff --git a/tests/breaker.test.mjs b/tests/breaker.test.mjs
 +
 +let verdictRequest7g = 0;
 +function reviewVerdict7g(root, runId, verdict, { fence = null, requestId = null } = {}) {
-+  const lease = readState(root, runId).data.session_chain.lease;
-+  const binding = fence ?? {
-+    owner: lease.owner_run_id, generation: lease.generation,
-+  };
++  const state = readState(root, runId).data;
++  const lease = state.session_chain.lease;
++  const runtime = state.autonomy?.session_runtime ?? 'claude';
++  const binding = fence == null
++    ? { owner: lease.owner_run_id, generation: lease.generation, runtime }
++    : { ...fence, runtime: fence.runtime ?? runtime };
 +  verdictRequest7g += 1;
 +  return recordReviewVerdict(root, runId, verdict, binding,
 +    { requestId: requestId ?? `breaker-test-${verdictRequest7g}` });
@@ -17153,9 +17399,23 @@ diff --git a/tests/breaker.test.mjs b/tests/breaker.test.mjs
 -  const r = resetBreaker(root, runId, { fence: { owner: runId, generation: 1, intent: 'breaker-reset' } });
 +  const r = resetBreaker(root, runId, { fence: { owner: runId, generation: 1, intent: 'breaker-reset' }, requestId: 'valid-reset' });
    assert.equal(r.status, 'running');   // breaker 사유 paused → 복귀
-@@ -80,9 +91,11 @@ test('tripBreaker / recordReviewVerdict: terminal run throws RUN_TERMINAL, state unchanged', () => {
+@@ -71,8 +86,8 @@ function terminalSeed(status = 'completed') {
+-function terminalSeed(status = 'completed') {
++function terminalSeed() {
+   const root = mkdtempSync(join(tmpdir(), 'dl-brk-t-'));
+   const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-07-09T00:00:00Z') });
+-  const { data } = readState(root, runId);
+-  data.status = status;
+-  writeState(root, runId, data);
++  finishRun(root, runId, { status: 'stopped', confirm: true,
++    proof: { human_reason: 'terminal breaker fixture' },
++    fence: { owner: runId, generation: 1 } });
+   return { root, runId, owner: runId };
+ }
+@@ -80,9 +95,11 @@ test('tripBreaker / recordReviewVerdict: terminal run throws RUN_TERMINAL, state unchanged', () => {
  test('tripBreaker / recordReviewVerdict: terminal run throws RUN_TERMINAL, state unchanged', () => {
-   const { root, runId } = terminalSeed('completed');
+-  const { root, runId } = terminalSeed('completed');
++  const { root, runId } = terminalSeed();
 -  assert.throws(() => tripBreaker(root, runId, 'x'), /RUN_TERMINAL: tripBreaker/);
 -  // trip 분기 포함: REQUEST_CHANGES 3연속으로 paused 강등을 시도하는 fence-less 호출
 -  assert.throws(() => recordReviewVerdict(root, runId, 'REQUEST_CHANGES'), /RUN_TERMINAL: recordReviewVerdict/);
@@ -17165,12 +17425,14 @@ diff --git a/tests/breaker.test.mjs b/tests/breaker.test.mjs
 +  assert.throws(() => reviewVerdict7g(root, runId, 'REQUEST_CHANGES', { fence }),
 +    /RUN_TERMINAL: recordReviewVerdict/);
    const d = readState(root, runId).data;
-   assert.equal(d.status, 'completed');
+-  assert.equal(d.status, 'completed');
++  assert.equal(d.status, 'stopped');
    assert.equal(d.circuit_breaker?.tripped ?? false, false);
  });
-@@ -90,7 +103,7 @@ test('resetBreaker: fenced call rejects via LEASE_FENCED channel; fence-less via own throw (order = contract)', () => {
+@@ -90,7 +107,7 @@ test('resetBreaker: fenced call rejects via LEASE_FENCED channel; fence-less via own throw (order = contract)', () => {
  test('resetBreaker: fenced call rejects via LEASE_FENCED channel; fence-less via own throw (order = contract)', () => {
-   const { root, runId, owner } = terminalSeed('stopped');
+-  const { root, runId, owner } = terminalSeed('stopped');
++  const { root, runId, owner } = terminalSeed();
    // fence 있는 호출 → leaseCheck 선행 (drive-headless LEASE_FENCED swallow 계약 보존)
 -  assert.throws(() => resetBreaker(root, runId, { fence: { owner, generation: 1, intent: 'breaker-reset' } }), /LEASE_FENCED: RUN_TERMINAL/);
 +  assert.throws(() => resetBreaker(root, runId, { fence: { owner, generation: 1, intent: 'breaker-reset' }, requestId: 'terminal-reset' }), /LEASE_FENCED: RUN_TERMINAL/);
@@ -17199,6 +17461,17 @@ diff --git a/scripts/deep-loop.mjs b/scripts/deep-loop.mjs
 -      try { json(resetBreaker(root, runId, { fence })); return 0; }
 +      try { json(resetBreaker(root, runId, { fence, requestId })); return 0; }
        catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }
+diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -70,6 +70,6 @@
+ 1. **proposal-only / human approval** — push, PR, merge, publish, delete, and marketplace/deep-suite sync are never executed automatically. v1 always surfaces a proposal and waits for human confirmation.
+ 2. **Lease fencing** — every mutating kernel CLI requires matching `--owner` (run_id) and `--generation`. Stale sessions are rejected before any state change.
+ 3. **Fail-closed on unmeasurable usage** — unattended (headless) sessions that cannot measure turns/tokens are rejected, not silently passed. The `drive-headless.mjs` driver enforces this.
+-4. **Circuit breaker** — 3 consecutive REQUEST_CHANGES latch the breaker; a human must explicitly run `breaker reset --confirm --owner <run_id> --generation <n>` (lease-fenced, human-only) to resume. (`/deep-loop-ack` is unrelated — it reduces comprehension debt.)
++4. **Circuit breaker** — 3 consecutive REQUEST_CHANGES latch the breaker; a human must explicitly run `breaker reset --confirm --request-id <breaker_reset_request_id> --owner <run_id> --generation <n>` (lease-fenced, human-only) to resume. Allocate the bounded request ID once before reset and reuse it only for response-loss retry. (`/deep-loop-ack` is unrelated — it reduces comprehension debt.)
+ 5. **Terminal states via proof only** — episode `done`/`approved`/`rejected`, workstream `merged`/`abandoned` can only be set through verified proof artifacts, not direct state patch. **Exception: episode `abandoned` is a human-gated (`--confirm`) escape for stranded episodes, not proof-derived.**
+ 6. **No writes outside `.deep-loop/`** — all kernel writes go under `<project-root>/.deep-loop/`. External writes (deep-memory store, wiki) are delegated to those plugins' own skills.
 diff --git a/skills/deep-loop-status/SKILL.md b/skills/deep-loop-status/SKILL.md
 --- a/skills/deep-loop-status/SKILL.md
 +++ b/skills/deep-loop-status/SKILL.md
@@ -17270,7 +17543,7 @@ import { releaseLease as release7g, reserveHandoff as reserve7g,
   advanceHandoffPhase as advance7g, rollbackHandoff as rollback7g }
   from '../scripts/lib/lease.mjs';
 import { tripBreaker as trip7g, resetBreaker as reset7g,
-  recordReviewVerdict as verdict7g } from '../scripts/lib/breaker.mjs';
+  recordReviewVerdict as rawVerdict7g } from '../scripts/lib/breaker.mjs';
 import { appendAnchored as append7g, directMutationOptions as mutation7g,
   readLines as lines7g }
   from '../scripts/lib/integrity.mjs';
@@ -17280,6 +17553,9 @@ import { durableRunBytes as bytes7g, rawHashValidState as raw7g,
   from './fixtures/verified-app-run.mjs';
 
 const ROOT7G = file7g(new URL('..', import.meta.url));
+const verdict7g = (root, runId, verdict, fence, options) =>
+  rawVerdict7g(root, runId, verdict,
+    { ...fence, runtime: fence.runtime ?? 'codex' }, options);
 function sourceFiles7g(directory) {
   return list7g(directory).flatMap(name => {
     const path = join7g(directory, name);
@@ -17511,6 +17787,27 @@ test7g('review verdict enforces released releasing and paused lease policy befor
   }
 });
 
+test7g('review verdict requires and enforces runtime before fresh or replay semantics', () => {
+  const replay = fixture7g('dl-7g-verdict-runtime-replay-');
+  const correct = { owner: replay.owner, generation: replay.generation, runtime: 'codex' };
+  const input = { requestId: 'runtime-replay-verdict' };
+  assert7g.deepEqual(verdict7g(replay.root, replay.runId,
+    'REQUEST_CHANGES', correct, input), { ok: true, changed: true });
+  const committed = bytes7g(replay.root, replay.runId);
+  assert7g.throws(() => rawVerdict7g(replay.root, replay.runId,
+    'REQUEST_CHANGES', { ...correct, runtime: 'claude' }, input),
+  /LEASE_FENCED: RUNTIME_FENCED/);
+  assert7g.deepEqual(bytes7g(replay.root, replay.runId), committed);
+
+  const fresh = fixture7g('dl-7g-verdict-runtime-fresh-');
+  const before = bytes7g(fresh.root, fresh.runId);
+  assert7g.throws(() => rawVerdict7g(fresh.root, fresh.runId,
+    'REQUEST_CHANGES', { owner: fresh.owner, generation: fresh.generation,
+      runtime: 'claude' }, { requestId: 'runtime-fresh-verdict' }),
+  /LEASE_FENCED: RUNTIME_FENCED/);
+  assert7g.deepEqual(bytes7g(fresh.root, fresh.runId), before);
+});
+
 test7g('zero-count APPROVE receipt cannot reset a newer verdict after response loss', () => {
   const fixture = fixture7g('dl-7g-approve-noop-response-loss-');
   const fence = { owner: fixture.owner, generation: fixture.generation };
@@ -17647,7 +17944,8 @@ const publisher7g = Object.freeze({
       requestId: 'crash-7g-trip', crashProbe }),
   'breaker-verdict': ({ root, runId, owner, generation, crashProbe }) =>
     recordReviewVerdict(root, runId, 'REQUEST_CHANGES',
-      { owner, generation }, { requestId: 'crash-7g-verdict', crashProbe }),
+      { owner, generation, runtime: 'claude' },
+      { requestId: 'crash-7g-verdict', crashProbe }),
 });
 
 export function dispatchPublisherCrash7g({ root, runId, operation, point, owner, generation }) {
@@ -18044,6 +18342,9 @@ export function recordReviewVerdict(root, runId, verdict, fence,
   if (typeof fence?.owner !== 'string' || !Number.isSafeInteger(fence?.generation)) {
     throw new Error('FENCE_REQUIRED: breaker-review-verdict');
   }
+  if (typeof fence.runtime !== 'string') {
+    throw new Error('RUNTIME_REQUIRED: breaker-review-verdict');
+  }
   const identity = breakerRequestIdentity('review-verdict', requestId, { verdict });
   return breakerMutation(root, runId, fence, 'breaker-review-verdict',
     { verdict, request_digest: identity.requestDigest },
@@ -18117,7 +18418,7 @@ Expected: PASS with legacy return/error contracts preserved.
 ```bash
 rg -n "\bwriteState\(|\bappendEvent\(|appendFileSync\(" scripts/lib scripts/hooks-impl scripts/deep-loop.mjs
 rg -n "lease-released|handoff-reserved|handoff-phase-advanced|handoff-rolled-back|breaker-tripped|breaker-reset|breaker-review-verdict" scripts/lib tests
-git diff -- scripts/lib/lease.mjs scripts/lib/breaker.mjs scripts/lib/state.mjs scripts/deep-loop.mjs skills/deep-loop-status/SKILL.md skills/deep-loop-continue/SKILL.md tests/lease.test.mjs tests/breaker.test.mjs tests/cli-skillface.test.mjs tests/project-root.test.mjs tests/integrity.test.mjs tests/helpers/anchored-crash-worker.mjs
+git diff -- scripts/lib/lease.mjs scripts/lib/breaker.mjs scripts/lib/state.mjs scripts/deep-loop.mjs README.md skills/deep-loop-status/SKILL.md skills/deep-loop-continue/SKILL.md tests/lease.test.mjs tests/breaker.test.mjs tests/cli-skillface.test.mjs tests/project-root.test.mjs tests/integrity.test.mjs tests/helpers/anchored-crash-worker.mjs
 git diff --check
 git diff --check origin/main
 ```
@@ -18128,7 +18429,7 @@ and every production post-genesis mutation reaches the same pending/stage/hash c
 - [ ] **Step 7: Commit the publisher-closure slice**
 
 ```bash
-git add scripts/lib/lease.mjs scripts/lib/breaker.mjs scripts/lib/state.mjs scripts/deep-loop.mjs skills/deep-loop-status/SKILL.md skills/deep-loop-continue/SKILL.md tests/lease.test.mjs tests/breaker.test.mjs tests/cli-skillface.test.mjs tests/project-root.test.mjs tests/integrity.test.mjs tests/helpers/anchored-crash-worker.mjs
+git add scripts/lib/lease.mjs scripts/lib/breaker.mjs scripts/lib/state.mjs scripts/deep-loop.mjs README.md skills/deep-loop-status/SKILL.md skills/deep-loop-continue/SKILL.md tests/lease.test.mjs tests/breaker.test.mjs tests/cli-skillface.test.mjs tests/project-root.test.mjs tests/integrity.test.mjs tests/helpers/anchored-crash-worker.mjs
 git commit -m "fix: journal every post-genesis publisher" -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 git diff --check origin/main..HEAD
 ```
@@ -32877,6 +33178,8 @@ const fixedInterfaces = fixedStart < 0 ? ''
 requireTokens('Fixed Internal Interfaces', fixedInterfaces, [
   'callerBinding, intentDigest, fenceError, intentConflictError',
   'callerBinding, intentDigest, fenceError, crashProbe, allowTerminal',
+  'type AppTaskStatusResult = {',
+  "resume_policy: 'app' | 'human' | null",
 ]);
 const smokeStepMatches = [...smokeBody.matchAll(/^- \[ \] \*\*Step ([1-7]):[^\n]*\*\*$/gm)];
 const smokeStepBodies = smokeStepMatches.map((step, index) =>
@@ -33069,7 +33372,9 @@ for (const task of taskMatches) {
       "const recomputed = intentField('episode-create-request', projection)",
       'JSON.stringify(event.data.request_projection)',
       'dispatch_request_id_digest ?? null',
-      'has ambiguous creation identity']) {
+      'has ambiguous creation identity', 'legacy_episode_count',
+      'legacy_episode_digest', 'episode creation contract missing at index',
+      'dispatch_response: structuredClone(episode.dispatch_response ?? null)']) {
       if (!card.includes(token)) fail(`Task 7B missing recovery/intent token ${token}`);
     }
     for (const token of ['function appendTransitionalDirect(',
@@ -33107,7 +33412,8 @@ for (const task of taskMatches) {
       'export function replaceFileDurably(',
       'renameAtomicWithRetry(', "=== 'win32'", "(deps.open ?? durableOpenSync)(path, 'r+')",
       'GENERIC_WRITE', 'never replaces a check-to-publish race winner',
-      'tests/durable-file.test.mjs']) {
+      'tests/durable-file.test.mjs', 'validateExisting = () => {}',
+      'DURABLE_EXISTING_INVALID']) {
       if (!card.includes(token)) fail(`Task 5B missing platform durability token ${token}`);
     }
   }
@@ -33135,7 +33441,9 @@ for (const task of taskMatches) {
       'breaker reset requires --request-id', '--request-id <breaker_reset_request_id>',
       'trip and reset retries preserve their original response across newer operations',
       'review verdict replay authenticates intervening review-outcome transitions',
-      "mutation7g('test-review-outcome'"]) {
+      "mutation7g('test-review-outcome'", 'RUNTIME_REQUIRED: breaker-review-verdict',
+      'review verdict requires and enforces runtime before fresh or replay semantics',
+      'README.md:68-75']) {
       if (!card.includes(token)) fail(`Task 7G missing executable crash token ${token}`);
     }
   }
@@ -33250,7 +33558,13 @@ for (const task of taskMatches) {
       'an exact direct retry with the same request ID reuses its episode',
       'episode creation identity is state-event correlated and status-independent',
       "['pending', 'in_progress', 'approved', 'rejected', 'blocked']",
-      'no unprovable identifier-valued']) {
+      'no unprovable identifier-valued', 'function replayReviewDispatch(checker)',
+      'dispatch_response: structuredClone(dispatchResponse ?? null)',
+      'same-ID replay bypasses mutable contract and evidence derivation',
+      'materialize changed latest insights',
+      'episode request rematerialization rejects symlink file and directory winners',
+      'paired state/event discriminator removal cannot downgrade initialized proof',
+      'an initialized run rejects an unversioned episode with no creation event']) {
       if (!card.includes(token)) fail(`Task 7F missing literal caller migration token ${token}`);
     }
   }
@@ -33525,23 +33839,166 @@ const sequentialSourceDir = mkdtempSync(join(tmpdir(), 'deep-loop-plan-source-')
 cpSync('scripts', join(sequentialSourceDir, 'scripts'), { recursive: true });
 cpSync('tests', join(sequentialSourceDir, 'tests'), { recursive: true });
 cpSync('skills', join(sequentialSourceDir, 'skills'), { recursive: true });
+for (const directory of ['automation', 'protocols', 'recipes', 'schemas']) {
+  if (existsSync(directory)) {
+    cpSync(directory, join(sequentialSourceDir, directory), { recursive: true });
+  }
+}
+if (existsSync('package.json')) {
+  cpSync('package.json', join(sequentialSourceDir, 'package.json'));
+}
+if (existsSync('README.md')) {
+  cpSync('README.md', join(sequentialSourceDir, 'README.md'));
+}
+{
+  // Materialize the exact Task 5B durability module and the exact Task 4A digest dependency that
+  // Task 7B's installed integrity source imports. The latter is deliberately the production
+  // canonicalization/digest prefix only; no journal, lease, or breaker behavior is stubbed.
+  const durableFence = fenceRecords.find(record => record.language === 'js'
+    && record.body.includes('// scripts/lib/durable-file.mjs — complete file')
+    && record.body.includes('// scripts/lib/init-transaction.mjs — complete replacement'));
+  if (durableFence == null) {
+    fail('Task 5B complete durable module missing');
+  } else {
+    const start = durableFence.body.indexOf("import { randomBytes as durableRandomBytes }");
+    const end = durableFence.body.indexOf(
+      '// scripts/lib/init-transaction.mjs — complete replacement');
+    writeFileSync(join(sequentialSourceDir, 'scripts/lib/durable-file.mjs'),
+      `${durableFence.body.slice(start, end).trimEnd()}\n`);
+  }
+  const digestFence = fenceRecords.find(record => record.language === 'js'
+    && record.body.includes('export function initializationRequestDigest(projection)')
+    && record.body.includes('function buildRunInitializedEvent(loop)'));
+  if (digestFence == null) {
+    fail('Task 4A initialization digest source missing');
+  } else {
+    const importLine = "import { contentHash } from './envelope.mjs';";
+    const start = digestFence.body.indexOf('function canonicalValue(value)');
+    const end = digestFence.body.indexOf('\n\nfunction buildRunInitializedEvent(loop)');
+    writeFileSync(join(sequentialSourceDir, 'scripts/lib/init-transaction.mjs'),
+      `${importLine}\n\n${digestFence.body.slice(start, end).trimEnd()}\n`);
+  }
+}
 try {
   const applySequentialDiff = (label, body) => {
-    const args = body.includes('MISSING_REQUIRED_OPTION: --request-id')
-      && (body.includes('skills/deep-loop-workflow/references/hill-climbing.md')
-        || body.includes('skills/deep-loop-status/SKILL.md'))
-      ? ['apply', '--unsafe-paths', '--unidiff-zero', '-']
-      : ['apply', '--unsafe-paths', '-'];
+    const narrowContextMigration = body.includes('diff --git a/tests/breaker.test.mjs')
+      || (body.includes('MISSING_REQUIRED_OPTION: --request-id')
+        && (body.includes('skills/deep-loop-workflow/references/hill-climbing.md')
+          || body.includes('skills/deep-loop-status/SKILL.md')));
+    const args = narrowContextMigration
+      ? ['apply', '--verbose', '--unsafe-paths', '--unidiff-zero', '-']
+      : ['apply', '--verbose', '--unsafe-paths', '-'];
     const applied = spawnSync('git', args, {
       cwd: sequentialSourceDir, input: `${body}\n`, encoding: 'utf8',
       maxBuffer: 8 * 1024 * 1024,
     });
     if (applied.error || applied.status !== 0) {
-      const diagnostic = String(applied.error?.message || applied.stderr || applied.stdout)
-        .split('\n')[0];
+      const rawDiagnostic = String(applied.error?.message || applied.stderr || applied.stdout);
+      const lines = rawDiagnostic.split('\n');
+      const failedHunk = /patch failed: ([^:]+):(\d+)/u.exec(rawDiagnostic);
+      let installedContext = '';
+      if (failedHunk !== null) {
+        const failedPath = join(sequentialSourceDir, failedHunk[1]);
+        const failedLine = Number(failedHunk[2]);
+        if (existsSync(failedPath) && Number.isSafeInteger(failedLine)) {
+          installedContext = readFileSync(failedPath, 'utf8').split('\n')
+            .slice(Math.max(0, failedLine - 4), failedLine + 30)
+            .map((line, index) => `${Math.max(1, failedLine - 3) + index}:${line}`)
+            .join(' | ');
+        }
+      }
+      const diagnostic = lines.slice(0, 100).join(' | ')
+        + (installedContext === '' ? '' : ` | installed=${installedContext}`);
       fail(`${label}: ${diagnostic}`);
     }
   };
+  {
+    // Task 1A creates the dependency-leaf host-surface module and appends the matching runtime
+    // correlation guard. Install both exact complete afterimages because Task 7A's pure verifier
+    // imports their production digest helper.
+    const task = taskMatches.find(match => match[1] === '1A');
+    const nextTask = source.indexOf('\n### Task ', task.index + 1);
+    const card = source.slice(task.index, nextTask < 0 ? source.length : nextTask);
+    const units = [...card.matchAll(/```js\n([\s\S]*?)\n```/g)].map(match => match[1]);
+    const hostSurface = units.find(body => body.startsWith("import { createHash } from 'node:crypto';")
+      && body.includes('export function normalizeHostObservation(input, deps)'));
+    const runtimeGuard = units.find(body => body.includes('export const RUNTIME_SURFACES')
+      && body.includes('export function validateRuntimeSurface(runtime, surface)'));
+    if (hostSurface == null || runtimeGuard == null) {
+      fail('Task 1A complete host-surface/runtime afterimages missing');
+    } else {
+      writeFileSync(join(sequentialSourceDir, 'scripts/lib/host-surface.mjs'),
+        `${hostSurface.trimEnd()}\n`);
+      const runtimePath = join(sequentialSourceDir, 'scripts/lib/runtime.mjs');
+      const runtime = readFileSync(runtimePath, 'utf8');
+      writeFileSync(runtimePath, `${runtime.trimEnd()}\n\n${runtimeGuard.trimEnd()}\n`);
+      for (const relativePath of ['scripts/lib/host-surface.mjs', 'scripts/lib/runtime.mjs']) {
+        const checked = spawnSync(process.execPath,
+          ['--check', join(sequentialSourceDir, relativePath)], {
+            cwd: sequentialSourceDir, encoding: 'utf8',
+          });
+        if (checked.error || checked.status !== 0) {
+          const diagnostic = String(checked.error?.message || checked.stderr || checked.stdout)
+            .split('\n')[0];
+          fail(`Task 1A installed afterimage syntax ${relativePath}: ${diagnostic}`);
+        }
+      }
+    }
+  }
+  {
+    // Task 7A publishes the pure App/event correlation verifier as a complete helper rather than a
+    // diff. Install that exact helper and its two declared pure imports into the real schema module
+    // before Task 7B's verified-snapshot afterimage imports it. Its strict timestamp parser is the
+    // exact Task 3B schema prerequisite, not a validator-local reimplementation.
+    const task = taskMatches.find(match => match[1] === '7A');
+    const nextTask = source.indexOf('\n### Task ', task.index + 1);
+    const card = source.slice(task.index, nextTask < 0 ? source.length : nextTask);
+    const units = [...card.matchAll(/```js\n([\s\S]*?)\n```/g)].map(match => match[1]);
+    const verifier = units.find(body => body.includes('const APP_EVENT_CLOCK = Object.freeze([')
+      && body.includes('export function verifyAppEventCorrelation(loop, lines)'));
+    const prerequisiteTask = taskMatches.find(match => match[1] === '3B');
+    const prerequisiteNext = source.indexOf('\n### Task ', prerequisiteTask.index + 1);
+    const prerequisiteCard = source.slice(prerequisiteTask.index,
+      prerequisiteNext < 0 ? source.length : prerequisiteNext);
+    const prerequisiteUnit = [...prerequisiteCard.matchAll(/```js\n([\s\S]*?)\n```/g)]
+      .map(match => match[1]).find(body => body.includes('const ISO_INSTANT =')
+        && body.includes('const strictMs = value =>'));
+    const prerequisiteStart = prerequisiteUnit?.indexOf('const ISO_INSTANT =') ?? -1;
+    const prerequisiteEnd = prerequisiteUnit?.indexOf('\n\nconst opaque', prerequisiteStart) ?? -1;
+    if (verifier == null || prerequisiteStart < 0 || prerequisiteEnd < 0) {
+      fail('Task 3B/7A complete App correlation verifier prerequisites missing');
+    } else {
+      const path = join(sequentialSourceDir, 'scripts/lib/schema.mjs');
+      let installed = readFileSync(path, 'utf8');
+      const importAnchor = "import { dirname, isAbsolute, join, win32 } from 'node:path';";
+      const validateAnchor = 'export function validate(loopJson, schema = loadSchema()) {';
+      const importOffset = installed.indexOf(importAnchor);
+      const validateOffset = installed.indexOf(validateAnchor);
+      if (importOffset < 0 || validateOffset < 0) {
+        fail('Task 7A schema installation anchors missing');
+      } else {
+        const importEnd = importOffset + importAnchor.length;
+        installed = `${installed.slice(0, importEnd)}\n`
+          + "import { contentHash } from './envelope.mjs';\n"
+          + "import { hostSurfaceFactsDigest } from './host-surface.mjs';"
+          + installed.slice(importEnd);
+        const shiftedValidateOffset = installed.indexOf(validateAnchor);
+        const prerequisites = prerequisiteUnit.slice(prerequisiteStart, prerequisiteEnd).trimEnd();
+        installed = `${installed.slice(0, shiftedValidateOffset)}${prerequisites}\n\n`
+          + `${verifier.trimEnd()}\n\n`
+          + installed.slice(shiftedValidateOffset);
+        writeFileSync(path, installed);
+        const checked = spawnSync(process.execPath, ['--check', path], {
+          cwd: sequentialSourceDir, encoding: 'utf8',
+        });
+        if (checked.error || checked.status !== 0) {
+          const diagnostic = String(checked.error?.message || checked.stderr || checked.stdout)
+            .split('\n')[0];
+          fail(`Task 7A installed App correlation verifier syntax: ${diagnostic}`);
+        }
+      }
+    }
+  }
   for (const taskId of ['7B', '7C']) {
     const task = taskMatches.find(match => match[1] === taskId);
     const nextTask = source.indexOf('\n### Task ', task.index + 1);
@@ -33551,6 +34008,45 @@ try {
       .filter(body => body.includes('diff --git a/scripts/lib/'));
     for (const [index, body] of sourceDiffs.entries()) {
       applySequentialDiff(`Task ${taskId} sequential source diff ${index + 1}`, body);
+    }
+  }
+  {
+    // Task 7B publishes its journal implementation as two complete JavaScript afterimages rather
+    // than diffs. Install both into the real integrity module before later source/test migrations.
+    const task = taskMatches.find(match => match[1] === '7B');
+    const nextTask = source.indexOf('\n### Task ', task.index + 1);
+    const card = source.slice(task.index, nextTask < 0 ? source.length : nextTask);
+    const units = [...card.matchAll(/```js\n([\s\S]*?)\n```/g)].map(match => match[1]);
+    const intents = units.find(body => body.includes('export function intentField(domain, value)')
+      && body.includes('export function statePatchIntent(fence, field, value)')
+      && body.includes('function appMutationIntentDigest(input, operation)'));
+    const journal = units.find(body => body.includes('export function verifyRunSnapshot(loop, lines)')
+      && body.includes('export function withVerifiedMutationLock(root, runId,'));
+    const append = units.find(body => body.includes('function appendAnchoredUnderLock(')
+      && body.includes('export function appendAnchored(root, runId, event,'));
+    if (intents == null || journal == null || append == null) {
+      fail('Task 7B complete integrity afterimages missing');
+    } else {
+      const path = join(sequentialSourceDir, 'scripts/lib/integrity.mjs');
+      let installed = readFileSync(path, 'utf8');
+      const appendStart = installed.indexOf('export function appendAnchored(');
+      const rootRebind = installed.indexOf('// Root relocation is the sole mutation', appendStart);
+      if (appendStart < 0 || rootRebind < 0) {
+        fail('Task 7B integrity replacement anchors missing');
+      } else {
+        installed = `${installed.slice(0, appendStart)}${intents.trimEnd()}\n\n`
+          + `${journal.trimEnd()}\n\n`
+          + `${append.trimEnd()}\n\n${installed.slice(rootRebind)}`;
+        writeFileSync(path, installed);
+        const checked = spawnSync(process.execPath, ['--check', path], {
+          cwd: sequentialSourceDir, encoding: 'utf8',
+        });
+        if (checked.error || checked.status !== 0) {
+          const diagnostic = String(checked.error?.message || checked.stderr || checked.stdout)
+            .split('\n')[0];
+          fail(`Task 7B installed integrity afterimage syntax: ${diagnostic}`);
+        }
+      }
     }
   }
   for (const [taskId, pathPattern] of [
@@ -33665,9 +34161,22 @@ try {
     applySequentialDiff(`Task ${taskId} sequential caller diff ${requiredPath}`, matches[0]);
   }
   {
+    // The installed production sources and the migrated real breaker suite execute together in the
+    // disposable tree. This is the integration proof; the smaller probe below is supplemental only.
+    const integrated = spawnSync(process.execPath,
+      ['--test', 'tests/breaker.test.mjs'], {
+        cwd: sequentialSourceDir, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024,
+      });
+    if (integrated.error || integrated.status !== 0) {
+      const diagnostic = String(integrated.error?.message
+        || integrated.stderr || integrated.stdout).split('\n').slice(0, 30).join(' | ');
+      fail(`Task 7G installed real breaker suite: ${diagnostic}`);
+    }
+  }
+  {
     // Execute the exact installed Task 7G breaker afterimage, not a retyped model. The surrounding
-    // stubs expose only the verified-mutation/lease contracts required by this bounded behavioral
-    // probe, so a missing request identity or a replay-before-current-policy regression fails here.
+    // stubs expose only a bounded supplemental probe; they never substitute for the real installed
+    // source/test execution above.
     const runtimeDir = join(sequentialSourceDir, '.plan-afterimage-runtime');
     mkdirSync(runtimeDir, { recursive: true });
     cpSync(join(sequentialSourceDir, 'scripts/lib/breaker.mjs'),
@@ -33734,7 +34243,7 @@ const active = () => ({ status: 'running', session_chain: { lease: {
 
 test('installed breaker afterimage executes stable IDs and current lease policy', () => {
   configure(active());
-  const fence = { owner, generation: 1 };
+  const fence = { owner, generation: 1, runtime: 'claude' };
   assert.deepEqual(tripBreaker('/root', 'run', 'consecutive-request-changes',
     { fence, requestId: 'trip-once' }), { ok: true, changed: true });
   const tripEvents = events.length;
