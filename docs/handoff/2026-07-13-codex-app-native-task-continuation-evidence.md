@@ -1604,6 +1604,42 @@ no inherited approval from the historical receipt.
 - gate state: still open. Changed bytes require fresh cycle 5 round 4 with both reviewers pinned to
   exact `gpt-5.6-sol`/high; this Respond is not a Gate 1 pass.
 
+### Gate 1 fresh cycle 5 round 4 review
+
+- gate/artifact: Gate 1 design plus final 46-task plan, goal handoff, evidence, cycle-5 round-3
+  report context, and current repository code/tests.
+- invocation: two independent read-only Codex processes, both exact `gpt-5.6-sol` / `high`;
+  standard task `019f65d3-a6d7-7221-8aeb-ccec2b47dec5` plus a separately prompted adversarial audit.
+  Both processes terminated naturally with exit 0.
+- verdict: `REQUEST_CHANGES`; Red/Yellow/Info = `2 / 4 / 3`.
+- main-agent judgment: accepted all six actionable findings. Pathname request publication is removed;
+  crash injection is scalar-only across final cards; tests and CLI fixtures match the inline request
+  API; workstream request IDs are globally unique; normalized legacy active membership is exact-bound
+  in event and immutable state.
+- reviewer environment note: the adversarial read-only sandbox could not create the validator temp
+  directory (`EPERM`), so no validator-pass conclusion was taken from that process. The main session
+  independently executed the exact validator before and after correction.
+- report path: `.deep-review/reports/2026-07-15-220039-review.md`, SHA-256
+  `8f8bda5c8e1d2358a7228f33050685f557f03f5734b990e8c5f2ae6cf363b54d`.
+
+### Gate 1 fresh cycle 5 round 4 Respond
+
+- disposition: accepted 6 actionable findings, rejected 0, deferred 0;
+  `execution_path=main_fallback` under the session's no-subagent contract.
+- exact corrected candidate hashes: handoff
+  `1523907bf1931793b765ed8a5fac2d678a6ae1aa303cfef6e2c89f2e6f150fd9`; design
+  `6b09ac545b24781ecccce44e478ebc3d68cd0e137434a3aa73efd9edb6018c1d`; plan
+  `2cda13e084985d9e0b56ba2707c854f3fceede13cebbd1e685213c31bb312822`.
+- response record: `.deep-review/responses/2026-07-15-224910-response.md`, SHA-256
+  `ce47616f11dd4e3babc4cc9ce1c4d337b14eca00be45fa0e4301c483a7482bc6`.
+- verification: embedded validator passed `ok:true` for 46 tasks and 368 fences
+  (`bash=64`, `diff=91`, `js=185`, `json=4`, `markdown=12`, `text=11`, `yaml=1`), including
+  Task-11B-closed substrate and Task 8A–11C final-surface crash-capability closure. `git diff --check`,
+  cached/origin-main checks, and `npm run preflight` passed validation and all 1,463 tests with zero
+  failures, cancellations, skips, or todo.
+- gate state: still open. Changed bytes require fresh cycle 5 round 5 with both reviewers pinned to
+  exact `gpt-5.6-sol`/high; this Respond is not a Gate 1 pass.
+
 ## Review receipt template
 
 Each reviewed gate will add a receipt with all of these fields:
