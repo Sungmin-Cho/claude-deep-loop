@@ -36,6 +36,12 @@ Gate 2 and every later review checkpoint use the same durable protocol; a checkp
 6. Append the complete receipt and Info dispositions to `docs/handoff/2026-07-13-codex-app-native-task-continuation-evidence.md`; force-add it; run `git diff --cached --check`, commit a receipt-only evidence change with the required co-author trailer, then run `git diff --check origin/main..HEAD` so committed whitespace is covered.
 7. Preserve a sanitized copy of the report and loop summary plus their original hashes in `docs/handoff/2026-07-13-codex-app-native-task-continuation-review-bundle.md` during Task 17. Gate 6 appends its own report/summary after review. The bundle must contain no raw host receipt/project/thread ID or secret and becomes the durable wiki source after ignored `.deep-review/` files are removed.
 
+For Gate 1/2 planning convergence and every later cited review, the exact sanitized
+`.deep-review/reports/<timestamp>-review.md` and `.deep-review/responses/<timestamp>-response.md`
+files are also force-added in the same Respond/receipt commit despite `.gitignore`. The future bundle
+is an index/long-term copy, not a substitute for the contemporaneous report and response. A report
+or response cited by the evidence ledger but absent from `git ls-files` invalidates that gate receipt.
+
 ---
 
 ## File and Responsibility Map
@@ -135,14 +141,14 @@ These are the narrow baseline `Modify` anchors required by the execution tasks; 
 | 2A–2B | `scripts/lib/bounded-input.mjs:1-31` (`REVIEW_IMPORT_MAX_BYTES`, `readBoundedText`); `tests/bounded-input.test.mjs:1-35`; `tests/cli-skillface.test.mjs:1-18,192-265` (CLI harness and strict CLI-shape tail). |
 | 3A–3B | Created `scripts/lib/app-task-continuation.mjs` genesis defaults/deadline exports; `scripts/lib/initrun.mjs:13-58` (`buildInitialLoop`, `initRun`); `scripts/lib/schema.mjs:1-216` (`loadSchema`, `validate`); `schemas/loop-run.schema.json:1-29`; `tests/initrun.test.mjs:15-125`; `tests/schema.test.mjs:17-273`. |
 | 4A–4C | Created `scripts/lib/init-transaction.mjs` exports `hostObservationDigest` through `statusInitialization`; created `tests/init-transaction.test.mjs` projection/preflight/status cases. |
-| 5A–5C | Created `scripts/lib/durable-file.mjs` exports `syncRegularFile`, `syncParentDirectory`, `renamePreparedFile`, `unlinkRegularFile`, `createFileDurablyIfAbsent`, `publishDirectoryFileDurably`, and `replaceFileDurably`; produced `scripts/lib/init-transaction.mjs` symbols `withInitLock`, `publishGenesisState`, `commitPreparedInit`; `scripts/lib/initrun.mjs:42-58` (`initRun`); created `tests/durable-file.test.mjs` POSIX/Windows durability, no-replace, and directory-swap cases; produced `tests/init-transaction.test.mjs` lock/publisher/contention cases; `tests/initrun.test.mjs:59-125`; `tests/session-profile.test.mjs`; `tests/insights.test.mjs`; `tests/project-root.test.mjs`; created `tests/helpers/init-contention-worker.mjs`. |
+| 5A–5C | Created `scripts/lib/durable-file.mjs` exports `syncRegularFile`, `syncParentDirectory`, `renamePreparedFile`, `unlinkRegularFile`, `createFileDurablyIfAbsent`, and `replaceFileDurably`; produced `scripts/lib/init-transaction.mjs` symbols `withInitLock`, `publishGenesisState`, `commitPreparedInit`; `scripts/lib/initrun.mjs:42-58` (`initRun`); created `tests/durable-file.test.mjs` POSIX/Windows durability and no-replace cases; produced `tests/init-transaction.test.mjs` lock/publisher/contention cases; `scripts/lib/episode.mjs` and `tests/reviewer-failclosed.test.mjs` own the canonical-run-sibling request publication and obsolete-parent race coverage; `tests/initrun.test.mjs:59-125`; `tests/session-profile.test.mjs`; `tests/insights.test.mjs`; `tests/project-root.test.mjs`; created `tests/helpers/init-contention-worker.mjs`. |
 | 6A–6E | Produced `scripts/lib/app-task-continuation.mjs` consent/observe/revoke/status/redaction exports; `scripts/deep-loop.mjs:40-141,340-365`; `scripts/lib/initrun.mjs:13-58`; `scripts/lib/integrity.mjs:96-187`; `scripts/lib/lease.mjs:13-199`; `scripts/lib/schema.mjs:164-216`; created `tests/app-task-continuation.test.mjs`; `tests/orch-cli.test.mjs:246-286,831-1005`; `tests/cli-skillface.test.mjs:66-99,192-265`; `tests/integrity.test.mjs:123-211`; `tests/lease.test.mjs:27-490`; `tests/schema.test.mjs:17-273`; created `tests/helpers/fixed-init-crash-worker.mjs`. |
 | 7A | `scripts/lib/schema.mjs:164-216`; `scripts/deep-loop.mjs:120-180`; `tests/schema.test.mjs:17-273`; `tests/validate-cli.test.mjs:39-84`. |
 | 7B | produced `scripts/lib/durable-file.mjs`; `scripts/lib/finish.mjs:70-107`; `scripts/lib/integrity.mjs:21-187`; `scripts/lib/lease.mjs:43-103`; `scripts/lib/state.mjs:79-115`; `scripts/lib/workspace.mjs`; `tests/automation.test.mjs`; `tests/breaker.test.mjs`; `tests/budget.test.mjs`; `tests/codex-checker-integration.test.mjs`; `tests/comprehension.test.mjs`; `tests/detect-terminal.test.mjs`; produced `tests/durable-file.test.mjs`; `tests/episode.test.mjs`; `tests/fencing.test.mjs`; `tests/finish.test.mjs`; produced `tests/fixtures/verified-app-run.mjs`; `tests/handoff.test.mjs`; `tests/headless-host.test.mjs`; `tests/insights.test.mjs`; `tests/integrity.test.mjs`; `tests/lease.test.mjs`; `tests/orch-cli.test.mjs`; `tests/pause.test.mjs`; `tests/precompact-hook.test.mjs`; `tests/project-root.test.mjs`; `tests/recover.test.mjs`; `tests/respawn.test.mjs`; `tests/review.test.mjs`; `tests/runtime-executable.test.mjs`; `tests/session-profile.test.mjs`; `tests/spawn-optin.test.mjs`; `tests/state.test.mjs`; `tests/terminal-cli.test.mjs`; `tests/workspace.test.mjs`; created `tests/helpers/anchored-crash-worker.mjs`. |
 | 7C | `scripts/lib/lease.mjs:43-199`; `scripts/lib/budget.mjs:279-1048`; `scripts/lib/headless-host.mjs`; `scripts/deep-loop.mjs:650-670`; `skills/deep-loop-continue/SKILL.md:173-182`; `skills/deep-loop-workflow/references/handoff-respawn.md:179-187`; produced `tests/helpers/anchored-crash-worker.mjs`; `tests/lease.test.mjs`; `tests/budget.test.mjs`; `tests/headless-host.test.mjs`; `tests/skills.test.mjs`; `tests/cli-skillface.test.mjs`; `tests/insights.test.mjs`; `tests/integrity.test.mjs`; `tests/project-root.test.mjs`. |
 | 7D | Produced `scripts/lib/init-transaction.mjs` strict current/genesis proof; produced `scripts/lib/app-task-continuation.mjs` observe/revoke/status boundaries; produced `tests/fixtures/verified-app-run.mjs`; produced `tests/init-transaction.test.mjs`; produced `tests/app-task-continuation.test.mjs`; `tests/cli-skillface.test.mjs`. |
 | 7G | `scripts/lib/lease.mjs:102-199`; `scripts/lib/breaker.mjs:1-62`; `scripts/lib/state.mjs:102-110`; `scripts/deep-loop.mjs:694-703`; `README.md:68-75`; `skills/deep-loop-status/SKILL.md`; `skills/deep-loop-continue/SKILL.md`; `tests/lease.test.mjs`; `tests/breaker.test.mjs`; `tests/cli-skillface.test.mjs`; `tests/project-root.test.mjs`; `tests/integrity.test.mjs`; produced `tests/helpers/anchored-crash-worker.mjs`. |
-| 7E–7F | `scripts/lib/session-profile.mjs:44-80`; `scripts/lib/comprehension.mjs:27-92`; `scripts/lib/project-root-recovery.mjs:20-51`; `scripts/lib/budget.mjs:1053-1067`; `scripts/lib/episode.mjs:25-220`; `scripts/lib/insights.mjs:357-509`; `scripts/lib/review.mjs:50-179,310-668`; `scripts/lib/workspace.mjs:80-153`; `scripts/lib/detect-terminal.mjs:284-343`; `scripts/deep-loop.mjs:120-180,340-710`; `skills/deep-loop/SKILL.md`; `skills/deep-loop-continue/SKILL.md`; `skills/deep-loop-workflow/references/adapters.md`; `skills/deep-loop-workflow/references/hill-climbing.md`; `tests/helpers/episode-request.mjs`; `tests/helpers/review-request.mjs`; `tests/session-profile.test.mjs`; `tests/comprehension.test.mjs`; `tests/project-root.test.mjs`; `tests/budget.test.mjs`; `tests/cli-skillface.test.mjs`; `tests/codex-checker-integration.test.mjs`; `tests/codex-isolation-integration.test.mjs`; `tests/episode.test.mjs`; `tests/fencing.test.mjs`; `tests/finish.test.mjs`; `tests/handoff.test.mjs`; `tests/next-action.test.mjs`; `tests/orch-cli.test.mjs`; `tests/pause.test.mjs`; `tests/review.test.mjs`; `tests/insights.test.mjs`; `tests/review-import.test.mjs`; `tests/reviewer-failclosed.test.mjs`; `tests/workspace.test.mjs`; `tests/detect-terminal.test.mjs`. |
+| 7E–7F | `scripts/lib/session-profile.mjs:44-80`; `scripts/lib/comprehension.mjs:27-92`; `scripts/lib/project-root-recovery.mjs:20-51`; `scripts/lib/budget.mjs:1053-1067`; `scripts/lib/episode.mjs:25-220`; `scripts/lib/insights.mjs:357-509`; `scripts/lib/review.mjs:50-179,310-668`; `scripts/lib/workspace.mjs:80-153`; `scripts/lib/state.mjs:51-160`; `scripts/lib/detect-terminal.mjs:284-343`; `scripts/deep-loop.mjs:120-180,340-710`; `skills/deep-loop/SKILL.md`; `skills/deep-loop-continue/SKILL.md`; `skills/deep-loop-workflow/references/adapters.md`; `skills/deep-loop-workflow/references/hill-climbing.md`; `tests/helpers/episode-request.mjs`; `tests/helpers/review-request.mjs`; `tests/session-profile.test.mjs`; `tests/comprehension.test.mjs`; `tests/project-root.test.mjs`; `tests/budget.test.mjs`; `tests/cli-skillface.test.mjs`; `tests/codex-checker-integration.test.mjs`; `tests/codex-isolation-integration.test.mjs`; `tests/episode.test.mjs`; `tests/fencing.test.mjs`; `tests/finish.test.mjs`; `tests/handoff.test.mjs`; `tests/next-action.test.mjs`; `tests/orch-cli.test.mjs`; `tests/pause.test.mjs`; `tests/review.test.mjs`; `tests/insights.test.mjs`; `tests/review-import.test.mjs`; `tests/reviewer-failclosed.test.mjs`; `tests/workspace.test.mjs`; `tests/detect-terminal.test.mjs`. |
 | 8A–8B | Produced `scripts/lib/app-task-continuation.mjs` `prepareAppTask`; `scripts/lib/handoff.mjs:38-224` (`handoffMarkdown`, `emitHandoff`); `scripts/lib/lease.mjs:121-205` (`reserveHandoff`, `rollbackHandoff`); `scripts/lib/schema.mjs:164-216`; `tests/handoff.test.mjs:343-789,1107-1163`; produced `tests/app-task-continuation.test.mjs` prepare cases; created `tests/fixtures/app-prepare-worker.mjs`. |
 | 9A–9B | Produced `scripts/lib/app-task-continuation.mjs` `confirmAppTask`, `failAppTask`, `sweepUnconfirmedAppTask`, `statusAppTask`, `awaitAppTask`; `scripts/deep-loop.mjs:489-616`; produced `tests/app-task-continuation.test.mjs` receipt/readiness cases; `tests/orch-cli.test.mjs:246-286,831-1005`; `tests/schema.test.mjs:17-273`. |
 | 10A–10D | Produced `scripts/lib/app-task-continuation.mjs` acquire/recovery/finish helpers; `scripts/lib/lease.mjs:13-199`; `scripts/lib/recover.mjs:1-47`; `scripts/lib/state.mjs:51-79,120-211`; `scripts/lib/finish.mjs:13-107`; `scripts/deep-loop.mjs:120-141,489-616,834-861`; produced `tests/app-task-continuation.test.mjs` acquire/history cases; `tests/lease.test.mjs:27-490`; `tests/recover.test.mjs:65-231`; `tests/finish.test.mjs:1-335`; `tests/terminal-cli.test.mjs:1-192`; `tests/orch-cli.test.mjs:246-286,831-1005`; produced `tests/integrity.test.mjs` crash matrix; produced `tests/helpers/anchored-crash-worker.mjs`. |
@@ -205,7 +211,6 @@ export function syncParentDirectory(path, deps);
 export function renamePreparedFile(source, destination, options, deps);
 export function unlinkRegularFile(path, deps);
 export function createFileDurablyIfAbsent(path, bytes, options, deps): boolean;
-export function publishDirectoryFileDurably(directory, name, bytes, options, deps): boolean;
 export function replaceFileDurably(path, bytes, options, deps);
 
 // scripts/lib/app-task-continuation.mjs
@@ -228,11 +233,17 @@ export function acquireAppTask(root, runId, input, deps);
 // scripts/lib/schema.mjs (definition site; app-task-continuation.mjs re-exports both constants)
 export declare const APP_PREPARE_TIMEOUT_MS: number;
 export declare const APP_CONFIRMATION_TIMEOUT_MS: number;
-export function legacyEpisodeBaselineDigest(episodes): string;
+export function episodeProofProjection(episode): object;
+export function workstreamProofProjection(loop, workstream): object;
+export function legacyProofBaselineProjection(loop, episodeCount, workstreamCount): object;
+export function legacyProofBaselineDigest(loop, episodeCount, workstreamCount): string;
 export function verifyAppEventCorrelation(loop, lines);
 
 // scripts/lib/integrity.mjs
 export function verifyRunSnapshot(loop, lines);
+export function proofEntityDigest(kind, value, loop = null): string;
+export function proofTransitionsForCandidate(beforeLoop, candidateLoop, entityKeys = null): object[];
+export function verifyProofTransitionCorrelation(loop, lines);
 export function assertVerifiedRunSnapshot(root, runId, loop, { lines } = {});
 export function readVerifiedState(root, runId, { fenceCheck } = {});
 export function authenticateVerifiedMutationCaller(root, runId, {
@@ -249,6 +260,11 @@ export function appendAnchored(root, runId, event, mutate, preCheck, {
 
 // callerBinding is required on every production mutation. The gateway never infers it from
 // current/post-mutation lease state. Pending-journal recovery precedes canonical state/log reads.
+
+// scripts/lib/episode.mjs
+export function episodeMaterializationWork(episode): object;
+export function materializeEpisodeRequest(root, runId, workItem,
+  { beforeMaterialize, beforePublish } = {}): { id: string, requestPath: string };
 
 // scripts/lib/handoff.mjs — `appIntent` itself is boolean-only; other members are existing
 // handoff arguments or injected library-test seams, never caller-supplied App authority.
@@ -4722,9 +4738,10 @@ git commit -m "feat: add owner-safe init root lock" -m "Co-Authored-By: Claude O
 - [ ] **Step 1: Write complete pending/publisher tests**
 
 Add `publishGenesisState` and `commitPreparedInit` to the transaction test import. Create
-`tests/durable-file.test.mjs` with explicit POSIX parent-sync and Windows no-directory-fd/bounded-
-retry cases. Import `publishDirectoryFileDurably` from the produced durability module and
-`createDirectoryJunction` from `tests/helpers/fs-fixtures.mjs`, then append the tests below:
+`tests/durable-file.test.mjs` with explicit POSIX parent-sync, Windows no-directory-fd/bounded-
+retry, and single-file no-replace cases. Directory publication is deliberately not part of this
+helper: Task 7F publishes an episode request as a regular file directly under the canonical run
+directory and tests the obsolete `episodes` path as an attacker-controlled non-parent.
 
 ```js
 function commitInput(root, attempt, requestDigest, previous = 'NONE') {
@@ -4960,22 +4977,6 @@ test('durable create-if-absent never replaces a check-to-publish race winner', (
     'the losing caller cleans only its own temporary');
 });
 
-test('staged directory publication rejects a target-path swap without external writes', () => {
-  const root = mkdtempSync(join(tmpdir(), 'dl-durable-directory-swap-'));
-  const episodes = join(root, 'episodes');
-  const external = mkdtempSync(join(tmpdir(), 'dl-durable-directory-external-'));
-  mkdirSync(episodes);
-  writeFileSync(join(external, 'sentinel'), 'outside-bytes');
-  const target = join(episodes, '001-deep-work');
-  assert.throws(() => publishDirectoryFileDurably(target, 'request.md', 'kernel skeleton', {
-    nonce: () => 'directoryswapnonce000000',
-    beforePublish: () => createDirectoryJunction(external, target),
-  }), /DURABLE_EXISTING_DIRECTORY_INVALID/);
-  assert.equal(readFileSync(join(external, 'sentinel'), 'utf8'), 'outside-bytes');
-  assert.deepEqual(readdirSync(external), ['sentinel']);
-  assert.deepEqual(readdirSync(episodes), ['001-deep-work'],
-    'private staging is removed and no request/temp entry appears outside');
-});
 ```
 
 - [ ] **Step 2: Run publisher tests to verify RED**
@@ -4995,11 +4996,8 @@ embed a raw `renameSync` or unconditional directory-fd `fsync` path.
 import { randomBytes as durableRandomBytes } from 'node:crypto';
 import { closeSync as durableCloseSync, fsyncSync as durableFsyncSync,
   linkSync as durableLinkSync, lstatSync as durableLstatSync, openSync as durableOpenSync,
-  mkdirSync as durableMkdirSync, readdirSync as durableReaddirSync,
-  renameSync as durableRenameSync, rmdirSync as durableRmdirSync,
   unlinkSync as durableUnlinkSync, writeFileSync as durableWriteFileSync } from 'node:fs';
-import { basename as durableBasename, dirname as durableDirname,
-  join as durableJoin } from 'node:path';
+import { dirname as durableDirname } from 'node:path';
 import { renameAtomicWithRetry } from './atomic-write.mjs';
 
 function regularIfPresent(path, deps, label) {
@@ -5083,73 +5081,6 @@ export function createFileDurablyIfAbsent(path, bytes, {
   } finally {
     // This invocation owns only `temporary`; a racing destination is never unlinked or renamed.
     unlinkRegularFile(temporary, deps);
-  }
-}
-
-function removeOwnedStagingDirectory(directory, name, deps) {
-  let stat;
-  try { stat = (deps.lstat ?? durableLstatSync)(directory); }
-  catch (error) { if (error?.code === 'ENOENT') return; throw error; }
-  if (!stat.isDirectory() || stat.isSymbolicLink()) {
-    throw new Error('DURABLE_DIRECTORY_STAGE_INVALID');
-  }
-  const entries = (deps.readdir ?? durableReaddirSync)(directory);
-  if (entries.length !== 1 || entries[0] !== name) {
-    throw new Error('DURABLE_DIRECTORY_STAGE_INVALID');
-  }
-  unlinkRegularFile(durableJoin(directory, name), deps);
-  (deps.rmdir ?? durableRmdirSync)(directory);
-  syncParentDirectory(directory, deps);
-}
-
-export function publishDirectoryFileDurably(directory, name, bytes, {
-  beforePublish = () => {}, validateExisting = () => {}, mode = 0o600, nonce,
-} = {}, deps = {}) {
-  if (durableBasename(name) !== name || name === '.' || name === '..') {
-    throw new Error('DURABLE_DIRECTORY_NAME_INVALID');
-  }
-  const parent = durableDirname(directory);
-  const parentStat = (deps.lstat ?? durableLstatSync)(parent);
-  if (!parentStat.isDirectory() || parentStat.isSymbolicLink()) {
-    throw new Error('DURABLE_DIRECTORY_PARENT_INVALID');
-  }
-  const suffix = (nonce ?? (() => durableRandomBytes(12).toString('hex')))();
-  if (!/^[A-Za-z0-9_-]{16,128}$/.test(suffix)) {
-    throw new Error('DURABLE_CREATE_NONCE_INVALID');
-  }
-  const staging = durableJoin(parent,
-    `.publish-${durableBasename(directory)}-${suffix}`);
-  (deps.mkdir ?? durableMkdirSync)(staging, { mode: 0o700 });
-  const stagedFile = durableJoin(staging, name);
-  let published = false;
-  try {
-    (deps.writeFile ?? durableWriteFileSync)(stagedFile, bytes, { flag: 'wx', mode });
-    syncRegularFile(stagedFile, deps);
-    syncParentDirectory(stagedFile, deps);
-    beforePublish();
-    let targetStat = null;
-    try { targetStat = (deps.lstat ?? durableLstatSync)(directory); }
-    catch (error) { if (error?.code !== 'ENOENT') throw error; }
-    if (targetStat !== null) {
-      if (!targetStat.isDirectory() || targetStat.isSymbolicLink()) {
-        throw new Error('DURABLE_EXISTING_DIRECTORY_INVALID');
-      }
-      const entries = (deps.readdir ?? durableReaddirSync)(directory);
-      if (entries.includes(name)) {
-        validateExisting(durableJoin(directory, name));
-        return false;
-      }
-      if (entries.length !== 0) throw new Error('DURABLE_EXISTING_DIRECTORY_INVALID');
-      (deps.rmdir ?? durableRmdirSync)(directory);
-    }
-    // rename never traverses the destination entry. A concurrent symlink can at worst make this
-    // call fail or be replaced as a directory entry; no write is issued through that symlink.
-    (deps.rename ?? durableRenameSync)(staging, directory);
-    published = true;
-    syncParentDirectory(directory, deps);
-    return true;
-  } finally {
-    if (!published) removeOwnedStagingDirectory(staging, name, deps);
   }
 }
 
@@ -8413,8 +8344,9 @@ test7b('legacy lease lineage is opaque before one checkpoint and exact after it'
   const baseline = { type: 'lease-lineage-baselined',
     ts: '2026-07-13T00:00:03.000Z', data: {
       owner_run_id: 'LEGACY-OWNER', generation: 3, lease_state: 'released',
-      acquired_at: '2026-07-13T00:00:02.000Z', pre_state_digest: 'a'.repeat(64),
-      legacy_episode_count: 0, legacy_episode_digest: legacyDigest7b([]),
+      acquired_at: '2026-07-13T00:00:02.000Z', legacy_episode_count: 0,
+      legacy_workstream_count: 0,
+      legacy_proof_digest: legacyDigest7b(legacyGeneration3AtCheckpoint(), 0, 0),
     } };
   const acquire = { type: 'lease-acquired', ts: '2026-07-13T00:00:04.000Z', data: {
     previous_owner_run_id: 'LEGACY-OWNER', previous_generation: 3,
@@ -8425,7 +8357,7 @@ test7b('legacy lease lineage is opaque before one checkpoint and exact after it'
   for (const invalid of [
     [baseline, baseline],
     [{ ...baseline, data: { ...baseline.data,
-      legacy_episode_digest: 'b'.repeat(64) } }],
+      legacy_proof_digest: 'b'.repeat(64) } }],
     [{ ...baseline, data: { ...baseline.data, generation: 2 } }, acquire],
     [baseline, { ...acquire, data: { ...acquire.data, previous_owner_run_id: 'OTHER' } }],
     [baseline, { ...acquire, data: { ...acquire.data, generation: 5 } }],
@@ -8446,7 +8378,7 @@ Append the first complete block to `tests/schema.test.mjs` and the second to `te
 ```js
 import { test as test7b } from 'node:test';
 import assert7b from 'node:assert/strict';
-import { legacyEpisodeBaselineDigest as legacyDigest7b,
+import { legacyProofBaselineDigest as legacyDigest7b,
   verifyAppEventCorrelation as verify7b } from '../scripts/lib/schema.mjs';
 import { hostSurfaceFactsDigest as facts7b } from '../scripts/lib/host-surface.mjs';
 import { contentHash as hash7b } from '../scripts/lib/envelope.mjs';
@@ -9174,21 +9106,61 @@ function hostObservationSeed(loop, session, index, events) {
   return null;
 }
 
-export function legacyEpisodeBaselineDigest(episodes) {
-  const projection = (episodes ?? []).map(episode => ({
-    id: episode.id, plugin: episode.plugin, role: episode.role, kind: episode.kind,
-    point: episode.point, workstream_id: episode.workstream_id ?? null,
-    request_path: episode.request_path ?? null,
-    expected_artifacts: structuredClone(episode.expected_artifacts ?? []),
-    target_maker: episode.target_maker ?? null,
-    requires_independent_session: episode.requires_independent_session ?? null,
-    reviewer_resolution: structuredClone(episode.reviewer_resolution ?? null),
-    evidence: structuredClone(episode.evidence ?? null),
-    contract: structuredClone(episode.contract ?? null),
-    verification: structuredClone(episode.verification ?? null),
-  }));
+// Finish/review authority is narrower than mutable comprehension bookkeeping. Keep the complete
+// episode proof record but deliberately exclude the two acknowledgement markers: changing either
+// marker is already authenticated by comprehension counters/events and must remain possible after
+// a legacy checkpoint without inventing review proof. Workstream proof is the exact subset consumed
+// by finish/review routing; its episode inventory and integration metadata are not terminal proof.
+export function episodeProofProjection(episode) {
+  const projection = structuredClone(episode);
+  delete projection.human_reviewed;
+  delete projection.agent_reviewed;
+  return projection;
+}
+
+export function workstreamProofProjection(loop, workstream) {
+  return {
+    id: workstream.id,
+    status: workstream.status,
+    review_points_done: structuredClone(workstream.review_points_done ?? []),
+    active: (loop?.active_workstreams ?? []).includes(workstream.id),
+  };
+}
+
+export function legacyProofBaselineProjection(loop, episodeCount, workstreamCount) {
+  const episodes = Array.isArray(loop?.episodes) ? loop.episodes : [];
+  const workstreams = Array.isArray(loop?.workstreams) ? loop.workstreams : [];
+  if (!Number.isSafeInteger(episodeCount) || episodeCount < 0
+      || episodeCount > episodes.length
+      || !Number.isSafeInteger(workstreamCount) || workstreamCount < 0
+      || workstreamCount > workstreams.length) {
+    throw new Error('LEGACY_PROOF_BASELINE_COUNT_INVALID');
+  }
+  const legacyWorkstreamIds = new Set(
+    workstreams.slice(0, workstreamCount).map(workstream => workstream.id));
+  return {
+    version: 'legacy-proof-v1',
+    episodes: episodes.slice(0, episodeCount).map(episodeProofProjection),
+    workstreams: workstreams.slice(0, workstreamCount)
+      .map(workstream => workstreamProofProjection(loop, workstream)),
+    active_workstreams: structuredClone((loop.active_workstreams ?? [])
+      .filter(id => legacyWorkstreamIds.has(id))),
+    review_contract: loop.review == null ? null : {
+      points: structuredClone(loop.review.points ?? []),
+      reviewer: loop.review.reviewer ?? null,
+      mode: loop.review.mode ?? null,
+      flags: structuredClone(loop.review.flags ?? []),
+      converge: loop.review.converge ?? null,
+      require_human_ack: loop.review.require_human_ack ?? null,
+    },
+    recipe: { id: loop.recipe?.id ?? null },
+  };
+}
+
+export function legacyProofBaselineDigest(loop, episodeCount, workstreamCount) {
+  const projection = legacyProofBaselineProjection(loop, episodeCount, workstreamCount);
   const encoded = JSON.stringify({ kind: 'object', value: projection });
-  return contentHash(`legacy-episode-baseline\0${encoded}`);
+  return contentHash(`legacy-proof-baseline\0${encoded}`);
 }
 
 export function verifyAppEventCorrelation(loop, lines) {
@@ -9225,16 +9197,19 @@ export function verifyAppEventCorrelation(loop, lines) {
     const checkpointIndex = events.indexOf(checkpoint);
     const data = checkpoint.data ?? {};
     const exactKeys = ['acquired_at', 'generation', 'lease_state',
-      'legacy_episode_count', 'legacy_episode_digest', 'owner_run_id',
-      'pre_state_digest'].sort();
+      'legacy_episode_count', 'legacy_proof_digest', 'legacy_workstream_count',
+      'owner_run_id'].sort();
     const legacyEpisodes = Array.isArray(loop?.episodes) ? loop.episodes : [];
-    const episodeEventsBefore = events.slice(0, checkpointIndex)
-      .filter(event => event?.type === 'episode-new');
+    const legacyWorkstreams = Array.isArray(loop?.workstreams) ? loop.workstreams : [];
     const legacyCount = data.legacy_episode_count;
+    const legacyWorkstreamCount = data.legacy_workstream_count;
     const prefix = Number.isSafeInteger(legacyCount) && legacyCount >= 0
       ? legacyEpisodes.slice(0, legacyCount) : [];
+    const workstreamPrefix = Number.isSafeInteger(legacyWorkstreamCount)
+      && legacyWorkstreamCount >= 0
+      ? legacyWorkstreams.slice(0, legacyWorkstreamCount) : [];
     const prefixIsUnversioned = prefix.every(episode => episode?.creation_contract == null)
-      && episodeEventsBefore.every(event => event?.data?.creation_contract == null);
+      && workstreamPrefix.every(workstream => workstream?.creation_contract == null);
     const checkpointValid = checkpointIndex >= 0 && strictMs(checkpoint.ts) !== null
       && strictMs(data.acquired_at) !== null
       && strictMs(data.acquired_at) <= strictMs(checkpoint.ts)
@@ -9243,12 +9218,14 @@ export function verifyAppEventCorrelation(loop, lines) {
       && sessions.some(session => session.run_id === data.owner_run_id)
       && Number.isSafeInteger(data.generation) && data.generation >= 1
       && ['active', 'releasing', 'released'].includes(data.lease_state)
-      && /^[0-9a-f]{64}$/.test(data.pre_state_digest || '')
       && Number.isSafeInteger(legacyCount) && legacyCount >= 0
       && legacyCount <= legacyEpisodes.length
-      && episodeEventsBefore.length === legacyCount
+      && Number.isSafeInteger(legacyWorkstreamCount) && legacyWorkstreamCount >= 0
+      && legacyWorkstreamCount <= legacyWorkstreams.length
       && prefixIsUnversioned
-      && data.legacy_episode_digest === legacyEpisodeBaselineDigest(prefix);
+      && /^[0-9a-f]{64}$/.test(data.legacy_proof_digest || '')
+      && data.legacy_proof_digest === legacyProofBaselineDigest(
+        loop, legacyCount, legacyWorkstreamCount);
     if (!checkpointValid) {
       errors.push('legacy lineage checkpoint binding invalid');
     } else {
@@ -10845,9 +10822,15 @@ before lock acquisition.
 Add a separate generation-3 legacy worker fixture. Its first matching generic mutation must prepend
 exactly one `lease-lineage-baselined` event immediately before the business event in the same staged
 suffix. Repeat, duplicate-baseline, auto-consent, non-null unproved host surface, wrong current
-pointer, and foreign-fence cases must add no baseline. After the checkpoint, recover → acquire →
-finish passes the normal verifier; a numeric generation bump, same-generation owner swap, or
-disconnected first edge fails.
+pointer, and foreign-fence cases must add no baseline. The positive fixture contains a terminal
+workstream plus a done maker and its bound approved checker, so `finishProofState` is genuinely
+complete before the checkpoint. After checkpoint → recover → acquire → finish it passes the normal
+verifier. Separate incomplete legacy input may checkpoint but remains frozen/manual and cannot be
+silently completed. Recompute canonical state/hash while changing each of maker/checker status,
+artifacts/result/reviewer proof, workstream status, legacy active membership, or a substituted
+well-formed `legacy_proof_digest`; every case fails before finish and writes no event/state/hash.
+A numeric generation bump, same-generation owner swap, duplicate checkpoint, or disconnected first
+edge also fails.
 
 Do not name or import the future App prepare/confirm/acquire exports in this task. Task 10D, after
 Tasks 8B–10C have introduced every App mutation, extends this same worker with the real
@@ -10881,8 +10864,8 @@ diff --git a/scripts/lib/integrity.mjs b/scripts/lib/integrity.mjs
  import { runDir, readState, writeState, withLock } from './state.mjs';
  import { assertProjectRootBinding, canonicalProjectRoot, projectRootDigest } from './project-root.mjs';
 -import { validate } from './schema.mjs';
-+import { legacyEpisodeBaselineDigest, validate,
-+  verifyAppEventCorrelation } from './schema.mjs';
++import { episodeProofProjection, legacyProofBaselineDigest, validate,
++  verifyAppEventCorrelation, workstreamProofProjection } from './schema.mjs';
 +import { initializationRequestDigest } from './init-transaction.mjs';
 +import { replaceFileDurably, syncParentDirectory, syncRegularFile,
 +  unlinkRegularFile } from './durable-file.mjs';
@@ -10921,6 +10904,7 @@ export function verifyEpisodeCreationCorrelation(loop, lines) {
   const allEpisodes = loop?.episodes || [];
   const baselines = lines.filter(event => event.type === 'lease-lineage-baselined');
   let legacyCount = 0;
+  let versionedEvents = allEvents;
   if (loop?.initialization == null) {
     if (baselines.length === 0) {
       if (allEvents.some(event => event.data?.creation_contract != null)
@@ -10934,31 +10918,32 @@ export function verifyEpisodeCreationCorrelation(loop, lines) {
       return { ok: false, errors };
     }
     const baselineIndex = lines.indexOf(baselines[0]);
-    const episodeEventsBefore = lines.slice(0, baselineIndex)
+    versionedEvents = lines.slice(baselineIndex + 1)
       .filter(event => event.type === 'episode-new');
     legacyCount = baselines[0].data?.legacy_episode_count;
+    const legacyWorkstreamCount = baselines[0].data?.legacy_workstream_count;
     if (!Number.isSafeInteger(legacyCount) || legacyCount < 0
         || legacyCount > allEpisodes.length
-        || episodeEventsBefore.length !== legacyCount
-        || baselines[0].data?.legacy_episode_digest
-          !== legacyEpisodeBaselineDigest(allEpisodes.slice(0, legacyCount))) {
-      errors.push('legacy episode baseline mismatch');
+        || !Number.isSafeInteger(legacyWorkstreamCount) || legacyWorkstreamCount < 0
+        || legacyWorkstreamCount > (loop.workstreams ?? []).length
+        || baselines[0].data?.legacy_proof_digest
+          !== legacyProofBaselineDigest(loop, legacyCount, legacyWorkstreamCount)) {
+      errors.push('legacy proof baseline mismatch');
       return { ok: false, errors };
     }
   } else if (baselines.length !== 0) {
     errors.push('initialized run cannot declare a legacy episode baseline');
   }
-  if (allEpisodes.length !== allEvents.length) {
+  if (allEpisodes.length !== legacyCount + versionedEvents.length) {
     errors.push('episode object/event cardinality mismatch');
   }
   for (let index = 0; index < legacyCount; index += 1) {
-    if (allEpisodes[index]?.creation_contract != null
-        || allEvents[index]?.data?.creation_contract != null) {
+    if (allEpisodes[index]?.creation_contract != null) {
       errors.push(`legacy episode baseline contains versioned entry ${index}`);
     }
   }
   const episodes = allEpisodes.slice(legacyCount);
-  const events = allEvents.slice(legacyCount);
+  const events = versionedEvents;
   for (let index = 0; index < Math.max(episodes.length, events.length); index += 1) {
     if (episodes[index]?.creation_contract !== 'episode-create-v1'
         || events[index]?.data?.creation_contract !== 'episode-create-v1') {
@@ -11022,6 +11007,151 @@ export function verifyEpisodeCreationCorrelation(loop, lines) {
   return { ok: errors.length === 0, errors };
 }
 
+export function proofEntityDigest(kind, value, loop = null) {
+  const projection = kind === 'episode'
+    ? episodeProofProjection(value)
+    : kind === 'workstream'
+      ? workstreamProofProjection(loop, value)
+      : (() => { throw new Error(`PROOF_ENTITY_KIND_INVALID: ${kind}`); })();
+  return contentHash(`proof-entity-${kind}-v1\0${JSON.stringify({
+    kind: 'object', value: projection,
+  })}`);
+}
+
+export function proofTransitionsForCandidate(beforeLoop, candidateLoop, entityKeys = null) {
+  const inventory = loop => [
+    ...(loop?.episodes ?? []).map(item => `episode:${item.id}`),
+    ...(loop?.workstreams ?? []).map(item => `workstream:${item.id}`),
+  ];
+  const keys = [...new Set(entityKeys ?? [...inventory(beforeLoop), ...inventory(candidateLoop)])]
+    .sort();
+  const entity = (loop, key) => {
+    const split = key.indexOf(':');
+    const kind = key.slice(0, split); const id = key.slice(split + 1);
+    const value = kind === 'episode'
+      ? (loop?.episodes ?? []).find(item => item.id === id)
+      : kind === 'workstream'
+        ? (loop?.workstreams ?? []).find(item => item.id === id)
+        : null;
+    return { kind, id, value };
+  };
+  return keys.flatMap(key => {
+    const before = entity(beforeLoop, key); const after = entity(candidateLoop, key);
+    if (after.value == null) throw new Error(`PROOF_ENTITY_REMOVAL_FORBIDDEN: ${key}`);
+    const beforeDigest = before.value == null ? 'NONE'
+      : proofEntityDigest(before.kind, before.value, beforeLoop);
+    const afterDigest = proofEntityDigest(after.kind, after.value, candidateLoop);
+    if (entityKeys == null && beforeDigest === afterDigest) return [];
+    return [{ kind: after.kind, id: after.id,
+      before_digest: beforeDigest, after_digest: afterDigest }];
+  });
+}
+
+function validateProofTransitionEventShape(event, transitions) {
+  const errors = [];
+  const actual = transitions.map(item => `${item?.kind}:${item?.id}`);
+  const sorted = [...actual].sort();
+  if (JSON.stringify(actual) !== JSON.stringify(sorted)
+      || new Set(actual).size !== actual.length) {
+    errors.push('proof transitions are not unique canonical order');
+  }
+  let expected;
+  if (event.type === 'episode-new') expected = [`episode:${event.data?.episode_id}`];
+  else if (event.type === 'episode-record' || event.type === 'episode-abandon') {
+    expected = [`episode:${event.data?.id}`];
+  } else if (event.type === 'independent-review-claimed'
+      || event.type === 'independent-review-blocked') {
+    expected = [`episode:${event.data?.episode_id}`];
+  } else if (event.type === 'review-outcome') {
+    expected = [`episode:${event.data?.episodeId}`,
+      `workstream:${event.data?.workstream_id}`].sort();
+  } else if (event.type === 'workstream-new' || event.type === 'workstream-status'
+      || event.type === 'workstream-terminal') {
+    expected = [`workstream:${event.data?.id}`];
+  } else if (event.type === 'state-patch') {
+    // The redacted state-patch event cannot reproduce removed active membership from current state.
+    // Its writer records the canonical set of every projection that actually changed; chain
+    // continuity plus the final projection comparison authenticates that set.
+    return errors;
+  } else return ['unexpected proof transition event'];
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    errors.push('proof transition entity set mismatch');
+  }
+  return errors;
+}
+
+// Every post-checkpoint proof-bearing mutation event carries one exact, ordered
+// proof_transitions array. A transaction such as review-outcome may change both the checker and its
+// workstream; one event therefore carries one four-key entry per affected proof entity. Creation
+// uses before_digest='NONE'. Writers compute before from the verified snapshot and after from the
+// one candidate installed by the same anchored commit.
+export function verifyProofTransitionCorrelation(loop, lines) {
+  const errors = [];
+  const baseline = lines.find(event => event.type === 'lease-lineage-baselined') ?? null;
+  const legacyEpisodes = baseline?.data?.legacy_episode_count ?? 0;
+  const legacyWorkstreams = baseline?.data?.legacy_workstream_count ?? 0;
+  const floor = baseline === null ? 0 : lines.indexOf(baseline) + 1;
+  const proofTypes = new Set([
+    'episode-new', 'episode-record', 'episode-abandon',
+    'independent-review-claimed', 'independent-review-blocked', 'review-outcome',
+    'workstream-new', 'workstream-status', 'workstream-terminal', 'state-patch',
+  ]);
+  const chains = new Map();
+  for (const event of lines.slice(floor)) {
+    if (!proofTypes.has(event.type)) continue;
+    const transitions = event.data?.proof_transitions;
+    if (!Array.isArray(transitions)) {
+      errors.push(`proof transitions missing at event ${event.seq}`);
+      continue;
+    }
+    const expectedKeys = ['after_digest', 'before_digest', 'id', 'kind'];
+    const eventKeys = new Set();
+    for (const transition of transitions) {
+      if (transition == null
+          || JSON.stringify(Object.keys(transition).sort()) !== JSON.stringify(expectedKeys)
+          || !['episode', 'workstream'].includes(transition.kind)
+          || typeof transition.id !== 'string' || transition.id.length === 0
+          || !/^[0-9a-f]{64}$/.test(transition.after_digest || '')
+          || !(/^[0-9a-f]{64}$/.test(transition.before_digest || '')
+            || transition.before_digest === 'NONE')) {
+        errors.push(`proof transition invalid at event ${event.seq}`);
+        continue;
+      }
+      const key = `${transition.kind}:${transition.id}`;
+      const expectedBefore = chains.get(key) ?? 'NONE';
+      const creation = event.type === 'episode-new' || event.type === 'workstream-new';
+      if (eventKeys.has(key) || transition.before_digest !== expectedBefore
+          || creation !== (expectedBefore === 'NONE')) {
+        errors.push(`proof transition disconnected for ${key}`);
+        continue;
+      }
+      eventKeys.add(key);
+      chains.set(key, transition.after_digest);
+    }
+    // validateProofTransitionEventShape checks exact entity identities and cardinality:
+    // ordinary entity events carry one entry, review-outcome carries checker+workstream (including
+    // an unchanged workstream digest on rejection/idempotent approval), and state-patch carries the
+    // sorted set of every episode/workstream projection changed by its candidate.
+    errors.push(...validateProofTransitionEventShape(event, transitions)
+      .map(error => `${error} at event ${event.seq}`));
+  }
+  const current = new Map();
+  for (const episode of (loop.episodes ?? []).slice(legacyEpisodes)) {
+    current.set(`episode:${episode.id}`, proofEntityDigest('episode', episode, loop));
+  }
+  for (const workstream of (loop.workstreams ?? []).slice(legacyWorkstreams)) {
+    current.set(`workstream:${workstream.id}`,
+      proofEntityDigest('workstream', workstream, loop));
+  }
+  for (const [key, digest] of current) {
+    if (chains.get(key) !== digest) errors.push(`proof state/event mismatch for ${key}`);
+  }
+  for (const key of chains.keys()) {
+    if (!current.has(key)) errors.push(`orphan proof transition for ${key}`);
+  }
+  return { ok: errors.length === 0, errors };
+}
+
 export function verifyRunSnapshot(loop, lines) {
   const errors = [];
   const state = validate(loop);
@@ -11042,6 +11172,10 @@ export function verifyRunSnapshot(loop, lines) {
   const episodeCreation = verifyEpisodeCreationCorrelation(loop, lines);
   if (!episodeCreation.ok) {
     errors.push(...episodeCreation.errors.map(error => `episode creation: ${error}`));
+  }
+  const proofTransitions = verifyProofTransitionCorrelation(loop, lines);
+  if (!proofTransitions.ok) {
+    errors.push(...proofTransitions.errors.map(error => `proof transition: ${error}`));
   }
   return { ok: errors.length === 0, errors };
 }
@@ -11448,7 +11582,7 @@ export function withVerifiedMutationLock(root, runId,
 }
 
 function legacyCheckpointSpec(root, runId, loop, lines,
-  { callerBinding, baseStateHash, now }) {
+  { callerBinding, now }) {
   if (loop.initialization !== undefined) return null;
   const baselines = lines.filter(event => event?.type === 'lease-lineage-baselined');
   if (baselines.length > 0) return null;
@@ -11466,16 +11600,18 @@ function legacyCheckpointSpec(root, runId, loop, lines,
       || typeof lease.acquired_at !== 'string'
       || !Number.isFinite(Date.parse(lease.acquired_at))
       || new Date(Date.parse(lease.acquired_at)).toISOString() !== lease.acquired_at
-      || !['active', 'releasing', 'released'].includes(lease.state)
-      || !/^[0-9a-f]{64}$/.test(baseStateHash || '')) {
+      || !['active', 'releasing', 'released'].includes(lease.state)) {
     throw new Error('LEGACY_LINEAGE_CHECKPOINT_INELIGIBLE');
   }
+  const legacyEpisodeCount = (loop.episodes || []).length;
+  const legacyWorkstreamCount = (loop.workstreams || []).length;
   return { type: 'lease-lineage-baselined', now, data: {
     owner_run_id: lease.owner_run_id, generation: lease.generation,
     lease_state: lease.state, acquired_at: lease.acquired_at,
-    pre_state_digest: baseStateHash,
-    legacy_episode_count: (loop.episodes || []).length,
-    legacy_episode_digest: legacyEpisodeBaselineDigest(loop.episodes || []),
+    legacy_episode_count: legacyEpisodeCount,
+    legacy_workstream_count: legacyWorkstreamCount,
+    legacy_proof_digest: legacyProofBaselineDigest(
+      loop, legacyEpisodeCount, legacyWorkstreamCount),
   } };
 }
 
@@ -11499,7 +11635,7 @@ export function commitVerifiedEventsUnderLock(root, runId, loop, eventSpecs, mut
   const lines = baseLines;
   requireVerifiedSnapshot(loop, lines);
   const checkpoint = legacyCheckpointSpec(root, runId, loop, lines, {
-    callerBinding: binding, baseStateHash, now: eventSpecs[0].now,
+    callerBinding: binding, now: eventSpecs[0].now,
   });
   const preparedSpecs = checkpoint === null ? eventSpecs : [checkpoint, ...eventSpecs];
   const prospective = [...lines];
@@ -14950,12 +15086,15 @@ git commit -m "fix: verify success-class state authority" -m "Co-Authored-By: Cl
 **Files:**
 - Modify: `scripts/lib/episode.mjs:25-220` (public direct authority plus the review operation's
   already-open mutation context and exact recovered episode projection).
-- Consume: produced `scripts/lib/durable-file.mjs` `publishDirectoryFileDurably` and its
-  `tests/durable-file.test.mjs` check-to-publish directory-swap proof.
+- Consume: produced `scripts/lib/durable-file.mjs` `createFileDurablyIfAbsent`. Episode request
+  publication uses a canonical-run regular sibling and `tests/reviewer-failclosed.test.mjs` proves
+  that the obsolete `episodes` path is never a publication parent in either race window.
 - Modify: `scripts/lib/insights.mjs:357-509` (compute/emit/latest verified selection).
 - Modify: `scripts/lib/review.mjs:50-179,310-668` (dispatch, claim/block/revalidate, outcomes).
 - Modify: `scripts/lib/workspace.mjs:80-153` (literal status/terminal direct authority plus
   `inheritWorkstreams`).
+- Modify: `scripts/lib/state.mjs:51-160` (proof-bearing patch branches emit canonical transition
+  arrays; non-proof patches emit an empty array).
 - Modify: `scripts/lib/detect-terminal.mjs:284-343` (`detectAndPersist`).
 - Modify: `scripts/deep-loop.mjs:410-430` (mandatory episode creation request ID).
 - Modify: `skills/deep-loop/SKILL.md`.
@@ -14986,7 +15125,8 @@ git commit -m "fix: verify success-class state authority" -m "Co-Authored-By: Cl
 **Interfaces:**
 - Consumes: Task 7B `readVerifiedState(root,runId,{fenceCheck?})`,
   `assertVerifiedRunSnapshot(root,runId,loop,{lines})`, prospective `appendAnchored(...,{fenceCheck})`,
-  and Task 7E's verified `reconcileBudget`.
+  canonical `episodeProofProjection`, `workstreamProofProjection`, and
+  `proofTransitionsForCandidate`, plus Task 7E's verified `reconcileBudget`.
 - Produces: one lock-owned insights snapshot `{data,hash,lines}`; semantic proof before active-run
   classification, before any artifact/source is trusted, and before random callbacks, file writes,
   imported-review materialization, worktree existence checks, launcher revalidation, or subprocess
@@ -15003,6 +15143,17 @@ git commit -m "fix: verify success-class state authority" -m "Co-Authored-By: Cl
   dispatch and is not caller-stable retry identity. `beforeFinalLock` is test-only and is never
   accepted by the CLI. Production and skill callers allocate once and reuse on response loss;
   tests share one adapter and pass an explicit ID only when a logical retry is under test.
+  Every `episode-new`, `episode-record`, `episode-abandon`, `independent-review-*`,
+  `review-outcome`, `workstream-new`, `workstream-status`, `workstream-terminal`, and `state-patch`
+  event also carries an exact,
+  canonical `proof_transitions=[{kind,id,before_digest,after_digest},...]` array. Creation uses
+  `NONE`; all later transitions chain from the previous anchored digest. Writers compute every
+  digest from verified before/candidate projections inside the same transaction. A review outcome
+  binds both checker and workstream; a proof-bearing state patch binds every changed entity.
+  `verifyProofTransitionCorrelation` reduces the chain and compares it to the current episode proof
+  projection (all fields except comprehension acknowledgements) or the exact workstream proof
+  projection `{id,status,review_points_done,active}`, so no hash-valid status/artifact/result/reviewer
+  proof/workstream rewrite can become finish authority without an anchored transition.
 
 - [ ] **Step 1: Write the complete failing pre-action authority tests**
 
@@ -15176,25 +15327,53 @@ function corruptDispatchFixture7f({ corrupt = true, hillClimb = true } = {}) {
   return { root, runId, ws, maker, fence };
 }
 
-test7f('episode publication rejects a swapped target before any target-path write', () => {
+test7f('obsolete episodes parent swaps cannot redirect first write or final publication', () => {
+  for (const window of ['before-first-write', 'before-final-link']) {
+    const fixture = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
+    const external = realpath7f(temp7f(join7f(tmp7f(), 'dl-episode-swap-external-')));
+    write7f(join7f(external, 'sentinel'), 'outside-bytes');
+    const run = runDirDispatch7f(fixture.root, fixture.runId);
+    const obsolete = join7f(run, 'episodes');
+    const swap = () => symlink7f(external, obsolete,
+      process.platform === 'win32' ? 'junction' : 'dir');
+    const result = episode7f(fixture.root, fixture.runId, {
+      plugin: 'deep-work', role: 'maker', kind: 'fix', point: 'design',
+      workstream: fixture.ws, fence: fixture.fence,
+      requestId: `episode-obsolete-parent-${window}`,
+      ...(window === 'before-first-write'
+        ? { beforeMaterialize: swap } : { beforePublish: swap }),
+    });
+    assert7f.equal(result.requestPath,
+      join7f(run, `episode-request-${result.id}.md`));
+    assert7f.match(readDispatch7f(result.requestPath, 'utf8'), /Execution plane/);
+    assert7f.equal(readDispatch7f(join7f(external, 'sentinel'), 'utf8'), 'outside-bytes');
+    assert7f.deepEqual(readdirDispatch7f(external), ['sentinel']);
+    assert7f.deepEqual(readdirDispatch7f(obsolete), ['sentinel'],
+      'attacker-controlled obsolete parent is never written');
+    assert7f.deepEqual(readdirDispatch7f(run)
+      .filter(name => name.includes('.create-')), []);
+  }
+});
+
+test7f('episode materialization hook re-enters verified read and survives a competing mutation', () => {
   const fixture = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
-  const external = realpath7f(temp7f(join7f(tmp7f(), 'dl-episode-swap-external-')));
-  write7f(join7f(external, 'sentinel'), 'outside-bytes');
-  const episodes = join7f(runDirDispatch7f(fixture.root, fixture.runId), 'episodes');
-  const target = join7f(episodes, '002-deep-work');
-  assert7f.throws(() => episode7f(fixture.root, fixture.runId, {
+  let hookReads = 0;
+  const result = episode7f(fixture.root, fixture.runId, {
     plugin: 'deep-work', role: 'maker', kind: 'fix', point: 'design',
-    workstream: fixture.ws, fence: fixture.fence, requestId: 'episode-directory-swap',
-    crashProbe: point => {
-      if (point === 'episode-request-before-directory-publish') {
-        symlink7f(external, target, process.platform === 'win32' ? 'junction' : 'dir');
-      }
+    workstream: fixture.ws, fence: fixture.fence,
+    requestId: 'episode-unlocked-materialization',
+    beforeMaterialize: work => {
+      assert7f.equal(verifiedDispatch7f(fixture.root, fixture.runId).data
+        .episodes.some(episode => episode.id === work.id), true);
+      hookReads += 1;
+      record7f(fixture.root, fixture.runId, work.id,
+        { status: 'in_progress', fence: fixture.fence });
     },
-  }), /DURABLE_EXISTING_DIRECTORY_INVALID/);
-  assert7f.equal(readDispatch7f(join7f(external, 'sentinel'), 'utf8'), 'outside-bytes');
-  assert7f.deepEqual(readdirDispatch7f(external), ['sentinel']);
-  assert7f.deepEqual(readdirDispatch7f(episodes)
-    .filter(name => name.startsWith('.publish-')), []);
+  });
+  assert7f.equal(hookReads, 1);
+  assert7f.equal(verifiedDispatch7f(fixture.root, fixture.runId).data.episodes
+    .find(episode => episode.id === result.id).status, 'in_progress');
+  assert7f.match(readDispatch7f(result.requestPath, 'utf8'), /Execution plane/);
 });
 
 function materializeHillContract7f(fixture) {
@@ -15997,8 +16176,8 @@ diff --git a/scripts/lib/review.mjs b/scripts/lib/review.mjs
 +  withVerifiedMutationLock } from './integrity.mjs';
 +import { contentHash } from './envelope.mjs';
 -import { newBlockedCheckerEpisode, newEpisode } from './episode.mjs';
-+import { episodeRequestDigest, newBlockedCheckerEpisode,
-+  newEpisode } from './episode.mjs';
++import { episodeMaterializationWork, episodeRequestDigest,
++  materializeEpisodeRequest, newBlockedCheckerEpisode, newEpisode } from './episode.mjs';
  import { leaseCheck } from './lease.mjs';
 ```
 
@@ -16350,40 +16529,24 @@ object. Recovery reconstructs the exact ID/path before request materialization:
 diff --git a/scripts/lib/episode.mjs b/scripts/lib/episode.mjs
 --- a/scripts/lib/episode.mjs
 +++ b/scripts/lib/episode.mjs
-@@ -1,7 +1,8 @@
+@@ -1,7 +1,9 @@
 -import { mkdirSync, existsSync } from 'node:fs';
-+import { lstatSync, mkdirSync, realpathSync } from 'node:fs';
++import { lstatSync, realpathSync } from 'node:fs';
 -import { isAbsolute, join, resolve, sep } from 'node:path';
 +import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
  import { readState, writeState, withLock, runDir } from './state.mjs';
 -import { appendAnchored } from './integrity.mjs';
 +import { appendAnchored, directMutationOptions, intentField,
++  proofTransitionsForCandidate, readVerifiedState,
 +  withVerifiedMutationLock } from './integrity.mjs';
 -import { atomicWrite } from './envelope.mjs';
-+import { publishDirectoryFileDurably } from './durable-file.mjs';
++import { createFileDurablyIfAbsent } from './durable-file.mjs';
  import { slugify } from './slug.mjs';
  import { leaseCheck } from './lease.mjs';
-@@ -28,5 +29,68 @@ function requestSkeleton({ id, plugin, role, kind, point, workstream, expectedArtifacts, evidence }) {
+@@ -28,5 +29,86 @@ function requestSkeleton({ id, plugin, role, kind, point, workstream, expectedArtifacts, evidence }) {
    ].join('\n');
  }
 -
-+
-+function ensureEpisodesParent(runRoot) {
-+  const canonicalRun = realpathSync(runRoot);
-+  const episodes = join(canonicalRun, 'episodes');
-+  try { mkdirSync(episodes); }
-+  catch (error) { if (error?.code !== 'EEXIST') throw error; }
-+  const stat = lstatSync(episodes);
-+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
-+    throw new Error('EPISODE_DIRECTORY_INVALID');
-+  }
-+  const canonical = realpathSync(episodes);
-+  if (canonical !== episodes
-+      || (canonical !== canonicalRun && !canonical.startsWith(`${canonicalRun}${sep}`))) {
-+    throw new Error('EPISODE_PATH_ESCAPE');
-+  }
-+  return canonical;
-+}
 +
 +function validateRequestWinner(path, expectedParent) {
 +  const stat = lstatSync(path);
@@ -16391,6 +16554,41 @@ diff --git a/scripts/lib/episode.mjs b/scripts/lib/episode.mjs
 +      || realpathSync(dirname(path)) !== expectedParent) {
 +    throw new Error('EPISODE_REQUEST_WINNER_INVALID');
 +  }
++}
++
++export function episodeMaterializationWork(episode) {
++  const bytes = requestSkeleton({ id: episode.id, plugin: episode.plugin,
++    role: episode.role, kind: episode.kind, point: episode.point,
++    workstream: episode.workstream_id, expectedArtifacts: episode.expected_artifacts,
++    evidence: episode.evidence });
++  return Object.freeze({ id: episode.id, requestPath: episode.request_path,
++    bytes, requestDigest: episode.creation_request_digest,
++    skeletonDigest: intentField('episode-request-skeleton', bytes) });
++}
++
++export function materializeEpisodeRequest(root, runId, workItem,
++  { beforeMaterialize, beforePublish } = {}) {
++  beforeMaterialize?.(workItem); // always outside the run lock
++  const canonicalRun = realpathSync(runDir(root, runId));
++  const expectedPath = join(canonicalRun, `episode-request-${workItem?.id}.md`);
++  if (workItem?.requestPath !== expectedPath
++      || !/^[0-9a-f]{64}$/.test(workItem?.requestDigest || '')
++      || !/^[0-9a-f]{64}$/.test(workItem?.skeletonDigest || '')) {
++    throw new Error('EPISODE_MATERIALIZATION_WORK_INVALID');
++  }
++  const episode = readVerifiedState(root, runId).data.episodes
++    .find(item => item.id === workItem.id);
++  if (episode?.request_path !== expectedPath
++      || episode?.creation_request_digest !== workItem.requestDigest
++      || intentField('episode-request-skeleton', workItem.bytes)
++        !== workItem.skeletonDigest) {
++    throw new Error('EPISODE_MATERIALIZATION_STALE');
++  }
++  createFileDurablyIfAbsent(expectedPath, workItem.bytes, {
++    beforePublish,
++    validateExisting: path => validateRequestWinner(path, canonicalRun),
++  });
++  return { id: workItem.id, requestPath: expectedPath };
 +}
 +
 -function createEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker, reviewerResolution, evidence, contract, initialStatus = 'pending', blockReason, fence, operation } = {}) {
@@ -16442,7 +16640,7 @@ Apply the creation/recovery body and remaining episode callers against that impo
 diff --git a/scripts/lib/episode.mjs b/scripts/lib/episode.mjs
 --- a/scripts/lib/episode.mjs
 +++ b/scripts/lib/episode.mjs
-@@ -92,5 +92,37 @@ function createEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker, reviewerResolution, evidence, contract, initialStatus = 'pending', blockReason, fence, operation } = {}) {
+@@ -92,5 +92,36 @@ function createEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker, reviewerResolution, evidence, contract, initialStatus = 'pending', blockReason, fence, operation } = {}) {
    const safePlugin = slugify(plugin) || 'plugin';
 -  appendAnchored(root, runId, { type: 'episode-new', data: {
 +  const completeRequest = episodeRequestProjection({ plugin, role, kind, point,
@@ -16470,8 +16668,7 @@ diff --git a/scripts/lib/episode.mjs b/scripts/lib/episode.mjs
 +      throw new Error('EPISODE_RESPONSE_PROJECTION_CHANGED');
 +    }
 +    id = recovered.id;
-+    dir = join(runDir(root, runId), 'episodes', id);
-+    requestPath = join(dir, 'request.md');
++    requestPath = join(runDir(root, runId), `episode-request-${id}.md`);
 +    return { id, requestPath };
 +  };
 +  const onExisting = loop => loop.episodes.some(episode =>
@@ -16577,10 +16774,13 @@ checker statuses and makers, while each intentional round rotates its caller ID.
 phases use the same complete caller-input intent, while the selected
 maker and episode payload are deterministic verified-state derivations recorded in the event/state
 projection. The final lock rederives latest-maker/checker eligibility before append. Request-file
-materialization completes and flushes a private sibling staging directory under the verified
-`episodes` parent before any target-path inspection. Publication renames that directory as one entry;
-an existing request is validation-only, and an exact empty request-less directory is the sole
-recoverable replacement. No write ever traverses the replaceable episode pathname.
+materialization is not performed by `episodeAppend`. The transaction returns one immutable work item,
+closes the run lock, re-attests that committed creation projection, then publishes the regular
+`episode-request-<id>.md` sibling directly under the canonical run directory through
+`createFileDurablyIfAbsent`. There is no `episodes` parent or per-episode directory in the write path.
+An existing regular exact-parent request is validation-only and execution-plane edits are preserved.
+`beforeMaterialize` is the only public test hook for this phase and always runs after lock release;
+the journal `crashProbe` remains a private synchronous non-reentrant seam.
 
 ```diff
 diff --git a/scripts/lib/episode.mjs b/scripts/lib/episode.mjs
@@ -16628,7 +16828,7 @@ index c567221..8bf9718 100644
 +  return intentField('episode-create-request-id', requestId);
 +}
 +
-+function episodeAppend(root, runId, mutation, event, mutate, preCheck, options, materialize) {
++function episodeAppend(root, runId, mutation, event, mutate, preCheck, options, buildWorkItem) {
    const execute = context => {
      const snapshot = context.readVerifiedState();
      if (typeof preCheck === 'function') preCheck(snapshot.data);
@@ -16638,15 +16838,15 @@ index c567221..8bf9718 100644
 +      if (typeof options.onRecovered === 'function') {
 +        options.onRecovered(snapshot.data, context.recovered);
 +      }
-+      return materialize();
++      return buildWorkItem();
      }
      const existing = typeof options.onExisting === 'function'
        ? options.onExisting(snapshot.data) : null;
 -    if (existing !== null && existing !== undefined) return existing;
 -    return context.appendAnchored(event, mutate, preCheck, options);
-+    if (existing !== null && existing !== undefined) return materialize();
++    if (existing !== null && existing !== undefined) return buildWorkItem();
 +    context.appendAnchored(event, mutate, preCheck, options);
-+    return materialize();
++    return buildWorkItem();
    };
    if (mutation) return execute(mutation);
    const { callerBinding, intentDigest, fenceError } = options;
@@ -16655,14 +16855,15 @@ index c567221..8bf9718 100644
    plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker,
    reviewerResolution, evidence, contract, initialStatus = 'pending', blockReason,
 -  fence, operation, mutation = null, crashProbe,
-+  fence, operation, mutation = null, crashProbe, requestId,
++  fence, operation, mutation = null, crashProbe, beforeMaterialize, beforePublish, requestId,
 +  dispatchRequestIdDigest, dispatchRequestDigest, dispatchResponse,
  } = {}) {
    if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error(`FENCE_REQUIRED: ${operation}`);
    // Fix 3: validate required non-fence args before any state write
 @@ -90,15 +111,28 @@ function createEpisode(root, runId, {
    }
-   let id, requestPath, dir;
+-  let id, requestPath, dir;
++  let id, requestPath;
    const safePlugin = slugify(plugin) || 'plugin';
 +  const creationRequestIdDigest = episodeRequestIdDigest(
 +    requestId, dispatchRequestIdDigest);
@@ -16694,7 +16895,7 @@ index c567221..8bf9718 100644
      if (matches.length !== 1) throw new Error('EPISODE_RESPONSE_PROJECTION_CHANGED');
      const [recovered] = matches;
      if (recovered.plugin !== plugin || recovered.role !== role
-@@ -111,31 +145,75 @@ function createEpisode(root, runId, {
+@@ -111,30 +145,81 @@ function createEpisode(root, runId, {
          || JSON.stringify(recovered.evidence) !== JSON.stringify(evidence)
          || JSON.stringify(recovered.contract) !== JSON.stringify(contract)
          || recovered.creation_initial_status !== initialStatus
@@ -16715,8 +16916,7 @@ index c567221..8bf9718 100644
 +        ? 'EPISODE_REQUEST_CONFLICT' : 'EPISODE_RESPONSE_PROJECTION_CHANGED');
      }
      id = recovered.id;
-     dir = join(runDir(root, runId), 'episodes', id);
-     requestPath = join(dir, 'request.md');
+     requestPath = join(runDir(root, runId), `episode-request-${id}.md`);
      return { id, requestPath };
    };
 -  const onExisting = loop => loop.episodes.some(episode =>
@@ -16741,7 +16941,15 @@ index c567221..8bf9718 100644
 -    id = `${n}-${safePlugin}`;
 -    dir = join(runDir(root, runId), 'episodes', id);
 -    requestPath = join(dir, 'request.md');
+-    const epObj = {
+-      id, plugin, role, kind, point, workstream_id: workstream, status: initialStatus,
+-      request_path: requestPath, expected_artifacts: expectedArtifacts,
+-      creation_request_digest: requestDigest, creation_initial_status: initialStatus,
+-      creation_block_reason: blockReason ?? null,
+-      verification: { checker_episode_required: role === 'maker', checker_plugin: 'deep-review', review_point: point, proof_required: expectedArtifacts },
+-    };
 +  } };
++  let initialEpisode;
 +  const preCheck = loop => {
 +    const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason);
 +    if (workstream && !loop.workstreams.find(w => w.id === workstream)) {
@@ -16750,38 +16958,44 @@ index c567221..8bf9718 100644
 +    if (id == null) {
 +      const n = String(loop.episodes.length + 1).padStart(3, '0');
 +      id = `${n}-${safePlugin}`;
-+      dir = join(runDir(root, runId), 'episodes', id);
-+      requestPath = join(dir, 'request.md');
++      requestPath = join(runDir(root, runId), `episode-request-${id}.md`);
 +      event.data.episode_id = id;
++      initialEpisode = {
++        id, plugin, role, kind, point, workstream_id: workstream, status: initialStatus,
++        request_path: requestPath, expected_artifacts: expectedArtifacts,
++        creation_request_digest: requestDigest, creation_initial_status: initialStatus,
++        creation_block_reason: blockReason ?? null, creation_contract: 'episode-create-v1',
++        creation_request_id_digest: creationRequestIdDigest,
++        dispatch_request_id_digest: dispatchRequestIdDigest ?? null,
++        dispatch_request_digest: dispatchRequestDigest ?? null,
++        dispatch_response: structuredClone(dispatchResponse ?? null),
++        verification: { checker_episode_required: role === 'maker',
++          checker_plugin: 'deep-review', review_point: point,
++          proof_required: expectedArtifacts },
++        ...(targetMaker ? { target_maker: targetMaker } : {}),
++        ...(role === 'checker' ? { requires_independent_session: true } : {}),
++        ...(reviewerResolution ? { reviewer_resolution: reviewerResolution } : {}),
++        ...(evidence !== undefined ? { evidence } : {}),
++        ...(contract !== undefined ? { contract } : {}),
++        ...(initialStatus === 'blocked'
++          ? { block_reason: blockReason, needs_human: true } : {}),
++      };
++      const candidate = structuredClone(loop);
++      candidate.episodes.push(structuredClone(initialEpisode));
++      event.data.proof_transitions = proofTransitionsForCandidate(loop, candidate,
++        [`episode:${id}`]);
 +    }
 +  };
-+  const materialize = () => {
-+    const episodesParent = ensureEpisodesParent(runDir(root, runId));
-+    dir = join(episodesParent, id);
-+    requestPath = join(dir, 'request.md');
-+    publishDirectoryFileDurably(dir, 'request.md', requestSkeleton({
-+      id, plugin, role, kind, point, workstream, expectedArtifacts, evidence,
-+    }), {
-+      beforePublish: () => crashProbe?.('episode-request-before-directory-publish'),
-+      validateExisting: path => validateRequestWinner(path, dir),
-+    });
-+    return { id, requestPath };
++  const buildWorkItem = () => {
++    const bytes = requestSkeleton({ id, plugin, role, kind, point, workstream,
++      expectedArtifacts, evidence });
++    return Object.freeze({ id, requestPath, bytes, requestDigest,
++      skeletonDigest: intentField('episode-request-skeleton', bytes) });
 +  };
-+  return episodeAppend(root, runId, mutation, event, (loop) => {
-     const epObj = {
-       id, plugin, role, kind, point, workstream_id: workstream, status: initialStatus,
-       request_path: requestPath, expected_artifacts: expectedArtifacts,
-       creation_request_digest: requestDigest, creation_initial_status: initialStatus,
-       creation_block_reason: blockReason ?? null,
-+      creation_contract: 'episode-create-v1',
-+      creation_request_id_digest: creationRequestIdDigest,
-+      dispatch_request_id_digest: dispatchRequestIdDigest ?? null,
-+      dispatch_request_digest: dispatchRequestDigest ?? null,
-+      dispatch_response: structuredClone(dispatchResponse ?? null),
-       verification: { checker_episode_required: role === 'maker', checker_plugin: 'deep-review', review_point: point, proof_required: expectedArtifacts },
-     };
++  const workItem = episodeAppend(root, runId, mutation, event, (loop) => {
++    const epObj = structuredClone(initialEpisode);
      if (targetMaker && typeof targetMaker === 'string' && targetMaker.length) epObj.target_maker = targetMaker;
-@@ -156,40 +231,38 @@ function createEpisode(root, runId, {
+@@ -156,40 +231,45 @@ function createEpisode(root, runId, {
        // preCheck guarantees the workstream exists when non-null (Codex impl r14/r15) — bind episode to it.
        loop.workstreams.find(w => w.id === workstream).episodes.push(id);
      }
@@ -16807,19 +17021,25 @@ index c567221..8bf9718 100644
 -  return { id, requestPath };
 +        floor: MUTATION_TURN_FLOOR, crashProbe,
 +        onRecovered: (loop, recovered) => recoverExact(loop, recovered), onExisting,
-+      }), materialize);
++      }), buildWorkItem);
++  if (mutation) return { id, requestPath, deferred_materialization: workItem };
++  return materializeEpisodeRequest(root, runId, workItem,
++    { beforeMaterialize, beforePublish });
  }
 -
 +
  export function newEpisode(root, runId, {
    plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker,
-   reviewerResolution, evidence, contract, fence, mutation, crashProbe,
+-  reviewerResolution, evidence, contract, fence, mutation, crashProbe,
++  reviewerResolution, evidence, contract, fence, mutation, crashProbe,
++  beforeMaterialize, beforePublish,
 +  requestId, dispatchRequestIdDigest, dispatchRequestDigest, dispatchResponse,
  } = {}) {
    return createEpisode(root, runId, { plugin, role, kind, point, workstream,
      expectedArtifacts, targetMaker, reviewerResolution, evidence, contract, fence,
 -    mutation, crashProbe, operation: 'newEpisode' });
-+    mutation, crashProbe, requestId, dispatchRequestIdDigest, dispatchRequestDigest,
++    mutation, crashProbe, beforeMaterialize, beforePublish, requestId,
++    dispatchRequestIdDigest, dispatchRequestDigest,
 +    dispatchResponse,
 +    operation: 'newEpisode' });
  }
@@ -16830,10 +17050,13 @@ index c567221..8bf9718 100644
  export function newBlockedCheckerEpisode(root, runId, { plugin, kind, point,
 -  workstream = null, targetMaker, reason, reviewerResolution, fence, mutation, crashProbe } = {}) {
 +  workstream = null, targetMaker, reason, reviewerResolution, fence, mutation, crashProbe,
++  beforeMaterialize,
 +  requestId, dispatchRequestIdDigest, dispatchRequestDigest, dispatchResponse } = {}) {
    return createEpisode(root, runId, {
      plugin, role: 'checker', kind, point, workstream, targetMaker, reviewerResolution,
-     initialStatus: 'blocked', blockReason: reason, fence, mutation, crashProbe,
+-    initialStatus: 'blocked', blockReason: reason, fence, mutation, crashProbe,
++    initialStatus: 'blocked', blockReason: reason, fence, mutation, crashProbe,
++    beforeMaterialize,
 +    requestId, dispatchRequestIdDigest, dispatchRequestDigest, dispatchResponse,
      operation: 'newBlockedCheckerEpisode',
    });
@@ -16900,7 +17123,7 @@ index 730e203..aa1cf72 100644
    const eps = data.episodes || [];
    // P2 codex r7: hill-climb 마이그레이션 특례 — pre-patch 커널이 approve한 checker(contract 미pin)에 묶인
    // maker는 makerReviewed=true라 재리뷰 불가, abandonEpisode는 terminal checker를 거부 → finish의
-@@ -340,16 +343,29 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
+@@ -340,16 +343,31 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
      const latest = cs.reduce((a, b) => (epOrder(a.id, b.id) >= 0 ? a : b));
      return latest.status === 'approved' && !latest.contract?.sha256;
    };
@@ -16922,6 +17145,8 @@ index 730e203..aa1cf72 100644
 +    throw new Error('REVIEW_RECOVERY_PROJECTION_MISMATCH');
 +  }
 +  if (dispatchMatches.length === 1) {
++    materializeEpisodeRequest(root, runId,
++      episodeMaterializationWork(dispatchMatches[0]));
 +    return replayReviewDispatch(dispatchMatches[0]);
 +  }
 +  const candidateMakers = eps.filter(e =>
@@ -16955,7 +17180,7 @@ index 730e203..aa1cf72 100644
    const { reviewer, flags, mode, reviewerResolution, blockedReason } = resolveReviewer(data, detected, { independentSubagent });
    // P2 (hillclimb-ledger 2026-07-10, release-blocking): hill-climb run은 checker 계약(HILLCLIMB-001)이 실제로
    // 강제되는 리뷰만 만들 수 있다. `.deep-review/`는 gitignored라 fresh checkout에는 계약이 없고, deep-review는
-@@ -427,20 +483,62 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
+@@ -427,20 +483,69 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
    const episodeInput = {
      plugin: reviewer === 'deep-review-loop' || reviewer === 'deep-review' ? 'deep-review' : reviewer,
      kind: `${point}-review`, point, workstream: workstreamId, targetMaker,
@@ -17020,14 +17245,55 @@ index 730e203..aa1cf72 100644
 +        ? newBlockedCheckerEpisode(root, runId,
 +          { ...episodeInput, reason: blockedReason, mutation })
 +        : newEpisode(root, runId, { ...episodeInput, role: 'checker', mutation });
-+      return { id: created.id, replayed: null };
++      return { id: created.id, replayed: null,
++        deferred_materialization: created.deferred_materialization };
 +    });
-+  if (committed.replayed !== null) return committed.replayed;
++  if (committed.replayed !== null) {
++    const checker = readVerifiedState(root, runId).data.episodes
++      .find(episode => episode.id === committed.id);
++    materializeEpisodeRequest(root, runId, episodeMaterializationWork(checker));
++    return committed.replayed;
++  }
++  materializeEpisodeRequest(root, runId, committed.deferred_materialization);
 +  const id = committed.id;
    const descriptor = {
      ...checkerDescriptor(reviewer, { point, workstreamId, flags, mode, reason: blockedReason }),
      ...(evidence !== undefined ? { evidence } : {}),
 ```
+
+Apply the proof-transition retrofit in the same Task 7F commit. `newEpisode` above sets its one-entry
+`proof_transitions` array in `preCheck` from the exact object later appended. Refactor
+`recordEpisode`, `abandonEpisode`, `claimIndependentReview`, `blockIndependentReview`,
+`commitReviewOutcome`, `newWorkstream`, `setWorkstreamStatus`, `markWorkstreamTerminal`, and the
+proof-bearing branches of `state.patch` to use the same candidate-only pattern. Each precheck clones
+the verified target(s), computes `before_digest=proofEntityDigest(kind,before,beforeLoop)`, applies
+the requested mutation to one candidate loop, computes the corresponding after digests from that
+same candidate, writes a canonical kind/id-sorted `proof_transitions` array into the already
+allocated event, and the mutator installs those exact clones. All writers call the shared
+`proofTransitionsForCandidate(beforeLoop,candidateLoop,entityKeys)` rather than duplicating projection
+logic. `review-outcome` always carries two
+entries—checker episode and workstream—even when rejection or an idempotent approval leaves the
+workstream digest unchanged; this authenticates `review_points_done` without an ambiguous
+conditional event shape. `state-patch` records the sorted set of every episode/workstream proof
+projection actually changed by its candidate, including all workstreams whose active membership
+changed. A comprehension ack changes only excluded `human_reviewed`/`agent_reviewed` bookkeeping
+and requires no proof transition.
+
+For a workstream the canonical projection is exactly `{id,status,review_points_done,active}`; for an
+episode it is the complete object except those two comprehension markers. `workstream-new` adds its
+derived `id` to event data before digesting. Creation uses `before_digest:'NONE'` and
+`creation_contract:'workstream-create-v1'`. No writer may recompute the candidate differently after
+the event is allocated. `verifyProofTransitionCorrelation` is called by both current and prospective
+`verifyRunSnapshot`, so a missing/disconnected/duplicate/misbound transition fails the same anchored
+commit instead of becoming durable. Add a table-driven test that creates one episode and one
+workstream; advances them through every legal record, claim, block, review-outcome, status, terminal,
+and proof-bearing state-patch path; verifies the chain; and separately proves comprehension ack is
+accepted without changing the episode proof digest. Then for each of status/artifacts/result/reviewer
+proof/workstream status/review_points_done/active-membership recompute only `loop.json` plus
+`.loop.hash` and prove `readVerifiedState` and `finishRun` both fail with `RUN_SNAPSHOT_INVALID` and
+write zero bytes. Also mutate one well-formed transition digest, remove one transition event, delete
+one member of a two-entity review transition, and reorder/duplicate an array under a recomputed
+checksum chain; every case must fail.
 
 The direct episode API now requires one bounded caller-generated logical request ID. The execution
 plane chooses it once before the first call, reuses it after response loss, and rotates it only for
@@ -17574,8 +17840,8 @@ terminal detection still works.
 - [ ] **Step 6: Audit only the pre-action authority slice**
 
 ```bash
-git diff -- scripts/lib/episode.mjs scripts/lib/insights.mjs scripts/lib/review.mjs scripts/lib/workspace.mjs scripts/lib/detect-terminal.mjs scripts/deep-loop.mjs skills/deep-loop/SKILL.md skills/deep-loop-continue/SKILL.md skills/deep-loop-workflow/references/adapters.md skills/deep-loop-workflow/references/hill-climbing.md tests/helpers/episode-request.mjs tests/helpers/review-request.mjs tests/budget.test.mjs tests/cli-skillface.test.mjs tests/codex-checker-integration.test.mjs tests/codex-isolation-integration.test.mjs tests/comprehension.test.mjs tests/episode.test.mjs tests/fencing.test.mjs tests/finish.test.mjs tests/handoff.test.mjs tests/next-action.test.mjs tests/orch-cli.test.mjs tests/pause.test.mjs tests/review.test.mjs tests/insights.test.mjs tests/review-import.test.mjs tests/reviewer-failclosed.test.mjs tests/workspace.test.mjs tests/detect-terminal.test.mjs
-rg -n "readState\(|readVerifiedState|assertVerifiedRunSnapshot|appendAnchored|fenceCheck|attemptIdFactory|materializeImportedReview|detectTerminal\(" scripts/lib/insights.mjs scripts/lib/review.mjs scripts/lib/workspace.mjs scripts/lib/detect-terminal.mjs
+git diff -- scripts/lib/episode.mjs scripts/lib/insights.mjs scripts/lib/review.mjs scripts/lib/workspace.mjs scripts/lib/state.mjs scripts/lib/detect-terminal.mjs scripts/deep-loop.mjs skills/deep-loop/SKILL.md skills/deep-loop-continue/SKILL.md skills/deep-loop-workflow/references/adapters.md skills/deep-loop-workflow/references/hill-climbing.md tests/helpers/episode-request.mjs tests/helpers/review-request.mjs tests/budget.test.mjs tests/cli-skillface.test.mjs tests/codex-checker-integration.test.mjs tests/codex-isolation-integration.test.mjs tests/comprehension.test.mjs tests/episode.test.mjs tests/fencing.test.mjs tests/finish.test.mjs tests/handoff.test.mjs tests/next-action.test.mjs tests/orch-cli.test.mjs tests/pause.test.mjs tests/review.test.mjs tests/insights.test.mjs tests/review-import.test.mjs tests/reviewer-failclosed.test.mjs tests/workspace.test.mjs tests/detect-terminal.test.mjs
+rg -n "readState\(|readVerifiedState|assertVerifiedRunSnapshot|appendAnchored|proof_transitions|fenceCheck|attemptIdFactory|materializeImportedReview|detectTerminal\(" scripts/lib/insights.mjs scripts/lib/review.mjs scripts/lib/workspace.mjs scripts/lib/state.mjs scripts/lib/detect-terminal.mjs
 git diff --check
 ```
 
@@ -17585,7 +17851,7 @@ has no unverified pre-read, and no probe/materialization/random callback precede
 - [ ] **Step 7: Commit the pre-action authority slice**
 
 ```bash
-git add scripts/lib/episode.mjs scripts/lib/insights.mjs scripts/lib/review.mjs scripts/lib/workspace.mjs scripts/lib/detect-terminal.mjs scripts/deep-loop.mjs skills/deep-loop/SKILL.md skills/deep-loop-continue/SKILL.md skills/deep-loop-workflow/references/adapters.md skills/deep-loop-workflow/references/hill-climbing.md tests/helpers/episode-request.mjs tests/helpers/review-request.mjs tests/budget.test.mjs tests/cli-skillface.test.mjs tests/codex-checker-integration.test.mjs tests/codex-isolation-integration.test.mjs tests/comprehension.test.mjs tests/episode.test.mjs tests/fencing.test.mjs tests/finish.test.mjs tests/handoff.test.mjs tests/next-action.test.mjs tests/orch-cli.test.mjs tests/pause.test.mjs tests/review.test.mjs tests/insights.test.mjs tests/review-import.test.mjs tests/reviewer-failclosed.test.mjs tests/workspace.test.mjs tests/detect-terminal.test.mjs
+git add scripts/lib/episode.mjs scripts/lib/insights.mjs scripts/lib/review.mjs scripts/lib/workspace.mjs scripts/lib/state.mjs scripts/lib/detect-terminal.mjs scripts/deep-loop.mjs skills/deep-loop/SKILL.md skills/deep-loop-continue/SKILL.md skills/deep-loop-workflow/references/adapters.md skills/deep-loop-workflow/references/hill-climbing.md tests/helpers/episode-request.mjs tests/helpers/review-request.mjs tests/budget.test.mjs tests/cli-skillface.test.mjs tests/codex-checker-integration.test.mjs tests/codex-isolation-integration.test.mjs tests/comprehension.test.mjs tests/episode.test.mjs tests/fencing.test.mjs tests/finish.test.mjs tests/handoff.test.mjs tests/next-action.test.mjs tests/orch-cli.test.mjs tests/pause.test.mjs tests/review.test.mjs tests/insights.test.mjs tests/review-import.test.mjs tests/reviewer-failclosed.test.mjs tests/workspace.test.mjs tests/detect-terminal.test.mjs
 git commit -m "fix: verify authority before external actions" -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
 
@@ -33740,7 +34006,9 @@ for (const task of taskMatches) {
       'JSON.stringify(event.data.request_projection)',
       'dispatch_request_id_digest ?? null',
       'has ambiguous creation identity', 'legacy_episode_count',
-      'legacy_episode_digest', 'episode creation contract missing at index',
+      'legacy_workstream_count', 'legacy_proof_digest',
+      'verifyProofTransitionCorrelation(loop, lines)',
+      'proof transition disconnected', 'episode creation contract missing at index',
       'dispatch_response: structuredClone(episode.dispatch_response ?? null)']) {
       if (!card.includes(token)) fail(`Task 7B missing recovery/intent token ${token}`);
     }
@@ -33776,22 +34044,22 @@ for (const task of taskMatches) {
     for (const token of ['export function syncRegularFile(',
       'export function syncParentDirectory(', 'export function renamePreparedFile(',
       'export function unlinkRegularFile(', 'export function createFileDurablyIfAbsent(',
-      'export function publishDirectoryFileDurably(',
       'export function replaceFileDurably(',
       'renameAtomicWithRetry(', "=== 'win32'", "(deps.open ?? durableOpenSync)(path, 'r+')",
       'GENERIC_WRITE', 'never replaces a check-to-publish race winner',
-      'staged directory publication rejects a target-path swap without external writes',
       'tests/durable-file.test.mjs', 'validateExisting = () => {}',
       'DURABLE_EXISTING_INVALID']) {
       if (!card.includes(token)) fail(`Task 5B missing platform durability token ${token}`);
     }
   }
   if (task[1] === '7A') {
-    for (const token of ['export function legacyEpisodeBaselineDigest(',
+    for (const token of ['export function legacyProofBaselineProjection(',
+      'export function legacyProofBaselineDigest(',
       "events.filter(event => event?.type === 'lease-lineage-baselined')",
       'legacy lineage checkpoint binding invalid',
       'generation > lineageFloor.generation', 'edge.index > lineageFloor.index',
-      'legacy_episode_count: 0', 'legacy_episode_digest: legacyDigest7b([])',
+      'legacy_episode_count: 0', 'legacy_workstream_count: 0',
+      'legacy_proof_digest: legacyDigest7b(legacyGeneration3AtCheckpoint(), 0, 0)',
       'legacy lease lineage is opaque before one checkpoint and exact after it']) {
       if (!card.includes(token)) fail(`Task 7A missing lineage checkpoint token ${token}`);
     }
@@ -33922,7 +34190,15 @@ for (const task of taskMatches) {
       'creation_request_id_digest: creationRequestIdDigest',
       'dispatch_request_id_digest: dispatchRequestIdDigest ?? null',
       'dispatch_request_digest: dispatchRequestDigest ?? null',
-      'request_projection: completeRequest', 'publishDirectoryFileDurably(dir',
+      'request_projection: completeRequest',
+      'createFileDurablyIfAbsent(expectedPath, workItem.bytes',
+      'episode-request-${id}.md', 'deferred_materialization',
+      'beforeMaterialize?.(workItem)',
+      'event.data.proof_transitions = proofTransitionsForCandidate(',
+      'episodeProofProjection', 'workstreamProofProjection',
+      'proofTransitionsForCandidate(',
+      '`independent-review-*`', '`review-outcome`',
+      '`review-outcome` always carries two', 'proof-bearing state-patch',
       'EPISODE_REQUEST_ID_REQUIRED', 'EPISODE_REQUEST_CONFLICT',
       'REVIEW_DISPATCH_REQUEST_ID_REQUIRED', 'REVIEW_DISPATCH_REQUEST_CONFLICT',
       'beforeFinalLock',
@@ -33944,7 +34220,8 @@ for (const task of taskMatches) {
       'same-ID replay bypasses mutable contract and evidence derivation',
       'fresh detector drift cannot alter a durable same-ID response',
       'real claim-to-block transition pauses before same-ID dispatch replay',
-      'episode publication rejects a swapped target before any target-path write',
+      'obsolete episodes parent swaps cannot redirect first write or final publication',
+      'episode materialization hook re-enters verified read and survives a competing mutation',
       'materialize changed latest insights',
       'episode request rematerialization rejects symlink file and directory winners',
       'paired state/event discriminator removal cannot downgrade initialized proof',
@@ -34258,27 +34535,21 @@ if (existsSync('README.md')) {
       '// scripts/lib/init-transaction.mjs — complete replacement');
     writeFileSync(join(sequentialSourceDir, 'scripts/lib/durable-file.mjs'),
       `${durableFence.body.slice(start, end).trimEnd()}\n`);
-    const probePath = join(sequentialSourceDir, '.plan-directory-publication-probe.mjs');
+    const probePath = join(sequentialSourceDir, '.plan-file-publication-probe.mjs');
     writeFileSync(probePath, `
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync,
-  writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { publishDirectoryFileDurably } from './scripts/lib/durable-file.mjs';
-const root = mkdtempSync(join(tmpdir(), 'plan-directory-publish-'));
-const parent = join(root, 'episodes'); mkdirSync(parent);
-const outside = mkdtempSync(join(tmpdir(), 'plan-directory-outside-'));
-writeFileSync(join(outside, 'sentinel'), 'outside-bytes');
-const target = join(parent, '001-deep-work');
-assert.throws(() => publishDirectoryFileDurably(target, 'request.md', 'kernel', {
-  nonce: () => 'directoryprobe0000000000',
-  beforePublish: () => symlinkSync(outside, target,
-    process.platform === 'win32' ? 'junction' : 'dir'),
-}), /DURABLE_EXISTING_DIRECTORY_INVALID/);
-assert.equal(readFileSync(join(outside, 'sentinel'), 'utf8'), 'outside-bytes');
-assert.deepEqual(readdirSync(outside), ['sentinel']);
-assert.deepEqual(readdirSync(parent).filter(name => name.startsWith('.publish-')), []);
+import { createFileDurablyIfAbsent } from './scripts/lib/durable-file.mjs';
+const root = mkdtempSync(join(tmpdir(), 'plan-file-publish-'));
+const target = join(root, 'episode-request-001-deep-work.md');
+assert.equal(createFileDurablyIfAbsent(target, 'kernel', {
+  nonce: () => 'fileprobe0000000000000',
+  beforePublish: () => writeFileSync(target, 'execution-plane winner'),
+}), false);
+assert.equal(readFileSync(target, 'utf8'), 'execution-plane winner');
+assert.deepEqual(readdirSync(root), ['episode-request-001-deep-work.md']);
 `);
     const probed = spawnSync(process.execPath, [probePath], {
       cwd: sequentialSourceDir, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024,
@@ -34286,7 +34557,7 @@ assert.deepEqual(readdirSync(parent).filter(name => name.startsWith('.publish-')
     if (probed.error || probed.status !== 0) {
       const diagnostic = String(probed.error?.message || probed.stderr || probed.stdout)
         .split('\n').slice(0, 20).join(' | ');
-      fail(`Task 5B installed directory publication behavior: ${diagnostic}`);
+      fail(`Task 5B installed no-replace file publication behavior: ${diagnostic}`);
     }
   }
   const digestFence = fenceRecords.find(record => record.language === 'js'
@@ -34423,7 +34694,7 @@ try {
         const probePath = join(sequentialSourceDir, '.plan-lineage-probe.mjs');
         writeFileSync(probePath, `
 import assert from 'node:assert/strict';
-import { legacyEpisodeBaselineDigest,
+import { legacyProofBaselineDigest,
   verifyAppEventCorrelation } from './scripts/lib/schema.mjs';
 
 const generation3 = () => ({ run_id: 'LEGACY-RUN', status: 'running', episodes: [],
@@ -34442,8 +34713,9 @@ const generation4 = () => {
 const baseline = { type: 'lease-lineage-baselined',
   ts: '2026-07-13T00:00:03.000Z', data: {
     owner_run_id: 'LEGACY-OWNER', generation: 3, lease_state: 'released',
-    acquired_at: '2026-07-13T00:00:02.000Z', pre_state_digest: 'a'.repeat(64),
-    legacy_episode_count: 0, legacy_episode_digest: legacyEpisodeBaselineDigest([]),
+    acquired_at: '2026-07-13T00:00:02.000Z', legacy_episode_count: 0,
+    legacy_workstream_count: 0,
+    legacy_proof_digest: legacyProofBaselineDigest(generation3(), 0, 0),
   } };
 const acquire = { type: 'lease-acquired', ts: '2026-07-13T00:00:04.000Z', data: {
   previous_owner_run_id: 'LEGACY-OWNER', previous_generation: 3,
@@ -34453,9 +34725,37 @@ assert.equal(verifyAppEventCorrelation(generation3(), [baseline]).ok, true);
 assert.equal(verifyAppEventCorrelation(generation4(), [baseline, acquire]).ok, true);
 assert.equal(verifyAppEventCorrelation(generation3(), [baseline, baseline]).ok, false);
 assert.equal(verifyAppEventCorrelation(generation3(), [{ ...baseline, data: {
-  ...baseline.data, legacy_episode_digest: 'b'.repeat(64) } }]).ok, false);
+  ...baseline.data, legacy_proof_digest: 'b'.repeat(64) } }]).ok, false);
 assert.equal(verifyAppEventCorrelation(generation4(), [baseline, { ...acquire, data: {
   ...acquire.data, previous_owner_run_id: 'OTHER' } }]).ok, false);
+const proofState = generation3();
+proofState.episodes = [{ id: '001-maker', role: 'maker', status: 'done',
+  artifacts: ['design.md'], reviewer_resolution: { source: 'legacy' } }];
+proofState.workstreams = [{ id: 'ws-legacy', status: 'ready', episodes: ['001-maker'] }];
+proofState.active_workstreams = [];
+proofState.review = { points: ['design'], reviewer: 'deep-review-loop', mode: 'cross-model',
+  flags: [], converge: true, require_human_ack: false };
+proofState.recipe = { id: 'legacy-recipe' };
+const proofBaseline = { ...baseline, data: { ...baseline.data,
+  legacy_episode_count: 1, legacy_workstream_count: 1,
+  legacy_proof_digest: legacyProofBaselineDigest(proofState, 1, 1) } };
+assert.equal(verifyAppEventCorrelation(proofState, [proofBaseline]).ok, true);
+for (const mutate of [
+  value => { value.episodes[0].status = 'approved'; },
+  value => { value.episodes[0].artifacts = ['forged.md']; },
+  value => { value.episodes[0].result_report = 'forged'; },
+  value => { value.episodes[0].reviewer_resolution = { source: 'forged' }; },
+  value => { value.workstreams[0].status = 'merged'; },
+  value => { value.workstreams[0].review_points_done = ['design']; },
+  value => { value.active_workstreams = ['ws-legacy']; },
+]) {
+  const rewritten = structuredClone(proofState); mutate(rewritten);
+  assert.equal(verifyAppEventCorrelation(rewritten, [proofBaseline]).ok, false);
+}
+const comprehensionOnly = structuredClone(proofState);
+comprehensionOnly.episodes[0].human_reviewed = true;
+comprehensionOnly.episodes[0].agent_reviewed = true;
+assert.equal(verifyAppEventCorrelation(comprehensionOnly, [proofBaseline]).ok, true);
 `);
         const probed = spawnSync(process.execPath, [probePath], {
           cwd: sequentialSourceDir, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024,
