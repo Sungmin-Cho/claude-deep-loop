@@ -235,8 +235,9 @@ export declare const APP_PREPARE_TIMEOUT_MS: number;
 export declare const APP_CONFIRMATION_TIMEOUT_MS: number;
 export function episodeProofProjection(episode): object;
 export function workstreamProofProjection(loop, workstream): object;
-export function legacyProofBaselineProjection(loop, episodeCount, workstreamCount): object;
-export function legacyProofBaselineDigest(loop, episodeCount, workstreamCount): string;
+export function legacyProofOrigins(loop, episodeCount, workstreamCount):
+  Array<{kind:'episode'|'workstream',id:string,digest:string}>;
+export function legacyAuthorityDigest(loop): string;
 export function verifyAppEventCorrelation(loop, lines);
 
 // scripts/lib/integrity.mjs
@@ -253,7 +254,7 @@ export function withVerifiedMutationLock(root, runId, {
   callerBinding, intentDigest, fenceError, intentConflictError,
 }, body);
 export function commitVerifiedEventsUnderLock(root, runId, loop, eventSpecs, mutate,
-  { baseLines, baseStateHash, callerBinding, intentDigest, crashProbe } = {});
+  { baseLines, baseStateHash, callerBinding, intentDigest } = {});
 export function appendAnchored(root, runId, event, mutate, preCheck, {
   floor, nowFn, fenceCheck, callerBinding, intentDigest, fenceError, crashProbe, allowTerminal,
 });
@@ -8317,7 +8318,7 @@ Apply the Gate Receipt and Artifact Preservation Protocol over the Gate 3A range
 
 **Interfaces:**
 - Consumes: `loop.session_chain.sessions[*].continuation` and generation-stamped `host_surface` from Tasks 3B/6C, the invariant that primary live phases require fresh `auto/human-confirmed` consent while failed/abandoned history may survive revoke, and parsed event-log lines from `readLines(root,runId)`.
-- Produces: `verifyAppEventCorrelation(loop,lines): {ok:boolean,errors:string[]}`; it performs no I/O and correlates the unique genesis `run-initialized` event plus `handoff-emitted`, `app-task-prepared`, `app-task-confirmed`, and `app-task-acquired` by exact attempt, child, multiplicity, strict timestamp, and immutable digests. The confirm event binds `SHA256("confirmed-thread\\0" + thread_id)` and a `message-unconfirmed` failure binds `SHA256("unconfirmed-thread\\0" + unconfirmed_thread_id)` without recording either raw opaque ID. It also binds revoke, fail, sweep, preserve, await-timeout, recover, and finish control events to exact attempt/child/code and their durable consent/phase/pause/terminal projection. A current-generation owner-bound `run-recovered` event forces the exact recovered projection until a later exact `finish` or a real generation advance, and every `finish` event is globally bidirectional with the single terminal status/report/timestamp projection. Every failed continuation additionally requires its one mapped fail/sweep event to repeat the exact immutable `failure_binding.owner_run_id/generation`, so a hash-valid state-only or event-only edit cannot forge response-loss authority. It validates every `host-surface-observed` event by logical run, exact owner, immutable-facts digest, kind, unique generation, derived `observed|reattested` outcome, and latest durable timestamp. The unique `run-initialized` event is the generation-1 host/request baseline; exact App-acquire is the acquired-generation baseline. Initialization-absent legacy non-null surfaces are not baselines. For initialization-absent legacy runs it recognizes at most one `lease-lineage-baselined` checkpoint and traces exactly-one generation edges only from that checkpoint forward; it never treats the checkpoint as App consent or host authority.
+- Produces: `verifyAppEventCorrelation(loop,lines): {ok:boolean,errors:string[]}`; it performs no I/O and correlates the unique genesis `run-initialized` event plus `handoff-emitted`, `app-task-prepared`, `app-task-confirmed`, and `app-task-acquired` by exact attempt, child, multiplicity, strict timestamp, and immutable digests. The confirm event binds `SHA256("confirmed-thread\\0" + thread_id)` and a `message-unconfirmed` failure binds `SHA256("unconfirmed-thread\\0" + unconfirmed_thread_id)` without recording either raw opaque ID. It also binds revoke, fail, sweep, preserve, await-timeout, recover, and finish control events to exact attempt/child/code and their durable consent/phase/pause/terminal projection. A current-generation owner-bound `run-recovered` event forces the exact recovered projection until a later exact `finish` or a real generation advance, and every `finish` event is globally bidirectional with the single terminal status/report/timestamp projection. Every failed continuation additionally requires its one mapped fail/sweep event to repeat the exact immutable `failure_binding.owner_run_id/generation`, so a hash-valid state-only or event-only edit cannot forge response-loss authority. It validates every `host-surface-observed` event by logical run, exact owner, immutable-facts digest, kind, unique generation, derived `observed|reattested` outcome, and latest durable timestamp. The unique `run-initialized` event is the generation-1 host/request baseline; exact App-acquire is the acquired-generation baseline. Initialization-absent legacy non-null surfaces are not baselines. For initialization-absent legacy runs it recognizes at most one `lease-lineage-baselined` checkpoint, validates canonical per-entity `legacy_proof_origins` plus immutable `legacy_authority_digest`, and traces exactly-one generation edges only from that checkpoint forward; it never treats the checkpoint as App consent or host authority. It also rejects duplicate or unknown `active_workstreams` IDs before any semantic consumer can use array length or order.
 
 The legacy matrix in this task must additionally construct a generation-3 1.8.2 fixture with no
 initialization/acquire events, then prove these exact cases before Task 7B adds the writer:
@@ -8346,7 +8347,8 @@ test7b('legacy lease lineage is opaque before one checkpoint and exact after it'
       owner_run_id: 'LEGACY-OWNER', generation: 3, lease_state: 'released',
       acquired_at: '2026-07-13T00:00:02.000Z', legacy_episode_count: 0,
       legacy_workstream_count: 0,
-      legacy_proof_digest: legacyDigest7b(legacyGeneration3AtCheckpoint(), 0, 0),
+      legacy_proof_origins: origins7b(legacyGeneration3AtCheckpoint(), 0, 0),
+      legacy_authority_digest: authority7b(legacyGeneration3AtCheckpoint()),
     } };
   const acquire = { type: 'lease-acquired', ts: '2026-07-13T00:00:04.000Z', data: {
     previous_owner_run_id: 'LEGACY-OWNER', previous_generation: 3,
@@ -8357,7 +8359,7 @@ test7b('legacy lease lineage is opaque before one checkpoint and exact after it'
   for (const invalid of [
     [baseline, baseline],
     [{ ...baseline, data: { ...baseline.data,
-      legacy_proof_digest: 'b'.repeat(64) } }],
+      legacy_authority_digest: 'b'.repeat(64) } }],
     [{ ...baseline, data: { ...baseline.data, generation: 2 } }, acquire],
     [baseline, { ...acquire, data: { ...acquire.data, previous_owner_run_id: 'OTHER' } }],
     [baseline, { ...acquire, data: { ...acquire.data, generation: 5 } }],
@@ -8378,7 +8380,7 @@ Append the first complete block to `tests/schema.test.mjs` and the second to `te
 ```js
 import { test as test7b } from 'node:test';
 import assert7b from 'node:assert/strict';
-import { legacyProofBaselineDigest as legacyDigest7b,
+import { legacyAuthorityDigest as authority7b, legacyProofOrigins as origins7b,
   verifyAppEventCorrelation as verify7b } from '../scripts/lib/schema.mjs';
 import { hostSurfaceFactsDigest as facts7b } from '../scripts/lib/host-surface.mjs';
 import { contentHash as hash7b } from '../scripts/lib/envelope.mjs';
@@ -9124,10 +9126,17 @@ export function workstreamProofProjection(loop, workstream) {
     status: workstream.status,
     review_points_done: structuredClone(workstream.review_points_done ?? []),
     active: (loop?.active_workstreams ?? []).includes(workstream.id),
+    active_workstreams: structuredClone(loop?.active_workstreams ?? []),
   };
 }
 
-export function legacyProofBaselineProjection(loop, episodeCount, workstreamCount) {
+function legacyOriginDigest(kind, projection) {
+  return contentHash(`proof-entity-${kind}-v1\0${JSON.stringify({
+    kind: 'object', value: projection,
+  })}`);
+}
+
+export function legacyProofOrigins(loop, episodeCount, workstreamCount) {
   const episodes = Array.isArray(loop?.episodes) ? loop.episodes : [];
   const workstreams = Array.isArray(loop?.workstreams) ? loop.workstreams : [];
   if (!Number.isSafeInteger(episodeCount) || episodeCount < 0
@@ -9136,15 +9145,20 @@ export function legacyProofBaselineProjection(loop, episodeCount, workstreamCoun
       || workstreamCount > workstreams.length) {
     throw new Error('LEGACY_PROOF_BASELINE_COUNT_INVALID');
   }
-  const legacyWorkstreamIds = new Set(
-    workstreams.slice(0, workstreamCount).map(workstream => workstream.id));
-  return {
-    version: 'legacy-proof-v1',
-    episodes: episodes.slice(0, episodeCount).map(episodeProofProjection),
-    workstreams: workstreams.slice(0, workstreamCount)
-      .map(workstream => workstreamProofProjection(loop, workstream)),
-    active_workstreams: structuredClone((loop.active_workstreams ?? [])
-      .filter(id => legacyWorkstreamIds.has(id))),
+  return [
+    ...episodes.slice(0, episodeCount).map(episode => ({
+      kind: 'episode', id: episode.id,
+      digest: legacyOriginDigest('episode', episodeProofProjection(episode)),
+    })),
+    ...workstreams.slice(0, workstreamCount).map(workstream => ({
+      kind: 'workstream', id: workstream.id,
+      digest: legacyOriginDigest('workstream', workstreamProofProjection(loop, workstream)),
+    })),
+  ].sort((left, right) => `${left.kind}:${left.id}`.localeCompare(`${right.kind}:${right.id}`));
+}
+
+export function legacyAuthorityDigest(loop) {
+  const projection = {
     review_contract: loop.review == null ? null : {
       points: structuredClone(loop.review.points ?? []),
       reviewer: loop.review.reviewer ?? null,
@@ -9155,17 +9169,20 @@ export function legacyProofBaselineProjection(loop, episodeCount, workstreamCoun
     },
     recipe: { id: loop.recipe?.id ?? null },
   };
-}
-
-export function legacyProofBaselineDigest(loop, episodeCount, workstreamCount) {
-  const projection = legacyProofBaselineProjection(loop, episodeCount, workstreamCount);
   const encoded = JSON.stringify({ kind: 'object', value: projection });
-  return contentHash(`legacy-proof-baseline\0${encoded}`);
+  return contentHash(`legacy-proof-authority-v1\0${encoded}`);
 }
 
 export function verifyAppEventCorrelation(loop, lines) {
   const errors = [];
   const events = Array.isArray(lines) ? lines : [];
+  const workstreamIds = (loop?.workstreams ?? []).map(workstream => workstream?.id);
+  const activeWorkstreams = loop?.active_workstreams;
+  if (!Array.isArray(activeWorkstreams)
+      || new Set(activeWorkstreams).size !== activeWorkstreams.length
+      || activeWorkstreams.some(id => typeof id !== 'string' || !workstreamIds.includes(id))) {
+    errors.push('active_workstreams must be unique existing workstream IDs');
+  }
   const identities = new Set();
   const sessions = loop?.session_chain?.sessions ?? [];
   const currentLease = loop?.session_chain?.lease ?? {};
@@ -9197,8 +9214,8 @@ export function verifyAppEventCorrelation(loop, lines) {
     const checkpointIndex = events.indexOf(checkpoint);
     const data = checkpoint.data ?? {};
     const exactKeys = ['acquired_at', 'generation', 'lease_state',
-      'legacy_episode_count', 'legacy_proof_digest', 'legacy_workstream_count',
-      'owner_run_id'].sort();
+      'legacy_authority_digest', 'legacy_episode_count', 'legacy_proof_origins',
+      'legacy_workstream_count', 'owner_run_id'].sort();
     const legacyEpisodes = Array.isArray(loop?.episodes) ? loop.episodes : [];
     const legacyWorkstreams = Array.isArray(loop?.workstreams) ? loop.workstreams : [];
     const legacyCount = data.legacy_episode_count;
@@ -9210,6 +9227,23 @@ export function verifyAppEventCorrelation(loop, lines) {
       ? legacyWorkstreams.slice(0, legacyWorkstreamCount) : [];
     const prefixIsUnversioned = prefix.every(episode => episode?.creation_contract == null)
       && workstreamPrefix.every(workstream => workstream?.creation_contract == null);
+    const origins = data.legacy_proof_origins;
+    const originKeys = Array.isArray(origins)
+      ? origins.map(origin => `${origin?.kind}:${origin?.id}`) : [];
+    const expectedOriginKeys = [
+      ...prefix.map(episode => `episode:${episode?.id}`),
+      ...workstreamPrefix.map(workstream => `workstream:${workstream?.id}`),
+    ].sort();
+    const originsValid = Array.isArray(origins)
+      && origins.length === legacyCount + legacyWorkstreamCount
+      && JSON.stringify(originKeys) === JSON.stringify(expectedOriginKeys)
+      && new Set(originKeys).size === originKeys.length
+      && origins.every(origin => origin != null
+        && JSON.stringify(Object.keys(origin).sort())
+          === JSON.stringify(['digest', 'id', 'kind'])
+        && ['episode', 'workstream'].includes(origin.kind)
+        && typeof origin.id === 'string' && origin.id.length > 0
+        && /^[0-9a-f]{64}$/.test(origin.digest || ''));
     const checkpointValid = checkpointIndex >= 0 && strictMs(checkpoint.ts) !== null
       && strictMs(data.acquired_at) !== null
       && strictMs(data.acquired_at) <= strictMs(checkpoint.ts)
@@ -9223,9 +9257,9 @@ export function verifyAppEventCorrelation(loop, lines) {
       && Number.isSafeInteger(legacyWorkstreamCount) && legacyWorkstreamCount >= 0
       && legacyWorkstreamCount <= legacyWorkstreams.length
       && prefixIsUnversioned
-      && /^[0-9a-f]{64}$/.test(data.legacy_proof_digest || '')
-      && data.legacy_proof_digest === legacyProofBaselineDigest(
-        loop, legacyCount, legacyWorkstreamCount);
+      && originsValid
+      && /^[0-9a-f]{64}$/.test(data.legacy_authority_digest || '')
+      && data.legacy_authority_digest === legacyAuthorityDigest(loop);
     if (!checkpointValid) {
       errors.push('legacy lineage checkpoint binding invalid');
     } else {
@@ -9983,6 +10017,55 @@ export function rawHashValidHistory(root, runId, eventSpecs, mutate = () => {}) 
     mutate(loop);
   });
 }
+
+function legacyEventLines(specs) {
+  let previous = 'GENESIS';
+  return specs.map((spec, index) => {
+    const seq = index + 1;
+    const ts = new Date(spec.now).toISOString();
+    const checksum = contentHash(`${seq}|${ts}|${spec.type}|${JSON.stringify(spec.data)}|${previous}`);
+    previous = checksum;
+    return { seq, ts, type: spec.type, data: spec.data, checksum };
+  });
+}
+
+export function legacyInProgressProofFixture() {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-legacy-proof-')));
+  const now = '2026-07-13T00:00:00.000Z';
+  const { runId } = initRun(root, { runtime: 'codex', goal: 'legacy proof continuation',
+    now: new Date(now), cwdFn: () => root });
+  const directory = runDir(root, runId);
+  const loop = structuredClone(readState(root, runId).data);
+  const workstreamId = 'ws-01-legacy';
+  const makerId = '001-legacy-maker';
+  delete loop.initialization;
+  loop.workstreams = [{ id: workstreamId, title: 'legacy', status: 'in_progress',
+    branch: 'legacy', worktree: '.worktrees/legacy', base_commit: null,
+    dirty_on_handoff: false, pr: { intended: true, state: 'none', url: null },
+    episodes: [makerId], review_points_done: [], depends_on: [] }];
+  loop.active_workstreams = [workstreamId];
+  loop.episodes = [{ id: makerId, plugin: 'deep-work', role: 'maker',
+    kind: 'implementation', point: 'implementation', workstream_id: workstreamId,
+    status: 'in_progress', request_path: join(directory, 'legacy-request.md'),
+    expected_artifacts: ['legacy.md'], verification: { checker_episode_required: true,
+      checker_plugin: 'deep-review', review_point: 'implementation',
+      proof_required: ['legacy.md'] } }];
+  const lines = legacyEventLines([
+    { type: 'workstream-new', data: { title: 'legacy' }, now },
+    { type: 'episode-new', data: { plugin: 'deep-work', role: 'maker',
+      kind: 'implementation', point: 'implementation' },
+    now: '2026-07-13T00:00:01.000Z' },
+  ]);
+  loop.event_log_head = { seq: lines.at(-1).seq, checksum: lines.at(-1).checksum };
+  loop.updated_at = lines.at(-1).ts;
+  const raw = JSON.stringify(loop, null, 2);
+  writeFileSync(join(directory, 'event-log.jsonl'),
+    `${lines.map(event => JSON.stringify(event)).join('\n')}\n`);
+  writeFileSync(join(directory, 'loop.json'), raw);
+  writeFileSync(join(directory, '.loop.hash'), contentHash(raw));
+  return { root, runId, makerId, workstreamId,
+    fence: { owner: runId, generation: 1, runtime: 'codex' } };
+}
 ```
 
 Add `readLines` from `../scripts/lib/integrity.mjs` to `tests/finish.test.mjs`, then append:
@@ -10511,10 +10594,7 @@ const RUN_ID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 const BASE_POINTS = new Set([
   'state-stage-after-rename', 'event-stage-after-rename', 'pending-after-rename',
   'event-after-partial-append', 'event-after-full-append', 'state-after-rename',
-  'hash-after-rename', 'before-cleanup', 'state-replace-after-create',
-  'state-replace-after-fsync', 'state-replace-after-rename-before-dir-fsync',
-  'hash-replace-after-create', 'hash-replace-after-fsync',
-  'hash-replace-after-rename-before-dir-fsync',
+  'hash-after-rename', 'before-cleanup',
 ]);
 
 function exactObject(value, keys) {
@@ -10535,35 +10615,30 @@ export function registerAnchoredCrashExtension(dispatch) {
 }
 
 const generic = Object.freeze({
-  'generic-append': ({ root, runId, owner, generation, point }) => appendAnchored(
+  'generic-append': ({ root, runId, owner, generation }) => appendAnchored(
     root, runId, { type: 'anchored-crash-probe', data: { owner, generation } }, undefined,
     undefined, { callerBinding: { owner, generation },
       intentDigest: contentHash(JSON.stringify(
-        { operation: 'anchored-crash-probe', owner, generation })),
-      crashProbe: reached => { if (reached === point) process.exit(91); } }),
-  'generic-acquire': ({ root, runId, owner, generation, point, rawInput }) => {
+        { operation: 'anchored-crash-probe', owner, generation })) }),
+  'generic-acquire': ({ root, runId, owner, generation, rawInput }) => {
     const input = parseInput(rawInput, ['childOwner']);
     return acquireLease(root, runId, { owner: input.childOwner,
-      expectGeneration: generation, runtime: 'codex',
-      crashProbe: reached => { if (reached === point) process.exit(91); } });
+      expectGeneration: generation, runtime: 'codex' });
   },
-  finish: ({ root, runId, owner, generation, point }) => finishRun(root, runId, {
+  finish: ({ root, runId, owner, generation }) => finishRun(root, runId, {
     status: 'stopped', reportRel: null, confirm: true,
     proof: { human_reason: 'crash-worker' },
     fence: { owner, generation, runtime: 'codex', intent: 'business' },
-    crashProbe: reached => { if (reached === point) process.exit(91); },
   }),
-  'state-patch': ({ root, runId, owner, generation, point, rawInput }) => {
+  'state-patch': ({ root, runId, owner, generation, rawInput }) => {
     const input = parseInput(rawInput, ['field', 'value']);
     return patch(root, runId, input.field, input.value,
-      { fence: { owner, generation },
-        crashProbe: reached => { if (reached === point) process.exit(91); } });
+      { fence: { owner, generation } });
   },
-  'workstream-new': ({ root, runId, owner, generation, point, rawInput }) => {
+  'workstream-new': ({ root, runId, owner, generation, rawInput }) => {
     const input = parseInput(rawInput,
       ['baseCommit', 'branch', 'dependsOn', 'title', 'worktree']);
-    return newWorkstream(root, runId, { ...input, fence: { owner, generation },
-      crashProbe: reached => { if (reached === point) process.exit(91); } });
+    return newWorkstream(root, runId, { ...input, fence: { owner, generation } });
   },
 });
 
@@ -10581,6 +10656,8 @@ export function runAnchoredCrashWorker(argv = process.argv.slice(2), env = proce
       || !/^[1-9]\d*$/.test(env.DEEP_LOOP_CRASH_GENERATION || '')) {
     throw new Error('CRASH_INPUT_INVALID');
   }
+  process.env.NODE_ENV = 'test';
+  process.env.DEEP_LOOP_TEST_CRASH_AT = point;
   dispatchAnchoredCrash({ root, runId, operation, point,
     owner: env.DEEP_LOOP_CRASH_OWNER,
     generation: Number(env.DEEP_LOOP_CRASH_GENERATION),
@@ -10609,10 +10686,7 @@ never becomes cleanup authority:
 const GENERIC_CRASH_POINTS7B = Object.freeze([
   'state-stage-after-rename', 'event-stage-after-rename', 'pending-after-rename',
   'event-after-partial-append', 'event-after-full-append', 'state-after-rename',
-  'hash-after-rename', 'before-cleanup', 'state-replace-after-create',
-  'state-replace-after-fsync', 'state-replace-after-rename-before-dir-fsync',
-  'hash-replace-after-create', 'hash-replace-after-fsync',
-  'hash-replace-after-rename-before-dir-fsync',
+  'hash-after-rename', 'before-cleanup',
 ]);
 const GENERIC_PRE_MARKER7B = new Set([
   'state-stage-after-rename', 'event-stage-after-rename',
@@ -10635,12 +10709,6 @@ function expectedJournalInventory7b(point) {
   }
   const names = ['.anchored-events.stage', '.anchored-hash.stage',
     '.anchored-pending.json', '.anchored-state.stage'];
-  if (['state-replace-after-create', 'state-replace-after-fsync'].includes(point)) {
-    names.push('loop.json.replace');
-  }
-  if (['hash-replace-after-create', 'hash-replace-after-fsync'].includes(point)) {
-    names.push('.loop.hash.replace');
-  }
   return names.sort();
 }
 
@@ -10819,16 +10887,18 @@ return the API's existing fence channel without invoking it or changing any byte
 `callerBinding` case for every production mutation entry and require `CALLER_BINDING_REQUIRED`
 before lock acquisition.
 
-Add a separate generation-3 legacy worker fixture. Its first matching generic mutation must prepend
+Add a separate generation-3 legacy worker fixture. A verified read before its checkpoint must accept
+old proof events without `proof_transitions`. Its first matching generic mutation must prepend
 exactly one `lease-lineage-baselined` event immediately before the business event in the same staged
 suffix. Repeat, duplicate-baseline, auto-consent, non-null unproved host surface, wrong current
 pointer, and foreign-fence cases must add no baseline. The positive fixture contains a terminal
 workstream plus a done maker and its bound approved checker, so `finishProofState` is genuinely
 complete before the checkpoint. After checkpoint → recover → acquire → finish it passes the normal
-verifier. Separate incomplete legacy input may checkpoint but remains frozen/manual and cannot be
-silently completed. Recompute canonical state/hash while changing each of maker/checker status,
-artifacts/result/reviewer proof, workstream status, legacy active membership, or a substituted
-well-formed `legacy_proof_digest`; every case fails before finish and writes no event/state/hash.
+verifier. A second positive fixture starts with an in-progress maker/workstream and proves checkpoint
+origins → record → checker outcome → review point → terminal → finish without inventing old events.
+Recompute canonical state/hash while changing each of maker/checker status, artifacts/result/reviewer
+proof, workstream status, exact active array, an origin digest/identity, or a substituted well-formed
+`legacy_authority_digest`; every case fails before finish and writes no event/state/hash.
 A numeric generation bump, same-generation owner swap, duplicate checkpoint, or disconnected first
 edge also fails.
 
@@ -10864,7 +10934,7 @@ diff --git a/scripts/lib/integrity.mjs b/scripts/lib/integrity.mjs
  import { runDir, readState, writeState, withLock } from './state.mjs';
  import { assertProjectRootBinding, canonicalProjectRoot, projectRootDigest } from './project-root.mjs';
 -import { validate } from './schema.mjs';
-+import { episodeProofProjection, legacyProofBaselineDigest, validate,
++import { episodeProofProjection, legacyAuthorityDigest, legacyProofOrigins, validate,
 +  verifyAppEventCorrelation, workstreamProofProjection } from './schema.mjs';
 +import { initializationRequestDigest } from './init-transaction.mjs';
 +import { replaceFileDurably, syncParentDirectory, syncRegularFile,
@@ -10892,10 +10962,10 @@ diff --git a/scripts/lib/state.mjs b/scripts/lib/state.mjs
 ```
 
 Then add these exports to `scripts/lib/integrity.mjs` immediately after `verifyHead`. Initialized
-runs have no legacy allowance. An initialization-absent run may retain only the exact episode prefix
-bound into its one Task 7B `lease-lineage-baselined` checkpoint; until that checkpoint exists the
-whole snapshot is legacy/read-only and the first post-upgrade mutation establishes the count/digest
-before its business event:
+runs have no legacy allowance. An initialization-absent run is readable before its checkpoint and
+its pre-checkpoint proof-event history stays opaque. The first post-upgrade mutation establishes
+authenticated per-entity transition origins before its business event; those origins seed mutable
+legacy chains rather than freezing the old entity prefix:
 
 ```js
 export function verifyEpisodeCreationCorrelation(loop, lines) {
@@ -10925,10 +10995,8 @@ export function verifyEpisodeCreationCorrelation(loop, lines) {
     if (!Number.isSafeInteger(legacyCount) || legacyCount < 0
         || legacyCount > allEpisodes.length
         || !Number.isSafeInteger(legacyWorkstreamCount) || legacyWorkstreamCount < 0
-        || legacyWorkstreamCount > (loop.workstreams ?? []).length
-        || baselines[0].data?.legacy_proof_digest
-          !== legacyProofBaselineDigest(loop, legacyCount, legacyWorkstreamCount)) {
-      errors.push('legacy proof baseline mismatch');
+        || legacyWorkstreamCount > (loop.workstreams ?? []).length) {
+      errors.push('legacy creation baseline mismatch');
       return { ok: false, errors };
     }
   } else if (baselines.length !== 0) {
@@ -11065,9 +11133,18 @@ function validateProofTransitionEventShape(event, transitions) {
   } else if (event.type === 'review-outcome') {
     expected = [`episode:${event.data?.episodeId}`,
       `workstream:${event.data?.workstream_id}`].sort();
-  } else if (event.type === 'workstream-new' || event.type === 'workstream-status'
-      || event.type === 'workstream-terminal') {
-    expected = [`workstream:${event.data?.id}`];
+  } else if (event.type === 'workstream-new') {
+    if (!actual.includes(`workstream:${event.data?.id}`)
+        || actual.some(key => !key.startsWith('workstream:'))) {
+      errors.push('workstream creation transition entity set mismatch');
+    }
+    return errors;
+  } else if (event.type === 'workstream-status' || event.type === 'workstream-terminal') {
+    if (!actual.includes(`workstream:${event.data?.id}`)
+        || actual.some(key => !key.startsWith('workstream:'))) {
+      errors.push('workstream mutation transition entity set mismatch');
+    }
+    return errors;
   } else if (event.type === 'state-patch') {
     // The redacted state-patch event cannot reproduce removed active membership from current state.
     // Its writer records the canonical set of every projection that actually changed; chain
@@ -11080,6 +11157,57 @@ function validateProofTransitionEventShape(event, transitions) {
   return errors;
 }
 
+const PROOF_EVENT_TYPES = new Set([
+  'episode-new', 'episode-record', 'episode-abandon',
+  'independent-review-claimed', 'independent-review-blocked', 'review-outcome',
+  'workstream-new', 'workstream-status', 'workstream-terminal', 'state-patch',
+]);
+
+function requiredProofKeys(event, changedKeys) {
+  if (event.type === 'episode-new') return [`episode:${event.data?.episode_id}`];
+  if (event.type === 'episode-record' || event.type === 'episode-abandon') {
+    return [`episode:${event.data?.id}`];
+  }
+  if (event.type === 'independent-review-claimed'
+      || event.type === 'independent-review-blocked') {
+    return [`episode:${event.data?.episode_id}`];
+  }
+  if (event.type === 'review-outcome') {
+    return [`episode:${event.data?.episodeId}`,
+      `workstream:${event.data?.workstream_id}`].sort();
+  }
+  if (event.type === 'workstream-new') {
+    return [...new Set([...changedKeys, `workstream:${event.data?.id}`])].sort();
+  }
+  if (event.type === 'workstream-status' || event.type === 'workstream-terminal') {
+    return [...new Set([...changedKeys, `workstream:${event.data?.id}`])].sort();
+  }
+  if (event.type === 'state-patch') return [...changedKeys].sort();
+  throw new Error(`PROOF_EVENT_TYPE_INVALID: ${event.type}`);
+}
+
+// The gateway calls this only after one business mutator has produced its exact candidate. It is
+// the sole writer of proof_transitions: individual public writers never accept callbacks or build
+// their own digest arrays. At most one proof-bearing business event is allowed per transaction.
+export function attachCandidateProofTransitions(beforeLoop, candidateLoop, eventSpecs) {
+  const proofEvents = eventSpecs.filter(event => PROOF_EVENT_TYPES.has(event.type));
+  const changed = proofTransitionsForCandidate(beforeLoop, candidateLoop);
+  const changedKeys = changed.map(item => `${item.kind}:${item.id}`).sort();
+  if (proofEvents.length === 0) {
+    if (changedKeys.length !== 0) throw new Error('PROOF_CHANGE_EVENT_REQUIRED');
+    return eventSpecs;
+  }
+  if (proofEvents.length !== 1) throw new Error('PROOF_EVENT_CARDINALITY_INVALID');
+  const [event] = proofEvents;
+  const keys = requiredProofKeys(event, changedKeys);
+  if (changedKeys.some(key => !keys.includes(key))) {
+    throw new Error('PROOF_CHANGE_ENTITY_SET_INVALID');
+  }
+  event.data = { ...structuredClone(event.data),
+    proof_transitions: proofTransitionsForCandidate(beforeLoop, candidateLoop, keys) };
+  return eventSpecs;
+}
+
 // Every post-checkpoint proof-bearing mutation event carries one exact, ordered
 // proof_transitions array. A transaction such as review-outcome may change both the checker and its
 // workstream; one event therefore carries one four-key entry per affected proof entity. Creation
@@ -11088,17 +11216,20 @@ function validateProofTransitionEventShape(event, transitions) {
 export function verifyProofTransitionCorrelation(loop, lines) {
   const errors = [];
   const baseline = lines.find(event => event.type === 'lease-lineage-baselined') ?? null;
-  const legacyEpisodes = baseline?.data?.legacy_episode_count ?? 0;
-  const legacyWorkstreams = baseline?.data?.legacy_workstream_count ?? 0;
+  if (loop?.initialization == null && baseline === null) {
+    return { ok: true, errors: [] }; // pre-checkpoint legacy history is intentionally opaque
+  }
   const floor = baseline === null ? 0 : lines.indexOf(baseline) + 1;
-  const proofTypes = new Set([
-    'episode-new', 'episode-record', 'episode-abandon',
-    'independent-review-claimed', 'independent-review-blocked', 'review-outcome',
-    'workstream-new', 'workstream-status', 'workstream-terminal', 'state-patch',
-  ]);
   const chains = new Map();
+  if (baseline !== null) {
+    for (const origin of (baseline.data?.legacy_proof_origins ?? [])) {
+      const key = `${origin.kind}:${origin.id}`;
+      if (chains.has(key)) errors.push(`duplicate legacy proof origin for ${key}`);
+      else chains.set(key, origin.digest);
+    }
+  }
   for (const event of lines.slice(floor)) {
-    if (!proofTypes.has(event.type)) continue;
+    if (!PROOF_EVENT_TYPES.has(event.type)) continue;
     const transitions = event.data?.proof_transitions;
     if (!Array.isArray(transitions)) {
       errors.push(`proof transitions missing at event ${event.seq}`);
@@ -11119,7 +11250,10 @@ export function verifyProofTransitionCorrelation(loop, lines) {
       }
       const key = `${transition.kind}:${transition.id}`;
       const expectedBefore = chains.get(key) ?? 'NONE';
-      const creation = event.type === 'episode-new' || event.type === 'workstream-new';
+      const creation = (event.type === 'episode-new'
+          && key === `episode:${event.data?.episode_id}`)
+        || (event.type === 'workstream-new'
+          && key === `workstream:${event.data?.id}`);
       if (eventKeys.has(key) || transition.before_digest !== expectedBefore
           || creation !== (expectedBefore === 'NONE')) {
         errors.push(`proof transition disconnected for ${key}`);
@@ -11136,10 +11270,10 @@ export function verifyProofTransitionCorrelation(loop, lines) {
       .map(error => `${error} at event ${event.seq}`));
   }
   const current = new Map();
-  for (const episode of (loop.episodes ?? []).slice(legacyEpisodes)) {
+  for (const episode of (loop.episodes ?? [])) {
     current.set(`episode:${episode.id}`, proofEntityDigest('episode', episode, loop));
   }
-  for (const workstream of (loop.workstreams ?? []).slice(legacyWorkstreams)) {
+  for (const workstream of (loop.workstreams ?? [])) {
     current.set(`workstream:${workstream.id}`,
       proofEntityDigest('workstream', workstream, loop));
   }
@@ -11411,8 +11545,24 @@ function recoverAnchoredTransactionUnderLock(root, runId, marker) {
     Object.freeze(structuredClone(event)))) });
 }
 
+const JOURNAL_CRASH_POINTS = new Set([
+  'state-stage-after-rename', 'event-stage-after-rename', 'pending-after-rename',
+  'event-after-partial-append', 'event-after-full-append', 'state-after-rename',
+  'hash-after-rename', 'before-cleanup',
+]);
+
+function crashIfScheduled(stage) {
+  const selected = process.env.NODE_ENV === 'test'
+    ? process.env.DEEP_LOOP_TEST_CRASH_AT : undefined;
+  if (selected === undefined) return;
+  if (!JOURNAL_CRASH_POINTS.has(selected)) {
+    throw new Error('ANCHORED_TEST_CRASH_POINT_INVALID');
+  }
+  if (selected === stage) process.exit(91);
+}
+
 function publishAnchoredCandidateUnderLock(root, runId, {
-  candidate, prospective, callerBinding, intentDigest, crashProbe = () => {},
+  candidate, prospective, callerBinding, intentDigest,
 }) {
   const paths = journalPaths(root, runId);
   assertNoAnchoredMarkerUnderLock(root, runId);
@@ -11435,23 +11585,23 @@ function publishAnchoredCandidateUnderLock(root, runId, {
     intent_digest: intentDigest,
     before: journalSnapshot(beforeEvents, beforeState, beforeHash),
     after: journalSnapshot(allEvents, stagedState, stagedHash) };
-  durableReplace(paths.state, stagedState); crashProbe('state-stage-after-rename');
-  durableReplace(paths.events, stagedEvents); crashProbe('event-stage-after-rename');
+  durableReplace(paths.state, stagedState); crashIfScheduled('state-stage-after-rename');
+  durableReplace(paths.events, stagedEvents); crashIfScheduled('event-stage-after-rename');
   durableReplace(paths.hash, stagedHash);
   durableReplace(paths.marker, Buffer.from(JSON.stringify(marker)));
-  crashProbe('pending-after-rename');
+  crashIfScheduled('pending-after-rename');
   const split = Math.max(1, Math.floor(stagedEvents.length / 2));
   appendFileSync(eventPath, stagedEvents.subarray(0, split));
   syncFile(eventPath); syncDirectory(eventPath);
-  crashProbe('event-after-partial-append');
+  crashIfScheduled('event-after-partial-append');
   appendFileSync(eventPath, stagedEvents.subarray(split));
   syncFile(eventPath);
-  crashProbe('event-after-full-append');
-  durableReplace(statePath, stagedState, { crashProbe, label: 'state' });
-  crashProbe('state-after-rename');
-  durableReplace(hashPath, stagedHash, { crashProbe, label: 'hash' });
-  crashProbe('hash-after-rename');
-  crashProbe('before-cleanup'); removeJournal(paths);
+  crashIfScheduled('event-after-full-append');
+  durableReplace(statePath, stagedState, { label: 'state' });
+  crashIfScheduled('state-after-rename');
+  durableReplace(hashPath, stagedHash, { label: 'hash' });
+  crashIfScheduled('hash-after-rename');
+  crashIfScheduled('before-cleanup'); removeJournal(paths);
 }
 
 function readVerifiedStateUnderLock(root, runId, { fenceCheck } = {}) {
@@ -11610,15 +11760,20 @@ function legacyCheckpointSpec(root, runId, loop, lines,
     lease_state: lease.state, acquired_at: lease.acquired_at,
     legacy_episode_count: legacyEpisodeCount,
     legacy_workstream_count: legacyWorkstreamCount,
-    legacy_proof_digest: legacyProofBaselineDigest(
+    legacy_proof_origins: legacyProofOrigins(
       loop, legacyEpisodeCount, legacyWorkstreamCount),
+    legacy_authority_digest: legacyAuthorityDigest(loop),
   } };
 }
 
 // Callers must already own the run lock through withVerifiedMutationLock. Only appendAnchored,
 // generic lease/accounting writers, and the fixed root-rebind commit may import this export.
 export function commitVerifiedEventsUnderLock(root, runId, loop, eventSpecs, mutate,
-  { baseLines, baseStateHash, callerBinding, intentDigest, crashProbe } = {}) {
+  options = {}) {
+  if (typeof options.crashProbe === 'function') {
+    throw new Error('LOCK_HELD_CALLBACK_FORBIDDEN');
+  }
+  const { baseLines, baseStateHash, callerBinding, intentDigest } = options;
   if (!Array.isArray(eventSpecs) || eventSpecs.length === 0) {
     throw new Error('VERIFIED_COMMIT_EVENTS_REQUIRED');
   }
@@ -11637,29 +11792,44 @@ export function commitVerifiedEventsUnderLock(root, runId, loop, eventSpecs, mut
   const checkpoint = legacyCheckpointSpec(root, runId, loop, lines, {
     callerBinding: binding, now: eventSpecs[0].now,
   });
-  const preparedSpecs = checkpoint === null ? eventSpecs : [checkpoint, ...eventSpecs];
-  const prospective = [...lines];
-  const allCommitted = [];
+  const preparedSpecs = structuredClone(
+    checkpoint === null ? eventSpecs : [checkpoint, ...eventSpecs]);
+  const draftProspective = [...lines];
+  const draftCommitted = [];
   for (const spec of preparedSpecs) {
     if (!spec || typeof spec.type !== 'string' || spec.type.length === 0) {
       throw new Error('VERIFIED_COMMIT_EVENT_INVALID');
     }
-    const event = nextEvent(prospective, { type: spec.type,
+    const event = nextEvent(draftProspective, { type: spec.type,
       data: structuredClone(spec.data), now: spec.now });
+    draftProspective.push(event); draftCommitted.push(event);
+  }
+  // The mutator may consume only stable seq/ts/type/data from draft business events. Checksums and
+  // event-log head are rebuilt after the candidate-derived proof transitions are attached.
+  const draftBusiness = checkpoint === null ? draftCommitted : draftCommitted.slice(1);
+  const candidate = structuredClone(loop);
+  candidate.event_log_head = headOfLines(draftProspective);
+  const draftSpent = spentOfLines(draftProspective);
+  if (mutate) mutate(candidate, draftSpent, draftBusiness);
+  candidate.updated_at = draftCommitted.at(-1).ts;
+
+  const finalSpecs = draftCommitted.map(event => ({ type: event.type,
+    data: structuredClone(event.data), now: event.ts }));
+  attachCandidateProofTransitions(loop, candidate, finalSpecs);
+  const prospective = [...lines];
+  const allCommitted = [];
+  for (const spec of finalSpecs) {
+    const event = nextEvent(prospective, spec);
     prospective.push(event); allCommitted.push(event);
   }
-  // Preserve the existing callback contract: callers see only their business events.
-  const committed = checkpoint === null ? allCommitted : allCommitted.slice(1);
-  const candidate = structuredClone(loop);
   candidate.event_log_head = headOfLines(prospective);
   const spent = spentOfLines(prospective);
-  if (mutate) mutate(candidate, spent, committed);
-  candidate.updated_at = allCommitted.at(-1).ts;
   assertVerifiedRunSnapshot(root, runId, candidate, { lines: prospective });
   publishAnchoredCandidateUnderLock(root, runId, {
     beforeLoop: loop, beforeLines: lines, candidate, prospective,
-    committed: allCommitted, callerBinding: binding, intentDigest, crashProbe,
+    committed: allCommitted, callerBinding: binding, intentDigest,
   });
+  const committed = checkpoint === null ? allCommitted : allCommitted.slice(1);
   return { candidate, committed, spent };
 }
 ```
@@ -11673,8 +11843,10 @@ real production ordering rather than a worker-only raw write.
 `callerBinding` is mandatory for every production call and is the identity already accepted by that
 API's fence check; it is never inferred from current or post-mutation lease bytes. `intentDigest` is a
 fixed canonical digest of business event type/data and idempotency key, not a raw receipt.
-`crashProbe` is an injected test seam with the closed points listed above and is absent from
-production callers. The gateway completes only a matching caller-and-intent pending transaction and
+Hard-crash injection is not a caller callback. Only child workers launched with `NODE_ENV=test` may
+select one allowlisted scalar `DEEP_LOOP_TEST_CRASH_AT`; private `crashIfScheduled` exits directly and
+never invokes caller code under the lock. Exported mutation APIs and the verified commit gateway do
+not accept a function capability. The gateway completes only a matching caller-and-intent pending transaction and
 then invokes the complete operation body once on a fresh read, so normal idempotency decides the
 response. A same-caller/different-intent entry receives `ANCHORED_TRANSACTION_PENDING` without
 writes; only the exact original API retry may recover it. The checkpoint
@@ -11774,7 +11946,7 @@ function appendAnchoredUnderLock(root, runId, { type, data }, mutate, preCheck, 
         if (mutate) mutate(candidate, spent, clock);
       }, { baseLines: lines, baseStateHash,
         callerBinding: binding, intentDigest,
-        crashProbe: opts.crashProbe });
+        });
 }
 
 function transitionalDirectIntent(event) {
@@ -15145,15 +15317,18 @@ git commit -m "fix: verify success-class state authority" -m "Co-Authored-By: Cl
   tests share one adapter and pass an explicit ID only when a logical retry is under test.
   Every `episode-new`, `episode-record`, `episode-abandon`, `independent-review-*`,
   `review-outcome`, `workstream-new`, `workstream-status`, `workstream-terminal`, and `state-patch`
-  event also carries an exact,
-  canonical `proof_transitions=[{kind,id,before_digest,after_digest},...]` array. Creation uses
-  `NONE`; all later transitions chain from the previous anchored digest. Writers compute every
-  digest from verified before/candidate projections inside the same transaction. A review outcome
-  binds both checker and workstream; a proof-bearing state patch binds every changed entity.
-  `verifyProofTransitionCorrelation` reduces the chain and compares it to the current episode proof
-  projection (all fields except comprehension acknowledgements) or the exact workstream proof
-  projection `{id,status,review_points_done,active}`, so no hash-valid status/artifact/result/reviewer
-  proof/workstream rewrite can become finish authority without an anchored transition.
+  event also carries an exact canonical
+  `proof_transitions=[{kind,id,before_digest,after_digest},...]` array. Creation uses `NONE`; all
+  later transitions chain from genesis or the checkpoint's authenticated `legacy_proof_origins`.
+  Individual writers do not compute this array. Task 7B's one prospective gateway applies the
+  business mutator to one candidate, diffs every proof entity, attaches the exact event-specific
+  transition set, and rebuilds final event checksums/head before verification and publication. A
+  review outcome binds both checker and workstream; a proof-bearing state patch binds every changed
+  entity. `verifyProofTransitionCorrelation` reduces the chain and compares it to the current episode
+  proof projection (all fields except comprehension acknowledgements) or the exact workstream proof
+  projection `{id,status,review_points_done,active,active_workstreams}`. The semantic verifier also
+  rejects duplicate and unknown active IDs, so no hash-valid status/artifact/result/reviewer proof,
+  workstream, or exact active-array rewrite can become finish authority without an anchored transition.
 
 - [ ] **Step 1: Write the complete failing pre-action authority tests**
 
@@ -16529,21 +16704,20 @@ object. Recovery reconstructs the exact ID/path before request materialization:
 diff --git a/scripts/lib/episode.mjs b/scripts/lib/episode.mjs
 --- a/scripts/lib/episode.mjs
 +++ b/scripts/lib/episode.mjs
-@@ -1,7 +1,9 @@
+@@ -1,7 +1,8 @@
 -import { mkdirSync, existsSync } from 'node:fs';
-+import { lstatSync, realpathSync } from 'node:fs';
++import { existsSync, lstatSync, realpathSync } from 'node:fs';
 -import { isAbsolute, join, resolve, sep } from 'node:path';
 +import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
  import { readState, writeState, withLock, runDir } from './state.mjs';
 -import { appendAnchored } from './integrity.mjs';
-+import { appendAnchored, directMutationOptions, intentField,
-+  proofTransitionsForCandidate, readVerifiedState,
++import { appendAnchored, directMutationOptions, intentField, readVerifiedState,
 +  withVerifiedMutationLock } from './integrity.mjs';
 -import { atomicWrite } from './envelope.mjs';
 +import { createFileDurablyIfAbsent } from './durable-file.mjs';
  import { slugify } from './slug.mjs';
  import { leaseCheck } from './lease.mjs';
-@@ -28,5 +29,86 @@ function requestSkeleton({ id, plugin, role, kind, point, workstream, expectedArtifacts, evidence }) {
+@@ -28,5 +29,90 @@ function requestSkeleton({ id, plugin, role, kind, point, workstream, expectedArtifacts, evidence }) {
    ].join('\n');
  }
 -
@@ -16554,6 +16728,10 @@ diff --git a/scripts/lib/episode.mjs b/scripts/lib/episode.mjs
 +      || realpathSync(dirname(path)) !== expectedParent) {
 +    throw new Error('EPISODE_REQUEST_WINNER_INVALID');
 +  }
++}
++
++function canonicalEpisodeRequestPath(root, runId, episodeId) {
++  return join(realpathSync(runDir(root, runId)), `episode-request-${episodeId}.md`);
 +}
 +
 +export function episodeMaterializationWork(episode) {
@@ -16570,7 +16748,7 @@ diff --git a/scripts/lib/episode.mjs b/scripts/lib/episode.mjs
 +  { beforeMaterialize, beforePublish } = {}) {
 +  beforeMaterialize?.(workItem); // always outside the run lock
 +  const canonicalRun = realpathSync(runDir(root, runId));
-+  const expectedPath = join(canonicalRun, `episode-request-${workItem?.id}.md`);
++  const expectedPath = canonicalEpisodeRequestPath(root, runId, workItem?.id);
 +  if (workItem?.requestPath !== expectedPath
 +      || !/^[0-9a-f]{64}$/.test(workItem?.requestDigest || '')
 +      || !/^[0-9a-f]{64}$/.test(workItem?.skeletonDigest || '')) {
@@ -16668,7 +16846,7 @@ diff --git a/scripts/lib/episode.mjs b/scripts/lib/episode.mjs
 +      throw new Error('EPISODE_RESPONSE_PROJECTION_CHANGED');
 +    }
 +    id = recovered.id;
-+    requestPath = join(runDir(root, runId), `episode-request-${id}.md`);
++    requestPath = canonicalEpisodeRequestPath(root, runId, id);
 +    return { id, requestPath };
 +  };
 +  const onExisting = loop => loop.episodes.some(episode =>
@@ -16780,7 +16958,7 @@ closes the run lock, re-attests that committed creation projection, then publish
 `createFileDurablyIfAbsent`. There is no `episodes` parent or per-episode directory in the write path.
 An existing regular exact-parent request is validation-only and execution-plane edits are preserved.
 `beforeMaterialize` is the only public test hook for this phase and always runs after lock release;
-the journal `crashProbe` remains a private synchronous non-reentrant seam.
+the journal uses only the private scalar worker schedule and invokes no function under the lock.
 
 ```diff
 diff --git a/scripts/lib/episode.mjs b/scripts/lib/episode.mjs
@@ -16895,7 +17073,7 @@ index c567221..8bf9718 100644
      if (matches.length !== 1) throw new Error('EPISODE_RESPONSE_PROJECTION_CHANGED');
      const [recovered] = matches;
      if (recovered.plugin !== plugin || recovered.role !== role
-@@ -111,30 +145,81 @@ function createEpisode(root, runId, {
+@@ -111,30 +145,77 @@ function createEpisode(root, runId, {
          || JSON.stringify(recovered.evidence) !== JSON.stringify(evidence)
          || JSON.stringify(recovered.contract) !== JSON.stringify(contract)
          || recovered.creation_initial_status !== initialStatus
@@ -16916,7 +17094,7 @@ index c567221..8bf9718 100644
 +        ? 'EPISODE_REQUEST_CONFLICT' : 'EPISODE_RESPONSE_PROJECTION_CHANGED');
      }
      id = recovered.id;
-     requestPath = join(runDir(root, runId), `episode-request-${id}.md`);
+     requestPath = canonicalEpisodeRequestPath(root, runId, id);
      return { id, requestPath };
    };
 -  const onExisting = loop => loop.episodes.some(episode =>
@@ -16958,7 +17136,7 @@ index c567221..8bf9718 100644
 +    if (id == null) {
 +      const n = String(loop.episodes.length + 1).padStart(3, '0');
 +      id = `${n}-${safePlugin}`;
-+      requestPath = join(runDir(root, runId), `episode-request-${id}.md`);
++      requestPath = canonicalEpisodeRequestPath(root, runId, id);
 +      event.data.episode_id = id;
 +      initialEpisode = {
 +        id, plugin, role, kind, point, workstream_id: workstream, status: initialStatus,
@@ -16980,10 +17158,6 @@ index c567221..8bf9718 100644
 +        ...(initialStatus === 'blocked'
 +          ? { block_reason: blockReason, needs_human: true } : {}),
 +      };
-+      const candidate = structuredClone(loop);
-+      candidate.episodes.push(structuredClone(initialEpisode));
-+      event.data.proof_transitions = proofTransitionsForCandidate(loop, candidate,
-+        [`episode:${id}`]);
 +    }
 +  };
 +  const buildWorkItem = () => {
@@ -17261,39 +17435,349 @@ index 730e203..aa1cf72 100644
      ...(evidence !== undefined ? { evidence } : {}),
 ```
 
-Apply the proof-transition retrofit in the same Task 7F commit. `newEpisode` above sets its one-entry
-`proof_transitions` array in `preCheck` from the exact object later appended. Refactor
-`recordEpisode`, `abandonEpisode`, `claimIndependentReview`, `blockIndependentReview`,
-`commitReviewOutcome`, `newWorkstream`, `setWorkstreamStatus`, `markWorkstreamTerminal`, and the
-proof-bearing branches of `state.patch` to use the same candidate-only pattern. Each precheck clones
-the verified target(s), computes `before_digest=proofEntityDigest(kind,before,beforeLoop)`, applies
-the requested mutation to one candidate loop, computes the corresponding after digests from that
-same candidate, writes a canonical kind/id-sorted `proof_transitions` array into the already
-allocated event, and the mutator installs those exact clones. All writers call the shared
-`proofTransitionsForCandidate(beforeLoop,candidateLoop,entityKeys)` rather than duplicating projection
-logic. `review-outcome` always carries two
-entries—checker episode and workstream—even when rejection or an idempotent approval leaves the
-workstream digest unchanged; this authenticates `review_points_done` without an ambiguous
-conditional event shape. `state-patch` records the sorted set of every episode/workstream proof
-projection actually changed by its candidate, including all workstreams whose active membership
-changed. A comprehension ack changes only excluded `human_reviewed`/`agent_reviewed` bookkeeping
-and requires no proof transition.
+The proof-transition retrofit is already complete in Task 7B's installable integrity afterimage;
+Task 7F supplies only the business writers and tests that exercise it. `attachCandidateProofTransitions`
+accepts at most one proof-bearing business event per transaction, derives `changedKeys` from the
+verified before/candidate inventories, adds any event-mandatory unchanged entity (the workstream in
+a rejecting review outcome), and rejects an unanchored proof change. `workstream-new` adds its derived
+`id` before the gateway runs. Because exact `active_workstreams` is inside every workstream projection,
+a membership change produces transitions for all affected existing workstreams as well as the new or
+target workstream. `state-patch` uses the exact changed set; comprehension acknowledgement produces
+an empty set because its two markers are excluded.
 
-For a workstream the canonical projection is exactly `{id,status,review_points_done,active}`; for an
-episode it is the complete object except those two comprehension markers. `workstream-new` adds its
-derived `id` to event data before digesting. Creation uses `before_digest:'NONE'` and
-`creation_contract:'workstream-create-v1'`. No writer may recompute the candidate differently after
-the event is allocated. `verifyProofTransitionCorrelation` is called by both current and prospective
-`verifyRunSnapshot`, so a missing/disconnected/duplicate/misbound transition fails the same anchored
-commit instead of becoming durable. Add a table-driven test that creates one episode and one
-workstream; advances them through every legal record, claim, block, review-outcome, status, terminal,
-and proof-bearing state-patch path; verifies the chain; and separately proves comprehension ack is
-accepted without changing the episode proof digest. Then for each of status/artifacts/result/reviewer
-proof/workstream status/review_points_done/active-membership recompute only `loop.json` plus
-`.loop.hash` and prove `readVerifiedState` and `finishRun` both fail with `RUN_SNAPSHOT_INVALID` and
-write zero bytes. Also mutate one well-formed transition digest, remove one transition event, delete
-one member of a two-entity review transition, and reorder/duplicate an array under a recomputed
-checksum chain; every case must fail.
+Replace the installed `newWorkstream` export with this complete afterimage before the later
+direct-authority workspace diff. It makes the derived creation ID available to the central gateway
+before the business mutator and restores the same ID on response-loss recovery:
+
+```js
+// PLAN_REPLACE_EXPORT: scripts/lib/workspace.mjs newWorkstream
+export function newWorkstream(root, runId, {
+  title, branch, worktree, baseCommit = null, dependsOn = [], fence,
+} = {}) {
+  if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) {
+    throw new Error('FENCE_REQUIRED: newWorkstream');
+  }
+  if (typeof title !== 'string' || title.length === 0
+      || typeof branch !== 'string' || branch.length === 0
+      || typeof worktree !== 'string' || worktree.length === 0) {
+    throw new Error('WORKSTREAM_INPUT_INVALID: title/branch/worktree must be non-empty strings');
+  }
+  if (!Array.isArray(dependsOn)
+      || dependsOn.some(dependency => typeof dependency !== 'string' || dependency.length === 0)) {
+    throw new Error('WORKSTREAM_INPUT_INVALID: dependsOn must be an array of strings');
+  }
+  const rootResolved = realpathSync(root);
+  function resolveDeep(path) {
+    const absolute = resolve(path);
+    if (existsSync(absolute)) return realpathSync(absolute);
+    try {
+      const stat = lstatSync(absolute);
+      if (stat.isSymbolicLink()) {
+        throw new Error(`WORKSTREAM_WORKTREE_ESCAPE: dangling symlink component: ${absolute}`);
+      }
+    } catch (error) {
+      if (String(error?.message || error).startsWith('WORKSTREAM_WORKTREE_ESCAPE')) throw error;
+      if (error?.code !== 'ENOENT') {
+        throw new Error(`WORKSTREAM_WORKTREE_ESCAPE: unresolved worktree component: ${absolute}`,
+          { cause: error });
+      }
+    }
+    const parent = dirname(absolute);
+    return parent === absolute ? absolute : join(resolveDeep(parent), basename(absolute));
+  }
+  const absoluteInput = isAbsolute(worktree);
+  const portableInput = absoluteInput ? null : normalizePortableRelativePath(worktree);
+  if (!absoluteInput && !portableInput) {
+    throw new Error(`WORKSTREAM_WORKTREE_ESCAPE: invalid relative worktree path: ${worktree}`);
+  }
+  const resolved = resolveDeep(absoluteInput ? worktree : join(rootResolved, portableInput));
+  const conventionRoots = [join(rootResolved, '.claude', 'worktrees'),
+    join(rootResolved, '.worktrees')];
+  const underConvention = conventionRoots.some(base =>
+    pathWithin(base, resolved) && relative(base, resolved) !== '');
+  if (worktree.split(/[/\\]/).includes('..') || !underConvention) {
+    throw new Error(`WORKSTREAM_WORKTREE_ESCAPE: worktree must resolve under project root: ${worktree}`);
+  }
+  const storedWorktree = normalizePortableRelativePath(relative(rootResolved, resolved));
+  if (!storedWorktree) {
+    throw new Error(`WORKSTREAM_WORKTREE_ESCAPE: worktree is not durably relative: ${worktree}`);
+  }
+  const callerBinding = { owner: fence.owner, generation: fence.generation };
+  const intentDigest = workstreamNewIntent(callerBinding,
+    { title, branch, worktree: storedWorktree, baseCommit, dependsOn });
+  let id;
+  const event = { type: 'workstream-new', data: { title, id: null } };
+  appendAnchored(root, runId, event, loop => {
+    loop.workstreams.push({
+      id, title, status: 'planned', branch, worktree: storedWorktree,
+      base_commit: baseCommit, dirty_on_handoff: false,
+      pr: { intended: true, state: 'none', url: null }, episodes: [],
+      review_points_done: [], depends_on: dependsOn,
+    });
+  }, loop => {
+    const result = leaseCheck(loop, fence);
+    if (!result.ok) throw new Error(`LEASE_FENCED: ${result.reason}`);
+    if (id == null) {
+      const number = String(loop.workstreams.length + 1).padStart(2, '0');
+      id = `ws-${number}-${slugify(title) || 'ws'}`;
+      event.data.id = id;
+    }
+  }, { floor: MUTATION_TURN_FLOOR, callerBinding, intentDigest,
+    fenceError: 'LEASE_FENCED: newWorkstream',
+    onRecovered: loop => {
+      const recovered = loop.workstreams.at(-1);
+      if (!recovered || recovered.title !== title || recovered.branch !== branch
+          || recovered.worktree !== storedWorktree || recovered.base_commit !== baseCommit
+          || JSON.stringify(recovered.depends_on) !== JSON.stringify(dependsOn)) {
+        throw new Error('WORKSTREAM_RESPONSE_PROJECTION_CHANGED');
+      }
+      id = recovered.id;
+    } });
+  return { id };
+}
+```
+
+Append the complete `tests/proof-transitions.test.mjs` block below. It runs the installed public
+episode, review, workspace, and state writers, not validator-local models:
+
+```js
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { initRun } from '../scripts/lib/initrun.mjs';
+import { contentHash } from '../scripts/lib/envelope.mjs';
+import { attachCandidateProofTransitions, readLines, readVerifiedState,
+  proofEntityDigest, verifyProofTransitionCorrelation }
+  from '../scripts/lib/integrity.mjs';
+import { newEpisode, recordEpisode } from './helpers/episode-request.mjs';
+import { newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal }
+  from '../scripts/lib/workspace.mjs';
+import { patch } from '../scripts/lib/state.mjs';
+import { legacyInProgressProofFixture } from './fixtures/verified-app-run.mjs';
+
+const ROOT = () => mkdtempSync(join(tmpdir(), 'deep-loop-proof-transitions-'));
+const FENCE = runId => ({ owner: runId, generation: 1, runtime: 'codex' });
+const writeHashValid = (root, runId, mutate) => {
+  const directory = join(root, '.deep-loop', 'runs', runId);
+  const loop = JSON.parse(readFileSync(join(directory, 'loop.json'), 'utf8'));
+  mutate(loop);
+  const raw = JSON.stringify(loop, null, 2);
+  writeFileSync(join(directory, 'loop.json'), raw);
+  writeFileSync(join(directory, '.loop.hash'), contentHash(raw));
+};
+
+function verifiedProofFixture() {
+  const root = ROOT();
+  const { runId } = initRun(root, { runtime: 'codex', goal: 'proof rewrite fixture',
+    cwdFn: () => root, now: new Date('2026-07-13T00:00:00.000Z') });
+  const fence = FENCE(runId);
+  const workstream = newWorkstream(root, runId, { title: 'rewrite', branch: 'rewrite',
+    worktree: '.worktrees/rewrite', fence });
+  const second = newWorkstream(root, runId, { title: 'rewrite second', branch: 'rewrite-second',
+    worktree: '.worktrees/rewrite-second', fence });
+  setWorkstreamStatus(root, runId, workstream.id, 'in_progress', { fence });
+  setWorkstreamStatus(root, runId, second.id, 'in_progress', { fence });
+  const maker = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker',
+    kind: 'implementation', point: 'implementation', workstream: workstream.id,
+    requestId: 'rewrite-maker-1', fence });
+  return { root, runId, fence, workstreamId: workstream.id, makerId: maker.id };
+}
+
+test('central gateway owns every proof-event entity mapping', () => {
+  const base = { episodes: [
+    { id: 'maker', role: 'maker', status: 'in_progress' },
+    { id: 'checker', role: 'checker', status: 'pending' },
+  ], workstreams: [{ id: 'ws', status: 'in_progress', review_points_done: [] }],
+  active_workstreams: ['ws'] };
+  const scenarios = [
+    ['episode-new', { episode_id: 'created' }, candidate => {
+      candidate.episodes.push({ id: 'created', role: 'maker', status: 'pending' });
+    }, ['episode:created']],
+    ['episode-record', { id: 'maker' }, candidate => {
+      candidate.episodes[0].status = 'done';
+    }, ['episode:maker']],
+    ['episode-abandon', { id: 'maker' }, candidate => {
+      candidate.episodes[0].status = 'abandoned';
+    }, ['episode:maker']],
+    ['independent-review-claimed', { episode_id: 'checker' }, candidate => {
+      candidate.episodes[1].status = 'in_progress';
+    }, ['episode:checker']],
+    ['independent-review-blocked', { episode_id: 'checker' }, candidate => {
+      candidate.episodes[1].status = 'blocked';
+    }, ['episode:checker']],
+    ['review-outcome', { episodeId: 'checker', workstream_id: 'ws' }, candidate => {
+      candidate.episodes[1].status = 'approved';
+      candidate.workstreams[0].review_points_done = ['implementation'];
+    }, ['episode:checker', 'workstream:ws']],
+    ['workstream-new', { id: 'ws-new' }, candidate => {
+      candidate.workstreams.push({ id: 'ws-new', status: 'planned', review_points_done: [] });
+    }, ['workstream:ws-new']],
+    ['workstream-status', { id: 'ws' }, candidate => {
+      candidate.workstreams[0].status = 'in_review';
+    }, ['workstream:ws']],
+    ['workstream-terminal', { id: 'ws' }, candidate => {
+      candidate.workstreams[0].status = 'ready';
+    }, ['workstream:ws']],
+    ['state-patch', { field: 'active_workstreams' }, candidate => {
+      candidate.active_workstreams = [];
+    }, ['workstream:ws']],
+  ];
+  for (const [type, data, mutate, expected] of scenarios) {
+    const candidate = structuredClone(base); mutate(candidate);
+    const events = [{ type, data: structuredClone(data) }];
+    attachCandidateProofTransitions(base, candidate, events);
+    assert.deepEqual(events[0].data.proof_transitions
+      .map(item => `${item.kind}:${item.id}`), expected, type);
+  }
+  const ack = structuredClone(base);
+  ack.episodes[0].human_reviewed = true;
+  const events = [{ type: 'comprehension-acknowledged', data: {} }];
+  assert.doesNotThrow(() => attachCandidateProofTransitions(base, ack, events));
+  assert.equal(events[0].data.proof_transitions, undefined);
+});
+
+test('transition reducer rejects digest and multi-entity event tampering', () => {
+  const empty = { initialization: {}, episodes: [], workstreams: [], active_workstreams: [] };
+  const created = { initialization: {}, episodes: [
+    { id: 'checker', role: 'checker', status: 'pending' },
+  ], workstreams: [
+    { id: 'ws', status: 'in_review', review_points_done: [] },
+  ], active_workstreams: ['ws'] };
+  const workstreamCreate = { type: 'workstream-new', data: { id: 'ws',
+    proof_transitions: [{ kind: 'workstream', id: 'ws', before_digest: 'NONE',
+      after_digest: proofEntityDigest('workstream', created.workstreams[0], created) }] } };
+  const episodeCreate = { type: 'episode-new', data: { episode_id: 'checker',
+    proof_transitions: [{ kind: 'episode', id: 'checker', before_digest: 'NONE',
+      after_digest: proofEntityDigest('episode', created.episodes[0], created) }] } };
+  const approved = structuredClone(created);
+  approved.episodes[0].status = 'approved';
+  approved.workstreams[0].review_points_done = ['implementation'];
+  const outcome = { type: 'review-outcome',
+    data: { episodeId: 'checker', workstream_id: 'ws' } };
+  attachCandidateProofTransitions(created, approved, [outcome]);
+  const lines = [workstreamCreate, episodeCreate, outcome];
+  assert.equal(verifyProofTransitionCorrelation(approved, lines).ok, true);
+
+  const digestDrift = structuredClone(lines);
+  digestDrift[2].data.proof_transitions[0].after_digest = 'f'.repeat(64);
+  assert.equal(verifyProofTransitionCorrelation(approved, digestDrift).ok, false);
+  const missingMember = structuredClone(lines);
+  missingMember[2].data.proof_transitions.pop();
+  assert.equal(verifyProofTransitionCorrelation(approved, missingMember).ok, false);
+  const reordered = structuredClone(lines);
+  reordered[2].data.proof_transitions.reverse();
+  assert.equal(verifyProofTransitionCorrelation(approved, reordered).ok, false);
+  const duplicate = structuredClone(lines);
+  duplicate[2].data.proof_transitions.push(
+    structuredClone(duplicate[2].data.proof_transitions[0]));
+  assert.equal(verifyProofTransitionCorrelation(approved, duplicate).ok, false);
+  assert.equal(verifyProofTransitionCorrelation(empty, []).ok, true);
+});
+
+test('gateway derives exact episode workstream and active-array transitions', () => {
+  const root = ROOT();
+  const { runId } = initRun(root, { runtime: 'codex', goal: 'proof gateway',
+    cwdFn: () => root, now: new Date('2026-07-13T00:00:00.000Z') });
+  const fence = FENCE(runId);
+  const first = newWorkstream(root, runId, { title: 'first', branch: 'first',
+    worktree: '.worktrees/first', fence });
+  const second = newWorkstream(root, runId, { title: 'second', branch: 'second',
+    worktree: '.worktrees/second', fence });
+  setWorkstreamStatus(root, runId, first.id, 'in_progress', { fence });
+  setWorkstreamStatus(root, runId, second.id, 'in_progress', { fence });
+  const maker = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker',
+    kind: 'implementation', point: 'implementation', workstream: first.id,
+    expectedArtifacts: ['result.md'], requestId: 'proof-maker-1', fence });
+  writeFileSync(join(root, 'result.md'), 'proof result\n');
+  recordEpisode(root, runId, maker.id, { status: 'done', artifacts: ['result.md'], fence });
+  patch(root, runId, 'active_workstreams', [second.id], { fence });
+  const snapshot = readVerifiedState(root, runId).data;
+  assert.equal(verifyProofTransitionCorrelation(snapshot, readLines(root, runId)).ok, true);
+  const patchEvent = readLines(root, runId).findLast(event => event.type === 'state-patch');
+  assert.deepEqual(patchEvent.data.proof_transitions.map(item => `${item.kind}:${item.id}`),
+    [`workstream:${first.id}`, `workstream:${second.id}`].sort());
+  recordWorkstreamTerminal(root, runId, second.id,
+    { status: 'abandoned', proof: { reason: 'complete probe' }, fence });
+});
+
+test('pre-checkpoint legacy proof history is opaque and existing entities advance from origins', () => {
+  // The fixture is the checked-in 1.8.2 raw-hash-valid builder used by Task 7B. It contains an
+  // in-progress maker and workstream plus old episode/workstream events without proof_transitions.
+  const { root, runId, makerId, workstreamId, fence } = legacyInProgressProofFixture();
+  assert.doesNotThrow(() => readVerifiedState(root, runId));
+  writeFileSync(join(root, 'legacy.md'), 'legacy result\n');
+  recordEpisode(root, runId, makerId, { status: 'done', artifacts: ['legacy.md'], fence });
+  setWorkstreamStatus(root, runId, workstreamId, 'in_review', { fence });
+  const lines = readLines(root, runId);
+  const baseline = lines.find(event => event.type === 'lease-lineage-baselined');
+  assert.equal(baseline.data.legacy_proof_origins.length, 2);
+  assert.equal(verifyProofTransitionCorrelation(readVerifiedState(root, runId).data, lines).ok, true);
+});
+
+test('hash-valid proof and exact active-array rewrites fail closed', () => {
+  for (const mutate of [
+    loop => { loop.episodes[0].status = 'approved'; },
+    loop => { loop.workstreams[0].review_points_done = ['implementation']; },
+    loop => { loop.active_workstreams = [loop.workstreams[0].id, loop.workstreams[0].id]; },
+    loop => { loop.active_workstreams = ['unknown-workstream']; },
+    loop => { loop.active_workstreams = [...loop.active_workstreams].reverse(); },
+  ]) {
+    const fixture = verifiedProofFixture();
+    writeHashValid(fixture.root, fixture.runId, mutate);
+    assert.throws(() => readVerifiedState(fixture.root, fixture.runId), /RUN_SNAPSHOT_INVALID/);
+  }
+});
+```
+
+`legacyInProgressProofFixture` is the complete shared raw legacy builder from Task 7B and
+`verifiedProofFixture` above uses the real repository writers and no copied verifier. The legacy
+fixture's old events deliberately omit
+`proof_transitions`, and the test proves the first mutation installs origins and advances existing
+entities instead of freezing them. The central table executes the complete event-type mapping for
+claim, block, both outcome shapes, abandon, status/terminal, state patch, and comprehension ack; the
+public-writer cases prove that mapping is installed rather than merely present as tokens. The final
+hash-valid rewrite loop covers episode/workstream/exact-active state attacks, while the reducer test
+supplies well-formed digest, missing review member, reorder, and duplicate-transition attacks.
+Task 7A's legacy matrix separately mutates origin and authority digest. The public hash-valid cases
+call `readVerifiedState`; the Gate 3B regression command also runs `finish.test.mjs`, whose corrupt
+proof fixture asserts byte-identical no-write failure from `finishRun`.
+
+Append this complete canonical-alias case to `tests/episode.test.mjs`:
+
+```js
+import { existsSync as existsAlias7f, mkdtempSync as tempAlias7f,
+  realpathSync as realAlias7f, symlinkSync as symlinkAlias7f } from 'node:fs';
+import { tmpdir as tmpAlias7f } from 'node:os';
+import { join as joinAlias7f } from 'node:path';
+import { initRun as initAlias7f } from '../scripts/lib/initrun.mjs';
+import { readVerifiedState as readAlias7f } from '../scripts/lib/integrity.mjs';
+import { newEpisode as newAlias7f } from './helpers/episode-request.mjs';
+
+test('episode request path is canonical before a symlink-root transaction commits',
+  { skip: process.platform === 'win32' }, () => {
+    const parent = realAlias7f(tempAlias7f(joinAlias7f(tmpAlias7f(), 'dl-episode-alias-')));
+    const canonical = joinAlias7f(parent, 'canonical');
+    const alias = joinAlias7f(parent, 'alias');
+    mkdirSync(canonical, { recursive: true });
+    symlinkAlias7f(canonical, alias, 'dir');
+    const { runId } = initAlias7f(canonical, { runtime: 'codex', goal: 'canonical episode',
+      cwdFn: () => canonical, now: new Date('2026-07-13T00:00:00.000Z') });
+    const result = newAlias7f(alias, runId, { plugin: 'deep-work', role: 'maker',
+      kind: 'implementation', point: 'implementation', requestId: 'canonical-alias-1',
+      fence: { owner: runId, generation: 1, runtime: 'codex' } });
+    const episode = readAlias7f(canonical, runId).data.episodes[0];
+    assert.equal(episode.request_path, result.requestPath);
+    assert.equal(episode.request_path,
+      joinAlias7f(realAlias7f(joinAlias7f(canonical, '.deep-loop', 'runs', runId)),
+        `episode-request-${episode.id}.md`));
+    assert.equal(existsAlias7f(episode.request_path), true);
+  });
+```
+
+Reuse the file's existing `mkdirSync`, `test`, and `assert` bindings; the aliased root is used for the
+actual public mutation, while every persisted/returned path must be the canonical run sibling.
 
 The direct episode API now requires one bounded caller-generated logical request ID. The execution
 plane chooses it once before the first call, reuses it after response loss, and rotates it only for
@@ -24357,8 +24841,8 @@ test9a('published message-unconfirmed marker fences a wrong stdin mode before re
 ```
 
 The helper is literal above. In Step 3, extend the worker with the following literal closed dispatch.
-Each listed public API accepts `crashProbe` only through its already-injected test dependency object;
-the CLI never exposes it, and the worker never calls a private recovery helper:
+The base worker has already set the private scalar crash environment; none of these public APIs
+accepts a callback or crash option, and the worker never calls a private recovery helper:
 
 ```js
 import { emitHandoff } from '../../scripts/lib/handoff.mjs';
@@ -24383,24 +24867,24 @@ function workerObservation10d(root) {
     host_task_cwd: root, host_task_cwd_source: 'app-task-context' };
 }
 const publicMutation10d = Object.freeze({
-  emit: ({ root, runId, input, crashProbe }) => emitHandoff(root, runId, {
+  emit: ({ root, runId, input }) => emitHandoff(root, runId, {
     trigger: 'crash-emit', reason: 'same', appIntent: true,
     expect: { owner: input.owner, generation: input.generation }, cwdFn: () => root,
     attemptIdFactory: () => input.attemptId, descriptorBuilder: workerDescriptor10d,
-    nowFn: () => Date.parse('2026-07-13T00:00:01.000Z'), crashProbe }),
-  prepare: ({ root, runId, input, crashProbe }) => prepareAppTask(root, runId,
+    nowFn: () => Date.parse('2026-07-13T00:00:01.000Z') }),
+  prepare: ({ root, runId, input }) => prepareAppTask(root, runId,
     { owner: input.owner, generation: input.generation, stdinMode: 'pty-raw-noecho',
       hostInput: { currentHostTaskCwd: root,
         projects: [{ projectId: 'p', projectKind: 'local', path: root }] } },
     { cwdFn: () => root, descriptorBuilder: workerPrepareDescriptor10d,
       nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'),
       precheckNowFn: () => Date.parse('2026-07-13T00:00:02.000Z'),
-      reconcileBudgetFn: () => {}, gateFn: () => ({ ok: true, blocked_by: [] }), crashProbe }),
-  confirm: ({ root, runId, input, crashProbe }) => confirmAppTask(root, runId,
+      reconcileBudgetFn: () => {}, gateFn: () => ({ ok: true, blocked_by: [] }) }),
+  confirm: ({ root, runId, input }) => confirmAppTask(root, runId,
     { ...input, stdinMode: 'pty-raw-noecho', threadId: 'confirmed-thread' },
     { cwdFn: () => root,
-      nowFn: () => Date.parse('2026-07-13T00:00:03.000Z'), crashProbe }),
-  fail: ({ root, runId, input, crashProbe }) => failAppTask(root, runId,
+      nowFn: () => Date.parse('2026-07-13T00:00:03.000Z') }),
+  fail: ({ root, runId, input }) => failAppTask(root, runId,
     input.messageFailure === true
       ? { owner: input.owner, generation: input.generation, attemptId: input.attemptId,
         code: 'message-unconfirmed', stdinMode: 'pty-raw-noecho',
@@ -24408,40 +24892,36 @@ const publicMutation10d = Object.freeze({
       : { owner: input.owner, generation: input.generation, attemptId: input.attemptId,
         code: 'host-call-failed' },
     { cwdFn: () => input.messageCwd ?? root,
-      nowFn: () => Date.parse('2026-07-13T00:00:03.000Z'), crashProbe }),
-  sweep: ({ root, runId, input, crashProbe }) => sweepUnconfirmedAppTask(root, runId,
+      nowFn: () => Date.parse('2026-07-13T00:00:03.000Z') }),
+  sweep: ({ root, runId, input }) => sweepUnconfirmedAppTask(root, runId,
     { ...input, deadline: '2026-07-13T00:05:00.000Z' },
-    { cwdFn: () => root, nowFn: () => Date.parse('2026-07-13T00:05:01.001Z'), crashProbe }),
-  'await-timeout': ({ root, runId, input, crashProbe }) => {
+    { cwdFn: () => root, nowFn: () => Date.parse('2026-07-13T00:05:01.001Z') }),
+  'await-timeout': ({ root, runId, input }) => {
     let pollNow = Date.parse('2026-07-13T00:00:03.000Z');
     return awaitAppTask(root, runId, { ...input, timeoutMs: 1, intervalMs: 1 }, {
       cwdFn: () => root, pollNowFn: () => pollNow,
       pollIntervalMs: 1_000, sleepFn: ms => { pollNow += ms; },
-      nowFn: () => pollNow + 1, crashProbe,
+      nowFn: () => pollNow + 1,
     });
   },
-  acquire: ({ root, runId, input, crashProbe }) => acquireAppTask(root, runId,
+  acquire: ({ root, runId, input }) => acquireAppTask(root, runId,
     { ...input, owner: input.childRunId, runtime: 'codex', stdinMode: 'pty-raw-noecho',
       observation: workerObservation10d(root) }, { cwdFn: () => root,
-      nowFn: () => Date.parse('2026-07-13T00:00:04.000Z'), crashProbe }),
-  recover: ({ root, runId, input, crashProbe }) => recoverRun(root, runId,
+      nowFn: () => Date.parse('2026-07-13T00:00:04.000Z') }),
+  recover: ({ root, runId, input }) => recoverRun(root, runId,
     { expect: { owner: input.owner, generation: input.generation }, confirm: true,
-      recoveryDigest: 'a'.repeat(64), crashProbe }),
-  finish: ({ root, runId, input, crashProbe }) => finishRun(root, runId, {
+      recoveryDigest: 'a'.repeat(64) }),
+  finish: ({ root, runId, input }) => finishRun(root, runId, {
     status: 'completed', reportRel: 'final.md', proof: { human_reason: 'same' },
     fence: { owner: input.owner, generation: input.generation,
-      runtime: 'codex', intent: 'business' }, crashProbe }),
+      runtime: 'codex', intent: 'business' } }),
 });
 
 export function dispatchPublicMutationCrash10d({ root, runId, operation, point, rawInput }) {
   if (!Object.hasOwn(publicMutation10d, operation)) throw new Error('CRASH_OPERATION_INVALID');
   const points = new Set(['state-stage-after-rename', 'event-stage-after-rename',
     'pending-after-rename', 'event-after-partial-append', 'event-after-full-append',
-    'state-after-rename', 'hash-after-rename', 'before-cleanup',
-    'state-replace-after-create', 'state-replace-after-fsync',
-    'state-replace-after-rename-before-dir-fsync',
-    'hash-replace-after-create', 'hash-replace-after-fsync',
-    'hash-replace-after-rename-before-dir-fsync']);
+    'state-after-rename', 'hash-after-rename', 'before-cleanup']);
   if (!points.has(point)) throw new Error('CRASH_POINT_INVALID');
   const input = JSON.parse(rawInput);
   const inputKeys = Object.keys(input).sort();
@@ -24454,8 +24934,7 @@ export function dispatchPublicMutationCrash10d({ root, runId, operation, point, 
         && (typeof input.messageCwd !== 'string' || input.messageCwd.length === 0)) {
     throw new Error('CRASH_INPUT_INVALID');
   }
-  return publicMutation10d[operation]({ root, runId, input,
-    crashProbe: reached => { if (reached === point) process.exit(91); } });
+  return publicMutation10d[operation]({ root, runId, input });
 }
 
 registerAnchoredCrashExtension(request => {
@@ -34006,8 +34485,10 @@ for (const task of taskMatches) {
       'JSON.stringify(event.data.request_projection)',
       'dispatch_request_id_digest ?? null',
       'has ambiguous creation identity', 'legacy_episode_count',
-      'legacy_workstream_count', 'legacy_proof_digest',
+      'legacy_workstream_count', 'legacy_proof_origins', 'legacy_authority_digest',
       'verifyProofTransitionCorrelation(loop, lines)',
+      'attachCandidateProofTransitions(beforeLoop, candidateLoop, eventSpecs)',
+      'LOCK_HELD_CALLBACK_FORBIDDEN', 'DEEP_LOOP_TEST_CRASH_AT',
       'proof transition disconnected', 'episode creation contract missing at index',
       'dispatch_response: structuredClone(episode.dispatch_response ?? null)']) {
       if (!card.includes(token)) fail(`Task 7B missing recovery/intent token ${token}`);
@@ -34053,13 +34534,14 @@ for (const task of taskMatches) {
     }
   }
   if (task[1] === '7A') {
-    for (const token of ['export function legacyProofBaselineProjection(',
-      'export function legacyProofBaselineDigest(',
+    for (const token of ['export function legacyProofOrigins(',
+      'export function legacyAuthorityDigest(',
       "events.filter(event => event?.type === 'lease-lineage-baselined')",
       'legacy lineage checkpoint binding invalid',
       'generation > lineageFloor.generation', 'edge.index > lineageFloor.index',
       'legacy_episode_count: 0', 'legacy_workstream_count: 0',
-      'legacy_proof_digest: legacyDigest7b(legacyGeneration3AtCheckpoint(), 0, 0)',
+      'legacy_proof_origins: origins7b(legacyGeneration3AtCheckpoint(), 0, 0)',
+      'legacy_authority_digest: authority7b(legacyGeneration3AtCheckpoint())',
       'legacy lease lineage is opaque before one checkpoint and exact after it']) {
       if (!card.includes(token)) fail(`Task 7A missing lineage checkpoint token ${token}`);
     }
@@ -34192,13 +34674,15 @@ for (const task of taskMatches) {
       'dispatch_request_digest: dispatchRequestDigest ?? null',
       'request_projection: completeRequest',
       'createFileDurablyIfAbsent(expectedPath, workItem.bytes',
-      'episode-request-${id}.md', 'deferred_materialization',
+      'deferred_materialization',
       'beforeMaterialize?.(workItem)',
-      'event.data.proof_transitions = proofTransitionsForCandidate(',
+      'canonicalEpisodeRequestPath(root, runId, id)',
+      'PLAN_REPLACE_EXPORT: scripts/lib/workspace.mjs newWorkstream',
+      'central gateway owns every proof-event entity mapping',
       'episodeProofProjection', 'workstreamProofProjection',
-      'proofTransitionsForCandidate(',
+      'attachCandidateProofTransitions(',
       '`independent-review-*`', '`review-outcome`',
-      '`review-outcome` always carries two', 'proof-bearing state-patch',
+      'review outcome', 'proof-bearing state patch',
       'EPISODE_REQUEST_ID_REQUIRED', 'EPISODE_REQUEST_CONFLICT',
       'REVIEW_DISPATCH_REQUEST_ID_REQUIRED', 'REVIEW_DISPATCH_REQUEST_CONFLICT',
       'beforeFinalLock',
@@ -34694,10 +35178,11 @@ try {
         const probePath = join(sequentialSourceDir, '.plan-lineage-probe.mjs');
         writeFileSync(probePath, `
 import assert from 'node:assert/strict';
-import { legacyProofBaselineDigest,
+import { legacyAuthorityDigest, legacyProofOrigins,
   verifyAppEventCorrelation } from './scripts/lib/schema.mjs';
 
 const generation3 = () => ({ run_id: 'LEGACY-RUN', status: 'running', episodes: [],
+  workstreams: [], active_workstreams: [],
   session_chain: {
     sessions: [{ run_id: 'LEGACY-OWNER', host_surface: null }],
     lease: { owner_run_id: 'LEGACY-OWNER', generation: 3, state: 'released',
@@ -34715,7 +35200,8 @@ const baseline = { type: 'lease-lineage-baselined',
     owner_run_id: 'LEGACY-OWNER', generation: 3, lease_state: 'released',
     acquired_at: '2026-07-13T00:00:02.000Z', legacy_episode_count: 0,
     legacy_workstream_count: 0,
-    legacy_proof_digest: legacyProofBaselineDigest(generation3(), 0, 0),
+    legacy_proof_origins: legacyProofOrigins(generation3(), 0, 0),
+    legacy_authority_digest: legacyAuthorityDigest(generation3()),
   } };
 const acquire = { type: 'lease-acquired', ts: '2026-07-13T00:00:04.000Z', data: {
   previous_owner_run_id: 'LEGACY-OWNER', previous_generation: 3,
@@ -34725,7 +35211,7 @@ assert.equal(verifyAppEventCorrelation(generation3(), [baseline]).ok, true);
 assert.equal(verifyAppEventCorrelation(generation4(), [baseline, acquire]).ok, true);
 assert.equal(verifyAppEventCorrelation(generation3(), [baseline, baseline]).ok, false);
 assert.equal(verifyAppEventCorrelation(generation3(), [{ ...baseline, data: {
-  ...baseline.data, legacy_proof_digest: 'b'.repeat(64) } }]).ok, false);
+  ...baseline.data, legacy_authority_digest: 'b'.repeat(64) } }]).ok, false);
 assert.equal(verifyAppEventCorrelation(generation4(), [baseline, { ...acquire, data: {
   ...acquire.data, previous_owner_run_id: 'OTHER' } }]).ok, false);
 const proofState = generation3();
@@ -34738,16 +35224,16 @@ proofState.review = { points: ['design'], reviewer: 'deep-review-loop', mode: 'c
 proofState.recipe = { id: 'legacy-recipe' };
 const proofBaseline = { ...baseline, data: { ...baseline.data,
   legacy_episode_count: 1, legacy_workstream_count: 1,
-  legacy_proof_digest: legacyProofBaselineDigest(proofState, 1, 1) } };
+  legacy_proof_origins: legacyProofOrigins(proofState, 1, 1),
+  legacy_authority_digest: legacyAuthorityDigest(proofState) } };
 assert.equal(verifyAppEventCorrelation(proofState, [proofBaseline]).ok, true);
 for (const mutate of [
-  value => { value.episodes[0].status = 'approved'; },
-  value => { value.episodes[0].artifacts = ['forged.md']; },
-  value => { value.episodes[0].result_report = 'forged'; },
-  value => { value.episodes[0].reviewer_resolution = { source: 'forged' }; },
-  value => { value.workstreams[0].status = 'merged'; },
-  value => { value.workstreams[0].review_points_done = ['design']; },
-  value => { value.active_workstreams = ['ws-legacy']; },
+  value => { value.episodes[0].id = 'forged-maker'; },
+  value => { value.workstreams[0].id = 'forged-workstream'; },
+  value => { value.review.points = ['implementation']; },
+  value => { value.recipe.id = 'forged-recipe'; },
+  value => { value.active_workstreams = ['ws-legacy', 'ws-legacy']; },
+  value => { value.active_workstreams = ['unknown-workstream']; },
 ]) {
   const rewritten = structuredClone(proofState); mutate(rewritten);
   assert.equal(verifyAppEventCorrelation(rewritten, [proofBaseline]).ok, false);
@@ -34756,6 +35242,11 @@ const comprehensionOnly = structuredClone(proofState);
 comprehensionOnly.episodes[0].human_reviewed = true;
 comprehensionOnly.episodes[0].agent_reviewed = true;
 assert.equal(verifyAppEventCorrelation(comprehensionOnly, [proofBaseline]).ok, true);
+const mutableProof = structuredClone(proofState);
+mutableProof.episodes[0].status = 'approved';
+mutableProof.workstreams[0].status = 'merged';
+assert.equal(verifyAppEventCorrelation(mutableProof, [proofBaseline]).ok, true,
+  'baseline origins seed later proof transitions instead of freezing current entity bytes');
 `);
         const probed = spawnSync(process.execPath, [probePath], {
           cwd: sequentialSourceDir, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024,
@@ -34818,8 +35309,57 @@ assert.equal(verifyAppEventCorrelation(comprehensionOnly, [proofBaseline]).ok, t
       }
     }
   }
+  {
+    const task = taskMatches.find(match => match[1] === '7B');
+    const nextTask = source.indexOf('\n### Task ', task.index + 1);
+    const card = source.slice(task.index, nextTask < 0 ? source.length : nextTask);
+    const fixture = [...card.matchAll(/```js\n([\s\S]*?)\n```/g)].map(match => match[1])
+      .find(body => body.includes('export function verifiedAppRun(')
+        && body.includes('export function legacyInProgressProofFixture('));
+    if (fixture == null) {
+      fail('Task 7B complete verified/legacy fixture afterimage missing');
+    } else {
+      const directory = join(sequentialSourceDir, 'tests/fixtures');
+      mkdirSync(directory, { recursive: true });
+      const path = join(directory, 'verified-app-run.mjs');
+      writeFileSync(path, `${fixture.trimEnd()}\n`);
+      const checked = spawnSync(process.execPath, ['--check', path], {
+        cwd: sequentialSourceDir, encoding: 'utf8',
+      });
+      if (checked.error || checked.status !== 0) {
+        const diagnostic = String(checked.error?.message || checked.stderr || checked.stdout)
+          .split('\n')[0];
+        fail(`Task 7B installed fixture syntax: ${diagnostic}`);
+      }
+    }
+  }
+  {
+    const task = taskMatches.find(match => match[1] === '7F');
+    const nextTask = source.indexOf('\n### Task ', task.index + 1);
+    const card = source.slice(task.index, nextTask < 0 ? source.length : nextTask);
+    const afterimage = [...card.matchAll(/```js\n([\s\S]*?)\n```/g)].map(match => match[1])
+      .find(body => body.startsWith('// PLAN_REPLACE_EXPORT: scripts/lib/workspace.mjs newWorkstream'));
+    const path = join(sequentialSourceDir, 'scripts/lib/workspace.mjs');
+    const installed = readFileSync(path, 'utf8');
+    const start = installed.indexOf('export function newWorkstream(');
+    const end = installed.indexOf('\nexport function setWorkstreamStatus(', start);
+    if (afterimage == null || start < 0 || end < 0) {
+      fail('Task 7F complete newWorkstream afterimage or anchors missing');
+    } else {
+      const body = afterimage.split('\n').slice(1).join('\n').trimEnd();
+      writeFileSync(path, `${installed.slice(0, start)}${body}\n${installed.slice(end + 1)}`);
+      const checked = spawnSync(process.execPath, ['--check', path], {
+        cwd: sequentialSourceDir, encoding: 'utf8',
+      });
+      if (checked.error || checked.status !== 0) {
+        const diagnostic = String(checked.error?.message || checked.stderr || checked.stdout)
+          .split('\n')[0];
+        fail(`Task 7F installed newWorkstream afterimage syntax: ${diagnostic}`);
+      }
+    }
+  }
   for (const [taskId, pathPattern] of [
-    ['7F', /diff --git a\/(?:scripts\/lib\/(?:episode|review)\.mjs|scripts\/deep-loop\.mjs|skills\/deep-loop(?:-continue)?\/SKILL\.md|skills\/deep-loop-workflow\/references\/adapters\.md|tests\/(?:codex-checker-integration|codex-isolation-integration|finish|fencing|next-action|reviewer-failclosed|review-import|review)\.test\.mjs)/u],
+    ['7F', /diff --git a\/(?:scripts\/lib\/(?:episode|review)\.mjs|scripts\/deep-loop\.mjs|skills\/deep-loop(?:-continue)?\/SKILL\.md|skills\/deep-loop-workflow\/references\/adapters\.md|tests\/(?:codex-checker-integration|codex-isolation-integration|episode|finish|fencing|next-action|reviewer-failclosed|review-import|review|workspace)\.test\.mjs)/u],
     ['7G', /diff --git a\/scripts\/lib\/breaker\.mjs/u],
   ]) {
     const task = taskMatches.find(match => match[1] === taskId);
@@ -34851,6 +35391,44 @@ assert.equal(verifyAppEventCorrelation(comprehensionOnly, [proofBaseline]).ok, t
         const diagnostic = String(checked.error?.message || checked.stderr || checked.stdout)
           .split('\n')[0];
         fail(`Task 7F installed request helper syntax: ${diagnostic}`);
+      }
+    }
+  }
+  {
+    const task = taskMatches.find(match => match[1] === '7F');
+    const nextTask = source.indexOf('\n### Task ', task.index + 1);
+    const card = source.slice(task.index, nextTask < 0 ? source.length : nextTask);
+    const units = [...card.matchAll(/```js\n([\s\S]*?)\n```/g)].map(match => match[1]);
+    const proofTest = units.find(body => body.includes("test('central gateway owns every proof-event entity mapping'")
+      && body.includes("test('pre-checkpoint legacy proof history is opaque"));
+    const aliasTest = units.find(body => body.includes("test('episode request path is canonical before a symlink-root transaction commits'"));
+    if (proofTest == null || aliasTest == null) {
+      fail('Task 7F complete proof/canonical-alias tests missing');
+    } else {
+      const proofPath = join(sequentialSourceDir, 'tests/proof-transitions.test.mjs');
+      writeFileSync(proofPath, `${proofTest.trimEnd()}\n`);
+      const episodePath = join(sequentialSourceDir, 'tests/episode.test.mjs');
+      writeFileSync(episodePath,
+        `${readFileSync(episodePath, 'utf8').trimEnd()}\n\n${aliasTest.trimEnd()}\n`);
+      for (const path of [proofPath, episodePath]) {
+        const checked = spawnSync(process.execPath, ['--check', path], {
+          cwd: sequentialSourceDir, encoding: 'utf8',
+        });
+        if (checked.error || checked.status !== 0) {
+          const diagnostic = String(checked.error?.message || checked.stderr || checked.stdout)
+            .split('\n')[0];
+          fail(`Task 7F installed proof test syntax ${path}: ${diagnostic}`);
+        }
+      }
+      const executed = spawnSync(process.execPath, ['--test',
+        '--test-name-pattern=central gateway|transition reducer|gateway derives|pre-checkpoint legacy|hash-valid proof|episode request path is canonical',
+        'tests/proof-transitions.test.mjs', 'tests/episode.test.mjs'], {
+        cwd: sequentialSourceDir, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024,
+      });
+      if (executed.error || executed.status !== 0) {
+        const diagnostic = String(executed.error?.message
+          || executed.stderr || executed.stdout).split('\n').slice(0, 60).join(' | ');
+        fail(`Task 7F installed proof/canonical behavior: ${diagnostic}`);
       }
     }
   }
@@ -35093,7 +35671,7 @@ test('installed breaker afterimage executes stable IDs and current lease policy'
   rmSync(sequentialSourceDir, { recursive: true, force: true });
 }
 const PLAN_EXPECTED_COUNTS = Object.freeze({
-  bash: 64, diff: 91, js: 178, json: 4, markdown: 12, text: 10, yaml: 1,
+  bash: 64, diff: 91, js: 181, json: 4, markdown: 12, text: 10, yaml: 1,
 });
 const orderedCounts = value => Object.fromEntries(Object.entries(value)
   .sort(([left], [right]) => left.localeCompare(right)));

@@ -405,40 +405,45 @@ Schema validator에 correlation을 직접 추가한다. 현재 validator가 JSON
   첫 outgoing lineage edge로 supersede되어야 하므로, proof보다 앞선 acquire event는 뒤의 response-loss
   recovery/failure를 세탁하지 못한다. Finish 뒤에는 generic/App acquire나 recovery event가 올 수 없다.
 - Initialization이 없는 1.8.2 legacy run은 과거 acquire·episode·workstream transition event를 사후
-  발명하지 않는다. 첫 업그레이드 post-genesis mutation은 same run lock에서 schema/hash/root, current
-  pointer, 기존 event chain/head, exact caller fence를 확인한 뒤 shared
+  발명하지 않는다. Baseline이 없을 때 verifier는 기존 proof event history를 opaque legacy history로
+  취급하므로 verified read와 첫 업그레이드 mutation이 도달 가능하다. 첫 post-genesis mutation은 same run
+  lock에서 schema/hash/root, current pointer, 기존 event chain/head, exact caller fence를 확인한 뒤 shared
   `commitVerifiedEventsUnderLock`가 business event **앞에** exactly one
-  `lease-lineage-baselined` event를 같은 prospective anchored transaction으로 추가할 수 있다. Checkpoint는
-  exact key set `{owner_run_id,generation,lease_state,acquired_at,legacy_episode_count,
-  legacy_workstream_count,legacy_proof_digest}`만 가진다. 임의의 well-formed digest를 받아들이는
-  `pre_state_digest`는 두지 않는다. `legacy_proof_digest`는 domain-separated canonical
-  `legacyProofBaselineProjection`—checkpoint 시점 episode prefix의 complete proof record
-  (`human_reviewed`/`agent_reviewed` comprehension marker 제외), workstream prefix의 exact
-  `{id,status,review_points_done,active}` proof projection, finish authority가 읽는 immutable `review`
-  contract와 `recipe.id` projection—의 digest다. Review verdict counter 같은 post-checkpoint mutable
-  accounting은 이 legacy projection에 넣지 않고 자기 exact transition proof로 검증한다.
-  이 값은 checkpoint event checksum과 event-log head를 거쳐 같은 anchored transaction에 결합된다.
+  `lease-lineage-baselined` event를 같은 prospective anchored transaction으로 추가한다. Checkpoint의 exact
+  key set은 `{owner_run_id,generation,lease_state,acquired_at,legacy_episode_count,
+  legacy_workstream_count,legacy_proof_origins,legacy_authority_digest}`다. `legacy_proof_origins`는 checkpoint
+  시점의 모든 existing episode/workstream을 stable `kind:id` 순서로 canonicalize한
+  `[{kind,id,digest}]`이며, episode digest는 complete proof record에서
+  `human_reviewed`/`agent_reviewed` comprehension marker만 제외하고 workstream digest는
+  `{id,status,review_points_done,active,active_workstreams}`를 포함한다. Exact active array를 모든 workstream
+  projection에 결합하고 schema가 그 배열의 unique/existing-ID contract를 보장하므로 duplicate, unknown,
+  reorder, addition, removal은 모두 proof change다. `legacy_authority_digest`는 finish authority가 읽는
+  immutable `review` contract와 `recipe.id`의 domain-separated digest다. 임의의 well-formed caller digest는
+  받지 않으며 두 값은 checkpoint checksum과 event-log head를 거쳐 같은 anchored transaction에 결합된다.
   Initialization이 있거나 이미 baseline이 있거나 App continuation/auto consent/non-null unproven host
   authority가 있는 state에는 생성할 수 없고, baseline 자체는 App automation·external action 권위를
   부여하지 않는다. Legacy consent는 계속 manual이며 새 auto consent는 새 run에서만 가능하다.
-  불완전한 legacy proof prefix도 checkpoint에서 그대로 동결할 수 있지만 그 상태를 proof-complete로
-  추정·승격하지 않으며 기존 manual/preserve 동작만 남는다. Automatic finish는 checkpoint 당시 이미
-  `finishProofState`가 complete인 legacy fixture에 대해서만 기존 의미대로 가능하다.
-  Verifier는 모든 후속 read/mutation에서 current episode/workstream prefix와 legacy active/review-contract/recipe
-  projection을 다시 canonicalize해 anchored `legacy_proof_digest`와 exact 비교한다. 따라서 checkpoint 뒤
-  legacy status/artifacts/result/reviewer proof/workstream status를 한 byte라도 바꾼 hash-valid rewrite나
-  well-formed digest 치환은 거부된다. Legacy proof prefix는 영구 동결되고, checkpoint 뒤 새 entity의
-  모든 proof-bearing 변경은 `episode-new`, `episode-record`, `episode-abandon`,
-  `independent-review-*`, `review-outcome`, `workstream-*`, `state-patch` event의 canonical
-  `proof_transitions=[{kind,id,before_digest,after_digest},...]`와 state projection을 양방향 검증한다.
-  Review outcome처럼 checker와 workstream을 함께 바꾸는 transaction은 두 entry를 갖고, proof-bearing
-  state patch는 실제 변경된 모든 entity entry를 갖는다. Lineage verifier는 baseline 이전 history를
-  opaque하게 두되 baseline
+  불완전한 legacy entity도 origin에서 proof-complete로 추정·승격하지 않는다. 대신 origin digest가 그
+  entity chain의 authenticated `before_digest`가 되어 기존 maker record/abandon, checker outcome,
+  workstream status/review-point/active-membership 변경을 정상적으로 전진시킬 수 있다.
+- Initialized run은 genesis 뒤, baselined legacy run은 checkpoint 뒤의 모든 proof-bearing mutation을
+  `episode-new`, `episode-record`, `episode-abandon`, `independent-review-*`, `review-outcome`,
+  `workstream-*`, `state-patch` event의 canonical
+  `proof_transitions=[{kind,id,before_digest,after_digest},...]`와 current state projection으로 양방향
+  검증한다. Transition은 writer별 callback에서 조립하지 않는다. Shared prospective mutation gateway가
+  business mutator를 one candidate에 적용한 뒤 verified before/candidate inventory diff로 exact entity set을
+  도출하고, 그 array를 event data에 넣어 checksum/head를 다시 계산한 final events만 publish한다. Review
+  outcome은 checker와 workstream을 함께 결합하고 state patch는 실제로 바뀐 모든 entity를 결합한다.
+  Callback은 timestamp/seq 외 provisional checksum을 소비할 수 없으며 final rebuilt event와 동일한
+  timestamp/seq를 받는다. Verifier는 baseline origins 또는 genesis `NONE`에서 chain을 reduce해 legacy와
+  new entity를 구분하지 않고 current **전체** inventory digest와 exact 비교한다. Immutable authority digest,
+  origin cardinality/identity, transition before/after/entity set, current entity identity 중 하나라도 바꾼
+  hash-valid rewrite는 거부된다. Lineage verifier는 baseline 이전 history를 opaque하게 두되 baseline
   generation의 owner에서 **이후** current lease까지 outgoing generic/App edge만 exactly-one으로 추적한다.
   Duplicate baseline, baseline 전 causal proof 재사용, same-generation owner swap, disconnected edge,
-  prefix mutation, baseline보다 작은 current generation을 모두 거부한다. Generation>1 proof-complete legacy
-  fixture가 baseline→recover/acquire→finish를 통과하고 owner/generation/event/proof-prefix corruption을
-  거부해야 backward compatibility를 통과한다.
+  baseline보다 작은 current generation을 모두 거부한다. Generation>1 in-progress legacy fixture가
+  baseline→maker record→review outcome→workstream completion→recover/acquire→finish를 통과하고
+  origin/authority/event/transition/current-state corruption을 거부해야 backward compatibility를 통과한다.
 - Live 또는 current-generation terminal provenance는 one-way다. Cleared ordinary failure의 fail event와 gate/pre-action abandonment event는 existing non-child owner와 positive/non-future generation을 기록한다. 그 binding이 아직 current lease generation이면 event 이후 허용되는 projection은 (a) paused + exact failure code + active/idle/fully-cleared와 transition-derived child outcome/lifecycle, (b) 그보다 뒤의 audited `run-recovered` event와 paused/recovered + released/idle/fully-cleared, 또는 (c) proof-gated terminal뿐이다. 현재 lease owner/generation과 결합된 new-format `run-recovered`는 child 유무와 무관하게 양방향 증거다. 실제 generation 전진 전에는 exact paused/recovered + released/idle/fully-cleared 또는 그 event보다 뒤의 exact terminal만 허용하므로, acquired/released bytes를 과거 shape로 되돌려 response-loss success를 부활시킬 수 없다. 모든 `finish` event도 App identity 유무와 무관하게 전역 exactly-one이며 `status=completed|stopped`, `termination.finished_at`, `final_report`와 양방향 exact 결합된다. 따라서 finish 뒤 non-terminal failed/acquired/recovered shape로의 state-only 부활과 finish보다 뒤의 recovery projection을 모두 거부한다. 새 lease generation이 실제로 전진한 뒤에만 recovery/failure terminal record가 순수 historical provenance가 된다.
 - App child의 incoming parent cardinality는 phase-aware exact다. emitted/prepared/confirmed와 live human-preserve에는 lease owner인 parent가 정확히 하나, acquired history에는 immediate historical parent가 정확히 하나, cleared failed/abandoned에는 0개다. Live parent outcome과 child start/end/outcome/outgoing link는 null이고, immediate acquired child의 start clock은 acquire clock이며 outcome/end/outgoing link는 null, parent outcome은 `took_over`다. Alias parent나 조기 lifecycle 종료는 semantic proof와 response-loss no-op 모두 거부한다.
 - `unconfirmed_thread_id`는 fork route의 `message-unconfirmed` failure에서만 허용하고 confirmed `thread_id`와 혼용하지 않음
@@ -731,13 +736,18 @@ Episode request는 교체 가능한 `episodes/` 또는 per-episode directory를 
 state/hash/event/journal이 사용하는 verified run identity boundary이고, episode publisher는 그 경계 아래에
 추가 replaceable parent를 만들거나 따라가지 않는다. `episode-new` transaction은 lock 안에서 immutable
 `{episode_id,request_path,skeleton_bytes,skeleton_digest}` work item만 만들고 state/event를 먼저 commit한다.
+`request_path`는 transaction 안에서 `realpath(canonical run directory)`로 한 번 도출해 state, event, work
+item, materializer가 모두 같은 canonical byte string을 사용한다. Project root가 symlink나 다른 valid alias로
+들어와도 noncanonical `runDir(root,runId)` string을 state에 저장하지 않는다.
 `withVerifiedMutationLock`가 반환해 run lock이 닫힌 뒤 public wrapper가 그 work item을
 `createFileDurablyIfAbsent`로 materialize한다. 이 helper는 canonical run directory의 private regular sibling
 temp를 flush한 뒤 atomic no-replace link로 같은 directory의 final regular file만 공개하며, 기존 winner는
 regular/non-symlink/exact parent/content ownership policy를 validation-only로 확인한다. Execution-plane이
 수정한 valid winner는 덮어쓰지 않는다. Materialization 전 `beforeMaterialize` test hook과 filesystem I/O는
-모두 lock 밖이다. Journal crash injection은 별도 kernel-private, synchronous, non-reentrant seam이며 public
-callback이 아니다. Reentrant `readVerifiedState`와 competing mutation이 hook에서 성공해도 committed episode의
+모두 lock 밖이다. Journal hard-crash injection은 exported mutation option이나 function callback이 아니다.
+Test worker가 allowlisted scalar `DEEP_LOOP_TEST_CRASH_AT`과 `NODE_ENV=test`를 주면 gateway의 private
+`crashIfScheduled(stage)`가 exact point에서 직접 exit할 뿐 arbitrary code를 호출하지 않는다. Production API는
+`crashProbe`, hook, function capability를 받지 않는다. Reentrant `readVerifiedState`와 competing mutation이 hook에서 성공해도 committed episode의
 immutable creation projection은 바뀌지 않으므로 stale artifact가 publish되지 않는다. 경합 뒤 current episode
 projection/digest가 work item과 다르면 file write 전에 fail closed하고, missing exact request만 동일 work
 item으로 rematerialize한다. POSIX/Windows race tests는 공격자가 옛 `episodes` path를 staging 직전과 final

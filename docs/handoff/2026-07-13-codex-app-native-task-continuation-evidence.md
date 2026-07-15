@@ -1513,6 +1513,60 @@ no inherited approval from the historical receipt.
 - gate state: still open. Changed bytes require fresh cycle 5 round 2 with both reviewers pinned to
   exact `gpt-5.6-sol`/high; this Respond is not a Gate 1 pass.
 
+### Gate 1 fresh cycle 5 round 2 review
+
+- gate/artifact: Gate 1 design plus final 46-task plan, goal handoff, evidence, cycle-5 round-1
+  report/response, and current repository code/tests.
+- base/head: `c38a96137f8f4f0099c35e893860930e8ee4cf73..c69ede50e5bbe67eaa86ecb13941d40fafeece4a`;
+  worktree clean at counted reviewer start.
+- invocation: one built-in `codex exec ... review --base c38a961...` and one direct adversarial audit;
+  both counted reviewers used `--ephemeral --ignore-user-config --ignore-rules -s read-only` with
+  exact `-m gpt-5.6-sol -c 'model_reasoning_effort="high"'`.
+- reviewer actual: standard thread `019f6545-47b8-78e2-8edb-2ea6c83200cb` returned 1 P1 and 1 P2;
+  adversarial thread `019f6545-47b8-7203-aee1-e72af82bf5ac` returned 2 Red and 3 Yellow with
+  `REQUEST_CHANGES`. `N_planned=N_actual=2`; both processes terminated naturally with exit 0.
+- model/effort evidence: both process headers confirmed exact `gpt-5.6-sol`, `high`, ephemeral,
+  ignored user config/rules, and read-only sandbox. No global Codex setting changed.
+- verdict: `REQUEST_CHANGES`.
+- red/yellow/info: `1 / 5 / 0`; both reviewers independently found complementary pre-checkpoint and
+  post-checkpoint failures in the legacy proof transition. Canonical request paths, executable
+  writer retrofit, exact active membership, lock-held callback reachability, and historical receipt
+  tracking remained solo Yellow after main-agent reproduction.
+- termination: fresh cycle 5 round 2 Respond required; neither convergence nor max reached.
+- report path: `.deep-review/reports/2026-07-15-192535-review.md`, SHA-256
+  `eb73093e5e069e4634d6d1d5642eefdeb374167391c8e5e00421d42c2dfe448c`.
+- main-agent judgment: accepted all six findings. Legacy proof history is opaque until one checkpoint
+  seeds authenticated entity origins; canonical request identity is fixed before commit; transition
+  derivation is centralized and executed against installed public writers; active arrays are exact;
+  journal crash injection is a private scalar; historical receipts are force-added.
+
+### Gate 1 fresh cycle 5 round 2 Respond
+
+- disposition: accepted 6, rejected 0, deferred 0; `execution_path=main_fallback` under the
+  session's no-subagent contract.
+- legacy/proof response: the checkpoint records `legacy_proof_origins` plus immutable
+  `legacy_authority_digest`, and later mutations of old or new entities advance the same canonical
+  chains. The central prospective mutation gateway attaches transitions after candidate mutation and
+  before event checksums/publication. Exact ordered active membership is part of every workstream
+  projection, with duplicate and unknown IDs rejected.
+- path/lock response: episode request paths are derived from the canonical real run directory before
+  state commit. Function-valued public crash probes are rejected; test interruption uses only the
+  allowlisted `DEEP_LOOP_TEST_CRASH_AT` scalar under `NODE_ENV=test` and direct worker exit.
+- receipt response: the original Gate-1 report/summary and cycle-5 round-2 report/response are
+  force-added despite `.deep-review/` ignore rules; their hashes remain the ledger authority.
+- exact corrected candidate hashes: handoff
+  `1523907bf1931793b765ed8a5fac2d678a6ae1aa303cfef6e2c89f2e6f150fd9`; design
+  `db7b64556194380decbc5d2ad79f22cfae2dca5d70558c8b330b6998313b802e`; plan
+  `f0fba09d6104c6bb5eb9122d3809868e74a3a69555994029f6b11804364d28b0`.
+- response record: `.deep-review/responses/2026-07-15-195621-response.md`, SHA-256
+  `f733b509dee9002d53581057a8941994da919225fd55fbb3873b96f7d63d6938`.
+- verification: embedded validator passed `ok:true` for 46 tasks and 363 fences
+  (`bash=64`, `diff=91`, `js=181`, `json=4`, `markdown=12`, `text=10`, `yaml=1`) and executed exact
+  installed legacy/proof/active-array/canonical-alias tests. `git diff --check` passed; `npm run
+  preflight` passed validation and all 1,463 tests with zero failures, cancellations, skips, or todo.
+- gate state: still open. Changed bytes require fresh cycle 5 round 3 with both reviewers pinned to
+  exact `gpt-5.6-sol`/high; this Respond is not a Gate 1 pass.
+
 ## Review receipt template
 
 Each reviewed gate will add a receipt with all of these fields:
