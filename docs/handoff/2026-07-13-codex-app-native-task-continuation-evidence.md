@@ -1691,6 +1691,61 @@ no inherited approval from the historical receipt.
 - gate state: still open. Changed bytes require a fresh review cycle with both reviewers pinned to
   exact `gpt-5.6-sol`/high; this Respond is not a Gate 1 pass.
 
+### Gate 1 fresh cycle 6 round 1 review
+
+- gate/artifact: Gate 1 design plus final 46-task plan, goal handoff, evidence ledger, cycle-5
+  round-5 report/response, and current repository code/tests.
+- base/head: `c38a96137f8f4f0099c35e893860930e8ee4cf73..3f76eb1c0490001b96c87c23508a97ec1462cbea`;
+  worktree clean at counted reviewer start.
+- invocation: two independent read-only Codex processes, both exact `gpt-5.6-sol` / `high`,
+  `--ephemeral --ignore-user-config --ignore-rules -s read-only`; one built-in whole-branch review
+  and one direct adversarial immutable design/plan audit.
+- reviewer actual: standard task `019f6952-785d-75f2-b883-4c910c61e896` returned 2 P2;
+  adversarial task `019f6952-78cb-7d11-9ad3-3b0f785f5e08` returned 2 Red, 1 Yellow, and 1 Info.
+  `N_planned=N_actual=2`; both JSONL streams contain a final agent message and natural
+  `turn.completed`. The surrounding zsh capture wrapper alone exited 1 after completion because it
+  assigned to reserved read-only variable `status`; neither reviewer was relaunched or truncated.
+- verdict: `REQUEST_CHANGES`; synthesized Red/Yellow/Info = `1 / 3 / 1`.
+- main-agent judgment: accepted all four actionable findings. Exact closure now covers all six
+  outside-lock race seams; fixed init-lock release uses nonce plus retained hard-link file identity;
+  the Task 11C-to-12B replacement is mechanically composed and syntax-checked; the design header
+  and history reflect the current non-approved gate state.
+- report path: `.deep-review/reports/2026-07-16-142627-review.md`, SHA-256
+  `e5a84e6eb98255f9da769432d9b0edcac9fc7a44d8e45bf8d2aad68b3f765454`.
+- standard raw/final SHA-256: `6c99bcd71dc173a357c87a64251bf4f127f726bbb3994b1c52e040c1a31362c1` /
+  `0af366534b24614b2fe6a581adba9f314c91a6620b11780e73ca53427defa2b5`.
+- adversarial raw/final SHA-256: `e30f439adedc4911eac1e7b2f6be1e2ed0c801a83e787ba683f7a2f050300366` /
+  `13aafd7cd72dc9e1ddfc00bc01fae189d041a308f8e1b9dbdfe9654a3b631fc6`.
+
+### Gate 1 fresh cycle 6 round 1 Respond
+
+- disposition: accepted 4 actionable findings, rejected 0, deferred 0;
+  `execution_path=main_fallback` after independent reproduction by the main agent.
+- callback response: Task 7F-to-11C scans recognize bare timing names and read/state/authority/catch
+  families, allowlist only the exact six test seams, and inventory their definitions, invocations,
+  and before-phase ordering. Production/CLI callers inject none.
+- lock response: the unique candidate hard link remains until release. Both paths must be regular
+  non-symlinks with same-file identity and the fixed record must contain the owner nonce before the
+  fixed path is removed. The validator executes a same-nonce distinct-inode ABA regression.
+- composition/status response: the exact Task 12B replacement is applied once over Task 11C and
+  `node --check` verifies the stitched source. Earlier late surfaces are accurately scoped as
+  structural until implementation tests/Gate 3B. Header/history identify round-1 Respond and fresh
+  round 2 without claiming approval.
+- exact corrected candidate hashes: handoff
+  `1523907bf1931793b765ed8a5fac2d678a6ae1aa303cfef6e2c89f2e6f150fd9`; design
+  `053a9834518f59296b1f379bb33cc820718988c4e4a24910b89f470a81f873d3`; plan
+  `708f852cb76c8c52cab686ca901bf1f311fdce23fe8ee6677b463341e424d283`.
+- correction commit: `ee4431e21d663722d276d986057c1b15b0338c88`.
+- response record: `.deep-review/responses/2026-07-16-143836-response.md`, SHA-256
+  `1cfa011c87af9664e4bdcf5fb3c8093a8445fef87ad44dc20d1a31d6af1b170f`.
+- verification: embedded validator passed `ok:true` for 46 tasks and 368 fences
+  (`bash=64`, `diff=91`, `js=185`, `json=4`, `markdown=12`, `text=11`, `yaml=1`), including
+  executed copied-token ABA, exact callback closure, and composed Task 11C-to-12B syntax.
+  `git diff --check`, cached check, and `npm run preflight` passed validation and all 1,463 tests
+  with zero failures, cancellations, skips, or todo.
+- gate state: still open. Changed bytes require fresh cycle 6 round 2 with both reviewers pinned to
+  exact `gpt-5.6-sol`/high; this Respond is not a Gate 1 pass.
+
 ## Review receipt template
 
 Each reviewed gate will add a receipt with all of these fields:
