@@ -36232,13 +36232,19 @@ for (const task of taskMatches) {
     const nativeWorkerUnits = [...card.matchAll(/```js\n([\s\S]*?)\n```/gu)]
       .map(match => match[1])
       .filter(body => body.startsWith('const FIXED_INIT_CRASH_WORKER = fileURLToPath('));
-    const expectedNativeWorkerUnitHash =
-      '61d5367ac737ddb814cf265d44c74d1a0a55fce8aa9f68a76b0846b9d80cf386';
-    if (nativeWorkerUnits.length !== 1) {
+    const nativeWorkerDestination = 'tests/orch-cli.test.mjs';
+    const destinationInstruction =
+      'Append this literal process reconciliation test to `tests/orch-cli.test.mjs`:';
+    const expectedNativeWorkerBindingHash =
+      '7f1fd7d3e428f28b2092bd45fb0dd923cb5d40b23609c77e0c1fd84172d4b170';
+    if ((card.match(new RegExp(destinationInstruction.replace(
+      /[.*+?^${}()|[\]\\]/g, '\\$&'), 'gu')) ?? []).length !== 1) {
+      fail('Task 6A native worker executable unit destination is not canonical');
+    } else if (nativeWorkerUnits.length !== 1) {
       fail(`Task 6A native worker executable unit count: ${nativeWorkerUnits.length}`);
-    } else if (createHash('sha256').update(nativeWorkerUnits[0]).digest('hex')
-        !== expectedNativeWorkerUnitHash) {
-      fail('Task 6A native worker executable unit differs from its reviewed exact binding');
+    } else if (createHash('sha256').update(`${nativeWorkerDestination}\0`)
+      .update(nativeWorkerUnits[0]).digest('hex') !== expectedNativeWorkerBindingHash) {
+      fail('Task 6A native worker executable unit or destination differs from its reviewed exact binding');
     }
     const executableCard = [...card.matchAll(/```js\n([\s\S]*?)\n```/gu)]
       .map(match => match[1]).join('\n')
@@ -37578,15 +37584,22 @@ assert.equal(verifyAppEventCorrelation(mutableProof, [proofBaseline]).ok, true,
     const proofTest = units.find(body => body.includes("test('central gateway owns every proof-event entity mapping'")
       && body.includes("test('pre-checkpoint legacy proof history is opaque"));
     const aliasTest = units.find(body => body.includes("test('episode inline request is identical through a symlink-root transaction'"));
-    if (proofTest == null || aliasTest == null) {
-      fail('Task 7F complete proof/canonical-alias tests missing');
+    const directGuardTest = units.find(body => body.includes(
+      "test7f('episode creation preserves role and artifact path guards before mutation'")
+      && body.includes('direct-invalid-target-maker')
+      && body.includes('productionBlockedEpisode7f'));
+    if (proofTest == null || aliasTest == null || directGuardTest == null) {
+      fail('Task 7F complete proof/canonical-alias/direct-guard tests missing');
     } else {
       const proofPath = join(sequentialSourceDir, 'tests/proof-transitions.test.mjs');
       writeFileSync(proofPath, `${proofTest.trimEnd()}\n`);
       const episodePath = join(sequentialSourceDir, 'tests/episode.test.mjs');
       writeFileSync(episodePath,
         `${readFileSync(episodePath, 'utf8').trimEnd()}\n\n${aliasTest.trimEnd()}\n`);
-      for (const path of [proofPath, episodePath]) {
+      const directGuardPath = join(sequentialSourceDir, 'tests/reviewer-failclosed.test.mjs');
+      writeFileSync(directGuardPath,
+        `${readFileSync(directGuardPath, 'utf8').trimEnd()}\n\n${directGuardTest.trimEnd()}\n`);
+      for (const path of [proofPath, episodePath, directGuardPath]) {
         const checked = spawnSync(process.execPath, ['--check', path], {
           cwd: sequentialSourceDir, encoding: 'utf8',
         });
@@ -37596,8 +37609,20 @@ assert.equal(verifyAppEventCorrelation(mutableProof, [proofBaseline]).ok, true,
           fail(`Task 7F installed proof test syntax ${path}: ${diagnostic}`);
         }
       }
+      const directExecuted = spawnSync(process.execPath, ['--test', '--test-reporter=tap',
+        '--test-name-pattern=^episode creation preserves role and artifact path guards before mutation$',
+        'tests/reviewer-failclosed.test.mjs'], {
+        cwd: sequentialSourceDir, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024,
+      });
+      if (directExecuted.error || directExecuted.status !== 0
+          || !/^ok \d+ - episode creation preserves role and artifact path guards before mutation$/mu
+            .test(directExecuted.stdout)) {
+        const diagnostic = String(directExecuted.error?.message
+          || directExecuted.stderr || directExecuted.stdout).split('\n').slice(0, 60).join(' | ');
+        fail(`Task 7F installed direct guard behavior: ${diagnostic}`);
+      }
       const executed = spawnSync(process.execPath, ['--test',
-        '--test-name-pattern=central gateway|transition reducer|gateway derives|pre-checkpoint legacy|hash-valid proof|workstream creation identities|episode creation preserves role and artifact path guards before mutation|episode inline request is identical',
+        '--test-name-pattern=central gateway|transition reducer|gateway derives|pre-checkpoint legacy|hash-valid proof|workstream creation identities|episode inline request is identical',
         'tests/proof-transitions.test.mjs', 'tests/episode.test.mjs'], {
         cwd: sequentialSourceDir, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024,
       });
