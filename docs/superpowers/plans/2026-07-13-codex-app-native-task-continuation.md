@@ -4672,7 +4672,7 @@ test('candidate nonce collision preserves the pre-existing candidate', () => {
   assert.deepEqual(readFileSync(candidate), bytes);
 });
 
-test('chain cap permits 64 owners and the 65th failure is write free', () => {
+test('stable exhausted chain permits 64 owners and rejects the 65th before any primitive', () => {
   const root = fixtureDir();
   const nonceFor = index => 'owner' + String(index).padStart(11, '0');
   let entered = 0;
@@ -4696,6 +4696,38 @@ test('chain cap permits 64 owners and the 65th failure is write free', () => {
   const binding = { attempt_id: '01JAPPGEN00000000000000000',
     expected_current_digest: 'NONE', expected_request_digest: 'a'.repeat(64) };
   assert.equal(statusInitialization(root, binding, initDeps(root)).lock_state, 'invalid');
+});
+
+test('last-slot overtaking cleans only the losing contender candidate without publishing authority', () => {
+  const root = fixtureDir();
+  const nonceFor = index => 'owner' + String(index).padStart(11, '0');
+  for (let index = 1; index <= INIT_LOCK_CHAIN_MAX - 1; index += 1) {
+    withInitLock(root, () => {}, { pid: 7, nonce: () => nonceFor(index),
+      now: () => Date.parse('2026-07-13T00:00:00.000Z') });
+  }
+  let interleaved = false;
+  const writes = [];
+  const unlinks = [];
+  assert.throws(() => withInitLock(root, () => assert.fail('loser entered'), {
+    pid: 7, nonce: () => nonceFor(65),
+    now: () => Date.parse('2026-07-13T00:00:00.000Z'),
+    writeFile: (path, bytes, options) => {
+      if (!interleaved) {
+        interleaved = true;
+        withInitLock(root, () => {}, { pid: 7, nonce: () => nonceFor(64),
+          now: () => Date.parse('2026-07-13T00:00:00.000Z') });
+      }
+      writes.push(path);
+      writeFileSync(path, bytes, options);
+    },
+    unlink: path => { unlinks.push(path); return unlinkSync(path); },
+  }), /LOCK_CHAIN_EXHAUSTED/);
+  assert.deepEqual(writes, [join(root, '.deep-loop',
+    '.init-lock-candidate-7-' + nonceFor(65))]);
+  assert.deepEqual(unlinks, writes, 'only the losing invocation own candidate is removed');
+  const names = readdirSync(join(root, '.deep-loop'));
+  assert.equal(names.includes('.init-lock-successor-' + nonceFor(64)), false);
+  assert.equal(names.includes('.init-lock-release-' + nonceFor(65)), false);
 });
 
 test('EEXIST fixed-holder matrix preserves live unknown invalid dead and PID-reused authority', () => {
@@ -4727,7 +4759,7 @@ test('EEXIST fixed-holder matrix preserves live unknown invalid dead and PID-reu
 
 - [ ] **Step 2: Run the lock tests to verify RED**
 
-Run: node --test --test-name-pattern='fixed init authority|owner-nonce|candidate sweep|hard link|candidate write failure|candidate nonce collision|chain cap|EEXIST fixed-holder' tests/init-transaction.test.mjs
+Run: node --test --test-name-pattern='fixed init authority|owner-nonce|candidate sweep|hard link|candidate write failure|candidate nonce collision|stable exhausted chain|last-slot overtaking|EEXIST fixed-holder' tests/init-transaction.test.mjs
 
 Expected: FAIL because withInitLock and its constants do not exist.
 
@@ -4878,7 +4910,7 @@ export function withInitLock(root, fn, deps = {}) {
   }
   const initial = followInitAuthority(control, deps);
   if (initial.state !== 'free') throwHeldAuthority(initial, deps);
-  // In particular, LOCK_CHAIN_EXHAUSTED is raised above before sweep or candidate publication.
+  // A cap already visible at entry is raised above before sweep or candidate publication.
   sweepInitCandidates(control, deps, nowMs);
   const holder = { pid, nonce, acquired_at: new Date(nowMs).toISOString() };
   const candidate = join(control, '.init-lock-candidate-' + pid + '-' + nonce);
@@ -4957,13 +4989,17 @@ export function withInitLock(root, fn, deps = {}) {
 Also add `import { randomUUID } from 'node:crypto';` at the top. `.init.lock`, every strict
 successor, and every same-inode release marker are append-only authority evidence: normal code never
 unlinks or renames them. Only strict candidate paths can be swept. After exactly 64 released owners,
-the 65th acquisition fails before authority publication and leaves the artifact set byte-identical;
-status returns `invalid` for separately approved manual compaction rather than silently discarding
-history.
+an acquisition that observes the stable exhausted chain fails before sweep/candidate primitives and
+leaves the artifact set byte-identical. A contender that observed slot 64 free may lose that slot
+after its precheck; because atomic hard-link publication requires a fully written source, that loser
+may create and remove only its own strict candidate before the second traversal reports
+`LOCK_CHAIN_EXHAUSTED`. It never publishes authority, release, or successor evidence and never
+performs a post-cap foreign sweep. Status returns `invalid` for separately approved manual
+compaction rather than silently discarding history.
 
 - [ ] **Step 4: Run the lock tests to verify GREEN**
 
-Run: node --test --test-name-pattern='fixed init authority|owner-nonce|candidate sweep|hard link|candidate write failure|candidate nonce collision|chain cap|EEXIST fixed-holder' tests/init-transaction.test.mjs
+Run: node --test --test-name-pattern='fixed init authority|owner-nonce|candidate sweep|hard link|candidate write failure|candidate nonce collision|stable exhausted chain|last-slot overtaking|EEXIST fixed-holder' tests/init-transaction.test.mjs
 
 Expected: PASS for live/unknown/invalid/dead/PID-reused terminal-holder preservation, candidate
 nonce-collision preservation, two stale
@@ -5013,10 +5049,10 @@ Add `publishGenesisState` and `commitPreparedInit` to the transaction test impor
 retry, and single-file no-replace cases. Directory publication is deliberately not part of this
 helper: Task 7F publishes an episode request as a regular file directly under the canonical run
 directory and tests the obsolete `episodes` path as an attacker-controlled non-parent.
-Add `renameSync` and `rmSync` to the transaction test's `node:fs` import and `spawnSync` from
-`node:child_process`. Function-valued crash injection is forbidden; order uses the concrete rename
-primitive, while hard-crash recovery uses the worker and a visibly test-only model of separately
-approved authority/temp compaction.
+Add `renameSync` and `rmSync` to the transaction test's `node:fs` import, `spawnSync` from
+`node:child_process`, and `fileURLToPath` from `node:url`. Function-valued crash injection is
+forbidden; order uses the concrete rename primitive, while hard-crash recovery uses the worker and
+a visibly test-only model of separately approved authority/temp compaction.
 
 ```js
 function commitInput(root, attempt, requestDigest, previous = 'NONE') {
@@ -5026,16 +5062,18 @@ function commitInput(root, attempt, requestDigest, previous = 'NONE') {
     request: initOptions(), observation: null };
 }
 
-const INIT_TRANSACTION_CRASH_WORKER =
-  new URL('./helpers/init-transaction-crash-worker.mjs', import.meta.url);
+const INIT_TRANSACTION_CRASH_WORKER = fileURLToPath(
+  new URL('./helpers/init-transaction-crash-worker.mjs', import.meta.url));
 
 function runInitTransactionCrash(root, attempt, previous, requestDigest, point) {
-  const crashed = spawnSync(process.execPath, [INIT_TRANSACTION_CRASH_WORKER.pathname,
+  const crashed = spawnSync(process.execPath, [INIT_TRANSACTION_CRASH_WORKER,
     root, attempt, previous, requestDigest, point], {
     cwd: root, encoding: 'utf8', env: { ...process.env, NODE_ENV: 'test',
       DEEP_LOOP_TEST_CRASH_AT: point },
   });
   assert.equal(crashed.status, 91, `${point}: ${crashed.stderr}`);
+  assert.equal(Number.isSafeInteger(crashed.pid) && crashed.pid > 0, true);
+  return crashed.pid;
 }
 
 function simulateSeparatelyApprovedInitCompaction(root) {
@@ -5056,6 +5094,12 @@ function simulateSeparatelyApprovedInitCompaction(root) {
     }
   }
 }
+
+test('init transaction crash worker URL is converted to a native filesystem path', () => {
+  assert.equal(INIT_TRANSACTION_CRASH_WORKER.endsWith(
+    join('helpers', 'init-transaction-crash-worker.mjs')), true);
+  assert.equal(INIT_TRANSACTION_CRASH_WORKER.includes('%20'), false);
+});
 
 test('commit reserves pending, publishes hash then loop, CASes current, and exact retry is inert', () => {
   const root = fixtureDir();
@@ -5097,15 +5141,18 @@ test('commit reserves pending, publishes hash then loop, CASes current, and exac
 test('crash after state publication recovers the exact pending attempt only', () => {
   const root = fixtureDir();
   const deps = initDeps(root, { pid: 7, nonce: () => 'writer0000000000',
-    now: () => Date.parse('2026-07-13T00:00:00.000Z'), probePidIdentity: () => 'alive' });
+    now: () => Date.parse('2026-07-13T00:00:00.000Z') });
   const attempt = '01JAPPGEN00000000000000000';
   const request = initializationRequestDigest(normalizeInitializationRequest(root, initOptions(), deps));
-  runInitTransactionCrash(root, attempt, 'NONE', request, 'current-before-rename');
+  const crashedPid = runInitTransactionCrash(
+    root, attempt, 'NONE', request, 'current-before-rename');
+  const recoveryDeps = { ...deps, probePidIdentity: ({ pid }) =>
+    pid === crashedPid ? 'definitely-dead' : 'unknown' };
   assert.equal(existsSync(join(root, '.deep-loop', 'init-pending.json')), true);
-  assert.throws(() => commitPreparedInit(root, commitInput(root, attempt, request), deps),
+  assert.throws(() => commitPreparedInit(root, commitInput(root, attempt, request), recoveryDeps),
     /LOCK_STALE_MANUAL/);
   simulateSeparatelyApprovedInitCompaction(root);
-  assert.equal(commitPreparedInit(root, commitInput(root, attempt, request), deps).outcome,
+  assert.equal(commitPreparedInit(root, commitInput(root, attempt, request), recoveryDeps).outcome,
     'recovered-pending');
   assert.equal(readFileSync(join(root, '.deep-loop', 'current'), 'utf8'), attempt + '\n');
   assert.equal(existsSync(join(root, '.deep-loop', 'init-pending.json')), false);
@@ -5156,16 +5203,19 @@ test('every private scalar genesis crash window fails closed and exact retry rec
     const root = fixtureDir();
     const deps = initDeps(root, { pid: 7, nonce: () => 'writer0000000000',
       tempNonce: () => 'temp000000000000',
-      now: () => Date.parse('2030-01-01T00:00:00.000Z'), probePidIdentity: () => 'alive' });
+      now: () => Date.parse('2030-01-01T00:00:00.000Z') });
     const attempt = '01JAPPGEN00000000000000000';
     const request = initializationRequestDigest(normalizeInitializationRequest(root,
       initOptions(), deps));
-    runInitTransactionCrash(root, attempt, 'NONE', request, stage);
-    assert.throws(() => commitPreparedInit(root, commitInput(root, attempt, request), deps),
+    const crashedPid = runInitTransactionCrash(root, attempt, 'NONE', request, stage);
+    const recoveryDeps = { ...deps, probePidIdentity: ({ pid }) =>
+      pid === crashedPid ? 'definitely-dead' : 'unknown' };
+    assert.throws(() => commitPreparedInit(root,
+      commitInput(root, attempt, request), recoveryDeps),
       /LOCK_STALE_MANUAL/);
     simulateSeparatelyApprovedInitCompaction(root);
     const result = commitPreparedInit(root, commitInput(root, attempt, request), {
-      ...deps, now: () => Date.parse('2040-01-01T00:00:00.000Z') });
+      ...recoveryDeps, now: () => Date.parse('2040-01-01T00:00:00.000Z') });
     assert.ok(['initialized', 'recovered-pending', 'already-initialized'].includes(result.outcome));
     assert.equal(readFileSync(join(root, '.deep-loop', 'current'), 'utf8'), attempt + '\n');
     assert.equal(existsSync(join(root, '.deep-loop', 'init-pending.json')), false);
@@ -5173,6 +5223,32 @@ test('every private scalar genesis crash window fails closed and exact retry rec
     assert.equal(contentHash(stateBytes.toString('utf8')),
       readFileSync(join(root, '.deep-loop', 'runs', attempt, '.loop.hash'), 'utf8'));
   }
+});
+
+test('genesis temp wx collision preserves the pre-existing foreign staging bytes', () => {
+  const root = fixtureDir();
+  const nowMs = Date.parse('2030-01-01T00:00:00.000Z');
+  const foreign = Buffer.from('foreign-staging-evidence');
+  let collidedTemp = null;
+  const deps = initDeps(root, { pid: 7, nonce: () => 'writer0000000000',
+    tempNonce: () => 'temp000000000000', now: () => nowMs,
+    writeFile: (path, bytes, options) => {
+      if (basename(path).startsWith('.tmp-')) {
+        collidedTemp = path;
+        writeFileSync(path, foreign, { flag: 'wx' });
+      }
+      return writeFileSync(path, bytes, options);
+    },
+  });
+  const attempt = '01JAPPGEN00000000000000000';
+  const request = initializationRequestDigest(normalizeInitializationRequest(root,
+    initOptions(), deps));
+  assert.throws(() => commitPreparedInit(root,
+    commitInput(root, attempt, request), deps), error => error?.code === 'EEXIST');
+  assert.equal(collidedTemp, join(root, '.deep-loop',
+    `.tmp-7-${nowMs}-temp000000000000`));
+  assert.deepEqual(readFileSync(collidedTemp), foreign);
+  assert.equal(existsSync(join(root, '.deep-loop', 'init-pending.json')), false);
 });
 
 test('exact pending retry cleans only strict own temp debris and rejects symlink escape', () => {
@@ -5335,7 +5411,7 @@ process.exit(70);
 
 - [ ] **Step 2: Run publisher tests to verify RED**
 
-Run: node --test --test-name-pattern='commit reserves|crash after state|foreign pending|private scalar genesis crash window|exact pending retry' tests/init-transaction.test.mjs
+Run: node --test --test-name-pattern='crash worker URL|commit reserves|crash after state|foreign pending|private scalar genesis crash window|genesis temp wx collision|exact pending retry' tests/init-transaction.test.mjs
 
 Expected: FAIL because publisher/commit exports do not exist and state has no genesis-only writer.
 
@@ -5633,15 +5709,24 @@ function writeGenesisArtifact(path, attempt, slot, bytes, deps) {
   }
   const name = `.tmp-${pid}-${nowMs}-${nonce}`;
   const temp = join(dirname(path), name);
+  let tempOwned = false;
   try {
     crashGenesisIfScheduled(`${slot}-before-write`);
-    (deps.writeFile ?? writeFileSync)(temp, bytes, { flag: 'wx' });
+    try {
+      (deps.writeFile ?? writeFileSync)(temp, bytes, { flag: 'wx' });
+      tempOwned = true;
+    } catch (error) {
+      // Native wx EEXIST proves this invocation never owned the pathname. Another write failure can
+      // leave a partial file at this invocation's strict unique name and authorizes own cleanup.
+      tempOwned = error?.code !== 'EEXIST';
+      throw error;
+    }
     crashGenesisIfScheduled(`${slot}-after-write`);
     crashGenesisIfScheduled(`${slot}-before-rename`);
     renameGenesisFile(temp, path,
       { renamedPoint: `${slot}-after-rename` }, deps);
   } finally {
-    removeOwnTemp(temp, deps);
+    if (tempOwned) removeOwnTemp(temp, deps);
   }
 }
 
@@ -5815,7 +5900,7 @@ The completedPendingMarker branch is the only foreign-marker cleanup: it require
 
 - [ ] **Step 4: Run publisher tests to verify GREEN**
 
-Run: node --test --test-name-pattern='commit reserves|crash after state|foreign pending|private scalar genesis crash window|exact pending retry' tests/init-transaction.test.mjs
+Run: node --test --test-name-pattern='crash worker URL|commit reserves|crash after state|foreign pending|private scalar genesis crash window|genesis temp wx collision|exact pending retry' tests/init-transaction.test.mjs
 
 Expected: PASS for the full private-scalar subprocess crash table, exact retries after test-modeled
 separately approved authority/temp compaction, completed-marker cleanup, state-last proof, current
@@ -6186,8 +6271,8 @@ git commit -m "refactor: route run initialization through shared writer" -m "Co-
 
 - [ ] **Step 1: Write complete fixed-init CLI tests**
 
-Add `spawn` to the existing `node:child_process` import and `readdirSync, unlinkSync` to the existing
-`node:fs` import, then append this helper and complete query/form tests to
+Add `spawn` to the existing `node:child_process` import, `readdirSync, unlinkSync` to the existing
+`node:fs` import, and `fileURLToPath` from `node:url`, then append this helper and complete query/form tests to
 `tests/orch-cli.test.mjs`. The child writes only after the exact READY token:
 Replace its existing `initrun.mjs` import with
 `import { buildFixedInitializationRequest, commitFixedInitialization, detectInitializationGit, initRun, prepareFixedInitialization, productionInitDeps } from '../scripts/lib/initrun.mjs';`.
@@ -6558,6 +6643,15 @@ process.exit(70);
 Append this literal process reconciliation test to `tests/orch-cli.test.mjs`:
 
 ```js
+const FIXED_INIT_CRASH_WORKER = fileURLToPath(
+  new URL('./helpers/fixed-init-crash-worker.mjs', import.meta.url));
+
+test('fixed init crash worker URL is converted to a native filesystem path', () => {
+  assert.equal(FIXED_INIT_CRASH_WORKER.endsWith(
+    join('helpers', 'fixed-init-crash-worker.mjs')), true);
+  assert.equal(FIXED_INIT_CRASH_WORKER.includes('%20'), false);
+});
+
 test('fixed enum init response loss retries the same committed attempt only', () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-fixed-loss-')));
   const fixed = ['--project-root', root, '--manual-enums', '--runtime', 'codex',
@@ -6568,8 +6662,7 @@ test('fixed enum init response loss retries the same committed attempt only', ()
     '--expected-observation-digest', 'NONE'], { cwd: root, encoding: 'utf8' });
   assert.equal(prepare.status, 0, prepare.stderr);
   const binding = JSON.parse(prepare.stdout);
-  const worker = new URL('./helpers/fixed-init-crash-worker.mjs', import.meta.url);
-  const crashed = spawnSync(process.execPath, [worker.pathname, root, binding.attempt_id,
+  const crashed = spawnSync(process.execPath, [FIXED_INIT_CRASH_WORKER, root, binding.attempt_id,
     binding.previous_current_digest, binding.expected_request_digest, 'NONE', 'enum',
     'after-commit'], { cwd: root, encoding: 'utf8' });
   assert.equal(crashed.status, 91, crashed.stderr);
@@ -6623,8 +6716,7 @@ test('fixed full init response loss retries the same structured observation and 
   assert.equal((invalidFull.stdout + invalidFull.stderr).includes(sentinel), false);
   assert.equal(existsSync(join(root, '.deep-loop')), false,
     'invalid full raw observation is rejected before pending/run/current creation');
-  const worker = new URL('./helpers/fixed-init-crash-worker.mjs', import.meta.url);
-  const crashed = spawnSync(process.execPath, [worker.pathname, root, binding.attempt_id,
+  const crashed = spawnSync(process.execPath, [FIXED_INIT_CRASH_WORKER, root, binding.attempt_id,
     binding.previous_current_digest, binding.expected_request_digest, observationDigest,
     'full', 'after-commit'], { cwd: root, encoding: 'utf8' });
   assert.equal(crashed.status, 91, crashed.stderr);
@@ -6657,8 +6749,7 @@ test('hard crash inside append-only init authority requires explicit manual comp
     '--expected-observation-digest', 'NONE'], { cwd: root, encoding: 'utf8' });
   assert.equal(prepare.status, 0, prepare.stderr);
   const binding = JSON.parse(prepare.stdout);
-  const worker = new URL('./helpers/fixed-init-crash-worker.mjs', import.meta.url);
-  const crashed = spawnSync(process.execPath, [worker.pathname, root, binding.attempt_id,
+  const crashed = spawnSync(process.execPath, [FIXED_INIT_CRASH_WORKER, root, binding.attempt_id,
     binding.previous_current_digest, binding.expected_request_digest, 'NONE', 'enum',
     'inside-lock'], { cwd: root, encoding: 'utf8' });
   assert.equal(crashed.status, 91, crashed.stderr);
@@ -6700,7 +6791,7 @@ test('hard crash inside append-only init authority requires explicit manual comp
 
 - [ ] **Step 2: Run fixed CLI tests to verify RED**
 
-Run: node --test --test-name-pattern='init-run preflight|structured JSON diagnostics|actual and host cwd|prepare status|fixed-only flags|fixed request facts|fixed git facts|immutable scalars|fixed review JSON|fixed enum init response loss|fixed full init response loss|hard crash inside|manual-enums' tests/orch-cli.test.mjs tests/cli-skillface.test.mjs
+Run: node --test --test-name-pattern='init-run preflight|structured JSON diagnostics|actual and host cwd|prepare status|fixed-only flags|fixed request facts|fixed git facts|immutable scalars|fixed review JSON|crash worker URL|fixed enum init response loss|fixed full init response loss|hard crash inside|manual-enums' tests/orch-cli.test.mjs tests/cli-skillface.test.mjs
 
 Expected: FAIL because fixed init verbs and READY dispatch do not exist.
 
@@ -7200,7 +7291,7 @@ another mode, attempt, or manual form.
 
 - [ ] **Step 4: Run fixed CLI tests to verify GREEN**
 
-Run: node --test --test-name-pattern='init-run preflight|structured JSON diagnostics|actual and host cwd|prepare status|fixed-only flags|fixed request facts|fixed git facts|immutable scalars|fixed review JSON|fixed enum init response loss|fixed full init response loss|hard crash inside|manual-enums' tests/orch-cli.test.mjs tests/cli-skillface.test.mjs
+Run: node --test --test-name-pattern='init-run preflight|structured JSON diagnostics|actual and host cwd|prepare status|fixed-only flags|fixed request facts|fixed git facts|immutable scalars|fixed review JSON|crash worker URL|fixed enum init response loss|fixed full init response loss|hard crash inside|manual-enums' tests/orch-cli.test.mjs tests/cli-skillface.test.mjs
 
 Expected: PASS for explicit root/bindings, READY order, no-write queries, same-attempt reconciliation even when an unignored kernel control directory exists, user-owned Git dirt detection, and manual enum exclusions.
 
@@ -35995,6 +36086,10 @@ for (const task of taskMatches) {
       'DURABLE_EXISTING_INVALID', 'tests/helpers/init-transaction-crash-worker.mjs',
       'every private scalar genesis crash window',
       'simulateSeparatelyApprovedInitCompaction(',
+      'fileURLToPath(', 'return crashed.pid;',
+      "pid === crashedPid ? 'definitely-dead' : 'unknown'",
+      'genesis temp wx collision preserves the pre-existing foreign staging bytes',
+      'let tempOwned = false;', "tempOwned = error?.code !== 'EEXIST'",
       "process.env.DEEP_LOOP_TEST_CRASH_AT !== point",
       "assert.equal(crashed.status, 91", 'process.exit(70)']) {
       if (!card.includes(token)) fail(`Task 5B missing platform durability token ${token}`);
@@ -36002,13 +36097,17 @@ for (const task of taskMatches) {
     if (/\bcrashProbe\b/u.test(card)) {
       fail('Task 5B retains a function-valued crash contract');
     }
+    if (/\.pathname\b/u.test(card)) {
+      fail('Task 5B passes a file URL pathname instead of a native filesystem path');
+    }
   }
   if (task[1] === '5A') {
     for (const token of ['INIT_LOCK_CHAIN_MAX = 64', 'function followInitAuthority(',
       "'.init-lock-release-' + nonce", "'.init-lock-successor-' + authority.holder.nonce",
       'link(candidate, releasePath)', 'LOCK_CHAIN_EXHAUSTED',
       'depth === INIT_LOCK_CHAIN_MAX - 1',
-      'chain cap permits 64 owners and the 65th failure is write free',
+      'stable exhausted chain permits 64 owners and rejects the 65th before any primitive',
+      'last-slot overtaking cleans only the losing contender candidate without publishing authority',
       'never pathname-deletes a release-time copied-nonce ABA replacement',
       'append-only authority evidence']) {
       if (!card.includes(token)) fail(`Task 5A missing append-only lock-chain token ${token}`);
@@ -36021,6 +36120,15 @@ for (const task of taskMatches) {
     const candidateSweep = card.indexOf('sweepInitCandidates(control, deps, nowMs);', capCheck);
     if (!(capCheck >= 0 && candidateSweep > capCheck)) {
       fail('Task 5A does not reject chain exhaustion before candidate sweep/publication');
+    }
+  }
+  if (task[1] === '6A') {
+    for (const token of ['fileURLToPath(', 'const FIXED_INIT_CRASH_WORKER = fileURLToPath(',
+      'fixed init crash worker URL is converted to a native filesystem path']) {
+      if (!card.includes(token)) fail(`Task 6A missing native worker-path token ${token}`);
+    }
+    if (/worker\.pathname\b/u.test(card)) {
+      fail('Task 6A passes a file URL pathname instead of a native filesystem path');
     }
   }
   if (task[1] === '4C') {
@@ -36527,12 +36635,47 @@ for (const fence of fenceRecords) {
       const probePath = join(probeDir, 'copied-token-aba.mjs');
       writeFileSync(probePath, `
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 ${lockFence.body}
 const exactKeys = (value, keys) => value !== null && typeof value === 'object'
   && !Array.isArray(value) && Object.keys(value).sort().length === keys.length
   && keys.every((key, index) => Object.keys(value).sort()[index] === key);
+if (process.argv[2] === 'hard-exit') {
+  withInitLock(process.argv[3], () => process.exit(91), {
+    pid: process.pid, nonce: () => String(process.pid).padStart(16, '0'),
+    platform: 'linux', realpath: value => value,
+    now: () => Date.parse('2026-07-13T00:00:00.000Z'),
+  });
+  process.exit(70);
+}
 const root = ${JSON.stringify(root)};
+const crashRoot = join(root, 'scalar-worker');
+mkdirSync(crashRoot);
+const crashed = spawnSync(process.execPath, [${JSON.stringify(probePath)}, 'hard-exit', crashRoot],
+  { encoding: 'utf8' });
+assert.equal(crashed.status, 91, crashed.stderr);
+assert.equal(Number.isSafeInteger(crashed.pid) && crashed.pid > 0, true);
+assert.throws(() => withInitLock(crashRoot, () => assert.fail('live retry entered'), {
+  pid: 7, nonce: () => 'livecontender001', platform: 'linux', realpath: value => value,
+  now: () => Date.parse('2026-07-13T00:00:01.000Z'), probePidIdentity: () => 'alive',
+}), /LOCK_BUSY/);
+assert.throws(() => withInitLock(crashRoot, () => assert.fail('stale retry entered'), {
+  pid: 7, nonce: () => 'deadcontender001', platform: 'linux', realpath: value => value,
+  now: () => Date.parse('2026-07-13T00:00:01.000Z'),
+  probePidIdentity: ({ pid }) => pid === crashed.pid ? 'definitely-dead' : 'unknown',
+}), /LOCK_STALE_MANUAL/);
+for (const name of readdirSync(join(crashRoot, '.deep-loop'))) {
+  if (name === '.init.lock' || name.startsWith('.init-lock-candidate-')) {
+    unlinkSync(join(crashRoot, '.deep-loop', name));
+  }
+}
+let recovered = false;
+withInitLock(crashRoot, () => { recovered = true; }, {
+  pid: 7, nonce: () => 'recoveredowner01', platform: 'linux', realpath: value => value,
+  now: () => Date.parse('2026-07-13T00:00:02.000Z'),
+});
+assert.equal(recovered, true);
 const nonce = 'copiednonce00001';
 const later = { pid: 99, nonce, acquired_at: '2026-07-13T00:00:01.000Z' };
 const fixed = join(root, '.deep-loop', '.init.lock');
@@ -36581,6 +36724,39 @@ assert.equal(beforeCapFailure.includes(
   '.init-lock-successor-' + nonceFor(INIT_LOCK_CHAIN_MAX)), false);
 assert.equal(beforeCapFailure.includes(
   '.init-lock-release-' + nonceFor(INIT_LOCK_CHAIN_MAX + 1)), false);
+
+const raceRoot = join(${JSON.stringify(root)}, 'last-slot-race');
+mkdirSync(raceRoot);
+for (let index = 1; index < INIT_LOCK_CHAIN_MAX; index += 1) {
+  withInitLock(raceRoot, () => {}, {
+    pid: 7, nonce: () => nonceFor(index), platform: 'linux', realpath: value => value,
+    now: () => Date.parse('2026-07-13T00:00:00.000Z'),
+  });
+}
+let interleaved = false;
+const raceWrites = [];
+const raceUnlinks = [];
+assert.throws(() => withInitLock(raceRoot, () => assert.fail('cap loser entered'), {
+  pid: 7, nonce: () => nonceFor(65), platform: 'linux', realpath: value => value,
+  now: () => Date.parse('2026-07-13T00:00:00.000Z'),
+  writeFile: (path, bytes, options) => {
+    if (!interleaved) {
+      interleaved = true;
+      withInitLock(raceRoot, () => {}, {
+        pid: 7, nonce: () => nonceFor(64), platform: 'linux', realpath: value => value,
+        now: () => Date.parse('2026-07-13T00:00:00.000Z'),
+      });
+    }
+    raceWrites.push(path);
+    writeFileSync(path, bytes, options);
+  },
+  unlink: path => { raceUnlinks.push(path); return unlinkSync(path); },
+}), /LOCK_CHAIN_EXHAUSTED/);
+assert.equal(raceWrites.length, 1);
+assert.deepEqual(raceUnlinks, raceWrites);
+const raceNames = readdirSync(join(raceRoot, '.deep-loop'));
+assert.equal(raceNames.includes('.init-lock-successor-' + nonceFor(64)), false);
+assert.equal(raceNames.includes('.init-lock-release-' + nonceFor(65)), false);
 
 const collisionRoot = join(${JSON.stringify(root)}, 'collision');
 mkdirSync(join(collisionRoot, '.deep-loop'), { recursive: true });
@@ -36692,6 +36868,43 @@ process.exit(70);
       const diagnostic = String(scalar.error?.message || scalar.stderr || scalar.stdout
         || `status=${scalar.status}`).split('\n').slice(0, 20).join(' | ');
       fail(`Task 5B installed private scalar crash behavior: ${diagnostic}`);
+    }
+    const artifactStart = durableFence.body.indexOf(
+      'function writeGenesisArtifact(path, attempt, slot, bytes, deps) {');
+    const artifactEnd = durableFence.body.indexOf('\n\nfunction deletePending(path, deps) {',
+      artifactStart);
+    if (!(artifactStart >= 0 && artifactEnd > artifactStart)) {
+      fail('Task 5B complete genesis artifact writer missing');
+    } else {
+      const collisionPath = join(sequentialSourceDir, '.plan-genesis-temp-collision-probe.mjs');
+      const artifactFunction = durableFence.body.slice(artifactStart, artifactEnd);
+      writeFileSync(collisionPath, `
+import assert from 'node:assert/strict';
+import { dirname, join } from 'node:path';
+const ATTEMPT_ID = { test: () => true };
+const GENESIS_TEMP_NONCE = { test: () => true };
+const crashGenesisIfScheduled = () => {};
+const renameGenesisFile = () => {};
+const randomUUID = () => 'unused';
+const writeFileSync = () => { throw new Error('unexpected default write'); };
+const removeOwnTemp = (path, deps) => deps.unlink(path);
+${artifactFunction}
+const removed = [];
+const collision = Object.assign(new Error('collision'), { code: 'EEXIST' });
+assert.throws(() => writeGenesisArtifact('/virtual/loop.json', 'attempt', 'loop', 'bytes', {
+  pid: 7, now: () => 0, tempNonce: () => 'temp000000000000',
+  writeFile: () => { throw collision; }, unlink: path => removed.push(path),
+}), error => error === collision);
+assert.deepEqual(removed, []);
+`);
+      const collision = spawnSync(process.execPath, [collisionPath], {
+        cwd: sequentialSourceDir, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024,
+      });
+      if (collision.error || collision.status !== 0) {
+        const diagnostic = String(collision.error?.message || collision.stderr || collision.stdout)
+          .split('\n').slice(0, 20).join(' | ');
+        fail(`Task 5B genesis temp collision ownership behavior: ${diagnostic}`);
+      }
     }
   }
   const digestFence = fenceRecords.find(record => record.language === 'js'
@@ -38057,7 +38270,7 @@ git diff --cached -- docs/superpowers/plans/2026-07-13-codex-app-native-task-con
 git status --short --branch
 ```
 
-Expected: the validator prints `ok:true` for the exact 46-card inventory, ordered seven-step semantics, nonempty Files/Interfaces, strict literal path multisets for scoped Step 6/7 commands and exact anchor tokens, the fixed known/nonempty/closed fence inventory and syntax, exact unified-diff hunk counts with no orphan trailing payload, executed release-time copied-token ABA preservation with zero authority unlink, 64 successful lock owners plus a primitive-write-free 65th cap failure, candidate-collision preservation, bracketed lock/state status inventory, installed Task 5B private-scalar hard exit and no-replace publication, sequential Task 7B→7G concrete substrate through the Task 11B gateway closure, exact Task 5B–11C race-callback closure, and mechanically composed Task 11C→12B final syntax with its prepared no-op before gate. Task 8A–11B late source cards are structural inventory here and become executable evidence only through their ordered card-local tests and Gate 3B preflight. Gate 5/7/8/9 approval/evidence semantics, ULIDs, banned prose, wildcard patterns, and whitespace are also checked. The ignored plan is then force-added so staged checks and inspection cover the exact reviewed bytes.
+Expected: the validator prints `ok:true` for the exact 46-card inventory, ordered seven-step semantics, nonempty Files/Interfaces, strict literal path multisets for scoped Step 6/7 commands and exact anchor tokens, the fixed known/nonempty/closed fence inventory and syntax, exact unified-diff hunk counts with no orphan trailing payload, executed release-time copied-token ABA preservation with zero authority unlink, 64 successful lock owners plus a primitive-write-free stable 65th cap failure and the bounded own-candidate cleanup of a concurrent last-slot loser, candidate/temp-collision preservation, bracketed lock/state status inventory, native worker file-URL conversion, installed Task 5B private-scalar hard exit with exact dead-PID stale/manual recovery, and no-replace publication, sequential Task 7B→7G concrete substrate through the Task 11B gateway closure, exact Task 5B–11C race-callback closure, and mechanically composed Task 11C→12B final syntax with its prepared no-op before gate. Task 8A–11B late source cards are structural inventory here and become executable evidence only through their ordered card-local tests and Gate 3B preflight. Gate 5/7/8/9 approval/evidence semantics, ULIDs, banned prose, wildcard patterns, and whitespace are also checked. The ignored plan is then force-added so staged checks and inspection cover the exact reviewed bytes.
 
 ## Execution Handoff
 
