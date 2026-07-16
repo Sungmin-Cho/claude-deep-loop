@@ -11213,9 +11213,17 @@ export function verifyEpisodeCreationCorrelation(loop, lines) {
     }
     const hasCallerId = episode.creation_request_id_digest != null;
     const hasDispatchId = episode.dispatch_request_id_digest != null;
-    if (hasCallerId === hasDispatchId
-        || hasDispatchId !== (episode.dispatch_request_digest != null)) {
+    const callerIdValid = hasCallerId
+      && /^[0-9a-f]{64}$/.test(episode.creation_request_id_digest);
+    const dispatchIdValid = hasDispatchId
+      && /^[0-9a-f]{64}$/.test(episode.dispatch_request_id_digest);
+    const dispatchRequestValid = hasDispatchId
+      ? /^[0-9a-f]{64}$/.test(episode.dispatch_request_digest || '')
+      : episode.dispatch_request_digest == null;
+    if (hasCallerId === hasDispatchId || hasCallerId !== callerIdValid
+        || hasDispatchId !== dispatchIdValid || !dispatchRequestValid) {
       errors.push(`episode ${episode.id} has ambiguous creation identity`);
+      continue;
     }
     const requestIdentity = hasCallerId
       ? `caller:${episode.creation_request_id_digest}`
@@ -11223,7 +11231,7 @@ export function verifyEpisodeCreationCorrelation(loop, lines) {
     const priorIdentityOwner = requestIdentityOwners.get(requestIdentity);
     if (priorIdentityOwner !== undefined && priorIdentityOwner !== episode.id) {
       errors.push(`duplicate episode creation request identity ${requestIdentity}`);
-    } else if (/^(?:caller|dispatch):[0-9a-f]{64}$/.test(requestIdentity)) {
+    } else {
       requestIdentityOwners.set(requestIdentity, episode.id);
     }
   }
@@ -15876,9 +15884,11 @@ test7f('review dispatch exact retry after marker cleanup reuses one checker', ()
     .find(episode => episode.id === first.checkerEpisodeId);
   const requestMarkdown = firstEpisode.request_markdown;
   const requestMarkdownDigest = firstEpisode.request_markdown_digest;
+  assert7f.equal(first.request_markdown, requestMarkdown);
+  assert7f.equal(first.request_markdown_digest, requestMarkdownDigest);
   const committed = bytes7f(fixture.root, fixture.runId);
   const second = dispatch7f(fixture.root, fixture.runId, input);
-  assert7f.equal(second.checkerEpisodeId, first.checkerEpisodeId);
+  assert7f.deepEqual(second, first);
   const replayedEpisode = stateDispatch7f(fixture.root, fixture.runId).data.episodes
     .find(episode => episode.id === first.checkerEpisodeId);
   assert7f.equal(replayedEpisode.request_markdown, requestMarkdown);
@@ -15966,12 +15976,13 @@ test7f('paired state and event task or contract tampering is rejected semantical
   }
 });
 
-function rewriteEpisodeCreationEvent7f(fixture, mutate) {
+function rewriteEpisodeCreationEvent7f(fixture, mutate, episodeId = null) {
   const path = join7f(runDirDispatch7f(fixture.root, fixture.runId),
     'event-log.jsonl');
   const events = readDispatch7f(path, 'utf8').trim().split('\n').map(JSON.parse);
   mutate(events.find(event => event.type === 'episode-new'
-    && event.data?.role === 'checker').data);
+    && (episodeId === null ? event.data?.role === 'checker'
+      : event.data?.episode_id === episodeId)).data);
   let previous = 'GENESIS';
   for (const event of events) {
     event.checksum = hashDispatch7f('sha256').update(
@@ -16005,6 +16016,56 @@ test7f('episode creation identity is state-event correlated and status-independe
   }), /EPISODE_REQUEST_CONFLICT/);
   assert7f.throws(() => episode7f(direct.root, direct.runId, repeatedInput),
     /EPISODE_REQUEST_ID_REQUIRED/);
+
+  const malformedCaller = 'g'.repeat(64);
+  rewriteEpisodeCreationEvent7f(direct, data => {
+    data.creation_request_id_digest = malformedCaller;
+    data.request_projection.creation_request_id_digest = malformedCaller;
+  }, repeatedB.id);
+  raw7f(direct.root, direct.runId, loop => {
+    loop.episodes.find(episode => episode.id === repeatedB.id)
+      .creation_request_id_digest = malformedCaller;
+  });
+  assert7f.throws(() => verifiedDispatch7f(direct.root, direct.runId),
+    /ambiguous creation identity/);
+
+  const malformedDispatch = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
+  const malformedReview = dispatch7f(malformedDispatch.root, malformedDispatch.runId, {
+    point: 'design', workstreamId: malformedDispatch.ws,
+    detected: { 'deep-review': true, codex: true },
+    requestId: 'malformed-dispatch-identity', fence: malformedDispatch.fence,
+  });
+  const uppercaseDigest = 'A'.repeat(64);
+  rewriteEpisodeCreationEvent7f(malformedDispatch, data => {
+    data.dispatch_request_id_digest = uppercaseDigest;
+    data.request_projection.dispatch_request_id_digest = uppercaseDigest;
+  }, malformedReview.checkerEpisodeId);
+  raw7f(malformedDispatch.root, malformedDispatch.runId, loop => {
+    loop.episodes.find(episode => episode.id === malformedReview.checkerEpisodeId)
+      .dispatch_request_id_digest = uppercaseDigest;
+  });
+  assert7f.throws(() => verifiedDispatch7f(malformedDispatch.root, malformedDispatch.runId),
+    /ambiguous creation identity/);
+
+  const duplicateIdentity = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
+  const duplicateInput = { plugin: 'deep-work', role: 'maker', kind: 'duplicate',
+    point: 'design', workstream: duplicateIdentity.ws, fence: duplicateIdentity.fence };
+  const identityA = episode7f(duplicateIdentity.root, duplicateIdentity.runId,
+    { ...duplicateInput, requestId: 'duplicate-identity-a' });
+  const identityB = episode7f(duplicateIdentity.root, duplicateIdentity.runId,
+    { ...duplicateInput, requestId: 'duplicate-identity-b' });
+  const duplicateDigest = stateDispatch7f(duplicateIdentity.root, duplicateIdentity.runId).data
+    .episodes.find(episode => episode.id === identityA.id).creation_request_id_digest;
+  rewriteEpisodeCreationEvent7f(duplicateIdentity, data => {
+    data.creation_request_id_digest = duplicateDigest;
+    data.request_projection.creation_request_id_digest = duplicateDigest;
+  }, identityB.id);
+  raw7f(duplicateIdentity.root, duplicateIdentity.runId, loop => {
+    loop.episodes.find(episode => episode.id === identityB.id)
+      .creation_request_id_digest = duplicateDigest;
+  });
+  assert7f.throws(() => verifiedDispatch7f(duplicateIdentity.root, duplicateIdentity.runId),
+    /duplicate episode creation request identity/);
 
   const stateOnly = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
   const input = { point: 'design', workstreamId: stateOnly.ws,
@@ -17539,14 +17600,14 @@ index c567221..8bf9718 100644
  // Keeping this separate from newEpisode prevents makers (or arbitrary callers) from selecting an initial blocked state.
  export function newBlockedCheckerEpisode(root, runId, { plugin, kind, point,
 -  workstream = null, targetMaker, reason, reviewerResolution, fence, mutation, crashProbe } = {}) {
-+  workstream = null, targetMaker, reason, reviewerResolution, fence, mutation, crashProbe,
++  task, workstream = null, targetMaker, reason, reviewerResolution, fence, mutation, crashProbe,
 +  beforeMaterialize,
 +  requestId, dispatchRequestIdDigest, dispatchRequestDigest, dispatchResponse } = {}) {
    return createEpisode(root, runId, {
      plugin, role: 'checker', kind, point, workstream, targetMaker, reviewerResolution,
 -    initialStatus: 'blocked', blockReason: reason, fence, mutation, crashProbe,
 +    initialStatus: 'blocked', blockReason: reason, fence, mutation, crashProbe,
-+    beforeMaterialize,
++    task, beforeMaterialize,
 +    requestId, dispatchRequestIdDigest, dispatchRequestDigest, dispatchResponse,
      operation: 'newBlockedCheckerEpisode',
    });
@@ -17560,7 +17621,7 @@ diff --git a/scripts/lib/review.mjs b/scripts/lib/review.mjs
 index 730e203..aa1cf72 100644
 --- a/scripts/lib/review.mjs
 +++ b/scripts/lib/review.mjs
-@@ -312,11 +312,45 @@
+@@ -312,11 +312,49 @@
 +function replayReviewDispatch(checker) {
 +  const stored = checker?.dispatch_response;
 +  if (stored == null || typeof stored !== 'object' || Array.isArray(stored)
@@ -17571,7 +17632,9 @@ index 730e203..aa1cf72 100644
 +      || (stored.reviewer === 'deep-review-loop' ? checker.plugin !== 'deep-review'
 +        : checker.plugin !== stored.reviewer)
 +      || JSON.stringify(stored.evidence ?? null)
-+        !== JSON.stringify(checker.evidence ?? null)) {
++        !== JSON.stringify(checker.evidence ?? null)
++      || typeof checker.request_markdown !== 'string'
++      || !/^[0-9a-f]{64}$/.test(checker.request_markdown_digest || '')) {
 +    throw new Error('REVIEW_RECOVERY_PROJECTION_MISMATCH');
 +  }
 +  const descriptor = {
@@ -17580,7 +17643,9 @@ index 730e203..aa1cf72 100644
 +      mode: stored.mode, reason: stored.reason ?? undefined }),
 +    ...(stored.evidence !== undefined ? { evidence: structuredClone(stored.evidence) } : {}),
 +  };
-+  return { checkerEpisodeId: checker.id, reviewer: stored.reviewer, descriptor };
++  return { checkerEpisodeId: checker.id, reviewer: stored.reviewer, descriptor,
++    request_markdown: checker.request_markdown,
++    request_markdown_digest: checker.request_markdown_digest };
 +}
 +
 -export function dispatchReview(root, runId, { point, workstreamId, detected = {}, independentSubagent = false, fence } = {}) {
@@ -17674,7 +17739,7 @@ index 730e203..aa1cf72 100644
    const { reviewer, flags, mode, reviewerResolution, blockedReason } = resolveReviewer(data, detected, { independentSubagent });
    // P2 (hillclimb-ledger 2026-07-10, release-blocking): hill-climb run은 checker 계약(HILLCLIMB-001)이 실제로
    // 강제되는 리뷰만 만들 수 있다. `.deep-review/`는 gitignored라 fresh checkout에는 계약이 없고, deep-review는
-@@ -427,20 +483,79 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
+@@ -427,23 +483,75 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
 +  const checkerTask = [
 +    `Independently review maker episode ${targetMaker} for review point ${point}.`,
 +    `Use only the verified run, maker artifacts, and complete contract embedded in this request.`,
@@ -17758,12 +17823,13 @@ index 730e203..aa1cf72 100644
 +  if (checker == null || typeof checker.request_markdown !== 'string') {
 +    throw new Error('REVIEW_RECOVERY_PROJECTION_MISMATCH');
 +  }
-+
-+
-+  const id = committed.id;
-   const descriptor = {
-     ...checkerDescriptor(reviewer, { point, workstreamId, flags, mode, reason: blockedReason }),
-     ...(evidence !== undefined ? { evidence } : {}),
+-  const descriptor = {
+-    ...checkerDescriptor(reviewer, { point, workstreamId, flags, mode, reason: blockedReason }),
+-    ...(evidence !== undefined ? { evidence } : {}),
+-  };
+-  return { checkerEpisodeId: id, reviewer, descriptor };
++  return replayReviewDispatch(checker);
+ }
 ```
 
 The preceding episode diffs document the incremental RED-to-GREEN path. Before running any Task 7F
@@ -18695,9 +18761,13 @@ index e449792..b19a37f 100644
 -  const maker = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'plan', '--point', 'plan', '--workstream', ws.id, '--artifacts', '["plan.txt"]', '--owner', runId, '--generation', '1']));
 +  const maker = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'plan', '--point', 'plan', '--workstream', ws.id, '--artifacts', '["plan.txt"]', '--task', 'Produce the finish proof plan.', '--request-id', 'finish-proof-maker', '--owner', runId, '--generation', '1']));
    run(root, ['episode', 'record', '--id', maker.id, '--status', 'done', '--artifacts', '["plan.txt"]', '--owner', runId, '--generation', '1']);
-@@ -278 +278 @@ test('review dispatch accepts --independent-subagent and records a neutral legac
+@@ -278,3 +278,5 @@ test('review dispatch accepts --independent-subagent and records a neutral legac
 -  const dispatched = JSON.parse(run(root, ['review', 'dispatch', '--point', 'plan', '--workstream', ws.id, '--independent-subagent', '--owner', runId, '--generation', '1']));
 +  const dispatched = JSON.parse(run(root, ['review', 'dispatch', '--point', 'plan', '--workstream', ws.id, '--request-id', 'cli-review-round-1', '--independent-subagent', '--owner', runId, '--generation', '1']));
++  assert.match(dispatched.request_markdown, /Independently review maker episode/);
++  assert.match(dispatched.request_markdown_digest, /^[0-9a-f]{64}$/);
+   assert.equal(dispatched.reviewer, 'subagent-checker');
+   assert.equal(dispatched.descriptor.kind, 'agent');
 @@ -833 +833 @@ test('workstream new + set via CLI with lease', () => {
 -  const ws = JSON.parse(run(root, ['workstream', 'new', '--title', 'Auth', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--owner', runId, '--generation', '1']));
 +  const ws = JSON.parse(run(root, ['workstream', 'new', '--title', 'Auth', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--request-id', 'cli-workstream-auth', '--owner', runId, '--generation', '1']));
@@ -23815,8 +23885,8 @@ git commit -m "feat: await App child readiness safely" -m "Co-Authored-By: Claud
   It reuses Task 9A's immediate acquired base predicate, so `confirm already-complete` and
   `acquire already-acquired` cannot disagree about release/recover/next-handoff progression.
   Observation-fact comparison ignores the two kernel-owned attestation fields
-  `observed_generation` and `observed_at`. `beforeAppendFn` is a test-only race seam invoked after
-  the initial verified response-loss projection and before the final anchored transaction. A
+  `observed_generation` and `observed_at`. After the initial authenticated read closes, `cwdFn` and
+  native-path dependencies normalize the observation before the final anchored transaction opens. A
   phase-aware, lock-owning read authenticates the exact reserved child against either its current
   parent generation or its immediate acquired child generation before any observation parsing or
   filesystem callback. That read closes before observation intent normalization. The final
@@ -24019,10 +24089,10 @@ test10a('acquire final lock fences identity before proof and proves before termi
     observation: observation10a(fixture.root) };
   let corrupted;
   const invoke = () => acquire10a(fixture.root, fixture.runId, input, {
-    cwdFn: () => fixture.root,
-    beforeAppendFn: () => {
+    cwdFn: () => {
       raw10a(fixture.root, fixture.runId, loop => { loop.status = 'stopped'; });
       corrupted = bytes10a(fixture.root, fixture.runId);
+      return fixture.root;
     },
   });
   assert10a.throws(invoke, /RUN_SNAPSHOT_INVALID/);
@@ -24143,16 +24213,16 @@ export function acquireAppTask(root, runId, input, deps = {}) {
     rawObservation.host_task_cwd, 'APP_CHILD_OBSERVATION_FENCED');
   const observationDigest = hostSurfaceFactsDigest(intentObservation);
   const intentInput = Object.freeze({ ...input, observationDigest });
+  const actualCwd = (deps.cwdFn ?? process.cwd)();
+  const normalizedObservation = normalizeAcquireObservation(rawObservation,
+    input, pathDeps, actualCwd, 'APP_CHILD_OBSERVATION_FENCED');
+  if (hostSurfaceFactsDigest(normalizedObservation) !== observationDigest) {
+    throw new Error('APP_CHILD_OBSERVATION_FENCED');
+  }
   return withAppMutation(root, runId, intentInput, 'app-acquire', mutation => {
   const snapshot = mutation.readVerifiedState(
     { fenceCheck: loop => assertAppAcquireEntryIdentity(loop, input) }).data;
   const historical = findAppAttempt(snapshot, input.attemptId);
-  const actualCwd = (deps.cwdFn ?? process.cwd)();
-  const normalizedObservation = normalizeAcquireObservation(rawObservation, input, pathDeps, actualCwd,
-    'APP_CHILD_OBSERVATION_FENCED');
-  if (hostSurfaceFactsDigest(normalizedObservation) !== observationDigest) {
-    throw new Error('APP_CHILD_OBSERVATION_FENCED');
-  }
   if (historical.continuation.phase === 'acquired') {
     if (input.stdinMode !== historical.session.host_surface?.structured_stdin_mode) {
       throw new Error('APP_STDIN_MODE_FENCED');
@@ -24166,7 +24236,6 @@ export function acquireAppTask(root, runId, input, deps = {}) {
   let result;
   const eventData = { attempt_id: input.attemptId,
     child_run_id: historical.session.run_id, observation_digest: observationDigest };
-  deps.beforeAppendFn?.();
   mutation.appendAnchored({ type: 'app-task-acquired', data: eventData },
   (loop, _spent, clock) => {
     applyAppAcquire(loop, input, observation, clock);
@@ -35440,7 +35509,9 @@ for (const task of taskMatches) {
       'assertEpisodeTask(episode.task)', 'task: episode.task',
       'contract: structuredClone(episode.contract ?? null)',
       'event.data.task !== episode.task',
-      'has ambiguous creation identity', 'legacy_episode_count',
+      'has ambiguous creation identity', 'callerIdValid', 'dispatchIdValid',
+      'dispatchRequestValid', 'duplicate episode creation request identity',
+      'legacy_episode_count',
       'legacy_workstream_count', 'legacy_proof_origins', 'legacy_authority_digest',
       'verifyProofTransitionCorrelation(loop, lines)',
       'attachCandidateProofTransitions(beforeLoop, candidateLoop, eventSpecs)',
@@ -35655,10 +35726,16 @@ for (const task of taskMatches) {
       'review dispatch exact retry after marker cleanup reuses one checker',
       'review dispatch separates retry identity, later rounds, and final-lock checker CAS',
       'episode exact retry returns the same inline request without another write',
+      'request_markdown: checker.request_markdown',
+      'request_markdown_digest: checker.request_markdown_digest',
+      'return replayReviewDispatch(checker)',
+      'assert7f.deepEqual(second, first)',
       'episode task is mandatory bounded UTF-8 before mutation',
       'two intentional direct creations with equal content and different IDs remain distinct',
       'an exact direct retry with the same request ID reuses its episode',
       'episode creation identity is state-event correlated and status-independent',
+      'malformed-dispatch-identity', 'duplicate-identity-a',
+      'duplicate episode creation request identity',
       "['pending', 'in_progress', 'approved', 'rejected', 'blocked']",
       'no unprovable identifier-valued', 'function replayReviewDispatch(checker)',
       'dispatch_response: structuredClone(dispatchResponse ?? null)',
@@ -35693,7 +35770,9 @@ for (const task of taskMatches) {
   }
   if (task[1] === '8A') {
     for (const token of ["stat: value => statFn(value, { bigint: true })",
-      'BigInt', 'Number.MAX_SAFE_INTEGER']) {
+      'BigInt', 'Number.MAX_SAFE_INTEGER',
+      'beforeFinalAppendFn = () => {}',
+      'beforeFinalAppendFn({ key: res.key, childRunId });']) {
       if (!card.includes(token)) fail(`Task 8A missing BigInt identity token ${token}`);
     }
   }
@@ -35763,6 +35842,7 @@ for (const task of taskMatches) {
       'reentrant cwd and native-path callbacks finish before the final mutation lock',
       'assertBoundAppParentMutationFence(candidate, input',
       'process-private scalar crash selector',
+      'outside the lock while the callback result is authorized',
       'callbacks can reenter the verified reader outside the lock']) {
       if (!card.includes(token)) fail(`Task 11C missing outside-lock race token ${token}`);
     }
@@ -36989,7 +37069,8 @@ test('installed breaker afterimage executes stable IDs and current lease policy'
     // The concrete Task 7 substrate is scanned only after the Task 11B final gateway closure.
     // Tasks 8A–11C are then closed inductively: every later card must expose its complete owned
     // production surface and no complete afterimage, retained source line, added source line, or
-    // worker may reintroduce the removed function-valued crash capability.
+    // worker may reintroduce the removed function-valued crash capability. The only separately
+    // allowlisted process-race seams have an exact production line inventory outside final locks.
     const finalSurfaceInventory = new Map([
       ['8A', ['deriveAppEmitAuthority', 'rollbackReservedHandoff',
         'export function emitHandoff']],
@@ -37037,6 +37118,93 @@ test('installed breaker afterimage executes stable IDs and current lease policy'
             fail(`Task ${taskId} source diff ${index + 1} retains a crash callback`);
           }
         }
+      }
+    }
+
+    const dangerousCallbackName = name => {
+      const callbackShape = /(?:Fn|Callback|Probe|Hook)$/iu.test(name);
+      const crashFamily = /^(?:crash|fault|failure|abort|kill|terminate|exit)/u.test(name)
+        || /(?:Crash|Fault|Failure|Abort|Kill|Terminate|Exit)/u.test(name);
+      const boundaryFamily = /(?:append|commit|publish|mutation|journal|lock|write|rename|replace|materialize|fsync)/iu
+        .test(name);
+      const timingFamily = /(?:before|after|pre|post)/iu.test(name);
+      return callbackShape && (crashFamily || boundaryFamily && timingFamily);
+    };
+    const allowedRaceSeams = new Map([
+      ['8A', new Set(['beforeFinalAppendFn'])],
+      // Task 11C owns the test worker that injects Task 8A's seam as well as the four App seams.
+      ['11C', new Set(['beforeAppendFn', 'beforeFinalAppendFn'])],
+    ]);
+    for (const [taskId] of finalSurfaceInventory) {
+      const task = taskMatches.find(match => match[1] === taskId);
+      const nextTask = source.indexOf('\n### Task ', task.index + 1);
+      const card = source.slice(task.index, nextTask < 0 ? source.length : nextTask);
+      const executable = [...card.matchAll(/```(?:js|diff)\n([\s\S]*?)\n```/g)]
+        .map(match => match[1]).join('\n');
+      const callbackNames = new Set([...executable.matchAll(
+        /\b[A-Za-z][A-Za-z0-9]*(?:Fn|Callback|Probe|Hook)\b/gu)]
+        .map(match => match[0]).filter(dangerousCallbackName));
+      const allowed = allowedRaceSeams.get(taskId) ?? new Set();
+      for (const name of callbackNames) {
+        if (!allowed.has(name)) {
+          fail(`Task ${taskId} introduces capability-equivalent crash/race callback ${name}`);
+        }
+      }
+    }
+    {
+      const task = taskMatches.find(match => match[1] === '8A');
+      const nextTask = source.indexOf('\n### Task ', task.index + 1);
+      const card = source.slice(task.index, nextTask < 0 ? source.length : nextTask);
+      const handoffDiffs = [...card.matchAll(/```diff\n([\s\S]*?)\n```/g)]
+        .map(match => match[1]).filter(body => body.includes('diff --git a/scripts/lib/handoff.mjs'));
+      const lines = handoffDiffs.flatMap(body => body.split('\n'))
+        .filter(line => line.includes('beforeFinalAppendFn'));
+      const exact = [
+        '+  attemptIdFactory = () => ulid(), beforeFinalAppendFn = () => {},',
+        '+    beforeFinalAppendFn({ key: res.key, childRunId });',
+      ];
+      if (JSON.stringify(lines) !== JSON.stringify(exact)) {
+        fail(`Task 8A final-append race seam inventory: ${JSON.stringify(lines)}`);
+      }
+      const invocationDiff = handoffDiffs.find(body => body.includes(exact[1]));
+      const invoke = invocationDiff?.indexOf(exact[1]);
+      const finalLock = invocationDiff?.indexOf(
+        '+    withEmitMutation(mutation => mutation.appendAnchored(', invoke);
+      if (!(Number.isInteger(invoke) && invoke >= 0 && Number.isInteger(finalLock)
+          && finalLock > invoke)) {
+        fail('Task 8A final-append race seam is not before the final mutation context');
+      }
+    }
+    {
+      const task = taskMatches.find(match => match[1] === '11C');
+      const nextTask = source.indexOf('\n### Task ', task.index + 1);
+      const card = source.slice(task.index, nextTask < 0 ? source.length : nextTask);
+      const implementation = [...card.matchAll(/```js\n([\s\S]*?)\n```/g)]
+        .map(match => match[1]).find(body => body.includes('export function prepareAppTask(')
+          && body.includes('export function sweepUnconfirmedAppTask('));
+      const exactInvocations = [
+        "deps.beforeAppendFn?.({ operation: 'prepare', snapshot: loop });",
+        "if (casAttempt === 0) deps.beforeAppendFn?.({ operation: 'confirm', snapshot: snapshot.data });",
+        "if (casAttempt === 0) deps.beforeAppendFn?.({ operation: 'revoke', snapshot: snapshot.data });",
+        "if (casAttempt === 0) deps.beforeAppendFn?.({ operation: 'sweep', snapshot: snapshot.data });",
+      ];
+      const lines = implementation?.split('\n')
+        .map(line => line.trim()).filter(line => line.includes('beforeAppendFn')) ?? [];
+      if (JSON.stringify(lines) !== JSON.stringify(exactInvocations)) {
+        fail(`Task 11C before-append race seam inventory: ${JSON.stringify(lines)}`);
+      }
+      for (const invocation of exactInvocations) {
+        const invoke = implementation?.indexOf(invocation);
+        const finalContext = implementation?.indexOf('return appCommitPhase(', invoke);
+        if (!(Number.isInteger(invoke) && invoke >= 0 && Number.isInteger(finalContext)
+            && finalContext > invoke)) {
+          fail(`Task 11C race seam is not before final appCommitPhase: ${invocation}`);
+        }
+      }
+      if (implementation?.includes('acquireAppTask')
+          || /(?:appendAnchored|withVerifiedMutationLock)[\s\S]{0,240}beforeAppendFn/u
+            .test(implementation ?? '')) {
+        fail('Task 11C race seam leaks into acquire or a publisher/mutation context');
       }
     }
 

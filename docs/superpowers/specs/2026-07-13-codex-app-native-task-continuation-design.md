@@ -757,11 +757,19 @@ payload 변경, request Markdown/digest 변조, duplicate identity는 conflict/c
 Journal hard-crash injection은 exported mutation option이나 function callback이 아니다. Test worker가 allowlisted
 scalar `DEEP_LOOP_TEST_CRASH_AT`과 `NODE_ENV=test`를 주면 gateway의 private
 `crashIfScheduled(stage)`가 exact point에서 직접 exit할 뿐 arbitrary code를 호출하지 않는다. 최종
-production tree의 모든 public mutation과 helper worker는 function-valued crash capability를 전달하지 않는다.
+production tree의 public mutation에는 function-valued hard-crash capability가 없다. 별개의 deterministic
+process-race barrier seam은 두 이름과 위치로 닫힌다. `emitHandoff`의 `beforeFinalAppendFn`과
+prepare/confirm/revoke/sweep의 `beforeAppendFn`만 library/test dependency로 허용되고 CLI input이 아니다. 전자는
+reservation snapshot과 artifact work가 끝난 뒤 final `withEmitMutation`을 열기 전에, 후자는 optimistic snapshot
+context가 닫힌 뒤 final `appCommitPhase`를 열기 전에 호출된다. 둘 다 publisher,
+`appendAnchored`, `withVerifiedMutationLock`, 또는 열린 mutation context로 전달되지 않으며 production caller는
+주입하지 않는다. Acquire를 포함한 다른 mutation에는 동등한 before/after/crash/fault callback seam이 없다.
 Validator는 Task 7B–7G의 concrete production substrate를 Task 11B의 final gateway closure까지 실제 조립한 뒤
 전역 검사하고, Task 8A–11C 각 card가 소유한 complete final production surface를 inventory로 exact 확인한다.
 그 뒤 모든 complete afterimage와 production diff의 retained/added line을 검사해 어느 후속 delta도
-`crashProbe`를 다시 도입할 수 없음을 귀납적으로 증명한다. 제거된 old diff line은 authority가 아니다.
+`crashProbe`나 다른 이름의 capability-equivalent crash/race callback을 다시 도입할 수 없음을 귀납적으로
+증명한다. 허용된 두 seam의 production line과 lock 밖 호출 순서도 exact inventory로 검사하며 제거된 old diff
+line은 authority가 아니다.
 
 `workstream new`도 caller가 최초 호출 전에 정한 bounded request ID를 필수로 받는다. Kernel은 raw ID 대신
 `SHA256("workstream-create-request-id\0" || canonical-id-value)`와 title/branch/canonical worktree/base/
