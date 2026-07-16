@@ -234,6 +234,7 @@ export function acquireAppTask(root, runId, input, deps);
 export declare const APP_PREPARE_TIMEOUT_MS: number;
 export declare const APP_CONFIRMATION_TIMEOUT_MS: number;
 export function episodeProofProjection(episode): object;
+export function assertEpisodeTask(task): void;
 export function episodeRequestMarkdown(input): string;
 export function workstreamProofProjection(loop, workstream): object;
 export function normalizeLegacyActiveWorkstreams(loop): string[];
@@ -9149,8 +9150,20 @@ export function episodeProofProjection(episode) {
   return projection;
 }
 
-export function episodeRequestMarkdown({ id, plugin, role, kind, point,
+const EPISODE_TASK_MAX_BYTES = 16 * 1024;
+
+export function assertEpisodeTask(task) {
+  if (typeof task !== 'string' || task.trim().length === 0
+      || Buffer.byteLength(task, 'utf8') > EPISODE_TASK_MAX_BYTES
+      || task.includes('\0') || task.includes('\r')
+      || /[\uD800-\uDFFF]/u.test(task)) {
+    throw new Error('EPISODE_TASK_INVALID');
+  }
+}
+
+export function episodeRequestMarkdown({ id, plugin, role, kind, point, task, contract,
   workstream = null, expectedArtifacts = [], evidence } = {}) {
+  assertEpisodeTask(task);
   if (typeof id !== 'string' || id.length === 0 || typeof plugin !== 'string'
       || typeof role !== 'string' || typeof kind !== 'string' || typeof point !== 'string'
       || !Array.isArray(expectedArtifacts)
@@ -9161,7 +9174,8 @@ export function episodeRequestMarkdown({ id, plugin, role, kind, point,
     `# Episode ${id} — request`, '',
     `- plugin: ${plugin}`, `- role: ${role}`, `- kind: ${kind}`,
     `- review point: ${point}`, `- workstream: ${workstream || '(none)'}`, '',
-    '## Task', '', '<!-- Execution plane: fill the maker/checker task here -->', '',
+    '## Task', '', task, '',
+    '## Contract', '', '```json', JSON.stringify(contract ?? null, null, 2), '```', '',
     '## Expected artifacts', '',
     ...(expectedArtifacts.length
       ? expectedArtifacts.map(artifact => `- ${artifact}`)
@@ -11036,7 +11050,7 @@ is held so callers cannot mutate an unlocked shared reference:
 diff --git a/scripts/lib/integrity.mjs b/scripts/lib/integrity.mjs
 --- a/scripts/lib/integrity.mjs
 +++ b/scripts/lib/integrity.mjs
-@@ -1,8 +1,14 @@
+@@ -1,8 +1,15 @@
 -import { readFileSync, appendFileSync, existsSync } from 'node:fs';
 +import { appendFileSync, existsSync, lstatSync, readFileSync, readdirSync,
 +  truncateSync } from 'node:fs';
@@ -11046,7 +11060,8 @@ diff --git a/scripts/lib/integrity.mjs b/scripts/lib/integrity.mjs
  import { runDir, readState, writeState, withLock } from './state.mjs';
  import { assertProjectRootBinding, canonicalProjectRoot, projectRootDigest } from './project-root.mjs';
 -import { validate } from './schema.mjs';
-+import { episodeProofProjection, episodeRequestMarkdown, legacyAuthorityDigest, legacyProofOrigins,
++import { assertEpisodeTask, episodeProofProjection, episodeRequestMarkdown,
++  legacyAuthorityDigest, legacyProofOrigins,
 +  normalizeLegacyActiveWorkstreams, validate,
 +  verifyAppEventCorrelation, workstreamProofProjection } from './schema.mjs';
 +import { initializationRequestDigest } from './init-transaction.mjs';
@@ -11150,12 +11165,13 @@ export function verifyEpisodeCreationCorrelation(loop, lines) {
     if (!event) { errors.push(`episode ${episode.id} has no creation event`); continue; }
     const projection = {
       plugin: episode.plugin, role: episode.role, kind: episode.kind, point: episode.point,
+      task: episode.task,
       workstream: episode.workstream_id ?? null,
       expectedArtifacts: structuredClone(episode.expected_artifacts ?? []),
       targetMaker: episode.target_maker ?? null,
       reviewerResolution: episode.reviewer_resolution ?? null,
       evidence_digest: intentField('episode-evidence', episode.evidence),
-      contract_digest: intentField('episode-contract', episode.contract),
+      contract: structuredClone(episode.contract ?? null),
       initialStatus: episode.creation_initial_status,
       blockReason: episode.creation_block_reason ?? null,
       creation_request_id_digest: episode.creation_request_id_digest ?? null,
@@ -11166,11 +11182,12 @@ export function verifyEpisodeCreationCorrelation(loop, lines) {
     const recomputed = intentField('episode-create-request', projection);
     let expectedMarkdown = null;
     try {
+      assertEpisodeTask(episode.task);
       expectedMarkdown = episodeRequestMarkdown({ id: episode.id,
         plugin: episode.plugin, role: episode.role, kind: episode.kind, point: episode.point,
         workstream: episode.workstream_id ?? null,
         expectedArtifacts: structuredClone(episode.expected_artifacts ?? []),
-        evidence: episode.evidence });
+        task: episode.task, contract: episode.contract, evidence: episode.evidence });
     } catch { /* the mismatch below is authoritative */ }
     const markdownDigest = expectedMarkdown == null ? null
       : intentField('episode-request-markdown', expectedMarkdown);
@@ -11188,6 +11205,9 @@ export function verifyEpisodeCreationCorrelation(loop, lines) {
         || episode.request_markdown_digest !== markdownDigest
         || event.data.request_markdown !== expectedMarkdown
         || event.data.request_markdown_digest !== markdownDigest
+        || event.data.task !== episode.task
+        || JSON.stringify(event.data.contract ?? null)
+          !== JSON.stringify(episode.contract ?? null)
         || event.data.episode_id !== episode.id) {
       errors.push(`episode ${episode.id} creation projection mismatch`);
     }
@@ -15545,7 +15565,8 @@ git commit -m "fix: verify success-class state authority" -m "Co-Authored-By: Cl
   `computeInsights` and `latestInsights` remain fail-soft; `emitInsights`, review, workspace, and
   terminal detection fail closed. Owner/generation identity is the only pre-proof decision for
   fenced review/emit/detect calls; runtime, terminal, no-op, eligibility, path, and source policy
-  all follow proof. Direct `episode new` requires a bounded logical `--request-id`; exact retry
+  all follow proof. Direct `episode new` requires a bounded logical `--request-id` and a nonempty
+  self-contained UTF-8 `--task` capped at 16 KiB; exact retry
   reuses it, changed payload conflicts, and a new intentional episode rotates it. Nested review
   creation instead requires its own bounded logical dispatch request ID. The kernel stores a
   domain-separated ID digest separately from the complete request digest; response-loss retry reuses
@@ -15695,7 +15716,7 @@ import { tmpdir as tmp7f } from 'node:os';
 import { dirname as dirname7f, join as join7f } from 'node:path';
 import { initRun as init7f } from '../scripts/lib/initrun.mjs';
 import { newWorkstream as workstream7f } from '../scripts/lib/workspace.mjs';
-import { newEpisode as episode7f, recordEpisode as record7f }
+import { newEpisode as productionEpisode7f, recordEpisode as record7f }
   from '../scripts/lib/episode.mjs';
 import { dispatchReview as dispatch7f } from './helpers/review-request.mjs';
 import { emitInsights as emitDispatchInsights7f,
@@ -15707,6 +15728,15 @@ import { readState as stateDispatch7f, runDir as runDirDispatch7f }
   from '../scripts/lib/state.mjs';
 import { durableRunBytes as bytes7f, rawHashValidState as raw7f }
   from './fixtures/verified-app-run.mjs';
+
+let episodeTaskSequence7f = 0;
+const episode7f = (root, runId, input = {}) => {
+  episodeTaskSequence7f += 1;
+  return productionEpisode7f(root, runId, {
+    ...input,
+    task: input.task ?? `Execute reviewer fixture episode ${episodeTaskSequence7f}.`,
+  });
+};
 
 function corruptDispatchFixture7f({ corrupt = true, hillClimb = true } = {}) {
   const root = realpath7f(temp7f(join7f(tmp7f(), 'dl-review-dispatch-proof-')));
@@ -15755,6 +15785,8 @@ test7f('versioned episode request is anchored inline and creates no request side
   const result = episode7f(fixture.root, fixture.runId, {
     plugin: 'deep-work', role: 'maker', kind: 'fix', point: 'design',
     workstream: fixture.ws, fence: fixture.fence,
+    task: 'Repair the reviewed design and write the bounded proof artifact.',
+    contract: { schema: 'episode-task-v1', verdict: 'maker-proof-required' },
     requestId: 'episode-inline-request',
   });
   const state = verifiedDispatch7f(fixture.root, fixture.runId).data;
@@ -15766,7 +15798,13 @@ test7f('versioned episode request is anchored inline and creates no request side
   assert7f.equal(result.requestMarkdownDigest, episode.request_markdown_digest);
   assert7f.equal(event.data.request_markdown, result.requestMarkdown);
   assert7f.equal(event.data.request_markdown_digest, result.requestMarkdownDigest);
-  assert7f.match(result.requestMarkdown, /Execution plane: fill/);
+  assert7f.match(result.requestMarkdown,
+    /Repair the reviewed design and write the bounded proof artifact\./);
+  assert7f.match(result.requestMarkdown, /"schema": "episode-task-v1"/);
+  assert7f.equal(episode.task,
+    'Repair the reviewed design and write the bounded proof artifact.');
+  assert7f.deepEqual(event.data.contract,
+    { schema: 'episode-task-v1', verdict: 'maker-proof-required' });
   assert7f.deepEqual(readdirDispatch7f(run).sort(), beforeNames,
     'the anchored state/event commit creates no request pathname');
 });
@@ -15775,6 +15813,8 @@ test7f('episode exact retry returns the same inline request without another writ
   const fixture = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
   const input = { plugin: 'deep-work', role: 'maker', kind: 'fix', point: 'design',
     workstream: fixture.ws, fence: fixture.fence,
+    task: 'Apply the exact inline-request retry contract.',
+    contract: { schema: 'episode-task-v1' },
     requestId: 'episode-inline-retry' };
   const first = episode7f(fixture.root, fixture.runId, input);
   const committed = bytes7f(fixture.root, fixture.runId);
@@ -15783,6 +15823,20 @@ test7f('episode exact retry returns the same inline request without another writ
   assert7f.deepEqual(bytes7f(fixture.root, fixture.runId), committed);
   assert7f.equal(lines7f(fixture.root, fixture.runId).filter(event =>
     event.type === 'episode-new' && event.data.episode_id === first.id).length, 1);
+});
+
+test7f('episode task is mandatory bounded UTF-8 before mutation', () => {
+  const fixture = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
+  const before = bytes7f(fixture.root, fixture.runId);
+  for (const task of [undefined, '', 'x'.repeat(16 * 1024 + 1),
+    'carriage\rreturn', '\uD800']) {
+    assert7f.throws(() => productionEpisode7f(fixture.root, fixture.runId, {
+      plugin: 'deep-work', role: 'maker', kind: 'fix', point: 'design',
+      workstream: fixture.ws, fence: fixture.fence, task,
+      requestId: `invalid-task-${String(task).length}`,
+    }), /EPISODE_TASK_INVALID/);
+    assert7f.deepEqual(bytes7f(fixture.root, fixture.runId), before);
+  }
 });
 
 function materializeHillContract7f(fixture) {
@@ -15838,7 +15892,8 @@ test7f('review dispatch exact retry after marker cleanup reuses one checker', ()
     event.type === 'episode-new' && event.data?.role === 'checker').length, 1);
   assert7f.equal(dispatch7f(fixture.root, fixture.runId, input).checkerEpisodeId,
     first.checkerEpisodeId);
-  assert7f.match(requestMarkdown, /Execution plane: fill/);
+  assert7f.match(requestMarkdown, /Independently review maker episode/);
+  assert7f.match(requestMarkdown, /## Contract\n\n```json/);
 });
 
 test7f('hill-climb same-ID replay bypasses mutable contract and evidence derivation', () => {
@@ -15891,6 +15946,24 @@ test7f('paired state and event request Markdown tampering is rejected semantical
   });
   assert7f.throws(() => verifiedDispatch7f(fixture.root, fixture.runId),
     /episode creation/);
+});
+
+test7f('paired state and event task or contract tampering is rejected semantically', () => {
+  for (const field of ['task', 'contract']) {
+    const fixture = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
+    const first = dispatch7f(fixture.root, fixture.runId, {
+      point: 'design', workstreamId: fixture.ws,
+      detected: { 'deep-review': true, codex: true },
+      requestId: `inline-${field}-tamper`, fence: fixture.fence,
+    });
+    const forged = field === 'task' ? 'Forged checker task.' : { forged: true };
+    rewriteEpisodeCreationEvent7f(fixture, data => { data[field] = forged; });
+    raw7f(fixture.root, fixture.runId, loop => {
+      loop.episodes.find(episode => episode.id === first.checkerEpisodeId)[field] = forged;
+    });
+    assert7f.throws(() => verifiedDispatch7f(fixture.root, fixture.runId),
+      /episode creation/, field);
+  }
 });
 
 function rewriteEpisodeCreationEvent7f(fixture, mutate) {
@@ -16324,7 +16397,7 @@ test('recovered insights commit publishes or validates its referenced artifact b
 - [ ] **Step 2: Run focused tests and verify RED**
 
 ```bash
-node --test --test-name-pattern='insights proves runs|latest skips a terminal|finish 이벤트 없는 terminal|legacy double-finish|review dispatch proves authority|review dispatch exact retry|review dispatch separates retry identity|episode creation identity|episode new missing --request-id|review dispatch missing --request-id|durable create-if-absent|stale lease creates zero|review claim factory and revalidation|review descriptor revalidation and outcomes|inheritWorkstreams rejects|detect-terminal fences and proves' tests/insights.test.mjs tests/review-import.test.mjs tests/reviewer-failclosed.test.mjs tests/workspace.test.mjs tests/detect-terminal.test.mjs tests/cli-skillface.test.mjs tests/durable-file.test.mjs
+node --test --test-name-pattern='insights proves runs|latest skips a terminal|finish 이벤트 없는 terminal|legacy double-finish|review dispatch proves authority|review dispatch exact retry|review dispatch separates retry identity|episode creation identity|episode task is mandatory|paired state and event request|paired state and event task|episode new missing --request-id|episode new missing --task|review dispatch missing --request-id|durable create-if-absent|stale lease creates zero|review claim factory and revalidation|review descriptor revalidation and outcomes|inheritWorkstreams rejects|detect-terminal fences and proves' tests/insights.test.mjs tests/review-import.test.mjs tests/reviewer-failclosed.test.mjs tests/workspace.test.mjs tests/detect-terminal.test.mjs tests/cli-skillface.test.mjs tests/durable-file.test.mjs
 ```
 
 Expected: FAIL because active classification and corrupt finish-history classification precede
@@ -16957,7 +17030,7 @@ diff --git a/scripts/lib/episode.mjs b/scripts/lib/episode.mjs
 +import { appendAnchored, directMutationOptions, intentField, readVerifiedState,
 +  withVerifiedMutationLock } from './integrity.mjs';
 -import { atomicWrite } from './envelope.mjs';
-+import { episodeRequestMarkdown } from './schema.mjs';
++import { assertEpisodeTask, episodeRequestMarkdown } from './schema.mjs';
  import { slugify } from './slug.mjs';
  import { leaseCheck } from './lease.mjs';
 @@ -28,5 +29,90 @@ function requestSkeleton({ id, plugin, role, kind, point, workstream, expectedArtifacts, evidence }) {
@@ -17601,10 +17674,17 @@ index 730e203..aa1cf72 100644
    const { reviewer, flags, mode, reviewerResolution, blockedReason } = resolveReviewer(data, detected, { independentSubagent });
    // P2 (hillclimb-ledger 2026-07-10, release-blocking): hill-climb run은 checker 계약(HILLCLIMB-001)이 실제로
    // 강제되는 리뷰만 만들 수 있다. `.deep-review/`는 gitignored라 fresh checkout에는 계약이 없고, deep-review는
-@@ -427,20 +483,73 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
+@@ -427,20 +483,79 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
++  const checkerTask = [
++    `Independently review maker episode ${targetMaker} for review point ${point}.`,
++    `Use only the verified run, maker artifacts, and complete contract embedded in this request.`,
++    `Return an evidence-backed APPROVE or REQUEST_CHANGES verdict for workstream ${workstreamId}.`,
++  ].join('\n');
    const episodeInput = {
      plugin: reviewer === 'deep-review-loop' || reviewer === 'deep-review' ? 'deep-review' : reviewer,
-     kind: `${point}-review`, point, workstream: workstreamId, targetMaker,
+-    kind: `${point}-review`, point, workstream: workstreamId, targetMaker,
++    kind: `${point}-review`, point, task: checkerTask,
++    workstream: workstreamId, targetMaker,
 -    reviewerResolution, evidence, contract, fence,
 +    reviewerResolution, evidence, contract, fence,
 +    dispatchRequestIdDigest, dispatchRequestDigest,
@@ -17696,15 +17776,15 @@ never touches a caller-selected or replaceable filesystem path:
 
 ```js
 // PLAN_REPLACE_RANGE: scripts/lib/episode.mjs final episode request/create range
-function episodeRequestProjection({ plugin, role, kind, point, workstream = null,
+function episodeRequestProjection({ plugin, role, kind, point, task, workstream = null,
   expectedArtifacts = [], targetMaker, reviewerResolution, evidence, contract,
   initialStatus = 'pending', blockReason, creationRequestIdDigest,
   dispatchRequestIdDigest, dispatchRequestDigest, dispatchResponse } = {}) {
-  return { plugin, role, kind, point, workstream, expectedArtifacts,
+  return { plugin, role, kind, point, task, workstream, expectedArtifacts,
     targetMaker: targetMaker ?? null,
     reviewerResolution: reviewerResolution ?? null,
     evidence_digest: intentField('episode-evidence', evidence),
-    contract_digest: intentField('episode-contract', contract),
+    contract: structuredClone(contract ?? null),
     initialStatus, blockReason: blockReason ?? null,
     creation_request_id_digest: creationRequestIdDigest ?? null,
     dispatch_request_id_digest: dispatchRequestIdDigest ?? null,
@@ -17750,7 +17830,7 @@ function episodeAppend(root, runId, mutation, event, mutate, preCheck, options,
 }
 
 function createEpisode(root, runId, {
-  plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker,
+  plugin, role, kind, point, task, workstream = null, expectedArtifacts = [], targetMaker,
   reviewerResolution, evidence, contract, initialStatus = 'pending', blockReason,
   fence, operation, mutation = null, requestId, dispatchRequestIdDigest,
   dispatchRequestDigest, dispatchResponse,
@@ -17764,6 +17844,7 @@ function createEpisode(root, runId, {
   if (!role || typeof role !== 'string' || !role.length) {
     throw new Error('EPISODE_INPUT_INVALID: role');
   }
+  assertEpisodeTask(task);
   if (!kind || typeof kind !== 'string' || !kind.length
       || !point || typeof point !== 'string' || !point.length
       || !Array.isArray(expectedArtifacts)
@@ -17773,11 +17854,11 @@ function createEpisode(root, runId, {
   const safePlugin = slugify(plugin) || 'plugin';
   const creationRequestIdDigest = episodeRequestIdDigest(
     requestId, dispatchRequestIdDigest);
-  const completeRequest = episodeRequestProjection({ plugin, role, kind, point,
+  const completeRequest = episodeRequestProjection({ plugin, role, kind, point, task,
     workstream, expectedArtifacts, targetMaker, reviewerResolution, evidence, contract,
     initialStatus, blockReason, creationRequestIdDigest,
     dispatchRequestIdDigest, dispatchRequestDigest, dispatchResponse });
-  const requestDigest = episodeRequestDigest({ plugin, role, kind, point, workstream,
+  const requestDigest = episodeRequestDigest({ plugin, role, kind, point, task, workstream,
     expectedArtifacts, targetMaker, reviewerResolution, evidence, contract,
     initialStatus, blockReason, creationRequestIdDigest,
     dispatchRequestIdDigest, dispatchRequestDigest, dispatchResponse });
@@ -17801,6 +17882,7 @@ function createEpisode(root, runId, {
     const [recovered] = matches;
     if (recovered.plugin !== plugin || recovered.role !== role
         || recovered.kind !== kind || recovered.point !== point
+        || recovered.task !== task
         || recovered.workstream_id !== workstream
         || JSON.stringify(recovered.expected_artifacts) !== JSON.stringify(expectedArtifacts)
         || (recovered.target_maker ?? null) !== (targetMaker ?? null)
@@ -17824,8 +17906,8 @@ function createEpisode(root, runId, {
         ? 'EPISODE_REQUEST_CONFLICT' : 'EPISODE_RESPONSE_PROJECTION_CHANGED');
     }
     id = recovered.id;
-    requestMarkdown = episodeRequestMarkdown({ id, plugin, role, kind, point,
-      workstream, expectedArtifacts, evidence });
+    requestMarkdown = episodeRequestMarkdown({ id, plugin, role, kind, point, task,
+      contract, workstream, expectedArtifacts, evidence });
     requestMarkdownDigest = intentField('episode-request-markdown', requestMarkdown);
     if (recovered.request_path !== undefined
         || recovered.request_markdown !== requestMarkdown
@@ -17840,6 +17922,7 @@ function createEpisode(root, runId, {
     ? recoverExact(loop) : null;
   const event = { type: 'episode-new', data: {
     plugin, role, kind, point, creation_contract: 'episode-create-v1',
+    task, contract: structuredClone(contract ?? null),
     request_digest: requestDigest,
     creation_request_id_digest: creationRequestIdDigest,
     dispatch_request_id_digest: dispatchRequestIdDigest ?? null,
@@ -17858,14 +17941,14 @@ function createEpisode(root, runId, {
     if (id !== null) return;
     const n = String(loop.episodes.length + 1).padStart(3, '0');
     id = `${n}-${safePlugin}`;
-    requestMarkdown = episodeRequestMarkdown({ id, plugin, role, kind, point,
-      workstream, expectedArtifacts, evidence });
+    requestMarkdown = episodeRequestMarkdown({ id, plugin, role, kind, point, task,
+      contract, workstream, expectedArtifacts, evidence });
     requestMarkdownDigest = intentField('episode-request-markdown', requestMarkdown);
     event.data.episode_id = id;
     event.data.request_markdown = requestMarkdown;
     event.data.request_markdown_digest = requestMarkdownDigest;
     initialEpisode = {
-      id, plugin, role, kind, point, workstream_id: workstream, status: initialStatus,
+      id, plugin, role, kind, point, task, workstream_id: workstream, status: initialStatus,
       request_markdown: requestMarkdown,
       request_markdown_digest: requestMarkdownDigest,
       expected_artifacts: structuredClone(expectedArtifacts),
@@ -17902,23 +17985,25 @@ function createEpisode(root, runId, {
 }
 
 export function newEpisode(root, runId, {
-  plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker,
+  plugin, role, kind, point, task, workstream = null, expectedArtifacts = [], targetMaker,
   reviewerResolution, evidence, contract, fence, mutation = null, requestId,
   dispatchRequestIdDigest, dispatchRequestDigest, dispatchResponse,
 } = {}) {
-  return createEpisode(root, runId, { plugin, role, kind, point, workstream,
+  return createEpisode(root, runId, { plugin, role, kind, point, task, workstream,
     expectedArtifacts, targetMaker, reviewerResolution, evidence, contract, fence,
     mutation, requestId, dispatchRequestIdDigest, dispatchRequestDigest,
     dispatchResponse, operation: 'newEpisode' });
 }
 
 export function newBlockedCheckerEpisode(root, runId, {
-  plugin, kind, point, workstream = null, targetMaker, reason, reviewerResolution,
+  plugin, kind, point, task, workstream = null, targetMaker, reason, reviewerResolution,
+  evidence, contract,
   fence, mutation = null, requestId, dispatchRequestIdDigest, dispatchRequestDigest,
   dispatchResponse,
 } = {}) {
-  return createEpisode(root, runId, { plugin, role: 'checker', kind, point, workstream,
-    targetMaker, reviewerResolution, initialStatus: 'blocked', blockReason: reason,
+  return createEpisode(root, runId, { plugin, role: 'checker', kind, point, task, workstream,
+    targetMaker, reviewerResolution, evidence, contract,
+    initialStatus: 'blocked', blockReason: reason,
     fence, mutation, requestId, dispatchRequestIdDigest, dispatchRequestDigest,
     dispatchResponse, operation: 'newBlockedCheckerEpisode' });
 }
@@ -18340,9 +18425,11 @@ Reuse the file's existing `mkdirSync`, `test`, and `assert` bindings; the aliase
 actual public mutation while the returned request remains the exact anchored Markdown and no request
 pathname is published.
 
-The direct episode API now requires one bounded caller-generated logical request ID. The execution
-plane chooses it once before the first call, reuses it after response loss, and rotates it only for
-an intentional new episode. Review dispatch independently requires the same allocate-once/reuse-on-
+The direct episode API now requires one bounded caller-generated logical request ID and one
+self-contained UTF-8 task of at most 16 KiB. The execution plane fixes both before the first call,
+reuses them after response loss, and rotates the ID only for an intentional new episode. Review
+dispatch derives its checker task from the selected maker/workstream/point and independently requires
+the same allocate-once/reuse-on-
 loss discipline; its ID digest is stable while its full request digest detects changed reuse. Apply
 this exact CLI, skill, and test-caller migration after the corrective episode/review patch:
 
@@ -18356,13 +18443,15 @@ index b47cf2c..0385970 100644
 +      const requestId = reqStr(f, 'request-id');
 +      if (!requestId) { error('MISSING_REQUIRED_OPTION: --request-id'); return 2; }
 +      const r = newWorkstream(root, runId, { title, branch, worktree, dependsOn, requestId, fence }); json(r); return 0;
-@@ -419 +419,7 @@ const handlers = {
+@@ -419 +419,9 @@ const handlers = {
 -      const r = newEpisode(root, runId, { plugin, role, kind, point, workstream: f.workstream, expectedArtifacts: f.artifacts ? JSON.parse(f.artifacts) : [], fence }); json({ id: r.id, request_path: r.requestPath }); return 0;
 +      const requestId = reqStr(f, 'request-id');
 +      if (!requestId) { error('MISSING_REQUIRED_OPTION: --request-id'); return 2; }
++      const task = reqStr(f, 'task');
++      if (!task) { error('MISSING_REQUIRED_OPTION: --task'); return 2; }
 +      const r = newEpisode(root, runId, { plugin, role, kind, point,
 +        workstream: f.workstream, expectedArtifacts: f.artifacts ? JSON.parse(f.artifacts) : [],
-+        fence, requestId });
++        fence, requestId, task });
 +      json({ id: r.id, request_markdown: r.requestMarkdown,
 +        request_markdown_digest: r.requestMarkdownDigest }); return 0;
 @@ -448,5 +453,8 @@ const handlers = {
@@ -18391,10 +18480,12 @@ index 177f497..d812012 100644
 +
 @@ -323 +323 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" workstream new --title "<workstream
 -node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin <maker_plugin> --role maker --kind implementation --point design --workstream <workstream_id> --artifacts '[".claude/worktrees/<ws-slug>/expected-output.md"]' --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>
-+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin <maker_plugin> --role maker --kind implementation --point design --workstream <workstream_id> --artifacts '[".claude/worktrees/<ws-slug>/expected-output.md"]' --request-id <episode_request_id> --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>
-@@ -325,0 +326,3 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin <maker_plugin>
++node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin <maker_plugin> --role maker --kind implementation --point design --workstream <workstream_id> --artifacts '[".claude/worktrees/<ws-slug>/expected-output.md"]' --task "<bounded_episode_task>" --request-id <episode_request_id> --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>
+@@ -325,0 +326,5 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin <maker_plugin>
 +`<episode_request_id>`는 이 logical episode 생성 전에 한 번 정하고 응답 유실 retry에는 그대로
 +재사용한다. 새 episode를 의도할 때만 새 ID를 사용하며, 같은 ID로 payload를 바꾸지 않는다.
++`<bounded_episode_task>`는 이전 대화 없이 실행 가능한 비어 있지 않은 UTF-8 본문이며 16 KiB를
++넘지 않는다. 같은 logical retry는 task와 contract를 byte-identical하게 재사용한다.
 +
 diff --git a/skills/deep-loop-continue/SKILL.md b/skills/deep-loop-continue/SKILL.md
 index 2898ca4..54ae473 100644
@@ -18417,7 +18508,7 @@ index 2898ca4..54ae473 100644
 +
 @@ -158 +158 @@ fix maker episode 생성 후 dispatch:
 -node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin <maker_plugin> --role maker --kind fix --point <point> --workstream <workstream_id> --artifacts '[".claude/worktrees/<ws-slug>/path/to/fix-output"]' --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
-+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin <maker_plugin> --role maker --kind fix --point <point> --workstream <workstream_id> --artifacts '[".claude/worktrees/<ws-slug>/path/to/fix-output"]' --request-id <episode_request_id> --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
++node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin <maker_plugin> --role maker --kind fix --point <point> --workstream <workstream_id> --artifacts '[".claude/worktrees/<ws-slug>/path/to/fix-output"]' --task "<bounded_episode_task>" --request-id <episode_request_id> --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
 @@ -160,0 +161,3 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin <maker_plugin>
 +`<episode_request_id>`는 fix episode 생성 전에 한 번 정해 응답 유실 retry에 재사용하고, 새
 +logical episode에서만 교체한다. 같은 ID로 payload를 바꾸면 안 된다.
@@ -18446,7 +18537,7 @@ index e88606e..ffebcd3 100644
 +++ b/skills/deep-loop-workflow/references/hill-climbing.md
 @@ -73 +73 @@ run 수명주기 (모든 단계가 기존 deep-loop 기계장치 재사용 — h
 -node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin standalone --role maker --kind implementation --point implementation --workstream <workstream_id> --artifacts '[".claude/worktrees/<ws-slug>/recipes/hillclimb-ledger.json"]' --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
-+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin standalone --role maker --kind implementation --point implementation --workstream <workstream_id> --artifacts '[".claude/worktrees/<ws-slug>/recipes/hillclimb-ledger.json"]' --request-id <episode_request_id> --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
++node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin standalone --role maker --kind implementation --point implementation --workstream <workstream_id> --artifacts '[".claude/worktrees/<ws-slug>/recipes/hillclimb-ledger.json"]' --task "<bounded_episode_task>" --request-id <episode_request_id> --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
 @@ -75,0 +76,3 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin standalone --ro
 +`<episode_request_id>`는 이 hill-climb maker 생성 전에 한 번 정하고 response-loss retry에는
 +그대로 재사용한다. 다음 intentional maker만 새 ID를 사용한다.
@@ -18467,16 +18558,22 @@ index 5f81c1e..ac371ff 100644
 +++ b/tests/cli-skillface.test.mjs
 @@ -137 +137 @@ test('episode new --artifacts then record done (the skill flow)', () => {
 -  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'implementation', '--point', 'implementation', '--artifacts', '["art.txt"]', '--owner', runId, '--generation', '1']));
-+  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'implementation', '--point', 'implementation', '--artifacts', '["art.txt"]', '--request-id', 'skillface-episode', '--owner', runId, '--generation', '1']));
-@@ -191,0 +192,7 @@ test('episode new missing --role exits 2', () => {
++  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'implementation', '--point', 'implementation', '--artifacts', '["art.txt"]', '--task', 'Implement the skillface fixture.', '--request-id', 'skillface-episode', '--owner', runId, '--generation', '1']));
+@@ -191,0 +192,13 @@ test('episode new missing --role exits 2', () => {
 +test('episode new missing --request-id exits 2', () => {
 +  const { root, runId } = seed();
 +  assert.equal(runFail(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker',
-+    '--kind', 'implementation', '--point', 'implementation',
++    '--kind', 'implementation', '--point', 'implementation', '--task', 'Bounded task.',
 +    '--owner', runId, '--generation', '1']), 2);
 +});
++test('episode new missing --task exits 2', () => {
++  const { root, runId } = seed();
++  assert.equal(runFail(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker',
++    '--kind', 'implementation', '--point', 'implementation',
++    '--request-id', 'missing-task', '--owner', runId, '--generation', '1']), 2);
++});
 +
-@@ -195,0 +203,6 @@ test('review dispatch missing --point exits 2', () => {
+@@ -195,0 +209,6 @@ test('review dispatch missing --point exits 2', () => {
 +test('review dispatch missing --request-id exits 2', () => {
 +  const { root, runId } = seed();
 +  assert.equal(runFail(root, ['review', 'dispatch', '--point', 'design',
@@ -18554,7 +18651,7 @@ index 201f495..d8d5875 100644
 -  assert.ok(existsSync(requestPath));
 -  const base = resolve(runDir(root, runId), 'episodes');
 -  assert.ok(requestPath.startsWith(base), `requestPath ${requestPath} must start with ${base}`);
-+  assert.match(requestMarkdown, /Execution plane: fill/);
++  assert.match(requestMarkdown, /Execute test episode/);
 +  const episode = readState(root, runId).data.episodes[0];
 +  assert.equal(episode.request_path, undefined);
 +  assert.equal(episode.request_markdown, requestMarkdown);
@@ -18596,7 +18693,7 @@ index e449792..b19a37f 100644
 +  const ws = JSON.parse(run(root, ['workstream', 'new', '--title', 'A', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--request-id', 'cli-review-workstream', '--owner', runId, '--generation', '1']));
    writeFileSync(join(root, 'plan.txt'), 'artifact');
 -  const maker = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'plan', '--point', 'plan', '--workstream', ws.id, '--artifacts', '["plan.txt"]', '--owner', runId, '--generation', '1']));
-+  const maker = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'plan', '--point', 'plan', '--workstream', ws.id, '--artifacts', '["plan.txt"]', '--request-id', 'finish-proof-maker', '--owner', runId, '--generation', '1']));
++  const maker = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'plan', '--point', 'plan', '--workstream', ws.id, '--artifacts', '["plan.txt"]', '--task', 'Produce the finish proof plan.', '--request-id', 'finish-proof-maker', '--owner', runId, '--generation', '1']));
    run(root, ['episode', 'record', '--id', maker.id, '--status', 'done', '--artifacts', '["plan.txt"]', '--owner', runId, '--generation', '1']);
 @@ -278 +278 @@ test('review dispatch accepts --independent-subagent and records a neutral legac
 -  const dispatched = JSON.parse(run(root, ['review', 'dispatch', '--point', 'plan', '--workstream', ws.id, '--independent-subagent', '--owner', runId, '--generation', '1']));
@@ -18607,14 +18704,15 @@ index e449792..b19a37f 100644
 @@ -841 +841 @@ test('mutating command with wrong generation is fenced (exit 3)', () => {
 -  try { run(root, ['workstream', 'new', '--title', 'X', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--owner', runId, '--generation', '9']); }
 +  try { run(root, ['workstream', 'new', '--title', 'X', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--request-id', 'cli-workstream-wrong-generation', '--owner', runId, '--generation', '9']); }
-@@ -846,6 +846,8 @@ test('mutating command with wrong generation is fenced (exit 3)', () => {
+@@ -846,6 +846,9 @@ test('mutating command with wrong generation is fenced (exit 3)', () => {
 -test('episode new creates request + episode via CLI', () => {
 +test('episode new returns anchored inline request + episode via CLI', () => {
    const { root, runId } = seed();
 -  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'impl', '--point', 'implementation', '--owner', runId, '--generation', '1']));
-+  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'impl', '--point', 'implementation', '--request-id', 'cli-episode-create', '--owner', runId, '--generation', '1']));
++  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'impl', '--point', 'implementation', '--task', 'Implement the CLI episode fixture.', '--request-id', 'cli-episode-create', '--owner', runId, '--generation', '1']));
    assert.match(ep.id, /^001-deep-work$/);
-+  assert.match(ep.request_markdown, /Execution plane: fill/);
++  assert.match(ep.request_markdown, /Implement the CLI episode fixture\./);
++  assert.doesNotMatch(ep.request_markdown, /fill the maker\/checker task/);
 +  assert.match(ep.request_markdown_digest, /^[0-9a-f]{64}$/);
    assert.equal(readState(root, runId).data.episodes.length, 1);
  });
@@ -18629,13 +18727,13 @@ index e449792..b19a37f 100644
 +  const ws2 = JSON.parse(run(root, ['workstream', 'new', '--title', 'B', '--branch', 'b2', '--worktree', '.claude/worktrees/w2', '--request-id', 'cli-workstream-terminal-b', '--owner', runId, '--generation', '1']));
    writeFileSync(join(root, 'plan-art.txt'), 'artifact');
 -  const maker = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'plan', '--point', 'plan', '--workstream', ws2.id, '--artifacts', '["plan-art.txt"]', '--owner', runId, '--generation', '1']));
-+  const maker = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'plan', '--point', 'plan', '--workstream', ws2.id, '--artifacts', '["plan-art.txt"]', '--request-id', 'cli-review-maker', '--owner', runId, '--generation', '1']));
++  const maker = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'plan', '--point', 'plan', '--workstream', ws2.id, '--artifacts', '["plan-art.txt"]', '--task', 'Produce the CLI review maker plan.', '--request-id', 'cli-review-maker', '--owner', runId, '--generation', '1']));
    run(root, ['episode', 'record', '--id', maker.id, '--status', 'done', '--artifacts', '["plan-art.txt"]', '--owner', runId, '--generation', '1']);
 -  const disp = JSON.parse(run(root, ['review', 'dispatch', '--point', 'plan', '--workstream', ws2.id, '--owner', runId, '--generation', '1']));
 +  const disp = JSON.parse(run(root, ['review', 'dispatch', '--point', 'plan', '--workstream', ws2.id, '--request-id', 'cli-review-terminal-flow', '--owner', runId, '--generation', '1']));
 @@ -897 +897 @@ test('episode record --status approved exits with code 1', () => {
 -  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'checker', '--kind', 'impl-review', '--point', 'implementation', '--owner', runId, '--generation', '1']));
-+  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'checker', '--kind', 'impl-review', '--point', 'implementation', '--request-id', 'cli-review-checker', '--owner', runId, '--generation', '1']));
++  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'checker', '--kind', 'impl-review', '--point', 'implementation', '--task', 'Review the CLI checker fixture.', '--request-id', 'cli-review-checker', '--owner', runId, '--generation', '1']));
 @@ -967 +967 @@ test('workstream new with valueless --generation flag exits with code 3', () => {
 -  try { run(root, ['workstream', 'new', '--title', 'X', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--owner', runId, '--generation']); }
 +  try { run(root, ['workstream', 'new', '--title', 'X', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--request-id', 'cli-workstream-missing-generation-value', '--owner', runId, '--generation']); }
@@ -18644,7 +18742,7 @@ index e449792..b19a37f 100644
 +  try { run(root, ['workstream', 'new', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--request-id', 'cli-workstream-missing-title', '--owner', runId, '--generation', '1']); }
 @@ -1013 +1013 @@ function setupRunWithPendingMaker() {
 -  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'impl', '--point', 'implementation', '--owner', runId, '--generation', '1']));
-+  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'impl', '--point', 'implementation', '--request-id', 'cli-abandon-maker', '--owner', runId, '--generation', '1']));
++  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'impl', '--point', 'implementation', '--task', 'Implement the abandon fixture.', '--request-id', 'cli-abandon-maker', '--owner', runId, '--generation', '1']));
 diff --git a/tests/pause.test.mjs b/tests/pause.test.mjs
 index a768b31..0b75ae6 100644
 --- a/tests/pause.test.mjs
@@ -18708,6 +18806,7 @@ export function newEpisode(root, runId, input = {}) {
   nextEpisodeRequest += 1;
   return createEpisode(root, runId, {
     ...input,
+    task: input.task ?? `Execute test episode ${nextEpisodeRequest} without prior conversation context.`,
     requestId: input.requestId ?? `test-episode-${nextEpisodeRequest}`,
   });
 }
@@ -35338,6 +35437,9 @@ for (const task of taskMatches) {
       "const recomputed = intentField('episode-create-request', projection)",
       'JSON.stringify(event.data.request_projection)',
       'dispatch_request_id_digest ?? null',
+      'assertEpisodeTask(episode.task)', 'task: episode.task',
+      'contract: structuredClone(episode.contract ?? null)',
+      'event.data.task !== episode.task',
       'has ambiguous creation identity', 'legacy_episode_count',
       'legacy_workstream_count', 'legacy_proof_origins', 'legacy_authority_digest',
       'verifyProofTransitionCorrelation(loop, lines)',
@@ -35527,6 +35629,7 @@ for (const task of taskMatches) {
       'dispatch_request_id_digest: dispatchRequestIdDigest ?? null',
       'dispatch_request_digest: dispatchRequestDigest ?? null',
       'request_projection: completeRequest',
+      'assertEpisodeTask(task);', 'task, contract: structuredClone(contract ?? null)',
       'episodeRequestMarkdown({ id, plugin, role, kind, point',
       'request_markdown: requestMarkdown',
       'request_markdown_digest: requestMarkdownDigest',
@@ -35538,17 +35641,21 @@ for (const task of taskMatches) {
       '`independent-review-*`', '`review-outcome`',
       'review outcome', 'proof-bearing state patch',
       'EPISODE_REQUEST_ID_REQUIRED', 'EPISODE_REQUEST_CONFLICT',
+      'EPISODE_TASK_INVALID',
       'REVIEW_DISPATCH_REQUEST_ID_REQUIRED', 'REVIEW_DISPATCH_REQUEST_CONFLICT',
       'beforeFinalLock',
       "intentField('episode-create-request-id', requestId)",
       'MISSING_REQUIRED_OPTION: --request-id',
+      'MISSING_REQUIRED_OPTION: --task',
       'tests/helpers/episode-request.mjs',
       'tests/helpers/review-request.mjs',
       'skills/deep-loop-workflow/references/adapters.md',
       '--request-id <episode_request_id>',
+      '--task "<bounded_episode_task>"',
       'review dispatch exact retry after marker cleanup reuses one checker',
       'review dispatch separates retry identity, later rounds, and final-lock checker CAS',
       'episode exact retry returns the same inline request without another write',
+      'episode task is mandatory bounded UTF-8 before mutation',
       'two intentional direct creations with equal content and different IDs remain distinct',
       'an exact direct retry with the same request ID reuses its episode',
       'episode creation identity is state-event correlated and status-independent',
@@ -35561,6 +35668,7 @@ for (const task of taskMatches) {
       'versioned episode request is anchored inline and creates no request sidecar',
       'materialize changed latest insights',
       'paired state and event request Markdown tampering is rejected semantically',
+      'paired state and event task or contract tampering is rejected semantically',
       'paired state/event discriminator removal cannot downgrade initialized proof',
       'an initialized run rejects an unversioned episode with no creation event']) {
       if (!card.includes(token)) fail(`Task 7F missing literal caller migration token ${token}`);
