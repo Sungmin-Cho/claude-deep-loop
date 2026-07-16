@@ -1640,6 +1640,57 @@ no inherited approval from the historical receipt.
 - gate state: still open. Changed bytes require fresh cycle 5 round 5 with both reviewers pinned to
   exact `gpt-5.6-sol`/high; this Respond is not a Gate 1 pass.
 
+### Gate 1 fresh cycle 5 round 5 review
+
+- gate/artifact: Gate 1 design plus final 46-task plan, goal handoff, evidence, cycle-5 round-4
+  report/response, and current repository code/tests.
+- base/head: `c38a96137f8f4f0099c35e893860930e8ee4cf73..33fb21e99655c443ffded46ed0cf058c3695ec2e`;
+  worktree clean at counted reviewer start.
+- invocation: two independent read-only Codex processes, both exact `gpt-5.6-sol` / `high`,
+  `--ephemeral --ignore-user-config --ignore-rules -s read-only`; one built-in whole-branch review
+  and one direct adversarial design/plan audit.
+- reviewer actual: standard task `019f660d-e788-7003-b6a9-f12b0dcb5f0c` returned 2 P1;
+  adversarial task `019f660d-5e07-7aa3-a232-f992bb133dc8` returned 3 Red and 4 Info.
+  `N_planned=N_actual=2`; both counted processes terminated naturally with exit 0.
+- verdict: `REQUEST_CHANGES`; synthesized Red/Yellow/Info = `1 / 3 / 4`.
+- main-agent judgment: accepted all four actionable findings. Versioned requests now carry bounded
+  task/contract authority; review dispatch returns the durable request; hard-crash and race seams
+  have a capability-complete closure; malformed and duplicate creation identities fail closed.
+- report path: `.deep-review/reports/2026-07-15-230325-review.md`, SHA-256
+  `f809fcbc5e49ddb5cbbcfccd44ee416ccaa7d07b0a4afc5ea7b6ecf2cf69d094`.
+- standard raw/final SHA-256: `179cdf2f4c929478553f41f8bff70bea05147e90c3bc6e9aaab6ff0453843730` /
+  `a6207a5b93be33944e4a8f8e51effa67ed2355667f10127ea59b7ff01fc1cbac`.
+- adversarial raw/final SHA-256: `2d773afe92ad908b8a6e5e303c2ec3661565de8422ec7455dbf3ae2c4b93b81b` /
+  `a2a5bd3575f4d6f5e9f396d452e51f558f614615eca0f35320c9dfbe0244fcb0`.
+
+### Gate 1 fresh cycle 5 round 5 Respond
+
+- disposition: accepted 4 actionable findings, rejected 0, deferred 0;
+  `execution_path=main_fallback` after the Phase 6 critical implementer did not complete and the
+  main agent independently audited/completed the partial edit.
+- request response: all versioned episodes require a bounded task and anchor task plus complete
+  contract in canonical Markdown/state/event/digest. Review dispatch derives its checker task and
+  returns exact durable snake-case Markdown/digest on both fresh and replay paths.
+- capability response: private hard crashes remain scalar-only. Only Task 8A
+  `beforeFinalAppendFn` and Task 11C prepare/confirm/revoke/sweep `beforeAppendFn` are allowlisted,
+  called before the final mutation context, and never enter the publisher. Acquire's lock-held
+  callback is removed. Validator scans capability-equivalent aliases and exact production lines.
+- identity response: caller/dispatch creation digests must be lowercase 64-hex before global
+  insertion; malformed forms and distinct-episode reuse are executable regressions.
+- exact corrected candidate hashes: handoff
+  `1523907bf1931793b765ed8a5fac2d678a6ae1aa303cfef6e2c89f2e6f150fd9`; design
+  `b58f5a08cf4881979ec1e567593c6d56b47cca7c6f7fe95b4969f11316deef50`; plan
+  `9e2160542f74fee8357bcbd912b23904f3efae3da564451a3c51ccf230397cd4`.
+- correction commits: `d767ba1` (critical) and `b3efe66` (warnings).
+- response record: `.deep-review/responses/2026-07-16-140458-response.md`, SHA-256
+  `e619dcbab59be1b9c3eb7d8ecbca8e7aa6e455a6a79c6e9711d7e3231ebc0589`.
+- verification: embedded validator passed `ok:true` for 46 tasks and 368 fences
+  (`bash=64`, `diff=91`, `js=185`, `json=4`, `markdown=12`, `text=11`, `yaml=1`);
+  `git diff --check`, cached/origin-main checks, and `npm run preflight` passed validation and all
+  1,463 tests with zero failures, cancellations, skips, or todo.
+- gate state: still open. Changed bytes require a fresh review cycle with both reviewers pinned to
+  exact `gpt-5.6-sol`/high; this Respond is not a Gate 1 pass.
+
 ## Review receipt template
 
 Each reviewed gate will add a receipt with all of these fields:
