@@ -32,7 +32,7 @@ Main-agent judgment: the fetched remote base, version, test count, and user-owne
 
 ## Gate 1 — research and design
 
-Status: REVIEW OPEN — fresh cycle 4 round 3 Respond complete; round 4 pending
+Status: REVIEW OPEN — fresh cycle 6 round 2 Respond complete; round 3 pending
 
 Design target: `docs/superpowers/specs/2026-07-13-codex-app-native-task-continuation-design.md`
 
@@ -1744,6 +1744,66 @@ no inherited approval from the historical receipt.
   `git diff --check`, cached check, and `npm run preflight` passed validation and all 1,463 tests
   with zero failures, cancellations, skips, or todo.
 - gate state: still open. Changed bytes require fresh cycle 6 round 2 with both reviewers pinned to
+  exact `gpt-5.6-sol`/high; this Respond is not a Gate 1 pass.
+
+### Gate 1 fresh cycle 6 round 2 review
+
+- gate/artifact: Gate 1 design plus final 46-task plan, goal handoff, evidence ledger, cycle-6
+  round-1 report/response, and current repository code/tests.
+- base/head: `c38a96137f8f4f0099c35e893860930e8ee4cf73..1b48e7b9e9293b074e42ccb6d41542750db04baa`;
+  worktree clean at counted reviewer start.
+- invocation: two independent read-only Codex processes, both exact `gpt-5.6-sol` / `high`,
+  `--ephemeral --ignore-user-config --ignore-rules -s read-only`; one built-in whole-branch review
+  and one direct adversarial immutable design/plan audit.
+- reviewer actual: standard task `019f6971-b484-7271-9485-5d5211a47091` returned 2 P2;
+  adversarial task `019f6971-b4ab-7110-bad8-803cd0f50c46` returned 1 Red, 2 Yellow, and 2 Info.
+  `N_planned=N_actual=2`; both exited 0 and both JSONL streams end in a natural `turn.completed`
+  with a final agent message.
+- verdict: `REQUEST_CHANGES`; synthesized Red/Yellow/Info = `1 / 3 / 2`.
+- main-agent judgment: accepted all four synthesized actionable findings (five concrete
+  manifestations). Task 5B publisher and bare-name classifier closure defects were independently
+  reproduced; the init release check-to-unlink ABA was executed; the prepared retry request loss
+  and stale evidence status were traced against exact source.
+- report path: `.deep-review/reports/2026-07-16-145441-review.md`, SHA-256
+  `9a5f9073e7d25b0ea2673a54fbf0af91171ccb3a494d9f0f4a39f93c4680537d`.
+- standard raw/final SHA-256: `67f2f256002496b912c59800155b4eeecd02d9bec0df08c2a1bdf605020f06bf` /
+  `ace0785dc12b9fa72ea8d6b3263d895e1530e48e2c6460963e675a34aa8fdcab`.
+- adversarial raw/final SHA-256: `08ca241f72a4728638e5874ee722f2bdc184bb8c9b96bee8d58dcc0407e8dbb6` /
+  `40fdca05a2c8c3ba5e311a57e85d90559a0b6c8ed133e3724fe0f26a83163c02`.
+
+### Gate 1 fresh cycle 6 round 2 Respond
+
+- disposition: accepted 4 synthesized actionable findings / 5 concrete manifestations, rejected
+  0, deferred 0; `execution_path=main_fallback` after independent reproduction and trace by the
+  main agent.
+- callback response: Task 5B has no function-valued publisher timing hook; its race uses the actual
+  link primitive. The validator scans Task 5B through Task 11C and classifies bare timing-prefix plus
+  boundary-vocabulary callback aliases without requiring a suffix, while preserving only the exact
+  six documented outside-lock process-race seams.
+- lock response: normal release never deletes an authority pathname. A bounded append-only
+  hard-link chain uses same-inode release markers, exclusive successors, and post-publication exact
+  owner/file verification. Executed probes cover the release-time copied-nonce ABA, two sequential
+  owners, zero authority unlink, and preservation of a pre-existing candidate on `wx` `EEXIST`.
+- prepared/status response: `descriptor_digest` authenticates the complete `app-prepare` request
+  digest plus exact action and is repeated by the prepared event. A prepared retry recomputes that
+  pure envelope and fences changed stdin/host input without clock, gate, reconciliation, append, or
+  external App action. Top-level evidence status and design history now point to round-2 Respond and
+  fresh round 3 without claiming approval.
+- exact corrected candidate hashes: handoff
+  `1523907bf1931793b765ed8a5fac2d678a6ae1aa303cfef6e2c89f2e6f150fd9`; design
+  `a5ce13ad608f2646ec096f39d68ddb010664fd06ed50c014a998486f1434b24a`; plan
+  `5365cd43e6c48121564c34e9c1e605aaa713e12fd41fc0a83a0b3c377229b768`.
+- correction commit: `2c4c5a8bb97c7bfc4663c69eef3033c8ca428c1d`.
+- response record: `.deep-review/responses/2026-07-16-153028-response.md`, SHA-256
+  `7b24aeb82f7851dfe3630bce32757df8f1ec6b774e2631e64c13068f32224794`.
+- Phase 6 log: `.deep-review/tmp/phase6-cycle6-round2.log`, SHA-256
+  `463bbb9034e5047e49716e0453c51a6a20bdf14e09fffdc47b77aa2f0bd00363` (ignored evidence).
+- verification: embedded validator passed `ok:true` for 46 tasks and 368 fences
+  (`bash=64`, `diff=91`, `js=185`, `json=4`, `markdown=12`, `text=11`, `yaml=1`), including all
+  executed lock, no-replace, callback, and Task 11C-to-12B composition probes. `git diff --check`,
+  cached check, and `npm run preflight` passed validation and all 1,463 tests with zero failures,
+  cancellations, skips, or todo.
+- gate state: still open. Changed bytes require fresh cycle 6 round 3 with both reviewers pinned to
   exact `gpt-5.6-sol`/high; this Respond is not a Gate 1 pass.
 
 ## Review receipt template
