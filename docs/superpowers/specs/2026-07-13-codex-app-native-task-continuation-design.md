@@ -2,7 +2,7 @@
 
 작성일: 2026-07-13
 운영 계약: `docs/handoff/2026-07-13-codex-app-native-task-continuation-goal-handoff.md`
-상태: Gate 1 fresh cycle 7 round 3 Respond 완료; CONCERN 미수렴, fresh cycle 7 round 4 필요
+상태: Gate 1 fresh cycle 7 round 4 Respond 완료; CONCERN 미수렴, fresh cycle 7 round 5 필요
 기준: `main@c38a96137f8f4f0099c35e893860930e8ee4cf73`, deep-loop `1.8.2`
 
 > source of truth: 이 문서 + 운영 계약 + 현재 저장소 + `git log`. 이전 대화 컨텍스트를 가정하지 말라.
@@ -1427,6 +1427,16 @@ silent no-match가 된 것을 확인했다. Standard와 adversarial Codex는 이
 재현했다. Respond는 canonical destination과 unit을 한 digest로 결합하고, complete direct guard unit을
 실제 reviewer-failclosed test에 설치해 exact TAP pass를 요구하며, live status를 round 4로 전진시킨다.
 이 Respond는 approval receipt가 아니며 fresh cycle 7 round 4가 새 bytes를 다시 검증해야 한다.
+
+Gate 1 fresh cycle 7 round 4도 `CONCERN`이었다. Standard/adversarial Codex는 canonical Task 6A
+destination 문장이 card 어디에든 한 번만 있으면 되고 hard-coded destination과 독립 unit을 hash하므로,
+실제 fence 앞 destination을 바꾸고 다른 위치에 canonical decoy를 남기는 반례를 확인했다. Adversarial
+Codex는 direct guard의 실제 test를 skip하고 같은 이름의 harmless pass를 추가하면 TAP `ok` 검사가
+통과하는 solo finding도 제시했다. Main agent가 두 변형 모두 complete 46-task validator에서 `ok:true`를
+재현해 수용한다. Respond는 destination instruction과 바로 뒤 JS fence를 하나의 structural pair로
+추출하고 다른 reconciliation destination prose를 금지한다. Direct guard는 unique candidate, exact full-unit
+SHA-256, unique unskipped registration을 먼저 검사한 뒤 실제 TAP run을 수행한다. 이 Respond는 approval
+receipt가 아니며 fresh cycle 7 round 5가 새 bytes를 다시 검증해야 한다.
 
 구현 순서:
 

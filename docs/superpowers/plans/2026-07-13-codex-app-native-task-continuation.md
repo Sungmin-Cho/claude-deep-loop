@@ -36235,15 +36235,26 @@ for (const task of taskMatches) {
     const nativeWorkerDestination = 'tests/orch-cli.test.mjs';
     const destinationInstruction =
       'Append this literal process reconciliation test to `tests/orch-cli.test.mjs`:';
+    const destinationInstructions = [...card.matchAll(
+      /^Append this literal process reconciliation[^\n]*$/gmu)].map(match => match[0]);
+    const destinationPairPrefix = `${destinationInstruction}\n\n\`\`\`js\n`;
+    const destinationPairStarts = [];
+    for (let at = card.indexOf(destinationPairPrefix); at >= 0;
+      at = card.indexOf(destinationPairPrefix, at + 1)) destinationPairStarts.push(at);
+    const pairedUnitStart = destinationPairStarts.length === 1
+      ? destinationPairStarts[0] + destinationPairPrefix.length : -1;
+    const pairedUnitEnd = pairedUnitStart < 0 ? -1 : card.indexOf('\n```', pairedUnitStart);
+    const pairedUnit = pairedUnitEnd < 0 ? null : card.slice(pairedUnitStart, pairedUnitEnd);
     const expectedNativeWorkerBindingHash =
       '7f1fd7d3e428f28b2092bd45fb0dd923cb5d40b23609c77e0c1fd84172d4b170';
-    if ((card.match(new RegExp(destinationInstruction.replace(
-      /[.*+?^${}()|[\]\\]/g, '\\$&'), 'gu')) ?? []).length !== 1) {
+    if (destinationInstructions.length !== 1
+        || destinationInstructions[0] !== destinationInstruction
+        || destinationPairStarts.length !== 1 || pairedUnit === null) {
       fail('Task 6A native worker executable unit destination is not canonical');
-    } else if (nativeWorkerUnits.length !== 1) {
+    } else if (nativeWorkerUnits.length !== 1 || nativeWorkerUnits[0] !== pairedUnit) {
       fail(`Task 6A native worker executable unit count: ${nativeWorkerUnits.length}`);
     } else if (createHash('sha256').update(`${nativeWorkerDestination}\0`)
-      .update(nativeWorkerUnits[0]).digest('hex') !== expectedNativeWorkerBindingHash) {
+      .update(pairedUnit).digest('hex') !== expectedNativeWorkerBindingHash) {
       fail('Task 6A native worker executable unit or destination differs from its reviewed exact binding');
     }
     const executableCard = [...card.matchAll(/```js\n([\s\S]*?)\n```/gu)]
@@ -37584,12 +37595,23 @@ assert.equal(verifyAppEventCorrelation(mutableProof, [proofBaseline]).ok, true,
     const proofTest = units.find(body => body.includes("test('central gateway owns every proof-event entity mapping'")
       && body.includes("test('pre-checkpoint legacy proof history is opaque"));
     const aliasTest = units.find(body => body.includes("test('episode inline request is identical through a symlink-root transaction'"));
-    const directGuardTest = units.find(body => body.includes(
+    const directGuardTests = units.filter(body => body.includes(
       "test7f('episode creation preserves role and artifact path guards before mutation'")
       && body.includes('direct-invalid-target-maker')
       && body.includes('productionBlockedEpisode7f'));
-    if (proofTest == null || aliasTest == null || directGuardTest == null) {
+    const directGuardTest = directGuardTests[0] ?? null;
+    const directGuardName = 'episode creation preserves role and artifact path guards before mutation';
+    const directGuardRegistration = `test7f('${directGuardName}', () => {`;
+    const expectedDirectGuardUnitHash =
+      '5cfdcedb07627d41d08fb2250450b2d40f5ee9fc81be5b7fceaa4e857bea6149';
+    if (proofTest == null || aliasTest == null || directGuardTests.length !== 1) {
       fail('Task 7F complete proof/canonical-alias/direct-guard tests missing');
+    } else if (createHash('sha256').update(directGuardTest).digest('hex')
+        !== expectedDirectGuardUnitHash
+      || directGuardTest.split(directGuardRegistration).length - 1 !== 1
+      || directGuardTest.split(directGuardName).length - 1 !== 1
+      || directGuardTest.includes(`test7f.skip('${directGuardName}'`)) {
+      fail('Task 7F direct guard unit or exact registration differs from reviewed bytes');
     } else {
       const proofPath = join(sequentialSourceDir, 'tests/proof-transitions.test.mjs');
       writeFileSync(proofPath, `${proofTest.trimEnd()}\n`);
