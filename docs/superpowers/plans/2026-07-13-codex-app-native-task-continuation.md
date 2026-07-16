@@ -4483,15 +4483,17 @@ test('dead fixed init authority is stale-manual and never unlinked', () => {
   assert.deepEqual(readFileSync(lock), before);
 });
 
-test('lock release is owner-nonce safe against ABA replacement', () => {
+test('lock release is owner-nonce and file-identity safe against copied-nonce ABA replacement', () => {
   const root = fixtureDir();
-  const later = { pid: 99, nonce: 'laterowner000000', acquired_at: '2026-07-13T00:00:01.000Z' };
+  const later = { pid: 99, nonce: 'firstowner000000', acquired_at: '2026-07-13T00:00:01.000Z' };
   withInitLock(root, () => {
     unlinkSync(join(root, '.deep-loop', '.init.lock'));
     put(root, '.deep-loop/.init.lock', JSON.stringify(later));
   }, { pid: 7, nonce: () => 'firstowner000000', now: () => Date.parse('2026-07-13T00:00:00.000Z'),
     probePidIdentity: () => 'alive' });
   assert.deepEqual(JSON.parse(readFileSync(join(root, '.deep-loop', '.init.lock'))), later);
+  assert.deepEqual(readdirSync(join(root, '.deep-loop'))
+    .filter(name => name.startsWith('.init-lock-candidate-')), []);
 });
 
 test('candidate sweep is strict, age greater-than TTL, lexical, capped, and candidate-only', () => {
@@ -4667,6 +4669,9 @@ export function withInitLock(root, fn, deps = {}) {
   const candidate = join(control, '.init-lock-candidate-' + pid + '-' + nonce);
   const fixed = join(control, '.init.lock');
   const unlink = deps.unlink ?? unlinkSync;
+  const lstat = deps.lstat ?? (value => lstatSync(value, { bigint: true }));
+  const sameFile = deps.sameFile
+    ?? ((left, right) => left.dev === right.dev && left.ino === right.ino);
   let linked = false;
   try {
     (deps.writeFile ?? writeFileSync)(candidate, JSON.stringify(holder), { flag: 'wx' });
@@ -4688,7 +4693,7 @@ export function withInitLock(root, fn, deps = {}) {
       }
       throw new Error('LOCK_ACQUIRE_FAILED');
     }
-    try { unlink(candidate); } catch { /* fixed link remains authoritative */ }
+    // Keep the unique hard-link candidate as the owner's file-identity capability until release.
     return fn();
   } finally {
     if (!linked) {
@@ -4696,7 +4701,12 @@ export function withInitLock(root, fn, deps = {}) {
     } else {
       try {
         const current = parseInitHolder(Buffer.from((deps.readFile ?? readFileSync)(fixed)));
-        if (current?.nonce === nonce) unlink(fixed);
+        const fixedStat = lstat(fixed);
+        const candidateStat = lstat(candidate);
+        const sameAuthority = fixedStat.isFile() && !fixedStat.isSymbolicLink()
+          && candidateStat.isFile() && !candidateStat.isSymbolicLink()
+          && sameFile(fixedStat, candidateStat);
+        if (current?.nonce === nonce && sameAuthority) unlink(fixed);
       } catch { /* later/uncertain owner is never removed */ }
       try { unlink(candidate); } catch { /* already absent */ }
     }
@@ -4710,7 +4720,9 @@ Also add `import { randomUUID } from 'node:crypto';` at the top. The fixed autho
 
 Run: node --test --test-name-pattern='fixed init authority|owner-nonce|candidate sweep|hard link|candidate write failure|EEXIST fixed-holder' tests/init-transaction.test.mjs
 
-Expected: PASS for live/unknown/invalid/dead/PID-reused holder preservation, two stale contenders, ABA release, exact TTL, lexical cap, and unsupported-link cleanup.
+Expected: PASS for live/unknown/invalid/dead/PID-reused holder preservation, two stale contenders,
+copied-nonce ABA release protected by retained hard-link identity, exact TTL, lexical cap, and
+unsupported-link cleanup.
 
 - [ ] **Step 5: Run lock-related regressions**
 
@@ -4722,7 +4734,9 @@ Expected: PASS; per-run state locks remain unchanged.
 
 Run: git diff -- scripts/lib/init-transaction.mjs tests/init-transaction.test.mjs && git diff --check
 
-Confirm .init.lock is never auto-unlinked, age must be strictly greater than TTL, only the first 64 raw-code-unit-sorted strict candidates are inspected, and release rereads the exact nonce.
+Confirm .init.lock is never auto-unlinked, age must be strictly greater than TTL, only the first 64
+raw-code-unit-sorted strict candidates are inspected, and release requires both the exact nonce and
+same-file identity against the retained unique candidate before unlinking the fixed authority.
 
 - [ ] **Step 7: Commit the lock slice**
 
@@ -15579,8 +15593,9 @@ git commit -m "fix: verify success-class state authority" -m "Co-Authored-By: Cl
   creation instead requires its own bounded logical dispatch request ID. The kernel stores a
   domain-separated ID digest separately from the complete request digest; response-loss retry reuses
   the ID and each intentional review round rotates it. Fresh plugin detection selects only a new
-  dispatch and is not caller-stable retry identity. `beforeFinalLock` is test-only and is never
-  accepted by the CLI. Production and skill callers allocate once and reuse on response loss;
+  dispatch and is not caller-stable retry identity. `beforeMutableReviewInputs` and
+  `beforeFinalLock` are test-only outside-lock race seams and are never accepted by the CLI.
+  Production and skill callers allocate once and reuse on response loss;
   tests share one adapter and pass an explicit ID only when a logical retry is under test.
   Versioned episode requests are exact anchored `request_markdown` plus a domain-separated digest;
   same-ID retry returns those bytes and never materializes a file. `workstream new` independently
@@ -31480,6 +31495,12 @@ if (route !== null) {
 }
 ```
 
+The embedded plan validator mechanically locates this exact Task 11C provisional preimage once,
+applies this Task 12B replacement, stitches in the exact descriptor conversion/action validator,
+and runs `node --check` over the composed final implementation. This is late-afterimage composition
+evidence for the 11C→12B boundary; earlier Task 8A–11B source surfaces remain structural inventory
+until their ordered implementation slices execute the card-local tests and Gate 3B full preflight.
+
 Pass the completed `action` and `descriptorDigest` into the transaction. The explicit injected builder retains Task 8's `{loop,route,child,attemptId}` test seam; only its absence selects the production public-action builder. Remove Task 8's provisional injected-action validation/digest expression so this is the single validation path. No builder, validator, JSON serialization, or digest operation may occur in `appendAnchored`'s `mutate` callback, so a throw cannot append an event ahead of state. Do not add an `appIntent` object parameter to `handoff.mjs`: Task 11's only public switch is boolean `--app-intent`, and Task 8 owns kernel-side route/cwd/attempt derivation in the final emit transaction.
 
 Exact-replace Task 11A's complete provisional
@@ -35714,7 +35735,7 @@ for (const task of taskMatches) {
       'EPISODE_REQUEST_ID_REQUIRED', 'EPISODE_REQUEST_CONFLICT',
       'EPISODE_TASK_INVALID',
       'REVIEW_DISPATCH_REQUEST_ID_REQUIRED', 'REVIEW_DISPATCH_REQUEST_CONFLICT',
-      'beforeFinalLock',
+      'beforeMutableReviewInputs', 'beforeFinalLock',
       "intentField('episode-create-request-id', requestId)",
       'MISSING_REQUIRED_OPTION: --request-id',
       'MISSING_REQUIRED_OPTION: --task',
@@ -35813,6 +35834,8 @@ for (const task of taskMatches) {
     }
     for (const token of ['function codeMask11b(', 'function invocationBody11b(',
       'function topLevelArguments11b(',
+      'beforeMakerAuthorityReadFn = () => {}',
+      'beforeMakerAuthorityReadFn();',
       'final direct append linkage is actual-call complete and the transition is absent',
       'requireCallerBinding(opts.callerBinding)',
       'directMutationOptions(\'launcher-executable-approve\'',
@@ -35843,6 +35866,7 @@ for (const task of taskMatches) {
       'assertBoundAppParentMutationFence(candidate, input',
       'process-private scalar crash selector',
       'outside the lock while the callback result is authorized',
+      'deps.catchReadStateFn ?? read',
       'callbacks can reenter the verified reader outside the lock']) {
       if (!card.includes(token)) fail(`Task 11C missing outside-lock race token ${token}`);
     }
@@ -35861,7 +35885,8 @@ for (const task of taskMatches) {
       'APP_PREPARED_ACTION_INVALID', 'if (route !== null)',
       'action = completed.action', 'descriptorDigest = completed.descriptorDigest',
       'app-task prepare projects snake_case stdin into one public create action',
-      'READY plus one JSON response only', 'tests/orch-cli.test.mjs']) {
+      'READY plus one JSON response only', 'tests/orch-cli.test.mjs',
+      'mechanically locates this exact Task 11C provisional preimage once']) {
       if (!card.includes(token)) fail(`Task 12B missing unwrapped snapshot token ${token}`);
     }
     for (const forbidden of ['snapshot.project.root', 'loop: snapshot',
@@ -36024,6 +36049,54 @@ for (const fence of fenceRecords) {
     const diagnostic = String(result.stderr || result.stdout || `status=${result.status}`)
       .split('\n')[0];
     fail(`${language} fence line ${line}: ${diagnostic}`);
+  }
+}
+
+{
+  // Execute the exact displayed owner-safe lock implementation against the copied-token ABA that
+  // a nonce-only release misses. The retained candidate hard link is the release identity.
+  const lockFence = fenceRecords.find(record => record.language === 'js'
+    && record.body.includes('export function withInitLock(root, fn, deps = {})')
+    && record.body.includes('INIT_LOCK_CANDIDATE_SWEEP_MAX'));
+  if (lockFence == null) {
+    fail('owner-safe init lock implementation missing');
+  } else {
+    const probeDir = mkdtempSync(join(tmpdir(), 'deep-loop-plan-init-lock-'));
+    try {
+      const root = join(probeDir, 'root');
+      mkdirSync(root);
+      const probePath = join(probeDir, 'copied-token-aba.mjs');
+      writeFileSync(probePath, `
+import assert from 'node:assert/strict';
+import { join } from 'node:path';
+${lockFence.body}
+const exactKeys = (value, keys) => value !== null && typeof value === 'object'
+  && !Array.isArray(value) && Object.keys(value).sort().length === keys.length
+  && keys.every((key, index) => Object.keys(value).sort()[index] === key);
+const root = ${JSON.stringify(root)};
+const nonce = 'copiednonce00001';
+const later = { pid: 99, nonce, acquired_at: '2026-07-13T00:00:01.000Z' };
+withInitLock(root, () => {
+  const fixed = join(root, '.deep-loop', '.init.lock');
+  unlinkSync(fixed);
+  writeFileSync(fixed, JSON.stringify(later));
+}, { pid: 7, nonce: () => nonce, platform: 'linux', realpath: value => value,
+  now: () => Date.parse('2026-07-13T00:00:00.000Z') });
+assert.deepEqual(JSON.parse(readFileSync(join(root, '.deep-loop', '.init.lock'))), later);
+assert.deepEqual(readdirSync(join(root, '.deep-loop'))
+  .filter(name => name.startsWith('.init-lock-candidate-')), []);
+`);
+      const executed = spawnSync(process.execPath, [probePath], {
+        encoding: 'utf8', maxBuffer: 4 * 1024 * 1024,
+      });
+      if (executed.error || executed.status !== 0) {
+        const diagnostic = String(executed.error?.message
+          || executed.stderr || executed.stdout).split('\n').slice(0, 30).join(' | ');
+        fail(`owner-safe init lock copied-token ABA behavior: ${diagnostic}`);
+      }
+    } finally {
+      rmSync(probeDir, { recursive: true, force: true });
+    }
   }
 }
 
@@ -37067,7 +37140,7 @@ test('installed breaker afterimage executes stable IDs and current lease policy'
   }
   {
     // The concrete Task 7 substrate is scanned only after the Task 11B final gateway closure.
-    // Tasks 8A–11C are then closed inductively: every later card must expose its complete owned
+    // Tasks 7F–11C are then closed inductively: every callback-owning card must expose its complete owned
     // production surface and no complete afterimage, retained source line, added source line, or
     // worker may reintroduce the removed function-valued crash capability. The only separately
     // allowlisted process-race seams have an exact production line inventory outside final locks.
@@ -37125,30 +37198,111 @@ test('installed breaker afterimage executes stable IDs and current lease policy'
       const callbackShape = /(?:Fn|Callback|Probe|Hook)$/iu.test(name);
       const crashFamily = /^(?:crash|fault|failure|abort|kill|terminate|exit)/u.test(name)
         || /(?:Crash|Fault|Failure|Abort|Kill|Terminate|Exit)/u.test(name);
-      const boundaryFamily = /(?:append|commit|publish|mutation|journal|lock|write|rename|replace|materialize|fsync)/iu
+      const boundaryFamily = /(?:append|commit|publish|mutation|journal|lock|write|rename|replace|materialize|fsync|read|state|authority|review|input)/iu
         .test(name);
-      const timingFamily = /(?:before|after|pre|post)/iu.test(name);
-      return callbackShape && (crashFamily || boundaryFamily && timingFamily);
+      const timingFamily = /^(?:before|after|pre|post|catch)[A-Z]/u.test(name);
+      const bareBoundary = /^(?:before|after|pre|post)[A-Z][A-Za-z0-9]*(?:Lock|Inputs|Append|Commit|Publish|Mutation|Write|Rename|Replace|Materialize|Fsync)$/u
+        .test(name);
+      return callbackShape && (crashFamily || boundaryFamily && timingFamily) || bareBoundary;
     };
     const allowedRaceSeams = new Map([
+      ['7F', new Set(['beforeMutableReviewInputs', 'beforeFinalLock'])],
       ['8A', new Set(['beforeFinalAppendFn'])],
+      ['11B', new Set(['beforeMakerAuthorityReadFn'])],
       // Task 11C owns the test worker that injects Task 8A's seam as well as the four App seams.
-      ['11C', new Set(['beforeAppendFn', 'beforeFinalAppendFn'])],
+      ['11C', new Set(['beforeAppendFn', 'beforeFinalAppendFn', 'catchReadStateFn'])],
     ]);
-    for (const [taskId] of finalSurfaceInventory) {
+    const callbackSurfaceTasks = ['7F', ...finalSurfaceInventory.keys()];
+    for (const taskId of callbackSurfaceTasks) {
       const task = taskMatches.find(match => match[1] === taskId);
       const nextTask = source.indexOf('\n### Task ', task.index + 1);
       const card = source.slice(task.index, nextTask < 0 ? source.length : nextTask);
-      const executable = [...card.matchAll(/```(?:js|diff)\n([\s\S]*?)\n```/g)]
-        .map(match => match[1]).join('\n');
+      const executable = taskId === '7F'
+        ? [
+          ...[...card.matchAll(/```js\n([\s\S]*?)\n```/g)].map(match => match[1])
+            .filter(body => body.includes('PLAN_REPLACE_RANGE: scripts/lib/episode.mjs')),
+          ...[...card.matchAll(/```diff\n([\s\S]*?)\n```/g)].map(match => match[1])
+            .filter(body => body.includes('diff --git a/scripts/lib/review.mjs'))
+            .map(body => body.split('\n').filter(line =>
+              (line.startsWith('+') && !line.startsWith('+++ ')) || line.startsWith(' '))
+              .join('\n')),
+        ].join('\n')
+        : [...card.matchAll(/```(js|diff)\n([\s\S]*?)\n```/g)].map(match =>
+          match[1] === 'js' ? match[2] : match[2].split('\n').filter(line =>
+            (line.startsWith('+') && !line.startsWith('+++ ')) || line.startsWith(' '))
+            .join('\n')).join('\n');
       const callbackNames = new Set([...executable.matchAll(
-        /\b[A-Za-z][A-Za-z0-9]*(?:Fn|Callback|Probe|Hook)\b/gu)]
+        /\b[A-Za-z][A-Za-z0-9]*\b/gu)]
         .map(match => match[0]).filter(dangerousCallbackName));
       const allowed = allowedRaceSeams.get(taskId) ?? new Set();
       for (const name of callbackNames) {
         if (!allowed.has(name)) {
           fail(`Task ${taskId} introduces capability-equivalent crash/race callback ${name}`);
         }
+      }
+    }
+    {
+      const task = taskMatches.find(match => match[1] === '7F');
+      const nextTask = source.indexOf('\n### Task ', task.index + 1);
+      const card = source.slice(task.index, nextTask < 0 ? source.length : nextTask);
+      const reviewDiffs = [...card.matchAll(/```diff\n([\s\S]*?)\n```/g)]
+        .map(match => match[1]).filter(body => body.includes('diff --git a/scripts/lib/review.mjs'));
+      const lines = reviewDiffs.flatMap(body => body.split('\n'))
+        .filter(line => line.includes('beforeMutableReviewInputs')
+          || line.includes('beforeFinalLock'));
+      const exact = [
+        '+  independentSubagent = false, requestId, beforeMutableReviewInputs, beforeFinalLock,',
+        "+  if (typeof beforeMutableReviewInputs === 'function') beforeMutableReviewInputs();",
+        "+  if (typeof beforeFinalLock === 'function') beforeFinalLock();",
+      ];
+      if (JSON.stringify(lines) !== JSON.stringify(exact)) {
+        fail(`Task 7F review race seam inventory: ${JSON.stringify(lines)}`);
+      }
+      const finalDiff = reviewDiffs.find(body => body.includes(exact[2]));
+      const mutableInvoke = finalDiff?.indexOf(exact[1]);
+      const mutableUse = finalDiff?.indexOf('const { reviewer, flags, mode', mutableInvoke);
+      const finalInvoke = finalDiff?.indexOf(exact[2]);
+      const finalContext = finalDiff?.indexOf('const committed = withReviewMutation(', finalInvoke);
+      if (!(mutableInvoke >= 0 && mutableUse > mutableInvoke
+          && finalInvoke >= 0 && finalContext > finalInvoke)) {
+        fail('Task 7F review race seams are not outside and before their target phases');
+      }
+    }
+    {
+      const task = taskMatches.find(match => match[1] === '11B');
+      const nextTask = source.indexOf('\n### Task ', task.index + 1);
+      const card = source.slice(task.index, nextTask < 0 ? source.length : nextTask);
+      const headlessSections = [...card.matchAll(/```diff\n([\s\S]*?)\n```/g)]
+        .flatMap(match => match[1].split(/(?=^diff --git a\/)/m))
+        .filter(body => body.startsWith('diff --git a/scripts/lib/headless-host.mjs'));
+      const lines = headlessSections.flatMap(body => body.split('\n'))
+        .filter(line => line.includes('beforeMakerAuthorityReadFn'));
+      const exact = [
+        '+  beforeMakerAuthorityReadFn = () => {},',
+        '+        beforeMakerAuthorityReadFn();',
+      ];
+      if (JSON.stringify(lines) !== JSON.stringify(exact)) {
+        fail(`Task 11B maker authority race seam inventory: ${JSON.stringify(lines)}`);
+      }
+      const body = headlessSections.find(section => section.includes(exact[1]));
+      if (!(body?.indexOf(exact[1]) >= 0
+          && body.indexOf('const freshLoop = readParentAuthority(', body.indexOf(exact[1]))
+            > body.indexOf(exact[1]))) {
+        fail('Task 11B maker authority race seam is not immediately before verified read');
+      }
+    }
+    {
+      const task = taskMatches.find(match => match[1] === '11C');
+      const nextTask = source.indexOf('\n### Task ', task.index + 1);
+      const card = source.slice(task.index, nextTask < 0 ? source.length : nextTask);
+      const awaitDiff = [...card.matchAll(/```diff\n([\s\S]*?)\n```/g)]
+        .map(match => match[1]).find(body => body.includes('deps.catchReadStateFn ?? read'));
+      const lines = awaitDiff?.split('\n')
+        .filter(line => line.includes('catchReadStateFn')) ?? [];
+      const exact = ['+      ? (deps.catchReadStateFn ?? read)()'];
+      if (JSON.stringify(lines) !== JSON.stringify(exact)
+          || !(awaitDiff.indexOf('} catch (error)') < awaitDiff.indexOf(exact[0]))) {
+        fail(`Task 11C catch-read race seam inventory: ${JSON.stringify(lines)}`);
       }
     }
     {
@@ -37205,6 +37359,53 @@ test('installed breaker afterimage executes stable IDs and current lease policy'
           || /(?:appendAnchored|withVerifiedMutationLock)[\s\S]{0,240}beforeAppendFn/u
             .test(implementation ?? '')) {
         fail('Task 11C race seam leaks into acquire or a publisher/mutation context');
+      }
+    }
+    {
+      // Task 12B is an exact replacement over Task 11C, not an independent illustrative fragment.
+      // Apply it once to the literal Task 11C preimage and syntax-check the stitched final source.
+      const task11c = taskMatches.find(match => match[1] === '11C');
+      const next11c = source.indexOf('\n### Task ', task11c.index + 1);
+      const card11c = source.slice(task11c.index, next11c < 0 ? source.length : next11c);
+      const implementation = [...card11c.matchAll(/```js\n([\s\S]*?)\n```/g)]
+        .map(match => match[1]).find(body => body.includes('export function prepareAppTask(')
+          && body.includes('export function sweepUnconfirmedAppTask('));
+      const task12b = taskMatches.find(match => match[1] === '12B');
+      const next12b = source.indexOf('\n### Task ', task12b.index + 1);
+      const card12b = source.slice(task12b.index, next12b < 0 ? source.length : next12b);
+      const units12b = [...card12b.matchAll(/```js\n([\s\S]*?)\n```/g)].map(match => match[1]);
+      const descriptor = units12b.find(body =>
+        body.includes('export function appTaskDescriptorInput('));
+      const actionValidator = units12b.find(body =>
+        body.includes('function finalizePreparedAppAction('));
+      const replacement = units12b.find(body => body.trimStart().startsWith('if (route !== null) {')
+        && body.includes('appTaskDescriptorInput({')
+        && body.includes('action = completed.action;'));
+      const oldStartToken = '    if (route !== null) {\n      if (typeof deps.descriptorBuilder';
+      const oldEndToken = '\n    if (!reconciled && failureCode === null) {';
+      const start = implementation?.indexOf(oldStartToken) ?? -1;
+      const end = implementation?.indexOf(oldEndToken, start) ?? -1;
+      if (implementation == null || descriptor == null || actionValidator == null
+          || replacement == null || start < 0 || end < 0
+          || implementation.indexOf(oldStartToken, start + 1) >= 0) {
+        fail('Task 11C to 12B exact replacement preimage/inventory mismatch');
+      } else {
+        const indented = replacement.split('\n').map(line => `    ${line}`).join('\n');
+        const composed = `${implementation.slice(0, start)}${indented}`
+          + `${implementation.slice(end)}`;
+        if (composed.includes('APP_DESCRIPTOR_BUILDER_REQUIRED')
+            || composed.includes('exactPreparedAction(')
+            || !composed.includes('action = completed.action;')
+            || !composed.includes('descriptorDigest = completed.descriptorDigest;')) {
+          fail('Task 12B composed prepare retains the provisional descriptor path');
+        }
+        const checked = run(process.execPath, ['--input-type=module', '--check'],
+          `${descriptor}\n\n${actionValidator}\n\n${composed}\n`);
+        if (checked.error || checked.status !== 0) {
+          const diagnostic = String(checked.error?.message || checked.stderr || checked.stdout)
+            .split('\n')[0];
+          fail(`Task 11C to 12B composed final syntax: ${diagnostic}`);
+        }
       }
     }
 
@@ -37300,7 +37501,7 @@ git diff --cached -- docs/superpowers/plans/2026-07-13-codex-app-native-task-con
 git status --short --branch
 ```
 
-Expected: the validator prints `ok:true` for the exact 46-card inventory, ordered seven-step semantics, nonempty Files/Interfaces, strict literal path multisets for scoped Step 6/7 commands and exact anchor tokens, the fixed known/nonempty/closed fence inventory and syntax, exact unified-diff hunk counts with no orphan trailing payload, sequential Task 7B→7G concrete substrate through the Task 11B gateway closure, inductive Task 8A→11C final-source/crash-capability closure, Gate 5/7/8/9 approval/evidence semantics, ULIDs, banned prose, wildcard patterns, and whitespace. The ignored plan is then force-added so staged checks and inspection cover the exact reviewed bytes.
+Expected: the validator prints `ok:true` for the exact 46-card inventory, ordered seven-step semantics, nonempty Files/Interfaces, strict literal path multisets for scoped Step 6/7 commands and exact anchor tokens, the fixed known/nonempty/closed fence inventory and syntax, exact unified-diff hunk counts with no orphan trailing payload, executed copied-token ABA protection, sequential Task 7B→7G concrete substrate through the Task 11B gateway closure, exact Task 7F–11C race-callback closure, and mechanically composed Task 11C→12B final syntax. Task 8A–11B late source cards are structural inventory here and become executable evidence only through their ordered card-local tests and Gate 3B preflight. Gate 5/7/8/9 approval/evidence semantics, ULIDs, banned prose, wildcard patterns, and whitespace are also checked. The ignored plan is then force-added so staged checks and inspection cover the exact reviewed bytes.
 
 ## Execution Handoff
 
