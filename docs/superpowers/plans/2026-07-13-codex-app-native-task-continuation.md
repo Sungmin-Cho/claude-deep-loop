@@ -49,7 +49,7 @@ or response cited by the evidence ledger but absent from `git ls-files` invalida
 | File | Responsibility |
 |---|---|
 | `scripts/lib/host-surface.mjs` | Allowlisted host profiles, canonical immutable-facts/route-binding digests, opaque-ID validation, same-directory identity, project/worktree route selection, and bounded manual route reasons. |
-| `scripts/lib/init-transaction.mjs` | Canonical immutable genesis request projections/digests, no-write preflight/prepare/status, fixed authority lock, pending reservation, hash-first/state-last publication, current CAS. |
+| `scripts/lib/init-transaction.mjs` | Canonical immutable genesis request projections/digests, no-write preflight/prepare/status, append-only init authority chain, pending reservation, hash-first/state-last publication, current CAS. |
 | `scripts/lib/app-task-continuation.mjs` | Consent validation, observe/revoke, App attempt phases, prepare/confirm/fail/sweep/status/await/acquire. |
 | `scripts/lib/bounded-input.mjs` | Existing bounded readers plus exact READY token and raw/no-echo one-line structured reader. |
 | `scripts/lib/initrun.mjs` | Backward-compatible initial builder and the only public wrappers into the shared init transaction. |
@@ -141,7 +141,7 @@ These are the narrow baseline `Modify` anchors required by the execution tasks; 
 | 2A–2B | `scripts/lib/bounded-input.mjs:1-31` (`REVIEW_IMPORT_MAX_BYTES`, `readBoundedText`); `tests/bounded-input.test.mjs:1-35`; `tests/cli-skillface.test.mjs:1-18,192-265` (CLI harness and strict CLI-shape tail). |
 | 3A–3B | Created `scripts/lib/app-task-continuation.mjs` genesis defaults/deadline exports; `scripts/lib/initrun.mjs:13-58` (`buildInitialLoop`, `initRun`); `scripts/lib/schema.mjs:1-216` (`loadSchema`, `validate`); `schemas/loop-run.schema.json:1-29`; `tests/initrun.test.mjs:15-125`; `tests/schema.test.mjs:17-273`. |
 | 4A–4C | Created `scripts/lib/init-transaction.mjs` exports `hostObservationDigest` through `statusInitialization`; created `tests/init-transaction.test.mjs` projection/preflight/status cases. |
-| 5A–5C | Created `scripts/lib/durable-file.mjs` exports `syncRegularFile`, `syncParentDirectory`, `renamePreparedFile`, `unlinkRegularFile`, `createFileDurablyIfAbsent`, and `replaceFileDurably`; produced `scripts/lib/init-transaction.mjs` symbols `withInitLock`, `publishGenesisState`, `commitPreparedInit`; `scripts/lib/initrun.mjs:42-58` (`initRun`); created `tests/durable-file.test.mjs` POSIX/Windows durability and no-replace cases; produced `tests/init-transaction.test.mjs` lock/publisher/contention cases; `scripts/lib/episode.mjs` and `tests/reviewer-failclosed.test.mjs` own the canonical-run-sibling request publication and obsolete-parent race coverage; `tests/initrun.test.mjs:59-125`; `tests/session-profile.test.mjs`; `tests/insights.test.mjs`; `tests/project-root.test.mjs`; created `tests/helpers/init-contention-worker.mjs`. |
+| 5A–5C | Created `scripts/lib/durable-file.mjs` exports `syncRegularFile`, `syncParentDirectory`, `renamePreparedFile`, `unlinkRegularFile`, `createFileDurablyIfAbsent`, and `replaceFileDurably`; produced `scripts/lib/init-transaction.mjs` symbols `withInitLock`, `publishGenesisState`, `commitPreparedInit`; `scripts/lib/initrun.mjs:42-58` (`initRun`); created `tests/durable-file.test.mjs` POSIX/Windows durability and no-replace cases; produced `tests/init-transaction.test.mjs` lock/publisher/contention cases; `scripts/lib/episode.mjs` and `tests/reviewer-failclosed.test.mjs` own the canonical-run-sibling request publication and obsolete-parent race coverage; `tests/initrun.test.mjs:59-125`; `tests/session-profile.test.mjs`; `tests/insights.test.mjs`; `tests/project-root.test.mjs`; created `tests/helpers/init-transaction-crash-worker.mjs` and `tests/helpers/init-contention-worker.mjs`. |
 | 6A–6E | Produced `scripts/lib/app-task-continuation.mjs` consent/observe/revoke/status/redaction exports; `scripts/deep-loop.mjs:40-141,340-365`; `scripts/lib/initrun.mjs:13-58`; `scripts/lib/integrity.mjs:96-187`; `scripts/lib/lease.mjs:13-199`; `scripts/lib/schema.mjs:164-216`; created `tests/app-task-continuation.test.mjs`; `tests/orch-cli.test.mjs:246-286,831-1005`; `tests/cli-skillface.test.mjs:66-99,192-265`; `tests/integrity.test.mjs:123-211`; `tests/lease.test.mjs:27-490`; `tests/schema.test.mjs:17-273`; created `tests/helpers/fixed-init-crash-worker.mjs`. |
 | 7A | `scripts/lib/schema.mjs:164-216`; `scripts/deep-loop.mjs:120-180`; `tests/schema.test.mjs:17-273`; `tests/validate-cli.test.mjs:39-84`. |
 | 7B | produced `scripts/lib/durable-file.mjs`; `scripts/lib/finish.mjs:70-107`; `scripts/lib/integrity.mjs:21-187`; `scripts/lib/lease.mjs:43-103`; `scripts/lib/state.mjs:79-115`; `scripts/lib/workspace.mjs`; `tests/automation.test.mjs`; `tests/breaker.test.mjs`; `tests/budget.test.mjs`; `tests/codex-checker-integration.test.mjs`; `tests/comprehension.test.mjs`; `tests/detect-terminal.test.mjs`; produced `tests/durable-file.test.mjs`; `tests/episode.test.mjs`; `tests/fencing.test.mjs`; `tests/finish.test.mjs`; produced `tests/fixtures/verified-app-run.mjs`; `tests/handoff.test.mjs`; `tests/headless-host.test.mjs`; `tests/insights.test.mjs`; `tests/integrity.test.mjs`; `tests/lease.test.mjs`; `tests/orch-cli.test.mjs`; `tests/pause.test.mjs`; `tests/precompact-hook.test.mjs`; `tests/project-root.test.mjs`; `tests/recover.test.mjs`; `tests/respawn.test.mjs`; `tests/review.test.mjs`; `tests/runtime-executable.test.mjs`; `tests/session-profile.test.mjs`; `tests/spawn-optin.test.mjs`; `tests/state.test.mjs`; `tests/terminal-cli.test.mjs`; `tests/workspace.test.mjs`; created `tests/helpers/anchored-crash-worker.mjs`. |
@@ -4066,11 +4066,12 @@ git commit -m "feat: prepare initialization without writes" -m "Co-Authored-By: 
 ### Task 4C: Stable and Redacted Initialization Status
 
 **Files:**
-- Modify: produced scripts/lib/init-transaction.mjs symbol statusInitialization and fixed-lock status parser.
+- Modify: produced scripts/lib/init-transaction.mjs symbol statusInitialization and append-only lock-chain status parser.
 - Modify: produced tests/init-transaction.test.mjs status/race/lock cases.
 
 **Interfaces:**
-- Consumes: an exact attempt/request/previous binding and one two-pass set containing current, pending, target loop/hash, and the fixed lock.
+- Consumes: an exact attempt/request/previous binding, a two-pass current/pending/target
+  loop/hash/event set, and append-only lock-chain snapshots bracketing that state set.
 - Produces: exactly the fixed InitializationStatusResult, including both match booleans on every outcome and free|busy|stale-manual|invalid lock state. Committed proof wins over a later foreign pending marker.
 
 - [ ] **Step 1: Write complete status, race, and lock tests**
@@ -4280,6 +4281,29 @@ test('status follows released init authorities to the bounded terminal successor
     join(control, '.init-lock-release-' + second.nonce));
   assert.equal(statusInitialization(root, binding, initDeps(root)).lock_state, 'free');
 });
+
+test('status returns raced when a held writer completes between state and lock snapshots', () => {
+  const root = fixtureDir();
+  const control = join(root, '.deep-loop');
+  mkdirSync(control);
+  const binding = { attempt_id: '01JAPPGEN00000000000000000',
+    expected_current_digest: 'NONE', expected_request_digest: 'a'.repeat(64) };
+  const holder = { pid: 42, nonce: 'snapshotwriter01',
+    acquired_at: '2026-07-13T00:00:00.000Z' };
+  let controlReads = 0;
+  const result = statusInitialization(root, binding, initDeps(root, {
+    readdir: path => {
+      if (path === control && ++controlReads === 3) {
+        put(root, '.deep-loop/.init.lock', JSON.stringify(holder));
+        linkSync(join(control, '.init.lock'),
+          join(control, '.init-lock-release-' + holder.nonce));
+      }
+      return readdirSync(path);
+    },
+  }));
+  assert.equal(result.outcome, 'raced');
+  assert.equal(result.lock_state, 'invalid');
+});
 ```
 
 - [ ] **Step 2: Run the status tests to verify RED**
@@ -4321,11 +4345,8 @@ function lockArtifactSnapshot(control, deps) {
     bytes: entry.bytes?.toString('base64') ?? null }))) };
 }
 
-function stableLockState(control, deps) {
-  const first = lockArtifactSnapshot(control, deps);
-  const second = lockArtifactSnapshot(control, deps);
-  if (first.stable !== second.stable) throw new Error('INIT_QUERY_RACED');
-  const entries = second.entries;
+function lockStateFromSnapshot(snapshot, deps) {
+  const entries = snapshot.entries;
   if (entries.some(entry => !entry.regular || entry.bytes === null
       || entry.name !== '.init.lock' && !STATUS_SUCCESSOR.test(entry.name)
         && !STATUS_RELEASE.test(entry.name))) return 'invalid';
@@ -4362,6 +4383,7 @@ function stableLockState(control, deps) {
     }
     const successorName = '.init-lock-successor-' + holder.nonce;
     const successor = byName.get(successorName);
+    if (depth === 63) return 'invalid';
     if (successor === undefined) return consumed.size === entries.length ? 'free' : 'invalid';
     authority = successor;
   }
@@ -4391,14 +4413,17 @@ function controlTempSnapshot(path, deps) {
 
 function stableStatusSet(paths, deps) {
   const beforeControl = controlTempSnapshot(paths.control, deps);
+  const beforeLock = lockArtifactSnapshot(paths.control, deps);
   const authority = stableAuthoritySet(
     [paths.current, paths.pending, paths.loop, paths.hash, paths.events],
     [paths.run], deps);
-  const lockState = stableLockState(paths.control, deps);
+  const afterLock = lockArtifactSnapshot(paths.control, deps);
   const afterControl = controlTempSnapshot(paths.control, deps);
-  if (beforeControl.stable !== afterControl.stable) {
+  if (beforeControl.stable !== afterControl.stable
+      || beforeLock.stable !== afterLock.stable) {
     throw new Error('INIT_QUERY_RACED');
   }
+  const lockState = lockStateFromSnapshot(afterLock, deps);
   return { files: authority.files, directory: authority.directories.get(paths.run),
     controlStaging: afterControl.staging, lockState };
 }
@@ -4517,7 +4542,11 @@ Expected: PASS; status is additive and no production write path changed.
 
 Run: git diff -- scripts/lib/init-transaction.mjs tests/init-transaction.test.mjs && git diff --check
 
-Confirm the status set contains current/pending/target loop/hash/fixed lock in both passes, committed proof precedes pending interpretation, only an exact matching pending marker can make a complete target `state-only` retryable, a pendingless complete target stays `indeterminate`, an exact pending marker cannot mask mismatched complete-target initialization facts, both booleans always exist, and lock inspection never mutates.
+Confirm lock-chain-before/after brackets the current/pending/target loop/hash/event stable set,
+committed proof precedes pending interpretation, only an exact matching pending marker can make a
+complete target `state-only` retryable, a pendingless complete target stays `indeterminate`, an exact
+pending marker cannot mask mismatched complete-target initialization facts, both booleans always
+exist, and lock inspection never mutates.
 
 - [ ] **Step 7: Commit this slice**
 
@@ -4643,6 +4672,32 @@ test('candidate nonce collision preserves the pre-existing candidate', () => {
   assert.deepEqual(readFileSync(candidate), bytes);
 });
 
+test('chain cap permits 64 owners and the 65th failure is write free', () => {
+  const root = fixtureDir();
+  const nonceFor = index => 'owner' + String(index).padStart(11, '0');
+  let entered = 0;
+  for (let index = 1; index <= INIT_LOCK_CHAIN_MAX; index += 1) {
+    withInitLock(root, () => { entered += 1; }, {
+      pid: 7, nonce: () => nonceFor(index),
+      now: () => Date.parse('2026-07-13T00:00:00.000Z'),
+    });
+  }
+  assert.equal(entered, 64);
+  const before = queryTree(root);
+  assert.throws(() => withInitLock(root, () => { entered += 1; }, {
+    pid: 7, nonce: () => nonceFor(65),
+    now: () => Date.parse('2026-07-13T00:00:00.000Z'),
+    writeFile: () => assert.fail('cap failure must not write a candidate'),
+    link: () => assert.fail('cap failure must not publish authority'),
+    unlink: () => assert.fail('cap failure must not sweep or clean'),
+  }), /LOCK_CHAIN_EXHAUSTED/);
+  assert.equal(entered, 64);
+  assert.deepEqual(queryTree(root), before);
+  const binding = { attempt_id: '01JAPPGEN00000000000000000',
+    expected_current_digest: 'NONE', expected_request_digest: 'a'.repeat(64) };
+  assert.equal(statusInitialization(root, binding, initDeps(root)).lock_state, 'invalid');
+});
+
 test('EEXIST fixed-holder matrix preserves live unknown invalid dead and PID-reused authority', () => {
   for (const row of [
     { name: 'live', holder: { pid: 42, nonce: '1234567890abcdef',
@@ -4672,7 +4727,7 @@ test('EEXIST fixed-holder matrix preserves live unknown invalid dead and PID-reu
 
 - [ ] **Step 2: Run the lock tests to verify RED**
 
-Run: node --test --test-name-pattern='fixed init authority|owner-nonce|candidate sweep|hard link|candidate write failure|EEXIST fixed-holder' tests/init-transaction.test.mjs
+Run: node --test --test-name-pattern='fixed init authority|owner-nonce|candidate sweep|hard link|candidate write failure|candidate nonce collision|chain cap|EEXIST fixed-holder' tests/init-transaction.test.mjs
 
 Expected: FAIL because withInitLock and its constants do not exist.
 
@@ -4792,6 +4847,7 @@ function followInitAuthority(control, deps) {
     }
     const successorPath = join(control, '.init-lock-successor-' + authority.holder.nonce);
     const successor = authorityRecord(successorPath, deps, lstat);
+    if (depth === INIT_LOCK_CHAIN_MAX - 1) throw new Error('LOCK_CHAIN_EXHAUSTED');
     if (successor === null) {
       return { state: 'free', publishPath: successorPath,
         predecessorPath: authorityPath, predecessor: authority };
@@ -4815,12 +4871,15 @@ function throwHeldAuthority(terminal, deps) {
 export function withInitLock(root, fn, deps = {}) {
   const control = ensureControlDirectory(root, deps);
   const nowMs = (deps.now ?? Date.now)();
-  sweepInitCandidates(control, deps, nowMs);
   const pid = deps.pid ?? process.pid;
   const nonce = (deps.nonce ?? (() => randomUUID().replace(/-/g, '')))();
   if (!Number.isSafeInteger(pid) || pid < 1 || !/^[A-Za-z0-9_-]{16,128}$/.test(nonce)) {
     throw new Error('LOCK_OWNER_INVALID');
   }
+  const initial = followInitAuthority(control, deps);
+  if (initial.state !== 'free') throwHeldAuthority(initial, deps);
+  // In particular, LOCK_CHAIN_EXHAUSTED is raised above before sweep or candidate publication.
+  sweepInitCandidates(control, deps, nowMs);
   const holder = { pid, nonce, acquired_at: new Date(nowMs).toISOString() };
   const candidate = join(control, '.init-lock-candidate-' + pid + '-' + nonce);
   const releasePath = join(control, '.init-lock-release-' + nonce);
@@ -4897,18 +4956,20 @@ export function withInitLock(root, fn, deps = {}) {
 
 Also add `import { randomUUID } from 'node:crypto';` at the top. `.init.lock`, every strict
 successor, and every same-inode release marker are append-only authority evidence: normal code never
-unlinks or renames them. Only strict candidate paths can be swept. A chain longer than 64 fails
-closed for separately approved manual compaction rather than silently discarding history.
+unlinks or renames them. Only strict candidate paths can be swept. After exactly 64 released owners,
+the 65th acquisition fails before authority publication and leaves the artifact set byte-identical;
+status returns `invalid` for separately approved manual compaction rather than silently discarding
+history.
 
 - [ ] **Step 4: Run the lock tests to verify GREEN**
 
-Run: node --test --test-name-pattern='fixed init authority|owner-nonce|candidate sweep|hard link|candidate write failure|EEXIST fixed-holder' tests/init-transaction.test.mjs
+Run: node --test --test-name-pattern='fixed init authority|owner-nonce|candidate sweep|hard link|candidate write failure|candidate nonce collision|chain cap|EEXIST fixed-holder' tests/init-transaction.test.mjs
 
 Expected: PASS for live/unknown/invalid/dead/PID-reused terminal-holder preservation, candidate
 nonce-collision preservation, two stale
 contenders, atomic successor election after a same-inode release marker, release-time copied-nonce
-ABA preservation without authority-path unlink, exact TTL, lexical cap, chain cap, and unsupported-
-link cleanup.
+ABA preservation without authority-path unlink, exact TTL, lexical cap, 64-owner success plus
+write-free 65th cap failure, and unsupported-link cleanup.
 
 - [ ] **Step 5: Run lock-related regressions**
 
@@ -4937,11 +4998,12 @@ git commit -m "feat: add owner-safe init root lock" -m "Co-Authored-By: Claude O
 **Files:**
 - Create: `scripts/lib/durable-file.mjs` as the single platform-aware durable replace/unlink helper.
 - Create: `tests/durable-file.test.mjs` with real policy tests for POSIX and Windows branches.
+- Create: `tests/helpers/init-transaction-crash-worker.mjs` for private scalar hard-crash windows.
 - Modify: produced `scripts/lib/init-transaction.mjs` with `publishGenesisState` and `commitPreparedInit`.
 - Modify: produced `tests/init-transaction.test.mjs`.
 
 **Interfaces:**
-- Consumes: an exact prepare binding, the raw-free canonical request plus full observation only at commit, Task 4A's deterministic builder, fixed lock, strict current/pending/state/hash readers, Task 0B's bounded Windows rename helper, and injected crash probes.
+- Consumes: an exact prepare binding, the raw-free canonical request plus full observation only at commit, Task 4A's deterministic builder, append-only init authority, strict current/pending/state/hash readers, Task 0B's bounded Windows rename helper, injected filesystem primitives, and the private scalar `NODE_ENV=test` + `DEEP_LOOP_TEST_CRASH_AT` subprocess selector.
 - Produces: one shared platform-aware durability boundary, root-contained strict-name temp/write/rename cleanup, atomic no-replace publication, hash-first/loop-last genesis publication, pending-before-state/current CAS, exact retry outcomes, and no repair of malformed/symlink/foreign artifacts. POSIX durability is file `fsync` + same-directory rename/link + parent-directory `fsync`; Windows durability is file flush + bounded sharing-error rename or atomic hard-link publication + journal/exact-retry recovery, with no directory-fd open or `fsync`.
 
 - [ ] **Step 1: Write complete pending/publisher tests**
@@ -4951,6 +5013,10 @@ Add `publishGenesisState` and `commitPreparedInit` to the transaction test impor
 retry, and single-file no-replace cases. Directory publication is deliberately not part of this
 helper: Task 7F publishes an episode request as a regular file directly under the canonical run
 directory and tests the obsolete `episodes` path as an attacker-controlled non-parent.
+Add `renameSync` and `rmSync` to the transaction test's `node:fs` import and `spawnSync` from
+`node:child_process`. Function-valued crash injection is forbidden; order uses the concrete rename
+primitive, while hard-crash recovery uses the worker and a visibly test-only model of separately
+approved authority/temp compaction.
 
 ```js
 function commitInput(root, attempt, requestDigest, previous = 'NONE') {
@@ -4958,6 +5024,37 @@ function commitInput(root, attempt, requestDigest, previous = 'NONE') {
       previous_current_digest: previous, expected_request_digest: requestDigest,
       expected_observation_digest: 'NONE' },
     request: initOptions(), observation: null };
+}
+
+const INIT_TRANSACTION_CRASH_WORKER =
+  new URL('./helpers/init-transaction-crash-worker.mjs', import.meta.url);
+
+function runInitTransactionCrash(root, attempt, previous, requestDigest, point) {
+  const crashed = spawnSync(process.execPath, [INIT_TRANSACTION_CRASH_WORKER.pathname,
+    root, attempt, previous, requestDigest, point], {
+    cwd: root, encoding: 'utf8', env: { ...process.env, NODE_ENV: 'test',
+      DEEP_LOOP_TEST_CRASH_AT: point },
+  });
+  assert.equal(crashed.status, 91, `${point}: ${crashed.stderr}`);
+}
+
+function simulateSeparatelyApprovedInitCompaction(root) {
+  // Test harness only: production has no automatic authority/temp deletion path.
+  const control = join(root, '.deep-loop');
+  for (const name of readdirSync(control)) {
+    if (name === '.init.lock'
+        || /^\.init-lock-(?:candidate-(?:0|[1-9][0-9]*)-|successor-|release-)[A-Za-z0-9_-]{16,128}$/.test(name)
+        || name.startsWith('.tmp-')) rmSync(join(control, name), { force: true });
+  }
+  const runs = join(control, 'runs');
+  if (!existsSync(runs)) return;
+  for (const runId of readdirSync(runs)) {
+    const run = join(runs, runId);
+    if (!lstatSync(run).isDirectory()) continue;
+    for (const name of readdirSync(run)) {
+      if (name.startsWith('.tmp-')) rmSync(join(run, name), { force: true });
+    }
+  }
 }
 
 test('commit reserves pending, publishes hash then loop, CASes current, and exact retry is inert', () => {
@@ -4969,11 +5066,16 @@ test('commit reserves pending, publishes hash then loop, CASes current, and exac
   const request = initializationRequestDigest(normalizeInitializationRequest(root, initOptions(), deps));
   const order = [];
   const result = commitPreparedInit(root, commitInput(root, attempt, request), {
-    ...deps, crashProbe: stage => { if (stage.endsWith('-after-rename')) order.push(stage); },
+    ...deps, rename: (source, destination) => {
+      renameSync(source, destination);
+      const name = basename(destination);
+      order.push(name === 'init-pending.json' ? 'pending' : name === 'event-log.jsonl'
+        ? 'events' : name === '.loop.hash' ? 'hash' : name === 'loop.json' ? 'loop'
+          : name === 'current' ? 'current' : name);
+    },
   });
   assert.equal(result.outcome, 'initialized');
-  assert.deepEqual(order, ['pending-after-rename', 'events-after-rename', 'hash-after-rename',
-    'loop-after-rename', 'current-after-rename']);
+  assert.deepEqual(order, ['pending', 'events', 'hash', 'loop', 'current']);
   const before = queryTree(root);
   assert.equal(commitPreparedInit(root, commitInput(root, attempt, request), deps).outcome,
     'already-initialized');
@@ -4998,12 +5100,11 @@ test('crash after state publication recovers the exact pending attempt only', ()
     now: () => Date.parse('2026-07-13T00:00:00.000Z'), probePidIdentity: () => 'alive' });
   const attempt = '01JAPPGEN00000000000000000';
   const request = initializationRequestDigest(normalizeInitializationRequest(root, initOptions(), deps));
-  assert.throws(() => commitPreparedInit(root, commitInput(root, attempt, request), {
-    ...deps, crashProbe: stage => {
-      if (stage === 'current-before-rename') throw new Error('CRASH_CURRENT');
-    },
-  }), /CRASH_CURRENT/);
+  runInitTransactionCrash(root, attempt, 'NONE', request, 'current-before-rename');
   assert.equal(existsSync(join(root, '.deep-loop', 'init-pending.json')), true);
+  assert.throws(() => commitPreparedInit(root, commitInput(root, attempt, request), deps),
+    /LOCK_STALE_MANUAL/);
+  simulateSeparatelyApprovedInitCompaction(root);
   assert.equal(commitPreparedInit(root, commitInput(root, attempt, request), deps).outcome,
     'recovered-pending');
   assert.equal(readFileSync(join(root, '.deep-loop', 'current'), 'utf8'), attempt + '\n');
@@ -5047,9 +5148,11 @@ test('foreign pending, copied-root state, loop-without-hash, and unknown entries
     commitInput(copied, attempt, copiedRequest), copiedDeps), /INIT_STATE_(?:ROOT_INVALID|CORRUPT)/);
 });
 
-test('every injected genesis exception window cleans and retries the exact deterministic binding', () => {
-  for (const stage of ['pending-after-rename', 'events-after-rename', 'hash-after-rename', 'loop-after-rename',
-    'current-after-rename', 'pending-delete-before', 'pending-delete-after']) {
+test('every private scalar genesis crash window fails closed and exact retry recovers after approved compaction', () => {
+  const slots = ['pending', 'events', 'hash', 'loop', 'current'];
+  const stages = slots.flatMap(slot => ['before-write', 'after-write', 'before-rename', 'after-rename']
+    .map(edge => `${slot}-${edge}`)).concat(['pending-delete-before', 'pending-delete-after']);
+  for (const stage of stages) {
     const root = fixtureDir();
     const deps = initDeps(root, { pid: 7, nonce: () => 'writer0000000000',
       tempNonce: () => 'temp000000000000',
@@ -5057,12 +5160,10 @@ test('every injected genesis exception window cleans and retries the exact deter
     const attempt = '01JAPPGEN00000000000000000';
     const request = initializationRequestDigest(normalizeInitializationRequest(root,
       initOptions(), deps));
-    let crashed = false;
-    assert.throws(() => commitPreparedInit(root, commitInput(root, attempt, request), {
-      ...deps, crashProbe: point => {
-        if (!crashed && point === stage) { crashed = true; throw new Error('CRASH_' + stage); }
-      },
-    }), /CRASH_/);
+    runInitTransactionCrash(root, attempt, 'NONE', request, stage);
+    assert.throws(() => commitPreparedInit(root, commitInput(root, attempt, request), deps),
+      /LOCK_STALE_MANUAL/);
+    simulateSeparatelyApprovedInitCompaction(root);
     const result = commitPreparedInit(root, commitInput(root, attempt, request), {
       ...deps, now: () => Date.parse('2040-01-01T00:00:00.000Z') });
     assert.ok(['initialized', 'recovered-pending', 'already-initialized'].includes(result.outcome));
@@ -5192,9 +5293,49 @@ test('durable create-if-absent never replaces a check-to-publish race winner', (
 
 ```
 
+Create `tests/helpers/init-transaction-crash-worker.mjs` with this complete private-scalar worker.
+It accepts only the exact allowlisted genesis points, owns no callback seam, and must either hard
+exit 91 at the selected publisher boundary or exit 70 if the boundary was not reached:
+
+```js
+import { buildInitialLoop, resolveInitialReview } from '../../scripts/lib/initrun.mjs';
+import { commitPreparedInit } from '../../scripts/lib/init-transaction.mjs';
+
+const [root, attempt, previous, requestDigest, point] = process.argv.slice(2);
+const CRASH_POINT = /^(?:(?:pending|events|hash|loop|current)-(?:before-write|after-write|before-rename|after-rename)|pending-delete-(?:before|after))$/;
+if (!CRASH_POINT.test(point || '') || process.env.NODE_ENV !== 'test'
+    || process.env.DEEP_LOOP_TEST_CRASH_AT !== point) process.exit(64);
+const request = { runtime: 'codex', goal: 'g', protocol: 'standalone',
+  recipe: { id: 'r', name: 'r', reason: 'test' }, review: null,
+  detected: {}, git: {}, sessionSpawn: {},
+  consent: { mode: 'manual', authority: 'default-manual', confirmed_at: null, revoked_at: null },
+  observationDigest: 'NONE',
+  enumProfile: { kind: 'codex-cli', source: 'codex-cli-host', capabilities: [] } };
+const deps = {
+  canonicalRoot: () => root,
+  resolveRouting: value => ({ protocol: value.protocol, recipe: value.recipe }),
+  resolveReview: value => resolveInitialReview(value.review, value.detected),
+  normalizePlugins: value => value,
+  normalizeGit: value => ({ git: !!value.head, head: value.head ?? null,
+    branch: value.branch ?? null, dirty: !!value.dirty }),
+  normalizeSessionSpawn: value => value, kernelCwd: () => root,
+  normalizeEnumProfile: value => ({ ...value, capabilities: [...value.capabilities].sort() }),
+  assertRoot: () => ({ ok: true }), buildLoop: buildInitialLoop,
+  pid: process.pid, nonce: () => String(process.pid).padStart(16, '0'),
+  tempNonce: () => 'temp000000000000',
+  now: () => Date.parse('2030-01-01T00:00:00.000Z'),
+  probePidIdentity: () => 'alive',
+};
+const prepared = { ok: true, outcome: 'prepared', attempt_id: attempt,
+  previous_current_digest: previous, expected_request_digest: requestDigest,
+  expected_observation_digest: 'NONE' };
+commitPreparedInit(root, { prepared, request, observation: null }, deps);
+process.exit(70);
+```
+
 - [ ] **Step 2: Run publisher tests to verify RED**
 
-Run: node --test --test-name-pattern='commit reserves|crash after state|foreign pending|genesis exception window|exact pending retry' tests/init-transaction.test.mjs
+Run: node --test --test-name-pattern='commit reserves|crash after state|foreign pending|private scalar genesis crash window|exact pending retry' tests/init-transaction.test.mjs
 
 Expected: FAIL because publisher/commit exports do not exist and state has no genesis-only writer.
 
@@ -5674,9 +5815,12 @@ The completedPendingMarker branch is the only foreign-marker cleanup: it require
 
 - [ ] **Step 4: Run publisher tests to verify GREEN**
 
-Run: node --test --test-name-pattern='commit reserves|crash after state|foreign pending|genesis exception window|exact pending retry' tests/init-transaction.test.mjs
+Run: node --test --test-name-pattern='commit reserves|crash after state|foreign pending|private scalar genesis crash window|exact pending retry' tests/init-transaction.test.mjs
 
-Expected: PASS for the full crash table, exact retries, completed-marker cleanup, state-last proof, current CAS, and corruption refusal.
+Expected: PASS for the full private-scalar subprocess crash table, exact retries after test-modeled
+separately approved authority/temp compaction, completed-marker cleanup, state-last proof, current
+CAS, and corruption refusal. No Task 5B test or production surface contains a function-valued
+crash callback.
 
 - [ ] **Step 5: Run state regressions**
 
@@ -5686,14 +5830,14 @@ Expected: PASS; post-genesis state writes retain their anchored per-run contract
 
 - [ ] **Step 6: Review only publisher files**
 
-Run: git diff -- scripts/lib/durable-file.mjs scripts/lib/init-transaction.mjs tests/durable-file.test.mjs tests/init-transaction.test.mjs && git diff --check
+Run: git diff -- scripts/lib/durable-file.mjs scripts/lib/init-transaction.mjs tests/durable-file.test.mjs tests/init-transaction.test.mjs tests/helpers/init-transaction-crash-worker.mjs && git diff --check
 
 Confirm pending precedes state, hash precedes loop, loop is the state marker, current is CASed after state proof, exact pending alone is deleted, symlink/unknown/corrupt artifacts are never repaired, and all writes remain root-contained.
 
 - [ ] **Step 7: Commit the publisher slice**
 
 ```bash
-git add scripts/lib/durable-file.mjs scripts/lib/init-transaction.mjs tests/durable-file.test.mjs tests/init-transaction.test.mjs
+git add scripts/lib/durable-file.mjs scripts/lib/init-transaction.mjs tests/durable-file.test.mjs tests/init-transaction.test.mjs tests/helpers/init-transaction-crash-worker.mjs
 git commit -m "feat: publish genesis state crash safely" -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
 
@@ -6495,7 +6639,7 @@ test('fixed full init response loss retries the same structured observation and 
   assert.equal(JSON.parse(retry.stdout.trim().split('\n').at(-1)).run_id, binding.attempt_id);
 });
 
-test('hard crash inside the fixed lock requires explicit manual lock cleanup', () => {
+test('hard crash inside append-only init authority requires explicit manual compaction', () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-fixed-stale-')));
   execFileSync('git', ['init', '-b', 'main', root]);
   execFileSync('git', ['-C', root, 'config', 'user.email', 'deep-loop@example.invalid']);
@@ -6535,9 +6679,14 @@ test('hard crash inside the fixed lock requires explicit manual lock cleanup', (
     '--expected-preflight-digest', 'NONE'], { cwd: root, encoding: 'utf8' });
   assert.equal(blocked.status, 1);
   assert.match(blocked.stderr, /LOCK_STALE_MANUAL/);
-  const lock = join(root, '.deep-loop', '.init.lock');
-  assert.equal(existsSync(lock), true, 'kernel never reclaims the fixed authority');
-  unlinkSync(lock); // Test harness models separately-approved manual recovery.
+  const control = join(root, '.deep-loop');
+  const authority = readdirSync(control).filter(name => name === '.init.lock'
+    || /^\.init-lock-(?:candidate-(?:0|[1-9][0-9]*)-|successor-|release-)[A-Za-z0-9_-]{16,128}$/.test(name));
+  assert.ok(authority.includes('.init.lock'), 'kernel never reclaims the root authority');
+  for (const name of authority) unlinkSync(join(control, name));
+  // Test harness models separately-approved manual compaction after every process is stopped.
+  assert.equal(readdirSync(control).some(name => name === '.init.lock'
+    || name.startsWith('.init-lock-')), false);
   const recovered = spawnSync(process.execPath, [CLI, 'init-run', ...fixed,
     '--init-attempt', binding.attempt_id,
     '--expected-current-digest', binding.previous_current_digest,
@@ -30891,15 +31040,17 @@ export function prepareAppTask(root, runId, input, deps = {}) {
         child: existing.session, attemptId: existing.attemptId }), route);
       descriptorDigest = contentHash(JSON.stringify({ action,
         prepare_request_digest: prepareRequestDigest }));
-      if (alreadyPrepared) {
-        if (existing.continuation.descriptor_digest !== descriptorDigest
-            || existing.continuation.project_id
-              !== (route.kind === 'create' ? route.projectId : null)) {
-          throw new Error('APP_PREPARE_REQUEST_FENCED');
-        }
-        return { ok: true, outcome: 'already-prepared', do_not_call: true,
-          attempt_id: existing.attemptId };
+    }
+    if (alreadyPrepared) {
+      if (existing.continuation.descriptor_digest !== descriptorDigest
+          || existing.continuation.project_id
+            !== (route.kind === 'create' ? route.projectId : null)) {
+        throw new Error('APP_PREPARE_REQUEST_FENCED');
       }
+      return { ok: true, outcome: 'already-prepared', do_not_call: true,
+        attempt_id: existing.attemptId };
+    }
+    if (route !== null) {
       const gate = gateFor(loop, { now: advisoryNow });
       if (!gate.ok) failureCode = `gate-${gate.blocked_by[0].replaceAll('_', '-')}`;
     }
@@ -31753,14 +31904,15 @@ if (route !== null) {
   );
   action = completed.action;
   descriptorDigest = completed.descriptorDigest;
-  const gate = gateFor(loop, { now: advisoryNow });
-  if (!gate.ok) failureCode = `gate-${gate.blocked_by[0].replaceAll('_', '-')}`;
 }
 ```
 
 The embedded plan validator mechanically locates this exact Task 11C provisional preimage once,
 applies this Task 12B replacement, stitches in the exact descriptor conversion/action validator,
-and runs `node --check` over the composed final implementation. This is late-afterimage composition
+requires the one `alreadyPrepared` digest/project comparison and no-op return to precede `gateFor`,
+then runs `node --check` over the composed final implementation. Thus an exact prepared replay may
+rebuild/validate its pure action envelope but cannot sample gate, reconcile, append, or emit an
+external action. This is late-afterimage composition
 evidence for the 11C→12B boundary; earlier Task 8A–11B source surfaces remain structural inventory
 until their ordered implementation slices execute the card-local tests and Gate 3B full preflight.
 
@@ -35840,14 +35992,23 @@ for (const task of taskMatches) {
       'renameAtomicWithRetry(', "=== 'win32'", "(deps.open ?? durableOpenSync)(path, 'r+')",
       'GENERIC_WRITE', 'never replaces a check-to-publish race winner',
       'tests/durable-file.test.mjs', 'validateExisting = () => {}',
-      'DURABLE_EXISTING_INVALID']) {
+      'DURABLE_EXISTING_INVALID', 'tests/helpers/init-transaction-crash-worker.mjs',
+      'every private scalar genesis crash window',
+      'simulateSeparatelyApprovedInitCompaction(',
+      "process.env.DEEP_LOOP_TEST_CRASH_AT !== point",
+      "assert.equal(crashed.status, 91", 'process.exit(70)']) {
       if (!card.includes(token)) fail(`Task 5B missing platform durability token ${token}`);
+    }
+    if (/\bcrashProbe\b/u.test(card)) {
+      fail('Task 5B retains a function-valued crash contract');
     }
   }
   if (task[1] === '5A') {
     for (const token of ['INIT_LOCK_CHAIN_MAX = 64', 'function followInitAuthority(',
       "'.init-lock-release-' + nonce", "'.init-lock-successor-' + authority.holder.nonce",
       'link(candidate, releasePath)', 'LOCK_CHAIN_EXHAUSTED',
+      'depth === INIT_LOCK_CHAIN_MAX - 1',
+      'chain cap permits 64 owners and the 65th failure is write free',
       'never pathname-deletes a release-time copied-nonce ABA replacement',
       'append-only authority evidence']) {
       if (!card.includes(token)) fail(`Task 5A missing append-only lock-chain token ${token}`);
@@ -35855,6 +36016,20 @@ for (const task of taskMatches) {
     for (const forbidden of ['unlink(fixed)', 'unlink(terminal.publishPath)',
       'unlink(published.authorityPath)']) {
       if (card.includes(forbidden)) fail(`Task 5A deletes authority pathname: ${forbidden}`);
+    }
+    const capCheck = card.indexOf('const initial = followInitAuthority(control, deps);');
+    const candidateSweep = card.indexOf('sweepInitCandidates(control, deps, nowMs);', capCheck);
+    if (!(capCheck >= 0 && candidateSweep > capCheck)) {
+      fail('Task 5A does not reject chain exhaustion before candidate sweep/publication');
+    }
+  }
+  if (task[1] === '4C') {
+    for (const token of ['function lockStateFromSnapshot(',
+      'const beforeLock = lockArtifactSnapshot(',
+      'const afterLock = lockArtifactSnapshot(',
+      'beforeLock.stable !== afterLock.stable',
+      'status returns raced when a held writer completes between state and lock snapshots']) {
+      if (!card.includes(token)) fail(`Task 4C missing cross-snapshot lock token ${token}`);
     }
   }
   if (task[1] === '7A') {
@@ -36382,19 +36557,30 @@ assert.deepEqual(readdirSync(join(root, '.deep-loop'))
 const sequenceRoot = join(${JSON.stringify(root)}, 'sequence');
 mkdirSync(sequenceRoot);
 const entered = [];
-for (const ownerNonce of ['chainowner000001', 'chainowner000002']) {
+const nonceFor = index => 'owner' + String(index).padStart(11, '0');
+for (let index = 1; index <= INIT_LOCK_CHAIN_MAX; index += 1) {
+  const ownerNonce = nonceFor(index);
   withInitLock(sequenceRoot, () => entered.push(ownerNonce), {
     pid: 7, nonce: () => ownerNonce, platform: 'linux', realpath: value => value,
     now: () => Date.parse('2026-07-13T00:00:00.000Z'),
   });
 }
-assert.deepEqual(entered, ['chainowner000001', 'chainowner000002']);
-assert.deepEqual(readdirSync(join(sequenceRoot, '.deep-loop')).sort(), [
-  '.init-lock-release-chainowner000001',
-  '.init-lock-release-chainowner000002',
-  '.init-lock-successor-chainowner000001',
-  '.init.lock',
-]);
+assert.equal(entered.length, INIT_LOCK_CHAIN_MAX);
+const beforeCapFailure = readdirSync(join(sequenceRoot, '.deep-loop')).sort();
+assert.throws(() => withInitLock(sequenceRoot, () => entered.push('unexpected'), {
+  pid: 7, nonce: () => nonceFor(INIT_LOCK_CHAIN_MAX + 1),
+  platform: 'linux', realpath: value => value,
+  now: () => Date.parse('2026-07-13T00:00:00.000Z'),
+  writeFile: () => assert.fail('cap failure wrote candidate'),
+  link: () => assert.fail('cap failure published authority'),
+  unlink: () => assert.fail('cap failure swept or cleaned'),
+}), /LOCK_CHAIN_EXHAUSTED/);
+assert.equal(entered.length, INIT_LOCK_CHAIN_MAX);
+assert.deepEqual(readdirSync(join(sequenceRoot, '.deep-loop')).sort(), beforeCapFailure);
+assert.equal(beforeCapFailure.includes(
+  '.init-lock-successor-' + nonceFor(INIT_LOCK_CHAIN_MAX)), false);
+assert.equal(beforeCapFailure.includes(
+  '.init-lock-release-' + nonceFor(INIT_LOCK_CHAIN_MAX + 1)), false);
 
 const collisionRoot = join(${JSON.stringify(root)}, 'collision');
 mkdirSync(join(collisionRoot, '.deep-loop'), { recursive: true });
@@ -36483,6 +36669,29 @@ assert.deepEqual(readdirSync(root), ['episode-request-001-deep-work.md']);
       const diagnostic = String(probed.error?.message || probed.stderr || probed.stdout)
         .split('\n').slice(0, 20).join(' | ');
       fail(`Task 5B installed no-replace file publication behavior: ${diagnostic}`);
+    }
+    const scalarPath = join(sequentialSourceDir, '.plan-private-scalar-crash-probe.mjs');
+    writeFileSync(scalarPath, `
+import { renamePreparedFile } from './scripts/lib/durable-file.mjs';
+const regular = { isFile: () => true, isSymbolicLink: () => false };
+renamePreparedFile('/virtual/source', '/virtual/destination', {
+  renamedPoint: 'loop-after-rename',
+}, {
+  platform: 'linux', lstat: () => regular, open: () => 1,
+  fsync: () => {}, close: () => {}, rename: () => {},
+  monotonicNowFn: () => 0, sleepFn: () => {},
+});
+process.exit(70);
+`);
+    const scalar = spawnSync(process.execPath, [scalarPath], {
+      cwd: sequentialSourceDir, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024,
+      env: { ...process.env, NODE_ENV: 'test',
+        DEEP_LOOP_TEST_CRASH_AT: 'loop-after-rename' },
+    });
+    if (scalar.error || scalar.status !== 91) {
+      const diagnostic = String(scalar.error?.message || scalar.stderr || scalar.stdout
+        || `status=${scalar.status}`).split('\n').slice(0, 20).join(' | ');
+      fail(`Task 5B installed private scalar crash behavior: ${diagnostic}`);
     }
   }
   const digestFence = fenceRecords.find(record => record.language === 'js'
@@ -37721,7 +37930,7 @@ test('installed breaker afterimage executes stable IDs and current lease policy'
         && body.includes('appTaskDescriptorInput({')
         && body.includes('action = completed.action;'));
       const oldStartToken = '    if (route !== null) {\n      if (typeof deps.descriptorBuilder';
-      const oldEndToken = '\n    if (!reconciled && failureCode === null) {';
+      const oldEndToken = '\n    if (alreadyPrepared) {';
       const start = implementation?.indexOf(oldStartToken) ?? -1;
       const end = implementation?.indexOf(oldEndToken, start) ?? -1;
       if (implementation == null || descriptor == null || actionValidator == null
@@ -37737,6 +37946,14 @@ test('installed breaker afterimage executes stable IDs and current lease policy'
             || !composed.includes('action = completed.action;')
             || !composed.includes('descriptorDigest = completed.descriptorDigest;')) {
           fail('Task 12B composed prepare retains the provisional descriptor path');
+        }
+        const replayStart = composed.indexOf('  if (alreadyPrepared) {',
+          composed.indexOf('descriptorDigest = completed.descriptorDigest;'));
+        const replayReturn = composed.indexOf("outcome: 'already-prepared'", replayStart);
+        const replayEnd = composed.indexOf('  const gate = gateFor(', replayReturn);
+        if (!(replayStart >= 0 && replayReturn > replayStart && replayEnd > replayReturn)
+            || composed.indexOf("outcome: 'already-prepared'", replayReturn + 1) >= 0) {
+          fail('Task 12B composition loses the exact prepared response-loss no-op before gate');
         }
         const checked = run(process.execPath, ['--input-type=module', '--check'],
           `${descriptor}\n\n${actionValidator}\n\n${composed}\n`);
@@ -37779,7 +37996,7 @@ test('installed breaker afterimage executes stable IDs and current lease policy'
   rmSync(sequentialSourceDir, { recursive: true, force: true });
 }
 const PLAN_EXPECTED_COUNTS = Object.freeze({
-  bash: 64, diff: 91, js: 185, json: 4, markdown: 12, text: 11, yaml: 1,
+  bash: 64, diff: 91, js: 186, json: 4, markdown: 12, text: 11, yaml: 1,
 });
 const orderedCounts = value => Object.fromEntries(Object.entries(value)
   .sort(([left], [right]) => left.localeCompare(right)));
@@ -37840,7 +38057,7 @@ git diff --cached -- docs/superpowers/plans/2026-07-13-codex-app-native-task-con
 git status --short --branch
 ```
 
-Expected: the validator prints `ok:true` for the exact 46-card inventory, ordered seven-step semantics, nonempty Files/Interfaces, strict literal path multisets for scoped Step 6/7 commands and exact anchor tokens, the fixed known/nonempty/closed fence inventory and syntax, exact unified-diff hunk counts with no orphan trailing payload, executed release-time copied-token ABA preservation with zero authority unlink, sequential lock-chain acquisition and candidate-collision preservation, sequential Task 7B→7G concrete substrate through the Task 11B gateway closure, exact Task 5B–11C race-callback closure, and mechanically composed Task 11C→12B final syntax. Task 8A–11B late source cards are structural inventory here and become executable evidence only through their ordered card-local tests and Gate 3B preflight. Gate 5/7/8/9 approval/evidence semantics, ULIDs, banned prose, wildcard patterns, and whitespace are also checked. The ignored plan is then force-added so staged checks and inspection cover the exact reviewed bytes.
+Expected: the validator prints `ok:true` for the exact 46-card inventory, ordered seven-step semantics, nonempty Files/Interfaces, strict literal path multisets for scoped Step 6/7 commands and exact anchor tokens, the fixed known/nonempty/closed fence inventory and syntax, exact unified-diff hunk counts with no orphan trailing payload, executed release-time copied-token ABA preservation with zero authority unlink, 64 successful lock owners plus a primitive-write-free 65th cap failure, candidate-collision preservation, bracketed lock/state status inventory, installed Task 5B private-scalar hard exit and no-replace publication, sequential Task 7B→7G concrete substrate through the Task 11B gateway closure, exact Task 5B–11C race-callback closure, and mechanically composed Task 11C→12B final syntax with its prepared no-op before gate. Task 8A–11B late source cards are structural inventory here and become executable evidence only through their ordered card-local tests and Gate 3B preflight. Gate 5/7/8/9 approval/evidence semantics, ULIDs, banned prose, wildcard patterns, and whitespace are also checked. The ignored plan is then force-added so staged checks and inspection cover the exact reviewed bytes.
 
 ## Execution Handoff
 
