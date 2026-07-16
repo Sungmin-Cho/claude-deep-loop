@@ -48,6 +48,10 @@ one exact Gate 6 response path recorded in the receipt. No directory wildcard or
 allowed. The final payload comparison excludes those same four exact paths from both trees; because
 the report/response paths do not exist in `runtime_candidate_sha`, the recomputed before digest must
 remain byte-identical to the initial two-path-exclusion digest.
+This is the only finite receipt-only exception to re-review: Gate 6 must prove the reviewed evidence
+and bundle blobs survive as byte-identical prefixes, only one sanitized receipt suffix is appended,
+the two new receipt paths were absent from the reviewed target, and both exact cumulative path and
+payload-digest checks pass. Otherwise the changed-target rule requires a fresh review.
 
 ---
 
@@ -416,6 +420,16 @@ const snapshotDurableRun = (root, runId) => snapshotTree(join(root, '.deep-loop'
 Every `### Task` heading below is the actual independently reviewable implementation unit; work-package prose or a table is never a substitute for a card. Each card has exactly seven checkbox steps in the required order. Step 1 shows complete executable test additions, including imports and fixtures or exact imports from an existing helper. Step 3 shows the complete minimal code/diff for every symbol owned by that card. Markdown, JSON, and YAML changes show exact replacement blocks. Anchor examples, prose inventories, undefined fixture names, and references such as “same as another task” do not satisfy either step. Steps 2, 4, and 5 name an exact command and expected result; Step 6 audits only the card's files; Step 7 stages only those files and creates one focused commit.
 
 ---
+
+## Sole Implementation Authority Region
+
+The exact raw bytes from this heading through the byte immediately before
+`### Gate 6 Whole-Branch Review and Receipt Procedure` are the sole operational authority for every
+Task 1A–17C implementation destination, command, code fence, test, audit, and commit. Prose outside
+this region is context, receipt, or release procedure only and cannot override, weaken, relocate, or
+supplement a task card. Any implementation directive placed before or after this region is
+non-operative even if it names a task, file, command, or destination. The embedded validator binds
+this entire region by exact SHA-256 in addition to its narrower per-card semantic diagnostics.
 
 ## Gate 3A — Host Surface, Schema, Genesis Transaction, Consent, Revoke
 
@@ -35595,10 +35609,14 @@ git commit -m "release: prepare deep-loop 1.9.0" -m "Co-Authored-By: Claude Opus
 ### Gate 6 Whole-Branch Review and Receipt Procedure
 
 This procedure is the intended 17C final-smoke/review-bundle/receipt checkpoint expressed honestly,
-not a fake code task. After the Task 17A/17B commits are clean, the pre-review delta may contain only
-the two named evidence documents. The post-Respond receipt delta may contain exactly four named
-paths: those two documents plus the exact Gate 6 report and response paths. Any fifth path, wildcard
-substitution, or path outside that staged set invalidates the final smoke and review.
+not a fake code task. Each intermediate receipt commit may change only the exact subset named by its
+step; subset does not mean all four paths must already exist. The cumulative pre-review delta contains
+exactly the two named evidence documents. The cumulative post-Respond delta contains exactly four
+named paths: those two documents plus the exact Gate 6 report and response paths. Any fifth path,
+wildcard substitution, mutation of a reviewed prefix, or path outside that staged set invalidates the
+final smoke and review. The post-review four-file commit is a finite receipt-only projection of the
+reviewed target, not a second candidate: it is exempt from recursive self-review only when Step 7's
+exact path, byte-prefix, absence, and payload-digest proofs all pass.
 
 1. Run `npm run preflight`, `git diff --check`, `git status --short --branch`, and the three-version
    Node command from Task 17B against the exact clean commit. Name its 40-character SHA the
@@ -35620,6 +35638,8 @@ substitution, or path outside that staged set invalidates the final smoke and re
    environment using the approved Gate 5 rollback. Scan, force-add only the evidence document,
    inspect the staged diff, run `git diff --cached --check`, and commit the final-smoke receipt. A
    failed/mismatched smoke returns to the owning slice and requires a new candidate and approval.
+   This commit's exact stage-allowed subset is the evidence document alone; its cumulative
+   `runtime_candidate_sha..HEAD` name-only delta must equal that one path.
 4. Create `docs/handoff/2026-07-13-codex-app-native-task-continuation-review-bundle.md` from every
    official Gate 1–5 and final-candidate-smoke report/loop summary. For each source record target/range,
    candidate SHA, session UUID, reviewer agent/model, effort, verdict, Red/Yellow/Info counts,
@@ -35629,30 +35649,48 @@ substitution, or path outside that staged set invalidates the final smoke and re
    `git diff runtime_candidate_sha..HEAD --name-only` to contain only the two exact evidence paths and
    require `installable_payload_sha256_after` to remain equal. Force-add only those two documents,
    inspect, run `git diff --cached --check`, and commit `docs: assemble App continuation review bundle`.
-5. Record that resulting review-target SHA, then launch a fresh
+   This commit's exact stage-allowed subset is the evidence document plus review bundle; the
+   cumulative name-only delta must equal those two paths, while the commit-local delta may contain
+   only that exact subset.
+5. Record that resulting SHA as `gate6_review_target_sha`. Record the Git blob SHA and byte length of
+   the evidence document and review bundle at that target as `gate6_evidence_prefix_blob`,
+   `gate6_evidence_prefix_bytes`, `gate6_bundle_prefix_blob`, and `gate6_bundle_prefix_bytes`. Prove
+   the future Gate 6 report and response paths are absent from that target. Then launch a fresh
    `/deep-review-loop --codex --no-agy --max=5 --contract` from a native Opus/xhigh session, with
    both Codex reviewer calls pinned to `gpt-5.6-sol` and `model_reasoning_effort=high`, over the complete branch from
    `c38a96137f8f4f0099c35e893860930e8ee4cf73` through that exact target. Pass only on actual
    Opus/xhigh plus `gpt-5.6-sol`/high three-reviewer evidence, `APPROVE`, Red 0, Yellow 0, and `converged`; a changed target requires a
-   fresh review. Any non-evidence path change also requires a fresh final-candidate smoke approval and
-   complete smoke before review.
+   fresh review. Any change to a recorded pre-review blob or any non-evidence path change also
+   requires a fresh final-candidate smoke approval and complete smoke before review.
 6. Independently replay `npm run preflight`, `git diff --check`, the focused App lifecycle matrix,
    version parity, the pre-review two-path set from `runtime_candidate_sha`, and equal
    installable-payload digest. Disposition every Info item against current code, tests, and design.
    Preserve the exact review session UUID, model/effort evidence, termination, report/summary paths,
-   and source hashes. Do not call the review converged until Respond creates the exact response file.
+   and source hashes. The review's `APPROVE` applies to `gate6_review_target_sha`; Gate 6 is not
+   complete until Respond creates the exact response file and Step 7 proves the only later bytes are
+   the review's own finite receipt-only projection.
 7. Name the one exact Gate 6 report path and one exact Gate 6 response path in the receipt;
    reject a missing file, duplicate, path outside the two `.deep-review` receipt directories, or any
-   other report/response candidate. Append the sanitized Gate 6 report/summary, metadata, hashes,
-   Info dispositions, and verification results to the two evidence documents. Force-add exactly all
-   four named paths, scan them again for secrets/raw IDs, inspect, run `git diff --cached --check`, and
-   commit `docs: record 1.9.0 release review` with the required trailer. Recompute the before digest
-   from `runtime_candidate_sha` and the after digest from this receipt head while excluding the same
-   four exact paths from each tree. The two newly named receipt paths are absent from the candidate,
-   so the recomputed before digest must equal the initial Step 1 digest. Recheck that every commit
-   after `runtime_candidate_sha` changes exactly the final four-path receipt set and that
-   `installable_payload_sha256_before == installable_payload_sha256_after`. This exact relation is
-   mandatory for the Gate 7 head; otherwise Gate 6 is invalid.
+   other report/response candidate. Re-prove both paths were absent from
+   `gate6_review_target_sha`. Append the sanitized Gate 6 report/summary, metadata, hashes, Info
+   dispositions, and verification results to the two evidence documents. Before staging, read each
+   recorded target blob as raw bytes and require the final corresponding file to begin with that
+   byte-identical prefix of exactly the recorded length; all later bytes must be the one sanitized
+   Gate 6 receipt append. A replacement, deletion, insertion into the prefix, truncation, or second
+   append invalidates the review. Force-add exactly all four named paths, scan them again for
+   secrets/raw IDs, inspect, run `git diff --cached --check`, and commit
+   `docs: record 1.9.0 release review` with the required trailer. Require this commit-local name-only
+   delta to equal the exact four paths. Recompute the before digest from `runtime_candidate_sha` and
+   the after digest from this receipt head while excluding the same four exact paths from each tree.
+   The two newly named receipt paths are absent from the candidate, so the recomputed before digest
+   must equal the initial Step 1 digest. Require the cumulative
+   `git diff runtime_candidate_sha..HEAD --name-only` to equal exactly the final four-path receipt set;
+   every earlier receipt commit must have satisfied only its own exact stage-allowed subset. Require
+   `git diff gate6_review_target_sha..HEAD --name-only` to equal those same four paths, both recorded
+   prefixes to remain byte-identical, and
+   `installable_payload_sha256_before == installable_payload_sha256_after`. These checks define the
+   sole non-recursive receipt-only exception to the changed-target rule and are mandatory for the
+   Gate 7 head; otherwise Gate 6 is invalid and a fresh review is required.
 
 ---
 
@@ -35662,7 +35700,8 @@ substitution, or path outside that staged set invalidates the final smoke and re
 
 - [ ] Present exact branch, commit list, diff stat, clean status, preflight result, Gate receipts,
   `GATE6_FINAL_SMOKE_BINDING_V1`, the exact final four-path receipt delta from
-  `runtime_candidate_sha`, equal
+  `runtime_candidate_sha`, `gate6_review_target_sha`, both reviewed prefix blob/length bindings,
+  their final byte-prefix checks, the sole non-recursive receipt-only exception proof, equal
   installable-payload digests, and target remote; request **branch push approval**.
 - [ ] After explicit approval, push only `codex/codex-app-native-task-continuation`; verify remote SHA.
 - [ ] Present pushed SHA/title/body/base and request **separate PR creation approval**.
@@ -35976,6 +36015,39 @@ const sectionBetween = (startHeading, endHeading) => {
   if (end < 0) { fail(`missing section boundary: ${endHeading}`); return ''; }
   return outsideFences.slice(start, end);
 };
+const implementationAuthorityMatch = /^## Sole Implementation Authority Region$/mu.exec(source);
+const gate6HeadingMatch = /^### Gate 6 Whole-Branch Review and Receipt Procedure$/mu.exec(source);
+const gates7HeadingMatch = /^## Gates 7–9 /mu.exec(source);
+const gate6RawEnd = gates7HeadingMatch == null ? -1
+  : source.lastIndexOf('\n---\n', gates7HeadingMatch.index);
+if (implementationAuthorityMatch == null || gate6HeadingMatch == null
+    || gates7HeadingMatch == null || gate6RawEnd <= gate6HeadingMatch.index
+    || gate6HeadingMatch.index <= implementationAuthorityMatch.index) {
+  fail('implementation authority or Gate 6 exact section boundary missing');
+}
+const implementationAuthorityRaw = implementationAuthorityMatch == null
+  || gate6HeadingMatch == null ? ''
+  : source.slice(implementationAuthorityMatch.index, gate6HeadingMatch.index);
+const gate6Raw = gate6HeadingMatch == null || gate6RawEnd < 0 ? ''
+  : source.slice(gate6HeadingMatch.index, gate6RawEnd);
+const expectedImplementationAuthorityHash =
+  '327e96eaec6acc8ebfa591e532249fd62710e8fe621419a7e9e368d9430de391';
+const expectedGate6SectionHash =
+  'b787ca9bbd982a61bbe46b39831dbbbb3b09bfbbc361cbddac9b31ed1e09ca6c';
+if (createHash('sha256').update(implementationAuthorityRaw).digest('hex')
+    !== expectedImplementationAuthorityHash) {
+  fail('sole implementation authority region differs from its exact reviewed binding');
+}
+if (createHash('sha256').update(gate6Raw).digest('hex') !== expectedGate6SectionHash) {
+  fail('Gate 6 complete procedure differs from its exact reviewed binding');
+}
+const gate6Steps = [...gate6Raw.matchAll(/^([1-7])\. /gmu)].map(match => match[1]);
+if (gate6Steps.join('') !== '1234567') {
+  fail(`Gate 6 ordered steps: ${gate6Steps.join(',')}`);
+}
+if (gate6Raw.includes('every commit after `runtime_candidate_sha` changes exactly')) {
+  fail('Gate 6 conflates per-commit subsets with the cumulative final receipt set');
+}
 const gate6 = sectionBetween('### Gate 6 Whole-Branch Review and Receipt Procedure',
   '\n---\n\n## Gates 7–9');
 requireTokens('Gate 6', gate6, [
@@ -35988,6 +36060,10 @@ requireTokens('Gate 6', gate6, [
   'pre-review two-path set from `runtime_candidate_sha`',
   'exactly the final four-path receipt set',
   'one exact Gate 6 report path and one exact Gate 6 response path',
+  'exact stage-allowed subset', 'cumulative post-Respond delta contains exactly four',
+  'gate6_review_target_sha', 'gate6_evidence_prefix_blob', 'gate6_bundle_prefix_blob',
+  'byte-identical prefix of exactly the recorded length',
+  'sole non-recursive receipt-only exception',
 ]);
 const gate7 = sectionBetween('### Gate 7 Procedure:', '### Gate 8 Procedure:');
 requireTokens('Gate 7', gate7, [
@@ -36001,6 +36077,7 @@ requireTokens('Gate 7', gate7, [
   'Evidence from different runs or attempts may never be mixed',
   'discard all superseded-attempt job evidence',
   'Rerun every invalidated Gate 5 smoke/check, including the final-candidate smoke',
+  'gate6_review_target_sha', 'sole non-recursive receipt-only exception proof',
 ]);
 const gate8 = sectionBetween('### Gate 8 Procedure:', '### Gate 9 Procedure:');
 requireTokens('Gate 8', gate8, [

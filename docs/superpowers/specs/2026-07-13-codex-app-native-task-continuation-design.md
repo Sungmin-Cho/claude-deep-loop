@@ -2,7 +2,7 @@
 
 작성일: 2026-07-13
 운영 계약: `docs/handoff/2026-07-13-codex-app-native-task-continuation-goal-handoff.md`
-상태: Gate 1 fresh cycle 7 round 5 Respond 완료; max_reached 미수렴, fresh cycle 8 round 1 필요
+상태: Gate 1 fresh cycle 8 round 1 Respond 완료; CONCERN 미수렴, fresh cycle 8 round 2 필요
 기준: `main@c38a96137f8f4f0099c35e893860930e8ee4cf73`, deep-loop `1.8.2`
 
 > source of truth: 이 문서 + 운영 계약 + 현재 저장소 + `git log`. 이전 대화 컨텍스트를 가정하지 말라.
@@ -1451,6 +1451,20 @@ post-Respond exact four-path set(evidence, bundle, exact Gate 6 report, exact Ga
 분리하며 final payload digest는 동일한 네 exact path만 양쪽 tree에서 제외한다. 이 Respond는 approval
 receipt가 아니며 fresh cycle 8 round 1이 변경된 bytes를 같은 Opus/xhigh + 두
 `gpt-5.6-sol`/high 패널로 다시 검증해야 한다.
+
+Gate 1 fresh cycle 8 round 1도 `CONCERN`이었다. Standard/adversarial Codex는 Gate 6 Step 3의
+one-path commit과 Step 4의 two-path commit이 있는데 Step 7이 “every commit”에 exact four-path를
+요구하는 실행 불가능한 모순을 함께 확인했다. Adversarial과 Opus는 Gate 6 validator가 token presence만
+검사해 상충 fifth-path authority를 삽입해도 통과할 수 있음을 각각 Yellow/Info로 확인했다. Solo
+finding으로 Task 6A card 밖 higher-scope override와 review 뒤 evidence/bundle 변경에 대한 prefix 보존
+증명 부재도 제시됐다. Main agent는 두 prose mutation 모두 complete validator에서 `ok:true`임을 실행
+재현하고 네 root를 모두 수용했다. Respond는 Task 1A–17C 전체를 sole implementation authority region으로
+선언하고 그 raw section 전체를 exact SHA-256으로 결합한다. Gate 6 complete section도 exact SHA-256과
+ordered seven-step semantics로 결합하며, 각 중간 commit의 exact subset과 cumulative final four-path set을
+분리한다. Review-target evidence/bundle의 blob hash와 length를 기록하고 final file의 byte-identical prefix,
+한 번의 sanitized suffix, 새 report/response의 target-absence, payload digest를 함께 증명할 때만 유한한
+non-recursive receipt-only exception을 인정한다. 이 Respond는 approval receipt가 아니며 fresh cycle 8
+round 2가 변경된 bytes를 다시 검증해야 한다.
 
 구현 순서:
 

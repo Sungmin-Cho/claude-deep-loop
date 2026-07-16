@@ -32,7 +32,7 @@ Main-agent judgment: the fetched remote base, version, test count, and user-owne
 
 ## Gate 1 — research and design
 
-Status: REVIEW OPEN — fresh cycle 7 round 5 Respond complete; cycle 7 max_reached, fresh cycle 8 round 1 pending
+Status: REVIEW OPEN — fresh cycle 8 round 1 Respond complete; CONCERN, round 2 pending
 
 Design target: `docs/superpowers/specs/2026-07-13-codex-app-native-task-continuation-design.md`
 
@@ -2372,6 +2372,45 @@ no inherited approval from the historical receipt.
 - gate state: still open. Cycle 7 terminated `max_reached`; changed bytes require fresh cycle 8
   round 1 using one native Claude Opus/xhigh reviewer plus standard and adversarial Codex reviewers
   both pinned to exact `gpt-5.6-sol`/high; agy remains disabled. This Respond is not a Gate 1 pass.
+
+### Gate 1 fresh cycle 8 round 1 review
+
+- gate/artifact: Gate 1 design plus final 46-task plan, goal handoff, evidence ledger, cycle-7
+  round-5 report/response, and current repository code/tests.
+- base/head: `c38a96137f8f4f0099c35e893860930e8ee4cf73..43b3cc17599411123870434233a0e6f76f45016c`;
+  worktree clean at counted reviewer start.
+- invocation: three independent read-only processes. Claude used the deep-review `code-reviewer`
+  with exact launcher `--model opus --effort xhigh`; standard and adversarial Codex each used
+  exact `gpt-5.6-sol` / `high`, `--ephemeral --ignore-user-config --ignore-rules -s read-only`.
+- reviewer actual: Claude session `15caf310-d263-43f1-be36-991d464a6b46` returned APPROVE with
+  6 Info and actual stream model `claude-opus-4-8`; standard Codex task
+  `019f6aba-b586-77f2-b40e-7e6a421ae10e` returned 2 P1; adversarial Codex task
+  `019f6aba-b583-7f13-8bec-4e386358554f` returned 2 Yellow and 3 Info.
+  `N_planned=N_actual=3`; all processes exited 0 and naturally completed with final messages.
+- verdict: `CONCERN`; synthesized Red/Yellow/Info = `0 / 2 / 4`. Standard/adversarial agreed on
+  Gate 6's per-commit/cumulative contradiction. Adversarial/Opus agreed that Gate 6 validation was
+  token-presence-only, with different severities. Higher-scope Task 6A authority and the final-head
+  receipt-only review exception were actionable solo findings.
+- main-agent judgment: accepted all four roots. The complete reviewed validator returned `ok:true`
+  after inserting a Task 6A override immediately before its card and separately after inserting a
+  Gate 6 fifth-path override. Steps 3/4 conflicted with the every-commit exact-four sentence, and
+  Gate 6 lacked byte-prefix proof for the evidence/bundle files changed after review.
+- report path: `.deep-review/reports/2026-07-16-205726-review.md`, SHA-256
+  `14a4e0bb7775cadc0441d91c929e7d210afe09841680bc2e03fd4ce646c57d5c`.
+- Opus raw/final SHA-256: `96b1835eee7fac39abd9baabce25c4f899c0a5cb6cdf2793a3a7a65a90aef6f6` /
+  `596b7617c47af0cd1f6dddf822aa846fa93e54e2fa179eb32b275617ec26f217`; prompt
+  `5315ed2a5173ebfe55ffd9e7d041e274853ac54d100a299ac0f6dfeecac20b62`; exact launcher record
+  `fc077f5ae8a437dde3d091b49bec334caae425136faa9f9fbfc02cd0ceb88070`.
+- standard raw/final SHA-256: `736032b0f916fa913d87090fb7a05f630667a3ce01ed8ca74ab001df94755dec` /
+  `e3f614d0557d644651c37c9bc5a92bc59df8c453d7eec7d4768f97e10e4ad5a5`; exact argv record
+  `15ac261c07c9bc6689714da737c205b92bc8e6d0dbfc5f5124e43660a0519cb3`.
+- adversarial raw/final SHA-256: `cbfe8240c7c1cc7a69635fc2fb10e00f67e5d7c6c5fbcce859f1a54067a6cb9c` /
+  `3e4e0ffe9dfab1b9064ab0fb2c842d9b9d6faf9f858484095c000ad716af707b`; prompt
+  `e47f4ccb3d89668888f1d39839c7e78dc6aa1437b8f361600926188037dae868`; exact argv record
+  `b6970cd5adca3e4ed25b6ab8890053aaf7c702cd0d49be5f1797a821c0d4fafe`.
+- independent reproduction probe: `.deep-review/tmp/cycle8-round1-reproduction-probe.mjs`, SHA-256
+  `c779a8c9cf16ef1100fa5f3d3c636f268a517af70d3c463a48f1ce9e9b7a222e`; output SHA-256
+  `ea7c505b02ddea9224b69017a3a06c6a8b1609dcfca0050d6ee103fc41f885ba`.
 
 ## Review receipt template
 
