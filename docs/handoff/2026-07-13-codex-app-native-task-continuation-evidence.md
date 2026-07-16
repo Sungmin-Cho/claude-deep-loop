@@ -2076,6 +2076,78 @@ no inherited approval from the historical receipt.
   Opus/xhigh reviewer plus standard and adversarial Codex reviewers both pinned to exact
   `gpt-5.6-sol`/high; agy remains disabled. This Respond is not a Gate 1 pass.
 
+### Gate 1 fresh cycle 7 round 2 review
+
+- gate/artifact: Gate 1 design plus final 46-task plan, goal handoff, evidence ledger, cycle-7
+  round-1 report/response, and current repository code/tests.
+- base/head: `c38a96137f8f4f0099c35e893860930e8ee4cf73..0768538f8a426785b76102c03ae2de43bcc171f0`;
+  worktree clean at counted reviewer start.
+- invocation: three independent read-only processes. Claude used the deep-review `code-reviewer`
+  with exact launcher `--model opus --effort xhigh`; standard and adversarial Codex each used
+  exact `gpt-5.6-sol` / `high`, `--ephemeral --ignore-user-config --ignore-rules -s read-only`.
+- reviewer actual: Claude session `02de6249-ba7a-41e6-881e-9f69ff757e4a` returned 1 Yellow and
+  4 Info with actual stream model `claude-opus-4-8`; standard Codex task
+  `019f6a42-17b5-79a0-a578-90247a809e3c` found no discrete correctness issue; adversarial Codex
+  task `019f6a42-154b-7e80-ac88-d0adf7cc4e2e` returned 2 Yellow and 3 Info.
+  `N_planned=N_actual=3`; all processes exited 0 and naturally completed with final messages.
+- verdict: `CONCERN`; synthesized Red/Yellow/Info = `0 / 1 / 4`. Opus's silent validator
+  no-match and the adversarial Task 6A lexical bypass were deduplicated to the shared executable-
+  coverage root with 2-of-3 agreement. Malformed `targetMaker` remained actionable solo Info.
+- main-agent judgment: accepted the shared Yellow and solo Info after a reviewed-HEAD probe.
+  String-decoy plus dynamic-property Task 6A input passed; the named bookkeeping test was absent;
+  the direct guard test was not selected; and a truthy object target maker persisted then failed
+  exact retry by reference inequality.
+- report path: `.deep-review/reports/2026-07-16-184720-review.md`, SHA-256
+  `e05e645904e0cd99661e3870b1bc093deb8495bb0e7f500ec37a47aefd0fbdd1`.
+- Opus raw/final SHA-256: `6ca3d6614424107140eaff26ff889ca8daf630bfbe20493efc9a03a57143bb21` /
+  `f3ae88bbe99d3d738097f028197d718df83e4afb4bf48a614b86ba8fffc32648`; prompt
+  `a0e23a876174bbd5e75f1d473929d14d053e9b502200c7109107a8c3153149d7`; exact launcher record
+  `ddc201dbb88c21917e013c8c39f5e988101169afccc9b3685cf7522c21776160`.
+- standard raw/final SHA-256: `8dec0b0e64b4dbfaefa044fabce7b416c40b71fa51f4251d043772fded445524` /
+  `104275d0bb81916fd82c317c5115b40e57d83cf16b3ba7754fd0705305991741`; exact argv record
+  `b67a827652585ea18b1eb1d4e32c8330512285b39db932c58c98da8d67a885ed`.
+- adversarial raw/final SHA-256: `55954aa33e6cf3c5d8b9c2d11dc5b0b98f76f2fb0993ba3a0fbd37e8eb701401` /
+  `ce7b5ffa499fdaa9dc473c789ccc2dd51b696e105714ecbc1eefdbe3c34ed90d`; prompt
+  `3e9ffa8b85c960ae3539e5cbd7d47d761b33988f93ab13eede6ee544420d5c0c`; exact argv record
+  `28188bd30c78ec80052471ebd7cad25c3a657354dd092d28420dca9730b54f20`.
+- independent reproduction probe: `.deep-review/tmp/cycle7-round2-reproduction-probe.mjs`, SHA-256
+  `b001d6acf4cc6d0a03ed22163d689d5eff041bada4ea725f30814d3bc98053cc`; output SHA-256
+  `e74be2d1efc4ee7be67b733c6118cc93dce609d76f3a8c9579b6fb8f29b4b3dd`.
+
+### Gate 1 fresh cycle 7 round 2 Respond
+
+- disposition: accepted 1 synthesized Yellow root cause plus 1 actionable solo Info finding,
+  rejected 0, deferred 0; `execution_path=main_fallback` after exact independent execution by the
+  main agent.
+- validator response: Task 6A's complete three-launch executable JS unit is bound to reviewed
+  SHA-256 `61d5367ac737ddb814cf265d44c74d1a0a55fce8aa9f68a76b0846b9d80cf386`,
+  so string/dynamic-property substitution cannot hide behind lexical decoys. The installed alias
+  test executes current/comprehension bookkeeping, the direct input-guard test is selected, and the
+  absent renamed-test alternative is removed.
+- episode response: the final afterimage rejects every non-null malformed or empty `targetMaker`
+  before digest/mutation. A direct truthy-object test requires the bounded diagnostic and
+  byte-identical durable state, and the validator executes it.
+- exact corrected candidate hashes: handoff
+  `ef490f193eec5fe1aa296af8810b56cbfc99639d469f111670f6fa06514b1d96`; design
+  `92637d533a30245496694b73432b71f493fcd3b8c202fc384304141f592bb3b1`; plan
+  `08e1a0f276f6cc7657d645aaf7e038328864ef20058f6102ff046a173a5fd041`.
+- correction commit: `7ce38241a6aa015efa4ffd8cd048961ab87f2b37`.
+- response record: `.deep-review/responses/2026-07-16-185459-response.md`, SHA-256
+  `88f62f530bd812cb77bb001a6e4fa3665728fc2c81847a66c86d2cd58cc43e4b`.
+- Phase 6 log: `.deep-review/tmp/phase6-cycle7-round2.log`, SHA-256
+  `dfe018df9cb4d037fb9a3f37290418be8d8b9ed71e89f80b805055c69c2504fa` (ignored evidence).
+- independent closure probe: `.deep-review/tmp/cycle7-round2-closure-probe.mjs`, SHA-256
+  `c36f9d119edb924604cfff197dd4427149b59cf4f7bddc62ace0f0d431ab5fa6`; output SHA-256
+  `87f859bf8e1cd67762fc355910583b9b8f68e757b6c57cdc5b730b1f5b69147d`.
+- verification: embedded validator passed `ok:true` for 46 tasks and 369 fences
+  (`bash=64`, `diff=91`, `js=186`, `json=4`, `markdown=12`, `text=11`, `yaml=1`); validator-output
+  SHA-256 `73e272aaaf56394144c868da81ed7f423396d1e0173aee176bab47f4d0380e57`;
+  `git diff --check` and `npm run preflight` passed validation and all 1,463 tests with zero
+  failures, cancellations, skips, or todo.
+- gate state: still open. Changed bytes require fresh cycle 7 round 3 using one native Claude
+  Opus/xhigh reviewer plus standard and adversarial Codex reviewers both pinned to exact
+  `gpt-5.6-sol`/high; agy remains disabled. This Respond is not a Gate 1 pass.
+
 ## Review receipt template
 
 Each reviewed gate will add a receipt with all of these fields:
