@@ -32,7 +32,7 @@ Main-agent judgment: the fetched remote base, version, test count, and user-owne
 
 ## Gate 1 — research and design
 
-Status: REVIEW OPEN — fresh cycle 6 round 2 Respond complete; round 3 pending
+Status: REVIEW OPEN — fresh cycle 6 round 3 Respond complete; round 4 pending
 
 Design target: `docs/superpowers/specs/2026-07-13-codex-app-native-task-continuation-design.md`
 
@@ -1804,6 +1804,71 @@ no inherited approval from the historical receipt.
   cached check, and `npm run preflight` passed validation and all 1,463 tests with zero failures,
   cancellations, skips, or todo.
 - gate state: still open. Changed bytes require fresh cycle 6 round 3 with both reviewers pinned to
+  exact `gpt-5.6-sol`/high; this Respond is not a Gate 1 pass.
+
+### Gate 1 fresh cycle 6 round 3 review
+
+- gate/artifact: Gate 1 design plus final 46-task plan, goal handoff, evidence ledger, cycle-6
+  round-2 report/response, and current repository code/tests.
+- base/head: `c38a96137f8f4f0099c35e893860930e8ee4cf73..47671631454f32333a981229d30344194eb99267`;
+  worktree clean at counted reviewer start.
+- invocation: two independent read-only Codex processes, both exact `gpt-5.6-sol` / `high`,
+  `--ephemeral --ignore-user-config --ignore-rules -s read-only`; one built-in whole-branch review
+  and one direct adversarial immutable design/plan audit. An incompatible combined
+  `review --base` plus stdin-prompt attempt exited with usage 2 before thread creation and was
+  excluded from `N_actual`.
+- reviewer actual: standard task `019f69a1-199a-7153-98a1-4c70782945f9` returned no discrete
+  finding; adversarial task `019f69a1-5e14-7c60-a59d-58601482bef6` returned 1 Red, 1 Yellow, and
+  3 Info. `N_planned=N_actual=2`; both counted processes exited 0 and both JSONL streams end in a
+  natural `turn.completed` with a final agent message.
+- verdict: `REQUEST_CHANGES`; synthesized Red/Yellow/Info = `0 / 4 / 2` under the two-reviewer
+  agreement rule.
+- main-agent judgment: accepted both reviewer findings after reproduction and added two independent
+  Yellow findings from executable composition/interleaving probes. The response replaces the stale
+  Task 5B callback contract with a scalar crash worker, makes the 65th init acquisition
+  primitive-write-free, preserves the prepared retry no-op through the Task 12B afterimage, and
+  brackets status state reads with lock-chain snapshots.
+- report path: `.deep-review/reports/2026-07-16-154613-review.md`, SHA-256
+  `ef926be76a8bc466cced7181b3a9df0cddd2c040a7a5b619387972a55fce0f1d`.
+- standard raw/final SHA-256: `09e3322eeed388975e2770c59363d3d6134f7d817a0841a9f33a8c4a2bca6a6b` /
+  `bef210d1ce7d35150ea888615c53aab226b0abc3564533fc6d3b5248e10e6136`.
+- adversarial raw/final SHA-256: `3dc291abca1f3f7b4c5b8fdb447afd6695fb09ee7e9ee8d2f7d943732b4a9f03` /
+  `0dd9a3de59b1353e3540f9fd50886feb2b278d584a31e2c9f027e696e3e0437f`;
+  prompt SHA-256 `82145b6e8492329f4671af8ed785c2c3b26989876e476272509999902e73fe97`.
+
+### Gate 1 fresh cycle 6 round 3 Respond
+
+- disposition: accepted 4 synthesized Yellow findings, rejected 0, deferred 0;
+  `execution_path=main_fallback` after independent reproduction, composition, and interleaving
+  checks by the main agent.
+- crash response: Task 5B uses only the private scalar `DEEP_LOOP_TEST_CRASH_AT` selector and a
+  complete hard-exit child worker across all 22 genesis windows. It has no function-valued
+  `crashProbe`; recovery observes stale-manual and uses only separately approved test compaction
+  before proving exact retry/current/pending/hash behavior.
+- lock/status response: the chain cap is checked before sweep or candidate write/link/unlink. The
+  exact first 64 owners succeed, every injected 65th primitive remains unused, the artifact tree is
+  unchanged, and status exposes the exhausted chain as invalid/manual. Status also brackets the
+  complete stable state set with lock snapshots and returns raced on control or authority drift.
+- prepared response: Task 12B replaces only the provisional descriptor builder. The final
+  descriptor validation is followed by the preserved `alreadyPrepared` comparison and write-free
+  return before gate, reconciliation, append, or App action; exact composition enforces that order.
+- exact corrected candidate hashes: handoff
+  `1523907bf1931793b765ed8a5fac2d678a6ae1aa303cfef6e2c89f2e6f150fd9`; design
+  `a2e1a7c5973b7c6914991fe41cc341cc4637557e2ab517006353ad9713718851`; plan
+  `df1187ec793a198cf3f1feb81610ef200e7831b3e912a665ab235e34809a7102`.
+- correction commit: `3307751cb7697c72d97ede043bffb49a68d5d14a`.
+- response record: `.deep-review/responses/2026-07-16-161445-response.md`, SHA-256
+  `3e3b3cfec93ec2a20b5826eeb418df8b6229d665f577b850da01f3c738b9fe4c`.
+- Phase 6 log: `.deep-review/tmp/phase6-cycle6-round3.log`, SHA-256
+  `9f9e770c42dbbd5a3ef6cef9a9a676a19185ee81c8cdc63b0b4a8ceaff5a3366` (ignored evidence).
+- independent probe: `/tmp/deep-loop-cycle6-round3-independent-probe.mjs`, SHA-256
+  `0e09e57e1aa568e748ff91b0f074aff137e4e3cf47c8b0c5863cca89dd9070b2`; result closed all four
+  synthesized issues.
+- verification: embedded validator passed `ok:true` for 46 tasks and 369 fences
+  (`bash=64`, `diff=91`, `js=186`, `json=4`, `markdown=12`, `text=11`, `yaml=1`);
+  `git diff --check` and `npm run preflight` passed validation and all 1,463 tests with zero
+  failures, cancellations, skips, or todo.
+- gate state: still open. Changed bytes require fresh cycle 6 round 4 with both reviewers pinned to
   exact `gpt-5.6-sol`/high; this Respond is not a Gate 1 pass.
 
 ## Review receipt template
