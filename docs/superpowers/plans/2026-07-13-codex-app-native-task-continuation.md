@@ -16478,6 +16478,12 @@ test7f('episode creation preserves role and artifact path guards before mutation
   }), /EPISODE_INPUT_INVALID: reviewerResolution/);
   assert7f.deepEqual(bytes7f(direct.root, direct.runId), before,
     'checker-only reviewer resolution is rejected before durable mutation');
+  assert7f.throws(() => productionEpisode7f(direct.root, direct.runId, {
+    ...base, role: 'checker', targetMaker: { forged: true },
+    requestId: 'direct-invalid-target-maker',
+  }), /EPISODE_INPUT_INVALID: targetMaker/);
+  assert7f.deepEqual(bytes7f(direct.root, direct.runId), before,
+    'a malformed target maker is rejected before durable mutation');
   assert7f.throws(() => productionBlockedEpisode7f(direct.root, direct.runId, {
     plugin: 'deep-review', kind: 'input-validation', point: 'design',
     task: 'Exercise blocked checker input validation.', workstream: direct.ws,
@@ -18427,6 +18433,10 @@ function createEpisode(root, runId, {
         || typeof reviewerResolution !== 'object' || Array.isArray(reviewerResolution))) {
     throw new Error('EPISODE_INPUT_INVALID: reviewerResolution');
   }
+  if (targetMaker !== undefined && targetMaker !== null
+      && (typeof targetMaker !== 'string' || targetMaker.length === 0)) {
+    throw new Error('EPISODE_INPUT_INVALID: targetMaker');
+  }
   assertEpisodeTask(task);
   if (!kind || typeof kind !== 'string' || !kind.length
       || !point || typeof point !== 'string' || !point.length
@@ -19005,7 +19015,10 @@ test('episode inline request is identical through a symlink-root transaction',
     const result = newAlias7f(alias, runId, { plugin: 'deep-work', role: 'maker',
       kind: 'implementation', point: 'implementation', requestId: 'canonical-alias-1',
       fence: { owner: runId, generation: 1, runtime: 'codex' } });
-    const episode = readAlias7f(canonical, runId).data.episodes[0];
+    const data = readAlias7f(canonical, runId).data;
+    const episode = data.episodes[0];
+    assert.equal(data.current_episode, result.id);
+    assert.equal(data.comprehension.episodes_total, 1);
     assert.equal(episode.request_path, undefined);
     assert.equal(episode.request_markdown, result.requestMarkdown);
     assert.equal(episode.request_markdown_digest, result.requestMarkdownDigest);
@@ -35814,6 +35827,7 @@ node --input-type=module <<'NODE'
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
   rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, posix } from 'node:path';
 
@@ -36214,6 +36228,17 @@ for (const task of taskMatches) {
     for (const token of ['fileURLToPath(', 'const FIXED_INIT_CRASH_WORKER = fileURLToPath(',
       'fixed init crash worker URL is converted to a native filesystem path']) {
       if (!card.includes(token)) fail(`Task 6A missing native worker-path token ${token}`);
+    }
+    const nativeWorkerUnits = [...card.matchAll(/```js\n([\s\S]*?)\n```/gu)]
+      .map(match => match[1])
+      .filter(body => body.startsWith('const FIXED_INIT_CRASH_WORKER = fileURLToPath('));
+    const expectedNativeWorkerUnitHash =
+      '61d5367ac737ddb814cf265d44c74d1a0a55fce8aa9f68a76b0846b9d80cf386';
+    if (nativeWorkerUnits.length !== 1) {
+      fail(`Task 6A native worker executable unit count: ${nativeWorkerUnits.length}`);
+    } else if (createHash('sha256').update(nativeWorkerUnits[0]).digest('hex')
+        !== expectedNativeWorkerUnitHash) {
+      fail('Task 6A native worker executable unit differs from its reviewed exact binding');
     }
     const executableCard = [...card.matchAll(/```js\n([\s\S]*?)\n```/gu)]
       .map(match => match[1]).join('\n')
@@ -37474,6 +37499,7 @@ assert.equal(verifyAppEventCorrelation(mutableProof, [proofBaseline]).ok, true,
         "!['pending', 'blocked'].includes(initialStatus)",
         "initialStatus === 'blocked' && role !== 'checker'",
         'EPISODE_INPUT_INVALID: blockReason', 'EPISODE_INPUT_INVALID: reviewerResolution',
+        'EPISODE_INPUT_INVALID: targetMaker',
         'isAbsolute(item)', "item.split(/[/\\\\]/).includes('..')",
         'EPISODE_ARTIFACT_UNSAFE: ', 'loop.current_episode = id;',
         'loop.comprehension.episodes_total']) {
@@ -37483,7 +37509,8 @@ assert.equal(verifyAppEventCorrelation(mutableProof, [proofBaseline]).ok, true,
         fail('Task 7F same-ID retry omits a stable explicit task');
       }
       for (const token of ['productionBlockedEpisode7f',
-        'direct-maker-reviewer-resolution', 'direct-blocked-reason']) {
+        'direct-maker-reviewer-resolution', 'direct-invalid-target-maker',
+        'direct-blocked-reason']) {
         if (!card.includes(token)) fail(`Task 7F retained episode regression missing ${token}`);
       }
       writeFileSync(path, `${installed.slice(0, start)}${body}\n\n${installed.slice(end)}`);
@@ -37570,7 +37597,7 @@ assert.equal(verifyAppEventCorrelation(mutableProof, [proofBaseline]).ok, true,
         }
       }
       const executed = spawnSync(process.execPath, ['--test',
-        '--test-name-pattern=central gateway|transition reducer|gateway derives|pre-checkpoint legacy|hash-valid proof|workstream creation identities|episode inline request is identical|newEpisode anchors inline request Markdown',
+        '--test-name-pattern=central gateway|transition reducer|gateway derives|pre-checkpoint legacy|hash-valid proof|workstream creation identities|episode creation preserves role and artifact path guards before mutation|episode inline request is identical',
         'tests/proof-transitions.test.mjs', 'tests/episode.test.mjs'], {
         cwd: sequentialSourceDir, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024,
       });
