@@ -2,7 +2,7 @@
 
 작성일: 2026-07-13
 운영 계약: `docs/handoff/2026-07-13-codex-app-native-task-continuation-goal-handoff.md`
-상태: Gate 1 fresh cycle 6 round 5 Respond 완료; cycle 6 max_reached 미수렴, fresh cycle 7 round 1 필요
+상태: Gate 1 fresh cycle 7 round 1 Respond 완료; CONCERN 미수렴, fresh cycle 7 round 2 필요
 기준: `main@c38a96137f8f4f0099c35e893860930e8ee4cf73`, deep-loop `1.8.2`
 
 > source of truth: 이 문서 + 운영 계약 + 현재 저장소 + `git log`. 이전 대화 컨텍스트를 가정하지 말라.
@@ -1398,6 +1398,20 @@ loop bytes와 canonical genesis event-log bytes를 함께 반환하며 complete 
 Episode final afterimage와 direct tests는 role/path guards를 mutation 전에 보존하고 same-ID input은 explicit
 stable task를 사용한다. 이 Respond는 approval receipt가 아니며 다음 review는 fresh cycle 7 round 1에서
 Opus/xhigh 1개와 `gpt-5.6-sol`/high standard/adversarial 2개의 새 계약으로만 시작한다.
+
+Gate 1 fresh cycle 7 round 1은 새 three-reviewer 계약으로 실행됐고 `CONCERN`이었다. Opus는
+APPROVE했지만 standard/adversarial Codex 두 voice가 final `createEpisode` afterimage의 retained
+responsibility 누락을 독립 확인했다. Main agent는 final afterimage가 `current_episode`와 maker
+`episodes_total`, `initialStatus`, blocked-checker-only, block reason, reviewer-resolution guards를 모두
+제거하는 반례를 재현했다. Solo finding도 실행/계약 대조로 확인했다. Task 6A validator는 computed
+`["pathname"]` launch와 comment-spoofed lexical count를 허용했고, public App CLI는
+`APP_PREPARE_REQUEST_FENCED`를 exit 1로 분류했으며, operating handoff는 최신 three-reviewer 지시와
+달리 Codex-only 계약을 유지했다. Respond는 episode final afterimage/test/validator에 모든 retained
+guard와 bookkeeping을 보존하고, Task 6A validator가 comment를 제거한 executable JS의 세 실제 launch
+argument를 exact 검사하며 dot/computed pathname mutation을 모두 거부하게 한다. Task 12B public CLI
+test와 final installed CLI validator는 changed prepare input의 exit 3을 증명하고, handoff의 모든 live
+gate 문구를 Opus/xhigh + standard/adversarial `gpt-5.6-sol`/high 계약으로 통일한다. 이 Respond는
+approval receipt가 아니며 fresh cycle 7 round 2가 새 bytes를 다시 검증해야 한다.
 
 구현 순서:
 

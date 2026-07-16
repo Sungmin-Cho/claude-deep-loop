@@ -16187,7 +16187,8 @@ import { tmpdir as tmp7f } from 'node:os';
 import { dirname as dirname7f, join as join7f } from 'node:path';
 import { initRun as init7f } from '../scripts/lib/initrun.mjs';
 import { newWorkstream as workstream7f } from '../scripts/lib/workspace.mjs';
-import { newEpisode as productionEpisode7f, recordEpisode as record7f }
+import { newBlockedCheckerEpisode as productionBlockedEpisode7f,
+  newEpisode as productionEpisode7f, recordEpisode as record7f }
   from '../scripts/lib/episode.mjs';
 import { dispatchReview as dispatch7f } from './helpers/review-request.mjs';
 import { emitInsights as emitDispatchInsights7f,
@@ -16471,6 +16472,20 @@ test7f('episode creation preserves role and artifact path guards before mutation
   }), /EPISODE_INPUT_INVALID: role/);
   assert7f.deepEqual(bytes7f(direct.root, direct.runId), before,
     'an invalid role is rejected before durable mutation');
+  assert7f.throws(() => productionEpisode7f(direct.root, direct.runId, {
+    ...base, reviewerResolution: { source: 'forged' },
+    requestId: 'direct-maker-reviewer-resolution',
+  }), /EPISODE_INPUT_INVALID: reviewerResolution/);
+  assert7f.deepEqual(bytes7f(direct.root, direct.runId), before,
+    'checker-only reviewer resolution is rejected before durable mutation');
+  assert7f.throws(() => productionBlockedEpisode7f(direct.root, direct.runId, {
+    plugin: 'deep-review', kind: 'input-validation', point: 'design',
+    task: 'Exercise blocked checker input validation.', workstream: direct.ws,
+    targetMaker: '001-deep-work', reason: undefined, fence: direct.fence,
+    requestId: 'direct-blocked-reason',
+  }), /EPISODE_INPUT_INVALID: blockReason/);
+  assert7f.deepEqual(bytes7f(direct.root, direct.runId), before,
+    'a blocked checker without a reason is rejected before durable mutation');
   for (const [requestId, artifact] of [
     ['direct-parent-artifact', '../proof.md'],
     ['direct-absolute-artifact', join7f(direct.root, 'proof.md')],
@@ -18397,6 +18412,21 @@ function createEpisode(root, runId, {
       || !['maker', 'checker'].includes(role)) {
     throw new Error('EPISODE_INPUT_INVALID: role');
   }
+  if (!['pending', 'blocked'].includes(initialStatus)) {
+    throw new Error('EPISODE_INPUT_INVALID: initialStatus');
+  }
+  if (initialStatus === 'blocked' && role !== 'checker') {
+    throw new Error('EPISODE_INPUT_INVALID: only checker episodes may start blocked');
+  }
+  if (initialStatus === 'blocked'
+      && (!blockReason || typeof blockReason !== 'string')) {
+    throw new Error('EPISODE_INPUT_INVALID: blockReason');
+  }
+  if (reviewerResolution !== undefined
+      && (role !== 'checker' || reviewerResolution === null
+        || typeof reviewerResolution !== 'object' || Array.isArray(reviewerResolution))) {
+    throw new Error('EPISODE_INPUT_INVALID: reviewerResolution');
+  }
   assertEpisodeTask(task);
   if (!kind || typeof kind !== 'string' || !kind.length
       || !point || typeof point !== 'string' || !point.length
@@ -18538,6 +18568,11 @@ function createEpisode(root, runId, {
   return episodeAppend(root, runId, mutation, event, loop => {
     const episode = structuredClone(initialEpisode);
     loop.episodes.push(episode);
+    loop.current_episode = id;
+    if (role === 'maker') {
+      loop.comprehension.episodes_total =
+        (loop.comprehension.episodes_total || 0) + 1;
+    }
     if (workstream) loop.workstreams.find(item => item.id === workstream).episodes.push(id);
   }, preCheck, options, buildResponse);
 }
@@ -27433,7 +27468,7 @@ function appFence(values, withAttempt = true) {
     ...(withAttempt ? { attemptId: values.attempt } : {}) };
 }
 
-const APP_EXIT_3 = /^(?:LEASE_FENCED|FENCE_REQUIRED|RUNTIME_FENCED|PROJECT_ROOT_FENCED|HANDOFF_(?:PHASE_FENCED|KEY_MISMATCH)|APP_TASK_FENCED|APP_(?:CONSENT_FENCED|ATTEMPT_FENCED|RECEIPT_FENCED|STDIN_MODE_FENCED|CHILD_OBSERVATION_FENCED|ACQUIRE_PROJECTION_CHANGED|CONFIRMATION_REQUIRED|TRANSPORT_OWNED|EMIT_AUTHORITY_FENCED|EMIT_BINDING_CONFLICT|PREPARE_ROUTE_CHANGED|ROUTE_UNCONFIRMED|ROUTE_AUTHORITY_FENCED|PREPARE_DEADLINE_EXPIRED))(?:[:]|$)/;
+const APP_EXIT_3 = /^(?:LEASE_FENCED|FENCE_REQUIRED|RUNTIME_FENCED|PROJECT_ROOT_FENCED|HANDOFF_(?:PHASE_FENCED|KEY_MISMATCH)|APP_TASK_FENCED|APP_(?:CONSENT_FENCED|ATTEMPT_FENCED|RECEIPT_FENCED|STDIN_MODE_FENCED|CHILD_OBSERVATION_FENCED|ACQUIRE_PROJECTION_CHANGED|CONFIRMATION_REQUIRED|TRANSPORT_OWNED|EMIT_AUTHORITY_FENCED|EMIT_BINDING_CONFLICT|PREPARE_REQUEST_FENCED|PREPARE_ROUTE_CHANGED|ROUTE_UNCONFIRMED|ROUTE_AUTHORITY_FENCED|PREPARE_DEADLINE_EXPIRED))(?:[:]|$)/;
 
 function appCliExit(errorValue) {
   const message = String(errorValue?.message || errorValue);
@@ -32057,8 +32092,9 @@ test('app-task prepare projects snake_case stdin into one public create action',
     '--app-host-input-stdin'];
   const ready = `DEEP_LOOP_STDIN_READY:v1:app-prepare:${fixture.runId}.1:pipe-open-noecho`;
   const projectId = ' p$`\\id ';
-  const result = await runReady11a(fixture, args, { host_task_cwd: fixture.root,
-    projects: [{ projectId, projectKind: 'local', path: fixture.root }] }, ready);
+  const hostInput = { host_task_cwd: fixture.root,
+    projects: [{ projectId, projectKind: 'local', path: fixture.root }] };
+  const result = await runReady11a(fixture, args, hostInput, ready);
   assert.equal(result.code, 0, result.stderr);
   const lines = result.stdout.split('\n').filter(Boolean);
   assert.equal(lines[0], ready);
@@ -32076,6 +32112,11 @@ test('app-task prepare projects snake_case stdin into one public create action',
   assert.deepEqual(response.action.target,
     { type: 'project', projectId, environment: { type: 'local' } });
   assert.equal(typeof response.action.prompt, 'string');
+  const conflict = await runReady11a(fixture, args,
+    { ...hostInput, host_task_cwd: `${fixture.root}/.` }, ready);
+  assert.equal(conflict.code, 3, conflict.stderr);
+  assert.equal(conflict.stdout.split('\n').filter(Boolean)[0], ready);
+  assert.match(conflict.stderr, /APP_PREPARE_REQUEST_FENCED/);
   const loop = readState(fixture.root, fixture.runId).data;
   const child = loop.session_chain.sessions.find(item => item.run_id === fixture.childRunId);
   assert.equal(child.continuation.phase, 'prepared');
@@ -36174,18 +36215,34 @@ for (const task of taskMatches) {
       'fixed init crash worker URL is converted to a native filesystem path']) {
       if (!card.includes(token)) fail(`Task 6A missing native worker-path token ${token}`);
     }
-    const nativeLaunches = card.match(
-      /spawnSync\(process\.execPath, \[FIXED_INIT_CRASH_WORKER,/gu) ?? [];
-    if (nativeLaunches.length !== 3) {
-      fail(`Task 6A native worker launch count: ${nativeLaunches.length}`);
+    const executableCard = [...card.matchAll(/```js\n([\s\S]*?)\n```/gu)]
+      .map(match => match[1]).join('\n')
+      .replace(/\/\*[\s\S]*?\*\//gu, '').replace(/\/\/.*$/gmu, '');
+    const crashLaunchArguments = [...executableCard.matchAll(
+      /const crashed = spawnSync\(process\.execPath,\s*\[([^,\n]+),/gu)]
+      .map(match => match[1].trim());
+    if (crashLaunchArguments.length !== 3
+        || crashLaunchArguments.some(argument => argument !== 'FIXED_INIT_CRASH_WORKER')) {
+      fail(`Task 6A native worker launch arguments: ${JSON.stringify(crashLaunchArguments)}`);
     }
-    if (/\.pathname\b/u.test(card)) {
+    const forbiddenPathname = /(?:\.pathname\b|\[\s*['"]pathname['"]\s*\])/u;
+    if (forbiddenPathname.test(executableCard)) {
       fail('Task 6A passes a file URL pathname instead of a native filesystem path');
     }
-    const pathnameMutation = card.replace('[FIXED_INIT_CRASH_WORKER,',
-      '[FIXED_INIT_CRASH_WORKER_URL.pathname,');
-    if (pathnameMutation === card || !/\.pathname\b/u.test(pathnameMutation)) {
-      fail('Task 6A pathname mutation self-probe does not exercise the forbidden predicate');
+    for (const replacement of [
+      'new URL(\'./helpers/fixed-init-crash-worker.mjs\', import.meta.url).pathname',
+      'new URL(\'./helpers/fixed-init-crash-worker.mjs\', import.meta.url)["pathname"]',
+    ]) {
+      const pathnameMutation = executableCard.replace(
+        '[FIXED_INIT_CRASH_WORKER,', `[${replacement},`);
+      const mutatedArguments = [...pathnameMutation.matchAll(
+        /const crashed = spawnSync\(process\.execPath,\s*\[([^,\n]+),/gu)]
+        .map(match => match[1].trim());
+      if (pathnameMutation === executableCard || !forbiddenPathname.test(pathnameMutation)
+          || mutatedArguments.length !== 3
+          || mutatedArguments.every(argument => argument === 'FIXED_INIT_CRASH_WORKER')) {
+        fail(`Task 6A pathname mutation self-probe does not reject ${replacement}`);
+      }
     }
   }
   if (task[1] === '4C') {
@@ -36514,6 +36571,7 @@ for (const task of taskMatches) {
       'prepare_request_digest: prepareRequestDigest',
       'action = completed.action', 'descriptorDigest = completed.descriptorDigest',
       'app-task prepare projects snake_case stdin into one public create action',
+      'assert.equal(conflict.code, 3, conflict.stderr)', 'APP_PREPARE_REQUEST_FENCED',
       'READY plus one JSON response only', 'tests/orch-cli.test.mjs',
       'mechanically locates this exact Task 11C provisional preimage once']) {
       if (!card.includes(token)) fail(`Task 12B missing unwrapped snapshot token ${token}`);
@@ -36525,6 +36583,12 @@ for (const task of taskMatches) {
     const composedPattern = "'App action|snapshot wrapper composes|builder failure|public create action'";
     if (!stepBodies[1].includes(composedPattern) || !stepBodies[3].includes(composedPattern)) {
       fail('Task 12B RED/GREEN commands do not execute the same composition test');
+    }
+    const task11a = taskMatches.find(match => match[1] === '11A');
+    const next11a = source.indexOf('\n### Task ', task11a.index + 1);
+    const card11a = source.slice(task11a.index, next11a < 0 ? source.length : next11a);
+    if (!card11a.includes('PREPARE_REQUEST_FENCED|PREPARE_ROUTE_CHANGED')) {
+      fail('Task 11A final App CLI does not classify prepare request conflicts as exit 3');
     }
   }
   if (task[1] === '7F') {
@@ -37407,12 +37471,20 @@ assert.equal(verifyAppEventCorrelation(mutableProof, [proofBaseline]).ok, true,
       fail('Task 7F final episode request/create afterimage or anchors missing');
     } else {
       for (const token of ["!['maker', 'checker'].includes(role)", 'EPISODE_INPUT_INVALID: role',
+        "!['pending', 'blocked'].includes(initialStatus)",
+        "initialStatus === 'blocked' && role !== 'checker'",
+        'EPISODE_INPUT_INVALID: blockReason', 'EPISODE_INPUT_INVALID: reviewerResolution',
         'isAbsolute(item)', "item.split(/[/\\\\]/).includes('..')",
-        'EPISODE_ARTIFACT_UNSAFE: ']) {
+        'EPISODE_ARTIFACT_UNSAFE: ', 'loop.current_episode = id;',
+        'loop.comprehension.episodes_total']) {
         if (!body.includes(token)) fail(`Task 7F final episode input guard missing ${token}`);
       }
       if (!card.includes("task: 'Exercise direct episode creation identity.'")) {
         fail('Task 7F same-ID retry omits a stable explicit task');
+      }
+      for (const token of ['productionBlockedEpisode7f',
+        'direct-maker-reviewer-resolution', 'direct-blocked-reason']) {
+        if (!card.includes(token)) fail(`Task 7F retained episode regression missing ${token}`);
       }
       writeFileSync(path, `${installed.slice(0, start)}${body}\n\n${installed.slice(end)}`);
       const checked = spawnSync(process.execPath, ['--check', path], {
@@ -37498,7 +37570,7 @@ assert.equal(verifyAppEventCorrelation(mutableProof, [proofBaseline]).ok, true,
         }
       }
       const executed = spawnSync(process.execPath, ['--test',
-        '--test-name-pattern=central gateway|transition reducer|gateway derives|pre-checkpoint legacy|hash-valid proof|workstream creation identities|episode inline request is identical',
+        '--test-name-pattern=central gateway|transition reducer|gateway derives|pre-checkpoint legacy|hash-valid proof|workstream creation identities|episode inline request is identical|newEpisode anchors inline request Markdown',
         'tests/proof-transitions.test.mjs', 'tests/episode.test.mjs'], {
         cwd: sequentialSourceDir, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024,
       });
@@ -38248,7 +38320,6 @@ test('installed breaker afterimage executes stable IDs and current lease policy'
         }
       }
     }
-
     const walkSources = directory => readdirSync(directory, { withFileTypes: true })
       .flatMap(entry => entry.isDirectory()
         ? walkSources(join(directory, entry.name)) : [join(directory, entry.name)]);
