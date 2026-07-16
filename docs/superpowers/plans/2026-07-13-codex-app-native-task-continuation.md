@@ -41,6 +41,13 @@ For Gate 1/2 planning convergence and every later cited review, the exact saniti
 files are also force-added in the same Respond/receipt commit despite `.gitignore`. The future bundle
 is an index/long-term copy, not a substitute for the contemporaneous report and response. A report
 or response cited by the evidence ledger but absent from `git ls-files` invalidates that gate receipt.
+Gate 6 uses a staged path set without weakening this rule: its pre-review target may differ from
+`runtime_candidate_sha` by exactly the evidence ledger and review bundle, while its post-Respond
+receipt commit must differ by exactly those two documents plus the one exact Gate 6 report path and
+one exact Gate 6 response path recorded in the receipt. No directory wildcard or fifth path is
+allowed. The final payload comparison excludes those same four exact paths from both trees; because
+the report/response paths do not exist in `runtime_candidate_sha`, the recomputed before digest must
+remain byte-identical to the initial two-path-exclusion digest.
 
 ---
 
@@ -35588,8 +35595,10 @@ git commit -m "release: prepare deep-loop 1.9.0" -m "Co-Authored-By: Claude Opus
 ### Gate 6 Whole-Branch Review and Receipt Procedure
 
 This procedure is the intended 17C final-smoke/review-bundle/receipt checkpoint expressed honestly,
-not a fake code task. After the Task 17A/17B commits are clean, later commits may change only the two
-named evidence documents. Any other path invalidates the final smoke and review.
+not a fake code task. After the Task 17A/17B commits are clean, the pre-review delta may contain only
+the two named evidence documents. The post-Respond receipt delta may contain exactly four named
+paths: those two documents plus the exact Gate 6 report and response paths. Any fifth path, wildcard
+substitution, or path outside that staged set invalidates the final smoke and review.
 
 1. Run `npm run preflight`, `git diff --check`, `git status --short --branch`, and the three-version
    Node command from Task 17B against the exact clean commit. Name its 40-character SHA the
@@ -35628,15 +35637,22 @@ named evidence documents. Any other path invalidates the final smoke and review.
    fresh review. Any non-evidence path change also requires a fresh final-candidate smoke approval and
    complete smoke before review.
 6. Independently replay `npm run preflight`, `git diff --check`, the focused App lifecycle matrix,
-   version parity, exact two-path delta from `runtime_candidate_sha`, and equal installable-payload
-   digest. Disposition every Info item against current code, tests, and design. Preserve the exact
-   review session UUID, model/effort evidence, termination, report/summary paths, and source hashes.
-7. Append the sanitized Gate 6 report/summary, metadata, hashes, Info dispositions, and verification
-   results to the two evidence documents only. Force-add those two files, scan again for secrets/raw
-   IDs, inspect, run `git diff --cached --check`, and commit `docs: record 1.9.0 release review` with
-   the required trailer. Recheck that every commit after `runtime_candidate_sha` changes only those
-   two paths and that `installable_payload_sha256_before == installable_payload_sha256_after`. This
-   exact relation is mandatory for the Gate 7 head; otherwise Gate 6 is invalid.
+   version parity, the pre-review two-path set from `runtime_candidate_sha`, and equal
+   installable-payload digest. Disposition every Info item against current code, tests, and design.
+   Preserve the exact review session UUID, model/effort evidence, termination, report/summary paths,
+   and source hashes. Do not call the review converged until Respond creates the exact response file.
+7. Name the one exact Gate 6 report path and one exact Gate 6 response path in the receipt;
+   reject a missing file, duplicate, path outside the two `.deep-review` receipt directories, or any
+   other report/response candidate. Append the sanitized Gate 6 report/summary, metadata, hashes,
+   Info dispositions, and verification results to the two evidence documents. Force-add exactly all
+   four named paths, scan them again for secrets/raw IDs, inspect, run `git diff --cached --check`, and
+   commit `docs: record 1.9.0 release review` with the required trailer. Recompute the before digest
+   from `runtime_candidate_sha` and the after digest from this receipt head while excluding the same
+   four exact paths from each tree. The two newly named receipt paths are absent from the candidate,
+   so the recomputed before digest must equal the initial Step 1 digest. Recheck that every commit
+   after `runtime_candidate_sha` changes exactly the final four-path receipt set and that
+   `installable_payload_sha256_before == installable_payload_sha256_after`. This exact relation is
+   mandatory for the Gate 7 head; otherwise Gate 6 is invalid.
 
 ---
 
@@ -35645,7 +35661,8 @@ named evidence documents. Any other path invalidates the final smoke and review.
 ### Gate 7 Procedure: Deep-Loop Push, PR, CI, and Merge
 
 - [ ] Present exact branch, commit list, diff stat, clean status, preflight result, Gate receipts,
-  `GATE6_FINAL_SMOKE_BINDING_V1`, the exact two-path-only delta from `runtime_candidate_sha`, equal
+  `GATE6_FINAL_SMOKE_BINDING_V1`, the exact final four-path receipt delta from
+  `runtime_candidate_sha`, equal
   installable-payload digests, and target remote; request **branch push approval**.
 - [ ] After explicit approval, push only `codex/codex-app-native-task-continuation`; verify remote SHA.
 - [ ] Present pushed SHA/title/body/base and request **separate PR creation approval**.
@@ -35968,7 +35985,9 @@ requireTokens('Gate 6', gate6, [
   'GATE6_FINAL_SMOKE_BINDING_V1=',
   'installable_payload_sha256_before == installable_payload_sha256_after',
   'git diff runtime_candidate_sha..HEAD --name-only',
-  'named evidence documents. Any other path invalidates',
+  'pre-review two-path set from `runtime_candidate_sha`',
+  'exactly the final four-path receipt set',
+  'one exact Gate 6 report path and one exact Gate 6 response path',
 ]);
 const gate7 = sectionBetween('### Gate 7 Procedure:', '### Gate 8 Procedure:');
 requireTokens('Gate 7', gate7, [
@@ -36225,6 +36244,11 @@ for (const task of taskMatches) {
     }
   }
   if (task[1] === '6A') {
+    const expectedTask6aCardHash =
+      '3774a5263631c78c17a4ec8e5148cbc63951e917012a9b9ca67738bc11161a7b';
+    if (createHash('sha256').update(card).digest('hex') !== expectedTask6aCardHash) {
+      fail('Task 6A complete reviewed card differs from its exact binding');
+    }
     for (const token of ['fileURLToPath(', 'const FIXED_INIT_CRASH_WORKER = fileURLToPath(',
       'fixed init crash worker URL is converted to a native filesystem path']) {
       if (!card.includes(token)) fail(`Task 6A missing native worker-path token ${token}`);

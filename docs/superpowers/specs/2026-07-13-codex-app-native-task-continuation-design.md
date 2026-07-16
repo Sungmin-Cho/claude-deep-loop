@@ -2,7 +2,7 @@
 
 작성일: 2026-07-13
 운영 계약: `docs/handoff/2026-07-13-codex-app-native-task-continuation-goal-handoff.md`
-상태: Gate 1 fresh cycle 7 round 4 Respond 완료; CONCERN 미수렴, fresh cycle 7 round 5 필요
+상태: Gate 1 fresh cycle 7 round 5 Respond 완료; max_reached 미수렴, fresh cycle 8 round 1 필요
 기준: `main@c38a96137f8f4f0099c35e893860930e8ee4cf73`, deep-loop `1.8.2`
 
 > source of truth: 이 문서 + 운영 계약 + 현재 저장소 + `git log`. 이전 대화 컨텍스트를 가정하지 말라.
@@ -1437,6 +1437,20 @@ Codex는 direct guard의 실제 test를 skip하고 같은 이름의 harmless pas
 추출하고 다른 reconciliation destination prose를 금지한다. Direct guard는 unique candidate, exact full-unit
 SHA-256, unique unskipped registration을 먼저 검사한 뒤 실제 TAP run을 수행한다. 이 Respond는 approval
 receipt가 아니며 fresh cycle 7 round 5가 새 bytes를 다시 검증해야 한다.
+
+Gate 1 fresh cycle 7 round 5는 formal reviewer synthesis상 Red 0 / Yellow 0이었지만 세 voice가
+자연 수렴하지 않았고 configured `max=5`에 도달해 cycle 7은 `max_reached`로 종료됐다. Standard
+Codex는 공통 receipt protocol이 모든 cited report/response를 추적하도록 요구하면서 Gate 6이
+`runtime_candidate_sha` 이후 두 evidence 문서만 허용하는 자기모순을 찾았다. Adversarial Codex는
+Task 6A validator가 다른 wording의 상충 destination instruction과 Step 2/4/5 command drift를
+검사하지 않는다고 지적했다. Main agent는 상충 instruction 삽입과 세 command의
+`tests/orch-cli.test.mjs` 제거가 모두 complete validator에서 `ok:true`인 것을 실행 재현하고, 두
+finding을 actionable Info로 수용해 gate를 통과시키지 않았다. Respond는 Task 6A card 전체를 exact
+SHA-256으로 결합하고 기존 semantic check를 유지한다. Gate 6은 pre-review two-path set과
+post-Respond exact four-path set(evidence, bundle, exact Gate 6 report, exact Gate 6 response)을
+분리하며 final payload digest는 동일한 네 exact path만 양쪽 tree에서 제외한다. 이 Respond는 approval
+receipt가 아니며 fresh cycle 8 round 1이 변경된 bytes를 같은 Opus/xhigh + 두
+`gpt-5.6-sol`/high 패널로 다시 검증해야 한다.
 
 구현 순서:
 

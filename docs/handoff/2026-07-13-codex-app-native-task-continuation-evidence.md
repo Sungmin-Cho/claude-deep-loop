@@ -32,7 +32,7 @@ Main-agent judgment: the fetched remote base, version, test count, and user-owne
 
 ## Gate 1 — research and design
 
-Status: REVIEW OPEN — fresh cycle 7 round 4 Respond complete; round 5 pending
+Status: REVIEW OPEN — fresh cycle 7 round 5 Respond complete; cycle 7 max_reached, fresh cycle 8 round 1 pending
 
 Design target: `docs/superpowers/specs/2026-07-13-codex-app-native-task-continuation-design.md`
 
@@ -2294,6 +2294,45 @@ no inherited approval from the historical receipt.
 - gate state: still open. Changed bytes require fresh cycle 7 round 5 using one native Claude
   Opus/xhigh reviewer plus standard and adversarial Codex reviewers both pinned to exact
   `gpt-5.6-sol`/high; agy remains disabled. This Respond is not a Gate 1 pass.
+
+### Gate 1 fresh cycle 7 round 5 review
+
+- gate/artifact: Gate 1 design plus final 46-task plan, goal handoff, evidence ledger, cycle-7
+  round-4 report/response, and current repository code/tests.
+- base/head: `c38a96137f8f4f0099c35e893860930e8ee4cf73..9f4e30b5618f03bc8a32617de0105e37699f9c29`;
+  worktree clean at counted reviewer start.
+- invocation: three independent read-only processes. Claude used the deep-review `code-reviewer`
+  with exact launcher `--model opus --effort xhigh`; standard and adversarial Codex each used
+  exact `gpt-5.6-sol` / `high`, `--ephemeral --ignore-user-config --ignore-rules -s read-only`.
+- reviewer actual: Claude session `75f268e3-a551-449c-a787-305b1ba79fbb` returned APPROVE with
+  6 Info and actual stream model `claude-opus-4-8`; standard Codex task
+  `019f6a9b-7139-7cf1-9a2d-6bc0939c072a` returned 1 P1; adversarial Codex task
+  `019f6a9b-7139-7262-9de0-f114ec6b67b4` returned 1 Yellow and 3 Info.
+  `N_planned=N_actual=3`; all processes exited 0 and naturally completed with final messages.
+- synthesis/gate disposition: formal reviewer synthesis `APPROVE`, Red/Yellow/Info = `0 / 0 / 6`
+  because each new defect was solo 1-of-3. The panel was not naturally converged. Main-agent
+  disposition is `CONCERN — DO NOT ADVANCE`; configured `max=5` ends cycle 7 as `max_reached`.
+- main-agent judgment: accepted both actionable Info findings after executing the complete reviewed
+  validator. Inserting a differently worded conflicting Task 6A destination still returned
+  `ok:true`; removing `tests/orch-cli.test.mjs` from both focused commands and the regression command
+  also returned `ok:true`. The common tracked-report rule and Gate 6 exact two-path-only rule were
+  simultaneously present, making a valid Gate 6 receipt impossible.
+- report path: `.deep-review/reports/2026-07-16-202629-review.md`, SHA-256
+  `7607fc93f6f428727addd8bb1c981573ce5ef682cb9ae133a904b04e24a692c2`.
+- Opus raw/final SHA-256: `272eefe6924d871da9192fd158a06dd1011a2cdd7bd96666761965b4c847fc50` /
+  `589142c758ba267c661c7ed4c68f005848041dfcbbec705cdccb22348ee3ab69`; prompt
+  `171e6110979c2332958d6e8f9a8beee560562505545ea395a761763f99c4989c`; exact launcher record
+  `fc05f15eae64d149ae011925161142fff13e180ef7f90dbdbdedd1706c6c5db0`.
+- standard raw/final SHA-256: `c31cb42222e1689f536ee25cda49fb36e6fa701dc4c064d4335c8d020ffcf67f` /
+  `ab9a000af77e89672997700c206db455d90f95db111dc129809548dd3455a43d`; exact argv record
+  `c7e41571099cc508e39c3cc975e4cc5d853b022cacc2a97809f88496821c1fbb`.
+- adversarial raw/final SHA-256: `3d291430a4720d60a249c38465dbfa50f95004446fe1143a3741daadaf295aef` /
+  `164ca78dd87812bdbb5d586f9c0f7fb18b9f4fe92b05ee6beb0be5ddd0a22ac8`; prompt
+  `78f0a25132de18e3b1c0312eacbc57efd29311ae620d2bf19e372916d2927b91`; exact argv record
+  `1a48cca6c50561f64951ea9fe92c2f490a2450570450329313e316a960565e68`.
+- independent reproduction probe: `.deep-review/tmp/cycle7-round5-reproduction-probe.mjs`, SHA-256
+  `01b01f31f769d167692cfdb776976a68f4998f6bb90202c3efa8de796fe0981a`; output SHA-256
+  `8b9f0fdda235d18f87265d7f03604aba6fc381b4331acbc721b3db3a96d344da`.
 
 ## Review receipt template
 
