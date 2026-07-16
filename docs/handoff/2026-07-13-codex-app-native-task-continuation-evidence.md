@@ -2412,6 +2412,44 @@ no inherited approval from the historical receipt.
   `c779a8c9cf16ef1100fa5f3d3c636f268a517af70d3c463a48f1ce9e9b7a222e`; output SHA-256
   `ea7c505b02ddea9224b69017a3a06c6a8b1609dcfca0050d6ee103fc41f885ba`.
 
+### Gate 1 fresh cycle 8 round 1 Respond
+
+- disposition: accepted 2 synthesized Yellow roots plus 2 actionable solo Info findings, rejected
+  0, deferred 0; `execution_path=main_fallback` after exact independent execution.
+- implementation-authority response: Task 1A–17C's complete 1,930,427-byte raw authority region is
+  the sole operational task source and is bound to SHA-256
+  `327e96eaec6acc8ebfa591e532249fd62710e8fe621419a7e9e368d9430de391`.
+  Outside prose cannot override a card; the Task 6A card-local and semantic guards remain.
+- Gate 6 response: the complete Gate 6 raw section is bound to SHA-256
+  `b787ca9bbd982a61bbe46b39831dbbbb3b09bfbbc361cbddac9b31ed1e09ca6c` plus ordered Steps 1–7.
+  Intermediate commit subsets and cumulative final paths are distinct. Review-target evidence and
+  bundle blob/length values must survive as byte-identical prefixes with one sanitized suffix; the
+  new report/response must be absent at the target. Exact commit/range paths and equal payload digest
+  define the sole finite non-recursive receipt-only exception.
+- status response: design/evidence live status records cycle-8 round-1 Respond and round 2 pending;
+  historical receipts remain unchanged.
+- exact corrected candidate hashes: handoff
+  `ef490f193eec5fe1aa296af8810b56cbfc99639d469f111670f6fa06514b1d96`; design
+  `e640b3e1999a39d87c7b7d89ac57fb89fd4e9edcd8db660a93e7e53825d35a36`; plan
+  `3489b7c5baba0db52b4aeda6239237d6f64e9826cbd145d3761db3e53cfcd4a0`; pre-receipt evidence
+  `a20b00e0435130b64b462b9197bab9e698f4ce54ef1e32dba682f3ccca1952ee`.
+- correction commit: `5577f162b3c0f51b324488c3dcf7be80473cf49a`.
+- response record: `.deep-review/responses/2026-07-16-210840-response.md`, SHA-256
+  `4276d75393aab0a2abdbcd0da8181e1549fd55a8a4882802fd0b015bb8123245`.
+- Phase 6 log: `.deep-review/tmp/phase6-cycle8-round1.log`, SHA-256
+  `b76c390f50424060d2e5ed2479a7a380e2ca09bd05cdf0b12b6887ecce5645b5` (ignored evidence).
+- independent closure probe: `.deep-review/tmp/cycle8-round1-closure-probe.mjs`, SHA-256
+  `a82b972f61c075c3cb0a2a4c7886bfb4d1ec8e9f192dbd0b88af4967677ff577`; output SHA-256
+  `0fe3b1c3867feebe13e86a234cdca893b5a7498b72533ff87aff1b364e42d523`.
+- verification: embedded validator passed `ok:true` for 46 tasks and 369 fences
+  (`bash=64`, `diff=91`, `js=186`, `json=4`, `markdown=12`, `text=11`, `yaml=1`); both reproduced
+  authority overrides now fail the full validator; Gate 6 subset/cumulative/prefix/exception checks
+  pass; `git diff --check` and `npm run preflight` passed validation and all 1,463 tests with zero
+  failures, cancellations, skips, or todo.
+- gate state: still open. Changed bytes require fresh cycle 8 round 2 using one native Claude
+  Opus/xhigh reviewer plus standard and adversarial Codex reviewers both pinned to exact
+  `gpt-5.6-sol`/high; agy remains disabled. This Respond is not a Gate 1 pass.
+
 ## Review receipt template
 
 Each reviewed gate will add a receipt with all of these fields:
