@@ -32,7 +32,7 @@ Main-agent judgment: the fetched remote base, version, test count, and user-owne
 
 ## Gate 1 — research and design
 
-Status: REVIEW OPEN — cycle 6 round 5 Respond complete; cycle 6 `max_reached`, fresh cycle 7 round 1 pending
+Status: REVIEW OPEN — fresh cycle 7 round 1 Respond complete; round 2 pending
 
 Design target: `docs/superpowers/specs/2026-07-13-codex-app-native-task-continuation-design.md`
 
@@ -1994,6 +1994,87 @@ no inherited approval from the historical receipt.
   review the new bytes using one native Claude Opus/xhigh reviewer plus standard and adversarial
   Codex reviewers both pinned to exact `gpt-5.6-sol`/high; agy remains disabled. This Respond is
   not a Gate 1 pass.
+
+### Gate 1 fresh cycle 7 round 1 review
+
+- gate/artifact: Gate 1 design plus final 46-task plan, goal handoff, evidence ledger, cycle-6
+  round-5 report/response, and current repository code/tests.
+- base/head: `c38a96137f8f4f0099c35e893860930e8ee4cf73..3a66689b1d77235e7c040febc4fa47121f5b34b8`;
+  worktree clean at counted reviewer start.
+- invocation: three independent read-only processes. Claude used the deep-review `code-reviewer`
+  with exact launcher `--model opus --effort xhigh`; standard and adversarial Codex each used
+  exact `gpt-5.6-sol` / `high`, `--ephemeral --ignore-user-config --ignore-rules -s read-only`.
+  A first standard CLI syntax attempt combined `review --base` with a stdin prompt and exited 2
+  before a thread started; it is excluded. The corrected built-in review is the counted standard
+  voice.
+- reviewer actual: Claude session `e271008e-adc7-44e6-95bf-b2fbb760ae63` returned APPROVE with
+  actual stream model `claude-opus-4-8`; standard Codex task
+  `019f6a27-1858-78e2-b6d9-1b665f792361` returned 1 P1 and 2 P2; adversarial Codex task
+  `019f6a25-ea45-7dd0-b180-c09a6c0b3c44` returned 3 Yellow and 4 Info.
+  `N_planned=N_actual=3`; all counted processes exited 0 and naturally completed with final
+  messages.
+- verdict: `CONCERN`; synthesized Red/Yellow/Info = `0 / 1 / 5`. The incomplete final episode
+  afterimage had 2-of-3 agreement; three other independently reproduced actionable findings were
+  solo 1-of-3 Info under the three-reviewer synthesis rule.
+- main-agent judgment: accepted the 2-of-3 episode root cause and all three solo signals after an
+  exact reviewed-HEAD probe. The final episode afterimage omitted six retained duties; Task 6A
+  accepted computed pathname plus comment-count spoofing; prepare conflict returned the wrong public
+  exit; and the handoff still carried the old Codex-only live contract.
+- report path: `.deep-review/reports/2026-07-16-181202-review.md`, SHA-256
+  `b53ec34075c846eb8a4551de83c36e9ee0df22d7148f61a4634df45dcf30db59`.
+- Opus raw/final SHA-256: `25ca0fe076c548e44f9361d51e8712101078336b0bd57836fcb28f8e4f392a6d` /
+  `567372404d08b0dd4ab11ee819d5832b2fe14370488a4be51e9d9fb4e88d6156`; prompt
+  `6c5e139307de45264935f4c201489f7c13251e1efdd49a47f266e313828c3579`; exact launcher record
+  `520fb86e16d0207b9ac9631d3106ca3cbac67190061be2fe9be368aa3ab8f1c1`.
+- standard raw/final SHA-256: `1da1ed06c5c5b4869c7e04ffc6ab4661d0da5b83926a558a2e9dc8fb8aced460` /
+  `852ea28f902882953c867a378249ab29db326a3c10057f2543c638f7a4bb8fb2`; exact argv record
+  `b6da47989d6b9e57a0ae0be337d7ba8a1c8d3ab71546d095775b660e0d0518e9`.
+- adversarial raw/final SHA-256: `02ccf59ac63cc2155ff42a8064db93eb669296495628865249e686165674559d` /
+  `e69d4032c450b950d8fcc57d81ebce4eb9a6410e76d4b8510cebb6716a857d32`; prompt
+  `8048f96e10a98a5f6583416faf97d34f9ee13497bf1c7af51609b07c5a57ab9a`; exact argv record
+  `e25beb834a48dd4d1c2932ea0c068749a269dfc7652728e508b6b3abb4cb05d2`.
+- independent reproduction probe: `/tmp/deep-loop-cycle7-round1-reproduction-probe.mjs`, SHA-256
+  `22c21ac566537e30776ec435c403edb1991da273da963c7094c868a94abcdc2a`; result reproduced every
+  accepted manifestation against the immutable reviewed head.
+
+### Gate 1 fresh cycle 7 round 1 Respond
+
+- disposition: accepted 1 synthesized Yellow root cause plus 3 actionable solo Info findings,
+  rejected 0, deferred 0; `execution_path=main_fallback` after exact independent execution by the
+  main agent.
+- episode response: final Task 7F afterimage preserves current episode, maker comprehension,
+  initial-status allowlist, checker-only blocked status, nonempty blocked reason, and checker/object
+  reviewer resolution. Direct no-mutation regressions and the retained bookkeeping test are part of
+  the executable validator.
+- Task 6A response: validator extracts executable JS, strips comments, captures all three real crash
+  launch arguments, requires the exact native worker string, rejects dot/computed pathname access,
+  and executes both mutation forms.
+- CLI response: final `APP_EXIT_3` includes `PREPARE_REQUEST_FENCED`; a public structured-stdin
+  changed-input retry must exit 3, and the validator binds the Task 11A classifier plus Task 12B
+  assertion.
+- handoff response: historical cycle-6 receipts remain Codex-only evidence, while every live gate,
+  checklist, native-goal, and deep-suite instruction now uses one Opus/xhigh plus standard and
+  adversarial exact Codex/high voices with agy disabled.
+- exact corrected candidate hashes: handoff
+  `ef490f193eec5fe1aa296af8810b56cbfc99639d469f111670f6fa06514b1d96`; design
+  `92637d533a30245496694b73432b71f493fcd3b8c202fc384304141f592bb3b1`; plan
+  `0a5eccdbd8dcf42338ed5eaa2397c577e46ab03ac0af704eccf6dd861e3c0c81`.
+- correction commit: `ffec28fca44bac0a53e33a8ea27db6fe11e46122`.
+- response record: `.deep-review/responses/2026-07-16-182540-response.md`, SHA-256
+  `a332f37cfec9ffb9a559afc0d9930dc780607411e5000aa65c2c2829d9b01b8b`.
+- Phase 6 log: `.deep-review/tmp/phase6-cycle7-round1.log`, SHA-256
+  `053943577804479e88a1ad5d3c0bcaa2f256827c9a0c5c49a61571d2a5000bf2` (ignored evidence).
+- independent closure probe: `/tmp/deep-loop-cycle7-round1-independent-probe.mjs`, SHA-256
+  `6a77a479bd4e373574e68a7d1dcd6a0cc67eca8e33163c0da963add58eec9a0e`; result closes the Task 6A
+  bypass, all six episode duties, prepare-conflict exit 3, and the handoff review contract.
+- verification: embedded validator passed `ok:true` for 46 tasks and 369 fences
+  (`bash=64`, `diff=91`, `js=186`, `json=4`, `markdown=12`, `text=11`, `yaml=1`); validator-output
+  SHA-256 `2275ce1cddc5980c190faf84ebf5f915bd961189ddd5890e53bd079e9cde9c5a`;
+  `git diff --check` and `npm run preflight` passed validation and all 1,463 tests with zero
+  failures, cancellations, skips, or todo.
+- gate state: still open. Changed bytes require fresh cycle 7 round 2 using one native Claude
+  Opus/xhigh reviewer plus standard and adversarial Codex reviewers both pinned to exact
+  `gpt-5.6-sol`/high; agy remains disabled. This Respond is not a Gate 1 pass.
 
 ## Review receipt template
 
