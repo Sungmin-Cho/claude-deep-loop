@@ -2222,6 +2222,79 @@ no inherited approval from the historical receipt.
   Opus/xhigh reviewer plus standard and adversarial Codex reviewers both pinned to exact
   `gpt-5.6-sol`/high; agy remains disabled. This Respond is not a Gate 1 pass.
 
+### Gate 1 fresh cycle 7 round 4 review
+
+- gate/artifact: Gate 1 design plus final 46-task plan, goal handoff, evidence ledger, cycle-7
+  round-3 report/response, and current repository code/tests.
+- base/head: `c38a96137f8f4f0099c35e893860930e8ee4cf73..26096f5a49f4a32ac2cc594e513b9f1c44c9628d`;
+  worktree clean at counted reviewer start.
+- invocation: three independent read-only processes. Claude used the deep-review `code-reviewer`
+  with exact launcher `--model opus --effort xhigh`; standard and adversarial Codex each used
+  exact `gpt-5.6-sol` / `high`, `--ephemeral --ignore-user-config --ignore-rules -s read-only`.
+- reviewer actual: Claude session `ae896d6b-555f-4ad8-9fa8-87f4203042d9` returned APPROVE with
+  2 Info and actual stream model `claude-opus-4-8`; standard Codex task
+  `019f6a78-5d85-7672-a482-554eb9778ef6` returned 1 P2; adversarial Codex task
+  `019f6a78-5dce-7e92-acc7-6161666727cc` returned 2 Yellow and 4 Info.
+  `N_planned=N_actual=3`; all processes exited 0 and naturally completed with final messages.
+- verdict: `CONCERN`; synthesized Red/Yellow/Info = `0 / 1 / 5`. The positional Task 6A
+  destination gap had standard/adversarial agreement. The direct-guard skip plus same-name pass
+  spoof was actionable solo Info.
+- main-agent judgment: accepted both roots after executing the complete reviewed validator against
+  exact in-memory counterexamples. Moving the actual Task 6A destination while retaining a heading
+  decoy passed; skipping the real direct test while adding a harmless same-name pass also passed.
+- report path: `.deep-review/reports/2026-07-16-194107-review.md`, SHA-256
+  `8062a11236f6bb4eba3eddf046ca5d347f2eccfaed75e70075ee4676d0117367`.
+- Opus raw/final SHA-256: `940e28e8fe6f1140860b5c5e781f8a1b850f9ab3f5d53a553584fb2da831817e` /
+  `d371831dfa4f9f3d531243289d1ca481270ab44edeec6a3e589df2347da21668`; prompt
+  `c2da7e2e97da9001c55bb7e09f5b507319488217589805844d2779766bdf7f61`; exact launcher record
+  `632ef2093d216738ba0e4161a6e761687ff4dc4bc13aa45da2b4559806756b69`.
+- standard raw/final SHA-256: `c9b44f0cd4b0850853719c08d1ced4c305f370e80a322b36eef6043f32acd5f1` /
+  `be4d850e2af988fd66d28b2615d1e5aff7b91f08a5e27b15bd3af3238a698da5`; exact argv record
+  `1d88b8856cdbbbd49cc83839e15e24c99b9b375875a9055cf444d09764a7c27a`.
+- adversarial raw/final SHA-256: `b4248e9fb5b91ce8d500a61ab88d330f390cb0195db33cad8a6eb543ca86f6f5` /
+  `b7dda63c32be113488485fd0e28e33d03c52369b47b86b8a2f5dd14596774bd3`; prompt
+  `fa9c7b7e3eab35efb58ab34f37f31c2045e5c649667c77ee2060af6e5a8756fb`; exact argv record
+  `dcdc5aed82eee73022fae83742360a40c6b78853c0418b247258c0e940d713be`.
+- independent reproduction probe: `.deep-review/tmp/cycle7-round4-reproduction-probe.mjs`, SHA-256
+  `0619326774f2471ea059cd8cc6ec60ed258a510d98852da4ca573d4a837b045c`; output SHA-256
+  `4296e900d6745cc43243ce34024d6a5d266d76fe0bbd1a659486945edebec1ec`.
+
+### Gate 1 fresh cycle 7 round 4 Respond
+
+- disposition: accepted 1 synthesized Yellow root plus 1 actionable solo Info finding, rejected 0,
+  deferred 0; `execution_path=main_fallback` after exact independent execution.
+- destination response: validator requires exactly one canonical reconciliation destination line
+  immediately followed by the one native-worker JS fence, rejects alternate destination prose, and
+  requires the unique worker unit to byte-equal that captured fence before hashing destination NUL
+  bytes.
+- direct-test response: validator requires one direct candidate, exact full-unit SHA-256
+  `5cfdcedb07627d41d08fb2250450b2d40f5ee9fc81be5b7fceaa4e857bea6149`,
+  one test-name occurrence, one exact unskipped registration, and no matching skip form before the
+  existing exact TAP execution.
+- status response: design/evidence live status records round-4 Respond complete and round 5 pending;
+  historical receipts remain unchanged.
+- exact corrected candidate hashes: handoff
+  `ef490f193eec5fe1aa296af8810b56cbfc99639d469f111670f6fa06514b1d96`; design
+  `6c5d946ceb8fa569c04c311e9d2850d40ad4784f6cf769581f6113bbe27f2650`; plan
+  `30aa8811f4bd8cea7ad28223152d0f42c7a1916d86593b7b9f8936e6c170640a`; pre-receipt evidence
+  `a4d67e0d61f22d425a29bcd1ef35c75bb6f4ee428eea33b5c03f70e9864772cb`.
+- correction commit: `3e1fa2b620d336421120c693edacfb01e677e1a8`.
+- response record: `.deep-review/responses/2026-07-16-200338-response.md`, SHA-256
+  `d672beebab6bac0059a53dd690599862656fef3621652c216014c78ad18101b5`.
+- Phase 6 log: `.deep-review/tmp/phase6-cycle7-round4.log`, SHA-256
+  `75d4fd0ab6c47b26ead7ec7b28db742628c6b50bf2b49df7f320fcfb3197bf82` (ignored evidence).
+- independent closure probe: `.deep-review/tmp/cycle7-round4-closure-probe.mjs`, SHA-256
+  `86617fc6d90415e1bc8893e359de874a6f12b8b45ba6ea50bfe5ae37df144afb`; output SHA-256
+  `8c2718d822c8a65529f0aa0070cddb73d066192c51c9648ce71b64fc2db12db0`.
+- verification: embedded validator passed `ok:true` for 46 tasks and 369 fences
+  (`bash=64`, `diff=91`, `js=186`, `json=4`, `markdown=12`, `text=11`, `yaml=1`); validator-output
+  SHA-256 `73e272aaaf56394144c868da81ed7f423396d1e0173aee176bab47f4d0380e57`;
+  `git diff --check` and `npm run preflight` passed validation and all 1,463 tests with zero
+  failures, cancellations, skips, or todo.
+- gate state: still open. Changed bytes require fresh cycle 7 round 5 using one native Claude
+  Opus/xhigh reviewer plus standard and adversarial Codex reviewers both pinned to exact
+  `gpt-5.6-sol`/high; agy remains disabled. This Respond is not a Gate 1 pass.
+
 ## Review receipt template
 
 Each reviewed gate will add a receipt with all of these fields:
