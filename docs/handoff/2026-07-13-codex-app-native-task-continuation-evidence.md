@@ -6,7 +6,7 @@
 >
 > Implementation worktree: `/Users/sungmin/Dev/claude-plugins/deep-loop/.claude/worktrees/codex-app-native-task-continuation`
 
-This is the durable evidence log for the gated implementation and release of Codex App native task continuation. A quality gate is not passed by green tests alone. The user's latest reviewer instruction on 2026-07-15 supersedes only the operating handoff's Opus/xhigh reviewer selection: each new gate must use Codex-only `gpt-5.6-sol` at `high`, naturally converge, and be followed by an independent main-agent check. Historical Opus receipts remain evidence only for their exact old target bytes.
+This is the durable evidence log for the gated implementation and release of Codex App native task continuation. A quality gate is not passed by green tests alone. Reviews through Gate 1 fresh cycle 6 round 5 used the then-current Codex-only contract: two exact `gpt-5.6-sol`/high reviewers followed by an independent main-agent check. The user's latest instruction on 2026-07-16 applies from the next review round: one native Claude Opus/xhigh reviewer plus standard and adversarial Codex reviewers both pinned to exact `gpt-5.6-sol`/high, with agy disabled. Historical receipts remain evidence only for their exact old target bytes.
 
 ## Gate 0 — bootstrap, isolation, baseline
 
@@ -32,7 +32,7 @@ Main-agent judgment: the fetched remote base, version, test count, and user-owne
 
 ## Gate 1 — research and design
 
-Status: REVIEW OPEN — fresh cycle 6 round 4 Respond complete; round 5 pending
+Status: REVIEW OPEN — cycle 6 round 5 Respond complete; cycle 6 `max_reached`, fresh cycle 7 round 1 pending
 
 Design target: `docs/superpowers/specs/2026-07-13-codex-app-native-task-continuation-design.md`
 
@@ -1930,6 +1930,70 @@ no inherited approval from the historical receipt.
   failures, cancellations, skips, or todo.
 - gate state: still open. Changed bytes require fresh cycle 6 round 5 with both reviewers pinned to
   exact `gpt-5.6-sol`/high; this Respond is not a Gate 1 pass.
+
+### Gate 1 fresh cycle 6 round 5 review
+
+- gate/artifact: Gate 1 design plus final 46-task plan, goal handoff, evidence ledger, cycle-6
+  round-4 report/response, and current repository code/tests.
+- base/head: `c38a96137f8f4f0099c35e893860930e8ee4cf73..8542c8ade6121a0ac8f57006df290558aba3fbed`;
+  worktree clean at counted reviewer start.
+- invocation: two independent read-only Codex processes, both exact `gpt-5.6-sol` / `high`,
+  `--ephemeral --ignore-user-config --ignore-rules -s read-only`; one built-in whole-branch review
+  and one direct adversarial immutable design/plan audit.
+- reviewer actual: standard task `019f69fa-001b-7671-a4cb-75beca0da316` returned 2 P1 and 2 P2;
+  adversarial task `019f69f9-ff84-7a22-b08d-20a31b077c20` returned 1 Yellow and 2 Info.
+  `N_planned=N_actual=2`; both exited 0 and both JSONL streams end in a natural `turn.completed`
+  with a final agent message.
+- verdict: `REQUEST_CHANGES`; synthesized Red/Yellow/Info = `0 / 5 / 2` under the two-reviewer
+  agreement rule. This fifth call terminated cycle 6 as `max_reached`, not as a pass.
+- main-agent judgment: accepted all five solo findings after an exact independent extraction/probe.
+  The Task 6A pathname validator bypass, missing genesis event-log fixtures, removed episode role
+  and artifact-path guards, and changing same-ID retry task all reproduced against the displayed
+  plan contracts.
+- report path: `.deep-review/reports/2026-07-16-173239-review.md`, SHA-256
+  `a1034b99ab94b7a7639ea5a59896c1e5fde03ff74106e6b65ee9532c432ae3b2`.
+- standard raw/final SHA-256: `4c7e27255361902d4660b3a30b2b79d2b83aa7702df6aee5f1c517e7e8eed6ff` /
+  `78a1b14965de904e8e280015b977c532969c3dd7cc4927338ec807355907925c`.
+- adversarial raw/final SHA-256: `7e679050be5d18570eb6730ce47c516d9a367b9eb48783432cbf61cfcc353180` /
+  `20e84c134445dc1d80ccf31aa3f85258d529a2bbcc0f3712cb10bc60941a73be`;
+  prompt SHA-256 `aaa5784bae0a0cfc26a45a5f404b51d1239faf99d39df5d1644a0e314af7f371`.
+
+### Gate 1 fresh cycle 6 round 5 Respond
+
+- disposition: accepted 5 synthesized Yellow findings, rejected 0, deferred 0;
+  `execution_path=main_fallback` after exact independent execution by the main agent.
+- Task 6A response: validator requires three launches with `FIXED_INIT_CRASH_WORKER`, rejects any
+  `.pathname` token, and executes an uppercase URL-pathname self-mutation that must be caught.
+- genesis response: `validGenesis` returns loop and canonical genesis-event bytes; all four complete
+  Task 4B/4C fixtures write `.loop.hash`, `event-log.jsonl`, and `loop.json`, with validator counts
+  and executable strict-integrity coverage.
+- episode response: the final afterimage preserves the exact `maker|checker` allowlist and both
+  absolute/`..` artifact-path guards before mutation. Direct invalid-role, traversal, and absolute
+  path regressions prove no durable mutation.
+- retry response: `repeatedInput` carries the stable explicit task
+  `Exercise direct episode creation identity.`, and the validator/probe require exact same-ID task
+  equality.
+- exact corrected candidate hashes: handoff
+  `1523907bf1931793b765ed8a5fac2d678a6ae1aa303cfef6e2c89f2e6f150fd9`; design
+  `7e6cd45a703843139b9612229689090bb44a6587da8e43a5e28e3256360cc43f`; plan
+  `b31a77ea9572fc230ec17875dec905999c3178fa16ab20b8166ddedc99ac7df9`.
+- correction commit: `c81d3f9d8542f1b182888b6b3b316c9b5eed1295`.
+- response record: `.deep-review/responses/2026-07-16-174946-response.md`, SHA-256
+  `90107fab4813a00135d30dc17cd4f27a1455470f0e9435382a5a32e3e5131d57`.
+- Phase 6 log: `.deep-review/tmp/phase6-cycle6-round5.log`, SHA-256
+  `8ca925c26f42b68c5c284f9b56ee9d4a53fba90c33e843fa2e8dfc4d911d8573` (ignored evidence).
+- independent closure probe: `/tmp/deep-loop-cycle6-round5-independent-probe.mjs`, SHA-256
+  `251b5867b6bcbd41be5ad4f7f75228731f97a986ca63a29579ff03dac7dd6752`; result closes the Task 6A
+  pathname bypass, supplies all genesis event logs, preserves episode role/path guards, and makes
+  the same-ID retry task equal.
+- verification: embedded validator passed `ok:true` for 46 tasks and 369 fences
+  (`bash=64`, `diff=91`, `js=186`, `json=4`, `markdown=12`, `text=11`, `yaml=1`);
+  `git diff --check` and `npm run preflight` passed validation and all 1,463 tests with zero
+  failures, cancellations, skips, or todo.
+- gate state: still open. Cycle 6 ended `max_reached`, not converged. Fresh cycle 7 round 1 must
+  review the new bytes using one native Claude Opus/xhigh reviewer plus standard and adversarial
+  Codex reviewers both pinned to exact `gpt-5.6-sol`/high; agy remains disabled. This Respond is
+  not a Gate 1 pass.
 
 ## Review receipt template
 
