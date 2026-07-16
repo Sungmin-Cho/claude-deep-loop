@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Authority: `docs/handoff/2026-07-13-codex-app-native-task-continuation-goal-handoff.md`, the current unreviewed target `docs/superpowers/specs/2026-07-13-codex-app-native-task-continuation-design.md` (its new Gate 1 SHA-256 is inserted only after a fresh `gpt-5.6-sol`/high approval under the user's 2026-07-15 reviewer override), current repository, and `git log`.
+- Authority: `docs/handoff/2026-07-13-codex-app-native-task-continuation-goal-handoff.md`, the current unreviewed target `docs/superpowers/specs/2026-07-13-codex-app-native-task-continuation-design.md` (its new Gate 1 SHA-256 is inserted only after a fresh Opus/xhigh + `gpt-5.6-sol`/high approval under the user's latest reviewer override), current repository, and `git log`.
 - Work only in `/Users/sungmin/Dev/claude-plugins/deep-loop/.claude/worktrees/codex-app-native-task-continuation` on `codex/codex-app-native-task-continuation`; do not modify the original checkout or its user-owned `.deep-memory/`.
 - Node `>=20`, ESM, zero external dependencies, `schema_version` remains `0.2.0`, and all time-sensitive tests inject a fixed clock.
 - The kernel returns descriptors and mutates state; only skills call `list_projects`, `create_thread`, `fork_thread`, and `send_message_to_thread`.
@@ -22,7 +22,7 @@
 - App task creation is attended respawn-style continuity under per-run consent. Push, PR, merge, publish, delete, marketplace/deep-suite sync, personal plugin installation, App restart, real smoke, and smoke-task cleanup retain their separate approval gates.
 - Every implementation task follows RED → correct RED check → minimal implementation → targeted GREEN → related regression GREEN → diff audit → focused commit.
 - Before every commit run both `git diff --check` and `git diff --check origin/main`; after committing run `git diff --check origin/main..HEAD`. Every commit uses `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
-- After Gates 3A, 3B, 4, 5, and 6, run a fresh `/deep-review-loop --codex-only --max=5 --contract` whose two Codex reviewer calls are pinned to `gpt-5.6-sol` with `model_reasoning_effort=high`. Only Codex-only `APPROVE`, Red 0, Yellow 0, natural convergence passes; the exact model/effort argv or config overrides are receipt evidence, and global Codex configuration is not modified.
+- After Gates 3A, 3B, 4, 5, and 6, run a fresh `/deep-review-loop --codex --no-agy --max=5 --contract` from a native Claude session launched with Opus/xhigh. Each round has one Opus/xhigh voice plus the standard and adversarial Codex voices pinned to `gpt-5.6-sol` with `model_reasoning_effort=high`. Only a non-degraded three-reviewer `APPROVE`, Red 0, Yellow 0, natural convergence passes; the exact Claude launcher and Codex argv/config overrides are receipt evidence, and no global model configuration is modified.
 
 ## Gate Receipt and Artifact Preservation Protocol
 
@@ -30,8 +30,8 @@ Gate 2 and every later review checkpoint use the same durable protocol; a checkp
 
 1. Complete the owning RED/GREEN/regression/diff checks, append the pre-review evidence row, force-add the ignored evidence file, and commit it. The review target is that exact commit/range, excluding only later receipt-only commits.
 2. Record the target commit/range, `git diff --stat`, target artifact SHA-256 values, command/result hashes, and clean/expected-ignored status before launching the reviewer.
-3. Launch a fresh `/deep-review-loop --codex-only --max=5 --contract`; pin every standard and adversarial Codex reviewer call to `gpt-5.6-sol` and `model_reasoning_effort=high`; retain task/thread IDs, exact invocation/config evidence, termination reason, report path, summary path, and SHA-256 of both outputs.
-4. Pass only on actual Codex-only `gpt-5.6-sol`/high evidence, `APPROVE`, Red 0, Yellow 0, and `converged`. Independently replay the checkpoint's decisive tests/probes and disposition every Info item against current code/spec facts.
+3. Launch a fresh native Claude session with `--model opus --effort xhigh`, then run `/deep-review-loop --codex --no-agy --max=5 --contract`; pin every standard and adversarial Codex reviewer call to `gpt-5.6-sol` and `model_reasoning_effort=high`; retain the Claude session/launcher evidence, Codex task/thread IDs, exact invocation/config evidence, termination reason, report path, summary path, and SHA-256 of all outputs.
+4. Pass only on actual Opus/xhigh plus two `gpt-5.6-sol`/high reviewer voices, `APPROVE`, Red 0, Yellow 0, and `converged`. Independently replay the checkpoint's decisive tests/probes and disposition every Info item against current code/spec facts.
 5. Recompute every target artifact hash and verify the reviewed commit/range is unchanged. If code, tests, design, plan, or release docs changed, discard the receipt and review the new target in a fresh session.
 6. Append the complete receipt and Info dispositions to `docs/handoff/2026-07-13-codex-app-native-task-continuation-evidence.md`; force-add it; run `git diff --cached --check`, commit a receipt-only evidence change with the required co-author trailer, then run `git diff --check origin/main..HEAD` so committed whitespace is covered.
 7. Preserve a sanitized copy of the report and loop summary plus their original hashes in `docs/handoff/2026-07-13-codex-app-native-task-continuation-review-bundle.md` during Task 17. Gate 6 appends its own report/summary after review. The bundle must contain no raw host receipt/project/thread ID or secret and becomes the durable wiki source after ignored `.deep-review/` files are removed.
@@ -3575,9 +3575,11 @@ function validGenesis(root, attempt, requestDigest, previousDigest) {
   const prepared = { ok: true, outcome: 'prepared', attempt_id: attempt,
     previous_current_digest: previousDigest, expected_request_digest: requestDigest,
     expected_observation_digest: 'NONE' };
-  return JSON.stringify(buildCanonicalGenesis(root, {
+  const { loop, genesisEvents } = buildCanonicalGenesis(root, {
     prepared, request: options, observation: null,
-  }, initDeps(root)).loop);
+  }, initDeps(root));
+  return { raw: JSON.stringify(loop),
+    events: `${genesisEvents.map(event => JSON.stringify(event)).join('\n')}\n` };
 }
 
 test('preflight and prepare are byte-identical no-write queries with exact reader binding', () => {
@@ -3676,9 +3678,10 @@ test('completed pending is logically absent and a proposed target collision neve
   const completed = '01JAPPGEN00000000000000000';
   const pending = { version: 1, attempt_id: completed, request_digest: request,
     previous_current_digest: 'NONE' };
-  const raw = validGenesis(root, completed, request, 'NONE');
+  const { raw, events } = validGenesis(root, completed, request, 'NONE');
   put(root, '.deep-loop/init-pending.json', JSON.stringify(pending));
   put(root, '.deep-loop/runs/' + completed + '/.loop.hash', contentHash(raw));
+  put(root, '.deep-loop/runs/' + completed + '/event-log.jsonl', events);
   put(root, '.deep-loop/runs/' + completed + '/loop.json', raw);
   put(root, '.deep-loop/current', completed + '\n');
   const before = queryTree(root);
@@ -4085,8 +4088,9 @@ test('status proves committed state before interpreting a later foreign pending'
   const deps = initDeps(root);
   const request = initializationRequestDigest(normalizeInitializationRequest(root, options, deps));
   const attempt = '01JAPPGEN00000000000000000';
-  const raw = validGenesis(root, attempt, request, 'NONE');
+  const { raw, events } = validGenesis(root, attempt, request, 'NONE');
   put(root, '.deep-loop/runs/' + attempt + '/.loop.hash', contentHash(raw));
+  put(root, '.deep-loop/runs/' + attempt + '/event-log.jsonl', events);
   put(root, '.deep-loop/runs/' + attempt + '/loop.json', raw);
   put(root, '.deep-loop/current', attempt + '\n');
   put(root, '.deep-loop/init-pending.json', JSON.stringify({ version: 1,
@@ -4155,8 +4159,9 @@ test('exact pending never masks mismatched complete target initialization', () =
   put(root, '.deep-loop/init-pending.json', JSON.stringify({ version: 1,
     attempt_id: attempt, request_digest: binding.expected_request_digest,
     previous_current_digest: binding.expected_current_digest }));
-  const raw = validGenesis(root, attempt, 'b'.repeat(64), 'NONE');
+  const { raw, events } = validGenesis(root, attempt, 'b'.repeat(64), 'NONE');
   put(root, '.deep-loop/runs/' + attempt + '/.loop.hash', contentHash(raw));
+  put(root, '.deep-loop/runs/' + attempt + '/event-log.jsonl', events);
   put(root, '.deep-loop/runs/' + attempt + '/loop.json', raw);
   const result = statusInitialization(root, binding, initDeps(root));
   assert.equal(result.outcome, 'conflict');
@@ -4170,8 +4175,9 @@ test('status distinguishes exact-pending state-only, clean absent, and pendingle
   const binding = { attempt_id: attempt, expected_current_digest: 'NONE',
     expected_request_digest: request };
   const stateRoot = fixtureDir();
-  const raw = validGenesis(stateRoot, attempt, request, 'NONE');
+  const { raw, events } = validGenesis(stateRoot, attempt, request, 'NONE');
   put(stateRoot, '.deep-loop/runs/' + attempt + '/.loop.hash', contentHash(raw));
+  put(stateRoot, '.deep-loop/runs/' + attempt + '/event-log.jsonl', events);
   put(stateRoot, '.deep-loop/runs/' + attempt + '/loop.json', raw);
   const pendinglessState = statusInitialization(stateRoot, binding, initDeps(stateRoot));
   assert.equal(pendinglessState.outcome, 'indeterminate');
@@ -16454,10 +16460,33 @@ function rewriteEpisodeCreationEvent7f(fixture, mutate, episodeId = null) {
   });
 }
 
+test7f('episode creation preserves role and artifact path guards before mutation', () => {
+  const direct = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
+  const base = { plugin: 'deep-work', role: 'maker', kind: 'input-validation',
+    point: 'design', task: 'Exercise direct episode input validation.',
+    workstream: direct.ws, expectedArtifacts: [], fence: direct.fence };
+  const before = bytes7f(direct.root, direct.runId);
+  assert7f.throws(() => productionEpisode7f(direct.root, direct.runId, {
+    ...base, role: 'typo', requestId: 'direct-invalid-role',
+  }), /EPISODE_INPUT_INVALID: role/);
+  assert7f.deepEqual(bytes7f(direct.root, direct.runId), before,
+    'an invalid role is rejected before durable mutation');
+  for (const [requestId, artifact] of [
+    ['direct-parent-artifact', '../proof.md'],
+    ['direct-absolute-artifact', join7f(direct.root, 'proof.md')],
+  ]) {
+    assert7f.throws(() => productionEpisode7f(direct.root, direct.runId, {
+      ...base, expectedArtifacts: [artifact], requestId,
+    }), /EPISODE_ARTIFACT_UNSAFE/);
+    assert7f.deepEqual(bytes7f(direct.root, direct.runId), before, artifact);
+  }
+});
+
 test7f('episode creation identity is state-event correlated and status-independent', () => {
   const direct = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
   const repeatedInput = { plugin: 'deep-work', role: 'maker', kind: 'repeat',
-    point: 'design', workstream: direct.ws, fence: direct.fence };
+    point: 'design', task: 'Exercise direct episode creation identity.',
+    workstream: direct.ws, fence: direct.fence };
   const repeatedA = episode7f(direct.root, direct.runId,
     { ...repeatedInput, requestId: 'direct-repeat-a' });
   const repeatedB = episode7f(direct.root, direct.runId,
@@ -18364,7 +18393,8 @@ function createEpisode(root, runId, {
   if (!plugin || typeof plugin !== 'string' || !plugin.length) {
     throw new Error('EPISODE_INPUT_INVALID: plugin');
   }
-  if (!role || typeof role !== 'string' || !role.length) {
+  if (!role || typeof role !== 'string' || !role.length
+      || !['maker', 'checker'].includes(role)) {
     throw new Error('EPISODE_INPUT_INVALID: role');
   }
   assertEpisodeTask(task);
@@ -18373,6 +18403,11 @@ function createEpisode(root, runId, {
       || !Array.isArray(expectedArtifacts)
       || !expectedArtifacts.every(item => typeof item === 'string')) {
     throw new Error('EPISODE_INPUT_INVALID');
+  }
+  for (const item of expectedArtifacts) {
+    if (isAbsolute(item) || item.split(/[/\\]/).includes('..')) {
+      throw new Error('EPISODE_ARTIFACT_UNSAFE: ' + item);
+    }
   }
   const safePlugin = slugify(plugin) || 'plugin';
   const creationRequestIdDigest = episodeRequestIdDigest(
@@ -35532,10 +35567,10 @@ named evidence documents. Any other path invalidates the final smoke and review.
    require `installable_payload_sha256_after` to remain equal. Force-add only those two documents,
    inspect, run `git diff --cached --check`, and commit `docs: assemble App continuation review bundle`.
 5. Record that resulting review-target SHA, then launch a fresh
-   `/deep-review-loop --codex-only --max=5 --contract` with both Codex reviewer calls pinned to
-   `gpt-5.6-sol` and `model_reasoning_effort=high` over the complete branch from
+   `/deep-review-loop --codex --no-agy --max=5 --contract` from a native Opus/xhigh session, with
+   both Codex reviewer calls pinned to `gpt-5.6-sol` and `model_reasoning_effort=high`, over the complete branch from
    `c38a96137f8f4f0099c35e893860930e8ee4cf73` through that exact target. Pass only on actual
-   Codex-only `gpt-5.6-sol`/high evidence, `APPROVE`, Red 0, Yellow 0, and `converged`; a changed target requires a
+   Opus/xhigh plus `gpt-5.6-sol`/high three-reviewer evidence, `APPROVE`, Red 0, Yellow 0, and `converged`; a changed target requires a
    fresh review. Any non-evidence path change also requires a fresh final-candidate smoke approval and
    complete smoke before review.
 6. Independently replay `npm run preflight`, `git diff --check`, the focused App lifecycle matrix,
@@ -35603,13 +35638,13 @@ named evidence documents. Any other path invalidates the final smoke and review.
 - [ ] Set both existing `deep-loop.source.sha` values to the exact merged deep-loop main SHA, then run `npm run docs:write`. Do not hand-edit generated content, `.claude-plugin/suite-extensions.json`, another plugin entry, or any non-generator file. Inspect every derived hunk; the expected changed paths are exactly the two manifests plus the four generated docs named above. Any extra path or sidecar/pinned-path failure stops for diagnosis and new authority.
 - [ ] Run deep-suite `npm run preflight`, inspect the exact authority-plus-derived diff, stage all and only those six expected paths, run `git diff --cached --check`, and create a focused local commit with the required Claude Opus co-author trailer. Verify the committed tree differs from its base only in those paths and that each generated hunk is reproducible by a clean `npm run docs:write` no-op.
 - [ ] Before review, append the exact deep-suite target commit/range, six-path stat, preflight hashes/results, and clean status to the retained deep-loop closeout evidence log; stage that tracked file, run `git diff --cached --check`, and commit the pre-review row locally. This is the cross-repository application of the common Gate Receipt protocol; no closeout push is authorized yet.
-- [ ] Apply the Codex-only `gpt-5.6-sol`/high naturally-converged review contract to that exact committed deep-suite candidate. If a finding changes any authority or generated artifact, commit the fix, rerun preflight, and obtain a fresh review; never reuse the old receipt.
+- [ ] Apply the Opus/xhigh plus `gpt-5.6-sol`/high naturally-converged three-reviewer contract to that exact committed deep-suite candidate. If a finding changes any authority or generated artifact, commit the fix, rerun preflight, and obtain a fresh review; never reuse the old receipt.
 - [ ] Any change after the reviewed candidate or after push invalidates its receipt and remote evidence.
   First present the new exact SHA/diff and scope. A change outside exactly the two manifests plus the
   four generated docs is scope expansion and requires a new explicit modification-authority proposal;
   do not infer it from Gate 8 approval. For every authorized fix, rerun `npm run docs:write` and prove
   it is a no-op, rerun `npm run preflight` and `git diff --check`, create a fresh focused commit, append
-  fresh pre-review evidence in closeout, and obtain a fresh Codex-only `gpt-5.6-sol`/high `APPROVE`/Red 0/Yellow 0/
+  fresh pre-review evidence in closeout, and obtain a fresh Opus/xhigh plus `gpt-5.6-sol`/high `APPROVE`/Red 0/Yellow 0/
   `converged` review and receipt. If a remote branch already exists, present that fresh SHA/diff and
   obtain a **separate fresh-push approval** before updating it. No earlier modification, review, or
   push approval survives the changed candidate.
@@ -36075,6 +36110,18 @@ for (const task of taskMatches) {
       if (!card.includes(token)) fail(`Task 6B missing future mandatory-intent token ${token}`);
     }
   }
+  if (task[1] === '4B') {
+    for (const token of ['const { loop, genesisEvents } = buildCanonicalGenesis(',
+      'genesisEvents.map(event => JSON.stringify(event)).join',
+      'const { raw, events } = validGenesis(', 'event-log.jsonl', ', events);']) {
+      if (!card.includes(token)) fail(`Task 4B missing complete genesis fixture token ${token}`);
+    }
+    const writes = card.match(
+      /put\([\s\S]{0,240}?event-log\.jsonl[\s\S]{0,120}?,\s*events\);/gu) ?? [];
+    if (writes.length !== 1) {
+      fail(`Task 4B complete genesis event-log writes: ${writes.length}`);
+    }
+  }
   if (task[1] === '5B') {
     for (const token of ['export function syncRegularFile(',
       'export function syncParentDirectory(', 'export function renamePreparedFile(',
@@ -36127,8 +36174,18 @@ for (const task of taskMatches) {
       'fixed init crash worker URL is converted to a native filesystem path']) {
       if (!card.includes(token)) fail(`Task 6A missing native worker-path token ${token}`);
     }
-    if (/worker\.pathname\b/u.test(card)) {
+    const nativeLaunches = card.match(
+      /spawnSync\(process\.execPath, \[FIXED_INIT_CRASH_WORKER,/gu) ?? [];
+    if (nativeLaunches.length !== 3) {
+      fail(`Task 6A native worker launch count: ${nativeLaunches.length}`);
+    }
+    if (/\.pathname\b/u.test(card)) {
       fail('Task 6A passes a file URL pathname instead of a native filesystem path');
+    }
+    const pathnameMutation = card.replace('[FIXED_INIT_CRASH_WORKER,',
+      '[FIXED_INIT_CRASH_WORKER_URL.pathname,');
+    if (pathnameMutation === card || !/\.pathname\b/u.test(pathnameMutation)) {
+      fail('Task 6A pathname mutation self-probe does not exercise the forbidden predicate');
     }
   }
   if (task[1] === '4C') {
@@ -36138,6 +36195,12 @@ for (const task of taskMatches) {
       'beforeLock.stable !== afterLock.stable',
       'status returns raced when a held writer completes between state and lock snapshots']) {
       if (!card.includes(token)) fail(`Task 4C missing cross-snapshot lock token ${token}`);
+    }
+    const fixtures = card.match(/const \{ raw, events \} = validGenesis\(/gu) ?? [];
+    const writes = card.match(
+      /put\([\s\S]{0,240}?event-log\.jsonl[\s\S]{0,120}?,\s*events\);/gu) ?? [];
+    if (fixtures.length !== 3 || writes.length !== 3) {
+      fail(`Task 4C complete genesis fixtures/writes: ${fixtures.length}/${writes.length}`);
     }
   }
   if (task[1] === '7A') {
@@ -37343,6 +37406,14 @@ assert.equal(verifyAppEventCorrelation(mutableProof, [proofBaseline]).ok, true,
     if (body == null || start < 0 || end < 0) {
       fail('Task 7F final episode request/create afterimage or anchors missing');
     } else {
+      for (const token of ["!['maker', 'checker'].includes(role)", 'EPISODE_INPUT_INVALID: role',
+        'isAbsolute(item)', "item.split(/[/\\\\]/).includes('..')",
+        'EPISODE_ARTIFACT_UNSAFE: ']) {
+        if (!body.includes(token)) fail(`Task 7F final episode input guard missing ${token}`);
+      }
+      if (!card.includes("task: 'Exercise direct episode creation identity.'")) {
+        fail('Task 7F same-ID retry omits a stable explicit task');
+      }
       writeFileSync(path, `${installed.slice(0, start)}${body}\n\n${installed.slice(end)}`);
       const checked = spawnSync(process.execPath, ['--check', path], {
         cwd: sequentialSourceDir, encoding: 'utf8',
