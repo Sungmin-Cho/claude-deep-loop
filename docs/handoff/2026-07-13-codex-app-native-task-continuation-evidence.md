@@ -2334,6 +2334,45 @@ no inherited approval from the historical receipt.
   `01b01f31f769d167692cfdb776976a68f4998f6bb90202c3efa8de796fe0981a`; output SHA-256
   `8b9f0fdda235d18f87265d7f03604aba6fc381b4331acbc721b3db3a96d344da`.
 
+### Gate 1 fresh cycle 7 round 5 Respond
+
+- disposition: accepted 2 actionable solo Info findings after independent executable reproduction,
+  rejected 0, deferred 0; `execution_path=main_fallback`. Formal reviewer synthesis was
+  `APPROVE`, Red/Yellow/Info `0 / 0 / 6`, but the gate disposition remained
+  `CONCERN — DO NOT ADVANCE` because the panel was not naturally converged.
+- Gate 6 response: common receipt and Gate 6 now use one staged contract. Pre-review delta is
+  exactly evidence plus review bundle. Post-Respond delta is exactly those two plus one exact Gate 6
+  report and one exact response path, with no wildcard/fifth path. Final payload comparison excludes
+  those same four exact paths from both trees and proves the recomputed candidate digest equals the
+  initial two-path-exclusion digest.
+- Task 6A response: complete reviewed card SHA-256 is
+  `3774a5263631c78c17a4ec8e5148cbc63951e917012a9b9ca67738bc11161a7b`.
+  Existing semantic checks remain, while any differently worded authority, command drift, fence,
+  or other card-local byte change now fails the exact-card guard.
+- status response: design/evidence live status records cycle-7 round-5 Respond, cycle 7
+  `max_reached`, and fresh cycle 8 round 1; historical receipts remain unchanged.
+- exact corrected candidate hashes: handoff
+  `ef490f193eec5fe1aa296af8810b56cbfc99639d469f111670f6fa06514b1d96`; design
+  `167c0225dd9525ec4d3ac3af8160d7ff20fa9803054567baa7b3682a863240b8`; plan
+  `48b1b115c912fd6f28e294f2e6641494f563d6a170fce664ce75e993673f92b5`; pre-receipt evidence
+  `107a9f3f412c0145230f63394b73a399f709a86d5492d1bc876b3d5143b5cf92`.
+- correction commit: `da1d2ec0a33ae69fd23a5e02660f81d9e08298d7`.
+- response record: `.deep-review/responses/2026-07-16-203804-response.md`, SHA-256
+  `cbbb305baa7c339188d315428a3e4bcb0d926817f8ca729df74452982d961de9`.
+- Phase 6 log: `.deep-review/tmp/phase6-cycle7-round5.log`, SHA-256
+  `0a6c4e772b568a2f0f91a57e4d8c40442b57c261af7a4a72a6f496d7a69bb04e` (ignored evidence).
+- independent closure probe: `.deep-review/tmp/cycle7-round5-closure-probe.mjs`, SHA-256
+  `654cfe8fd9c808c21f7ea77b56c34bcf3b124bddbfdf54ded6ccc10b440c8c52`; output SHA-256
+  `700927c037adfa804cfdcd991b062c3242af57829e2ed989d7bc6c4bb27b56f3`.
+- verification: embedded validator passed `ok:true` for 46 tasks and 369 fences
+  (`bash=64`, `diff=91`, `js=186`, `json=4`, `markdown=12`, `text=11`, `yaml=1`); both Task 6A
+  counterexamples now fail the full validator; Gate 6 staged set and live status closure checks pass;
+  `git diff --check` and `npm run preflight` passed validation and all 1,463 tests with zero
+  failures, cancellations, skips, or todo.
+- gate state: still open. Cycle 7 terminated `max_reached`; changed bytes require fresh cycle 8
+  round 1 using one native Claude Opus/xhigh reviewer plus standard and adversarial Codex reviewers
+  both pinned to exact `gpt-5.6-sol`/high; agy remains disabled. This Respond is not a Gate 1 pass.
+
 ## Review receipt template
 
 Each reviewed gate will add a receipt with all of these fields:
