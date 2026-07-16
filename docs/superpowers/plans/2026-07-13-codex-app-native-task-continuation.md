@@ -4261,6 +4261,25 @@ test('status classifies a stable fixed-lock holder without deleting it', () => {
   assert.equal(statusInitialization(root, binding, initDeps(root)).lock_state, 'invalid');
   assert.equal(existsSync(join(root, '.deep-loop', '.init.lock')), true);
 });
+
+test('status follows released init authorities to the bounded terminal successor', () => {
+  const root = fixtureDir();
+  const binding = { attempt_id: '01JAPPGEN00000000000000000',
+    expected_current_digest: 'NONE', expected_request_digest: 'a'.repeat(64) };
+  const control = join(root, '.deep-loop');
+  const first = { pid: 41, nonce: 'firstauthority01',
+    acquired_at: '2026-07-13T00:00:00.000Z' };
+  const second = { pid: 42, nonce: 'secondauthority1',
+    acquired_at: '2026-07-13T00:00:01.000Z' };
+  put(root, '.deep-loop/.init.lock', JSON.stringify(first));
+  linkSync(join(control, '.init.lock'), join(control, '.init-lock-release-' + first.nonce));
+  put(root, '.deep-loop/.init-lock-successor-' + first.nonce, JSON.stringify(second));
+  assert.equal(statusInitialization(root, binding,
+    initDeps(root, { probePidIdentity: () => 'alive' })).lock_state, 'busy');
+  linkSync(join(control, '.init-lock-successor-' + first.nonce),
+    join(control, '.init-lock-release-' + second.nonce));
+  assert.equal(statusInitialization(root, binding, initDeps(root)).lock_state, 'free');
+});
 ```
 
 - [ ] **Step 2: Run the status tests to verify RED**
@@ -4280,22 +4299,73 @@ const statusResult = (outcome, lock_state, fields = {}) => ({
   lock_state, ...fields,
 });
 
-function fixedLockState(lockBytes, deps) {
-  if (lockBytes === null) return 'free';
-  let holder;
-  try { holder = JSON.parse(lockBytes.toString('utf8')); } catch { return 'invalid'; }
-  try {
-    if (!exactKeys(holder, ['acquired_at', 'nonce', 'pid'])
-        || !Number.isSafeInteger(holder.pid) || holder.pid < 1
-        || !/^[A-Za-z0-9_-]{16,128}$/.test(holder.nonce)
-        || typeof holder.acquired_at !== 'string'
-        || new Date(holder.acquired_at).toISOString() !== holder.acquired_at) return 'invalid';
-  } catch { return 'invalid'; }
-  const liveness = deps.probePidIdentity?.({
-    pid: holder.pid, acquiredAt: holder.acquired_at,
-  }) ?? 'unknown';
-  return ['definitely-dead', 'pid-reused'].includes(liveness) ? 'stale-manual'
-    : ['alive', 'unknown'].includes(liveness) ? 'busy' : 'invalid';
+const STATUS_SUCCESSOR = /^\.init-lock-successor-[A-Za-z0-9_-]{16,128}$/;
+const STATUS_RELEASE = /^\.init-lock-release-[A-Za-z0-9_-]{16,128}$/;
+
+function lockArtifactSnapshot(control, deps) {
+  const exists = deps.exists ?? existsSync;
+  if (!exists(control)) return { stable: 'absent', entries: [] };
+  const names = (deps.readdir ?? readdirSync)(control).filter(name =>
+    name === '.init.lock' || name.startsWith('.init-lock-successor-')
+      || name.startsWith('.init-lock-release-')).sort();
+  const entries = names.map(name => {
+    const path = join(control, name);
+    const stat = (deps.lstat ?? lstatSync)(path);
+    let bytes = null;
+    try { bytes = Buffer.from((deps.readFile ?? readFileSync)(path)); } catch {}
+    return { name, stat, bytes, regular: stat.isFile() && !stat.isSymbolicLink(),
+      identity: [stat.dev, stat.ino, stat.mode, stat.size, stat.mtimeMs].join(':') };
+  });
+  return { entries, stable: JSON.stringify(entries.map(entry => ({ name: entry.name,
+    identity: entry.identity, regular: entry.regular,
+    bytes: entry.bytes?.toString('base64') ?? null }))) };
+}
+
+function stableLockState(control, deps) {
+  const first = lockArtifactSnapshot(control, deps);
+  const second = lockArtifactSnapshot(control, deps);
+  if (first.stable !== second.stable) throw new Error('INIT_QUERY_RACED');
+  const entries = second.entries;
+  if (entries.some(entry => !entry.regular || entry.bytes === null
+      || entry.name !== '.init.lock' && !STATUS_SUCCESSOR.test(entry.name)
+        && !STATUS_RELEASE.test(entry.name))) return 'invalid';
+  const byName = new Map(entries.map(entry => [entry.name, entry]));
+  let authority = byName.get('.init.lock');
+  if (authority === undefined) return entries.length === 0 ? 'free' : 'invalid';
+  const visited = new Set();
+  const consumed = new Set();
+  for (let depth = 0; depth < 64; depth += 1) {
+    let holder;
+    try { holder = JSON.parse(authority.bytes.toString('utf8')); } catch { return 'invalid'; }
+    try {
+      if (!exactKeys(holder, ['acquired_at', 'nonce', 'pid'])
+          || !Number.isSafeInteger(holder.pid) || holder.pid < 1
+          || !/^[A-Za-z0-9_-]{16,128}$/.test(holder.nonce)
+          || new Date(holder.acquired_at).toISOString() !== holder.acquired_at
+          || visited.has(holder.nonce)) return 'invalid';
+    } catch { return 'invalid'; }
+    visited.add(holder.nonce);
+    consumed.add(authority.name);
+    const releaseName = '.init-lock-release-' + holder.nonce;
+    const release = byName.get(releaseName);
+    if (release === undefined) {
+      if (consumed.size !== entries.length) return 'invalid';
+      const liveness = deps.probePidIdentity?.({
+        pid: holder.pid, acquiredAt: holder.acquired_at,
+      }) ?? 'unknown';
+      return ['definitely-dead', 'pid-reused'].includes(liveness) ? 'stale-manual'
+        : ['alive', 'unknown'].includes(liveness) ? 'busy' : 'invalid';
+    }
+    consumed.add(releaseName);
+    if (authority.stat.dev !== release.stat.dev || authority.stat.ino !== release.stat.ino) {
+      return 'invalid';
+    }
+    const successorName = '.init-lock-successor-' + holder.nonce;
+    const successor = byName.get(successorName);
+    if (successor === undefined) return consumed.size === entries.length ? 'free' : 'invalid';
+    authority = successor;
+  }
+  return 'invalid';
 }
 
 function controlTempSnapshot(path, deps) {
@@ -4322,14 +4392,15 @@ function controlTempSnapshot(path, deps) {
 function stableStatusSet(paths, deps) {
   const beforeControl = controlTempSnapshot(paths.control, deps);
   const authority = stableAuthoritySet(
-    [paths.current, paths.pending, paths.lock, paths.loop, paths.hash, paths.events],
+    [paths.current, paths.pending, paths.loop, paths.hash, paths.events],
     [paths.run], deps);
+  const lockState = stableLockState(paths.control, deps);
   const afterControl = controlTempSnapshot(paths.control, deps);
   if (beforeControl.stable !== afterControl.stable) {
     throw new Error('INIT_QUERY_RACED');
   }
   return { files: authority.files, directory: authority.directories.get(paths.run),
-    controlStaging: afterControl.staging };
+    controlStaging: afterControl.staging, lockState };
 }
 
 export function statusInitialization(root, binding, deps) {
@@ -4341,8 +4412,9 @@ export function statusInitialization(root, binding, deps) {
       return statusResult('indeterminate', 'invalid');
     }
     const paths = initPaths(root, binding.attempt_id);
-    const { files: snapshot, directory, controlStaging } = stableStatusSet(paths, deps);
-    lockState = fixedLockState(snapshot.get(paths.lock)?.bytes ?? null, deps);
+    const { files: snapshot, directory, controlStaging,
+      lockState: stableLock } = stableStatusSet(paths, deps);
+    lockState = stableLock;
     const current = currentValue(snapshot, paths.current);
     const actualCurrentDigest = current === null ? 'NONE' : contentHash(current);
     const target = targetClassification(root, snapshot, paths, binding.attempt_id, null, deps);
@@ -4454,7 +4526,7 @@ git add scripts/lib/init-transaction.mjs tests/init-transaction.test.mjs
 git commit -m "feat: reconcile initialization status safely" -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
 
-### Task 5A: Owner-Safe Fixed Initialization Lock
+### Task 5A: Owner-Safe Append-Only Initialization Lock Chain
 
 **Files:**
 - Modify: produced scripts/lib/init-transaction.mjs with withInitLock and candidate-only sweep.
@@ -4462,11 +4534,13 @@ git commit -m "feat: reconcile initialization status safely" -m "Co-Authored-By:
 
 **Interfaces:**
 - Consumes: injected pid/nonce/wall clock, hard-link primitives, and probePidIdentity returning alive|definitely-dead|unknown|pid-reused.
-- Produces: INIT_LOCK_CANDIDATE_TTL_MS=300000, INIT_LOCK_CANDIDATE_SWEEP_MAX=64, and a fixed .init.lock authority that is never automatically reclaimed.
+- Produces: `INIT_LOCK_CANDIDATE_TTL_MS=300000`, `INIT_LOCK_CANDIDATE_SWEEP_MAX=64`,
+  `INIT_LOCK_CHAIN_MAX=64`, and an append-only authority chain rooted at `.init.lock`. Normal
+  release publishes a same-inode release hard link and never unlinks an authority pathname.
 
 - [ ] **Step 1: Write complete fixed-lock tests**
 
-The Task 4B test import already includes `unlinkSync`; add `withInitLock` to the transaction
+The Task 4B test import already includes `unlinkSync`; add `linkSync` plus `withInitLock` to the transaction
 import and append:
 
 ```js
@@ -4483,14 +4557,22 @@ test('dead fixed init authority is stale-manual and never unlinked', () => {
   assert.deepEqual(readFileSync(lock), before);
 });
 
-test('lock release is owner-nonce and file-identity safe against copied-nonce ABA replacement', () => {
+test('lock release never pathname-deletes a release-time copied-nonce ABA replacement', () => {
   const root = fixtureDir();
   const later = { pid: 99, nonce: 'firstowner000000', acquired_at: '2026-07-13T00:00:01.000Z' };
-  withInitLock(root, () => {
-    unlinkSync(join(root, '.deep-loop', '.init.lock'));
-    put(root, '.deep-loop/.init.lock', JSON.stringify(later));
-  }, { pid: 7, nonce: () => 'firstowner000000', now: () => Date.parse('2026-07-13T00:00:00.000Z'),
-    probePidIdentity: () => 'alive' });
+  const fixed = join(root, '.deep-loop', '.init.lock');
+  withInitLock(root, () => {}, {
+    pid: 7, nonce: () => 'firstowner000000',
+    now: () => Date.parse('2026-07-13T00:00:00.000Z'),
+    probePidIdentity: () => 'alive',
+    link: (source, destination) => {
+      if (destination.endsWith('.init-lock-release-firstowner000000')) {
+        unlinkSync(fixed);
+        put(root, '.deep-loop/.init.lock', JSON.stringify(later));
+      }
+      return linkSync(source, destination);
+    },
+  });
   assert.deepEqual(JSON.parse(readFileSync(join(root, '.deep-loop', '.init.lock'))), later);
   assert.deepEqual(readdirSync(join(root, '.deep-loop'))
     .filter(name => name.startsWith('.init-lock-candidate-')), []);
@@ -4548,6 +4630,19 @@ test('candidate write failure cleans a partially-created candidate under native 
     .filter(name => name.startsWith('.init-lock-candidate-')), []);
 });
 
+test('candidate nonce collision preserves the pre-existing candidate', () => {
+  const root = fixtureDir();
+  const nonce = 'collisionowner01';
+  const candidate = join(root, '.deep-loop', '.init-lock-candidate-7-' + nonce);
+  const bytes = Buffer.from('pre-existing-candidate');
+  put(root, '.deep-loop/.init-lock-candidate-7-' + nonce, bytes);
+  assert.throws(() => withInitLock(root, () => assert.fail('writer entered'), {
+    pid: 7, nonce: () => nonce,
+    now: () => Date.parse('2026-07-13T00:00:00.000Z'),
+  }), error => error?.code === 'EEXIST');
+  assert.deepEqual(readFileSync(candidate), bytes);
+});
+
 test('EEXIST fixed-holder matrix preserves live unknown invalid dead and PID-reused authority', () => {
   for (const row of [
     { name: 'live', holder: { pid: 42, nonce: '1234567890abcdef',
@@ -4593,7 +4688,10 @@ import {
 
 export const INIT_LOCK_CANDIDATE_TTL_MS = 300_000;
 export const INIT_LOCK_CANDIDATE_SWEEP_MAX = 64;
+export const INIT_LOCK_CHAIN_MAX = 64;
 const INIT_CANDIDATE_NAME = /^\.init-lock-candidate-(?:0|[1-9][0-9]*)-[A-Za-z0-9_-]{16,128}$/;
+const INIT_SUCCESSOR_NAME = /^\.init-lock-successor-[A-Za-z0-9_-]{16,128}$/;
+const INIT_RELEASE_NAME = /^\.init-lock-release-[A-Za-z0-9_-]{16,128}$/;
 const HOLDER_KEYS = ['acquired_at', 'nonce', 'pid'];
 
 function parseInitHolder(bytes) {
@@ -4656,6 +4754,64 @@ function ensureControlDirectory(root, deps) {
   return control;
 }
 
+function authorityRecord(path, deps, lstat) {
+  let stat;
+  try { stat = lstat(path); }
+  catch (error) { if (error?.code === 'ENOENT') return null; throw error; }
+  if (!stat.isFile() || stat.isSymbolicLink()) return { stat, holder: null };
+  let holder = null;
+  try { holder = parseInitHolder(Buffer.from((deps.readFile ?? readFileSync)(path))); }
+  catch { /* invalid authority remains busy */ }
+  return { stat, holder };
+}
+
+function followInitAuthority(control, deps) {
+  const lstat = deps.lstat ?? (value => lstatSync(value, { bigint: true }));
+  const sameFile = deps.sameFile
+    ?? ((left, right) => left.dev === right.dev && left.ino === right.ino);
+  let authorityPath = join(control, '.init.lock');
+  const visited = new Set();
+  for (let depth = 0; depth < INIT_LOCK_CHAIN_MAX; depth += 1) {
+    const authority = authorityRecord(authorityPath, deps, lstat);
+    if (authority === null) {
+      if (depth === 0) return { state: 'free', publishPath: authorityPath };
+      throw new Error('LOCK_CHAIN_INVALID');
+    }
+    if (authority.holder === null || visited.has(authority.holder.nonce)) {
+      return { state: 'held', authorityPath, authority, invalid: true };
+    }
+    visited.add(authority.holder.nonce);
+    const releasePath = join(control, '.init-lock-release-' + authority.holder.nonce);
+    const release = authorityRecord(releasePath, deps, lstat);
+    if (release === null) {
+      return { state: 'held', authorityPath, authority, releasePath, invalid: false };
+    }
+    if (release.holder === null || release.holder.nonce !== authority.holder.nonce
+        || !sameFile(authority.stat, release.stat)) {
+      return { state: 'held', authorityPath, authority, releasePath, invalid: true };
+    }
+    const successorPath = join(control, '.init-lock-successor-' + authority.holder.nonce);
+    const successor = authorityRecord(successorPath, deps, lstat);
+    if (successor === null) {
+      return { state: 'free', publishPath: successorPath,
+        predecessorPath: authorityPath, predecessor: authority };
+    }
+    authorityPath = successorPath;
+  }
+  throw new Error('LOCK_CHAIN_EXHAUSTED');
+}
+
+function throwHeldAuthority(terminal, deps) {
+  const holder = terminal.authority?.holder;
+  const liveness = holder === null || holder === undefined || terminal.invalid
+    ? 'unknown'
+    : deps.probePidIdentity?.({ pid: holder.pid, acquiredAt: holder.acquired_at }) ?? 'unknown';
+  if (['definitely-dead', 'pid-reused'].includes(liveness)) {
+    throw new Error('LOCK_STALE_MANUAL');
+  }
+  throw new Error('LOCK_BUSY');
+}
+
 export function withInitLock(root, fn, deps = {}) {
   const control = ensureControlDirectory(root, deps);
   const nowMs = (deps.now ?? Date.now)();
@@ -4667,62 +4823,92 @@ export function withInitLock(root, fn, deps = {}) {
   }
   const holder = { pid, nonce, acquired_at: new Date(nowMs).toISOString() };
   const candidate = join(control, '.init-lock-candidate-' + pid + '-' + nonce);
-  const fixed = join(control, '.init.lock');
+  const releasePath = join(control, '.init-lock-release-' + nonce);
   const unlink = deps.unlink ?? unlinkSync;
+  const link = deps.link ?? linkSync;
   const lstat = deps.lstat ?? (value => lstatSync(value, { bigint: true }));
   const sameFile = deps.sameFile
     ?? ((left, right) => left.dev === right.dev && left.ino === right.ino);
+  let candidateOwned = false;
   let linked = false;
+  let releaseError = null;
   try {
-    (deps.writeFile ?? writeFileSync)(candidate, JSON.stringify(holder), { flag: 'wx' });
     try {
-      (deps.link ?? linkSync)(candidate, fixed);
+      (deps.writeFile ?? writeFileSync)(candidate, JSON.stringify(holder), { flag: 'wx' });
+      candidateOwned = true;
+    } catch (error) {
+      // Native wx EEXIST proves this invocation did not create the candidate. Other write failures
+      // can leave a partial unique candidate and therefore authorize candidate-only cleanup.
+      candidateOwned = error?.code !== 'EEXIST';
+      throw error;
+    }
+    const terminal = followInitAuthority(control, deps);
+    if (terminal.state !== 'free') throwHeldAuthority(terminal, deps);
+    try {
+      link(candidate, terminal.publishPath);
       linked = true;
     } catch (error) {
-      if (error?.code === 'EEXIST') {
-        let fixedHolder = null;
-        try { fixedHolder = parseInitHolder(Buffer.from((deps.readFile ?? readFileSync)(fixed))); }
-        catch { /* busy */ }
-        const liveness = fixedHolder === null ? 'unknown'
-          : deps.probePidIdentity?.({ pid: fixedHolder.pid, acquiredAt: fixedHolder.acquired_at }) ?? 'unknown';
-        if (['definitely-dead', 'pid-reused'].includes(liveness)) throw new Error('LOCK_STALE_MANUAL');
-        throw new Error('LOCK_BUSY');
-      }
+      if (error?.code === 'EEXIST') throwHeldAuthority(followInitAuthority(control, deps), deps);
       if (['EXDEV', 'ENOTSUP', 'EOPNOTSUPP', 'EPERM'].includes(error?.code)) {
         throw new Error('LOCK_UNSUPPORTED');
       }
       throw new Error('LOCK_ACQUIRE_FAILED');
     }
-    // Keep the unique hard-link candidate as the owner's file-identity capability until release.
+    const published = followInitAuthority(control, deps);
+    const candidateStat = lstat(candidate);
+    const publishedStat = lstat(terminal.publishPath);
+    if (published.state !== 'held' || published.authorityPath !== terminal.publishPath
+        || published.invalid || published.authority.holder.pid !== holder.pid
+        || published.authority.holder.nonce !== holder.nonce
+        || published.authority.holder.acquired_at !== holder.acquired_at
+        || !candidateStat.isFile() || candidateStat.isSymbolicLink()
+        || !publishedStat.isFile() || publishedStat.isSymbolicLink()
+        || !sameFile(candidateStat, publishedStat)) {
+      try { link(candidate, releasePath); } catch { /* preserve fail-closed evidence */ }
+      throw new Error('LOCK_ACQUIRE_RACED');
+    }
     return fn();
   } finally {
-    if (!linked) {
-      try { unlink(candidate); } catch { /* already absent */ }
-    } else {
-      try {
-        const current = parseInitHolder(Buffer.from((deps.readFile ?? readFileSync)(fixed)));
-        const fixedStat = lstat(fixed);
-        const candidateStat = lstat(candidate);
-        const sameAuthority = fixedStat.isFile() && !fixedStat.isSymbolicLink()
-          && candidateStat.isFile() && !candidateStat.isSymbolicLink()
-          && sameFile(fixedStat, candidateStat);
-        if (current?.nonce === nonce && sameAuthority) unlink(fixed);
-      } catch { /* later/uncertain owner is never removed */ }
+    if (linked) {
+      try { link(candidate, releasePath); }
+      catch (error) {
+        if (error?.code === 'EEXIST') {
+          try {
+            const releaseStat = lstat(releasePath);
+            const candidateStat = lstat(candidate);
+            if (!releaseStat.isFile() || releaseStat.isSymbolicLink()
+                || !candidateStat.isFile() || candidateStat.isSymbolicLink()
+                || !sameFile(releaseStat, candidateStat)) {
+              releaseError = new Error('LOCK_RELEASE_INDETERMINATE');
+            }
+          } catch { releaseError = new Error('LOCK_RELEASE_INDETERMINATE'); }
+        } else {
+          releaseError = new Error('LOCK_RELEASE_INDETERMINATE');
+        }
+      }
+    }
+    if (candidateOwned) {
       try { unlink(candidate); } catch { /* already absent */ }
     }
+    if (releaseError !== null) throw releaseError;
   }
 }
 ```
 
-Also add `import { randomUUID } from 'node:crypto';` at the top. The fixed authority path has no TTL unlink branch; only strict candidate paths can be swept.
+Also add `import { randomUUID } from 'node:crypto';` at the top. `.init.lock`, every strict
+successor, and every same-inode release marker are append-only authority evidence: normal code never
+unlinks or renames them. Only strict candidate paths can be swept. A chain longer than 64 fails
+closed for separately approved manual compaction rather than silently discarding history.
 
 - [ ] **Step 4: Run the lock tests to verify GREEN**
 
 Run: node --test --test-name-pattern='fixed init authority|owner-nonce|candidate sweep|hard link|candidate write failure|EEXIST fixed-holder' tests/init-transaction.test.mjs
 
-Expected: PASS for live/unknown/invalid/dead/PID-reused holder preservation, two stale contenders,
-copied-nonce ABA release protected by retained hard-link identity, exact TTL, lexical cap, and
-unsupported-link cleanup.
+Expected: PASS for live/unknown/invalid/dead/PID-reused terminal-holder preservation, candidate
+nonce-collision preservation, two stale
+contenders, atomic successor election after a same-inode release marker, release-time copied-nonce
+ABA preservation without authority-path unlink, exact TTL, lexical cap, chain cap, and unsupported-
+link cleanup.
 
 - [ ] **Step 5: Run lock-related regressions**
 
@@ -4734,9 +4920,10 @@ Expected: PASS; per-run state locks remain unchanged.
 
 Run: git diff -- scripts/lib/init-transaction.mjs tests/init-transaction.test.mjs && git diff --check
 
-Confirm .init.lock is never auto-unlinked, age must be strictly greater than TTL, only the first 64
-raw-code-unit-sorted strict candidates are inspected, and release requires both the exact nonce and
-same-file identity against the retained unique candidate before unlinking the fixed authority.
+Confirm no `.init.lock`, `.init-lock-successor-*`, or `.init-lock-release-*` authority path is ever
+unlinked or renamed; age must be strictly greater than TTL; only the first 64 raw-code-unit-sorted
+strict candidates are inspected; a release marker must be a same-file hard link to its authority;
+and successor publication is exclusive, post-verified, and capped at 64 links.
 
 - [ ] **Step 7: Commit the lock slice**
 
@@ -4760,7 +4947,7 @@ git commit -m "feat: add owner-safe init root lock" -m "Co-Authored-By: Claude O
 - [ ] **Step 1: Write complete pending/publisher tests**
 
 Add `publishGenesisState` and `commitPreparedInit` to the transaction test import. Create
-`tests/durable-file.test.mjs` with explicit POSIX parent-sync, Windows no-directory-fd/bounded-
+`tests/durable-file.test.mjs` (including `linkSync` in its `node:fs` imports) with explicit POSIX parent-sync, Windows no-directory-fd/bounded-
 retry, and single-file no-replace cases. Directory publication is deliberately not part of this
 helper: Task 7F publishes an episode request as a regular file directly under the canonical run
 directory and tests the obsolete `episodes` path as an attacker-controlled non-parent.
@@ -4991,7 +5178,11 @@ test('durable create-if-absent never replaces a check-to-publish race winner', (
   const target = join(root, 'request.md');
   const created = createFileDurablyIfAbsent(target, 'kernel skeleton', {
     nonce: () => 'callerownednonce0',
-    beforePublish: () => writeFileSync(target, 'execution-plane winner'),
+  }, {
+    link: (source, destination) => {
+      writeFileSync(destination, 'execution-plane winner');
+      return linkSync(source, destination);
+    },
   });
   assert.equal(created, false);
   assert.equal(readFileSync(target, 'utf8'), 'execution-plane winner');
@@ -5088,7 +5279,7 @@ export function unlinkRegularFile(path, deps = {}) {
 }
 
 export function createFileDurablyIfAbsent(path, bytes, {
-  beforePublish = () => {}, validateExisting = () => {}, mode = 0o600, nonce,
+  validateExisting = () => {}, mode = 0o600, nonce,
 } = {}, deps = {}) {
   const suffix = (nonce ?? (() => durableRandomBytes(12).toString('hex')))();
   if (!/^[A-Za-z0-9_-]{16,128}$/.test(suffix)) {
@@ -5098,7 +5289,6 @@ export function createFileDurablyIfAbsent(path, bytes, {
   (deps.writeFile ?? durableWriteFileSync)(temporary, bytes, { flag: 'wx', mode });
   try {
     syncRegularFile(temporary, deps);
-    beforePublish();
     try { (deps.link ?? durableLinkSync)(temporary, path); }
     catch (error) {
       if (error?.code === 'EEXIST') {
@@ -8465,12 +8655,15 @@ test7b('App event correlation rejects timestamp, identity, and multiplicity drif
     transport: 'codex-app', attempt_id: attempt, phase: 'confirmed',
     emitted_at: '2026-07-13T00:00:00.000Z', prepared_at: '2026-07-13T00:00:01.000Z',
     confirmed_at: '2026-07-13T00:00:02.000Z', acquired_at: null,
+    descriptor_digest: 'd'.repeat(64),
     thread_id: 'opaque-confirmed-thread', unconfirmed_thread_id: null,
   };
   const loop = { session_chain: { sessions: [{ run_id: child, continuation }] } };
   const lines = [
     { type: 'handoff-emitted', ts: continuation.emitted_at, data: { attempt_id: attempt, child_run_id: child } },
-    { type: 'app-task-prepared', ts: continuation.prepared_at, data: { attempt_id: attempt, child_run_id: child } },
+    { type: 'app-task-prepared', ts: continuation.prepared_at, data: {
+      attempt_id: attempt, child_run_id: child,
+      descriptor_digest: continuation.descriptor_digest } },
     { type: 'app-task-confirmed', ts: continuation.confirmed_at, data: { attempt_id: attempt,
       child_run_id: child,
       receipt_digest: hash7b('confirmed-thread\0' + continuation.thread_id) } },
@@ -8544,6 +8737,7 @@ test7b('App control events make revoke, terminal failure, and preserve one-way',
   const attempt = '01JAPPTASK0000000000000000';
   const continuation = { transport: 'codex-app', attempt_id: attempt, phase: 'failed',
     emitted_at: '2026-07-13T00:00:00.000Z', prepared_at: '2026-07-13T00:00:01.000Z',
+    descriptor_digest: 'd'.repeat(64),
     confirmed_at: null, acquired_at: null, failure_code: 'host-call-failed',
     failure_binding: { owner_run_id: parent, generation: 1 } };
   const loop = { status: 'paused', pause_reason: 'host-call-failed',
@@ -8560,7 +8754,8 @@ test7b('App control events make revoke, terminal failure, and preserve one-way',
     { type: 'handoff-emitted', ts: continuation.emitted_at,
       data: { attempt_id: attempt, child_run_id: child } },
     { type: 'app-task-prepared', ts: continuation.prepared_at,
-      data: { attempt_id: attempt, child_run_id: child } },
+      data: { attempt_id: attempt, child_run_id: child,
+        descriptor_digest: continuation.descriptor_digest } },
     { type: 'app-task-failed', ts: '2026-07-13T00:00:02.000Z',
       data: { attempt_id: attempt, child_run_id: child,
         failure_code: 'host-call-failed', owner_run_id: parent, generation: 1 } },
@@ -9493,6 +9688,13 @@ export function verifyAppEventCorrelation(loop, lines) {
       } else if (timestamp != null && (strictMs(matches[0].ts) === null
           || matches[0].ts !== timestamp)) {
         errors.push(`${eventType} ${continuation.attempt_id}/${session.run_id} timestamp mismatch`);
+      } else if (eventType === 'app-task-prepared' && timestamp != null) {
+        const keys = Object.keys(matches[0].data ?? {}).sort();
+        if (JSON.stringify(keys) !== JSON.stringify(
+          ['attempt_id', 'child_run_id', 'descriptor_digest'])
+            || matches[0].data.descriptor_digest !== continuation.descriptor_digest) {
+          errors.push(`${eventType} ${continuation.attempt_id}/${session.run_id} descriptor digest mismatch`);
+        }
       } else if (eventType === 'app-task-confirmed' && timestamp != null) {
         const expectedDigest = typeof continuation.thread_id === 'string'
           ? contentHash('confirmed-thread\0' + continuation.thread_id) : 'INVALID';
@@ -17137,7 +17339,7 @@ diff --git a/scripts/lib/episode.mjs b/scripts/lib/episode.mjs
 +}
 +
 +export function materializeEpisodeRequest(root, runId, workItem,
-+  { beforeMaterialize, beforePublish } = {}) {
++  { beforeMaterialize } = {}) {
 +  beforeMaterialize?.(workItem); // always outside the run lock
 +  const canonicalRun = realpathSync(runDir(root, runId));
 +  const expectedPath = canonicalEpisodeRequestPath(root, runId, workItem?.id);
@@ -17155,7 +17357,7 @@ diff --git a/scripts/lib/episode.mjs b/scripts/lib/episode.mjs
 +    throw new Error('EPISODE_MATERIALIZATION_STALE');
 +  }
 +  createFileDurablyIfAbsent(expectedPath, workItem.bytes, {
-+    beforePublish,
++    // No timing hook: the injected/native exclusive link itself decides the EEXIST race.
 +    validateExisting: path => validateRequestWinner(path, canonicalRun),
 +  });
 +  return { id: workItem.id, requestPath: expectedPath };
@@ -17425,7 +17627,7 @@ index c567221..8bf9718 100644
    plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker,
    reviewerResolution, evidence, contract, initialStatus = 'pending', blockReason,
 -  fence, operation, mutation = null, crashProbe,
-+  fence, operation, mutation = null, crashProbe, beforeMaterialize, beforePublish, requestId,
++  fence, operation, mutation = null, crashProbe, beforeMaterialize, requestId,
 +  dispatchRequestIdDigest, dispatchRequestDigest, dispatchResponse,
  } = {}) {
    if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error(`FENCE_REQUIRED: ${operation}`);
@@ -17589,8 +17791,8 @@ index c567221..8bf9718 100644
 +        onRecovered: (loop, recovered) => recoverExact(loop, recovered), onExisting,
 +      }), buildWorkItem);
 +  if (mutation) return { id, requestPath, deferred_materialization: workItem };
-+  return materializeEpisodeRequest(root, runId, workItem,
-+    { beforeMaterialize, beforePublish });
++  // The later complete afterimage removes materialization entirely.
++  return materializeEpisodeRequest(root, runId, workItem, { beforeMaterialize });
  }
 -
 +
@@ -17598,13 +17800,13 @@ index c567221..8bf9718 100644
    plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker,
 -  reviewerResolution, evidence, contract, fence, mutation, crashProbe,
 +  reviewerResolution, evidence, contract, fence, mutation, crashProbe,
-+  beforeMaterialize, beforePublish,
++  beforeMaterialize,
 +  requestId, dispatchRequestIdDigest, dispatchRequestDigest, dispatchResponse,
  } = {}) {
    return createEpisode(root, runId, { plugin, role, kind, point, workstream,
      expectedArtifacts, targetMaker, reviewerResolution, evidence, contract, fence,
 -    mutation, crashProbe, operation: 'newEpisode' });
-+    mutation, crashProbe, beforeMaterialize, beforePublish, requestId,
++    mutation, crashProbe, beforeMaterialize, requestId,
 +    dispatchRequestIdDigest, dispatchRequestDigest,
 +    dispatchResponse,
 +    operation: 'newEpisode' });
@@ -21521,7 +21723,7 @@ git commit -m "feat: bind App intent at handoff emit" -m "Co-Authored-By: Claude
 
 **Interfaces:**
 - Consumes: `prepareAppTask(root,runId,{owner,generation,stdinMode,hostInput},deps)`. The attempt is read only from the live lease; `hostInput` contains only the bounded READY/stdin host cwd claim and project rows. `cwdFn`, advisory `precheckNowFn`, authoritative lock-only `nowFn`, `descriptorBuilder`, `reconcileBudgetFn`, `gateFn`, and native path dependencies are internal test seams; route/attempt/cwd/workstream/project IDs are not argv fields.
-- Produces: first result `{ok:true,outcome:'prepared',do_not_call:false,attempt_id,route,context_mode,action}` and exact write-free retry `{ok:true,outcome:'already-prepared',do_not_call:true,attempt_id}`. Internal `findAppAttempt`, `assertAppParentFence`, `assertAppParentRoute`, `assertAppParentMutationFence`, `clearLiveAppBinding`, and `validateAppCandidate` are consumed by Tasks 9–10. Gate failures use only `gate-budget|gate-breaker|gate-max-sessions|gate-wallclock|gate-auto-handoff`.
+- Produces: first result `{ok:true,outcome:'prepared',do_not_call:false,attempt_id,route,context_mode,action}` and exact write-free retry `{ok:true,outcome:'already-prepared',do_not_call:true,attempt_id}`. The stored `descriptor_digest` authenticates an envelope containing both the exact action and complete `app-prepare` request digest; prepared retry recomputes that pure route/action envelope, rejects changed stdin/host input, and never samples clock/gate or reconciles budget. `app-task-prepared` repeats the same digest. Internal `findAppAttempt`, `assertAppParentFence`, `assertAppParentRoute`, `assertAppParentMutationFence`, `clearLiveAppBinding`, and `validateAppCandidate` are consumed by Tasks 9–10. Gate failures use only `gate-budget|gate-breaker|gate-max-sessions|gate-wallclock|gate-auto-handoff`.
 
 - [ ] **Step 1: Write the failing prepare-CAS tests**
 
@@ -21572,7 +21774,7 @@ function emitted8b() {
       projects: [{ projectId: 'project $`\\', projectKind: 'local', path: root }] } };
 }
 
-test8b('prepare grants one action and every exact retry is descriptor-free', () => {
+test8b('prepare grants one action and only the exact request retries descriptor-free', () => {
   const fixture = emitted8b();
   const action = { tool: 'create_thread', target: { type: 'project', projectId: 'project $`\\',
     environment: { type: 'local' } }, prompt: 'bounded prompt' };
@@ -21584,7 +21786,8 @@ test8b('prepare grants one action and every exact retry is descriptor-free', () 
   const first = prepare8b(fixture.root, fixture.runId, input, deps);
   const retry = prepare8b(fixture.root, fixture.runId, input, {
     nowFn: () => assert8b.fail('retry does not sample'),
-    cwdFn: () => assert8b.fail('retry does not derive route'),
+    cwdFn: () => fixture.root,
+    descriptorBuilder: () => action,
     reconcileBudgetFn: () => assert8b.fail('retry does not reconcile'),
     gateFn: () => assert8b.fail('retry does not gate') });
   assert8b.deepEqual(first.action, action);
@@ -21592,6 +21795,16 @@ test8b('prepare grants one action and every exact retry is descriptor-free', () 
   assert8b.deepEqual(retry, { ok: true, outcome: 'already-prepared', do_not_call: true,
     attempt_id: fixture.attemptId });
   assert8b.equal(Object.hasOwn(retry, 'action'), false);
+  assert8b.throws(() => prepare8b(fixture.root, fixture.runId,
+    { ...input, stdinMode: 'pipe-open-noecho' }, deps), /APP_STDIN_MODE_FENCED/);
+  assert8b.throws(() => prepare8b(fixture.root, fixture.runId,
+    { ...input, hostInput: { ...input.hostInput,
+      currentHostTaskCwd: `${fixture.root}/.` } }, deps), /APP_PREPARE_REQUEST_FENCED/);
+  const preparedEvent = lines8b(fixture.root, fixture.runId)
+    .find(event => event.type === 'app-task-prepared');
+  assert8b.equal(preparedEvent.data.descriptor_digest,
+    read8b(fixture.root, fixture.runId).data.session_chain.sessions
+      .find(session => session.run_id === fixture.childRunId).continuation.descriptor_digest);
   assert8b.equal(lines8b(fixture.root, fixture.runId)
     .filter(event => event.type === 'app-task-prepared').length, 1);
   assert8b.equal(read8b(fixture.root, fixture.runId).data.session_chain.lease.handoff_phase, 'spawned');
@@ -22308,6 +22521,7 @@ export function prepareAppTask(root, runId, input, deps = {}) {
   const reconcile = deps.reconcileBudgetFn ?? reconcileBudget;
   const gateFor = deps.gateFn ?? respawnGate;
   const authoritativeNow = deps.nowFn ?? Date.now;
+  const prepareRequestDigest = appMutationIntentDigest(input, 'app-prepare');
   return withAppMutation(root, runId, input, 'app-prepare', mutation => {
   const snapshot = mutation.readVerifiedState(
     { fenceCheck: loop => assertAppParentIdentity(loop, input) }).data;
@@ -22315,24 +22529,38 @@ export function prepareAppTask(root, runId, input, deps = {}) {
   if (snapshot.status !== 'running' || snapshot.session_chain.lease.resume_policy !== 'app') {
     throw new Error('RUN_PAUSED: app-prepare');
   }
-  if (existing.continuation.phase === 'prepared') {
+  const alreadyPrepared = existing.continuation.phase === 'prepared';
+  if (alreadyPrepared) {
     if (snapshot.session_chain.lease.handoff_phase !== 'spawned'
         || snapshot.session_chain.lease.state !== 'releasing') throw new Error('APP_ATTEMPT_FENCED');
-    return { ok: true, outcome: 'already-prepared', do_not_call: true,
-      attempt_id: existing.attemptId };
   }
   assertAppParentDirectoryIdentity(snapshot, root, input, deps);
   let route;
   try { route = resolvePrepareRoute(snapshot, root, input, deps); }
   catch (error) {
     if (!String(error?.message || error).startsWith('APP_ROUTE_UNCONFIRMED')) throw error;
+    if (alreadyPrepared) {
+      const parent = snapshot.session_chain.sessions.find(session => session.run_id === input.owner);
+      throw new Error(input.stdinMode !== parent?.host_surface?.structured_stdin_mode
+        ? 'APP_STDIN_MODE_FENCED' : 'APP_PREPARE_REQUEST_FENCED');
+    }
     return settlePrepareFailure(root, runId, input, { code: 'app-launch-unconfirmed',
       preserve: true, nowFn: authoritativeNow, gateFn: gateFor, deps, mutation });
   }
   if (typeof deps.descriptorBuilder !== 'function') throw new Error('APP_DESCRIPTOR_BUILDER_REQUIRED');
   const action = exactPreparedAction(deps.descriptorBuilder({ loop: snapshot, route,
     child: existing.session, attemptId: existing.attemptId }), route);
-  const descriptorDigest = contentHash(JSON.stringify(action));
+  const descriptorDigest = contentHash(JSON.stringify({ action,
+    prepare_request_digest: prepareRequestDigest }));
+  if (alreadyPrepared) {
+    if (existing.continuation.descriptor_digest !== descriptorDigest
+        || existing.continuation.project_id
+          !== (route.kind === 'create' ? route.projectId : null)) {
+      throw new Error('APP_PREPARE_REQUEST_FENCED');
+    }
+    return { ok: true, outcome: 'already-prepared', do_not_call: true,
+      attempt_id: existing.attemptId };
+  }
   const outerGate = gateFor(snapshot, { now: Number((deps.precheckNowFn ?? Date.now)()) });
   if (!outerGate.ok) return settlePrepareFailure(root, runId, input, {
     code: `gate-${outerGate.blocked_by[0].replaceAll('_', '-')}`,
@@ -22342,7 +22570,8 @@ export function prepareAppTask(root, runId, input, deps = {}) {
   let result;
   try {
     mutation.appendAnchored({ type: 'app-task-prepared',
-      data: { attempt_id: existing.attemptId, child_run_id: existing.session.run_id } },
+      data: { attempt_id: existing.attemptId, child_run_id: existing.session.run_id,
+        descriptor_digest: descriptorDigest } },
     (loop, _spent, clock) => {
       applyPrepared(loop, existing.attemptId, route, descriptorDigest, clock);
       result = { ok: true, outcome: 'prepared', do_not_call: false,
@@ -30624,17 +30853,17 @@ export function prepareAppTask(root, runId, input, deps = {}) {
   const reconcile = deps.reconcileBudgetFn ?? reconcileBudget;
   const gateFor = deps.gateFn ?? respawnGate;
   const nowFn = deps.nowFn ?? Date.now;
+  const prepareRequestDigest = appMutationIntentDigest(input, 'app-prepare');
   let reconciled = false;
   for (let casAttempt = 0; casAttempt < 3; casAttempt += 1) {
     const snapshot = appSnapshotPhase(root, runId, input, 'app-prepare', mutation =>
       mutation.readVerifiedState({ fenceCheck: loop => assertAppParentIdentity(loop, input) }));
     const loop = snapshot.data;
     const existing = assertAppParentFence(loop, input, ['emitted', 'prepared']);
-    if (existing.continuation.phase === 'prepared') {
+    const alreadyPrepared = existing.continuation.phase === 'prepared';
+    if (alreadyPrepared) {
       if (loop.session_chain.lease.handoff_phase !== 'spawned'
           || loop.session_chain.lease.state !== 'releasing') throw new Error('APP_ATTEMPT_FENCED');
-      return { ok: true, outcome: 'already-prepared', do_not_call: true,
-        attempt_id: existing.attemptId };
     }
     if (loop.status !== 'running' || loop.session_chain.lease.resume_policy !== 'app') {
       throw new Error('RUN_PAUSED: app-prepare');
@@ -30645,17 +30874,32 @@ export function prepareAppTask(root, runId, input, deps = {}) {
     try { route = resolvePrepareRoute(loop, root, input, deps); }
     catch (error) {
       if (!String(error?.message || error).startsWith('APP_ROUTE_UNCONFIRMED')) throw error;
+      if (alreadyPrepared) {
+        const parent = loop.session_chain.sessions.find(session => session.run_id === input.owner);
+        throw new Error(input.stdinMode !== parent?.host_surface?.structured_stdin_mode
+          ? 'APP_STDIN_MODE_FENCED' : 'APP_PREPARE_REQUEST_FENCED');
+      }
       failureCode = 'app-launch-unconfirmed'; preserve = true;
     }
     let action = null; let descriptorDigest = null;
-    const advisoryNow = Number((deps.precheckNowFn ?? nowFn)());
+    const advisoryNow = alreadyPrepared ? null : Number((deps.precheckNowFn ?? nowFn)());
     if (route !== null) {
       if (typeof deps.descriptorBuilder !== 'function') {
         throw new Error('APP_DESCRIPTOR_BUILDER_REQUIRED');
       }
       action = exactPreparedAction(deps.descriptorBuilder({ loop, route,
         child: existing.session, attemptId: existing.attemptId }), route);
-      descriptorDigest = contentHash(JSON.stringify(action));
+      descriptorDigest = contentHash(JSON.stringify({ action,
+        prepare_request_digest: prepareRequestDigest }));
+      if (alreadyPrepared) {
+        if (existing.continuation.descriptor_digest !== descriptorDigest
+            || existing.continuation.project_id
+              !== (route.kind === 'create' ? route.projectId : null)) {
+          throw new Error('APP_PREPARE_REQUEST_FENCED');
+        }
+        return { ok: true, outcome: 'already-prepared', do_not_call: true,
+          attempt_id: existing.attemptId };
+      }
       const gate = gateFor(loop, { now: advisoryNow });
       if (!gate.ok) failureCode = `gate-${gate.blocked_by[0].replaceAll('_', '-')}`;
     }
@@ -30707,7 +30951,8 @@ export function prepareAppTask(root, runId, input, deps = {}) {
             return result;
           }
           mutation.appendAnchored({ type: 'app-task-prepared', data: {
-            attempt_id: bound.attemptId, child_run_id: bound.session.run_id } },
+            attempt_id: bound.attemptId, child_run_id: bound.session.run_id,
+            descriptor_digest: descriptorDigest } },
           (candidate, _spent, clock) => {
             applyPrepared(candidate, bound.attemptId, route, descriptorDigest, clock);
             result = { ok: true, outcome: 'prepared', do_not_call: false,
@@ -30740,6 +30985,13 @@ export function prepareAppTask(root, runId, input, deps = {}) {
   }
   throw new Error('APP_PREPARE_CAS_EXHAUSTED');
 }
+
+// The prepared no-op is an exact response-loss replay, not a phase-only shortcut. Its descriptor
+// envelope binds the complete app-prepare intent digest (stdin mode plus bounded route/host input)
+// and the exact action. After journal cleanup, retry recomputes the pure route/action envelope and
+// returns no action only on digest equality. Changed mode throws APP_STDIN_MODE_FENCED; any other
+// changed prepare input throws APP_PREPARE_REQUEST_FENCED. Retry never resamples clock/gate or
+// reconciles budget.
 
 export function confirmAppTask(root, runId, input, deps = {}) {
   const threadId = validateOpaqueId(input.threadId, { label: 'thread-id' });
@@ -31283,7 +31535,7 @@ test8b('Task 11C snapshot wrapper composes with production prepare and redacts a
   assert8b.equal(first.action.tool, 'create_thread');
   const retry = prepare8b(fixture.root, fixture.runId, request, {
     nowFn: () => assert8b.fail('exact retry does not sample'),
-    cwdFn: () => assert8b.fail('exact retry does not derive a route'),
+    cwdFn: () => fixture.root,
     reconcileBudgetFn: () => assert8b.fail('exact retry does not reconcile'),
     gateFn: () => assert8b.fail('exact retry does not gate'),
   });
@@ -31292,6 +31544,13 @@ test8b('Task 11C snapshot wrapper composes with production prepare and redacts a
   });
   assert8b.equal(JSON.stringify(retry).includes('projectId'), false);
   assert8b.equal(JSON.stringify(retry).includes('prompt'), false);
+  assert8b.throws(() => prepare8b(fixture.root, fixture.runId,
+    { ...request, stdinMode: 'pipe-open-noecho' }, productionDeps),
+  /APP_STDIN_MODE_FENCED/);
+  assert8b.throws(() => prepare8b(fixture.root, fixture.runId,
+    { ...request, hostInput: { ...request.hostInput,
+      currentHostTaskCwd: `${fixture.root}/.` } }, productionDeps),
+  /APP_PREPARE_REQUEST_FENCED/);
 
   const noRoute = emitted8b();
   const preserved = prepare8b(noRoute.root, noRoute.runId,
@@ -31433,11 +31692,12 @@ function exactObjectKeys(value, keys) {
     && Object.keys(value).sort().join('\0') === [...keys].sort().join('\0');
 }
 
-function finalizePreparedAppAction(candidate, route) {
+function finalizePreparedAppAction(candidate, route, prepareRequestDigest) {
   const fail = () => { throw new Error('APP_PREPARED_ACTION_INVALID'); };
   const prompt = route?.kind === 'fork' ? candidate?.followup?.prompt : candidate?.prompt;
   if (!route || typeof prompt !== 'string' || prompt.length === 0
-      || Buffer.byteLength(prompt, 'utf8') > APP_RESUME_PROMPT_MAX_BYTES) fail();
+      || Buffer.byteLength(prompt, 'utf8') > APP_RESUME_PROMPT_MAX_BYTES
+      || !/^[0-9a-f]{64}$/.test(prepareRequestDigest || '')) fail();
   if (route.kind === 'create') {
     if (!exactObjectKeys(candidate, ['tool', 'target', 'prompt'])
         || candidate.tool !== 'create_thread'
@@ -31454,7 +31714,9 @@ function finalizePreparedAppAction(candidate, route) {
         || !exactObjectKeys(candidate.followup, ['tool', 'prompt'])
         || candidate.followup.tool !== 'send_message_to_thread') fail();
   } else fail();
-  return { action: candidate, descriptorDigest: contentHash(JSON.stringify(candidate)) };
+  return { action: candidate, descriptorDigest: contentHash(JSON.stringify({
+    action: candidate, prepare_request_digest: prepareRequestDigest,
+  })) };
 }
 ```
 
@@ -31487,6 +31749,7 @@ if (route !== null) {
         loop, route, child: childSession, attemptId: continuation.attempt_id,
       }),
     route,
+    prepareRequestDigest,
   );
   action = completed.action;
   descriptorDigest = completed.descriptorDigest;
@@ -34748,7 +35011,7 @@ The first App run asks for per-run consent; decline or ambiguity keeps manual mo
 
 The structured Node process must emit exact `READY` before one bounded line is sent, and the accepted mode must produce zero input echo. Observation/project payloads are JSON; confirm and only `message-unconfirmed` send the validated raw UTF-8 opaque ID itself (maximum 512 bytes) followed by exactly one LF, while an ordinary fail has no stdin/READY path. Unsupported, ambiguous, timed-out, echoed, or response-lost probes make zero App task calls and fall back to manual resume. A returned create/fork/send receipt is durably confirmed before the reserved child may acquire the lease (confirmation-before-acquire); uncertainty never triggers an automatic retry or cleanup.
 
-`LOCK_STALE_MANUAL` names the fixed authority `.deep-loop/.init.lock`. Stop every related deep-loop process, run the read-only `init-run status`, inspect the exact project root and pending/current state, and request separate human approval before deleting that single lock. The plugin never reclaims it automatically.
+`LOCK_STALE_MANUAL` names the held terminal of the append-only authority chain rooted at `.deep-loop/.init.lock`. Stop every related deep-loop process, run the read-only `init-run status`, inspect the exact strict root/successor/release chain plus pending/current state, and request separate human approval before compacting or deleting any authority artifact. The plugin never reclaims that chain automatically.
 
 `PreCompact` remains emit-only. Unattended/headless execution stays in `scripts/hooks-impl/drive-headless.mjs` and makes zero App task calls. Codex App real smoke receipt: Gate 5 passed on the exact App build, host OS, candidate SHA, and cases recorded in `docs/handoff/2026-07-13-codex-app-native-task-continuation-evidence.md`; that receipt does not claim unobserved App/OS combinations.
 ```
@@ -34766,7 +35029,7 @@ Codex App 설치/발견과 task 내부 스킬 실행은 계속 지원합니다. 
 
 구조화 Node 프로세스가 정확한 `READY`를 먼저 내보낸 뒤 bounded line 하나만 전달하며, 허용된 mode의 입력 echo는 0이어야 합니다. Observation/project payload는 JSON이지만 confirm과 `message-unconfirmed`만 검증된 raw UTF-8 opaque ID 자체(최대 512 bytes) 뒤 exactly one LF를 전달합니다. ordinary fail은 no stdin/READY 경로입니다. 미지원·모호·timeout·echo·응답 유실 probe는 App task 호출 0회와 수동 폴백으로 끝납니다. create/fork/send receipt를 durable confirm한 후에만 reserved child가 lease를 acquire합니다(확인 후에만 acquire). 불확실성은 자동 재시도나 자동 정리를 허용하지 않습니다.
 
-`LOCK_STALE_MANUAL`의 고정 authority는 `.deep-loop/.init.lock`입니다. 관련 deep-loop 프로세스를 모두 중단하고 read-only `init-run status`로 정확한 project root 및 pending/current 상태를 진단한 뒤, 그 lock 하나의 삭제에 별도 사람 승인을 받습니다. 자동 reclaim은 없습니다.
+`LOCK_STALE_MANUAL`은 `.deep-loop/.init.lock`에서 시작하는 append-only authority chain의 held terminal을 뜻합니다. 관련 deep-loop 프로세스를 모두 중단하고 read-only `init-run status`로 exact root/successor/release chain과 pending/current 상태를 진단한 뒤, authority artifact의 compaction 또는 삭제에 별도 사람 승인을 받습니다. 자동 reclaim은 없습니다.
 
 `PreCompact`는 emit-only입니다. unattended/headless 실행은 `scripts/hooks-impl/drive-headless.mjs`에 격리되고 App task 호출 0회입니다. Codex App real smoke receipt: Gate 5에서 실제 App build, host OS, candidate SHA, case 결과를 `docs/handoff/2026-07-13-codex-app-native-task-continuation-evidence.md`에 기록해 통과했으며, 관측하지 않은 App/OS 조합까지 주장하지 않습니다.
 ```
@@ -35581,6 +35844,19 @@ for (const task of taskMatches) {
       if (!card.includes(token)) fail(`Task 5B missing platform durability token ${token}`);
     }
   }
+  if (task[1] === '5A') {
+    for (const token of ['INIT_LOCK_CHAIN_MAX = 64', 'function followInitAuthority(',
+      "'.init-lock-release-' + nonce", "'.init-lock-successor-' + authority.holder.nonce",
+      'link(candidate, releasePath)', 'LOCK_CHAIN_EXHAUSTED',
+      'never pathname-deletes a release-time copied-nonce ABA replacement',
+      'append-only authority evidence']) {
+      if (!card.includes(token)) fail(`Task 5A missing append-only lock-chain token ${token}`);
+    }
+    for (const forbidden of ['unlink(fixed)', 'unlink(terminal.publishPath)',
+      'unlink(published.authorityPath)']) {
+      if (card.includes(forbidden)) fail(`Task 5A deletes authority pathname: ${forbidden}`);
+    }
+  }
   if (task[1] === '7A') {
     for (const token of ['export function legacyProofOrigins(',
       'export function legacyAuthorityDigest(',
@@ -35858,6 +36134,11 @@ for (const task of taskMatches) {
       "deps.beforeAppendFn?.({ operation: 'revoke'",
       "deps.beforeAppendFn?.({ operation: 'sweep'",
       'APP_PREPARE_DECISION_CHANGED',
+      "appMutationIntentDigest(input, 'app-prepare')",
+      'prepare_request_digest: prepareRequestDigest',
+      'descriptor_digest: descriptorDigest',
+      'APP_PREPARE_REQUEST_FENCED', 'APP_STDIN_MODE_FENCED',
+      'prepared no-op is an exact response-loss replay',
       'prepare authorizes deadline and gate with the fresh final-lock clock',
       'reentrant final-lock clock and gate seams fail closed without a write',
       'function bindAppParentRouteOutsideLock(',
@@ -35883,6 +36164,8 @@ for (const task of taskMatches) {
       "'route-null never invokes the production builder'",
       "test8b('throwing or recursively extra descriptor is write free'",
       'APP_PREPARED_ACTION_INVALID', 'if (route !== null)',
+      'finalizePreparedAppAction(candidate, route, prepareRequestDigest)',
+      'prepare_request_digest: prepareRequestDigest',
       'action = completed.action', 'descriptorDigest = completed.descriptorDigest',
       'app-task prepare projects snake_case stdin into one public create action',
       'READY plus one JSON response only', 'tests/orch-cli.test.mjs',
@@ -36053,8 +36336,9 @@ for (const fence of fenceRecords) {
 }
 
 {
-  // Execute the exact displayed owner-safe lock implementation against the copied-token ABA that
-  // a nonce-only release misses. The retained candidate hard link is the release identity.
+  // Execute the exact displayed append-only lock against a same-token replacement injected during
+  // release publication. Then execute two ordinary owners through the successor chain and prove a
+  // pre-existing nonce-collision candidate is preserved. No authority pathname may enter unlink.
   const lockFence = fenceRecords.find(record => record.language === 'js'
     && record.body.includes('export function withInitLock(root, fn, deps = {})')
     && record.body.includes('INIT_LOCK_CANDIDATE_SWEEP_MAX'));
@@ -36076,15 +36360,54 @@ const exactKeys = (value, keys) => value !== null && typeof value === 'object'
 const root = ${JSON.stringify(root)};
 const nonce = 'copiednonce00001';
 const later = { pid: 99, nonce, acquired_at: '2026-07-13T00:00:01.000Z' };
-withInitLock(root, () => {
-  const fixed = join(root, '.deep-loop', '.init.lock');
-  unlinkSync(fixed);
-  writeFileSync(fixed, JSON.stringify(later));
-}, { pid: 7, nonce: () => nonce, platform: 'linux', realpath: value => value,
-  now: () => Date.parse('2026-07-13T00:00:00.000Z') });
+const fixed = join(root, '.deep-loop', '.init.lock');
+const unlinked = [];
+withInitLock(root, () => {}, {
+  pid: 7, nonce: () => nonce, platform: 'linux', realpath: value => value,
+  now: () => Date.parse('2026-07-13T00:00:00.000Z'),
+  link: (source, destination) => {
+    if (destination.endsWith('.init-lock-release-' + nonce)) {
+      unlinkSync(fixed);
+      writeFileSync(fixed, JSON.stringify(later));
+    }
+    return linkSync(source, destination);
+  },
+  unlink: path => { unlinked.push(path); return unlinkSync(path); },
+});
 assert.deepEqual(JSON.parse(readFileSync(join(root, '.deep-loop', '.init.lock'))), later);
+assert.equal(unlinked.every(path => path.includes('.init-lock-candidate-')), true);
 assert.deepEqual(readdirSync(join(root, '.deep-loop'))
   .filter(name => name.startsWith('.init-lock-candidate-')), []);
+
+const sequenceRoot = join(${JSON.stringify(root)}, 'sequence');
+mkdirSync(sequenceRoot);
+const entered = [];
+for (const ownerNonce of ['chainowner000001', 'chainowner000002']) {
+  withInitLock(sequenceRoot, () => entered.push(ownerNonce), {
+    pid: 7, nonce: () => ownerNonce, platform: 'linux', realpath: value => value,
+    now: () => Date.parse('2026-07-13T00:00:00.000Z'),
+  });
+}
+assert.deepEqual(entered, ['chainowner000001', 'chainowner000002']);
+assert.deepEqual(readdirSync(join(sequenceRoot, '.deep-loop')).sort(), [
+  '.init-lock-release-chainowner000001',
+  '.init-lock-release-chainowner000002',
+  '.init-lock-successor-chainowner000001',
+  '.init.lock',
+]);
+
+const collisionRoot = join(${JSON.stringify(root)}, 'collision');
+mkdirSync(join(collisionRoot, '.deep-loop'), { recursive: true });
+const collisionNonce = 'collisionowner01';
+const collisionCandidate = join(collisionRoot, '.deep-loop',
+  '.init-lock-candidate-7-' + collisionNonce);
+const collisionBytes = Buffer.from('pre-existing-candidate');
+writeFileSync(collisionCandidate, collisionBytes);
+assert.throws(() => withInitLock(collisionRoot, () => assert.fail('collision entered'), {
+  pid: 7, nonce: () => collisionNonce, platform: 'linux', realpath: value => value,
+  now: () => Date.parse('2026-07-13T00:00:00.000Z'),
+}), error => error?.code === 'EEXIST');
+assert.deepEqual(readFileSync(collisionCandidate), collisionBytes);
 `);
       const executed = spawnSync(process.execPath, [probePath], {
         encoding: 'utf8', maxBuffer: 4 * 1024 * 1024,
@@ -36092,7 +36415,7 @@ assert.deepEqual(readdirSync(join(root, '.deep-loop'))
       if (executed.error || executed.status !== 0) {
         const diagnostic = String(executed.error?.message
           || executed.stderr || executed.stdout).split('\n').slice(0, 30).join(' | ');
-        fail(`owner-safe init lock copied-token ABA behavior: ${diagnostic}`);
+        fail(`owner-safe init lock release-time ABA behavior: ${diagnostic}`);
       }
     } finally {
       rmSync(probeDir, { recursive: true, force: true });
@@ -36136,7 +36459,7 @@ if (existsSync('README.md')) {
     const probePath = join(sequentialSourceDir, '.plan-file-publication-probe.mjs');
     writeFileSync(probePath, `
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { linkSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createFileDurablyIfAbsent } from './scripts/lib/durable-file.mjs';
@@ -36144,7 +36467,11 @@ const root = mkdtempSync(join(tmpdir(), 'plan-file-publish-'));
 const target = join(root, 'episode-request-001-deep-work.md');
 assert.equal(createFileDurablyIfAbsent(target, 'kernel', {
   nonce: () => 'fileprobe0000000000000',
-  beforePublish: () => writeFileSync(target, 'execution-plane winner'),
+}, {
+  link: (source, destination) => {
+    writeFileSync(destination, 'execution-plane winner');
+    return linkSync(source, destination);
+  },
 }), false);
 assert.equal(readFileSync(target, 'utf8'), 'execution-plane winner');
 assert.deepEqual(readdirSync(root), ['episode-request-001-deep-work.md']);
@@ -37201,9 +37528,7 @@ test('installed breaker afterimage executes stable IDs and current lease policy'
       const boundaryFamily = /(?:append|commit|publish|mutation|journal|lock|write|rename|replace|materialize|fsync|read|state|authority|review|input)/iu
         .test(name);
       const timingFamily = /^(?:before|after|pre|post|catch)[A-Z]/u.test(name);
-      const bareBoundary = /^(?:before|after|pre|post)[A-Z][A-Za-z0-9]*(?:Lock|Inputs|Append|Commit|Publish|Mutation|Write|Rename|Replace|Materialize|Fsync)$/u
-        .test(name);
-      return callbackShape && (crashFamily || boundaryFamily && timingFamily) || bareBoundary;
+      return callbackShape && crashFamily || timingFamily && boundaryFamily;
     };
     const allowedRaceSeams = new Map([
       ['7F', new Set(['beforeMutableReviewInputs', 'beforeFinalLock'])],
@@ -37212,12 +37537,22 @@ test('installed breaker afterimage executes stable IDs and current lease policy'
       // Task 11C owns the test worker that injects Task 8A's seam as well as the four App seams.
       ['11C', new Set(['beforeAppendFn', 'beforeFinalAppendFn', 'catchReadStateFn'])],
     ]);
-    const callbackSurfaceTasks = ['7F', ...finalSurfaceInventory.keys()];
+    for (const name of ['beforePublish', 'catchReadState', 'beforeMakerAuthorityRead',
+      'beforeReviewInput', 'afterFinalLockHook', 'crashProbe']) {
+      if (!dangerousCallbackName(name)) fail(`callback capability classifier misses ${name}`);
+    }
+    for (const name of ['beforeEach', 'readFile', 'sameFile', 'nowFn']) {
+      if (dangerousCallbackName(name)) fail(`callback capability classifier overmatches ${name}`);
+    }
+    const callbackSurfaceTasks = ['5B', '7F', ...finalSurfaceInventory.keys()];
     for (const taskId of callbackSurfaceTasks) {
       const task = taskMatches.find(match => match[1] === taskId);
       const nextTask = source.indexOf('\n### Task ', task.index + 1);
       const card = source.slice(task.index, nextTask < 0 ? source.length : nextTask);
-      const executable = taskId === '7F'
+      const executable = taskId === '5B'
+        ? [...card.matchAll(/```js\n([\s\S]*?)\n```/g)].map(match => match[1])
+          .find(body => body.includes('// scripts/lib/durable-file.mjs — complete file')) ?? ''
+        : taskId === '7F'
         ? [
           ...[...card.matchAll(/```js\n([\s\S]*?)\n```/g)].map(match => match[1])
             .filter(body => body.includes('PLAN_REPLACE_RANGE: scripts/lib/episode.mjs')),
@@ -37231,9 +37566,13 @@ test('installed breaker afterimage executes stable IDs and current lease policy'
           match[1] === 'js' ? match[2] : match[2].split('\n').filter(line =>
             (line.startsWith('+') && !line.startsWith('+++ ')) || line.startsWith(' '))
             .join('\n')).join('\n');
-      const callbackNames = new Set([...executable.matchAll(
-        /\b[A-Za-z][A-Za-z0-9]*\b/gu)]
-        .map(match => match[0]).filter(dangerousCallbackName));
+      const callbackNames = new Set([
+        ...[...executable.matchAll(
+          /\b([A-Za-z][A-Za-z0-9]*)\b(?=\s*(?:\?\.)?\s*\()/gu)].map(match => match[1]),
+        ...[...executable.matchAll(
+          /\b([A-Za-z][A-Za-z0-9]*)\b(?=\s*\?\?\s*[A-Za-z][A-Za-z0-9]*\s*\)\s*\()/gu)]
+          .map(match => match[1]),
+      ].filter(dangerousCallbackName));
       const allowed = allowedRaceSeams.get(taskId) ?? new Set();
       for (const name of callbackNames) {
         if (!allowed.has(name)) {
@@ -37403,7 +37742,7 @@ test('installed breaker afterimage executes stable IDs and current lease policy'
           `${descriptor}\n\n${actionValidator}\n\n${composed}\n`);
         if (checked.error || checked.status !== 0) {
           const diagnostic = String(checked.error?.message || checked.stderr || checked.stdout)
-            .split('\n')[0];
+            .split('\n').slice(0, 12).join(' | ');
           fail(`Task 11C to 12B composed final syntax: ${diagnostic}`);
         }
       }
@@ -37501,7 +37840,7 @@ git diff --cached -- docs/superpowers/plans/2026-07-13-codex-app-native-task-con
 git status --short --branch
 ```
 
-Expected: the validator prints `ok:true` for the exact 46-card inventory, ordered seven-step semantics, nonempty Files/Interfaces, strict literal path multisets for scoped Step 6/7 commands and exact anchor tokens, the fixed known/nonempty/closed fence inventory and syntax, exact unified-diff hunk counts with no orphan trailing payload, executed copied-token ABA protection, sequential Task 7B→7G concrete substrate through the Task 11B gateway closure, exact Task 7F–11C race-callback closure, and mechanically composed Task 11C→12B final syntax. Task 8A–11B late source cards are structural inventory here and become executable evidence only through their ordered card-local tests and Gate 3B preflight. Gate 5/7/8/9 approval/evidence semantics, ULIDs, banned prose, wildcard patterns, and whitespace are also checked. The ignored plan is then force-added so staged checks and inspection cover the exact reviewed bytes.
+Expected: the validator prints `ok:true` for the exact 46-card inventory, ordered seven-step semantics, nonempty Files/Interfaces, strict literal path multisets for scoped Step 6/7 commands and exact anchor tokens, the fixed known/nonempty/closed fence inventory and syntax, exact unified-diff hunk counts with no orphan trailing payload, executed release-time copied-token ABA preservation with zero authority unlink, sequential lock-chain acquisition and candidate-collision preservation, sequential Task 7B→7G concrete substrate through the Task 11B gateway closure, exact Task 5B–11C race-callback closure, and mechanically composed Task 11C→12B final syntax. Task 8A–11B late source cards are structural inventory here and become executable evidence only through their ordered card-local tests and Gate 3B preflight. Gate 5/7/8/9 approval/evidence semantics, ULIDs, banned prose, wildcard patterns, and whitespace are also checked. The ignored plan is then force-added so staged checks and inspection cover the exact reviewed bytes.
 
 ## Execution Handoff
 
