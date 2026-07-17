@@ -35808,7 +35808,14 @@ guarantees are unchanged.
 
 Before the first closeout commit, create exactly one isolated
 `codex/codex-app-native-task-continuation-closeout` worktree from the verified merged deep-loop
-`origin/main` commit. Require `git rev-parse --show-object-format` to equal `sha1`; this release
+`origin/main` commit. Before `git worktree add`, use the same canonical executable, empty-map
+environment, disabled config, and explicit `GIT_NO_LAZY_FETCH=1` defined below to parse the common
+local config with includes disabled. Reject `extensions.partialClone`, every `remote.*.promisor`, and
+every `remote.*.partialCloneFilter`. Run
+`git rev-list --objects --missing=print <exact-merged-main>` with lazy fetch disabled; reject any
+`?`-prefixed missing-object record and require `git rev-list --objects --missing=error` to exit zero.
+Thus worktree materialization cannot invoke transport or credential helpers and the complete merged
+tree is already local. Require `git rev-parse --show-object-format` to equal `sha1`; this release
 contract is intentionally bound to the repository's current SHA-1 storage and every release object
 ID must be exactly 40 lowercase hexadecimal characters. A different object format stops for a newly
 reviewed plan rather than silently claiming generic support.
@@ -35818,7 +35825,8 @@ Every closeout commit follows this finite procedure:
 1. Resolve one regular canonical Git executable and record its realpath/SHA-256. Invoke that exact
    executable with `-C <canonical-authorized-worktree>` and an environment built from an empty map:
    fixed locale, a private empty HOME, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_SYSTEM=/dev/null`, and
-   `GIT_CONFIG_GLOBAL=/dev/null`; inherit no other `GIT_*` variable. Prefix every command with
+   `GIT_CONFIG_GLOBAL=/dev/null`, plus explicit `GIT_NO_LAZY_FETCH=1`; inherit no other `GIT_*`
+   variable. Prefix every command with
    `--no-replace-objects -c core.hooksPath=/dev/null -c core.fsmonitor=false -c commit.gpgSign=false
    -c tag.gpgSign=false -c gc.auto=0 -c maintenance.auto=false`; commit identity is supplied by fixed
    `-c user.name=... -c user.email=...`, never local config. Before any `add`, `diff`, or `commit`,
@@ -35830,7 +35838,8 @@ Every closeout commit follows this finite procedure:
    `merge.*.driver`, `core.(attributesFile|hooksPath|fsmonitor|worktree|gitProxy|sshCommand|
    alternateRefsCommand|editor|pager)`, `pager.*`, `interactive.diffFilter`, `sequence.editor`,
    `gpg.*`, `user.signingKey`, `(commit|tag).gpgSign`, `fsmonitor.*`,
-   `remote.*.(uploadpack|receivepack)`, or `submodule.*.update`, case-insensitively. Require the
+   `extensions.partialClone`, `remote.*.(promisor|partialCloneFilter|uploadpack|receivepack)`, or
+   `submodule.*.update`, case-insensitively. Require the
    alternates file absent, `git for-each-ref refs/replace` empty, and raw
    `git check-attr -z --all -- <each exact allowed path>` output empty immediately before and after
    staging. Any configured attribute—including `filter`, `diff`, `merge`, or
@@ -36362,6 +36371,9 @@ requireTokens('Common closeout', closeoutProtocol, [
   'explicit allowed path/status set', 'predecessor-known Buffer',
   'environment built from an empty map', 'GIT_CONFIG_NOSYSTEM=1',
   'GIT_CONFIG_SYSTEM=/dev/null', 'GIT_CONFIG_GLOBAL=/dev/null',
+  'GIT_NO_LAZY_FETCH=1', 'extensions.partialClone', 'remote.*.promisor',
+  'git rev-list --objects --missing=print <exact-merged-main>',
+  'git rev-list --objects --missing=error', 'transport or credential helpers',
   '--no-replace-objects -c core.hooksPath=/dev/null -c core.fsmonitor=false -c commit.gpgSign=false',
   'git config --local --no-includes --null --list', 'key LF value NUL',
   'filter.*', 'diff.external', 'merge.*.driver', 'git check-attr -z --all',

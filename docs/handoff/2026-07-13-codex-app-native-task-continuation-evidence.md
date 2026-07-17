@@ -3365,6 +3365,70 @@ no inherited approval from the historical receipt.
   and work advances directly to Gate 2. No further whole-plan review is authorized here.
 
 
+### Gate 1 fresh cycle 8 round 13 micro-delta review
+
+- focused base/target:
+  `36e4515275fe598344fdae91ccdf67e59732ff3d..eb000ac2ec3926dd98e76adbd38dcb9128bca3e8`.
+- initial attempt: standard/adversarial exact `gpt-5.6-sol` / high / read-only processes both ended
+  on model-capacity errors without final files and are noncounted (`N_actual=0`). Main independently
+  reproduced the interrupted adversarial process's high-bit ASCII-folding counterexample and added
+  byte-`<=0x7f` header checks before fresh retry.
+- retry standard: task `019f70c6-285a-7cd0-9cad-89b883663afb`, valid final and exit 0,
+  `REQUEST_CHANGES`, one P1 / Red 1. It found partial-clone lazy fetch as an external transport and
+  credential-helper path. Because this was already actionable, adversarial retry was not launched;
+  `N_planned=2`, `N_actual=1`, degraded.
+- formal synthesis: `REQUEST_CHANGES`, consolidated Red/Yellow/Info `1 / 0 / 0 — DO NOT ADVANCE`.
+- report: `.deep-review/reports/2026-07-18-010401-review.md`, SHA-256
+  `b48c94b3897d83ff07d7e2a987100408658748422762ef6241b790e8a0c46d85`.
+- initial noncounted standard raw/stderr/argv SHA-256:
+  `3ce9a7f02418ac41fda4776f5f0c5e70337570823ccdf5257349a9545f8352df` /
+  `f411b92526b7ff58ba64e12262ff77f6f6e635bfb212a4e0bc0562f6371d8c9a` /
+  `4636e918cd9bc03628c0bc57f26ddb399c947bc71e450f51d0063504fcec0223`.
+- initial noncounted adversarial raw/stderr/prompt/argv SHA-256:
+  `8a734ac94f3377ae2e66a18014ad17dce7a1fb1d252bf7aa89c4d8d617e250d8` /
+  `27626dcc375dd6067c538a5e418ea0faa01a3bcd832db8d88a7fb50495cfae08` /
+  `6bcba670502ba5eaa7a235c1c9494663ec3c7d89baa2b3edefaf92037cd30901` /
+  `811720ae62b145b93e98afe51c07d25c1035a96f4b41084791f0e675f0ac9722`.
+- retry standard raw/final/stderr/argv SHA-256:
+  `edc02c2a5c997cbf03458a77b6fae36a60f8a8f9775e17a451a189ed3a72a56c` /
+  `b8546ec0720ba2aa77fefd33f1b438a61e4318869c67a7c937ec62f078e4fd56` /
+  `f56e15d5d0c3c3388ba8f949806391080c93ece4965f7e681a280141f04462ff` /
+  `a84562eb40ae4e56a110d0a7685245b26013f14f4207e148fe602e52e3d63ee0`.
+- recurring findings: validated Stage 5.5 run `01KXRD656A0D58HP8QREZB2EYK`; security
+  `37→38`; architecture `93`, test-coverage `49`, and error-handling `33` stayed unchanged.
+
+### Gate 1 fresh cycle 8 round 13 Respond
+
+- disposition: accepted the Red root; rejected/deferred none; `execution_path=main_fallback`.
+- pre-materialization guard: before `git worktree add`, use the canonical executable and empty-map
+  environment with explicit `GIT_NO_LAZY_FETCH=1`. Reject `extensions.partialClone`,
+  `remote.*.promisor`, and `remote.*.partialCloneFilter` in common or worktree scope.
+- local completeness: run `git rev-list --objects --missing=print <exact-merged-main>` with lazy fetch
+  disabled and reject every `?` record; require the `--missing=error` form to exit zero. Only then may
+  the exact merged-main closeout worktree be materialized.
+- high-bit parser response: every outer magic/header line rejects any byte above `0x7f` before ASCII
+  decoding. The negative fixture mutates the first magic byte in both suffixes and both parsers fail.
+- executable proof: the actual fixture first installs partial-clone/promisor config and proves the
+  local guard rejects it, clears the config, verifies the entire object graph locally with lazy fetch
+  disabled, and only then creates the closeout worktree. Existing local/worktree clean-filter,
+  attributes, hook, exact parser, EOF, and two-round checks remain green.
+- unchanged authority: pre-Gate-6 SHA-256
+  `4bc32f7e955c39ff93f1faf15dce745b84f0647605f546d7f12f87ce6e8a8ec0`; Gate 6 SHA-256
+  `648504926fc529d9e02202399384c09d5bc2737884187ed9923c90f1270733a4`.
+- closure probe: `.deep-review/tmp/cycle8-round12-closure-probe.mjs`, SHA-256
+  `c12353f91faee5a2179e40b8dd528181aa378d101c02039318302fcc62deb478`; output SHA-256
+  `b3088363eae34cc257ea760d2f85a4648873a2c4723be8970605b8aa15f250db`.
+- verification: embedded validator passed 46 tasks/372 fences. `npm run preflight` passed 1,463/1,463
+  on the first full run, log SHA-256
+  `492f8d5e1a0968457ea707960c3957fbf7e5c7c1122c2ec9855c968bbd60d290`; both diff checks passed.
+- corrected candidate hashes before correction commit: handoff
+  `c9cffa2c0b373e113beb6c133ad3ab9a7d92bcb8d45c2d0906631058586025bd`; design
+  `ea0ec55f94bf24d099a14179d6630408e59994299590b5b50406b6401231ddf8`; plan
+  `3c9adbdcd05fe995fda39d5ac399f7bbb4ba5d9bd15f6c82b9b96c964382d0e7`.
+- gate state: open. Fresh round 14 must provide two valid same-target `APPROVE` voices with
+  Red/Yellow `0 / 0`. No degraded/capacity attempt can close Gate 1.
+
+
 ## Review receipt template
 
 Each reviewed gate will add a receipt with all of these fields:
