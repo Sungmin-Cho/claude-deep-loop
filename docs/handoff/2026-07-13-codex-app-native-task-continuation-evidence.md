@@ -3425,6 +3425,12 @@ no inherited approval from the historical receipt.
   `c9cffa2c0b373e113beb6c133ad3ab9a7d92bcb8d45c2d0906631058586025bd`; design
   `ea0ec55f94bf24d099a14179d6630408e59994299590b5b50406b6401231ddf8`; plan
   `3c9adbdcd05fe995fda39d5ac399f7bbb4ba5d9bd15f6c82b9b96c964382d0e7`.
+- correction commit: `9959c9598b7fc555a7e875e81f1e1de87b380344`; pre-receipt evidence SHA-256
+  `999b48d893b9c6db5aa2adb4dee927bc78ca20b1adeac6463ea7a83a5c43e036`.
+- response path: `.deep-review/responses/2026-07-18-010704-response.md`, SHA-256
+  `7beebc338ef450e7f26e47c4fa50ebb07a418ab71f6c741c6eb7b7af8e50b707`.
+- Phase 6 main-fallback log: `.deep-review/tmp/phase6-cycle8-round13.log`, SHA-256
+  `174cdb47b8735288a344ce3813edb707fbdd53cecfa20d30fc56a53fece4a153`.
 - gate state: open. Fresh round 14 must provide two valid same-target `APPROVE` voices with
   Red/Yellow `0 / 0`. No degraded/capacity attempt can close Gate 1.
 
