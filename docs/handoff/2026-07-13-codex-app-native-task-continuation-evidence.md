@@ -2866,6 +2866,12 @@ no inherited approval from the historical receipt.
   `c9cffa2c0b373e113beb6c133ad3ab9a7d92bcb8d45c2d0906631058586025bd`; design
   `dda8f330de535b4b89b7065a7ffda338c5a4dacd83a85a76967ab90badc3913a`; plan
   `99bd5c772c6eed030e55cff8f73912fe8227e1a96de80c1135bacf288dd16f90`.
+- correction commit: `017b7a943e78bd7b8dc9d1526033578eac849112`; pre-receipt evidence SHA-256
+  `fc61edecfe87e74755afb9a020a3d8b6a247303a03fb4f52375a317185aa0bec`.
+- response path: `.deep-review/responses/2026-07-17-155753-response.md`, SHA-256
+  `e07a9403dbce9a5b0b7019fba03991d4ad1e766b575dcb9e5c32ea3fb864473b`.
+- Phase 6 main-fallback log: `.deep-review/tmp/phase6-cycle8-round6.log`, SHA-256
+  `0b5643702b2d9c644b1c83d5ed7f75307a10526edcafc820fc0cf06e4df41d77`.
 - gate state: still open. Changed bytes require fresh cycle 8 round 7 under the same exact two-way
   standard/adversarial `gpt-5.6-sol`/high contract, with Opus and agy excluded. This Respond is not a
   Gate 1 pass.
