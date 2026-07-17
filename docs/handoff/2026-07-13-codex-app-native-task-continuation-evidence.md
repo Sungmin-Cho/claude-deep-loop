@@ -32,7 +32,7 @@ Main-agent judgment: the fetched remote base, version, test count, and user-owne
 
 ## Gate 1 — research and design
 
-Status: REVIEW OPEN — fresh cycle 8 round 6 Respond complete; CONCERN, round 7 pending
+Status: REVIEW OPEN — fresh cycle 8 round 7 Respond complete; REQUEST_CHANGES, round 8 pending
 
 Design target: `docs/superpowers/specs/2026-07-13-codex-app-native-task-continuation-design.md`
 
@@ -2873,6 +2873,93 @@ no inherited approval from the historical receipt.
 - Phase 6 main-fallback log: `.deep-review/tmp/phase6-cycle8-round6.log`, SHA-256
   `0b5643702b2d9c644b1c83d5ed7f75307a10526edcafc820fc0cf06e4df41d77`.
 - gate state: still open. Changed bytes require fresh cycle 8 round 7 under the same exact two-way
+  standard/adversarial `gpt-5.6-sol`/high contract, with Opus and agy excluded. This Respond is not a
+  Gate 1 pass.
+
+### Gate 1 fresh cycle 8 round 7 review
+
+- gate/artifact: Gate 1 design plus complete 46-task plan, operating handoff, evidence ledger,
+  cycle-8 round-6 report/response, and current repository code/tests.
+- base/head: `c38a96137f8f4f0099c35e893860930e8ee4cf73..9b700126bc31f6055272139e1b5da1cfd47823b1`;
+  worktree clean at both counted reviewer starts.
+- invocation: Codex-only two-way contract. Standard and adversarial role processes used exact
+  `gpt-5.6-sol` / `high`, read-only sandboxing, ignored user config/rules, and ephemeral sessions. No
+  Opus or agy process was launched. Both exited 0 and produced finals despite the non-fatal local
+  model-cache parse warning. `N_planned=2`, `N_actual=2` valid role voices.
+- reviewer actual: standard task `019f6f77-7b01-79d1-b57c-5e30c46a6532` found two P2 issues;
+  adversarial task `019f6f77-7b8e-7262-9506-f652dcec67ec` found one Red and two Yellow issues.
+- synthesis/gate disposition: formal `REQUEST_CHANGES`, Red/Yellow/Info = `1 / 2 / 0`. Both reviewers
+  independently found the ancestor-directory swap and post-validation staged-blob substitution.
+  Adversarial additionally rejected process-object continuity as a mechanically meaningful content
+  authority. Main-agent disposition is `REQUEST_CHANGES — DO NOT ADVANCE`.
+- main-agent judgment: accepted all three roots after executable reproduction. Swapping a validated
+  reports parent to a symlink redirected the exclusive final-component pathname write outside the
+  root. Replacing validated worktree A with B before `git add` staged B. In contrast, writing retained
+  A directly as a Git blob and installing its exact object ID through a private index bound the tree to
+  A independently of worktree B; byte-identical reconstruction reused the same object ID and a changed
+  byte produced a different ID.
+- report path: `.deep-review/reports/2026-07-17-200906-review.md`, SHA-256
+  `b58cb644b7b39589e465703349d8f7bcbeffb12e5a748451ddd396f1a7232949`.
+- standard raw/final SHA-256: `9f300a87cef6c5eb5e5ccb1b478195b041c59b2d7e02e67fcf4a9f48fce3d2dc` /
+  `d16eb2cdf6addf1a207910cf250f81746e5b40edc1be54f001075ac8bd442f29`; exact argv record
+  `924b6bc270ab19b7bd76636208ff855673c2515fa202f100973342f6ef59ae44`.
+- adversarial raw/final SHA-256:
+  `f493904b97e10a732f928f15b4a2eb56e236aa7c8b4ee4395d19fc8b1dbf6e2a` /
+  `89583dd6756842fce150dce49260497d6041b7d824ac40e020062fa1adfced0a`; prompt
+  `71ee4052ea9063db8f31456e018c8177f18e8bc2e2718deac839a9ab407a5730`; exact argv record
+  `24f7654674463802b3e7880fda1653e1f625299eab9e03d50b55ab2c06b57f8b`.
+- independent reproduction probe: `.deep-review/tmp/cycle8-round7-reproduction-probe.mjs`, SHA-256
+  `d9f1cd2e8f4cd1bac207710d8a0b69cd14b203be10cad2ceb5f57f35e594d73a`; output SHA-256
+  `2bcded8c9f83aab34e29a36733a07348d3bae3ae9c1d7e11bd8223ac7b2518c1`.
+- recurring findings: Stage 5.5 envelope validated at run
+  `01KXQWFYC4WDR36AS1ERBZ7ESR`; architecture occurrences advanced `78→80`, security advanced
+  `31→32`, and test-coverage `47` plus error-handling `33` were unchanged.
+
+### Gate 1 fresh cycle 8 round 7 Respond
+
+- disposition: accepted the shared Red/Yellow roots and the adversarial continuity Yellow after
+  independent reproduction and content-binding analysis; closed no actionable item as rejected or
+  deferred; `execution_path=main_fallback`. The gate remains `REQUEST_CHANGES — DO NOT ADVANCE`.
+- content-authority response: the Gate 8 closeout renderer constructs exact LF-terminated fatal-UTF-8
+  Buffers for evidence, bundle, report, and response. Their byte lengths, SHA-256 values, and Git blob
+  object IDs are authority. The procedure no longer claims JavaScript object immutability, process
+  continuity, source pathname identity, or completion-time path hashes.
+- object receipt response: one recorded helper receives the four exact Buffers through bounded
+  structured stdin, writes/reads each with `git hash-object -w --stdin` and `git cat-file blob`, builds
+  a private index from the exact parent, installs only the four exact modes/blob IDs with
+  `git update-index --add --cacheinfo`, and verifies the exact four-path `git write-tree` result. It
+  creates an exact-parent commit with `git commit-tree`, revalidates commit/tree/blob/message/trailer,
+  and advances only the branch ref through expected-parent `git update-ref` CAS.
+- race/recovery response: no authoritative report/response worktree pathname is opened, so an ancestor
+  swap has no receipt write to redirect and a changed worktree file cannot alter the private-index
+  blobs. Every pre-CAS failure leaves the ref unchanged; a lost response after CAS recovers the one
+  exact commit only after all bindings revalidate, without a duplicate commit. The retained worktree
+  remains clean and detached at the recorded parent; a fresh clean checkout materializes the branch
+  receipt for audit/wiki.
+- reviewed-candidate response: the immutable deep-suite reviewed commit object, its exact parent/range,
+  six approved path names/modes/blob IDs, generator no-op, preflight/diff hashes, and two completed
+  reviewer bindings are verified directly. Later worktree or branch movement cannot silently replace
+  the reviewed candidate; any content fix creates a fresh commit and review.
+- unchanged exact authority: the pre-Gate-6 authority remains 1,968,755 JavaScript code units /
+  1,977,235 UTF-8 bytes, SHA-256
+  `4bc32f7e955c39ff93f1faf15dce745b84f0647605f546d7f12f87ce6e8a8ec0`; Gate 6 remains 14,401 code
+  units / 14,403 UTF-8 bytes, SHA-256
+  `1b7f05c95c1fb8e8a63416f859530ef1dab63194fcacb96a330d1fd213fbd693`.
+- closure probe: `.deep-review/tmp/cycle8-round7-closure-probe.mjs`, SHA-256
+  `f039315aa4a84993368ba97c64633abe9b6b2c60da1619baadba5f41898cd307`; output SHA-256
+  `043b8783cc159e5676dbe86be39cc7e2a94530f58efbb04192f61d5482de30df`.
+- verification: embedded validator passed `ok:true` for 46 tasks and 369 fences
+  (`bash=64`, `diff=91`, `js=186`, `json=4`, `markdown=12`, `text=11`, `yaml=1`). The closure probe
+  reproduced the ancestor-symlink out-of-root write and A-validation/B-staging races, then proved zero
+  receipt-path opens, worktree-substitution independence, exact four-buffer blob/private-tree/commit
+  binding, wrong-parent CAS rejection with no ref movement, post-CAS recovery without duplication,
+  byte-identical object replay, fresh checkout materialization, unchanged Gate 6 bindings, and the
+  round-8 no-Opus/no-agy contract. `npm run preflight` passed 1,463/1,463; both diff checks passed.
+- corrected candidate hashes before receipt commit: handoff
+  `c9cffa2c0b373e113beb6c133ad3ab9a7d92bcb8d45c2d0906631058586025bd`; design
+  `065bb61f16cfeac89cf67b4a75efeda0192279dff472610e4f1895f3b7f9d473`; plan
+  `ad41acd3162d78d8bca4b26f977d5032887c86b618b3aef33ddf2ca4dd5110aa`.
+- gate state: still open. Changed bytes require fresh cycle 8 round 8 under the same exact two-way
   standard/adversarial `gpt-5.6-sol`/high contract, with Opus and agy excluded. This Respond is not a
   Gate 1 pass.
 

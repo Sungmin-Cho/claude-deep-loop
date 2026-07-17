@@ -2,7 +2,7 @@
 
 작성일: 2026-07-13
 운영 계약: `docs/handoff/2026-07-13-codex-app-native-task-continuation-goal-handoff.md`
-상태: Gate 1 fresh cycle 8 round 6 Respond 완료; CONCERN 미수렴, fresh cycle 8 round 7 필요
+상태: Gate 1 fresh cycle 8 round 7 Respond 완료; REQUEST_CHANGES 미수렴, fresh cycle 8 round 8 필요
 기준: `main@c38a96137f8f4f0099c35e893860930e8ee4cf73`, deep-loop `1.8.2`
 
 > source of truth: 이 문서 + 운영 계약 + 현재 저장소 + `git log`. 이전 대화 컨텍스트를 가정하지 말라.
@@ -1539,6 +1539,28 @@ materialize하며 fsync, inode/device/link/size, pre/post source, destination by
 A→B/symlink/hard-link/valid-copy fixtures와 reviewed deep-suite HEAD/exact six-path tree 재검증도 receipt에
 결합한다. 변경된 bytes는 round 6 receipt를 상속하지 않으며 fresh cycle 8 round 7이 같은
 no-Opus/no-agy exact 2-way로 다시 검증해야 한다.
+
+Gate 1 fresh cycle 8 round 7도 Opus/agy 없이 standard와 adversarial `gpt-5.6-sol`/high 두
+valid voice를 완료했다. 두 reviewer는 component-wise parent check 뒤 pathname open 사이의 ancestor
+symlink swap과 final byte revalidation 뒤 `git add` 사이의 staged-blob substitution을 독립적으로 찾았다.
+Adversarial은 같은 프로세스가 JavaScript Buffer를 유지했다는 조건도 content authority가 아니라
+기계적으로 검증할 수 없는 절차라고 추가 지적했다. Formal verdict는 Red 1 / Yellow 2의
+`REQUEST_CHANGES`다. Main agent의 독립 probe는 swapped parent를 통한 root 밖 write와 A 검증 뒤 B를
+stage하는 반례를 실행했고, retained A를 `hash-object`로 만든 뒤 exact blob ID를 `update-index
+--cacheinfo`에 넣으면 worktree B와 무관하게 index/tree가 A에 결합됨을 확인했다.
+
+Respond는 Gate 8 receipt의 live-path copy와 `git add`를 제거한다. Canonical renderer가 만든 evidence,
+bundle, report, response 네 exact Buffer의 byte length/SHA-256와 Git object ID가 authority이며,
+byte-identical reconstruction은 같은 object ID, 한 byte 차이는 다른 ID를 만든다. Recorded helper는
+네 Buffer를 structured stdin으로 받아 `hash-object -w --stdin`/`cat-file` round-trip을 검증하고,
+exact closeout parent를 private index에 `read-tree`한 뒤 네 mode/blob만 `update-index --cacheinfo`로 넣어
+exact four-path tree를 만든다. 그 tree와 exact parent로 `commit-tree`를 만들고 commit/tree/blob/message를
+재검증한 뒤 `update-ref <ref> <new> <expected-parent>` CAS로만 branch를 전진시킨다. Pre-CAS failure는
+ref를 바꾸지 않고 post-CAS response loss는 같은 exact commit 검증으로만 회복한다. Authoritative
+report/response pathname을 열지 않으므로 ancestor swap이 쓸 지점이 없고, live worktree가 바뀌어도 staged
+blob이 바뀌지 않는다. Immutable deep-suite reviewed commit object의 exact six-path tree를 검증하며 mutable
+worktree HEAD continuity는 authority로 삼지 않는다. 변경된 bytes는 round 7 receipt를 상속하지 않으며
+fresh cycle 8 round 8이 같은 no-Opus/no-agy exact 2-way로 다시 검증해야 한다.
 
 구현 순서:
 
