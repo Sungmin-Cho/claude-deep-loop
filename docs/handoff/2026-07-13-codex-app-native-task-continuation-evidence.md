@@ -2604,6 +2604,23 @@ no inherited approval from the historical receipt.
   `eaec6c5eaa8eb49f0aaaa013d59a4259427111c65ccc01709b62dd3c515bc585`. The corrected Gate 6 section
   through its separator is 12,144 code units / 12,146 UTF-8 bytes, SHA-256
   `98905b95e5e5ef6cc30eadec493ab108db3e2b2909e726390aa4b92df2ce01a9`.
+- correction commit: `817313f50a50c96493c8d917fa24a6016dda35db`.
+- corrected candidate hashes at the correction commit: handoff
+  `ef490f193eec5fe1aa296af8810b56cbfc99639d469f111670f6fa06514b1d96`; design
+  `f17d4782e2424e5a4bda10bdc053e2e0f6dcb317336c203745d8f1445c3d1486`; plan
+  `cfd7314295f75008af63ea01edd2f1f1ed26a0cc2865f5b3abfe80ef21eabd20`; pre-receipt evidence
+  `6c27fd71c2ec693194337b6030880d2c79d1f11fca35b8626b0ebd04ba41167b`.
+- response record: `.deep-review/responses/2026-07-17-142253-response.md`, SHA-256
+  `b0fbc5d25a41040bc44911b76e321114603d6ba7146f75ccac4b4ceca28bc6fe`.
+- Phase 6 log: `.deep-review/tmp/phase6-cycle8-round3.log`, SHA-256
+  `5da31a9d47dd27ad08b29ebe52897c5b7f81b015b01a20d8805f2eec1cd77be0` (ignored evidence).
+- closure probe: `.deep-review/tmp/cycle8-round3-closure-probe.mjs`, SHA-256
+  `044e3f650be5662cc87b7992f5418495a2da0d6f766d977495b1265223536bcf`; output SHA-256
+  `2efef2659330c65c9ac55b26e80ea5cfe7a4c6b2f86420ac44cfb8412bfd201d`.
+- verification before the correction commit: embedded validator passed `ok:true` for 46 tasks and
+  369 fences (`bash=64`, `diff=91`, `js=186`, `json=4`, `markdown=12`, `text=11`, `yaml=1`);
+  `git diff --check`, `git diff --check origin/main`, and `npm run preflight` passed all 1,463 tests
+  with zero failures, cancellations, skips, or todo.
 - gate state: still open. Changed bytes require fresh cycle 8 round 4 using one native Claude
   Opus/xhigh reviewer plus standard and adversarial Codex reviewers both pinned to exact
   `gpt-5.6-sol`/high; agy remains disabled. This Respond is not a Gate 1 pass.
