@@ -2969,7 +2969,96 @@ no inherited approval from the historical receipt.
   standard/adversarial `gpt-5.6-sol`/high contract, with Opus and agy excluded. This Respond is not a
   Gate 1 pass.
 
-## Review receipt template
+### Gate 1 fresh cycle 8 round 8 review
+
+- gate/artifact: Gate 1 design plus complete 46-task plan, operating handoff, evidence ledger,
+  cycle-8 round-7 report/response, and current repository code/tests.
+- base/head: `c38a96137f8f4f0099c35e893860930e8ee4cf73..dddffe4e9f236210afc4b42bfd3de4146cf97765`;
+  worktree clean at both counted reviewer starts.
+- invocation: Codex-only two-way contract. Both counted standard and adversarial role processes used
+  exact `gpt-5.6-sol` / `high`, `--ephemeral --ignore-user-config --ignore-rules -s read-only`.
+  No Opus or agy process was launched. `N_planned=2`, `N_actual=2` valid completed role voices.
+- reviewer actual: standard task `019f6fe5-bef9-7201-90b8-93185f2cddbe` found one P1
+  self-referential receipt; fresh adversarial retry task
+  `019f6ff2-d979-7ce0-87fe-b528a3743555` found that same Red plus inherited Git
+  object/config/hook redirection. Both counted processes exited 0 with finals.
+- noncounted execution: the first adversarial process used the same exact model/effort/read-only
+  contract but exceeded 900 seconds without a final and was interrupted. It contributes no reviewer
+  voice. Raw/stderr/prompt/argv SHA-256:
+  `c846a8b145d97284f2c21bb2d0662b3400076b7a1ab002ccf6eb5f7189032521` /
+  `16cff6e088bb88cc2bc0305b57bfe82a7d35e9e86ef9f1c06eaa37cef6767d6b` /
+  `b1aba1994c033ed794b5430c0d721602b8e618b4083440de630f4c07801428a2` /
+  `4787cdcc400532a4692f771a929ec4a842a2ac6a0d479291004b97930aba02f9`.
+- synthesis/gate disposition: formal `REQUEST_CHANGES`, Red/Yellow/Info = `2 / 0 / 0`.
+  Main-agent disposition is `REQUEST_CHANGES — DO NOT ADVANCE`.
+- main-agent judgment: accepted both roots after executable reproduction. Embedding a first-pass
+  self hash changes the receipt hash and CAS outcome does not exist before CAS. Inherited
+  `GIT_OBJECT_DIRECTORY` plus a real-store alternate published a ref whose commit disappeared
+  without the injected object directory; a configured reference-transaction hook executed on
+  update-ref. Round-7 ancestor swap, staged substitution, and process-continuity findings remain
+  resolved; Gate 6 authority is unchanged.
+- report path: `.deep-review/reports/2026-07-17-215111-review.md`, SHA-256
+  `f903c6954780c2cf8e3d5d936c7732877473ef08736149e81229dbb355ec05a6`.
+- standard raw/final SHA-256:
+  `5d4ddd5d8f30e8c58a33f3f07c22934c741ee76e2c8b01ac27ad8638c38cf213` /
+  `ee97b80e4a9e898fe8efaae58d112f32b57ed52d139c5fe18736509fc5f799e2`; exact argv record
+  `d6c706b4495de01737ae672df12d14a2861c94deca9a6cc557c52883592aaeb3`.
+- counted adversarial retry raw/final SHA-256:
+  `4776d16450cdf77e9f1e9f22b5f25915a4d05c91d440a131f75d3de4cf7bbefc` /
+  `0f387ff71657e3b601f0e12074e86ff643710bee8b48935a2f97cba9bec378f9`; prompt
+  `f38921c4d04287945bbc0bbe51f90d00661da40a5f55813b295b689d3d7274fd`; exact argv record
+  `61ef5699474854f7ccfd26e4bd89f004833d7f0e43ea31ca76b6309f258245a2`.
+- independent reproduction probe: `.deep-review/tmp/cycle8-round8-reproduction-probe.mjs`, SHA-256
+  `90fa0419cce14911d7579bcf5fece046d46f4486da0450026adaa8828cb61a63`; output SHA-256
+  `40870f078fc499264b19c950f9da4d7ec83ad61e92c870f5808804508495a065`.
+- recurring findings: Stage 5.5 envelope validated at run
+  `01KXR2C9GNDVAZ0S1DV3S75E02`; architecture occurrences advanced `80→81`, security advanced
+  `32→33`, and test-coverage `47` plus error-handling `33` were unchanged.
+
+### Gate 1 fresh cycle 8 round 8 Respond
+
+- disposition: accepted both Red roots after independent reproduction; closed no actionable item as
+  rejected or deferred; `execution_path=main_fallback`. The gate remains
+  `REQUEST_CHANGES — DO NOT ADVANCE`.
+- finite receipt response: Gate 8 now publishes payload commit A with exactly evidence, bundle,
+  report, and response and no self-derived identities, then predecessor-attestation commit B with an
+  exact evidence/bundle-only delta that records only A's lengths, hashes, blob/tree/commit IDs, CAS,
+  review, helper, and fixture bindings. B never records its own derived identity. A is an exact
+  four-path child, B an exact two-path child, and the cumulative delta remains four paths.
+- Git isolation response: one canonical regular Git executable realpath/SHA-256 and a minimal
+  helper-owned child environment are fixed before execution. Inherited `GIT_*`, config, object,
+  alternate, replace, namespace, worktree, index, and hook injections are stripped; system/global
+  config are `/dev/null`; replace objects and hooks are disabled. Canonical no-symlink Git/common/
+  object/private-index paths, exact fully qualified `refs/heads/...`, alternate/replace-ref
+  rejection, and canonical-store reads before and after each CAS fail closed.
+- recovery response: response loss recovers the unique exact A or B child without duplication.
+  Later one-path evidence publications use the same finite payload/predecessor-attestation pair.
+  The advancing fully qualified branch ref plus independent post-CAS object inspection externally
+  binds each attestation commit rather than asking tracked content to name itself.
+- unchanged exact authority: the pre-Gate-6 authority remains 1,968,755 JavaScript code units /
+  1,977,235 UTF-8 bytes, SHA-256
+  `4bc32f7e955c39ff93f1faf15dce745b84f0647605f546d7f12f87ce6e8a8ec0`; Gate 6 remains 14,401 code
+  units / 14,403 UTF-8 bytes, SHA-256
+  `1b7f05c95c1fb8e8a63416f859530ef1dab63194fcacb96a330d1fd213fbd693`.
+- closure probe: `.deep-review/tmp/cycle8-round8-closure-probe.mjs`, SHA-256
+  `23401afc8d210f3d4e2b156eee01b46363bf59c2121a935777c787e263a8f9f1`; output SHA-256
+  `c157cd3f9230aead36dcbe2d50eb403b8fa11ac255029ccbc7b734576c827633`.
+- verification: embedded validator passed `ok:true` for 46 tasks and 369 fences
+  (`bash=64`, `diff=91`, `js=186`, `json=4`, `markdown=12`, `text=11`, `yaml=1`). The
+  actual-host probe proved A-four/B-two/cumulative-four deltas, predecessor-only attestation,
+  canonical-store-only writes, inherited Git injection stripping, alternates/replace-ref rejection,
+  reference hook suppression, exact lost-response recovery, later one-path finite publication,
+  unchanged Gate 6 bindings, and the round-9 no-Opus/no-agy contract. `npm run preflight` passed
+  1,463/1,463; both diff checks passed.
+- corrected candidate hashes before receipt commit: handoff
+  `c9cffa2c0b373e113beb6c133ad3ab9a7d92bcb8d45c2d0906631058586025bd`; design
+  `c1aae365b8ab89aa8082cf8a26c2d14e2f99c74162c8c96d9a21449ac9c7544e`; plan
+  `bc68d05e5bfb938cc72577109e42a39a838419afb0c0675c6ff1d7f3ca523ec0`.
+- gate state: still open. Changed bytes require fresh cycle 8 round 9 under the same exact two-way
+  standard/adversarial `gpt-5.6-sol`/high contract, with Opus and agy excluded. This Respond is not a
+  Gate 1 pass.
+
++## Review receipt template
 
 Each reviewed gate will add a receipt with all of these fields:
 

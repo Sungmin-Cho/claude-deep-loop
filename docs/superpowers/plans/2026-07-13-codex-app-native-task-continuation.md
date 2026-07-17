@@ -35851,67 +35851,96 @@ exact path, byte-prefix, absence, and payload-digest proofs all pass.
   `converged` review and receipt. If a remote branch already exists, present that fresh SHA/diff and
   obtain a **separate fresh-push approval** before updating it. No earlier modification, review, or
   push approval survives the changed candidate.
-- [ ] After Gate 8 Respond, construct exactly four canonical LF-terminated fatal-UTF-8 Buffers in the
-  retained deep-loop closeout process: the parent commit's evidence blob plus one sanitized receipt
-  suffix, the parent commit's review-bundle blob plus one sanitized receipt suffix, one exact report,
-  and one exact response. Report/response names must match their respective ASCII-only timestamped
-  grammar under exactly `.deep-review/reports/` and `.deep-review/responses/`; reject `..`, extra
-  separators, Unicode/case aliases, another extension, or a path already present in the closeout
-  parent tree. The canonical renderer source/SHA-256, exact reviewer raw/final input hashes,
-  structured synthesis, session/model/effort/verdict/termination, Info dispositions, and the four
-  Buffer byte lengths/SHA-256 values are receipt inputs. Content identity is authoritative: an exact
-  replay may reconstruct byte-identical content and must produce the same SHA-256 and Git blob object
-  ID; a different byte must produce a different binding. Do not claim JavaScript object immutability,
-  process continuity, source pathname identity, or a completion-time file hash, and do not create or
-  copy either authoritative report/response through a worktree pathname before the receipt commit.
+- [ ] After Gate 8 Respond, use a finite **payload commit A → predecessor-attestation commit B**
+  protocol. Construct exactly four canonical LF-terminated fatal-UTF-8 payload Buffers in the retained
+  deep-loop closeout process: the parent commit's evidence blob plus one sanitized review-result
+  suffix, the parent commit's review-bundle blob plus one sanitized review-result suffix, one exact
+  report, and one exact response. Report/response names must match their respective ASCII-only
+  timestamped grammar under exactly `.deep-review/reports/` and `.deep-review/responses/`; reject
+  `..`, extra separators, Unicode/case aliases, another extension, or a path already present in the
+  closeout parent tree. The payload evidence and bundle may record the canonical renderer source hash,
+  reviewer input hashes, structured synthesis, session/model/effort/verdict/termination, and Info
+  dispositions, but they must not claim their own byte lengths, content hashes, blob IDs, tree ID,
+  commit ID, or CAS outcome. Those values do not exist until payload A is built. Exact reconstruction
+  may produce byte-identical content, while any changed byte must produce a different binding. Do not
+  claim JavaScript object immutability, process continuity, source pathname identity, or a
+  completion-time file hash. Payload Content identity is authoritative; do not create or copy either authoritative report/response through a worktree pathname before payload A.
 
-  Feed the four exact Buffers and canonical metadata through bounded structured stdin to one recorded
-  Git-object receipt helper whose source/SHA-256 and actual-host fixture output are included in the
-  receipt. Before object creation, require the closeout branch ref, HEAD, real index, and tracked
+  Feed the four exact payload Buffers and canonical metadata through bounded structured stdin to one
+  recorded Git-object receipt helper. Before any Git subprocess, resolve the configured executable to
+  one canonical regular executable with no symlink component, record its SHA-256, and invoke only that
+  absolute executable. Build every child environment from an empty object plus a fixed allowlist;
+  never inherit arbitrary `GIT_*`, config, object-directory, alternate-object-directory, namespace,
+  replace-ref, index, worktree, or hook variables. Set `GIT_CONFIG_NOSYSTEM=1`,
+  `GIT_CONFIG_SYSTEM=/dev/null`, and `GIT_CONFIG_GLOBAL=/dev/null`; use only helper-owned exact
+  `GIT_DIR` and private `GIT_INDEX_FILE` values. Prefix every Git command with
+  `--no-replace-objects -c core.hooksPath=/dev/null -c core.fsmonitor=false`. The helper source/hash,
+  canonical Git executable/hash, sanitized environment projection, and actual-host fixture output are
+  ordinary predecessor-known inputs, not self-attestation.
+
+  Resolve and require canonical no-symlink Git common, Git, object, and private-index directories.
+  Reject `.git/objects/info/alternates`, any `refs/replace/*`, an unexpected repository-format or
+  object-format extension, a symbolic or ambiguously abbreviated closeout ref, and local configuration
+  that redirects objects, refs, hooks, worktrees, or an external helper. The sole update target must
+  pass `git check-ref-format` as the exact fully qualified `refs/heads/<closeout-branch>` and resolve to
+  the exact expected object. Reference-transaction and ordinary hooks are disabled by the fixed empty
+  hooks path. Before object creation, require the closeout branch ref, HEAD, real index, and tracked
   worktree to equal the exact recorded parent with no staged or tracked modifications, then detach the
-  retained closeout worktree at that parent and prove it remains clean. The branch ref is thereafter
-  the sole closeout update target; never read the detached worktree paths as current receipt authority.
-  Require the evidence/bundle parent blob IDs and byte-identical prefixes, and require both receipt
-  paths absent from that parent tree. Independently address the immutable reviewed deep-suite commit object,
-  not a mutable worktree `HEAD`: verify its exact parent/range, six approved path names/modes/blob IDs,
-  recorded generator no-op, preflight/diff hashes, and both completed reviewer bindings. Later branch
-  or ignored-worktree movement cannot alter that commit; any later push proposal must still name this
-  exact reviewed commit, and any candidate-content fix creates a new commit and review.
+  retained closeout worktree at that parent and prove it remains clean. The fully qualified branch ref
+  is thereafter the sole closeout update target; never read detached worktree paths as current receipt
+  authority. Require the evidence/bundle parent blob IDs and byte-identical prefixes and require both
+  receipt paths absent from the parent tree. Independently address the immutable reviewed deep-suite
+  commit object, not a mutable worktree `HEAD`: verify its exact parent/range, six approved path
+  names/modes/blob IDs, generator no-op, preflight/diff hashes, and both completed reviewer bindings.
 
-  Determine and record the repository object format rather than assuming a 40-character SHA-1 ID.
-  For each Buffer, write one Git blob directly with `git hash-object -w --stdin`, immediately read it
-  back with `git cat-file blob`, and require exact byte length, SHA-256, and object ID replay. Never use
-  a report/response worktree path as blob input. Create a private temporary index under the resolved
-  Git directory, initialize it from the exact closeout parent with `git read-tree`, and install only
-  the four modes/blob IDs with `git update-index --add --cacheinfo`. `git write-tree` must produce a
-  tree whose parent-to-tree name-only delta is exactly evidence, bundle, report, and response and whose
-  four entries have the exact expected modes/object IDs. A fifth path, worktree substitution, prefix
-  mismatch, pre-existing receipt entry, or different blob fails before ref mutation.
+  Determine and record the repository object format rather than assuming a 40-character SHA-1 ID. For
+  each payload Buffer, write one Git blob directly into the canonical repository object store with
+  `git hash-object -w --stdin`, immediately read it back with `git cat-file blob`, and require exact
+  byte length, SHA-256, and object ID replay. Never use a report/response worktree path as blob input.
+  Initialize the private index from the exact closeout parent with `git read-tree`, install only the
+  four modes/blob IDs with `git update-index --add --cacheinfo`, and require `git write-tree` to produce
+  a parent-to-tree name-only delta of exactly evidence, bundle, report, and response with their exact
+  modes/object IDs. Create payload commit A from that tree and exact parent with `git commit-tree`,
+  include the required trailer, and re-read its exact tree, sole parent, message, four-path delta, and
+  four entries. Before CAS, prove every A object is readable from the canonical object store with the
+  sanitized environment. Advance only the fully qualified ref using
+  `git update-ref <fully-qualified-ref> <payload-A> <exact-parent>` and then repeat the canonical-store
+  reads. A fifth path, alternate-only object, worktree substitution, prefix mismatch, pre-existing
+  receipt entry, different blob, wrong parent, or hook execution fails closed.
 
-  Create the receipt commit from that exact tree and exact parent with `git commit-tree`; include the
-  required trailer. Read the commit object back and require its tree, sole parent, message, trailer,
-  exact four-path delta, and four entry object IDs. Update the closeout branch only with
-  `git update-ref <ref> <new-commit> <exact-parent>` so concurrent parent movement fails the atomic
-  compare-and-swap. Object, private-index, tree, or commit creation failure before this CAS leaves the
-  branch unchanged; unreachable objects are not a receipt. If response is lost after CAS, recover only
-  by reading the exact branch commit and revalidating every recorded parent/tree/blob/message binding;
-  never create a second receipt commit. After a successful or recovered CAS, require the branch ref
-  to equal the verified commit while the retained worktree remains clean and detached at its recorded
-  parent; its older files are intentionally non-authoritative. Subsequent closeout evidence updates
-  must read parent blobs from the advancing branch ref and use the same blob/tree/expected-parent CAS
-  protocol. A fresh clean checkout of the branch must materialize all tracked receipt files and match
-  every recorded blob before final audit/wiki use.
+  Only after payload A is verified and published, construct two new canonical attestation Buffers from
+  A's evidence and bundle blobs. They record the four payload Buffer lengths/SHA-256/blob IDs, A tree
+  ID and commit ID, A exact-parent CAS result, source-review bindings, canonical Git/helper bindings,
+  and fixture hashes. They explicitly do not record either attestation Buffer's own length/hash/blob
+  ID, attestation tree/commit ID, or attestation CAS result. Build attestation commit B with exact
+  parent A and an `A..B` delta of exactly evidence and bundle; require the original
+  `pre-receipt-parent..B` cumulative delta to remain exactly the four receipt paths. Verify B's tree,
+  parent, message, trailer, and the unchanged A report/response entries, prove every B object readable
+  from the canonical store, then advance the same fully qualified ref using
+  `git update-ref <fully-qualified-ref> <attestation-B> <payload-A>`. The branch ref plus independent
+  post-CAS object inspection externally binds B; no tracked artifact attempts to name its own derived
+  identity.
 
-  Actual-host fixtures must reproduce the old ancestor-symlink out-of-root write and post-validation
-  `git add` substitution, then prove the object helper opens no receipt worktree pathname, ignores a
-  substituted worktree file, binds private-index and committed-tree blobs to the exact Buffers, rejects
-  a fifth path and wrong expected parent, leaves the ref unchanged on every pre-CAS failure, and
-  recovers one exact post-CAS commit without duplication. The helper must also prove byte-identical
-  reconstruction yields the same object ID while any one-byte change yields a different object ID.
-  Record all four content hashes/object IDs, private tree ID, commit ID, expected-parent CAS result,
-  source-review bindings, and fixture hashes in evidence and bundle. This Git-object receipt is the
-  common protocol's exact four-path force-add implemented without live-path staging; it neither
-  mutates nor adds receipt files to the reviewed six-path deep-suite candidate and authorizes no push.
+  Object, private-index, tree, commit, or validation failure before either CAS leaves the ref at the
+  preceding verified commit. If a CAS response is lost, inspect the exact fully qualified ref: recover
+  A only if it is the unique exact four-path child of the recorded pre-receipt parent, and recover B
+  only if it is the unique exact two-path child of A with every predecessor binding valid; never create
+  a duplicate A or B. After success or recovery, the retained worktree remains clean and detached at
+  its recorded parent. A fresh clean checkout of B must materialize all four receipt paths and match
+  its verified tree. Every later one-path closeout evidence publication uses the same finite shape: a
+  payload commit changes only evidence and contains no self-derived binding, then an exact-parent
+  attestation commit changes only evidence to bind that payload predecessor; external ref inspection
+  binds the attestation commit itself.
+
+  Actual-host fixtures must reproduce the old ancestor-symlink out-of-root write, post-validation
+  `git add` substitution, inherited external `GIT_OBJECT_DIRECTORY` plus alternate-store publication,
+  replace-ref ambiguity, and configured reference-transaction hook execution. They must prove the
+  sanitized helper opens no receipt worktree pathname, ignores substituted worktree content and all
+  inherited Git injection, writes every required object to the canonical store, executes no hook,
+  rejects alternates/replace refs/fifth paths/wrong parents, leaves the ref unchanged on every pre-CAS
+  failure, publishes exact A-four/B-two path deltas, and recovers each lost CAS response without
+  duplication. This finite two-commit Git-object receipt is the common protocol's exact four-path force-add implemented without live-path staging; its private-index tree/commit chain mutates no
+  reviewed deep-suite candidate file and authorizes no push.
 - [ ] Present deep-suite commit, branch, six-path authority-plus-derived diff, preflight/review receipt, and remote target; request **separate push approval**.
 - [ ] After an approved branch push and verified remote SHA, present the exact deep-suite PR title/body/base/head and request **separate PR creation approval**. After the PR exists and all required checks/reviews pass, present the exact merge target/method/result and request **separate merge approval**. Verify the re-pin reaches deep-suite main; a feature-branch push or PR alone is not completion, and none of these approvals implies another.
 - [ ] After deep-suite main contains the re-pin, fetch its exact main object ID in the repository's
@@ -36283,12 +36312,22 @@ requireTokens('Gate 8', gate8, [
   '.deep-review/reports/', '.deep-review/responses/',
   'Content identity is authoritative', 'do not create or',
   'copy either authoritative report/response through a worktree pathname',
+  'payload commit A → predecessor-attestation commit B',
+  'must not claim their own byte lengths, content hashes, blob IDs, tree ID',
+  'GIT_CONFIG_NOSYSTEM=1', 'GIT_CONFIG_SYSTEM=/dev/null', 'GIT_CONFIG_GLOBAL=/dev/null',
+  '--no-replace-objects -c core.hooksPath=/dev/null -c core.fsmonitor=false',
+  '.git/objects/info/alternates', 'refs/replace/*',
+  'refs/heads/<closeout-branch>', 'canonical repository object store',
   'git hash-object -w --stdin', 'git cat-file blob',
   'git update-index --add --cacheinfo', 'git write-tree',
-  'git commit-tree', 'git update-ref <ref> <new-commit> <exact-parent>',
+  'git commit-tree',
+  'git update-ref <fully-qualified-ref> <payload-A> <exact-parent>',
+  'git update-ref <fully-qualified-ref> <attestation-B> <payload-A>',
+  'A..B` delta of exactly evidence and bundle',
+  'do not record either attestation Buffer',
   'exact four-path force-add implemented without live-path staging',
   'ancestor-symlink out-of-root write', 'post-validation', '`git add` substitution',
-  'byte-identical content and must produce the same SHA-256 and Git blob object',
+  'inherited external `GIT_OBJECT_DIRECTORY`', 'reference-transaction hook',
   'private-index tree/commit',
 ]);
 const gate9 = sectionBetween('### Gate 9 Procedure:', '\n---\n\n## Plan Self-Review');
