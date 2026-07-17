@@ -32,7 +32,7 @@ Main-agent judgment: the fetched remote base, version, test count, and user-owne
 
 ## Gate 1 — research and design
 
-Status: REVIEW OPEN — fresh cycle 8 round 2 review complete; CONCERN, Respond in progress
+Status: REVIEW OPEN — fresh cycle 8 round 2 Respond complete; CONCERN, round 3 pending
 
 Design target: `docs/superpowers/specs/2026-07-13-codex-app-native-task-continuation-design.md`
 
@@ -2492,6 +2492,56 @@ no inherited approval from the historical receipt.
 - independent reproduction probe: `.deep-review/tmp/cycle8-round2-reproduction-probe.mjs`, SHA-256
   `d6d9c7a3b4104adce3506485671eb6dd9eeaaf246d0d73ebffd0b1b4a1824dfa`; output SHA-256
   `81ed0d530db98f26909db49b72ec5da307bfe2cc4f10a6acc872ab22bf6349e5`.
+
+### Gate 1 fresh cycle 8 round 2 Respond
+
+- disposition: accepted 3 actionable solo findings after independent execution, rejected the Opus
+  separator-injection counterexample, and closed 4 nonblocking evidence items;
+  `execution_path=main_fallback`. Formal synthesis was `APPROVE`, Red/Yellow/Info `0 / 0 / 8`, but
+  the gate remains `CONCERN — DO NOT ADVANCE` because the three reviewers did not naturally converge.
+- authority response: the exact pre-Gate-6 authority now starts at file offset 0 and includes the
+  title, global constraints, receipt protocol, responsibility/anchor maps, fixed interfaces, shared
+  fixtures, card rules, all 46 Task 1A–17B cards, and Gate 5. It is 1,968,851 JavaScript code units /
+  1,977,331 UTF-8 bytes, SHA-256
+  `eaec6c5eaa8eb49f0aaaa013d59a4259427111c65ccc01709b62dd3c515bc585`. No Task 17C is claimed.
+- Gate 6 response: the exact section through the Gates 7–9 heading boundary is 9,487 code units /
+  9,489 UTF-8 bytes, SHA-256
+  `21c57042def125eea57b5cee2f8acca61cc0dc64ff780d8141d01a8d028d7355`. Step 1 defines raw
+  `git ls-tree -rz --full-tree` parsing, raw-path sorting, `DEEP_LOOP_INSTALLABLE_PAYLOAD_V1` domain
+  separation, record serialization, and failure rules. Step 7 defines one target/kind-bound begin/end
+  marker pair, fatal UTF-8 body, body SHA-256, suffix byte length/hash, exact EOF, and second-receipt
+  rejection.
+- release-date response: Task 17B computes `new Date().toISOString().slice(0, 10)` immediately before
+  editing, validates and records it, substitutes `{{RELEASE_DATE_UTC}}` exactly once, and forbids a
+  literal planning-time date.
+- rejected finding: inserting a directive in the old separator gap failed the complete reviewed
+  validator at its exact semantic boundary. The new section hash nevertheless includes that separator
+  as defense in depth.
+- trust-root/validator response: in-file hashes remain authoring change detectors. The immutable
+  reviewed commit plus externally recorded whole-plan SHA are the trust root. The validator remains
+  intentionally authoring-only and its manual execution is receipt evidence.
+- historical-unit correction: old authority = 1,930,427 code units / 1,938,855 UTF-8 bytes; Task 6A
+  = 55,521 code units / 55,523 UTF-8 bytes. Historical artifacts are not rewritten.
+- correction commit: `9ce17aa4921db6a8e562ef3066e52ed49cfdd5b4`.
+- corrected candidate hashes at the correction commit: handoff
+  `ef490f193eec5fe1aa296af8810b56cbfc99639d469f111670f6fa06514b1d96`; design
+  `819b6fc989ebeb8ae085640f5f5d392105f11402422a3e607b5bc598c67d792b`; plan
+  `0fde6124b96cd8424eb94aee7c91f77c03032d2dc481275f089023c65d3f5b9d`; pre-receipt evidence
+  `242aa74c3d887de59a5f4ff89c24ac06a6b30395da770d28f77cbd287f8f978f`.
+- response record: `.deep-review/responses/2026-07-17-134724-response.md`, SHA-256
+  `15b9164d2c8609907b8cc478c29ae87b2b2d5961d94fcf34a1b3fb9779831e0e`.
+- Phase 6 log: `.deep-review/tmp/phase6-cycle8-round2.log`, SHA-256
+  `29cf6ca2995510a683100f9d7f4def1cfe9a759565d310c149b40515f91a593d` (ignored evidence).
+- closure probe: `.deep-review/tmp/cycle8-round2-closure-probe.mjs`, SHA-256
+  `0b6fd4a6092bb02e6caac90250d21957159582a1b7143ce4a1dfbc308938e3dd`; output SHA-256
+  `780b0bd3b12cc09b4f93053ad6c6b89b8436deb6c81727213dad87693d3cae86`.
+- verification before the correction commit: embedded validator passed `ok:true` for 46 tasks and
+  369 fences (`bash=64`, `diff=91`, `js=186`, `json=4`, `markdown=12`, `text=11`, `yaml=1`);
+  `git diff --check`, `git diff --check origin/main`, and `npm run preflight` passed all 1,463 tests
+  with zero failures, cancellations, skips, or todo.
+- gate state: still open. Changed bytes require fresh cycle 8 round 3 using one native Claude
+  Opus/xhigh reviewer plus standard and adversarial Codex reviewers both pinned to exact
+  `gpt-5.6-sol`/high; agy remains disabled. This Respond is not a Gate 1 pass.
 
 ## Review receipt template
 
