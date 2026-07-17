@@ -32,7 +32,7 @@ Main-agent judgment: the fetched remote base, version, test count, and user-owne
 
 ## Gate 1 — research and design
 
-Status: REVIEW OPEN — fresh cycle 8 round 4 Respond complete; CONCERN, round 5 pending
+Status: REVIEW OPEN — fresh cycle 8 round 5 Respond complete; CONCERN, round 6 pending
 
 Design target: `docs/superpowers/specs/2026-07-13-codex-app-native-task-continuation-design.md`
 
@@ -2707,6 +2707,84 @@ no inherited approval from the historical receipt.
 - Phase 6 log: `.deep-review/tmp/phase6-cycle8-round4.log`, SHA-256
   `7214a6960dc1fcac6ed0cf55c745362356daacdb09ecfc36d792c7f8eb1d11e2` (ignored evidence).
 - gate state: still open. Changed bytes require fresh cycle 8 round 5 under the latest exact two-way
+  standard/adversarial `gpt-5.6-sol`/high contract, with Opus and agy excluded. This Respond is not a
+  Gate 1 pass.
+
+### Gate 1 fresh cycle 8 round 5 review
+
+- gate/artifact: Gate 1 design plus complete 46-task plan, operating handoff, evidence ledger,
+  cycle-8 round-4 report/response, and current repository code/tests.
+- base/head: `c38a96137f8f4f0099c35e893860930e8ee4cf73..77c699b6d929bcbb4284add09c18b757ff09ce0d`;
+  worktree clean at counted reviewer start.
+- invocation: latest Codex-only two-way contract. Standard and adversarial role processes used exact
+  `gpt-5.6-sol` / `high`, `--ephemeral --ignore-user-config --ignore-rules -s read-only`. No Opus or
+  agy process was launched. The first adversarial process was stopped by a policy filter without a
+  final and was not counted; a fresh same-role replacement completed.
+- reviewer actual: standard task `019f6ea4-7986-75c1-ab6b-10bcbf97a58c` completed with one P2;
+  adversarial replacement task `019f6ea8-73f7-7731-80d6-a32164112667` completed with one Yellow.
+  Failed noncounted adversarial task: `019f6ea4-79bf-7593-b608-a27e6d65d479`.
+  `N_planned=2`, `N_actual=2` valid role voices.
+- synthesis/gate disposition: formal `CONCERN`, Red/Yellow/Info = `0 / 2 / 0`. The two reviewers found
+  different solo roots, so there was neither two-of-two agreement nor natural approval convergence.
+  Main-agent disposition is `CONCERN — DO NOT ADVANCE`.
+- main-agent judgment: accepted both roots after one independent executable probe. Gate 8 violated the
+  common protocol by staging only evidence/bundle instead of the exact report/response as well. A
+  leading `EF BB BF` input passed the V2 prose but the recorded default decoder removed it, producing
+  different projection/body/suffix bytes from BOM-preserving fatal decode.
+- report path: `.deep-review/reports/2026-07-17-151000-review.md`, SHA-256
+  `860d125a363b4a8188f56cbdf078de6d7d6b9f70b849b3be0d1af9ebe4021cfb`.
+- standard raw/final SHA-256: `0dcc0555c91c7a4b46425f9f22ef522a89644f946ab1df74d247c80d76b0dfc9` /
+  `8355ebcb5d25fe8b1b6ce9ebf48d000804202a91b292fab8cc67e1016f55246d`; exact argv record
+  `0de8a7863e70b8a3ee610f13e0ed143ee02bcda4fa837c7a710a4a00c4972377`.
+- failed adversarial raw SHA-256: `3e8cc6660005505209770e7995b1359034a32ac377ed247769453620d3543d14`;
+  no final; prompt `02dcf2772915bf3b27c4fb17d3e9dd707b487bb818d6935a5c8c880377bf8520`;
+  exact argv record `085d9429cdf7128168076672057d4f9290e5ce08d06799159dab9da4d1a0644a`.
+- adversarial replacement raw/final SHA-256:
+  `094e801deef29d69376132df50cea4d781a1ad6fbc9ae60a4cb8a74d786e004c` /
+  `768b5c436765f7084211001b2659161058d611853d3839e70334ec442fa41397`; prompt
+  `f63cbee838a7d26a76b3bd516abfd8195996f689b68b9e995c9c4080e04bc14a`; exact argv record
+  `b5dc6fcb542f72bb058cdd4282945b8ce94e1addf615b6ee750f3d611d2cf75c`.
+- independent reproduction probe: `.deep-review/tmp/cycle8-round5-reproduction-probe.mjs`, SHA-256
+  `efa0d1dd2a69e512483b5d0f0efb1c3c85ceecaf1a23eb1772dbdc6048f40ff1`; output SHA-256
+  `ba52172707df6c0bd0702073f96ae8a65f437c36cff11c44b450d70dde7dc394`.
+- recurring findings: Stage 5.5 envelope validated at run
+  `01KXQBBNBCDSDEBW0RSYF0HP9W`; architecture occurrences advanced `75→77`; test-coverage `47`,
+  error-handling `33`, and security `31` were unchanged.
+
+### Gate 1 fresh cycle 8 round 5 Respond
+
+- disposition: accepted both solo Yellow roots after independent reproduction; closed no actionable
+  item as rejected or deferred; `execution_path=main_fallback`. The gate remains
+  `CONCERN — DO NOT ADVANCE`.
+- BOM/projection response: Gate 6 now inspects each frozen raw Buffer and rejects exact leading UTF-8
+  BOM bytes `EF BB BF` before fatal decoding. Decoding validates only; one recorded raw-Buffer helper
+  performs left-to-right non-overlapping exact ASCII byte replacements and never decode/re-encodes a
+  projection. Every other byte is preserved. Negative fixtures cover BOM, malformed UTF-8, CR, and
+  NUL; positive fixtures cover repeated tokens, strict substrings, already-bracketed tokens, and an
+  end-label-looking payload line.
+- Gate 8 receipt response: after Respond, the exact sanitized Gate 8 report/response bytes are copied
+  from the deep-suite review worktree to identical relative paths in the retained deep-loop closeout
+  worktree only after path, absence, fatal-UTF-8, raw-ID/secret, byte-length, and SHA-256 checks. The
+  closeout receipt force-adds exactly evidence, bundle, report, and response. It neither mutates nor
+  adds receipt files to the reviewed six-path deep-suite candidate and authorizes no push.
+- exact authority response: the pre-Gate-6 authority remains 1,968,755 JavaScript code units /
+  1,977,235 UTF-8 bytes, SHA-256
+  `4bc32f7e955c39ff93f1faf15dce745b84f0647605f546d7f12f87ce6e8a8ec0`. The complete Gate 6 section
+  is 14,401 code units / 14,403 UTF-8 bytes, SHA-256
+  `1b7f05c95c1fb8e8a63416f859530ef1dab63194fcacb96a330d1fd213fbd693`.
+- closure probe: `.deep-review/tmp/cycle8-round5-closure-probe.mjs`, SHA-256
+  `e1fdf6cc19d3e828e39b72a7902ca166d92623f432dda361cc7413d268ccbba5`; output SHA-256
+  `f75f5000b1f83b93693183ce3b61398ae6b2801718dfb63d08925e05e48887a9`.
+- verification: embedded validator passed `ok:true` for 46 tasks and 369 fences
+  (`bash=64`, `diff=91`, `js=186`, `json=4`, `markdown=12`, `text=11`, `yaml=1`). The closure probe
+  proved BOM-before-decode rejection, byte-preserving projection/replay, repeated/substring/bracketed
+  and end-label cases, malformed-UTF-8/CR/NUL rejection, the Gate 8 exact four-path cross-repository
+  receipt, unchanged authority binding, and the no-Opus/no-agy round-6 contract.
+- corrected candidate hashes before receipt commit: handoff
+  `c9cffa2c0b373e113beb6c133ad3ab9a7d92bcb8d45c2d0906631058586025bd`; design
+  `b5ff35697ded418bbe27047dc4c473bbfe7f368105a816effce53e8f76fc563f`; plan
+  `4349848c33224a9ccbab95bb94a2c9c0fb99eda43fda837a1b185d12a57498c4`.
+- gate state: still open. Changed bytes require fresh cycle 8 round 6 under the same exact two-way
   standard/adversarial `gpt-5.6-sol`/high contract, with Opus and agy excluded. This Respond is not a
   Gate 1 pass.
 

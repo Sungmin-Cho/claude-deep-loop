@@ -35707,14 +35707,20 @@ exact path, byte-prefix, absence, and payload-digest proofs all pass.
    `response_core`; require that terminator line once at EOF, require both response-binding sentinels
    absent, freeze the raw bytes, and record its canonical decimal byte length and SHA-256.
 
-   Require both frozen inputs to use LF only, end in LF, contain no NUL, and pass the secret/raw-ID
-   scan. Decode them as fatal UTF-8 without Unicode or line-ending normalization. Create the canonical
-   readable projections `report_text` and `response_text` by replacing every exact ASCII occurrence
-   of `GATE6_RECEIPT_V1_BEGIN` with `GATE6_RECEIPT_V1_[BEGIN]` and every exact occurrence of
-   `GATE6_RECEIPT_V1_END` with `GATE6_RECEIPT_V1_[END]`, in that order, and changing no other byte.
-   Record the complete projection helper source/hash and both replacement counts. Require each
-   projected byte string to be nonempty fatal UTF-8, LF-terminated, CR/NUL-free, free of both original
-   marker tokens, and byte-identical to a fresh replay of that helper over its frozen input.
+   Require both frozen inputs to use LF only, end in LF, contain no NUL, begin with no exact UTF-8 BOM
+   bytes `EF BB BF`, and pass the secret/raw-ID scan. Inspect and reject the BOM on the frozen raw
+   Buffer before decoding so a decoder cannot silently consume it. Validate fatal UTF-8 without
+   Unicode or line-ending normalization, but never decode/re-encode to construct a projection. Create
+   the canonical readable projections `report_text` and `response_text` with one recorded raw-Buffer
+   helper: scan left-to-right and replace every non-overlapping exact ASCII byte sequence
+   `GATE6_RECEIPT_V1_BEGIN` with `GATE6_RECEIPT_V1_[BEGIN]`, then run the same exact-byte operation over
+   that result to replace every `GATE6_RECEIPT_V1_END` with `GATE6_RECEIPT_V1_[END]`. Preserve every
+   other byte exactly, including substrings and already bracketed text. Record the complete projection
+   helper source/hash and both replacement counts. Require each projected byte string to be nonempty
+   fatal UTF-8, LF-terminated, BOM/CR/NUL-free, free of both original marker tokens, and byte-identical
+   to a fresh replay of that helper over its frozen input. Negative replay fixtures cover a leading
+   BOM, malformed UTF-8, CR, and NUL; positive fixtures cover repeated exact tokens, strict substrings,
+   already bracketed tokens, and an end-label-looking payload line.
 
    Construct exactly one `body` for each `kind` in `evidence|bundle` from only those frozen values and
    projections. Serialize the exact LF-terminated ASCII header lines
@@ -35845,7 +35851,19 @@ exact path, byte-prefix, absence, and payload-digest proofs all pass.
   `converged` review and receipt. If a remote branch already exists, present that fresh SHA/diff and
   obtain a **separate fresh-push approval** before updating it. No earlier modification, review, or
   push approval survives the changed candidate.
-- [ ] Before any cleanup, append a sanitized Gate 8 report/loop-summary record, original hashes, session/model/effort/verdict/termination, and Info dispositions to the retained closeout evidence log and review bundle; stage both tracked documents, run `git diff --cached --check`, and commit the receipt locally. Do not add a third authority file to the deep-suite commit merely to store the receipt and do not push the closeout branch yet.
+- [ ] After Gate 8 review Respond completes, name its one exact sanitized report path and one exact
+  response path in the deep-suite review worktree. Require both to be nonempty regular files under
+  `.deep-review/reports/` and `.deep-review/responses/`, absent from the retained deep-loop closeout
+  target and its tracked path sets, LF-only fatal UTF-8, and clear of raw IDs/secrets. Copy their exact
+  bytes into the retained deep-loop closeout worktree under the identical relative paths; compare
+  source/copy byte lengths and SHA-256 values and fail on an existing path, mismatch, or extra file.
+  Append the sanitized Gate 8 report/loop-summary record, original hashes,
+  session/model/effort/verdict/termination, and Info dispositions to the closeout evidence log and
+  review bundle. Force-add and stage exactly those four closeout paths: evidence log, review bundle,
+  exact report, and exact response. Require the commit-local name-only set to equal those four paths,
+  run `git diff --cached --check`, and commit the receipt locally. This cross-repository receipt copy
+  does not mutate the reviewed six-path deep-suite candidate, does not add either receipt file to the
+  deep-suite commit, and does not authorize a closeout push.
 - [ ] Present deep-suite commit, branch, six-path authority-plus-derived diff, preflight/review receipt, and remote target; request **separate push approval**.
 - [ ] After an approved branch push and verified remote SHA, present the exact deep-suite PR title/body/base/head and request **separate PR creation approval**. After the PR exists and all required checks/reviews pass, present the exact merge target/method/result and request **separate merge approval**. Verify the re-pin reaches deep-suite main; a feature-branch push or PR alone is not completion, and none of these approvals implies another.
 - [ ] After deep-suite main contains the re-pin, fetch its exact 40-character main SHA, verify both manifest pins equal the merged deep-loop main SHA, and rerun deep-suite `npm run preflight` from that merged main in a safe checkout. Append the actual push result, PR URL and merge SHA when applicable, final two-pin values, merged-main preflight result, and remote/main verification commands to the retained deep-loop closeout evidence log. Stage only that tracked evidence file, run `git diff --cached --check`, and commit the post-main Gate 8 evidence locally with the required trailer. Do not push the closeout branch yet.
@@ -36121,7 +36139,7 @@ const gate6Raw = gate6HeadingMatch == null || gate6RawEnd < 0 ? ''
 const expectedImplementationAuthorityHash =
   '4bc32f7e955c39ff93f1faf15dce745b84f0647605f546d7f12f87ce6e8a8ec0';
 const expectedGate6SectionHash =
-  'b85f937d83bf1b59c53264e8fee5d205716ab0038011bdd9cc15a1390238bac7';
+  '1b7f05c95c1fb8e8a63416f859530ef1dab63194fcacb96a330d1fd213fbd693';
 if (Buffer.byteLength(implementationAuthorityRaw, 'utf8') !== 1977235) {
   fail('pre-Gate-6 authority UTF-8 byte length differs from its exact reviewed binding');
 }
@@ -36129,7 +36147,7 @@ if (createHash('sha256').update(implementationAuthorityRaw).digest('hex')
     !== expectedImplementationAuthorityHash) {
   fail('pre-Gate-6 authority differs from its exact reviewed binding');
 }
-if (Buffer.byteLength(gate6Raw, 'utf8') !== 13813) {
+if (Buffer.byteLength(gate6Raw, 'utf8') !== 14403) {
   fail('Gate 6 complete procedure UTF-8 byte length differs from its exact reviewed binding');
 }
 if (createHash('sha256').update(gate6Raw).digest('hex') !== expectedGate6SectionHash) {
@@ -36166,6 +36184,8 @@ requireTokens('Gate 6', gate6, [
   'report_text_bytes=', 'report_text_begin', 'report_text_end',
   'response_text_bytes=', 'response_text_begin', 'response_text_end',
   'length-framed byte protocol', 'durable sanitized Gate 6 report/summary',
+  'exact UTF-8 BOM', 'one recorded raw-Buffer', 'never decode/re-encode',
+  'repeated exact tokens', 'already bracketed tokens',
   'GATE6_RESPONSE_BINDINGS_V1_BEGIN', 'GATE6_RESPONSE_BINDINGS_V1_END',
   'response_core + canonical-binding-block',
   'sanitized projections -> bodies -> suffixes',
@@ -36202,6 +36222,8 @@ requireTokens('Gate 8', gate8, [
   'rerun `npm run docs:write` and prove', 'it is a no-op',
   'separate fresh-push approval',
   'No earlier modification, review, or', 'push approval survives the changed candidate',
+  '.deep-review/reports/', '.deep-review/responses/',
+  'source/copy byte lengths and SHA-256 values', 'exactly those four closeout paths',
 ]);
 const gate9 = sectionBetween('### Gate 9 Procedure:', '\n---\n\n## Plan Self-Review');
 requireTokens('Gate 9', gate9, [

@@ -2,7 +2,7 @@
 
 작성일: 2026-07-13
 운영 계약: `docs/handoff/2026-07-13-codex-app-native-task-continuation-goal-handoff.md`
-상태: Gate 1 fresh cycle 8 round 4 Respond 완료; CONCERN 미수렴, fresh cycle 8 round 5 필요
+상태: Gate 1 fresh cycle 8 round 5 Respond 완료; CONCERN 미수렴, fresh cycle 8 round 6 필요
 기준: `main@c38a96137f8f4f0099c35e893860930e8ee4cf73`, deep-loop `1.8.2`
 
 > source of truth: 이 문서 + 운영 계약 + 현재 저장소 + `git log`. 이전 대화 컨텍스트를 가정하지 말라.
@@ -1508,6 +1508,22 @@ escape한 readable projection을 만든다. 원본 path·length·hash와 project
 모두 보존한다. Response binding block은 여전히 두 suffix 완성 후에만 append되어 acyclic하다.
 변경된 bytes는 round 4 incomplete-panel receipt를 상속하지 않는다. 2026-07-17 사용자 override에 따라
 fresh cycle 8 round 5는 Opus/agy 없이 exact standard/adversarial `gpt-5.6-sol`/high 2-way로 다시 검증해야 한다.
+
+Gate 1 fresh cycle 8 round 5는 최신 계약대로 Opus/agy 없이 standard와 adversarial
+`gpt-5.6-sol`/high 두 valid voice를 완료했다. 첫 adversarial process는 policy filter로 final 없이
+종료돼 계수하지 않고 같은 role의 fresh replacement를 사용했다. 두 valid reviewer는 서로 다른 solo
+Yellow를 제시해 formal verdict가 `CONCERN`이었다. Standard는 common receipt protocol이 모든 later
+review의 exact report/response를 같은 receipt commit에 force-add하도록 요구하지만 Gate 8이 evidence와
+bundle만 stage하는 충돌을 찾았다. Adversarial은 현재 projection input이 선두 UTF-8 BOM을 허용하고
+기록된 기본 WHATWG decoder가 BOM을 제거해 BOM-preserving 구현과 서로 다른 body/suffix hash를 만드는
+반례를 실행했다. Main agent는 두 root를 하나의 read-only probe로 독립 재현해 모두 수용했다.
+Respond는 frozen raw Buffer의 선두 `EF BB BF`를 decode 전에 fail-closed하고, projection을
+decode/re-encode가 아닌 exact ASCII byte-sequence replacement로 고정하며 BOM/malformed UTF-8/CR/NUL
+negative와 repeated/substring/already-bracketed positive fixtures를 요구한다. Gate 8 Respond는 deep-suite
+review worktree의 exact sanitized report/response bytes를 같은 상대 경로로 retained deep-loop closeout
+worktree에 복사해 source/copy hash를 증명하고 evidence/bundle과 함께 exact four-path receipt commit으로
+force-add한다. 이 copy는 reviewed six-path deep-suite candidate를 변경하지 않는다. 변경된 bytes는 round 5
+receipt를 상속하지 않으며 fresh cycle 8 round 6가 같은 no-Opus/no-agy exact 2-way로 다시 검증해야 한다.
 
 구현 순서:
 
