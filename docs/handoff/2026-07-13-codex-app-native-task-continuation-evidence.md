@@ -6,7 +6,7 @@
 >
 > Implementation worktree: `/Users/sungmin/Dev/claude-plugins/deep-loop/.claude/worktrees/codex-app-native-task-continuation`
 
-This is the durable evidence log for the gated implementation and release of Codex App native task continuation. A quality gate is not passed by green tests alone. Reviews through Gate 1 fresh cycle 6 round 5 used the then-current Codex-only contract: two exact `gpt-5.6-sol`/high reviewers followed by an independent main-agent check. The user's latest instruction on 2026-07-16 applies from the next review round: one native Claude Opus/xhigh reviewer plus standard and adversarial Codex reviewers both pinned to exact `gpt-5.6-sol`/high, with agy disabled. Historical receipts remain evidence only for their exact old target bytes.
+This is the durable evidence log for the gated implementation and release of Codex App native task continuation. A quality gate is not passed by green tests alone. Reviews through Gate 1 fresh cycle 6 round 5 used the then-current Codex-only contract; fresh cycle 7 round 1 through cycle 8 round 4 used the then-current Opus/xhigh plus two-Codex contract. The user's latest instruction on 2026-07-17 applies from fresh cycle 8 round 5: exclude Opus and agy and use independent standard and adversarial Codex reviewers both pinned to exact `gpt-5.6-sol`/high. Historical receipts remain evidence only for their exact old target bytes.
 
 ## Gate 0 — bootstrap, isolation, baseline
 
@@ -32,7 +32,7 @@ Main-agent judgment: the fetched remote base, version, test count, and user-owne
 
 ## Gate 1 — research and design
 
-Status: REVIEW OPEN — fresh cycle 8 round 3 Respond complete; CONCERN, round 4 pending
+Status: REVIEW OPEN — fresh cycle 8 round 4 Respond complete; CONCERN, round 5 pending
 
 Design target: `docs/superpowers/specs/2026-07-13-codex-app-native-task-continuation-design.md`
 
@@ -2624,6 +2624,85 @@ no inherited approval from the historical receipt.
 - gate state: still open. Changed bytes require fresh cycle 8 round 4 using one native Claude
   Opus/xhigh reviewer plus standard and adversarial Codex reviewers both pinned to exact
   `gpt-5.6-sol`/high; agy remains disabled. This Respond is not a Gate 1 pass.
+
+### Gate 1 fresh cycle 8 round 4 review
+
+- gate/artifact: Gate 1 design plus complete 46-task plan, goal handoff, evidence ledger, cycle-8
+  round-3 report/response, and current repository code/tests.
+- base/head: `c38a96137f8f4f0099c35e893860930e8ee4cf73..76823ddbcaa3d56f508f45177ef272bca2a7dcef`;
+  worktree clean at counted reviewer start.
+- invocation: planned three independent read-only processes under the then-current contract. Claude
+  used exact `--model opus --effort xhigh`; standard/adversarial Codex used exact
+  `gpt-5.6-sol` / `high`, `--ephemeral --ignore-user-config --ignore-rules -s read-only`.
+- reviewer actual: Opus session `d226a314-70eb-4afd-9a33-db63ba937cf2` exhausted its account session
+  limit after 24 turns and returned no review final; adversarial Codex task
+  `019f6e8a-8bc8-7610-9d2d-6983c26ab123` was stopped by a policy filter after parser probes and
+  returned no final. Neither is counted. Standard Codex task
+  `019f6e8a-8c97-7992-8249-d7447ba2168b` completed with one P2. `N_planned=3`, `N_actual=1`.
+- synthesis/gate disposition: formal `CONCERN`, Red/Yellow/Info = `0 / 1 / 1`; incomplete low-confidence
+  panel. Main-agent disposition is `CONCERN — DO NOT ADVANCE`.
+- main-agent judgment: accepted the standard reviewer's durable-text finding after executable
+  reproduction. The common receipt protocol requires sanitized report/summary text, Info disposition,
+  and verification results in the durable bundle, but the nine-line V1 body kept only path/length/hash.
+  After modeled Gate 9 cleanup, the bundle retained hashes while losing `APPROVE`, Info disposition,
+  and verification text even though the complete embedded validator returned `ok:true`.
+- report path: `.deep-review/reports/2026-07-17-143417-review.md`, SHA-256
+  `e08214862417abb24911e3a89f0f51b2c38f67d92102cdea6b91d4a3a5faa0fe`.
+- Opus raw/error-final SHA-256: `bb24f7be1f6348d351679d2f597de4ef2ef8dd0c8ec6edf55ad693957655c4f4` /
+  `94505c2f5c808c780ff0d02da06bcfdd7fcd6d36c176f70ebf8fea82743f5122`; prompt
+  `49474ada38dfd6180b1896abf53dcfffafabfea72fe0acd95ae92525b3ef2e65`; exact launcher record
+  `4130b717c2a5a260816c68e2ccb2e99b212eccc7f2d8c2ffbdc083fb42e41ee3`.
+- standard raw/final SHA-256: `7d728b27c7bb029e9d048698fc2b80fbfef8c6f117c1bd516eee6aef5e1bd6ed` /
+  `7928df14252b9a7dd0773584c15f13012a1d31e55deafa17cfce0289dbf17430`; exact argv record
+  `d15b953b995eb0af9bfd0b355bf1043cae0bfa9d8a33b50bf59646fbfc39143b`.
+- adversarial raw SHA-256: `7613e44b684d35b9abb393ad0153c00edb9ab84479a7f9e3aeff33d03a672663`;
+  no final; prompt `e391849cd8b76fe9b5d869e4bb941c237d1ffb440e9f6702d3834416b0cb18b6`;
+  exact argv record `06d5a7fc6e82335e60b4dbad0798574161c9a8d4c6af8e54ff7bec0ee6880213`.
+- independent reproduction probe: `.deep-review/tmp/cycle8-round4-reproduction-probe.mjs`, SHA-256
+  `31f0fe2e9edd90a55dab67c5309099dbafab0277ae718764c8673791bb8cfd0b`; reviewed-target output
+  SHA-256 `541bd9dc6d5f2fed1978a93ae6b6743eb925b7acd5046598ff6a7b02704f5c81`.
+
+### Gate 1 fresh cycle 8 round 4 Respond
+
+- disposition: accepted the sole completed reviewer's Yellow after independent reproduction; closed
+  the failed adversarial parser stream as a nonfinding; `execution_path=main_fallback`. The gate
+  remains `CONCERN — DO NOT ADVANCE`.
+- durable receipt response: `GATE6_RECEIPT_BODY_V2` binds the original frozen report and response-core
+  paths, nonzero byte lengths, and SHA-256 values plus deterministic readable projections. The
+  projection helper changes only the two outer receipt-marker tokens, records source/hash and
+  replacement counts, and otherwise preserves fatal-UTF-8 LF-terminated bytes.
+- framing response: each projected text is carried by an exact byte length and SHA-256 between a
+  `*_text_begin` header and required `*_text_end` line. The parser consumes the declared byte count
+  rather than searching for the end label, so an end-label-looking line inside review text is data.
+  Cleanup may remove ignored source files without removing the durable review, Info disposition, or
+  verification text from the tracked bundle suffix.
+- acyclicity response: the frozen report and response core produce sanitized projections, bodies,
+  and suffixes; only after both suffixes are complete is their canonical binding block appended to the
+  response. No finalized-response or suffix value feeds a projection/body/suffix.
+- reviewer override response: the 2026-07-17 user instruction supersedes only future rounds. Fresh
+  cycle 8 round 5 and every later new round exclude Opus and agy and use independent standard and
+  adversarial Codex reviewers pinned to exact `gpt-5.6-sol` and `model_reasoning_effort="high"`.
+  Historical Opus receipts remain immutable evidence for their old target bytes.
+- exact authority response: the pre-Gate-6 authority is 1,968,755 JavaScript code units / 1,977,235
+  UTF-8 bytes, SHA-256 `4bc32f7e955c39ff93f1faf15dce745b84f0647605f546d7f12f87ce6e8a8ec0`.
+  The complete Gate 6 section is 13,811 code units / 13,813 UTF-8 bytes, SHA-256
+  `b85f937d83bf1b59c53264e8fee5d205716ab0038011bdd9cc15a1390238bac7`.
+- closure probe: `.deep-review/tmp/cycle8-round4-closure-probe.mjs`, SHA-256
+  `beab053f65a48b3cc03df6235b83fbf2b3906f6b7abae27286f061f7f0ab4867`; output SHA-256
+  `c5846aca1b13cbeb1b46cafa29bdfcdf136d2020f71426626a4037627f06f97b`.
+- verification: embedded validator passed `ok:true` for 46 tasks and 369 fences
+  (`bash=64`, `diff=91`, `js=186`, `json=4`, `markdown=12`, `text=11`, `yaml=1`); the closure probe
+  proved marker escaping, original/projection hashes, embedded end-label handling, durable text after
+  cleanup, acyclic response binding, and the no-Opus/no-agy round-5 contract. `git diff --check`,
+  `git diff --check origin/main`, and `npm run preflight` passed all 1,463 tests with zero failures,
+  cancellations, skips, or todo.
+- corrected candidate hashes before receipt commit: handoff
+  `c9cffa2c0b373e113beb6c133ad3ab9a7d92bcb8d45c2d0906631058586025bd`; design
+  `b423058ad7c4bff77d4b522aab7b5e8531e1f630df34a5d699ca012296eb6e2a`; plan
+  `bda1c959cfde4236930436ed920c91d272aa134eb656f60a33e5cca8e85bbed3`.
+- gate state: still open. Changed bytes require fresh cycle 8 round 5 under the latest exact two-way
+  standard/adversarial `gpt-5.6-sol`/high contract, with Opus and agy excluded. This Respond is not a
+  Gate 1 pass.
 
 ## Review receipt template
 

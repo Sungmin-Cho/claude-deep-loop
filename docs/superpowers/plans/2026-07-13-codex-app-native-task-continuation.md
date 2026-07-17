@@ -11,7 +11,7 @@ Gate 5 operational procedure. Gate 6 is separately exact-bound as a complete sec
 post-review publication/cleanup procedures. No bytes before the document-title anchor are permitted,
 and context or receipt prose outside these exact regions cannot override an implementation card.
 The in-file expected hashes are authoring change detectors, not trust roots: the immutable reviewed
-commit plus the plan SHA-256 recorded in its tracked three-reviewer receipt are authoritative. A
+commit plus the plan SHA-256 recorded in its tracked two-reviewer receipt are authoritative. A
 coordinated region edit and constant update invalidates that receipt and requires a fresh review.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -24,7 +24,7 @@ coordinated region edit and constant update invalidates that receipt and require
 
 ## Global Constraints
 
-- Authority: `docs/handoff/2026-07-13-codex-app-native-task-continuation-goal-handoff.md`, the current unreviewed target `docs/superpowers/specs/2026-07-13-codex-app-native-task-continuation-design.md` (its new Gate 1 SHA-256 is inserted only after a fresh Opus/xhigh + `gpt-5.6-sol`/high approval under the user's latest reviewer override), current repository, and `git log`.
+- Authority: `docs/handoff/2026-07-13-codex-app-native-task-continuation-goal-handoff.md`, the current unreviewed target `docs/superpowers/specs/2026-07-13-codex-app-native-task-continuation-design.md` (its new Gate 1 SHA-256 is inserted only after a fresh standard/adversarial `gpt-5.6-sol`/high approval under the user's latest reviewer override), current repository, and `git log`.
 - Work only in `/Users/sungmin/Dev/claude-plugins/deep-loop/.claude/worktrees/codex-app-native-task-continuation` on `codex/codex-app-native-task-continuation`; do not modify the original checkout or its user-owned `.deep-memory/`.
 - Node `>=20`, ESM, zero external dependencies, `schema_version` remains `0.2.0`, and all time-sensitive tests inject a fixed clock.
 - The kernel returns descriptors and mutates state; only skills call `list_projects`, `create_thread`, `fork_thread`, and `send_message_to_thread`.
@@ -36,7 +36,7 @@ coordinated region edit and constant update invalidates that receipt and require
 - App task creation is attended respawn-style continuity under per-run consent. Push, PR, merge, publish, delete, marketplace/deep-suite sync, personal plugin installation, App restart, real smoke, and smoke-task cleanup retain their separate approval gates.
 - Every implementation task follows RED → correct RED check → minimal implementation → targeted GREEN → related regression GREEN → diff audit → focused commit.
 - Before every commit run both `git diff --check` and `git diff --check origin/main`; after committing run `git diff --check origin/main..HEAD`. Every commit uses `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
-- After Gates 3A, 3B, 4, 5, and 6, run a fresh `/deep-review-loop --codex --no-agy --max=5 --contract` from a native Claude session launched with Opus/xhigh. Each round has one Opus/xhigh voice plus the standard and adversarial Codex voices pinned to `gpt-5.6-sol` with `model_reasoning_effort=high`. Only a non-degraded three-reviewer `APPROVE`, Red 0, Yellow 0, natural convergence passes; the exact Claude launcher and Codex argv/config overrides are receipt evidence, and no global model configuration is modified.
+- After Gates 3A, 3B, 4, 5, and 6, run a fresh `/deep-review-loop --codex-only --no-agy --max=5 --contract`. Each new round from Gate 1 fresh cycle 8 round 5 onward has independent standard and adversarial Codex voices pinned to `gpt-5.6-sol` with `model_reasoning_effort=high`; Opus and agy are excluded. Only a non-degraded two-reviewer `APPROVE`, Red 0, Yellow 0, natural convergence passes; the exact Codex argv/config overrides are receipt evidence, and no global model configuration is modified.
 
 ## Gate Receipt and Artifact Preservation Protocol
 
@@ -44,8 +44,8 @@ Gate 2 and every later review checkpoint use the same durable protocol; a checkp
 
 1. Complete the owning RED/GREEN/regression/diff checks, append the pre-review evidence row, force-add the ignored evidence file, and commit it. The review target is that exact commit/range, excluding only later receipt-only commits.
 2. Record the target commit/range, `git diff --stat`, target artifact SHA-256 values, command/result hashes, and clean/expected-ignored status before launching the reviewer.
-3. Launch a fresh native Claude session with `--model opus --effort xhigh`, then run `/deep-review-loop --codex --no-agy --max=5 --contract`; pin every standard and adversarial Codex reviewer call to `gpt-5.6-sol` and `model_reasoning_effort=high`; retain the Claude session/launcher evidence, Codex task/thread IDs, exact invocation/config evidence, termination reason, report path, summary path, and SHA-256 of all outputs.
-4. Pass only on actual Opus/xhigh plus two `gpt-5.6-sol`/high reviewer voices, `APPROVE`, Red 0, Yellow 0, and `converged`. Independently replay the checkpoint's decisive tests/probes and disposition every Info item against current code/spec facts.
+3. Run `/deep-review-loop --codex-only --no-agy --max=5 --contract`; pin both independent standard and adversarial Codex reviewer calls to `gpt-5.6-sol` and `model_reasoning_effort=high`; retain Codex task/thread IDs, exact invocation/config evidence, termination reason, report path, summary path, and SHA-256 of all outputs. Do not launch or count Opus or agy.
+4. Pass only on both `gpt-5.6-sol`/high reviewer voices, `APPROVE`, Red 0, Yellow 0, and `converged`. Independently replay the checkpoint's decisive tests/probes and disposition every Info item against current code/spec facts.
 5. Recompute every target artifact hash and verify the reviewed commit/range is unchanged. If code, tests, design, plan, or release docs changed, discard the receipt and review the new target in a fresh session.
 6. Append the complete receipt and Info dispositions to `docs/handoff/2026-07-13-codex-app-native-task-continuation-evidence.md`; force-add it; run `git diff --cached --check`, commit a receipt-only evidence change with the required co-author trailer, then run `git diff --check origin/main..HEAD` so committed whitespace is covered.
 7. Preserve a sanitized copy of the report and loop summary plus their original hashes in `docs/handoff/2026-07-13-codex-app-native-task-continuation-review-bundle.md` during Task 17. Gate 6 appends its own report/summary after review. The bundle must contain no raw host receipt/project/thread ID or secret and becomes the durable wiki source after ignored `.deep-review/` files are removed.
@@ -35682,10 +35682,11 @@ exact path, byte-prefix, absence, and payload-digest proofs all pass.
    the evidence document and review bundle at that target as `gate6_evidence_prefix_blob`,
    `gate6_evidence_prefix_bytes`, `gate6_bundle_prefix_blob`, and `gate6_bundle_prefix_bytes`. Record
    the complete tracked report/response path sets at that target. Then launch a fresh
-   `/deep-review-loop --codex --no-agy --max=5 --contract` from a native Opus/xhigh session, with
-   both Codex reviewer calls pinned to `gpt-5.6-sol` and `model_reasoning_effort=high`, over the complete branch from
+   `/deep-review-loop --codex-only --no-agy --max=5 --contract`, with the independent standard and
+   adversarial Codex reviewer calls pinned to `gpt-5.6-sol` and `model_reasoning_effort=high`, over the complete branch from
    `c38a96137f8f4f0099c35e893860930e8ee4cf73` through that exact target. Pass only on actual
-   Opus/xhigh plus `gpt-5.6-sol`/high three-reviewer evidence, `APPROVE`, Red 0, Yellow 0, and `converged`; a changed target requires a
+   `gpt-5.6-sol`/high standard/adversarial two-reviewer evidence with no Opus or agy, `APPROVE`, Red 0,
+   Yellow 0, and `converged`; a changed target requires a
    fresh review. Any change to a recorded pre-review blob or any non-evidence path change also
    requires a fresh final-candidate smoke approval and complete smoke before review.
 6. Independently replay `npm run preflight`, `git diff --check`, the focused App lifecycle matrix,
@@ -35706,18 +35707,37 @@ exact path, byte-prefix, absence, and payload-digest proofs all pass.
    `response_core`; require that terminator line once at EOF, require both response-binding sentinels
    absent, freeze the raw bytes, and record its canonical decimal byte length and SHA-256.
 
-   Construct exactly one ASCII `body` for each `kind` in `evidence|bundle` from only these already
-   frozen values. It is the following nine LF-terminated lines in this exact order, with no CR,
-   escaping, blank line, leading/trailing space, extra field, or bytes after the final LF:
-   `GATE6_RECEIPT_BODY_V1`, `kind=<kind>`, `target=<gate6_review_target_sha>`,
+   Require both frozen inputs to use LF only, end in LF, contain no NUL, and pass the secret/raw-ID
+   scan. Decode them as fatal UTF-8 without Unicode or line-ending normalization. Create the canonical
+   readable projections `report_text` and `response_text` by replacing every exact ASCII occurrence
+   of `GATE6_RECEIPT_V1_BEGIN` with `GATE6_RECEIPT_V1_[BEGIN]` and every exact occurrence of
+   `GATE6_RECEIPT_V1_END` with `GATE6_RECEIPT_V1_[END]`, in that order, and changing no other byte.
+   Record the complete projection helper source/hash and both replacement counts. Require each
+   projected byte string to be nonempty fatal UTF-8, LF-terminated, CR/NUL-free, free of both original
+   marker tokens, and byte-identical to a fresh replay of that helper over its frozen input.
+
+   Construct exactly one `body` for each `kind` in `evidence|bundle` from only those frozen values and
+   projections. Serialize the exact LF-terminated ASCII header lines
+   `GATE6_RECEIPT_BODY_V2`, `kind=<kind>`, `target=<gate6_review_target_sha>`,
    `report_path=<exact-report-path>`, `report_bytes=<canonical-decimal>`,
-   `report_sha256=<64-lower-hex>`, `response_path=<exact-response-path>`,
-   `response_core_bytes=<canonical-decimal>`, and `response_core_sha256=<64-lower-hex>`.
-   Here canonical decimal is `0` or a nonzero digit followed only by digits, with no leading zero;
-   both recorded byte lengths must be nonzero. The report and `response_core` are the sole sources for
-   the sanitized review text, metadata, hashes, Info dispositions, and verification result; a missing
-   required response section or a failed secret/raw-ID scan blocks construction. The body must be
-   fatal-UTF-8 and contain neither receipt marker token. It never reads the later response binding
+   `report_sha256=<64-lower-hex>`, `report_text_bytes=<canonical-decimal>`,
+   `report_text_sha256=<64-lower-hex>`, and `report_text_begin`; then append exactly
+   `report_text`, followed immediately by the exact line `report_text_end`. Continue with the exact
+   LF-terminated ASCII header lines `response_path=<exact-response-path>`,
+   `response_core_bytes=<canonical-decimal>`, `response_core_sha256=<64-lower-hex>`,
+   `response_text_bytes=<canonical-decimal>`, `response_text_sha256=<64-lower-hex>`, and
+   `response_text_begin`; then append exactly `response_text`, followed immediately by the exact
+   LF-terminated line `response_text_end`, which is body EOF. Canonical decimal is a nonzero digit
+   followed only by digits, with no leading zero; every byte count is nonzero.
+
+   Parse this as a length-framed byte protocol, not by searching for the text-end labels: after each
+   `*_text_begin` LF, consume exactly the recorded number of bytes, verify its recorded SHA-256 and
+   terminal LF, then require the corresponding exact `*_text_end` line. Require every fixed field once
+   in the stated order, exact paths/kind/target/hashes/counts, no CR, blank metadata line, escaping,
+   leading/trailing space, extra field, or bytes after body EOF. The two readable projections are the
+   durable sanitized Gate 6 report/summary, metadata, hashes, Info dispositions, and verification
+   result required by the common receipt protocol and later wiki ingest; the original input
+   lengths/hashes preserve their source bindings. The body never reads the later response binding
    block, finalized response bytes/hash, or either completed suffix binding.
 
    Let `begin` be exactly
@@ -35735,8 +35755,8 @@ exact path, byte-prefix, absence, and payload-digest proofs all pass.
    `<!-- GATE6_RESPONSE_BINDINGS_V1_END -->`. Require each sentinel exactly once, the end sentinel at
    response EOF, all four values to match the completed suffixes, and the finalized response to equal
    exactly `response_core + canonical-binding-block`. This gives the acyclic dependency order
-   `report + response_core -> bodies -> suffixes -> response binding block`; no finalized-response
-   value feeds a body or suffix.
+   `raw report + response_core -> sanitized projections -> bodies -> suffixes -> response binding
+   block`; no finalized-response value feeds a projection, body, or suffix.
 
    Before appending to the evidence documents, read each recorded target blob as raw bytes and require
    its byte length and Git blob SHA to match Step 5. Require each final evidence file to equal exactly
@@ -35815,13 +35835,13 @@ exact path, byte-prefix, absence, and payload-digest proofs all pass.
 - [ ] Set both existing `deep-loop.source.sha` values to the exact merged deep-loop main SHA, then run `npm run docs:write`. Do not hand-edit generated content, `.claude-plugin/suite-extensions.json`, another plugin entry, or any non-generator file. Inspect every derived hunk; the expected changed paths are exactly the two manifests plus the four generated docs named above. Any extra path or sidecar/pinned-path failure stops for diagnosis and new authority.
 - [ ] Run deep-suite `npm run preflight`, inspect the exact authority-plus-derived diff, stage all and only those six expected paths, run `git diff --cached --check`, and create a focused local commit with the required Claude Opus co-author trailer. Verify the committed tree differs from its base only in those paths and that each generated hunk is reproducible by a clean `npm run docs:write` no-op.
 - [ ] Before review, append the exact deep-suite target commit/range, six-path stat, preflight hashes/results, and clean status to the retained deep-loop closeout evidence log; stage that tracked file, run `git diff --cached --check`, and commit the pre-review row locally. This is the cross-repository application of the common Gate Receipt protocol; no closeout push is authorized yet.
-- [ ] Apply the Opus/xhigh plus `gpt-5.6-sol`/high naturally-converged three-reviewer contract to that exact committed deep-suite candidate. If a finding changes any authority or generated artifact, commit the fix, rerun preflight, and obtain a fresh review; never reuse the old receipt.
+- [ ] Apply the standard/adversarial `gpt-5.6-sol`/high naturally-converged two-reviewer contract, with Opus and agy excluded, to that exact committed deep-suite candidate. If a finding changes any authority or generated artifact, commit the fix, rerun preflight, and obtain a fresh review; never reuse the old receipt.
 - [ ] Any change after the reviewed candidate or after push invalidates its receipt and remote evidence.
   First present the new exact SHA/diff and scope. A change outside exactly the two manifests plus the
   four generated docs is scope expansion and requires a new explicit modification-authority proposal;
   do not infer it from Gate 8 approval. For every authorized fix, rerun `npm run docs:write` and prove
   it is a no-op, rerun `npm run preflight` and `git diff --check`, create a fresh focused commit, append
-  fresh pre-review evidence in closeout, and obtain a fresh Opus/xhigh plus `gpt-5.6-sol`/high `APPROVE`/Red 0/Yellow 0/
+  fresh pre-review evidence in closeout, and obtain a fresh standard/adversarial `gpt-5.6-sol`/high two-reviewer `APPROVE`/Red 0/Yellow 0/
   `converged` review and receipt. If a remote branch already exists, present that fresh SHA/diff and
   obtain a **separate fresh-push approval** before updating it. No earlier modification, review, or
   push approval survives the changed candidate.
@@ -36099,17 +36119,17 @@ const implementationAuthorityRaw = implementationAuthorityMatch == null
 const gate6Raw = gate6HeadingMatch == null || gate6RawEnd < 0 ? ''
   : source.slice(gate6HeadingMatch.index, gate6RawEnd);
 const expectedImplementationAuthorityHash =
-  'eaec6c5eaa8eb49f0aaaa013d59a4259427111c65ccc01709b62dd3c515bc585';
+  '4bc32f7e955c39ff93f1faf15dce745b84f0647605f546d7f12f87ce6e8a8ec0';
 const expectedGate6SectionHash =
-  '98905b95e5e5ef6cc30eadec493ab108db3e2b2909e726390aa4b92df2ce01a9';
-if (Buffer.byteLength(implementationAuthorityRaw, 'utf8') !== 1977331) {
+  'b85f937d83bf1b59c53264e8fee5d205716ab0038011bdd9cc15a1390238bac7';
+if (Buffer.byteLength(implementationAuthorityRaw, 'utf8') !== 1977235) {
   fail('pre-Gate-6 authority UTF-8 byte length differs from its exact reviewed binding');
 }
 if (createHash('sha256').update(implementationAuthorityRaw).digest('hex')
     !== expectedImplementationAuthorityHash) {
   fail('pre-Gate-6 authority differs from its exact reviewed binding');
 }
-if (Buffer.byteLength(gate6Raw, 'utf8') !== 12146) {
+if (Buffer.byteLength(gate6Raw, 'utf8') !== 13813) {
   fail('Gate 6 complete procedure UTF-8 byte length differs from its exact reviewed binding');
 }
 if (createHash('sha256').update(gate6Raw).digest('hex') !== expectedGate6SectionHash) {
@@ -36141,13 +36161,23 @@ requireTokens('Gate 6', gate6, [
   'git ls-tree -rz --full-tree <treeish>',
   'discard exactly the one final empty segment', 'accept only exact type',
   'GATE6_RECEIPT_V1_BEGIN', 'GATE6_RECEIPT_V1_END',
-  'GATE6_RECEIPT_BODY_V1', 'GATE6_RESPONSE_CORE_V1_END',
+  'GATE6_RECEIPT_BODY_V2', 'GATE6_RESPONSE_CORE_V1_END',
+  'GATE6_RECEIPT_V1_[BEGIN]', 'GATE6_RECEIPT_V1_[END]',
+  'report_text_bytes=', 'report_text_begin', 'report_text_end',
+  'response_text_bytes=', 'response_text_begin', 'response_text_end',
+  'length-framed byte protocol', 'durable sanitized Gate 6 report/summary',
   'GATE6_RESPONSE_BINDINGS_V1_BEGIN', 'GATE6_RESPONSE_BINDINGS_V1_END',
   'response_core + canonical-binding-block',
-  'report + response_core -> bodies -> suffixes -> response binding block',
+  'sanitized projections -> bodies -> suffixes',
   'recorded-prefix + canonical-suffix',
   'sole non-recursive receipt-only exception',
+  '/deep-review-loop --codex-only --no-agy --max=5 --contract',
+  'independent standard and', 'adversarial Codex reviewer calls',
 ]);
+if (gate6Raw.includes('from a native Opus/xhigh session')
+    || gate6Raw.includes('three-reviewer evidence')) {
+  fail('Gate 6 uses the superseded Opus/three-reviewer contract');
+}
 const gate7 = sectionBetween('### Gate 7 Procedure:', '### Gate 8 Procedure:');
 requireTokens('Gate 7', gate7, [
   'exactly the nine unique cells',
