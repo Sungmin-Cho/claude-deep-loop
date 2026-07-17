@@ -35639,15 +35639,18 @@ exact path, byte-prefix, absence, and payload-digest proofs all pass.
    with SHA-256 over this canonical byte stream while excluding exactly
    `docs/handoff/2026-07-13-codex-app-native-task-continuation-evidence.md` and
    `docs/handoff/2026-07-13-codex-app-native-task-continuation-review-bundle.md`. Run
-   `git ls-tree -rz --full-tree <treeish>` with shell disabled and retain raw Buffer output. Split on
-   NUL, reject an unterminated/malformed/duplicate record, parse each record as raw
+   `git ls-tree -rz --full-tree <treeish>` with shell disabled and retain raw Buffer output. Require
+   the output to end in NUL, split on NUL, discard exactly the one final empty segment created by that
+   terminator, and reject a missing terminator, any other empty segment, or a malformed/duplicate
+   record. Parse every remaining record as raw
    `<mode> SP <type> SP <object-id> TAB <path>` bytes, and remove only records whose path bytes equal
    an excluded UTF-8 path exactly. Sort remaining records by raw path bytes with `Buffer.compare`.
    Hash the ASCII domain prefix `DEEP_LOOP_INSTALLABLE_PAYLOAD_V1` plus NUL, followed for every
    record by `mode + NUL + type + NUL + object-id + NUL + raw-path + NUL`. Record the complete Node
    helper source/hash, exact Git argv, excluded paths, record count, canonical-stream byte length, and
-   digest. Any parse ambiguity, Git failure, non-blob/tree entry type, or duplicate path blocks Gate 6.
-   Any other failure returns to its owning TDD card.
+   digest. Because recursive `git ls-tree -r` emits installable file records, accept only exact type
+   `blob`; a `commit` gitlink, unexpected `tree`, any other type, parse ambiguity, Git failure, or
+   duplicate path blocks Gate 6. Any other failure returns to its owning TDD card.
 2. Present a new exact final-candidate operational proposal that repeats every Gate 5 install source,
    marketplace/enable-selection diff, backup, rollback, App restart, fresh task creation, root/fork
    checks, and task-retention term, now bound to `runtime_candidate_sha` and the payload digest. Obtain
@@ -35695,22 +35698,53 @@ exact path, byte-prefix, absence, and payload-digest proofs all pass.
 7. Name the one exact Gate 6 report path and one exact Gate 6 response path in the receipt;
    reject a missing file, duplicate, path outside the two `.deep-review` receipt directories, or any
    other report/response candidate. Re-prove both paths were absent from
-   `gate6_review_target_sha` and were absent from its recorded path sets. Construct exactly one
-   canonical suffix for each `kind` in `evidence|bundle`. Let `body` be the nonempty fatal-UTF-8
-   sanitized Gate 6 report/summary, metadata, hashes, Info dispositions, and verification result
-   bytes, with neither marker token. Let `begin` be exactly
+   `gate6_review_target_sha` and were absent from its recorded path sets. Read the completed report as
+   nonempty fatal-UTF-8 raw bytes and record its canonical decimal byte length and SHA-256. After
+   Respond has written every Summary field, item disposition, model/session/hash receipt, and
+   verification result, but before any suffix binding exists, append exactly one line
+   `<!-- GATE6_RESPONSE_CORE_V1_END -->` plus LF. Name the entire response through that LF
+   `response_core`; require that terminator line once at EOF, require both response-binding sentinels
+   absent, freeze the raw bytes, and record its canonical decimal byte length and SHA-256.
+
+   Construct exactly one ASCII `body` for each `kind` in `evidence|bundle` from only these already
+   frozen values. It is the following nine LF-terminated lines in this exact order, with no CR,
+   escaping, blank line, leading/trailing space, extra field, or bytes after the final LF:
+   `GATE6_RECEIPT_BODY_V1`, `kind=<kind>`, `target=<gate6_review_target_sha>`,
+   `report_path=<exact-report-path>`, `report_bytes=<canonical-decimal>`,
+   `report_sha256=<64-lower-hex>`, `response_path=<exact-response-path>`,
+   `response_core_bytes=<canonical-decimal>`, and `response_core_sha256=<64-lower-hex>`.
+   Here canonical decimal is `0` or a nonzero digit followed only by digits, with no leading zero;
+   both recorded byte lengths must be nonzero. The report and `response_core` are the sole sources for
+   the sanitized review text, metadata, hashes, Info dispositions, and verification result; a missing
+   required response section or a failed secret/raw-ID scan blocks construction. The body must be
+   fatal-UTF-8 and contain neither receipt marker token. It never reads the later response binding
+   block, finalized response bytes/hash, or either completed suffix binding.
+
+   Let `begin` be exactly
    `LF + "<!-- GATE6_RECEIPT_V1_BEGIN kind=<kind> target=<gate6_review_target_sha> -->" + LF` and
    let `end` be exactly
    `LF + "<!-- GATE6_RECEIPT_V1_END kind=<kind> body_sha256=<sha256(body)> -->" + LF`.
    The sole suffix is `begin + body + end`. Require exactly one begin and one end marker, exact kind
    and target fields, end at EOF, a recomputed SHA-256 match over the exact body bytes, and no bytes
-   outside that grammar. Record each suffix byte length and SHA-256 in the finalized Gate 6 response
-   file before staging. Before appending, read each recorded target blob as raw bytes and require its
-   byte length and Git blob SHA to match Step 5. Require each final evidence file to equal exactly
+   outside that grammar. Compute both completed suffix byte lengths and SHA-256 values before
+   finalizing the response. Append to the frozen `response_core` exactly this LF-terminated block and
+   no other bytes:
+   `<!-- GATE6_RESPONSE_BINDINGS_V1_BEGIN target=<gate6_review_target_sha> -->`,
+   `evidence_suffix_bytes=<canonical-decimal>`, `evidence_suffix_sha256=<64-lower-hex>`,
+   `bundle_suffix_bytes=<canonical-decimal>`, `bundle_suffix_sha256=<64-lower-hex>`, and
+   `<!-- GATE6_RESPONSE_BINDINGS_V1_END -->`. Require each sentinel exactly once, the end sentinel at
+   response EOF, all four values to match the completed suffixes, and the finalized response to equal
+   exactly `response_core + canonical-binding-block`. This gives the acyclic dependency order
+   `report + response_core -> bodies -> suffixes -> response binding block`; no finalized-response
+   value feeds a body or suffix.
+
+   Before appending to the evidence documents, read each recorded target blob as raw bytes and require
+   its byte length and Git blob SHA to match Step 5. Require each final evidence file to equal exactly
    `recorded-prefix + canonical-suffix`; this simultaneously proves the byte-identical prefix and one
    append. A replacement, deletion, insertion into the prefix, truncation, concatenated second
-   receipt, malformed marker, or unrecorded suffix hash invalidates the review. Force-add exactly all
-   four named paths, scan them again for secrets/raw IDs, inspect, run `git diff --cached --check`, and commit
+   receipt, malformed marker, noncanonical body/binding block, or unrecorded suffix hash invalidates
+   the review. Force-add exactly all four named paths, scan them again for secrets/raw IDs, inspect,
+   run `git diff --cached --check`, and commit
    `docs: record 1.9.0 release review` with the required trailer. Require this commit-local name-only
    delta to equal the exact four paths. Recompute the before digest from `runtime_candidate_sha` and
    the after digest from this receipt head with the exact Step 1 helper/serialization while excluding
@@ -36067,7 +36101,7 @@ const gate6Raw = gate6HeadingMatch == null || gate6RawEnd < 0 ? ''
 const expectedImplementationAuthorityHash =
   'eaec6c5eaa8eb49f0aaaa013d59a4259427111c65ccc01709b62dd3c515bc585';
 const expectedGate6SectionHash =
-  '21c57042def125eea57b5cee2f8acca61cc0dc64ff780d8141d01a8d028d7355';
+  '98905b95e5e5ef6cc30eadec493ab108db3e2b2909e726390aa4b92df2ce01a9';
 if (Buffer.byteLength(implementationAuthorityRaw, 'utf8') !== 1977331) {
   fail('pre-Gate-6 authority UTF-8 byte length differs from its exact reviewed binding');
 }
@@ -36075,7 +36109,7 @@ if (createHash('sha256').update(implementationAuthorityRaw).digest('hex')
     !== expectedImplementationAuthorityHash) {
   fail('pre-Gate-6 authority differs from its exact reviewed binding');
 }
-if (Buffer.byteLength(gate6Raw, 'utf8') !== 9489) {
+if (Buffer.byteLength(gate6Raw, 'utf8') !== 12146) {
   fail('Gate 6 complete procedure UTF-8 byte length differs from its exact reviewed binding');
 }
 if (createHash('sha256').update(gate6Raw).digest('hex') !== expectedGate6SectionHash) {
@@ -36105,8 +36139,12 @@ requireTokens('Gate 6', gate6, [
   'simultaneously proves the byte-identical prefix',
   'DEEP_LOOP_INSTALLABLE_PAYLOAD_V1',
   'git ls-tree -rz --full-tree <treeish>',
+  'discard exactly the one final empty segment', 'accept only exact type',
   'GATE6_RECEIPT_V1_BEGIN', 'GATE6_RECEIPT_V1_END',
-  'Record each suffix byte length and SHA-256',
+  'GATE6_RECEIPT_BODY_V1', 'GATE6_RESPONSE_CORE_V1_END',
+  'GATE6_RESPONSE_BINDINGS_V1_BEGIN', 'GATE6_RESPONSE_BINDINGS_V1_END',
+  'response_core + canonical-binding-block',
+  'report + response_core -> bodies -> suffixes -> response binding block',
   'recorded-prefix + canonical-suffix',
   'sole non-recursive receipt-only exception',
 ]);

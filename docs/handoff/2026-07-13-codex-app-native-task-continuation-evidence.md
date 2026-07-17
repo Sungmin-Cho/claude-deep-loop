@@ -32,7 +32,7 @@ Main-agent judgment: the fetched remote base, version, test count, and user-owne
 
 ## Gate 1 — research and design
 
-Status: REVIEW OPEN — fresh cycle 8 round 2 Respond complete; CONCERN, round 3 pending
+Status: REVIEW OPEN — fresh cycle 8 round 3 Respond complete; CONCERN, round 4 pending
 
 Design target: `docs/superpowers/specs/2026-07-13-codex-app-native-task-continuation-design.md`
 
@@ -2540,6 +2540,71 @@ no inherited approval from the historical receipt.
   `git diff --check`, `git diff --check origin/main`, and `npm run preflight` passed all 1,463 tests
   with zero failures, cancellations, skips, or todo.
 - gate state: still open. Changed bytes require fresh cycle 8 round 3 using one native Claude
+  Opus/xhigh reviewer plus standard and adversarial Codex reviewers both pinned to exact
+  `gpt-5.6-sol`/high; agy remains disabled. This Respond is not a Gate 1 pass.
+
+### Gate 1 fresh cycle 8 round 3 review
+
+- gate/artifact: Gate 1 design plus complete 46-task plan, goal handoff, evidence ledger, cycle-8
+  round-2 report/response, and current repository code/tests.
+- base/head: `c38a96137f8f4f0099c35e893860930e8ee4cf73..a9034450125ceb4c0243a712bfb1563abc315849`;
+  worktree clean at counted reviewer start.
+- invocation: three independent read-only processes. Claude used the deep-review `code-reviewer`
+  with exact launcher `--model opus --effort xhigh`; standard and adversarial Codex each used exact
+  `gpt-5.6-sol` / `high`, `--ephemeral --ignore-user-config --ignore-rules -s read-only`.
+- reviewer actual: Claude session `7c2d80e6-4f62-401b-9d7a-5ac6979ebcf1` returned APPROVE with
+  4 Info and actual stream model `claude-opus-4-8`; standard Codex task
+  `019f6e69-fd2b-7c23-942d-66bdc1d6e7ee` found no discrete actionable defect; adversarial Codex task
+  `019f6e6a-207f-7ec2-a437-b6fd9c742017` returned 1 Yellow and 2 Info.
+  `N_planned=N_actual=3`; all processes exited 0 and naturally completed with final messages.
+- synthesis/gate disposition: formal reviewer synthesis `APPROVE`, Red/Yellow/Info = `0 / 0 / 7`
+  because the receipt-body defect was solo 1-of-3. The panel was not naturally converged. Main-agent
+  disposition is `CONCERN — DO NOT ADVANCE`.
+- main-agent judgment: accepted the receipt-body finding after an independent executable probe.
+  Both a review-summary body and a response-projection body satisfy the old marker/body-hash/EOF
+  grammar but produce different suffix lengths and SHA-256 values. Treating summary as the finalized
+  response creates the cycle `response -> suffix hash -> suffix -> body -> response`. Accepted Opus's
+  final-NUL and blob-only parser clarifications as defense in depth. Other round-2 corrections and
+  external-approval boundaries remain intact.
+- report path: `.deep-review/reports/2026-07-17-140512-review.md`, SHA-256
+  `3ff0a17ab125d5cbdb5722d5382e8275070da1c2937dfd286471d5704df3d7ad`.
+- Opus raw/final SHA-256: `2188ba47bd0f2fd03bbee5c1063400f7b0c8c7d151e67a772a2786ea21184478` /
+  `02d644bfe7ea88d46902118050dfe96d0340cf042197e9c5a8d31128dae58e90`; prompt
+  `9057b167e5a1f755526966cf0424d57a8ea8e8f9af81b1fc039b9a3cf8f0b35d`; exact launcher record
+  `b05d349eeb5010313369b5a22f86c9327ac92a7dca74393d140fbe0bb3e3a473`.
+- standard raw/final SHA-256: `d253a85ef997a69e4b4b992f91f0ecdd867ccb532aeed224daea0402e9a27390` /
+  `36bba010726636e9fa1e834da5a59940032f2496e70bca2ac28d25317a735590`; exact argv record
+  `bc2143a831d894f93e51cd6fa91e1768a70573aa25f0ddc33aa8dea01c87fd1e`.
+- adversarial raw/final SHA-256: `ea6539c67aad6c8b45583fbcb19b8a4c5d43162bf602e8c9884712bd0fc81543` /
+  `df1638a02e5ff9332c6f31e95a1106ef441b0bf979bca122849e54e77588b45e`; prompt
+  `42e65d136ca8c12d16d638b6172a561f36b253409cb57e374860f52dffb45e36`; exact argv record
+  `0bd0705f303549a04e46aea4b84e9abecf777086d8048f7729a6e541a03f9f6c`.
+- independent reproduction probe: `.deep-review/tmp/cycle8-round3-reproduction-probe.mjs`, SHA-256
+  `dcd7ef120188606e8edb36195d090f5a91d04f02321331ae4e89c70be40b3ed3`; output SHA-256
+  `42d1d31678b47e85ba6abe692405dd6967eb7018a86ce2a004d507cbc5b31118`.
+
+### Gate 1 fresh cycle 8 round 3 Respond
+
+- disposition: accepted the actionable receipt-body root and two parser clarifications; closed four
+  nonblocking evidence items; `execution_path=main_fallback`. Formal synthesis was `APPROVE`,
+  Red/Yellow/Info `0 / 0 / 7`, but the gate remains `CONCERN — DO NOT ADVANCE` because the three
+  reviewers did not naturally converge.
+- payload parser response: canonical `git ls-tree -rz` parsing now requires a terminal NUL, discards
+  exactly the one terminator-created final empty segment, rejects any other empty segment, and accepts
+  only `blob`; gitlinks and unexpected tree/other records fail closed.
+- receipt response: Respond freezes a fatal-UTF-8 report and a response core ending in one exact core
+  terminator before any suffix binding exists. The nine-line `GATE6_RECEIPT_BODY_V1` binds kind,
+  target, exact report/response paths, nonzero canonical byte lengths, and SHA-256 values in fixed
+  order. Completed evidence/bundle suffix bindings are appended afterward in one canonical response
+  binding block. The explicit dependency order is
+  `report + response_core -> bodies -> suffixes -> response binding block`; finalized response bytes
+  never feed a body.
+- exact authority response: the pre-Gate-6 authority remains 1,968,851 JavaScript code units /
+  1,977,331 UTF-8 bytes, SHA-256
+  `eaec6c5eaa8eb49f0aaaa013d59a4259427111c65ccc01709b62dd3c515bc585`. The corrected Gate 6 section
+  through its separator is 12,144 code units / 12,146 UTF-8 bytes, SHA-256
+  `98905b95e5e5ef6cc30eadec493ab108db3e2b2909e726390aa4b92df2ce01a9`.
+- gate state: still open. Changed bytes require fresh cycle 8 round 4 using one native Claude
   Opus/xhigh reviewer plus standard and adversarial Codex reviewers both pinned to exact
   `gpt-5.6-sol`/high; agy remains disabled. This Respond is not a Gate 1 pass.
 

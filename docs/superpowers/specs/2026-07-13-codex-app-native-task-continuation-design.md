@@ -2,7 +2,7 @@
 
 작성일: 2026-07-13
 운영 계약: `docs/handoff/2026-07-13-codex-app-native-task-continuation-goal-handoff.md`
-상태: Gate 1 fresh cycle 8 round 2 Respond 완료; CONCERN 미수렴, fresh cycle 8 round 3 필요
+상태: Gate 1 fresh cycle 8 round 3 Respond 완료; CONCERN 미수렴, fresh cycle 8 round 4 필요
 기준: `main@c38a96137f8f4f0099c35e893860930e8ee4cf73`, deep-loop `1.8.2`
 
 > source of truth: 이 문서 + 운영 계약 + 현재 저장소 + `git log`. 이전 대화 컨텍스트를 가정하지 말라.
@@ -1478,6 +1478,20 @@ offset 0의 title부터 Gate 6 직전까지를 complete pre-Gate-6 authority로 
 stream, domain prefix, fatal parse rules, target/kind/body-hash/EOF-bound one-suffix grammar를 정의한다.
 Task 17B는 실행 시 UTC 날짜를 계산하고 reviewed marker를 정확히 한 번 치환한다. 변경된 bytes는 round 2
 receipt를 상속하지 않으며 fresh cycle 8 round 3가 다시 검증해야 한다.
+
+Gate 1 fresh cycle 8 round 3도 `CONCERN`이었다. Opus/xhigh는 APPROVE했고 standard Codex는
+별도 결함을 찾지 못했지만, adversarial Codex는 Gate 6 receipt body가 sanitized
+`report/summary`로만 정의되어 있고 완성 suffix hash를 finalized response에 기록하라는 순서와
+충돌한다고 Yellow를 제시했다. Main agent는 review-summary body와 response-projection body가
+모두 현재 marker/body-hash/EOF grammar를 통과하면서 서로 다른 suffix hash를 만드는 것과,
+`summary=finalized response` 해석이 `response -> suffix hash -> suffix -> body -> response` 순환을
+만드는 것을 실행 재현해 finding을 수용했다. Respond는 `git ls-tree -rz`의 final NUL을
+정확히 하나 제거하고 recursive payload type을 `blob`만 허용한다. Gate 6 response는 disposition과
+검증 결과를 포함한 immutable `response_core`를 먼저 고정하고, exact report/response-core
+path·byte-length·SHA-256만을 고정 순서의 `GATE6_RECEIPT_BODY_V1`으로 serialization한다.
+두 suffix를 완성한 뒤에만 canonical binding block을 response core에 append해 의존성을
+`report + response_core -> bodies -> suffixes -> response binding block`으로 비순환 고정한다.
+변경된 bytes는 round 3 receipt를 상속하지 않으며 fresh cycle 8 round 4가 다시 검증해야 한다.
 
 구현 순서:
 
