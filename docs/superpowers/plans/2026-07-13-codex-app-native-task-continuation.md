@@ -1,5 +1,19 @@
 # Codex App Native Task Continuation Implementation Plan
 
+## Pre-Gate-6 Authority Boundary
+
+The exact raw UTF-8 bytes from the first `# Codex App Native Task Continuation Implementation Plan`
+byte at file offset 0 through the byte immediately before
+`### Gate 6 Whole-Branch Review and Receipt Procedure` are the sole operational authority for all
+pre-Gate-6 implementation work: global constraints, receipt rules, responsibility/anchor maps,
+fixed interfaces, shared fixtures, card rules, the 46 Task 1A–17B cards, and the separately approved
+Gate 5 operational procedure. Gate 6 is separately exact-bound as a complete section. Gates 7–9 are
+post-review publication/cleanup procedures. No bytes before the document-title anchor are permitted,
+and context or receipt prose outside these exact regions cannot override an implementation card.
+The in-file expected hashes are authoring change detectors, not trust roots: the immutable reviewed
+commit plus the plan SHA-256 recorded in its tracked three-reviewer receipt are authoritative. A
+coordinated region edit and constant update invalidates that receipt and requires a fresh review.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add consent-gated, at-most-once Codex App task continuation for exact project-root and recorded-worktree runs while preserving every legacy Claude/Codex path and the kernel/execution-plane trust boundary.
@@ -421,15 +435,11 @@ Every `### Task` heading below is the actual independently reviewable implementa
 
 ---
 
-## Sole Implementation Authority Region
+## Task Card Authority Sequence
 
-The exact raw bytes from this heading through the byte immediately before
-`### Gate 6 Whole-Branch Review and Receipt Procedure` are the sole operational authority for every
-Task 1A–17C implementation destination, command, code fence, test, audit, and commit. Prose outside
-this region is context, receipt, or release procedure only and cannot override, weaken, relocate, or
-supplement a task card. Any implementation directive placed before or after this region is
-non-operative even if it names a task, file, command, or destination. The embedded validator binds
-this entire region by exact SHA-256 in addition to its narrower per-card semantic diagnostics.
+The following card sequence operates under every global rule, map, interface, fixture, and execution
+rule already included in the pre-Gate-6 authority boundary. Per-card hashes and semantic checks are
+narrow diagnostics in addition to that complete raw-region binding.
 
 ## Gate 3A — Host Surface, Schema, Genesis Transaction, Consent, Revoke
 
@@ -35562,12 +35572,17 @@ Use these complete JSON files (including their final newline):
 }
 ```
 
-As the changelog part of Step 3, insert the exact 1.9.0 entry:
+As the changelog part of Step 3, compute `release_date_utc` immediately before editing with the exact
+Node expression `new Date().toISOString().slice(0, 10)`, require it to match
+`/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/`, and record the command, UTC instant, and value in the evidence row.
+Substitute that value exactly once for `{{RELEASE_DATE_UTC}}` in the following reviewed template;
+the marker must be absent from the staged file and a literal planning-time date is forbidden. Then
+insert the resolved 1.9.0 entry:
 
 Insert this block immediately before `## [1.8.0]` in `CHANGELOG.md`:
 
 ```markdown
-## [1.9.0] — 2026-07-14
+## [1.9.0] — {{RELEASE_DATE_UTC}}
 
 Attended Codex App native task continuation release.
 
@@ -35608,7 +35623,7 @@ git commit -m "release: prepare deep-loop 1.9.0" -m "Co-Authored-By: Claude Opus
 
 ### Gate 6 Whole-Branch Review and Receipt Procedure
 
-This procedure is the intended 17C final-smoke/review-bundle/receipt checkpoint expressed honestly,
+This procedure is the intended final-smoke/review-bundle/receipt checkpoint expressed honestly,
 not a fake code task. Each intermediate receipt commit may change only the exact subset named by its
 step; subset does not mean all four paths must already exist. The cumulative pre-review delta contains
 exactly the two named evidence documents. The cumulative post-Respond delta contains exactly four
@@ -35621,10 +35636,18 @@ exact path, byte-prefix, absence, and payload-digest proofs all pass.
 1. Run `npm run preflight`, `git diff --check`, `git status --short --branch`, and the three-version
    Node command from Task 17B against the exact clean commit. Name its 40-character SHA the
    `runtime_candidate_sha`. Compute `installable_payload_sha256_before` from the complete tracked tree
-   while excluding exactly
+   with SHA-256 over this canonical byte stream while excluding exactly
    `docs/handoff/2026-07-13-codex-app-native-task-continuation-evidence.md` and
-   `docs/handoff/2026-07-13-codex-app-native-task-continuation-review-bundle.md`; record the command,
-   sorted path/blob/mode input, and digest. Any failure returns to its owning TDD card.
+   `docs/handoff/2026-07-13-codex-app-native-task-continuation-review-bundle.md`. Run
+   `git ls-tree -rz --full-tree <treeish>` with shell disabled and retain raw Buffer output. Split on
+   NUL, reject an unterminated/malformed/duplicate record, parse each record as raw
+   `<mode> SP <type> SP <object-id> TAB <path>` bytes, and remove only records whose path bytes equal
+   an excluded UTF-8 path exactly. Sort remaining records by raw path bytes with `Buffer.compare`.
+   Hash the ASCII domain prefix `DEEP_LOOP_INSTALLABLE_PAYLOAD_V1` plus NUL, followed for every
+   record by `mode + NUL + type + NUL + object-id + NUL + raw-path + NUL`. Record the complete Node
+   helper source/hash, exact Git argv, excluded paths, record count, canonical-stream byte length, and
+   digest. Any parse ambiguity, Git failure, non-blob/tree entry type, or duplicate path blocks Gate 6.
+   Any other failure returns to its owning TDD card.
 2. Present a new exact final-candidate operational proposal that repeats every Gate 5 install source,
    marketplace/enable-selection diff, backup, rollback, App restart, fresh task creation, root/fork
    checks, and task-retention term, now bound to `runtime_candidate_sha` and the payload digest. Obtain
@@ -35652,10 +35675,10 @@ exact path, byte-prefix, absence, and payload-digest proofs all pass.
    This commit's exact stage-allowed subset is the evidence document plus review bundle; the
    cumulative name-only delta must equal those two paths, while the commit-local delta may contain
    only that exact subset.
-5. Record that resulting SHA as `gate6_review_target_sha`. Record the Git blob SHA and byte length of
+5. Record that resulting SHA as `gate6_review_target_sha`. Record the Git blob SHA and UTF-8 byte length of
    the evidence document and review bundle at that target as `gate6_evidence_prefix_blob`,
-   `gate6_evidence_prefix_bytes`, `gate6_bundle_prefix_blob`, and `gate6_bundle_prefix_bytes`. Prove
-   the future Gate 6 report and response paths are absent from that target. Then launch a fresh
+   `gate6_evidence_prefix_bytes`, `gate6_bundle_prefix_blob`, and `gate6_bundle_prefix_bytes`. Record
+   the complete tracked report/response path sets at that target. Then launch a fresh
    `/deep-review-loop --codex --no-agy --max=5 --contract` from a native Opus/xhigh session, with
    both Codex reviewer calls pinned to `gpt-5.6-sol` and `model_reasoning_effort=high`, over the complete branch from
    `c38a96137f8f4f0099c35e893860930e8ee4cf73` through that exact target. Pass only on actual
@@ -35672,16 +35695,26 @@ exact path, byte-prefix, absence, and payload-digest proofs all pass.
 7. Name the one exact Gate 6 report path and one exact Gate 6 response path in the receipt;
    reject a missing file, duplicate, path outside the two `.deep-review` receipt directories, or any
    other report/response candidate. Re-prove both paths were absent from
-   `gate6_review_target_sha`. Append the sanitized Gate 6 report/summary, metadata, hashes, Info
-   dispositions, and verification results to the two evidence documents. Before staging, read each
-   recorded target blob as raw bytes and require the final corresponding file to begin with that
-   byte-identical prefix of exactly the recorded length; all later bytes must be the one sanitized
-   Gate 6 receipt append. A replacement, deletion, insertion into the prefix, truncation, or second
-   append invalidates the review. Force-add exactly all four named paths, scan them again for
-   secrets/raw IDs, inspect, run `git diff --cached --check`, and commit
+   `gate6_review_target_sha` and were absent from its recorded path sets. Construct exactly one
+   canonical suffix for each `kind` in `evidence|bundle`. Let `body` be the nonempty fatal-UTF-8
+   sanitized Gate 6 report/summary, metadata, hashes, Info dispositions, and verification result
+   bytes, with neither marker token. Let `begin` be exactly
+   `LF + "<!-- GATE6_RECEIPT_V1_BEGIN kind=<kind> target=<gate6_review_target_sha> -->" + LF` and
+   let `end` be exactly
+   `LF + "<!-- GATE6_RECEIPT_V1_END kind=<kind> body_sha256=<sha256(body)> -->" + LF`.
+   The sole suffix is `begin + body + end`. Require exactly one begin and one end marker, exact kind
+   and target fields, end at EOF, a recomputed SHA-256 match over the exact body bytes, and no bytes
+   outside that grammar. Record each suffix byte length and SHA-256 in the finalized Gate 6 response
+   file before staging. Before appending, read each recorded target blob as raw bytes and require its
+   byte length and Git blob SHA to match Step 5. Require each final evidence file to equal exactly
+   `recorded-prefix + canonical-suffix`; this simultaneously proves the byte-identical prefix and one
+   append. A replacement, deletion, insertion into the prefix, truncation, concatenated second
+   receipt, malformed marker, or unrecorded suffix hash invalidates the review. Force-add exactly all
+   four named paths, scan them again for secrets/raw IDs, inspect, run `git diff --cached --check`, and commit
    `docs: record 1.9.0 release review` with the required trailer. Require this commit-local name-only
    delta to equal the exact four paths. Recompute the before digest from `runtime_candidate_sha` and
-   the after digest from this receipt head while excluding the same four exact paths from each tree.
+   the after digest from this receipt head with the exact Step 1 helper/serialization while excluding
+   the same four exact paths from each tree.
    The two newly named receipt paths are absent from the candidate, so the recomputed before digest
    must equal the initial Step 1 digest. Require the cumulative
    `git diff runtime_candidate_sha..HEAD --name-only` to equal exactly the final four-path receipt set;
@@ -36015,14 +36048,15 @@ const sectionBetween = (startHeading, endHeading) => {
   if (end < 0) { fail(`missing section boundary: ${endHeading}`); return ''; }
   return outsideFences.slice(start, end);
 };
-const implementationAuthorityMatch = /^## Sole Implementation Authority Region$/mu.exec(source);
+const implementationAuthorityMatch = /^# Codex App Native Task Continuation Implementation Plan$/mu.exec(source);
 const gate6HeadingMatch = /^### Gate 6 Whole-Branch Review and Receipt Procedure$/mu.exec(source);
 const gates7HeadingMatch = /^## Gates 7–9 /mu.exec(source);
 const gate6RawEnd = gates7HeadingMatch == null ? -1
-  : source.lastIndexOf('\n---\n', gates7HeadingMatch.index);
+  : gates7HeadingMatch.index;
 if (implementationAuthorityMatch == null || gate6HeadingMatch == null
     || gates7HeadingMatch == null || gate6RawEnd <= gate6HeadingMatch.index
-    || gate6HeadingMatch.index <= implementationAuthorityMatch.index) {
+    || gate6HeadingMatch.index <= implementationAuthorityMatch.index
+    || implementationAuthorityMatch.index !== 0) {
   fail('implementation authority or Gate 6 exact section boundary missing');
 }
 const implementationAuthorityRaw = implementationAuthorityMatch == null
@@ -36031,12 +36065,18 @@ const implementationAuthorityRaw = implementationAuthorityMatch == null
 const gate6Raw = gate6HeadingMatch == null || gate6RawEnd < 0 ? ''
   : source.slice(gate6HeadingMatch.index, gate6RawEnd);
 const expectedImplementationAuthorityHash =
-  '327e96eaec6acc8ebfa591e532249fd62710e8fe621419a7e9e368d9430de391';
+  'eaec6c5eaa8eb49f0aaaa013d59a4259427111c65ccc01709b62dd3c515bc585';
 const expectedGate6SectionHash =
-  'b787ca9bbd982a61bbe46b39831dbbbb3b09bfbbc361cbddac9b31ed1e09ca6c';
+  '21c57042def125eea57b5cee2f8acca61cc0dc64ff780d8141d01a8d028d7355';
+if (Buffer.byteLength(implementationAuthorityRaw, 'utf8') !== 1977331) {
+  fail('pre-Gate-6 authority UTF-8 byte length differs from its exact reviewed binding');
+}
 if (createHash('sha256').update(implementationAuthorityRaw).digest('hex')
     !== expectedImplementationAuthorityHash) {
-  fail('sole implementation authority region differs from its exact reviewed binding');
+  fail('pre-Gate-6 authority differs from its exact reviewed binding');
+}
+if (Buffer.byteLength(gate6Raw, 'utf8') !== 9489) {
+  fail('Gate 6 complete procedure UTF-8 byte length differs from its exact reviewed binding');
 }
 if (createHash('sha256').update(gate6Raw).digest('hex') !== expectedGate6SectionHash) {
   fail('Gate 6 complete procedure differs from its exact reviewed binding');
@@ -36062,7 +36102,12 @@ requireTokens('Gate 6', gate6, [
   'one exact Gate 6 report path and one exact Gate 6 response path',
   'exact stage-allowed subset', 'cumulative post-Respond delta contains exactly four',
   'gate6_review_target_sha', 'gate6_evidence_prefix_blob', 'gate6_bundle_prefix_blob',
-  'byte-identical prefix of exactly the recorded length',
+  'simultaneously proves the byte-identical prefix',
+  'DEEP_LOOP_INSTALLABLE_PAYLOAD_V1',
+  'git ls-tree -rz --full-tree <treeish>',
+  'GATE6_RECEIPT_V1_BEGIN', 'GATE6_RECEIPT_V1_END',
+  'Record each suffix byte length and SHA-256',
+  'recorded-prefix + canonical-suffix',
   'sole non-recursive receipt-only exception',
 ]);
 const gate7 = sectionBetween('### Gate 7 Procedure:', '### Gate 8 Procedure:');
@@ -36323,6 +36368,9 @@ for (const task of taskMatches) {
   if (task[1] === '6A') {
     const expectedTask6aCardHash =
       '3774a5263631c78c17a4ec8e5148cbc63951e917012a9b9ca67738bc11161a7b';
+    if (Buffer.byteLength(card, 'utf8') !== 55523) {
+      fail('Task 6A complete reviewed card UTF-8 byte length differs from its exact binding');
+    }
     if (createHash('sha256').update(card).digest('hex') !== expectedTask6aCardHash) {
       fail('Task 6A complete reviewed card differs from its exact binding');
     }
@@ -36490,6 +36538,17 @@ for (const task of taskMatches) {
       'pending acquire identity fence must precede cwd callback',
       'pending acquire identity fence must precede realpath callback']) {
       if (!card.includes(token)) fail(`Task 10D missing exact recovery cleanup token ${token}`);
+    }
+  }
+  if (task[1] === '17B') {
+    for (const token of ['release_date_utc',
+      "new Date().toISOString().slice(0, 10)",
+      '{{RELEASE_DATE_UTC}}',
+      'literal planning-time date is forbidden']) {
+      if (!card.includes(token)) fail(`Task 17B missing execution-time release-date token ${token}`);
+    }
+    if (card.includes('## [1.9.0] — 2026-07-14')) {
+      fail('Task 17B hard-codes a planning-time changelog release date');
     }
   }
   if (task[1] === '7C') {

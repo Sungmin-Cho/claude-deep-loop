@@ -32,7 +32,7 @@ Main-agent judgment: the fetched remote base, version, test count, and user-owne
 
 ## Gate 1 — research and design
 
-Status: REVIEW OPEN — fresh cycle 8 round 1 Respond complete; CONCERN, round 2 pending
+Status: REVIEW OPEN — fresh cycle 8 round 2 review complete; CONCERN, Respond in progress
 
 Design target: `docs/superpowers/specs/2026-07-13-codex-app-native-task-continuation-design.md`
 
@@ -2449,6 +2449,49 @@ no inherited approval from the historical receipt.
 - gate state: still open. Changed bytes require fresh cycle 8 round 2 using one native Claude
   Opus/xhigh reviewer plus standard and adversarial Codex reviewers both pinned to exact
   `gpt-5.6-sol`/high; agy remains disabled. This Respond is not a Gate 1 pass.
+
+### Gate 1 fresh cycle 8 round 2 review
+
+- gate/artifact: Gate 1 design plus final 46-task plan, goal handoff, evidence ledger, cycle-8
+  round-1 report/response, and current repository code/tests.
+- base/head: `c38a96137f8f4f0099c35e893860930e8ee4cf73..ff46c365899d6105ccc65c8071286ebbb5213de3`;
+  worktree clean at counted reviewer start.
+- invocation: three independent read-only processes. Claude used the deep-review `code-reviewer`
+  with exact launcher `--model opus --effort xhigh`; standard and adversarial Codex each used
+  exact `gpt-5.6-sol` / `high`, `--ephemeral --ignore-user-config --ignore-rules -s read-only`.
+- reviewer actual: Claude session `e9aafc8f-9417-43f0-a339-0ba171a90cef` returned APPROVE with
+  3 Info and actual stream model `claude-opus-4-8`; standard Codex task
+  `019f6ad6-bf13-7d83-bbbc-7db90fe27fce` returned 1 P2; adversarial Codex task
+  `019f6ad6-bf4a-7901-8520-3c1493fb997d` returned 2 Yellow and 3 Info.
+  `N_planned=N_actual=3`; all processes exited 0 and naturally completed with final messages.
+- synthesis/gate disposition: formal reviewer synthesis `APPROVE`, Red/Yellow/Info = `0 / 0 / 8`
+  because no new root had two-of-three severity agreement. The panel was not naturally converged.
+  Main-agent disposition is `CONCERN — DO NOT ADVANCE`.
+- main-agent judgment: accepted three actionable solo roots after executing the full reviewed
+  validator and byte probes. A Task 6A override in Global Constraints returned status 0 because the
+  old exact authority began later. Gate 6 had no canonical Git-tree serialization or uniquely
+  delimited suffix grammar. Task 17B hard-coded `2026-07-14`. The proposed Opus separator injection
+  returned status 1 at the old exact semantic section boundary, so that counterexample was rejected;
+  separator inclusion in the new hash is defense in depth.
+- corrected historical units: old authority = 1,930,427 JavaScript code units / 1,938,855 UTF-8
+  bytes; Task 6A = 55,521 code units / 55,523 UTF-8 bytes. Earlier immutable receipts that called
+  the code-unit values “bytes” are corrected here rather than rewritten.
+- report path: `.deep-review/reports/2026-07-16-213919-review.md`, SHA-256
+  `f2357767f67de2fe82e0b7e1e45752e4be3ffbc4027f7b10700d8a375b420bdc`.
+- Opus raw/final SHA-256: `113041d504d3be87bd61cbddc248fe5771b01131fc6d40ad07b7a0398bfc762e` /
+  `5a5c13d38ec6952c9e368b11195fa68a19271fc69ae2d8a49ecd768c7270b767`; prompt
+  `844fd092a12739965d9cc6da7684777da1c53290871f332b59d54eccdddf7258`; exact launcher record
+  `897ff07d7c97b58015e20fad07493c80f5358d82357faa6c245401fa0964e3b2`.
+- standard raw/final SHA-256: `b48fc5b428bac60e789ecbd94c9f50d670815a1fdcf8c73b255a12ba97a0cfd8` /
+  `20d8b131271cac219becd72f09d7529052d47398691e52c36967507affb283cf`; exact argv record
+  `cb343a6027e3c275444962f7ecd22faf625ff7005e0249ce1e263db4576f9ad2`.
+- adversarial raw/final SHA-256: `7d21f7a279218c78ab64a691330b526f04b8bb5b9a90fe32c20a1bbd70fa01bb` /
+  `29a933b702eea99c5332a2aa661fac17ea0d6581ef76369a903af8297087407f`; prompt
+  `89e076b16091b2f5ace0c4481b5f33c0c2a5e10cca945ed3b8e6f4bfad4a0ca3`; exact argv record
+  `1e95226fc34dfb097c23ea5b84c4c761a35ef2543b327c869636c841a809241b`.
+- independent reproduction probe: `.deep-review/tmp/cycle8-round2-reproduction-probe.mjs`, SHA-256
+  `d6d9c7a3b4104adce3506485671eb6dd9eeaaf246d0d73ebffd0b1b4a1824dfa`; output SHA-256
+  `81ed0d530db98f26909db49b72ec5da307bfe2cc4f10a6acc872ab22bf6349e5`.
 
 ## Review receipt template
 
