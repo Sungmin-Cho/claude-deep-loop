@@ -35906,22 +35906,29 @@ reviewer_2_verdict=<APPROVE|REQUEST_CHANGES>
 reviewer_2_red=<canonical-decimal>
 reviewer_2_yellow=<canonical-decimal>
 reviewer_2_info=<canonical-decimal>
-main_disposition=<ACCEPT_ALL_ACTIONABLE|APPROVE_NO_ACTIONABLE>
+main_disposition=<ACCEPT_ALL_ACTIONABLE|APPROVE_NO_ACTIONABLE|MIXED_WITH_GATE_OPEN|REJECT_ALL_NONACTIONABLE|DEFER_WITH_GATE_OPEN>
 ```
 
 `safe-posix-path` is ASCII `[A-Za-z0-9._/-]+`, does not start with `-` or `/`, and has no empty,
 `.` or `..` segment. Canonical decimal is `0` or a nonzero digit followed by digits, with no sign or
-leading zero; byte lengths are nonzero. Every fixed field occurs once in that order, with no blank,
+leading zero; byte lengths are nonzero, parse without rounding to a JavaScript safe integer, and do
+not exceed the exact remaining suffix bytes. Every fixed field occurs once in that order, with no blank,
 unknown, escaped, duplicated, leading/trailing-space, or continuation line. The target/range, paths,
 raw lengths/hashes, task IDs, reviewer facts/counts, and main disposition must replay the frozen
-review inputs exactly.
+review inputs exactly. `APPROVE` requires that reviewer's Red and Yellow counts both be zero;
+`REQUEST_CHANGES` requires at least one Red or Yellow. `APPROVE_NO_ACTIONABLE` requires both reviewers
+to approve with aggregate Red/Yellow zero; every other disposition keeps the gate open and must match
+the accepted/rejected/deferred item table in the response.
 
 The fixed metadata contains the literal fields `reviewer_1_role=standard` and
 `reviewer_2_role=adversarial`; its final field is exactly
-`main_disposition=<ACCEPT_ALL_ACTIONABLE|APPROVE_NO_ACTIONABLE>` with one of the two values selected.
+`main_disposition=<ACCEPT_ALL_ACTIONABLE|APPROVE_NO_ACTIONABLE|MIXED_WITH_GATE_OPEN|
+REJECT_ALL_NONACTIONABLE|DEFER_WITH_GATE_OPEN>` with one of the five values selected.
 The evidence header uses `body_bytes=<positive-canonical-decimal>` and the bundle header uses
 `metadata_bytes=<positive-canonical-decimal>` before their corresponding hashes.
 
+In the following two grammar blocks, `LF` means exactly one byte `0x0a` and every angle-bracketed
+form is a validated metavariable; the ASCII letters `LF` and the angle brackets are never emitted.
 The evidence suffix is exactly these bytes and no others:
 
 ```text
@@ -36368,7 +36375,9 @@ requireTokens('Common closeout', closeoutProtocol, [
   'body_bytes=<positive-canonical-decimal>', 'body_begin',
   'metadata_bytes=<positive-canonical-decimal>', 'payload_begin',
   'reviewer_1_role=standard', 'reviewer_2_role=adversarial',
-  'main_disposition=<ACCEPT_ALL_ACTIONABLE|APPROVE_NO_ACTIONABLE>',
+  'main_disposition=<ACCEPT_ALL_ACTIONABLE|APPROVE_NO_ACTIONABLE|MIXED_WITH_GATE_OPEN|',
+  'JavaScript safe integer', 'APPROVE_NO_ACTIONABLE` requires both reviewers',
+  '`LF` means exactly one byte `0x0a`',
   'requires suffix EOF', 'one trailing byte', 'a second concatenated entry',
   'git diff --cached --name-status -z', 'git show :<path>',
   'git diff --cached --check', 'unique exact child',
