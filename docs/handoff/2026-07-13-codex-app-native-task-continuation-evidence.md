@@ -3260,10 +3260,13 @@ no inherited approval from the historical receipt.
 - closure probe: `.deep-review/tmp/cycle8-round11-closure-probe.mjs`, SHA-256
   `0acaeff5fad737b43ab93d7aab262858f65c73cee9139e39973a4d2cde13e1d9`; output SHA-256
   `35ed038f5d5343d821192ae17ad204b9f2677ddbdffbc974b6baa644e400fe0a`.
-- verification: embedded validator passed 46 tasks/369 fences. Actual SHA-1 fixture proved the
-  sanitized environment, configured-hook suppression, report/response parent absence and exact `A`,
-  evidence/bundle prefix preservation, two finite review rounds, unique-child response-loss recovery,
-  no detached-worktree reuse, and the negative wiki rule. `npm run preflight` passed 1,463/1,463 on
+- verification: embedded validator passed 46 tasks/369 fences. The Round 11 actual SHA-1 fixture
+  proved sanitized-environment construction, one configured pre-commit-hook suppression,
+  report/response parent absence and exact `A`, evidence/bundle prefix preservation, two finite
+  review rounds, unique-child response-loss recovery, no detached-worktree reuse, and the negative
+  wiki rule. It did not yet execute the broader local config/filter/attributes/alternates rejection,
+  no-helper trace, or exact suffix-parser negative matrix; Round 12 owns those closure proofs.
+  `npm run preflight` passed 1,463/1,463 on
   the first full run, log SHA-256
   `dcc6fc2f51aef664d812905f9c3fc331a4d03c677f58282df878995b5b998f75`; both diff checks passed.
 - corrected candidate hashes before correction commit: handoff
@@ -3280,6 +3283,80 @@ no inherited approval from the historical receipt.
   review only the round-11 delta, unchanged pre-Gate-6 binding, new Gate-6 binding, and finite
   closeout protocol. If both exact reviewers return `APPROVE` with Red/Yellow `0 / 0` and main
   verification stays green, advance immediately to Gate 2 without another full-plan review.
+
+
+### Gate 1 fresh cycle 8 round 12 focused review
+
+- authority/focused base/head:
+  `c38a96137f8f4f0099c35e893860930e8ee4cf73` /
+  `922d746fb4160bf07c487e632357c00984e6ae27..36e4515275fe598344fdae91ccdf67e59732ff3d`.
+- scope: Round 11 response delta, frozen pre-Gate-6 binding, new Gate-6 binding, and Gates 7–9 finite
+  closeout protocol only; this deliberately did not repeat the complete 38k-line plan review.
+- invocation: two independent completed Codex processes, exact `gpt-5.6-sol` / high,
+  `--ephemeral --ignore-user-config --ignore-rules -s read-only`, actual 900-second bounds; no Opus
+  or agy. `N_planned=2`, `N_actual=2`; both exited 0 with finals.
+- standard: task `019f709d-76ef-7cd1-ad1c-486a6c6728e5`, `REQUEST_CHANGES`, two P1 roots: undefined
+  suffix byte grammar and overstated Git-boundary probe evidence.
+- adversarial: task `019f709d-76c1-7cb1-86ab-8586fb5722bd`, `REQUEST_CHANGES`, Red/Yellow/Info
+  `2 / 0 / 0`; independently reproduced the executable local clean-filter/attributes gap and the
+  undefined suffix grammar/parser gap.
+- formal synthesis: `REQUEST_CHANGES`, consolidated Red/Yellow/Info `2 / 0 / 0 — DO NOT ADVANCE`.
+- report: `.deep-review/reports/2026-07-18-002255-review.md`, SHA-256
+  `ae8b926eace201b6552516b70ef0a7b0302c873646e3879ba79d1f2b6e70969f`.
+- standard raw/final/stderr/argv SHA-256:
+  `34be369d88c12241bcae67d0ad4bf2a88cb9f67895523d4603309a42cdf05f59` /
+  `1858678152764e3aef7004073932e5a48be3955d8fd9768f1239851a167fb6bb` /
+  `3a136f891e0cfa2aacdf027277e64e72b9691836a7afe288294b402f78e40e6d` /
+  `b80880ef2009eab281617db6cb8ebcc9bf730d08c2874868b5f364ae5dfd1650`.
+- adversarial raw/final/stderr/prompt/argv SHA-256:
+  `f4468a6e0e82f6fbd47de9cc3f0463f8bade0ad97423a3558ee1b0cb4e77346b` /
+  `9e27d4cf290d3593100e3dbe892aa1b3e75609079e37a377b75eccf966a13194` /
+  `184d2f360440b4d41839796275b54752276a2531f22924580828e6e595790209` /
+  `c75931b0d417122db3bc9b8f8d0382ffc992a12b1cc73d31e5de587815828a50` /
+  `66967a1c71ba1b80fe081183d367ab8efee9fe4f8c2bde782551f403afbfb113`.
+- recurring findings: validated Stage 5.5 run `01KXRATTJ7H248V5Y4HZWQ13H8`; architecture
+  `92→93`, security `36→37`; test-coverage `49` and error-handling `33` stayed unchanged.
+
+### Gate 1 fresh cycle 8 round 12 Respond
+
+- disposition: accepted both consolidated Red roots; rejected/deferred none;
+  `execution_path=main_fallback`.
+- exact Git-local guard: canonical common/worktree config and attribute inputs are hashed. Raw
+  `git config --local --no-includes --null --list` and optional worktree scope are parsed as exact
+  `key LF value NUL`; include/filter/external-diff/merge-driver/hook/fsmonitor/worktree/object/ref/
+  signing/editor/pager/helper keys fail closed. Alternates must be absent, replace refs empty, and
+  `git check-attr -z --all` empty for every exact allowed path before and after staging.
+- execution proof: the actual fixture installs a marker-writing `filter.receipt.clean` selected by
+  `info/attributes`; the guard rejects before `git add` and the marker stays absent. A separate
+  marker-writing default pre-commit hook remains present while the `/dev/null` override suppresses it.
+  Config/attribute identities stay fixed and the new commit is readable under both sanitized and
+  no-`GIT_*` environments.
+- exact receipt grammar: one 26-field ASCII/LF metadata Buffer fixes target/range, safe report and
+  response paths/lengths/hashes, exactly two reviewer role/task/model/effort/verdict/count tuples,
+  and the closed main disposition. `REVIEW_RECEIPT_V1` consumes exact metadata length/hash to EOF.
+  `REVIEW_BUNDLE_ENTRY_V1` consumes exact metadata/report/response length/hash frames to EOF; quoted
+  instruction-looking bytes remain data only.
+- negative grammar proof: missing/reordered/unknown fields, unsafe path, invalid enum/hash/UUID,
+  noncanonical or mismatched lengths, CR/NUL/BOM, truncation, trailing bytes, and a concatenated
+  second entry fail. The prior evidence claim is narrowed above to exactly what Round 11 ran.
+- unchanged authority: pre-Gate-6 SHA-256
+  `4bc32f7e955c39ff93f1faf15dce745b84f0647605f546d7f12f87ce6e8a8ec0`; Gate 6 SHA-256
+  `648504926fc529d9e02202399384c09d5bc2737884187ed9923c90f1270733a4`.
+- closure probe: `.deep-review/tmp/cycle8-round12-closure-probe.mjs`, SHA-256
+  `1cf4d6bd4ffb9238c3fc83406137fa6ab4c6a23e28bb19dc36105d745837f9ed`; output SHA-256
+  `2dd8759dfc00732b86d6dcbb685ae1926c2b4706566bf3bdc8515ffec1792fd7`.
+- verification: embedded validator passed 46 tasks/372 fences. The executable probe passed the full
+  Git-local guard, exact parser positive/negative matrix, two review rounds, exact `A` paths, prefix
+  preservation, object readability, and unique-child recovery prerequisites. `npm run preflight`
+  passed 1,463/1,463 on the first full run, log SHA-256
+  `28133f3cabab1b8e112c93073316f18fc5590e66d7f10881d301feb9fd73f921`; both diff checks passed.
+- corrected candidate hashes before correction commit: handoff
+  `c9cffa2c0b373e113beb6c133ad3ab9a7d92bcb8d45c2d0906631058586025bd`; design
+  `e0d05a9f9337e729deefcfeb2f00534ee4486086663085d48b589bee814b8977`; plan
+  `fbe1161f874528f38a8ddc8a7c205d8f174ce98dbd77d8f218d5b052f578581f`.
+- gate state: open. One micro-delta round 13 will inspect only the two Round 12 fixes and their
+  executable probe. If both exact reviewers return `APPROVE` with Red/Yellow `0 / 0`, Gate 1 closes
+  and work advances directly to Gate 2. No further whole-plan review is authorized here.
 
 
 ## Review receipt template

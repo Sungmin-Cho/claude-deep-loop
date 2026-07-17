@@ -2,7 +2,7 @@
 
 작성일: 2026-07-13
 운영 계약: `docs/handoff/2026-07-13-codex-app-native-task-continuation-goal-handoff.md`
-상태: Gate 1 fresh cycle 8 round 11 Respond 진행; REQUEST_CHANGES 미수렴, finite receipt 경계 검증 중
+상태: Gate 1 fresh cycle 8 round 12 Respond 진행; REQUEST_CHANGES 미수렴, exact Git guard/receipt grammar 검증 중
 기준: `main@c38a96137f8f4f0099c35e893860930e8ee4cf73`, deep-loop `1.8.2`
 
 > source of truth: 이 문서 + 운영 계약 + 현재 저장소 + `git log`. 이전 대화 컨텍스트를 가정하지 말라.
@@ -1675,6 +1675,32 @@ overwrite는 receipt exemption을 무효화한다. Gate 6 step 1은 full unabbre
 sanitized env와 configured hook suppression, parent absence/status A, evidence/bundle prefix, two rounds,
 lost-response no-duplicate, wiki negative control을 실행했다. 변경된 bytes는 round 11 receipt를 상속하지
 않으며 fresh cycle 8 round 12 same exact two-way review가 필요하다.
+
+Gate 1 fresh cycle 8 round 12는 사용자와 합의한 delta-only closure review로 실행했다. Standard와
+adversarial 둘 다 exact `gpt-5.6-sol`/high/read-only로 완료했고, 두 root를 독립적으로 재현했다.
+첫째, empty-map environment가 system/global config를 없애도 repository/worktree local config와
+attributes는 남아 `filter.*` clean process가 `git add`에서 외부 helper를 실행할 수 있었다. 기존
+probe는 configured pre-commit hook 하나만 차단했으며 evidence의 filter/alternate/redirect zero-execution
+표현을 다 증명하지 못했다. 둘째, `REVIEW_RECEIPT_V1`/
+`REVIEW_BUNDLE_ENTRY_V1`이 canonical length-framed라고만 정의되어 field order, delimiter, encoding,
+enum, length parser, sanitization, EOF 규칙이 없었고 extra instruction이나 두 번째 entry를 기계적으로
+거부할 수 없었다. Consolidated result는 Red 2 / Yellow 0의 `REQUEST_CHANGES`다.
+
+Respond는 closeout Git guard를 exact executable contract로 닫는다. Canonical common/worktree config와
+alternates/info-attributes/tracked attributes를 hash하고, `git config --local --no-includes --null --list`의
+`key LF value NUL`을 parsing한 뒤 include/filter/external diff/merge driver/hook/fsmonitor/worktree/object/ref/
+signing/editor/pager/helper 키를 거부한다. Exact allowed path들에 `git check-attr -z --all`이 empty인지
+stage 전후 확인하고 alternates/replace ref가 없으며 모든 identity hash가 그대로인지 다시 검증한다.
+Malicious local clean filter + `info/attributes` fixture는 `git add` 전에 거부되고 marker가 생기지
+않아야 하며, default hook은 `/dev/null` override로 별도 차단한다.
+
+Receipt protocol은 두 reviewer의 exact target/range, report/response path/length/hash,
+role/task/model/effort/verdict/counts, closed main disposition을 고정 순서 ASCII metadata로 serialize한다.
+Evidence suffix는 exact body length/hash 뒤 metadata만 consume하고 EOF를 요구한다. Bundle suffix는
+metadata/report/response 세 length/hash를 고정하고 그 byte 수만 순서대로 consume한 뒤 EOF를
+요구한다. Unsafe path, invalid enum/UUID/hash, noncanonical length, reordered/extra/duplicate field,
+CR/NUL/BOM, truncation, trailing byte, second entry, metadata instruction을 negative fixture로 거부한다. 이 변경은
+pre-Gate-6와 Gate 6 bytes를 바꾸지 않는 focused closeout correction이다.
 
 구현 순서:
 

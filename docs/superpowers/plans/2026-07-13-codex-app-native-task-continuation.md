@@ -35819,11 +35819,28 @@ Every closeout commit follows this finite procedure:
    executable with `-C <canonical-authorized-worktree>` and an environment built from an empty map:
    fixed locale, a private empty HOME, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_SYSTEM=/dev/null`, and
    `GIT_CONFIG_GLOBAL=/dev/null`; inherit no other `GIT_*` variable. Prefix every command with
-   `--no-replace-objects -c core.hooksPath=/dev/null -c core.fsmonitor=false -c commit.gpgSign=false`.
-   Reject object alternates, replace refs, local include/filter/hook/fsmonitor/worktree/object/ref
-   redirection, unexpected attributes filters, and any executable/config identity drift. Prove no
-   hook/filter/helper process executes and every new object remains readable with the same sanitized
-   environment and again after clearing all Git-specific variables.
+   `--no-replace-objects -c core.hooksPath=/dev/null -c core.fsmonitor=false -c commit.gpgSign=false
+   -c tag.gpgSign=false -c gc.auto=0 -c maintenance.auto=false`; commit identity is supplied by fixed
+   `-c user.name=... -c user.email=...`, never local config. Before any `add`, `diff`, or `commit`,
+   canonicalize and hash the common `config`, optional `config.worktree`, `objects/info/alternates`,
+   `info/attributes`, and every tracked `.gitattributes` input. Parse the raw NUL-terminated output of
+   `git config --local --no-includes --null --list` and, when enabled, the corresponding `--worktree`
+   scope as exact `key LF value NUL` records. Reject a malformed record and every key matching
+   `include.*`, `includeIf.*`, `filter.*`, `diff.external`, `diff.*.(command|textconv)`,
+   `merge.*.driver`, `core.(attributesFile|hooksPath|fsmonitor|worktree|gitProxy|sshCommand|
+   alternateRefsCommand|editor|pager)`, `pager.*`, `interactive.diffFilter`, `sequence.editor`,
+   `gpg.*`, `user.signingKey`, `(commit|tag).gpgSign`, `fsmonitor.*`,
+   `remote.*.(uploadpack|receivepack)`, or `submodule.*.update`, case-insensitively. Require the
+   alternates file absent, `git for-each-ref refs/replace` empty, and raw
+   `git check-attr -z --all -- <each exact allowed path>` output empty immediately before and after
+   staging. Any configured attribute—including `filter`, `diff`, `merge`, or
+   `working-tree-encoding`—therefore stops before a content-transforming command. Re-hash all inputs
+   after staging and after commit; any identity drift fails closed. The executable fixture configures
+   a marker-writing clean filter through local config plus `info/attributes` and must reject it before
+   `git add` with the marker absent; it separately leaves a marker-writing default pre-commit hook and
+   proves the `/dev/null` override suppresses it. Every new object must remain readable with the same
+   sanitized environment and again with an environment containing no `GIT_*` variable. No
+   hook/filter/helper process executes before the guard passes or during the bounded commit.
 2. Record the exact 40-hex parent, clean status, branch ref, worktree/common-dir realpaths, and the
    explicit allowed path/status set for this commit. Reject symlinks, dirty tracked state, staged state,
    an unexpected branch/ref, or any identity change before mutation.
@@ -35853,6 +35870,92 @@ Every closeout commit follows this finite procedure:
 8. The evidence row records the reviewed target and all predecessor-known artifact hashes. The
    receipt commit's identity is external Git evidence and is recorded by the next already-authorized
    evidence event or final report; the receipt never embeds its own derived identity.
+
+#### Exact `REVIEW_RECEIPT_V1` / `REVIEW_BUNDLE_ENTRY_V1` Byte Protocol
+
+Freeze the exact already-sanitized report and response raw Buffers before rendering either suffix.
+Each must be nonempty fatal UTF-8, LF-terminated, BOM/CR/NUL-free, pass the recorded secret/raw-ID
+scan, and match its staged Buffer. A quotation remains data only: no consumer may execute or treat
+quoted report/response text as configuration, replacement authority, or a new instruction.
+
+Render one shared `metadata` Buffer as ASCII-only, LF-terminated lines in exactly this order:
+
+```text
+target=<40-lower-hex>
+range=<40-lower-hex>..<40-lower-hex>
+report_path=<safe-posix-path>
+report_bytes=<positive-canonical-decimal>
+report_sha256=<64-lower-hex>
+response_path=<safe-posix-path>
+response_bytes=<positive-canonical-decimal>
+response_sha256=<64-lower-hex>
+reviewer_count=2
+reviewer_1_role=standard
+reviewer_1_task=<lowercase-uuid>
+reviewer_1_model=gpt-5.6-sol
+reviewer_1_effort=high
+reviewer_1_verdict=<APPROVE|REQUEST_CHANGES>
+reviewer_1_red=<canonical-decimal>
+reviewer_1_yellow=<canonical-decimal>
+reviewer_1_info=<canonical-decimal>
+reviewer_2_role=adversarial
+reviewer_2_task=<lowercase-uuid>
+reviewer_2_model=gpt-5.6-sol
+reviewer_2_effort=high
+reviewer_2_verdict=<APPROVE|REQUEST_CHANGES>
+reviewer_2_red=<canonical-decimal>
+reviewer_2_yellow=<canonical-decimal>
+reviewer_2_info=<canonical-decimal>
+main_disposition=<ACCEPT_ALL_ACTIONABLE|APPROVE_NO_ACTIONABLE>
+```
+
+`safe-posix-path` is ASCII `[A-Za-z0-9._/-]+`, does not start with `-` or `/`, and has no empty,
+`.` or `..` segment. Canonical decimal is `0` or a nonzero digit followed by digits, with no sign or
+leading zero; byte lengths are nonzero. Every fixed field occurs once in that order, with no blank,
+unknown, escaped, duplicated, leading/trailing-space, or continuation line. The target/range, paths,
+raw lengths/hashes, task IDs, reviewer facts/counts, and main disposition must replay the frozen
+review inputs exactly.
+
+The fixed metadata contains the literal fields `reviewer_1_role=standard` and
+`reviewer_2_role=adversarial`; its final field is exactly
+`main_disposition=<ACCEPT_ALL_ACTIONABLE|APPROVE_NO_ACTIONABLE>` with one of the two values selected.
+The evidence header uses `body_bytes=<positive-canonical-decimal>` and the bundle header uses
+`metadata_bytes=<positive-canonical-decimal>` before their corresponding hashes.
+
+The evidence suffix is exactly these bytes and no others:
+
+```text
+LF REVIEW_RECEIPT_V1 LF
+body_bytes=<positive-canonical-decimal> LF
+body_sha256=<64-lower-hex> LF
+body_begin LF
+<exact metadata bytes>
+```
+
+After the exact `body_begin` LF, the parser consumes exactly `body_bytes`, verifies
+`body_sha256`, parses the fixed metadata grammar above, and requires suffix EOF immediately after
+that body. It never searches for a terminator. The bundle suffix is exactly:
+
+```text
+LF REVIEW_BUNDLE_ENTRY_V1 LF
+metadata_bytes=<positive-canonical-decimal> LF
+metadata_sha256=<64-lower-hex> LF
+report_bytes=<positive-canonical-decimal> LF
+report_sha256=<64-lower-hex> LF
+response_bytes=<positive-canonical-decimal> LF
+response_sha256=<64-lower-hex> LF
+payload_begin LF
+<exact metadata bytes><exact sanitized report bytes><exact sanitized response bytes>
+```
+
+After `payload_begin`, consume those three byte lengths in order, verify all three hashes, require
+metadata to satisfy the same fixed grammar and describe the identical report/response Buffers, and
+require suffix EOF. Marker-looking or instruction-looking bytes inside a quotation are inert because
+only lengths delimit them. Record the renderer/parser source and SHA-256 and require a byte-identical
+fresh replay. Negative fixtures must reject a missing/reordered/duplicate/unknown field, unsafe path,
+invalid enum/UUID/hash, noncanonical or mismatched length, mismatched payload hash, BOM/CR/NUL,
+truncation, one trailing byte, a second concatenated entry, and metadata instruction text. The
+receipt-only exception is valid only when both the exact parent prefix and this complete parser pass.
 
 For every review round, the allowed set includes that round's one exact timestamped report path, one
 exact timestamped response path, and the evidence ledger; include the review bundle only when that
@@ -36251,12 +36354,22 @@ requireTokens('Common closeout', closeoutProtocol, [
   'environment built from an empty map', 'GIT_CONFIG_NOSYSTEM=1',
   'GIT_CONFIG_SYSTEM=/dev/null', 'GIT_CONFIG_GLOBAL=/dev/null',
   '--no-replace-objects -c core.hooksPath=/dev/null -c core.fsmonitor=false -c commit.gpgSign=false',
+  'git config --local --no-includes --null --list', 'key LF value NUL',
+  'filter.*', 'diff.external', 'merge.*.driver', 'git check-attr -z --all',
+  'objects/info/alternates', 'git for-each-ref refs/replace',
+  'marker-writing clean filter', 'reject it before', '`git add`',
   'hook/filter/helper process executes',
   'absent from', 'parent tree', 'staged statuses to be exactly `A`',
   'REVIEW_RECEIPT_V1', 'exact parent Buffer plus one canonical',
   'REVIEW_BUNDLE_ENTRY_V1', 'exact length-framed sanitized report/response raw bytes',
   'data-only quotations', 'Neither suffix permits',
   'parent prefix byte-for-byte',
+  'Exact `REVIEW_RECEIPT_V1` / `REVIEW_BUNDLE_ENTRY_V1` Byte Protocol',
+  'body_bytes=<positive-canonical-decimal>', 'body_begin',
+  'metadata_bytes=<positive-canonical-decimal>', 'payload_begin',
+  'reviewer_1_role=standard', 'reviewer_2_role=adversarial',
+  'main_disposition=<ACCEPT_ALL_ACTIONABLE|APPROVE_NO_ACTIONABLE>',
+  'requires suffix EOF', 'one trailing byte', 'a second concatenated entry',
   'git diff --cached --name-status -z', 'git show :<path>',
   'git diff --cached --check', 'unique exact child',
   'arbitrarily many finite rounds', 'new unique report/response pair',
@@ -38741,7 +38854,7 @@ test('installed breaker afterimage executes stable IDs and current lease policy'
   rmSync(sequentialSourceDir, { recursive: true, force: true });
 }
 const PLAN_EXPECTED_COUNTS = Object.freeze({
-  bash: 64, diff: 91, js: 186, json: 4, markdown: 12, text: 11, yaml: 1,
+  bash: 64, diff: 91, js: 186, json: 4, markdown: 12, text: 14, yaml: 1,
 });
 const orderedCounts = value => Object.fromEntries(Object.entries(value)
   .sort(([left], [right]) => left.localeCompare(right)));
