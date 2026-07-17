@@ -3270,6 +3270,12 @@ no inherited approval from the historical receipt.
   `c9cffa2c0b373e113beb6c133ad3ab9a7d92bcb8d45c2d0906631058586025bd`; design
   `e6bd09b0bcd0fd3dc72b7ef247213c1607efce837e7cee0311fa6d5194a73e1a`; plan
   `e187ee8b7386b636e5fa9a99c7c97551aabfa6c183e0dafbebc36c2b7ce5bad3`.
+- correction commit: `6e78f7180beea39e87c7d4020ac169fa48272246`; pre-receipt evidence SHA-256
+  `a94562d84d550abea54bb4ce293619c657947c69b7678242ab1139605218489e`.
+- response path: `.deep-review/responses/2026-07-18-000249-response.md`, SHA-256
+  `9f9526b7a853d8b04cc34a327778fbff024fe37c02594745bb2294ab05bde3e6`.
+- Phase 6 main-fallback log: `.deep-review/tmp/phase6-cycle8-round11.log`, SHA-256
+  `b0cb907cfd769765defb4d3f20a16cfc61577dd2b0f61b456596a382b3fb48a1`.
 - gate state: open. This response changes Gate 6 and Gates 7–9. One focused cycle 8 round 12 will
   review only the round-11 delta, unchanged pre-Gate-6 binding, new Gate-6 binding, and finite
   closeout protocol. If both exact reviewers return `APPROVE` with Red/Yellow `0 / 0` and main
