@@ -35809,16 +35809,25 @@ guarantees are unchanged.
 Before the first closeout commit, create exactly one isolated
 `codex/codex-app-native-task-continuation-closeout` worktree from the verified merged deep-loop
 `origin/main` commit. Before `git worktree add`, use the same canonical executable, empty-map
-environment, disabled config, and explicit `GIT_NO_LAZY_FETCH=1` defined below to parse the common
-local config with includes disabled. Reject `extensions.partialClone`, every `remote.*.promisor`, and
-every `remote.*.partialCloneFilter`. Run
+environment, disabled config, and explicit `GIT_NO_LAZY_FETCH=1` defined below to run the complete
+hazardous-key guard over common local config with includes disabled—not only the partial-clone keys.
+Also require common `info/attributes` absent and the exact merged-main tree to contain no path whose
+basename is `.gitattributes`; this release stops for a newly reviewed materialization rule if either
+attribute source exists. Reject `extensions.partialClone`, every `remote.*.promisor`, and every
+`remote.*.partialCloneFilter`. Run
 `git rev-list --objects --missing=print <exact-merged-main>` with lazy fetch disabled; reject any
 `?`-prefixed missing-object record and require `git rev-list --objects --missing=error` to exit zero.
-Thus worktree materialization cannot invoke transport or credential helpers and the complete merged
-tree is already local. Require `git rev-parse --show-object-format` to equal `sha1`; this release
+Create the branch/worktree with `git worktree add --no-checkout`, so this administrative step cannot
+run a smudge filter or checkout hook. Run the complete common/worktree config, alternates, replace-ref,
+and attribute guard from that no-checkout worktree, then materialize only with the canonical sanitized
+`git reset --hard <exact-merged-main>`. Require exact HEAD/tree, clean state, and unchanged guard
+identities afterward. Thus worktree materialization cannot invoke transport, credential, filter, or
+hook helpers and the complete merged tree is already local. Require
+`git rev-parse --show-object-format` to equal `sha1`; this release
 contract is intentionally bound to the repository's current SHA-1 storage and every release object
 ID must be exactly 40 lowercase hexadecimal characters. A different object format stops for a newly
 reviewed plan rather than silently claiming generic support.
+This complete hazardous-key guard prevents transport or credential helpers before materialization.
 
 Every closeout commit follows this finite procedure:
 
@@ -36374,6 +36383,9 @@ requireTokens('Common closeout', closeoutProtocol, [
   'GIT_NO_LAZY_FETCH=1', 'extensions.partialClone', 'remote.*.promisor',
   'git rev-list --objects --missing=print <exact-merged-main>',
   'git rev-list --objects --missing=error', 'transport or credential helpers',
+  'complete hazardous-key guard', 'common `info/attributes` absent',
+  'basename is `.gitattributes`', 'git worktree add --no-checkout',
+  'git reset --hard <exact-merged-main>', 'smudge filter or checkout hook',
   '--no-replace-objects -c core.hooksPath=/dev/null -c core.fsmonitor=false -c commit.gpgSign=false',
   'git config --local --no-includes --null --list', 'key LF value NUL',
   'filter.*', 'diff.external', 'merge.*.driver', 'git check-attr -z --all',
