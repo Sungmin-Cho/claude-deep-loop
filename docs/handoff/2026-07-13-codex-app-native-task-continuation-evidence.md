@@ -3126,6 +3126,12 @@ no inherited approval from the historical receipt.
   `c9cffa2c0b373e113beb6c133ad3ab9a7d92bcb8d45c2d0906631058586025bd`; design
   `3698d819eaf14952d3d13d416cba656fd69d4c29e403ffa80fa867363b94d966`; plan
   `d32aa9b7cdb023f0301adb86555872af650eef407d6689623aab309ff1e389c6`.
+- correction commit: `04525109407681787d6de2d5d492f5ab2fcc8f5f`; pre-receipt evidence SHA-256
+  `e19be14a7fcdebb65274554f80eb252c96bf311e6b99a1bae58b9497d807b73c`.
+- response path: `.deep-review/responses/2026-07-17-225951-response.md`, SHA-256
+  `2dc0e82ef6c1a7fce7240762fd0baaee3aa17331e56d8e9cdcbdc87b577e3a4c`.
+- Phase 6 main-fallback log: `.deep-review/tmp/phase6-cycle8-round9.log`, SHA-256
+  `36c6078b7603c8dd5f59e6d7b08264a8c2d176be8d25e0aacaf01c495bf7a71f`.
 - gate state: open. Fresh cycle 8 round 10 uses the same exact two-way contract. If it fails, simplify
   the common closeout helper rather than resume local clause patching. This Respond is not a Gate 1 pass.
 
