@@ -35634,8 +35634,10 @@ reviewed target, not a second candidate: it is exempt from recursive self-review
 exact path, byte-prefix, absence, and payload-digest proofs all pass.
 
 1. Run `npm run preflight`, `git diff --check`, `git status --short --branch`, and the three-version
-   Node command from Task 17B against the exact clean commit. Name its 40-character SHA the
-   `runtime_candidate_sha`. Compute `installable_payload_sha256_before` from the complete tracked tree
+   Node command from Task 17B against the exact clean commit. Require the complete output of
+   `git rev-parse --show-object-format` to equal `sha1`; obtain the full, unabbreviated commit ID and
+   require exactly 40 lowercase hexadecimal characters before naming it `runtime_candidate_sha`.
+   Compute `installable_payload_sha256_before` from the complete tracked tree
    with SHA-256 over this canonical byte stream while excluding exactly
    `docs/handoff/2026-07-13-codex-app-native-task-continuation-evidence.md` and
    `docs/handoff/2026-07-13-codex-app-native-task-continuation-review-bundle.md`. Run
@@ -35791,9 +35793,12 @@ exact path, byte-prefix, absence, and payload-digest proofs all pass.
 
 ### Common Closeout Receipt Commit Protocol
 
-Gates 7–9 use ordinary Git commits in one dedicated closeout worktree; they do not construct Git objects directly,
-detach or reuse an older worktree, or ask tracked content to authenticate the
-commit that contains it. This operational protocol is intentionally narrower than the runtime
+Gates 7–9 use ordinary Git commits in one currently authorized receipt worktree; they do not construct Git objects directly,
+detach or reuse an older worktree, or ask tracked content to authenticate the commit that contains it.
+Gates 7–8 authorize the one closeout worktree; only after its source commit reaches main and its
+approved disposition is recorded may Gate 9 authorize the one wiki-receipt worktree as its successor.
+The two are never active receipt authorities at the same time, and this protocol applies identically
+to whichever one is currently authorized. This operational protocol is intentionally narrower than the runtime
 write-containment threat model: it assumes the current OS user exclusively controls the repository
 and closeout worktree during each bounded Git command. Active same-user or privileged filesystem
 mutation during a command is outside this release procedure; any observed path, index, ref, process,
@@ -35810,22 +35815,42 @@ reviewed plan rather than silently claiming generic support.
 
 Every closeout commit follows this finite procedure:
 
-1. Record the exact 40-hex parent, clean status, branch ref, worktree/common-dir realpaths, and the
-   explicit allowed path set for this commit. Reject symlinks, dirty tracked state, staged state,
+1. Resolve one regular canonical Git executable and record its realpath/SHA-256. Invoke that exact
+   executable with `-C <canonical-authorized-worktree>` and an environment built from an empty map:
+   fixed locale, a private empty HOME, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_SYSTEM=/dev/null`, and
+   `GIT_CONFIG_GLOBAL=/dev/null`; inherit no other `GIT_*` variable. Prefix every command with
+   `--no-replace-objects -c core.hooksPath=/dev/null -c core.fsmonitor=false -c commit.gpgSign=false`.
+   Reject object alternates, replace refs, local include/filter/hook/fsmonitor/worktree/object/ref
+   redirection, unexpected attributes filters, and any executable/config identity drift. Prove no
+   hook/filter/helper process executes and every new object remains readable with the same sanitized
+   environment and again after clearing all Git-specific variables.
+2. Record the exact 40-hex parent, clean status, branch ref, worktree/common-dir realpaths, and the
+   explicit allowed path/status set for this commit. Reject symlinks, dirty tracked state, staged state,
    an unexpected branch/ref, or any identity change before mutation.
-2. Produce every new artifact as a predecessor-known Buffer. A Buffer may include hashes, paths,
+3. Produce every new artifact as a predecessor-known Buffer. A Buffer may include hashes, paths,
    reviewer/task/model/effort/verdict facts, and immutable external results already observed before
    the commit; it must not claim its own future Git blob/tree/commit ID or commit result.
-3. Stage exactly the allowed path set. Compare `git diff --cached --name-status -z` with that set,
+4. For a review response, require the exact timestamped report and response paths to be absent from
+   the parent tree and require their staged statuses to be exactly `A`; reuse or `M` is forbidden.
+   Read the parent evidence and optional bundle blobs as raw Buffers. The staged evidence/bundle must
+   equal the exact parent Buffer plus one canonical length-framed suffix derived solely from frozen
+   review inputs. The evidence suffix is `REVIEW_RECEIPT_V1` metadata containing only report/response
+   path, raw byte length, SHA-256, reviewed target/range, reviewer task/model/effort/verdict counts,
+   and a closed main-disposition enum. When bundle is allowed, its `REVIEW_BUNDLE_ENTRY_V1` suffix
+   contains the same metadata plus the exact length-framed sanitized report/response raw bytes as
+   data-only quotations; it contains no executable or replacement authority. Neither suffix permits
+   other free-form prose. Verify each parent prefix byte-for-byte before and after staging; removal,
+   rewrite, or superseding text invalidates the receipt-only exception.
+5. Stage exactly the allowed path/status set. Compare `git diff --cached --name-status -z` with that set,
    read each staged blob through `git show :<path>`, and require exact mode, byte length, SHA-256,
    and Buffer equality. Require the staged tree to preserve every unlisted parent entry.
-4. Run `git diff --cached --check`, create one focused commit with the required trailer, and
+6. Run `git diff --cached --check`, create one focused commit with the required trailer, and
    immediately verify its sole parent, message, tree, exact local delta, modes, and blob bytes.
    Recheck branch/worktree/common-dir identities and clean status. Any mismatch fails closed.
-5. If the commit response is lost, do not commit again. Recover only when the branch tip is the
+7. If the commit response is lost, do not commit again. Recover only when the branch tip is the
    unique exact child of the recorded parent and its message, tree, allowed path set, modes, and
    Buffer hashes all match. Otherwise stop for manual diagnosis.
-6. The evidence row records the reviewed target and all predecessor-known artifact hashes. The
+8. The evidence row records the reviewed target and all predecessor-known artifact hashes. The
    receipt commit's identity is external Git evidence and is recorded by the next already-authorized
    evidence event or final report; the receipt never embeds its own derived identity.
 
@@ -35833,9 +35858,10 @@ For every review round, the allowed set includes that round's one exact timestam
 exact timestamped response path, and the evidence ledger; include the review bundle only when that
 round appends its sanitized copy. Findings may create arbitrarily many finite rounds: each round gets
 a new unique report/response pair and one response commit, so no earlier pair is overwritten or
-omitted. The exact receipt-only response commit does not change the reviewed candidate and does not recursively require another review
-when the reviewed artifact blobs remain byte-identical and the
-six checks above pass. A finding that changes code, tests, design, plan, release docs, a marketplace
+omitted. The exact receipt-only response commit preserves the reviewed evidence/bundle blobs as
+byte-identical prefixes and adds only the canonical length-framed suffix; it does not recursively
+require another review when every other reviewed artifact remains byte-identical and the eight
+checks above pass. A finding that changes code, tests, design, plan, release docs, a marketplace
 authority, generated output, or a previously reviewed evidence/bundle prefix invalidates the review
 and requires a fresh target.
 
@@ -36149,7 +36175,7 @@ const gate6Raw = gate6HeadingMatch == null || gate6RawEnd < 0 ? ''
 const expectedImplementationAuthorityHash =
   '4bc32f7e955c39ff93f1faf15dce745b84f0647605f546d7f12f87ce6e8a8ec0';
 const expectedGate6SectionHash =
-  '1b7f05c95c1fb8e8a63416f859530ef1dab63194fcacb96a330d1fd213fbd693';
+  '648504926fc529d9e02202399384c09d5bc2737884187ed9923c90f1270733a4';
 if (Buffer.byteLength(implementationAuthorityRaw, 'utf8') !== 1977235) {
   fail('pre-Gate-6 authority UTF-8 byte length differs from its exact reviewed binding');
 }
@@ -36157,7 +36183,7 @@ if (createHash('sha256').update(implementationAuthorityRaw).digest('hex')
     !== expectedImplementationAuthorityHash) {
   fail('pre-Gate-6 authority differs from its exact reviewed binding');
 }
-if (Buffer.byteLength(gate6Raw, 'utf8') !== 14403) {
+if (Buffer.byteLength(gate6Raw, 'utf8') !== 14578) {
   fail('Gate 6 complete procedure UTF-8 byte length differs from its exact reviewed binding');
 }
 if (createHash('sha256').update(gate6Raw).digest('hex') !== expectedGate6SectionHash) {
@@ -36174,6 +36200,8 @@ const gate6 = sectionBetween('### Gate 6 Whole-Branch Review and Receipt Procedu
   '\n---\n\n## Gates 7–9');
 requireTokens('Gate 6', gate6, [
   'runtime_candidate_sha', 'installable_payload_sha256_before',
+  'git rev-parse --show-object-format', 'equal `sha1`',
+  'full, unabbreviated commit ID', 'exactly 40 lowercase hexadecimal characters',
   'separate final-candidate real App smoke approval',
   'loaded_candidate_sha == runtime_candidate_sha',
   'GATE6_FINAL_SMOKE_BINDING_V1=',
@@ -36211,17 +36239,28 @@ if (gate6Raw.includes('from a native Opus/xhigh session')
 const closeoutProtocol = sectionBetween('### Common Closeout Receipt Commit Protocol',
   '### Gate 7 Procedure:');
 requireTokens('Common closeout', closeoutProtocol, [
-  'ordinary Git commits in one dedicated closeout worktree',
+  'ordinary Git commits in one currently authorized receipt worktree',
   'do not construct Git objects directly',
+  'one closeout worktree', 'one wiki-receipt worktree as its successor',
+  'never active receipt authorities at the same time',
   'exclusively controls the repository',
   'outside this release procedure',
   'git rev-parse --show-object-format',
   'equal \`sha1\`', 'exactly 40 lowercase hexadecimal characters',
-  'explicit allowed path set', 'predecessor-known Buffer',
+  'explicit allowed path/status set', 'predecessor-known Buffer',
+  'environment built from an empty map', 'GIT_CONFIG_NOSYSTEM=1',
+  'GIT_CONFIG_SYSTEM=/dev/null', 'GIT_CONFIG_GLOBAL=/dev/null',
+  '--no-replace-objects -c core.hooksPath=/dev/null -c core.fsmonitor=false -c commit.gpgSign=false',
+  'hook/filter/helper process executes',
+  'absent from', 'parent tree', 'staged statuses to be exactly `A`',
+  'REVIEW_RECEIPT_V1', 'exact parent Buffer plus one canonical',
+  'REVIEW_BUNDLE_ENTRY_V1', 'exact length-framed sanitized report/response raw bytes',
+  'data-only quotations', 'Neither suffix permits',
+  'parent prefix byte-for-byte',
   'git diff --cached --name-status -z', 'git show :<path>',
   'git diff --cached --check', 'unique exact child',
   'arbitrarily many finite rounds', 'new unique report/response pair',
-  'does not recursively require another review',
+  'does not recursively', 'require another review',
   'must not claim its own future Git blob/tree/commit ID',
 ]);
 const gate7 = sectionBetween('### Gate 7 Procedure:', '### Gate 8 Procedure:');

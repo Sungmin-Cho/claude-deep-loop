@@ -3205,6 +3205,77 @@ no inherited approval from the historical receipt.
   11 under the exact two-way `gpt-5.6-sol`/high no-Opus/no-agy contract. This Respond is not a Gate 1 pass.
 
 
+### Gate 1 fresh cycle 8 round 11 review
+
+- base/head: `c38a96137f8f4f0099c35e893860930e8ee4cf73..922d746fb4160bf07c487e632357c00984e6ae27`; worktree clean at both reviewer starts.
+- invocation: two independent completed Codex processes, exact `gpt-5.6-sol` / high,
+  `--ephemeral --ignore-user-config --ignore-rules -s read-only`, actual 900-second bounds; no Opus
+  or agy. `N_planned=2`, `N_actual=2`; both exited 0 with finals.
+- standard: task `019f7083-3a6e-75a2-8f9f-b41ef38f5794`, `REQUEST_CHANGES`, Red/Yellow/Info
+  `2 / 1 / 0`; found inherited Git object/config/hook authority, unbound reviewed evidence/bundle
+  prefixes, and the one-closeout-worktree versus wiki-receipt-worktree conflict.
+- adversarial: task `019f7083-3b4c-7d63-b2a5-2d2d803116dd`, `REQUEST_CHANGES`, Red/Yellow/Info
+  `1 / 2 / 0`; independently found the prefix-smuggling/recursive-review root, missing parent-tree
+  absence plus exact `A` status, and Gate 6's missing explicit SHA-1 storage check.
+- formal synthesis: `REQUEST_CHANGES`, consolidated Red/Yellow/Info `2 / 3 / 0 — DO NOT ADVANCE`.
+- report: `.deep-review/reports/2026-07-17-235541-review.md`, SHA-256
+  `9fec6c2be4dff4df68f6856c32be2aa5d551211e50ef06fe81ca33badb82e743`.
+- standard raw/final/stderr/argv SHA-256:
+  `3c674cc8333c1c5043eeb66632c8492de7f8b9c04961ab7058e5183d2300093a` /
+  `ea0f2b0d67b6cb6a8a46ac6759b248c22c0168e2ede663ff5a8888bee7adfd49` /
+  `721e02d5e03c6b284706a07e37291983716ee5411a7fc341884dbc57a8b4344c` /
+  `899076a5752d520fd1aff3795521e32cf6fee6f6bef9b12be4205cfd6e5eb1a1`.
+- adversarial raw/final/stderr/prompt/argv SHA-256:
+  `fc8d594373a71b2d878bd60699695eb043bd2a39c34c0e4d00c864e96d264b52` /
+  `35c33d77f3b7e9e11e1bf56192bad653edff4784cd839245425eb33d2d470bd1` /
+  `4fc4b08e3a44383062662e882ea8c364fb5c726b01f4a57093969bef525bf29f` /
+  `e6588bd479b3459e9e45f7fa8ba7e4e4f30c4e0e0ff6203a26b7a96fe4fa5912` /
+  `397d2228e9f4f71135417893a7873fe17df0f73f171c1d2baa0ff203009c2703`.
+- recurring findings: validated Stage 5.5 run `01KXR9GG9ETHR6QYV8Y145APQZ`; architecture
+  `89→92`, test-coverage `48→49`, security `35→36`; error-handling stayed `33`.
+
+### Gate 1 fresh cycle 8 round 11 Respond
+
+- disposition: accepted all five consolidated roots; rejected/deferred none;
+  `execution_path=main_fallback`.
+- Git execution boundary: the currently authorized receipt worktree uses one canonical regular Git
+  executable and an empty-map allowlisted environment with private HOME, disabled system/global
+  config, no inherited `GIT_*`, and disabled replace/hooks/fsmonitor/signing. Redirecting local
+  alternates, replace refs, includes, filters, hooks, worktree/object/ref settings, and attributes are
+  rejected; hook/filter/helper zero-execution and clean-environment object readability are proved.
+- sequential authority: Gates 7–8 authorize the closeout worktree. Only after its source commit reaches
+  main and its approved disposition is recorded may Gate 9 authorize the wiki-receipt worktree as the
+  sole successor. The two worktrees are never simultaneously active receipt authorities.
+- finite receipt grammar: each timestamped report/response is absent from the parent and staged as
+  exact `A`. Evidence and optional bundle retain their exact parent Buffer as a byte-identical prefix.
+  Evidence appends one closed-metadata `REVIEW_RECEIPT_V1`; bundle appends one
+  `REVIEW_BUNDLE_ENTRY_V1` with exact length-framed sanitized report/response bytes as data-only
+  quotation. Free-form replacement authority, prefix removal/rewrite, or prior-pair overwrite fails.
+- SHA-1 binding: Gate 6 now requires `git rev-parse --show-object-format == sha1`, one full
+  unabbreviated object ID, and exact lowercase 40-hex before naming `runtime_candidate_sha`.
+- authority hashes: pre-Gate-6 remains SHA-256
+  `4bc32f7e955c39ff93f1faf15dce745b84f0647605f546d7f12f87ce6e8a8ec0`; Gate 6 is now 14,576
+  JavaScript code units / 14,578 UTF-8 bytes, SHA-256
+  `648504926fc529d9e02202399384c09d5bc2737884187ed9923c90f1270733a4`.
+- closure probe: `.deep-review/tmp/cycle8-round11-closure-probe.mjs`, SHA-256
+  `0acaeff5fad737b43ab93d7aab262858f65c73cee9139e39973a4d2cde13e1d9`; output SHA-256
+  `35ed038f5d5343d821192ae17ad204b9f2677ddbdffbc974b6baa644e400fe0a`.
+- verification: embedded validator passed 46 tasks/369 fences. Actual SHA-1 fixture proved the
+  sanitized environment, configured-hook suppression, report/response parent absence and exact `A`,
+  evidence/bundle prefix preservation, two finite review rounds, unique-child response-loss recovery,
+  no detached-worktree reuse, and the negative wiki rule. `npm run preflight` passed 1,463/1,463 on
+  the first full run, log SHA-256
+  `dcc6fc2f51aef664d812905f9c3fc331a4d03c677f58282df878995b5b998f75`; both diff checks passed.
+- corrected candidate hashes before correction commit: handoff
+  `c9cffa2c0b373e113beb6c133ad3ab9a7d92bcb8d45c2d0906631058586025bd`; design
+  `e6bd09b0bcd0fd3dc72b7ef247213c1607efce837e7cee0311fa6d5194a73e1a`; plan
+  `e187ee8b7386b636e5fa9a99c7c97551aabfa6c183e0dafbebc36c2b7ce5bad3`.
+- gate state: open. This response changes Gate 6 and Gates 7–9. One focused cycle 8 round 12 will
+  review only the round-11 delta, unchanged pre-Gate-6 binding, new Gate-6 binding, and finite
+  closeout protocol. If both exact reviewers return `APPROVE` with Red/Yellow `0 / 0` and main
+  verification stays green, advance immediately to Gate 2 without another full-plan review.
+
+
 ## Review receipt template
 
 Each reviewed gate will add a receipt with all of these fields:
