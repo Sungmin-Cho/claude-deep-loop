@@ -32,7 +32,7 @@ Main-agent judgment: the fetched remote base, version, test count, and user-owne
 
 ## Gate 1 — research and design
 
-Status: REVIEW OPEN — fresh cycle 8 round 5 Respond complete; CONCERN, round 6 pending
+Status: REVIEW OPEN — fresh cycle 8 round 6 Respond complete; CONCERN, round 7 pending
 
 Design target: `docs/superpowers/specs/2026-07-13-codex-app-native-task-continuation-design.md`
 
@@ -2791,6 +2791,82 @@ no inherited approval from the historical receipt.
 - Phase 6 main-fallback log: `.deep-review/tmp/phase6-cycle8-round5.log`, SHA-256
   `4093851eb44fde03aaf69c217e011c79b67df8d9b722fa7e6bb5c635af1bc093`.
 - gate state: still open. Changed bytes require fresh cycle 8 round 6 under the same exact two-way
+  standard/adversarial `gpt-5.6-sol`/high contract, with Opus and agy excluded. This Respond is not a
+  Gate 1 pass.
+
+### Gate 1 fresh cycle 8 round 6 review
+
+- gate/artifact: Gate 1 design plus complete 46-task plan, operating handoff, evidence ledger,
+  cycle-8 round-5 report/response, and current repository code/tests.
+- base/head: `c38a96137f8f4f0099c35e893860930e8ee4cf73..6ced1c80d9d96e01df920c8376ae0d485a1d9286`;
+  worktree clean at both counted reviewer starts.
+- invocation: Codex-only two-way contract. Standard and adversarial role processes used exact
+  `gpt-5.6-sol` / `high`, `--ephemeral --ignore-user-config --ignore-rules -s read-only`. No Opus or
+  agy process was launched. Both exited 0 and produced finals despite a non-fatal local model-cache
+  parse warning. `N_planned=2`, `N_actual=2` valid role voices.
+- reviewer actual: standard task `019f6ec8-679a-7940-8544-49b0766538f8` found no actionable issue;
+  adversarial task `019f6ec8-67d5-7590-98ba-725ed3f46747` completed with one Yellow.
+- synthesis/gate disposition: formal `CONCERN`, Red/Yellow/Info = `0 / 1 / 0`. Standard approval-side
+  output and one adversarial Yellow do not naturally converge. Main-agent disposition is
+  `CONCERN — DO NOT ADVANCE`.
+- main-agent judgment: accepted the solo root after an executable probe. Gate 8 validates a source,
+  later copies whichever bytes occupy it, and hashes that current source/copy pair. A valid A→B
+  replacement therefore passes as B/B, while a symlink inserted after destination absence redirects a
+  normal copy into another artifact. The existing token-only validator did not execute either race.
+- report path: `.deep-review/reports/2026-07-17-154804-review.md`, SHA-256
+  `fd006598e4029858a08934464a0ed956cd92c9137091d99cc35fb71d861f495c`.
+- standard raw/final SHA-256: `c53b8b810d454ad17b631fa774ef9b26f7d0b84581f5a80b1afc0aa8d45a9bf1` /
+  `e6ac96e5053061c84c6ce446c62a20021f0facdf7b4bfd7b8edd3191fc94da1f`; exact argv record
+  `26894440119d42c4ae55d4c1ac2c48070caf9ec83f8778747f1771f4857e4d29`.
+- adversarial raw/final SHA-256:
+  `64007311fdcc464d39d6a006b3a088171fb682fc019ab65a938455b0b975847e` /
+  `31988f4d0c93d6572dc085a8e5c46df8523f3479d842e755948b7c05dccb82a0`; prompt
+  `8c9fedef93dcf19bbdf612a753c0d595c831fb9cd3c11d000d59a08332094117`; exact argv record
+  `b81a2e4777c7873204888b799dc871bdba2cac9162f1b004f02ec960bb2f520d`.
+- independent reproduction probe: `.deep-review/tmp/cycle8-round6-reproduction-probe.mjs`, SHA-256
+  `6a439f4886c772ec38198b62a350a75297079d63c6138a8e2d55f438bc3bf31c`; output SHA-256
+  `f53218f21c7dd6bd276095276c5864a8647ab2cdc3a9ae0d930629ab6d60ff01`.
+- recurring findings: Stage 5.5 envelope validated at run
+  `01KXQDF49ZQRK8CDZDDXCBGF2C`; architecture occurrences advanced `77→78`; test-coverage `47`,
+  error-handling `33`, and security `31` were unchanged.
+
+### Gate 1 fresh cycle 8 round 6 Respond
+
+- disposition: accepted the Gate 8 completion-time byte/TOCTOU Yellow after independent reproduction;
+  closed no actionable item as rejected or deferred; `execution_path=main_fallback`. The gate remains
+  `CONCERN — DO NOT ADVANCE`.
+- completion-time binding response: the same uninterrupted operator process must retain each exact
+  sanitized report/response serializer Buffer, length, hash, path, and source-file identity at its
+  completion boundary. Restart, lost binding, pre-existing source, or inability to retain the Buffer
+  invalidates the receipt and requires fresh Gate 8 review/Respond; later path hashing cannot recreate
+  the authority.
+- materialization response: one recorded helper validates ASCII-only exact names, canonical
+  component-wise no-symlink parent containment, stable source identity, and frozen source bytes. It
+  writes from the retained Buffer through atomic create-exclusive/no-replace/no-follow semantics with
+  a complete short-write loop and fsync, then binds device/inode/link-count/size and exact bytes/hash.
+  Actual-host A→B, symlink, pre-existing/hard-link, and valid-write fixtures are mandatory. Unsupported
+  semantics fail closed, and unexpected artifacts are retained for diagnosis rather than overwritten.
+- source-candidate response: after materialization, source and destination identities/bytes are
+  revalidated and deep-suite HEAD, exact base-to-HEAD six-path tree, generator no-op, preflight, diff,
+  and clean tracked/index/worktree state are re-proved before the four-path closeout receipt commit.
+- unchanged exact authority: the pre-Gate-6 authority remains 1,968,755 JavaScript code units /
+  1,977,235 UTF-8 bytes, SHA-256
+  `4bc32f7e955c39ff93f1faf15dce745b84f0647605f546d7f12f87ce6e8a8ec0`; Gate 6 remains 14,401 code
+  units / 14,403 UTF-8 bytes, SHA-256
+  `1b7f05c95c1fb8e8a63416f859530ef1dab63194fcacb96a330d1fd213fbd693`.
+- closure probe: `.deep-review/tmp/cycle8-round6-closure-probe.mjs`, SHA-256
+  `84e3147cdaabe77bf002c3b9058c57f5be417d998914f8ad787710330066c83a`; output SHA-256
+  `105f2fec1c0197f9fb7e746be2d971ddd751b91475d9bd44dee9df4591797a6e`.
+- verification: embedded validator passed `ok:true` for 46 tasks and 369 fences
+  (`bash=64`, `diff=91`, `js=186`, `json=4`, `markdown=12`, `text=11`, `yaml=1`). Closure executed the
+  old A→B counterexample, completion-time mismatch detection, atomic symlink rejection, exact valid
+  Buffer write, inode/link/size/hash checks, unchanged Gate 6 bindings, and round-7 no-Opus contract.
+  `npm run preflight` passed 1,463/1,463; both diff checks passed.
+- corrected candidate hashes before receipt commit: handoff
+  `c9cffa2c0b373e113beb6c133ad3ab9a7d92bcb8d45c2d0906631058586025bd`; design
+  `dda8f330de535b4b89b7065a7ffda338c5a4dacd83a85a76967ab90badc3913a`; plan
+  `99bd5c772c6eed030e55cff8f73912fe8227e1a96de80c1135bacf288dd16f90`.
+- gate state: still open. Changed bytes require fresh cycle 8 round 7 under the same exact two-way
   standard/adversarial `gpt-5.6-sol`/high contract, with Opus and agy excluded. This Respond is not a
   Gate 1 pass.
 

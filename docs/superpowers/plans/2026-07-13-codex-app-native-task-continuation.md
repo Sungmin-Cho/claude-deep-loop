@@ -35851,19 +35851,47 @@ exact path, byte-prefix, absence, and payload-digest proofs all pass.
   `converged` review and receipt. If a remote branch already exists, present that fresh SHA/diff and
   obtain a **separate fresh-push approval** before updating it. No earlier modification, review, or
   push approval survives the changed candidate.
-- [ ] After Gate 8 review Respond completes, name its one exact sanitized report path and one exact
-  response path in the deep-suite review worktree. Require both to be nonempty regular files under
-  `.deep-review/reports/` and `.deep-review/responses/`, absent from the retained deep-loop closeout
-  target and its tracked path sets, LF-only fatal UTF-8, and clear of raw IDs/secrets. Copy their exact
-  bytes into the retained deep-loop closeout worktree under the identical relative paths; compare
-  source/copy byte lengths and SHA-256 values and fail on an existing path, mismatch, or extra file.
-  Append the sanitized Gate 8 report/loop-summary record, original hashes,
-  session/model/effort/verdict/termination, and Info dispositions to the closeout evidence log and
-  review bundle. Force-add and stage exactly those four closeout paths: evidence log, review bundle,
-  exact report, and exact response. Require the commit-local name-only set to equal those four paths,
-  run `git diff --cached --check`, and commit the receipt locally. This cross-repository receipt copy
-  does not mutate the reviewed six-path deep-suite candidate, does not add either receipt file to the
-  deep-suite commit, and does not authorize a closeout push.
+- [ ] At the instant the Gate 8 report serializer completes and again when Respond serialization
+  completes, the same uninterrupted operator process must retain each exact sanitized immutable
+  Buffer, canonical byte length, SHA-256, exact source relative path, and source-file identity before
+  proceeding. The filenames must match the respective ASCII-only timestamped report/response grammar
+  under exactly `.deep-review/reports/` or `.deep-review/responses/`; reject `..`, separators in the
+  basename, Unicode/case aliases, another extension, or any symlinked/non-directory parent. Create
+  each deep-suite source file from its retained Buffer with exclusive no-replace semantics, fsync it,
+  and bind its regular-file device/inode/link-count/size. If the serializer cannot retain its Buffer,
+  any source was already present, the operator process/session restarts, or either completion-time
+  binding is lost, invalidate the receipt and rerun the Gate 8 review and Respond; never reconstruct a
+  binding by hashing whichever bytes happen to occupy the path later.
+
+  Materialize the retained deep-loop closeout copies only with one recorded Node helper whose source
+  and SHA-256 are part of the receipt. Resolve and component-wise `lstat` both canonical worktree roots
+  and both exact parent directories before use; require real directories, no symlink component,
+  distinct source/destination roots, and exact root containment. Reopen each source with no-follow
+  read-only semantics, require the saved regular single-link identity and a stable pre/post-read
+  `fstat`, and compare the read bytes to the retained Buffer. Do not copy from the live source path.
+  Open the absent destination final name with atomic create-exclusive/no-replace and no-follow
+  semantics, write the retained Buffer with a complete short-write loop, fsync, and bind the open
+  descriptor's regular single-link device/inode/size. After close, require `lstat`/realpath to resolve
+  the same inode under the unchanged canonical parent, link count one, and exact retained length/hash.
+  The helper must first pass actual-host fixtures proving an A→B source replacement aborts, a
+  destination symlink inserted after an absence observation is rejected without changing its target,
+  a pre-existing regular/hard-linked path is rejected, and a valid exclusive write preserves exact
+  bytes. Unsupported no-follow/exclusive behavior fails closed; a prior absence check is never write
+  authority. Retain unexpected artifacts for diagnosis rather than overwriting or deleting them.
+
+  After both copies exist, reopen and revalidate both source and destination identities/bytes against
+  the retained Buffers, then re-prove the deep-suite HEAD equals the reviewed commit, its base-to-HEAD
+  name-only tree is exactly the approved six paths, generated-doc regeneration remains a no-op,
+  preflight/diff checks remain green, and no tracked/index/worktree mutation occurred after review.
+  Also re-prove the retained closeout target/prefix and both destination-path absences from its reviewed
+  tree were the recorded values before this materialization. Any mismatch invalidates the receipt.
+  Only then append the sanitized Gate 8 report/loop-summary record, completion-time Buffer hashes,
+  helper hash and fixture output, source/destination identities, session/model/effort/verdict/
+  termination, and Info dispositions to the closeout evidence log and review bundle. Force-add and
+  stage exactly those four closeout paths: evidence log, review bundle, exact report, and exact
+  response. Require the commit-local name-only set to equal those four paths, run
+  `git diff --cached --check`, and commit the receipt locally. This materialization neither mutates nor
+  adds receipt files to the reviewed six-path deep-suite candidate and authorizes no closeout push.
 - [ ] Present deep-suite commit, branch, six-path authority-plus-derived diff, preflight/review receipt, and remote target; request **separate push approval**.
 - [ ] After an approved branch push and verified remote SHA, present the exact deep-suite PR title/body/base/head and request **separate PR creation approval**. After the PR exists and all required checks/reviews pass, present the exact merge target/method/result and request **separate merge approval**. Verify the re-pin reaches deep-suite main; a feature-branch push or PR alone is not completion, and none of these approvals implies another.
 - [ ] After deep-suite main contains the re-pin, fetch its exact 40-character main SHA, verify both manifest pins equal the merged deep-loop main SHA, and rerun deep-suite `npm run preflight` from that merged main in a safe checkout. Append the actual push result, PR URL and merge SHA when applicable, final two-pin values, merged-main preflight result, and remote/main verification commands to the retained deep-loop closeout evidence log. Stage only that tracked evidence file, run `git diff --cached --check`, and commit the post-main Gate 8 evidence locally with the required trailer. Do not push the closeout branch yet.
@@ -36223,7 +36251,11 @@ requireTokens('Gate 8', gate8, [
   'separate fresh-push approval',
   'No earlier modification, review, or', 'push approval survives the changed candidate',
   '.deep-review/reports/', '.deep-review/responses/',
-  'source/copy byte lengths and SHA-256 values', 'exactly those four closeout paths',
+  'completion-time Buffer hashes', 'exactly those four closeout paths',
+  'same uninterrupted operator process', 'retained Buffer',
+  'atomic create-exclusive/no-replace', 'A→B source replacement aborts',
+  'destination symlink inserted after an absence observation is rejected',
+  're-prove the deep-suite HEAD equals the reviewed commit',
 ]);
 const gate9 = sectionBetween('### Gate 9 Procedure:', '\n---\n\n## Plan Self-Review');
 requireTokens('Gate 9', gate9, [

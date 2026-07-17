@@ -2,7 +2,7 @@
 
 작성일: 2026-07-13
 운영 계약: `docs/handoff/2026-07-13-codex-app-native-task-continuation-goal-handoff.md`
-상태: Gate 1 fresh cycle 8 round 5 Respond 완료; CONCERN 미수렴, fresh cycle 8 round 6 필요
+상태: Gate 1 fresh cycle 8 round 6 Respond 완료; CONCERN 미수렴, fresh cycle 8 round 7 필요
 기준: `main@c38a96137f8f4f0099c35e893860930e8ee4cf73`, deep-loop `1.8.2`
 
 > source of truth: 이 문서 + 운영 계약 + 현재 저장소 + `git log`. 이전 대화 컨텍스트를 가정하지 말라.
@@ -1524,6 +1524,21 @@ review worktree의 exact sanitized report/response bytes를 같은 상대 경로
 worktree에 복사해 source/copy hash를 증명하고 evidence/bundle과 함께 exact four-path receipt commit으로
 force-add한다. 이 copy는 reviewed six-path deep-suite candidate를 변경하지 않는다. 변경된 bytes는 round 5
 receipt를 상속하지 않으며 fresh cycle 8 round 6가 같은 no-Opus/no-agy exact 2-way로 다시 검증해야 한다.
+
+Gate 1 fresh cycle 8 round 6도 Opus/agy 없이 standard와 adversarial `gpt-5.6-sol`/high 두
+valid voice를 완료했다. Standard는 actionable issue 없이 종료했지만 adversarial은 Gate 8의
+source/copy current-time hash 비교가 report/response completion-time bytes를 결합하지 않아 solo Yellow를
+제시했고 formal verdict는 `CONCERN`이었다. 검증 후 source A가 B로 교체되면 B를 복사해 B/B hash로
+통과하고, absence 관측 뒤 destination symlink가 삽입되면 다른 closeout file을 덮어쓸 수 있다. Main
+agent의 독립 probe는 두 interleaving을 실행 재현했고 retained Buffer + atomic exclusive create가 source
+replacement와 symlink를 각각 거부함을 확인해 root를 수용했다. Respond는 같은 uninterrupted operator가
+report/response serializer 완료 시 exact sanitized immutable Buffer·length·hash·path·file identity를 보존하고,
+restart/binding loss 시 review를 폐기한다. Recorded helper는 ASCII-only exact path와 canonical no-symlink
+parents를 요구하고 live source가 아니라 retained Buffer를 atomic create-exclusive/no-replace/no-follow로
+materialize하며 fsync, inode/device/link/size, pre/post source, destination bytes를 검증한다. Actual-host
+A→B/symlink/hard-link/valid-copy fixtures와 reviewed deep-suite HEAD/exact six-path tree 재검증도 receipt에
+결합한다. 변경된 bytes는 round 6 receipt를 상속하지 않으며 fresh cycle 8 round 7이 같은
+no-Opus/no-agy exact 2-way로 다시 검증해야 한다.
 
 구현 순서:
 
