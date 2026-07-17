@@ -35941,7 +35941,9 @@ body_begin LF
 
 After the exact `body_begin` LF, the parser consumes exactly `body_bytes`, verifies
 `body_sha256`, parses the fixed metadata grammar above, and requires suffix EOF immediately after
-that body. It never searches for a terminator. The bundle suffix is exactly:
+that body. It never searches for a terminator. Before decoding any magic or header line, require
+every byte through its LF to be at most `0x7f`; a high-bit byte fails rather than being folded by an
+ASCII decoder. The bundle suffix is exactly:
 
 ```text
 LF REVIEW_BUNDLE_ENTRY_V1 LF
@@ -36378,6 +36380,7 @@ requireTokens('Common closeout', closeoutProtocol, [
   'main_disposition=<ACCEPT_ALL_ACTIONABLE|APPROVE_NO_ACTIONABLE|MIXED_WITH_GATE_OPEN|',
   'JavaScript safe integer', 'APPROVE_NO_ACTIONABLE` requires both reviewers',
   '`LF` means exactly one byte `0x0a`',
+  'high-bit byte fails', 'ASCII decoder',
   'requires suffix EOF', 'one trailing byte', 'a second concatenated entry',
   'git diff --cached --name-status -z', 'git show :<path>',
   'git diff --cached --check', 'unique exact child',

@@ -1707,6 +1707,10 @@ pre-Gate-6와 Gate 6 bytes를 바꾸지 않는 focused closeout correction이다
 닫힌 enum으로 지원한다. Length는 JavaScript safe integer이고 남은 suffix 범위 이하여야 하며,
 `APPROVE`는 Red/Yellow zero, `REQUEST_CHANGES`는 둘 중 하나 이상을 요구한다. Grammar의
 `LF`는 literal text가 아니라 exact `0x0a` byte다.
+Round 13 first attempt는 두 process 모두 model capacity로 final 없이 중단되어 noncounted다.
+다만 중단 전 실행된 반례에서 Node `Buffer.toString('ascii')`가 high-bit header byte를 7-bit ASCII로
+fold할 수 있음을 확인했다. Main pre-review는 모든 outer magic/header line을 decode하기 전
+byte `<=0x7f`를 요구하고 high-bit negative fixture를 추가한 뒤 fresh retry한다.
 
 구현 순서:
 
