@@ -3354,6 +3354,12 @@ no inherited approval from the historical receipt.
   `c9cffa2c0b373e113beb6c133ad3ab9a7d92bcb8d45c2d0906631058586025bd`; design
   `e0d05a9f9337e729deefcfeb2f00534ee4486086663085d48b589bee814b8977`; plan
   `fbe1161f874528f38a8ddc8a7c205d8f174ce98dbd77d8f218d5b052f578581f`.
+- correction commit: `663f0d25b6b5e79a3d5e35f8bb9c3bf7db154699`; pre-receipt evidence SHA-256
+  `0dae395d0f3d43597bb5262e616b6a3f00531c0c2ced492d0de468d419b6ca77`.
+- response path: `.deep-review/responses/2026-07-18-003423-response.md`, SHA-256
+  `38f2aa3646670b04db78cb9f35c5c7d1ffa41462335fb9aa03834e91f686430e`.
+- Phase 6 main-fallback log: `.deep-review/tmp/phase6-cycle8-round12.log`, SHA-256
+  `a101f47d69881abfc6186cf10dbb76f27bbf3d0d742b18aaed485d1b87d44814`.
 - gate state: open. One micro-delta round 13 will inspect only the two Round 12 fixes and their
   executable probe. If both exact reviewers return `APPROVE` with Red/Yellow `0 / 0`, Gate 1 closes
   and work advances directly to Gate 2. No further whole-plan review is authorized here.
