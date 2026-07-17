@@ -3135,6 +3135,69 @@ no inherited approval from the historical receipt.
 - gate state: open. Fresh cycle 8 round 10 uses the same exact two-way contract. If it fails, simplify
   the common closeout helper rather than resume local clause patching. This Respond is not a Gate 1 pass.
 
+### Gate 1 fresh cycle 8 round 10 review
+
+- base/head: `c38a96137f8f4f0099c35e893860930e8ee4cf73..68d311a4b3d389f5f50c9ced3e7775e72cbe2a94`; worktree clean at both reviewer starts.
+- invocation: two independent completed Codex processes, exact `gpt-5.6-sol` / high,
+  `--ephemeral --ignore-user-config --ignore-rules -s read-only`, actual 900-second bounds; no Opus
+  or agy. `N_planned=2`, `N_actual=2`; both exited 0 with finals.
+- standard: task `019f7063-40f4-7311-b3d4-a4bf95714bfe`, `REQUEST_CHANGES`, Red/Yellow/Info
+  `0 / 1 / 0`; found the Gate 6/7 40-char SHA-1 contract versus late generic object-format claim.
+- adversarial: task `019f7063-3f19-7d43-95a5-65925dc77d16`, `REQUEST_CHANGES`, Red/Yellow/Info
+  `3 / 2 / 0`; found multi-round report/response loss, contradictory detached-worktree Q
+  materialization, swap-and-restore overclaim, missing executable helper authority, and the same
+  object-format inconsistency.
+- formal synthesis: `REQUEST_CHANGES`, consolidated Red/Yellow/Info `3 / 2 / 0 — DO NOT ADVANCE`.
+- report: `.deep-review/reports/2026-07-17-233050-review.md`, SHA-256
+  `6bbbcf92e607666ad9b9a1242b2ddd51faf4764264f474aade75ea2179eb85e6`.
+- standard raw/final/stderr/argv SHA-256:
+  `7cb3161f66fa9e300ca511c7531f176b6919679a7d30ecc9100e91969c4e64f3` /
+  `546cbbdfff55f4a8f8d29c68dc200b6d060cad7b54afda4e24b28e02d18d0ba1` /
+  `33c8f70b3849be67acbf8589272388516ce04d1e79cbbf22693b45c2ba985936` /
+  `b3b3dce527d03ffb25e7f643412821b882fcb83f21b7d5bf19939e46d16d0506`.
+- adversarial raw/final/stderr/prompt/argv SHA-256:
+  `7346846fcdda522aee7cbbd021e70471d36d9ad74c3887175db823b95d60ee5a` /
+  `2b5a63236630246ada1df20cde3f7bfe814ef87c63a86342a25e6163bb3d1d99` /
+  `8c2d8ec6a48c4d18336f22d96bbfa0de937424c84c65df6040a7a9203542863a` /
+  `2059384cc5954e405460cc3102dfd7f2f3bd890ebc03761e3c1eea4ae598dc2b` /
+  `99549f8a77a5a8d411def972ed7e975d26154f78a64386c5da3163d91135f979`.
+- recurring findings: validated Stage 5.5 run `01KXR7W4JKZPBJXVEBR4WZJ1A0`; architecture
+  `85→89`, security `34→35`; test-coverage `48` and error-handling `33` unchanged.
+
+### Gate 1 fresh cycle 8 round 10 Respond
+
+- disposition: accepted all five consolidated roots; rejected/deferred none;
+  `execution_path=main_fallback`.
+- structural simplification: removed the complete direct-object/private-index P/Q helper and every
+  retained detached-worktree publication clause from Gates 7–9. One isolated closeout worktree from
+  verified merged main now owns ordinary exact-staged commits.
+- finite review rounds: every round stages one unique report, one unique response, and evidence
+  (plus bundle only when appended). Exact staged Buffer equality, parent/tree/mode/message, allowed
+  path set, clean state, and unique-child lost-response recovery are checked; no tracked artifact
+  claims its own future Git identity. Any number of finding/fix/re-review rounds preserves all pairs.
+- authority and threat scope: the current repository release contract explicitly requires
+  `git rev-parse --show-object-format == sha1` and exact 40-hex IDs, matching handoff/Gate 6/7; a
+  different storage format requires a newly reviewed plan. Bounded release commands assume exclusive
+  current-user repository control; active same-user/privileged mutation is out of operational scope,
+  while observed drift fails closed. Runtime kernel containment is unchanged.
+- closure probe: `.deep-review/tmp/cycle8-round10-closure-probe.mjs`, SHA-256
+  `3fd8a6ec52dc5fd25b462ffd973ae3f0a2304cbeec752266de4765c4a634f3cb`; output SHA-256
+  `ed0c085b0c77aaf7ceff08309b483aecbc05aaacf3bbee3834b783d06283e91c`.
+- verification: embedded validator passed 46 tasks/369 fences; unchanged pre-Gate-6/Gate-6 hashes;
+  actual SHA-1 worktree fixture preserved two unique review pairs in two exact commits, verified
+  staged bytes, recovered lost responses without duplication, used no detached old worktree, and
+  rejected a positive wiki-receipt ingest rewrite.
+- full verification: the first full preflight immediately after both large reviewer processes passed
+  1,459/1,463 and hit four existing 2-second child-process timeouts. The exact four failed tests then
+  passed 4/4 in 1.39 seconds. A fresh full `npm run preflight` passed 1,463/1,463, log SHA-256
+  `1841fdbe3e30739bb1c1c56e97673dc983b6a82c7a3687bc196accdd2440f6cc`; both diff checks passed.
+- corrected candidate hashes before correction commit: handoff
+  `c9cffa2c0b373e113beb6c133ad3ab9a7d92bcb8d45c2d0906631058586025bd`; design
+  `71fc4d3f1e2ebbf99102db24f12c9fb59bf09f750fa3d46d491ba37341761fc9`; plan
+  `8a870ef22f5351600d827a47fec6ea4d390fd7fc83b494fbe8bb64ee8f720bb5`.
+- gate state: open. This structural response changes reviewed bytes and requires fresh cycle 8 round
+  11 under the exact two-way `gpt-5.6-sol`/high no-Opus/no-agy contract. This Respond is not a Gate 1 pass.
+
 
 ## Review receipt template
 

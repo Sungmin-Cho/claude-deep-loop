@@ -35789,274 +35789,171 @@ exact path, byte-prefix, absence, and payload-digest proofs all pass.
 
 ## Gates 7–9 — Separately Approved Publication, Deep-Suite Sync, Cleanup, and Knowledge
 
+### Common Closeout Receipt Commit Protocol
+
+Gates 7–9 use ordinary Git commits in one dedicated closeout worktree; they do not construct Git objects directly,
+detach or reuse an older worktree, or ask tracked content to authenticate the
+commit that contains it. This operational protocol is intentionally narrower than the runtime
+write-containment threat model: it assumes the current OS user exclusively controls the repository
+and closeout worktree during each bounded Git command. Active same-user or privileged filesystem
+mutation during a command is outside this release procedure; any observed path, index, ref, process,
+or worktree drift aborts the gate and requires a fresh trusted checkout. The kernel's 2-plane,
+lease-fence, appendAnchored, proof-derived-terminal, fail-closed, and .deep-loop write-containment
+guarantees are unchanged.
+
+Before the first closeout commit, create exactly one isolated
+`codex/codex-app-native-task-continuation-closeout` worktree from the verified merged deep-loop
+`origin/main` commit. Require `git rev-parse --show-object-format` to equal `sha1`; this release
+contract is intentionally bound to the repository's current SHA-1 storage and every release object
+ID must be exactly 40 lowercase hexadecimal characters. A different object format stops for a newly
+reviewed plan rather than silently claiming generic support.
+
+Every closeout commit follows this finite procedure:
+
+1. Record the exact 40-hex parent, clean status, branch ref, worktree/common-dir realpaths, and the
+   explicit allowed path set for this commit. Reject symlinks, dirty tracked state, staged state,
+   an unexpected branch/ref, or any identity change before mutation.
+2. Produce every new artifact as a predecessor-known Buffer. A Buffer may include hashes, paths,
+   reviewer/task/model/effort/verdict facts, and immutable external results already observed before
+   the commit; it must not claim its own future Git blob/tree/commit ID or commit result.
+3. Stage exactly the allowed path set. Compare `git diff --cached --name-status -z` with that set,
+   read each staged blob through `git show :<path>`, and require exact mode, byte length, SHA-256,
+   and Buffer equality. Require the staged tree to preserve every unlisted parent entry.
+4. Run `git diff --cached --check`, create one focused commit with the required trailer, and
+   immediately verify its sole parent, message, tree, exact local delta, modes, and blob bytes.
+   Recheck branch/worktree/common-dir identities and clean status. Any mismatch fails closed.
+5. If the commit response is lost, do not commit again. Recover only when the branch tip is the
+   unique exact child of the recorded parent and its message, tree, allowed path set, modes, and
+   Buffer hashes all match. Otherwise stop for manual diagnosis.
+6. The evidence row records the reviewed target and all predecessor-known artifact hashes. The
+   receipt commit's identity is external Git evidence and is recorded by the next already-authorized
+   evidence event or final report; the receipt never embeds its own derived identity.
+
+For every review round, the allowed set includes that round's one exact timestamped report path, one
+exact timestamped response path, and the evidence ledger; include the review bundle only when that
+round appends its sanitized copy. Findings may create arbitrarily many finite rounds: each round gets
+a new unique report/response pair and one response commit, so no earlier pair is overwritten or
+omitted. The exact receipt-only response commit does not change the reviewed candidate and does not recursively require another review
+when the reviewed artifact blobs remain byte-identical and the
+six checks above pass. A finding that changes code, tests, design, plan, release docs, a marketplace
+authority, generated output, or a previously reviewed evidence/bundle prefix invalidates the review
+and requires a fresh target.
+
 ### Gate 7 Procedure: Deep-Loop Push, PR, CI, and Merge
 
-- [ ] Present exact branch, commit list, diff stat, clean status, preflight result, Gate receipts,
-  `GATE6_FINAL_SMOKE_BINDING_V1`, the exact final four-path receipt delta from
-  `runtime_candidate_sha`, `gate6_review_target_sha`, both reviewed prefix blob/length bindings,
-  their final byte-prefix checks, the sole non-recursive receipt-only exception proof, equal
-  installable-payload digests, and target remote; request **branch push approval**.
-- [ ] After explicit approval, push only `codex/codex-app-native-task-continuation`; verify remote SHA.
-- [ ] Present pushed SHA/title/body/base and request **separate PR creation approval**.
-- [ ] After explicit approval, create the PR and record its URL without claiming merge.
-- [ ] Select one authoritative exact-head PR workflow execution and record its workflow path and blob
-  SHA, trigger event, workflow run ID, run attempt, run URL, and exact PR head SHA. From that single
-  run attempt require exactly the nine unique cells in
-  `{ubuntu-latest,macos-latest,windows-latest} × {20,22,24}`. Record OS, Node, job/check identity and
-  conclusion for each. Every one of the nine conclusions must be literal `success`; missing,
-  duplicate, skipped, cancelled, neutral, timed_out, action_required, stale-SHA, another run/attempt,
-  or any other conclusion blocks merge. Evidence from different runs or attempts may never be mixed.
-  If GitHub reruns the workflow, discard all superseded-attempt job evidence and evaluate the complete
-  latest attempt as a new indivisible nine-cell set. Local fixtures are not Windows CI evidence.
-- [ ] Resolve review/CI defects only through the owning TDD slice. Any post-review or post-push change
-  requires a new commit SHA/diff presentation and a **separate fresh-push approval** before updating
-  the remote branch. Rerun every invalidated Gate 5 smoke/check, including the final-candidate smoke,
-  and the complete Gate 6 review/receipt on the new exact SHA; never reuse old smoke, CI, or review
-  evidence. Select a new authoritative single workflow run/attempt for that fresh head. After it again
-  has all nine unique `success` cells and current receipts, present the exact merge target/result and
-  request **separate merge approval**.
-- [ ] After explicit approval, merge; fetch the actual 40-character `origin/main` SHA; run
-  `npm run preflight` from merged main in a safe read-only checkout/worktree.
-- [ ] Before creating any closeout/receipt worktree or relying on publication after primary cleanup,
-  present an explicit native-goal DoD order-amendment proposal. It must state that the handoff/design
-  require all cleanup before the single wiki ingest, while the proposed amended order retains one
-  closeout worktree through source publication, creates one wiki-receipt worktree for post-ingest
-  durable evidence, and performs their final cleanup after receipt merge. Request a **separate
-  explicit order-amendment approval**. Feature push/PR/merge, deep-suite sync, cleanup, wiki-write,
-  or publication approval never implies it. If approval is absent or denied, create neither
-  exception, do not invoke wiki ingest, and stop Gate 8/9 closeout pending a cleanup-first
-  design/plan revision plus fresh Gate 1/2 reviews; never silently apply this amended procedure.
-- [ ] Only after that exact order-amendment approval, create a local-only isolated
-  `codex/codex-app-native-task-continuation-closeout` docs worktree from merged main,
-  append PR URL, merge SHA, authoritative workflow blob/event/run ID/run attempt/head SHA, all nine
-  conclusions from that one attempt, and merged-main preflight to its evidence log, run
-  `git add docs/handoff/2026-07-13-codex-app-native-task-continuation-evidence.md && git diff --cached --check`,
-  and commit the Gate 7 evidence with the required trailer. Do not push it yet, mutate the
-  already-merged feature branch, or claim the local commit is published.
+- [ ] Re-run `npm run preflight`, the focused App lifecycle/race matrix, version parity, secret/raw-ID
+  scans, `git diff --check origin/main..HEAD`, and the Gate 6 receipt proofs. Require a clean exact
+  release candidate with both Gate 6 reviewers `APPROVE`, Red 0, Yellow 0.
+- [ ] Present the exact branch, commit list, diff stat, candidate SHA/payload digest, Gate receipts,
+  smoke restoration, remote target, and rollback boundary. Request **separate branch push approval**.
+  Do not push before that exact approval.
+- [ ] After an approved push, verify the remote SHA, present the exact PR title/body/base/head, and
+  request **separate PR creation approval**. Creating or editing the PR is not implied by push approval.
+- [ ] Observe CI and review without mutation. If any change is required, make the scoped fix, repeat
+  invalidated tests/smoke/review, present the changed candidate, and obtain new push/PR authority as
+  required. Green CI alone is not a merge approval.
+- [ ] Present the exact PR URL, checks, review state, merge method, base/head, expected result, and
+  rollback/diagnosis boundary. Request **separate merge approval** and merge only after it is granted.
+- [ ] Fetch `origin/main`; require SHA-1 storage and record the actual 40-hex merged main SHA. In a
+  fresh read-only checkout of that exact commit run `npm run preflight`, version parity, and the
+  focused App lifecycle matrix. Record the PR URL, merge result, merged SHA, and command hashes.
+- [ ] Before creating the local closeout worktree, present the exact ordering amendment: retain one
+  closeout branch/worktree through deep-suite sync and source publication, then one wiki-receipt
+  branch/worktree through receipt publication, with all other cleanup performed before wiki ingest.
+  Request explicit approval for this bounded exception; if declined, re-plan cleanup-first without
+  creating either exception.
+- [ ] Under that approval, create the one closeout branch/worktree from exact merged main. Apply the
+  Common Closeout Receipt Commit Protocol to record Gate 7 merged-main facts in the evidence ledger.
+  This local commit authorizes no push, PR, merge, sync, cleanup, or wiki write.
 
-### Gate 8 Procedure: Deep-Suite Two-Manifest Authority Re-Pin and Generated Docs Sync
+### Gate 8 Procedure: Deep-Suite Re-Pin, Review, Main Integration, and Source Publication
 
-- [ ] Present merged deep-loop SHA and an exact proposal: hand-edit only `/Users/sungmin/Dev/claude-plugins/deep-suite/.claude-plugin/marketplace.json` and `/Users/sungmin/Dev/claude-plugins/deep-suite/.agents/plugins/marketplace.json`, then run the repository-owned generator that is expected to update the deep-loop 1.9.0/SHA rows in `README.md`, `README.ko.md`, `CLAUDE.md`, and `docs/source-pinning.md`. Explain that current `check-semver-sha-sync.js` makes a literal two-file-only 1.8.2→1.9.0 diff fail preflight. Request **post-merge sync modification approval for this exact authority-plus-derived file set**; if not approved, Gate 8 is blocked.
-- [ ] After approval, fetch deep-suite and create an isolated `codex/` worktree/branch without disturbing user-owned changes.
-- [ ] Set both existing `deep-loop.source.sha` values to the exact merged deep-loop main SHA, then run `npm run docs:write`. Do not hand-edit generated content, `.claude-plugin/suite-extensions.json`, another plugin entry, or any non-generator file. Inspect every derived hunk; the expected changed paths are exactly the two manifests plus the four generated docs named above. Any extra path or sidecar/pinned-path failure stops for diagnosis and new authority.
-- [ ] Run deep-suite `npm run preflight`, inspect the exact authority-plus-derived diff, stage all and only those six expected paths, run `git diff --cached --check`, and create a focused local commit with the required Claude Opus co-author trailer. Verify the committed tree differs from its base only in those paths and that each generated hunk is reproducible by a clean `npm run docs:write` no-op.
-- [ ] Before review, append the exact deep-suite target commit/range, six-path stat, preflight hashes/results, and clean status to the retained deep-loop closeout evidence log; stage that tracked file, run `git diff --cached --check`, and commit the pre-review row locally. This is the cross-repository application of the common Gate Receipt protocol; no closeout push is authorized yet.
-- [ ] Apply the standard/adversarial `gpt-5.6-sol`/high naturally-converged two-reviewer contract, with Opus and agy excluded, to that exact committed deep-suite candidate. If a finding changes any authority or generated artifact, commit the fix, rerun preflight, and obtain a fresh review; never reuse the old receipt.
-- [ ] Any change after the reviewed candidate or after push invalidates its receipt and remote evidence.
-  First present the new exact SHA/diff and scope. A change outside exactly the two manifests plus the
-  four generated docs is scope expansion and requires a new explicit modification-authority proposal;
-  do not infer it from Gate 8 approval. For every authorized fix, rerun `npm run docs:write` and prove
-  it is a no-op, rerun `npm run preflight` and `git diff --check`, create a fresh focused commit, append
-  fresh pre-review evidence in closeout, and obtain a fresh standard/adversarial `gpt-5.6-sol`/high two-reviewer `APPROVE`/Red 0/Yellow 0/
-  `converged` review and receipt. If a remote branch already exists, present that fresh SHA/diff and
-  obtain a **separate fresh-push approval** before updating it. No earlier modification, review, or
-  push approval survives the changed candidate.
-- [ ] After Gate 8 Respond, use a finite **payload commit A → predecessor-attestation commit B**
-  protocol. Construct exactly four canonical LF-terminated fatal-UTF-8 payload Buffers in the retained
-  deep-loop closeout process: the parent commit's evidence blob plus one sanitized review-result
-  suffix, the parent commit's review-bundle blob plus one sanitized review-result suffix, one exact
-  report, and one exact response. Report/response names must match their respective ASCII-only
-  timestamped grammar under exactly `.deep-review/reports/` and `.deep-review/responses/`; reject
-  `..`, extra separators, Unicode/case aliases, another extension, or a path already present in the
-  closeout parent tree. Each of all four payload Buffers may contain only predecessor-known renderer,
-  review, synthesis, session/model/effort/verdict/termination, and Info-disposition inputs appropriate
-  to that artifact. No payload Buffer—including report or response—may claim its own byte length,
-  content hash, blob ID, or any tree ID, commit ID, or CAS outcome derived from the not-yet-existing
-  payload A. Those values do not exist until A is built. Exact reconstruction may produce
-  byte-identical content, while any changed byte must produce a different binding. Do not
-  claim JavaScript object immutability, process continuity, source pathname identity, or a
-  completion-time file hash. Payload Content identity is authoritative; do not create or copy either authoritative report/response through a worktree pathname before payload A.
-
-  Feed the four exact payload Buffers and canonical metadata through bounded structured stdin to one
-  recorded Git-object receipt helper. Before any Git subprocess, resolve the configured executable to
-  one canonical regular executable with no symlink component, record its SHA-256, and invoke only that
-  absolute executable. Build every child environment from an empty object plus a fixed allowlist;
-  never inherit arbitrary `GIT_*`, config, object-directory, alternate-object-directory, namespace,
-  replace-ref, index, worktree, or hook variables. Set `GIT_CONFIG_NOSYSTEM=1`,
-  `GIT_CONFIG_SYSTEM=/dev/null`, and `GIT_CONFIG_GLOBAL=/dev/null`. After the clean worktree is
-  detached, every object/ref child must run bare-style with helper-owned
-  `GIT_DIR=<canonical-common-dir>`, `GIT_COMMON_DIR=<canonical-common-dir>`, and
-  `GIT_OBJECT_DIRECTORY=<canonical-object-dir>`; set exact private `GIT_INDEX_FILE` only for index
-  commands and leave `GIT_WORK_TREE` absent. Never pass the linked-worktree administrative Git dir or
-  consult its `HEAD` or `commondir` after detachment. Prefix every Git command with
-  `--no-replace-objects -c core.hooksPath=/dev/null -c core.fsmonitor=false`. The helper source/hash,
-  canonical Git executable/hash, sanitized environment projection, and actual-host fixture output are
-  ordinary predecessor-known inputs, not self-attestation.
-
-  Resolve and require canonical no-symlink Git common, worktree-administrative Git, object, and
-  private-index directories before detachment, then bind publication only to the canonical common and
-  object directories as above. Re-read their identities and the exact fully qualified ref around each
-  subprocess; any linked-worktree `commondir` change is irrelevant to publication and still fails the
-  retained-worktree audit.
-  Reject `.git/objects/info/alternates`, any `refs/replace/*`, an unexpected repository-format or
-  object-format extension, a symbolic or ambiguously abbreviated closeout ref, and local configuration
-  that redirects objects, refs, hooks, worktrees, or an external helper. The sole update target must
-  pass `git check-ref-format` as the exact fully qualified `refs/heads/<closeout-branch>` and resolve to
-  the exact expected object. Reference-transaction and ordinary hooks are disabled by the fixed empty
-  hooks path. Before object creation, require the closeout branch ref, HEAD, real index, and tracked
-  worktree to equal the exact recorded parent with no staged or tracked modifications, then detach the
-  retained closeout worktree at that parent and prove it remains clean. The fully qualified branch ref
-  is thereafter the sole closeout update target; never read detached worktree paths as current receipt
-  authority. Require the evidence/bundle parent blob IDs and byte-identical prefixes and require both
-  receipt paths absent from the parent tree. Independently address the immutable reviewed deep-suite
-  commit object, not a mutable worktree `HEAD`: verify its exact parent/range, six approved path
-  names/modes/blob IDs, generator no-op, preflight/diff hashes, and both completed reviewer bindings.
-
-  Determine and record the repository object format rather than assuming a 40-character SHA-1 ID. For
-  each payload Buffer, write one Git blob directly into the canonical repository object store with
-  `git hash-object -w --stdin`, immediately read it back with `git cat-file blob`, and require exact
-  byte length, SHA-256, and object ID replay. Never use a report/response worktree path as blob input.
-  Initialize the private index from the exact closeout parent with `git read-tree`, install only the
-  four modes/blob IDs with `git update-index --add --cacheinfo`, and require `git write-tree` to produce
-  a parent-to-tree name-only delta of exactly evidence, bundle, report, and response with their exact
-  modes/object IDs. Create payload commit A from that tree and exact parent with `git commit-tree`,
-  include the required trailer, and re-read its exact tree, sole parent, message, four-path delta, and
-  four entries. Before CAS, prove every A object is readable from the canonical object store with the
-  sanitized environment. Advance only the fully qualified ref using
-  `git update-ref <fully-qualified-ref> <payload-A> <exact-parent>` and then repeat the canonical-store
-  reads. A fifth path, alternate-only object, worktree substitution, prefix mismatch, pre-existing
-  receipt entry, different blob, wrong parent, or hook execution fails closed.
-
-  Only after payload A is verified and published, construct two new canonical attestation Buffers from
-  A's evidence and bundle blobs. They record the four payload Buffer lengths/SHA-256/blob IDs, A tree
-  ID and commit ID, A exact-parent CAS result, source-review bindings, canonical Git/helper bindings,
-  and fixture hashes. They explicitly do not record either attestation Buffer's own length/hash/blob
-  ID, attestation tree/commit ID, or attestation CAS result. Build attestation commit B with exact
-  parent A and an `A..B` delta of exactly evidence and bundle; require the original
-  `pre-receipt-parent..B` cumulative delta to remain exactly the four receipt paths. Verify B's tree,
-  parent, message, trailer, and the unchanged A report/response entries, prove every B object readable
-  from the canonical store, then advance the same fully qualified ref using
-  `git update-ref <fully-qualified-ref> <attestation-B> <payload-A>`. The branch ref plus independent
-  post-CAS object inspection externally binds B; no tracked artifact attempts to name its own derived
-  identity.
-
-  Object, private-index, tree, commit, or validation failure before either CAS leaves the ref at the
-  preceding verified commit. If a CAS response is lost, inspect the exact fully qualified ref: recover
-  A only if it is the unique exact four-path child of the recorded pre-receipt parent, and recover B
-  only if it is the unique exact two-path child of A with every predecessor binding valid; never create
-  a duplicate A or B. After success or recovery, the retained worktree remains clean and detached at
-  its recorded parent. A fresh clean checkout of B must materialize all four receipt paths and match
-  its verified tree.
-
-  Every later closeout publication uses one reusable finite helper contract. For the stage's explicit
-  allowed payload path set `S` (only evidence, or exactly evidence plus bundle), payload commit P has
-  the current verified fully qualified closeout ref as exact parent, changes exactly `S`, and contains
-  no value derived from P. Predecessor-attestation commit Q has exact parent P and changes only the
-  stage's attestation carriers—evidence when `S` is evidence-only, otherwise evidence plus bundle—to
-  record P's path/length/hash/blob/tree/commit/CAS/helper bindings without any Q-derived value. Require
-  the pair-parent-to-Q cumulative delta to equal exactly `S`; verify unchanged paths, canonical-store
-  objects, both exact-parent CAS boundaries, and unique P/Q response-loss recovery without
-  duplication. External fully qualified ref inspection binds Q. No later clause may publish a lone
-  payload commit or commit from the older detached worktree.
-
-  Actual-host fixtures must reproduce the old ancestor-symlink out-of-root write, post-validation
-  `git add` substitution, inherited external `GIT_OBJECT_DIRECTORY` plus alternate-store publication,
-  replace-ref ambiguity, and configured reference-transaction hook execution. They must prove the
-  sanitized helper opens no receipt worktree pathname and ignores substituted worktree content, all
-  inherited Git injection, and linked-worktree `commondir` swaps; writes every required object to the
-  canonical store; executes no hook;
-  rejects alternates/replace refs/fifth paths/wrong parents, leaves the ref unchanged on every pre-CAS
-  failure, publishes exact A-four/B-two path deltas, and recovers each lost CAS response without
-  duplication. This finite two-commit Git-object receipt is the common protocol's exact four-path force-add implemented without live-path staging; its private-index tree/commit chain mutates no
-  reviewed deep-suite candidate file and authorizes no push.
-- [ ] Present deep-suite commit, branch, six-path authority-plus-derived diff, preflight/review receipt, and remote target; request **separate push approval**.
-- [ ] After an approved branch push and verified remote SHA, present the exact deep-suite PR title/body/base/head and request **separate PR creation approval**. After the PR exists and all required checks/reviews pass, present the exact merge target/method/result and request **separate merge approval**. Verify the re-pin reaches deep-suite main; a feature-branch push or PR alone is not completion, and none of these approvals implies another.
-- [ ] After deep-suite main contains the re-pin, fetch its exact main object ID in the repository's
-  recorded object format, verify both manifest pins equal the merged deep-loop main SHA, and rerun
-  deep-suite `npm run preflight` from that merged main in a safe checkout. Construct the next evidence
-  Buffer from the exact current closeout-commit blob plus the actual push result, PR URL and merge SHA
-  when applicable, final two-pin values, merged-main preflight result, and remote/main verification
-  commands. Apply the reusable finite helper with `S={evidence}`: publish one evidence-only payload P
-  that contains no P-derived value, then one evidence-only predecessor-attestation Q that records P's
-  byte/hash/blob/tree/commit/CAS/helper bindings without any Q-derived value. Verify the exact one-path
-  delta at each commit and cumulatively, canonical-store readability, both expected-parent CAS results,
-  and unique P/Q lost-response recovery without duplication. The retained worktree stays clean and
-  detached at its older recorded parent. Do not read or stage a worktree evidence file and do not push
-  the closeout branch yet.
+- [ ] Present the merged deep-loop 40-hex SHA and an exact modification proposal for an isolated
+  deep-suite branch/worktree. The hand-edited authorities are only
+  `/Users/sungmin/Dev/claude-plugins/deep-suite/.claude-plugin/marketplace.json` and
+  `/Users/sungmin/Dev/claude-plugins/deep-suite/.agents/plugins/marketplace.json`; the repository
+  generator may update only `README.md`, `README.ko.md`, `CLAUDE.md`, and
+  `docs/source-pinning.md`. Request **separate post-merge sync modification approval** for exactly
+  those six paths. No earlier implementation or merge approval applies.
+- [ ] After approval, create the isolated deep-suite branch/worktree, set both existing
+  `deep-loop.source.sha` values to the exact merged deep-loop SHA, run `npm run docs:write`, and
+  require a second `npm run docs:write` to be a no-op. Reject any seventh path, manual generated-file
+  edit, plugin-entry reorder, `.claude-plugin/suite-extensions.json` change, or pin mismatch.
+- [ ] Run deep-suite `npm run preflight`, inspect the exact six-path authority-plus-derived diff,
+  stage only those paths, run `git diff --cached --check`, commit, and prove the committed tree and
+  generator output are exact.
+- [ ] Run independent standard/adversarial reviewers, each actual `gpt-5.6-sol` / high with Opus and
+  agy excluded, over the exact committed deep-suite candidate. Pass only on two valid finals,
+  `APPROVE`, Red 0, Yellow 0, natural convergence, and main-agent replay. If a finding changes the
+  candidate, commit the fix, rerun preflight, and use a fresh review round.
+- [ ] For every deep-suite review round, copy the sanitized exact report/response into unique tracked
+  paths on the deep-loop closeout branch and apply the Common Closeout Receipt Commit Protocol with
+  the evidence ledger and, when updated, review bundle. This preserves rejected and approving rounds
+  without changing the deep-suite candidate or overwriting an earlier pair.
+- [ ] Present the exact deep-suite branch, commit, six-path diff, preflight/review receipts, remote
+  target, and recovery boundary; request **separate branch push approval**. After a verified push,
+  present the exact PR and request **separate PR creation approval**. After checks pass, present the
+  exact merge method/result and request **separate merge approval**. None implies another.
+- [ ] Fetch deep-suite `origin/main`, verify both manifest pins equal the merged deep-loop SHA,
+  verify the exact six paths and generated bytes, and run deep-suite `npm run preflight` from a
+  fresh checkout of the merged commit. Record the actual main commit, PR/merge facts, two pins, and
+  verification hashes on the closeout branch through one finite evidence receipt commit.
+- [ ] Append all sanitized Gate 7/8 publication facts and all unique review pairs to the evidence
+  ledger and review bundle. Run deep-loop `npm run preflight`, version parity, raw-ID/secret scans,
+  and exact source-path/blob checks in the closeout worktree.
+- [ ] Review the exact closeout source candidate with independent standard/adversarial
+  `gpt-5.6-sol` / high reviewers, Opus/agy excluded. Each finding round uses a new finite
+  report/response receipt commit. Pass only on two valid `APPROVE`, Red 0, Yellow 0 finals plus
+  main-agent replay and unchanged source blobs.
+- [ ] Present the exact closeout branch/commit/range and request **separate source branch push
+  approval**; after a verified push request **separate PR creation approval**; after checks pass
+  request **separate merge approval**. Verify the final closeout source commit reaches deep-loop
+  `origin/main` and record its 40-hex `source_publication_sha`. No feature-branch approval applies.
 
 ### Gate 9 Procedure: Cleanup and Wiki Ingest
 
-This procedure is conditional on the exact order-amendment approval recorded in Gate 7; it does not
-make or infer that amendment itself. Under that approval, a local
-closeout worktree/branch, followed by a local wiki-receipt worktree/branch, are the sole cleanup
-exceptions while their publication duties remain. Every wiki source is an immutable commit-pinned
-HTTPS URL, never a local worktree path. The separate receipt artifact is not an ingest source. Both
-exceptions must ultimately receive an approved disposition; temporary retention is not completion.
-Approval of a wiki write or this ordering amendment never implies cleanup, push, PR, merge, archive,
-delete, or permanent-retention approval.
+This procedure is conditional on the exact order-amendment approval recorded in Gate 7. Every wiki
+source is an immutable commit-pinned HTTPS URL at `source_publication_sha`, never a local worktree
+path. The separate wiki receipt is not an ingest source. Approval of wiki ingest never implies push,
+PR, merge, cleanup, archive, delete, or permanent retention.
 
-- [ ] Verify the Gate 7 evidence contains the explicit order-amendment proposal, the user's exact
-  approval, and the bounded two-exception scope above. If any element is missing, stop before cleanup,
-  wiki proposal, or new worktree creation and return to the cleanup-first replan path.
-- [ ] After both repositories are confirmed on main, enumerate every candidate local/remote branch,
-  worktree, backup, disposable smoke clone/internal worktree, App saved-project registration,
-  `.deep-loop` smoke run/current artifact, plugin/marketplace backup, ignored review artifact, and
-  smoke task. Preserve dirty/untracked user-owned items. Give every inventory row a stable ID and an
-  initially unresolved disposition; the committed review bundle, not ignored `.deep-review/`, is the
-  review source of record.
+- [ ] Enumerate every local/remote feature, deep-suite, closeout, and future receipt branch/worktree;
+  backup; disposable smoke clone/internal worktree; App registration/task; `.deep-loop` smoke
+  artifact; plugin/marketplace backup; ignored review artifact; and temporary file. Preserve dirty or
+  untracked user-owned items. Give every row a stable ID and unresolved disposition.
 - [ ] Present the exact primary-cleanup inventory and request explicit cleanup approval naming every
-  non-task target to remove. Request a separate approval for each smoke-task archive/delete set.
-  Perform only approved primary cleanup and verify both repositories' status/branch/worktree/remote
-  lists afterward. Retain only the declared closeout worktree/branch and items whose user-approved
-  disposition is explicit permanent retention. Lack of deletion approval is not permanent-retention
-  approval and leaves the row unresolved.
-- [ ] Start from the latest verified fully qualified closeout ref, never the older detached worktree.
-  Apply the reusable finite helper with `S={evidence,bundle}` to append all sanitized Gate 7/8 source
-  facts as payload P and predecessor-attestation Q, with exact two-path per-commit/cumulative deltas,
-  both expected-parent CAS proofs, canonical-store reads, and unique response-loss recovery. Verify the
-  retained worktree is still clean at its recorded old parent, then switch it safely to detached exact
-  Q only to materialize Q and prove every tracked blob; run `npm run preflight` and scan for raw host
-  IDs/secrets there, but make no worktree commit. Return to the fully qualified ref authority and apply
-  the helper with `S={evidence}` to record those verification results as a second payload R plus
-  predecessor-attestation S. Require exact one-path per-commit/cumulative deltas, both CAS proofs,
-  canonical-store reads, and unique R/S recovery. Present final S and the full Q..S/ref range and
-  request **separate closeout-source branch push approval**, then present the exact PR and request
-  **separate PR creation approval**, then present the merge target/method and request **separate merge
-  approval**. Verify final S on `origin/main` and record `source_publication_sha` using the recorded
-  repository object format and its exact object-ID length; none of these approvals implies another.
-- [ ] Create a local `codex/codex-app-native-task-continuation-wiki-receipt` worktree/branch from that
-  exact merged source SHA without mutating any published source file. Build the complete source list
-  as commit-pinned raw HTTPS URLs at `source_publication_sha` for the handoff, design, plan, evidence,
-  and review bundle. For every URL record the repository/path, git blob ID, fetched byte length, and
-  SHA-256 and prove it matches the merged blob. These immutable URLs, not local absolute paths, are
-  the sole ingest origins.
-- [ ] Present one exact `deep-wiki:wiki-ingest` multi-source write proposal naming the canonical wiki
-  root, every immutable source URL and SHA-256, the expected distinct or reused source slug and
-  provenance YAML for **each** input, every expected page create/update, expected action/log row per
-  source, collision behavior, and rollback/diagnosis behavior. Request explicit wiki-write approval.
-  No earlier implementation, smoke, cleanup, source-publication, or receipt-publication approval
-  authorizes this write.
-- [ ] After that exact approval, invoke `deep-wiki:wiki-ingest` exactly once with the complete URL
-  batch. Record a complete mapping for every input `URL + SHA-256 → source slug + provenance YAML`,
-  and for every affected page record filename key, absolute/relative page path, title, create/update
-  classification, contributing slugs, plus every ingest/skip/repair action and log row. Verify all
-  provenance origins equal the immutable URLs, hashes match, the expected page set is complete, and
-  no duplicate page/log creation occurred. A failed or ambiguous invocation authorizes no retry and
-  leaves the goal incomplete unless the user explicitly approves a DoD amendment.
+  non-task target to remove, plus separate archive/delete approval for each smoke-task set. Perform
+  only approved cleanup, verify both repositories, and retain only the one declared wiki-receipt
+  exception plus items explicitly approved for permanent retention.
+- [ ] From exact merged `source_publication_sha`, create only the local
+  `codex/codex-app-native-task-continuation-wiki-receipt` branch/worktree. Build the complete source
+  list as commit-pinned raw HTTPS URLs for handoff, design, plan, evidence, and review bundle. Record
+  repository/path, Git blob ID, fetched byte length, and SHA-256 for every URL and prove equality with
+  the merged blob.
+- [ ] Present one exact `deep-wiki:wiki-ingest` multi-source write proposal naming the canonical
+  wiki root, all immutable URLs/hashes, expected source slugs/provenance YAML, page creates/updates,
+  action/log rows, collision behavior, and rollback/diagnosis behavior. Request **explicit wiki-write
+  approval**; no earlier approval authorizes the write.
+- [ ] After approval, invoke `deep-wiki:wiki-ingest` exactly once with the complete URL batch. Record
+  every `URL + SHA-256 -> source slug + provenance YAML`, every affected page key/path/title and
+  create/update classification, contributing slugs, and all ingest/skip/repair log rows. Verify exact
+  immutable origins, complete page set, and no duplicate page/log creation. An ambiguous invocation
+  authorizes no retry without an explicit DoD amendment.
 - [ ] Create only
-  `docs/handoff/2026-07-13-codex-app-native-task-continuation-wiki-receipt.md` on the receipt branch;
-  it contains the complete mapping and verification above plus the primary-cleanup dispositions. Do not alter or include this receipt file in the ingest source set, and never mutate the five ingested
-  origins because their commit-pinned bytes are already immutable. Append the same exact-once result
-  to the native goal receipt. Run `npm run preflight`, scan, stage only this new receipt artifact,
-  inspect, run `git diff --cached --check`, and commit it with the required trailer.
-- [ ] Present the wiki-receipt commit/branch and request **separate receipt branch push approval**;
-  after a verified push, present the exact PR and request **separate PR creation approval**; after all
-  checks, present the exact merge and request **separate merge approval**. Verify the receipt commit
-  reaches `origin/main`. No source-publication or prior feature approval applies to this second
-  publication cycle, and wiki ingest is never invoked again.
-- [ ] Re-enumerate every original and newly created cleanup item, including local/remote closeout and
-  receipt branches/worktrees. For every stable inventory ID require exactly one final disposition:
-  removed after explicit approval, or an explicit user-approved permanent-retention/DoD amendment
-  naming that item. Request deletion/archive approval for every still-removable target and separately
-  for task sets, perform only approved actions, and verify both repositories' final status, branch,
-  worktree, remote, App registration/task, backup, and smoke-artifact state without reading or
-  touching the original checkout's user-owned `.deep-memory/`.
-- [ ] Record the final complete inventory/disposition table and verification results in the native
-  goal receipt. Mark the native goal complete only when every DoD item, the successful exactly-once
-  wiki mapping, both durable publication cycles, and every enumerated cleanup item have a final
-  approved disposition. The sole cleanup exceptions must be removed or explicitly approved for
-  permanent retention; an unresolved or merely unapproved row keeps the goal incomplete.
-
+  `docs/handoff/2026-07-13-codex-app-native-task-continuation-wiki-receipt.md` on the receipt branch.
+  Include the mapping, verification, and cleanup dispositions. Do not alter or include this receipt file in the ingest source set.
+  Run `npm run preflight`, scans, exact one-path staged checks, and
+  commit through the Common Closeout Receipt Commit Protocol.
+- [ ] Present the exact receipt branch/commit and request **separate receipt branch push approval**;
+  after a verified push request **separate PR creation approval**; after checks pass request
+  **separate merge approval**. Verify the receipt reaches deep-loop `origin/main`; never ingest again.
+- [ ] Re-enumerate every original and newly created item. Each stable ID must end as removed under
+  explicit approval or explicitly approved permanent retention/DoD amendment. Request remaining
+  deletion/archive approvals, perform only approved actions, verify both repositories and App/task
+  state, and never read or touch the original checkout's user-owned `.deep-memory/`.
+- [ ] Record the final inventory and receipts. Mark the native goal complete only when every DoD item,
+  the one successful wiki mapping, both repositories' main integration, both durable publication
+  cycles, and every cleanup item have objective evidence and a final approved disposition.
 ---
 
 ## Plan Self-Review
@@ -36311,74 +36208,59 @@ if (gate6Raw.includes('from a native Opus/xhigh session')
     || gate6Raw.includes('three-reviewer evidence')) {
   fail('Gate 6 uses the superseded Opus/three-reviewer contract');
 }
+const closeoutProtocol = sectionBetween('### Common Closeout Receipt Commit Protocol',
+  '### Gate 7 Procedure:');
+requireTokens('Common closeout', closeoutProtocol, [
+  'ordinary Git commits in one dedicated closeout worktree',
+  'do not construct Git objects directly',
+  'exclusively controls the repository',
+  'outside this release procedure',
+  'git rev-parse --show-object-format',
+  'equal \`sha1\`', 'exactly 40 lowercase hexadecimal characters',
+  'explicit allowed path set', 'predecessor-known Buffer',
+  'git diff --cached --name-status -z', 'git show :<path>',
+  'git diff --cached --check', 'unique exact child',
+  'arbitrarily many finite rounds', 'new unique report/response pair',
+  'does not recursively require another review',
+  'must not claim its own future Git blob/tree/commit ID',
+]);
 const gate7 = sectionBetween('### Gate 7 Procedure:', '### Gate 8 Procedure:');
 requireTokens('Gate 7', gate7, [
-  'exactly the nine unique cells',
-  '{ubuntu-latest,macos-latest,windows-latest} × {20,22,24}',
-  'Every one of the nine conclusions must be literal `success`',
-  'any other conclusion blocks merge',
-  'separate fresh-push approval',
-  'one authoritative exact-head PR workflow execution',
-  'workflow run ID', 'run attempt',
-  'Evidence from different runs or attempts may never be mixed',
-  'discard all superseded-attempt job evidence',
-  'Rerun every invalidated Gate 5 smoke/check, including the final-candidate smoke',
-  'gate6_review_target_sha', 'sole non-recursive receipt-only exception proof',
+  'npm run preflight', 'Gate 6 reviewers \`APPROVE\`',
+  'separate branch push approval', 'separate PR creation approval',
+  'separate merge approval', 'Green CI alone is not a merge approval',
+  'actual 40-hex merged main SHA', 'fresh read-only checkout',
+  'exact ordering amendment', 'one closeout branch/worktree',
+  'Common Closeout Receipt Commit Protocol',
 ]);
 const gate8 = sectionBetween('### Gate 8 Procedure:', '### Gate 9 Procedure:');
 requireTokens('Gate 8', gate8, [
-  'post-merge sync modification approval for this exact authority-plus-derived file set',
-  'separate push approval', 'separate PR creation approval', 'separate merge approval',
-  'none of these approvals implies another',
-  'exactly the two manifests plus the four generated docs',
-  'scope expansion and requires a new explicit modification-authority proposal',
-  'rerun `npm run docs:write` and prove', 'it is a no-op',
-  'separate fresh-push approval',
-  'No earlier modification, review, or', 'push approval survives the changed candidate',
-  '.deep-review/reports/', '.deep-review/responses/',
-  'Content identity is authoritative', 'do not create or',
-  'copy either authoritative report/response through a worktree pathname',
-  'payload commit A → predecessor-attestation commit B',
-  'all four payload Buffers',
-  'No payload Buffer—including report or response—may claim its own byte length',
-  'GIT_CONFIG_NOSYSTEM=1', 'GIT_CONFIG_SYSTEM=/dev/null', 'GIT_CONFIG_GLOBAL=/dev/null',
-  'GIT_DIR=<canonical-common-dir>', 'GIT_COMMON_DIR=<canonical-common-dir>',
-  'GIT_OBJECT_DIRECTORY=<canonical-object-dir>',
-  'Never pass the linked-worktree administrative Git dir', '`commondir` after detachment',
-  '--no-replace-objects -c core.hooksPath=/dev/null -c core.fsmonitor=false',
-  '.git/objects/info/alternates', 'refs/replace/*',
-  'refs/heads/<closeout-branch>', 'canonical repository object store',
-  'git hash-object -w --stdin', 'git cat-file blob',
-  'git update-index --add --cacheinfo', 'git write-tree',
-  'git commit-tree',
-  'git update-ref <fully-qualified-ref> <payload-A> <exact-parent>',
-  'git update-ref <fully-qualified-ref> <attestation-B> <payload-A>',
-  'A..B` delta of exactly evidence and bundle',
-  'do not record either attestation Buffer',
-  'exact four-path force-add implemented without live-path staging',
-  'ancestor-symlink out-of-root write', 'post-validation', '`git add` substitution',
-  'inherited external `GIT_OBJECT_DIRECTORY`', 'reference-transaction hook',
-  'Every later closeout publication uses one reusable finite helper contract',
-  'No later clause may publish a lone',
-  'private-index tree/commit',
+  'separate post-merge sync modification approval',
+  '.claude-plugin/marketplace.json', '.agents/plugins/marketplace.json',
+  'README.md', 'README.ko.md', 'CLAUDE.md', 'docs/source-pinning.md',
+  'second \`npm run docs:write\` to be a no-op',
+  'Reject any seventh path', 'npm run preflight',
+  'standard/adversarial reviewers', 'gpt-5.6-sol', 'Opus and',
+  'fresh review round', 'every deep-suite review round',
+  'unique tracked', 'without changing the deep-suite candidate',
+  'separate branch push approval', 'separate PR creation approval',
+  'separate merge approval', 'both manifest pins equal',
+  'exact closeout source candidate', 'new finite',
+  'separate source branch push', 'source_publication_sha',
 ]);
 const gate9 = sectionBetween('### Gate 9 Procedure:', '\n---\n\n## Plan Self-Review');
 requireTokens('Gate 9', gate9, [
-  'sole cleanup', 'commit-pinned raw HTTPS URLs',
-  'source_publication_sha', 'every immutable source URL and SHA-256',
-  'expected page create/update', 'exactly once',
-  'URL + SHA-256 → source slug + provenance YAML',
-  'every ingest/skip/repair action and log row',
-  'codex-app-native-task-continuation-wiki-receipt.md',
+  'commit-pinned HTTPS URL', 'source_publication_sha',
+  'stable ID and unresolved disposition', 'explicit cleanup approval',
+  'explicitly approved for permanent retention',
+  'codex-app-native-task-continuation-wiki-receipt',
+  'repository/path, Git blob ID, fetched byte length, and SHA-256',
+  'explicit wiki-write', 'deep-wiki:wiki-ingest',
+  'URL + SHA-256 -> source slug + provenance YAML',
   'Do not alter or include this receipt file in the ingest source set',
-  'Start from the latest verified fully qualified closeout ref',
-  'make no worktree commit', 'second payload R plus',
-  'using the recorded', 'repository object format and its exact object-ID length',
-  'separate closeout-source branch push approval',
   'separate receipt branch push approval', 'separate PR creation approval',
-  'separate merge approval', 'every stable inventory ID require exactly one final disposition',
-  'explicit user-approved permanent-retention/DoD amendment',
-  'wiki ingest is never invoked again',
+  'separate merge approval', 'never ingest again',
+  'explicitly approved permanent retention/DoD amendment',
 ]);
 const negativeReceiptIngestRule = 'Do not alter or include this receipt file in the ingest source set';
 const gate9WithoutNegativeReceiptRule = gate9.replace(negativeReceiptIngestRule, '');
@@ -36389,10 +36271,9 @@ if (gate9WithoutNegativeReceiptRule === gate9
 if (/same recorded page ID|same-page final wiki refresh/i.test(gate9)) {
   fail('Gate 9 retains an unsupported second/same-page ingest');
 }
-if ((gate9.match(/invoke `deep-wiki:wiki-ingest`/gi) ?? []).length !== 1) {
+if ((gate9.match(/invoke \`deep-wiki:wiki-ingest\`/gi) ?? []).length !== 1) {
   fail('Gate 9 must contain exactly one executable wiki-ingest invocation');
 }
-
 const strictPathTokens = (raw, label) => {
   const tokens = raw.trim().split(/\s+/u).filter(Boolean);
   if (tokens.length === 0) fail(`${label}: empty path list`);

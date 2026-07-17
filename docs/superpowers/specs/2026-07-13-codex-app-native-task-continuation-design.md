@@ -2,7 +2,7 @@
 
 작성일: 2026-07-13
 운영 계약: `docs/handoff/2026-07-13-codex-app-native-task-continuation-goal-handoff.md`
-상태: Gate 1 fresh cycle 8 round 9 Respond 완료; REQUEST_CHANGES 미수렴, fresh cycle 8 round 10 필요
+상태: Gate 1 fresh cycle 8 round 10 Respond 진행; REQUEST_CHANGES 미수렴, 구조적 closeout 단순화 검증 중
 기준: `main@c38a96137f8f4f0099c35e893860930e8ee4cf73`, deep-loop `1.8.2`
 
 > source of truth: 이 문서 + 운영 계약 + 현재 저장소 + `git log`. 이전 대화 컨텍스트를 가정하지 말라.
@@ -1618,6 +1618,34 @@ positive inclusion을 거부하며, source publication ID는 recorded object for
 국소 patch review 반복은 여기서 중단하고 이 공통 helper/state-machine에 대한 executable closure 뒤 fresh
 cycle 8 round 10 exact two-way review 한 번으로 수렴을 판정한다. 변경된 bytes는 round 9 receipt를
 상속하지 않는다.
+
+Gate 1 fresh cycle 8 round 10은 clean committed target에서 standard/adversarial 두 process를 모두
+exact `gpt-5.6-sol`/high/read-only/900초 계약으로 완료했다. Standard는 후기 절차만 object-format
+generic으로 표현하면서 handoff/Gate 6/7은 40자 SHA-1을 요구하는 Yellow 1의 범위 불일치를 찾았다.
+Adversarial은 다중 review round의 새 report/response를 later helper가 수용하지 못하는 Red, bare-style
+publication 뒤 오래된 worktree를 Q로 switch하라는 Red, active same-user swap-and-restore를 path recheck가
+막는다고 과도하게 주장한 Red를 찾았다. 또한 security-critical direct-object helper의 executable
+authority가 46개 card 어디에도 없다는 Yellow와 같은 object-format 불일치를 재확인했다. Formal 결과는
+standard `REQUEST_CHANGES` Yellow 1, adversarial `REQUEST_CHANGES` Red 3 / Yellow 2다.
+
+Respond는 finding별 예외를 더하지 않고 Gates 7–9 closeout을 구조적으로 축소했다. Direct Git-object,
+private index, payload/attestation, detached old-worktree publication을 전부 제거한다. Verified merged main에서
+단 하나의 isolated closeout worktree를 만들고 ordinary staged commit만 사용한다. 각 commit은 exact
+allowed path set, staged blob Buffer equality, parent/tree/mode/message, clean-state를 전후 검증하고 response
+loss는 branch tip의 unique exact child만 회복한다. Tracked content는 자기 future blob/tree/commit ID를
+기록하지 않는다. 각 review round는 고유 report/response와 evidence를 하나의 finite response commit으로
+보존하므로 round 수에 제한이 없고 이전 pair를 덮어쓰지 않는다. Receipt-only commit은 reviewed artifact
+bytes를 바꾸지 않아 재귀 review 대상이 아니며, artifact 변경은 fresh target을 요구한다.
+
+Release 운영 threat model은 현재 OS user가 bounded Git command 동안 repository/worktree를 독점한다는
+조건을 명시한다. Active same-user/privileged filesystem mutation은 이 운영 절차의 보장 밖이며 관측되는
+drift는 fresh trusted checkout으로 fail closed한다. 이는 runtime kernel의 write-containment를 약화시키지
+않는다. 현재 handoff와 native goal의 실제 40-char 요구에 맞춰 repository storage가 `sha1`인지 먼저
+검증하고 40-hex만 허용한다. 다른 object format에서는 generic 지원을 가장하지 않고 새 reviewed plan을
+요구한다. 새 actual-host closure는 두 review round의 unique report/response 보존, exact staged bytes,
+lost-response no-duplicate recovery, old detached worktree 미사용, negative wiki rule, unchanged pre-Gate-6 /
+Gate 6 hashes를 실행했다. 변경된 bytes는 round 10 receipt를 상속하지 않으며 fresh cycle 8 round 11의
+same exact two-way review가 필요하다.
 
 구현 순서:
 
