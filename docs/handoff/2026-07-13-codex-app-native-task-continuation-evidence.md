@@ -3064,7 +3064,73 @@ no inherited approval from the historical receipt.
   standard/adversarial `gpt-5.6-sol`/high contract, with Opus and agy excluded. This Respond is not a
   Gate 1 pass.
 
-+## Review receipt template
+### Gate 1 fresh cycle 8 round 9 review
+
+- base/head: `c38a96137f8f4f0099c35e893860930e8ee4cf73..583febe85c0d73805939b97efc38956a702b6bc7`; clean at both starts.
+- invocation: standard/adversarial Codex-only, exact `gpt-5.6-sol` / `high`, read-only,
+  ignored user config/rules, ephemeral sessions, actual 900-second bound; no Opus or agy.
+- reviewer actual: standard task `019f7037-2bc3-76a1-937c-188d566f334b` completed with two P1 and
+  two P2. Adversarial task `019f7037-2bce-7190-8da4-22973be8b53c` timed out exit 124 without final
+  and is noncounted. `N_planned=2`, `N_actual=1`. No retry was launched because the valid final
+  already required changes and another full-plan pass before structural consolidation had diminishing value.
+- disposition: valid-reviewer `REQUEST_CHANGES`, Red/Yellow/Info `2 / 2 / 0`, degraded. Main
+  reproduced those four and two adjacent roots; consolidated `4 / 2 / 0 — DO NOT ADVANCE`.
+- accepted roots: final Gate 8 attestation omission; Gate 9 stale detached-worktree commit; weak
+  negative wiki validator; 40-character object-ID assumption; report/response omission from the
+  self-derived ban; linked-worktree `commondir` ref redirection unless canonical common/object dirs
+  are pinned bare-style.
+- report: `.deep-review/reports/2026-07-17-223413-review.md`, SHA-256
+  `1c1983f53117f4c9a8be77865d8a226c2d99ee75171ae1ee8c6df260c3e490d0`.
+- standard raw/final/stderr SHA-256:
+  `4afffb17fdbb5da849495d43a30a7ad12fcafa5c18b83f1ce42600cb8635ab18` /
+  `d10c6786f46e332a51bfb041090c4953ecdd9aa7e0fd181704dd4576196764c2` /
+  `df925774d2dc9a9d1761193685f0769aa1a48f43b5d9beb3294d1d408e03a433`; argv
+  `aa83e482dff5b0f5d9a4d209f55ce5a644a8c5853c3ad9c201db132b53811006`.
+- noncounted adversarial raw/stderr/prompt/argv SHA-256:
+  `aa8583bd04b5bd55cfe3b81fa7df20d2aa9fada8becb2bbe8795c9bff12d80b9` /
+  `f65cfad6829693fa374e972c2981b4ad91d416501ad237a652338127c9598efa` /
+  `538d6f5268ce3bf1b2922993caf666e4ae11d2d713eb2c1510ef5feb813f6c48` /
+  `5f7e84e28b45e2be742347078e827e98d0b207044313ff3721be2b8d540021e9`.
+- reproduction probe source/output SHA-256:
+  `02093eeba8dc72bab6559e0830d056e487dd1e27397743d06cb97d1f2ea65123` /
+  `f04ed7e050585d48d7a2f202de916d6376addbefa8ac2eb1a727011eafd98cfa`.
+- recurring findings run `01KXR4V6J50XVD9V6GPNNF5TYT`: architecture `81→85`,
+  test-coverage `47→48`, security `33→34`; error-handling stayed `33`.
+
+### Gate 1 fresh cycle 8 round 9 Respond
+
+- disposition: accepted all six roots; rejected/deferred none; `execution_path=main_fallback`.
+- reusable publication: every post-initial update uses payload P changing exact stage set S and
+  predecessor-attestation Q changing only its carriers. Parent..Q cumulative paths equal S; both CAS
+  boundaries, canonical objects, and P/Q loss recovery are verified. No later lone payload is allowed.
+- cross-gate continuity: final Gate 8 evidence is an evidence-only P/Q pair. Gate 9 source facts are
+  an evidence+bundle P/Q pair; exact Q is materialized only for preflight/secret scan with no worktree
+  commit; results are recorded by an evidence-only R/S pair from the latest fully qualified ref.
+- Git authority: all four initial payload Buffers forbid current A-derived identity. Publication uses
+  canonical common dir as both `GIT_DIR` and `GIT_COMMON_DIR`, exact canonical
+  `GIT_OBJECT_DIRECTORY`, and never linked-worktree HEAD/commondir after detachment.
+- validator/compatibility: the exact negative wiki-receipt sentence is required and a remaining
+  positive inclusion fails; source publication IDs use recorded object format and exact length.
+- unchanged authority: pre-Gate-6 SHA-256
+  `4bc32f7e955c39ff93f1faf15dce745b84f0647605f546d7f12f87ce6e8a8ec0`; Gate 6 SHA-256
+  `1b7f05c95c1fb8e8a63416f859530ef1dab63194fcacb96a330d1fd213fbd693`.
+- closure probe source/output SHA-256:
+  `2413a458f9d6b7816f2299b3d185268342e36f541fd6d6748774e5533b838fc1` /
+  `fc5acd119dbe02a3d600f2510fb14cf99fffcba013462714831c84baab874f8b`.
+- verification: embedded validator passed 46 tasks/369 fences. Actual Git proved commondir redirection
+  is defeated, Gate8-one/Gate9-two/Gate9-one P/Q pairs create six exact commits, loss recovery is
+  duplicate-free, no stale-worktree commit occurs, positive wiki inclusion fails, object format is
+  generic, Gate 6 is unchanged, and round 10 remains no-Opus/no-agy. `npm run preflight` passed
+  1,463/1,463; both working-tree and staged diff checks passed.
+- corrected candidate hashes before correction commit: handoff
+  `c9cffa2c0b373e113beb6c133ad3ab9a7d92bcb8d45c2d0906631058586025bd`; design
+  `3698d819eaf14952d3d13d416cba656fd69d4c29e403ffa80fa867363b94d966`; plan
+  `d32aa9b7cdb023f0301adb86555872af650eef407d6689623aab309ff1e389c6`.
+- gate state: open. Fresh cycle 8 round 10 uses the same exact two-way contract. If it fails, simplify
+  the common closeout helper rather than resume local clause patching. This Respond is not a Gate 1 pass.
+
+
+## Review receipt template
 
 Each reviewed gate will add a receipt with all of these fields:
 

@@ -2,7 +2,7 @@
 
 작성일: 2026-07-13
 운영 계약: `docs/handoff/2026-07-13-codex-app-native-task-continuation-goal-handoff.md`
-상태: Gate 1 fresh cycle 8 round 8 Respond 완료; REQUEST_CHANGES 미수렴, fresh cycle 8 round 9 필요
+상태: Gate 1 fresh cycle 8 round 9 Respond 완료; REQUEST_CHANGES 미수렴, fresh cycle 8 round 10 필요
 기준: `main@c38a96137f8f4f0099c35e893860930e8ee4cf73`, deep-loop `1.8.2`
 
 > source of truth: 이 문서 + 운영 계약 + 현재 저장소 + `git log`. 이전 대화 컨텍스트를 가정하지 말라.
@@ -1588,6 +1588,36 @@ Git/common/object/private-index directory, exact `refs/heads/...`, alternate/rep
 pre/post-CAS reads를 강제한다. Actual-host closure는 external object injection과 reference hook이 무시되고
 A-four/B-two delta와 lost-response recovery가 유지됨을 실행한다. 변경된 bytes는 round 8 receipt를
 상속하지 않으며 fresh cycle 8 round 9가 같은 no-Opus/no-agy exact 2-way로 다시 검증해야 한다.
+
+Gate 1 fresh cycle 8 round 9는 standard/adversarial 두 process를 모두 exact
+`gpt-5.6-sol`/high/read-only/900초 계약으로 실행했지만 standard만 final을 완료했고 adversarial은 exit 124
+timeout으로 noncounted다. Standard는 Gate 8 최종 one-path evidence가 mandatory attestation 없이 lone
+commit으로 끝나는 모순, Gate 9가 최신 closeout ref 대신 오래된 detached worktree에서 commit하는 모순,
+wiki receipt ingest 금지 validator의 부정문 미검증, SHA-1 40자 가정을 찾았다. Formal valid-voice 결과는
+Red 2 / Yellow 2 / Info 0의 `REQUEST_CHANGES`, `N_actual=1` degraded다. 이미 actionable finding이 있어
+timeout process를 재시도하지 않았다.
+
+Main agent는 네 finding을 실행/텍스트 probe로 재현하고 같은 state machine에서 두 root를 추가 확인했다.
+Self-derived 금지가 evidence/bundle에만 쓰여 report/response payload가 빠졌고, linked-worktree
+administrative Git dir의 `commondir`를 validation 뒤 바꾸면 fully-qualified ref도 다른 common repository로
+redirect됐다. 반면 publication child의 `GIT_DIR`/`GIT_COMMON_DIR`를 canonical common directory로,
+`GIT_OBJECT_DIRECTORY`를 canonical store로 고정하고 linked-worktree HEAD/commondir를 더는 읽지 않으면
+원래 ref가 유지됐다. Consolidated main disposition은 Red 4 / Yellow 2다.
+
+Respond는 initial A/B 이후의 모든 closeout publication을 하나의 reusable finite helper contract로
+통합한다. Stage의 allowed payload set S에 대해 P가 exact S만 바꾸고 P-derived 값을 포함하지 않으며,
+Q가 evidence 또는 evidence+bundle carrier만 바꿔 predecessor P를 증명한다. Pair parent..Q cumulative
+delta는 exact S이고, 두 CAS와 lost-response recovery를 각각 검증한다. Gate 8 final evidence는 one-path
+P/Q pair다. Gate 9 source facts는 evidence+bundle P/Q, 최신 Q의 detached read-only materialization에서
+preflight/secret scan, 그 결과는 evidence-only R/S pair로 기록한다. 오래된 worktree에서 commit하지 않는다.
+
+모든 네 initial payload Buffer에 자기 length/hash/blob 또는 A tree/commit/CAS 파생값을 금지한다.
+Publication subprocess는 bare-style canonical common/object dirs만 사용해 linked-worktree commondir를
+authority에서 제거한다. Gate 9 validator는 exact negative receipt-ingest sentence를 한 번 제거한 뒤 남는
+positive inclusion을 거부하며, source publication ID는 recorded object format 길이를 따른다. 동일한
+국소 patch review 반복은 여기서 중단하고 이 공통 helper/state-machine에 대한 executable closure 뒤 fresh
+cycle 8 round 10 exact two-way review 한 번으로 수렴을 판정한다. 변경된 bytes는 round 9 receipt를
+상속하지 않는다.
 
 구현 순서:
 

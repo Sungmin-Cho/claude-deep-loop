@@ -35858,11 +35858,12 @@ exact path, byte-prefix, absence, and payload-digest proofs all pass.
   report, and one exact response. Report/response names must match their respective ASCII-only
   timestamped grammar under exactly `.deep-review/reports/` and `.deep-review/responses/`; reject
   `..`, extra separators, Unicode/case aliases, another extension, or a path already present in the
-  closeout parent tree. The payload evidence and bundle may record the canonical renderer source hash,
-  reviewer input hashes, structured synthesis, session/model/effort/verdict/termination, and Info
-  dispositions, but they must not claim their own byte lengths, content hashes, blob IDs, tree ID,
-  commit ID, or CAS outcome. Those values do not exist until payload A is built. Exact reconstruction
-  may produce byte-identical content, while any changed byte must produce a different binding. Do not
+  closeout parent tree. Each of all four payload Buffers may contain only predecessor-known renderer,
+  review, synthesis, session/model/effort/verdict/termination, and Info-disposition inputs appropriate
+  to that artifact. No payload Buffer—including report or response—may claim its own byte length,
+  content hash, blob ID, or any tree ID, commit ID, or CAS outcome derived from the not-yet-existing
+  payload A. Those values do not exist until A is built. Exact reconstruction may produce
+  byte-identical content, while any changed byte must produce a different binding. Do not
   claim JavaScript object immutability, process continuity, source pathname identity, or a
   completion-time file hash. Payload Content identity is authoritative; do not create or copy either authoritative report/response through a worktree pathname before payload A.
 
@@ -35872,13 +35873,21 @@ exact path, byte-prefix, absence, and payload-digest proofs all pass.
   absolute executable. Build every child environment from an empty object plus a fixed allowlist;
   never inherit arbitrary `GIT_*`, config, object-directory, alternate-object-directory, namespace,
   replace-ref, index, worktree, or hook variables. Set `GIT_CONFIG_NOSYSTEM=1`,
-  `GIT_CONFIG_SYSTEM=/dev/null`, and `GIT_CONFIG_GLOBAL=/dev/null`; use only helper-owned exact
-  `GIT_DIR` and private `GIT_INDEX_FILE` values. Prefix every Git command with
+  `GIT_CONFIG_SYSTEM=/dev/null`, and `GIT_CONFIG_GLOBAL=/dev/null`. After the clean worktree is
+  detached, every object/ref child must run bare-style with helper-owned
+  `GIT_DIR=<canonical-common-dir>`, `GIT_COMMON_DIR=<canonical-common-dir>`, and
+  `GIT_OBJECT_DIRECTORY=<canonical-object-dir>`; set exact private `GIT_INDEX_FILE` only for index
+  commands and leave `GIT_WORK_TREE` absent. Never pass the linked-worktree administrative Git dir or
+  consult its `HEAD` or `commondir` after detachment. Prefix every Git command with
   `--no-replace-objects -c core.hooksPath=/dev/null -c core.fsmonitor=false`. The helper source/hash,
   canonical Git executable/hash, sanitized environment projection, and actual-host fixture output are
   ordinary predecessor-known inputs, not self-attestation.
 
-  Resolve and require canonical no-symlink Git common, Git, object, and private-index directories.
+  Resolve and require canonical no-symlink Git common, worktree-administrative Git, object, and
+  private-index directories before detachment, then bind publication only to the canonical common and
+  object directories as above. Re-read their identities and the exact fully qualified ref around each
+  subprocess; any linked-worktree `commondir` change is irrelevant to publication and still fails the
+  retained-worktree audit.
   Reject `.git/objects/info/alternates`, any `refs/replace/*`, an unexpected repository-format or
   object-format extension, a symbolic or ambiguously abbreviated closeout ref, and local configuration
   that redirects objects, refs, hooks, worktrees, or an external helper. The sole update target must
@@ -35927,16 +35936,25 @@ exact path, byte-prefix, absence, and payload-digest proofs all pass.
   only if it is the unique exact two-path child of A with every predecessor binding valid; never create
   a duplicate A or B. After success or recovery, the retained worktree remains clean and detached at
   its recorded parent. A fresh clean checkout of B must materialize all four receipt paths and match
-  its verified tree. Every later one-path closeout evidence publication uses the same finite shape: a
-  payload commit changes only evidence and contains no self-derived binding, then an exact-parent
-  attestation commit changes only evidence to bind that payload predecessor; external ref inspection
-  binds the attestation commit itself.
+  its verified tree.
+
+  Every later closeout publication uses one reusable finite helper contract. For the stage's explicit
+  allowed payload path set `S` (only evidence, or exactly evidence plus bundle), payload commit P has
+  the current verified fully qualified closeout ref as exact parent, changes exactly `S`, and contains
+  no value derived from P. Predecessor-attestation commit Q has exact parent P and changes only the
+  stage's attestation carriers—evidence when `S` is evidence-only, otherwise evidence plus bundle—to
+  record P's path/length/hash/blob/tree/commit/CAS/helper bindings without any Q-derived value. Require
+  the pair-parent-to-Q cumulative delta to equal exactly `S`; verify unchanged paths, canonical-store
+  objects, both exact-parent CAS boundaries, and unique P/Q response-loss recovery without
+  duplication. External fully qualified ref inspection binds Q. No later clause may publish a lone
+  payload commit or commit from the older detached worktree.
 
   Actual-host fixtures must reproduce the old ancestor-symlink out-of-root write, post-validation
   `git add` substitution, inherited external `GIT_OBJECT_DIRECTORY` plus alternate-store publication,
   replace-ref ambiguity, and configured reference-transaction hook execution. They must prove the
-  sanitized helper opens no receipt worktree pathname, ignores substituted worktree content and all
-  inherited Git injection, writes every required object to the canonical store, executes no hook,
+  sanitized helper opens no receipt worktree pathname and ignores substituted worktree content, all
+  inherited Git injection, and linked-worktree `commondir` swaps; writes every required object to the
+  canonical store; executes no hook;
   rejects alternates/replace refs/fifth paths/wrong parents, leaves the ref unchanged on every pre-CAS
   failure, publishes exact A-four/B-two path deltas, and recovers each lost CAS response without
   duplication. This finite two-commit Git-object receipt is the common protocol's exact four-path force-add implemented without live-path staging; its private-index tree/commit chain mutates no
@@ -35948,12 +35966,13 @@ exact path, byte-prefix, absence, and payload-digest proofs all pass.
   deep-suite `npm run preflight` from that merged main in a safe checkout. Construct the next evidence
   Buffer from the exact current closeout-commit blob plus the actual push result, PR URL and merge SHA
   when applicable, final two-pin values, merged-main preflight result, and remote/main verification
-  commands. Use the same recorded Git-object helper to create and read back its blob, build a one-path
-  private-index tree/commit with the required trailer, verify that exact evidence object ID, and move
-  the closeout ref with an exact-parent `update-ref` CAS. Recover a lost response from that one exact
-  commit without duplication while the retained worktree stays clean and detached at its older
-  recorded parent. Do not read or stage a worktree evidence file and do not push the closeout branch
-  yet.
+  commands. Apply the reusable finite helper with `S={evidence}`: publish one evidence-only payload P
+  that contains no P-derived value, then one evidence-only predecessor-attestation Q that records P's
+  byte/hash/blob/tree/commit/CAS/helper bindings without any Q-derived value. Verify the exact one-path
+  delta at each commit and cumulatively, canonical-store readability, both expected-parent CAS results,
+  and unique P/Q lost-response recovery without duplication. The retained worktree stays clean and
+  detached at its older recorded parent. Do not read or stage a worktree evidence file and do not push
+  the closeout branch yet.
 
 ### Gate 9 Procedure: Cleanup and Wiki Ingest
 
@@ -35981,12 +36000,20 @@ delete, or permanent-retention approval.
   lists afterward. Retain only the declared closeout worktree/branch and items whose user-approved
   disposition is explicit permanent retention. Lack of deletion approval is not permanent-retention
   approval and leaves the row unresolved.
-- [ ] From the retained closeout worktree, append all sanitized Gate 7/8 source facts to the evidence
-  and review bundle, run `npm run preflight`, scan for raw host IDs/secrets, and commit. Present its
-  exact commit range and request **separate closeout-source branch push approval**, then present the
-  exact PR and request **separate PR creation approval**, then present the merge target/method and
-  request **separate merge approval**. Verify the closeout-source commit on `origin/main` and record
-  its exact 40-character `source_publication_sha`; none of these approvals implies another.
+- [ ] Start from the latest verified fully qualified closeout ref, never the older detached worktree.
+  Apply the reusable finite helper with `S={evidence,bundle}` to append all sanitized Gate 7/8 source
+  facts as payload P and predecessor-attestation Q, with exact two-path per-commit/cumulative deltas,
+  both expected-parent CAS proofs, canonical-store reads, and unique response-loss recovery. Verify the
+  retained worktree is still clean at its recorded old parent, then switch it safely to detached exact
+  Q only to materialize Q and prove every tracked blob; run `npm run preflight` and scan for raw host
+  IDs/secrets there, but make no worktree commit. Return to the fully qualified ref authority and apply
+  the helper with `S={evidence}` to record those verification results as a second payload R plus
+  predecessor-attestation S. Require exact one-path per-commit/cumulative deltas, both CAS proofs,
+  canonical-store reads, and unique R/S recovery. Present final S and the full Q..S/ref range and
+  request **separate closeout-source branch push approval**, then present the exact PR and request
+  **separate PR creation approval**, then present the merge target/method and request **separate merge
+  approval**. Verify final S on `origin/main` and record `source_publication_sha` using the recorded
+  repository object format and its exact object-ID length; none of these approvals implies another.
 - [ ] Create a local `codex/codex-app-native-task-continuation-wiki-receipt` worktree/branch from that
   exact merged source SHA without mutating any published source file. Build the complete source list
   as commit-pinned raw HTTPS URLs at `source_publication_sha` for the handoff, design, plan, evidence,
@@ -36008,8 +36035,7 @@ delete, or permanent-retention approval.
   leaves the goal incomplete unless the user explicitly approves a DoD amendment.
 - [ ] Create only
   `docs/handoff/2026-07-13-codex-app-native-task-continuation-wiki-receipt.md` on the receipt branch;
-  it contains the complete mapping and verification above plus the primary-cleanup dispositions. Do
-  not alter or include this receipt file in the ingest source set, and never mutate the five ingested
+  it contains the complete mapping and verification above plus the primary-cleanup dispositions. Do not alter or include this receipt file in the ingest source set, and never mutate the five ingested
   origins because their commit-pinned bytes are already immutable. Append the same exact-once result
   to the native goal receipt. Run `npm run preflight`, scan, stage only this new receipt artifact,
   inspect, run `git diff --cached --check`, and commit it with the required trailer.
@@ -36313,8 +36339,12 @@ requireTokens('Gate 8', gate8, [
   'Content identity is authoritative', 'do not create or',
   'copy either authoritative report/response through a worktree pathname',
   'payload commit A → predecessor-attestation commit B',
-  'must not claim their own byte lengths, content hashes, blob IDs, tree ID',
+  'all four payload Buffers',
+  'No payload Buffer—including report or response—may claim its own byte length',
   'GIT_CONFIG_NOSYSTEM=1', 'GIT_CONFIG_SYSTEM=/dev/null', 'GIT_CONFIG_GLOBAL=/dev/null',
+  'GIT_DIR=<canonical-common-dir>', 'GIT_COMMON_DIR=<canonical-common-dir>',
+  'GIT_OBJECT_DIRECTORY=<canonical-object-dir>',
+  'Never pass the linked-worktree administrative Git dir', '`commondir` after detachment',
   '--no-replace-objects -c core.hooksPath=/dev/null -c core.fsmonitor=false',
   '.git/objects/info/alternates', 'refs/replace/*',
   'refs/heads/<closeout-branch>', 'canonical repository object store',
@@ -36328,6 +36358,8 @@ requireTokens('Gate 8', gate8, [
   'exact four-path force-add implemented without live-path staging',
   'ancestor-symlink out-of-root write', 'post-validation', '`git add` substitution',
   'inherited external `GIT_OBJECT_DIRECTORY`', 'reference-transaction hook',
+  'Every later closeout publication uses one reusable finite helper contract',
+  'No later clause may publish a lone',
   'private-index tree/commit',
 ]);
 const gate9 = sectionBetween('### Gate 9 Procedure:', '\n---\n\n## Plan Self-Review');
@@ -36338,13 +36370,22 @@ requireTokens('Gate 9', gate9, [
   'URL + SHA-256 → source slug + provenance YAML',
   'every ingest/skip/repair action and log row',
   'codex-app-native-task-continuation-wiki-receipt.md',
-  'include this receipt file in the ingest source set',
+  'Do not alter or include this receipt file in the ingest source set',
+  'Start from the latest verified fully qualified closeout ref',
+  'make no worktree commit', 'second payload R plus',
+  'using the recorded', 'repository object format and its exact object-ID length',
   'separate closeout-source branch push approval',
   'separate receipt branch push approval', 'separate PR creation approval',
   'separate merge approval', 'every stable inventory ID require exactly one final disposition',
   'explicit user-approved permanent-retention/DoD amendment',
   'wiki ingest is never invoked again',
 ]);
+const negativeReceiptIngestRule = 'Do not alter or include this receipt file in the ingest source set';
+const gate9WithoutNegativeReceiptRule = gate9.replace(negativeReceiptIngestRule, '');
+if (gate9WithoutNegativeReceiptRule === gate9
+    || /include this receipt file in the ingest source set/iu.test(gate9WithoutNegativeReceiptRule)) {
+  fail('Gate 9 must forbid the wiki receipt from becoming an ingest source');
+}
 if (/same recorded page ID|same-page final wiki refresh/i.test(gate9)) {
   fail('Gate 9 retains an unsupported second/same-page ingest');
 }
