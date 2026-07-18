@@ -32,7 +32,7 @@ Main-agent judgment: the fetched remote base, version, test count, and user-owne
 
 ## Gate 1 — research and design
 
-Status: REVIEW OPEN — fresh cycle 8 round 7 Respond complete; REQUEST_CHANGES, round 8 pending
+Status: PASS — Gate 1 fresh cycle 8 round 17 APPROVE; Gate 2 planning active
 
 Design target: `docs/superpowers/specs/2026-07-13-codex-app-native-task-continuation-design.md`
 
@@ -3569,6 +3569,46 @@ no inherited approval from the historical receipt.
   changing a validated card without a concrete gap would invalidate the just-approved authority.
 - main judgment: the plan is ready for Gate 2 whole-artifact standard/adversarial review against the
   handoff, design, current repository paths, and generated validator evidence.
+
+### Gate 2 plan round 1 review and Respond
+
+- reviewed target/plan SHA-256:
+  `5d7bd58218ee2dae78554a650cfb5bef37eb2744` /
+  `1d13389aaa4f832679685d11b726f9fdc164ba9c6fd3d92717c1cbf4a51f9ded`.
+- standard task `019f72b9-9239-74a0-8653-4fa0d6183207`: `APPROVE`, Red/Yellow/Info
+  `0 / 0 / 0`, exit 0 and valid final.
+- adversarial task `019f72c4-edb1-7382-b0ad-e187d5767be2`: exit 124 at 900 seconds without a final,
+  noncounted; `N_planned=2`, `N_actual=1`, degraded.
+- main independently reproduced three composition blockers from the partial trace: Task 14B omitted
+  mandatory workstream request identity; Task 10D's six inner-replace crash points were rejected by
+  both closed dispatch surfaces; recover used an unbound fictional divergent input and immediate
+  recovery retained the dead worker lock.
+- formal report: `.deep-review/reports/2026-07-18-103702-review.md`, SHA-256
+  `e3c119d31ed03b868f25825e63b4ac35145433e2f9e193937153603448c03e30`;
+  main synthesis `REQUEST_CHANGES`, Red/Yellow/Info `3 / 0 / 0`.
+- response: accepted all three roots. Task 14B now passes stable request identity; Task 7B/10D both
+  expose all 14 crash points; only the proven-dead test worker lock is removed; recover keeps its real
+  API and omits only the inapplicable same-fence different-input row.
+- response report/Phase 6 main-fallback log SHA-256:
+  `7387facd789b268aa40f24263eb9bbfbff24944dd1bf6b83abf7bdb0ff7bc988` /
+  `1fda055ab09ad9baf6f5f838c3d7e17c8931d54fb3545f27f79a9da7bc7f9053`.
+- correction commit: `e0a87789b8e9d3841420502261f0ed4c3988fe5a`.
+- corrected plan/design SHA-256:
+  `e67dc6add2c609ada24d84de64ce1295697042dbf0e5641f22bfaa5131d23c38` /
+  `ead72788b7e366b9a835086c4d3f14c9b930a517a162d5198bb435cb0d0e3e8a`.
+- corrected pre-Gate-6/Gate-6 SHA-256:
+  `0cad66912dbb501e648ea317f334e46918ecb0c2b84dc437a78cdfde7ca99878` /
+  `648504926fc529d9e02202399384c09d5bc2737884187ed9923c90f1270733a4`.
+- closure probe source/output SHA-256:
+  `1d83121aaeee16d1a9c303b416c5280d17e7d3ff116c2aea450279049ceab952` /
+  `2d191e460bbaa010a332bd66e6e69f0df3b89d96b5da3385a5fc028653e10342`;
+  all four corrected closures true, embedded validator 46 tasks/372 fences.
+- `npm run preflight`: PASS — 1,463/1,463, output SHA-256
+  `98780acfa775513d942845c1d949ea35b11d4f3d58947a77589600e09e05cb91`.
+- recurring findings Stage 5.5 run `01KXSE1MNHAEVR5SSFEKJJ4WQK`: architecture `95→96`,
+  test-coverage `50→52`; error-handling `33`, security `40` unchanged.
+- gate state: open only for one fresh focused round 2 over these corrections. Two valid
+  `APPROVE`, Red/Yellow `0 / 0`, plus main replay close Gate 2 and advance directly to Gate 3A.
 
 ## Review receipt template
 
