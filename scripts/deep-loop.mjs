@@ -900,9 +900,12 @@ const handlers = {
   review: async (a) => {
     const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
     // Import intentionally materializes its immutable envelope before taking the commit lock; its
-    // authoritative commit re-fences under that lock. An outer verified lease read would take the
-    // same lock too early and break the tamper/race boundary exercised after materialization.
-    if (verb !== 'import') requireLease(root, runId, f);
+    // authoritative commit re-fences under that lock. Preserve the ordinary verified CLI precheck
+    // (including terminal error order) when the lock is free, but if a commit is already in flight,
+    // defer authority to importReviewOutcome rather than blocking envelope materialization on it.
+    if (verb !== 'import' || !existsSync(join(runDir(root, runId), '.lock'))) {
+      requireLease(root, runId, f);
+    }
     const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'business' };
     if (verb === 'dispatch') {
       const point = reqStr(f, 'point'); if (!point) { error('MISSING_POINT'); return 2; }
