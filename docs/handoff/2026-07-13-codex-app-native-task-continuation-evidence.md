@@ -3837,3 +3837,40 @@ main-agent judgment:
   `36e449f25b62af609623bb5eeea16d10d8694f5f9ae1767bec6d8f2470b013a0`.
 - gate state: one fresh focused Round 2 only. Two valid `APPROVE`, Red/Yellow `0 / 0`, plus the
   retained main replay close Gate 3A immediately and advance to Gate 3B; no speculative extra round.
+
+### Gate 3A checkpoint round 2 focused review and Respond
+
+- reviewed base/head: `4a4c5c82ea8aa5b6b0429cd7550511f4a7aa43da..24e2e85025e1a893a968d0ff8fe0352c4cfb65da`;
+  target tree `806a71a1f3e68346546fdd3d414d90a0c4d95fab`.
+- invocation: two direct read-only ephemeral Codex processes, each exact `gpt-5.6-sol` / high.
+  Opus and agy were not planned or invoked. Both exited 0 with valid finals and unchanged target;
+  `N_planned=2`, `N_actual=2`.
+- standard task `019f738c-6e21-7cc0-ab3e-4000a81076d9`: `REQUEST_CHANGES`, Red/Yellow/Info
+  `0 / 1 / 0`.
+- adversarial task `019f738c-6cda-7f61-b52b-7ff525c5a0fb`: `REQUEST_CHANGES`, Red/Yellow/Info
+  `0 / 3 / 0`.
+- consolidated roots: positive genesis generation-one could be bypassed; host authority arrays and
+  schema projection arrays accepted trap-bearing Proxies; enum-only profile fields could be accessors.
+- formal review: `.deep-review/reports/2026-07-18-135607-review.md`, SHA-256
+  `64f706ed51d5a220a106d82d393ea7e3522f7b7fac67ed784f6369ef0e776505`.
+- response: accepted all four roots. Proxy and accessor inputs reject before traps/getters, positive
+  genesis stays generation 1 with exact clock, and main audit restored the designed null/manual
+  compatibility before re-review. `.deep-review/responses/2026-07-18-140946-response.md`, SHA-256
+  `fcc137fed86f98708613ced634b6dcc2be85456d7c43b50975212498e381edeb`;
+  `execution_path=subagent`.
+- correction commits/tree: `066b1398429b433238a760a467fad1ca5acc6864`,
+  `6b4529984ac3d345c67daf9d7c6b23604ebecf06` / `8b04373ae1cad76cbf2d423594222d41a8b4e1bd`.
+- independent main replay:
+  - focused: PASS — 5/5; output SHA-256
+    `29d366c0cdd6fe639ef9957e5ea7cec64ec4b976aa8321c1bbd44cfb44cf43d4`.
+  - checkpoint group 1: PASS — 180/180; output SHA-256
+    `49f60cbb6896cb24ea727613ff6986b094459430dd34d0aa70d39844c5ae8edb`.
+  - checkpoint group 2: PASS — 128/128; output SHA-256
+    `0d4f3c242a20757ba77530a69df77d1c4f5cee473a220dc3e0f1df826ffb7d72`.
+  - `npm run preflight`: PASS — 1,522/1,522; output SHA-256
+    `c7421013d82480d475d61b6b3c660126ac2ec1604a99e1e971af8e85fcc5855c`.
+- recurring findings Stage 5.5 run `01KXST2BPQH8RYQ8V333E5WTYN`: security `46→50`;
+  architecture `96`, test-coverage `54`, error-handling `33` unchanged; validated SHA-256
+  `e3db4325272c0c7ed5ddba34cc8719e9310eec682050016fd675a33f3b3c611c`.
+- gate state: one same-delta micro-confirmation only. Two valid `APPROVE`, Red/Yellow `0 / 0` close
+  Gate 3A immediately and begin Gate 3B. Do not reopen the whole Gate 3A implementation.
