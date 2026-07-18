@@ -299,3 +299,60 @@ export function statusAppTask(root, runId, { attempt = null } = {}) {
     resume_policy: lease.resume_policy ?? null,
     manual_recovery: loop.status === 'paused' && lease.resume_policy === 'human' };
 }
+
+const APP_SECRET_KEYS = new Set(['thread_id', 'unconfirmed_thread_id', 'project_id']);
+
+export function redactAppSecrets(value, keyPath = []) {
+  const path = Array.isArray(keyPath) ? keyPath : [keyPath];
+  const project = (current, currentPath, ancestors) => {
+    if (currentPath.some(key => APP_SECRET_KEYS.has(key))) {
+      return current == null ? null : '[REDACTED_OPAQUE_ID]';
+    }
+    if (current === null || typeof current !== 'object') return current;
+    if (utilTypes.isProxy(current)) throw new Error('APP_REDACTION_INVALID: proxy');
+    if (ancestors.has(current)) throw new Error('APP_REDACTION_INVALID: cycle');
+    ancestors.add(current);
+    try {
+      const descriptors = Object.getOwnPropertyDescriptors(current);
+      if (Array.isArray(current)) {
+        if (Object.getPrototypeOf(current) !== Array.prototype) {
+          throw new Error('APP_REDACTION_INVALID: non-plain array');
+        }
+        const length = descriptors.length?.value;
+        if (!Number.isSafeInteger(length) || length < 0) {
+          throw new Error('APP_REDACTION_INVALID: array length');
+        }
+        return Array.from({ length }, (_, index) => {
+          const descriptor = descriptors[String(index)];
+          if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
+            throw new Error('APP_REDACTION_INVALID: sparse or accessor array');
+          }
+          return project(descriptor.value, currentPath, ancestors);
+        });
+      }
+      const prototype = Object.getPrototypeOf(current);
+      if (prototype !== Object.prototype && prototype !== null) {
+        throw new Error('APP_REDACTION_INVALID: non-plain object');
+      }
+      const entries = [];
+      for (const key of Reflect.ownKeys(descriptors)) {
+        if (typeof key !== 'string') continue;
+        const descriptor = descriptors[key];
+        if (!descriptor.enumerable) continue;
+        const childPath = [...currentPath, key];
+        if (!Object.hasOwn(descriptor, 'value')) {
+          if (APP_SECRET_KEYS.has(key)) {
+            entries.push([key, '[REDACTED_OPAQUE_ID]']);
+            continue;
+          }
+          throw new Error('APP_REDACTION_INVALID: accessor object');
+        }
+        entries.push([key, project(descriptor.value, childPath, ancestors)]);
+      }
+      return Object.fromEntries(entries);
+    } finally {
+      ancestors.delete(current);
+    }
+  };
+  return project(value, path, new WeakSet());
+}

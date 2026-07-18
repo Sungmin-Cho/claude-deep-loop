@@ -1,10 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
+import { readState, writeState } from '../scripts/lib/state.mjs';
+import { appHostTaskCwdDigest } from '../scripts/lib/host-surface.mjs';
 
 const CLI = join(process.cwd(), 'scripts', 'deep-loop.mjs');
 function run(root, args) { return execFileSync('node', [CLI, ...args, '--project-root', root], { encoding: 'utf8' }); }
@@ -97,6 +99,112 @@ test('state get returns whole loop and a field path', () => {
   const missing = JSON.parse(run(root, ['state', 'get', '--field', 'nope.deep']));
   assert.equal(missing, null);
 });
+
+test('state get masks App opaque IDs for whole parent and exact leaf without changing disk', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-redact-')));
+  const observation = { kind: 'codex-app', source: 'codex-app-tool-provenance',
+    capabilities: ['create-thread-local', 'list-projects', 'structured-process-stdin'],
+    structured_stdin_mode: 'pipe-open-noecho', host_task_cwd: root,
+    host_task_cwd_source: 'app-task-context',
+    observed_at: '2026-07-13T00:00:00.000Z' };
+  const { runId } = initRun(root, { runtime: 'codex', goal: 'g',
+    now: new Date('2026-07-13T00:00:00.000Z'), hostObservation: observation, cwdFn: () => root,
+    appContinuationConsent: { mode: 'auto', authority: 'human-confirmed',
+      confirmed_at: '2026-07-13T00:00:00.000Z', revoked_at: null } });
+  const loop = readState(root, runId).data;
+  Object.assign(loop.session_chain.lease, { generation: 2,
+    acquired_at: '2026-07-13T00:00:30.000Z' });
+  const rawProjectId = ' project $ backtick \\ ';
+  const rawThreadId = ' thread $ backtick \\ ';
+  const continuation = overrides => ({
+    transport: 'codex-app', attempt_id: '01JAPPTASK0000000000000000',
+    route: 'create', context_mode: 'fresh', phase: 'failed',
+    expected_runtime: 'codex', expected_host_surface: 'codex-app',
+    target_cwd: root, host_task_cwd_digest: appHostTaskCwdDigest(
+      loop.session_chain.sessions[0].host_surface, root),
+    workstream_id: null, project_id: rawProjectId,
+    descriptor_digest: 'd'.repeat(64), emitted_at: '2026-07-13T00:00:00.000Z',
+    prepare_deadline: '2026-07-13T00:05:00.000Z',
+    prepared_at: '2026-07-13T00:00:10.000Z',
+    confirmation_deadline: '2026-07-13T00:02:10.000Z',
+    confirmed_at: '2026-07-13T00:00:20.000Z', acquired_at: null,
+    acquired_generation: null, thread_id: rawThreadId,
+    unconfirmed_thread_id: null, failure_code: 'host-call-failed',
+    failure_binding: { owner_run_id: loop.run_id, generation: 1 }, ...overrides,
+  });
+  loop.session_chain.sessions.push(
+    { run_id: '01JAPPCHD00000000000000010', started_at: null, ended_at: null, turns: 0,
+      outcome: 'failed_launch', superseded_by: null, host_surface: null,
+      continuation: continuation({}) },
+    { run_id: '01JAPPCHD00000000000000011', started_at: null, ended_at: null, turns: 0,
+      outcome: null, superseded_by: null, host_surface: null, continuation: continuation({
+        attempt_id: '01JAPPTASK0000000000000001', route: 'fork',
+        context_mode: 'inherited-completed-history', workstream_id: 'WS1',
+        project_id: null, confirmed_at: null, thread_id: null,
+        unconfirmed_thread_id: 'uncertain', failure_code: 'message-unconfirmed',
+      }) },
+  );
+  writeState(root, runId, loop);
+  const disk = readFileSync(join(root, '.deep-loop', 'runs', runId, 'loop.json'));
+  for (const args of [
+    ['state', 'get', '--run-id', runId],
+    ['state', 'get', '--run-id', runId, '--field', 'session_chain.sessions'],
+    ['state', 'get', '--run-id', runId, '--field', 'session_chain.sessions.1.continuation'],
+    ['state', 'get', '--run-id', runId, '--field',
+      'session_chain.sessions.1.continuation.thread_id'],
+    ['state', 'get', '--run-id', runId, '--field',
+      'session_chain.sessions.1.continuation.thread_id.0'],
+    ['state', 'get', '--run-id', runId, '--field',
+      'session_chain.sessions.1.continuation.project_id'],
+    ['state', 'get', '--run-id', runId, '--field',
+      'session_chain.sessions.1.continuation.project_id.length'],
+    ['state', 'get', '--run-id', runId, '--field',
+      'session_chain.sessions.2.continuation.unconfirmed_thread_id'],
+    ['state', 'get', '--run-id', runId, '--field',
+      'session_chain.sessions.2.continuation.unconfirmed_thread_id.0'],
+  ]) {
+    const output = run(root, args);
+    assert.equal(output.includes(rawThreadId), false);
+    assert.equal(output.includes(rawProjectId), false);
+    assert.equal(output.includes('uncertain'), false);
+    assert.match(output, /REDACTED_OPAQUE_ID/);
+  }
+  assert.match(run(root, ['state', 'get', '--run-id', runId, '--field',
+    'session_chain.sessions.1.continuation.descriptor_digest']), /dddddddd/);
+  assert.equal(JSON.parse(run(root, ['state', 'get', '--run-id', runId, '--field',
+    'session_chain.sessions.2.continuation.project_id'])), null);
+  assert.deepEqual(readFileSync(join(root, '.deep-loop', 'runs', runId, 'loop.json')), disk);
+  assert.equal(readState(root, runId).data.session_chain.sessions[1].continuation.project_id,
+    rawProjectId);
+});
+
+test('App secret projection masks secret accessors and rejects other dynamic objects without traps',
+  async () => {
+    const { redactAppSecrets } = await import('../scripts/lib/app-task-continuation.mjs');
+    let getterCalls = 0;
+    const secretAccessor = {};
+    Object.defineProperty(secretAccessor, 'thread_id', { enumerable: true, get() {
+      getterCalls++;
+      return 'raw-thread';
+    } });
+    assert.deepEqual(redactAppSecrets(secretAccessor), {
+      thread_id: '[REDACTED_OPAQUE_ID]',
+    });
+    assert.equal(getterCalls, 0);
+
+    const otherAccessor = {};
+    Object.defineProperty(otherAccessor, 'nested', { enumerable: true, get() {
+      getterCalls++;
+      return { project_id: 'raw-project' };
+    } });
+    assert.throws(() => redactAppSecrets(otherAccessor), /APP_REDACTION_INVALID/);
+    assert.equal(getterCalls, 0);
+
+    let proxyTraps = 0;
+    const proxy = new Proxy({}, { ownKeys() { proxyTraps++; return []; } });
+    assert.throws(() => redactAppSecrets(proxy), /APP_REDACTION_INVALID/);
+    assert.equal(proxyTraps, 0);
+  });
 
 test('state patch writes whitelisted field with valid fence', () => {
   const { root, runId } = seed();

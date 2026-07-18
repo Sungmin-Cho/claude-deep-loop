@@ -1586,7 +1586,7 @@ test('host-surface observe has exact grammar and safe malformed JSON diagnostics
     '--runtime', 'codex', '--manual-enums', '--host-surface', 'codex-app',
     '--host-source', 'codex-app-tool-provenance', '--capabilities',
     'create-thread-local,list-projects'], { cwd: outside, encoding: 'utf8' });
-  assert.equal(outsideEnum.status, 1, outsideEnum.stderr);
+  assert.equal(outsideEnum.status, 3, outsideEnum.stderr);
   assert.match(outsideEnum.stderr, /HOST_SURFACE_FENCED/);
   assert.deepEqual(readFileSync(join(root, '.deep-loop', 'runs', runId, 'loop.json')),
     outsideBefore.state);
@@ -1631,4 +1631,36 @@ test('host-surface observe has exact grammar and safe malformed JSON diagnostics
   assert.equal((rejected.stdout + rejected.stderr).includes(sentinel), false);
   assert.deepEqual(readFileSync(join(root, '.deep-loop', 'runs', runId, 'loop.json')), before);
   assert.equal(readLines(root, runId).some(event => JSON.stringify(event).includes(sentinel)), false);
+});
+
+test('App fence mismatches exit 3 but terminal after a valid fence exits 1', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-app-exit-')));
+  const { runId } = initRun(root, { runtime: 'codex', goal: 'exit-precedence',
+    cwdFn: () => root, now: new Date('2026-07-13T00:00:00.000Z') });
+  assert.equal(runResult(root, ['app-task', 'status', '--project-root', root,
+    '--run-id', runId]).code, 2);
+  assert.equal(runResult(root, ['app-task', 'status', '--run-id', runId,
+    '--attempt', '01JAPPTASK0000000000000000']).code, 0);
+  assert.equal(runResult(root, ['app-task', 'status', '--run-id', runId,
+    '--attempt', 'not-an-attempt']).code, 2);
+  assert.equal(runResult(root, ['app-task', 'revoke',
+    '--run-id', 'ABSENT', '--runtime', 'codex']).code, 2);
+  assert.equal(runResult(root, ['app-task', 'revoke',
+    '--run-id', runId, '--owner', runId, '--generation', '1', '--runtime', 'codex',
+    '--unknown-app-flag', 'value']).code, 2);
+  assert.equal(runResult(root, ['app-task', 'revoke',
+    '--run-id', runId, '--owner', runId, '--generation', 'bad', '--runtime', 'codex']).code, 2);
+  assert.equal(runResult(root, ['app-task', 'revoke',
+    '--run-id', runId, '--owner', '01JAPPWR0NG000000000000000',
+    '--generation', '99', '--runtime', 'codex']).code, 3);
+  assert.equal(runResult(root, ['app-task', 'revoke',
+    '--run-id', runId, '--owner', runId, '--generation', '1', '--runtime', 'claude']).code, 3);
+  assert.equal(runResult(root, ['app-task', 'revoke',
+    '--run-id', runId, '--owner', runId, '--generation', '1', '--runtime', 'invalid']).code, 2);
+  const loop = readState(root, runId).data;
+  loop.status = 'completed';
+  writeState(root, runId, loop);
+  assert.equal(runResult(root, ['app-task', 'revoke',
+    '--run-id', runId, '--owner', runId, '--generation', '1', '--runtime', 'codex']).code, 1);
+  assert.equal(runResult(root, ['app-task', 'consent', '--run-id', runId]).code, 2);
 });

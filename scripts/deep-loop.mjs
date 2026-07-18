@@ -19,7 +19,8 @@ import { dispatchReview, importReviewOutcome, recordReviewOutcome } from './lib/
 import { readBoundedText, readStructuredLine } from './lib/bounded-input.mjs';
 import { classifyProjectTaskDirectory, exactRawHostObservation,
   normalizeHostObservation } from './lib/host-surface.mjs';
-import { observeHostSurface } from './lib/app-task-continuation.mjs';
+import { observeHostSurface, redactAppSecrets, revokeAppTaskContinuation,
+  statusAppTask } from './lib/app-task-continuation.mjs';
 import { canonicalProjectRoot } from './lib/project-root.mjs';
 import { contentHash } from './lib/envelope.mjs';
 import { nextAction } from './lib/next-action.mjs';
@@ -329,6 +330,12 @@ function strArg(f, name) {
 }
 function classifyKernelError(e) {
   const message = String(e?.message || e);
+  if (/^(?:APP_TASK_FENCED|HOST_SURFACE_FENCED)(?::|$)/.test(message)) {
+    return { code: 3, message };
+  }
+  if (/^(?:APP_TASK_TERMINAL|APP_TASK_CONSENT_INVALID|HOST_SURFACE_TERMINAL)(?::|$)/.test(message)) {
+    return { code: 1, message };
+  }
   if (/^(?:LEASE_FENCED|FENCE_REQUIRED|RUNTIME_FENCED|PROJECT_ROOT_FENCED)(?::|$)/.test(message)) {
     return { code: 3, message };
   }
@@ -343,6 +350,47 @@ function classifyKernelError(e) {
   }
   return null;
 }
+
+function appFenceSyntax(f) {
+  const runId = reqStr(f, 'run-id');
+  const owner = reqStr(f, 'owner');
+  const runtime = reqStr(f, 'runtime');
+  if (runId === null || owner === null || !['claude', 'codex'].includes(runtime)
+      || typeof f.generation !== 'string'
+      || !/^(?:0|[1-9][0-9]*)$/.test(f.generation)
+      || !Number.isSafeInteger(Number(f.generation))) return null;
+  return { runId, owner, runtime, generation: Number(f.generation) };
+}
+
+const APP_TASK_FLAGS = Object.freeze({
+  status: new Set(['project-root', 'run-id', 'attempt']),
+  revoke: new Set(['project-root', 'run-id', 'owner', 'generation', 'runtime']),
+});
+
+const appTaskHandler = async argv => {
+  const [verb, ...flagArgs] = argv;
+  if (!Object.hasOwn(APP_TASK_FLAGS, verb)) return 2;
+  try { assertExactFlagGrammar(flagArgs, APP_TASK_FLAGS[verb]); }
+  catch { return 2; }
+  const f = parseFlags(flagArgs);
+  let root;
+  try { root = explicitRoot(f); }
+  catch { return 2; }
+  if (verb === 'status') {
+    const runId = reqStr(f, 'run-id');
+    if (runId === null || f.attempt === true
+        || f.attempt !== undefined && !INIT_ATTEMPT.test(f.attempt)) return 2;
+    json(statusAppTask(root, runId, { attempt: f.attempt ?? null }));
+    return 0;
+  }
+  if (verb !== 'revoke') return 2;
+  const syntax = appFenceSyntax(f);
+  if (syntax === null) return 2;
+  json(revokeAppTaskContinuation(root, syntax.runId, {
+    owner: syntax.owner, generation: syntax.generation, runtime: syntax.runtime,
+  }));
+  return 0;
+};
 function requireLease(root, runId, f, intent = 'business') {
   strArg(f, 'owner');
   const generation = intArg(f, 'generation');
@@ -536,6 +584,7 @@ const hostSurfaceHandler = async argv => {
 // 1) 스키마+빌더 self-test: buildInitialLoop 산출물이 항상 검증 통과해야 함 (regression 게이트)
 // 2) 현재/지정 run이 있으면 readState(해시 검증 발화) + schema.validate
 const handlers = {
+  'app-task': appTaskHandler,
   'host-surface': hostSurfaceHandler,
   validate: async (a) => {
     const f = parseFlags(a);
@@ -948,9 +997,12 @@ const handlers = {
         // explicit --run-id miss / STATE_TAMPERED / bad JSON / EACCES / RUN_ID_INVALID / other → surface.
         error(String(e && e.message || e)); return 1;
       }
-      if (f.field === undefined || f.field === true) { json(data); return 0; }
-      const val = String(f.field).split('.').reduce((o, k) => (o == null ? undefined : o[k]), data);
-      json(val === undefined ? null : val); return 0;
+      const field = f.field === undefined || f.field === true ? null : String(f.field);
+      const fieldKeys = field === null ? [] : field.split('.');
+      const value = field === null ? data
+        : fieldKeys.reduce((object, key) => object == null ? undefined : object[key], data);
+      json(redactAppSecrets(value === undefined ? null : value, fieldKeys));
+      return 0;
     }
     if (verb === 'patch') {
       if (runId == null) { error('MISSING_RUN_ID'); return 2; }   // mutating with no run = usage error (before fence)
