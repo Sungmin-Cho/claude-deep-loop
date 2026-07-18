@@ -6,7 +6,8 @@ import { initRun, buildInitialLoop } from './lib/initrun.mjs';
 import { detectPlugins } from './lib/detect.mjs';
 import { matchRecipe, recipesDir, validateRecipesDir } from './lib/recipes.mjs';
 import { json } from './lib/log.mjs';
-import { validate as validateLoop } from './lib/schema.mjs';
+import { validate as validateLoop, verifyAppEventCorrelation } from './lib/schema.mjs';
+import { readLines, verifyHeadLines, verifyLines } from './lib/integrity.mjs';
 import { readState, writeState, patch as patchState, pauseRun, runDir, findRoot } from './lib/state.mjs';
 import { leaseCheck, acquireLease, releaseLease } from './lib/lease.mjs';
 import { newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal } from './lib/workspace.mjs';
@@ -161,6 +162,13 @@ const handlers = {
         const { data } = readState(root, runId);   // 해시 anchor 검증 발화
         const rv = validateLoop(data);
         if (!rv.ok) errors.push(`run ${runId}: ${rv.errors.join('; ')}`);
+        const lines = readLines(root, runId);
+        const lv = verifyLines(lines);
+        if (!lv.ok) errors.push(`run ${runId}: event log: ${lv.errors.join('; ')}`);
+        const hv = verifyHeadLines(lines, data.event_log_head);
+        if (!hv.ok) errors.push(`run ${runId}: event head: ${hv.errors.join('; ')}`);
+        const av = verifyAppEventCorrelation(data, lines);
+        if (!av.ok) errors.push(`run ${runId}: App event correlation: ${av.errors.join('; ')}`);
       } catch (e) { errors.push(`run ${runId}: ${e.message}`); }
     }
     // recipe/ledger 정적 검사는 런타임 라우팅이 실제로 읽는 **플러그인 번들** recipesDir 기준이다

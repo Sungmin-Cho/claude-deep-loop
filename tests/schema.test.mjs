@@ -1223,3 +1223,606 @@ test('failed fork uncertainty is the only unconfirmed-thread shape and unknown c
   child.continuation.raw_host_receipt = 'forbidden';
   assert.equal(validate(loop).ok, false);
 });
+
+import { test as test7b } from 'node:test';
+import assert7b from 'node:assert/strict';
+import { legacyAuthorityDigest as authority7b, legacyProofOrigins as origins7b,
+  verifyAppEventCorrelation as verify7b } from '../scripts/lib/schema.mjs';
+import { hostSurfaceFactsDigest as facts7b } from '../scripts/lib/host-surface.mjs';
+import { contentHash as hash7b } from '../scripts/lib/envelope.mjs';
+
+test7b('genesis event binds request projection against paired state rewrites', () => {
+  const requestDigest = 'a'.repeat(64);
+  const surfaceDigest = 'b'.repeat(64);
+  const requestProjection = {
+    runtime: 'codex', goal: 'original',
+    routing: { protocol: 'standalone', recipe: { id: 'r', name: 'r', reason: 'test' } },
+    review: null, model: null, effort: null,
+    project: { root: '/repo', git: { git: false, head: null, branch: null, dirty: false } },
+    plugins_detected: {}, session_spawn: {}, consent: null,
+    host_observation_digest: 'NONE', enum_profile: null,
+  };
+  const loop = { run_id: '01JAPPGEN00000000000000000',
+    created_at: '2026-07-13T00:00:00.000Z', initialization: {
+      request_digest: requestDigest, host_surface_digest: surfaceDigest,
+      request_projection: requestProjection,
+    }, session_chain: { sessions: [] } };
+  const event = { seq: 1, type: 'run-initialized', ts: loop.created_at, data: {
+    run_id: loop.run_id, request_digest: requestDigest,
+    host_surface_digest: surfaceDigest } };
+  assert7b.deepEqual(verify7b(loop, [event]), { ok: true, errors: [] });
+  const paired = structuredClone(loop);
+  paired.initialization.request_projection.goal = 'rewritten';
+  paired.initialization.request_digest = 'c'.repeat(64);
+  assert7b.equal(verify7b(paired, [event]).ok, false,
+    'projection and colocated digest cannot be rewritten together');
+  assert7b.equal(verify7b(loop, []).ok, false);
+  assert7b.equal(verify7b(loop, [event, event]).ok, false);
+});
+
+test7b('App event correlation rejects timestamp, identity, and multiplicity drift', () => {
+  const attempt = '01JAPPTASK0000000000000000';
+  const child = '01JAPPCHD00000000000000000';
+  const continuation = {
+    transport: 'codex-app', attempt_id: attempt, phase: 'confirmed',
+    emitted_at: '2026-07-13T00:00:00.000Z', prepared_at: '2026-07-13T00:00:01.000Z',
+    confirmed_at: '2026-07-13T00:00:02.000Z', acquired_at: null,
+    descriptor_digest: 'd'.repeat(64),
+    thread_id: 'opaque-confirmed-thread', unconfirmed_thread_id: null,
+  };
+  const loop = { session_chain: { sessions: [{ run_id: child, continuation }] } };
+  const lines = [
+    { type: 'handoff-emitted', ts: continuation.emitted_at, data: { attempt_id: attempt, child_run_id: child } },
+    { type: 'app-task-prepared', ts: continuation.prepared_at, data: {
+      attempt_id: attempt, child_run_id: child,
+      descriptor_digest: continuation.descriptor_digest } },
+    { type: 'app-task-confirmed', ts: continuation.confirmed_at, data: { attempt_id: attempt,
+      child_run_id: child,
+      receipt_digest: hash7b('confirmed-thread\0' + continuation.thread_id) } },
+  ];
+  assert7b.deepEqual(verify7b(loop, lines), { ok: true, errors: [] });
+  assert7b.equal(verify7b(loop, [...lines, lines[2]]).ok, false);
+  const rewrittenReceipt = structuredClone(loop);
+  rewrittenReceipt.session_chain.sessions[0].continuation.thread_id = 'hash-valid-state-rewrite';
+  assert7b.equal(verify7b(rewrittenReceipt, lines).ok, false,
+    'raw receipt rewrite cannot preserve the immutable event digest');
+  assert7b.equal(verify7b(loop, lines.map((event, index) => index === 1
+    ? { ...event, ts: '2026-07-13T00:00:09.000Z' } : event)).ok, false);
+  assert7b.equal(verify7b(loop, lines.map((event, index) => index === 0
+    ? { ...event, data: { ...event.data,
+      child_run_id: '01JAPPCHD00000000000000012' } } : event)).ok, false);
+  assert7b.equal(verify7b(loop, [...lines, {
+    type: 'app-task-acquired', ts: '2026-07-13T00:00:03.000Z',
+    data: { attempt_id: attempt, child_run_id: child },
+  }]).ok, false, 'an event is forbidden while its durable timestamp is null');
+  assert7b.equal(verify7b(loop, [...lines, {
+    type: 'app-task-confirmed', ts: '2026-07-13T00:00:02.000Z',
+    data: { attempt_id: '01JAPPTASK0000000000000001',
+      child_run_id: '01JAPPCHD00000000000000013' },
+  }]).ok, false, 'an App-identified event must have one matching continuation');
+  assert7b.deepEqual(verify7b({ session_chain: { sessions: [] } }, [{
+    type: 'handoff-emitted', ts: '2026-07-12T23:59:59.000Z',
+    data: { child_run_id: '01JAPPCHD00000000000000014',
+      reason: 'milestone', key: 'legacy-key' },
+  }]), { ok: true, errors: [] }, 'legacy handoff with no App attempt identity stays valid');
+
+  const acquiredAt = '2026-07-13T00:00:03.000Z';
+  const lateSurface = { kind: 'codex-app', source: 'codex-app-tool-provenance',
+    capabilities: ['create-thread-local', 'list-projects', 'structured-process-stdin'],
+    structured_stdin_mode: 'pty-raw-noecho', host_task_cwd: '/repo',
+    host_task_cwd_source: 'app-task-context', kernel_cwd_at_observation: '/repo',
+    observed_generation: 2, observed_at: acquiredAt };
+  const lateContinuation = { ...continuation, phase: 'acquired', acquired_at: acquiredAt,
+    acquired_generation: 2 };
+  const lateLoop = { status: 'running', pause_reason: null,
+    session_chain: { lease: { owner_run_id: child, generation: 2,
+      state: 'active', handoff_phase: 'acquired', handoff_transport: null,
+      handoff_attempt_id: null, handoff_child_run_id: null,
+      handoff_idempotency_key: null, resume_policy: null, expires_at: null },
+      sessions: [{ run_id: child, started_at: acquiredAt,
+        outcome: null, host_surface: lateSurface, continuation: lateContinuation }] } };
+  const lateLines = [...lines,
+    { type: 'app-task-await-timeout', ts: '2026-07-13T00:00:02.500Z', data: {
+      attempt_id: attempt, child_run_id: child,
+      failure_code: 'app-child-timeout-awaiting' } },
+    { type: 'app-task-acquired', ts: acquiredAt, data: { attempt_id: attempt,
+      child_run_id: child, observation_digest: facts7b(lateSurface) } }];
+  assert7b.deepEqual(verify7b(lateLoop, lateLines), { ok: true, errors: [] },
+    'an exact late acquire causally supersedes the earlier await-timeout projection');
+  assert7b.equal(verify7b(lateLoop, lateLines.slice(0, -1)).ok, false,
+    'timeout alone cannot forge an acquired projection');
+  assert7b.equal(verify7b(lateLoop, [...lateLines, {
+    type: 'run-recovered', ts: '2026-07-13T00:00:04.000Z',
+    data: { owner_run_id: child, generation: 2 },
+  }]).ok, false,
+  'a current-generation recovery event cannot be erased back to immediate acquired');
+  assert7b.equal(verify7b(lateLoop, [...lateLines, {
+    type: 'finish', ts: '2026-07-13T00:00:04.000Z',
+    data: { status: 'completed', reportRel: null },
+  }]).ok, false,
+  'a finish event cannot be erased back to running acquired');
+});
+
+test7b('App control events make revoke, terminal failure, and preserve one-way', () => {
+  const parent = '01JAPPPAR00000000000000000';
+  const child = '01JAPPCHD00000000000000000';
+  const attempt = '01JAPPTASK0000000000000000';
+  const continuation = { transport: 'codex-app', attempt_id: attempt, phase: 'failed',
+    emitted_at: '2026-07-13T00:00:00.000Z', prepared_at: '2026-07-13T00:00:01.000Z',
+    descriptor_digest: 'd'.repeat(64),
+    confirmed_at: null, acquired_at: null, failure_code: 'host-call-failed',
+    failure_binding: { owner_run_id: parent, generation: 1 } };
+  const loop = { status: 'paused', pause_reason: 'host-call-failed',
+    autonomy: { app_task_continuation: { mode: 'manual', authority: 'human-confirmed',
+      confirmed_at: '2026-07-13T00:00:00.000Z',
+      revoked_at: '2026-07-13T00:00:03.000Z' } },
+    session_chain: { lease: { owner_run_id: parent, generation: 1,
+      state: 'active', handoff_phase: 'idle', handoff_transport: null,
+      handoff_attempt_id: null, handoff_child_run_id: null,
+      handoff_idempotency_key: null, resume_policy: null, expires_at: null },
+      sessions: [{ run_id: parent, host_surface: null, outcome: null },
+        { run_id: child, host_surface: null, outcome: 'failed_launch', continuation }] } };
+  const lines = [
+    { type: 'handoff-emitted', ts: continuation.emitted_at,
+      data: { attempt_id: attempt, child_run_id: child } },
+    { type: 'app-task-prepared', ts: continuation.prepared_at,
+      data: { attempt_id: attempt, child_run_id: child,
+        descriptor_digest: continuation.descriptor_digest } },
+    { type: 'app-task-failed', ts: '2026-07-13T00:00:02.000Z',
+      data: { attempt_id: attempt, child_run_id: child,
+        failure_code: 'host-call-failed', owner_run_id: parent, generation: 1 } },
+    { type: 'app-task-consent-revoked', ts: '2026-07-13T00:00:03.000Z',
+      data: { owner_run_id: parent, generation: 1,
+        attempt_id: attempt, child_run_id: child, failure_code: null } },
+  ];
+  assert7b.deepEqual(verify7b(loop, lines), { ok: true, errors: [] });
+  const revivedConsent = structuredClone(loop);
+  Object.assign(revivedConsent.autonomy.app_task_continuation,
+    { mode: 'auto', revoked_at: null });
+  assert7b.equal(verify7b(revivedConsent, lines).ok, false,
+    'revoke event cannot be erased from durable consent');
+  const revivedAttempt = structuredClone(loop);
+  Object.assign(revivedAttempt.session_chain.sessions[1].continuation,
+    { phase: 'prepared', failure_code: null, failure_binding: null });
+  Object.assign(revivedAttempt, { status: 'running', pause_reason: null });
+  assert7b.equal(verify7b(revivedAttempt, lines).ok, false,
+    'terminal control event cannot be rewritten to a live phase');
+  assert7b.equal(verify7b(loop, [...lines, lines[2]]).ok, false,
+    'terminal control identity is unique');
+  assert7b.equal(verify7b(loop, [...lines, {
+    type: 'finish', ts: '2026-07-13T00:00:04.000Z',
+    data: { status: 'completed', reportRel: null },
+  }]).ok, false,
+  'a finish event cannot be erased back to the immediate failed projection');
+  const bumpedGeneration = structuredClone(loop);
+  Object.assign(bumpedGeneration, { status: 'running', pause_reason: null });
+  bumpedGeneration.session_chain.lease.generation = 2;
+  assert7b.equal(verify7b(bumpedGeneration, lines).ok, false,
+    'a numeric generation bump without an acquire event cannot historicalize failure');
+  const stateBindingDrift = structuredClone(loop);
+  stateBindingDrift.session_chain.sessions[1].continuation.failure_binding.generation = 2;
+  assert7b.equal(verify7b(stateBindingDrift, lines).ok, false,
+    'state-only failure binding drift is rejected');
+  const eventBindingDrift = structuredClone(lines);
+  eventBindingDrift[2].data.owner_run_id = child;
+  assert7b.equal(verify7b(loop, eventBindingDrift).ok, false,
+    'event-only failure binding drift is rejected');
+  for (const [eventIndex, extraKey] of [[2, 'thread_id'], [3, 'unconfirmed_thread_id']]) {
+    const rawExtra = structuredClone(lines);
+    rawExtra[eventIndex].data[extraKey] = 'raw-host-receipt';
+    assert7b.equal(verify7b(loop, rawExtra).ok, false,
+      `${rawExtra[eventIndex].type} rejects every extra raw receipt key`);
+  }
+  for (const [type, phase, failureCode] of [
+    ['app-task-swept', 'failed', 'app-prepare-unattended'],
+    ['app-task-abandoned', 'abandoned', 'gate-budget'],
+  ]) {
+    const controlled = structuredClone(loop);
+    Object.assign(controlled.autonomy.app_task_continuation,
+      { mode: 'auto', revoked_at: null });
+    Object.assign(controlled.session_chain.sessions[1].continuation,
+      { phase, failure_code: failureCode, prepared_at: phase === 'failed'
+        ? '2026-07-13T00:00:01.000Z' : null,
+        failure_binding: phase === 'failed'
+          ? { owner_run_id: parent, generation: 1 } : null });
+    controlled.status = 'paused'; controlled.pause_reason = failureCode;
+    const controlledLines = [lines[0], ...(phase === 'failed' ? [lines[1]] : []), {
+      type, ts: '2026-07-13T00:00:02.000Z', data: {
+        attempt_id: attempt, child_run_id: child, failure_code: failureCode,
+        owner_run_id: parent, generation: 1,
+      },
+    }];
+    assert7b.deepEqual(verify7b(controlled, controlledLines), { ok: true, errors: [] });
+    const rawExtra = structuredClone(controlledLines);
+    rawExtra.at(-1).data.thread_id = 'raw-host-receipt';
+    assert7b.equal(verify7b(controlled, rawExtra).ok, false,
+      `${type} rejects an extra raw receipt key`);
+  }
+  for (const mutate of [
+    event => { event.data.owner_run_id = '01JAPPF0R00000000000000099'; },
+    event => { event.data.owner_run_id = child; },
+    event => { event.data.generation = 2; },
+  ]) {
+    const invalidRevoke = structuredClone(lines);
+    mutate(invalidRevoke[3]);
+    assert7b.equal(verify7b(loop, invalidRevoke).ok, false,
+      'revoke owner provenance is existing, non-child, and non-future');
+  }
+
+  const preserved = structuredClone(loop);
+  Object.assign(preserved, { status: 'paused', pause_reason: 'gate-budget' });
+  Object.assign(preserved.autonomy.app_task_continuation,
+    { mode: 'auto', revoked_at: null });
+  Object.assign(preserved.session_chain.sessions[1].continuation,
+    { phase: 'emitted', prepared_at: null, failure_code: null, failure_binding: null });
+  preserved.session_chain.sessions[1].outcome = null;
+  preserved.session_chain.lease.resume_policy = 'human';
+  const preserveLines = [lines[0], {
+    type: 'app-task-preserved', ts: '2026-07-13T00:00:02.000Z',
+    data: { attempt_id: attempt, child_run_id: child, failure_code: 'gate-budget' },
+  }];
+  assert7b.deepEqual(verify7b(preserved, preserveLines), { ok: true, errors: [] });
+  const rawPreserve = structuredClone(preserveLines);
+  rawPreserve[1].data.thread_id = 'raw-host-receipt';
+  assert7b.equal(verify7b(preserved, rawPreserve).ok, false,
+    'app-task-preserved rejects an extra raw receipt key');
+  preserved.status = 'running'; preserved.pause_reason = null;
+  preserved.session_chain.lease.resume_policy = 'app';
+  assert7b.equal(verify7b(preserved, preserveLines).ok, false,
+    'manual preserve cannot be cleared without a later recovery/finish control event');
+});
+
+test7b('App recovery and finish controls bind exact identity code and terminal projection', () => {
+  const parent = '01JAPPPAR00000000000000000';
+  const child = '01JAPPCHD00000000000000000';
+  const attempt = '01JAPPTASK0000000000000000';
+  const terminal = (failureCode, type) => {
+    const continuation = { transport: 'codex-app', attempt_id: attempt, phase: 'abandoned',
+      emitted_at: '2026-07-13T00:00:00.000Z', prepared_at: null,
+      confirmed_at: null, acquired_at: null, failure_code: failureCode };
+    const session = { run_id: child, host_surface: null, continuation,
+      outcome: type === 'run-recovered' ? 'abandoned_recover' : 'failed_launch',
+      recovery_binding: type === 'run-recovered'
+        ? { owner_run_id: parent, generation: 1 } : null };
+    const terminalAt = '2026-07-13T00:00:01.000Z';
+    const loop = { run_id: parent, initialization: {},
+      status: type === 'finish' ? 'stopped' : 'paused',
+      pause_reason: type === 'finish' ? null : 'recovered:awaiting-resume',
+      termination: type === 'finish' ? { finished_at: terminalAt } : {},
+      session_chain: { lease: { owner_run_id: parent, generation: 1,
+        state: 'released', handoff_phase: 'idle', handoff_transport: null,
+        handoff_attempt_id: null, handoff_child_run_id: null,
+        handoff_idempotency_key: null, resume_policy: null, expires_at: null }, sessions: [
+        { run_id: parent, host_surface: null, superseded_by: null }, session,
+      ] } };
+    const lines = [
+      { type: 'handoff-emitted', ts: continuation.emitted_at,
+        data: { attempt_id: attempt, child_run_id: child } },
+      { type, ts: terminalAt, data: {
+        attempt_id: attempt, child_run_id: child, failure_code: failureCode,
+        ...(type === 'run-recovered'
+          ? { owner_run_id: parent, generation: 1 }
+          : { status: 'stopped', reportRel: null }),
+      } },
+    ];
+    return { loop, lines };
+  };
+
+  for (const [code, type] of [
+    ['human-recovered', 'run-recovered'], ['run-finished', 'finish'],
+  ]) {
+    const valid = terminal(code, type);
+    assert7b.deepEqual(verify7b(valid.loop, valid.lines), { ok: true, errors: [] });
+
+    const codeDrift = structuredClone(valid.lines);
+    codeDrift[1].data.failure_code = 'different-code';
+    assert7b.equal(verify7b(valid.loop, codeDrift).ok, false,
+      `${type} failure code is exact`);
+
+    const identityDrift = structuredClone(valid.lines);
+    identityDrift[1].data.child_run_id = '01JAPPCHD00000000000000099';
+    assert7b.equal(verify7b(valid.loop, identityDrift).ok, false,
+      `${type} identity is exact`);
+
+    const projectionDrift = structuredClone(valid.loop);
+    if (type === 'run-recovered') {
+      projectionDrift.session_chain.sessions[1].recovery_binding = null;
+    } else {
+      projectionDrift.status = 'running';
+    }
+    assert7b.equal(verify7b(projectionDrift, valid.lines).ok, false,
+      `${type} terminal projection is exact`);
+
+    const rawExtra = structuredClone(valid.lines);
+    rawExtra[1].data.thread_id = 'raw-host-receipt';
+    assert7b.equal(verify7b(valid.loop, rawExtra).ok, false,
+      `${type} rejects an extra raw receipt key`);
+
+    if (type === 'run-recovered') {
+      assert7b.equal(verify7b(valid.loop, valid.lines.slice(0, 1)).ok, false,
+        'state-only recovery binding has no causal authority');
+      assert7b.equal(verify7b(valid.loop, [...valid.lines, valid.lines[1]]).ok, false,
+        'a recovered session has exactly one causal recovery event');
+      assert7b.equal(verify7b(valid.loop, [...valid.lines, {
+        type: 'finish', ts: '2026-07-13T00:00:02.000Z',
+        data: { status: 'completed', reportRel: null },
+      }]).ok, false,
+      'a later finish cannot be erased back to the recovered projection');
+      const progressed = structuredClone(valid.loop);
+      progressed.status = 'running'; progressed.pause_reason = null;
+      progressed.session_chain.sessions[1].outcome = 'took_over';
+      progressed.session_chain.sessions[1].started_at =
+        '2026-07-13T00:00:02.000Z';
+      Object.assign(progressed.session_chain.lease, { owner_run_id: child, generation: 2,
+        state: 'active', handoff_phase: 'acquired',
+        acquired_at: '2026-07-13T00:00:02.000Z' });
+      const acquired = { type: 'lease-acquired', ts: '2026-07-13T00:00:02.000Z',
+        data: { previous_owner_run_id: parent, previous_generation: 1,
+          owner_run_id: child, generation: 2 } };
+      assert7b.deepEqual(verify7b(progressed, [...valid.lines, acquired]),
+        { ok: true, errors: [] },
+        'a later takeover preserves the exact event-backed recovery binding as history');
+    }
+  }
+
+  const genericAt = '2026-07-13T00:00:03.000Z';
+  const generic = { status: 'stopped', termination: { finished_at: genericAt },
+    session_chain: { lease: { owner_run_id: parent, generation: 1,
+      state: 'released', handoff_phase: 'idle', handoff_transport: null,
+      handoff_attempt_id: null, handoff_child_run_id: null,
+      handoff_idempotency_key: null, resume_policy: null, expires_at: null },
+    sessions: [{ run_id: parent, host_surface: null, superseded_by: null }] } };
+  const genericLines = [{ type: 'finish', ts: genericAt,
+    data: { status: 'stopped', reportRel: null } }];
+  assert7b.deepEqual(verify7b(generic, genericLines), { ok: true, errors: [] });
+  const legacyTick = structuredClone(genericLines);
+  legacyTick[0].ts = '2026-07-13T00:00:03.001Z';
+  assert7b.deepEqual(verify7b(generic, legacyTick), { ok: true, errors: [] },
+    'checkpoint-free legacy finish retains the old one-millisecond writer skew');
+  const genericRawExtra = structuredClone(genericLines);
+  genericRawExtra[0].data.thread_id = 'raw-host-receipt';
+  assert7b.equal(verify7b(generic, genericRawExtra).ok, false,
+    'generic finish rejects an extra raw receipt key');
+});
+
+test7b('generic recovery binding and event are bidirectionally exact', () => {
+  const parent = '01JAPPPAR00000000000000000';
+  const child = '01JAPPCHD00000000000000031';
+  const loop = { run_id: parent, initialization: {}, status: 'paused',
+    pause_reason: 'recovered:awaiting-resume', session_chain: {
+      lease: { owner_run_id: parent, generation: 1, state: 'released',
+        handoff_phase: 'idle', handoff_transport: null, handoff_attempt_id: null,
+        handoff_child_run_id: null, handoff_idempotency_key: null,
+        resume_policy: null, expires_at: null },
+      sessions: [{ run_id: parent, outcome: null, host_surface: null },
+        { run_id: child, outcome: 'abandoned_recover', host_surface: null,
+          recovery_binding: { owner_run_id: parent, generation: 1 } }] } };
+  const event = { type: 'run-recovered', ts: '2026-07-13T00:00:01.000Z',
+    data: { child_run_id: child, owner_run_id: parent, generation: 1 } };
+  assert7b.deepEqual(verify7b(loop, [event]), { ok: true, errors: [] });
+  assert7b.equal(verify7b(loop, []).ok, false,
+    'state-only generic recovery binding is not resume authority');
+  const eventOnly = structuredClone(loop);
+  delete eventOnly.session_chain.sessions[1].recovery_binding;
+  assert7b.equal(verify7b(eventOnly, [event]).ok, false,
+    'event-only generic recovery cannot mint a state projection');
+
+  const noChild = structuredClone(loop);
+  noChild.session_chain.sessions.pop();
+  const noChildEvent = { type: 'run-recovered', ts: '2026-07-13T00:00:02.000Z',
+    data: { owner_run_id: parent, generation: 1 } };
+  assert7b.deepEqual(verify7b(noChild, [noChildEvent]), { ok: true, errors: [] },
+    'new-format no-child recovery retains its current owner/generation proof');
+  assert7b.equal(verify7b(noChild, []).ok, false,
+    'state-only no-child recovered shape is not resume authority');
+  const staleNoChild = structuredClone(noChildEvent);
+  staleNoChild.data.generation = 2;
+  assert7b.equal(verify7b(noChild, [staleNoChild]).ok, false,
+    'stale or future no-child recovery proof cannot authorize convergence');
+  const bumpedNoChild = structuredClone(noChild);
+  Object.assign(bumpedNoChild, { status: 'running', pause_reason: null });
+  bumpedNoChild.session_chain.lease.generation = 2;
+  assert7b.equal(verify7b(bumpedNoChild, [noChildEvent]).ok, false,
+    'a numeric generation bump without an acquire event cannot historicalize recovery');
+  const swappedOwner = structuredClone(noChild);
+  const foreign = '01JAPPF0R00000000000000032';
+  swappedOwner.session_chain.sessions.push({ run_id: foreign, outcome: null,
+    host_surface: null });
+  Object.assign(swappedOwner, { status: 'running', pause_reason: null });
+  swappedOwner.session_chain.lease.owner_run_id = foreign;
+  assert7b.equal(verify7b(swappedOwner, [noChildEvent]).ok, false,
+    'same-generation owner swap cannot historicalize a recovery event');
+  const prematureAdvance = structuredClone(noChild);
+  Object.assign(prematureAdvance, { status: 'running', pause_reason: null });
+  Object.assign(prematureAdvance.session_chain.lease, { generation: 2,
+    state: 'active', handoff_phase: 'acquired',
+    acquired_at: '2026-07-13T00:00:01.000Z' });
+  const earlyAcquire = { type: 'lease-acquired', ts: '2026-07-13T00:00:01.000Z',
+    data: { previous_owner_run_id: parent, previous_generation: 1,
+      owner_run_id: parent, generation: 2 } };
+  assert7b.equal(verify7b(prematureAdvance, [earlyAcquire, noChildEvent]).ok, false,
+    'an acquire event before recovery cannot historicalize the later proof');
+  const disconnected = structuredClone(prematureAdvance);
+  Object.assign(disconnected.session_chain.lease, { owner_run_id: foreign, generation: 3,
+    acquired_at: '2026-07-13T00:00:03.000Z' });
+  const disconnectedEdges = [noChildEvent,
+    { type: 'lease-acquired', ts: '2026-07-13T00:00:02.500Z', data: {
+      previous_owner_run_id: parent, previous_generation: 1,
+      owner_run_id: child, generation: 2 } },
+    { type: 'lease-acquired', ts: '2026-07-13T00:00:03.000Z', data: {
+      previous_owner_run_id: '01JAPPVNR00000000000000033', previous_generation: 2,
+      owner_run_id: foreign, generation: 3 } }];
+  assert7b.equal(verify7b(disconnected, disconnectedEdges).ok, false,
+    'disconnected generation edges cannot historicalize recovery');
+  const legacyNoChild = structuredClone(noChild);
+  delete legacyNoChild.initialization;
+  assert7b.deepEqual(verify7b(legacyNoChild,
+    [{ type: 'run-recovered', ts: '2026-07-13T00:00:03.000Z', data: {} }]),
+  { ok: true, errors: [] }, 'initialization-absent legacy keeps empty recovery event compatibility');
+});
+
+test7b('host observation correlation binds facts, strict genesis, generations, and clocks', () => {
+  const logicalRun = '01JAPPGEN00000000000000000';
+  const owner = '01JAPPHST00000000000000000';
+  const surface = (generation, observedAt, overrides = {}) => ({ kind: 'codex-app',
+    source: 'codex-app-tool-provenance',
+    capabilities: ['create-thread-local', 'list-projects', 'structured-process-stdin'],
+    structured_stdin_mode: 'pty-raw-noecho', host_task_cwd: '/repo',
+    host_task_cwd_source: 'app-task-context', kernel_cwd_at_observation: '/repo',
+    observed_generation: generation, observed_at: observedAt, ...overrides });
+  const current = surface(2, '2026-07-13T00:00:02.000Z');
+  const digest = facts7b(current);
+  const loop = { run_id: logicalRun, created_at: '2026-07-13T00:00:00.000Z',
+    initialization: { host_observation_digest: 'NONE', host_surface_digest: 'NONE' },
+    session_chain: { sessions: [{ run_id: owner,
+      started_at: '2026-07-13T00:00:00.000Z', host_surface: current }] } };
+  const lines = [
+    { type: 'host-surface-observed', ts: '2026-07-13T00:00:01.000Z',
+      data: { run_id: logicalRun, owner_run_id: owner, kind: 'codex-app',
+        observed_generation: 1, observation_digest: digest, outcome: 'observed' } },
+    { type: 'host-surface-observed', ts: '2026-07-13T00:00:02.000Z',
+      data: { run_id: logicalRun, owner_run_id: owner, kind: 'codex-app',
+        observed_generation: 2, observation_digest: digest, outcome: 'reattested' } },
+  ];
+  assert7b.deepEqual(verify7b(loop, lines), { ok: true, errors: [] });
+  assert7b.equal(verify7b(loop, []).ok, false, 'stamp-only state has no event proof');
+  assert7b.equal(verify7b(loop, lines.slice(0, 1)).ok, false, 'latest attestation is required');
+  assert7b.equal(verify7b(loop, [...lines, lines[1]]).ok, false, 'generation is unique');
+  for (const [field, value] of [
+    ['owner_run_id', '01JAPPWR0NG000000000000000'],
+    ['observed_generation', 3], ['observation_digest', 'f'.repeat(64)],
+    ['outcome', 'observed'],
+  ]) {
+    const drift = structuredClone(lines); drift[1].data[field] = value;
+    assert7b.equal(verify7b(loop, drift).ok, false, `host event ${field} drift`);
+  }
+  for (const mutate of [
+    candidate => { candidate[1].ts = 'not-an-instant'; },
+    candidate => { candidate[1].ts = '2026-07-13T00:00:09.000Z'; },
+    candidate => { candidate[1].data.run_id = '01JAPPWR0NG000000000000001'; },
+  ]) {
+    const drift = structuredClone(lines); mutate(drift);
+    assert7b.equal(verify7b(loop, drift).ok, false);
+  }
+  const factsDrift = structuredClone(loop);
+  factsDrift.session_chain.sessions[0].host_surface.capabilities = ['structured-process-stdin'];
+  assert7b.equal(verify7b(factsDrift, lines).ok, false,
+    'authority-bearing surface facts are tied to the event digest');
+
+  const genesisSurface = surface(1, '2026-07-13T00:00:00.000Z');
+  const genesis = { run_id: logicalRun, created_at: genesisSurface.observed_at,
+    initialization: { host_observation_digest: 'a'.repeat(64),
+      host_surface_digest: facts7b(genesisSurface) },
+    session_chain: { sessions: [{ run_id: logicalRun,
+      started_at: genesisSurface.observed_at, host_surface: genesisSurface }] } };
+  assert7b.deepEqual(verify7b(genesis, []), { ok: true, errors: [] },
+    'exact initialized generation-one genesis is event-free');
+  for (const mutate of [
+    candidate => { candidate.initialization.host_surface_digest = 'b'.repeat(64); },
+    candidate => { candidate.session_chain.sessions[0].run_id = owner; },
+    candidate => { candidate.session_chain.sessions[0].started_at =
+      '2026-07-13T00:00:01.000Z'; },
+    candidate => { candidate.session_chain.sessions[0].host_surface.observed_generation = 2; },
+    candidate => { candidate.session_chain.sessions[0].host_surface.observed_at =
+      '2026-07-13T00:00:01.000Z'; },
+  ]) {
+    const invalid = structuredClone(genesis); mutate(invalid);
+    assert7b.equal(verify7b(invalid, []).ok, false, 'genesis proof is exact');
+  }
+  const legacy = structuredClone(genesis); delete legacy.initialization;
+  assert7b.equal(verify7b(legacy, []).ok, false,
+    'initialization-absent non-null legacy surface is not an authority baseline');
+
+  const genesisReattested = structuredClone(genesis);
+  genesisReattested.session_chain.sessions[0].host_surface.observed_generation = 2;
+  genesisReattested.session_chain.sessions[0].host_surface.observed_at =
+    '2026-07-13T00:00:01.000Z';
+  const genesisReattestation = { type: 'host-surface-observed',
+    ts: '2026-07-13T00:00:01.000Z', data: { run_id: logicalRun,
+      owner_run_id: logicalRun, kind: 'codex-app', observed_generation: 2,
+      observation_digest: facts7b(genesisReattested.session_chain.sessions[0].host_surface),
+      outcome: 'reattested' } };
+  assert7b.deepEqual(verify7b(genesisReattested, [genesisReattestation]),
+    { ok: true, errors: [] },
+    'immutable genesis is a generation-one seed for a later exact re-attestation');
+  assert7b.equal(verify7b(genesisReattested, []).ok, false,
+    'a changed genesis stamp still requires its later attestation event');
+
+  const acquiredAt = '2026-07-13T00:00:03.000Z';
+  const attempt = '01JAPPTASK0000000000000002';
+  const acquiredSurface = surface(2, acquiredAt);
+  const acquired = { run_id: logicalRun, session_chain: { sessions: [{ run_id: owner,
+    started_at: acquiredAt, host_surface: acquiredSurface, continuation: {
+      transport: 'codex-app', attempt_id: attempt, phase: 'acquired',
+      emitted_at: null, prepared_at: null, confirmed_at: null,
+      acquired_at: acquiredAt, acquired_generation: 2,
+    } }] } };
+  const acquiredEvent = { type: 'app-task-acquired', ts: acquiredAt,
+    data: { attempt_id: attempt, child_run_id: owner,
+      observation_digest: facts7b(acquiredSurface) } };
+  assert7b.deepEqual(verify7b(acquired, [acquiredEvent]), { ok: true, errors: [] },
+    'exact App acquire event binds the materialized child facts');
+  const acquiredDrift = structuredClone(acquiredEvent);
+  acquiredDrift.data.observation_digest = 'c'.repeat(64);
+  assert7b.equal(verify7b(acquired, [acquiredDrift]).ok, false);
+  const acquiredReattested = structuredClone(acquired);
+  acquiredReattested.session_chain.sessions[0].host_surface.observed_generation = 3;
+  acquiredReattested.session_chain.sessions[0].host_surface.observed_at =
+    '2026-07-13T00:00:04.000Z';
+  const acquiredReattestation = { type: 'host-surface-observed',
+    ts: '2026-07-13T00:00:04.000Z', data: { run_id: logicalRun,
+      owner_run_id: owner, kind: 'codex-app', observed_generation: 3,
+      observation_digest: facts7b(acquiredReattested.session_chain.sessions[0].host_surface),
+      outcome: 'reattested' } };
+  assert7b.deepEqual(verify7b(acquiredReattested,
+    [acquiredEvent, acquiredReattestation]), { ok: true, errors: [] },
+  'the immutable acquire event is a baseline after later re-attestation');
+  const acquiredBaselineDrift = structuredClone(acquiredEvent);
+  acquiredBaselineDrift.data.observation_digest = 'd'.repeat(64);
+  assert7b.equal(verify7b(acquiredReattested,
+    [acquiredBaselineDrift, acquiredReattestation]).ok, false,
+  'later re-attestation cannot conceal acquire baseline digest drift');
+});
+
+function legacyGeneration3AtCheckpoint() {
+  return { run_id: 'LEGACY-RUN', status: 'running', episodes: [], workstreams: [],
+    active_workstreams: [], legacy_lineage: { active_workstreams: [] },
+    session_chain: {
+      sessions: [{ run_id: 'LEGACY-OWNER', host_surface: null }],
+      lease: { owner_run_id: 'LEGACY-OWNER', generation: 3, state: 'released',
+        acquired_at: '2026-07-13T00:00:02.000Z' },
+    } };
+}
+
+function legacyGeneration4AfterAcquire() {
+  const loop = legacyGeneration3AtCheckpoint();
+  loop.session_chain.sessions.push({ run_id: 'FRESH-OWNER', host_surface: null });
+  Object.assign(loop.session_chain.lease, { owner_run_id: 'FRESH-OWNER', generation: 4,
+    state: 'active', acquired_at: '2026-07-13T00:00:04.000Z' });
+  return loop;
+}
+
+test7b('legacy lease lineage is opaque before one checkpoint and exact after it', () => {
+  const baseline = { type: 'lease-lineage-baselined',
+    ts: '2026-07-13T00:00:03.000Z', data: {
+      owner_run_id: 'LEGACY-OWNER', generation: 3, lease_state: 'released',
+      acquired_at: '2026-07-13T00:00:02.000Z', legacy_episode_count: 0,
+      legacy_workstream_count: 0, legacy_active_workstreams: [],
+      legacy_proof_origins: origins7b(legacyGeneration3AtCheckpoint(), 0, 0),
+      legacy_authority_digest: authority7b(legacyGeneration3AtCheckpoint()),
+    } };
+  const acquire = { type: 'lease-acquired', ts: '2026-07-13T00:00:04.000Z', data: {
+    previous_owner_run_id: 'LEGACY-OWNER', previous_generation: 3,
+    owner_run_id: 'FRESH-OWNER', generation: 4,
+  } };
+  assert7b.equal(verify7b(legacyGeneration3AtCheckpoint(), [baseline]).ok, true);
+  assert7b.equal(verify7b(legacyGeneration4AfterAcquire(), [baseline, acquire]).ok, true);
+  for (const invalid of [
+    [baseline, baseline],
+    [{ ...baseline, data: { ...baseline.data,
+      legacy_authority_digest: 'b'.repeat(64) } }],
+    [{ ...baseline, data: { ...baseline.data, generation: 2 } }, acquire],
+    [baseline, { ...acquire, data: { ...acquire.data, previous_owner_run_id: 'OTHER' } }],
+    [baseline, { ...acquire, data: { ...acquire.data, generation: 5 } }],
+  ]) assert7b.equal(verify7b(legacyGeneration4AfterAcquire(), invalid).ok, false);
+});

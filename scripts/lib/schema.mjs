@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, isAbsolute, join, posix, win32 } from 'node:path';
 import { types } from 'node:util';
+import { contentHash } from './envelope.mjs';
 import {
   appHostTaskCwdDigest,
   hostSurfaceFactsDigest,
@@ -895,6 +896,881 @@ function validateAppState(loop, errors) {
   if (lease.handoff_transport === null && lease.handoff_attempt_id !== null) {
     errors.push('orphan App attempt binding');
   }
+}
+
+const APP_EVENT_CLOCK = Object.freeze([
+  ['emitted_at', 'handoff-emitted'],
+  ['prepared_at', 'app-task-prepared'],
+  ['confirmed_at', 'app-task-confirmed'],
+  ['acquired_at', 'app-task-acquired'],
+]);
+const APP_CONTROL_TYPES = new Set([
+  'app-task-consent-revoked', 'app-task-failed', 'app-task-swept',
+  'app-task-preserved', 'app-task-abandoned', 'app-task-await-timeout',
+  'run-recovered', 'finish',
+]);
+const APP_FAILURE_EVENT = new Map([
+  ['host-call-timeout', 'app-task-failed'],
+  ['host-call-no-return', 'app-task-failed'],
+  ['host-call-failed', 'app-task-failed'],
+  ['invalid-host-receipt', 'app-task-failed'],
+  ['message-unconfirmed', 'app-task-failed'],
+  ['app-prepare-unattended', 'app-task-swept'],
+  ['app-launch-unconfirmed', 'app-task-swept'],
+  ['consent-revoked', 'app-task-consent-revoked'],
+  ['gate-budget', 'app-task-abandoned'],
+  ['gate-breaker', 'app-task-abandoned'],
+  ['gate-max-sessions', 'app-task-abandoned'],
+  ['gate-wallclock', 'app-task-abandoned'],
+  ['gate-auto-handoff', 'app-task-abandoned'],
+  ['human-recovered', 'run-recovered'],
+  ['run-finished', 'finish'],
+]);
+const APP_CONTROL_EXACT_KEYS = Object.freeze({
+  'app-task-consent-revoked': [['attempt_id', 'child_run_id', 'failure_code',
+    'generation', 'owner_run_id']],
+  'app-task-failed': [
+    ['attempt_id', 'child_run_id', 'failure_code', 'generation', 'owner_run_id'],
+    ['attempt_id', 'child_run_id', 'failure_code', 'generation', 'owner_run_id',
+      'unconfirmed_receipt_digest'],
+  ],
+  'app-task-swept': [['attempt_id', 'child_run_id', 'failure_code',
+    'generation', 'owner_run_id']],
+  'app-task-abandoned': [['attempt_id', 'child_run_id', 'failure_code',
+    'generation', 'owner_run_id']],
+  'app-task-preserved': [['attempt_id', 'child_run_id', 'failure_code']],
+  'app-task-await-timeout': [['attempt_id', 'child_run_id', 'failure_code']],
+  finish: [
+    ['reportRel', 'status'],
+    ['attempt_id', 'child_run_id', 'failure_code', 'reportRel', 'status'],
+  ],
+});
+
+function hostObservationSeed(loop, session, index, events) {
+  const surface = session?.host_surface;
+  if (surface == null) return null;
+  let surfaceDigest = 'INVALID';
+  try { surfaceDigest = hostSurfaceFactsDigest(surface); } catch {}
+  const continuation = session.continuation;
+  const acquiredEvent = events.find(event => event?.type === 'app-task-acquired'
+    && event?.data?.attempt_id === continuation?.attempt_id
+    && event?.data?.child_run_id === session.run_id);
+  const acquiredSeeded = continuation?.transport === 'codex-app'
+    && continuation.phase === 'acquired'
+    && Number.isSafeInteger(continuation.acquired_generation)
+    && strictMs(continuation.acquired_at) !== null
+    && session.started_at === continuation.acquired_at
+    && acquiredEvent?.ts === continuation.acquired_at
+    && acquiredEvent?.data?.observation_digest === surfaceDigest;
+  if (acquiredSeeded) return { generation: continuation.acquired_generation,
+    observedAt: continuation.acquired_at, digest: acquiredEvent.data.observation_digest,
+    kind: 'acquired' };
+  const genesisEvent = events.find(event => event?.type === 'run-initialized');
+  const requiresGenesisEvent = loop?.initialization?.request_digest !== undefined;
+  const genesisSeeded = index === 0 && loop?.initialization !== undefined
+    && loop.initialization.host_surface_digest !== 'NONE'
+    && loop.initialization.host_surface_digest === surfaceDigest
+    && (!requiresGenesisEvent || genesisEvent?.data?.host_surface_digest === surfaceDigest)
+    && session.run_id === loop.run_id
+    && strictMs(loop.created_at) !== null
+    && session.started_at === loop.created_at;
+  if (genesisSeeded) return { generation: 1, observedAt: loop.created_at,
+    digest: loop.initialization.host_surface_digest, kind: 'genesis' };
+  return null;
+}
+
+// Finish/review authority is narrower than mutable comprehension bookkeeping. Keep the complete
+// episode proof record but deliberately exclude the two acknowledgement markers: changing either
+// marker is already authenticated by comprehension counters/events and must remain possible after
+// a legacy checkpoint without inventing review proof. Workstream proof is the exact subset consumed
+// by finish/review routing; its episode inventory and integration metadata are not terminal proof.
+export function episodeProofProjection(episode) {
+  const projection = structuredClone(episode);
+  delete projection.human_reviewed;
+  delete projection.agent_reviewed;
+  return projection;
+}
+
+const EPISODE_TASK_MAX_BYTES = 16 * 1024;
+
+export function assertEpisodeTask(task) {
+  if (typeof task !== 'string' || task.trim().length === 0
+      || Buffer.byteLength(task, 'utf8') > EPISODE_TASK_MAX_BYTES
+      || task.includes('\0') || task.includes('\r')
+      || /[\uD800-\uDFFF]/u.test(task)) {
+    throw new Error('EPISODE_TASK_INVALID');
+  }
+}
+
+export function episodeRequestMarkdown({ id, plugin, role, kind, point, task, contract,
+  workstream = null, expectedArtifacts = [], evidence } = {}) {
+  assertEpisodeTask(task);
+  if (typeof id !== 'string' || id.length === 0 || typeof plugin !== 'string'
+      || typeof role !== 'string' || typeof kind !== 'string' || typeof point !== 'string'
+      || !Array.isArray(expectedArtifacts)
+      || !expectedArtifacts.every(artifact => typeof artifact === 'string')) {
+    throw new Error('EPISODE_REQUEST_MARKDOWN_INPUT_INVALID');
+  }
+  return [
+    `# Episode ${id} — request`, '',
+    `- plugin: ${plugin}`, `- role: ${role}`, `- kind: ${kind}`,
+    `- review point: ${point}`, `- workstream: ${workstream || '(none)'}`, '',
+    '## Task', '', task, '',
+    '## Contract', '', '```json', JSON.stringify(contract ?? null, null, 2), '```', '',
+    '## Expected artifacts', '',
+    ...(expectedArtifacts.length
+      ? expectedArtifacts.map(artifact => `- ${artifact}`)
+      : ['- <!-- list proof artifacts -->']), '',
+    ...(evidence !== undefined ? ['## Evidence (kernel-verified insights)', '',
+      '<!-- copy; anchored episodes[].evidence is authoritative -->', '',
+      '```json', JSON.stringify(evidence, null, 2), '```', ''] : []),
+    '## Constraints', '',
+    '- Do not assume prior conversation context. The verified run plus this request are authoritative.',
+    '',
+  ].join('\n');
+}
+
+export function workstreamProofProjection(loop, workstream) {
+  return {
+    id: workstream.id,
+    status: workstream.status,
+    review_points_done: structuredClone(workstream.review_points_done ?? []),
+    active: (loop?.active_workstreams ?? []).includes(workstream.id),
+    active_workstreams: structuredClone(loop?.active_workstreams ?? []),
+  };
+}
+
+// Input compatibility exists only for the first verified mutation of an initialization-absent,
+// checkpoint-free run. Preserve the first occurrence of each existing string ID in source order;
+// old duplicates, unknown IDs, and non-strings are discarded deterministically in memory and the
+// normalized candidate is published only together with the checkpoint/business event.
+export function normalizeLegacyActiveWorkstreams(loop) {
+  const existing = new Set((Array.isArray(loop?.workstreams) ? loop.workstreams : [])
+    .map(workstream => workstream?.id)
+    .filter(id => typeof id === 'string'));
+  const seen = new Set();
+  const normalized = [];
+  for (const id of (Array.isArray(loop?.active_workstreams) ? loop.active_workstreams : [])) {
+    if (typeof id !== 'string' || !existing.has(id) || seen.has(id)) continue;
+    seen.add(id);
+    normalized.push(id);
+  }
+  return normalized;
+}
+
+function legacyOriginDigest(kind, projection) {
+  return contentHash(`proof-entity-${kind}-v1\0${JSON.stringify({
+    kind: 'object', value: projection,
+  })}`);
+}
+
+export function legacyProofOrigins(loop, episodeCount, workstreamCount) {
+  const episodes = Array.isArray(loop?.episodes) ? loop.episodes : [];
+  const workstreams = Array.isArray(loop?.workstreams) ? loop.workstreams : [];
+  if (!Number.isSafeInteger(episodeCount) || episodeCount < 0
+      || episodeCount > episodes.length
+      || !Number.isSafeInteger(workstreamCount) || workstreamCount < 0
+      || workstreamCount > workstreams.length) {
+    throw new Error('LEGACY_PROOF_BASELINE_COUNT_INVALID');
+  }
+  return [
+    ...episodes.slice(0, episodeCount).map(episode => ({
+      kind: 'episode', id: episode.id,
+      digest: legacyOriginDigest('episode', episodeProofProjection(episode)),
+    })),
+    ...workstreams.slice(0, workstreamCount).map(workstream => ({
+      kind: 'workstream', id: workstream.id,
+      digest: legacyOriginDigest('workstream', workstreamProofProjection(loop, workstream)),
+    })),
+  ].sort((left, right) => `${left.kind}:${left.id}`.localeCompare(`${right.kind}:${right.id}`));
+}
+
+export function legacyAuthorityDigest(loop) {
+  const projection = {
+    review_contract: loop.review == null ? null : {
+      points: structuredClone(loop.review.points ?? []),
+      reviewer: loop.review.reviewer ?? null,
+      mode: loop.review.mode ?? null,
+      flags: structuredClone(loop.review.flags ?? []),
+      converge: loop.review.converge ?? null,
+      require_human_ack: loop.review.require_human_ack ?? null,
+    },
+    recipe: { id: loop.recipe?.id ?? null },
+  };
+  const encoded = JSON.stringify({ kind: 'object', value: projection });
+  return contentHash(`legacy-proof-authority-v1\0${encoded}`);
+}
+
+export function verifyAppEventCorrelation(loop, lines) {
+  const errors = [];
+  const events = Array.isArray(lines) ? lines : [];
+  const lineageCheckpoints = events.filter(event => event?.type === 'lease-lineage-baselined');
+  const legacyLineage = loop?.legacy_lineage;
+  const preCheckpointLegacy = loop?.initialization === undefined
+    && lineageCheckpoints.length === 0;
+  const workstreamIds = (loop?.workstreams ?? []).map(workstream => workstream?.id);
+  const activeWorkstreams = loop?.active_workstreams;
+  if (!preCheckpointLegacy && activeWorkstreams !== undefined
+      && (!Array.isArray(activeWorkstreams)
+      || new Set(activeWorkstreams).size !== activeWorkstreams.length
+      || activeWorkstreams.some(id => typeof id !== 'string' || !workstreamIds.includes(id)))) {
+    errors.push('active_workstreams must be unique existing workstream IDs');
+  }
+  const identities = new Set();
+  const sessions = loop?.session_chain?.sessions ?? [];
+  const currentLease = loop?.session_chain?.lease ?? {};
+  const initializationEvents = events.filter(event => event?.type === 'run-initialized');
+  const hasInitializationGenesis = loop?.initialization?.request_digest !== undefined;
+  if (loop?.initialization === undefined) {
+    if (initializationEvents.length !== 0) errors.push('legacy run-initialized event forbidden');
+  } else if (hasInitializationGenesis) {
+    const event = initializationEvents[0];
+    const exactKeys = ['host_surface_digest', 'request_digest', 'run_id'];
+    if (initializationEvents.length !== 1 || event !== events[0] || event?.seq !== 1
+        || event?.ts !== loop.created_at
+        || JSON.stringify(Object.keys(event?.data ?? {}).sort()) !== JSON.stringify(exactKeys)
+        || event?.data?.run_id !== loop.run_id
+        || event?.data?.request_digest !== loop.initialization.request_digest
+        || event?.data?.host_surface_digest !== loop.initialization.host_surface_digest) {
+      errors.push('run-initialized genesis binding invalid');
+    }
+  }
+  let checkpointFloor = null;
+  if (loop?.initialization !== undefined) {
+    if (lineageCheckpoints.length !== 0) {
+      errors.push('initialized run cannot declare a legacy lineage checkpoint');
+    }
+    if (legacyLineage !== undefined) {
+      errors.push('initialized run cannot declare legacy lineage state');
+    }
+  } else if (lineageCheckpoints.length > 1) {
+    errors.push('legacy run has duplicate lineage checkpoints');
+  } else if (lineageCheckpoints.length === 0 && legacyLineage !== undefined) {
+    errors.push('pre-checkpoint legacy run cannot declare lineage state');
+  } else if (lineageCheckpoints.length === 1) {
+    const checkpoint = lineageCheckpoints[0];
+    const checkpointIndex = events.indexOf(checkpoint);
+    const data = checkpoint.data ?? {};
+    const exactKeys = ['acquired_at', 'generation', 'lease_state',
+      'legacy_active_workstreams',
+      'legacy_authority_digest', 'legacy_episode_count', 'legacy_proof_origins',
+      'legacy_workstream_count', 'owner_run_id'].sort();
+    const legacyEpisodes = Array.isArray(loop?.episodes) ? loop.episodes : [];
+    const legacyWorkstreams = Array.isArray(loop?.workstreams) ? loop.workstreams : [];
+    const legacyCount = data.legacy_episode_count;
+    const legacyWorkstreamCount = data.legacy_workstream_count;
+    const prefix = Number.isSafeInteger(legacyCount) && legacyCount >= 0
+      ? legacyEpisodes.slice(0, legacyCount) : [];
+    const workstreamPrefix = Number.isSafeInteger(legacyWorkstreamCount)
+      && legacyWorkstreamCount >= 0
+      ? legacyWorkstreams.slice(0, legacyWorkstreamCount) : [];
+    const prefixIsUnversioned = prefix.every(episode => episode?.creation_contract == null)
+      && workstreamPrefix.every(workstream => workstream?.creation_contract == null);
+    const origins = data.legacy_proof_origins;
+    const originKeys = Array.isArray(origins)
+      ? origins.map(origin => `${origin?.kind}:${origin?.id}`) : [];
+    const expectedOriginKeys = [
+      ...prefix.map(episode => `episode:${episode?.id}`),
+      ...workstreamPrefix.map(workstream => `workstream:${workstream?.id}`),
+    ].sort();
+    const originsValid = Array.isArray(origins)
+      && origins.length === legacyCount + legacyWorkstreamCount
+      && JSON.stringify(originKeys) === JSON.stringify(expectedOriginKeys)
+      && new Set(originKeys).size === originKeys.length
+      && origins.every(origin => origin != null
+        && JSON.stringify(Object.keys(origin).sort())
+          === JSON.stringify(['digest', 'id', 'kind'])
+        && ['episode', 'workstream'].includes(origin.kind)
+        && typeof origin.id === 'string' && origin.id.length > 0
+        && /^[0-9a-f]{64}$/.test(origin.digest || ''));
+    const checkpointValid = checkpointIndex >= 0 && strictMs(checkpoint.ts) !== null
+      && strictMs(data.acquired_at) !== null
+      && strictMs(data.acquired_at) <= strictMs(checkpoint.ts)
+      && JSON.stringify(Object.keys(data).sort()) === JSON.stringify(exactKeys)
+      && typeof data.owner_run_id === 'string' && data.owner_run_id.length > 0
+      && sessions.some(session => session.run_id === data.owner_run_id)
+      && Number.isSafeInteger(data.generation) && data.generation >= 1
+      && ['active', 'releasing', 'released'].includes(data.lease_state)
+      && Number.isSafeInteger(legacyCount) && legacyCount >= 0
+      && legacyCount <= legacyEpisodes.length
+      && Number.isSafeInteger(legacyWorkstreamCount) && legacyWorkstreamCount >= 0
+      && legacyWorkstreamCount <= legacyWorkstreams.length
+      && Array.isArray(data.legacy_active_workstreams)
+      && data.legacy_active_workstreams.every((id, index, values) =>
+        typeof id === 'string'
+          && workstreamPrefix.some(workstream => workstream?.id === id)
+          && values.indexOf(id) === index)
+      && legacyLineage != null && !Array.isArray(legacyLineage)
+      && JSON.stringify(Object.keys(legacyLineage).sort())
+        === JSON.stringify(['active_workstreams'])
+      && Array.isArray(legacyLineage.active_workstreams)
+      && JSON.stringify(data.legacy_active_workstreams)
+        === JSON.stringify(legacyLineage.active_workstreams)
+      && prefixIsUnversioned
+      && originsValid
+      && /^[0-9a-f]{64}$/.test(data.legacy_authority_digest || '')
+      && data.legacy_authority_digest === legacyAuthorityDigest(loop);
+    if (!checkpointValid) {
+      errors.push('legacy lineage checkpoint binding invalid');
+    } else {
+      checkpointFloor = { generation: data.generation, owner: data.owner_run_id,
+        leaseState: data.lease_state, acquiredAt: data.acquired_at,
+        index: checkpointIndex };
+    }
+  }
+  const genericAcquireEvents = events.filter(event => event?.type === 'lease-acquired');
+  for (const event of genericAcquireEvents) {
+    const data = event.data ?? {};
+    const keys = Object.keys(data).sort();
+    const exactKeys = ['generation', 'owner_run_id',
+      'previous_generation', 'previous_owner_run_id'];
+    if (JSON.stringify(keys) !== JSON.stringify(exactKeys)
+        || strictMs(event.ts) === null
+        || typeof data.owner_run_id !== 'string' || data.owner_run_id.length === 0
+        || typeof data.previous_owner_run_id !== 'string'
+        || data.previous_owner_run_id.length === 0
+        || !Number.isSafeInteger(data.previous_generation)
+        || data.previous_generation < 1
+        || data.generation !== data.previous_generation + 1
+        || data.generation > (currentLease.generation ?? 0)) {
+      errors.push('lease-acquired causal binding invalid');
+    }
+  }
+  const genericEdges = genericAcquireEvents.map(event => ({ kind: 'generic', event,
+    index: events.indexOf(event), previousOwner: event.data?.previous_owner_run_id,
+    previousGeneration: event.data?.previous_generation,
+    owner: event.data?.owner_run_id, generation: event.data?.generation }));
+  const appEdges = sessions
+    .filter(session => session?.continuation?.transport === 'codex-app'
+      && session.continuation.phase === 'acquired'
+      && Number.isSafeInteger(session.continuation.acquired_generation))
+    .map(session => {
+      const continuation = session.continuation;
+      const parents = sessions.filter(parent => parent.superseded_by === session.run_id);
+      const event = events.find(item => item?.type === 'app-task-acquired'
+        && item?.data?.attempt_id === continuation.attempt_id
+        && item?.data?.child_run_id === session.run_id);
+      return { kind: 'app', event, index: events.indexOf(event),
+        previousOwner: parents.length === 1 ? parents[0].run_id : undefined,
+        previousGeneration: continuation.acquired_generation - 1,
+        owner: session.run_id, generation: continuation.acquired_generation };
+    });
+  const acquisitionEdges = [...genericEdges, ...appEdges];
+  const ownerAtGeneration = new Map();
+  const edgeIndexByGeneration = new Map();
+  const lineageFloor = loop?.initialization !== undefined
+    ? { generation: 1, owner: loop.run_id, index: events.indexOf(initializationEvents[0]),
+      kind: 'genesis' }
+    : checkpointFloor === null ? null : { ...checkpointFloor, kind: 'checkpoint' };
+  let lineageComplete = lineageFloor !== null
+    && Number.isSafeInteger(currentLease.generation)
+    && currentLease.generation >= lineageFloor.generation
+    && typeof currentLease.owner_run_id === 'string';
+  if (lineageComplete) {
+    ownerAtGeneration.set(currentLease.generation, currentLease.owner_run_id);
+    let laterIndex = events.length;
+    for (let generation = currentLease.generation;
+      generation > lineageFloor.generation; generation -= 1) {
+      const candidates = acquisitionEdges.filter(edge => edge.generation === generation
+        && edge.index > lineageFloor.index);
+      const edge = candidates.length === 1 ? candidates[0] : null;
+      const exact = edge !== null && edge.previousGeneration === generation - 1
+        && edge.owner === ownerAtGeneration.get(generation)
+        && edge.index > lineageFloor.index && edge.index < laterIndex
+        && strictMs(edge.event?.ts) !== null
+        && (generation !== currentLease.generation
+          || edge.event.ts === currentLease.acquired_at);
+      if (!exact) {
+        lineageComplete = false;
+        errors.push(`lease generation ${generation} acquisition lineage invalid`);
+        break;
+      }
+      ownerAtGeneration.set(generation - 1, edge.previousOwner);
+      edgeIndexByGeneration.set(generation, edge.index);
+      laterIndex = edge.index;
+    }
+    if (lineageComplete
+        && ownerAtGeneration.get(lineageFloor.generation) !== lineageFloor.owner) {
+      lineageComplete = false;
+      errors.push(`${lineageFloor.kind} lineage owner mismatch`);
+    }
+    if (lineageComplete && lineageFloor.kind === 'checkpoint'
+        && currentLease.generation === lineageFloor.generation
+        && currentLease.acquired_at !== lineageFloor.acquiredAt) {
+      lineageComplete = false;
+      errors.push('legacy lineage checkpoint acquired-at mismatch');
+    }
+  }
+  const isProvenHistorical = (ownerRunId, generation, proofIndex) => lineageComplete
+    && Number.isSafeInteger(generation) && currentLease.generation > generation
+    && ownerAtGeneration.get(generation) === ownerRunId
+    && edgeIndexByGeneration.get(generation + 1) > proofIndex;
+  for (const session of sessions) {
+    const continuation = session?.continuation;
+    if (continuation?.transport !== 'codex-app') continue;
+    const identity = `${continuation.attempt_id}\u0000${session.run_id}`;
+    identities.add(identity);
+    for (const [clockField, eventType] of APP_EVENT_CLOCK) {
+      const timestamp = continuation[clockField];
+      const matches = events.filter(event => event?.type === eventType
+        && event?.data?.attempt_id === continuation.attempt_id
+        && event?.data?.child_run_id === session.run_id);
+      if (timestamp == null && matches.length !== 0) {
+        errors.push(`${eventType} ${continuation.attempt_id}/${session.run_id} premature count=${matches.length}`);
+      } else if (timestamp != null && matches.length !== 1) {
+        errors.push(`${eventType} ${continuation.attempt_id}/${session.run_id} count=${matches.length}`);
+      } else if (timestamp != null && (strictMs(matches[0].ts) === null
+          || matches[0].ts !== timestamp)) {
+        errors.push(`${eventType} ${continuation.attempt_id}/${session.run_id} timestamp mismatch`);
+      } else if (eventType === 'app-task-prepared' && timestamp != null) {
+        const keys = Object.keys(matches[0].data ?? {}).sort();
+        if (JSON.stringify(keys) !== JSON.stringify(
+          ['attempt_id', 'child_run_id', 'descriptor_digest'])
+            || matches[0].data.descriptor_digest !== continuation.descriptor_digest) {
+          errors.push(`${eventType} ${continuation.attempt_id}/${session.run_id} descriptor digest mismatch`);
+        }
+      } else if (eventType === 'app-task-confirmed' && timestamp != null) {
+        const expectedDigest = typeof continuation.thread_id === 'string'
+          ? contentHash('confirmed-thread\0' + continuation.thread_id) : 'INVALID';
+        const keys = Object.keys(matches[0].data ?? {}).sort();
+        if (JSON.stringify(keys) !== JSON.stringify(
+          ['attempt_id', 'child_run_id', 'receipt_digest'])
+            || matches[0].data.receipt_digest !== expectedDigest) {
+          errors.push(`${eventType} ${continuation.attempt_id}/${session.run_id} receipt digest mismatch`);
+        }
+      } else if (eventType === 'app-task-acquired' && timestamp != null) {
+        let digest = 'INVALID';
+        try { digest = hostSurfaceFactsDigest(session.host_surface); } catch {}
+        if (matches[0].data?.observation_digest !== digest) {
+          errors.push(`${eventType} ${continuation.attempt_id}/${session.run_id} observation digest mismatch`);
+        }
+      }
+    }
+    const controls = events.filter(event => APP_CONTROL_TYPES.has(event?.type)
+      && event?.data?.attempt_id === continuation.attempt_id
+      && event?.data?.child_run_id === session.run_id);
+    for (const type of APP_CONTROL_TYPES) {
+      const matches = controls.filter(event => event.type === type);
+      if (matches.length > 1) {
+        errors.push(`${type} ${continuation.attempt_id}/${session.run_id} count=${matches.length}`);
+      }
+      if (matches.some(event => strictMs(event.ts) === null)) {
+        errors.push(`${type} ${continuation.attempt_id}/${session.run_id} timestamp invalid`);
+      }
+    }
+    for (const event of controls) {
+      const failureCode = event.data?.failure_code;
+      const allowedKeySets = APP_CONTROL_EXACT_KEYS[event.type];
+      if (allowedKeySets !== undefined) {
+        const actualKeys = Object.keys(event.data ?? {}).sort();
+        const exact = allowedKeySets.some(keys =>
+          JSON.stringify(actualKeys) === JSON.stringify([...keys].sort()));
+        const failedReceiptShape = event.type === 'app-task-failed'
+          && ((failureCode === 'message-unconfirmed')
+            !== Object.hasOwn(event.data ?? {}, 'unconfirmed_receipt_digest'));
+        if (!exact || failedReceiptShape) {
+          errors.push(`${event.type} ${continuation.attempt_id}/${session.run_id} exact keys invalid`);
+        }
+      }
+      if (['app-task-failed', 'app-task-swept', 'app-task-abandoned',
+        'run-recovered', 'finish'].includes(event.type)
+          && failureCode !== continuation.failure_code) {
+        errors.push(`${event.type} ${continuation.attempt_id}/${session.run_id} failure code mismatch`);
+      }
+      if (event.type === 'app-task-preserved'
+          && (typeof failureCode !== 'string' || failureCode.length === 0)) {
+        errors.push(`app-task-preserved ${continuation.attempt_id}/${session.run_id} failure code invalid`);
+      }
+      if (event.type === 'app-task-await-timeout'
+          && failureCode !== 'app-child-timeout-awaiting') {
+        errors.push(`app-task-await-timeout ${continuation.attempt_id}/${session.run_id} failure code invalid`);
+      }
+    }
+    if (['failed', 'abandoned'].includes(continuation.phase)) {
+      const expectedType = APP_FAILURE_EVENT.get(continuation.failure_code);
+      const proof = controls.filter(event => event.type === expectedType
+        && event.data?.failure_code === continuation.failure_code);
+      if (expectedType === undefined || proof.length !== 1) {
+        errors.push(`App terminal ${continuation.attempt_id}/${session.run_id} proof mismatch`);
+      }
+      if (continuation.phase === 'failed') {
+        const binding = continuation.failure_binding;
+        const eventData = proof[0]?.data;
+        const baseFailureKeys = [
+          'attempt_id', 'child_run_id', 'failure_code', 'generation', 'owner_run_id',
+        ];
+        const expectedFailureKeys = continuation.failure_code === 'message-unconfirmed'
+          ? [...baseFailureKeys, 'unconfirmed_receipt_digest'].sort()
+          : baseFailureKeys.sort();
+        if (typeof binding?.owner_run_id !== 'string'
+            || !Number.isSafeInteger(binding?.generation)
+            || eventData?.owner_run_id !== binding.owner_run_id
+            || eventData?.generation !== binding.generation
+            || JSON.stringify(Object.keys(eventData ?? {}).sort())
+              !== JSON.stringify(expectedFailureKeys)) {
+          errors.push(`App failure ${continuation.attempt_id}/${session.run_id} binding mismatch`);
+        }
+        if (continuation.failure_code === 'message-unconfirmed') {
+          const expectedDigest = typeof continuation.unconfirmed_thread_id === 'string'
+            ? contentHash('unconfirmed-thread\0' + continuation.unconfirmed_thread_id)
+            : 'INVALID';
+          if (eventData?.unconfirmed_receipt_digest !== expectedDigest) {
+            errors.push(`App failure ${continuation.attempt_id}/${session.run_id} receipt digest mismatch`);
+          }
+        } else if (Object.hasOwn(eventData ?? {}, 'unconfirmed_receipt_digest')) {
+          errors.push(`App failure ${continuation.attempt_id}/${session.run_id} unexpected receipt digest`);
+        }
+      }
+      const proofEvent = proof[0];
+      const proofData = proofEvent?.data ?? {};
+      const lease = loop?.session_chain?.lease ?? {};
+      const ownerBoundProof = ['app-task-failed', 'app-task-swept',
+        'app-task-abandoned', 'app-task-consent-revoked', 'run-recovered']
+        .includes(expectedType);
+      if (ownerBoundProof
+          && (typeof proofData.owner_run_id !== 'string'
+            || !Number.isSafeInteger(proofData.generation)
+            || proofData.generation < 1 || proofData.generation > lease.generation
+            || !sessions.some(item => item.run_id === proofData.owner_run_id
+              && item.run_id !== session.run_id))) {
+        errors.push(`App terminal ${continuation.attempt_id}/${session.run_id} owner binding invalid`);
+      }
+      const isLeaseBound = lease.handoff_transport === 'codex-app'
+        && lease.handoff_attempt_id === continuation.attempt_id
+        && lease.handoff_child_run_id === session.run_id;
+      if (isLeaseBound && ownerBoundProof
+          && (proofData.owner_run_id !== lease.owner_run_id
+            || proofData.generation !== lease.generation)) {
+        errors.push(`App terminal ${continuation.attempt_id}/${session.run_id} live binding mismatch`);
+      }
+      const proofIndex = events.indexOf(proofEvent);
+      const historicalProof = isProvenHistorical(
+        proofData.owner_run_id, proofData.generation, proofIndex);
+      const currentProof = ownerBoundProof && !historicalProof;
+      if (currentProof && (proofData.owner_run_id !== lease.owner_run_id
+          || proofData.generation !== lease.generation)) {
+        errors.push(`App terminal ${continuation.attempt_id}/${session.run_id} unsuperseded binding mismatch`);
+      }
+      if (currentProof && !isLeaseBound) {
+        const laterFinishes = events.slice(proofIndex + 1)
+          .filter(event => event?.type === 'finish');
+        const terminalProjection = ['completed', 'stopped'].includes(loop?.status)
+          && laterFinishes.length === 1
+          && laterFinishes[0].data?.status === loop.status
+          && laterFinishes[0].data?.reportRel === (loop.termination?.final_report ?? null)
+          && laterFinishes[0].ts === loop.termination?.finished_at;
+        const laterRecovery = expectedType === 'run-recovered' ? proofEvent
+          : events.slice(proofIndex + 1).find(event => {
+            if (event?.type !== 'run-recovered') return false;
+            const data = event.data ?? {};
+            const noChild = data.child_run_id === undefined
+              && (Object.keys(data).length === 0
+                || data.owner_run_id === proofData.owner_run_id
+                  && data.generation === proofData.generation);
+            const sameChild = data.attempt_id === continuation.attempt_id
+              && data.child_run_id === session.run_id
+              && data.owner_run_id === proofData.owner_run_id
+              && data.generation === proofData.generation;
+            return noChild || sameChild;
+          });
+        const incoming = sessions.filter(parent => parent.superseded_by === session.run_id);
+        const ownerSession = sessions.find(item => item.run_id === proofData.owner_run_id);
+        const clearedLifecycle = incoming.length === 0 && ownerSession?.outcome == null
+          && session.started_at == null && session.ended_at == null
+          && session.host_surface == null && session.superseded_by == null;
+        const immediateOutcome = ['app-task-failed', 'app-task-swept', 'app-task-abandoned']
+          .includes(expectedType)
+          && session.outcome === 'failed_launch' && session.recovery_binding == null;
+        const recoveryData = laterRecovery?.data ?? {};
+        const recoveredSameChild = recoveryData.child_run_id === session.run_id;
+        const recoveredOutcome = recoveredSameChild
+          ? session.outcome === 'abandoned_recover'
+            && session.recovery_binding?.owner_run_id === proofData.owner_run_id
+            && session.recovery_binding?.generation === proofData.generation
+          : recoveryData.child_run_id === undefined
+            && session.outcome === 'failed_launch' && session.recovery_binding == null;
+        const cleared = ['handoff_transport', 'handoff_attempt_id', 'handoff_child_run_id',
+          'handoff_idempotency_key', 'resume_policy', 'expires_at']
+          .every(key => lease[key] == null);
+        const immediate = laterRecovery === undefined && loop?.status === 'paused'
+          && loop?.pause_reason === continuation.failure_code
+          && lease.state === 'active' && lease.handoff_phase === 'idle' && cleared
+          && clearedLifecycle && immediateOutcome;
+        const recoveredProjection = laterRecovery !== undefined && loop?.status === 'paused'
+          && loop?.pause_reason === 'recovered:awaiting-resume'
+          && lease.state === 'released' && lease.handoff_phase === 'idle' && cleared
+          && clearedLifecycle && recoveredOutcome;
+        const exactTerminal = terminalProjection && clearedLifecycle
+          && [null, 'failed_launch', 'abandoned_recover'].includes(session.outcome);
+        if (!immediate && !recoveredProjection && !exactTerminal) {
+          errors.push(`App terminal ${continuation.attempt_id}/${session.run_id} current projection invalid`);
+        }
+      }
+    } else if (controls.some(event => [
+      'app-task-consent-revoked', 'app-task-failed', 'app-task-swept',
+      'app-task-abandoned', 'run-recovered', 'finish',
+    ].includes(event.type))) {
+      errors.push(`App live ${continuation.attempt_id}/${session.run_id} has terminal control proof`);
+    }
+    const latestControl = controls.at(-1);
+    const latestAttemptTransition = events.filter(event =>
+      event?.data?.attempt_id === continuation.attempt_id
+      && event?.data?.child_run_id === session.run_id
+      && (APP_CONTROL_TYPES.has(event.type) || event.type === 'app-task-acquired')).at(-1);
+    if (latestControl?.type === 'app-task-preserved') {
+      if (loop?.status !== 'paused' || loop?.pause_reason !== latestControl.data?.failure_code
+          || loop?.session_chain?.lease?.resume_policy !== 'human') {
+        errors.push(`app-task-preserved ${continuation.attempt_id}/${session.run_id} projection mismatch`);
+      }
+    }
+    if (latestAttemptTransition?.type === 'app-task-await-timeout') {
+      if (loop?.status !== 'paused' || loop?.pause_reason !== 'app-child-timeout-awaiting'
+          || loop?.session_chain?.lease?.resume_policy !== 'human') {
+        errors.push(`app-task-await-timeout ${continuation.attempt_id}/${session.run_id} projection mismatch`);
+      }
+    }
+    const recovery = controls.find(event => event.type === 'run-recovered');
+    if (recovery && (!['abandoned_recover', 'took_over'].includes(session.outcome)
+        || typeof session.recovery_binding?.owner_run_id !== 'string'
+        || !Number.isSafeInteger(session.recovery_binding?.generation)
+        || (continuation.phase === 'failed'
+          && (session.recovery_binding.owner_run_id
+              !== continuation.failure_binding?.owner_run_id
+            || session.recovery_binding.generation
+              !== continuation.failure_binding?.generation)))) {
+      errors.push(`run-recovered ${continuation.attempt_id}/${session.run_id} projection mismatch`);
+    }
+    const finished = controls.find(event => event.type === 'finish');
+    if (finished && (!['completed', 'stopped'].includes(loop?.status)
+        || loop?.session_chain?.lease?.handoff_attempt_id === continuation.attempt_id
+        || sessions.some(parent => parent.superseded_by === session.run_id))) {
+      errors.push(`finish ${continuation.attempt_id}/${session.run_id} projection mismatch`);
+    }
+  }
+  const recoveryEvents = events.filter(item => item?.type === 'run-recovered');
+  for (const event of recoveryEvents) {
+    const data = event.data ?? {};
+    const keys = Object.keys(data).sort();
+    if (strictMs(event.ts) === null) errors.push('run-recovered timestamp invalid');
+    if (data.child_run_id === undefined) {
+      const legacy = keys.length === 0 && loop?.initialization === undefined;
+      const newFormat = JSON.stringify(keys) === JSON.stringify(['generation', 'owner_run_id'])
+        && typeof data.owner_run_id === 'string'
+        && sessions.some(session => session.run_id === data.owner_run_id)
+        && Number.isSafeInteger(data.generation) && data.generation >= 1
+        && data.generation <= (loop?.session_chain?.lease?.generation ?? 0);
+      if (!legacy && !newFormat) {
+        errors.push('no-child run-recovered causal binding invalid');
+      }
+      continue;
+    }
+    const session = sessions.find(item => item.run_id === data.child_run_id);
+    const binding = session?.recovery_binding;
+    const app = session?.continuation?.transport === 'codex-app';
+    const expectedKeys = app
+      ? ['attempt_id', 'child_run_id', 'failure_code', 'generation', 'owner_run_id']
+      : ['child_run_id', 'generation', 'owner_run_id'];
+    if (JSON.stringify(keys) !== JSON.stringify(expectedKeys.sort())
+        || !session || !['abandoned_recover', 'took_over'].includes(session.outcome)
+        || data.owner_run_id !== binding?.owner_run_id
+        || data.generation !== binding?.generation
+        || !Number.isSafeInteger(data.generation) || data.generation < 1
+        || (app && (data.attempt_id !== session.continuation.attempt_id
+          || data.failure_code !== session.continuation.failure_code))) {
+      errors.push(`run-recovered ${String(data.child_run_id)} causal binding mismatch`);
+    }
+  }
+  if (loop?.initialization !== undefined) {
+    for (const session of sessions.filter(item => item?.recovery_binding != null)) {
+      const binding = session.recovery_binding;
+      const app = session?.continuation?.transport === 'codex-app';
+      const matches = events.filter(event => event?.type === 'run-recovered'
+        && event?.data?.child_run_id === session.run_id
+        && event?.data?.owner_run_id === binding.owner_run_id
+        && event?.data?.generation === binding.generation
+        && (!app || (event.data?.attempt_id === session.continuation.attempt_id
+          && event.data?.failure_code === session.continuation.failure_code)));
+      if (matches.length !== 1) {
+        errors.push(`session ${String(session.run_id)} recovery proof count=${matches.length}`);
+      }
+    }
+  }
+  if (loop?.status === 'paused' && loop?.pause_reason === 'recovered:awaiting-resume') {
+    const lease = loop?.session_chain?.lease ?? {};
+    const latest = recoveryEvents.at(-1);
+    const data = latest?.data ?? {};
+    const exactLegacy = loop?.initialization === undefined
+      && Object.keys(data).length === 0;
+    const exactCurrent = data.owner_run_id === lease.owner_run_id
+      && data.generation === lease.generation;
+    const cleared = ['handoff_transport', 'handoff_attempt_id', 'handoff_child_run_id',
+      'handoff_idempotency_key', 'resume_policy', 'expires_at']
+      .every(key => lease[key] == null);
+    if (!latest || (!exactLegacy && !exactCurrent)
+        || lease.state !== 'released' || lease.handoff_phase !== 'idle' || !cleared) {
+      errors.push('current recovered projection lacks exact latest recovery proof');
+    }
+  }
+  const finishEvents = events.filter(event => event?.type === 'finish');
+  const terminalStatus = ['completed', 'stopped'].includes(loop?.status);
+  if (finishEvents.length !== (terminalStatus ? 1 : 0)) {
+    errors.push(`finish global count=${finishEvents.length}`);
+  } else if (terminalStatus) {
+    const finish = finishEvents[0];
+    const finishKeys = Object.keys(finish.data ?? {}).sort();
+    const exactFinishKeys = APP_CONTROL_EXACT_KEYS.finish.some(keys =>
+      JSON.stringify(finishKeys) === JSON.stringify([...keys].sort()));
+    if (!exactFinishKeys) errors.push('finish global exact keys invalid');
+    const finishMs = strictMs(finish.ts);
+    const finishedMs = strictMs(loop?.termination?.finished_at);
+    const exactFinishClock = finish.ts === loop?.termination?.finished_at;
+    const legacyWriterTick = preCheckpointLegacy
+      && finishMs !== null
+      && finishedMs !== null
+      && finishMs === finishedMs + 1;
+    if (finishMs === null
+        || finish.data?.status !== loop.status
+        || finish.data?.reportRel !== (loop?.termination?.final_report ?? null)
+        || (!exactFinishClock && !legacyWriterTick)) {
+      errors.push('finish global terminal projection mismatch');
+    }
+  }
+  if (finishEvents.length === 1) {
+    const finishIndex = events.indexOf(finishEvents[0]);
+    if (recoveryEvents.some(event => events.indexOf(event) > finishIndex)) {
+      errors.push('run-recovered occurs after finish');
+    }
+    if (acquisitionEdges.some(edge => edge.index > finishIndex)) {
+      errors.push('lease acquisition occurs after finish');
+    }
+  }
+  const lease = currentLease;
+  for (const recovery of recoveryEvents) {
+    const data = recovery.data ?? {};
+    if (!Number.isSafeInteger(data.generation)) continue;
+    const recoveryIndex = events.indexOf(recovery);
+    if (isProvenHistorical(data.owner_run_id, data.generation, recoveryIndex)) continue;
+    if (data.owner_run_id !== lease.owner_run_id
+        || data.generation !== lease.generation) {
+      errors.push('unsuperseded recovery binding mismatch');
+      continue;
+    }
+    const laterFinish = finishEvents.length === 1
+      && events.indexOf(finishEvents[0]) > recoveryIndex;
+    const cleared = ['handoff_transport', 'handoff_attempt_id', 'handoff_child_run_id',
+      'handoff_idempotency_key', 'resume_policy', 'expires_at']
+      .every(key => lease[key] == null);
+    const exactRecovered = loop?.status === 'paused'
+      && loop?.pause_reason === 'recovered:awaiting-resume'
+      && lease.state === 'released' && lease.handoff_phase === 'idle' && cleared;
+    const exactTerminal = terminalStatus && laterFinish;
+    if (!exactRecovered && !exactTerminal) {
+      errors.push('unsuperseded recovery projection mismatch');
+    }
+  }
+  const revokeEvents = events.filter(event => event?.type === 'app-task-consent-revoked');
+  const consent = loop?.autonomy?.app_task_continuation;
+  if (consent?.revoked_at == null) {
+    if (revokeEvents.length !== 0) errors.push('App consent revoke event without durable revoke');
+  } else if (revokeEvents.length !== 1) {
+    errors.push(`App consent revoke count=${revokeEvents.length}`);
+  } else {
+    const revoke = revokeEvents[0];
+    const data = revoke.data ?? {};
+    const nullableIdentity = data.attempt_id === null && data.child_run_id === null;
+    const exactIdentity = typeof data.attempt_id === 'string'
+      && typeof data.child_run_id === 'string'
+      && identities.has(`${data.attempt_id}\u0000${data.child_run_id}`);
+    const owner = sessions.find(session => session.run_id === data.owner_run_id);
+    if (strictMs(revoke.ts) === null || revoke.ts !== consent.revoked_at
+        || consent.mode !== 'manual' || consent.authority !== 'human-confirmed'
+        || typeof data.owner_run_id !== 'string' || data.owner_run_id.length === 0
+        || !Number.isSafeInteger(data.generation) || data.generation < 1
+        || data.generation > (loop?.session_chain?.lease?.generation ?? 0)
+        || !owner || (exactIdentity && owner.run_id === data.child_run_id)
+        || !(nullableIdentity || exactIdentity)
+        || ![null, 'consent-revoked'].includes(data.failure_code)) {
+      errors.push('App consent revoke projection mismatch');
+    }
+  }
+  const sessionByOwner = new Map(sessions.map((session, index) =>
+    [session.run_id, { session, index }]));
+  const hostEvents = new Map();
+  for (const event of events) {
+    if (event?.type !== 'host-surface-observed') continue;
+    const data = event.data ?? {};
+    const found = sessionByOwner.get(data.owner_run_id);
+    if (data.run_id !== loop?.run_id || !found) {
+      errors.push(`host-surface-observed orphan run/owner ${String(data.run_id)}/${String(data.owner_run_id)}`);
+      continue;
+    }
+    const surface = found.session.host_surface;
+    let digest = 'INVALID';
+    try { digest = hostSurfaceFactsDigest(surface); } catch {}
+    if (surface == null || data.kind !== surface.kind
+        || !Number.isSafeInteger(data.observed_generation) || data.observed_generation < 1
+        || strictMs(event.ts) === null || data.observation_digest !== digest
+        || !['observed', 'reattested'].includes(data.outcome)) {
+      errors.push(`host-surface-observed ${data.owner_run_id} fields invalid`);
+      continue;
+    }
+    const rows = hostEvents.get(data.owner_run_id) ?? [];
+    rows.push(event);
+    hostEvents.set(data.owner_run_id, rows);
+  }
+  for (const [index, session] of sessions.entries()) {
+    const surface = session?.host_surface;
+    const rows = hostEvents.get(session.run_id) ?? [];
+    const seed = hostObservationSeed(loop, session, index, events);
+    if (surface == null) {
+      if (rows.length !== 0) errors.push(`host-surface-observed ${session.run_id} has null surface`);
+      continue;
+    }
+    let previousGeneration = seed?.generation ?? 0;
+    for (const [rowIndex, event] of rows.entries()) {
+      const generation = event.data.observed_generation;
+      const expectedOutcome = seed !== null || rowIndex > 0 ? 'reattested' : 'observed';
+      if (generation <= previousGeneration) {
+        errors.push(`host-surface-observed ${session.run_id} generation duplicate/regression`);
+      }
+      if (event.data.outcome !== expectedOutcome) {
+        errors.push(`host-surface-observed ${session.run_id}/${generation} outcome mismatch`);
+      }
+      previousGeneration = Math.max(previousGeneration, generation);
+    }
+    if (rows.length === 0) {
+      const exactSeed = seed !== null
+        && surface.observed_generation === seed.generation
+        && surface.observed_at === seed.observedAt;
+      if (!exactSeed) errors.push(`host-surface-observed ${session.run_id} current proof missing`);
+      continue;
+    }
+    const latest = rows.at(-1);
+    let digest = 'INVALID';
+    try { digest = hostSurfaceFactsDigest(surface); } catch {}
+    if (latest.data.observed_generation !== surface.observed_generation
+        || latest.data.kind !== surface.kind
+        || latest.data.observation_digest !== digest
+        || latest.ts !== surface.observed_at) {
+      errors.push(`host-surface-observed ${session.run_id} latest attestation mismatch`);
+    }
+  }
+  const appTypes = new Set([...APP_EVENT_CLOCK.map(([, type]) => type), ...APP_CONTROL_TYPES]);
+  for (const event of events) {
+    if (!appTypes.has(event?.type)) continue;
+    const attempt = event?.data?.attempt_id;
+    const child = event?.data?.child_run_id;
+    if (event.type === 'handoff-emitted' && attempt === undefined) continue;
+    if (event.type === 'run-recovered' && attempt === undefined) continue;
+    if (event.type === 'finish' && attempt === undefined && child === undefined) continue;
+    if (event.type === 'app-task-consent-revoked'
+        && attempt === null && child === null) continue;
+    if (typeof attempt !== 'string' || typeof child !== 'string'
+        || !identities.has(`${attempt}\u0000${child}`)) {
+      errors.push(`${event.type} orphan App identity`);
+    }
+  }
+  return { ok: errors.length === 0, errors };
 }
 
 export function validate(loopJson, schema = loadSchema()) {

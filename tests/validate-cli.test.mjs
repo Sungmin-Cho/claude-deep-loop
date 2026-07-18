@@ -82,3 +82,88 @@ test('validate exits 0 for the bundled recipes/ dir (validated independent of --
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
   assert.equal(runValidate(['--project-root', root]), 0);
 });
+
+import { test as test7bCli } from 'node:test';
+import assert7bCli from 'node:assert/strict';
+import { mkdtempSync as temp7b, writeFileSync as write7b } from 'node:fs';
+import { tmpdir as tmp7b } from 'node:os';
+import { join as join7b } from 'node:path';
+import { contentHash as hash7b } from '../scripts/lib/envelope.mjs';
+import { appHostTaskCwdDigest as cwdDigest7b } from '../scripts/lib/host-surface.mjs';
+import { initRun as init7b } from '../scripts/lib/initrun.mjs';
+import { appendAnchored as append7b } from '../scripts/lib/integrity.mjs';
+import { readState as read7b } from '../scripts/lib/state.mjs';
+
+function writeHashValidTamper7b(root, runId, loop) {
+  const directory = join7b(root, '.deep-loop', 'runs', runId);
+  const raw = JSON.stringify(loop, null, 2);
+  write7b(join7b(directory, 'loop.json'), raw);
+  write7b(join7b(directory, '.loop.hash'), hash7b(raw));
+}
+
+test7bCli('validate CLI rejects App event timestamp drift in a hash-valid run', () => {
+  const root = temp7b(join7b(tmp7b(), 'dl-app-correlation-'));
+  const { runId } = init7b(root, { runtime: 'codex', goal: 'g',
+    now: new Date('2026-07-13T00:00:00.000Z') });
+  const seeded = read7b(root, runId).data;
+  const canonicalRoot = seeded.project.root;
+  seeded.session_chain.sessions[0].host_surface = {
+    kind: 'codex-app', source: 'codex-app-tool-provenance',
+    capabilities: ['create-thread-local', 'list-projects', 'structured-process-stdin'],
+    structured_stdin_mode: 'pty-raw-noecho', host_task_cwd: canonicalRoot,
+    host_task_cwd_source: 'app-task-context', kernel_cwd_at_observation: canonicalRoot,
+    observed_generation: 1, observed_at: '2026-07-13T00:00:00.000Z',
+  };
+  seeded.autonomy.app_task_continuation = { mode: 'auto', authority: 'human-confirmed',
+    confirmed_at: '2026-07-13T00:00:00.000Z', revoked_at: null };
+  writeHashValidTamper7b(root, runId, seeded);
+  const attempt = '01JAPPTASK0000000000000000';
+  const childId = '01JAPPCHD00000000000000000';
+  append7b(root, runId, { type: 'handoff-emitted',
+    data: { attempt_id: attempt, child_run_id: childId } }, loop => {
+    const parent = loop.session_chain.sessions.find(session =>
+      session.run_id === loop.session_chain.lease.owner_run_id);
+    parent.superseded_by = childId;
+    loop.session_chain.sessions.push({ run_id: childId, started_at: null, ended_at: null,
+      turns: 0, outcome: null, superseded_by: null, host_surface: null, continuation: {
+        transport: 'codex-app', attempt_id: attempt, route: 'create', context_mode: 'fresh',
+        phase: 'emitted', expected_runtime: 'codex', expected_host_surface: 'codex-app',
+        target_cwd: canonicalRoot,
+        host_task_cwd_digest: cwdDigest7b(parent.host_surface, canonicalRoot),
+        workstream_id: null,
+        project_id: null, descriptor_digest: null,
+        emitted_at: '2026-07-13T00:00:01.000Z',
+        prepare_deadline: '2026-07-13T00:05:01.000Z', prepared_at: null,
+        confirmation_deadline: null, confirmed_at: null, acquired_at: null,
+        acquired_generation: null, thread_id: null, unconfirmed_thread_id: null,
+        failure_code: null, failure_binding: null,
+      } });
+    Object.assign(loop.session_chain.lease, { state: 'releasing', handoff_phase: 'emitted',
+      handoff_transport: 'codex-app', handoff_attempt_id: attempt,
+      handoff_child_run_id: childId, resume_policy: 'app' });
+  }, undefined, { nowFn: () => Date.parse('2026-07-13T00:00:01.000Z') });
+  const loop = read7b(root, runId).data;
+  loop.session_chain.sessions.at(-1).continuation.emitted_at = '2026-07-13T00:00:02.000Z';
+  writeHashValidTamper7b(root, runId, loop);
+  const result = runCli(['validate', '--project-root', root, '--run-id', runId]);
+  assert7bCli.notEqual(result.status, 0);
+  assert7bCli.match(result.stderr, /App event correlation/);
+
+  const stampRoot = temp7b(join7b(tmp7b(), 'dl-host-stamp-correlation-'));
+  const stamped = init7b(stampRoot, { runtime: 'codex', goal: 'g',
+    now: new Date('2026-07-13T00:00:00.000Z') });
+  const stampOnly = read7b(stampRoot, stamped.runId).data;
+  stampOnly.session_chain.lease.generation = 2;
+  stampOnly.session_chain.sessions[0].host_surface = {
+    kind: 'codex-app', source: 'codex-app-tool-provenance', capabilities: [],
+    structured_stdin_mode: null, host_task_cwd: null, host_task_cwd_source: null,
+    kernel_cwd_at_observation: stampRoot, observed_generation: 2,
+    observed_at: '2026-07-13T00:00:02.000Z',
+  };
+  writeHashValidTamper7b(stampRoot, stamped.runId, stampOnly);
+  const stampResult = runCli(['validate', '--project-root', stampRoot,
+    '--run-id', stamped.runId]);
+  assert7bCli.notEqual(stampResult.status, 0);
+  assert7bCli.match(stampResult.stderr, /App event correlation/,
+    'current-generation stamp without its anchored observation event is invalid');
+});
