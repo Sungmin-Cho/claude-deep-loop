@@ -3795,3 +3795,45 @@ main-agent judgment:
 - review boundary: force-add and commit this evidence-only row, then review the exact resulting
   commit over base `f15d42dc0a21a2f37d86aa1a3467f5e3a2820b53`. Any later code, test, schema,
   plan, design, or release-document change invalidates the receipt and requires a fresh target.
+
+### Gate 3A checkpoint round 1 review and Respond
+
+- reviewed base/head: `f15d42dc0a21a2f37d86aa1a3467f5e3a2820b53..4a4c5c82ea8aa5b6b0429cd7550511f4a7aa43da`;
+  target tree `4672801fe95d144ccec0140d50db365189af1e42`.
+- invocation: two direct, read-only, ephemeral Codex processes in the exact worktree, each fixed to
+  `gpt-5.6-sol` / high. Opus and agy were not planned or invoked. Both exited 0 with valid final bytes;
+  `N_planned=2`, `N_actual=2`.
+- standard task `019f7367-0505-71e1-a084-b140a94910b3`: `REQUEST_CHANGES`, Red/Yellow/Info
+  `0 / 3 / 0`.
+- adversarial task `019f7367-04d3-7890-ae3e-d51092cdf94c`: `REQUEST_CHANGES`, Red/Yellow/Info
+  `0 / 4 / 2`.
+- consolidated disposition: `REQUEST_CHANGES`, Red 0 / accepted Yellow 6 / Info 2. Accepted roots:
+  duplicate or exotic active-workstream authority, uncorrelated enum-only profiles, optional genesis
+  surface proof/clock, sparse projection bound bypass, erasable historical acquisition provenance,
+  and rebindable progressed failure provenance.
+- one reviewer claim was rejected: the fixed two-immediate transport barrier is the explicit Task 2B
+  contract and must not be replaced with an EOF-dependent or unbounded drain.
+- formal review: `.deep-review/reports/2026-07-18-132114-review.md`, SHA-256
+  `3150cb702836e70bd43ae7f50991842426c29edc6103efe089878e9fcada694a`.
+- response: all six accepted roots closed under strict RED to GREEN; rejected transport claim left
+  untouched. `.deep-review/responses/2026-07-18-134302-response.md`, SHA-256
+  `55c21f5c0d73b034018ab92d566fc6a440bf8b23b1a7f9b9c524f7a050eb6f0b`;
+  `execution_path=subagent`.
+- correction commit/tree: `687ba42d5ec28e491393d3b236870207397a29ea` /
+  `88ab82591371bfe7f2a39a505111a6fc4548ec1d`; exactly four authorized source/test files changed.
+- implementer RED: six root tests `0/6`, plus one capability-entry test `0/1`. Implementer GREEN:
+  focused `7/7`, checkpoint groups `176/176` and `128/128`, preflight `1,518/1,518`.
+- independent main replay:
+  - focused: PASS — 7/7; output SHA-256
+    `f045328f89d8387c06f237e0e0714e711ab6e7955d0e0dff953180f688efc5a2`.
+  - checkpoint group 1: PASS — 176/176; output SHA-256
+    `6c5ee75b013cfc4b3941941b9f0e30bf1410fb2ec3682f132d8d8e7909a96430`.
+  - checkpoint group 2: PASS — 128/128; output SHA-256
+    `21cdedf1d3e480d26eda527c32447caadf9a0ca646498c739b1b728a49431919`.
+  - `npm run preflight`: PASS — 1,518/1,518; output SHA-256
+    `316f2f9c72ac146e14673404fb9aaf3ebe9432de2e23b143da69cda02543f690`.
+- recurring findings Stage 5.5 run `01KXSQG47T0HF8N5V87FJDB9GR`: security `40→46`;
+  architecture `96`, test-coverage `54`, and error-handling `33` unchanged. Validated artifact SHA-256
+  `36e449f25b62af609623bb5eeea16d10d8694f5f9ae1767bec6d8f2470b013a0`.
+- gate state: one fresh focused Round 2 only. Two valid `APPROVE`, Red/Yellow `0 / 0`, plus the
+  retained main replay close Gate 3A immediately and advance to Gate 3B; no speculative extra round.
