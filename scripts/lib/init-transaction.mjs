@@ -827,6 +827,7 @@ export function withInitLock(root, fn, deps = {}) {
     ?? ((left, right) => left.dev === right.dev && left.ino === right.ino);
   let candidateOwned = null;
   let linked = false;
+  let releaseAuthorized = false;
   let releaseError = null;
   try {
     let candidateDescriptor = null;
@@ -894,9 +895,10 @@ export function withInitLock(root, fn, deps = {}) {
         || !sameFile(candidateOwned.stat, published.authority.stat)) {
       throw new Error('LOCK_ACQUIRE_RACED');
     }
+    releaseAuthorized = true;
     return fn();
   } finally {
-    if (linked) {
+    if (linked && releaseAuthorized) {
       try {
         const beforeRelease = initFileRecord(candidate, deps, lstat);
         if (!sameInitFile(candidateOwned, beforeRelease, sameFile)) {

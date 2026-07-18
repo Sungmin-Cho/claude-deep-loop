@@ -1094,6 +1094,46 @@ test('quality authority namespace is revalidated after candidate write before pu
   assert.equal(readFileSync(orphan, 'utf8'), 'foreign-authority-artifact');
 });
 
+test('quality link-seam successor injection cannot authorize release or activate foreign holder', () => {
+  const root = fixtureDir();
+  const control = join(root, '.deep-loop');
+  const nonce = 'publishwindow001';
+  const fixed = join(control, '.init.lock');
+  const release = join(control, '.init-lock-release-' + nonce);
+  const successor = join(control, '.init-lock-successor-' + nonce);
+  const foreign = { pid: 99, nonce: 'foreignholder001',
+    acquired_at: '2026-07-13T00:00:01.000Z' };
+  let callbackCalls = 0;
+  assert.throws(() => withInitLock(root, () => { callbackCalls += 1; }, {
+    pid: 7, nonce: () => nonce,
+    now: () => Date.parse('2026-07-13T00:00:00.000Z'),
+    link: (source, destination) => {
+      const result = linkSync(source, destination);
+      if (destination === fixed) {
+        writeFileSync(successor, JSON.stringify(foreign), { flag: 'wx' });
+      }
+      return result;
+    },
+  }), /LOCK_CHAIN_INVALID/);
+
+  assert.equal(callbackCalls, 0, 'post-publication verification must precede callback entry');
+  assert.equal(existsSync(release), false,
+    'an unverified publication must never create release evidence');
+  assert.deepEqual(JSON.parse(readFileSync(successor)), foreign,
+    'the foreign successor remains append-only evidence, not owned cleanup');
+  assert.equal(JSON.parse(readFileSync(fixed)).nonce, nonce,
+    'the linked authority remains held when publication verification fails');
+
+  const binding = { attempt_id: '01JAPPGEN00000000000000000',
+    expected_current_digest: 'NONE', expected_request_digest: 'a'.repeat(64) };
+  const probed = [];
+  const status = statusInitialization(root, binding, initDeps(root, {
+    probePidIdentity: holder => { probed.push(holder.pid); return 'alive'; },
+  }));
+  assert.equal(status.lock_state, 'invalid');
+  assert.deepEqual(probed, [], 'the foreign successor is never activated as terminal authority');
+});
+
 test('quality sweep ABA replacement during liveness probe is preserved', () => {
   const root = fixtureDir();
   const candidate = join(root, '.deep-loop',
