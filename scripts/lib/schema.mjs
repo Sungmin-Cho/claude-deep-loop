@@ -1167,6 +1167,10 @@ export function verifyAppEventCorrelation(loop, lines) {
     const prefixIsUnversioned = prefix.every(episode => episode?.creation_contract == null)
       && workstreamPrefix.every(workstream => workstream?.creation_contract == null);
     const origins = data.legacy_proof_origins;
+    let canonicalOrigins = null;
+    try {
+      canonicalOrigins = legacyProofOrigins(loop, legacyCount, legacyWorkstreamCount);
+    } catch {}
     const originKeys = Array.isArray(origins)
       ? origins.map(origin => `${origin?.kind}:${origin?.id}`) : [];
     const expectedOriginKeys = [
@@ -1174,6 +1178,8 @@ export function verifyAppEventCorrelation(loop, lines) {
       ...workstreamPrefix.map(workstream => `workstream:${workstream?.id}`),
     ].sort();
     const originsValid = Array.isArray(origins)
+      && canonicalOrigins !== null
+      && JSON.stringify(origins) === JSON.stringify(canonicalOrigins)
       && origins.length === legacyCount + legacyWorkstreamCount
       && JSON.stringify(originKeys) === JSON.stringify(expectedOriginKeys)
       && new Set(originKeys).size === originKeys.length
@@ -1621,17 +1627,10 @@ export function verifyAppEventCorrelation(loop, lines) {
     const exactFinishKeys = APP_CONTROL_EXACT_KEYS.finish.some(keys =>
       JSON.stringify(finishKeys) === JSON.stringify([...keys].sort()));
     if (!exactFinishKeys) errors.push('finish global exact keys invalid');
-    const finishMs = strictMs(finish.ts);
-    const finishedMs = strictMs(loop?.termination?.finished_at);
-    const exactFinishClock = finish.ts === loop?.termination?.finished_at;
-    const legacyWriterTick = preCheckpointLegacy
-      && finishMs !== null
-      && finishedMs !== null
-      && finishMs === finishedMs + 1;
-    if (finishMs === null
+    if (strictMs(finish.ts) === null
         || finish.data?.status !== loop.status
         || finish.data?.reportRel !== (loop?.termination?.final_report ?? null)
-        || (!exactFinishClock && !legacyWriterTick)) {
+        || finish.ts !== loop?.termination?.finished_at) {
       errors.push('finish global terminal projection mismatch');
     }
   }

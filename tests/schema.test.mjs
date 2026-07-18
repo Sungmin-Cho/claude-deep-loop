@@ -1577,8 +1577,8 @@ test7b('App recovery and finish controls bind exact identity code and terminal p
   assert7b.deepEqual(verify7b(generic, genericLines), { ok: true, errors: [] });
   const legacyTick = structuredClone(genericLines);
   legacyTick[0].ts = '2026-07-13T00:00:03.001Z';
-  assert7b.deepEqual(verify7b(generic, legacyTick), { ok: true, errors: [] },
-    'checkpoint-free legacy finish retains the old one-millisecond writer skew');
+  assert7b.equal(verify7b(generic, legacyTick).ok, false,
+    'checkpoint-free legacy finish still requires the exact terminal timestamp');
   const genericRawExtra = structuredClone(genericLines);
   genericRawExtra[0].data.thread_id = 'raw-host-receipt';
   assert7b.equal(verify7b(generic, genericRawExtra).ok, false,
@@ -1802,6 +1802,27 @@ function legacyGeneration4AfterAcquire() {
   return loop;
 }
 
+function legacyProofState() {
+  const loop = legacyGeneration3AtCheckpoint();
+  loop.episodes = [{ id: '001-maker', role: 'maker', status: 'done',
+    artifacts: ['design.md'], reviewer_resolution: { source: 'legacy' } }];
+  loop.workstreams = [{ id: 'ws-legacy', status: 'ready', episodes: ['001-maker'] }];
+  loop.review = { points: ['design'], reviewer: 'deep-review-loop', mode: 'cross-model',
+    flags: [], converge: true, require_human_ack: false };
+  loop.recipe = { id: 'legacy-recipe', name: 'Legacy recipe', reason: 'legacy' };
+  return loop;
+}
+
+function legacyProofBaseline(loop) {
+  return { type: 'lease-lineage-baselined', ts: '2026-07-13T00:00:03.000Z', data: {
+    owner_run_id: 'LEGACY-OWNER', generation: 3, lease_state: 'released',
+    acquired_at: '2026-07-13T00:00:02.000Z', legacy_episode_count: 1,
+    legacy_workstream_count: 1, legacy_active_workstreams: [],
+    legacy_proof_origins: origins7b(loop, 1, 1),
+    legacy_authority_digest: authority7b(loop),
+  } };
+}
+
 test7b('legacy lease lineage is opaque before one checkpoint and exact after it', () => {
   const baseline = { type: 'lease-lineage-baselined',
     ts: '2026-07-13T00:00:03.000Z', data: {
@@ -1825,4 +1846,34 @@ test7b('legacy lease lineage is opaque before one checkpoint and exact after it'
     [baseline, { ...acquire, data: { ...acquire.data, previous_owner_run_id: 'OTHER' } }],
     [baseline, { ...acquire, data: { ...acquire.data, generation: 5 } }],
   ]) assert7b.equal(verify7b(legacyGeneration4AfterAcquire(), invalid).ok, false);
+});
+
+test7b('legacy checkpoint binds canonical proof origins and top-level recipe authority', () => {
+  const loop = legacyProofState();
+  const baseline = legacyProofBaseline(loop);
+  assert7b.deepEqual(verify7b(loop, [baseline]), { ok: true, errors: [] });
+
+  for (const index of [0, 1]) {
+    const forged = structuredClone(baseline);
+    forged.data.legacy_proof_origins[index].digest = 'f'.repeat(64);
+    assert7b.equal(verify7b(loop, [forged]).ok, false,
+      `canonical legacy proof origin ${index} rejects a digest-only forgery`);
+  }
+  const rewrittenProof = structuredClone(loop);
+  rewrittenProof.episodes[0].artifacts = ['forged.md'];
+  assert7b.equal(verify7b(rewrittenProof, [baseline]).ok, false,
+    'checkpoint proof origins bind the canonical entity projection');
+
+  const recipeDrift = structuredClone(loop);
+  recipeDrift.recipe.id = 'forged-recipe';
+  assert7b.notEqual(authority7b(recipeDrift), authority7b(loop));
+  assert7b.equal(verify7b(recipeDrift, [baseline]).ok, false,
+    'legacy authority binds the durable top-level recipe id');
+  const descriptiveRecipeDrift = structuredClone(loop);
+  descriptiveRecipeDrift.recipe.name = 'Renamed legacy recipe';
+  descriptiveRecipeDrift.recipe.reason = 'new description';
+  assert7b.equal(authority7b(descriptiveRecipeDrift), authority7b(loop),
+    'the Task 7A authority contract binds recipe id, not descriptive metadata');
+  assert7b.deepEqual(verify7b(descriptiveRecipeDrift, [baseline]),
+    { ok: true, errors: [] });
 });
