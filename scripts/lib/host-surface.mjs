@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { posix, win32 } from 'node:path';
+import { types } from 'node:util';
 import { validateRuntimeSurface } from './runtime.mjs';
 
 export const HOST_SURFACES = Object.freeze(['claude-code', 'claude-desktop', 'codex-cli', 'codex-app']);
@@ -26,6 +27,7 @@ export function hostSurfaceFactsDigest(observation) {
   if (!observation || typeof observation !== 'object' || Array.isArray(observation)) {
     throw new Error('HOST_SURFACE_DIGEST_INVALID');
   }
+  if (types.isProxy(observation.capabilities)) throw new Error('HOST_SURFACE_DIGEST_INVALID');
   return sha256(JSON.stringify({
     kind: observation.kind,
     source: observation.source,
@@ -69,7 +71,8 @@ const rawObservationFailure = () => {
 };
 
 function exactPlainDataArray(value, { maxLength, fail }) {
-  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype
+  if (types.isProxy(value) || !Array.isArray(value)
+      || Object.getPrototypeOf(value) !== Array.prototype
       || value.length > maxLength || Object.getOwnPropertySymbols(value).length !== 0) fail();
   const names = Object.getOwnPropertyNames(value);
   const expected = [...Array(value.length).keys()].map(String);
@@ -86,6 +89,25 @@ function exactPlainDataArray(value, { maxLength, fail }) {
   });
 }
 
+function exactPlainDataObject(value, keys) {
+  if (!value || typeof value !== 'object' || types.isProxy(value) || Array.isArray(value)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(value))
+      || Object.getOwnPropertySymbols(value).length !== 0) return null;
+  const actual = Object.getOwnPropertyNames(value).sort();
+  const expected = [...keys].sort();
+  if (actual.length !== expected.length
+      || !expected.every((key, index) => actual[index] === key)) return null;
+  const entries = [];
+  for (const key of keys) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || descriptor.enumerable !== true || !Object.hasOwn(descriptor, 'value')) {
+      return null;
+    }
+    entries.push([key, descriptor.value]);
+  }
+  return Object.fromEntries(entries);
+}
+
 function exactCapabilityArray(value) {
   return exactPlainDataArray(value, {
     maxLength: APP_CAPABILITIES.length, fail: rawObservationFailure,
@@ -94,12 +116,12 @@ function exactCapabilityArray(value) {
 
 export function isManualEnumHostProfile(profile, runtime) {
   try {
-    if (!profile || typeof profile !== 'object' || Array.isArray(profile)
-        || ![Object.prototype, null].includes(Object.getPrototypeOf(profile))) return false;
-    const kind = profile.kind;
+    const values = exactPlainDataObject(profile, ['kind', 'source', 'capabilities']);
+    if (values === null) return false;
+    const { kind, source } = values;
     validateRuntimeSurface(runtime, kind);
-    if (!HOST_SURFACES.includes(kind) || !SOURCES[kind]?.includes(profile.source)) return false;
-    const capabilities = exactPlainDataArray(profile.capabilities, {
+    if (!HOST_SURFACES.includes(kind) || !SOURCES[kind]?.includes(source)) return false;
+    const capabilities = exactPlainDataArray(values.capabilities, {
       maxLength: APP_CAPABILITIES.length, fail: () => { throw new Error('invalid'); },
     });
     return new Set(capabilities).size === capabilities.length

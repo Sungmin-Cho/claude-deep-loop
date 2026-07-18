@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, isAbsolute, join, posix, win32 } from 'node:path';
+import { types } from 'node:util';
 import {
   appHostTaskCwdDigest,
   hostSurfaceFactsDigest,
@@ -227,7 +228,8 @@ const objectWithExactKeys = (value, keys) => {
 };
 
 const densePlainDataArray = (value, maxLength) => {
-  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype
+  if (types.isProxy(value) || !Array.isArray(value)
+      || Object.getPrototypeOf(value) !== Array.prototype
       || value.length > maxLength || Object.getOwnPropertySymbols(value).length !== 0) return null;
   const expected = [...Array(value.length).keys()].map(String);
   const names = Object.getOwnPropertyNames(value);
@@ -412,6 +414,7 @@ const INIT_MAX_CANONICAL_BYTES = 65_536;
 
 function canonicalProjectionValue(value) {
   if (Array.isArray(value)) {
+    if (types.isProxy(value)) throw new Error('projection Array proxy invalid');
     const limit = Math.min(value.length, INIT_MAX_ENTRIES + 1);
     return Array.from({ length: limit }, (_, index) => {
       const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
@@ -446,12 +449,11 @@ function validateBoundedProjectionTree(value, errors) {
     }
     if (Array.isArray(item)) {
       const values = densePlainDataArray(item, INIT_MAX_ENTRIES);
-      if (values === null) errors.push(label + ' array invalid');
-      const count = Math.min(item.length, INIT_MAX_ENTRIES + 1);
-      for (let index = 0; index < count; index += 1) {
-        const descriptor = Object.getOwnPropertyDescriptor(item, String(index));
-        visit(descriptor && Object.hasOwn(descriptor, 'value') ? descriptor.value : undefined,
-          depth + 1, label + '[' + index + ']');
+      if (values === null) {
+        errors.push(label + ' array invalid'); return;
+      }
+      for (let index = 0; index < values.length; index += 1) {
+        visit(values[index], depth + 1, label + '[' + index + ']');
       }
       return;
     }
@@ -585,8 +587,8 @@ function validateAppState(loop, errors) {
     if (initialization.host_surface_digest !== actualSurfaceDigest) {
       errors.push('initialization.host_surface_digest facts correlation invalid');
     }
-    if (initialObservation !== null && initialObservation.observed_generation === 1
-        && initialObservation.observed_at !== loop.created_at) {
+    if (initialObservation === null || initialObservation.observed_generation !== 1
+        || initialObservation.observed_at !== loop.created_at) {
       errors.push('initialized genesis observation clock invalid');
     }
   }

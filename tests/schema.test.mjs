@@ -487,7 +487,8 @@ test('enum-only initialization profile is allowlisted and runtime correlated', (
   const valid = enumProfileSchemaLoop();
   assert.equal(validate(valid).ok, true, validate(valid).errors.join('; '));
   const nullProfile = enumProfileSchemaLoop({ kind: null, source: null });
-  assert.equal(validate(nullProfile).ok, true, validate(nullProfile).errors.join('; '));
+  assert.equal(validate(nullProfile).ok, false,
+    'initialized genesis must retain a non-null observed host surface');
   const mutations = [
     ['unknown kind', profile => { profile.kind = 'unknown-host'; }],
     ['unknown source', profile => { profile.source = 'unknown-source'; }],
@@ -529,6 +530,17 @@ test('genesis surface digest and observation clocks are exact anchors', () => {
   nullSurface.initialization.host_surface_digest = 'b'.repeat(64);
   assert.equal(validate(nullSurface).ok, false,
     'null genesis requires the exact NONE digest');
+});
+
+test('genesis observation cannot evade generation-one clock authority', () => {
+  const loop = enumProfileSchemaLoop();
+  const genesis = loop.session_chain.sessions[0].host_surface;
+  genesis.observed_generation = 2;
+  genesis.observed_at = '2026-07-13T00:00:01.000Z';
+  loop.session_chain.lease.generation = 2;
+  loop.initialization.host_surface_digest = hostSurfaceFactsDigest(genesis);
+  assert.equal(validate(loop).ok, false,
+    'later lease generation cannot reclassify the initialized first observation');
 });
 
 test('projection arrays are dense plain arrays and count every slot', () => {
@@ -573,10 +585,37 @@ test('projection arrays are dense plain arrays and count every slot', () => {
   assert.equal(validate(symbolCandidate).ok, false, 'array symbol keys are rejected');
 });
 
+test('projection and stored capability proxies fail before executing traps', () => {
+  const proxyArray = () => {
+    let trapCount = 0;
+    const value = new Proxy(Array.from({ length: 129 }, () => null), {
+      get(backing, property, receiver) {
+        trapCount += 1;
+        return property === 'length' ? 0 : Reflect.get(backing, property, receiver);
+      },
+    });
+    return { value, traps: () => trapCount };
+  };
+
+  const projection = enumProfileSchemaLoop();
+  const projectionProxy = proxyArray();
+  projection.initialization.request_projection.plugins_detected = projectionProxy.value;
+  assert.equal(validate(projection).ok, false);
+  assert.equal(projectionProxy.traps(), 0,
+    'projection proxy must be rejected before traversal');
+
+  const stored = enumProfileSchemaLoop();
+  const storedProxy = proxyArray();
+  stored.session_chain.sessions[0].host_surface.capabilities = storedProxy.value;
+  assert.equal(validate(stored).ok, false);
+  assert.equal(storedProxy.traps(), 0,
+    'stored capability proxy must be rejected before traversal or digesting');
+});
+
 test('App extension validation is additive, exact-keyed, and consent correlation is fail closed', () => {
   const legacy = minimalValid();
   assert.equal(validate(legacy).ok, true);
-  const loop = appSchemaLoop();
+  const loop = enumProfileSchemaLoop();
   assert.equal(validate(loop).ok, true);
   const invalidConsent = structuredClone(loop);
   invalidConsent.autonomy.app_task_continuation = {
@@ -646,7 +685,8 @@ test('App extension validation is additive, exact-keyed, and consent correlation
   }
   const nullSurface = appSchemaLoop();
   assert.equal(nullSurface.session_chain.sessions[0].host_surface, null);
-  assert.equal(validate(nullSurface).ok, true, 'null enum profile remains a null surface');
+  assert.equal(validate(nullSurface).ok, false,
+    'initialized null surface is rejected while initialization-absent legacy remains additive');
 
   const arbitraryMode = appSchemaLoop({ auto: true });
   arbitraryMode.session_chain.sessions[0].host_surface.capabilities = [];
@@ -678,7 +718,7 @@ test('App extension validation is additive, exact-keyed, and consent correlation
 });
 
 test('recovered child binding is exact and remains durable historical provenance', () => {
-  const loop = appSchemaLoop();
+  const loop = appSchemaLoop({ auto: true });
   loop.status = 'paused';
   loop.pause_reason = 'recovered:awaiting-resume';
   Object.assign(loop.session_chain.lease, { state: 'released', handoff_phase: 'idle',
@@ -695,6 +735,9 @@ test('recovered child binding is exact and remains durable historical provenance
     'new-format abandoned_recover sessions require their causal binding');
   const legacyMissing = structuredClone(missing);
   delete legacyMissing.initialization;
+  legacyMissing.autonomy.app_task_continuation = {
+    mode: 'manual', authority: 'default-manual', confirmed_at: null, revoked_at: null,
+  };
   assert.equal(validate(legacyMissing).ok, true,
     'initialization-absent legacy recovery keeps field-absence compatibility');
   const extra = structuredClone(loop);

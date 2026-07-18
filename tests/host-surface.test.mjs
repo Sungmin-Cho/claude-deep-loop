@@ -5,6 +5,7 @@ import {
   appHostTaskCwdDigest,
   classifyProjectTaskDirectory,
   hostSurfaceFactsDigest,
+  isManualEnumHostProfile,
   normalizeHostObservation,
   normalizeProjectList,
   sameNativeDirectory,
@@ -338,6 +339,45 @@ test('active workstream authority input is dense plain unique and opaque', () =>
     assert.deepEqual(result, { kind: 'manual', reason: 'workstream-query-failed',
       targetCwd: target, projectId: null, workstreamId: null, contextMode: null }, label);
   }
+});
+
+test('active workstream authority rejects an Array proxy before executing traps', () => {
+  const target = '/repo/.worktrees/feature';
+  const deps = { platform: 'linux', exists: () => true, realpath: value => value,
+    stat: value => ({ dev: 1, ino: value === target ? 2 : 1 }),
+    sameFile: (left, right) => left.dev === right.dev && left.ino === right.ino };
+  let trapCount = 0;
+  const activeWorkstreams = new Proxy(['WS1', 'WS1'], {
+    get(backing, property, receiver) {
+      trapCount += 1;
+      return property === 'length' ? 1 : Reflect.get(backing, property, receiver);
+    },
+  });
+  const result = selectAppContinuationRoute({ root: '/repo', recordedHostTaskCwd: target,
+    currentHostTaskCwd: target, kernelCwd: target,
+    capabilities: ['fork-thread-same-directory', 'send-message-to-thread',
+      'structured-process-stdin'], projects: [], activeWorkstreams,
+    workstreams: [{ id: 'WS1', status: 'in_progress', worktree: '.worktrees/feature' }] }, deps);
+  assert.equal(result.kind, 'manual');
+  assert.equal(result.reason, 'workstream-query-failed');
+  assert.equal(trapCount, 0, 'proxy rejection must precede every reflective trap');
+});
+
+test('manual enum profile reads only exact own data descriptors', () => {
+  const values = { kind: 'codex-app', source: 'codex-app-tool-provenance', capabilities: [] };
+  for (const key of Object.keys(values)) {
+    let getterCount = 0;
+    const profile = { ...values };
+    Object.defineProperty(profile, key, { enumerable: true, get() {
+      getterCount += 1; return values[key];
+    } });
+    assert.equal(isManualEnumHostProfile(profile, 'codex'), false, key);
+    assert.equal(getterCount, 0, `${key} accessor must not execute`);
+  }
+  assert.equal(isManualEnumHostProfile({ ...values, extra: true }, 'codex'), false);
+  const symbol = { ...values };
+  symbol[Symbol('authority')] = true;
+  assert.equal(isManualEnumHostProfile(symbol, 'codex'), false);
 });
 
 test('Windows worktree containment tolerates path case drift but still requires file identity', () => {
