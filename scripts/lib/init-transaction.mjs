@@ -1,40 +1,156 @@
+import { types } from 'node:util';
 import { contentHash } from './envelope.mjs';
 import { validateGenesisConsent } from './app-task-continuation.mjs';
 import { hostSurfaceFactsDigest } from './host-surface.mjs';
 
-function canonicalValue(value) {
-  if (Array.isArray(value)) return value.map(canonicalValue);
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.keys(value).sort().map(key => [key, canonicalValue(value[key])]));
-  }
-  return value;
-}
-
-export function initializationRequestDigest(projection) {
-  return contentHash(JSON.stringify(canonicalValue(projection)));
-}
-
-function buildRunInitializedEvent(loop) {
-  const data = { run_id: loop.run_id,
-    request_digest: loop.initialization.request_digest,
-    host_surface_digest: loop.initialization.host_surface_digest };
-  const seq = 1;
-  const ts = loop.created_at;
-  const type = 'run-initialized';
-  const checksum = contentHash(`${seq}|${ts}|${type}|${JSON.stringify(data)}|GENESIS`);
-  return Object.freeze({ seq, ts, type, data: Object.freeze(data), checksum });
-}
-
+const NO_EXCLUDED_KEYS = new Set();
 const KERNEL_GENERATED_KEYS = new Set([
   'created_at', 'updated_at', 'detected_at', 'confirmed_at', 'revoked_at',
   'observed_generation', 'observed_at',
 ]);
+const INIT_FORBIDDEN_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
+const INIT_MAX_DEPTH = 8;
+const INIT_MAX_NODES = 256;
+const INIT_MAX_ENTRIES = 128;
+const INIT_MAX_STRING_BYTES = 4096;
+const INIT_MAX_CANONICAL_BYTES = 65_536;
+
+function invalidCanonicalValue(reason) {
+  throw new Error(`INIT_CANONICAL_VALUE_INVALID: ${reason}`);
+}
+
+function canonicalClone(value, depth, { excludedKeys, ancestors, budget }) {
+  budget.nodes += 1;
+  if (depth > INIT_MAX_DEPTH || budget.nodes > INIT_MAX_NODES) {
+    invalidCanonicalValue('tree bounds');
+  }
+  if (typeof value === 'string') {
+    if (Buffer.byteLength(value, 'utf8') > INIT_MAX_STRING_BYTES) {
+      invalidCanonicalValue('string bytes');
+    }
+    return value;
+  }
+  if (value === null || typeof value === 'boolean') return value;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || Object.is(value, -0)) invalidCanonicalValue('number');
+    return value;
+  }
+  if (typeof value !== 'object') invalidCanonicalValue(typeof value);
+  if (types.isProxy(value)) invalidCanonicalValue('proxy');
+  if (ancestors.has(value)) invalidCanonicalValue('cycle');
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      if (Object.getPrototypeOf(value) !== Array.prototype) {
+        invalidCanonicalValue('non-plain array');
+      }
+      if (value.length > INIT_MAX_ENTRIES) invalidCanonicalValue('array entries');
+      const descriptors = Object.getOwnPropertyDescriptors(value);
+      const ownKeys = Reflect.ownKeys(descriptors);
+      if (ownKeys.some(key => typeof key === 'symbol')) invalidCanonicalValue('symbol key');
+      const length = descriptors.length?.value;
+      if (!Number.isSafeInteger(length) || length < 0) invalidCanonicalValue('array length');
+      const expectedKeys = new Set(['length']);
+      const result = [];
+      for (let index = 0; index < length; index += 1) {
+        const key = String(index);
+        expectedKeys.add(key);
+        const descriptor = descriptors[key];
+        if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, 'value')) {
+          invalidCanonicalValue('sparse or accessor array');
+        }
+        result.push(canonicalClone(descriptor.value, depth + 1,
+          { excludedKeys, ancestors, budget }));
+      }
+      if (ownKeys.some(key => typeof key !== 'string' || !expectedKeys.has(key))) {
+        invalidCanonicalValue('array property');
+      }
+      return result;
+    }
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      invalidCanonicalValue('non-plain object');
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const ownKeys = Reflect.ownKeys(descriptors);
+    if (ownKeys.some(key => typeof key === 'symbol')) invalidCanonicalValue('symbol key');
+    const includedKeys = ownKeys.filter(key => !excludedKeys.has(key));
+    if (includedKeys.length > INIT_MAX_ENTRIES) invalidCanonicalValue('object entries');
+    const entries = [];
+    for (const key of includedKeys.sort()) {
+      if (INIT_FORBIDDEN_KEYS.has(key)
+          || Buffer.byteLength(key, 'utf8') > INIT_MAX_STRING_BYTES) {
+        invalidCanonicalValue('object key');
+      }
+      const descriptor = descriptors[key];
+      if (!descriptor.enumerable || !Object.hasOwn(descriptor, 'value')) {
+        invalidCanonicalValue('accessor or non-enumerable property');
+      }
+      entries.push([key, canonicalClone(descriptor.value, depth + 1,
+        { excludedKeys, ancestors, budget })]);
+    }
+    return Object.fromEntries(entries);
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+function canonicalValue(value, { excludedKeys = NO_EXCLUDED_KEYS } = {}) {
+  const result = canonicalClone(value, 0,
+    { excludedKeys, ancestors: new WeakSet(), budget: { nodes: 0 } });
+  if (Buffer.byteLength(canonicalJson(result), 'utf8') > INIT_MAX_CANONICAL_BYTES) {
+    invalidCanonicalValue('canonical bytes');
+  }
+  return result;
+}
+
+// JSON.stringify performs inherited `toJSON` lookup even on a freshly cloned ordinary object.
+// Serialize the already-canonical data tree from own data descriptors so primordial prototype
+// pollution cannot collapse two requests, execute a trap, or split the size and digest bytes.
+function canonicalJson(value, { sortKeys = true } = {}) {
+  if (value === null) return 'null';
+  if (typeof value === 'string') return JSON.stringify(value);
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  if (typeof value === 'number') return `${value}`;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (Array.isArray(value)) {
+    let encoded = '[';
+    for (let index = 0; index < value.length; index += 1) {
+      if (index > 0) encoded += ',';
+      encoded += canonicalJson(descriptors[String(index)].value, { sortKeys });
+    }
+    return `${encoded}]`;
+  }
+  const keys = Reflect.ownKeys(descriptors);
+  if (sortKeys) keys.sort();
+  let encoded = '{';
+  for (let index = 0; index < keys.length; index += 1) {
+    if (index > 0) encoded += ',';
+    const key = keys[index];
+    encoded += `${JSON.stringify(key)}:${canonicalJson(descriptors[key].value, { sortKeys })}`;
+  }
+  return `${encoded}}`;
+}
+
+export function initializationRequestDigest(projection) {
+  return contentHash(canonicalJson(canonicalValue(projection)));
+}
+
+function buildRunInitializedEvent(loop) {
+  const data = Object.create(null);
+  data.run_id = loop.run_id;
+  data.request_digest = loop.initialization.request_digest;
+  data.host_surface_digest = loop.initialization.host_surface_digest;
+  const seq = 1;
+  const ts = loop.created_at;
+  const type = 'run-initialized';
+  const checksum = contentHash(`${seq}|${ts}|${type}|${canonicalJson(data,
+    { sortKeys: false })}|GENESIS`);
+  return Object.freeze({ seq, ts, type, data: Object.freeze(data), checksum });
+}
+
 function withoutKernelGenerated(value) {
-  if (Array.isArray(value)) return value.map(withoutKernelGenerated);
-  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value)
-    .filter(([key]) => !KERNEL_GENERATED_KEYS.has(key))
-    .map(([key, item]) => [key, withoutKernelGenerated(item)]));
-  return value;
+  return canonicalValue(value, { excludedKeys: KERNEL_GENERATED_KEYS });
 }
 
 export function hostObservationDigest(observation) {
@@ -43,6 +159,7 @@ export function hostObservationDigest(observation) {
 }
 
 export function normalizeInitializationRequest(root, options, deps) {
+  if (types.isProxy(options)) invalidCanonicalValue('proxy');
   if (Object.hasOwn(options, 'observation')) throw new Error('INIT_REQUEST_RAW_OBSERVATION');
   const routing = deps.resolveRouting(options);
   const observationDigest = options.observationDigest ?? 'NONE';
@@ -81,7 +198,11 @@ export function genesisClockFromAttempt(attemptId) {
   if (!Number.isSafeInteger(ms) || !Number.isFinite(date.getTime())) {
     throw new Error('INIT_ATTEMPT_CLOCK_INVALID');
   }
-  return Object.freeze({ ms, iso: date.toISOString() });
+  const iso = date.toISOString();
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(iso)) {
+    throw new Error('INIT_ATTEMPT_CLOCK_INVALID');
+  }
+  return Object.freeze({ ms, iso });
 }
 
 // Build-time only: this proves the just-created genesis bytes before publication. Runtime snapshot
@@ -153,15 +274,17 @@ export function buildCanonicalGenesis(root, { prepared, request, observation }, 
     host_observation_digest: prepared.expected_observation_digest,
     host_surface_digest: hostSurfaceFactsDigest(storedObservation) };
   const loop = deps.buildLoop({ runtime: projection.runtime, goal: projection.goal,
-    protocol: projection.routing.protocol, recipe: projection.routing.recipe,
-    detected: projection.plugins_detected, review: projection.review,
+    protocol: projection.routing.protocol, recipe: structuredClone(projection.routing.recipe),
+    detected: structuredClone(projection.plugins_detected),
+    review: structuredClone(projection.review),
     now: new Date(clock.ms), runId: prepared.attempt_id,
     git: { head: projection.project.git.head, branch: projection.project.git.branch,
       dirty: projection.project.git.dirty }, model: projection.model, effort: projection.effort,
-    initialization, hostObservation: storedObservation,
-    appContinuationConsent: consent, appContinuationRoute: consentRoute,
+    initialization: structuredClone(initialization),
+    hostObservation: structuredClone(storedObservation),
+    appContinuationConsent: structuredClone(consent), appContinuationRoute: consentRoute,
     projectRoot: projection.project.root,
-    sessionSpawn: { ...projection.session_spawn, detected_at: clock.iso } });
+    sessionSpawn: { ...structuredClone(projection.session_spawn), detected_at: clock.iso } });
   if (initializationRequestDigest(projectionFromGenesisLoop(loop))
       !== prepared.expected_request_digest) throw new Error('INIT_BUILDER_PROJECTION_MISMATCH');
   if (initializationRequestDigest(loop.initialization.request_projection)
