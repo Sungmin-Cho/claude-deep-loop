@@ -12,17 +12,24 @@ import { observeHostSurface, revokeAppTaskContinuation, statusAppTask,
   validateGenesisConsent } from '../scripts/lib/app-task-continuation.mjs';
 import { appHostTaskCwdDigest, hostSurfaceFactsDigest } from '../scripts/lib/host-surface.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
+import {
+  rawHashValidHistory as rawHistory7b,
+  rawHashValidState as rawState7b,
+  seedCorrelatedTerminal as terminal7b,
+} from './fixtures/verified-app-run.mjs';
 
 function observedRun({ legacyNullSurface = true } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-observe-')));
   const { runId } = initRun(root, { runtime: 'codex', goal: 'g',
     now: new Date('2026-07-13T00:00:00.000Z') });
   if (legacyNullSurface) {
-    const loop = readState(root, runId).data;
-    delete loop.initialization;
-    delete loop.autonomy.app_task_continuation;
-    loop.session_chain.sessions[0].host_surface = null;
-    writeState(root, runId, loop);
+    writeFileSync(join(root, '.deep-loop', 'runs', runId, 'event-log.jsonl'), '');
+    rawState7b(root, runId, loop => {
+      delete loop.initialization;
+      delete loop.autonomy.app_task_continuation;
+      loop.session_chain.sessions[0].host_surface = null;
+      loop.event_log_head = { seq: 0, checksum: 'GENESIS' };
+    });
   }
   return { root, runId };
 }
@@ -477,10 +484,11 @@ test('revoke retry and not-auto verify schema, anchored log, and event correlati
   }
 
   const manual = observedRun({ legacyNullSurface: false });
-  appendAnchored(manual.root, manual.runId, { type: 'app-task-consent-revoked', data: {
+  rawHistory7b(manual.root, manual.runId, [{ type: 'app-task-consent-revoked',
+    now: Date.parse('2026-07-13T00:00:01.000Z'), data: {
     owner_run_id: manual.runId, generation: 1, attempt_id: null,
     child_run_id: null, failure_code: null,
-  } }, undefined, undefined, { nowFn: () => Date.parse('2026-07-13T00:00:01.000Z') });
+  } }]);
   const run = join(manual.root, '.deep-loop', 'runs', manual.runId);
   const before = { state: readFileSync(join(run, 'loop.json')),
     events: readFileSync(join(run, 'event-log.jsonl')) };
@@ -508,9 +516,7 @@ test('revoke rejects a backward consent clock before appending an event', () => 
 
 test('revoke checks fence before terminal and abandons an in-flight attempt atomically', () => {
   const { root, runId } = autoRun();
-  const loop = readState(root, runId).data;
-  loop.status = 'completed';
-  writeState(root, runId, loop);
+  terminal7b(root, runId, { status: 'completed' });
   assert.throws(() => revokeAppTaskContinuation(root, runId,
     { owner: '01JAPPWR0NG000000000000000', generation: 9, runtime: 'codex' }, {}), /FENCED/);
   assert.throws(() => revokeAppTaskContinuation(root, runId,

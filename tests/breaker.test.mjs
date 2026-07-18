@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { checkBreaker, recordReviewVerdict, resetBreaker } from '../scripts/lib/breaker.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState } from '../scripts/lib/state.mjs';
+import { seedCorrelatedTerminal } from './fixtures/verified-app-run.mjs';
 
 function seed() {
   const root = mkdtempSync(join(tmpdir(), 'dl-breaker-'));
@@ -71,9 +72,7 @@ import { writeState } from '../scripts/lib/state.mjs';
 function terminalSeed(status = 'completed') {
   const root = mkdtempSync(join(tmpdir(), 'dl-brk-t-'));
   const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-07-09T00:00:00Z') });
-  const { data } = readState(root, runId);
-  data.status = status;
-  writeState(root, runId, data);
+  seedCorrelatedTerminal(root, runId, { status });
   return { root, runId, owner: runId };
 }
 

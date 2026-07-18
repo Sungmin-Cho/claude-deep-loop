@@ -10,6 +10,8 @@ import {
   inheritWorkstreams, integrationOrder,
 } from '../scripts/lib/workspace.mjs';
 import { createDirectoryJunction, fixtureDir } from './helpers/fs-fixtures.mjs';
+import { proofTransitionsForCandidate } from '../scripts/lib/integrity.mjs';
+import { rawHashValidHistory as rawHistory7b } from './fixtures/verified-app-run.mjs';
 
 function seed() {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
@@ -18,6 +20,21 @@ function seed() {
 }
 
 function fence(runId) { return { owner: runId, generation: 1, intent: 'business' }; }
+
+function seedReviewPoints(root, runId, id) {
+  const before = readState(root, runId).data;
+  const after = structuredClone(before);
+  after.workstreams.find(workstream => workstream.id === id).review_points_done =
+    [...(after.review?.points || [])];
+  const proofTransitions = proofTransitionsForCandidate(before, after);
+  rawHistory7b(root, runId, [{ type: 'state-patch',
+    data: { field: 'test-fixture.review_points_done',
+      proof_transitions: proofTransitions },
+    now: Date.parse('2026-07-13T00:00:01.000Z') }], loop => {
+    loop.workstreams.find(workstream => workstream.id === id).review_points_done =
+      [...(loop.review?.points || [])];
+  });
+}
 
 test('newWorkstream creates planned workstream with kernel fields', () => {
   const { root, runId } = seed();
@@ -56,12 +73,7 @@ test('recordWorkstreamTerminal derives terminal from proof content; clears activ
   // ready FAILS when review_points_done is empty (kernel-derived, not proof shortcut)
   assert.throws(() => recordWorkstreamTerminal(root, runId, id, { status: 'ready', proof: {}, fence: f }), /WORKSTREAM_TERMINAL_NO_PROOF/);
   // Populate review_points_done via readState+writeState to all review.points
-  {
-    const { data } = readState(root, runId);
-    const ws = data.workstreams.find(w => w.id === id);
-    ws.review_points_done = [...(data.review?.points || [])];
-    writeState(root, runId, data);
-  }
+  seedReviewPoints(root, runId, id);
   // Now ready SUCCEEDS (proof can be empty — derivation is from state)
   recordWorkstreamTerminal(root, runId, id, { status: 'ready', proof: {}, fence: f });
   const { data } = readState(root, runId);
@@ -80,12 +92,7 @@ test('setWorkstreamStatus throws WORKSTREAM_TERMINAL_LOCKED when workstream is t
   const { id } = newWorkstream(root, runId, { title: 'C', branch: 'c', worktree: '.claude/worktrees/wc', fence: f });
   setWorkstreamStatus(root, runId, id, 'in_progress', { fence: f });
   // Mark it ready via state manipulation + recordWorkstreamTerminal
-  {
-    const { data } = readState(root, runId);
-    const ws = data.workstreams.find(w => w.id === id);
-    ws.review_points_done = [...(data.review?.points || [])];
-    writeState(root, runId, data);
-  }
+  seedReviewPoints(root, runId, id);
   recordWorkstreamTerminal(root, runId, id, { status: 'ready', proof: {}, fence: f });
   assert.equal(readState(root, runId).data.workstreams.find(w => w.id === id).status, 'ready');
   // Now trying to set it back to in_progress must fail
@@ -108,12 +115,7 @@ test('recordWorkstreamTerminal blocks terminal->terminal rewrites (merged/abando
 
   // Set up a workstream that is 'ready' and confirm it CAN go to 'merged'
   const { id: idR } = newWorkstream(root, runId, { title: 'R', branch: 'br', worktree: '.claude/worktrees/wr', fence: f });
-  {
-    const { data } = readState(root, runId);
-    const ws = data.workstreams.find(w => w.id === idR);
-    ws.review_points_done = [...(data.review?.points || [])];
-    writeState(root, runId, data);
-  }
+  seedReviewPoints(root, runId, idR);
   recordWorkstreamTerminal(root, runId, idR, { status: 'ready', proof: {}, fence: f });
   assert.equal(readState(root, runId).data.workstreams.find(w => w.id === idR).status, 'ready');
   // ready → merged must succeed (the only allowed terminal→terminal transition)

@@ -10,6 +10,7 @@ import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { runPreCompactHandoff } from '../scripts/hooks-impl/precompact-handoff.mjs';
 import { rollbackAndPause } from '../scripts/lib/respawn.mjs';
 import { createDirectoryJunction } from './helpers/fs-fixtures.mjs';
+import { seedCorrelatedTerminal } from './fixtures/verified-app-run.mjs';
 const PROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PRECOMPACT_HOOK = join(PROOT, 'scripts', 'hooks-impl', 'precompact-handoff.mjs');
 const DRIVE_HOOK = join(PROOT, 'scripts', 'hooks-impl', 'drive-headless.mjs');
@@ -330,9 +331,7 @@ test('gate-blocked precompact propagates a terminal rollback race without changi
 
   let terminalSnapshot;
   const rollbackFn = (rollbackRoot, rollbackRunId, options) => {
-    const raced = readState(rollbackRoot, rollbackRunId).data;
-    raced.status = 'completed';
-    writeState(rollbackRoot, rollbackRunId, raced);
+    seedCorrelatedTerminal(rollbackRoot, rollbackRunId, { status: 'completed' });
     terminalSnapshot = structuredClone(readState(rollbackRoot, rollbackRunId).data);
     return rollbackAndPause(rollbackRoot, rollbackRunId, options);
   };
@@ -355,9 +354,7 @@ function parseLog(path) {
 // ── v1.6: terminal run에서 PreCompact 훅 graceful 거부 (spec §4-4③) ──────────
 test('terminal run → hook returns ok:false action:fenced RUN_TERMINAL (graceful, no write)', async () => {
   const { root, runId } = seed();
-  const { data } = readState(root, runId);
-  data.status = 'completed';
-  writeState(root, runId, data);
+  seedCorrelatedTerminal(root, runId, { status: 'completed' });
   const r = await runPreCompactHandoff({}, { root, now: Date.parse('2026-07-09T00:01:00Z') });
   assert.equal(r.ok, false);
   assert.equal(r.action, 'fenced');

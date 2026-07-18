@@ -111,7 +111,7 @@ test('root rebind fails closed on log corruption before event, hash, or state mu
       fence: { owner: runId, generation: 1 },
       now: Date.parse('2026-07-11T01:00:00Z'),
     }),
-    /LOG_TAMPERED/
+    /RUN_SNAPSHOT_INVALID/
   );
   assert.deepEqual({
     event: readFileSync(eventPath, 'utf8'),
@@ -130,9 +130,7 @@ function seededRun() {
   return { root, runId };
 }
 function makeTerminal(root, runId, status = 'completed') {
-  const { data } = readState(root, runId);
-  data.status = status;
-  writeState(root, runId, data);
+  return terminal7b(root, runId, { status });
 }
 
 test('appendAnchored: terminal gateway blocks any event after caller preCheck (spec §2.1.5)', () => {
@@ -155,13 +153,13 @@ test('appendAnchored: fence-less state patch is blocked on terminal (spec §4-1b
   const { root, runId } = seededRun();
   makeTerminal(root, runId, 'stopped');
   // 'discovered_items'는 classifyPatch 화이트리스트 필드 (비허용 필드는 FIELD_FORBIDDEN이 선착 — 관문 검증 불가)
-  assert.throws(() => patch(root, runId, 'discovered_items', []), /RUN_TERMINAL: append/);
+  assert.throws(() => patch(root, runId, 'discovered_items', [],
+    { fence: { owner: runId, generation: 1, intent: 'business' } }), /RUN_TERMINAL/);
 });
 
 test('appendAnchored: non-terminal finish transition + auto-floor cost still commit (spec §4-1b ④)', () => {
   const { root, runId } = seededRun();
-  appendAnchored(root, runId, { type: 'x-transition', data: {} },
-    (loop) => { loop.status = 'stopped'; }, undefined, { floor: 1 });
+  terminal7b(root, runId, { status: 'stopped', floor: 1 });
   const { data } = readState(root, runId);
   assert.equal(data.status, 'stopped');   // 전이 자체는 mutate 단계 — preCheck 시점 non-terminal이라 통과
   assert.ok(readFileSync(join(runDir(root, runId), 'event-log.jsonl'), 'utf8').includes('auto_floor'));
@@ -271,4 +269,397 @@ test6b('invalid injected clock fails before an event append', () => {
       intentDigest: intent6b('invalid-clock', runId),
       fenceError: 'LEASE_FENCED: test-clock' }), /INVALID_NOW/);
   assert6b.deepEqual(lines6b(root, runId), before);
+});
+import { assertVerifiedRunSnapshot as assertSnapshot7c,
+  appendAnchored as append7c, mutationIntentDigest as intent7c,
+  readLines as lines7c, readVerifiedState as verified7c,
+  withVerifiedMutationLock as mutation7b }
+  from '../scripts/lib/integrity.mjs';
+import { patch as patch7b, readState as state7c, runDir as runDir7b,
+  writeState as writeState7c } from '../scripts/lib/state.mjs';
+import { durableRunBytes as bytes7c, rawHashValidState as raw7c,
+  seedCorrelatedTerminal as terminal7b,
+  verifiedAppRun as fixture7c } from './fixtures/verified-app-run.mjs';
+import { spawnSync as spawn7c } from 'node:child_process';
+import { existsSync as existsJournal7b, mkdirSync as mkdir7b, readdirSync as list7b,
+  readFileSync as readSource7b, rmdirSync as rmdir7b } from 'node:fs';
+import { join as join7b } from 'node:path';
+import { fileURLToPath as file7b } from 'node:url';
+import { acquireLease as acquire7b } from '../scripts/lib/lease.mjs';
+import { finishRun as finish7b } from '../scripts/lib/finish.mjs';
+import { newWorkstream as workstream7b } from '../scripts/lib/workspace.mjs';
+import { initializationRequestDigest as initDigest7c }
+  from '../scripts/lib/init-transaction.mjs';
+
+const probeIntent7c = (operation, owner, generation, projection = {}) =>
+  intent7c(`test-${operation}`, { owner, generation }, projection);
+
+test6b('immutable genesis event rejects a paired projection and digest rewrite', () => {
+  const { root, runId } = fixture7c('dl-genesis-paired-rewrite-');
+  raw7c(root, runId, loop => {
+    loop.initialization.request_projection.goal = 'paired rewrite';
+    loop.initialization.request_digest = initDigest7c(
+      loop.initialization.request_projection);
+  });
+  const before = bytes7c(root, runId);
+  assert6b.throws(() => verified7c(root, runId),
+    /run-initialized genesis binding invalid/);
+  assert6b.deepEqual(bytes7c(root, runId), before);
+});
+
+test6b('split fence precedes semantic proof but no-op business sentinels cannot bypass it', () => {
+  const { root, runId, owner, generation } = fixture7c();
+  raw7c(root, runId, loop => {
+    loop.session_chain.sessions[0].host_surface.observed_at =
+      '2026-07-13T00:00:01.000Z';
+  });
+  const before = bytes7c(root, runId);
+  assert6b.throws(() => verified7c(root, runId, { fenceCheck: loop => {
+    if (loop.session_chain.lease.owner_run_id !== 'wrong') throw new Error('LEASE_FENCED');
+  } }), /LEASE_FENCED/, 'wrong caller retains fence-first result');
+  assert6b.throws(() => append7c(root, runId, { type: 'never', data: {} }, () => {},
+    () => { throw new Error('ALREADY_SENTINEL'); }, {
+      fenceCheck: loop => {
+        if (loop.session_chain.lease.owner_run_id !== 'wrong') throw new Error('LEASE_FENCED');
+      },
+      callerBinding: { owner, generation },
+      intentDigest: probeIntent7c('split-fence-sentinel', owner, generation),
+      fenceError: 'LEASE_FENCED',
+    }), /LEASE_FENCED/, 'wrong caller retains fence-first result');
+  let clockCalls = 0;
+  assert6b.throws(() => append7c(root, runId, { type: 'never', data: {} }, () => {},
+    () => { throw new Error('ALREADY_SENTINEL'); }, {
+      nowFn: () => { clockCalls += 1; return Number.NaN; },
+      fenceCheck: loop => {
+        if (loop.session_chain.lease.owner_run_id !== 'wrong') throw new Error('LEASE_FENCED');
+      },
+      callerBinding: { owner, generation },
+      intentDigest: probeIntent7c('split-fence-clock', owner, generation),
+      fenceError: 'LEASE_FENCED',
+    }), /LEASE_FENCED/, 'identity fence precedes clock sampling and validation');
+  assert6b.equal(clockCalls, 0, 'a fenced caller cannot execute the clock callback');
+  assert6b.throws(() => append7c(root, runId, { type: 'never', data: {} }, () => {},
+    () => { throw new Error('ALREADY_SENTINEL'); }, { fenceCheck: () => {},
+      callerBinding: { owner, generation },
+      intentDigest: probeIntent7c('split-fence-proof', owner, generation),
+      fenceError: 'LEASE_FENCED' }),
+  /RUN_SNAPSHOT_INVALID/, 'semantic proof precedes the success-class business sentinel');
+  assert6b.throws(() => verified7c(root, runId), /RUN_SNAPSHOT_INVALID/);
+  assert6b.throws(() => assertSnapshot7c(root, runId, state7c(root, runId).data),
+    /RUN_SNAPSHOT_INVALID/);
+  assert6b.deepEqual(bytes7c(root, runId), before);
+});
+
+test6b('prospective App correlation failure writes no event, state, or hash byte', () => {
+  const { root, runId, owner, generation } = fixture7c('dl-prospective-proof-');
+  const before = bytes7c(root, runId);
+  assert6b.throws(() => append7c(root, runId, {
+    type: 'app-task-consent-revoked', data: { owner_run_id: owner, generation,
+      attempt_id: null, child_run_id: null, failure_code: null },
+  }, () => {}, () => {}, {
+    nowFn: () => Date.parse('2026-07-13T00:00:01.000Z'),
+    fenceCheck: loop => {
+      if (loop.session_chain.lease.owner_run_id !== owner
+          || loop.session_chain.lease.generation !== generation) throw new Error('LEASE_FENCED');
+    },
+    callerBinding: { owner, generation },
+    intentDigest: probeIntent7c('prospective-app-correlation', owner, generation),
+    fenceError: 'LEASE_FENCED',
+  }), /RUN_SNAPSHOT_INVALID/,
+  'a revoke event without its candidate consent mutation fails before the first append');
+  assert6b.deepEqual(bytes7c(root, runId), before);
+
+  for (const [label, mutate, expected] of [
+    ['run identity', candidate => { candidate.run_id = 'OTHER-RUN-ID'; },
+      /RUN_SNAPSHOT_INVALID: run_id mismatch/],
+    ['project root', candidate => {
+      candidate.project.root = join(root, 'nonexistent-project-root');
+    }, /PROJECT_ROOT_/],
+  ]) {
+    const fixture = fixture7c(`dl-prospective-${label.replace(' ', '-')}-`);
+    const original = bytes7c(fixture.root, fixture.runId);
+    assert6b.throws(() => append7c(fixture.root, fixture.runId,
+      { type: 'verified-boundary-probe', data: { label } }, mutate, () => {}, {
+        nowFn: () => Date.parse('2026-07-13T00:00:01.000Z'),
+        fenceCheck: loop => {
+          if (loop.session_chain.lease.owner_run_id !== fixture.owner
+              || loop.session_chain.lease.generation !== fixture.generation) {
+            throw new Error('LEASE_FENCED');
+          }
+        },
+        callerBinding: { owner: fixture.owner, generation: fixture.generation },
+        intentDigest: probeIntent7c('prospective-boundary', fixture.owner,
+          fixture.generation, { label }),
+        fenceError: 'LEASE_FENCED',
+      }), expected, `${label} candidate must fail before its event byte`);
+    assert6b.deepEqual(bytes7c(fixture.root, fixture.runId), original);
+  }
+});
+
+test6b('verified mutation gateway exposes null before a commit and exact proof after recovery', () => {
+  const clean = fixture7c('dl-mutation-gateway-clean-');
+  const cleanBinding = { owner: clean.owner, generation: clean.generation };
+  const cleanIntent = intent7c('gateway-clean', cleanBinding, { request: 'clean' });
+  let cleanRecovered = 'unset';
+  const cleanResult = mutation7b(clean.root, clean.runId, {
+    callerBinding: cleanBinding, intentDigest: cleanIntent,
+    fenceError: 'LEASE_FENCED: gateway-clean',
+  }, mutation => {
+    cleanRecovered = mutation.recovered;
+    return mutation.readVerifiedState().data.run_id;
+  });
+  assert6b.equal(cleanRecovered, null);
+  assert6b.equal(cleanResult, clean.runId);
+
+  const pending = fixture7c('dl-mutation-gateway-pending-');
+  const binding = { owner: pending.owner, generation: pending.generation };
+  const intentDigest = intent7c('anchored-crash-probe', binding, {});
+  const worker = file7b(new URL('./helpers/anchored-crash-worker.mjs', import.meta.url));
+  const child = spawn7c(process.execPath,
+    [worker, pending.root, pending.runId, 'generic-append', 'pending-after-rename'], {
+      shell: false, encoding: 'utf8', timeout: 10_000,
+      env: { ...process.env, DEEP_LOOP_CRASH_OWNER: pending.owner,
+        DEEP_LOOP_CRASH_GENERATION: String(pending.generation) },
+    });
+  assert6b.equal(child.status, 91, child.stderr || child.stdout || child.error?.message);
+  rmdir7b(join7b(pending.root, '.deep-loop', 'runs', pending.runId, '.lock'));
+
+  const recovered = mutation7b(pending.root, pending.runId, {
+    callerBinding: binding, intentDigest,
+    fenceError: 'LEASE_FENCED: gateway-pending',
+  }, mutation => {
+    mutation.readVerifiedState();
+    return mutation.recovered;
+  });
+  assert6b.notEqual(recovered, null);
+  assert6b.equal(recovered.events.length, 1);
+  assert6b.equal(recovered.events[0].type, 'anchored-crash-probe');
+  assert6b.deepEqual(recovered.events[0].data,
+    { owner: pending.owner, generation: pending.generation });
+  const durable = lines7c(pending.root, pending.runId)
+    .filter(event => event.type === 'anchored-crash-probe');
+  assert6b.equal(durable.length, 1);
+  assert6b.equal(recovered.events[0].seq, durable[0].seq,
+    'recovery exposes the exact durable event sequence');
+  assert6b.equal(recovered.events[0].checksum, durable[0].checksum,
+    'recovery exposes the exact durable event checksum');
+});
+
+test6b('prospective commit persists the exact proved event timestamp', () => {
+  const { root, runId, owner, generation } = fixture7c('dl-exact-proved-candidate-');
+  const now = Date.parse('2026-07-13T00:00:01.000Z');
+  append7c(root, runId, { type: 'verified-stamp', data: {} }, () => {}, () => {}, {
+    nowFn: () => now,
+    fenceCheck: loop => {
+      if (loop.session_chain.lease.owner_run_id !== owner
+          || loop.session_chain.lease.generation !== generation) throw new Error('LEASE_FENCED');
+    },
+    callerBinding: { owner, generation },
+    intentDigest: probeIntent7c('prospective-stamp', owner, generation),
+    fenceError: 'LEASE_FENCED',
+  });
+  const event = lines7c(root, runId).at(-1);
+  assert6b.equal(event.ts, new Date(now).toISOString());
+  assert6b.equal(state7c(root, runId).data.updated_at, event.ts);
+});
+
+test6b('writeState and cold fresh-process imports enforce the same verified boundary', () => {
+  const { root, runId } = fixture7c('dl-write-proof-');
+  const candidate = state7c(root, runId).data;
+  candidate.session_chain.sessions[0].host_surface.observed_at =
+    '2026-07-13T00:00:01.000Z';
+  const before = bytes7c(root, runId);
+  assert6b.throws(() => writeState7c(root, runId, candidate), /RUN_SNAPSHOT_INVALID/);
+  assert6b.deepEqual(bytes7c(root, runId), before);
+  const identity = fixture7c('dl-write-run-identity-');
+  const identityCandidate = state7c(identity.root, identity.runId).data;
+  identityCandidate.run_id = 'DIFFERENT-RUN-ID';
+  const identityBefore = bytes7c(identity.root, identity.runId);
+  assert6b.throws(() => writeState7c(identity.root, identity.runId, identityCandidate),
+    /RUN_SNAPSHOT_INVALID: run_id mismatch/);
+  assert6b.deepEqual(bytes7c(identity.root, identity.runId), identityBefore);
+  const modules = [new URL('../scripts/lib/state.mjs', import.meta.url).href,
+    new URL('../scripts/lib/integrity.mjs', import.meta.url).href];
+  for (const order of [modules, [...modules].reverse()]) {
+    const source = order.map(url => `await import(${JSON.stringify(url)})`).join(';');
+    const child = spawn7c(process.execPath, ['--input-type=module', '--eval', source],
+      { encoding: 'utf8' });
+    assert6b.equal(child.status, 0, child.stderr || child.stdout);
+  }
+});
+
+const PUBLIC_MUTATION_INVENTORY7B = Object.freeze({
+  'workspace.mjs': ['newWorkstream'],
+  'state.mjs': ['patch'],
+  'finish.mjs': ['finishRun'],
+  'lease.mjs': ['acquireLease'],
+});
+
+test6b('Task 7B staged mutation inventory enters recovery before any canonical read', () => {
+  const canonicalRead = /\b(?:readState|readVerifiedState|reconcileBudget)\s*\(/;
+  const recoveryEntry = /\b(?:withVerifiedMutationLock|appendAnchored|newEpisode|newBlockedCheckerEpisode|commitReviewOutcome|appendTransition|respawnOperation)\s*\(/;
+  for (const [file, exports] of Object.entries(PUBLIC_MUTATION_INVENTORY7B)) {
+    const source = readSource7b(new URL(`../scripts/lib/${file}`, import.meta.url), 'utf8');
+    for (const name of exports) {
+      const start = source.indexOf(`export function ${name}`);
+      assert6b.notEqual(start, -1, `${file}:${name} missing from closed inventory`);
+      const next = source.indexOf('\nexport function ', start + 1);
+      const body = source.slice(start, next < 0 ? source.length : next);
+      const entry = body.search(recoveryEntry);
+      const read = body.search(canonicalRead);
+      assert6b.notEqual(entry, -1, `${file}:${name} has no recovery-aware entry`);
+      assert6b.ok(read < 0 || entry < read,
+        `${file}:${name} performs a canonical read before journal recovery`);
+    }
+  }
+});
+const GENERIC_CRASH_POINTS7B = Object.freeze([
+  'state-stage-after-rename', 'event-stage-after-rename', 'pending-after-rename',
+  'event-after-partial-append', 'event-after-full-append', 'state-after-rename',
+  'hash-after-rename', 'before-cleanup',
+  'state-replace-after-create', 'state-replace-after-fsync',
+  'state-replace-after-rename-before-dir-fsync',
+  'hash-replace-after-create', 'hash-replace-after-fsync',
+  'hash-replace-after-rename-before-dir-fsync',
+]);
+const GENERIC_PRE_MARKER7B = new Set([
+  'state-stage-after-rename', 'event-stage-after-rename',
+]);
+const GENERIC_EVENT7B = Object.freeze({
+  'generic-append': 'anchored-crash-probe', 'generic-acquire': 'lease-acquired',
+  finish: 'finish', 'state-patch': 'state-patch', 'workstream-new': 'workstream-new',
+});
+
+function fixedJournalInventory7b(root, runId) {
+  return list7b(runDir7b(root, runId)).sort().filter(name =>
+    name.startsWith('.anchored-') || name === 'loop.json.replace'
+      || name === '.loop.hash.replace');
+}
+
+function expectedJournalInventory7b(point) {
+  if (point === 'state-stage-after-rename') return ['.anchored-state.stage'];
+  if (point === 'event-stage-after-rename') {
+    return ['.anchored-events.stage', '.anchored-state.stage'];
+  }
+  const names = ['.anchored-events.stage', '.anchored-hash.stage',
+    '.anchored-pending.json', '.anchored-state.stage'];
+  if (point === 'state-replace-after-create' || point === 'state-replace-after-fsync') {
+    names.push('loop.json.replace');
+  }
+  if (point === 'hash-replace-after-create' || point === 'hash-replace-after-fsync') {
+    names.push('.loop.hash.replace');
+  }
+  return names.sort();
+}
+
+function completeJournalBytes7b(root, runId) {
+  const directory = runDir7b(root, runId);
+  const names = [...fixedJournalInventory7b(root, runId),
+    'event-log.jsonl', 'loop.json', '.loop.hash'];
+  return Object.fromEntries(names.map(name =>
+    [name, existsJournal7b(join7b(directory, name))
+      ? readSource7b(join7b(directory, name)) : null]));
+}
+
+function genericCrashCase7b(operation) {
+  const fixture = fixture7c(`dl-generic-${operation}-`);
+  mkdir7b(join7b(fixture.root, '.worktrees'), { recursive: true });
+  if (operation === 'generic-acquire') {
+    raw7c(fixture.root, fixture.runId, loop => {
+      loop.session_chain.lease.state = 'released';
+    });
+  }
+  const fence = { owner: fixture.owner, generation: fixture.generation };
+  const patchValue = ['crash-probe'];
+  const workstream = { title: 'crash probe', branch: 'codex/crash-probe',
+    worktree: '.worktrees/crash-probe', baseCommit: null, dependsOn: [],
+    requestId: 'workstream-crash-probe-1' };
+  const invoke = ({ foreign = false, different = false } = {}) => {
+    const owner = foreign ? '01JAPPF0R00000000000000000' : fixture.owner;
+    const caller = { owner, generation: fixture.generation };
+    if (operation === 'generic-append') {
+      const data = { owner, generation: fixture.generation, ...(different ? { variant: 2 } : {}) };
+      return append7c(fixture.root, fixture.runId,
+        { type: 'anchored-crash-probe', data }, () => {}, undefined, {
+          callerBinding: caller,
+          intentDigest: intent7c('anchored-crash-probe', caller,
+            different ? { variant: 2 } : {}),
+          fenceError: 'LEASE_FENCED: generic-append',
+        });
+    }
+    if (operation === 'generic-acquire') {
+      return acquire7b(fixture.root, fixture.runId, { owner,
+        expectGeneration: fixture.generation, runtime: different ? 'claude' : 'codex' });
+    }
+    if (operation === 'finish') {
+      return finish7b(fixture.root, fixture.runId, { status: 'stopped', confirm: true,
+        reportRel: null, proof: { human_reason: different ? 'different' : 'crash-worker' },
+        fence: { ...caller, runtime: 'codex', intent: 'business' } });
+    }
+    if (operation === 'state-patch') {
+      return patch7b(fixture.root, fixture.runId, 'decisions',
+        different ? ['different'] : patchValue, { fence: caller });
+    }
+    return workstream7b(fixture.root, fixture.runId,
+      { ...workstream, ...(different ? { branch: 'codex/crash-probe-other',
+        worktree: '.worktrees/crash-probe-other' } : {}), fence: caller });
+  };
+  const workerInput = operation === 'generic-acquire'
+    ? { childOwner: fixture.owner }
+    : operation === 'state-patch' ? { field: 'decisions', value: patchValue }
+      : operation === 'workstream-new' ? workstream : {};
+  return { fixture, invoke, workerInput };
+}
+
+function assertGenericCrashRecovery7b(operation, point) {
+  const { fixture, invoke, workerInput } = genericCrashCase7b(operation);
+  const canonicalBefore = bytes7c(fixture.root, fixture.runId);
+  const worker = file7b(new URL('./helpers/anchored-crash-worker.mjs', import.meta.url));
+  const child = spawn7c(process.execPath,
+    [worker, fixture.root, fixture.runId, operation, point], {
+      shell: false, encoding: 'utf8', timeout: 10_000,
+      env: { ...process.env, DEEP_LOOP_CRASH_OWNER: fixture.owner,
+        DEEP_LOOP_CRASH_GENERATION: String(fixture.generation),
+        DEEP_LOOP_CRASH_INPUT: JSON.stringify(workerInput) },
+    });
+  assert6b.notEqual(child.error?.code, 'ETIMEDOUT', `${operation}/${point} worker timeout`);
+  assert6b.equal(child.status, 91, child.stderr || child.stdout || child.error?.message);
+  // A hard process exit cannot run withLock's finally block. Once spawnSync proves that exact
+  // owner is dead, accelerate the production stale-lock TTL by removing only its orphan lock.
+  // Journal/state recovery remains exclusively owned by the exact public API retry below.
+  rmdir7b(join7b(fixture.root, '.deep-loop', 'runs', fixture.runId, '.lock'));
+  assert6b.deepEqual(fixedJournalInventory7b(fixture.root, fixture.runId),
+    expectedJournalInventory7b(point), `${operation}/${point} exact journal inventory`);
+  const pending = completeJournalBytes7b(fixture.root, fixture.runId);
+
+  if (GENERIC_PRE_MARKER7B.has(point)) {
+    assert6b.deepEqual(bytes7c(fixture.root, fixture.runId), canonicalBefore,
+      `${operation}/${point} changed canonical bytes before marker publication`);
+    assert6b.doesNotThrow(() => verified7c(fixture.root, fixture.runId));
+  } else {
+    assert6b.throws(() => verified7c(fixture.root, fixture.runId),
+      /ANCHORED_TRANSACTION_PENDING/);
+    for (const variant of [{ foreign: true }, { different: true }]) {
+      let result;
+      try { result = invoke(variant); }
+      catch (error) { assert6b.match(String(error?.message || error), /FENCED|PENDING/); }
+      if (result !== undefined) assert6b.equal(result.ok, false);
+      assert6b.deepEqual(completeJournalBytes7b(fixture.root, fixture.runId), pending,
+        `${operation}/${point} divergent retry changed bytes`);
+    }
+  }
+  assert6b.deepEqual(completeJournalBytes7b(fixture.root, fixture.runId), pending,
+    `${operation}/${point} read-only status changed journal bytes`);
+  invoke();
+  assert6b.deepEqual(fixedJournalInventory7b(fixture.root, fixture.runId), []);
+  assert6b.equal(lines7c(fixture.root, fixture.runId)
+    .filter(event => event.type === GENERIC_EVENT7B[operation]).length, 1,
+  `${operation}/${point} must converge to one business event`);
+}
+
+test6b('anchored crash parent matrix preserves orphans pending bytes and exact retry convergence', () => {
+  for (const operation of ['generic-append', 'generic-acquire', 'finish',
+    'state-patch', 'workstream-new']) {
+    for (const point of GENERIC_CRASH_POINTS7B) assertGenericCrashRecovery7b(operation, point);
+  }
 });

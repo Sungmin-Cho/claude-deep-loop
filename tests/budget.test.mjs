@@ -26,6 +26,11 @@ import { releaseLease, acquireLease } from '../scripts/lib/lease.mjs';
 import { finishRun } from '../scripts/lib/finish.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
+import {
+  rawHashValidHistory as rawHistory7b,
+  rawHashValidState as rawState7b,
+  seedCorrelatedTerminal as terminal7b,
+} from './fixtures/verified-app-run.mjs';
 
 function floorRun() {
   const root = mkdtempSync(join(tmpdir(), 'dl-floor-'));
@@ -177,7 +182,8 @@ test('Codex preflight receipts settle read/write exactly once and survive a late
   assert.equal(readFileSync(statePath, 'utf8'), afterLeaseState, 'exact retries must not rewrite state');
   assert.equal(readFileSync(logPath, 'utf8'), afterLeaseLog, 'exact retries must not append events');
   assert.notEqual(afterLeaseState, beforeState, 'the fixture must really advance the lease');
-  assert.equal(afterLeaseLog, beforeLog, 'lease-only transitions do not append cost receipts');
+  assert.notEqual(afterLeaseLog, beforeLog, 'lease acquisition appends its proof event');
+  assert.equal(readLines(fixture.root, fixture.runId).at(-1).type, 'lease-acquired');
 
   const costs = readLines(fixture.root, fixture.runId).filter(
     event => event.type === 'cost' && event.data?.source === 'codex-preflight-measured',
@@ -893,24 +899,21 @@ function checkerProcessReceiptFixture({ originOwner, originGeneration } = {}) {
     lease_generation: 1,
     artifacts: [],
   };
-  const { data } = readState(root, runId);
-  data.episodes.push({
-    id: claim.checker_episode_id,
-    role: 'checker',
-    status: 'in_progress',
-    attempt_id: claim.attempt_id,
-    target_maker: claim.target_maker,
-    review_claim: claim,
-  });
-  data.session_chain.sessions.push({
-    run_id: 'OTHER-SESSION',
-    started_at: '2026-07-12T00:00:01.000Z',
-    ended_at: null,
-    turns: 0,
-    outcome: null,
-    superseded_by: null,
-  });
-  writeState(root, runId, data);
+  appendAnchored(root, runId, {
+    type: 'episode-new',
+    data: { plugin: 'deep-review', role: 'checker', kind: 'review', point: 'implementation' },
+  }, data => {
+    data.episodes.push({
+      id: claim.checker_episode_id,
+      plugin: 'deep-review', role: 'checker', kind: 'review', point: 'implementation',
+      status: 'in_progress', attempt_id: claim.attempt_id,
+      target_maker: claim.target_maker, review_claim: claim,
+    });
+    data.session_chain.sessions.push({
+      run_id: 'OTHER-SESSION', started_at: '2026-07-12T00:00:01.000Z',
+      ended_at: null, turns: 0, outcome: null, superseded_by: null,
+    });
+  }, undefined, { nowFn: () => Date.parse('2026-07-12T00:00:01.000Z') });
   const receipt = makeCodexProcessReceipt({
     root,
     runId,
@@ -967,38 +970,39 @@ function stopPreImportCheckerFixture({ claimEvents = 1, originOwner, originGener
 }
 
 function setManualTerminal(fixture, {
-  status = 'stopped',
-  finishFloor = 'correct',
-  postFinishEvent = null,
+  status = 'stopped', finishFloor = 'correct', postFinishEvent = null,
   claimAfterFinish = false,
 } = {}) {
-  appendAnchored(fixture.root, fixture.runId, {
-    type: 'finish',
-    data: { status, reportRel: null },
-  }, undefined, undefined, finishFloor === 'correct' ? { floor: MUTATION_TURN_FLOOR } : {});
-  if (finishFloor === 'wrong') {
-    appendAnchored(fixture.root, fixture.runId, {
-      type: 'cost',
-      data: {
-        turns: MUTATION_TURN_FLOOR,
-        tokens: 0,
-        auto_floor: true,
-        for: 'finish',
-        owner: 'OTHER-SESSION',
-        generation: 1,
-      },
-    });
-  }
-  if (claimAfterFinish) appendCheckerClaimEvent(fixture);
-  if (postFinishEvent) appendAnchored(fixture.root, fixture.runId, postFinishEvent);
-  const { data } = readState(fixture.root, fixture.runId);
-  data.status = status;
-  data.termination.finished_at = '2026-07-12T00:03:00.000Z';
-  if (finishFloor === 'wrong') {
-    data.budget.spent += MUTATION_TURN_FLOOR;
-    data.session_chain.sessions.find(session => session.run_id === 'OTHER-SESSION').turns += MUTATION_TURN_FLOOR;
-  }
-  writeState(fixture.root, fixture.runId, data);
+  const finishedAt = '2026-07-12T00:03:00.000Z';
+  const now = Date.parse(finishedAt);
+  const owner = fixture.runId;
+  const generation = 1;
+  const eventSpecs = [{ type: 'finish', now,
+    data: { status, reportRel: null } }];
+  if (finishFloor === 'correct') eventSpecs.push({ type: 'cost', now, data: {
+    turns: MUTATION_TURN_FLOOR, tokens: 0, auto_floor: true, for: 'finish',
+    owner, generation,
+  } });
+  if (finishFloor === 'wrong') eventSpecs.push({ type: 'cost', now, data: {
+    turns: MUTATION_TURN_FLOOR, tokens: 0, auto_floor: true, for: 'finish',
+    owner: 'OTHER-SESSION', generation,
+  } });
+  if (claimAfterFinish) eventSpecs.push({ type: 'independent-review-claimed', now: now + 1,
+    data: checkerClaimEventData(fixture.claim) });
+  if (postFinishEvent) eventSpecs.push({ ...postFinishEvent, now: now + 1 });
+  rawHistory7b(fixture.root, fixture.runId, eventSpecs, loop => {
+    loop.status = status;
+    loop.pause_reason = null;
+    loop.termination = loop.termination || {};
+    loop.termination.finished_at = finishedAt;
+    const costOwner = finishFloor === 'wrong' ? 'OTHER-SESSION' : owner;
+    if (finishFloor !== 'missing') {
+      loop.budget.spent += MUTATION_TURN_FLOOR;
+      const session = loop.session_chain.sessions
+        .find(item => item.run_id === costOwner);
+      if (session) session.turns += MUTATION_TURN_FLOOR;
+    }
+  });
   return fixture;
 }
 
@@ -1041,9 +1045,9 @@ test('stopped pre-import checker settlement rejects malformed claim, attempt, ta
       originOwner: 'OTHER-SESSION', originGeneration: 1,
     }), () => {}],
   ]) {
-    const { data } = readState(fixture.root, fixture.runId);
-    mutate(data.episodes.find(episode => episode.id === fixture.claim.checker_episode_id));
-    writeState(fixture.root, fixture.runId, data);
+    rawState7b(fixture.root, fixture.runId, data => {
+      mutate(data.episodes.find(episode => episode.id === fixture.claim.checker_episode_id));
+    });
     assertProcessSettlementRejectsWithoutWrites(
       fixture,
       /PROCESS_ACCOUNTING_CONTEXT_MISMATCH/,
@@ -1073,15 +1077,16 @@ test('stopped pre-import checker settlement rejects non-stopped or ambiguous fin
 
   const multiple = checkerProcessReceiptFixture();
   appendCheckerClaimEvent(multiple);
-  appendAnchored(multiple.root, multiple.runId, {
-    type: 'finish', data: { status: 'stopped', reportRel: 'unrelated' },
-  });
-  finishRun(multiple.root, multiple.runId, {
-    status: 'stopped',
-    confirm: true,
-    proof: { human_reason: 'multiple finish fixture' },
-    fence: { owner: multiple.runId, generation: 1, intent: 'business' },
-    now: Date.parse('2026-07-12T00:03:00.000Z'),
+  rawHistory7b(multiple.root, multiple.runId, [
+    { type: 'finish', now: Date.parse('2026-07-12T00:03:00.000Z'),
+      data: { status: 'stopped', reportRel: 'unrelated' } },
+    { type: 'finish', now: Date.parse('2026-07-12T00:03:01.000Z'),
+      data: { status: 'stopped', reportRel: null } },
+  ], loop => {
+    loop.status = 'stopped';
+    loop.pause_reason = null;
+    loop.termination = loop.termination || {};
+    loop.termination.finished_at = '2026-07-12T00:03:01.000Z';
   });
 
   for (const [label, fixture] of [['completed', completed], ['multiple', multiple]]) {
@@ -1106,24 +1111,17 @@ test('stopped pre-import checker settlement requires the exact adjacent finish f
 });
 
 test('stopped pre-import checker settlement rejects review outcome or unrelated post-finish event', () => {
-  const outcome = checkerProcessReceiptFixture();
-  appendCheckerClaimEvent(outcome);
-  appendAnchored(outcome.root, outcome.runId, {
+  const outcome = stopPreImportCheckerFixture();
+  rawHistory7b(outcome.root, outcome.runId, [{
     type: 'review-outcome',
+    now: Date.parse('2026-07-12T00:03:01.000Z'),
     data: {
       episodeId: outcome.claim.checker_episode_id,
       attempt_id: outcome.claim.attempt_id,
       target_maker: outcome.claim.target_maker,
       review_source: 'imported-stdin',
     },
-  });
-  finishRun(outcome.root, outcome.runId, {
-    status: 'stopped',
-    confirm: true,
-    proof: { human_reason: 'outcome fixture' },
-    fence: { owner: outcome.runId, generation: 1, intent: 'business' },
-    now: Date.parse('2026-07-12T00:03:00.000Z'),
-  });
+  }]);
 
   const postFinish = checkerProcessReceiptFixture();
   appendCheckerClaimEvent(postFinish);
@@ -1311,14 +1309,14 @@ test('checkBudget derives wallclock from created_at when sessionStart omitted', 
 });
 
 test('non-cost anchored append keeps reconcile consistent; its truncation is caught', () => {
-  const root = seedRun();
-  recordCost(root, 'R', { turns: 2, tokens: 0 });
-  appendAnchored(root, 'R', { type: 'decision', data: { note: 'x' } }); // non-cost advances anchor (no floor opt)
-  reconcileBudget(root, 'R'); // must NOT throw (anchor tracks tail, spent still 2)
-  const p = join(runDir(root, 'R'), 'event-log.jsonl');
+  const { root, runId, fence } = floorRun();
+  recordCost(root, runId, { turns: 2, tokens: 0, fence });
+  appendAnchored(root, runId, { type: 'decision', data: { note: 'x' } }); // non-cost advances anchor (no floor opt)
+  reconcileBudget(root, runId); // must NOT throw (anchor tracks tail, spent still 2)
+  const p = join(runDir(root, runId), 'event-log.jsonl');
   const lines = readFileSync(p, 'utf8').split('\n').filter(Boolean);
   writeFileSync(p, lines.slice(0, -1).join('\n') + '\n'); // truncate the non-cost event
-  assert.throws(() => reconcileBudget(root, 'R'), /BUDGET_TAMPERED/);
+  assert.throws(() => reconcileBudget(root, runId), /BUDGET_TAMPERED/);
 });
 
 // ── #3: kernel-boundary per-mutation cost floor ──
@@ -1405,9 +1403,7 @@ import { initRun as initRunT } from '../scripts/lib/initrun.mjs';
 test('recordCost: terminal run — fenced call LEASE_FENCED channel, fence-less own throw; no event written', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-bud-t-'));
   const { runId } = initRunT(root, { runtime: 'claude', goal: 'g', now: new Date('2026-07-09T00:00:00Z') });
-  const { data } = readState(root, runId);
-  data.status = 'completed';
-  writeState(root, runId, data);
+  terminal7b(root, runId, { status: 'completed' });
   // fence 있는 호출 → leaseCheck 선행 → LEASE_FENCED: RUN_TERMINAL (drive-headless swallow 계약)
   assert.throws(() => recordCost(root, runId, { turns: 1, tokens: 0, fence: { owner: runId, generation: 1, intent: 'accounting' } }), /LEASE_FENCED: RUN_TERMINAL/);
   // fence-less 직접 호출 → 자체 가드
@@ -1503,9 +1499,7 @@ test('terminal Codex maker settlement remains narrow to an exact acquired child 
     usage, fence: { owner: childRunId, generation: 2, intent: 'accounting' }, handoffKey: 'b'.repeat(16),
   }), /TERMINAL_ACCOUNTING_PROOF_MISSING/);
 
-  const { data } = readState(root, runId);
-  data.status = 'running';
-  writeState(root, runId, data);
+  rawState7b(root, runId, loop => { loop.status = 'running'; });
   assert.throws(() => settleTerminalCodexMakerCost(root, runId, {
     usage, fence: { owner: childRunId, generation: 2, intent: 'accounting' }, handoffKey,
   }), /RUN_NOT_TERMINAL/);

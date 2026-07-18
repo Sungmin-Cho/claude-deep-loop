@@ -25,6 +25,7 @@ import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState } from '../scripts/lib/state.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { detectAndPersist } from '../scripts/lib/detect-terminal.mjs';
+import { seedCorrelatedTerminal } from './fixtures/verified-app-run.mjs';
 import {
   canonicalRealpath,
   createDirectoryJunction,
@@ -834,9 +835,7 @@ test('launcher approval fence, terminal state, candidate replacement, and securi
     ['owner fence', () => {}, { fence: { owner: 'stale-owner', generation: 1 } }, /LEASE_FENCED/],
     ['generation fence', () => {}, { fence: { owner: null, generation: 9 } }, /LEASE_FENCED/],
     ['terminal', fixture => {
-      const { data } = readState(fixture.root, fixture.runId);
-      data.status = 'completed';
-      writeState(fixture.root, fixture.runId, data);
+      seedCorrelatedTerminal(fixture.root, fixture.runId, { status: 'completed' });
     }, {}, /LAUNCHER_EXECUTABLE_STATE_INVALID.*RUN_TERMINAL/],
     ['candidate replacement', fixture => {
       writeFileSync(fixture.executable, 'replacement launcher bytes');
@@ -901,7 +900,7 @@ test('launcher approval rejects a present malformed approval map instead of repa
     () => runtimeExecutable.approveLauncherExecutable(
       fixture.root, fixture.runId, launcherApprovalOptions(fixture),
     ),
-    /STATE_INVALID.*launcher_executable_approvals/,
+    /RUN_SNAPSHOT_INVALID.*launcher_executable_approvals/,
   );
   assert.equal(fixture.calls.length, 0, 'malformed durable state must fail before executing a candidate');
   assert.deepEqual(durableApprovalBytes(fixture.root, fixture.runId), before);

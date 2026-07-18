@@ -8,6 +8,7 @@ import { newEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
 import { ack, computeDebt } from '../scripts/lib/comprehension.mjs';
 import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { verifyLog } from '../scripts/lib/integrity.mjs';
+import { seedCorrelatedTerminal } from './fixtures/verified-app-run.mjs';
 
 // Non-headless env for attended human acks — the test runner may inherit a headless CLAUDE_CODE_ENTRYPOINT,
 // so pass an explicit empty env whenever an ack should NOT be treated as headless.
@@ -245,9 +246,7 @@ import { recordReviewed } from '../scripts/lib/comprehension.mjs';
 test('recordReviewed: terminal run throws RUN_TERMINAL, counters unchanged', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-comp-t-'));
   const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-07-09T00:00:00Z') });
-  const { data } = readState(root, runId);
-  data.status = 'stopped';
-  writeState(root, runId, data);
+  seedCorrelatedTerminal(root, runId, { status: 'stopped' });
   assert.throws(() => recordReviewed(root, runId, 'ep-x', 'src'), /RUN_TERMINAL: recordReviewed/);
   assert.equal(readState(root, runId).data.comprehension.episodes_human_reviewed || 0, 0);
 });

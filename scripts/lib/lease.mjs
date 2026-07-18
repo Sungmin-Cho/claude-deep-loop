@@ -1,6 +1,8 @@
 import { contentHash, ulid } from './envelope.mjs';
 import { runtimeFence } from './runtime.mjs';
 import { readState, writeState, withLock } from './state.mjs';
+import { commitVerifiedEventsUnderLock, readLines,
+  withVerifiedMutationLock } from './integrity.mjs';
 
 const PHASE_ORDER = { idle: 0, reserved: 1, emitted: 2, spawned: 3, acquired: 4 };
 
@@ -42,10 +44,15 @@ export function leaseCheck(loop, { owner, generation, runtime, intent = 'busines
 }
 
 // Runtime-fenced CAS 인수: released 또는 stale(expired)만, generation === expectGeneration. 성공 시 generation+1.
-export function acquireLease(root, runId, { owner, expectGeneration, runtime, now = Date.now() }) {
+export function acquireLease(root, runId, { owner, expectGeneration, runtime,
+  now = Date.now() } = {}) {
   if (typeof owner !== 'string' || owner.length === 0) throw new Error('INVALID_OWNER');
-  return withLock(root, runId, () => {
-    const { data } = readState(root, runId);
+  const callerBinding = { owner, generation: expectGeneration };
+  const intentDigest = contentHash(JSON.stringify({ operation: 'lease-acquire',
+    owner, expectGeneration, runtime }));
+  return withVerifiedMutationLock(root, runId, { callerBinding, intentDigest,
+    fenceError: 'LEASE_FENCED: acquireLease' }, () => {
+    const { data, hash: baseStateHash } = readState(root, runId);
     const runtimeResult = runtimeFence(data, runtime);
     if (!runtimeResult.ok) return runtimeResult;
     const lease = data.session_chain.lease;
@@ -61,6 +68,7 @@ export function acquireLease(root, runId, { owner, expectGeneration, runtime, no
     if (lease.generation !== expectGeneration) {
       return { ok: false, generation: lease.generation, reason: 'generation-mismatch' };
     }
+    const lines = readLines(root, runId);
     // v1.6 (spec §2.3-6): generation CAS 직후·takeable 체크 앞 — stale expectGeneration은 위에서
     // generation-mismatch(fence-first), generation이 맞는 terminal acquire는 여기서 안정적으로 run-terminal
     // (기존 위치는 takeable 뒤라 terminal+released가 lease-not-takeable/child-not-reserved로 새었다).
@@ -78,26 +86,31 @@ export function acquireLease(root, runId, { owner, expectGeneration, runtime, no
       return { ok: false, generation: lease.generation, reason: 'child-not-reserved' };
     }
     const waspaused = data.status === 'paused';
-    const iso = new Date(now).toISOString();
-    data.session_chain.lease = {
-      ...lease, owner_run_id: owner, generation: expectGeneration + 1,
-      acquired_at: iso, expires_at: null,   // active 소유자는 deadline 없음 → 무기한 write (renewal 불필요)
-      state: 'active', handoff_phase: 'acquired', handoff_idempotency_key: null, handoff_child_run_id: null,
-    };
-    // Unpause (same transaction): covers BOTH preserve-resume (releasing+reserved-child) AND
-    // recover-resume (released, no reserved child). This is the acquire-resume path that is
-    // exempt from the RUN_PAUSED gate (Task 6 / leaseCheck intent='resume').
-    if (waspaused) {
-      data.status = 'running';
-      data.pause_reason = null;
-      data.session_chain.lease.resume_policy = null;
-    }
-    const childEntry = data.session_chain.sessions.find(s => s.run_id === owner);
-    if (childEntry && !childEntry.started_at) childEntry.started_at = iso;
-    const parentEntry = data.session_chain.sessions.find(s => s.superseded_by === owner);
-    if (parentEntry) parentEntry.outcome = 'took_over';
-    writeState(root, runId, data);
-    return { ok: true, generation: expectGeneration + 1, reason: 'acquired' };
+    const generation = expectGeneration + 1;
+    const eventData = { previous_owner_run_id: lease.owner_run_id,
+      previous_generation: expectGeneration, owner_run_id: owner, generation };
+    commitVerifiedEventsUnderLock(root, runId, data,
+      [{ type: 'lease-acquired', data: eventData, now }],
+      (candidate, _spent, committed) => {
+        const iso = committed[0].ts;
+        candidate.session_chain.lease = {
+          ...candidate.session_chain.lease, owner_run_id: owner, generation,
+          acquired_at: iso, expires_at: null, state: 'active', handoff_phase: 'acquired',
+          handoff_idempotency_key: null, handoff_child_run_id: null,
+        };
+        if (waspaused) {
+          candidate.status = 'running';
+          candidate.pause_reason = null;
+          candidate.session_chain.lease.resume_policy = null;
+        }
+        const childEntry = candidate.session_chain.sessions
+          .find(session => session.run_id === owner);
+        if (childEntry && !childEntry.started_at) childEntry.started_at = iso;
+        const parentEntry = candidate.session_chain.sessions
+          .find(session => session.superseded_by === owner);
+        if (parentEntry) parentEntry.outcome = 'took_over';
+      }, { baseLines: lines, baseStateHash, callerBinding, intentDigest });
+    return { ok: true, generation, reason: 'acquired' };
   });
 }
 

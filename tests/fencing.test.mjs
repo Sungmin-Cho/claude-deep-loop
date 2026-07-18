@@ -11,6 +11,7 @@ import { detectAndPersist } from '../scripts/lib/detect-terminal.mjs';
 import { newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal } from '../scripts/lib/workspace.mjs';
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { dispatchReview, importReviewOutcome, recordReviewOutcome } from '../scripts/lib/review.mjs';
+import { seedCorrelatedTerminal as terminal7b } from './fixtures/verified-app-run.mjs';
 
 function seed() {
   const root = mkdtempSync(join(tmpdir(), 'dl-fence-'));
@@ -297,18 +298,19 @@ test('detectAndPersist: terminal run throws RUN_TERMINAL (releasing-safe preserv
   const { data } = readState(root, runId);
   const owner = data.session_chain.lease.owner_run_id;
   // terminal → 유효 fence여도 in-lock 가드가 거부 (외곽 requireLease 없이 lib 직접 — in-lock이 권위)
-  data.status = 'completed';
-  writeState(root, runId, data);
+  terminal7b(root, runId, { status: 'completed' });
   assert.throws(
     () => detectAndPersist(root, runId, { owner, generation: 1, env: {}, platform: 'linux', run: noOpRun, now: '2026-07-09T00:00:01.000Z' }),
     /RUN_TERMINAL: detect-terminal/
   );
   assert.equal(readLog(root, runId).filter(e => e.type === 'terminal-detected').length, 0);
   // releasing-safe 불변: 비terminal + releasing lease는 기존대로 통과
-  const d2 = readState(root, runId).data;
+  const { root: root2, runId: runId2 } = seed();
+  const d2 = readState(root2, runId2).data;
+  const owner2 = d2.session_chain.lease.owner_run_id;
   d2.status = 'running';
   d2.session_chain.lease.state = 'releasing';
-  writeState(root, runId, d2);
-  const d = detectAndPersist(root, runId, { owner, generation: 1, env: {}, platform: 'linux', run: noOpRun, now: '2026-07-09T00:00:02.000Z' });
+  writeState(root2, runId2, d2);
+  const d = detectAndPersist(root2, runId2, { owner: owner2, generation: 1, env: {}, platform: 'linux', run: noOpRun, now: '2026-07-09T00:00:02.000Z' });
   assert.equal(typeof d.launcher, 'string');
 });

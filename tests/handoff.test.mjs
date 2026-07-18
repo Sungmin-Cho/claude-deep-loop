@@ -10,6 +10,8 @@ import { emitHandoff, buildLaunchCommand } from '../scripts/lib/handoff.mjs';
 import { buildRuntimeResumeDescriptor } from '../scripts/lib/runtime-descriptor.mjs';
 import { newEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
 import { createDirectoryJunction } from './helpers/fs-fixtures.mjs';
+import { seedCorrelatedTerminal } from './fixtures/verified-app-run.mjs';
+import { rawHashValidState as rawState7b } from './fixtures/verified-app-run.mjs';
 
 // Inject deterministic env so detectTerminal never probes real cmux/osascript.
 function seed(runtime = 'claude') {
@@ -363,14 +365,14 @@ test('emitHandoff writes md + compaction-state(M3) + launch-command, chains sess
 
 test('legacy runtime handoff remains Claude-compatible', () => {
   const { root, runId } = seed();
-  const { data } = readState(root, runId);
-  delete data.initialization;
-  delete data.autonomy.session_runtime;
-  delete data.autonomy.runtime_source;
-  data.event_log_head = { seq: 0, checksum: 'GENESIS' };
-  data.session_chain.sessions[0].host_surface = null;
-  writeState(root, runId, data);
   writeFileSync(join(runDir(root, runId), 'event-log.jsonl'), '');
+  rawState7b(root, runId, data => {
+    delete data.initialization;
+    delete data.autonomy.session_runtime;
+    delete data.autonomy.runtime_source;
+    data.event_log_head = { seq: 0, checksum: 'GENESIS' };
+    data.session_chain.sessions[0].host_surface = null;
+  });
   const r = emitHandoff(root, runId, {
     now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId), platform: POSIX_PLATFORM,
     descriptorBuilder: buildPosixDescriptor,
@@ -1103,9 +1105,7 @@ import { rollbackHandoff } from '../scripts/lib/lease.mjs';
 
 const T_NOW = Date.parse('2026-07-09T03:00:00Z');
 function makeTerminal(root, runId, status = 'completed') {
-  const { data } = readState(root, runId);
-  data.status = status;
-  writeState(root, runId, data);
+  seedCorrelatedTerminal(root, runId, { status });
 }
 
 test('emitHandoff: reserve-succeeds-then-finish race → final-append rejected + compensating rollback (spec §4-5e)', () => {

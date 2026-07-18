@@ -14,6 +14,10 @@ import { respawn as respawnImpl } from '../scripts/lib/respawn.mjs';
 import { acquireLease } from '../scripts/lib/lease.mjs';
 import { driveHeadless as driveHeadlessImpl } from '../scripts/hooks-impl/drive-headless.mjs';
 import { pauseRun } from '../scripts/lib/state.mjs';
+import {
+  rawHashValidHistory as rawHistory7b,
+  seedCorrelatedTerminal,
+} from './fixtures/verified-app-run.mjs';
 
 const A = join(dirname(fileURLToPath(import.meta.url)), '..', 'recipes', 'automation');
 const HANDOFF_REFERENCE = join(dirname(fileURLToPath(import.meta.url)), '..', 'skills', 'deep-loop-workflow', 'references', 'handoff-respawn.md');
@@ -413,9 +417,7 @@ test('driveHeadless: fail-closed-terminal when spawn fails and run reached compl
     // Child acquires the lease (generation bumps to 2)
     acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, runtime: 'claude', now: NOW1 });
     // Then the run reaches terminal status (completed)
-    const { data } = readState(root, runId);
-    data.status = 'completed';
-    writeState(root, runId, data);
+    seedCorrelatedTerminal(root, runId, { status: 'completed' });
     // Spawn returns failure (unmeasurable)
     return { ok: false, reason: 'unmeasurable-fail-closed' };
   }});
@@ -582,9 +584,7 @@ test('driveHeadless: terminal Claude child keeps the legacy terminal fence and r
     spawnFn: () => {
       // 자식이 acquire 후 작업을 끝내고 run을 terminal로 전이시킨 시나리오
       acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, runtime: 'claude', now: NOW1 });
-      const { data } = readState(root, runId);
-      data.status = 'completed';
-      writeState(root, runId, data);
+      seedCorrelatedTerminal(root, runId, { status: 'completed' });
       return { ok: true, usage: { num_turns: 3, tokens: 70 } };
     },
   });
@@ -599,9 +599,12 @@ test('driveHeadless: terminal Claude child keeps the legacy terminal fence and r
 
 test('driveHeadless: legacy terminal+emitted pending handoff → no write, terminal outcome (spec §4-5c ②)', () => {
   const { root, runId } = seedRunWithHandoff();
-  const { data } = readState(root, runId);
-  data.status = 'completed';                       // legacy 오염 상태 직조 (가드 이전 로그 잔재 시나리오)
-  writeState(root, runId, data);
+  rawHistory7b(root, runId, [], loop => {
+    loop.status = 'completed';
+    loop.pause_reason = null;
+    loop.termination = loop.termination || {};
+    loop.termination.finished_at = '2026-07-13T00:00:10.000Z';
+  });
   const before = JSON.stringify(readState(root, runId).data);
   const r = driveHeadless({
     root,

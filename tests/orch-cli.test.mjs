@@ -14,6 +14,10 @@ import { emitHandoff } from '../scripts/lib/handoff.mjs';
 import { appendAnchored, readLines } from '../scripts/lib/integrity.mjs';
 import { appHostTaskCwdDigest } from '../scripts/lib/host-surface.mjs';
 import { validate, verifyAppEventCorrelation } from '../scripts/lib/schema.mjs';
+import {
+  rawHashValidState as rawState7b,
+  seedCorrelatedTerminal,
+} from './fixtures/verified-app-run.mjs';
 
 const CLI = join(process.cwd(), 'scripts', 'deep-loop.mjs');
 const FORCE_WIN32 = join(process.cwd(), 'tests', 'helpers', 'force-win32.mjs');
@@ -361,12 +365,9 @@ test('root rebind invalid actor, digest, candidate root, or state exits 1', () =
   }
 
   const invalidOriginal = seed();
+  rawState7b(invalidOriginal.root, invalidOriginal.runId,
+    data => { data.run_id = 'DIFFERENT-RUN-ID'; });
   const { data } = readState(invalidOriginal.root, invalidOriginal.runId);
-  data.run_id = 'DIFFERENT-RUN-ID';
-  const invalidRaw = JSON.stringify(data, null, 2);
-  writeFileSync(join(runDir(invalidOriginal.root, invalidOriginal.runId), 'loop.json'), invalidRaw);
-  writeFileSync(join(runDir(invalidOriginal.root, invalidOriginal.runId), '.loop.hash'),
-    createHash('sha256').update(invalidRaw).digest('hex'));
   const invalidState = {
     candidateRoot: `${invalidOriginal.root}-moved`,
     runId: invalidOriginal.runId,
@@ -380,9 +381,8 @@ test('root rebind invalid actor, digest, candidate root, or state exits 1', () =
 
 test('root rebind keeps a resolvable stopped copy fenced at exit 3', () => {
   const original = seed();
+  seedCorrelatedTerminal(original.root, original.runId, { status: 'stopped' });
   const { data } = readState(original.root, original.runId);
-  data.status = 'stopped';
-  writeState(original.root, original.runId, data);
   const candidateRoot = mkdtempSync(join(tmpdir(), 'dl-root-cli-stopped-copy-'));
   cpSync(join(original.root, '.deep-loop'), join(candidateRoot, '.deep-loop'), { recursive: true });
   const fixture = { candidateRoot, runId: original.runId, storedRoot: data.project.root };
@@ -594,9 +594,7 @@ runtimeExecutableCliTest('runtime-executable approval can repair a paused run wi
 
 runtimeExecutableCliTest('runtime-executable approval rejects a terminal run as invalid state, not as a fence', () => {
   const fixture = runtimeExecutableCliFixture();
-  const { data } = readState(fixture.root, fixture.runId);
-  data.status = 'completed';
-  writeState(fixture.root, fixture.runId, data);
+  seedCorrelatedTerminal(fixture.root, fixture.runId, { status: 'completed' });
   const before = cliSnapshot(fixture.root, fixture.runId);
 
   const result = runResult(fixture.root, validRuntimeApprovalArgs(fixture));
@@ -755,9 +753,7 @@ launcherExecutableCliTest('launcher-executable approval repairs paused active st
 
   const terminal = nativeWin32LauncherCliFixture();
   const terminalRunId = initWin32LauncherRun(terminal);
-  const { data: terminalState } = readState(terminal.root, terminalRunId);
-  terminalState.status = 'completed';
-  writeState(terminal.root, terminalRunId, terminalState);
+  seedCorrelatedTerminal(terminal.root, terminalRunId, { status: 'completed' });
   const before = cliSnapshot(terminal.root, terminalRunId);
   const rejected = win32RunResult(terminal.root, validLauncherApprovalArgs(terminal, terminalRunId), terminal.env);
   assert.equal(rejected.code, 1, rejected.stderr);
@@ -1634,11 +1630,13 @@ test('host-surface observe has exact grammar and safe malformed JSON diagnostics
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-observe-cli-')));
   const { runId } = initRun(root, { runtime: 'codex', goal: 'observe-cli',
     cwdFn: () => root, now: new Date('2026-07-13T00:00:00.000Z') });
-  const loop = readState(root, runId).data;
-  delete loop.initialization;
-  delete loop.autonomy.app_task_continuation;
-  loop.session_chain.sessions[0].host_surface = null;
-  writeState(root, runId, loop);
+  writeFileSync(join(runDir(root, runId), 'event-log.jsonl'), '');
+  rawState7b(root, runId, loop => {
+    delete loop.initialization;
+    delete loop.autonomy.app_task_continuation;
+    loop.session_chain.sessions[0].host_surface = null;
+    loop.event_log_head = { seq: 0, checksum: 'GENESIS' };
+  });
   const manual = ['host-surface', 'observe', '--project-root', root, '--run-id', runId,
     '--owner', runId, '--generation', '1', '--runtime', 'codex', '--manual-enums',
     '--host-surface', 'codex-cli', '--host-source', 'codex-cli-host'];
@@ -1733,9 +1731,7 @@ test('App fence mismatches exit 3 but terminal after a valid fence exits 1', () 
     '--run-id', runId, '--owner', runId, '--generation', '1', '--runtime', 'claude']).code, 3);
   assert.equal(runResult(root, ['app-task', 'revoke',
     '--run-id', runId, '--owner', runId, '--generation', '1', '--runtime', 'invalid']).code, 2);
-  const loop = readState(root, runId).data;
-  loop.status = 'completed';
-  writeState(root, runId, loop);
+  seedCorrelatedTerminal(root, runId, { status: 'completed' });
   assert.equal(runResult(root, ['app-task', 'revoke',
     '--run-id', runId, '--owner', runId, '--generation', '1', '--runtime', 'codex']).code, 1);
   assert.equal(runResult(root, ['app-task', 'consent', '--run-id', runId]).code, 2);

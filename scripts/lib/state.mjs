@@ -3,7 +3,8 @@ import path, { join } from 'node:path';
 import { contentHash, atomicWrite } from './envelope.mjs';
 import { validate } from './schema.mjs';
 import { leaseCheck } from './lease.mjs';
-import { appendAnchored, MUTATION_TURN_FLOOR } from './integrity.mjs';
+import { appendAnchored, assertVerifiedRunSnapshot, MUTATION_TURN_FLOOR,
+  statePatchIntent } from './integrity.mjs';
 import { assertProjectRootBinding } from './project-root.mjs';
 import { ancestorPaths } from './path-portable.mjs';
 
@@ -99,11 +100,13 @@ export function readState(root, runId) {
   return state;
 }
 
-export function writeState(root, runId, data, { atomicWriteFn = atomicWrite } = {}) {
+export function writeState(root, runId, data,
+  { atomicWriteFn = atomicWrite, stampUpdatedAt = true } = {}) {
   assertProjectRootBinding(root, data);
+  if (stampUpdatedAt) data.updated_at = new Date().toISOString();
+  assertVerifiedRunSnapshot(root, runId, data);
   const v = validate(data);
   if (!v.ok) throw new Error(`SCHEMA_INVALID: ${v.errors.join('; ')}`);
-  data.updated_at = new Date().toISOString();
   const raw = JSON.stringify(data, null, 2);
   atomicWriteFn(loopPath(root, runId), raw);
   atomicWriteFn(hashPath(root, runId), contentHash(raw));
@@ -118,11 +121,17 @@ function setPath(obj, path, value) {
 }
 
 export function patch(root, runId, field, value, { fence } = {}) {
+  if (!fence || typeof fence.owner !== 'string'
+      || !Number.isSafeInteger(fence.generation) || fence.generation < 1) {
+    throw new Error('FENCE_REQUIRED: patch');
+  }
   if (classifyPatch(field, value) !== 'allow') throw new Error(`FIELD_FORBIDDEN: ${field}`);
   // #3 (R1 Fix 2): route through appendAnchored so a whitelisted patch (which can flip active_workstreams — a
   // finish proof input — and non-terminal episode/workstream status — a next-action routing input) is BOTH
   // tamper-evident (was a silent withLock+writeState) AND floor-charged. The value is NOT recorded in the event
   // (may be large/sensitive) — only the field path. All throwing guards live in preCheck (fresh loop, pre-append).
+  const callerBinding = { owner: fence.owner, generation: fence.generation };
+  const intentDigest = statePatchIntent(callerBinding, field, value);
   return appendAnchored(root, runId, { type: 'state-patch', data: { field } },
     (loop) => { setPath(loop, field, value); },
     (loop) => {
@@ -147,7 +156,8 @@ export function patch(root, runId, field, value, { fence } = {}) {
       const sv = validate(candidate);
       if (!sv.ok) throw new Error(`SCHEMA_INVALID: ${sv.errors.join('; ')}`);
     },
-    { floor: MUTATION_TURN_FLOOR });
+    { floor: MUTATION_TURN_FLOOR, callerBinding, intentDigest,
+      fenceError: 'LEASE_FENCED: patch' });
 }
 
 function sleepMs(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }

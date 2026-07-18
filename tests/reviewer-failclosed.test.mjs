@@ -18,6 +18,7 @@ import { finishProofState } from '../scripts/lib/finish.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { resolveReviewer, dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
+import { appendAnchored } from '../scripts/lib/integrity.mjs';
 import { createDirectoryJunction } from './helpers/fs-fixtures.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -297,9 +298,10 @@ test('P2: legacy unpinned-approved maker is re-review eligible and finish unbloc
   const ws = doneMakerOn(root, runId, f);
   const makerId = readState(root, runId).data.episodes.find(e => e.role === 'maker').id;
   const { id: legacyId } = newEpisode(root, runId, { plugin: 'deep-review', role: 'checker', kind: 'design-review', point: 'design', workstream: ws, targetMaker: makerId, fence: f });
-  const d = readState(root, runId).data;
-  d.episodes.find(e => e.id === legacyId).status = 'approved';   // pre-patch 커널 잔재 재현 (contract 미pin)
-  writeState(root, runId, d);
+  appendAnchored(root, runId,
+    { type: 'state-patch', data: { field: 'test-legacy-approved' } }, d => {
+      d.episodes.find(e => e.id === legacyId).status = 'approved';
+    });
   assert.ok(finishProofState(readState(root, runId).data).missing.includes('hillclimb-contract-unpinned'));
   materializeContract(root, '.claude/worktrees/w-design');
   const r = dispatchReview(root, runId, { point: 'design', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
@@ -396,14 +398,16 @@ test('P2: legacy approved checker without pinned contract blocks hill-climb fini
   const makerId = readState(root, runId).data.episodes.find(e => e.role === 'maker').id;
   const { id: checkerId } = newEpisode(root, runId, { plugin: 'deep-review', role: 'checker', kind: 'design-review', point: 'design', workstream: ws, targetMaker: makerId, fence: f });
   // pre-patch 커널이 남긴 approved 상태 재현 (fixture 전용 raw 전이 — 정상 경로로는 record 게이트가 막음)
-  const d = readState(root, runId).data;
-  d.episodes.find(e => e.id === checkerId).status = 'approved';
-  writeState(root, runId, d);
+  appendAnchored(root, runId,
+    { type: 'state-patch', data: { field: 'test-legacy-approved' } }, d => {
+      d.episodes.find(e => e.id === checkerId).status = 'approved';
+    });
   assert.ok(finishProofState(readState(root, runId).data).missing.includes('hillclimb-contract-unpinned'));
   // 대조: 같은 상태에서 contract가 pin되어 있으면 이 마커는 사라진다
-  const d2 = readState(root, runId).data;
-  d2.episodes.find(e => e.id === checkerId).contract = { slice: 'HILLCLIMB-001', path: '.claude/worktrees/w-design/.deep-review/contracts/HILLCLIMB-001.yaml', sha256: 'a'.repeat(64) };
-  writeState(root, runId, d2);
+  appendAnchored(root, runId,
+    { type: 'state-patch', data: { field: 'test-legacy-contract' } }, d2 => {
+      d2.episodes.find(e => e.id === checkerId).contract = { slice: 'HILLCLIMB-001', path: '.claude/worktrees/w-design/.deep-review/contracts/HILLCLIMB-001.yaml', sha256: 'a'.repeat(64) };
+    });
   assert.ok(!finishProofState(readState(root, runId).data).missing.includes('hillclimb-contract-unpinned'));
 });
 

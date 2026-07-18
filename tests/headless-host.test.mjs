@@ -9,11 +9,18 @@ import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
 import { acquireLease, advanceHandoffPhase } from '../scripts/lib/lease.mjs';
 import { recordCost } from '../scripts/lib/budget.mjs';
-import { readLines } from '../scripts/lib/integrity.mjs';
+import { appendAnchored, readLines } from '../scripts/lib/integrity.mjs';
 import { respawn } from '../scripts/lib/respawn.mjs';
 import { buildLaunchCommand } from '../scripts/lib/runtime-descriptor.mjs';
 import { finishRun } from '../scripts/lib/finish.mjs';
 import { canonicalRealpath } from './helpers/fs-fixtures.mjs';
+import { newWorkstream, recordWorkstreamTerminal } from '../scripts/lib/workspace.mjs';
+import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
+import { dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
+import {
+  rawHashValidState as rawState7b,
+  seedCorrelatedTerminal,
+} from './fixtures/verified-app-run.mjs';
 
 const NOW0 = new Date('2026-07-11T00:00:00Z');
 const NOW1 = Date.parse('2026-07-11T00:01:00Z');
@@ -73,7 +80,7 @@ function measuredUsage(inputTokens) {
   };
 }
 
-function seedCodexHandoff() {
+function seedCodexHandoff({ completable = false } = {}) {
   const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-headless-host-')));
   const { runId } = initRun(root, {
     runtime: 'codex', goal: 'g', now: NOW0, env: {}, platform: 'linux',
@@ -95,6 +102,7 @@ function seedCodexHandoff() {
     approved_at: '2026-07-11T00:00:00.000Z',
   };
   writeState(root, runId, data);
+  if (completable) prepareCompletableCodexRun(root, runId);
   const handoff = emitHandoff(root, runId, {
     trigger: 'milestone',
     headless: true,
@@ -142,15 +150,25 @@ function codexHostDeps(root, runId) {
 }
 
 function prepareCompletableCodexRun(root, runId) {
+  const fence = { owner: runId, generation: 1, intent: 'business' };
   const state = readState(root, runId).data;
   state.review.points = ['implementation'];
-  state.episodes = [
-    { id: '001-maker', role: 'maker', plugin: 'deep-work', point: 'implementation', workstream_id: 'ws', status: 'done' },
-    { id: '002-checker', role: 'checker', plugin: 'deep-review', point: 'implementation', workstream_id: 'ws', status: 'approved', target_maker: '001-maker' },
-  ];
-  state.workstreams = [{ id: 'ws', status: 'ready', review_points_done: ['implementation'] }];
-  state.active_workstreams = [];
   writeState(root, runId, state);
+  writeFileSync(join(root, 'art.txt'), 'artifact');
+  const ws = newWorkstream(root, runId,
+    { title: 'W', branch: 'b', worktree: '.claude/worktrees/wt', fence });
+  const maker = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker',
+    kind: 'implementation', point: 'implementation', workstream: ws.id,
+    expectedArtifacts: ['art.txt'], fence });
+  recordEpisode(root, runId, maker.id,
+    { status: 'done', artifacts: ['art.txt'], proof: {}, fence });
+  const review = dispatchReview(root, runId,
+    { point: 'implementation', workstreamId: ws.id, detected: {}, fence });
+  mkdirSync(join(root, '.claude/worktrees/wt'), { recursive: true });
+  writeFileSync(join(root, '.claude/worktrees/wt/review.md'), '# review');
+  recordReviewOutcome(root, runId, { episodeId: review.checkerEpisodeId,
+    verdict: 'APPROVE', proof: { report: '.claude/worktrees/wt/review.md' }, fence });
+  recordWorkstreamTerminal(root, runId, ws.id, { status: 'ready', proof: {}, fence });
   writeFileSync(join(runDir(root, runId), 'final-report.md'), '# complete');
 }
 
@@ -427,9 +445,9 @@ test('receipt-settled preflight is accounted through the injected kernel settler
 });
 
 test('terminal Codex maker usage is settled once after the acquired child completes the run', () => {
-  const { root, runId, childRunId } = seedCodexHandoff();
+  const { root, runId, childRunId } = seedCodexHandoff({ completable: true });
   const deps = codexHostDeps(root, runId);
-  prepareCompletableCodexRun(root, runId);
+  const setupSpent = readState(root, runId).data.budget.spent;
 
   const result = driveHeadlessRun({
     root,
@@ -455,7 +473,8 @@ test('terminal Codex maker usage is settled once after the acquired child comple
   });
   const after = readState(root, runId).data;
   assert.equal(after.status, 'completed');
-  assert.equal(after.budget.spent, 1, 'the one measured maker turn must absorb the finish mutation floor');
+  assert.equal(after.budget.spent, setupSpent + 1,
+    'the one measured maker turn must absorb the finish mutation floor');
   assert.equal(after.budget.tokens_spent, 31);
   const terminalCosts = readLines(root, runId).filter(
     event => event.type === 'cost' && event.data.terminal_process === 'codex-maker',
@@ -466,9 +485,9 @@ test('terminal Codex maker usage is settled once after the acquired child comple
 });
 
 test('terminal Codex maker settlement failure is explicit and never reported as a successful resume', () => {
-  const { root, runId, childRunId } = seedCodexHandoff();
+  const { root, runId, childRunId } = seedCodexHandoff({ completable: true });
   const deps = codexHostDeps(root, runId);
-  prepareCompletableCodexRun(root, runId);
+  const setupSpent = readState(root, runId).data.budget.spent;
 
   const result = driveHeadlessRun({
     root,
@@ -499,7 +518,7 @@ test('terminal Codex maker settlement failure is explicit and never reported as 
   });
   const after = readState(root, runId).data;
   assert.equal(after.status, 'completed');
-  assert.equal(after.budget.spent, 1);
+  assert.equal(after.budget.spent, setupSpent + 1);
   assert.equal(after.budget.tokens_spent, 0);
   assert.equal(readLines(root, runId).some(
     event => event.type === 'cost' && event.data.terminal_process === 'codex-maker',
@@ -881,7 +900,7 @@ test('host rejects a stale explicit parent fence before authentication or prefli
 });
 
 test('host carries the original parent fence through preflight into respawn', () => {
-  const { root, runId } = seedCodexHandoff();
+  const { root, runId, childRunId } = seedCodexHandoff();
   const deps = codexHostDeps(root, runId);
   let makerCalls = 0;
   const result = driveHeadlessRun({
@@ -891,10 +910,8 @@ test('host carries the original parent fence through preflight into respawn', ()
     now: NOW1 + 1_000,
     ...deps,
     preflightFn: () => {
-      const { data } = readState(root, runId);
-      data.session_chain.lease.owner_run_id = 'OTHER';
-      data.session_chain.lease.generation = 2;
-      writeState(root, runId, data);
+      acquireLease(root, runId, { owner: childRunId, expectGeneration: 1,
+        runtime: 'codex', now: NOW1 + 1_000 });
       return { ok: true, cache_hit: true, measured_usage: [] };
     },
     spawnFn: () => { makerCalls += 1; return { ok: true, usage: measuredUsage(30) }; },
@@ -908,9 +925,9 @@ test('host carries the original parent fence through preflight into respawn', ()
   assert.equal(makerCalls, 0);
   const after = readState(root, runId).data;
   assert.equal(after.status, 'running');
-  assert.equal(after.session_chain.lease.owner_run_id, 'OTHER');
+  assert.equal(after.session_chain.lease.owner_run_id, childRunId);
   assert.equal(after.session_chain.lease.generation, 2);
-  assert.equal(after.session_chain.lease.handoff_phase, 'emitted');
+  assert.equal(after.session_chain.lease.handoff_phase, 'acquired');
 });
 
 test('measured Codex maker without acquisition records against the parent before preserve-pause', () => {
@@ -953,7 +970,7 @@ test('measured Codex maker without acquisition records against the parent before
 test('unrelated takeover is never accepted as the reserved child acquisition proof', () => {
   const { root, runId, childRunId } = seedCodexHandoff();
   const deps = codexHostDeps(root, runId);
-  const result = driveHeadlessRun({
+  assert.throws(() => driveHeadlessRun({
     root,
     runId,
     expect: { owner: runId, generation: 1 },
@@ -961,21 +978,18 @@ test('unrelated takeover is never accepted as the reserved child acquisition pro
     ...deps,
     preflightFn: () => ({ ok: true, cache_hit: true, measured_usage: [] }),
     spawnFn: () => {
-      const { data } = readState(root, runId);
-      data.session_chain.lease.owner_run_id = 'UNRELATED';
-      data.session_chain.lease.generation = 2;
-      data.session_chain.lease.state = 'active';
-      data.session_chain.lease.handoff_phase = 'acquired';
-      writeState(root, runId, data);
+      rawState7b(root, runId, data => {
+        data.session_chain.lease.owner_run_id = 'UNRELATED';
+        data.session_chain.lease.generation = 2;
+        data.session_chain.lease.state = 'active';
+        data.session_chain.lease.handoff_phase = 'acquired';
+      });
       return { ok: true, usage: measuredUsage(30) };
     },
-  });
+  }), /RUN_SNAPSHOT_INVALID.*acquisition lineage invalid/);
 
-  assert.equal(result.ok, false);
-  assert.notEqual(result.action, 'resumed');
-  assert.equal(result.recorded, false);
   const after = readState(root, runId).data;
-  assert.equal(after.status, 'paused');
+  assert.equal(after.status, 'running');
   assert.equal(after.session_chain.sessions.find((session) => session.run_id === childRunId).started_at, null);
 });
 
@@ -1303,10 +1317,8 @@ test('preflight accounting fence loss stops before CAS and never adopts the new 
       const recorded = recordCost(projectRoot, id, options);
       records += 1;
       if (records === 1) {
-        const { data } = readState(root, runId);
-        data.session_chain.lease.owner_run_id = 'OTHER';
-        data.session_chain.lease.generation = 2;
-        writeState(root, runId, data);
+        acquireLease(root, runId, { owner: childRunId, expectGeneration: 1,
+          runtime: 'codex', now: NOW1 + 1_000 });
       }
       return recorded;
     },
@@ -1322,16 +1334,16 @@ test('preflight accounting fence loss stops before CAS and never adopts the new 
   assert.equal(makerCalls, 0);
   const after = readState(root, runId).data;
   assert.equal(after.status, 'running');
-  assert.equal(after.session_chain.lease.owner_run_id, 'OTHER');
+  assert.equal(after.session_chain.lease.owner_run_id, childRunId);
   assert.equal(after.session_chain.lease.generation, 2);
-  assert.equal(after.session_chain.lease.handoff_phase, 'emitted');
-  assert.equal(after.session_chain.lease.handoff_child_run_id, childRunId);
+  assert.equal(after.session_chain.lease.handoff_phase, 'acquired');
+  assert.equal(after.session_chain.lease.handoff_child_run_id, null);
   const costs = readLines(root, runId).filter((event) => event.type === 'cost');
   assert.deepEqual(costs.map((event) => event.data.reported_tokens), [11]);
 });
 
 test('preflight failure never refreshes a stale parent fence to pause a new owner', () => {
-  const { root, runId } = seedCodexHandoff();
+  const { root, runId, childRunId } = seedCodexHandoff();
   const deps = codexHostDeps(root, runId);
   const result = driveHeadlessRun({
     root,
@@ -1340,10 +1352,8 @@ test('preflight failure never refreshes a stale parent fence to pause a new owne
     now: NOW1 + 1_000,
     ...deps,
     preflightFn: () => {
-      const { data } = readState(root, runId);
-      data.session_chain.lease.owner_run_id = 'OTHER';
-      data.session_chain.lease.generation = 2;
-      writeState(root, runId, data);
+      acquireLease(root, runId, { owner: childRunId, expectGeneration: 1,
+        runtime: 'codex', now: NOW1 + 1_000 });
       return {
         ok: false,
         reason: 'read-smoke-failed',
@@ -1361,9 +1371,9 @@ test('preflight failure never refreshes a stale parent fence to pause a new owne
   });
   const after = readState(root, runId).data;
   assert.equal(after.status, 'running');
-  assert.equal(after.session_chain.lease.owner_run_id, 'OTHER');
+  assert.equal(after.session_chain.lease.owner_run_id, childRunId);
   assert.equal(after.session_chain.lease.generation, 2);
-  assert.equal(after.session_chain.lease.handoff_phase, 'emitted');
+  assert.equal(after.session_chain.lease.handoff_phase, 'acquired');
 });
 
 test('concurrent terminal transition during preflight failure is never demoted to paused', () => {
@@ -1376,9 +1386,7 @@ test('concurrent terminal transition during preflight failure is never demoted t
     now: NOW1 + 1_000,
     ...deps,
     preflightFn: () => {
-      const { data } = readState(root, runId);
-      data.status = 'completed';
-      writeState(root, runId, data);
+      seedCorrelatedTerminal(root, runId, { status: 'completed' });
       return {
         ok: false,
         reason: 'read-smoke-failed',
@@ -1495,9 +1503,7 @@ test('post-CAS validation rejects allowlisted environment drift after preflight'
 
 test('terminal Codex handoff returns before authentication, preflight, or maker', () => {
   const { root, runId } = seedCodexHandoff();
-  const { data } = readState(root, runId);
-  data.status = 'completed';
-  writeState(root, runId, data);
+  seedCorrelatedTerminal(root, runId, { status: 'completed' });
   let calls = 0;
   const result = driveHeadlessRun({
     root,

@@ -9,6 +9,7 @@ import { newWorkstream, recordWorkstreamTerminal } from '../scripts/lib/workspac
 import { newEpisode, recordEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
 import { dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
 import { finishRun, finishProofState } from '../scripts/lib/finish.mjs';
+import { readLines } from '../scripts/lib/integrity.mjs';
 import { createFileSymlinkOrSkip } from './helpers/fs-fixtures.mjs';
 
 // Codex r2 should-fix-2: review.points 를 ['implementation'] 한 개로 시드해야 recordWorkstreamTerminal('ready')
@@ -19,6 +20,18 @@ function seed() {
   const { runId } = initRun(root, { runtime: 'claude', goal: 'g', review, now: new Date('2026-06-24T00:00:00Z') });
   return { root, runId, fence: { owner: runId, generation: 1, intent: 'business' } };
 }
+
+test('finish event and termination use the same injected anchored clock', () => {
+  const { root, runId, fence } = seed();
+  const now = Date.parse('2026-07-13T00:00:11.000Z');
+  assert.equal(finishRun(root, runId, { status: 'stopped',
+    proof: { human_reason: 'clock proof' }, confirm: true, fence, now }).ok, true);
+  const loop = readState(root, runId).data;
+  const finish = readLines(root, runId).find(event => event.type === 'finish');
+  assert.equal(finish.ts, '2026-07-13T00:00:11.000Z');
+  assert.equal(loop.termination.finished_at, finish.ts);
+  assert.equal(finish.data.reportRel, loop.termination.final_report ?? null);
+});
 
 // 완전히 settled+reviewed+terminal 인 run 을 실제 lib 계약대로 조립 (completed proof 충족).
 // Codex r2 sf-2: recordEpisode('done')는 expected_artifacts 가 비어있지 않고 실제 파일이 root 하위에 존재해야 한다

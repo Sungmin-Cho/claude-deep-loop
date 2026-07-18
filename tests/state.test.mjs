@@ -4,21 +4,32 @@ import { cpSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync, read
 import { tmpdir } from 'node:os';
 import { basename, join, dirname as _dn, posix, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readState, writeState, patch, withLock, runDir, findRoot } from '../scripts/lib/state.mjs';
+import { readState, writeState, patch as kernelPatch, withLock, runDir, findRoot } from '../scripts/lib/state.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
+import { rawHashValidState as rawState7b } from './fixtures/verified-app-run.mjs';
 
 const atomicApiPromise = import('../scripts/lib/atomic-write.mjs').catch(() => ({}));
 
+function patch(root, runId, field, value, options) {
+  return kernelPatch(root, runId, field, value,
+    options ?? { fence: { owner: runId, generation: 1, intent: 'business' } });
+}
+
 function seed() {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
-  const runId = 'R1';
+  const runId = '01J00000000000000000000000';
   const dir = runDir(root, runId);
   mkdirSync(dir, { recursive: true });
+  mkdirSync(join(root, '.deep-loop'), { recursive: true });
+  writeFileSync(join(root, '.deep-loop', 'current'), `${runId}\n`);
   const data = {
     schema_version: '0.2.0', run_id: runId, goal: 'g', status: 'running',
     project: { root }, routing: { protocol: 'deep-work' }, review: { points: ['design'] },
     autonomy: { tier: 'recommend', spawn_style: 'interactive' }, budget: { unit: 'turns', spent: 5 },
-    comprehension: {}, circuit_breaker: { tripped: false }, session_chain: { lease: { state: 'active', handoff_phase: 'idle' }, sessions: [] },
+    comprehension: {}, circuit_breaker: { tripped: false }, session_chain: { lease: {
+      owner_run_id: runId, generation: 1, state: 'active', handoff_phase: 'idle',
+      acquired_at: '2026-07-13T00:00:00.000Z',
+    }, sessions: [{ run_id: runId }] },
     workstreams: [{ id: 'ws-1', status: 'in_progress', depends_on: [] }], active_workstreams: ['ws-1'],
     triage: { actionable: [] }, episodes: [{ id: 'e1', status: 'pending' }], termination: {},
   };
@@ -207,7 +218,7 @@ test('patch: non-terminal workstream status allowed; terminal workstream resurre
   const { root, runId } = seed();   // workstreams[0]=ws-1, status in_progress
   patch(root, runId, 'workstreams.0.status', 'in_progress');                 // non-terminal → allowed
   assert.equal(readState(root, runId).data.workstreams[0].status, 'in_progress');
-  const data = readState(root, runId).data; data.workstreams[0].status = 'ready'; writeState(root, runId, data);  // fix terminal
+  rawState7b(root, runId, loop => { loop.workstreams[0].status = 'ready'; });
   assert.throws(() => patch(root, runId, 'workstreams.0.status', 'in_progress'), /FIELD_FORBIDDEN/);   // resurrection rejected
 });
 

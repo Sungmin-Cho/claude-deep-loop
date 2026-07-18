@@ -8,16 +8,26 @@ import { join } from 'node:path';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
+import { seedCorrelatedTerminal } from './fixtures/verified-app-run.mjs';
 
 const CLI = join(process.cwd(), 'scripts', 'deep-loop.mjs');
 
 function seedTerminal(status, mutate, runtime = 'claude') {
   const root = mkdtempSync(join(tmpdir(), 'dl-term-'));
   const { runId } = initRun(root, { runtime, goal: 'g', now: new Date('2026-07-09T00:00:00Z') });
-  const { data } = readState(root, runId);
-  data.status = status;
-  if (mutate) mutate(data);
-  writeState(root, runId, data);
+  let { data } = readState(root, runId);
+  if (['completed', 'stopped'].includes(status)) {
+    seedCorrelatedTerminal(root, runId, { status });
+    data = readState(root, runId).data;
+  } else {
+    data.status = status;
+  }
+  if (mutate) {
+    mutate(data);
+    writeState(root, runId, data);
+  } else if (!['completed', 'stopped'].includes(status)) {
+    writeState(root, runId, data);
+  }
   return { root, runId, owner: data.session_chain.lease.owner_run_id, gen: data.session_chain.lease.generation };
 }
 const run = (root, args) => spawnSync(process.execPath, [CLI, ...args, '--project-root', root], { encoding: 'utf8' });

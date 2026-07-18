@@ -129,9 +129,7 @@ test('stopping the original run never authorizes a copied candidate root', () =>
   const originalRoot = freshRoot('dl-root-stopped-original-');
   const candidateRoot = freshRoot('dl-root-stopped-copy-');
   const { runId } = init(originalRoot);
-  const { data } = readState(originalRoot, runId);
-  data.status = 'stopped';
-  writeState(originalRoot, runId, data);
+  terminal7b(originalRoot, runId, { status: 'stopped' });
   copyDurableState(originalRoot, candidateRoot);
 
   assert.throws(() => readState(candidateRoot, runId), /PROJECT_ROOT_FENCED/);
@@ -213,9 +211,8 @@ test('a stopped original still fences diagnosis and rebind while its stored root
   const originalRoot = freshRoot('dl-root-rebind-stopped-original-');
   const candidateRoot = freshRoot('dl-root-rebind-stopped-copy-');
   const { runId } = init(originalRoot);
+  terminal7b(originalRoot, runId, { status: 'stopped' });
   const { data } = readState(originalRoot, runId);
-  data.status = 'stopped';
-  writeState(originalRoot, runId, data);
   copyDurableState(originalRoot, candidateRoot);
   const storedRoot = data.project.root;
   const before = durableSnapshot(candidateRoot, runId);
@@ -460,4 +457,39 @@ test('scripts contain no generic project-root binding bypass tokens', () => {
     .filter(({ source }) => genericRootBypassPattern.test(source))
     .map(({ path }) => path);
   assert.deepEqual(violations, []);
+});
+import { renameSync as rename7c } from 'node:fs';
+import { rebindProjectRoot as rebind7c } from '../scripts/lib/project-root-recovery.mjs';
+import { projectRootDigest as rootDigest7c } from '../scripts/lib/project-root.mjs';
+import { durableRunBytes as bytes7c, rawHashValidState as raw7c,
+  seedCorrelatedTerminal as terminal7b,
+  verifiedAppRun as fixture7c } from './fixtures/verified-app-run.mjs';
+
+test('root rebind proves App correlation before its sole direct append', () => {
+  const fixture = fixture7c('dl-root-rebind-proof-');
+  const moved = `${fixture.root}-moved`;
+  rename7c(fixture.root, moved);
+  raw7c(moved, fixture.runId, loop => {
+    loop.session_chain.sessions[0].host_surface.observed_at =
+      '2026-07-13T00:00:01.000Z';
+  }, { recovery: true });
+  const before = bytes7c(moved, fixture.runId);
+  assert.throws(() => rebind7c(moved, fixture.runId, { actor: 'human', confirm: true,
+    expectedStoredRootDigest: rootDigest7c(fixture.root),
+    fence: { owner: fixture.owner, generation: fixture.generation },
+    now: Date.parse('2026-07-13T00:00:01.000Z') }), /RUN_SNAPSHOT_INVALID/);
+  assert.deepEqual(bytes7c(moved, fixture.runId), before);
+});
+test('verified under-lock commit has a closed production reference set', () => {
+  const production = sourceFiles(join(REPO_ROOT, 'scripts'));
+  for (const file of production) {
+    const rel = portableRelative(REPO_ROOT, file);
+    const count = (readFileSync(file, 'utf8')
+      .match(/\bcommitVerifiedEventsUnderLock\b/g) || []).length;
+    if (rel === 'scripts/lib/integrity.mjs') assert.equal(count, 3,
+      'one definition plus appendAnchored and root-rebind calls');
+    else if (rel === 'scripts/lib/lease.mjs') assert.equal(count, 2,
+      'one import plus the generic-acquire generation commit');
+    else assert.equal(count, 0, `${rel}: unapproved verified under-lock commit reference`);
+  }
 });

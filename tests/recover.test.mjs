@@ -9,10 +9,11 @@ import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { recoverRun } from '../scripts/lib/recover.mjs';
+import { seedCorrelatedTerminal as terminal7b } from './fixtures/verified-app-run.mjs';
 
 const CLI = join(process.cwd(), 'scripts', 'deep-loop.mjs');
-const OWNER = 'RECOVER01';
-const CHILD = 'CHILD01';
+const OWNER = '01KX9SZA00V7WATCFMFBBDJSP1';
+const CHILD = '01KX9SZA00V7WATCFMFBBDJSP2';
 const GEN = 2;
 
 function baseData(overrides = {}) {
@@ -31,6 +32,7 @@ function baseData(overrides = {}) {
         owner_run_id: OWNER, generation: GEN, state: 'releasing', handoff_phase: 'emitted',
         handoff_idempotency_key: 'key123', handoff_child_run_id: CHILD,
         expires_at: null, resume_policy: 'human',
+        acquired_at: '2026-07-01T00:00:00.000Z',
       },
       sessions: [
         { run_id: OWNER, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: CHILD },
@@ -48,9 +50,15 @@ function seed(overrides = {}) {
   const root = mkdtempSync(join(tmpdir(), 'dl-recover-'));
   const runId = OWNER;
   mkdirSync(runDir(root, runId), { recursive: true });
-  const data = baseData(overrides);
+  const terminal = ['completed', 'stopped'].includes(overrides.status)
+    ? overrides.status : null;
+  const data = baseData(terminal ? { ...overrides, status: 'running' } : overrides);
   data.project.root = root;
+  data.session_chain.lease.acquired_at ??= '2026-07-01T00:00:00.000Z';
   writeState(root, runId, data);
+  mkdirSync(join(root, '.deep-loop'), { recursive: true });
+  writeFileSync(join(root, '.deep-loop', 'current'), runId);
+  if (terminal) terminal7b(root, runId, { status: terminal });
   return { root, runId };
 }
 

@@ -11,6 +11,11 @@ import { readLines, appendAnchored, appendEvent, lastLogHead } from '../scripts/
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { recordCost } from '../scripts/lib/budget.mjs';
+import { newEpisode } from '../scripts/lib/episode.mjs';
+import {
+  rawHashValidHistory as rawHistory7b,
+  seedCorrelatedTerminal as terminal7b,
+} from './fixtures/verified-app-run.mjs';
 
 const FIXED = new Date('2026-07-07T00:00:00Z');
 const NOSLEEP = () => {};
@@ -88,26 +93,36 @@ test('computeRunMetrics: maker 없는 run은 ack_before_first_dispatch=null', ()
 
 // fixture 전용 터미널 전이: readState → status 변경 → writeState (hash 재계산되므로 검증 읽기 통과)
 function toTerminal(root, runId, status = 'completed') {
-  const d = readState(root, runId).data; d.status = status; writeState(root, runId, d);
+  return terminal7b(root, runId, { status });
 }
 
 // finish-edge 정합 픽스처: finishRun은 completed-proof(episode/review/report)를 요구하므로, 테스트는 동일
 // 트랜잭션 모양(appendAnchored: finish 이벤트 + status 전이 + auto-floor cost)만 재현한다 — spec §3의
 // 정상 event-log 형태 `insights-emitted(k) → cost(auto-floor) → finish(m) → cost(auto-floor)`가 만들어진다.
 function finishFixture(root, runId) {
-  appendAnchored(root, runId, { type: 'finish', data: { status: 'completed', reportRel: null } },
-    (loop) => { loop.status = 'completed'; }, undefined, { floor: 1 });
+  return terminal7b(root, runId,
+    { status: 'completed', floor: 1, now: FIXED.getTime() + 10_000 });
+}
+
+function corruptTerminalWithoutFinish(root, runId, status = 'completed') {
+  rawHistory7b(root, runId, [], loop => {
+    loop.status = status;
+    loop.pause_reason = null;
+    loop.termination = loop.termination || {};
+    loop.termination.finished_at = '2026-07-13T00:00:10.000Z';
+  });
 }
 // finish-edge 위반 픽스처 — v1.6 재설계(plan Task 11 / 3차 r1 P2-b): appendAnchored 관문(RUN_TERMINAL: append)이
 // 가드-시대 API로는 post-finish 이벤트 생성을 정확히 차단하므로(그것이 v1.6의 목적), 구버전(가드 이전)
 // 오염 로그는 raw로 직조한다: appendEvent(체인 checksum 유지) + event_log_head 앵커 수동 재계산 —
 // computeInsights의 무결성 검증(체인+head)을 통과해야 integrity_failed가 아닌 post_finish_mutated 경로로 분류된다.
 function businessEventFixture(root, runId) {
-  appendEvent(root, runId, { type: 'episode-new', data: { plugin: 'p', role: 'maker', kind: 'design', point: 'design' } });
-  appendEvent(root, runId, { type: 'cost', data: { turns: 1, tokens: 0, auto_floor: true, for: 'episode-new' } });
-  const d = readState(root, runId).data;
-  d.event_log_head = lastLogHead(root, runId);
-  writeState(root, runId, d);
+  rawHistory7b(root, runId, [
+    { type: 'episode-new', now: FIXED.getTime() + 20_000,
+      data: { plugin: 'p', role: 'maker', kind: 'design', point: 'design' } },
+    { type: 'cost', now: FIXED.getTime() + 20_000,
+      data: { turns: 1, tokens: 0, auto_floor: true, for: 'episode-new' } },
+  ]);
 }
 
 function terminalMakerReceiptFixture(root, runId) {
@@ -563,7 +578,8 @@ test('v1.5 (b): mid-run emit(뒤에 business 이벤트) → skip — finish-인�
   const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: FIXED });
   const fence = { owner: runId, generation: 1, intent: 'business' };
   const rMid = emitInsights(root, runId, { fence, now: FIXED.getTime(), rnd: () => 0.1 });
-  businessEventFixture(root, runId);
+  newEpisode(root, runId,
+    { plugin: 'p', role: 'maker', kind: 'design', point: 'design', fence });
   const rFinal = emitInsights(root, runId, { fence, now: FIXED.getTime() + 60000, rnd: () => 0.2 });
   finishFixture(root, runId);
   assert.equal(latestInsights(root).path, rFinal.path);          // 최신이자 유일하게 finish-인접
@@ -622,7 +638,7 @@ test('v1.5 (b): finish 이벤트 부재(status만 terminal) → skip', () => {
   const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: FIXED });
   const fence = { owner: runId, generation: 1, intent: 'business' };
   emitInsights(root, runId, { fence, now: FIXED.getTime(), rnd: () => 0.5 });
-  toTerminal(root, runId);                                       // finish 이벤트 없이 status만 전이(레거시/드리프트)
+  corruptTerminalWithoutFinish(root, runId);                     // finish 이벤트 없이 status만 전이(레거시/드리프트)
   assert.equal(latestInsights(root), null);
 });
 
@@ -657,7 +673,7 @@ test('v1.5 (b′): finish 이벤트 없는 terminal 로그(레거시)는 판정 
   const root = mkdtempSync(join(tmpdir(), 'dl-pfm2-'));
   const { runId: self } = initRun(root, { runtime: 'claude', goal: 'self', now: FIXED });
   const { runId: legacy } = initRun(root, { runtime: 'claude', goal: 'legacy', now: FIXED });
-  toTerminal(root, legacy);                                     // finish 이벤트 없이 status만 terminal
+  corruptTerminalWithoutFinish(root, legacy);                    // finish 이벤트 없이 status만 terminal
   const out = computeInsights(root, { selfRunId: self, now: FIXED.getTime(), sleepFn: NOSLEEP });
   assert.deepEqual(out.post_finish_mutated, []);
   assert.ok(out.per_run[legacy]);
@@ -755,7 +771,8 @@ test('fix_cycles: approve-only 리뷰 쌍도 0으로 분모에 포함된다', ()
 // 불능이어도 run 하나가 insights 전체를 크래시하면 안 된다 (per-run fail-soft → unreadable) ───
 test('computeInsights: metrics 산출 불능 run은 unreadable로 fail-soft한다', () => {
   const { root, runId } = emitFixture();
-  appendAnchored(root, runId, { type: 'review-outcome' });   // data 없는 이벤트 — shape drift 시뮬레이션 (체인은 유효)
+  rawHistory7b(root, runId,
+    [{ type: 'review-outcome', now: FIXED.getTime() + 10_000 }]);
   const out = computeInsights(root, { selfRunId: runId, now: FIXED.getTime(), sleepFn: NOSLEEP });
   assert.ok(out.unreadable.includes(runId));
   assert.equal(out.per_run[runId], undefined);
@@ -826,10 +843,8 @@ test('post_finish_mutated: legacy double-finish log is labeled (raw fixture — 
   finishFixture(root, doubled);                       // 정상 first finish (앵커)
   // 둘째 finish는 v1.6 가드(leaseCheck·관문·FINISH_ALREADY_TERMINAL)가 전부 막으므로 커널 API로는
   // 재현 불가 — 구버전(가드 이전) 로그를 raw로 직조한다: appendEvent(체인 checksum 유지) + head 앵커 재계산.
-  appendEvent(root, doubled, { type: 'finish', data: { status: 'completed', reportRel: null } });
-  const d = readState(root, doubled).data;
-  d.event_log_head = lastLogHead(root, doubled);
-  writeState(root, doubled, d);
+  rawHistory7b(root, doubled, [{ type: 'finish', now: FIXED.getTime() + 20_000,
+    data: { status: 'completed', reportRel: null } }]);
   const out = computeInsights(root, { selfRunId: self, now: FIXED.getTime(), sleepFn: NOSLEEP });
   assert.ok(!(out.integrity_failed_runs || []).includes(doubled));   // 앵커 유효 — 라벨 경로로 분류 (plan r2)
   assert.ok(out.post_finish_mutated.includes(doubled));              // 둘째 finish도 non-exempt → 라벨

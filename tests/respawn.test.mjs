@@ -11,6 +11,7 @@ import { acquireLease, advanceHandoffPhase, releaseLease } from '../scripts/lib/
 import { respawn as respawnImpl, respawnGate, resolveSpawnMode, isHeadlessInvocation } from '../scripts/lib/respawn.mjs';
 import { buildLaunchCommand, buildRuntimeResumeDescriptor } from '../scripts/lib/runtime-descriptor.mjs';
 import { sessionRuntime } from '../scripts/lib/runtime.mjs';
+import { seedCorrelatedTerminal as terminal7b } from './fixtures/verified-app-run.mjs';
 
 const NOW0 = new Date('2026-06-24T00:00:00Z');
 const NOW1 = Date.parse('2026-06-24T01:00:00Z');
@@ -1622,10 +1623,10 @@ import { rollbackAndPause } from '../scripts/lib/respawn.mjs';
 test('respawn: terminal fast-return before every branch — emitted AND spawned legacy states', () => {
   for (const phase of ['emitted', 'spawned']) {
     const { root, runId } = seed((d) => {
-      d.status = 'completed';
       d.session_chain.lease = { ...d.session_chain.lease, state: 'releasing', handoff_phase: phase,
         handoff_child_run_id: 'child-legacy-01', handoff_idempotency_key: 'k1', resume_policy: 'headless' };
     });
+    terminal7b(root, runId, { status: 'completed' });
     const before = JSON.stringify(readState(root, runId).data);
     const r = respawn(root, runId, { childRunId: 'child-legacy-01', key: 'k1', now: NOW1,
       spawnFn: () => { throw new Error('must not spawn'); } });
@@ -1636,10 +1637,10 @@ test('respawn: terminal fast-return before every branch — emitted AND spawned 
 
 test('rollbackAndPause: terminal TOCTOU returns {terminal:true} and never demotes a completed run to paused', () => {
   const { root, runId } = seed((d) => {
-    d.status = 'completed';
     d.session_chain.lease = { ...d.session_chain.lease, state: 'releasing', handoff_phase: 'emitted',
       handoff_child_run_id: 'child-x', handoff_idempotency_key: 'kx' };
   });
+  terminal7b(root, runId, { status: 'completed' });
   const r = rollbackAndPause(root, runId, { childRunId: 'child-x', parentOwner: runId, generation: 1,
     eventData: { child_run_id: 'child-x' }, pauseReason: 'gate:budget' });
   assert.deepEqual(r, { terminal: true });

@@ -16,6 +16,7 @@ import { claimIndependentReview, dispatchReview, importReviewOutcome, recordRevi
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import { REVIEW_IMPORT_MAX_BYTES } from '../scripts/lib/bounded-input.mjs';
+import { appendAnchored } from '../scripts/lib/integrity.mjs';
 import {
   REVIEW_IMPORT_MAX_ARTIFACTS,
   REVIEW_REPORT_BODY_MAX_BYTES,
@@ -177,7 +178,10 @@ test('importReviewOutcome materializes a content-addressed M3 envelope and commi
   assert.deepEqual(state.workstreams.find(w => w.id === f.ws).review_points_done, ['implementation']);
   const outcomes = eventLog(f.root, f.runId).slice(beforeEvents).filter(e => e.type === 'review-outcome');
   assert.equal(outcomes.length, 1);
-  assert.deepEqual(outcomes[0].data, {
+  const { proof_transitions: proofTransitions, ...outcomeData } = outcomes[0].data;
+  assert.deepEqual(proofTransitions.map(item => `${item.kind}:${item.id}`),
+    [`episode:${f.checkerId}`, `workstream:${f.ws}`]);
+  assert.deepEqual(outcomeData, {
     episodeId: f.checkerId, verdict: 'APPROVE', workstream_id: f.ws, point: 'implementation',
     target_maker: f.makerId, reviewer_id: 'deep-review', review_source: 'imported-stdin',
     attempt_id: 'attempt-01',
@@ -197,9 +201,10 @@ test('import accepts only the checker plugin as canonical reviewer_id', () => {
   }), /REVIEW_IMPORT_REVIEWER_MISMATCH/);
 
   const unsupported = fixture();
-  const state = readState(unsupported.root, unsupported.runId).data;
-  state.episodes.find(e => e.id === unsupported.checkerId).plugin = 'caller-chosen-reviewer';
-  writeState(unsupported.root, unsupported.runId, state);
+  appendAnchored(unsupported.root, unsupported.runId,
+    { type: 'state-patch', data: { field: 'test-reviewer-plugin' } }, state => {
+      state.episodes.find(e => e.id === unsupported.checkerId).plugin = 'caller-chosen-reviewer';
+    });
   assert.throws(() => importReviewOutcome(unsupported.root, unsupported.runId, {
     raw: JSON.stringify({ ...unsupported.input, reviewer_id: 'caller-chosen-reviewer' }), fence: unsupported.fence, now: FIXED_NOW,
   }), /REVIEW_IMPORT_REVIEWER_INVALID/);
@@ -225,9 +230,10 @@ test('import rejects checker/target/maker parity and exact artifact set/hash mis
   }
 
   const parity = fixture();
-  const state = readState(parity.root, parity.runId).data;
-  state.episodes.find(e => e.id === parity.makerId).point = 'plan';
-  writeState(parity.root, parity.runId, state);
+  appendAnchored(parity.root, parity.runId,
+    { type: 'state-patch', data: { field: 'test-maker-point' } }, state => {
+      state.episodes.find(e => e.id === parity.makerId).point = 'plan';
+    });
   assert.throws(() => importReviewOutcome(parity.root, parity.runId, { raw: JSON.stringify(parity.input), fence: parity.fence, now: FIXED_NOW }), /REVIEW_MAKER_BINDING_MISMATCH/);
 });
 
@@ -238,7 +244,11 @@ test('import requires a done maker and an in-progress claimed, unblocked, target
     ['checker blocked', (s, f) => { s.episodes.find(e => e.id === f.checkerId).status = 'blocked'; }, /REVIEW_CHECKER_BLOCKED/],
     ['checker unbound', (s, f) => { delete s.episodes.find(e => e.id === f.checkerId).target_maker; }, /REVIEW_UNBOUND_CHECKER/],
   ]) {
-    const f = fixture(); const state = readState(f.root, f.runId).data; mutate(state, f); writeState(f.root, f.runId, state);
+    const f = fixture();
+    appendAnchored(f.root, f.runId,
+      { type: 'state-patch', data: { field: `test-import-${label}` } }, state => {
+        mutate(state, f);
+      });
     assert.throws(() => importReviewOutcome(f.root, f.runId, { raw: JSON.stringify(f.input), fence: f.fence, now: FIXED_NOW }), error, label);
   }
 });
@@ -392,7 +402,7 @@ test('locked commit reopens the exact envelope and rejects post-materialization 
   assert.equal(readState(f.root, f.runId).data.episodes.find(e => e.id === f.checkerId).status, 'in_progress');
 });
 
-test('locked commit runtime snapshot is fenced if stored runtime changes after envelope creation', async () => {
+test('locked commit runtime snapshot fails closed if stored runtime becomes semantically invalid', async () => {
   const f = fixture(); const lock = join(runDir(f.root, f.runId), '.lock'); mkdirSync(lock);
   const proc = spawnImport(f.root, f.runId, JSON.stringify(f.input));
   await waitForEnvelope(f.root, f.runId);
@@ -403,8 +413,8 @@ test('locked commit runtime snapshot is fenced if stored runtime changes after e
   writeFileSync(join(runDir(f.root, f.runId), '.loop.hash'), contentHash(raw));
   rmdirSync(lock);
   const result = await proc.done;
-  assert.equal(result.code, 3);
-  assert.match(result.stderr, /RUNTIME_FENCED/);
+  assert.equal(result.code, 1, result.stderr);
+  assert.match(result.stderr, /RUN_SNAPSHOT_INVALID.*runtime correlation invalid/);
   assert.equal(readState(f.root, f.runId).data.episodes.find(e => e.id === f.checkerId).status, 'in_progress');
 });
 

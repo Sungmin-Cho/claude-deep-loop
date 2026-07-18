@@ -1,9 +1,16 @@
-import { readFileSync, appendFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { appendFileSync, existsSync, lstatSync, readFileSync, readdirSync,
+  truncateSync } from 'node:fs';
+import { basename, join } from 'node:path';
 import { contentHash } from './envelope.mjs';
 import { runDir, readState, writeState, withLock } from './state.mjs';
 import { assertProjectRootBinding, canonicalProjectRoot, projectRootDigest } from './project-root.mjs';
-import { validate } from './schema.mjs';
+import { assertEpisodeTask, episodeProofProjection, episodeRequestMarkdown,
+  legacyAuthorityDigest, legacyProofOrigins,
+  normalizeLegacyActiveWorkstreams, validate,
+  verifyAppEventCorrelation, workstreamProofProjection } from './schema.mjs';
+import { initializationRequestDigest } from './init-transaction.mjs';
+import { replaceFileDurably, syncParentDirectory, syncRegularFile,
+  unlinkRegularFile } from './durable-file.mjs';
 
 const logPath = (root, runId) => join(runDir(root, runId), 'event-log.jsonl');
 
@@ -63,10 +70,7 @@ export function validCost(d) {
 }
 
 export function recomputeSpent(root, runId) {
-  return readLines(root, runId).filter(e => e.type === 'cost').reduce((acc, e) => {
-    if (!validCost(e.data)) throw new Error(`LOG_CORRUPT: invalid cost event at seq ${e.seq}`);
-    return { turns: acc.turns + e.data.turns, tokens: acc.tokens + e.data.tokens };
-  }, { turns: 0, tokens: 0 });
+  return spentOfLines(readLines(root, runId));
 }
 
 // 마지막 이벤트의 head {seq, checksum} (빈 로그면 GENESIS) — loop.json 앵커와 대조용 (Codex impl 🔴3)
@@ -93,80 +97,1229 @@ export function verifyHead(root, runId, expected) {
   return verifyHeadLines(readLines(root, runId), expected);
 }
 
-// 단일 anchored append 경로 — 이벤트 append + loop.json의 event_log_head 앵커 갱신을 한 lock 안에서.
-// 모든 이벤트 기록(cost 포함)은 이 경로를 통해야 앵커가 stale되지 않는다 (Codex impl r2 🟡).
-// mutate(loop, spent): 호출자별 상태 변경(예: budget.spent) — 선택.
-// preCheck(loop): lock 안 fresh loop 위에서 실행 — throw하면 append 전에 중단 (Codex r3 🔴: 가드 원자성).
-// opts.floor (#3): a business-intent mutation is charged a minimum floor of `opts.floor` turns via a PAIRED cost
-// event appended in the SAME lock/anchor, so a driver cannot neutralize the turns budget / per_session_turn_cap by
-// under-reporting or skipping `budget record`. Omitting floor (control-plane appends, recordCost) keeps the old
-// behavior exactly — floor is strictly opt-in.
-export function appendAnchored(root, runId, { type, data }, mutate, preCheck, opts = {}) {
+export function verifyEpisodeCreationCorrelation(loop, lines) {
+  const errors = [];
+  const allEvents = lines.filter(event => event.type === 'episode-new');
+  const allEpisodes = loop?.episodes || [];
+  // Task 7B authenticates the existing unversioned creation surface through proof-transition
+  // chains. Task 7F owns the richer episode-create-v1 request contract; until the first such
+  // record exists, do not pretend the older event contains fields its writer never emitted.
+  if (!allEvents.some(event => event.data?.creation_contract != null)
+      && !allEpisodes.some(episode => episode.creation_contract != null)) {
+    return { ok: true, errors: [] };
+  }
+  const baselines = lines.filter(event => event.type === 'lease-lineage-baselined');
+  let legacyCount = 0;
+  let versionedEvents = allEvents;
+  if (loop?.initialization == null) {
+    if (baselines.length === 0) {
+      if (allEvents.some(event => event.data?.creation_contract != null)
+          || allEpisodes.some(episode => episode.creation_contract != null)) {
+        errors.push('legacy run has versioned episodes without an explicit baseline');
+      }
+      return { ok: errors.length === 0, errors };
+    }
+    if (baselines.length !== 1) {
+      errors.push('legacy run requires exactly one episode baseline');
+      return { ok: false, errors };
+    }
+    const baselineIndex = lines.indexOf(baselines[0]);
+    versionedEvents = lines.slice(baselineIndex + 1)
+      .filter(event => event.type === 'episode-new');
+    legacyCount = baselines[0].data?.legacy_episode_count;
+    const legacyWorkstreamCount = baselines[0].data?.legacy_workstream_count;
+    if (!Number.isSafeInteger(legacyCount) || legacyCount < 0
+        || legacyCount > allEpisodes.length
+        || !Number.isSafeInteger(legacyWorkstreamCount) || legacyWorkstreamCount < 0
+        || legacyWorkstreamCount > (loop.workstreams ?? []).length) {
+      errors.push('legacy creation baseline mismatch');
+      return { ok: false, errors };
+    }
+  } else if (baselines.length !== 0) {
+    errors.push('initialized run cannot declare a legacy episode baseline');
+  }
+  if (allEpisodes.length !== legacyCount + versionedEvents.length) {
+    errors.push('episode object/event cardinality mismatch');
+  }
+  for (let index = 0; index < legacyCount; index += 1) {
+    if (allEpisodes[index]?.creation_contract != null) {
+      errors.push(`legacy episode baseline contains versioned entry ${index}`);
+    }
+  }
+  const episodes = allEpisodes.slice(legacyCount);
+  const events = versionedEvents;
+  for (let index = 0; index < Math.max(episodes.length, events.length); index += 1) {
+    if (episodes[index]?.creation_contract !== 'episode-create-v1'
+        || events[index]?.data?.creation_contract !== 'episode-create-v1') {
+      errors.push(`episode creation contract missing at index ${legacyCount + index}`);
+    }
+  }
+  const eventById = new Map();
+  for (const event of events) {
+    const id = event.data?.episode_id;
+    if (typeof id !== 'string' || eventById.has(id)) {
+      errors.push(`duplicate or invalid episode-new identity ${String(id)}`);
+    } else eventById.set(id, event);
+  }
+  const episodeById = new Map();
+  const requestIdentityOwners = new Map();
+  for (const episode of episodes) {
+    if (typeof episode.id !== 'string' || episodeById.has(episode.id)) {
+      errors.push(`duplicate or invalid episode object identity ${String(episode.id)}`);
+      continue;
+    }
+    episodeById.set(episode.id, episode);
+    const event = eventById.get(episode.id);
+    if (!event) { errors.push(`episode ${episode.id} has no creation event`); continue; }
+    const projection = {
+      plugin: episode.plugin, role: episode.role, kind: episode.kind, point: episode.point,
+      task: episode.task,
+      workstream: episode.workstream_id ?? null,
+      expectedArtifacts: structuredClone(episode.expected_artifacts ?? []),
+      targetMaker: episode.target_maker ?? null,
+      reviewerResolution: episode.reviewer_resolution ?? null,
+      evidence_digest: intentField('episode-evidence', episode.evidence),
+      contract: structuredClone(episode.contract ?? null),
+      initialStatus: episode.creation_initial_status,
+      blockReason: episode.creation_block_reason ?? null,
+      creation_request_id_digest: episode.creation_request_id_digest ?? null,
+      dispatch_request_id_digest: episode.dispatch_request_id_digest ?? null,
+      dispatch_request_digest: episode.dispatch_request_digest ?? null,
+      dispatch_response: structuredClone(episode.dispatch_response ?? null),
+    };
+    const recomputed = intentField('episode-create-request', projection);
+    let expectedMarkdown = null;
+    try {
+      assertEpisodeTask(episode.task);
+      expectedMarkdown = episodeRequestMarkdown({ id: episode.id,
+        plugin: episode.plugin, role: episode.role, kind: episode.kind, point: episode.point,
+        workstream: episode.workstream_id ?? null,
+        expectedArtifacts: structuredClone(episode.expected_artifacts ?? []),
+        task: episode.task, contract: episode.contract, evidence: episode.evidence });
+    } catch { /* the mismatch below is authoritative */ }
+    const markdownDigest = expectedMarkdown == null ? null
+      : intentField('episode-request-markdown', expectedMarkdown);
+    if (recomputed !== episode.creation_request_digest
+        || recomputed !== event.data.request_digest
+        || JSON.stringify(projection) !== JSON.stringify(event.data.request_projection)
+        || (episode.creation_request_id_digest ?? null)
+          !== (event.data.creation_request_id_digest ?? null)
+        || (episode.dispatch_request_id_digest ?? null)
+          !== (event.data.dispatch_request_id_digest ?? null)
+        || (episode.dispatch_request_digest ?? null)
+          !== (event.data.dispatch_request_digest ?? null)
+        || episode.request_path !== undefined
+        || episode.request_markdown !== expectedMarkdown
+        || episode.request_markdown_digest !== markdownDigest
+        || event.data.request_markdown !== expectedMarkdown
+        || event.data.request_markdown_digest !== markdownDigest
+        || event.data.task !== episode.task
+        || JSON.stringify(event.data.contract ?? null)
+          !== JSON.stringify(episode.contract ?? null)
+        || event.data.episode_id !== episode.id) {
+      errors.push(`episode ${episode.id} creation projection mismatch`);
+    }
+    const hasCallerId = episode.creation_request_id_digest != null;
+    const hasDispatchId = episode.dispatch_request_id_digest != null;
+    const callerIdValid = hasCallerId
+      && /^[0-9a-f]{64}$/.test(episode.creation_request_id_digest);
+    const dispatchIdValid = hasDispatchId
+      && /^[0-9a-f]{64}$/.test(episode.dispatch_request_id_digest);
+    const dispatchRequestValid = hasDispatchId
+      ? /^[0-9a-f]{64}$/.test(episode.dispatch_request_digest || '')
+      : episode.dispatch_request_digest == null;
+    if (hasCallerId === hasDispatchId || hasCallerId !== callerIdValid
+        || hasDispatchId !== dispatchIdValid || !dispatchRequestValid) {
+      errors.push(`episode ${episode.id} has ambiguous creation identity`);
+      continue;
+    }
+    const requestIdentity = hasCallerId
+      ? `caller:${episode.creation_request_id_digest}`
+      : `dispatch:${episode.dispatch_request_id_digest}`;
+    const priorIdentityOwner = requestIdentityOwners.get(requestIdentity);
+    if (priorIdentityOwner !== undefined && priorIdentityOwner !== episode.id) {
+      errors.push(`duplicate episode creation request identity ${requestIdentity}`);
+    } else {
+      requestIdentityOwners.set(requestIdentity, episode.id);
+    }
+  }
+  for (const id of eventById.keys()) {
+    if (!episodeById.has(id)) errors.push(`episode-new ${id} has no episode object`);
+  }
+  return { ok: errors.length === 0, errors };
+}
+
+export function verifyWorkstreamCreationCorrelation(loop, lines) {
+  const errors = [];
+  const allWorkstreams = Array.isArray(loop?.workstreams) ? loop.workstreams : [];
+  const allEvents = lines.filter(event => event.type === 'workstream-new');
+  // Workstream request correlation is versioned by its later owning card. The Task 7B proof chain
+  // still binds every legacy creation event to the exact prospective object digest.
+  if (!allEvents.some(event => event.data?.creation_contract != null)
+      && !allWorkstreams.some(workstream => workstream.creation_contract != null)) {
+    return { ok: true, errors: [] };
+  }
+  const baselines = lines.filter(event => event.type === 'lease-lineage-baselined');
+  let legacyCount = 0;
+  let versionedEvents = allEvents;
+  if (loop?.initialization == null) {
+    if (baselines.length === 0) {
+      if (allEvents.some(event => event.data?.creation_contract != null)
+          || allWorkstreams.some(workstream => workstream.creation_contract != null)) {
+        errors.push('legacy run has versioned workstreams without an explicit baseline');
+      }
+      return { ok: errors.length === 0, errors };
+    }
+    if (baselines.length !== 1) {
+      return { ok: false, errors: ['legacy run requires exactly one workstream baseline'] };
+    }
+    const baselineIndex = lines.indexOf(baselines[0]);
+    versionedEvents = lines.slice(baselineIndex + 1)
+      .filter(event => event.type === 'workstream-new');
+    legacyCount = baselines[0].data?.legacy_workstream_count;
+  } else if (baselines.length !== 0) {
+    errors.push('initialized run cannot declare a legacy workstream baseline');
+  }
+  if (!Number.isSafeInteger(legacyCount) || legacyCount < 0
+      || legacyCount > allWorkstreams.length
+      || allWorkstreams.length !== legacyCount + versionedEvents.length) {
+    errors.push('workstream object/event cardinality mismatch');
+    return { ok: false, errors };
+  }
+  for (let index = 0; index < legacyCount; index += 1) {
+    if (allWorkstreams[index]?.creation_contract != null) {
+      errors.push(`legacy workstream baseline contains versioned entry ${index}`);
+    }
+  }
+  const eventById = new Map();
+  for (const event of versionedEvents) {
+    const id = event.data?.id;
+    if (typeof id !== 'string' || eventById.has(id)) {
+      errors.push(`duplicate or invalid workstream-new identity ${String(id)}`);
+    } else eventById.set(id, event);
+  }
+  const objectById = new Map();
+  const requestIdentityOwners = new Map();
+  for (const workstream of allWorkstreams.slice(legacyCount)) {
+    if (typeof workstream.id !== 'string' || objectById.has(workstream.id)) {
+      errors.push(`duplicate or invalid workstream object identity ${String(workstream.id)}`);
+      continue;
+    }
+    objectById.set(workstream.id, workstream);
+    const event = eventById.get(workstream.id);
+    const projection = { title: workstream.title, branch: workstream.branch,
+      worktree: workstream.worktree, baseCommit: workstream.base_commit,
+      dependsOn: structuredClone(workstream.depends_on ?? []) };
+    const digest = intentField('workstream-create-request', projection);
+    const requestIdentity = workstream.creation_request_id_digest;
+    const priorIdentityOwner = requestIdentityOwners.get(requestIdentity);
+    if (priorIdentityOwner !== undefined && priorIdentityOwner !== workstream.id) {
+      errors.push(`duplicate workstream creation request identity ${requestIdentity}`);
+    } else if (/^[0-9a-f]{64}$/.test(requestIdentity || '')) {
+      requestIdentityOwners.set(requestIdentity, workstream.id);
+    }
+    if (!event || workstream.creation_contract !== 'workstream-create-v1'
+        || event.data?.creation_contract !== 'workstream-create-v1'
+        || workstream.creation_request_digest !== digest
+        || event.data?.creation_request_digest !== digest
+        || workstream.creation_request_id_digest !== event.data?.creation_request_id_digest
+        || !/^[0-9a-f]{64}$/.test(workstream.creation_request_id_digest || '')
+        || JSON.stringify(event.data?.request_projection) !== JSON.stringify(projection)) {
+      errors.push(`workstream ${workstream.id} creation projection mismatch`);
+    }
+  }
+  for (const id of eventById.keys()) {
+    if (!objectById.has(id)) errors.push(`workstream-new ${id} has no workstream object`);
+  }
+  return { ok: errors.length === 0, errors };
+}
+
+export function proofEntityDigest(kind, value, loop = null) {
+  const projection = kind === 'episode'
+    ? episodeProofProjection(value)
+    : kind === 'workstream'
+      ? workstreamProofProjection(loop, value)
+      : (() => { throw new Error(`PROOF_ENTITY_KIND_INVALID: ${kind}`); })();
+  return contentHash(`proof-entity-${kind}-v1\0${JSON.stringify({
+    kind: 'object', value: projection,
+  })}`);
+}
+
+export function proofTransitionsForCandidate(beforeLoop, candidateLoop, entityKeys = null) {
+  const inventory = loop => [
+    ...(loop?.episodes ?? []).map(item => `episode:${item.id}`),
+    ...(loop?.workstreams ?? []).map(item => `workstream:${item.id}`),
+  ];
+  const keys = [...new Set(entityKeys ?? [...inventory(beforeLoop), ...inventory(candidateLoop)])]
+    .sort();
+  const entity = (loop, key) => {
+    const split = key.indexOf(':');
+    const kind = key.slice(0, split); const id = key.slice(split + 1);
+    const value = kind === 'episode'
+      ? (loop?.episodes ?? []).find(item => item.id === id)
+      : kind === 'workstream'
+        ? (loop?.workstreams ?? []).find(item => item.id === id)
+        : null;
+    return { kind, id, value };
+  };
+  return keys.flatMap(key => {
+    const before = entity(beforeLoop, key); const after = entity(candidateLoop, key);
+    if (after.value == null) throw new Error(`PROOF_ENTITY_REMOVAL_FORBIDDEN: ${key}`);
+    const beforeDigest = before.value == null ? 'NONE'
+      : proofEntityDigest(before.kind, before.value, beforeLoop);
+    const afterDigest = proofEntityDigest(after.kind, after.value, candidateLoop);
+    if (entityKeys == null && beforeDigest === afterDigest) return [];
+    return [{ kind: after.kind, id: after.id,
+      before_digest: beforeDigest, after_digest: afterDigest }];
+  });
+}
+
+function validateProofTransitionEventShape(event, transitions) {
+  const errors = [];
+  const actual = transitions.map(item => `${item?.kind}:${item?.id}`);
+  const sorted = [...actual].sort();
+  if (JSON.stringify(actual) !== JSON.stringify(sorted)
+      || new Set(actual).size !== actual.length) {
+    errors.push('proof transitions are not unique canonical order');
+  }
+  let expected;
+  if (event.type === 'episode-new') {
+    expected = typeof event.data?.episode_id === 'string'
+      ? [`episode:${event.data.episode_id}`] : actual;
+    if (actual.length === 0 || actual.some(key => !key.startsWith('episode:'))) {
+      errors.push('episode creation transition entity set mismatch');
+    }
+  }
+  else if (event.type === 'episode-record' || event.type === 'episode-abandon') {
+    expected = [`episode:${event.data?.id}`];
+  } else if (event.type === 'independent-review-claimed'
+      || event.type === 'independent-review-blocked') {
+    expected = [`episode:${event.data?.episode_id}`];
+  } else if (event.type === 'review-outcome') {
+    expected = [`episode:${event.data?.episodeId}`,
+      `workstream:${event.data?.workstream_id}`].sort();
+  } else if (event.type === 'workstream-new') {
+    const eventKey = typeof event.data?.id === 'string'
+      ? `workstream:${event.data.id}` : null;
+    if ((eventKey !== null && !actual.includes(eventKey))
+        || actual.length === 0 || actual.some(key => !key.startsWith('workstream:'))) {
+      errors.push('workstream creation transition entity set mismatch');
+    }
+    return errors;
+  } else if (event.type === 'workstream-status' || event.type === 'workstream-terminal') {
+    if (!actual.includes(`workstream:${event.data?.id}`)
+        || actual.some(key => !key.startsWith('workstream:'))) {
+      errors.push('workstream mutation transition entity set mismatch');
+    }
+    return errors;
+  } else if (event.type === 'state-patch') {
+    // The redacted state-patch event cannot reproduce removed active membership from current state.
+    // Its writer records the canonical set of every projection that actually changed; chain
+    // continuity plus the final projection comparison authenticates that set.
+    return errors;
+  } else return ['unexpected proof transition event'];
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    errors.push('proof transition entity set mismatch');
+  }
+  return errors;
+}
+
+const PROOF_EVENT_TYPES = new Set([
+  'episode-new', 'episode-record', 'episode-abandon',
+  'independent-review-claimed', 'independent-review-blocked', 'review-outcome',
+  'workstream-new', 'workstream-status', 'workstream-terminal', 'state-patch',
+]);
+
+function requiredProofKeys(event, changedKeys) {
+  if (event.type === 'episode-new') {
+    const explicit = typeof event.data?.episode_id === 'string'
+      ? [`episode:${event.data.episode_id}`] : [];
+    return [...new Set([...changedKeys, ...explicit])].sort();
+  }
+  if (event.type === 'episode-record' || event.type === 'episode-abandon') {
+    return [`episode:${event.data?.id}`];
+  }
+  if (event.type === 'independent-review-claimed'
+      || event.type === 'independent-review-blocked') {
+    return [`episode:${event.data?.episode_id}`];
+  }
+  if (event.type === 'review-outcome') {
+    return [`episode:${event.data?.episodeId}`,
+      `workstream:${event.data?.workstream_id}`].sort();
+  }
+  if (event.type === 'workstream-new') {
+    const explicit = typeof event.data?.id === 'string'
+      ? [`workstream:${event.data.id}`] : [];
+    return [...new Set([...changedKeys, ...explicit])].sort();
+  }
+  if (event.type === 'workstream-status' || event.type === 'workstream-terminal') {
+    return [...new Set([...changedKeys, `workstream:${event.data?.id}`])].sort();
+  }
+  if (event.type === 'state-patch') return [...changedKeys].sort();
+  throw new Error(`PROOF_EVENT_TYPE_INVALID: ${event.type}`);
+}
+
+// The gateway calls this only after one business mutator has produced its exact candidate. It is
+// the sole writer of proof_transitions: individual public writers never accept callbacks or build
+// their own digest arrays. At most one proof-bearing business event is allowed per transaction.
+export function attachCandidateProofTransitions(beforeLoop, candidateLoop, eventSpecs) {
+  const proofEvents = eventSpecs.filter(event => PROOF_EVENT_TYPES.has(event.type));
+  const changed = proofTransitionsForCandidate(beforeLoop, candidateLoop);
+  const changedKeys = changed.map(item => `${item.kind}:${item.id}`).sort();
+  if (proofEvents.length === 0) {
+    if (changedKeys.length !== 0) throw new Error('PROOF_CHANGE_EVENT_REQUIRED');
+    return eventSpecs;
+  }
+  if (proofEvents.length !== 1) throw new Error('PROOF_EVENT_CARDINALITY_INVALID');
+  const [event] = proofEvents;
+  const keys = requiredProofKeys(event, changedKeys);
+  if (changedKeys.some(key => !keys.includes(key))) {
+    throw new Error('PROOF_CHANGE_ENTITY_SET_INVALID');
+  }
+  event.data = { ...structuredClone(event.data),
+    proof_transitions: proofTransitionsForCandidate(beforeLoop, candidateLoop, keys) };
+  return eventSpecs;
+}
+
+// Every post-checkpoint proof-bearing mutation event carries one exact, ordered
+// proof_transitions array. A transaction such as review-outcome may change both the checker and its
+// workstream; one event therefore carries one four-key entry per affected proof entity. Creation
+// uses before_digest='NONE'. Writers compute before from the verified snapshot and after from the
+// one candidate installed by the same anchored commit.
+export function verifyProofTransitionCorrelation(loop, lines) {
+  const errors = [];
+  const baseline = lines.find(event => event.type === 'lease-lineage-baselined') ?? null;
+  if (loop?.initialization == null && baseline === null) {
+    return { ok: true, errors: [] }; // pre-checkpoint legacy history is intentionally opaque
+  }
+  const floor = baseline === null ? 0 : lines.indexOf(baseline) + 1;
+  const chains = new Map();
+  if (baseline !== null) {
+    for (const origin of (baseline.data?.legacy_proof_origins ?? [])) {
+      const key = `${origin.kind}:${origin.id}`;
+      if (chains.has(key)) errors.push(`duplicate legacy proof origin for ${key}`);
+      else chains.set(key, origin.digest);
+    }
+  }
+  for (const event of lines.slice(floor)) {
+    if (!PROOF_EVENT_TYPES.has(event.type)) continue;
+    const transitions = event.data?.proof_transitions;
+    if (!Array.isArray(transitions)) {
+      errors.push(`proof transitions missing at event ${event.seq}`);
+      continue;
+    }
+    const expectedKeys = ['after_digest', 'before_digest', 'id', 'kind'];
+    const eventKeys = new Set();
+    for (const transition of transitions) {
+      if (transition == null
+          || JSON.stringify(Object.keys(transition).sort()) !== JSON.stringify(expectedKeys)
+          || !['episode', 'workstream'].includes(transition.kind)
+          || typeof transition.id !== 'string' || transition.id.length === 0
+          || !/^[0-9a-f]{64}$/.test(transition.after_digest || '')
+          || !(/^[0-9a-f]{64}$/.test(transition.before_digest || '')
+            || transition.before_digest === 'NONE')) {
+        errors.push(`proof transition invalid at event ${event.seq}`);
+        continue;
+      }
+      const key = `${transition.kind}:${transition.id}`;
+      const expectedBefore = chains.get(key) ?? 'NONE';
+      const creation = (event.type === 'episode-new'
+          && (typeof event.data?.episode_id === 'string'
+            ? key === `episode:${event.data.episode_id}` : expectedBefore === 'NONE'))
+        || (event.type === 'workstream-new'
+          && (typeof event.data?.id === 'string'
+            ? key === `workstream:${event.data.id}` : expectedBefore === 'NONE'));
+      if (eventKeys.has(key) || transition.before_digest !== expectedBefore
+          || creation !== (expectedBefore === 'NONE')) {
+        errors.push(`proof transition disconnected for ${key}`);
+        continue;
+      }
+      eventKeys.add(key);
+      chains.set(key, transition.after_digest);
+    }
+    // validateProofTransitionEventShape checks exact entity identities and cardinality:
+    // ordinary entity events carry one entry, review-outcome carries checker+workstream (including
+    // an unchanged workstream digest on rejection/idempotent approval), and state-patch carries the
+    // sorted set of every episode/workstream projection changed by its candidate.
+    errors.push(...validateProofTransitionEventShape(event, transitions)
+      .map(error => `${error} at event ${event.seq}`));
+  }
+  const current = new Map();
+  for (const episode of (loop.episodes ?? [])) {
+    current.set(`episode:${episode.id}`, proofEntityDigest('episode', episode, loop));
+  }
+  for (const workstream of (loop.workstreams ?? [])) {
+    current.set(`workstream:${workstream.id}`,
+      proofEntityDigest('workstream', workstream, loop));
+  }
+  for (const [key, digest] of current) {
+    if (chains.get(key) !== digest) errors.push(`proof state/event mismatch for ${key}`);
+  }
+  for (const key of chains.keys()) {
+    if (!current.has(key)) errors.push(`orphan proof transition for ${key}`);
+  }
+  return { ok: errors.length === 0, errors };
+}
+
+export function verifyRunSnapshot(loop, lines) {
+  const errors = [];
+  const state = validate(loop);
+  if (!state.ok) errors.push(...state.errors.map(error => `schema: ${error}`));
+  if (loop?.initialization != null) {
+    const actualRequestDigest = initializationRequestDigest(
+      loop.initialization.request_projection);
+    if (actualRequestDigest !== loop.initialization.request_digest) {
+      errors.push('initialization: stored request projection digest mismatch');
+    }
+  }
+  const chain = verifyLines(lines);
+  if (!chain.ok) errors.push(...chain.errors.map(error => `event chain: ${error}`));
+  const head = verifyHeadLines(lines, loop?.event_log_head);
+  if (!head.ok) errors.push(...head.errors.map(error => `event head: ${error}`));
+  const app = verifyAppEventCorrelation(loop, lines);
+  if (!app.ok) errors.push(...app.errors.map(error => `App event correlation: ${error}`));
+  const episodeCreation = verifyEpisodeCreationCorrelation(loop, lines);
+  if (!episodeCreation.ok) {
+    errors.push(...episodeCreation.errors.map(error => `episode creation: ${error}`));
+  }
+  const workstreamCreation = verifyWorkstreamCreationCorrelation(loop, lines);
+  if (!workstreamCreation.ok) {
+    errors.push(...workstreamCreation.errors.map(error => `workstream creation: ${error}`));
+  }
+  const proofTransitions = verifyProofTransitionCorrelation(loop, lines);
+  if (!proofTransitions.ok) {
+    errors.push(...proofTransitions.errors.map(error => `proof transition: ${error}`));
+  }
+  return { ok: errors.length === 0, errors };
+}
+
+function requireVerifiedSnapshot(loop, lines) {
+  const verified = verifyRunSnapshot(loop, lines);
+  if (!verified.ok) throw new Error(`RUN_SNAPSHOT_INVALID: ${verified.errors.join('; ')}`);
+  return loop;
+}
+
+export function assertVerifiedRunSnapshot(root, runId, loop, { lines } = {}) {
+  if (loop?.run_id !== runId) throw new Error('RUN_SNAPSHOT_INVALID: run_id mismatch');
+  assertProjectRootBinding(root, loop);
+  return requireVerifiedSnapshot(loop, lines ?? readLines(root, runId));
+}
+
+const JOURNAL_NAMES = Object.freeze({
+  marker: '.anchored-pending.json', events: '.anchored-events.stage',
+  state: '.anchored-state.stage', hash: '.anchored-hash.stage',
+});
+const MARKER_KEYS = Object.freeze([
+  'after', 'before', 'caller', 'intent_digest', 'version',
+]);
+const SNAPSHOT_KEYS = Object.freeze(['events_bytes', 'events_digest', 'hash_bytes',
+  'hash_digest', 'state_bytes', 'state_digest']);
+
+function journalPaths(root, runId) {
+  const dir = runDir(root, runId);
+  return Object.fromEntries(Object.entries(JOURNAL_NAMES)
+    .map(([key, name]) => [key, join(dir, name)]));
+}
+
+function regularFileIfPresent(path, label) {
+  let stat;
+  try { stat = lstatSync(path); }
+  catch (error) {
+    if (error?.code === 'ENOENT') return false;
+    throw error;
+  }
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    throw new Error(`ANCHORED_TRANSACTION_CORRUPT: ${label}`);
+  }
+  return true;
+}
+
+function regularFile(path, label) {
+  if (!regularFileIfPresent(path, label)) {
+    throw new Error(`ANCHORED_TRANSACTION_CORRUPT: missing ${label}`);
+  }
+}
+
+function exactKeys(value, keys) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...keys].sort());
+}
+
+function digestBytes(bytes) { return contentHash(Buffer.from(bytes).toString('base64')); }
+
+function readExactBytes(path, label) {
+  regularFile(path, label);
+  return readFileSync(path);
+}
+
+function syncDirectory(path) { syncParentDirectory(path); }
+function syncFile(path) { syncRegularFile(path); }
+
+function durableUnlink(path) {
+  try { unlinkRegularFile(path); }
+  catch { throw new Error('ANCHORED_TRANSACTION_CORRUPT: durable unlink target'); }
+}
+
+function durableReplace(path, bytes, options = {}) {
+  try { replaceFileDurably(path, bytes, options); }
+  catch (error) {
+    if (String(error?.message || error).startsWith('ANCHORED_TRANSACTION_')) throw error;
+    throw new Error(`ANCHORED_TRANSACTION_CORRUPT: durable replace: ${error?.message || error}`);
+  }
+}
+
+function strictSnapshot(value) {
+  return exactKeys(value, SNAPSHOT_KEYS)
+    && Number.isSafeInteger(value.events_bytes) && value.events_bytes >= 0
+    && Number.isSafeInteger(value.state_bytes) && value.state_bytes >= 0
+    && Number.isSafeInteger(value.hash_bytes) && value.hash_bytes >= 0
+    && [value.events_digest, value.state_digest, value.hash_digest]
+      .every(item => /^[0-9a-f]{64}$/.test(item));
+}
+
+function readAnchoredMarkerUnderLock(root, runId) {
+  const path = journalPaths(root, runId).marker;
+  if (!regularFileIfPresent(path, 'marker')) return null;
+  let marker;
+  try { marker = JSON.parse(readFileSync(path, 'utf8')); }
+  catch { throw new Error('ANCHORED_TRANSACTION_CORRUPT: marker json'); }
+  if (!exactKeys(marker, MARKER_KEYS) || marker.version !== 1
+      || !exactKeys(marker.caller, ['generation', 'owner'])
+      || typeof marker.caller.owner !== 'string'
+      || !Number.isSafeInteger(marker.caller.generation) || marker.caller.generation < 1
+      || !/^[0-9a-f]{64}$/.test(marker.intent_digest)
+      || !strictSnapshot(marker.before) || !strictSnapshot(marker.after)) {
+    throw new Error('ANCHORED_TRANSACTION_CORRUPT: marker shape');
+  }
+  return Object.freeze(marker);
+}
+
+function assertNoAnchoredMarkerUnderLock(root, runId) {
+  if (readAnchoredMarkerUnderLock(root, runId) !== null) {
+    throw new Error('ANCHORED_TRANSACTION_PENDING');
+  }
+  const paths = journalPaths(root, runId);
+  const knownOrphans = new Map(Object.values(paths)
+    .flatMap(path => path === paths.marker
+      ? [[`${path}.replace`, `${path}.replace`]]
+      : [[path, path], [`${path}.replace`, `${path}.replace`]]));
+  for (const name of readdirSync(runDir(root, runId))) {
+    if (!name.startsWith('.anchored-')) continue;
+    const path = join(runDir(root, runId), name);
+    if (!knownOrphans.has(path)) {
+      throw new Error('ANCHORED_TRANSACTION_CORRUPT: unknown journal artifact');
+    }
+    durableUnlink(path);
+  }
+}
+
+function assertKnownAnchoredArtifactsUnderLock(root, runId, paths) {
+  const known = new Set(Object.values(paths).map(path => basename(path)));
+  for (const name of readdirSync(runDir(root, runId))) {
+    if (!name.startsWith('.anchored-')) continue;
+    const path = join(runDir(root, runId), name);
+    if (!known.has(name)) {
+      throw new Error('ANCHORED_TRANSACTION_CORRUPT: unknown journal artifact');
+    }
+    regularFile(path, 'journal artifact');
+  }
+}
+
+function readCurrentRunIdUnderLock(root) {
+  const current = join(root, '.deep-loop', 'current');
+  if (!regularFileIfPresent(current, 'current pointer')) return null;
+  const value = readFileSync(current, 'utf8').trim();
+  if (!/^[0-9A-HJKMNP-TV-Z]{26}$/.test(value)) {
+    throw new Error('CURRENT_RUN_ID_INVALID');
+  }
+  return value;
+}
+
+function journalSnapshot(events, state, hash) {
+  return { events_bytes: events.length, events_digest: digestBytes(events),
+    state_bytes: state.length, state_digest: digestBytes(state),
+    hash_bytes: hash.length, hash_digest: digestBytes(hash) };
+}
+
+function assertSnapshotBytes(snapshot, events, state, hash, label) {
+  const actual = journalSnapshot(events, state, hash);
+  if (JSON.stringify(actual) !== JSON.stringify(snapshot)) {
+    throw new Error(`ANCHORED_TRANSACTION_CORRUPT: ${label}`);
+  }
+}
+
+function removeJournal(paths) {
+  for (const key of ['marker', 'events', 'state', 'hash']) {
+    durableUnlink(paths[key]);
+  }
+}
+
+function recoverAnchoredTransactionUnderLock(root, runId, marker) {
+  const paths = journalPaths(root, runId);
+  // Reject unknown or symlinked journal names before reading or changing canonical bytes.
+  assertKnownAnchoredArtifactsUnderLock(root, runId, paths);
+  const stagedEvents = readExactBytes(paths.events, 'events stage');
+  const stagedState = readExactBytes(paths.state, 'state stage');
+  const stagedHash = readExactBytes(paths.hash, 'hash stage');
+  const eventPath = logPath(root, runId);
+  const statePath = join(runDir(root, runId), 'loop.json');
+  const hashPath = join(runDir(root, runId), '.loop.hash');
+  const canonicalEvents = regularFileIfPresent(eventPath, 'canonical event log')
+    ? readFileSync(eventPath) : Buffer.alloc(0);
+  const canonicalState = readExactBytes(statePath, 'canonical state');
+  const canonicalHash = readExactBytes(hashPath, 'canonical hash');
+  const beforeLength = marker.before.events_bytes;
+  if (canonicalEvents.length < beforeLength
+      || canonicalEvents.length > beforeLength + stagedEvents.length) {
+    throw new Error('ANCHORED_TRANSACTION_CORRUPT: event length');
+  }
+  const canonicalPrefix = canonicalEvents.subarray(0, beforeLength);
+  if (digestBytes(canonicalPrefix) !== marker.before.events_digest) {
+    throw new Error('ANCHORED_TRANSACTION_CORRUPT: event prefix');
+  }
+  // Authenticate the complete after image before changing any canonical byte. Never replace the
+  // marker's event digest with a digest recomputed from the untrusted stage itself.
+  const stagedAfterEvents = Buffer.concat([canonicalPrefix, stagedEvents]);
+  assertSnapshotBytes(marker.after, stagedAfterEvents, stagedState, stagedHash, 'stage digest');
+  const partial = canonicalEvents.subarray(beforeLength);
+  if (!stagedEvents.subarray(0, partial.length).equals(partial)) {
+    throw new Error('ANCHORED_TRANSACTION_CORRUPT: event suffix');
+  }
+  const stateBefore = canonicalState.length === marker.before.state_bytes
+    && digestBytes(canonicalState) === marker.before.state_digest;
+  const stateAfter = canonicalState.length === marker.after.state_bytes
+    && digestBytes(canonicalState) === marker.after.state_digest;
+  const hashBefore = canonicalHash.length === marker.before.hash_bytes
+    && digestBytes(canonicalHash) === marker.before.hash_digest;
+  const hashAfter = canonicalHash.length === marker.after.hash_bytes
+    && digestBytes(canonicalHash) === marker.after.hash_digest;
+  const fullyAppended = partial.length === stagedEvents.length;
+  // These fixed scratch names may be partial after a real process death. They carry no authority;
+  // a matching marker retry discards them and republishes from the authenticated stages.
+  durableUnlink(`${statePath}.replace`);
+  durableUnlink(`${hashPath}.replace`);
+  if (stateBefore && hashBefore) {
+    if (regularFileIfPresent(eventPath, 'canonical event log')) truncateSync(eventPath, beforeLength);
+    else if (beforeLength !== 0) {
+      throw new Error('ANCHORED_TRANSACTION_CORRUPT: missing event prefix');
+    }
+    appendFileSync(eventPath, stagedEvents);
+    syncFile(eventPath);
+    syncDirectory(eventPath);
+    durableReplace(statePath, stagedState);
+    durableReplace(hashPath, stagedHash);
+  } else if (stateAfter && hashBefore && fullyAppended) {
+    // `state-after-rename` is a valid intermediate commit point: events and
+    // state are already durable, while the hash is still the before image.
+    durableReplace(hashPath, stagedHash);
+  } else if (!(stateAfter && hashAfter && fullyAppended)) {
+    throw new Error('ANCHORED_TRANSACTION_CORRUPT: canonical state pair');
+  }
+  const finalEvents = readFileSync(eventPath);
+  const finalState = readFileSync(statePath);
+  const finalHash = readFileSync(hashPath);
+  assertSnapshotBytes(marker.after, finalEvents, finalState, finalHash, 'recovered candidate');
+  const recoveredEvents = stagedEvents.toString('utf8').split('\n').filter(Boolean)
+    .map(line => JSON.parse(line));
+  removeJournal(paths);
+  return Object.freeze({ events: Object.freeze(recoveredEvents.map(event =>
+    Object.freeze(structuredClone(event)))) });
+}
+
+const JOURNAL_CRASH_POINTS = new Set([
+  'state-stage-after-rename', 'event-stage-after-rename', 'pending-after-rename',
+  'event-after-partial-append', 'event-after-full-append', 'state-after-rename',
+  'hash-after-rename', 'before-cleanup',
+  'state-replace-after-create', 'state-replace-after-fsync',
+  'state-replace-after-rename-before-dir-fsync',
+  'hash-replace-after-create', 'hash-replace-after-fsync',
+  'hash-replace-after-rename-before-dir-fsync',
+]);
+
+function crashIfScheduled(stage) {
+  const selected = process.env.NODE_ENV === 'test'
+    ? process.env.DEEP_LOOP_TEST_CRASH_AT : undefined;
+  if (selected === undefined) return;
+  if (!JOURNAL_CRASH_POINTS.has(selected)) {
+    throw new Error('ANCHORED_TEST_CRASH_POINT_INVALID');
+  }
+  if (selected === stage) process.exit(91);
+}
+
+function publishAnchoredCandidateUnderLock(root, runId, {
+  candidate, prospective, callerBinding, intentDigest,
+}) {
+  const paths = journalPaths(root, runId);
+  assertNoAnchoredMarkerUnderLock(root, runId);
+  const eventPath = logPath(root, runId);
+  const statePath = join(runDir(root, runId), 'loop.json');
+  const hashPath = join(runDir(root, runId), '.loop.hash');
+  const beforeEvents = regularFileIfPresent(eventPath, 'canonical event log')
+    ? readFileSync(eventPath) : Buffer.alloc(0);
+  const beforeState = readExactBytes(statePath, 'canonical state');
+  const beforeHash = readExactBytes(hashPath, 'canonical hash');
+  const allEvents = Buffer.from(prospective.map(event => `${JSON.stringify(event)}\n`).join(''));
+  if (!allEvents.subarray(0, beforeEvents.length).equals(beforeEvents)) {
+    throw new Error('ANCHORED_TRANSACTION_CORRUPT: prospective prefix');
+  }
+  const stagedEvents = allEvents.subarray(beforeEvents.length);
+  const stagedState = Buffer.from(JSON.stringify(candidate, null, 2));
+  const stagedHash = Buffer.from(contentHash(stagedState.toString('utf8')));
+  const marker = { version: 1,
+    caller: { owner: callerBinding.owner, generation: callerBinding.generation },
+    intent_digest: intentDigest,
+    before: journalSnapshot(beforeEvents, beforeState, beforeHash),
+    after: journalSnapshot(allEvents, stagedState, stagedHash) };
+  durableReplace(paths.state, stagedState); crashIfScheduled('state-stage-after-rename');
+  durableReplace(paths.events, stagedEvents); crashIfScheduled('event-stage-after-rename');
+  durableReplace(paths.hash, stagedHash);
+  durableReplace(paths.marker, Buffer.from(JSON.stringify(marker)));
+  crashIfScheduled('pending-after-rename');
+  const split = Math.max(1, Math.floor(stagedEvents.length / 2));
+  appendFileSync(eventPath, stagedEvents.subarray(0, split));
+  syncFile(eventPath); syncDirectory(eventPath);
+  crashIfScheduled('event-after-partial-append');
+  appendFileSync(eventPath, stagedEvents.subarray(split));
+  syncFile(eventPath);
+  crashIfScheduled('event-after-full-append');
+  durableReplace(statePath, stagedState, { label: 'state' });
+  crashIfScheduled('state-after-rename');
+  durableReplace(hashPath, stagedHash, { label: 'hash' });
+  crashIfScheduled('hash-after-rename');
+  crashIfScheduled('before-cleanup'); removeJournal(paths);
+}
+
+function readVerifiedStateUnderLock(root, runId, { fenceCheck } = {}) {
+  const state = readState(root, runId);
+  if (fenceCheck !== undefined) {
+    if (typeof fenceCheck !== 'function') throw new Error('INVALID_FENCE_CHECK');
+    fenceCheck(state.data);
+  }
+  const lines = readLines(root, runId);
+  assertVerifiedRunSnapshot(root, runId, state.data, { lines });
+  return { data: structuredClone(state.data), hash: state.hash };
+}
+
+function pendingAuthenticationStateUnderLock(root, runId, marker,
+  { allowUnboundRoot = false } = {}) {
+  const stateBytes = readExactBytes(join(runDir(root, runId), 'loop.json'),
+    'pending authentication state');
+  const matches = [marker.before, marker.after].some(snapshot =>
+    stateBytes.length === snapshot.state_bytes
+      && digestBytes(stateBytes) === snapshot.state_digest);
+  if (!matches) {
+    throw new Error('ANCHORED_TRANSACTION_CORRUPT: authentication state');
+  }
+  let loop;
+  try { loop = JSON.parse(stateBytes.toString('utf8')); }
+  catch { throw new Error('ANCHORED_TRANSACTION_CORRUPT: authentication state json'); }
+  if (!allowUnboundRoot) assertProjectRootBinding(root, loop);
+  return loop;
+}
+
+export function authenticateVerifiedMutationCaller(root, runId, {
+  callerBinding, fenceCheck, fenceError = 'LEASE_FENCED: mutation-authentication',
+} = {}) {
+  const binding = requireCallerBinding(callerBinding);
+  if (typeof fenceCheck !== 'function') throw new Error('INVALID_FENCE_CHECK');
   return withLock(root, runId, () => {
-    const { data: loop } = readState(root, runId);
-    // Defense in depth at the shared mutation gateway: this check stays inside the existing lock and precedes
-    // caller guards and event writes. readState is already strict, so no unbound reader is exposed here.
+    const marker = readAnchoredMarkerUnderLock(root, runId);
+    if (marker !== null) {
+      if (marker.caller.owner !== binding.owner
+          || marker.caller.generation !== binding.generation) {
+        throw new Error(fenceError);
+      }
+      // Authentication only: a pending transaction may leave the canonical state at either the
+      // exact before or exact after image. The final intent-aware gateway alone may recover it.
+      const loop = pendingAuthenticationStateUnderLock(root, runId, marker);
+      fenceCheck(loop);
+      return Object.freeze({ pending: true });
+    }
+    readVerifiedStateUnderLock(root, runId, { fenceCheck });
+    return Object.freeze({ pending: false });
+  });
+}
+
+export function readVerifiedState(root, runId, options = {}) {
+  return withLock(root, runId, () => {
+    if (readAnchoredMarkerUnderLock(root, runId) !== null) {
+      throw new Error('ANCHORED_TRANSACTION_PENDING');
+    }
+    return readVerifiedStateUnderLock(root, runId, options);
+  });
+}
+
+function spentOfLines(lines) {
+  return lines.filter(event => event.type === 'cost').reduce((acc, event) => {
+    if (!validCost(event.data)) {
+      throw new Error(`LOG_CORRUPT: invalid cost event at seq ${event.seq}`);
+    }
+    return { turns: acc.turns + event.data.turns,
+      tokens: acc.tokens + event.data.tokens };
+  }, { turns: 0, tokens: 0 });
+}
+
+function requireCallerBinding(binding) {
+  if (typeof binding?.owner !== 'string' || binding.owner.length === 0
+      || !Number.isSafeInteger(binding?.generation) || binding.generation < 1) {
+    throw new Error('CALLER_BINDING_REQUIRED');
+  }
+  return Object.freeze({ owner: binding.owner, generation: binding.generation });
+}
+
+export function withVerifiedMutationLock(root, runId,
+  { callerBinding, intentDigest, fenceError,
+    intentConflictError = 'ANCHORED_TRANSACTION_PENDING',
+    allowUnboundRoot = false }, body) {
+  const binding = requireCallerBinding(callerBinding);
+  if (!/^[0-9a-f]{64}$/.test(intentDigest || '') || typeof body !== 'function') {
+    throw new Error('MUTATION_INTENT_REQUIRED');
+  }
+  if (typeof fenceError !== 'string' || fenceError.length === 0) {
+    throw new Error('MUTATION_FENCE_ERROR_REQUIRED');
+  }
+  return withLock(root, runId, () => {
+    let recovered = null;
+    // This strict marker read is deliberately before readState/readLines/root/schema verification.
+    const marker = readAnchoredMarkerUnderLock(root, runId);
+    if (marker !== null) {
+      if (marker.caller.owner !== binding.owner
+          || marker.caller.generation !== binding.generation) {
+        throw new Error(fenceError);
+      }
+      if (marker.intent_digest !== intentDigest) {
+        throw new Error(intentConflictError);
+      }
+      pendingAuthenticationStateUnderLock(root, runId, marker, { allowUnboundRoot });
+      // Uses raw exact before/after bytes recorded by the marker, not canonical public readers.
+      recovered = recoverAnchoredTransactionUnderLock(root, runId, marker);
+    }
+    // Logical restart: the complete public operation begins its normal read/idempotency path only now.
+    let active = true;
+    const assertActive = () => {
+      if (!active) throw new Error('MUTATION_CONTEXT_EXPIRED');
+    };
+    const context = Object.freeze({
+      recovered,
+      readVerifiedState(options = {}) {
+        assertActive();
+        return readVerifiedStateUnderLock(root, runId, options);
+      },
+      appendAnchored(event, mutate, preCheck, opts = {}) {
+        assertActive();
+        return appendAnchoredUnderLock(root, runId, event, mutate, preCheck, opts,
+          { callerBinding: binding, intentDigest });
+      },
+    });
+    try {
+      return body(context);
+    } finally {
+      active = false;
+    }
+  });
+}
+
+function legacyCheckpointSpec(root, runId, loop, lines,
+  { callerBinding, now }) {
+  if (loop.initialization !== undefined) return null;
+  const baselines = lines.filter(event => event?.type === 'lease-lineage-baselined');
+  if (baselines.length > 0) return null;
+  const lease = loop.session_chain?.lease ?? {};
+  const incompatible = loop.autonomy?.app_task_continuation?.mode === 'auto'
+    || (loop.session_chain?.sessions ?? []).some(session =>
+      session?.host_surface != null || session?.continuation?.transport === 'codex-app')
+    || lines.some(event => ['lease-acquired', 'app-task-acquired']
+      .includes(event?.type));
+  if (incompatible || readCurrentRunIdUnderLock(root) !== runId
+      || callerBinding.owner !== lease.owner_run_id
+      || callerBinding.generation !== lease.generation
+      || typeof lease.owner_run_id !== 'string'
+      || !Number.isSafeInteger(lease.generation) || lease.generation < 1
+      || typeof lease.acquired_at !== 'string'
+      || !Number.isFinite(Date.parse(lease.acquired_at))
+      || new Date(Date.parse(lease.acquired_at)).toISOString() !== lease.acquired_at
+      || !['active', 'releasing', 'released'].includes(lease.state)) {
+    throw new Error('LEGACY_LINEAGE_CHECKPOINT_INELIGIBLE');
+  }
+  const legacyEpisodeCount = (loop.episodes || []).length;
+  const legacyWorkstreamCount = (loop.workstreams || []).length;
+  return { type: 'lease-lineage-baselined', now, data: {
+    owner_run_id: lease.owner_run_id, generation: lease.generation,
+    lease_state: lease.state, acquired_at: lease.acquired_at,
+    legacy_episode_count: legacyEpisodeCount,
+    legacy_workstream_count: legacyWorkstreamCount,
+    legacy_active_workstreams: structuredClone(loop.active_workstreams),
+    legacy_proof_origins: legacyProofOrigins(
+      loop, legacyEpisodeCount, legacyWorkstreamCount),
+    legacy_authority_digest: legacyAuthorityDigest(loop),
+  } };
+}
+
+// Callers must already own the run lock through withVerifiedMutationLock. Only appendAnchored,
+// generic lease/accounting writers, and the fixed root-rebind commit may import this export.
+export function commitVerifiedEventsUnderLock(root, runId, loop, eventSpecs, mutate,
+  options = {}) {
+  if (Object.values(options).some(value => typeof value === 'function')) {
+    throw new Error('LOCK_HELD_CALLBACK_FORBIDDEN');
+  }
+  const { baseLines, baseStateHash, callerBinding, intentDigest } = options;
+  if (!Array.isArray(eventSpecs) || eventSpecs.length === 0) {
+    throw new Error('VERIFIED_COMMIT_EVENTS_REQUIRED');
+  }
+  const binding = requireCallerBinding(callerBinding);
+  if (!Array.isArray(baseLines) || !/^[0-9a-f]{64}$/.test(baseStateHash || '')
+      || !/^[0-9a-f]{64}$/.test(intentDigest || '')) {
+    throw new Error('VERIFIED_COMMIT_BASE_REQUIRED');
+  }
+  if (eventSpecs.some(spec => spec?.type === 'lease-lineage-baselined')) {
+    throw new Error('LEGACY_CHECKPOINT_CALLER_FORBIDDEN');
+  }
+  assertNoAnchoredMarkerUnderLock(root, runId);
+  if (loop?.run_id !== runId) throw new Error('RUN_SNAPSHOT_INVALID: run_id mismatch');
+  const lines = baseLines;
+  requireVerifiedSnapshot(loop, lines);
+  const preCheckpointLegacy = loop.initialization === undefined
+    && !lines.some(event => event?.type === 'lease-lineage-baselined');
+  const proofBefore = structuredClone(loop);
+  if (preCheckpointLegacy) {
+    loop.active_workstreams = normalizeLegacyActiveWorkstreams(loop);
+    loop.legacy_lineage = {
+      active_workstreams: structuredClone(loop.active_workstreams),
+    };
+    proofBefore.active_workstreams = structuredClone(loop.active_workstreams);
+    proofBefore.legacy_lineage = structuredClone(loop.legacy_lineage);
+  }
+  const checkpoint = legacyCheckpointSpec(root, runId, proofBefore, lines, {
+    callerBinding: binding, now: eventSpecs[0].now,
+  });
+  const preparedSpecs = structuredClone(
+    checkpoint === null ? eventSpecs : [checkpoint, ...eventSpecs]);
+  const draftProspective = [...lines];
+  const draftCommitted = [];
+  for (const spec of preparedSpecs) {
+    if (!spec || typeof spec.type !== 'string' || spec.type.length === 0) {
+      throw new Error('VERIFIED_COMMIT_EVENT_INVALID');
+    }
+    const event = nextEvent(draftProspective, { type: spec.type,
+      data: structuredClone(spec.data), now: spec.now });
+    draftProspective.push(event); draftCommitted.push(event);
+  }
+  // The mutator may consume only stable seq/ts/type/data from draft business events. Checksums and
+  // event-log head are rebuilt after the candidate-derived proof transitions are attached.
+  const draftBusiness = checkpoint === null ? draftCommitted : draftCommitted.slice(1);
+  // Preserve the historical appendAnchored callback contract: preCheck and mutate observe the
+  // same in-lock object identity. Several transitional callers intentionally bind entity objects
+  // during preCheck and update those exact objects in mutate. `proofBefore` is the immutable
+  // prospective baseline; the freshly read `loop` is the unpublished candidate.
+  const candidate = loop;
+  candidate.event_log_head = headOfLines(draftProspective);
+  const draftSpent = spentOfLines(draftProspective);
+  if (mutate) mutate(candidate, draftSpent, draftBusiness);
+  candidate.updated_at = draftCommitted.at(-1).ts;
+
+  const finalSpecs = draftCommitted.map(event => ({ type: event.type,
+    data: structuredClone(event.data), now: event.ts }));
+  attachCandidateProofTransitions(proofBefore, candidate, finalSpecs);
+  const prospective = [...lines];
+  const allCommitted = [];
+  for (const spec of finalSpecs) {
+    const event = nextEvent(prospective, spec);
+    prospective.push(event); allCommitted.push(event);
+  }
+  candidate.event_log_head = headOfLines(prospective);
+  const spent = spentOfLines(prospective);
+  assertVerifiedRunSnapshot(root, runId, candidate, { lines: prospective });
+  publishAnchoredCandidateUnderLock(root, runId, {
+    beforeLoop: loop, beforeLines: lines, candidate, prospective,
+    committed: allCommitted, callerBinding: binding, intentDigest,
+  });
+  const committed = checkpoint === null ? allCommitted : allCommitted.slice(1);
+  return { candidate, committed, spent };
+}
+
+function appendAnchoredUnderLock(root, runId, { type, data }, mutate, preCheck, opts,
+  { callerBinding: binding, intentDigest }) {
+    const { data: loop, hash: baseStateHash } = readState(root, runId);
     assertProjectRootBinding(root, loop);
+    const splitFence = opts.fenceCheck !== undefined;
+    if (splitFence && typeof opts.fenceCheck !== 'function') {
+      throw new Error('INVALID_FENCE_CHECK');
+    }
+    if (splitFence) opts.fenceCheck(loop);
     let clock;
     if (opts.nowFn !== undefined) {
       if (typeof opts.nowFn !== 'function') throw new Error('INVALID_NOW: nowFn');
       const sampled = opts.nowFn();
-      if (typeof sampled !== 'number' || !Number.isFinite(sampled)) {
+      if (typeof sampled !== 'number' || !Number.isFinite(sampled)
+          || !Number.isFinite(new Date(sampled).getTime())) {
         throw new Error('INVALID_NOW: anchored clock');
       }
-      const date = new Date(sampled);
-      if (!Number.isFinite(date.getTime())) {
-        throw new Error('INVALID_NOW: anchored clock');
-      }
-      clock = Object.freeze({ ms: sampled, iso: date.toISOString() });
+      clock = Object.freeze({ ms: sampled, iso: new Date(sampled).toISOString() });
     }
-    if (preCheck) preCheck(loop, clock);              // throws BEFORE append → anchor stays consistent
-    // v1.6 gateway terminal gate (spec §2.1.5): 반드시 caller preCheck **뒤** — fence-first 보존
-    // (LEASE_FENCED/RESPAWN_FENCED/RUN_TERMINAL:emitHandoff 등 특정-에러 경로가 먼저 발화해야 한다).
-    // 여기 도달했는데 terminal이면 "어떤 preCheck도 못 잡은" fence-less 경로 — 최후 방벽.
-    // finish 이벤트는 preCheck 시점 non-terminal(전이는 mutate 단계)이라 자연 통과; double-finish는 차단된다.
-    if (loop.status === 'completed' || loop.status === 'stopped') throw new Error('RUN_TERMINAL: append');
-    // Codex impl r12 🔴: verify the existing log (chain + tail vs stored anchor) BEFORE appending. Otherwise a
-    // suffix-truncated/tampered log would be laundered — a new append + fresh anchor would hide the loss and
-    // reconcileBudget would no longer detect it. Fail-stop here keeps the anchor honest.
-    const v = verifyLog(root, runId);
-    if (!v.ok) throw new Error(`LOG_TAMPERED: ${v.errors.join('; ')}`);
-    const h = verifyHead(root, runId, loop.event_log_head);
-    if (!h.ok) throw new Error(`LOG_TAMPERED: ${h.errors.join('; ')}`);
-    appendEvent(root, runId, { type, data, now: clock?.ms });
-    // Paired floor cost — SAME lock/anchor as the mutation event, so verifyHead/reconcileBudget stay consistent.
-    // impl-R1 Fix 1: tag the floor with the CURRENT lease owner+generation. recordCost only absorbs floors from its
-    // OWN session, so an explicit report in a LATER session cannot swallow an EARLIER session's floors (which are
-    // confirmed prior consumption) — that would undercount total spent and weaken per_session_turn_cap.
+    if (!splitFence && preCheck) preCheck(loop, clock);
+    const lines = readLines(root, runId);
+    requireVerifiedSnapshot(loop, lines);
+    if (splitFence && preCheck) preCheck(loop, clock);
+    if ((loop.status === 'completed' || loop.status === 'stopped') && opts.allowTerminal !== true) {
+      throw new Error('RUN_TERMINAL: append');
+    }
+    const eventSpecs = [{ type, data, now: clock?.ms }];
     if (opts.floor) {
       const lease = loop.session_chain?.lease || {};
-      appendEvent(root, runId, { type: 'cost', data: { turns: opts.floor, tokens: 0, auto_floor: true, for: type, owner: lease.owner_run_id, generation: lease.generation }, now: clock?.ms });
+      eventSpecs.push({ type: 'cost', now: clock?.ms, data: {
+        turns: opts.floor, tokens: 0, auto_floor: true, for: type,
+        owner: lease.owner_run_id, generation: lease.generation,
+      } });
     }
-    loop.event_log_head = lastLogHead(root, runId);   // floor present → the cost event is the head
-    const spent = (mutate || opts.floor) ? recomputeSpent(root, runId) : null;
-    if (opts.floor) {
-      loop.budget.spent = spent.turns;
-      loop.budget.tokens_spent = spent.tokens;
-      // per_session_turn_cap is judged off the lease owner's session.turns (next-action.mjs) — bump it here so
-      // the floor drives the handoff cadence (= human checkpoints) too, not only budget.spent.
-      const owner = loop.session_chain?.lease?.owner_run_id;
-      const sess = (loop.session_chain?.sessions || []).find(s => s.run_id === owner);
-      if (sess) sess.turns = (sess.turns || 0) + opts.floor;
+    commitVerifiedEventsUnderLock(root, runId, loop, eventSpecs,
+      (candidate, spent) => {
+        if (opts.floor) {
+          candidate.budget.spent = spent.turns;
+          candidate.budget.tokens_spent = spent.tokens;
+          const owner = candidate.session_chain?.lease?.owner_run_id;
+          const session = (candidate.session_chain?.sessions || [])
+            .find(item => item.run_id === owner);
+          if (session) session.turns = (session.turns || 0) + opts.floor;
+        }
+        if (mutate) mutate(candidate, spent, clock);
+      }, { baseLines: lines, baseStateHash,
+        callerBinding: binding, intentDigest });
+}
+
+function transitionalDirectIntent(event) {
+  if (typeof event?.type !== 'string' || event.type.length === 0) {
+    throw new Error('MUTATION_INTENT_REQUIRED');
+  }
+  return contentHash(JSON.stringify({ operation: 'transitional-direct-append',
+    type: event.type, data: event.data }));
+}
+
+function appendTransitionalDirect(root, runId, event, mutate, preCheck, opts) {
+  const intentDigest = transitionalDirectIntent(event);
+  return withLock(root, runId, () => {
+    const marker = readAnchoredMarkerUnderLock(root, runId);
+    if (marker !== null) {
+      if (marker.intent_digest !== intentDigest) {
+        throw new Error('ANCHORED_TRANSACTION_PENDING');
+      }
+      const pending = pendingAuthenticationStateUnderLock(root, runId, marker);
+      const lease = pending.session_chain?.lease;
+      if (lease?.owner_run_id !== marker.caller.owner
+          || lease?.generation !== marker.caller.generation) {
+        throw new Error('ANCHORED_TRANSACTION_PENDING');
+      }
+      if (typeof opts.fenceCheck === 'function') opts.fenceCheck(pending);
+      else if (preCheck) preCheck(pending);
+      const recovered = recoverAnchoredTransactionUnderLock(root, runId, marker);
+      const verified = readVerifiedStateUnderLock(root, runId);
+      return typeof opts.onRecovered === 'function'
+        ? opts.onRecovered(verified.data, recovered) : undefined;
     }
-    if (mutate) mutate(loop, spent, clock);
-    writeState(root, runId, loop);
+    const verified = readVerifiedStateUnderLock(root, runId,
+      typeof opts.fenceCheck === 'function' ? { fenceCheck: opts.fenceCheck } : {});
+    const lease = verified.data.session_chain?.lease;
+    const callerBinding = requireCallerBinding({ owner: lease?.owner_run_id,
+      generation: lease?.generation });
+    return appendAnchoredUnderLock(root, runId, event, mutate, preCheck, opts,
+      { callerBinding, intentDigest });
   });
 }
 
-// Root relocation is the sole mutation that cannot enter appendAnchored: the old lexical root is intentionally
-// unresolvable, while appendAnchored performs a strict bound read and owns its own non-reentrant lock. The caller
-// already owns the candidate run lock. This fixed commit accepts neither a caller-selected event nor a mutation
-// callback; all validation completes before its single hard-coded append.
-export function commitProjectRootRebindUnderLock(root, runId, loop, { oldRootDigest, newRoot, now }) {
+export function appendAnchored(root, runId, event, mutate, preCheck, opts = {}) {
+  const hasBinding = opts.callerBinding !== undefined;
+  const hasIntent = opts.intentDigest !== undefined;
+  if (!hasBinding && !hasIntent) {
+    return appendTransitionalDirect(root, runId, event, mutate, preCheck, opts);
+  }
+  if (hasBinding !== hasIntent) throw new Error('MUTATION_AUTHORITY_INCOMPLETE');
+  const binding = requireCallerBinding(opts.callerBinding);
+  const intentDigest = opts.intentDigest;
+  // There is deliberately no event-only fallback: event payloads may redact or omit business
+  // inputs. Every public mutation must bind its complete request before lock acquisition.
+  if (!/^[0-9a-f]{64}$/.test(intentDigest || '')) {
+    throw new Error('MUTATION_INTENT_REQUIRED');
+  }
+  return withVerifiedMutationLock(root, runId, {
+    callerBinding: binding, intentDigest,
+    fenceError: opts.fenceError ?? 'LEASE_FENCED: append',
+  }, mutation => {
+    // An exact marker retry has already durably committed this direct append. Prove the recovered
+    // snapshot, but never execute mutate/preCheck a second time or append a duplicate business event.
+    // Operation wrappers that owe a structured response derive it from this proved snapshot.
+    if (mutation.recovered) {
+      const recovered = mutation.readVerifiedState();
+      return typeof opts.onRecovered === 'function'
+        ? opts.onRecovered(recovered.data, mutation.recovered) : undefined;
+    }
+    return mutation.appendAnchored(event, mutate, preCheck, opts);
+  });
+}
+
+
+export function intentField(domain, value) {
+  if (typeof domain !== 'string' || domain.length === 0) {
+    throw new Error('MUTATION_INTENT_REQUIRED');
+  }
+  let encoded;
+  try {
+    encoded = value === undefined
+      ? JSON.stringify({ kind: 'undefined' })
+      : JSON.stringify({ kind: value === null ? 'null' : typeof value, value });
+  } catch { throw new Error('MUTATION_INTENT_REQUIRED'); }
+  if (typeof encoded !== 'string') throw new Error('MUTATION_INTENT_REQUIRED');
+  return contentHash(`${domain}\0${encoded}`);
+}
+
+export function mutationIntentDigest(operation, callerBinding, projection) {
+  if (typeof operation !== 'string' || operation.length === 0
+      || projection === null || typeof projection !== 'object' || Array.isArray(projection)) {
+    throw new Error('MUTATION_INTENT_REQUIRED');
+  }
+  const binding = requireCallerBinding(callerBinding);
+  return contentHash(JSON.stringify({ ...projection, operation,
+    owner: binding.owner, generation: binding.generation }));
+}
+
+export function directMutationOptions(operation, callerBinding, completeRequest,
+  fenceError, { onRecovered, ...extra } = {}) {
+  if (typeof fenceError !== 'string' || fenceError.length === 0) {
+    throw new Error('MUTATION_FENCE_ERROR_REQUIRED');
+  }
+  const binding = requireCallerBinding(callerBinding);
+  const intentDigest = mutationIntentDigest(operation, binding, {
+    request_digest: intentField(`${operation}-request`, completeRequest),
+  });
+  return Object.freeze({ ...extra, callerBinding: binding, intentDigest, fenceError,
+    ...(onRecovered === undefined ? {} : { onRecovered }) });
+}
+
+// These two redaction-sensitive examples are mandatory shapes, not illustrative fallbacks.
+// The state-patch event omits value and workstream-new omits most business inputs, so the request
+// intent must carry bounded digests for every omitted behavior input.
+export function statePatchIntent(fence, field, value) {
+  return mutationIntentDigest('state-patch', fence,
+    { field, value_digest: intentField('state-patch-value', value) });
+}
+
+export function workstreamNewIntent(fence,
+  { title, branch, worktree, baseCommit, dependsOn }) {
+  return mutationIntentDigest('workstream-new', fence, {
+    title_digest: intentField('workstream-title', title),
+    branch_digest: intentField('workstream-branch', branch),
+    worktree_digest: intentField('workstream-path', worktree),
+    base_commit_digest: intentField('workstream-base', baseCommit),
+    depends_on_digest: intentField('workstream-dependencies', dependsOn),
+  });
+}
+
+
+export function commitProjectRootRebindUnderLock(root, runId, loop,
+  { oldRootDigest, newRoot, now, baseStateHash, callerBinding, intentDigest }) {
   if (!loop || typeof loop !== 'object' || loop.run_id !== runId) {
     throw new Error('STATE_INVALID: loop.run_id mismatch');
   }
-  if (!/^[0-9a-f]{64}$/.test(oldRootDigest || '') || projectRootDigest(loop.project?.root) !== oldRootDigest) {
+  if (!/^[0-9a-f]{64}$/.test(oldRootDigest || '')
+      || projectRootDigest(loop.project?.root) !== oldRootDigest) {
     throw new Error('INVALID_STORED_ROOT_DIGEST: stored root changed');
   }
   let canonicalRoot;
@@ -176,25 +1329,17 @@ export function commitProjectRootRebindUnderLock(root, runId, loop, { oldRootDig
       throw new Error('PROJECT_ROOT_UNRESOLVABLE: candidate root identity changed');
     }
   } catch (error) {
-    if (String(error?.message || error) === 'PROJECT_ROOT_UNRESOLVABLE: candidate root identity changed') throw error;
+    if (String(error?.message || error)
+        === 'PROJECT_ROOT_UNRESOLVABLE: candidate root identity changed') throw error;
     throw new Error('PROJECT_ROOT_UNRESOLVABLE: candidate root', { cause: error });
   }
 
   const lines = readLines(root, runId);
-  const verified = verifyLines(lines);
-  if (!verified.ok) throw new Error(`LOG_TAMPERED: ${verified.errors.join('; ')}`);
-  const anchored = verifyHeadLines(lines, loop.event_log_head);
-  if (!anchored.ok) throw new Error(`LOG_TAMPERED: ${anchored.errors.join('; ')}`);
-
+  requireVerifiedSnapshot(loop, lines);
   const data = { old_root_digest: oldRootDigest, new_root: canonicalRoot };
-  const event = nextEvent(lines, { type: 'project-root-rebound', data, now });
-  const candidate = structuredClone(loop);
-  candidate.project.root = canonicalRoot;
-  candidate.event_log_head = { seq: event.seq, checksum: event.checksum };
-  const stateValidation = validate(candidate);
-  if (!stateValidation.ok) throw new Error(`STATE_INVALID: ${stateValidation.errors.join('; ')}`);
-
-  appendFileSync(logPath(root, runId), JSON.stringify(event) + '\n');
-  writeState(root, runId, candidate);
+  commitVerifiedEventsUnderLock(root, runId, loop,
+    [{ type: 'project-root-rebound', data, now }], candidate => {
+      candidate.project.root = canonicalRoot;
+    }, { baseLines: lines, baseStateHash, callerBinding, intentDigest });
   return { ok: true };
 }

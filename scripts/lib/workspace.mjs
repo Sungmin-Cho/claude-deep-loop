@@ -1,7 +1,7 @@
 import { existsSync, realpathSync, lstatSync } from 'node:fs';
 import { isAbsolute, join, resolve, relative, dirname, basename } from 'node:path';
 import { readState, writeState, withLock } from './state.mjs';
-import { appendAnchored } from './integrity.mjs';
+import { appendAnchored, workstreamNewIntent } from './integrity.mjs';
 import { slugify } from './slug.mjs';
 import { leaseCheck } from './lease.mjs';
 import { MUTATION_TURN_FLOOR } from './budget.mjs';
@@ -10,7 +10,8 @@ import { normalizePortableRelativePath, pathWithin } from './fs-safe.mjs';
 const NON_TERMINAL = ['planned', 'in_progress', 'in_review', 'parked'];
 const TERMINAL = ['ready', 'merged', 'abandoned'];
 
-export function newWorkstream(root, runId, { title, branch, worktree, baseCommit = null, dependsOn = [], fence } = {}) {
+export function newWorkstream(root, runId, { title, branch, worktree, baseCommit = null,
+  dependsOn = [], fence } = {}) {
   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: newWorkstream');
   if (typeof title !== 'string' || title.length === 0 ||
       typeof branch !== 'string' || branch.length === 0 ||
@@ -67,6 +68,9 @@ export function newWorkstream(root, runId, { title, branch, worktree, baseCommit
   // it stay root-relative and pass episode.mjs containment (absolute/.. paths are rejected there).
   const _storedWorktree = normalizePortableRelativePath(relative(_rootResolved, _wtResolved));
   if (!_storedWorktree) throw new Error('WORKSTREAM_WORKTREE_ESCAPE: worktree is not durably relative: ' + worktree);
+  const callerBinding = { owner: fence.owner, generation: fence.generation };
+  const intentDigest = workstreamNewIntent(callerBinding,
+    { title, branch, worktree: _storedWorktree, baseCommit, dependsOn });
   let id;
   appendAnchored(root, runId, { type: 'workstream-new', data: { title } }, (loop) => {
     const n = String(loop.workstreams.length + 1).padStart(2, '0');
@@ -76,7 +80,18 @@ export function newWorkstream(root, runId, { title, branch, worktree, baseCommit
       dirty_on_handoff: false, pr: { intended: true, state: 'none', url: null },
       episodes: [], review_points_done: [], depends_on: dependsOn,
     });
-  }, fence ? (loop) => { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); } : undefined, { floor: MUTATION_TURN_FLOOR });
+  }, (loop) => { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); },
+  { floor: MUTATION_TURN_FLOOR, callerBinding, intentDigest,
+    fenceError: 'LEASE_FENCED: newWorkstream',
+    onRecovered: loop => {
+      const recovered = loop.workstreams.at(-1);
+      if (!recovered || recovered.title !== title || recovered.branch !== branch
+          || recovered.worktree !== _storedWorktree || recovered.base_commit !== baseCommit
+          || JSON.stringify(recovered.depends_on) !== JSON.stringify(dependsOn)) {
+        throw new Error('WORKSTREAM_RESPONSE_PROJECTION_CHANGED');
+      }
+      id = recovered.id;
+    } });
   return { id };
 }
 

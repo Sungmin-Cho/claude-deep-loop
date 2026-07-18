@@ -1,15 +1,26 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 function readJson(path) {
   return JSON.parse(readFileSync(path, 'utf8'));
 }
 
 test('validate exits 0', () => {
-  const out = execFileSync('node', ['scripts/deep-loop.mjs', 'validate'], { encoding: 'utf8' });
-  assert.match(out, /ok/);
+  // Other test files intentionally exercise live run journals under the repository root.
+  // Keep this bundle/schema smoke test independent from those concurrent runtime fixtures.
+  const projectRoot = mkdtempSync(join(tmpdir(), 'deep-loop-scaffold-'));
+  try {
+    const out = execFileSync('node', [
+      'scripts/deep-loop.mjs', 'validate', '--project-root', projectRoot,
+    ], { encoding: 'utf8' });
+    assert.match(out, /ok/);
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
 });
 
 test('package.json is module type with node>=20', () => {

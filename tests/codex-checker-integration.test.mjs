@@ -20,6 +20,11 @@ import { driveHeadlessRun } from '../scripts/lib/headless-host.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
 import { recordCost } from '../scripts/lib/budget.mjs';
 import { canonicalRealpath } from './helpers/fs-fixtures.mjs';
+import {
+  rawHashValidState as rawState7b,
+  seedCorrelatedTerminal as terminal7b,
+} from './fixtures/verified-app-run.mjs';
+import { appendAnchored } from '../scripts/lib/integrity.mjs';
 
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const FIXED_NOW = '2026-07-11T01:00:00.000Z';
@@ -273,9 +278,10 @@ test('import rechecks persisted claim root/runtime/lease binding under the fresh
     ['generation', claim => { claim.lease_generation = 99; }, /REVIEW_IMPORT_CLAIM_LEASE_MISMATCH/],
   ]) {
     const f = seed(); claim(f);
-    const state = readState(f.root, f.runId).data;
-    mutate(state.episodes.find(e => e.id === f.checkerId).review_claim);
-    writeState(f.root, f.runId, state);
+    appendAnchored(f.root, f.runId,
+      { type: 'state-patch', data: { field: `test-claim-${label}` } }, state => {
+      mutate(state.episodes.find(e => e.id === f.checkerId).review_claim);
+    });
     assert.throws(() => importReviewOutcome(f.root, f.runId, {
       raw: JSON.stringify(input(f)), fence: f.fence, now: FIXED_NOW,
     }), error, label);
@@ -422,11 +428,12 @@ test('headless checker immutable prompt carries anchored contract and evidence f
   const f = seed();
   const evidence = { insights_path: '.deep-loop/insights/x.json', emit_ulid: '01TEST', sha256: 'a'.repeat(64), candidates: [] };
   const contract = { slice: 'HILLCLIMB-001', path: `${f.worktree}/.deep-review/contracts/HILLCLIMB-001.yaml`, sha256: 'b'.repeat(64) };
-  const state = readState(f.root, f.runId).data;
-  const checker = state.episodes.find(episode => episode.id === f.checkerId);
-  checker.evidence = evidence;
-  checker.contract = contract;
-  writeState(f.root, f.runId, state);
+  appendAnchored(f.root, f.runId,
+    { type: 'state-patch', data: { field: 'test-checker-contract' } }, state => {
+      const checker = state.episodes.find(episode => episode.id === f.checkerId);
+      checker.evidence = evidence;
+      checker.contract = contract;
+    });
 
   const deps = hostDeps(f);
   let immutableContract;
@@ -607,9 +614,7 @@ test('terminal accounting race is explicit and never adopts another fence', () =
     root: f.root, runId: f.runId, now: Date.parse(FIXED_NOW), ...deps,
     checkerImportFn: (options, bytes) => {
       const imported = deps.checkerImportFn(options, bytes);
-      const state = readState(f.root, f.runId).data;
-      state.status = 'stopped';
-      writeState(f.root, f.runId, state);
+      terminal7b(f.root, f.runId, { status: 'stopped' });
       return imported;
     },
   });

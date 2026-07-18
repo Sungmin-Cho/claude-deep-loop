@@ -5,11 +5,17 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
+import { patch, readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import {
   deriveIdempotencyKey, leaseCheck, acquireLease, releaseLease,
   reserveHandoff, advanceHandoffPhase, rollbackHandoff,
 } from '../scripts/lib/lease.mjs';
+import { readLines as readLines7b } from '../scripts/lib/integrity.mjs';
+import { durableRunBytes as bytes7b, rawHashValidState as raw7b,
+  rawHashValidHistory as rawHistory7b, seedCorrelatedTerminal as terminal7b,
+  verifiedAppRun as fixture7b }
+  from './fixtures/verified-app-run.mjs';
+import { pauseRun } from '../scripts/lib/state.mjs';
 
 function seed(runtime = 'claude') {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
@@ -23,6 +29,60 @@ function writeHashValidState(root, runId, data) {
   writeFileSync(join(dir, 'loop.json'), raw);
   writeFileSync(join(dir, '.loop.hash'), contentHash(raw));
 }
+
+function seedRecovered(root, runId) {
+  pauseRun(root, runId, { reason: 'recover fixture',
+    expect: { owner: runId, generation: 1 }, now: Date.parse('2026-07-13T00:00:01Z') });
+  rawHistory7b(root, runId, [{ type: 'run-recovered',
+    data: { owner_run_id: runId, generation: 1 },
+    now: Date.parse('2026-07-13T00:00:02Z') }], loop => {
+    const lease = loop.session_chain.lease;
+    lease.handoff_child_run_id = null;
+    lease.handoff_idempotency_key = null;
+    lease.handoff_phase = 'idle';
+    lease.state = 'released';
+    lease.expires_at = null;
+    lease.resume_policy = null;
+    loop.pause_reason = 'recovered:awaiting-resume';
+  });
+}
+
+test('generic acquire anchors one exact generation edge and rejects a raw numeric bump', () => {
+  const fixture = fixture7b('dl-generic-acquire-lineage-');
+  assert.deepEqual(releaseLease(fixture.root, fixture.runId,
+    { owner: fixture.owner, generation: fixture.generation }),
+  { ok: true, reason: 'released' });
+  const now = Date.parse('2026-07-13T00:00:01.000Z');
+  assert.deepEqual(acquireLease(fixture.root, fixture.runId,
+    { owner: 'FRESH', expectGeneration: 1, runtime: 'codex', now }),
+  { ok: true, generation: 2, reason: 'acquired' });
+  const events = readLines7b(fixture.root, fixture.runId)
+    .filter(event => event.type === 'lease-acquired');
+  assert.equal(events.length, 1);
+  assert.equal(events[0].ts, '2026-07-13T00:00:01.000Z');
+  assert.deepEqual(events[0].data, { previous_owner_run_id: fixture.owner,
+    previous_generation: 1, owner_run_id: 'FRESH', generation: 2 });
+  assert.equal(readState(fixture.root, fixture.runId).data.session_chain.lease.acquired_at,
+    events[0].ts);
+  assert.deepEqual(acquireLease(fixture.root, fixture.runId,
+    { owner: 'FRESH', expectGeneration: 2, runtime: 'codex', now: now + 1 }),
+  { ok: true, generation: 2, reason: 'already-owned' });
+  assert.equal(readLines7b(fixture.root, fixture.runId)
+    .filter(event => event.type === 'lease-acquired').length, 1);
+
+  const forged = fixture7b('dl-generic-acquire-forged-generation-');
+  raw7b(forged.root, forged.runId, loop => {
+    loop.session_chain.lease.owner_run_id = 'FORGED';
+    loop.session_chain.lease.generation = 2;
+    loop.session_chain.lease.acquired_at = '2026-07-13T00:00:01.000Z';
+    loop.session_chain.lease.state = 'released';
+  });
+  const before = bytes7b(forged.root, forged.runId);
+  assert.throws(() => acquireLease(forged.root, forged.runId,
+    { owner: 'NEXT', expectGeneration: 2, runtime: 'codex', now: now + 1 }),
+  /RUN_SNAPSHOT_INVALID/);
+  assert.deepEqual(bytes7b(forged.root, forged.runId), before);
+});
 
 test('deriveIdempotencyKey is deterministic and trigger-sensitive', () => {
   const a = deriveIdempotencyKey('R', 1, 'milestone');
@@ -249,19 +309,7 @@ test('recover round-trip: released-paused run acquired by fresh owner unpauses (
   // handoff_child_run_id=null, pause_reason='recovered:awaiting-resume'.
   // Task 8 acquireLease must clear the pause.
   const { root, runId } = seed();
-  const { data: d0 } = readState(root, runId);
-  d0.status = 'paused';
-  d0.pause_reason = 'recovered:awaiting-resume';
-  d0.session_chain.lease = {
-    ...d0.session_chain.lease,
-    state: 'released',
-    handoff_child_run_id: null,
-    handoff_idempotency_key: null,
-    handoff_phase: 'idle',
-    resume_policy: null,
-    expires_at: null,
-  };
-  writeState(root, runId, d0);
+  seedRecovered(root, runId);
 
   const r = acquireLease(root, runId, { owner: 'FRESH', expectGeneration: 1, runtime: 'claude' });
   assert.equal(r.ok, true);
@@ -274,9 +322,7 @@ test('recover round-trip: released-paused run acquired by fresh owner unpauses (
 test('terminal guard: stopped run rejects acquireLease with run-terminal', () => {
   const { root, runId } = seed();
   releaseLease(root, runId, { owner: runId, generation: 1 });
-  const { data: d0 } = readState(root, runId);
-  d0.status = 'stopped';
-  writeState(root, runId, d0);
+  terminal7b(root, runId, { status: 'stopped' });
 
   const r = acquireLease(root, runId, { owner: 'NEW', expectGeneration: 1, runtime: 'claude' });
   assert.equal(r.ok, false);
@@ -286,9 +332,7 @@ test('terminal guard: stopped run rejects acquireLease with run-terminal', () =>
 test('terminal guard: completed run rejects acquireLease with run-terminal', () => {
   const { root, runId } = seed();
   releaseLease(root, runId, { owner: runId, generation: 1 });
-  const { data: d0 } = readState(root, runId);
-  d0.status = 'completed';
-  writeState(root, runId, d0);
+  terminal7b(root, runId, { status: 'completed' });
 
   const r = acquireLease(root, runId, { owner: 'NEW', expectGeneration: 1, runtime: 'claude' });
   assert.equal(r.ok, false);
@@ -328,9 +372,7 @@ test('releaseLease on paused run returns RUN_PAUSED; lease NOT released; acquire
 
 // ── v1.6 terminal guard (spec §2.1/§4-1) ─────────────────────────────────────
 function makeTerminal(root, runId, status = 'completed') {
-  const { data } = readState(root, runId);
-  data.status = status;                    // writeState가 .loop.hash 앵커를 재계산
-  writeState(root, runId, data);
+  return terminal7b(root, runId, { status });
 }
 
 test('leaseCheck: terminal run rejects EVERY intent with RUN_TERMINAL', () => {
@@ -407,12 +449,7 @@ test('acquireLease checks runtime before same-owner idempotency', () => {
 
 test('acquireLease checks runtime before stale generation and paused unpause without mutating state', () => {
   const { root, runId } = seed();
-  const { data } = readState(root, runId);
-  data.status = 'paused';
-  data.pause_reason = 'recovered:awaiting-resume';
-  data.session_chain.lease.state = 'released';
-  data.session_chain.lease.resume_policy = 'human';
-  writeState(root, runId, data);
+  seedRecovered(root, runId);
   const before = structuredClone(readState(root, runId).data);
 
   assert.deepEqual(
@@ -439,14 +476,16 @@ test('acquireLease checks runtime before stale generation and paused unpause wit
 
 test('acquireLease treats only Claude as matching a valid legacy runtime state', () => {
   const { root, runId } = seed();
-  const { data } = readState(root, runId);
-  delete data.initialization;
-  delete data.autonomy.session_runtime;
-  delete data.autonomy.runtime_source;
-  data.event_log_head = { seq: 0, checksum: 'GENESIS' };
-  data.session_chain.sessions[0].host_surface = null;
-  writeState(root, runId, data);
+  raw7b(root, runId, data => {
+    delete data.initialization;
+    delete data.autonomy.session_runtime;
+    delete data.autonomy.runtime_source;
+    data.event_log_head = { seq: 0, checksum: 'GENESIS' };
+    data.session_chain.sessions[0].host_surface = null;
+  });
   writeFileSync(join(runDir(root, runId), 'event-log.jsonl'), '');
+  patch(root, runId, 'decisions', [],
+    { fence: { owner: runId, generation: 1, intent: 'business' } });
   releaseLease(root, runId, { owner: runId, generation: 1 });
 
   assert.deepEqual(

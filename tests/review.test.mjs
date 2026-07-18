@@ -14,6 +14,7 @@ import {
 import { releaseLease, acquireLease } from '../scripts/lib/lease.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { createFileSymlinkOrSkip } from './helpers/fs-fixtures.mjs';
+import { appendAnchored } from '../scripts/lib/integrity.mjs';
 
 function eventLog(root, runId) {
   return readFileSync(join(runDir(root, runId), 'event-log.jsonl'), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l));
@@ -69,9 +70,10 @@ function legacyStandaloneChecker() {
   const { checkerEpisodeId } = dispatchReview(root, runId, {
     point: 'plan', workstreamId: ws, detected: { 'deep-review': true }, fence: f,
   });
-  const state = readState(root, runId).data;
-  state.episodes.find(e => e.id === checkerEpisodeId).plugin = 'standalone';
-  writeState(root, runId, state);
+  appendAnchored(root, runId,
+    { type: 'state-patch', data: { field: 'test-legacy-standalone-checker' } }, state => {
+      state.episodes.find(e => e.id === checkerEpisodeId).plugin = 'standalone';
+    });
   return { root, runId, f, worktree, ws, artifact, makerId, checkerEpisodeId };
 }
 
@@ -298,9 +300,11 @@ test('recordReviewOutcome throws REVIEW_UNBOUND_CHECKER on a checker with no tar
   const f = fence(runId);
   const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: '.claude/worktrees/w', fence: f }).id;
   // Inject a legacy unbound pending checker directly (dispatchReview can no longer create one) to prove the guard.
-  const data = readState(root, runId).data;
-  data.episodes.push({ id: '001-deep-review', role: 'checker', plugin: 'subagent-checker', status: 'pending', point: 'plan', workstream_id: ws, kind: 'plan-review' });
-  writeState(root, runId, data);
+  appendAnchored(root, runId, { type: 'episode-new', data: {
+    plugin: 'subagent-checker', role: 'checker', kind: 'plan-review', point: 'plan',
+  } }, data => {
+    data.episodes.push({ id: '001-deep-review', role: 'checker', plugin: 'subagent-checker', status: 'pending', point: 'plan', workstream_id: ws, kind: 'plan-review' });
+  });
   assert.throws(
     () => recordReviewOutcome(root, runId, { episodeId: '001-deep-review', verdict: 'APPROVE', fence: f }),
     /REVIEW_UNBOUND_CHECKER/
@@ -362,7 +366,10 @@ test('recordReviewOutcome: rejects recording on a done checker (defensive)', () 
   recordEpisode(root, runId, m.id, { status: 'done', artifacts: ['art.txt'], proof: {}, fence });
   const dr = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws.id, detected: { 'deep-review': true }, fence });
   // checker 를 'done' 으로 강제(정상 경로로는 도달 불가 — 방어적 가드 확인)
-  const data = readState(root, runId).data; data.episodes.find(e => e.id === dr.checkerEpisodeId).status = 'done'; writeState(root, runId, data);
+  appendAnchored(root, runId,
+    { type: 'state-patch', data: { field: 'test-done-checker' } }, data => {
+      data.episodes.find(e => e.id === dr.checkerEpisodeId).status = 'done';
+    });
   assert.throws(() => recordReviewOutcome(root, runId, { episodeId: dr.checkerEpisodeId, verdict: 'APPROVE', fence }), /REVIEW_ALREADY_RECORDED/);
 });
 

@@ -779,6 +779,7 @@ function verifyStoppedPreImportCheckerSettlement(loop, exact, origin, lines) {
       'workstream_id',
       'point',
       'artifacts',
+      'proof_transitions',
     ])
     || claimEvent.data.reviewer_id !== claim.reviewer_id
     || claimEvent.data.target_maker !== claim.target_maker

@@ -9,9 +9,10 @@ import { execFileSync } from 'node:child_process';
 import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { appendAnchored } from '../scripts/lib/integrity.mjs';
 import { offerDesktop, confirmDesktop, declineDesktop, resetDesktop } from '../scripts/lib/spawn-optin.mjs';
+import { seedCorrelatedTerminal as terminal7b } from './fixtures/verified-app-run.mjs';
 
 const CLI = join(process.cwd(), 'scripts', 'deep-loop.mjs');
-const OWNER = 'SPAWNOPTIN01';
+const OWNER = '01KX9SZA00V7WATCFMFBBDJSRM';
 const GEN = 1;
 const T0 = Date.parse('2026-07-01T00:00:00.000Z');
 
@@ -49,6 +50,7 @@ function baseData(overrides = {}) {
       lease: {
         owner_run_id: OWNER, generation: GEN, state: 'active', handoff_phase: 'idle',
         handoff_idempotency_key: null, handoff_child_run_id: null, expires_at: null,
+        acquired_at: '2026-07-01T00:00:00.000Z',
       },
       sessions: [{ run_id: OWNER, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: null }],
     },
@@ -66,6 +68,7 @@ function seedFreshRun({ spawn_style } = {}) {
   data.project.root = root;
   if (spawn_style) data.autonomy.spawn_style = spawn_style;
   writeState(root, runId, data);
+  withCurrentPointer(root, runId);
   return { root, runId, expect: { owner: OWNER, generation: GEN } };
 }
 
@@ -82,7 +85,7 @@ function forceSpawnStyle(root, runId, style) {
 function seedPausedReleasingDesktop() {
   const root = mkdtempSync(join(tmpdir(), 'dl-spawn-optin-stuck-'));
   const runId = OWNER;
-  const CHILD = 'SPAWNOPTINCHILD1';
+  const CHILD = '01KX9SZA00V7WATCFMFBBDJSRN';
   mkdirSync(runDir(root, runId), { recursive: true });
   const data = baseData({
     status: 'paused',
@@ -92,7 +95,7 @@ function seedPausedReleasingDesktop() {
       lease: {
         owner_run_id: OWNER, generation: GEN, state: 'releasing', handoff_phase: 'emitted',
         handoff_idempotency_key: 'key123', handoff_child_run_id: CHILD,
-        expires_at: null, resume_policy: 'human',
+        expires_at: null, resume_policy: 'human', acquired_at: '2026-07-01T00:00:00.000Z',
       },
       sessions: [
         { run_id: OWNER, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: CHILD },
@@ -102,6 +105,7 @@ function seedPausedReleasingDesktop() {
   });
   data.project.root = root;
   writeState(root, runId, data);
+  withCurrentPointer(root, runId);
   return { root, runId, expect: { owner: OWNER, generation: GEN } };
 }
 
@@ -277,7 +281,8 @@ test('confirmDesktop appends exactly one event on success; rejections append non
   offerDesktop(root, runId, { expect, now: T0, nonce: 'n1' });
   confirmDesktop(root, runId, { expect, now: T0 + 1, nonce: 'n1', platform: 'darwin', desktopProbe: passingProbe });                   // accepted
   const afterAccept = readState(root, runId).data.event_log_head;
-  assert.equal(afterAccept.seq, 2, 'offer + confirm each append exactly one event');
+  assert.equal(afterAccept.seq, 3,
+    'legacy checkpoint + offer + confirm each append exactly one event');
 });
 
 // ── out-of-range ttlSec must fail BEFORE appendAnchored, never half-commit an event ──
@@ -307,7 +312,8 @@ test('offerDesktop with out-of-range ttlSec returns {ok:false} and appends NO ev
   const o = offerDesktop(root, runId, { expect, now: T0 + 1000, nonce: 'n2' });
   assert.equal(o.ok, true);
   assert.equal(readState(root, runId).data.autonomy.spawn_style_optin_pending.nonce, 'n2');
-  assert.equal(readState(root, runId).data.event_log_head.seq, 1, 'the good offer is the FIRST event — the bad one appended none');
+  assert.equal(readState(root, runId).data.event_log_head.seq, 2,
+    'the checkpoint and good offer are the first events — the bad one appended none');
 });
 
 test('offerDesktop with non-finite now returns {ok:false} INVALID_TTL_SEC and appends no event', () => {
@@ -403,19 +409,23 @@ function seedDesktopWith({ status = 'running', leaseState = 'active', handoffPha
   const root = mkdtempSync(join(tmpdir(), 'dl-spawn-optin-reset-'));
   const runId = OWNER;
   mkdirSync(runDir(root, runId), { recursive: true });
+  const terminal = ['completed', 'stopped'].includes(status) ? status : null;
   const data = baseData({
-    status,
+    status: terminal ? 'running' : status,
     autonomy: { tier: 'recommend', spawn_style: 'desktop' },
     session_chain: {
       lease: {
         owner_run_id: OWNER, generation: GEN, state: leaseState, handoff_phase: handoffPhase,
         handoff_idempotency_key: null, handoff_child_run_id: null, expires_at: null,
+        acquired_at: '2026-07-01T00:00:00.000Z',
       },
       sessions: [{ run_id: OWNER, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: null }],
     },
   });
   data.project.root = root;
   writeState(root, runId, data);
+  withCurrentPointer(root, runId);
+  if (terminal) terminal7b(root, runId, { status: terminal });
   return { root, runId, expect: { owner: OWNER, generation: GEN } };
 }
 

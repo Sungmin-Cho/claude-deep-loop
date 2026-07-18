@@ -1,11 +1,12 @@
 import { validate } from './schema.mjs';
-import { readStateForRootRecovery, withLock } from './state.mjs';
+import { readStateForRootRecovery } from './state.mjs';
 import {
   canonicalProjectRoot,
   classifyProjectRootBinding,
   projectRootDigest,
 } from './project-root.mjs';
-import { commitProjectRootRebindUnderLock } from './integrity.mjs';
+import { commitProjectRootRebindUnderLock, mutationIntentDigest,
+  withVerifiedMutationLock } from './integrity.mjs';
 
 const ROOT_DIGEST = /^[0-9a-f]{64}$/;
 
@@ -17,12 +18,14 @@ function canonicalCandidate(candidateRoot) {
   }
 }
 
-function assertRecoveryState(loop, runId) {
+function assertRecoveryState(loop, runId, { validateSchema = true } = {}) {
   if (!loop || typeof loop !== 'object' || loop.run_id !== runId) {
     throw new Error('STATE_INVALID: loop.run_id mismatch');
   }
-  const stateValidation = validate(loop);
-  if (!stateValidation.ok) throw new Error(`STATE_INVALID: ${stateValidation.errors.join('; ')}`);
+  if (validateSchema) {
+    const stateValidation = validate(loop);
+    if (!stateValidation.ok) throw new Error(`STATE_INVALID: ${stateValidation.errors.join('; ')}`);
+  }
   if (!loop.project || typeof loop.project !== 'object') throw new Error('STATE_INVALID: project missing');
   const lease = loop.session_chain?.lease;
   if (!lease || typeof lease.owner_run_id !== 'string' || lease.owner_run_id.length === 0
@@ -58,14 +61,28 @@ export function rebindProjectRoot(candidateRoot, runId, {
   now,
 } = {}) {
   const lockedRoot = canonicalCandidate(candidateRoot);
-  return withLock(lockedRoot, runId, () => {
+  if (!fence || typeof fence.owner !== 'string' || fence.owner.length === 0
+    || !Number.isSafeInteger(fence.generation) || fence.generation < 1) {
+    throw new Error('FENCE_REQUIRED: root rebind requires owner and generation');
+  }
+  const callerBinding = { owner: fence.owner, generation: fence.generation };
+  const intentDigest = mutationIntentDigest('project-root-rebind', callerBinding, {
+    actor, confirm: confirm === true, expected_stored_root_digest: expectedStoredRootDigest,
+    candidate_root: lockedRoot, now: now ?? null,
+  });
+  return withVerifiedMutationLock(lockedRoot, runId, { callerBinding, intentDigest,
+    fenceError: 'PROJECT_ROOT_RECOVERY_FENCED', allowUnboundRoot: true }, mutation => {
+    if (mutation.recovered) {
+      mutation.readVerifiedState();
+      return { ok: true };
+    }
     const candidateCanonical = canonicalCandidate(candidateRoot);
     if (candidateCanonical !== lockedRoot) {
       throw new Error('PROJECT_ROOT_UNRESOLVABLE: candidate root identity changed');
     }
 
-    const { data: loop } = readStateForRootRecovery(lockedRoot, runId);
-    const lease = assertRecoveryState(loop, runId);
+    const { data: loop, hash: baseStateHash } = readStateForRootRecovery(lockedRoot, runId);
+    const lease = assertRecoveryState(loop, runId, { validateSchema: false });
     const binding = classifyProjectRootBinding(candidateCanonical, loop.project.root);
     if (binding.mismatch_class === 'fenced') {
       throw new Error('PROJECT_ROOT_FENCED: stored project root still resolves');
@@ -79,10 +96,6 @@ export function rebindProjectRoot(candidateRoot, runId, {
     if (!ROOT_DIGEST.test(expectedStoredRootDigest || '')
       || expectedStoredRootDigest !== projectRootDigest(loop.project.root)) {
       throw new Error('INVALID_STORED_ROOT_DIGEST: exact stored lexical root digest required');
-    }
-    if (!fence || typeof fence.owner !== 'string' || fence.owner.length === 0
-      || !Number.isSafeInteger(fence.generation) || fence.generation < 0) {
-      throw new Error('FENCE_REQUIRED: root rebind requires owner and generation');
     }
     if (lease.owner_run_id !== fence.owner || lease.generation !== fence.generation) {
       throw new Error('LEASE_FENCED: owner/generation mismatch');
@@ -100,6 +113,9 @@ export function rebindProjectRoot(candidateRoot, runId, {
       oldRootDigest: expectedStoredRootDigest,
       newRoot: candidateCanonical,
       now,
+      baseStateHash,
+      callerBinding,
+      intentDigest,
     });
   });
 }

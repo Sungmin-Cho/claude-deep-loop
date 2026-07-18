@@ -1184,7 +1184,18 @@ export function verifyAppEventCorrelation(loop, lines) {
     const origins = data.legacy_proof_origins;
     let canonicalOrigins = null;
     try {
-      canonicalOrigins = legacyProofOrigins(loop, legacyCount, legacyWorkstreamCount);
+      const firstBeforeDigest = new Map();
+      for (const event of lines.slice(lines.indexOf(checkpoint) + 1)) {
+        for (const transition of (event?.data?.proof_transitions ?? [])) {
+          const key = `${transition?.kind}:${transition?.id}`;
+          if (!firstBeforeDigest.has(key)) {
+            firstBeforeDigest.set(key, transition?.before_digest);
+          }
+        }
+      }
+      canonicalOrigins = legacyProofOrigins(loop, legacyCount, legacyWorkstreamCount)
+        .map(origin => ({ ...origin,
+          digest: firstBeforeDigest.get(`${origin.kind}:${origin.id}`) ?? origin.digest }));
     } catch {}
     const originKeys = Array.isArray(origins)
       ? origins.map(origin => `${origin?.kind}:${origin?.id}`) : [];

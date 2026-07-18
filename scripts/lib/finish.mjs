@@ -1,4 +1,4 @@
-import { appendAnchored } from './integrity.mjs';
+import { appendAnchored, intentField, mutationIntentDigest } from './integrity.mjs';
 import { leaseCheck } from './lease.mjs';
 import { runDir } from './state.mjs';
 import { isProofCapableChecker, makerReviewed, unsatisfiedReviewPoints, epOrder, rejectionResolved } from './review.mjs';
@@ -67,15 +67,23 @@ export function finishProofState(loop) {
   return { hasWork, settled, noActiveWs, allWsTerminal: wsAll, allMakersReviewed, reviewedProof, missing };
 }
 
-export function finishRun(root, runId, { status, reportRel, proof = {}, confirm, fence, now = Date.now() } = {}) {
+export function finishRun(root, runId, { status, reportRel, proof = {}, confirm, fence, now,
+  nowFn = now === undefined ? Date.now : () => now } = {}) {
   // Codex r3 sf-3: fence 는 lib 레벨에서 **필수** (CLI 우회 호출도 fence 강제). newEpisode/recordEpisode 와 동일 규약.
   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: finishRun');
   let result;
+  const callerBinding = { owner: fence.owner, generation: fence.generation };
+  const intentDigest = mutationIntentDigest('finish-run', callerBinding, {
+    status, confirm: confirm === true, runtime: fence.runtime ?? null,
+    terminal_intent: fence.intent ?? null,
+    proof_digest: intentField('finish-proof', proof),
+    report_digest: intentField('finish-report', reportRel),
+  });
   appendAnchored(root, runId, { type: 'finish', data: { status, reportRel: reportRel || null } },
-    (loop) => {
+    (loop, _spent, clock) => {
       loop.status = status;
       loop.termination = loop.termination || {};
-      loop.termination.finished_at = new Date(now).toISOString();
+      loop.termination.finished_at = clock.iso;
       if (reportRel) loop.termination.final_report = reportRel;
       result = { ok: true, status };
     },
@@ -102,6 +110,12 @@ export function finishRun(root, runId, { status, reportRel, proof = {}, confirm,
       const real = reportRel ? containedRealFile(runDir(root, runId), reportRel) : null;
       if (!real) ps.missing.push('final-report-missing');
       if (ps.missing.length) throw new Error(`FINISH_PROOF_UNMET: ${ps.missing.join(',')}`);
-    }, { floor: MUTATION_TURN_FLOOR });
+    }, { floor: MUTATION_TURN_FLOOR, nowFn,
+      callerBinding, intentDigest,
+      fenceError: 'LEASE_FENCED: finishRun',
+      onRecovered: loop => {
+        if (loop.status !== status) throw new Error('FINISH_RESPONSE_PROJECTION_CHANGED');
+        result = { ok: true, status };
+      } });
   return result;
 }

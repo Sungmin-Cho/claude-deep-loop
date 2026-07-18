@@ -7,6 +7,7 @@ import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { reconcileBudget } from '../scripts/lib/budget.mjs';
 import { newEpisode, recordEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
+import { appendAnchored } from '../scripts/lib/integrity.mjs';
 
 function seed() {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
@@ -222,7 +223,10 @@ test('recordEpisode: cannot resurrect an approved/rejected episode to non-termin
   const { root, runId, fence } = freshRun();
   const { id } = newEpisode(root, runId, { plugin: 'deep-review', role: 'checker', kind: 'implementation-review', point: 'implementation', workstream: null, expectedArtifacts: [], fence });
   for (const term of ['approved', 'rejected']) {
-    const data = readState(root, runId).data; data.episodes.find(e => e.id === id).status = term; writeState(root, runId, data);   // 터미널 고정(approved/rejected는 정상적으론 review record 경유)
+    appendAnchored(root, runId,
+      { type: 'state-patch', data: { field: `test-terminal-${term}` } }, data => {
+        data.episodes.find(e => e.id === id).status = term;
+      });
     assert.throws(() => recordEpisode(root, runId, id, { status: 'in_progress', fence }), /EPISODE_ALREADY_TERMINAL/);
   }
 });
