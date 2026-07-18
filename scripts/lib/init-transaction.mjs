@@ -1,4 +1,8 @@
-import { lstatSync, readFileSync, readdirSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import {
+  linkSync, lstatSync, mkdirSync, readFileSync, readdirSync,
+  realpathSync, statSync, unlinkSync, writeFileSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 import { types } from 'node:util';
 import { contentHash, ulid } from './envelope.mjs';
@@ -610,14 +614,223 @@ export function prepareInitialization(root, options, deps) {
     expected_observation_digest: expectedObservation };
 }
 
+export const INIT_LOCK_CANDIDATE_TTL_MS = 300_000;
+export const INIT_LOCK_CANDIDATE_SWEEP_MAX = 64;
+export const INIT_LOCK_CHAIN_MAX = 64;
+const INIT_CANDIDATE_NAME = /^\.init-lock-candidate-(?:0|[1-9][0-9]*)-[A-Za-z0-9_-]{16,128}$/;
+const INIT_SUCCESSOR_NAME = /^\.init-lock-successor-[A-Za-z0-9_-]{16,128}$/;
+const INIT_RELEASE_NAME = /^\.init-lock-release-[A-Za-z0-9_-]{16,128}$/;
+const HOLDER_KEYS = ['acquired_at', 'nonce', 'pid'];
+
+function parseInitHolder(bytes) {
+  let holder;
+  try { holder = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
+  catch { return null; }
+  if (!exactKeys(holder, HOLDER_KEYS) || !Number.isSafeInteger(holder.pid) || holder.pid < 1
+      || !/^[A-Za-z0-9_-]{16,128}$/.test(holder.nonce)) return null;
+  try {
+    if (new Date(holder.acquired_at).toISOString() !== holder.acquired_at) return null;
+  } catch { return null; }
+  return holder;
+}
+
+function sweepInitCandidates(control, deps, nowMs) {
+  const names = (deps.readdir ?? readdirSync)(control)
+    .filter(name => INIT_CANDIDATE_NAME.test(name)).sort()
+    .slice(0, INIT_LOCK_CANDIDATE_SWEEP_MAX);
+  for (const name of names) {
+    const path = join(control, name);
+    try {
+      const stat = (deps.lstat ?? lstatSync)(path);
+      if (!stat.isFile() || stat.isSymbolicLink()) continue;
+      const holder = parseInitHolder(Buffer.from((deps.readFile ?? readFileSync)(path)));
+      if (holder === null) continue;
+      const acquiredMs = Date.parse(holder.acquired_at);
+      if (nowMs - acquiredMs <= INIT_LOCK_CANDIDATE_TTL_MS) continue;
+      if (deps.probePidIdentity?.({ pid: holder.pid, acquiredAt: holder.acquired_at })
+          !== 'definitely-dead') continue;
+      (deps.unlink ?? unlinkSync)(path);
+    } catch {
+      // Candidate uncertainty preserves the path.
+    }
+  }
+}
+
+function ensureControlDirectory(root, deps) {
+  const platform = deps.platform ?? process.platform;
+  const realpath = deps.realpath ?? (realpathSync.native || realpathSync);
+  const lstat = deps.lstat ?? lstatSync;
+  const statPath = deps.stat ?? statSync;
+  const sameFile = deps.sameFile ?? ((left, right) => left.dev === right.dev && left.ino === right.ino);
+  const mkdir = deps.mkdir ?? mkdirSync;
+  const canonicalRoot = realpath(root);
+  if (platform === 'win32'
+    ? !sameFile(statPath(root), statPath(canonicalRoot))
+    : canonicalRoot !== root) {
+    throw new Error('INIT_ROOT_NOT_CANONICAL');
+  }
+  const control = join(canonicalRoot, '.deep-loop');
+  try { mkdir(control); }
+  catch (error) { if (error?.code !== 'EEXIST') throw error; }
+  const stat = lstat(control);
+  const controlReal = realpath(control);
+  const exactControl = platform === 'win32'
+    ? sameFile(statPath(control), statPath(controlReal)) : controlReal === control;
+  if (!stat.isDirectory() || stat.isSymbolicLink() || !exactControl) {
+    throw new Error('INIT_ROOT_CONTAINMENT_INVALID');
+  }
+  return control;
+}
+
+function authorityRecord(path, deps, lstat) {
+  let stat;
+  try { stat = lstat(path); }
+  catch (error) { if (error?.code === 'ENOENT') return null; throw error; }
+  if (!stat.isFile() || stat.isSymbolicLink()) return { stat, holder: null };
+  let holder = null;
+  try { holder = parseInitHolder(Buffer.from((deps.readFile ?? readFileSync)(path))); }
+  catch { /* invalid authority remains busy */ }
+  return { stat, holder };
+}
+
+function followInitAuthority(control, deps) {
+  const lstat = deps.lstat ?? (value => lstatSync(value, { bigint: true }));
+  const sameFile = deps.sameFile
+    ?? ((left, right) => left.dev === right.dev && left.ino === right.ino);
+  let authorityPath = join(control, '.init.lock');
+  const visited = new Set();
+  for (let depth = 0; depth < INIT_LOCK_CHAIN_MAX; depth += 1) {
+    const authority = authorityRecord(authorityPath, deps, lstat);
+    if (authority === null) {
+      if (depth === 0) return { state: 'free', publishPath: authorityPath };
+      throw new Error('LOCK_CHAIN_INVALID');
+    }
+    if (authority.holder === null || visited.has(authority.holder.nonce)) {
+      return { state: 'held', authorityPath, authority, invalid: true };
+    }
+    visited.add(authority.holder.nonce);
+    const releasePath = join(control, '.init-lock-release-' + authority.holder.nonce);
+    const release = authorityRecord(releasePath, deps, lstat);
+    if (release === null) {
+      return { state: 'held', authorityPath, authority, releasePath, invalid: false };
+    }
+    if (release.holder === null || release.holder.nonce !== authority.holder.nonce
+        || !sameFile(authority.stat, release.stat)) {
+      return { state: 'held', authorityPath, authority, releasePath, invalid: true };
+    }
+    const successorPath = join(control, '.init-lock-successor-' + authority.holder.nonce);
+    const successor = authorityRecord(successorPath, deps, lstat);
+    if (depth === INIT_LOCK_CHAIN_MAX - 1) throw new Error('LOCK_CHAIN_EXHAUSTED');
+    if (successor === null) {
+      return { state: 'free', publishPath: successorPath,
+        predecessorPath: authorityPath, predecessor: authority };
+    }
+    authorityPath = successorPath;
+  }
+  throw new Error('LOCK_CHAIN_EXHAUSTED');
+}
+
+function throwHeldAuthority(terminal, deps) {
+  const holder = terminal.authority?.holder;
+  const liveness = holder === null || holder === undefined || terminal.invalid
+    ? 'unknown'
+    : deps.probePidIdentity?.({ pid: holder.pid, acquiredAt: holder.acquired_at }) ?? 'unknown';
+  if (['definitely-dead', 'pid-reused'].includes(liveness)) {
+    throw new Error('LOCK_STALE_MANUAL');
+  }
+  throw new Error('LOCK_BUSY');
+}
+
+export function withInitLock(root, fn, deps = {}) {
+  const control = ensureControlDirectory(root, deps);
+  const nowMs = (deps.now ?? Date.now)();
+  const pid = deps.pid ?? process.pid;
+  const nonce = (deps.nonce ?? (() => randomUUID().replace(/-/g, '')))();
+  if (!Number.isSafeInteger(pid) || pid < 1 || !/^[A-Za-z0-9_-]{16,128}$/.test(nonce)) {
+    throw new Error('LOCK_OWNER_INVALID');
+  }
+  const initial = followInitAuthority(control, deps);
+  if (initial.state !== 'free') throwHeldAuthority(initial, deps);
+  // A cap already visible at entry is raised above before sweep or candidate publication.
+  sweepInitCandidates(control, deps, nowMs);
+  const holder = { pid, nonce, acquired_at: new Date(nowMs).toISOString() };
+  const candidate = join(control, '.init-lock-candidate-' + pid + '-' + nonce);
+  const releasePath = join(control, '.init-lock-release-' + nonce);
+  const unlink = deps.unlink ?? unlinkSync;
+  const link = deps.link ?? linkSync;
+  const lstat = deps.lstat ?? (value => lstatSync(value, { bigint: true }));
+  const sameFile = deps.sameFile
+    ?? ((left, right) => left.dev === right.dev && left.ino === right.ino);
+  let candidateOwned = false;
+  let linked = false;
+  let releaseError = null;
+  try {
+    try {
+      (deps.writeFile ?? writeFileSync)(candidate, JSON.stringify(holder), { flag: 'wx' });
+      candidateOwned = true;
+    } catch (error) {
+      // Native wx EEXIST proves this invocation did not create the candidate. Other write failures
+      // can leave a partial unique candidate and therefore authorize candidate-only cleanup.
+      candidateOwned = error?.code !== 'EEXIST';
+      throw error;
+    }
+    const terminal = followInitAuthority(control, deps);
+    if (terminal.state !== 'free') throwHeldAuthority(terminal, deps);
+    try {
+      link(candidate, terminal.publishPath);
+      linked = true;
+    } catch (error) {
+      if (error?.code === 'EEXIST') throwHeldAuthority(followInitAuthority(control, deps), deps);
+      if (['EXDEV', 'ENOTSUP', 'EOPNOTSUPP', 'EPERM'].includes(error?.code)) {
+        throw new Error('LOCK_UNSUPPORTED');
+      }
+      throw new Error('LOCK_ACQUIRE_FAILED');
+    }
+    const published = followInitAuthority(control, deps);
+    const candidateStat = lstat(candidate);
+    const publishedStat = lstat(terminal.publishPath);
+    if (published.state !== 'held' || published.authorityPath !== terminal.publishPath
+        || published.invalid || published.authority.holder.pid !== holder.pid
+        || published.authority.holder.nonce !== holder.nonce
+        || published.authority.holder.acquired_at !== holder.acquired_at
+        || !candidateStat.isFile() || candidateStat.isSymbolicLink()
+        || !publishedStat.isFile() || publishedStat.isSymbolicLink()
+        || !sameFile(candidateStat, publishedStat)) {
+      try { link(candidate, releasePath); } catch { /* preserve fail-closed evidence */ }
+      throw new Error('LOCK_ACQUIRE_RACED');
+    }
+    return fn();
+  } finally {
+    if (linked) {
+      try { link(candidate, releasePath); }
+      catch (error) {
+        if (error?.code === 'EEXIST') {
+          try {
+            const releaseStat = lstat(releasePath);
+            const candidateStat = lstat(candidate);
+            if (!releaseStat.isFile() || releaseStat.isSymbolicLink()
+                || !candidateStat.isFile() || candidateStat.isSymbolicLink()
+                || !sameFile(releaseStat, candidateStat)) {
+              releaseError = new Error('LOCK_RELEASE_INDETERMINATE');
+            }
+          } catch { releaseError = new Error('LOCK_RELEASE_INDETERMINATE'); }
+        } else {
+          releaseError = new Error('LOCK_RELEASE_INDETERMINATE');
+        }
+      }
+    }
+    if (candidateOwned) {
+      try { unlink(candidate); } catch { /* already absent */ }
+    }
+    if (releaseError !== null) throw releaseError;
+  }
+}
+
 const statusResult = (outcome, lock_state, fields = {}) => ({
   ok: true, outcome, request_match: false, previous_current_match: false,
   consent_mode: null, host_surface: null, structured_stdin_mode: null,
   lock_state, ...fields,
 });
-
-const STATUS_SUCCESSOR = /^\.init-lock-successor-[A-Za-z0-9_-]{16,128}$/;
-const STATUS_RELEASE = /^\.init-lock-release-[A-Za-z0-9_-]{16,128}$/;
 
 function lockArtifactSnapshot(control, deps) {
   if (queryDirectory(control, deps) === null) return { stable: 'absent', entries: [] };
@@ -641,8 +854,8 @@ function lockArtifactSnapshot(control, deps) {
 function lockStateFromSnapshot(snapshot, deps) {
   const entries = snapshot.entries;
   if (entries.some(entry => !entry.regular || entry.bytes === null
-      || entry.name !== '.init.lock' && !STATUS_SUCCESSOR.test(entry.name)
-        && !STATUS_RELEASE.test(entry.name))) return 'invalid';
+      || entry.name !== '.init.lock' && !INIT_SUCCESSOR_NAME.test(entry.name)
+        && !INIT_RELEASE_NAME.test(entry.name))) return 'invalid';
   const byName = new Map(entries.map(entry => [entry.name, entry]));
   let authority = byName.get('.init.lock');
   if (authority === undefined) return entries.length === 0 ? 'free' : 'invalid';

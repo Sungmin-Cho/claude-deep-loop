@@ -15,10 +15,13 @@ import {
   genesisClockFromAttempt,
   hostObservationDigest,
   initializationRequestDigest,
+  INIT_LOCK_CANDIDATE_TTL_MS,
+  INIT_LOCK_CHAIN_MAX,
   normalizeInitializationRequest,
   preflightInitialization,
   prepareInitialization,
   statusInitialization,
+  withInitLock,
 } from '../scripts/lib/init-transaction.mjs';
 import { verifyHeadLines, verifyLines } from '../scripts/lib/integrity.mjs';
 
@@ -838,4 +841,187 @@ test('status returns raced when a held writer completes between state and lock s
   }));
   assert.equal(result.outcome, 'raced');
   assert.equal(result.lock_state, 'invalid');
+});
+
+test('dead fixed init authority is stale-manual and never unlinked', () => {
+  const root = fixtureDir();
+  const lock = join(root, '.deep-loop', '.init.lock');
+  put(root, '.deep-loop/.init.lock', JSON.stringify({
+    pid: 42, nonce: '1234567890abcdef', acquired_at: '2026-07-13T00:00:00.000Z' }));
+  const before = readFileSync(lock);
+  assert.throws(() => withInitLock(root, () => assert.fail('writer entered'), {
+    pid: 7, nonce: () => 'fedcba0987654321', now: () => Date.parse('2026-07-13T00:10:00.001Z'),
+    probePidIdentity: () => 'definitely-dead',
+  }), /LOCK_STALE_MANUAL/);
+  assert.deepEqual(readFileSync(lock), before);
+});
+
+test('lock release never pathname-deletes a release-time copied-nonce ABA replacement', () => {
+  const root = fixtureDir();
+  const later = { pid: 99, nonce: 'firstowner000000', acquired_at: '2026-07-13T00:00:01.000Z' };
+  const fixed = join(root, '.deep-loop', '.init.lock');
+  withInitLock(root, () => {}, {
+    pid: 7, nonce: () => 'firstowner000000',
+    now: () => Date.parse('2026-07-13T00:00:00.000Z'),
+    probePidIdentity: () => 'alive',
+    link: (source, destination) => {
+      if (destination.endsWith('.init-lock-release-firstowner000000')) {
+        unlinkSync(fixed);
+        put(root, '.deep-loop/.init.lock', JSON.stringify(later));
+      }
+      return linkSync(source, destination);
+    },
+  });
+  assert.deepEqual(JSON.parse(readFileSync(join(root, '.deep-loop', '.init.lock'))), later);
+  assert.deepEqual(readdirSync(join(root, '.deep-loop'))
+    .filter(name => name.startsWith('.init-lock-candidate-')), []);
+});
+
+test('candidate sweep is strict, age greater-than TTL, lexical, capped, and candidate-only', () => {
+  const root = fixtureDir();
+  const acquired = '2026-07-13T00:00:00.000Z';
+  for (let index = 64; index >= 0; index -= 1) {
+    const nonce = String(index).padStart(16, '0');
+    put(root, '.deep-loop/.init-lock-candidate-' + (100 + index) + '-' + nonce,
+      JSON.stringify({ pid: 100 + index, nonce, acquired_at: acquired }));
+  }
+  const touched = [];
+  withInitLock(root, () => {}, {
+    pid: 7, nonce: () => 'writer0000000000',
+    now: () => Date.parse('2026-07-13T00:05:00.001Z'),
+    probePidIdentity: value => { touched.push(value.pid); return 'definitely-dead'; },
+  });
+  assert.equal(touched.length, 64);
+  assert.equal(readdirSync(join(root, '.deep-loop'))
+    .filter(name => name.startsWith('.init-lock-candidate-')).length, 1);
+
+  const boundary = fixtureDir();
+  put(boundary, '.deep-loop/.init-lock-candidate-42-1234567890abcdef',
+    JSON.stringify({ pid: 42, nonce: '1234567890abcdef', acquired_at: acquired }));
+  withInitLock(boundary, () => {}, { pid: 7, nonce: () => 'writer0000000000',
+    now: () => Date.parse(acquired) + INIT_LOCK_CANDIDATE_TTL_MS,
+    probePidIdentity: () => 'definitely-dead' });
+  assert.equal(existsSync(join(boundary, '.deep-loop', '.init-lock-candidate-42-1234567890abcdef')), true);
+});
+
+test('unsupported hard link cleans only its candidate', () => {
+  const root = fixtureDir();
+  const error = Object.assign(new Error('unsupported'), { code: 'EXDEV' });
+  assert.throws(() => withInitLock(root, () => {}, {
+    pid: 7, nonce: () => 'writer0000000000', now: () => Date.parse('2026-07-13T00:00:00.000Z'),
+    link: () => { throw error; },
+  }), /LOCK_UNSUPPORTED/);
+  assert.deepEqual(readdirSync(join(root, '.deep-loop'))
+    .filter(name => name.startsWith('.init-lock-candidate-')), []);
+});
+
+test('candidate write failure cleans a partially-created candidate under native defaults', () => {
+  const root = fixtureDir();
+  assert.throws(() => withInitLock(root, () => assert.fail('writer entered'), {
+    pid: 7, nonce: () => 'writer0000000000',
+    now: () => Date.parse('2026-07-13T00:00:00.000Z'),
+    writeFile: (path, bytes, options) => {
+      writeFileSync(path, bytes, options);
+      throw new Error('PARTIAL_CANDIDATE_WRITE');
+    },
+  }), /PARTIAL_CANDIDATE_WRITE/);
+  assert.deepEqual(readdirSync(join(root, '.deep-loop'))
+    .filter(name => name.startsWith('.init-lock-candidate-')), []);
+});
+
+test('candidate nonce collision preserves the pre-existing candidate', () => {
+  const root = fixtureDir();
+  const nonce = 'collisionowner01';
+  const candidate = join(root, '.deep-loop', '.init-lock-candidate-7-' + nonce);
+  const bytes = Buffer.from('pre-existing-candidate');
+  put(root, '.deep-loop/.init-lock-candidate-7-' + nonce, bytes);
+  assert.throws(() => withInitLock(root, () => assert.fail('writer entered'), {
+    pid: 7, nonce: () => nonce,
+    now: () => Date.parse('2026-07-13T00:00:00.000Z'),
+  }), error => error?.code === 'EEXIST');
+  assert.deepEqual(readFileSync(candidate), bytes);
+});
+
+test('stable exhausted chain permits 64 owners and rejects the 65th before any primitive', () => {
+  const root = fixtureDir();
+  const nonceFor = index => 'owner' + String(index).padStart(11, '0');
+  let entered = 0;
+  for (let index = 1; index <= INIT_LOCK_CHAIN_MAX; index += 1) {
+    withInitLock(root, () => { entered += 1; }, {
+      pid: 7, nonce: () => nonceFor(index),
+      now: () => Date.parse('2026-07-13T00:00:00.000Z'),
+    });
+  }
+  assert.equal(entered, 64);
+  const before = queryTree(root);
+  assert.throws(() => withInitLock(root, () => { entered += 1; }, {
+    pid: 7, nonce: () => nonceFor(65),
+    now: () => Date.parse('2026-07-13T00:00:00.000Z'),
+    writeFile: () => assert.fail('cap failure must not write a candidate'),
+    link: () => assert.fail('cap failure must not publish authority'),
+    unlink: () => assert.fail('cap failure must not sweep or clean'),
+  }), /LOCK_CHAIN_EXHAUSTED/);
+  assert.equal(entered, 64);
+  assert.deepEqual(queryTree(root), before);
+  const binding = { attempt_id: '01JAPPGEN00000000000000000',
+    expected_current_digest: 'NONE', expected_request_digest: 'a'.repeat(64) };
+  assert.equal(statusInitialization(root, binding, initDeps(root)).lock_state, 'invalid');
+});
+
+test('last-slot overtaking cleans only the losing contender candidate without publishing authority', () => {
+  const root = fixtureDir();
+  const nonceFor = index => 'owner' + String(index).padStart(11, '0');
+  for (let index = 1; index <= INIT_LOCK_CHAIN_MAX - 1; index += 1) {
+    withInitLock(root, () => {}, { pid: 7, nonce: () => nonceFor(index),
+      now: () => Date.parse('2026-07-13T00:00:00.000Z') });
+  }
+  let interleaved = false;
+  const writes = [];
+  const unlinks = [];
+  assert.throws(() => withInitLock(root, () => assert.fail('loser entered'), {
+    pid: 7, nonce: () => nonceFor(65),
+    now: () => Date.parse('2026-07-13T00:00:00.000Z'),
+    writeFile: (path, bytes, options) => {
+      if (!interleaved) {
+        interleaved = true;
+        withInitLock(root, () => {}, { pid: 7, nonce: () => nonceFor(64),
+          now: () => Date.parse('2026-07-13T00:00:00.000Z') });
+      }
+      writes.push(path);
+      writeFileSync(path, bytes, options);
+    },
+    unlink: path => { unlinks.push(path); return unlinkSync(path); },
+  }), /LOCK_CHAIN_EXHAUSTED/);
+  assert.deepEqual(writes, [join(root, '.deep-loop',
+    '.init-lock-candidate-7-' + nonceFor(65))]);
+  assert.deepEqual(unlinks, writes, 'only the losing invocation own candidate is removed');
+  const names = readdirSync(join(root, '.deep-loop'));
+  assert.equal(names.includes('.init-lock-successor-' + nonceFor(64)), false);
+  assert.equal(names.includes('.init-lock-release-' + nonceFor(65)), false);
+});
+
+test('EEXIST fixed-holder matrix preserves live unknown invalid dead and PID-reused authority', () => {
+  for (const row of [
+    { name: 'live', holder: { pid: 42, nonce: '1234567890abcdef',
+      acquired_at: '2026-07-13T00:00:00.000Z' }, liveness: 'alive', code: /LOCK_BUSY/ },
+    { name: 'unknown', holder: { pid: 42, nonce: '1234567890abcdef',
+      acquired_at: '2026-07-13T00:00:00.000Z' }, liveness: 'unknown', code: /LOCK_BUSY/ },
+    { name: 'dead', holder: { pid: 42, nonce: '1234567890abcdef',
+      acquired_at: '2026-07-13T00:00:00.000Z' }, liveness: 'definitely-dead', code: /LOCK_STALE_MANUAL/ },
+    { name: 'pid-reused', holder: { pid: 42, nonce: '1234567890abcdef',
+      acquired_at: '2026-07-13T00:00:00.000Z' }, liveness: 'pid-reused', code: /LOCK_STALE_MANUAL/ },
+    { name: 'invalid', holder: '{bad', liveness: 'unknown', code: /LOCK_BUSY/ },
+  ]) {
+    const root = fixtureDir();
+    const bytes = typeof row.holder === 'string' ? row.holder : JSON.stringify(row.holder);
+    put(root, '.deep-loop/.init.lock', bytes);
+    const fixed = join(root, '.deep-loop', '.init.lock');
+    for (const nonce of ['contender0000001', 'contender0000002']) {
+      assert.throws(() => withInitLock(root, () => assert.fail(row.name), {
+        pid: 7, nonce: () => nonce, now: () => Date.parse('2026-07-13T00:10:00.000Z'),
+        probePidIdentity: () => row.liveness,
+      }), row.code);
+      assert.equal(readFileSync(fixed, 'utf8'), bytes, row.name);
+    }
+  }
 });
