@@ -164,13 +164,18 @@ function manualEnumProfile(f, argv, expectedObservation) {
   if (forbidden.some(name => f[name] !== undefined) || expectedObservation !== 'NONE'
       || f['app-continuation'] !== 'manual'
       || f['app-consent-authority'] !== 'default-manual') throw new Error('USAGE_MANUAL_ENUMS');
-  const validPair = f.runtime === 'codex'
-    ? f['host-surface'] === 'codex-cli' && f['host-source'] === 'codex-cli-host'
+  const surface = f['host-surface']; const source = f['host-source'];
+  const nullPair = surface === undefined && source === undefined;
+  const validPairs = f.runtime === 'codex'
+    ? { 'codex-cli': 'codex-cli-host', 'codex-app': 'codex-app-tool-provenance' }
     : f.runtime === 'claude'
-      && f['host-surface'] === 'claude-code' && f['host-source'] === 'claude-cli-entrypoint';
-  if (!validPair) throw new Error('USAGE_MANUAL_ENUMS');
-  return { kind: f['host-surface'], source: f['host-source'],
-    capabilities: oneCapabilityList(f, argv, { manual: true }) };
+      ? { 'claude-code': 'claude-cli-entrypoint',
+        'claude-desktop': 'claude-desktop-local-agent' }
+      : {};
+  if (!nullPair && validPairs[surface] !== source) throw new Error('USAGE_MANUAL_ENUMS');
+  const capabilities = oneCapabilityList(f, argv, { manual: true });
+  if (nullPair && capabilities.length !== 0) throw new Error('USAGE_MANUAL_ENUMS');
+  return { kind: nullPair ? null : surface, source: nullPair ? null : source, capabilities };
 }
 
 function nativeObservationDeps(kernelCwd) {

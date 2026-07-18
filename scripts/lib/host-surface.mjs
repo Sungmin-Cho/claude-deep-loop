@@ -120,10 +120,11 @@ export function isManualEnumHostProfile(profile, runtime) {
     if (values === null) return false;
     const { kind, source } = values;
     validateRuntimeSurface(runtime, kind);
-    if (!HOST_SURFACES.includes(kind) || !SOURCES[kind]?.includes(source)) return false;
     const capabilities = exactPlainDataArray(values.capabilities, {
       maxLength: APP_CAPABILITIES.length, fail: () => { throw new Error('invalid'); },
     });
+    if (kind === null) return source === null && capabilities.length === 0;
+    if (!HOST_SURFACES.includes(kind) || !SOURCES[kind]?.includes(source)) return false;
     return new Set(capabilities).size === capabilities.length
       && capabilities.every(value => APP_CAPABILITIES.includes(value))
       && JSON.stringify(capabilities) === JSON.stringify([...capabilities].sort())

@@ -146,9 +146,8 @@ export function productionInitDeps(root, request, overrides = {}) {
         kind: value.kind, source: value.source, capabilities: value.capabilities,
         structured_stdin_mode: null, host_task_cwd: null,
         host_task_cwd_source: null, observed_at: null }, native);
-      return normalized.kind === null ? null
-        : { kind: normalized.kind, source: normalized.source,
-          capabilities: normalized.capabilities };
+      return { kind: normalized.kind, source: normalized.source,
+        capabilities: normalized.capabilities };
     },
     normalizeObservation: value => normalizeHostObservation(value, native),
     assertInitializationAuthority: (candidateRoot, observation) => {

@@ -1220,6 +1220,80 @@ function manualFixed(root, goal = 'fixed') {
     '--app-continuation', 'manual', '--app-consent-authority', 'default-manual'];
 }
 
+for (const profile of [
+  { label: 'paired-null', runtime: 'codex', suffix: [],
+    expected: { kind: null, source: null, capabilities: [] } },
+  { label: 'claude-code', runtime: 'claude',
+    suffix: ['--host-surface', 'claude-code', '--host-source', 'claude-cli-entrypoint'],
+    expected: { kind: 'claude-code', source: 'claude-cli-entrypoint', capabilities: [] } },
+  { label: 'claude-desktop', runtime: 'claude',
+    suffix: ['--host-surface', 'claude-desktop', '--host-source',
+      'claude-desktop-local-agent', '--capabilities', 'send-message-to-thread'],
+    expected: { kind: 'claude-desktop', source: 'claude-desktop-local-agent',
+      capabilities: ['send-message-to-thread'] } },
+  { label: 'codex-cli', runtime: 'codex',
+    suffix: ['--host-surface', 'codex-cli', '--host-source', 'codex-cli-host'],
+    expected: { kind: 'codex-cli', source: 'codex-cli-host', capabilities: [] } },
+  { label: 'codex-app', runtime: 'codex',
+    suffix: ['--host-surface', 'codex-app', '--host-source', 'codex-app-tool-provenance',
+      '--capabilities', 'list-projects,create-thread-local'],
+    expected: { kind: 'codex-app', source: 'codex-app-tool-provenance',
+      capabilities: ['create-thread-local', 'list-projects'] } },
+]) {
+  test(`fixed manual enum ${profile.label} prepares, commits, and retries the exact binding`, () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), `dl-fixed-${profile.label}-`)));
+    const common = ['--project-root', root, '--manual-enums', '--runtime', profile.runtime,
+      '--goal', `manual-${profile.label}`, ...profile.suffix,
+      '--app-continuation', 'manual', '--app-consent-authority', 'default-manual'];
+    const prepare = spawnSync(process.execPath, [CLI, 'init-run', 'prepare', ...common,
+      '--expected-observation-digest', 'NONE'], { cwd: root, encoding: 'utf8' });
+    assert.equal(prepare.status, 0, prepare.stderr);
+    const binding = JSON.parse(prepare.stdout);
+    assert.equal(existsSync(join(root, '.deep-loop')), false, 'prepare must be no-write');
+    const fullArgs = [CLI, 'init-run', ...common,
+      '--init-attempt', binding.attempt_id,
+      '--expected-current-digest', binding.previous_current_digest,
+      '--expected-request-digest', binding.expected_request_digest,
+      '--expected-preflight-digest', 'NONE',
+      '--prepared-authority', JSON.stringify(binding.prepared_authority)];
+    const full = spawnSync(process.execPath, fullArgs, { cwd: root, encoding: 'utf8' });
+    assert.equal(full.status, 0, full.stderr);
+    assert.equal(JSON.parse(full.stdout).run_id, binding.attempt_id);
+    const retry = spawnSync(process.execPath, fullArgs, { cwd: root, encoding: 'utf8' });
+    assert.equal(retry.status, 0, retry.stderr);
+    assert.equal(JSON.parse(retry.stdout).run_id, binding.attempt_id);
+    const state = readState(root, binding.attempt_id).data;
+    assert.equal(state.initialization.host_observation_digest, 'NONE');
+    assert.deepEqual(state.initialization.request_projection.enum_profile, profile.expected);
+    const stored = state.session_chain.sessions[0].host_surface;
+    assert.equal(stored?.kind ?? null, profile.expected?.kind ?? null);
+    assert.equal(stored?.structured_stdin_mode ?? null, null);
+  });
+}
+
+test('fixed manual enums reject mixed, sentinel, cross-runtime, and structured forms without writes',
+  () => {
+    const invalid = [
+      ['--runtime', 'codex', '--host-surface', 'codex-app'],
+      ['--runtime', 'codex', '--host-surface', 'null', '--host-source', 'null'],
+      ['--runtime', 'claude', '--host-surface', 'codex-app', '--host-source',
+        'codex-app-tool-provenance'],
+      ['--runtime', 'codex', '--host-surface', 'codex-app', '--host-source',
+        'codex-app-tool-provenance', '--capabilities', 'structured-process-stdin'],
+      ['--runtime', 'codex', '--stdin-mode', 'pipe-open-noecho'],
+      ['--runtime', 'codex', '--host-task-cwd', '/raw/host/cwd'],
+    ];
+    for (const [index, suffix] of invalid.entries()) {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), `dl-fixed-invalid-${index}-`)));
+      const result = spawnSync(process.execPath, [CLI, 'init-run', 'prepare',
+        '--project-root', root, '--manual-enums', '--goal', 'invalid-manual',
+        '--app-continuation', 'manual', '--app-consent-authority', 'default-manual',
+        '--expected-observation-digest', 'NONE', ...suffix], { cwd: root, encoding: 'utf8' });
+      assert.equal(result.status, 2, `${suffix.join(' ')}: ${result.stderr}`);
+      assert.equal(existsSync(join(root, '.deep-loop')), false);
+    }
+  });
+
 test('prepare status and manual-enums forms require exact explicit authority bindings', () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-fixed-query-')));
   const common = manualFixed(root);

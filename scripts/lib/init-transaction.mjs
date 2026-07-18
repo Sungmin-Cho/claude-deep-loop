@@ -686,6 +686,36 @@ function initAuthorityNameKind(name) {
   return null;
 }
 
+function caseVariantAuthorityName(name) {
+  if (/^\.init\.lock$/i.test(name) && name !== '.init.lock') return '.init.lock';
+  for (const prefix of ['.init-lock-successor-', '.init-lock-release-']) {
+    if (name.length > prefix.length && name.slice(0, prefix.length).toLowerCase() === prefix
+        && /^[A-Za-z0-9_-]{16,128}$/.test(name.slice(prefix.length))
+        && !name.startsWith(prefix)) return prefix + name.slice(prefix.length);
+  }
+  return null;
+}
+
+function classifiedInitAuthorityNames(control, deps) {
+  const names = (deps.readdir ?? readdirSync)(control);
+  const listed = new Set(names);
+  const lstat = deps.lstat ?? (value => lstatSync(value, { bigint: true }));
+  const sameFile = deps.sameFile
+    ?? ((left, right) => left.dev === right.dev && left.ino === right.ino);
+  return names.map(name => {
+    let kind = initAuthorityNameKind(name);
+    const canonical = kind === null ? caseVariantAuthorityName(name) : null;
+    if (canonical !== null && !listed.has(canonical)) {
+      try {
+        if (sameFile(lstat(join(control, name)), lstat(join(control, canonical)))) kind = 'invalid';
+      } catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+      }
+    }
+    return { name, kind };
+  });
+}
+
 function parseInitHolder(bytes) {
   let holder;
   try { holder = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
@@ -778,8 +808,7 @@ function authorityRecord(path, deps, lstat) {
 
 function initAuthorityNamespace(control, deps) {
   const names = new Set();
-  for (const name of (deps.readdir ?? readdirSync)(control)) {
-    const kind = initAuthorityNameKind(name);
+  for (const { name, kind } of classifiedInitAuthorityNames(control, deps)) {
     if (kind === 'invalid') throw new Error('LOCK_CHAIN_INVALID');
     if (kind !== null) names.add(name);
   }
@@ -1384,8 +1413,8 @@ const statusResult = (outcome, lock_state, fields = {}) => ({
 
 function lockArtifactSnapshot(control, deps) {
   if (queryDirectory(control, deps) === null) return { stable: 'absent', entries: [] };
-  const names = (deps.readdir ?? readdirSync)(control)
-    .filter(name => initAuthorityNameKind(name) !== null).sort();
+  const names = classifiedInitAuthorityNames(control, deps)
+    .filter(entry => entry.kind !== null).map(entry => entry.name).sort();
   const entries = names.map(name => {
     const path = join(control, name);
     const stat = queryLstat(path, deps);
