@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { posix, win32 } from 'node:path';
 import { validateRuntimeSurface } from './runtime.mjs';
 
 export const HOST_SURFACES = Object.freeze(['claude-code', 'claude-desktop', 'codex-cli', 'codex-app']);
@@ -173,4 +174,95 @@ export function normalizeHostObservation(input, deps) {
     kernel_cwd_at_observation: nativeCwd?.rightReal ?? deps.realpath(deps.kernelCwd),
     observed_at: input.observed_at ?? null,
   };
+}
+
+const manualRoute = (reason, targetCwd = null) => ({
+  kind: 'manual', reason, targetCwd, projectId: null, workstreamId: null, contextMode: null,
+});
+
+export function classifyProjectTaskDirectory(root, cwd, deps) {
+  try {
+    const canonicalRoot = deps.realpath(root);
+    const canonicalCwd = deps.realpath(cwd);
+    const sameCanonicalPath = deps.platform === 'win32'
+      ? canonicalRoot.toLowerCase() === canonicalCwd.toLowerCase()
+      : canonicalRoot === canonicalCwd;
+    if (sameCanonicalPath && sameNativeDirectory(canonicalRoot, canonicalCwd, deps)) {
+      return { kind: 'root', cwd: canonicalRoot };
+    }
+    const pathApi = deps.platform === 'win32' ? win32 : posix;
+    const relative = pathApi.relative(canonicalRoot, canonicalCwd).replace(/\\/g, '/');
+    const comparable = deps.platform === 'win32' ? relative.toLowerCase() : relative;
+    if (!/^(?:\.claude\/worktrees|\.worktrees)\/[^/]+$/.test(comparable)) return null;
+    const rebuilt = pathApi.resolve(canonicalRoot, ...relative.split('/'));
+    if (!sameNativeDirectory(rebuilt, canonicalCwd, deps)) return null;
+    return { kind: 'worktree', cwd: canonicalCwd };
+  } catch {
+    return null;
+  }
+}
+
+export function normalizeProjectList(input, { maxEntries = 256 } = {}) {
+  if (!Array.isArray(input) || !Number.isSafeInteger(maxEntries) || maxEntries < 1
+      || input.length > maxEntries) throw new Error('PROJECT_LIST_INVALID');
+  return input.map(row => {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) throw new Error('PROJECT_LIST_INVALID');
+    if (typeof row.path !== 'string' || row.path.length === 0
+        || Buffer.byteLength(row.path, 'utf8') > 4096
+        || /[\u0000-\u001f\u007f-\u009f]/u.test(row.path)) throw new Error('PROJECT_LIST_INVALID');
+    return { projectId: validateOpaqueId(row.projectId, { label: 'project-id' }),
+      projectKind: row.projectKind, path: row.path };
+  });
+}
+
+export function selectAppContinuationRoute(input, deps) {
+  let target;
+  try { target = deps.realpath(input.currentHostTaskCwd); }
+  catch { return manualRoute('cwd-identity-mismatch'); }
+  if (!sameNativeDirectory(input.recordedHostTaskCwd, target, deps)
+      || !sameNativeDirectory(input.kernelCwd, target, deps)) return manualRoute('cwd-identity-mismatch', target);
+  const classifiedTarget = classifyProjectTaskDirectory(input.root, target, deps);
+  if (classifiedTarget?.kind === 'root') {
+    const required = ['list-projects', 'create-thread-local', 'structured-process-stdin'];
+    if (!required.every(value => input.capabilities.includes(value))) return manualRoute('create-capability-incomplete', target);
+    let projects;
+    try { projects = normalizeProjectList(input.projects); }
+    catch { return manualRoute('project-list-invalid', target); }
+    let matches;
+    try {
+      matches = projects.filter(project => project.projectKind === 'local'
+        && deps.exists(project.path) && sameNativeDirectory(project.path, input.root, deps));
+    } catch { return manualRoute('project-query-failed', target); }
+    if (matches.length !== 1) return manualRoute(matches.length === 0 ? 'project-match-missing' : 'project-match-ambiguous', target);
+    const canonicalRoot = deps.realpath(input.root);
+    return { kind: 'create', reason: 'exact-project-root', targetCwd: canonicalRoot,
+      projectId: matches[0].projectId, workstreamId: null, contextMode: 'fresh' };
+  }
+  const required = ['fork-thread-same-directory', 'send-message-to-thread', 'structured-process-stdin'];
+  if (!required.every(value => input.capabilities.includes(value))) return manualRoute('fork-capability-incomplete', target);
+  const pathApi = deps.platform === 'win32' ? win32 : posix;
+  const active = new Set(input.activeWorkstreams ?? []);
+  let canonicalRoot;
+  try { canonicalRoot = deps.realpath(input.root); }
+  catch { return manualRoute('workstream-query-failed', target); }
+  const matches = (input.workstreams ?? []).flatMap(workstream => {
+    if (!active.has(workstream.id) || !['in_progress', 'in_review'].includes(workstream.status)
+        || typeof workstream.worktree !== 'string') return [];
+    const normalized = workstream.worktree.replace(/\\/g, '/');
+    if (!/^(?:\.claude\/worktrees|\.worktrees)\/[^/]+$/.test(normalized)) return [];
+    const absolute = pathApi.resolve(input.root, ...normalized.split('/'));
+    try { if (!deps.exists(absolute)) return []; }
+    catch { return []; }
+    let canonicalWorktree;
+    try { canonicalWorktree = deps.realpath(absolute); } catch { return []; }
+    const canonicalRelative = pathApi.relative(canonicalRoot, canonicalWorktree).replace(/\\/g, '/');
+    const sameRelative = deps.platform === 'win32'
+      ? canonicalRelative.toLowerCase() === normalized.toLowerCase()
+      : canonicalRelative === normalized;
+    if (!sameRelative || !sameNativeDirectory(canonicalWorktree, target, deps)) return [];
+    return [{ workstream, canonicalWorktree }];
+  });
+  if (matches.length !== 1) return manualRoute(matches.length === 0 ? 'workstream-match-missing' : 'workstream-match-ambiguous', target);
+  return { kind: 'fork', reason: 'exact-active-worktree', targetCwd: matches[0].canonicalWorktree,
+    projectId: null, workstreamId: matches[0].workstream.id, contextMode: 'inherited-completed-history' };
 }

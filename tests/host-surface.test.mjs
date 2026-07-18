@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import {
   exactRawHostObservation,
   appHostTaskCwdDigest,
+  classifyProjectTaskDirectory,
   hostSurfaceFactsDigest,
   normalizeHostObservation,
   sameNativeDirectory,
+  selectAppContinuationRoute,
   validateOpaqueId,
 } from '../scripts/lib/host-surface.mjs';
 
@@ -207,4 +209,107 @@ test('manual surface correlation permits only the raw-free enum-only profile', (
     source: 'claude-cli-entrypoint', capabilities: [], structured_stdin_mode: null,
     host_task_cwd: '/repo', host_task_cwd_source: null, observed_at: null }, deps),
   /HOST_SURFACE_INVALID/);
+});
+
+test('project task directory classifier distinguishes root worktree and escape', () => {
+  const root = '/repo';
+  const worktree = '/repo/.worktrees/feature';
+  const deps = { platform: 'linux', realpath: value => value,
+    stat: value => ({ dev: 1, ino: value === root ? 1 : value === worktree ? 2 : 3 }),
+    sameFile: (left, right) => left.dev === right.dev && left.ino === right.ino };
+  assert.deepEqual(classifyProjectTaskDirectory(root, root, deps),
+    { kind: 'root', cwd: root });
+  assert.deepEqual(classifyProjectTaskDirectory(root, worktree, deps),
+    { kind: 'worktree', cwd: worktree });
+  assert.equal(classifyProjectTaskDirectory(root, '/repo/.worktrees/feature/child', deps), null);
+  assert.equal(classifyProjectTaskDirectory(root, '/outside', deps), null);
+});
+
+test('root create is exact and duplicate local projects fail closed', () => {
+  const deps = { platform: 'linux', exists: () => true, realpath: value => value,
+    stat: value => ({ dev: 1, ino: value === '/repo' ? 1 : 2 }),
+    sameFile: (left, right) => left.dev === right.dev && left.ino === right.ino };
+  const base = {
+    root: '/repo', recordedHostTaskCwd: '/repo', currentHostTaskCwd: '/repo', kernelCwd: '/repo',
+    capabilities: ['list-projects', 'create-thread-local', 'structured-process-stdin'],
+    workstreams: [], activeWorkstreams: [],
+  };
+  const one = selectAppContinuationRoute({ ...base,
+    projects: [{ projectId: ' p$`\\id ', projectKind: 'local', path: '/repo', ignored: 'drop' }] }, deps);
+  assert.deepEqual(one, { kind: 'create', reason: 'exact-project-root', targetCwd: '/repo',
+    projectId: ' p$`\\id ', workstreamId: null, contextMode: 'fresh' });
+  const two = selectAppContinuationRoute({ ...base, projects: [
+    { projectId: 'one', projectKind: 'local', path: '/repo' },
+    { projectId: 'two', projectKind: 'local', path: '/repo' },
+  ] }, deps);
+  assert.deepEqual(two, { kind: 'manual', reason: 'project-match-ambiguous', targetCwd: '/repo',
+    projectId: null, workstreamId: null, contextMode: null });
+});
+
+test('root project and capability matrix fails closed', () => {
+  const deps = { platform: 'linux', exists: value => value === '/repo', realpath: value => value,
+    stat: value => ({ dev: 1, ino: value === '/repo' ? 1 : 9 }),
+    sameFile: (left, right) => left.dev === right.dev && left.ino === right.ino };
+  const base = { root: '/repo', recordedHostTaskCwd: '/repo', currentHostTaskCwd: '/repo', kernelCwd: '/repo',
+    capabilities: ['list-projects', 'create-thread-local', 'structured-process-stdin'],
+    workstreams: [], activeWorkstreams: [] };
+  for (const [projects, reason] of [
+    [[], 'project-match-missing'],
+    [[{ projectId: 'remote', projectKind: 'remote', path: '/repo' }], 'project-match-missing'],
+    [[{ projectId: 'worktree', projectKind: 'worktree', path: '/repo' }], 'project-match-missing'],
+    [[{ projectId: 'missing-path', projectKind: 'local' }], 'project-list-invalid'],
+    [[{ projectId: 'large', projectKind: 'local', path: '/' + 'x'.repeat(4097) }], 'project-list-invalid'],
+    [[{ projectId: 'nul', projectKind: 'local', path: '/repo\u0000evil' }], 'project-list-invalid'],
+  ]) assert.equal(selectAppContinuationRoute({ ...base, projects }, deps).reason, reason);
+  assert.equal(selectAppContinuationRoute({ ...base, projects: [{ projectId: 'p', projectKind: 'local', path: '/repo' }],
+    capabilities: ['list-projects', 'create-thread-local'] }, deps).reason, 'create-capability-incomplete');
+  assert.equal(selectAppContinuationRoute({ ...base,
+    projects: [{ projectId: 'p', projectKind: 'local', path: '/repo' }] },
+  { ...deps, exists: () => { throw new Error('host failure'); } }).reason, 'project-query-failed');
+});
+
+test('fork accepts one canonical conventional active worktree and rejects escape or multiplicity', () => {
+  const target = '/repo/.worktrees/feature';
+  const identities = new Map([['/repo', 1], [target, 2], ['/outside', 3]]);
+  const deps = { platform: 'linux', exists: value => identities.has(value)
+      || value === '/repo/.worktrees/escape',
+    realpath: value => value === '/repo/.worktrees/escape' ? '/outside' : value,
+    stat: value => ({ dev: 1, ino: identities.get(value) }),
+    sameFile: (left, right) => left.dev === right.dev && left.ino === right.ino };
+  const workstream = { id: 'WS1', status: 'in_progress', worktree: '.worktrees/feature' };
+  const base = { root: '/repo', recordedHostTaskCwd: target, currentHostTaskCwd: target, kernelCwd: target,
+    capabilities: ['fork-thread-same-directory', 'send-message-to-thread', 'structured-process-stdin'],
+    projects: [], workstreams: [workstream], activeWorkstreams: ['WS1'] };
+  assert.deepEqual(selectAppContinuationRoute(base, deps), { kind: 'fork', reason: 'exact-active-worktree',
+    targetCwd: target, projectId: null, workstreamId: 'WS1', contextMode: 'inherited-completed-history' });
+  assert.equal(selectAppContinuationRoute({ ...base, activeWorkstreams: [] }, deps).reason, 'workstream-match-missing');
+  assert.equal(selectAppContinuationRoute({ ...base, workstreams: [workstream, { ...workstream, id: 'WS2' }],
+    activeWorkstreams: ['WS1', 'WS2'] }, deps).reason, 'workstream-match-ambiguous');
+  const escapeTarget = '/outside';
+  assert.equal(selectAppContinuationRoute({ ...base, recordedHostTaskCwd: escapeTarget,
+    currentHostTaskCwd: escapeTarget, kernelCwd: escapeTarget,
+    workstreams: [{ ...workstream, worktree: '.worktrees/escape' }] }, deps).reason, 'workstream-match-missing');
+  assert.equal(selectAppContinuationRoute({ ...base,
+    capabilities: ['fork-thread-same-directory', 'structured-process-stdin'] }, deps).reason, 'fork-capability-incomplete');
+});
+
+test('Windows worktree containment tolerates path case drift but still requires file identity', () => {
+  const target = 'c:\\repo\\.worktrees\\feature';
+  const deps = { platform: 'win32', exists: () => true,
+    realpath: value => value.toLowerCase(),
+    stat: value => ({ volume: 'v', file: value.toLowerCase() === target ? 2 : 1 }),
+    sameFile: (left, right) => left.volume === right.volume && left.file === right.file };
+  const input = { root: 'C:\\Repo', recordedHostTaskCwd: target,
+    currentHostTaskCwd: target, kernelCwd: target,
+    capabilities: ['fork-thread-same-directory', 'send-message-to-thread', 'structured-process-stdin'],
+    projects: [], activeWorkstreams: ['WS1'],
+    workstreams: [{ id: 'WS1', status: 'in_review', worktree: '.worktrees/Feature' }] };
+  assert.deepEqual(selectAppContinuationRoute(input, deps), {
+    kind: 'fork', reason: 'exact-active-worktree', targetCwd: target,
+    projectId: null, workstreamId: 'WS1', contextMode: 'inherited-completed-history',
+  });
+  assert.equal(selectAppContinuationRoute({ ...input,
+    currentHostTaskCwd: 'c:\\repo\\.worktrees\\other',
+    recordedHostTaskCwd: 'c:\\repo\\.worktrees\\other',
+    kernelCwd: 'c:\\repo\\.worktrees\\other' }, deps).reason, 'workstream-match-missing');
 });
