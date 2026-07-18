@@ -35837,8 +35837,9 @@ Every closeout commit follows this finite procedure:
    fixed locale, a private empty HOME, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_SYSTEM=/dev/null`, and
    `GIT_CONFIG_GLOBAL=/dev/null`, plus explicit `GIT_ATTR_NOSYSTEM=1` and
    `GIT_NO_LAZY_FETCH=1`; inherit no other `GIT_*` variable. Prefix every command with
-   `--no-replace-objects -c core.hooksPath=/dev/null -c core.fsmonitor=false -c commit.gpgSign=false
-   -c tag.gpgSign=false -c gc.auto=0 -c maintenance.auto=false`; commit identity is supplied by fixed
+   `--no-replace-objects -c core.hooksPath=/dev/null -c core.fsmonitor=false -c core.autocrlf=false
+   -c core.eol=lf -c commit.gpgSign=false -c tag.gpgSign=false -c gc.auto=0
+   -c maintenance.auto=false`; commit identity is supplied by fixed
    `-c user.name=... -c user.email=...`, never local config. Before any `add`, `diff`, or `commit`,
    canonicalize and hash the common `config`, optional `config.worktree`, `objects/info/alternates`,
    `info/attributes`, and every tracked `.gitattributes` input. Parse the raw NUL-terminated output of
@@ -35846,7 +35847,8 @@ Every closeout commit follows this finite procedure:
    scope as exact `key LF value NUL` records. Reject a malformed record and every key matching
    `include.*`, `includeIf.*`, `filter.*`, `diff.external`, `diff.*.(command|textconv)`,
    `merge.*.driver`, `core.(attributesFile|hooksPath|fsmonitor|worktree|gitProxy|sshCommand|
-   alternateRefsCommand|editor|pager)`, `pager.*`, `interactive.diffFilter`, `sequence.editor`,
+   alternateRefsCommand|editor|pager|autocrlf|eol|safecrlf)`, `pager.*`,
+   `interactive.diffFilter`, `sequence.editor`,
    `gpg.*`, `user.signingKey`, `(commit|tag).gpgSign`, `fsmonitor.*`,
    `extensions.partialClone`, `remote.*.(promisor|partialCloneFilter|uploadpack|receivepack)`, or
    `submodule.*.update`, case-insensitively. Require the
@@ -35933,8 +35935,12 @@ main_disposition=<ACCEPT_ALL_ACTIONABLE|APPROVE_NO_ACTIONABLE|MIXED_WITH_GATE_OP
 
 `safe-posix-path` is ASCII `[A-Za-z0-9._/-]+`, does not start with `-` or `/`, and has no empty,
 `.` or `..` segment. Canonical decimal is `0` or a nonzero digit followed by digits, with no sign or
-leading zero; byte lengths are nonzero, parse without rounding to a JavaScript safe integer, and do
-not exceed the exact remaining suffix bytes. Every fixed field occurs once in that order, with no blank,
+leading zero; byte lengths are nonzero and parse without rounding to a JavaScript safe integer.
+Only a length whose corresponding bytes are embedded in the current suffix—the evidence `body_bytes`
+and bundle `metadata_bytes`/`report_bytes`/`response_bytes` frames—must not exceed the exact remaining
+suffix bytes before slicing. The metadata's `report_bytes` and `response_bytes` describe separately
+staged files for an evidence-only receipt and are instead checked against those frozen staged Buffers;
+they are not bounded by the metadata suffix length. Every fixed field occurs once in that order, with no blank,
 unknown, escaped, duplicated, leading/trailing-space, or continuation line. The target/range, paths,
 raw lengths/hashes, task IDs, reviewer facts/counts, and main disposition must replay the frozen
 review inputs exactly. `APPROVE` requires that reviewer's Red and Yellow counts both be zero;
@@ -36391,7 +36397,9 @@ requireTokens('Common closeout', closeoutProtocol, [
   'complete hazardous-key guard', 'common `info/attributes` absent',
   'basename is `.gitattributes`', 'git worktree add --no-checkout',
   'git reset --hard <exact-merged-main>', 'smudge filter or checkout hook',
-  '--no-replace-objects -c core.hooksPath=/dev/null -c core.fsmonitor=false -c commit.gpgSign=false',
+  '--no-replace-objects -c core.hooksPath=/dev/null -c core.fsmonitor=false -c core.autocrlf=false',
+  '-c core.eol=lf', 'core.(attributesFile|hooksPath|fsmonitor|worktree|gitProxy|sshCommand|',
+  'autocrlf|eol|safecrlf)',
   'git config --local --no-includes --null --list', 'key LF value NUL',
   'filter.*', 'diff.external', 'merge.*.driver', 'git check-attr -z --all',
   'objects/info/alternates', 'git for-each-ref refs/replace',
@@ -36408,6 +36416,8 @@ requireTokens('Common closeout', closeoutProtocol, [
   'reviewer_1_role=standard', 'reviewer_2_role=adversarial',
   'main_disposition=<ACCEPT_ALL_ACTIONABLE|APPROVE_NO_ACTIONABLE|MIXED_WITH_GATE_OPEN|',
   'JavaScript safe integer', 'APPROVE_NO_ACTIONABLE` requires both reviewers',
+  'Only a length whose corresponding bytes are embedded in the current suffix',
+  'they are not bounded by the metadata suffix length',
   '`LF` means exactly one byte `0x0a`',
   'high-bit byte fails', 'ASCII decoder',
   'requires suffix EOF', 'one trailing byte', 'a second concatenated entry',

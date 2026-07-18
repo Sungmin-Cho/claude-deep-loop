@@ -2,7 +2,7 @@
 
 작성일: 2026-07-13
 운영 계약: `docs/handoff/2026-07-13-codex-app-native-task-continuation-goal-handoff.md`
-상태: Gate 1 fresh cycle 8 round 15 Review 진행; round 14 Respond 완료, final micro-delta 수렴 검증 중
+상태: Gate 1 fresh cycle 8 round 15 Respond 진행; REQUEST_CHANGES 미수렴, line-ending/frame-bound 검증 중
 기준: `main@c38a96137f8f4f0099c35e893860930e8ee4cf73`, deep-loop `1.8.2`
 
 > source of truth: 이 문서 + 운영 계약 + 현재 저장소 + `git log`. 이전 대화 컨텍스트를 가정하지 말라.
@@ -1731,6 +1731,15 @@ Round 14 standard는 이 materialization 환경에 system-wide attributes source
 환경의 `git var GIT_ATTR_SYSTEM`이 enabled source를 보고하지 않음을 worktree 생성 전과 materialization
 전에 증명한다. Round 14의 두 번째 P2인 상태 header drift도 이 Respond에서 현재 stage로
 동기화한다. Actionable finding이 있어 adversarial은 시작하지 않고 `N_actual=1`로 종료했다.
+Round 15 standard는 두 P1을 찾았다. 첫째, `core.autocrlf=true`는 attribute source가 없어도
+LF blob을 CRLF working-tree bytes로 materialize하면서 clean status를 유지할 수 있었다. Respond는
+local/worktree `core.autocrlf`/`core.eol`/`core.safecrlf`를 거부하고 모든 bounded Git command에
+`-c core.autocrlf=false -c core.eol=lf`를 pin한다. 둘째, metadata의 `report_bytes`/
+`response_bytes`는 evidence-only suffix 안에 embedded되지 않고 별도 staged Buffer를 설명하는데도
+모든 length를 remaining suffix로 bound하는 prose는 정상 receipt를 거부했다. Respond는 current
+suffix에 실제 embedded된 frame length만 slicing 전 remaining bytes로 bound하고, metadata의 두
+external-file length는 frozen staged Buffer와 대조한다. Actionable finding이 있어 adversarial은
+시작하지 않고 `N_actual=1`로 종료했다.
 
 구현 순서:
 
