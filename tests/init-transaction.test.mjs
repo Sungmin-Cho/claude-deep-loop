@@ -999,6 +999,53 @@ for (const [mixedName, canonicalName] of [
     });
 }
 
+for (const [mixedName, canonicalName] of [
+  ['.INIT.LOCK-junk', '.init.lock-junk'],
+  ['.INIT-LOCK-SUCCESSORJUNK', '.init-lock-successorJUNK'],
+  ['.INIT-LOCK-RELEASEJUNK', '.init-lock-releaseJUNK'],
+]) {
+  test(`native malformed case alias ${mixedName} is invalid only when canonical lookup aliases it`,
+    () => {
+      const binding = { attempt_id: '01JAPPGEN00000000000000000',
+        expected_current_digest: 'NONE', expected_request_digest: 'a'.repeat(64) };
+      const bytes = JSON.stringify({ pid: 42, nonce: 'malformedalias01',
+        acquired_at: '2026-07-13T00:00:00.000Z' });
+
+      const foreignRoot = fixtureDir();
+      put(foreignRoot, `.deep-loop/${mixedName}`, bytes);
+      const foreignMixed = join(foreignRoot, '.deep-loop', mixedName);
+      const foreignCanonical = join(foreignRoot, '.deep-loop', canonicalName);
+      const missing = Object.assign(new Error('case-sensitive canonical name is absent'),
+        { code: 'ENOENT' });
+      assert.equal(statusInitialization(foreignRoot, binding, initDeps(foreignRoot, {
+        lstat: path => {
+          if (path === foreignCanonical && path !== foreignMixed) throw missing;
+          return lstatSync(path);
+        },
+      })).lock_state, 'free');
+      assert.equal(readFileSync(foreignMixed, 'utf8'), bytes);
+
+      const aliasRoot = fixtureDir();
+      put(aliasRoot, `.deep-loop/${mixedName}`, bytes);
+      const mixedPath = join(aliasRoot, '.deep-loop', mixedName);
+      const canonicalPath = join(aliasRoot, '.deep-loop', canonicalName);
+      const nativeAlias = initDeps(aliasRoot, {
+        lstat: path => lstatSync(path === canonicalPath ? mixedPath : path),
+      });
+      const before = queryTree(aliasRoot);
+      assert.equal(statusInitialization(aliasRoot, binding, nativeAlias).lock_state, 'invalid');
+      assert.deepEqual(queryTree(aliasRoot), before, 'status must be byte-no-write');
+      assert.throws(() => withInitLock(aliasRoot, () => assert.fail('writer callback entered'), {
+        ...nativeAlias, pid: 7, nonce: () => 'casecontender001',
+        now: () => Date.parse('2026-07-13T00:00:01.000Z'),
+        lockWriteFile: () => assert.fail('candidate write preceded namespace rejection'),
+        link: () => assert.fail('publication preceded namespace rejection'),
+        unlink: () => assert.fail('alias was cleaned'),
+      }), /LOCK_CHAIN_INVALID/);
+      assert.deepEqual(queryTree(aliasRoot), before, 'writer rejection must be byte-no-write');
+    });
+}
+
 test('status follows released init authorities to the bounded terminal successor', () => {
   const root = fixtureDir();
   const binding = { attempt_id: '01JAPPGEN00000000000000000',

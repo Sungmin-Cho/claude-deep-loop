@@ -687,10 +687,8 @@ function initAuthorityNameKind(name) {
 }
 
 function caseVariantAuthorityName(name) {
-  if (/^\.init\.lock$/i.test(name) && name !== '.init.lock') return '.init.lock';
-  for (const prefix of ['.init-lock-successor-', '.init-lock-release-']) {
-    if (name.length > prefix.length && name.slice(0, prefix.length).toLowerCase() === prefix
-        && /^[A-Za-z0-9_-]{16,128}$/.test(name.slice(prefix.length))
+  for (const prefix of ['.init.lock', '.init-lock-successor', '.init-lock-release']) {
+    if (name.length >= prefix.length && name.slice(0, prefix.length).toLowerCase() === prefix
         && !name.startsWith(prefix)) return prefix + name.slice(prefix.length);
   }
   return null;
