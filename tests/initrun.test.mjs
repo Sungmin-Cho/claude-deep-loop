@@ -1,10 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, existsSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun, buildInitialLoop } from '../scripts/lib/initrun.mjs';
 import { readState, runDir } from '../scripts/lib/state.mjs';
+import { readLines } from '../scripts/lib/integrity.mjs';
 import { DEFAULT_APP_TASK_CONTINUATION } from '../scripts/lib/app-task-continuation.mjs';
 
 // Inject a no-signal env + no-op probe so detect-terminal deterministically yields launcher:'none'
@@ -12,6 +13,8 @@ import { DEFAULT_APP_TASK_CONTINUATION } from '../scripts/lib/app-task-continuat
 const noSignalEnv = {};
 const noSignalPlatform = 'linux';
 const noOpRun = () => ({ code: 1 });
+const fixtureDir = () => (realpathSync.native || realpathSync)(
+  mkdtempSync(join(tmpdir(), 'dl-initrun-')));
 
 const validCreateObservation = (overrides = {}) => ({
   kind: 'codex-app', source: 'codex-app-host-context',
@@ -90,6 +93,51 @@ test('initRun creates state, current pointer, valid schema', () => {
   assert.deepEqual(data.review.points, ['design', 'plan', 'implementation']);
   assert.equal(data.autonomy.tier, 'recommend'); // 기본
   assert.equal(data.session_chain.lease.owner_run_id, runId);
+  const events = readLines(root, runId);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, 'run-initialized');
+  assert.equal(events[0].seq, 1);
+});
+
+test('direct initRun preserves its result while using hash state pending and current transaction', () => {
+  const root = fixtureDir();
+  const result = initRun(root, { runtime: 'codex', goal: 'g', protocol: 'standalone',
+    recipe: 'r', now: new Date('2026-07-13T00:00:00.000Z') });
+  assert.equal(result.runId, result.loop.run_id);
+  assert.deepEqual(readState(root, result.runId).data, result.loop);
+  assert.equal(readFileSync(join(root, '.deep-loop', 'current'), 'utf8'), result.runId + '\n');
+  assert.equal(existsSync(join(root, '.deep-loop', 'runs', result.runId, '.loop.hash')), true);
+  assert.equal(existsSync(join(root, '.deep-loop', 'init-pending.json')), false);
+  const events = readLines(root, result.runId);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, 'run-initialized');
+  assert.equal(events[0].seq, 1);
+  assert.deepEqual(result.loop.event_log_head,
+    { seq: 1, checksum: events[0].checksum });
+});
+
+test('direct App init accepts one exact internal worktree and rejects root escape before any write', () => {
+  const root = fixtureDir();
+  const worktree = join(root, '.worktrees', 'feature');
+  mkdirSync(worktree, { recursive: true });
+  const hostObservation = { kind: 'codex-app', source: 'codex-app-tool-provenance',
+    capabilities: ['fork-thread-same-directory', 'send-message-to-thread',
+      'structured-process-stdin'],
+    structured_stdin_mode: 'pipe-open-noecho', host_task_cwd: worktree,
+    host_task_cwd_source: 'app-task-context', observed_at: null };
+  const accepted = initRun(root, { runtime: 'codex', goal: 'worktree-root',
+    hostObservation, cwdFn: () => worktree,
+    appContinuationConsent: { mode: 'auto', authority: 'human-confirmed' } });
+  assert.equal(accepted.loop.project.root, root);
+  assert.equal(accepted.loop.session_chain.sessions[0].host_surface.host_task_cwd, worktree);
+
+  const fencedRoot = fixtureDir();
+  const outside = fixtureDir();
+  assert.throws(() => initRun(fencedRoot, { runtime: 'codex', goal: 'wrong-root',
+    hostObservation: { ...hostObservation, host_task_cwd: outside }, cwdFn: () => outside,
+    appContinuationConsent: { mode: 'auto', authority: 'human-confirmed' } }),
+  /INIT_CWD_MISMATCH/);
+  assert.equal(existsSync(join(fencedRoot, '.deep-loop')), false);
 });
 
 // ── C2: object-shape initial reviewer selection — routes on present (installed‖initialized) ───

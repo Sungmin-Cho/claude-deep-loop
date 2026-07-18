@@ -54,14 +54,16 @@ test('setSessionProfile rejects Codex max before mutation', () => {
   assert.equal(readState(root, runId).data.autonomy.session_effort, undefined);
 });
 
-test('setSessionProfile persists both fields + one event, fenced', () => {
+test('session profile on an initialized run persists both fields as sequence two', () => {
   const { root, runId } = seed();
+  assert.equal(readState(root, runId).data.event_log_head.seq, 1,
+    'successful production initialization is the first event');
   const r = setSessionProfile(root, runId, { model: 'claude-opus-4-8[1m]', effort: 'xhigh', expect: expect_(runId), now: 1 });
   assert.deepEqual(r, { ok: true, changed: true });
   const { data } = readState(root, runId);
   assert.equal(data.autonomy.session_model, 'claude-opus-4-8[1m]');
   assert.equal(data.autonomy.session_effort, 'xhigh');
-  assert.equal(data.event_log_head.seq, 1); // exactly one appended event
+  assert.equal(data.event_log_head.seq, 2); // initialization plus exactly one business event
 });
 
 test('setSessionProfile is idempotent no-op on identical values', () => {

@@ -278,7 +278,7 @@ test('rebind rejects stale owner or generation without changing event, hash, or 
   }
 });
 
-test('successful relocation commits one fixed event, root, and anchor then restores strict access', async () => {
+test('initialized run relocation appends rebound at sequence two and restores strict access', async () => {
   const moved = movedRun('dl-root-rebind-success-');
   const before = durableSnapshot(moved.candidateRoot, moved.runId);
   const { rebindProjectRoot } = await recoveryApi();
@@ -293,15 +293,18 @@ test('successful relocation commits one fixed event, root, and anchor then resto
   const { data } = readState(moved.candidateRoot, moved.runId);
   const lines = readFileSync(join(runDir(moved.candidateRoot, moved.runId), 'event-log.jsonl'), 'utf8')
     .split('\n').filter(Boolean).map(line => JSON.parse(line));
-  assert.equal(lines.length, 1);
-  assert.equal(lines[0].type, 'project-root-rebound');
-  assert.equal(lines[0].ts, FIXED_NOW.toISOString());
-  assert.deepEqual(lines[0].data, {
+  assert.equal(lines.length, 2);
+  assert.equal(lines[0].type, 'run-initialized');
+  assert.equal(lines[0].seq, 1);
+  assert.equal(lines[1].type, 'project-root-rebound');
+  assert.equal(lines[1].seq, 2);
+  assert.equal(lines[1].ts, FIXED_NOW.toISOString());
+  assert.deepEqual(lines[1].data, {
     old_root_digest: projectRootDigest(moved.storedRoot),
     new_root: canonicalProjectRoot(moved.candidateRoot),
   });
   assert.equal(data.project.root, canonicalProjectRoot(moved.candidateRoot));
-  assert.deepEqual(data.event_log_head, { seq: lines[0].seq, checksum: lines[0].checksum });
+  assert.deepEqual(data.event_log_head, { seq: lines[1].seq, checksum: lines[1].checksum });
   assert.notEqual(durableSnapshot(moved.candidateRoot, moved.runId).hash, before.hash);
 });
 
@@ -313,7 +316,10 @@ test('rebind rejects a loop.run_id mismatch without durable mutation', async () 
   const { runId } = init(originalRoot);
   const { data } = readState(originalRoot, runId);
   data.run_id = 'DIFFERENT-RUN-ID';
-  writeState(originalRoot, runId, data);
+  const invalidRaw = JSON.stringify(data, null, 2);
+  writeFileSync(join(runDir(originalRoot, runId), 'loop.json'), invalidRaw);
+  writeFileSync(join(runDir(originalRoot, runId), '.loop.hash'),
+    createHash('sha256').update(invalidRaw).digest('hex'));
   const storedRoot = data.project.root;
   renameSync(originalRoot, candidateRoot);
   const before = durableSnapshot(candidateRoot, runId);

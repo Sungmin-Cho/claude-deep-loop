@@ -104,19 +104,15 @@ function writeHashValidTamper7b(root, runId, loop) {
 test7bCli('validate CLI rejects App event timestamp drift in a hash-valid run', () => {
   const root = temp7b(join7b(tmp7b(), 'dl-app-correlation-'));
   const { runId } = init7b(root, { runtime: 'codex', goal: 'g',
-    now: new Date('2026-07-13T00:00:00.000Z') });
-  const seeded = read7b(root, runId).data;
-  const canonicalRoot = seeded.project.root;
-  seeded.session_chain.sessions[0].host_surface = {
-    kind: 'codex-app', source: 'codex-app-tool-provenance',
-    capabilities: ['create-thread-local', 'list-projects', 'structured-process-stdin'],
-    structured_stdin_mode: 'pty-raw-noecho', host_task_cwd: canonicalRoot,
-    host_task_cwd_source: 'app-task-context', kernel_cwd_at_observation: canonicalRoot,
-    observed_generation: 1, observed_at: '2026-07-13T00:00:00.000Z',
-  };
-  seeded.autonomy.app_task_continuation = { mode: 'auto', authority: 'human-confirmed',
-    confirmed_at: '2026-07-13T00:00:00.000Z', revoked_at: null };
-  writeHashValidTamper7b(root, runId, seeded);
+    now: new Date('2026-07-13T00:00:00.000Z'),
+    hostObservation: { kind: 'codex-app', source: 'codex-app-tool-provenance',
+      capabilities: ['create-thread-local', 'list-projects', 'structured-process-stdin'],
+      structured_stdin_mode: 'pty-raw-noecho', host_task_cwd: root,
+      host_task_cwd_source: 'app-task-context',
+      observed_at: '2026-07-13T00:00:00.000Z' },
+    cwdFn: () => root, appContinuationConsent: { mode: 'auto', authority: 'human-confirmed',
+      confirmed_at: '2026-07-13T00:00:00.000Z', revoked_at: null } });
+  const canonicalRoot = read7b(root, runId).data.project.root;
   const attempt = '01JAPPTASK0000000000000000';
   const childId = '01JAPPCHD00000000000000000';
   append7b(root, runId, { type: 'handoff-emitted',
@@ -151,15 +147,17 @@ test7bCli('validate CLI rejects App event timestamp drift in a hash-valid run', 
 
   const stampRoot = temp7b(join7b(tmp7b(), 'dl-host-stamp-correlation-'));
   const stamped = init7b(stampRoot, { runtime: 'codex', goal: 'g',
-    now: new Date('2026-07-13T00:00:00.000Z') });
+    now: new Date('2026-07-13T00:00:00.000Z'),
+    hostObservation: { kind: 'codex-app', source: 'codex-app-tool-provenance',
+      capabilities: ['create-thread-local', 'list-projects', 'structured-process-stdin'],
+      structured_stdin_mode: 'pty-raw-noecho', host_task_cwd: stampRoot,
+      host_task_cwd_source: 'app-task-context',
+      observed_at: '2026-07-13T00:00:00.000Z' }, cwdFn: () => stampRoot });
   const stampOnly = read7b(stampRoot, stamped.runId).data;
   stampOnly.session_chain.lease.generation = 2;
-  stampOnly.session_chain.sessions[0].host_surface = {
-    kind: 'codex-app', source: 'codex-app-tool-provenance', capabilities: [],
-    structured_stdin_mode: null, host_task_cwd: null, host_task_cwd_source: null,
-    kernel_cwd_at_observation: stampRoot, observed_generation: 2,
-    observed_at: '2026-07-13T00:00:02.000Z',
-  };
+  stampOnly.session_chain.sessions[0].host_surface.observed_generation = 2;
+  stampOnly.session_chain.sessions[0].host_surface.observed_at =
+    '2026-07-13T00:00:02.000Z';
   writeHashValidTamper7b(stampRoot, stamped.runId, stampOnly);
   const stampResult = runCli(['validate', '--project-root', stampRoot,
     '--run-id', stamped.runId]);

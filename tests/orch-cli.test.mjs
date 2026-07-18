@@ -358,7 +358,10 @@ test('root rebind invalid actor, digest, candidate root, or state exits 1', () =
   const invalidOriginal = seed();
   const { data } = readState(invalidOriginal.root, invalidOriginal.runId);
   data.run_id = 'DIFFERENT-RUN-ID';
-  writeState(invalidOriginal.root, invalidOriginal.runId, data);
+  const invalidRaw = JSON.stringify(data, null, 2);
+  writeFileSync(join(runDir(invalidOriginal.root, invalidOriginal.runId), 'loop.json'), invalidRaw);
+  writeFileSync(join(runDir(invalidOriginal.root, invalidOriginal.runId), '.loop.hash'),
+    createHash('sha256').update(invalidRaw).digest('hex'));
   const invalidState = {
     candidateRoot: `${invalidOriginal.root}-moved`,
     runId: invalidOriginal.runId,

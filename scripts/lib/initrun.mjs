@@ -1,8 +1,7 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, realpathSync, statSync } from 'node:fs';
 import { runIdSlug } from './slug.mjs';
 import { matchRecipe } from './recipes.mjs';
-import { writeState, runDir } from './state.mjs';
+import { readState } from './state.mjs';
 import { ulid } from './envelope.mjs';
 import { detectTerminal, defaultProbeRun } from './detect-terminal.mjs';
 import { pluginPresent } from './detect.mjs';
@@ -10,6 +9,10 @@ import { validateModel, validateEffort } from './session-profile.mjs';
 import { validateSessionRuntime } from './runtime.mjs';
 import { canonicalProjectRoot } from './project-root.mjs';
 import { DEFAULT_APP_TASK_CONTINUATION, validateGenesisConsent } from './app-task-continuation.mjs';
+import { commitPreparedInit, hostObservationDigest,
+  prepareInitialization } from './init-transaction.mjs';
+import { classifyProjectTaskDirectory, normalizeHostObservation,
+  sameNativeDirectory } from './host-surface.mjs';
 
 export function resolveInitialReview(review, detected = {}) {
   if (review?.reviewer === 'standalone') throw new Error('REVIEWER_STANDALONE_INVALID: standalone reviewer is supported only for legacy-state resolution');
@@ -68,20 +71,105 @@ export function buildInitialLoop({ runtime, goal, protocol, recipe, detected = {
   return loop;
 }
 
-export function initRun(root, { runtime, goal, protocol, recipe, review, detected = {}, now = new Date(), git = {}, env = process.env, platform = process.platform, run = defaultProbeRun, pid = process.pid, model = null, effort = null }) {
+const DEFAULT_INIT_CONSENT = Object.freeze({ mode: 'manual', authority: 'default-manual' });
+
+function initialRouteEligibility(root, actualCwd, observation, native) {
+  if (observation?.kind !== 'codex-app') {
+    return { eligible: false, reason: 'surface-ineligible', route: null };
+  }
+  const location = classifyProjectTaskDirectory(root, actualCwd, native);
+  if (location === null) return { eligible: false, reason: 'cwd-mismatch', route: null };
+  const capabilities = new Set(observation.capabilities);
+  const required = location.kind === 'root'
+    ? ['list-projects', 'create-thread-local', 'structured-process-stdin']
+    : ['fork-thread-same-directory', 'send-message-to-thread', 'structured-process-stdin'];
+  if (!required.every(value => capabilities.has(value))) {
+    return { eligible: false, reason: 'capability-incomplete', route: null };
+  }
+  return { eligible: true, reason: 'eligible',
+    route: { kind: location.kind === 'root' ? 'create' : 'fork' } };
+}
+
+function nativeInitObservationDeps(kernelCwd, platform) {
+  return { kernelCwd, platform, exists: existsSync,
+    realpath: value => (realpathSync.native || realpathSync)(value),
+    stat: value => statSync(value, { bigint: true }),
+    sameFile: (left, right) => left.dev === right.dev && left.ino === right.ino };
+}
+
+function nativePidIdentity({ pid }) {
+  try { process.kill(pid, 0); return 'alive'; }
+  catch (error) { return error?.code === 'ESRCH' ? 'definitely-dead' : 'unknown'; }
+}
+
+export function productionInitDeps(root, request, overrides = {}) {
+  const actualCwd = (overrides.cwdFn ?? process.cwd)();
+  const native = nativeInitObservationDeps(actualCwd, overrides.platform ?? process.platform);
+  return { canonicalRoot: canonicalProjectRoot,
+    resolveRouting: value => ({ protocol: value.protocol, recipe: value.recipe }),
+    resolveReview: value => resolveInitialReview(value.review, value.detected ?? {}),
+    normalizePlugins: value => structuredClone(value),
+    normalizeGit: value => ({ git: !!value.head, head: value.head ?? null,
+      branch: value.branch ?? null, dirty: !!value.dirty }),
+    normalizeSessionSpawn: value => structuredClone(value),
+    normalizeEnumProfile: value => {
+      const normalized = normalizeHostObservation({ runtime: request.runtime,
+        kind: value.kind, source: value.source, capabilities: value.capabilities,
+        structured_stdin_mode: null, host_task_cwd: null,
+        host_task_cwd_source: null, observed_at: null }, native);
+      return normalized.kind === null ? null
+        : { kind: normalized.kind, source: normalized.source,
+          capabilities: normalized.capabilities };
+    },
+    normalizeObservation: value => normalizeHostObservation(value, native),
+    assertInitializationAuthority: (candidateRoot, observation) => {
+      if (classifyProjectTaskDirectory(candidateRoot, actualCwd, native) === null
+          || !sameNativeDirectory(observation.host_task_cwd, actualCwd, native)
+          || !sameNativeDirectory(observation.kernel_cwd_at_observation, actualCwd, native)) {
+        throw new Error('INIT_CWD_MISMATCH');
+      }
+    },
+    kernelCwd: () => native.realpath(actualCwd), probePidIdentity: nativePidIdentity,
+    eligible: observation => initialRouteEligibility(root, actualCwd, observation, native),
+    classifyObservationRoute: observation =>
+      initialRouteEligibility(root, actualCwd, observation, native).route?.kind ?? null,
+    buildLoop: buildInitialLoop, ...overrides };
+}
+
+export function initRun(root, options) {
+  const { runtime, goal, protocol, recipe, review, detected = {}, now = new Date(),
+    git = {}, env = process.env, platform = process.platform, run = defaultProbeRun,
+    pid = process.pid, model = null, effort = null, cwdFn = process.cwd } = options;
   validateSessionRuntime(runtime);
   if (model != null) validateModel(model);
   if (effort != null) validateEffort(effort);
   const canonicalRoot = canonicalProjectRoot(root);
-  const runId = ulid(now.getTime());
-  const m = matchRecipe(goal, detected);
-  const proto = protocol || m.protocol;
-  const rec = recipe ? { id: recipe, name: recipe, reason: 'user' } : { id: m.recipe, name: m.recipe, reason: m.reason };
-  const loop = buildInitialLoop({ runtime, goal, protocol: proto, recipe: rec, detected, review, now, runId, git, env, platform, run, pid, model, effort });
-  loop.project.root = canonicalRoot;
-  mkdirSync(runDir(canonicalRoot, runId), { recursive: true });
-  writeState(canonicalRoot, runId, loop);
-  mkdirSync(join(canonicalRoot, '.deep-loop'), { recursive: true });
-  writeFileSync(join(canonicalRoot, '.deep-loop', 'current'), runId + '\n');
-  return { runId, loop };
+  const match = matchRecipe(goal, detected);
+  const resolvedProtocol = protocol || match.protocol;
+  const resolvedRecipe = recipe
+    ? { id: recipe, name: recipe, reason: 'user' }
+    : { id: match.recipe, name: match.recipe, reason: match.reason };
+  const actualCwd = cwdFn();
+  const native = nativeInitObservationDeps(actualCwd, platform);
+  const observation = options.hostObservation == null ? null
+    : normalizeHostObservation({ ...options.hostObservation, runtime }, native);
+  const request = { runtime, goal, protocol: resolvedProtocol, recipe: resolvedRecipe,
+    review: review ?? null, detected, git, model, effort,
+    sessionSpawn: detectTerminal({ env, platform, run, now: now.toISOString(), pid }),
+    consent: options.appContinuationConsent ?? DEFAULT_INIT_CONSENT,
+    observationDigest: hostObservationDigest(observation),
+    enumProfile: observation === null
+      ? runtime === 'codex'
+        ? { kind: 'codex-cli', source: 'codex-cli-host', capabilities: [] }
+        : { kind: 'claude-code', source: 'claude-cli-entrypoint', capabilities: [] }
+      : null };
+  const deps = productionInitDeps(canonicalRoot, request, {
+    platform, cwdFn: () => actualCwd, ulid: () => ulid(now.getTime()), pid,
+  });
+  const prepared = prepareInitialization(canonicalRoot, request, deps);
+  const committed = commitPreparedInit(canonicalRoot, {
+    prepared, request, observation,
+  }, deps);
+  const { data: loop } = readState(canonicalRoot, committed.run_id);
+  return { runId: committed.run_id, loop };
 }
