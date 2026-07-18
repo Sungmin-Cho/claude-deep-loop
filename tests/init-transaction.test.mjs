@@ -1189,3 +1189,22 @@ test('quality candidate replacement is never deleted or linked as release author
       'a replacement candidate is never linked into release authority');
   }
 });
+
+test('quality truncated non-empty holder prefix after exclusive creation failure is cleaned', () => {
+  const root = fixtureDir();
+  const nonce = 'truncatedown0001';
+  const candidate = join(root, '.deep-loop', '.init-lock-candidate-7-' + nonce);
+  const error = Object.assign(new Error('TRUNCATED_CANDIDATE_WRITE'), { code: 'EIO' });
+  let prefix = null;
+  assert.throws(() => withInitLock(root, () => assert.fail('writer entered'), {
+    pid: 7, nonce: () => nonce,
+    now: () => Date.parse('2026-07-13T00:00:00.000Z'),
+    writeFile: (path, bytes, options) => {
+      prefix = Buffer.from(bytes.subarray(0, 8));
+      writeFileSync(path, prefix, options);
+      throw error;
+    },
+  }), /TRUNCATED_CANDIDATE_WRITE/);
+  assert.equal(prefix.length, 8);
+  assert.equal(existsSync(candidate), false);
+});

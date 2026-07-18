@@ -838,7 +838,9 @@ export function withInitLock(root, fn, deps = {}) {
       if (error?.code !== 'EEXIST' && candidateBefore === null) {
         try {
           const afterFailure = initFileRecord(candidate, deps, lstat);
-          if (afterFailure?.regular && afterFailure.bytes.equals(holderBytes)) {
+          if (afterFailure?.regular && afterFailure.bytes.length > 0
+              && afterFailure.bytes.length <= holderBytes.length
+              && holderBytes.subarray(0, afterFailure.bytes.length).equals(afterFailure.bytes)) {
             candidateOwned = afterFailure;
           }
         } catch { /* candidate uncertainty preserves the path */ }
