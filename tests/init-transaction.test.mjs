@@ -1,11 +1,11 @@
 import {
   existsSync, lstatSync, mkdirSync, readFileSync, readdirSync,
-  unlinkSync, writeFileSync,
+  rmSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { canonicalRealpath, createDirectoryJunction,
+import { canonicalRealpath, createDirectoryJunction, createFileSymlinkOrSkip,
   fixtureDir as rawFixtureDir } from './helpers/fs-fixtures.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { buildInitialLoop, resolveInitialReview } from '../scripts/lib/initrun.mjs';
@@ -539,4 +539,61 @@ test('prepare validates exact current bytes and strict legacy current state befo
   assert.throws(() => prepareInitialization(root, options, deps), /INIT_CURRENT_INVALID/);
   put(root, '.deep-loop/current', '01JAPPGEN00000000000000002\n');
   assert.throws(() => prepareInitialization(root, options, deps), /INIT_CURRENT_INVALID/);
+});
+
+test('prepare rejects a dangling current symlink', t => {
+  const root = fixtureDir();
+  mkdirSync(join(root, '.deep-loop'), { recursive: true });
+  if (!createFileSymlinkOrSkip(t, join(root, 'missing-current'),
+    join(root, '.deep-loop', 'current'))) return;
+  assert.throws(() => prepareInitialization(root, initOptions(), initDeps(root)),
+    /INIT_QUERY_INDETERMINATE/);
+});
+
+test('prepare rejects a dangling pending marker symlink', t => {
+  const root = fixtureDir();
+  mkdirSync(join(root, '.deep-loop'), { recursive: true });
+  if (!createFileSymlinkOrSkip(t, join(root, 'missing-pending'),
+    join(root, '.deep-loop', 'init-pending.json'))) return;
+  assert.throws(() => prepareInitialization(root, initOptions(), initDeps(root)),
+    /INIT_QUERY_INDETERMINATE/);
+});
+
+test('prepare rejects a dangling pending run directory', () => {
+  const attempt = '01JAPPGEN00000000000000000';
+  const root = fixtureDir();
+  const pendingOptions = initOptions();
+  const pendingDeps = initDeps(root);
+  const pendingRequest = initializationRequestDigest(
+    normalizeInitializationRequest(root, pendingOptions, pendingDeps));
+  put(root, '.deep-loop/init-pending.json', JSON.stringify({ version: 1,
+    attempt_id: attempt, request_digest: pendingRequest, previous_current_digest: 'NONE' }));
+  const outside = fixtureDir('dl-init-outside-');
+  const run = join(root, '.deep-loop', 'runs', attempt);
+  mkdirSync(dirname(run), { recursive: true });
+  createDirectoryJunction(outside, run);
+  rmSync(outside, { recursive: true });
+  assert.throws(() => prepareInitialization(root, pendingOptions, pendingDeps),
+    /INIT_QUERY_INDETERMINATE/);
+});
+
+test('prepare rejects a dangling proposed run directory', () => {
+  const root = fixtureDir();
+  const proposed = '01JAPPGEN00000000000000001';
+  const outside = fixtureDir('dl-init-outside-');
+  const run = join(root, '.deep-loop', 'runs', proposed);
+  mkdirSync(dirname(run), { recursive: true });
+  createDirectoryJunction(outside, run);
+  rmSync(outside, { recursive: true });
+  assert.throws(() => prepareInitialization(root, initOptions(),
+    initDeps(root, { ulid: () => proposed })), /INIT_QUERY_INDETERMINATE/);
+});
+
+test('prepare rejects a symlinked runs ancestor even when the proposed target is absent', () => {
+  const root = fixtureDir();
+  const outside = fixtureDir('dl-init-outside-');
+  mkdirSync(join(root, '.deep-loop'), { recursive: true });
+  createDirectoryJunction(outside, join(root, '.deep-loop', 'runs'));
+  assert.throws(() => prepareInitialization(root, initOptions(), initDeps(root)),
+    /INIT_QUERY_INDETERMINATE/);
 });

@@ -1,5 +1,5 @@
-import { existsSync, lstatSync, readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { lstatSync, readFileSync, readdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { types } from 'node:util';
 import { contentHash, ulid } from './envelope.mjs';
 import { verifyHeadLines, verifyLines } from './integrity.mjs';
@@ -317,10 +317,26 @@ function initPaths(root, attempt = null) {
     events: run === null ? null : join(run, 'event-log.jsonl') };
 }
 
+function queryLstat(path, deps) {
+  try { return (deps.lstat ?? lstatSync)(path); }
+  catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    throw new Error('INIT_QUERY_INDETERMINATE', { cause: error });
+  }
+}
+
+function queryDirectory(path, deps) {
+  const stat = queryLstat(path, deps);
+  if (stat !== null && (!stat.isDirectory() || stat.isSymbolicLink())) {
+    throw new Error('INIT_QUERY_INDETERMINATE');
+  }
+  return stat;
+}
+
 function querySnapshot(path, deps) {
-  const exists = deps.exists ?? existsSync;
-  if (!exists(path)) return null;
-  const stat = (deps.lstat ?? lstatSync)(path);
+  queryDirectory(dirname(path), deps);
+  const stat = queryLstat(path, deps);
+  if (stat === null) return null;
   if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('INIT_QUERY_INDETERMINATE');
   const bytes = Buffer.from((deps.readFile ?? readFileSync)(path));
   return { identity: [stat.dev, stat.ino, stat.mode, stat.size, stat.mtimeMs].join(':'),
@@ -347,18 +363,21 @@ function stableSet(paths, deps) {
 const GENESIS_TEMP_NAME = /^\.tmp-(?:0|[1-9][0-9]*)-(?:0|[1-9][0-9]*)-[A-Za-z0-9_-]{16,128}$/;
 
 function runDirectorySnapshot(path, deps) {
-  const exists = deps.exists ?? existsSync;
-  if (!exists(path)) return { stable: 'missing', exists: false, plain: true,
+  queryDirectory(dirname(dirname(path)), deps);
+  queryDirectory(dirname(path), deps);
+  const directory = queryLstat(path, deps);
+  if (directory === null) return { stable: 'missing', exists: false, plain: true,
     recoverableStaging: true };
-  const directory = (deps.lstat ?? lstatSync)(path);
   const directoryIdentity = [directory.dev, directory.ino, directory.mode,
     directory.size, directory.mtimeMs].join(':');
-  if (!directory.isDirectory() || directory.isSymbolicLink()) {
+  if (directory.isSymbolicLink()) throw new Error('INIT_QUERY_INDETERMINATE');
+  if (!directory.isDirectory()) {
     return { stable: JSON.stringify({ directoryIdentity, kind: 'invalid' }),
       exists: true, plain: false, recoverableStaging: false };
   }
   const entries = (deps.readdir ?? readdirSync)(path).sort().map(name => {
-    const stat = (deps.lstat ?? lstatSync)(join(path, name));
+    const stat = queryLstat(join(path, name), deps);
+    if (stat === null) throw new Error('INIT_QUERY_INDETERMINATE');
     const kind = stat.isSymbolicLink() ? 'symlink'
       : stat.isFile() ? 'file' : stat.isDirectory() ? 'directory' : 'other';
     return { name, kind,
