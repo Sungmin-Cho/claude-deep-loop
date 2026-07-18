@@ -3905,3 +3905,27 @@ main-agent judgment:
   `23d658d8b2ebdbfd3dfa132c9bd673da5d0dfade88b0c87ecac1f15b9be045e4`.
 - gate state: final two-root confirmation only. Two valid `APPROVE`, Red/Yellow `0 / 0` close Gate 3A
   immediately. No additional whole-scope review is authorized by this receipt.
+
+### Gate 3A checkpoint round 4 final approval
+
+- reviewed base/head: `7ea76e6b2138b3ccdb6658658acf97d8d93094fd..c057aecc60cdc61ccfd40d60d0b492f58efea8ab`;
+  target tree `439eacc58eaa8e0c454d3d6e947c47cb8843a214`.
+- two direct read-only ephemeral `gpt-5.6-sol` / high voices completed with exit 0, valid finals,
+  and unchanged exact target; Opus/agy not planned, `N_planned=2`, `N_actual=2`.
+- standard task `019f73b0-ba38-7ea2-b99c-aa0ad9614929`: `APPROVE`, Red/Yellow/Info
+  `0 / 0 / 0`; adversarial task `019f73b0-b9dd-76f2-bc62-0530501b2716`: `APPROVE`,
+  `0 / 0 / 0`.
+- both verified trap-free enum-profile and nested projection object Proxy rejection; committed focused
+  anchors passed, prior positive-genesis/null/Array/accessor/transport behavior remained unchanged.
+- formal report: `.deep-review/reports/2026-07-18-143018-review.md`, SHA-256
+  `86e79203c098b6408a60da5d291d468011c3e2f52f80129ff0e879bb0f0225b4`.
+- retained main verification on the approved correction bytes: focused 2/2, checkpoint groups
+  182/182 and 128/128, full preflight 1,524/1,524; output SHA-256
+  `834202569662de80498db26118ad92ccc9774cce74e66f256954bc8b2487f53e` /
+  `7e0df0ef7abf2fd7f808c40101da1586b62aa1a73b351ecd4b955a1c20566720` /
+  `a90d655e56697bb547ed624041c9565d4756c5ecf494fbada00a1aba48ce6651` /
+  `6012d3fb17b7c25b5bc928cef7b2e51df079e0a043a0cb76d6d9dbcfe96902a4`.
+- recurring findings Stage 5.5 run `01KXSV9TPGJ5V0FEW7X34731KG`; all counts unchanged
+  (architecture 96, test-coverage 54, error-handling 33, security 52); validated SHA-256
+  `3ad72459202fdc5a09b5f927fd86e3f63289d3fc12ed355c992db48d4177f454`.
+- formal disposition: `APPROVE — GATE 3A COMPLETE`. Begin Gate 3B. No further Gate 3A review.
