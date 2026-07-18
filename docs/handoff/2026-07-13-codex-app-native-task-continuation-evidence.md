@@ -3988,3 +3988,35 @@ main-agent judgment:
   base `f15d42dc0a21a2f37d86aa1a3467f5e3a2820b53` with two independent read-only
   `gpt-5.6-sol`/high voices, Opus/agy excluded. Any subsequent code, test, schema, plan, design, or
   release-document change invalidates the receipt and requires a fresh target.
+
+### Corrected Gate 3A checkpoint round 1 review and Respond
+
+- reviewed base/head: `f15d42dc0a21a2f37d86aa1a3467f5e3a2820b53..6ea624203053e861e3f21b85c4bf792960a303ce`;
+  target tree `455c5dad9273e74458f20d4410618b9294393e9e`.
+- invocation: two independent fresh read-only Codex voices, each exact `gpt-5.6-sol` / high;
+  Opus and agy were excluded. Standard task `/root/gate3a_corrected_standard` and replacement
+  edge-checker `/root/gate3a_corrected_edge_checker` both returned valid finals. An initial
+  `/root/gate3a_corrected_adversarial` launch was rejected by a platform filter before review and is
+  excluded from `N_actual`; `N_planned=2`, `N_actual=2` valid.
+- verdict: both valid voices independently returned `REQUEST_CHANGES`, consolidated Red/Yellow/Info
+  `0 / 1 / 0`, on the same root: status ignored malformed `.init.lock-*`,
+  `.init-lock-successor*`, and `.init-lock-release*` reserved authority names and falsely reported
+  `lock_state=free` while the writer rejected the namespace `LOCK_CHAIN_INVALID`.
+- formal review: `.deep-review/reports/2026-07-19-005743-review.md`, SHA-256
+  `7f354ef6ed354315889f8461e4042d065a992c5a08a3620d3b320d047d66228a`.
+- response: accepted Yellow 1; rejected/deferred none; Info none. Shared authority-name
+  classification now gives status and writer identical reserved-prefix decisions without weakening
+  the writer. `.deep-review/responses/2026-07-19-005743-response.md`, SHA-256
+  `e448afc71f61cca05c7e327f3260421a95638c2f16365f26f7740cbc895846a3`.
+- correction commit/tree: `da1f3a72126b092abea0d6fa8ebf879e102961aa` /
+  `8a6d5b794e091c1af236cd9e92f6ef6c855856b4`; exact committed scope is
+  `scripts/lib/init-transaction.mjs` and `tests/init-transaction.test.mjs`, 39 insertions and
+  14 deletions. Artifact SHA-256: source
+  `ec1428112ca61ee71df81453ebc32febfd4d9240a545c96e70f5e4c79a4c6c69`; test
+  `6416f26ddef51fdfa07a0bd926b033f433ee407e4f3afc21108dc9381d63b47e`.
+- strict response evidence: RED 0/3 to GREEN 3/3; focused status/authority 12/12; corrected Gate 3A
+  groups 306/306 and 131/131; clean-detached exact-commit preflight 1,660/1,660; diff check clean.
+- gate state: open. Force-add this evidence update plus the exact report and response and commit them
+  as a receipt-only target. Because source/test bytes changed, discard the Round 1 target and run one
+  fresh same-target two-voice review. Two `APPROVE`, Red/Yellow `0 / 0`, and unchanged target close
+  corrected Gate 3A; no extra speculative round follows.
