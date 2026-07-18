@@ -4058,3 +4058,30 @@ main-agent judgment:
   receipt-only target. Run one fresh same-target confirmation; two valid `APPROVE`, Red/Yellow
   `0 / 0`, plus unchanged artifacts close corrected Gate 3A. No additional round is authorized
   without a new concrete counterexample.
+
+### Corrected Gate 3A checkpoint round 3 review and Respond
+
+- reviewed target/tree: `4427cd436041aba53dc32f244428c2114c3cc393` /
+  `478e11ad317fe873aa60a3e842cd5d3b65b7abb4`.
+- invocation: fresh standard `/root/gate3a_round3_standard` and edge checker
+  `/root/gate3a_round3_edge_checker`, both read-only `gpt-5.6-sol` / high; Opus/agy excluded;
+  `N_planned=2`, `N_actual=2`.
+- verdict: edge `APPROVE` 0/0/0; standard `REQUEST_CHANGES` 0/1/0; consolidated
+  Red/Yellow/Info `0 / 1 / 0`. The cross-product of native case aliases and malformed reserved
+  prefixes was missing for fixed/successor/release authority names.
+- formal review: `.deep-review/reports/2026-07-19-014646-review.md`, SHA-256
+  `617466c803f1aeddac841efa18ee16cb745dd72a64438feb307c58bbb68b8b5c`.
+- response: accepted Yellow 1; rejected/deferred none; Info none. Mixed-case malformed native aliases
+  now fail before writer callback while distinct case-sensitive foreign names remain free.
+  `.deep-review/responses/2026-07-19-014646-response.md`, SHA-256
+  `f2f4ecc4847ce8baf86487c66c6a4690e66b8b0d644217d896315451e34aebd4`.
+- correction commit/tree: `95f33c02881ea6c18b560da5a1a0f2c4450fbaa6` /
+  `cf951524fc70f9effdd19d94e8f940daacb969df`; source/test only, 49 insertions and
+  4 deletions. Artifact SHA-256: source
+  `b0f6140427467d3a0120a2e0072e04d931b3d10ab185c97e60d5f7ff94a5a746`; test
+  `374718dd87215c64fadfb8ee10ced3949e110fae3549a80f195a34fd058bee28`.
+- strict response evidence: RED 0/3 to GREEN 3/3; authority matrix 9/9; Gate groups 318/318 and
+  131/131; clean-detached preflight 1,672/1,672; diff check clean.
+- gate state: open for one same-target delta confirmation only. Force-add this evidence row plus the
+  exact report/response and commit them. Two valid `APPROVE`, Red/Yellow `0 / 0`, close corrected
+  Gate 3A immediately; no broader or speculative review follows.
