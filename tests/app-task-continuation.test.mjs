@@ -311,6 +311,22 @@ function writeUncheckedLoop(root, runId, loop) {
   writeFileSync(join(run, '.loop.hash'), contentHash(raw));
 }
 
+function rewriteAnchoredEvents(root, runId, loop, transform) {
+  const run = join(root, '.deep-loop', 'runs', runId);
+  const events = transform(structuredClone(readLines(root, runId)));
+  let previous = 'GENESIS';
+  for (const [index, event] of events.entries()) {
+    event.seq = index + 1;
+    event.checksum = contentHash(`${event.seq}|${event.ts}|${event.type}|${JSON.stringify(event.data)}|${previous}`);
+    previous = event.checksum;
+  }
+  writeFileSync(join(run, 'event-log.jsonl'), events.length === 0 ? ''
+    : `${events.map(event => JSON.stringify(event)).join('\n')}\n`);
+  loop.event_log_head = events.length === 0 ? { seq: 0, checksum: 'GENESIS' }
+    : { seq: events.at(-1).seq, checksum: events.at(-1).checksum };
+  writeUncheckedLoop(root, runId, loop);
+}
+
 function preservedAutoRun(phase) {
   const fixture = autoRun();
   const attempt = '01JAPPTASK0000000000000000';
@@ -348,8 +364,19 @@ function preservedAutoRun(phase) {
   if (phase === 'confirmed') Object.assign(continuation, {
     confirmed_at: '2026-07-13T00:00:15.000Z', thread_id: 'raw-thread-must-not-leak',
   });
-  if (phase === 'prepared') writeUncheckedLoop(fixture.root, fixture.runId, loop);
-  else writeState(fixture.root, fixture.runId, loop);
+  if (phase === 'emitted') {
+    writeState(fixture.root, fixture.runId, loop);
+  } else {
+    rewriteAnchoredEvents(fixture.root, fixture.runId, loop, events => [...events,
+      { type: 'app-task-prepared', ts: continuation.prepared_at, data: {
+        attempt_id: attempt, child_run_id: child,
+        descriptor_digest: continuation.descriptor_digest,
+      } },
+      ...(phase === 'confirmed' ? [{ type: 'app-task-confirmed',
+        ts: continuation.confirmed_at, data: { attempt_id: attempt, child_run_id: child,
+          receipt_digest: contentHash(`confirmed-thread\0${continuation.thread_id}`) } }] : []),
+    ]);
+  }
   return { ...fixture, attempt, child };
 }
 
@@ -372,6 +399,27 @@ test('genesis consent accepts only default manual or route-matched complete App 
   ]) assert.throws(() => validateGenesisConsent(changed), /APP_CONSENT_INVALID/);
 });
 
+test('genesis consent rejects accessors without invocation and returns one frozen data snapshot', () => {
+  let reads = 0;
+  const accessor = { authority: 'default-manual', confirmed_at: null, revoked_at: null };
+  Object.defineProperty(accessor, 'mode', { enumerable: true, get() {
+    reads++;
+    return reads === 1 ? 'manual' : 'auto';
+  } });
+  assert.throws(() => validateGenesisConsent({ runtime: 'codex', route: null,
+    observation: null, consent: accessor }), /APP_CONSENT_INVALID/);
+  assert.equal(reads, 0, 'descriptor validation must not invoke attacker-controlled accessors');
+
+  const consent = { mode: 'manual', authority: 'default-manual',
+    confirmed_at: null, revoked_at: null };
+  const snapshot = validateGenesisConsent({ runtime: 'codex', route: null,
+    observation: null, consent });
+  consent.mode = 'auto';
+  assert.equal(snapshot.mode, 'manual');
+  assert.equal(Object.isFrozen(snapshot), true);
+  assert.notStrictEqual(snapshot, consent);
+});
+
 test('revoke is one anchored write, exact retry is inert, and default manual is not-auto', () => {
   const { root, runId } = autoRun();
   const input = { owner: runId, generation: 1, runtime: 'codex' };
@@ -391,11 +439,56 @@ test('revoke is one anchored write, exact retry is inert, and default manual is 
   assert.equal(status.resume_policy, null);
   assert.equal(status.manual_recovery, false);
   assert.equal(JSON.stringify(status).includes('thread_id'), false);
-  const manual = observedRun();
+  const manual = observedRun({ legacyNullSurface: false });
   const manualBefore = readLines(manual.root, manual.runId);
   assert.equal(revokeAppTaskContinuation(manual.root, manual.runId,
     { owner: manual.runId, generation: 1, runtime: 'codex' }, deps).outcome, 'not-auto');
   assert.deepEqual(readLines(manual.root, manual.runId), manualBefore);
+});
+
+test('revoke retry and not-auto verify schema, anchored log, and event correlation before success', () => {
+  for (const corruption of ['missing-event', 'tampered-event', 'malformed-state']) {
+    const fixture = autoRun();
+    const input = { owner: fixture.runId, generation: 1, runtime: 'codex' };
+    assert.equal(revokeAppTaskContinuation(fixture.root, fixture.runId, input,
+      { nowFn: () => Date.parse('2026-07-13T00:00:01.000Z') }).outcome, 'revoked');
+    const loop = readState(fixture.root, fixture.runId).data;
+    if (corruption === 'missing-event') {
+      rewriteAnchoredEvents(fixture.root, fixture.runId, loop,
+        events => events.filter(event => event.type !== 'app-task-consent-revoked'));
+    } else if (corruption === 'tampered-event') {
+      rewriteAnchoredEvents(fixture.root, fixture.runId, loop, events => {
+        events.find(event => event.type === 'app-task-consent-revoked')
+          .data.owner_run_id = '01JAPPWR0NG000000000000000';
+        return events;
+      });
+    } else {
+      loop.autonomy.app_task_continuation.authority = 'default-manual';
+      writeUncheckedLoop(fixture.root, fixture.runId, loop);
+    }
+    const run = join(fixture.root, '.deep-loop', 'runs', fixture.runId);
+    const before = { state: readFileSync(join(run, 'loop.json')),
+      events: readFileSync(join(run, 'event-log.jsonl')) };
+    assert.throws(() => revokeAppTaskContinuation(fixture.root, fixture.runId, input,
+      { nowFn: () => Date.parse('2026-07-13T00:00:02.000Z') }),
+    /RUN_SNAPSHOT_INVALID/, corruption);
+    assert.deepEqual(readFileSync(join(run, 'loop.json')), before.state, corruption);
+    assert.deepEqual(readFileSync(join(run, 'event-log.jsonl')), before.events, corruption);
+  }
+
+  const manual = observedRun({ legacyNullSurface: false });
+  appendAnchored(manual.root, manual.runId, { type: 'app-task-consent-revoked', data: {
+    owner_run_id: manual.runId, generation: 1, attempt_id: null,
+    child_run_id: null, failure_code: null,
+  } }, undefined, undefined, { nowFn: () => Date.parse('2026-07-13T00:00:01.000Z') });
+  const run = join(manual.root, '.deep-loop', 'runs', manual.runId);
+  const before = { state: readFileSync(join(run, 'loop.json')),
+    events: readFileSync(join(run, 'event-log.jsonl')) };
+  assert.throws(() => revokeAppTaskContinuation(manual.root, manual.runId,
+    { owner: manual.runId, generation: 1, runtime: 'codex' },
+    { nowFn: () => Date.parse('2026-07-13T00:00:02.000Z') }), /RUN_SNAPSHOT_INVALID/);
+  assert.deepEqual(readFileSync(join(run, 'loop.json')), before.state);
+  assert.deepEqual(readFileSync(join(run, 'event-log.jsonl')), before.events);
 });
 
 test('revoke rejects a backward consent clock before appending an event', () => {

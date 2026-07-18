@@ -1,8 +1,9 @@
 import { resolve } from 'node:path';
-import { appendAnchored } from './integrity.mjs';
+import { types as utilTypes } from 'node:util';
+import { appendAnchored, readLines, verifyHeadLines, verifyLines } from './integrity.mjs';
 import { leaseCheck } from './lease.mjs';
 import { readState } from './state.mjs';
-import { validate } from './schema.mjs';
+import { validate, verifyAppEventCorrelation } from './schema.mjs';
 import { classifyProjectTaskDirectory, exactRawHostObservation, normalizeHostObservation,
   hostSurfaceFactsDigest, sameNativeDirectory } from './host-surface.mjs';
 
@@ -13,21 +14,35 @@ export const DEFAULT_APP_TASK_CONTINUATION = Object.freeze({
 });
 
 const CONSENT_KEYS = ['authority', 'confirmed_at', 'mode', 'revoked_at'];
-const exactConsent = value => value && typeof value === 'object' && !Array.isArray(value)
-  && Object.keys(value).sort().length === CONSENT_KEYS.length
-  && CONSENT_KEYS.every((key, index) => Object.keys(value).sort()[index] === key);
+const snapshotConsent = value => {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || utilTypes.isProxy(value)
+      || Object.getPrototypeOf(value) !== Object.prototype) return null;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Reflect.ownKeys(descriptors);
+  if (keys.length !== CONSENT_KEYS.length
+      || !keys.every(key => typeof key === 'string' && CONSENT_KEYS.includes(key))) return null;
+  const snapshot = {};
+  for (const key of CONSENT_KEYS) {
+    const descriptor = descriptors[key];
+    if (!descriptor || !Object.hasOwn(descriptor, 'value') || descriptor.enumerable !== true) {
+      return null;
+    }
+    snapshot[key] = descriptor.value;
+  }
+  return Object.freeze(snapshot);
+};
 const strictInstant = value => {
   if (typeof value !== 'string') return false;
   try { return new Date(value).toISOString() === value; } catch { return false; }
 };
 
 export function validateGenesisConsent({ runtime, route, observation, consent }) {
-  const value = consent ?? { mode: 'manual', authority: 'default-manual',
-    confirmed_at: null, revoked_at: null };
-  if (!exactConsent(value)) throw new Error('APP_CONSENT_INVALID');
+  const value = snapshotConsent(consent ?? { mode: 'manual', authority: 'default-manual',
+    confirmed_at: null, revoked_at: null });
+  if (value === null) throw new Error('APP_CONSENT_INVALID');
   const manual = value.mode === 'manual' && value.authority === 'default-manual'
     && value.confirmed_at === null && value.revoked_at === null;
-  if (manual) return { ...value };
+  if (manual) return value;
   const capabilities = new Set(observation?.capabilities ?? []);
   const completeCreate = ['list-projects', 'create-thread-local', 'structured-process-stdin']
     .every(capability => capabilities.has(capability));
@@ -58,7 +73,7 @@ export function validateGenesisConsent({ runtime, route, observation, consent })
       || (route === 'create' ? !completeCreate : route === 'fork' ? !completeFork : true)) {
     throw new Error('APP_CONSENT_INVALID');
   }
-  return { ...value };
+  return value;
 }
 
 const withoutKernelAttestation = value => value == null ? null
@@ -179,6 +194,18 @@ export function revokeAppTaskContinuation(root, runId, input, deps = {}) {
           if (fence.reason === 'RUN_TERMINAL') throw new Error('APP_TASK_TERMINAL');
           throw new Error('APP_TASK_FENCED');
         }
+        const snapshot = validate(loop);
+        if (!snapshot.ok) {
+          throw new Error(`RUN_SNAPSHOT_INVALID: ${snapshot.errors.join('; ')}`);
+        }
+        const lines = readLines(root, runId);
+        const chain = verifyLines(lines);
+        const head = verifyHeadLines(lines, loop.event_log_head);
+        const correlation = verifyAppEventCorrelation(loop, lines);
+        const proofErrors = [...chain.errors, ...head.errors, ...correlation.errors];
+        if (proofErrors.length !== 0) {
+          throw new Error(`RUN_SNAPSHOT_INVALID: ${proofErrors.join('; ')}`);
+        }
         const consent = loop.autonomy.app_task_continuation
           ?? { mode: 'manual', authority: 'default-manual', confirmed_at: null, revoked_at: null };
         if (consent.mode === 'manual' && consent.authority === 'human-confirmed'
@@ -188,10 +215,6 @@ export function revokeAppTaskContinuation(root, runId, input, deps = {}) {
             || consent.revoked_at !== null || !strictInstant(consent.confirmed_at)
             || !clock || clock.ms < Date.parse(consent.confirmed_at)) {
           throw new Error('APP_TASK_CONSENT_INVALID');
-        }
-        const snapshot = validate(loop);
-        if (!snapshot.ok) {
-          throw new Error(`RUN_SNAPSHOT_INVALID: ${snapshot.errors.join('; ')}`);
         }
         const lease = loop.session_chain.lease;
         const livePhases = loop.session_chain.sessions.filter(session =>
