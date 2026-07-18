@@ -696,8 +696,7 @@ function ensureControlDirectory(root, deps) {
     throw new Error('INIT_ROOT_NOT_CANONICAL');
   }
   const control = join(canonicalRoot, '.deep-loop');
-  let created = false;
-  try { mkdir(control); created = true; }
+  try { mkdir(control); }
   catch (error) { if (error?.code !== 'EEXIST') throw error; }
   const stat = lstat(control);
   const controlReal = realpath(control);
@@ -706,7 +705,7 @@ function ensureControlDirectory(root, deps) {
   if (!stat.isDirectory() || stat.isSymbolicLink() || !exactControl) {
     throw new Error('INIT_ROOT_CONTAINMENT_INVALID');
   }
-  if (created) syncGenesisParent(control, deps);
+  syncGenesisParent(control, deps);
   return control;
 }
 
@@ -1006,9 +1005,8 @@ function exactPendingAt(path, expected, deps) {
 
 function assertPlainDirectory(path, deps, { create = false } = {}) {
   const mkdir = deps.mkdir ?? mkdirSync;
-  let created = false;
   if (create) {
-    try { mkdir(path); created = true; }
+    try { mkdir(path); }
     catch (error) { if (error?.code !== 'EEXIST') throw error; }
   }
   let lexical;
@@ -1028,7 +1026,7 @@ function assertPlainDirectory(path, deps, { create = false } = {}) {
   } else if (resolved !== path) {
     throw new Error('INIT_ROOT_CONTAINMENT_INVALID');
   }
-  if (created) syncGenesisParent(path, deps);
+  if (create) syncGenesisParent(path, deps);
   return resolved;
 }
 

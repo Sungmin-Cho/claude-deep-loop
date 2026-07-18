@@ -1554,6 +1554,89 @@ test('new control and run directory entries are parent-synced before current pub
   assert.ok(current > runsSync, 'directory entries are durable before current publication');
 });
 
+test('pre-existing plain control directory is parent-synced before current publication', () => {
+  const root = fixtureDir();
+  mkdirSync(join(root, '.deep-loop'));
+  const descriptors = new Map();
+  const order = [];
+  const deps = initDeps(root, { pid: 7, nonce: lockNonceSequence(),
+    now: () => Date.parse('2026-07-13T00:00:00.000Z'),
+    durableOpen: (path, flags, mode) => {
+      const descriptor = openSync(path, flags, mode);
+      descriptors.set(descriptor, { path, flags });
+      return descriptor;
+    },
+    durableFsync: descriptor => {
+      const opened = descriptors.get(descriptor);
+      if (opened?.flags === 'r') order.push(`dir:${opened.path}`);
+      fsyncSync(descriptor);
+    },
+    durableClose: descriptor => {
+      descriptors.delete(descriptor);
+      closeSync(descriptor);
+    },
+    durableAfterRename: (_source, destination) => {
+      if (basename(destination) === 'current') order.push('rename:current');
+    },
+  });
+  const attempt = '01JAPPGEN00000000000000000';
+  const request = initializationRequestDigest(normalizeInitializationRequest(root,
+    initOptions(), deps));
+  assert.equal(commitPreparedInit(root, commitInput(root, attempt, request), deps).outcome,
+    'initialized');
+
+  const rootSync = order.indexOf(`dir:${root}`);
+  const current = order.indexOf('rename:current');
+  assert.ok(rootSync >= 0, 'retry fsyncs the parent of a pre-existing .deep-loop');
+  assert.ok(current > rootSync, 'the pre-existing control entry is durable before current');
+});
+
+test('exact-pending retry syncs every pre-existing directory parent before current', () => {
+  const root = fixtureDir();
+  const control = join(root, '.deep-loop');
+  const runs = join(control, 'runs');
+  const attempt = '01JAPPGEN00000000000000000';
+  mkdirSync(join(runs, attempt), { recursive: true });
+  const descriptors = new Map();
+  const order = [];
+  const deps = initDeps(root, { pid: 7, nonce: lockNonceSequence(),
+    now: () => Date.parse('2026-07-13T00:00:00.000Z'),
+    durableOpen: (path, flags, mode) => {
+      const descriptor = openSync(path, flags, mode);
+      descriptors.set(descriptor, { path, flags });
+      return descriptor;
+    },
+    durableFsync: descriptor => {
+      const opened = descriptors.get(descriptor);
+      if (opened?.flags === 'r') order.push(`dir:${opened.path}`);
+      fsyncSync(descriptor);
+    },
+    durableClose: descriptor => {
+      descriptors.delete(descriptor);
+      closeSync(descriptor);
+    },
+    durableAfterRename: (_source, destination) => {
+      if (basename(destination) === 'current') order.push('rename:current');
+    },
+  });
+  const request = initializationRequestDigest(normalizeInitializationRequest(root,
+    initOptions(), deps));
+  put(root, '.deep-loop/init-pending.json', JSON.stringify({ version: 1,
+    attempt_id: attempt, request_digest: request, previous_current_digest: 'NONE' }));
+
+  assert.equal(commitPreparedInit(root, commitInput(root, attempt, request), deps).outcome,
+    'recovered-pending');
+
+  const rootSync = order.indexOf(`dir:${root}`);
+  const controlSync = order.indexOf(`dir:${control}`);
+  const runsSync = order.indexOf(`dir:${runs}`);
+  const current = order.indexOf('rename:current');
+  assert.ok(rootSync >= 0, 'retry fsyncs the project root for pre-existing .deep-loop');
+  assert.ok(controlSync > rootSync, 'retry fsyncs .deep-loop for pre-existing runs');
+  assert.ok(runsSync > controlSync, 'retry fsyncs runs for the pre-existing run directory');
+  assert.ok(current > runsSync, 'all pre-existing directory entries are durable before current');
+});
+
 test('commit proves published loop bytes before current CAS', () => {
   const root = fixtureDir();
   const attempt = '01JAPPGEN00000000000000000';
