@@ -78,6 +78,21 @@ test('pipe reader installs listeners before READY, accepts a split one-line reco
   for (const event of ['data', 'end', 'close', 'error']) assert.equal(stream.listenerCount(event), 0);
 });
 
+test('pipe reader accepts synchronous post-READY input from the READY writer', async () => {
+  const stream = new PassThrough();
+  let readyCalls = 0;
+  const promise = readStructuredLine(stream, {
+    mode: 'pipe-open-noecho', purpose: 'probe', binding: 'nonce-sync', maxBytes: 32,
+    writeReady: token => {
+      readyCalls += 1;
+      assert.equal(token, 'DEEP_LOOP_STDIN_READY:v1:probe:nonce-sync:pipe-open-noecho');
+      stream.end('synchronous\n');
+    },
+  });
+  assert.equal(await promise, 'synchronous');
+  assert.equal(readyCalls, 1);
+});
+
 test('READY token rejects invalid purpose, binding, mode, control, and size', () => {
   for (const input of [
     { purpose: 'bad:purpose', binding: 'ok', mode: 'pipe-open-noecho' },

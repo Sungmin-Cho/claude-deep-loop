@@ -130,8 +130,8 @@ export async function readStructuredLine(stream, {
             || stream.readableAborted === true) throw new Error('STRUCTURED_STDIN_PIPE_CLOSED');
       }
       timer = setTimeoutFn(() => finish(new Error('STRUCTURED_STDIN_TIMEOUT')), APP_STDIN_READ_TIMEOUT_MS);
-      writeReady(token);
       ready = true;
+      writeReady(token);
     } catch (error) {
       finish(error);
     }
