@@ -1,6 +1,6 @@
 import {
-  existsSync, linkSync, lstatSync, mkdirSync, readFileSync, readdirSync,
-  renameSync, rmSync, unlinkSync, writeFileSync,
+  closeSync, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync,
+  readFileSync, readdirSync, renameSync, rmSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { basename, dirname, join } from 'node:path';
@@ -1426,14 +1426,25 @@ test('commit reserves pending, publishes hash then loop, CASes current, and exac
 test('commit proves published loop bytes before current CAS', () => {
   const root = fixtureDir();
   const attempt = '01JAPPGEN00000000000000000';
+  const loopPath = join(root, '.deep-loop', 'runs', attempt, 'loop.json');
+  const descriptors = new Map();
+  let corrupted = false;
   const deps = initDeps(root, { pid: 7, nonce: () => 'proofowner000001',
     tempNonce: () => 'temp000000000000',
     now: () => Date.parse('2030-01-01T00:00:00.000Z'),
-    writeFile: (path, bytes, options) => {
-      const text = Buffer.from(bytes).toString('utf8');
-      const corrupt = dirname(path).endsWith(attempt)
-        && text.startsWith('{\n  "schema_version"');
-      return writeFileSync(path, corrupt ? '{}\n' : bytes, options);
+    durableOpen: (path, flags, mode) => {
+      const descriptor = openSync(path, flags, mode);
+      descriptors.set(descriptor, path);
+      return descriptor;
+    },
+    durableClose: descriptor => {
+      const path = descriptors.get(descriptor);
+      descriptors.delete(descriptor);
+      closeSync(descriptor);
+      if (!corrupted && path === dirname(loopPath) && existsSync(loopPath)) {
+        corrupted = true;
+        writeFileSync(loopPath, '{}\n');
+      }
     },
   });
   const request = initializationRequestDigest(normalizeInitializationRequest(root,
@@ -1540,12 +1551,12 @@ test('genesis temp wx collision preserves the pre-existing foreign staging bytes
   let collidedTemp = null;
   const deps = initDeps(root, { pid: 7, nonce: () => 'writer0000000000',
     tempNonce: () => 'temp000000000000', now: () => nowMs,
-    writeFile: (path, bytes, options) => {
-      if (basename(path).startsWith('.tmp-')) {
+    durableOpen: (path, flags, mode) => {
+      if (flags === 'wx' && basename(path).startsWith('.tmp-')) {
         collidedTemp = path;
         writeFileSync(path, foreign, { flag: 'wx' });
       }
-      return writeFileSync(path, bytes, options);
+      return openSync(path, flags, mode);
     },
   });
   const attempt = '01JAPPGEN00000000000000000';
@@ -1557,6 +1568,36 @@ test('genesis temp wx collision preserves the pre-existing foreign staging bytes
     `.tmp-7-${nowMs}-temp000000000000`));
   assert.deepEqual(readFileSync(collidedTemp), foreign);
   assert.equal(existsSync(join(root, '.deep-loop', 'init-pending.json')), false);
+});
+
+test('genesis temp cleanup preserves a foreign regular that replaces the created inode', () => {
+  const root = fixtureDir();
+  const foreign = Buffer.from('foreign-genesis-replacement');
+  let temporary = null;
+  let replaced = false;
+  const deps = initDeps(root, { pid: 7, nonce: () => 'writer0000000000',
+    tempNonce: () => 'temp000000000000',
+    durableOpen: (path, flags, mode) => {
+      if (flags === 'wx' && basename(path).startsWith('.tmp-')) temporary = path;
+      return openSync(path, flags, mode);
+    },
+    durableFstat: descriptor => {
+      const stat = fstatSync(descriptor);
+      if (temporary !== null && !replaced) {
+        replaced = true;
+        unlinkSync(temporary);
+        writeFileSync(temporary, foreign, { flag: 'wx' });
+      }
+      return stat;
+    },
+  });
+  const attempt = '01JAPPGEN00000000000000000';
+  const request = initializationRequestDigest(normalizeInitializationRequest(root,
+    initOptions(), deps));
+  assert.throws(() => commitPreparedInit(root,
+    commitInput(root, attempt, request), deps), /DURABLE_SOURCE_CHANGED/);
+  assert.equal(existsSync(join(root, '.deep-loop', 'init-pending.json')), false);
+  assert.deepEqual(readFileSync(temporary), foreign);
 });
 
 test('exact pending retry cleans only strict own temp debris and rejects symlink escape', () => {

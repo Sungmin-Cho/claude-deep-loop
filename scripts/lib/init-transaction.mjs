@@ -12,6 +12,7 @@ import { assertProjectRootBinding } from './project-root.mjs';
 import { validateGenesisConsent } from './app-task-continuation.mjs';
 import { exactRawHostObservation, hostSurfaceFactsDigest } from './host-surface.mjs';
 import {
+  createPreparedFile as createGenesisFile,
   renamePreparedFile as renameGenesisFile,
   unlinkRegularFile as unlinkGenesisFile,
 } from './durable-file.mjs';
@@ -1085,8 +1086,8 @@ function strictExistingCurrent(root, current, deps) {
   }
 }
 
-function removeOwnTemp(path, deps) {
-  unlinkGenesisFile(path, deps);
+function removeOwnTemp(path, deps, expectedRecord = null) {
+  unlinkGenesisFile(path, deps, expectedRecord);
 }
 
 function strictTempPaths(directory, deps) {
@@ -1126,23 +1127,20 @@ function writeGenesisArtifact(path, attempt, slot, bytes, deps) {
   }
   const name = `.tmp-${pid}-${nowMs}-${nonce}`;
   const temporary = join(dirname(path), name);
-  let tempOwned = false;
+  let tempRecord = null;
   try {
-    crashGenesisIfScheduled(`${slot}-before-write`);
-    try {
-      (deps.writeFile ?? writeFileSync)(temporary, bytes, { flag: 'wx' });
-      tempOwned = true;
-    } catch (error) {
-      // Native wx EEXIST proves this invocation never owned the pathname. Other write failures can
-      // leave a partial file at this invocation's strict unique name and authorize own cleanup.
-      tempOwned = error?.code !== 'EEXIST';
-      throw error;
-    }
-    crashGenesisIfScheduled(`${slot}-after-write`);
+    tempRecord = createGenesisFile(temporary, bytes, {
+      beforeWritePoint: `${slot}-before-write`,
+      afterWritePoint: `${slot}-after-write`,
+    }, deps);
     crashGenesisIfScheduled(`${slot}-before-rename`);
-    renameGenesisFile(temporary, path, { renamedPoint: `${slot}-after-rename` }, deps);
+    renameGenesisFile(temporary, path, {
+      sourceAlreadySynced: true,
+      sourceRecord: tempRecord,
+      renamedPoint: `${slot}-after-rename`,
+    }, deps);
   } finally {
-    if (tempOwned) removeOwnTemp(temporary, deps);
+    if (tempRecord !== null) removeOwnTemp(temporary, deps, tempRecord);
   }
 }
 
