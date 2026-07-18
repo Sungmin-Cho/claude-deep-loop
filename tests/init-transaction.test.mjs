@@ -1,5 +1,5 @@
 import {
-  existsSync, lstatSync, mkdirSync, readFileSync, readdirSync,
+  existsSync, linkSync, lstatSync, mkdirSync, readFileSync, readdirSync,
   rmSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
@@ -18,6 +18,7 @@ import {
   normalizeInitializationRequest,
   preflightInitialization,
   prepareInitialization,
+  statusInitialization,
 } from '../scripts/lib/init-transaction.mjs';
 import { verifyHeadLines, verifyLines } from '../scripts/lib/integrity.mjs';
 
@@ -596,4 +597,245 @@ test('prepare rejects a symlinked runs ancestor even when the proposed target is
   createDirectoryJunction(outside, join(root, '.deep-loop', 'runs'));
   assert.throws(() => prepareInitialization(root, initOptions(), initDeps(root)),
     /INIT_QUERY_INDETERMINATE/);
+});
+
+test('status proves committed state before interpreting a later foreign pending', () => {
+  const root = fixtureDir();
+  const options = initOptions();
+  const deps = initDeps(root);
+  const request = initializationRequestDigest(normalizeInitializationRequest(root, options, deps));
+  const attempt = '01JAPPGEN00000000000000000';
+  const { raw, events } = validGenesis(root, attempt, request, 'NONE');
+  put(root, '.deep-loop/runs/' + attempt + '/.loop.hash', contentHash(raw));
+  put(root, '.deep-loop/runs/' + attempt + '/event-log.jsonl', events);
+  put(root, '.deep-loop/runs/' + attempt + '/loop.json', raw);
+  put(root, '.deep-loop/current', attempt + '\n');
+  put(root, '.deep-loop/init-pending.json', JSON.stringify({ version: 1,
+    attempt_id: '01JAPPGEN00000000000000002', request_digest: 'f'.repeat(64),
+    previous_current_digest: contentHash(attempt) }));
+  const result = statusInitialization(root, { attempt_id: attempt,
+    expected_current_digest: 'NONE', expected_request_digest: request }, deps);
+  assert.equal(result.outcome, 'committed');
+  assert.equal(result.request_match, true);
+  assert.equal(result.previous_current_match, true);
+  assert.equal(result.lock_state, 'free');
+  assert.equal(Object.hasOwn(result, 'expected_request_digest'), false);
+});
+
+test('status returns pending, conflict, and raced without an unnamed success shortcut', () => {
+  const root = fixtureDir();
+  const options = initOptions();
+  const deps = initDeps(root);
+  const request = initializationRequestDigest(normalizeInitializationRequest(root, options, deps));
+  const attempt = '01JAPPGEN00000000000000000';
+  put(root, '.deep-loop/init-pending.json', JSON.stringify({ version: 1,
+    attempt_id: attempt, request_digest: request, previous_current_digest: 'NONE' }));
+  const binding = { attempt_id: attempt, expected_current_digest: 'NONE',
+    expected_request_digest: request };
+  assert.deepEqual(statusInitialization(root, binding, deps), {
+    ok: true, outcome: 'pending', request_match: true, previous_current_match: true,
+    consent_mode: null, host_surface: null, structured_stdin_mode: null, lock_state: 'free' });
+  assert.equal(statusInitialization(root, { ...binding,
+    expected_request_digest: 'f'.repeat(64) }, deps).outcome, 'conflict');
+  put(root, '.deep-loop/init-pending.json', '{bad');
+  assert.equal(statusInitialization(root, binding, deps).outcome, 'conflict');
+
+  let currentRead = 0;
+  const virtual = new Map([
+    [join(root, '.deep-loop', 'current'), Buffer.from(attempt + '\n')],
+  ]);
+  const virtualControl = join(root, '.deep-loop');
+  const raced = statusInitialization(root, binding, initDeps(root, {
+    lstat: path => {
+      if (path === virtualControl) return { isDirectory: () => true,
+        isFile: () => false, isSymbolicLink: () => false,
+        dev: 1, ino: 1, mode: 16877, size: 64, mtimeMs: 1 };
+      if (virtual.has(path)) return { isDirectory: () => false,
+        isFile: () => true, isSymbolicLink: () => false,
+        dev: 1, ino: 2, mode: 33188, size: 27, mtimeMs: 1 };
+      const error = new Error('missing');
+      error.code = 'ENOENT';
+      throw error;
+    },
+    readFile: path => path.endsWith('current') && ++currentRead > 1
+      ? Buffer.from('01JAPPGEN00000000000000002\n') : virtual.get(path),
+  }));
+  assert.equal(raced.outcome, 'raced');
+  assert.equal(raced.request_match, false);
+  assert.equal(raced.previous_current_match, false);
+
+  const controlRaceRoot = fixtureDir();
+  const control = join(controlRaceRoot, '.deep-loop');
+  mkdirSync(control, { recursive: true });
+  let controlReads = 0;
+  const controlRaced = statusInitialization(controlRaceRoot, binding,
+    initDeps(controlRaceRoot, { lstat: path => path === control ? {
+      isDirectory: () => true, isSymbolicLink: () => false,
+      dev: 1, ino: ++controlReads, mode: 16877, size: 64, mtimeMs: 1,
+    } : lstatSync(path) }));
+  assert.equal(controlRaced.outcome, 'raced',
+    'replacement of an otherwise empty control directory is not a stable absent result');
+});
+
+test('exact pending never masks mismatched complete target initialization', () => {
+  const root = fixtureDir();
+  const attempt = '01JAPPGEN00000000000000000';
+  const actualRequest = initializationRequestDigest(
+    normalizeInitializationRequest(root, initOptions(), initDeps(root)));
+  const binding = { attempt_id: attempt, expected_current_digest: 'NONE',
+    expected_request_digest: 'a'.repeat(64) };
+  put(root, '.deep-loop/init-pending.json', JSON.stringify({ version: 1,
+    attempt_id: attempt, request_digest: binding.expected_request_digest,
+    previous_current_digest: binding.expected_current_digest }));
+  const { raw, events } = validGenesis(root, attempt, actualRequest, 'NONE');
+  put(root, '.deep-loop/runs/' + attempt + '/.loop.hash', contentHash(raw));
+  put(root, '.deep-loop/runs/' + attempt + '/event-log.jsonl', events);
+  put(root, '.deep-loop/runs/' + attempt + '/loop.json', raw);
+  const result = statusInitialization(root, binding, initDeps(root));
+  assert.equal(result.outcome, 'conflict');
+  assert.equal(result.request_match, false);
+  assert.equal(result.previous_current_match, true);
+});
+
+test('status distinguishes exact-pending state-only, clean absent, and pendingless state corruption', () => {
+  const attempt = '01JAPPGEN00000000000000000';
+  const stateRoot = fixtureDir();
+  const request = initializationRequestDigest(
+    normalizeInitializationRequest(stateRoot, initOptions(), initDeps(stateRoot)));
+  const binding = { attempt_id: attempt, expected_current_digest: 'NONE',
+    expected_request_digest: request };
+  const { raw, events } = validGenesis(stateRoot, attempt, request, 'NONE');
+  put(stateRoot, '.deep-loop/runs/' + attempt + '/.loop.hash', contentHash(raw));
+  put(stateRoot, '.deep-loop/runs/' + attempt + '/event-log.jsonl', events);
+  put(stateRoot, '.deep-loop/runs/' + attempt + '/loop.json', raw);
+  const pendinglessState = statusInitialization(stateRoot, binding, initDeps(stateRoot));
+  assert.equal(pendinglessState.outcome, 'indeterminate');
+  assert.equal(pendinglessState.request_match && pendinglessState.previous_current_match, true,
+    'matching state facts remain diagnostic but are not retry authority without exact pending');
+  put(stateRoot, '.deep-loop/init-pending.json', JSON.stringify({ version: 1,
+    attempt_id: attempt, request_digest: request, previous_current_digest: 'NONE' }));
+  const stateOnly = statusInitialization(stateRoot, binding, initDeps(stateRoot));
+  assert.equal(stateOnly.outcome, 'state-only');
+  assert.equal(stateOnly.request_match && stateOnly.previous_current_match, true);
+  put(stateRoot, '.deep-loop/runs/' + attempt + '/event-log.jsonl',
+    JSON.stringify({ seq: 1, ts: '2026-07-13T00:00:01.000Z', type: 'tampered',
+      data: {}, checksum: 'f'.repeat(64) }) + '\n');
+  assert.equal(statusInitialization(stateRoot, binding, initDeps(stateRoot)).outcome,
+    'indeterminate', 'status requires matching event-log chain and stored head');
+
+  const absentRoot = fixtureDir();
+  assert.deepEqual(statusInitialization(absentRoot, binding, initDeps(absentRoot)), {
+    ok: true, outcome: 'absent', request_match: true, previous_current_match: true,
+    consent_mode: null, host_surface: null, structured_stdin_mode: null, lock_state: 'free' });
+  put(absentRoot, '.deep-loop/current', '01JAPPGEN00000000000000002\n');
+  assert.equal(statusInitialization(absentRoot, binding, initDeps(absentRoot)).outcome, 'conflict',
+    'previous-current drift is not a clean absent');
+
+  const partialRoot = fixtureDir();
+  put(partialRoot, '.deep-loop/runs/' + attempt + '/.loop.hash', 'f'.repeat(64));
+  assert.equal(statusInitialization(partialRoot, binding, initDeps(partialRoot)).outcome, 'indeterminate');
+});
+
+test('status treats exact pending hash and strict temp debris as pending but unknown entries as indeterminate', () => {
+  const attempt = '01JAPPGEN00000000000000000';
+  const request = 'a'.repeat(64);
+  const binding = { attempt_id: attempt, expected_current_digest: 'NONE',
+    expected_request_digest: request };
+  const root = fixtureDir();
+  put(root, '.deep-loop/init-pending.json', JSON.stringify({ version: 1,
+    attempt_id: attempt, request_digest: request, previous_current_digest: 'NONE' }));
+  put(root, '.deep-loop/runs/' + attempt + '/.loop.hash', 'f'.repeat(64));
+  put(root, '.deep-loop/runs/' + attempt + '/.tmp-7-1783900800000-1234567890abcdef',
+    'partial');
+  put(root, '.deep-loop/.tmp-7-1783900800000-fedcba0987654321', 'partial-current');
+  assert.equal(statusInitialization(root, binding, initDeps(root)).outcome, 'pending');
+  put(root, '.deep-loop/runs/' + attempt + '/unknown', 'foreign');
+  assert.equal(statusInitialization(root, binding, initDeps(root)).outcome, 'indeterminate');
+  const symlinkRoot = fixtureDir();
+  put(symlinkRoot, '.deep-loop/init-pending.json', JSON.stringify({ version: 1,
+    attempt_id: attempt, request_digest: request, previous_current_digest: 'NONE' }));
+  mkdirSync(join(symlinkRoot, '.deep-loop', 'runs', attempt), { recursive: true });
+  const foreignTarget = fixtureDir('dl-init-foreign-target-');
+  createDirectoryJunction(foreignTarget,
+    join(symlinkRoot, '.deep-loop', 'runs', attempt, 'foreign-link'));
+  assert.equal(statusInitialization(symlinkRoot, binding, initDeps(symlinkRoot)).outcome,
+    'indeterminate');
+  const eventOnly = fixtureDir();
+  put(eventOnly, '.deep-loop/init-pending.json', JSON.stringify({ version: 1,
+    attempt_id: attempt, request_digest: request, previous_current_digest: 'NONE' }));
+  put(eventOnly, '.deep-loop/runs/' + attempt + '/event-log.jsonl', '');
+  assert.equal(statusInitialization(eventOnly, binding, initDeps(eventOnly)).outcome,
+    'indeterminate', 'event-only never masquerades as pending staging');
+  const pendinglessRun = fixtureDir();
+  put(pendinglessRun, '.deep-loop/runs/' + attempt + '/foreign.tmp', 'x');
+  assert.equal(statusInitialization(pendinglessRun, binding, initDeps(pendinglessRun)).outcome,
+    'indeterminate', 'a pendingless foreign run directory is not absent');
+  const emptyRun = fixtureDir();
+  mkdirSync(join(emptyRun, '.deep-loop', 'runs', attempt), { recursive: true });
+  assert.equal(statusInitialization(emptyRun, binding, initDeps(emptyRun)).outcome,
+    'indeterminate', 'a pendingless empty run directory is not absent');
+  const pendingless = fixtureDir();
+  put(pendingless, '.deep-loop/.tmp-7-1783900800000-1234567890abcdef', 'partial-pending');
+  assert.equal(statusInitialization(pendingless, binding, initDeps(pendingless)).outcome,
+    'indeterminate', 'pendingless control-directory staging is never a clean absent');
+});
+
+test('status classifies a stable fixed-lock holder without deleting it', () => {
+  const root = fixtureDir();
+  const attempt = '01JAPPGEN00000000000000000';
+  const binding = { attempt_id: attempt, expected_current_digest: 'NONE',
+    expected_request_digest: 'a'.repeat(64) };
+  put(root, '.deep-loop/.init.lock', JSON.stringify({
+    pid: 42, nonce: '1234567890abcdef', acquired_at: '2026-07-13T00:00:00.000Z' }));
+  assert.equal(statusInitialization(root, binding,
+    initDeps(root, { probePidIdentity: () => 'alive' })).lock_state, 'busy');
+  assert.equal(statusInitialization(root, binding,
+    initDeps(root, { probePidIdentity: () => 'unknown' })).lock_state, 'busy');
+  assert.equal(statusInitialization(root, binding,
+    initDeps(root, { probePidIdentity: () => 'definitely-dead' })).lock_state, 'stale-manual');
+  put(root, '.deep-loop/.init.lock', '{bad');
+  assert.equal(statusInitialization(root, binding, initDeps(root)).lock_state, 'invalid');
+  assert.equal(existsSync(join(root, '.deep-loop', '.init.lock')), true);
+});
+
+test('status follows released init authorities to the bounded terminal successor', () => {
+  const root = fixtureDir();
+  const binding = { attempt_id: '01JAPPGEN00000000000000000',
+    expected_current_digest: 'NONE', expected_request_digest: 'a'.repeat(64) };
+  const control = join(root, '.deep-loop');
+  const first = { pid: 41, nonce: 'firstauthority01',
+    acquired_at: '2026-07-13T00:00:00.000Z' };
+  const second = { pid: 42, nonce: 'secondauthority1',
+    acquired_at: '2026-07-13T00:00:01.000Z' };
+  put(root, '.deep-loop/.init.lock', JSON.stringify(first));
+  linkSync(join(control, '.init.lock'), join(control, '.init-lock-release-' + first.nonce));
+  put(root, '.deep-loop/.init-lock-successor-' + first.nonce, JSON.stringify(second));
+  assert.equal(statusInitialization(root, binding,
+    initDeps(root, { probePidIdentity: () => 'alive' })).lock_state, 'busy');
+  linkSync(join(control, '.init-lock-successor-' + first.nonce),
+    join(control, '.init-lock-release-' + second.nonce));
+  assert.equal(statusInitialization(root, binding, initDeps(root)).lock_state, 'free');
+});
+
+test('status returns raced when a held writer completes between state and lock snapshots', () => {
+  const root = fixtureDir();
+  const control = join(root, '.deep-loop');
+  mkdirSync(control);
+  const binding = { attempt_id: '01JAPPGEN00000000000000000',
+    expected_current_digest: 'NONE', expected_request_digest: 'a'.repeat(64) };
+  const holder = { pid: 42, nonce: 'snapshotwriter01',
+    acquired_at: '2026-07-13T00:00:00.000Z' };
+  let controlReads = 0;
+  const result = statusInitialization(root, binding, initDeps(root, {
+    readdir: path => {
+      if (path === control && ++controlReads === 3) {
+        put(root, '.deep-loop/.init.lock', JSON.stringify(holder));
+        linkSync(join(control, '.init.lock'),
+          join(control, '.init-lock-release-' + holder.nonce));
+      }
+      return readdirSync(path);
+    },
+  }));
+  assert.equal(result.outcome, 'raced');
+  assert.equal(result.lock_state, 'invalid');
 });

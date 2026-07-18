@@ -609,3 +609,205 @@ export function prepareInitialization(root, options, deps) {
     previous_current_digest: previous, expected_request_digest: expectedRequest,
     expected_observation_digest: expectedObservation };
 }
+
+const statusResult = (outcome, lock_state, fields = {}) => ({
+  ok: true, outcome, request_match: false, previous_current_match: false,
+  consent_mode: null, host_surface: null, structured_stdin_mode: null,
+  lock_state, ...fields,
+});
+
+const STATUS_SUCCESSOR = /^\.init-lock-successor-[A-Za-z0-9_-]{16,128}$/;
+const STATUS_RELEASE = /^\.init-lock-release-[A-Za-z0-9_-]{16,128}$/;
+
+function lockArtifactSnapshot(control, deps) {
+  if (queryDirectory(control, deps) === null) return { stable: 'absent', entries: [] };
+  const names = (deps.readdir ?? readdirSync)(control).filter(name =>
+    name === '.init.lock' || name.startsWith('.init-lock-successor-')
+      || name.startsWith('.init-lock-release-')).sort();
+  const entries = names.map(name => {
+    const path = join(control, name);
+    const stat = queryLstat(path, deps);
+    if (stat === null) throw new Error('INIT_QUERY_INDETERMINATE');
+    let bytes = null;
+    try { bytes = Buffer.from((deps.readFile ?? readFileSync)(path)); } catch {}
+    return { name, stat, bytes, regular: stat.isFile() && !stat.isSymbolicLink(),
+      identity: [stat.dev, stat.ino, stat.mode, stat.size, stat.mtimeMs].join(':') };
+  });
+  return { entries, stable: JSON.stringify(entries.map(entry => ({ name: entry.name,
+    identity: entry.identity, regular: entry.regular,
+    bytes: entry.bytes?.toString('base64') ?? null }))) };
+}
+
+function lockStateFromSnapshot(snapshot, deps) {
+  const entries = snapshot.entries;
+  if (entries.some(entry => !entry.regular || entry.bytes === null
+      || entry.name !== '.init.lock' && !STATUS_SUCCESSOR.test(entry.name)
+        && !STATUS_RELEASE.test(entry.name))) return 'invalid';
+  const byName = new Map(entries.map(entry => [entry.name, entry]));
+  let authority = byName.get('.init.lock');
+  if (authority === undefined) return entries.length === 0 ? 'free' : 'invalid';
+  const visited = new Set();
+  const consumed = new Set();
+  for (let depth = 0; depth < 64; depth += 1) {
+    let holder;
+    try { holder = JSON.parse(authority.bytes.toString('utf8')); } catch { return 'invalid'; }
+    try {
+      if (!exactKeys(holder, ['acquired_at', 'nonce', 'pid'])
+          || !Number.isSafeInteger(holder.pid) || holder.pid < 1
+          || !/^[A-Za-z0-9_-]{16,128}$/.test(holder.nonce)
+          || new Date(holder.acquired_at).toISOString() !== holder.acquired_at
+          || visited.has(holder.nonce)) return 'invalid';
+    } catch { return 'invalid'; }
+    visited.add(holder.nonce);
+    consumed.add(authority.name);
+    const releaseName = '.init-lock-release-' + holder.nonce;
+    const release = byName.get(releaseName);
+    if (release === undefined) {
+      if (consumed.size !== entries.length) return 'invalid';
+      const liveness = deps.probePidIdentity?.({
+        pid: holder.pid, acquiredAt: holder.acquired_at,
+      }) ?? 'unknown';
+      return ['definitely-dead', 'pid-reused'].includes(liveness) ? 'stale-manual'
+        : ['alive', 'unknown'].includes(liveness) ? 'busy' : 'invalid';
+    }
+    consumed.add(releaseName);
+    if (authority.stat.dev !== release.stat.dev || authority.stat.ino !== release.stat.ino) {
+      return 'invalid';
+    }
+    const successorName = '.init-lock-successor-' + holder.nonce;
+    const successor = byName.get(successorName);
+    if (depth === 63) return 'invalid';
+    if (successor === undefined) return consumed.size === entries.length ? 'free' : 'invalid';
+    authority = successor;
+  }
+  return 'invalid';
+}
+
+function controlTempSnapshot(path, deps) {
+  const directory = queryDirectory(path, deps);
+  if (directory === null) return { stable: '', staging: 'none' };
+  const directoryIdentity = [directory.dev, directory.ino, directory.mode,
+    directory.size, directory.mtimeMs].join(':');
+  const entries = (deps.readdir ?? readdirSync)(path).filter(name => name.startsWith('.tmp-'))
+    .sort().map(name => {
+      const stat = queryLstat(join(path, name), deps);
+      if (stat === null) throw new Error('INIT_QUERY_INDETERMINATE');
+      const kind = stat.isSymbolicLink() ? 'symlink' : stat.isFile() ? 'file' : 'other';
+      return { name, kind, identity: [stat.dev, stat.ino, stat.mode, stat.size, stat.mtimeMs].join(':') };
+    });
+  const invalid = entries.some(entry => entry.kind !== 'file' || !GENESIS_TEMP_NAME.test(entry.name));
+  return { stable: JSON.stringify({ directoryIdentity, entries }),
+    staging: invalid ? 'invalid' : entries.length === 0 ? 'none' : 'strict' };
+}
+
+function stableStatusSet(paths, deps) {
+  const beforeControl = controlTempSnapshot(paths.control, deps);
+  const beforeLock = lockArtifactSnapshot(paths.control, deps);
+  const authority = stableAuthoritySet(
+    [paths.current, paths.pending, paths.loop, paths.hash, paths.events],
+    [paths.run], deps);
+  const afterLock = lockArtifactSnapshot(paths.control, deps);
+  const afterControl = controlTempSnapshot(paths.control, deps);
+  if (beforeControl.stable !== afterControl.stable
+      || beforeLock.stable !== afterLock.stable) {
+    throw new Error('INIT_QUERY_RACED');
+  }
+  const lockState = lockStateFromSnapshot(afterLock, deps);
+  return { files: authority.files, directory: authority.directories.get(paths.run),
+    controlStaging: afterControl.staging, lockState };
+}
+
+export function statusInitialization(root, binding, deps) {
+  let lockState = 'invalid';
+  try {
+    if (!ATTEMPT_ID.test(binding?.attempt_id || '')
+        || !/^(?:NONE|[0-9a-f]{64})$/.test(binding?.expected_current_digest || '')
+        || !SHA256.test(binding?.expected_request_digest || '')) {
+      return statusResult('indeterminate', 'invalid');
+    }
+    const paths = initPaths(root, binding.attempt_id);
+    const { files: snapshot, directory, controlStaging,
+      lockState: stableLock } = stableStatusSet(paths, deps);
+    lockState = stableLock;
+    const current = currentValue(snapshot, paths.current);
+    const actualCurrentDigest = current === null ? 'NONE' : contentHash(current);
+    const target = targetClassification(root, snapshot, paths, binding.attempt_id, null, deps);
+    const loop = target.kind === 'complete' ? target.loop : null;
+    const requestMatch = loop?.initialization?.request_digest === binding.expected_request_digest;
+    const previousMatch = loop?.initialization?.previous_current_digest === binding.expected_current_digest;
+    const safeFields = loop === null ? {} : {
+      consent_mode: loop.autonomy?.app_task_continuation?.mode ?? null,
+      host_surface: loop.session_chain?.sessions?.[0]?.host_surface?.kind ?? null,
+      structured_stdin_mode: loop.session_chain?.sessions?.[0]?.host_surface?.structured_stdin_mode ?? null,
+    };
+    if (target.kind === 'complete' && current === binding.attempt_id) {
+      return requestMatch && previousMatch
+        ? statusResult('committed', lockState, {
+          request_match: true, previous_current_match: true, ...safeFields,
+        }) : statusResult('conflict', lockState, {
+          request_match: requestMatch, previous_current_match: previousMatch,
+        });
+    }
+    if (controlStaging === 'invalid') return statusResult('indeterminate', lockState);
+    const pendingBytes = snapshot.get(paths.pending)?.bytes ?? null;
+    if (pendingBytes !== null) {
+      let pending;
+      try { pending = strictPending(pendingBytes); }
+      catch { return statusResult('conflict', lockState); }
+      const exact = pending.attempt_id === binding.attempt_id;
+      if (!exact) return statusResult('conflict', lockState);
+      const pendingRequest = pending.request_digest === binding.expected_request_digest;
+      const pendingPrevious = pending.previous_current_digest === binding.expected_current_digest
+        && actualCurrentDigest === binding.expected_current_digest;
+      if (!pendingRequest || !pendingPrevious) {
+        return statusResult('conflict', lockState, {
+          request_match: pendingRequest, previous_current_match: pendingPrevious,
+        });
+      }
+      if (target.kind === 'malformed'
+          || target.kind !== 'complete' && !directory.recoverableStaging) {
+        return statusResult('indeterminate', lockState, {
+          request_match: true, previous_current_match: true,
+        });
+      }
+      if (target.kind === 'complete') {
+        return requestMatch && previousMatch
+          ? statusResult('state-only', lockState, {
+            request_match: true, previous_current_match: true, ...safeFields,
+          }) : statusResult('conflict', lockState, {
+            request_match: requestMatch, previous_current_match: previousMatch,
+          });
+      }
+      if (['absent', 'hash-only'].includes(target.kind)) {
+        return statusResult('pending', lockState, {
+          request_match: true, previous_current_match: true,
+        });
+      }
+      return statusResult('indeterminate', lockState, {
+        request_match: true, previous_current_match: true,
+      });
+    }
+    if (target.kind === 'malformed' || target.kind === 'hash-only'
+        || target.kind === 'absent' && directory.exists
+        || controlStaging !== 'none') {
+      return statusResult('indeterminate', lockState);
+    }
+    if (target.kind === 'complete') {
+      const currentPreserved = actualCurrentDigest === binding.expected_current_digest;
+      return statusResult('indeterminate', lockState, {
+        request_match: requestMatch,
+        previous_current_match: previousMatch && currentPreserved,
+      });
+    }
+    const previousMatchAbsent = actualCurrentDigest === binding.expected_current_digest;
+    return previousMatchAbsent
+      ? statusResult('absent', lockState, {
+        request_match: true, previous_current_match: true,
+      }) : statusResult('conflict', lockState, {
+        request_match: true, previous_current_match: false,
+      });
+  } catch (error) {
+    return statusResult(String(error?.message).includes('INIT_QUERY_RACED')
+      ? 'raced' : 'indeterminate', lockState);
+  }
+}
