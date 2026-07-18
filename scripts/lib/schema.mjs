@@ -978,7 +978,7 @@ function hostObservationSeed(loop, session, index, events) {
     && acquiredEvent?.data?.observation_digest === surfaceDigest;
   if (acquiredSeeded) return { generation: continuation.acquired_generation,
     observedAt: continuation.acquired_at, digest: acquiredEvent.data.observation_digest,
-    kind: 'acquired' };
+    kind: 'acquired', index: events.indexOf(acquiredEvent) };
   const genesisEvent = events.find(event => event?.type === 'run-initialized');
   const requiresGenesisEvent = loop?.initialization?.request_digest !== undefined;
   const genesisSeeded = index === 0 && loop?.initialization !== undefined
@@ -989,7 +989,8 @@ function hostObservationSeed(loop, session, index, events) {
     && strictMs(loop.created_at) !== null
     && session.started_at === loop.created_at;
   if (genesisSeeded) return { generation: 1, observedAt: loop.created_at,
-    digest: loop.initialization.host_surface_digest, kind: 'genesis' };
+    digest: loop.initialization.host_surface_digest, kind: 'genesis',
+    index: events.indexOf(genesisEvent) };
   return null;
 }
 
@@ -1244,6 +1245,9 @@ export function verifyAppEventCorrelation(loop, lines) {
     const keys = Object.keys(data).sort();
     const exactKeys = ['generation', 'owner_run_id',
       'previous_generation', 'previous_owner_run_id'];
+    const stalePostCheckpoint = checkpointFloor !== null
+      && events.indexOf(event) > checkpointFloor.index
+      && data.generation <= checkpointFloor.generation;
     if (JSON.stringify(keys) !== JSON.stringify(exactKeys)
         || strictMs(event.ts) === null
         || typeof data.owner_run_id !== 'string' || data.owner_run_id.length === 0
@@ -1252,7 +1256,8 @@ export function verifyAppEventCorrelation(loop, lines) {
         || !Number.isSafeInteger(data.previous_generation)
         || data.previous_generation < 1
         || data.generation !== data.previous_generation + 1
-        || data.generation > (currentLease.generation ?? 0)) {
+        || data.generation > (currentLease.generation ?? 0)
+        || stalePostCheckpoint) {
       errors.push('lease-acquired causal binding invalid');
     }
   }
@@ -1382,6 +1387,9 @@ export function verifyAppEventCorrelation(loop, lines) {
     const controls = events.filter(event => APP_CONTROL_TYPES.has(event?.type)
       && event?.data?.attempt_id === continuation.attempt_id
       && event?.data?.child_run_id === session.run_id);
+    const terminalControlTypes = new Set([
+      'app-task-failed', 'app-task-swept', 'app-task-abandoned',
+    ]);
     for (const type of APP_CONTROL_TYPES) {
       const matches = controls.filter(event => event.type === type);
       if (matches.length > 1) {
@@ -1440,6 +1448,11 @@ export function verifyAppEventCorrelation(loop, lines) {
       const expectedType = APP_FAILURE_EVENT.get(continuation.failure_code);
       const proof = controls.filter(event => event.type === expectedType
         && event.data?.failure_code === continuation.failure_code);
+      const terminalControls = controls.filter(event => terminalControlTypes.has(event.type));
+      const expectedTerminalCount = terminalControlTypes.has(expectedType) ? 1 : 0;
+      if (terminalControls.length !== expectedTerminalCount) {
+        errors.push(`App terminal ${continuation.attempt_id}/${session.run_id} control family mismatch`);
+      }
       if (expectedType === undefined || proof.length !== 1) {
         errors.push(`App terminal ${continuation.attempt_id}/${session.run_id} proof mismatch`);
       }
@@ -1783,6 +1796,9 @@ export function verifyAppEventCorrelation(loop, lines) {
     for (const [rowIndex, event] of rows.entries()) {
       const generation = event.data.observed_generation;
       const expectedOutcome = seed !== null || rowIndex > 0 ? 'reattested' : 'observed';
+      if (seed !== null && events.indexOf(event) <= seed.index) {
+        errors.push(`host-surface-observed ${session.run_id}/${generation} baseline order invalid`);
+      }
       if (generation <= previousGeneration) {
         errors.push(`host-surface-observed ${session.run_id} generation duplicate/regression`);
       }

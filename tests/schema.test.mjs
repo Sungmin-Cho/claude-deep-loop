@@ -1557,6 +1557,12 @@ test7b('App control events make revoke, terminal failure, and preserve one-way',
   assert7b.equal(verify7b(loop, [...lines, lines[2]]).ok, false,
     'terminal control identity is unique');
   assert7b.equal(verify7b(loop, [...lines, {
+    type: 'app-task-abandoned', ts: '2026-07-13T00:00:02.500Z',
+    data: { attempt_id: attempt, child_run_id: child,
+      failure_code: 'host-call-failed', owner_run_id: parent, generation: 1 },
+  }]).ok, false,
+  'a mapped terminal control cannot be duplicated under another terminal event type');
+  assert7b.equal(verify7b(loop, [...lines, {
     type: 'finish', ts: '2026-07-13T00:00:04.000Z',
     data: { status: 'completed', reportRel: null },
   }]).ok, false,
@@ -1948,6 +1954,9 @@ test7b('host observation correlation binds facts, strict genesis, generations, a
   assert7b.deepEqual(verify7b(acquiredReattested,
     [acquiredEvent, acquiredReattestation]), { ok: true, errors: [] },
   'the immutable acquire event is a baseline after later re-attestation');
+  assert7b.equal(verify7b(acquiredReattested,
+    [acquiredReattestation, acquiredEvent]).ok, false,
+  'a re-attestation cannot precede the acquire event that establishes its baseline');
   const acquiredBaselineDrift = structuredClone(acquiredEvent);
   acquiredBaselineDrift.data.observation_digest = 'd'.repeat(64);
   assert7b.equal(verify7b(acquiredReattested,
@@ -2009,6 +2018,21 @@ test7b('legacy lease lineage is opaque before one checkpoint and exact after it'
   } };
   assert7b.equal(verify7b(legacyGeneration3AtCheckpoint(), [baseline]).ok, true);
   assert7b.equal(verify7b(legacyGeneration4AfterAcquire(), [baseline, acquire]).ok, true);
+  const staleAcquire = { type: 'lease-acquired', ts: '2026-07-13T00:00:03.500Z', data: {
+    previous_owner_run_id: 'LEGACY-GEN1', previous_generation: 1,
+    owner_run_id: 'LEGACY-GEN2', generation: 2,
+  } };
+  const replayedFloorAcquire = { type: 'lease-acquired',
+    ts: '2026-07-13T00:00:03.500Z', data: {
+      previous_owner_run_id: 'LEGACY-GEN2', previous_generation: 2,
+      owner_run_id: 'LEGACY-OWNER', generation: 3,
+    } };
+  assert7b.equal(verify7b(legacyGeneration3AtCheckpoint(),
+    [baseline, staleAcquire]).ok, false,
+  'a post-checkpoint edge below the lineage floor is stale authority');
+  assert7b.equal(verify7b(legacyGeneration3AtCheckpoint(),
+    [baseline, replayedFloorAcquire]).ok, false,
+  'a post-checkpoint replay into the checkpoint generation is invalid');
   for (const invalid of [
     [baseline, baseline],
     [{ ...baseline, data: { ...baseline.data,
