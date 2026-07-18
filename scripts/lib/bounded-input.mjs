@@ -135,7 +135,12 @@ export async function readStructuredLine(stream, {
         if (stream.readable !== true || stream.destroyed === true || stream.readableEnded === true
             || stream.readableAborted === true) throw new Error('STRUCTURED_STDIN_PIPE_CLOSED');
       }
-      timer = setTimeoutFn(() => finish(new Error('STRUCTURED_STDIN_TIMEOUT')), APP_STDIN_READ_TIMEOUT_MS);
+      const nextTimer = setTimeoutFn(() => finish(new Error('STRUCTURED_STDIN_TIMEOUT')), APP_STDIN_READ_TIMEOUT_MS);
+      if (settled) {
+        clearTimeoutFn(nextTimer);
+        return;
+      }
+      timer = nextTimer;
       ready = true;
       writeReady(token);
     } catch (error) {

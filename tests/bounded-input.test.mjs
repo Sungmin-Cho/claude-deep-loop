@@ -106,14 +106,19 @@ test('READY token rejects invalid purpose, binding, mode, control, and size', ()
 test('ended or aborted pipe never emits READY', async () => {
   const ended = Readable.from([]);
   for await (const _chunk of ended) { /* drain to readableEnded */ }
+  const events = ['data', 'end', 'close', 'error'];
+  const endedListeners = events.map(event => ended.listenerCount(event));
   let ready = 0;
   await assert.rejects(readStructuredLine(ended, { mode: 'pipe-open-noecho', purpose: 'probe',
     binding: 'nonce-1', writeReady: () => { ready += 1; } }), /STRUCTURED_STDIN_PIPE_CLOSED/);
   const aborted = new PassThrough();
   Object.defineProperty(aborted, 'readableAborted', { value: true });
+  const abortedListeners = events.map(event => aborted.listenerCount(event));
   await assert.rejects(readStructuredLine(aborted, { mode: 'pipe-open-noecho', purpose: 'probe',
     binding: 'nonce-2', writeReady: () => { ready += 1; } }), /STRUCTURED_STDIN_PIPE_CLOSED/);
   assert.equal(ready, 0);
+  assert.deepEqual(events.map(event => ended.listenerCount(event)), endedListeners);
+  assert.deepEqual(events.map(event => aborted.listenerCount(event)), abortedListeners);
 });
 
 test('pipe mode rejects a TTY before READY instead of accepting an echoing channel', async () => {
@@ -130,11 +135,14 @@ test('pipe mode rejects a TTY before READY instead of accepting an echoing chann
 test('bytes delivered before READY are rejected and READY is not emitted', async () => {
   const stream = new PassThrough();
   stream.isTTY = true;
-  stream.setRawMode = value => { if (value) stream.write('early\n'); };
+  const rawCalls = [];
+  stream.setRawMode = value => { rawCalls.push(value); if (value) stream.write('early\n'); };
   let ready = 0;
   await assert.rejects(readStructuredLine(stream, { mode: 'pty-raw-noecho', purpose: 'probe',
     binding: 'nonce-3', writeReady: () => { ready += 1; } }), /STRUCTURED_STDIN_EARLY_WRITE/);
   assert.equal(ready, 0);
+  assert.deepEqual(rawCalls, [true, false]);
+  for (const event of ['data', 'end', 'close', 'error']) assert.equal(stream.listenerCount(event), 0);
 });
 
 function rawStream({ restoreThrows = false } = {}) {
@@ -150,71 +158,128 @@ function rawStream({ restoreThrows = false } = {}) {
 
 test('structured reader rejects malformed UTF-8 and restores raw mode', async () => {
   const { stream, calls } = rawStream();
+  const cleared = [];
   const pending = readStructuredLine(stream, { mode: 'pty-raw-noecho', purpose: 'confirm',
-    binding: 'attempt-1', maxBytes: 8, writeReady: () => {} });
+    binding: 'attempt-1', maxBytes: 8, writeReady: () => {},
+    setTimeoutFn: () => 7, clearTimeoutFn: id => cleared.push(id) });
   stream.end(Buffer.from([0xc3, 0x28, 0x0a]));
   await assert.rejects(pending, /STRUCTURED_STDIN_UTF8_INVALID/);
   assert.deepEqual(calls, [true, false]);
+  assert.deepEqual(cleared, [7]);
+  for (const event of ['data', 'end', 'close', 'error']) assert.equal(stream.listenerCount(event), 0);
 });
 
 test('structured reader rejects split extra records, oversize, timeout, and restore failure', async () => {
   const extra = rawStream();
+  const extraCleared = [];
   const extraPending = readStructuredLine(extra.stream, { mode: 'pty-raw-noecho', purpose: 'confirm',
-    binding: 'attempt-1', maxBytes: 8, writeReady: () => {} });
+    binding: 'attempt-1', maxBytes: 8, writeReady: () => {},
+    setTimeoutFn: () => 8, clearTimeoutFn: id => extraCleared.push(id) });
   extra.stream.write('a\n');
   extra.stream.end('b\n');
   await assert.rejects(extraPending, /STRUCTURED_STDIN_MULTILINE/);
+  await new Promise(resolve => setImmediate(() => setImmediate(resolve)));
+  assert.deepEqual(extra.calls, [true, false]);
+  assert.deepEqual(extraCleared, [8]);
+  for (const event of ['data', 'end', 'close', 'error']) assert.equal(extra.stream.listenerCount(event), 0);
 
   const delayed = rawStream();
+  const delayedCleared = [];
   const delayedPending = readStructuredLine(delayed.stream, { mode: 'pty-raw-noecho', purpose: 'confirm',
-    binding: 'attempt-delayed', maxBytes: 8, writeReady: () => {} });
+    binding: 'attempt-delayed', maxBytes: 8, writeReady: () => {},
+    setTimeoutFn: () => 9, clearTimeoutFn: id => delayedCleared.push(id) });
   delayed.stream.write('a\n');
   await new Promise(resolve => setImmediate(() => {
     delayed.stream.end('b\n');
     resolve();
   }));
   await assert.rejects(delayedPending, /STRUCTURED_STDIN_MULTILINE/);
+  await new Promise(resolve => setImmediate(() => setImmediate(resolve)));
+  assert.deepEqual(delayed.calls, [true, false]);
+  assert.deepEqual(delayedCleared, [9]);
+  for (const event of ['data', 'end', 'close', 'error']) assert.equal(delayed.stream.listenerCount(event), 0);
 
   const large = rawStream();
+  const largeCleared = [];
   const largePending = readStructuredLine(large.stream, { mode: 'pty-raw-noecho', purpose: 'confirm',
-    binding: 'attempt-1', maxBytes: 4, writeReady: () => {} });
+    binding: 'attempt-1', maxBytes: 4, writeReady: () => {},
+    setTimeoutFn: () => 10, clearTimeoutFn: id => largeCleared.push(id) });
   large.stream.end('12345\n');
   await assert.rejects(largePending, /STRUCTURED_STDIN_TOO_LARGE/);
+  assert.deepEqual(large.calls, [true, false]);
+  assert.deepEqual(largeCleared, [10]);
+  for (const event of ['data', 'end', 'close', 'error']) assert.equal(large.stream.listenerCount(event), 0);
 
   const timeout = rawStream();
+  const timeoutCleared = [];
   const timeoutPending = readStructuredLine(timeout.stream, { mode: 'pty-raw-noecho', purpose: 'confirm',
     binding: 'attempt-1', writeReady: () => {},
     setTimeoutFn: (fn, ms) => { assert.equal(ms, APP_STDIN_READ_TIMEOUT_MS); queueMicrotask(fn); return 7; },
-    clearTimeoutFn: id => assert.equal(id, 7) });
+    clearTimeoutFn: id => timeoutCleared.push(id) });
   await assert.rejects(timeoutPending, /STRUCTURED_STDIN_TIMEOUT/);
+  assert.deepEqual(timeout.calls, [true, false]);
+  assert.deepEqual(timeoutCleared, [7]);
+  for (const event of ['data', 'end', 'close', 'error']) assert.equal(timeout.stream.listenerCount(event), 0);
 
   const restore = rawStream({ restoreThrows: true });
+  const restoreCleared = [];
   const restorePending = readStructuredLine(restore.stream, { mode: 'pty-raw-noecho', purpose: 'confirm',
-    binding: 'attempt-1', writeReady: () => {} });
+    binding: 'attempt-1', writeReady: () => {},
+    setTimeoutFn: () => 11, clearTimeoutFn: id => restoreCleared.push(id) });
   restore.stream.end('ok\n');
   await assert.rejects(restorePending, /STRUCTURED_STDIN_RAW_RESTORE_FAILED/);
+  assert.deepEqual(restore.calls, [true, false]);
+  assert.deepEqual(restoreCleared, [11]);
+  for (const event of ['data', 'end', 'close', 'error']) assert.equal(restore.stream.listenerCount(event), 0);
 
   const readyFailure = rawStream();
+  const readyCleared = [];
   await assert.rejects(readStructuredLine(readyFailure.stream, { mode: 'pty-raw-noecho', purpose: 'confirm',
-    binding: 'attempt-1', writeReady: () => { throw new Error('ready failed'); } }), /ready failed/);
+    binding: 'attempt-1', writeReady: () => { throw new Error('ready failed'); },
+    setTimeoutFn: () => 12, clearTimeoutFn: id => readyCleared.push(id) }), /ready failed/);
   assert.deepEqual(readyFailure.calls, [true, false]);
+  assert.deepEqual(readyCleared, [12]);
+  for (const event of ['data', 'end', 'close', 'error']) assert.equal(readyFailure.stream.listenerCount(event), 0);
+});
+
+test('synchronous injected timeout fences READY and cleans the returned timer handle exactly once', async () => {
+  const fixture = rawStream();
+  const cleared = [];
+  let readyCalls = 0;
+  const pending = readStructuredLine(fixture.stream, { mode: 'pty-raw-noecho', purpose: 'confirm',
+    binding: 'attempt-sync-timeout', writeReady: () => { readyCalls += 1; },
+    setTimeoutFn: (fn, ms) => { assert.equal(ms, APP_STDIN_READ_TIMEOUT_MS); fn(); return 13; },
+    clearTimeoutFn: id => cleared.push(id) });
+  await assert.rejects(pending, /STRUCTURED_STDIN_TIMEOUT/);
+  assert.equal(readyCalls, 0);
+  assert.deepEqual(cleared, [13]);
+  assert.deepEqual(fixture.calls, [true, false]);
+  for (const event of ['data', 'end', 'close', 'error']) assert.equal(fixture.stream.listenerCount(event), 0);
 });
 
 test('structured reader normalizes raw setup and stream lifecycle failures and removes listeners', async () => {
   const missing = new PassThrough(); missing.isTTY = true;
   await assert.rejects(readStructuredLine(missing, { mode: 'pty-raw-noecho', purpose: 'confirm',
     binding: 'attempt-1', writeReady: () => {} }), /STRUCTURED_STDIN_RAW_UNAVAILABLE/);
+  for (const name of ['data', 'end', 'close', 'error']) assert.equal(missing.listenerCount(name), 0);
   const throwing = new PassThrough(); throwing.isTTY = true;
-  throwing.setRawMode = () => { throw new Error('raw failed'); };
+  const throwingCalls = [];
+  throwing.setRawMode = value => { throwingCalls.push(value); throw new Error('raw failed'); };
   await assert.rejects(readStructuredLine(throwing, { mode: 'pty-raw-noecho', purpose: 'confirm',
     binding: 'attempt-1', writeReady: () => {} }), /raw failed/);
+  assert.deepEqual(throwingCalls, [true, false]);
+  for (const name of ['data', 'end', 'close', 'error']) assert.equal(throwing.listenerCount(name), 0);
   for (const event of ['end', 'close', 'error']) {
     const fixture = rawStream();
+    const cleared = [];
     const pending = readStructuredLine(fixture.stream, { mode: 'pty-raw-noecho', purpose: 'confirm',
-      binding: `attempt-${event}`, writeReady: () => {} });
+      binding: `attempt-${event}`, writeReady: () => {},
+      setTimeoutFn: () => 14, clearTimeoutFn: id => cleared.push(id) });
     if (event === 'error') fixture.stream.emit('error', new Error('stream failed'));
     else fixture.stream.emit(event);
     await assert.rejects(pending, /STRUCTURED_STDIN_(?:ERROR|EARLY_EOF|CLOSED)/);
+    assert.deepEqual(fixture.calls, [true, false]);
+    assert.deepEqual(cleared, [14]);
     for (const name of ['data', 'end', 'close', 'error']) assert.equal(fixture.stream.listenerCount(name), 0);
   }
 });

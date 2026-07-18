@@ -266,6 +266,12 @@ test('finish --status stopped without --confirm exits 2 (#4)', () => {
 
 test('structured input has no argv env file base64 or echo fallback', () => {
   const source = readFileSync(join(process.cwd(), 'scripts', 'lib', 'bounded-input.mjs'), 'utf8');
-  assert.doesNotMatch(source, /process\.argv|process\.env|writeFile|mkdtemp|base64/i);
-  assert.doesNotMatch(source, /process\.stdout\.write\([^)]*(?:chunk|bytes|value)/);
+  const readyWrite = 'writeReady = token => process.stdout.write(`${token}\\n`),';
+  assert.equal(source.split(readyWrite).length - 1, 1);
+  const sourceWithoutReadyWrite = source.replace(readyWrite, '');
+  assert.doesNotMatch(sourceWithoutReadyWrite,
+    /process\.(?:stdout|stderr)\.write|console\.(?:log|info|warn|error)|\.pipe\s*\(/);
+  assert.deepEqual(source.match(/\bwriteReady\s*\([^)]*\)/g), ['writeReady(token)']);
+  assert.doesNotMatch(source,
+    /process\.(?:argv|env)|node:(?:fs|os)|['"](?:fs|fs\/promises|os)['"]|\b(?:readFile|writeFile|appendFile|copyFile|rename|open|mkdtemp|createReadStream|createWriteStream)(?:Sync)?\s*\(|\b(?:atob|btoa|Deno|Bun)\b|['"`]base64['"`]|fileURLToPath|pathToFileURL/i);
 });
