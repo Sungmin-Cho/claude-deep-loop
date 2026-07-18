@@ -1,9 +1,11 @@
 import {
   existsSync, linkSync, lstatSync, mkdirSync, readFileSync, readdirSync,
-  rmSync, unlinkSync, writeFileSync,
+  renameSync, rmSync, unlinkSync, writeFileSync,
 } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { basename, dirname, join } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { canonicalRealpath, createDirectoryJunction, createFileSymlinkOrSkip,
   fixtureDir as rawFixtureDir } from './helpers/fs-fixtures.mjs';
@@ -12,6 +14,7 @@ import { buildInitialLoop, resolveInitialReview } from '../scripts/lib/initrun.m
 import { hostSurfaceFactsDigest } from '../scripts/lib/host-surface.mjs';
 import {
   buildCanonicalGenesis,
+  commitPreparedInit,
   genesisClockFromAttempt,
   hostObservationDigest,
   initializationRequestDigest,
@@ -20,6 +23,7 @@ import {
   normalizeInitializationRequest,
   preflightInitialization,
   prepareInitialization,
+  publishGenesisState,
   statusInitialization,
   withInitLock,
 } from '../scripts/lib/init-transaction.mjs';
@@ -38,6 +42,11 @@ function queryTree(root) {
       bytes: stat.isFile() ? readFileSync(absolute).toString('base64') : null }];
   });
   return visit(root);
+}
+
+function queryPublishedState(root) {
+  return queryTree(root).filter(entry => entry.path !== '.deep-loop/.init.lock'
+    && !entry.path.startsWith('.deep-loop/.init-lock-'));
 }
 
 function put(root, relative, bytes) {
@@ -71,6 +80,51 @@ function initDeps(root, overrides = {}) {
       route: value.capabilities.includes('create-thread-local') ? { kind: 'create' } : null }),
     assertRoot: () => ({ ok: true }),
     buildLoop: buildInitialLoop, ulid: () => '01JAPPGEN00000000000000001', ...overrides };
+}
+
+function commitInput(root, attempt, requestDigest, previous = 'NONE') {
+  return { prepared: { ok: true, outcome: 'prepared', attempt_id: attempt,
+    previous_current_digest: previous, expected_request_digest: requestDigest,
+    expected_observation_digest: 'NONE' },
+  request: initOptions(), observation: null };
+}
+
+function lockNonceSequence() {
+  let index = 0;
+  return () => `writer${String(index++).padStart(10, '0')}`;
+}
+
+const INIT_TRANSACTION_CRASH_WORKER = fileURLToPath(
+  new URL('./helpers/init-transaction-crash-worker.mjs', import.meta.url));
+
+function runInitTransactionCrash(root, attempt, previous, requestDigest, point) {
+  const crashed = spawnSync(process.execPath, [INIT_TRANSACTION_CRASH_WORKER,
+    root, attempt, previous, requestDigest, point], {
+    cwd: root, encoding: 'utf8', env: { ...process.env, NODE_ENV: 'test',
+      DEEP_LOOP_TEST_CRASH_AT: point },
+  });
+  assert.equal(crashed.status, 91, `${point}: ${crashed.stderr}`);
+  assert.equal(Number.isSafeInteger(crashed.pid) && crashed.pid > 0, true);
+  return crashed.pid;
+}
+
+function simulateSeparatelyApprovedInitCompaction(root) {
+  // Test harness only: production has no automatic authority/temp deletion path.
+  const control = join(root, '.deep-loop');
+  for (const name of readdirSync(control)) {
+    if (name === '.init.lock'
+        || /^\.init-lock-(?:candidate-(?:0|[1-9][0-9]*)-|successor-|release-)[A-Za-z0-9_-]{16,128}$/.test(name)
+        || name.startsWith('.tmp-')) rmSync(join(control, name), { force: true });
+  }
+  const runs = join(control, 'runs');
+  if (!existsSync(runs)) return;
+  for (const runId of readdirSync(runs)) {
+    const run = join(runs, runId);
+    if (!lstatSync(run).isDirectory()) continue;
+    for (const name of readdirSync(run)) {
+      if (name.startsWith('.tmp-')) rmSync(join(run, name), { force: true });
+    }
+  }
 }
 
 function validGenesis(root, attempt, requestDigest, previousDigest) {
@@ -484,8 +538,8 @@ test('prepare reuses exact incomplete pending and rejects foreign or malformed p
   put(eventOnly, '.deep-loop/init-pending.json', JSON.stringify({ ...pending,
     request_digest: eventRequest }));
   put(eventOnly, '.deep-loop/runs/' + attempt + '/event-log.jsonl', '');
-  assert.throws(() => prepareInitialization(eventOnly, options, eventDeps),
-    /INIT_PENDING_CONFLICT/, 'event-only is not a recoverable no-loop staging shape');
+  assert.equal(prepareInitialization(eventOnly, options, eventDeps).attempt_id, attempt,
+    'event-only is the first recoverable events-then-hash staging shape');
 });
 
 test('completed pending is logically absent and a proposed target collision never succeeds', () => {
@@ -747,6 +801,7 @@ test('status treats exact pending hash and strict temp debris as pending but unk
   const root = fixtureDir();
   put(root, '.deep-loop/init-pending.json', JSON.stringify({ version: 1,
     attempt_id: attempt, request_digest: request, previous_current_digest: 'NONE' }));
+  put(root, '.deep-loop/runs/' + attempt + '/event-log.jsonl', '');
   put(root, '.deep-loop/runs/' + attempt + '/.loop.hash', 'f'.repeat(64));
   put(root, '.deep-loop/runs/' + attempt + '/.tmp-7-1783900800000-1234567890abcdef',
     'partial');
@@ -768,7 +823,7 @@ test('status treats exact pending hash and strict temp debris as pending but unk
     attempt_id: attempt, request_digest: request, previous_current_digest: 'NONE' }));
   put(eventOnly, '.deep-loop/runs/' + attempt + '/event-log.jsonl', '');
   assert.equal(statusInitialization(eventOnly, binding, initDeps(eventOnly)).outcome,
-    'indeterminate', 'event-only never masquerades as pending staging');
+    'pending', 'event-only is the first recoverable events-then-hash staging shape');
   const pendinglessRun = fixtureDir();
   put(pendinglessRun, '.deep-loop/runs/' + attempt + '/foreign.tmp', 'x');
   assert.equal(statusInitialization(pendinglessRun, binding, initDeps(pendinglessRun)).outcome,
@@ -920,7 +975,7 @@ test('candidate write failure cleans a partially-created candidate under native 
   assert.throws(() => withInitLock(root, () => assert.fail('writer entered'), {
     pid: 7, nonce: () => 'writer0000000000',
     now: () => Date.parse('2026-07-13T00:00:00.000Z'),
-    writeFile: (path, bytes, options) => {
+    lockWriteFile: (path, bytes, options) => {
       writeFileSync(path, bytes, options);
       throw new Error('PARTIAL_CANDIDATE_WRITE');
     },
@@ -957,7 +1012,7 @@ test('stable exhausted chain permits 64 owners and rejects the 65th before any p
   assert.throws(() => withInitLock(root, () => { entered += 1; }, {
     pid: 7, nonce: () => nonceFor(65),
     now: () => Date.parse('2026-07-13T00:00:00.000Z'),
-    writeFile: () => assert.fail('cap failure must not write a candidate'),
+    lockWriteFile: () => assert.fail('cap failure must not write a candidate'),
     link: () => assert.fail('cap failure must not publish authority'),
     unlink: () => assert.fail('cap failure must not sweep or clean'),
   }), /LOCK_CHAIN_EXHAUSTED/);
@@ -981,7 +1036,7 @@ test('last-slot overtaking cleans only the losing contender candidate without pu
   assert.throws(() => withInitLock(root, () => assert.fail('loser entered'), {
     pid: 7, nonce: () => nonceFor(65),
     now: () => Date.parse('2026-07-13T00:00:00.000Z'),
-    writeFile: (path, bytes, options) => {
+    lockWriteFile: (path, bytes, options) => {
       if (!interleaved) {
         interleaved = true;
         withInitLock(root, () => {}, { pid: 7, nonce: () => nonceFor(64),
@@ -1037,7 +1092,7 @@ test('quality owner nonce reuse in a released chain rejects before candidate pri
   try {
     withInitLock(root, () => assert.fail('reused owner entered'), {
       pid: 7, nonce: () => nonce, now,
-      writeFile: (...args) => { calls.push('write'); return writeFileSync(...args); },
+      lockWriteFile: (...args) => { calls.push('write'); return writeFileSync(...args); },
       link: (...args) => { calls.push('link'); return linkSync(...args); },
       unlink: (...args) => { calls.push('unlink'); return unlinkSync(...args); },
     });
@@ -1063,7 +1118,7 @@ test('quality authority namespace rejects orphan and malformed artifacts without
       withInitLock(root, () => assert.fail(row[0]), {
         pid: 7, nonce: () => 'contender0000001',
         now: () => Date.parse('2026-07-13T00:00:01.000Z'),
-        writeFile: (...args) => { calls.push('write'); return writeFileSync(...args); },
+        lockWriteFile: (...args) => { calls.push('write'); return writeFileSync(...args); },
         link: (...args) => { calls.push('link'); return linkSync(...args); },
         unlink: (...args) => { calls.push('unlink'); return unlinkSync(...args); },
       });
@@ -1083,7 +1138,7 @@ test('quality authority namespace is revalidated after candidate write before pu
   assert.throws(() => withInitLock(root, () => assert.fail('writer entered'), {
     pid: 7, nonce: () => 'contender0000001',
     now: () => Date.parse('2026-07-13T00:00:01.000Z'),
-    writeFile: (path, bytes, options) => {
+    lockWriteFile: (path, bytes, options) => {
       writeFileSync(path, bytes, options);
       writeFileSync(orphan, 'foreign-authority-artifact');
     },
@@ -1208,7 +1263,7 @@ test('quality ambiguous candidate write failures preserve foreign bytes', () => 
     let seamCalls = 0;
     assert.throws(() => withInitLock(root, () => assert.fail('writer entered'), {
       pid: 7, nonce: () => nonce, now,
-      writeFile: () => { seamCalls += 1; throw new Error('SEAM_MUST_NOT_RUN'); },
+      lockWriteFile: () => { seamCalls += 1; throw new Error('SEAM_MUST_NOT_RUN'); },
     }), error => error?.code === 'EEXIST');
     assert.equal(seamCalls, 0);
     assert.deepEqual(readFileSync(candidate), foreign);
@@ -1221,7 +1276,7 @@ test('quality ambiguous candidate write failures preserve foreign bytes', () => 
     const error = Object.assign(new Error('REPLACED_WRITE'), { code: 'EIO' });
     assert.throws(() => withInitLock(root, () => assert.fail('writer entered'), {
       pid: 7, nonce: () => nonce, now,
-      writeFile: (path, bytes, options) => {
+      lockWriteFile: (path, bytes, options) => {
         writeFileSync(path, bytes, options);
         unlinkSync(path);
         writeFileSync(path, foreign, { flag: 'wx' });
@@ -1284,7 +1339,7 @@ test('quality truncated non-empty holder prefix after exclusive creation failure
   assert.throws(() => withInitLock(root, () => assert.fail('writer entered'), {
     pid: 7, nonce: () => nonce,
     now: () => Date.parse('2026-07-13T00:00:00.000Z'),
-    writeFile: (path, bytes, options) => {
+    lockWriteFile: (path, bytes, options) => {
       prefix = Buffer.from(bytes.subarray(0, 8));
       writeFileSync(path, prefix, options);
       throw error;
@@ -1300,7 +1355,7 @@ test('quality truncated non-empty holder prefix after exclusive creation failure
   assert.throws(() => withInitLock(emptyRoot, () => assert.fail('empty writer entered'), {
     pid: 7, nonce: () => emptyNonce,
     now: () => Date.parse('2026-07-13T00:00:00.000Z'),
-    writeFile: () => { throw new Error('EMPTY_CANDIDATE_WRITE'); },
+    lockWriteFile: () => { throw new Error('EMPTY_CANDIDATE_WRITE'); },
   }), /EMPTY_CANDIDATE_WRITE/);
   assert.equal(existsSync(emptyCandidate), false);
 });
@@ -1314,7 +1369,7 @@ test('quality copied same-prefix ABA after exclusive creation preserves replacem
   assert.throws(() => withInitLock(root, () => assert.fail('writer entered'), {
     pid: 7, nonce: () => nonce,
     now: () => Date.parse('2026-07-13T00:00:00.000Z'),
-    writeFile: (path, bytes, options) => {
+    lockWriteFile: (path, bytes, options) => {
       copied = Buffer.from(bytes.subarray(0, 8));
       writeFileSync(path, copied, options);
       unlinkSync(path);
@@ -1323,4 +1378,243 @@ test('quality copied same-prefix ABA after exclusive creation preserves replacem
     },
   }), /COPIED_PREFIX_ABA/);
   assert.deepEqual(readFileSync(candidate), copied);
+});
+
+test('init transaction crash worker URL is converted to a native filesystem path', () => {
+  assert.equal(INIT_TRANSACTION_CRASH_WORKER.endsWith(
+    join('helpers', 'init-transaction-crash-worker.mjs')), true);
+  assert.equal(INIT_TRANSACTION_CRASH_WORKER.includes('%20'), false);
+});
+
+test('commit reserves pending, publishes hash then loop, CASes current, and exact retry is inert', () => {
+  const root = fixtureDir();
+  const deps = initDeps(root, { pid: 7, nonce: lockNonceSequence(),
+    now: () => Date.parse('2026-07-13T00:00:00.000Z'),
+    probePidIdentity: () => 'alive' });
+  const attempt = '01JAPPGEN00000000000000000';
+  const request = initializationRequestDigest(normalizeInitializationRequest(root, initOptions(), deps));
+  const order = [];
+  const result = commitPreparedInit(root, commitInput(root, attempt, request), {
+    ...deps, rename: (source, destination) => {
+      renameSync(source, destination);
+      const name = basename(destination);
+      order.push(name === 'init-pending.json' ? 'pending' : name === 'event-log.jsonl'
+        ? 'events' : name === '.loop.hash' ? 'hash' : name === 'loop.json' ? 'loop'
+          : name === 'current' ? 'current' : name);
+    },
+  });
+  assert.equal(result.outcome, 'initialized');
+  assert.deepEqual(order, ['pending', 'events', 'hash', 'loop', 'current']);
+  const before = queryPublishedState(root);
+  assert.equal(commitPreparedInit(root, commitInput(root, attempt, request), deps).outcome,
+    'already-initialized');
+  assert.deepEqual(queryPublishedState(root), before);
+
+  const loopPath = join(root, '.deep-loop', 'runs', attempt, 'loop.json');
+  const hashPath = join(root, '.deep-loop', 'runs', attempt, '.loop.hash');
+  const advanced = JSON.parse(readFileSync(loopPath, 'utf8'));
+  advanced.discovered_items = ['legitimate-post-init-progress'];
+  const advancedRaw = JSON.stringify(advanced, null, 2);
+  put(root, '.deep-loop/runs/' + attempt + '/loop.json', advancedRaw);
+  put(root, '.deep-loop/runs/' + attempt + '/.loop.hash', contentHash(advancedRaw));
+  const advancedBefore = queryPublishedState(root);
+  assert.equal(commitPreparedInit(root, commitInput(root, attempt, request), deps).outcome,
+    'already-initialized', 'idempotent init retry permits valid post-init progress');
+  assert.deepEqual(queryPublishedState(root), advancedBefore);
+});
+
+test('commit proves published loop bytes before current CAS', () => {
+  const root = fixtureDir();
+  const attempt = '01JAPPGEN00000000000000000';
+  const deps = initDeps(root, { pid: 7, nonce: () => 'proofowner000001',
+    tempNonce: () => 'temp000000000000',
+    now: () => Date.parse('2030-01-01T00:00:00.000Z'),
+    writeFile: (path, bytes, options) => {
+      const text = Buffer.from(bytes).toString('utf8');
+      const corrupt = dirname(path).endsWith(attempt)
+        && text.startsWith('{\n  "schema_version"');
+      return writeFileSync(path, corrupt ? '{}\n' : bytes, options);
+    },
+  });
+  const request = initializationRequestDigest(normalizeInitializationRequest(root,
+    initOptions(), deps));
+  assert.throws(() => commitPreparedInit(root,
+    commitInput(root, attempt, request), deps), /INIT_STATE_CORRUPT/);
+  assert.equal(existsSync(join(root, '.deep-loop', 'current')), false,
+    'current is never published before strict loop/hash/event proof');
+  assert.equal(existsSync(join(root, '.deep-loop', 'init-pending.json')), true,
+    'the exact pending reservation remains as crash/recovery evidence');
+});
+
+test('crash after state publication recovers the exact pending attempt only', () => {
+  const root = fixtureDir();
+  const deps = initDeps(root, { pid: 7, nonce: lockNonceSequence(),
+    now: () => Date.parse('2026-07-13T00:00:00.000Z') });
+  const attempt = '01JAPPGEN00000000000000000';
+  const request = initializationRequestDigest(normalizeInitializationRequest(root, initOptions(), deps));
+  const crashedPid = runInitTransactionCrash(
+    root, attempt, 'NONE', request, 'current-before-rename');
+  const recoveryDeps = { ...deps, probePidIdentity: ({ pid }) =>
+    pid === crashedPid ? 'definitely-dead' : 'unknown' };
+  assert.equal(existsSync(join(root, '.deep-loop', 'init-pending.json')), true);
+  assert.throws(() => commitPreparedInit(root, commitInput(root, attempt, request), recoveryDeps),
+    /LOCK_STALE_MANUAL/);
+  simulateSeparatelyApprovedInitCompaction(root);
+  assert.equal(commitPreparedInit(root, commitInput(root, attempt, request), recoveryDeps).outcome,
+    'recovered-pending');
+  assert.equal(readFileSync(join(root, '.deep-loop', 'current'), 'utf8'), attempt + '\n');
+  assert.equal(existsSync(join(root, '.deep-loop', 'init-pending.json')), false);
+});
+
+test('foreign pending, copied-root state, loop-without-hash, and unknown entries fail closed', () => {
+  const root = fixtureDir();
+  const deps = initDeps(root, { pid: 7, nonce: lockNonceSequence(),
+    now: () => Date.parse('2026-07-13T00:00:00.000Z'), probePidIdentity: () => 'alive' });
+  const attempt = '01JAPPGEN00000000000000000';
+  const request = initializationRequestDigest(normalizeInitializationRequest(root, initOptions(), deps));
+  put(root, '.deep-loop/init-pending.json', JSON.stringify({ version: 1,
+    attempt_id: '01JAPPGEN00000000000000002', request_digest: 'b'.repeat(64),
+    previous_current_digest: 'NONE' }));
+  assert.throws(() => commitPreparedInit(root, commitInput(root, attempt, request), deps),
+    /INIT_PENDING_CONFLICT/);
+  unlinkSync(join(root, '.deep-loop', 'init-pending.json'));
+  put(root, '.deep-loop/runs/' + attempt + '/loop.json', '{}');
+  assert.throws(() => commitPreparedInit(root, commitInput(root, attempt, request), deps),
+    /INIT_STATE_CORRUPT/);
+  assert.equal(existsSync(join(root, '.deep-loop', 'init-pending.json')), false,
+    'a pendingless target collision is rejected before reservation');
+
+  const copied = fixtureDir();
+  const copiedDeps = initDeps(copied);
+  const copiedRequest = initializationRequestDigest(
+    normalizeInitializationRequest(copied, initOptions(), copiedDeps));
+  const loop = buildCanonicalGenesis(copied, {
+    prepared: { ok: true, outcome: 'prepared', attempt_id: attempt,
+      previous_current_digest: 'NONE', expected_request_digest: copiedRequest,
+      expected_observation_digest: 'NONE' }, request: initOptions(), observation: null,
+  }, copiedDeps).loop;
+  loop.project.root = root;
+  const raw = JSON.stringify(loop, null, 2) + '\n';
+  put(copied, '.deep-loop/init-pending.json', JSON.stringify({ version: 1,
+    attempt_id: attempt, request_digest: copiedRequest, previous_current_digest: 'NONE' }));
+  put(copied, '.deep-loop/runs/' + attempt + '/.loop.hash', contentHash(raw));
+  put(copied, '.deep-loop/runs/' + attempt + '/loop.json', raw);
+  assert.throws(() => commitPreparedInit(copied,
+    commitInput(copied, attempt, copiedRequest), copiedDeps), /INIT_STATE_(?:ROOT_INVALID|CORRUPT)/);
+});
+
+test('every private scalar genesis crash window fails closed and exact retry recovers after approved compaction', () => {
+  const slots = ['pending', 'events', 'hash', 'loop', 'current'];
+  const stages = slots.flatMap(slot => ['before-write', 'after-write', 'before-rename', 'after-rename']
+    .map(edge => `${slot}-${edge}`)).concat(['pending-delete-before', 'pending-delete-after']);
+  for (const stage of stages) {
+    const root = fixtureDir();
+    const deps = initDeps(root, { pid: 7, nonce: () => 'writer0000000000',
+      tempNonce: () => 'temp000000000000',
+      now: () => Date.parse('2030-01-01T00:00:00.000Z') });
+    const attempt = '01JAPPGEN00000000000000000';
+    const request = initializationRequestDigest(normalizeInitializationRequest(root,
+      initOptions(), deps));
+    const crashedPid = runInitTransactionCrash(root, attempt, 'NONE', request, stage);
+    const recoveryDeps = { ...deps, probePidIdentity: ({ pid }) =>
+      pid === crashedPid ? 'definitely-dead' : 'unknown' };
+    assert.throws(() => commitPreparedInit(root,
+      commitInput(root, attempt, request), recoveryDeps),
+    /LOCK_STALE_MANUAL/);
+    simulateSeparatelyApprovedInitCompaction(root);
+    const result = commitPreparedInit(root, commitInput(root, attempt, request), {
+      ...recoveryDeps, now: () => Date.parse('2040-01-01T00:00:00.000Z') });
+    assert.ok(['initialized', 'recovered-pending', 'already-initialized'].includes(result.outcome));
+    assert.equal(readFileSync(join(root, '.deep-loop', 'current'), 'utf8'), attempt + '\n');
+    assert.equal(existsSync(join(root, '.deep-loop', 'init-pending.json')), false);
+    const stateBytes = readFileSync(join(root, '.deep-loop', 'runs', attempt, 'loop.json'));
+    assert.equal(contentHash(stateBytes.toString('utf8')),
+      readFileSync(join(root, '.deep-loop', 'runs', attempt, '.loop.hash'), 'utf8'));
+  }
+});
+
+test('genesis temp wx collision preserves the pre-existing foreign staging bytes', () => {
+  const root = fixtureDir();
+  const nowMs = Date.parse('2030-01-01T00:00:00.000Z');
+  const foreign = Buffer.from('foreign-staging-evidence');
+  let collidedTemp = null;
+  const deps = initDeps(root, { pid: 7, nonce: () => 'writer0000000000',
+    tempNonce: () => 'temp000000000000', now: () => nowMs,
+    writeFile: (path, bytes, options) => {
+      if (basename(path).startsWith('.tmp-')) {
+        collidedTemp = path;
+        writeFileSync(path, foreign, { flag: 'wx' });
+      }
+      return writeFileSync(path, bytes, options);
+    },
+  });
+  const attempt = '01JAPPGEN00000000000000000';
+  const request = initializationRequestDigest(normalizeInitializationRequest(root,
+    initOptions(), deps));
+  assert.throws(() => commitPreparedInit(root,
+    commitInput(root, attempt, request), deps), error => error?.code === 'EEXIST');
+  assert.equal(collidedTemp, join(root, '.deep-loop',
+    `.tmp-7-${nowMs}-temp000000000000`));
+  assert.deepEqual(readFileSync(collidedTemp), foreign);
+  assert.equal(existsSync(join(root, '.deep-loop', 'init-pending.json')), false);
+});
+
+test('exact pending retry cleans only strict own temp debris and rejects symlink escape', () => {
+  const root = fixtureDir();
+  const deps = initDeps(root, { pid: 7, nonce: () => 'writer0000000000',
+    tempNonce: () => 'temp000000000000', probePidIdentity: () => 'alive' });
+  const attempt = '01JAPPGEN00000000000000000';
+  const request = initializationRequestDigest(normalizeInitializationRequest(root, initOptions(), deps));
+  put(root, '.deep-loop/init-pending.json', JSON.stringify({ version: 1,
+    attempt_id: attempt, request_digest: request, previous_current_digest: 'NONE' }));
+  put(root, '.deep-loop/runs/' + attempt + '/.tmp-7-1783900800000-orphan0000000000',
+    'partial');
+  put(root, '.deep-loop/.tmp-7-1783900800000-control000000000', 'partial-current');
+  assert.equal(commitPreparedInit(root, commitInput(root, attempt, request), deps).outcome,
+    'recovered-pending');
+  assert.equal(existsSync(join(root, '.deep-loop', '.tmp-7-1783900800000-control000000000')),
+    false);
+
+  const pendingless = fixtureDir();
+  const pendinglessDeps = initDeps(pendingless, { pid: 7, nonce: () => 'writer0000000000',
+    tempNonce: () => 'temp000000000000', probePidIdentity: () => 'alive' });
+  const pendinglessRequest = initializationRequestDigest(
+    normalizeInitializationRequest(pendingless, initOptions(), pendinglessDeps));
+  put(pendingless, '.deep-loop/.tmp-7-1783900800000-orphan0000000000',
+    'partial-pending');
+  assert.throws(() => commitPreparedInit(pendingless,
+    commitInput(pendingless, attempt, pendinglessRequest), pendinglessDeps),
+  /INIT_STATE_CORRUPT/, 'pendingless control staging is never adopted');
+
+  const unknown = fixtureDir();
+  const unknownDeps = initDeps(unknown);
+  const unknownRequest = initializationRequestDigest(
+    normalizeInitializationRequest(unknown, initOptions(), unknownDeps));
+  put(unknown, '.deep-loop/init-pending.json', JSON.stringify({ version: 1,
+    attempt_id: attempt, request_digest: unknownRequest, previous_current_digest: 'NONE' }));
+  put(unknown, '.deep-loop/runs/' + attempt + '/foreign.tmp', 'partial');
+  assert.throws(() => commitPreparedInit(unknown,
+    commitInput(unknown, attempt, unknownRequest), unknownDeps), /INIT_STATE_CORRUPT/);
+
+  const freshUnknown = fixtureDir();
+  const freshUnknownDeps = initDeps(freshUnknown);
+  const freshUnknownRequest = initializationRequestDigest(
+    normalizeInitializationRequest(freshUnknown, initOptions(), freshUnknownDeps));
+  put(freshUnknown, '.deep-loop/runs/' + attempt + '/foreign.tmp', 'partial');
+  assert.throws(() => commitPreparedInit(freshUnknown,
+    commitInput(freshUnknown, attempt, freshUnknownRequest), freshUnknownDeps),
+  /INIT_STATE_CORRUPT/);
+  assert.equal(existsSync(join(freshUnknown, '.deep-loop', 'init-pending.json')), false,
+    'fresh foreign staging never creates a durable pending reservation');
+
+  const escaped = fixtureDir();
+  mkdirSync(join(escaped, '.deep-loop'), { recursive: true });
+  const escapedTarget = fixtureDir('dl-init-escape-target-');
+  createDirectoryJunction(escapedTarget, join(escaped, '.deep-loop', 'runs'));
+  const escapedDeps = initDeps(escaped);
+  const escapedRequest = initializationRequestDigest(
+    normalizeInitializationRequest(escaped, initOptions(), escapedDeps));
+  assert.throws(() => commitPreparedInit(escaped,
+    commitInput(escaped, attempt, escapedRequest), escapedDeps),
+  /INIT_ROOT_CONTAINMENT_INVALID/);
 });

@@ -11,6 +11,10 @@ import { validate } from './schema.mjs';
 import { assertProjectRootBinding } from './project-root.mjs';
 import { validateGenesisConsent } from './app-task-continuation.mjs';
 import { exactRawHostObservation, hostSurfaceFactsDigest } from './host-surface.mjs';
+import {
+  renamePreparedFile as renameGenesisFile,
+  unlinkRegularFile as unlinkGenesisFile,
+} from './durable-file.mjs';
 
 const NO_EXCLUDED_KEYS = new Set();
 const KERNEL_GENERATED_KEYS = new Set([
@@ -23,6 +27,7 @@ const INIT_MAX_NODES = 256;
 const INIT_MAX_ENTRIES = 128;
 const INIT_MAX_STRING_BYTES = 4096;
 const INIT_MAX_CANONICAL_BYTES = 65_536;
+const GENESIS_TEMP_NONCE = /^[A-Za-z0-9_-]{16,128}$/;
 
 function invalidCanonicalValue(reason) {
   throw new Error(`INIT_CANONICAL_VALUE_INVALID: ${reason}`);
@@ -392,7 +397,7 @@ function runDirectorySnapshot(path, deps) {
   const eventLogPresent = entries.some(entry => entry.name === 'event-log.jsonl');
   const recoverableStaging = !loopPresent && entries.every(entry => entry.kind === 'file'
     && (entry.name === '.loop.hash' || entry.name === 'event-log.jsonl'
-      || GENESIS_TEMP_NAME.test(entry.name))) && (!eventLogPresent || hashPresent);
+      || GENESIS_TEMP_NAME.test(entry.name))) && (!hashPresent || eventLogPresent);
   return { stable: JSON.stringify({ directoryIdentity, entries }), exists: true, plain: true,
     recoverableStaging };
 }
@@ -854,21 +859,21 @@ export function withInitLock(root, fn, deps = {}) {
     let writeError = null;
     let closeError = null;
     try {
-      candidateDescriptor = (deps.open ?? openSync)(candidate, 'wx');
-      const descriptorStat = (deps.fstat
+      candidateDescriptor = (deps.lockOpen ?? openSync)(candidate, 'wx');
+      const descriptorStat = (deps.lockFstat
         ?? (value => fstatSync(value, { bigint: true })))(candidateDescriptor);
       if (!descriptorStat.isFile()) throw new Error('LOCK_CANDIDATE_INDETERMINATE');
       createdIdentity = descriptorStat;
-      if (deps.writeFile !== undefined) {
-        deps.writeFile(candidate, holderBytes, { flag: 'r+' });
+      if (deps.lockWriteFile !== undefined) {
+        deps.lockWriteFile(candidate, holderBytes, { flag: 'r+' });
       } else {
-        (deps.writeDescriptor ?? writeFileSync)(candidateDescriptor, holderBytes);
+        (deps.lockWriteDescriptor ?? writeFileSync)(candidateDescriptor, holderBytes);
       }
     } catch (error) {
       writeError = error;
     } finally {
       if (candidateDescriptor !== null) {
-        try { (deps.close ?? closeSync)(candidateDescriptor); }
+        try { (deps.lockClose ?? closeSync)(candidateDescriptor); }
         catch (error) { closeError = error; }
       }
     }
@@ -951,6 +956,366 @@ export function withInitLock(root, fn, deps = {}) {
     }
     if (releaseError !== null) throw releaseError;
   }
+}
+
+function readOptionalRegular(path, deps) {
+  try {
+    const stat = (deps.lstat ?? lstatSync)(path);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      throw new Error('INIT_ROOT_CONTAINMENT_INVALID');
+    }
+    return Buffer.from((deps.readFile ?? readFileSync)(path));
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+function parseCurrent(bytes) {
+  if (bytes === null) return null;
+  let text;
+  try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+  catch { throw new Error('INIT_CURRENT_INVALID'); }
+  const value = text.endsWith('\n') ? text.slice(0, -1) : '';
+  if (!ATTEMPT_ID.test(value) || text !== value + '\n') {
+    throw new Error('INIT_CURRENT_INVALID');
+  }
+  return value;
+}
+
+function exactPendingAt(path, expected, deps) {
+  const bytes = readOptionalRegular(path, deps);
+  if (bytes === null) return null;
+  const value = strictPending(bytes);
+  if (expected !== null && (value.attempt_id !== expected.attempt_id
+      || value.request_digest !== expected.request_digest
+      || value.previous_current_digest !== expected.previous_current_digest)) {
+    throw new Error('INIT_PENDING_CONFLICT');
+  }
+  return value;
+}
+
+function assertPlainDirectory(path, deps, { create = false } = {}) {
+  const mkdir = deps.mkdir ?? mkdirSync;
+  if (create) {
+    try { mkdir(path); }
+    catch (error) { if (error?.code !== 'EEXIST') throw error; }
+  }
+  let lexical;
+  try { lexical = (deps.lstat ?? lstatSync)(path); }
+  catch { throw new Error('INIT_ROOT_CONTAINMENT_INVALID'); }
+  if (!lexical.isDirectory() || lexical.isSymbolicLink()) {
+    throw new Error('INIT_ROOT_CONTAINMENT_INVALID');
+  }
+  const resolved = (deps.realpath ?? (realpathSync.native || realpathSync))(path);
+  const platform = deps.platform ?? process.platform;
+  if (platform === 'win32') {
+    const sameFile = deps.sameFile
+      ?? ((left, right) => left.dev === right.dev && left.ino === right.ino);
+    if (!sameFile((deps.stat ?? statSync)(path), (deps.stat ?? statSync)(resolved))) {
+      throw new Error('INIT_ROOT_CONTAINMENT_INVALID');
+    }
+  } else if (resolved !== path) {
+    throw new Error('INIT_ROOT_CONTAINMENT_INVALID');
+  }
+  return resolved;
+}
+
+function genesisRunDirectory(root, attempt, deps, { create = false } = {}) {
+  if (!ATTEMPT_ID.test(attempt)) throw new Error('INIT_ATTEMPT_INVALID');
+  const canonicalRoot = assertPlainDirectory(root, deps);
+  const control = join(canonicalRoot, '.deep-loop');
+  assertPlainDirectory(control, deps);
+  const runs = join(control, 'runs');
+  assertPlainDirectory(runs, deps, { create });
+  const run = join(runs, attempt);
+  assertPlainDirectory(run, deps, { create });
+  return run;
+}
+
+function strictGenesisProof(root, binding, expectedRaw, deps,
+  { checkObservation = true } = {}) {
+  const paths = initPaths(root, binding.attempt_id);
+  const run = genesisRunDirectory(root, binding.attempt_id, deps);
+  if (run !== dirname(paths.loop)) throw new Error('INIT_ROOT_CONTAINMENT_INVALID');
+  const loopBytes = readOptionalRegular(paths.loop, deps);
+  const hashBytes = readOptionalRegular(paths.hash, deps);
+  if (loopBytes === null || hashBytes === null) throw new Error('INIT_STATE_CORRUPT');
+  const raw = loopBytes.toString('utf8');
+  if (!SHA256.test(hashBytes.toString('utf8'))
+      || hashBytes.toString('utf8') !== contentHash(raw)
+      || expectedRaw !== null && raw !== expectedRaw) {
+    throw new Error('INIT_STATE_CORRUPT');
+  }
+  const loop = strictJson(loopBytes, 'INIT_STATE_CORRUPT');
+  const init = loop.initialization;
+  if (!(deps.validateState ?? validate)(loop).ok || loop.run_id !== binding.attempt_id
+      || init?.attempt_id !== binding.attempt_id
+      || init.request_digest !== binding.request_digest
+      || init.previous_current_digest !== binding.previous_current_digest
+      || checkObservation && init.host_observation_digest !== binding.observation_digest) {
+    throw new Error('INIT_STATE_CORRUPT');
+  }
+  try { (deps.assertRoot ?? assertProjectRootBinding)(root, loop); }
+  catch { throw new Error('INIT_STATE_ROOT_INVALID'); }
+  try { strictIntegrity(loop, readOptionalRegular(paths.events, deps)); }
+  catch { throw new Error('INIT_STATE_CORRUPT'); }
+  return loop;
+}
+
+function completedPendingMarker(root, pending, current, deps) {
+  if (current !== pending.attempt_id) return false;
+  try {
+    strictGenesisProof(root, { ...pending, observation_digest: 'NONE' }, null, deps,
+      { checkObservation: false });
+    return true;
+  } catch { return false; }
+}
+
+function strictExistingCurrent(root, current, deps) {
+  if (current === null) return;
+  const paths = initPaths(root, current);
+  const snapshot = new Map([paths.loop, paths.hash, paths.events].map(path => {
+    const bytes = readOptionalRegular(path, deps);
+    return [path, bytes === null ? null : { bytes }];
+  }));
+  if (targetClassification(root, snapshot, paths, current, null, deps, false).kind
+      !== 'complete') {
+    throw new Error('INIT_CURRENT_INVALID');
+  }
+}
+
+function removeOwnTemp(path, deps) {
+  unlinkGenesisFile(path, deps);
+}
+
+function strictTempPaths(directory, deps) {
+  const paths = [];
+  for (const name of (deps.readdir ?? readdirSync)(directory).sort()
+    .filter(value => value.startsWith('.tmp-'))) {
+    const path = join(directory, name);
+    const stat = (deps.lstat ?? lstatSync)(path);
+    if (!GENESIS_TEMP_NAME.test(name) || stat.isSymbolicLink() || !stat.isFile()) {
+      throw new Error('INIT_STATE_CORRUPT');
+    }
+    paths.push(path);
+  }
+  return paths;
+}
+
+const GENESIS_TEST_CRASH_POINT = /^(?:[a-z0-9-]+-(?:before-write|after-write|before-rename)|pending-delete-(?:before|after))$/;
+
+function crashGenesisIfScheduled(point) {
+  const selected = process.env.NODE_ENV === 'test'
+    ? process.env.DEEP_LOOP_TEST_CRASH_AT : undefined;
+  if (selected === undefined || selected !== point) return;
+  if (!GENESIS_TEST_CRASH_POINT.test(selected)) {
+    throw new Error('GENESIS_TEST_CRASH_POINT_INVALID');
+  }
+  process.exit(91);
+}
+
+function writeGenesisArtifact(path, attempt, slot, bytes, deps) {
+  const nonce = (deps.tempNonce ?? (() => randomUUID().replace(/-/g, '')))();
+  const pid = deps.pid ?? process.pid;
+  const nowMs = (deps.now ?? Date.now)();
+  if (!ATTEMPT_ID.test(attempt) || !GENESIS_TEMP_NONCE.test(nonce)
+      || !Number.isSafeInteger(pid) || pid < 1
+      || !Number.isSafeInteger(nowMs) || nowMs < 0) {
+    throw new Error('INIT_TEMP_IDENTITY_INVALID');
+  }
+  const name = `.tmp-${pid}-${nowMs}-${nonce}`;
+  const temporary = join(dirname(path), name);
+  let tempOwned = false;
+  try {
+    crashGenesisIfScheduled(`${slot}-before-write`);
+    try {
+      (deps.writeFile ?? writeFileSync)(temporary, bytes, { flag: 'wx' });
+      tempOwned = true;
+    } catch (error) {
+      // Native wx EEXIST proves this invocation never owned the pathname. Other write failures can
+      // leave a partial file at this invocation's strict unique name and authorize own cleanup.
+      tempOwned = error?.code !== 'EEXIST';
+      throw error;
+    }
+    crashGenesisIfScheduled(`${slot}-after-write`);
+    crashGenesisIfScheduled(`${slot}-before-rename`);
+    renameGenesisFile(temporary, path, { renamedPoint: `${slot}-after-rename` }, deps);
+  } finally {
+    if (tempOwned) removeOwnTemp(temporary, deps);
+  }
+}
+
+function deletePending(path, deps) {
+  crashGenesisIfScheduled('pending-delete-before');
+  if (!unlinkGenesisFile(path, deps)) throw new Error('INIT_PENDING_CONFLICT');
+  crashGenesisIfScheduled('pending-delete-after');
+}
+
+export function publishGenesisState(root, runId, canonical, deps = {}) {
+  const { loop, genesisEvents } = canonical;
+  const paths = initPaths(root, runId);
+  const init = loop.initialization;
+  const expectedPending = { version: 1, attempt_id: runId,
+    request_digest: init?.request_digest,
+    previous_current_digest: init?.previous_current_digest };
+  if (exactPendingAt(paths.pending, expectedPending, deps) === null) {
+    throw new Error('INIT_PENDING_CONFLICT');
+  }
+  if (loop.run_id !== runId || !(deps.validateState ?? validate)(loop).ok) {
+    throw new Error('INIT_STATE_INVALID');
+  }
+  try { (deps.assertRoot ?? assertProjectRootBinding)(root, loop); }
+  catch { throw new Error('INIT_STATE_ROOT_INVALID'); }
+  const run = genesisRunDirectory(root, runId, deps, { create: true });
+  if (!Array.isArray(genesisEvents) || genesisEvents.length !== 1
+      || genesisEvents[0]?.type !== 'run-initialized'
+      || genesisEvents[0]?.ts !== loop.created_at
+      || genesisEvents[0]?.data?.run_id !== runId
+      || genesisEvents[0]?.data?.request_digest !== init.request_digest
+      || genesisEvents[0]?.data?.host_surface_digest !== init.host_surface_digest
+      || !(deps.verifyLines ?? verifyLines)(genesisEvents).ok
+      || !(deps.verifyHeadLines ?? verifyHeadLines)(genesisEvents, loop.event_log_head).ok) {
+    throw new Error('INIT_GENESIS_EVENT_INVALID');
+  }
+  const eventRaw = genesisEvents.map(event => JSON.stringify(event)).join('\n') + '\n';
+  const raw = JSON.stringify(loop, null, 2) + '\n';
+  const digest = contentHash(raw);
+  const entries = (deps.readdir ?? readdirSync)(run).sort();
+  for (const name of entries) {
+    const path = join(run, name);
+    const stat = (deps.lstat ?? lstatSync)(path);
+    if (stat.isSymbolicLink() || !stat.isFile()
+        || !['.loop.hash', 'loop.json', 'event-log.jsonl'].includes(name)
+          && !GENESIS_TEMP_NAME.test(name)) {
+      throw new Error('INIT_STATE_CORRUPT');
+    }
+  }
+  const loopBytes = readOptionalRegular(paths.loop, deps);
+  const hashBytes = readOptionalRegular(paths.hash, deps);
+  const eventBytes = readOptionalRegular(paths.events, deps);
+  if (loopBytes !== null) {
+    strictGenesisProof(root, { attempt_id: runId, request_digest: init.request_digest,
+      previous_current_digest: init.previous_current_digest,
+      observation_digest: init.host_observation_digest }, raw, deps);
+    for (const name of entries.filter(name => GENESIS_TEMP_NAME.test(name))) {
+      removeOwnTemp(join(run, name), deps);
+    }
+    return { outcome: 'already-published', raw };
+  }
+  if (hashBytes !== null && hashBytes.toString('utf8') !== digest) {
+    throw new Error('INIT_STATE_CORRUPT');
+  }
+  if (eventBytes !== null && !eventBytes.equals(Buffer.from(eventRaw))) {
+    throw new Error('INIT_STATE_CORRUPT');
+  }
+  for (const name of entries.filter(name => GENESIS_TEMP_NAME.test(name))) {
+    removeOwnTemp(join(run, name), deps);
+  }
+  if (eventBytes === null) writeGenesisArtifact(paths.events, runId, 'events', eventRaw, deps);
+  if (hashBytes === null) writeGenesisArtifact(paths.hash, runId, 'hash', digest, deps);
+  writeGenesisArtifact(paths.loop, runId, 'loop', raw, deps);
+  return { outcome: hashBytes === null ? 'published' : 'recovered-hash', raw };
+}
+
+export function commitPreparedInit(root, input, deps = {}) {
+  const prepared = input?.prepared;
+  if (prepared?.ok !== true || prepared.outcome !== 'prepared'
+      || !ATTEMPT_ID.test(prepared.attempt_id)
+      || !SHA256.test(prepared.expected_request_digest)
+      || !/^(?:NONE|[0-9a-f]{64})$/.test(prepared.previous_current_digest)
+      || !/^(?:NONE|[0-9a-f]{64})$/.test(prepared.expected_observation_digest)) {
+    throw new Error('INIT_COMMIT_BINDING_INVALID');
+  }
+  const canonical = buildCanonicalGenesis(root, {
+    prepared, request: input.request, observation: input.observation ?? null,
+  }, deps);
+  const canonicalRaw = JSON.stringify(canonical.loop, null, 2) + '\n';
+  const binding = { attempt_id: prepared.attempt_id,
+    request_digest: prepared.expected_request_digest,
+    previous_current_digest: prepared.previous_current_digest,
+    observation_digest: prepared.expected_observation_digest };
+  return withInitLock(root, () => {
+    const paths = initPaths(root, prepared.attempt_id);
+    let current = parseCurrent(readOptionalRegular(paths.current, deps));
+    let pending = exactPendingAt(paths.pending, null, deps);
+    if (current === prepared.attempt_id) {
+      strictGenesisProof(root, binding, null, deps);
+      if (pending?.attempt_id === prepared.attempt_id) {
+        exactPendingAt(paths.pending, { version: 1, attempt_id: binding.attempt_id,
+          request_digest: binding.request_digest,
+          previous_current_digest: binding.previous_current_digest }, deps);
+        deletePending(paths.pending, deps);
+        return { ok: true, outcome: 'recovered-pending', run_id: prepared.attempt_id };
+      }
+      return { ok: true, outcome: 'already-initialized', run_id: prepared.attempt_id };
+    }
+    strictExistingCurrent(root, current, deps);
+    let completedForeign = false;
+    if (pending !== null && pending.attempt_id !== prepared.attempt_id) {
+      if (!completedPendingMarker(root, pending, current, deps)
+          || prepared.previous_current_digest !== contentHash(current)) {
+        throw new Error('INIT_PENDING_CONFLICT');
+      }
+      deletePending(paths.pending, deps);
+      if (exactPendingAt(paths.pending, null, deps) !== null) {
+        throw new Error('INIT_PENDING_CONFLICT');
+      }
+      pending = null;
+      completedForeign = true;
+    }
+    const actualPrevious = current === null ? 'NONE' : contentHash(current);
+    if (actualPrevious !== prepared.previous_current_digest) {
+      throw new Error('INIT_CURRENT_CONFLICT');
+    }
+    const expectedPending = { version: 1, attempt_id: prepared.attempt_id,
+      request_digest: prepared.expected_request_digest,
+      previous_current_digest: prepared.previous_current_digest };
+    const recovering = pending !== null;
+    if (recovering) exactPendingAt(paths.pending, expectedPending, deps);
+    const control = assertPlainDirectory(join(assertPlainDirectory(root, deps), '.deep-loop'), deps);
+    if (dirname(paths.pending) !== control) throw new Error('INIT_ROOT_CONTAINMENT_INVALID');
+    const controlTemps = strictTempPaths(control, deps);
+    if (controlTemps.length > 0 && !recovering && !completedForeign) {
+      throw new Error('INIT_STATE_CORRUPT');
+    }
+    for (const temporary of controlTemps) removeOwnTemp(temporary, deps);
+    if (queryLstat(dirname(paths.run), deps) !== null) {
+      assertPlainDirectory(dirname(paths.run), deps);
+    }
+    const targetDirectory = runDirectorySnapshot(paths.run, deps);
+    if (!targetDirectory.plain
+        || !recovering && targetDirectory.exists
+        || recovering && readOptionalRegular(paths.loop, deps) === null
+          && !targetDirectory.recoverableStaging) {
+      throw new Error('INIT_STATE_CORRUPT');
+    }
+    if (pending === null) {
+      writeGenesisArtifact(paths.pending, prepared.attempt_id, 'pending',
+        JSON.stringify(expectedPending), deps);
+    }
+    exactPendingAt(paths.pending, expectedPending, deps);
+    publishGenesisState(root, prepared.attempt_id, canonical, deps);
+    strictGenesisProof(root, binding, canonicalRaw, deps);
+    current = parseCurrent(readOptionalRegular(paths.current, deps));
+    const currentDigest = current === null ? 'NONE' : contentHash(current);
+    if (currentDigest !== prepared.previous_current_digest
+        && current !== prepared.attempt_id) {
+      throw new Error('INIT_CURRENT_CONFLICT');
+    }
+    if (current !== prepared.attempt_id) {
+      writeGenesisArtifact(paths.current, prepared.attempt_id, 'current',
+        prepared.attempt_id + '\n', deps);
+    }
+    strictGenesisProof(root, binding, canonicalRaw, deps);
+    if (parseCurrent(readOptionalRegular(paths.current, deps)) !== prepared.attempt_id) {
+      throw new Error('INIT_CURRENT_CONFLICT');
+    }
+    exactPendingAt(paths.pending, expectedPending, deps);
+    deletePending(paths.pending, deps);
+    return { ok: true, outcome: recovering ? 'recovered-pending' : 'initialized',
+      run_id: prepared.attempt_id };
+  }, deps);
 }
 
 const statusResult = (outcome, lock_state, fields = {}) => ({
