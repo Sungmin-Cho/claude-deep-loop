@@ -2,7 +2,7 @@
 
 작성일: 2026-07-13
 운영 계약: `docs/handoff/2026-07-13-codex-app-native-task-continuation-goal-handoff.md`
-상태: Gate 1 fresh cycle 8 round 16 Review 진행; round 15 Respond 완료, correction-only 수렴 검증 중
+상태: Gate 1 fresh cycle 8 round 16 Respond 진행; REQUEST_CHANGES 미수렴, oversized external-frame probe 검증 중
 기준: `main@c38a96137f8f4f0099c35e893860930e8ee4cf73`, deep-loop `1.8.2`
 
 > source of truth: 이 문서 + 운영 계약 + 현재 저장소 + `git log`. 이전 대화 컨텍스트를 가정하지 말라.
@@ -1740,6 +1740,13 @@ local/worktree `core.autocrlf`/`core.eol`/`core.safecrlf`를 거부하고 모든
 suffix에 실제 embedded된 frame length만 slicing 전 remaining bytes로 bound하고, metadata의 두
 external-file length는 frozen staged Buffer와 대조한다. Actionable finding이 있어 adversarial은
 시작하지 않고 `N_actual=1`로 종료했다.
+Round 16 standard는 Round 15의 protocol correction은 sound하지만 regression evidence가 해당
+반례를 실제 재현하지 않았다고 판정했다. Probe의 external report/response가 약 20
+bytes라 수백 bytes metadata보다 작아, 잘못된 remaining-suffix bound도 통과했을 수 있었다.
+Respond는 fatal-UTF-8/LF 규칙을 유지하는 4 KiB 초과 external report Buffer를 사용하고 그
+Buffer가 metadata body보다 큰지 명시적으로 증명한다. Evidence suffix parser가 이 metadata를
+수용한 뒤 frozen external report/response의 exact length/hash를 다시 대조해야 한다. Actionable
+finding이 있어 adversarial은 시작하지 않고 `N_actual=1`로 종료했다.
 
 구현 순서:
 
