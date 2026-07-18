@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
@@ -262,4 +262,10 @@ test('A1: state patch with no run → MISSING_RUN_ID, exit 2', () => {
 test('finish --status stopped without --confirm exits 2 (#4)', () => {
   const { root, runId } = seed();
   assert.equal(runFail(root, ['finish', '--status', 'stopped', '--proof', '{"human_reason":"x"}', '--owner', runId, '--generation', '1']), 2);
+});
+
+test('structured input has no argv env file base64 or echo fallback', () => {
+  const source = readFileSync(join(process.cwd(), 'scripts', 'lib', 'bounded-input.mjs'), 'utf8');
+  assert.doesNotMatch(source, /process\.argv|process\.env|writeFile|mkdtemp|base64/i);
+  assert.doesNotMatch(source, /process\.stdout\.write\([^)]*(?:chunk|bytes|value)/);
 });

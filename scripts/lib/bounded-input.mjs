@@ -67,19 +67,25 @@ export async function readStructuredLine(stream, {
     let finalizeImmediate = null;
     const chunks = [];
     const cleanup = () => {
+      let restoreError = null;
       if (timer !== null) clearTimeoutFn(timer);
       if (finalizeImmediate !== null) clearImmediate(finalizeImmediate);
       stream.removeListener('data', onData);
       stream.removeListener('end', onEnd);
       stream.removeListener('close', onClose);
       stream.removeListener('error', onError);
-      if (raw) { raw = false; stream.setRawMode(false); }
+      if (raw) {
+        raw = false;
+        try { stream.setRawMode(false); }
+        catch { restoreError = new Error('STRUCTURED_STDIN_RAW_RESTORE_FAILED'); }
+      }
+      return restoreError;
     };
     const finish = (error, value) => {
       if (settled) return;
       settled = true;
-      cleanup();
-      if (error) reject(error); else resolve(value);
+      const restoreError = cleanup();
+      if (error || restoreError) reject(error || restoreError); else resolve(value);
     };
     const onError = () => finish(new Error('STRUCTURED_STDIN_ERROR'));
     const onEnd = () => candidate === null

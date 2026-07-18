@@ -136,3 +136,85 @@ test('bytes delivered before READY are rejected and READY is not emitted', async
     binding: 'nonce-3', writeReady: () => { ready += 1; } }), /STRUCTURED_STDIN_EARLY_WRITE/);
   assert.equal(ready, 0);
 });
+
+function rawStream({ restoreThrows = false } = {}) {
+  const calls = [];
+  const stream = new PassThrough();
+  stream.isTTY = true;
+  stream.setRawMode = value => {
+    calls.push(value);
+    if (!value && restoreThrows) throw new Error('restore failed');
+  };
+  return { stream, calls };
+}
+
+test('structured reader rejects malformed UTF-8 and restores raw mode', async () => {
+  const { stream, calls } = rawStream();
+  const pending = readStructuredLine(stream, { mode: 'pty-raw-noecho', purpose: 'confirm',
+    binding: 'attempt-1', maxBytes: 8, writeReady: () => {} });
+  stream.end(Buffer.from([0xc3, 0x28, 0x0a]));
+  await assert.rejects(pending, /STRUCTURED_STDIN_UTF8_INVALID/);
+  assert.deepEqual(calls, [true, false]);
+});
+
+test('structured reader rejects split extra records, oversize, timeout, and restore failure', async () => {
+  const extra = rawStream();
+  const extraPending = readStructuredLine(extra.stream, { mode: 'pty-raw-noecho', purpose: 'confirm',
+    binding: 'attempt-1', maxBytes: 8, writeReady: () => {} });
+  extra.stream.write('a\n');
+  extra.stream.end('b\n');
+  await assert.rejects(extraPending, /STRUCTURED_STDIN_MULTILINE/);
+
+  const delayed = rawStream();
+  const delayedPending = readStructuredLine(delayed.stream, { mode: 'pty-raw-noecho', purpose: 'confirm',
+    binding: 'attempt-delayed', maxBytes: 8, writeReady: () => {} });
+  delayed.stream.write('a\n');
+  await new Promise(resolve => setImmediate(() => {
+    delayed.stream.end('b\n');
+    resolve();
+  }));
+  await assert.rejects(delayedPending, /STRUCTURED_STDIN_MULTILINE/);
+
+  const large = rawStream();
+  const largePending = readStructuredLine(large.stream, { mode: 'pty-raw-noecho', purpose: 'confirm',
+    binding: 'attempt-1', maxBytes: 4, writeReady: () => {} });
+  large.stream.end('12345\n');
+  await assert.rejects(largePending, /STRUCTURED_STDIN_TOO_LARGE/);
+
+  const timeout = rawStream();
+  const timeoutPending = readStructuredLine(timeout.stream, { mode: 'pty-raw-noecho', purpose: 'confirm',
+    binding: 'attempt-1', writeReady: () => {},
+    setTimeoutFn: (fn, ms) => { assert.equal(ms, APP_STDIN_READ_TIMEOUT_MS); queueMicrotask(fn); return 7; },
+    clearTimeoutFn: id => assert.equal(id, 7) });
+  await assert.rejects(timeoutPending, /STRUCTURED_STDIN_TIMEOUT/);
+
+  const restore = rawStream({ restoreThrows: true });
+  const restorePending = readStructuredLine(restore.stream, { mode: 'pty-raw-noecho', purpose: 'confirm',
+    binding: 'attempt-1', writeReady: () => {} });
+  restore.stream.end('ok\n');
+  await assert.rejects(restorePending, /STRUCTURED_STDIN_RAW_RESTORE_FAILED/);
+
+  const readyFailure = rawStream();
+  await assert.rejects(readStructuredLine(readyFailure.stream, { mode: 'pty-raw-noecho', purpose: 'confirm',
+    binding: 'attempt-1', writeReady: () => { throw new Error('ready failed'); } }), /ready failed/);
+  assert.deepEqual(readyFailure.calls, [true, false]);
+});
+
+test('structured reader normalizes raw setup and stream lifecycle failures and removes listeners', async () => {
+  const missing = new PassThrough(); missing.isTTY = true;
+  await assert.rejects(readStructuredLine(missing, { mode: 'pty-raw-noecho', purpose: 'confirm',
+    binding: 'attempt-1', writeReady: () => {} }), /STRUCTURED_STDIN_RAW_UNAVAILABLE/);
+  const throwing = new PassThrough(); throwing.isTTY = true;
+  throwing.setRawMode = () => { throw new Error('raw failed'); };
+  await assert.rejects(readStructuredLine(throwing, { mode: 'pty-raw-noecho', purpose: 'confirm',
+    binding: 'attempt-1', writeReady: () => {} }), /raw failed/);
+  for (const event of ['end', 'close', 'error']) {
+    const fixture = rawStream();
+    const pending = readStructuredLine(fixture.stream, { mode: 'pty-raw-noecho', purpose: 'confirm',
+      binding: `attempt-${event}`, writeReady: () => {} });
+    if (event === 'error') fixture.stream.emit('error', new Error('stream failed'));
+    else fixture.stream.emit(event);
+    await assert.rejects(pending, /STRUCTURED_STDIN_(?:ERROR|EARLY_EOF|CLOSED)/);
+    for (const name of ['data', 'end', 'close', 'error']) assert.equal(fixture.stream.listenerCount(name), 0);
+  }
+});
