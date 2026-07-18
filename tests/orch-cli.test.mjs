@@ -11,6 +11,7 @@ import { buildFixedInitializationRequest, commitFixedInitialization, detectIniti
 import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import { canonicalProjectRoot, projectRootDigest } from '../scripts/lib/project-root.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
+import { readLines } from '../scripts/lib/integrity.mjs';
 
 const CLI = join(process.cwd(), 'scripts', 'deep-loop.mjs');
 const FORCE_WIN32 = join(process.cwd(), 'tests', 'helpers', 'force-win32.mjs');
@@ -1511,4 +1512,108 @@ test('hard crash inside append-only init authority requires explicit manual comp
     '--prepared-authority', authorityJson], { cwd: root, encoding: 'utf8' });
   assert.equal(recovered.status, 0, recovered.stderr);
   assert.equal(JSON.parse(recovered.stdout).run_id, binding.attempt_id);
+});
+
+function runReadyMatch(args, readyPattern, line, { cwd } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [CLI, ...args], {
+      cwd, stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = ''; let stderr = ''; let wrote = false;
+    child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
+    child.stdout.on('data', chunk => {
+      stdout += chunk;
+      const ready = stdout.split('\n').find(value => readyPattern.test(value));
+      if (!wrote && ready !== undefined) {
+        wrote = true;
+        child.stdin.end(line + '\n');
+      }
+    });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    child.once('error', reject);
+    child.once('close', code => resolve({ code, stdout, stderr, wrote }));
+  });
+}
+
+test('host-surface stdin-probe is a literal READY-gated no-echo process', async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-probe-')));
+  const canary = 'DEEP_LOOP_CANARY_7f3a';
+  const result = await runReadyMatch(['host-surface', 'stdin-probe',
+    '--project-root', root, '--stdin-mode', 'pipe-open-noecho', '--probe-stdin'],
+  /^DEEP_LOOP_STDIN_READY:v1:stdin-probe:[0-9a-f]{32}:pipe-open-noecho$/, canary);
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.wrote, true);
+  assert.equal(result.stdout.includes(canary), false);
+  assert.equal(result.stderr.includes(canary), false);
+  const lines = result.stdout.trim().split('\n');
+  const receipt = JSON.parse(lines.at(-1));
+  assert.deepEqual(Object.keys(receipt).sort(), ['byte_length', 'mode', 'ok', 'sha256']);
+  assert.deepEqual(receipt, { ok: true, mode: 'pipe-open-noecho',
+    byte_length: Buffer.byteLength(canary),
+    sha256: createHash('sha256').update(canary).digest('hex') });
+  assert.equal(existsSync(join(root, '.deep-loop')), false);
+});
+
+test('host-surface observe has exact grammar and safe malformed JSON diagnostics', async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-observe-cli-')));
+  const { runId } = initRun(root, { runtime: 'codex', goal: 'observe-cli',
+    cwdFn: () => root, now: new Date('2026-07-13T00:00:00.000Z') });
+  const loop = readState(root, runId).data;
+  delete loop.initialization;
+  delete loop.autonomy.app_task_continuation;
+  loop.session_chain.sessions[0].host_surface = null;
+  writeState(root, runId, loop);
+  const manual = ['host-surface', 'observe', '--project-root', root, '--run-id', runId,
+    '--owner', runId, '--generation', '1', '--runtime', 'codex', '--manual-enums',
+    '--host-surface', 'codex-cli', '--host-source', 'codex-cli-host'];
+  for (const extra of [
+    ['--project-root', root],
+    ['--stdin-mode', 'pipe-open-noecho'],
+    ['--observation-stdin'],
+    ['--unknown-host-flag', 'value'],
+  ]) {
+    const rejected = spawnSync(process.execPath, [CLI, ...manual, ...extra],
+      { cwd: root, encoding: 'utf8' });
+    assert.equal(rejected.status, 2, rejected.stderr);
+  }
+  const enumApp = spawnSync(process.execPath, [CLI, 'host-surface', 'observe',
+    '--project-root', root, '--run-id', runId, '--owner', runId, '--generation', '1',
+    '--runtime', 'codex', '--manual-enums', '--host-surface', 'codex-app',
+    '--host-source', 'codex-app-tool-provenance', '--capabilities',
+    'create-thread-local,list-projects'], { cwd: root, encoding: 'utf8' });
+  assert.equal(enumApp.status, 0, enumApp.stderr);
+  assert.equal(JSON.parse(enumApp.stdout).outcome, 'observed');
+  const enumStored = readState(root, runId).data.session_chain.sessions[0].host_surface;
+  assert.equal(enumStored.kind, 'codex-app');
+  assert.equal(enumStored.host_task_cwd, null);
+  assert.equal(enumStored.structured_stdin_mode, null);
+  assert.equal(enumStored.kernel_cwd_at_observation, root);
+  assert.equal(enumStored.observed_generation, 1);
+  const before = readFileSync(join(root, '.deep-loop', 'runs', runId, 'loop.json'));
+  const secret = 'RAW_OBSERVATION_SECRET_SHOULD_NOT_ECHO';
+  const malformed = await runReadyMatch(['host-surface', 'observe', '--project-root', root,
+    '--run-id', runId, '--owner', runId, '--generation', '1', '--runtime', 'codex',
+    '--stdin-mode', 'pipe-open-noecho', '--observation-stdin'],
+  new RegExp('^DEEP_LOOP_STDIN_READY:v1:host-observe:' + runId
+    + '\\.1:pipe-open-noecho$'), '{"secret":"' + secret + '",BROKEN');
+  assert.equal(malformed.code, 1);
+  assert.equal(malformed.stdout.includes(secret), false);
+  assert.equal(malformed.stderr.includes(secret), false);
+  assert.match(malformed.stderr, /STRUCTURED_JSON_INVALID/);
+  assert.deepEqual(readFileSync(join(root, '.deep-loop', 'runs', runId, 'loop.json')), before);
+
+  const sentinel = 'RAW_OBSERVE_EXTRA_THREAD_ID';
+  const rejected = await runReadyMatch(['host-surface', 'observe', '--project-root', root,
+    '--run-id', runId, '--owner', runId, '--generation', '1', '--runtime', 'codex',
+    '--stdin-mode', 'pipe-open-noecho', '--observation-stdin'],
+  new RegExp('^DEEP_LOOP_STDIN_READY:v1:host-observe:' + runId
+    + '\\.1:pipe-open-noecho$'), JSON.stringify({ kind: 'codex-app',
+      source: 'codex-app-tool-provenance',
+      capabilities: ['create-thread-local', 'list-projects', 'structured-process-stdin'],
+      structured_stdin_mode: 'pipe-open-noecho', host_task_cwd: root,
+      host_task_cwd_source: 'app-task-context', threadId: sentinel }), { cwd: root });
+  assert.equal(rejected.code, 1, rejected.stderr);
+  assert.equal((rejected.stdout + rejected.stderr).includes(sentinel), false);
+  assert.deepEqual(readFileSync(join(root, '.deep-loop', 'runs', runId, 'loop.json')), before);
+  assert.equal(readLines(root, runId).some(event => JSON.stringify(event).includes(sentinel)), false);
 });

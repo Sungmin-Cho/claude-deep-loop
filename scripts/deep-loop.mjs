@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { error } from './lib/log.mjs';
@@ -18,6 +19,7 @@ import { dispatchReview, importReviewOutcome, recordReviewOutcome } from './lib/
 import { readBoundedText, readStructuredLine } from './lib/bounded-input.mjs';
 import { classifyProjectTaskDirectory, exactRawHostObservation,
   normalizeHostObservation } from './lib/host-surface.mjs';
+import { observeHostSurface } from './lib/app-task-continuation.mjs';
 import { canonicalProjectRoot } from './lib/project-root.mjs';
 import { contentHash } from './lib/envelope.mjs';
 import { nextAction } from './lib/next-action.mjs';
@@ -455,10 +457,86 @@ const initRunHandler = async a => {
   } catch (failure) { error(String(failure?.message || failure)); return 1; }
 };
 
+function manualObservationFromFlags(f, argv, kernelCwd) {
+  const surface = f['host-surface']; const source = f['host-source'];
+  const nullPair = surface === 'null' && source === 'null';
+  if (!nullPair && (typeof surface !== 'string' || typeof source !== 'string')) {
+    throw new Error('USAGE_MANUAL_OBSERVATION');
+  }
+  return { kind: nullPair ? null : surface, source: nullPair ? null : source,
+    capabilities: oneCapabilityList(f, argv, { manual: true }),
+    structured_stdin_mode: null, host_task_cwd: null, host_task_cwd_source: null,
+    kernel_cwd_at_observation: (realpathSync.native || realpathSync)(kernelCwd), observed_at: null };
+}
+
+const HOST_SURFACE_FLAGS = Object.freeze({
+  'stdin-probe': new Set(['project-root', 'stdin-mode', 'probe-stdin']),
+  observe: new Set(['project-root', 'run-id', 'owner', 'generation', 'runtime',
+    'manual-enums', 'stdin-mode', 'observation-stdin', 'host-surface', 'host-source',
+    'capabilities']),
+});
+
+const hostSurfaceHandler = async argv => {
+  const [verb, ...flagArgs] = argv;
+  if (!Object.hasOwn(HOST_SURFACE_FLAGS, verb)) return 2;
+  try { assertExactFlagGrammar(flagArgs, HOST_SURFACE_FLAGS[verb]); }
+  catch { return 2; }
+  const f = parseFlags(flagArgs);
+  let root;
+  try { root = explicitRoot(f); }
+  catch { return 2; }
+  if (verb === 'stdin-probe') {
+    const mode = f['stdin-mode'];
+    if (f['probe-stdin'] !== true
+        || !['pipe-open-noecho', 'pty-raw-noecho'].includes(mode)) return 2;
+    const nonce = randomBytes(16).toString('hex');
+    const line = await readStructuredLine(process.stdin, {
+      mode, purpose: 'stdin-probe', binding: nonce, maxBytes: 1024,
+      writeReady: token => process.stdout.write(token + '\n'),
+    });
+    json({ ok: true, mode, byte_length: Buffer.byteLength(line),
+      sha256: createHash('sha256').update(line).digest('hex') });
+    return 0;
+  }
+  const runId = reqStr(f, 'run-id');
+  const owner = reqStr(f, 'owner');
+  if (runId === null || owner === null || typeof f.generation !== 'string'
+      || !/^(?:0|[1-9][0-9]*)$/.test(f.generation)
+      || !Number.isSafeInteger(Number(f.generation))) return 2;
+  const generation = Number(f.generation);
+  const runtime = reqStr(f, 'runtime');
+  if (!['claude', 'codex'].includes(runtime)) return 2;
+  if (f['manual-enums'] !== undefined && f['manual-enums'] !== true) return 2;
+  const manual = f['manual-enums'] === true;
+  const mode = manual ? null : f['stdin-mode'];
+  if (manual && (f['stdin-mode'] !== undefined || f['observation-stdin'] !== undefined)) return 2;
+  if (!manual && ['host-surface', 'host-source', 'capabilities']
+    .some(name => f[name] !== undefined)) return 2;
+  if (!manual && (!['pipe-open-noecho', 'pty-raw-noecho'].includes(mode)
+      || f['observation-stdin'] !== true)) return 2;
+  let observation;
+  if (manual) {
+    try { observation = manualObservationFromFlags(f, flagArgs, process.cwd()); }
+    catch (failure) {
+      if (String(failure?.message).startsWith('USAGE_')) return 2;
+      throw failure;
+    }
+  } else {
+    observation = await readStructuredJson({
+      mode, purpose: 'host-observe', binding: owner + '.' + generation,
+      maxBytes: 32_768, writeReady: token => process.stdout.write(token + '\n'),
+    });
+  }
+  json(observeHostSurface(root, runId, { owner, generation, runtime,
+    readerMode: mode, observation }, nativeObservationDeps(process.cwd())));
+  return 0;
+};
+
 // validate: 비공허 검증 (Codex impl 🟡4)
 // 1) 스키마+빌더 self-test: buildInitialLoop 산출물이 항상 검증 통과해야 함 (regression 게이트)
 // 2) 현재/지정 run이 있으면 readState(해시 검증 발화) + schema.validate
 const handlers = {
+  'host-surface': hostSurfaceHandler,
   validate: async (a) => {
     const f = parseFlags(a);
     const errors = [];
