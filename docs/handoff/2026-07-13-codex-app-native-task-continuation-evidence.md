@@ -4020,3 +4020,41 @@ main-agent judgment:
   as a receipt-only target. Because source/test bytes changed, discard the Round 1 target and run one
   fresh same-target two-voice review. Two `APPROVE`, Red/Yellow `0 / 0`, and unchanged target close
   corrected Gate 3A; no extra speculative round follows.
+
+### Corrected Gate 3A checkpoint round 2 review and Respond
+
+- reviewed base/head: `f15d42dc0a21a2f37d86aa1a3467f5e3a2820b53..1f55c7c71ec7b0c4faa7da58be2d9a68a78fc4b4`;
+  target tree `c44d60516db8897d0ee4d0c2fd35aaeaec50837a`.
+- invocation: fresh standard `/root/gate3a_round2_standard` and edge checker
+  `/root/gate3a_round2_edge_checker`, both read-only exact `gpt-5.6-sol` / high; Opus and agy
+  excluded; `N_planned=2`, `N_actual=2`.
+- verdict: both `REQUEST_CHANGES`; consolidated Red/Yellow/Info `0 / 2 / 0`. Accepted roots:
+  case-insensitive native aliases of fixed/successor/release initialization authority were omitted by
+  status, and fixed manual initialization rejected paired-null plus positive App/Desktop profiles
+  required by design section 2.4 and Task 6A.
+- formal review: `.deep-review/reports/2026-07-19-012921-review.md`, SHA-256
+  `148b118c60eec6883d1b805d44767515d3c40673c86bc963ae2df29f97e3718a`.
+- response: accepted Yellow 2; rejected/deferred none; Info none. Native-alias classification now
+  binds only same-file authority aliases and manual init accepts exactly paired-null plus all four
+  runtime-correlated positive profiles while preserving every raw/mixed/structured-input rejection.
+  `.deep-review/responses/2026-07-19-012921-response.md`, SHA-256
+  `a9a9680fca8b74c945aabae872fcb779c849fb35d80039987c60f6ad1706f3a2`.
+- correction commit/tree: `1c061afbaebe78ee378f4ad557fac9f46f66a8e6` /
+  `3aa5c174304db35577c541e1eb45765f03269aef`; six files, 169 insertions and 14 deletions.
+  Artifact SHA-256: `scripts/deep-loop.mjs`
+  `32c4455786706a800a6d36f9c1a066530b45bc3706fbcbc22b0bdfe17b46898e`;
+  `scripts/lib/host-surface.mjs`
+  `f3fe26bc82841ca1ceb1e83bb36febbd4cdeed6ae9e80ab80a43bc6728d0c473`;
+  `scripts/lib/init-transaction.mjs`
+  `a07e1ecabe0c3106426b678c4d3a23f16ddb2d4c83589e7f3d86f91a555dc607`;
+  `scripts/lib/initrun.mjs`
+  `a401026605bcca3d600b6769ddc7ac805dbe679dd8f56a1da513949d53bcc479`;
+  tests `c70c180b5498a4d8ba16c2f425336c1f9c418ff65420d783562cf08a5d7e7520` /
+  `a73431dfd4c370fb5e01cc81e8f544fc10aaba8a2cd409cdc2e96e6fe7a990d8`.
+- strict response evidence: authority RED 0/3 to GREEN 3/3; profiles RED 2/5 to GREEN 5/5 plus
+  invalid-input matrix 1/1; Gate groups 315/315 and 131/131; clean-detached preflight 1,669/1,669;
+  diff check clean.
+- gate state: open. Force-add this evidence update with the exact report/response and commit a
+  receipt-only target. Run one fresh same-target confirmation; two valid `APPROVE`, Red/Yellow
+  `0 / 0`, plus unchanged artifacts close corrected Gate 3A. No additional round is authorized
+  without a new concrete counterexample.
