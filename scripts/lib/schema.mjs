@@ -587,8 +587,8 @@ function validateAppState(loop, errors) {
     if (initialization.host_surface_digest !== actualSurfaceDigest) {
       errors.push('initialization.host_surface_digest facts correlation invalid');
     }
-    if (initialObservation === null || initialObservation.observed_generation !== 1
-        || initialObservation.observed_at !== loop.created_at) {
+    if (initialObservation !== null && (initialObservation.observed_generation !== 1
+        || initialObservation.observed_at !== loop.created_at)) {
       errors.push('initialized genesis observation clock invalid');
     }
   }
