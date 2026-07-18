@@ -81,7 +81,7 @@ function legacyEventLines(specs) {
   });
 }
 
-export function legacyInProgressProofFixture() {
+export function legacyInProgressProofFixture({ appAuthority = false } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-legacy-proof-')));
   const now = '2026-07-13T00:00:00.000Z';
   const { runId } = initRun(root, { runtime: 'codex', goal: 'legacy proof continuation',
@@ -91,6 +91,7 @@ export function legacyInProgressProofFixture() {
   const workstreamId = 'ws-01-legacy';
   const makerId = '001-legacy-maker';
   delete loop.initialization;
+  if (!appAuthority) loop.session_chain.sessions[0].host_surface = null;
   loop.review.points = ['implementation'];
   loop.workstreams = [{ id: workstreamId, title: 'legacy', status: 'in_progress',
     branch: 'legacy', worktree: '.worktrees/legacy', base_commit: null,

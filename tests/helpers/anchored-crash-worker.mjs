@@ -18,6 +18,9 @@ const BASE_POINTS = new Set([
   'state-replace-after-rename-before-dir-fsync',
   'hash-replace-after-create', 'hash-replace-after-fsync',
   'hash-replace-after-rename-before-dir-fsync',
+  'cleanup-events-after-unlink', 'cleanup-state-after-unlink',
+  'cleanup-hash-after-unlink', 'cleanup-marker-after-unlink',
+  'response-after-cleanup',
 ]);
 
 function exactObject(value, keys) {

@@ -278,6 +278,7 @@ import { assertVerifiedRunSnapshot as assertSnapshot7c,
 import { patch as patch7b, readState as state7c, runDir as runDir7b,
   writeState as writeState7c } from '../scripts/lib/state.mjs';
 import { durableRunBytes as bytes7c, rawHashValidState as raw7c,
+  legacyInProgressProofFixture as legacyProof7b,
   seedCorrelatedTerminal as terminal7b,
   verifiedAppRun as fixture7c } from './fixtures/verified-app-run.mjs';
 import { spawnSync as spawn7c } from 'node:child_process';
@@ -532,7 +533,8 @@ const GENERIC_EVENT7B = Object.freeze({
 
 function fixedJournalInventory7b(root, runId) {
   return list7b(runDir7b(root, runId)).sort().filter(name =>
-    name.startsWith('.anchored-') || name === 'loop.json.replace'
+    (name.startsWith('.anchored-') && name !== '.anchored-committed.json')
+      || name === 'loop.json.replace'
       || name === '.loop.hash.replace');
 }
 
@@ -604,11 +606,22 @@ function genericCrashCase7b(operation) {
       { ...workstream, ...(different ? { branch: 'codex/crash-probe-other',
         worktree: '.worktrees/crash-probe-other' } : {}), fence: caller });
   };
+  const retryWithResult = operation === 'generic-append' ? () => {
+    const caller = { owner: fixture.owner, generation: fixture.generation };
+    return append7c(fixture.root, fixture.runId,
+      { type: 'anchored-crash-probe', data: { owner: fixture.owner,
+        generation: fixture.generation } }, () => {}, undefined, {
+        callerBinding: caller,
+        intentDigest: intent7c('anchored-crash-probe', caller, {}),
+        fenceError: 'LEASE_FENCED: generic-append',
+        onRecovered: (_loop, recovered) => recovered.events[0],
+      });
+  } : null;
   const workerInput = operation === 'generic-acquire'
     ? { childOwner: fixture.owner }
     : operation === 'state-patch' ? { field: 'decisions', value: patchValue }
       : operation === 'workstream-new' ? workstream : {};
-  return { fixture, invoke, workerInput };
+  return { fixture, invoke, retryWithResult, workerInput };
 }
 
 function assertGenericCrashRecovery7b(operation, point) {
@@ -652,6 +665,9 @@ function assertGenericCrashRecovery7b(operation, point) {
     `${operation}/${point} read-only status changed journal bytes`);
   invoke();
   assert6b.deepEqual(fixedJournalInventory7b(fixture.root, fixture.runId), []);
+  assert6b.equal(list7b(runDir7b(fixture.root, fixture.runId))
+    .filter(name => name === '.anchored-committed.json').length, 1,
+  `${operation}/${point} keeps exactly one bounded committed receipt`);
   assert6b.equal(lines7c(fixture.root, fixture.runId)
     .filter(event => event.type === GENERIC_EVENT7B[operation]).length, 1,
   `${operation}/${point} must converge to one business event`);
@@ -662,4 +678,91 @@ test6b('anchored crash parent matrix preserves orphans pending bytes and exact r
     'state-patch', 'workstream-new']) {
     for (const point of GENERIC_CRASH_POINTS7B) assertGenericCrashRecovery7b(operation, point);
   }
+});
+
+const CLEANUP_CRASH_POINTS7B = Object.freeze([
+  'cleanup-events-after-unlink', 'cleanup-state-after-unlink',
+  'cleanup-hash-after-unlink', 'cleanup-marker-after-unlink',
+  'response-after-cleanup',
+]);
+
+test6b('generic append cleanup interruption and final response loss remain exactly idempotent', () => {
+  const worker = file7b(new URL('./helpers/anchored-crash-worker.mjs', import.meta.url));
+  for (const point of CLEANUP_CRASH_POINTS7B) {
+    const { fixture, invoke, retryWithResult, workerInput } =
+      genericCrashCase7b('generic-append');
+    const child = spawn7c(process.execPath,
+      [worker, fixture.root, fixture.runId, 'generic-append', point], {
+        shell: false, encoding: 'utf8', timeout: 10_000,
+        env: { ...process.env, DEEP_LOOP_CRASH_OWNER: fixture.owner,
+          DEEP_LOOP_CRASH_GENERATION: String(fixture.generation),
+          DEEP_LOOP_CRASH_INPUT: JSON.stringify(workerInput) },
+      });
+    assert6b.equal(child.status, 91,
+      `${point}: ${child.stderr || child.stdout || child.error?.message}`);
+    rmdir7b(join7b(fixture.root, '.deep-loop', 'runs', fixture.runId, '.lock'));
+    if (!['cleanup-marker-after-unlink', 'response-after-cleanup'].includes(point)) {
+      const pending = completeJournalBytes7b(fixture.root, fixture.runId);
+      for (const variant of [{ foreign: true }, { different: true }]) {
+        assert6b.throws(() => invoke(variant), /FENCED|PENDING/);
+        assert6b.deepEqual(completeJournalBytes7b(fixture.root, fixture.runId), pending,
+          `${point} divergent retry changed cleanup bytes`);
+      }
+    }
+    const recovered = retryWithResult();
+    assert6b.equal(recovered?.type, GENERIC_EVENT7B['generic-append']);
+    assert6b.deepEqual(recovered?.data,
+      { owner: fixture.owner, generation: fixture.generation });
+    assert6b.equal(lines7c(fixture.root, fixture.runId)
+      .filter(event => event.type === GENERIC_EVENT7B['generic-append']).length, 1,
+    `${point} exact retry must not duplicate its committed event`);
+    assert6b.doesNotThrow(() => verified7c(fixture.root, fixture.runId));
+  }
+});
+
+test6b('matching committed receipt with a divergent canonical snapshot fails closed', () => {
+  const { fixture, invoke } = genericCrashCase7b('generic-append');
+  invoke();
+  const receiptPath = join7b(runDir7b(fixture.root, fixture.runId),
+    '.anchored-committed.json');
+  const receipt = JSON.parse(readSource7b(receiptPath, 'utf8'));
+  receipt.after.events_digest = '0'.repeat(64);
+  writeFileSync(receiptPath, JSON.stringify(receipt));
+  const before = bytes7c(fixture.root, fixture.runId);
+  const receiptBefore = readSource7b(receiptPath);
+  assert6b.throws(() => invoke(), /ANCHORED_TRANSACTION_CORRUPT/);
+  assert6b.deepEqual(bytes7c(fixture.root, fixture.runId), before);
+  assert6b.deepEqual(readSource7b(receiptPath), receiptBefore);
+  assert6b.equal(lines7c(fixture.root, fixture.runId)
+    .filter(event => event.type === GENERIC_EVENT7B['generic-append']).length, 1);
+});
+
+test6b('eligible legacy proof fixture checkpoints once and keeps later proof continuity', () => {
+  const fixture = legacyProof7b();
+  patch7b(fixture.root, fixture.runId, 'decisions', ['first'], { fence: fixture.fence });
+  let lines = lines7c(fixture.root, fixture.runId);
+  const checkpoints = lines.filter(event => event.type === 'lease-lineage-baselined');
+  assert6b.equal(checkpoints.length, 1);
+  assert6b.deepEqual(checkpoints[0].data.legacy_active_workstreams,
+    [fixture.workstreamId]);
+  assert6b.deepEqual(checkpoints[0].data.legacy_proof_origins
+    .map(origin => `${origin.kind}:${origin.id}`),
+  [`episode:${fixture.makerId}`, `workstream:${fixture.workstreamId}`]);
+  assert6b.deepEqual(state7c(fixture.root, fixture.runId).data.active_workstreams,
+    [fixture.workstreamId]);
+
+  patch7b(fixture.root, fixture.runId, 'decisions', ['second'], { fence: fixture.fence });
+  lines = lines7c(fixture.root, fixture.runId);
+  assert6b.equal(lines.filter(event => event.type === 'lease-lineage-baselined').length, 1);
+  assert6b.equal(lines.filter(event => event.type === 'state-patch').length, 2);
+  assert6b.doesNotThrow(() => verified7c(fixture.root, fixture.runId));
+});
+
+test6b('unbaselined legacy App authority remains ineligible for a verified mutation', () => {
+  const fixture = legacyProof7b({ appAuthority: true });
+  const before = bytes7c(fixture.root, fixture.runId);
+  assert6b.throws(() => patch7b(fixture.root, fixture.runId,
+    'decisions', ['forbidden'], { fence: fixture.fence }),
+  /RUN_SNAPSHOT_INVALID|LEGACY_LINEAGE_CHECKPOINT_INELIGIBLE/);
+  assert6b.deepEqual(bytes7c(fixture.root, fixture.runId), before);
 });

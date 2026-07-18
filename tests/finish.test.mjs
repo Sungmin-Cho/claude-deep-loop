@@ -334,13 +334,15 @@ test('repro: abandoning the orphan pending maker unblocks finish --status comple
 });
 
 // ── v1.6 double-finish 회귀 (spec §2.2/§4-3) ─────────────────────────────────
-test('double-finish is rejected via leaseCheck RUN_TERMINAL (spec §4-3)', () => {
+test('exact finish response-loss retry is inert while a different finish remains terminal-fenced', () => {
   const { root, runId, fence } = seed();
   buildSettledRun(root, runId, fence);
   writeFileSync(join(runDir(root, runId), 'final-report.md'), '# done');
   assert.equal(finishRun(root, runId, { status: 'completed', reportRel: 'final-report.md', proof: {}, fence }).ok, true);
-  // 2번째 finish — LEASE_FENCED: RUN_TERMINAL (fence 채널 선착, FINISH_ALREADY_TERMINAL은 방어-심층)
-  assert.throws(() => finishRun(root, runId, { status: 'completed', reportRel: 'final-report.md', proof: {}, fence }), /LEASE_FENCED: RUN_TERMINAL/);
+  // 동일 caller+intent의 response-loss retry는 committed receipt에서 원래 결과를 복원한다.
+  assert.equal(finishRun(root, runId,
+    { status: 'completed', reportRel: 'final-report.md', proof: {}, fence }).ok, true);
+  // 다른 intent는 receipt를 재사용하지 않으며 기존 terminal fence를 그대로 받는다.
   assert.throws(() => finishRun(root, runId, { status: 'stopped', proof: { human_reason: 'x' }, confirm: true, fence }), /LEASE_FENCED: RUN_TERMINAL/);
   // finish 이벤트는 정확히 1개
   const log = readFileSync(join(runDir(root, runId), 'event-log.jsonl'), 'utf8');

@@ -608,6 +608,7 @@ export function assertVerifiedRunSnapshot(root, runId, loop, { lines } = {}) {
 const JOURNAL_NAMES = Object.freeze({
   marker: '.anchored-pending.json', events: '.anchored-events.stage',
   state: '.anchored-state.stage', hash: '.anchored-hash.stage',
+  receipt: '.anchored-committed.json',
 });
 const MARKER_KEYS = Object.freeze([
   'after', 'before', 'caller', 'intent_digest', 'version',
@@ -694,6 +695,23 @@ function readAnchoredMarkerUnderLock(root, runId) {
   return Object.freeze(marker);
 }
 
+function readCommittedReceiptUnderLock(root, runId) {
+  const path = journalPaths(root, runId).receipt;
+  if (!regularFileIfPresent(path, 'committed receipt')) return null;
+  let receipt;
+  try { receipt = JSON.parse(readFileSync(path, 'utf8')); }
+  catch { throw new Error('ANCHORED_TRANSACTION_CORRUPT: committed receipt json'); }
+  if (!exactKeys(receipt, MARKER_KEYS) || receipt.version !== 1
+      || !exactKeys(receipt.caller, ['generation', 'owner'])
+      || typeof receipt.caller.owner !== 'string'
+      || !Number.isSafeInteger(receipt.caller.generation) || receipt.caller.generation < 1
+      || !/^[0-9a-f]{64}$/.test(receipt.intent_digest)
+      || !strictSnapshot(receipt.before) || !strictSnapshot(receipt.after)) {
+    throw new Error('ANCHORED_TRANSACTION_CORRUPT: committed receipt shape');
+  }
+  return Object.freeze(receipt);
+}
+
 function assertNoAnchoredMarkerUnderLock(root, runId) {
   if (readAnchoredMarkerUnderLock(root, runId) !== null) {
     throw new Error('ANCHORED_TRANSACTION_PENDING');
@@ -708,6 +726,10 @@ function assertNoAnchoredMarkerUnderLock(root, runId) {
     const path = join(runDir(root, runId), name);
     if (!knownOrphans.has(path)) {
       throw new Error('ANCHORED_TRANSACTION_CORRUPT: unknown journal artifact');
+    }
+    if (path === paths.receipt) {
+      regularFile(path, 'committed receipt');
+      continue;
     }
     durableUnlink(path);
   }
@@ -748,19 +770,34 @@ function assertSnapshotBytes(snapshot, events, state, hash, label) {
   }
 }
 
-function removeJournal(paths) {
-  for (const key of ['marker', 'events', 'state', 'hash']) {
+function removeJournal(paths, marker) {
+  for (const key of ['events', 'state', 'hash']) {
     durableUnlink(paths[key]);
+    crashIfScheduled(`cleanup-${key}-after-unlink`);
   }
+  // The marker remains authoritative until every disposable stage is gone. Publish one bounded
+  // last-commit receipt before removing it so a lost response can still recover the exact durable
+  // caller/intent/result without retaining an unbounded journal.
+  durableReplace(paths.receipt, Buffer.from(JSON.stringify(marker)));
+  durableUnlink(paths.marker);
+  crashIfScheduled('cleanup-marker-after-unlink');
+}
+
+function snapshotBytesMatch(snapshot, events, state, hash) {
+  return JSON.stringify(journalSnapshot(events, state, hash)) === JSON.stringify(snapshot);
+}
+
+function frozenRecoveredEvents(bytes) {
+  const events = bytes.toString('utf8').split('\n').filter(Boolean)
+    .map(line => JSON.parse(line));
+  return Object.freeze({ events: Object.freeze(events.map(event =>
+    Object.freeze(structuredClone(event)))) });
 }
 
 function recoverAnchoredTransactionUnderLock(root, runId, marker) {
   const paths = journalPaths(root, runId);
   // Reject unknown or symlinked journal names before reading or changing canonical bytes.
   assertKnownAnchoredArtifactsUnderLock(root, runId, paths);
-  const stagedEvents = readExactBytes(paths.events, 'events stage');
-  const stagedState = readExactBytes(paths.state, 'state stage');
-  const stagedHash = readExactBytes(paths.hash, 'hash stage');
   const eventPath = logPath(root, runId);
   const statePath = join(runDir(root, runId), 'loop.json');
   const hashPath = join(runDir(root, runId), '.loop.hash');
@@ -769,6 +806,26 @@ function recoverAnchoredTransactionUnderLock(root, runId, marker) {
   const canonicalState = readExactBytes(statePath, 'canonical state');
   const canonicalHash = readExactBytes(hashPath, 'canonical hash');
   const beforeLength = marker.before.events_bytes;
+  const canonicalAfter = snapshotBytesMatch(marker.after,
+    canonicalEvents, canonicalState, canonicalHash);
+  if (canonicalAfter) {
+    const suffix = canonicalEvents.subarray(beforeLength);
+    for (const [key, expected] of [
+      ['events', suffix], ['state', canonicalState], ['hash', canonicalHash],
+    ]) {
+      if (regularFileIfPresent(paths[key], `${key} stage`)
+          && !readFileSync(paths[key]).equals(expected)) {
+        throw new Error(`ANCHORED_TRANSACTION_CORRUPT: ${key} cleanup stage`);
+      }
+    }
+    const recovered = frozenRecoveredEvents(suffix);
+    removeJournal(paths, marker);
+    crashIfScheduled('response-after-cleanup');
+    return recovered;
+  }
+  const stagedEvents = readExactBytes(paths.events, 'events stage');
+  const stagedState = readExactBytes(paths.state, 'state stage');
+  const stagedHash = readExactBytes(paths.hash, 'hash stage');
   if (canonicalEvents.length < beforeLength
       || canonicalEvents.length > beforeLength + stagedEvents.length) {
     throw new Error('ANCHORED_TRANSACTION_CORRUPT: event length');
@@ -819,11 +876,10 @@ function recoverAnchoredTransactionUnderLock(root, runId, marker) {
   const finalState = readFileSync(statePath);
   const finalHash = readFileSync(hashPath);
   assertSnapshotBytes(marker.after, finalEvents, finalState, finalHash, 'recovered candidate');
-  const recoveredEvents = stagedEvents.toString('utf8').split('\n').filter(Boolean)
-    .map(line => JSON.parse(line));
-  removeJournal(paths);
-  return Object.freeze({ events: Object.freeze(recoveredEvents.map(event =>
-    Object.freeze(structuredClone(event)))) });
+  const recovered = frozenRecoveredEvents(stagedEvents);
+  removeJournal(paths, marker);
+  crashIfScheduled('response-after-cleanup');
+  return recovered;
 }
 
 const JOURNAL_CRASH_POINTS = new Set([
@@ -834,6 +890,9 @@ const JOURNAL_CRASH_POINTS = new Set([
   'state-replace-after-rename-before-dir-fsync',
   'hash-replace-after-create', 'hash-replace-after-fsync',
   'hash-replace-after-rename-before-dir-fsync',
+  'cleanup-events-after-unlink', 'cleanup-state-after-unlink',
+  'cleanup-hash-after-unlink', 'cleanup-marker-after-unlink',
+  'response-after-cleanup',
 ]);
 
 function crashIfScheduled(stage) {
@@ -886,7 +945,33 @@ function publishAnchoredCandidateUnderLock(root, runId, {
   crashIfScheduled('state-after-rename');
   durableReplace(hashPath, stagedHash, { label: 'hash' });
   crashIfScheduled('hash-after-rename');
-  crashIfScheduled('before-cleanup'); removeJournal(paths);
+  crashIfScheduled('before-cleanup'); removeJournal(paths, marker);
+  crashIfScheduled('response-after-cleanup');
+}
+
+function recoverCommittedReceiptUnderLock(root, runId, receipt) {
+  const eventPath = logPath(root, runId);
+  const events = regularFileIfPresent(eventPath, 'canonical event log')
+    ? readFileSync(eventPath) : Buffer.alloc(0);
+  const state = readExactBytes(join(runDir(root, runId), 'loop.json'), 'canonical state');
+  const hash = readExactBytes(join(runDir(root, runId), '.loop.hash'), 'canonical hash');
+  if (!snapshotBytesMatch(receipt.after, events, state, hash)) {
+    const stateMatches = state.length === receipt.after.state_bytes
+      && digestBytes(state) === receipt.after.state_digest;
+    const hashMatches = hash.length === receipt.after.hash_bytes
+      && digestBytes(hash) === receipt.after.hash_digest;
+    // If the canonical state/hash still are the receipt's exact after image, a divergent event
+    // claim is receipt corruption, not an older receipt displaced by later state.
+    if (stateMatches && hashMatches && events.length === receipt.after.events_bytes) {
+      throw new Error('ANCHORED_TRANSACTION_CORRUPT: committed receipt snapshot');
+    }
+    return null;
+  }
+  if (receipt.before.events_bytes > receipt.after.events_bytes) {
+    throw new Error('ANCHORED_TRANSACTION_CORRUPT: committed receipt event range');
+  }
+  return frozenRecoveredEvents(events.subarray(
+    receipt.before.events_bytes, receipt.after.events_bytes));
 }
 
 function readVerifiedStateUnderLock(root, runId, { fenceCheck } = {}) {
@@ -993,6 +1078,17 @@ export function withVerifiedMutationLock(root, runId,
       pendingAuthenticationStateUnderLock(root, runId, marker, { allowUnboundRoot });
       // Uses raw exact before/after bytes recorded by the marker, not canonical public readers.
       recovered = recoverAnchoredTransactionUnderLock(root, runId, marker);
+    } else {
+      // Pre-marker stages have no authority and are safe to discard only on a mutation entry.
+      // The bounded committed receipt is preserved and may prove an exact response-loss retry.
+      assertNoAnchoredMarkerUnderLock(root, runId);
+      const receipt = readCommittedReceiptUnderLock(root, runId);
+      if (receipt !== null
+          && receipt.caller.owner === binding.owner
+          && receipt.caller.generation === binding.generation
+          && receipt.intent_digest === intentDigest) {
+        recovered = recoverCommittedReceiptUnderLock(root, runId, receipt);
+      }
     }
     // Logical restart: the complete public operation begins its normal read/idempotency path only now.
     let active = true;
