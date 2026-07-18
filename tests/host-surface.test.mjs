@@ -160,6 +160,15 @@ test('surface correlation matrix rejects every unsafe combination', () => {
   });
 });
 
+test('normalized host capability arrays are dense plain data arrays', () => {
+  const deps = { platform: 'linux', kernelCwd: '/repo', realpath: value => value,
+    stat: () => ({ dev: 1, ino: 1 }), sameFile: () => true };
+  const input = { runtime: 'codex', kind: 'codex-app', source: 'codex-app-tool-provenance',
+    capabilities: new Array(1), structured_stdin_mode: null,
+    host_task_cwd: '/repo', host_task_cwd_source: 'app-task-context', observed_at: null };
+  assert.throws(() => normalizeHostObservation(input, deps), /HOST_SURFACE_INVALID/);
+});
+
 test('identity is stat-backed on Windows candidates and fails closed for UNC uncertainty', () => {
   const windows = { platform: 'win32', realpath: value => value.toLowerCase(),
     stat: value => ({ volume: 'v', file: value === 'c:\\repo' ? 1 : 2 }),
@@ -292,6 +301,43 @@ test('fork accepts one canonical conventional active worktree and rejects escape
     workstreams: [{ ...workstream, worktree: '.worktrees/escape' }] }, deps).reason, 'workstream-match-missing');
   assert.equal(selectAppContinuationRoute({ ...base,
     capabilities: ['fork-thread-same-directory', 'structured-process-stdin'] }, deps).reason, 'fork-capability-incomplete');
+});
+
+test('active workstream authority input is dense plain unique and opaque', () => {
+  const target = '/repo/.worktrees/feature';
+  const deps = { platform: 'linux', exists: () => true, realpath: value => value,
+    stat: value => ({ dev: 1, ino: value === target ? 2 : 1 }),
+    sameFile: (left, right) => left.dev === right.dev && left.ino === right.ino };
+  const base = { root: '/repo', recordedHostTaskCwd: target,
+    currentHostTaskCwd: target, kernelCwd: target,
+    capabilities: ['fork-thread-same-directory', 'send-message-to-thread',
+      'structured-process-stdin'], projects: [],
+    workstreams: [{ id: 'WS1', status: 'in_progress', worktree: '.worktrees/feature' }] };
+  const sparse = new Array(1);
+  const accessor = [];
+  Object.defineProperty(accessor, '0', { enumerable: true, get: () => 'WS1' });
+  accessor.length = 1;
+  const symbol = ['WS1'];
+  symbol[Symbol('authority')] = true;
+  const extra = ['WS1'];
+  extra.authority = true;
+  const exotic = new (class ActiveWorkstreams extends Array {})('WS1');
+  for (const [label, activeWorkstreams] of [
+    ['duplicate', ['WS1', 'WS1']],
+    ['nonarray', { 0: 'WS1', length: 1 }],
+    ['sparse', sparse],
+    ['empty ID', ['']],
+    ['control ID', ['WS1\u0000forged']],
+    ['oversized ID', ['x'.repeat(513)]],
+    ['accessor', accessor],
+    ['symbol', symbol],
+    ['extra key', extra],
+    ['exotic prototype', exotic],
+  ]) {
+    const result = selectAppContinuationRoute({ ...base, activeWorkstreams }, deps);
+    assert.deepEqual(result, { kind: 'manual', reason: 'workstream-query-failed',
+      targetCwd: target, projectId: null, workstreamId: null, contextMode: null }, label);
+  }
 });
 
 test('Windows worktree containment tolerates path case drift but still requires file identity', () => {

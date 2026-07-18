@@ -68,23 +68,47 @@ const rawObservationFailure = () => {
   throw new Error('HOST_OBSERVATION_INPUT_INVALID');
 };
 
-function exactCapabilityArray(value) {
+function exactPlainDataArray(value, { maxLength, fail }) {
   if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype
-      || value.length > APP_CAPABILITIES.length
-      || Object.getOwnPropertySymbols(value).length !== 0) rawObservationFailure();
+      || value.length > maxLength || Object.getOwnPropertySymbols(value).length !== 0) fail();
   const names = Object.getOwnPropertyNames(value);
   const expected = [...Array(value.length).keys()].map(String);
   if (names.length !== expected.length + 1 || names.at(-1) !== 'length'
-      || !expected.every((key, index) => names[index] === key)) rawObservationFailure();
+      || !expected.every((key, index) => names[index] === key)) fail();
   const length = Object.getOwnPropertyDescriptor(value, 'length');
   if (!length || length.enumerable || !Object.hasOwn(length, 'value')
-      || length.value !== value.length) rawObservationFailure();
+      || length.value !== value.length) fail();
   return expected.map(key => {
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
     if (!descriptor || descriptor.enumerable !== true || !Object.hasOwn(descriptor, 'value')
-        || typeof descriptor.value !== 'string') rawObservationFailure();
+        || typeof descriptor.value !== 'string') fail();
     return descriptor.value;
   });
+}
+
+function exactCapabilityArray(value) {
+  return exactPlainDataArray(value, {
+    maxLength: APP_CAPABILITIES.length, fail: rawObservationFailure,
+  });
+}
+
+export function isManualEnumHostProfile(profile, runtime) {
+  try {
+    if (!profile || typeof profile !== 'object' || Array.isArray(profile)
+        || ![Object.prototype, null].includes(Object.getPrototypeOf(profile))) return false;
+    const kind = profile.kind;
+    validateRuntimeSurface(runtime, kind);
+    if (!HOST_SURFACES.includes(kind) || !SOURCES[kind]?.includes(profile.source)) return false;
+    const capabilities = exactPlainDataArray(profile.capabilities, {
+      maxLength: APP_CAPABILITIES.length, fail: () => { throw new Error('invalid'); },
+    });
+    return new Set(capabilities).size === capabilities.length
+      && capabilities.every(value => APP_CAPABILITIES.includes(value))
+      && JSON.stringify(capabilities) === JSON.stringify([...capabilities].sort())
+      && !capabilities.includes('structured-process-stdin');
+  } catch {
+    return false;
+  }
 }
 
 export function exactRawHostObservation(input) {
@@ -138,7 +162,9 @@ export function normalizeHostObservation(input, deps) {
   const fail = detail => { throw new Error(`HOST_SURFACE_INVALID: ${detail}`); };
   if (!input || typeof input !== 'object' || Array.isArray(input)) fail('object required');
   const kind = input.kind ?? null;
-  const capabilities = input.capabilities ?? [];
+  const capabilities = exactPlainDataArray(input.capabilities ?? [], {
+    maxLength: APP_CAPABILITIES.length, fail: () => fail('capabilities'),
+  });
   if (!validHostPath(deps.kernelCwd)) fail('kernel cwd');
   validateRuntimeSurface(input.runtime, kind);
   if (kind === null) {
@@ -150,7 +176,7 @@ export function normalizeHostObservation(input, deps) {
   }
   if (!HOST_SURFACES.includes(kind)) fail('surface');
   if (!SOURCES[kind].includes(input.source)) fail('source correlation');
-  if (!Array.isArray(capabilities) || new Set(capabilities).size !== capabilities.length
+  if (new Set(capabilities).size !== capabilities.length
       || capabilities.some(value => !APP_CAPABILITIES.includes(value))) fail('capabilities');
   const sorted = [...capabilities].sort();
   const hasStructured = sorted.includes('structured-process-stdin');
@@ -240,7 +266,17 @@ export function selectAppContinuationRoute(input, deps) {
   const required = ['fork-thread-same-directory', 'send-message-to-thread', 'structured-process-stdin'];
   if (!required.every(value => input.capabilities.includes(value))) return manualRoute('fork-capability-incomplete', target);
   const pathApi = deps.platform === 'win32' ? win32 : posix;
-  const active = new Set(input.activeWorkstreams ?? []);
+  let activeValues;
+  try {
+    activeValues = exactPlainDataArray(input.activeWorkstreams, {
+      maxLength: 128, fail: () => { throw new Error('invalid'); },
+    });
+    for (const id of activeValues) validateOpaqueId(id, { label: 'active-workstream-id' });
+    if (new Set(activeValues).size !== activeValues.length) throw new Error('invalid');
+  } catch {
+    return manualRoute('workstream-query-failed', target);
+  }
+  const active = new Set(activeValues);
   let canonicalRoot;
   try { canonicalRoot = deps.realpath(input.root); }
   catch { return manualRoute('workstream-query-failed', target); }

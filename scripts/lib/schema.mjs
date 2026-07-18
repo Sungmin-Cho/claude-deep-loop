@@ -1,7 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, isAbsolute, join, posix, win32 } from 'node:path';
-import { appHostTaskCwdDigest, hostSurfaceFactsDigest } from './host-surface.mjs';
+import {
+  appHostTaskCwdDigest,
+  hostSurfaceFactsDigest,
+  isManualEnumHostProfile,
+} from './host-surface.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 export function loadSchema() {
@@ -222,6 +226,27 @@ const objectWithExactKeys = (value, keys) => {
   return actual.length === expected.length && expected.every((key, index) => actual[index] === key);
 };
 
+const densePlainDataArray = (value, maxLength) => {
+  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype
+      || value.length > maxLength || Object.getOwnPropertySymbols(value).length !== 0) return null;
+  const expected = [...Array(value.length).keys()].map(String);
+  const names = Object.getOwnPropertyNames(value);
+  if (names.length !== expected.length + 1 || names.at(-1) !== 'length'
+      || !expected.every((key, index) => names[index] === key)) return null;
+  const length = Object.getOwnPropertyDescriptor(value, 'length');
+  if (!length || length.enumerable || !Object.hasOwn(length, 'value')
+      || length.value !== value.length) return null;
+  const values = [];
+  for (const key of expected) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || descriptor.enumerable !== true || !Object.hasOwn(descriptor, 'value')) {
+      return null;
+    }
+    values.push(descriptor.value);
+  }
+  return values;
+};
+
 const strictMs = value => {
   if (typeof value !== 'string' || !ISO_INSTANT.test(value)) return null;
   const milliseconds = Date.parse(value);
@@ -247,8 +272,8 @@ function validateObservation(observation, runtime, errors, label) {
   }
   if (SURFACE_RUNTIME[observation.kind] !== runtime) fail('runtime correlation invalid');
   if (!SURFACE_SOURCE[observation.kind]?.has(observation.source)) fail('source correlation invalid');
-  const capabilities = observation.capabilities;
-  if (!Array.isArray(capabilities) || capabilities.length > CAPABILITIES.size
+  const capabilities = densePlainDataArray(observation.capabilities, CAPABILITIES.size);
+  if (capabilities === null
       || new Set(capabilities).size !== capabilities.length
       || capabilities.some(value => !CAPABILITIES.has(value))
       || JSON.stringify(capabilities) !== JSON.stringify([...capabilities].sort())) {
@@ -386,7 +411,15 @@ const INIT_MAX_STRING_BYTES = 4096;
 const INIT_MAX_CANONICAL_BYTES = 65_536;
 
 function canonicalProjectionValue(value) {
-  if (Array.isArray(value)) return value.map(canonicalProjectionValue);
+  if (Array.isArray(value)) {
+    const limit = Math.min(value.length, INIT_MAX_ENTRIES + 1);
+    return Array.from({ length: limit }, (_, index) => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      return canonicalProjectionValue(
+        descriptor && Object.hasOwn(descriptor, 'value') ? descriptor.value : null,
+      );
+    });
+  }
   if (value !== null && typeof value === 'object') return Object.fromEntries(
     Object.keys(value).sort().map(key => [key, canonicalProjectionValue(value[key])]),
   );
@@ -412,8 +445,14 @@ function validateBoundedProjectionTree(value, errors) {
       return;
     }
     if (Array.isArray(item)) {
-      if (item.length > INIT_MAX_ENTRIES) errors.push(label + ' entries invalid');
-      item.forEach((child, index) => visit(child, depth + 1, label + '[' + index + ']'));
+      const values = densePlainDataArray(item, INIT_MAX_ENTRIES);
+      if (values === null) errors.push(label + ' array invalid');
+      const count = Math.min(item.length, INIT_MAX_ENTRIES + 1);
+      for (let index = 0; index < count; index += 1) {
+        const descriptor = Object.getOwnPropertyDescriptor(item, String(index));
+        visit(descriptor && Object.hasOwn(descriptor, 'value') ? descriptor.value : undefined,
+          depth + 1, label + '[' + index + ']');
+      }
       return;
     }
     if (typeof item !== 'object' || item === undefined
@@ -467,9 +506,7 @@ function validateInitializationProjection(projection, errors) {
       || !SHA_OR_NONE.test(projection.host_observation_digest || '')
       || !validConsent
       || projection.enum_profile !== null
-        && (!Array.isArray(projection.enum_profile.capabilities)
-          || new Set(projection.enum_profile.capabilities).size
-            !== projection.enum_profile.capabilities.length)) {
+        && !isManualEnumHostProfile(projection.enum_profile, projection.runtime)) {
     errors.push('initialization.request_projection semantics invalid');
   }
   validateBoundedProjectionTree(projection, errors);
@@ -545,9 +582,12 @@ function validateAppState(loop, errors) {
     }
     let actualSurfaceDigest = 'INVALID';
     try { actualSurfaceDigest = hostSurfaceFactsDigest(initialObservation); } catch {}
-    if (initialization.host_surface_digest !== 'NONE'
-        && initialization.host_surface_digest !== actualSurfaceDigest) {
+    if (initialization.host_surface_digest !== actualSurfaceDigest) {
       errors.push('initialization.host_surface_digest facts correlation invalid');
+    }
+    if (initialObservation !== null && initialObservation.observed_generation === 1
+        && initialObservation.observed_at !== loop.created_at) {
+      errors.push('initialized genesis observation clock invalid');
     }
   }
   const consent = loop.autonomy?.app_task_continuation;
@@ -676,8 +716,8 @@ function validateAppState(loop, errors) {
             || session.outcome !== null || session.ended_at !== null)) {
         errors.push(label + ' current-generation acquisition provenance invalid');
       }
-      if (incomingParents.length !== 1) {
-        errors.push(label + ' acquired continuation requires one historical parent');
+      if (incomingParents.length !== 1 || incomingParents[0]?.outcome !== 'took_over') {
+        errors.push(label + ' acquired continuation requires one took-over historical parent');
       }
       const currentAcquiredPhase = continuation.acquired_generation === lease.generation
         && lease.state === 'active' && lease.handoff_phase === 'acquired';
@@ -730,7 +770,8 @@ function validateAppState(loop, errors) {
     } else if (failureBinding !== null) {
       errors.push(label + ' non-failed failure_binding must be null');
     }
-    if (continuation.phase === 'failed' && session.outcome === 'abandoned_recover'
+    if (continuation.phase === 'failed'
+        && ['abandoned_recover', 'took_over'].includes(session.outcome)
         && (session.recovery_binding?.owner_run_id !== failureBinding?.owner_run_id
           || session.recovery_binding?.generation !== failureBinding?.generation)) {
       errors.push(label + ' recovered failure binding mismatch');

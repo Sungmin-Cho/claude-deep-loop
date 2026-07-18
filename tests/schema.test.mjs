@@ -323,7 +323,26 @@ function emittedChild(parentObservation, targetCwd = '/repo') {
       confirmation_deadline: null, confirmed_at: null, acquired_at: null,
       acquired_generation: null, thread_id: null, unconfirmed_thread_id: null,
       failure_code: null, failure_binding: null,
-    } };
+  } };
+}
+
+function enumProfileSchemaLoop({ runtime = 'codex', kind = 'codex-app',
+  source = 'codex-app-tool-provenance', capabilities = [] } = {}) {
+  const runId = '01JAPPENUM0000000000000000';
+  const observation = kind === null ? null : {
+    kind, source, capabilities: structuredClone(capabilities), structured_stdin_mode: null,
+    host_task_cwd: null, host_task_cwd_source: null, kernel_cwd_at_observation: '/repo',
+    observed_generation: 1, observed_at: '2026-07-13T00:00:00.000Z',
+  };
+  return buildInitialLoop({ runtime, goal: 'enum', protocol: 'standalone',
+    recipe: { id: 'r', name: 'r', reason: 'test' }, runId,
+    now: new Date('2026-07-13T00:00:00.000Z'), initialization: {
+      attempt_id: runId, request_digest: 'a'.repeat(64), previous_current_digest: 'NONE',
+      request_projection: exactSchemaProjection({ runtime, goal: 'enum', enumProfile:
+        kind === null ? null : { kind, source, capabilities: structuredClone(capabilities) } }),
+      host_observation_digest: 'NONE',
+      host_surface_digest: hostSurfaceFactsDigest(observation),
+    }, hostObservation: observation });
 }
 
 test('initialization projection bounds and exact keys are enforced', () => {
@@ -462,6 +481,96 @@ test('initialization projection bounds and exact keys are enforced', () => {
   for (const [label, candidate] of invalid) {
     assert.equal(validate(candidate).ok, false, label);
   }
+});
+
+test('enum-only initialization profile is allowlisted and runtime correlated', () => {
+  const valid = enumProfileSchemaLoop();
+  assert.equal(validate(valid).ok, true, validate(valid).errors.join('; '));
+  const nullProfile = enumProfileSchemaLoop({ kind: null, source: null });
+  assert.equal(validate(nullProfile).ok, true, validate(nullProfile).errors.join('; '));
+  const mutations = [
+    ['unknown kind', profile => { profile.kind = 'unknown-host'; }],
+    ['unknown source', profile => { profile.source = 'unknown-source'; }],
+    ['unknown capability', profile => { profile.capabilities = ['unknown-capability']; }],
+    ['runtime mismatch', (profile, projection) => { projection.runtime = 'claude'; }],
+    ['kind mismatch', profile => { profile.kind = 'claude-code'; }],
+    ['source mismatch', profile => { profile.source = 'codex-cli-host'; }],
+    ['unsorted capabilities', profile => { profile.capabilities =
+      ['send-message-to-thread', 'create-thread-local']; }],
+    ['duplicate capabilities', profile => { profile.capabilities =
+      ['create-thread-local', 'create-thread-local']; }],
+    ['structured input capability', profile => { profile.capabilities =
+      ['structured-process-stdin']; }],
+  ];
+  for (const [label, mutate] of mutations) {
+    const candidate = structuredClone(valid);
+    const projection = candidate.initialization.request_projection;
+    mutate(projection.enum_profile, projection);
+    assert.equal(validate(candidate).ok, false, label);
+  }
+});
+
+test('genesis surface digest and observation clocks are exact anchors', () => {
+  const full = appSchemaLoop({ auto: true });
+  assert.equal(validate(full).ok, true, validate(full).errors.join('; '));
+  const missingDigest = structuredClone(full);
+  missingDigest.initialization.host_surface_digest = 'NONE';
+  assert.equal(validate(missingDigest).ok, false,
+    'non-null genesis requires its recomputed surface digest');
+  const observationClockDrift = structuredClone(full);
+  observationClockDrift.session_chain.sessions[0].host_surface.observed_at =
+    '2026-07-13T00:00:01.000Z';
+  assert.equal(validate(observationClockDrift).ok, false,
+    'genesis observation clock must equal loop and session creation clock');
+  const sessionClockDrift = structuredClone(full);
+  sessionClockDrift.session_chain.sessions[0].started_at = '2026-07-13T00:00:01.000Z';
+  assert.equal(validate(sessionClockDrift).ok, false);
+  const nullSurface = appSchemaLoop();
+  nullSurface.initialization.host_surface_digest = 'b'.repeat(64);
+  assert.equal(validate(nullSurface).ok, false,
+    'null genesis requires the exact NONE digest');
+});
+
+test('projection arrays are dense plain arrays and count every slot', () => {
+  const base = enumProfileSchemaLoop();
+  const sparseAggregate = structuredClone(base);
+  sparseAggregate.initialization.request_projection.plugins_detected =
+    Array.from({ length: 90 }, () => new Array(128));
+  assert.equal(validate(sparseAggregate).ok, false,
+    'sparse slots count toward the aggregate node bound');
+
+  const sparseProjectionCapability = structuredClone(base);
+  sparseProjectionCapability.initialization.request_projection.enum_profile.capabilities =
+    new Array(1);
+  assert.equal(validate(sparseProjectionCapability).ok, false,
+    'enum profile capabilities must be dense');
+
+  const sparseStoredCapability = structuredClone(base);
+  sparseStoredCapability.session_chain.sessions[0].host_surface.capabilities = new Array(1);
+  sparseStoredCapability.initialization.host_surface_digest =
+    hostSurfaceFactsDigest(sparseStoredCapability.session_chain.sessions[0].host_surface);
+  assert.equal(validate(sparseStoredCapability).ok, false,
+    'stored observation capabilities must be dense');
+
+  for (const [label, array] of [
+    ['custom prototype', new (class ProjectionArray extends Array {})()],
+    ['extra key', Object.assign([], { authority: true })],
+  ]) {
+    const candidate = structuredClone(base);
+    candidate.initialization.request_projection.plugins_detected = array;
+    assert.equal(validate(candidate).ok, false, label);
+  }
+  const accessor = [];
+  Object.defineProperty(accessor, '0', { enumerable: true, get: () => 'forbidden' });
+  accessor.length = 1;
+  const accessorCandidate = structuredClone(base);
+  accessorCandidate.initialization.request_projection.plugins_detected = accessor;
+  assert.equal(validate(accessorCandidate).ok, false, 'array accessors are rejected');
+  const symbol = [];
+  symbol[Symbol('authority')] = true;
+  const symbolCandidate = structuredClone(base);
+  symbolCandidate.initialization.request_projection.plugins_detected = symbol;
+  assert.equal(validate(symbolCandidate).ok, false, 'array symbol keys are rejected');
 });
 
 test('App extension validation is additive, exact-keyed, and consent correlation is fail closed', () => {
@@ -782,6 +891,79 @@ test('App continuation emitted, prepared, confirmed, and current acquired phases
   loop.session_chain.sessions.pop();
   child.continuation.acquired_generation = 3;
   assert.equal(validate(loop).ok, false);
+});
+
+test('historical acquired provenance retains its unique took-over parent', () => {
+  const loop = appSchemaLoop({ auto: true });
+  loop.project.root = '/repo';
+  const child = emittedChild(loop.session_chain.sessions[0].host_surface);
+  Object.assign(child.continuation, {
+    phase: 'acquired', project_id: 'project', descriptor_digest: 'd'.repeat(64),
+    prepared_at: '2026-07-13T00:00:10.000Z',
+    confirmation_deadline: '2026-07-13T00:02:10.000Z',
+    confirmed_at: '2026-07-13T00:00:15.000Z', thread_id: 'thread',
+    acquired_at: '2026-07-13T00:00:20.000Z', acquired_generation: 2,
+  });
+  child.started_at = child.continuation.acquired_at;
+  child.host_surface = { ...structuredClone(loop.session_chain.sessions[0].host_surface),
+    observed_generation: 2, observed_at: child.continuation.acquired_at };
+  loop.session_chain.sessions[0].superseded_by = child.run_id;
+  loop.session_chain.sessions[0].outcome = 'took_over';
+  loop.session_chain.sessions.push(child);
+  const currentOwner = '01JAPPHST00000000000000088';
+  loop.session_chain.sessions.push({ run_id: currentOwner,
+    started_at: '2026-07-13T00:00:30.000Z', ended_at: null, turns: 0,
+    outcome: null, superseded_by: null, handoff_rel: 'handoffs/current.md' });
+  Object.assign(loop.session_chain.lease, { owner_run_id: currentOwner, generation: 3,
+    acquired_at: '2026-07-13T00:00:30.000Z', state: 'active', handoff_phase: 'idle',
+    handoff_transport: null, handoff_attempt_id: null, handoff_child_run_id: null,
+    handoff_idempotency_key: null, resume_policy: null, expires_at: null });
+  assert.equal(validate(loop).ok, true, validate(loop).errors.join('; '));
+  loop.session_chain.sessions[0].outcome = null;
+  assert.equal(validate(loop).ok, false,
+    'generation advance cannot erase the acquired child parent outcome');
+});
+
+test('failed recovery provenance remains exact after child progression', () => {
+  const loop = appSchemaLoop({ auto: true });
+  loop.project.root = '/repo';
+  const parentSurface = loop.session_chain.sessions[0].host_surface;
+  Object.assign(parentSurface, { capabilities: ['fork-thread-same-directory',
+    'send-message-to-thread', 'structured-process-stdin'],
+    host_task_cwd: '/repo/.worktrees/ws', kernel_cwd_at_observation: '/repo/.worktrees/ws' });
+  loop.initialization.host_surface_digest = hostSurfaceFactsDigest(parentSurface);
+  loop.workstreams = [{ id: 'WS1', title: 'ws', status: 'in_progress',
+    worktree: '.worktrees/ws', depends_on: [] }];
+  loop.active_workstreams = ['WS1'];
+  const child = emittedChild(parentSurface, '/repo/.worktrees/ws');
+  Object.assign(child.continuation, { route: 'fork', context_mode: 'inherited-completed-history',
+    workstream_id: 'WS1', phase: 'failed', failure_code: 'message-unconfirmed',
+    failure_binding: { owner_run_id: loop.run_id, generation: 1 },
+    unconfirmed_thread_id: 'opaque-thread', descriptor_digest: 'd'.repeat(64),
+    prepared_at: '2026-07-13T00:00:10.000Z',
+    confirmation_deadline: '2026-07-13T00:02:10.000Z' });
+  child.outcome = 'took_over';
+  child.recovery_binding = structuredClone(child.continuation.failure_binding);
+  loop.session_chain.sessions.push(child);
+  const currentOwner = '01JAPPHST00000000000000077';
+  loop.session_chain.sessions.push({ run_id: currentOwner,
+    started_at: '2026-07-13T00:00:30.000Z', ended_at: null, turns: 0,
+    outcome: null, superseded_by: null, handoff_rel: 'handoffs/current.md' });
+  Object.assign(loop.session_chain.lease, { owner_run_id: currentOwner, generation: 3,
+    acquired_at: '2026-07-13T00:00:30.000Z', state: 'active', handoff_phase: 'idle',
+    handoff_transport: null, handoff_attempt_id: null, handoff_child_run_id: null,
+    handoff_idempotency_key: null, resume_policy: null, expires_at: null });
+  assert.equal(validate(loop).ok, true, validate(loop).errors.join('; '));
+  const missing = structuredClone(loop);
+  delete missing.session_chain.sessions[1].recovery_binding;
+  assert.equal(validate(missing).ok, false,
+    'progressed failed child cannot drop its recovery binding');
+  const rebound = structuredClone(loop);
+  rebound.session_chain.sessions[1].recovery_binding = {
+    owner_run_id: currentOwner, generation: 2,
+  };
+  assert.equal(validate(rebound).ok, false,
+    'later generations cannot rebind failed recovery provenance');
 });
 
 test('live App parent route projection rejects impossible create and fork bindings', () => {
