@@ -967,11 +967,17 @@ function recoverCommittedReceiptUnderLock(root, runId, receipt) {
     }
     return null;
   }
-  if (receipt.before.events_bytes > receipt.after.events_bytes) {
+  const boundary = receipt.before.events_bytes;
+  if (boundary < 0 || boundary >= receipt.after.events_bytes
+      || boundary > events.length
+      || (boundary > 0 && events[boundary - 1] !== 0x0a)) {
     throw new Error('ANCHORED_TRANSACTION_CORRUPT: committed receipt event range');
   }
-  return frozenRecoveredEvents(events.subarray(
-    receipt.before.events_bytes, receipt.after.events_bytes));
+  const prefix = events.subarray(0, boundary);
+  if (digestBytes(prefix) !== receipt.before.events_digest) {
+    throw new Error('ANCHORED_TRANSACTION_CORRUPT: committed receipt event prefix');
+  }
+  return frozenRecoveredEvents(events.subarray(boundary, receipt.after.events_bytes));
 }
 
 function readVerifiedStateUnderLock(root, runId, { fenceCheck } = {}) {

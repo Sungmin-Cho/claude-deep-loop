@@ -737,6 +737,40 @@ test6b('matching committed receipt with a divergent canonical snapshot fails clo
     .filter(event => event.type === GENERIC_EVENT7B['generic-append']).length, 1);
 });
 
+test6b('committed receipt rejects a forged before event boundary without writes', () => {
+  const { fixture, retryWithResult, invoke } = genericCrashCase7b('generic-append');
+  invoke();
+  const receiptPath = join7b(runDir7b(fixture.root, fixture.runId),
+    '.anchored-committed.json');
+  const receipt = JSON.parse(readSource7b(receiptPath, 'utf8'));
+  receipt.before.events_bytes = receipt.after.events_bytes;
+  writeFileSync(receiptPath, JSON.stringify(receipt));
+  const before = bytes7c(fixture.root, fixture.runId);
+  const receiptBefore = readSource7b(receiptPath);
+  assert6b.throws(() => retryWithResult(), /ANCHORED_TRANSACTION_CORRUPT/);
+  assert6b.deepEqual(bytes7c(fixture.root, fixture.runId), before);
+  assert6b.deepEqual(readSource7b(receiptPath), receiptBefore);
+  assert6b.equal(lines7c(fixture.root, fixture.runId)
+    .filter(event => event.type === GENERIC_EVENT7B['generic-append']).length, 1);
+});
+
+test6b('committed receipt rejects a forged before event digest without writes', () => {
+  const { fixture, retryWithResult, invoke } = genericCrashCase7b('generic-append');
+  invoke();
+  const receiptPath = join7b(runDir7b(fixture.root, fixture.runId),
+    '.anchored-committed.json');
+  const receipt = JSON.parse(readSource7b(receiptPath, 'utf8'));
+  receipt.before.events_digest = '0'.repeat(64);
+  writeFileSync(receiptPath, JSON.stringify(receipt));
+  const before = bytes7c(fixture.root, fixture.runId);
+  const receiptBefore = readSource7b(receiptPath);
+  assert6b.throws(() => retryWithResult(), /ANCHORED_TRANSACTION_CORRUPT/);
+  assert6b.deepEqual(bytes7c(fixture.root, fixture.runId), before);
+  assert6b.deepEqual(readSource7b(receiptPath), receiptBefore);
+  assert6b.equal(lines7c(fixture.root, fixture.runId)
+    .filter(event => event.type === GENERIC_EVENT7B['generic-append']).length, 1);
+});
+
 test6b('eligible legacy proof fixture checkpoints once and keeps later proof continuity', () => {
   const fixture = legacyProof7b();
   patch7b(fixture.root, fixture.runId, 'decisions', ['first'], { fence: fixture.fence });
