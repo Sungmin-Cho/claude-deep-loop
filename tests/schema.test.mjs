@@ -972,6 +972,47 @@ test('App continuation emitted, prepared, confirmed, and current acquired phases
   assert.equal(validate(loop).ok, false);
 });
 
+test('primary App human preserve is exact for emitted unconfirmed or confirmed timeout only', () => {
+  const preserved = phase => {
+    const loop = appSchemaLoop({ auto: true });
+    loop.project.root = '/repo';
+    const child = emittedChild(loop.session_chain.sessions[0].host_surface);
+    loop.session_chain.sessions.push(child);
+    loop.session_chain.sessions[0].superseded_by = child.run_id;
+    Object.assign(loop.session_chain.lease, { state: 'releasing',
+      handoff_phase: phase === 'emitted' ? 'emitted' : 'spawned',
+      handoff_transport: 'codex-app', handoff_attempt_id: child.continuation.attempt_id,
+      handoff_child_run_id: child.run_id, resume_policy: 'human', expires_at: null });
+    loop.status = 'paused';
+    if (phase === 'emitted') {
+      loop.pause_reason = 'app-launch-unconfirmed';
+    } else {
+      Object.assign(child.continuation, { phase, project_id: 'project',
+        descriptor_digest: 'd'.repeat(64), prepared_at: '2026-07-13T00:00:10.000Z',
+        confirmation_deadline: '2026-07-13T00:02:10.000Z' });
+      if (phase === 'confirmed') Object.assign(child.continuation, {
+        confirmed_at: '2026-07-13T00:00:15.000Z', thread_id: 'confirmed-thread',
+      });
+      loop.pause_reason = 'app-child-timeout-awaiting';
+    }
+    return loop;
+  };
+  for (const phase of ['emitted', 'confirmed']) {
+    const exact = preserved(phase);
+    assert.equal(validate(exact).ok, true,
+      `${phase}: ${validate(exact).errors.join('; ')}`);
+    const wrongReason = structuredClone(exact);
+    wrongReason.pause_reason = phase === 'emitted'
+      ? 'app-child-timeout-awaiting' : 'app-launch-unconfirmed';
+    assert.equal(validate(wrongReason).ok, false, `${phase} pause reason is exact`);
+    const expiring = structuredClone(exact);
+    expiring.session_chain.lease.expires_at = '2026-07-13T00:15:00.000Z';
+    assert.equal(validate(expiring).ok, false, `${phase} human preserve clears expiry`);
+  }
+  assert.equal(validate(preserved('prepared')).ok, false,
+    'prepared is never a human-preserved primary phase');
+});
+
 test('historical acquired provenance retains its unique took-over parent', () => {
   const loop = appSchemaLoop({ auto: true });
   loop.project.root = '/repo';

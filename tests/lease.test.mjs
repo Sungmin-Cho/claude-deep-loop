@@ -492,3 +492,17 @@ test('acquireLease rejects hash-valid malformed autonomy before a wrong-runtime 
     assert.equal(after.status, 'running');
   }
 });
+
+test('app-revoke intent crosses releasing and paused only after an exact live fence', () => {
+  const loop = { status: 'paused', autonomy: { session_runtime: 'codex',
+    runtime_source: 'skill-asserted' },
+    session_chain: { lease: { owner_run_id: '01JAPPPAR00000000000000000', generation: 4,
+      state: 'releasing' } } };
+  assert.deepEqual(leaseCheck(loop, { owner: '01JAPPPAR00000000000000000', generation: 4,
+    runtime: 'codex', intent: 'app-revoke' }), { ok: true, reason: 'ok' });
+  assert.equal(leaseCheck(loop, { owner: '01JAPPWR0NG000000000000000', generation: 4,
+    runtime: 'codex', intent: 'app-revoke' }).reason, 'owner-mismatch');
+  loop.status = 'completed';
+  assert.equal(leaseCheck(loop, { owner: '01JAPPPAR00000000000000000', generation: 4,
+    runtime: 'codex', intent: 'app-revoke' }).reason, 'RUN_TERMINAL');
+});

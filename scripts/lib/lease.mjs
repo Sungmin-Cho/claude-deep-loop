@@ -25,7 +25,8 @@ export function leaseCheck(loop, { owner, generation, runtime, intent = 'busines
   if (loop.status === 'completed' || loop.status === 'stopped') return { ok: false, reason: 'RUN_TERMINAL' };
   if (lease.state === 'released') return { ok: false, reason: 'lease-released' };
   // 부모 carve-out: releasing 중 업무 write 거부; 자기 lease 관리(intent='lease')와 비용 회계(intent='accounting')만 허용.
-  if (lease.state === 'releasing' && intent !== 'lease' && intent !== 'accounting') return { ok: false, reason: 'lease-releasing-carveout' };
+  if (lease.state === 'releasing' && intent !== 'lease' && intent !== 'accounting'
+      && intent !== 'app-revoke') return { ok: false, reason: 'lease-releasing-carveout' };
   // Codex r2 🔴2: expires_at 로 active 소유자를 fence 하지 않는다 — 살아있는 소유자가 TTL(15분) 후 자기 write 에서
   // 죽으면 안 됨. stale 소유자(자식이 인수해 generation 이 올라간 경우)는 generation-mismatch 로 이미 펜싱된다.
   // expires_at 는 오직 acquireLease 의 takeover 판단(releasing 크래시)에만 쓰인다.
@@ -33,7 +34,8 @@ export function leaseCheck(loop, { owner, generation, runtime, intent = 'busines
   // checker turn을 최종 import 후 기록하는 matching accounting만 허용한다. 상단 owner/generation,
   // terminal, released/releasing 가드를 모두 통과해야 하므로 소유권이나 업무 권한은 넓어지지 않는다.
   if (loop.status === 'paused' && intent !== 'accounting'
-    && intent !== 'recover' && intent !== 'resume' && intent !== 'breaker-reset') {
+    && intent !== 'recover' && intent !== 'resume' && intent !== 'breaker-reset'
+    && intent !== 'app-revoke') {
     return { ok: false, reason: 'RUN_PAUSED' };
   }
   return { ok: true, reason: 'ok' };

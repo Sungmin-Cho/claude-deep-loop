@@ -37,8 +37,9 @@ const validCreateObservation = (overrides = {}) => ({
   kind: 'codex-app', source: 'codex-app-host-context',
   host_task_cwd_source: 'app-task-context', host_task_cwd: '/project',
   kernel_cwd_at_observation: '/project', observed_generation: 1,
+  observed_at: '2026-07-13T00:00:00.000Z',
   structured_stdin_mode: 'pipe-open-noecho',
-  capabilities: ['list-projects', 'create-thread-local', 'structured-process-stdin'],
+  capabilities: ['create-thread-local', 'list-projects', 'structured-process-stdin'],
   ...overrides,
 });
 

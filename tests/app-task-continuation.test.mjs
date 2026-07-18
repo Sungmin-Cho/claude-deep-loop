@@ -1,15 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync,
-  statSync } from 'node:fs';
+  statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { readLines } from '../scripts/lib/integrity.mjs';
+import { appendAnchored, readLines } from '../scripts/lib/integrity.mjs';
 import { acquireLease, releaseLease } from '../scripts/lib/lease.mjs';
 import { readState, writeState } from '../scripts/lib/state.mjs';
-import { observeHostSurface } from '../scripts/lib/app-task-continuation.mjs';
-import { hostSurfaceFactsDigest } from '../scripts/lib/host-surface.mjs';
+import { observeHostSurface, revokeAppTaskContinuation, statusAppTask,
+  validateGenesisConsent } from '../scripts/lib/app-task-continuation.mjs';
+import { appHostTaskCwdDigest, hostSurfaceFactsDigest } from '../scripts/lib/host-surface.mjs';
+import { contentHash } from '../scripts/lib/envelope.mjs';
 
 function observedRun({ legacyNullSurface = true } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-observe-')));
@@ -282,4 +284,245 @@ test('legacy absent host surface materializes but an explicit null observation i
   assert.deepEqual(readFileSync(join(ambiguous.root, '.deep-loop', 'runs', ambiguous.runId,
     'loop.json')), before.state);
   assert.deepEqual(readLines(ambiguous.root, ambiguous.runId), before.events);
+});
+
+function autoRun() {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-consent-')));
+  const observation = { kind: 'codex-app', source: 'codex-app-tool-provenance',
+    capabilities: ['create-thread-local', 'list-projects', 'structured-process-stdin'],
+    structured_stdin_mode: 'pty-raw-noecho', host_task_cwd: root,
+    host_task_cwd_source: 'app-task-context',
+    observed_at: '2026-07-13T00:00:00.000Z' };
+  const consent = { mode: 'auto', authority: 'human-confirmed',
+    confirmed_at: '2026-07-13T00:00:00.000Z', revoked_at: null };
+  const { runId } = initRun(root, { runtime: 'codex', goal: 'g',
+    now: new Date('2026-07-13T00:00:00.000Z'),
+    hostObservation: observation, appContinuationConsent: consent, cwdFn: () => root });
+  const stored = readState(root, runId).data;
+  return { root, runId,
+    observation: stored.session_chain.sessions[0].host_surface,
+    consent: stored.autonomy.app_task_continuation };
+}
+
+function writeUncheckedLoop(root, runId, loop) {
+  const raw = JSON.stringify(loop, null, 2);
+  const run = join(root, '.deep-loop', 'runs', runId);
+  writeFileSync(join(run, 'loop.json'), raw);
+  writeFileSync(join(run, '.loop.hash'), contentHash(raw));
+}
+
+function preservedAutoRun(phase) {
+  const fixture = autoRun();
+  const attempt = '01JAPPTASK0000000000000000';
+  const child = '01JAPPCHD00000000000000000';
+  const emitted = '2026-07-13T00:00:00.000Z';
+  appendAnchored(fixture.root, fixture.runId, { type: 'handoff-emitted',
+    data: { attempt_id: attempt, child_run_id: child } }, loop => {
+    const parent = loop.session_chain.sessions[0];
+    parent.superseded_by = child;
+    Object.assign(loop.session_chain.lease, { state: 'releasing', handoff_phase: 'emitted',
+      handoff_idempotency_key: 'a'.repeat(16), handoff_child_run_id: child,
+      handoff_transport: 'codex-app', handoff_attempt_id: attempt,
+      resume_policy: 'app', expires_at: '2026-07-13T00:15:00.000Z' });
+    loop.session_chain.sessions.push({ run_id: child, started_at: null, ended_at: null,
+      turns: 0, outcome: null, superseded_by: null, host_surface: null,
+      continuation: { transport: 'codex-app', attempt_id: attempt, route: 'create',
+        context_mode: 'fresh', phase: 'emitted', expected_runtime: 'codex',
+        expected_host_surface: 'codex-app', target_cwd: fixture.root,
+        host_task_cwd_digest: appHostTaskCwdDigest(parent.host_surface, fixture.root),
+        workstream_id: null, project_id: null, descriptor_digest: null,
+        emitted_at: emitted, prepare_deadline: '2026-07-13T00:05:00.000Z',
+        prepared_at: null, confirmation_deadline: null, confirmed_at: null,
+        acquired_at: null, acquired_generation: null, thread_id: null,
+        unconfirmed_thread_id: null, failure_code: null, failure_binding: null } });
+  }, undefined, { nowFn: () => Date.parse(emitted) });
+  const loop = readState(fixture.root, fixture.runId).data;
+  Object.assign(loop, { status: 'paused', pause_reason: phase === 'emitted'
+    ? 'app-launch-unconfirmed' : 'app-child-timeout-awaiting' });
+  Object.assign(loop.session_chain.lease, { handoff_phase: phase === 'emitted'
+    ? 'emitted' : 'spawned', resume_policy: 'human', expires_at: null });
+  const continuation = loop.session_chain.sessions.at(-1).continuation;
+  if (phase !== 'emitted') Object.assign(continuation, { phase, project_id: 'project-safe-id',
+    descriptor_digest: 'd'.repeat(64), prepared_at: '2026-07-13T00:00:10.000Z',
+    confirmation_deadline: '2026-07-13T00:02:10.000Z' });
+  if (phase === 'confirmed') Object.assign(continuation, {
+    confirmed_at: '2026-07-13T00:00:15.000Z', thread_id: 'raw-thread-must-not-leak',
+  });
+  if (phase === 'prepared') writeUncheckedLoop(fixture.root, fixture.runId, loop);
+  else writeState(fixture.root, fixture.runId, loop);
+  return { ...fixture, attempt, child };
+}
+
+test('genesis consent accepts only default manual or route-matched complete App auto', () => {
+  assert.deepEqual(validateGenesisConsent({ runtime: 'codex', route: null,
+    observation: null, consent: null }),
+  { mode: 'manual', authority: 'default-manual', confirmed_at: null, revoked_at: null });
+  const { observation, consent } = autoRun();
+  assert.deepEqual(validateGenesisConsent({ runtime: 'codex', route: 'create',
+    observation, consent }), consent);
+  for (const changed of [
+    { runtime: 'claude', route: 'create', observation, consent },
+    { runtime: 'codex', route: 'create',
+      observation: { ...observation, host_task_cwd: '/other' }, consent },
+    { runtime: 'codex', route: 'create', observation: { ...observation,
+      capabilities: ['structured-process-stdin'] }, consent },
+    { runtime: 'codex', route: 'fork', observation, consent },
+    { runtime: 'codex', route: 'create', observation,
+      consent: { ...consent, authority: 'default-manual' } },
+  ]) assert.throws(() => validateGenesisConsent(changed), /APP_CONSENT_INVALID/);
+});
+
+test('revoke is one anchored write, exact retry is inert, and default manual is not-auto', () => {
+  const { root, runId } = autoRun();
+  const input = { owner: runId, generation: 1, runtime: 'codex' };
+  const deps = { nowFn: () => Date.parse('2026-07-13T00:00:01.000Z') };
+  assert.equal(revokeAppTaskContinuation(root, runId, input, deps).outcome, 'revoked');
+  const before = { state: readFileSync(join(root, '.deep-loop', 'runs', runId, 'loop.json')),
+    events: readLines(root, runId) };
+  assert.equal(revokeAppTaskContinuation(root, runId, input, deps).outcome, 'already-revoked');
+  assert.deepEqual(readFileSync(join(root, '.deep-loop', 'runs', runId, 'loop.json')), before.state);
+  assert.deepEqual(readLines(root, runId), before.events);
+  const status = statusAppTask(root, runId, {});
+  assert.deepEqual(Object.keys(status).sort(), ['current', 'generation', 'generic_current', 'handoff_phase',
+    'has_app_history', 'history', 'logical_run_id', 'manual_recovery', 'ok', 'owner_run_id',
+    'recovery_pending', 'resume_policy']);
+  assert.equal(status.generic_current, null);
+  assert.equal(status.recovery_pending, null);
+  assert.equal(status.resume_policy, null);
+  assert.equal(status.manual_recovery, false);
+  assert.equal(JSON.stringify(status).includes('thread_id'), false);
+  const manual = observedRun();
+  const manualBefore = readLines(manual.root, manual.runId);
+  assert.equal(revokeAppTaskContinuation(manual.root, manual.runId,
+    { owner: manual.runId, generation: 1, runtime: 'codex' }, deps).outcome, 'not-auto');
+  assert.deepEqual(readLines(manual.root, manual.runId), manualBefore);
+});
+
+test('revoke rejects a backward consent clock before appending an event', () => {
+  const { root, runId } = autoRun();
+  const before = {
+    state: readFileSync(join(root, '.deep-loop', 'runs', runId, 'loop.json')),
+    events: readLines(root, runId),
+  };
+  assert.throws(() => revokeAppTaskContinuation(root, runId,
+    { owner: runId, generation: 1, runtime: 'codex' },
+    { nowFn: () => Date.parse('2026-07-12T23:59:59.999Z') }),
+  /APP_TASK_CONSENT_INVALID/);
+  assert.deepEqual(readFileSync(join(root, '.deep-loop', 'runs', runId, 'loop.json')),
+    before.state);
+  assert.deepEqual(readLines(root, runId), before.events);
+});
+
+test('revoke checks fence before terminal and abandons an in-flight attempt atomically', () => {
+  const { root, runId } = autoRun();
+  const loop = readState(root, runId).data;
+  loop.status = 'completed';
+  writeState(root, runId, loop);
+  assert.throws(() => revokeAppTaskContinuation(root, runId,
+    { owner: '01JAPPWR0NG000000000000000', generation: 9, runtime: 'codex' }, {}), /FENCED/);
+  assert.throws(() => revokeAppTaskContinuation(root, runId,
+    { owner: runId, generation: 1, runtime: 'codex' }, {}), /TERMINAL/);
+});
+
+test('revoke abandons only the exact current live attempt in the same anchored transaction', () => {
+  const { root, runId } = autoRun();
+  const attempt = '01JAPPTASK0000000000000000';
+  const child = '01JAPPCHD00000000000000000';
+  const emitted = '2026-07-13T00:00:00.000Z';
+  appendAnchored(root, runId, { type: 'handoff-emitted',
+    data: { attempt_id: attempt, child_run_id: child } }, loop => {
+    const parent = loop.session_chain.sessions[0];
+    loop.session_chain.lease = { ...loop.session_chain.lease, state: 'releasing',
+      handoff_phase: 'emitted', handoff_idempotency_key: 'a'.repeat(16),
+      handoff_child_run_id: child, handoff_transport: 'codex-app',
+      handoff_attempt_id: attempt, resume_policy: 'app',
+      expires_at: '2026-07-13T00:15:00.000Z' };
+    parent.superseded_by = child;
+    loop.session_chain.sessions.push({ run_id: child, started_at: null, ended_at: null,
+      turns: 0, outcome: null, superseded_by: null, host_surface: null,
+      continuation: { transport: 'codex-app', attempt_id: attempt, route: 'create',
+        context_mode: 'fresh', phase: 'emitted', expected_runtime: 'codex',
+        expected_host_surface: 'codex-app', target_cwd: root,
+        host_task_cwd_digest: appHostTaskCwdDigest(parent.host_surface, root),
+        workstream_id: null, project_id: null, descriptor_digest: null,
+        emitted_at: emitted, prepare_deadline: '2026-07-13T00:05:00.000Z',
+        prepared_at: null, confirmation_deadline: null, confirmed_at: null,
+        acquired_at: null, acquired_generation: null, thread_id: null,
+        unconfirmed_thread_id: null, failure_code: null, failure_binding: null } });
+  }, undefined, { nowFn: () => Date.parse(emitted) });
+  const loop = readState(root, runId).data;
+  const orphan = structuredClone(loop.session_chain.sessions.at(-1));
+  orphan.run_id = '01JAPPCHD00000000000000001';
+  orphan.continuation.attempt_id = '01JAPPTASK0000000000000001';
+  loop.session_chain.sessions.push(orphan);
+  writeUncheckedLoop(root, runId, loop);
+  const beforeRejected = {
+    state: readFileSync(join(root, '.deep-loop', 'runs', runId, 'loop.json')),
+    events: readLines(root, runId),
+  };
+  assert.throws(() => revokeAppTaskContinuation(root, runId,
+    { owner: runId, generation: 1, runtime: 'codex' },
+    { nowFn: () => Date.parse('2026-07-13T00:00:01.000Z') }), /RUN_SNAPSHOT_INVALID/);
+  assert.deepEqual(readFileSync(join(root, '.deep-loop', 'runs', runId, 'loop.json')),
+    beforeRejected.state);
+  assert.deepEqual(readLines(root, runId), beforeRejected.events,
+    'ambiguous live cardinality must fail before appendAnchored writes an event');
+  loop.session_chain.sessions.pop();
+  const orphanedLease = structuredClone(loop);
+  orphanedLease.session_chain.sessions.pop();
+  writeUncheckedLoop(root, runId, orphanedLease);
+  const orphanBytes = readFileSync(join(root, '.deep-loop', 'runs', runId, 'loop.json'));
+  assert.throws(() => revokeAppTaskContinuation(root, runId,
+    { owner: runId, generation: 1, runtime: 'codex' },
+    { nowFn: () => Date.parse('2026-07-13T00:00:01.000Z') }), /RUN_SNAPSHOT_INVALID/);
+  assert.deepEqual(readFileSync(join(root, '.deep-loop', 'runs', runId, 'loop.json')),
+    orphanBytes);
+  assert.deepEqual(readLines(root, runId), beforeRejected.events,
+    'an orphan App lease binding also fails before event append');
+  writeState(root, runId, loop);
+  assert.equal(revokeAppTaskContinuation(root, runId,
+    { owner: runId, generation: 1, runtime: 'codex' },
+    { nowFn: () => Date.parse('2026-07-13T00:00:02.000Z') }).outcome, 'revoked');
+  const after = readState(root, runId).data;
+  const continuation = after.session_chain.sessions.find(item => item.run_id === child).continuation;
+  assert.equal(after.autonomy.app_task_continuation.mode, 'manual');
+  assert.equal(after.autonomy.app_task_continuation.revoked_at, '2026-07-13T00:00:02.000Z');
+  assert.equal(continuation.phase, 'abandoned');
+  assert.equal(continuation.failure_code, 'consent-revoked');
+  assert.equal(after.session_chain.lease.resume_policy, 'human');
+  assert.equal(after.session_chain.lease.expires_at, null);
+  assert.equal(after.status, 'paused');
+  assert.equal(after.pause_reason, 'app-task-human-preserve');
+  const status = statusAppTask(root, runId, {});
+  assert.equal(status.current.phase, 'abandoned');
+  assert.equal(status.manual_recovery, true);
+});
+
+test('revoke accepts only exact primary human-preserve shapes and status projects no raw facts', () => {
+  for (const phase of ['emitted', 'confirmed']) {
+    const fixture = preservedAutoRun(phase);
+    assert.equal(revokeAppTaskContinuation(fixture.root, fixture.runId,
+      { owner: fixture.runId, generation: 1, runtime: 'codex' },
+      { nowFn: () => Date.parse('2026-07-13T00:00:20.000Z') }).outcome, 'revoked');
+    const stored = readState(fixture.root, fixture.runId).data;
+    assert.equal(stored.session_chain.sessions.at(-1).continuation.phase, 'abandoned');
+    const status = statusAppTask(fixture.root, fixture.runId, { attempt: fixture.attempt });
+    assert.deepEqual(Object.keys(status.current).sort(),
+      ['attempt_id', 'failure_code', 'handoff_rel', 'phase', 'route', 'run_id']);
+    const projected = JSON.stringify(status);
+    for (const raw of [fixture.root, 'project-safe-id', 'd'.repeat(64),
+      'raw-thread-must-not-leak', 'host_task_cwd', 'descriptor_digest', 'thread_id']) {
+      assert.equal(projected.includes(raw), false, `${phase}: ${raw}`);
+    }
+  }
+
+  const invalid = preservedAutoRun('prepared');
+  const before = { state: readFileSync(join(invalid.root, '.deep-loop', 'runs', invalid.runId,
+    'loop.json')), events: readLines(invalid.root, invalid.runId) };
+  assert.throws(() => revokeAppTaskContinuation(invalid.root, invalid.runId,
+    { owner: invalid.runId, generation: 1, runtime: 'codex' },
+    { nowFn: () => Date.parse('2026-07-13T00:00:20.000Z') }), /RUN_SNAPSHOT_INVALID/);
+  assert.deepEqual(readFileSync(join(invalid.root, '.deep-loop', 'runs', invalid.runId,
+    'loop.json')), before.state);
+  assert.deepEqual(readLines(invalid.root, invalid.runId), before.events);
 });

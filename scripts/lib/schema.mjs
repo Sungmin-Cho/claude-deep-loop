@@ -799,6 +799,17 @@ function validateAppState(loop, errors) {
     const isLeaseBound = lease.handoff_transport === 'codex-app'
       && lease.handoff_attempt_id === continuation.attempt_id
       && lease.handoff_child_run_id === session.run_id;
+    const emittedManualPreserve = continuation.phase === 'emitted'
+      && loop.status === 'paused' && loop.pause_reason === 'app-launch-unconfirmed'
+      && lease.resume_policy === 'human' && lease.expires_at === null
+      && continuation.prepared_at === null && continuation.failure_code === null;
+    const confirmedAwaitPreserve = continuation.phase === 'confirmed'
+      && loop.status === 'paused' && loop.pause_reason === 'app-child-timeout-awaiting'
+      && lease.resume_policy === 'human' && lease.expires_at === null
+      && strictMs(continuation.prepared_at) !== null
+      && strictMs(continuation.confirmed_at) !== null
+      && continuation.failure_code === null;
+    const primaryHumanPreserve = emittedManualPreserve || confirmedAwaitPreserve;
     const liveFailedBinding = continuation.phase === 'failed' && isLeaseBound;
     if (liveFailedBinding
         && (continuation.failure_binding?.owner_run_id !== lease.owner_run_id
@@ -873,11 +884,14 @@ function validateAppState(loop, errors) {
         errors.push(label + ' human-preserve lease phase invalid');
       }
     }
-    if (isPrimaryLive || isLeaseBound) bound.push({ session, continuation, isPrimaryLive });
+    if (isPrimaryLive || isLeaseBound) {
+      bound.push({ session, continuation, isPrimaryLive, primaryHumanPreserve });
+    }
   }
   if (bound.length > 1) errors.push('multiple live App continuations');
   if (bound.length === 1) {
-    const requiredPolicy = bound[0].isPrimaryLive ? 'app' : 'human';
+    const requiredPolicy = bound[0].isPrimaryLive && !bound[0].primaryHumanPreserve
+      ? 'app' : 'human';
     if (lease.resume_policy !== requiredPolicy) errors.push('live App continuation resume policy invalid');
     const parent = sessions.find(session => session.run_id === lease.owner_run_id);
     if (!parent || parent.run_id === bound[0].session.run_id
