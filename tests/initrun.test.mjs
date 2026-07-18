@@ -244,6 +244,35 @@ test('production init dependencies pin semantic authority against caller overrid
   assert.equal(readState(root, prepared.attempt_id).data.project.root, root);
 });
 
+test('prepared authority rejects numeric identities before verification and accepts JSON strings', () => {
+  const root = fixtureDir();
+  const request = productionRequest();
+  const deps = productionInitDeps(root, request, {
+    cwdFn: () => root, platform: 'linux', pid: 7,
+    ulid: () => '01JAPPGEN00000000000000003', nonce: () => 'identitytype00001',
+  });
+  const prepared = prepareInitialization(root, request, deps);
+  let verifierCalls = 0;
+  const guardedDeps = { ...deps, verifyPreparedAuthority: () => {
+    verifierCalls += 1;
+    throw new Error('VERIFIER_REACHED');
+  } };
+  for (const [field, value] of [['dev', 7], ['ino', 7n]]) {
+    const malformed = structuredClone(prepared);
+    malformed.prepared_authority.root[field] = value;
+    assert.throws(() => commitPreparedInit(root, {
+      prepared: malformed, request, observation: null,
+    }, guardedDeps), /INIT_PREPARED_AUTHORITY_INVALID/, `${field} must be a decimal string`);
+  }
+  assert.equal(verifierCalls, 0);
+  assert.equal(existsSync(join(root, '.deep-loop')), false);
+
+  const roundTripped = JSON.parse(JSON.stringify(prepared));
+  assert.equal(commitPreparedInit(root, {
+    prepared: roundTripped, request, observation: null,
+  }, deps).ok, true);
+});
+
 // ── C2: object-shape initial reviewer selection — routes on present (installed‖initialized) ───
 test('C2: initRun review.reviewer routes on present (object shape)', () => {
   const r1 = initRun(mkdtempSync(join(tmpdir(), 'dl-c2-')), { runtime: 'claude', goal: 'g', detected: { 'deep-review': { present: false } }, now: new Date('2026-06-24T00:00:00Z') });

@@ -632,6 +632,7 @@ function validPreparedIdentity(value) {
   return value && typeof value === 'object' && !Array.isArray(value)
     && Object.keys(value).sort().join('\0') === ['dev', 'ino', 'realpath'].join('\0')
     && typeof value.realpath === 'string' && value.realpath.length > 0
+    && typeof value.dev === 'string' && typeof value.ino === 'string'
     && /^(?:0|[1-9][0-9]*)$/.test(value.dev)
     && /^(?:0|[1-9][0-9]*)$/.test(value.ino);
 }
