@@ -1,3 +1,5 @@
+export { APP_PREPARE_TIMEOUT_MS, APP_CONFIRMATION_TIMEOUT_MS } from './schema.mjs';
+
 export const DEFAULT_APP_TASK_CONTINUATION = Object.freeze({
   mode: 'manual', authority: 'default-manual', confirmed_at: null, revoked_at: null,
 });

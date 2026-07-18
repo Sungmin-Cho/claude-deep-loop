@@ -9,20 +9,64 @@
     "budget.unit": ["turns","tokens"],
     "session_chain.lease.state": ["active","releasing","released"],
     "session_chain.lease.handoff_phase": ["idle","reserved","emitted","spawned","acquired"],
+    "session_chain.lease.handoff_transport": ["codex-app",null],
+    "session_chain.lease.resume_policy": ["visible","headless","human","app",null],
     "session_spawn.launcher": ["cmux","iterm2","terminal-app","wt","powershell","none"],
     "autonomy.session_effort": ["low","medium","high","xhigh","max"],
     "autonomy.session_runtime": ["claude","codex"],
-    "autonomy.runtime_source": ["skill-asserted"]
+    "autonomy.runtime_source": ["skill-asserted"],
+    "autonomy.app_task_continuation.mode": ["manual","auto"],
+    "autonomy.app_task_continuation.authority": ["default-manual","human-confirmed"]
   },
   "properties": {
+    "initialization": {
+      "type": "object",
+      "required": ["attempt_id","request_digest","previous_current_digest","host_observation_digest","host_surface_digest"],
+      "additionalProperties": false
+    },
+    "legacy_lineage": {
+      "type": "object",
+      "required": ["active_workstreams"],
+      "additionalProperties": false
+    },
     "session_spawn": { "type": "object" },
     "pause_reason": { "type": "string" },
-    "session_chain.lease.resume_policy": { "type": "string" },
+    "session_chain.lease.resume_policy": { "type": ["string","null"] },
+    "session_chain.lease.handoff_transport": { "type": ["string","null"] },
+    "session_chain.lease.handoff_attempt_id": { "type": ["string","null"] },
+    "session_chain.sessions": {
+      "type": "array",
+      "items": {
+        "host_surface": { "type": ["object","null"] },
+        "recovery_binding": {
+          "type": "object",
+          "required": ["owner_run_id","generation"],
+          "additionalProperties": false
+        },
+        "continuation": {
+          "type": "object",
+          "required": ["transport","attempt_id","route","context_mode","phase","expected_runtime","expected_host_surface","target_cwd","host_task_cwd_digest","workstream_id","project_id","descriptor_digest","emitted_at","prepare_deadline","prepared_at","confirmation_deadline","confirmed_at","acquired_at","acquired_generation","thread_id","unconfirmed_thread_id","failure_code","failure_binding"],
+          "additionalProperties": false
+        }
+      }
+    },
+    "autonomy.app_task_continuation": {
+      "type": "object",
+      "required": ["mode","authority","confirmed_at","revoked_at"],
+      "additionalProperties": false
+    },
     "autonomy.session_model": { "type": "string" },
     "autonomy.session_runtime": { "type": "string" },
     "autonomy.runtime_source": { "type": "string" },
     "autonomy.runtime_executable_approval": { "type": ["object", "null"] },
     "autonomy.launcher_executable_approvals": { "type": "object" }
+  },
+  "app": {
+    "host_surfaces": ["claude-code","claude-desktop","codex-cli","codex-app"],
+    "stdin_modes": ["pipe-open-noecho","pty-raw-noecho"],
+    "continuation_routes": ["create","fork"],
+    "continuation_context_modes": ["fresh","inherited-completed-history"],
+    "continuation_phases": ["emitted","prepared","confirmed","acquired","failed","abandoned"]
   },
   "episode_status": { "skill": ["pending","in_progress","blocked"], "kernel": ["done","approved","rejected","abandoned"] },
   "workstream_status": { "skill": ["planned","in_progress","in_review","parked"], "kernel": ["ready","merged","abandoned"] }
