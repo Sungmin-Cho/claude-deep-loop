@@ -17,6 +17,8 @@ import {
   rawHashValidState as rawState7b,
   seedCorrelatedTerminal as terminal7b,
 } from './fixtures/verified-app-run.mjs';
+import { durableRunBytes as bytes7d, rawHashValidState as raw7d,
+  verifiedAppRun as fixture7d } from './fixtures/verified-app-run.mjs';
 
 function observedRun({ legacyNullSurface = true } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-observe-')));
@@ -624,4 +626,56 @@ test('revoke accepts only exact primary human-preserve shapes and status project
   assert.deepEqual(readFileSync(join(invalid.root, '.deep-loop', 'runs', invalid.runId,
     'loop.json')), before.state);
   assert.deepEqual(readLines(invalid.root, invalid.runId), before.events);
+});
+
+test('observe revoke and status fence first then reject a corrupt success projection', () => {
+  const fixture = fixture7d('dl-existing-app-proof-');
+  raw7d(fixture.root, fixture.runId, loop => {
+    loop.session_chain.sessions[0].host_surface.observed_at =
+      '2026-07-13T00:00:01.000Z';
+  });
+  const before = bytes7d(fixture.root, fixture.runId);
+  const input = { owner: fixture.owner, generation: fixture.generation, runtime: 'codex',
+    readerMode: 'pty-raw-noecho', observation: { kind: 'codex-app',
+      source: 'codex-app-tool-provenance',
+      capabilities: ['create-thread-local', 'list-projects', 'structured-process-stdin'],
+      structured_stdin_mode: 'pty-raw-noecho', host_task_cwd: fixture.root,
+      host_task_cwd_source: 'app-task-context' } };
+  const deps = { kernelCwd: fixture.root, platform: process.platform,
+    realpath: value => value, stat: () => ({ dev: 1, ino: 1 }), sameFile: () => true,
+    nowFn: () => Date.parse('2026-07-13T00:00:02.000Z') };
+  assert.throws(() => observeHostSurface(fixture.root, fixture.runId,
+    { ...input, owner: 'wrong' }, deps), /HOST_SURFACE_FENCED/);
+  assert.throws(() => observeHostSurface(fixture.root, fixture.runId, input, deps),
+    /RUN_SNAPSHOT_INVALID/);
+  assert.throws(() => revokeAppTaskContinuation(fixture.root, fixture.runId,
+    { owner: 'wrong', generation: 1, runtime: 'codex' }, deps), /APP_TASK_FENCED/);
+  assert.throws(() => revokeAppTaskContinuation(fixture.root, fixture.runId,
+    { owner: fixture.owner, generation: 1, runtime: 'codex' }, deps),
+  /RUN_SNAPSHOT_INVALID/);
+  assert.throws(() => statusAppTask(fixture.root, fixture.runId, {}),
+    /RUN_SNAPSHOT_INVALID/);
+  assert.deepEqual(bytes7d(fixture.root, fixture.runId), before);
+
+  const terminal = fixture7d('dl-existing-app-terminal-proof-');
+  raw7d(terminal.root, terminal.runId, loop => {
+    loop.status = 'stopped';
+    loop.session_chain.sessions[0].host_surface.observed_at =
+      '2026-07-13T00:00:01.000Z';
+  });
+  const terminalInput = { ...input, owner: terminal.owner,
+    observation: { ...input.observation, host_task_cwd: terminal.root } };
+  const terminalDeps = { ...deps, kernelCwd: terminal.root };
+  const terminalBefore = bytes7d(terminal.root, terminal.runId);
+  assert.throws(() => observeHostSurface(terminal.root, terminal.runId,
+    { ...terminalInput, owner: 'wrong' }, terminalDeps), /HOST_SURFACE_FENCED/);
+  assert.throws(() => observeHostSurface(terminal.root, terminal.runId,
+    terminalInput, terminalDeps), /RUN_SNAPSHOT_INVALID/);
+  assert.throws(() => revokeAppTaskContinuation(terminal.root, terminal.runId,
+    { owner: 'wrong', generation: 1, runtime: 'codex' }, terminalDeps),
+  /APP_TASK_FENCED/);
+  assert.throws(() => revokeAppTaskContinuation(terminal.root, terminal.runId,
+    { owner: terminal.owner, generation: 1, runtime: 'codex' }, terminalDeps),
+  /RUN_SNAPSHOT_INVALID/);
+  assert.deepEqual(bytes7d(terminal.root, terminal.runId), terminalBefore);
 });

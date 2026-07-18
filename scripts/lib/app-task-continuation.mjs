@@ -1,11 +1,35 @@
 import { resolve } from 'node:path';
 import { types as utilTypes } from 'node:util';
-import { appendAnchored, readLines, verifyHeadLines, verifyLines } from './integrity.mjs';
+import { contentHash } from './envelope.mjs';
+import { appendAnchored, intentField, readLines, readVerifiedState, verifyHeadLines,
+  verifyLines } from './integrity.mjs';
 import { leaseCheck } from './lease.mjs';
-import { readState } from './state.mjs';
+import { runtimeFence } from './runtime.mjs';
 import { validate, verifyAppEventCorrelation } from './schema.mjs';
 import { classifyProjectTaskDirectory, exactRawHostObservation, normalizeHostObservation,
   hostSurfaceFactsDigest, sameNativeDirectory } from './host-surface.mjs';
+
+function assertAppCommandIdentity(loop, input, code) {
+  const runtime = runtimeFence(loop, input.runtime);
+  const lease = loop?.session_chain?.lease;
+  if (!runtime.ok || lease?.owner_run_id !== input.owner
+      || lease?.generation !== input.generation) throw new Error(code);
+}
+
+function appMutationIntentDigest(input, operation) {
+  const base = { operation, owner: input.owner, generation: input.generation,
+    attempt_id: input.attemptId ?? null };
+  const projection = operation === 'host-observe'
+    ? { ...base, runtime: input.runtime ?? null, reader_mode: input.readerMode ?? null,
+      observation_digest: intentField('host-observe-raw', input.observation) }
+    : operation === 'app-revoke'
+      ? { ...base, runtime: input.runtime ?? null }
+      : null;
+  if (projection === null) {
+    throw new Error(`MUTATION_INTENT_OPERATION_UNSUPPORTED: ${operation}`);
+  }
+  return contentHash(JSON.stringify(projection));
+}
 
 export { APP_PREPARE_TIMEOUT_MS, APP_CONFIRMATION_TIMEOUT_MS } from './schema.mjs';
 
@@ -104,8 +128,11 @@ export function observeHostSurface(root, runId, input, deps) {
   let materialized = null;
   const eventData = { run_id: runId, owner_run_id: input.owner, kind: null,
     observed_generation: null, observation_digest: null, outcome: null };
+  const callerBinding = { owner: input.owner, generation: input.generation };
+  const intentDigest = appMutationIntentDigest(input, 'host-observe');
   try {
-    appendAnchored(root, runId, { type: 'host-surface-observed', data: eventData },
+    const recovered = appendAnchored(root, runId,
+      { type: 'host-surface-observed', data: eventData },
       loop => {
         const session = loop.session_chain.sessions.find(item => item.run_id === input.owner);
         session.host_surface = materialized;
@@ -156,7 +183,12 @@ export function observeHostSurface(root, runId, input, deps) {
         eventData.outcome = 'observed';
         materialized = { ...normalized, observed_generation: input.generation };
         eventData.observation_digest = hostSurfaceFactsDigest(materialized);
-      }, { nowFn: deps.nowFn ?? Date.now });
+      }, { nowFn: deps.nowFn ?? Date.now,
+        fenceCheck: loop => assertAppCommandIdentity(loop, input, 'HOST_SURFACE_FENCED'),
+        callerBinding, intentDigest, fenceError: 'HOST_SURFACE_FENCED',
+        crashProbe: deps.crashProbe,
+        onRecovered: () => ({ ok: true, outcome: 'already-observed' }) });
+    if (recovered !== undefined) return recovered;
     return { ok: true, outcome: eventData.outcome };
   } catch (error) {
     if (error.message === 'HOST_SURFACE_ALREADY') return { ok: true, outcome: 'already-observed' };
@@ -168,8 +200,11 @@ export function observeHostSurface(root, runId, input, deps) {
 export function revokeAppTaskContinuation(root, runId, input, deps = {}) {
   const eventData = { owner_run_id: input.owner, generation: input.generation,
     attempt_id: null, child_run_id: null, failure_code: null };
+  const callerBinding = { owner: input.owner, generation: input.generation };
+  const intentDigest = appMutationIntentDigest(input, 'app-revoke');
   try {
-    appendAnchored(root, runId, { type: 'app-task-consent-revoked', data: eventData },
+    const recovered = appendAnchored(root, runId,
+      { type: 'app-task-consent-revoked', data: eventData },
       (loop, _spent, clock) => {
         const consent = loop.autonomy.app_task_continuation;
         consent.mode = 'manual'; consent.revoked_at = clock.iso;
@@ -264,7 +299,11 @@ export function revokeAppTaskContinuation(root, runId, input, deps = {}) {
             throw new Error('APP_TASK_TRANSITION_INVALID');
           }
         }
-      }, { nowFn: deps.nowFn ?? Date.now });
+      }, { nowFn: deps.nowFn ?? Date.now,
+        fenceCheck: loop => assertAppCommandIdentity(loop, input, 'APP_TASK_FENCED'),
+        callerBinding, intentDigest, fenceError: 'APP_TASK_FENCED',
+        onRecovered: () => ({ ok: true, outcome: 'already-revoked' }) });
+    if (recovered !== undefined) return recovered;
     return { ok: true, outcome: 'revoked' };
   } catch (error) {
     if (error.message === 'APP_TASK_ALREADY_REVOKED') {
@@ -276,7 +315,7 @@ export function revokeAppTaskContinuation(root, runId, input, deps = {}) {
 }
 
 export function statusAppTask(root, runId, { attempt = null } = {}) {
-  const { data: loop } = readState(root, runId);
+  const { data: loop } = readVerifiedState(root, runId);
   const sessions = loop.session_chain.sessions.filter(session => session.continuation);
   const safe = session => ({ run_id: session.run_id,
     attempt_id: session.continuation.attempt_id, route: session.continuation.route,

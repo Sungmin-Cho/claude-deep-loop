@@ -6,7 +6,7 @@ import {
 import { dirname, join } from 'node:path';
 import { types } from 'node:util';
 import { contentHash, ulid } from './envelope.mjs';
-import { verifyHeadLines, verifyLines } from './integrity.mjs';
+import { verifyHeadLines, verifyLines, verifyRunSnapshot } from './integrity.mjs';
 import { validate } from './schema.mjs';
 import { assertProjectRootBinding } from './project-root.mjs';
 import { validateGenesisConsent } from './app-task-continuation.mjs';
@@ -434,9 +434,7 @@ function strictIntegrity(loop, eventBytes) {
     try { lines = text.split('\n').filter(Boolean).map(line => JSON.parse(line)); }
     catch { throw new Error('INIT_INTEGRITY_INVALID'); }
   }
-  const chain = verifyLines(lines);
-  const head = verifyHeadLines(lines, loop.event_log_head);
-  if (!chain.ok || !head.ok) throw new Error('INIT_INTEGRITY_INVALID');
+  if (!verifyRunSnapshot(loop, lines).ok) throw new Error('INIT_INTEGRITY_INVALID');
   if (loop.initialization !== undefined) {
     const genesis = lines.filter(event => event.type === 'run-initialized');
     const event = genesis[0];
@@ -1317,6 +1315,12 @@ export function commitPreparedInit(root, input, deps = {}) {
     request_digest: prepared.expected_request_digest,
     previous_current_digest: prepared.previous_current_digest,
     observation_digest: prepared.expected_observation_digest };
+  const currentBeforeLock = parseCurrent(readOptionalRegular(initPaths(root).current, deps));
+  if (currentBeforeLock === prepared.attempt_id) {
+    strictGenesisProof(root, binding, null, deps);
+  } else {
+    strictExistingCurrent(root, currentBeforeLock, deps);
+  }
   return withInitLock(root, () => {
     verifyPreparedAuthority(root, prepared.prepared_authority, deps);
     const paths = initPaths(root, prepared.attempt_id);

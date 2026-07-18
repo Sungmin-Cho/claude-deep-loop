@@ -29,6 +29,8 @@ import {
   withInitLock,
 } from '../scripts/lib/init-transaction.mjs';
 import { verifyHeadLines, verifyLines } from '../scripts/lib/integrity.mjs';
+import { rawHashValidState as raw7d, verifiedAppRun as fixture7d }
+  from './fixtures/verified-app-run.mjs';
 
 const fixtureDir = (prefix = 'dl-init-') => canonicalRealpath(rawFixtureDir(prefix));
 
@@ -2093,4 +2095,42 @@ test('contention harness bounds a worker that never reports ready', async () => 
   } finally {
     await hanging.cleanup();
   }
+});
+
+test('init prepare commit and exact retry reject hash-valid cross-log-invalid state', () => {
+  const fixture = fixture7d('dl-init-current-proof-');
+  raw7d(fixture.root, fixture.runId, loop => {
+    loop.session_chain.sessions[0].host_surface.observed_at =
+      '2026-07-13T00:00:01.000Z';
+  });
+  const before = queryTree(fixture.root);
+  assert.throws(() => prepareInitialization(fixture.root, initOptions(),
+    initDeps(fixture.root)), /INIT_CURRENT_INVALID/);
+  assert.deepEqual(queryTree(fixture.root), before);
+
+  const commitFixture = fixture7d('dl-init-commit-proof-');
+  const commitDeps = initDeps(commitFixture.root);
+  const commitPrepared = prepareInitialization(commitFixture.root, initOptions(), commitDeps);
+  raw7d(commitFixture.root, commitFixture.runId, loop => {
+    loop.session_chain.sessions[0].host_surface.observed_at =
+      '2026-07-13T00:00:01.000Z';
+  });
+  const commitBefore = queryTree(commitFixture.root);
+  assert.throws(() => commitPreparedInit(commitFixture.root,
+    { prepared: commitPrepared, request: initOptions(), observation: null }, commitDeps),
+  /INIT_CURRENT_INVALID/);
+  assert.deepEqual(queryTree(commitFixture.root), commitBefore);
+
+  const retryRoot = fixtureDir();
+  const retryDeps = initDeps(retryRoot);
+  const retryPrepared = prepareInitialization(retryRoot, initOptions(), retryDeps);
+  const retryInput = { prepared: retryPrepared, request: initOptions(), observation: null };
+  assert.equal(commitPreparedInit(retryRoot, retryInput, retryDeps).outcome, 'initialized');
+  raw7d(retryRoot, retryPrepared.attempt_id, loop => {
+    loop.event_log_head = { seq: 1, checksum: 'f'.repeat(64) };
+  });
+  const retryBefore = queryTree(retryRoot);
+  assert.throws(() => commitPreparedInit(retryRoot, retryInput, retryDeps),
+    /INIT_STATE_CORRUPT/);
+  assert.deepEqual(queryTree(retryRoot), retryBefore);
 });

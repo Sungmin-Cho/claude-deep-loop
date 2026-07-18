@@ -3,9 +3,84 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { contentHash } from '../../scripts/lib/envelope.mjs';
 import { initRun } from '../../scripts/lib/initrun.mjs';
-import { appendAnchored, appendEvent, lastLogHead, mutationIntentDigest }
+import { appendAnchored, appendEvent, commitVerifiedEventsUnderLock, lastLogHead,
+  mutationIntentDigest, readLines }
   from '../../scripts/lib/integrity.mjs';
-import { readState, readStateForRootRecovery, runDir } from '../../scripts/lib/state.mjs';
+import { readState, readStateForRootRecovery, runDir, withLock }
+  from '../../scripts/lib/state.mjs';
+
+const TERMINAL_EVENT = new Map([
+  ['host-call-timeout', 'app-task-failed'],
+  ['host-call-no-return', 'app-task-failed'],
+  ['host-call-failed', 'app-task-failed'],
+  ['invalid-host-receipt', 'app-task-failed'],
+  ['message-unconfirmed', 'app-task-failed'],
+  ['app-prepare-unattended', 'app-task-swept'],
+  ['app-launch-unconfirmed', 'app-task-swept'],
+]);
+
+export function seedVerifiedAppHistories(root, runId, sessions) {
+  return withLock(root, runId, () => {
+    const { data: loop, hash: baseStateHash } = readState(root, runId);
+    const specs = [];
+    for (const session of sessions) {
+      const continuation = session.continuation;
+      const identity = { attempt_id: continuation.attempt_id, child_run_id: session.run_id };
+      for (const [field, type] of [
+        ['emitted_at', 'handoff-emitted'], ['prepared_at', 'app-task-prepared'],
+        ['confirmed_at', 'app-task-confirmed'],
+      ]) {
+        if (continuation[field] !== null) specs.push({ type, data: {
+          ...identity, ...(type === 'app-task-prepared' ? {
+            descriptor_digest: continuation.descriptor_digest,
+          } : type === 'app-task-confirmed' ? {
+            receipt_digest: contentHash('confirmed-thread\0' + continuation.thread_id),
+          } : {}) },
+        now: Date.parse(continuation[field]) });
+      }
+      if (['failed', 'abandoned'].includes(continuation.phase)) {
+        const type = TERMINAL_EVENT.get(continuation.failure_code);
+        if (type === undefined) throw new Error('TEST_HISTORY_CODE_UNSUPPORTED');
+        const binding = continuation.failure_binding;
+        if (continuation.phase === 'failed'
+            && (typeof binding?.owner_run_id !== 'string'
+              || !Number.isSafeInteger(binding?.generation))) {
+          throw new Error('TEST_HISTORY_FAILURE_BINDING_UNSUPPORTED');
+        }
+        const lastClock = continuation.confirmed_at ?? continuation.prepared_at
+          ?? continuation.emitted_at;
+        specs.push({ type, now: Date.parse(lastClock) + 1,
+          data: { ...identity, failure_code: continuation.failure_code,
+            ...(continuation.failure_code === 'message-unconfirmed' ? {
+              unconfirmed_receipt_digest: contentHash(
+                'unconfirmed-thread\0' + continuation.unconfirmed_thread_id),
+            } : {}),
+            ...(continuation.phase === 'failed' ? binding : {}) } });
+      }
+    }
+    const terminalNow = sessions.some(session =>
+      ['failed', 'abandoned'].includes(session.continuation?.phase))
+      ? Math.max(...specs.map(spec => spec.now)) + 1 : null;
+    if (terminalNow !== null) {
+      specs.push({ type: 'finish', data: { status: 'stopped', reportRel: null },
+        now: terminalNow });
+    }
+    specs.sort((left, right) => left.now - right.now
+      || left.type.localeCompare(right.type));
+    return commitVerifiedEventsUnderLock(root, runId, loop, specs, candidate => {
+      candidate.session_chain.sessions.push(...structuredClone(sessions));
+      if (terminalNow !== null) {
+        candidate.status = 'stopped';
+        candidate.pause_reason = null;
+        candidate.termination.finished_at = new Date(terminalNow).toISOString();
+        delete candidate.termination.final_report;
+      }
+    }, { baseLines: readLines(root, runId), baseStateHash, callerBinding: {
+      owner: loop.session_chain.lease.owner_run_id,
+      generation: loop.session_chain.lease.generation,
+    }, intentDigest: contentHash(JSON.stringify(specs)) });
+  });
+}
 
 export function verifiedAppRun(prefix = 'dl-verified-app-') {
   const root = realpathSync(mkdtempSync(join(tmpdir(), prefix)));

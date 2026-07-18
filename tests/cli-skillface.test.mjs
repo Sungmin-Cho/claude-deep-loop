@@ -5,9 +5,9 @@ import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { readState, writeState } from '../scripts/lib/state.mjs';
+import { readState } from '../scripts/lib/state.mjs';
 import { appHostTaskCwdDigest } from '../scripts/lib/host-surface.mjs';
-import { rawHashValidState as rawState7b } from './fixtures/verified-app-run.mjs';
+import { seedVerifiedAppHistories } from './fixtures/verified-app-run.mjs';
 
 const CLI = join(process.cwd(), 'scripts', 'deep-loop.mjs');
 function run(root, args) { return execFileSync('node', [CLI, ...args, '--project-root', root], { encoding: 'utf8' }); }
@@ -145,7 +145,7 @@ test('state get masks App opaque IDs for whole parent and exact leaf without cha
         unconfirmed_thread_id: 'uncertain', failure_code: 'message-unconfirmed',
       }) },
   );
-  rawState7b(root, runId, state => Object.assign(state, loop));
+  seedVerifiedAppHistories(root, runId, loop.session_chain.sessions.slice(1));
   const disk = readFileSync(join(root, '.deep-loop', 'runs', runId, 'loop.json'));
   for (const args of [
     ['state', 'get', '--run-id', runId],
