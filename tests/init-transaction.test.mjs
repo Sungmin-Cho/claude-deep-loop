@@ -1134,6 +1134,50 @@ test('quality link-seam successor injection cannot authorize release or activate
   assert.deepEqual(probed, [], 'the foreign successor is never activated as terminal authority');
 });
 
+test('quality post-publication authority read brackets a stale namespace snapshot', () => {
+  const root = fixtureDir();
+  const control = join(root, '.deep-loop');
+  const nonce = 'stalesnapshot001';
+  const fixed = join(control, '.init.lock');
+  const release = join(control, '.init-lock-release-' + nonce);
+  const successor = join(control, '.init-lock-successor-' + nonce);
+  const foreign = { pid: 99, nonce: 'foreignholder002',
+    acquired_at: '2026-07-13T00:00:01.000Z' };
+  let injected = false;
+  let callbackCalls = 0;
+  let thrown = null;
+  try {
+    withInitLock(root, () => { callbackCalls += 1; }, {
+      pid: 7, nonce: () => nonce,
+      now: () => Date.parse('2026-07-13T00:00:00.000Z'),
+      readFile: path => {
+        const bytes = readFileSync(path);
+        if (path === fixed && !injected) {
+          injected = true;
+          writeFileSync(successor, JSON.stringify(foreign), { flag: 'wx' });
+        }
+        return bytes;
+      },
+    });
+  } catch (error) { thrown = error; }
+
+  assert.equal(injected, true, 'the successor is injected after the opening namespace read');
+  assert.match(thrown?.message ?? '', /LOCK_CHAIN_INVALID/);
+  assert.equal(callbackCalls, 0, 'a stale namespace snapshot cannot authorize callback entry');
+  assert.equal(existsSync(release), false,
+    'a stale namespace snapshot cannot authorize release evidence');
+  assert.deepEqual(JSON.parse(readFileSync(successor)), foreign);
+
+  const binding = { attempt_id: '01JAPPGEN00000000000000000',
+    expected_current_digest: 'NONE', expected_request_digest: 'a'.repeat(64) };
+  const probed = [];
+  const status = statusInitialization(root, binding, initDeps(root, {
+    probePidIdentity: holder => { probed.push(holder.pid); return 'alive'; },
+  }));
+  assert.equal(status.lock_state, 'invalid');
+  assert.deepEqual(probed, [], 'the injected successor is never terminal authority');
+});
+
 test('quality sweep ABA replacement during liveness probe is preserved', () => {
   const root = fixtureDir();
   const candidate = join(root, '.deep-loop',

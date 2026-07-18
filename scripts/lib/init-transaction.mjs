@@ -736,6 +736,20 @@ function requireCompleteAuthorityNamespace(namespace, consumed) {
   }
 }
 
+function requireStableAuthorityNamespace(control, deps, before) {
+  const after = initAuthorityNamespace(control, deps);
+  if (before.size !== after.size || [...before].some(name => !after.has(name))) {
+    throw new Error('LOCK_CHAIN_INVALID');
+  }
+  return after;
+}
+
+function requireBracketedCompleteAuthorityNamespace(control, deps, before, consumed) {
+  const after = requireStableAuthorityNamespace(control, deps, before);
+  requireCompleteAuthorityNamespace(before, consumed);
+  requireCompleteAuthorityNamespace(after, consumed);
+}
+
 function followInitAuthority(control, deps) {
   const lstat = deps.lstat ?? (value => lstatSync(value, { bigint: true }));
   const sameFile = deps.sameFile
@@ -748,7 +762,7 @@ function followInitAuthority(control, deps) {
     const authority = authorityRecord(authorityPath, deps, lstat);
     if (authority === null) {
       if (depth === 0) {
-        requireCompleteAuthorityNamespace(namespace, consumed);
+        requireBracketedCompleteAuthorityNamespace(control, deps, namespace, consumed);
         return { state: 'free', publishPath: authorityPath, visited };
       }
       throw new Error('LOCK_CHAIN_INVALID');
@@ -756,7 +770,7 @@ function followInitAuthority(control, deps) {
     consumed.add(authorityPath === join(control, '.init.lock')
       ? '.init.lock' : authorityPath.slice(control.length + 1));
     if (authority.holder === null || visited.has(authority.holder.nonce)) {
-      requireCompleteAuthorityNamespace(namespace, consumed);
+      requireBracketedCompleteAuthorityNamespace(control, deps, namespace, consumed);
       return { state: 'held', authorityPath, authority, invalid: true, visited };
     }
     visited.add(authority.holder.nonce);
@@ -764,14 +778,14 @@ function followInitAuthority(control, deps) {
     const releasePath = join(control, releaseName);
     const release = authorityRecord(releasePath, deps, lstat);
     if (release === null) {
-      requireCompleteAuthorityNamespace(namespace, consumed);
+      requireBracketedCompleteAuthorityNamespace(control, deps, namespace, consumed);
       return { state: 'held', authorityPath, authority, releasePath,
         invalid: false, visited };
     }
     consumed.add(releaseName);
     if (release.holder === null || release.holder.nonce !== authority.holder.nonce
         || !sameFile(authority.stat, release.stat)) {
-      requireCompleteAuthorityNamespace(namespace, consumed);
+      requireBracketedCompleteAuthorityNamespace(control, deps, namespace, consumed);
       return { state: 'held', authorityPath, authority, releasePath,
         invalid: true, visited };
     }
@@ -779,11 +793,15 @@ function followInitAuthority(control, deps) {
     const successorPath = join(control, successorName);
     const successor = authorityRecord(successorPath, deps, lstat);
     if (depth === INIT_LOCK_CHAIN_MAX - 1) {
-      if (successor === null) requireCompleteAuthorityNamespace(namespace, consumed);
+      if (successor === null) {
+        requireBracketedCompleteAuthorityNamespace(control, deps, namespace, consumed);
+      } else {
+        requireStableAuthorityNamespace(control, deps, namespace);
+      }
       throw new Error('LOCK_CHAIN_EXHAUSTED');
     }
     if (successor === null) {
-      requireCompleteAuthorityNamespace(namespace, consumed);
+      requireBracketedCompleteAuthorityNamespace(control, deps, namespace, consumed);
       return { state: 'free', publishPath: successorPath,
         predecessorPath: authorityPath, predecessor: authority, visited };
     }
@@ -828,6 +846,7 @@ export function withInitLock(root, fn, deps = {}) {
   let candidateOwned = null;
   let linked = false;
   let releaseAuthorized = false;
+  let authorizedAuthorityPath = null;
   let releaseError = null;
   try {
     let candidateDescriptor = null;
@@ -895,13 +914,20 @@ export function withInitLock(root, fn, deps = {}) {
         || !sameFile(candidateOwned.stat, published.authority.stat)) {
       throw new Error('LOCK_ACQUIRE_RACED');
     }
+    authorizedAuthorityPath = published.authorityPath;
     releaseAuthorized = true;
     return fn();
   } finally {
     if (linked && releaseAuthorized) {
       try {
+        const held = followInitAuthority(control, deps);
         const beforeRelease = initFileRecord(candidate, deps, lstat);
-        if (!sameInitFile(candidateOwned, beforeRelease, sameFile)) {
+        if (held.state !== 'held' || held.authorityPath !== authorizedAuthorityPath
+            || held.invalid || held.authority.holder.pid !== holder.pid
+            || held.authority.holder.nonce !== holder.nonce
+            || held.authority.holder.acquired_at !== holder.acquired_at
+            || !sameFile(candidateOwned.stat, held.authority.stat)
+            || !sameInitFile(candidateOwned, beforeRelease, sameFile)) {
           releaseError = new Error('LOCK_RELEASE_INDETERMINATE');
         } else {
           try { link(candidate, releasePath); }
