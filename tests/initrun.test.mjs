@@ -123,3 +123,43 @@ test('new runs reject the legacy standalone reviewer before creating durable sta
   );
   assert.equal(existsSync(join(root, '.deep-loop')), false);
 });
+
+test('new production genesis records manual consent and caller-fixed initialization', () => {
+  const loop = buildInitialLoop({
+    runtime: 'codex', goal: 'g', protocol: 'standalone',
+    recipe: { id: 'r', name: 'r', reason: 'test' },
+    runId: '01JAPPGEN00000000000000000', now: new Date('2026-07-13T00:00:00.000Z'),
+    initialization: {
+      attempt_id: '01JAPPGEN00000000000000000', request_digest: 'a'.repeat(64),
+      request_projection: {},
+      previous_current_digest: 'NONE', host_observation_digest: 'NONE',
+      host_surface_digest: 'NONE',
+    },
+  });
+  assert.deepEqual(loop.autonomy.app_task_continuation, {
+    mode: 'manual', authority: 'default-manual', confirmed_at: null, revoked_at: null,
+  });
+  assert.deepEqual(loop.initialization, {
+    attempt_id: '01JAPPGEN00000000000000000', request_digest: 'a'.repeat(64),
+    request_projection: {},
+    previous_current_digest: 'NONE', host_observation_digest: 'NONE',
+    host_surface_digest: 'NONE',
+  });
+  assert.equal(loop.session_chain.sessions[0].host_surface, null);
+  assert.equal(loop.session_chain.lease.handoff_transport, null);
+  assert.equal(loop.session_chain.lease.handoff_attempt_id, null);
+  const next = buildInitialLoop({ runtime: 'codex', goal: 'next', protocol: 'standalone',
+    recipe: { id: 'r', name: 'r', reason: 'test' }, runId: '01JAPPGEN00000000000000001',
+    now: new Date('2026-07-13T00:00:01.000Z') });
+  assert.deepEqual(next.autonomy.app_task_continuation, {
+    mode: 'manual', authority: 'default-manual', confirmed_at: null, revoked_at: null,
+  });
+});
+
+test('direct legacy builder call may omit initialization', () => {
+  const loop = buildInitialLoop({ runtime: 'claude', goal: 'legacy', protocol: 'standalone',
+    recipe: { id: 'r', name: 'r', reason: 'test' }, runId: '01JAPPGEN00000000000000003',
+    now: new Date('2026-07-13T00:00:00.000Z') });
+  assert.equal(Object.hasOwn(loop, 'initialization'), false);
+  assert.equal(loop.session_chain.sessions[0].host_surface, null);
+});
