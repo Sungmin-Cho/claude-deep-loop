@@ -3610,6 +3610,45 @@ no inherited approval from the historical receipt.
 - gate state: open only for one fresh focused round 2 over these corrections. Two valid
   `APPROVE`, Red/Yellow `0 / 0`, plus main replay close Gate 2 and advance directly to Gate 3A.
 
+### Gate 2 focused round 2 review and Respond
+
+- reviewed target/plan SHA-256:
+  `87d98a2e37fdc1275949e3ca820b3764cfd58794` /
+  `e67dc6add2c609ada24d84de64ce1295697042dbf0e5641f22bfaa5131d23c38`.
+- standard task `019f72e3-b532-7a11-8345-9e4fc051855e`: `REQUEST_CHANGES`,
+  Red/Yellow/Info `1 / 0 / 0`.
+- adversarial task `019f72e3-b4ae-74a2-8d23-b603a435d606`: `REQUEST_CHANGES`,
+  Red/Yellow/Info `1 / 0 / 0`.
+- both completed with exit 0 and valid finals; `N_planned=2`, `N_actual=2`.
+- roots: the publisher's operative `JOURNAL_CRASH_POINTS` still rejected all six replacement points;
+  four direct exit-91 tests outside the matrix helper retried while their exact orphan run lock remained.
+- report: `.deep-review/reports/2026-07-18-105445-review.md`, SHA-256
+  `77f843ad609d59a9574e0253f10cafb963e31c102be7a0c3b1c379145c73f6ba`.
+- response: both roots accepted. The operative enum is now 14-point and separately parsed; each
+  direct worker test removes only its exact empty lock after verified exit 91, with validator-enforced
+  counts for the three finish-file sites and exact app-test site.
+- response report/Phase 6 main-fallback log SHA-256:
+  `e2b79a3aa6bf478d0d42074e348caa398da812b623f394fdd38714b2f9cad7ba` /
+  `f7aaef3b91cced06c2b1f745c89841b566837ee263882bf53e38a36fa58e90cc`.
+- correction commit: `0296885b4fce61ad84a56ce47915da612ca0c6f4`.
+- corrected plan/design SHA-256:
+  `0236e407d1b939190fec7b48ea1c3f3a9968f38dcba1fecef890d3a9dc68c45a` /
+  `38bae009994af1af840053d6fca24255a89fa37aabeb88b59ff6ddb505841eee`.
+- corrected pre-Gate-6/Gate-6 SHA-256:
+  `0f4de641a1e7ff269f16374ec453f7c1255e45ae462a8f4bb9e418420f7e26aa` /
+  `648504926fc529d9e02202399384c09d5bc2737884187ed9923c90f1270733a4`.
+- closure probe source/output SHA-256:
+  `b9f78f43fefa85e1c14818fe0cba686806c5e46380a6b6e39d21522e2c3727c7` /
+  `30203eda81d543b6e34ea18bb5319d118110d404fdbdbc5a0a8962bbc8d09249`.
+- embedded validator: PASS — 46 tasks/372 fences. Full preflight: PASS — 1,463/1,463,
+  output SHA-256 `61562163147512347ad99ac68c9f2689fe8689ef1280fa1157a8f799c11b8ee5`.
+- recurring findings Stage 5.5 run `01KXSF69N5SSNJYJN132WE69VN`: test-coverage `52→54`;
+  architecture `96`, error-handling `33`, security `40` unchanged.
+- reviewer-internal validator/probe attempts hit read-only sandbox `mkdtemp EPERM`; the exact same
+  committed bytes passed main's executable validator/probe/preflight outside that reviewer sandbox.
+- gate state: one minimal same-target confirmation over only these two roots. Two valid `APPROVE`
+  finals close Gate 2 immediately; no whole-plan review follows.
+
 ## Review receipt template
 
 ### Gate 1 fresh cycle 8 round 14 micro-delta review
