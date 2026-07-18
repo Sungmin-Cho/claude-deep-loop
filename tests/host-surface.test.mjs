@@ -34,6 +34,31 @@ test('positive Codex App observation requires exact native cwd identity', () => 
   assert.equal(sameNativeDirectory('/repo', '/other', deps), false);
 });
 
+test('observation returns the exact canonical paths used for native identity', () => {
+  const calls = new Map();
+  const deps = {
+    platform: 'linux', kernelCwd: '/kernel',
+    realpath: value => {
+      const count = (calls.get(value) ?? 0) + 1;
+      calls.set(value, count);
+      return count === 1 ? '/canonical/repo' : `/retargeted${value}`;
+    },
+    stat: value => {
+      assert.equal(value, '/canonical/repo');
+      return { dev: 7, ino: 11 };
+    },
+    sameFile: (left, right) => left.dev === right.dev && left.ino === right.ino,
+  };
+  const observation = normalizeHostObservation({
+    runtime: 'codex', kind: 'codex-app', source: 'codex-app-tool-provenance',
+    capabilities: ['structured-process-stdin'], structured_stdin_mode: 'pty-raw-noecho',
+    host_task_cwd: '/task', host_task_cwd_source: 'app-task-context', observed_at: null,
+  }, deps);
+  assert.equal(observation.host_task_cwd, '/canonical/repo');
+  assert.equal(observation.kernel_cwd_at_observation, '/canonical/repo');
+  assert.deepEqual([...calls], [['/task', 1], ['/kernel', 1]]);
+});
+
 test('raw host observation is exactly six own data keys with one dense plain capability array', () => {
   const raw = { kind: 'codex-app', source: 'codex-app-tool-provenance',
     capabilities: ['structured-process-stdin'], structured_stdin_mode: 'pty-raw-noecho',

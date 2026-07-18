@@ -115,17 +115,22 @@ export function exactRawHostObservation(input) {
   }
 }
 
-export function sameNativeDirectory(left, right, deps) {
+function nativeDirectoryIdentity(left, right, deps) {
   try {
     const leftReal = deps.realpath(left);
     const rightReal = deps.realpath(right);
     const leftStat = deps.stat(leftReal);
     const rightStat = deps.stat(rightReal);
-    if (deps.platform !== 'win32' && leftReal !== rightReal) return false;
-    return Boolean(leftStat && rightStat && deps.sameFile(leftStat, rightStat));
+    if (deps.platform !== 'win32' && leftReal !== rightReal) return null;
+    if (!leftStat || !rightStat || !deps.sameFile(leftStat, rightStat)) return null;
+    return { leftReal, rightReal };
   } catch {
-    return false;
+    return null;
   }
+}
+
+export function sameNativeDirectory(left, right, deps) {
+  return nativeDirectoryIdentity(left, right, deps) !== null;
 }
 
 export function normalizeHostObservation(input, deps) {
@@ -153,16 +158,19 @@ export function normalizeHostObservation(input, deps) {
     : input.structured_stdin_mode !== null) fail('stdin mode correlation');
   const manualSurface = !hasStructured
     && input.host_task_cwd == null && input.host_task_cwd_source == null;
+  let nativeCwd = null;
   if (!manualSurface) {
     if (!CWD_SOURCES[kind].includes(input.host_task_cwd_source)) fail('cwd source correlation');
-    if (!validHostPath(input.host_task_cwd)
-        || !sameNativeDirectory(input.host_task_cwd, deps.kernelCwd, deps)) fail('cwd identity');
+    if (!validHostPath(input.host_task_cwd)) fail('cwd identity');
+    nativeCwd = nativeDirectoryIdentity(input.host_task_cwd, deps.kernelCwd, deps);
+    if (nativeCwd === null) fail('cwd identity');
   }
   return {
     kind, source: input.source, capabilities: sorted,
     structured_stdin_mode: hasStructured ? input.structured_stdin_mode : null,
-    host_task_cwd: manualSurface ? null : deps.realpath(input.host_task_cwd),
+    host_task_cwd: nativeCwd?.leftReal ?? null,
     host_task_cwd_source: manualSurface ? null : input.host_task_cwd_source,
-    kernel_cwd_at_observation: deps.realpath(deps.kernelCwd), observed_at: input.observed_at ?? null,
+    kernel_cwd_at_observation: nativeCwd?.rightReal ?? deps.realpath(deps.kernelCwd),
+    observed_at: input.observed_at ?? null,
   };
 }
