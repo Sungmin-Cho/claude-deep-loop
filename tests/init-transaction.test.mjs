@@ -927,6 +927,31 @@ test('status classifies a stable fixed-lock holder without deleting it', () => {
   assert.equal(existsSync(join(root, '.deep-loop', '.init.lock')), true);
 });
 
+for (const malformedName of [
+  '.init.lock-junk',
+  '.init-lock-successorJUNK',
+  '.init-lock-releaseJUNK',
+]) {
+  test(`status and writer reject the same malformed reserved authority ${malformedName}`, () => {
+    const root = fixtureDir();
+    const binding = { attempt_id: '01JAPPGEN00000000000000000',
+      expected_current_digest: 'NONE', expected_request_digest: 'a'.repeat(64) };
+    put(root, `.deep-loop/${malformedName}`, JSON.stringify({ pid: 42,
+      nonce: 'malformedowner01', acquired_at: '2026-07-13T00:00:00.000Z' }));
+    const before = queryTree(root);
+    assert.equal(statusInitialization(root, binding, initDeps(root)).lock_state, 'invalid');
+    assert.deepEqual(queryTree(root), before, 'read-only status must not mutate reserved artifacts');
+    assert.throws(() => withInitLock(root, () => assert.fail('malformed authority entered'), {
+      pid: 7, nonce: () => 'contender0000001',
+      now: () => Date.parse('2026-07-13T00:00:01.000Z'),
+      lockWriteFile: () => assert.fail('malformed namespace must fail before candidate write'),
+      link: () => assert.fail('malformed namespace must fail before authority publication'),
+      unlink: () => assert.fail('malformed namespace must not be cleaned'),
+    }), /LOCK_CHAIN_INVALID/);
+    assert.deepEqual(queryTree(root), before, 'writer rejection must preserve malformed artifacts');
+  });
+}
+
 test('status follows released init authorities to the bounded terminal successor', () => {
   const root = fixtureDir();
   const binding = { attempt_id: '01JAPPGEN00000000000000000',

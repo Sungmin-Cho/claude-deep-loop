@@ -677,6 +677,15 @@ const INIT_SUCCESSOR_NAME = /^\.init-lock-successor-[A-Za-z0-9_-]{16,128}$/;
 const INIT_RELEASE_NAME = /^\.init-lock-release-[A-Za-z0-9_-]{16,128}$/;
 const HOLDER_KEYS = ['acquired_at', 'nonce', 'pid'];
 
+function initAuthorityNameKind(name) {
+  if (name === '.init.lock') return 'fixed';
+  if (INIT_SUCCESSOR_NAME.test(name)) return 'successor';
+  if (INIT_RELEASE_NAME.test(name)) return 'release';
+  if (name.startsWith('.init.lock') || name.startsWith('.init-lock-successor')
+      || name.startsWith('.init-lock-release')) return 'invalid';
+  return null;
+}
+
 function parseInitHolder(bytes) {
   let holder;
   try { holder = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
@@ -770,17 +779,9 @@ function authorityRecord(path, deps, lstat) {
 function initAuthorityNamespace(control, deps) {
   const names = new Set();
   for (const name of (deps.readdir ?? readdirSync)(control)) {
-    if (name === '.init.lock') {
-      names.add(name);
-    } else if (name.startsWith('.init.lock')
-        || name.startsWith('.init-lock-successor')
-          && !INIT_SUCCESSOR_NAME.test(name)
-        || name.startsWith('.init-lock-release')
-          && !INIT_RELEASE_NAME.test(name)) {
-      throw new Error('LOCK_CHAIN_INVALID');
-    } else if (INIT_SUCCESSOR_NAME.test(name) || INIT_RELEASE_NAME.test(name)) {
-      names.add(name);
-    }
+    const kind = initAuthorityNameKind(name);
+    if (kind === 'invalid') throw new Error('LOCK_CHAIN_INVALID');
+    if (kind !== null) names.add(name);
   }
   return names;
 }
@@ -1383,9 +1384,8 @@ const statusResult = (outcome, lock_state, fields = {}) => ({
 
 function lockArtifactSnapshot(control, deps) {
   if (queryDirectory(control, deps) === null) return { stable: 'absent', entries: [] };
-  const names = (deps.readdir ?? readdirSync)(control).filter(name =>
-    name === '.init.lock' || name.startsWith('.init-lock-successor-')
-      || name.startsWith('.init-lock-release-')).sort();
+  const names = (deps.readdir ?? readdirSync)(control)
+    .filter(name => initAuthorityNameKind(name) !== null).sort();
   const entries = names.map(name => {
     const path = join(control, name);
     const stat = queryLstat(path, deps);
