@@ -225,12 +225,12 @@ export function revokeAppTaskContinuation(root, runId, input, deps = {}) {
           && session.continuation?.transport === 'codex-app');
         const appBound = lease.handoff_transport === 'codex-app';
         if (!appBound && (lease.handoff_attempt_id !== null || livePhases.length !== 0)) {
-          throw new Error('APP_TASK_FENCED');
+          throw new Error('APP_TASK_TRANSITION_INVALID');
         }
-        if (appBound && exactBound.length !== 1) throw new Error('APP_TASK_FENCED');
+        if (appBound && exactBound.length !== 1) throw new Error('APP_TASK_TRANSITION_INVALID');
         if (livePhases.length > 0
             && (livePhases.length !== 1 || exactBound[0] !== livePhases[0])) {
-          throw new Error('APP_TASK_FENCED');
+          throw new Error('APP_TASK_TRANSITION_INVALID');
         }
         if (appBound) {
           const bound = exactBound[0];
@@ -261,7 +261,7 @@ export function revokeAppTaskContinuation(root, runId, input, deps = {}) {
                 && !settledPreserve)
               || lease.state !== 'releasing' || lease.handoff_phase !== expectedPhase
               || !parent || parent.superseded_by !== bound.run_id) {
-            throw new Error('APP_TASK_FENCED');
+            throw new Error('APP_TASK_TRANSITION_INVALID');
           }
         }
       }, { nowFn: deps.nowFn ?? Date.now });

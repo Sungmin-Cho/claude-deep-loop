@@ -333,7 +333,7 @@ function classifyKernelError(e) {
   if (/^(?:APP_TASK_FENCED|HOST_SURFACE_FENCED)(?::|$)/.test(message)) {
     return { code: 3, message };
   }
-  if (/^(?:APP_TASK_TERMINAL|APP_TASK_CONSENT_INVALID|HOST_SURFACE_TERMINAL)(?::|$)/.test(message)) {
+  if (/^(?:APP_TASK_TERMINAL|APP_TASK_CONSENT_INVALID|APP_TASK_TRANSITION_INVALID|HOST_SURFACE_TERMINAL)(?::|$)/.test(message)) {
     return { code: 1, message };
   }
   if (/^(?:LEASE_FENCED|FENCE_REQUIRED|RUNTIME_FENCED|PROJECT_ROOT_FENCED)(?::|$)/.test(message)) {

@@ -11,7 +11,9 @@ import { buildFixedInitializationRequest, commitFixedInitialization, detectIniti
 import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import { canonicalProjectRoot, projectRootDigest } from '../scripts/lib/project-root.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
-import { readLines } from '../scripts/lib/integrity.mjs';
+import { appendAnchored, readLines } from '../scripts/lib/integrity.mjs';
+import { appHostTaskCwdDigest } from '../scripts/lib/host-surface.mjs';
+import { validate, verifyAppEventCorrelation } from '../scripts/lib/schema.mjs';
 
 const CLI = join(process.cwd(), 'scripts', 'deep-loop.mjs');
 const FORCE_WIN32 = join(process.cwd(), 'tests', 'helpers', 'force-win32.mjs');
@@ -1663,4 +1665,78 @@ test('App fence mismatches exit 3 but terminal after a valid fence exits 1', () 
   assert.equal(runResult(root, ['app-task', 'revoke',
     '--run-id', runId, '--owner', runId, '--generation', '1', '--runtime', 'codex']).code, 1);
   assert.equal(runResult(root, ['app-task', 'consent', '--run-id', runId]).code, 2);
+});
+
+function seedAutoAppRun(goal) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-app-transition-')));
+  const observed = '2026-07-13T00:00:00.000Z';
+  const observation = { kind: 'codex-app', source: 'codex-app-tool-provenance',
+    capabilities: ['create-thread-local', 'list-projects', 'structured-process-stdin'],
+    structured_stdin_mode: 'pipe-open-noecho', host_task_cwd: root,
+    host_task_cwd_source: 'app-task-context', observed_at: observed };
+  const { runId } = initRun(root, { runtime: 'codex', goal, cwdFn: () => root,
+    now: new Date(observed), hostObservation: observation,
+    appContinuationConsent: { mode: 'auto', authority: 'human-confirmed',
+      confirmed_at: observed, revoked_at: null } });
+  return { root, runId, observed };
+}
+
+test('App post-fence transition invalidity exits 1 while fences stay 3 and retry is inert', () => {
+  const fixture = seedAutoAppRun('transition-invalid');
+  const attempt = '01JAPPTASK0000000000000000';
+  const child = '01JAPPCHD00000000000000020';
+  appendAnchored(fixture.root, fixture.runId, { type: 'handoff-emitted',
+    data: { attempt_id: attempt, child_run_id: child } }, loop => {
+    const parent = loop.session_chain.sessions[0];
+    parent.superseded_by = child;
+    Object.assign(loop.session_chain.lease, { state: 'releasing', handoff_phase: 'emitted',
+      handoff_idempotency_key: 'a'.repeat(16), handoff_child_run_id: child,
+      handoff_transport: 'codex-app', handoff_attempt_id: attempt,
+      resume_policy: 'app', expires_at: '2026-07-13T00:15:00.000Z' });
+    loop.session_chain.sessions.push({ run_id: child, started_at: null, ended_at: null,
+      turns: 0, outcome: null, superseded_by: null, host_surface: null,
+      continuation: { transport: 'codex-app', attempt_id: attempt, route: 'create',
+        context_mode: 'fresh', phase: 'emitted', expected_runtime: 'codex',
+        expected_host_surface: 'codex-app', target_cwd: fixture.root,
+        host_task_cwd_digest: appHostTaskCwdDigest(parent.host_surface, fixture.root),
+        workstream_id: null, project_id: null, descriptor_digest: null,
+        emitted_at: fixture.observed, prepare_deadline: '2026-07-13T00:05:00.000Z',
+        prepared_at: null, confirmation_deadline: null, confirmed_at: null,
+        acquired_at: null, acquired_generation: null, thread_id: null,
+        unconfirmed_thread_id: null, failure_code: null, failure_binding: null } });
+  }, undefined, { nowFn: () => Date.parse(fixture.observed) });
+  appendAnchored(fixture.root, fixture.runId, { type: 'app-task-abandoned', data: {
+    owner_run_id: fixture.runId, generation: 1, attempt_id: attempt,
+    child_run_id: child, failure_code: 'gate-budget',
+  } }, loop => {
+    const continuation = loop.session_chain.sessions.at(-1).continuation;
+    continuation.phase = 'abandoned';
+    continuation.failure_code = 'gate-budget';
+    loop.status = 'paused';
+    loop.pause_reason = 'operator-preserve';
+    loop.session_chain.lease.resume_policy = 'human';
+    loop.session_chain.lease.expires_at = null;
+  }, undefined, { nowFn: () => Date.parse('2026-07-13T00:00:01.000Z') });
+  const loop = readState(fixture.root, fixture.runId).data;
+  const schema = validate(loop);
+  const correlation = verifyAppEventCorrelation(loop, readLines(fixture.root, fixture.runId));
+  assert.equal(schema.ok, true, schema.errors.join('; '));
+  assert.equal(correlation.ok, true, correlation.errors.join('; '));
+  const before = cliSnapshot(fixture.root, fixture.runId);
+  assert.equal(runResult(fixture.root, ['app-task', 'revoke', '--run-id', fixture.runId,
+    '--owner', '01JAPPWR0NG000000000000000', '--generation', '1',
+    '--runtime', 'codex']).code, 3);
+  assert.equal(runResult(fixture.root, ['app-task', 'revoke', '--run-id', fixture.runId,
+    '--owner', fixture.runId, '--generation', '1', '--runtime', 'claude']).code, 3);
+  assert.equal(runResult(fixture.root, ['app-task', 'revoke', '--run-id', fixture.runId,
+    '--owner', fixture.runId, '--generation', '1', '--runtime', 'codex']).code, 1);
+  assert.deepEqual(cliSnapshot(fixture.root, fixture.runId), before);
+
+  const retry = seedAutoAppRun('retry-inert');
+  const args = ['app-task', 'revoke', '--run-id', retry.runId, '--owner', retry.runId,
+    '--generation', '1', '--runtime', 'codex'];
+  assert.equal(runResult(retry.root, args).code, 0);
+  const revoked = cliSnapshot(retry.root, retry.runId);
+  assert.equal(runResult(retry.root, args).code, 0);
+  assert.deepEqual(cliSnapshot(retry.root, retry.runId), revoked);
 });
