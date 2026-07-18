@@ -1185,11 +1185,15 @@ test('interactive budget record templates carry one stable per-tick request iden
     assert.match(source,
       /budget record[^\n]*--turns <n>[^\n]*--request-id <accounting_request_id>[^\n]*--owner <owner_run_id>[^\n]*--generation <n>/,
       `${name}: canonical interactive command lacks the stable request identity`);
-    assert.match(source, /same tick|동일 tick/,
-      `${name}: response-loss retry does not require same-tick identity reuse`);
-    assert.match(source, /new request|새 request|새로운 request/,
-      `${name}: later ticks are not required to allocate a new request identity`);
     assert.match(source, /\[A-Za-z0-9\]\[A-Za-z0-9\._:-\]\{0,127\}/,
       `${name}: request identity does not publish the kernel's bounded ASCII grammar`);
+    assert.match(source, /(?:tick을 시작할 때|tick(?:\*\*)?은 시작 시)[^\n]*interactive-<uuid>/i,
+      `${name}: request identity is not allocated as interactive-<uuid> at tick start`);
+    assert.match(source, /interactive-<uuid>[^\n]*tick context에 보존/i,
+      `${name}: request identity is not preserved in tick context`);
+    assert.match(source, /(?:응답 유실|응답이 모호해)[^\n]*(?:같은 값|같은 request ID)/i,
+      `${name}: ambiguous-response retry does not reuse the same request identity`);
+    assert.match(source, /다음 tick[^\n]*(?:새 값|새 ID)/i,
+      `${name}: the next tick is not required to allocate a new request identity`);
   }
 });
