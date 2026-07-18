@@ -1,5 +1,5 @@
 import {
-  closeSync, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync,
+  closeSync, existsSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync,
   readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -92,6 +92,32 @@ function commitInput(root, attempt, requestDigest, previous = 'NONE') {
 function lockNonceSequence() {
   let index = 0;
   return () => `writer${String(index++).padStart(10, '0')}`;
+}
+
+function pendingReplacementAfterValidatedRead(root, deps, pendingBytes) {
+  const pendingPath = join(root, '.deep-loop', 'init-pending.json');
+  const currentPath = join(root, '.deep-loop', 'current');
+  let replaced = false;
+  let hookReached = false;
+  return {
+    deps: { ...deps,
+      readFile: path => {
+        const bytes = Buffer.from(readFileSync(path));
+        if (path === pendingPath && existsSync(currentPath) && !replaced) {
+          replaced = true;
+          unlinkSync(path);
+          writeFileSync(path, pendingBytes, { flag: 'wx' });
+        }
+        return bytes;
+      },
+      durableBeforeUnlink: path => {
+        if (path === pendingPath) hookReached = true;
+      },
+    },
+    replaced: () => replaced,
+    hookReached: () => hookReached,
+    pendingPath,
+  };
 }
 
 const INIT_TRANSACTION_CRASH_WORKER = fileURLToPath(
@@ -1420,6 +1446,112 @@ test('commit reserves pending, publishes hash then loop, CASes current, and exac
   assert.equal(commitPreparedInit(root, commitInput(root, attempt, request), deps).outcome,
     'already-initialized', 'idempotent init retry permits valid post-init progress');
   assert.deepEqual(queryPublishedState(root), advancedBefore);
+});
+
+test('current-exact retry never deletes a same-bytes foreign pending replacement', () => {
+  const root = fixtureDir();
+  const deps = initDeps(root, { pid: 7, nonce: lockNonceSequence(),
+    now: () => Date.parse('2026-07-13T00:00:00.000Z') });
+  const attempt = '01JAPPGEN00000000000000000';
+  const request = initializationRequestDigest(normalizeInitializationRequest(root,
+    initOptions(), deps));
+  assert.equal(commitPreparedInit(root, commitInput(root, attempt, request), deps).outcome,
+    'initialized');
+  const pendingBytes = Buffer.from(JSON.stringify({ version: 1, attempt_id: attempt,
+    request_digest: request, previous_current_digest: 'NONE' }));
+  put(root, '.deep-loop/init-pending.json', pendingBytes);
+  const replacement = pendingReplacementAfterValidatedRead(root, deps, pendingBytes);
+
+  assert.throws(() => commitPreparedInit(root,
+    commitInput(root, attempt, request), replacement.deps),
+  /(?:INIT_PENDING_CONFLICT|DURABLE_OWNERSHIP_CHANGED)/);
+  assert.equal(replacement.replaced(), true);
+  assert.deepEqual(readFileSync(replacement.pendingPath), pendingBytes);
+});
+
+test('completed-foreign cleanup never deletes a same-bytes pending replacement', () => {
+  const root = fixtureDir();
+  const deps = initDeps(root, { pid: 7, nonce: lockNonceSequence(),
+    now: () => Date.parse('2026-07-13T00:00:00.000Z') });
+  const completed = '01JAPPGEN00000000000000000';
+  const next = '01JAPPGEN00000000000000002';
+  const request = initializationRequestDigest(normalizeInitializationRequest(root,
+    initOptions(), deps));
+  assert.equal(commitPreparedInit(root, commitInput(root, completed, request), deps).outcome,
+    'initialized');
+  const pendingBytes = Buffer.from(JSON.stringify({ version: 1, attempt_id: completed,
+    request_digest: request, previous_current_digest: 'NONE' }));
+  put(root, '.deep-loop/init-pending.json', pendingBytes);
+  const replacement = pendingReplacementAfterValidatedRead(root, deps, pendingBytes);
+
+  assert.throws(() => commitPreparedInit(root,
+    commitInput(root, next, request, contentHash(completed)), replacement.deps),
+  /(?:INIT_PENDING_CONFLICT|DURABLE_OWNERSHIP_CHANGED)/);
+  assert.equal(replacement.replaced(), true);
+  assert.deepEqual(readFileSync(replacement.pendingPath), pendingBytes);
+  assert.equal(readFileSync(join(root, '.deep-loop', 'current'), 'utf8'), completed + '\n');
+  assert.equal(existsSync(join(root, '.deep-loop', 'runs', next)), false);
+});
+
+test('final initialized cleanup never deletes a same-bytes pending replacement', () => {
+  const root = fixtureDir();
+  const deps = initDeps(root, { pid: 7, nonce: lockNonceSequence(),
+    now: () => Date.parse('2026-07-13T00:00:00.000Z') });
+  const attempt = '01JAPPGEN00000000000000000';
+  const request = initializationRequestDigest(normalizeInitializationRequest(root,
+    initOptions(), deps));
+  const pendingBytes = Buffer.from(JSON.stringify({ version: 1, attempt_id: attempt,
+    request_digest: request, previous_current_digest: 'NONE' }));
+  const replacement = pendingReplacementAfterValidatedRead(root, deps, pendingBytes);
+
+  assert.throws(() => commitPreparedInit(root,
+    commitInput(root, attempt, request), replacement.deps),
+  /(?:INIT_PENDING_CONFLICT|DURABLE_OWNERSHIP_CHANGED)/);
+  assert.equal(replacement.replaced(), true);
+  assert.deepEqual(readFileSync(replacement.pendingPath), pendingBytes);
+  assert.equal(readFileSync(join(root, '.deep-loop', 'current'), 'utf8'), attempt + '\n');
+});
+
+test('new control and run directory entries are parent-synced before current publication', () => {
+  const root = fixtureDir();
+  const descriptors = new Map();
+  const order = [];
+  const deps = initDeps(root, { pid: 7, nonce: lockNonceSequence(),
+    now: () => Date.parse('2026-07-13T00:00:00.000Z'),
+    durableOpen: (path, flags, mode) => {
+      const descriptor = openSync(path, flags, mode);
+      descriptors.set(descriptor, { path, flags });
+      return descriptor;
+    },
+    durableFsync: descriptor => {
+      const opened = descriptors.get(descriptor);
+      if (opened?.flags === 'r') order.push(`dir:${opened.path}`);
+      fsyncSync(descriptor);
+    },
+    durableClose: descriptor => {
+      descriptors.delete(descriptor);
+      closeSync(descriptor);
+    },
+    durableAfterRename: (_source, destination) => {
+      if (basename(destination) === 'current') order.push('rename:current');
+    },
+  });
+  const attempt = '01JAPPGEN00000000000000000';
+  const request = initializationRequestDigest(normalizeInitializationRequest(root,
+    initOptions(), deps));
+  assert.equal(commitPreparedInit(root, commitInput(root, attempt, request), deps).outcome,
+    'initialized');
+
+  const control = join(root, '.deep-loop');
+  const runs = join(control, 'runs');
+  const rootSync = order.indexOf(`dir:${root}`);
+  const controlSync = order.indexOf(`dir:${control}`);
+  const runsSync = order.indexOf(`dir:${runs}`);
+  const current = order.indexOf('rename:current');
+  assert.ok(rootSync >= 0, 'new .deep-loop entry fsyncs the project root');
+  assert.ok(controlSync > rootSync, 'new runs entry fsyncs .deep-loop');
+  assert.ok(runsSync > controlSync, 'new run entry fsyncs runs');
+  assert.ok(current > runsSync, 'directory entries are durable before current publication');
 });
 
 test('commit proves published loop bytes before current CAS', () => {

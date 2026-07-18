@@ -94,6 +94,10 @@ function requireRecord(path, expected, deps, codes) {
   return actual;
 }
 
+export function readDurableRegularRecord(path, options = {}, deps = {}) {
+  return regularRecord(path, deps, options);
+}
+
 export function syncRegularFile(path, deps = {}, expectedRecord = null) {
   const expected = expectedRecord ?? regularRecord(path, deps, {
     invalidCode: 'DURABLE_FILE_INVALID', changedCode: 'DURABLE_SOURCE_CHANGED',

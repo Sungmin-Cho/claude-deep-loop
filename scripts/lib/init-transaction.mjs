@@ -13,7 +13,9 @@ import { validateGenesisConsent } from './app-task-continuation.mjs';
 import { exactRawHostObservation, hostSurfaceFactsDigest } from './host-surface.mjs';
 import {
   createPreparedFile as createGenesisFile,
+  readDurableRegularRecord as readGenesisRecord,
   renamePreparedFile as renameGenesisFile,
+  syncParentDirectory as syncGenesisParent,
   unlinkRegularFile as unlinkGenesisFile,
 } from './durable-file.mjs';
 
@@ -694,7 +696,8 @@ function ensureControlDirectory(root, deps) {
     throw new Error('INIT_ROOT_NOT_CANONICAL');
   }
   const control = join(canonicalRoot, '.deep-loop');
-  try { mkdir(control); }
+  let created = false;
+  try { mkdir(control); created = true; }
   catch (error) { if (error?.code !== 'EEXIST') throw error; }
   const stat = lstat(control);
   const controlReal = realpath(control);
@@ -703,6 +706,7 @@ function ensureControlDirectory(root, deps) {
   if (!stat.isDirectory() || stat.isSymbolicLink() || !exactControl) {
     throw new Error('INIT_ROOT_CONTAINMENT_INVALID');
   }
+  if (created) syncGenesisParent(control, deps);
   return control;
 }
 
@@ -985,21 +989,26 @@ function parseCurrent(bytes) {
 }
 
 function exactPendingAt(path, expected, deps) {
-  const bytes = readOptionalRegular(path, deps);
-  if (bytes === null) return null;
-  const value = strictPending(bytes);
+  const record = readGenesisRecord(path, {
+    optional: true,
+    invalidCode: 'INIT_ROOT_CONTAINMENT_INVALID',
+    changedCode: 'INIT_PENDING_CONFLICT',
+  }, deps);
+  if (record === null) return null;
+  const value = strictPending(record.bytes);
   if (expected !== null && (value.attempt_id !== expected.attempt_id
       || value.request_digest !== expected.request_digest
       || value.previous_current_digest !== expected.previous_current_digest)) {
     throw new Error('INIT_PENDING_CONFLICT');
   }
-  return value;
+  return { value, record };
 }
 
 function assertPlainDirectory(path, deps, { create = false } = {}) {
   const mkdir = deps.mkdir ?? mkdirSync;
+  let created = false;
   if (create) {
-    try { mkdir(path); }
+    try { mkdir(path); created = true; }
     catch (error) { if (error?.code !== 'EEXIST') throw error; }
   }
   let lexical;
@@ -1019,6 +1028,7 @@ function assertPlainDirectory(path, deps, { create = false } = {}) {
   } else if (resolved !== path) {
     throw new Error('INIT_ROOT_CONTAINMENT_INVALID');
   }
+  if (created) syncGenesisParent(path, deps);
   return resolved;
 }
 
@@ -1144,9 +1154,9 @@ function writeGenesisArtifact(path, attempt, slot, bytes, deps) {
   }
 }
 
-function deletePending(path, deps) {
+function deletePending(path, deps, expectedRecord) {
   crashGenesisIfScheduled('pending-delete-before');
-  if (!unlinkGenesisFile(path, deps)) throw new Error('INIT_PENDING_CONFLICT');
+  if (!unlinkGenesisFile(path, deps, expectedRecord)) throw new Error('INIT_PENDING_CONFLICT');
   crashGenesisIfScheduled('pending-delete-after');
 }
 
@@ -1239,23 +1249,25 @@ export function commitPreparedInit(root, input, deps = {}) {
     let pending = exactPendingAt(paths.pending, null, deps);
     if (current === prepared.attempt_id) {
       strictGenesisProof(root, binding, null, deps);
-      if (pending?.attempt_id === prepared.attempt_id) {
-        exactPendingAt(paths.pending, { version: 1, attempt_id: binding.attempt_id,
+      if (pending?.value.attempt_id === prepared.attempt_id) {
+        const validatedPending = exactPendingAt(paths.pending,
+          { version: 1, attempt_id: binding.attempt_id,
           request_digest: binding.request_digest,
           previous_current_digest: binding.previous_current_digest }, deps);
-        deletePending(paths.pending, deps);
+        deletePending(paths.pending, deps, validatedPending.record);
         return { ok: true, outcome: 'recovered-pending', run_id: prepared.attempt_id };
       }
       return { ok: true, outcome: 'already-initialized', run_id: prepared.attempt_id };
     }
     strictExistingCurrent(root, current, deps);
     let completedForeign = false;
-    if (pending !== null && pending.attempt_id !== prepared.attempt_id) {
-      if (!completedPendingMarker(root, pending, current, deps)
+    if (pending !== null && pending.value.attempt_id !== prepared.attempt_id) {
+      if (!completedPendingMarker(root, pending.value, current, deps)
           || prepared.previous_current_digest !== contentHash(current)) {
         throw new Error('INIT_PENDING_CONFLICT');
       }
-      deletePending(paths.pending, deps);
+      const validatedPending = exactPendingAt(paths.pending, pending.value, deps);
+      deletePending(paths.pending, deps, validatedPending.record);
       if (exactPendingAt(paths.pending, null, deps) !== null) {
         throw new Error('INIT_PENDING_CONFLICT');
       }
@@ -1309,8 +1321,8 @@ export function commitPreparedInit(root, input, deps = {}) {
     if (parseCurrent(readOptionalRegular(paths.current, deps)) !== prepared.attempt_id) {
       throw new Error('INIT_CURRENT_CONFLICT');
     }
-    exactPendingAt(paths.pending, expectedPending, deps);
-    deletePending(paths.pending, deps);
+    const validatedPending = exactPendingAt(paths.pending, expectedPending, deps);
+    deletePending(paths.pending, deps, validatedPending.record);
     return { ok: true, outcome: recovering ? 'recovered-pending' : 'initialized',
       run_id: prepared.attempt_id };
   }, deps);
