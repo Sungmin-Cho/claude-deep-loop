@@ -1281,6 +1281,8 @@ test7b('App event correlation rejects timestamp, identity, and multiplicity drif
       receipt_digest: hash7b('confirmed-thread\0' + continuation.thread_id) } },
   ];
   assert7b.deepEqual(verify7b(loop, lines), { ok: true, errors: [] });
+  assert7b.equal(verify7b(loop, [lines[2], lines[0], lines[1], lines[3]]).ok, false,
+    'failure control cannot precede the last present lifecycle event');
   assert7b.equal(verify7b(loop, [...lines, lines[2]]).ok, false);
   const rewrittenReceipt = structuredClone(loop);
   rewrittenReceipt.session_chain.sessions[0].continuation.thread_id = 'hash-valid-state-rewrite';
@@ -1341,6 +1343,130 @@ test7b('App event correlation rejects timestamp, identity, and multiplicity drif
     data: { status: 'completed', reportRel: null },
   }]).ok, false,
   'a finish event cannot be erased back to running acquired');
+});
+
+test7b('App lifecycle positions and acquisition controls are causally ordered', () => {
+  const attempt = '01JAPPTASK0000000000000010';
+  const child = '01JAPPCHD00000000000000010';
+  const continuation = {
+    transport: 'codex-app', attempt_id: attempt, phase: 'confirmed',
+    emitted_at: '2026-07-13T00:00:00.000Z', prepared_at: '2026-07-13T00:00:01.000Z',
+    confirmed_at: '2026-07-13T00:00:02.000Z', acquired_at: null,
+    descriptor_digest: 'd'.repeat(64), thread_id: 'causal-thread',
+    unconfirmed_thread_id: null,
+  };
+  const confirmedLoop = { session_chain: { sessions: [{ run_id: child, continuation }] } };
+  const confirmedLines = [
+    { type: 'handoff-emitted', ts: continuation.emitted_at,
+      data: { attempt_id: attempt, child_run_id: child } },
+    { type: 'app-task-prepared', ts: continuation.prepared_at,
+      data: { attempt_id: attempt, child_run_id: child,
+        descriptor_digest: continuation.descriptor_digest } },
+    { type: 'app-task-confirmed', ts: continuation.confirmed_at,
+      data: { attempt_id: attempt, child_run_id: child,
+        receipt_digest: hash7b('confirmed-thread\0' + continuation.thread_id) } },
+  ];
+  assert7b.deepEqual(verify7b(confirmedLoop, confirmedLines), { ok: true, errors: [] });
+  assert7b.equal(verify7b(confirmedLoop,
+    [confirmedLines[2], confirmedLines[0], confirmedLines[1]]).ok, false,
+  'valid clocks cannot authorize confirmed -> emitted -> prepared log order');
+
+  const acquiredAt = '2026-07-13T00:00:03.000Z';
+  const surface = { kind: 'codex-app', source: 'codex-app-tool-provenance',
+    capabilities: ['create-thread-local', 'list-projects', 'structured-process-stdin'],
+    structured_stdin_mode: 'pty-raw-noecho', host_task_cwd: '/repo',
+    host_task_cwd_source: 'app-task-context', kernel_cwd_at_observation: '/repo',
+    observed_generation: 2, observed_at: acquiredAt };
+  const acquiredContinuation = { ...continuation, phase: 'acquired', acquired_at: acquiredAt,
+    acquired_generation: 2 };
+  const acquiredLoop = { status: 'running', pause_reason: null,
+    session_chain: { lease: { owner_run_id: child, generation: 2,
+      acquired_at: acquiredAt, state: 'active', handoff_phase: 'acquired',
+      handoff_transport: null, handoff_attempt_id: null, handoff_child_run_id: null,
+      handoff_idempotency_key: null, resume_policy: null, expires_at: null },
+      sessions: [{ run_id: child, started_at: acquiredAt, outcome: null,
+        host_surface: surface, continuation: acquiredContinuation }] } };
+  const timeout = { type: 'app-task-await-timeout', ts: '2026-07-13T00:00:02.500Z',
+    data: { attempt_id: attempt, child_run_id: child,
+      failure_code: 'app-child-timeout-awaiting' } };
+  const acquired = { type: 'app-task-acquired', ts: acquiredAt,
+    data: { attempt_id: attempt, child_run_id: child,
+      observation_digest: facts7b(surface) } };
+  assert7b.deepEqual(verify7b(acquiredLoop, [...confirmedLines, timeout, acquired]),
+    { ok: true, errors: [] }, 'a late acquire may supersede a prior await timeout');
+  assert7b.equal(verify7b(acquiredLoop,
+    [confirmedLines[0], confirmedLines[1], timeout, confirmedLines[2], acquired]).ok, false,
+  'await-timeout cannot precede confirmation');
+  assert7b.equal(verify7b(acquiredLoop,
+    [...confirmedLines, acquired, timeout]).ok, false,
+  'await-timeout cannot follow the acquisition it purports to precede');
+  assert7b.equal(verify7b(acquiredLoop,
+    [confirmedLines[0], confirmedLines[1], timeout, acquired, confirmedLines[2]]).ok, false,
+  'acquisition cannot precede confirmation in event-log position');
+});
+
+test7b('null-identity App revoke binds exact current or proven historical ownership', () => {
+  const parent = '01JAPPPAR00000000000000010';
+  const child = '01JAPPCHD00000000000000011';
+  const unrelated = '01JAPP0THER000000000000001';
+  const revokedAt = '2026-07-13T00:00:01.000Z';
+  const currentLoop = { status: 'running',
+    autonomy: { app_task_continuation: { mode: 'manual', authority: 'human-confirmed',
+      confirmed_at: '2026-07-13T00:00:00.000Z', revoked_at: revokedAt } },
+    session_chain: { lease: { owner_run_id: parent, generation: 1,
+      state: 'active', handoff_phase: 'idle' },
+      sessions: [{ run_id: parent, host_surface: null }] } };
+  const currentRevoke = { type: 'app-task-consent-revoked', ts: revokedAt,
+    data: { owner_run_id: parent, generation: 1,
+      attempt_id: null, child_run_id: null, failure_code: null } };
+  assert7b.deepEqual(verify7b(currentLoop, [currentRevoke]), { ok: true, errors: [] },
+    'the current writer null-identity shape remains valid');
+  for (const rawKey of ['thread_id', 'unconfirmed_thread_id']) {
+    const extra = structuredClone(currentRevoke);
+    extra.data[rawKey] = 'raw-host-receipt';
+    assert7b.equal(verify7b(currentLoop, [extra]).ok, false,
+      `null-identity revoke rejects extra ${rawKey}`);
+  }
+  const unrelatedLoop = structuredClone(currentLoop);
+  unrelatedLoop.session_chain.sessions.push({ run_id: unrelated, host_surface: null });
+  const unrelatedRevoke = structuredClone(currentRevoke);
+  unrelatedRevoke.data.owner_run_id = unrelated;
+  assert7b.equal(verify7b(unrelatedLoop, [unrelatedRevoke]).ok, false,
+    'an unrelated existing session is not current revoke authority');
+
+  const genesisAt = '2026-07-13T00:00:00.000Z';
+  const acquiredAt = '2026-07-13T00:00:02.000Z';
+  const historicalLoop = { run_id: parent, created_at: genesisAt, status: 'running',
+    initialization: { request_digest: 'a'.repeat(64), host_surface_digest: 'NONE' },
+    autonomy: { app_task_continuation: { mode: 'manual', authority: 'human-confirmed',
+      confirmed_at: genesisAt, revoked_at: revokedAt } },
+    session_chain: { lease: { owner_run_id: child, generation: 2,
+      acquired_at: acquiredAt, state: 'active', handoff_phase: 'idle' },
+      sessions: [{ run_id: parent, host_surface: null },
+        { run_id: child, host_surface: null }, { run_id: unrelated, host_surface: null }] } };
+  const genesis = { seq: 1, type: 'run-initialized', ts: genesisAt, data: {
+    run_id: parent, request_digest: historicalLoop.initialization.request_digest,
+    host_surface_digest: 'NONE' } };
+  const acquire = { type: 'lease-acquired', ts: acquiredAt, data: {
+    previous_owner_run_id: parent, previous_generation: 1,
+    owner_run_id: child, generation: 2 } };
+  assert7b.deepEqual(verify7b(historicalLoop, [genesis, currentRevoke, acquire]),
+    { ok: true, errors: [] },
+    'a real later acquisition proves the earlier revoke owner historical');
+  const wrongGenerationOwner = structuredClone(currentRevoke);
+  wrongGenerationOwner.data.owner_run_id = child;
+  assert7b.equal(verify7b(historicalLoop, [genesis, wrongGenerationOwner, acquire]).ok, false,
+    'the current owner cannot be backdated as the generation-one owner');
+  const unrelatedHistorical = structuredClone(currentRevoke);
+  unrelatedHistorical.data.owner_run_id = unrelated;
+  assert7b.equal(verify7b(historicalLoop, [genesis, unrelatedHistorical, acquire]).ok, false,
+    'an unrelated session cannot borrow a historical generation');
+  const afterAcquire = structuredClone(currentRevoke);
+  afterAcquire.ts = '2026-07-13T00:00:03.000Z';
+  const afterLoop = structuredClone(historicalLoop);
+  afterLoop.autonomy.app_task_continuation.revoked_at = afterAcquire.ts;
+  assert7b.equal(verify7b(afterLoop, [genesis, acquire, afterAcquire]).ok, false,
+    'a past owner cannot revoke after its superseding acquisition');
 });
 
 test7b('App control events make revoke, terminal failure, and preserve one-way', () => {
@@ -1462,6 +1588,8 @@ test7b('App control events make revoke, terminal failure, and preserve one-way',
     data: { attempt_id: attempt, child_run_id: child, failure_code: 'gate-budget' },
   }];
   assert7b.deepEqual(verify7b(preserved, preserveLines), { ok: true, errors: [] });
+  assert7b.equal(verify7b(preserved, [preserveLines[1], preserveLines[0]]).ok, false,
+    'preserve control cannot precede emitted lifecycle proof');
   const rawPreserve = structuredClone(preserveLines);
   rawPreserve[1].data.thread_id = 'raw-host-receipt';
   assert7b.equal(verify7b(preserved, rawPreserve).ok, false,
@@ -1513,6 +1641,8 @@ test7b('App recovery and finish controls bind exact identity code and terminal p
   ]) {
     const valid = terminal(code, type);
     assert7b.deepEqual(verify7b(valid.loop, valid.lines), { ok: true, errors: [] });
+    assert7b.equal(verify7b(valid.loop, [valid.lines[1], valid.lines[0]]).ok, false,
+      `${type} terminal control cannot precede emitted lifecycle proof`);
 
     const codeDrift = structuredClone(valid.lines);
     codeDrift[1].data.failure_code = 'different-code';

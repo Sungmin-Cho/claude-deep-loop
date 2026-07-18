@@ -1316,6 +1316,8 @@ export function verifyAppEventCorrelation(loop, lines) {
     if (continuation?.transport !== 'codex-app') continue;
     const identity = `${continuation.attempt_id}\u0000${session.run_id}`;
     identities.add(identity);
+    const lifecycleIndexes = new Map();
+    let previousLifecycleIndex = -1;
     for (const [clockField, eventType] of APP_EVENT_CLOCK) {
       const timestamp = continuation[clockField];
       const matches = events.filter(event => event?.type === eventType
@@ -1328,14 +1330,24 @@ export function verifyAppEventCorrelation(loop, lines) {
       } else if (timestamp != null && (strictMs(matches[0].ts) === null
           || matches[0].ts !== timestamp)) {
         errors.push(`${eventType} ${continuation.attempt_id}/${session.run_id} timestamp mismatch`);
-      } else if (eventType === 'app-task-prepared' && timestamp != null) {
+      }
+      if (timestamp != null && matches.length === 1) {
+        const lifecycleIndex = events.indexOf(matches[0]);
+        lifecycleIndexes.set(eventType, lifecycleIndex);
+        if (lifecycleIndex <= previousLifecycleIndex) {
+          errors.push(`${eventType} ${continuation.attempt_id}/${session.run_id} lifecycle order invalid`);
+        }
+        previousLifecycleIndex = Math.max(previousLifecycleIndex, lifecycleIndex);
+      }
+      if (eventType === 'app-task-prepared' && timestamp != null && matches.length === 1) {
         const keys = Object.keys(matches[0].data ?? {}).sort();
         if (JSON.stringify(keys) !== JSON.stringify(
           ['attempt_id', 'child_run_id', 'descriptor_digest'])
             || matches[0].data.descriptor_digest !== continuation.descriptor_digest) {
           errors.push(`${eventType} ${continuation.attempt_id}/${session.run_id} descriptor digest mismatch`);
         }
-      } else if (eventType === 'app-task-confirmed' && timestamp != null) {
+      } else if (eventType === 'app-task-confirmed' && timestamp != null
+          && matches.length === 1) {
         const expectedDigest = typeof continuation.thread_id === 'string'
           ? contentHash('confirmed-thread\0' + continuation.thread_id) : 'INVALID';
         const keys = Object.keys(matches[0].data ?? {}).sort();
@@ -1344,7 +1356,8 @@ export function verifyAppEventCorrelation(loop, lines) {
             || matches[0].data.receipt_digest !== expectedDigest) {
           errors.push(`${eventType} ${continuation.attempt_id}/${session.run_id} receipt digest mismatch`);
         }
-      } else if (eventType === 'app-task-acquired' && timestamp != null) {
+      } else if (eventType === 'app-task-acquired' && timestamp != null
+          && matches.length === 1) {
         let digest = 'INVALID';
         try { digest = hostSurfaceFactsDigest(session.host_surface); } catch {}
         if (matches[0].data?.observation_digest !== digest) {
@@ -1362,6 +1375,23 @@ export function verifyAppEventCorrelation(loop, lines) {
       }
       if (matches.some(event => strictMs(event.ts) === null)) {
         errors.push(`${type} ${continuation.attempt_id}/${session.run_id} timestamp invalid`);
+      }
+    }
+    const awaitTimeout = controls.find(event => event.type === 'app-task-await-timeout');
+    if (awaitTimeout !== undefined) {
+      const timeoutIndex = events.indexOf(awaitTimeout);
+      const confirmedIndex = lifecycleIndexes.get('app-task-confirmed');
+      const acquiredIndex = lifecycleIndexes.get('app-task-acquired');
+      if (confirmedIndex === undefined || timeoutIndex <= confirmedIndex
+          || (acquiredIndex !== undefined && timeoutIndex >= acquiredIndex)) {
+        errors.push(`app-task-await-timeout ${continuation.attempt_id}/${session.run_id} lifecycle order invalid`);
+      }
+    }
+    const lastLifecycleIndex = Math.max(-1, ...lifecycleIndexes.values());
+    for (const control of controls) {
+      if (control.type !== 'app-task-await-timeout'
+          && events.indexOf(control) <= lastLifecycleIndex) {
+        errors.push(`${control.type} ${continuation.attempt_id}/${session.run_id} lifecycle order invalid`);
       }
     }
     for (const event of controls) {
@@ -1676,17 +1706,27 @@ export function verifyAppEventCorrelation(loop, lines) {
   } else {
     const revoke = revokeEvents[0];
     const data = revoke.data ?? {};
+    const actualKeys = Object.keys(data).sort();
+    const exactKeys = APP_CONTROL_EXACT_KEYS['app-task-consent-revoked'].some(keys =>
+      JSON.stringify(actualKeys) === JSON.stringify([...keys].sort()));
     const nullableIdentity = data.attempt_id === null && data.child_run_id === null;
     const exactIdentity = typeof data.attempt_id === 'string'
       && typeof data.child_run_id === 'string'
       && identities.has(`${data.attempt_id}\u0000${data.child_run_id}`);
     const owner = sessions.find(session => session.run_id === data.owner_run_id);
+    const revokeIndex = events.indexOf(revoke);
+    const currentBinding = data.owner_run_id === currentLease.owner_run_id
+      && data.generation === currentLease.generation;
+    const historicalBinding = isProvenHistorical(
+      data.owner_run_id, data.generation, revokeIndex);
     if (strictMs(revoke.ts) === null || revoke.ts !== consent.revoked_at
         || consent.mode !== 'manual' || consent.authority !== 'human-confirmed'
+        || !exactKeys
         || typeof data.owner_run_id !== 'string' || data.owner_run_id.length === 0
         || !Number.isSafeInteger(data.generation) || data.generation < 1
         || data.generation > (loop?.session_chain?.lease?.generation ?? 0)
-        || !owner || (exactIdentity && owner.run_id === data.child_run_id)
+        || !owner || !(currentBinding || historicalBinding)
+        || (exactIdentity && owner.run_id === data.child_run_id)
         || !(nullableIdentity || exactIdentity)
         || ![null, 'consent-revoked'].includes(data.failure_code)) {
       errors.push('App consent revoke projection mismatch');
