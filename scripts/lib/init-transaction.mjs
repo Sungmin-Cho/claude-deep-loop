@@ -137,10 +137,9 @@ export function initializationRequestDigest(projection) {
 }
 
 function buildRunInitializedEvent(loop) {
-  const data = Object.create(null);
-  data.run_id = loop.run_id;
-  data.request_digest = loop.initialization.request_digest;
-  data.host_surface_digest = loop.initialization.host_surface_digest;
+  const data = { run_id: loop.run_id,
+    request_digest: loop.initialization.request_digest,
+    host_surface_digest: loop.initialization.host_surface_digest };
   const seq = 1;
   const ts = loop.created_at;
   const type = 'run-initialized';

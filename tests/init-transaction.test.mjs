@@ -83,10 +83,9 @@ test('canonical genesis derives every clock from the attempt and materializes co
   assert.equal(first.loop.initialization.request_digest,
     initializationRequestDigest(first.loop.initialization.request_projection));
   assert.equal(first.genesisEvents.length, 1);
-  assert.deepEqual({ ...first.genesisEvents[0].data }, { run_id: attempt,
+  assert.deepEqual(first.genesisEvents[0].data, { run_id: attempt,
     request_digest: first.loop.initialization.request_digest,
     host_surface_digest: first.loop.initialization.host_surface_digest });
-  assert.equal(Object.getPrototypeOf(first.genesisEvents[0].data), null);
   assert.equal(first.genesisEvents[0].type, 'run-initialized');
   assert.equal(first.genesisEvents[0].ts, first.loop.created_at);
   assert.deepEqual(verifyLines(first.genesisEvents), { ok: true, errors: [] });
@@ -255,7 +254,7 @@ test('canonical serialization ignores inherited toJSON without collisions or tra
   assert.equal(inheritedCalls, 0);
 });
 
-test('genesis event and head remain verifiable under inherited toJSON pollution', () => {
+test('genesis event build ignores inherited toJSON and preserves its ordinary public shape', () => {
   const request = { ...options, review: null, observationDigest: 'NONE',
     enumProfile: { kind: null, source: null, capabilities: [] } };
   const projection = normalizeInitializationRequest('/repo', request, deps);
@@ -273,15 +272,20 @@ test('genesis event and head remain verifiable under inherited toJSON pollution'
     } });
     built = buildCanonicalGenesis('/repo', { prepared, request, observation: null },
       { ...deps, buildLoop: buildInitialLoop });
-    assert.deepEqual(verifyLines(built.genesisEvents), { ok: true, errors: [] });
-    assert.deepEqual(verifyHeadLines(built.genesisEvents, built.loop.event_log_head),
-      { ok: true, errors: [] });
   } finally {
     if (original) Object.defineProperty(Object.prototype, 'toJSON', original);
     else delete Object.prototype.toJSON;
   }
-  assert.equal(Object.getPrototypeOf(built.genesisEvents[0].data), null);
   assert.equal(inheritedCalls, 0);
+  assert.equal(Object.getPrototypeOf(built.genesisEvents[0].data), Object.prototype);
+  assert.deepEqual(built.genesisEvents[0].data, {
+    run_id: prepared.attempt_id,
+    request_digest: prepared.expected_request_digest,
+    host_surface_digest: 'NONE',
+  });
+  assert.deepEqual(verifyLines(built.genesisEvents), { ok: true, errors: [] });
+  assert.deepEqual(verifyHeadLines(built.genesisEvents, built.loop.event_log_head),
+    { ok: true, errors: [] });
 });
 
 test('genesis ULID clock accepts the last canonical four-digit UTC instant and rejects extended years', () => {
