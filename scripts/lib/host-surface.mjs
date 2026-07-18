@@ -231,11 +231,10 @@ export function selectAppContinuationRoute(input, deps) {
     let matches;
     try {
       matches = projects.filter(project => project.projectKind === 'local'
-        && deps.exists(project.path) && sameNativeDirectory(project.path, input.root, deps));
+        && deps.exists(project.path) && sameNativeDirectory(project.path, classifiedTarget.cwd, deps));
     } catch { return manualRoute('project-query-failed', target); }
     if (matches.length !== 1) return manualRoute(matches.length === 0 ? 'project-match-missing' : 'project-match-ambiguous', target);
-    const canonicalRoot = deps.realpath(input.root);
-    return { kind: 'create', reason: 'exact-project-root', targetCwd: canonicalRoot,
+    return { kind: 'create', reason: 'exact-project-root', targetCwd: classifiedTarget.cwd,
       projectId: matches[0].projectId, workstreamId: null, contextMode: 'fresh' };
   }
   const required = ['fork-thread-same-directory', 'send-message-to-thread', 'structured-process-stdin'];
@@ -249,7 +248,8 @@ export function selectAppContinuationRoute(input, deps) {
     if (!active.has(workstream.id) || !['in_progress', 'in_review'].includes(workstream.status)
         || typeof workstream.worktree !== 'string') return [];
     const normalized = workstream.worktree.replace(/\\/g, '/');
-    if (!/^(?:\.claude\/worktrees|\.worktrees)\/[^/]+$/.test(normalized)) return [];
+    const comparable = deps.platform === 'win32' ? normalized.toLowerCase() : normalized;
+    if (!/^(?:\.claude\/worktrees|\.worktrees)\/[^/]+$/.test(comparable)) return [];
     const absolute = pathApi.resolve(input.root, ...normalized.split('/'));
     try { if (!deps.exists(absolute)) return []; }
     catch { return []; }

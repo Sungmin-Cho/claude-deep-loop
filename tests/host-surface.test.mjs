@@ -6,6 +6,7 @@ import {
   classifyProjectTaskDirectory,
   hostSurfaceFactsDigest,
   normalizeHostObservation,
+  normalizeProjectList,
   sameNativeDirectory,
   selectAppContinuationRoute,
   validateOpaqueId,
@@ -312,4 +313,63 @@ test('Windows worktree containment tolerates path case drift but still requires 
     currentHostTaskCwd: 'c:\\repo\\.worktrees\\other',
     recordedHostTaskCwd: 'c:\\repo\\.worktrees\\other',
     kernelCwd: 'c:\\repo\\.worktrees\\other' }, deps).reason, 'workstream-match-missing');
+});
+
+test('Windows conventional directory casing is accepted for fork routes', () => {
+  for (const [worktree, target] of [
+    ['.WORKTREES/Feature', 'c:\\repo\\.worktrees\\feature'],
+    ['.CLAUDE/WORKTREES/Feature', 'c:\\repo\\.claude\\worktrees\\feature'],
+  ]) {
+    const deps = { platform: 'win32', exists: () => true,
+      realpath: value => value.toLowerCase(),
+      stat: value => ({ volume: 'v', file: value.toLowerCase() === target ? 2 : 1 }),
+      sameFile: (left, right) => left.volume === right.volume && left.file === right.file };
+    const input = { root: 'C:\\Repo', recordedHostTaskCwd: target,
+      currentHostTaskCwd: target, kernelCwd: target,
+      capabilities: ['fork-thread-same-directory', 'send-message-to-thread', 'structured-process-stdin'],
+      projects: [], activeWorkstreams: ['WS1'],
+      workstreams: [{ id: 'WS1', status: 'in_progress', worktree }] };
+    assert.deepEqual(selectAppContinuationRoute(input, deps), {
+      kind: 'fork', reason: 'exact-active-worktree', targetCwd: target,
+      projectId: null, workstreamId: 'WS1', contextMode: 'inherited-completed-history',
+    });
+  }
+});
+
+test('canonical create route reuses the classified root without resolving the input root again', () => {
+  let rootResolutions = 0;
+  const deps = { platform: 'linux', exists: () => true,
+    realpath: value => {
+      if (value !== '/repo-link') return value;
+      rootResolutions += 1;
+      if (rootResolutions > 1) throw new Error('root retargeted');
+      return '/repo';
+    },
+    stat: () => ({ dev: 1, ino: 1 }),
+    sameFile: (left, right) => left.dev === right.dev && left.ino === right.ino };
+  const route = selectAppContinuationRoute({
+    root: '/repo-link', recordedHostTaskCwd: '/repo', currentHostTaskCwd: '/repo', kernelCwd: '/repo',
+    capabilities: ['list-projects', 'create-thread-local', 'structured-process-stdin'],
+    projects: [{ projectId: 'project', projectKind: 'local', path: '/repo' }],
+    workstreams: [], activeWorkstreams: [],
+  }, deps);
+  assert.deepEqual(route, { kind: 'create', reason: 'exact-project-root', targetCwd: '/repo',
+    projectId: 'project', workstreamId: null, contextMode: 'fresh' });
+  assert.equal(rootResolutions, 1);
+});
+
+test('project list normalization bounds entries and strips fields', () => {
+  const normalized = normalizeProjectList([
+    { projectId: ' opaque ', projectKind: 'local', path: '/repo', ignored: 'drop' },
+  ]);
+  assert.deepEqual(normalized, [
+    { projectId: ' opaque ', projectKind: 'local', path: '/repo' },
+  ]);
+  assert.deepEqual(Object.keys(normalized[0]), ['projectId', 'projectKind', 'path']);
+  assert.throws(() => normalizeProjectList(Array.from({ length: 257 }, (_, index) => ({
+    projectId: `p${index}`, projectKind: 'local', path: `/repo/${index}`,
+  }))), /PROJECT_LIST_INVALID/);
+  for (const maxEntries of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(() => normalizeProjectList([], { maxEntries }), /PROJECT_LIST_INVALID/);
+  }
 });
