@@ -7,6 +7,8 @@ import { emitInsights } from '../../scripts/lib/insights.mjs';
 import { acquireLease } from '../../scripts/lib/lease.mjs';
 import { patch } from '../../scripts/lib/state.mjs';
 import { newWorkstream } from '../../scripts/lib/workspace.mjs';
+import { recordCost, settleCodexPreflightCost, settleCodexProcessCost,
+  settleTerminalCodexMakerCost } from '../../scripts/lib/budget.mjs';
 
 const EXTENSIONS = [];
 const RUN_ID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
@@ -41,6 +43,28 @@ export function registerAnchoredCrashExtension(dispatch) {
 }
 
 const generic = Object.freeze({
+  'accounting-record': ({ root, runId, owner, generation, rawInput }) => {
+    const input = parseInput(rawInput, ['intent', 'requestId', 'tokens', 'turns']);
+    return recordCost(root, runId, { turns: input.turns, tokens: input.tokens,
+      requestId: input.requestId,
+      fence: { owner, generation, intent: input.intent } });
+  },
+  'accounting-preflight': ({ root, runId, owner, generation, rawInput }) => {
+    const input = parseInput(rawInput, ['receipt']);
+    return settleCodexPreflightCost(root, runId, { receipt: input.receipt,
+      fence: { owner, generation, intent: 'accounting' } });
+  },
+  'accounting-process': ({ root, runId, owner, generation, rawInput }) => {
+    const input = parseInput(rawInput, ['receipt']);
+    return settleCodexProcessCost(root, runId, { receipt: input.receipt,
+      fence: { owner, generation, intent: 'accounting' } });
+  },
+  'accounting-terminal-maker': ({ root, runId, owner, generation, rawInput }) => {
+    const input = parseInput(rawInput, ['handoffKey', 'intent', 'usage']);
+    return settleTerminalCodexMakerCost(root, runId, { usage: input.usage,
+      handoffKey: input.handoffKey,
+      fence: { owner, generation, intent: input.intent } });
+  },
   'generic-append': ({ root, runId, owner, generation }) => appendAnchored(
     root, runId, { type: 'anchored-crash-probe', data: { owner, generation } }, undefined,
     undefined, { callerBinding: { owner, generation },

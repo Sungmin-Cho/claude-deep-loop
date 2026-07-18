@@ -605,7 +605,8 @@ test('v1.5 (b): emit→finish 사이 명시 budget record cost(auto_floor 부재
   const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: FIXED });
   const fence = { owner: runId, generation: 1, intent: 'business' };
   emitInsights(root, runId, { fence, now: FIXED.getTime(), rnd: () => 0.5 });
-  recordCost(root, runId, { turns: 3, tokens: 0, fence: { owner: runId, generation: 1 } });
+  recordCost(root, runId, { turns: 3, tokens: 0, requestId: 'insights-cost-1',
+    fence: { owner: runId, generation: 1 } });
   finishFixture(root, runId);
   assert.equal(latestInsights(root), null);
 });

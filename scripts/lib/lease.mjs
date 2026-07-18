@@ -1,7 +1,7 @@
 import { contentHash, ulid } from './envelope.mjs';
 import { runtimeFence } from './runtime.mjs';
 import { readState, writeState, withLock } from './state.mjs';
-import { commitVerifiedEventsUnderLock, readLines,
+import { assertVerifiedRunSnapshot, commitVerifiedEventsUnderLock, readLines,
   withVerifiedMutationLock } from './integrity.mjs';
 
 const PHASE_ORDER = { idle: 0, reserved: 1, emitted: 2, spawned: 3, acquired: 4 };
@@ -58,6 +58,7 @@ export function acquireLease(root, runId, { owner, expectGeneration, runtime,
     const lease = data.session_chain.lease;
     // 같은 owner 가 이미 active 면 멱등 (active 는 만료 deadline 이 없다 — Codex r2 🔴2)
     if (lease.owner_run_id === owner && lease.state === 'active') {
+      assertVerifiedRunSnapshot(root, runId, data);
       // v1.6 (spec §2.3-6, r5 P2-b): terminal+active(정상 finish 상태)에서 멱등 성공(already-owned)으로
       // 위장 금지 — resume이 소유권 경계에서 명확히 거부되어야 한다.
       if (data.status === 'stopped' || data.status === 'completed') {
@@ -69,6 +70,7 @@ export function acquireLease(root, runId, { owner, expectGeneration, runtime,
       return { ok: false, generation: lease.generation, reason: 'generation-mismatch' };
     }
     const lines = readLines(root, runId);
+    assertVerifiedRunSnapshot(root, runId, data, { lines });
     // v1.6 (spec §2.3-6): generation CAS 직후·takeable 체크 앞 — stale expectGeneration은 위에서
     // generation-mismatch(fence-first), generation이 맞는 terminal acquire는 여기서 안정적으로 run-terminal
     // (기존 위치는 takeable 뒤라 terminal+released가 lease-not-takeable/child-not-reserved로 새었다).
@@ -120,6 +122,7 @@ export function releaseLease(root, runId, { owner, generation }) {
     const { data } = readState(root, runId);
     const lease = data.session_chain.lease;
     if (lease.owner_run_id !== owner || lease.generation !== generation) return { ok: false, reason: 'fenced' };
+    assertVerifiedRunSnapshot(root, runId, data);
     // Codex r3 🔴1: RUN_PAUSED — refuse to release when paused. An owner that got gate-blocked
     // (rollbackAndPause) must not call releaseLease to bypass the `recover --confirm` audit path.
     // leaseCheck intent='recover' (human-only) is the only way to resume from a paused run.
@@ -136,16 +139,18 @@ export function releaseLease(root, runId, { owner, generation }) {
 export function reserveHandoff(root, runId, { trigger, now = Date.now(), expect } = {}) {
   return withLock(root, runId, () => {
     const { data } = readState(root, runId);
+    const lease = data.session_chain.lease;
+    if (expect && (lease.owner_run_id !== expect.owner || lease.generation !== expect.generation)) {
+      return { ok: false, reserved: false, reason: 'fenced',
+        key: lease.handoff_idempotency_key, childRunId: lease.handoff_child_run_id };
+    }
+    assertVerifiedRunSnapshot(root, runId, data);
     // v1.6 (spec §2.3-1): terminal run에는 새 handoff 예약 금지 — RUN_PAUSED 명시 차단과 대칭.
     if (data.status === 'completed' || data.status === 'stopped') {
       return { ok: false, reserved: false, reason: 'RUN_TERMINAL', key: null, childRunId: null };
     }
     if (data.status === 'paused') {
       return { ok: false, reserved: false, reason: 'RUN_PAUSED', key: null, childRunId: null };
-    }
-    const lease = data.session_chain.lease;
-    if (expect && (lease.owner_run_id !== expect.owner || lease.generation !== expect.generation)) {
-      return { ok: false, reserved: false, reason: 'fenced', key: lease.handoff_idempotency_key, childRunId: lease.handoff_child_run_id };
     }
     const key = deriveIdempotencyKey(lease.owner_run_id, lease.generation, trigger);
     if (lease.handoff_phase === 'idle' || lease.handoff_phase === 'acquired') {
@@ -166,10 +171,13 @@ export function advanceHandoffPhase(root, runId, { key, toPhase, now = Date.now(
     const { data } = readState(root, runId);
     // v1.6 (spec §2.3-3): terminal run의 handoff 전진 금지 — reserve↔advance 사이 finish 경합 및
     // 구버전 오염 상태(terminal+emitted 등)에 대한 방어-심층. respawn은 이 reason을 outcome:'terminal'로 전파.
-    if (data.status === 'completed' || data.status === 'stopped') return { ok: false, reason: 'RUN_TERMINAL' };
     const lease = data.session_chain.lease;
     if (expect && (lease.owner_run_id !== expect.owner || lease.generation !== expect.generation)) {
       return { ok: false, reason: 'fenced' };
+    }
+    assertVerifiedRunSnapshot(root, runId, data);
+    if (data.status === 'completed' || data.status === 'stopped') {
+      return { ok: false, reason: 'RUN_TERMINAL' };
     }
     if (lease.handoff_idempotency_key !== key) return { ok: false, reason: 'key-mismatch' };
     const cur = PHASE_ORDER[lease.handoff_phase];
@@ -196,6 +204,7 @@ export function rollbackHandoff(root, runId, { owner, generation }) {
     const { data } = readState(root, runId);
     const lease = data.session_chain.lease;
     if (lease.owner_run_id !== owner || lease.generation !== generation) return { ok: false, reason: 'fenced' };
+    assertVerifiedRunSnapshot(root, runId, data);
     const terminal = data.status === 'completed' || data.status === 'stopped';
     // terminal + 잔여 없음(idle, key/child null) → write 없는 no-op (plan r2 P1: 정상-finish 후
     // emitHandoff 거부 경로의 무조건 보상 호출이 idle lease를 다시 쓰지 않도록).

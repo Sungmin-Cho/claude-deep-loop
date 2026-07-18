@@ -232,7 +232,8 @@ test('state patch forbids terminal episode status (exit 1)', () => {
 
 test('budget record accrues turns/tokens via event log with fence', () => {
   const { root, runId } = seed();
-  const r = JSON.parse(run(root, ['budget', 'record', '--turns', '3', '--tokens', '1000', '--owner', runId, '--generation', '1']));
+  const r = JSON.parse(run(root, ['budget', 'record', '--turns', '3', '--tokens', '1000',
+    '--request-id', 'cli-budget-record-1', '--owner', runId, '--generation', '1']));
   assert.equal(r.ok, true);
   const spent = JSON.parse(run(root, ['state', 'get', '--field', 'budget.spent']));
   assert.equal(spent, 3);
@@ -240,13 +241,27 @@ test('budget record accrues turns/tokens via event log with fence', () => {
 
 test('budget record is fenced (exit 3)', () => {
   const { root, runId } = seed();
-  assert.equal(runFail(root, ['budget', 'record', '--turns', '1', '--owner', runId, '--generation', '9']), 3);
+  assert.equal(runFail(root, ['budget', 'record', '--turns', '1',
+    '--request-id', 'cli-budget-fenced-1', '--owner', runId, '--generation', '9']), 3);
 });
 
 // Codex r4 sf-4: 값 없는 --turns 는 1 로 오기록하지 말고 거부(exit 1).
 test('budget record rejects a valueless --turns (exit 1)', () => {
   const { root, runId } = seed();
-  assert.equal(runFail(root, ['budget', 'record', '--turns', '--owner', runId, '--generation', '1']), 1);
+  assert.equal(runFail(root, ['budget', 'record', '--turns',
+    '--request-id', 'cli-budget-invalid-turns-1', '--owner', runId, '--generation', '1']), 1);
+});
+
+test('budget record requires a request id as usage (exit 2)', () => {
+  const { root, runId } = seed();
+  assert.equal(runFail(root, ['budget', 'record', '--turns', '1',
+    '--owner', runId, '--generation', '1']), 2);
+});
+
+test('budget record rejects a valueless request id as usage (exit 2)', () => {
+  const { root, runId } = seed();
+  assert.equal(runFail(root, ['budget', 'record', '--turns', '1', '--request-id',
+    '--owner', runId, '--generation', '1']), 2);
 });
 
 test('budget check is read-only and reports ok', () => {
@@ -258,7 +273,8 @@ test('budget check is read-only and reports ok', () => {
 // Codex r3 critical-1: budget record 가 세션 turns 를 증가시켜 per_session_turn_cap 마일스톤을 실제로 구동.
 test('budget record drives per_session_turn_cap → next-action handoff', () => {
   const { root, runId } = seed();
-  run(root, ['budget', 'record', '--turns', '40', '--owner', runId, '--generation', '1']);   // == per_session_turn_cap(40)
+  run(root, ['budget', 'record', '--turns', '40',
+    '--request-id', 'cli-budget-cap-1', '--owner', runId, '--generation', '1']);   // == per_session_turn_cap(40)
   const na = JSON.parse(run(root, ['next-action', '--json', '--now', '2026-06-24T00:00:01Z']));
   assert.equal(na.action.type, 'handoff');
   assert.equal(na.action.reason, 'per_session_turn_cap');

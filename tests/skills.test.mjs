@@ -1174,3 +1174,22 @@ test('skills/ 전역: hill-climb 제안 명령에 candidate id 콜론-템플릿 
       `${f}: candidate id 콜론-템플릿("하네스 개선:) 잔존 — 고정 문구 /deep-loop "하네스 개선" 로 동기화되어야 함`);
   }
 });
+
+test('interactive budget record templates carry one stable per-tick request identity', () => {
+  const continueSkill = readFileSync(skillPath('deep-loop-continue'), 'utf8');
+  const handoffReference = readFileSync(
+    join(ROOT, 'skills', 'deep-loop-workflow', 'references', 'handoff-respawn.md'), 'utf8');
+  for (const [name, source] of [
+    ['deep-loop-continue', continueSkill], ['handoff-respawn', handoffReference],
+  ]) {
+    assert.match(source,
+      /budget record[^\n]*--turns <n>[^\n]*--request-id <accounting_request_id>[^\n]*--owner <owner_run_id>[^\n]*--generation <n>/,
+      `${name}: canonical interactive command lacks the stable request identity`);
+    assert.match(source, /same tick|동일 tick/,
+      `${name}: response-loss retry does not require same-tick identity reuse`);
+    assert.match(source, /new request|새 request|새로운 request/,
+      `${name}: later ticks are not required to allocate a new request identity`);
+    assert.match(source, /\[A-Za-z0-9\]\[A-Za-z0-9\._:-\]\{0,127\}/,
+      `${name}: request identity does not publish the kernel's bounded ASCII grammar`);
+  }
+});

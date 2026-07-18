@@ -545,3 +545,73 @@ test('app-revoke intent crosses releasing and paused only after an exact live fe
   assert.equal(leaseCheck(loop, { owner: '01JAPPPAR00000000000000000', generation: 4,
     runtime: 'codex', intent: 'app-revoke' }).reason, 'RUN_TERMINAL');
 });
+
+const corrupt7c = fixture => raw7b(fixture.root, fixture.runId, loop => {
+  loop.session_chain.sessions[0].host_surface.observed_at =
+    '2026-07-13T00:00:01.000Z';
+});
+
+test('lease fences precede proof and every success-class direct path proves the snapshot', () => {
+  const release = fixture7b('dl-lease-release-proof-');
+  corrupt7c(release);
+  const releaseBefore = bytes7b(release.root, release.runId);
+  assert.deepEqual(releaseLease(release.root, release.runId,
+    { owner: 'wrong', generation: 1 }), { ok: false, reason: 'fenced' });
+  assert.throws(() => releaseLease(release.root, release.runId,
+    { owner: release.owner, generation: 1 }), /RUN_SNAPSHOT_INVALID/);
+  assert.deepEqual(bytes7b(release.root, release.runId), releaseBefore);
+
+  const acquire = fixture7b('dl-lease-acquire-proof-');
+  corrupt7c(acquire);
+  const acquireBefore = bytes7b(acquire.root, acquire.runId);
+  assert.deepEqual(acquireLease(acquire.root, acquire.runId, { owner: acquire.owner,
+    expectGeneration: 99, runtime: 'claude' }),
+  { ok: false, reason: 'RUNTIME_FENCED', expected: 'codex', actual: 'claude' });
+  assert.deepEqual(acquireLease(acquire.root, acquire.runId, { owner: 'different-owner',
+    expectGeneration: 99, runtime: 'codex' }),
+  { ok: false, generation: 1, reason: 'generation-mismatch' });
+  assert.throws(() => acquireLease(acquire.root, acquire.runId, { owner: acquire.owner,
+    expectGeneration: 1, runtime: 'codex' }), /RUN_SNAPSHOT_INVALID/);
+  assert.deepEqual(bytes7b(acquire.root, acquire.runId), acquireBefore);
+
+  const reserve = fixture7b('dl-lease-reserve-proof-');
+  const first = reserveHandoff(reserve.root, reserve.runId,
+    { trigger: 'proof', expect: { owner: reserve.owner, generation: 1 } });
+  raw7b(reserve.root, reserve.runId, loop => {
+    loop.status = 'stopped';
+    loop.session_chain.sessions[0].host_surface.observed_at =
+      '2026-07-13T00:00:01.000Z';
+  });
+  const reserveBefore = bytes7b(reserve.root, reserve.runId);
+  assert.deepEqual(reserveHandoff(reserve.root, reserve.runId,
+    { trigger: 'proof', expect: { owner: 'wrong', generation: 1 } }),
+  { ok: false, reserved: false, reason: 'fenced', key: first.key,
+    childRunId: first.childRunId });
+  assert.throws(() => reserveHandoff(reserve.root, reserve.runId,
+    { trigger: 'proof', expect: { owner: reserve.owner, generation: 1 } }),
+  /RUN_SNAPSHOT_INVALID/);
+  assert.deepEqual(advanceHandoffPhase(reserve.root, reserve.runId,
+    { key: first.key, toPhase: 'reserved', expect: { owner: 'wrong', generation: 1 } }),
+  { ok: false, reason: 'fenced' });
+  assert.throws(() => advanceHandoffPhase(reserve.root, reserve.runId,
+    { key: first.key, toPhase: 'reserved',
+      expect: { owner: reserve.owner, generation: 1 } }), /RUN_SNAPSHOT_INVALID/);
+  assert.deepEqual(rollbackHandoff(reserve.root, reserve.runId,
+    { owner: 'wrong', generation: 1 }), { ok: false, reason: 'fenced' });
+  assert.throws(() => rollbackHandoff(reserve.root, reserve.runId,
+    { owner: reserve.owner, generation: 1 }), /RUN_SNAPSHOT_INVALID/);
+  assert.deepEqual(bytes7b(reserve.root, reserve.runId), reserveBefore);
+
+  const terminalIdle = fixture7b('dl-lease-terminal-idle-proof-');
+  raw7b(terminalIdle.root, terminalIdle.runId, loop => {
+    loop.status = 'stopped';
+    loop.session_chain.sessions[0].host_surface.observed_at =
+      '2026-07-13T00:00:01.000Z';
+  });
+  const terminalIdleBefore = bytes7b(terminalIdle.root, terminalIdle.runId);
+  assert.deepEqual(rollbackHandoff(terminalIdle.root, terminalIdle.runId,
+    { owner: 'wrong', generation: 1 }), { ok: false, reason: 'fenced' });
+  assert.throws(() => rollbackHandoff(terminalIdle.root, terminalIdle.runId,
+    { owner: terminalIdle.owner, generation: 1 }), /RUN_SNAPSHOT_INVALID/);
+  assert.deepEqual(bytes7b(terminalIdle.root, terminalIdle.runId), terminalIdleBefore);
+});

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync,
+  writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { driveHeadless as driveHeadlessImpl, driveHeadlessRun as driveHeadlessRunImpl } from '../scripts/lib/headless-host.mjs';
@@ -1795,6 +1796,22 @@ test('an owner-missing host lock is reclaimed after the short metadata crash gra
   assert.equal(result.action, 'resumed');
   assert.equal(makerCalls, 1);
   assert.equal(existsSync(lockPath), false);
+});
+
+test('all six legacy headless accounting calls bind a stable purpose request id to their fence', () => {
+  const source = readFileSync(new URL('../scripts/lib/headless-host.mjs', import.meta.url), 'utf8');
+  const calls = [...source.matchAll(/\brecordCostFn\([\s\S]*?\n\s*\}\);/g)]
+    .map(match => match[0]);
+  assert.equal(calls.length, 6, 'closed legacy accounting call inventory changed');
+  assert.match(source,
+    /const accountingFence = \{ owner: childRunId, generation: parentGeneration \+ 1, intent: 'accounting' \};/,
+    'the variable accounting fence is not derived from the acquired child identity');
+  for (const call of calls) {
+    assert.match(call, /requestId:\s*legacyAccountingRequestId\(/,
+      'recordCostFn call does not receive its stable request identity');
+    assert.match(call, /fence:\s*(?:\{[^}]*owner:|accountingFence\b)/,
+      'recordCostFn call does not receive its actual accounting fence');
+  }
 });
 
 test('a malformed-owner host lock is reclaimed after the short metadata crash grace', () => {

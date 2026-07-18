@@ -174,8 +174,10 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin <maker_plugin> 
 
 Interactive tick은 best-effort로 self-report:
 ```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" budget record --turns <n> --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" budget record --turns <n> --request-id <accounting_request_id> --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
+
+`<accounting_request_id>`는 `[A-Za-z0-9][A-Za-z0-9._:-]{0,127}` 문법으로 tick마다 새 request ID를 한 번 할당한다. 응답 손실로 동일 tick을 재시도할 때는 같은 ID를 재사용하고, 다음 tick에는 새로운 request ID를 할당한다.
 
 **`DEEP_LOOP_UNATTENDED` set 시 자기보고를 생략** — drive-headless 드라이버가 측정 usage를 권위있게 기록하므로 이중계상 방지.
 

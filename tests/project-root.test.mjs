@@ -490,6 +490,8 @@ test('verified under-lock commit has a closed production reference set', () => {
       'one definition plus appendAnchored and root-rebind calls');
     else if (rel === 'scripts/lib/lease.mjs') assert.equal(count, 2,
       'one import plus the generic-acquire generation commit');
+    else if (rel === 'scripts/lib/budget.mjs') assert.equal(count, 2,
+      'one import plus the single measured-accounting adapter call');
     else assert.equal(count, 0, `${rel}: unapproved verified under-lock commit reference`);
   }
 });

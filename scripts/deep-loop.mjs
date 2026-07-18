@@ -1097,8 +1097,10 @@ const handlers = {
       // 미지정 → 0, 지정 시 비음정수 문자열만 허용(true/음수/NaN/Infinity 거부).
       const turns = optInt(f, 'turns'); const tokens = optInt(f, 'tokens');
       if (turns === null || tokens === null) { error('INVALID_COST: --turns/--tokens must be non-negative integers'); return 1; }
-      const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'business' };
-      try { recordCost(root, runId, { turns, tokens, fence }); }
+      const requestId = reqStr(f, 'request-id');
+      if (!requestId) { error('USAGE: --request-id ID is required'); return 2; }
+      const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'accounting' };
+      try { recordCost(root, runId, { turns, tokens, requestId, fence }); }
       catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }
       const { data } = readState(root, runId);
       json({ ok: true, spent: data.budget.spent, tokens_spent: data.budget.tokens_spent }); return 0;

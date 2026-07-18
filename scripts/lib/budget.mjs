@@ -1,6 +1,8 @@
 import {
-  appendEvent,
-  lastLogHead,
+  assertVerifiedRunSnapshot,
+  commitVerifiedEventsUnderLock,
+  mutationIntentDigest,
+  withVerifiedMutationLock,
   MUTATION_TURN_FLOOR,
   readLines,
   recomputeSpent,
@@ -8,9 +10,9 @@ import {
   verifyHead,
   validCost,
 } from './integrity.mjs';
-import { readState, writeState, withLock } from './state.mjs';
+import { readState, withLock } from './state.mjs';
 import { leaseCheck } from './lease.mjs';
-import { sessionRuntime } from './runtime.mjs';
+import { runtimeFence, sessionRuntime } from './runtime.mjs';
 import { contentHash } from './envelope.mjs';
 import { canonicalProjectRoot, projectRootDigest } from './project-root.mjs';
 
@@ -273,32 +275,255 @@ function trailingFloor(lines, owner, generation) {
   return { tf, tk };
 }
 
+function commitMeasuredCost(root, runId, loop, lines, baseStateHash, eventData,
+  { owner, addedTurns, callerBinding, intentDigest, requireSession = true }) {
+  return commitVerifiedEventsUnderLock(root, runId, loop,
+    [{ type: 'cost', data: eventData }], (candidate, spent) => {
+      candidate.budget.spent = spent.turns;
+      candidate.budget.tokens_spent = spent.tokens;
+      const session = (candidate.session_chain?.sessions || [])
+        .find(item => item.run_id === owner);
+      if (!session && requireSession) throw new Error('ACCOUNTING_SESSION_INVALID');
+      if (session) session.turns = (session.turns || 0) + addedTurns;
+    }, { baseLines: lines, baseStateHash, callerBinding, intentDigest });
+}
+
+function accountingReplayFence(fence, {
+  runtime = null, runtimeMessage = null, leasePolicy = false,
+} = {}) {
+  const identityCheck = loop => {
+    const lease = loop.session_chain?.lease || {};
+    if (runtime === null && fence.runtime !== undefined) {
+      const checkedRuntime = runtimeFence(loop, fence.runtime);
+      if (!checkedRuntime.ok) throw new Error(`LEASE_FENCED: ${checkedRuntime.reason}`);
+    }
+    if (lease.owner_run_id !== fence.owner) throw new Error('LEASE_FENCED: owner-mismatch');
+    if (lease.generation !== fence.generation) throw new Error('LEASE_FENCED: generation-mismatch');
+    if (runtime !== null && sessionRuntime(loop) !== runtime) throw new Error(runtimeMessage);
+  };
+  identityCheck.policyCheck = leasePolicy ? loop => {
+    const authorized = leaseCheck(loop, fence);
+    if (!authorized.ok) throw new Error(`LEASE_FENCED: ${authorized.reason}`);
+  } : null;
+  return identityCheck;
+}
+
+function recoveredCostEvent(root, runId, mutation, predicate,
+  { requestDigest = null, requestIdDigest = null, fenceCheck, policyCheck = null } = {}) {
+  if (typeof fenceCheck !== 'function') throw new Error('ACCOUNTING_RECOVERY_FENCE_REQUIRED');
+  if (policyCheck !== null && typeof policyCheck !== 'function') {
+    throw new Error('ACCOUNTING_RECOVERY_POLICY_REQUIRED');
+  }
+  const snapshot = mutation.readVerifiedState({ fenceCheck });
+  const lines = readLines(root, runId);
+  if (fenceCheck.policyCheck !== null) fenceCheck.policyCheck(snapshot.data, lines);
+  if (policyCheck !== null) policyCheck(snapshot.data, lines);
+  if (requestIdDigest !== null) {
+    const durable = lines.filter(event => event.type === 'cost'
+      && event.data?.accounting_request_id_digest === requestIdDigest);
+    if (durable.length > 1) throw new Error('ACCOUNTING_RECOVERY_PROJECTION_MISMATCH');
+    if (durable.length === 1) {
+      if (durable[0].data?.accounting_request_digest !== requestDigest) {
+        throw new Error('ACCOUNTING_REQUEST_CONFLICT');
+      }
+      if (!predicate(durable[0])) throw new Error('ACCOUNTING_REQUEST_CONFLICT');
+      if (mutation.recovered !== null
+          && !mutation.recovered.events.some(event => event.seq === durable[0].seq
+            && event.checksum === durable[0].checksum)) {
+        throw new Error('ACCOUNTING_RECOVERY_PROJECTION_MISMATCH');
+      }
+      return true;
+    }
+  }
+  if (mutation.recovered === null) return false;
+  const recovered = mutation.recovered.events.filter(event =>
+    event.type === 'cost' && predicate(event));
+  if (recovered.length !== 1) throw new Error('ACCOUNTING_RECOVERY_PROJECTION_MISMATCH');
+  const durable = lines.filter(event => event.seq === recovered[0].seq
+    && event.checksum === recovered[0].checksum);
+  if (durable.length !== 1 || !predicate(durable[0])) {
+    throw new Error('ACCOUNTING_RECOVERY_PROJECTION_MISMATCH');
+  }
+  return true;
+}
+
+function assertPreflightReplayPolicy(loop, fence) {
+  const authorized = leaseCheck(loop, fence);
+  if (!authorized.ok) throw new Error(`LEASE_FENCED: ${authorized.reason}`);
+}
+
+function verifySettledCheckerAfterLeaseAdvance(loop, exact, origin, lines, fence) {
+  const lease = loop.session_chain?.lease || {};
+  if (!['completed', 'stopped'].includes(loop.status)
+      || lease.owner_run_id !== fence.owner || lease.generation !== fence.generation
+      || lease.state !== 'active' || lease.handoff_phase !== 'acquired'
+      || origin.owner === fence.owner) {
+    throw new Error('PROCESS_ACCOUNTING_TERMINAL_PROOF_MISSING');
+  }
+  const checker = (loop.episodes || []).find(
+    episode => episode.id === exact.context.checker_episode_id);
+  if (checker?.status !== 'in_progress' || !checker.review_claim
+      || checker.attempt_id !== exact.context.attempt_id) {
+    throw new Error('PROCESS_ACCOUNTING_TERMINAL_PROOF_MISSING');
+  }
+  const receipts = lines.filter(event => exactProcessCostEvent(event, exact, origin, lines));
+  const handoffs = lines.filter(event => event.type === 'handoff-emitted'
+    && event.data?.child_run_id === fence.owner);
+  const finishes = lines.filter(event => event.type === 'finish');
+  const receipt = receipts[0];
+  const handoff = handoffs[0];
+  const finish = finishes[0];
+  const finishFloor = lines.find(event => event.seq === finish?.seq + 1
+    && event.type === 'cost' && event.data?.auto_floor === true
+    && event.data?.for === 'finish' && event.data?.owner === fence.owner
+    && event.data?.generation === fence.generation);
+  const outcomes = lines.filter(event => event.type === 'review-outcome'
+    && event.data?.episodeId === exact.context.checker_episode_id
+    && event.data?.attempt_id === exact.context.attempt_id);
+  if (receipts.length !== 1 || handoffs.length !== 1 || finishes.length !== 1
+      || !finishFloor || outcomes.length !== 0
+      || !(receipt.seq < handoff.seq && handoff.seq < finish.seq)
+      || finish.data?.status !== loop.status
+      || typeof loop.termination?.finished_at !== 'string') {
+    throw new Error('PROCESS_ACCOUNTING_TERMINAL_PROOF_MISSING');
+  }
+  if (lines.some(event => event.seq > finish.seq && event !== finishFloor)) {
+    throw new Error('PROCESS_ACCOUNTING_TERMINAL_PROOF_MISSING');
+  }
+}
+
+function assertProcessReplayPolicy(loop, lines, exact, fence) {
+  const authorized = leaseCheck(loop, fence);
+  if (authorized.ok) return;
+  if (authorized.reason !== 'RUN_TERMINAL') {
+    throw new Error(`LEASE_FENCED: ${authorized.reason}`);
+  }
+  const origin = exact.process_kind === 'maker'
+    ? makerOrigin(loop, exact, lines) : checkerOrigin(loop, exact);
+  if (exact.process_kind === 'maker') {
+    verifyTerminalMakerSettlement(loop, exact, origin, lines);
+    return;
+  }
+  const checker = (loop.episodes || []).find(
+    episode => episode.id === exact.context.checker_episode_id);
+  if (loop.status === 'stopped' && checker?.status === 'in_progress') {
+    const settledEvent = lines.find(event => exactProcessCostEvent(
+      event, exact, origin, lines));
+    const alreadySettled = settledEvent !== undefined;
+    if (alreadySettled && origin.owner !== fence.owner) {
+      verifySettledCheckerAfterLeaseAdvance(loop, exact, origin, lines, fence);
+    } else {
+      verifyStoppedPreImportCheckerSettlement(loop, exact, origin,
+        alreadySettled ? lines.filter(event => event !== settledEvent) : lines);
+    }
+  } else {
+    verifyTerminalCheckerSettlement(loop, exact, origin, lines);
+  }
+}
+
+function assertTerminalMakerReplayPolicy(loop, lines, { usage, fence, handoffKey }) {
+  const lease = loop.session_chain?.lease || {};
+  if (loop.status !== 'completed' && loop.status !== 'stopped') {
+    throw new Error('RUN_NOT_TERMINAL: terminal maker settlement');
+  }
+  if (lease.state !== 'active' || lease.handoff_phase !== 'acquired') {
+    throw new Error('TERMINAL_ACCOUNTING_CHILD_NOT_ACQUIRED');
+  }
+  const session = (loop.session_chain?.sessions || []).find(item => item.run_id === fence.owner);
+  if (!session || typeof session.started_at !== 'string'
+      || !Number.isFinite(Date.parse(session.started_at))
+      || session.outcome === 'failed_launch'
+      || !Number.isSafeInteger(session.turns) || session.turns < 0) {
+    throw new Error('TERMINAL_ACCOUNTING_SESSION_INVALID');
+  }
+  const finishes = lines.filter(event => event.type === 'finish');
+  const finish = finishes[0];
+  if (finishes.length !== 1 || finish.data?.status !== loop.status
+      || typeof loop.termination?.finished_at !== 'string') {
+    throw new Error('TERMINAL_ACCOUNTING_PROOF_MISSING');
+  }
+  const handoffs = lines.filter(event => event.type === 'handoff-emitted'
+    && event.data?.child_run_id === fence.owner && event.data?.key === handoffKey);
+  const finishFloor = lines.find(event => event.seq === finish.seq + 1
+    && event.type === 'cost' && event.data?.auto_floor === true && event.data?.for === 'finish'
+    && event.data?.owner === fence.owner && event.data?.generation === fence.generation);
+  if (handoffs.length !== 1 || handoffs[0].seq >= finish.seq || !finishFloor) {
+    throw new Error('TERMINAL_ACCOUNTING_PROOF_MISSING');
+  }
+  const accountingKey = contentHash(
+    `${loop.run_id}|${fence.owner}|${fence.generation}|${handoffKey}|${finish.checksum}`);
+  const exactReceipt = event => event.type === 'cost'
+    && event.data?.terminal_process === 'codex-maker'
+    && event.data?.source === 'terminal-maker-measured'
+    && event.data?.accounting_key === accountingKey
+    && event.data?.owner === fence.owner && event.data?.generation === fence.generation;
+  if (lines.some(event => event.seq > finish.seq
+      && event !== finishFloor && !exactReceipt(event))) {
+    throw new Error('TERMINAL_ACCOUNTING_PROOF_MISSING');
+  }
+  const receipts = lines.filter(exactReceipt);
+  if (receipts.length > 1) throw new Error('TERMINAL_ACCOUNTING_DUPLICATE');
+  if (receipts.length === 1) {
+    const priorUsage = processUsageFromEvent(receipts[0]);
+    if (!sameMeasuredUsage(priorUsage, usage)) throw new Error('TERMINAL_ACCOUNTING_MISMATCH');
+  }
+  return accountingKey;
+}
+
 // Explicit cost report — its own withLock (needs to read the log to absorb the tick's floor before appending an
 // ADJUSTED cost). Mirrors appendAnchored's verify→append→anchor→reconcile sequence; recomputeSpent stays a PURE
 // sum so reconcileBudget agrees automatically. Negative/non-finite still rejected (validCost).
-export function recordCost(root, runId, { turns = 0, tokens = 0, fence } = {}) {
+export function recordCost(root, runId, {
+  turns = 0, tokens = 0, requestId, fence,
+} = {}) {
   if (!validCost({ turns, tokens })) throw new Error(`INVALID_COST: turns/tokens must be finite >= 0 (got ${turns}/${tokens})`);
-  return withLock(root, runId, () => {
-    const { data: loop } = readState(root, runId);
-    if (fence) { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
-    // v1.6 (spec §2.3-7): recordCost는 자체 appendEvent+writeState 경로(appendAnchored 관문 비경유).
-    // fence가 있으면 위 leaseCheck가 LEASE_FENCED: RUN_TERMINAL로 선착 — drive-headless의 LEASE_FENCED
-    // swallow 계약 보존(순서가 계약). fence-less 직접 호출만 이 자체 가드가 잡는다.
-    if (loop.status === 'completed' || loop.status === 'stopped') throw new Error('RUN_TERMINAL: recordCost');
-    const v = verifyLog(root, runId); if (!v.ok) throw new Error(`LOG_TAMPERED: ${v.errors.join('; ')}`);
-    const h = verifyHead(root, runId, loop.event_log_head); if (!h.ok) throw new Error(`LOG_TAMPERED: ${h.errors.join('; ')}`);
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(requestId || '')) {
+    throw new Error('ACCOUNTING_REQUEST_ID_REQUIRED');
+  }
+  if (!fence || typeof fence.owner !== 'string'
+      || !Number.isSafeInteger(fence.generation) || fence.generation < 1) {
+    throw new Error('BUDGET_ACCOUNTING_FENCE_REQUIRED');
+  }
+  const callerBinding = { owner: fence.owner, generation: fence.generation };
+  const requestIdDigest = contentHash(`budget-record-id\0${requestId}`);
+  const requestDigest = contentHash(JSON.stringify({
+    domain: 'budget-record-request-v1', request_id_digest: requestIdDigest,
+    owner: fence.owner, generation: fence.generation, turns, tokens,
+    runtime: fence.runtime ?? null, intent: fence.intent ?? null,
+  }));
+  const intentDigest = mutationIntentDigest('budget-record', callerBinding,
+    { request_digest: requestDigest, turns, tokens,
+      runtime: fence.runtime ?? null, intent: fence.intent ?? null });
+  const replayFence = accountingReplayFence(fence, { leasePolicy: true });
+  return withVerifiedMutationLock(root, runId, { callerBinding, intentDigest,
+    fenceError: 'BUDGET_FENCED: record' }, mutation => {
+    if (recoveredCostEvent(root, runId, mutation, event =>
+      event.data?.reported_turns === turns && event.data?.reported_tokens === tokens
+      && event.data?.owner === fence.owner
+      && event.data?.generation === fence.generation,
+    { requestDigest, requestIdDigest, fenceCheck: replayFence })) return;
+    const { data: loop, hash: baseStateHash } = readState(root, runId);
     const lease = loop.session_chain?.lease || {};
-    const { tf, tk } = trailingFloor(readLines(root, runId), lease.owner_run_id, lease.generation);   // this session's tick floor only
+    const runtime = fence.runtime === undefined ? { ok: true } : runtimeFence(loop, fence.runtime);
+    if (!runtime.ok) throw new Error(`LEASE_FENCED: ${runtime.reason}`);
+    if (lease.owner_run_id !== fence.owner) throw new Error('LEASE_FENCED: owner-mismatch');
+    if (lease.generation !== fence.generation) throw new Error('LEASE_FENCED: generation-mismatch');
+    const lines = readLines(root, runId);
+    assertVerifiedRunSnapshot(root, runId, loop, { lines });
+    const authorized = leaseCheck(loop, fence);
+    if (!authorized.ok) throw new Error(`LEASE_FENCED: ${authorized.reason}`);
+    if (loop.status === 'completed' || loop.status === 'stopped') {
+      throw new Error('RUN_TERMINAL: recordCost');
+    }
+    const { tf, tk } = trailingFloor(lines, lease.owner_run_id, lease.generation);
     const adjTurns = Math.max(0, turns - tf), adjTokens = Math.max(0, tokens - tk);   // tick contribution = max(reported, floor-sum)
-    appendEvent(root, runId, { type: 'cost', data: { turns: adjTurns, tokens: adjTokens, reported_turns: turns, reported_tokens: tokens, owner: lease.owner_run_id, generation: lease.generation } });
-    loop.event_log_head = lastLogHead(root, runId);
-    const spent = recomputeSpent(root, runId);   // pure sum = prior + floors + adjusted = prior-session floors + max(reported, this-session floors)
-    loop.budget.spent = spent.turns;
-    loop.budget.tokens_spent = spent.tokens;
-    // per_session_turn_cap 판정용 session.turns 도 max-rule을 따른다 — 이 tick 기여분 = tf(이미 floor로 반영) + adjTurns.
-    const sess = (loop.session_chain?.sessions || []).find(s => s.run_id === lease.owner_run_id);
-    if (sess) sess.turns = (sess.turns || 0) + adjTurns;
-    writeState(root, runId, loop);
+    const eventData = { turns: adjTurns, tokens: adjTokens, reported_turns: turns,
+      reported_tokens: tokens, owner: lease.owner_run_id, generation: lease.generation,
+      accounting_request_id_digest: requestIdDigest,
+      accounting_request_digest: requestDigest };
+    commitMeasuredCost(root, runId, loop, lines, baseStateHash, eventData,
+      { owner: lease.owner_run_id, addedTurns: adjTurns, callerBinding, intentDigest,
+        requireSession: false });
   });
 }
 
@@ -419,19 +644,29 @@ export function settleCodexPreflightCost(root, runId, { receipt, fence } = {}) {
     || fence.intent !== 'accounting') {
     throw new Error('PREFLIGHT_ACCOUNTING_FENCE_REQUIRED');
   }
-  return withLock(root, runId, () => {
-    const { data: loop } = readState(root, runId);
+  const callerBinding = { owner: fence.owner, generation: fence.generation };
+  const intentDigest = mutationIntentDigest('budget-preflight-settle', callerBinding,
+    { receipt_digest: contentHash(JSON.stringify(exact)) });
+  const replayFence = accountingReplayFence(fence, { runtime: 'codex',
+    runtimeMessage: 'RUNTIME_FENCED: preflight accounting requires codex' });
+  return withVerifiedMutationLock(root, runId, { callerBinding, intentDigest,
+    fenceError: 'BUDGET_FENCED: preflight' }, mutation => {
+    if (recoveredCostEvent(root, runId, mutation, event =>
+      event.data?.preflight_receipt_id === exact.receipt_id
+      && event.data?.preflight_cache_key === exact.cache_key,
+    { fenceCheck: replayFence,
+      policyCheck: loop => assertPreflightReplayPolicy(loop, fence) })) {
+      return { ok: true, recorded: true, reason: 'recorded' };
+    }
+    const { data: loop, hash: baseStateHash } = readState(root, runId);
     const lease = loop.session_chain?.lease || {};
     if (lease.owner_run_id !== fence.owner) throw new Error('LEASE_FENCED: owner-mismatch');
     if (lease.generation !== fence.generation) throw new Error('LEASE_FENCED: generation-mismatch');
     if (sessionRuntime(loop) !== 'codex') {
       throw new Error('RUNTIME_FENCED: preflight accounting requires codex');
     }
-    const verified = verifyLog(root, runId);
-    if (!verified.ok) throw new Error(`LOG_TAMPERED: ${verified.errors.join('; ')}`);
-    const anchored = verifyHead(root, runId, loop.event_log_head);
-    if (!anchored.ok) throw new Error(`LOG_TAMPERED: ${anchored.errors.join('; ')}`);
     const lines = readLines(root, runId);
+    assertVerifiedRunSnapshot(root, runId, loop, { lines });
     const originSession = (loop.session_chain?.sessions || [])
       .find(session => session.run_id === exact.owner);
     if (!originSession || !Number.isSafeInteger(originSession.turns) || originSession.turns < 0) {
@@ -460,9 +695,7 @@ export function settleCodexPreflightCost(root, runId, { receipt, fence } = {}) {
     const { tf, tk } = trailingFloor(lines, exact.owner, exact.generation);
     const adjustedTurns = Math.max(0, exact.usage.num_turns - tf);
     const adjustedTokens = Math.max(0, exact.usage.tokens - tk);
-    appendEvent(root, runId, {
-      type: 'cost',
-      data: {
+    const eventData = {
         turns: adjustedTurns,
         tokens: adjustedTokens,
         reported_turns: exact.usage.num_turns,
@@ -481,14 +714,10 @@ export function settleCodexPreflightCost(root, runId, { receipt, fence } = {}) {
         preflight_smoke: exact.smoke_kind,
         preflight_attempt_id: exact.attempt_id,
         predecessor_receipt_id: exact.predecessor_receipt_id,
-      },
-    });
-    loop.event_log_head = lastLogHead(root, runId);
-    const spent = recomputeSpent(root, runId);
-    loop.budget.spent = spent.turns;
-    loop.budget.tokens_spent = spent.tokens;
-    originSession.turns += adjustedTurns;
-    writeState(root, runId, loop);
+    };
+    commitMeasuredCost(root, runId, loop, lines, baseStateHash, eventData,
+      { owner: exact.owner, addedTurns: adjustedTurns, callerBinding, intentDigest,
+        requireSession: true });
     return { ok: true, recorded: true, reason: 'recorded' };
   });
 }
@@ -841,19 +1070,29 @@ export function settleCodexProcessCost(root, runId, { receipt, fence } = {}) {
     || fence.intent !== 'accounting') {
     throw new Error('PROCESS_ACCOUNTING_FENCE_REQUIRED');
   }
-  return withLock(root, runId, () => {
-    const { data: loop } = readState(root, runId);
+  const callerBinding = { owner: fence.owner, generation: fence.generation };
+  const intentDigest = mutationIntentDigest('budget-process-settle', callerBinding,
+    { receipt_digest: contentHash(JSON.stringify(exact)) });
+  const replayFence = accountingReplayFence(fence, { runtime: 'codex',
+    runtimeMessage: 'RUNTIME_FENCED: process accounting requires codex' });
+  return withVerifiedMutationLock(root, runId, { callerBinding, intentDigest,
+    fenceError: 'BUDGET_FENCED: process' }, mutation => {
+    if (recoveredCostEvent(root, runId, mutation, event =>
+      event.data?.process_receipt_id === exact.receipt_id
+      && event.data?.process_kind === exact.process_kind,
+    { fenceCheck: replayFence,
+      policyCheck: (loop, lines) => assertProcessReplayPolicy(loop, lines, exact, fence) })) {
+      return { ok: true, recorded: true, reason: 'recorded' };
+    }
+    const { data: loop, hash: baseStateHash } = readState(root, runId);
     const lease = loop.session_chain?.lease || {};
     if (lease.owner_run_id !== fence.owner) throw new Error('LEASE_FENCED: owner-mismatch');
     if (lease.generation !== fence.generation) throw new Error('LEASE_FENCED: generation-mismatch');
     if (sessionRuntime(loop) !== 'codex') {
       throw new Error('RUNTIME_FENCED: process accounting requires codex');
     }
-    const verified = verifyLog(root, runId);
-    if (!verified.ok) throw new Error(`LOG_TAMPERED: ${verified.errors.join('; ')}`);
-    const anchored = verifyHead(root, runId, loop.event_log_head);
-    if (!anchored.ok) throw new Error(`LOG_TAMPERED: ${anchored.errors.join('; ')}`);
     const lines = readLines(root, runId);
+    assertVerifiedRunSnapshot(root, runId, loop, { lines });
     const receiptEvents = lines.filter(event => event.type === 'cost'
       && event.data?.process_receipt_id === exact.receipt_id);
     const identityEvents = lines.filter(event => sameProcessIdentity(event, exact));
@@ -901,9 +1140,7 @@ export function settleCodexProcessCost(root, runId, { receipt, fence } = {}) {
     const { tf, tk } = trailingFloor(lines, origin.owner, origin.generation);
     const adjustedTurns = Math.max(0, exact.usage.num_turns - tf);
     const adjustedTokens = Math.max(0, exact.usage.tokens - tk);
-    appendEvent(root, runId, {
-      type: 'cost',
-      data: {
+    const eventData = {
         turns: adjustedTurns,
         tokens: adjustedTokens,
         reported_turns: exact.usage.num_turns,
@@ -923,14 +1160,10 @@ export function settleCodexProcessCost(root, runId, { receipt, fence } = {}) {
         ...(exact.process_kind === 'maker'
           && (loop.status === 'completed' || loop.status === 'stopped')
           ? { terminal_process: 'codex-maker' } : {}),
-      },
-    });
-    loop.event_log_head = lastLogHead(root, runId);
-    const spent = recomputeSpent(root, runId);
-    loop.budget.spent = spent.turns;
-    loop.budget.tokens_spent = spent.tokens;
-    origin.session.turns += adjustedTurns;
-    writeState(root, runId, loop);
+    };
+    commitMeasuredCost(root, runId, loop, lines, baseStateHash, eventData,
+      { owner: origin.owner, addedTurns: adjustedTurns, callerBinding, intentDigest,
+        requireSession: true });
     return { ok: true, recorded: true, reason: 'recorded' };
   });
 }
@@ -940,7 +1173,9 @@ export function settleCodexProcessCost(root, runId, { receipt, fence } = {}) {
 // the one narrow settlement path: it accepts only one measured Codex turn, for the exact acquired child lease,
 // after a kernel-authored matching finish event. It is deliberately not exposed by the CLI and cannot mutate
 // status, proof, lease, or any caller-selected field/event. An identical retry is a no-write idempotent success.
-export function settleTerminalCodexMakerCost(root, runId, { usage, fence, handoffKey } = {}) {
+export function settleTerminalCodexMakerCost(root, runId, {
+  usage, fence, handoffKey,
+} = {}) {
   if (!isMeasuredOneTurnUsage(usage)) throw new Error('TERMINAL_ACCOUNTING_USAGE_INVALID');
   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)
     || fence.intent !== 'accounting') {
@@ -949,13 +1184,37 @@ export function settleTerminalCodexMakerCost(root, runId, { usage, fence, handof
   if (typeof handoffKey !== 'string' || !/^[a-f0-9]{16}$/.test(handoffKey)) {
     throw new Error('TERMINAL_ACCOUNTING_HANDOFF_INVALID');
   }
-  return withLock(root, runId, () => {
-    const { data: loop } = readState(root, runId);
+  const callerBinding = { owner: fence.owner, generation: fence.generation };
+  const intentDigest = mutationIntentDigest('budget-terminal-maker-settle', callerBinding,
+    { usage_digest: contentHash(JSON.stringify(usage)), handoff_key: handoffKey });
+  const replayFence = accountingReplayFence(fence, { runtime: 'codex',
+    runtimeMessage: 'RUNTIME_FENCED: terminal maker settlement requires codex' });
+  let replayAccountingKey = null;
+  return withVerifiedMutationLock(root, runId, { callerBinding, intentDigest,
+    fenceError: 'BUDGET_FENCED: terminal-maker' }, mutation => {
+    if (recoveredCostEvent(root, runId, mutation, event =>
+      event.data?.terminal_process === 'codex-maker'
+      && event.data?.source === 'terminal-maker-measured'
+      && event.data?.reported_turns === usage.num_turns
+      && event.data?.reported_tokens === usage.tokens
+      && event.data?.owner === fence.owner
+      && event.data?.generation === fence.generation
+      && event.data?.accounting_key === replayAccountingKey,
+    { fenceCheck: replayFence,
+      policyCheck: (loop, lines) => {
+        replayAccountingKey = assertTerminalMakerReplayPolicy(
+          loop, lines, { usage, fence, handoffKey });
+      } })) {
+      return { ok: true, recorded: true, reason: 'recorded' };
+    }
+    const { data: loop, hash: baseStateHash } = readState(root, runId);
     const lease = loop.session_chain?.lease || {};
     if (lease.owner_run_id !== fence.owner) throw new Error('LEASE_FENCED: owner-mismatch');
     if (lease.generation !== fence.generation) throw new Error('LEASE_FENCED: generation-mismatch');
-    if (loop.status !== 'completed' && loop.status !== 'stopped') throw new Error('RUN_NOT_TERMINAL: terminal maker settlement');
     if (sessionRuntime(loop) !== 'codex') throw new Error('RUNTIME_FENCED: terminal maker settlement requires codex');
+    const lines = readLines(root, runId);
+    assertVerifiedRunSnapshot(root, runId, loop, { lines });
+    if (loop.status !== 'completed' && loop.status !== 'stopped') throw new Error('RUN_NOT_TERMINAL: terminal maker settlement');
     if (lease.state !== 'active' || lease.handoff_phase !== 'acquired') {
       throw new Error('TERMINAL_ACCOUNTING_CHILD_NOT_ACQUIRED');
     }
@@ -968,11 +1227,6 @@ export function settleTerminalCodexMakerCost(root, runId, { usage, fence, handof
       throw new Error('TERMINAL_ACCOUNTING_SESSION_INVALID');
     }
 
-    const v = verifyLog(root, runId);
-    if (!v.ok) throw new Error(`LOG_TAMPERED: ${v.errors.join('; ')}`);
-    const h = verifyHead(root, runId, loop.event_log_head);
-    if (!h.ok) throw new Error(`LOG_TAMPERED: ${h.errors.join('; ')}`);
-    const lines = readLines(root, runId);
     const finishes = lines.filter(event => event.type === 'finish');
     const finish = finishes[0];
     if (finishes.length !== 1 || finish.data?.status !== loop.status
@@ -1023,9 +1277,7 @@ export function settleTerminalCodexMakerCost(root, runId, { usage, fence, handof
     const { tf, tk } = trailingFloor(lines, fence.owner, fence.generation);
     const adjTurns = Math.max(0, usage.num_turns - tf);
     const adjTokens = Math.max(0, usage.tokens - tk);
-    appendEvent(root, runId, {
-      type: 'cost',
-      data: {
+    const eventData = {
         turns: adjTurns,
         tokens: adjTokens,
         reported_turns: usage.num_turns,
@@ -1039,14 +1291,10 @@ export function settleTerminalCodexMakerCost(root, runId, { usage, fence, handof
         terminal_process: 'codex-maker',
         source: 'terminal-maker-measured',
         accounting_key: accountingKey,
-      },
-    });
-    loop.event_log_head = lastLogHead(root, runId);
-    const spent = recomputeSpent(root, runId);
-    loop.budget.spent = spent.turns;
-    loop.budget.tokens_spent = spent.tokens;
-    session.turns += adjTurns;
-    writeState(root, runId, loop);
+    };
+    commitMeasuredCost(root, runId, loop, lines, baseStateHash, eventData,
+      { owner: fence.owner, addedTurns: adjTurns, callerBinding, intentDigest,
+        requireSession: true });
     return { ok: true, recorded: true, reason: 'recorded' };
   });
 }

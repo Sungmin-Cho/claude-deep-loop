@@ -1,8 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, rmdirSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   checkBudget,
   codexCheckerClaimHash,
@@ -27,9 +29,11 @@ import { finishRun } from '../scripts/lib/finish.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import {
+  durableRunBytes as bytes7c,
   rawHashValidHistory as rawHistory7b,
   rawHashValidState as rawState7b,
   seedCorrelatedTerminal as terminal7b,
+  verifiedAppRun as fixture7c,
 } from './fixtures/verified-app-run.mjs';
 
 function floorRun() {
@@ -42,25 +46,25 @@ function ownerSessionTurns(root, runId) {
   const owner = data.session_chain.lease.owner_run_id;
   return (data.session_chain.sessions.find(s => s.run_id === owner) || {}).turns || 0;
 }
+let recordRequest7c = 0;
+function recordMeasured7c(root, runId, options) {
+  const lease = readState(root, runId).data.session_chain.lease;
+  recordRequest7c += 1;
+  return recordCost(root, runId, { requestId: `budget-test-${recordRequest7c}`,
+    ...options,
+    fence: { owner: lease.owner_run_id, generation: lease.generation,
+      intent: 'accounting' },
+  });
+}
 function mk(root, runId, fence, n) {   // n distinct maker episodes (each a business mutation → floor)
   for (let i = 0; i < n; i++) newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'k', point: 'implementation', fence });
 }
 
-// 자기완결 minimal valid loop (cross-task import 없음)
-function minimalLoop(root, runId) {
-  return {
-    schema_version: '0.2.0', run_id: runId, goal: 'g', status: 'running',
-    project: { root }, routing: { protocol: 'standalone' }, review: {}, autonomy: { tier: 'act-gated', spawn_style: 'interactive' },
-    budget: { unit: 'turns', total: 100, spent: 0, tokens_total: 1000, tokens_spent: 0, soft_stop_ratio: 0.8, hard_stop_ratio: 1.0, max_wallclock_sec: 3600, enforcement: 'best-effort-interactive', on_unmeasurable_usage: 'fail-closed' },
-    comprehension: {}, circuit_breaker: {}, session_chain: { lease: { state: 'active', handoff_phase: 'idle' }, sessions: [] },
-    workstreams: [], active_workstreams: [], triage: {}, episodes: [], termination: {},
-  };
-}
 function seedRun() {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
-  mkdirSync(runDir(root, 'R'), { recursive: true });
-  writeState(root, 'R', minimalLoop(root, 'R'));
-  return root;
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g',
+    now: new Date('2026-06-24T00:00:00Z') });
+  return { root, runId };
 }
 
 function writeHashValidState(root, runId, data) {
@@ -278,7 +282,7 @@ test('Codex preflight read/write receipts preserve the existing per-session max-
   assert.doesNotThrow(() => reconcileBudget(fixture.root, fixture.runId));
 });
 
-test('an exact recorded preflight receipt remains a write-free no-op under its current terminal fence', () => {
+test('an exact recorded preflight receipt cannot bypass current terminal policy', () => {
   const fixture = preflightReceiptFixture();
   settleCodexPreflightCost(fixture.root, fixture.runId, {
     receipt: fixture.read,
@@ -295,10 +299,10 @@ test('an exact recorded preflight receipt remains a write-free no-op under its c
   const logPath = join(runDir(fixture.root, fixture.runId), 'event-log.jsonl');
   const stateBefore = readFileSync(statePath, 'utf8');
   const logBefore = readFileSync(logPath, 'utf8');
-  assert.deepEqual(settleCodexPreflightCost(fixture.root, fixture.runId, {
+  assert.throws(() => settleCodexPreflightCost(fixture.root, fixture.runId, {
     receipt: fixture.read,
     fence: fixture.fence,
-  }), { ok: true, recorded: false, reason: 'already-recorded' });
+  }), /LEASE_FENCED: RUN_TERMINAL/);
   assert.equal(readFileSync(statePath, 'utf8'), stateBefore);
   assert.equal(readFileSync(logPath, 'utf8'), logBefore);
   assert.throws(() => settleCodexPreflightCost(fixture.root, fixture.runId, {
@@ -359,7 +363,7 @@ test('terminal preflight retry still rejects a missing or mismatched receipt eve
   assert.throws(() => settleCodexPreflightCost(mismatch.root, mismatch.runId, {
     receipt: mismatch.read,
     fence: mismatch.fence,
-  }), /PREFLIGHT_ACCOUNTING_MISMATCH/);
+  }), /LEASE_FENCED: RUN_TERMINAL/);
 });
 
 test('preflight receipt idempotency rejects semantic event-data extras', () => {
@@ -582,7 +586,7 @@ test('maker process receipts derive parent versus acquired-child origin and retr
     assert.deepEqual(settleCodexProcessCost(fixture.root, fixture.runId, {
       receipt: fixture.receipt,
       fence: fixture.fence,
-    }), { ok: true, recorded: false, reason: 'already-recorded' });
+    }), { ok: true, recorded: true, reason: 'recorded' });
     assert.equal(readFileSync(statePath, 'utf8'), stateBeforeRetry);
     assert.equal(readFileSync(logPath, 'utf8'), logBeforeRetry);
 
@@ -1050,7 +1054,7 @@ test('stopped pre-import checker settlement rejects malformed claim, attempt, ta
     });
     assertProcessSettlementRejectsWithoutWrites(
       fixture,
-      /PROCESS_ACCOUNTING_CONTEXT_MISMATCH/,
+      /RUN_SNAPSHOT_INVALID|PROCESS_ACCOUNTING_CONTEXT_MISMATCH/,
     );
     assert.equal(readState(fixture.root, fixture.runId).data.status, 'stopped', label);
   }
@@ -1064,7 +1068,7 @@ test('stopped pre-import checker settlement requires exactly one matching claim 
   ]) {
     assertProcessSettlementRejectsWithoutWrites(
       fixture,
-      /PROCESS_ACCOUNTING_TERMINAL_PROOF_MISSING/,
+      /RUN_SNAPSHOT_INVALID|PROCESS_ACCOUNTING_TERMINAL_PROOF_MISSING/,
     );
     assert.equal(readState(fixture.root, fixture.runId).data.status, 'stopped', label);
   }
@@ -1092,7 +1096,7 @@ test('stopped pre-import checker settlement rejects non-stopped or ambiguous fin
   for (const [label, fixture] of [['completed', completed], ['multiple', multiple]]) {
     assertProcessSettlementRejectsWithoutWrites(
       fixture,
-      /PROCESS_ACCOUNTING_TERMINAL_PROOF_MISSING/,
+      /RUN_SNAPSHOT_INVALID|PROCESS_ACCOUNTING_TERMINAL_PROOF_MISSING/,
     );
     assert.equal(readState(fixture.root, fixture.runId).data.status, label === 'completed' ? 'completed' : 'stopped');
   }
@@ -1105,7 +1109,7 @@ test('stopped pre-import checker settlement requires the exact adjacent finish f
     setManualTerminal(fixture, { finishFloor });
     assertProcessSettlementRejectsWithoutWrites(
       fixture,
-      /PROCESS_ACCOUNTING_TERMINAL_PROOF_MISSING/,
+      /RUN_SNAPSHOT_INVALID|PROCESS_ACCOUNTING_TERMINAL_PROOF_MISSING/,
     );
   }
 });
@@ -1131,7 +1135,7 @@ test('stopped pre-import checker settlement rejects review outcome or unrelated 
   for (const fixture of [outcome, postFinish]) {
     assertProcessSettlementRejectsWithoutWrites(
       fixture,
-      /PROCESS_ACCOUNTING_TERMINAL_PROOF_MISSING/,
+      /RUN_SNAPSHOT_INVALID|PROCESS_ACCOUNTING_TERMINAL_PROOF_MISSING/,
     );
   }
 });
@@ -1163,7 +1167,7 @@ test('stopped pre-import checker settlement records once and exact retry is writ
   assert.deepEqual(settleCodexProcessCost(fixture.root, fixture.runId, {
     receipt: fixture.receipt,
     fence: fixture.fence,
-  }), { ok: true, recorded: false, reason: 'already-recorded' });
+  }), { ok: true, recorded: true, reason: 'recorded' });
   assert.equal(readFileSync(statePath, 'utf8'), stateBeforeRetry);
   assert.equal(readFileSync(logPath, 'utf8'), logBeforeRetry);
   const state = readState(fixture.root, fixture.runId).data;
@@ -1252,25 +1256,25 @@ test('an exact checker receipt remains a write-free no-op after lease advance an
 });
 
 test('recordCost syncs kernel-derived spent from event-log', () => {
-  const root = seedRun();
-  recordCost(root, 'R', { turns: 5, tokens: 100 });
-  recordCost(root, 'R', { turns: 3, tokens: 50 });
-  const { data } = readState(root, 'R');
+  const { root, runId } = seedRun();
+  recordMeasured7c(root, runId, { turns: 5, tokens: 100 });
+  recordMeasured7c(root, runId, { turns: 3, tokens: 50 });
+  const { data } = readState(root, runId);
   assert.equal(data.budget.spent, 8);
   assert.equal(data.budget.tokens_spent, 150);
 });
 
 test('reconcileBudget throws on stored/log mismatch', () => {
-  const root = seedRun();
-  recordCost(root, 'R', { turns: 5, tokens: 0 });
-  const { data } = readState(root, 'R'); data.budget.spent = 0; writeState(root, 'R', data); // tamper low
-  assert.throws(() => reconcileBudget(root, 'R'), /BUDGET_TAMPERED/);
+  const { root, runId } = seedRun();
+  recordMeasured7c(root, runId, { turns: 5, tokens: 0 });
+  const { data } = readState(root, runId); data.budget.spent = 0; writeState(root, runId, data); // tamper low
+  assert.throws(() => reconcileBudget(root, runId), /BUDGET_TAMPERED/);
 });
 
 test('recordCost rejects negative / non-finite values', () => {
-  const root = seedRun();
-  assert.throws(() => recordCost(root, 'R', { turns: -1, tokens: 0 }), /INVALID_COST/);
-  assert.throws(() => recordCost(root, 'R', { turns: 1, tokens: Infinity }), /INVALID_COST/);
+  const { root, runId } = seedRun();
+  assert.throws(() => recordCost(root, runId, { turns: -1, tokens: 0 }), /INVALID_COST/);
+  assert.throws(() => recordCost(root, runId, { turns: 1, tokens: Infinity }), /INVALID_COST/);
 });
 
 test('recordCost records one known checker turn on a paused run only through the matching accounting fence', () => {
@@ -1282,24 +1286,26 @@ test('recordCost records one known checker turn on a paused run only through the
   assert.doesNotThrow(() => recordCost(root, runId, {
     turns: 1,
     tokens: 12,
+    requestId: 'paused-accounting-allowed',
     fence: { owner: runId, generation: 1, intent: 'accounting' },
   }));
   assert.equal(readState(root, runId).data.budget.spent, 1);
   assert.throws(() => recordCost(root, runId, {
     turns: 1,
     tokens: 12,
+    requestId: 'paused-accounting-business',
     fence: { owner: runId, generation: 1, intent: 'business' },
   }), /LEASE_FENCED: RUN_PAUSED/);
 });
 
 test('reconcileBudget detects event-log suffix truncation', () => {
-  const root = seedRun();
-  recordCost(root, 'R', { turns: 2, tokens: 0 });
-  recordCost(root, 'R', { turns: 3, tokens: 0 });
-  const p = join(runDir(root, 'R'), 'event-log.jsonl');
+  const { root, runId } = seedRun();
+  recordMeasured7c(root, runId, { turns: 2, tokens: 0 });
+  recordMeasured7c(root, runId, { turns: 3, tokens: 0 });
+  const p = join(runDir(root, runId), 'event-log.jsonl');
   const lines = readFileSync(p, 'utf8').split('\n').filter(Boolean);
   writeFileSync(p, lines.slice(0, -1).join('\n') + '\n'); // drop last event
-  assert.throws(() => reconcileBudget(root, 'R'), /BUDGET_TAMPERED/);
+  assert.throws(() => reconcileBudget(root, runId), /BUDGET_TAMPERED/);
 });
 
 test('checkBudget derives wallclock from created_at when sessionStart omitted', () => {
@@ -1310,7 +1316,8 @@ test('checkBudget derives wallclock from created_at when sessionStart omitted', 
 
 test('non-cost anchored append keeps reconcile consistent; its truncation is caught', () => {
   const { root, runId, fence } = floorRun();
-  recordCost(root, runId, { turns: 2, tokens: 0, fence });
+  recordCost(root, runId, { turns: 2, tokens: 0,
+    requestId: 'non-cost-anchor', fence });
   appendAnchored(root, runId, { type: 'decision', data: { note: 'x' } }); // non-cost advances anchor (no floor opt)
   reconcileBudget(root, runId); // must NOT throw (anchor tracks tail, spent still 2)
   const p = join(runDir(root, runId), 'event-log.jsonl');
@@ -1336,7 +1343,8 @@ test('#3(a): N business mutations charge N×floor to spent AND session.turns (no
 test('#3(b): explicit budget record absorbs the tick floor (max-rule, no double count)', () => {
   const { root, runId, fence } = floorRun();
   mk(root, runId, fence, 2);   // 2 floors → spent 2, session.turns 2
-  recordCost(root, runId, { turns: 5, tokens: 0, fence });   // reported 5 > floor-sum 2
+  recordCost(root, runId, { turns: 5, tokens: 0,
+    requestId: 'floor-max-rule', fence });   // reported 5 > floor-sum 2
   // tick contribution = max(5, 2) = 5, so total spent = 5 (NOT 2 + 5 = 7)
   assert.equal(readState(root, runId).data.budget.spent, 5);
   assert.equal(ownerSessionTurns(root, runId), 5);
@@ -1358,7 +1366,8 @@ test('#3(c): per_session_turn_cap is reached through floors and routes to handof
 test('#3(d): floor keeps negatives rejected and the log verifiable', () => {
   const { root, runId, fence } = floorRun();
   mk(root, runId, fence, 2);
-  assert.throws(() => recordCost(root, runId, { turns: -1, tokens: 0, fence }), /INVALID_COST/);
+  assert.throws(() => recordCost(root, runId, { turns: -1, tokens: 0,
+    requestId: 'floor-invalid', fence }), /INVALID_COST/);
   const { data } = readState(root, runId);
   assert.equal(verifyLog(root, runId).ok, true);
   assert.equal(verifyHead(root, runId, data.event_log_head).ok, true);
@@ -1392,7 +1401,9 @@ test('#3(Fix1): a later session budget record does not absorb an earlier session
   releaseLease(root, runId, { owner: runId, generation: 1 });
   acquireLease(root, runId, { owner: 'CHILD-ACTOR', expectGeneration: 1, runtime: 'claude', now });
   // gen 2 reports 5 turns — its own tick floor is 0, so it must NOT absorb the gen-1 floors
-  recordCost(root, runId, { turns: 5, tokens: 0, fence: { owner: 'CHILD-ACTOR', generation: 2, intent: 'business' } });
+  recordCost(root, runId, { turns: 5, tokens: 0,
+    requestId: 'later-session-report',
+    fence: { owner: 'CHILD-ACTOR', generation: 2, intent: 'business' } });
   assert.equal(readState(root, runId).data.budget.spent, 3 * MUTATION_TURN_FLOOR + 5, 'gen-1 floors survive; gen-2 report adds max(5, 0)=5 on top');
   assert.doesNotThrow(() => reconcileBudget(root, runId));
 });
@@ -1400,14 +1411,15 @@ test('#3(Fix1): a later session budget record does not absorb an earlier session
 // ── v1.6 recordCost terminal 가드 (spec §2.3-7 / §4-5g) ──────────────────────
 import { initRun as initRunT } from '../scripts/lib/initrun.mjs';
 
-test('recordCost: terminal run — fenced call LEASE_FENCED channel, fence-less own throw; no event written', () => {
+test('recordCost: terminal run — mandatory fence preserves LEASE_FENCED channel; no event written', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-bud-t-'));
   const { runId } = initRunT(root, { runtime: 'claude', goal: 'g', now: new Date('2026-07-09T00:00:00Z') });
   terminal7b(root, runId, { status: 'completed' });
   // fence 있는 호출 → leaseCheck 선행 → LEASE_FENCED: RUN_TERMINAL (drive-headless swallow 계약)
-  assert.throws(() => recordCost(root, runId, { turns: 1, tokens: 0, fence: { owner: runId, generation: 1, intent: 'accounting' } }), /LEASE_FENCED: RUN_TERMINAL/);
-  // fence-less 직접 호출 → 자체 가드
-  assert.throws(() => recordCost(root, runId, { turns: 1, tokens: 0 }), /RUN_TERMINAL: recordCost/);
+  assert.throws(() => recordCost(root, runId, { turns: 1, tokens: 0,
+    requestId: 'terminal-fenced-record',
+    fence: { owner: runId, generation: 1, intent: 'accounting' } }),
+  /LEASE_FENCED: RUN_TERMINAL/);
   assert.equal(readState(root, runId).data.budget.spent, 0);
 });
 
@@ -1502,7 +1514,7 @@ test('terminal Codex maker settlement remains narrow to an exact acquired child 
   rawState7b(root, runId, loop => { loop.status = 'running'; });
   assert.throws(() => settleTerminalCodexMakerCost(root, runId, {
     usage, fence: { owner: childRunId, generation: 2, intent: 'accounting' }, handoffKey,
-  }), /RUN_NOT_TERMINAL/);
+  }), /RUN_SNAPSHOT_INVALID/);
 });
 
 test('terminal Codex maker settlement rejects malformed session, runtime, proof, and log anchors without appending', () => {
@@ -1518,7 +1530,8 @@ test('terminal Codex maker settlement rejects malformed session, runtime, proof,
     const { data } = readState(fixture.root, fixture.runId);
     data.session_chain.sessions.find(s => s.run_id === fixture.childRunId).turns = '1';
     writeHashValidState(fixture.root, fixture.runId, data);
-    assert.throws(() => invoke(fixture), /TERMINAL_ACCOUNTING_SESSION_INVALID/);
+    assert.throws(() => invoke(fixture),
+      /RUN_SNAPSHOT_INVALID|TERMINAL_ACCOUNTING_SESSION_INVALID/);
   }
   {
     const fixture = terminalCodexChildRun();
@@ -1532,20 +1545,236 @@ test('terminal Codex maker settlement rejects malformed session, runtime, proof,
     const { data } = readState(fixture.root, fixture.runId);
     delete data.termination.finished_at;
     writeHashValidState(fixture.root, fixture.runId, data);
-    assert.throws(() => invoke(fixture), /TERMINAL_ACCOUNTING_PROOF_MISSING/);
+    assert.throws(() => invoke(fixture), /RUN_SNAPSHOT_INVALID/);
   }
   {
     const fixture = terminalCodexChildRun();
-    const { data } = readState(fixture.root, fixture.runId);
-    data.event_log_head = { seq: 0, checksum: 'GENESIS' };
-    writeHashValidState(fixture.root, fixture.runId, data);
-    assert.throws(() => invoke(fixture), /LOG_TAMPERED/);
+    rawState7b(fixture.root, fixture.runId, loop => {
+      loop.event_log_head = { seq: 0, checksum: 'GENESIS' };
+    });
+    assert.throws(() => invoke(fixture), /RUN_SNAPSHOT_INVALID/);
   }
   {
     const fixture = terminalCodexChildRun();
     const logPath = join(runDir(fixture.root, fixture.runId), 'event-log.jsonl');
     const before = readFileSync(logPath, 'utf8');
     writeFileSync(logPath, before.replace('"reason":"fixture"', '"reason":"tampered"'));
-    assert.throws(() => invoke(fixture), /LOG_TAMPERED/);
+    assert.throws(() => invoke(fixture), /RUN_SNAPSHOT_INVALID/);
   }
+});
+
+function exportedFunction7c(source, name) {
+  const start = source.indexOf(`export function ${name}(`);
+  assert.notEqual(start, -1, `${name} export missing`);
+  const next = source.indexOf('\nexport function ', start + 1);
+  return source.slice(start, next < 0 ? undefined : next);
+}
+
+test('all four manual accounting writers use one prospective adapter after their fences', () => {
+  const source = readFileSync(new URL('../scripts/lib/budget.mjs', import.meta.url), 'utf8');
+  assert.equal((source.match(/\bcommitMeasuredCost\b/g) || []).length, 5,
+    'one adapter definition plus exactly four call sites');
+  for (const name of ['recordCost', 'settleCodexPreflightCost',
+    'settleCodexProcessCost', 'settleTerminalCodexMakerCost']) {
+    const body = exportedFunction7c(source, name);
+    const proof = body.indexOf('assertVerifiedRunSnapshot');
+    const duplicate = body.indexOf("reason: 'already-recorded'");
+    const commit = body.indexOf('commitMeasuredCost');
+    assert.ok(proof >= 0 && commit > proof, `${name}: proof must precede prospective commit`);
+    if (duplicate >= 0) assert.ok(proof < duplicate,
+      `${name}: duplicate success must follow proof`);
+    assert.doesNotMatch(body, /\bappendEvent\s*\(/,
+      `${name}: manual append bypass remains`);
+  }
+});
+
+test('accounting fence precedes semantic proof and a correct caller cannot launder drift', () => {
+  const fixture = fixture7c('dl-budget-proof-');
+  rawState7b(fixture.root, fixture.runId, loop => {
+    loop.session_chain.sessions[0].host_surface.observed_at =
+      '2026-07-13T00:00:01.000Z';
+  });
+  const before = bytes7c(fixture.root, fixture.runId);
+  assert.throws(() => recordCost(fixture.root, fixture.runId, { turns: 1, tokens: 0,
+    requestId: 'proof-record-1',
+    fence: { owner: 'wrong', generation: 1, runtime: 'codex', intent: 'accounting' } }),
+  /LEASE_FENCED/);
+  assert.throws(() => recordCost(fixture.root, fixture.runId, { turns: 1, tokens: 0,
+    requestId: 'proof-record-1',
+    fence: { owner: fixture.owner, generation: 1, runtime: 'codex',
+      intent: 'accounting' } }), /RUN_SNAPSHOT_INVALID/);
+  assert.deepEqual(bytes7c(fixture.root, fixture.runId), before);
+
+  const terminal = fixture7c('dl-budget-terminal-proof-');
+  rawState7b(terminal.root, terminal.runId, loop => {
+    loop.status = 'stopped';
+    loop.session_chain.sessions[0].host_surface.observed_at =
+      '2026-07-13T00:00:01.000Z';
+  });
+  const terminalBefore = bytes7c(terminal.root, terminal.runId);
+  assert.throws(() => recordCost(terminal.root, terminal.runId, { turns: 1, tokens: 0,
+    requestId: 'terminal-proof-record-1',
+    fence: { owner: 'wrong', generation: 1, runtime: 'codex', intent: 'accounting' } }),
+  /LEASE_FENCED/);
+  assert.throws(() => recordCost(terminal.root, terminal.runId, { turns: 1, tokens: 0,
+    requestId: 'terminal-proof-record-1',
+    fence: { owner: terminal.owner, generation: 1, runtime: 'codex',
+      intent: 'accounting' } }), /RUN_SNAPSHOT_INVALID/);
+  assert.deepEqual(bytes7c(terminal.root, terminal.runId), terminalBefore);
+});
+
+const ACCOUNTING_CRASH_POINTS7C = Object.freeze([
+  'pending-after-rename', 'event-after-partial-append', 'event-after-full-append',
+  'state-after-rename', 'hash-after-rename', 'before-cleanup',
+]);
+
+function accountingCrashCase7c(operation) {
+  if (operation === 'accounting-record') {
+    const fixture = floorRun();
+    const input = { turns: 3, tokens: 17, intent: fixture.fence.intent,
+      requestId: 'accounting-crash-record-1' };
+    return { ...fixture, input,
+      retry: () => recordCost(fixture.root, fixture.runId,
+        { ...input, fence: fixture.fence }),
+      match: event => event.data?.reported_turns === input.turns
+        && event.data?.reported_tokens === input.tokens };
+  }
+  if (operation === 'accounting-preflight') {
+    const fixture = preflightReceiptFixture();
+    const input = { receipt: fixture.read };
+    return { ...fixture, input,
+      retry: () => settleCodexPreflightCost(fixture.root, fixture.runId,
+        { receipt: fixture.read, fence: fixture.fence }),
+      match: event => event.data?.preflight_receipt_id === fixture.read.receipt_id };
+  }
+  if (operation === 'accounting-process') {
+    const fixture = makerProcessReceiptFixture();
+    const input = { receipt: fixture.receipt };
+    return { ...fixture, input,
+      retry: () => settleCodexProcessCost(fixture.root, fixture.runId,
+        { receipt: fixture.receipt, fence: fixture.fence }),
+      match: event => event.data?.process_receipt_id === fixture.receipt.receipt_id };
+  }
+  const fixture = terminalCodexChildRun();
+  const usage = { num_turns: 1, input_tokens: 5, output_tokens: 7, tokens: 12 };
+  const fence = { owner: fixture.childRunId, generation: 2, intent: 'accounting' };
+  const input = { usage, handoffKey: fixture.handoffKey, intent: fence.intent };
+  return { ...fixture, fence, input,
+    retry: () => settleTerminalCodexMakerCost(fixture.root, fixture.runId,
+      { usage, fence, handoffKey: fixture.handoffKey }),
+    match: event => event.data?.terminal_process === 'codex-maker'
+      && event.data?.source === 'terminal-maker-measured' };
+}
+
+function assertAccountingCrash7c(operation, point) {
+  const fixture = accountingCrashCase7c(operation);
+  const before = readState(fixture.root, fixture.runId).data;
+  const child = spawnSync(process.execPath,
+    [fileURLToPath(new URL('./helpers/anchored-crash-worker.mjs', import.meta.url)),
+      fixture.root, fixture.runId, operation, point], {
+      shell: false, encoding: 'utf8', timeout: 10_000,
+      env: { ...process.env, DEEP_LOOP_CRASH_OWNER: fixture.fence.owner,
+        DEEP_LOOP_CRASH_GENERATION: String(fixture.fence.generation),
+        DEEP_LOOP_CRASH_INPUT: JSON.stringify(fixture.input) },
+    });
+  assert.notEqual(child.error?.code, 'ETIMEDOUT');
+  assert.equal(child.status, 91, child.stderr || child.stdout || child.error?.message);
+  rmdirSync(join(fixture.root, '.deep-loop', 'runs', fixture.runId, '.lock'));
+  fixture.retry();
+  const costs = readLines(fixture.root, fixture.runId)
+    .filter(event => event.type === 'cost' && fixture.match(event));
+  assert.equal(costs.length, 1, `${operation}/${point}: duplicate cost`);
+  const after = readState(fixture.root, fixture.runId).data;
+  assert.equal(after.budget.spent - before.budget.spent, costs[0].data.turns);
+  assert.equal(after.budget.tokens_spent - before.budget.tokens_spent,
+    costs[0].data.tokens);
+  const beforeSession = before.session_chain.sessions
+    .find(item => item.run_id === costs[0].data.owner)?.turns ?? 0;
+  const afterSession = after.session_chain.sessions
+    .find(item => item.run_id === costs[0].data.owner)?.turns ?? 0;
+  assert.equal(afterSession - beforeSession, costs[0].data.turns);
+}
+
+test('four accounting writers recover every published marker without double charge', () => {
+  for (const operation of ['accounting-record', 'accounting-preflight',
+    'accounting-process', 'accounting-terminal-maker']) {
+    for (const point of ACCOUNTING_CRASH_POINTS7C) assertAccountingCrash7c(operation, point);
+  }
+});
+
+test('recordCost request identity survives cleanup and distinguishes equal reports', () => {
+  const fixture = floorRun();
+  const input = { turns: 3, tokens: 17, requestId: 'record-response-loss-1',
+    fence: fixture.fence };
+  recordCost(fixture.root, fixture.runId, input);
+  const committed = bytes7c(fixture.root, fixture.runId);
+  recordCost(fixture.root, fixture.runId, input);
+  assert.deepEqual(bytes7c(fixture.root, fixture.runId), committed,
+    'post-cleanup exact retry must not charge again');
+  for (const [label, fence, expected] of [
+    ['owner', { ...fixture.fence, owner: '01JAPPF0R00000000000000000' }, /owner-mismatch/],
+    ['generation', { ...fixture.fence, generation: fixture.fence.generation + 1 },
+      /generation-mismatch/],
+    ['runtime', { ...fixture.fence, runtime: 'codex' }, /RUNTIME_FENCED/],
+  ]) {
+    assert.throws(() => recordCost(fixture.root, fixture.runId,
+      { ...input, fence }), expected, `${label} must fence before durable request lookup`);
+    assert.deepEqual(bytes7c(fixture.root, fixture.runId), committed,
+      `${label} retry changed durable accounting bytes`);
+  }
+  assert.throws(() => recordCost(fixture.root, fixture.runId,
+    { ...input, tokens: 18 }), /ACCOUNTING_REQUEST_CONFLICT/);
+  assert.deepEqual(bytes7c(fixture.root, fixture.runId), committed);
+  for (const [label, fence] of [
+    ['runtime', { ...fixture.fence, runtime: 'claude' }],
+    ['intent', { ...fixture.fence, intent: 'accounting' }],
+  ]) {
+    assert.throws(() => recordCost(fixture.root, fixture.runId,
+      { ...input, fence }), /ACCOUNTING_REQUEST_CONFLICT/,
+    `same request ID with changed ${label} must conflict`);
+    assert.deepEqual(bytes7c(fixture.root, fixture.runId), committed);
+  }
+  recordCost(fixture.root, fixture.runId,
+    { ...input, requestId: 'record-response-loss-2' });
+  assert.equal(readLines(fixture.root, fixture.runId)
+    .filter(event => event.type === 'cost'
+      && event.data?.reported_turns === input.turns
+      && event.data?.reported_tokens === input.tokens).length, 2);
+  terminal7b(fixture.root, fixture.runId, { status: 'stopped' });
+  const terminalBytes = bytes7c(fixture.root, fixture.runId);
+  assert.throws(() => recordCost(fixture.root, fixture.runId, input),
+    /LEASE_FENCED: RUN_TERMINAL/);
+  assert.deepEqual(bytes7c(fixture.root, fixture.runId), terminalBytes);
+});
+
+test('durable accounting replay rechecks each current operation policy', () => {
+  const processFixture = makerProcessReceiptFixture({ acquire: true });
+  settleCodexProcessCost(processFixture.root, processFixture.runId,
+    { receipt: processFixture.receipt, fence: processFixture.fence });
+  finishRun(processFixture.root, processFixture.runId, { status: 'stopped', confirm: true,
+    proof: { human_reason: 'invalidate parent process replay carve' },
+    fence: { owner: processFixture.handoff.childRunId, generation: 2, intent: 'business' },
+    now: Date.parse('2026-07-12T00:04:00.000Z') });
+  assert.deepEqual(releaseLease(processFixture.root, processFixture.runId,
+    { owner: processFixture.handoff.childRunId, generation: 2 }),
+  { ok: true, reason: 'released' });
+  const processBytes = bytes7c(processFixture.root, processFixture.runId);
+  assert.throws(() => settleCodexProcessCost(processFixture.root, processFixture.runId,
+    { receipt: processFixture.receipt, fence: processFixture.fence }),
+  /PROCESS_ACCOUNTING_TERMINAL_PROOF_MISSING/);
+  assert.deepEqual(bytes7c(processFixture.root, processFixture.runId), processBytes);
+
+  const terminal = terminalCodexChildRun();
+  const usage = { num_turns: 1, input_tokens: 5, output_tokens: 7, tokens: 12 };
+  const fence = { owner: terminal.childRunId, generation: 2, intent: 'accounting' };
+  settleTerminalCodexMakerCost(terminal.root, terminal.runId,
+    { usage, fence, handoffKey: terminal.handoffKey });
+  assert.deepEqual(releaseLease(terminal.root, terminal.runId,
+    { owner: terminal.childRunId, generation: 2 }),
+  { ok: true, reason: 'released' });
+  const terminalBytes = bytes7c(terminal.root, terminal.runId);
+  assert.throws(() => settleTerminalCodexMakerCost(terminal.root, terminal.runId,
+    { usage, fence, handoffKey: terminal.handoffKey }),
+  /TERMINAL_ACCOUNTING_CHILD_NOT_ACQUIRED/);
+  assert.deepEqual(bytes7c(terminal.root, terminal.runId), terminalBytes);
 });

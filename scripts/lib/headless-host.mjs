@@ -64,6 +64,15 @@ const HOST_LOCK_CRASH_GRACE_MS = 30 * 1000;
 const NODE_TIMER_MAX_MS = 2_147_483_647;
 const CHECKER_IMPORT_TIMEOUT_MS = 30_000;
 
+function legacyAccountingRequestId(scope, {
+  runId, owner, generation, handoffKey = null, episodeId = null,
+  attemptId = null, index = null,
+}) {
+  const digest = createHash('sha256').update(JSON.stringify({ scope, runId, owner,
+    generation, handoffKey, episodeId, attemptId, index })).digest('hex');
+  return `legacy-${digest}`;
+}
+
 function sameFileIdentity(left, right) {
   return left.dev === right.dev && left.ino === right.ino && left.mode === right.mode
     && left.size === right.size && left.mtimeNs === right.mtimeNs && left.ctimeNs === right.ctimeNs;
@@ -604,11 +613,15 @@ function driveIndependentChecker({
     });
     return { ok: false, action: pauseOutcome === 'fenced' ? 'fenced' : 'preflight-failed', reason: 'preflight-usage-invalid' };
   }
-  for (const usage of accountingMode === 'legacy' ? preflight.measured_usage : []) {
+  for (const [index, usage] of (accountingMode === 'legacy'
+    ? preflight.measured_usage : []).entries()) {
     try {
       recordCostFn(projectRoot, runId, {
         turns: usage.num_turns,
         tokens: usage.tokens,
+        requestId: legacyAccountingRequestId('checker-preflight', {
+          runId, owner: parentOwner, generation: parentGeneration,
+          episodeId: pending.id, index }),
         fence: { owner: parentOwner, generation: parentGeneration, intent: 'accounting' },
       });
     } catch (error) {
@@ -716,6 +729,9 @@ function driveIndependentChecker({
         recordCostFn(projectRoot, runId, {
           turns: usage.num_turns,
           tokens: usage.tokens,
+          requestId: legacyAccountingRequestId('checker-process', {
+            runId, owner: parentOwner, generation: parentGeneration,
+            episodeId: pending.id, attemptId: claimed.attemptId }),
           fence: { owner: parentOwner, generation: parentGeneration, intent: 'accounting' },
         });
         recorded = true;
@@ -938,6 +954,9 @@ function driveIndependentChecker({
       recordCostFn(projectRoot, runId, {
         turns: checkerResult.usage.num_turns,
         tokens: checkerResult.usage.tokens,
+        requestId: legacyAccountingRequestId('checker-process', {
+          runId, owner: parentOwner, generation: parentGeneration,
+          episodeId: pending.id, attemptId: claimed.attemptId }),
         fence: { owner: parentOwner, generation: parentGeneration, intent: 'accounting' },
       });
       recorded = true;
@@ -1230,11 +1249,14 @@ function driveHeadlessRunLocked({
     }
     const measuredUsage = accountingMode === 'legacy' ? preflight.measured_usage : [];
     let preflightRecorded = 0;
-    for (const usage of measuredUsage) {
+    for (const [index, usage] of measuredUsage.entries()) {
       try {
         recordCostFn(projectRoot, runId, {
           turns: usage.num_turns,
           tokens: usage.tokens,
+          requestId: legacyAccountingRequestId('maker-preflight', {
+            runId, owner: parentOwner, generation: parentGeneration,
+            handoffKey: key, index }),
           fence: { owner: parentOwner, generation: parentGeneration, intent: 'accounting' },
         });
         preflightRecorded += 1;
@@ -1461,6 +1483,9 @@ function driveHeadlessRunLocked({
           recordCostFn(projectRoot, runId, {
             turns: captured.usage.num_turns,
             tokens: captured.usage.tokens,
+            requestId: legacyAccountingRequestId('maker-process', {
+              runId, owner: parentOwner, generation: parentGeneration,
+              handoffKey: key, attemptId: childRunId }),
             fence: { owner: parentOwner, generation: parentGeneration, intent: 'accounting' },
           });
           recorded = true;
@@ -1535,6 +1560,9 @@ function driveHeadlessRunLocked({
         recordCostFn(projectRoot, runId, {
           turns: captured.usage.num_turns || 0,
           tokens: captured.usage.tokens || 0,
+          requestId: legacyAccountingRequestId('maker-process', {
+            runId, owner: parentOwner, generation: parentGeneration,
+            handoffKey: key, attemptId: childRunId }),
           fence: accountingFence,
         });
         recorded = true;
