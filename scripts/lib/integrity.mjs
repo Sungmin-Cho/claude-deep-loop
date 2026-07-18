@@ -107,7 +107,20 @@ export function appendAnchored(root, runId, { type, data }, mutate, preCheck, op
     // Defense in depth at the shared mutation gateway: this check stays inside the existing lock and precedes
     // caller guards and event writes. readState is already strict, so no unbound reader is exposed here.
     assertProjectRootBinding(root, loop);
-    if (preCheck) preCheck(loop);              // throws BEFORE append → anchor stays consistent
+    let clock;
+    if (opts.nowFn !== undefined) {
+      if (typeof opts.nowFn !== 'function') throw new Error('INVALID_NOW: nowFn');
+      const sampled = opts.nowFn();
+      if (typeof sampled !== 'number' || !Number.isFinite(sampled)) {
+        throw new Error('INVALID_NOW: anchored clock');
+      }
+      const date = new Date(sampled);
+      if (!Number.isFinite(date.getTime())) {
+        throw new Error('INVALID_NOW: anchored clock');
+      }
+      clock = Object.freeze({ ms: sampled, iso: date.toISOString() });
+    }
+    if (preCheck) preCheck(loop, clock);              // throws BEFORE append → anchor stays consistent
     // v1.6 gateway terminal gate (spec §2.1.5): 반드시 caller preCheck **뒤** — fence-first 보존
     // (LEASE_FENCED/RESPAWN_FENCED/RUN_TERMINAL:emitHandoff 등 특정-에러 경로가 먼저 발화해야 한다).
     // 여기 도달했는데 terminal이면 "어떤 preCheck도 못 잡은" fence-less 경로 — 최후 방벽.
@@ -120,14 +133,14 @@ export function appendAnchored(root, runId, { type, data }, mutate, preCheck, op
     if (!v.ok) throw new Error(`LOG_TAMPERED: ${v.errors.join('; ')}`);
     const h = verifyHead(root, runId, loop.event_log_head);
     if (!h.ok) throw new Error(`LOG_TAMPERED: ${h.errors.join('; ')}`);
-    appendEvent(root, runId, { type, data });
+    appendEvent(root, runId, { type, data, now: clock?.ms });
     // Paired floor cost — SAME lock/anchor as the mutation event, so verifyHead/reconcileBudget stay consistent.
     // impl-R1 Fix 1: tag the floor with the CURRENT lease owner+generation. recordCost only absorbs floors from its
     // OWN session, so an explicit report in a LATER session cannot swallow an EARLIER session's floors (which are
     // confirmed prior consumption) — that would undercount total spent and weaken per_session_turn_cap.
     if (opts.floor) {
       const lease = loop.session_chain?.lease || {};
-      appendEvent(root, runId, { type: 'cost', data: { turns: opts.floor, tokens: 0, auto_floor: true, for: type, owner: lease.owner_run_id, generation: lease.generation } });
+      appendEvent(root, runId, { type: 'cost', data: { turns: opts.floor, tokens: 0, auto_floor: true, for: type, owner: lease.owner_run_id, generation: lease.generation }, now: clock?.ms });
     }
     loop.event_log_head = lastLogHead(root, runId);   // floor present → the cost event is the head
     const spent = (mutate || opts.floor) ? recomputeSpent(root, runId) : null;
@@ -140,7 +153,7 @@ export function appendAnchored(root, runId, { type, data }, mutate, preCheck, op
       const sess = (loop.session_chain?.sessions || []).find(s => s.run_id === owner);
       if (sess) sess.turns = (sess.turns || 0) + opts.floor;
     }
-    if (mutate) mutate(loop, spent);
+    if (mutate) mutate(loop, spent, clock);
     writeState(root, runId, loop);
   });
 }

@@ -209,3 +209,66 @@ test('exhausted state rename fails closed without replaying the anchored transac
   assert.equal(readLines(root, runId).filter(event => event.type === 'one-fail-stop-event').length, 1);
   assert.doesNotThrow(() => readState(root, runId), 'failed first replacement must leave the prior state/hash pair readable');
 });
+
+import { test as test6b } from 'node:test';
+import assert6b from 'node:assert/strict';
+import { existsSync as exists6b, mkdtempSync as temp6b } from 'node:fs';
+import { tmpdir as tmp6b } from 'node:os';
+import { join as join6b } from 'node:path';
+import { contentHash as digest6b } from '../scripts/lib/envelope.mjs';
+import { initRun as init6b } from '../scripts/lib/initrun.mjs';
+import { appendAnchored as append6b, readLines as lines6b } from '../scripts/lib/integrity.mjs';
+import { runDir as runDir6b } from '../scripts/lib/state.mjs';
+
+const intent6b = (operation, runId, projection = {}) => digest6b(JSON.stringify({
+  operation, caller: { owner: runId, generation: 1 }, projection,
+}));
+
+test6b('anchored clock is sampled once inside the lock and shared by both events', () => {
+  const root = temp6b(join6b(tmp6b(), 'dl-clock-'));
+  const { runId } = init6b(root, { runtime: 'codex', goal: 'clock',
+    now: new Date('2026-07-13T00:00:00.000Z') });
+  const seen = [];
+  let samples = 0;
+  append6b(root, runId, { type: 'clock-probe', data: {} },
+    (_loop, _spent, clock) => seen.push(['mutate', clock]),
+    (_loop, clock) => seen.push(['precheck', clock]), {
+      floor: 1,
+      nowFn: () => {
+        samples += 1;
+        assert6b.equal(exists6b(join6b(runDir6b(root, runId), '.lock')), true);
+        return Date.parse('2026-07-13T00:00:04.000Z');
+      },
+      callerBinding: { owner: runId, generation: 1 },
+      intentDigest: intent6b('clock-probe', runId, { floor: 1 }),
+      fenceError: 'LEASE_FENCED: test-clock',
+    });
+  assert6b.equal(samples, 1);
+  assert6b.deepEqual(seen, [
+    ['precheck', { ms: 1783900804000, iso: '2026-07-13T00:00:04.000Z' }],
+    ['mutate', { ms: 1783900804000, iso: '2026-07-13T00:00:04.000Z' }],
+  ]);
+  assert6b.deepEqual(lines6b(root, runId).slice(-2).map(event => event.ts),
+    ['2026-07-13T00:00:04.000Z', '2026-07-13T00:00:04.000Z']);
+});
+
+test6b('invalid injected clock fails before an event append', () => {
+  const root = temp6b(join6b(tmp6b(), 'dl-clock-invalid-'));
+  const { runId } = init6b(root, { runtime: 'codex', goal: 'clock',
+    now: new Date('2026-07-13T00:00:00.000Z') });
+  const before = lines6b(root, runId);
+  for (const invalid of [Number.NaN, null, '1783900800000']) {
+    assert6b.throws(() => append6b(root, runId, { type: 'never', data: {} }, () => {},
+      () => {}, { nowFn: () => invalid,
+        callerBinding: { owner: runId, generation: 1 },
+        intentDigest: intent6b('invalid-clock', runId),
+        fenceError: 'LEASE_FENCED: test-clock' }), /INVALID_NOW/);
+    assert6b.deepEqual(lines6b(root, runId), before);
+  }
+  assert6b.throws(() => append6b(root, runId, { type: 'never', data: {} }, () => {},
+    () => {}, { nowFn: null,
+      callerBinding: { owner: runId, generation: 1 },
+      intentDigest: intent6b('invalid-clock', runId),
+      fenceError: 'LEASE_FENCED: test-clock' }), /INVALID_NOW/);
+  assert6b.deepEqual(lines6b(root, runId), before);
+});
