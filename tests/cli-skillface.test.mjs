@@ -15,6 +15,31 @@ function seed() {
   return { root, runId };
 }
 
+test('fixed init manual-enums grammar carries prepared authority through retry workers', () => {
+  const cli = readFileSync(join(process.cwd(), 'scripts', 'deep-loop.mjs'), 'utf8');
+  const worker = readFileSync(join(process.cwd(), 'tests', 'helpers',
+    'fixed-init-crash-worker.mjs'), 'utf8');
+  for (const token of ["'prepared-authority'", 'exactPreparedAuthority',
+    'prepared_authority: authority.value', 'authority.digest']) assert.ok(cli.includes(token), token);
+  for (const token of ['authorityJson', 'prepared_authority: preparedAuthority']) {
+    assert.ok(worker.includes(token), token);
+  }
+  assert.doesNotMatch(worker, /capturePreparedAuthority|prepareFixedInitialization/,
+    'retry/crash worker must never recapture or prepare a replacement authority');
+});
+
+test('fixed init skillface is strict explicit-root READY transport with no fallback', () => {
+  const cli = readFileSync(join(process.cwd(), 'scripts', 'deep-loop.mjs'), 'utf8');
+  assert.match(cli, /async function dispatchFixedInit\(argv\)/);
+  assert.match(cli, /explicitFixedRoot\(f\)/);
+  assert.match(cli, /readStructuredJson\(\{ mode, purpose: 'init-commit'/);
+  assert.match(cli, /fixedVerb \|\| hasFixedInitOnlyFlag\(a\)/);
+  const fixedBody = cli.slice(cli.indexOf('async function dispatchFixedInit(argv)'),
+    cli.indexOf('const initRunHandler'));
+  assert.doesNotMatch(fixedBody, /rootOf\(|runIdOf\(/,
+    'fixed dispatcher must not regain implicit cwd/current fallback');
+});
+
 // Codex r1 should-fix-2: spec §6 의 4-verb 계약을 CLI 가 노출해야 한다 (dispatch 만 X).
 test('adapter resolve returns a normalized 4-verb descriptor', () => {
   const { root } = seed();

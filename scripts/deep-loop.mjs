@@ -1,8 +1,10 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { error } from './lib/log.mjs';
-import { initRun, buildInitialLoop } from './lib/initrun.mjs';
+import { buildFixedInitializationRequest, buildInitialLoop, commitFixedInitialization,
+  initRun, normalizeFixedReview, prepareFixedInitialization, preflightFixedInitialization,
+  statusFixedInitialization } from './lib/initrun.mjs';
 import { detectPlugins } from './lib/detect.mjs';
 import { matchRecipe, recipesDir, validateRecipesDir } from './lib/recipes.mjs';
 import { json } from './lib/log.mjs';
@@ -13,7 +15,11 @@ import { leaseCheck, acquireLease, releaseLease } from './lib/lease.mjs';
 import { newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal } from './lib/workspace.mjs';
 import { newEpisode, recordEpisode, abandonEpisode } from './lib/episode.mjs';
 import { dispatchReview, importReviewOutcome, recordReviewOutcome } from './lib/review.mjs';
-import { readBoundedText } from './lib/bounded-input.mjs';
+import { readBoundedText, readStructuredLine } from './lib/bounded-input.mjs';
+import { classifyProjectTaskDirectory, exactRawHostObservation,
+  normalizeHostObservation } from './lib/host-surface.mjs';
+import { canonicalProjectRoot } from './lib/project-root.mjs';
+import { contentHash } from './lib/envelope.mjs';
 import { nextAction } from './lib/next-action.mjs';
 import { emitHandoff } from './lib/handoff.mjs';
 import { respawn, respawnGate, resolveSpawnMode } from './lib/respawn.mjs';
@@ -57,6 +63,187 @@ function parseFlags(argv) {
 function flagOccurrences(argv, name) {
   const flag = `--${name}`;
   return argv.filter(token => token === flag || token.startsWith(`${flag}=`)).length;
+}
+
+const SHA_OR_NONE = /^(?:NONE|[0-9a-f]{64})$/;
+const INIT_ATTEMPT = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
+const APP_CAPABILITY = new Set([
+  'list-projects', 'create-thread-local', 'fork-thread-same-directory',
+  'send-message-to-thread', 'structured-process-stdin',
+]);
+const FIXED_INIT_COMMON = [
+  'project-root', 'runtime', 'goal', 'protocol', 'recipe', 'review', 'model', 'effort',
+  'app-continuation', 'app-consent-authority', 'manual-enums', 'host-surface',
+  'host-source', 'capabilities',
+];
+const FIXED_INIT_FLAGS = Object.freeze({
+  preflight: new Set(['project-root', 'runtime', 'stdin-mode', 'preflight-nonce',
+    'observation-stdin']),
+  prepare: new Set([...FIXED_INIT_COMMON, 'expected-observation-digest']),
+  status: new Set(['project-root', 'attempt', 'expected-current-digest',
+    'expected-request-digest']),
+  full: new Set([...FIXED_INIT_COMMON, 'init-attempt', 'expected-current-digest',
+    'expected-request-digest', 'expected-preflight-digest', 'stdin-mode',
+    'app-host-input-stdin', 'prepared-authority']),
+});
+const FIXED_INIT_ONLY_FLAGS = new Set([
+  'app-continuation', 'app-consent-authority', 'manual-enums', 'host-surface',
+  'host-source', 'capabilities', 'expected-observation-digest', 'init-attempt',
+  'expected-current-digest', 'expected-request-digest', 'expected-preflight-digest',
+  'stdin-mode', 'app-host-input-stdin', 'observation-stdin', 'preflight-nonce', 'attempt',
+  'prepared-authority',
+]);
+
+function hasFixedInitOnlyFlag(argv) {
+  return argv.some(token => typeof token === 'string' && token.startsWith('--')
+    && FIXED_INIT_ONLY_FLAGS.has(token.slice(2).split('=', 1)[0]));
+}
+
+function assertExactFlagGrammar(argv, allowed) {
+  const seen = new Set();
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index];
+    if (typeof token !== 'string' || !token.startsWith('--') || token === '--') {
+      throw new Error('USAGE_UNKNOWN_FLAG');
+    }
+    const body = token.slice(2);
+    const equals = body.indexOf('=');
+    const name = equals < 0 ? body : body.slice(0, equals);
+    if (!allowed.has(name) || seen.has(name)) throw new Error('USAGE_UNKNOWN_FLAG');
+    seen.add(name);
+    if (equals < 0 && argv[index + 1] !== undefined && !argv[index + 1].startsWith('--')) index += 1;
+  }
+}
+
+function explicitRoot(f) {
+  if (typeof f['project-root'] !== 'string' || f['project-root'].length === 0) {
+    throw new Error('USAGE_FIXED_ROOT_REQUIRED');
+  }
+  return f['project-root'];
+}
+
+function oneCapabilityList(f, argv, { manual = false } = {}) {
+  const count = flagOccurrences(argv, 'capabilities');
+  if (count === 0) return [];
+  if (count !== 1 || typeof f.capabilities !== 'string' || f.capabilities.length === 0) {
+    throw new Error('USAGE_CAPABILITIES');
+  }
+  const values = f.capabilities.split(',');
+  if (values.some(value => !APP_CAPABILITY.has(value)) || new Set(values).size !== values.length
+      || (manual && values.includes('structured-process-stdin'))) {
+    throw new Error('USAGE_CAPABILITIES');
+  }
+  return values.sort();
+}
+
+function exactInitBinding(f, { status = false } = {}) {
+  const attempt = status ? f.attempt : f['init-attempt'];
+  if (!INIT_ATTEMPT.test(attempt || '')
+      || !SHA_OR_NONE.test(f['expected-current-digest'] || '')
+      || !/^[0-9a-f]{64}$/.test(f['expected-request-digest'] || '')) {
+    throw new Error('USAGE_INIT_BINDING');
+  }
+  return { attempt_id: attempt, expected_current_digest: f['expected-current-digest'],
+    expected_request_digest: f['expected-request-digest'] };
+}
+
+function exactConsentFlags(f) {
+  const mode = f['app-continuation']; const authority = f['app-consent-authority'];
+  if (!((mode === 'manual' && authority === 'default-manual')
+      || (mode === 'auto' && authority === 'human-confirmed'))) {
+    throw new Error('USAGE_INIT_CONSENT');
+  }
+  return { mode, authority };
+}
+
+function manualEnumProfile(f, argv, expectedObservation) {
+  const forbidden = ['stdin-mode', 'observation-stdin', 'app-host-input-stdin', 'host-task-cwd'];
+  if (forbidden.some(name => f[name] !== undefined) || expectedObservation !== 'NONE'
+      || f['app-continuation'] !== 'manual'
+      || f['app-consent-authority'] !== 'default-manual') throw new Error('USAGE_MANUAL_ENUMS');
+  const validPair = f.runtime === 'codex'
+    ? f['host-surface'] === 'codex-cli' && f['host-source'] === 'codex-cli-host'
+    : f.runtime === 'claude'
+      && f['host-surface'] === 'claude-code' && f['host-source'] === 'claude-cli-entrypoint';
+  if (!validPair) throw new Error('USAGE_MANUAL_ENUMS');
+  return { kind: f['host-surface'], source: f['host-source'],
+    capabilities: oneCapabilityList(f, argv, { manual: true }) };
+}
+
+function nativeObservationDeps(kernelCwd) {
+  return { platform: process.platform, kernelCwd,
+    realpath: value => (realpathSync.native || realpathSync)(value),
+    stat: value => statSync(value, { bigint: true }),
+    sameFile: (left, right) => left.dev === right.dev && left.ino === right.ino,
+    exists: existsSync };
+}
+
+function explicitFixedRoot(f) {
+  const root = canonicalProjectRoot(explicitRoot(f));
+  const actualCwd = canonicalProjectRoot(process.cwd());
+  const native = nativeObservationDeps(actualCwd);
+  if (classifyProjectTaskDirectory(root, actualCwd, native) === null) {
+    throw new Error('PROJECT_ROOT_FENCED: fixed init cwd is neither the explicit root nor one exact internal worktree');
+  }
+  return { root, native };
+}
+
+const boundedFixedLiteral = value => typeof value === 'string' && value.length > 0
+  && Buffer.byteLength(value, 'utf8') <= 16_384
+  && !/[\u0000-\u001f\u007f-\u009f]/u.test(value);
+
+function parseFixedReviewFlag(f) {
+  if (f.review === undefined) return null;
+  if (typeof f.review !== 'string' || f.review.length === 0
+      || Buffer.byteLength(f.review, 'utf8') > 16_384
+      || /[\u0000-\u001f\u007f-\u009f]/u.test(f.review)) throw new Error('USAGE_INIT_REVIEW');
+  let parsed;
+  try { parsed = JSON.parse(f.review); } catch { throw new Error('USAGE_INIT_REVIEW'); }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('USAGE_INIT_REVIEW');
+  }
+  try { return normalizeFixedReview(parsed); } catch { throw new Error('USAGE_INIT_REVIEW'); }
+}
+
+function validateFixedRequestFlags(f, { preflight = false } = {}) {
+  if (!['claude', 'codex'].includes(f.runtime)) throw new Error('USAGE_INIT_RUNTIME');
+  if (preflight) return;
+  if (!boundedFixedLiteral(f.goal)) throw new Error('USAGE_INIT_GOAL');
+  parseFixedReviewFlag(f);
+  if (f.protocol !== undefined && !['deep-work', 'superpowers', 'standalone'].includes(f.protocol)) {
+    throw new Error('USAGE_INIT_PROTOCOL');
+  }
+  if (f.recipe !== undefined && !boundedFixedLiteral(f.recipe)) throw new Error('USAGE_INIT_RECIPE');
+  if (f.model !== undefined && (!boundedFixedLiteral(f.model)
+      || !/^[A-Za-z0-9][A-Za-z0-9._[\]-]{0,127}$/.test(f.model))) throw new Error('USAGE_INIT_MODEL');
+  if (f.effort !== undefined && !['low', 'medium', 'high', 'xhigh', 'max'].includes(f.effort)) {
+    throw new Error('USAGE_INIT_EFFORT');
+  }
+}
+
+function exactPreparedAuthority(raw) {
+  if (typeof raw !== 'string' || raw.length === 0 || Buffer.byteLength(raw, 'utf8') > 16_384
+      || /[\u0000-\u001f\u007f-\u009f]/u.test(raw)) throw new Error('USAGE_PREPARED_AUTHORITY');
+  let value;
+  try { value = JSON.parse(raw); } catch { throw new Error('USAGE_PREPARED_AUTHORITY'); }
+  if (JSON.stringify(value) !== raw) throw new Error('USAGE_PREPARED_AUTHORITY');
+  const exactKeys = (object, expected) => object && typeof object === 'object'
+    && !Array.isArray(object) && Object.getPrototypeOf(object) === Object.prototype
+    && Object.keys(object).sort().join('\0') === [...expected].sort().join('\0');
+  const identity = candidate => exactKeys(candidate, ['realpath', 'dev', 'ino'])
+    && boundedFixedLiteral(candidate.realpath) && typeof candidate.dev === 'string'
+    && typeof candidate.ino === 'string' && /^(?:0|[1-9][0-9]*)$/.test(candidate.dev)
+    && /^(?:0|[1-9][0-9]*)$/.test(candidate.ino);
+  if (!exactKeys(value, ['version', 'root', 'cwd']) || value.version !== 1
+      || !identity(value.root) || !(value.cwd === null || identity(value.cwd))) {
+    throw new Error('USAGE_PREPARED_AUTHORITY');
+  }
+  return { value, digest: contentHash(raw) };
+}
+
+async function readStructuredJson(options) {
+  const line = await readStructuredLine(process.stdin, options);
+  try { return JSON.parse(line); } catch { throw new Error('STRUCTURED_JSON_INVALID'); }
 }
 
 // --now 관례(v1.5.0, spec §4): 미지정 → Date.now() 폴백. 지정 시 화이트리스트 — ① 순수 정수(epoch ms)
@@ -144,6 +331,108 @@ function requireLease(root, runId, f, intent = 'business') {
 }
 
 const [, , sub, ...rest] = process.argv;
+
+async function dispatchFixedInit(argv) {
+  const verb = ['preflight', 'prepare', 'status'].includes(argv[0]) ? argv[0] : 'full';
+  const flagArgs = verb === 'full' ? argv : argv.slice(1);
+  assertExactFlagGrammar(flagArgs, FIXED_INIT_FLAGS[verb]);
+  const f = parseFlags(flagArgs);
+  const { root, native } = explicitFixedRoot(f);
+  if (verb === 'status') return statusFixedInitialization(root, exactInitBinding(f, { status: true }));
+  validateFixedRequestFlags(f, { preflight: verb === 'preflight' });
+  if (verb === 'preflight') {
+    const mode = f['stdin-mode'];
+    if (!['pipe-open-noecho', 'pty-raw-noecho'].includes(mode)
+        || f['observation-stdin'] !== true
+        || !/^[0-9a-f]{32}$/.test(f['preflight-nonce'] || '')) {
+      throw new Error('USAGE_STRUCTURED_INIT');
+    }
+    const raw = await readStructuredJson({ mode, purpose: 'init-preflight',
+      binding: f['preflight-nonce'], maxBytes: 32_768,
+      writeReady: token => process.stdout.write(`${token}\n`) });
+    return preflightFixedInitialization(root, { runtime: f.runtime,
+      nonce: f['preflight-nonce'], readerMode: mode, observation: raw });
+  }
+  if (f['manual-enums'] !== undefined && f['manual-enums'] !== true) {
+    throw new Error('USAGE_MANUAL_ENUMS');
+  }
+  const manual = f['manual-enums'] === true;
+  const consent = exactConsentFlags(f);
+  const review = parseFixedReviewFlag(f);
+  if (!manual && ['host-surface', 'host-source', 'capabilities']
+    .some(name => f[name] !== undefined)) throw new Error('USAGE_STRUCTURED_INIT');
+  if (verb === 'prepare') {
+    if (f['stdin-mode'] !== undefined || f['observation-stdin'] !== undefined
+        || f['app-host-input-stdin'] !== undefined) throw new Error('USAGE_PREPARE_STDIN');
+    const expectedObservation = f['expected-observation-digest'];
+    if (!SHA_OR_NONE.test(expectedObservation || '')) throw new Error('USAGE_OBSERVATION_DIGEST');
+    const enumProfile = manual ? manualEnumProfile(f, flagArgs, expectedObservation) : null;
+    if (!manual && expectedObservation === 'NONE') throw new Error('USAGE_OBSERVATION_DIGEST');
+    const request = buildFixedInitializationRequest({ root, runtime: f.runtime, goal: f.goal,
+      protocol: f.protocol, recipe: f.recipe, review, model: f.model, effort: f.effort,
+      consentMode: consent.mode, consentAuthority: consent.authority,
+      observationDigest: expectedObservation, enumProfile });
+    return prepareFixedInitialization(root, request);
+  }
+  if (flagOccurrences(flagArgs, 'init-attempt') !== 1) throw new Error('USAGE_INIT_BINDING');
+  const binding = exactInitBinding(f);
+  const expectedObservation = f['expected-preflight-digest'];
+  if (!SHA_OR_NONE.test(expectedObservation || '')) throw new Error('USAGE_OBSERVATION_DIGEST');
+  const authority = exactPreparedAuthority(f['prepared-authority']);
+  let observation = null; let enumProfile = null;
+  if (manual) {
+    enumProfile = manualEnumProfile(f, flagArgs, expectedObservation);
+  } else {
+    const mode = f['stdin-mode'];
+    if (!['pipe-open-noecho', 'pty-raw-noecho'].includes(mode)
+        || f['app-host-input-stdin'] !== true || expectedObservation === 'NONE') {
+      throw new Error('USAGE_STRUCTURED_INIT');
+    }
+    const readyBinding = [binding.attempt_id, binding.expected_current_digest,
+      binding.expected_request_digest, expectedObservation, authority.digest].join('.');
+    const raw = await readStructuredJson({ mode, purpose: 'init-commit', binding: readyBinding,
+      maxBytes: 32_768, writeReady: token => process.stdout.write(`${token}\n`) });
+    const exactRaw = exactRawHostObservation(raw);
+    observation = normalizeHostObservation({ ...exactRaw, runtime: f.runtime,
+      observed_at: null }, native);
+    if (observation.structured_stdin_mode !== mode) throw new Error('INIT_BINDING_FENCED');
+  }
+  const request = buildFixedInitializationRequest({ root, runtime: f.runtime, goal: f.goal,
+    protocol: f.protocol, recipe: f.recipe, review, model: f.model, effort: f.effort,
+    consentMode: consent.mode, consentAuthority: consent.authority,
+    observationDigest: expectedObservation, enumProfile });
+  return commitFixedInitialization(root, { request, observation, prepared: {
+    ok: true, outcome: 'prepared', attempt_id: binding.attempt_id,
+    previous_current_digest: binding.expected_current_digest,
+    expected_request_digest: binding.expected_request_digest,
+    expected_observation_digest: expectedObservation,
+    prepared_authority: authority.value,
+  } });
+}
+
+const initRunHandler = async a => {
+  const fixedVerb = ['preflight', 'prepare', 'status'].includes(a[0]);
+  if (fixedVerb || hasFixedInitOnlyFlag(a)) {
+    try { json(await dispatchFixedInit(a)); return 0; }
+    catch (failure) {
+      const message = String(failure?.message || failure); error(message);
+      return message.startsWith('USAGE_') ? 2 : (classifyKernelError(failure)?.code ?? 1);
+    }
+  }
+  const f = parseFlags(a); const root = rootOf(f); const runtime = reqStr(f, 'runtime');
+  if (!runtime) { error('USAGE: --runtime <claude|codex> is required'); return 2; }
+  if (f.model === true || f.effort === true) {
+    error('USAGE: --model/--effort require a value'); return 2;
+  }
+  try {
+    const { runId } = initRun(root, { runtime, goal: f.goal, protocol: f.protocol,
+      recipe: f.recipe, detected: detectPlugins(root),
+      review: f.review ? JSON.parse(f.review) : undefined,
+      model: f.model === undefined ? null : String(f.model),
+      effort: f.effort === undefined ? null : String(f.effort) });
+    json({ run_id: runId }); return 0;
+  } catch (failure) { error(String(failure?.message || failure)); return 1; }
+};
 
 // validate: 비공허 검증 (Codex impl 🟡4)
 // 1) 스키마+빌더 self-test: buildInitialLoop 산출물이 항상 검증 통과해야 함 (regression 게이트)
@@ -345,21 +634,7 @@ const handlers = {
     json(result);
     return 0;
   },
-  'init-run': async (a) => {
-    const f = parseFlags(a);
-    const root = rootOf(f);
-    const runtime = reqStr(f, 'runtime');
-    if (!runtime) { error('USAGE: --runtime <claude|codex> is required'); return 2; }
-    if (f.model === true || f.effort === true) { error('USAGE: --model/--effort require a value'); return 2; }
-    const model = f.model !== undefined ? String(f.model) : null;
-    const effort = f.effort !== undefined ? String(f.effort) : null;
-    try {
-      const { runId } = initRun(root, { runtime, goal: f.goal, protocol: f.protocol, recipe: f.recipe, detected: detectPlugins(root), review: f.review ? JSON.parse(f.review) : undefined, model, effort });
-      json({ run_id: runId }); return 0;
-    } catch (e) {
-      error(String(e?.message || e)); return 1;   // INVALID_RUNTIME / INVALID_MODEL / INVALID_EFFORT → exit 1 (fail-closed)
-    }
-  },
+  'init-run': initRunHandler,
   'next-action': async (a) => { const f = parseFlags(a); const root = rootOf(f); const { data } = readState(root, runIdOf(root, f)); json(nextAction(data, { now: parseNow(f) })); return 0; },
   tick: async (a) => { const f = parseFlags(a); const root = rootOf(f); const { data } = readState(root, runIdOf(root, f)); json({ mode: f.mode || 'advance', ...nextAction(data, { now: parseNow(f) }) }); return 0; },
   lease: async (a) => {

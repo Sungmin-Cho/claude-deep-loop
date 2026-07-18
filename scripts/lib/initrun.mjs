@@ -4,13 +4,14 @@ import { matchRecipe } from './recipes.mjs';
 import { readState } from './state.mjs';
 import { ulid } from './envelope.mjs';
 import { detectTerminal, defaultProbeRun } from './detect-terminal.mjs';
-import { pluginPresent } from './detect.mjs';
+import { detectPlugins, pluginPresent } from './detect.mjs';
 import { validateModel, validateEffort } from './session-profile.mjs';
 import { validateSessionRuntime } from './runtime.mjs';
 import { canonicalProjectRoot } from './project-root.mjs';
 import { DEFAULT_APP_TASK_CONTINUATION, validateGenesisConsent } from './app-task-continuation.mjs';
-import { commitPreparedInit, hostObservationDigest,
-  prepareInitialization } from './init-transaction.mjs';
+import { commitPreparedInit, hostObservationDigest, initializationRequestDigest,
+  normalizeInitializationRequest, prepareInitialization, preflightInitialization,
+  statusInitialization } from './init-transaction.mjs';
 import { classifyProjectTaskDirectory, normalizeHostObservation,
   sameNativeDirectory } from './host-surface.mjs';
 
@@ -173,6 +174,145 @@ export function productionInitDeps(root, request, overrides = {}) {
         throw new Error('INIT_PREPARED_AUTHORITY_MISMATCH');
       }
     } };
+}
+
+const safeGitLine = (value, label) => {
+  const line = String(value ?? '').trim();
+  if (Buffer.byteLength(line, 'utf8') > 512 || /[\u0000-\u001f\u007f-\u009f]/u.test(line)) {
+    throw new Error(`INIT_GIT_PROBE_INVALID: ${label}`);
+  }
+  return line;
+};
+
+const FIXED_REQUEST_PROTOCOLS = new Set(['deep-work', 'superpowers', 'standalone']);
+const fixedRequestLiteral = value => typeof value === 'string' && value.length > 0
+  && Buffer.byteLength(value, 'utf8') <= 16_384
+  && !/[\u0000-\u001f\u007f-\u009f]/u.test(value);
+
+export function normalizeFixedReview(value) {
+  if (value == null) return null;
+  if (typeof value !== 'object' || Array.isArray(value)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) {
+    throw new Error('review object');
+  }
+  const seen = new Set();
+  const validateJson = (node, depth = 0) => {
+    if (depth > 16) throw new Error('review depth');
+    if (node === null || typeof node === 'boolean') return;
+    if (typeof node === 'number') {
+      if (!Number.isFinite(node)) throw new Error('review number');
+      return;
+    }
+    if (typeof node === 'string') {
+      if (/[\u0000-\u001f\u007f-\u009f]/u.test(node)) throw new Error('review string');
+      return;
+    }
+    if (typeof node !== 'object' || seen.has(node)) throw new Error('review JSON');
+    seen.add(node);
+    if (Array.isArray(node)) {
+      if (node.length > 256) throw new Error('review array');
+      for (const item of node) validateJson(item, depth + 1);
+    } else {
+      if (![Object.prototype, null].includes(Object.getPrototypeOf(node))) {
+        throw new Error('review prototype');
+      }
+      const entries = Object.entries(node);
+      if (entries.length > 256) throw new Error('review keys');
+      for (const [key, item] of entries) {
+        if (key.length === 0 || /[\u0000-\u001f\u007f-\u009f]/u.test(key)) {
+          throw new Error('review key');
+        }
+        validateJson(item, depth + 1);
+      }
+    }
+    seen.delete(node);
+  };
+  validateJson(value);
+  const encoded = JSON.stringify(value);
+  if (Buffer.byteLength(encoded, 'utf8') > 16_384) throw new Error('review bytes');
+  return JSON.parse(encoded);
+}
+
+function validateFixedInitializationInput(input) {
+  try {
+    validateSessionRuntime(input?.runtime);
+    if (!fixedRequestLiteral(input?.goal)
+        || !FIXED_REQUEST_PROTOCOLS.has(input?.protocol ?? 'standalone')
+        || !fixedRequestLiteral(input?.recipe ?? 'default')) throw new Error('scalar');
+    if (input.model != null) validateModel(input.model);
+    if (input.effort != null) validateEffort(input.effort);
+    normalizeFixedReview(input.review);
+    const consent = [input?.consentMode, input?.consentAuthority];
+    if (!(consent[0] === 'manual' && consent[1] === 'default-manual')
+        && !(consent[0] === 'auto' && consent[1] === 'human-confirmed')) {
+      throw new Error('consent');
+    }
+  } catch (error) {
+    throw new Error('INIT_FIXED_INPUT_INVALID', { cause: error });
+  }
+}
+
+export function detectInitializationGit(root, { run = defaultProbeRun } = {}) {
+  const probe = argv => run('git', ['-C', root, ...argv], { timeoutMs: 5_000, capture: true });
+  const headResult = probe(['rev-parse', '--verify', 'HEAD']);
+  if (headResult?.code !== 0) return { head: null, branch: null, dirty: false };
+  const head = safeGitLine(headResult.stdout, 'head');
+  if (!/^[0-9a-f]{40,64}$/.test(head)) throw new Error('INIT_GIT_PROBE_INVALID: head');
+  const branchResult = probe(['symbolic-ref', '--quiet', '--short', 'HEAD']);
+  const branch = branchResult?.code === 0 ? safeGitLine(branchResult.stdout, 'branch') : null;
+  const statusResult = probe(['status', '--porcelain=v1', '--untracked-files=normal',
+    '--', '.', ':(exclude,top).deep-loop']);
+  return { head, branch, dirty: statusResult?.code !== 0 || String(statusResult.stdout ?? '') !== '' };
+}
+
+export function buildFixedInitializationRequest(input, deps = {}) {
+  validateFixedInitializationInput(input);
+  const root = canonicalProjectRoot(input.root);
+  const detected = (deps.detectPlugins ?? detectPlugins)(root);
+  const git = (deps.detectGit ?? (value => detectInitializationGit(value,
+    { run: deps.run ?? defaultProbeRun })))(root);
+  const sessionSpawn = (deps.detectSessionSpawn ?? (() => detectTerminal({
+    env: deps.env ?? process.env, platform: deps.platform ?? process.platform,
+    run: deps.run ?? defaultProbeRun, now: new Date().toISOString(), pid: deps.pid ?? process.pid,
+  })))();
+  return { runtime: input.runtime, goal: input.goal,
+    protocol: input.protocol ?? 'standalone',
+    recipe: { id: input.recipe ?? 'default', name: input.recipe ?? 'default', reason: 'fixed-cli' },
+    review: normalizeFixedReview(input.review), detected, git, sessionSpawn,
+    model: input.model ?? null, effort: input.effort ?? null,
+    consent: { mode: input.consentMode, authority: input.consentAuthority },
+    observationDigest: input.observationDigest, enumProfile: input.enumProfile };
+}
+
+export function preflightFixedInitialization(root, request,
+  deps = productionInitDeps(root, request)) {
+  return preflightInitialization(root, request, deps);
+}
+
+export function prepareFixedInitialization(root, request,
+  deps = productionInitDeps(root, request)) {
+  return prepareInitialization(root, request, deps);
+}
+
+export function statusFixedInitialization(root, binding,
+  deps = productionInitDeps(root, { runtime: 'codex', observationDigest: 'NONE' })) {
+  return statusInitialization(root, binding, deps);
+}
+
+export function commitFixedInitialization(root, { request, observation, prepared },
+  deps = productionInitDeps(root, request)) {
+  const normalizedObservation = observation === null ? null
+    : deps.normalizeObservation({ ...observation, runtime: request.runtime });
+  const observationDigest = hostObservationDigest(normalizedObservation);
+  const normalizedRequest = { ...request, observationDigest };
+  const requestDigest = initializationRequestDigest(
+    normalizeInitializationRequest(root, normalizedRequest, deps));
+  if (requestDigest !== prepared.expected_request_digest
+      || observationDigest !== prepared.expected_observation_digest) {
+    throw new Error('INIT_BINDING_FENCED');
+  }
+  return commitPreparedInit(root, { prepared, request: normalizedRequest,
+    observation: normalizedObservation }, deps);
 }
 
 export function initRun(root, options) {

@@ -1,11 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { initRun } from '../scripts/lib/initrun.mjs';
+import { fileURLToPath } from 'node:url';
+import { buildFixedInitializationRequest, commitFixedInitialization, detectInitializationGit,
+  initRun, prepareFixedInitialization, productionInitDeps } from '../scripts/lib/initrun.mjs';
 import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import { canonicalProjectRoot, projectRootDigest } from '../scripts/lib/project-root.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
@@ -1143,4 +1145,328 @@ test('v1.5 (c): 범위 밖 tz 오프셋(+09:99, +24:00)은 exit 1 (impl-r4)', ()
     assert.equal(code, 1, bad);
     assert.match(stderr, /INVALID_NOW/, bad);
   }
+});
+
+function runReady(args, expectedReady, payload, { cwd: cwdOverride } = {}) {
+  return new Promise((resolve, reject) => {
+    const rootIndex = args.indexOf('--project-root');
+    const cwd = cwdOverride ?? (rootIndex >= 0 ? args[rootIndex + 1] : undefined);
+    const child = spawn(process.execPath, [CLI, ...args], { cwd, stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = ''; let stderr = ''; let wrote = false;
+    child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
+    child.stdout.on('data', chunk => {
+      stdout += chunk;
+      if (!wrote && stdout.includes(`${expectedReady}\n`)) {
+        wrote = true;
+        child.stdin.end(`${typeof payload === 'string' ? payload : JSON.stringify(payload)}\n`);
+      }
+    });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    child.on('error', reject);
+    child.on('close', code => resolve({ code, stdout, stderr, wrote }));
+  });
+}
+
+const fixedObservation = root => ({ kind: 'codex-app', source: 'codex-app-tool-provenance',
+  capabilities: ['create-thread-local', 'list-projects', 'structured-process-stdin'],
+  structured_stdin_mode: 'pipe-open-noecho', host_task_cwd: root,
+  host_task_cwd_source: 'app-task-context' });
+
+test('init-run preflight is explicit-root READY-gated and byte-identical no-write', async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-fixed-preflight-')));
+  const nonce = '11111111111111111111111111111111';
+  const ready = `DEEP_LOOP_STDIN_READY:v1:init-preflight:${nonce}:pipe-open-noecho`;
+  const result = await runReady(['init-run', 'preflight', '--project-root', root, '--runtime',
+    'codex', '--stdin-mode', 'pipe-open-noecho', '--preflight-nonce', nonce,
+    '--observation-stdin'], ready, fixedObservation(root));
+  assert.equal(result.code, 0, result.stderr); assert.equal(result.wrote, true);
+  assert.equal(existsSync(join(root, '.deep-loop')), false);
+  const extra = await runReady(['init-run', 'preflight', '--project-root', root, '--runtime',
+    'codex', '--stdin-mode', 'pipe-open-noecho', '--preflight-nonce',
+    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', '--observation-stdin'],
+  'DEEP_LOOP_STDIN_READY:v1:init-preflight:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:pipe-open-noecho',
+  { ...fixedObservation(root), threadId: 'RAW_THREAD_SENTINEL' });
+  assert.equal(extra.code, 1); assert.doesNotMatch(extra.stdout + extra.stderr, /RAW_THREAD_SENTINEL/);
+  assert.equal(existsSync(join(root, '.deep-loop')), false);
+  const malformed = await runReady(['init-run', 'preflight', '--project-root', root, '--runtime',
+    'codex', '--stdin-mode', 'pipe-open-noecho', '--preflight-nonce', 'not-hex',
+    '--observation-stdin'], 'unused', fixedObservation(root));
+  assert.equal(malformed.code, 2); assert.equal(malformed.wrote, false);
+  const outside = realpathSync(mkdtempSync(join(tmpdir(), 'dl-fixed-outside-')));
+  const fenced = await runReady(['init-run', 'preflight', '--project-root', root, '--runtime',
+    'codex', '--stdin-mode', 'pipe-open-noecho', '--preflight-nonce', nonce,
+    '--observation-stdin'], ready, fixedObservation(root), { cwd: outside });
+  assert.equal(fenced.code, 3); assert.equal(fenced.wrote, false);
+});
+
+test('fixed structured JSON diagnostics never reflect malformed host payload bytes', async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-fixed-json-')));
+  const nonce = '22222222222222222222222222222222';
+  const secret = 'RAW_HOST_SECRET_SHOULD_NOT_ECHO';
+  const result = await runReady(['init-run', 'preflight', '--project-root', root, '--runtime',
+    'codex', '--stdin-mode', 'pipe-open-noecho', '--preflight-nonce', nonce,
+    '--observation-stdin'], `DEEP_LOOP_STDIN_READY:v1:init-preflight:${nonce}:pipe-open-noecho`,
+  `{"host_task_cwd":"${secret}",BROKEN`);
+  assert.equal(result.code, 1); assert.doesNotMatch(result.stdout + result.stderr, new RegExp(secret));
+  assert.match(result.stderr, /STRUCTURED_JSON_INVALID/);
+});
+
+function manualFixed(root, goal = 'fixed') {
+  return ['--project-root', root, '--manual-enums', '--runtime', 'codex', '--goal', goal,
+    '--host-surface', 'codex-cli', '--host-source', 'codex-cli-host',
+    '--app-continuation', 'manual', '--app-consent-authority', 'default-manual'];
+}
+
+test('prepare status and manual-enums forms require exact explicit authority bindings', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-fixed-query-')));
+  const common = manualFixed(root);
+  const prepare = spawnSync(process.execPath, [CLI, 'init-run', 'prepare', ...common,
+    '--expected-observation-digest', 'NONE'], { cwd: root, encoding: 'utf8' });
+  assert.equal(prepare.status, 0, prepare.stderr);
+  const binding = JSON.parse(prepare.stdout);
+  assert.deepEqual(Object.keys(binding.prepared_authority).sort(), ['cwd', 'root', 'version']);
+  const status = spawnSync(process.execPath, [CLI, 'init-run', 'status', '--project-root', root,
+    '--attempt', binding.attempt_id, '--expected-current-digest', binding.previous_current_digest,
+    '--expected-request-digest', binding.expected_request_digest], { cwd: root, encoding: 'utf8' });
+  assert.equal(status.status, 0, status.stderr);
+  assert.equal(JSON.parse(status.stdout).outcome, 'absent');
+  assert.equal(existsSync(join(root, '.deep-loop')), false, 'prepare/status are no-write');
+  const authority = JSON.stringify(binding.prepared_authority);
+  const full = spawnSync(process.execPath, [CLI, 'init-run', ...common,
+    '--init-attempt', binding.attempt_id, '--expected-current-digest', binding.previous_current_digest,
+    '--expected-request-digest', binding.expected_request_digest, '--expected-preflight-digest', 'NONE',
+    '--prepared-authority', authority], { cwd: root, encoding: 'utf8' });
+  assert.equal(full.status, 0, full.stderr);
+  assert.equal(JSON.parse(full.stdout).run_id, binding.attempt_id);
+  for (const forbidden of [['--stdin-mode', 'pty-raw-noecho'],
+    ['--capabilities', 'structured-process-stdin'], ['--project-root', root],
+    ['--unknown-init-flag', 'value']]) {
+    const bad = spawnSync(process.execPath, [CLI, 'init-run', 'prepare', ...common,
+      '--expected-observation-digest', 'NONE', ...forbidden], { cwd: root, encoding: 'utf8' });
+    assert.equal(bad.status, 2, forbidden.join(' '));
+  }
+});
+
+test('prepared_authority grammar fails closed before READY or mutation', async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-fixed-authority-')));
+  const attempt = '01JAPPTASK0000000000000000';
+  const base = ['init-run', '--project-root', root, '--runtime', 'codex', '--goal', 'authority',
+    '--app-continuation', 'manual', '--app-consent-authority', 'default-manual',
+    '--init-attempt', attempt, '--expected-current-digest', 'NONE',
+    '--expected-request-digest', 'a'.repeat(64), '--expected-preflight-digest', 'b'.repeat(64),
+    '--stdin-mode', 'pipe-open-noecho', '--app-host-input-stdin'];
+  const identity = { realpath: root, dev: '1', ino: '2' };
+  const cases = [[], ['--prepared-authority'], ['--prepared-authority', '{broken'],
+    ['--prepared-authority', `{"version":1,"version":1,"root":${JSON.stringify(identity)},"cwd":null}`],
+    ['--prepared-authority', `{"version":1,"root":${JSON.stringify(identity)},"root":${JSON.stringify(identity)},"cwd":null}`],
+    ['--prepared-authority', `{"version":1,"root":{"realpath":${JSON.stringify(root)},"dev":"1","dev":"1","ino":"2"},"cwd":null}`],
+    ['--prepared-authority', JSON.stringify({ version: 1,
+      root: { realpath: root, dev: '1n', ino: '2' }, cwd: null })],
+    ['--prepared-authority', JSON.stringify({ version: 1,
+      root: { realpath: root, dev: '1' }, cwd: null })],
+    ['--prepared-authority', JSON.stringify({ version: 1, root: { ...identity, dev: 1 }, cwd: identity })],
+    ['--prepared-authority', JSON.stringify({ version: 1, root: identity, cwd: identity, extra: true })],
+    ['--prepared-authority', JSON.stringify({ version: 1, root: identity, cwd: identity }),
+      '--prepared-authority', JSON.stringify({ version: 1, root: identity, cwd: identity })]];
+  for (const suffix of cases) {
+    const result = spawnSync(process.execPath, [CLI, ...base, ...suffix], { cwd: root, encoding: 'utf8' });
+    assert.equal(result.status, 2, `${suffix.join(' ')}: ${result.stderr}`);
+    assert.equal(result.stdout.includes('DEEP_LOOP_STDIN_READY'), false);
+    assert.equal(existsSync(join(root, '.deep-loop')), false);
+  }
+});
+
+test('fixed request facts and fixed git facts are independently bound', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-fixed-facts-')));
+  execFileSync('git', ['init', '-b', 'main', root]);
+  execFileSync('git', ['-C', root, 'config', 'user.email', 'deep-loop@example.invalid']);
+  execFileSync('git', ['-C', root, 'config', 'user.name', 'Deep Loop Test']);
+  writeFileSync(join(root, 'seed.txt'), 'seed\n'); execFileSync('git', ['-C', root, 'add', 'seed.txt']);
+  execFileSync('git', ['-C', root, 'commit', '-m', 'seed']);
+  mkdirSync(join(root, '.deep-loop'), { recursive: true }); writeFileSync(join(root, '.deep-loop', 'x'), 'x');
+  assert.equal(detectInitializationGit(root).dirty, false);
+  writeFileSync(join(root, 'user.txt'), 'x'); assert.equal(detectInitializationGit(root).dirty, true);
+});
+
+test('fixed request facts are independently recomputed and drift fences before any write', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-fixed-request-drift-')));
+  const input = { root, runtime: 'codex', goal: 'facts', protocol: 'standalone', recipe: 'default',
+    review: { reviewer: 'subagent-checker' }, model: null, effort: null,
+    consentMode: 'manual', consentAuthority: 'default-manual', observationDigest: 'NONE',
+    enumProfile: { kind: 'codex-cli', source: 'codex-cli-host', capabilities: [] } };
+  let generation = 1;
+  const deps = { detectPlugins: () => ({ marker: generation }),
+    detectGit: () => ({ head: String(generation).repeat(40), branch: `b${generation}`, dirty: false }),
+    detectSessionSpawn: () => ({ launcher: 'none', generation }) };
+  const first = buildFixedInitializationRequest(input, deps);
+  const prepared = prepareFixedInitialization(root, first,
+    productionInitDeps(root, first, { cwdFn: () => root }));
+  generation = 2; const second = buildFixedInitializationRequest(input, deps);
+  assert.throws(() => commitFixedInitialization(root, { request: second, observation: null, prepared },
+    productionInitDeps(root, second, { cwdFn: () => root })), /INIT_BINDING_FENCED/);
+  assert.equal(existsSync(join(root, '.deep-loop')), false);
+});
+
+test('fixed-only flags without an exact init attempt never fall through to one-shot init', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-fixed-no-fallback-')));
+  const result = spawnSync(process.execPath, [CLI, 'init-run', '--project-root', root,
+    '--runtime', 'codex', '--goal', 'no-write', '--prepared-authority', '{}'],
+  { cwd: root, encoding: 'utf8' });
+  assert.equal(result.status, 2); assert.equal(existsSync(join(root, '.deep-loop')), false);
+});
+
+const FIXED_INIT_CRASH_WORKER = fileURLToPath(new URL('./helpers/fixed-init-crash-worker.mjs', import.meta.url));
+test('fixed init crash worker URL is converted to a native filesystem path', () => {
+  assert.equal(FIXED_INIT_CRASH_WORKER.endsWith(join('helpers', 'fixed-init-crash-worker.mjs')), true);
+  assert.equal(FIXED_INIT_CRASH_WORKER.includes('%20'), false);
+});
+
+test('fixed preflight binds actual and host cwd within the root or one exact internal worktree', async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-fixed-cwd-')));
+  const other = realpathSync(mkdtempSync(join(tmpdir(), 'dl-fixed-host-other-')));
+  const args = nonce => ['init-run', 'preflight', '--project-root', root, '--runtime', 'codex',
+    '--stdin-mode', 'pipe-open-noecho', '--preflight-nonce', nonce, '--observation-stdin'];
+  const wrongNonce = '33333333333333333333333333333333';
+  const wrong = await runReady(args(wrongNonce),
+    `DEEP_LOOP_STDIN_READY:v1:init-preflight:${wrongNonce}:pipe-open-noecho`,
+    { ...fixedObservation(root), host_task_cwd: other });
+  assert.equal(wrong.code, 0, wrong.stderr);
+  assert.deepEqual(JSON.parse(wrong.stdout.trim().split('\n').at(-1)), {
+    eligible: false, reason: 'cwd-mismatch', observation_digest: 'NONE',
+  });
+  const worktree = join(root, '.worktrees', 'exact-child'); mkdirSync(worktree, { recursive: true });
+  const worktreeNonce = '44444444444444444444444444444444';
+  const accepted = await runReady(args(worktreeNonce),
+    `DEEP_LOOP_STDIN_READY:v1:init-preflight:${worktreeNonce}:pipe-open-noecho`,
+    { ...fixedObservation(root), host_task_cwd: worktree }, { cwd: worktree });
+  assert.equal(accepted.code, 0, accepted.stderr); assert.equal(accepted.wrote, true);
+  assert.equal(existsSync(join(root, '.deep-loop')), false);
+});
+
+test('fixed prepare rejects missing immutable scalars and malformed review without state', () => {
+  for (const suffix of [[], ['--goal'], ['--goal', 'g', '--protocol'],
+    ['--goal', 'g', '--model', '-unsafe'], ['--runtime', 'invalid', '--goal', 'g']]) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-fixed-scalars-')));
+    const runtime = suffix.includes('--runtime') ? [] : ['--runtime', 'codex'];
+    const result = spawnSync(process.execPath, [CLI, 'init-run', 'prepare', '--project-root', root,
+      '--manual-enums', ...runtime, '--host-surface', 'codex-cli', '--host-source', 'codex-cli-host',
+      '--app-continuation', 'manual', '--app-consent-authority', 'default-manual',
+      '--expected-observation-digest', 'NONE', ...suffix], { cwd: root, encoding: 'utf8' });
+    assert.equal(result.status, 2, `${suffix.join(' ')}: ${result.stderr}`);
+    assert.equal(existsSync(join(root, '.deep-loop')), false);
+  }
+  for (const review of ['null', '[]', '"scalar"', '{broken',
+    JSON.stringify({ payload: 'x'.repeat(17_000) })]) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-fixed-review-')));
+    const result = spawnSync(process.execPath, [CLI, 'init-run', 'prepare', ...manualFixed(root),
+      '--review', review, '--expected-observation-digest', 'NONE'], { cwd: root, encoding: 'utf8' });
+    assert.equal(result.status, 2, result.stderr);
+    assert.equal(existsSync(join(root, '.deep-loop')), false);
+  }
+});
+
+test('fixed review JSON is request-bound through full commit', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-fixed-review-bound-')));
+  const review = JSON.stringify({ reviewer: 'deep-review-loop', max_review_rounds: 5,
+    contract: { model: 'opus', effort: 'xhigh' } });
+  const common = [...manualFixed(root, 'review-bound'), '--review', review];
+  const prepared = spawnSync(process.execPath, [CLI, 'init-run', 'prepare', ...common,
+    '--expected-observation-digest', 'NONE'], { cwd: root, encoding: 'utf8' });
+  assert.equal(prepared.status, 0, prepared.stderr); const binding = JSON.parse(prepared.stdout);
+  const committed = spawnSync(process.execPath, [CLI, 'init-run', ...common,
+    '--init-attempt', binding.attempt_id, '--expected-current-digest', binding.previous_current_digest,
+    '--expected-request-digest', binding.expected_request_digest, '--expected-preflight-digest', 'NONE',
+    '--prepared-authority', JSON.stringify(binding.prepared_authority)], { cwd: root, encoding: 'utf8' });
+  assert.equal(committed.status, 0, committed.stderr);
+  assert.deepEqual(readState(root, binding.attempt_id).data.review, JSON.parse(review));
+});
+
+test('fixed enum init response loss retries the same committed attempt only', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-fixed-loss-')));
+  const fixed = manualFixed(root, 'response-loss');
+  const prepare = spawnSync(process.execPath, [CLI, 'init-run', 'prepare', ...fixed,
+    '--expected-observation-digest', 'NONE'], { cwd: root, encoding: 'utf8' });
+  assert.equal(prepare.status, 0, prepare.stderr); const binding = JSON.parse(prepare.stdout);
+  const authority = JSON.stringify(binding.prepared_authority);
+  const crashed = spawnSync(process.execPath, [FIXED_INIT_CRASH_WORKER, root, binding.attempt_id,
+    binding.previous_current_digest, binding.expected_request_digest, 'NONE', authority, 'enum',
+    'after-commit'], { cwd: root, encoding: 'utf8' });
+  assert.equal(crashed.status, 91, crashed.stderr);
+  const retry = spawnSync(process.execPath, [CLI, 'init-run', ...fixed,
+    '--init-attempt', binding.attempt_id, '--expected-current-digest', binding.previous_current_digest,
+    '--expected-request-digest', binding.expected_request_digest, '--expected-preflight-digest', 'NONE',
+    '--prepared-authority', authority], { cwd: root, encoding: 'utf8' });
+  assert.equal(retry.status, 0, retry.stderr);
+  assert.equal(JSON.parse(retry.stdout).run_id, binding.attempt_id);
+  assert.deepEqual(readdirSync(join(root, '.deep-loop', 'runs'))
+    .filter(id => existsSync(join(root, '.deep-loop', 'runs', id, 'loop.json'))), [binding.attempt_id]);
+});
+
+test('fixed full init response loss retries the same structured observation and attempt', async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-fixed-full-loss-')));
+  const observation = fixedObservation(root); const nonce = '55555555555555555555555555555555';
+  const preflight = await runReady(['init-run', 'preflight', '--project-root', root, '--runtime',
+    'codex', '--stdin-mode', 'pipe-open-noecho', '--preflight-nonce', nonce, '--observation-stdin'],
+  `DEEP_LOOP_STDIN_READY:v1:init-preflight:${nonce}:pipe-open-noecho`, observation);
+  assert.equal(preflight.code, 0, preflight.stderr);
+  const observationDigest = JSON.parse(preflight.stdout.trim().split('\n').at(-1)).observation_digest;
+  const fixed = ['--project-root', root, '--runtime', 'codex', '--goal', 'response-loss',
+    '--app-continuation', 'manual', '--app-consent-authority', 'default-manual'];
+  const prepare = spawnSync(process.execPath, [CLI, 'init-run', 'prepare', ...fixed,
+    '--expected-observation-digest', observationDigest], { cwd: root, encoding: 'utf8' });
+  assert.equal(prepare.status, 0, prepare.stderr); const binding = JSON.parse(prepare.stdout);
+  const authority = JSON.stringify(binding.prepared_authority);
+  const authorityDigest = createHash('sha256').update(authority).digest('hex');
+  const readyBinding = [binding.attempt_id, binding.previous_current_digest,
+    binding.expected_request_digest, observationDigest, authorityDigest].join('.');
+  const crashed = spawnSync(process.execPath, [FIXED_INIT_CRASH_WORKER, root, binding.attempt_id,
+    binding.previous_current_digest, binding.expected_request_digest, observationDigest, authority,
+    'full', 'after-commit'], { cwd: root, encoding: 'utf8' });
+  assert.equal(crashed.status, 91, crashed.stderr);
+  const retry = await runReady(['init-run', ...fixed, '--init-attempt', binding.attempt_id,
+    '--expected-current-digest', binding.previous_current_digest,
+    '--expected-request-digest', binding.expected_request_digest,
+    '--expected-preflight-digest', observationDigest, '--prepared-authority', authority,
+    '--stdin-mode', 'pipe-open-noecho', '--app-host-input-stdin'],
+  `DEEP_LOOP_STDIN_READY:v1:init-commit:${readyBinding}:pipe-open-noecho`, observation);
+  assert.equal(retry.code, 0, retry.stderr);
+  assert.equal(JSON.parse(retry.stdout.trim().split('\n').at(-1)).run_id, binding.attempt_id);
+});
+
+test('hard crash inside append-only init authority requires explicit manual compaction', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-fixed-stale-')));
+  execFileSync('git', ['init', '-b', 'main', root]);
+  execFileSync('git', ['-C', root, 'config', 'user.email', 'deep-loop@example.invalid']);
+  execFileSync('git', ['-C', root, 'config', 'user.name', 'Deep Loop Test']);
+  writeFileSync(join(root, 'seed.txt'), 'seed\n'); execFileSync('git', ['-C', root, 'add', 'seed.txt']);
+  execFileSync('git', ['-C', root, 'commit', '-m', 'seed']);
+  const fixed = manualFixed(root, 'response-loss');
+  const prepare = spawnSync(process.execPath, [CLI, 'init-run', 'prepare', ...fixed,
+    '--expected-observation-digest', 'NONE'], { cwd: root, encoding: 'utf8' });
+  assert.equal(prepare.status, 0, prepare.stderr); const binding = JSON.parse(prepare.stdout);
+  const authorityJson = JSON.stringify(binding.prepared_authority);
+  const crashed = spawnSync(process.execPath, [FIXED_INIT_CRASH_WORKER, root, binding.attempt_id,
+    binding.previous_current_digest, binding.expected_request_digest, 'NONE', authorityJson, 'enum',
+    'inside-lock'], { cwd: root, encoding: 'utf8' });
+  assert.equal(crashed.status, 91, crashed.stderr);
+  const status = spawnSync(process.execPath, [CLI, 'init-run', 'status', '--project-root', root,
+    '--attempt', binding.attempt_id, '--expected-current-digest', binding.previous_current_digest,
+    '--expected-request-digest', binding.expected_request_digest], { cwd: root, encoding: 'utf8' });
+  assert.equal(status.status, 0, status.stderr); assert.equal(JSON.parse(status.stdout).lock_state, 'stale-manual');
+  const blocked = spawnSync(process.execPath, [CLI, 'init-run', ...fixed,
+    '--init-attempt', binding.attempt_id, '--expected-current-digest', binding.previous_current_digest,
+    '--expected-request-digest', binding.expected_request_digest, '--expected-preflight-digest', 'NONE',
+    '--prepared-authority', authorityJson], { cwd: root, encoding: 'utf8' });
+  assert.equal(blocked.status, 1); assert.match(blocked.stderr, /LOCK_STALE_MANUAL/);
+  const control = join(root, '.deep-loop');
+  const authorityFiles = readdirSync(control).filter(name => name === '.init.lock'
+    || /^\.init-lock-(?:candidate-(?:0|[1-9][0-9]*)-|successor-|release-)[A-Za-z0-9_-]{16,128}$/.test(name));
+  assert.ok(authorityFiles.includes('.init.lock'));
+  for (const name of authorityFiles) unlinkSync(join(control, name));
+  const recovered = spawnSync(process.execPath, [CLI, 'init-run', ...fixed,
+    '--init-attempt', binding.attempt_id, '--expected-current-digest', binding.previous_current_digest,
+    '--expected-request-digest', binding.expected_request_digest, '--expected-preflight-digest', 'NONE',
+    '--prepared-authority', authorityJson], { cwd: root, encoding: 'utf8' });
+  assert.equal(recovered.status, 0, recovered.stderr);
+  assert.equal(JSON.parse(recovered.stdout).run_id, binding.attempt_id);
 });
