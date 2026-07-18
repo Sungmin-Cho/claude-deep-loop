@@ -35809,7 +35809,8 @@ guarantees are unchanged.
 Before the first closeout commit, create exactly one isolated
 `codex/codex-app-native-task-continuation-closeout` worktree from the verified merged deep-loop
 `origin/main` commit. Before `git worktree add`, use the same canonical executable, empty-map
-environment, disabled config, and explicit `GIT_NO_LAZY_FETCH=1` defined below to run the complete
+environment, disabled config and system attributes, and explicit `GIT_NO_LAZY_FETCH=1` defined below
+to run the complete
 hazardous-key guard over common local config with includes disabled—not only the partial-clone keys.
 Also require common `info/attributes` absent and the exact merged-main tree to contain no path whose
 basename is `.gitattributes`; this release stops for a newly reviewed materialization rule if either
@@ -35834,8 +35835,8 @@ Every closeout commit follows this finite procedure:
 1. Resolve one regular canonical Git executable and record its realpath/SHA-256. Invoke that exact
    executable with `-C <canonical-authorized-worktree>` and an environment built from an empty map:
    fixed locale, a private empty HOME, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_SYSTEM=/dev/null`, and
-   `GIT_CONFIG_GLOBAL=/dev/null`, plus explicit `GIT_NO_LAZY_FETCH=1`; inherit no other `GIT_*`
-   variable. Prefix every command with
+   `GIT_CONFIG_GLOBAL=/dev/null`, plus explicit `GIT_ATTR_NOSYSTEM=1` and
+   `GIT_NO_LAZY_FETCH=1`; inherit no other `GIT_*` variable. Prefix every command with
    `--no-replace-objects -c core.hooksPath=/dev/null -c core.fsmonitor=false -c commit.gpgSign=false
    -c tag.gpgSign=false -c gc.auto=0 -c maintenance.auto=false`; commit identity is supplied by fixed
    `-c user.name=... -c user.email=...`, never local config. Before any `add`, `diff`, or `commit`,
@@ -35851,7 +35852,10 @@ Every closeout commit follows this finite procedure:
    `submodule.*.update`, case-insensitively. Require the
    alternates file absent, `git for-each-ref refs/replace` empty, and raw
    `git check-attr -z --all -- <each exact allowed path>` output empty immediately before and after
-   staging. Any configured attribute—including `filter`, `diff`, `merge`, or
+   staging. Require `git var GIT_ATTR_SYSTEM` in that same environment to report no enabled system
+   attribute file before worktree creation and again before materialization. Config disabling alone
+   does not disable `$(prefix)/etc/gitattributes`; any enabled system attribute source fails closed.
+   Any configured attribute—including `filter`, `diff`, `merge`, or
    `working-tree-encoding`—therefore stops before a content-transforming command. Re-hash all inputs
    after staging and after commit; any identity drift fails closed. The executable fixture configures
    a marker-writing clean filter through local config plus `info/attributes` and must reject it before
@@ -36380,6 +36384,7 @@ requireTokens('Common closeout', closeoutProtocol, [
   'explicit allowed path/status set', 'predecessor-known Buffer',
   'environment built from an empty map', 'GIT_CONFIG_NOSYSTEM=1',
   'GIT_CONFIG_SYSTEM=/dev/null', 'GIT_CONFIG_GLOBAL=/dev/null',
+  'GIT_ATTR_NOSYSTEM=1', 'git var GIT_ATTR_SYSTEM',
   'GIT_NO_LAZY_FETCH=1', 'extensions.partialClone', 'remote.*.promisor',
   'git rev-list --objects --missing=print <exact-merged-main>',
   'git rev-list --objects --missing=error', 'transport or credential helpers',

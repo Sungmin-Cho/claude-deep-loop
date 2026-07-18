@@ -2,7 +2,7 @@
 
 작성일: 2026-07-13
 운영 계약: `docs/handoff/2026-07-13-codex-app-native-task-continuation-goal-handoff.md`
-상태: Gate 1 fresh cycle 8 round 12 Respond 진행; REQUEST_CHANGES 미수렴, exact Git guard/receipt grammar 검증 중
+상태: Gate 1 fresh cycle 8 round 14 Respond 진행; REQUEST_CHANGES 미수렴, system attributes 경계 검증 중
 기준: `main@c38a96137f8f4f0099c35e893860930e8ee4cf73`, deep-loop `1.8.2`
 
 > source of truth: 이 문서 + 운영 계약 + 현재 저장소 + `git log`. 이전 대화 컨텍스트를 가정하지 말라.
@@ -1724,6 +1724,13 @@ path가 없고 common `info/attributes`가 없으며 full hazardous common confi
 먼저 통과해야 한다. 그 뒤 `git worktree add --no-checkout`으로 admin state만 만들고,
 새 worktree에서 common/worktree config·alternates·replace-ref·attribute guard를 다시 통과한 뒤에만
 sanitized `git reset --hard <exact-merged-main>`으로 materialize한다.
+Round 14 standard는 이 materialization 환경에 system-wide attributes source가 남아 있음을 찾았다.
+`GIT_CONFIG_NOSYSTEM=1`은 system config만 끄고 `$(prefix)/etc/gitattributes`를 끄지 않으므로,
+`working-tree-encoding`같은 rule이 `reset --hard`의 working-tree bytes를 변환해도 clean status가 남을
+수 있었다. Respond는 empty-map environment에 `GIT_ATTR_NOSYSTEM=1`을 명시하고, 같은
+환경의 `git var GIT_ATTR_SYSTEM`이 enabled source를 보고하지 않음을 worktree 생성 전과 materialization
+전에 증명한다. Round 14의 두 번째 P2인 상태 header drift도 이 Respond에서 현재 stage로
+동기화한다. Actionable finding이 있어 adversarial은 시작하지 않고 `N_actual=1`로 종료했다.
 
 구현 순서:
 
