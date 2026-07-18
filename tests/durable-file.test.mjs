@@ -1,6 +1,6 @@
 import {
   existsSync, fstatSync, linkSync, lstatSync, mkdtempSync, openSync, readFileSync,
-  readdirSync, readlinkSync, unlinkSync, writeFileSync,
+  readdirSync, readlinkSync, renameSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,6 +10,7 @@ import { createFileSymlink, createFileSymlinkOrSkip } from './helpers/fs-fixture
 import {
   createFileDurablyIfAbsent,
   renamePreparedFile,
+  unlinkRegularFile,
 } from '../scripts/lib/durable-file.mjs';
 
 test('durable helper syncs a POSIX parent after same-directory rename', () => {
@@ -33,7 +34,7 @@ test('durable helper syncs a POSIX parent after same-directory rename', () => {
     open: path => (calls.push(['open', path]), path),
     fstat: () => regular,
     fsync: fd => calls.push(['fsync', fd]), close: fd => calls.push(['close', fd]),
-    rename: (from, to) => {
+    durableRenamePrimitive: (from, to) => {
       calls.push(['rename', from, to]);
       sourcePresent = false;
       destinationPresent = true;
@@ -75,7 +76,7 @@ test('durable helper never opens a Windows directory fd and retries sharing erro
       opens.push([path, flags]);
       return path;
     }, fstat: () => regular, fsync: () => {}, close: () => {},
-    rename: () => {
+    durableRenamePrimitive: () => {
       attempts += 1;
       if (attempts < 3) throw Object.assign(new Error('sharing'), { code: 'EPERM' });
       sourcePresent = false;
@@ -183,4 +184,56 @@ test('rename refuses publication when the source changes during file sync', () =
   }), /DURABLE_SOURCE_CHANGED/);
   assert.equal(existsSync(destination), false);
   assert.equal(readFileSync(source, 'utf8'), 'changed-during-sync');
+});
+
+test('rename revalidates after the final interleaving hook before its faithful primitive', context => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-durable-before-rename-'));
+  const probeTarget = join(root, 'probe-target');
+  const probeLink = join(root, 'probe-link');
+  writeFileSync(probeTarget, 'probe');
+  if (!createFileSymlinkOrSkip(context, probeTarget, probeLink)) return;
+  unlinkSync(probeLink);
+  const source = join(root, '.tmp-source');
+  const destination = join(root, 'loop.json');
+  const missingTarget = join(root, 'missing-target');
+  writeFileSync(source, 'prepared-source');
+  let primitiveCalls = 0;
+
+  assert.throws(() => renamePreparedFile(source, destination, {}, {
+    durableBeforeRename: () => createFileSymlink(missingTarget, destination),
+    durableRenamePrimitive: (from, to) => {
+      primitiveCalls += 1;
+      renameSync(from, to);
+    },
+  }), /DURABLE_DESTINATION_INVALID/);
+  assert.equal(primitiveCalls, 0, 'the faithful rename is fenced by post-hook revalidation');
+  assert.equal(lstatSync(destination).isSymbolicLink(), true);
+  assert.equal(readlinkSync(destination), missingTarget);
+  assert.equal(readFileSync(source, 'utf8'), 'prepared-source');
+});
+
+test('owned cleanup revalidates after the final interleaving hook before unlink', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-durable-before-unlink-'));
+  const target = join(root, 'request.md');
+  const temporary = `${target}.create-callerownednonce0`;
+  const foreign = Buffer.from('kernel skeleton');
+  let primitiveCalls = 0;
+
+  assert.throws(() => createFileDurablyIfAbsent(target, 'kernel skeleton', {
+    nonce: () => 'callerownednonce0',
+  }, {
+    durableBeforeUnlink: path => {
+      if (path !== temporary) return;
+      unlinkSync(path);
+      writeFileSync(path, foreign, { flag: 'wx' });
+    },
+    durableUnlinkPrimitive: path => {
+      primitiveCalls += 1;
+      unlinkSync(path);
+    },
+  }), /DURABLE_OWNERSHIP_CHANGED/);
+  assert.equal(primitiveCalls, 0, 'the faithful unlink is fenced by post-hook revalidation');
+  assert.deepEqual(readFileSync(temporary), foreign);
+  assert.equal(readFileSync(target, 'utf8'), 'kernel skeleton');
+  assert.equal(unlinkRegularFile(temporary), true, 'test cleanup uses the native default');
 });

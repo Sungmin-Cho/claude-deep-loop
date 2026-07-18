@@ -1,6 +1,6 @@
 import {
   closeSync, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync,
-  readFileSync, readdirSync, renameSync, rmSync, unlinkSync, writeFileSync,
+  readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { basename, dirname, join } from 'node:path';
@@ -1395,8 +1395,7 @@ test('commit reserves pending, publishes hash then loop, CASes current, and exac
   const request = initializationRequestDigest(normalizeInitializationRequest(root, initOptions(), deps));
   const order = [];
   const result = commitPreparedInit(root, commitInput(root, attempt, request), {
-    ...deps, rename: (source, destination) => {
-      renameSync(source, destination);
+    ...deps, durableAfterRename: (_source, destination) => {
       const name = basename(destination);
       order.push(name === 'init-pending.json' ? 'pending' : name === 'event-log.jsonl'
         ? 'events' : name === '.loop.hash' ? 'hash' : name === 'loop.json' ? 'loop'

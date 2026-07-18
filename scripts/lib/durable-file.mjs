@@ -144,12 +144,15 @@ export function renamePreparedFile(source, destination, {
       invalidCode: 'DURABLE_FILE_INVALID', changedCode: 'DURABLE_SOURCE_CHANGED',
     })
     : syncRegularFile(source, deps, sourceInitial);
-  const rename = durableDep(deps, 'durableRename', 'rename', durableRenameSync);
+  // Only the before hook models an interleaving. The primitive is the faithful syscall seam;
+  // the after hook is observation-only and must not be used to mutate either pathname.
+  const rename = deps.durableRenamePrimitive ?? durableRenameSync;
   renameAtomicWithRetry(source, destination, {
     platform: deps.platform ?? process.platform,
     monotonicNowFn: deps.monotonicNowFn,
     sleepFn: deps.sleepFn,
     renameFn: (from, to) => {
+      deps.durableBeforeRename?.(from, to);
       requireRecord(from, sourceReady, deps, {
         invalidCode: 'DURABLE_FILE_INVALID', changedCode: 'DURABLE_SOURCE_CHANGED',
       });
@@ -160,7 +163,9 @@ export function renamePreparedFile(source, destination, {
       if (!recordMatches(destinationInitial, destinationReady, deps)) {
         throw new Error('DURABLE_DESTINATION_CHANGED');
       }
-      return rename(from, to);
+      const result = rename(from, to);
+      deps.durableAfterRename?.(from, to);
+      return result;
     },
   });
   crashDurableIfScheduled(renamedPoint);
@@ -192,7 +197,14 @@ export function unlinkRegularFile(path, deps = {}, expectedRecord = null) {
   requireRecord(path, initial, deps, {
     invalidCode: 'DURABLE_UNLINK_INVALID', changedCode: 'DURABLE_OWNERSHIP_CHANGED',
   });
-  durableDep(deps, 'durableUnlink', 'unlink', durableUnlinkSync)(path);
+  deps.durableBeforeUnlink?.(path);
+  requireRecord(path, initial, deps, {
+    invalidCode: 'DURABLE_UNLINK_INVALID', changedCode: 'DURABLE_OWNERSHIP_CHANGED',
+  });
+  // As with rename, the dedicated primitive is the syscall itself; generic lock `unlink` seams are
+  // deliberately not consumed by this durability boundary.
+  (deps.durableUnlinkPrimitive ?? durableUnlinkSync)(path);
+  deps.durableAfterUnlink?.(path);
   if (regularRecord(path, deps, {
     optional: true, invalidCode: 'DURABLE_UNLINK_INVALID',
     changedCode: 'DURABLE_OWNERSHIP_CHANGED',
