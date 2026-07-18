@@ -11200,6 +11200,10 @@ const BASE_POINTS = new Set([
   'state-stage-after-rename', 'event-stage-after-rename', 'pending-after-rename',
   'event-after-partial-append', 'event-after-full-append', 'state-after-rename',
   'hash-after-rename', 'before-cleanup',
+  'state-replace-after-create', 'state-replace-after-fsync',
+  'state-replace-after-rename-before-dir-fsync',
+  'hash-replace-after-create', 'hash-replace-after-fsync',
+  'hash-replace-after-rename-before-dir-fsync',
 ]);
 
 function exactObject(value, keys) {
@@ -26026,7 +26030,7 @@ file's `buildSettledRun` proof builder:
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
 import { spawnSync as spawn10d } from 'node:child_process';
 import { readdirSync as list10d, readFileSync as read10d, symlinkSync as symlink10d,
-  writeFileSync as write10d } from 'node:fs';
+  rmdirSync as rmdir10d, writeFileSync as write10d } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { acquireAppTask, awaitAppTask, confirmAppTask, failAppTask, prepareAppTask,
   revokeAppTaskContinuation, sweepUnconfirmedAppTask }
@@ -26157,8 +26161,7 @@ function mutationCase10d(operation) {
         ...(pathDeps === undefined ? {} : { pathDeps }),
         nowFn: () => Date.parse('2026-07-13T00:00:04.000Z') });
     if (operation === 'recover') return recoverRun(fixture.root, fixture.runId,
-      { expect: { owner: input.owner, generation: input.generation }, confirm: true,
-        recoveryDigest: different ? 'b'.repeat(64) : 'a'.repeat(64) });
+      { expect: { owner: input.owner, generation: input.generation }, confirm: true });
     return finishRun(fixture.root, fixture.runId, { status: 'completed',
       reportRel: different ? 'different-final.md' : 'final.md',
       proof: { human_reason: different ? 'different' : 'same' },
@@ -26235,6 +26238,9 @@ function assertPublicMutationCrashRecovery10d({ operation, crashPoint, worker })
       timeout: CRASH_WORKER_TIMEOUT_MS10D,
     });
   assertCrashWorkerExit10d(child);
+  // The exact worker is dead. Remove only its orphan run lock to accelerate the production stale
+  // TTL; the foreign and exact public retries below remain the only journal recovery attempts.
+  rmdir10d(join(fixture.root, '.deep-loop', 'runs', fixture.runId, '.lock'));
   const pending = journalBytes10d(fixture.root, fixture.runId);
   const markerBacked = !PRE_MARKER_CRASH_POINTS10D.has(crashPoint);
   assert.equal(Object.hasOwn(pending, '.anchored-pending.json'), markerBacked);
@@ -26266,7 +26272,7 @@ function assertPublicMutationCrashRecovery10d({ operation, crashPoint, worker })
     sameFile: () => assert.fail('pending acquire identity fence must precede sameFile callback') });
   const variants = [operation === 'acquire'
     ? { foreign: true, pathDeps: noAcquirePathCallbacks } : { foreign: true },
-  { different: true },
+    ...(operation === 'recover' ? [] : [{ different: true }]),
     ...(operation === 'confirm' ? [{ wrongMode: true }] : []),
     ...(operation === 'acquire'
       ? [{ wrongRuntime: true, pathDeps: noAcquirePathCallbacks }] : [])];
@@ -26556,8 +26562,7 @@ const publicMutation10d = Object.freeze({
       observation: workerObservation10d(root) }, { cwdFn: () => root,
       nowFn: () => Date.parse('2026-07-13T00:00:04.000Z') }),
   recover: ({ root, runId, input }) => recoverRun(root, runId,
-    { expect: { owner: input.owner, generation: input.generation }, confirm: true,
-      recoveryDigest: 'a'.repeat(64) }),
+    { expect: { owner: input.owner, generation: input.generation }, confirm: true }),
   finish: ({ root, runId, input }) => finishRun(root, runId, {
     status: 'completed', reportRel: 'final.md', proof: { human_reason: 'same' },
     fence: { owner: input.owner, generation: input.generation,
@@ -26568,7 +26573,11 @@ export function dispatchPublicMutationCrash10d({ root, runId, operation, point, 
   if (!Object.hasOwn(publicMutation10d, operation)) throw new Error('CRASH_OPERATION_INVALID');
   const points = new Set(['state-stage-after-rename', 'event-stage-after-rename',
     'pending-after-rename', 'event-after-partial-append', 'event-after-full-append',
-    'state-after-rename', 'hash-after-rename', 'before-cleanup']);
+    'state-after-rename', 'hash-after-rename', 'before-cleanup',
+    'state-replace-after-create', 'state-replace-after-fsync',
+    'state-replace-after-rename-before-dir-fsync',
+    'hash-replace-after-create', 'hash-replace-after-fsync',
+    'hash-replace-after-rename-before-dir-fsync']);
   if (!points.has(point)) throw new Error('CRASH_POINT_INVALID');
   const input = JSON.parse(rawInput);
   const inputKeys = Object.keys(input).sort();
@@ -33596,7 +33605,8 @@ export async function runAppLifecycle(route, {
   if (route === 'fork') {
     const workstream = runKernel(root, [
       'workstream', 'new', '--title', 'App E2E', '--branch', 'app-e2e',
-      '--worktree', '.claude/worktrees/app-e2e', '--owner', runId, '--generation', '1', '--run-id', runId,
+      '--worktree', '.claude/worktrees/app-e2e', '--request-id', 'app-e2e-workstream',
+      '--owner', runId, '--generation', '1', '--run-id', runId,
     ], { cwd }).json;
     runKernel(root, [
       'workstream', 'set', '--id', workstream.id, '--status', 'in_progress',
@@ -36313,10 +36323,10 @@ const implementationAuthorityRaw = implementationAuthorityMatch == null
 const gate6Raw = gate6HeadingMatch == null || gate6RawEnd < 0 ? ''
   : source.slice(gate6HeadingMatch.index, gate6RawEnd);
 const expectedImplementationAuthorityHash =
-  '4bc32f7e955c39ff93f1faf15dce745b84f0647605f546d7f12f87ce6e8a8ec0';
+  '0cad66912dbb501e648ea317f334e46918ecb0c2b84dc437a78cdfde7ca99878';
 const expectedGate6SectionHash =
   '648504926fc529d9e02202399384c09d5bc2737884187ed9923c90f1270733a4';
-if (Buffer.byteLength(implementationAuthorityRaw, 'utf8') !== 1977235) {
+if (Buffer.byteLength(implementationAuthorityRaw, 'utf8') !== 1977949) {
   fail('pre-Gate-6 authority UTF-8 byte length differs from its exact reviewed binding');
 }
 if (createHash('sha256').update(implementationAuthorityRaw).digest('hex')
@@ -36607,6 +36617,18 @@ for (const task of taskMatches) {
       "'lease.mjs': ['acquireLease']"]) {
       if (!card.includes(token)) fail(`Task 7B missing staged caller token ${token}`);
     }
+    const basePoints = /const BASE_POINTS = new Set\(\[([\s\S]*?)\n\]\);/u.exec(card)?.[1] ?? '';
+    for (const point of [
+      'state-stage-after-rename', 'event-stage-after-rename', 'pending-after-rename',
+      'event-after-partial-append', 'event-after-full-append', 'state-after-rename',
+      'hash-after-rename', 'before-cleanup',
+      'state-replace-after-create', 'state-replace-after-fsync',
+      'state-replace-after-rename-before-dir-fsync',
+      'hash-replace-after-create', 'hash-replace-after-fsync',
+      'hash-replace-after-rename-before-dir-fsync',
+    ]) {
+      if (!basePoints.includes(`'${point}'`)) fail(`Task 7B BASE_POINTS omits ${point}`);
+    }
   }
   if (task[1] === '7D') {
     for (const token of ['callerBinding, intentDigest',
@@ -36851,13 +36873,45 @@ for (const task of taskMatches) {
       'messageFailure: true', "input.messageCwd ?? root",
       'same-length staged-event corruption is rejected before any canonical mutation',
       'dangling journal symlink is corruption and never cleanup authority',
-      'published confirm marker plus a different receipt is the public App fence']) {
+      'published confirm marker plus a different receipt is the public App fence',
+      'rmdirSync as rmdir10d',
+      "rmdir10d(join(fixture.root, '.deep-loop', 'runs', fixture.runId, '.lock'))",
+      "...(operation === 'recover' ? [] : [{ different: true }])",
+      "'state-replace-after-create', 'state-replace-after-fsync'",
+      "'state-replace-after-rename-before-dir-fsync'",
+      "'hash-replace-after-create', 'hash-replace-after-fsync'",
+      "'hash-replace-after-rename-before-dir-fsync'"]) {
       if (!card.includes(token)) fail(`Task 10D missing executable crash token ${token}`);
+    }
+    if (card.includes('recoveryDigest')) {
+      fail('Task 10D invents a recovery input that recoverRun does not bind');
+    }
+    const dispatchStart = card.indexOf('export function dispatchPublicMutationCrash10d(');
+    const dispatchEnd = card.indexOf('registerAnchoredCrashExtension(request =>', dispatchStart);
+    const dispatchBody = dispatchStart < 0 || dispatchEnd < 0
+      ? '' : card.slice(dispatchStart, dispatchEnd);
+    for (const point of [
+      'state-replace-after-create', 'state-replace-after-fsync',
+      'state-replace-after-rename-before-dir-fsync',
+      'hash-replace-after-create', 'hash-replace-after-fsync',
+      'hash-replace-after-rename-before-dir-fsync',
+    ]) {
+      if (!dispatchBody.includes(`'${point}'`)) {
+        fail(`Task 10D public crash dispatch omits ${point}`);
+      }
     }
     for (const token of ['exact post-recovery cleanup',
       'pending acquire identity fence must precede cwd callback',
       'pending acquire identity fence must precede realpath callback']) {
       if (!card.includes(token)) fail(`Task 10D missing exact recovery cleanup token ${token}`);
+    }
+  }
+  if (task[1] === '14B') {
+    for (const token of [
+      "'workstream', 'new', '--title', 'App E2E', '--branch', 'app-e2e'",
+      "'--worktree', '.claude/worktrees/app-e2e', '--request-id', 'app-e2e-workstream'",
+    ]) {
+      if (!card.includes(token)) fail(`Task 14B lifecycle missing workstream request token ${token}`);
     }
   }
   if (task[1] === '17B') {

@@ -2,7 +2,7 @@
 
 작성일: 2026-07-13
 운영 계약: `docs/handoff/2026-07-13-codex-app-native-task-continuation-goal-handoff.md`
-상태: Gate 2 Plan Review 진행; Gate 1 round 17 APPROVE 완료, 46-card TDD plan 무변경 재검증 중
+상태: Gate 2 round 1 Respond 완료; focused round 2 확인 뒤 Gate 3A 진행 예정
 기준: `main@c38a96137f8f4f0099c35e893860930e8ee4cf73`, deep-loop `1.8.2`
 
 > source of truth: 이 문서 + 운영 계약 + 현재 저장소 + `git log`. 이전 대화 컨텍스트를 가정하지 말라.
@@ -1747,6 +1747,28 @@ Respond는 fatal-UTF-8/LF 규칙을 유지하는 4 KiB 초과 external report Bu
 Buffer가 metadata body보다 큰지 명시적으로 증명한다. Evidence suffix parser가 이 metadata를
 수용한 뒤 frozen external report/response의 exact length/hash를 다시 대조해야 한다. Actionable
 finding이 있어 adversarial은 시작하지 않고 `N_actual=1`로 종료했다.
+
+Gate 2 round 1은 exact target `5d7bd58218ee2dae78554a650cfb5bef37eb2744`와 plan SHA-256
+`1d13389aaa4f832679685d11b726f9fdc164ba9c6fd3d92717c1cbf4a51f9ded`를 검토했다. Standard는
+`APPROVE` Red/Yellow/Info `0 / 0 / 0`으로 완료했고, adversarial은 900초에 final 없이 종료되어
+noncounted다. 다만 main이 partial trace의 세 composition counterexample을 독립 재현했다. Task 14B
+lifecycle은 Task 7E 이후 필수인 workstream `--request-id`를 잃었고, Task 10D의 14-point crash
+matrix 중 six inner-replace point가 base worker와 public dispatch 양쪽 closed enum에서 빠졌으며,
+hard-crash 뒤 orphan run lock이 남아 immediate public retry가 TTL 전 수렴하지 않았다. 또한 recover
+행의 `different` 변형은 `recoverRun`이 받지도 결속하지도 않는 `recoveryDigest`를 바꿔 실제 divergent
+input을 만들지 못했다.
+
+Respond는 Task 14B에 stable `app-e2e-workstream` request ID를 넣고, base worker와 Task 10D public
+dispatch 모두 six inner-replace point를 수용하게 한다. Exact worker exit 91 뒤에는 Task 7G와 같은
+test-only 규칙으로 그 worker의 orphan `.lock`만 제거하고 journal recovery는 public retry에만 맡긴다.
+Recover에는 같은 fence 아래 별도의 business input이 없으므로 fictional field를 추가하지 않고 그
+operation만 generic `different` variant에서 제외하며 foreign-fence와 exact convergence는 유지한다.
+Embedded validator는 Task 7B base enum, Task 10D dispatch/orphan cleanup/no-fictional-input, Task 14B
+request ID를 직접 검사한다. Corrected pre-Gate-6 authority SHA-256은
+`0cad66912dbb501e648ea317f334e46918ecb0c2b84dc437a78cdfde7ca99878`, Gate 6 SHA-256은 기존
+`648504926fc529d9e02202399384c09d5bc2737884187ed9923c90f1270733a4`이고, embedded validator는
+46 tasks/372 fences로 통과했다. 다음 확인은 이 네 composition closure에 한정한 fresh two-reviewer
+round 2 한 번이며, 통과하면 추가 plan round 없이 Gate 3A로 이동한다.
 
 구현 순서:
 
