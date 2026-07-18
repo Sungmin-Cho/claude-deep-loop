@@ -510,6 +510,25 @@ test('enum-only initialization profile is allowlisted and runtime correlated', (
   }
 });
 
+test('enum profile Proxy fails full validation before executing traps', () => {
+  const loop = enumProfileSchemaLoop();
+  let trapCount = 0;
+  const backing = loop.initialization.request_projection.enum_profile;
+  loop.initialization.request_projection.enum_profile = new Proxy(backing, {
+    get(target, property, receiver) {
+      trapCount += 1; return Reflect.get(target, property, receiver);
+    },
+    getPrototypeOf(target) {
+      trapCount += 1; return Reflect.getPrototypeOf(target);
+    },
+    ownKeys() {
+      trapCount += 1; return [];
+    },
+  });
+  assert.equal(validate(loop).ok, false);
+  assert.equal(trapCount, 0, 'enum profile Proxy rejection must precede reflection');
+});
+
 test('genesis surface digest and observation clocks are exact anchors', () => {
   const full = appSchemaLoop({ auto: true });
   assert.equal(validate(full).ok, true, validate(full).errors.join('; '));
@@ -609,6 +628,28 @@ test('projection and stored capability proxies fail before executing traps', () 
   assert.equal(validate(stored).ok, false);
   assert.equal(storedProxy.traps(), 0,
     'stored capability proxy must be rejected before traversal or digesting');
+});
+
+test('nested projected object Proxy cannot hide keys or execute traps', () => {
+  const loop = enumProfileSchemaLoop();
+  let trapCount = 0;
+  const backing = Object.fromEntries(
+    Array.from({ length: 129 }, (_, index) => [`hidden-${index}`, null]),
+  );
+  const hidden = new Proxy(backing, {
+    get(target, property, receiver) {
+      trapCount += 1; return Reflect.get(target, property, receiver);
+    },
+    getPrototypeOf(target) {
+      trapCount += 1; return Reflect.getPrototypeOf(target);
+    },
+    ownKeys() {
+      trapCount += 1; return [];
+    },
+  });
+  loop.initialization.request_projection.plugins_detected = [hidden];
+  assert.equal(validate(loop).ok, false);
+  assert.equal(trapCount, 0, 'nested object Proxy rejection must precede traversal');
 });
 
 test('App extension validation is additive, exact-keyed, and consent correlation is fail closed', () => {

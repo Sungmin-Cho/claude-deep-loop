@@ -221,7 +221,8 @@ const CWD_SOURCE = {
 };
 
 const objectWithExactKeys = (value, keys) => {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  if (value === null || typeof value !== 'object' || types.isProxy(value)
+      || Array.isArray(value)) return false;
   const actual = Object.keys(value).sort();
   const expected = [...keys].sort();
   return actual.length === expected.length && expected.every((key, index) => actual[index] === key);
@@ -423,9 +424,12 @@ function canonicalProjectionValue(value) {
       );
     });
   }
-  if (value !== null && typeof value === 'object') return Object.fromEntries(
-    Object.keys(value).sort().map(key => [key, canonicalProjectionValue(value[key])]),
-  );
+  if (value !== null && typeof value === 'object') {
+    if (types.isProxy(value)) throw new Error('projection object Proxy invalid');
+    return Object.fromEntries(
+      Object.keys(value).sort().map(key => [key, canonicalProjectionValue(value[key])]),
+    );
+  }
   return value;
 }
 
@@ -457,7 +461,7 @@ function validateBoundedProjectionTree(value, errors) {
       }
       return;
     }
-    if (typeof item !== 'object' || item === undefined
+    if (typeof item !== 'object' || item === undefined || types.isProxy(item)
         || ![Object.prototype, null].includes(Object.getPrototypeOf(item))) {
       errors.push(label + ' value invalid'); return;
     }
