@@ -336,10 +336,17 @@ test('workstream creation retry after marker cleanup reuses one ID and changed r
   assert.equal(readState(root, runId).data.workstreams.length, 1);
   assert.equal(readLines(root, runId)
     .filter(event => event.type === 'workstream-new').length, eventCount);
+  const intentional = productionNewWorkstream(root, runId, {
+    ...request, requestId: 'workstream-stable-2',
+  });
+  assert.notEqual(intentional.id, first.id);
+  assert.equal(readState(root, runId).data.workstreams.length, 2);
+  assert.equal(readLines(root, runId)
+    .filter(event => event.type === 'workstream-new').length, eventCount + 1);
   assert.throws(() => productionNewWorkstream(root, runId, {
     ...request, branch: 'changed',
   }), /WORKSTREAM_REQUEST_CONFLICT/);
-  assert.equal(readState(root, runId).data.workstreams.length, 1);
+  assert.equal(readState(root, runId).data.workstreams.length, 2);
 });
 
 import { test as test7f } from 'node:test';

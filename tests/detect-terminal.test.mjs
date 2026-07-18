@@ -462,14 +462,20 @@ test7f('detect-terminal fences and proves before launcher revalidation or probe'
   const before = bytes7f(fixture.root, fixture.runId);
   let revalidations = 0;
   let probes = 0;
+  let envReads = 0;
+  const guardedEnv = {};
+  Object.defineProperty(guardedEnv, 'WT_SESSION', { enumerable: true,
+    get() { envReads += 1; return 'session-1'; } });
   const invoke = owner => detect7f(fixture.root, fixture.runId, {
-    owner, generation: fixture.generation, env: { WT_SESSION: 'session-1' },
+    owner, generation: fixture.generation, env: guardedEnv,
     platform: 'win32', arch: 'x64', now: '2026-07-13T00:00:10.000Z',
     revalidateLauncher: identity => { revalidations += 1; return identity; },
     run: () => { probes += 1; return { code: 0 }; },
   });
   assert7f.throws(() => invoke('01JAPPWR0NG000000000000000'), /LEASE_FENCED/);
+  assert7f.equal(envReads, 0);
   assert7f.throws(() => invoke(fixture.owner), /RUN_SNAPSHOT_INVALID/);
+  assert7f.equal(envReads, 0);
   assert7f.equal(revalidations, 0);
   assert7f.equal(probes, 0);
   assert7f.deepEqual(bytes7f(fixture.root, fixture.runId), before);

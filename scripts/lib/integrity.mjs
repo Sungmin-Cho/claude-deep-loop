@@ -1404,8 +1404,10 @@ export function statePatchIntent(fence, field, value) {
 }
 
 export function workstreamNewIntent(fence,
-  { title, branch, worktree, baseCommit, dependsOn }) {
+  { title, branch, worktree, baseCommit, dependsOn, requestIdDigest, requestDigest }) {
   return mutationIntentDigest('workstream-new', fence, {
+    request_id_digest: requestIdDigest,
+    request_digest: requestDigest,
     title_digest: intentField('workstream-title', title),
     branch_digest: intentField('workstream-branch', branch),
     worktree_digest: intentField('workstream-path', worktree),

@@ -581,7 +581,7 @@ function genericCrashCase7b(operation) {
   const workstream = { title: 'crash probe', branch: 'codex/crash-probe',
     worktree: '.worktrees/crash-probe', baseCommit: null, dependsOn: [],
     requestId: 'workstream-crash-probe-1' };
-  const invoke = ({ foreign = false, different = false } = {}) => {
+  const invoke = ({ foreign = false, different = false, rotatedRequestId = false } = {}) => {
     const owner = foreign ? '01JAPPF0R00000000000000000' : fixture.owner;
     const caller = { owner, generation: fixture.generation };
     if (operation === 'generic-append') {
@@ -609,7 +609,9 @@ function genericCrashCase7b(operation) {
     }
     return workstream7b(fixture.root, fixture.runId,
       { ...workstream, ...(different ? { branch: 'codex/crash-probe-other',
-        worktree: '.worktrees/crash-probe-other' } : {}), fence: caller });
+        worktree: '.worktrees/crash-probe-other' } : {}),
+      ...(rotatedRequestId ? { requestId: 'workstream-crash-probe-2' } : {}),
+      fence: caller });
   };
   const retryWithResult = operation === 'generic-append' ? () => {
     const caller = { owner: fixture.owner, generation: fixture.generation };
@@ -657,7 +659,9 @@ function assertGenericCrashRecovery7b(operation, point) {
   } else {
     assert6b.throws(() => verified7c(fixture.root, fixture.runId),
       /ANCHORED_TRANSACTION_PENDING/);
-    for (const variant of [{ foreign: true }, { different: true }]) {
+    const divergent = [{ foreign: true }, { different: true },
+      ...(operation === 'workstream-new' ? [{ rotatedRequestId: true }] : [])];
+    for (const variant of divergent) {
       let result;
       try { result = invoke(variant); }
       catch (error) { assert6b.match(String(error?.message || error), /FENCED|PENDING/); }

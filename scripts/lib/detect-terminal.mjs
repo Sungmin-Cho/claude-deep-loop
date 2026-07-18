@@ -296,8 +296,14 @@ export function detectAndPersist(root, runId, {
     }
   };
   const callerBinding = { owner, generation };
+  const normalizedNow = now === undefined ? null
+    : typeof now === 'number' && Number.isFinite(now) ? new Date(now).toISOString()
+      : typeof now === 'string' && Number.isFinite(Date.parse(now))
+        ? new Date(Date.parse(now)).toISOString() : (() => {
+          throw new Error('DETECT_TERMINAL_NOW_INVALID');
+        })();
   const intentDigest = contentHash(JSON.stringify({ operation: 'detect-terminal',
-    ...callerBinding, platform, arch, env, now: now ?? null }));
+    ...callerBinding, platform, arch, now: normalizedNow }));
   const phase = body => withVerifiedMutationLock(root, runId,
     { callerBinding, intentDigest, fenceError: 'LEASE_FENCED: detect-terminal' }, body);
   const entry = phase(mutation => {

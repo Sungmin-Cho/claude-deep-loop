@@ -461,22 +461,38 @@ export function emitInsights(root, runId, {
     }
   };
   const callerBinding = { owner: fence.owner, generation: fence.generation };
+  if (typeof now !== 'number' || !Number.isFinite(now)) {
+    throw new Error('INSIGHTS_NOW_INVALID');
+  }
+  const emissionIdentity = new Date(now).toISOString();
   const intentDigest = contentHash(JSON.stringify({ operation: 'emit-insights',
-    ...callerBinding }));
+    ...callerBinding, emission_identity: emissionIdentity }));
   const phase = body => withVerifiedMutationLock(root, runId,
     { callerBinding, intentDigest, fenceError: 'LEASE_FENCED: emitInsights' }, body);
   const entry = phase(mutation => {
     const authority = mutation.readVerifiedState({ fenceCheck: identityFence }).data;
     if (!mutation.recovered) return { authority, recovered: null };
-    const event = readLines(root, runId).filter(item => item.type === 'insights-emitted').at(-1);
+    const event = mutation.recovered.events?.find(item => item.type === 'insights-emitted');
     if (!event) throw new Error('INSIGHTS_RECOVERY_PROJECTION_INVALID');
     return { authority, recovered: { ok: true, path: event.data.path,
       sha256: event.data.sha256, candidates_count: event.data.candidates_count,
       recovered: true } };
   });
   if (entry.recovered) {
-    return finishRecoveredInsightsArtifact(root, entry.recovered,
+    const recovered = finishRecoveredInsightsArtifact(root, entry.recovered,
       { platform, monotonicNowFn, renameFn, sleepFn });
+    const raw = readFileSync(join(root, recovered.path), 'utf8');
+    const artifact = unwrap(JSON.parse(raw),
+      { producer: 'deep-loop', artifact_kind: 'loop-insights' });
+    const payload = artifact?.payload;
+    if (!payload || !Array.isArray(payload.candidates)
+        || !Array.isArray(payload.suspicious_active)
+        || !Array.isArray(payload.post_finish_mutated)) {
+      throw new Error('INSIGHTS_RECOVERY_PROJECTION_INVALID');
+    }
+    return { ...recovered, candidates: payload.candidates,
+      suspicious_active: payload.suspicious_active,
+      post_finish_mutated: payload.post_finish_mutated };
   }
   const authority = entry.authority;
   const authorized = leaseCheck(authority, fence);

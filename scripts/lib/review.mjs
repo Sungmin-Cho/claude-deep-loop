@@ -3,15 +3,15 @@ import { randomUUID } from 'node:crypto';
 import { resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { latestInsights } from './insights.mjs';
-import { appendAnchored, readLines, readVerifiedState,
-  withVerifiedMutationLock } from './integrity.mjs';
+import { appendAnchored, authenticateVerifiedMutationCaller, readLines, readVerifiedState,
+  intentField, withVerifiedMutationLock } from './integrity.mjs';
 import { contentHash } from './envelope.mjs';
 import { episodeRequestDigest, newBlockedCheckerEpisode,
   newEpisode } from './episode.mjs';
 import { leaseCheck } from './lease.mjs';
 import { pluginPresent } from './detect.mjs';
 import { checkerDescriptor } from './adapters.mjs';
-import { containedRealFile } from './fs-safe.mjs';
+import { containedRealFile, normalizePortableRelativePath } from './fs-safe.mjs';
 import { MUTATION_TURN_FLOOR } from './budget.mjs';
 import { sessionRuntime } from './runtime.mjs';
 import { canonicalProjectRoot } from './project-root.mjs';
@@ -76,14 +76,33 @@ function withReviewMutation(root, runId, fence, operation, projection, body) {
   }, body);
 }
 
-function recoveredReviewOutcome(loop, episodeId, verdict, reviewSource) {
+function recoveredReviewOutcome(loop, episodeId, verdict, reviewSource, event) {
   const checker = loop.episodes.find(episode => episode.id === episodeId);
   const passed = verdict === 'APPROVE' || verdict === 'CONCERN';
   const terminal = passed ? 'approved' : 'rejected';
-  if (checker?.status !== terminal || checker.review_source !== reviewSource) {
+  if (checker?.status !== terminal || checker.review_source !== reviewSource
+      || event?.type !== 'review-outcome' || event.data?.episodeId !== episodeId
+      || event.data?.verdict !== verdict || event.data?.review_source !== reviewSource) {
     throw new Error('REVIEW_RECOVERY_PROJECTION_MISMATCH');
   }
-  return { verdict, passed, terminal, review_source: reviewSource };
+  return { verdict, passed, terminal, review_source: reviewSource,
+    ...(event.data.report ? { report: event.data.report,
+      report_sha256: event.data.report_sha256 } : {}) };
+}
+
+function normalizedRecordedProof(proof) {
+  const report = typeof proof.report === 'string'
+    ? normalizePortableRelativePath(proof.report) : null;
+  const findings = proof.findings != null && String(proof.findings).length
+    ? String(proof.findings).slice(0, 2000) : null;
+  return { report, findings,
+    reportPathDigest: intentField('record-review-report-path', report),
+    findingsDigest: intentField('record-review-findings', findings) };
+}
+
+function outcomeEvents(root, runId, episodeId, reviewSource) {
+  return readLines(root, runId).filter(event => event.type === 'review-outcome'
+    && event.data?.episodeId === episodeId && event.data?.review_source === reviewSource);
 }
 
 function checkIndependentReviewFence(loop, fence) {
@@ -698,6 +717,7 @@ function validVerdict(verdict) {
 // preCheck then applies runtime/lease, checker/maker, and source-evidence checks in the locked order.
 function commitReviewOutcome(root, runId, mutation, {
   episodeId, verdict, reviewSource, evidence, fence, runtime, snapshot,
+  requestReportPathDigest, requestFindingsDigest,
 }) {
   const passed = verdict === 'APPROVE' || verdict === 'CONCERN';
   if (!REVIEW_SOURCES.has(reviewSource)) throw new Error(`REVIEW_SOURCE_INVALID: ${reviewSource}`);
@@ -708,6 +728,10 @@ function commitReviewOutcome(root, runId, mutation, {
     target_maker: snapshot.targetMaker,
     reviewer_id: snapshot.reviewerId,
     review_source: reviewSource,
+    ...(reviewSource === 'recorded-path' ? {
+      request_report_path_digest: requestReportPathDigest,
+      request_findings_digest: requestFindingsDigest,
+    } : {}),
     ...(reviewSource === 'imported-stdin' ? { attempt_id: evidence.input?.attempt_id } : {}),
     ...(evidence.report ? { report: evidence.report, report_sha256: evidence.reportSha256 } : {}),
     ...(evidence.findings ? { findings: evidence.findings } : {}),
@@ -824,26 +848,54 @@ export function recordReviewOutcome(root, runId, options = {}) {
     throw new Error('REVIEW_INPUT_INVALID: proof');
   }
   rejectCallerMetadata(proof, 'recordReviewOutcome proof');
-  const projection = { episode_id: episodeId, verdict };
+  authenticateVerifiedMutationCaller(root, runId, {
+    callerBinding: { owner: fence.owner, generation: fence.generation },
+    fenceCheck: reviewIdentityFence(fence, 'recordReviewOutcome'),
+    fenceError: 'LEASE_FENCED: recordReviewOutcome',
+  });
+  const normalized = normalizedRecordedProof(proof);
+  const projection = { episode_id: episodeId, verdict,
+    report_path_digest: normalized.reportPathDigest,
+    findings_digest: normalized.findingsDigest };
   return withReviewMutation(root, runId, fence, 'recordReviewOutcome', projection,
     mutation => {
       const preState = mutation.readVerifiedState({
         fenceCheck: reviewIdentityFence(fence, 'recordReviewOutcome'),
       }).data;
+      const recoveredEvent = mutation.recovered?.events?.find(event =>
+        event.type === 'review-outcome' && event.data?.episodeId === episodeId);
+      if (recoveredEvent) {
+        return recoveredReviewOutcome(preState, episodeId, verdict,
+          'recorded-path', recoveredEvent);
+      }
+      const existing = outcomeEvents(root, runId, episodeId, 'recorded-path');
+      if (existing.length > 1) throw new Error('REVIEW_RECOVERY_PROJECTION_MISMATCH');
+      if (existing.length === 1
+          && existing[0].data.request_report_path_digest !== undefined) {
+        const [event] = existing;
+        if (event.data.verdict !== verdict) {
+          throw new Error(`REVIEW_ALREADY_RECORDED: ${episodeId}`);
+        }
+        if (event.data.request_report_path_digest !== normalized.reportPathDigest
+            || event.data.request_findings_digest !== normalized.findingsDigest
+        ) {
+          throw new Error('REVIEW_REQUEST_CONFLICT');
+        }
+        return recoveredReviewOutcome(preState, episodeId, verdict,
+          'recorded-path', event);
+      }
       const runtime = checkIndependentReviewFence(preState, fence);
       const snapshot = snapshotContext(preState, episodeId);
-      if (mutation.recovered) {
-        return recoveredReviewOutcome(preState, episodeId, verdict, 'recorded-path');
-      }
       const passed = verdict === 'APPROVE' || verdict === 'CONCERN';
-      const report = proof.report;
+      const report = normalized.report;
       const realReport = passed ? containedRealFile(resolve(root), report) : null;
       const evidence = { realReport, report: realReport ? report : null,
         reportSha256: realReport ? sha256File(realReport) : null,
-        findings: proof.findings != null && String(proof.findings).length
-          ? String(proof.findings).slice(0, 2000) : null };
+        findings: normalized.findings };
       return commitReviewOutcome(root, runId, mutation, { episodeId, verdict,
-        reviewSource: 'recorded-path', evidence, fence, runtime, snapshot });
+        reviewSource: 'recorded-path', evidence, fence, runtime, snapshot,
+        requestReportPathDigest: normalized.reportPathDigest,
+        requestFindingsDigest: normalized.findingsDigest });
     });
 }
 
@@ -864,8 +916,10 @@ export function importReviewOutcome(root, runId, options = {}) {
         fenceCheck: reviewIdentityFence(fence, 'importReviewOutcome'),
       }).data }));
   if (entry.recovered) {
+    const event = entry.recovered.events?.find(item => item.type === 'review-outcome'
+      && item.data?.episodeId === input.checker_episode_id);
     return recoveredReviewOutcome(entry.preState, input.checker_episode_id,
-      input.verdict, 'imported-stdin');
+      input.verdict, 'imported-stdin', event);
   }
   const runtime = checkIndependentReviewFence(entry.preState, fence);
   const snapshot = snapshotContext(entry.preState, input.checker_episode_id);

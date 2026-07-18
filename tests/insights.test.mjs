@@ -454,14 +454,40 @@ test('a failed newer publish does not hide an older trusted insights artifact', 
 
 test('latest: 정상 emit → 검증 통과 최신 반환', () => {
   const { root, runId, fence } = emitFixture();
-  const r1 = emitInsights(root, runId, { fence, now: FIXED.getTime(), rnd: () => 0.1 });
-  const r2 = emitInsights(root, runId, { fence, now: FIXED.getTime() + 60000, rnd: () => 0.2 });
+  let randomCalls = 0;
+  const r1 = emitInsights(root, runId, { fence, now: FIXED.getTime(),
+    rnd: () => { randomCalls += 1; return 0.1; } });
+  const firstRandomCalls = randomCalls;
+  const r2 = emitInsights(root, runId, { fence, now: FIXED.getTime() + 60000,
+    rnd: () => { randomCalls += 1; return 0.2; } });
+  assert.notEqual(r1.path, r2.path);
+  assert.ok(firstRandomCalls > 0);
+  assert.ok(randomCalls > firstRandomCalls);
+  assert.equal(readLines(root, runId)
+    .filter(event => event.type === 'insights-emitted').length, 2);
+  for (const key of ['candidates', 'suspicious_active', 'post_finish_mutated']) {
+    assert.ok(Array.isArray(r2[key]), key);
+  }
   finishFixture(root, runId);   // 이벤트 순 ie(r1)→af→ie(r2)→af→finish — r1은 after에 ie(r2)가 껴 skip, r2는 finish-인접
   const got = latestInsights(root);
   assert.equal(got.path, r2.path);                          // ULID 최신 + finish-인접
   assert.equal(got.envelope.envelope.run_id, runId);
   // codex r2 (P2 evidence): anchored 이벤트의 sha256을 소비자용으로 노출 — artifact 내용과 일치해야 한다
   assert.equal(got.sha256, contentHash(readFileSync(join(root, r2.path), 'utf8')));
+});
+
+test('emitInsights same-now response-loss retry converges once with its complete response', () => {
+  const { root, runId, fence } = emitFixture();
+  const request = { fence, now: FIXED.getTime(), rnd: () => 0.3 };
+  const first = emitInsights(root, runId, request);
+  const eventCount = readLines(root, runId)
+    .filter(event => event.type === 'insights-emitted').length;
+  const retry = emitInsights(root, runId, {
+    ...request, rnd: () => { throw new Error('exact retry must not execute random source'); },
+  });
+  assert.deepEqual({ ...retry, recovered: undefined }, { ...first, recovered: undefined });
+  assert.equal(readLines(root, runId)
+    .filter(event => event.type === 'insights-emitted').length, eventCount);
 });
 
 // ── Phase6 ITEM-4 (adversarial): finish는 proof 검증 이전에 insights emit을 실행하므로, proof 미충족

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, unlinkSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
@@ -133,6 +133,41 @@ test('recordReviewOutcome derives checker terminal + drives breaker/comprehensio
   assert.equal(d.episodes.find(e => e.id === r2.checkerEpisodeId).status, 'approved');
   assert.equal(d.circuit_breaker.consecutive_request_changes, 0);
   assert.ok(d.workstreams.find(w => w.id === ws).review_points_done.includes('plan'));
+});
+
+test('recordReviewOutcome binds complete proof and recovers the durable response without report I/O', () => {
+  const { root, runId } = seed();
+  const f = fence(runId);
+  const { checkerId, worktree } = boundChecker(root, runId, f, 'complete-intent');
+  const report = wsReport(root, worktree, 'review.md', '# original review');
+  const request = { episodeId: checkerId, verdict: 'APPROVE',
+    proof: { report, findings: 'stable findings' }, fence: f };
+  const first = recordReviewOutcome(root, runId, request);
+  const events = eventLog(root, runId).filter(event => event.type === 'review-outcome').length;
+  assert.equal(first.report, report);
+  assert.match(first.report_sha256, /^[0-9a-f]{64}$/);
+
+  writeFileSync(join(root, report), '# changed after durable success');
+  const changedBytesRetry = recordReviewOutcome(root, runId, request);
+  assert.deepEqual({ ...changedBytesRetry, recovered: undefined },
+    { ...first, recovered: undefined });
+  unlinkSync(join(root, report));
+  const removedSourceRetry = recordReviewOutcome(root, runId, request);
+  assert.deepEqual({ ...removedSourceRetry, recovered: undefined },
+    { ...first, recovered: undefined });
+  assert.equal(eventLog(root, runId).filter(event => event.type === 'review-outcome').length,
+    events);
+
+  for (const proof of [
+    { report, findings: 'changed findings' },
+    { report: `${worktree}/other.md`, findings: 'stable findings' },
+  ]) {
+    const before = eventLog(root, runId).length;
+    assert.throws(() => recordReviewOutcome(root, runId, {
+      episodeId: checkerId, verdict: 'APPROVE', proof, fence: f,
+    }), /REVIEW_REQUEST_CONFLICT/);
+    assert.equal(eventLog(root, runId).length, before);
+  }
 });
 
 // (RC → nextAction=fix_episode 종단 테스트는 Task 6 next-action.test.mjs 로 이동 — Task 4 는 next-action.mjs 미존재. Codex r5 🟡1)
