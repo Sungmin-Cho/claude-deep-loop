@@ -3435,6 +3435,51 @@ no inherited approval from the historical receipt.
   Red/Yellow `0 / 0`. No degraded/capacity attempt can close Gate 1.
 
 
+### Gate 1 fresh cycle 8 round 15 micro-delta review
+
+- focused base/target:
+  `36e4515275fe598344fdae91ccdf67e59732ff3d..45f18a875f4833da72ec7729b8ab33980db1d75c`.
+- invocation: standard exact `gpt-5.6-sol` / high / read-only / ephemeral process completed with
+  exit 0 and final output. It returned two P1 findings; adversarial was not launched after actionable
+  findings, so `N_planned=2`, `N_actual=1`, degraded.
+- standard task: `019f728f-b77e-7d02-809a-0040a0fe61ab`; `REQUEST_CHANGES`, Red/Yellow/Info
+  `2 / 0 / 0`.
+- roots: evidence-only external file lengths were incorrectly remaining-suffix bounded; local
+  `core.autocrlf` could transform materialized bytes while HEAD/tree/status/attributes stayed green.
+- report: `.deep-review/reports/2026-07-18-092033-review.md`, SHA-256
+  `135505f2b67e6da40fae631d012fc3ca7050ca9c0cc45b4db31b5d4dcd982f97`.
+- standard raw/final/stderr/argv SHA-256:
+  `a328f5cb358f137b037a1ae0ba00ba49d2a41b8b32eae0177b2adbc7e84b842d` /
+  `5bba8f595ff6bb8546ff049005a9c18185ceafe841485ba96c8dad1e8d470295` /
+  `620ddee433954137a5a1df41c5d984b7692dfae3ab212f470c770adb2fae74b1` /
+  `b27a3efe834cc828c6d441d86e90016ff9c7d470aa4d77e7e5e3857404c30e13`.
+- recurring findings: validated Stage 5.5 run `01KXS9J9C3QW50HXW64JS6RRYB`; architecture
+  `94→95`, security `39→40`; test-coverage `49` and error-handling `33` stayed unchanged.
+
+### Gate 1 fresh cycle 8 round 15 Respond
+
+- disposition: accepted both Red roots; rejected/deferred none; `execution_path=main_fallback`.
+- frame bounds: only embedded suffix frames are remaining-byte bounded before slicing. Evidence
+  metadata file lengths remain safe integers and must match the separately frozen staged Buffers.
+- line endings: common/worktree `core.autocrlf`, `core.eol`, and `core.safecrlf` are rejected; every
+  bounded Git command pins `core.autocrlf=false` and `core.eol=lf`.
+- unchanged authority: pre-Gate-6 SHA-256
+  `4bc32f7e955c39ff93f1faf15dce745b84f0647605f546d7f12f87ce6e8a8ec0`; Gate 6 SHA-256
+  `648504926fc529d9e02202399384c09d5bc2737884187ed9923c90f1270733a4`.
+- closure probe: `.deep-review/tmp/cycle8-round12-closure-probe.mjs`, SHA-256
+  `c1f2909973ef44cffc3f78ab313a2f212f9dbbf05c2baa538365e3501ae2c828`; output SHA-256
+  `3a5195b574be1b973faaecccb341eaa3b7f2a591dff03a532a274e44cdf059e5`.
+- verification: embedded validator passed 46 tasks/372 fences; both new probe facts are true.
+  `npm run preflight` passed 1,463/1,463; log SHA-256
+  `565c9a2a044920e62c71da16f6e1f8c9bb1393d73160d25b3dedce5d9cdbfe82`.
+- correction commit: `46b3b00d14a979542e237dfa280ddf3aa17d5f8a`.
+- response: `.deep-review/responses/2026-07-18-092230-response.md`, SHA-256
+  `25cbe71089c24fbacb67efd7274bc6ca7ea27a4143e645a9e908139c07265f89`.
+- Phase 6 main-fallback log: `.deep-review/tmp/phase6-cycle8-round15.log`, SHA-256
+  `957c1840a467676d52c0153a74076cc0af02de1348b4adfca1c70582af40f27e`.
+- gate state: open only for the native goal's two-voice proof. One correction-only Round 16 must
+  produce two valid same-target `APPROVE`, Red/Yellow `0 / 0`; then Gate 1 closes and Gate 2 starts.
+
 ## Review receipt template
 
 ### Gate 1 fresh cycle 8 round 14 micro-delta review
