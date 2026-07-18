@@ -3929,3 +3929,62 @@ main-agent judgment:
   (architecture 96, test-coverage 54, error-handling 33, security 52); validated SHA-256
   `3ad72459202fdc5a09b5f927fd86e3f63289d3fc12ed355c992db48d4177f454`.
 - formal disposition: `APPROVE — GATE 3A COMPLETE`. Begin Gate 3B. No further Gate 3A review.
+
+## Gate 3A corrected full pre-review implementation target
+
+- correction of authority: the earlier Gate 3A receipt ending at
+  `c057aecc60cdc61ccfd40d60d0b492f58efea8ab` covered only Tasks 1A-3B. Tasks 4A-6E were
+  subsequently discovered to have been skipped, so that historical approval is not the current
+  Gate 3A completion proof. This target includes the missing Tasks 4A-6E and supersedes that
+  completion claim without rewriting the preserved historical receipt.
+- implementation base/code candidate:
+  `f15d42dc0a21a2f37d86aa1a3467f5e3a2820b53..ecbb3a8c01abc6a92545a8657a61190f53816507`;
+  candidate tree `ff72746511b21e835efa92f29f77b518f3d1fb16`; branch
+  `codex/codex-app-native-task-continuation`; tracked worktree clean before this evidence-only edit.
+- range stat: 43 files changed, 12,746 insertions, 101 deletions. The range transparently includes
+  the prematurely implemented Task 7A commits `8c985c1`, `5f8d5cf`, and `a3e5440`; they do not
+  satisfy Gate 3A and must be refreshed/re-reviewed at the Gate 3B boundary after this checkpoint.
+- missing-slice implementation sequence: Task 4A `a8a250e`; Task 4B `3cd0b03`; Task 4C
+  `679549e`; Task 5A `ecc2f1c`; Task 5B `747b372`; Task 5C `ac141eb`; Task 6A `fb76618`;
+  Task 6B `139ddc2`; Task 6C `13e6897`; Task 6D `00d4ef4`; Task 6E `ecbb3a8`.
+- core artifact SHA-256:
+  - `schemas/loop-run.schema.json`: `4b5c9eb1fb34d14691a11ec0410f886507461b8f8d6830984861f628767d84f4`.
+  - `scripts/deep-loop.mjs`: `6befc1ed79db6ae936f9331274482485d48566cd540840cb14df6e80b393ba1d`.
+  - `scripts/lib/app-task-continuation.mjs`: `d1302238b182a343bac351655d0412952973391a501b1e54ea6989edf28e33b7`.
+  - `scripts/lib/bounded-input.mjs`: `79cf359ecb7df3f6a167684ef048b7f81d311a68e956a50b63b909b9bc024923`.
+  - `scripts/lib/durable-file.mjs`: `e990f97b30d9999acc789ce62af721a1e53b2678784f37c306f861fcd8e0a844`.
+  - `scripts/lib/host-surface.mjs`: `64fb54ce2d958f54ef31ec8e7827c26c7fecec74044333e096c39f75b14a2c14`.
+  - `scripts/lib/init-transaction.mjs`: `60364c4157e438628afc10bae393d7d192acc917b5f8be710bca57243960f31d`.
+  - `scripts/lib/initrun.mjs`: `978bf1dc0a2e0f26023f4e548c336ccc9d85d3e2c3ec55cd072365be2b866059`.
+  - `scripts/lib/integrity.mjs`: `369d7b0b281475bb0f27af227c8d3361e98dae45db681b78fe799f95a77dfcab`.
+  - `scripts/lib/lease.mjs`: `1494761c73ffc5625bd56cf781d67c16546d18ae0bbdc679f21aab718cf44eef`.
+  - `scripts/lib/runtime.mjs`: `c8bf6bb2b1d1009b76dbef080c41e4f21efbb4867159b08cb0217c6bcaaf7f90`.
+  - `scripts/lib/schema.mjs`: `1552532e11923b57cd1cb915a44a4bddf3c40123de925fd3f37149ffdc29d4dc`.
+- authority SHA-256: plan
+  `0236e407d1b939190fec7b48ea1c3f3a9968f38dcba1fecef890d3a9dc68c45a`; design
+  `3ae9407f1cb9f6f97a2726a303a303230692e7c4b96a9964f97779575698bac4`.
+- corrected Gate 3A checkpoint replay:
+  - focused group 1 command/result SHA-256
+    `6d9cabac8e78c350e995394a0bcc86b4b664d9528e5d341ffabb5401f8010b8d` /
+    `f1a9c33b6a8223a1863b40b2574e1c36463bb7bfac75fddb15fd52dd153f6788`: PASS 303/303.
+  - focused group 2 command/result SHA-256
+    `f493728ed9813043922994c39170ebb9ae4b6cc61e8dac7f964e3f34fff04837` /
+    `216e4509e45f41228b1ef84f734c66b3406522c5b4cebd50eea7b438107b23c7`: PASS 131/131.
+  - clean-detached exact-commit `npm run preflight` command/result SHA-256
+    `9021fa383a0eeb1e34ff8dc320bfe443449f6fbc42ef67347f496b685a74acfd` /
+    `eef2ecdfee22400abf6100613d542d1f9fa6577672314c43bd2466e7911d0ebb`: PASS 1,657/1,657.
+  - `git diff --check` and `git diff --check origin/main..HEAD`: PASS with empty output;
+    command SHA-256 `466c2f308b48c7661d646fdd068fbecea974c665fe65dbf8ed508f224180ce0b` /
+    `49b5d7d52ea1827970c76cd59bbee3d5a788572b0c2aa64f98b1e4b2db08c164` and empty-result
+    SHA-256 `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+- task-review disposition: every Task 4A-6E target ended with independent specification PASS and
+  adversarial quality APPROVE on its final SHA. Accepted findings were closed under RED/GREEN and
+  only final-target delta confirmation was retained; no speculative extra review round was used.
+- ignored-state disposition: root `.deep-loop` run state is external to this worktree and is not
+  mutated. It can make a live-worktree validation noisy, so the exact-commit clean-detached preflight
+  above is the authoritative full-gate result. Ignored `.superpowers/` packages/reports remain local
+  execution evidence and are not part of the reviewed payload.
+- review boundary: force-add and commit this evidence-only row. Review the exact resulting commit over
+  base `f15d42dc0a21a2f37d86aa1a3467f5e3a2820b53` with two independent read-only
+  `gpt-5.6-sol`/high voices, Opus/agy excluded. Any subsequent code, test, schema, plan, design, or
+  release-document change invalidates the receipt and requires a fresh target.
