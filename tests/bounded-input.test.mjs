@@ -1,9 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Readable } from 'node:stream';
+import { PassThrough, Readable } from 'node:stream';
 import {
+  APP_STDIN_READ_TIMEOUT_MS,
   REVIEW_IMPORT_MAX_BYTES,
   readBoundedText,
+  readStructuredLine,
+  structuredReadyToken,
 } from '../scripts/lib/bounded-input.mjs';
 
 test('review import byte limit is pinned to 1 MiB', () => {
@@ -32,4 +35,89 @@ test('readBoundedText rejects malformed and truncated UTF-8 after retaining raw 
 test('readBoundedText validates its byte bound and stream contract', async () => {
   await assert.rejects(readBoundedText(Readable.from([]), { maxBytes: 0 }), /REVIEW_IMPORT_BOUND_INVALID/);
   await assert.rejects(readBoundedText(null), /REVIEW_IMPORT_STREAM_INVALID/);
+});
+
+test('pty reader enters raw mode before READY and restores it after one line', async () => {
+  const calls = [];
+  const stream = new PassThrough();
+  stream.isTTY = true;
+  stream.setRawMode = value => calls.push(['raw', value]);
+  const promise = readStructuredLine(stream, {
+    mode: 'pty-raw-noecho', purpose: 'confirm', binding: 'attempt-1', maxBytes: 513,
+    writeReady: token => calls.push(['ready', token]),
+  });
+  stream.end(Buffer.from('opaque $`\\ id\n'));
+  assert.equal(await promise, 'opaque $`\\ id');
+  assert.deepEqual(calls, [
+    ['raw', true],
+    ['ready', 'DEEP_LOOP_STDIN_READY:v1:confirm:attempt-1:pty-raw-noecho'],
+    ['raw', false],
+  ]);
+});
+
+test('pipe reader installs listeners before READY, accepts a split one-line record, and cleans up', async () => {
+  const stream = new PassThrough();
+  const calls = [];
+  const promise = readStructuredLine(stream, {
+    mode: 'pipe-open-noecho', purpose: 'probe', binding: 'nonce-1', maxBytes: 32,
+    writeReady: token => {
+      for (const event of ['data', 'end', 'close', 'error']) {
+        assert.ok(stream.listenerCount(event) > 0, event + ' listener missing before READY');
+      }
+      calls.push(['ready', token]);
+    },
+    setTimeoutFn: (fn, ms) => { assert.equal(ms, APP_STDIN_READ_TIMEOUT_MS); return 9; },
+    clearTimeoutFn: id => calls.push(['clear', id]),
+  });
+  stream.write('opaque');
+  stream.end('\n');
+  assert.equal(await promise, 'opaque');
+  assert.deepEqual(calls, [
+    ['ready', 'DEEP_LOOP_STDIN_READY:v1:probe:nonce-1:pipe-open-noecho'], ['clear', 9],
+  ]);
+  for (const event of ['data', 'end', 'close', 'error']) assert.equal(stream.listenerCount(event), 0);
+});
+
+test('READY token rejects invalid purpose, binding, mode, control, and size', () => {
+  for (const input of [
+    { purpose: 'bad:purpose', binding: 'ok', mode: 'pipe-open-noecho' },
+    { purpose: 'probe', binding: '', mode: 'pipe-open-noecho' },
+    { purpose: 'probe', binding: 'bad\nvalue', mode: 'pipe-open-noecho' },
+    { purpose: 'probe', binding: 'x'.repeat(513), mode: 'pipe-open-noecho' },
+    { purpose: 'probe', binding: 'ok', mode: 'tty' },
+  ]) assert.throws(() => structuredReadyToken(input), /STRUCTURED_STDIN_BINDING_INVALID/);
+});
+
+test('ended or aborted pipe never emits READY', async () => {
+  const ended = Readable.from([]);
+  for await (const _chunk of ended) { /* drain to readableEnded */ }
+  let ready = 0;
+  await assert.rejects(readStructuredLine(ended, { mode: 'pipe-open-noecho', purpose: 'probe',
+    binding: 'nonce-1', writeReady: () => { ready += 1; } }), /STRUCTURED_STDIN_PIPE_CLOSED/);
+  const aborted = new PassThrough();
+  Object.defineProperty(aborted, 'readableAborted', { value: true });
+  await assert.rejects(readStructuredLine(aborted, { mode: 'pipe-open-noecho', purpose: 'probe',
+    binding: 'nonce-2', writeReady: () => { ready += 1; } }), /STRUCTURED_STDIN_PIPE_CLOSED/);
+  assert.equal(ready, 0);
+});
+
+test('pipe mode rejects a TTY before READY instead of accepting an echoing channel', async () => {
+  const stream = new PassThrough();
+  stream.isTTY = true;
+  stream.setRawMode = () => assert.fail('pipe mode never toggles TTY raw mode');
+  let ready = 0;
+  await assert.rejects(readStructuredLine(stream, { mode: 'pipe-open-noecho', purpose: 'probe',
+    binding: 'nonce-tty', writeReady: () => { ready += 1; } }),
+  /STRUCTURED_STDIN_PIPE_TTY/);
+  assert.equal(ready, 0);
+});
+
+test('bytes delivered before READY are rejected and READY is not emitted', async () => {
+  const stream = new PassThrough();
+  stream.isTTY = true;
+  stream.setRawMode = value => { if (value) stream.write('early\n'); };
+  let ready = 0;
+  await assert.rejects(readStructuredLine(stream, { mode: 'pty-raw-noecho', purpose: 'probe',
+    binding: 'nonce-3', writeReady: () => { ready += 1; } }), /STRUCTURED_STDIN_EARLY_WRITE/);
+  assert.equal(ready, 0);
 });
