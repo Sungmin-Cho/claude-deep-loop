@@ -4085,3 +4085,24 @@ main-agent judgment:
 - gate state: open for one same-target delta confirmation only. Force-add this evidence row plus the
   exact report/response and commit them. Two valid `APPROVE`, Red/Yellow `0 / 0`, close corrected
   Gate 3A immediately; no broader or speculative review follows.
+
+### Corrected Gate 3A checkpoint round 4 final approval
+
+- reviewed target/tree: `f0f5521db5e299894a3c9e29141086e68b1d5db1` /
+  `644af1eaddc6b58bf4fa8a5e429f5479d244a19d`; target and tracked worktree stayed unchanged/clean.
+- invocation: fresh standard `/root/gate3a_round4_standard` and edge checker
+  `/root/gate3a_round4_edge_checker`, both read-only exact `gpt-5.6-sol` / high; Opus/agy excluded;
+  `N_planned=2`, `N_actual=2`.
+- verdict: both `APPROVE`, Red/Yellow/Info `0 / 0 / 0`; natural convergence. The 9-case authority
+  matrix passed 9/9, all five manual profiles passed 5/5, and Gate groups remained 318/318 and
+  131/131. All Round 3 source/test/report/response hashes matched.
+- formal review: `.deep-review/reports/2026-07-19-015250-review.md`, SHA-256
+  `3d83d3f361697bb3126e9a8e28b58c7729105a5bc23ce0ccde7b0674a8a8d017`.
+- no-change response: `.deep-review/responses/2026-07-19-015250-response.md`, SHA-256
+  `51f3346870f44f7359fa607cb1e091115850c8c34f50ad5eac909d5995964fde`;
+  findings and Info dispositions none.
+- retained full-gate proof: corrected Gate 3A clean-detached preflight 1,672/1,672 at correction
+  commit `95f33c02881ea6c18b560da5a1a0f2c4450fbaa6`; receipt-only target changes no runtime/test bytes.
+- formal disposition: `APPROVE — CORRECTED GATE 3A COMPLETE`. The earlier false completion is
+  superseded by this exact receipt. Begin Gate 3B by refreshing and independently re-reviewing the
+  already-present Task 7A against this completed prerequisite before starting Task 7B.
