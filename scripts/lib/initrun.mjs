@@ -102,10 +102,38 @@ function nativePidIdentity({ pid }) {
   catch (error) { return error?.code === 'ESRCH' ? 'definitely-dead' : 'unknown'; }
 }
 
+const SAFE_PRODUCTION_INIT_OVERRIDES = new Set([
+  'ulid', 'pid', 'nonce',
+]);
+
+function safeProductionInitOverrides(overrides) {
+  return Object.fromEntries(Object.entries(overrides)
+    .filter(([key]) => SAFE_PRODUCTION_INIT_OVERRIDES.has(key)));
+}
+
+function captureDirectoryIdentity(path, native) {
+  const realpath = native.realpath(path);
+  const stat = native.stat(realpath);
+  if (!stat?.isDirectory?.()) throw new Error('INIT_PREPARED_AUTHORITY_MISMATCH');
+  return { realpath, dev: String(stat.dev), ino: String(stat.ino) };
+}
+
+function sameDirectoryIdentity(path, expected, native) {
+  try {
+    const actual = captureDirectoryIdentity(path, native);
+    const samePath = native.platform === 'win32'
+      ? actual.realpath.toLowerCase() === expected.realpath.toLowerCase()
+      : actual.realpath === expected.realpath;
+    return samePath && actual.dev === expected.dev && actual.ino === expected.ino;
+  } catch { return false; }
+}
+
 export function productionInitDeps(root, request, overrides = {}) {
   const actualCwd = (overrides.cwdFn ?? process.cwd)();
   const native = nativeInitObservationDeps(actualCwd, overrides.platform ?? process.platform);
-  return { canonicalRoot: canonicalProjectRoot,
+  const preparedCwdRequired = request.observationDigest !== 'NONE';
+  return { ...safeProductionInitOverrides(overrides), platform: native.platform,
+    canonicalRoot: canonicalProjectRoot,
     resolveRouting: value => ({ protocol: value.protocol, recipe: value.recipe }),
     resolveReview: value => resolveInitialReview(value.review, value.detected ?? {}),
     normalizePlugins: value => structuredClone(value),
@@ -133,7 +161,18 @@ export function productionInitDeps(root, request, overrides = {}) {
     eligible: observation => initialRouteEligibility(root, actualCwd, observation, native),
     classifyObservationRoute: observation =>
       initialRouteEligibility(root, actualCwd, observation, native).route?.kind ?? null,
-    buildLoop: buildInitialLoop, ...overrides };
+    buildLoop: buildInitialLoop,
+    requirePreparedAuthority: true,
+    capturePreparedAuthority: candidateRoot => ({ version: 1,
+      root: captureDirectoryIdentity(candidateRoot, native),
+      cwd: preparedCwdRequired ? captureDirectoryIdentity(actualCwd, native) : null }),
+    verifyPreparedAuthority: (candidateRoot, authority) => {
+      if (!sameDirectoryIdentity(candidateRoot, authority.root, native)
+          || preparedCwdRequired !== (authority.cwd !== null)
+          || preparedCwdRequired && !sameDirectoryIdentity(actualCwd, authority.cwd, native)) {
+        throw new Error('INIT_PREPARED_AUTHORITY_MISMATCH');
+      }
+    } };
 }
 
 export function initRun(root, options) {

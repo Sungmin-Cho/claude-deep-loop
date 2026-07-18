@@ -125,24 +125,47 @@ const INIT_TRANSACTION_CRASH_WORKER = fileURLToPath(
   new URL('./helpers/init-transaction-crash-worker.mjs', import.meta.url));
 const CONTENTION_WORKER = new URL('./helpers/init-contention-worker.mjs', import.meta.url);
 
-function startInitContender(root, goal, attempt) {
-  const child = fork(CONTENTION_WORKER, [root, goal, attempt], {
+function workerMessage(child, type, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      clearTimeout(timer);
+      child.off('message', onMessage);
+      child.off('error', onError);
+      child.off('exit', onExit);
+    };
+    const settle = (fn, value) => { cleanup(); fn(value); };
+    const onMessage = message => {
+      if (message?.type === type) settle(resolve, message);
+    };
+    const onError = error => settle(reject, error);
+    const onExit = (code, signal) => settle(reject,
+      new Error(`worker exited before ${type}: code=${String(code)} signal=${String(signal)}`));
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      settle(reject, new Error(`worker timed out before ${type}`));
+    }, timeoutMs);
+    child.on('message', onMessage);
+    child.once('error', onError);
+    child.once('exit', onExit);
+  });
+}
+
+function cleanupInitContender(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise(resolve => {
+    const timer = setTimeout(resolve, 1_000);
+    child.once('exit', () => { clearTimeout(timer); resolve(); });
+    child.kill('SIGKILL');
+  });
+}
+
+function startInitContender(root, goal, attempt, mode = 'normal', timeoutMs = 5_000) {
+  const child = fork(CONTENTION_WORKER, [root, goal, attempt, mode], {
     stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
   });
-  const ready = new Promise((resolve, reject) => {
-    child.once('error', reject);
-    child.on('message', message => { if (message?.type === 'ready') resolve(message); });
-  });
-  const result = new Promise((resolve, reject) => {
-    child.once('error', reject);
-    child.on('message', message => {
-      if (message?.type === 'result') resolve(message);
-    });
-    child.once('exit', code => {
-      if (code !== 0 && code !== null) reject(new Error(`worker ${code}`));
-    });
-  });
-  return { child, ready, result };
+  return { child, ready: workerMessage(child, 'ready', timeoutMs),
+    result: workerMessage(child, 'result', timeoutMs),
+    cleanup: () => cleanupInitContender(child) };
 }
 
 function runInitTransactionCrash(root, attempt, previous, requestDigest, point) {
@@ -1900,15 +1923,55 @@ test('real child-process barrier permits one prepared production writer to CAS c
   const root = fixtureDir();
   const first = startInitContender(root, 'one', '01JAPPGEN00000000000000000');
   const second = startInitContender(root, 'two', '01JAPPGEN00000000000000001');
-  await Promise.all([first.ready, second.ready]);
-  first.child.send({ type: 'commit' });
-  second.child.send({ type: 'commit' });
-  const results = await Promise.all([first.result, second.result]);
-  assert.equal(results.filter(item => item.ok).length, 1);
-  assert.equal(results.filter(item => !item.ok).length, 1);
-  const current = readFileSync(join(root, '.deep-loop', 'current'), 'utf8').trim();
-  assert.equal(readState(root, current).data.run_id, current);
-  const committed = readdirSync(join(root, '.deep-loop', 'runs'))
-    .filter(runId => existsSync(join(root, '.deep-loop', 'runs', runId, 'loop.json')));
-  assert.deepEqual(committed, [current]);
+  try {
+    await Promise.all([first.ready, second.ready]);
+    first.child.send({ type: 'commit' });
+    second.child.send({ type: 'commit' });
+    const results = await Promise.all([first.result, second.result]);
+    assert.equal(results.filter(item => item.ok).length, 1);
+    assert.equal(results.filter(item => !item.ok).length, 1);
+    const current = readFileSync(join(root, '.deep-loop', 'current'), 'utf8').trim();
+    assert.equal(readState(root, current).data.run_id, current);
+    const committed = readdirSync(join(root, '.deep-loop', 'runs'))
+      .filter(runId => existsSync(join(root, '.deep-loop', 'runs', runId, 'loop.json')));
+    assert.deepEqual(committed, [current]);
+  } finally {
+    await Promise.all([first.cleanup(), second.cleanup()]);
+  }
+});
+
+test('contention harness rejects clean child exit before ready and before result', async () => {
+  const root = fixtureDir();
+  const beforeReady = startInitContender(root, 'before-ready',
+    '01JAPPGEN00000000000000002', 'exit-before-ready');
+  try {
+    const settled = await Promise.allSettled([beforeReady.ready, beforeReady.result]);
+    assert.match(String(settled[0].reason), /worker exited before ready/);
+    assert.match(String(settled[1].reason), /worker exited before result/);
+  } finally {
+    await beforeReady.cleanup();
+  }
+
+  const beforeResult = startInitContender(root, 'before-result',
+    '01JAPPGEN00000000000000003', 'exit-before-result');
+  try {
+    await beforeResult.ready;
+    await assert.rejects(beforeResult.result, /worker exited before result/);
+  } finally {
+    await beforeResult.cleanup();
+  }
+
+});
+
+test('contention harness bounds a worker that never reports ready', async () => {
+  const root = fixtureDir();
+  const hanging = startInitContender(root, 'hanging',
+    '01JAPPGEN00000000000000004', 'hang-before-ready', 100);
+  try {
+    const settled = await Promise.allSettled([hanging.ready, hanging.result]);
+    assert.match(String(settled[0].reason), /worker timed out before ready/);
+    assert.equal(settled[1].status, 'rejected');
+  } finally {
+    await hanging.cleanup();
+  }
 });

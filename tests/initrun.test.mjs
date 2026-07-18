@@ -1,12 +1,20 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, existsSync, realpathSync } from 'node:fs';
+import {
+  mkdtempSync, mkdirSync, readFileSync, existsSync, realpathSync, renameSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { initRun, buildInitialLoop } from '../scripts/lib/initrun.mjs';
+import {
+  initRun, buildInitialLoop, productionInitDeps,
+} from '../scripts/lib/initrun.mjs';
+import {
+  commitPreparedInit, hostObservationDigest, prepareInitialization,
+} from '../scripts/lib/init-transaction.mjs';
 import { readState, runDir } from '../scripts/lib/state.mjs';
 import { readLines } from '../scripts/lib/integrity.mjs';
 import { DEFAULT_APP_TASK_CONTINUATION } from '../scripts/lib/app-task-continuation.mjs';
+import { createDirectoryJunction } from './helpers/fs-fixtures.mjs';
 
 // Inject a no-signal env + no-op probe so detect-terminal deterministically yields launcher:'none'
 // regardless of the developer's ambient terminal environment.
@@ -15,6 +23,15 @@ const noSignalPlatform = 'linux';
 const noOpRun = () => ({ code: 1 });
 const fixtureDir = () => (realpathSync.native || realpathSync)(
   mkdtempSync(join(tmpdir(), 'dl-initrun-')));
+
+const productionRequest = (overrides = {}) => ({
+  runtime: 'codex', goal: 'g', protocol: 'standalone',
+  recipe: { id: 'r', name: 'r', reason: 'test' }, review: null,
+  detected: {}, git: {}, sessionSpawn: { launcher: 'none' }, model: null, effort: null,
+  consent: { mode: 'manual', authority: 'default-manual' }, observationDigest: 'NONE',
+  enumProfile: { kind: 'codex-cli', source: 'codex-cli-host', capabilities: [] },
+  ...overrides,
+});
 
 const validCreateObservation = (overrides = {}) => ({
   kind: 'codex-app', source: 'codex-app-host-context',
@@ -138,6 +155,93 @@ test('direct App init accepts one exact internal worktree and rejects root escap
     appContinuationConsent: { mode: 'auto', authority: 'human-confirmed' } }),
   /INIT_CWD_MISMATCH/);
   assert.equal(existsSync(join(fencedRoot, '.deep-loop')), false);
+});
+
+test('production prepared authority rejects project-root inode ABA before publication', () => {
+  const root = fixtureDir();
+  const request = productionRequest();
+  const deps = productionInitDeps(root, request, {
+    cwdFn: () => root, platform: 'linux', pid: 7,
+    ulid: () => '01JAPPGEN00000000000000000', nonce: () => 'rootabafence0001',
+  });
+  const prepared = prepareInitialization(root, request, deps);
+  assert.equal(prepared.prepared_authority?.version, 1);
+  const original = root + '-original';
+  renameSync(root, original);
+  mkdirSync(root);
+  assert.throws(() => commitPreparedInit(root, {
+    prepared, request, observation: null,
+  }, deps), /INIT_PREPARED_AUTHORITY_MISMATCH/);
+  assert.equal(existsSync(join(root, '.deep-loop', 'init-pending.json')), false);
+  assert.equal(existsSync(join(root, '.deep-loop', 'current')), false);
+  assert.equal(existsSync(join(root, '.deep-loop', 'runs', prepared.attempt_id, 'loop.json')), false);
+});
+
+test('production prepared authority rejects App cwd inode ABA inside the root lock', () => {
+  const root = fixtureDir();
+  const worktree = join(root, '.worktrees', 'feature');
+  mkdirSync(worktree, { recursive: true });
+  const provisional = productionRequest({ observationDigest: 'a'.repeat(64), enumProfile: null });
+  const observationDeps = productionInitDeps(root, provisional, {
+    cwdFn: () => worktree, platform: 'linux', pid: 7,
+  });
+  const observation = observationDeps.normalizeObservation({
+    runtime: 'codex', kind: 'codex-app', source: 'codex-app-tool-provenance',
+    capabilities: ['fork-thread-same-directory', 'send-message-to-thread',
+      'structured-process-stdin'],
+    structured_stdin_mode: 'pipe-open-noecho', host_task_cwd: worktree,
+    host_task_cwd_source: 'app-task-context', observed_at: null,
+  });
+  const request = productionRequest({
+    observationDigest: hostObservationDigest(observation), enumProfile: null,
+    consent: { mode: 'auto', authority: 'human-confirmed' },
+  });
+  const outside = fixtureDir();
+  const parked = worktree + '-original';
+  let swapped = false;
+  const deps = productionInitDeps(root, request, {
+    cwdFn: () => worktree, platform: 'linux', pid: 7,
+    ulid: () => '01JAPPGEN00000000000000001', nonce: () => {
+      renameSync(worktree, parked);
+      createDirectoryJunction(outside, worktree);
+      swapped = true;
+      return 'cwdabafence00001';
+    },
+  });
+  const prepared = prepareInitialization(root, request, deps);
+  assert.equal(prepared.prepared_authority?.cwd?.realpath, worktree);
+  assert.throws(() => commitPreparedInit(root, {
+    prepared, request, observation,
+  }, deps), /INIT_PREPARED_AUTHORITY_MISMATCH/);
+  assert.equal(swapped, true);
+  assert.equal(existsSync(join(root, '.deep-loop', 'init-pending.json')), false);
+  assert.equal(existsSync(join(root, '.deep-loop', 'current')), false);
+  assert.equal(existsSync(join(root, '.deep-loop', 'runs', prepared.attempt_id, 'loop.json')), false);
+});
+
+test('production init dependencies pin semantic authority against caller overrides', () => {
+  const root = fixtureDir();
+  const request = productionRequest();
+  const outside = fixtureDir();
+  const bypass = () => {};
+  const deps = productionInitDeps(root, request, {
+    cwdFn: () => root, platform: 'linux', pid: 7,
+    canonicalRoot: () => outside, buildLoop: bypass,
+    assertInitializationAuthority: bypass, eligible: () => ({ eligible: true,
+      reason: 'eligible', route: { kind: 'create' } }),
+    capturePreparedAuthority: () => null, verifyPreparedAuthority: bypass,
+    requirePreparedAuthority: false,
+    ulid: () => '01JAPPGEN00000000000000002', nonce: () => 'overridefence0001',
+  });
+  assert.equal(deps.requirePreparedAuthority, true);
+  assert.notStrictEqual(deps.buildLoop, bypass);
+  assert.notStrictEqual(deps.assertInitializationAuthority, bypass);
+  assert.notStrictEqual(deps.capturePreparedAuthority, bypass);
+  assert.notStrictEqual(deps.verifyPreparedAuthority, bypass);
+  const prepared = prepareInitialization(root, request, deps);
+  assert.equal(prepared.prepared_authority.root.realpath, root);
+  assert.equal(commitPreparedInit(root, { prepared, request, observation: null }, deps).ok, true);
+  assert.equal(readState(root, prepared.attempt_id).data.project.root, root);
 });
 
 // ── C2: object-shape initial reviewer selection — routes on present (installed‖initialized) ───

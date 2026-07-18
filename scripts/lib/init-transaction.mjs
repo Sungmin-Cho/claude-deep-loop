@@ -543,6 +543,12 @@ export function prepareInitialization(root, options, deps) {
   const projection = normalizeInitializationRequest(root, options, deps);
   const expectedRequest = initializationRequestDigest(projection);
   const expectedObservation = projection.host_observation_digest;
+  const preparedAuthority = capturePreparedAuthority(root, deps);
+  const finishPrepared = result => {
+    verifyPreparedAuthority(root, preparedAuthority, deps);
+    return preparedAuthority === undefined ? result
+      : { ...result, prepared_authority: structuredClone(preparedAuthority) };
+  };
   const basePaths = initPaths(root);
   const discovery = stableSet([basePaths.current, basePaths.pending], deps);
   const discoveredCurrent = currentValue(discovery, basePaths.current);
@@ -581,9 +587,9 @@ export function prepareInitialization(root, options, deps) {
     } else {
       if (pending.request_digest !== expectedRequest
           || pending.previous_current_digest !== previous) throw new Error('INIT_PENDING_CONFLICT');
-      return { ok: true, outcome: 'prepared', attempt_id: pending.attempt_id,
+      return finishPrepared({ ok: true, outcome: 'prepared', attempt_id: pending.attempt_id,
         previous_current_digest: previous, expected_request_digest: expectedRequest,
-        expected_observation_digest: expectedObservation };
+        expected_observation_digest: expectedObservation });
     }
   }
   const attempt = (deps.ulid ?? ulid)(deps.nowMs?.());
@@ -617,9 +623,49 @@ export function prepareInitialization(root, options, deps) {
     throw new Error('INIT_ATTEMPT_COLLISION');
   }
   previous = current === null ? 'NONE' : contentHash(current);
-  return { ok: true, outcome: 'prepared', attempt_id: attempt,
+  return finishPrepared({ ok: true, outcome: 'prepared', attempt_id: attempt,
     previous_current_digest: previous, expected_request_digest: expectedRequest,
-    expected_observation_digest: expectedObservation };
+    expected_observation_digest: expectedObservation });
+}
+
+function validPreparedIdentity(value) {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).sort().join('\0') === ['dev', 'ino', 'realpath'].join('\0')
+    && typeof value.realpath === 'string' && value.realpath.length > 0
+    && /^(?:0|[1-9][0-9]*)$/.test(value.dev)
+    && /^(?:0|[1-9][0-9]*)$/.test(value.ino);
+}
+
+function validPreparedAuthority(value) {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).sort().join('\0') === ['cwd', 'root', 'version'].join('\0')
+    && value.version === 1 && validPreparedIdentity(value.root)
+    && (value.cwd === null || validPreparedIdentity(value.cwd));
+}
+
+function capturePreparedAuthority(root, deps) {
+  if (deps.requirePreparedAuthority !== true) return undefined;
+  if (typeof deps.capturePreparedAuthority !== 'function') {
+    throw new Error('INIT_PREPARED_AUTHORITY_INVALID');
+  }
+  const authority = deps.capturePreparedAuthority(root);
+  if (!validPreparedAuthority(authority)) {
+    throw new Error('INIT_PREPARED_AUTHORITY_INVALID');
+  }
+  return structuredClone(authority);
+}
+
+function verifyPreparedAuthority(root, authority, deps) {
+  if (deps.requirePreparedAuthority !== true && authority === undefined) return;
+  if (!validPreparedAuthority(authority)
+      || typeof deps.verifyPreparedAuthority !== 'function') {
+    throw new Error('INIT_PREPARED_AUTHORITY_INVALID');
+  }
+  try { deps.verifyPreparedAuthority(root, authority); }
+  catch (error) {
+    if (error?.message === 'INIT_PREPARED_AUTHORITY_MISMATCH') throw error;
+    throw new Error('INIT_PREPARED_AUTHORITY_MISMATCH');
+  }
 }
 
 export const INIT_LOCK_CANDIDATE_TTL_MS = 300_000;
@@ -1233,6 +1279,7 @@ export function commitPreparedInit(root, input, deps = {}) {
       || !/^(?:NONE|[0-9a-f]{64})$/.test(prepared.expected_observation_digest)) {
     throw new Error('INIT_COMMIT_BINDING_INVALID');
   }
+  verifyPreparedAuthority(root, prepared.prepared_authority, deps);
   const canonical = buildCanonicalGenesis(root, {
     prepared, request: input.request, observation: input.observation ?? null,
   }, deps);
@@ -1242,6 +1289,7 @@ export function commitPreparedInit(root, input, deps = {}) {
     previous_current_digest: prepared.previous_current_digest,
     observation_digest: prepared.expected_observation_digest };
   return withInitLock(root, () => {
+    verifyPreparedAuthority(root, prepared.prepared_authority, deps);
     const paths = initPaths(root, prepared.attempt_id);
     let current = parseCurrent(readOptionalRegular(paths.current, deps));
     let pending = exactPendingAt(paths.pending, null, deps);
