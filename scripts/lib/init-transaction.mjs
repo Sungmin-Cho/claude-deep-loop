@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
-  linkSync, lstatSync, mkdirSync, readFileSync, readdirSync,
-  realpathSync, statSync, unlinkSync, writeFileSync,
+  closeSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync,
+  readdirSync, realpathSync, statSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { types } from 'node:util';
@@ -825,34 +825,48 @@ export function withInitLock(root, fn, deps = {}) {
   const lstat = deps.lstat ?? (value => lstatSync(value, { bigint: true }));
   const sameFile = deps.sameFile
     ?? ((left, right) => left.dev === right.dev && left.ino === right.ino);
-  const candidateBefore = initFileRecord(candidate, deps, lstat);
   let candidateOwned = null;
   let linked = false;
   let releaseError = null;
   try {
+    let candidateDescriptor = null;
+    let createdIdentity = null;
+    let writeError = null;
+    let closeError = null;
     try {
-      (deps.writeFile ?? writeFileSync)(candidate, holderBytes, { flag: 'wx' });
-    } catch (error) {
-      // A failed exclusive write owns cleanup only when this pathname was absent beforehand and
-      // now proves the exact invocation bytes. Ambiguous or replaced paths remain foreign.
-      if (error?.code !== 'EEXIST' && candidateBefore === null) {
-        try {
-          const afterFailure = initFileRecord(candidate, deps, lstat);
-          if (afterFailure?.regular && afterFailure.bytes.length > 0
-              && afterFailure.bytes.length <= holderBytes.length
-              && holderBytes.subarray(0, afterFailure.bytes.length).equals(afterFailure.bytes)) {
-            candidateOwned = afterFailure;
-          }
-        } catch { /* candidate uncertainty preserves the path */ }
+      candidateDescriptor = (deps.open ?? openSync)(candidate, 'wx');
+      const descriptorStat = (deps.fstat
+        ?? (value => fstatSync(value, { bigint: true })))(candidateDescriptor);
+      if (!descriptorStat.isFile()) throw new Error('LOCK_CANDIDATE_INDETERMINATE');
+      createdIdentity = descriptorStat;
+      if (deps.writeFile !== undefined) {
+        deps.writeFile(candidate, holderBytes, { flag: 'r+' });
+      } else {
+        (deps.writeDescriptor ?? writeFileSync)(candidateDescriptor, holderBytes);
       }
-      throw error;
+    } catch (error) {
+      writeError = error;
+    } finally {
+      if (candidateDescriptor !== null) {
+        try { (deps.close ?? closeSync)(candidateDescriptor); }
+        catch (error) { closeError = error; }
+      }
     }
-    const afterWrite = initFileRecord(candidate, deps, lstat);
-    if (candidateBefore !== null || afterWrite === null || !afterWrite.regular
-        || !afterWrite.bytes.equals(holderBytes)) {
+    if (createdIdentity !== null && closeError === null) {
+      try {
+        const afterDescriptor = initFileRecord(candidate, deps, lstat);
+        if (afterDescriptor?.regular && sameFile(createdIdentity, afterDescriptor.stat)) {
+          candidateOwned = afterDescriptor;
+        }
+      } catch { /* descriptor/path uncertainty preserves the pathname */ }
+    }
+    if (closeError !== null) {
+      throw new Error('LOCK_CANDIDATE_INDETERMINATE', { cause: closeError });
+    }
+    if (writeError !== null) throw writeError;
+    if (candidateOwned === null || !candidateOwned.bytes.equals(holderBytes)) {
       throw new Error('LOCK_CANDIDATE_INDETERMINATE');
     }
-    candidateOwned = afterWrite;
     const terminal = followInitAuthority(control, deps);
     if (terminal.state !== 'free') throwHeldAuthority(terminal, deps);
     if (terminal.visited.has(nonce)) throw new Error('LOCK_OWNER_REUSED');

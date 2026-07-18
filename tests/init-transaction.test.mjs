@@ -1121,11 +1121,12 @@ test('quality ambiguous candidate write failures preserve foreign bytes', () => 
     const candidate = join(root, '.deep-loop', '.init-lock-candidate-7-' + nonce);
     const foreign = Buffer.from('foreign-pre-existing-candidate');
     put(root, '.deep-loop/.init-lock-candidate-7-' + nonce, foreign);
-    const error = Object.assign(new Error('AMBIGUOUS_WRITE'), { code: 'EIO' });
+    let seamCalls = 0;
     assert.throws(() => withInitLock(root, () => assert.fail('writer entered'), {
       pid: 7, nonce: () => nonce, now,
-      writeFile: () => { throw error; },
-    }), /AMBIGUOUS_WRITE/);
+      writeFile: () => { seamCalls += 1; throw new Error('SEAM_MUST_NOT_RUN'); },
+    }), error => error?.code === 'EEXIST');
+    assert.equal(seamCalls, 0);
     assert.deepEqual(readFileSync(candidate), foreign);
   }
   {
@@ -1207,4 +1208,35 @@ test('quality truncated non-empty holder prefix after exclusive creation failure
   }), /TRUNCATED_CANDIDATE_WRITE/);
   assert.equal(prefix.length, 8);
   assert.equal(existsSync(candidate), false);
+
+  const emptyRoot = fixtureDir();
+  const emptyNonce = 'emptypartial0001';
+  const emptyCandidate = join(emptyRoot, '.deep-loop',
+    '.init-lock-candidate-7-' + emptyNonce);
+  assert.throws(() => withInitLock(emptyRoot, () => assert.fail('empty writer entered'), {
+    pid: 7, nonce: () => emptyNonce,
+    now: () => Date.parse('2026-07-13T00:00:00.000Z'),
+    writeFile: () => { throw new Error('EMPTY_CANDIDATE_WRITE'); },
+  }), /EMPTY_CANDIDATE_WRITE/);
+  assert.equal(existsSync(emptyCandidate), false);
+});
+
+test('quality copied same-prefix ABA after exclusive creation preserves replacement', () => {
+  const root = fixtureDir();
+  const nonce = 'copiedprefix0001';
+  const candidate = join(root, '.deep-loop', '.init-lock-candidate-7-' + nonce);
+  const error = Object.assign(new Error('COPIED_PREFIX_ABA'), { code: 'EIO' });
+  let copied = null;
+  assert.throws(() => withInitLock(root, () => assert.fail('writer entered'), {
+    pid: 7, nonce: () => nonce,
+    now: () => Date.parse('2026-07-13T00:00:00.000Z'),
+    writeFile: (path, bytes, options) => {
+      copied = Buffer.from(bytes.subarray(0, 8));
+      writeFileSync(path, copied, options);
+      unlinkSync(path);
+      writeFileSync(path, copied, { flag: 'wx' });
+      throw error;
+    },
+  }), /COPIED_PREFIX_ABA/);
+  assert.deepEqual(readFileSync(candidate), copied);
 });
