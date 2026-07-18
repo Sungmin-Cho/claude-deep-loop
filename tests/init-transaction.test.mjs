@@ -1,5 +1,13 @@
+import {
+  existsSync, lstatSync, mkdirSync, readFileSync, readdirSync,
+  unlinkSync, writeFileSync,
+} from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { canonicalRealpath, createDirectoryJunction,
+  fixtureDir as rawFixtureDir } from './helpers/fs-fixtures.mjs';
+import { contentHash } from '../scripts/lib/envelope.mjs';
 import { buildInitialLoop, resolveInitialReview } from '../scripts/lib/initrun.mjs';
 import { hostSurfaceFactsDigest } from '../scripts/lib/host-surface.mjs';
 import {
@@ -8,8 +16,70 @@ import {
   hostObservationDigest,
   initializationRequestDigest,
   normalizeInitializationRequest,
+  preflightInitialization,
+  prepareInitialization,
 } from '../scripts/lib/init-transaction.mjs';
 import { verifyHeadLines, verifyLines } from '../scripts/lib/integrity.mjs';
+
+const fixtureDir = (prefix = 'dl-init-') => canonicalRealpath(rawFixtureDir(prefix));
+
+function queryTree(root) {
+  if (!existsSync(root)) return [];
+  const visit = (path, relative = '') => readdirSync(path).sort().flatMap(name => {
+    const absolute = join(path, name);
+    const rel = relative ? relative + '/' + name : name;
+    const stat = lstatSync(absolute);
+    if (stat.isDirectory()) return [{ path: rel, kind: 'dir' }, ...visit(absolute, rel)];
+    return [{ path: rel, kind: stat.isFile() ? 'file' : 'other',
+      bytes: stat.isFile() ? readFileSync(absolute).toString('base64') : null }];
+  });
+  return visit(root);
+}
+
+function put(root, relative, bytes) {
+  const path = join(root, relative);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, bytes);
+}
+
+function initOptions() {
+  return { runtime: 'codex', goal: 'g', protocol: 'standalone',
+    recipe: { id: 'r', name: 'r', reason: 'test' }, review: null,
+    detected: {}, git: {}, sessionSpawn: {},
+    consent: { mode: 'manual', authority: 'default-manual', confirmed_at: null, revoked_at: null },
+    observationDigest: 'NONE',
+    enumProfile: { kind: 'codex-cli', source: 'codex-cli-host', capabilities: [] } };
+}
+
+function initDeps(root, overrides = {}) {
+  return { canonicalRoot: () => root,
+    resolveRouting: value => ({ protocol: value.protocol, recipe: value.recipe }),
+    resolveReview: value => resolveInitialReview(value.review, value.detected),
+    normalizePlugins: value => value,
+    normalizeGit: value => ({ git: !!value.head, head: value.head ?? null,
+      branch: value.branch ?? null, dirty: !!value.dirty }),
+    normalizeSessionSpawn: value => value, kernelCwd: () => root,
+    normalizeEnumProfile: value => ({ ...value, capabilities: [...value.capabilities].sort() }),
+    normalizeObservation: value => ({ ...value, kernel_cwd_at_observation: root }),
+    eligible: value => ({ eligible: value.kind === 'codex-app'
+      && value.capabilities.includes('structured-process-stdin'),
+      reason: value.kind === 'codex-app' ? 'capability-incomplete' : 'surface-ineligible',
+      route: value.capabilities.includes('create-thread-local') ? { kind: 'create' } : null }),
+    assertRoot: () => ({ ok: true }),
+    buildLoop: buildInitialLoop, ulid: () => '01JAPPGEN00000000000000001', ...overrides };
+}
+
+function validGenesis(root, attempt, requestDigest, previousDigest) {
+  const options = initOptions();
+  const prepared = { ok: true, outcome: 'prepared', attempt_id: attempt,
+    previous_current_digest: previousDigest, expected_request_digest: requestDigest,
+    expected_observation_digest: 'NONE' };
+  const { loop, genesisEvents } = buildCanonicalGenesis(root, {
+    prepared, request: options, observation: null,
+  }, initDeps(root));
+  return { raw: JSON.stringify(loop),
+    events: `${genesisEvents.map(event => JSON.stringify(event)).join('\n')}\n` };
+}
 
 const observation = { kind: 'codex-app', source: 'codex-app-tool-provenance',
   capabilities: ['create-thread-local', 'list-projects', 'structured-process-stdin'],
@@ -324,4 +394,149 @@ test('canonical genesis isolates returned projection stored projection and loop 
   built.loop.initialization.request_projection.routing.recipe.name = 'stored-mutated';
   assert.equal(built.loop.recipe.name, 'loop-mutated');
   assert.equal(built.projection.routing.recipe.name, 'projection-mutated');
+});
+
+test('preflight and prepare are byte-identical no-write queries with exact reader binding', () => {
+  const root = fixtureDir();
+  const options = initOptions();
+  const deps = initDeps(root);
+  const before = queryTree(root);
+  const preflight = preflightInitialization(root, {
+    ...options, nonce: '00000000000000000000000000000001', readerMode: 'pty-raw-noecho',
+    observation: { kind: 'codex-app', source: 'codex-app-tool-provenance',
+      capabilities: ['create-thread-local', 'list-projects', 'structured-process-stdin'],
+      structured_stdin_mode: 'pty-raw-noecho', host_task_cwd: root,
+      host_task_cwd_source: 'app-task-context' },
+  }, deps);
+  assert.deepEqual(preflight, { eligible: true, reason: 'eligible',
+    observation_digest: preflight.observation_digest });
+  assert.throws(() => preflightInitialization(root, {
+    ...options, nonce: '../bad', readerMode: 'pipe-open-noecho',
+    observation: { structured_stdin_mode: 'pty-raw-noecho' },
+  }, deps), /INIT_PREFLIGHT_BINDING_INVALID/);
+  const partial = preflightInitialization(root, {
+    runtime: 'codex', nonce: '00000000000000000000000000000002', readerMode: 'pty-raw-noecho',
+    observation: { kind: 'codex-app', source: 'codex-app-tool-provenance',
+      capabilities: ['structured-process-stdin'],
+      structured_stdin_mode: 'pty-raw-noecho', host_task_cwd: root,
+      host_task_cwd_source: 'app-task-context' },
+  }, initDeps(root, {
+    eligible: () => ({ eligible: false, reason: 'capability-incomplete', route: null }) }));
+  assert.deepEqual(partial, { eligible: false, reason: 'capability-incomplete',
+    observation_digest: partial.observation_digest });
+  const wrongRoot = preflightInitialization(root, {
+    runtime: 'codex', nonce: '00000000000000000000000000000003', readerMode: 'pty-raw-noecho',
+    observation: { kind: 'codex-app', source: 'codex-app-tool-provenance',
+      capabilities: ['create-thread-local', 'list-projects', 'structured-process-stdin'],
+      structured_stdin_mode: 'pty-raw-noecho', host_task_cwd: root,
+      host_task_cwd_source: 'app-task-context' },
+  }, initDeps(root, { assertInitializationAuthority: () => {
+    throw new Error('INIT_CWD_MISMATCH');
+  } }));
+  assert.equal(wrongRoot.eligible, false);
+  assert.equal(wrongRoot.reason, 'cwd-mismatch');
+  const exactRaw = { kind: 'codex-app', source: 'codex-app-tool-provenance',
+    capabilities: ['create-thread-local', 'list-projects', 'structured-process-stdin'],
+    structured_stdin_mode: 'pty-raw-noecho', host_task_cwd: root,
+    host_task_cwd_source: 'app-task-context' };
+  for (const extra of ['runtime', 'kernel_cwd_at_observation', 'observed_generation', 'observed_at',
+    'projectId', 'threadId', 'clientThreadId']) {
+    assert.throws(() => preflightInitialization(root, { runtime: 'codex',
+      nonce: 'ffffffffffffffffffffffffffffffff', readerMode: 'pty-raw-noecho',
+      observation: { ...exactRaw, [extra]: `RAW-${extra}` } }, deps),
+    /HOST_OBSERVATION_INPUT_INVALID/);
+    assert.deepEqual(queryTree(root), before, extra);
+  }
+  const prepared = prepareInitialization(root, options, deps);
+  assert.deepEqual(prepared, { ok: true, outcome: 'prepared',
+    attempt_id: '01JAPPGEN00000000000000001', previous_current_digest: 'NONE',
+    expected_request_digest: prepared.expected_request_digest,
+    expected_observation_digest: 'NONE' });
+  assert.throws(() => prepareInitialization(root, { ...options,
+    observation: { host_task_cwd: '/raw/forbidden' } }, deps),
+  /INIT_REQUEST_RAW_OBSERVATION/);
+  assert.deepEqual(queryTree(root), before);
+});
+
+test('prepare reuses exact incomplete pending and rejects foreign or malformed pending', () => {
+  const root = fixtureDir();
+  const options = initOptions();
+  const deps = initDeps(root);
+  const request = initializationRequestDigest(normalizeInitializationRequest(root, options, deps));
+  const attempt = '01JAPPGEN00000000000000000';
+  const pending = { version: 1, attempt_id: attempt, request_digest: request,
+    previous_current_digest: 'NONE' };
+  put(root, '.deep-loop/init-pending.json', JSON.stringify(pending));
+  assert.equal(prepareInitialization(root, options, deps).attempt_id, attempt);
+  put(root, '.deep-loop/init-pending.json', JSON.stringify({ ...pending, request_digest: 'f'.repeat(64) }));
+  assert.throws(() => prepareInitialization(root, options, deps), /INIT_PENDING_CONFLICT/);
+  put(root, '.deep-loop/init-pending.json', '{bad');
+  assert.throws(() => prepareInitialization(root, options, deps), /INIT_PENDING_CONFLICT/);
+
+  const eventOnly = fixtureDir();
+  const eventDeps = initDeps(eventOnly);
+  const eventRequest = initializationRequestDigest(
+    normalizeInitializationRequest(eventOnly, options, eventDeps));
+  put(eventOnly, '.deep-loop/init-pending.json', JSON.stringify({ ...pending,
+    request_digest: eventRequest }));
+  put(eventOnly, '.deep-loop/runs/' + attempt + '/event-log.jsonl', '');
+  assert.throws(() => prepareInitialization(eventOnly, options, eventDeps),
+    /INIT_PENDING_CONFLICT/, 'event-only is not a recoverable no-loop staging shape');
+});
+
+test('completed pending is logically absent and a proposed target collision never succeeds', () => {
+  const root = fixtureDir();
+  const options = initOptions();
+  const deps = initDeps(root);
+  const request = initializationRequestDigest(normalizeInitializationRequest(root, options, deps));
+  const completed = '01JAPPGEN00000000000000000';
+  const pending = { version: 1, attempt_id: completed, request_digest: request,
+    previous_current_digest: 'NONE' };
+  const { raw, events } = validGenesis(root, completed, request, 'NONE');
+  put(root, '.deep-loop/init-pending.json', JSON.stringify(pending));
+  put(root, '.deep-loop/runs/' + completed + '/.loop.hash', contentHash(raw));
+  put(root, '.deep-loop/runs/' + completed + '/event-log.jsonl', events);
+  put(root, '.deep-loop/runs/' + completed + '/loop.json', raw);
+  put(root, '.deep-loop/current', completed + '\n');
+  const before = queryTree(root);
+  const prepared = prepareInitialization(root, options, deps);
+  assert.equal(prepared.attempt_id, '01JAPPGEN00000000000000001');
+  assert.equal(prepared.previous_current_digest, contentHash(completed));
+  assert.deepEqual(queryTree(root), before);
+
+  const collisionRoot = fixtureDir();
+  put(collisionRoot, '.deep-loop/runs/01JAPPGEN00000000000000001/foreign.tmp', 'x');
+  assert.throws(() => prepareInitialization(collisionRoot, options, initDeps(collisionRoot)),
+    /INIT_ATTEMPT_COLLISION/);
+  const emptyCollision = fixtureDir();
+  mkdirSync(join(emptyCollision, '.deep-loop', 'runs', '01JAPPGEN00000000000000001'),
+    { recursive: true });
+  assert.throws(() => prepareInitialization(emptyCollision, options, initDeps(emptyCollision)),
+    /INIT_ATTEMPT_COLLISION/, 'even an existing empty proposed directory is a collision');
+});
+
+test('prepare validates exact current bytes and strict legacy current state before upgrade', () => {
+  const root = fixtureDir();
+  const options = initOptions();
+  const deps = initDeps(root);
+  const legacy = '01JAPPGEN00000000000000000';
+  const loop = buildInitialLoop({ runtime: 'codex', goal: 'legacy', protocol: 'standalone',
+    recipe: { id: 'r', name: 'r', reason: 'test' }, runId: legacy,
+    now: new Date('2026-07-13T00:00:00.000Z') });
+  loop.project.root = root;
+  const raw = JSON.stringify(loop);
+  put(root, '.deep-loop/runs/' + legacy + '/.loop.hash', contentHash(raw));
+  put(root, '.deep-loop/runs/' + legacy + '/loop.json', raw);
+  put(root, '.deep-loop/current', legacy + '\n');
+  assert.equal(prepareInitialization(root, options, deps).previous_current_digest, contentHash(legacy));
+  put(root, '.deep-loop/runs/' + legacy + '/event-log.jsonl',
+    JSON.stringify({ seq: 1, ts: '2026-07-13T00:00:01.000Z', type: 'tampered',
+      data: {}, checksum: 'f'.repeat(64) }) + '\n');
+  assert.throws(() => prepareInitialization(root, options, deps), /INIT_CURRENT_INVALID/,
+    'state hash without matching event-log chain/head is not a strict current');
+  unlinkSync(join(root, '.deep-loop', 'runs', legacy, 'event-log.jsonl'));
+  put(root, '.deep-loop/current', legacy + ' \n');
+  assert.throws(() => prepareInitialization(root, options, deps), /INIT_CURRENT_INVALID/);
+  put(root, '.deep-loop/current', '01JAPPGEN00000000000000002\n');
+  assert.throws(() => prepareInitialization(root, options, deps), /INIT_CURRENT_INVALID/);
 });
