@@ -8,7 +8,7 @@ import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { reserveHandoff, releaseLease, acquireLease } from '../scripts/lib/lease.mjs';
 import { emitHandoff, buildLaunchCommand } from '../scripts/lib/handoff.mjs';
 import { buildRuntimeResumeDescriptor } from '../scripts/lib/runtime-descriptor.mjs';
-import { newEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
+import { newEpisode, abandonEpisode } from './helpers/episode-request.mjs';
 import { createDirectoryJunction } from './helpers/fs-fixtures.mjs';
 import { seedCorrelatedTerminal } from './fixtures/verified-app-run.mjs';
 import { rawHashValidState as rawState7b } from './fixtures/verified-app-run.mjs';

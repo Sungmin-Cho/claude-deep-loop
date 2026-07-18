@@ -5,12 +5,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
-import { newWorkstream } from '../scripts/lib/workspace.mjs';
-import { newEpisode, recordEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
+import { newWorkstream } from './helpers/workstream-request.mjs';
+import { newEpisode, recordEpisode, abandonEpisode } from './helpers/episode-request.mjs';
 import {
   resolveReviewer, dispatchReview, importReviewOutcome, makerReviewed, parseVerdict,
   recordReviewOutcome, unsatisfiedReviewPoints,
-} from '../scripts/lib/review.mjs';
+} from './helpers/review-request.mjs';
 import { releaseLease, acquireLease } from '../scripts/lib/lease.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { createFileSymlinkOrSkip } from './helpers/fs-fixtures.mjs';
@@ -67,13 +67,10 @@ function legacyStandaloneChecker() {
   const ws = newWorkstream(root, runId, { title: 'legacy', branch: 'legacy', worktree, fence: f }).id;
   const artifact = `${worktree}/plan-artifact.txt`;
   const makerId = doneMaker(root, runId, ws, 'plan', f, artifact);
-  const { checkerEpisodeId } = dispatchReview(root, runId, {
-    point: 'plan', workstreamId: ws, detected: { 'deep-review': true }, fence: f,
-  });
-  appendAnchored(root, runId,
-    { type: 'state-patch', data: { field: 'test-legacy-standalone-checker' } }, state => {
-      state.episodes.find(e => e.id === checkerEpisodeId).plugin = 'standalone';
-    });
+  const checkerEpisodeId = newEpisode(root, runId, {
+    plugin: 'standalone', role: 'checker', kind: 'plan-review', point: 'plan',
+    workstream: ws, targetMaker: makerId, fence: f,
+  }).id;
   return { root, runId, f, worktree, ws, artifact, makerId, checkerEpisodeId };
 }
 

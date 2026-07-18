@@ -296,13 +296,13 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" lease check --owner <owner_run_id> -
 **`--worktree`는 반드시 루트-상대(root-relative) 경로**로 기록한다 — git이 `<canonical_project_root>/.claude/worktrees/<slug>` 절대경로로 생성하더라도 기록 값은 `.claude/worktrees/<slug>` 형태다:
 
 ```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" workstream new --title "<workstream title>" --branch "<actual-branch>" --worktree ".claude/worktrees/<ws-slug>" --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" workstream new --title "<workstream title>" --branch "<actual-branch>" --worktree ".claude/worktrees/<ws-slug>" --request-id <workstream_request_id> --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
 의존 관계가 있으면 다음 완전한 명령을 사용한다:
 
 ```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" workstream new --title "<workstream title>" --branch "<actual-branch>" --worktree ".claude/worktrees/<ws-slug>" --depends-on '["ws-id-1"]' --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" workstream new --title "<workstream title>" --branch "<actual-branch>" --worktree ".claude/worktrees/<ws-slug>" --depends-on '["ws-id-1"]' --request-id <workstream_request_id> --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
 #### 결정표
@@ -320,7 +320,7 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" workstream new --title "<workstream 
 ### 2-7. 첫 번째 Episode 생성
 
 ```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin <maker_plugin> --role maker --kind implementation --point design --workstream <workstream_id> --artifacts '[".claude/worktrees/<ws-slug>/expected-output.md"]' --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin <maker_plugin> --role maker --kind implementation --point design --workstream <workstream_id> --artifacts '[".claude/worktrees/<ws-slug>/expected-output.md"]' --task "<bounded_episode_task>" --request-id <episode_request_id> --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
 `--artifacts`는 필수다 — maker `done` 전이는 비어있지 않은 `expected_artifacts`와 실제 파일 존재를 요구한다.
@@ -333,3 +333,10 @@ expected 경로는 `adapter resolve`의 `read.path`를 **변환(TRANSFORM)** 하
 run_id와 workstream 요약을 출력하고 다음 명령을 안내한다:
 
 이후 각 tick마다 Claude는 `/deep-loop-continue`, Codex는 `$deep-loop:deep-loop-continue`를 호출해 루프를 진행한다.
+`<workstream_request_id>`는 logical workstream 생성 전에 한 번 정해 response-loss retry에는
+재사용하고, intentional new workstream에서만 새 ID를 사용한다. 같은 ID로 payload를 바꾸지 않는다.
+
+`<episode_request_id>`는 이 logical episode 생성 전에 한 번 정하고 응답 유실 retry에는 그대로
+재사용한다. 새 episode를 의도할 때만 새 ID를 사용하며, 같은 ID로 payload를 바꾸지 않는다.
+`<bounded_episode_task>`는 이전 대화 없이 실행 가능한 비어 있지 않은 UTF-8 본문이며 16 KiB를
+넘지 않는다. 같은 logical retry는 task와 contract를 byte-identical하게 재사용한다.

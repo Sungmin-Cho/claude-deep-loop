@@ -284,7 +284,7 @@ test('budget record drives per_session_turn_cap → next-action handoff', () => 
 test('episode new --artifacts then record done (the skill flow)', () => {
   const { root, runId } = seed();
   writeFileSync(join(root, 'art.txt'), 'x');   // expected artifact 가 root 하위에 존재해야 done 통과
-  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'implementation', '--point', 'implementation', '--artifacts', '["art.txt"]', '--owner', runId, '--generation', '1']));
+  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'implementation', '--point', 'implementation', '--artifacts', '["art.txt"]', '--task', 'Implement the skillface fixture.', '--request-id', 'skillface-episode', '--owner', runId, '--generation', '1']));
   run(root, ['episode', 'record', '--id', ep.id, '--status', 'done', '--artifacts', '["art.txt"]', '--owner', runId, '--generation', '1']);
   assert.equal(JSON.parse(run(root, ['state', 'get', '--field', 'episodes.0.status'])), 'done');
 });
@@ -496,4 +496,22 @@ testCli7e('read-only CLI and requireLease reject cross-log-invalid authority', (
   assertCli7e.equal(dangling.code, 0);
   assertCli7e.equal(dangling.stdout.trim(), 'null',
     'an implicit pointer to an absent run directory remains a clean null projection');
+});
+test('episode new missing --request-id exits 2', () => {
+  const { root, runId } = seed();
+  assert.equal(runFail(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker',
+    '--kind', 'implementation', '--point', 'implementation', '--task', 'Bounded task.',
+    '--owner', runId, '--generation', '1']), 2);
+});
+test('episode new missing --task exits 2', () => {
+  const { root, runId } = seed();
+  assert.equal(runFail(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker',
+    '--kind', 'implementation', '--point', 'implementation',
+    '--request-id', 'missing-task', '--owner', runId, '--generation', '1']), 2);
+});
+
+test('review dispatch missing --request-id exits 2', () => {
+  const { root, runId } = seed();
+  assert.equal(runFail(root, ['review', 'dispatch', '--point', 'design',
+    '--workstream', 'ws1', '--owner', runId, '--generation', '1']), 2);
 });

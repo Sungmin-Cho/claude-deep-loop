@@ -440,3 +440,37 @@ test('same kind/path with altered hash version or Authenticode is rejected and n
   assert.equal(persisted.launcher_identity, undefined);
   assert.notDeepEqual(persisted.launcher_identity, altered);
 });
+
+import { test as test7f } from 'node:test';
+import assert7f from 'node:assert/strict';
+import { detectAndPersist as detect7f } from '../scripts/lib/detect-terminal.mjs';
+import { durableRunBytes as bytes7f, rawHashValidState as raw7f,
+  verifiedAppRun as fixture7f } from './fixtures/verified-app-run.mjs';
+
+test7f('detect-terminal fences and proves before launcher revalidation or probe', () => {
+  const fixture = fixture7f('dl-terminal-authority-');
+  const approval = { kind: 'wt',
+    canonical_path: 'C:\\Program Files\\WindowsApps\\wt.exe',
+    sha256: 'a'.repeat(64), version: '1.22.10352.0', platform: 'win32', arch: 'x64',
+    source: 'human-explicit', authenticode: null, approved_by: 'human',
+    approved_at: '2026-07-13T00:00:00.000Z' };
+  raw7f(fixture.root, fixture.runId, loop => {
+    loop.autonomy.launcher_executable_approvals.wt = approval;
+    loop.session_chain.sessions[0].host_surface.observed_at =
+      '2026-07-13T00:00:01.000Z';
+  });
+  const before = bytes7f(fixture.root, fixture.runId);
+  let revalidations = 0;
+  let probes = 0;
+  const invoke = owner => detect7f(fixture.root, fixture.runId, {
+    owner, generation: fixture.generation, env: { WT_SESSION: 'session-1' },
+    platform: 'win32', arch: 'x64', now: '2026-07-13T00:00:10.000Z',
+    revalidateLauncher: identity => { revalidations += 1; return identity; },
+    run: () => { probes += 1; return { code: 0 }; },
+  });
+  assert7f.throws(() => invoke('01JAPPWR0NG000000000000000'), /LEASE_FENCED/);
+  assert7f.throws(() => invoke(fixture.owner), /RUN_SNAPSHOT_INVALID/);
+  assert7f.equal(revalidations, 0);
+  assert7f.equal(probes, 0);
+  assert7f.deepEqual(bytes7f(fixture.root, fixture.runId), before);
+});

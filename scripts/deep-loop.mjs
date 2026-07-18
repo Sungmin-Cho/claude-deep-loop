@@ -848,7 +848,10 @@ const handlers = {
         if (!Array.isArray(parsed) || parsed.some(d => typeof d !== 'string' || d.length === 0)) { error('INVALID_DEPENDS_ON'); return 1; }
         dependsOn = parsed;
       }
-      const r = newWorkstream(root, runId, { title, branch, worktree, dependsOn, fence }); json(r); return 0;
+      const requestId = reqStr(f, 'request-id');
+      if (!requestId) { error('MISSING_REQUIRED_OPTION: --request-id'); return 2; }
+      const r = newWorkstream(root, runId,
+        { title, branch, worktree, dependsOn, requestId, fence }); json(r); return 0;
     }
     if (verb === 'set') {
       const id = reqStr(f, 'id'); if (!id) { error('MISSING_ID'); return 2; }
@@ -872,7 +875,15 @@ const handlers = {
       const role = reqStr(f, 'role'); if (!role) { error('MISSING_ROLE'); return 2; }
       const kind = reqStr(f, 'kind'); if (!kind) { error('MISSING_KIND'); return 2; }
       const point = reqStr(f, 'point'); if (!point) { error('MISSING_POINT'); return 2; }
-      const r = newEpisode(root, runId, { plugin, role, kind, point, workstream: f.workstream, expectedArtifacts: f.artifacts ? JSON.parse(f.artifacts) : [], fence }); json({ id: r.id, request_path: r.requestPath }); return 0;
+      const requestId = reqStr(f, 'request-id');
+      if (!requestId) { error('MISSING_REQUIRED_OPTION: --request-id'); return 2; }
+      const task = reqStr(f, 'task');
+      if (!task) { error('MISSING_REQUIRED_OPTION: --task'); return 2; }
+      const r = newEpisode(root, runId, { plugin, role, kind, point,
+        workstream: f.workstream, expectedArtifacts: f.artifacts ? JSON.parse(f.artifacts) : [],
+        fence, requestId, task });
+      json({ id: r.id, request_markdown: r.requestMarkdown,
+        request_markdown_digest: r.requestMarkdownDigest }); return 0;
     }
     if (verb === 'record') {
       const id = reqStr(f, 'id'); if (!id) { error('MISSING_ID'); return 2; }
@@ -910,8 +921,11 @@ const handlers = {
     if (verb === 'dispatch') {
       const point = reqStr(f, 'point'); if (!point) { error('MISSING_POINT'); return 2; }
       const workstream = reqStr(f, 'workstream'); if (!workstream) { error('MISSING_WORKSTREAM'); return 2; }
+      const requestId = reqStr(f, 'request-id');
+      if (!requestId) { error('MISSING_REQUIRED_OPTION: --request-id'); return 2; }
       const independentSubagent = f['independent-subagent'] === true || f['independent-subagent'] === 'true';
-      json(dispatchReview(root, runId, { point, workstreamId: workstream, detected: detectPlugins(root), independentSubagent, fence })); return 0;
+      json(dispatchReview(root, runId, { point, workstreamId: workstream,
+        detected: detectPlugins(root), independentSubagent, requestId, fence })); return 0;
     }
     // verdict 기록 → checker 터미널 파생 + breaker/comprehension/review_points (Codex r1 🔴6: CLI 경계로 노출)
     if (verb === 'record') {

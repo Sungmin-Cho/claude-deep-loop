@@ -1,7 +1,8 @@
-import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { runDir, readState } from './state.mjs';
-import { readLines, verifyLines, verifyHeadLines, appendAnchored, MUTATION_TURN_FLOOR } from './integrity.mjs';
+import { runDir, readState, withLock } from './state.mjs';
+import { assertVerifiedRunSnapshot, MUTATION_TURN_FLOOR, readLines,
+  withVerifiedMutationLock } from './integrity.mjs';
 import { contentHash, wrap, unwrap, ulid, atomicWrite, renameAtomicWithRetry } from './envelope.mjs';
 import { leaseCheck } from './lease.mjs';
 
@@ -328,10 +329,19 @@ function listRunIds(root) {
   return readdirSync(dir, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name).sort();
 }
 
-// 1단 raw 읽기: 한 번의 JSON.parse에서 status + lease를 함께 뽑는다 (추가 I/O 없음 — 두-단계 읽기 구조 유지).
+// Raw parsing classifies only unreadable bytes. Status and lease are never consumed before proof.
 function rawProbeOnce(root, runId) {
-  const parsed = JSON.parse(readFileSync(join(runDir(root, runId), 'loop.json'), 'utf8'));
-  return { status: parsed.status, lease: parsed.session_chain?.lease ?? null };
+  JSON.parse(readFileSync(join(runDir(root, runId), 'loop.json'), 'utf8'));
+}
+
+function verifiedInsightsSnapshot(root, runId) {
+  return withLock(root, runId, () => {
+    const snapshot = readState(root, runId);
+    const lines = readLines(root, runId);
+    assertVerifiedRunSnapshot(root, runId, snapshot.data, { lines });
+    return { data: structuredClone(snapshot.data), hash: snapshot.hash,
+      lines: structuredClone(lines) };
+  });
 }
 
 // (a) suspicious_active 판정 — raw(비검증) 읽기 기반의 **라벨**이지 신뢰 판단이 아니다(집계 제외 원칙은
@@ -354,82 +364,128 @@ export function isSuspiciousActive(status, lease, nowMs) {
   return false;
 }
 
-export function computeInsights(root, { selfRunId = null, now = Date.now(), retryDelayMs = 50, sleepFn = defaultSleep } = {}) {
+const insightsDir = (root) => join(root, '.deep-loop', 'insights');
+export const relInsightsPath = (name) => '.deep-loop/insights/' + name;
+
+export function computeInsights(root, {
+  selfRunId = null, now = Date.now(), retryDelayMs = 50, sleepFn = defaultSleep,
+} = {}) {
   const out = {
     insights_schema_version: INSIGHTS_SCHEMA_VERSION,
     generated_at: new Date(now).toISOString(),
-    runs_analyzed: [], excluded_active: [], suspicious_active: [], unreadable: [], integrity_failed_runs: [],
-    post_finish_mutated: [],
-    per_run: Object.create(null), aggregates: {}, candidates: [],
+    runs_analyzed: [], excluded_active: [], suspicious_active: [], unreadable: [],
+    integrity_failed_runs: [], post_finish_mutated: [], per_run: Object.create(null),
+    aggregates: {}, candidates: [],
   };
   for (const id of listRunIds(root)) {
     const isSelf = id === selfRunId;
-    // 1단: raw parse (실패 → 1회 재시도 → unreadable)
-    let probe;
-    try { probe = rawProbeOnce(root, id); }
-    catch { try { sleepFn(retryDelayMs); probe = rawProbeOnce(root, id); } catch { out.unreadable.push(id); continue; } }
-    if (!isSelf && !TERMINAL_RUN.has(probe.status)) {
+    try { rawProbeOnce(root, id); }
+    catch {
+      try { sleepFn(retryDelayMs); rawProbeOnce(root, id); }
+      catch { out.unreadable.push(id); continue; }
+    }
+    let snapshot;
+    try { snapshot = verifiedInsightsSnapshot(root, id); }
+    catch {
+      try { sleepFn(retryDelayMs); snapshot = verifiedInsightsSnapshot(root, id); }
+      catch { out.integrity_failed_runs.push(id); continue; }
+    }
+    const { data: loop, hash: loopHash, lines: events } = snapshot;
+    if (!isSelf && !TERMINAL_RUN.has(loop.status)) {
       out.excluded_active.push(id);
-      if (isSuspiciousActive(probe.status, probe.lease, now)) out.suspicious_active.push(id);
+      if (isSuspiciousActive(loop.status, loop.session_chain?.lease ?? null, now)) {
+        out.suspicious_active.push(id);
+      }
       continue;
     }
-    // 2단: 검증 읽기 = readState + verifyLog + verifyHead + readLines (스펙 §4-2). readLines는 JSON parse만 하므로
-    // verifyLog(checksum/seq 체인)와 verifyHead(loop.json의 event_log_head anchor 대조 — suffix truncation 탐지,
-    // appendAnchored와 동일 2중 검증)를 반드시 함께 돌린다. 실패 → ≥retryDelayMs 재시도 1회 → integrity_failed.
-    let loopHash, loop, events;
-    const verifiedRead = () => {
-      // Single verified read: readState hash-checks loop.json and returns the verified content hash — a second
-      // readFileSync would open a TOCTOU window where loop_sha256 hashes different bytes than the analyzed data.
-      // 이벤트 로그도 같은 원리로 **1회만** 읽고 그 in-memory 배열에 체인 검증 + head-anchor 대조를 수행한다 —
-      // verifyLog/verifyHead(디스크 재읽기)와 분석용 readLines를 분리하면 그 사이 concurrent append가
-      // 검증 밖 suffix로 metrics/last_seq에 유입된다 (impl-R2 🟡2).
-      const r = readState(root, id);                                   // hash anchor 검증
-      const lines = readLines(root, id);                               // 단일 읽기 — 검증 배열 == 분석 배열
-      const vl = verifyLines(lines);                                   // event-log 체인 검증
-      if (!vl.ok) throw new Error(`LOG_TAMPERED: ${vl.errors.join('; ')}`);
-      const vh = verifyHeadLines(lines, r.data.event_log_head);        // suffix truncation 탐지
-      if (!vh.ok) throw new Error(`LOG_TAMPERED: ${vh.errors.join('; ')}`);
-      return { hash: r.hash, data: r.data, events: lines };
-    };
-    try { ({ hash: loopHash, data: loop, events } = verifiedRead()); }
-    catch { try { sleepFn(retryDelayMs); ({ hash: loopHash, data: loop, events } = verifiedRead()); } catch { out.integrity_failed_runs.push(id); continue; } }
-    // 검증은 통과했으나 metrics 산출이 불능인 run(과거/타 버전 커널의 이벤트 shape drift)은 fail-soft로
-    // unreadable에 분류 — run 하나가 insights 전체(피드백 루프)를 크래시하면 안 된다 (impl-R3 🟡D).
-    let m;
-    try { m = computeRunMetrics(loop, events); }
+    let metrics;
+    try { metrics = computeRunMetrics(loop, events); }
     catch { out.unreadable.push(id); continue; }
-    if (isSelf) m.self_snapshot = true;
-    // (b′) post-finish mutation 라벨 (spec §3, r5 리뷰 — 라벨 방식): finish 이후 non-exempt 이벤트가 낀
-    // terminal 로그는 집계에 유지하되 노출만 한다 (suspicious_active와 동일한 라벨 정신 — 제외는 run 전체
-    // 이력의 학습 손실이라 채택 안 함). finish 이벤트 없는 terminal 로그(레거시)는 판정 불가 → 라벨 없음.
-    const fin = events.find(e => e.type === 'finish');
-    if (fin && events.some(e => e.seq > fin.seq && nonExemptEvent(e))) out.post_finish_mutated.push(id);
-    out.per_run[id] = m;
-    out.runs_analyzed.push({ run_id: id, last_seq: m.last_seq, loop_sha256: loopHash });
+    if (isSelf) metrics.self_snapshot = true;
+    const finish = events.find(event => event.type === 'finish');
+    if (finish && events.some(event => event.seq > finish.seq && nonExemptEvent(event))) {
+      out.post_finish_mutated.push(id);
+    }
+    out.per_run[id] = metrics;
+    out.runs_analyzed.push({ run_id: id, last_seq: metrics.last_seq,
+      loop_sha256: loopHash });
   }
-  out.candidates = deriveCandidates(out.per_run, { integrityFailed: out.integrity_failed_runs });
-  out.aggregates = { avg_fix_cycles_by_point: avgFixCyclesByPoint(out.per_run), total_runs: out.runs_analyzed.length };
+  out.candidates = deriveCandidates(out.per_run,
+    { integrityFailed: out.integrity_failed_runs });
+  out.aggregates = { avg_fix_cycles_by_point: avgFixCyclesByPoint(out.per_run),
+    total_runs: out.runs_analyzed.length };
   return out;
 }
 
-const insightsDir = (root) => join(root, '.deep-loop', 'insights');
-export const relInsightsPath = (name) => `.deep-loop/insights/${name}`;
+function finishRecoveredInsightsArtifact(root, recovered,
+  { platform, monotonicNowFn, renameFn, sleepFn } = {}) {
+  const prefix = '.deep-loop/insights/';
+  if (typeof recovered?.path !== 'string' || !recovered.path.startsWith(prefix)
+      || !/^[0-7][0-9A-HJKMNP-TV-Z]{25}-insights\.json$/.test(
+        recovered.path.slice(prefix.length))
+      || !/^[0-9a-f]{64}$/.test(recovered.sha256 || '')) {
+    throw new Error('INSIGHTS_RECOVERY_PROJECTION_INVALID');
+  }
+  const finalName = recovered.path.slice(prefix.length);
+  const fileUlid = finalName.slice(0, 26);
+  const finalPath = join(insightsDir(root), finalName);
+  const tmp = join(insightsDir(root), `.tmp-${fileUlid}`);
+  const matches = path => existsSync(path)
+    && contentHash(readFileSync(path, 'utf8')) === recovered.sha256;
+  if (existsSync(finalPath)) {
+    if (!matches(finalPath)) throw new Error('INSIGHTS_RECOVERY_ARTIFACT_INVALID');
+    if (existsSync(tmp)) {
+      if (!matches(tmp)) throw new Error('INSIGHTS_RECOVERY_ARTIFACT_INVALID');
+      unlinkSync(tmp);
+    }
+    return recovered;
+  }
+  if (!matches(tmp)) throw new Error('INSIGHTS_RECOVERY_ARTIFACT_MISSING');
+  renameAtomicWithRetry(tmp, finalPath,
+    { platform, monotonicNowFn, renameFn, sleepFn });
+  if (!matches(finalPath)) throw new Error('INSIGHTS_RECOVERY_ARTIFACT_INVALID');
+  return recovered;
+}
 
 export function emitInsights(root, runId, {
   fence, now = Date.now(), rnd = Math.random, platform, monotonicNowFn, renameFn, sleepFn,
 } = {}) {
-  // lib 진입점 fence 필수 — shape까지 episode.mjs:26-27/finish.mjs 동형(owner 문자열 + generation 정수, r2 리뷰 정정)
-  if (!fence || typeof fence.owner !== 'string' || !fence.owner.length || !Number.isInteger(fence.generation)) {
+  if (!fence || typeof fence.owner !== 'string' || !fence.owner.length
+      || !Number.isInteger(fence.generation)) {
     throw new Error('FENCE_REQUIRED: emitInsights requires {owner: string, generation: integer}');
   }
-  // fast-fail leaseCheck를 tmp write **이전에** 수행 (r2 리뷰 정정 — wrong-generation 호출이 .tmp- 잔재를 남기지 않게).
-  // 권위 검사는 여전히 아래 appendAnchored preCheck(락 안)에 있다 — 이건 잔재 방지용 사전 검사.
-  { const { data: pre } = readState(root, runId); const lc = leaseCheck(pre, fence); if (!lc.ok) throw new Error('LEASE_FENCED: ' + lc.reason); }
-  const payload = computeInsights(root, { selfRunId: runId, now, ...(sleepFn ? { sleepFn } : {}) });
-  const { data: loop } = readState(root, runId);
+  const identityFence = loop => {
+    const lease = loop.session_chain?.lease;
+    if (lease?.owner_run_id !== fence.owner || lease?.generation !== fence.generation) {
+      throw new Error('LEASE_FENCED: emitInsights');
+    }
+  };
+  const callerBinding = { owner: fence.owner, generation: fence.generation };
+  const intentDigest = contentHash(JSON.stringify({ operation: 'emit-insights',
+    ...callerBinding }));
+  const phase = body => withVerifiedMutationLock(root, runId,
+    { callerBinding, intentDigest, fenceError: 'LEASE_FENCED: emitInsights' }, body);
+  const entry = phase(mutation => {
+    const authority = mutation.readVerifiedState({ fenceCheck: identityFence }).data;
+    if (!mutation.recovered) return { authority, recovered: null };
+    const event = readLines(root, runId).filter(item => item.type === 'insights-emitted').at(-1);
+    if (!event) throw new Error('INSIGHTS_RECOVERY_PROJECTION_INVALID');
+    return { authority, recovered: { ok: true, path: event.data.path,
+      sha256: event.data.sha256, candidates_count: event.data.candidates_count,
+      recovered: true } };
+  });
+  if (entry.recovered) {
+    return finishRecoveredInsightsArtifact(root, entry.recovered,
+      { platform, monotonicNowFn, renameFn, sleepFn });
+  }
+  const authority = entry.authority;
+  const authorized = leaseCheck(authority, fence);
+  if (!authorized.ok) throw new Error('LEASE_FENCED: ' + authorized.reason);
+  const payload = computeInsights(root,
+    { selfRunId: runId, now, ...(sleepFn ? { sleepFn } : {}) });
   const envelope = wrap({ producer: 'deep-loop', artifact_kind: 'loop-insights',
     schema: { name: 'loop-insights', version: String(INSIGHTS_SCHEMA_VERSION) },
-    run_id: runId, parent_run_id: loop.session_chain?.parent_run_id ?? null,
+    run_id: runId, parent_run_id: authority.session_chain?.parent_run_id ?? null,
     payload, now: new Date(now).toISOString() });
   const json = JSON.stringify(envelope, null, 2);
   const sha256 = contentHash(json);
@@ -438,77 +494,66 @@ export function emitInsights(root, runId, {
   const rel = relInsightsPath(finalName);
   mkdirSync(insightsDir(root), { recursive: true });
   const tmp = join(insightsDir(root), `.tmp-${fileUlid}`);
-  atomicWrite(tmp, json);                                            // ① tmp (latest 스캔 제외 접두)
-  appendAnchored(root, runId,                                        // ② anchored 이벤트 = 신뢰 원천
-    { type: 'insights-emitted', data: { path: rel, sha256, candidates_count: payload.candidates.length } },
-    undefined,
-    (l) => { if (fence) { const r = leaseCheck(l, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); } },
-    { floor: MUTATION_TURN_FLOOR });
+  atomicWrite(tmp, json);
+  phase(mutation => mutation.appendAnchored(
+    { type: 'insights-emitted', data: { path: rel, sha256,
+      candidates_count: payload.candidates.length } }, undefined,
+    loop => {
+      const checked = leaseCheck(loop, fence);
+      if (!checked.ok) throw new Error('LEASE_FENCED: ' + checked.reason);
+    }, { floor: MUTATION_TURN_FLOOR, fenceCheck: identityFence }));
   renameAtomicWithRetry(tmp, join(insightsDir(root), finalName),
-    { platform, monotonicNowFn, renameFn, sleepFn });                // ③ 공개
-  // candidates를 반환에 포함 — finish 스킬이 파일을 직접 파싱하지 않고 CLI 출력만으로 제안 블록을 구성(§9, 2-plane).
-  // v1.5: 신뢰 라벨 2배열도 함께 노출 — payload에만 있으면 stdout-만 읽는 소비자에게 영원히 안 보인다 (plan-r2).
-  return { ok: true, path: rel, sha256, candidates_count: payload.candidates.length, candidates: payload.candidates,
-    suspicious_active: payload.suspicious_active, post_finish_mutated: payload.post_finish_mutated };
+    { platform, monotonicNowFn, renameFn, sleepFn });
+  return { ok: true, path: rel, sha256, candidates_count: payload.candidates.length,
+    candidates: payload.candidates, suspicious_active: payload.suspicious_active,
+    post_finish_mutated: payload.post_finish_mutated };
 }
 
 export function latestInsights(root) {
   const dir = insightsDir(root);
   if (!existsSync(dir)) return null;
-  const files = readdirSync(dir).filter(f => f.endsWith('-insights.json') && !f.startsWith('.tmp-')).sort().reverse();
-  for (const f of files) {
+  const files = readdirSync(dir)
+    .filter(file => file.endsWith('-insights.json') && !file.startsWith('.tmp-'))
+    .sort().reverse();
+  for (const file of files) {
     try {
-      const raw = readFileSync(join(dir, f), 'utf8');
-      const obj = unwrap(JSON.parse(raw), { producer: 'deep-loop', artifact_kind: 'loop-insights' });
-      if (!obj) continue;
-      if ((obj.payload?.insights_schema_version ?? Infinity) > INSIGHTS_SCHEMA_VERSION) { process.stderr.write(`[deep-loop:warn] insights ${f}: newer schema — skipped\n`); continue; }
-      const rel = relInsightsPath(f);
-      // 리뷰 판정(2026-07-07): anchored 신뢰는 체인 검증을 전제한다 — readLines는 parse만 하므로
-      // verifyLines(체크섬 체인) + verifyHeadLines(head anchor, suffix truncation)를 통과한 로그의 이벤트만
-      // 증거로 인정한다 (computeInsights §4-2 동형 — 단일 읽기, impl-R2 🟡2). 실패는 throw → per-file
-      // catch → fail-soft skip.
-      const rid = obj.envelope.run_id;
-      const producerData = readState(root, rid).data;
-      // Phase6 ITEM-4: finish는 proof 검증 **이전**에 insights emit을 실행하므로, proof 미충족으로
-      // finish가 실패하면 status=running인 run의 insights가 검증 통과 상태로 latest에 남아 다음
-      // init/hill-climb이 소비할 수 있다 — computeInsights가 타 run에 적용하는 terminal-only 원칙
-      // (TERMINAL_RUN, :306)을 여기 artifact 선택에도 대칭 적용한다. emit→finish 성공 사이 창에서만
-      // 일시 skip되고, finish가 status를 terminal로 바꾸는 순간 동일 artifact가 유효화된다.
-      if (!TERMINAL_RUN.has(producerData.status)) {
-        process.stderr.write(`[deep-loop:warn] insights ${f}: producer run ${rid} not terminal (status=${producerData.status}) — skipped\n`);
+      const raw = readFileSync(join(dir, file), 'utf8');
+      const object = unwrap(JSON.parse(raw),
+        { producer: 'deep-loop', artifact_kind: 'loop-insights' });
+      if (!object) continue;
+      if ((object.payload?.insights_schema_version ?? Infinity) > INSIGHTS_SCHEMA_VERSION) {
+        process.stderr.write(`[deep-loop:warn] insights ${file}: newer schema — skipped\n`);
         continue;
       }
-      const anchor = producerData.event_log_head;
-      const lines = readLines(root, rid);
-      const vl = verifyLines(lines);
-      if (!vl.ok) throw new Error(`LOG_TAMPERED: ${vl.errors.join('; ')}`);
-      const vh = verifyHeadLines(lines, anchor);
-      if (!vh.ok) throw new Error(`LOG_TAMPERED: ${vh.errors.join('; ')}`);
-      // (b) 앵커는 path-binding을 통과시킨 바로 그 이벤트 — artifact의 path와 정확 일치. 동일 path 매칭이
-      // 2개 이상이면 fail-closed(정상 경로에서 파일명 ULID가 유일하므로 중복은 규약 밖; spec §3 r3 리뷰).
-      const matches = lines.filter(e => e.type === 'insights-emitted' && e.data.path === rel);
-      if (matches.length === 0) continue;                   // path-binding: 이벤트의 path와 정확 일치 필수
-      if (matches.length > 1) { process.stderr.write(`[deep-loop:warn] insights ${f}: ${matches.length} insights-emitted events match path — skipped\n`); continue; }
-      const ev = matches[0];
-      if (ev.data.sha256 !== contentHash(raw)) continue;    // 내용 무결성
-      // (b) finish-edge: 앵커 이후 non-exempt 이벤트가 정확히 finish 하나(=마지막 non-exempt)여야 신뢰
-      // (spec §3, r2 리뷰 🔴 2/2 일치) — mid-run emit(뒤에 business/명시 cost 이벤트)과 post-finish
-      // mutation(finish 뒤 non-exempt) 로그의 pre-finish payload를 모두 skip한다. 회복 경로는 재-emit.
-      const after = lines.filter(e => e.seq > ev.seq && nonExemptEvent(e));
+      const rel = relInsightsPath(file);
+      const producerRunId = object.envelope.run_id;
+      const producer = verifiedInsightsSnapshot(root, producerRunId);
+      if (!TERMINAL_RUN.has(producer.data.status)) {
+        process.stderr.write(`[deep-loop:warn] insights ${file}: producer run ${producerRunId} not terminal (status=${producer.data.status}) — skipped\n`);
+        continue;
+      }
+      const matches = producer.lines.filter(event =>
+        event.type === 'insights-emitted' && event.data.path === rel);
+      if (matches.length === 0) continue;
+      if (matches.length > 1) {
+        process.stderr.write(`[deep-loop:warn] insights ${file}: ${matches.length} insights-emitted events match path — skipped\n`);
+        continue;
+      }
+      const emitted = matches[0];
+      if (emitted.data.sha256 !== contentHash(raw)) continue;
+      const after = producer.lines.filter(event =>
+        event.seq > emitted.seq && nonExemptEvent(event));
       if (after.length !== 1 || after[0].type !== 'finish') {
-        process.stderr.write(`[deep-loop:warn] insights ${f}: no clean finish edge after emit (non-exempt after: ${after.length ? after.map(e => e.type).join(',') : 'none'}) — skipped\n`);
+        process.stderr.write(`[deep-loop:warn] insights ${file}: no clean finish edge after emit (non-exempt after: ${after.length ? after.map(event => event.type).join(',') : 'none'}) — skipped\n`);
         continue;
       }
-      // sha256: anchored insights-emitted 이벤트에 기록된 값(위에서 contentHash(raw) 일치 검증 완료) —
-      // 소비자(dispatchReview evidence 등)가 artifact 동일성을 재검증 없이 인용할 수 있게 노출한다 (codex r2).
-      return { path: rel, envelope: obj, sha256: ev.data.sha256 };
-    } catch (e) {
-      process.stderr.write(`[deep-loop:warn] insights ${f}: ${String(e?.message || e)} — skipped\n`);   // fail-soft
+      return { path: rel, envelope: object, sha256: emitted.data.sha256 };
+    } catch (error) {
+      process.stderr.write(`[deep-loop:warn] insights ${file}: ${String(error?.message || error)} — skipped\n`);
     }
   }
   return null;
 }
-
 // spec §8.3 — hillclimb-ledger.json 스키마 검증 (배열·append-only 항목 형태만; append-only 강제는
 // checker 계약 (f)의 diff 검사 + git history 폴백이 담당 — 여기서는 스키마·배열 형태만 단언).
 export function validateLedger(arr) {

@@ -15,9 +15,10 @@ import { fileURLToPath } from 'node:url';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState } from '../scripts/lib/state.mjs';
 import { finishProofState } from '../scripts/lib/finish.mjs';
-import { newWorkstream } from '../scripts/lib/workspace.mjs';
-import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
-import { resolveReviewer, dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
+import { newWorkstream } from './helpers/workstream-request.mjs';
+import { newEpisode, recordEpisode } from './helpers/episode-request.mjs';
+import { blockIndependentReview, claimIndependentReview, resolveReviewer,
+  dispatchReview, recordReviewOutcome } from './helpers/review-request.mjs';
 import { appendAnchored } from '../scripts/lib/integrity.mjs';
 import { createDirectoryJunction } from './helpers/fs-fixtures.mjs';
 
@@ -179,20 +180,20 @@ test('P2: hill-climb run dispatch succeeds after contract is materialized into t
   // criterion (a) 결정론 근거 — hill-climb 디스크립터는 evidence 키를 항상 실어준다(검증 insights 부재 시 null)
   assert.ok('evidence' in r.descriptor, 'hill-climb descriptor carries kernel-verified insights evidence');
   assert.equal(r.descriptor.evidence, null, 'fresh test run has no verified insights — evidence is null');
-  // codex r2: evidence는 디스크립터(휘발)만이 아니라 checker request.md에 durable 기록되어야 한다
+  // Evidence is durable in the checker episode's anchored inline request.
   const ep = readState(root, runId).data.episodes.find(e => e.id === r.checkerEpisodeId);
-  const req = readFileSync(ep.request_path, 'utf8');
+  const req = ep.request_markdown;
   assert.match(req, /## Evidence \(kernel-verified insights\)/);
   assert.match(req, /```json\nnull\n```/);
 });
 
-test('P2: non-hill-climb checker request has no evidence section (undefined omits it)', () => {
+test('P2: non-hill-climb inline checker request omits evidence', () => {
   const { root, runId, f } = seedRun({ reviewer: 'deep-review-loop' });
   const ws = doneMakerOn(root, runId, f);
   const r = dispatchReview(root, runId, { point: 'design', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
   assert.ok(!('evidence' in r.descriptor), 'non-hill-climb descriptor has no evidence key');
   const ep = readState(root, runId).data.episodes.find(e => e.id === r.checkerEpisodeId);
-  assert.doesNotMatch(readFileSync(ep.request_path, 'utf8'), /## Evidence/);
+  assert.doesNotMatch(ep.request_markdown, /## Evidence/);
 });
 
 test('P2: project-root-only contract copy does NOT satisfy the worktree-local gate', () => {
@@ -397,18 +398,12 @@ test('P2: legacy approved checker without pinned contract blocks hill-climb fini
   const ws = doneMakerOn(root, runId, f);
   const makerId = readState(root, runId).data.episodes.find(e => e.role === 'maker').id;
   const { id: checkerId } = newEpisode(root, runId, { plugin: 'deep-review', role: 'checker', kind: 'design-review', point: 'design', workstream: ws, targetMaker: makerId, fence: f });
-  // pre-patch 커널이 남긴 approved 상태 재현 (fixture 전용 raw 전이 — 정상 경로로는 record 게이트가 막음)
-  appendAnchored(root, runId,
-    { type: 'state-patch', data: { field: 'test-legacy-approved' } }, d => {
-      d.episodes.find(e => e.id === checkerId).status = 'approved';
-    });
-  assert.ok(finishProofState(readState(root, runId).data).missing.includes('hillclimb-contract-unpinned'));
+  const legacy = structuredClone(readState(root, runId).data);
+  legacy.episodes.find(e => e.id === checkerId).status = 'approved';
+  assert.ok(finishProofState(legacy).missing.includes('hillclimb-contract-unpinned'));
   // 대조: 같은 상태에서 contract가 pin되어 있으면 이 마커는 사라진다
-  appendAnchored(root, runId,
-    { type: 'state-patch', data: { field: 'test-legacy-contract' } }, d2 => {
-      d2.episodes.find(e => e.id === checkerId).contract = { slice: 'HILLCLIMB-001', path: '.claude/worktrees/w-design/.deep-review/contracts/HILLCLIMB-001.yaml', sha256: 'a'.repeat(64) };
-    });
-  assert.ok(!finishProofState(readState(root, runId).data).missing.includes('hillclimb-contract-unpinned'));
+  legacy.episodes.find(e => e.id === checkerId).contract = { slice: 'HILLCLIMB-001', path: '.claude/worktrees/w-design/.deep-review/contracts/HILLCLIMB-001.yaml', sha256: 'a'.repeat(64) };
+  assert.ok(!finishProofState(legacy).missing.includes('hillclimb-contract-unpinned'));
 });
 
 // ── P2 스코프 한정 — hill-climb이 아닌 recipe는 계약 게이트 비대상(무회귀) ──
@@ -417,4 +412,550 @@ test('P2: non-hill-climb runs are not gated by contract presence', () => {
   const ws = doneMakerOn(root, runId, f);
   const r = dispatchReview(root, runId, { point: 'design', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
   assert.equal(r.descriptor.skill, 'deep-review:deep-review-loop');
+});
+
+import { test as test7f } from 'node:test';
+import assert7f from 'node:assert/strict';
+import { createHash as hashDispatch7f } from 'node:crypto';
+import { mkdirSync as mkdir7f, mkdtempSync as temp7f,
+  readFileSync as readDispatch7f, readdirSync as readdirDispatch7f,
+  realpathSync as realpath7f,
+  rmSync as removeDispatch7f, symlinkSync as symlink7f,
+  writeFileSync as write7f } from 'node:fs';
+import { tmpdir as tmp7f } from 'node:os';
+import { dirname as dirname7f, join as join7f } from 'node:path';
+import { initRun as init7f } from '../scripts/lib/initrun.mjs';
+import { newWorkstream as workstream7f } from '../scripts/lib/workspace.mjs';
+import { newBlockedCheckerEpisode as productionBlockedEpisode7f,
+  newEpisode as productionEpisode7f, recordEpisode as record7f }
+  from '../scripts/lib/episode.mjs';
+import { dispatchReview as dispatch7f } from './helpers/review-request.mjs';
+import { emitInsights as emitDispatchInsights7f,
+  latestInsights as latestDispatchInsights7f } from '../scripts/lib/insights.mjs';
+import { finishRun as finishDispatchInsights7f } from '../scripts/lib/finish.mjs';
+import { readLines as lines7f, readVerifiedState as verifiedDispatch7f }
+  from '../scripts/lib/integrity.mjs';
+import { readState as stateDispatch7f, runDir as runDirDispatch7f }
+  from '../scripts/lib/state.mjs';
+import { durableRunBytes as bytes7f, rawHashValidState as raw7f }
+  from './fixtures/verified-app-run.mjs';
+
+let episodeTaskSequence7f = 0;
+const episode7f = (root, runId, input = {}) => {
+  episodeTaskSequence7f += 1;
+  return productionEpisode7f(root, runId, {
+    ...input,
+    task: input.task ?? `Execute reviewer fixture episode ${episodeTaskSequence7f}.`,
+  });
+};
+
+function corruptDispatchFixture7f({ corrupt = true, hillClimb = true } = {}) {
+  const root = realpath7f(temp7f(join7f(tmp7f(), 'dl-review-dispatch-proof-')));
+  const observed = '2026-07-13T00:00:00.000Z';
+  const { runId } = init7f(root, {
+    runtime: 'codex', goal: '하네스 개선',
+    recipe: hillClimb ? 'harness-hill-climb' : 'triage-and-discovery',
+    review: { points: ['design'], reviewer: 'deep-review-loop', mode: 'cross-model',
+      flags: hillClimb ? ['--contract'] : [], converge: true, max_review_rounds: 5,
+      require_human_ack: false },
+    detected: { 'deep-review': true, codex: true }, now: new Date(observed),
+    cwdFn: () => root,
+    hostObservation: { kind: 'codex-app', source: 'codex-app-tool-provenance',
+      capabilities: ['create-thread-local', 'list-projects', 'structured-process-stdin'],
+      structured_stdin_mode: 'pty-raw-noecho', host_task_cwd: root,
+      host_task_cwd_source: 'app-task-context', observed_at: observed },
+    appContinuationConsent: { mode: 'auto', authority: 'human-confirmed',
+      confirmed_at: observed, revoked_at: null },
+  });
+  const fence = { owner: runId, generation: 1, intent: 'business' };
+  const worktree = '.claude/worktrees/design';
+  mkdir7f(join7f(root, worktree), { recursive: true });
+  const ws = workstream7f(root, runId,
+    { title: 'design', branch: 'design', worktree,
+      requestId: 'review-dispatch-workstream', fence }).id;
+  const artifact = `${worktree}/design.md`;
+  write7f(join7f(root, artifact), '# design');
+  const maker = episode7f(root, runId, { plugin: 'deep-work', role: 'maker',
+    kind: 'design', point: 'design', workstream: ws,
+    expectedArtifacts: [artifact], fence,
+    requestId: 'review-dispatch-authority-maker' }).id;
+  record7f(root, runId, maker, { status: 'done', artifacts: [artifact], fence });
+  if (corrupt) {
+    raw7f(root, runId, loop => {
+      loop.session_chain.sessions[0].host_surface.observed_at =
+        '2026-07-13T00:00:01.000Z';
+    });
+  }
+  return { root, runId, ws, maker, fence };
+}
+
+test7f('versioned episode request is anchored inline and creates no request sidecar', () => {
+  const fixture = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
+  const run = runDirDispatch7f(fixture.root, fixture.runId);
+  const beforeNames = readdirDispatch7f(run).sort();
+  const result = episode7f(fixture.root, fixture.runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'fix', point: 'design',
+    workstream: fixture.ws, fence: fixture.fence,
+    task: 'Repair the reviewed design and write the bounded proof artifact.',
+    contract: { schema: 'episode-task-v1', verdict: 'maker-proof-required' },
+    requestId: 'episode-inline-request',
+  });
+  const state = verifiedDispatch7f(fixture.root, fixture.runId).data;
+  const episode = state.episodes.find(item => item.id === result.id);
+  const event = lines7f(fixture.root, fixture.runId)
+    .find(item => item.type === 'episode-new' && item.data.episode_id === result.id);
+  assert7f.equal(episode.request_path, undefined);
+  assert7f.equal(result.requestMarkdown, episode.request_markdown);
+  assert7f.equal(result.requestMarkdownDigest, episode.request_markdown_digest);
+  assert7f.equal(event.data.request_markdown, result.requestMarkdown);
+  assert7f.equal(event.data.request_markdown_digest, result.requestMarkdownDigest);
+  assert7f.match(result.requestMarkdown,
+    /Repair the reviewed design and write the bounded proof artifact\./);
+  assert7f.match(result.requestMarkdown, /"schema": "episode-task-v1"/);
+  assert7f.equal(episode.task,
+    'Repair the reviewed design and write the bounded proof artifact.');
+  assert7f.deepEqual(event.data.contract,
+    { schema: 'episode-task-v1', verdict: 'maker-proof-required' });
+  assert7f.deepEqual(readdirDispatch7f(run).sort(), beforeNames,
+    'the anchored state/event commit creates no request pathname');
+});
+
+test7f('episode exact retry returns the same inline request without another write', () => {
+  const fixture = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
+  const input = { plugin: 'deep-work', role: 'maker', kind: 'fix', point: 'design',
+    workstream: fixture.ws, fence: fixture.fence,
+    task: 'Apply the exact inline-request retry contract.',
+    contract: { schema: 'episode-task-v1' },
+    requestId: 'episode-inline-retry' };
+  const first = episode7f(fixture.root, fixture.runId, input);
+  const committed = bytes7f(fixture.root, fixture.runId);
+  const second = episode7f(fixture.root, fixture.runId, input);
+  assert7f.deepEqual(second, first);
+  assert7f.deepEqual(bytes7f(fixture.root, fixture.runId), committed);
+  assert7f.equal(lines7f(fixture.root, fixture.runId).filter(event =>
+    event.type === 'episode-new' && event.data.episode_id === first.id).length, 1);
+});
+
+test7f('episode task is mandatory bounded UTF-8 before mutation', () => {
+  const fixture = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
+  const before = bytes7f(fixture.root, fixture.runId);
+  for (const task of [undefined, '', 'x'.repeat(16 * 1024 + 1),
+    'carriage\rreturn', '\uD800']) {
+    assert7f.throws(() => productionEpisode7f(fixture.root, fixture.runId, {
+      plugin: 'deep-work', role: 'maker', kind: 'fix', point: 'design',
+      workstream: fixture.ws, fence: fixture.fence, task,
+      requestId: `invalid-task-${String(task).length}`,
+    }), /EPISODE_TASK_INVALID/);
+    assert7f.deepEqual(bytes7f(fixture.root, fixture.runId), before);
+  }
+});
+
+function materializeHillContract7f(fixture) {
+  const destination = join7f(fixture.root, '.claude', 'worktrees', 'design',
+    '.deep-review', 'contracts', 'HILLCLIMB-001.yaml');
+  mkdir7f(dirname7f(destination), { recursive: true });
+  write7f(destination, readDispatch7f(new URL(
+    '../skills/deep-loop-workflow/references/contracts/HILLCLIMB-001.yaml',
+    import.meta.url)));
+  return destination;
+}
+
+test7f('review dispatch proves authority before descriptor and contract source actions', () => {
+  const fixture = corruptDispatchFixture7f();
+  const before = bytes7f(fixture.root, fixture.runId);
+  for (const [owner, expected] of [
+    ['01JAPPWR0NG000000000000000', /LEASE_FENCED/],
+    [fixture.runId, /RUN_SNAPSHOT_INVALID/],
+  ]) {
+    assert7f.throws(() => dispatch7f(fixture.root, fixture.runId, {
+      point: 'design', workstreamId: fixture.ws,
+      detected: { 'deep-review': true, codex: true },
+      requestId: 'authority-proof-dispatch',
+      fence: { ...fixture.fence, owner },
+    }), expected);
+  }
+  assert7f.deepEqual(bytes7f(fixture.root, fixture.runId), before);
+});
+
+test7f('review dispatch exact retry after marker cleanup reuses one checker', () => {
+  const fixture = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
+  const input = { point: 'design', workstreamId: fixture.ws,
+    detected: { 'deep-review': true, codex: true },
+    requestId: 'dispatch-design-round-1', fence: fixture.fence };
+  const first = dispatch7f(fixture.root, fixture.runId, input);
+  const firstEpisode = stateDispatch7f(fixture.root, fixture.runId).data.episodes
+    .find(episode => episode.id === first.checkerEpisodeId);
+  const requestMarkdown = firstEpisode.request_markdown;
+  const requestMarkdownDigest = firstEpisode.request_markdown_digest;
+  assert7f.equal(first.request_markdown, requestMarkdown);
+  assert7f.equal(first.request_markdown_digest, requestMarkdownDigest);
+  const committed = bytes7f(fixture.root, fixture.runId);
+  const second = dispatch7f(fixture.root, fixture.runId, input);
+  assert7f.deepEqual(second, first);
+  const replayedEpisode = stateDispatch7f(fixture.root, fixture.runId).data.episodes
+    .find(episode => episode.id === first.checkerEpisodeId);
+  assert7f.equal(replayedEpisode.request_markdown, requestMarkdown);
+  assert7f.equal(replayedEpisode.request_markdown_digest, requestMarkdownDigest);
+  assert7f.deepEqual(bytes7f(fixture.root, fixture.runId), committed,
+    'post-cleanup exact dispatch retry must be byte-identical');
+  const state = stateDispatch7f(fixture.root, fixture.runId).data;
+  assert7f.equal(state.episodes.filter(episode => episode.role === 'checker'
+    && episode.target_maker === fixture.maker).length, 1);
+  assert7f.equal(lines7f(fixture.root, fixture.runId).filter(event =>
+    event.type === 'episode-new' && event.data?.role === 'checker').length, 1);
+  assert7f.equal(dispatch7f(fixture.root, fixture.runId, input).checkerEpisodeId,
+    first.checkerEpisodeId);
+  assert7f.match(requestMarkdown, /Independently review maker episode/);
+  assert7f.match(requestMarkdown, /## Contract\n\n```json/);
+});
+
+test7f('hill-climb same-ID replay bypasses mutable contract and evidence derivation', () => {
+  const fixture = corruptDispatchFixture7f({ corrupt: false, hillClimb: true });
+  const contract = materializeHillContract7f(fixture);
+  const input = { point: 'design', workstreamId: fixture.ws,
+    detected: { 'deep-review': true, codex: true },
+    requestId: 'hill-mutable-replay', fence: fixture.fence };
+  const first = dispatch7f(fixture.root, fixture.runId, input);
+  const committed = bytes7f(fixture.root, fixture.runId);
+  const { runId: insightsRun } = init7f(fixture.root, {
+    runtime: 'claude', goal: 'mutable replay evidence',
+    now: new Date('2026-07-13T00:01:00.000Z'),
+  });
+  const insightsFence = { owner: insightsRun, generation: 1, runtime: 'claude' };
+  emitDispatchInsights7f(fixture.root, insightsRun, {
+    fence: insightsFence, now: Date.parse('2026-07-13T00:01:01.000Z'),
+    rnd: () => 0.25, sleepFn: () => {},
+  });
+  finishDispatchInsights7f(fixture.root, insightsRun, {
+    status: 'stopped', confirm: true,
+    proof: { human_reason: 'materialize changed latest insights' },
+    fence: insightsFence, now: Date.parse('2026-07-13T00:01:02.000Z'),
+  });
+  assert7f.notEqual(latestDispatchInsights7f(fixture.root), null);
+  removeDispatch7f(contract);
+  const replayed = dispatch7f(fixture.root, fixture.runId, {
+    ...input,
+    beforeMutableReviewInputs: () => assert7f.fail(
+      'same-ID replay must precede contract/latest-insights derivation'),
+  });
+  assert7f.deepEqual(replayed, first);
+  assert7f.deepEqual(bytes7f(fixture.root, fixture.runId), committed);
+});
+
+test7f('paired state and event request Markdown tampering is rejected semantically', () => {
+  const fixture = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
+  const input = { point: 'design', workstreamId: fixture.ws,
+    detected: { 'deep-review': true, codex: true },
+    requestId: 'inline-request-tamper', fence: fixture.fence };
+  const first = dispatch7f(fixture.root, fixture.runId, input);
+  rewriteEpisodeCreationEvent7f(fixture, data => {
+    data.request_markdown = '# forged request';
+    data.request_markdown_digest = hashDispatch7f('sha256').update('forged').digest('hex');
+  });
+  raw7f(fixture.root, fixture.runId, loop => {
+    const checker = loop.episodes.find(episode => episode.id === first.checkerEpisodeId);
+    checker.request_markdown = '# forged request';
+    checker.request_markdown_digest = hashDispatch7f('sha256').update('forged').digest('hex');
+  });
+  assert7f.throws(() => verifiedDispatch7f(fixture.root, fixture.runId),
+    /episode creation/);
+});
+
+test7f('paired state and event task or contract tampering is rejected semantically', () => {
+  for (const field of ['task', 'contract']) {
+    const fixture = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
+    const first = dispatch7f(fixture.root, fixture.runId, {
+      point: 'design', workstreamId: fixture.ws,
+      detected: { 'deep-review': true, codex: true },
+      requestId: `inline-${field}-tamper`, fence: fixture.fence,
+    });
+    const forged = field === 'task' ? 'Forged checker task.' : { forged: true };
+    rewriteEpisodeCreationEvent7f(fixture, data => { data[field] = forged; });
+    raw7f(fixture.root, fixture.runId, loop => {
+      loop.episodes.find(episode => episode.id === first.checkerEpisodeId)[field] = forged;
+    });
+    assert7f.throws(() => verifiedDispatch7f(fixture.root, fixture.runId),
+      /episode creation/, field);
+  }
+});
+
+function rewriteEpisodeCreationEvent7f(fixture, mutate, episodeId = null) {
+  const path = join7f(runDirDispatch7f(fixture.root, fixture.runId),
+    'event-log.jsonl');
+  const events = readDispatch7f(path, 'utf8').trim().split('\n').map(JSON.parse);
+  mutate(events.find(event => event.type === 'episode-new'
+    && (episodeId === null ? event.data?.role === 'checker'
+      : event.data?.episode_id === episodeId)).data);
+  let previous = 'GENESIS';
+  for (const event of events) {
+    event.checksum = hashDispatch7f('sha256').update(
+      `${event.seq}|${event.ts}|${event.type}|${JSON.stringify(event.data)}|${previous}`)
+      .digest('hex');
+    previous = event.checksum;
+  }
+  write7f(path, `${events.map(JSON.stringify).join('\n')}\n`);
+  raw7f(fixture.root, fixture.runId, loop => {
+    const last = events.at(-1);
+    loop.event_log_head = { seq: last.seq, checksum: last.checksum };
+  });
+}
+
+test7f('episode creation preserves role and artifact path guards before mutation', () => {
+  const direct = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
+  const base = { plugin: 'deep-work', role: 'maker', kind: 'input-validation',
+    point: 'design', task: 'Exercise direct episode input validation.',
+    workstream: direct.ws, expectedArtifacts: [], fence: direct.fence };
+  const before = bytes7f(direct.root, direct.runId);
+  assert7f.throws(() => productionEpisode7f(direct.root, direct.runId, {
+    ...base, role: 'typo', requestId: 'direct-invalid-role',
+  }), /EPISODE_INPUT_INVALID: role/);
+  assert7f.deepEqual(bytes7f(direct.root, direct.runId), before,
+    'an invalid role is rejected before durable mutation');
+  assert7f.throws(() => productionEpisode7f(direct.root, direct.runId, {
+    ...base, reviewerResolution: { source: 'forged' },
+    requestId: 'direct-maker-reviewer-resolution',
+  }), /EPISODE_INPUT_INVALID: reviewerResolution/);
+  assert7f.deepEqual(bytes7f(direct.root, direct.runId), before,
+    'checker-only reviewer resolution is rejected before durable mutation');
+  assert7f.throws(() => productionEpisode7f(direct.root, direct.runId, {
+    ...base, role: 'checker', targetMaker: { forged: true },
+    requestId: 'direct-invalid-target-maker',
+  }), /EPISODE_INPUT_INVALID: targetMaker/);
+  assert7f.deepEqual(bytes7f(direct.root, direct.runId), before,
+    'a malformed target maker is rejected before durable mutation');
+  assert7f.throws(() => productionBlockedEpisode7f(direct.root, direct.runId, {
+    plugin: 'deep-review', kind: 'input-validation', point: 'design',
+    task: 'Exercise blocked checker input validation.', workstream: direct.ws,
+    targetMaker: '001-deep-work', reason: undefined, fence: direct.fence,
+    requestId: 'direct-blocked-reason',
+  }), /EPISODE_INPUT_INVALID: blockReason/);
+  assert7f.deepEqual(bytes7f(direct.root, direct.runId), before,
+    'a blocked checker without a reason is rejected before durable mutation');
+  for (const [requestId, artifact] of [
+    ['direct-parent-artifact', '../proof.md'],
+    ['direct-absolute-artifact', join7f(direct.root, 'proof.md')],
+  ]) {
+    assert7f.throws(() => productionEpisode7f(direct.root, direct.runId, {
+      ...base, expectedArtifacts: [artifact], requestId,
+    }), /EPISODE_ARTIFACT_UNSAFE/);
+    assert7f.deepEqual(bytes7f(direct.root, direct.runId), before, artifact);
+  }
+});
+
+test7f('episode creation identity is state-event correlated and status-independent', () => {
+  const direct = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
+  const repeatedInput = { plugin: 'deep-work', role: 'maker', kind: 'repeat',
+    point: 'design', task: 'Exercise direct episode creation identity.',
+    workstream: direct.ws, fence: direct.fence };
+  const repeatedA = episode7f(direct.root, direct.runId,
+    { ...repeatedInput, requestId: 'direct-repeat-a' });
+  const repeatedB = episode7f(direct.root, direct.runId,
+    { ...repeatedInput, requestId: 'direct-repeat-b' });
+  assert7f.notEqual(repeatedA.id, repeatedB.id,
+    'two intentional direct creations with equal content and different IDs remain distinct');
+  const repeatedRetry = episode7f(direct.root, direct.runId,
+    { ...repeatedInput, requestId: 'direct-repeat-a' });
+  assert7f.equal(repeatedRetry.id, repeatedA.id,
+    'an exact direct retry with the same request ID reuses its episode');
+  assert7f.throws(() => episode7f(direct.root, direct.runId, {
+    ...repeatedInput, kind: 'changed', requestId: 'direct-repeat-a',
+  }), /EPISODE_REQUEST_CONFLICT/);
+  assert7f.throws(() => episode7f(direct.root, direct.runId, repeatedInput),
+    /EPISODE_REQUEST_ID_REQUIRED/);
+
+  const malformedCaller = 'g'.repeat(64);
+  rewriteEpisodeCreationEvent7f(direct, data => {
+    data.creation_request_id_digest = malformedCaller;
+    data.request_projection.creation_request_id_digest = malformedCaller;
+  }, repeatedB.id);
+  raw7f(direct.root, direct.runId, loop => {
+    loop.episodes.find(episode => episode.id === repeatedB.id)
+      .creation_request_id_digest = malformedCaller;
+  });
+  assert7f.throws(() => verifiedDispatch7f(direct.root, direct.runId),
+    /ambiguous creation identity/);
+
+  const malformedDispatch = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
+  const malformedReview = dispatch7f(malformedDispatch.root, malformedDispatch.runId, {
+    point: 'design', workstreamId: malformedDispatch.ws,
+    detected: { 'deep-review': true, codex: true },
+    requestId: 'malformed-dispatch-identity', fence: malformedDispatch.fence,
+  });
+  const uppercaseDigest = 'A'.repeat(64);
+  rewriteEpisodeCreationEvent7f(malformedDispatch, data => {
+    data.dispatch_request_id_digest = uppercaseDigest;
+    data.request_projection.dispatch_request_id_digest = uppercaseDigest;
+  }, malformedReview.checkerEpisodeId);
+  raw7f(malformedDispatch.root, malformedDispatch.runId, loop => {
+    loop.episodes.find(episode => episode.id === malformedReview.checkerEpisodeId)
+      .dispatch_request_id_digest = uppercaseDigest;
+  });
+  assert7f.throws(() => verifiedDispatch7f(malformedDispatch.root, malformedDispatch.runId),
+    /ambiguous creation identity/);
+
+  const duplicateIdentity = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
+  const duplicateInput = { plugin: 'deep-work', role: 'maker', kind: 'duplicate',
+    point: 'design', workstream: duplicateIdentity.ws, fence: duplicateIdentity.fence };
+  const identityA = episode7f(duplicateIdentity.root, duplicateIdentity.runId,
+    { ...duplicateInput, requestId: 'duplicate-identity-a' });
+  const identityB = episode7f(duplicateIdentity.root, duplicateIdentity.runId,
+    { ...duplicateInput, requestId: 'duplicate-identity-b' });
+  const duplicateDigest = stateDispatch7f(duplicateIdentity.root, duplicateIdentity.runId).data
+    .episodes.find(episode => episode.id === identityA.id).creation_request_id_digest;
+  rewriteEpisodeCreationEvent7f(duplicateIdentity, data => {
+    data.creation_request_id_digest = duplicateDigest;
+    data.request_projection.creation_request_id_digest = duplicateDigest;
+  }, identityB.id);
+  raw7f(duplicateIdentity.root, duplicateIdentity.runId, loop => {
+    loop.episodes.find(episode => episode.id === identityB.id)
+      .creation_request_id_digest = duplicateDigest;
+  });
+  assert7f.throws(() => verifiedDispatch7f(duplicateIdentity.root, duplicateIdentity.runId),
+    /duplicate episode creation request identity/);
+
+  const stateOnly = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
+  const input = { point: 'design', workstreamId: stateOnly.ws,
+    detected: { 'deep-review': true, codex: true },
+    requestId: 'state-correlation-dispatch', fence: stateOnly.fence };
+  const first = dispatch7f(stateOnly.root, stateOnly.runId, input);
+  raw7f(stateOnly.root, stateOnly.runId, loop => {
+    loop.episodes.find(episode => episode.id === first.checkerEpisodeId)
+      .creation_request_digest = '0'.repeat(64);
+  });
+  assert7f.throws(() => verifiedDispatch7f(stateOnly.root, stateOnly.runId),
+    /episode creation/);
+
+  const semanticOnly = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
+  const semantic = dispatch7f(semanticOnly.root, semanticOnly.runId, {
+    ...input, workstreamId: semanticOnly.ws, fence: semanticOnly.fence,
+    requestId: 'semantic-correlation-dispatch',
+  });
+  raw7f(semanticOnly.root, semanticOnly.runId, loop => {
+    const checker = loop.episodes.find(episode => episode.id === semantic.checkerEpisodeId);
+    checker.target_maker = '999-forged-maker';
+    checker.expected_artifacts = ['forged-output.md'];
+  });
+  assert7f.throws(() => verifiedDispatch7f(semanticOnly.root, semanticOnly.runId),
+    /episode creation/,
+    'copied creation digest cannot authenticate mutated immutable semantic fields');
+
+  const eventOnly = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
+  dispatch7f(eventOnly.root, eventOnly.runId, { ...input,
+    workstreamId: eventOnly.ws, fence: eventOnly.fence });
+  rewriteEpisodeCreationEvent7f(eventOnly,
+    data => { data.request_digest = '1'.repeat(64); });
+  assert7f.throws(() => verifiedDispatch7f(eventOnly.root, eventOnly.runId),
+    /episode creation/);
+
+  const downgraded = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
+  const downgradedResult = dispatch7f(downgraded.root, downgraded.runId, {
+    ...input, workstreamId: downgraded.ws, fence: downgraded.fence,
+    requestId: 'discriminator-downgrade-dispatch',
+  });
+  raw7f(downgraded.root, downgraded.runId, loop => {
+    delete loop.episodes.find(episode =>
+      episode.id === downgradedResult.checkerEpisodeId).creation_contract;
+  });
+  rewriteEpisodeCreationEvent7f(downgraded,
+    data => { delete data.creation_contract; });
+  assert7f.throws(() => verifiedDispatch7f(downgraded.root, downgraded.runId),
+    /episode creation/,
+    'paired state/event discriminator removal cannot downgrade initialized proof');
+
+  const injected = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
+  const injectedResult = dispatch7f(injected.root, injected.runId, {
+    ...input, workstreamId: injected.ws, fence: injected.fence,
+    requestId: 'unversioned-injection-dispatch',
+  });
+  raw7f(injected.root, injected.runId, loop => {
+    const forged = structuredClone(loop.episodes.find(episode =>
+      episode.id === injectedResult.checkerEpisodeId));
+    forged.id = '999-forged-unversioned';
+    delete forged.creation_contract;
+    loop.episodes.push(forged);
+  });
+  assert7f.throws(() => verifiedDispatch7f(injected.root, injected.runId),
+    /episode creation/,
+    'an initialized run rejects an unversioned episode with no creation event');
+
+  for (const status of ['pending', 'in_progress', 'approved', 'rejected', 'blocked']) {
+    const fixture = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
+    const retryInput = { point: 'design', workstreamId: fixture.ws,
+      detected: { 'deep-review': true, codex: true },
+      requestId: `status-retry-${status}`, fence: fixture.fence };
+    const created = dispatch7f(fixture.root, fixture.runId, retryInput);
+    if (status === 'in_progress' || status === 'blocked') {
+      const claim = claimIndependentReview(fixture.root, fixture.runId, {
+        episodeId: created.checkerEpisodeId, fence: fixture.fence,
+        attemptIdFactory: () => `status-attempt-${status}`,
+      });
+      if (status === 'blocked') {
+        blockIndependentReview(fixture.root, fixture.runId, {
+          episodeId: created.checkerEpisodeId, attemptId: claim.attemptId,
+          reason: 'status-replay-blocked', fence: fixture.fence,
+        });
+      }
+    } else if (status === 'approved') {
+      const report = '.claude/worktrees/design/status-review.md';
+      write7f(join7f(fixture.root, report), '# approved\n');
+      recordReviewOutcome(fixture.root, fixture.runId, {
+        episodeId: created.checkerEpisodeId, verdict: 'APPROVE',
+        proof: { report }, fence: fixture.fence,
+      });
+    } else if (status === 'rejected') {
+      recordReviewOutcome(fixture.root, fixture.runId, {
+        episodeId: created.checkerEpisodeId, verdict: 'REQUEST_CHANGES',
+        fence: fixture.fence,
+      });
+    }
+    assert7f.equal(dispatch7f(fixture.root, fixture.runId, retryInput).checkerEpisodeId,
+      created.checkerEpisodeId, status);
+  }
+});
+
+test7f('review dispatch separates retry identity, later rounds, and final-lock checker CAS', () => {
+  const fixture = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
+  const common = { point: 'design', workstreamId: fixture.ws,
+    detected: { 'deep-review': true, codex: true }, fence: fixture.fence };
+  const first = dispatch7f(fixture.root, fixture.runId,
+    { ...common, requestId: 'logical-review-round-1' });
+  recordReviewOutcome(fixture.root, fixture.runId, {
+    episodeId: first.checkerEpisodeId, verdict: 'REQUEST_CHANGES',
+    fence: fixture.fence,
+  });
+  const artifact = '.claude/worktrees/design/fix.md';
+  write7f(join7f(fixture.root, artifact), '# fixed design');
+  const fixMaker = episode7f(fixture.root, fixture.runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'fix', point: 'design',
+    workstream: fixture.ws, expectedArtifacts: [artifact], fence: fixture.fence,
+    requestId: 'logical-review-fix-maker',
+  });
+  record7f(fixture.root, fixture.runId, fixMaker.id,
+    { status: 'done', artifacts: [artifact], fence: fixture.fence });
+  assert7f.equal(dispatch7f(fixture.root, fixture.runId,
+    { ...common, requestId: 'logical-review-round-1' }).checkerEpisodeId,
+  first.checkerEpisodeId, 'response-loss retry remains bound to its original maker');
+  const second = dispatch7f(fixture.root, fixture.runId,
+    { ...common, requestId: 'logical-review-round-2' });
+  assert7f.notEqual(second.checkerEpisodeId, first.checkerEpisodeId);
+  assert7f.equal(stateDispatch7f(fixture.root, fixture.runId).data.episodes
+    .find(episode => episode.id === second.checkerEpisodeId).target_maker, fixMaker.id);
+  const detectorDriftReplay = dispatch7f(fixture.root, fixture.runId, {
+    ...common, detected: { codex: true }, requestId: 'logical-review-round-2',
+  });
+  assert7f.equal(detectorDriftReplay.checkerEpisodeId, second.checkerEpisodeId);
+  assert7f.deepEqual(detectorDriftReplay.descriptor, second.descriptor,
+    'fresh detector drift cannot alter a durable same-ID response');
+
+  const raced = corruptDispatchFixture7f({ corrupt: false, hillClimb: false });
+  const racedCommon = { point: 'design', workstreamId: raced.ws,
+    detected: { 'deep-review': true, codex: true }, fence: raced.fence };
+  assert7f.throws(() => dispatch7f(raced.root, raced.runId, {
+    ...racedCommon, requestId: 'cas-loser', beforeFinalLock: () => {
+      dispatch7f(raced.root, raced.runId, { ...racedCommon, requestId: 'cas-winner' });
+    },
+  }), /REVIEW_NO_ELIGIBLE_MAKER/);
+  const checkers = stateDispatch7f(raced.root, raced.runId).data.episodes
+    .filter(episode => episode.role === 'checker' && episode.target_maker === raced.maker);
+  assert7f.equal(checkers.length, 1);
 });

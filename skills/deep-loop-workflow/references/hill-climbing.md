@@ -70,7 +70,7 @@ run 수명주기 (모든 단계가 기존 deep-loop 기계장치 재사용 — h
 각 maker episode는 일반 워크플로우와 동일하게 fence를 반드시 지킨다. 예:
 
 ```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin standalone --role maker --kind implementation --point implementation --workstream <workstream_id> --artifacts '[".claude/worktrees/<ws-slug>/recipes/hillclimb-ledger.json"]' --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin standalone --role maker --kind implementation --point implementation --workstream <workstream_id> --artifacts '[".claude/worktrees/<ws-slug>/recipes/hillclimb-ledger.json"]' --task "<bounded_episode_task>" --request-id <episode_request_id> --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
 ## 3. 증거 계약 + 2계층 화이트리스트 + ledger (spec §8)
@@ -116,7 +116,7 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin standalone --ro
 
 - reviewer가 `deep-review-loop`이고 flags에 **정확히 1회의 bare `--contract`**(selector 금지 — deep-review 파서는 `SLICE-NNN`만 selector로 소비하므로 HILLCLIMB-001을 명시 지정할 수 없고, `=` 형태·중복·타-slice는 전부 우회 경로)가 있어야 한다 — 아니면 `REVIEW_CONTRACT_UNENFORCEABLE`(subagent/codex-cross/standalone은 계약 파일을 읽지 않으므로 계약 미강제 APPROVE가 된다). bare `--contract`는 모든 active 계약을 로드하므로 worktree contracts 디렉터리에는 HILLCLIMB-001.yaml **외 다른 계약 yaml이 없어야** 한다(커널이 dispatch·record 양쪽에서 유일성 검증).
 - worktree-local 계약 사본이 존재하고 tracked 소스와 **byte-identical**이어야 한다 — 아니면 `REVIEW_CONTRACT_MISSING`(`status: active` 문자열만으론 stale/변조 사본 — 예: criteria 비움 — 이 통과한다; 계약은 run-불변이므로 "그대로 복사"가 곧 판정 기준). 검증된 계약 identity(slice·path·sha256)는 checker episode에 durable 기록되고, `review record`의 passing verdict는 **같은 파일을 record 시점에 재검증**한다 — dispatch~record 사이 삭제/변조(deep-review는 무-contract를 조용히 skip)로 나온 APPROVE는 `REVIEW_CONTRACT_MISSING`으로 거부된다.
-- 통과 시 `evidence`(커널-검증 `latestInsights`의 경로·emit_ulid·producer run·sha256·후보 — 부재 시 `null`)를 디스크립터에 싣고 **checker episode의 `request.md`에도 durable 기록**한다. 스킬은 이 evidence를 checker 리뷰 요청 본문에 그대로 포함하고, checker는 maker 인용(ledger `insights_ref`/`insights_sha256`, design/plan은 문서 인용)과 대조해 mismatch를 criterion (a) 위반으로 판정한다. run-특정 값은 계약 파일이 아니라 이 evidence로 전달한다 — 계약 파일은 run-불변.
+- 통과 시 `evidence`(커널-검증 `latestInsights`의 경로·emit_ulid·producer run·sha256·후보 — 부재 시 `null`)를 디스크립터와 **checker episode의 anchored `request_markdown`에 durable 기록**하며 별도 request pathname은 만들지 않는다. 스킬은 이 evidence를 checker 리뷰 요청 본문에 그대로 포함하고, checker는 maker 인용(ledger `insights_ref`/`insights_sha256`, design/plan은 문서 인용)과 대조해 mismatch를 criterion (a) 위반으로 판정한다. run-특정 값은 계약 파일이 아니라 이 evidence로 전달한다 — 계약 파일은 run-불변.
 
 **phase 적용성:** (a)(b)(c)(e)는 모든 review point(design/plan/implementation)에 적용하되 design/plan에서는 문서 수준으로 적용한다. **(d)(f)는 implementation checker 전용**이다 — diff/ledger가 존재하지 않는 design/plan phase에 일괄 적용하면 구조적으로 승인 불가가 된다(첫 실사용 run r5 W 실측).
 
@@ -155,3 +155,5 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" insights emit --owner <owner_run_id>
 1. `insights latest --json` 호출(커널이 검증 전부 수행 — 스킬은 파일을 직접 파싱하지 않는다). `null`이면 스킵 — 무마찰.
 2. **표시 규칙:** 후보·집계에서 파생한 제안은 AskUserQuestion에서 **기존 문서화 기본값과 나란히, 별도 옵션으로** 표시하고, 각 제안에 인용 지표를 병기한다(예: "max_review_rounds 7 — 근거: 직전 run implementation fix_cycles 평균 2.0"). 제안을 preselect하지 않으며, 무응답 경로로 채택되게 하지 않는다. 어떤 값도 자동 적용 ❌. 이 표시 규칙은 prose-only 규율이다(자동 테스트 없음); user-only 확정은 init이 항상 AskUserQuestion을 거치는 구조로 보장된다.
 3. 반환 envelope.payload의 `suspicious_active` / `post_finish_mutated` 배열이 비어있지 않으면 제안·요약에 해당 run 목록을 ⚠️ 주의로 함께 표기한다 — 후보/제안 유무와 무관하게(라벨만 있는 경우에도 출력; 위와 동일한 prose-only 규율).
+`<episode_request_id>`는 이 hill-climb maker 생성 전에 한 번 정하고 response-loss retry에는
+그대로 재사용한다. 다음 intentional maker만 새 ID를 사용한다.

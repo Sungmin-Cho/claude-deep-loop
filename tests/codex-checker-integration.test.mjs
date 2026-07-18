@@ -5,8 +5,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { newWorkstream } from '../scripts/lib/workspace.mjs';
-import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
+import { newWorkstream } from './helpers/workstream-request.mjs';
+import { newEpisode, recordEpisode } from './helpers/episode-request.mjs';
 import {
   blockIndependentReview,
   claimIndependentReview,
@@ -14,7 +14,7 @@ import {
   findPendingIndependentChecker,
   importReviewOutcome,
   recordReviewOutcome,
-} from '../scripts/lib/review.mjs';
+} from './helpers/review-request.mjs';
 import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import { driveHeadlessRun } from '../scripts/lib/headless-host.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
@@ -35,7 +35,7 @@ function events(root, runId) {
   return readFileSync(path, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line));
 }
 
-function seed({ reviewer = 'deep-review' } = {}) {
+function seed({ reviewer = 'deep-review', checkerEvidence, checkerContract } = {}) {
   const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-checker-int-')));
   const detected = reviewer === 'deep-review' ? { 'deep-review': true } : { 'deep-review': false };
   const { runId } = initRun(root, {
@@ -54,10 +54,16 @@ function seed({ reviewer = 'deep-review' } = {}) {
     workstream: ws, expectedArtifacts: [artifact], fence,
   }).id;
   recordEpisode(root, runId, makerId, { status: 'done', artifacts: [artifact], fence });
-  const checkerId = dispatchReview(root, runId, {
-    point: 'implementation', workstreamId: ws, detected,
-    independentSubagent: reviewer !== 'deep-review', fence,
-  }).checkerEpisodeId;
+  const checkerId = checkerEvidence !== undefined || checkerContract !== undefined
+    ? newEpisode(root, runId, {
+      plugin: reviewer, role: 'checker', kind: 'implementation-review',
+      point: 'implementation', workstream: ws, targetMaker: makerId,
+      evidence: checkerEvidence, contract: checkerContract, fence,
+    }).id
+    : dispatchReview(root, runId, {
+      point: 'implementation', workstreamId: ws, detected,
+      independentSubagent: reviewer !== 'deep-review', fence,
+    }).checkerEpisodeId;
   return { root, runId, fence, worktree, artifact, bytes, ws, makerId, checkerId, reviewer };
 }
 
@@ -161,7 +167,7 @@ test('durable claim CAS derives one immutable attempt/artifact/root/runtime/leas
   const second = claim(f, 'attempt-02');
   assert.equal(first.ok, true);
   assert.equal(first.attemptId, 'attempt-01');
-  assert.deepEqual(second, { ok: false, reason: 'already-claimed' });
+  assert.deepEqual(second, first);
 
   const loop = readState(f.root, f.runId).data;
   const checker = loop.episodes.find(e => e.id === f.checkerId);
@@ -191,9 +197,8 @@ test('claim rejects a malformed reviewed-worktree binding instead of widening co
   const f = seed();
   const state = readState(f.root, f.runId).data;
   state.workstreams.find(workstream => workstream.id === f.ws).worktree = '';
-  writeState(f.root, f.runId, state);
   const before = events(f.root, f.runId).length;
-  assert.throws(() => claim(f), /REVIEW_IMPORT_ARTIFACT_CONTAINMENT/);
+  assert.throws(() => writeState(f.root, f.runId, state), /RUN_SNAPSHOT_INVALID/);
   assert.equal(events(f.root, f.runId).length, before);
   assert.equal(readState(f.root, f.runId).data.episodes.find(e => e.id === f.checkerId).status, 'pending');
 });
@@ -425,15 +430,11 @@ test('checker process failure blocks and pauses once without proof or fabricated
 });
 
 test('headless checker immutable prompt carries anchored contract and evidence from the durable claim', () => {
-  const f = seed();
   const evidence = { insights_path: '.deep-loop/insights/x.json', emit_ulid: '01TEST', sha256: 'a'.repeat(64), candidates: [] };
-  const contract = { slice: 'HILLCLIMB-001', path: `${f.worktree}/.deep-review/contracts/HILLCLIMB-001.yaml`, sha256: 'b'.repeat(64) };
-  appendAnchored(f.root, f.runId,
-    { type: 'state-patch', data: { field: 'test-checker-contract' } }, state => {
-      const checker = state.episodes.find(episode => episode.id === f.checkerId);
-      checker.evidence = evidence;
-      checker.contract = contract;
-    });
+  const contract = { slice: 'HILLCLIMB-001',
+    path: '.claude/worktrees/w/.deep-review/contracts/HILLCLIMB-001.yaml',
+    sha256: 'b'.repeat(64) };
+  const f = seed({ checkerEvidence: evidence, checkerContract: contract });
 
   const deps = hostDeps(f);
   let immutableContract;

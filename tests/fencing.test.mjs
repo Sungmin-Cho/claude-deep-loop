@@ -8,9 +8,9 @@ import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { acquireLease, releaseLease } from '../scripts/lib/lease.mjs';
 import { detectAndPersist } from '../scripts/lib/detect-terminal.mjs';
-import { newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal } from '../scripts/lib/workspace.mjs';
-import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
-import { dispatchReview, importReviewOutcome, recordReviewOutcome } from '../scripts/lib/review.mjs';
+import { newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal } from './helpers/workstream-request.mjs';
+import { newEpisode, recordEpisode } from './helpers/episode-request.mjs';
+import { dispatchReview, importReviewOutcome, recordReviewOutcome } from './helpers/review-request.mjs';
 import { seedCorrelatedTerminal as terminal7b } from './fixtures/verified-app-run.mjs';
 
 function seed() {

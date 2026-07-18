@@ -3,9 +3,11 @@ import { randomUUID } from 'node:crypto';
 import { resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { latestInsights } from './insights.mjs';
-import { readState } from './state.mjs';
-import { appendAnchored } from './integrity.mjs';
-import { newBlockedCheckerEpisode, newEpisode } from './episode.mjs';
+import { appendAnchored, readLines, readVerifiedState,
+  withVerifiedMutationLock } from './integrity.mjs';
+import { contentHash } from './envelope.mjs';
+import { episodeRequestDigest, newBlockedCheckerEpisode,
+  newEpisode } from './episode.mjs';
 import { leaseCheck } from './lease.mjs';
 import { pluginPresent } from './detect.mjs';
 import { checkerDescriptor } from './adapters.mjs';
@@ -45,6 +47,43 @@ function boundedBlockReason(value) {
 
 function sameJson(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function reviewIdentityFence(fence, operation) {
+  return loop => {
+    const lease = loop.session_chain?.lease;
+    if (lease?.owner_run_id !== fence.owner || lease?.generation !== fence.generation) {
+      throw new Error(`LEASE_FENCED: ${operation}`);
+    }
+  };
+}
+
+function verifiedReviewState(root, runId, fence, operation) {
+  return readVerifiedState(root, runId,
+    { fenceCheck: reviewIdentityFence(fence, operation) }).data;
+}
+
+function reviewIntentDigest(fence, operation, projection = {}) {
+  return contentHash(JSON.stringify({ operation, owner: fence.owner,
+    generation: fence.generation, ...projection }));
+}
+
+function withReviewMutation(root, runId, fence, operation, projection, body) {
+  return withVerifiedMutationLock(root, runId, {
+    callerBinding: { owner: fence.owner, generation: fence.generation },
+    intentDigest: reviewIntentDigest(fence, operation, projection),
+    fenceError: `REVIEW_FENCED: ${operation}`,
+  }, body);
+}
+
+function recoveredReviewOutcome(loop, episodeId, verdict, reviewSource) {
+  const checker = loop.episodes.find(episode => episode.id === episodeId);
+  const passed = verdict === 'APPROVE' || verdict === 'CONCERN';
+  const terminal = passed ? 'approved' : 'rejected';
+  if (checker?.status !== terminal || checker.review_source !== reviewSource) {
+    throw new Error('REVIEW_RECOVERY_PROJECTION_MISMATCH');
+  }
+  return { verdict, passed, terminal, review_source: reviewSource };
 }
 
 function checkIndependentReviewFence(loop, fence) {
@@ -90,60 +129,92 @@ function claimedContext(root, loop, episodeId, attemptId, fence) {
 }
 
 export function claimIndependentReview(root, runId, options = {}) {
-  if (options == null || typeof options !== 'object' || Array.isArray(options)) throw new Error('REVIEW_CLAIM_INPUT_INVALID');
-  for (const key of ['attemptId', 'attempt_id', 'reviewer_id', 'target_maker', 'runtime', 'project_root', 'artifacts', 'evidence', 'contract']) {
-    if (Object.hasOwn(options, key)) throw new Error(`REVIEW_METADATA_FORBIDDEN: claim derives ${key}`);
+  if (options == null || typeof options !== 'object' || Array.isArray(options)) {
+    throw new Error('REVIEW_CLAIM_INPUT_INVALID');
+  }
+  for (const key of ['attemptId', 'attempt_id', 'reviewer_id', 'target_maker',
+    'runtime', 'project_root', 'artifacts', 'evidence', 'contract']) {
+    if (Object.hasOwn(options, key)) {
+      throw new Error(`REVIEW_METADATA_FORBIDDEN: claim derives ${key}`);
+    }
   }
   const { episodeId, fence, attemptIdFactory = randomUUID } = options;
   validFence(fence, 'claimIndependentReview');
-  if (typeof episodeId !== 'string' || episodeId.length === 0) throw new Error('REVIEW_CLAIM_INPUT_INVALID: episodeId');
-  if (typeof attemptIdFactory !== 'function') throw new Error('REVIEW_CLAIM_INPUT_INVALID: attemptIdFactory');
-  const attemptId = attemptIdFactory();
-  if (!REVIEW_ATTEMPT_ID.test(attemptId || '')) throw new Error('REVIEW_CLAIM_ATTEMPT_INVALID');
-  const eventData = { episode_id: episodeId, attempt_id: attemptId };
+  if (typeof episodeId !== 'string' || episodeId.length === 0) {
+    throw new Error('REVIEW_CLAIM_INPUT_INVALID: episodeId');
+  }
+  if (typeof attemptIdFactory !== 'function') {
+    throw new Error('REVIEW_CLAIM_INPUT_INVALID: attemptIdFactory');
+  }
+  let attemptId = null;
+  const eventData = { episode_id: episodeId, attempt_id: null };
   let context;
   let alreadyClaimed = false;
+  const identityFence = reviewIdentityFence(fence, 'claimIndependentReview');
   try {
-    appendAnchored(root, runId, { type: 'independent-review-claimed', data: eventData }, (loop) => {
-      const checker = loop.episodes.find(episode => episode.id === episodeId);
-      checker.status = 'in_progress';
-      checker.attempt_id = attemptId;
-      checker.review_claim = context.claim;
-    }, (loop) => {
-      checkIndependentReviewFence(loop, fence);
-      const checker = loop.episodes.find(episode => episode.id === episodeId);
-      if (checker?.status === 'in_progress' && checker.review_claim) {
-        alreadyClaimed = true;
-        throw Object.assign(new Error('REVIEW_ALREADY_CLAIMED'), { alreadyClaimed: true });
-      }
-      if (loop.status !== 'running') throw new Error('REVIEW_CLAIM_RUN_NOT_RUNNING');
-      if (checker?.status !== 'pending') throw new Error('REVIEW_CLAIM_NOT_PENDING');
-      context = claimedContext(root, loop, episodeId, attemptId, fence);
-      Object.assign(eventData, {
-        reviewer_id: context.claim.reviewer_id,
-        target_maker: context.claim.target_maker,
-        workstream_id: context.claim.workstream_id,
-        point: context.claim.point,
-        artifacts: context.claim.artifacts,
-      });
-    });
+    const recovered = appendAnchored(root, runId,
+      { type: 'independent-review-claimed', data: eventData }, loop => {
+        const checker = loop.episodes.find(episode => episode.id === episodeId);
+        checker.status = 'in_progress';
+        checker.attempt_id = attemptId;
+        checker.review_claim = context.claim;
+      }, loop => {
+        checkIndependentReviewFence(loop, fence);
+        const checker = loop.episodes.find(episode => episode.id === episodeId);
+        if (checker?.status === 'in_progress' && checker.review_claim) {
+          alreadyClaimed = true;
+          throw Object.assign(new Error('REVIEW_ALREADY_CLAIMED'), { alreadyClaimed: true });
+        }
+        if (loop.status !== 'running') throw new Error('REVIEW_CLAIM_RUN_NOT_RUNNING');
+        if (checker?.status !== 'pending') throw new Error('REVIEW_CLAIM_NOT_PENDING');
+        attemptId = attemptIdFactory();
+        if (!REVIEW_ATTEMPT_ID.test(attemptId || '')) {
+          throw new Error('REVIEW_CLAIM_ATTEMPT_INVALID');
+        }
+        context = claimedContext(root, loop, episodeId, attemptId, fence);
+        Object.assign(eventData, { attempt_id: attemptId,
+          reviewer_id: context.claim.reviewer_id,
+          target_maker: context.claim.target_maker,
+          workstream_id: context.claim.workstream_id,
+          point: context.claim.point, artifacts: context.claim.artifacts });
+      }, { fenceCheck: identityFence,
+        callerBinding: { owner: fence.owner, generation: fence.generation },
+        intentDigest: reviewIntentDigest(fence, 'claim-independent-review',
+          { episode_id: episodeId }),
+        onRecovered: loop => {
+          const checker = loop.episodes.find(episode => episode.id === episodeId);
+          if (checker?.status !== 'in_progress' || !checker.review_claim
+              || !REVIEW_ATTEMPT_ID.test(checker.attempt_id || '')) {
+            throw new Error('REVIEW_RECOVERY_PROJECTION_MISMATCH');
+          }
+          return { ok: true, checkerEpisodeId: episodeId,
+            attemptId: checker.attempt_id, claim: checker.review_claim };
+        },
+        fenceError: 'REVIEW_FENCED: claimIndependentReview' });
+    if (recovered !== undefined) return recovered;
   } catch (error) {
-    if (error?.alreadyClaimed === true || alreadyClaimed) return { ok: false, reason: 'already-claimed' };
+    if (error?.alreadyClaimed === true || alreadyClaimed) {
+      return { ok: false, reason: 'already-claimed' };
+    }
     throw error;
   }
   return { ok: true, checkerEpisodeId: episodeId, attemptId, claim: context.claim };
 }
 
 export function blockIndependentReview(root, runId, options = {}) {
-  if (options == null || typeof options !== 'object' || Array.isArray(options)) throw new Error('REVIEW_BLOCK_INPUT_INVALID');
+  if (options == null || typeof options !== 'object' || Array.isArray(options)) {
+    throw new Error('REVIEW_BLOCK_INPUT_INVALID');
+  }
   const { episodeId, attemptId, reason, fence } = options;
   validFence(fence, 'blockIndependentReview');
-  if (!REVIEW_ATTEMPT_ID.test(attemptId || '')) throw new Error('REVIEW_BLOCK_ATTEMPT_INVALID');
+  if (!REVIEW_ATTEMPT_ID.test(attemptId || '')) {
+    throw new Error('REVIEW_BLOCK_ATTEMPT_INVALID');
+  }
   const safeReason = boundedBlockReason(reason);
   let locked;
-  appendAnchored(root, runId, { type: 'independent-review-blocked', data: {
+  const recovered = appendAnchored(root, runId, { type: 'independent-review-blocked', data: {
     episode_id: episodeId, attempt_id: attemptId, reason: safeReason,
-  } }, (loop) => {
+  } }, loop => {
     const checker = locked.checker;
     checker.status = 'blocked';
     checker.block_reason = safeReason;
@@ -152,73 +223,69 @@ export function blockIndependentReview(root, runId, options = {}) {
     loop.pause_reason = `independent-review:${safeReason}`;
     loop.session_chain.lease.resume_policy = 'human';
     loop.session_chain.lease.expires_at = null;
-  }, (loop) => {
+  }, loop => {
     checkIndependentReviewFence(loop, fence);
     const checker = loop.episodes.find(episode => episode.id === episodeId);
-    if (checker?.status !== 'in_progress' || checker.attempt_id !== attemptId || !checker.review_claim) {
+    if (checker?.status !== 'in_progress' || checker.attempt_id !== attemptId
+        || !checker.review_claim) throw new Error('REVIEW_BLOCK_CLAIM_MISMATCH');
+    locked = claimedContext(root, loop, episodeId, attemptId, fence);
+    if (!sameJson(checker.review_claim, locked.claim)) {
       throw new Error('REVIEW_BLOCK_CLAIM_MISMATCH');
     }
-    locked = claimedContext(root, loop, episodeId, attemptId, fence);
-    if (!sameJson(checker.review_claim, locked.claim)) throw new Error('REVIEW_BLOCK_CLAIM_MISMATCH');
-  });
+  }, { fenceCheck: reviewIdentityFence(fence, 'blockIndependentReview'),
+    callerBinding: { owner: fence.owner, generation: fence.generation },
+    intentDigest: reviewIntentDigest(fence, 'block-independent-review',
+      { episode_id: episodeId, attempt_id: attemptId, reason: safeReason }),
+    onRecovered: loop => {
+      const checker = loop.episodes.find(episode => episode.id === episodeId);
+      if (checker?.status !== 'blocked' || checker.attempt_id !== attemptId
+          || checker.block_reason !== safeReason || loop.status !== 'paused') {
+        throw new Error('REVIEW_RECOVERY_PROJECTION_MISMATCH');
+      }
+      return { ok: true, status: 'blocked', reason: safeReason };
+    },
+    fenceError: 'REVIEW_FENCED: blockIndependentReview' });
+  if (recovered !== undefined) return recovered;
   return { ok: true, status: 'blocked', reason: safeReason };
 }
 
 export function revalidateIndependentReviewClaim(root, runId, options = {}) {
-  if (options == null || typeof options !== 'object' || Array.isArray(options)) throw new Error('REVIEW_CLAIM_INPUT_INVALID');
+  if (options == null || typeof options !== 'object' || Array.isArray(options)) {
+    throw new Error('REVIEW_CLAIM_INPUT_INVALID');
+  }
   const { episodeId, attemptId, fence } = options;
   validFence(fence, 'revalidateIndependentReviewClaim');
-  if (!REVIEW_ATTEMPT_ID.test(attemptId || '')) throw new Error('REVIEW_CLAIM_ATTEMPT_INVALID');
-  const { data: loop } = readState(root, runId);
+  if (!REVIEW_ATTEMPT_ID.test(attemptId || '')) {
+    throw new Error('REVIEW_CLAIM_ATTEMPT_INVALID');
+  }
+  const loop = verifiedReviewState(root, runId, fence,
+    'revalidateIndependentReviewClaim');
   const checker = loop.episodes.find(episode => episode.id === episodeId);
-  if (checker?.status !== 'in_progress' || checker.attempt_id !== attemptId || !checker.review_claim) {
+  if (checker?.status !== 'in_progress' || checker.attempt_id !== attemptId
+      || !checker.review_claim) throw new Error('REVIEW_CLAIM_MISMATCH');
+  const fresh = claimedContext(root, loop, episodeId, attemptId, fence);
+  if (!sameJson(checker.review_claim, fresh.claim)) {
     throw new Error('REVIEW_CLAIM_MISMATCH');
   }
-  const fresh = claimedContext(root, loop, episodeId, attemptId, fence);
-  if (!sameJson(checker.review_claim, fresh.claim)) throw new Error('REVIEW_CLAIM_MISMATCH');
   return { ok: true, claim: fresh.claim };
 }
 
-// impl-R2 Fix 4: a passing verdict's report must be BOUND to the reviewed workstream — its realpath must sit under
-// the workstream's worktree directory. This stops an unrelated stale file (README.md, another ws's report) from
-// being reused as fake evidence. `realReport` is already a realpath (via containedRealFile); worktree is realpath'd
-// too so a symlinked worktree can't be spoofed.
 function reportBoundToWorktree(root, realReport, worktreeRel) {
   if (!realReport || typeof worktreeRel !== 'string' || !worktreeRel.length) return false;
-  let wt;
-  try { wt = realpathSync(resolve(root, worktreeRel)); } catch { return false; }
-  return realReport === wt || realReport.startsWith(wt + sep);
+  let worktree;
+  try { worktree = realpathSync(resolve(root, worktreeRel)); } catch { return false; }
+  return realReport === worktree || realReport.startsWith(worktree + sep);
 }
 
-// 연속 REQUEST_CHANGES 임계 (breaker.mjs THRESHOLD 미러 — fail-stop latch).
 const BREAKER_THRESHOLD = 3;
 
-// Hybrid episode-order comparator (shared — finish.mjs / next-action.mjs import it). Episode ids are
-// `NNN-plugin` zero-padded to only 3 digits, so naive string `>` breaks at the 999→1000 boundary
-// ('1000-x' < '999-x' lexicographically). When BOTH ids carry a numeric prefix, compare NUMERICALLY;
-// otherwise fall back to string compare (preserves synthetic test ids like m1/m2/c1). "a is later than b"
-// iff epOrder(a, b) > 0.
 export const epOrder = (a, b) => {
-  const na = parseInt(a, 10), nb = parseInt(b, 10);
-  if (Number.isInteger(na) && Number.isInteger(nb)) return na - nb;
+  const left = parseInt(a, 10);
+  const right = parseInt(b, 10);
+  if (Number.isInteger(left) && Number.isInteger(right)) return left - right;
   return a < b ? -1 : a > b ? 1 : 0;
 };
 
-// UNIFIED rejected-checker resolution predicate — the SINGLE source of truth for
-// "is this rejected checker RESOLVED (superseded)?", shared by next-action.mjs (routing)
-// AND finish.mjs (settledEp). Before this, the two files answered the question differently
-// (next-action: order-aware but ignored UNBOUND rejections; finish: review_points_done/any-approval,
-// not order-aware) → a NEWER unbound REQUEST_CHANGES after an approved point could be silently
-// finished past (next-action ignored it AND finish settled it). One predicate closes the whole class.
-// Order is computed with epOrder (numeric-prefix compare, not string) so the 999→1000 boundary is correct.
-//   bound (target_maker set): resolved iff the SAME target maker was re-reviewed and APPROVED by a checker
-//     NEWER than this rejection (an OLDER approve followed by a NEWER reject must NOT count), OR a strictly
-//     LATER done maker exists for the same (workstream_id, point) (the flow moved on to a newer maker).
-//   unbound (no target_maker): ALWAYS resolved (neutral). Such a checker reviewed no maker, so a rejection on it is
-//     meaningless — it must neither block finish nor route to action. dispatchReview no longer creates unbound
-//     checkers (REVIEW_NO_ELIGIBLE_MAKER), so this branch only settles LEGACY unbound rejected checkers in old
-//     loop.json — treating them as neutral avoids BOTH silent-completion (never silently masked by an unrelated
-//     approval) AND strand (a terminal unbound checker can neither be abandoned nor re-recorded).
 export function rejectionResolved(loop, e) {
   const eps = loop.episodes || [];
   // Unsupported/legacy checker proof is neutral history: it cannot demand a fix and cannot strand finish.
@@ -307,16 +374,62 @@ export function makerReviewed(loop, maker) {
 }
 
 // checker episode 생성 + dispatch 디스크립터 반환 — 커널은 sibling을 호출하지 않음 (spec §1.1·§6).
-export function dispatchReview(root, runId, { point, workstreamId, detected = {}, independentSubagent = false, fence } = {}) {
+function replayReviewDispatch(checker) {
+  const stored = checker?.dispatch_response;
+  if (stored == null || typeof stored !== 'object' || Array.isArray(stored)
+      || typeof stored.reviewer !== 'string' || !Array.isArray(stored.flags)
+      || !stored.flags.every(flag => typeof flag === 'string')
+      || typeof stored.mode !== 'string'
+      || (stored.reason ?? null) !== (checker.creation_block_reason ?? null)
+      || (stored.reviewer === 'deep-review-loop' ? checker.plugin !== 'deep-review'
+        : checker.plugin !== stored.reviewer)
+      || JSON.stringify(stored.evidence ?? null)
+        !== JSON.stringify(checker.evidence ?? null)
+      || typeof checker.request_markdown !== 'string'
+      || !/^[0-9a-f]{64}$/.test(checker.request_markdown_digest || '')) {
+    throw new Error('REVIEW_RECOVERY_PROJECTION_MISMATCH');
+  }
+  const descriptor = {
+    ...checkerDescriptor(stored.reviewer, { point: checker.point,
+      workstreamId: checker.workstream_id, flags: stored.flags,
+      mode: stored.mode, reason: stored.reason ?? undefined }),
+    ...(stored.evidence !== undefined ? { evidence: structuredClone(stored.evidence) } : {}),
+  };
+  return { checkerEpisodeId: checker.id, reviewer: stored.reviewer, descriptor,
+    request_markdown: checker.request_markdown,
+    request_markdown_digest: checker.request_markdown_digest };
+}
+
+export function dispatchReview(root, runId, { point, workstreamId, detected = {},
+  independentSubagent = false, requestId, beforeMutableReviewInputs, beforeFinalLock,
+  fence } = {}) {
   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: dispatchReview');
   // Fix 3: validate point before any state read/write
   if (!point || typeof point !== 'string' || !point.length) throw new Error('REVIEW_INPUT_INVALID: point');
-  const { data } = readState(root, runId);
+  const identityFence = reviewIdentityFence(fence, 'dispatchReview');
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(requestId || '')) {
+    throw new Error('REVIEW_DISPATCH_REQUEST_ID_REQUIRED');
+  }
+  // Fresh plugin detection selects a reviewer only for a brand-new logical dispatch. It is not
+  // caller-stable request identity and cannot invalidate same-ID response-loss recovery.
+  const projection = { point, workstream_id: workstreamId,
+    independent_subagent: independentSubagent === true };
+  const dispatchRequestIdDigest = contentHash(`dispatch-review-request-id\0${requestId}`);
+  const dispatchProjection = { ...projection,
+    dispatch_request_id_digest: dispatchRequestIdDigest };
+  const dispatchRequestDigest = reviewIntentDigest(
+    fence, 'dispatch-review', dispatchProjection);
+  const data = withReviewMutation(root, runId, fence, 'dispatch-review', dispatchProjection,
+    mutation => {
+      const loop = mutation.readVerifiedState({ fenceCheck: identityFence }).data;
+      return loop;
+    });
   // Codex impl r14 🟡: validate the workstream EXISTS at dispatch time — otherwise the checker is bound to a phantom
   // workstream and recordReviewOutcome (which derives workstream_id from the checker) later fails WORKSTREAM_NOT_FOUND,
   // stranding a pending checker that can't converge. Fail early instead.
   if (!workstreamId || !data.workstreams.find(w => w.id === workstreamId)) throw new Error(`WORKSTREAM_NOT_FOUND: ${workstreamId}`);
-  // Derive the target maker: the latest done maker for this (workstreamId, point) that does NOT already have a bound terminal checker.
+  // Select the latest done maker without filtering on checker status. An exact dispatch retry
+  // must remain discoverable after its checker moves through every later status.
   const eps = data.episodes || [];
   // P2 codex r7: hill-climb 마이그레이션 특례 — pre-patch 커널이 approve한 checker(contract 미pin)에 묶인
   // maker는 makerReviewed=true라 재리뷰 불가, abandonEpisode는 terminal checker를 거부 → finish의
@@ -329,16 +442,31 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
     const latest = cs.reduce((a, b) => (epOrder(a.id, b.id) >= 0 ? a : b));
     return latest.status === 'approved' && !latest.contract?.sha256;
   };
-  const eligibleMakers = eps.filter(e =>
-    e.role === 'maker' && e.status === 'done' &&
-    e.workstream_id === workstreamId && e.point === point &&
-    (!makerReviewed(data, e) || legacyUnpinned(e))
-  );
+  const dispatchMatches = eps.filter(episode => episode.role === 'checker'
+    && episode.dispatch_request_id_digest === dispatchRequestIdDigest);
+  if (dispatchMatches.length > 1) throw new Error('REVIEW_RECOVERY_PROJECTION_MISMATCH');
+  if (dispatchMatches.length === 1
+      && dispatchMatches[0].dispatch_request_digest !== dispatchRequestDigest) {
+    throw new Error('REVIEW_DISPATCH_REQUEST_CONFLICT');
+  }
+  const replayedMaker = dispatchMatches.length === 1
+    ? eps.find(episode => episode.id === dispatchMatches[0].target_maker) : null;
+  if (dispatchMatches.length === 1 && !replayedMaker) {
+    throw new Error('REVIEW_RECOVERY_PROJECTION_MISMATCH');
+  }
+  if (dispatchMatches.length === 1) {
+    if (typeof dispatchMatches[0].request_markdown !== 'string') throw new Error('REVIEW_RECOVERY_PROJECTION_MISMATCH');
+    return replayReviewDispatch(dispatchMatches[0]);
+  }
+  checkIndependentReviewFence(data, fence);
+  const candidateMakers = eps.filter(e =>
+    e.role === 'maker' && e.status === 'done'
+      && e.workstream_id === workstreamId && e.point === point);
   // Pick the latest episode via epOrder (hybrid numeric/string). Naive string `>` is WRONG here: ids are
   // zero-padded to only 3 digits, so '1000-x' < '999-x' lexicographically — at the 999→1000 boundary it
   // would mis-pick the target maker.
-  const targetMakerEp = eligibleMakers.length > 0
-    ? eligibleMakers.reduce((a, b) => (epOrder(a.id, b.id) > 0 ? a : b))
+  const targetMakerEp = candidateMakers.length > 0
+    ? candidateMakers.reduce((a, b) => (epOrder(a.id, b.id) > 0 ? a : b))
     : null;
   // ROOT FIX: a review MUST bind to a real done maker. With no eligible done maker the checker would be UNBOUND
   // ("reviewed no maker") — a degenerate state that either silently completes (if its REQUEST_CHANGES is ignored)
@@ -346,6 +474,16 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
   // source, so every checker is ALWAYS bound going forward. (preCheck — thrown before newEpisode: no episode created.)
   if (!targetMakerEp) throw new Error('REVIEW_NO_ELIGIBLE_MAKER: no done maker to review for ' + point + '/' + workstreamId);
   const targetMaker = targetMakerEp.id;
+  if (dispatchMatches.length === 0
+      && makerReviewed(data, targetMakerEp) && !legacyUnpinned(targetMakerEp)) {
+    throw new Error('REVIEW_NO_ELIGIBLE_MAKER: latest maker already has a terminal checker');
+  }
+  if (dispatchMatches.length === 0 && eps.some(episode =>
+    episode.role === 'checker' && episode.target_maker === targetMaker
+      && !['approved', 'rejected', 'abandoned'].includes(episode.status))) {
+    throw new Error('REVIEW_NO_ELIGIBLE_MAKER: latest maker already has an active checker');
+  }
+  if (typeof beforeMutableReviewInputs === 'function') beforeMutableReviewInputs();
   const { reviewer, flags, mode, reviewerResolution, blockedReason } = resolveReviewer(data, detected, { independentSubagent });
   // P2 (hillclimb-ledger 2026-07-10, release-blocking): hill-climb run은 checker 계약(HILLCLIMB-001)이 실제로
   // 강제되는 리뷰만 만들 수 있다. `.deep-review/`는 gitignored라 fresh checkout에는 계약이 없고, deep-review는
@@ -413,19 +551,80 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
       candidates: li.envelope?.payload?.candidates ?? [],
     } : null;
   }
+  const checkerTask = [
+    `Independently review maker episode ${targetMaker} for review point ${point}.`,
+    `Use only the verified run, maker artifacts, and complete contract embedded in this request.`,
+    `Return an evidence-backed APPROVE or REQUEST_CHANGES verdict for workstream ${workstreamId}.`,
+  ].join('\n');
   const episodeInput = {
     plugin: reviewer === 'deep-review-loop' || reviewer === 'deep-review' ? 'deep-review' : reviewer,
-    kind: `${point}-review`, point, workstream: workstreamId, targetMaker,
+    kind: `${point}-review`, point, task: checkerTask,
+    workstream: workstreamId, targetMaker,
     reviewerResolution, evidence, contract, fence,
+    dispatchRequestIdDigest, dispatchRequestDigest,
+    dispatchResponse: { reviewer, flags: structuredClone(flags), mode,
+      reason: blockedReason ?? null,
+      ...(evidence !== undefined ? { evidence: structuredClone(evidence) } : {}) },
   };
-  const { id } = blockedReason
-    ? newBlockedCheckerEpisode(root, runId, { ...episodeInput, reason: blockedReason })
-    : newEpisode(root, runId, { ...episodeInput, role: 'checker' });
-  const descriptor = {
-    ...checkerDescriptor(reviewer, { point, workstreamId, flags, mode, reason: blockedReason }),
-    ...(evidence !== undefined ? { evidence } : {}),
-  };
-  return { checkerEpisodeId: id, reviewer, descriptor };
+  const episodeCreationInput = blockedReason
+    ? { ...episodeInput, role: 'checker', initialStatus: 'blocked',
+      blockReason: blockedReason }
+    : { ...episodeInput, role: 'checker' };
+  if (typeof beforeFinalLock === 'function') beforeFinalLock();
+  // The nested episode transaction commits its request Markdown inline.
+  const committed = withReviewMutation(root, runId, fence,
+    'dispatch-review', dispatchProjection,
+    mutation => {
+      const finalData = mutation.readVerifiedState({ fenceCheck: identityFence }).data;
+      checkIndependentReviewFence(finalData, fence);
+      const sameId = (finalData.episodes || []).filter(episode => episode.role === 'checker'
+        && episode.dispatch_request_id_digest === dispatchRequestIdDigest);
+      if (sameId.length > 1) throw new Error('REVIEW_RECOVERY_PROJECTION_MISMATCH');
+      if (sameId.length === 1
+          && sameId[0].dispatch_request_digest !== dispatchRequestDigest) {
+        throw new Error('REVIEW_DISPATCH_REQUEST_CONFLICT');
+      }
+      if (sameId.length === 1) {
+        return { id: sameId[0].id, replayed: replayReviewDispatch(sameId[0]) };
+      }
+      if (sameId.length === 0) {
+        const latest = (finalData.episodes || []).filter(episode => episode.role === 'maker'
+          && episode.status === 'done' && episode.workstream_id === workstreamId
+          && episode.point === point)
+          .reduce((selected, episode) => selected == null
+            || epOrder(episode.id, selected.id) > 0 ? episode : selected, null);
+        if (latest?.id !== targetMaker) {
+          throw new Error('REVIEW_NO_ELIGIBLE_MAKER: latest maker changed before commit');
+        }
+        const bound = (finalData.episodes || []).filter(episode =>
+          isProofCapableChecker(episode) && episode.target_maker === targetMaker);
+        const latestTerminal = bound.filter(episode =>
+          episode.status === 'approved' || episode.status === 'rejected')
+          .reduce((selected, episode) => selected == null
+            || epOrder(episode.id, selected.id) > 0 ? episode : selected, null);
+        const finalLegacyUnpinned = finalData.recipe?.id === 'harness-hill-climb'
+          && latestTerminal?.status === 'approved' && !latestTerminal.contract?.sha256;
+        if ((latestTerminal && !finalLegacyUnpinned)
+            || bound.some(episode => ['pending', 'in_progress', 'blocked'].includes(episode.status))) {
+          throw new Error('REVIEW_NO_ELIGIBLE_MAKER: latest maker already has a checker');
+        }
+      }
+      const created = blockedReason
+        ? newBlockedCheckerEpisode(root, runId,
+          { ...episodeInput, reason: blockedReason, mutation })
+        : newEpisode(root, runId, { ...episodeInput, role: 'checker', mutation });
+
+      return { id: created.id, replayed: null };
+    });
+  if (committed.replayed !== null) {
+    return committed.replayed;
+  }
+  const checker = readVerifiedState(root, runId).data.episodes
+    .find(episode => episode.id === committed.id);
+  if (checker == null || typeof checker.request_markdown !== 'string') {
+    throw new Error('REVIEW_RECOVERY_PROJECTION_MISMATCH');
+  }
+  return replayReviewDispatch(checker);
 }
 
 const REVIEW_TERMINAL = new Set(['done', 'approved', 'rejected', 'abandoned']);
@@ -497,7 +696,7 @@ function validVerdict(verdict) {
 
 // Sole proof transaction for both adapters. appendAnchored performs the root-bound fresh read first; this
 // preCheck then applies runtime/lease, checker/maker, and source-evidence checks in the locked order.
-function commitReviewOutcome(root, runId, {
+function commitReviewOutcome(root, runId, mutation, {
   episodeId, verdict, reviewSource, evidence, fence, runtime, snapshot,
 }) {
   const passed = verdict === 'APPROVE' || verdict === 'CONCERN';
@@ -515,11 +714,14 @@ function commitReviewOutcome(root, runId, {
   };
   let lockedContext;
   let result;
-  appendAnchored(root, runId, { type: 'review-outcome', data: eventData },
+  mutation.appendAnchored({ type: 'review-outcome', data: eventData },
     (loop) => {
-      const checker = lockedContext.checker;
-      const maker = lockedContext.maker;
-      const workstream = lockedContext.workstream;
+      // preCheck validates the source snapshot; mutate must resolve records again from the
+      // gateway-owned candidate clone rather than mutate captured source-snapshot references.
+      const candidateContext = snapshotContext(loop, episodeId);
+      const checker = candidateContext.checker;
+      const maker = candidateContext.maker;
+      const workstream = candidateContext.workstream;
       checker.status = passed ? 'approved' : 'rejected';
       checker.review_source = reviewSource;
       const breaker = loop.circuit_breaker;
@@ -605,7 +807,8 @@ function commitReviewOutcome(root, runId, {
         } catch { stillValid = false; }
         if (!stillValid) throw new Error(`REVIEW_CONTRACT_MISSING: contract ${checker.contract.path} was removed or altered since dispatch (recorded sha256 mismatch) — re-materialize the tracked contract (그대로 복사), re-run the review, and record this SAME checker episode (it stays pending; do NOT dispatch a second checker)`);
       }
-    }, { floor: MUTATION_TURN_FLOOR });
+    }, { floor: MUTATION_TURN_FLOOR,
+      fenceCheck: reviewIdentityFence(fence, 'commitReviewOutcome') });
   return result;
 }
 
@@ -617,22 +820,31 @@ export function recordReviewOutcome(root, runId, options = {}) {
   const { episodeId, verdict, proof = {}, fence } = options;
   validFence(fence, 'recordReviewOutcome');
   validVerdict(verdict);
-  if (proof === null || typeof proof !== 'object' || Array.isArray(proof)) throw new Error('REVIEW_INPUT_INVALID: proof');
+  if (proof === null || typeof proof !== 'object' || Array.isArray(proof)) {
+    throw new Error('REVIEW_INPUT_INVALID: proof');
+  }
   rejectCallerMetadata(proof, 'recordReviewOutcome proof');
-  const preState = readState(root, runId).data;
-  const runtime = sessionRuntime(preState);
-  const snapshot = snapshotContext(preState, episodeId);
-  const passed = verdict === 'APPROVE' || verdict === 'CONCERN';
-  const realReport = passed ? containedRealFile(resolve(root), proof.report) : null;
-  const evidence = {
-    realReport,
-    report: realReport ? proof.report : null,
-    reportSha256: realReport ? sha256File(realReport) : null,
-    findings: proof.findings != null && String(proof.findings).length ? String(proof.findings).slice(0, 2000) : null,
-  };
-  return commitReviewOutcome(root, runId, {
-    episodeId, verdict, reviewSource: 'recorded-path', evidence, fence, runtime, snapshot,
-  });
+  const projection = { episode_id: episodeId, verdict };
+  return withReviewMutation(root, runId, fence, 'recordReviewOutcome', projection,
+    mutation => {
+      const preState = mutation.readVerifiedState({
+        fenceCheck: reviewIdentityFence(fence, 'recordReviewOutcome'),
+      }).data;
+      const runtime = checkIndependentReviewFence(preState, fence);
+      const snapshot = snapshotContext(preState, episodeId);
+      if (mutation.recovered) {
+        return recoveredReviewOutcome(preState, episodeId, verdict, 'recorded-path');
+      }
+      const passed = verdict === 'APPROVE' || verdict === 'CONCERN';
+      const report = proof.report;
+      const realReport = passed ? containedRealFile(resolve(root), report) : null;
+      const evidence = { realReport, report: realReport ? report : null,
+        reportSha256: realReport ? sha256File(realReport) : null,
+        findings: proof.findings != null && String(proof.findings).length
+          ? String(proof.findings).slice(0, 2000) : null };
+      return commitReviewOutcome(root, runId, mutation, { episodeId, verdict,
+        reviewSource: 'recorded-path', evidence, fence, runtime, snapshot });
+    });
 }
 
 export function importReviewOutcome(root, runId, options = {}) {
@@ -643,31 +855,35 @@ export function importReviewOutcome(root, runId, options = {}) {
   const { raw, fence, now } = options;
   validFence(fence, 'importReviewOutcome');
   const input = parseReviewImport(raw);
-  const preState = readState(root, runId).data;
-  const runtime = sessionRuntime(preState);
-  const snapshot = snapshotContext(preState, input.checker_episode_id);
+  const projection = { checker_episode_id: input.checker_episode_id,
+    verdict: input.verdict,
+    input_digest: contentHash(`review-import\0${String(raw)}`) };
+  const entry = withReviewMutation(root, runId, fence, 'importReviewOutcome', projection,
+    mutation => ({ recovered: mutation.recovered,
+      preState: mutation.readVerifiedState({
+        fenceCheck: reviewIdentityFence(fence, 'importReviewOutcome'),
+      }).data }));
+  if (entry.recovered) {
+    return recoveredReviewOutcome(entry.preState, input.checker_episode_id,
+      input.verdict, 'imported-stdin');
+  }
+  const runtime = checkIndependentReviewFence(entry.preState, fence);
+  const snapshot = snapshotContext(entry.preState, input.checker_episode_id);
   let evidence;
   try {
-    const checked = checkedContext(preState, input.checker_episode_id, { reviewSource: 'imported-stdin' });
-    const binding = validateImportedEvidence(root, preState, input, checked);
+    const checked = checkedContext(entry.preState, input.checker_episode_id,
+      { reviewSource: 'imported-stdin' });
+    const binding = validateImportedEvidence(root, entry.preState, input, checked);
     evidence = materializeImportedReview(root, runId, input, binding, { now });
   } catch (preparationError) {
-    // Preserve the authoritative locked error order. Invalid/stale source material never receives proof,
-    // but the commit preCheck still gets to report root/runtime/lease/checker fences first.
     evidence = { input, preparationError, report: null, reportSha256: null };
   }
-  return commitReviewOutcome(root, runId, {
-    episodeId: input.checker_episode_id,
-    verdict: input.verdict,
-    reviewSource: 'imported-stdin',
-    evidence,
-    fence,
-    runtime,
-    snapshot,
-  });
+  return withReviewMutation(root, runId, fence, 'importReviewOutcome', projection,
+    mutation => commitReviewOutcome(root, runId, mutation, {
+      episodeId: input.checker_episode_id, verdict: input.verdict,
+      reviewSource: 'imported-stdin', evidence, fence, runtime, snapshot,
+    }));
 }
-
-// review.points = run-level 계약. 충족은 workstream review_points_done(bound approved checker가 채움)이 단일 출처.
 export function unsatisfiedReviewPoints(loop) {
   const pts = loop.review?.points || [];
   const done = (loop.workstreams || []).flatMap(w => w.review_points_done || []);

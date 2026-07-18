@@ -157,14 +157,17 @@ function prepareCompletableCodexRun(root, runId) {
   writeState(root, runId, state);
   writeFileSync(join(root, 'art.txt'), 'artifact');
   const ws = newWorkstream(root, runId,
-    { title: 'W', branch: 'b', worktree: '.claude/worktrees/wt', fence });
+    { title: 'W', branch: 'b', worktree: '.claude/worktrees/wt',
+      requestId: 'headless-completable-workstream', fence });
   const maker = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker',
     kind: 'implementation', point: 'implementation', workstream: ws.id,
-    expectedArtifacts: ['art.txt'], fence });
+    expectedArtifacts: ['art.txt'], requestId: 'headless-completable-maker',
+    task: 'Produce art.txt for the terminal Codex maker settlement fixture.', fence });
   recordEpisode(root, runId, maker.id,
     { status: 'done', artifacts: ['art.txt'], proof: {}, fence });
   const review = dispatchReview(root, runId,
-    { point: 'implementation', workstreamId: ws.id, detected: {}, fence });
+    { point: 'implementation', workstreamId: ws.id, detected: {},
+      requestId: 'headless-completable-review', fence });
   mkdirSync(join(root, '.claude/worktrees/wt'), { recursive: true });
   writeFileSync(join(root, '.claude/worktrees/wt/review.md'), '# review');
   recordReviewOutcome(root, runId, { episodeId: review.checkerEpisodeId,

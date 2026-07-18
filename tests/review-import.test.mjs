@@ -10,9 +10,9 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { newWorkstream } from '../scripts/lib/workspace.mjs';
-import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
-import { claimIndependentReview, dispatchReview, importReviewOutcome, recordReviewOutcome } from '../scripts/lib/review.mjs';
+import { newWorkstream } from './helpers/workstream-request.mjs';
+import { newEpisode, recordEpisode } from './helpers/episode-request.mjs';
+import { claimIndependentReview, dispatchReview, importReviewOutcome, recordReviewOutcome } from './helpers/review-request.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import { REVIEW_IMPORT_MAX_BYTES } from '../scripts/lib/bounded-input.mjs';
@@ -187,7 +187,10 @@ test('importReviewOutcome materializes a content-addressed M3 envelope and commi
     attempt_id: 'attempt-01',
     report: result.report, report_sha256: result.report_sha256,
   });
-  assert.throws(() => importReviewOutcome(f.root, f.runId, { raw: JSON.stringify(f.input), fence: f.fence, now: FIXED_NOW }), /REVIEW_ALREADY_RECORDED/);
+  const replayed = importReviewOutcome(f.root, f.runId,
+    { raw: JSON.stringify(f.input), fence: f.fence, now: FIXED_NOW });
+  assert.equal(replayed.terminal, 'approved');
+  assert.equal(eventLog(f.root, f.runId).filter(e => e.type === 'review-outcome').length, 1);
 });
 
 test('import accepts only the checker plugin as canonical reviewer_id', () => {
@@ -201,13 +204,10 @@ test('import accepts only the checker plugin as canonical reviewer_id', () => {
   }), /REVIEW_IMPORT_REVIEWER_MISMATCH/);
 
   const unsupported = fixture();
-  appendAnchored(unsupported.root, unsupported.runId,
+  assert.throws(() => appendAnchored(unsupported.root, unsupported.runId,
     { type: 'state-patch', data: { field: 'test-reviewer-plugin' } }, state => {
       state.episodes.find(e => e.id === unsupported.checkerId).plugin = 'caller-chosen-reviewer';
-    });
-  assert.throws(() => importReviewOutcome(unsupported.root, unsupported.runId, {
-    raw: JSON.stringify({ ...unsupported.input, reviewer_id: 'caller-chosen-reviewer' }), fence: unsupported.fence, now: FIXED_NOW,
-  }), /REVIEW_IMPORT_REVIEWER_INVALID/);
+    }), /RUN_SNAPSHOT_INVALID/);
 });
 
 test('import rejects checker/target/maker parity and exact artifact set/hash mismatches without proof', () => {
@@ -230,26 +230,32 @@ test('import rejects checker/target/maker parity and exact artifact set/hash mis
   }
 
   const parity = fixture();
-  appendAnchored(parity.root, parity.runId,
+  assert.throws(() => appendAnchored(parity.root, parity.runId,
     { type: 'state-patch', data: { field: 'test-maker-point' } }, state => {
       state.episodes.find(e => e.id === parity.makerId).point = 'plan';
-    });
-  assert.throws(() => importReviewOutcome(parity.root, parity.runId, { raw: JSON.stringify(parity.input), fence: parity.fence, now: FIXED_NOW }), /REVIEW_MAKER_BINDING_MISMATCH/);
+    }), /RUN_SNAPSHOT_INVALID/);
 });
 
 test('import requires a done maker and an in-progress claimed, unblocked, target-bound checker', () => {
-  for (const [label, mutate, error] of [
-    ['maker role', (s, f) => { s.episodes.find(e => e.id === f.makerId).role = 'checker'; }, /REVIEW_TARGET_MAKER_INVALID/],
-    ['maker status', (s, f) => { s.episodes.find(e => e.id === f.makerId).status = 'in_progress'; }, /REVIEW_TARGET_MAKER_NOT_DONE/],
-    ['checker blocked', (s, f) => { s.episodes.find(e => e.id === f.checkerId).status = 'blocked'; }, /REVIEW_CHECKER_BLOCKED/],
-    ['checker unbound', (s, f) => { delete s.episodes.find(e => e.id === f.checkerId).target_maker; }, /REVIEW_UNBOUND_CHECKER/],
+  for (const [label, mutate, error, validTransition] of [
+    ['maker role', (s, f) => { s.episodes.find(e => e.id === f.makerId).role = 'checker'; }, /REVIEW_TARGET_MAKER_INVALID/, false],
+    ['maker status', (s, f) => { s.episodes.find(e => e.id === f.makerId).status = 'in_progress'; }, /REVIEW_TARGET_MAKER_NOT_DONE/, true],
+    ['checker blocked', (s, f) => { s.episodes.find(e => e.id === f.checkerId).status = 'blocked'; }, /REVIEW_CHECKER_BLOCKED/, true],
+    ['checker unbound', (s, f) => { delete s.episodes.find(e => e.id === f.checkerId).target_maker; }, /REVIEW_UNBOUND_CHECKER/, false],
   ]) {
     const f = fixture();
-    appendAnchored(f.root, f.runId,
+    const mutateState = () => appendAnchored(f.root, f.runId,
       { type: 'state-patch', data: { field: `test-import-${label}` } }, state => {
         mutate(state, f);
       });
-    assert.throws(() => importReviewOutcome(f.root, f.runId, { raw: JSON.stringify(f.input), fence: f.fence, now: FIXED_NOW }), error, label);
+    if (!validTransition) {
+      assert.throws(mutateState, /RUN_SNAPSHOT_INVALID/, label);
+      continue;
+    }
+    mutateState();
+    assert.throws(() => importReviewOutcome(f.root, f.runId, {
+      raw: JSON.stringify(f.input), fence: f.fence, now: FIXED_NOW,
+    }), error, label);
   }
 });
 
@@ -312,14 +318,16 @@ test('shared commit validates mutable structures before append so mutate remains
   assert.equal(eventLog(f.root, f.runId).length, before);
 });
 
-test('stale lease leaves at most an unreferenced envelope and never checker proof', () => {
+test('stale lease creates zero unreferenced envelopes and never checker proof', () => {
   const f = fixture(); const before = eventLog(f.root, f.runId).length;
   assert.throws(() => importReviewOutcome(f.root, f.runId, {
     raw: JSON.stringify(f.input), fence: { ...f.fence, generation: 9 }, now: FIXED_NOW,
   }), /LEASE_FENCED/);
   assert.equal(readState(f.root, f.runId).data.episodes.find(e => e.id === f.checkerId).status, 'in_progress');
   assert.equal(eventLog(f.root, f.runId).length, before);
-  assert.equal(readdirSync(join(runDir(f.root, f.runId), 'reviews')).filter(n => n.endsWith('.json')).length, 1);
+  const reviewsDir = join(runDir(f.root, f.runId), 'reviews');
+  const reviewFiles = existsSync(reviewsDir) ? readdirSync(reviewsDir).filter(n => n.endsWith('.json')) : [];
+  assert.deepEqual(reviewFiles, []);
 });
 
 test('locked error order keeps runtime/lease fencing ahead of source and terminal validation', () => {
@@ -327,13 +335,13 @@ test('locked error order keeps runtime/lease fencing ahead of source and termina
   assert.throws(() => importReviewOutcome(sourceMismatch.root, sourceMismatch.runId, {
     raw: JSON.stringify({ ...sourceMismatch.input, reviewer_id: 'subagent-checker' }),
     fence: { ...sourceMismatch.fence, generation: 9 }, now: FIXED_NOW,
-  }), /LEASE_FENCED: generation-mismatch/);
+  }), /LEASE_FENCED/);
 
   const duplicate = fixture();
   importReviewOutcome(duplicate.root, duplicate.runId, { raw: JSON.stringify(duplicate.input), fence: duplicate.fence, now: FIXED_NOW });
   assert.throws(() => importReviewOutcome(duplicate.root, duplicate.runId, {
     raw: JSON.stringify(duplicate.input), fence: { ...duplicate.fence, generation: 9 }, now: FIXED_NOW,
-  }), /LEASE_FENCED: generation-mismatch/);
+  }), /LEASE_FENCED/);
 });
 
 test('record and import have exact terminal/breaker/point/comprehension parity and closed review sources', () => {
@@ -388,52 +396,39 @@ async function waitForEnvelope(root, runId) {
   throw new Error('test timed out waiting for review envelope');
 }
 
-test('locked commit reopens the exact envelope and rejects post-materialization tampering', async () => {
+test('locked import proves authority before materializing any envelope', async () => {
   const f = fixture(); const lock = join(runDir(f.root, f.runId), '.lock'); mkdirSync(lock);
   const proc = spawnImport(f.root, f.runId, JSON.stringify(f.input));
-  const envelopePath = await waitForEnvelope(f.root, f.runId);
-  const envelope = JSON.parse(readFileSync(envelopePath, 'utf8'));
-  envelope.payload.report_body = 'tampered after materialization';
-  writeFileSync(envelopePath, JSON.stringify(envelope));
-  rmdirSync(lock);
   const result = await proc.done;
+  rmdirSync(lock);
   assert.equal(result.code, 1);
-  assert.match(result.stderr, /REVIEW_REPORT_HASH_MISMATCH/);
+  assert.match(result.stderr, /LOCK_BUSY/);
+  const reviews = join(runDir(f.root, f.runId), 'reviews');
+  assert.equal(existsSync(reviews), false);
   assert.equal(readState(f.root, f.runId).data.episodes.find(e => e.id === f.checkerId).status, 'in_progress');
 });
 
-test('locked commit runtime snapshot fails closed if stored runtime becomes semantically invalid', async () => {
+test('locked import runs no runtime source action before authority', async () => {
   const f = fixture(); const lock = join(runDir(f.root, f.runId), '.lock'); mkdirSync(lock);
   const proc = spawnImport(f.root, f.runId, JSON.stringify(f.input));
-  await waitForEnvelope(f.root, f.runId);
-  const state = readState(f.root, f.runId).data;
-  state.autonomy.session_runtime = 'claude';
-  const raw = JSON.stringify(state, null, 2);
-  writeFileSync(join(runDir(f.root, f.runId), 'loop.json'), raw);
-  writeFileSync(join(runDir(f.root, f.runId), '.loop.hash'), contentHash(raw));
-  rmdirSync(lock);
   const result = await proc.done;
-  assert.equal(result.code, 1, result.stderr);
-  assert.match(result.stderr, /RUN_SNAPSHOT_INVALID.*runtime correlation invalid/);
+  rmdirSync(lock);
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /LOCK_BUSY/);
+  assert.equal(existsSync(join(runDir(f.root, f.runId), 'reviews')), false);
   assert.equal(readState(f.root, f.runId).data.episodes.find(e => e.id === f.checkerId).status, 'in_progress');
 });
 
-test('appendAnchored root-bound read fences a copied-root identity change before review proof', async () => {
+test('locked import runs no root-bound source action before authority', async () => {
   const f = fixture(); const lock = join(runDir(f.root, f.runId), '.lock'); mkdirSync(lock);
   const proc = spawnImport(f.root, f.runId, JSON.stringify(f.input));
-  await waitForEnvelope(f.root, f.runId);
-  const loopPath = join(runDir(f.root, f.runId), 'loop.json');
-  const state = JSON.parse(readFileSync(loopPath, 'utf8'));
-  state.project.root = mkdtempSync(join(tmpdir(), 'dl-review-other-root-'));
-  const raw = JSON.stringify(state, null, 2);
-  writeFileSync(loopPath, raw);
-  writeFileSync(join(runDir(f.root, f.runId), '.loop.hash'), contentHash(raw));
-  rmdirSync(lock);
   const result = await proc.done;
-  assert.equal(result.code, 3);
-  assert.match(result.stderr, /PROJECT_ROOT_FENCED/);
-  const persisted = JSON.parse(readFileSync(loopPath, 'utf8'));
-  assert.equal(persisted.episodes.find(e => e.id === f.checkerId).status, 'in_progress');
+  rmdirSync(lock);
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /LOCK_BUSY/);
+  assert.equal(existsSync(join(runDir(f.root, f.runId), 'reviews')), false);
+  assert.equal(readState(f.root, f.runId).data.episodes
+    .find(e => e.id === f.checkerId).status, 'in_progress');
 });
 
 test('CLI import requires --stdin, rejects caller metadata/runtime, and classifies invalid/fence errors', async () => {
@@ -462,4 +457,138 @@ test('CLI import requires --stdin, rejects caller metadata/runtime, and classifi
   let staleErr = ''; staleProc.stderr.setEncoding('utf8'); staleProc.stderr.on('data', c => { staleErr += c; });
   const staleCode = await new Promise(resolve => staleProc.on('close', resolve));
   assert.equal(staleCode, 3); assert.match(staleErr, /LEASE_FENCED/);
+});
+
+import { test as test7f } from 'node:test';
+import assert7f from 'node:assert/strict';
+import { createHash as hash7f } from 'node:crypto';
+import { existsSync as exists7f, mkdirSync as mkdir7f,
+  readFileSync as read7f, readdirSync as readdir7f, writeFileSync as write7f }
+  from 'node:fs';
+import { join as join7f } from 'node:path';
+import { newWorkstream as workstream7f } from './helpers/workstream-request.mjs';
+import { newEpisode as episode7f, recordEpisode as record7f }
+  from './helpers/episode-request.mjs';
+import { blockIndependentReview as block7f, claimIndependentReview as claim7f,
+  dispatchReview as dispatch7f, importReviewOutcome as import7f,
+  recordReviewOutcome as outcome7f,
+  revalidateIndependentReviewClaim as revalidate7f } from './helpers/review-request.mjs';
+import { readState as state7f } from '../scripts/lib/state.mjs';
+import { durableRunBytes as bytes7f, rawHashValidState as raw7f,
+  verifiedAppRun as fixture7f } from './fixtures/verified-app-run.mjs';
+
+const digest7f = bytes => hash7f('sha256').update(bytes).digest('hex');
+
+function reviewAuthorityFixture7f({ claim = true } = {}) {
+  const fixture = fixture7f('dl-review-authority-');
+  const fence = { owner: fixture.owner, generation: fixture.generation, intent: 'business' };
+  const worktree = '.claude/worktrees/review-authority';
+  mkdir7f(join7f(fixture.root, worktree), { recursive: true });
+  const ws = workstream7f(fixture.root, fixture.runId,
+    { title: 'review authority', branch: 'review-authority', worktree, fence }).id;
+  const artifact = `${worktree}/artifact.txt`;
+  const artifactBytes = Buffer.from('review authority artifact');
+  write7f(join7f(fixture.root, artifact), artifactBytes);
+  const maker = episode7f(fixture.root, fixture.runId, { plugin: 'deep-work',
+    role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws,
+    expectedArtifacts: [artifact], fence,
+    requestId: 'review-authority-maker' }).id;
+  record7f(fixture.root, fixture.runId, maker,
+    { status: 'done', artifacts: [artifact], fence });
+  const checker = dispatch7f(fixture.root, fixture.runId, {
+    point: 'implementation', workstreamId: ws, independentSubagent: true,
+    detected: { 'deep-review': true, codex: true },
+    requestId: 'review-authority-dispatch', fence,
+  }).checkerEpisodeId;
+  if (claim) claim7f(fixture.root, fixture.runId,
+    { episodeId: checker, fence, attemptIdFactory: () => 'attempt-01' });
+  const reviewer = state7f(fixture.root, fixture.runId).data.episodes
+    .find(episode => episode.id === checker).plugin;
+  const input = { schema_version: '1.0', reviewer_id: reviewer,
+    checker_episode_id: checker, target_maker: maker, attempt_id: 'attempt-01',
+    verdict: 'APPROVE', report_body: '# review\n\nAPPROVE',
+    artifacts: [{ path: artifact, sha256: digest7f(artifactBytes) }] };
+  return { ...fixture, fence, ws, maker, checker, input };
+}
+
+const corruptReview7f = fixture => raw7f(fixture.root, fixture.runId, loop => {
+  loop.session_chain.sessions[0].host_surface.observed_at =
+    '2026-07-13T00:00:01.000Z';
+});
+const wrongFence7f = fence => ({ ...fence, owner: '01JAPPWR0NG000000000000000' });
+const reviewFiles7f = fixture => {
+  const directory = join7f(fixture.root, '.deep-loop', 'runs', fixture.runId, 'reviews');
+  return exists7f(directory) ? readdir7f(directory).sort() : [];
+};
+
+test7f('real claim-to-block transition pauses before same-ID dispatch replay', () => {
+  const fixture = reviewAuthorityFixture7f();
+  assert7f.deepEqual(block7f(fixture.root, fixture.runId, {
+    episodeId: fixture.checker, attemptId: 'attempt-01',
+    reason: 'host-unavailable', fence: fixture.fence,
+  }), { ok: true, status: 'blocked', reason: 'host-unavailable' });
+  const before = bytes7f(fixture.root, fixture.runId);
+  const replayed = dispatch7f(fixture.root, fixture.runId, {
+    point: 'implementation', workstreamId: fixture.ws, independentSubagent: true,
+    detected: { codex: true }, requestId: 'review-authority-dispatch',
+    fence: fixture.fence,
+  });
+  assert7f.equal(replayed.checkerEpisodeId, fixture.checker);
+  assert7f.deepEqual(bytes7f(fixture.root, fixture.runId), before,
+    'a real human-pause block never reauthorizes an external reviewer action');
+});
+
+test7f('review claim factory and revalidation prove authority before source actions', () => {
+  const fixture = reviewAuthorityFixture7f({ claim: false });
+  corruptReview7f(fixture);
+  const before = bytes7f(fixture.root, fixture.runId);
+  let factoryCalls = 0;
+  for (const [fence, expected] of [
+    [wrongFence7f(fixture.fence), /LEASE_FENCED/],
+    [fixture.fence, /RUN_SNAPSHOT_INVALID/],
+  ]) {
+    assert7f.throws(() => claim7f(fixture.root, fixture.runId, {
+      episodeId: fixture.checker, fence,
+      attemptIdFactory: () => { factoryCalls += 1; return 'attempt-02'; },
+    }), expected);
+  }
+  assert7f.equal(factoryCalls, 0);
+  assert7f.deepEqual(bytes7f(fixture.root, fixture.runId), before);
+});
+
+test7f('review descriptor revalidation and outcomes prove authority before source actions', () => {
+  const fixture = reviewAuthorityFixture7f();
+  corruptReview7f(fixture);
+  const before = bytes7f(fixture.root, fixture.runId);
+  const initialReviewFiles = reviewFiles7f(fixture);
+  const callers = [
+    [wrongFence7f(fixture.fence), /LEASE_FENCED/],
+    [fixture.fence, /RUN_SNAPSHOT_INVALID/],
+  ];
+  for (const [fence, expected] of callers) {
+    assert7f.throws(() => revalidate7f(fixture.root, fixture.runId,
+      { episodeId: fixture.checker, attemptId: 'attempt-01', fence }), expected);
+    assert7f.throws(() => block7f(fixture.root, fixture.runId,
+      { episodeId: fixture.checker, attemptId: 'attempt-01',
+        reason: 'host-unavailable', fence }), expected);
+  }
+
+  let reportReads = 0;
+  const proof = {};
+  Object.defineProperty(proof, 'report', { enumerable: true,
+    get: () => { reportReads += 1; return 'missing-review.md'; } });
+  for (const [fence, expected] of callers) {
+    assert7f.throws(() => outcome7f(fixture.root, fixture.runId, {
+      episodeId: fixture.checker, verdict: 'APPROVE', proof, fence,
+    }), expected);
+    assert7f.throws(() => import7f(fixture.root, fixture.runId,
+      { raw: JSON.stringify(fixture.input), fence,
+        now: '2026-07-13T00:00:10.000Z' }), expected);
+  }
+  assert7f.equal(reportReads, 0);
+  assert7f.deepEqual(reviewFiles7f(fixture), initialReviewFiles,
+    'proof refusal creates zero unreferenced review envelopes');
+  assert7f.deepEqual(bytes7f(fixture.root, fixture.runId), before);
+  assert7f.equal(read7f(join7f(fixture.root, '.deep-loop', 'runs', fixture.runId,
+    'loop.json'), 'utf8').includes('missing-review.md'), false);
 });

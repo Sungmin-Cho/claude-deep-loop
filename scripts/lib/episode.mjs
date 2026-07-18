@@ -1,116 +1,278 @@
-import { mkdirSync, existsSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { isAbsolute, join, resolve, sep } from 'node:path';
-import { readState, writeState, withLock, runDir } from './state.mjs';
-import { appendAnchored } from './integrity.mjs';
-import { atomicWrite } from './envelope.mjs';
+import { appendAnchored, directMutationOptions, intentField,
+  withVerifiedMutationLock } from './integrity.mjs';
+import { assertEpisodeTask, episodeRequestMarkdown } from './schema.mjs';
 import { slugify } from './slug.mjs';
 import { leaseCheck } from './lease.mjs';
 import { MUTATION_TURN_FLOOR } from './budget.mjs';
 
 const NON_TERMINAL = ['pending', 'in_progress', 'blocked'];
-const RECORDABLE_TERMINAL = ['done', 'approved', 'rejected'];   // record 가 설정 가능한 터미널 (abandoned 제외)
-const TERMINAL = RECORDABLE_TERMINAL;                            // 하위 호환 — done 가드/검증 등 기존 참조 유지
-const ALL_TERMINAL = [...RECORDABLE_TERMINAL, 'abandoned'];     // 4개 전체 터미널 (abandonEpisode 가드 포함)
+const RECORDABLE_TERMINAL = ['done', 'approved', 'rejected'];
+const TERMINAL = RECORDABLE_TERMINAL;
+const ALL_TERMINAL = [...RECORDABLE_TERMINAL, 'abandoned'];
 
-function requestSkeleton({ id, plugin, role, kind, point, workstream, expectedArtifacts, evidence }) {
-  return [
-    `# Episode ${id} — request`, '',
-    `- plugin: ${plugin}`, `- role: ${role}`, `- kind: ${kind}`,
-    `- review point: ${point}`, `- workstream: ${workstream || '(none)'}`, '',
-    '## Task', '', '<!-- Execution plane: fill the maker/checker task here -->', '',
-    '## Expected artifacts', '', ...(expectedArtifacts.length ? expectedArtifacts.map(a => `- ${a}`) : ['- <!-- list proof artifacts -->']), '',
-    // P2 codex r2/r3: checker가 읽을 evidence 사본 — durable 원본은 anchored loop.json의 episode.evidence다
-    // (이 파일은 ## Task 편집이 허용되는 가변 문서). undefined면 섹션 자체를 생략(비-hill-climb).
-    ...(evidence !== undefined ? ['## Evidence (kernel-verified insights)', '',
-      '<!-- 사본 — anchored 원본은 loop.json episodes[].evidence. 불일치 시 loop.json이 이긴다. -->', '',
-      '```json', JSON.stringify(evidence, null, 2), '```', ''] : []),
-    '## Constraints', '', '- 이전 대화 컨텍스트를 가정하지 말라. loop.json + 이 request가 source of truth.', '',
-  ].join('\n');
+function episodeRequestProjection({ plugin, role, kind, point, task, workstream = null,
+  expectedArtifacts = [], targetMaker, reviewerResolution, evidence, contract,
+  initialStatus = 'pending', blockReason, creationRequestIdDigest,
+  dispatchRequestIdDigest, dispatchRequestDigest, dispatchResponse } = {}) {
+  return { plugin, role, kind, point, task, workstream, expectedArtifacts,
+    targetMaker: targetMaker ?? null,
+    reviewerResolution: reviewerResolution ?? null,
+    evidence_digest: intentField('episode-evidence', evidence),
+    contract: structuredClone(contract ?? null),
+    initialStatus, blockReason: blockReason ?? null,
+    creation_request_id_digest: creationRequestIdDigest ?? null,
+    dispatch_request_id_digest: dispatchRequestIdDigest ?? null,
+    dispatch_request_digest: dispatchRequestDigest ?? null,
+    dispatch_response: structuredClone(dispatchResponse ?? null) };
 }
 
-function createEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker, reviewerResolution, evidence, contract, initialStatus = 'pending', blockReason, fence, operation } = {}) {
-  if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error(`FENCE_REQUIRED: ${operation}`);
-  // Fix 3: validate required non-fence args before any state write
-  if (!plugin || typeof plugin !== 'string' || !plugin.length) throw new Error('EPISODE_INPUT_INVALID: plugin');
-  if (!role || typeof role !== 'string' || !role.length) throw new Error('EPISODE_INPUT_INVALID: role');
-  if (!['maker', 'checker'].includes(role)) throw new Error('EPISODE_INPUT_INVALID: role');
-  if (!kind || typeof kind !== 'string' || !kind.length) throw new Error('EPISODE_INPUT_INVALID: kind');
-  if (!point || typeof point !== 'string' || !point.length) throw new Error('EPISODE_INPUT_INVALID: point');
-  if (!['pending', 'blocked'].includes(initialStatus)) throw new Error('EPISODE_INPUT_INVALID: initialStatus');
-  if (initialStatus === 'blocked' && role !== 'checker') throw new Error('EPISODE_INPUT_INVALID: only checker episodes may start blocked');
-  if (initialStatus === 'blocked' && (!blockReason || typeof blockReason !== 'string')) throw new Error('EPISODE_INPUT_INVALID: blockReason');
-  if (reviewerResolution !== undefined && (role !== 'checker' || reviewerResolution === null || typeof reviewerResolution !== 'object' || Array.isArray(reviewerResolution))) {
+export function episodeRequestDigest(input) {
+  return intentField('episode-create-request', episodeRequestProjection(input));
+}
+
+const EPISODE_REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
+function episodeRequestIdDigest(requestId, dispatchRequestIdDigest) {
+  if (dispatchRequestIdDigest != null) {
+    if (requestId != null) throw new Error('EPISODE_REQUEST_ID_CONFLICT');
+    return null;
+  }
+  if (!EPISODE_REQUEST_ID.test(requestId || '')) {
+    throw new Error('EPISODE_REQUEST_ID_REQUIRED');
+  }
+  return intentField('episode-create-request-id', requestId);
+}
+
+function episodeAppend(root, runId, mutation, event, mutate, preCheck, options,
+  buildResponse) {
+  const execute = context => {
+    const snapshot = context.readVerifiedState();
+    preCheck(snapshot.data);
+    if (context.recovered !== null) {
+      options.onRecovered(snapshot.data, context.recovered);
+      return buildResponse();
+    }
+    const existing = options.onExisting(snapshot.data);
+    if (existing !== null) return buildResponse();
+    context.appendAnchored(event, mutate, preCheck, options);
+    return buildResponse();
+  };
+  if (mutation !== null) return execute(mutation);
+  const { callerBinding, intentDigest, fenceError } = options;
+  return withVerifiedMutationLock(root, runId,
+    { callerBinding, intentDigest, fenceError }, execute);
+}
+
+function createEpisode(root, runId, {
+  plugin, role, kind, point, task, workstream = null, expectedArtifacts = [], targetMaker,
+  reviewerResolution, evidence, contract, initialStatus = 'pending', blockReason,
+  fence, operation, mutation = null, requestId, dispatchRequestIdDigest,
+  dispatchRequestDigest, dispatchResponse,
+} = {}) {
+  if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) {
+    throw new Error(`FENCE_REQUIRED: ${operation}`);
+  }
+  if (!plugin || typeof plugin !== 'string' || !plugin.length) {
+    throw new Error('EPISODE_INPUT_INVALID: plugin');
+  }
+  if (!role || typeof role !== 'string' || !role.length
+      || !['maker', 'checker'].includes(role)) {
+    throw new Error('EPISODE_INPUT_INVALID: role');
+  }
+  if (!['pending', 'blocked'].includes(initialStatus)) {
+    throw new Error('EPISODE_INPUT_INVALID: initialStatus');
+  }
+  if (initialStatus === 'blocked' && role !== 'checker') {
+    throw new Error('EPISODE_INPUT_INVALID: only checker episodes may start blocked');
+  }
+  if (initialStatus === 'blocked'
+      && (!blockReason || typeof blockReason !== 'string')) {
+    throw new Error('EPISODE_INPUT_INVALID: blockReason');
+  }
+  if (reviewerResolution !== undefined
+      && (role !== 'checker' || reviewerResolution === null
+        || typeof reviewerResolution !== 'object' || Array.isArray(reviewerResolution))) {
     throw new Error('EPISODE_INPUT_INVALID: reviewerResolution');
   }
-  // Codex impl r7 🔴: expectedArtifacts must be an array of strings (a null/non-array would throw in the
-  // loop below; though that is before appendAnchored, give a clean error rather than a raw TypeError).
-  if (!Array.isArray(expectedArtifacts) || !expectedArtifacts.every(a => typeof a === 'string')) throw new Error('EPISODE_INPUT_INVALID: expectedArtifacts must be an array of strings');
-  // Codex r2 🟡: expectedArtifacts 경로 안전성 검증 — 절대 경로 및 '..' 세그먼트 사전 차단.
-  for (const a of expectedArtifacts) {
-    if (isAbsolute(a) || a.split(/[/\\]/).includes('..')) throw new Error('EPISODE_ARTIFACT_UNSAFE: ' + a);
+  if (targetMaker !== undefined && targetMaker !== null
+      && (typeof targetMaker !== 'string' || targetMaker.length === 0)) {
+    throw new Error('EPISODE_INPUT_INVALID: targetMaker');
   }
-  let id, requestPath, dir;
+  assertEpisodeTask(task);
+  if (!kind || typeof kind !== 'string' || !kind.length
+      || !point || typeof point !== 'string' || !point.length
+      || !Array.isArray(expectedArtifacts)
+      || !expectedArtifacts.every(item => typeof item === 'string')) {
+    throw new Error('EPISODE_INPUT_INVALID');
+  }
+  for (const item of expectedArtifacts) {
+    if (isAbsolute(item) || item.split(/[/\\]/).includes('..')) {
+      throw new Error('EPISODE_ARTIFACT_UNSAFE: ' + item);
+    }
+  }
   const safePlugin = slugify(plugin) || 'plugin';
-  appendAnchored(root, runId, { type: 'episode-new', data: {
-    plugin, role, kind, point,
-    ...(initialStatus === 'blocked' ? { status: initialStatus, block_reason: blockReason } : {}),
+  const creationRequestIdDigest = episodeRequestIdDigest(
+    requestId, dispatchRequestIdDigest);
+  const completeRequest = episodeRequestProjection({ plugin, role, kind, point, task,
+    workstream, expectedArtifacts, targetMaker, reviewerResolution, evidence, contract,
+    initialStatus, blockReason, creationRequestIdDigest,
+    dispatchRequestIdDigest, dispatchRequestDigest, dispatchResponse });
+  const requestDigest = episodeRequestDigest({ plugin, role, kind, point, task, workstream,
+    expectedArtifacts, targetMaker, reviewerResolution, evidence, contract,
+    initialStatus, blockReason, creationRequestIdDigest,
+    dispatchRequestIdDigest, dispatchRequestDigest, dispatchResponse });
+  let id = null;
+  let requestMarkdown = null;
+  let requestMarkdownDigest = null;
+  let initialEpisode = null;
+  const recoverExact = (loop, recoveredTransaction = null) => {
+    const recoveredEvents = recoveredTransaction?.events?.filter(event =>
+      event.type === 'episode-new' && event.data?.creation_contract === 'episode-create-v1'
+        && event.data?.request_digest === requestDigest) ?? [];
+    if (recoveredTransaction !== null && recoveredEvents.length !== 1) {
+      throw new Error('EPISODE_RESPONSE_PROJECTION_CHANGED');
+    }
+    const matches = recoveredTransaction !== null
+      ? loop.episodes.filter(episode => episode.id === recoveredEvents[0].data.episode_id)
+      : loop.episodes.filter(episode => dispatchRequestIdDigest != null
+        ? episode.dispatch_request_id_digest === dispatchRequestIdDigest
+        : episode.creation_request_id_digest === creationRequestIdDigest);
+    if (matches.length !== 1) throw new Error('EPISODE_RESPONSE_PROJECTION_CHANGED');
+    const [recovered] = matches;
+    if (recovered.plugin !== plugin || recovered.role !== role
+        || recovered.kind !== kind || recovered.point !== point
+        || recovered.task !== task
+        || recovered.workstream_id !== workstream
+        || JSON.stringify(recovered.expected_artifacts) !== JSON.stringify(expectedArtifacts)
+        || (recovered.target_maker ?? null) !== (targetMaker ?? null)
+        || JSON.stringify(recovered.reviewer_resolution ?? null)
+          !== JSON.stringify(reviewerResolution ?? null)
+        || JSON.stringify(recovered.evidence) !== JSON.stringify(evidence)
+        || JSON.stringify(recovered.contract) !== JSON.stringify(contract)
+        || recovered.creation_initial_status !== initialStatus
+        || (recovered.creation_block_reason ?? null) !== (blockReason ?? null)
+        || (recovered.creation_request_id_digest ?? null)
+          !== (creationRequestIdDigest ?? null)
+        || (recovered.dispatch_request_id_digest ?? null)
+          !== (dispatchRequestIdDigest ?? null)
+        || (recovered.dispatch_request_digest ?? null) !== (dispatchRequestDigest ?? null)
+        || JSON.stringify(recovered.dispatch_response ?? null)
+          !== JSON.stringify(dispatchResponse ?? null)
+        || recovered.creation_contract !== 'episode-create-v1'
+        || recovered.creation_request_digest !== requestDigest) {
+      throw new Error(dispatchRequestIdDigest == null
+        && recovered.creation_request_id_digest === creationRequestIdDigest
+        ? 'EPISODE_REQUEST_CONFLICT' : 'EPISODE_RESPONSE_PROJECTION_CHANGED');
+    }
+    id = recovered.id;
+    requestMarkdown = episodeRequestMarkdown({ id, plugin, role, kind, point, task,
+      contract, workstream, expectedArtifacts, evidence });
+    requestMarkdownDigest = intentField('episode-request-markdown', requestMarkdown);
+    if (recovered.request_path !== undefined
+        || recovered.request_markdown !== requestMarkdown
+        || recovered.request_markdown_digest !== requestMarkdownDigest) {
+      throw new Error('EPISODE_RESPONSE_PROJECTION_CHANGED');
+    }
+    return recovered;
+  };
+  const onExisting = loop => loop.episodes.some(episode => dispatchRequestIdDigest != null
+    ? episode.dispatch_request_id_digest === dispatchRequestIdDigest
+    : episode.creation_request_id_digest === creationRequestIdDigest)
+    ? recoverExact(loop) : null;
+  const event = { type: 'episode-new', data: {
+    plugin, role, kind, point, creation_contract: 'episode-create-v1',
+    task, contract: structuredClone(contract ?? null),
+    request_digest: requestDigest,
+    creation_request_id_digest: creationRequestIdDigest,
+    dispatch_request_id_digest: dispatchRequestIdDigest ?? null,
+    dispatch_request_digest: dispatchRequestDigest ?? null,
+    request_projection: completeRequest,
+    ...(initialStatus === 'blocked'
+      ? { status: initialStatus, block_reason: blockReason } : {}),
     ...(reviewerResolution ? { reviewer_resolution: reviewerResolution } : {}),
-  } }, (loop) => {
+  } };
+  const preCheck = loop => {
+    const checked = leaseCheck(loop, fence);
+    if (!checked.ok) throw new Error(`LEASE_FENCED: ${checked.reason}`);
+    if (workstream && !loop.workstreams.find(item => item.id === workstream)) {
+      throw new Error(`WORKSTREAM_NOT_FOUND: ${workstream}`);
+    }
+    if (id !== null) return;
     const n = String(loop.episodes.length + 1).padStart(3, '0');
     id = `${n}-${safePlugin}`;
-    dir = join(runDir(root, runId), 'episodes', id);
-    requestPath = join(dir, 'request.md');
-    const epObj = {
-      id, plugin, role, kind, point, workstream_id: workstream, status: initialStatus,
-      request_path: requestPath, expected_artifacts: expectedArtifacts,
-      verification: { checker_episode_required: role === 'maker', checker_plugin: 'deep-review', review_point: point, proof_required: expectedArtifacts },
+    requestMarkdown = episodeRequestMarkdown({ id, plugin, role, kind, point, task,
+      contract, workstream, expectedArtifacts, evidence });
+    requestMarkdownDigest = intentField('episode-request-markdown', requestMarkdown);
+    event.data.episode_id = id;
+    event.data.request_markdown = requestMarkdown;
+    event.data.request_markdown_digest = requestMarkdownDigest;
+    initialEpisode = {
+      id, plugin, role, kind, point, task, workstream_id: workstream, status: initialStatus,
+      request_markdown: requestMarkdown,
+      request_markdown_digest: requestMarkdownDigest,
+      expected_artifacts: structuredClone(expectedArtifacts),
+      creation_request_digest: requestDigest, creation_initial_status: initialStatus,
+      creation_block_reason: blockReason ?? null, creation_contract: 'episode-create-v1',
+      creation_request_id_digest: creationRequestIdDigest,
+      dispatch_request_id_digest: dispatchRequestIdDigest ?? null,
+      dispatch_request_digest: dispatchRequestDigest ?? null,
+      dispatch_response: structuredClone(dispatchResponse ?? null),
+      verification: { checker_episode_required: role === 'maker',
+        checker_plugin: 'deep-review', review_point: point,
+        proof_required: structuredClone(expectedArtifacts) },
+      ...(targetMaker ? { target_maker: targetMaker } : {}),
+      ...(role === 'checker' ? { requires_independent_session: true } : {}),
+      ...(reviewerResolution ? { reviewer_resolution: reviewerResolution } : {}),
+      ...(evidence !== undefined ? { evidence: structuredClone(evidence) } : {}),
+      ...(contract !== undefined ? { contract: structuredClone(contract) } : {}),
+      ...(initialStatus === 'blocked'
+        ? { block_reason: blockReason, needs_human: true } : {}),
     };
-    if (targetMaker && typeof targetMaker === 'string' && targetMaker.length) epObj.target_maker = targetMaker;
-    if (role === 'checker') epObj.requires_independent_session = true;
-    if (reviewerResolution) epObj.reviewer_resolution = reviewerResolution;
-    if (initialStatus === 'blocked') {
-      epObj.block_reason = blockReason;
-      epObj.needs_human = true;
-    }
-    // P2 codex r3: evidence/contract는 anchored loop.json이 원본 — request.md는 편집 가능한(## Task) 사본이라
-    // durable 신뢰 원천이 될 수 없다. undefined면 필드 자체를 생략(비-hill-climb 무변화).
-    if (evidence !== undefined) epObj.evidence = evidence;
-    if (contract !== undefined) epObj.contract = contract;
-    loop.episodes.push(epObj);
+  };
+  const buildResponse = () => Object.freeze({ id,
+    requestMarkdown, requestMarkdownDigest });
+  const options = mutation !== null
+    ? { floor: MUTATION_TURN_FLOOR, onRecovered: recoverExact, onExisting }
+    : directMutationOptions(operation, fence, completeRequest,
+      `LEASE_FENCED: ${operation}`,
+      { floor: MUTATION_TURN_FLOOR, onRecovered: recoverExact, onExisting });
+  return episodeAppend(root, runId, mutation, event, loop => {
+    const episode = structuredClone(initialEpisode);
+    loop.episodes.push(episode);
     loop.current_episode = id;
-    if (role === 'maker') loop.comprehension.episodes_total = (loop.comprehension.episodes_total || 0) + 1;
-    if (workstream) {
-      // preCheck guarantees the workstream exists when non-null (Codex impl r14/r15) — bind episode to it.
-      loop.workstreams.find(w => w.id === workstream).episodes.push(id);
+    if (role === 'maker') {
+      loop.comprehension.episodes_total =
+        (loop.comprehension.episodes_total || 0) + 1;
     }
-  }, (loop) => {
-    const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason);
-    // Codex impl r15 🟡: reject a non-null workstream that does not exist — otherwise a maker bound to a phantom
-    // workstream becomes unreviewable (dispatchReview rightly rejects WORKSTREAM_NOT_FOUND at review time).
-    if (workstream && !loop.workstreams.find(w => w.id === workstream)) throw new Error(`WORKSTREAM_NOT_FOUND: ${workstream}`);
-  }, { floor: MUTATION_TURN_FLOOR });
-  // Assert containment before FS writes
-  const base = resolve(runDir(root, runId), 'episodes');
-  const full = resolve(dir);
-  if (full !== base && !full.startsWith(base + sep)) throw new Error('EPISODE_PATH_ESCAPE: ' + id);
-  mkdirSync(dir, { recursive: true });
-  atomicWrite(requestPath, requestSkeleton({ id, plugin, role, kind, point, workstream, expectedArtifacts, evidence }));
-  return { id, requestPath };
+    if (workstream) loop.workstreams.find(item => item.id === workstream).episodes.push(id);
+  }, preCheck, options, buildResponse);
 }
 
-export function newEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker, reviewerResolution, evidence, contract, fence } = {}) {
-  return createEpisode(root, runId, { plugin, role, kind, point, workstream, expectedArtifacts, targetMaker, reviewerResolution, evidence, contract, fence, operation: 'newEpisode' });
+export function newEpisode(root, runId, {
+  plugin, role, kind, point, task, workstream = null, expectedArtifacts = [], targetMaker,
+  reviewerResolution, evidence, contract, fence, mutation = null, requestId,
+  dispatchRequestIdDigest, dispatchRequestDigest, dispatchResponse,
+} = {}) {
+  return createEpisode(root, runId, { plugin, role, kind, point, task, workstream,
+    expectedArtifacts, targetMaker, reviewerResolution, evidence, contract, fence,
+    mutation, requestId, dispatchRequestIdDigest, dispatchRequestDigest,
+    dispatchResponse, operation: 'newEpisode' });
 }
 
-// Fail-closed compatibility path only: a checker with no independent dispatch capability is born blocked.
-// Keeping this separate from newEpisode prevents makers (or arbitrary callers) from selecting an initial blocked state.
-export function newBlockedCheckerEpisode(root, runId, { plugin, kind, point, workstream = null, targetMaker, reason, reviewerResolution, fence } = {}) {
-  return createEpisode(root, runId, {
-    plugin, role: 'checker', kind, point, workstream, targetMaker, reviewerResolution,
-    initialStatus: 'blocked', blockReason: reason, fence, operation: 'newBlockedCheckerEpisode',
-  });
+export function newBlockedCheckerEpisode(root, runId, {
+  plugin, kind, point, task, workstream = null, targetMaker, reason, reviewerResolution,
+  evidence, contract,
+  fence, mutation = null, requestId, dispatchRequestIdDigest, dispatchRequestDigest,
+  dispatchResponse,
+} = {}) {
+  return createEpisode(root, runId, { plugin, role: 'checker', kind, point, task, workstream,
+    targetMaker, reviewerResolution, evidence, contract,
+    initialStatus: 'blocked', blockReason: reason,
+    fence, mutation, requestId, dispatchRequestIdDigest, dispatchRequestDigest,
+    dispatchResponse, operation: 'newBlockedCheckerEpisode' });
 }
-
 // Human-gated escape hatch — settles a stranded non-terminal episode as abandoned.
 // Separate from the record path to preserve the done-needs-proof invariant.
 export function abandonEpisode(root, runId, episodeId, { reason, confirm, fence } = {}) {
@@ -137,7 +299,15 @@ export function abandonEpisode(root, runId, episodeId, { reason, confirm, fence 
     const ep = loop.episodes.find(e => e.id === episodeId);
     if (!ep) throw new Error(`EPISODE_NOT_FOUND: ${episodeId}`);
     if (ALL_TERMINAL.includes(ep.status)) throw new Error('EPISODE_ALREADY_TERMINAL: ' + episodeId);
-  }, { floor: MUTATION_TURN_FLOOR });
+  }, directMutationOptions('episode-abandon', fence,
+    { episodeId, reason, confirm }, 'LEASE_FENCED: abandonEpisode', {
+      floor: MUTATION_TURN_FLOOR, onRecovered: loop => {
+        const episode = loop.episodes.find(item => item.id === episodeId);
+        if (episode?.status !== 'abandoned' || episode.abandon_reason !== reason) {
+          throw new Error('EPISODE_RESPONSE_PROJECTION_CHANGED');
+        }
+      },
+    }));
 }
 
 export function recordEpisode(root, runId, episodeId, { status, artifacts = [], proof = {}, fence } = {}) {
@@ -150,6 +320,7 @@ export function recordEpisode(root, runId, episodeId, { status, artifacts = [], 
   if (![...NON_TERMINAL, ...TERMINAL].includes(status)) throw new Error(`EPISODE_STATUS_INVALID: ${status}`);
   if (!Array.isArray(artifacts) || !artifacts.every(a => typeof a === 'string')) throw new Error('EPISODE_INPUT_INVALID: artifacts must be an array of strings');
   if (proof === null || typeof proof !== 'object' || Array.isArray(proof)) throw new Error('EPISODE_INPUT_INVALID: proof must be an object');
+  const proofDigest = intentField('episode-record-proof', proof);
   appendAnchored(root, runId, { type: 'episode-record', data: { id: episodeId, status, artifacts } }, (loop) => {
     const ep = loop.episodes.find(e => e.id === episodeId);
     if (!ep) throw new Error(`EPISODE_NOT_FOUND: ${episodeId}`);   // 방어적
@@ -196,5 +367,14 @@ export function recordEpisode(root, runId, episodeId, { status, artifacts = [], 
         throw new Error(`EPISODE_TERMINAL_NO_PROOF: ${episodeId} rejected requires proof.verdict=REQUEST_CHANGES`);
       }
     }
-  }, { floor: MUTATION_TURN_FLOOR });
+  }, directMutationOptions('episode-record', fence,
+    { episodeId, status, artifacts, proofDigest }, 'LEASE_FENCED: recordEpisode', {
+      floor: MUTATION_TURN_FLOOR, onRecovered: loop => {
+        const episode = loop.episodes.find(item => item.id === episodeId);
+        if (episode?.status !== status
+            || JSON.stringify(episode.artifacts ?? []) !== JSON.stringify(artifacts)) {
+          throw new Error('EPISODE_RESPONSE_PROJECTION_CHANGED');
+        }
+      },
+    }));
 }

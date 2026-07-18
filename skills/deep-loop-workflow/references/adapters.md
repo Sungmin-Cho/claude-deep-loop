@@ -71,7 +71,7 @@ deep-work 예시: `.deep-work/<task>/session-receipt.json`의 `current_phase=idl
 현재 host의 cooperative fresh-subagent 기능이 **실제로 사용 가능**하다고 host capability로 assertion한 경우에만 이 route를 선택하고 `review dispatch`에 `--independent-subagent`를 전달한다:
 
 ```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review dispatch --point <review_point> --workstream <workstream_id> --independent-subagent --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review dispatch --point <review_point> --workstream <workstream_id> --request-id <review_dispatch_request_id> --independent-subagent --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
 `--independent-subagent` flag는 cooperative capability가 실제로 있을 때만 전달한다. 반환 descriptor가 `checker.kind === 'agent'`이고 `agent_role === 'code-reviewer'`인지 확인한다. 그 뒤 fresh `code-reviewer`를 host tool(호스트 도구)로 실제 spawn한다. 같은 execution task의 inline 리뷰로 대체하지 않는다. fresh reviewer가 리뷰 대상 worktree 아래에 실제 report를 작성해 반환한 경우에만 아래 Verdict 기록으로 간다.
@@ -81,7 +81,7 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review dispatch --point <review_poin
 Codex runtime의 unattended run이고 measured host-owned driver가 실행을 소유한 경우다. execution skill은 다음 명령으로 checker를 정확히 한 번 dispatch한 뒤 즉시 host에 yield한다:
 
 ```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review dispatch --point <review_point> --workstream <workstream_id> --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review dispatch --point <review_point> --workstream <workstream_id> --request-id <review_dispatch_request_id> --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
 host-owned measured driver가 claim 후 isolated read-only 두 번째 `codex exec`를 spawn하고, 최종 bytes를 import한 뒤 accounting까지 수행한다: **claim → spawn → import → accounting**. execution skill은 이 route에서 `review record`를 호출하지 않는다(never). 같은 task의 `$<checker.skill>` 실행이나 caller가 만든 verdict는 proof가 아니다.
@@ -91,7 +91,7 @@ host-owned measured driver가 claim 후 isolated read-only 두 번째 `codex exe
 interactive Claude/Codex에서 `checker.kind === 'skill'`이고, 리뷰 대상 worktree(reviewed worktree)를 root로 쓰는 **독립 별도 distinct fresh session 또는 fresh task**가 실제로 준비된 경우다. 준비 가능성을 먼저 확인한 뒤 다음 명령으로 dispatch한다:
 
 ```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review dispatch --point <review_point> --workstream <workstream_id> --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review dispatch --point <review_point> --workstream <workstream_id> --request-id <review_dispatch_request_id> --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
 반환 descriptor의 `requires_independent_session === true`를 확인한다. 그 별도 task에서 Claude는 `Skill({ skill: checker.skill, args: checker.args })`, Codex는 `$<checker.skill>`에 `checker.args`를 전달한다. Codex automatic new task는 지원하지 않으므로 사람이 manual(수동) task 생성을 완료하고 descriptor를 넘긴 경우에만 진행한다. 같은 task의 `$<checker.skill>` 실행은 독립 proof가 아니며 금지한다.
@@ -125,3 +125,7 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review record --episode <checkerEpis
 - 또는 protocol의 계획된 산출물 경로
 
 항상 비어있지 않은 배열이어야 한다 — maker `done` 전이는 expected_artifacts 존재와 실제 파일을 요구한다.
+`<review_dispatch_request_id>`는 Route A/B/C 모두 logical dispatch 직전에 한 번 정하고,
+response-loss retry에는 byte-identical point/workstream/subagent input과 함께 그대로 재사용한다.
+새 intentional review round에서만 새 ID를 사용한다. Plugin detection은 fresh resolution input이지
+same-ID payload가 아니므로 detector 변화만으로 ID를 교체하거나 retry를 충돌시키지 않는다.

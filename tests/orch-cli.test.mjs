@@ -279,12 +279,14 @@ test('review dispatch accepts --independent-subagent and records a neutral legac
   const { data } = readState(root, runId);
   data.review.reviewer = 'standalone';
   writeState(root, runId, data);
-  const ws = JSON.parse(run(root, ['workstream', 'new', '--title', 'A', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--owner', runId, '--generation', '1']));
+  const ws = JSON.parse(run(root, ['workstream', 'new', '--title', 'A', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--request-id', 'cli-review-workstream', '--owner', runId, '--generation', '1']));
   writeFileSync(join(root, 'plan.txt'), 'artifact');
-  const maker = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'plan', '--point', 'plan', '--workstream', ws.id, '--artifacts', '["plan.txt"]', '--owner', runId, '--generation', '1']));
+  const maker = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'plan', '--point', 'plan', '--workstream', ws.id, '--artifacts', '["plan.txt"]', '--task', 'Produce the finish proof plan.', '--request-id', 'finish-proof-maker', '--owner', runId, '--generation', '1']));
   run(root, ['episode', 'record', '--id', maker.id, '--status', 'done', '--artifacts', '["plan.txt"]', '--owner', runId, '--generation', '1']);
 
-  const dispatched = JSON.parse(run(root, ['review', 'dispatch', '--point', 'plan', '--workstream', ws.id, '--independent-subagent', '--owner', runId, '--generation', '1']));
+  const dispatched = JSON.parse(run(root, ['review', 'dispatch', '--point', 'plan', '--workstream', ws.id, '--request-id', 'cli-review-round-1', '--independent-subagent', '--owner', runId, '--generation', '1']));
+  assert.match(dispatched.request_markdown, /Independently review maker episode/);
+  assert.match(dispatched.request_markdown_digest, /^[0-9a-f]{64}$/);
   assert.equal(dispatched.reviewer, 'subagent-checker');
   assert.equal(dispatched.descriptor.kind, 'agent');
   assert.equal(dispatched.descriptor.agent_role, 'code-reviewer');
@@ -834,7 +836,7 @@ launcherExecutableCliTest('forced-win32 POSIX CLI fixture never becomes runnable
 
 test('workstream new + set via CLI with lease', () => {
   const { root, runId } = seed();
-  const ws = JSON.parse(run(root, ['workstream', 'new', '--title', 'Auth', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--owner', runId, '--generation', '1']));
+  const ws = JSON.parse(run(root, ['workstream', 'new', '--title', 'Auth', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--request-id', 'cli-workstream-auth', '--owner', runId, '--generation', '1']));
   run(root, ['workstream', 'set', '--id', ws.id, '--status', 'in_progress', '--owner', runId, '--generation', '1']);
   assert.equal(readState(root, runId).data.workstreams[0].status, 'in_progress');
 });
@@ -842,15 +844,18 @@ test('workstream new + set via CLI with lease', () => {
 test('mutating command with wrong generation is fenced (exit 3)', () => {
   const { root, runId } = seed();
   let code = 0;
-  try { run(root, ['workstream', 'new', '--title', 'X', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--owner', runId, '--generation', '9']); }
+  try { run(root, ['workstream', 'new', '--title', 'X', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--request-id', 'cli-workstream-wrong-generation', '--owner', runId, '--generation', '9']); }
   catch (e) { code = e.status; }
   assert.equal(code, 3);
 });
 
-test('episode new creates request + episode via CLI', () => {
+test('episode new returns anchored inline request + episode via CLI', () => {
   const { root, runId } = seed();
-  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'impl', '--point', 'implementation', '--owner', runId, '--generation', '1']));
+  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'impl', '--point', 'implementation', '--task', 'Implement the CLI episode fixture.', '--request-id', 'cli-episode-create', '--owner', runId, '--generation', '1']));
   assert.match(ep.id, /^001-deep-work$/);
+  assert.match(ep.request_markdown, /Implement the CLI episode fixture\./);
+  assert.doesNotMatch(ep.request_markdown, /fill the maker\/checker task/);
+  assert.match(ep.request_markdown_digest, /^[0-9a-f]{64}$/);
   assert.equal(readState(root, runId).data.episodes.length, 1);
 });
 
@@ -858,16 +863,16 @@ test('episode new creates request + episode via CLI', () => {
 // Fix 2: workstream terminal --status ready now uses kernel-derived proof (abandoned doesn't need review_points).
 test('workstream terminal (abandoned) + review record reach kernel via CLI', () => {
   const { root, runId } = seed();
-  const ws = JSON.parse(run(root, ['workstream', 'new', '--title', 'A', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--owner', runId, '--generation', '1']));
+  const ws = JSON.parse(run(root, ['workstream', 'new', '--title', 'A', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--request-id', 'cli-workstream-terminal-a', '--owner', runId, '--generation', '1']));
   run(root, ['workstream', 'set', '--id', ws.id, '--status', 'in_progress', '--owner', runId, '--generation', '1']);
   run(root, ['workstream', 'terminal', '--id', ws.id, '--status', 'abandoned', '--proof', '{"reason":"superseded"}', '--owner', runId, '--generation', '1']);
   assert.equal(readState(root, runId).data.workstreams[0].status, 'abandoned');
   // review record: a done maker (so the checker binds — dispatchReview refuses unbound), then dispatch + record.
-  const ws2 = JSON.parse(run(root, ['workstream', 'new', '--title', 'B', '--branch', 'b2', '--worktree', '.claude/worktrees/w2', '--owner', runId, '--generation', '1']));
+  const ws2 = JSON.parse(run(root, ['workstream', 'new', '--title', 'B', '--branch', 'b2', '--worktree', '.claude/worktrees/w2', '--request-id', 'cli-workstream-terminal-b', '--owner', runId, '--generation', '1']));
   writeFileSync(join(root, 'plan-art.txt'), 'artifact');
-  const maker = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'plan', '--point', 'plan', '--workstream', ws2.id, '--artifacts', '["plan-art.txt"]', '--owner', runId, '--generation', '1']));
+  const maker = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'plan', '--point', 'plan', '--workstream', ws2.id, '--artifacts', '["plan-art.txt"]', '--task', 'Produce the CLI review maker plan.', '--request-id', 'cli-review-maker', '--owner', runId, '--generation', '1']));
   run(root, ['episode', 'record', '--id', maker.id, '--status', 'done', '--artifacts', '["plan-art.txt"]', '--owner', runId, '--generation', '1']);
-  const disp = JSON.parse(run(root, ['review', 'dispatch', '--point', 'plan', '--workstream', ws2.id, '--owner', runId, '--generation', '1']));
+  const disp = JSON.parse(run(root, ['review', 'dispatch', '--point', 'plan', '--workstream', ws2.id, '--request-id', 'cli-review-terminal-flow', '--owner', runId, '--generation', '1']));
   // #2+Fix4: a passing verdict via CLI must carry --report — a real file under the reviewed ws worktree (.claude/worktrees/w2).
   mkdirSync(join(root, '.claude/worktrees/w2'), { recursive: true });
   writeFileSync(join(root, '.claude/worktrees/w2/plan-review.md'), '# plan review');
@@ -898,7 +903,7 @@ test('review record missing episode or verdict remains usage exit 2', () => {
 // Fix 1: episode record --status approved/rejected exits nonzero (status 1 — invalid value, not a fence violation)
 test('episode record --status approved exits with code 1', () => {
   const { root, runId } = seed();
-  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'checker', '--kind', 'impl-review', '--point', 'implementation', '--owner', runId, '--generation', '1']));
+  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'checker', '--kind', 'impl-review', '--point', 'implementation', '--task', 'Review the CLI checker fixture.', '--request-id', 'cli-review-checker', '--owner', runId, '--generation', '1']));
   let code = 0;
   try { run(root, ['episode', 'record', '--id', ep.id, '--status', 'approved', '--proof', '{"verdict":"APPROVE"}', '--owner', runId, '--generation', '1']); }
   catch (e) { code = e.status; }
@@ -968,7 +973,7 @@ test('CLI respawn threads an explicit --timeout-ms into the shared headless host
 test('workstream new with valueless --generation flag exits with code 3', () => {
   const { root, runId } = seed();
   let code = 0;
-  try { run(root, ['workstream', 'new', '--title', 'X', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--owner', runId, '--generation']); }
+  try { run(root, ['workstream', 'new', '--title', 'X', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--request-id', 'cli-workstream-missing-generation-value', '--owner', runId, '--generation']); }
   catch (e) { code = e.status; }
   assert.equal(code, 3);
 });
@@ -1001,7 +1006,7 @@ test('lease acquire (missing --owner) exits with code 3', () => {
 test('workstream new missing --title exits with code 2', () => {
   const { root, runId } = seed();
   let code = 0;
-  try { run(root, ['workstream', 'new', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--owner', runId, '--generation', '1']); }
+  try { run(root, ['workstream', 'new', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--request-id', 'cli-workstream-missing-title', '--owner', runId, '--generation', '1']); }
   catch (e) { code = e.status; }
   assert.equal(code, 2);
 });
@@ -1014,7 +1019,7 @@ test('full suite still green count grows (smoke: validate ok)', () => {
 
 function setupRunWithPendingMaker() {
   const { root, runId } = seed();
-  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'impl', '--point', 'implementation', '--owner', runId, '--generation', '1']));
+  const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'impl', '--point', 'implementation', '--task', 'Implement the abandon fixture.', '--request-id', 'cli-abandon-maker', '--owner', runId, '--generation', '1']));
   return { root, runId, episodeId: ep.id };
 }
 

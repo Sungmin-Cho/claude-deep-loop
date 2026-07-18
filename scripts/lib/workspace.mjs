@@ -1,7 +1,7 @@
 import { existsSync, realpathSync, lstatSync } from 'node:fs';
 import { isAbsolute, join, resolve, relative, dirname, basename } from 'node:path';
-import { readState, writeState, withLock } from './state.mjs';
-import { appendAnchored, workstreamNewIntent } from './integrity.mjs';
+import { appendAnchored, directMutationOptions, intentField, readVerifiedState,
+  withVerifiedMutationLock, workstreamNewIntent } from './integrity.mjs';
 import { slugify } from './slug.mjs';
 import { leaseCheck } from './lease.mjs';
 import { MUTATION_TURN_FLOOR } from './budget.mjs';
@@ -10,164 +10,222 @@ import { normalizePortableRelativePath, pathWithin } from './fs-safe.mjs';
 const NON_TERMINAL = ['planned', 'in_progress', 'in_review', 'parked'];
 const TERMINAL = ['ready', 'merged', 'abandoned'];
 
-export function newWorkstream(root, runId, { title, branch, worktree, baseCommit = null,
-  dependsOn = [], fence } = {}) {
-  if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: newWorkstream');
-  if (typeof title !== 'string' || title.length === 0 ||
-      typeof branch !== 'string' || branch.length === 0 ||
-      typeof worktree !== 'string' || worktree.length === 0) {
+export function newWorkstream(root, runId, {
+  title, branch, worktree, baseCommit = null, dependsOn = [], requestId, fence,
+} = {}) {
+  if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) {
+    throw new Error('FENCE_REQUIRED: newWorkstream');
+  }
+  if (typeof title !== 'string' || title.length === 0
+      || typeof branch !== 'string' || branch.length === 0
+      || typeof worktree !== 'string' || worktree.length === 0) {
     throw new Error('WORKSTREAM_INPUT_INVALID: title/branch/worktree must be non-empty strings');
   }
-  if (!Array.isArray(dependsOn) || dependsOn.some(d => typeof d !== 'string' || d.length === 0)) {
+  if (!Array.isArray(dependsOn)
+      || dependsOn.some(dependency => typeof dependency !== 'string' || dependency.length === 0)) {
     throw new Error('WORKSTREAM_INPUT_INVALID: dependsOn must be an array of strings');
   }
-  // §0.6-2: containment — worktree must resolve strictly inside a convention dir:
-  //   <root>/.claude/worktrees/  OR  <root>/.worktrees/
-  // Root-self ('.', root) and arbitrary under-root paths are rejected; only convention dirs accepted.
-  // R5 P2-2: existing paths use realpathSync (blocks symlink escapes); non-existent paths walk up to
-  // the nearest existing ancestor for symlink resolution (handles /tmp→/private/tmp on macOS).
-  const _rootResolved = realpathSync(root);
-  function _resolveDeep(p) {
-    const abs = resolve(p);
-    if (existsSync(abs)) return realpathSync(abs);
-    // FIX M: existsSync follows symlinks and returns false for dangling symlinks.
-    // lstatSync does NOT follow symlinks — it detects the symlink itself even when dangling.
-    // A dangling symlink component must be rejected: once the target is created the path escapes.
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(requestId || '')) {
+    throw new Error('WORKSTREAM_REQUEST_ID_REQUIRED');
+  }
+  const rootResolved = realpathSync(root);
+  function resolveDeep(path) {
+    const absolute = resolve(path);
+    if (existsSync(absolute)) return realpathSync(absolute);
     try {
-      const st = lstatSync(abs);
-      if (st.isSymbolicLink()) throw new Error('WORKSTREAM_WORKTREE_ESCAPE: dangling symlink component: ' + abs);
-    } catch (e) {
-      if (e.message.startsWith('WORKSTREAM_WORKTREE_ESCAPE')) throw e;
-      if (e?.code !== 'ENOENT') {
-        throw new Error('WORKSTREAM_WORKTREE_ESCAPE: unresolved worktree component: ' + abs, { cause: e });
+      const stat = lstatSync(absolute);
+      if (stat.isSymbolicLink()) {
+        throw new Error(`WORKSTREAM_WORKTREE_ESCAPE: dangling symlink component: ${absolute}`);
       }
-      // ENOENT → truly absent leaf; continue walking up
+    } catch (error) {
+      if (String(error?.message || error).startsWith('WORKSTREAM_WORKTREE_ESCAPE')) throw error;
+      if (error?.code !== 'ENOENT') {
+        throw new Error(`WORKSTREAM_WORKTREE_ESCAPE: unresolved worktree component: ${absolute}`,
+          { cause: error });
+      }
     }
-    const par = dirname(abs);
-    if (par === abs) return abs; // filesystem root — can't walk further
-    return join(_resolveDeep(par), basename(abs));
+    const parent = dirname(absolute);
+    return parent === absolute ? absolute : join(resolveDeep(parent), basename(absolute));
   }
-  const _absoluteInput = isAbsolute(worktree);
-  const _portableInput = _absoluteInput ? null : normalizePortableRelativePath(worktree);
-  if (!_absoluteInput && !_portableInput) {
-    throw new Error('WORKSTREAM_WORKTREE_ESCAPE: invalid relative worktree path: ' + worktree);
+  const absoluteInput = isAbsolute(worktree);
+  const portableInput = absoluteInput ? null : normalizePortableRelativePath(worktree);
+  if (!absoluteInput && !portableInput) {
+    throw new Error(`WORKSTREAM_WORKTREE_ESCAPE: invalid relative worktree path: ${worktree}`);
   }
-  const _wtBase = _absoluteInput ? worktree : join(_rootResolved, _portableInput);
-  const _wtResolved = _resolveDeep(_wtBase);
-  // Convention prefixes are lexical (rooted at resolved root) — do NOT resolve the convention dirs
-  // themselves, so a symlinked .claude/worktrees pointing outside root is still rejected.
-  const _conv1 = join(_rootResolved, '.claude', 'worktrees');
-  const _conv2 = join(_rootResolved, '.worktrees');
-  const _underConvention = [_conv1, _conv2].some(base =>
-    pathWithin(base, _wtResolved) && relative(base, _wtResolved) !== '');
-  if (worktree.split(/[/\\]/).includes('..') || !_underConvention) {
-    throw new Error('WORKSTREAM_WORKTREE_ESCAPE: worktree must resolve under project root: ' + worktree);
+  const resolved = resolveDeep(absoluteInput ? worktree : join(rootResolved, portableInput));
+  const conventionRoots = [join(rootResolved, '.claude', 'worktrees'),
+    join(rootResolved, '.worktrees')];
+  const underConvention = conventionRoots.some(base =>
+    pathWithin(base, resolved) && relative(base, resolved) !== '');
+  if (worktree.split(/[/\\]/).includes('..') || !underConvention) {
+    throw new Error(`WORKSTREAM_WORKTREE_ESCAPE: worktree must resolve under project root: ${worktree}`);
   }
-  // FIX Q: normalize stored worktree to root-relative form regardless of whether caller passed an
-  // absolute or relative path — stored value must be root-relative so artifact prefixes derived from
-  // it stay root-relative and pass episode.mjs containment (absolute/.. paths are rejected there).
-  const _storedWorktree = normalizePortableRelativePath(relative(_rootResolved, _wtResolved));
-  if (!_storedWorktree) throw new Error('WORKSTREAM_WORKTREE_ESCAPE: worktree is not durably relative: ' + worktree);
+  const storedWorktree = normalizePortableRelativePath(relative(rootResolved, resolved));
+  if (!storedWorktree) {
+    throw new Error(`WORKSTREAM_WORKTREE_ESCAPE: worktree is not durably relative: ${worktree}`);
+  }
   const callerBinding = { owner: fence.owner, generation: fence.generation };
+  const requestProjection = { title, branch, worktree: storedWorktree,
+    baseCommit, dependsOn: structuredClone(dependsOn) };
+  const requestIdDigest = intentField('workstream-create-request-id', requestId);
+  const requestDigest = intentField('workstream-create-request', requestProjection);
   const intentDigest = workstreamNewIntent(callerBinding,
-    { title, branch, worktree: _storedWorktree, baseCommit, dependsOn });
-  let id;
-  appendAnchored(root, runId, { type: 'workstream-new', data: { title } }, (loop) => {
-    const n = String(loop.workstreams.length + 1).padStart(2, '0');
-    id = `ws-${n}-${slugify(title) || 'ws'}`;
-    loop.workstreams.push({
-      id, title, status: 'planned', branch, worktree: _storedWorktree, base_commit: baseCommit,
-      dirty_on_handoff: false, pr: { intended: true, state: 'none', url: null },
-      episodes: [], review_points_done: [], depends_on: dependsOn,
-    });
-  }, (loop) => { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); },
-  { floor: MUTATION_TURN_FLOOR, callerBinding, intentDigest,
-    fenceError: 'LEASE_FENCED: newWorkstream',
-    onRecovered: loop => {
-      const recovered = loop.workstreams.at(-1);
-      if (!recovered || recovered.title !== title || recovered.branch !== branch
-          || recovered.worktree !== _storedWorktree || recovered.base_commit !== baseCommit
-          || JSON.stringify(recovered.depends_on) !== JSON.stringify(dependsOn)) {
-        throw new Error('WORKSTREAM_RESPONSE_PROJECTION_CHANGED');
+    { ...requestProjection, requestIdDigest, requestDigest });
+  const fenceCheck = loop => {
+    const result = leaseCheck(loop, fence);
+    if (!result.ok) throw new Error(`LEASE_FENCED: ${result.reason}`);
+  };
+  return withVerifiedMutationLock(root, runId, { callerBinding, intentDigest,
+    fenceError: 'LEASE_FENCED: newWorkstream' }, mutation => {
+    const loop = mutation.readVerifiedState({ fenceCheck }).data;
+    const matches = loop.workstreams.filter(workstreamRecord =>
+      workstreamRecord.creation_request_id_digest === requestIdDigest);
+    if (matches.length > 1) throw new Error('WORKSTREAM_RESPONSE_PROJECTION_CHANGED');
+    if (matches.length === 1) {
+      const [existing] = matches;
+      if (existing.creation_contract !== 'workstream-create-v1'
+          || existing.creation_request_digest !== requestDigest
+          || existing.title !== title || existing.branch !== branch
+          || existing.worktree !== storedWorktree || existing.base_commit !== baseCommit
+          || JSON.stringify(existing.depends_on) !== JSON.stringify(dependsOn)) {
+        throw new Error('WORKSTREAM_REQUEST_CONFLICT');
       }
-      id = recovered.id;
-    } });
-  return { id };
+      return { id: existing.id };
+    }
+    if (mutation.recovered !== null) {
+      throw new Error('WORKSTREAM_RESPONSE_PROJECTION_CHANGED');
+    }
+    const number = String(loop.workstreams.length + 1).padStart(2, '0');
+    const id = `ws-${number}-${slugify(title) || 'ws'}`;
+    const event = { type: 'workstream-new', data: { id, title,
+      creation_contract: 'workstream-create-v1',
+      creation_request_id_digest: requestIdDigest,
+      creation_request_digest: requestDigest,
+      request_projection: requestProjection } };
+    mutation.appendAnchored(event, candidate => {
+      candidate.workstreams.push({
+        id, title, status: 'planned', branch, worktree: storedWorktree,
+        base_commit: baseCommit, dirty_on_handoff: false,
+        pr: { intended: true, state: 'none', url: null }, episodes: [],
+        review_points_done: [], depends_on: structuredClone(dependsOn),
+        creation_contract: 'workstream-create-v1',
+        creation_request_id_digest: requestIdDigest,
+        creation_request_digest: requestDigest,
+      });
+    }, undefined, { floor: MUTATION_TURN_FLOOR });
+    return { id };
+  });
 }
 
-export function setWorkstreamStatus(root, runId, wsId, status, opts = {}) {
+export function setWorkstreamStatus(root, runId, wsId, status,
+  { fence } = {}) {
   if (TERMINAL.includes(status)) throw new Error(`WORKSTREAM_TERMINAL_NO_PROOF: ${status} is kernel-derived (use recordWorkstreamTerminal)`);
   if (!NON_TERMINAL.includes(status)) throw new Error(`WORKSTREAM_STATUS_INVALID: ${status}`);
-  const { fence } = opts;
   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: setWorkstreamStatus');
-  // #3 (R1 Fix 2): route through appendAnchored so this status flip (which drives active_workstreams — a finish
-  // proof input — and non-terminal status — a next-action routing input) is BOTH tamper-evident (was a silent
-  // withLock+writeState) AND floor-charged. All throwing guards move to preCheck (fresh loop, before the append)
-  // so a rejected transition never stales the anchor; the mutate is pure.
   appendAnchored(root, runId, { type: 'workstream-status', data: { id: wsId, status } },
-    (loop) => {
-      if (status === 'in_progress' && !loop.active_workstreams.includes(wsId)) loop.active_workstreams.push(wsId);
-      if (status === 'parked') loop.active_workstreams = loop.active_workstreams.filter(x => x !== wsId);
-      loop.workstreams.find(w => w.id === wsId).status = status;
+    loop => {
+      if (status === 'in_progress' && !loop.active_workstreams.includes(wsId)) {
+        loop.active_workstreams.push(wsId);
+      }
+      if (status === 'parked') {
+        loop.active_workstreams = loop.active_workstreams.filter(id => id !== wsId);
+      }
+      loop.workstreams.find(workstream => workstream.id === wsId).status = status;
     },
-    (loop) => {
-      if (fence) { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
-      const ws = loop.workstreams.find(w => w.id === wsId);
-      if (!ws) throw new Error(`WORKSTREAM_NOT_FOUND: ${wsId}`);
-      if (['ready', 'merged', 'abandoned'].includes(ws.status)) throw new Error(`WORKSTREAM_TERMINAL_LOCKED: ${wsId} is ${ws.status}`);
+    loop => {
+      const authorized = leaseCheck(loop, fence);
+      if (!authorized.ok) throw new Error('LEASE_FENCED: ' + authorized.reason);
+      const workstream = loop.workstreams.find(item => item.id === wsId);
+      if (!workstream) throw new Error(`WORKSTREAM_NOT_FOUND: ${wsId}`);
+      if (TERMINAL.includes(workstream.status)) {
+        throw new Error(`WORKSTREAM_TERMINAL_LOCKED: ${wsId} is ${workstream.status}`);
+      }
       if (status === 'in_progress' && !loop.active_workstreams.includes(wsId)) {
         const cap = loop.autonomy?.max_parallel ?? 2;
-        if (loop.active_workstreams.length >= cap) throw new Error(`MAX_PARALLEL_EXCEEDED: ${loop.active_workstreams.length}/${cap}`);
+        if (loop.active_workstreams.length >= cap) {
+          throw new Error(`MAX_PARALLEL_EXCEEDED: ${loop.active_workstreams.length}/${cap}`);
+        }
       }
     },
-    { floor: MUTATION_TURN_FLOOR });
+    directMutationOptions('workstream-status', fence, { wsId, status },
+      'LEASE_FENCED: setWorkstreamStatus', {
+        floor: MUTATION_TURN_FLOOR, onRecovered: loop => {
+          if (loop.workstreams.find(item => item.id === wsId)?.status !== status) {
+            throw new Error('WORKSTREAM_RESPONSE_PROJECTION_CHANGED');
+          }
+        },
+      }));
 }
 
-export function recordWorkstreamTerminal(root, runId, wsId, { status, proof = {}, fence } = {}) {
-  if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: recordWorkstreamTerminal');
-  // Cheap input validation (no atomicity required)
-  if (!TERMINAL.includes(status)) throw new Error(`WORKSTREAM_STATUS_INVALID: ${status} is not terminal`);
-  if (!proof || typeof proof !== 'object' || Array.isArray(proof)) throw new Error(`WORKSTREAM_TERMINAL_NO_PROOF: ${wsId} requires proof object`);
-  appendAnchored(root, runId, { type: 'workstream-terminal', data: { id: wsId, status, proof } }, (loop) => {
-    const w = loop.workstreams.find(x => x.id === wsId);
-    if (!w) throw new Error(`WORKSTREAM_NOT_FOUND: ${wsId}`);
-    w.status = status;
-    loop.active_workstreams = loop.active_workstreams.filter(x => x !== wsId);
-  }, (loop) => {
-    // Codex r3 🔴: all throwing validations inside preCheck on fresh loop (atomic terminal guard)
-    if (fence) { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
-    const ws = loop.workstreams.find(w => w.id === wsId);
-    if (!ws) throw new Error(`WORKSTREAM_NOT_FOUND: ${wsId}`);
-    // Codex r2 🔴: 터미널→터미널 전환 차단 — merged/abandoned 는 흡수 상태; 유일한 허용 전환은 ready→merged.
-    if (TERMINAL.includes(ws.status)) {
-      if (!(ws.status === 'ready' && status === 'merged')) {
-        throw new Error('WORKSTREAM_TERMINAL_LOCKED: ' + wsId + ' ' + ws.status + '->' + status + ' not allowed');
+export function recordWorkstreamTerminal(root, runId, wsId, {
+  status, proof = {}, fence } = {}) {
+  if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) {
+    throw new Error('FENCE_REQUIRED: recordWorkstreamTerminal');
+  }
+  if (!TERMINAL.includes(status)) {
+    throw new Error(`WORKSTREAM_STATUS_INVALID: ${status} is not terminal`);
+  }
+  if (!proof || typeof proof !== 'object' || Array.isArray(proof)) {
+    throw new Error(`WORKSTREAM_TERMINAL_NO_PROOF: ${wsId} requires proof object`);
+  }
+  const proofDigest = intentField('workstream-terminal-proof', proof);
+  appendAnchored(root, runId,
+    { type: 'workstream-terminal', data: { id: wsId, status, proof } }, loop => {
+      const workstream = loop.workstreams.find(item => item.id === wsId);
+      if (!workstream) throw new Error(`WORKSTREAM_NOT_FOUND: ${wsId}`);
+      workstream.status = status;
+      loop.active_workstreams = loop.active_workstreams.filter(id => id !== wsId);
+    }, loop => {
+      const authorized = leaseCheck(loop, fence);
+      if (!authorized.ok) throw new Error('LEASE_FENCED: ' + authorized.reason);
+      const workstream = loop.workstreams.find(item => item.id === wsId);
+      if (!workstream) throw new Error(`WORKSTREAM_NOT_FOUND: ${wsId}`);
+      if (TERMINAL.includes(workstream.status)
+          && !(workstream.status === 'ready' && status === 'merged')) {
+        throw new Error('WORKSTREAM_TERMINAL_LOCKED: ' + wsId + ' '
+          + workstream.status + '->' + status + ' not allowed');
       }
-    }
-    const reviewPoints = (loop.review?.points || []);
-    const ok =
-      status === 'ready'     ? (reviewPoints.length > 0 && reviewPoints.every(p => (ws.review_points_done || []).includes(p))) :
-      status === 'merged'    ? (typeof proof.merge_commit === 'string' && proof.human_approved === true) :
-      status === 'abandoned' ? (typeof proof.reason === 'string' && proof.reason.length > 0) : false;
-    if (!ok) throw new Error(`WORKSTREAM_TERMINAL_NO_PROOF: ${wsId} -> ${status} proof insufficient`);
-  }, { floor: MUTATION_TURN_FLOOR });
+      const reviewPoints = loop.review?.points || [];
+      const sufficient = status === 'ready'
+        ? reviewPoints.length > 0
+          && reviewPoints.every(point =>
+            (workstream.review_points_done || []).includes(point))
+        : status === 'merged'
+          ? typeof proof.merge_commit === 'string' && proof.human_approved === true
+          : status === 'abandoned'
+            ? typeof proof.reason === 'string' && proof.reason.length > 0 : false;
+      if (!sufficient) {
+        throw new Error(`WORKSTREAM_TERMINAL_NO_PROOF: ${wsId} -> ${status} proof insufficient`);
+      }
+    }, directMutationOptions('workstream-terminal', fence,
+      { wsId, status, proofDigest }, 'LEASE_FENCED: recordWorkstreamTerminal', {
+        floor: MUTATION_TURN_FLOOR, onRecovered: loop => {
+          if (loop.workstreams.find(item => item.id === wsId)?.status !== status) {
+            throw new Error('WORKSTREAM_RESPONSE_PROJECTION_CHANGED');
+          }
+        },
+      }));
 }
 
-// respawn 인수: active worktree 경로가 디스크에 존재하는지만 확인. 누락은 조용히 재생성 ❌ → fail-safe.
-export function inheritWorkstreams(root, runId) {
-  const { data } = readState(root, runId);
-  const inherited = [], missing = [];
+export function inheritWorkstreams(root, runId, { existsFn = existsSync } = {}) {
+  if (typeof existsFn !== 'function') throw new Error('WORKSPACE_EXISTS_FN_INVALID');
+  const data = readVerifiedState(root, runId).data;
+  const inherited = [];
+  const missing = [];
   for (const id of data.active_workstreams) {
-    const ws = data.workstreams.find(w => w.id === id);
-    if (!ws) { missing.push({ id, reason: 'workstream-record-missing' }); continue; }
-    const path = isAbsolute(ws.worktree) ? ws.worktree : join(root, ws.worktree);
-    if (existsSync(path)) inherited.push(id);
-    else missing.push({ id, worktree: ws.worktree, reason: 'worktree-path-missing' });
+    const workstream = data.workstreams.find(item => item.id === id);
+    if (!workstream) {
+      missing.push({ id, reason: 'workstream-record-missing' });
+      continue;
+    }
+    const path = isAbsolute(workstream.worktree)
+      ? workstream.worktree : join(root, workstream.worktree);
+    if (existsFn(path)) inherited.push(id);
+    else missing.push({ id, worktree: workstream.worktree,
+      reason: 'worktree-path-missing' });
   }
   return { inherited, missing };
 }
-
-// 머지 순서 = depends_on 위상정렬 (spec §8.1). 순환 + 미지 의존 탐지.
 export function integrationOrder(loop) {
   const ws = loop.workstreams || [];
   const ids = new Set(ws.map(w => w.id));

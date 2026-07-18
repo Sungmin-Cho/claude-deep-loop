@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { newEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
+import { newEpisode, abandonEpisode } from './helpers/episode-request.mjs';
 import { ack, computeDebt } from '../scripts/lib/comprehension.mjs';
 import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { verifyLog } from '../scripts/lib/integrity.mjs';
@@ -253,7 +253,7 @@ test('recordReviewed: terminal run throws RUN_TERMINAL, counters unchanged', () 
 
 import { test as testComprehension7e } from 'node:test';
 import assertComprehension7e from 'node:assert/strict';
-import { newEpisode as newEpisode7e } from '../scripts/lib/episode.mjs';
+import { newEpisode as newEpisode7e } from './helpers/episode-request.mjs';
 import { ack as ack7e, recordReviewed as recordReviewed7e }
   from '../scripts/lib/comprehension.mjs';
 import { durableRunBytes as comprehensionBytes7e,

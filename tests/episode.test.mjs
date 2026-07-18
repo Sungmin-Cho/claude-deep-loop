@@ -1,12 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
+import { readState, writeState } from '../scripts/lib/state.mjs';
 import { reconcileBudget } from '../scripts/lib/budget.mjs';
-import { newEpisode, recordEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
+import { newEpisode, recordEpisode, abandonEpisode } from './helpers/episode-request.mjs';
 import { appendAnchored } from '../scripts/lib/integrity.mjs';
 
 function seed() {
@@ -18,16 +18,19 @@ function seed() {
 function fence(runId) { return { owner: runId, generation: 1, intent: 'business' }; }
 function freshRun() { const { root, runId } = seed(); return { root, runId, fence: fence(runId) }; }
 
-test('newEpisode scaffolds request.md, bumps episodes_total, sets current', () => {
+test('newEpisode anchors inline request Markdown, bumps episodes_total, sets current', () => {
   const { root, runId } = seed();
-  const { id, requestPath } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', fence: fence(runId) });
+  const { id, requestMarkdown, requestMarkdownDigest } = newEpisode(root, runId,
+    { plugin: 'deep-work', role: 'maker', kind: 'implementation',
+      point: 'implementation', fence: fence(runId) });
   assert.match(id, /^001-deep-work$/);
-  assert.ok(existsSync(requestPath));
   const { data } = readState(root, runId);
   assert.equal(data.comprehension.episodes_total, 1);
   assert.equal(data.current_episode, id);
   assert.equal(data.episodes[0].status, 'pending');
   assert.equal(data.episodes[0].verification.checker_episode_required, true);
+  assert.equal(data.episodes[0].request_markdown, requestMarkdown);
+  assert.equal(data.episodes[0].request_markdown_digest, requestMarkdownDigest);
 });
 
 test('recordEpisode non-terminal status + result_* allowed', () => {
@@ -49,17 +52,18 @@ test('recordEpisode done requires expected artifacts to exist', () => {
   assert.equal(readState(root, runId).data.episodes[0].status, 'done');
 });
 
-// Fix 3: path-traversal plugin name produces safe id and file is inside episodes dir
-test('newEpisode with path-traversal plugin name produces safe id and contained path', () => {
+// A path-traversal plugin name produces only a safe logical ID and inline request.
+test('newEpisode with path-traversal plugin name produces safe id and no pathname', () => {
   const { root, runId } = seed();
-  const { id, requestPath } = newEpisode(root, runId, { plugin: '../../../../etc/evil', role: 'maker', kind: 'x', point: 'implementation', fence: fence(runId) });
+  const { id, requestMarkdown } = newEpisode(root, runId, { plugin: '../../../../etc/evil',
+    role: 'maker', kind: 'x', point: 'implementation', fence: fence(runId) });
   // id must not contain path separators
   assert.match(id, /^001-[a-z0-9-]+$/);
   assert.ok(!/[/\\]/.test(id), 'id must not contain path separators');
-  // request file must exist and be under runDir/episodes
-  assert.ok(existsSync(requestPath));
-  const base = resolve(runDir(root, runId), 'episodes');
-  assert.ok(requestPath.startsWith(base), `requestPath ${requestPath} must start with ${base}`);
+  assert.match(requestMarkdown, /Execute test episode/);
+  const episode = readState(root, runId).data.episodes[0];
+  assert.equal(episode.request_path, undefined);
+  assert.equal(episode.request_markdown, requestMarkdown);
 });
 
 // Codex r2 🟡: newEpisode 에 절대 경로나 '..' 세그먼트가 있는 expectedArtifacts 는 거부.
@@ -230,3 +234,34 @@ test('recordEpisode: cannot resurrect an approved/rejected episode to non-termin
     assert.throws(() => recordEpisode(root, runId, id, { status: 'in_progress', fence }), /EPISODE_ALREADY_TERMINAL/);
   }
 });
+
+import { mkdtempSync as tempAlias7f, readdirSync as readDirAlias7f,
+  realpathSync as realAlias7f, symlinkSync as symlinkAlias7f } from 'node:fs';
+import { tmpdir as tmpAlias7f } from 'node:os';
+import { join as joinAlias7f } from 'node:path';
+import { initRun as initAlias7f } from '../scripts/lib/initrun.mjs';
+import { readVerifiedState as readAlias7f } from '../scripts/lib/integrity.mjs';
+import { newEpisode as newAlias7f } from './helpers/episode-request.mjs';
+
+test('episode inline request is identical through a symlink-root transaction',
+  { skip: process.platform === 'win32' }, () => {
+    const parent = realAlias7f(tempAlias7f(joinAlias7f(tmpAlias7f(), 'dl-episode-alias-')));
+    const canonical = joinAlias7f(parent, 'canonical');
+    const alias = joinAlias7f(parent, 'alias');
+    mkdirSync(canonical, { recursive: true });
+    symlinkAlias7f(canonical, alias, 'dir');
+    const { runId } = initAlias7f(canonical, { runtime: 'codex', goal: 'canonical episode',
+      cwdFn: () => canonical, now: new Date('2026-07-13T00:00:00.000Z') });
+    const result = newAlias7f(alias, runId, { plugin: 'deep-work', role: 'maker',
+      kind: 'implementation', point: 'implementation', requestId: 'canonical-alias-1',
+      fence: { owner: runId, generation: 1, runtime: 'codex' } });
+    const data = readAlias7f(canonical, runId).data;
+    const episode = data.episodes[0];
+    assert.equal(data.current_episode, result.id);
+    assert.equal(data.comprehension.episodes_total, 1);
+    assert.equal(episode.request_path, undefined);
+    assert.equal(episode.request_markdown, result.requestMarkdown);
+    assert.equal(episode.request_markdown_digest, result.requestMarkdownDigest);
+    assert.equal(readDirAlias7f(joinAlias7f(canonical, '.deep-loop', 'runs', runId))
+      .some(name => name.startsWith('episode-request-')), false);
+  });

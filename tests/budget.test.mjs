@@ -21,8 +21,8 @@ import {
 import { appendAnchored, readLines, verifyLog, verifyHead } from '../scripts/lib/integrity.mjs';
 import { writeState, readState, runDir, patch } from '../scripts/lib/state.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { newEpisode } from '../scripts/lib/episode.mjs';
-import { newWorkstream, setWorkstreamStatus } from '../scripts/lib/workspace.mjs';
+import { newEpisode } from './helpers/episode-request.mjs';
+import { newWorkstream, setWorkstreamStatus } from './helpers/workstream-request.mjs';
 import { nextAction } from '../scripts/lib/next-action.mjs';
 import { releaseLease, acquireLease } from '../scripts/lib/lease.mjs';
 import { finishRun } from '../scripts/lib/finish.mjs';

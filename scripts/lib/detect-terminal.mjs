@@ -2,8 +2,8 @@ import { spawnSync } from 'node:child_process';
 import { isAbsolute } from 'node:path';
 import { existsSync } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
-import { appendAnchored } from './integrity.mjs';
-import { readState } from './state.mjs';
+import { withVerifiedMutationLock } from './integrity.mjs';
+import { contentHash } from './envelope.mjs';
 import { reconcileBudget } from './budget.mjs';
 import { revalidateTrustedLauncherExecutable } from './runtime-executable.mjs';
 
@@ -282,63 +282,73 @@ export function detectTerminal({
  * Returns the descriptor so the CLI can print it.
  */
 export function detectAndPersist(root, runId, {
-  owner, generation,
-  env = process.env,
-  platform = process.platform,
-  run = defaultProbeRun,
-  now,
-  pid = (typeof process !== 'undefined' ? process.pid : 0),
-  arch = process.arch,
+  owner, generation, env = process.env, platform = process.platform,
+  run = defaultProbeRun, now,
+  pid = (typeof process !== 'undefined' ? process.pid : 0), arch = process.arch,
   windowsLauncherIdentities = {},
   revalidateLauncher = revalidateTrustedLauncherExecutable,
   launcherRevalidationOptions = {},
 } = {}) {
-  reconcileBudget(root, runId);
-  const { data: loop } = readState(root, runId);
-  const persistedLauncher = loop.session_spawn?.launcher;
-  const persistedIdentity = loop.session_spawn?.launcher_identity;
-  // Authority order: durable human approval > legacy persisted session identity > explicit test fallback.
-  // Production callers do not inject windowsLauncherIdentities; keeping it last preserves focused tests without
-  // turning PATH/fixed candidates into authority. Legacy states may omit the new approval map entirely.
-  const durableApprovals = loop.autonomy?.launcher_executable_approvals;
+  const identityFence = loop => {
+    const lease = loop.session_chain?.lease;
+    if (lease?.owner_run_id !== owner || lease?.generation !== generation) {
+      throw new Error('LEASE_FENCED: detect-terminal');
+    }
+  };
+  const callerBinding = { owner, generation };
+  const intentDigest = contentHash(JSON.stringify({ operation: 'detect-terminal',
+    ...callerBinding, platform, arch, env, now: now ?? null }));
+  const phase = body => withVerifiedMutationLock(root, runId,
+    { callerBinding, intentDigest, fenceError: 'LEASE_FENCED: detect-terminal' }, body);
+  const entry = phase(mutation => {
+    const authority = mutation.readVerifiedState({ fenceCheck: identityFence }).data;
+    reconcileBudget(root, runId, { mutation });
+    return { authority, recovered: mutation.recovered };
+  });
+  const authority = entry.authority;
+  if (authority.status === 'completed' || authority.status === 'stopped') {
+    throw new Error('RUN_TERMINAL: detect-terminal');
+  }
+  if (entry.recovered) return structuredClone(authority.session_spawn);
+  const persistedLauncher = authority.session_spawn?.launcher;
+  const persistedIdentity = authority.session_spawn?.launcher_identity;
+  const durableApprovals = authority.autonomy?.launcher_executable_approvals;
   const hasDurableApprovalMap = durableApprovals !== undefined;
-  const effectiveWindowsIdentities = hasDurableApprovalMap ? {} : { ...windowsLauncherIdentities };
+  const effectiveWindowsIdentities = hasDurableApprovalMap
+    ? {} : { ...windowsLauncherIdentities };
   if (!hasDurableApprovalMap && persistedIdentity != null
-    && (persistedLauncher === 'wt' || persistedLauncher === 'powershell')) {
+      && (persistedLauncher === 'wt' || persistedLauncher === 'powershell')) {
     effectiveWindowsIdentities[persistedLauncher] = persistedIdentity;
   }
-  if (hasDurableApprovalMap && durableApprovals && typeof durableApprovals === 'object' && !Array.isArray(durableApprovals)) {
+  if (hasDurableApprovalMap && durableApprovals
+      && typeof durableApprovals === 'object' && !Array.isArray(durableApprovals)) {
     for (const kind of ['wt', 'powershell']) {
-      if (durableApprovals[kind] != null) effectiveWindowsIdentities[kind] = durableApprovals[kind];
+      if (durableApprovals[kind] != null) {
+        effectiveWindowsIdentities[kind] = durableApprovals[kind];
+      }
     }
   }
-  const d = detectTerminal({
-    env, platform, run, now, pid, arch, windowsLauncherIdentities: effectiveWindowsIdentities,
-    revalidateLauncher, launcherRevalidationOptions,
-  });
-  appendAnchored(
-    root, runId,
-    { type: 'terminal-detected', data: { launcher: d.launcher } },
-    (l) => { l.session_spawn = d; },
-    (l) => {
-      const lease = l.session_chain.lease;
-      // Direct owner/generation check only — must NOT reject on lease.state==='releasing'.
+  const descriptor = detectTerminal({ env, platform, run, now, pid, arch,
+    windowsLauncherIdentities: effectiveWindowsIdentities,
+    revalidateLauncher, launcherRevalidationOptions });
+  phase(mutation => mutation.appendAnchored(
+    { type: 'terminal-detected', data: { launcher: descriptor.launcher } },
+    loop => { loop.session_spawn = descriptor; }, loop => {
+      const lease = loop.session_chain.lease;
       if (lease.owner_run_id !== owner || lease.generation !== generation) {
         throw new Error('LEASE_FENCED: detect-terminal');
       }
-      // v1.6 (spec §2.3-4, r1 🟡2): terminal run에 terminal-detected write 금지. lease.state는 계속
-      // 안 보므로 releasing-safe(R11-HH) 불변. CLI 외곽 requireLease는 TOCTOU 창이 있고 lib 직접
-      // 호출은 외곽을 안 거친다 — 이 in-lock이 권위.
-      if (l.status === 'completed' || l.status === 'stopped') {
+      if (loop.status === 'completed' || loop.status === 'stopped') {
         throw new Error('RUN_TERMINAL: detect-terminal');
       }
-      if (platform === 'win32' && (d.launcher === 'wt' || d.launcher === 'powershell')) {
-        const authority = launcherAuthority(l, d.launcher);
-        if (authority == null || !isDeepStrictEqual(d.launcher_identity, authority)) {
+      if (platform === 'win32'
+          && (descriptor.launcher === 'wt' || descriptor.launcher === 'powershell')) {
+        const currentAuthority = launcherAuthority(loop, descriptor.launcher);
+        if (currentAuthority == null
+            || !isDeepStrictEqual(descriptor.launcher_identity, currentAuthority)) {
           throw new Error('LAUNCHER_EXECUTABLE_DRIFT: detect-terminal authority changed');
         }
       }
-    }
-  );
-  return d;
+    }, { fenceCheck: identityFence }));
+  return descriptor;
 }

@@ -11,7 +11,7 @@ import { readLines, appendAnchored, appendEvent, lastLogHead } from '../scripts/
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { recordCost } from '../scripts/lib/budget.mjs';
-import { newEpisode } from '../scripts/lib/episode.mjs';
+import { newEpisode } from './helpers/episode-request.mjs';
 import {
   rawHashValidHistory as rawHistory7b,
   seedCorrelatedTerminal as terminal7b,
@@ -644,7 +644,7 @@ test('v1.5 (b): finish 이벤트 부재(status만 terminal) → skip', () => {
 });
 
 // ── v1.5.0 (b′): post_finish_mutated 라벨 — 집계 유지 + 노출 (spec §3, r5 리뷰 라벨 방식) ───
-test('v1.5 (b′): finish 후 이벤트 낀 terminal run → post_finish_mutated 라벨 + per_run 유지', () => {
+test('v1.5 (b′): finish 후 이벤트 낀 terminal run은 integrity failure', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-pfm-'));
   const { runId: self } = initRun(root, { runtime: 'claude', goal: 'self', now: FIXED });
   const { runId: tainted } = initRun(root, { runtime: 'claude', goal: 'tainted', now: FIXED });
@@ -653,8 +653,9 @@ test('v1.5 (b′): finish 후 이벤트 낀 terminal run → post_finish_mutated
   businessEventFixture(root, tainted);                          // post-finish mutation (커널이 현재 막지 않음 — r2 판정)
   finishFixture(root, clean);
   const out = computeInsights(root, { selfRunId: self, now: FIXED.getTime(), sleepFn: NOSLEEP });
-  assert.deepEqual(out.post_finish_mutated, [tainted]);
-  assert.ok(out.per_run[tainted]);                              // 라벨이지 제외가 아니다 — 집계 유지
+  assert.deepEqual(out.post_finish_mutated, []);
+  assert.deepEqual(out.integrity_failed_runs, [tainted]);
+  assert.equal(out.per_run[tainted], undefined);
   assert.ok(out.per_run[clean]);
   assert.equal(out.insights_schema_version, 1);
 });
@@ -670,14 +671,15 @@ test('v1.5 (b′): emitInsights 반환 JSON에 라벨 2배열 포함 — finish 
   assert.deepEqual(r.post_finish_mutated, []);
 });
 
-test('v1.5 (b′): finish 이벤트 없는 terminal 로그(레거시)는 판정 불가 → 라벨 없음', () => {
+test('v1.5 (b′): finish 이벤트 없는 terminal 로그는 integrity failure', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-pfm2-'));
   const { runId: self } = initRun(root, { runtime: 'claude', goal: 'self', now: FIXED });
   const { runId: legacy } = initRun(root, { runtime: 'claude', goal: 'legacy', now: FIXED });
   corruptTerminalWithoutFinish(root, legacy);                    // finish 이벤트 없이 status만 terminal
   const out = computeInsights(root, { selfRunId: self, now: FIXED.getTime(), sleepFn: NOSLEEP });
   assert.deepEqual(out.post_finish_mutated, []);
-  assert.ok(out.per_run[legacy]);
+  assert.deepEqual(out.integrity_failed_runs, [legacy]);
+  assert.equal(out.per_run[legacy], undefined);
 });
 
 // CLI tests
@@ -770,12 +772,12 @@ test('fix_cycles: approve-only 리뷰 쌍도 0으로 분모에 포함된다', ()
 
 // ── impl-R3 🟡D: 마이닝 대상은 과거/타 버전 커널이 쓴 run — 이벤트 shape drift로 metrics 산출이
 // 불능이어도 run 하나가 insights 전체를 크래시하면 안 된다 (per-run fail-soft → unreadable) ───
-test('computeInsights: metrics 산출 불능 run은 unreadable로 fail-soft한다', () => {
+test('computeInsights: semantically invalid metrics history is an integrity failure', () => {
   const { root, runId } = emitFixture();
   rawHistory7b(root, runId,
     [{ type: 'review-outcome', now: FIXED.getTime() + 10_000 }]);
   const out = computeInsights(root, { selfRunId: runId, now: FIXED.getTime(), sleepFn: NOSLEEP });
-  assert.ok(out.unreadable.includes(runId));
+  assert.ok(out.integrity_failed_runs.includes(runId));
   assert.equal(out.per_run[runId], undefined);
 });
 
@@ -837,7 +839,7 @@ test('computeRunMetrics/deriveCandidates: __proto__ point·kind가 프로토타�
 });
 
 // ── v1.6 Minor (b)2: double-finish 명시 회귀 — raw 픽스처 (plan Task 11) ─────
-test('post_finish_mutated: legacy double-finish log is labeled (raw fixture — guard-era APIs cannot create this)', () => {
+test('legacy double-finish log is an integrity failure', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-dfin-'));
   const { runId: self } = initRun(root, { runtime: 'claude', goal: 'self', now: FIXED });
   const { runId: doubled } = initRun(root, { runtime: 'claude', goal: 'doubled', now: FIXED });
@@ -847,7 +849,70 @@ test('post_finish_mutated: legacy double-finish log is labeled (raw fixture — 
   rawHistory7b(root, doubled, [{ type: 'finish', now: FIXED.getTime() + 20_000,
     data: { status: 'completed', reportRel: null } }]);
   const out = computeInsights(root, { selfRunId: self, now: FIXED.getTime(), sleepFn: NOSLEEP });
-  assert.ok(!(out.integrity_failed_runs || []).includes(doubled));   // 앵커 유효 — 라벨 경로로 분류 (plan r2)
-  assert.ok(out.post_finish_mutated.includes(doubled));              // 둘째 finish도 non-exempt → 라벨
-  assert.ok(out.per_run[doubled]);                                   // 라벨이지 제외가 아니다 (집계 유지)
+  assert.ok(out.integrity_failed_runs.includes(doubled));
+  assert.equal(out.post_finish_mutated.includes(doubled), false);
+  assert.equal(out.per_run[doubled], undefined);
+});
+
+import { test as test7f } from 'node:test';
+import assert7f from 'node:assert/strict';
+import { existsSync as exists7f } from 'node:fs';
+import { join as join7f } from 'node:path';
+import { initRun as init7f } from '../scripts/lib/initrun.mjs';
+import { computeInsights as compute7f, emitInsights as emit7f,
+  latestInsights as latest7f } from '../scripts/lib/insights.mjs';
+import { durableRunBytes as bytes7f, rawHashValidState as raw7f,
+  seedCorrelatedTerminal as terminal7f, verifiedAppRun as fixture7f }
+  from './fixtures/verified-app-run.mjs';
+
+const NOW7F = Date.parse('2026-07-13T00:00:10.000Z');
+const corruptAuthority7f = fixture => raw7f(fixture.root, fixture.runId, loop => {
+  loop.session_chain.sessions[0].host_surface.observed_at =
+    '2026-07-13T00:00:01.000Z';
+});
+
+function finishInsights7f(fixture) {
+  terminal7f(fixture.root, fixture.runId,
+    { status: 'completed', floor: 1, now: NOW7F + 1 });
+}
+
+test7f('insights proves runs before active classification and emit side effects', () => {
+  const corrupt = fixture7f('dl-insights-authority-');
+  const { runId: selfRunId } = init7f(corrupt.root, {
+    runtime: 'claude', goal: 'self', now: new Date('2026-07-13T00:00:02.000Z'),
+  });
+  corruptAuthority7f(corrupt);
+  const before = bytes7f(corrupt.root, corrupt.runId);
+  const computed = compute7f(corrupt.root, {
+    selfRunId, now: NOW7F, retryDelayMs: 0, sleepFn: () => {},
+  });
+  assert7f.deepEqual(computed.integrity_failed_runs, [corrupt.runId]);
+  assert7f.equal(computed.excluded_active.includes(corrupt.runId), false);
+  assert7f.equal(computed.suspicious_active.includes(corrupt.runId), false);
+
+  let randomCalls = 0;
+  for (const [owner, expected] of [
+    ['01JAPPWR0NG000000000000000', /LEASE_FENCED/],
+    [corrupt.owner, /RUN_SNAPSHOT_INVALID/],
+  ]) {
+    assert7f.throws(() => emit7f(corrupt.root, corrupt.runId, {
+      fence: { owner, generation: corrupt.generation, intent: 'business' },
+      now: NOW7F, rnd: () => { randomCalls += 1; return 0.5; }, sleepFn: () => {},
+    }), expected);
+  }
+  assert7f.equal(randomCalls, 0);
+  assert7f.equal(exists7f(join7f(corrupt.root, '.deep-loop', 'insights')), false);
+  assert7f.deepEqual(bytes7f(corrupt.root, corrupt.runId), before);
+});
+
+test7f('latest skips a terminal artifact whose producer snapshot is cross-log-invalid', () => {
+  const fixture = fixture7f('dl-latest-authority-');
+  const emitted = emit7f(fixture.root, fixture.runId, {
+    fence: { owner: fixture.owner, generation: fixture.generation, intent: 'business' },
+    now: NOW7F, rnd: () => 0.25, sleepFn: () => {},
+  });
+  finishInsights7f(fixture);
+  assert7f.equal(latest7f(fixture.root).path, emitted.path);
+  corruptAuthority7f(fixture);
+  assert7f.equal(latest7f(fixture.root), null);
 });

@@ -9,7 +9,7 @@ import { execFileSync } from 'node:child_process';
 import { readState, writeState, runDir, pauseRun } from '../scripts/lib/state.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
 import { respawn } from '../scripts/lib/respawn.mjs';
-import { newEpisode } from '../scripts/lib/episode.mjs';
+import { newEpisode } from './helpers/episode-request.mjs';
 import { setWorkstreamStatus } from '../scripts/lib/workspace.mjs';
 import { recordReviewOutcome } from '../scripts/lib/review.mjs';
 import { seedCorrelatedTerminal as terminal7b } from './fixtures/verified-app-run.mjs';

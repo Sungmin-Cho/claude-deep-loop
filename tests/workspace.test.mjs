@@ -5,10 +5,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState } from '../scripts/lib/state.mjs';
+import { readLines } from '../scripts/lib/integrity.mjs';
+import { newWorkstream as productionNewWorkstream } from '../scripts/lib/workspace.mjs';
 import {
   newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal,
   inheritWorkstreams, integrationOrder,
-} from '../scripts/lib/workspace.mjs';
+} from './helpers/workstream-request.mjs';
 import { createDirectoryJunction, fixtureDir } from './helpers/fs-fixtures.mjs';
 import { proofTransitionsForCandidate } from '../scripts/lib/integrity.mjs';
 import { rawHashValidHistory as rawHistory7b } from './fixtures/verified-app-run.mjs';
@@ -185,14 +187,9 @@ test('integrationOrder treats non-array depends_on as no-deps (defensive)', () =
   const f = fence(runId);
   // Create workstream normally
   newWorkstream(root, runId, { title: 'Core', branch: 'c', worktree: '.claude/worktrees/wc', fence: f });
-  // Inject malformed depends_on via writeState
-  {
-    const { data } = readState(root, runId);
-    data.workstreams[0].depends_on = 'bad-value';
-    writeState(root, runId, data);
-  }
-  // Should not throw — malformed treated as no-deps
   const { data } = readState(root, runId);
+  data.workstreams[0].depends_on = 'bad-value';
+  // Pure defensive sorter should not throw even though durable semantic verification rejects this shape.
   const r = integrationOrder(data);
   assert.equal(r.cycle, false);
   assert.equal(r.missing.length, 0);
@@ -317,4 +314,57 @@ test('newWorkstream stores backslash relative input as a slash-normalized durabl
   });
   const ws = readState(root, runId).data.workstreams.find(w => w.branch === 'b-win-rel');
   assert.equal(ws.worktree, '.claude/worktrees/windows-relative');
+});
+
+test('production newWorkstream requires a stable bounded request ID', () => {
+  const { root, runId } = seed();
+  assert.throws(() => productionNewWorkstream(root, runId, {
+    title: 'Missing ID', branch: 'missing-id', worktree: '.worktrees/missing-id',
+    fence: fence(runId),
+  }), /WORKSTREAM_REQUEST_ID_REQUIRED/);
+});
+
+test('workstream creation retry after marker cleanup reuses one ID and changed reuse conflicts', () => {
+  const { root, runId } = seed();
+  const request = { title: 'Stable', branch: 'stable', worktree: '.worktrees/stable',
+    requestId: 'workstream-stable-1', fence: fence(runId) };
+  const first = productionNewWorkstream(root, runId, request);
+  const eventCount = readLines(root, runId)
+    .filter(event => event.type === 'workstream-new').length;
+  const second = productionNewWorkstream(root, runId, request);
+  assert.deepEqual(second, first);
+  assert.equal(readState(root, runId).data.workstreams.length, 1);
+  assert.equal(readLines(root, runId)
+    .filter(event => event.type === 'workstream-new').length, eventCount);
+  assert.throws(() => productionNewWorkstream(root, runId, {
+    ...request, branch: 'changed',
+  }), /WORKSTREAM_REQUEST_CONFLICT/);
+  assert.equal(readState(root, runId).data.workstreams.length, 1);
+});
+
+import { test as test7f } from 'node:test';
+import assert7f from 'node:assert/strict';
+import { inheritWorkstreams as inherit7f, newWorkstream as workstream7f,
+  setWorkstreamStatus as status7f } from '../scripts/lib/workspace.mjs';
+import { durableRunBytes as bytes7f, rawHashValidState as raw7f,
+  verifiedAppRun as fixture7f } from './fixtures/verified-app-run.mjs';
+
+test7f('inheritWorkstreams rejects corrupt readiness authority before path probes', () => {
+  const fixture = fixture7f('dl-workspace-authority-');
+  const fence = { owner: fixture.owner, generation: fixture.generation, intent: 'business' };
+  const workstream = workstream7f(fixture.root, fixture.runId, {
+    title: 'missing worktree', branch: 'missing',
+    worktree: '.claude/worktrees/missing', requestId: 'workspace-authority-probe', fence,
+  }).id;
+  status7f(fixture.root, fixture.runId, workstream, 'in_progress', { fence });
+  raw7f(fixture.root, fixture.runId, loop => {
+    loop.session_chain.sessions[0].host_surface.observed_at =
+      '2026-07-13T00:00:01.000Z';
+  });
+  const before = bytes7f(fixture.root, fixture.runId);
+  let pathProbes = 0;
+  assert7f.throws(() => inherit7f(fixture.root, fixture.runId,
+    { existsFn: () => { pathProbes += 1; return true; } }), /RUN_SNAPSHOT_INVALID/);
+  assert7f.equal(pathProbes, 0);
+  assert7f.deepEqual(bytes7f(fixture.root, fixture.runId), before);
 });

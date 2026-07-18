@@ -125,12 +125,12 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field recipe.id --projec
 
 tracked 소스를 **그대로 복사**한다(byte-identical — 커널이 대조; 수정본은 `REVIEW_CONTRACT_MISSING`으로 거부). 커널도 realpath containment + contracts 디렉터리 유일성(HILLCLIMB-001.yaml 외 다른 계약 yaml 금지 — bare `--contract`는 모든 active 계약을 로드하므로)을 fail-closed로 재검증한다. 계약-비소비 reviewer나 `--contract` 플래그 부재/명시 selector(`--contract SLICE-NNN` 등 — deep-review 파서는 SLICE-NNN만 selector로 소비하므로 HILLCLIMB-001을 지정할 수 없다)는 `REVIEW_CONTRACT_UNENFORCEABLE` — run의 review 설정을 사람과 함께 재구성해야 한다.
 
-Route A/B/C 모두 hill-climb dispatch 응답의 `descriptor.evidence`(커널-검증 insights 경로·emit ULID·sha256·후보)를 fresh checker의 리뷰 요청 본문에 그대로 포함하여 maker 인용과 대조하게 한다. checker episode의 `request.md`에도 같은 evidence 사본이 durable 기록되며, Codex measured host는 anchored claim의 evidence/contract를 immutable prompt contract로 전달한다.
+Route A/B/C 모두 hill-climb dispatch 응답의 `descriptor.evidence`(커널-검증 insights 경로·emit ULID·sha256·후보)를 fresh checker의 리뷰 요청 본문에 그대로 포함하여 maker 인용과 대조하게 한다. checker episode의 anchored `request_markdown`에도 같은 evidence 사본이 durable 기록되며 별도 request pathname은 만들지 않는다. Codex measured host는 anchored claim의 evidence/contract를 immutable prompt contract로 전달한다.
 
 - **Route A — cooperative fresh subagent:** host에 fresh `code-reviewer`를 만드는 cooperative tool이 실제로 있을 때만 다음 명령을 실행한다. configured reviewer가 agent인데 이 capability가 없으면 Route D로 가며 dispatch하지 않는다.
 
 ```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review dispatch --point <review_point> --workstream <workstream_id> --independent-subagent --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review dispatch --point <review_point> --workstream <workstream_id> --request-id <review_dispatch_request_id> --independent-subagent --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
   반환된 agent descriptor로 host tool을 통해 fresh reviewer를 spawn한다. inline 자기 리뷰는 proof가 아니다.
@@ -138,7 +138,7 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review dispatch --point <review_poin
 - **Route B — Codex unattended measured host:** 다음 명령을 정확히 한 번 실행하고 즉시 measured host에 yield한다.
 
 ```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review dispatch --point <review_point> --workstream <workstream_id> --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review dispatch --point <review_point> --workstream <workstream_id> --request-id <review_dispatch_request_id> --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
   host가 claim, isolated read-only 두 번째 `codex exec`, import, accounting을 소유한다. 이 execution skill은 Route B에서 아래 `review record`를 실행하지 않는다.
@@ -155,7 +155,7 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" review record --episode <checker_epi
 
 fix maker episode 생성 후 dispatch:
 ```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin <maker_plugin> --role maker --kind fix --point <point> --workstream <workstream_id> --artifacts '[".claude/worktrees/<ws-slug>/path/to/fix-output"]' --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode new --plugin <maker_plugin> --role maker --kind fix --point <point> --workstream <workstream_id> --artifacts '[".claude/worktrees/<ws-slug>/path/to/fix-output"]' --task "<bounded_episode_task>" --request-id <episode_request_id> --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
 ### discover
@@ -291,3 +291,10 @@ respawn의 `outcome`에 따라 분기:
   `terminal/launch-command.txt` 내용을 사람에게 제시한다. 다음 세션에서 Claude는 `/deep-loop-resume`, Codex는 `$deep-loop:deep-loop-resume`을 실행한다.
 
 - **그 외** (`fenced` 등): 보고만 하고 pause 하지 않는다.
+`<review_dispatch_request_id>`는 dispatch 전에 한 번 정해 response-loss retry에는 그대로
+재사용한다. 다음 intentional review round에서만 새 ID를 사용하며 같은 ID로 point/workstream/
+subagent payload를 바꾸지 않는다. Plugin detection은 새 dispatch의 fresh resolution input이며
+same-ID request identity에는 포함하지 않는다.
+
+`<episode_request_id>`는 fix episode 생성 전에 한 번 정해 응답 유실 retry에 재사용하고, 새
+logical episode에서만 교체한다. 같은 ID로 payload를 바꾸면 안 된다.
