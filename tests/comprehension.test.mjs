@@ -250,3 +250,41 @@ test('recordReviewed: terminal run throws RUN_TERMINAL, counters unchanged', () 
   assert.throws(() => recordReviewed(root, runId, 'ep-x', 'src'), /RUN_TERMINAL: recordReviewed/);
   assert.equal(readState(root, runId).data.comprehension.episodes_human_reviewed || 0, 0);
 });
+
+import { test as testComprehension7e } from 'node:test';
+import assertComprehension7e from 'node:assert/strict';
+import { newEpisode as newEpisode7e } from '../scripts/lib/episode.mjs';
+import { ack as ack7e, recordReviewed as recordReviewed7e }
+  from '../scripts/lib/comprehension.mjs';
+import { durableRunBytes as comprehensionBytes7e,
+  rawHashValidState as rawComprehension7e,
+  verifiedAppRun as comprehensionFixture7e } from './fixtures/verified-app-run.mjs';
+
+const ATTENDED7E = {};
+
+testComprehension7e('comprehension runtime and recordReviewed no-op require a verified snapshot', () => {
+  const fixture = comprehensionFixture7e('dl-comprehension-proof-');
+  const fence = { owner: fixture.owner, generation: fixture.generation,
+    intent: 'business' };
+  const { id } = newEpisode7e(fixture.root, fixture.runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation',
+    expectedArtifacts: [], fence,
+  });
+  rawComprehension7e(fixture.root, fixture.runId, loop => {
+    loop.review.require_human_ack = true;
+    loop.session_chain.sessions[0].host_surface.observed_at =
+      '2026-07-13T00:00:01.000Z';
+  });
+  const before = comprehensionBytes7e(fixture.root, fixture.runId);
+
+  assertComprehension7e.throws(() => ack7e(fixture.root, fixture.runId, id, {
+    actor: 'agent', env: ATTENDED7E,
+    fence: { ...fence, owner: 'wrong-owner' },
+  }), /LEASE_FENCED/);
+  assertComprehension7e.throws(() => ack7e(fixture.root, fixture.runId, id,
+    { actor: 'agent', env: ATTENDED7E, fence }), /RUN_SNAPSHOT_INVALID/);
+  assertComprehension7e.throws(() => recordReviewed7e(fixture.root, fixture.runId, id,
+    'deep-review-approve'), /RUN_SNAPSHOT_INVALID/);
+  assertComprehension7e.deepEqual(comprehensionBytes7e(fixture.root, fixture.runId), before,
+    'failed ack/no-op paths must not change state, hash, or events');
+});

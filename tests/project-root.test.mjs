@@ -480,6 +480,51 @@ test('root rebind proves App correlation before its sole direct append', () => {
     now: Date.parse('2026-07-13T00:00:01.000Z') }), /RUN_SNAPSHOT_INVALID/);
   assert.deepEqual(bytes7c(moved, fixture.runId), before);
 });
+
+import { test as testRecovery7e } from 'node:test';
+import assertRecovery7e from 'node:assert/strict';
+import { renameSync as renameRecovery7e } from 'node:fs';
+import { diagnoseProjectRoot as diagnoseRecovery7e }
+  from '../scripts/lib/project-root-recovery.mjs';
+import { projectRootDigest as projectRootDigest7e } from '../scripts/lib/project-root.mjs';
+import { durableRunBytes as recoveryBytes7e,
+  rawHashValidState as rawRecovery7e,
+  verifiedAppRun as recoveryFixture7e } from './fixtures/verified-app-run.mjs';
+
+testRecovery7e('diagnosis verifies cross-log semantics without requiring the stale stored root', () => {
+  const fixture = recoveryFixture7e('dl-root-diagnosis-proof-');
+  const movedRoot = `${fixture.root}-moved`;
+  renameRecovery7e(fixture.root, movedRoot);
+  const validBefore = recoveryBytes7e(movedRoot, fixture.runId);
+
+  const diagnosis = diagnoseRecovery7e(movedRoot, fixture.runId);
+  assertRecovery7e.deepEqual(diagnosis, {
+    mismatch_class: 'unresolvable', rebind_allowed: true,
+    stored_root_digest: projectRootDigest7e(fixture.root),
+    owner: fixture.owner, generation: fixture.generation,
+  });
+  assertRecovery7e.equal(JSON.stringify(diagnosis).includes(fixture.root), false);
+  assertRecovery7e.equal(JSON.stringify(diagnosis).includes(movedRoot), false);
+  assertRecovery7e.deepEqual(recoveryBytes7e(movedRoot, fixture.runId), validBefore,
+    'valid diagnosis is read-only');
+
+  rawRecovery7e(movedRoot, fixture.runId, loop => {
+    loop.session_chain.sessions[0].host_surface.observed_at =
+      '2026-07-13T00:00:01.000Z';
+  }, { recovery: true });
+  const corruptBefore = recoveryBytes7e(movedRoot, fixture.runId);
+  let failureMessage = '';
+  assertRecovery7e.throws(() => diagnoseRecovery7e(movedRoot, fixture.runId), error => {
+    failureMessage = String(error?.message || error);
+    return /RUN_SNAPSHOT_INVALID/.test(failureMessage);
+  });
+  assertRecovery7e.equal(failureMessage.includes(fixture.root), false,
+    'failure must not disclose the stale root');
+  assertRecovery7e.equal(failureMessage.includes(movedRoot), false,
+    'failure must not disclose the candidate root');
+  assertRecovery7e.deepEqual(recoveryBytes7e(movedRoot, fixture.runId), corruptBefore,
+    'failed diagnosis is read-only');
+});
 test('verified under-lock commit has a closed production reference set', () => {
   const production = sourceFiles(join(REPO_ROOT, 'scripts'));
   for (const file of production) {

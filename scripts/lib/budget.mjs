@@ -5,9 +5,6 @@ import {
   withVerifiedMutationLock,
   MUTATION_TURN_FLOOR,
   readLines,
-  recomputeSpent,
-  verifyLog,
-  verifyHead,
   validCost,
 } from './integrity.mjs';
 import { readState, withLock } from './state.mjs';
@@ -1300,17 +1297,31 @@ export function settleTerminalCodexMakerCost(root, runId, {
 }
 
 // 저장된 budget vs event-log 재계산 비교 + log head 앵커 대조 — 불일치/손상/truncation 시 fail-stop
-export function reconcileBudget(root, runId) {
-  return withLock(root, runId, () => {
-    const v = verifyLog(root, runId);
-    if (!v.ok) throw new Error(`BUDGET_TAMPERED: event-log integrity: ${v.errors.join('; ')}`);
-    const { data } = readState(root, runId);
-    const h = verifyHead(root, runId, data.event_log_head);   // suffix truncation 탐지
-    if (!h.ok) throw new Error(`BUDGET_TAMPERED: ${h.errors.join('; ')}`);
-    const t = recomputeSpent(root, runId);
-    if ((data.budget.spent || 0) !== t.turns || (data.budget.tokens_spent || 0) !== t.tokens) {
-      throw new Error(`BUDGET_TAMPERED: stored ${data.budget.spent}/${data.budget.tokens_spent} != log ${t.turns}/${t.tokens}`);
+export function reconcileBudget(root, runId, { mutation } = {}) {
+  const reconcile = () => {
+    const { data } = mutation
+      ? mutation.readVerifiedState()
+      : readState(root, runId);
+    const lines = readLines(root, runId);
+    try {
+      assertVerifiedRunSnapshot(root, runId, data, { lines });
+    } catch (error) {
+      throw new Error(`BUDGET_TAMPERED: ${String(error?.message || error)}`,
+        { cause: error });
     }
-    return { turns: t.turns, tokens: t.tokens };
-  });
+    const totals = lines.filter(event => event.type === 'cost')
+      .reduce((sum, event) => {
+        if (!validCost(event.data)) {
+          throw new Error(`BUDGET_TAMPERED: invalid cost event at seq ${event.seq}`);
+        }
+        return { turns: sum.turns + event.data.turns,
+          tokens: sum.tokens + event.data.tokens };
+      }, { turns: 0, tokens: 0 });
+    if ((data.budget.spent || 0) !== totals.turns
+        || (data.budget.tokens_spent || 0) !== totals.tokens) {
+      throw new Error(`BUDGET_TAMPERED: stored ${data.budget.spent}/${data.budget.tokens_spent} != log ${totals.turns}/${totals.tokens}`);
+    }
+    return totals;
+  };
+  return mutation ? reconcile() : withLock(root, runId, reconcile);
 }

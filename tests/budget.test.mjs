@@ -1778,3 +1778,22 @@ test('durable accounting replay rechecks each current operation policy', () => {
   /TERMINAL_ACCOUNTING_CHILD_NOT_ACQUIRED/);
   assert.deepEqual(bytes7c(terminal.root, terminal.runId), terminalBytes);
 });
+
+import { test as testReconcile7e } from 'node:test';
+import assertReconcile7e from 'node:assert/strict';
+import { reconcileBudget as reconcileBudget7e } from '../scripts/lib/budget.mjs';
+import { durableRunBytes as reconcileBytes7e,
+  rawHashValidState as rawReconcile7e,
+  verifiedAppRun as reconcileFixture7e } from './fixtures/verified-app-run.mjs';
+
+testReconcile7e('reconcileBudget rejects cross-log-invalid state even when cost and head match', () => {
+  const fixture = reconcileFixture7e('dl-reconcile-proof-');
+  rawReconcile7e(fixture.root, fixture.runId, loop => {
+    loop.session_chain.sessions[0].host_surface.observed_at =
+      '2026-07-13T00:00:01.000Z';
+  });
+  const before = reconcileBytes7e(fixture.root, fixture.runId);
+  assertReconcile7e.throws(() => reconcileBudget7e(fixture.root, fixture.runId),
+    /BUDGET_TAMPERED: RUN_SNAPSHOT_INVALID/);
+  assertReconcile7e.deepEqual(reconcileBytes7e(fixture.root, fixture.runId), before);
+});

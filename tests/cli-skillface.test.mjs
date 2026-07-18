@@ -425,3 +425,75 @@ test('structured input has no argv env file base64 or echo fallback', () => {
   assert.doesNotMatch(source,
     /process\.(?:argv|env)|node:(?:fs|os)|['"](?:fs|fs\/promises|os)['"]|\b(?:readFile|writeFile|appendFile|copyFile|rename|open|mkdtemp|createReadStream|createWriteStream)(?:Sync)?\s*\(|\b(?:atob|btoa|Deno|Bun)\b|['"`]base64['"`]|fileURLToPath|pathToFileURL/i);
 });
+
+import { test as testCli7e } from 'node:test';
+import assertCli7e from 'node:assert/strict';
+import { spawnSync as spawn7e } from 'node:child_process';
+import { mkdirSync as mkdir7e, mkdtempSync as mkdtemp7e,
+  writeFileSync as writeFile7e } from 'node:fs';
+import { tmpdir as tmpdir7e } from 'node:os';
+import { join as join7e } from 'node:path';
+import { fileURLToPath as fileURLToPath7e } from 'node:url';
+import { durableRunBytes as cliBytes7e, rawHashValidState as rawCli7e,
+  verifiedAppRun as cliFixture7e } from './fixtures/verified-app-run.mjs';
+
+const CLI7E = fileURLToPath7e(new URL('../scripts/deep-loop.mjs', import.meta.url));
+function runCli7e(root, args) {
+  const child = spawn7e('node', [CLI7E, ...args, '--project-root', root],
+    { encoding: 'utf8' });
+  return { code: child.status ?? 1, stdout: child.stdout || '', stderr: child.stderr || '' };
+}
+
+testCli7e('read-only CLI and requireLease reject cross-log-invalid authority', () => {
+  const fixture = cliFixture7e('dl-cli-verified-read-');
+  rawCli7e(fixture.root, fixture.runId, loop => {
+    loop.session_chain.sessions[0].host_surface.observed_at =
+      '2026-07-13T00:00:01.000Z';
+  });
+  const before = cliBytes7e(fixture.root, fixture.runId);
+  const readOnly = [
+    ['validate', ['validate', '--run-id', fixture.runId]],
+    ['state get', ['state', 'get', '--run-id', fixture.runId]],
+    ['next-action', ['next-action', '--run-id', fixture.runId]],
+    ['tick', ['tick', '--run-id', fixture.runId]],
+    ['lease check', ['lease', 'check', '--run-id', fixture.runId,
+      '--owner', fixture.owner, '--generation', String(fixture.generation)]],
+    ['budget check', ['budget', 'check', '--run-id', fixture.runId]],
+    ['comprehension status', ['comprehension', 'status', '--run-id', fixture.runId]],
+    ['breaker check', ['breaker', 'check', '--run-id', fixture.runId]],
+  ];
+  for (const [label, args] of readOnly) {
+    const result = runCli7e(fixture.root, args);
+    assertCli7e.equal(result.code, 1, `${label} must fail closed`);
+    assertCli7e.match(result.stderr, /RUN_SNAPSHOT_INVALID/, label);
+    assertCli7e.doesNotMatch(result.stderr, /\n\s+at\s/, `${label} must not leak a stack`);
+  }
+
+  const mutation = ['state', 'patch', '--run-id', fixture.runId,
+    '--field', 'decisions', '--value', '[]'];
+  const wrong = runCli7e(fixture.root, [...mutation,
+    '--owner', 'wrong-owner', '--generation', String(fixture.generation)]);
+  assertCli7e.equal(wrong.code, 3);
+  assertCli7e.match(wrong.stderr, /LEASE_FENCED/);
+  const correct = runCli7e(fixture.root, [...mutation,
+    '--owner', fixture.owner, '--generation', String(fixture.generation)]);
+  assertCli7e.equal(correct.code, 1);
+  assertCli7e.match(correct.stderr, /RUN_SNAPSHOT_INVALID/);
+  assertCli7e.deepEqual(cliBytes7e(fixture.root, fixture.runId), before,
+    'read-only and rejected mutation commands must preserve durable bytes');
+
+  const emptyRoot = mkdtemp7e(join7e(tmpdir7e(), 'dl-cli-no-current-'));
+  const missing = runCli7e(emptyRoot, ['state', 'get']);
+  assertCli7e.equal(missing.code, 0);
+  assertCli7e.equal(missing.stdout.trim(), 'null',
+    'implicit current missing remains a clean null projection');
+
+  const danglingRoot = mkdtemp7e(join7e(tmpdir7e(), 'dl-cli-dangling-current-'));
+  mkdir7e(join7e(danglingRoot, '.deep-loop'), { recursive: true });
+  writeFile7e(join7e(danglingRoot, '.deep-loop', 'current'),
+    '01JABCNOTAREALRUN\n');
+  const dangling = runCli7e(danglingRoot, ['state', 'get']);
+  assertCli7e.equal(dangling.code, 0);
+  assertCli7e.equal(dangling.stdout.trim(), 'null',
+    'an implicit pointer to an absent run directory remains a clean null projection');
+});

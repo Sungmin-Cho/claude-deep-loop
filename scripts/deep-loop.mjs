@@ -10,7 +10,7 @@ import { detectPlugins } from './lib/detect.mjs';
 import { matchRecipe, recipesDir, validateRecipesDir } from './lib/recipes.mjs';
 import { json } from './lib/log.mjs';
 import { validate as validateLoop, verifyAppEventCorrelation } from './lib/schema.mjs';
-import { readLines, verifyHeadLines, verifyLines } from './lib/integrity.mjs';
+import { readLines, readVerifiedState, verifyHeadLines, verifyLines } from './lib/integrity.mjs';
 import { readState, writeState, patch as patchState, pauseRun, runDir, findRoot } from './lib/state.mjs';
 import { leaseCheck, acquireLease, releaseLease } from './lib/lease.mjs';
 import { newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal } from './lib/workspace.mjs';
@@ -335,6 +335,9 @@ function strArg(f, name) {
 }
 function classifyKernelError(e) {
   const message = String(e?.message || e);
+  if (/^RUN_SNAPSHOT_INVALID(?::|$)/.test(message)) {
+    return { code: 1, message };
+  }
   if (/^(?:APP_TASK_FENCED|HOST_SURFACE_FENCED)(?::|$)/.test(message)) {
     return { code: 3, message };
   }
@@ -399,9 +402,26 @@ const appTaskHandler = async argv => {
 function requireLease(root, runId, f, intent = 'business') {
   strArg(f, 'owner');
   const generation = intArg(f, 'generation');
-  const { data } = readState(root, runId);
-  const r = leaseCheck(data, { owner: f.owner, generation, intent });
-  if (!r.ok) { error(`LEASE_FENCED: ${r.reason}`); process.exit(3); }
+  let data;
+  try {
+    data = readVerifiedState(root, runId, { fenceCheck: loop => {
+      const lease = loop.session_chain?.lease;
+      if (lease?.owner_run_id !== f.owner || lease?.generation !== generation) {
+        throw new Error('LEASE_FENCED: owner-or-generation-mismatch');
+      }
+    } }).data;
+  } catch (caught) {
+    if (String(caught?.message || caught).startsWith('LEASE_FENCED:')) {
+      error(String(caught.message || caught));
+      process.exit(3);
+    }
+    throw caught;
+  }
+  const checked = leaseCheck(data, { owner: f.owner, generation, intent });
+  if (!checked.ok) {
+    error('LEASE_FENCED: ' + checked.reason);
+    process.exit(3);
+  }
   return data;
 }
 
@@ -601,7 +621,7 @@ const handlers = {
     const runId = runIdOf(root, f);
     if (runId) {
       try {
-        const { data } = readState(root, runId);   // 해시 anchor 검증 발화
+        const { data } = readVerifiedState(root, runId);
         const rv = validateLoop(data);
         if (!rv.ok) errors.push(`run ${runId}: ${rv.errors.join('; ')}`);
         const lines = readLines(root, runId);
@@ -788,11 +808,11 @@ const handlers = {
     return 0;
   },
   'init-run': initRunHandler,
-  'next-action': async (a) => { const f = parseFlags(a); const root = rootOf(f); const { data } = readState(root, runIdOf(root, f)); json(nextAction(data, { now: parseNow(f) })); return 0; },
-  tick: async (a) => { const f = parseFlags(a); const root = rootOf(f); const { data } = readState(root, runIdOf(root, f)); json({ mode: f.mode || 'advance', ...nextAction(data, { now: parseNow(f) }) }); return 0; },
+  'next-action': async (a) => { const f = parseFlags(a); const root = rootOf(f); const { data } = readVerifiedState(root, runIdOf(root, f)); json(nextAction(data, { now: parseNow(f) })); return 0; },
+  tick: async (a) => { const f = parseFlags(a); const root = rootOf(f); const { data } = readVerifiedState(root, runIdOf(root, f)); json({ mode: f.mode || 'advance', ...nextAction(data, { now: parseNow(f) }) }); return 0; },
   lease: async (a) => {
     const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
-    if (verb === 'check') { const { data } = readState(root, runId); json(leaseCheck(data, { owner: strArg(f, 'owner'), generation: intArg(f, 'generation') })); return 0; }
+    if (verb === 'check') { const { data } = readVerifiedState(root, runId); json(leaseCheck(data, { owner: strArg(f, 'owner'), generation: intArg(f, 'generation') })); return 0; }
     if (verb === 'acquire') {
       const owner = strArg(f, 'owner');
       const expectGeneration = intArg(f, f['expect-generation'] !== undefined ? 'expect-generation' : 'generation');
@@ -990,8 +1010,9 @@ const handlers = {
     if (verb === 'get') {
       if (runId == null) { json(null); return 0; }   // no pointer at all (first entry) → clean null
       const explicit = f['run-id'] != null;           // explicit --run-id vs implicit .deep-loop/current
+      if (!explicit && !existsSync(runDir(root, runId))) { json(null); return 0; }
       let data;
-      try { ({ data } = readState(root, runId)); }
+      try { ({ data } = readVerifiedState(root, runId)); }
       catch (e) {
         // null ONLY for: implicit current pointer AND the run dir itself is absent (genuine stale pointer).
         if (e && e.code === 'ENOENT' && !explicit && !existsSync(runDir(root, runId))) { json(null); return 0; }
@@ -1090,7 +1111,7 @@ const handlers = {
   },
   budget: async (a) => {
     const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
-    if (verb === 'check') { const { data } = readState(root, runId); json(checkBudget(data, { now: parseNow(f) })); return 0; }
+    if (verb === 'check') { const { data } = readVerifiedState(root, runId); json(checkBudget(data, { now: parseNow(f) })); return 0; }
     if (verb === 'record') {
       requireLease(root, runId, f);
       // Codex r4 sf-4: parseFlags 는 값 없는 플래그를 true 로 둔다 → Number(true)=1 오기록 방지.
@@ -1102,14 +1123,14 @@ const handlers = {
       const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'accounting' };
       try { recordCost(root, runId, { turns, tokens, requestId, fence }); }
       catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }
-      const { data } = readState(root, runId);
+      const { data } = readVerifiedState(root, runId);
       json({ ok: true, spent: data.budget.spent, tokens_spent: data.budget.tokens_spent }); return 0;
     }
     error(`unknown budget verb: ${verb}`); return 2;
   },
   comprehension: async (a) => {
     const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
-    if (verb === 'status') { const { data } = readState(root, runId); json(computeDebt(data)); return 0; }
+    if (verb === 'status') { const { data } = readVerifiedState(root, runId); json(computeDebt(data)); return 0; }
     if (verb === 'ack') {
       requireLease(root, runId, f);   // fence 인자 → exit 3
       const episode = reqStr(f, 'episode'); if (!episode) { error('MISSING_EPISODE'); return 2; }   // Codex r1 sf-6
@@ -1126,15 +1147,15 @@ const handlers = {
       if (r && r.ok === false && r.rejected) {
         // headless-human fail-closed (the ack-rejected event is already appended). Surface as usage error.
         error(`ACK_REJECTED: ${r.reason}`);
-        const { data } = readState(root, runId); json({ ok: false, ...computeDebt(data) }); return 2;
+        const { data } = readVerifiedState(root, runId); json({ ok: false, ...computeDebt(data) }); return 2;
       }
-      const { data } = readState(root, runId); json({ ok: true, ...computeDebt(data) }); return 0;
+      const { data } = readVerifiedState(root, runId); json({ ok: true, ...computeDebt(data) }); return 0;
     }
     error(`unknown comprehension verb: ${verb}`); return 2;
   },
   breaker: async (a) => {
     const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
-    if (verb === 'check') { const { data } = readState(root, runId); json(checkBreaker(data)); return 0; }
+    if (verb === 'check') { const { data } = readVerifiedState(root, runId); json(checkBreaker(data)); return 0; }
     if (verb === 'reset') {
       if (f.confirm !== true && f.confirm !== 'true') { error('BREAKER_RESET_REQUIRES_CONFIRM: pass --confirm (human-only)'); return 2; }
       requireLease(root, runId, f, 'breaker-reset');   // Codex r2 critical-1: fence 필수; breaker-reset exempt from RUN_PAUSED gate

@@ -1,8 +1,23 @@
 import { readState, writeState, withLock } from './state.mjs';
-import { appendAnchored, MUTATION_TURN_FLOOR } from './integrity.mjs';
+import { assertVerifiedRunSnapshot, MUTATION_TURN_FLOOR, readLines,
+  withVerifiedMutationLock } from './integrity.mjs';
+import { contentHash } from './envelope.mjs';
 import { isHeadlessInvocation } from './respawn.mjs';
 import { leaseCheck } from './lease.mjs';
 import { sessionRuntime } from './runtime.mjs';
+
+function ackIdentityFence(fence) {
+  return loop => {
+    if (!fence) return;
+    const lease = loop.session_chain?.lease;
+    if (lease?.owner_run_id !== fence.owner) {
+      throw new Error('LEASE_FENCED: owner-mismatch');
+    }
+    if (lease?.generation !== fence.generation) {
+      throw new Error('LEASE_FENCED: generation-mismatch');
+    }
+  };
+}
 
 export function computeDebt(loop) {
   const c = loop.comprehension || {};
@@ -28,13 +43,21 @@ export function ack(root, runId, episodeId, { actor = 'agent', confirm = false, 
   // lib-authoritative guards — BEFORE any append/counter change (형제 abandonEpisode:78 동형).
   if (!['human', 'agent'].includes(actor)) throw new Error('INVALID_ACTOR: actor must be human|agent');
   if (actor === 'human' && confirm !== true) throw new Error('CONFIRM_REQUIRED: human ack requires confirm (human-only)');
-  const runtime = sessionRuntime(readState(root, runId).data);
+  if (!fence || typeof fence.owner !== 'string'
+      || !Number.isSafeInteger(fence.generation)) throw new Error('FENCE_REQUIRED: ack');
+  const fenceCheck = ackIdentityFence(fence);
+  const callerBinding = { owner: fence.owner, generation: fence.generation };
+  const intentDigest = contentHash(JSON.stringify({ operation: 'comprehension-ack',
+    ...callerBinding, episode_id: episodeId, actor, confirm: confirm === true }));
+  return withVerifiedMutationLock(root, runId, { callerBinding, intentDigest,
+    fenceError: 'LEASE_FENCED: ack' }, mutation => {
+  const runtime = sessionRuntime(mutation.readVerifiedState({ fenceCheck }).data);
   const headless = isHeadlessInvocation(env, runtime);
   const isHuman = actor === 'human';
   if (isHuman && headless) {
     // fail-closed: a headless session cannot self-assert a human review. Append the rejection (never a counter
     // bump) then return non-ok — single flow, sudo-audit-able.
-    appendAnchored(root, runId,
+    mutation.appendAnchored(
       { type: 'comprehension-ack-rejected', data: { episodeId, actor, headless, attended: false, reason: 'headless-human-ack-forbidden' } },
       undefined,
       (loop) => {
@@ -43,11 +66,11 @@ export function ack(root, runId, episodeId, { actor = 'agent', confirm = false, 
         if (!ep) throw new Error(`EPISODE_NOT_FOUND: ${episodeId}`);
         if (ep.role !== 'maker') throw new Error('ACK_NOT_MAKER: only a maker episode can be acked');   // impl-R3 Fix 5
       },
-      { floor: MUTATION_TURN_FLOOR });
+      { floor: MUTATION_TURN_FLOOR, fenceCheck });
     return { ok: false, rejected: true, reason: 'headless-human-ack-forbidden' };
   }
   let out = { ok: true, already: false };
-  appendAnchored(root, runId,
+  mutation.appendAnchored(
     { type: 'comprehension-ack', data: { episodeId, actor, headless, attended: !headless } },
     (loop) => {
       const ep = loop.episodes.find(e => e.id === episodeId);
@@ -71,13 +94,16 @@ export function ack(root, runId, episodeId, { actor = 'agent', confirm = false, 
       // inflate episodes_human_reviewed past episodes_total and drive debt_ratio below threshold with no maker reviewed.
       if (ep.role !== 'maker') throw new Error('ACK_NOT_MAKER: only a maker episode can be acked');
     },
-    { floor: MUTATION_TURN_FLOOR });
+    { floor: MUTATION_TURN_FLOOR, fenceCheck });
   return out;
+  });
 }
 
 export function recordReviewed(root, runId, episodeId, source) {
   return withLock(root, runId, () => {
     const { data } = readState(root, runId);
+    const lines = readLines(root, runId);
+    assertVerifiedRunSnapshot(root, runId, data, { lines });
     // v1.6 (spec §2.3-7): fence 없는 legacy export — terminal run에 카운터 write 금지.
     if (data.status === 'completed' || data.status === 'stopped') throw new Error('RUN_TERMINAL: recordReviewed');
     const requireHumanAck = data.review?.require_human_ack === true;

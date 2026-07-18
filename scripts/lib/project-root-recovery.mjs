@@ -1,12 +1,12 @@
 import { validate } from './schema.mjs';
-import { readStateForRootRecovery } from './state.mjs';
+import { readStateForRootRecovery, withLock } from './state.mjs';
 import {
   canonicalProjectRoot,
   classifyProjectRootBinding,
   projectRootDigest,
 } from './project-root.mjs';
-import { commitProjectRootRebindUnderLock, mutationIntentDigest,
-  withVerifiedMutationLock } from './integrity.mjs';
+import { commitProjectRootRebindUnderLock, mutationIntentDigest, readLines,
+  verifyRunSnapshot, withVerifiedMutationLock } from './integrity.mjs';
 
 const ROOT_DIGEST = /^[0-9a-f]{64}$/;
 
@@ -49,8 +49,23 @@ function diagnosis(candidateRoot, runId, loop) {
 
 export function diagnoseProjectRoot(candidateRoot, runId) {
   const candidateCanonical = canonicalCandidate(candidateRoot);
-  const { data: loop } = readStateForRootRecovery(candidateCanonical, runId);
-  return diagnosis(candidateCanonical, runId, loop);
+  return withLock(candidateCanonical, runId, () => {
+    const { data: loop } = readStateForRootRecovery(candidateCanonical, runId);
+    if (!loop || typeof loop !== 'object' || loop.run_id !== runId) {
+      throw new Error('RUN_SNAPSHOT_INVALID: run_id mismatch');
+    }
+    let verified;
+    try {
+      verified = verifyRunSnapshot(loop, readLines(candidateCanonical, runId));
+    } catch (error) {
+      throw new Error(`RUN_SNAPSHOT_INVALID: ${String(error?.message || error)}`,
+        { cause: error });
+    }
+    if (!verified.ok) {
+      throw new Error(`RUN_SNAPSHOT_INVALID: ${verified.errors.join('; ')}`);
+    }
+    return diagnosis(candidateCanonical, runId, loop);
+  });
 }
 
 export function rebindProjectRoot(candidateRoot, runId, {

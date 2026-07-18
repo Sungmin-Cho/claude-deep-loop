@@ -159,3 +159,33 @@ test('CLI supports --key=value form for --model/--effort (WS1 parseFlags)', () =
   assert.equal(data.autonomy.session_model, 'claude-opus-4-8[1m]');
   assert.equal(data.autonomy.session_effort, 'xhigh');
 });
+
+import { test as testProfile7e } from 'node:test';
+import assertProfile7e from 'node:assert/strict';
+import { setSessionProfile as setProfile7e } from '../scripts/lib/session-profile.mjs';
+import { durableRunBytes as profileBytes7e, rawHashValidState as rawProfile7e,
+  verifiedAppRun as profileFixture7e } from './fixtures/verified-app-run.mjs';
+
+testProfile7e('session profile no-op fences before proof and proof precedes idempotency', () => {
+  const fixture = profileFixture7e('dl-session-profile-proof-');
+  const expect = { owner: fixture.owner, generation: fixture.generation };
+  assertProfile7e.deepEqual(setProfile7e(fixture.root, fixture.runId,
+    { model: 'gpt-5.4', effort: 'high', expect }), { ok: true, changed: true });
+  rawProfile7e(fixture.root, fixture.runId, loop => {
+    loop.session_chain.sessions[0].host_surface.observed_at =
+      '2026-07-13T00:00:01.000Z';
+  });
+  const before = profileBytes7e(fixture.root, fixture.runId);
+
+  assertProfile7e.throws(() => setProfile7e(fixture.root, fixture.runId,
+    { model: 'gpt-5.4', effort: 'high',
+      expect: { owner: 'wrong-owner', generation: fixture.generation } }),
+  /LEASE_FENCED/);
+  assertProfile7e.deepEqual(profileBytes7e(fixture.root, fixture.runId), before);
+  assertProfile7e.throws(() => setProfile7e(fixture.root, fixture.runId,
+    { model: 'gpt-5.4', effort: 'high', expect }), /RUN_SNAPSHOT_INVALID/);
+  assertProfile7e.deepEqual(profileBytes7e(fixture.root, fixture.runId), before);
+  assertProfile7e.throws(() => setProfile7e(fixture.root, fixture.runId,
+    { model: 'gpt-5.4', effort: 'xhigh', expect }), /RUN_SNAPSHOT_INVALID/);
+  assertProfile7e.deepEqual(profileBytes7e(fixture.root, fixture.runId), before);
+});
