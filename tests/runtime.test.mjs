@@ -1,7 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  RUNTIME_SURFACES,
   SESSION_RUNTIMES,
+  validateRuntimeSurface,
   validateSessionRuntime,
   sessionRuntime,
   runtimeFence,
@@ -15,6 +17,21 @@ test('session runtime allowlist is immutable and validation returns the asserted
   assert.equal(validateSessionRuntime('codex'), 'codex');
   assert.throws(() => validateSessionRuntime(undefined), /INVALID_RUNTIME/);
   assert.throws(() => validateSessionRuntime('other'), /INVALID_RUNTIME/);
+});
+
+test('runtime and surface correlation accepts only the native runtime allowlist', () => {
+  assert.deepEqual(RUNTIME_SURFACES, {
+    claude: ['claude-code', 'claude-desktop'],
+    codex: ['codex-cli', 'codex-app'],
+  });
+  assert.equal(Object.isFrozen(RUNTIME_SURFACES), true);
+  assert.equal(Object.isFrozen(RUNTIME_SURFACES.claude), true);
+  assert.equal(Object.isFrozen(RUNTIME_SURFACES.codex), true);
+  assert.equal(validateRuntimeSurface('claude', 'claude-code'), 'claude-code');
+  assert.equal(validateRuntimeSurface('codex', 'codex-app'), 'codex-app');
+  assert.equal(validateRuntimeSurface('claude', null), null);
+  assert.throws(() => validateRuntimeSurface('claude', 'codex-app'), /HOST_SURFACE_INVALID/);
+  assert.throws(() => validateRuntimeSurface('invalid', null), /INVALID_RUNTIME/);
 });
 
 test('sessionRuntime maps a valid autonomy object with both runtime fields absent to legacy claude', () => {

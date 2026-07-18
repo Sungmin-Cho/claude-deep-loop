@@ -31,3 +31,16 @@ export function runtimeFence(loop, assertedRuntime) {
     ? { ok: true, runtime: expected }
     : { ok: false, reason: 'RUNTIME_FENCED', expected, actual };
 }
+
+export const RUNTIME_SURFACES = Object.freeze({
+  claude: Object.freeze(['claude-code', 'claude-desktop']),
+  codex: Object.freeze(['codex-cli', 'codex-app']),
+});
+
+export function validateRuntimeSurface(runtime, surface) {
+  const value = validateSessionRuntime(runtime);
+  if (surface !== null && !RUNTIME_SURFACES[value].includes(surface)) {
+    throw new Error(`HOST_SURFACE_INVALID: ${runtime}/${String(surface)}`);
+  }
+  return surface;
+}
