@@ -634,21 +634,39 @@ function parseInitHolder(bytes) {
   return holder;
 }
 
+function initFileRecord(path, deps, lstat) {
+  let stat;
+  try { stat = lstat(path); }
+  catch (error) { if (error?.code === 'ENOENT') return null; throw error; }
+  if (!stat.isFile() || stat.isSymbolicLink()) return { stat, bytes: null, regular: false };
+  return { stat, bytes: Buffer.from((deps.readFile ?? readFileSync)(path)), regular: true };
+}
+
+function sameInitFile(left, right, sameFile) {
+  return left !== null && right !== null && left.regular && right.regular
+    && left.bytes.equals(right.bytes) && sameFile(left.stat, right.stat);
+}
+
 function sweepInitCandidates(control, deps, nowMs) {
+  const lstat = deps.lstat ?? (value => lstatSync(value, { bigint: true }));
+  const sameFile = deps.sameFile
+    ?? ((left, right) => left.dev === right.dev && left.ino === right.ino);
   const names = (deps.readdir ?? readdirSync)(control)
     .filter(name => INIT_CANDIDATE_NAME.test(name)).sort()
     .slice(0, INIT_LOCK_CANDIDATE_SWEEP_MAX);
   for (const name of names) {
     const path = join(control, name);
     try {
-      const stat = (deps.lstat ?? lstatSync)(path);
-      if (!stat.isFile() || stat.isSymbolicLink()) continue;
-      const holder = parseInitHolder(Buffer.from((deps.readFile ?? readFileSync)(path)));
+      const observed = initFileRecord(path, deps, lstat);
+      if (observed === null || !observed.regular) continue;
+      const holder = parseInitHolder(observed.bytes);
       if (holder === null) continue;
       const acquiredMs = Date.parse(holder.acquired_at);
       if (nowMs - acquiredMs <= INIT_LOCK_CANDIDATE_TTL_MS) continue;
       if (deps.probePidIdentity?.({ pid: holder.pid, acquiredAt: holder.acquired_at })
           !== 'definitely-dead') continue;
+      const revalidated = initFileRecord(path, deps, lstat);
+      if (!sameInitFile(observed, revalidated, sameFile)) continue;
       (deps.unlink ?? unlinkSync)(path);
     } catch {
       // Candidate uncertainty preserves the path.
@@ -693,37 +711,81 @@ function authorityRecord(path, deps, lstat) {
   return { stat, holder };
 }
 
+function initAuthorityNamespace(control, deps) {
+  const names = new Set();
+  for (const name of (deps.readdir ?? readdirSync)(control)) {
+    if (name === '.init.lock') {
+      names.add(name);
+    } else if (name.startsWith('.init.lock')
+        || name.startsWith('.init-lock-successor')
+          && !INIT_SUCCESSOR_NAME.test(name)
+        || name.startsWith('.init-lock-release')
+          && !INIT_RELEASE_NAME.test(name)) {
+      throw new Error('LOCK_CHAIN_INVALID');
+    } else if (INIT_SUCCESSOR_NAME.test(name) || INIT_RELEASE_NAME.test(name)) {
+      names.add(name);
+    }
+  }
+  return names;
+}
+
+function requireCompleteAuthorityNamespace(namespace, consumed) {
+  if (namespace.size !== consumed.size
+      || [...namespace].some(name => !consumed.has(name))) {
+    throw new Error('LOCK_CHAIN_INVALID');
+  }
+}
+
 function followInitAuthority(control, deps) {
   const lstat = deps.lstat ?? (value => lstatSync(value, { bigint: true }));
   const sameFile = deps.sameFile
     ?? ((left, right) => left.dev === right.dev && left.ino === right.ino);
+  const namespace = initAuthorityNamespace(control, deps);
   let authorityPath = join(control, '.init.lock');
   const visited = new Set();
+  const consumed = new Set();
   for (let depth = 0; depth < INIT_LOCK_CHAIN_MAX; depth += 1) {
     const authority = authorityRecord(authorityPath, deps, lstat);
     if (authority === null) {
-      if (depth === 0) return { state: 'free', publishPath: authorityPath };
+      if (depth === 0) {
+        requireCompleteAuthorityNamespace(namespace, consumed);
+        return { state: 'free', publishPath: authorityPath, visited };
+      }
       throw new Error('LOCK_CHAIN_INVALID');
     }
+    consumed.add(authorityPath === join(control, '.init.lock')
+      ? '.init.lock' : authorityPath.slice(control.length + 1));
     if (authority.holder === null || visited.has(authority.holder.nonce)) {
-      return { state: 'held', authorityPath, authority, invalid: true };
+      requireCompleteAuthorityNamespace(namespace, consumed);
+      return { state: 'held', authorityPath, authority, invalid: true, visited };
     }
     visited.add(authority.holder.nonce);
-    const releasePath = join(control, '.init-lock-release-' + authority.holder.nonce);
+    const releaseName = '.init-lock-release-' + authority.holder.nonce;
+    const releasePath = join(control, releaseName);
     const release = authorityRecord(releasePath, deps, lstat);
     if (release === null) {
-      return { state: 'held', authorityPath, authority, releasePath, invalid: false };
+      requireCompleteAuthorityNamespace(namespace, consumed);
+      return { state: 'held', authorityPath, authority, releasePath,
+        invalid: false, visited };
     }
+    consumed.add(releaseName);
     if (release.holder === null || release.holder.nonce !== authority.holder.nonce
         || !sameFile(authority.stat, release.stat)) {
-      return { state: 'held', authorityPath, authority, releasePath, invalid: true };
+      requireCompleteAuthorityNamespace(namespace, consumed);
+      return { state: 'held', authorityPath, authority, releasePath,
+        invalid: true, visited };
     }
-    const successorPath = join(control, '.init-lock-successor-' + authority.holder.nonce);
+    const successorName = '.init-lock-successor-' + authority.holder.nonce;
+    const successorPath = join(control, successorName);
     const successor = authorityRecord(successorPath, deps, lstat);
-    if (depth === INIT_LOCK_CHAIN_MAX - 1) throw new Error('LOCK_CHAIN_EXHAUSTED');
+    if (depth === INIT_LOCK_CHAIN_MAX - 1) {
+      if (successor === null) requireCompleteAuthorityNamespace(namespace, consumed);
+      throw new Error('LOCK_CHAIN_EXHAUSTED');
+    }
     if (successor === null) {
+      requireCompleteAuthorityNamespace(namespace, consumed);
       return { state: 'free', publishPath: successorPath,
-        predecessorPath: authorityPath, predecessor: authority };
+        predecessorPath: authorityPath, predecessor: authority, visited };
     }
     authorityPath = successorPath;
   }
@@ -751,9 +813,11 @@ export function withInitLock(root, fn, deps = {}) {
   }
   const initial = followInitAuthority(control, deps);
   if (initial.state !== 'free') throwHeldAuthority(initial, deps);
+  if (initial.visited.has(nonce)) throw new Error('LOCK_OWNER_REUSED');
   // A cap already visible at entry is raised above before sweep or candidate publication.
   sweepInitCandidates(control, deps, nowMs);
   const holder = { pid, nonce, acquired_at: new Date(nowMs).toISOString() };
+  const holderBytes = Buffer.from(JSON.stringify(holder));
   const candidate = join(control, '.init-lock-candidate-' + pid + '-' + nonce);
   const releasePath = join(control, '.init-lock-release-' + nonce);
   const unlink = deps.unlink ?? unlinkSync;
@@ -761,21 +825,39 @@ export function withInitLock(root, fn, deps = {}) {
   const lstat = deps.lstat ?? (value => lstatSync(value, { bigint: true }));
   const sameFile = deps.sameFile
     ?? ((left, right) => left.dev === right.dev && left.ino === right.ino);
-  let candidateOwned = false;
+  const candidateBefore = initFileRecord(candidate, deps, lstat);
+  let candidateOwned = null;
   let linked = false;
   let releaseError = null;
   try {
     try {
-      (deps.writeFile ?? writeFileSync)(candidate, JSON.stringify(holder), { flag: 'wx' });
-      candidateOwned = true;
+      (deps.writeFile ?? writeFileSync)(candidate, holderBytes, { flag: 'wx' });
     } catch (error) {
-      // Native wx EEXIST proves this invocation did not create the candidate. Other write failures
-      // can leave a partial unique candidate and therefore authorize candidate-only cleanup.
-      candidateOwned = error?.code !== 'EEXIST';
+      // A failed exclusive write owns cleanup only when this pathname was absent beforehand and
+      // now proves the exact invocation bytes. Ambiguous or replaced paths remain foreign.
+      if (error?.code !== 'EEXIST' && candidateBefore === null) {
+        try {
+          const afterFailure = initFileRecord(candidate, deps, lstat);
+          if (afterFailure?.regular && afterFailure.bytes.equals(holderBytes)) {
+            candidateOwned = afterFailure;
+          }
+        } catch { /* candidate uncertainty preserves the path */ }
+      }
       throw error;
     }
+    const afterWrite = initFileRecord(candidate, deps, lstat);
+    if (candidateBefore !== null || afterWrite === null || !afterWrite.regular
+        || !afterWrite.bytes.equals(holderBytes)) {
+      throw new Error('LOCK_CANDIDATE_INDETERMINATE');
+    }
+    candidateOwned = afterWrite;
     const terminal = followInitAuthority(control, deps);
     if (terminal.state !== 'free') throwHeldAuthority(terminal, deps);
+    if (terminal.visited.has(nonce)) throw new Error('LOCK_OWNER_REUSED');
+    const beforePublish = initFileRecord(candidate, deps, lstat);
+    if (!sameInitFile(candidateOwned, beforePublish, sameFile)) {
+      throw new Error('LOCK_ACQUIRE_RACED');
+    }
     try {
       link(candidate, terminal.publishPath);
       linked = true;
@@ -787,40 +869,41 @@ export function withInitLock(root, fn, deps = {}) {
       throw new Error('LOCK_ACQUIRE_FAILED');
     }
     const published = followInitAuthority(control, deps);
-    const candidateStat = lstat(candidate);
-    const publishedStat = lstat(terminal.publishPath);
+    const afterPublish = initFileRecord(candidate, deps, lstat);
     if (published.state !== 'held' || published.authorityPath !== terminal.publishPath
         || published.invalid || published.authority.holder.pid !== holder.pid
         || published.authority.holder.nonce !== holder.nonce
         || published.authority.holder.acquired_at !== holder.acquired_at
-        || !candidateStat.isFile() || candidateStat.isSymbolicLink()
-        || !publishedStat.isFile() || publishedStat.isSymbolicLink()
-        || !sameFile(candidateStat, publishedStat)) {
-      try { link(candidate, releasePath); } catch { /* preserve fail-closed evidence */ }
+        || !sameInitFile(candidateOwned, afterPublish, sameFile)
+        || !sameFile(candidateOwned.stat, published.authority.stat)) {
       throw new Error('LOCK_ACQUIRE_RACED');
     }
     return fn();
   } finally {
     if (linked) {
-      try { link(candidate, releasePath); }
-      catch (error) {
-        if (error?.code === 'EEXIST') {
-          try {
-            const releaseStat = lstat(releasePath);
-            const candidateStat = lstat(candidate);
-            if (!releaseStat.isFile() || releaseStat.isSymbolicLink()
-                || !candidateStat.isFile() || candidateStat.isSymbolicLink()
-                || !sameFile(releaseStat, candidateStat)) {
+      try {
+        const beforeRelease = initFileRecord(candidate, deps, lstat);
+        if (!sameInitFile(candidateOwned, beforeRelease, sameFile)) {
+          releaseError = new Error('LOCK_RELEASE_INDETERMINATE');
+        } else {
+          try { link(candidate, releasePath); }
+          catch (error) {
+            if (error?.code !== 'EEXIST') {
               releaseError = new Error('LOCK_RELEASE_INDETERMINATE');
             }
-          } catch { releaseError = new Error('LOCK_RELEASE_INDETERMINATE'); }
-        } else {
-          releaseError = new Error('LOCK_RELEASE_INDETERMINATE');
+          }
+          const release = initFileRecord(releasePath, deps, lstat);
+          if (!sameInitFile(candidateOwned, release, sameFile)) {
+            releaseError = new Error('LOCK_RELEASE_INDETERMINATE');
+          }
         }
-      }
+      } catch { releaseError = new Error('LOCK_RELEASE_INDETERMINATE'); }
     }
-    if (candidateOwned) {
-      try { unlink(candidate); } catch { /* already absent */ }
+    if (candidateOwned !== null) {
+      try {
+        const beforeUnlink = initFileRecord(candidate, deps, lstat);
+        if (sameInitFile(candidateOwned, beforeUnlink, sameFile)) unlink(candidate);
+      } catch { /* candidate uncertainty or absence preserves the path */ }
     }
     if (releaseError !== null) throw releaseError;
   }

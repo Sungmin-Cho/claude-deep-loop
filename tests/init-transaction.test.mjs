@@ -1025,3 +1025,167 @@ test('EEXIST fixed-holder matrix preserves live unknown invalid dead and PID-reu
     }
   }
 });
+
+test('quality owner nonce reuse in a released chain rejects before candidate primitives', () => {
+  const root = fixtureDir();
+  const nonce = 'reusedowner00001';
+  const now = () => Date.parse('2026-07-13T00:00:00.000Z');
+  withInitLock(root, () => {}, { pid: 7, nonce: () => nonce, now });
+  const before = queryTree(root);
+  const calls = [];
+  let thrown = null;
+  try {
+    withInitLock(root, () => assert.fail('reused owner entered'), {
+      pid: 7, nonce: () => nonce, now,
+      writeFile: (...args) => { calls.push('write'); return writeFileSync(...args); },
+      link: (...args) => { calls.push('link'); return linkSync(...args); },
+      unlink: (...args) => { calls.push('unlink'); return unlinkSync(...args); },
+    });
+  } catch (error) { thrown = error; }
+  assert.deepEqual(calls, []);
+  assert.deepEqual(queryTree(root), before);
+  assert.match(thrown?.message ?? '', /LOCK_OWNER_REUSED/);
+});
+
+test('quality authority namespace rejects orphan and malformed artifacts without mutation', () => {
+  for (const row of [
+    ['orphan-successor', '.deep-loop/.init-lock-successor-orphanowner00001'],
+    ['orphan-release', '.deep-loop/.init-lock-release-orphanrelease001'],
+    ['malformed-prefix', '.deep-loop/.init-lock-successor-bad'],
+  ]) {
+    const root = fixtureDir();
+    put(root, row[1], JSON.stringify({ pid: 42, nonce: 'artifactowner001',
+      acquired_at: '2026-07-13T00:00:00.000Z' }));
+    const before = queryTree(root);
+    const calls = [];
+    let thrown = null;
+    try {
+      withInitLock(root, () => assert.fail(row[0]), {
+        pid: 7, nonce: () => 'contender0000001',
+        now: () => Date.parse('2026-07-13T00:00:01.000Z'),
+        writeFile: (...args) => { calls.push('write'); return writeFileSync(...args); },
+        link: (...args) => { calls.push('link'); return linkSync(...args); },
+        unlink: (...args) => { calls.push('unlink'); return unlinkSync(...args); },
+      });
+    } catch (error) { thrown = error; }
+    assert.deepEqual(calls, [], row[0]);
+    assert.deepEqual(queryTree(root), before, row[0]);
+    assert.match(thrown?.message ?? '', /LOCK_CHAIN_INVALID/, row[0]);
+  }
+});
+
+test('quality authority namespace is revalidated after candidate write before publication', () => {
+  const root = fixtureDir();
+  mkdirSync(join(root, '.deep-loop'));
+  const candidate = join(root, '.deep-loop', '.init-lock-candidate-7-contender0000001');
+  const orphan = join(root, '.deep-loop', '.init-lock-release-raceorphan000001');
+  let linkCalls = 0;
+  assert.throws(() => withInitLock(root, () => assert.fail('writer entered'), {
+    pid: 7, nonce: () => 'contender0000001',
+    now: () => Date.parse('2026-07-13T00:00:01.000Z'),
+    writeFile: (path, bytes, options) => {
+      writeFileSync(path, bytes, options);
+      writeFileSync(orphan, 'foreign-authority-artifact');
+    },
+    link: (...args) => { linkCalls += 1; return linkSync(...args); },
+  }), /LOCK_CHAIN_INVALID/);
+  assert.equal(linkCalls, 0);
+  assert.equal(existsSync(candidate), false, 'the proven invocation candidate is cleaned');
+  assert.equal(readFileSync(orphan, 'utf8'), 'foreign-authority-artifact');
+});
+
+test('quality sweep ABA replacement during liveness probe is preserved', () => {
+  const root = fixtureDir();
+  const candidate = join(root, '.deep-loop',
+    '.init-lock-candidate-42-1234567890abcdef');
+  put(root, '.deep-loop/.init-lock-candidate-42-1234567890abcdef', JSON.stringify({
+    pid: 42, nonce: '1234567890abcdef', acquired_at: '2026-07-13T00:00:00.000Z' }));
+  const replacement = Buffer.from('foreign-sweep-aba-replacement');
+  withInitLock(root, () => {}, {
+    pid: 7, nonce: () => 'contender0000001',
+    now: () => Date.parse('2026-07-13T00:05:00.001Z'),
+    probePidIdentity: () => {
+      unlinkSync(candidate);
+      writeFileSync(candidate, replacement, { flag: 'wx' });
+      return 'definitely-dead';
+    },
+  });
+  assert.deepEqual(readFileSync(candidate), replacement);
+});
+
+test('quality ambiguous candidate write failures preserve foreign bytes', () => {
+  const now = () => Date.parse('2026-07-13T00:00:00.000Z');
+  {
+    const root = fixtureDir();
+    const nonce = 'ambiguousowner01';
+    const candidate = join(root, '.deep-loop', '.init-lock-candidate-7-' + nonce);
+    const foreign = Buffer.from('foreign-pre-existing-candidate');
+    put(root, '.deep-loop/.init-lock-candidate-7-' + nonce, foreign);
+    const error = Object.assign(new Error('AMBIGUOUS_WRITE'), { code: 'EIO' });
+    assert.throws(() => withInitLock(root, () => assert.fail('writer entered'), {
+      pid: 7, nonce: () => nonce, now,
+      writeFile: () => { throw error; },
+    }), /AMBIGUOUS_WRITE/);
+    assert.deepEqual(readFileSync(candidate), foreign);
+  }
+  {
+    const root = fixtureDir();
+    const nonce = 'replacementown01';
+    const candidate = join(root, '.deep-loop', '.init-lock-candidate-7-' + nonce);
+    const foreign = Buffer.from('foreign-write-replacement');
+    const error = Object.assign(new Error('REPLACED_WRITE'), { code: 'EIO' });
+    assert.throws(() => withInitLock(root, () => assert.fail('writer entered'), {
+      pid: 7, nonce: () => nonce, now,
+      writeFile: (path, bytes, options) => {
+        writeFileSync(path, bytes, options);
+        unlinkSync(path);
+        writeFileSync(path, foreign, { flag: 'wx' });
+        throw error;
+      },
+    }), /REPLACED_WRITE/);
+    assert.deepEqual(readFileSync(candidate), foreign);
+  }
+});
+
+test('quality candidate replacement is never deleted or linked as release authority', () => {
+  const now = () => Date.parse('2026-07-13T00:00:00.000Z');
+  {
+    const root = fixtureDir();
+    const nonce = 'cleanupowner0001';
+    const control = join(root, '.deep-loop');
+    const candidate = join(control, '.init-lock-candidate-7-' + nonce);
+    const release = join(control, '.init-lock-release-' + nonce);
+    const foreign = Buffer.from('foreign-after-valid-release');
+    withInitLock(root, () => {}, {
+      pid: 7, nonce: () => nonce, now,
+      link: (source, destination) => {
+        const result = linkSync(source, destination);
+        if (destination === release) {
+          unlinkSync(candidate);
+          writeFileSync(candidate, foreign, { flag: 'wx' });
+        }
+        return result;
+      },
+    });
+    assert.deepEqual(readFileSync(candidate), foreign);
+    const fixedStat = lstatSync(join(control, '.init.lock'));
+    const releaseStat = lstatSync(release);
+    assert.equal(fixedStat.dev, releaseStat.dev);
+    assert.equal(fixedStat.ino, releaseStat.ino);
+  }
+  {
+    const root = fixtureDir();
+    const nonce = 'releaseowner0001';
+    const control = join(root, '.deep-loop');
+    const candidate = join(control, '.init-lock-candidate-7-' + nonce);
+    const release = join(control, '.init-lock-release-' + nonce);
+    const foreign = Buffer.from('foreign-before-release');
+    assert.throws(() => withInitLock(root, () => {
+      unlinkSync(candidate);
+      writeFileSync(candidate, foreign, { flag: 'wx' });
+    }, { pid: 7, nonce: () => nonce, now }), /LOCK_RELEASE_INDETERMINATE/);
+    assert.deepEqual(readFileSync(candidate), foreign);
+    assert.equal(existsSync(release), false,
+      'a replacement candidate is never linked into release authority');
+  }
+});
