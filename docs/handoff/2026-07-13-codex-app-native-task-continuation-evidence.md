@@ -3437,6 +3437,55 @@ no inherited approval from the historical receipt.
 
 ## Review receipt template
 
+### Gate 1 fresh cycle 8 round 14 micro-delta review
+
+- focused base/target:
+  `36e4515275fe598344fdae91ccdf67e59732ff3d..6500d2e800deef206c695ff39e0c2abadc53796e`.
+- invocation: standard exact `gpt-5.6-sol` / high / read-only / ephemeral process completed with
+  exit 0 and final output. It returned two P2 findings. Because actionable findings already existed,
+  adversarial was not launched; `N_planned=2`, `N_actual=1`, degraded.
+- standard task: `019f70dc-eb62-7dc0-8f58-2bbeb8ccd3d2`; `REQUEST_CHANGES`, Red/Yellow/Info
+  `0 / 2 / 0`.
+- roots: system-wide attributes remained active during `reset --hard` despite disabled system config;
+  the design source-of-truth header lagged the Round 13 history and pending Round 14 phase.
+- formal synthesis: `REQUEST_CHANGES`, consolidated Red/Yellow/Info `0 / 2 / 0 — DO NOT ADVANCE`.
+- report: `.deep-review/reports/2026-07-18-090431-review.md`, SHA-256
+  `4314e052694d37090200f6698eba54d1dae3c92820862bd99699550148b79b8a`.
+- standard raw/final/stderr/argv SHA-256:
+  `fb7ab559b24eaf561256edaecf666750d32e48e1ee0decd4e6dfdeb6ecfd643e` /
+  `64eae057f7766b203426512c90e1e67b757efbc39c4a7eef6b2b5cd58bfac9ca` /
+  `539c5d88447b41698ad074172e66d20906ded62da70a440aa437bcc6bcd2bc8d` /
+  `94b2f8780de052300d2a26527fbc24c2f2a1de3f5f48b556f28959da98c5e07e`.
+- recurring findings: validated Stage 5.5 run `01KXS8R7J7060GMWAVCR9W3KM2`; architecture
+  `93→94`, security `38→39`; test-coverage `49` and error-handling `33` stayed unchanged.
+
+### Gate 1 fresh cycle 8 round 14 Respond
+
+- disposition: accepted both Yellow roots; rejected/deferred none; `execution_path=main_fallback`.
+- system attributes: the empty-map allowlist now includes `GIT_ATTR_NOSYSTEM=1`. The exact canonical
+  Git must make `git var GIT_ATTR_SYSTEM` return no enabled source before worktree creation and again
+  in the guarded no-checkout worktree immediately before materialization.
+- status authority: the design header now identifies Round 14 Respond, and the history records the
+  standard findings, degraded termination, response, and next exact review boundary.
+- unchanged authority: pre-Gate-6 SHA-256
+  `4bc32f7e955c39ff93f1faf15dce745b84f0647605f546d7f12f87ce6e8a8ec0`; Gate 6 SHA-256
+  `648504926fc529d9e02202399384c09d5bc2737884187ed9923c90f1270733a4`.
+- closure probe: `.deep-review/tmp/cycle8-round12-closure-probe.mjs`, SHA-256
+  `1e84a435077efcd1eafaf617074ecdb64148a8670c4b8b92909a00305df28625`; output SHA-256
+  `dc13484d810bf82d825d4c07e3846a4be3bd8260cf2c2abeb554a2d9347bec40`.
+- verification: embedded validator passed 46 tasks/372 fences. The probe additionally records
+  `system_attributes_disabled_before_worktree_and_materialization=true`. `npm run preflight` passed
+  1,463/1,463; log SHA-256
+  `ea734d6b085df766de92655d7a42b274c461d2dca8a904d33bb46340e1eaacf4`.
+- correction commit: `94e178146ec241b47c0f05da230bc6a23816da4e`.
+- response: `.deep-review/responses/2026-07-18-090818-response.md`, SHA-256
+  `c11144be261a39cb2f6545ee461285f19a84cf0598d653ae158b1698958f967e`.
+- Phase 6 main-fallback log: `.deep-review/tmp/phase6-cycle8-round14.log`, SHA-256
+  `7d4ee3d309031bca8ad32bb0fd9a03baf4ef7a142e936f2034cf9a8cfded138b`.
+- gate state: open. One final fresh Round 15 will review the current focused delta with two valid
+  same-target `gpt-5.6-sol`/high voices. Two `APPROVE`, Red/Yellow `0 / 0`, plus the existing main
+  verification close Gate 1 and advance directly to Gate 2. No extra speculative Round 16 follows.
+
 Each reviewed gate will add a receipt with all of these fields:
 
 ```text
