@@ -3480,6 +3480,41 @@ no inherited approval from the historical receipt.
 - gate state: open only for the native goal's two-voice proof. One correction-only Round 16 must
   produce two valid same-target `APPROVE`, Red/Yellow `0 / 0`; then Gate 1 closes and Gate 2 starts.
 
+### Gate 1 fresh cycle 8 round 16 correction-only review and Respond
+
+- focused base/target:
+  `45f18a875f4833da72ec7729b8ab33980db1d75c..f89140ac241555e9efed0e5ff187f2ae2b2fa2a3`.
+- standard task `019f729c-c36f-7c30-9c55-997f8dc36316`, exact `gpt-5.6-sol` / high /
+  read-only / ephemeral, completed exit 0 with one P2. Adversarial was not launched after the
+  actionable finding; `N_planned=2`, `N_actual=1`, degraded.
+- verdict: `REQUEST_CHANGES`, Red/Yellow/Info `0 / 1 / 0 — DO NOT COUNT AS CONVERGENCE`.
+- root: the protocol correction was sound, but the approximately 20-byte external report fixture was
+  smaller than metadata and could not falsify the old blanket remaining-suffix bound.
+- report: `.deep-review/reports/2026-07-18-093350-review.md`, SHA-256
+  `2b55e825170197388b8379e3ccc23c88d467726cc23f03d3d19d97bb397834f4`.
+- standard raw/final/stderr/argv SHA-256:
+  `c51508cf74ae347be7d41922850ca0617da3836c77bc9a45172400878581a41c` /
+  `a8a5ab1abdee70577197a3176eb9305c26c54586a6ac5292e808601295648582` /
+  `ac39b6435dd4c1450558eba78a8ebeea7bb8afbea066a4dd44b40975f743467c` /
+  `95ec0e2d8483f6961e40d1ea9471305950b780c693bd654af6e8b0f109f42527`.
+- response: use a 4,097-byte LF-terminated external report; assert it exceeds metadata; parse the
+  evidence suffix; replay exact report/response byte lengths and SHA-256 against frozen Buffers.
+- closure probe source/output SHA-256:
+  `0ede7a13b81ee21bcf4541dc518c96d4f3a9d3480f890359acbf22b822773b0a` /
+  `70e08218a371c3b7be823a53313b165473ed226715c77691c9dcdfbc48d017d7`.
+- verification: embedded validator 46 tasks/372 fences; oversized regression fact true;
+  `npm run preflight` 1,463/1,463, log SHA-256
+  `433a63ff5d921f524c4536cfe32720af4eaad42c30ffdf8503d3b7f4d573dd46`.
+- recurring findings: Stage 5.5 run `01KXSAAK03ZE6PQFEP8YVJ1SAF`; test-coverage `49→50`;
+  architecture `95`, security `40`, error-handling `33` unchanged.
+- correction commit: `ecb5b784caf805464916f068f0d910a39be4330c`.
+- response: `.deep-review/responses/2026-07-18-093547-response.md`, SHA-256
+  `cc826697265cf36ada4f396ea758b7f1fdf8415620870c89de3c44316ff7a270`.
+- Phase 6 log: `.deep-review/tmp/phase6-cycle8-round16.log`, SHA-256
+  `ccf76812d99cba64bc560804d065c722226a5d169324c335fcf26596489a131d`.
+- gate state: open only for two valid same-target approvals. The next review is limited to this
+  evidence-only correction; two approvals close Gate 1 and start Gate 2.
+
 ## Review receipt template
 
 ### Gate 1 fresh cycle 8 round 14 micro-delta review
