@@ -241,6 +241,26 @@ function exactPreparedAuthority(raw) {
   return { value, digest: contentHash(raw) };
 }
 
+function verifyFixedPreparedAuthority(root, authority, expectedObservation, native) {
+  const sameIdentity = (path, expected) => {
+    try {
+      const realpath = native.realpath(path);
+      const stat = native.stat(realpath);
+      const samePath = native.platform === 'win32'
+        ? realpath.toLowerCase() === expected.realpath.toLowerCase()
+        : realpath === expected.realpath;
+      return stat?.isDirectory?.() === true && samePath
+        && String(stat.dev) === expected.dev && String(stat.ino) === expected.ino;
+    } catch { return false; }
+  };
+  const cwdRequired = expectedObservation !== 'NONE';
+  if (!sameIdentity(root, authority.root)
+      || cwdRequired !== (authority.cwd !== null)
+      || cwdRequired && !sameIdentity(native.kernelCwd, authority.cwd)) {
+    throw new Error('INIT_PREPARED_AUTHORITY_MISMATCH');
+  }
+}
+
 async function readStructuredJson(options) {
   const line = await readStructuredLine(process.stdin, options);
   try { return JSON.parse(line); } catch { throw new Error('STRUCTURED_JSON_INVALID'); }
@@ -379,6 +399,7 @@ async function dispatchFixedInit(argv) {
   const expectedObservation = f['expected-preflight-digest'];
   if (!SHA_OR_NONE.test(expectedObservation || '')) throw new Error('USAGE_OBSERVATION_DIGEST');
   const authority = exactPreparedAuthority(f['prepared-authority']);
+  verifyFixedPreparedAuthority(root, authority.value, expectedObservation, native);
   let observation = null; let enumProfile = null;
   if (manual) {
     enumProfile = manualEnumProfile(f, flagArgs, expectedObservation);

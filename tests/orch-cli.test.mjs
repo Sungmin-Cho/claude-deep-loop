@@ -1433,6 +1433,48 @@ test('fixed full init response loss retries the same structured observation and 
   assert.equal(JSON.parse(retry.stdout.trim().split('\n').at(-1)).run_id, binding.attempt_id);
 });
 
+test('structured full verifies transported root and required cwd authority before READY or write', async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-fixed-authority-before-ready-')));
+  const observation = fixedObservation(root);
+  const nonce = '66666666666666666666666666666666';
+  const preflight = await runReady(['init-run', 'preflight', '--project-root', root, '--runtime',
+    'codex', '--stdin-mode', 'pipe-open-noecho', '--preflight-nonce', nonce,
+    '--observation-stdin'],
+  `DEEP_LOOP_STDIN_READY:v1:init-preflight:${nonce}:pipe-open-noecho`, observation);
+  assert.equal(preflight.code, 0, preflight.stderr);
+  const observationDigest = JSON.parse(preflight.stdout.trim().split('\n').at(-1)).observation_digest;
+  const fixed = ['--project-root', root, '--runtime', 'codex', '--goal', 'authority-before-ready',
+    '--app-continuation', 'manual', '--app-consent-authority', 'default-manual'];
+  const prepare = spawnSync(process.execPath, [CLI, 'init-run', 'prepare', ...fixed,
+    '--expected-observation-digest', observationDigest], { cwd: root, encoding: 'utf8' });
+  assert.equal(prepare.status, 0, prepare.stderr);
+  const binding = JSON.parse(prepare.stdout);
+  const full = authorityJson => ['init-run', ...fixed, '--init-attempt', binding.attempt_id,
+    '--expected-current-digest', binding.previous_current_digest,
+    '--expected-request-digest', binding.expected_request_digest,
+    '--expected-preflight-digest', observationDigest,
+    '--prepared-authority', authorityJson,
+    '--stdin-mode', 'pipe-open-noecho', '--app-host-input-stdin'];
+  for (const authority of [
+    { ...binding.prepared_authority,
+      root: { ...binding.prepared_authority.root, realpath: `${root}/.` } },
+    { ...binding.prepared_authority, cwd: null },
+  ]) {
+    const authorityJson = JSON.stringify(authority);
+    const authorityDigest = createHash('sha256').update(authorityJson).digest('hex');
+    const readyBinding = [binding.attempt_id, binding.previous_current_digest,
+      binding.expected_request_digest, observationDigest, authorityDigest].join('.');
+    const result = await runReady(full(authorityJson),
+      `DEEP_LOOP_STDIN_READY:v1:init-commit:${readyBinding}:pipe-open-noecho`, observation);
+    assert.equal(result.code, 1, result.stderr);
+    assert.equal(result.wrote, false, 'transported authority is fenced before host observation');
+    assert.equal(result.stdout.includes('DEEP_LOOP_STDIN_READY'), false);
+    assert.match(result.stderr, /INIT_PREPARED_AUTHORITY_MISMATCH/);
+    assert.equal(existsSync(join(root, '.deep-loop')), false,
+      'pre-READY authority rejection cannot create control state');
+  }
+});
+
 test('hard crash inside append-only init authority requires explicit manual compaction', () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-fixed-stale-')));
   execFileSync('git', ['init', '-b', 'main', root]);
