@@ -3739,3 +3739,59 @@ report path:
 verification commands:
 main-agent judgment:
 ```
+
+## Gate 3A pre-review implementation target
+
+- implementation base/candidate: `f15d42dc0a21a2f37d86aa1a3467f5e3a2820b53..ff64086e3c255e22c4439b1aa672bdb06394ef8f`.
+- candidate tree: `bf19bc442a16f6299dcf4a9a10018b7d6e3c3da2`; branch
+  `codex/codex-app-native-task-continuation`; tracked worktree clean before this evidence-only edit.
+- implementation commits, oldest first: `fcdd2ed`, `1cdaabc`, `dec93b1`, `e67485e`,
+  `2ae7276`, `c64d633`, `b5dbd5a`, `b0e9247`, `0c44c3f`, `1308128`, `ff64086`.
+- range stat: 13 files changed, 2,728 insertions, 11 deletions.
+- implementation artifact SHA-256:
+  - `schemas/loop-run.schema.json`: `4b5c9eb1fb34d14691a11ec0410f886507461b8f8d6830984861f628767d84f4`.
+  - `scripts/lib/app-task-continuation.mjs`: `c03dfe92e7ac60410c789d82bb7806e88cad8614eb4c51feccbbebabd2a6593a`.
+  - `scripts/lib/bounded-input.mjs`: `79cf359ecb7df3f6a167684ef048b7f81d311a68e956a50b63b909b9bc024923`.
+  - `scripts/lib/host-surface.mjs`: `093a5a351d746bc1ad4ede1f71f08ba93c692ee7ca7a76effefd07ea213afac6`.
+  - `scripts/lib/initrun.mjs`: `489f953d68d62d8e07140a435b7a0bbbdae3c91bc3d6cd31a85533170edbd9ce`.
+  - `scripts/lib/runtime.mjs`: `c8bf6bb2b1d1009b76dbef080c41e4f21efbb4867159b08cb0217c6bcaaf7f90`.
+  - `scripts/lib/schema.mjs`: `41d37807cf59f4945ce225d6a5cdc125614cec3f47731454358d34e6c088fd6f`.
+  - `tests/bounded-input.test.mjs`: `0e104fb0870a11109705aa58b184f453fa102968a3e773fefb19ce077ac96830`.
+  - `tests/cli-skillface.test.mjs`: `0ab28247921f173b3185227a434d23447767e3642287f807d02accdd96c17e2e`.
+  - `tests/host-surface.test.mjs`: `4b31a718f81ed052c4be3341f15cbbe4c4a2a5ae8ecc63b9c3ff2ba9167d156d`.
+  - `tests/initrun.test.mjs`: `3f310e52711a59e0e9527899a47fa9af92097e2cacaa7224fb1ec503d445712b`.
+  - `tests/runtime.test.mjs`: `636d436ef20af2b7e9757878435492e8944085a2f722485927bb76abf3b5f4dd`.
+  - `tests/schema.test.mjs`: `77b1ef1f49a082d44dcf4f1b68ec80db740567a64041519ed0f56c81bead9959`.
+- authority SHA-256: plan
+  `0236e407d1b939190fec7b48ea1c3f3a9968f38dcba1fecef890d3a9dc68c45a`; design
+  `3ae9407f1cb9f6f97a2726a303a303230692e7c4b96a9964f97779575698bac4`.
+- task-scoped independent review disposition:
+  - Task 1A approved after binding returned canonical paths to the exact identity check.
+  - Task 1B approved after Windows conventional-prefix, repeated-root-resolution, and direct
+    normalization coverage corrections.
+  - Task 2A approved after synchronous post-READY reentrancy was accepted at the correct boundary.
+  - Task 2B approved after synchronous timer settlement, exactly-once cleanup, and transport-scan
+    corrections.
+  - Task 3A approved after explicit route-bound consent validation and clone-isolation coverage.
+  - Task 3B approved with declarative/semantic correlation and projection bounds fully implemented.
+- non-blocking task-review disposition: Task 3A's valid-fork path passed the reviewer's focused probe;
+  the missing committed fork-positive case is coverage-only. Task 3B's self-cycle passed the focused
+  fail-closed probe and malformed/noncanonical ISO strings are rejected by the reviewed strict parser;
+  both remaining suggestions are test-hardening only, not observed implementation defects. Do not add
+  another task-review round solely for these approved Minor items; the Gate 3A adversarial checkpoint
+  may promote them only if it demonstrates a concrete uncovered defect.
+- Gate 3A checkpoint replay:
+  - focused group 1: PASS — 169/169; output SHA-256
+    `ea187001fc812056075f192d9cdf3a3ca2c0823db4bb0553d2dfce756e6bb54b`.
+  - focused group 2: PASS — 128/128; output SHA-256
+    `c2f0279360a7db65dfdd5d9ee3392c28284def5ba36b32d19cfc6ea6fa91ed3b`.
+  - `npm run preflight`: PASS — 1,511/1,511; output SHA-256
+    `0944d8a670ec8234825c1d7bd8a38c01bbb5af8c22accb6190107fe18ca6889e`.
+  - `git diff --check`: PASS with empty output SHA-256
+    `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+- ignored local review/runtime state at target preparation is expected: `.superpowers/` task briefs,
+  reports, and packages plus `.deep-review/` configuration, recurring findings, and temporary files.
+  No ignored file is part of the implementation payload or review authority.
+- review boundary: force-add and commit this evidence-only row, then review the exact resulting
+  commit over base `f15d42dc0a21a2f37d86aa1a3467f5e3a2820b53`. Any later code, test, schema,
+  plan, design, or release-document change invalidates the receipt and requires a fresh target.
