@@ -5,12 +5,34 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun, buildInitialLoop } from '../scripts/lib/initrun.mjs';
 import { readState, runDir } from '../scripts/lib/state.mjs';
+import { DEFAULT_APP_TASK_CONTINUATION } from '../scripts/lib/app-task-continuation.mjs';
 
 // Inject a no-signal env + no-op probe so detect-terminal deterministically yields launcher:'none'
 // regardless of the developer's ambient terminal environment.
 const noSignalEnv = {};
 const noSignalPlatform = 'linux';
 const noOpRun = () => ({ code: 1 });
+
+const validCreateObservation = (overrides = {}) => ({
+  kind: 'codex-app', source: 'codex-app-host-context',
+  host_task_cwd_source: 'app-task-context', host_task_cwd: '/project',
+  kernel_cwd_at_observation: '/project', observed_generation: 1,
+  structured_stdin_mode: 'pipe-open-noecho',
+  capabilities: ['list-projects', 'create-thread-local', 'structured-process-stdin'],
+  ...overrides,
+});
+
+const validAutoConsent = () => ({
+  mode: 'auto', authority: 'human-confirmed',
+  confirmed_at: '2026-07-13T00:00:00.000Z', revoked_at: null,
+});
+
+const buildAppGenesis = (overrides = {}) => buildInitialLoop({
+  runtime: 'codex', goal: 'g', protocol: 'standalone', recipe: {},
+  runId: '01JAPPBOUNDARY0000000000000',
+  now: new Date('2026-07-13T00:00:00.000Z'), sessionSpawn: null,
+  ...overrides,
+});
 
 test('buildInitialLoop autonomy defaults — spawn_style visible, new fields', () => {
   const loop = buildInitialLoop({ runtime: 'claude', runId: 'r2', goal: 'g', recipe: {}, now: new Date('2026-06-27T00:00:00Z'), env: noSignalEnv, platform: noSignalPlatform, run: noOpRun });
@@ -162,4 +184,120 @@ test('direct legacy builder call may omit initialization', () => {
     now: new Date('2026-07-13T00:00:00.000Z') });
   assert.equal(Object.hasOwn(loop, 'initialization'), false);
   assert.equal(loop.session_chain.sessions[0].host_surface, null);
+});
+
+test('App genesis rejects an invalid explicit auto consent without route or observation', () => {
+  assert.throws(
+    () => buildAppGenesis({ appContinuationConsent: {
+      mode: 'auto', authority: 'human-confirmed', confirmed_at: '', revoked_at: null,
+    } }),
+    /APP_CONSENT_INVALID/
+  );
+});
+
+test('App genesis stores valid create auto consent by value', () => {
+  const consent = validAutoConsent();
+  const loop = buildAppGenesis({
+    appContinuationRoute: 'create', hostObservation: validCreateObservation(),
+    appContinuationConsent: consent,
+  });
+  assert.deepEqual(loop.autonomy.app_task_continuation, consent);
+  assert.notStrictEqual(loop.autonomy.app_task_continuation, consent);
+});
+
+test('App genesis rejects every incomplete or mismatched auto consent boundary', () => {
+  const base = {
+    appContinuationRoute: 'create', hostObservation: validCreateObservation(),
+    appContinuationConsent: validAutoConsent(),
+  };
+  const cases = [
+    ['missing route', { appContinuationRoute: null }],
+    ['unknown route', { appContinuationRoute: 'resume' }],
+    ['route capability mismatch', { hostObservation: validCreateObservation({
+      capabilities: ['list-projects', 'create-thread-local'],
+    }) }],
+    ['later generation', { hostObservation: validCreateObservation({ observed_generation: 2 }) }],
+    ['malformed confirmation', { appContinuationConsent: {
+      ...validAutoConsent(), confirmed_at: 'not-a-timestamp',
+    } }],
+    ['wrong runtime', { runtime: 'claude' }],
+    ['wrong source', { hostObservation: validCreateObservation({ source: 'codex-cli' }) }],
+    ['cwd mismatch', { hostObservation: validCreateObservation({ host_task_cwd: '/other' }) }],
+    ['stdin mode mismatch', { hostObservation: validCreateObservation({
+      structured_stdin_mode: 'pipe-open',
+    }) }],
+  ];
+  for (const [label, override] of cases) {
+    assert.throws(() => buildAppGenesis({ ...base, ...override }), /APP_CONSENT_INVALID/, label);
+  }
+});
+
+test('App genesis manual default is fresh and never aliases the frozen constant', () => {
+  const first = buildAppGenesis();
+  assert.notStrictEqual(first.autonomy.app_task_continuation, DEFAULT_APP_TASK_CONTINUATION);
+  first.autonomy.app_task_continuation.mode = 'auto';
+  const second = buildAppGenesis({ runId: '01JAPPBOUNDARY0000000000001' });
+  assert.deepEqual(second.autonomy.app_task_continuation, DEFAULT_APP_TASK_CONTINUATION);
+  assert.equal(DEFAULT_APP_TASK_CONTINUATION.mode, 'manual');
+  assert.notStrictEqual(second.autonomy.app_task_continuation,
+    first.autonomy.app_task_continuation);
+});
+
+test('App genesis preserves generation-one host observation with clone isolation', () => {
+  const observation = validCreateObservation();
+  const loop = buildAppGenesis({
+    appContinuationRoute: 'create', hostObservation: observation,
+    appContinuationConsent: validAutoConsent(),
+  });
+  const stored = loop.session_chain.sessions[0].host_surface;
+  assert.equal(stored.observed_generation, 1);
+  assert.notStrictEqual(stored, observation);
+  assert.notStrictEqual(stored.capabilities, observation.capabilities);
+  observation.capabilities.push('caller-mutation');
+  assert.equal(stored.capabilities.includes('caller-mutation'), false);
+});
+
+test('App genesis stores precomputed project and session surfaces without probing', () => {
+  let probeCalls = 0;
+  const sessionSpawn = { launcher: 'precomputed', nested: { fixed: true } };
+  const loop = buildAppGenesis({
+    projectRoot: '/project', sessionSpawn,
+    run: () => { probeCalls++; throw new Error('terminal probe must not run'); },
+  });
+  assert.equal(loop.project.root, '/project');
+  assert.deepEqual(loop.session_spawn, sessionSpawn);
+  assert.notStrictEqual(loop.session_spawn, sessionSpawn);
+  assert.notStrictEqual(loop.session_spawn.nested, sessionSpawn.nested);
+  assert.equal(probeCalls, 0);
+});
+
+test('App genesis clones caller-owned initialization review consent and session spawn', () => {
+  const initialization = { request_projection: { fixed: true } };
+  const review = { reviewer: 'subagent-checker', points: ['implementation'],
+    flags: ['--contract'] };
+  const consent = { ...DEFAULT_APP_TASK_CONTINUATION };
+  const sessionSpawn = { launcher: 'precomputed', nested: { fixed: true } };
+  const loop = buildAppGenesis({ initialization, review,
+    appContinuationConsent: consent, sessionSpawn });
+  for (const [stored, input] of [
+    [loop.initialization, initialization], [loop.review, review],
+    [loop.autonomy.app_task_continuation, consent], [loop.session_spawn, sessionSpawn],
+  ]) assert.notStrictEqual(stored, input);
+  assert.notStrictEqual(loop.initialization.request_projection,
+    initialization.request_projection);
+  assert.notStrictEqual(loop.review.points, review.points);
+  assert.notStrictEqual(loop.session_spawn.nested, sessionSpawn.nested);
+  initialization.request_projection.fixed = false;
+  review.points.push('caller-mutation');
+  sessionSpawn.nested.fixed = false;
+  assert.equal(loop.initialization.request_projection.fixed, true);
+  assert.deepEqual(loop.review.points, ['implementation']);
+  assert.equal(loop.session_spawn.nested.fixed, true);
+});
+
+test('App genesis fails loudly for unsupported structured-clone input', () => {
+  assert.throws(
+    () => buildAppGenesis({ initialization: { unsupported() {} } }),
+    error => error?.name === 'DataCloneError'
+  );
 });

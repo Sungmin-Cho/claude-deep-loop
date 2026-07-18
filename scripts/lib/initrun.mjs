@@ -9,7 +9,7 @@ import { pluginPresent } from './detect.mjs';
 import { validateModel, validateEffort } from './session-profile.mjs';
 import { validateSessionRuntime } from './runtime.mjs';
 import { canonicalProjectRoot } from './project-root.mjs';
-import { DEFAULT_APP_TASK_CONTINUATION } from './app-task-continuation.mjs';
+import { DEFAULT_APP_TASK_CONTINUATION, validateGenesisConsent } from './app-task-continuation.mjs';
 
 export function resolveInitialReview(review, detected = {}) {
   if (review?.reviewer === 'standalone') throw new Error('REVIEWER_STANDALONE_INVALID: standalone reviewer is supported only for legacy-state resolution');
@@ -23,9 +23,15 @@ export function buildInitialLoop({ runtime, goal, protocol, recipe, detected = {
   now = new Date(), runId, git = {}, env = process.env, platform = process.platform,
   run = defaultProbeRun, pid = process.pid, model = null, effort = null,
   initialization, hostObservation = null, appContinuationConsent = null,
-  sessionSpawn = undefined, projectRoot = '' }) {
+  appContinuationRoute = null, sessionSpawn = undefined, projectRoot = '' }) {
   validateSessionRuntime(runtime);
   const resolvedReview = resolveInitialReview(review, detected);
+  const consent = appContinuationConsent == null
+    ? { ...DEFAULT_APP_TASK_CONTINUATION }
+    : appContinuationConsent;
+  const validatedConsent = validateGenesisConsent({
+    runtime, route: appContinuationRoute, observation: hostObservation, consent,
+  });
   const iso = now.toISOString();
   const loop = {
     schema_version: '0.2.0', run_id: runId, goal, status: 'running',
@@ -52,9 +58,7 @@ export function buildInitialLoop({ runtime, goal, protocol, recipe, detected = {
     connectors: { enabled: [], pre_authorized: [] },
     termination: { max_episodes_policy: 'derived', max_episodes: 24, proofs: ['implementation artifacts exist', 'independent review verdict approve or accepted concern', 'final report exists', 'human verification checklist written'] },
   };
-  loop.autonomy.app_task_continuation = appContinuationConsent == null
-    ? { ...DEFAULT_APP_TASK_CONTINUATION }
-    : structuredClone(appContinuationConsent);
+  loop.autonomy.app_task_continuation = structuredClone(validatedConsent);
   loop.session_chain.lease.handoff_transport = null;
   loop.session_chain.lease.handoff_attempt_id = null;
   loop.session_chain.lease.resume_policy ??= null;

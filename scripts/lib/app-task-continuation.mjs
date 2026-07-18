@@ -16,7 +16,8 @@ export function validateGenesisConsent({ runtime, route, observation, consent })
     ? COMPLETE_CREATE.every(value => capabilities.has(value))
     : route === 'fork' && COMPLETE_FORK.every(value => capabilities.has(value));
   const auto = consent?.mode === 'auto' && consent?.authority === 'human-confirmed'
-    && typeof consent.confirmed_at === 'string' && consent.revoked_at === null;
+    && typeof consent.confirmed_at === 'string'
+    && Number.isFinite(Date.parse(consent.confirmed_at)) && consent.revoked_at === null;
   if (!auto || runtime !== 'codex' || observation?.kind !== 'codex-app'
       || !['codex-app-host-context', 'codex-app-tool-provenance'].includes(observation.source)
       || observation.host_task_cwd_source !== 'app-task-context'
