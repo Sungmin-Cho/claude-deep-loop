@@ -194,6 +194,48 @@ test('enum-only Codex App observe records positive enums without host cwd author
     observed_at: '2026-07-13T00:00:01.000Z' });
 });
 
+test('enum-only observe fences an external kernel cwd before state or event write', () => {
+  const { root, runId } = observedRun();
+  const outside = realpathSync(mkdtempSync(join(tmpdir(), 'dl-observe-enum-outside-')));
+  const statePath = join(root, '.deep-loop', 'runs', runId, 'loop.json');
+  const before = { state: readFileSync(statePath), events: readLines(root, runId) };
+  const deps = { kernelCwd: outside, platform: process.platform,
+    realpath: value => realpathSync(value), stat: value => statSync(value, { bigint: true }),
+    sameFile: (left, right) => left.dev === right.dev && left.ino === right.ino,
+    nowFn: () => Date.parse('2026-07-13T00:00:01.000Z') };
+  assert.throws(() => observeHostSurface(root, runId, {
+    owner: runId, generation: 1, runtime: 'codex', readerMode: null,
+    observation: { kind: 'codex-app', source: 'codex-app-tool-provenance',
+      capabilities: ['create-thread-local', 'list-projects'], structured_stdin_mode: null,
+      host_task_cwd: null, host_task_cwd_source: null },
+  }, deps), /HOST_SURFACE_FENCED/);
+  assert.deepEqual(readFileSync(statePath), before.state);
+  assert.deepEqual(readLines(root, runId), before.events);
+});
+
+test('enum-only observe accepts one active recorded worktree as the kernel cwd', () => {
+  const { root, runId } = observedRun();
+  const worktree = join(root, '.worktrees', 'enum-observe');
+  mkdirSync(worktree, { recursive: true });
+  const loop = readState(root, runId).data;
+  loop.workstreams = [{ id: 'WS1', status: 'in_review', worktree: '.worktrees/enum-observe' }];
+  loop.active_workstreams = ['WS1'];
+  writeState(root, runId, loop);
+  const deps = { kernelCwd: worktree, platform: process.platform,
+    realpath: value => realpathSync(value), stat: value => statSync(value, { bigint: true }),
+    sameFile: (left, right) => left.dev === right.dev && left.ino === right.ino,
+    nowFn: () => Date.parse('2026-07-13T00:00:01.000Z') };
+  assert.equal(observeHostSurface(root, runId, {
+    owner: runId, generation: 1, runtime: 'codex', readerMode: null,
+    observation: { kind: 'codex-app', source: 'codex-app-tool-provenance',
+      capabilities: ['create-thread-local', 'list-projects'], structured_stdin_mode: null,
+      host_task_cwd: null, host_task_cwd_source: null },
+  }, deps).outcome, 'observed');
+  const stored = readState(root, runId).data.session_chain.sessions[0].host_surface;
+  assert.equal(stored.kernel_cwd_at_observation, realpathSync(worktree));
+  assert.equal(stored.host_task_cwd, null);
+});
+
 test('production initialized host surface cannot be upgraded by observe', () => {
   const { root, runId } = observedRun({ legacyNullSurface: false });
   const before = { state: readFileSync(join(root, '.deep-loop', 'runs', runId, 'loop.json')),

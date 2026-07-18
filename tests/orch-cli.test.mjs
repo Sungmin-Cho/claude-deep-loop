@@ -1576,6 +1576,21 @@ test('host-surface observe has exact grammar and safe malformed JSON diagnostics
       { cwd: root, encoding: 'utf8' });
     assert.equal(rejected.status, 2, rejected.stderr);
   }
+  const outside = realpathSync(mkdtempSync(join(tmpdir(), 'dl-observe-cli-outside-')));
+  const outsideBefore = {
+    state: readFileSync(join(root, '.deep-loop', 'runs', runId, 'loop.json')),
+    events: readLines(root, runId),
+  };
+  const outsideEnum = spawnSync(process.execPath, [CLI, 'host-surface', 'observe',
+    '--project-root', root, '--run-id', runId, '--owner', runId, '--generation', '1',
+    '--runtime', 'codex', '--manual-enums', '--host-surface', 'codex-app',
+    '--host-source', 'codex-app-tool-provenance', '--capabilities',
+    'create-thread-local,list-projects'], { cwd: outside, encoding: 'utf8' });
+  assert.equal(outsideEnum.status, 1, outsideEnum.stderr);
+  assert.match(outsideEnum.stderr, /HOST_SURFACE_FENCED/);
+  assert.deepEqual(readFileSync(join(root, '.deep-loop', 'runs', runId, 'loop.json')),
+    outsideBefore.state);
+  assert.deepEqual(readLines(root, runId), outsideBefore.events);
   const enumApp = spawnSync(process.execPath, [CLI, 'host-surface', 'observe',
     '--project-root', root, '--run-id', runId, '--owner', runId, '--generation', '1',
     '--runtime', 'codex', '--manual-enums', '--host-surface', 'codex-app',

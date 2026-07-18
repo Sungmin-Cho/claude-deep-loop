@@ -44,8 +44,12 @@ const sameObservation = (left, right) => JSON.stringify(withoutKernelAttestation
   === JSON.stringify(withoutKernelAttestation(right));
 
 function assertObservedTaskDirectory(root, loop, observation, deps) {
-  if (observation.kind !== 'codex-app' || observation.host_task_cwd === null) return;
-  const location = classifyProjectTaskDirectory(root, observation.host_task_cwd, deps);
+  if (observation.kind === null) return;
+  if (observation.host_task_cwd !== null
+      && !sameNativeDirectory(observation.host_task_cwd, deps.kernelCwd, deps)) {
+    throw new Error('HOST_SURFACE_FENCED');
+  }
+  const location = classifyProjectTaskDirectory(root, deps.kernelCwd, deps);
   if (location?.kind === 'root') return;
   if (location?.kind !== 'worktree') throw new Error('HOST_SURFACE_FENCED');
   const active = new Set(loop.active_workstreams ?? []);
