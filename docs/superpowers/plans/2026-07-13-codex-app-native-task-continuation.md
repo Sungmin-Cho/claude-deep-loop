@@ -12297,6 +12297,10 @@ const JOURNAL_CRASH_POINTS = new Set([
   'state-stage-after-rename', 'event-stage-after-rename', 'pending-after-rename',
   'event-after-partial-append', 'event-after-full-append', 'state-after-rename',
   'hash-after-rename', 'before-cleanup',
+  'state-replace-after-create', 'state-replace-after-fsync',
+  'state-replace-after-rename-before-dir-fsync',
+  'hash-replace-after-create', 'hash-replace-after-fsync',
+  'hash-replace-after-rename-before-dir-fsync',
 ]);
 
 function crashIfScheduled(stage) {
@@ -26390,6 +26394,7 @@ test('same-length staged-event corruption is rejected before any canonical mutat
       timeout: CRASH_WORKER_TIMEOUT_MS10D,
     });
   assertCrashWorkerExit10d(child);
+  rmdir10d(join(fixture.root, '.deep-loop', 'runs', fixture.runId, '.lock'));
   const canonicalBefore = canonicalBytes10d(fixture.root, fixture.runId);
   const stagePath = join(runDir(fixture.root, fixture.runId), '.anchored-events.stage');
   const corrupted = Buffer.from(read10d(stagePath));
@@ -26423,6 +26428,7 @@ test('published confirm marker plus a different receipt is the public App fence'
       timeout: CRASH_WORKER_TIMEOUT_MS10D,
     });
   assertCrashWorkerExit10d(child);
+  rmdir10d(join(fixture.root, '.deep-loop', 'runs', fixture.runId, '.lock'));
   const pending = journalBytes10d(fixture.root, fixture.runId);
   assert.throws(() => invoke({ different: true }), /APP_RECEIPT_FENCED/);
   assert.deepEqual(journalBytes10d(fixture.root, fixture.runId), pending);
@@ -26442,6 +26448,7 @@ test('published acquire marker accepts an equivalent normalized observation inte
       timeout: CRASH_WORKER_TIMEOUT_MS10D,
     });
   assertCrashWorkerExit10d(child);
+  rmdir10d(join(fixture.root, '.deep-loop', 'runs', fixture.runId, '.lock'));
   const result = invoke({ equivalentObservation: true });
   assert.equal(result.outcome, 'already-acquired');
   assert.equal(Object.keys(journalBytes10d(fixture.root, fixture.runId))
@@ -26455,6 +26462,7 @@ mutation before the injected crash:
 
 ```js
 import { spawnSync as spawn10dApp } from 'node:child_process';
+import { rmdirSync as rmdir10dApp } from 'node:fs';
 import { fileURLToPath as file10dApp } from 'node:url';
 
 function journalBytes10dApp(root, runId) {
@@ -26479,6 +26487,7 @@ test9a('published message-unconfirmed marker fences a wrong stdin mode before re
     });
   assert9a.notEqual(child.error?.code, 'ETIMEDOUT', 'message failure crash worker timed out');
   assert9a.equal(child.status, 91, child.stderr || child.stdout);
+  rmdir10dApp(join9a(fixture.root, '.deep-loop', 'runs', fixture.runId, '.lock'));
   const pending = journalBytes10dApp(fixture.root, fixture.runId);
   assert9a.throws(() => fail9a(fixture.root, fixture.runId,
     { owner: fixture.runId, generation: 1, attemptId: fixture.attemptId,
@@ -36323,10 +36332,10 @@ const implementationAuthorityRaw = implementationAuthorityMatch == null
 const gate6Raw = gate6HeadingMatch == null || gate6RawEnd < 0 ? ''
   : source.slice(gate6HeadingMatch.index, gate6RawEnd);
 const expectedImplementationAuthorityHash =
-  '0cad66912dbb501e648ea317f334e46918ecb0c2b84dc437a78cdfde7ca99878';
+  '0f4de641a1e7ff269f16374ec453f7c1255e45ae462a8f4bb9e418420f7e26aa';
 const expectedGate6SectionHash =
   '648504926fc529d9e02202399384c09d5bc2737884187ed9923c90f1270733a4';
-if (Buffer.byteLength(implementationAuthorityRaw, 'utf8') !== 1977949) {
+if (Buffer.byteLength(implementationAuthorityRaw, 'utf8') !== 1978535) {
   fail('pre-Gate-6 authority UTF-8 byte length differs from its exact reviewed binding');
 }
 if (createHash('sha256').update(implementationAuthorityRaw).digest('hex')
@@ -36629,6 +36638,21 @@ for (const task of taskMatches) {
     ]) {
       if (!basePoints.includes(`'${point}'`)) fail(`Task 7B BASE_POINTS omits ${point}`);
     }
+    const journalPoints = /const JOURNAL_CRASH_POINTS = new Set\(\[([\s\S]*?)\n\]\);/u
+      .exec(card)?.[1] ?? '';
+    for (const point of [
+      'state-stage-after-rename', 'event-stage-after-rename', 'pending-after-rename',
+      'event-after-partial-append', 'event-after-full-append', 'state-after-rename',
+      'hash-after-rename', 'before-cleanup',
+      'state-replace-after-create', 'state-replace-after-fsync',
+      'state-replace-after-rename-before-dir-fsync',
+      'hash-replace-after-create', 'hash-replace-after-fsync',
+      'hash-replace-after-rename-before-dir-fsync',
+    ]) {
+      if (!journalPoints.includes(`'${point}'`)) {
+        fail(`Task 7B JOURNAL_CRASH_POINTS omits ${point}`);
+      }
+    }
   }
   if (task[1] === '7D') {
     for (const token of ['callerBinding, intentDigest',
@@ -36876,6 +36900,8 @@ for (const task of taskMatches) {
       'published confirm marker plus a different receipt is the public App fence',
       'rmdirSync as rmdir10d',
       "rmdir10d(join(fixture.root, '.deep-loop', 'runs', fixture.runId, '.lock'))",
+      'rmdirSync as rmdir10dApp',
+      "rmdir10dApp(join9a(fixture.root, '.deep-loop', 'runs', fixture.runId, '.lock'))",
       "...(operation === 'recover' ? [] : [{ different: true }])",
       "'state-replace-after-create', 'state-replace-after-fsync'",
       "'state-replace-after-rename-before-dir-fsync'",
@@ -36885,6 +36911,11 @@ for (const task of taskMatches) {
     }
     if (card.includes('recoveryDigest')) {
       fail('Task 10D invents a recovery input that recoverRun does not bind');
+    }
+    const directCrashCleanups = card.match(
+      /assertCrashWorkerExit10d\(child\);\n  rmdir10d\(join\(fixture\.root, '\.deep-loop', 'runs', fixture\.runId, '\.lock'\)\);/gu) ?? [];
+    if (directCrashCleanups.length !== 3) {
+      fail(`Task 10D direct crash cleanup count: ${directCrashCleanups.length}`);
     }
     const dispatchStart = card.indexOf('export function dispatchPublicMutationCrash10d(');
     const dispatchEnd = card.indexOf('registerAnchoredCrashExtension(request =>', dispatchStart);

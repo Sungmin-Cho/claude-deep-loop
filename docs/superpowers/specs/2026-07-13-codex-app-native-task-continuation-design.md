@@ -2,7 +2,7 @@
 
 작성일: 2026-07-13
 운영 계약: `docs/handoff/2026-07-13-codex-app-native-task-continuation-goal-handoff.md`
-상태: Gate 2 round 1 Respond 완료; focused round 2 확인 뒤 Gate 3A 진행 예정
+상태: Gate 2 focused round 2 Respond 진행; 두 잔존 crash composition root 교정 중
 기준: `main@c38a96137f8f4f0099c35e893860930e8ee4cf73`, deep-loop `1.8.2`
 
 > source of truth: 이 문서 + 운영 계약 + 현재 저장소 + `git log`. 이전 대화 컨텍스트를 가정하지 말라.
@@ -1769,6 +1769,22 @@ request ID를 직접 검사한다. Corrected pre-Gate-6 authority SHA-256은
 `648504926fc529d9e02202399384c09d5bc2737884187ed9923c90f1270733a4`이고, embedded validator는
 46 tasks/372 fences로 통과했다. 다음 확인은 이 네 composition closure에 한정한 fresh two-reviewer
 round 2 한 번이며, 통과하면 추가 plan round 없이 Gate 3A로 이동한다.
+
+Gate 2 focused round 2는 exact target `87d98a2e37fdc1275949e3ca820b3764cfd58794`에서 두 valid
+`gpt-5.6-sol`/high final을 완료했고 서로 다른 Red 1씩을 찾았다. Adversarial은 Task 7B의 outer
+`BASE_POINTS`와 Task 10D dispatch를 열었어도 실제 publisher의 별도 `JOURNAL_CRASH_POINTS`가 원래
+8개만 허용해 replacement point가 첫 ordinary checkpoint에서
+`ANCHORED_TEST_CRASH_POINT_INVALID`로 끝나는 반례를 실행했다. Standard는 matrix helper 밖의
+same-length corruption, different confirm receipt, equivalent acquire, message-unconfirmed 네 direct
+exit-91 test가 각각 orphan run lock을 제거하지 않아 TTL 전에 의도한 public fence/recovery에 도달하지
+못함을 확인했다. 두 finding은 모두 accepted test-composition root다.
+
+Respond는 operative journal enum도 동일한 14 point로 닫고 embedded validator와 closure probe가
+`BASE_POINTS`와 `JOURNAL_CRASH_POINTS`를 따로 parse하게 한다. Task 10D의 세 direct finish-file
+worker와 한 app-task worker는 exit 91 확인 직후 각 fixture의 exact empty `.lock`만 제거한다. Validator는
+matrix helper의 단일 token에 만족하지 않고 세 adjacent direct cleanup과 app-test cleanup을 별도로
+요구한다. 이 correction 뒤 main validator/closure/full preflight를 다시 통과시키고, 두 exact root만
+minimal same-target 확인한다. 새 범위나 whole-plan round는 열지 않는다.
 
 구현 순서:
 
