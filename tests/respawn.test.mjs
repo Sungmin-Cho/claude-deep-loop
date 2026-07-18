@@ -112,11 +112,17 @@ const noSleep = () => {};
 
 test('respawnGate: total sessions may reach max_sessions but not exceed (off-by-one, Codex r3 🟡6)', () => {
   // 경계: sessions.length == max_sessions (pending child 가 max 번째) → 허용
-  const ok = seed((d) => { d.autonomy.max_sessions = 2; d.session_chain.sessions = [{ run_id: 'a' }, { run_id: 'b' }]; });
-  assert.equal(respawnGate(readState(ok.root, ok.runId).data, { now: NOW1 }).blocked_by.includes('max_sessions'), false);
+  const ok = seed();
+  const okProjection = readState(ok.root, ok.runId).data;
+  okProjection.autonomy.max_sessions = 2;
+  okProjection.session_chain.sessions.push({ run_id: 'b' });
+  assert.equal(respawnGate(okProjection, { now: NOW1 }).blocked_by.includes('max_sessions'), false);
   // 초과: sessions.length > max_sessions → 차단
-  const over = seed((d) => { d.autonomy.max_sessions = 1; d.session_chain.sessions = [{ run_id: 'a' }, { run_id: 'b' }]; });
-  const r = respawnGate(readState(over.root, over.runId).data, { now: NOW1 });
+  const over = seed();
+  const overProjection = readState(over.root, over.runId).data;
+  overProjection.autonomy.max_sessions = 1;
+  overProjection.session_chain.sessions.push({ run_id: 'b' });
+  const r = respawnGate(overProjection, { now: NOW1 });
   assert.equal(r.ok, false);
   assert.ok(r.blocked_by.includes('max_sessions'));
 });
@@ -124,17 +130,16 @@ test('respawnGate: total sessions may reach max_sessions but not exceed (off-by-
 // R4-plan: phantom failed-launch sessions (never acquired) must NOT consume max_sessions slots.
 test('respawnGate excludes failed_launch sessions from max_sessions (R4-plan, no phantom exhaustion)', () => {
   // 5 sessions but 4 are failed_launch phantoms → live count = 1 → not blocked even at max_sessions=1
-  const { root, runId } = seed((d) => {
-    d.autonomy.max_sessions = 1;
-    d.session_chain.sessions = [
-      { run_id: 'live', outcome: null },
+  const { root, runId } = seed();
+  const projection = readState(root, runId).data;
+  projection.autonomy.max_sessions = 1;
+  projection.session_chain.sessions.push(
       { run_id: 'p1', outcome: 'failed_launch' },
       { run_id: 'p2', outcome: 'failed_launch' },
       { run_id: 'p3', outcome: 'failed_launch' },
       { run_id: 'p4', outcome: 'failed_launch' },
-    ];
-  });
-  const r = respawnGate(readState(root, runId).data, { now: NOW1 });
+  );
+  const r = respawnGate(projection, { now: NOW1 });
   assert.equal(r.blocked_by.includes('max_sessions'), false, 'phantom failed_launch sessions must not exhaust max_sessions');
 });
 
@@ -518,11 +523,12 @@ test('crash after spawned-claim recovers via stale-TTL acquire (not permanently 
 
 // Codex r1 🟡8: 동시 다발 실패 시 게이트 순서(budget→breaker→max_sessions→wallclock) 보고가 일관적인지.
 test('respawnGate reports documented order; wallclock not mislabeled as budget', () => {
-  const { root, runId } = seed((d) => {
-    d.autonomy.max_sessions = 1; d.session_chain.sessions = [{ run_id: 'a' }, { run_id: 'b' }];
-    d.budget.max_wallclock_sec = 1;            // created_at(NOW0) 기준 NOW1 은 1h 경과 → wallclock 초과
-  });
-  const r = respawnGate(readState(root, runId).data, { now: NOW1 });
+  const { root, runId } = seed();
+  const projection = readState(root, runId).data;
+  projection.autonomy.max_sessions = 1;
+  projection.session_chain.sessions.push({ run_id: 'b' });
+  projection.budget.max_wallclock_sec = 1;     // created_at(NOW0) 기준 NOW1 은 1h 경과 → wallclock 초과
+  const r = respawnGate(projection, { now: NOW1 });
   assert.equal(r.ok, false);
   assert.ok(r.blocked_by.includes('max_sessions'));
   assert.ok(r.blocked_by.includes('wallclock'));

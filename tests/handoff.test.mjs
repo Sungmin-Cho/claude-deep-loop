@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cpSync, mkdirSync, mkdtempSync, existsSync, readFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
@@ -364,9 +364,13 @@ test('emitHandoff writes md + compaction-state(M3) + launch-command, chains sess
 test('legacy runtime handoff remains Claude-compatible', () => {
   const { root, runId } = seed();
   const { data } = readState(root, runId);
+  delete data.initialization;
   delete data.autonomy.session_runtime;
   delete data.autonomy.runtime_source;
+  data.event_log_head = { seq: 0, checksum: 'GENESIS' };
+  data.session_chain.sessions[0].host_surface = null;
   writeState(root, runId, data);
+  writeFileSync(join(runDir(root, runId), 'event-log.jsonl'), '');
   const r = emitHandoff(root, runId, {
     now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId), platform: POSIX_PLATFORM,
     descriptorBuilder: buildPosixDescriptor,

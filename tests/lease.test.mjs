@@ -440,9 +440,13 @@ test('acquireLease checks runtime before stale generation and paused unpause wit
 test('acquireLease treats only Claude as matching a valid legacy runtime state', () => {
   const { root, runId } = seed();
   const { data } = readState(root, runId);
+  delete data.initialization;
   delete data.autonomy.session_runtime;
   delete data.autonomy.runtime_source;
+  data.event_log_head = { seq: 0, checksum: 'GENESIS' };
+  data.session_chain.sessions[0].host_surface = null;
   writeState(root, runId, data);
+  writeFileSync(join(runDir(root, runId), 'event-log.jsonl'), '');
   releaseLease(root, runId, { owner: runId, generation: 1 });
 
   assert.deepEqual(

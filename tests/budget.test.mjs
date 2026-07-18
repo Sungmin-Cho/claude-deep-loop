@@ -25,6 +25,7 @@ import { nextAction } from '../scripts/lib/next-action.mjs';
 import { releaseLease, acquireLease } from '../scripts/lib/lease.mjs';
 import { finishRun } from '../scripts/lib/finish.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
+import { contentHash } from '../scripts/lib/envelope.mjs';
 
 function floorRun() {
   const root = mkdtempSync(join(tmpdir(), 'dl-floor-'));
@@ -55,6 +56,13 @@ function seedRun() {
   mkdirSync(runDir(root, 'R'), { recursive: true });
   writeState(root, 'R', minimalLoop(root, 'R'));
   return root;
+}
+
+function writeHashValidState(root, runId, data) {
+  const raw = JSON.stringify(data, null, 2);
+  const dir = runDir(root, runId);
+  writeFileSync(join(dir, 'loop.json'), raw);
+  writeFileSync(join(dir, '.loop.hash'), contentHash(raw));
 }
 
 const base = () => ({
@@ -184,12 +192,13 @@ test('Codex preflight receipt validation rejects altered usage and write-before-
   const mismatch = preflightReceiptFixture();
   const mismatchState = join(runDir(mismatch.root, mismatch.runId), 'loop.json');
   const stateBefore = readFileSync(mismatchState, 'utf8');
+  const eventsBefore = readLines(mismatch.root, mismatch.runId);
   assert.throws(() => settleCodexPreflightCost(mismatch.root, mismatch.runId, {
     receipt: { ...mismatch.read, usage: { ...mismatch.read.usage, output_tokens: 4, tokens: 6 } },
     fence: mismatch.fence,
   }), /PREFLIGHT_ACCOUNTING_RECEIPT_INVALID/);
   assert.equal(readFileSync(mismatchState, 'utf8'), stateBefore);
-  assert.deepEqual(readLines(mismatch.root, mismatch.runId), []);
+  assert.deepEqual(readLines(mismatch.root, mismatch.runId), eventsBefore);
 
   const predecessor = preflightReceiptFixture();
   assert.throws(() => settleCodexPreflightCost(predecessor.root, predecessor.runId, {
@@ -1514,28 +1523,28 @@ test('terminal Codex maker settlement rejects malformed session, runtime, proof,
     const fixture = terminalCodexChildRun();
     const { data } = readState(fixture.root, fixture.runId);
     data.session_chain.sessions.find(s => s.run_id === fixture.childRunId).turns = '1';
-    writeState(fixture.root, fixture.runId, data);
+    writeHashValidState(fixture.root, fixture.runId, data);
     assert.throws(() => invoke(fixture), /TERMINAL_ACCOUNTING_SESSION_INVALID/);
   }
   {
     const fixture = terminalCodexChildRun();
     const { data } = readState(fixture.root, fixture.runId);
     data.autonomy.session_runtime = 'claude';
-    writeState(fixture.root, fixture.runId, data);
+    writeHashValidState(fixture.root, fixture.runId, data);
     assert.throws(() => invoke(fixture), /RUNTIME_FENCED/);
   }
   {
     const fixture = terminalCodexChildRun();
     const { data } = readState(fixture.root, fixture.runId);
     delete data.termination.finished_at;
-    writeState(fixture.root, fixture.runId, data);
+    writeHashValidState(fixture.root, fixture.runId, data);
     assert.throws(() => invoke(fixture), /TERMINAL_ACCOUNTING_PROOF_MISSING/);
   }
   {
     const fixture = terminalCodexChildRun();
     const { data } = readState(fixture.root, fixture.runId);
     data.event_log_head = { seq: 0, checksum: 'GENESIS' };
-    writeState(fixture.root, fixture.runId, data);
+    writeHashValidState(fixture.root, fixture.runId, data);
     assert.throws(() => invoke(fixture), /LOG_TAMPERED/);
   }
   {

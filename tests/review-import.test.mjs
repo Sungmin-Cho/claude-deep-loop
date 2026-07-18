@@ -398,7 +398,9 @@ test('locked commit runtime snapshot is fenced if stored runtime changes after e
   await waitForEnvelope(f.root, f.runId);
   const state = readState(f.root, f.runId).data;
   state.autonomy.session_runtime = 'claude';
-  writeState(f.root, f.runId, state);
+  const raw = JSON.stringify(state, null, 2);
+  writeFileSync(join(runDir(f.root, f.runId), 'loop.json'), raw);
+  writeFileSync(join(runDir(f.root, f.runId), '.loop.hash'), contentHash(raw));
   rmdirSync(lock);
   const result = await proc.done;
   assert.equal(result.code, 3);
