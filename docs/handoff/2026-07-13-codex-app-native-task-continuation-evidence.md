@@ -3515,6 +3515,38 @@ no inherited approval from the historical receipt.
 - gate state: open only for two valid same-target approvals. The next review is limited to this
   evidence-only correction; two approvals close Gate 1 and start Gate 2.
 
+### Gate 1 fresh cycle 8 round 17 approval
+
+- focused base/target:
+  `f89140ac241555e9efed0e5ff187f2ae2b2fa2a3..de0f6eccedcb17e54ac3a6e5e66100e907698cf9`.
+- invocation: two independent exact `gpt-5.6-sol` / high / read-only / ephemeral processes,
+  both final and exit 0; `N_planned=2`, `N_actual=2`.
+- standard task `019f72a8-515a-7591-a398-81c16194fc20`: no actionable issue, normalized
+  `APPROVE`, Red/Yellow/Info `0 / 0 / 0`.
+- adversarial task `019f72ab-3084-7e82-9fa7-0d89991a230e`: explicit `APPROVE`,
+  Red/Yellow/Info `0 / 0 / 0`.
+- standard raw/final/stderr/argv SHA-256:
+  `e2c12e6cf0d5efeab91970b30ef03fc2adb1abfff857c6338bb7cd8e65f1814c` /
+  `8c678663bc1cfdbda9b1925b8b91773f797f5290752c6dd180a64ddf061159bb` /
+  `301f7d80302986a82b88001e3acf3a169e174377c67a73b48fce06a6765e7f11` /
+  `af8af026816ca715a6ca902cc3ea4fc6b96a8af05262a47a23956e13827dee96`.
+- adversarial raw/final/stderr/prompt/argv SHA-256:
+  `15d0b75a9f57f4429c680a6a20d1495da1c7adc5c8fd4b1466a9e0032adf4416` /
+  `f8f8cc15033da6263ae54081423326b65ea0fbcd1566b6d073fda17da01e5963` /
+  `c3e4f20261b8a2cc9ed1ee0b2e4fc82cd57bd3cd755c9af828f374b9cdcf5f37` /
+  `a10da83db2661af93b52ddec8bc5f1c5951a9a9a7f5ee29fe6cf9dfc8d184c0d` /
+  `07e7f5e4d0c71ef33c2fbb398d25841faf6196bc0b32d86de1edc8b9fdb1d86f`.
+- report: `.deep-review/reports/2026-07-18-095011-review.md`, SHA-256
+  `97e9b683b9675143428dd4c66d8a8264b17572b192497fc81be0a2dc8d85b817`.
+- main verification: closure probe source/output SHA-256
+  `0ede7a13b81ee21bcf4541dc518c96d4f3a9d3480f890359acbf22b822773b0a` /
+  `70e08218a371c3b7be823a53313b165473ed226715c77691c9dcdfbc48d017d7`;
+  embedded validator 46 tasks/372 fences; `npm run preflight` 1,463/1,463, log SHA-256
+  `09d4ec892cd09f781df306d383003eabc81ad916d79c6dafdab95adb8f861e30`.
+- recurring findings: Stage 5.5 run `01KXSB8N6HFMF4K212YNEYV494`; counts unchanged at
+  architecture `95`, test-coverage `50`, error-handling `33`, security `40`.
+- formal disposition: `APPROVE — GATE 1 COMPLETE`. Stop the Gate 1 loop and start Gate 2.
+
 ## Review receipt template
 
 ### Gate 1 fresh cycle 8 round 14 micro-delta review
