@@ -648,9 +648,9 @@ test('v1.5 (b′): finish 후 이벤트 낀 terminal run → post_finish_mutated
   const root = mkdtempSync(join(tmpdir(), 'dl-pfm-'));
   const { runId: self } = initRun(root, { runtime: 'claude', goal: 'self', now: FIXED });
   const { runId: tainted } = initRun(root, { runtime: 'claude', goal: 'tainted', now: FIXED });
+  const { runId: clean } = initRun(root, { runtime: 'claude', goal: 'clean', now: FIXED });
   finishFixture(root, tainted);
   businessEventFixture(root, tainted);                          // post-finish mutation (커널이 현재 막지 않음 — r2 판정)
-  const { runId: clean } = initRun(root, { runtime: 'claude', goal: 'clean', now: FIXED });
   finishFixture(root, clean);
   const out = computeInsights(root, { selfRunId: self, now: FIXED.getTime(), sleepFn: NOSLEEP });
   assert.deepEqual(out.post_finish_mutated, [tainted]);
