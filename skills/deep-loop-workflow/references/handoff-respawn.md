@@ -76,6 +76,83 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" handoff emit --reason "<reason>" --o
 - `handoffs/<timestamp>-compaction-state.json` — 압축 상태
 - `terminal/launch-command.txt` — 재시작 명령
 
+### Attended Codex App handoff protocol
+
+This branch is valid only for durable `runtime=codex`, parent `host_surface=codex-app` whose
+kernel-owned `observed_generation` exactly equals the current lease generation,
+`auto/human-confirmed` consent, a complete recorded route capability set, and a current attended App
+host assertion. The prepare mutation re-derives the same generation-bound authority under lock.
+A stale positive surface may only reach the human preserve-pause path; it cannot call an App tool.
+PreCompact and headless never enter this branch.
+
+1. Before any App task tool call, run this command from the actual current task cwd:
+   ```
+   node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" handoff emit --reason "<reason>" --trigger "<trigger>" --owner <owner_run_id> --generation <generation> --app-intent --project-root "<canonical_project_root>" --run-id <run_id>
+   ```
+   `--app-intent` is a boolean only: never put route, target cwd, workstream, attempt, project ID, or host payload in argv. The kernel derives root versus one recorded active worktree from fresh durable parent state plus `process.cwd()`, rechecks App surface/source/capabilities/stdin mode/auto consent in the final emit transaction, and generates or exact-reuses the App attempt. Generic emit remains legacy and cannot be upgraded.
+
+   If and only if this command fails with `APP_EMIT_AUTHORITY_FENCED`, make zero discovery or App
+   tool calls and read safe status. The stale-origin fallback is allowed only when status proves the
+   same logical run/owner/generation, `handoff_phase=idle`, no current App attempt, no
+   `recovery_pending`, and `manual_recovery=false`; any reservation, emitted child, terminal state,
+   foreign fence, corrupt read, or ambiguous result stops for manual diagnosis. With that exact
+   proof, run the same reason and trigger through generic `handoff emit`—the identical command above
+   with only `--app-intent` removed. Require its direct result to contain
+   `appOriginFallback=true`, then require safe status to show the same generic emitted child with
+   `resume_policy=human` before running:
+   ```
+   node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" pause --owner <owner_run_id> --generation <generation> --mode preserve --reason "app-authority-unconfirmed:<reason>" --project-root "<canonical_project_root>" --run-id <run_id>
+   ```
+   The kernel sets human policy in the generic emit transaction, so a concurrent driver is fenced
+   even before the pause commits. If the generic emit or pause result is lost, reconcile only by safe
+   status; never emit again. This stale-origin fallback makes zero `list_projects` calls, zero `app-task prepare` calls, zero public App tool calls, and zero `respawn` calls, then presents
+   manual `$deep-loop:deep-loop-resume` guidance.
+2. From the safe emit result/argumentless safe status obtain only `<emitted_attempt_id>`, then immediately run:
+   ```
+   node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" app-task status --attempt <emitted_attempt_id> --project-root "<canonical_project_root>" --run-id <run_id>
+   ```
+   Before any discovery or task call, verify emitted attempt/owner/generation/route: `logical_run_id=<run_id>`, `owner_run_id=<owner_run_id>`, `generation=<generation>`, `handoff_phase=emitted`, `current.attempt_id=<emitted_attempt_id>`, `current.phase=emitted`, and `current.route` matches the kernel-produced root `create` or exact active-worktree `fork` route. Missing/mismatched fields stop for manual recovery. This redacted check never reads whole sessions or raw IDs.
+3. Root route only after step 2: call `list_projects` exactly once through a bounded timeout/no-return wrapper. Build a bounded project projection containing only `projectId`, `projectKind`, and `path`, with at most 256 entries and at most the structured-input byte cap. If discovery throws, times out, never returns, is not an array, contains an invalid entry, exceeds either bound, or cannot be safely projected, mark discovery unavailable; do not retry and do not call `app-task fail` while the attempt is still `emitted`. Worktree fork/manual routes: `list_projects` call count is 0.
+4. Start the fixed prepare process:
+   ```
+   node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" app-task prepare --owner <owner_run_id> --generation <generation> --stdin-mode <pipe-open-noecho|pty-raw-noecho> --app-host-input-stdin --project-root "<canonical_project_root>" --run-id <run_id>
+   ```
+   Match the full exact `DEEP_LOOP_STDIN_READY:v1:app-prepare:<owner_run_id>.<generation>:<mode>` line. On successful root discovery send `{ "host_task_cwd": <current_host_task_cwd>, "projects": <bounded_projection> }`; on discovery unavailable send only `{ "host_task_cwd": <current_host_task_cwd> }` and omit the `projects` field. The latter must return `manual-preserve`, keep the child phase `emitted`, set human resume policy, and authorize zero App task actions. Send exactly one bounded JSON line through structured process input in either case. If the prepare process result is lost, boundedly poll that original process handle and make zero App task tool calls while it is live or unknown. Once exit is proven, read redacted exact-attempt status. Only a still-`emitted` attempt with `manual_recovery=false`, exact owner/generation, `handoff_phase=emitted`, and a live deadline may run the same prepare binding and byte-identical input once. An `emitted` projection with `manual_recovery=true` is the durable `manual-preserve` outcome: perform zero prepare retries, zero App task tool calls, and zero automatic sweep, then present manual recovery immediately. Only a `prepared` attempt with `manual_recovery=false` may run that exact re-entry to obtain `already-prepared` with `do_not_call=true`, then must make zero external App actions and wait for its strict deadline. For either an expired `emitted` attempt or an expired `prepared` attempt with `manual_recovery=false`, run exactly:
+   ```
+   node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" app-task sweep-unconfirmed --owner <owner_run_id> --generation <generation> --attempt <attempt_id> --project-root "<canonical_project_root>" --run-id <run_id>
+   ```
+   No new prepare or host action is allowed, and a lost sweep result is reconciled only by redacted exact-attempt status. Any phase/policy/fence mismatch stops without another mutating process.
+5. `do_not_call=true` means stop without any App tool call. Only a directly observed first exact `do_not_call=false` result authorizes one action; a lost actionable prepare response is never reconstructed from status or retried at the host-tool boundary.
+6. For `action.tool=create_thread`, pass `action.prompt` and `action.target` directly to `create_thread`.
+   Omit model and thinking. Success requires exactly one own `threadId` string that passes the bounded opaque receipt validator. Missing/multiple ID, another shape, `clientThreadId`, a control byte, or a UTF-8 value over 512 bytes is `invalid-host-receipt` failure.
+7. For `action.tool=fork_thread`, call `fork_thread` once with `environment.type=same-directory`. Before `send_message_to_thread`, pass the complete fork result through the same strict recursive receipt validator as create: the root must have a plain/null prototype; every traversed property must be an own enumerable data property; symbol, accessor, custom-prototype, function, non-finite/bigint/symbol value, or cyclic shapes fail; case-insensitive keys ending in `id|ids|identifier|identifiers` count as ID-shaped fields; and exactly one such field must exist as the own root `threadId` whose bounded opaque UTF-8 value is at most 512 bytes. Receipt traversal is fail-closed at maximum depth 32, maximum total nodes 1024, and maximum container entries 256; check array length before allocating or enumerating expected indices. Missing/multiple/nested/plural/alternate/control/surrogate/oversize/bounds-exceeded fork IDs are `invalid-host-receipt`; make zero message calls. Only after this validation, retain the fork ID in memory and call `send_message_to_thread` once for that same child with `action.followup.prompt`.
+   Omit model and thinking. A resolved null/undefined/string/finite-number/boolean send receipt, or a recursively valid plain object/exact plain array with zero ID-shaped fields, is success. An array must have `Array.prototype`. Array index descriptors must be canonical dense own data descriptors with `enumerable=true,writable=true,configurable=true`, and the canonical `length` data descriptor has `enumerable=false,writable=true,configurable=false`; custom key, symbol, accessor, hole, frozen/non-writable index, or subclass prototype fails. If a send receipt has an ID-shaped field, it must have exactly one own root `threadId`, pass the same bounded opaque validator, and byte-equal the fork ID. Any nested, plural, alternate, multiple, accessor, symbol, custom-prototype, cyclic, or mismatched send ID is `message-unconfirmed` with the already-known fork receipt and never authorizes a resend. Function, custom-array, and bounds-exceeded send receipts are the same `message-unconfirmed` failure.
+8. After create success or fork plus message success, start:
+   ```
+   node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" app-task confirm --owner <owner_run_id> --generation <generation> --attempt <attempt_id> --stdin-mode <pipe-open-noecho|pty-raw-noecho> --receipt-stdin --project-root "<canonical_project_root>" --run-id <run_id>
+   ```
+   For confirm, send the raw UTF-8 opaque ID itself, at most 512 bytes, followed by exactly one LF through structured process input. Match the full exact `DEEP_LOOP_STDIN_READY:v1:app-confirm:<attempt_id>:<mode>` line before sending; JSON, quotes, or an object are forbidden. A 513-byte value must fail closed. Never put the ID in argv, environment, temp files, logs, or reports. If the confirm process result is lost, boundedly poll only that original process handle; while liveness is unknown, stop. After exit is proven, read redacted exact-attempt status and run the exact confirm command again with the same raw receipt and mode—never another create/fork/send call. A committed first confirm returns the write-free `already-confirmed` (or exact acquired completion); an uncommitted live-deadline confirm performs the one commit. A different receipt, expired first confirm, or a second lost result stops for status/manual diagnosis.
+9. Start the await mutation:
+   ```
+   node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" app-task await --owner <owner_run_id> --generation <generation> --attempt <attempt_id> --project-root "<canonical_project_root>" --run-id <run_id>
+   ```
+   Only exact child acquisition is success.
+
+Timeout, no-return, dynamic error, malformed receipt, or uncertain completion is failure and does not authorize a host-tool retry. These commands are valid only after `do_not_call=false` changed the attempt to `prepared`; discovery failure follows step 3 instead.
+
+- With no usable receipt, run:
+  ```
+  node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" app-task fail --owner <owner_run_id> --generation <generation> --attempt <attempt_id> --code <host-call-timeout|host-call-no-return|host-call-failed|invalid-host-receipt> --project-root "<canonical_project_root>" --run-id <run_id>
+  ```
+  This ordinary fail form has no stdin flags, emits no READY, and consumes no receipt bytes. Do not start a second failure process if its result is lost; poll that handle and use redacted exact-attempt status.
+- For fork message uncertainty with the already-known fork receipt, start:
+  ```
+  node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" app-task fail --owner <owner_run_id> --generation <generation> --attempt <attempt_id> --code message-unconfirmed --stdin-mode <pipe-open-noecho|pty-raw-noecho> --receipt-stdin --project-root "<canonical_project_root>" --run-id <run_id>
+  ```
+  For message-unconfirmed, send the known raw UTF-8 opaque ID itself, at most 512 bytes, followed by exactly one LF. Match the full exact `DEEP_LOOP_STDIN_READY:v1:app-fail:<attempt_id>:<mode>` line before sending; JSON, quotes, or an object are forbidden. A 513-byte value must fail closed. Never resend the message.
+
+Do not resend, archive, delete, rename, pin, open a private URL, launch Claude, or launch a bare Codex executable.
+
 ## Visible Respawn 결정 흐름 (Task 12)
 
 handoff emit 후 spawn style을 결정한다.

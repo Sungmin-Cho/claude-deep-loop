@@ -1288,3 +1288,78 @@ test('App mutating command fence scanner covers every post-init mutation', () =>
   assert.equal(mutatingFenced(
     'node x/deep-loop.mjs host-surface stdin-probe --stdin-mode pipe-open-noecho'), true);
 });
+
+test('attended App handoff has one ordered public-tool route and no retry authority', () => {
+  const reference = readFileSync(join(ROOT, 'skills', 'deep-loop-workflow', 'references', 'handoff-respawn.md'), 'utf8');
+  const appStart = reference.indexOf('### Attended Codex App handoff protocol');
+  const appEnd = reference.indexOf('\n### ', appStart + 4);
+  assert.ok(appStart >= 0, 'missing App protocol section');
+  const appProtocol = reference.slice(appStart, appEnd < 0 ? reference.length : appEnd);
+  const rootOrder = ['handoff emit', '--app-intent', 'app-task status --attempt',
+    'verify emitted attempt/owner/generation/route', 'list_projects', 'bounded project projection',
+    'app-task prepare', 'do_not_call=false', 'create_thread', 'app-task confirm', 'app-task await'];
+  let cursor = -1;
+  for (const token of rootOrder) {
+    const next = appProtocol.indexOf(token, cursor + 1);
+    assert.ok(next > cursor, `root route missing or out of order: ${token}`);
+    cursor = next;
+  }
+  assert.match(appProtocol, /fork\/manual routes: `list_projects` call count is 0/);
+  assert.match(appProtocol, /fork_thread[\s\S]{0,2600}send_message_to_thread[\s\S]{0,1200}app-task confirm/);
+  assert.match(appProtocol, /create.*exactly one.*threadId/is);
+  assert.match(appProtocol, /clientThreadId.*failure/i);
+  assert.match(appProtocol,
+    /fork_thread[\s\S]{0,900}before `send_message_to_thread`[\s\S]{0,500}same strict recursive receipt validator/i);
+  assert.match(appProtocol,
+    /send receipt[\s\S]{0,700}zero ID-shaped fields[\s\S]{0,700}exactly one own root `threadId`[\s\S]{0,500}byte-equal/i);
+  assert.match(appProtocol,
+    /nested, plural, alternate, multiple, accessor, symbol, custom-prototype, cyclic, or mismatched send ID[\s\S]{0,500}`message-unconfirmed`/i);
+  assert.match(appProtocol,
+    /receipt traversal[\s\S]{0,260}depth 32[\s\S]{0,260}nodes 1024[\s\S]{0,260}container entries 256/i);
+  assert.match(appProtocol,
+    /array index descriptors[\s\S]{0,260}writable=true[\s\S]{0,260}configurable=true[\s\S]{0,320}length[\s\S]{0,220}configurable=false/i);
+  assert.match(appProtocol, /timeout.*no-return.*does not authorize.*retry/is);
+  assert.match(appProtocol,
+    /prepare process result is lost[\s\S]{0,900}boundedly poll[\s\S]{0,900}already-prepared[\s\S]{0,300}do_not_call=true[\s\S]{0,700}sweep-unconfirmed/i);
+  assert.match(appProtocol,
+    /still-`emitted`[\s\S]{0,500}manual_recovery=false[\s\S]{0,500}same prepare binding/i);
+  assert.match(appProtocol,
+    /`emitted`[\s\S]{0,500}manual_recovery=true[\s\S]{0,500}zero prepare retries[\s\S]{0,300}manual recovery/i);
+  const sweepLine = appProtocol.split('\n').find(line =>
+    line.includes('app-task sweep-unconfirmed --owner'));
+  assert.ok(sweepLine, 'response-loss/expiry path needs the literal sweep CLI');
+  for (const flag of ['--owner', '--generation', '--attempt', '--project-root', '--run-id']) {
+    assert.ok(sweepLine.includes(flag), `sweep command missing ${flag}`);
+  }
+  assert.match(appProtocol,
+    /confirm process result is lost[\s\S]{0,900}same raw receipt[\s\S]{0,500}already-confirmed/i);
+  assert.match(appProtocol, /list_projects[\s\S]{0,1800}omit the `projects` field[\s\S]{0,600}manual-preserve/i);
+  assert.match(appProtocol,
+    /APP_EMIT_AUTHORITY_FENCED[\s\S]{0,1200}handoff_phase=idle[\s\S]{0,900}same reason and trigger[\s\S]{0,900}generic `handoff emit`[\s\S]{0,900}appOriginFallback=true[\s\S]{0,600}resume_policy=human[\s\S]{0,900}pause --owner[\s\S]{0,500}--mode preserve/i);
+  assert.match(appProtocol,
+    /stale-origin fallback[\s\S]{0,1200}zero `list_projects`[\s\S]{0,500}zero `app-task prepare`[\s\S]{0,500}zero public App tool[\s\S]{0,500}zero `respawn`/i);
+  const failLines = appProtocol.split('\n').filter(line => line.includes('app-task fail --owner'));
+  assert.equal(failLines.length, 2, 'exact no-receipt and known-receipt failure commands');
+  const ordinaryFail = failLines.find(line => !line.includes('message-unconfirmed'));
+  const messageFail = failLines.find(line => line.includes('message-unconfirmed'));
+  for (const line of failLines) {
+    for (const flag of ['--owner', '--generation', '--attempt', '--code', '--project-root', '--run-id']) {
+      assert.ok(line.includes(flag), `failure command missing ${flag}`);
+    }
+  }
+  assert.doesNotMatch(ordinaryFail, /--stdin-mode|--receipt-stdin/,
+    'ordinary host failure must have no stdin or READY path');
+  assert.match(messageFail, /--stdin-mode <pipe-open-noecho\|pty-raw-noecho>.*--receipt-stdin/);
+  assert.match(appProtocol, /confirm[^\n]*raw UTF-8 opaque ID[^\n]*512 bytes[^\n]*exactly one LF/i);
+  assert.match(appProtocol, /message-unconfirmed[^\n]*raw UTF-8 opaque ID[^\n]*exactly one LF/i);
+  assert.match(appProtocol, /513-byte[^\n]*fail closed/i);
+  assert.doesNotMatch(appProtocol, /\{\s*"(?:thread_id|unconfirmed_thread_id)"\s*:/);
+  const appEmit = appProtocol.split('\n').find(line => line.includes('handoff emit') && line.includes('--app-intent'));
+  assert.ok(appEmit, 'missing attended App-bound emit');
+  assert.doesNotMatch(appEmit, /--(?:route|target-cwd|workstream|attempt|project-id)\b/);
+  assert.doesNotMatch(appProtocol, /(?:create_thread|fork_thread|send_message_to_thread)[^\n]*(?:model|thinking)/i);
+  for (const name of ['deep-loop-continue', 'deep-loop-handoff']) {
+    const source = readFileSync(skillPath(name), 'utf8');
+    assert.ok(source.includes('App handoff protocol in `handoff-respawn.md`'));
+  }
+});
