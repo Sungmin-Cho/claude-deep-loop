@@ -3,8 +3,9 @@ import path, { join } from 'node:path';
 import { contentHash, atomicWrite } from './envelope.mjs';
 import { validate } from './schema.mjs';
 import { appTransportBinding, leaseCheck } from './lease.mjs';
-import { appendAnchored, assertVerifiedRunSnapshot, directMutationOptions,
-  MUTATION_TURN_FLOOR, statePatchIntent } from './integrity.mjs';
+import { appendAnchored, assertVerifiedRunSnapshot, intentField, mutationIntentDigest,
+  MUTATION_TURN_FLOOR, readLines, statePatchIntent, withVerifiedMutationLock }
+  from './integrity.mjs';
 import { assertProjectRootBinding } from './project-root.mjs';
 import { ancestorPaths } from './path-portable.mjs';
 
@@ -186,61 +187,99 @@ export function withLock(root, runId, fn, { ttlMs = LOCK_STALE_TTL_MS, retries =
 //   sets lease.resume_policy='human' + lease.expires_at=null.
 // mode='rollback': additionally resets lease to active/idle and clears all handoff fields.
 // preCheck: owner/generation fence. Does NOT apply releasing carve-out (pause is privileged).
+function pauseFence(expect) {
+  return loop => {
+    const lease = loop.session_chain?.lease;
+    if (!lease || lease.owner_run_id !== expect.owner || lease.generation !== expect.generation) {
+      throw new Error('LEASE_FENCED: pauseRun wrong generation');
+    }
+  };
+}
+
+function exactPauseStateProjection(loop, reason, mode) {
+  const lease = loop.session_chain?.lease;
+  if (loop.status !== 'paused' || loop.pause_reason !== reason) return false;
+  return mode === 'rollback'
+    ? lease?.state === 'active' && lease.handoff_phase === 'idle'
+      && lease.handoff_child_run_id == null && lease.handoff_idempotency_key == null
+      && lease.expires_at == null
+    : lease?.resume_policy === 'human' && lease.expires_at == null;
+}
+
+function exactPauseEventPair(lines, index, reason, mode, expect) {
+  const pause = lines[index], floor = lines[index + 1];
+  const exactKeys = (value, keys) => JSON.stringify(Object.keys(value ?? {}).sort())
+    === JSON.stringify([...keys].sort());
+  return pause?.type === 'run-paused'
+    && exactKeys(pause.data, ['mode', 'reason'])
+    && pause.data.reason === reason && pause.data.mode === mode
+    && floor?.type === 'cost' && floor.seq === pause.seq + 1 && floor.ts === pause.ts
+    && exactKeys(floor.data, ['auto_floor', 'for', 'generation', 'owner', 'tokens', 'turns'])
+    && floor.data.auto_floor === true && floor.data.for === 'run-paused'
+    && floor.data.owner === expect.owner && floor.data.generation === expect.generation
+    && floor.data.turns === MUTATION_TURN_FLOOR && floor.data.tokens === 0;
+}
+
+function pauseReplayProjection(loop, lines, reason, mode, expect) {
+  const matching = lines.map((_, index) => index)
+    .filter(index => exactPauseEventPair(lines, index, reason, mode, expect));
+  if (matching.length === 0) return 'new';
+  const index = matching.at(-1);
+  const floor = lines[index + 1];
+  const immediate = matching.length === 1 && index === lines.length - 2
+    && floor?.seq === loop.event_log_head?.seq
+    && floor?.checksum === loop.event_log_head?.checksum
+    && exactPauseStateProjection(loop, reason, mode);
+  return immediate ? 'exact' : 'changed';
+}
+
 export function pauseRun(root, runId, {
   reason, mode = 'preserve', expect, now = Date.now(),
 } = {}) {
   if (!expect || typeof expect.owner !== 'string'
       || !Number.isSafeInteger(expect.generation)) throw new Error('FENCE_REQUIRED: pauseRun');
-  const recovered = appendAnchored(root, runId,
-    { type: 'run-paused', data: { reason: reason || 'fail-closed', mode } },
-    (loop) => {
-      loop.status = 'paused';
-      loop.pause_reason = reason || 'fail-closed';
-      if (mode === 'rollback') {
-        loop.session_chain.lease = {
-          ...loop.session_chain.lease,
-          state: 'active',
-          handoff_phase: 'idle',
-          handoff_child_run_id: null,
-          handoff_idempotency_key: null,
-          expires_at: null,
-        };
-      } else {
-        // preserve: keep lease.state + handoff_child_run_id intact; set resume_policy + expires_at
-        loop.session_chain.lease = {
-          ...loop.session_chain.lease,
-          resume_policy: 'human',
-          expires_at: null,
-        };
-      }
-    },
-    (loop) => {
-      const lease = loop.session_chain?.lease;
-      if (!lease || lease.owner_run_id !== expect.owner || lease.generation !== expect.generation) {
-        throw new Error('LEASE_FENCED: pauseRun wrong generation');
-      }
-      // Terminal guard (spec §1.2 / acquireLease mirror): completed/stopped runs must never be demoted to paused.
-      // Checked after fence so that LEASE_FENCED fires first when both conditions hold —
-      // drive-headless re-reads state to detect terminal after catching LEASE_FENCED.
-      if (loop.status === 'completed' || loop.status === 'stopped') {
-        throw new Error('RUN_TERMINAL: pauseRun');
-      }
-      if (appTransportBinding(loop)) throw new Error('APP_TRANSPORT_OWNED: pauseRun');
-    }, directMutationOptions('run-pause', expect,
-      { reason: reason || 'fail-closed', mode, now }, 'LEASE_FENCED: pauseRun', {
-        onRecovered: loop => {
-          const lease = loop.session_chain?.lease;
-          const exactLease = mode === 'rollback'
-            ? lease?.state === 'active' && lease.handoff_phase === 'idle'
-              && lease.handoff_child_run_id == null && lease.handoff_idempotency_key == null
-            : lease?.resume_policy === 'human';
-          if (loop.status !== 'paused'
-              || loop.pause_reason !== (reason || 'fail-closed') || !exactLease) {
-            throw new Error('STATE_RESPONSE_PROJECTION_CHANGED');
-          }
-          return undefined;
-        },
-      })
-  );
-  return recovered;
+  const pauseReason = reason || 'fail-closed';
+  const callerBinding = { owner: expect.owner, generation: expect.generation };
+  const intentDigest = mutationIntentDigest('run-pause', callerBinding, {
+    request_digest: intentField('run-pause-request', { reason: pauseReason, mode }),
+  });
+  const fenceCheck = pauseFence(expect);
+  return withVerifiedMutationLock(root, runId, { callerBinding, intentDigest,
+    fenceError: 'LEASE_FENCED: pauseRun' }, mutation => {
+    const loop = mutation.readVerifiedState({ fenceCheck }).data;
+    const replay = pauseReplayProjection(loop, readLines(root, runId),
+      pauseReason, mode, expect);
+    if (replay === 'exact') return undefined;
+    if (replay === 'changed') throw new Error('STATE_RESPONSE_PROJECTION_CHANGED');
+    return mutation.appendAnchored(
+      { type: 'run-paused', data: { reason: pauseReason, mode } },
+      candidate => {
+        candidate.status = 'paused';
+        candidate.pause_reason = pauseReason;
+        if (mode === 'rollback') {
+          candidate.session_chain.lease = {
+            ...candidate.session_chain.lease,
+            state: 'active',
+            handoff_phase: 'idle',
+            handoff_child_run_id: null,
+            handoff_idempotency_key: null,
+            expires_at: null,
+          };
+        } else {
+          // preserve: keep lease.state + handoff_child_run_id intact; set resume_policy + expires_at
+          candidate.session_chain.lease = {
+            ...candidate.session_chain.lease,
+            resume_policy: 'human',
+            expires_at: null,
+          };
+        }
+      }, candidate => {
+        // Terminal guard (spec §1.2 / acquireLease mirror): completed/stopped runs must never be
+        // demoted to paused. The split fence runs before verified proof, then these business guards.
+        if (candidate.status === 'completed' || candidate.status === 'stopped') {
+          throw new Error('RUN_TERMINAL: pauseRun');
+        }
+        if (appTransportBinding(candidate)) throw new Error('APP_TRANSPORT_OWNED: pauseRun');
+      }, { floor: MUTATION_TURN_FLOOR, nowFn: () => now, fenceCheck });
+  });
 }

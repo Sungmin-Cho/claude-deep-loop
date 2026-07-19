@@ -1,8 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { patch, readState, runDir, writeState } from '../scripts/lib/state.mjs';
@@ -386,6 +388,103 @@ test('paused exact reservation reports RUN_PAUSED before ordinary reserved polic
   assert.deepEqual(acquireLease(root, runId, { owner: runId, expectGeneration: 1,
     runtime: 'claude' }), { ok: false, generation: 1, reason: 'handoff-reserved' });
   assert.deepEqual(bytes7b(root, runId), before, 'both exclusions are write-free');
+});
+
+test('pause retry ignores a newly sampled clock and appends no duplicate event or floor', () => {
+  for (const mode of ['preserve', 'rollback']) {
+    const { root, runId } = seed();
+    const expect = { owner: runId, generation: 1 };
+    const reason = `stable-${mode}`;
+    assert.equal(pauseRun(root, runId, { reason, mode, expect,
+      now: Date.parse('2026-07-13T00:00:01.000Z') }), undefined);
+    const before = bytes7b(root, runId);
+    assert.equal(pauseRun(root, runId, { reason, mode, expect,
+      now: Date.parse('2026-07-13T00:00:09.000Z') }), undefined);
+    assert.deepEqual(bytes7b(root, runId), before, mode);
+    const lines = readLines7b(root, runId);
+    assert.equal(lines.filter(event => event.type === 'run-paused'
+      && event.data.reason === reason && event.data.mode === mode).length, 1, mode);
+    assert.equal(lines.filter(event => event.type === 'cost'
+      && event.data.auto_floor === true && event.data.for === 'run-paused').length, 1, mode);
+  }
+});
+
+test('pause retry recovers a committed response-after-cleanup crash without duplication', () => {
+  const { root, runId } = seed();
+  const reason = 'response-after-cleanup';
+  const mode = 'preserve';
+  const worker = fileURLToPath(new URL('./helpers/anchored-crash-worker.mjs', import.meta.url));
+  const child = spawnSync(process.execPath,
+    [worker, root, runId, 'state-pause', 'response-after-cleanup'], {
+      shell: false, encoding: 'utf8', timeout: 10_000,
+      env: { ...process.env, DEEP_LOOP_CRASH_OWNER: runId,
+        DEEP_LOOP_CRASH_GENERATION: '1',
+        DEEP_LOOP_CRASH_INPUT: JSON.stringify({ mode,
+          now: Date.parse('2026-07-13T00:00:01.000Z'), reason }) },
+    });
+  assert.notEqual(child.error?.code, 'ETIMEDOUT');
+  assert.equal(child.status, 91, child.stderr || child.stdout || child.error?.message);
+  rmdirSync(join(root, '.deep-loop', 'runs', runId, '.lock'));
+  const committed = bytes7b(root, runId);
+
+  assert.equal(pauseRun(root, runId, { reason, mode,
+    expect: { owner: runId, generation: 1 },
+    now: Date.parse('2026-07-13T00:00:09.000Z') }), undefined);
+  assert.deepEqual(bytes7b(root, runId), committed);
+  const lines = readLines7b(root, runId);
+  assert.equal(lines.filter(event => event.type === 'run-paused'
+    && event.data.reason === reason && event.data.mode === mode).length, 1);
+  assert.equal(lines.filter(event => event.type === 'cost'
+    && event.data.auto_floor === true && event.data.for === 'run-paused').length, 1);
+});
+
+test('pause retry rejects a displaced causal tail without writing', () => {
+  const { root, runId } = seed();
+  const expect = { owner: runId, generation: 1 };
+  pauseRun(root, runId, { reason: 'older-pause', mode: 'preserve', expect,
+    now: Date.parse('2026-07-13T00:00:01.000Z') });
+  pauseRun(root, runId, { reason: 'newer-pause', mode: 'preserve', expect,
+    now: Date.parse('2026-07-13T00:00:02.000Z') });
+  const before = bytes7b(root, runId);
+  assert.throws(() => pauseRun(root, runId,
+    { reason: 'older-pause', mode: 'preserve', expect,
+      now: Date.parse('2026-07-13T00:00:09.000Z') }),
+  /STATE_RESPONSE_PROJECTION_CHANGED/);
+  assert.deepEqual(bytes7b(root, runId), before);
+});
+
+test('a later lease generation may reuse the same pause reason and mode', () => {
+  const { root, runId } = seed();
+  const reason = 'generation-reuse';
+  pauseRun(root, runId, { reason, mode: 'preserve',
+    expect: { owner: runId, generation: 1 },
+    now: Date.parse('2026-07-13T00:00:01.000Z') });
+  rawHistory7b(root, runId, [{ type: 'run-recovered',
+    data: { owner_run_id: runId, generation: 1 },
+    now: Date.parse('2026-07-13T00:00:02.000Z') }], loop => {
+    const lease = loop.session_chain.lease;
+    lease.handoff_child_run_id = null;
+    lease.handoff_idempotency_key = null;
+    lease.handoff_phase = 'idle';
+    lease.state = 'released';
+    lease.expires_at = null;
+    lease.resume_policy = null;
+    loop.pause_reason = 'recovered:awaiting-resume';
+  });
+  assert.deepEqual(acquireLease(root, runId, { owner: runId, expectGeneration: 1,
+    runtime: 'claude', now: Date.parse('2026-07-13T00:00:03.000Z') }),
+  { ok: true, generation: 2, reason: 'acquired' });
+
+  assert.doesNotThrow(() => pauseRun(root, runId, { reason, mode: 'preserve',
+    expect: { owner: runId, generation: 2 },
+    now: Date.parse('2026-07-13T00:00:04.000Z') }));
+  const lines = readLines7b(root, runId);
+  assert.equal(lines.filter(event => event.type === 'run-paused'
+    && event.data.reason === reason && event.data.mode === 'preserve').length, 2);
+  const latestFloor = lines.filter(event => event.type === 'cost'
+    && event.data.auto_floor === true && event.data.for === 'run-paused').at(-1);
+  assert.equal(latestFloor.data.owner, runId);
+  assert.equal(latestFloor.data.generation, 2);
 });
 
 // ── v1.6 terminal guard (spec §2.1/§4-1) ─────────────────────────────────────

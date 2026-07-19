@@ -7,7 +7,7 @@ import { emitInsights } from '../../scripts/lib/insights.mjs';
 import { acquireLease, releaseLease, reserveHandoff } from '../../scripts/lib/lease.mjs';
 import { recordReviewVerdict, tripBreaker } from '../../scripts/lib/breaker.mjs';
 import { recordReviewed } from '../../scripts/lib/comprehension.mjs';
-import { patch } from '../../scripts/lib/state.mjs';
+import { patch, pauseRun } from '../../scripts/lib/state.mjs';
 import { newWorkstream } from '../../scripts/lib/workspace.mjs';
 import { recordCost, settleCodexPreflightCost, settleCodexProcessCost,
   settleTerminalCodexMakerCost } from '../../scripts/lib/budget.mjs';
@@ -126,6 +126,15 @@ const generic = Object.freeze({
     const input = parseInput(rawInput, ['field', 'value']);
     return patch(root, runId, input.field, input.value,
       { fence: { owner, generation } });
+  },
+  'state-pause': ({ root, runId, owner, generation, rawInput }) => {
+    const input = parseInput(rawInput, ['mode', 'now', 'reason']);
+    if (!['preserve', 'rollback'].includes(input.mode)
+        || !Number.isFinite(input.now) || typeof input.reason !== 'string') {
+      throw new Error('CRASH_INPUT_INVALID');
+    }
+    return pauseRun(root, runId, { mode: input.mode, now: input.now, reason: input.reason,
+      expect: { owner, generation } });
   },
   'workstream-new': ({ root, runId, owner, generation, rawInput }) => {
     const input = parseInput(rawInput,
