@@ -66,7 +66,7 @@ test('appendAnchored rechecks project-root binding in-lock before precheck, even
   const originalRoot = mkdtempSync(join(tmpdir(), 'dl-root-gateway-original-'));
   const candidateRoot = mkdtempSync(join(tmpdir(), 'dl-root-gateway-copy-'));
   const { runId } = initRun(originalRoot, { runtime: 'claude', goal: 'g', now: new Date('2026-07-11T00:00:00Z') });
-  appendAnchored(originalRoot, runId, { type: 'seed-event', data: {} }, () => {});
+  testAppend(originalRoot, runId, { type: 'seed-event', data: {} }, () => {});
   cpSync(join(originalRoot, '.deep-loop'), join(candidateRoot, '.deep-loop'), { recursive: true });
 
   const eventPath = join(runDir(candidateRoot, runId), 'event-log.jsonl');
@@ -76,7 +76,7 @@ test('appendAnchored rechecks project-root binding in-lock before precheck, even
   let preCheckRan = false;
 
   assert.throws(
-    () => appendAnchored(candidateRoot, runId, { type: 'must-not-append', data: {} }, () => {}, () => { preCheckRan = true; }),
+    () => testAppend(candidateRoot, runId, { type: 'must-not-append', data: {} }, () => {}, () => { preCheckRan = true; }),
     /PROJECT_ROOT_FENCED/
   );
   assert.equal(preCheckRan, false, 'root binding must reject before caller preCheck runs');
@@ -90,7 +90,7 @@ test('root rebind fails closed on log corruption before event, hash, or state mu
   const candidateRoot = join(parent, 'candidate');
   mkdirSync(originalRoot);
   const { runId } = initRun(originalRoot, { runtime: 'claude', goal: 'g', now: new Date('2026-07-11T00:00:00Z') });
-  appendAnchored(originalRoot, runId, { type: 'seed-event', data: {} }, () => {});
+  testAppend(originalRoot, runId, { type: 'seed-event', data: {} }, () => {});
   const storedRoot = readState(originalRoot, runId).data.project.root;
   renameSync(originalRoot, candidateRoot);
 
@@ -126,7 +126,7 @@ test('root rebind fails closed on log corruption before event, hash, or state mu
 });
 
 // ── v1.6 appendAnchored gateway terminal gate (spec §2.1.5/§4-1b) ────────────
-import { appendAnchored } from '../scripts/lib/integrity.mjs';
+import { appendAnchored, directMutationOptions } from '../scripts/lib/integrity.mjs';
 import { writeState, patch } from '../scripts/lib/state.mjs';
 
 function seededRun() {
@@ -134,20 +134,26 @@ function seededRun() {
   const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-07-09T00:00:00Z') });
   return { root, runId };
 }
+function testAppend(root, runId, event, mutate, preCheck) {
+  return appendAnchored(root, runId, event, mutate, preCheck,
+    directMutationOptions(`integrity-test-${event.type}`,
+      { owner: runId, generation: 1 }, { data: event.data },
+      'LEASE_FENCED: integrity-test'));
+}
 function makeTerminal(root, runId, status = 'completed') {
   return terminal7b(root, runId, { status });
 }
 
 test('appendAnchored: terminal gateway blocks any event after caller preCheck (spec §2.1.5)', () => {
   const { root, runId } = seededRun();
-  appendAnchored(root, runId, { type: 'x-pre', data: {} }, () => {});   // 로그 생성 (fresh run은 이벤트 0)
+  testAppend(root, runId, { type: 'x-pre', data: {} }, () => {});   // 로그 생성 (fresh run은 이벤트 0)
   makeTerminal(root, runId, 'completed');
   const logPath = join(runDir(root, runId), 'event-log.jsonl');
   const before = readFileSync(logPath, 'utf8');
   // ① preCheck 없는 직접 append → RUN_TERMINAL: append
-  assert.throws(() => appendAnchored(root, runId, { type: 'x-test', data: {} }, () => {}), /RUN_TERMINAL: append/);
+  assert.throws(() => testAppend(root, runId, { type: 'x-test', data: {} }, () => {}), /RUN_TERMINAL: append/);
   // ③ 순서 계약(4차 r1): caller preCheck의 특정 에러가 관문보다 우선 (fence-first)
-  assert.throws(() => appendAnchored(root, runId, { type: 'x-test', data: {} }, () => {},
+  assert.throws(() => testAppend(root, runId, { type: 'x-test', data: {} }, () => {},
     () => { throw new Error('LEASE_FENCED: owner-mismatch'); }), /LEASE_FENCED: owner-mismatch/);
   // 로그/상태 무변
   assert.equal(readFileSync(logPath, 'utf8'), before);
@@ -182,7 +188,7 @@ function transientRenameOptions(renameFn) {
 
 test('a transient state rename retry leaves one anchored event rather than replaying it', () => {
   const { root, runId } = seededRun();
-  appendAnchored(root, runId, { type: 'one-business-event', data: {} }, () => {});
+  testAppend(root, runId, { type: 'one-business-event', data: {} }, () => {});
   const before = readFileSync(join(runDir(root, runId), 'event-log.jsonl'), 'utf8');
   const data = readState(root, runId).data;
   let attempts = 0;
@@ -200,7 +206,7 @@ test('a transient state rename retry leaves one anchored event rather than repla
 
 test('exhausted state rename fails closed without replaying the anchored transaction', () => {
   const { root, runId } = seededRun();
-  appendAnchored(root, runId, { type: 'one-fail-stop-event', data: {} }, () => {});
+  testAppend(root, runId, { type: 'one-fail-stop-event', data: {} }, () => {});
   const eventPath = join(runDir(root, runId), 'event-log.jsonl');
   const before = readFileSync(eventPath, 'utf8');
   const data = readState(root, runId).data;

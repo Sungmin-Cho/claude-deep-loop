@@ -16,7 +16,7 @@ import { claimIndependentReview, dispatchReview, importReviewOutcome, recordRevi
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import { REVIEW_IMPORT_MAX_BYTES } from '../scripts/lib/bounded-input.mjs';
-import { appendAnchored } from '../scripts/lib/integrity.mjs';
+import { appendAnchored, directMutationOptions } from '../scripts/lib/integrity.mjs';
 import {
   REVIEW_IMPORT_MAX_ARTIFACTS,
   REVIEW_REPORT_BODY_MAX_BYTES,
@@ -207,7 +207,10 @@ test('import accepts only the checker plugin as canonical reviewer_id', () => {
   assert.throws(() => appendAnchored(unsupported.root, unsupported.runId,
     { type: 'state-patch', data: { field: 'test-reviewer-plugin' } }, state => {
       state.episodes.find(e => e.id === unsupported.checkerId).plugin = 'caller-chosen-reviewer';
-    }), /RUN_SNAPSHOT_INVALID/);
+    }, undefined, directMutationOptions('test-reviewer-plugin-drift',
+      { owner: unsupported.runId, generation: 1 },
+      { checker_id: unsupported.checkerId, plugin: 'caller-chosen-reviewer' },
+      'LEASE_FENCED: review-import-fixture')), /RUN_SNAPSHOT_INVALID/);
 });
 
 test('import rejects checker/target/maker parity and exact artifact set/hash mismatches without proof', () => {
@@ -233,7 +236,10 @@ test('import rejects checker/target/maker parity and exact artifact set/hash mis
   assert.throws(() => appendAnchored(parity.root, parity.runId,
     { type: 'state-patch', data: { field: 'test-maker-point' } }, state => {
       state.episodes.find(e => e.id === parity.makerId).point = 'plan';
-    }), /RUN_SNAPSHOT_INVALID/);
+    }, undefined, directMutationOptions('test-maker-point-drift',
+      { owner: parity.runId, generation: 1 },
+      { maker_id: parity.makerId, point: 'plan' },
+      'LEASE_FENCED: review-import-fixture')), /RUN_SNAPSHOT_INVALID/);
 });
 
 test('import requires a done maker and an in-progress claimed, unblocked, target-bound checker', () => {
@@ -247,7 +253,10 @@ test('import requires a done maker and an in-progress claimed, unblocked, target
     const mutateState = () => appendAnchored(f.root, f.runId,
       { type: 'state-patch', data: { field: `test-import-${label}` } }, state => {
         mutate(state, f);
-      });
+      }, undefined, directMutationOptions('test-review-import-state',
+        { owner: f.runId, generation: 1 },
+        { label, maker_id: f.makerId, checker_id: f.checkerId },
+        'LEASE_FENCED: review-import-fixture'));
     if (!validTransition) {
       assert.throws(mutateState, /RUN_SNAPSHOT_INVALID/, label);
       continue;

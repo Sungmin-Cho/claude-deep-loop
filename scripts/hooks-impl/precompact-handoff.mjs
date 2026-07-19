@@ -2,9 +2,11 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readBoundedText } from '../lib/bounded-input.mjs';
 import { detectMain } from '../lib/detect-main.mjs';
-import { readState, findRoot } from '../lib/state.mjs';
+import { findRoot, pauseRun } from '../lib/state.mjs';
+import { readVerifiedState } from '../lib/integrity.mjs';
 import { emitHandoff } from '../lib/handoff.mjs';
 import { respawnGate, resolveSpawnMode, rollbackAndPause } from '../lib/respawn.mjs';
+import { deriveAppEmitAuthority } from '../lib/app-task-continuation.mjs';
 
 /**
  * PreCompact emits a clean handoff only; measured fail-closed resumption is the cron `driveHeadless`
@@ -22,27 +24,130 @@ function currentRunId(root) {
   return existsSync(p) ? readFileSync(p, 'utf8').trim() : null;
 }
 
+function precompactPostEmitFence(expect) {
+  return current => {
+    const lease = current.session_chain?.lease;
+    if (lease?.owner_run_id !== expect.owner
+        || lease?.generation !== expect.generation) {
+      throw new Error('LEASE_FENCED: precompact-post-emit');
+    }
+  };
+}
+
 export async function runPreCompactHandoff(input = {}, {
   root = findRoot(process.cwd()),
   now = Date.now(),
   env = process.env,
   rollbackFn = rollbackAndPause,
+  emitFn = emitHandoff,
+  gateFn = respawnGate,
+  pauseFn = pauseRun,
+  cwdFn = process.cwd,
+  deriveAppAuthorityFn = deriveAppEmitAuthority,
 } = {}) {
   const runId = currentRunId(root);
   if (!runId) return { ok: true, action: 'no-run' };
   let loop;
-  try { ({ data: loop } = readState(root, runId)); } catch (e) { return { ok: false, action: 'error', reason: String(e.message || e) }; }
+  try {
+    loop = readVerifiedState(root, runId).data;
+  } catch (caught) {
+    return { ok: false, action: 'error',
+      reason: String(caught?.message || caught) };
+  }
   const lease = loop.session_chain?.lease || {};
   const expect = { owner: lease.owner_run_id, generation: lease.generation };
   const headless = resolveSpawnMode(loop, { headless: input.unattended === true, env }) === 'headless';
-  const em = emitHandoff(root, runId, { reason: 'pre-compact', trigger: 'pre-compact', headless, expect, env });
+  const ownerSession = loop.session_chain?.sessions?.find(session =>
+    session.run_id === expect.owner);
+  const appOrigin = loop.autonomy?.session_runtime === 'codex'
+    && ownerSession?.host_surface?.kind === 'codex-app';
+  let appIntent = false;
+  if (appOrigin) {
+    try {
+      deriveAppAuthorityFn(loop, root, expect.owner, cwdFn());
+      appIntent = true;
+    } catch (caught) {
+      if (!String(caught?.message || caught).startsWith('APP_EMIT_AUTHORITY_FENCED')) {
+        throw caught;
+      }
+    }
+  }
+  const em = emitFn(root, runId, {
+    reason: 'pre-compact',
+    trigger: 'pre-compact',
+    headless,
+    expect,
+    env,
+    appIntent,
+    cwdFn,
+    now,
+    nowFn: () => now,
+  });
   if (!em.ok) return { ok: false, action: 'fenced', reason: em.reason };
 
-  if (headless && loop.autonomy?.auto_handoff) {
-    // Gate check on POST-emit state (Fix 2): emitHandoff appended the reserved child session so
-    // sessions.length grew — respawnGate must see the fresh state or max_sessions is off-by-one.
-    const fresh = readState(root, runId).data;
-    const gate = respawnGate(fresh, { now });
+  if (appIntent) {
+    return { ok: true, action: 'emitted',
+      childRunId: em.childRunId, headless };
+  }
+  if (appOrigin) {
+    if (em.appOriginFallback !== true) {
+      throw new Error('APP_ORIGIN_FALLBACK_MISSING');
+    }
+    let fallback;
+    try {
+      fallback = readVerifiedState(root, runId, {
+        fenceCheck: precompactPostEmitFence(expect),
+      }).data;
+    } catch (caught) {
+      if (String(caught?.message || caught).startsWith('LEASE_FENCED:')) {
+        return { ok: false, action: 'fenced',
+          reason: 'lease-changed-after-precompact-emit',
+          childRunId: em.childRunId, headless };
+      }
+      throw caught;
+    }
+    const fallbackLease = fallback.session_chain?.lease || {};
+    const exactFallback = fallback.status === 'running'
+      && fallbackLease.state === 'releasing'
+      && fallbackLease.handoff_phase === 'emitted'
+      && fallbackLease.handoff_child_run_id === em.childRunId
+      && fallbackLease.resume_policy === 'human'
+      && fallbackLease.handoff_transport == null
+      && fallbackLease.handoff_attempt_id == null;
+    if (!exactFallback) throw new Error('APP_ORIGIN_FALLBACK_INVALID');
+    try {
+      pauseFn(root, runId, { reason: 'app-authority-unconfirmed',
+        mode: 'preserve', expect, now });
+    } catch (caught) {
+      const message = String(caught?.message || caught);
+      if (message.startsWith('RUN_TERMINAL')) {
+        return { ok: false, action: 'terminal', reason: 'RUN_TERMINAL' };
+      }
+      if (message.startsWith('LEASE_FENCED')) {
+        return { ok: false, action: 'fenced',
+          reason: 'lease-changed-before-pause', childRunId: em.childRunId, headless };
+      }
+      throw caught;
+    }
+    return { ok: true, action: 'app-authority-unconfirmed-paused',
+      childRunId: em.childRunId, headless };
+  }
+
+  let fresh;
+  try {
+    fresh = readVerifiedState(root, runId, {
+      fenceCheck: precompactPostEmitFence(expect),
+    }).data;
+  } catch (caught) {
+    if (String(caught?.message || caught).startsWith('LEASE_FENCED:')) {
+      return { ok: false, action: 'fenced',
+        reason: 'lease-changed-after-precompact-emit',
+        childRunId: em.childRunId, headless };
+    }
+    throw caught;
+  }
+  if (headless && fresh.autonomy?.auto_handoff) {
+    const gate = gateFn(fresh, { now });
     if (!gate.ok) {
       // R12-LL fix: gate-blocked must ROLLBACK (invalidate reserved child), not merely set status=paused.
       // A status-only pause leaves handoff_child_run_id intact, allowing a human to bypass the gate via
@@ -57,10 +162,9 @@ export async function runPreCompactHandoff(input = {}, {
       if (res.fenced) return { ok: false, action: 'fenced', reason: 'lease-changed-before-pause', childRunId: em.childRunId, headless };
       return { ok: true, action: 'gate-blocked-paused', childRunId: em.childRunId, headless };
     }
-    // Gate open: handoff emitted with lease=releasing; measured cron driveHeadless will resume via round-2 handshake.
-    return { ok: true, action: 'emitted', childRunId: em.childRunId, headless };
   }
-  return { ok: true, action: 'emitted', childRunId: em.childRunId, headless };   // interactive → human uses terminal/launch-command.txt
+  return { ok: true, action: 'emitted',
+    childRunId: em.childRunId, headless };
 }
 
 // CLI 진입 — best-effort, 절대 compaction 차단 안 함.

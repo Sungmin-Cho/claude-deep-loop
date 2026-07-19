@@ -15,7 +15,8 @@ import {
 } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
-import { findRoot, pauseRun, readState, runDir, withLock } from './state.mjs';
+import { findRoot, pauseRun, runDir, withLock } from './state.mjs';
+import { readVerifiedState } from './integrity.mjs';
 import {
   codexCheckerClaimHash,
   recordCost,
@@ -48,6 +49,8 @@ import {
   sameCheckerIdentity,
 } from './codex-checker.mjs';
 import { emitHandoff } from './handoff.mjs';
+import { appTransportBinding } from './lease.mjs';
+import { sweepUnconfirmedAppTask } from './app-task-continuation.mjs';
 import { STREAM_LIMITS } from './usage-parser.mjs';
 import {
   listProcessUsageReceipts,
@@ -245,6 +248,50 @@ function exactChildAcquired(loop, childRunId) {
   return typeof child?.started_at === 'string' && child.started_at.length > 0;
 }
 
+function headlessParentFence(expect) {
+  return loop => {
+    const lease = loop.session_chain?.lease;
+    if (lease?.owner_run_id !== expect.owner || lease?.generation !== expect.generation) {
+      throw new Error('LEASE_FENCED: headless-parent');
+    }
+  };
+}
+
+const readParentAuthority = (root, runId, expect) =>
+  readVerifiedState(root, runId, { fenceCheck: headlessParentFence(expect) }).data;
+
+function headlessAppDisposition(root, runId, loop, {
+  now, parentFence, cwdFn, sweepAppTaskFn,
+}) {
+  const binding = appTransportBinding(loop);
+  if (binding == null) return null;
+  const phase = binding.continuation.phase;
+  const deadline = phase === 'emitted' ? binding.continuation.prepare_deadline
+    : phase === 'prepared' ? binding.continuation.confirmation_deadline : null;
+  if (deadline != null && Number.isFinite(Date.parse(deadline))
+      && now > Date.parse(deadline)) {
+    const swept = sweepAppTaskFn(root, runId, {
+      owner: parentFence.owner,
+      generation: parentFence.generation,
+      attemptId: binding.continuation.attempt_id,
+    }, { cwdFn, nowFn: () => now });
+    if (['swept', 'already-swept'].includes(swept.outcome)) {
+      const afterSweep = readParentAuthority(root, runId, parentFence);
+      const settled = appTransportBinding(afterSweep);
+      if (settled?.continuation?.attempt_id !== binding.continuation.attempt_id
+          || settled.continuation.phase !== 'failed'
+          || afterSweep.status !== 'paused'
+          || settled.lease.resume_policy !== 'human'
+          || settled.lease.expires_at != null) {
+        throw new Error('APP_SWEEP_PROJECTION_INVALID');
+      }
+      return { ok: true, action: 'app-swept', reason: swept.outcome };
+    }
+  }
+  return { ok: true, skipped: true,
+    action: 'app-transport-owned', reason: 'kernel-only-wait' };
+}
+
 function pendingHandoff(loop) {
   const lease = loop.session_chain?.lease || {};
   return (lease.handoff_phase === 'emitted' || lease.handoff_phase === 'spawned')
@@ -322,33 +369,21 @@ function processAccountingFailureReason(error) {
   return 'settlement-invalid';
 }
 
-function pauseWithFreshFence(root, runId, { reason, expect, now }) {
-  const attempt = (fence) => pauseRun(root, runId, {
-    reason,
-    mode: 'preserve',
-    expect: fence,
-    now,
-  });
+function pauseAfterParentRace(root, runId, {
+  reason, expect, now, childRunId, pauseFn,
+}) {
   try {
-    attempt(expect);
+    pauseFn(root, runId, { reason, mode: 'preserve', expect, now });
     return 'paused';
-  } catch (error) {
-    const message = String(error?.message || error);
+  } catch (caught) {
+    const message = String(caught?.message || caught);
     if (message.startsWith('RUN_TERMINAL')) return 'terminal';
-    if (!message.startsWith('LEASE_FENCED')) throw error;
+    if (!message.startsWith('LEASE_FENCED')) throw caught;
   }
-  const { data: freshLoop } = readState(root, runId);
-  if (terminal(freshLoop)) return 'terminal';
-  const freshLease = freshLoop.session_chain?.lease || {};
-  try {
-    attempt({ owner: freshLease.owner_run_id, generation: freshLease.generation });
-    return 'paused';
-  } catch (error) {
-    const message = String(error?.message || error);
-    if (message.startsWith('RUN_TERMINAL')) return 'terminal';
-    if (message.startsWith('LEASE_FENCED')) return 'raced';
-    throw error;
-  }
+  const current = readVerifiedState(root, runId).data;
+  if (terminal(current)) return 'terminal';
+  if (exactChildAcquired(current, childRunId)) return 'acquired';
+  return 'raced';
 }
 
 function pauseWithOriginalFence(root, runId, { reason, expect, now }) {
@@ -430,7 +465,7 @@ function driveIndependentChecker({
       if (message.includes('LEASE_FENCED') || message.includes('RUN_TERMINAL')) {
         return { ok: false, action: message.includes('RUN_TERMINAL') ? 'terminal' : 'fenced', reason };
       }
-      const { data: raceLoop } = readState(projectRoot, runId);
+      const raceLoop = readVerifiedState(projectRoot, runId).data;
       const raced = inProgressIndependentChecker(raceLoop);
       if (raced) {
         return {
@@ -635,7 +670,7 @@ function driveIndependentChecker({
     return { ok: false, action: pauseOutcome === 'fenced' ? 'fenced' : 'preflight-failed', reason: preflight.reason };
   }
 
-  const { data: postCostLoop } = readState(projectRoot, runId);
+  const postCostLoop = readParentAuthority(projectRoot, runId, parentFence);
   const postLease = postCostLoop.session_chain?.lease || {};
   if (postLease.owner_run_id !== parentOwner || postLease.generation !== parentGeneration
     || sessionRuntime(postCostLoop) !== 'codex' || canonicalProjectRoot(postCostLoop.project.root) !== projectRoot) {
@@ -662,7 +697,7 @@ function driveIndependentChecker({
     const message = String(error?.message || error);
     if (message.includes('LEASE_FENCED')) return { ok: false, action: 'fenced', reason: 'checker-claim-failed' };
     if (message.includes('RUN_TERMINAL')) return { ok: false, action: 'terminal', reason: 'checker-claim-failed' };
-    const { data: raceLoop } = readState(projectRoot, runId);
+    const raceLoop = readVerifiedState(projectRoot, runId).data;
     const raced = inProgressIndependentChecker(raceLoop);
     if (raced) {
       return {
@@ -752,7 +787,7 @@ function driveIndependentChecker({
 
   const identityFresh = () => {
     try {
-      const { data: freshLoop } = readState(projectRoot, runId);
+      const freshLoop = readParentAuthority(projectRoot, runId, parentFence);
       const freshLease = freshLoop.session_chain?.lease || {};
       const freshExecutable = revalidateExecutable(freshLoop.autonomy?.runtime_executable_approval);
       const freshHome = resolveCodexHome({ env, expectedIdentity: codexHome, platform: freshExecutable.platform });
@@ -792,7 +827,10 @@ function driveIndependentChecker({
         && sameValue(inspectResumeSkill(kernelPath), kernelSnapshot)
         && sameValue(inspectResumeSkill(process.execPath, { maxBytes: TRUSTED_NODE_MAX_BYTES }), nodeSnapshot)
         && sameCheckerIdentity(freshCheckerSkill, checkerSkillSnapshot);
-    } catch {
+    } catch (caught) {
+      if (String(caught?.message || caught).startsWith('RUN_SNAPSHOT_INVALID')) {
+        throw caught;
+      }
       return false;
     }
   };
@@ -886,7 +924,7 @@ function driveIndependentChecker({
   }
   if (imported?.ok) {
     try {
-      const { data: proofLoop } = readState(projectRoot, runId);
+      const proofLoop = readVerifiedState(projectRoot, runId).data;
       const proofChecker = proofLoop.episodes.find(episode => episode.id === pending.id);
       if (!['approved', 'rejected'].includes(proofChecker?.status)
         || proofChecker.review_source !== 'imported-stdin'
@@ -894,7 +932,10 @@ function driveIndependentChecker({
         || !sameValue(proofChecker.review_claim, claimed.claim)) {
         imported = { ok: false, reason: 'checker-import-proof-missing' };
       }
-    } catch {
+    } catch (caught) {
+      if (String(caught?.message || caught).startsWith('RUN_SNAPSHOT_INVALID')) {
+        throw caught;
+      }
       imported = { ok: false, reason: 'checker-import-proof-missing' };
     }
   }
@@ -908,7 +949,7 @@ function driveIndependentChecker({
 
   let continuation = false;
   let continuationFailure = null;
-  const { data: afterImport } = readState(projectRoot, runId);
+  const afterImport = readParentAuthority(projectRoot, runId, parentFence);
   if (afterImport.status === 'running') {
     try {
       const handoff = emitHandoffFn(projectRoot, runId, {
@@ -1012,27 +1053,35 @@ function driveHeadlessRunLocked({
   claimReviewFn = claimIndependentReview,
   blockReviewFn = blockIndependentReview,
   revalidateClaimFn = revalidateIndependentReviewClaim,
+  sweepAppTaskFn = sweepUnconfirmedAppTask,
+  cwdFn = process.cwd,
+  pauseFn = pauseRun,
+  beforeMakerAuthorityReadFn = () => {},
   attemptIdFactory,
 } = {}) {
   const sampleNow = typeof clock === 'function' ? clock : (now === undefined ? Date.now : () => now);
   const entryNow = now === undefined ? sampleNow() : now;
-  let { data: initialLoop } = readState(root, runId);
+  let initialLoop;
+  try {
+    initialLoop = readVerifiedState(root, runId, {
+      fenceCheck: expect == null ? undefined : headlessParentFence(expect),
+    }).data;
+  } catch (caught) {
+    if (String(caught?.message || caught).startsWith('LEASE_FENCED:')) {
+      return { ok: false, action: 'fenced',
+        reason: 'caller-parent-fence-mismatch' };
+    }
+    throw caught;
+  }
   const runtime = sessionRuntime(initialLoop);
   const projectRoot = canonicalProjectRoot(initialLoop.project.root);
-  const initialLease = initialLoop.session_chain?.lease || {};
+  let initialLease = initialLoop.session_chain?.lease || {};
   const parentFence = expect ?? {
     owner: initialLease.owner_run_id,
     generation: initialLease.generation,
   };
-  if (initialLease.owner_run_id !== parentFence.owner
-    || initialLease.generation !== parentFence.generation) {
-    return { ok: false, action: 'fenced', reason: 'caller-parent-fence-mismatch' };
-  }
   const parentOwner = parentFence.owner;
   const parentGeneration = parentFence.generation;
-  const childRunId = initialLease.handoff_child_run_id;
-  const key = initialLease.handoff_idempotency_key;
-  const initialApproval = initialLoop.autonomy?.runtime_executable_approval;
 
   if (runtime === 'codex') {
     let pendingReceipts;
@@ -1057,8 +1106,14 @@ function driveHeadlessRunLocked({
         return leftRank - rightRank || left.journalPath.localeCompare(right.journalPath);
       });
       for (const item of cleanupOrder) removeProcessReceiptFn(item);
-      if (pendingReceipts.length > 0) initialLoop = readState(projectRoot, runId).data;
+      if (pendingReceipts.length > 0) {
+        initialLoop = readParentAuthority(projectRoot, runId, parentFence);
+        initialLease = initialLoop.session_chain?.lease || {};
+      }
     } catch (error) {
+      if (String(error?.message || error).startsWith('RUN_SNAPSHOT_INVALID')) {
+        throw error;
+      }
       return {
         ok: false,
         action: 'process-accounting-failed',
@@ -1068,6 +1123,16 @@ function driveHeadlessRunLocked({
   }
 
   if (terminal(initialLoop)) return { ok: false, action: 'terminal', reason: 'RUN_TERMINAL' };
+  const appDisposition = headlessAppDisposition(projectRoot, runId, initialLoop, {
+    now: entryNow,
+    parentFence,
+    cwdFn,
+    sweepAppTaskFn,
+  });
+  if (appDisposition) return appDisposition;
+  const childRunId = initialLease.handoff_child_run_id;
+  const key = initialLease.handoff_idempotency_key;
+  const initialApproval = initialLoop.autonomy?.runtime_executable_approval;
   const checkerResult = driveIndependentChecker({
     root,
     runId,
@@ -1115,12 +1180,16 @@ function driveHeadlessRunLocked({
     if (exactChildAcquired(initialLoop, childRunId)) {
       return { ok: true, action: 'already-spawned' };
     }
-    const pauseOutcome = pauseWithFreshFence(projectRoot, runId, {
+    const pauseOutcome = pauseAfterParentRace(projectRoot, runId, {
       reason: 'headless-child-did-not-acquire',
       expect: parentFence,
       now: entryNow,
+      childRunId,
+      pauseFn,
     });
-    if (pauseOutcome === 'terminal') return { ok: true, action: 'already-spawned' };
+    if (pauseOutcome === 'terminal' || pauseOutcome === 'acquired') {
+      return { ok: true, action: 'already-spawned' };
+    }
     return {
       ok: false,
       action: pauseOutcome === 'raced' ? 'fail-closed-raced' : 'resumed-unconfirmed',
@@ -1308,7 +1377,8 @@ function driveHeadlessRunLocked({
           || !sameValue(freshPluginDirectory, pluginDirectorySnapshot)) {
           return { ok: false, reason: 'post-cas-root-drift' };
         }
-        const { data: freshLoop } = readState(projectRoot, runId);
+        beforeMakerAuthorityReadFn();
+        const freshLoop = readParentAuthority(projectRoot, runId, parentFence);
         const freshLease = freshLoop.session_chain?.lease || {};
         const freshExecutable = revalidateExecutable(freshLoop.autonomy?.runtime_executable_approval);
         const freshHome = resolveCodexHome({
@@ -1384,7 +1454,10 @@ function driveHeadlessRunLocked({
             handoff_rel: handoffRel,
           },
         });
-      } catch {
+      } catch (caught) {
+        if (String(caught?.message || caught).startsWith('RUN_SNAPSHOT_INVALID')) {
+          throw caught;
+        }
         return { ok: false, reason: 'post-cas-identity-drift' };
       }
     }
@@ -1429,16 +1502,27 @@ function driveHeadlessRunLocked({
     expect: parentFence,
     expectedMode: 'headless',
   });
-  const { data: freshLoop } = readState(projectRoot, runId);
+  const freshLoop = readVerifiedState(projectRoot, runId).data;
+  const postRespawnApp = headlessAppDisposition(projectRoot, runId, freshLoop, {
+    now: respawnNow,
+    parentFence,
+    cwdFn,
+    sweepAppTaskFn,
+  });
+  if (postRespawnApp) return postRespawnApp;
   const childAcquired = exactChildAcquired(freshLoop, childRunId);
   if (result.outcome === 'already-spawned' && captured == null) {
     if (terminal(freshLoop) || childAcquired) return { ok: true, action: 'already-spawned' };
-    const pauseOutcome = pauseWithFreshFence(projectRoot, runId, {
+    const pauseOutcome = pauseAfterParentRace(projectRoot, runId, {
       reason: 'headless-child-did-not-acquire',
       expect: parentFence,
       now: respawnNow,
+      childRunId,
+      pauseFn,
     });
-    if (pauseOutcome === 'terminal') return { ok: true, action: 'already-spawned' };
+    if (pauseOutcome === 'terminal' || pauseOutcome === 'acquired') {
+      return { ok: true, action: 'already-spawned' };
+    }
     return {
       ok: false,
       action: pauseOutcome === 'raced' ? 'fail-closed-raced' : 'resumed-unconfirmed',
@@ -1450,12 +1534,15 @@ function driveHeadlessRunLocked({
     const reason = captured.reason || result.reason;
     if (terminal(freshLoop)) return { ok: false, action: 'fail-closed-terminal', reason, ...capturedDiagnostic() };
     if (result.outcome === 'failed_launch') return { ok: false, action: 'fail-closed', reason, ...capturedDiagnostic() };
-    const pauseOutcome = pauseWithFreshFence(projectRoot, runId, {
+    const pauseOutcome = pauseAfterParentRace(projectRoot, runId, {
       reason: 'headless-unmeasurable',
       expect: parentFence,
       now: respawnNow,
+      childRunId,
+      pauseFn,
     });
     if (pauseOutcome === 'terminal') return { ok: false, action: 'fail-closed-terminal', reason };
+    if (pauseOutcome === 'acquired') return { ok: true, action: 'already-spawned' };
     return {
       ok: false,
       action: pauseOutcome === 'raced' ? 'fail-closed-raced' : 'fail-closed',
@@ -1499,12 +1586,14 @@ function driveHeadlessRunLocked({
         }
       }
     }
-    const pauseOutcome = pauseWithFreshFence(projectRoot, runId, {
+    const pauseOutcome = pauseAfterParentRace(projectRoot, runId, {
       reason: 'headless-child-did-not-acquire',
       expect: parentFence,
       now: respawnNow,
+      childRunId,
+      pauseFn,
     });
-    if (pauseOutcome === 'terminal') {
+    if (pauseOutcome === 'terminal' || pauseOutcome === 'acquired') {
       return {
         ok: true, action: 'resumed', usage: captured.usage, recorded,
         ...(accountingReason ? { accounting_reason: accountingReason } : {}),

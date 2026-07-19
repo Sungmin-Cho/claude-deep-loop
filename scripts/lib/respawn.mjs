@@ -1,12 +1,13 @@
-import { readState } from './state.mjs';
 import { existsSync } from 'node:fs';
 import { dirname, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
-import { appendAnchored } from './integrity.mjs';
+import { appendAnchored, directMutationOptions, readLines, readVerifiedState,
+  withVerifiedMutationLock } from './integrity.mjs';
+import { contentHash } from './envelope.mjs';
 import { checkBudget, reconcileBudget } from './budget.mjs';
 import { checkBreaker } from './breaker.mjs';
-import { advanceHandoffPhase } from './lease.mjs';
+import { advanceHandoffPhase, appTransportBinding } from './lease.mjs';
 import { buildLaunchCommand } from './runtime-descriptor.mjs';
 import { defaultDesktopProbe } from './desktop-target.mjs';
 import { sessionRuntime } from './runtime.mjs';
@@ -150,14 +151,163 @@ function classifyReadiness(l, { childRunId, startGeneration }) {
   return 'pending';
 }
 
+function respawnIdentityFence(expect, code = 'LEASE_FENCED: respawn-parent') {
+  if (expect == null) return undefined;
+  return loop => {
+    const lease = loop.session_chain?.lease;
+    if (lease?.owner_run_id !== expect.owner || lease?.generation !== expect.generation) {
+      throw new Error(code);
+    }
+  };
+}
+
+function respawnIntentProjection({ expect, childRunId, key, handoffRel,
+  headless, attended, expectedMode }) {
+  return { operation: 'respawn', owner: expect.owner, generation: expect.generation,
+    child_run_id: childRunId, key_digest: contentHash(`respawn-key\0${key}`),
+    handoff_digest: contentHash(`respawn-handoff\0${handoffRel ?? ''}`),
+    headless: headless === true, attended: attended === true,
+    expected_mode: expectedMode ?? null };
+}
+
+function respawnOperation(root, runId, input, body) {
+  const callerBinding = { owner: input.expect.owner, generation: input.expect.generation };
+  const intentDigest = contentHash(JSON.stringify(respawnIntentProjection(input)));
+  return withVerifiedMutationLock(root, runId, { callerBinding, intentDigest,
+    fenceError: 'LEASE_FENCED: respawn-parent' }, body);
+}
+
+function exactGenericSpawnAuthority(loop, {
+  parentOwner, generation, key, childRunId, phase, mode, headless, attended, env,
+}) {
+  const lease = loop.session_chain?.lease;
+  return loop.status === 'running'
+    && lease?.owner_run_id === parentOwner && lease.generation === generation
+    && lease.state === 'releasing' && lease.handoff_phase === phase
+    && lease.handoff_idempotency_key === key
+    && lease.handoff_child_run_id === childRunId
+    && lease.handoff_transport == null && lease.handoff_attempt_id == null
+    && lease.resume_policy !== 'human' && appTransportBinding(loop) == null
+    && resolveSpawnMode(loop, { headless, attended, env }) === mode;
+}
+
+function validateStandaloneRespawnRecovery(root, runId, loop, {
+  eventType, requestDigest, childRunId, pauseReason, outcome, reason,
+}) {
+  const events = readLines(root, runId).filter(event => event.type === eventType
+    && event.data?.respawn_request_digest === requestDigest);
+  if (events.length !== 1
+      || events[0].data?.child_run_id !== childRunId
+      || events[0].data?.pause_reason !== pauseReason
+      || events[0].data?.outcome !== outcome
+      || events[0].data?.reason !== reason
+      || loop.status !== 'paused' || loop.pause_reason !== pauseReason) {
+    throw new Error('RESPAWN_RECOVERY_PROJECTION_MISMATCH');
+  }
+  if (eventType === 'respawn-timeout') {
+    const lease = loop.session_chain?.lease;
+    if (lease?.handoff_child_run_id !== childRunId
+        || lease.resume_policy !== 'human' || lease.expires_at !== null) {
+      throw new Error('RESPAWN_RECOVERY_PROJECTION_MISMATCH');
+    }
+  } else {
+    const child = loop.session_chain?.sessions
+      ?.find(session => session.run_id === childRunId);
+    const lease = loop.session_chain?.lease;
+    if (child?.outcome !== 'failed_launch' || lease?.state !== 'active'
+        || lease.handoff_phase !== 'idle' || lease.handoff_child_run_id !== null) {
+      throw new Error('RESPAWN_RECOVERY_PROJECTION_MISMATCH');
+    }
+  }
+}
+
+function recoveredRespawnCompensation(root, runId, mutation, input) {
+  const requestDigest = contentHash(JSON.stringify(respawnIntentProjection(input)));
+  const loop = mutation.readVerifiedState().data;
+  const lines = readLines(root, runId);
+  const events = lines.filter(event =>
+    (event.type === 'respawn-failed' || event.type === 'respawn-timeout')
+      && event.data?.respawn_request_digest === requestDigest);
+  if (events.length === 0) return null;
+  if (events.length !== 1
+      || (input.childRunId != null && events[0].data?.child_run_id !== input.childRunId)) {
+    throw new Error('RESPAWN_RECOVERY_PROJECTION_MISMATCH');
+  }
+  const childRunId = events[0].data?.child_run_id;
+  if (typeof childRunId !== 'string' || childRunId.length === 0) {
+    throw new Error('RESPAWN_RECOVERY_PROJECTION_MISMATCH');
+  }
+  if (mutation.recovered !== null
+      && !mutation.recovered.events.some(event => event.seq === events[0].seq
+        && event.checksum === events[0].checksum)) {
+    throw new Error('RESPAWN_RECOVERY_PROJECTION_MISMATCH');
+  }
+  const outcome = events[0].data?.outcome;
+  const reason = events[0].data?.reason;
+  if (!['gate-blocked', 'no-launcher', 'build-error', 'identity-drift', 'authority-drift',
+    'failed_launch', 'child-timeout-awaiting', 'spawn-unconfirmed-awaiting'].includes(outcome)
+      || typeof reason !== 'string' || reason.length === 0) {
+    throw new Error('RESPAWN_RECOVERY_PROJECTION_MISMATCH');
+  }
+  if (loop.status !== 'paused' || loop.pause_reason !== events[0].data?.pause_reason) {
+    throw new Error('RESPAWN_RECOVERY_PROJECTION_MISMATCH');
+  }
+  if (events[0].type === 'respawn-timeout') {
+    const lease = loop.session_chain?.lease;
+    if (lease?.handoff_child_run_id !== childRunId
+        || lease.resume_policy !== 'human' || lease.expires_at !== null) {
+      throw new Error('RESPAWN_RECOVERY_PROJECTION_MISMATCH');
+    }
+    if (!['child-timeout-awaiting', 'spawn-unconfirmed-awaiting', 'no-launcher',
+      'build-error', 'identity-drift', 'authority-drift'].includes(outcome)) {
+      throw new Error('RESPAWN_RECOVERY_PROJECTION_MISMATCH');
+    }
+    return { ok: false, outcome, reason, childRunId };
+  }
+  const child = loop.session_chain?.sessions
+    ?.find(session => session.run_id === childRunId);
+  const lease = loop.session_chain?.lease;
+  if (child?.outcome !== 'failed_launch' || lease?.state !== 'active'
+      || lease.handoff_phase !== 'idle' || lease.handoff_child_run_id !== null) {
+    throw new Error('RESPAWN_RECOVERY_PROJECTION_MISMATCH');
+  }
+  if (['child-timeout-awaiting', 'spawn-unconfirmed-awaiting'].includes(outcome)) {
+    throw new Error('RESPAWN_RECOVERY_PROJECTION_MISMATCH');
+  }
+  return { ok: false, outcome, reason, childRunId };
+}
+
+function runRespawnCompensation(root, runId, operationInput, settle) {
+  return respawnOperation(root, runId, operationInput, mutation => settle(mutation));
+}
+
 // Failure handler (a): launch FAILURE (visibleSpawn {ok:false}/throw) AND gate-blocked → ROLLBACK + paused.
 // ONE appendAnchored transaction: child.outcome='failed_launch' (excluded from max_sessions), parent.superseded_by
 // cleared, lease rolled back to active/idle (stale TTL released), status='paused' + pause_reason. The reserved
 // child is invalidated (it never ran). In-lock parent fence → if the lease changed (child took over), abort
 // WITHOUT mutating (returns {fenced:true}). No half-commit: event + chain + lease + status are one transaction.
-export function rollbackAndPause(root, runId, { childRunId, parentOwner, generation, eventData, pauseReason }) {
+export function rollbackAndPause(root, runId, { childRunId, parentOwner, generation,
+  eventData, pauseReason, outcome = eventData?.outcome ?? 'failed_launch',
+  reason = eventData?.reason ?? eventData?.error ?? eventData?.gate ?? pauseReason,
+  requestDigest = contentHash(JSON.stringify(['respawn-rollback-pause',
+    childRunId, parentOwner, generation, eventData, pauseReason, outcome, reason])),
+  mutation = null }) {
   try {
-    appendAnchored(root, runId, { type: 'respawn-failed', data: { ...eventData, pause_reason: pauseReason } }, (l) => {
+    const appendWithMutation = mutation === null
+      ? (event, mutate, preCheck, options) => appendAnchored(
+        root, runId, event, mutate, preCheck,
+        directMutationOptions('respawn-rollback-pause',
+          { owner: parentOwner, generation },
+          { childRunId, eventData, pauseReason, outcome, reason },
+          'RESPAWN_FENCED: rollback-pause', { ...options,
+            onRecovered: loop => validateStandaloneRespawnRecovery(root, runId, loop, {
+              eventType: 'respawn-failed', requestDigest, childRunId,
+              pauseReason, outcome, reason,
+            }) }))
+      : mutation.appendAnchored;
+    appendWithMutation({ type: 'respawn-failed', data: { ...eventData,
+      outcome, reason, respawn_request_digest: requestDigest,
+      pause_reason: pauseReason } }, (l) => {
       const child = l.session_chain.sessions.find(s => s.run_id === childRunId);
       if (child) child.outcome = 'failed_launch';
       const parent = l.session_chain.sessions.find(s => s.superseded_by === childRunId);
@@ -170,7 +320,8 @@ export function rollbackAndPause(root, runId, { childRunId, parentOwner, generat
       if (lease.owner_run_id !== parentOwner || lease.generation !== generation) throw new Error('RESPAWN_FENCED: rollback-pause');
       // v1.6 (spec §2.3-5): completed run을 paused로 강등 금지 — 초입 read↔이 append 사이 TOCTOU를 in-lock에서 봉쇄.
       if (l.status === 'completed' || l.status === 'stopped') throw new Error('RUN_TERMINAL: respawn');
-    });
+    }, undefined, { fenceCheck: respawnIdentityFence(
+      { owner: parentOwner, generation }, 'RESPAWN_FENCED: rollback-pause') });
   } catch (appendErr) {
     if (String(appendErr.message).startsWith('RESPAWN_FENCED')) return { fenced: true };
     if (String(appendErr.message).startsWith('RUN_TERMINAL')) return { terminal: true };   // v1.6 — caller가 outcome:'terminal'로 전파
@@ -185,9 +336,29 @@ export function rollbackAndPause(root, runId, { childRunId, parentOwner, generat
 // status='paused', pause_reason='child-timeout-awaiting' so a LATE /deep-loop-resume by the reserved child still
 // acquires (Task 8) and unpauses; the headless driver skips it; a human `recover` can abandon it. ONE transaction.
 // If the child acquired right at the boundary (fence), distinguish success (reserved child) from a real fence.
-function preservePause(root, runId, { childRunId, parentOwner, generation, pauseReason = 'child-timeout-awaiting' }) {
+function preservePause(root, runId, { childRunId, parentOwner, generation,
+  pauseReason = 'child-timeout-awaiting', outcome = 'child-timeout-awaiting',
+  reason = pauseReason,
+  requestDigest = contentHash(JSON.stringify(['respawn-timeout-preserve',
+    childRunId, parentOwner, generation, pauseReason, outcome, reason])),
+  mutation = null }) {
   try {
-    appendAnchored(root, runId, { type: 'respawn-timeout', data: { child_run_id: childRunId, pause_reason: pauseReason } }, (l) => {
+    const appendWithMutation = mutation === null
+      ? (event, mutate, preCheck, options) => appendAnchored(
+        root, runId, event, mutate, preCheck,
+        directMutationOptions('respawn-timeout-preserve',
+          { owner: parentOwner, generation },
+          { childRunId, pauseReason, outcome, reason },
+          'RESPAWN_FENCED: timeout-preserve',
+          { ...options,
+            onRecovered: loop => validateStandaloneRespawnRecovery(root, runId, loop, {
+              eventType: 'respawn-timeout', requestDigest, childRunId,
+              pauseReason, outcome, reason,
+            }) }))
+      : mutation.appendAnchored;
+    appendWithMutation({ type: 'respawn-timeout', data: { child_run_id: childRunId,
+      outcome, reason, respawn_request_digest: requestDigest,
+      pause_reason: pauseReason } }, (l) => {
       l.session_chain.lease = { ...l.session_chain.lease, resume_policy: 'human', expires_at: null };
       l.status = 'paused';
       l.pause_reason = pauseReason;
@@ -196,11 +367,12 @@ function preservePause(root, runId, { childRunId, parentOwner, generation, pause
       if (lease.owner_run_id !== parentOwner || lease.generation !== generation) throw new Error('RESPAWN_FENCED: timeout-preserve');
       // v1.6 (spec §2.3-5): terminal run은 preserve-pause로도 강등 금지 (readiness-timeout TOCTOU).
       if (l.status === 'completed' || l.status === 'stopped') throw new Error('RUN_TERMINAL: respawn');
-    });
+    }, undefined, { fenceCheck: respawnIdentityFence(
+      { owner: parentOwner, generation }, 'RESPAWN_FENCED: timeout-preserve') });
   } catch (appendErr) {
     if (String(appendErr.message).startsWith('RUN_TERMINAL')) return { terminal: true };   // v1.6
     if (String(appendErr.message).startsWith('RESPAWN_FENCED')) {
-      const fresh = readState(root, runId).data.session_chain.lease;
+      const fresh = readVerifiedState(root, runId).data.session_chain.lease;
       if (fresh.owner_run_id === childRunId && fresh.state === 'active' && fresh.handoff_phase === 'acquired') return { acquired: true };
       return { fenced: true };
     }
@@ -217,7 +389,7 @@ function preservePause(root, runId, { childRunId, parentOwner, generation, pause
 // Count-based loop (maxPolls) with an injectable poll/sleep → deterministic under fixed clocks.
 function awaitChildReadiness(root, runId, {
   childRunId, parentOwner, generation, loop, poll, sleep, pollIntervalMs,
-  successOutcome, successReason, lateAcquireReason, pauseReason, timeoutOutcome,
+  successOutcome, successReason, lateAcquireReason, pauseReason, timeoutOutcome, preserve,
 }) {
   const timeoutMs = (loop.autonomy?.child_ready_timeout_sec ?? 75) * 1000;
   const interval = pollIntervalMs > 0 ? pollIntervalMs : 1500;
@@ -229,7 +401,8 @@ function awaitChildReadiness(root, runId, {
     if (i < maxPolls - 1) sleep(interval);
   }
   // readiness TIMEOUT → PRESERVE (do NOT rollback) — 늦은 /deep-loop-resume 도 reserved child 면 인수 성공.
-  const res = preservePause(root, runId, { childRunId, parentOwner, generation, pauseReason });
+  const res = preserve({ childRunId, parentOwner, generation, pauseReason,
+    outcome: timeoutOutcome, reason: 'readiness-timeout-preserve' });
   if (res.acquired) return { ok: true, outcome: successOutcome, reason: lateAcquireReason, childRunId };
   if (res.terminal) return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };   // v1.6 (plan r2 high): timeout outcome으로 뭉개짐 금지
   if (res.fenced) return { ok: false, outcome: 'fenced', reason: 'lease-changed-at-timeout', childRunId };
@@ -250,24 +423,68 @@ export function respawn(root, runId, {
   runtimeRevalidationOptions = {},
   launcherRevalidationOptions = {},
 } = {}) {
-  reconcileBudget(root, runId);                       // 무결성 fail-stop (탐지 시 throw)
-  const { data: loop } = readState(root, runId);
+  let loop;
+  if (!expect || typeof expect.owner !== 'string'
+      || !Number.isSafeInteger(expect.generation)) throw new Error('FENCE_REQUIRED: respawn');
+  const operationInput = { expect, childRunId, key, handoffRel,
+    headless, attended, expectedMode };
+  const requestedChildRunId = childRunId;
+  const requestedKey = key;
+  const requestDigest = contentHash(JSON.stringify(
+    respawnIntentProjection(operationInput)));
+  const rollback = args => runRespawnCompensation(root, runId, operationInput,
+    mutation => rollbackAndPause(root, runId,
+      { ...args, requestDigest, mutation }));
+  const preserve = args => runRespawnCompensation(root, runId, operationInput,
+    mutation => preservePause(root, runId,
+      { ...args, requestDigest, mutation }));
+  try {
+    const entry = respawnOperation(root, runId, operationInput, mutation => {
+      mutation.readVerifiedState({ fenceCheck: respawnIdentityFence(expect) });
+      const recovered = recoveredRespawnCompensation(root, runId, mutation, operationInput);
+      if (recovered !== null) return { recovered };
+      reconcileBudget(root, runId, { mutation });
+      return { loop: mutation.readVerifiedState(
+        { fenceCheck: respawnIdentityFence(expect) }).data };
+    });
+    if (entry.recovered) return entry.recovered;
+    loop = entry.loop;
+  } catch (caught) {
+    if (String(caught?.message || caught).startsWith('LEASE_FENCED:')) {
+      return { ok: false, outcome: 'fenced',
+        reason: 'caller-parent-fence-mismatch', childRunId };
+    }
+    throw caught;
+  }
   const runtime = sessionRuntime(loop);
   const canonicalRoot = canonicalProjectRoot(loop.project.root);
   const lease = loop.session_chain.lease;
+  childRunId = lease.handoff_child_run_id;
+  key = lease.handoff_idempotency_key;
+  const boundChild = loop.session_chain.sessions.find(session => session.run_id === childRunId);
+  handoffRel = handoffRel ?? boundChild?.handoff_rel ?? null;
   const generation = lease.generation;
   const parentOwner = lease.owner_run_id;
-  const poll = pollLease || (() => readState(root, runId).data.session_chain.lease);
-
-  if (expect && (lease.owner_run_id !== expect.owner || lease.generation !== expect.generation)) {
-    return { ok: false, outcome: 'fenced', reason: 'caller-parent-fence-mismatch', childRunId };
-  }
+  const poll = pollLease ?? (() =>
+    readVerifiedState(root, runId).data.session_chain.lease);
 
   // v1.6 (spec §2.3-5, r5 P2-a): terminal fast-return — 모든 분기(특히 spawned 재진입 :Codex r5 A)보다 앞.
-  // legacy terminal+spawned는 재진입 분기가 already-spawned 성공/preservePause(paused 강등)로 새고,
+  // legacy terminal+spawned는 재진입 분기가 already-spawned 성공/paused 강등으로 새고,
   // legacy terminal+releasing+emitted는 not-emitted 체크를 통과하므로 초입 차단이 필수.
   if (loop.status === 'completed' || loop.status === 'stopped') {
     return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };
+  }
+  if (appTransportBinding(loop)) {
+    return { ok: false, outcome: 'app-transport-owned',
+      reason: 'app-transport-owned', childRunId };
+  }
+  if (lease.resume_policy === 'human') {
+    return { ok: false, outcome: 'human-resume-policy',
+      reason: 'human-resume-policy', childRunId };
+  }
+  if ((requestedChildRunId != null && requestedChildRunId !== childRunId)
+      || (requestedKey != null && requestedKey !== key)) {
+    return { ok: false, outcome: 'fenced', reason: 'requested-binding-mismatch', childRunId };
   }
   // 멱등/펜싱 사전조건 (Codex r1 🔴2): 잘못된 key 거부, 이미 spawned 면 재spawn 금지(이중 spawn 차단).
   if (lease.handoff_idempotency_key !== key) return { ok: false, outcome: 'key-mismatch', reason: 'key-mismatch', childRunId };
@@ -296,19 +513,22 @@ export function respawn(root, runId, {
     }
     // (3) Visible re-entry: launcher exit was never proof of acquisition + the CAS-doer may have crashed.
     //     Bounded-wait for the reserved child; if it never acquires, preserve-pause (late acquire still safe,
-    //     human recover can abandon) — autonomous-detectable, NOT a false success.
+  //     human recover can abandon) — autonomous-detectable, NOT a false success.
     return awaitChildReadiness(root, runId, {
       childRunId, parentOwner, generation, loop, poll, sleep, pollIntervalMs,
       successOutcome: 'already-spawned', successReason: 'child-acquired-on-reentry',
       lateAcquireReason: 'child-acquired-on-reentry-at-timeout',
       pauseReason: 'spawn-unconfirmed-awaiting', timeoutOutcome: 'spawn-unconfirmed-awaiting',
+      preserve,
     });
   }
   if (lease.handoff_phase !== 'emitted' || lease.state !== 'releasing') {
     return { ok: false, outcome: 'not-emitted', reason: `phase=${lease.handoff_phase} state=${lease.state}`, childRunId };
   }
   // RUN_PAUSED (Task 6): paused 상태에서는 respawn 금지. respawn 은 leaseCheck 를 경유하지 않으므로 명시 차단.
-  if (loop.status === 'paused') return { ok: false, outcome: 'paused', reason: 'RUN_PAUSED', childRunId };
+  if (loop.status === 'paused') {
+    return { ok: false, outcome: 'paused', reason: 'RUN_PAUSED', childRunId };
+  }
 
   // ── gate check (spec §9, R12-LL) ─────────────────────────────────────────
   // Gate MUST win regardless of launcher availability (R12-LL fix): a gate-blocked run must always
@@ -318,7 +538,9 @@ export function respawn(root, runId, {
   const gate = respawnGate(loop, { now });
   if (!gate.ok) {
     // 실패모드 (A) gate-blocked: ROLLBACK + paused — ONE 트랜잭션 (R12-LL; 자식 무효화, 결코 실행 안 됨).
-    const res = rollbackAndPause(root, runId, { childRunId, parentOwner, generation, eventData: { child_run_id: childRunId, gate: gate.reason }, pauseReason: `gate:${gate.reason}` });
+    const res = rollback({ childRunId, parentOwner, generation,
+      eventData: { child_run_id: childRunId, gate: gate.reason },
+      pauseReason: `gate:${gate.reason}`, outcome: 'gate-blocked', reason: gate.reason });
     if (res.terminal) return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };   // v1.6
     if (res.fenced) return { ok: false, outcome: 'fenced', reason: 'lease-changed-before-pause', childRunId };
     return { ok: false, outcome: 'gate-blocked', reason: gate.reason, childRunId };
@@ -378,7 +600,8 @@ export function respawn(root, runId, {
       }
     } catch {
       const reason = `${identityStage}-identity-unavailable`;
-      const res = preservePause(root, runId, { childRunId, parentOwner, generation, pauseReason: reason });
+      const res = preserve({ childRunId, parentOwner, generation, pauseReason: reason,
+        outcome: 'no-launcher', reason });
       if (res.terminal) return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };
       if (res.fenced) return { ok: false, outcome: 'fenced', reason: 'lease-changed-before-pause', childRunId };
       return { ok: false, outcome: 'no-launcher', reason, childRunId };
@@ -418,9 +641,8 @@ export function respawn(root, runId, {
     // must preserve-pause here. Keep the emitted reservation recoverable and retain the bounded original
     // construction reason rather than replacing it with a generic marker.
     const buildReason = String(buildErr.message || buildErr).slice(0, 512);
-    const res = preservePause(root, runId, {
-      childRunId, parentOwner, generation, pauseReason: buildReason,
-    });
+    const res = preserve({ childRunId, parentOwner, generation,
+      pauseReason: buildReason, outcome: 'build-error', reason: buildReason });
     if (res.acquired) return { ok: true, outcome: 'spawned', reason: 'child-acquired-during-build-error', childRunId };
     if (res.terminal) return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };
     if (res.fenced) return { ok: false, outcome: 'fenced', reason: 'lease-changed-before-pause', childRunId };
@@ -440,7 +662,8 @@ export function respawn(root, runId, {
   // the handoff is left emitted/releasing, unpaused, with no child spawned (stranded). Mirrors gate-blocked self-pause.
   if (!_entry || _entry.unavailable || !_entry.bin) {
     const unavailableReason = _entry?.reason || `${mode}-launcher-unavailable`;
-    const res = preservePause(root, runId, { childRunId, parentOwner, generation, pauseReason: unavailableReason });
+    const res = preserve({ childRunId, parentOwner, generation,
+      pauseReason: unavailableReason, outcome: 'no-launcher', reason: unavailableReason });
     if (res.terminal) return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };   // v1.6
     if (res.fenced) return { ok: false, outcome: 'fenced', reason: 'lease-changed-before-pause', childRunId };
     return { ok: false, outcome: 'no-launcher', reason: unavailableReason, childRunId };
@@ -484,11 +707,44 @@ export function respawn(root, runId, {
   };
 
   // Fresh durable identity + direct version/hash checks immediately before the CAS may authorize spawn.
-  const preClaimIdentityFailure = revalidateIdentityStage(readState(root, runId).data);
+  let preClaimLoop;
+  try {
+    preClaimLoop = respawnOperation(root, runId, operationInput, mutation =>
+      mutation.readVerifiedState({ fenceCheck: respawnIdentityFence(
+        { owner: parentOwner, generation }) }).data);
+  } catch (caught) {
+    if (String(caught?.message || caught).startsWith('LEASE_FENCED:')) {
+      return { ok: false, outcome: 'fenced',
+        reason: 'lease-changed-before-claim', childRunId };
+    }
+    throw caught;
+  }
+  if (!exactGenericSpawnAuthority(preClaimLoop, { parentOwner, generation, key,
+    childRunId, phase: 'emitted', mode, headless, attended, env })) {
+    if (preClaimLoop.status === 'completed' || preClaimLoop.status === 'stopped') {
+      return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };
+    }
+    if (appTransportBinding(preClaimLoop)) {
+      return { ok: false, outcome: 'app-transport-owned',
+        reason: 'app-transport-owned', childRunId };
+    }
+    const drift = preserve({ childRunId, parentOwner, generation,
+      pauseReason: 'spawn-authority-drift', outcome: 'authority-drift',
+      reason: 'spawn-authority-drift' });
+    if (drift.acquired) {
+      return { ok: true, outcome: 'already-spawned',
+        reason: 'child-acquired-before-claim', childRunId };
+    }
+    if (drift.terminal) return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };
+    if (drift.fenced) return { ok: false, outcome: 'fenced', reason: 'lease-changed-before-claim', childRunId };
+    return { ok: false, outcome: 'authority-drift',
+      reason: 'spawn-authority-drift', childRunId };
+  }
+  const preClaimIdentityFailure = revalidateIdentityStage(preClaimLoop);
   if (preClaimIdentityFailure) {
-    const res = preservePause(root, runId, {
-      childRunId, parentOwner, generation, pauseReason: preClaimIdentityFailure,
-    });
+    const res = preserve({ childRunId, parentOwner, generation,
+      pauseReason: preClaimIdentityFailure, outcome: 'no-launcher',
+      reason: preClaimIdentityFailure });
     if (res.terminal) return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };
     if (res.fenced) return { ok: false, outcome: 'fenced', reason: 'lease-changed-before-pause', childRunId };
     return { ok: false, outcome: 'no-launcher', reason: preClaimIdentityFailure, childRunId };
@@ -496,7 +752,9 @@ export function respawn(root, runId, {
 
   // Codex r2 🔴3: 외부 spawn **이전에** emitted→spawned 를 원자적(withLock CAS)으로 클레임 (이중 외부 spawn 차단).
   // Command is already validated above; only the CAS + spawnFn call remain below.
-  const claim = advanceHandoffPhase(root, runId, { key, toPhase: 'spawned', now, expect: { owner: parentOwner, generation } });
+  const claim = respawnOperation(root, runId, operationInput, mutation =>
+    advanceHandoffPhase(root, runId, { key, toPhase: 'spawned', now,
+      expect: { owner: parentOwner, generation }, mutation }));
   if (!claim.ok) {
     // v1.6 (spec §2.3-5, plan r1): 초입 read↔클레임 사이 finish 경합 — phase-error로 뭉개짐 금지.
     if (claim.reason === 'RUN_TERMINAL') return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };
@@ -507,13 +765,46 @@ export function respawn(root, runId, {
 
   // Codex impl r8 🟡: entry is already built + validated before the CAS above.
   const entry = _entry;
-  const identityFailure = revalidateIdentityStage(readState(root, runId).data);
-  if (identityFailure) {
-    const res = rollbackAndPause(root, runId, {
+  let postClaimLoop;
+  try {
+    postClaimLoop = respawnOperation(root, runId, operationInput, mutation =>
+      mutation.readVerifiedState({ fenceCheck: respawnIdentityFence(
+        { owner: parentOwner, generation }) }).data);
+  } catch (caught) {
+    if (String(caught?.message || caught).startsWith('LEASE_FENCED:')) {
+      return { ok: false, outcome: 'fenced',
+        reason: 'lease-changed-after-claim', childRunId };
+    }
+    throw caught;
+  }
+  if (!exactGenericSpawnAuthority(postClaimLoop, { parentOwner, generation, key,
+    childRunId, phase: 'spawned', mode, headless, attended, env })) {
+    if (postClaimLoop.status === 'completed' || postClaimLoop.status === 'stopped') {
+      return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };
+    }
+    if (appTransportBinding(postClaimLoop)) {
+      return { ok: false, outcome: 'app-transport-owned',
+        reason: 'app-transport-owned', childRunId };
+    }
+    const drift = rollback({
       childRunId, parentOwner, generation,
-      eventData: { child_run_id: childRunId, error: identityFailure },
-      pauseReason: 'launch-failed',
+      eventData: { child_run_id: childRunId, error: 'spawn-authority-drift' },
+      pauseReason: 'launch-failed', outcome: 'failed_launch',
+      reason: 'spawn-authority-drift',
     });
+    if (drift.terminal) return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };
+    if (drift.fenced) {
+      return { ok: false, outcome: 'fenced',
+        reason: 'lease-changed-before-failure-record', childRunId };
+    }
+    return { ok: false, outcome: 'failed_launch',
+      reason: 'spawn-authority-drift', childRunId };
+  }
+  const identityFailure = revalidateIdentityStage(postClaimLoop);
+  if (identityFailure) {
+    const res = rollback({ childRunId, parentOwner, generation,
+      eventData: { child_run_id: childRunId, error: identityFailure },
+      pauseReason: 'launch-failed', outcome: 'failed_launch', reason: identityFailure });
     if (res.terminal) return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };
     if (res.fenced) return { ok: false, outcome: 'fenced', reason: 'lease-changed-before-failure-record', childRunId };
     return { ok: false, outcome: 'failed_launch', reason: identityFailure, childRunId };
@@ -523,16 +814,29 @@ export function respawn(root, runId, {
     if (res && res.ok === false) throw new Error(res.reason || 'spawn-returned-false');
   } catch (e) {
     // 실패모드 (B) launch failure: ROLLBACK + paused — ONE 트랜잭션 (자식 무효화, 결코 시작 안 됨).
-    const res = rollbackAndPause(root, runId, { childRunId, parentOwner, generation, eventData: { child_run_id: childRunId, error: String(e.message || e) }, pauseReason: 'launch-failed' });
+    const launchReason = String(e.message || e);
+    const res = rollback({ childRunId, parentOwner, generation,
+      eventData: { child_run_id: childRunId, error: launchReason }, pauseReason: 'launch-failed', outcome: 'failed_launch', reason: launchReason });
     if (res.terminal) return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };   // v1.6
     if (res.fenced) return { ok: false, outcome: 'fenced', reason: 'lease-changed-before-failure-record', childRunId };
-    return { ok: false, outcome: 'failed_launch', reason: String(e.message || e), childRunId };
+    return { ok: false, outcome: 'failed_launch', reason: launchReason, childRunId };
   }
 
   // spawn 성공 → respawn-spawned 기록 (parent fence). lease 는 releasing 유지 — 자식이 handshake acquire.
   // (Codex impl r11 🔴: 이벤트 기록과 lease 전이 분리 금지 → 단일 appendAnchored.)
+  const spawnedResponseFence = currentLoop => {
+    const current = currentLoop.session_chain?.lease;
+    const parent = current?.owner_run_id === parentOwner
+      && current.generation === generation;
+    const childOwner = current?.owner_run_id === childRunId
+      && current.generation === generation + 1;
+    if (!parent && !childOwner) {
+      throw new Error('RESPAWN_FENCED: spawned-append');
+    }
+  };
   try {
-    appendAnchored(root, runId, { type: 'respawn-spawned', data: { child_run_id: childRunId, headless: isHeadless } }, (_l) => {
+    respawnOperation(root, runId, operationInput, mutation => mutation.appendAnchored(
+      { type: 'respawn-spawned', data: { child_run_id: childRunId, headless: isHeadless } }, (_l) => {
       // 자식이 releasing 상태의 lease 를 handshake acquire (acquireLease: releasing && owner===handoff_child_run_id).
     }, (l) => {
       if (l.session_chain.lease.owner_run_id !== parentOwner || l.session_chain.lease.generation !== generation) {
@@ -540,14 +844,14 @@ export function respawn(root, runId, {
       }
       // v1.6 (spec §2.3-5): terminal run에 respawn-spawned 이벤트 append 금지 (spawn↔기록 사이 TOCTOU).
       if (l.status === 'completed' || l.status === 'stopped') throw new Error('RUN_TERMINAL: respawn');
-    });
+      }, { fenceCheck: spawnedResponseFence }));
   } catch (appendErr) {
     if (String(appendErr.message).startsWith('RUN_TERMINAL')) {
       return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };   // v1.6
     }
     if (String(appendErr.message).startsWith('RESPAWN_FENCED')) {
       // R6-U: a fast RESERVED child may have acquired before we recorded → that is SUCCESS, not a fence.
-      const fresh = readState(root, runId).data.session_chain.lease;
+      const fresh = readVerifiedState(root, runId).data.session_chain.lease;
       if (fresh.owner_run_id === childRunId && fresh.state === 'active' && fresh.handoff_phase === 'acquired') {
         return { ok: true, outcome: 'spawned', reason: 'fast-child-acquired', childRunId };
       }
@@ -567,5 +871,6 @@ export function respawn(root, runId, {
     successOutcome: 'spawned', successReason: 'child-acquired',
     lateAcquireReason: 'child-acquired-at-timeout',
     pauseReason: 'child-timeout-awaiting', timeoutOutcome: 'child-timeout-awaiting',
+    preserve,
   });
 }

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { appendAnchored } from './integrity.mjs';
+import { appendAnchored, directMutationOptions,
+  intentField } from './integrity.mjs';
 import { leaseCheck } from './lease.mjs';
 import { defaultDesktopProbe } from './desktop-target.mjs';
 
@@ -38,7 +39,7 @@ export function offerDesktop(root, runId, { expect, now = Date.now(), ttlSec = 6
   try { expiresAt = new Date(expiresAtMs).toISOString(); }
   catch { return { ok: false, reason: 'INVALID_TTL_SEC' }; }
   const issued = nonce ?? randomUUID();
-  appendAnchored(root, runId, { type: 'spawn-style-desktop-offered', data: { nonce: issued } },
+  const recovered = appendAnchored(root, runId, { type: 'spawn-style-desktop-offered', data: { nonce: issued } },
     (l) => {
       // ONLY assigns the pre-computed, already-validated expiresAt string — no Date math here.
       l.autonomy.spawn_style_optin_pending = { nonce: issued, expires_at: expiresAt };
@@ -46,7 +47,17 @@ export function offerDesktop(root, runId, { expect, now = Date.now(), ttlSec = 6
     (l) => {
       const lc = leaseCheck(l, { owner: expect.owner, generation: expect.generation });
       if (!lc.ok) throw new Error('LEASE_FENCED: ' + lc.reason);
-    });
+    }, directMutationOptions('desktop-offer', expect,
+      { now, ttlSec, nonce: issued, expiresAt }, 'LEASE_FENCED: offerDesktop', {
+        onRecovered: loop => {
+          const pending = loop.autonomy?.spawn_style_optin_pending;
+          if (pending?.nonce !== issued || pending.expires_at !== expiresAt) {
+            throw new Error('DESKTOP_OFFER_RESPONSE_PROJECTION_CHANGED');
+          }
+          return { ok: true, nonce: issued };
+        },
+      }));
+  if (recovered !== undefined) return recovered;
   return { ok: true, nonce: issued };
 }
 
@@ -83,7 +94,7 @@ export function confirmDesktop(root, runId, { expect, now = Date.now(), nonce, p
   let probeResult;
   try { probeResult = desktopProbe({ platform }); } catch { probeResult = { ok: false, reason: 'probe-error' }; }
   try {
-    appendAnchored(root, runId, { type: 'spawn-style-desktop-confirmed', data: { nonce } },
+    const recovered = appendAnchored(root, runId, { type: 'spawn-style-desktop-confirmed', data: { nonce } },
       (l) => {
         l.autonomy.spawn_style = 'desktop';
         delete l.autonomy.spawn_style_optin_pending;
@@ -98,7 +109,16 @@ export function confirmDesktop(root, runId, { expect, now = Date.now(), nonce, p
         const cur = l.autonomy?.spawn_style;
         if (cur !== 'visible' && cur !== 'interactive') throw new Error('SOURCE_INVALID: confirmDesktop');               // ⑤ source-state (in-lock)
         if (!probeResult || probeResult.ok !== true) throw new Error('HANDLER_UNVERIFIED: confirmDesktop');              // ⑥ live handler probe (pre-computed, read-only)
-      });
+      }, directMutationOptions('desktop-confirm', expect, { now, nonce, platform,
+        probe_digest: intentField('desktop-confirm-probe', probeResult) },
+      'LEASE_FENCED: confirmDesktop', { onRecovered: loop => {
+        if (loop.autonomy?.spawn_style !== 'desktop'
+            || loop.autonomy?.spawn_style_optin_pending !== undefined) {
+          throw new Error('DESKTOP_CONFIRM_RESPONSE_PROJECTION_CHANGED');
+        }
+        return { ok: true };
+      } }));
+    if (recovered !== undefined) return recovered;
   } catch (e) {
     const msg = String(e?.message || e);
     // Only the 5 known domain-validation reasons are translated to a rejection return.
@@ -115,14 +135,21 @@ export function confirmDesktop(root, runId, { expect, now = Date.now(), nonce, p
 // downgrading an already-durable 'desktop' opt-in, see resetDesktop below.
 export function declineDesktop(root, runId, { expect, now = Date.now() } = {}) {
   assertFenceShape(expect, 'declineDesktop');
-  appendAnchored(root, runId, { type: 'spawn-style-desktop-declined', data: {} },
+  const recovered = appendAnchored(root, runId, { type: 'spawn-style-desktop-declined', data: {} },
     (l) => {
       delete l.autonomy.spawn_style_optin_pending;
     },
     (l) => {
       const lc = leaseCheck(l, { owner: expect.owner, generation: expect.generation });
       if (!lc.ok) throw new Error('LEASE_FENCED: ' + lc.reason);
-    });
+    }, directMutationOptions('desktop-decline', expect, { now },
+      'LEASE_FENCED: declineDesktop', { onRecovered: loop => {
+        if (loop.autonomy?.spawn_style_optin_pending !== undefined) {
+          throw new Error('DESKTOP_DECLINE_RESPONSE_PROJECTION_CHANGED');
+        }
+        return { ok: true };
+      } }));
+  if (recovered !== undefined) return recovered;
   return { ok: true };
 }
 
@@ -165,7 +192,7 @@ export function declineDesktop(root, runId, { expect, now = Date.now() } = {}) {
 export function resetDesktop(root, runId, { expect, now = Date.now() } = {}) {
   assertFenceShape(expect, 'resetDesktop');
   try {
-    appendAnchored(root, runId, { type: 'spawn-style-desktop-reset', data: {} },
+    const recovered = appendAnchored(root, runId, { type: 'spawn-style-desktop-reset', data: {} },
       (l) => {
         l.autonomy.spawn_style = 'visible';
         delete l.autonomy.spawn_style_optin_pending;
@@ -189,7 +216,15 @@ export function resetDesktop(root, runId, { expect, now = Date.now() } = {}) {
         if (lease.state === 'releasing' && l.status !== 'paused') throw new Error('HANDOFF_IN_FLIGHT: resetDesktop');
         const cur = l.autonomy?.spawn_style;
         if (cur !== 'desktop') throw new Error('SOURCE_INVALID: resetDesktop');
-      });
+      }, directMutationOptions('desktop-reset', expect, { now },
+      'LEASE_FENCED: resetDesktop', { onRecovered: loop => {
+        if (loop.autonomy?.spawn_style !== 'visible'
+            || loop.autonomy?.spawn_style_optin_pending !== undefined) {
+          throw new Error('DESKTOP_RESET_RESPONSE_PROJECTION_CHANGED');
+        }
+        return { ok: true };
+      } }));
+    if (recovered !== undefined) return recovered;
   } catch (e) {
     const msg = String(e?.message || e);
     if (/^SOURCE_INVALID:/.test(msg)) return { ok: false, reason: 'SOURCE_INVALID' };

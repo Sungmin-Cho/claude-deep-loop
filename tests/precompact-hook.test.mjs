@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync as rf, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync as rf, realpathSync,
+  writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -10,7 +11,11 @@ import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { runPreCompactHandoff } from '../scripts/hooks-impl/precompact-handoff.mjs';
 import { rollbackAndPause } from '../scripts/lib/respawn.mjs';
 import { createDirectoryJunction } from './helpers/fs-fixtures.mjs';
-import { seedCorrelatedTerminal } from './fixtures/verified-app-run.mjs';
+import { emitHandoff } from '../scripts/lib/handoff.mjs';
+import { revokeAppTaskContinuation } from '../scripts/lib/app-task-continuation.mjs';
+import { readVerifiedState } from '../scripts/lib/integrity.mjs';
+import { rawHashValidState,
+  seedCorrelatedTerminal } from './fixtures/verified-app-run.mjs';
 const PROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PRECOMPACT_HOOK = join(PROOT, 'scripts', 'hooks-impl', 'precompact-handoff.mjs');
 const DRIVE_HOOK = join(PROOT, 'scripts', 'hooks-impl', 'drive-headless.mjs');
@@ -361,4 +366,79 @@ test('terminal run → hook returns ok:false action:fenced RUN_TERMINAL (gracefu
   assert.equal(r.reason, 'RUN_TERMINAL');
   const lease = readState(root, runId).data.session_chain.lease;
   assert.equal(lease.handoff_phase, 'idle');   // 예약 잔여 없음
+});
+
+function appPrecompactSeed11b() {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-app-precompact-')));
+  const observed = '2026-07-13T00:00:00.000Z';
+  const { runId } = initRun(root, { runtime: 'codex', goal: 'g',
+    now: new Date(observed), cwdFn: () => root,
+    hostObservation: { kind: 'codex-app', source: 'codex-app-tool-provenance',
+      capabilities: ['list-projects', 'create-thread-local', 'structured-process-stdin'],
+      structured_stdin_mode: 'pipe-open-noecho', host_task_cwd: root,
+      host_task_cwd_source: 'app-task-context', observed_at: observed },
+    appContinuationConsent: { mode: 'auto', authority: 'human-confirmed',
+      confirmed_at: observed, revoked_at: null } });
+  return { root, runId };
+}
+
+test('PreCompact exact App authority is emit-only and bypasses every generic branch', async () => {
+  const fixture = appPrecompactSeed11b();
+  let gates = 0; let rollbacks = 0;
+  const result = await runPreCompactHandoff({ unattended: true }, {
+    root: fixture.root, cwdFn: () => fixture.root,
+    emitFn: (_root, _runId, options) => {
+      assert.equal(options.appIntent, true);
+      return { ok: true, childRunId: '01JAPPCHD00000000000000015',
+        key: 'key', handoffRel: 'handoffs/next.md' };
+    },
+    gateFn: () => { gates += 1; return { ok: false, blocked_by: ['budget'] }; },
+    rollbackFn: () => { rollbacks += 1; throw new Error('forbidden'); },
+    pauseFn: () => assert.fail('exact App transport cannot pause generically') });
+  assert.equal(result.action, 'emitted');
+  assert.deepEqual({ gates, rollbacks }, { gates: 0, rollbacks: 0 });
+});
+
+test('PreCompact revoked App origin emits human legacy transport and preserve-pauses', async () => {
+  const fixture = appPrecompactSeed11b();
+  revokeAppTaskContinuation(fixture.root, fixture.runId,
+    { owner: fixture.runId, generation: 1, runtime: 'codex' },
+    { nowFn: () => Date.parse('2026-07-13T00:00:01.000Z') });
+  const result = await runPreCompactHandoff({ unattended: true }, {
+    root: fixture.root, now: Date.parse('2026-07-13T00:00:02.000Z'),
+    cwdFn: () => fixture.root });
+  assert.equal(result.action, 'app-authority-unconfirmed-paused');
+  const loop = readVerifiedState(fixture.root, fixture.runId).data;
+  assert.equal(loop.status, 'paused');
+  assert.equal(loop.session_chain.lease.resume_policy, 'human');
+  assert.equal(loop.session_chain.lease.handoff_transport, null);
+});
+
+test('PreCompact proves initial and generic post-emit state before gate or rollback', async () => {
+  const initial = appPrecompactSeed11b();
+  rawHashValidState(initial.root, initial.runId, loop => {
+    loop.session_chain.sessions[0].host_surface.observed_at =
+      '2026-07-13T00:00:09.000Z';
+  });
+  let emits = 0; let gates = 0; let rollbacks = 0;
+  const failed = await runPreCompactHandoff({ unattended: true }, {
+    root: initial.root, emitFn: () => { emits += 1; throw new Error('forbidden'); },
+    gateFn: () => { gates += 1; throw new Error('forbidden'); },
+    rollbackFn: () => { rollbacks += 1; throw new Error('forbidden'); } });
+  assert.equal(failed.action, 'error');
+  assert.deepEqual({ emits, gates, rollbacks }, { emits: 0, gates: 0, rollbacks: 0 });
+
+  const generic = seed('claude');
+  await assert.rejects(() => runPreCompactHandoff({ unattended: true }, {
+    root: generic.root,
+    emitFn: (emitRoot, emitRunId, options) => {
+      const emitted = emitHandoff(emitRoot, emitRunId, options);
+      rawHashValidState(emitRoot, emitRunId,
+        loop => { loop.event_log_head.checksum = 'f'.repeat(64); });
+      return emitted;
+    },
+    gateFn: () => { gates += 1; throw new Error('forbidden'); },
+    rollbackFn: () => { rollbacks += 1; throw new Error('forbidden'); },
+  }), /RUN_SNAPSHOT_INVALID/);
+  assert.deepEqual({ gates, rollbacks }, { gates: 0, rollbacks: 0 });
 });

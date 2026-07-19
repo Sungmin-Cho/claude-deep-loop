@@ -596,6 +596,12 @@ function requireLease(root, runId, f, intent = 'business') {
   }
   return data;
 }
+function parseMutationFence(f) {
+  strArg(f, 'owner');
+  const generation = intArg(f, 'generation');
+  if (generation < 1) throw new Error('INVALID_GENERATION');
+  return Object.freeze({ owner: f.owner, generation });
+}
 
 const [, , sub, ...rest] = process.argv;
 
@@ -1284,10 +1290,13 @@ const handlers = {
   respawn: async (a) => {
     const f = parseFlags(a); const root = rootOf(f); const runId = runIdOf(root, f);
     if (!runId) { error('MISSING_RUN_ID'); return 2; }
-    const { data } = readState(root, runId);
-    if (f['dry-run']) { json(respawnGate(data)); return 0; }
-    // Require + fence --owner/--generation (exit 3). intent 'lease' so a releasing handoff lease is not rejected.
-    requireLease(root, runId, f, 'lease');
+    let data;
+    if (f['dry-run']) {
+      data = readVerifiedState(root, runId).data;
+      json(respawnGate(data));
+      return 0;
+    }
+    const expect = parseMutationFence(f);
     const headless = f.headless === true || f.headless === 'true';
     const attended = f.attended === true || f.attended === 'true';
     let timeoutMs;
@@ -1298,14 +1307,8 @@ const handlers = {
         return 1;
       }
     }
-    const mode = resolveSpawnMode(data, { headless, attended, env: process.env });
-    const lease = data.session_chain?.lease || {};
-    const childRunId = lease.handoff_child_run_id;
-    const key = lease.handoff_idempotency_key;
-    const cs = (data.session_chain?.sessions || []).find(s => s.run_id === childRunId);
-    const handoffRel = cs && cs.handoff_rel;
-    const pollLease = () => readState(root, runId).data.session_chain.lease;
-    const expect = { owner: f.owner, generation: intArg(f, 'generation') };
+    const mode = headless ? 'headless' : null;
+    const childRunId = null; const key = null; const handoffRel = null;
     const now = parseNow(f);
     try {
       const r = mode === 'headless'
@@ -1317,10 +1320,16 @@ const handlers = {
         })
         : respawn(root, runId, {
           childRunId, key, handoffRel, headless, attended, now,
-          spawnFn: visibleSpawn, pollLease, env: process.env,
+          spawnFn: visibleSpawn, env: process.env,
           expect, expectedMode: mode,
         });
       json({ mode, ...r });
+      if (r.outcome === 'fenced' || r.action === 'fenced') {
+        error(`LEASE_FENCED: ${r.reason}`);
+      }
+      if (r.outcome === 'terminal' || r.action === 'terminal') {
+        error('RUN_TERMINAL');
+      }
       return r.ok ? 0 : (r.outcome === 'fenced' || r.outcome === 'terminal' || r.action === 'fenced' || r.action === 'terminal' ? 3 : 0);   // v1.6: terminal 거부는 fence 채널 — soft error(0) 위장 금지 (spec §2.3-5)
     } catch (e) {
       const msg = String(e?.message || e);

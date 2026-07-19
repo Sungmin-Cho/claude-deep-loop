@@ -14,10 +14,7 @@ import { respawn as respawnImpl } from '../scripts/lib/respawn.mjs';
 import { acquireLease } from '../scripts/lib/lease.mjs';
 import { driveHeadless as driveHeadlessImpl } from '../scripts/hooks-impl/drive-headless.mjs';
 import { pauseRun } from '../scripts/lib/state.mjs';
-import {
-  rawHashValidHistory as rawHistory7b,
-  seedCorrelatedTerminal,
-} from './fixtures/verified-app-run.mjs';
+import { seedCorrelatedTerminal } from './fixtures/verified-app-run.mjs';
 
 const A = join(dirname(fileURLToPath(import.meta.url)), '..', 'recipes', 'automation');
 const HANDOFF_REFERENCE = join(dirname(fileURLToPath(import.meta.url)), '..', 'skills', 'deep-loop-workflow', 'references', 'handoff-respawn.md');
@@ -210,9 +207,9 @@ test('driveHeadless does not throw when post-resume lease fenced (child acquired
   assert.ok(typeof r.recorded === 'boolean');
 });
 
-// Regression: driveHeadless must fail-closed PAUSE even when the resume child already acquired the
-// lease before measurement failure was detected (spec §9 headless fail-closed invariant).
-test('driveHeadless fails closed (pauses) when measurement fails after the child acquired the lease', () => {
+// Once the reserved child acquires generation 2, a stale parent must treat that durable acquisition as
+// authoritative even if its local worker result is a failure. It must never adopt or pause the child fence.
+test('driveHeadless preserves an acquired child when measurement fails in the stale parent', () => {
   const { root, runId, childRunId } = seedRunWithHandoff();
   const r = driveHeadless({ root, now: NOW1, spawnFn: () => {
     // Simulate: the resume child takes over the releasing lease (generation+1), then the process
@@ -220,9 +217,11 @@ test('driveHeadless fails closed (pauses) when measurement fails after the child
     acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, runtime: 'claude', now: NOW1 });
     return { ok: false, reason: 'unmeasurable-fail-closed' };
   }});
-  assert.equal(r.ok, false);
-  assert.equal(r.action, 'fail-closed');
-  assert.equal(readState(root, runId).data.status, 'paused', 'fail-closed pause must be set even when child took over lease');
+  assert.deepEqual({ ok: r.ok, action: r.action }, { ok: true, action: 'already-spawned' });
+  const after = readState(root, runId).data;
+  assert.equal(after.status, 'running');
+  assert.equal(after.session_chain.lease.owner_run_id, childRunId);
+  assert.equal(after.session_chain.lease.generation, 2);
 });
 
 // R5-plan gate: driveHeadless must skip handoffs not intended for headless resumption.
@@ -426,19 +425,20 @@ test('driveHeadless: fail-closed-terminal when spawn fails and run reached compl
   assert.equal(readState(root, runId).data.status, 'completed', 'status must stay completed, not paused');
 });
 
-// driveHeadless must use a FRESH fence (not unfenced) when the child acquired the lease
-// and the run is non-terminal. After fix: fresh-fence pause succeeds normally.
-// Expected: action='fail-closed', status='paused' (same end result but via fenced pause).
-test('driveHeadless: fresh-fence pause when spawn fails, child acquired, run non-terminal', () => {
+// The parent fence stays stale after acquisition. A local spawn failure cannot authorize a fresh-fence
+// pause of the running child.
+test('driveHeadless never adopts the acquired child fence after a local spawn failure', () => {
   const { root, runId, childRunId } = seedRunWithHandoff();
   const r = driveHeadless({ root, now: NOW1, spawnFn: () => {
     // Child acquires the lease (generation bumps to 2), run stays 'running'
     acquireLease(root, runId, { owner: childRunId, expectGeneration: 1, runtime: 'claude', now: NOW1 });
     return { ok: false, reason: 'unmeasurable-fail-closed' };
   }});
-  assert.equal(r.ok, false);
-  assert.equal(r.action, 'fail-closed', 'non-terminal run must be fail-closed paused');
-  assert.equal(readState(root, runId).data.status, 'paused', 'run must be paused with fresh fence');
+  assert.deepEqual({ ok: r.ok, action: r.action }, { ok: true, action: 'already-spawned' });
+  const after = readState(root, runId).data;
+  assert.equal(after.status, 'running');
+  assert.equal(after.session_chain.lease.owner_run_id, childRunId);
+  assert.equal(after.session_chain.lease.generation, 2);
 });
 
 // ── Codex-R6B: child acquisition verification before reporting success ──────────
@@ -597,14 +597,9 @@ test('driveHeadless: terminal Claude child keeps the legacy terminal fence and r
   assert.equal(d.budget.spent, 0);                // usage 이벤트 미기록 (전면 거부 — 사람 확정 트레이드오프)
 });
 
-test('driveHeadless: legacy terminal+emitted pending handoff → no write, terminal outcome (spec §4-5c ②)', () => {
+test('driveHeadless: proved terminal+emitted pending handoff → no write, terminal outcome (spec §4-5c ②)', () => {
   const { root, runId } = seedRunWithHandoff();
-  rawHistory7b(root, runId, [], loop => {
-    loop.status = 'completed';
-    loop.pause_reason = null;
-    loop.termination = loop.termination || {};
-    loop.termination.finished_at = '2026-07-13T00:00:10.000Z';
-  });
+  seedCorrelatedTerminal(root, runId, { status: 'completed' });
   const before = JSON.stringify(readState(root, runId).data);
   const r = driveHeadless({
     root,

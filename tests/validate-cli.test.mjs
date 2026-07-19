@@ -91,7 +91,9 @@ import { join as join7b } from 'node:path';
 import { contentHash as hash7b } from '../scripts/lib/envelope.mjs';
 import { appHostTaskCwdDigest as cwdDigest7b } from '../scripts/lib/host-surface.mjs';
 import { initRun as init7b } from '../scripts/lib/initrun.mjs';
-import { appendAnchored as append7b } from '../scripts/lib/integrity.mjs';
+import {
+  appendAnchored as append7b, directMutationOptions as directOptions7b,
+} from '../scripts/lib/integrity.mjs';
 import { readState as read7b } from '../scripts/lib/state.mjs';
 
 function writeHashValidTamper7b(root, runId, loop) {
@@ -137,7 +139,10 @@ test7bCli('validate CLI rejects App event timestamp drift in a hash-valid run', 
     Object.assign(loop.session_chain.lease, { state: 'releasing', handoff_phase: 'emitted',
       handoff_transport: 'codex-app', handoff_attempt_id: attempt,
       handoff_child_run_id: childId, resume_policy: 'app' });
-  }, undefined, { nowFn: () => Date.parse('2026-07-13T00:00:01.000Z') });
+  }, undefined, directOptions7b('test-app-correlation-timestamp-drift',
+    { owner: runId, generation: 1 }, { attempt, child_id: childId, canonical_root: canonicalRoot },
+    'LEASE_FENCED: validate-fixture',
+    { nowFn: () => Date.parse('2026-07-13T00:00:01.000Z') }));
   const loop = read7b(root, runId).data;
   loop.session_chain.sessions.at(-1).continuation.emitted_at = '2026-07-13T00:00:02.000Z';
   writeHashValidTamper7b(root, runId, loop);

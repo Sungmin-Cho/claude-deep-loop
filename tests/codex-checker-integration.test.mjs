@@ -24,7 +24,7 @@ import {
   rawHashValidState as rawState7b,
   seedCorrelatedTerminal as terminal7b,
 } from './fixtures/verified-app-run.mjs';
-import { appendAnchored } from '../scripts/lib/integrity.mjs';
+import { appendAnchored, directMutationOptions } from '../scripts/lib/integrity.mjs';
 
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const FIXED_NOW = '2026-07-11T01:00:00.000Z';
@@ -286,7 +286,9 @@ test('import rechecks persisted claim root/runtime/lease binding under the fresh
     appendAnchored(f.root, f.runId,
       { type: 'state-patch', data: { field: `test-claim-${label}` } }, state => {
       mutate(state.episodes.find(e => e.id === f.checkerId).review_claim);
-    });
+    }, undefined, directMutationOptions('test-checker-claim-drift',
+      { owner: f.runId, generation: 1 }, { checker_id: f.checkerId, label },
+      'LEASE_FENCED: checker-claim-fixture'));
     assert.throws(() => importReviewOutcome(f.root, f.runId, {
       raw: JSON.stringify(input(f)), fence: f.fence, now: FIXED_NOW,
     }), error, label);

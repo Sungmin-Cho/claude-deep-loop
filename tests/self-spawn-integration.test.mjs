@@ -13,18 +13,19 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { recordCost } from '../scripts/lib/budget.mjs';
 import { driveHeadlessRun as driveHeadlessRunImpl } from '../scripts/lib/headless-host.mjs';
-import { readLines } from '../scripts/lib/integrity.mjs';
+import { readLines, readVerifiedState } from '../scripts/lib/integrity.mjs';
 import { readState, writeState, pauseRun, patch } from '../scripts/lib/state.mjs';
 import { emitHandoff, buildLaunchCommand } from '../scripts/lib/handoff.mjs';
 import { acquireLease } from '../scripts/lib/lease.mjs';
 import { respawn as respawnImpl } from '../scripts/lib/respawn.mjs';
+import { revokeAppTaskContinuation } from '../scripts/lib/app-task-continuation.mjs';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -45,10 +46,15 @@ function buildPosixLaunchCommand(options) {
 }
 
 function respawn(root, runId, options = {}) {
+  const normalized = { ...options };
+  if (normalized.expect == null) {
+    const lease = readState(root, runId).data.session_chain.lease;
+    normalized.expect = { owner: lease.owner_run_id, generation: lease.generation };
+  }
   return respawnImpl(root, runId, {
-    ...options,
+    ...normalized,
     platform: 'linux',
-    launchCommandBuilder: options.launchCommandBuilder ?? buildPosixLaunchCommand,
+    launchCommandBuilder: normalized.launchCommandBuilder ?? buildPosixLaunchCommand,
   });
 }
 
@@ -462,4 +468,70 @@ test('Codex emitted handoff stays on the shared measured host path through prefl
   });
   assert.equal(second.action, 'no-pending-handoff');
   assert.equal(order.length, beforeSecondTick);
+});
+
+test('revoked App origin stays human-pinned throughout the generic emit-to-pause interval', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-self-spawn-app-fallback-')));
+  const observed = NOW0.toISOString();
+  const { runId } = initRun(root, {
+    runtime: 'codex', goal: 'App fallback isolation', now: NOW0,
+    env: {}, platform: 'linux', run: noOpRun, cwdFn: () => root,
+    hostObservation: { kind: 'codex-app', source: 'codex-app-tool-provenance',
+      capabilities: ['list-projects', 'create-thread-local', 'structured-process-stdin'],
+      structured_stdin_mode: 'pipe-open-noecho', host_task_cwd: root,
+      host_task_cwd_source: 'app-task-context', observed_at: observed },
+    appContinuationConsent: { mode: 'auto', authority: 'human-confirmed',
+      confirmed_at: observed, revoked_at: null },
+  });
+  const executable = {
+    runtime: 'codex', canonical_path: '/opt/codex/bin/codex', sha256: 'a'.repeat(64),
+    version: '0.144.1', platform: 'linux', arch: process.arch,
+    source: 'human-explicit', package: null, authenticode: null,
+    approved_by: 'human', approved_at: observed,
+  };
+  revokeAppTaskContinuation(root, runId,
+    { owner: runId, generation: 1, runtime: 'codex' },
+    { nowFn: () => Date.parse('2026-07-13T00:00:01.000Z') });
+  const seeded = readVerifiedState(root, runId).data;
+  seeded.autonomy.spawn_style = 'headless';
+  seeded.autonomy.runtime_executable_approval = executable;
+  writeState(root, runId, seeded);
+  readVerifiedState(root, runId);
+
+  const handoff = emitHandoff(root, runId, {
+    trigger: 'revoked-app-origin', headless: true, resumePolicy: 'headless',
+    expect: { owner: runId, generation: 1 }, now: NOW1,
+    nowFn: () => NOW1, cwdFn: () => root,
+  });
+  assert.equal(handoff.appOriginFallback, true);
+  const emitted = readVerifiedState(root, runId).data;
+  assert.equal(emitted.status, 'running');
+  assert.equal(emitted.session_chain.lease.resume_policy, 'human');
+  assert.equal(emitted.session_chain.lease.handoff_transport, null);
+
+  let preflights = 0; let respawns = 0; let spawns = 0;
+  const isolated = {
+    listProcessReceiptsFn: () => [],
+    preflightFn: () => { preflights += 1; throw new Error('forbidden'); },
+    respawnFn: () => { respawns += 1; throw new Error('forbidden'); },
+    spawnFn: () => { spawns += 1; throw new Error('forbidden'); },
+  };
+  assert.deepEqual(driveHeadlessRun({ root, runId,
+    expect: { owner: runId, generation: 1 }, now: NOW1 + 1, ...isolated }),
+  { ok: true, skipped: true, reason: 'human-resume-policy' });
+  assert.deepEqual({ preflights, respawns, spawns },
+    { preflights: 0, respawns: 0, spawns: 0 });
+
+  pauseRun(root, runId, { reason: 'app-authority-unconfirmed', mode: 'preserve',
+    expect: { owner: runId, generation: 1 }, now: NOW1 + 2 });
+  assert.deepEqual(driveHeadlessRun({ root, runId,
+    expect: { owner: runId, generation: 1 }, now: NOW1 + 3, ...isolated }),
+  { ok: true, skipped: true, reason: 'human-resume-policy' });
+  assert.deepEqual({ preflights, respawns, spawns },
+    { preflights: 0, respawns: 0, spawns: 0 });
+  const paused = readVerifiedState(root, runId).data;
+  assert.equal(paused.status, 'paused');
+  assert.equal(paused.pause_reason, 'app-authority-unconfirmed');
+  assert.equal(readLines(root, runId)
+    .filter(event => event.type === 'run-paused').length, 1);
 });

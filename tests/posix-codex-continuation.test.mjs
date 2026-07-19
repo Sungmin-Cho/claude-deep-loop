@@ -24,9 +24,14 @@ function buildPosixDescriptor(options) {
 }
 
 function respawn(root, runId, options = {}) {
+  const normalized = { ...options };
+  if (normalized.expect == null) {
+    const lease = readState(root, runId).data.session_chain.lease;
+    normalized.expect = { owner: lease.owner_run_id, generation: lease.generation };
+  }
   return respawnImpl(root, runId, {
-    ...options,
-    launchCommandBuilder: options.launchCommandBuilder
+    ...normalized,
+    launchCommandBuilder: normalized.launchCommandBuilder
       ?? (descriptorOptions => buildPosixDescriptor(descriptorOptions).entries),
   });
 }

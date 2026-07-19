@@ -10,15 +10,19 @@ import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
 import { acquireLease, advanceHandoffPhase } from '../scripts/lib/lease.mjs';
 import { recordCost } from '../scripts/lib/budget.mjs';
-import { appendAnchored, readLines } from '../scripts/lib/integrity.mjs';
+import { appendAnchored, readLines, readVerifiedState } from '../scripts/lib/integrity.mjs';
 import { respawn } from '../scripts/lib/respawn.mjs';
 import { buildLaunchCommand } from '../scripts/lib/runtime-descriptor.mjs';
 import { finishRun } from '../scripts/lib/finish.mjs';
 import { canonicalRealpath } from './helpers/fs-fixtures.mjs';
+import { confirmAppTask, prepareAppTask }
+  from '../scripts/lib/app-task-continuation.mjs';
 import { newWorkstream, recordWorkstreamTerminal } from '../scripts/lib/workspace.mjs';
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
 import {
+  durableRunBytes,
+  rawHashValidState,
   rawHashValidState as rawState7b,
   seedCorrelatedTerminal,
 } from './fixtures/verified-app-run.mjs';
@@ -1799,6 +1803,143 @@ test('an owner-missing host lock is reclaimed after the short metadata crash gra
   assert.equal(result.action, 'resumed');
   assert.equal(makerCalls, 1);
   assert.equal(existsSync(lockPath), false);
+});
+
+function appHeadlessSeed11b({ phase = 'emitted' } = {}) {
+  const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-app-headless-')));
+  const observed = '2026-07-13T00:00:00.000Z';
+  const { runId } = initRun(root, { runtime: 'codex', goal: 'g',
+    now: new Date(observed), cwdFn: () => root,
+    hostObservation: { kind: 'codex-app', source: 'codex-app-tool-provenance',
+      capabilities: ['list-projects', 'create-thread-local', 'structured-process-stdin'],
+      structured_stdin_mode: 'pipe-open-noecho', host_task_cwd: root,
+      host_task_cwd_source: 'app-task-context', observed_at: observed },
+    appContinuationConsent: { mode: 'auto', authority: 'human-confirmed',
+      confirmed_at: observed, revoked_at: null } });
+  const attemptId = '01JAPPTASK0000000000000000';
+  const emitted = emitHandoff(root, runId, { reason: 'headless-isolation',
+    trigger: 'headless-isolation', appIntent: true,
+    expect: { owner: runId, generation: 1 }, cwdFn: () => root,
+    attemptIdFactory: () => attemptId,
+    descriptorBuilder: ({ runtime, root: projectRoot, parentRunId, childRunId }) => ({
+      runtime, projectRoot, runId: parentRunId, usageOutputKind: 'json',
+      resumeInvocation: childRunId,
+      entries: Object.fromEntries(['interactive', 'headless', 'cmux', 'iterm2',
+        'terminal-app', 'wt', 'powershell', 'desktop']
+        .map(name => [name, { display: 'manual', unavailable: true }])),
+    }),
+    nowFn: () => Date.parse('2026-07-13T00:00:01.000Z') });
+  if (phase !== 'emitted') {
+    prepareAppTask(root, runId, { owner: runId, generation: 1,
+      stdinMode: 'pipe-open-noecho',
+      hostInput: { currentHostTaskCwd: root,
+        projects: [{ projectId: 'headless-project', projectKind: 'local', path: root }] } },
+    { cwdFn: () => root,
+      nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'),
+      descriptorBuilder: () => ({ tool: 'create_thread',
+        target: { type: 'project', projectId: 'headless-project',
+          environment: { type: 'local' } }, prompt: 'headless prompt' }),
+      reconcileBudgetFn: () => ({ turns: 0, tokens: 0 }),
+      gateFn: () => ({ ok: true, blocked_by: [] }) });
+  }
+  if (phase === 'confirmed') {
+    confirmAppTask(root, runId, { owner: runId, generation: 1, attemptId,
+      stdinMode: 'pipe-open-noecho', threadId: 'headless-thread' },
+    { cwdFn: () => root,
+      nowFn: () => Date.parse('2026-07-13T00:00:03.000Z') });
+  }
+  return { root, runId, attemptId, childRunId: emitted.childRunId };
+}
+
+test('headless skips live App transport and sweeps only expired unconfirmed attempts', () => {
+  for (const phase of ['emitted', 'prepared', 'confirmed']) {
+    const fixture = appHeadlessSeed11b({ phase });
+    let preflights = 0; let respawns = 0; let spawns = 0;
+    const result = driveHeadlessRun({ root: fixture.root, runId: fixture.runId,
+      now: Date.parse('2026-07-13T00:00:03.000Z'),
+      expect: { owner: fixture.runId, generation: 1 },
+      listProcessReceiptsFn: () => [], acquireHostLock: () => ({ release() {} }),
+      preflightFn: () => { preflights += 1; throw new Error('forbidden'); },
+      respawnFn: () => { respawns += 1; throw new Error('forbidden'); },
+      spawnFn: () => { spawns += 1; throw new Error('forbidden'); } });
+    assert.deepEqual(result, { ok: true, skipped: true,
+      action: 'app-transport-owned', reason: 'kernel-only-wait' });
+    assert.deepEqual({ preflights, respawns, spawns },
+      { preflights: 0, respawns: 0, spawns: 0 });
+  }
+
+  const expired = appHeadlessSeed11b({ phase: 'prepared' });
+  const swept = driveHeadlessRun({ root: expired.root, runId: expired.runId,
+    now: Date.parse('2026-07-13T00:10:01.000Z'),
+    clock: () => Date.parse('2026-07-13T00:10:01.000Z'),
+    expect: { owner: expired.runId, generation: 1 }, cwdFn: () => expired.root,
+    listProcessReceiptsFn: () => [], acquireHostLock: () => ({ release() {} }),
+    respawnFn: () => assert.fail('expired App attempt cannot enter generic respawn') });
+  assert.equal(swept.action, 'app-swept');
+  assert.equal(swept.reason, 'swept');
+});
+
+test('headless fences a wrong caller then rejects matching corrupt authority before work', () => {
+  const fixture = appHeadlessSeed11b();
+  rawHashValidState(fixture.root, fixture.runId, loop => {
+    loop.session_chain.sessions[0].host_surface.observed_at =
+      '2026-07-13T00:00:09.000Z';
+  });
+  const before = durableRunBytes(fixture.root, fixture.runId);
+  let receipts = 0; let preflights = 0; let respawns = 0; let spawns = 0;
+  const deps = { root: fixture.root, runId: fixture.runId,
+    listProcessReceiptsFn: () => { receipts += 1; return []; },
+    preflightFn: () => { preflights += 1; throw new Error('forbidden'); },
+    respawnFn: () => { respawns += 1; throw new Error('forbidden'); },
+    spawnFn: () => { spawns += 1; throw new Error('forbidden'); } };
+  assert.deepEqual(driveHeadlessRun({ ...deps,
+    expect: { owner: '01JAPPWR0NG000000000000000', generation: 1 } }),
+  { ok: false, action: 'fenced', reason: 'caller-parent-fence-mismatch' });
+  assert.throws(() => driveHeadlessRun({ ...deps,
+    expect: { owner: fixture.runId, generation: 1 } }), /RUN_SNAPSHOT_INVALID/);
+  assert.deepEqual({ receipts, preflights, respawns, spawns },
+    { receipts: 0, preflights: 0, respawns: 0, spawns: 0 });
+  assert.deepEqual(durableRunBytes(fixture.root, fixture.runId), before);
+});
+
+test('headless proves the post-CAS maker snapshot immediately before external spawn', () => {
+  const fixture = seedCodexHandoff();
+  const deps = codexHostDeps(fixture.root, fixture.runId);
+  let spawnCalls = 0;
+  assert.throws(() => driveHeadlessRun({ root: fixture.root, runId: fixture.runId,
+    now: NOW1 + 1_000, ...deps,
+    preflightFn: () => ({ ok: true, cache_hit: true, measured_usage: [] }),
+    beforeMakerAuthorityReadFn: () => rawHashValidState(fixture.root, fixture.runId,
+      loop => { loop.event_log_head.checksum = 'f'.repeat(64); }),
+    spawnFn: () => { spawnCalls += 1; return { ok: true, usage: measuredUsage(1) }; },
+  }), /RUN_SNAPSHOT_INVALID/);
+  assert.equal(spawnCalls, 0);
+});
+
+test('a stale headless parent never adopts the acquired child fence to pause it', () => {
+  const fixture = seedCodexHandoff();
+  const key = readVerifiedState(fixture.root, fixture.runId).data
+    .session_chain.lease.handoff_idempotency_key;
+  advanceHandoffPhase(fixture.root, fixture.runId,
+    { key, toPhase: 'spawned', now: NOW1 + 1,
+      expect: { owner: fixture.runId, generation: 1 } });
+  let pauseCalls = 0;
+  const result = driveHeadlessRun({ root: fixture.root, runId: fixture.runId,
+    now: NOW1 + 2, expect: { owner: fixture.runId, generation: 1 },
+    listProcessReceiptsFn: () => [], acquireHostLock: () => ({ release() {} }),
+    pauseFn: () => {
+      pauseCalls += 1;
+      acquireLease(fixture.root, fixture.runId, { owner: fixture.childRunId,
+        expectGeneration: 1, runtime: 'codex', now: NOW1 + 3 });
+      throw new Error('LEASE_FENCED: simulated child acquire');
+    } });
+  assert.deepEqual(result, { ok: true, action: 'already-spawned' });
+  assert.equal(pauseCalls, 1);
+  const current = readVerifiedState(fixture.root, fixture.runId).data;
+  assert.equal(current.status, 'running');
+  assert.equal(current.session_chain.lease.owner_run_id, fixture.childRunId);
+  assert.equal(readLines(fixture.root, fixture.runId)
+    .filter(event => event.type === 'run-paused').length, 0);
 });
 
 test('all six legacy headless accounting calls bind a stable purpose request id to their fence', () => {

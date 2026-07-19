@@ -7,7 +7,8 @@ import { fileURLToPath as file10dApp } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { appendAnchored, readLines, readVerifiedState } from '../scripts/lib/integrity.mjs';
+import { appendAnchored, directMutationOptions, readLines,
+  readVerifiedState } from '../scripts/lib/integrity.mjs';
 import { acquireLease, releaseLease, reserveHandoff } from '../scripts/lib/lease.mjs';
 import { readState, writeState } from '../scripts/lib/state.mjs';
 import { observeHostSurface, revokeAppTaskContinuation, statusAppTask,
@@ -365,7 +366,9 @@ function preservedAutoRun(phase) {
         prepared_at: null, confirmation_deadline: null, confirmed_at: null,
         acquired_at: null, acquired_generation: null, thread_id: null,
         unconfirmed_thread_id: null, failure_code: null, failure_binding: null } });
-  }, undefined, { nowFn: () => Date.parse(emitted) });
+  }, undefined, directMutationOptions('test-preserved-auto-run',
+    { owner: fixture.runId, generation: 1 }, { attempt, child, phase },
+    'LEASE_FENCED: test', { nowFn: () => Date.parse(emitted) }));
   const loop = readState(fixture.root, fixture.runId).data;
   Object.assign(loop, { status: 'paused', pause_reason: phase === 'emitted'
     ? 'app-launch-unconfirmed' : 'app-child-timeout-awaiting' });
@@ -582,7 +585,9 @@ test('revoke abandons only the exact current live attempt in the same anchored t
         prepared_at: null, confirmation_deadline: null, confirmed_at: null,
         acquired_at: null, acquired_generation: null, thread_id: null,
         unconfirmed_thread_id: null, failure_code: null, failure_binding: null } });
-  }, undefined, { nowFn: () => Date.parse(emitted) });
+  }, undefined, directMutationOptions('test-revoke-live-attempt',
+    { owner: runId, generation: 1 }, { attempt, child },
+    'LEASE_FENCED: test', { nowFn: () => Date.parse(emitted) }));
   const loop = readState(root, runId).data;
   const orphan = structuredClone(loop.session_chain.sessions.at(-1));
   orphan.run_id = '01JAPPCHD00000000000000001';

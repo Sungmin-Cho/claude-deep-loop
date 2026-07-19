@@ -7,7 +7,9 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { computeRunMetrics, computeInsights, deriveCandidates, emitInsights, latestInsights, relInsightsPath, validateLedger, isSuspiciousActive } from '../scripts/lib/insights.mjs';
 import { readState, writeState, runDir as runDirOf } from '../scripts/lib/state.mjs';
-import { readLines, appendAnchored, appendEvent, lastLogHead } from '../scripts/lib/integrity.mjs';
+import {
+  readLines, appendAnchored, appendEvent, directMutationOptions, lastLogHead,
+} from '../scripts/lib/integrity.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { recordCost } from '../scripts/lib/budget.mjs';
@@ -558,7 +560,10 @@ test('latest: 상위 insights_schema_version 파일은 skip하고 더 오래된 
   const futureName = 'ZZZZZZZZZZ9999999999999999-insights.json';
   appendAnchored(root, runB, { type: 'insights-emitted',
     data: { path: relInsightsPath(futureName), sha256: contentHash(futureJson), candidates_count: 0 } },
-    undefined, undefined, { floor: 1 });                     // path-binding+sha 성립 (auto-floor cost 포함)
+    undefined, undefined, directMutationOptions('test-future-schema-insights-event',
+      { owner: runB, generation: 1 },
+      { path: relInsightsPath(futureName), sha256: contentHash(futureJson), floor: 1 },
+      'LEASE_FENCED: insights-fixture', { floor: 1 }));       // path-binding+sha 성립 (auto-floor cost 포함)
   writeFileSync(join(dir, futureName), futureJson);
   finishFixture(root, runB);                                 // ZZZZ의 after = [finish] → finish-edge까지 전부 통과
   // 순회(ULID 내림차순): ZZZZ → rOld → r0B. ZZZZ는 **schema 검사 하나만으로** skip되어야 rOld가 반환된다
@@ -621,7 +626,9 @@ test('v1.5 (b): 동일 path 매칭 insights-emitted 이벤트 2개 → fail-clos
   const r = emitInsights(root, runId, { fence, now: FIXED.getTime(), rnd: () => 0.5 });
   // 같은 path·sha를 가리키는 중복 insights-emitted 이벤트(규약 밖 — 정상 경로에서 ULID 파일명은 유일)
   appendAnchored(root, runId, { type: 'insights-emitted', data: { path: r.path, sha256: r.sha256, candidates_count: 0 } },
-    undefined, undefined, { floor: 1 });
+    undefined, undefined, directMutationOptions('test-duplicate-insights-event',
+      { owner: runId, generation: 1 }, { path: r.path, sha256: r.sha256, floor: 1 },
+      'LEASE_FENCED: insights-fixture', { floor: 1 }));
   finishFixture(root, runId);
   assert.equal(latestInsights(root), null);                      // 앵커 모호 → fail-closed
 });

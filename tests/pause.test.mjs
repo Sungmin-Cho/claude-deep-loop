@@ -229,7 +229,10 @@ test('RUN_PAUSED gate: respawn on paused run returns {ok:false}', () => {
       stale_lease_ttl_sec: 900,
     },
   });
-  const result = respawn(root, runId, { childRunId: 'CHILD01', key: 'k123', handoffRel: 'handoffs/h.md', spawnFn: () => ({ ok: true }) });
+  const result = respawn(root, runId, {
+    childRunId: 'CHILD01', key: 'k123', handoffRel: 'handoffs/h.md',
+    expect: { owner: OWNER, generation: GEN }, spawnFn: () => ({ ok: true }),
+  });
   assert.equal(result.ok, false, 'respawn must fail on paused run');
   assert.match(result.reason, /RUN_PAUSED|paused/i);
   // handoff phase must not have advanced to 'spawned'

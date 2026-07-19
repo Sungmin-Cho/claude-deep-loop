@@ -1,8 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmdirSync } from 'node:fs';
+import { spawnSync as spawnRespawn11b } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath as fileRespawn11b } from 'node:url';
 import { runDir } from '../scripts/lib/state.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState } from '../scripts/lib/state.mjs';
@@ -11,7 +13,10 @@ import { acquireLease, advanceHandoffPhase, releaseLease } from '../scripts/lib/
 import { respawn as respawnImpl, respawnGate, resolveSpawnMode, isHeadlessInvocation } from '../scripts/lib/respawn.mjs';
 import { buildLaunchCommand, buildRuntimeResumeDescriptor } from '../scripts/lib/runtime-descriptor.mjs';
 import { sessionRuntime } from '../scripts/lib/runtime.mjs';
-import { seedCorrelatedTerminal as terminal7b } from './fixtures/verified-app-run.mjs';
+import { finishRun } from '../scripts/lib/finish.mjs';
+import { readVerifiedState } from '../scripts/lib/integrity.mjs';
+import { durableRunBytes, rawHashValidState,
+  seedCorrelatedTerminal as terminal7b } from './fixtures/verified-app-run.mjs';
 
 const NOW0 = new Date('2026-06-24T00:00:00Z');
 const NOW1 = Date.parse('2026-06-24T01:00:00Z');
@@ -29,6 +34,142 @@ function windowsDescriptorOptions(options) {
     : WINDOWS_DEEP_LOOP_ROOT;
   return { ...options, root: WINDOWS_TARGET_ROOT, deepLoopRoot };
 }
+
+function appRespawnSeed11b() {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-app-respawn-')));
+  const observed = '2026-07-13T00:00:00.000Z';
+  const { runId } = initRun(root, { runtime: 'codex', goal: 'g',
+    now: new Date(observed), cwdFn: () => root,
+    hostObservation: { kind: 'codex-app', source: 'codex-app-tool-provenance',
+      capabilities: ['list-projects', 'create-thread-local', 'structured-process-stdin'],
+      structured_stdin_mode: 'pipe-open-noecho', host_task_cwd: root,
+      host_task_cwd_source: 'app-task-context', observed_at: observed },
+    appContinuationConsent: { mode: 'auto', authority: 'human-confirmed',
+      confirmed_at: observed, revoked_at: null } });
+  const descriptorBuilder = ({ runtime, root: projectRoot, parentRunId, childRunId }) => ({
+    runtime, projectRoot, runId: parentRunId, usageOutputKind: 'json',
+    resumeInvocation: childRunId,
+    entries: Object.fromEntries(['interactive', 'headless', 'cmux', 'iterm2',
+      'terminal-app', 'wt', 'powershell', 'desktop']
+      .map(name => [name, { display: 'manual', unavailable: true }])),
+  });
+  const emitted = emitHandoffImpl(root, runId, {
+    reason: 'respawn-isolation', trigger: 'respawn-isolation', appIntent: true,
+    expect: { owner: runId, generation: 1 }, cwdFn: () => root, descriptorBuilder,
+    attemptIdFactory: () => '01JAPPTASK0000000000000000',
+    nowFn: () => Date.parse('2026-07-13T00:00:01.000Z'),
+  });
+  return { root, runId, emitted };
+}
+
+test('respawn fences then proves then orders terminal App key and spawn decisions', () => {
+  const app = appRespawnSeed11b();
+  let spawned = 0;
+  const base = { childRunId: app.emitted.childRunId, key: app.emitted.key,
+    handoffRel: app.emitted.handoffRel, headless: true,
+    spawnFn: () => { spawned += 1; return { ok: true }; } };
+  assert.equal(respawnImpl(app.root, app.runId, {
+    ...base, expect: { owner: '01JAPPWR0NG000000000000000', generation: 1 },
+  }).outcome, 'fenced');
+  assert.equal(respawnImpl(app.root, app.runId, {
+    ...base, childRunId: '01JAPPCHD00000000000000098', key: 'wrong-key',
+    expect: { owner: app.runId, generation: 1 },
+  }).outcome, 'app-transport-owned');
+
+  const terminal = appRespawnSeed11b();
+  finishRun(terminal.root, terminal.runId, { status: 'stopped', confirm: true,
+    proof: { human_reason: 'valid terminal precedence fixture' },
+    fence: { owner: terminal.runId, generation: 1, runtime: 'codex',
+      intent: 'business' },
+    now: Date.parse('2026-07-13T00:00:02.000Z') });
+  assert.equal(respawnImpl(terminal.root, terminal.runId, {
+    ...base, childRunId: '01JAPPCHD00000000000000099', key: 'wrong-key',
+    expect: { owner: terminal.runId, generation: 1 },
+  }).outcome, 'terminal');
+  assert.equal(spawned, 0);
+});
+
+test('respawn caller fence precedes proof and matching callers reject corrupt App state', () => {
+  for (const mutate of [
+    loop => { loop.session_chain.sessions[0].host_surface.observed_at =
+      '2026-07-13T00:00:09.000Z'; },
+    loop => { loop.session_chain.lease.handoff_transport = null;
+      loop.session_chain.lease.handoff_attempt_id = null; },
+    loop => { loop.status = 'stopped'; },
+  ]) {
+    const fixture = appRespawnSeed11b();
+    rawHashValidState(fixture.root, fixture.runId, mutate);
+    const before = durableRunBytes(fixture.root, fixture.runId);
+    const input = { childRunId: fixture.emitted.childRunId, key: fixture.emitted.key,
+      handoffRel: fixture.emitted.handoffRel, headless: true,
+      spawnFn: () => assert.fail('corrupt snapshot cannot spawn') };
+    assert.equal(respawnImpl(fixture.root, fixture.runId, { ...input,
+      expect: { owner: '01JAPPWR0NG000000000000000', generation: 1 } }).outcome,
+    'fenced');
+    assert.throws(() => respawnImpl(fixture.root, fixture.runId, { ...input,
+      expect: { owner: fixture.runId, generation: 1 } }), /RUN_SNAPSHOT_INVALID/);
+    assert.deepEqual(durableRunBytes(fixture.root, fixture.runId), before);
+  }
+});
+
+test('public respawn compensation uses one public intent and no private marker operation', () => {
+  const source = readFileSync(new URL('../scripts/lib/respawn.mjs', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /operation:\s*'respawn-(?:rollback-pause|timeout-preserve)'/);
+  assert.match(source, /const rollback = args => runRespawnCompensation\([\s\S]*mutation => rollbackAndPause\([\s\S]*mutation/);
+  assert.match(source, /const preserve = args => runRespawnCompensation\([\s\S]*mutation => preservePause\([\s\S]*mutation/);
+  const publicBody = source.slice(source.indexOf('export function respawn('));
+  assert.equal((publicBody.match(/rollbackAndPause\(/g) || []).length, 1,
+    'only the same-intent rollback closure may name the private helper');
+  assert.equal((publicBody.match(/preservePause\(/g) || []).length, 1,
+    'only the same-intent preserve closure may name the private helper');
+  assert.match(publicBody,
+    /recoveredRespawnCompensation\(root, runId, mutation, operationInput\)/);
+});
+
+function compensationCrash11b(kind) {
+  const fixture = seedLauncher();
+  const handoff = emitHandoff(fixture.root, fixture.runId,
+    { trigger: `compensation-${kind}`, now: NOW1, expect: expect_(fixture.runId) });
+  const input = { kind, childRunId: handoff.childRunId, key: handoff.key,
+    handoffRel: handoff.handoffRel, attended: true, now: NOW1 };
+  return { ...fixture, handoff, input };
+}
+
+test('public respawn retry recovers rollback and timeout markers without a second spawn', () => {
+  for (const kind of ['rollback', 'timeout']) {
+    for (const point of ['pending-after-rename', 'event-after-partial-append',
+      'state-after-rename', 'hash-after-rename', 'before-cleanup']) {
+      const fixture = compensationCrash11b(kind);
+      const worker = spawnRespawn11b(process.execPath,
+        [fileRespawn11b(new URL('./helpers/anchored-crash-worker.mjs', import.meta.url)),
+          fixture.root, fixture.runId, `respawn-${kind}`, point], {
+          shell: false, encoding: 'utf8', timeout: 10_000,
+          env: { ...process.env, DEEP_LOOP_CRASH_OWNER: fixture.runId,
+            DEEP_LOOP_CRASH_GENERATION: '1',
+            DEEP_LOOP_CRASH_INPUT: JSON.stringify(fixture.input) },
+        });
+      assert.notEqual(worker.error?.code, 'ETIMEDOUT');
+      assert.equal(worker.status, 91, worker.stderr || worker.stdout || worker.error?.message);
+      rmdirSync(join(runDir(fixture.root, fixture.runId), '.lock'));
+      let spawned = 0;
+      const result = respawn(fixture.root, fixture.runId, { ...fixture.input,
+        expect: expect_(fixture.runId), env: {}, platform: 'darwin',
+        spawnFn: () => { spawned += 1; return kind === 'rollback'
+          ? { ok: false, reason: 'launch-exit-1' } : { ok: true }; },
+        pollLease: () => ({ state: 'releasing', owner_run_id: fixture.runId,
+          generation: 1 }), sleep: noSleep,
+        revalidateRuntimeExecutable: identity => identity,
+        revalidateLauncherExecutable: identity => identity });
+      assert.equal(spawned, 0, `${kind}/${point}: recovered retry repeated spawn`);
+      assert.equal(result.outcome,
+        kind === 'rollback' ? 'failed_launch' : 'child-timeout-awaiting');
+      const events = readFileSync(join(runDir(fixture.root, fixture.runId),
+        'event-log.jsonl'), 'utf8').split('\n').filter(Boolean).map(JSON.parse);
+      assert.equal(events.filter(event => event.type ===
+        (kind === 'rollback' ? 'respawn-failed' : 'respawn-timeout')).length, 1);
+    }
+  }
+});
 
 function buildWindowsDescriptor(options) {
   return buildRuntimeResumeDescriptor(windowsDescriptorOptions(options));
@@ -76,6 +217,10 @@ function emitHandoff(root, runId, options = {}) {
 
 function respawn(root, runId, options = {}) {
   const normalized = { ...options, platform: targetPlatform(root, runId, options) };
+  if (normalized.expect == null) {
+    const lease = readState(root, runId).data.session_chain.lease;
+    normalized.expect = { owner: lease.owner_run_id, generation: lease.generation };
+  }
   if (isForeignWindowsCodexFixture(root, runId, normalized)) {
     normalized.launchCommandBuilder ??= buildWindowsLaunchCommand;
   } else if (isForeignPosixCodexFixture(root, runId, normalized)) {
@@ -242,7 +387,7 @@ test('respawn rejects a stale caller parent fence before gate, CAS, or spawn', (
     key: h.key,
     handoffRel: h.handoffRel,
     headless: true,
-    expect: { owner: 'STALE', generation: 0 },
+    expect: { owner: 'STALE', generation: 1 },
     now: NOW1,
     spawnFn: () => { spawned += 1; return { ok: true }; },
   });
@@ -444,7 +589,8 @@ test('respawn rejects childRunId that does not match the reserved handoff child 
   let spawned = false;
   const r = respawn(root, runId, { childRunId: 'WRONG-CHILD', key: h.key, handoffRel: h.handoffRel, now: NOW1, spawnFn: () => { spawned = true; return { ok: true }; } });
   assert.equal(r.ok, false);
-  assert.equal(r.outcome, 'child-mismatch');
+  assert.equal(r.outcome, 'fenced');
+  assert.equal(r.reason, 'requested-binding-mismatch');
   assert.equal(spawned, false);
   const after = readState(root, runId).data.session_chain.lease;
   assert.equal(after.handoff_phase, 'emitted');   // no advance to spawned

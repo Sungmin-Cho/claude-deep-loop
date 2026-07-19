@@ -13,6 +13,7 @@ import { recordReviewVerdict, tripBreaker } from '../../scripts/lib/breaker.mjs'
 import { recordReviewed } from '../../scripts/lib/comprehension.mjs';
 import { patch, pauseRun } from '../../scripts/lib/state.mjs';
 import { newWorkstream } from '../../scripts/lib/workspace.mjs';
+import { respawn } from '../../scripts/lib/respawn.mjs';
 import { recordCost, settleCodexPreflightCost, settleCodexProcessCost,
   settleTerminalCodexMakerCost } from '../../scripts/lib/budget.mjs';
 
@@ -84,6 +85,34 @@ registerAnchoredCrashExtension(request => {
 });
 
 const generic = Object.freeze({
+  'respawn-rollback': ({ root, runId, owner, generation, point, rawInput }) => {
+    const input = parseInput(rawInput,
+      ['attended', 'childRunId', 'handoffRel', 'key', 'kind', 'now']);
+    delete process.env.DEEP_LOOP_TEST_CRASH_AT;
+    return respawn(root, runId,
+      { ...input, env: {}, expect: { owner, generation },
+      spawnFn: () => {
+        process.env.DEEP_LOOP_TEST_CRASH_AT = point;
+        return { ok: false, reason: 'launch-exit-1' };
+      },
+      revalidateRuntimeExecutable: identity => identity,
+      revalidateLauncherExecutable: identity => identity });
+  },
+  'respawn-timeout': ({ root, runId, owner, generation, point, rawInput }) => {
+    const input = parseInput(rawInput,
+      ['attended', 'childRunId', 'handoffRel', 'key', 'kind', 'now']);
+    delete process.env.DEEP_LOOP_TEST_CRASH_AT;
+    return respawn(root, runId,
+      { ...input, env: {}, expect: { owner, generation },
+      spawnFn: () => ({ ok: true }),
+      pollLease: () => {
+        process.env.DEEP_LOOP_TEST_CRASH_AT = point;
+        return { state: 'releasing', owner_run_id: owner, generation };
+      },
+      sleep: () => {},
+      revalidateRuntimeExecutable: identity => identity,
+      revalidateLauncherExecutable: identity => identity });
+  },
   'accounting-record': ({ root, runId, owner, generation, rawInput }) => {
     const input = parseInput(rawInput, ['intent', 'requestId', 'tokens', 'turns']);
     return recordCost(root, runId, { turns: input.turns, tokens: input.tokens,

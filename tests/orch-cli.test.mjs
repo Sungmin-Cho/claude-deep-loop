@@ -14,11 +14,12 @@ import { emitHandoff } from '../scripts/lib/handoff.mjs';
 import { structuredReadyToken } from '../scripts/lib/bounded-input.mjs';
 import { confirmAppTask, prepareAppTask } from '../scripts/lib/app-task-continuation.mjs';
 import { finishRun as finish11a } from '../scripts/lib/finish.mjs';
-import { appendAnchored, readLines } from '../scripts/lib/integrity.mjs';
+import { appendAnchored, directMutationOptions, readLines } from '../scripts/lib/integrity.mjs';
 import { createDirectoryJunction } from './helpers/fs-fixtures.mjs';
 import { appHostTaskCwdDigest } from '../scripts/lib/host-surface.mjs';
 import { validate, verifyAppEventCorrelation } from '../scripts/lib/schema.mjs';
 import {
+  rawHashValidState,
   rawHashValidState as rawState7b,
   seedCorrelatedTerminal,
 } from './fixtures/verified-app-run.mjs';
@@ -561,7 +562,7 @@ runtimeExecutableCliTest('POSIX Codex CLI visible respawn consumes durable appro
   });
   assert.equal(launched.status, 0, launched.stderr);
   const result = JSON.parse(launched.stdout);
-  assert.equal(result.mode, 'cmux');
+  assert.equal(result.mode, null);
   assert.equal(result.outcome, 'child-timeout-awaiting');
 
   const argv = readFileSync(launchLog, 'utf8').trimEnd().split('\n');
@@ -650,7 +651,7 @@ runtimeExecutableCliTest('explicit native executable is hashed without execution
   assert.equal(approval.source, 'human-explicit');
   assert.equal(approval.version, '7.8.9');
   assert.equal(approval.package, null);
-  assert.equal(readFileSync(marker, 'utf8'), 'xx', 'approval revalidates once inside the locked transaction');
+  assert.equal(readFileSync(marker, 'utf8'), 'x', 'approval observes the executable once before entering the locked transaction');
 });
 
 launcherExecutableCliTest('forced-win32 fixture is hermetic to host terminal signals (cmux/tmux leak)', () => {
@@ -826,7 +827,7 @@ launcherExecutableCliTest('forced-win32 POSIX CLI fixture never becomes runnable
   ], fixture.env);
   assert.equal(respawned.code, 0, respawned.stderr);
   const outcome = JSON.parse(respawned.stdout);
-  assert.equal(outcome.mode, 'wt');
+  assert.equal(outcome.mode, null);
   assert.equal(outcome.ok, false);
   assert.equal(outcome.outcome, 'no-launcher');
   assert.equal(outcome.reason, 'trusted-native-identity-unavailable');
@@ -1816,7 +1817,9 @@ test('App post-fence transition invalidity exits 1 while fences stay 3 and retry
         prepared_at: null, confirmation_deadline: null, confirmed_at: null,
         acquired_at: null, acquired_generation: null, thread_id: null,
         unconfirmed_thread_id: null, failure_code: null, failure_binding: null } });
-  }, undefined, { nowFn: () => Date.parse(fixture.observed) });
+  }, undefined, directMutationOptions('test-app-post-fence-transition',
+    { owner: fixture.runId, generation: 1 }, { attempt, child },
+    'LEASE_FENCED: test', { nowFn: () => Date.parse(fixture.observed) }));
   appendAnchored(fixture.root, fixture.runId, { type: 'app-task-abandoned', data: {
     owner_run_id: fixture.runId, generation: 1, attempt_id: attempt,
     child_run_id: child, failure_code: 'gate-budget',
@@ -1828,7 +1831,10 @@ test('App post-fence transition invalidity exits 1 while fences stay 3 and retry
     loop.pause_reason = 'operator-preserve';
     loop.session_chain.lease.resume_policy = 'human';
     loop.session_chain.lease.expires_at = null;
-  }, undefined, { nowFn: () => Date.parse('2026-07-13T00:00:01.000Z') });
+  }, undefined, directMutationOptions('test-app-post-fence-abandon',
+    { owner: fixture.runId, generation: 1 },
+    { attempt, child, failure_code: 'gate-budget' }, 'LEASE_FENCED: test',
+    { nowFn: () => Date.parse('2026-07-13T00:00:01.000Z') }));
   const loop = readState(fixture.root, fixture.runId).data;
   const schema = validate(loop);
   const correlation = verifyAppEventCorrelation(loop, readLines(fixture.root, fixture.runId));
@@ -2365,5 +2371,211 @@ test('every App syntax error exits 2 before state read or READY', () => {
       { encoding: 'utf8', shell: false });
     assert.equal(result.status, 2, `${args.join(' ')}\n${result.stderr}`);
     assert.equal(result.stdout.includes('DEEP_LOOP_STDIN_READY:'), false);
+  }
+});
+
+test('respawn CLI fences wrong corrupt callers and proves matching and dry-run reads', () => {
+  const fixture = appCliSeed11a();
+  rawHashValidState(fixture.root, fixture.runId, loop => {
+    loop.session_chain.sessions[0].host_surface.observed_at =
+      '2026-07-13T00:00:09.000Z';
+  });
+  const base = ['respawn', '--project-root', fixture.root, '--run-id', fixture.runId,
+    '--owner', fixture.runId, '--generation', '1', '--headless'];
+  const wrong = [...base];
+  wrong[wrong.indexOf('--owner') + 1] = '01JAPPWR0NG000000000000000';
+  const fenced = appSpawnSync11a(fixture, wrong,
+    { cwd: fixture.root, encoding: 'utf8', shell: false });
+  assert.equal(fenced.status, 3, fenced.stderr);
+  assert.match(fenced.stderr, /LEASE_FENCED/);
+
+  const matching = appSpawnSync11a(fixture, base,
+    { cwd: fixture.root, encoding: 'utf8', shell: false });
+  assert.equal(matching.status, 1, matching.stderr);
+  assert.match(matching.stderr, /RUN_SNAPSHOT_INVALID/);
+
+  const dry = appSpawnSync11a(fixture, ['respawn', '--project-root', fixture.root,
+    '--run-id', fixture.runId, '--dry-run'],
+  { cwd: fixture.root, encoding: 'utf8', shell: false });
+  assert.equal(dry.status, 1, dry.stderr);
+  assert.match(dry.stderr, /RUN_SNAPSHOT_INVALID/);
+});
+
+function codeMask11b(source) {
+  const out = source.split('');
+  let quote = null; let escaped = false; let lineComment = false; let blockComment = false;
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index]; const next = source[index + 1];
+    if (lineComment) {
+      if (char === '\n') lineComment = false;
+      else out[index] = ' ';
+      continue;
+    }
+    if (blockComment) {
+      out[index] = ' ';
+      if (char === '*' && next === '/') { out[index + 1] = ' '; index += 1; blockComment = false; }
+      continue;
+    }
+    if (quote !== null) {
+      out[index] = ' ';
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '/' && next === '/') {
+      out[index] = ' '; out[index + 1] = ' '; index += 1; lineComment = true; continue;
+    }
+    if (char === '/' && next === '*') {
+      out[index] = ' '; out[index + 1] = ' '; index += 1; blockComment = true; continue;
+    }
+    if (char === "'" || char === '"' || char === '`') { out[index] = ' '; quote = char; }
+  }
+  return out.join('');
+}
+
+function invocationBody11b(source, openIndex) {
+  let depth = 0; let quote = null; let escaped = false;
+  let lineComment = false; let blockComment = false;
+  for (let index = openIndex; index < source.length; index += 1) {
+    const char = source[index]; const next = source[index + 1];
+    if (lineComment) { if (char === '\n') lineComment = false; continue; }
+    if (blockComment) {
+      if (char === '*' && next === '/') { index += 1; blockComment = false; }
+      continue;
+    }
+    if (quote !== null) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '/' && next === '/') { index += 1; lineComment = true; continue; }
+    if (char === '/' && next === '*') { index += 1; blockComment = true; continue; }
+    if (char === "'" || char === '"' || char === '`') { quote = char; continue; }
+    if (char === '(' || char === '[' || char === '{') depth += 1;
+    else if (char === ')' || char === ']' || char === '}') {
+      depth -= 1;
+      if (depth === 0) return source.slice(openIndex + 1, index);
+    }
+  }
+  throw new Error('UNTERMINATED_APPEND_CALL');
+}
+
+function topLevelArguments11b(body) {
+  const args = []; let start = 0; let depth = 0; let quote = null; let escaped = false;
+  let lineComment = false; let blockComment = false;
+  for (let index = 0; index < body.length; index += 1) {
+    const char = body[index]; const next = body[index + 1];
+    if (lineComment) { if (char === '\n') lineComment = false; continue; }
+    if (blockComment) {
+      if (char === '*' && next === '/') { index += 1; blockComment = false; }
+      continue;
+    }
+    if (quote !== null) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '/' && next === '/') { index += 1; lineComment = true; continue; }
+    if (char === '/' && next === '*') { index += 1; blockComment = true; continue; }
+    if (char === "'" || char === '"' || char === '`') { quote = char; continue; }
+    if (char === '(' || char === '[' || char === '{') depth += 1;
+    else if (char === ')' || char === ']' || char === '}') depth -= 1;
+    else if (char === ',' && depth === 0) { args.push(body.slice(start, index).trim()); start = index + 1; }
+  }
+  args.push(body.slice(start).trim());
+  return args;
+}
+
+const RECOVERED_RETURN_EVENTS11B = Object.freeze([
+  'episode-new', 'workstream-new', 'finish', 'launcher-executable-approved',
+  'runtime-executable-approved', 'spawn-style-desktop-offered',
+  'independent-review-claimed', 'independent-review-blocked', 'review-outcome',
+  'respawn-failed', 'respawn-timeout', 'respawn-spawned',
+]);
+
+test('final direct append linkage is actual-call complete and the transition is absent', () => {
+  const directory = fileURLToPath(new URL('../scripts/lib/', import.meta.url));
+  let calls = 0;
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith('.mjs') || entry.name === 'integrity.mjs') continue;
+    const source = readFileSync(join(directory, entry.name), 'utf8');
+    const mask = codeMask11b(source);
+    for (const match of mask.matchAll(/\bappendAnchored\s*\(/g)) {
+      const previous = mask.slice(0, match.index).trimEnd().at(-1);
+      if (previous === '.') continue;
+      const openIndex = match.index + match[0].lastIndexOf('(');
+      const body = invocationBody11b(source, openIndex);
+      const args = topLevelArguments11b(body);
+      assert.equal(args.length, 6, `${entry.name}: bare append must pass six actual arguments`);
+      const options = args[5];
+      assert.ok(options.includes('directMutationOptions(')
+        || (/callerBinding/.test(options) && /intentDigest/.test(options)
+          && /fenceError/.test(options)),
+      `${entry.name}: actual options argument is not linked to caller authority`);
+      const requiresRecovery = RECOVERED_RETURN_EVENTS11B
+        .some(type => body.includes(`type: '${type}'`));
+      if (requiresRecovery) assert.match(options, /onRecovered/,
+        `${entry.name}: response-bearing append lacks an actual recovered projection`);
+      calls += 1;
+    }
+  }
+  assert.ok(calls > 0, 'closed direct append scan unexpectedly found no calls');
+  const episode = readFileSync(join(directory, 'episode.mjs'), 'utf8');
+  const helper = episode.slice(episode.indexOf('function episodeAppend('),
+    episode.indexOf('\nfunction createEpisode('));
+  assert.match(helper, /withVerifiedMutationLock\(root, runId,/,
+    'episode public branch does not enter the verified mutation gateway');
+  assert.match(helper, /context\.appendAnchored\(/,
+    'episode helper does not use the authenticated context append');
+  assert.doesNotMatch(helper, /(?<!\.)\bappendAnchored\s*\(/,
+    'episode helper reintroduced a bare append with unresolved options provenance');
+  const integrity = readFileSync(join(directory, 'integrity.mjs'), 'utf8');
+  assert.doesNotMatch(integrity, /appendTransitionalDirect|transitionalDirectIntent/);
+  assert.match(integrity,
+    /export function appendAnchored[\s\S]*requireCallerBinding\(opts\.callerBinding\)/);
+});
+
+const PUBLIC_MUTATION_INVENTORY11B = Object.freeze({
+  'comprehension.mjs': ['ack', 'recordReviewed'],
+  'episode.mjs': ['newEpisode', 'newBlockedCheckerEpisode', 'abandonEpisode', 'recordEpisode'],
+  'workspace.mjs': ['newWorkstream', 'setWorkstreamStatus', 'recordWorkstreamTerminal'],
+  'state.mjs': ['patch', 'pauseRun'],
+  'session-profile.mjs': ['setSessionProfile'],
+  'insights.mjs': ['emitInsights'],
+  'review.mjs': ['claimIndependentReview', 'blockIndependentReview', 'dispatchReview',
+    'recordReviewOutcome', 'importReviewOutcome'],
+  'detect-terminal.mjs': ['detectAndPersist'],
+  'recover.mjs': ['recoverRun'],
+  'finish.mjs': ['finishRun'],
+  'lease.mjs': ['acquireLease', 'releaseLease', 'reserveHandoff',
+    'advanceHandoffPhase', 'rollbackHandoff'],
+  'budget.mjs': ['recordCost', 'settleCodexPreflightCost', 'settleCodexProcessCost',
+    'settleTerminalCodexMakerCost'],
+  'breaker.mjs': ['tripBreaker', 'resetBreaker', 'recordReviewVerdict'],
+  'respawn.mjs': ['rollbackAndPause', 'respawn'],
+  'runtime-executable.mjs': ['approveLauncherExecutable', 'approveRuntimeExecutable'],
+  'spawn-optin.mjs': ['offerDesktop', 'confirmDesktop', 'declineDesktop', 'resetDesktop'],
+});
+
+test('final generic mutation inventory enters recovery before any canonical read', () => {
+  const canonicalRead = /\b(?:readState|readVerifiedState|reconcileBudget)\s*\(/;
+  const recoveryEntry = /\b(?:readAuthenticatedMutationSnapshot|authenticateVerifiedMutationCaller|withVerifiedMutationLock|withReviewMutation|runLeaseJournal|appendAnchored|newEpisode|newBlockedCheckerEpisode|commitReviewOutcome|appendTransition|respawnOperation)\s*\(/;
+  for (const [file, exports] of Object.entries(PUBLIC_MUTATION_INVENTORY11B)) {
+    const source = readFileSync(fileURLToPath(new URL(`../scripts/lib/${file}`, import.meta.url)),
+      'utf8');
+    for (const name of exports) {
+      const start = source.indexOf(`export function ${name}(`);
+      assert.notEqual(start, -1, `${file}:${name} missing from closed inventory`);
+      const next = source.indexOf('\nexport function ', start + 1);
+      const body = source.slice(start, next < 0 ? source.length : next);
+      const entry = body.search(recoveryEntry);
+      const read = body.search(canonicalRead);
+      assert.notEqual(entry, -1, `${file}:${name} has no recovery-aware entry`);
+      assert.ok(read < 0 || entry < read,
+        `${file}:${name} performs a canonical read before journal recovery`);
+    }
   }
 });

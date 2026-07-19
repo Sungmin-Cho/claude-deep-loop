@@ -19,7 +19,7 @@ import { newWorkstream } from './helpers/workstream-request.mjs';
 import { newEpisode, recordEpisode } from './helpers/episode-request.mjs';
 import { blockIndependentReview, claimIndependentReview, resolveReviewer,
   dispatchReview, recordReviewOutcome } from './helpers/review-request.mjs';
-import { appendAnchored } from '../scripts/lib/integrity.mjs';
+import { appendAnchored, directMutationOptions } from '../scripts/lib/integrity.mjs';
 import { createDirectoryJunction } from './helpers/fs-fixtures.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -302,7 +302,10 @@ test('P2: legacy unpinned-approved maker is re-review eligible and finish unbloc
   appendAnchored(root, runId,
     { type: 'state-patch', data: { field: 'test-legacy-approved' } }, d => {
       d.episodes.find(e => e.id === legacyId).status = 'approved';
-    });
+    }, undefined, directMutationOptions('test-legacy-approved-checker',
+      { owner: runId, generation: 1 },
+      { checker_id: legacyId, status: 'approved' },
+      'LEASE_FENCED: reviewer-fixture'));
   assert.ok(finishProofState(readState(root, runId).data).missing.includes('hillclimb-contract-unpinned'));
   materializeContract(root, '.claude/worktrees/w-design');
   const r = dispatchReview(root, runId, { point: 'design', workstreamId: ws, detected: { 'deep-review': true }, fence: f });

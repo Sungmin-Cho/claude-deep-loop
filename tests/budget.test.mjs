@@ -18,7 +18,9 @@ import {
   settleTerminalCodexMakerCost,
   MUTATION_TURN_FLOOR,
 } from '../scripts/lib/budget.mjs';
-import { appendAnchored, readLines, verifyLog, verifyHead } from '../scripts/lib/integrity.mjs';
+import {
+  appendAnchored, directMutationOptions, readLines, verifyLog, verifyHead,
+} from '../scripts/lib/integrity.mjs';
 import { writeState, readState, runDir, patch } from '../scripts/lib/state.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { newEpisode } from './helpers/episode-request.mjs';
@@ -72,6 +74,18 @@ function writeHashValidState(root, runId, data) {
   const dir = runDir(root, runId);
   writeFileSync(join(dir, 'loop.json'), raw);
   writeFileSync(join(dir, '.loop.hash'), contentHash(raw));
+}
+
+function appendFixture(root, runId, operation, event, mutate, preCheck,
+  { mutation, ...options } = {}) {
+  if (mutate !== undefined && mutation === undefined) {
+    throw new Error(`fixture mutation intent missing: ${operation}`);
+  }
+  const lease = readState(root, runId).data.session_chain.lease;
+  const caller = { owner: lease.owner_run_id, generation: lease.generation };
+  return appendAnchored(root, runId, event, mutate, preCheck,
+    directMutationOptions(`budget-fixture-${operation}`, caller,
+      { event, mutation: mutation ?? null }, 'LEASE_FENCED: budget-fixture', options));
 }
 
 const base = () => ({
@@ -221,7 +235,7 @@ test('Codex preflight receipt validation rejects altered usage and write-before-
 
 test('Codex preflight settlement rejects a conflicting or duplicated durable receipt event', () => {
   const conflict = preflightReceiptFixture();
-  appendAnchored(conflict.root, conflict.runId, {
+  appendFixture(conflict.root, conflict.runId, 'conflicting-preflight-receipt', {
     type: 'cost',
     data: {
       turns: 1,
@@ -251,7 +265,8 @@ test('Codex preflight settlement rejects a conflicting or duplicated durable rec
   const exactData = structuredClone(readLines(duplicate.root, duplicate.runId).find(
     event => event.data?.preflight_receipt_id === duplicate.read.receipt_id,
   ).data);
-  appendAnchored(duplicate.root, duplicate.runId, { type: 'cost', data: exactData });
+  appendFixture(duplicate.root, duplicate.runId, 'duplicate-preflight-receipt',
+    { type: 'cost', data: exactData });
   const statePath = join(runDir(duplicate.root, duplicate.runId), 'loop.json');
   const logPath = join(runDir(duplicate.root, duplicate.runId), 'event-log.jsonl');
   const stateBefore = readFileSync(statePath, 'utf8');
@@ -334,7 +349,7 @@ test('terminal preflight retry still rejects a missing or mismatched receipt eve
   }), /LEASE_FENCED: RUN_TERMINAL/);
 
   const mismatch = preflightReceiptFixture();
-  appendAnchored(mismatch.root, mismatch.runId, {
+  appendFixture(mismatch.root, mismatch.runId, 'mismatched-terminal-preflight-receipt', {
     type: 'cost',
     data: {
       turns: 1,
@@ -368,7 +383,7 @@ test('terminal preflight retry still rejects a missing or mismatched receipt eve
 
 test('preflight receipt idempotency rejects semantic event-data extras', () => {
   const fixture = preflightReceiptFixture();
-  appendAnchored(fixture.root, fixture.runId, {
+  appendFixture(fixture.root, fixture.runId, 'preflight-semantic-event-extras', {
     type: 'cost',
     data: {
       turns: fixture.read.usage.num_turns,
@@ -427,7 +442,7 @@ test('preflight process identity rejects a second rehashed receipt with altered 
 
 test('an exact preflight write receipt still requires its unique read predecessor', () => {
   const fixture = preflightReceiptFixture();
-  appendAnchored(fixture.root, fixture.runId, {
+  appendFixture(fixture.root, fixture.runId, 'preflight-write-without-predecessor', {
     type: 'cost',
     data: {
       turns: fixture.write.usage.num_turns,
@@ -469,7 +484,7 @@ test('a preflight write rejects multiple read receipts for the same raw-journal 
     generation: fixture.read.generation,
     usage: { num_turns: 1, input_tokens: 2, output_tokens: 4, tokens: 6 },
   });
-  appendAnchored(fixture.root, fixture.runId, {
+  appendFixture(fixture.root, fixture.runId, 'duplicate-preflight-read-receipt', {
     type: 'cost',
     data: {
       turns: conflictingRead.usage.num_turns,
@@ -507,7 +522,7 @@ test('an exact preflight receipt still requires a durable origin session', () =>
     generation: 1,
     usage: fixture.read.usage,
   });
-  appendAnchored(fixture.root, fixture.runId, {
+  appendFixture(fixture.root, fixture.runId, 'preflight-receipt-missing-origin', {
     type: 'cost',
     data: {
       turns: receipt.usage.num_turns,
@@ -721,7 +736,7 @@ function appendExactishMakerReceiptEvent(fixture, {
   processContext = fixture.receipt.context,
   extraData = {},
 } = {}) {
-  appendAnchored(fixture.root, fixture.runId, {
+  appendFixture(fixture.root, fixture.runId, 'exactish-maker-receipt', {
     type: 'cost',
     data: {
       turns,
@@ -847,7 +862,7 @@ test('maker process receipt alteration, mismatched events, and duplicate events 
   }
 
   const mismatch = makerProcessReceiptFixture();
-  appendAnchored(mismatch.root, mismatch.runId, {
+  appendFixture(mismatch.root, mismatch.runId, 'mismatched-maker-receipt', {
     type: 'cost',
     data: {
       turns: 1,
@@ -877,7 +892,8 @@ test('maker process receipt alteration, mismatched events, and duplicate events 
   const exactData = structuredClone(readLines(duplicate.root, duplicate.runId).find(
     event => event.data?.process_receipt_id === duplicate.receipt.receipt_id,
   ).data);
-  appendAnchored(duplicate.root, duplicate.runId, { type: 'cost', data: exactData });
+  appendFixture(duplicate.root, duplicate.runId, 'duplicate-maker-receipt',
+    { type: 'cost', data: exactData });
   assert.throws(() => settleCodexProcessCost(duplicate.root, duplicate.runId, {
     receipt: duplicate.receipt,
     fence: duplicate.fence,
@@ -903,7 +919,7 @@ function checkerProcessReceiptFixture({ originOwner, originGeneration } = {}) {
     lease_generation: 1,
     artifacts: [],
   };
-  appendAnchored(root, runId, {
+  appendFixture(root, runId, 'checker-process-receipt-seed', {
     type: 'episode-new',
     data: { plugin: 'deep-review', role: 'checker', kind: 'review', point: 'implementation' },
   }, data => {
@@ -917,7 +933,10 @@ function checkerProcessReceiptFixture({ originOwner, originGeneration } = {}) {
       run_id: 'OTHER-SESSION', started_at: '2026-07-12T00:00:01.000Z',
       ended_at: null, turns: 0, outcome: null, superseded_by: null,
     });
-  }, undefined, { nowFn: () => Date.parse('2026-07-12T00:00:01.000Z') });
+  }, undefined, {
+    mutation: { claim, other_session: 'OTHER-SESSION' },
+    nowFn: () => Date.parse('2026-07-12T00:00:01.000Z'),
+  });
   const receipt = makeCodexProcessReceipt({
     root,
     runId,
@@ -953,16 +972,16 @@ function checkerClaimEventData(claim) {
   };
 }
 
-function appendCheckerClaimEvent(fixture, overrides = {}) {
-  appendAnchored(fixture.root, fixture.runId, {
+function appendCheckerClaimEvent(fixture, overrides = {}, occurrence = 1) {
+  appendFixture(fixture.root, fixture.runId, 'checker-claim-event', {
     type: 'independent-review-claimed',
     data: { ...checkerClaimEventData(fixture.claim), ...overrides },
-  });
+  }, undefined, undefined, { mutation: { occurrence } });
 }
 
 function stopPreImportCheckerFixture({ claimEvents = 1, originOwner, originGeneration } = {}) {
   const fixture = checkerProcessReceiptFixture({ originOwner, originGeneration });
-  for (let i = 0; i < claimEvents; i += 1) appendCheckerClaimEvent(fixture);
+  for (let i = 0; i < claimEvents; i += 1) appendCheckerClaimEvent(fixture, {}, i + 1);
   finishRun(fixture.root, fixture.runId, {
     status: 'stopped',
     confirm: true,
@@ -1318,7 +1337,8 @@ test('non-cost anchored append keeps reconcile consistent; its truncation is cau
   const { root, runId, fence } = floorRun();
   recordCost(root, runId, { turns: 2, tokens: 0,
     requestId: 'non-cost-anchor', fence });
-  appendAnchored(root, runId, { type: 'decision', data: { note: 'x' } }); // non-cost advances anchor (no floor opt)
+  appendFixture(root, runId, 'non-cost-decision',
+    { type: 'decision', data: { note: 'x' } }); // non-cost advances anchor (no floor opt)
   reconcileBudget(root, runId); // must NOT throw (anchor tracks tail, spent still 2)
   const p = join(runDir(root, runId), 'event-log.jsonl');
   const lines = readFileSync(p, 'utf8').split('\n').filter(Boolean);
@@ -1430,7 +1450,7 @@ function terminalCodexChildRun() {
   });
   const childRunId = '01JTERMINALCHILD0000000000';
   const handoffKey = 'a'.repeat(16);
-  appendAnchored(root, runId, {
+  appendFixture(root, runId, 'terminal-codex-child', {
     type: 'handoff-emitted',
     data: { child_run_id: childRunId, reason: 'fixture', key: handoffKey },
   }, (data) => {
@@ -1445,6 +1465,8 @@ function terminalCodexChildRun() {
       handoff_idempotency_key: handoffKey,
       handoff_child_run_id: childRunId,
     };
+  }, undefined, {
+    mutation: { child_run_id: childRunId, handoff_key: handoffKey },
   });
   assert.equal(acquireLease(root, runId, {
     owner: childRunId, expectGeneration: 1, runtime: 'codex',

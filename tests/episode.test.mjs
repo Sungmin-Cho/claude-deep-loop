@@ -7,7 +7,7 @@ import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState } from '../scripts/lib/state.mjs';
 import { reconcileBudget } from '../scripts/lib/budget.mjs';
 import { newEpisode, recordEpisode, abandonEpisode } from './helpers/episode-request.mjs';
-import { appendAnchored } from '../scripts/lib/integrity.mjs';
+import { appendAnchored, directMutationOptions } from '../scripts/lib/integrity.mjs';
 
 function seed() {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
@@ -230,7 +230,9 @@ test('recordEpisode: cannot resurrect an approved/rejected episode to non-termin
     appendAnchored(root, runId,
       { type: 'state-patch', data: { field: `test-terminal-${term}` } }, data => {
         data.episodes.find(e => e.id === id).status = term;
-      });
+      }, undefined, directMutationOptions('test-episode-terminal-state',
+        { owner: runId, generation: 1 }, { episode_id: id, status: term },
+        'LEASE_FENCED: episode-terminal-fixture'));
     assert.throws(() => recordEpisode(root, runId, id, { status: 'in_progress', fence }), /EPISODE_ALREADY_TERMINAL/);
   }
 });

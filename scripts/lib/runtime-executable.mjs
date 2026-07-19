@@ -25,7 +25,8 @@ import {
 } from 'node:path';
 import { validateSessionRuntime } from './runtime.mjs';
 import { leaseCheck } from './lease.mjs';
-import { appendAnchored, MUTATION_TURN_FLOOR } from './integrity.mjs';
+import { appendAnchored, directMutationOptions, intentField, MUTATION_TURN_FLOOR,
+  readAuthenticatedMutationSnapshot } from './integrity.mjs';
 import { validate as validateLoop } from './schema.mjs';
 
 const VERSION_TIMEOUT_MS = 5_000;
@@ -983,96 +984,119 @@ function applyLauncherApproval(loop, kind, approval) {
   }
 }
 
+function validateLauncherApprovalPolicy(loop, fence) {
+  const lease = leaseCheck(loop, { ...fence, intent: 'recover' });
+  if (!lease.ok) {
+    if (['RUN_TERMINAL', 'no-lease', 'RUN_PAUSED', 'lease-released',
+      'lease-releasing-carveout'].includes(lease.reason)) {
+      throw runtimeError('LAUNCHER_EXECUTABLE_STATE_INVALID', lease.reason);
+    }
+    throw runtimeError('LEASE_FENCED', lease.reason);
+  }
+  const approvalMap = loop.autonomy?.launcher_executable_approvals;
+  if (approvalMap !== undefined && (approvalMap === null
+      || typeof approvalMap !== 'object' || Array.isArray(approvalMap))) {
+    throw runtimeError('STATE_INVALID',
+      'autonomy.launcher_executable_approvals is malformed');
+  }
+}
+
+function validateRuntimeApprovalPolicy(loop, fence, runtime) {
+  const lease = leaseCheck(loop, { ...fence, runtime, intent: 'recover' });
+  if (!lease.ok) {
+    if (lease.reason === 'RUNTIME_FENCED') throw runtimeError('RUNTIME_FENCED',
+      'stored runtime does not match approval');
+    if (lease.reason === 'RUN_TERMINAL' || lease.reason === 'no-lease') {
+      throw runtimeError('RUNTIME_EXECUTABLE_STATE_INVALID', lease.reason);
+    }
+    throw runtimeError('LEASE_FENCED', lease.reason);
+  }
+}
+
 export function approveLauncherExecutable(root, runId, {
-  kind,
-  candidatePath,
-  expectedCanonicalPath,
-  expectedSha256,
-  actor,
-  confirm,
-  fence,
-  now = Date.now(),
-  platform = process.platform,
-  arch = process.arch,
-  runVersion = spawnSync,
-  authenticodeProbe,
-  authenticodePolicy,
+  kind, candidatePath, expectedCanonicalPath, expectedSha256, actor, confirm, fence,
+  now = Date.now(), platform = process.platform, arch = process.arch,
+  runVersion = spawnSync, authenticodeProbe, authenticodePolicy,
 } = {}) {
   validateLauncherKind(kind);
-  if (actor !== 'human') throw runtimeError('INVALID_ACTOR', 'launcher executable approval requires actor human');
-  if (confirm !== true) throw runtimeError('CONFIRM_REQUIRED', 'launcher executable approval requires confirmation');
+  if (actor !== 'human') throw runtimeError('INVALID_ACTOR',
+    'launcher executable approval requires actor human');
+  if (confirm !== true) throw runtimeError('CONFIRM_REQUIRED',
+    'launcher executable approval requires confirmation');
   if (!fence || typeof fence.owner !== 'string' || fence.owner.length === 0
-    || !Number.isSafeInteger(fence.generation) || fence.generation < 0) {
-    throw runtimeError('FENCE_REQUIRED', 'launcher executable approval requires owner and generation');
+      || !Number.isSafeInteger(fence.generation) || fence.generation < 0) {
+    throw runtimeError('FENCE_REQUIRED',
+      'launcher executable approval requires owner and generation');
   }
   const selected = launcherAbsolutePath(candidatePath, platform);
   const expectedPath = launcherAbsolutePath(expectedCanonicalPath, platform);
   if (!/^[0-9a-f]{64}$/.test(expectedSha256 || '')) {
-    throw runtimeError('LAUNCHER_EXECUTABLE_HASH_INVALID', 'exact lowercase SHA-256 is required');
+    throw runtimeError('LAUNCHER_EXECUTABLE_HASH_INVALID',
+      'exact lowercase SHA-256 is required');
   }
   const approvedAt = new Date(now);
-  if (!Number.isFinite(approvedAt.getTime())) throw runtimeError('INVALID_NOW', 'launcher executable approval timestamp');
-
-  let approval;
-  const eventData = {};
-  appendAnchored(
-    root,
-    runId,
+  if (!Number.isFinite(approvedAt.getTime())) throw runtimeError('INVALID_NOW',
+    'launcher executable approval timestamp');
+  const identityFence = loop => {
+    const lease = loop.session_chain?.lease;
+    if (lease?.owner_run_id !== fence.owner || lease?.generation !== fence.generation) {
+      throw runtimeError('LEASE_FENCED', 'launcher approval identity changed');
+    }
+  };
+  const approvalSnapshot = readAuthenticatedMutationSnapshot(root, runId, {
+    callerBinding: { owner: fence.owner, generation: fence.generation },
+    fenceCheck: identityFence,
+    fenceError: 'LEASE_FENCED: launcher approval',
+  });
+  validateLauncherApprovalPolicy(approvalSnapshot.data, fence);
+  const identity = inspectHumanApprovedLauncher(kind, selected, {
+    platform, arch, expectedSha256, runVersion, authenticodeProbe, authenticodePolicy,
+  });
+  if (identity.canonical_path !== expectedPath) throw runtimeError(
+    'LAUNCHER_EXECUTABLE_PATH_MISMATCH',
+    'diagnosed canonical path does not match approval');
+  if (identity.sha256 !== expectedSha256) throw runtimeError(
+    'LAUNCHER_EXECUTABLE_HASH_MISMATCH', 'diagnosed SHA-256 does not match approval');
+  let approval = { ...identity, approved_by: 'human',
+    approved_at: approvedAt.toISOString() };
+  const revalidated = revalidateTrustedLauncherExecutable(approval, {
+    platform, arch, runVersion, authenticodeProbe, authenticodePolicy,
+  });
+  if (JSON.stringify(launcherSecurityIdentity(revalidated))
+      !== JSON.stringify(launcherSecurityIdentity(identity))) {
+    throw runtimeError('LAUNCHER_EXECUTABLE_DRIFT',
+      'launcher security identity changed during approval');
+  }
+  const eventData = { kind: approval.kind, canonical_path: approval.canonical_path,
+    sha256: approval.sha256, version: approval.version, source: approval.source,
+    actor: 'human' };
+  const recovered = appendAnchored(root, runId,
     { type: 'launcher-executable-approved', data: eventData },
-    (loop) => { applyLauncherApproval(loop, kind, approval); },
-    (loop) => {
-      const lease = leaseCheck(loop, { ...fence, intent: 'recover' });
-      if (!lease.ok) {
-        if (lease.reason === 'RUN_TERMINAL' || lease.reason === 'no-lease'
-          || lease.reason === 'RUN_PAUSED' || lease.reason === 'lease-released'
-          || lease.reason === 'lease-releasing-carveout') {
-          throw runtimeError('LAUNCHER_EXECUTABLE_STATE_INVALID', lease.reason);
-        }
-        throw runtimeError('LEASE_FENCED', lease.reason);
-      }
-      const approvalMap = loop.autonomy?.launcher_executable_approvals;
-      if (approvalMap !== undefined
-        && (approvalMap === null || typeof approvalMap !== 'object' || Array.isArray(approvalMap))) {
-        throw runtimeError('STATE_INVALID', 'autonomy.launcher_executable_approvals is malformed');
-      }
-      const identity = inspectHumanApprovedLauncher(kind, selected, {
-        platform, arch, expectedSha256, runVersion, authenticodeProbe, authenticodePolicy,
-      });
-      if (identity.canonical_path !== expectedPath) {
-        throw runtimeError('LAUNCHER_EXECUTABLE_PATH_MISMATCH', 'diagnosed canonical path does not match approval');
-      }
-      if (identity.sha256 !== expectedSha256) {
-        throw runtimeError('LAUNCHER_EXECUTABLE_HASH_MISMATCH', 'diagnosed SHA-256 does not match approval');
-      }
-      const approvalCandidate = {
-        ...identity,
-        approved_by: 'human',
-        approved_at: approvedAt.toISOString(),
-      };
-      const revalidated = revalidateTrustedLauncherExecutable(approvalCandidate, {
-        platform, arch, runVersion, authenticodeProbe, authenticodePolicy,
-      });
-      if (JSON.stringify(launcherSecurityIdentity(revalidated)) !== JSON.stringify(launcherSecurityIdentity(identity))) {
-        throw runtimeError('LAUNCHER_EXECUTABLE_DRIFT', 'launcher security identity changed during approval');
-      }
-      approval = approvalCandidate;
-      Object.assign(eventData, {
-        kind: approval.kind,
-        canonical_path: approval.canonical_path,
-        sha256: approval.sha256,
-        version: approval.version,
-        source: approval.source,
-        actor: 'human',
-      });
+    loop => { applyLauncherApproval(loop, kind, approval); },
+    loop => {
+      validateLauncherApprovalPolicy(loop, fence);
       const candidateLoop = structuredClone(loop);
       applyLauncherApproval(candidateLoop, kind, approval);
       const validation = validateLoop(candidateLoop);
-      if (!validation.ok) {
-        throw runtimeError('STATE_INVALID', `launcher executable approval would violate schema (${validation.errors.join('; ')})`);
-      }
+      if (!validation.ok) throw runtimeError('STATE_INVALID',
+        `launcher executable approval would violate schema (${validation.errors.join('; ')})`);
     },
-    { floor: MUTATION_TURN_FLOOR },
-  );
+    directMutationOptions('launcher-executable-approve', fence, {
+      kind, selected, expectedPath, expectedSha256, actor, confirm,
+      approvedAt: approvedAt.toISOString(), platform, arch,
+      approval_digest: intentField('launcher-approval', approval),
+      policy_digest: intentField('launcher-authenticode-policy', authenticodePolicy),
+    }, 'LEASE_FENCED: approveLauncherExecutable', {
+      floor: MUTATION_TURN_FLOOR, onRecovered: loop => {
+        const durable = loop.autonomy?.launcher_executable_approvals?.[kind];
+        if (!durable || JSON.stringify(durable) !== JSON.stringify(approval)) {
+          throw new Error('LAUNCHER_APPROVAL_RESPONSE_PROJECTION_CHANGED');
+        }
+        approval = durable;
+        return { ok: true, approval };
+      },
+    }));
+  if (recovered !== undefined) return recovered;
   return { ok: true, approval };
 }
 
@@ -1131,94 +1155,88 @@ export function diagnoseRuntimeExecutable(runtime, options = {}) {
 }
 
 export function approveRuntimeExecutable(root, runId, {
-  runtime,
-  candidatePath,
-  expectedCanonicalPath,
-  expectedSha256,
-  actor,
-  confirm,
-  fence,
-  now = Date.now(),
-  platform = process.platform,
-  arch = process.arch,
-  runVersion = spawnSync,
-  authenticodeProbe,
-  authenticodePolicy,
+  runtime, candidatePath, expectedCanonicalPath, expectedSha256, actor, confirm, fence,
+  now = Date.now(), platform = process.platform, arch = process.arch,
+  runVersion = spawnSync, authenticodeProbe, authenticodePolicy,
 } = {}) {
   validateSessionRuntime(runtime);
-  if (actor !== 'human') throw runtimeError('INVALID_ACTOR', 'runtime executable approval requires actor human');
-  if (confirm !== true) throw runtimeError('CONFIRM_REQUIRED', 'runtime executable approval requires confirmation');
+  if (actor !== 'human') throw runtimeError('INVALID_ACTOR',
+    'runtime executable approval requires actor human');
+  if (confirm !== true) throw runtimeError('CONFIRM_REQUIRED',
+    'runtime executable approval requires confirmation');
+  if (!fence || typeof fence.owner !== 'string' || fence.owner.length === 0
+      || !Number.isSafeInteger(fence.generation) || fence.generation < 0) {
+    throw runtimeError('FENCE_REQUIRED',
+      'runtime executable approval requires owner and generation');
+  }
   assertTrustedRuntimeNamespace(candidatePath, platform);
   assertTrustedRuntimeNamespace(expectedCanonicalPath, platform);
-  const expectedPath = absolutePath(expectedCanonicalPath, 'RUNTIME_EXECUTABLE_PATH_INVALID');
-  if (!/^[0-9a-f]{64}$/.test(expectedSha256 || '')) {
-    throw runtimeError('RUNTIME_EXECUTABLE_HASH_INVALID', 'exact lowercase SHA-256 is required');
-  }
+  const expectedPath = absolutePath(expectedCanonicalPath,
+    'RUNTIME_EXECUTABLE_PATH_INVALID');
+  if (!/^[0-9a-f]{64}$/.test(expectedSha256 || '')) throw runtimeError(
+    'RUNTIME_EXECUTABLE_HASH_INVALID', 'exact lowercase SHA-256 is required');
   const approvedAt = new Date(now);
-  if (!Number.isFinite(approvedAt.getTime())) throw runtimeError('INVALID_NOW', 'runtime executable approval timestamp');
-
+  if (!Number.isFinite(approvedAt.getTime())) throw runtimeError('INVALID_NOW',
+    'runtime executable approval timestamp');
+  const identityFence = loop => {
+    const lease = loop.session_chain?.lease;
+    if (lease?.owner_run_id !== fence.owner || lease?.generation !== fence.generation) {
+      throw runtimeError('LEASE_FENCED', 'runtime approval identity changed');
+    }
+  };
+  const approvalSnapshot = readAuthenticatedMutationSnapshot(root, runId, {
+    callerBinding: { owner: fence.owner, generation: fence.generation },
+    fenceCheck: identityFence,
+    fenceError: 'LEASE_FENCED: runtime approval',
+  });
+  validateRuntimeApprovalPolicy(approvalSnapshot.data, fence, runtime);
   let identity;
   try {
     identity = resolveTrustedRuntimeExecutable(runtime, {
-      explicitPath: candidatePath, platform, arch, runVersion, authenticodeProbe, authenticodePolicy,
+      explicitPath: candidatePath, platform, arch, runVersion,
+      authenticodeProbe, authenticodePolicy,
     });
-  } catch (officialError) {
+  } catch {
     identity = inspectHumanApprovedExecutable(runtime, candidatePath, {
       platform, arch, expectedSha256, runVersion, authenticodeProbe, authenticodePolicy,
     });
   }
-  if (identity.canonical_path !== expectedPath) {
-    throw runtimeError('RUNTIME_EXECUTABLE_PATH_MISMATCH', 'diagnosed canonical path does not match approval');
-  }
-  if (identity.sha256 !== expectedSha256) {
-    throw runtimeError('RUNTIME_EXECUTABLE_HASH_MISMATCH', 'diagnosed SHA-256 does not match approval');
-  }
-  const approval = {
-    ...securityIdentity(identity),
-    approved_by: 'human',
-    approved_at: approvedAt.toISOString(),
-  };
-  const eventData = {
-    runtime: approval.runtime,
-    canonical_path: approval.canonical_path,
-    sha256: approval.sha256,
-    version: approval.version,
-    source: approval.source,
-    actor: 'human',
-  };
-
-  appendAnchored(root, runId, { type: 'runtime-executable-approved', data: eventData },
-    (loop) => { loop.autonomy.runtime_executable_approval = approval; },
-    (loop) => {
-      const lease = leaseCheck(loop, { ...fence, runtime, intent: 'recover' });
-      if (!lease.ok) {
-        if (lease.reason === 'RUNTIME_FENCED') throw runtimeError('RUNTIME_FENCED', 'stored runtime does not match approval');
-        if (lease.reason === 'RUN_TERMINAL' || lease.reason === 'no-lease') {
-          throw runtimeError('RUNTIME_EXECUTABLE_STATE_INVALID', lease.reason);
-        }
-        throw runtimeError('LEASE_FENCED', lease.reason);
-      }
-      let fresh;
-      try {
-        fresh = resolveTrustedRuntimeExecutable(runtime, {
-          explicitPath: candidatePath, platform, arch, runVersion, authenticodeProbe, authenticodePolicy,
-        });
-      } catch {
-        fresh = inspectHumanApprovedExecutable(runtime, candidatePath, {
-          platform, arch, expectedSha256, runVersion, authenticodeProbe, authenticodePolicy,
-        });
-      }
-      if (JSON.stringify(securityIdentity(fresh)) !== JSON.stringify(securityIdentity(identity))
-        || fresh.canonical_path !== expectedPath || fresh.sha256 !== expectedSha256) {
-        throw runtimeError('RUNTIME_EXECUTABLE_DRIFT', 'candidate changed before the approval transaction');
-      }
+  if (identity.canonical_path !== expectedPath) throw runtimeError(
+    'RUNTIME_EXECUTABLE_PATH_MISMATCH',
+    'diagnosed canonical path does not match approval');
+  if (identity.sha256 !== expectedSha256) throw runtimeError(
+    'RUNTIME_EXECUTABLE_HASH_MISMATCH', 'diagnosed SHA-256 does not match approval');
+  let approval = { ...securityIdentity(identity), approved_by: 'human',
+    approved_at: approvedAt.toISOString() };
+  const eventData = { runtime: approval.runtime, canonical_path: approval.canonical_path,
+    sha256: approval.sha256, version: approval.version, source: approval.source,
+    actor: 'human' };
+  const recovered = appendAnchored(root, runId,
+    { type: 'runtime-executable-approved', data: eventData },
+    loop => { loop.autonomy.runtime_executable_approval = approval; },
+    loop => {
+      validateRuntimeApprovalPolicy(loop, fence, runtime);
       const candidateLoop = structuredClone(loop);
       candidateLoop.autonomy.runtime_executable_approval = approval;
       const validation = validateLoop(candidateLoop);
-      if (!validation.ok) {
-        throw runtimeError('STATE_INVALID', `runtime executable approval would violate schema (${validation.errors.join('; ')})`);
-      }
+      if (!validation.ok) throw runtimeError('STATE_INVALID',
+        `runtime executable approval would violate schema (${validation.errors.join('; ')})`);
     },
-    { floor: MUTATION_TURN_FLOOR });
+    directMutationOptions('runtime-executable-approve', fence, {
+      runtime, candidatePath, expectedPath, expectedSha256, actor, confirm,
+      approvedAt: approvedAt.toISOString(), platform, arch,
+      approval_digest: intentField('runtime-approval', approval),
+      policy_digest: intentField('runtime-authenticode-policy', authenticodePolicy),
+    }, 'LEASE_FENCED: approveRuntimeExecutable', {
+      floor: MUTATION_TURN_FLOOR, onRecovered: loop => {
+        const durable = loop.autonomy?.runtime_executable_approval;
+        if (!durable || JSON.stringify(durable) !== JSON.stringify(approval)) {
+          throw new Error('RUNTIME_APPROVAL_RESPONSE_PROJECTION_CHANGED');
+        }
+        approval = durable;
+        return { ok: true, approval };
+      },
+    }));
+  if (recovered !== undefined) return recovered;
   return { ok: true, approval };
 }

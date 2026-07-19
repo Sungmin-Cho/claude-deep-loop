@@ -1318,52 +1318,7 @@ function appendAnchoredUnderLock(root, runId, { type, data }, mutate, preCheck, 
         callerBinding: binding, intentDigest });
 }
 
-function transitionalDirectIntent(event) {
-  if (typeof event?.type !== 'string' || event.type.length === 0) {
-    throw new Error('MUTATION_INTENT_REQUIRED');
-  }
-  return contentHash(JSON.stringify({ operation: 'transitional-direct-append',
-    type: event.type, data: event.data }));
-}
-
-function appendTransitionalDirect(root, runId, event, mutate, preCheck, opts) {
-  const intentDigest = transitionalDirectIntent(event);
-  return withLock(root, runId, () => {
-    const marker = readAnchoredMarkerUnderLock(root, runId);
-    if (marker !== null) {
-      if (marker.intent_digest !== intentDigest) {
-        throw new Error('ANCHORED_TRANSACTION_PENDING');
-      }
-      const pending = pendingAuthenticationStateUnderLock(root, runId, marker);
-      const lease = pending.session_chain?.lease;
-      if (lease?.owner_run_id !== marker.caller.owner
-          || lease?.generation !== marker.caller.generation) {
-        throw new Error('ANCHORED_TRANSACTION_PENDING');
-      }
-      if (typeof opts.fenceCheck === 'function') opts.fenceCheck(pending);
-      else if (preCheck) preCheck(pending);
-      const recovered = recoverAnchoredTransactionUnderLock(root, runId, marker);
-      const verified = readVerifiedStateUnderLock(root, runId);
-      return typeof opts.onRecovered === 'function'
-        ? opts.onRecovered(verified.data, recovered) : undefined;
-    }
-    const verified = readVerifiedStateUnderLock(root, runId,
-      typeof opts.fenceCheck === 'function' ? { fenceCheck: opts.fenceCheck } : {});
-    const lease = verified.data.session_chain?.lease;
-    const callerBinding = requireCallerBinding({ owner: lease?.owner_run_id,
-      generation: lease?.generation });
-    return appendAnchoredUnderLock(root, runId, event, mutate, preCheck, opts,
-      { callerBinding, intentDigest });
-  });
-}
-
 export function appendAnchored(root, runId, event, mutate, preCheck, opts = {}) {
-  const hasBinding = opts.callerBinding !== undefined;
-  const hasIntent = opts.intentDigest !== undefined;
-  if (!hasBinding && !hasIntent) {
-    return appendTransitionalDirect(root, runId, event, mutate, preCheck, opts);
-  }
-  if (hasBinding !== hasIntent) throw new Error('MUTATION_AUTHORITY_INCOMPLETE');
   const binding = requireCallerBinding(opts.callerBinding);
   const intentDigest = opts.intentDigest;
   // There is deliberately no event-only fallback: event payloads may redact or omit business

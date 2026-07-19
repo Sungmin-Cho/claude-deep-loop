@@ -697,11 +697,11 @@ test('human exact path+SHA approval accepts native Claude.exe and persists the b
   assert.equal(result.approval.source, 'human-explicit');
   assert.equal(result.approval.authenticode, null);
   assert.deepEqual(readState(root, runId).data.autonomy.runtime_executable_approval, result.approval);
-  assert.ok(calls.length >= 2, 'approval performs initial and fresh in-lock direct probes');
+  assert.equal(calls.length, 1, 'approval performs one pre-lock observed-approval probe');
   assert.ok(calls.every(call => call.bin === executable && call.options.shell === false));
 });
 
-test('official Windows approval persists the observed Authenticode identity and repeats the pinned probe in-lock', () => {
+test('official Windows approval persists one pre-lock observed Authenticode identity', () => {
   const fixture = officialCodexFixture({ platform: 'win32', arch: 'x64' });
   const policy = { signer: 'OpenAI, L.L.C.', thumbprint: 'aabbcc11' };
   const observation = { status: 'Valid', signer: 'OpenAI, L.L.C.', thumbprint: 'AA BB CC 11' };
@@ -730,7 +730,7 @@ test('official Windows approval persists the observed Authenticode identity and 
   assert.deepEqual(result.approval.authenticode, {
     status: 'valid', signer: 'OpenAI, L.L.C.', thumbprint: 'aabbcc11',
   });
-  assert.equal(signerProbes, 2, 'approval and fresh in-lock verification must both observe the signer');
+  assert.equal(signerProbes, 1, 'approval observes the signer once before the final mutation lock');
   assert.deepEqual(readState(fixture.root, runId).data.autonomy.runtime_executable_approval, result.approval);
 });
 

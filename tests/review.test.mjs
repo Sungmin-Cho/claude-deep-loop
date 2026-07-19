@@ -14,7 +14,7 @@ import {
 import { releaseLease, acquireLease } from '../scripts/lib/lease.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { createFileSymlinkOrSkip } from './helpers/fs-fixtures.mjs';
-import { appendAnchored } from '../scripts/lib/integrity.mjs';
+import { appendAnchored, directMutationOptions } from '../scripts/lib/integrity.mjs';
 
 function eventLog(root, runId) {
   return readFileSync(join(runDir(root, runId), 'event-log.jsonl'), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l));
@@ -336,7 +336,10 @@ test('recordReviewOutcome throws REVIEW_UNBOUND_CHECKER on a checker with no tar
     plugin: 'subagent-checker', role: 'checker', kind: 'plan-review', point: 'plan',
   } }, data => {
     data.episodes.push({ id: '001-deep-review', role: 'checker', plugin: 'subagent-checker', status: 'pending', point: 'plan', workstream_id: ws, kind: 'plan-review' });
-  });
+  }, undefined, directMutationOptions('test-legacy-unbound-checker',
+    { owner: runId, generation: 1 },
+    { checker_id: '001-deep-review', workstream_id: ws, point: 'plan' },
+    'LEASE_FENCED: review-fixture'));
   assert.throws(
     () => recordReviewOutcome(root, runId, { episodeId: '001-deep-review', verdict: 'APPROVE', fence: f }),
     /REVIEW_UNBOUND_CHECKER/
@@ -401,7 +404,10 @@ test('recordReviewOutcome: rejects recording on a done checker (defensive)', () 
   appendAnchored(root, runId,
     { type: 'state-patch', data: { field: 'test-done-checker' } }, data => {
       data.episodes.find(e => e.id === dr.checkerEpisodeId).status = 'done';
-    });
+    }, undefined, directMutationOptions('test-done-checker-state',
+      { owner: runId, generation: 1 },
+      { checker_id: dr.checkerEpisodeId, status: 'done' },
+      'LEASE_FENCED: review-fixture'));
   assert.throws(() => recordReviewOutcome(root, runId, { episodeId: dr.checkerEpisodeId, verdict: 'APPROVE', fence }), /REVIEW_ALREADY_RECORDED/);
 });
 

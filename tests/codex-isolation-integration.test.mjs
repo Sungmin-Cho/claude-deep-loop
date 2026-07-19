@@ -919,7 +919,7 @@ test('recovery settles the full raw snapshot and removes write before read acros
   );
 });
 
-test('a real maker receipt survives a host crash after worker return and settles before no-handoff exit', () => {
+test('a real maker receipt survives acquired-child recovery and settles before the next no-pending exit', () => {
   const h = createHostHarness();
   let makerWorkers = 0;
   const first = driveHeadlessRun({
@@ -934,7 +934,8 @@ test('a real maker receipt survives a host crash after worker return and settles
       throw new Error('INJECTED_HOST_CRASH_AFTER_MAKER_WORKER_RETURN');
     },
   });
-  assert.equal(first.ok, false, JSON.stringify(first));
+  assert.deepEqual({ ok: first.ok, action: first.action },
+    { ok: true, action: 'already-spawned' }, JSON.stringify(first));
   assert.equal(makerWorkers, 1);
   assert.deepEqual(h.calls().map(call => call.kind), [
     'preflight-read', 'preflight-write', 'maker',
@@ -957,7 +958,8 @@ test('a real maker receipt survives a host crash after worker return and settles
       throw new Error('a durable maker receipt must never trigger a process retry');
     },
   });
-  assert.equal(second.action, 'no-pending-handoff', JSON.stringify(second));
+  assert.deepEqual({ ok: second.ok, action: second.action },
+    { ok: true, action: 'no-pending-handoff' }, JSON.stringify(second));
   assert.equal(respawns, 0);
   assert.equal(h.calls().filter(call => call.kind === 'maker').length, 1);
   const costs = readLines(h.root, h.runId).filter(event => event.type === 'cost');

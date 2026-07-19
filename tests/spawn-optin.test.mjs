@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
-import { appendAnchored } from '../scripts/lib/integrity.mjs';
+import { appendAnchored, directMutationOptions } from '../scripts/lib/integrity.mjs';
 import { offerDesktop, confirmDesktop, declineDesktop, resetDesktop } from '../scripts/lib/spawn-optin.mjs';
 import { seedCorrelatedTerminal as terminal7b } from './fixtures/verified-app-run.mjs';
 
@@ -75,7 +75,10 @@ function seedFreshRun({ spawn_style } = {}) {
 // test seam: simulate a concurrent, legitimate kernel-transition changing spawn_style out-of-band
 // (a real appendAnchored transaction, distinct from the opt-in path under test).
 function forceSpawnStyle(root, runId, style) {
-  appendAnchored(root, runId, { type: 'test-force-spawn-style', data: { style } }, (l) => { l.autonomy.spawn_style = style; });
+  appendAnchored(root, runId, { type: 'test-force-spawn-style', data: { style } },
+    (l) => { l.autonomy.spawn_style = style; }, undefined,
+    directMutationOptions('test-force-spawn-style',
+      { owner: OWNER, generation: GEN }, { style }, 'LEASE_FENCED: test'));
 }
 
 // Round-7 review fix (Finding 1): reproduces the EXACT stuck state respawn.mjs's preservePause leaves
@@ -338,7 +341,9 @@ test('resetDesktop also clears a stray pending nonce', () => {
   // defensive case: a pending nonce left over despite spawn_style already being 'desktop'.
   appendAnchored(root, runId, { type: 'test-force-pending', data: {} }, (l) => {
     l.autonomy.spawn_style_optin_pending = { nonce: 'stray', expires_at: new Date(T0 + 1000).toISOString() };
-  });
+  }, undefined, directMutationOptions('test-force-pending',
+    { owner: OWNER, generation: GEN }, { nonce: 'stray', expiresAt: T0 + 1000 },
+    'LEASE_FENCED: test'));
   const r = resetDesktop(root, runId, { expect, now: T0 });
   assert.equal(r.ok, true);
   assert.equal(readState(root, runId).data.autonomy.spawn_style, 'visible');
