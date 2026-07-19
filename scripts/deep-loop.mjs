@@ -608,6 +608,45 @@ const hostSurfaceHandler = async argv => {
 // validate: 비공허 검증 (Codex impl 🟡4)
 // 1) 스키마+빌더 self-test: buildInitialLoop 산출물이 항상 검증 통과해야 함 (regression 게이트)
 // 2) 현재/지정 run이 있으면 readState(해시 검증 발화) + schema.validate
+async function handleFinish(a) {
+  const f = parseFlags(a);
+  const root = rootOf(f);
+  const runId = runIdOf(root, f);
+  const owner = reqStr(f, 'owner');
+  if (!owner) { error('MISSING_OWNER'); return 2; }
+  const generation = intArg(f, 'generation');
+  const status = reqStr(f, 'status');
+  if (!status) { error('MISSING_STATUS'); return 2; }
+  const runtime = reqStr(f, 'runtime') ?? undefined;
+  const confirm = f.confirm === true || f.confirm === 'true';
+  if (status === 'stopped' && !confirm) {
+    error('CONFIRM_REQUIRED: stopped requires --confirm (human-only)');
+    return 2;
+  }
+  const reportRel = f.report && f.report !== true ? String(f.report) : undefined;
+  if (reportRel && (reportRel.startsWith('/') || reportRel.split('/').includes('..'))) {
+    error('FINISH_REPORT_PATH_UNSAFE');
+    return 1;
+  }
+  let proof;
+  try { proof = f.proof ? JSON.parse(f.proof) : {}; }
+  catch { error('INVALID_PROOF: must be JSON'); return 1; }
+  try {
+    const value = finishRun(root, runId, { status, reportRel, proof, confirm,
+      fence: { owner, generation, runtime, intent: 'business' }, now: parseNow(f) });
+    json(value);
+    return 0;
+  } catch (errorValue) {
+    const message = String(errorValue?.message || errorValue);
+    if (/^(?:LEASE_FENCED|RUNTIME_FENCED|PROJECT_ROOT_FENCED)(?::|$)/.test(message)) {
+      error(message);
+      return 3;
+    }
+    error(message);
+    return 1;
+  }
+}
+
 const handlers = {
   'app-task': appTaskHandler,
   'host-surface': hostSurfaceHandler,
@@ -1315,21 +1354,7 @@ const handlers = {
       error(e.message); return 1;
     }
   },
-  finish: async (a) => {
-    const f = parseFlags(a); const root = rootOf(f); const runId = runIdOf(root, f);
-    requireLease(root, runId, f);   // fence 인자 → exit 3
-    const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'business' };
-    const status = reqStr(f, 'status'); if (!status) { error('MISSING_STATUS'); return 2; }   // Codex r1 sf-6
-    const confirm = f.confirm === true || f.confirm === 'true';
-    // #4: stopped is a human-only bypass of completed-proof — mirror the abandon/recover/breaker-reset fast-fail
-    // (exit 2). Authoritative guard is in finishRun (CLI-bypass safe); completed is unaffected.
-    if (status === 'stopped' && !confirm) { error('CONFIRM_REQUIRED: stopped requires --confirm (human-only)'); return 2; }
-    const reportRel = f.report && f.report !== true ? String(f.report) : undefined;
-    if (reportRel && (reportRel.startsWith('/') || reportRel.split('/').includes('..'))) { error('FINISH_REPORT_PATH_UNSAFE'); return 1; }
-    let proof; try { proof = f.proof ? JSON.parse(f.proof) : {}; } catch { error('INVALID_PROOF: must be JSON'); return 1; }   // 무효 값 → exit 1
-    try { const r = finishRun(root, runId, { status, reportRel, proof, confirm, fence, now: parseNow(f) }); json(r); return 0; }
-    catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }   // FINISH_STATUS_INVALID/PROOF_UNMET → exit 1
-  },
+  finish: handleFinish,
 };
 
 const fn = handlers[sub];

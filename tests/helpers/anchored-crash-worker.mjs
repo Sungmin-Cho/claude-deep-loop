@@ -2,6 +2,10 @@ import { isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { contentHash } from '../../scripts/lib/envelope.mjs';
 import { finishRun } from '../../scripts/lib/finish.mjs';
+import { emitHandoff } from '../../scripts/lib/handoff.mjs';
+import { acquireAppTask, awaitAppTask, confirmAppTask, failAppTask, prepareAppTask,
+  sweepUnconfirmedAppTask } from '../../scripts/lib/app-task-continuation.mjs';
+import { recoverRun } from '../../scripts/lib/recover.mjs';
 import { appendAnchored } from '../../scripts/lib/integrity.mjs';
 import { emitInsights } from '../../scripts/lib/insights.mjs';
 import { acquireLease, releaseLease, reserveHandoff } from '../../scripts/lib/lease.mjs';
@@ -112,11 +116,6 @@ const generic = Object.freeze({
     return acquireLease(root, runId, { owner: input.childOwner,
       expectGeneration: generation, runtime: 'codex' });
   },
-  finish: ({ root, runId, owner, generation }) => finishRun(root, runId, {
-    status: 'stopped', reportRel: null, confirm: true,
-    proof: { human_reason: 'crash-worker' },
-    fence: { owner, generation, runtime: 'codex', intent: 'business' },
-  }),
   'insights-emit': ({ root, runId, owner, generation, rawInput }) => {
     const input = parseInput(rawInput, ['now', 'rnd']);
     return emitInsights(root, runId, { fence: { owner, generation }, now: input.now,
@@ -141,6 +140,101 @@ const generic = Object.freeze({
       ['baseCommit', 'branch', 'dependsOn', 'requestId', 'title', 'worktree']);
     return newWorkstream(root, runId, { ...input, fence: { owner, generation } });
   },
+});
+
+function workerDescriptor10d({ runtime, root: projectRoot, parentRunId, childRunId }) {
+  return { runtime, projectRoot, runId: parentRunId, usageOutputKind: 'json',
+    resumeInvocation: childRunId, entries: Object.fromEntries(['interactive', 'headless',
+      'cmux', 'iterm2', 'terminal-app', 'wt', 'powershell', 'desktop']
+      .map(name => [name, { display: 'manual', unavailable: true }])) };
+}
+function workerPrepareDescriptor10d() {
+  return { tool: 'create_thread', target: { type: 'project', projectId: 'p',
+    environment: { type: 'local' } }, prompt: 'prompt' };
+}
+function workerObservation10d(root) {
+  return { kind: 'codex-app', source: 'codex-app-tool-provenance',
+    capabilities: ['structured-process-stdin'], structured_stdin_mode: 'pty-raw-noecho',
+    host_task_cwd: root, host_task_cwd_source: 'app-task-context' };
+}
+const publicMutation10d = Object.freeze({
+  emit: ({ root, runId, input }) => emitHandoff(root, runId, {
+    trigger: 'crash-emit', reason: 'same', appIntent: true,
+    expect: { owner: input.owner, generation: input.generation }, cwdFn: () => root,
+    attemptIdFactory: () => input.attemptId, descriptorBuilder: workerDescriptor10d,
+    nowFn: () => Date.parse('2026-07-13T00:00:01.000Z') }),
+  prepare: ({ root, runId, input }) => prepareAppTask(root, runId,
+    { owner: input.owner, generation: input.generation, stdinMode: 'pty-raw-noecho',
+      hostInput: { currentHostTaskCwd: root,
+        projects: [{ projectId: 'p', projectKind: 'local', path: root }] } },
+    { cwdFn: () => root, descriptorBuilder: workerPrepareDescriptor10d,
+      nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'),
+      precheckNowFn: () => Date.parse('2026-07-13T00:00:02.000Z'),
+      reconcileBudgetFn: () => {}, gateFn: () => ({ ok: true, blocked_by: [] }) }),
+  confirm: ({ root, runId, input }) => confirmAppTask(root, runId,
+    { ...input, stdinMode: 'pty-raw-noecho', threadId: 'confirmed-thread' },
+    { cwdFn: () => root,
+      nowFn: () => Date.parse('2026-07-13T00:00:03.000Z') }),
+  fail: ({ root, runId, input }) => failAppTask(root, runId,
+    input.messageFailure === true
+      ? { owner: input.owner, generation: input.generation, attemptId: input.attemptId,
+        code: 'message-unconfirmed', stdinMode: 'pty-raw-noecho',
+        unconfirmedThreadId: 'known-message-thread' }
+      : { owner: input.owner, generation: input.generation, attemptId: input.attemptId,
+        code: 'host-call-failed' },
+    { cwdFn: () => input.messageCwd ?? root,
+      nowFn: () => Date.parse('2026-07-13T00:00:03.000Z') }),
+  sweep: ({ root, runId, input }) => sweepUnconfirmedAppTask(root, runId,
+    { ...input, deadline: '2026-07-13T00:05:00.000Z' },
+    { cwdFn: () => root, nowFn: () => Date.parse('2026-07-13T00:05:01.001Z') }),
+  'await-timeout': ({ root, runId, input }) => {
+    let pollNow = Date.parse('2026-07-13T00:00:03.000Z');
+    return awaitAppTask(root, runId, { ...input, timeoutMs: 1, intervalMs: 1 }, {
+      cwdFn: () => root, pollNowFn: () => pollNow,
+      pollIntervalMs: 1_000, sleepFn: ms => { pollNow += ms; },
+      nowFn: () => pollNow + 1,
+    });
+  },
+  acquire: ({ root, runId, input }) => acquireAppTask(root, runId,
+    { ...input, owner: input.childRunId, runtime: 'codex', stdinMode: 'pty-raw-noecho',
+      observation: workerObservation10d(root) }, { cwdFn: () => root,
+      nowFn: () => Date.parse('2026-07-13T00:00:04.000Z') }),
+  recover: ({ root, runId, input }) => recoverRun(root, runId,
+    { expect: { owner: input.owner, generation: input.generation }, confirm: true }),
+  finish: ({ root, runId, input }) => finishRun(root, runId, {
+    status: 'completed', reportRel: 'final.md', proof: { human_reason: 'same' },
+    fence: { owner: input.owner, generation: input.generation,
+      runtime: 'codex', intent: 'business' } }),
+});
+
+export function dispatchPublicMutationCrash10d({ root, runId, operation, point, rawInput }) {
+  if (!Object.hasOwn(publicMutation10d, operation)) throw new Error('CRASH_OPERATION_INVALID');
+  const points = new Set(['state-stage-after-rename', 'event-stage-after-rename',
+    'pending-after-rename', 'event-after-partial-append', 'event-after-full-append',
+    'state-after-rename', 'hash-after-rename', 'before-cleanup',
+    'state-replace-after-create', 'state-replace-after-fsync',
+    'state-replace-after-rename-before-dir-fsync',
+    'hash-replace-after-create', 'hash-replace-after-fsync',
+    'hash-replace-after-rename-before-dir-fsync']);
+  if (!points.has(point)) throw new Error('CRASH_POINT_INVALID');
+  const input = JSON.parse(rawInput);
+  const inputKeys = Object.keys(input).sort();
+  const baseKeys = ['attemptId', 'childRunId', 'generation', 'owner'];
+  const messageKeys = [...baseKeys, 'messageCwd', 'messageFailure'].sort();
+  if (JSON.stringify(inputKeys) !== JSON.stringify(baseKeys)
+      && JSON.stringify(inputKeys) !== JSON.stringify(messageKeys)
+      || input.messageFailure !== undefined && input.messageFailure !== true
+      || input.messageFailure === true
+        && (typeof input.messageCwd !== 'string' || input.messageCwd.length === 0)) {
+    throw new Error('CRASH_INPUT_INVALID');
+  }
+  return publicMutation10d[operation]({ root, runId, input });
+}
+
+registerAnchoredCrashExtension(request => {
+  if (!Object.hasOwn(publicMutation10d, request.operation)) return false;
+  dispatchPublicMutationCrash10d(request);
+  return true;
 });
 
 export function dispatchAnchoredCrash(request) {

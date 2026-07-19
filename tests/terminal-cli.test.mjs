@@ -56,7 +56,6 @@ const VERBS = (o, g) => [
   ['session-profile', 'set', '--model', 'm'],
   ['detect-terminal'],
   ['breaker', 'reset', '--confirm', '--request-id', 'terminal-sweep-reset'],
-  ['finish', '--status', 'completed', '--report', 'final-report.md'],
 ].map(a => [...a, '--owner', o, '--generation', String(g)]);
 
 for (const status of ['completed', 'stopped']) {
@@ -200,3 +199,19 @@ test('CLI lease release on terminal run is intentionally allowed (cleanup path) 
   assert.equal(w.status, 3);
   assert.match(w.stderr, /RUN_TERMINAL/);
 });
+for (const status of ['completed', 'stopped']) {
+  test(`finish CLI keeps a stale fence at exit 3 and a valid terminal conflict at exit 1 on ${status}`,
+    () => {
+      const { root, runId, owner, gen } = seedTerminal(status);
+      const before = readFileSync(join(runDir(root, runId), 'loop.json'));
+      const stale = run(root, ['finish', '--status', 'completed', '--report', 'final-report.md',
+        '--owner', owner, '--generation', String(gen + 1)]);
+      assert.equal(stale.status, 3, stale.stdout + stale.stderr);
+      assert.match(stale.stderr, /LEASE_FENCED/);
+      const valid = run(root, ['finish', '--status', 'completed', '--report', 'final-report.md',
+        '--owner', owner, '--generation', String(gen)]);
+      assert.equal(valid.status, 1, valid.stdout + valid.stderr);
+      assert.match(valid.stderr, /FINISH_ALREADY_TERMINAL/);
+      assert.deepEqual(readFileSync(join(runDir(root, runId), 'loop.json')), before);
+    });
+}

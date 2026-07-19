@@ -1,6 +1,9 @@
-import { appendAnchored, intentField, mutationIntentDigest } from './integrity.mjs';
+import { withVerifiedMutationLock } from './integrity.mjs';
+import { contentHash } from './envelope.mjs';
 import { leaseCheck } from './lease.mjs';
 import { runDir } from './state.mjs';
+import { validate } from './schema.mjs';
+import { runtimeFence } from './runtime.mjs';
 import { isProofCapableChecker, makerReviewed, unsatisfiedReviewPoints, epOrder, rejectionResolved } from './review.mjs';
 import { MUTATION_TURN_FLOOR } from './budget.mjs';
 import { containedRealFile } from './fs-safe.mjs';
@@ -67,55 +70,183 @@ export function finishProofState(loop) {
   return { hasWork, settled, noActiveWs, allWsTerminal: wsAll, allMakersReviewed, reviewedProof, missing };
 }
 
-export function finishRun(root, runId, { status, reportRel, proof = {}, confirm, fence, now,
-  nowFn = now === undefined ? Date.now : () => now } = {}) {
-  // Codex r3 sf-3: fence 는 lib 레벨에서 **필수** (CLI 우회 호출도 fence 강제). newEpisode/recordEpisode 와 동일 규약.
-  if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: finishRun');
-  let result;
+function inspectTerminalAppBinding(loop) {
+  const lease = loop.session_chain.lease;
+  if (lease.handoff_transport !== 'codex-app') return null;
+  const child = loop.session_chain.sessions.find(session =>
+    session.run_id === lease.handoff_child_run_id);
+  const continuation = child?.continuation;
+  if (!child || continuation?.transport !== 'codex-app'
+      || continuation.attempt_id !== lease.handoff_attempt_id
+      || !['emitted', 'prepared', 'confirmed', 'failed', 'abandoned']
+        .includes(continuation.phase)) {
+    throw new Error('APP_TERMINAL_BINDING_INVALID');
+  }
+  const live = ['emitted', 'prepared', 'confirmed'].includes(continuation.phase);
+  return Object.freeze({ childRunId: child.run_id, attemptId: continuation.attempt_id,
+    failureCode: live ? 'run-finished' : continuation.failure_code });
+}
+
+function sameTerminalAppBinding(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function finishIdentityFence(fence) {
+  return loop => {
+    const lease = loop.session_chain?.lease;
+    if (!lease || lease.owner_run_id !== fence.owner
+        || lease.generation !== fence.generation) throw new Error('LEASE_FENCED: finish');
+    if (fence.runtime !== undefined) {
+      const runtime = runtimeFence(loop, fence.runtime);
+      if (!runtime.ok) throw new Error(`RUNTIME_FENCED: ${runtime.reason}`);
+    }
+  };
+}
+
+function applyTerminalAppCleanup(loop, binding) {
+  if (binding === null) return;
+  const lease = loop.session_chain.lease;
+  const child = loop.session_chain.sessions.find(session => session.run_id === binding.childRunId);
+  const continuation = child.continuation;
+  if (['emitted', 'prepared', 'confirmed'].includes(continuation.phase)) {
+    continuation.phase = 'abandoned';
+    continuation.failure_code = 'run-finished';
+    if (!child.outcome) child.outcome = 'abandoned_finish';
+  }
+  const parent = loop.session_chain.sessions.find(session =>
+    session.superseded_by === binding.childRunId);
+  if (parent) parent.superseded_by = null;
+  Object.assign(lease, { state: 'released', handoff_phase: 'idle',
+    handoff_transport: null, handoff_attempt_id: null, handoff_child_run_id: null,
+    handoff_idempotency_key: null, expires_at: null, resume_policy: null });
+}
+
+function applyFinish(loop, { status, reportRel, binding, clock }) {
+  applyTerminalAppCleanup(loop, binding);
+  loop.status = status;
+  loop.termination = loop.termination || {};
+  loop.termination.finished_at = clock.iso;
+  if (reportRel) loop.termination.final_report = reportRel;
+}
+
+function assertRecoveredFinishProjection(loop, recovered, { status, reportRel, fence }) {
+  if (recovered.events?.length !== 2 || recovered.events[0]?.type !== 'finish'
+      || recovered.events[1]?.type !== 'cost') {
+    throw new Error('FINISH_RESPONSE_PROJECTION_CHANGED');
+  }
+  const event = recovered.events[0];
+  const cost = recovered.events[1];
+  const expectedCostKeys = ['auto_floor', 'for', 'generation', 'owner', 'tokens', 'turns'];
+  if (JSON.stringify(Object.keys(cost.data ?? {}).sort()) !== JSON.stringify(expectedCostKeys)
+      || cost.data.turns !== MUTATION_TURN_FLOOR || cost.data.tokens !== 0
+      || cost.data.auto_floor !== true || cost.data.for !== 'finish'
+      || cost.data.owner !== fence.owner || cost.data.generation !== fence.generation
+      || cost.ts !== event.ts || cost.seq !== event.seq + 1) {
+    throw new Error('FINISH_RESPONSE_PROJECTION_CHANGED');
+  }
+  const data = event.data ?? {};
+  const appKeys = ['attempt_id', 'child_run_id', 'failure_code'];
+  const hasAppProjection = appKeys.some(key => Object.hasOwn(data, key));
+  const expectedKeys = ['reportRel', 'status', ...(hasAppProjection ? appKeys : [])].sort();
+  if (JSON.stringify(Object.keys(data).sort()) !== JSON.stringify(expectedKeys)
+      || data.status !== status || data.reportRel !== (reportRel || null)
+      || loop.status !== status || loop.termination?.finished_at !== event.ts
+      || (reportRel && loop.termination?.final_report !== reportRel)) {
+    throw new Error('FINISH_RESPONSE_PROJECTION_CHANGED');
+  }
+  if (!hasAppProjection) return;
+  const child = loop.session_chain.sessions.find(session => session.run_id === data.child_run_id);
+  const continuation = child?.continuation;
+  const lease = loop.session_chain.lease;
+  const cleared = ['handoff_transport', 'handoff_attempt_id', 'handoff_child_run_id',
+    'handoff_idempotency_key', 'resume_policy', 'expires_at'];
+  if (!child || continuation?.transport !== 'codex-app'
+      || continuation.attempt_id !== data.attempt_id
+      || continuation.failure_code !== data.failure_code
+      || (data.failure_code === 'run-finished'
+        && (continuation.phase !== 'abandoned' || child.outcome !== 'abandoned_finish'))
+      || lease.state !== 'released' || lease.handoff_phase !== 'idle'
+      || cleared.some(key => lease[key] !== null)
+      || loop.session_chain.sessions.some(session => session.superseded_by === child.run_id)) {
+    throw new Error('FINISH_RESPONSE_PROJECTION_CHANGED');
+  }
+}
+
+export function finishRun(root, runId,
+  { status, reportRel, proof = {}, confirm, fence, now,
+    nowFn = now === undefined ? Date.now : () => now } = {}) {
+  if (!fence || typeof fence.owner !== 'string'
+      || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: finishRun');
+  const fenceCheck = finishIdentityFence(fence);
   const callerBinding = { owner: fence.owner, generation: fence.generation };
-  const intentDigest = mutationIntentDigest('finish-run', callerBinding, {
-    status, confirm: confirm === true, runtime: fence.runtime ?? null,
-    terminal_intent: fence.intent ?? null,
-    proof_digest: intentField('finish-proof', proof),
-    report_digest: intentField('finish-report', reportRel),
-  });
-  appendAnchored(root, runId, { type: 'finish', data: { status, reportRel: reportRel || null } },
+  const intentDigest = contentHash(JSON.stringify({ operation: 'finish',
+    owner: fence.owner, generation: fence.generation, status,
+    runtime: fence.runtime ?? null, confirm: confirm === true,
+    report_digest: reportRel == null ? null
+      : contentHash(`finish-report\0${reportRel}`),
+    proof_digest: contentHash(`finish-proof\0${JSON.stringify(proof)}`) }));
+  return withVerifiedMutationLock(root, runId, { callerBinding, intentDigest,
+    fenceError: 'LEASE_FENCED: finishRun' }, mutation => {
+    const snapshot = mutation.readVerifiedState({ fenceCheck }).data;
+    if (mutation.recoverySource === 'pending') {
+      assertRecoveredFinishProjection(snapshot, mutation.recovered, { status, reportRel, fence });
+      return { ok: true, status };
+    }
+    const binding = inspectTerminalAppBinding(snapshot);
+    if (binding !== null && fence.runtime === undefined) {
+      throw new Error('RUNTIME_FENCED: App finish requires runtime');
+    }
+    const eventData = { status, reportRel: reportRel || null,
+      ...(binding === null ? {} : { attempt_id: binding.attemptId,
+        child_run_id: binding.childRunId, failure_code: binding.failureCode }) };
+    let result;
+    mutation.appendAnchored({ type: 'finish', data: eventData },
     (loop, _spent, clock) => {
-      loop.status = status;
-      loop.termination = loop.termination || {};
-      loop.termination.finished_at = clock.iso;
-      if (reportRel) loop.termination.final_report = reportRel;
+      applyFinish(loop, { status, reportRel, binding, clock });
       result = { ok: true, status };
     },
-    (loop) => {
-      const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason);   // 무조건 (fence 필수)
-      // v1.6 defense-in-depth (spec §2.2): 전면 거부 하에선 위 leaseCheck가 항상 먼저 RUN_TERMINAL을
-      // 반환하므로 정상 경로에서 도달 불가 — 미래에 leaseCheck 예외 intent가 도입되어도 finish는
-      // 독립적으로 double-finish를 차단한다(의도된 도달-불가 방어-심층, 단위 테스트 비강제).
-      if (loop.status === 'completed' || loop.status === 'stopped') throw new Error(`FINISH_ALREADY_TERMINAL: ${loop.status}`);
-      if (status !== 'completed' && status !== 'stopped') throw new Error(`FINISH_STATUS_INVALID: ${status}`);
-      if (status === 'stopped') {
-        // #4: `stopped` bypasses every completed-proof (review/workstream-terminal/report). It is a human-only
-        // one-way termination, so it carries the same --confirm gate as the sibling human-only ops (abandon /
-        // recover / breaker reset) — enforced in the lib (CLI-bypass safe). human_reason stays a required reason.
-        if (confirm !== true) throw new Error('CONFIRM_REQUIRED: stopped requires --confirm (human-only)');
-        if (!proof || !proof.human_reason) throw new Error('FINISH_PROOF_UNMET: stopped requires proof.human_reason');
-        return;
+    (loop, clock) => {
+      const lease = loop.session_chain?.lease;
+      const appTransport = lease.handoff_transport === 'codex-app';
+      if (appTransport && fence.runtime === undefined) {
+        throw new Error('RUNTIME_FENCED: App finish requires runtime');
       }
-      // completed: report 는 runDir 하위로 격리(containment)된 **실제 파일**이어야 — CLI 가드 비의존, lib 가 강제.
-      // impl-R1 Fix 2: containedRealFile(realpathSync deref)로 교체 — 기존 resolve+startsWith+statSync 는 symlink 를
-      // follow 해서 runDir-상대 symlink 가 프로젝트 밖을 가리켜도 통과했다(#2 review report 와 동일 결함 클래스).
-      // containedRealFile 은 `--report .` / 디렉터리(isFile 아님) / 부재 / '..'·절대경로도 모두 null 로 거부한다.
-      const ps = finishProofState(loop);
-      const real = reportRel ? containedRealFile(runDir(root, runId), reportRel) : null;
-      if (!real) ps.missing.push('final-report-missing');
-      if (ps.missing.length) throw new Error(`FINISH_PROOF_UNMET: ${ps.missing.join(',')}`);
-    }, { floor: MUTATION_TURN_FLOOR, nowFn,
-      callerBinding, intentDigest,
-      fenceError: 'LEASE_FENCED: finishRun',
-      onRecovered: loop => {
-        if (loop.status !== status) throw new Error('FINISH_RESPONSE_PROJECTION_CHANGED');
-        result = { ok: true, status };
-      } });
-  return result;
+      if (loop.status === 'completed' || loop.status === 'stopped') {
+        throw new Error(`FINISH_ALREADY_TERMINAL: ${loop.status}`);
+      }
+
+      const freshBinding = inspectTerminalAppBinding(loop);
+      if (!sameTerminalAppBinding(freshBinding, binding)) {
+        throw new Error('APP_TERMINAL_BINDING_CHANGED');
+      }
+      if (freshBinding === null) {
+        const business = leaseCheck(loop, fence);
+        if (!business.ok) throw new Error(`LEASE_FENCED: ${business.reason}`);
+      }
+      if (status !== 'completed' && status !== 'stopped') {
+        throw new Error(`FINISH_STATUS_INVALID: ${status}`);
+      }
+      if (status === 'stopped') {
+        if (confirm !== true) {
+          throw new Error('CONFIRM_REQUIRED: stopped requires --confirm (human-only)');
+        }
+        if (!proof?.human_reason) {
+          throw new Error('FINISH_PROOF_UNMET: stopped requires proof.human_reason');
+        }
+      } else {
+        const checkedProof = finishProofState(loop);
+        const real = reportRel ? containedRealFile(runDir(root, runId), reportRel) : null;
+        if (!real) checkedProof.missing.push('final-report-missing');
+        if (checkedProof.missing.length) {
+          throw new Error(`FINISH_PROOF_UNMET: ${checkedProof.missing.join(',')}`);
+        }
+      }
+
+      const candidate = structuredClone(loop);
+      applyFinish(candidate, { status, reportRel, binding: freshBinding, clock });
+      const checked = validate(candidate);
+      if (!checked.ok) throw new Error(`STATE_INVALID: ${checked.errors.join('; ')}`);
+    }, { floor: MUTATION_TURN_FLOOR, nowFn, fenceCheck });
+    return result;
+  });
 }

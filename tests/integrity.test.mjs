@@ -793,7 +793,7 @@ function assertGenericCrashRecovery7b(operation, point) {
 }
 
 test6b('anchored crash parent matrix preserves orphans pending bytes and exact retry convergence', () => {
-  for (const operation of ['generic-append', 'generic-acquire', 'finish',
+  for (const operation of ['generic-append', 'generic-acquire',
     'state-patch', 'workstream-new']) {
     for (const point of GENERIC_CRASH_POINTS7B) assertGenericCrashRecovery7b(operation, point);
   }

@@ -1,7 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync as spawn10dApp } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync,
-  statSync, writeFileSync } from 'node:fs';
+  statSync, writeFileSync, rmdirSync as rmdir10dApp } from 'node:fs';
+import { fileURLToPath as file10dApp } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
@@ -3352,4 +3354,39 @@ test10c('recovered generic child rejects a reattached incoming parent', () => {
   assert10c.throws(() => status10c(fixture.root, fixture.runId, {}),
     /RUN_SNAPSHOT_INVALID/);
   assert10c.deepEqual(bytes8a(fixture.root, fixture.runId), forged);
+});
+function journalBytes10dApp(root, runId) {
+  const directory = runDir9a(root, runId);
+  return Object.fromEntries(['.anchored-pending.json', '.anchored-events.stage',
+    '.anchored-state.stage', '.anchored-hash.stage', 'event-log.jsonl', 'loop.json', '.loop.hash']
+    .map(name => [name, read9a(join9a(directory, name))]));
+}
+
+test9a('published message-unconfirmed marker fences a wrong stdin mode before recovery', () => {
+  const fixture = prepared9a({ route: 'fork' });
+  const worker = file10dApp(new URL('./helpers/anchored-crash-worker.mjs', import.meta.url));
+  const child = spawn10dApp(process.execPath,
+    [worker, fixture.root, fixture.runId, 'fail', 'pending-after-rename'], {
+      shell: false, encoding: 'utf8', env: { ...process.env,
+        DEEP_LOOP_CRASH_OWNER: fixture.runId,
+        DEEP_LOOP_CRASH_GENERATION: '1',
+        DEEP_LOOP_CRASH_INPUT: JSON.stringify({ owner: fixture.runId, generation: 1,
+          attemptId: fixture.attemptId, childRunId: fixture.childRunId,
+          messageFailure: true, messageCwd: fixture.worktree }) },
+      timeout: 10_000,
+    });
+  assert9a.notEqual(child.error?.code, 'ETIMEDOUT', 'message failure crash worker timed out');
+  assert9a.equal(child.status, 91, child.stderr || child.stdout);
+  rmdir10dApp(join9a(fixture.root, '.deep-loop', 'runs', fixture.runId, '.lock'));
+  const pending = journalBytes10dApp(fixture.root, fixture.runId);
+  assert9a.throws(() => fail9a(fixture.root, fixture.runId,
+    { owner: fixture.runId, generation: 1, attemptId: fixture.attemptId,
+      code: 'message-unconfirmed', stdinMode: 'pipe-open-noecho',
+      unconfirmedThreadId: 'known-message-thread' }), /APP_RECEIPT_FENCED/);
+  assert9a.deepEqual(journalBytes10dApp(fixture.root, fixture.runId), pending);
+  const recovered = fail9a(fixture.root, fixture.runId,
+    { owner: fixture.runId, generation: 1, attemptId: fixture.attemptId,
+      code: 'message-unconfirmed', stdinMode: 'pty-raw-noecho',
+      unconfirmedThreadId: 'known-message-thread' });
+  assert9a.equal(recovered.outcome, 'already-failed');
 });

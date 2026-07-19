@@ -1140,6 +1140,7 @@ export const APP_FAILURE_CODES = Object.freeze([
   'invalid-host-receipt', 'message-unconfirmed', 'app-prepare-unattended',
   'app-launch-unconfirmed', 'consent-revoked', 'gate-budget', 'gate-breaker',
   'gate-max-sessions', 'gate-wallclock', 'gate-auto-handoff', 'human-recovered',
+  'run-finished',
 ]);
 export const APP_PUBLIC_FAILURE_CODES = Object.freeze([
   'host-call-timeout', 'host-call-no-return', 'host-call-failed',

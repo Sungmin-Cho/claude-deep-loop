@@ -1,6 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync,
+  readdirSync as list10d, readFileSync as read10d, symlinkSync as symlink10d,
+  rmdirSync as rmdir10d, writeFileSync as write10d } from 'node:fs';
+import { spawnSync as spawn10d } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
@@ -9,7 +13,14 @@ import { newWorkstream, recordWorkstreamTerminal } from './helpers/workstream-re
 import { newEpisode, recordEpisode, abandonEpisode } from './helpers/episode-request.mjs';
 import { dispatchReview, recordReviewOutcome } from './helpers/review-request.mjs';
 import { finishRun, finishProofState } from '../scripts/lib/finish.mjs';
-import { readLines } from '../scripts/lib/integrity.mjs';
+import { recoverRun } from '../scripts/lib/recover.mjs';
+import { emitHandoff } from '../scripts/lib/handoff.mjs';
+import { acquireAppTask, awaitAppTask, confirmAppTask, failAppTask, prepareAppTask,
+  revokeAppTaskContinuation, sweepUnconfirmedAppTask }
+  from '../scripts/lib/app-task-continuation.mjs';
+import { readLines, readVerifiedState as verified10d } from '../scripts/lib/integrity.mjs';
+import { durableRunBytes as bytes10d, rawHashValidState as raw10d }
+  from './fixtures/verified-app-run.mjs';
 import { createFileSymlinkOrSkip } from './helpers/fs-fixtures.mjs';
 
 // Codex r2 should-fix-2: review.points 를 ['implementation'] 한 개로 시드해야 recordWorkstreamTerminal('ready')
@@ -333,18 +344,453 @@ test('repro: abandoning the orphan pending maker unblocks finish --status comple
   assert.equal(res.status, 'completed');
 });
 
-// ── v1.6 double-finish 회귀 (spec §2.2/§4-3) ─────────────────────────────────
-test('exact finish response-loss retry is inert while a different finish remains terminal-fenced', () => {
+// ── Task 10D double-finish 회귀 ──────────────────────────────────────────────
+test('a finish committed receipt keeps exact and different retries terminal', () => {
   const { root, runId, fence } = seed();
   buildSettledRun(root, runId, fence);
   writeFileSync(join(runDir(root, runId), 'final-report.md'), '# done');
   assert.equal(finishRun(root, runId, { status: 'completed', reportRel: 'final-report.md', proof: {}, fence }).ok, true);
-  // 동일 caller+intent의 response-loss retry는 committed receipt에서 원래 결과를 복원한다.
-  assert.equal(finishRun(root, runId,
-    { status: 'completed', reportRel: 'final-report.md', proof: {}, fence }).ok, true);
-  // 다른 intent는 receipt를 재사용하지 않으며 기존 terminal fence를 그대로 받는다.
-  assert.throws(() => finishRun(root, runId, { status: 'stopped', proof: { human_reason: 'x' }, confirm: true, fence }), /LEASE_FENCED: RUN_TERMINAL/);
+  const terminalBytes = bytes10d(root, runId);
+  // 정상 완료 후 committed receipt는 crash-marker recovery authority가 아니다.
+  assert.throws(() => finishRun(root, runId,
+    { status: 'completed', reportRel: 'final-report.md', proof: {}, fence }),
+  /FINISH_ALREADY_TERMINAL/);
+  assert.throws(() => finishRun(root, runId,
+    { status: 'stopped', proof: { human_reason: 'x' }, confirm: true, fence }),
+  /FINISH_ALREADY_TERMINAL/);
+  assert.deepEqual(bytes10d(root, runId), terminalBytes);
   // finish 이벤트는 정확히 1개
   const log = readFileSync(join(runDir(root, runId), 'event-log.jsonl'), 'utf8');
   assert.equal(log.split('\n').filter(l => l.includes('"type":"finish"')).length, 1);
+});
+function appFinishSeed10d(phase) {
+  const root = mkdtempSync(join(tmpdir(), 'dl-app-finish-'));
+  const observed = '2026-07-13T00:00:00.000Z';
+  const { runId } = initRun(root, { runtime: 'codex', goal: 'g',
+    review: { points: ['implementation'], reviewer: 'subagent-checker', mode: 'cross-model',
+      flags: [], converge: true, max_review_rounds: 5, require_human_ack: false },
+    now: new Date(observed), hostObservation: { kind: 'codex-app',
+      source: 'codex-app-tool-provenance',
+      capabilities: ['list-projects', 'create-thread-local', 'structured-process-stdin'],
+      structured_stdin_mode: 'pty-raw-noecho', host_task_cwd: root,
+      host_task_cwd_source: 'app-task-context',
+      observed_at: observed }, cwdFn: () => root, appContinuationConsent: { mode: 'auto',
+      authority: 'human-confirmed', confirmed_at: observed, revoked_at: null } });
+  const parentFence = { owner: runId, generation: 1, runtime: 'codex', intent: 'business' };
+  let fence = parentFence;
+  buildSettledRun(root, runId, parentFence);
+  writeFileSync(join(runDir(root, runId), 'final.md'), '# final');
+  const attemptId = '01JAPPTASK0000000000000000';
+  const descriptorBuilder = ({ runtime, root: projectRoot, parentRunId, childRunId }) => ({
+    runtime, projectRoot, runId: parentRunId, usageOutputKind: 'json',
+    resumeInvocation: childRunId, entries: Object.fromEntries(['interactive', 'headless', 'cmux',
+      'iterm2', 'terminal-app', 'wt', 'powershell', 'desktop']
+      .map(name => [name, { display: 'manual', unavailable: true }])) });
+  const emitted = phase === 'before-emit' ? null
+    : emitHandoff(root, runId, { trigger: phase, reason: `finish-${phase}`, appIntent: true,
+      expect: { owner: runId, generation: 1 }, cwdFn: () => root, descriptorBuilder,
+      attemptIdFactory: () => attemptId,
+      nowFn: () => Date.parse('2026-07-13T00:00:01.000Z') });
+  const request = { owner: runId, generation: 1, stdinMode: 'pty-raw-noecho',
+    hostInput: { currentHostTaskCwd: root,
+      projects: [{ projectId: 'p', projectKind: 'local', path: root }] } };
+  const deps = { cwdFn: () => root, nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'),
+    descriptorBuilder: () => ({ tool: 'create_thread', target: { type: 'project',
+      projectId: 'p', environment: { type: 'local' } }, prompt: 'prompt' }),
+    reconcileBudgetFn: () => {}, gateFn: () => ({ ok: true, blocked_by: [] }) };
+  if (['prepared', 'confirmed', 'acquired'].includes(phase)) prepareAppTask(root, runId, request, deps);
+  if (['confirmed', 'acquired'].includes(phase)) confirmAppTask(root, runId,
+    { owner: runId, generation: 1, attemptId, stdinMode: 'pty-raw-noecho', threadId: 't' },
+    { cwdFn: () => root,
+      nowFn: () => Date.parse('2026-07-13T00:00:03.000Z') });
+  const acquireInput = { attemptId, owner: emitted?.childRunId, generation: 1,
+    runtime: 'codex', stdinMode: 'pty-raw-noecho', observation: { kind: 'codex-app',
+      source: 'codex-app-tool-provenance', capabilities: ['structured-process-stdin'],
+      structured_stdin_mode: 'pty-raw-noecho', host_task_cwd: root,
+      host_task_cwd_source: 'app-task-context' } };
+  if (phase === 'acquired') {
+    acquireAppTask(root, runId, acquireInput,
+      { cwdFn: () => root, nowFn: () => Date.parse('2026-07-13T00:00:04.000Z') });
+    fence = { owner: emitted.childRunId, generation: 2,
+      runtime: 'codex', intent: 'business' };
+  }
+  if (phase === 'failed') sweepUnconfirmedAppTask(root, runId,
+    { owner: runId, generation: 1, attemptId },
+    { cwdFn: () => root,
+      nowFn: () => Date.parse('2026-07-13T00:05:01.001Z') });
+  if (phase === 'abandoned') revokeAppTaskContinuation(root, runId,
+    { owner: runId, generation: 1, runtime: 'codex' },
+    { nowFn: () => Date.parse('2026-07-13T00:00:02.000Z') });
+  return { root, runId, fence, parentFence, attemptId,
+    childRunId: emitted?.childRunId ?? null, acquireInput, request, deps, descriptorBuilder };
+}
+
+function mutationCase10d(operation) {
+  const phase = ({ emit: 'before-emit', prepare: 'emitted', confirm: 'prepared',
+    fail: 'prepared', sweep: 'emitted', 'await-timeout': 'confirmed',
+    acquire: 'confirmed', recover: 'abandoned', finish: 'emitted' })[operation];
+  if (phase === undefined) throw new Error(`PUBLIC_MUTATION_CASE_UNKNOWN: ${operation}`);
+  const fixture = appFinishSeed10d(phase);
+  const parent = (different = false, foreign = false) => ({
+    owner: foreign ? '01JAPPF0R00000000000000000' : fixture.runId,
+    generation: 1, attemptId: fixture.attemptId, stdinMode: 'pty-raw-noecho',
+  });
+  const invoke = ({ different = false, foreign = false, wrongMode = false,
+    wrongRuntime = false, equivalentObservation = false, pathDeps } = {}) => {
+    const input = parent(different, foreign);
+    if (operation === 'emit') return emitHandoff(fixture.root, fixture.runId, {
+      trigger: 'crash-emit', reason: different ? 'different' : 'same', appIntent: true,
+      expect: { owner: input.owner, generation: input.generation },
+      cwdFn: () => fixture.root, descriptorBuilder: fixture.descriptorBuilder,
+      attemptIdFactory: () => fixture.attemptId,
+      nowFn: () => Date.parse('2026-07-13T00:00:01.000Z') });
+    if (operation === 'prepare') return prepareAppTask(fixture.root, fixture.runId,
+      { ...fixture.request, owner: input.owner,
+        hostInput: different ? { ...fixture.request.hostInput,
+          currentHostTaskCwd: `${fixture.root}-different` } : fixture.request.hostInput }, fixture.deps);
+    if (operation === 'confirm') return confirmAppTask(fixture.root, fixture.runId,
+      { ...input, stdinMode: wrongMode ? 'pipe-open-noecho' : input.stdinMode,
+        threadId: different ? 'different-thread' : 'confirmed-thread' },
+      { cwdFn: () => fixture.root,
+        nowFn: () => Date.parse('2026-07-13T00:00:03.000Z') });
+    if (operation === 'fail') return failAppTask(fixture.root, fixture.runId,
+      { owner: input.owner, generation: input.generation, attemptId: input.attemptId,
+        code: different ? 'message-unconfirmed' : 'host-call-failed',
+        ...(different ? { stdinMode: wrongMode ? 'pipe-open-noecho' : input.stdinMode,
+          unconfirmedThreadId: 'different-thread' } : {}) },
+      { cwdFn: () => fixture.root,
+        nowFn: () => Date.parse('2026-07-13T00:00:03.000Z') });
+    if (operation === 'sweep') return sweepUnconfirmedAppTask(fixture.root, fixture.runId,
+      { ...input, deadline: different ? '2026-07-13T00:06:00.000Z'
+        : '2026-07-13T00:05:00.000Z' },
+      { cwdFn: () => fixture.root,
+        nowFn: () => Date.parse('2026-07-13T00:05:01.001Z') });
+    if (operation === 'await-timeout') {
+      let pollClock = Date.parse('2026-07-13T00:00:03.000Z');
+      return awaitAppTask(fixture.root, fixture.runId,
+        { ...input, timeoutMs: different ? 2 : 1, intervalMs: 1 },
+        { cwdFn: () => fixture.root, nowFn: () => pollClock + 1,
+          pollNowFn: () => pollClock, pollIntervalMs: 1_000,
+          sleepFn: ms => { pollClock += ms; } });
+    }
+    if (operation === 'acquire') return acquireAppTask(fixture.root, fixture.runId,
+      { ...fixture.acquireInput, owner: foreign ? input.owner : fixture.childRunId,
+        runtime: wrongRuntime ? 'claude' : fixture.acquireInput.runtime,
+        observation: different ? { ...fixture.acquireInput.observation,
+          structured_stdin_mode: 'pipe-open-noecho' }
+          : equivalentObservation ? { ...fixture.acquireInput.observation,
+            host_task_cwd: `${fixture.root}/.` } : fixture.acquireInput.observation },
+      { cwdFn: pathDeps === undefined ? () => fixture.root
+        : () => assert.fail('pending acquire identity fence must precede cwd callback'),
+        ...(pathDeps === undefined ? {} : { pathDeps }),
+        nowFn: () => Date.parse('2026-07-13T00:00:04.000Z') });
+    if (operation === 'recover') return recoverRun(fixture.root, fixture.runId,
+      { expect: { owner: input.owner, generation: input.generation }, confirm: true });
+    return finishRun(fixture.root, fixture.runId, { status: 'completed',
+      reportRel: different ? 'different-final.md' : 'final.md',
+      proof: { human_reason: different ? 'different' : 'same' },
+      fence: { owner: input.owner, generation: input.generation,
+        runtime: 'codex', intent: 'business' } });
+  };
+  return { fixture, invoke };
+}
+
+function journalBytes10d(root, runId) {
+  const directory = runDir(root, runId);
+  return Object.fromEntries(list10d(directory).sort()
+    .filter(name => name.startsWith('.anchored-') || name === 'loop.json'
+      || name === '.loop.hash' || name === 'event-log.jsonl'
+      || name === 'loop.json.replace' || name === '.loop.hash.replace')
+    .map(name => [name, read10d(join(directory, name))]));
+}
+
+function fixedJournalInventory10d(root, runId) {
+  return list10d(runDir(root, runId)).sort().filter(name =>
+    name.startsWith('.anchored-') && name !== '.anchored-committed.json'
+      || name === 'loop.json.replace'
+      || name === '.loop.hash.replace');
+}
+
+function expectedJournalInventory10d(point) {
+  if (point === 'state-stage-after-rename') return ['.anchored-state.stage'];
+  if (point === 'event-stage-after-rename') {
+    return ['.anchored-events.stage', '.anchored-state.stage'];
+  }
+  const names = ['.anchored-events.stage', '.anchored-hash.stage',
+    '.anchored-pending.json', '.anchored-state.stage'];
+  if (['state-replace-after-create', 'state-replace-after-fsync'].includes(point)) {
+    names.push('loop.json.replace');
+  }
+  if (['hash-replace-after-create', 'hash-replace-after-fsync'].includes(point)) {
+    names.push('.loop.hash.replace');
+  }
+  return names.sort();
+}
+
+function canonicalBytes10d(root, runId) {
+  const directory = runDir(root, runId);
+  return Object.fromEntries(['event-log.jsonl', 'loop.json', '.loop.hash']
+    .map(name => [name, read10d(join(directory, name))]));
+}
+
+const CRASH_WORKER_TIMEOUT_MS10D = 10_000;
+const PRE_MARKER_CRASH_POINTS10D = new Set([
+  'state-stage-after-rename', 'event-stage-after-rename',
+]);
+const PUBLIC_MUTATION_EVENT10D = Object.freeze({
+  emit: 'handoff-emitted', prepare: 'app-task-prepared', confirm: 'app-task-confirmed',
+  fail: 'app-task-failed', sweep: 'app-task-swept',
+  'await-timeout': 'app-task-await-timeout', acquire: 'app-task-acquired',
+  recover: 'run-recovered', finish: 'finish',
+});
+
+function assertCrashWorkerExit10d(child) {
+  assert.notEqual(child.error?.code, 'ETIMEDOUT',
+    `crash worker exceeded ${CRASH_WORKER_TIMEOUT_MS10D}ms`);
+  assert.equal(child.status, 91, child.stderr || child.stdout || child.error?.message);
+}
+
+function assertPublicMutationCrashRecovery10d({ operation, crashPoint, worker }) {
+  const { fixture, invoke } = mutationCase10d(operation);
+  const canonicalBefore = canonicalBytes10d(fixture.root, fixture.runId);
+  const child = spawn10d(process.execPath,
+    [fileURLToPath(worker), fixture.root, fixture.runId, operation, crashPoint], {
+      shell: false, encoding: 'utf8', env: { ...process.env,
+        DEEP_LOOP_CRASH_OWNER: fixture.runId,
+        DEEP_LOOP_CRASH_GENERATION: '1',
+        DEEP_LOOP_CRASH_INPUT: JSON.stringify({ owner: fixture.runId, generation: 1,
+          attemptId: fixture.attemptId, childRunId: fixture.childRunId }) },
+      timeout: CRASH_WORKER_TIMEOUT_MS10D,
+    });
+  assertCrashWorkerExit10d(child);
+  // The exact worker is dead. Remove only its orphan run lock to accelerate the production stale
+  // TTL; the foreign and exact public retries below remain the only journal recovery attempts.
+  rmdir10d(join(fixture.root, '.deep-loop', 'runs', fixture.runId, '.lock'));
+  const pending = journalBytes10d(fixture.root, fixture.runId);
+  const markerBacked = !PRE_MARKER_CRASH_POINTS10D.has(crashPoint);
+  assert.equal(Object.hasOwn(pending, '.anchored-pending.json'), markerBacked);
+  assert.deepEqual(fixedJournalInventory10d(fixture.root, fixture.runId),
+    expectedJournalInventory10d(crashPoint),
+  `${operation}/${crashPoint} exact journal inventory`);
+  if (markerBacked) {
+    assert.throws(() => verified10d(fixture.root, fixture.runId),
+      /ANCHORED_TRANSACTION_PENDING/);
+  } else {
+    assert.doesNotThrow(() => verified10d(fixture.root, fixture.runId));
+  }
+  assert.deepEqual(journalBytes10d(fixture.root, fixture.runId), pending,
+    `${operation}/${crashPoint} read-only verification changed journal bytes`);
+  if (!markerBacked) {
+    assert.deepEqual(canonicalBytes10d(fixture.root, fixture.runId), canonicalBefore,
+      `${operation}/${crashPoint} changed canonical bytes before marker publication`);
+    invoke();
+    assert.deepEqual(fixedJournalInventory10d(fixture.root, fixture.runId), [],
+      `${operation}/${crashPoint} exact post-recovery cleanup`);
+    assert.equal(readLines(fixture.root, fixture.runId)
+      .filter(event => event.type === PUBLIC_MUTATION_EVENT10D[operation]).length, 1);
+    return;
+  }
+  const noAcquirePathCallbacks = Object.freeze({ platform: process.platform,
+    exists: () => assert.fail('pending acquire identity fence must precede exists callback'),
+    realpath: () => assert.fail('pending acquire identity fence must precede realpath callback'),
+    stat: () => assert.fail('pending acquire identity fence must precede stat callback'),
+    sameFile: () => assert.fail('pending acquire identity fence must precede sameFile callback') });
+  const variants = [operation === 'acquire'
+    ? { foreign: true, pathDeps: noAcquirePathCallbacks } : { foreign: true },
+    ...(operation === 'recover' ? [] : [{ different: true }]),
+    ...(operation === 'confirm' ? [{ wrongMode: true }] : []),
+    ...(operation === 'acquire'
+      ? [{ wrongRuntime: true, pathDeps: noAcquirePathCallbacks }] : [])];
+  for (const variant of variants) {
+    let result;
+    try { result = invoke(variant); }
+    catch (error) { assert.match(String(error?.message || error), /FENCED|PENDING/i); }
+    if (result !== undefined) assert.equal(result.ok, false);
+    assert.deepEqual(journalBytes10d(fixture.root, fixture.runId), pending,
+      `${operation}/${crashPoint} divergent retry changed bytes`);
+  }
+  invoke();
+  assert.deepEqual(fixedJournalInventory10d(fixture.root, fixture.runId), [],
+    `${operation}/${crashPoint} exact post-recovery cleanup`);
+  assert.equal(readLines(fixture.root, fixture.runId)
+    .filter(event => event.type === PUBLIC_MUTATION_EVENT10D[operation]).length, 1);
+}
+
+test('finish settles every App phase without weakening proof or fence', () => {
+  for (const phase of ['emitted', 'prepared', 'confirmed', 'failed', 'abandoned', 'acquired']) {
+    const fixture = appFinishSeed10d(phase);
+    assert.throws(() => finishRun(fixture.root, fixture.runId, { status: 'completed',
+      reportRel: 'final.md', fence: { owner: '01JAPPWR0NG000000000000000', generation: 1,
+        runtime: 'claude' } }), /LEASE_FENCED/);
+    assert.throws(() => finishRun(fixture.root, fixture.runId, { status: 'completed',
+      reportRel: 'final.md', fence: { ...fixture.fence, runtime: 'claude' } }),
+    /RUNTIME_FENCED/);
+    finishRun(fixture.root, fixture.runId, { status: 'completed', reportRel: 'final.md',
+      fence: fixture.fence });
+    const loop = readState(fixture.root, fixture.runId).data;
+    const continuation = loop.session_chain.sessions
+      .find(session => session.run_id === fixture.childRunId).continuation;
+    assert.equal(loop.status, 'completed');
+    assert.equal(continuation.phase,
+      ['failed', 'abandoned', 'acquired'].includes(phase) ? phase : 'abandoned');
+    if (!['failed', 'abandoned', 'acquired'].includes(phase)) {
+      assert.equal(continuation.failure_code, 'run-finished');
+    }
+    for (const key of ['handoff_transport', 'handoff_attempt_id', 'handoff_child_run_id',
+      'handoff_idempotency_key', 'resume_policy', 'expires_at']) {
+      assert.equal(loop.session_chain.lease[key], null);
+    }
+    assert.equal(readLines(fixture.root, fixture.runId)
+      .filter(event => event.type === 'finish').length, 1);
+    const finishEvent = readLines(fixture.root, fixture.runId)
+      .filter(event => event.type === 'finish').at(-1);
+    const expectedFailure = ['emitted', 'prepared', 'confirmed'].includes(phase)
+      ? 'run-finished' : phase === 'failed'
+        ? 'app-prepare-unattended' : 'consent-revoked';
+    if (phase === 'acquired') {
+      assert.equal(finishEvent.data.attempt_id, undefined);
+      const terminalBytes = bytes10d(fixture.root, fixture.runId);
+      assert.throws(() => acquireAppTask(fixture.root, fixture.runId, fixture.acquireInput,
+        { cwdFn: () => fixture.root,
+          nowFn: () => assert.fail('terminal acquire retry has no clock') }),
+      /APP_ACQUIRE_PROJECTION_CHANGED/);
+      assert.deepEqual(bytes10d(fixture.root, fixture.runId), terminalBytes);
+    } else {
+      assert.equal(finishEvent.data.attempt_id, fixture.attemptId);
+      assert.equal(finishEvent.data.child_run_id, fixture.childRunId);
+      assert.equal(finishEvent.data.failure_code, expectedFailure);
+    }
+  }
+});
+
+test('finish identity fence precedes proof and corrupt App state writes no bytes', () => {
+  const fixture = appFinishSeed10d('emitted');
+  raw10d(fixture.root, fixture.runId, loop => {
+    loop.session_chain.sessions[0].host_surface.observed_at =
+      '2026-07-13T00:00:09.000Z';
+  });
+  const before = bytes10d(fixture.root, fixture.runId);
+  assert.throws(() => finishRun(fixture.root, fixture.runId, { status: 'stopped',
+    confirm: true, proof: { human_reason: 'wrong caller' },
+    fence: { owner: 'wrong', generation: 1, runtime: 'codex' },
+    nowFn: () => assert.fail('wrong caller cannot sample finish clock') }), /LEASE_FENCED/);
+  assert.throws(() => finishRun(fixture.root, fixture.runId, { status: 'stopped',
+    confirm: true, proof: { human_reason: 'correct corrupt caller' },
+    fence: fixture.fence }), /RUN_SNAPSHOT_INVALID/);
+  assert.deepEqual(bytes10d(fixture.root, fixture.runId), before);
+});
+
+test('every real App mutation recovers its own journal before its first canonical read', () => {
+  const operations = [
+    'emit', 'prepare', 'confirm', 'fail', 'sweep', 'await-timeout',
+    'acquire', 'recover', 'finish',
+  ];
+  const crashPoints = [
+    'state-stage-after-rename', 'event-stage-after-rename', 'pending-after-rename',
+    'event-after-partial-append', 'event-after-full-append', 'state-after-rename',
+    'hash-after-rename', 'before-cleanup',
+    'state-replace-after-create', 'state-replace-after-fsync',
+    'state-replace-after-rename-before-dir-fsync',
+    'hash-replace-after-create', 'hash-replace-after-fsync',
+    'hash-replace-after-rename-before-dir-fsync',
+  ];
+  for (const operation of operations) {
+    for (const crashPoint of crashPoints) {
+      assertPublicMutationCrashRecovery10d({ operation, crashPoint,
+        worker: new URL('./helpers/anchored-crash-worker.mjs', import.meta.url) });
+    }
+  }
+});
+
+test('finish pending recovery succeeds once but its committed receipt stays terminal', () => {
+  const { fixture, invoke } = mutationCase10d('finish');
+  const worker = new URL('./helpers/anchored-crash-worker.mjs', import.meta.url);
+  const child = spawn10d(process.execPath,
+    [fileURLToPath(worker), fixture.root, fixture.runId, 'finish', 'pending-after-rename'], {
+      shell: false, encoding: 'utf8', env: { ...process.env,
+        DEEP_LOOP_CRASH_OWNER: fixture.runId,
+        DEEP_LOOP_CRASH_GENERATION: '1',
+        DEEP_LOOP_CRASH_INPUT: JSON.stringify({ owner: fixture.runId, generation: 1,
+          attemptId: fixture.attemptId, childRunId: fixture.childRunId }) },
+      timeout: CRASH_WORKER_TIMEOUT_MS10D,
+    });
+  assertCrashWorkerExit10d(child);
+  rmdir10d(join(fixture.root, '.deep-loop', 'runs', fixture.runId, '.lock'));
+  assert.deepEqual(invoke(), { ok: true, status: 'completed' });
+  const terminalBytes = bytes10d(fixture.root, fixture.runId);
+  assert.throws(() => invoke(), /FINISH_ALREADY_TERMINAL/);
+  assert.deepEqual(bytes10d(fixture.root, fixture.runId), terminalBytes);
+});
+
+test('same-length staged-event corruption is rejected before any canonical mutation', () => {
+  const { fixture, invoke } = mutationCase10d('confirm');
+  const worker = new URL('./helpers/anchored-crash-worker.mjs', import.meta.url);
+  const child = spawn10d(process.execPath,
+    [fileURLToPath(worker), fixture.root, fixture.runId, 'confirm', 'pending-after-rename'], {
+      shell: false, encoding: 'utf8', env: { ...process.env,
+        DEEP_LOOP_CRASH_OWNER: fixture.runId,
+        DEEP_LOOP_CRASH_GENERATION: '1',
+        DEEP_LOOP_CRASH_INPUT: JSON.stringify({ owner: fixture.runId, generation: 1,
+          attemptId: fixture.attemptId, childRunId: fixture.childRunId }) },
+      timeout: CRASH_WORKER_TIMEOUT_MS10D,
+    });
+  assertCrashWorkerExit10d(child);
+  rmdir10d(join(fixture.root, '.deep-loop', 'runs', fixture.runId, '.lock'));
+  const canonicalBefore = canonicalBytes10d(fixture.root, fixture.runId);
+  const stagePath = join(runDir(fixture.root, fixture.runId), '.anchored-events.stage');
+  const corrupted = Buffer.from(read10d(stagePath));
+  corrupted[0] = corrupted[0] === 0x7b ? 0x5b : 0x7b;
+  write10d(stagePath, corrupted);
+  assert.throws(() => invoke(), /ANCHORED_TRANSACTION_CORRUPT: stage digest/);
+  assert.deepEqual(canonicalBytes10d(fixture.root, fixture.runId), canonicalBefore,
+    'untrusted same-length stage bytes cannot change canonical event/state/hash bytes');
+});
+
+test('dangling journal symlink is corruption and never cleanup authority',
+  { skip: process.platform === 'win32' }, () => {
+    const { fixture, invoke } = mutationCase10d('confirm');
+    const canonicalBefore = canonicalBytes10d(fixture.root, fixture.runId);
+    symlink10d(join(fixture.root, 'missing-stage-target'),
+      join(runDir(fixture.root, fixture.runId), '.anchored-events.stage'));
+    assert.throws(() => invoke(), /ANCHORED_TRANSACTION_CORRUPT/);
+    assert.deepEqual(canonicalBytes10d(fixture.root, fixture.runId), canonicalBefore);
+  });
+
+test('published confirm marker plus a different receipt is the public App fence', () => {
+  const { fixture, invoke } = mutationCase10d('confirm');
+  const worker = new URL('./helpers/anchored-crash-worker.mjs', import.meta.url);
+  const child = spawn10d(process.execPath,
+    [fileURLToPath(worker), fixture.root, fixture.runId, 'confirm', 'pending-after-rename'], {
+      shell: false, encoding: 'utf8', env: { ...process.env,
+        DEEP_LOOP_CRASH_OWNER: fixture.runId,
+        DEEP_LOOP_CRASH_GENERATION: '1',
+        DEEP_LOOP_CRASH_INPUT: JSON.stringify({ owner: fixture.runId, generation: 1,
+          attemptId: fixture.attemptId, childRunId: fixture.childRunId }) },
+      timeout: CRASH_WORKER_TIMEOUT_MS10D,
+    });
+  assertCrashWorkerExit10d(child);
+  rmdir10d(join(fixture.root, '.deep-loop', 'runs', fixture.runId, '.lock'));
+  const pending = journalBytes10d(fixture.root, fixture.runId);
+  assert.throws(() => invoke({ different: true }), /APP_RECEIPT_FENCED/);
+  assert.deepEqual(journalBytes10d(fixture.root, fixture.runId), pending);
+  invoke();
+});
+
+test('published acquire marker accepts an equivalent normalized observation intent', () => {
+  const { fixture, invoke } = mutationCase10d('acquire');
+  const worker = new URL('./helpers/anchored-crash-worker.mjs', import.meta.url);
+  const child = spawn10d(process.execPath,
+    [fileURLToPath(worker), fixture.root, fixture.runId, 'acquire', 'pending-after-rename'], {
+      shell: false, encoding: 'utf8', env: { ...process.env,
+        DEEP_LOOP_CRASH_OWNER: fixture.runId,
+        DEEP_LOOP_CRASH_GENERATION: '1',
+        DEEP_LOOP_CRASH_INPUT: JSON.stringify({ owner: fixture.runId, generation: 1,
+          attemptId: fixture.attemptId, childRunId: fixture.childRunId }) },
+      timeout: CRASH_WORKER_TIMEOUT_MS10D,
+    });
+  assertCrashWorkerExit10d(child);
+  rmdir10d(join(fixture.root, '.deep-loop', 'runs', fixture.runId, '.lock'));
+  const result = invoke({ equivalentObservation: true });
+  assert.equal(result.outcome, 'already-acquired');
+  assert.deepEqual(fixedJournalInventory10d(fixture.root, fixture.runId), []);
 });

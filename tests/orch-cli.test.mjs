@@ -1842,3 +1842,50 @@ test('App post-fence transition invalidity exits 1 while fences stay 3 and retry
   assert.equal(runResult(retry.root, args).code, 0);
   assert.deepEqual(cliSnapshot(retry.root, retry.runId), revoked);
 });
+function appFinishCliSeed10d() {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-app-finish-cli-')));
+  const observed = '2026-07-13T00:00:00.000Z';
+  const { runId } = initRun(root, { runtime: 'codex', goal: 'g', now: new Date(observed),
+    hostObservation: { kind: 'codex-app', source: 'codex-app-tool-provenance',
+      capabilities: ['list-projects', 'create-thread-local', 'structured-process-stdin'],
+      structured_stdin_mode: 'pipe-open-noecho', host_task_cwd: root,
+      host_task_cwd_source: 'app-task-context',
+      observed_at: observed }, cwdFn: () => root, appContinuationConsent: { mode: 'auto',
+      authority: 'human-confirmed', confirmed_at: observed, revoked_at: null } });
+  const descriptorBuilder = ({ runtime, root: projectRoot, parentRunId, childRunId }) => ({
+    runtime, projectRoot, runId: parentRunId, usageOutputKind: 'json',
+    resumeInvocation: childRunId, entries: Object.fromEntries(['interactive', 'headless', 'cmux',
+      'iterm2', 'terminal-app', 'wt', 'powershell', 'desktop']
+      .map(name => [name, { display: 'manual', unavailable: true }])) });
+  emitHandoff(root, runId, { trigger: 'finish-cli', appIntent: true,
+    expect: { owner: runId, generation: 1 }, cwdFn: () => root, descriptorBuilder,
+    attemptIdFactory: () => '01JAPPTASK0000000000000000',
+    nowFn: () => Date.parse('2026-07-13T00:00:01.000Z') });
+  return { root, runId };
+}
+
+test('finish CLI requires the exact App runtime and then settles the bound attempt', () => {
+  const fixture = appFinishCliSeed10d();
+  const common = ['finish', '--project-root', fixture.root, '--run-id', fixture.runId,
+    '--owner', fixture.runId, '--generation', '1', '--status', 'stopped', '--confirm',
+    '--proof', JSON.stringify({ human_reason: 'test' })];
+  const before = structuredClone(readState(fixture.root, fixture.runId).data);
+  for (const runtimeArgs of [[], ['--runtime', 'claude']]) {
+    const result = spawnSync(process.execPath, [CLI, ...common, ...runtimeArgs],
+      { cwd: fixture.root, encoding: 'utf8', shell: false });
+    assert.equal(result.status, 3, result.stdout + result.stderr);
+    assert.match(result.stderr, /RUNTIME_FENCED/);
+    assert.deepEqual(readState(fixture.root, fixture.runId).data, before);
+  }
+  const success = spawnSync(process.execPath, [CLI, ...common, '--runtime', 'codex'],
+    { cwd: fixture.root, encoding: 'utf8', shell: false });
+  assert.equal(success.status, 0, success.stderr);
+  const loop = readState(fixture.root, fixture.runId).data;
+  assert.equal(loop.status, 'stopped');
+  assert.equal(loop.session_chain.lease.handoff_transport, null);
+  assert.equal(loop.session_chain.lease.handoff_attempt_id, null);
+  const terminal = spawnSync(process.execPath, [CLI, ...common, '--runtime', 'codex'],
+    { cwd: fixture.root, encoding: 'utf8', shell: false });
+  assert.equal(terminal.status, 1);
+  assert.match(terminal.stderr, /FINISH_ALREADY_TERMINAL/);
+});
