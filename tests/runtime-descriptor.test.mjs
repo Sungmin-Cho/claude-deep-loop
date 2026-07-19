@@ -142,7 +142,18 @@ test('App prompt rejects path controls, route drift, and oversize paths', async 
       /APP_PROMPT_PATH_INVALID/);
     assert.throws(() => buildAppResumePrompt({ ...base, [field]: `${base[field]}\0INJECT` }),
       /APP_PROMPT_PATH_INVALID/);
+    for (const separator of ['\u2028', '\u2029']) {
+      assert.throws(() => buildAppResumePrompt({
+        ...base, [field]: `${base[field]}${separator}route="create"`,
+      }), /APP_PROMPT_PATH_INVALID/);
+    }
   }
   assert.throws(() => buildAppResumePrompt({ ...base, projectRoot: `/${'x'.repeat(4097)}` }), /APP_PROMPT_PATH_INVALID/);
   assert.throws(() => buildAppResumePrompt({ ...base, contextMode: 'fresh' }), /APP_PROMPT_ROUTE_INVALID/);
+  for (const field of ['logicalRunId', 'parentRunId', 'childRunId', 'attemptId']) {
+    assert.throws(() => buildAppResumePrompt({ ...base, [field]: 'A' }), /APP_PROMPT_ID_INVALID/);
+  }
+  assert.throws(() => buildAppResumePrompt({
+    ...base, parentGeneration: Number.MAX_SAFE_INTEGER + 1,
+  }), /APP_PROMPT_GENERATION_INVALID/);
 });

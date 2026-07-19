@@ -33,6 +33,7 @@ function meSh(quote, model, effort) {
 
 const SAFE_ID = /^[A-Za-z0-9_-]+$/;
 const SAFE_HANDOFF_REL = /^handoffs\/[A-Za-z0-9._-]+$/;
+const APP_PROMPT_ULID = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
 
 export const APP_RESUME_PROMPT_MAX_BYTES = 16_384;
 
@@ -81,14 +82,21 @@ function targetAbsolutePath(value, platform) {
 }
 
 function appPromptId(value, label) {
-  if (typeof value !== 'string' || !SAFE_ID.test(value) || Buffer.byteLength(value, 'utf8') > 256) {
+  if (typeof value !== 'string' || !APP_PROMPT_ULID.test(value)) {
     throw new Error(`APP_PROMPT_ID_INVALID: ${label}`);
   }
   return value;
 }
 
+function appPromptWorkstream(value) {
+  if (typeof value !== 'string' || !SAFE_ID.test(value) || Buffer.byteLength(value, 'utf8') > 256) {
+    throw new Error('APP_PROMPT_ID_INVALID: workstreamId');
+  }
+  return value;
+}
+
 function appPromptAbsolutePath(value, platform, label) {
-  if (typeof value !== 'string' || /[\u0000\r\n]/u.test(value)
+  if (typeof value !== 'string' || /[\u0000\r\n\u2028\u2029]/u.test(value)
       || !targetAbsolutePath(value, platform) || Buffer.byteLength(value, 'utf8') > 4096) {
     throw new Error(`APP_PROMPT_PATH_INVALID: ${label}`);
   }
@@ -115,7 +123,7 @@ export function buildAppResumePrompt(input = {}) {
   const child = appPromptId(childRunId, 'childRunId');
   const attempt = appPromptId(attemptId, 'attemptId');
   const handoff = appPromptHandoff(handoffRel);
-  if (!Number.isInteger(parentGeneration) || parentGeneration < 1) {
+  if (!Number.isSafeInteger(parentGeneration) || parentGeneration < 1) {
     throw new Error('APP_PROMPT_GENERATION_INVALID');
   }
   if ((route === 'create' && contextMode !== 'fresh')
@@ -123,7 +131,7 @@ export function buildAppResumePrompt(input = {}) {
       || !['create', 'fork'].includes(route)) {
     throw new Error('APP_PROMPT_ROUTE_INVALID');
   }
-  const workstream = route === 'fork' ? appPromptId(workstreamId, 'workstreamId') : null;
+  const workstream = route === 'fork' ? appPromptWorkstream(workstreamId) : null;
   if (route === 'create' && workstreamId != null) throw new Error('APP_PROMPT_ROUTE_INVALID');
 
   const lines = [
