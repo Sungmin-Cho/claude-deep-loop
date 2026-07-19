@@ -165,21 +165,38 @@ async function waitForRaceFile(path, operations = []) {
   throw new Error(`snapshot-barrier-timeout:${path}`);
 }
 
+async function waitForRaceEvent(root, runId, type, operations = []) {
+  const deadline = Date.now() + RACE_BARRIER_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    try {
+      if (readLines(root, runId).some(event => event.type === type)) return;
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+    }
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  await stopChildren(operations);
+  throw new Error(`event-barrier-timeout:${type}`);
+}
+
 async function raceAfterInitialSnapshots(left, right) {
   const markerA = join(left.root, 'await-initial-a');
   const markerB = join(left.root, 'await-initial-b');
-  const release = join(left.root, 'await-initial-release');
+  const releaseA = join(left.root, 'await-initial-release-a');
+  const releaseB = join(left.root, 'await-initial-release-b');
   const a = childOperation({ ...left,
-    snapshotBarrier: { mine: markerA, peer: markerB, release } });
+    snapshotBarrier: { mine: markerA, peer: markerB, release: releaseA } });
   const b = childOperation({ ...right,
-    snapshotBarrier: { mine: markerB, peer: markerA, release } });
+    snapshotBarrier: { mine: markerB, peer: markerA, release: releaseB } });
   return protectChildren([a, b], async () => {
     await Promise.all([a.ready, b.ready]);
     a.release(); b.release();
     await Promise.all([
       waitForRaceFile(markerA, [a, b]), waitForRaceFile(markerB, [a, b]),
     ]);
-    writeFileSync(release, 'continue', { flag: 'wx' });
+    writeFileSync(releaseA, 'continue', { flag: 'wx' });
+    await waitForRaceEvent(left.root, left.runId, 'app-task-await-timeout', [a, b]);
+    writeFileSync(releaseB, 'continue', { flag: 'wx' });
     return Promise.all([a.done, b.done]);
   });
 }
@@ -550,7 +567,8 @@ test('await CAS loser converges when acquire commits before its catch re-read', 
   const fixture = confirmed10a();
   const markerA = join(fixture.root, 'await-three-initial-a');
   const markerB = join(fixture.root, 'await-three-initial-b');
-  const initialRelease = join(fixture.root, 'await-three-initial-release');
+  const initialReleaseA = join(fixture.root, 'await-three-initial-release-a');
+  const initialReleaseB = join(fixture.root, 'await-three-initial-release-b');
   const catchReady = join(fixture.root, 'await-three-catch-ready');
   const catchRelease = join(fixture.root, 'await-three-catch-release');
   const base = { op: 'await', root: fixture.root, runId: fixture.runId,
@@ -558,16 +576,18 @@ test('await CAS loser converges when acquire commits before its catch re-read', 
     input: { owner: fixture.runId, generation: 1, attemptId: fixture.attemptId },
     catchReadBarrier: { ready: catchReady, release: catchRelease } };
   const a = childOperation({ ...base,
-    snapshotBarrier: { mine: markerA, peer: markerB, release: initialRelease } });
+    snapshotBarrier: { mine: markerA, peer: markerB, release: initialReleaseA } });
   const b = childOperation({ ...base,
-    snapshotBarrier: { mine: markerB, peer: markerA, release: initialRelease } });
+    snapshotBarrier: { mine: markerB, peer: markerA, release: initialReleaseB } });
   await protectChildren([a, b], async () => {
     await Promise.all([a.ready, b.ready]);
     a.release(); b.release();
     await Promise.all([
       waitForRaceFile(markerA, [a, b]), waitForRaceFile(markerB, [a, b]),
     ]);
-    writeFileSync(initialRelease, 'continue', { flag: 'wx' });
+    writeFileSync(initialReleaseA, 'continue', { flag: 'wx' });
+    await waitForRaceEvent(fixture.root, fixture.runId, 'app-task-await-timeout', [a, b]);
+    writeFileSync(initialReleaseB, 'continue', { flag: 'wx' });
     await waitForRaceFile(catchReady, [a, b]);
     const acquired = acquireAppTask(fixture.root, fixture.runId, {
       attemptId: fixture.attemptId, owner: fixture.childRunId, generation: 1,
@@ -589,7 +609,8 @@ test('await CAS loser returns safe terminal outcome when revoke wins before catc
   const fixture = confirmed10a();
   const markerA = join(fixture.root, 'await-terminal-initial-a');
   const markerB = join(fixture.root, 'await-terminal-initial-b');
-  const initialRelease = join(fixture.root, 'await-terminal-initial-release');
+  const initialReleaseA = join(fixture.root, 'await-terminal-initial-release-a');
+  const initialReleaseB = join(fixture.root, 'await-terminal-initial-release-b');
   const catchReady = join(fixture.root, 'await-terminal-catch-ready');
   const catchRelease = join(fixture.root, 'await-terminal-catch-release');
   const base = { op: 'await', root: fixture.root, runId: fixture.runId,
@@ -597,16 +618,18 @@ test('await CAS loser returns safe terminal outcome when revoke wins before catc
     input: { owner: fixture.runId, generation: 1, attemptId: fixture.attemptId },
     catchReadBarrier: { ready: catchReady, release: catchRelease } };
   const a = childOperation({ ...base,
-    snapshotBarrier: { mine: markerA, peer: markerB, release: initialRelease } });
+    snapshotBarrier: { mine: markerA, peer: markerB, release: initialReleaseA } });
   const b = childOperation({ ...base,
-    snapshotBarrier: { mine: markerB, peer: markerA, release: initialRelease } });
+    snapshotBarrier: { mine: markerB, peer: markerA, release: initialReleaseB } });
   await protectChildren([a, b], async () => {
     await Promise.all([a.ready, b.ready]);
     a.release(); b.release();
     await Promise.all([
       waitForRaceFile(markerA, [a, b]), waitForRaceFile(markerB, [a, b]),
     ]);
-    writeFileSync(initialRelease, 'continue', { flag: 'wx' });
+    writeFileSync(initialReleaseA, 'continue', { flag: 'wx' });
+    await waitForRaceEvent(fixture.root, fixture.runId, 'app-task-await-timeout', [a, b]);
+    writeFileSync(initialReleaseB, 'continue', { flag: 'wx' });
     await waitForRaceFile(catchReady, [a, b]);
     revokeAppTaskContinuation(fixture.root, fixture.runId,
       { owner: fixture.runId, generation: 1, runtime: 'codex' },
