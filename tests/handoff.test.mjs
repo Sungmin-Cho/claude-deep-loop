@@ -719,9 +719,9 @@ test('emitHandoff: stale expect fences at reserve (no mutation); correct expect 
   const { root, runId } = seed();
   const now = Date.parse('2026-06-24T01:00:00Z');
   // Stale owner → fenced
-  const r1 = emitHandoff(root, runId, { trigger: 'milestone', now, expect: { owner: 'WRONG', generation: 1 } });
-  assert.equal(r1.ok, false);
-  assert.equal(r1.reason, 'fenced');
+  assert.throws(() => emitHandoff(root, runId,
+    { trigger: 'milestone', now, expect: { owner: 'WRONG', generation: 1 } }),
+  /LEASE_FENCED/);
   assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'idle');
   // Correct expect → succeeds
   const r2 = emitHandoff(root, runId, { trigger: 'milestone', now, expect: { owner: runId, generation: 1 } });
@@ -738,9 +738,9 @@ test('emitHandoff: lease stolen before call → fenced at reserve, new owner lea
   releaseLease(root, runId, { owner: runId, generation: 1 });
   acquireLease(root, runId, { owner: CHILD2, expectGeneration: 1, runtime: 'claude', now });
   // emitHandoff with stale expect (original owner/gen=1) → fenced at reserveHandoff (generation mismatch)
-  const r = emitHandoff(root, runId, { trigger: 'milestone', now, expect: { owner: runId, generation: 1 } });
-  assert.equal(r.ok, false);
-  assert.equal(r.reason, 'fenced');
+  assert.throws(() => emitHandoff(root, runId,
+    { trigger: 'milestone', now, expect: { owner: runId, generation: 1 } }),
+  /LEASE_FENCED/);
   // New owner's lease is intact (not mutated)
   const lease = readState(root, runId).data.session_chain.lease;
   assert.equal(lease.owner_run_id, CHILD2);
@@ -753,7 +753,7 @@ test('emitHandoff fall-through after bare reserve reuses reserved childRunId (no
   const { root, runId } = seed();
   const now = Date.parse('2026-06-24T01:00:00Z');
   const ex = expect_(runId);
-  const r = reserveHandoff(root, runId, { trigger: 'milestone', now });
+  const r = reserveHandoff(root, runId, { trigger: 'milestone', now, expect: ex });
   assert.equal(r.reserved, true);
   const e1 = emitHandoff(root, runId, { trigger: 'milestone', now, expect: ex });
   assert.equal(e1.childRunId, r.childRunId);

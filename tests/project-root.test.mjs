@@ -561,6 +561,8 @@ import { durableRunBytes as bytes7g, rawHashValidState as raw7g,
   seedCorrelatedTerminal as terminal7g,
   verifiedAppRun as fixture7g }
   from './fixtures/verified-app-run.mjs';
+import { newEpisode as newEpisode7g } from './helpers/episode-request.mjs';
+import { newWorkstream as newWorkstream7g } from './helpers/workstream-request.mjs';
 
 const ROOT7G = file7g(new URL('..', import.meta.url));
 const verdict7g = (root, runId, verdict, fence, options) =>
@@ -860,8 +862,13 @@ test7g('first upgraded verdict authenticates a nonzero legacy counter baseline',
     assert7g.equal(event.data.previous_count, baseline);
     assert7g.equal(event.data.next_count, baseline + 1);
     const committed = bytes7g(fixture.root, fixture.runId);
-    assert7g.deepEqual(
-      verdict7g(fixture.root, fixture.runId, 'REQUEST_CHANGES', fence, input), first);
+    if (baseline === 1) {
+      assert7g.deepEqual(
+        verdict7g(fixture.root, fixture.runId, 'REQUEST_CHANGES', fence, input), first);
+    } else {
+      assert7g.throws(() => verdict7g(fixture.root, fixture.runId,
+        'REQUEST_CHANGES', fence, input), /LEASE_FENCED: RUN_PAUSED/);
+    }
     assert7g.deepEqual(bytes7g(fixture.root, fixture.runId), committed);
   }
 
@@ -886,14 +893,16 @@ test7g('trip and reset retries preserve their original response across newer ope
   const fixture = fixture7g('dl-7g-breaker-intervening-retry-');
   const fence = { owner: fixture.owner, generation: fixture.generation };
   const trip = { fence, requestId: 'intervening-trip' };
-  assert7g.deepEqual(trip7g(fixture.root, fixture.runId, 'manual-trip', trip),
+  assert7g.deepEqual(trip7g(fixture.root, fixture.runId,
+    'consecutive-request-changes', trip),
     { ok: true, changed: true });
   const reset = { fence: { ...fence, intent: 'breaker-reset' },
     requestId: 'intervening-reset' };
   assert7g.deepEqual(reset7g(fixture.root, fixture.runId, reset),
     { ok: true, changed: true, status: 'running' });
   const afterReset = bytes7g(fixture.root, fixture.runId);
-  assert7g.deepEqual(trip7g(fixture.root, fixture.runId, 'manual-trip', trip),
+  assert7g.deepEqual(trip7g(fixture.root, fixture.runId,
+    'consecutive-request-changes', trip),
     { ok: true, changed: true });
   assert7g.deepEqual(bytes7g(fixture.root, fixture.runId), afterReset,
     'old trip retry must not re-trip after the newer reset');
@@ -912,10 +921,20 @@ test7g('trip and reset retries preserve their original response across newer ope
 test7g('review verdict replay authenticates intervening review-outcome transitions', () => {
   const fixture = fixture7g('dl-7g-review-outcome-lineage-');
   const fence = { owner: fixture.owner, generation: fixture.generation };
+  const mutationFence = { ...fence, intent: 'business' };
+  const workstreamId = newWorkstream7g(fixture.root, fixture.runId, {
+    title: 'lineage', branch: 'codex/lineage',
+    worktree: '.claude/worktrees/lineage', fence: mutationFence,
+  }).id;
+  const episodeId = newEpisode7g(fixture.root, fixture.runId, {
+    plugin: 'deep-review', role: 'checker', kind: 'review', point: 'implementation',
+    workstream: workstreamId, expectedArtifacts: [], fence: mutationFence,
+  }).id;
   const original = { requestId: 'lineage-verdict' };
   verdict7g(fixture.root, fixture.runId, 'REQUEST_CHANGES', fence, original);
   append7g(fixture.root, fixture.runId, {
-    type: 'review-outcome', data: { verdict: 'REQUEST_CHANGES' },
+    type: 'review-outcome', data: { verdict: 'REQUEST_CHANGES', episodeId,
+      workstream_id: workstreamId },
   }, loop => { loop.circuit_breaker.consecutive_request_changes += 1; }, undefined,
   mutation7g('test-review-outcome', fence,
     { requestId: 'lineage-review-request-changes', verdict: 'REQUEST_CHANGES' },
@@ -925,7 +944,8 @@ test7g('review verdict replay authenticates intervening review-outcome transitio
     'REQUEST_CHANGES', fence, original), { ok: true, changed: true });
   assert7g.deepEqual(bytes7g(fixture.root, fixture.runId), afterRequestChanges);
   append7g(fixture.root, fixture.runId, {
-    type: 'review-outcome', data: { verdict: 'APPROVE' },
+    type: 'review-outcome', data: { verdict: 'APPROVE', episodeId,
+      workstream_id: workstreamId },
   }, loop => { loop.circuit_breaker.consecutive_request_changes = 0; }, undefined,
   mutation7g('test-review-outcome', fence,
     { requestId: 'lineage-review-approve', verdict: 'APPROVE' },

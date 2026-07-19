@@ -510,7 +510,7 @@ test('respawn claims atomically before external spawn → concurrent re-entry do
 test('crash after spawned-claim recovers via stale-TTL acquire (not permanently stranded)', () => {
   const { root, runId } = seed();
   const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });   // expires_at = NOW1 + 900s
-  advanceHandoffPhase(root, runId, { key: h.key, toPhase: 'spawned', now: NOW1 });   // claim 만(=respawn 이 release 전 크래시)
+  advanceHandoffPhase(root, runId, { expect: { owner: runId, generation: 1 }, key: h.key, toPhase: 'spawned', now: NOW1 });   // claim 만(=respawn 이 release 전 크래시)
   const st = readState(root, runId).data.session_chain.lease;
   assert.equal(st.handoff_phase, 'spawned');
   assert.equal(st.state, 'releasing');
@@ -588,7 +588,7 @@ test('already-spawned re-entry, child NEVER acquires (visible) → bounded wait 
   const { root, runId } = seedLauncher();
   const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });
   // Simulate a prior respawn that did the emitted→spawned CAS then crashed before/during the external spawn.
-  advanceHandoffPhase(root, runId, { key: h.key, toPhase: 'spawned', now: NOW1 });
+  advanceHandoffPhase(root, runId, { expect: { owner: runId, generation: 1 }, key: h.key, toPhase: 'spawned', now: NOW1 });
   assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'spawned');
   // Reserved child never acquires (poll always shows the parent still releasing). spawnFn must NOT be re-called.
   const pollLease = () => ({ state: 'releasing', owner_run_id: runId, generation: 1 });
@@ -616,7 +616,7 @@ test('already-spawned re-entry, child NEVER acquires (visible) → bounded wait 
 test('already-spawned re-entry where the child HAS acquired → already-spawned immediately, no false pause (codex-r5a)', () => {
   const { root, runId } = seedLauncher();
   const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });
-  advanceHandoffPhase(root, runId, { key: h.key, toPhase: 'spawned', now: NOW1 });
+  advanceHandoffPhase(root, runId, { expect: { owner: runId, generation: 1 }, key: h.key, toPhase: 'spawned', now: NOW1 });
   // Lease already shows the reserved child acquired (a prior call genuinely spawned + the child took over).
   const pollLease = () => ({ state: 'active', handoff_phase: 'acquired', owner_run_id: h.childRunId, generation: 2 });
   let spawned = false;

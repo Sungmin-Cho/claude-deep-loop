@@ -55,7 +55,7 @@ const VERBS = (o, g) => [
   ['respawn'],
   ['session-profile', 'set', '--model', 'm'],
   ['detect-terminal'],
-  ['breaker', 'reset', '--confirm'],
+  ['breaker', 'reset', '--confirm', '--request-id', 'terminal-sweep-reset'],
   ['finish', '--status', 'completed', '--report', 'final-report.md'],
 ].map(a => [...a, '--owner', o, '--generation', String(g)]);
 

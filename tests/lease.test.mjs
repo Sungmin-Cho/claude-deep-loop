@@ -116,13 +116,13 @@ test('leaseCheck optionally fences a mismatched runtime before owner/generation 
 
 test('reserveHandoff dedups concurrent triggers (PreCompact no-op after Decide)', () => {
   const { root, runId } = seed();
-  const decide = reserveHandoff(root, runId, { trigger: 'milestone' });
+  const decide = reserveHandoff(root, runId, { expect: { owner: runId, generation: 1 }, trigger: 'milestone' });
   assert.equal(decide.reserved, true);
-  const precompact = reserveHandoff(root, runId, { trigger: 'precompact' });
+  const precompact = reserveHandoff(root, runId, { expect: { owner: runId, generation: 1 }, trigger: 'precompact' });
   assert.equal(precompact.ok, false);
   assert.equal(precompact.reason, 'handoff-in-flight');
   // same trigger re-entry is idempotent (ok, not re-reserved)
-  const retry = reserveHandoff(root, runId, { trigger: 'milestone' });
+  const retry = reserveHandoff(root, runId, { expect: { owner: runId, generation: 1 }, trigger: 'milestone' });
   assert.equal(retry.ok, true);
   assert.equal(retry.reserved, false);
   assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'reserved');
@@ -130,12 +130,12 @@ test('reserveHandoff dedups concurrent triggers (PreCompact no-op after Decide)'
 
 test('advanceHandoffPhase enforces forward-only and sets releasing on emitted', () => {
   const { root, runId } = seed();
-  const { key } = reserveHandoff(root, runId, { trigger: 'milestone' });
-  assert.equal(advanceHandoffPhase(root, runId, { key, toPhase: 'spawned' }).ok, false); // skip
-  assert.equal(advanceHandoffPhase(root, runId, { key, toPhase: 'emitted' }).ok, true);
+  const { key } = reserveHandoff(root, runId, { expect: { owner: runId, generation: 1 }, trigger: 'milestone' });
+  assert.equal(advanceHandoffPhase(root, runId, { expect: { owner: runId, generation: 1 }, key, toPhase: 'spawned' }).ok, false); // skip
+  assert.equal(advanceHandoffPhase(root, runId, { expect: { owner: runId, generation: 1 }, key, toPhase: 'emitted' }).ok, true);
   assert.equal(readState(root, runId).data.session_chain.lease.state, 'releasing');
-  assert.equal(advanceHandoffPhase(root, runId, { key: 'wrong', toPhase: 'spawned' }).ok, false); // key fence
-  assert.equal(advanceHandoffPhase(root, runId, { key, toPhase: 'spawned' }).ok, true);
+  assert.equal(advanceHandoffPhase(root, runId, { expect: { owner: runId, generation: 1 }, key: 'wrong', toPhase: 'spawned' }).ok, false); // key fence
+  assert.equal(advanceHandoffPhase(root, runId, { expect: { owner: runId, generation: 1 }, key, toPhase: 'spawned' }).ok, true);
 });
 
 test('acquireLease: child takes over released lease, generation+1; stale generation rejected', () => {
@@ -174,8 +174,8 @@ test('acquireLease: active lease is never stolen (even past expires_at); release
 
 test('rollbackHandoff restores active/idle (launch-failure path)', () => {
   const { root, runId } = seed();
-  const { key } = reserveHandoff(root, runId, { trigger: 'milestone' });
-  advanceHandoffPhase(root, runId, { key, toPhase: 'emitted' });
+  const { key } = reserveHandoff(root, runId, { expect: { owner: runId, generation: 1 }, trigger: 'milestone' });
+  advanceHandoffPhase(root, runId, { expect: { owner: runId, generation: 1 }, key, toPhase: 'emitted' });
   const r = rollbackHandoff(root, runId, { owner: runId, generation: 1 });
   assert.equal(r.ok, true);
   const lease = readState(root, runId).data.session_chain.lease;
@@ -188,8 +188,8 @@ test('rollbackHandoff restores active/idle (launch-failure path)', () => {
 test('emitted sets expires_at → child can take over after stale TTL without explicit release', () => {
   const { root, runId } = seed();
   const now0 = Date.parse('2026-06-24T00:00:00Z');
-  const { key } = reserveHandoff(root, runId, { trigger: 'milestone' });
-  advanceHandoffPhase(root, runId, { key, toPhase: 'emitted', now: now0 });
+  const { key } = reserveHandoff(root, runId, { expect: { owner: runId, generation: 1 }, trigger: 'milestone' });
+  advanceHandoffPhase(root, runId, { expect: { owner: runId, generation: 1 }, key, toPhase: 'emitted', now: now0 });
   const lease = readState(root, runId).data.session_chain.lease;
   assert.equal(lease.state, 'releasing');
   assert.ok(lease.expires_at, 'expires_at must be set on emitted');
@@ -221,42 +221,42 @@ test('leaseCheck allows only matching accounting on a nonterminal paused run', (
 });
 
 // Fix A: reserveHandoff with stale expect is fenced (generation-mismatch); without expect is unchanged
-test('reserveHandoff: stale expect fences without mutating; no expect is unchanged', () => {
+test('reserveHandoff requires expect and stale expect fences without mutating', () => {
   const { root, runId } = seed();
   // Stale owner → fenced
-  const r1 = reserveHandoff(root, runId, { trigger: 'milestone', expect: { owner: 'WRONG', generation: 1 } });
-  assert.equal(r1.ok, false);
-  assert.equal(r1.reason, 'fenced');
-  assert.equal(r1.reserved, false);
+  assert.throws(() => reserveHandoff(root, runId,
+    { trigger: 'milestone', expect: { owner: 'WRONG', generation: 1 } }),
+  /LEASE_FENCED/);
   // Stale generation → fenced
-  const r2 = reserveHandoff(root, runId, { trigger: 'milestone', expect: { owner: runId, generation: 99 } });
-  assert.equal(r2.ok, false);
-  assert.equal(r2.reason, 'fenced');
+  assert.throws(() => reserveHandoff(root, runId,
+    { trigger: 'milestone', expect: { owner: runId, generation: 99 } }),
+  /LEASE_FENCED/);
   // State is NOT mutated by fenced calls
   assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'idle');
   // Correct expect → succeeds
-  const r3 = reserveHandoff(root, runId, { trigger: 'milestone', expect: { owner: runId, generation: 1 } });
+  const r3 = reserveHandoff(root, runId,
+    { trigger: 'milestone', expect: { owner: runId, generation: 1 } });
   assert.equal(r3.ok, true);
   assert.equal(r3.reserved, true);
-  // No expect → unchanged behavior (backward compat)
+  // No expect fails closed.
   const { root: root2, runId: runId2 } = seed();
-  const r4 = reserveHandoff(root2, runId2, { trigger: 'milestone' });
-  assert.equal(r4.ok, true);
-  assert.equal(r4.reserved, true);
+  assert.throws(() => reserveHandoff(root2, runId2, { trigger: 'milestone' }),
+    /FENCE_REQUIRED/);
 });
 
 // Fix A: advanceHandoffPhase with stale expect is fenced before key/phase checks
 test('advanceHandoffPhase: stale expect fences before key/phase checks; correct expect proceeds', () => {
   const { root, runId } = seed();
-  const { key } = reserveHandoff(root, runId, { trigger: 'milestone' });
+  const { key } = reserveHandoff(root, runId, { expect: { owner: runId, generation: 1 }, trigger: 'milestone' });
   // Stale generation → fenced (before key check)
-  const r1 = advanceHandoffPhase(root, runId, { key, toPhase: 'emitted', expect: { owner: runId, generation: 99 } });
-  assert.equal(r1.ok, false);
-  assert.equal(r1.reason, 'fenced');
+  assert.throws(() => advanceHandoffPhase(root, runId,
+    { key, toPhase: 'emitted', expect: { owner: runId, generation: 99 } }),
+  /LEASE_FENCED/);
   // State not mutated
   assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'reserved');
   // Correct expect → proceeds
-  const r2 = advanceHandoffPhase(root, runId, { key, toPhase: 'emitted', expect: { owner: runId, generation: 1 } });
+  const r2 = advanceHandoffPhase(root, runId,
+    { key, toPhase: 'emitted', expect: { owner: runId, generation: 1 } });
   assert.equal(r2.ok, true);
   assert.equal(readState(root, runId).data.session_chain.lease.state, 'releasing');
 });
@@ -408,13 +408,13 @@ test('leaseCheck: terminal run rejects EVERY intent with RUN_TERMINAL', () => {
 test('reserveHandoff / advanceHandoffPhase reject terminal runs (spec §2.3-1/3)', () => {
   const { root, runId } = seed();
   // running에서 reserve 성공 → finish 경합 재현
-  const r1 = reserveHandoff(root, runId, { trigger: 't', now: Date.parse('2026-07-09T00:00:00Z') });
+  const r1 = reserveHandoff(root, runId, { expect: { owner: runId, generation: 1 }, trigger: 't', now: Date.parse('2026-07-09T00:00:00Z') });
   assert.equal(r1.reserved, true);
   makeTerminal(root, runId, 'completed');
   assert.deepEqual(
-    advanceHandoffPhase(root, runId, { key: r1.key, toPhase: 'emitted', now: Date.parse('2026-07-09T00:00:01Z') }),
+    advanceHandoffPhase(root, runId, { expect: { owner: runId, generation: 1 }, key: r1.key, toPhase: 'emitted', now: Date.parse('2026-07-09T00:00:01Z') }),
     { ok: false, reason: 'RUN_TERMINAL' });
-  const r2 = reserveHandoff(root, runId, { trigger: 't2', now: Date.parse('2026-07-09T00:00:02Z') });
+  const r2 = reserveHandoff(root, runId, { expect: { owner: runId, generation: 1 }, trigger: 't2', now: Date.parse('2026-07-09T00:00:02Z') });
   assert.equal(r2.ok, false); assert.equal(r2.reason, 'RUN_TERMINAL'); assert.equal(r2.childRunId, null);
 });
 
@@ -555,8 +555,8 @@ test('lease fences precede proof and every success-class direct path proves the 
   const release = fixture7b('dl-lease-release-proof-');
   corrupt7c(release);
   const releaseBefore = bytes7b(release.root, release.runId);
-  assert.deepEqual(releaseLease(release.root, release.runId,
-    { owner: 'wrong', generation: 1 }), { ok: false, reason: 'fenced' });
+  assert.throws(() => releaseLease(release.root, release.runId,
+    { owner: 'wrong', generation: 1 }), /LEASE_FENCED/);
   assert.throws(() => releaseLease(release.root, release.runId,
     { owner: release.owner, generation: 1 }), /RUN_SNAPSHOT_INVALID/);
   assert.deepEqual(bytes7b(release.root, release.runId), releaseBefore);
@@ -583,21 +583,19 @@ test('lease fences precede proof and every success-class direct path proves the 
       '2026-07-13T00:00:01.000Z';
   });
   const reserveBefore = bytes7b(reserve.root, reserve.runId);
-  assert.deepEqual(reserveHandoff(reserve.root, reserve.runId,
-    { trigger: 'proof', expect: { owner: 'wrong', generation: 1 } }),
-  { ok: false, reserved: false, reason: 'fenced', key: first.key,
-    childRunId: first.childRunId });
+  assert.throws(() => reserveHandoff(reserve.root, reserve.runId,
+    { trigger: 'proof', expect: { owner: 'wrong', generation: 1 } }), /LEASE_FENCED/);
   assert.throws(() => reserveHandoff(reserve.root, reserve.runId,
     { trigger: 'proof', expect: { owner: reserve.owner, generation: 1 } }),
   /RUN_SNAPSHOT_INVALID/);
-  assert.deepEqual(advanceHandoffPhase(reserve.root, reserve.runId,
+  assert.throws(() => advanceHandoffPhase(reserve.root, reserve.runId,
     { key: first.key, toPhase: 'reserved', expect: { owner: 'wrong', generation: 1 } }),
-  { ok: false, reason: 'fenced' });
+  /LEASE_FENCED/);
   assert.throws(() => advanceHandoffPhase(reserve.root, reserve.runId,
     { key: first.key, toPhase: 'reserved',
       expect: { owner: reserve.owner, generation: 1 } }), /RUN_SNAPSHOT_INVALID/);
-  assert.deepEqual(rollbackHandoff(reserve.root, reserve.runId,
-    { owner: 'wrong', generation: 1 }), { ok: false, reason: 'fenced' });
+  assert.throws(() => rollbackHandoff(reserve.root, reserve.runId,
+    { owner: 'wrong', generation: 1 }), /LEASE_FENCED/);
   assert.throws(() => rollbackHandoff(reserve.root, reserve.runId,
     { owner: reserve.owner, generation: 1 }), /RUN_SNAPSHOT_INVALID/);
   assert.deepEqual(bytes7b(reserve.root, reserve.runId), reserveBefore);
@@ -609,8 +607,8 @@ test('lease fences precede proof and every success-class direct path proves the 
       '2026-07-13T00:00:01.000Z';
   });
   const terminalIdleBefore = bytes7b(terminalIdle.root, terminalIdle.runId);
-  assert.deepEqual(rollbackHandoff(terminalIdle.root, terminalIdle.runId,
-    { owner: 'wrong', generation: 1 }), { ok: false, reason: 'fenced' });
+  assert.throws(() => rollbackHandoff(terminalIdle.root, terminalIdle.runId,
+    { owner: 'wrong', generation: 1 }), /LEASE_FENCED/);
   assert.throws(() => rollbackHandoff(terminalIdle.root, terminalIdle.runId,
     { owner: terminalIdle.owner, generation: 1 }), /RUN_SNAPSHOT_INVALID/);
   assert.deepEqual(bytes7b(terminalIdle.root, terminalIdle.runId), terminalIdleBefore);
