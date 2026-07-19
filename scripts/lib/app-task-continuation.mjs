@@ -736,7 +736,7 @@ function exactObjectKeys(value, keys) {
 function finalizePreparedAppAction(candidate, route, prepareRequestDigest) {
   const fail = () => { throw new Error('APP_PREPARED_ACTION_INVALID'); };
   if (!route || !/^[0-9a-f]{64}$/.test(prepareRequestDigest || '')) fail();
-  let prompt;
+  let action;
   if (route.kind === 'create') {
     if (!exactObjectKeys(candidate, ['tool', 'target', 'prompt'])
         || candidate.tool !== 'create_thread'
@@ -745,7 +745,11 @@ function finalizePreparedAppAction(candidate, route, prepareRequestDigest) {
         || candidate.target.projectId !== route.projectId
         || !exactObjectKeys(candidate.target.environment, ['type'])
         || candidate.target.environment.type !== 'local') fail();
-    prompt = candidate.prompt;
+    action = Object.freeze({ tool: candidate.tool,
+      target: Object.freeze({ type: candidate.target.type,
+        projectId: candidate.target.projectId,
+        environment: Object.freeze({ type: candidate.target.environment.type }) }),
+      prompt: candidate.prompt });
   } else if (route.kind === 'fork') {
     if (!exactObjectKeys(candidate, ['tool', 'environment', 'followup'])
         || candidate.tool !== 'fork_thread'
@@ -753,12 +757,16 @@ function finalizePreparedAppAction(candidate, route, prepareRequestDigest) {
         || candidate.environment.type !== 'same-directory'
         || !exactObjectKeys(candidate.followup, ['tool', 'prompt'])
         || candidate.followup.tool !== 'send_message_to_thread') fail();
-    prompt = candidate.followup.prompt;
+    action = Object.freeze({ tool: candidate.tool,
+      environment: Object.freeze({ type: candidate.environment.type }),
+      followup: Object.freeze({ tool: candidate.followup.tool,
+        prompt: candidate.followup.prompt }) });
   } else fail();
+  const prompt = route.kind === 'fork' ? action.followup.prompt : action.prompt;
   if (typeof prompt !== 'string' || prompt.length === 0
       || Buffer.byteLength(prompt, 'utf8') > APP_RESUME_PROMPT_MAX_BYTES) fail();
-  return { action: candidate, descriptorDigest: contentHash(JSON.stringify({
-    action: candidate, prepare_request_digest: prepareRequestDigest,
+  return { action, descriptorDigest: contentHash(JSON.stringify({
+    action, prepare_request_digest: prepareRequestDigest,
   })) };
 }
 

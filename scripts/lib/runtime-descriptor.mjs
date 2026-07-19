@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs';
 import { posix, win32 } from 'node:path';
+import { types as utilTypes } from 'node:util';
 import { isTrustedPsBin, trustedPsCandidates } from './detect-terminal.mjs';
 import { validateSessionRuntime } from './runtime.mjs';
 import { buildCodexExecEntry } from './codex-runtime.mjs';
@@ -169,18 +170,41 @@ export function buildAppResumePrompt(input = {}) {
   return prompt;
 }
 
+function appActionInputSnapshot(input) {
+  try {
+    if (!input || typeof input !== 'object' || Array.isArray(input) || utilTypes.isProxy(input)
+        || ![Object.prototype, null].includes(Object.getPrototypeOf(input))
+        || Object.getOwnPropertySymbols(input).length !== 0) {
+      throw new Error('APP_ACTION_INPUT_INVALID');
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(input);
+    const entries = Object.keys(descriptors).map(key => {
+      const descriptor = descriptors[key];
+      if (!descriptor || descriptor.enumerable !== true || !Object.hasOwn(descriptor, 'value')) {
+        throw new Error('APP_ACTION_INPUT_INVALID');
+      }
+      return [key, descriptor.value];
+    });
+    return Object.freeze(Object.fromEntries(entries));
+  } catch (error) {
+    if (error?.message === 'APP_ACTION_INPUT_INVALID') throw error;
+    throw new Error('APP_ACTION_INPUT_INVALID');
+  }
+}
+
 export function buildAppTaskAction(input = {}) {
-  const prompt = buildAppResumePrompt(input);
-  if (input.route === 'create') {
-    const projectId = validateOpaqueId(input.projectId, { label: 'project-id', maxBytes: 512 });
+  const snapshot = appActionInputSnapshot(input);
+  const prompt = buildAppResumePrompt(snapshot);
+  if (snapshot.route === 'create') {
+    const projectId = validateOpaqueId(snapshot.projectId, { label: 'project-id', maxBytes: 512 });
     return {
       tool: 'create_thread',
       target: { type: 'project', projectId, environment: { type: 'local' } },
       prompt,
     };
   }
-  if (input.route === 'fork') {
-    if (input.projectId != null) throw new Error('APP_ACTION_PROJECT_INVALID');
+  if (snapshot.route === 'fork') {
+    if (snapshot.projectId != null) throw new Error('APP_ACTION_PROJECT_INVALID');
     return {
       tool: 'fork_thread',
       environment: { type: 'same-directory' },

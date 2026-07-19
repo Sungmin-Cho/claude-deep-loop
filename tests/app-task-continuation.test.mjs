@@ -1205,6 +1205,34 @@ test8b('descriptor builder failure leaves emitted state and event log unchanged'
   }
 });
 
+test8b('prepared action is detached from the injected builder alias before gate callbacks', () => {
+  const fixture = emitted8b();
+  const request = { owner: fixture.runId, generation: 1,
+    stdinMode: 'pty-raw-noecho', hostInput: fixture.hostInput };
+  let retained;
+  const descriptorBuilder = () => {
+    retained = { tool: 'create_thread', target: { type: 'project',
+      projectId: 'project $`\\', environment: { type: 'local' } }, prompt: 'original' };
+    return retained;
+  };
+  const result = prepare8b(fixture.root, fixture.runId, request, {
+    nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'), cwdFn: () => fixture.root,
+    descriptorBuilder, reconcileBudgetFn: () => ({ turns: 0, tokens: 0 }),
+    gateFn: () => {
+      retained.prompt = 'mutated-after-validation';
+      return { ok: true, blocked_by: [] };
+    },
+  });
+  assert8b.equal(result.action.prompt, 'original');
+  assert8b.equal(Object.isFrozen(result.action), true);
+  assert8b.deepEqual(prepare8b(fixture.root, fixture.runId, request, {
+    nowFn: () => assert8b.fail('exact retry does not sample'), cwdFn: () => fixture.root,
+    descriptorBuilder, reconcileBudgetFn: () => assert8b.fail('retry does not reconcile'),
+    gateFn: () => assert8b.fail('retry does not gate'),
+  }), { ok: true, outcome: 'already-prepared', do_not_call: true,
+    attempt_id: fixture.attemptId });
+});
+
 test8b('throwing or recursively extra descriptor is write free', () => {
   for (const [builder, error] of [
     [() => { throw new Error('BUILDER_BOOM'); }, /BUILDER_BOOM/],

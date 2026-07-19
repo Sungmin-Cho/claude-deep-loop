@@ -183,3 +183,20 @@ test('App action exposes only the reviewed public create and fork shapes', async
   });
   assert.doesNotMatch(JSON.stringify({ create, fork }), /"(?:model|thinking|clientThreadId)"/);
 });
+
+test('App action rejects accessor-backed route drift without invoking it', async () => {
+  const { buildAppTaskAction } = await descriptorModule();
+  let reads = 0;
+  const input = {
+    projectRoot: '/repo', targetCwd: '/repo', platform: 'linux',
+    logicalRunId: '01JAPPRAN00000000000000000',
+    parentRunId: '01JAPPPAR00000000000000000',
+    childRunId: '01JAPPCHD00000000000000015',
+    parentGeneration: 1, attemptId: '01JAPPTASK0000000000000000',
+    contextMode: 'fresh', handoffRel: 'handoffs/next.md', projectId: 'project',
+  };
+  Object.defineProperty(input, 'route', { enumerable: true,
+    get() { reads += 1; return reads === 1 ? 'create' : 'fork'; } });
+  assert.throws(() => buildAppTaskAction(input), /APP_ACTION_INPUT_INVALID/);
+  assert.equal(reads, 0);
+});
