@@ -343,8 +343,9 @@ test('gate-blocked precompact propagates a terminal rollback race without changi
     env: {},
     rollbackFn,
   });
-  assert.deepEqual(r, { ok: false, action: 'terminal', reason: 'RUN_TERMINAL' });
-  assert.deepEqual(readState(root, runId).data, terminalSnapshot);
+  // spec §3.4.1: rollback 중 terminal 판명(구 {ok:false, action:'terminal'})도 benign no-run-terminal.
+  assert.deepEqual(r, { ok: true, action: 'no-run-terminal' });
+  assert.deepEqual(readState(root, runId).data, terminalSnapshot);   // 상태 무변경은 그대로 유지
 });
 
 // ── §3.4.1: emit-시점 경합(체크와 emit 사이 상태 전이) reason-특정 정규화 ──────────

@@ -118,7 +118,7 @@ export async function runPreCompactHandoff(input = {}, {
         eventData: { child_run_id: em.childRunId, gate: gate.reason, trigger: 'pre-compact' },
         pauseReason: `gate:${gate.reason}`,
       });
-      if (res.terminal) return { ok: false, action: 'terminal', reason: 'RUN_TERMINAL' };
+      if (res.terminal) return { ok: true, action: 'no-run-terminal' };   // spec §3.4.1: rollback 중 terminal 판명 → benign
       if (res.fenced) return { ok: false, action: 'fenced', reason: 'lease-changed-before-pause', childRunId: em.childRunId, headless };
       return { ok: true, action: 'gate-blocked-paused', childRunId: em.childRunId, headless };
     }
