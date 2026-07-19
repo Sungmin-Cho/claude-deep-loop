@@ -775,6 +775,71 @@ function settlePrepareFailure(root, runId, input,
   });
 }
 
+const PREPARE_GATE_FAILURE_CODES = new Set([
+  'gate-budget', 'gate-breaker', 'gate-max-sessions', 'gate-wallclock',
+  'gate-auto-handoff',
+]);
+
+function exactRecoveredFailureData(value, keys) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+      || Object.keys(value).sort().join('\0') !== [...keys].sort().join('\0')) {
+    throw new Error('APP_PREPARE_RECOVERY_INVALID');
+  }
+  return value;
+}
+
+function recoveredPrepareFailure(mutation, input) {
+  const recovered = mutation.recovered;
+  if (!recovered || !Array.isArray(recovered.events) || recovered.events.length !== 1) {
+    throw new Error('APP_PREPARE_RECOVERY_INVALID');
+  }
+  const event = recovered.events[0];
+  const preserve = event?.type === 'app-task-preserved';
+  const abandoned = event?.type === 'app-task-abandoned';
+  if (!preserve && !abandoned) throw new Error('APP_PREPARE_RECOVERY_INVALID');
+  const data = exactRecoveredFailureData(event.data, preserve
+    ? ['attempt_id', 'child_run_id', 'failure_code']
+    : ['attempt_id', 'child_run_id', 'failure_code', 'owner_run_id', 'generation']);
+  if (typeof data.attempt_id !== 'string' || typeof data.child_run_id !== 'string'
+      || (input.attemptId !== null && input.attemptId !== data.attempt_id)) {
+    throw new Error('APP_PREPARE_RECOVERY_INVALID');
+  }
+  const current = mutation.readVerifiedState().data;
+  const { session, continuation } = findAppAttempt(current, data.attempt_id);
+  if (session.run_id !== data.child_run_id || current.status !== 'paused'
+      || current.pause_reason !== data.failure_code) {
+    throw new Error('APP_PREPARE_RECOVERY_INVALID');
+  }
+  if (preserve) {
+    const lease = current.session_chain.lease;
+    if (data.failure_code !== 'app-launch-unconfirmed'
+        || continuation.phase !== 'emitted'
+        || lease.owner_run_id !== input.owner || lease.generation !== input.generation
+        || lease.handoff_transport !== 'codex-app'
+        || lease.handoff_attempt_id !== data.attempt_id
+        || lease.handoff_child_run_id !== data.child_run_id
+        || lease.resume_policy !== 'human' || lease.expires_at !== null) {
+      throw new Error('APP_PREPARE_RECOVERY_INVALID');
+    }
+    return { ok: false, outcome: 'manual-preserve', do_not_call: true,
+      attempt_id: data.attempt_id, reason: data.failure_code };
+  }
+  const lease = current.session_chain.lease;
+  if (!PREPARE_GATE_FAILURE_CODES.has(data.failure_code)
+      || data.owner_run_id !== input.owner || data.generation !== input.generation
+      || continuation.phase !== 'abandoned'
+      || continuation.failure_code !== data.failure_code
+      || session.outcome !== 'failed_launch'
+      || lease.state !== 'active' || lease.handoff_phase !== 'idle'
+      || lease.handoff_transport !== null || lease.handoff_attempt_id !== null
+      || lease.handoff_child_run_id !== null || lease.handoff_idempotency_key !== null
+      || lease.expires_at !== null || lease.resume_policy !== null) {
+    throw new Error('APP_PREPARE_RECOVERY_INVALID');
+  }
+  return { ok: false, outcome: 'gate-blocked', do_not_call: true,
+    attempt_id: data.attempt_id, reason: data.failure_code };
+}
+
 export function prepareAppTask(root, runId, input, deps = {}) {
   const hostInput = exactPrepareHostInput(input.hostInput);
   const request = Object.freeze({ owner: input.owner, generation: input.generation,
@@ -791,6 +856,15 @@ export function prepareAppTask(root, runId, input, deps = {}) {
     fenceError: 'LEASE_FENCED: app-prepare',
   });
   const snapshot = authenticated.data;
+  try {
+    const failureRetry = requestPhase(mutation => mutation.recovered === null
+      ? null : recoveredPrepareFailure(mutation, request));
+    if (failureRetry !== null) return failureRetry;
+  } catch (error) {
+    // A final action claim has a stronger descriptor-bound intent. Its pending marker must remain
+    // untouched until the complete action is rebuilt and authenticated by completePhase below.
+    if (String(error?.message || error) !== 'APP_TASK_FENCED:app-prepare') throw error;
+  }
   const existing = assertAppParentFence(snapshot, request, ['emitted', 'prepared']);
   if (snapshot.status !== 'running' || snapshot.session_chain.lease.resume_policy !== 'app') {
     throw new Error('RUN_PAUSED: app-prepare');

@@ -8,10 +8,13 @@ const projectId = 'project $`\\';
 try {
   const result = prepareAppTask(root, runId, { owner: runId, generation: 1,
     stdinMode: 'pty-raw-noecho', hostInput: { currentHostTaskCwd: root,
-      projects: [{ projectId, projectKind: 'local', path: root }] } }, {
+      projects: mode === 'route-preserve' ? []
+        : [{ projectId, projectKind: 'local', path: root }] } }, {
     cwdFn: () => root, nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'),
-    descriptorBuilder: () => ({ tool: 'create_thread', target: { type: 'project', projectId,
-      environment: { type: 'local' } }, prompt: 'prompt' }),
+    descriptorBuilder: () => mode === 'route-preserve'
+      ? (() => { throw new Error('ROUTE_PRESERVE_BUILT_DESCRIPTOR'); })()
+      : ({ tool: 'create_thread', target: { type: 'project', projectId,
+        environment: { type: 'local' } }, prompt: 'prompt' }),
     reconcileBudgetFn: () => {
       if (mode !== 'barrier-valid') return;
       writeFileSync(barrierReady, 'ready', { flag: 'wx' });
@@ -19,7 +22,8 @@ try {
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
       }
     },
-    gateFn: () => ({ ok: true, blocked_by: [] }),
+    gateFn: () => mode === 'gate-blocked'
+      ? ({ ok: false, blocked_by: ['budget'] }) : ({ ok: true, blocked_by: [] }),
   });
   process.stdout.write(JSON.stringify(result));
 } catch (error) {

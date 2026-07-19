@@ -764,8 +764,17 @@ test8b('prepare grants one action and only the exact request retries descriptor-
   const fixture = emitted8b();
   const action = { tool: 'create_thread', target: { type: 'project', projectId: 'project $`\\',
     environment: { type: 'local' } }, prompt: 'bounded prompt' };
+  const beforePreliminaryProbe = bytes7d(fixture.root, fixture.runId);
+  let builderCalls = 0;
   const deps = { nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'),
-    cwdFn: () => fixture.root, descriptorBuilder: () => action,
+    cwdFn: () => fixture.root, descriptorBuilder: () => {
+      if (builderCalls === 0) {
+        assert8b.deepEqual(bytes7d(fixture.root, fixture.runId), beforePreliminaryProbe,
+          'preliminary request recovery probe is write-free');
+      }
+      builderCalls += 1;
+      return action;
+    },
     reconcileBudgetFn: () => ({ turns: 0, tokens: 0 }), gateFn: () => ({ ok: true, blocked_by: [] }) };
   const input = { owner: fixture.runId, generation: 1,
     stdinMode: 'pty-raw-noecho', hostInput: fixture.hostInput };
@@ -1266,6 +1275,49 @@ test8b('exact action retry converges from every pending prepare marker stage', a
     assert8b.equal(Object.hasOwn(exact, 'action'), false, point);
     assert8b.equal(lines8b(fixture.root, fixture.runId)
       .filter(event => event.type === 'app-task-prepared').length, 1, point);
+  }
+});
+
+test8b('request-only failure retries recover pending markers and committed receipts', async () => {
+  for (const [mode, point, expected, projects] of [
+    ['gate-blocked', 'pending-after-rename',
+      { outcome: 'gate-blocked', reason: 'gate-budget' }, null],
+    ['gate-blocked', 'response-after-cleanup',
+      { outcome: 'gate-blocked', reason: 'gate-budget' }, null],
+    ['route-preserve', 'pending-after-rename',
+      { outcome: 'manual-preserve', reason: 'app-launch-unconfirmed' }, []],
+    ['route-preserve', 'response-after-cleanup',
+      { outcome: 'manual-preserve', reason: 'app-launch-unconfirmed' }, []],
+  ]) {
+    const fixture = emitted8b();
+    const gateFile = join8b(fixture.root, `start-${mode}-${point}`);
+    const readyFile = join8b(fixture.root, `ready-${mode}-${point}`);
+    write8bFile(gateFile, 'go');
+    const crashed = await prepareWorker8b(fixture.root, fixture.runId, {
+      gateFile, readyFile, mode, crashAt: point, expectedExit: 91,
+    });
+    assert8b.equal(crashed.status, 91,
+      `${mode}/${point}: ${crashed.stderr || crashed.stdout || 'wrong crash exit'}`);
+    rmdir8b(join8b(fixture.root, '.deep-loop', 'runs', fixture.runId, '.lock'));
+
+    const exact = prepare8b(fixture.root, fixture.runId, {
+      owner: fixture.runId, generation: 1, stdinMode: 'pty-raw-noecho',
+      hostInput: projects === null ? fixture.hostInput
+        : { currentHostTaskCwd: fixture.root, projects },
+    }, {
+      cwdFn: () => fixture.root,
+      descriptorBuilder: () => assert8b.fail(`${mode}/${point}: retry builds no action`),
+      nowFn: () => assert8b.fail(`${mode}/${point}: retry samples no clock`),
+      reconcileBudgetFn: () => assert8b.fail(`${mode}/${point}: retry does not reconcile`),
+      gateFn: () => assert8b.fail(`${mode}/${point}: retry does not gate`),
+    });
+    assert8b.deepEqual(exact, { ok: false, outcome: expected.outcome, do_not_call: true,
+      attempt_id: fixture.attemptId, reason: expected.reason }, `${mode}/${point}`);
+    assert8b.equal(Object.hasOwn(exact, 'action'), false, `${mode}/${point}`);
+    const expectedEvent = mode === 'gate-blocked'
+      ? 'app-task-abandoned' : 'app-task-preserved';
+    assert8b.equal(lines8b(fixture.root, fixture.runId)
+      .filter(event => event.type === expectedEvent).length, 1, `${mode}/${point}`);
   }
 });
 
