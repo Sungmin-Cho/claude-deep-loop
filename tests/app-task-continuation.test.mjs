@@ -1906,7 +1906,13 @@ function acquiredProjection9b(fixture, source = state9b(fixture.root, fixture.ru
   child.continuation.acquired_at = '2026-07-13T00:00:04.000Z';
   child.continuation.acquired_generation = 2;
   child.started_at = child.continuation.acquired_at;
+  child.ended_at = null;
+  child.outcome = null;
+  child.superseded_by = null;
+  child.host_surface = { ...structuredClone(parent.host_surface),
+    observed_generation: 2, observed_at: child.continuation.acquired_at };
   parent.outcome = 'took_over';
+  parent.superseded_by = child.run_id;
   Object.assign(acquired.session_chain.lease, { owner_run_id: fixture.childRunId, generation: 2,
     state: 'active', handoff_phase: 'acquired', acquired_at: child.continuation.acquired_at,
     handoff_transport: null, handoff_attempt_id: null, handoff_child_run_id: null,
@@ -2130,6 +2136,8 @@ test9b('acquired readiness binds the exact immediate parent after two handoffs',
   secondChild.continuation.acquired_at = '2026-07-13T00:00:05.000Z';
   secondChild.continuation.acquired_generation = 3;
   secondChild.started_at = secondChild.continuation.acquired_at;
+  secondChild.host_surface.observed_generation = 3;
+  secondChild.host_surface.observed_at = secondChild.continuation.acquired_at;
   secondChild.outcome = null;
   secondChild.superseded_by = null;
   firstChild.outcome = 'took_over';
@@ -2291,4 +2299,90 @@ test9b('await does not reread or converge an unrelated mutation failure', () => 
     }), /APP_AWAIT_NOT_EXPIRED/);
   assert9b.equal(reads, 1, 'non-convergence errors never trigger a catch-path reread');
   assert9b.deepEqual(durable9a(fixture.root, fixture.runId), before);
+});
+
+test9b('acquired readiness rejects host-surface and unique-parent drift', () => {
+  for (const drift of ['host-surface', 'unique-parent']) {
+    const fixture = prepared9a();
+    confirm9b(fixture.root, fixture.runId, { owner: fixture.runId, generation: 1,
+      attemptId: fixture.attemptId, stdinMode: 'pty-raw-noecho', threadId: 'thread' },
+    { cwdFn: () => fixture.root,
+      nowFn: () => Date.parse('2026-07-13T00:00:03.000Z') });
+    const acquired = acquiredProjection9b(fixture);
+    const child = acquired.session_chain.sessions.find(item => item.run_id === fixture.childRunId);
+    if (drift === 'host-surface') {
+      child.host_surface.observed_generation = 9;
+    } else {
+      const duplicate = structuredClone(acquired.session_chain.sessions
+        .find(item => item.run_id === fixture.runId));
+      duplicate.run_id = '01JAPPPRNT0000000000000002';
+      duplicate.outcome = null;
+      acquired.session_chain.sessions.push(duplicate);
+    }
+    assert9b.throws(() => await9b(fixture.root, fixture.runId,
+      { owner: fixture.runId, generation: 1, attemptId: fixture.attemptId }, {
+        readStateFn: () => acquired,
+        pollNowFn: () => assert9b.fail('drifted acquired projection does not poll'),
+        nowFn: () => assert9b.fail('drifted acquired projection does not mutate'),
+      }), /LEASE_FENCED/, drift);
+  }
+});
+
+function assertInvalidAwaitTiming9b(scenario) {
+  const fixture = prepared9a();
+  confirm9b(fixture.root, fixture.runId, { owner: fixture.runId, generation: 1,
+    attemptId: fixture.attemptId, stdinMode: 'pty-raw-noecho', threadId: 'thread' },
+  { cwdFn: () => fixture.root,
+    nowFn: () => Date.parse('2026-07-13T00:00:03.000Z') });
+  const injected = structuredClone(state9b(fixture.root, fixture.runId).data);
+  if (Object.hasOwn(scenario, 'timeout')) {
+    injected.autonomy.child_ready_timeout_sec = scenario.timeout;
+  }
+  const before = durable9a(fixture.root, fixture.runId);
+  assert9b.throws(() => await9b(fixture.root, fixture.runId,
+    { owner: fixture.runId, generation: 1, attemptId: fixture.attemptId }, {
+      readStateFn: () => injected, pollNowFn: scenario.poll,
+      pollIntervalMs: scenario.interval, cwdFn: () => fixture.root,
+      nowFn: () => assert9b.fail('invalid await timing has no mutation clock'),
+      sleepFn: () => assert9b.fail('invalid await timing does not sleep'),
+    }), /APP_AWAIT_(?:CLOCK|INTERVAL|TIMEOUT)_INVALID/, scenario.name);
+  assert9b.deepEqual(durable9a(fixture.root, fixture.runId), before, scenario.name);
+}
+
+test9b('await rejects every invalid poll clock sample without writing', () => {
+  assertInvalidAwaitTiming9b({ name: 'initial NaN clock',
+    poll: () => Number.NaN, interval: 1_000 });
+  const samples = [Date.parse('2026-07-13T00:00:03.000Z'), Number.POSITIVE_INFINITY];
+  assertInvalidAwaitTiming9b({ name: 'later infinite clock',
+    poll: () => samples.shift(), interval: 1_000 });
+});
+
+test9b('await rejects non-positive and non-finite poll intervals without writing', () => {
+  for (const interval of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+    assertInvalidAwaitTiming9b({ name: `interval ${String(interval)}`, interval,
+      poll: () => assert9b.fail('invalid interval does not sample the poll clock') });
+  }
+});
+
+test9b('await rejects non-positive and non-finite derived timeouts without writing', () => {
+  for (const timeout of [0, Number.NaN, Number.POSITIVE_INFINITY]) {
+    assertInvalidAwaitTiming9b({ name: `timeout ${String(timeout)}`, timeout, interval: 1_000,
+      poll: () => assert9b.fail('invalid timeout does not sample the poll clock') });
+  }
+});
+
+test9b('swept response-loss rejects a later accounting event without callbacks or writes', () => {
+  const fixture = emitted8b();
+  const input = { owner: fixture.runId, generation: 1, attemptId: fixture.attemptId };
+  sweep9b(fixture.root, fixture.runId, input, { cwdFn: () => fixture.root,
+    nowFn: () => Date.parse('2026-07-13T00:05:01.001Z') });
+  recordCost9a(fixture.root, fixture.runId, { turns: 1, tokens: 0,
+    requestId: 'task9b-sweep-tail', fence: { owner: fixture.runId, generation: 1,
+      runtime: 'codex', intent: 'accounting' } });
+  const afterCost = durable9a(fixture.root, fixture.runId);
+  assert9b.throws(() => sweep9b(fixture.root, fixture.runId, input, {
+    cwdFn: () => assert9b.fail('displaced sweep retry has no cwd callback'),
+    nowFn: () => assert9b.fail('displaced sweep retry has no clock'),
+  }), /APP_RESPONSE_PROJECTION_CHANGED/);
+  assert9b.deepEqual(durable9a(fixture.root, fixture.runId), afterCost);
 });

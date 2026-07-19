@@ -1756,6 +1756,33 @@ function seedAutoAppRun(goal) {
   return { root, runId, observed };
 }
 
+test('argumentless App status CLI returns the exact live current attempt', () => {
+  const fixture = seedAutoAppRun('status-current');
+  const attemptId = '01JAPPTASK0000000000000091';
+  const emitted = emitHandoff(fixture.root, fixture.runId, {
+    trigger: 'status-current', appIntent: true,
+    expect: { owner: fixture.runId, generation: 1 },
+    cwdFn: () => fixture.root, attemptIdFactory: () => attemptId,
+    now: Date.parse('2026-07-13T00:00:01.000Z'),
+    nowFn: () => Date.parse('2026-07-13T00:00:01.000Z'),
+    descriptorBuilder: ({ runtime, root, parentRunId, childRunId }) => ({
+      runtime, projectRoot: root, runId: parentRunId, usageOutputKind: 'json',
+      resumeInvocation: `$deep-loop:deep-loop-resume ${childRunId}`,
+      entries: Object.fromEntries(['interactive', 'headless', 'cmux', 'iterm2',
+        'terminal-app', 'wt', 'powershell', 'desktop']
+        .map(name => [name, { display: 'manual continuation', unavailable: true }])),
+    }),
+  });
+  const result = runResult(fixture.root,
+    ['app-task', 'status', '--run-id', fixture.runId]);
+  assert.equal(result.code, 0, result.stderr);
+  const projected = JSON.parse(result.stdout);
+  assert.deepEqual({ run_id: projected.current?.run_id,
+    attempt_id: projected.current?.attempt_id }, {
+    run_id: emitted.childRunId, attempt_id: attemptId,
+  });
+});
+
 test('App post-fence transition invalidity exits 1 while fences stay 3 and retry is inert', () => {
   const fixture = seedAutoAppRun('transition-invalid');
   const attempt = '01JAPPTASK0000000000000000';
