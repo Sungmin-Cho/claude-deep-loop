@@ -7,6 +7,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { contentHash } from '../scripts/lib/envelope.mjs';
+import { appendAnchored } from '../scripts/lib/integrity.mjs';
 import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { recoverRun } from '../scripts/lib/recover.mjs';
 import { seedCorrelatedTerminal as terminal7b } from './fixtures/verified-app-run.mjs';
@@ -68,6 +70,12 @@ function requireLog(root, runId) {
   catch { return []; }
 }
 
+function durableBytes(root, runId) {
+  const dir = runDir(root, runId);
+  return ['loop.json', '.loop.hash', 'event-log.jsonl']
+    .map(name => readFileSync(join(dir, name)));
+}
+
 // ── 1. confirm required ───────────────────────────────────────────────────────
 
 test('recoverRun: throws CONFIRM_REQUIRED if confirm is not true', () => {
@@ -120,6 +128,45 @@ test('recoverRun: run-recovered event appended to event log', () => {
   const events = requireLog(root, runId);
   const recovered = events.find(e => e.type === 'run-recovered');
   assert.ok(recovered, 'run-recovered event must be in log');
+});
+
+test('recoverRun: legacy duplicate requires the immediate empty recovery tail', () => {
+  const { root, runId } = seed();
+  const expect = { owner: OWNER, generation: GEN };
+  recoverRun(root, runId, { expect, confirm: true,
+    nowFn: () => Date.parse('2026-07-13T00:00:01.000Z') });
+  const before = durableBytes(root, runId);
+  const count = requireLog(root, runId).filter(event => event.type === 'run-recovered').length;
+  assert.deepEqual(recoverRun(root, runId, { expect, confirm: true,
+    nowFn: () => assert.fail('exact legacy retry has no clock') }),
+  { ok: true, reason: 'already-recovered' });
+  assert.deepEqual(durableBytes(root, runId), before);
+  assert.equal(requireLog(root, runId).filter(event => event.type === 'run-recovered').length,
+    count);
+  assert.deepEqual(requireLog(root, runId).at(-1).data, {});
+});
+
+test('recoverRun: legacy duplicate rejects a displaced valid cost tail write-free', () => {
+  const { root, runId } = seed();
+  const expect = { owner: OWNER, generation: GEN };
+  recoverRun(root, runId, { expect, confirm: true,
+    nowFn: () => Date.parse('2026-07-13T00:00:01.000Z') });
+  appendAnchored(root, runId, { type: 'cost', data: { turns: 0, tokens: 0 } },
+    undefined, undefined, { callerBinding: expect,
+      intentDigest: contentHash(JSON.stringify({ operation: 'legacy-recover-tail' })),
+      fenceCheck: loop => {
+        const lease = loop.session_chain?.lease;
+        if (loop.status !== 'paused' || lease?.owner_run_id !== expect.owner
+            || lease?.generation !== expect.generation) throw new Error('LEASE_FENCED');
+      } });
+  const displaced = durableBytes(root, runId);
+  const count = requireLog(root, runId).filter(event => event.type === 'run-recovered').length;
+  assert.throws(() => recoverRun(root, runId, { expect, confirm: true,
+    nowFn: () => assert.fail('displaced legacy retry has no clock') }),
+  /APP_RECOVERY_PROJECTION_CHANGED/);
+  assert.deepEqual(durableBytes(root, runId), displaced);
+  assert.equal(requireLog(root, runId).filter(event => event.type === 'run-recovered').length,
+    count);
 });
 
 // ── 3. negative: not recoverable on running/completed/stopped ─────────────────

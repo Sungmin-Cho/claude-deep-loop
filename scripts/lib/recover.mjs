@@ -38,11 +38,17 @@ function inspectRecoveryBinding(loop) {
     return Object.freeze({ ...common, kind: 'legacy-child', attemptId: null,
       failureCode: null });
   }
+  const parents = loop.session_chain.sessions.filter(session =>
+    session.superseded_by === childId);
+  if (parents.length !== 1 || parents[0].run_id !== lease.owner_run_id) {
+    throw new Error('RECOVERY_PARENT_BINDING_INVALID');
+  }
+  const bound = { ...common, parentRunId: parents[0].run_id };
   if (lease.handoff_transport !== 'codex-app') {
     if (continuation != null || child.outcome != null) {
       throw new Error('RECOVERY_TRANSPORT_BINDING_INVALID');
     }
-    return Object.freeze({ ...common, kind: 'bound-child', attemptId: null,
+    return Object.freeze({ ...bound, kind: 'bound-child', attemptId: null,
       failureCode: null });
   }
   if (continuation?.transport !== 'codex-app'
@@ -56,7 +62,7 @@ function inspectRecoveryBinding(loop) {
     throw new Error('APP_RECOVERY_FAILURE_BINDING_INVALID');
   }
   const live = ['emitted', 'prepared', 'confirmed'].includes(continuation.phase);
-  return Object.freeze({ ...common, kind: 'bound-child', attemptId: continuation.attempt_id,
+  return Object.freeze({ ...bound, kind: 'bound-child', attemptId: continuation.attempt_id,
     failureCode: live ? 'human-recovered' : continuation.failure_code });
 }
 
@@ -85,8 +91,17 @@ function applyRecovery(loop, binding) {
       generation: lease.generation,
     };
   }
-  const parent = loop.session_chain.sessions.find(session => session.superseded_by === childId);
-  if (parent) parent.superseded_by = null;
+  if (binding?.kind === 'bound-child') {
+    const parent = loop.session_chain.sessions.find(session =>
+      session.run_id === binding.parentRunId);
+    if (!parent || parent.superseded_by !== childId) {
+      throw new Error('RECOVERY_PARENT_BINDING_INVALID');
+    }
+    parent.superseded_by = null;
+  } else if (binding?.kind === 'legacy-child') {
+    const parent = loop.session_chain.sessions.find(session => session.superseded_by === childId);
+    if (parent) parent.superseded_by = null;
+  }
   Object.assign(lease, { handoff_transport: null, handoff_attempt_id: null,
     handoff_child_run_id: null, handoff_idempotency_key: null, handoff_phase: 'idle',
     state: 'released', expires_at: null, resume_policy: null });
@@ -105,11 +120,12 @@ function alreadyRecoveredStateProjection(loop, expect) {
 
 function exactAlreadyRecoveredProjection(loop, expect, lines) {
   if (!alreadyRecoveredStateProjection(loop, expect)) return false;
-  if (loop.initialization === undefined) return true;
   const tail = lines?.at(-1);
   return tail?.type === 'run-recovered'
-    && tail.data?.owner_run_id === expect.owner
-    && tail.data?.generation === expect.generation
+    && (loop.initialization === undefined
+      ? Object.keys(tail.data ?? {}).length === 0
+      : tail.data?.owner_run_id === expect.owner
+        && tail.data?.generation === expect.generation)
     && tail.seq === loop.event_log_head?.seq
     && tail.checksum === loop.event_log_head?.checksum;
 }

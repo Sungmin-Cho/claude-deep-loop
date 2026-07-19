@@ -3281,3 +3281,75 @@ test10c('a recovered binding to a different existing owner is not recovery autho
     /RUN_SNAPSHOT_INVALID/);
   assert10c.deepEqual(bytes8a(fixture.root, fixture.runId), changed);
 });
+
+function recoverableGenericParent10c() {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-recover-parent-')));
+  const { runId } = initRun(root, { runtime: 'codex', goal: 'generic recovery parent',
+    now: new Date('2026-07-13T00:00:00.000Z') });
+  const first = genericEmit10b(root, runId, {
+    reason: 'first generic child', trigger: 'first-parent',
+    now: Date.parse('2026-07-13T00:00:01.000Z'),
+    expect: { owner: runId, generation: 1 },
+  });
+  assert10c.deepEqual(genericAcquire10c(root, runId, {
+    owner: first.childRunId, expectGeneration: 1, runtime: 'codex',
+  }), { ok: true, generation: 2, reason: 'acquired' });
+  const generic = genericEmit10b(root, runId, {
+    reason: 'generic parent binding', trigger: 'parent-binding',
+    now: Date.parse('2026-07-13T00:00:02.000Z'),
+    expect: { owner: first.childRunId, generation: 2 },
+  });
+  pause10b(root, runId, { reason: 'recover-parent-binding', mode: 'preserve',
+    expect: { owner: first.childRunId, generation: 2 } });
+  return { root, runId, childRunId: first.childRunId, generic };
+}
+
+for (const kind of ['zero', 'multiple', 'wrong-owner']) {
+  test10c(`recover rejects ${kind} generic parent bindings write-free`, () => {
+    const fixture = recoverableGenericParent10c();
+    raw8a(fixture.root, fixture.runId, loop => {
+      const lease = loop.session_chain.lease;
+      const childId = fixture.generic.childRunId;
+      const owner = loop.session_chain.sessions.find(session =>
+        session.run_id === lease.owner_run_id);
+      const foreign = loop.session_chain.sessions.find(session =>
+        session.run_id !== childId && session.run_id !== lease.owner_run_id);
+      if (kind !== 'multiple') {
+        for (const session of loop.session_chain.sessions) {
+          if (session.superseded_by === childId) session.superseded_by = null;
+        }
+      }
+      if (kind === 'multiple') foreign.superseded_by = childId;
+      if (kind === 'wrong-owner') foreign.superseded_by = childId;
+      assert10c.equal(owner.run_id, fixture.childRunId);
+    });
+    const before = bytes8a(fixture.root, fixture.runId);
+    assert10c.throws(() => recover10c(fixture.root, fixture.runId,
+      { expect: { owner: fixture.childRunId, generation: 2 }, confirm: true }),
+    /RECOVERY_PARENT_BINDING_INVALID/, kind);
+    assert10c.deepEqual(bytes8a(fixture.root, fixture.runId), before, kind);
+    const loop = state10b(fixture.root, fixture.runId).data;
+    assert10c.equal(loop.pause_reason, 'recover-parent-binding', kind);
+    assert10c.equal(loop.session_chain.lease.handoff_child_run_id,
+      fixture.generic.childRunId, kind);
+    assert10c.equal(status10c(fixture.root, fixture.runId, {}).recovery_pending, null, kind);
+  });
+}
+
+test10c('recovered generic child rejects a reattached incoming parent', () => {
+  const fixture = recoverableGenericParent10c();
+  recover10c(fixture.root, fixture.runId,
+    { expect: { owner: fixture.childRunId, generation: 2 }, confirm: true });
+  assert10c.equal(status10c(fixture.root, fixture.runId, {}).recovery_pending.run_id,
+    fixture.generic.childRunId);
+  raw8a(fixture.root, fixture.runId, loop => {
+    loop.session_chain.sessions.find(session => session.run_id === fixture.childRunId)
+      .superseded_by = fixture.generic.childRunId;
+  });
+  const forged = bytes8a(fixture.root, fixture.runId);
+  assert10c.throws(() => readVerifiedState(fixture.root, fixture.runId),
+    /RUN_SNAPSHOT_INVALID/);
+  assert10c.throws(() => status10c(fixture.root, fixture.runId, {}),
+    /RUN_SNAPSHOT_INVALID/);
+  assert10c.deepEqual(bytes8a(fixture.root, fixture.runId), forged);
+});

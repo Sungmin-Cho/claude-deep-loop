@@ -574,6 +574,10 @@ function validateAppState(loop, errors) {
           || !['abandoned_recover', 'took_over'].includes(session.outcome)) {
         errors.push('session ' + String(session.run_id) + ' recovery_binding invalid');
       }
+      if (sessions.some(parent => parent.superseded_by === session.run_id)) {
+        errors.push('session ' + String(session.run_id)
+          + ' recovery_binding requires zero incoming parents');
+      }
     }
     if (initialization !== undefined && session?.outcome === 'abandoned_recover'
         && session.recovery_binding === undefined) {
