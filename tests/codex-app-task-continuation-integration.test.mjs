@@ -375,6 +375,9 @@ export async function runAppLifecycle(route, {
       session.continuation?.attempt_id === emittedAttemptId)?.continuation;
     const liveDeadline = exactCurrent?.phase === 'emitted'
       ? lossContinuation?.prepare_deadline : lossContinuation?.confirmation_deadline;
+    const decisionAnchor = exactCurrent?.phase === 'emitted'
+      ? lossContinuation?.emitted_at : lossContinuation?.prepared_at;
+    const decisionNow = Date.parse(decisionAnchor) + 1;
     const retryEligible = exactStatus.json.logical_run_id === runId
       && exactStatus.json.owner_run_id === runId
       && exactStatus.json.generation === 1
@@ -382,8 +385,9 @@ export async function runAppLifecycle(route, {
       && exactStatus.json.manual_recovery === false
       && exactCurrent?.attempt_id === emittedAttemptId
       && ['emitted', 'prepared'].includes(exactCurrent?.phase)
+      && Number.isFinite(decisionNow)
       && Number.isFinite(Date.parse(liveDeadline))
-      && Date.now() <= Date.parse(liveDeadline);
+      && decisionNow <= Date.parse(liveDeadline);
     assert.equal(retryEligible, true);
     const lostResultRetry = await runReadyKernel(root, prepareArgs, hostInput,
       exactReadyPattern('app-prepare', `${runId}.1`, mode), { cwd });
@@ -1511,6 +1515,9 @@ test('confirm result loss retries the exact receipt before and after commit with
     const loop = readState(fixture.root, fixture.runId).data;
     const continuation = loop.session_chain.sessions.find(session =>
       session.continuation?.attempt_id === fixture.prepared.attempt_id)?.continuation;
+    const decisionAnchor = expectedPhase === 'prepared'
+      ? continuation?.prepared_at : continuation?.confirmed_at;
+    const decisionNow = Date.parse(decisionAnchor) + 1;
     const retryEligible = beforeRetry.json.logical_run_id === fixture.runId
       && beforeRetry.json.owner_run_id === fixture.runId
       && beforeRetry.json.generation === 1
@@ -1518,9 +1525,10 @@ test('confirm result loss retries the exact receipt before and after commit with
       && beforeRetry.json.manual_recovery === false
       && beforeRetry.json.current?.attempt_id === fixture.prepared.attempt_id
       && beforeRetry.json.current?.phase === expectedPhase
+      && Number.isFinite(decisionNow)
       && (expectedPhase === 'confirmed'
         || (Number.isFinite(Date.parse(continuation?.confirmation_deadline))
-          && Date.now() <= Date.parse(continuation.confirmation_deadline)));
+          && decisionNow <= Date.parse(continuation.confirmation_deadline)));
     assert.equal(retryEligible, true, lossPoint);
     assert.deepEqual(fixture.host.calls.map(call => call.tool), ['list_projects', 'create_thread']);
     const retry = await runReadyKernel(fixture.root, args,
