@@ -75,11 +75,9 @@ function violatesBoundary(src) {
 }
 
 // Codex r3 sf-4: deep-loop.mjs 를 실제 호출하는 라인 중 mutating subcommand 는 --owner 와 --generation 을 **둘 다** 가져야 한다.
-// Task 8: insights emit 도 mutating (lease-fenced) — MUTATING_SUB/MUTATING_CMD 둘 다 확장.
-const MUTATING_SUB = /(state\s+patch|episode\s+(?:new|record|abandon)|workstream\s+(?:new|set|terminal)|review\s+(?:dispatch|record)|handoff\s+emit|budget\s+record|comprehension\s+ack|breaker\s+reset|session-profile\s+set|launcher-executable\s+approve|lease\s+(?:acquire|release)|finish\b|insights\s+emit)/;
-// Codex r5 sf-3: shorthand 명령(예: `episode record --status done`, `finish --status completed`)도 잡는다.
-// "command 라인" = deep-loop.mjs 호출이거나, mutating sub 뒤에 CLI 플래그(--xxx)가 오는 경우. 순수 산문 멘션은 무시.
-const MUTATING_CMD = /(?:state\s+patch|episode\s+(?:new|record|abandon)|workstream\s+(?:new|set|terminal)|review\s+(?:dispatch|record)|handoff\s+emit|budget\s+record|comprehension\s+ack|breaker\s+reset|session-profile\s+set|launcher-executable\s+approve|lease\s+(?:acquire|release)|finish|insights\s+emit)\b[^\n]*\s--\w/;
+const APP_MUTATING = String.raw`(?:app-task\s+(?:revoke|prepare|confirm|fail|sweep-unconfirmed|await|acquire)|host-surface\s+observe)`;
+const MUTATING_SUB = new RegExp(String.raw`(?:state\s+patch|episode\s+(?:new|record|abandon)|workstream\s+(?:new|set|terminal)|review\s+(?:dispatch|record)|handoff\s+emit|budget\s+record|comprehension\s+ack|breaker\s+reset|session-profile\s+set|launcher-executable\s+approve|lease\s+(?:acquire|release)|finish\b|insights\s+emit|${APP_MUTATING})`);
+const MUTATING_CMD = new RegExp(String.raw`(?:state\s+patch|episode\s+(?:new|record|abandon)|workstream\s+(?:new|set|terminal)|review\s+(?:dispatch|record)|handoff\s+emit|budget\s+record|comprehension\s+ack|breaker\s+reset|session-profile\s+set|launcher-executable\s+approve|lease\s+(?:acquire|release)|finish|insights\s+emit|${APP_MUTATING})\b[^\n]*\s--\w`);
 function mutatingFenced(text) {
   // Codex r4 sf-2: 셸 라인 연속(\ 로 끝나는 줄)을 논리 명령으로 먼저 합친다 — multi-line unfenced 명령 회피 차단.
   const joined = text.replace(/\r\n?/g, '\n').replace(/\\\n\s*/g, ' ');
@@ -203,7 +201,7 @@ test('portable command contract: execution docs contain no shell-only constructi
     [/\$\(/, 'command substitution'],
     [/\b[A-Z][A-Z0-9_]*\s*=\s*\(/, 'Bash array'],
     [/\$\{[A-Z][A-Z0-9_]*\[@\]\}/, 'Bash array expansion'],
-    [/^\s*[A-Z][A-Z0-9_]*=\S+(?:\s+[A-Z][A-Z0-9_]*=\S+)*\s+\S+/m, 'POSIX env-prefix assignment'],
+    [/^(?!\s*APP_OBSERVATION_CONTRACT_V1=)\s*[A-Z][A-Z0-9_]*=\S+(?:\s+[A-Z][A-Z0-9_]*=\S+)*\s+\S+/m, 'POSIX env-prefix assignment'],
     [/^\s*\[[^\n]*\]\s*(?:&&|\|\|)/m, 'Bash test/chaining'],
     [/(?:&&|\|\|)/, 'shell command chaining'],
     [/\\\s*$/m, 'backslash continuation'],
@@ -218,8 +216,9 @@ test('portable command contract: execution docs contain no shell-only constructi
 
 test('portable command contract: runtime and resumed mutation identity are explicit', () => {
   const init = kernelCommandLines(readFileSync(skillPath('deep-loop'), 'utf8'))
-    .find((line) => /\binit-run\b/.test(line)) || '';
-  assert.match(init, /--runtime\s+<claude\|codex>/, 'init-run must carry the asserted current runtime');
+    .find((line) => /\binit-run prepare\b/.test(line)) || '';
+  assert.match(init, /--runtime\s+(?:codex|<codex\|claude>)/,
+    'init-run prepare must carry the asserted current runtime');
   assert.match(init, /--project-root\s+"<canonical_project_root>"/, 'init-run must pin the canonical root');
 
   for (const file of EXECUTION_DOCS) {
@@ -862,7 +861,10 @@ test('deep-loop init skill observes + seeds session model/effort into init-run (
 
 test('runtime-facing skills assert runtime and carry explicit resume root/run identity', () => {
   const entry = readFileSync(new URL('../skills/deep-loop/SKILL.md', import.meta.url), 'utf8');
-  assert.match(entry, /init-run[\s\S]{0,500}--runtime\s+<claude\|codex>/, 'new runs must record the asserted host runtime');
+  assert.match(entry, /init-run prepare[\s\S]{0,500}--runtime\s+codex/,
+    'positive App new runs must record the asserted Codex host runtime');
+  assert.match(entry, /init-run prepare --manual-enums --runtime\s+<codex\|claude>/,
+    'manual enum initialization must carry the asserted host runtime');
 
   const resume = readFileSync(new URL('../skills/deep-loop-resume/SKILL.md', import.meta.url), 'utf8');
   assert.match(resume, /\$deep-loop:deep-loop-resume/, 'Codex resume must use the qualified dollar skill token');
@@ -1016,7 +1018,8 @@ test('review strategy separates durable reviewer enums from host invocation skil
 
 test('init review JSON is one exact cross-POSIX/PowerShell single-quoted argv argument', () => {
   const entry = readFileSync(new URL('../skills/deep-loop/SKILL.md', import.meta.url), 'utf8');
-  const initCommands = kernelCommandLines(entry).filter((line) => /\binit-run\b/.test(line));
+  const initCommands = kernelCommandLines(entry)
+    .filter((line) => /\binit-run(?:\s+prepare|\s+--init-attempt)\b/.test(line));
   assert.ok(initCommands.length >= 3, 'all documented model/effort variants remain explicit');
   for (const line of initCommands) {
     assert.match(line, /--review\s+'<review_json_compact>'(?:\s|$)/,
@@ -1196,4 +1199,92 @@ test('interactive budget record templates carry one stable per-tick request iden
     assert.match(source, /다음 tick[^\n]*(?:새 값|새 ID)/i,
       `${name}: the next tick is not required to allocate a new request identity`);
   }
+});
+
+const APP_OBSERVATION_CONTRACT_PREFIX = 'APP_OBSERVATION_CONTRACT_V1=';
+
+function parseAppObservationContract(source) {
+  const rows = source.split(/\r?\n/u)
+    .map(line => line.trim())
+    .filter(line => line.startsWith(APP_OBSERVATION_CONTRACT_PREFIX));
+  assert.equal(rows.length, 1, 'exactly one App observation contract required');
+  return JSON.parse(rows[0].slice(APP_OBSERVATION_CONTRACT_PREFIX.length));
+}
+
+test('App initialization is provenance-first, asks once, and preserves exact response-loss bindings', () => {
+  const source = readFileSync(skillPath('deep-loop'), 'utf8');
+  const observation = source.indexOf('### 2-4.5. 세션 model/effort 관측 (자동, 무프롬프트)');
+  const handshake = source.indexOf('### 2-5. Run 생성: Codex App bounded handshake');
+  assert.ok(observation >= 0 && observation < handshake,
+    'host-side model/effort observation must remain before the bounded handshake');
+  const ordered = [
+    'positive App provenance', 'host-surface stdin-probe', 'init-run preflight',
+    '이 run에서 handoff 시 별도 Codex task를 자동 생성하도록 허용할까요?',
+    'init-run prepare', '--init-attempt', 'init-run status',
+  ];
+  let cursor = -1;
+  for (const token of ordered) {
+    const next = source.indexOf(token, cursor + 1);
+    assert.ok(next > cursor, `missing or out-of-order init token: ${token}`);
+    cursor = next;
+  }
+  assert.equal(source.match(/이 run에서 handoff 시 별도 Codex task를 자동 생성하도록 허용할까요\?/g)?.length, 1);
+  for (const token of [
+    'This run only', 'create_thread', 'fork_thread', 'send_message_to_thread',
+    'App sidebar에 표시되며 사용자가 소유합니다',
+    'app-task revoke', 'archive/delete are not automatic', 'manual/default-manual',
+    '질문 도구가 없거나', 'request_match===true', 'previous_current_match===true',
+  ]) assert.ok(source.includes(token), `missing init contract: ${token}`);
+  assert.doesNotMatch(source, /app-task consent|new attempt after full init|enum-only downgrade after full init/i);
+});
+
+test('entry skill publishes the exact six-key App observation projection', () => {
+  const source = readFileSync(skillPath('deep-loop'), 'utf8');
+  const contract = parseAppObservationContract(source);
+  assert.deepEqual(contract.tool_to_kernel, {
+    list_projects: 'list-projects',
+    'create_thread(local)': 'create-thread-local',
+    'fork_thread(same-directory)': 'fork-thread-same-directory',
+    send_message_to_thread: 'send-message-to-thread',
+    structured_input: 'structured-process-stdin',
+  });
+  assert.deepEqual(contract.raw_template, {
+    kind: 'codex-app',
+    source: 'codex-app-tool-provenance',
+    capabilities: [],
+    structured_stdin_mode: null,
+    host_task_cwd: null,
+    host_task_cwd_source: 'app-task-context',
+  });
+  assert.deepEqual(Object.keys(contract.raw_template), [
+    'kind', 'source', 'capabilities', 'structured_stdin_mode',
+    'host_task_cwd', 'host_task_cwd_source',
+  ]);
+  for (const forbidden of [
+    'kernel_cwd_at_observation', 'observed_generation', 'observed_at',
+    'projectId', 'threadId', 'clientThreadId',
+  ]) assert.equal(Object.hasOwn(contract.raw_template, forbidden), false, forbidden);
+  assert.match(source,
+    /preflight process result is lost[\s\S]{0,700}original process handle[\s\S]{0,700}same nonce[\s\S]{0,500}byte-identical observation[\s\S]{0,500}once/i);
+  assert.match(source,
+    /no-write prepare result is lost[\s\S]{0,700}original process handle[\s\S]{0,700}exact chosen prepare argv[\s\S]{0,500}once[\s\S]{0,500}second loss[\s\S]{0,300}stop/i);
+  assert.match(source,
+    /enum no-write prepare result is lost[\s\S]{0,700}byte-identical enum argv[\s\S]{0,500}once[\s\S]{0,500}second loss[\s\S]{0,300}stop/i);
+});
+
+test('App mutating command fence scanner covers every post-init mutation', () => {
+  for (const command of [
+    'app-task revoke', 'app-task prepare', 'app-task confirm', 'app-task fail',
+    'app-task sweep-unconfirmed', 'app-task await', 'app-task acquire',
+    'host-surface observe',
+  ]) {
+    assert.equal(mutatingFenced(`node x/deep-loop.mjs ${command} --run-id R`), false,
+      `${command}: an unfenced command must be detected`);
+    assert.equal(mutatingFenced(
+      `node x/deep-loop.mjs ${command} --run-id R --owner O --generation 1`), true,
+    `${command}: both fence flags are accepted`);
+  }
+  assert.equal(mutatingFenced('node x/deep-loop.mjs app-task status --run-id R'), true);
+  assert.equal(mutatingFenced(
+    'node x/deep-loop.mjs host-surface stdin-probe --stdin-mode pipe-open-noecho'), true);
 });

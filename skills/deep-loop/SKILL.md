@@ -115,29 +115,63 @@ respawn이 자식 세션을 부모와 같은 model/effort로 띄우도록, init 
 - effort가 비어 있으면 그 항목만 생략한다. 정상 경로에선 아무것도 묻지 않는다(무프롬프트).
 - 관측된 값만 아래 `init-run`에 플래그로 덧붙인다(값 없는 `--model`/`--effort`는 커널이 usage exit 2로 거부하므로, 관측 못 한 항목은 플래그 자체를 생략한다). 무효 effort는 커널이 exit 1로 거부.
 
-### 2-5. Run 생성 (`init-run`)
+### 2-5. Run 생성: Codex App bounded handshake
 
-현재 runtime을 실제 `claude` 또는 `codex`로 치환한다. model과 effort를 둘 다 관측했으면 다음 완전한 명령을 사용한다:
+`runtime=codex`에서 current host의 positive App provenance와 callable tool contract를 직접 관측한 경우에만 다음 순서를 사용한다. 이름 문자열, 환경 변수, 설치 경로는 positive App provenance가 아니다. partial capability, cwd ambiguity, probe failure, READY mismatch, echo, closed stdin은 질문 없이 처음부터 `manual/default-manual` enum form을 선택한다.
 
-```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" init-run --runtime <claude|codex> --goal "<goal>" --protocol <protocol> --recipe <recipe_id> --review '<review_json_compact>' --model "<session_model>" --effort "<session_effort>" --project-root "<canonical_project_root>"
-```
+현재 callable public tool을 kernel capability enum으로 투영하는 유일한 표는 다음 한 줄이다. `create_thread(local)`과 `fork_thread(same-directory)`는 그 exact 호출 form이 current host에서 callable할 때만 present다. `structured_input`은 same-handle process start/write가 모두 callable하고 아래 live no-echo probe가 성공한 뒤에만 present다. 표에 없는 tool-name/string은 capability가 아니다.
 
-model만 관측했으면 다음 완전한 명령을 사용한다:
+    APP_OBSERVATION_CONTRACT_V1={"tool_to_kernel":{"list_projects":"list-projects","create_thread(local)":"create-thread-local","fork_thread(same-directory)":"fork-thread-same-directory","send_message_to_thread":"send-message-to-thread","structured_input":"structured-process-stdin"},"raw_template":{"kind":"codex-app","source":"codex-app-tool-provenance","capabilities":[],"structured_stdin_mode":null,"host_task_cwd":null,"host_task_cwd_source":"app-task-context"}}
 
-```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" init-run --runtime <claude|codex> --goal "<goal>" --protocol <protocol> --recipe <recipe_id> --review '<review_json_compact>' --model "<session_model>" --project-root "<canonical_project_root>"
-```
+Probe success 뒤 `raw_template`을 복제하고 `capabilities`, `structured_stdin_mode`, `host_task_cwd`만 current observation으로 채운다. `capabilities`는 위 표의 current callable tool projection을 sorted unique array로 만든다. 전송 객체의 key set과 order는 `kind,source,capabilities,structured_stdin_mode,host_task_cwd,host_task_cwd_source` exactly six다. `kernel_cwd_at_observation`, `observed_generation`, `observed_at`, `projectId`, `threadId`, `clientThreadId`를 넣지 않는다. Kernel cwd, current lease generation, and observation timestamp는 kernel이 직접 materialize한다.
 
-둘 다 관측하지 못했으면 다음 완전한 명령을 사용한다:
+1. static process를 다음 exact argv로 시작한다.
+   node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" host-surface stdin-probe --project-root "<canonical_project_root>" --stdin-mode <pipe-open-noecho|pty-raw-noecho> --probe-stdin
+2. exact nonce READY 뒤에만 non-secret canary 한 줄을 structured process-input tool로 쓴다. 전체 host tool output에 canary가 0회이고 safe result digest가 맞을 때만 계속한다.
+3. non-secret process-local 32-hex nonce를 새로 만들고 다음 preflight process를 시작한다. `DEEP_LOOP_STDIN_READY:v1:init-preflight:<same_32_hex_nonce>:<mode>` 전체 line이 exact 일치한 뒤 bounded observation JSON 한 줄을 같은 tool로 쓴다.
+   node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" init-run preflight --runtime codex --preflight-nonce <32_hex_process_nonce> --stdin-mode <pipe-open-noecho|pty-raw-noecho> --observation-stdin --project-root "<canonical_project_root>"
+   preflight process result is lost이면 original process handle만 bounded poll한다. Live/unknown 동안 다른 process나 질문을 시작하지 않는다. 종료가 증명된 뒤 same nonce, same mode/root, same exact argv와 byte-identical observation으로 이 no-write preflight를 once(한 번만) 재실행한다. 두 번째 result loss, 다른 digest, READY/input drift는 stop이다.
+4. `eligible=true`일 때만 정확히 한 번 묻는다:
 
-```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" init-run --runtime <claude|codex> --goal "<goal>" --protocol <protocol> --recipe <recipe_id> --review '<review_json_compact>' --project-root "<canonical_project_root>"
-```
+   > 이 run에서 handoff 시 별도 Codex task를 자동 생성하도록 허용할까요? 생성된 task는 App sidebar에 표시되며 사용자가 소유합니다. This run only. 각 session boundary에서 root는 `create_thread`, recorded worktree는 `fork_thread` 뒤 `send_message_to_thread`를 사용합니다. `app-task revoke`는 이후 자동화를 끄며 archive/delete are not automatic.
 
-`--recipe`는 `recipe-match`가 반환한 recipe **id 문자열**(예: `robust-implementation`)이다 — JSON이 아님.
-`<review_json_compact>` placeholder는 선택한 durable review object의 한 줄 compact JSON으로 치환한다. compact JSON 내부의 JSON double quotes(JSON 이중 따옴표)는 그대로 유지하고, 바깥 single quotes가 전체 JSON을 POSIX와 PowerShell 모두에서 하나의 argv 값으로 보존한다.
-`--model`/`--effort`는 §2-4.5에서 관측한 값(관측된 것만; effort가 비면 `--effort` 생략, 둘 다 못 하면 둘 다 생략 → 커널 기본값). 이 값이 `autonomy.session_model`/`session_effort`로 seed된다.
+   승인만 `auto/human-confirmed`다. 거절, 취소, 불명확 응답은 `manual/default-manual`이다. 이전 logical run의 consent나 timestamp를 복사하지 않는다.
+5. §2-4.5 관측 결과에 따라 다음 세 pair 중 하나만 고른다. 각 pair의 첫 명령은 no-write prepare이고, 둘째 명령은 그 응답의 `<init_attempt>`, `<previous_current_digest>`, `<expected_request_digest>`, `<observation_digest>`를 그대로 쓰는 full commit이다. 다른 pair로 retry하거나 prepare와 commit 사이에 profile argv를 바꾸면 안 된다.
+
+   profile:model+effort
+   node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" init-run prepare --runtime codex --goal "<goal>" --protocol <protocol> --recipe <recipe_id> --review '<review_json_compact>' --model "<session_model>" --effort "<session_effort>" --app-continuation <auto|manual> --app-consent-authority <human-confirmed|default-manual> --expected-observation-digest <observation_digest> --project-root "<canonical_project_root>"
+   node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" init-run --init-attempt <init_attempt> --expected-current-digest <previous_current_digest> --expected-request-digest <expected_request_digest> --expected-preflight-digest <observation_digest> --stdin-mode <pipe-open-noecho|pty-raw-noecho> --app-host-input-stdin --app-continuation <auto|manual> --app-consent-authority <human-confirmed|default-manual> --runtime codex --goal "<goal>" --protocol <protocol> --recipe <recipe_id> --review '<review_json_compact>' --model "<session_model>" --effort "<session_effort>" --project-root "<canonical_project_root>"
+
+   profile:model-only
+   node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" init-run prepare --runtime codex --goal "<goal>" --protocol <protocol> --recipe <recipe_id> --review '<review_json_compact>' --model "<session_model>" --app-continuation <auto|manual> --app-consent-authority <human-confirmed|default-manual> --expected-observation-digest <observation_digest> --project-root "<canonical_project_root>"
+   node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" init-run --init-attempt <init_attempt> --expected-current-digest <previous_current_digest> --expected-request-digest <expected_request_digest> --expected-preflight-digest <observation_digest> --stdin-mode <pipe-open-noecho|pty-raw-noecho> --app-host-input-stdin --app-continuation <auto|manual> --app-consent-authority <human-confirmed|default-manual> --runtime codex --goal "<goal>" --protocol <protocol> --recipe <recipe_id> --review '<review_json_compact>' --model "<session_model>" --project-root "<canonical_project_root>"
+
+   profile:none
+   node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" init-run prepare --runtime codex --goal "<goal>" --protocol <protocol> --recipe <recipe_id> --review '<review_json_compact>' --app-continuation <auto|manual> --app-consent-authority <human-confirmed|default-manual> --expected-observation-digest <observation_digest> --project-root "<canonical_project_root>"
+   node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" init-run --init-attempt <init_attempt> --expected-current-digest <previous_current_digest> --expected-request-digest <expected_request_digest> --expected-preflight-digest <observation_digest> --stdin-mode <pipe-open-noecho|pty-raw-noecho> --app-host-input-stdin --app-continuation <auto|manual> --app-consent-authority <human-confirmed|default-manual> --runtime codex --goal "<goal>" --protocol <protocol> --recipe <recipe_id> --review '<review_json_compact>' --project-root "<canonical_project_root>"
+
+   선택한 no-write prepare result is lost이면 original process handle을 bounded poll하고 live/unknown 동안 full process나 다른 prepare를 시작하지 않는다. 종료가 증명된 뒤 exact chosen prepare argv를 byte-identical하게 once(한 번만) 재실행하고 그 직접 응답 binding만 사용한다. 첫 prepare는 durable attempt를 만들지 않으므로 binding 없는 status 추정은 금지한다. second loss는 stop이며 다른 profile, consent, digest, enum downgrade로 바꾸지 않는다.
+
+6. 프로필 선택 뒤에만 chosen full process를 시작한다. `DEEP_LOOP_STDIN_READY:v1:init-commit:<attempt>.<previous_current_digest>.<request_digest>.<preflight_digest>:<mode>` 전체 line이 exact 일치한 뒤 preflight와 byte-identical한 observation JSON 한 줄만 쓴다. Prepare가 반환한 request digest는 선택한 exact profile argv를 포함하므로 full command의 `--expected-request-digest`와 반드시 일치해야 한다.
+7. full process result가 유실되면 먼저 그 process handle을 bounded poll한다. 종료가 확인된 뒤에만 다음 exact binding을 조회한다.
+   node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" init-run status --attempt <init_attempt> --expected-current-digest <previous_current_digest> --expected-request-digest <expected_request_digest> --project-root "<canonical_project_root>"
+
+Status matrix: `committed` and `request_match===true` and `previous_current_match===true`만 성공이다. `pending|state-only|absent` with both match flags true는 original process 종료가 증명된 뒤 same binding + byte-identical input으로 한 번만 retry한다. Either match false는 stop. `raced`는 status poll만 한다. `indeterminate|conflict` 또는 process alive/unknown은 stop/diagnose다. Full init을 시작한 뒤 new attempt, enum-only downgrade, current overwrite는 금지한다.
+
+질문 도구가 없거나 질문 호출이 취소·무응답·모호 응답으로 끝난 경우도 승인으로 추정하지 않고, full process를 시작하기 전에 아래 enum-only manual family를 선택한다. Surface/source/capability는 current host evidence를 known literal allowlist로 투영한다. raw cwd, stdin mode, `structured-process-stdin` capability를 enum argv에 넣지 않는다. `surface/source paired form:` valid allowlisted pair가 있으면 `--host-surface`와 `--host-source`를 둘 다 전달하고, 둘 중 하나라도 관측되지 않으면 두 flag/value pair를 둘 다 생략해 `null/null`을 표현한다. 하나만 전달하는 mixed form은 금지한다.
+
+8. enum-only request를 다음 static family로 no-write prepare한다. `<capability_projection>`은 comma-separated allowlisted non-structured capability literals다. Capability가 0개이면 `--capabilities <capability_projection>` 두 argv token을 모두 생략해 exact `[]`를 표현한다. `NONE`이나 빈 문자열 sentinel은 전달하지 않는다. `<paired_surface_source_argv>`는 위 규칙에 따른 두 flag/value pair 또는 zero argv이고, `<same_profile_argv>`는 위 세 profile 중 선택된 exact suffix 또는 zero argv다. 이 angle-bracket 이름들은 실제 argv로 전달하지 않는다.
+   node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" init-run prepare --manual-enums --runtime <codex|claude> --goal "<goal>" --protocol <protocol> --recipe <recipe_id> --review '<review_json_compact>' <same_profile_argv> <paired_surface_source_argv> --capabilities <capability_projection> --app-continuation manual --app-consent-authority default-manual --expected-observation-digest NONE --project-root "<canonical_project_root>"
+   enum no-write prepare result is lost이면 original process handle 종료를 먼저 증명하고 byte-identical enum argv로 once(한 번만) 재실행한다. second loss는 stop이며 binding 없는 status, full observation 승격, optional argv 변화는 금지한다.
+9. returned binding을 byte-for-byte 보존하고 stdin/READY 없는 fixed enum commit을 정확히 한 번 시작한다. Prepare에서 zero argv였던 optional group은 commit에서도 zero argv이고, 전달한 profile/surface/source/capability argv는 byte-identical하다.
+   node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" init-run --init-attempt <init_attempt> --expected-current-digest <previous_current_digest> --expected-request-digest <expected_request_digest> --expected-preflight-digest NONE --manual-enums --runtime <codex|claude> --goal "<goal>" --protocol <protocol> --recipe <recipe_id> --review '<review_json_compact>' <same_profile_argv> <paired_surface_source_argv> --capabilities <capability_projection> --app-continuation manual --app-consent-authority default-manual --project-root "<canonical_project_root>"
+10. enum commit result가 유실되면 그 process handle을 먼저 bounded poll하고, 다음 exact query만 사용한다.
+    node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" init-run status --attempt <init_attempt> --expected-current-digest <previous_current_digest> --expected-request-digest <expected_request_digest> --project-root "<canonical_project_root>"
+
+Enum status/retry도 위 Status matrix와 동일하다. `raced`는 process liveness와 무관하게 bounded status poll만 하고 full commit을 재시작하지 않는다. `pending|state-only|absent` exact retry는 original process 종료가 증명된 경우에만 같은 binding과 byte-identical enum argv로 한 번 허용한다. 새 attempt, full observation 승격, current overwrite는 금지한다.
+
+`--recipe`는 `recipe-match`가 반환한 recipe **id 문자열**(예: `robust-implementation`)이다 — JSON이 아님. `<review_json_compact>` placeholder는 선택한 durable review object의 한 줄 compact JSON으로 치환한다. compact JSON 내부의 JSON double quotes(JSON 이중 따옴표)는 그대로 유지하고, 바깥 single quotes가 전체 JSON을 POSIX와 PowerShell 모두에서 하나의 argv 값으로 보존한다.
+
 init-run 반환의 `<run_id>`를 저장한다. 이 값은 descriptor/current run의 논리적(logical) loop run id이며 전체 run 수명 동안 불변(immutable)이다. 초기 lease는 init-run이 같은 ID와 generation 1로 만들지만 두 역할의 placeholder는 이후에도 구분한다: `<owner_run_id> = <run_id>`, `<generation> = 1`. 이후 모든 mutating CLI는 `--owner <owner_run_id> --generation <generation> --run-id <run_id>`를 사용하며 논리 ID를 owner 변수로 재사용하지 않는다.
 
 ### 2-5-1. Desktop 딥링크 재시작 opt-in 제안 (선택적, 최초 1회)

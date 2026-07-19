@@ -17,6 +17,8 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field session_chain.leas
 
 `<owner_run_id>`는 `session_chain.lease.owner_run_id`, `<generation>`은 `session_chain.lease.generation`에서 얻는다. 모든 checker command는 current fence에는 owner/generation을, descriptor identity에는 불변 `<run_id>`를 전달한다.
 
+Host-derived observation, project, or receipt data is never shell argv, environment, temp-file, here-doc, command substitution, or base64 argv. Start the documented static process, match its exact READY token, then send exactly one bounded line with the host structured process-input tool. Missing/duplicate READY, echo, timeout, no-return, extra LF, or uncertain process liveness is fail-closed and never authorizes a fallback process.
+
 ## 1. dispatch — Maker 스킬 Invoke
 
 ### 디스크립터 획득

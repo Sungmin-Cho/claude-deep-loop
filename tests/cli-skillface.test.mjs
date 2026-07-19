@@ -573,3 +573,47 @@ test('review dispatch missing --request-id exits 2', () => {
   assert.equal(runFail(root, ['review', 'dispatch', '--point', 'design',
     '--workstream', 'ws1', '--owner', runId, '--generation', '1']), 2);
 });
+
+test('skill publishes the exact fixed App init command family', () => {
+  const source = readFileSync(join(process.cwd(), 'skills', 'deep-loop', 'SKILL.md'), 'utf8');
+  for (const command of [
+    'host-surface stdin-probe --project-root "<canonical_project_root>" --stdin-mode <pipe-open-noecho|pty-raw-noecho> --probe-stdin',
+    'init-run preflight --runtime codex --preflight-nonce <32_hex_process_nonce> --stdin-mode <pipe-open-noecho|pty-raw-noecho> --observation-stdin',
+    'init-run prepare --runtime codex',
+    'init-run prepare --manual-enums --runtime <codex|claude>',
+    'init-run --init-attempt <init_attempt> --expected-current-digest <previous_current_digest> --expected-request-digest <expected_request_digest> --expected-preflight-digest NONE --manual-enums',
+    'init-run status --attempt <init_attempt>',
+    '--expected-current-digest <previous_current_digest>',
+    '--expected-request-digest <expected_request_digest>',
+  ]) assert.ok(source.includes(command), `missing fixed init CLI: ${command}`);
+
+  const variants = [
+    ['profile:model+effort', '--model "<session_model>" --effort "<session_effort>"'],
+    ['profile:model-only', '--model "<session_model>"'],
+    ['profile:none', ''],
+  ];
+  for (let index = 0; index < variants.length; index += 1) {
+    const [marker, flags] = variants[index];
+    const start = source.indexOf(marker);
+    const end = index + 1 < variants.length
+      ? source.indexOf(variants[index + 1][0], start + marker.length)
+      : source.indexOf('프로필 선택 뒤에만', start + marker.length);
+    assert.ok(start >= 0 && end > start, `missing profile variant block: ${marker}`);
+    const block = source.slice(start, end);
+    const prepare = block.split('\n').find(line => line.includes('init-run prepare'));
+    const commit = block.split('\n').find(line => line.includes('init-run --init-attempt'));
+    assert.ok(prepare && commit, `${marker}: exact prepare/full pair required`);
+    assert.equal(prepare.includes('--model'), flags.includes('--model'), `${marker}: prepare model`);
+    assert.equal(commit.includes('--model'), flags.includes('--model'), `${marker}: commit model`);
+    assert.equal(prepare.includes('--effort'), flags.includes('--effort'), `${marker}: prepare effort`);
+    assert.equal(commit.includes('--effort'), flags.includes('--effort'), `${marker}: commit effort`);
+    if (flags) {
+      assert.ok(prepare.includes(flags), `${marker}: prepare flags drift`);
+      assert.ok(commit.includes(flags), `${marker}: commit flags drift`);
+    }
+    assert.ok(commit.includes('--expected-request-digest <expected_request_digest>'),
+      `${marker}: full commit must bind prepare request digest`);
+  }
+  assert.match(source, /surface\/source paired form:[^\n]*둘 다 생략[^\n]*null\/null/);
+  assert.match(source, /capability가 0개이면[^\n]*--capabilities[^\n]*생략[^\n]*exact `\[\]`/i);
+});
