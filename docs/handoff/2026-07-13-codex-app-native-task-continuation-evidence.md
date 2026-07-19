@@ -4208,8 +4208,9 @@ locally verified; final-candidate happy-path re-smoke and hosted 3×3 CI remain 
   send receipt validation. Discovery additionally requires exact dense array descriptors and plain
   own-data project rows before allowlist projection.
 - adversarial coverage: integration tests reject malformed, non-canonical, oversized, BOM-prefixed,
-  whitespace-prefixed, and double-encoded wire receipts, plus sparse/custom/accessor/symbol arrays and
-  inherited/custom/accessor project rows. Create/fork failures remain non-retriable receipt failures;
+  whitespace-prefixed, inner-BOM/NBSP structured strings, and double-encoded wire receipts, plus
+  Proxy/sparse/custom/accessor/symbol arrays and inherited/custom/accessor/Proxy project rows before
+  validator reflection. Create/fork failures remain non-retriable receipt failures;
   send failures remain `message-unconfirmed` without resend authority.
 - verification: focused integration tests passed `26/26`; skills contract tests passed `143/143`;
   validation returned `ok`; `git diff --check` passed. A subsequent full `npm run preflight` exited
@@ -4219,3 +4220,29 @@ locally verified; final-candidate happy-path re-smoke and hosted 3×3 CI remain 
   remain preserved. No new App task, project registration, cleanup, push, PR, merge, or deep-suite
   synchronization was performed for this correction. A new exact candidate requires its own approved
   final-candidate real App smoke boundary.
+
+### Gate 5 canonical-wire quality review and response
+
+- review target: `c25eb8236d890f273e64fb078e1db48d9f026fc2..3124b93b844d7284a5de10ee40f376629cbe2310`;
+  exactly two independent read-only `gpt-5.6-sol` / `high` reviewers ran, standard and adversarial,
+  with Opus and agy excluded. Pre/post review fingerprint
+  `0caf9d0d313eb775e89a496bbb0e4fdb8fb71779f1bc7ab4c32ee5c82063ef68` matched.
+- synthesized verdict: `REQUEST_CHANGES` with one Critical and two Warnings. The Critical showed that
+  an inner BOM/NBSP structured string could survive the second parse attempt and be accepted as a
+  scalar send receipt. The Warnings identified Proxy-wrapped already-decoded discovery values and a
+  stale Task 14C executable helper/test snippet in the plan.
+- response: decoded strings with a whitespace/BOM-prefixed object/array marker now fail directly;
+  common create/fork/send/discovery regressions cover inner BOM/NBSP object and array values. The
+  plain-data and recursive receipt validators use `node:util` `types.isProxy` before their own
+  reflective operations. Because JavaScript Promise resolution necessarily reads a possible
+  thenable before returning an async host value, the Proxy regression distinguishes that unavoidable
+  `get:then` from validator `getPrototypeOf`/`ownKeys`/descriptor traps and proves only the former
+  occurs. Task 14C's complete helper and test snippets, commands, audit prose, protocol, design, and
+  pre-Gate-6 byte/hash binding were synchronized with the final implementation.
+- verification: focused wire/proxy cases passed `3/3`; the full App continuation integration file
+  passed `27/27`; skills contract tests passed `143/143`; validation returned `ok`; `git diff --check`
+  passed. Final `npm run preflight` exited 0 with tests/pass/fail/cancelled/skipped/todo
+  `1,981/1,981/0/0/0/0` and reported Node test duration `327,599.649834 ms`.
+- boundary: this response performed no App tool action, install, restart, registration, push, PR,
+  merge, deep-suite synchronization, or cleanup. Final-candidate real App smoke remains separately
+  approval-gated.

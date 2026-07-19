@@ -1085,6 +1085,8 @@ test('current App wire receipts decode one canonical JSON layer before strict va
     ` ${JSON.stringify(envelope)}`,
     `${JSON.stringify(envelope)}\n`,
     JSON.stringify(JSON.stringify(envelope)),
+    JSON.stringify(`\ufeff${JSON.stringify(envelope)}`),
+    JSON.stringify(`\u00a0${JSON.stringify(envelope)}`),
     '{"schemaVersion":1,"projects":',
     `\ufeff${JSON.stringify(envelope)}`,
     JSON.stringify({ schemaVersion: 1, projects: [{
@@ -1098,6 +1100,7 @@ test('current App wire receipts decode one canonical JSON layer before strict va
   for (const createReceipt of [
     ` ${JSON.stringify({ threadId: 'CREATE-WIRE' })}`,
     JSON.stringify(JSON.stringify({ threadId: 'CREATE-WIRE' })),
+    JSON.stringify(`\ufeff${JSON.stringify({ threadId: 'CREATE-WIRE' })}`),
     '{"threadId":"CREATE-WIRE"',
     JSON.stringify({ threadId: 'x'.repeat(1_048_576) }),
   ]) {
@@ -1107,6 +1110,7 @@ test('current App wire receipts decode one canonical JSON layer before strict va
   for (const forkReceipt of [
     ` ${JSON.stringify({ threadId: 'FORK-WIRE' })}`,
     JSON.stringify(JSON.stringify({ threadId: 'FORK-WIRE' })),
+    JSON.stringify(`\u00a0${JSON.stringify({ threadId: 'FORK-WIRE' })}`),
   ]) {
     await assert.rejects(() => executePreparedAction(forkAction, new FakeAppHost({
       forkReceipt,
@@ -1115,6 +1119,8 @@ test('current App wire receipts decode one canonical JSON layer before strict va
   for (const sendReceipt of [
     ` ${JSON.stringify({ threadId: 'FORK-WIRE' })}`,
     JSON.stringify(JSON.stringify({ threadId: 'FORK-WIRE' })),
+    JSON.stringify(`\ufeff${JSON.stringify({ threadId: 'FORK-WIRE' })}`),
+    JSON.stringify(`\u00a0${JSON.stringify([{ threadId: 'FORK-WIRE' }])}`),
   ]) {
     await assert.rejects(() => executePreparedAction(forkAction, new FakeAppHost({
       forkReceipt: JSON.stringify({ threadId: 'FORK-WIRE' }), sendReceipt,
@@ -1148,6 +1154,30 @@ test('project discovery rejects hostile array and row descriptors before project
     }), root, { timeoutMs: 25 });
     assert.equal(discovery.discoveryAvailable, false);
   }
+});
+
+test('project discovery rejects Proxy envelopes arrays and rows before reflective validation traps', async () => {
+  const root = '/repo/proxy-project-envelope';
+  const row = { projectId: 'PROJECT', projectKind: 'local', path: root };
+  const traps = [];
+  const handler = Object.fromEntries([
+    'get', 'getPrototypeOf', 'has', 'ownKeys', 'getOwnPropertyDescriptor',
+  ].map(name => [name, (...args) => {
+    traps.push(`${name}:${String(args[1])}`);
+    return Reflect[name](...args);
+  }]));
+  const receipts = [
+    new Proxy({ schemaVersion: 1, projects: [row] }, handler),
+    { schemaVersion: 1, projects: new Proxy([row], handler) },
+    { schemaVersion: 1, projects: [new Proxy(row, handler)] },
+  ];
+  for (const listProjectsReceipt of receipts) {
+    const discovery = await boundedRootPrepareInput(
+      new FakeAppHost({ listProjectsReceipt }), root, { timeoutMs: 25 });
+    assert.equal(discovery.discoveryAvailable, false);
+  }
+  assert.ok(traps.length > 0, 'async Promise resolution reads a possible thenable');
+  assert.deepEqual([...new Set(traps)], ['get:then']);
 });
 
 test('handoff protocol binds discovery to the current strict v1 App envelope', () => {

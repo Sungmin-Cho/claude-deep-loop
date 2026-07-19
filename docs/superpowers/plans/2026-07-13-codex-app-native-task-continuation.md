@@ -24704,6 +24704,7 @@ test10a('acquire final lock fences identity before proof and proves before termi
   assert10a.throws(invoke, /RUN_SNAPSHOT_INVALID/);
   assert10a.deepEqual(bytes10a(fixture.root, fixture.runId), corrupted);
 });
+
 ```
 
 - [ ] **Step 2: Run tests to verify RED**
@@ -32622,7 +32623,7 @@ PreCompact and headless never enter this branch.
    `app-task prepare` calls, zero public App tool calls, and zero `respawn` calls, then presents
    manual `$deep-loop:deep-loop-resume` guidance.
 2. From the safe emit result/argumentless safe status obtain only `<emitted_attempt_id>`, then immediately run `node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" app-task status --attempt <emitted_attempt_id> --project-root "<canonical_project_root>" --run-id <run_id>`. Before any discovery or task call, verify emitted attempt/owner/generation/route: `logical_run_id=<run_id>`, `owner_run_id=<owner_run_id>`, `generation=<generation>`, `handoff_phase=emitted`, `current.attempt_id=<emitted_attempt_id>`, `current.phase=emitted`, and `current.route` matches the kernel-produced root `create` or exact active-worktree `fork` route. Missing/mismatched fields stop for manual recovery. This redacted check never reads whole sessions or raw IDs.
-3. Root route only after step 2: call `list_projects` exactly once through a bounded timeout/no-return wrapper. The current App may expose the result as an already-decoded value or canonical JSON wire text. Wire text is capped at 1,048,576 bytes before parsing, rejects BOM and leading/trailing whitespace, requires `JSON.stringify(JSON.parse(raw)) === raw`, decodes exactly one layer, and rejects a decoded string containing a JSON object/array. Require the decoded v1 receipt to be a plain/null-prototype top-level data object with exactly `schemaVersion` and `projects`, require `schemaVersion === 1`, and require `projects` to be a canonical dense `Array.prototype` data-property array. Every row is a plain/null-prototype own-enumerable-data-property object with at most 16 scalar fields and own string `projectId`, `projectKind`, and `path`; symbol, accessor, inherited/custom-prototype, sparse/custom-array, nested extra value, non-finite number, or exceeded bound is invalid. Build a bounded projection from those three fields, with at most 256 entries and at most the structured-input byte cap. A bare array, non-canonical/double-encoded/malformed wire value, extra or missing envelope key, unsupported schema version, discovery throw/timeout/no-return, invalid entry, exceeded bound, or unsafe projection makes discovery unavailable; do not retry and do not call `app-task fail` while the attempt is still `emitted`. Worktree fork/manual routes: `list_projects` call count is 0.
+3. Root route only after step 2: call `list_projects` exactly once through a bounded timeout/no-return wrapper. The current App may expose the result as an already-decoded value or canonical JSON wire text. Wire text is capped at 1,048,576 bytes before parsing, rejects BOM and leading/trailing whitespace, requires `JSON.stringify(JSON.parse(raw)) === raw`, decodes exactly one layer, and rejects a decoded string with a whitespace/BOM-prefixed JSON object/array marker. Require the decoded v1 receipt to be a non-Proxy plain/null-prototype top-level data object with exactly `schemaVersion` and `projects`, require `schemaVersion === 1`, and require `projects` to be a non-Proxy canonical dense `Array.prototype` data-property array. Every row is a non-Proxy plain/null-prototype own-enumerable-data-property object with at most 16 scalar fields and own string `projectId`, `projectKind`, and `path`; Proxy, symbol, accessor, inherited/custom-prototype, sparse/custom-array, nested extra value, non-finite number, or exceeded bound is invalid. Build a bounded projection from those three fields, with at most 256 entries and at most the structured-input byte cap. A bare array, non-canonical/double-encoded/malformed wire value, extra or missing envelope key, unsupported schema version, discovery throw/timeout/no-return, invalid entry, exceeded bound, or unsafe projection makes discovery unavailable; do not retry and do not call `app-task fail` while the attempt is still `emitted`. Worktree fork/manual routes: `list_projects` call count is 0.
 4. Start `node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" app-task prepare --owner <owner_run_id> --generation <generation> --stdin-mode <pipe-open-noecho|pty-raw-noecho> --app-host-input-stdin --project-root "<canonical_project_root>" --run-id <run_id>`. Match the full exact `DEEP_LOOP_STDIN_READY:v1:app-prepare:<owner_run_id>.<generation>:<mode>` line. On successful root discovery send `{ "host_task_cwd": <current_host_task_cwd>, "projects": <bounded_projection> }`; on discovery unavailable send only `{ "host_task_cwd": <current_host_task_cwd> }` and omit the `projects` field. The latter must return `manual-preserve`, keep the child phase `emitted`, set human resume policy, and authorize zero App task actions. Send exactly one bounded JSON line through structured process input in either case. If the prepare process result is lost, boundedly poll that original process handle and make zero App task tool calls while it is live or unknown. Once exit is proven, read redacted exact-attempt status. Only a still-`emitted` attempt with `manual_recovery=false`, exact owner/generation, `handoff_phase=emitted`, and a live deadline may run the same prepare binding and byte-identical input once. An `emitted` projection with `manual_recovery=true` is the durable `manual-preserve` outcome: perform zero prepare retries, zero App task tool calls, and zero automatic sweep, then present manual recovery immediately. Only a `prepared` attempt with `manual_recovery=false` may run that exact re-entry to obtain `already-prepared` with `do_not_call=true`, then must make zero external App actions and wait for its strict deadline. For either an expired `emitted` attempt or an expired `prepared` attempt with `manual_recovery=false`, run exactly `node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" app-task sweep-unconfirmed --owner <owner_run_id> --generation <generation> --attempt <attempt_id> --project-root "<canonical_project_root>" --run-id <run_id>`; no new prepare or host action is allowed, and a lost sweep result is reconciled only by redacted exact-attempt status. Any phase/policy/fence mismatch stops without another mutating process.
 5. `do_not_call=true` means stop without any App tool call. Only a directly observed first exact `do_not_call=false` result authorizes one action; a lost actionable prepare response is never reconstructed from status or retried at the host-tool boundary.
 6. For `action.tool=create_thread`, pass `action.prompt` and `action.target` directly to `create_thread`; omit model and thinking. Before strict validation, apply step 3's bounded canonical-JSON wire adapter once to a string result. Success requires exactly one own `threadId` string that passes the bounded opaque receipt validator. Missing/multiple ID, another shape, `clientThreadId`, a control byte, a UTF-8 value over 512 bytes, or non-canonical/malformed/double-encoded object/array wire text is `invalid-host-receipt` failure.
@@ -34410,17 +34411,188 @@ test('confirm result loss retries the exact receipt before and after commit with
     }
   }
 });
+
+// Current App bridge receipt representation and hostile already-decoded values.
+test('current Codex App v1 list_projects envelope is projected for root prepare', async () => {
+  const root = '/repo/current-app-envelope';
+  const envelope = {
+    schemaVersion: 1,
+    projects: [{
+      projectId: 'PROJECT-CURRENT-APP',
+      projectKind: 'local',
+      path: root,
+      label: 'current-app-envelope',
+      hostId: 'local',
+      hostDisplayName: 'Local',
+    }],
+  };
+  const host = new FakeAppHost({
+    listProjectsReceipt: JSON.stringify(envelope),
+  });
+
+  const discovery = await boundedRootPrepareInput(host, root, { timeoutMs: 25 });
+
+  assert.equal(discovery.discoveryAvailable, true);
+  assert.deepEqual(JSON.parse(discovery.line), {
+    host_task_cwd: root,
+    projects: [{
+      projectId: 'PROJECT-CURRENT-APP',
+      projectKind: 'local',
+      path: root,
+    }],
+  });
+  assert.deepEqual(host.calls.map(call => call.tool), ['list_projects']);
+});
+
+test('current App wire receipts decode one canonical JSON layer before strict validation', async () => {
+  const root = '/repo/current-app-wire';
+  const envelope = { schemaVersion: 1, projects: [{
+    projectId: 'PROJECT-CURRENT-WIRE', projectKind: 'local', path: root,
+  }] };
+  for (const listProjectsReceipt of [envelope, JSON.stringify(envelope)]) {
+    const discovery = await boundedRootPrepareInput(
+      new FakeAppHost({ listProjectsReceipt }), root, { timeoutMs: 25 });
+    assert.equal(discovery.discoveryAvailable, true);
+    assert.equal(JSON.parse(discovery.line).projects[0].projectId, 'PROJECT-CURRENT-WIRE');
+  }
+
+  const createAction = { tool: 'create_thread', target: {
+    type: 'project', projectId: 'PROJECT', environment: { type: 'local' },
+  }, prompt: 'PROMPT' };
+  assert.deepEqual(await executePreparedAction(createAction, new FakeAppHost({
+    createReceipt: JSON.stringify({ threadId: 'CREATE-WIRE' }),
+  })), { threadId: 'CREATE-WIRE' });
+
+  const forkAction = { tool: 'fork_thread', environment: { type: 'same-directory' },
+    followup: { tool: 'send_message_to_thread', prompt: 'PROMPT' } };
+  assert.deepEqual(await executePreparedAction(forkAction, new FakeAppHost({
+    forkReceipt: JSON.stringify({ threadId: 'FORK-WIRE' }),
+    sendReceipt: JSON.stringify({ threadId: 'FORK-WIRE' }),
+  })), { threadId: 'FORK-WIRE' });
+  assert.deepEqual(await executePreparedAction(forkAction, new FakeAppHost({
+    forkReceipt: JSON.stringify({ threadId: 'FORK-WIRE' }),
+    sendReceipt: 'null',
+  })), { threadId: 'FORK-WIRE' });
+
+  for (const listProjectsReceipt of [
+    ` ${JSON.stringify(envelope)}`,
+    `${JSON.stringify(envelope)}\n`,
+    JSON.stringify(JSON.stringify(envelope)),
+    JSON.stringify(`\ufeff${JSON.stringify(envelope)}`),
+    JSON.stringify(`\u00a0${JSON.stringify(envelope)}`),
+    '{"schemaVersion":1,"projects":',
+    `\ufeff${JSON.stringify(envelope)}`,
+    JSON.stringify({ schemaVersion: 1, projects: [{
+      projectId: 'PROJECT', projectKind: 'local', path: 'x'.repeat(1_048_576),
+    }] }),
+  ]) {
+    const discovery = await boundedRootPrepareInput(
+      new FakeAppHost({ listProjectsReceipt }), root, { timeoutMs: 25 });
+    assert.equal(discovery.discoveryAvailable, false);
+  }
+  for (const createReceipt of [
+    ` ${JSON.stringify({ threadId: 'CREATE-WIRE' })}`,
+    JSON.stringify(JSON.stringify({ threadId: 'CREATE-WIRE' })),
+    JSON.stringify(`\ufeff${JSON.stringify({ threadId: 'CREATE-WIRE' })}`),
+    '{"threadId":"CREATE-WIRE"',
+    JSON.stringify({ threadId: 'x'.repeat(1_048_576) }),
+  ]) {
+    await assert.rejects(() => executePreparedAction(createAction,
+      new FakeAppHost({ createReceipt })), /CREATE_RECEIPT_INVALID/);
+  }
+  for (const forkReceipt of [
+    ` ${JSON.stringify({ threadId: 'FORK-WIRE' })}`,
+    JSON.stringify(JSON.stringify({ threadId: 'FORK-WIRE' })),
+    JSON.stringify(`\u00a0${JSON.stringify({ threadId: 'FORK-WIRE' })}`),
+  ]) {
+    await assert.rejects(() => executePreparedAction(forkAction, new FakeAppHost({
+      forkReceipt,
+    })), /FORK_RECEIPT_INVALID/);
+  }
+  for (const sendReceipt of [
+    ` ${JSON.stringify({ threadId: 'FORK-WIRE' })}`,
+    JSON.stringify(JSON.stringify({ threadId: 'FORK-WIRE' })),
+    JSON.stringify(`\ufeff${JSON.stringify({ threadId: 'FORK-WIRE' })}`),
+    JSON.stringify(`\u00a0${JSON.stringify([{ threadId: 'FORK-WIRE' }])}`),
+  ]) {
+    await assert.rejects(() => executePreparedAction(forkAction, new FakeAppHost({
+      forkReceipt: JSON.stringify({ threadId: 'FORK-WIRE' }), sendReceipt,
+    })), /SEND_RECEIPT_MISMATCH/);
+  }
+});
+
+test('project discovery rejects hostile array and row descriptors before projection', async () => {
+  const root = '/repo/hostile-project-envelope';
+  const goodRow = { projectId: 'PROJECT', projectKind: 'local', path: root };
+  const customArray = [goodRow];
+  Object.setPrototypeOf(customArray, { custom: true });
+  const sparseArray = new Array(1);
+  const accessorArray = [];
+  Object.defineProperty(accessorArray, '0', {
+    enumerable: true, configurable: true, get: () => goodRow,
+  });
+  Object.defineProperty(accessorArray, 'length', { value: 1, writable: true });
+  const symbolArray = [goodRow];
+  symbolArray[Symbol('project')] = goodRow;
+  const customRow = Object.create({ inherited: true });
+  Object.assign(customRow, goodRow);
+  const accessorRow = { projectKind: 'local', path: root };
+  Object.defineProperty(accessorRow, 'projectId', {
+    enumerable: true, get: () => 'PROJECT',
+  });
+  for (const projects of [customArray, sparseArray, accessorArray, symbolArray,
+    [customRow], [accessorRow]]) {
+    const discovery = await boundedRootPrepareInput(new FakeAppHost({
+      listProjectsReceipt: { schemaVersion: 1, projects },
+    }), root, { timeoutMs: 25 });
+    assert.equal(discovery.discoveryAvailable, false);
+  }
+});
+
+test('project discovery rejects Proxy envelopes arrays and rows before reflective validation traps', async () => {
+  const root = '/repo/proxy-project-envelope';
+  const row = { projectId: 'PROJECT', projectKind: 'local', path: root };
+  const traps = [];
+  const handler = Object.fromEntries([
+    'get', 'getPrototypeOf', 'has', 'ownKeys', 'getOwnPropertyDescriptor',
+  ].map(name => [name, (...args) => {
+    traps.push(`${name}:${String(args[1])}`);
+    return Reflect[name](...args);
+  }]));
+  const receipts = [
+    new Proxy({ schemaVersion: 1, projects: [row] }, handler),
+    { schemaVersion: 1, projects: new Proxy([row], handler) },
+    { schemaVersion: 1, projects: [new Proxy(row, handler)] },
+  ];
+  for (const listProjectsReceipt of receipts) {
+    const discovery = await boundedRootPrepareInput(
+      new FakeAppHost({ listProjectsReceipt }), root, { timeoutMs: 25 });
+    assert.equal(discovery.discoveryAvailable, false);
+  }
+  assert.ok(traps.length > 0, 'async Promise resolution reads a possible thenable');
+  assert.deepEqual([...new Set(traps)], ['get:then']);
+});
+
+test('handoff protocol binds discovery to the current strict v1 App envelope', () => {
+  const protocol = readFileSync(join(HERE, '..', 'skills', 'deep-loop-workflow',
+    'references', 'handoff-respawn.md'), 'utf8');
+  assert.match(protocol,
+    /canonical JSON wire text[\s\S]{0,300}exactly one layer[\s\S]{0,500}`schemaVersion === 1`/u);
+  assert.match(protocol, /bare array[\s\S]{0,180}discovery unavailable/u);
+});
+
+
 ```
 
 - [ ] **Step 2: Run tests to verify RED**
 
-Run: `node --test --test-name-pattern='documented denial|ambiguous project|discovery failure|PreCompact-first|strict host receipt|raw confirm and message-unconfirmed|resolved null|throw timeout|failure result loss|prepare result loss|manual-preserve prepare result|acquired safe status|confirm result loss' tests/codex-app-task-continuation-integration.test.mjs`
+Run: `node --test --test-name-pattern='documented denial|ambiguous project|discovery failure|current App wire receipts|project discovery rejects|PreCompact-first|strict host receipt|raw confirm and message-unconfirmed|resolved null|throw timeout|failure result loss|prepare result loss|manual-preserve prepare result|acquired safe status|confirm result loss' tests/codex-app-task-continuation-integration.test.mjs`
 
 Expected: FAIL because the causal init decision runner, bounded discovery fallback, PreCompact takeover/no-tick proof, strict receipt seams, and prepare/confirm result-loss cases are absent.
 
 - [ ] **Step 3: Implement strict host seams and production-CLI state helpers**
 
-Add `import { validateOpaqueId } from '../../scripts/lib/host-surface.mjs';` at the top of `tests/helpers/fake-app-host.mjs`, and add `boundedRootPrepareInput` to the integration test's existing fake-host import. Replace its `FakeAppHost`, receipt validator, discovery wrapper, and executor with these complete definitions; keep Task 14A's `clone` and `FakeStructuredProcess` unchanged:
+Add `import { types as utilTypes } from 'node:util';` and `import { validateOpaqueId } from '../../scripts/lib/host-surface.mjs';` at the top of `tests/helpers/fake-app-host.mjs`, and add `boundedRootPrepareInput` to the integration test's existing fake-host import. Replace its `FakeAppHost`, receipt validator, discovery wrapper, and executor with these complete definitions; keep Task 14A's `clone` and `FakeStructuredProcess` unchanged:
 
 ```js
 const HOST_LABEL = {
@@ -34480,6 +34652,89 @@ export class FakeAppHost {
 const HOST_RECEIPT_MAX_DEPTH = 32;
 const HOST_RECEIPT_MAX_NODES = 1024;
 const HOST_RECEIPT_MAX_CONTAINER_ENTRIES = 256;
+const HOST_WIRE_JSON_MAX_BYTES = 1_048_576;
+
+function decodeCanonicalAppWireValue(value, label) {
+  if (typeof value !== 'string') return value;
+  if (Buffer.byteLength(value, 'utf8') > HOST_WIRE_JSON_MAX_BYTES) {
+    throw new Error(`${label}_WIRE_INVALID`);
+  }
+  let decoded;
+  try {
+    decoded = JSON.parse(value);
+  } catch {
+    if (/^[\s\ufeff]*[\[{"]/u.test(value)) throw new Error(`${label}_WIRE_INVALID`);
+    return value;
+  }
+  if (JSON.stringify(decoded) !== value) throw new Error(`${label}_WIRE_INVALID`);
+  if (typeof decoded === 'string' && /^[\s\ufeff]*[\[{]/u.test(decoded)) {
+    throw new Error(`${label}_WIRE_INVALID`);
+  }
+  return decoded;
+}
+
+function exactPlainDataEntries(value, maxEntries) {
+  if (!value || typeof value !== 'object' || utilTypes.isProxy(value) || Array.isArray(value)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return null;
+  let enumerableCount = 0;
+  for (const key in value) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) return null;
+    enumerableCount += 1;
+    if (enumerableCount > maxEntries) return null;
+  }
+  const keys = Reflect.ownKeys(value);
+  if (keys.length > maxEntries || keys.some(key => typeof key !== 'string')) return null;
+  const entries = new Map();
+  for (const key of keys) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || descriptor.enumerable !== true
+        || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) return null;
+    entries.set(key, descriptor.value);
+  }
+  return entries;
+}
+
+function exactDenseDataArray(value, maxEntries) {
+  if (utilTypes.isProxy(value) || !Array.isArray(value)
+      || Object.getPrototypeOf(value) !== Array.prototype
+      || value.length > maxEntries) return null;
+  let enumerableCount = 0;
+  for (const key in value) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) return null;
+    enumerableCount += 1;
+    if (enumerableCount > maxEntries) return null;
+  }
+  const keys = Reflect.ownKeys(value);
+  const expected = [...Array(value.length).keys()].map(String);
+  if (keys.length !== expected.length + 1 || keys.at(-1) !== 'length'
+      || !expected.every((key, index) => keys[index] === key)) return null;
+  const length = Object.getOwnPropertyDescriptor(value, 'length');
+  if (!length || length.enumerable || length.writable !== true
+      || length.configurable !== false || length.value !== value.length
+      || !Object.prototype.hasOwnProperty.call(length, 'value')) return null;
+  const values = [];
+  for (const key of expected) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || descriptor.enumerable !== true || descriptor.writable !== true
+        || descriptor.configurable !== true
+        || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) return null;
+    values.push(descriptor.value);
+  }
+  return values;
+}
+
+function preflightEnumerableEntryBound(value) {
+  let count = 0;
+  for (const key in value) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) {
+      throw new Error('HOST_RECEIPT_INHERITED_PROPERTY_INVALID');
+    }
+    count += 1;
+    if (count > HOST_RECEIPT_MAX_CONTAINER_ENTRIES) {
+      throw new Error('HOST_RECEIPT_BOUNDS_INVALID');
+    }
+  }
+}
 
 function collectIdFields(value, path = '$', seen = new Set(), found = [],
   budget = { nodes: 0 }, depth = 0) {
@@ -34493,6 +34748,7 @@ function collectIdFields(value, path = '$', seen = new Set(), found = [],
         || (typeof value === 'number' && Number.isFinite(value))) return found;
     throw new Error('HOST_RECEIPT_VALUE_INVALID');
   }
+  if (utilTypes.isProxy(value)) throw new Error('HOST_RECEIPT_PROXY_INVALID');
   if (seen.has(value)) throw new Error('HOST_RECEIPT_CYCLIC');
   seen.add(value);
   if (Array.isArray(value)) {
@@ -34502,7 +34758,14 @@ function collectIdFields(value, path = '$', seen = new Set(), found = [],
     if (value.length > HOST_RECEIPT_MAX_CONTAINER_ENTRIES) {
       throw new Error('HOST_RECEIPT_BOUNDS_INVALID');
     }
+    // Reject an ordinary named-property flood incrementally before Reflect.ownKeys creates
+    // its complete key array. The later reflective check remains necessary for symbols and
+    // non-enumerable properties, which JavaScript exposes only through array-returning APIs.
+    preflightEnumerableEntryBound(value);
     const keys = Reflect.ownKeys(value);
+    if (keys.length > HOST_RECEIPT_MAX_CONTAINER_ENTRIES + 1) {
+      throw new Error('HOST_RECEIPT_BOUNDS_INVALID');
+    }
     if (keys.some(key => typeof key !== 'string')) {
       throw new Error('HOST_RECEIPT_SYMBOL_INVALID');
     }
@@ -34531,6 +34794,7 @@ function collectIdFields(value, path = '$', seen = new Set(), found = [],
   if (prototype !== Object.prototype && prototype !== null) {
     throw new Error('HOST_RECEIPT_PROTOTYPE_INVALID');
   }
+  preflightEnumerableEntryBound(value);
   const keys = Reflect.ownKeys(value);
   if (keys.length > HOST_RECEIPT_MAX_CONTAINER_ENTRIES) {
     throw new Error('HOST_RECEIPT_BOUNDS_INVALID');
@@ -34595,25 +34859,28 @@ export async function boundedRootPrepareInput(host, currentHostTaskCwd, {
   const absent = () => ({ discoveryAvailable: false,
     line: JSON.stringify({ host_task_cwd: currentHostTaskCwd }) });
   try {
-    const raw = await callHost(() => host.list_projects({}), 'DISCOVERY', timeoutMs);
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)
-        || ![Object.prototype, null].includes(Object.getPrototypeOf(raw))) return absent();
-    const keys = Reflect.ownKeys(raw);
-    if (keys.length !== 2 || keys.some(key => typeof key !== 'string')
-        || !keys.includes('schemaVersion') || !keys.includes('projects')) return absent();
-    const schemaVersion = Object.getOwnPropertyDescriptor(raw, 'schemaVersion');
-    const projectList = Object.getOwnPropertyDescriptor(raw, 'projects');
-    if (!schemaVersion || !projectList || schemaVersion.enumerable !== true
-        || projectList.enumerable !== true
-        || !Object.prototype.hasOwnProperty.call(schemaVersion, 'value')
-        || !Object.prototype.hasOwnProperty.call(projectList, 'value')
-        || schemaVersion.value !== 1 || !Array.isArray(projectList.value)
-        || projectList.value.length > maxEntries) return absent();
-    const projects = projectList.value.map(item => {
-      if (!item || typeof item !== 'object' || Array.isArray(item)
-          || typeof item.projectId !== 'string' || typeof item.projectKind !== 'string'
-          || typeof item.path !== 'string') throw new Error('DISCOVERY_PROJECTION_INVALID');
-      return { projectId: item.projectId, projectKind: item.projectKind, path: item.path };
+    const wire = await callHost(() => host.list_projects({}), 'DISCOVERY', timeoutMs);
+    const raw = decodeCanonicalAppWireValue(wire, 'DISCOVERY');
+    const envelope = exactPlainDataEntries(raw, 2);
+    if (!envelope || envelope.size !== 2 || !envelope.has('schemaVersion')
+        || !envelope.has('projects') || envelope.get('schemaVersion') !== 1) return absent();
+    const rows = exactDenseDataArray(envelope.get('projects'), maxEntries);
+    if (!rows) return absent();
+    const projects = rows.map(item => {
+      const fields = exactPlainDataEntries(item, 16);
+      if (!fields || typeof fields.get('projectId') !== 'string'
+          || typeof fields.get('projectKind') !== 'string'
+          || typeof fields.get('path') !== 'string') {
+        throw new Error('DISCOVERY_PROJECTION_INVALID');
+      }
+      for (const value of fields.values()) {
+        if (value !== null && typeof value !== 'string' && typeof value !== 'boolean'
+            && !(typeof value === 'number' && Number.isFinite(value))) {
+          throw new Error('DISCOVERY_PROJECTION_INVALID');
+        }
+      }
+      return { projectId: fields.get('projectId'), projectKind: fields.get('projectKind'),
+        path: fields.get('path') };
     });
     const line = JSON.stringify({ host_task_cwd: currentHostTaskCwd, projects });
     return Buffer.byteLength(line, 'utf8') <= maxBytes
@@ -34626,18 +34893,27 @@ export async function boundedRootPrepareInput(host, currentHostTaskCwd, {
 
 export async function executePreparedAction(action, host, { timeoutMs = 5_000 } = {}) {
   if (action?.tool === 'create_thread') {
-    const receipt = await callHost(
+    const wire = await callHost(
       () => host.create_thread({ target: clone(action.target), prompt: action.prompt }),
       'CREATE', timeoutMs);
+    let receipt;
+    try { receipt = decodeCanonicalAppWireValue(wire, 'CREATE'); }
+    catch { throw new Error('CREATE_RECEIPT_INVALID'); }
     return { threadId: exactThreadId(receipt, 'CREATE') };
   }
   if (action?.tool === 'fork_thread') {
-    const fork = await callHost(
+    const forkWire = await callHost(
       () => host.fork_thread({ environment: clone(action.environment) }), 'FORK', timeoutMs);
+    let fork;
+    try { fork = decodeCanonicalAppWireValue(forkWire, 'FORK'); }
+    catch { throw new Error('FORK_RECEIPT_INVALID'); }
     const threadId = exactThreadId(fork, 'FORK');
-    const sent = await callHost(() => host.send_message_to_thread({
+    const sendWire = await callHost(() => host.send_message_to_thread({
       threadId, prompt: action.followup?.prompt,
     }), 'SEND', timeoutMs);
+    let sent;
+    try { sent = decodeCanonicalAppWireValue(sendWire, 'SEND'); }
+    catch { throw new Error('SEND_RECEIPT_MISMATCH'); }
     const scalar = sent === null || sent === undefined || typeof sent === 'string'
       || typeof sent === 'boolean' || (typeof sent === 'number' && Number.isFinite(sent));
     if (!scalar) {
@@ -34935,7 +35211,7 @@ Resolved `null`, `undefined`, scalars, or objects without an ID are successful s
 
 - [ ] **Step 4: Run targeted tests to verify GREEN**
 
-Run: `node --test --test-name-pattern='documented denial|ambiguous project|discovery failure|PreCompact-first|strict host receipt|raw confirm and message-unconfirmed|resolved null|throw timeout|failure result loss|prepare result loss|manual-preserve prepare result|acquired safe status|confirm result loss' tests/codex-app-task-continuation-integration.test.mjs`
+Run: `node --test --test-name-pattern='documented denial|ambiguous project|discovery failure|current App wire receipts|project discovery rejects|PreCompact-first|strict host receipt|raw confirm and message-unconfirmed|resolved null|throw timeout|failure result loss|prepare result loss|manual-preserve prepare result|acquired safe status|confirm result loss' tests/codex-app-task-continuation-integration.test.mjs`
 
 Expected: PASS with probe/preflight-caused manual states, exact question/discovery/task call counts,
 same-attempt PreCompact takeover/no-tick sweep, strict recursive receipts, resolved no-ID send
@@ -34962,7 +35238,7 @@ after the original handle exits and starts neither a prepare retry nor an automa
 emits only and the same attempt is either prepared once or swept with zero
 App calls, each external action is attempted at most once, duplicate prepare is checked immediately
 after an actionable first prepare and before action consumption, recursive plural/nested/inherited/
-symbol/accessor/control IDs and depth/node/container overflow fail closed before unbounded allocation,
+symbol/accessor/control IDs, Proxy envelopes/arrays/rows, and depth/node/container overflow fail closed before validator reflection or unbounded allocation,
 512 UTF-8 bytes succeed and 513 fail without state advance,
 a resolved send without an ID succeeds, only explicit timeout or unresolved no-return (never
 resolved null) becomes `message-unconfirmed` with the known raw fork receipt plus one LF through
@@ -36347,10 +36623,10 @@ const implementationAuthorityRaw = implementationAuthorityMatch == null
 const gate6Raw = gate6HeadingMatch == null || gate6RawEnd < 0 ? ''
   : source.slice(gate6HeadingMatch.index, gate6RawEnd);
 const expectedImplementationAuthorityHash =
-  '0c35933e96e2c26b5584a64768b4d6d50985c9b0e962e6d8c1a592d3603cd740';
+  '8edc669921ba42ff5ed7d058d1e4f75b56ccda1ab0cb52614ac4ba3921d6609f';
 const expectedGate6SectionHash =
   '648504926fc529d9e02202399384c09d5bc2737884187ed9923c90f1270733a4';
-if (Buffer.byteLength(implementationAuthorityRaw, 'utf8') !== 1980762) {
+if (Buffer.byteLength(implementationAuthorityRaw, 'utf8') !== 1992437) {
   fail('pre-Gate-6 authority UTF-8 byte length differs from its exact reviewed binding');
 }
 if (createHash('sha256').update(implementationAuthorityRaw).digest('hex')

@@ -1,3 +1,4 @@
+import { types as utilTypes } from 'node:util';
 import { validateOpaqueId } from '../../scripts/lib/host-surface.mjs';
 
 function clone(value) {
@@ -119,18 +120,13 @@ function decodeCanonicalAppWireValue(value, label) {
   }
   if (JSON.stringify(decoded) !== value) throw new Error(`${label}_WIRE_INVALID`);
   if (typeof decoded === 'string' && /^[\s\ufeff]*[\[{]/u.test(decoded)) {
-    try {
-      const nested = JSON.parse(decoded);
-      if (nested && typeof nested === 'object') throw new Error(`${label}_WIRE_INVALID`);
-    } catch (error) {
-      if (error?.message === `${label}_WIRE_INVALID`) throw error;
-    }
+    throw new Error(`${label}_WIRE_INVALID`);
   }
   return decoded;
 }
 
 function exactPlainDataEntries(value, maxEntries) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)
+  if (!value || typeof value !== 'object' || utilTypes.isProxy(value) || Array.isArray(value)
       || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return null;
   let enumerableCount = 0;
   for (const key in value) {
@@ -151,7 +147,8 @@ function exactPlainDataEntries(value, maxEntries) {
 }
 
 function exactDenseDataArray(value, maxEntries) {
-  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype
+  if (utilTypes.isProxy(value) || !Array.isArray(value)
+      || Object.getPrototypeOf(value) !== Array.prototype
       || value.length > maxEntries) return null;
   let enumerableCount = 0;
   for (const key in value) {
@@ -203,6 +200,7 @@ function collectIdFields(value, path = '$', seen = new Set(), found = [],
         || (typeof value === 'number' && Number.isFinite(value))) return found;
     throw new Error('HOST_RECEIPT_VALUE_INVALID');
   }
+  if (utilTypes.isProxy(value)) throw new Error('HOST_RECEIPT_PROXY_INVALID');
   if (seen.has(value)) throw new Error('HOST_RECEIPT_CYCLIC');
   seen.add(value);
   if (Array.isArray(value)) {
