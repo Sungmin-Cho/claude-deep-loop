@@ -1879,6 +1879,44 @@ test('headless skips live App transport and sweeps only expired unconfirmed atte
   assert.equal(swept.reason, 'swept');
 });
 
+test('headless refreshes authority after an empty receipt scan before generic work', () => {
+  const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-app-empty-receipt-race-')));
+  const observed = '2026-07-13T00:00:00.000Z';
+  const { runId } = initRun(root, { runtime: 'codex', goal: 'g',
+    now: new Date(observed), cwdFn: () => root,
+    hostObservation: { kind: 'codex-app', source: 'codex-app-tool-provenance',
+      capabilities: ['list-projects', 'create-thread-local', 'structured-process-stdin'],
+      structured_stdin_mode: 'pipe-open-noecho', host_task_cwd: root,
+      host_task_cwd_source: 'app-task-context', observed_at: observed },
+    appContinuationConsent: { mode: 'auto', authority: 'human-confirmed',
+      confirmed_at: observed, revoked_at: null } });
+  let preflights = 0; let emitted = 0;
+  const result = driveHeadlessRun({ root, runId,
+    now: Date.parse('2026-07-13T00:00:02.000Z'),
+    expect: { owner: runId, generation: 1 },
+    acquireHostLock: () => ({ release() {} }), listProcessReceiptsFn: () => [],
+    afterReceiptScanFn: () => {
+      emitted += 1;
+      emitHandoff(root, runId, { reason: 'empty-receipt-race',
+        trigger: 'empty-receipt-race', appIntent: true,
+        expect: { owner: runId, generation: 1 }, cwdFn: () => root,
+        attemptIdFactory: () => '01JAPPTASK0000000000000000',
+        descriptorBuilder: ({ runtime, root: projectRoot, parentRunId, childRunId }) => ({
+          runtime, projectRoot, runId: parentRunId, usageOutputKind: 'json',
+          resumeInvocation: childRunId,
+          entries: Object.fromEntries(['interactive', 'headless', 'cmux', 'iterm2',
+            'terminal-app', 'wt', 'powershell', 'desktop']
+            .map(name => [name, { display: 'manual', unavailable: true }])),
+        }), nowFn: () => Date.parse('2026-07-13T00:00:01.000Z') });
+    },
+    preflightFn: () => { preflights += 1; throw new Error('generic preflight forbidden'); },
+  });
+  assert.deepEqual(result, { ok: true, skipped: true,
+    action: 'app-transport-owned', reason: 'kernel-only-wait' });
+  assert.equal(emitted, 1);
+  assert.equal(preflights, 0);
+});
+
 test('headless fences a wrong caller then rejects matching corrupt authority before work', () => {
   const fixture = appHeadlessSeed11b();
   rawHashValidState(fixture.root, fixture.runId, loop => {

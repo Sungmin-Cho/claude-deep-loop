@@ -3,7 +3,7 @@ import { dirname, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { appendAnchored, directMutationOptions, readLines, readVerifiedState,
-  withVerifiedMutationLock } from './integrity.mjs';
+  requirePrecompactMutationIdentity, withVerifiedMutationLock } from './integrity.mjs';
 import { contentHash } from './envelope.mjs';
 import { checkBudget, reconcileBudget } from './budget.mjs';
 import { checkBreaker } from './breaker.mjs';
@@ -291,19 +291,34 @@ export function rollbackAndPause(root, runId, { childRunId, parentOwner, generat
   reason = eventData?.reason ?? eventData?.error ?? eventData?.gate ?? pauseReason,
   requestDigest = contentHash(JSON.stringify(['respawn-rollback-pause',
     childRunId, parentOwner, generation, eventData, pauseReason, outcome, reason])),
-  mutation = null }) {
+  mutation = null, mutationIdentity = null }) {
   try {
-    const appendWithMutation = mutation === null
-      ? (event, mutate, preCheck, options) => appendAnchored(
-        root, runId, event, mutate, preCheck,
-        directMutationOptions('respawn-rollback-pause',
+    const directOptions = options => {
+      const recovered = loop => validateStandaloneRespawnRecovery(root, runId, loop, {
+        eventType: 'respawn-failed', requestDigest, childRunId,
+        pauseReason, outcome, reason,
+      });
+      if (mutationIdentity !== null) {
+        const identity = requirePrecompactMutationIdentity(mutationIdentity, 'rollback',
+          { owner: parentOwner, generation });
+        return { ...options, ...identity, onRecovered: recovered };
+      }
+      return directMutationOptions('respawn-rollback-pause',
           { owner: parentOwner, generation },
           { childRunId, eventData, pauseReason, outcome, reason },
-          'RESPAWN_FENCED: rollback-pause', { ...options,
-            onRecovered: loop => validateStandaloneRespawnRecovery(root, runId, loop, {
-              eventType: 'respawn-failed', requestDigest, childRunId,
-              pauseReason, outcome, reason,
-            }) }))
+          'RESPAWN_FENCED: rollback-pause', { ...options, onRecovered: recovered });
+    };
+    const appendWithMutation = mutation === null
+      ? (event, mutate, preCheck, options) => {
+        const authority = directOptions(options);
+        return appendAnchored(root, runId, event, mutate, preCheck, {
+          ...authority,
+          callerBinding: authority.callerBinding,
+          intentDigest: authority.intentDigest,
+          fenceError: authority.fenceError,
+          onRecovered: authority.onRecovered,
+        });
+      }
       : mutation.appendAnchored;
     appendWithMutation({ type: 'respawn-failed', data: { ...eventData,
       outcome, reason, respawn_request_digest: requestDigest,
@@ -430,6 +445,7 @@ export function respawn(root, runId, {
     headless, attended, expectedMode };
   const requestedChildRunId = childRunId;
   const requestedKey = key;
+  const requestedHandoffRel = handoffRel;
   const requestDigest = contentHash(JSON.stringify(
     respawnIntentProjection(operationInput)));
   const rollback = args => runRespawnCompensation(root, runId, operationInput,
@@ -462,7 +478,7 @@ export function respawn(root, runId, {
   childRunId = lease.handoff_child_run_id;
   key = lease.handoff_idempotency_key;
   const boundChild = loop.session_chain.sessions.find(session => session.run_id === childRunId);
-  handoffRel = handoffRel ?? boundChild?.handoff_rel ?? null;
+  const durableHandoffRel = boundChild?.handoff_rel ?? null;
   const generation = lease.generation;
   const parentOwner = lease.owner_run_id;
   const poll = pollLease ?? (() =>
@@ -483,9 +499,25 @@ export function respawn(root, runId, {
       reason: 'human-resume-policy', childRunId };
   }
   if ((requestedChildRunId != null && requestedChildRunId !== childRunId)
-      || (requestedKey != null && requestedKey !== key)) {
+      || (requestedKey != null && requestedKey !== key)
+      || (requestedHandoffRel != null && requestedHandoffRel !== durableHandoffRel)) {
     return { ok: false, outcome: 'fenced', reason: 'requested-binding-mismatch', childRunId };
   }
+  if (typeof durableHandoffRel !== 'string' || durableHandoffRel.length === 0) {
+    const invalid = preserve({ childRunId, parentOwner: lease.owner_run_id,
+      generation: lease.generation, pauseReason: 'durable-handoff-binding-invalid',
+      outcome: 'handoff-binding-invalid', reason: 'durable-handoff-rel-missing' });
+    if (invalid.terminal) {
+      return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };
+    }
+    if (invalid.fenced) {
+      return { ok: false, outcome: 'fenced',
+        reason: 'lease-changed-before-pause', childRunId };
+    }
+    return { ok: false, outcome: 'handoff-binding-invalid',
+      reason: 'durable-handoff-rel-missing', childRunId };
+  }
+  handoffRel = durableHandoffRel;
   // 멱등/펜싱 사전조건 (Codex r1 🔴2): 잘못된 key 거부, 이미 spawned 면 재spawn 금지(이중 spawn 차단).
   if (lease.handoff_idempotency_key !== key) return { ok: false, outcome: 'key-mismatch', reason: 'key-mismatch', childRunId };
   // Codex impl r8 🟡: bind the spawn to the RESERVED handoff child — a valid key must not spawn an arbitrary child.
@@ -611,8 +643,7 @@ export function respawn(root, runId, {
   // buildLaunchCommand can throw UNSAFE_SPAWN_ARG (or cmds[mode] undefined for an unrecognised mode).
   // A throw here leaves the lease in 'emitted' (no CAS yet → not stranded). Only command CONSTRUCTION
   // moves above the CAS; spawnFn call and its try/catch remain below, unchanged.
-  const childSession = loop.session_chain.sessions.find(s => s.run_id === childRunId);
-  const effHandoffRel = (childSession && childSession.handoff_rel) || handoffRel;
+  const effHandoffRel = handoffRel;
   // Task 5b: only a Claude 'desktop' mode spawn probes the real (or injected) handler-verification target —
   // Codex and other modes never touch it. A verified target's argvTarget threads through as `desktopTarget`; an
   // unverified/failed probe (dt.ok===false) yields null → buildLaunchCommand's unavailable entry →

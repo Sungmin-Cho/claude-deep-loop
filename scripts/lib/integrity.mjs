@@ -1057,6 +1057,76 @@ export function readAuthenticatedMutationSnapshot(root, runId, {
   });
 }
 
+// Kernel-owned orchestration entry for mutations (currently PreCompact) whose caller fence is
+// derived from the active run rather than supplied by an execution-plane request. A strict pending
+// marker is always read first. Its authenticated before/after image may expose only the same caller
+// that owns the lease; recovery still requires a separately reconstructed exact intent through
+// withVerifiedMutationLock.
+export function readKernelMutationAuthoritySnapshot(root, runId) {
+  return withLock(root, runId, () => {
+    const marker = readAnchoredMarkerUnderLock(root, runId);
+    const loop = marker === null
+      ? readVerifiedStateUnderLock(root, runId).data
+      : pendingAuthenticationStateUnderLock(root, runId, marker);
+    const lease = loop.session_chain?.lease;
+    const callerBinding = marker?.caller ?? {
+      owner: lease?.owner_run_id, generation: lease?.generation,
+    };
+    const binding = requireCallerBinding(callerBinding);
+    if (lease?.owner_run_id !== binding.owner || lease?.generation !== binding.generation) {
+      throw new Error('ANCHORED_TRANSACTION_CORRUPT: kernel mutation caller');
+    }
+    return Object.freeze({ data: structuredClone(loop), callerBinding: binding,
+      pending: marker !== null,
+      pendingIntentDigest: marker?.intent_digest ?? null });
+  });
+}
+
+const PRECOMPACT_MUTATION_STAGES = Object.freeze(['emit', 'pause', 'rollback']);
+const precompactMutationIdentityRecords = new WeakMap();
+
+// PreCompact is the only kernel orchestration path that may substitute a reconstructed intent
+// for a public mutation helper. Keep that escape hatch capability-bound and stage-bound: callers
+// cannot pass an arbitrary object that merely has the same fields, and an emit identity cannot be
+// reused for pause/rollback. A retry in a fresh process deterministically reissues the bounded
+// identities from the authenticated lease + request digest before matching the durable marker.
+export function createPrecompactMutationIdentities(callerBinding, requestDigest) {
+  const binding = requireCallerBinding(callerBinding);
+  if (!/^[0-9a-f]{64}$/.test(requestDigest || '')) {
+    throw new Error('PRECOMPACT_REQUEST_DIGEST_REQUIRED');
+  }
+  const identities = {};
+  for (const stage of PRECOMPACT_MUTATION_STAGES) {
+    const identity = Object.freeze({
+      callerBinding: binding,
+      intentDigest: mutationIntentDigest(`precompact-handoff-${stage}`, binding, {
+        request_digest: requestDigest,
+      }),
+      fenceError: 'LEASE_FENCED: precompact-handoff',
+    });
+    precompactMutationIdentityRecords.set(identity, Object.freeze({
+      stage, owner: binding.owner, generation: binding.generation,
+    }));
+    identities[stage] = identity;
+  }
+  return Object.freeze(identities);
+}
+
+export function requirePrecompactMutationIdentity(identity, stage, callerBinding) {
+  const binding = requireCallerBinding(callerBinding);
+  const record = identity !== null && typeof identity === 'object'
+    ? precompactMutationIdentityRecords.get(identity) : null;
+  if (!record || record.stage !== stage || record.owner !== binding.owner
+      || record.generation !== binding.generation
+      || identity.callerBinding?.owner !== binding.owner
+      || identity.callerBinding?.generation !== binding.generation
+      || !/^[0-9a-f]{64}$/.test(identity.intentDigest || '')
+      || identity.fenceError !== 'LEASE_FENCED: precompact-handoff') {
+    throw new Error('MUTATION_AUTHORITY_INCOMPLETE');
+  }
+  return identity;
+}
+
 export function readVerifiedState(root, runId, options = {}) {
   return withLock(root, runId, () => {
     if (readAnchoredMarkerUnderLock(root, runId) !== null) {

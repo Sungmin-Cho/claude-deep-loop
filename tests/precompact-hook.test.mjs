@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync as rf, realpathSync,
-  writeFileSync } from 'node:fs';
+  rmdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -381,6 +381,56 @@ function appPrecompactSeed11b() {
       confirmed_at: observed, revoked_at: null } });
   return { root, runId };
 }
+
+const PRECOMPACT_CRASH_WORKER = fileURLToPath(
+  new URL('./helpers/precompact-crash-worker.mjs', import.meta.url));
+function crashPrecompact11b(root, mode, now, point = 'pending-after-rename') {
+  const result = spawnSync(process.execPath,
+    [PRECOMPACT_CRASH_WORKER, root, mode, String(now)], {
+      encoding: 'utf8', env: { ...process.env, DEEP_LOOP_TEST_CRASH_AT: point },
+    });
+  assert.equal(result.status, 91, result.stderr || result.stdout);
+  rmdirSync(join(runDir(root, readFileSyncCurrent(root)), '.lock'));
+}
+function readFileSyncCurrent(root) {
+  return rf(join(root, '.deep-loop', 'current'), 'utf8').trim();
+}
+
+test('PreCompact recovers exact emit pause and rollback pending stages on public retry', async () => {
+  const emitFixture = appPrecompactSeed11b();
+  const emitNow = Date.parse('2026-07-13T00:00:02.000Z');
+  crashPrecompact11b(emitFixture.root, 'emit', emitNow);
+  const emitted = await runPreCompactHandoff({ unattended: true }, {
+    root: emitFixture.root, now: emitNow, env: {}, cwdFn: () => emitFixture.root });
+  assert.equal(emitted.action, 'emitted');
+  assert.equal(events(emitFixture.root, emitFixture.runId)
+    .filter(event => event.type === 'handoff-emitted').length, 1);
+
+  const pauseFixture = appPrecompactSeed11b();
+  revokeAppTaskContinuation(pauseFixture.root, pauseFixture.runId,
+    { owner: pauseFixture.runId, generation: 1, runtime: 'codex' },
+    { nowFn: () => Date.parse('2026-07-13T00:00:01.000Z') });
+  const pauseNow = Date.parse('2026-07-13T00:00:02.000Z');
+  crashPrecompact11b(pauseFixture.root, 'pause', pauseNow);
+  const paused = await runPreCompactHandoff({ unattended: true }, {
+    root: pauseFixture.root, now: pauseNow, env: {}, cwdFn: () => pauseFixture.root });
+  assert.equal(paused.action, 'app-authority-unconfirmed-paused');
+  assert.equal(events(pauseFixture.root, pauseFixture.runId)
+    .filter(event => event.type === 'run-paused').length, 1);
+
+  const rollbackFixture = seed();
+  const rollbackState = readState(rollbackFixture.root, rollbackFixture.runId).data;
+  rollbackState.circuit_breaker.tripped = true;
+  writeState(rollbackFixture.root, rollbackFixture.runId, rollbackState);
+  const rollbackNow = Date.parse('2026-06-24T00:01:00.000Z');
+  crashPrecompact11b(rollbackFixture.root, 'rollback', rollbackNow);
+  const rolledBack = await runPreCompactHandoff({ unattended: true }, {
+    root: rollbackFixture.root, now: rollbackNow, env: {},
+    cwdFn: () => rollbackFixture.root });
+  assert.equal(rolledBack.action, 'gate-blocked-paused');
+  assert.equal(events(rollbackFixture.root, rollbackFixture.runId)
+    .filter(event => event.type === 'respawn-failed').length, 1);
+});
 
 test('PreCompact exact App authority is emit-only and bypasses every generic branch', async () => {
   const fixture = appPrecompactSeed11b();

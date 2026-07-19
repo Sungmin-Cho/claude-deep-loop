@@ -2,12 +2,13 @@
 // Hand-built seeds (no initRun) per task hygiene — matches pause.test.mjs / recover.test.mjs convention.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
-import { appendAnchored, directMutationOptions } from '../scripts/lib/integrity.mjs';
+import { appendAnchored, directMutationOptions, readLines } from '../scripts/lib/integrity.mjs';
 import { offerDesktop, confirmDesktop, declineDesktop, resetDesktop } from '../scripts/lib/spawn-optin.mjs';
 import { seedCorrelatedTerminal as terminal7b } from './fixtures/verified-app-run.mjs';
 
@@ -149,6 +150,26 @@ test('offerDesktop generates a nonce via crypto.randomUUID when none injected', 
   assert.equal(typeof o.nonce, 'string');
   assert.ok(o.nonce.length > 0);
   assert.equal(readState(root, runId).data.autonomy.spawn_style_optin_pending.nonce, o.nonce);
+});
+
+test('generated desktop nonce is recovered exactly after response loss without a second event', () => {
+  const { root, runId, expect } = seedFreshRun();
+  const worker = fileURLToPath(new URL('./helpers/anchored-crash-worker.mjs', import.meta.url));
+  const crashed = spawnSync(process.execPath,
+    [worker, root, runId, 'desktop-offer', 'response-after-cleanup'], {
+      encoding: 'utf8', env: { ...process.env,
+        DEEP_LOOP_CRASH_OWNER: expect.owner,
+        DEEP_LOOP_CRASH_GENERATION: String(expect.generation),
+        DEEP_LOOP_CRASH_INPUT: JSON.stringify({ now: T0, ttlSec: 600 }) },
+    });
+  assert.equal(crashed.status, 91, crashed.stderr || crashed.stdout);
+  rmdirSync(join(runDir(root, runId), '.lock'));
+  const durable = readState(root, runId).data.autonomy.spawn_style_optin_pending;
+  const retry = offerDesktop(root, runId, { expect, now: T0 + 5_000, ttlSec: 600 });
+  assert.deepEqual(retry, { ok: true, nonce: durable.nonce });
+  assert.equal(readLines(root, runId)
+    .filter(event => event.type === 'spawn-style-desktop-offered').length, 1);
+  assert.deepEqual(readState(root, runId).data.autonomy.spawn_style_optin_pending, durable);
 });
 
 test('offerDesktop default TTL is 600s from injected now', () => {

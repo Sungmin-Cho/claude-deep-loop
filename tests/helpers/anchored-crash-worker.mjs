@@ -14,6 +14,7 @@ import { recordReviewed } from '../../scripts/lib/comprehension.mjs';
 import { patch, pauseRun } from '../../scripts/lib/state.mjs';
 import { newWorkstream } from '../../scripts/lib/workspace.mjs';
 import { respawn } from '../../scripts/lib/respawn.mjs';
+import { offerDesktop } from '../../scripts/lib/spawn-optin.mjs';
 import { recordCost, settleCodexPreflightCost, settleCodexProcessCost,
   settleTerminalCodexMakerCost } from '../../scripts/lib/budget.mjs';
 
@@ -85,6 +86,12 @@ registerAnchoredCrashExtension(request => {
 });
 
 const generic = Object.freeze({
+  'desktop-offer': ({ root, runId, owner, generation, rawInput }) => {
+    const input = parseInput(rawInput, ['now', 'ttlSec']);
+    return offerDesktop(root, runId, {
+      expect: { owner, generation }, now: input.now, ttlSec: input.ttlSec,
+    });
+  },
   'respawn-rollback': ({ root, runId, owner, generation, point, rawInput }) => {
     const input = parseInput(rawInput,
       ['attended', 'childRunId', 'handoffRel', 'key', 'kind', 'now']);

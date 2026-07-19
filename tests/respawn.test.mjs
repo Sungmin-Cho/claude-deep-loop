@@ -597,6 +597,20 @@ test('respawn rejects childRunId that does not match the reserved handoff child 
   assert.equal(after.state, 'releasing');
 });
 
+test('respawn rejects a caller handoff path that does not match the durable child binding', () => {
+  const { root, runId } = seed();
+  const h = emitHandoff(root, runId,
+    { trigger: 'milestone', now: NOW1, expect: expect_(runId) });
+  let spawned = false;
+  const r = respawn(root, runId, { childRunId: h.childRunId, key: h.key,
+    handoffRel: 'handoffs/not-the-durable-file.md', headless: true, now: NOW1,
+    spawnFn: () => { spawned = true; return { ok: true }; } });
+  assert.deepEqual({ ok: r.ok, outcome: r.outcome, reason: r.reason },
+    { ok: false, outcome: 'fenced', reason: 'requested-binding-mismatch' });
+  assert.equal(spawned, false);
+  assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'emitted');
+});
+
 test('respawn success → spawned (headless), lease stays releasing, child can acquire via handshake; retry idempotent', () => {
   const { root, runId } = seed();
   const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });
@@ -821,13 +835,15 @@ test('child can acquire the releasing lease after a headless respawn via handsha
 // Descriptor construction still happens before the spawned CAS, but a visible/headless caller cannot be
 // relied on to preserve-pause after a soft build-error result. respawn therefore preserves the emitted
 // reservation itself under the original fence and returns the original bounded construction reason.
-test('respawn: buildLaunchCommand throw self-pauses emitted handoff without advancing to spawned', () => {
+test('respawn: missing durable handoff path preserve-pauses before descriptor or spawn', () => {
   const { root, runId } = seed();
   const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });
-  // Blank the child session's handoff_rel so effHandoffRel falls back to the respawn arg.
+  // A legacy/corrupt child without a durable path may never borrow caller-supplied descriptor authority.
   { const { data } = readState(root, runId); const cs = data.session_chain.sessions.find(s => s.run_id === h.childRunId); if (cs) cs.handoff_rel = null; writeState(root, runId, data); }
-  // Pass unsafe/empty handoffRel (fails SAFE_HANDOFF_REL → buildLaunchCommand throws UNSAFE_SPAWN_ARG).
-  const r = respawn(root, runId, { childRunId: h.childRunId, key: h.key, handoffRel: '', headless: true, now: NOW1, spawnFn: () => { throw new Error('must not reach spawnFn'); } });
+  const r = respawn(root, runId, { childRunId: h.childRunId, key: h.key,
+    handoffRel: null, headless: true, now: NOW1,
+    launchCommandBuilder: () => { throw new Error('must not build descriptor'); },
+    spawnFn: () => { throw new Error('must not reach spawnFn'); } });
   // Lease MUST NOT have advanced to 'spawned' (must be emitted/releasing — re-tryable, not stranded).
   const after = readState(root, runId).data;
   const lease = after.session_chain.lease;
@@ -835,10 +851,10 @@ test('respawn: buildLaunchCommand throw self-pauses emitted handoff without adva
   assert.equal(lease.state, 'releasing', 'lease must stay releasing (emitted, re-tryable)');
   assert.equal(lease.handoff_phase, 'emitted', 'lease must stay emitted when build throws before CAS');
   assert.equal(r.ok, false, 'respawn must return ok:false on build error');
-  assert.equal(r.outcome, 'build-error');
-  assert.match(r.reason, /^UNSAFE_SPAWN_ARG:/);
+  assert.equal(r.outcome, 'handoff-binding-invalid');
+  assert.equal(r.reason, 'durable-handoff-rel-missing');
   assert.equal(after.status, 'paused', 'descriptor build failure must never leave running+emitted');
-  assert.equal(after.pause_reason, r.reason, 'the original bounded build reason must be preserved');
+  assert.equal(after.pause_reason, 'durable-handoff-binding-invalid');
   assert.equal(lease.resume_policy, 'human');
   assert.equal(lease.handoff_child_run_id, h.childRunId, 'preserve-pause keeps the reserved child recoverable');
 });

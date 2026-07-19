@@ -1057,6 +1057,7 @@ function driveHeadlessRunLocked({
   cwdFn = process.cwd,
   pauseFn = pauseRun,
   beforeMakerAuthorityReadFn = () => {},
+  afterReceiptScanFn = () => {},
   attemptIdFactory,
 } = {}) {
   const sampleNow = typeof clock === 'function' ? clock : (now === undefined ? Date.now : () => now);
@@ -1106,10 +1107,12 @@ function driveHeadlessRunLocked({
         return leftRank - rightRank || left.journalPath.localeCompare(right.journalPath);
       });
       for (const item of cleanupOrder) removeProcessReceiptFn(item);
-      if (pendingReceipts.length > 0) {
-        initialLoop = readParentAuthority(projectRoot, runId, parentFence);
-        initialLease = initialLoop.session_chain?.lease || {};
-      }
+      afterReceiptScanFn();
+      // Receipt discovery and settlement perform host I/O outside the run lock. Refresh even when
+      // the scan was empty so an App handoff committed in that interval cannot reach a generic
+      // checker/maker/preflight path through the stale entry snapshot.
+      initialLoop = readParentAuthority(projectRoot, runId, parentFence);
+      initialLease = initialLoop.session_chain?.lease || {};
     } catch (error) {
       if (String(error?.message || error).startsWith('RUN_SNAPSHOT_INVALID')) {
         throw error;

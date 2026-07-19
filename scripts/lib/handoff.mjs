@@ -3,7 +3,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { types as utilTypes } from 'node:util';
 import { runDir } from './state.mjs';
-import { withVerifiedMutationLock } from './integrity.mjs';
+import { requirePrecompactMutationIdentity, withVerifiedMutationLock } from './integrity.mjs';
 import { atomicWrite, contentHash, ulid, wrap } from './envelope.mjs';
 import { reserveHandoff, rollbackReservedHandoff } from './lease.mjs';
 import { APP_PREPARE_TIMEOUT_MS,
@@ -121,6 +121,7 @@ export function emitHandoff(root, runId, {
   descriptorBuilder = buildRuntimeResumeDescriptor,
   appIntent = false, cwdFn = process.cwd, nowFn = Date.now,
   attemptIdFactory = () => ulid(), beforeFinalAppendFn = () => {},
+  mutationIdentity = null,
 } = {}) {
   if (!expect || typeof expect.owner !== 'string' || !Number.isInteger(expect.generation)) throw new Error('FENCE_REQUIRED: emitHandoff');
   if (typeof appIntent !== 'boolean') throw new Error('APP_INTENT_BOOLEAN_REQUIRED');
@@ -134,8 +135,10 @@ export function emitHandoff(root, runId, {
     observed_cwd_digest: contentHash(`emit-cwd\0${String(observedCwd)}`),
     policy: policySnapshot,
     app_intent: appIntent }));
-  const withEmitMutation = body => withVerifiedMutationLock(root, runId,
-    { callerBinding, intentDigest, fenceError: 'LEASE_FENCED: handoff-emit' }, body);
+  const identity = mutationIdentity === null
+    ? { callerBinding, intentDigest, fenceError: 'LEASE_FENCED: handoff-emit' }
+    : requirePrecompactMutationIdentity(mutationIdentity, 'emit', callerBinding);
+  const withEmitMutation = body => withVerifiedMutationLock(root, runId, identity, body);
   const emitFence = loop => {
     const lease = loop?.session_chain?.lease;
     if (lease?.owner_run_id !== expect.owner || lease?.generation !== expect.generation) {

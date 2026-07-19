@@ -48,13 +48,15 @@ export function offerDesktop(root, runId, { expect, now = Date.now(), ttlSec = 6
       const lc = leaseCheck(l, { owner: expect.owner, generation: expect.generation });
       if (!lc.ok) throw new Error('LEASE_FENCED: ' + lc.reason);
     }, directMutationOptions('desktop-offer', expect,
-      { now, ttlSec, nonce: issued, expiresAt }, 'LEASE_FENCED: offerDesktop', {
+      { ttlSec, nonce: nonce ?? null }, 'LEASE_FENCED: offerDesktop', {
         onRecovered: loop => {
           const pending = loop.autonomy?.spawn_style_optin_pending;
-          if (pending?.nonce !== issued || pending.expires_at !== expiresAt) {
+          if (typeof pending?.nonce !== 'string' || pending.nonce.length === 0
+              || typeof pending.expires_at !== 'string'
+              || (nonce !== undefined && pending.nonce !== nonce)) {
             throw new Error('DESKTOP_OFFER_RESPONSE_PROJECTION_CHANGED');
           }
-          return { ok: true, nonce: issued };
+          return { ok: true, nonce: pending.nonce };
         },
       }));
   if (recovered !== undefined) return recovered;

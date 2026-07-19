@@ -4,7 +4,8 @@ import { contentHash, atomicWrite } from './envelope.mjs';
 import { validate } from './schema.mjs';
 import { appTransportBinding, leaseCheck } from './lease.mjs';
 import { appendAnchored, assertVerifiedRunSnapshot, intentField, mutationIntentDigest,
-  MUTATION_TURN_FLOOR, readLines, statePatchIntent, withVerifiedMutationLock }
+  MUTATION_TURN_FLOOR, readLines, requirePrecompactMutationIdentity, statePatchIntent,
+  withVerifiedMutationLock }
   from './integrity.mjs';
 import { assertProjectRootBinding } from './project-root.mjs';
 import { ancestorPaths } from './path-portable.mjs';
@@ -229,7 +230,7 @@ function pauseReplayProjection(loop, lines, reason, mode) {
 }
 
 export function pauseRun(root, runId, {
-  reason, mode = 'preserve', expect, now = Date.now(),
+  reason, mode = 'preserve', expect, now = Date.now(), mutationIdentity = null,
 } = {}) {
   if (!expect || typeof expect.owner !== 'string'
       || !Number.isSafeInteger(expect.generation)) throw new Error('FENCE_REQUIRED: pauseRun');
@@ -239,8 +240,10 @@ export function pauseRun(root, runId, {
     request_digest: intentField('run-pause-request', { reason: pauseReason, mode }),
   });
   const fenceCheck = pauseFence(expect);
-  return withVerifiedMutationLock(root, runId, { callerBinding, intentDigest,
-    fenceError: 'LEASE_FENCED: pauseRun' }, mutation => {
+  const identity = mutationIdentity === null
+    ? { callerBinding, intentDigest, fenceError: 'LEASE_FENCED: pauseRun' }
+    : requirePrecompactMutationIdentity(mutationIdentity, 'pause', callerBinding);
+  return withVerifiedMutationLock(root, runId, identity, mutation => {
     const loop = mutation.readVerifiedState({ fenceCheck }).data;
     const replay = pauseReplayProjection(loop, readLines(root, runId), pauseReason, mode);
     if (replay === 'exact') return undefined;

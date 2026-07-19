@@ -3,7 +3,8 @@ import { join } from 'node:path';
 import { readBoundedText } from '../lib/bounded-input.mjs';
 import { detectMain } from '../lib/detect-main.mjs';
 import { findRoot, pauseRun } from '../lib/state.mjs';
-import { readVerifiedState } from '../lib/integrity.mjs';
+import { createPrecompactMutationIdentities, intentField, readKernelMutationAuthoritySnapshot,
+  readLines, readVerifiedState, withVerifiedMutationLock } from '../lib/integrity.mjs';
 import { emitHandoff } from '../lib/handoff.mjs';
 import { respawnGate, resolveSpawnMode, rollbackAndPause } from '../lib/respawn.mjs';
 import { deriveAppEmitAuthority } from '../lib/app-task-continuation.mjs';
@@ -34,6 +35,38 @@ function precompactPostEmitFence(expect) {
   };
 }
 
+function exactRecoveredPrecompactResult(root, runId, loop, expect, headless) {
+  const lease = loop.session_chain?.lease || {};
+  const parent = loop.session_chain?.sessions?.find(session => session.run_id === expect.owner);
+  if (loop.status === 'running' && lease.owner_run_id === expect.owner
+      && lease.generation === expect.generation && lease.state === 'releasing'
+      && lease.handoff_phase === 'emitted' && lease.resume_policy === 'app'
+      && lease.handoff_transport === 'codex-app'
+      && typeof lease.handoff_child_run_id === 'string') {
+    return { ok: true, action: 'emitted', childRunId: lease.handoff_child_run_id, headless };
+  }
+  if (loop.status === 'paused' && loop.pause_reason === 'app-authority-unconfirmed'
+      && lease.owner_run_id === expect.owner && lease.generation === expect.generation
+      && lease.state === 'releasing' && lease.handoff_phase === 'emitted'
+      && lease.resume_policy === 'human' && lease.handoff_transport == null
+      && lease.handoff_attempt_id == null && typeof lease.handoff_child_run_id === 'string'
+      && parent?.superseded_by === lease.handoff_child_run_id) {
+    return { ok: true, action: 'app-authority-unconfirmed-paused',
+      childRunId: lease.handoff_child_run_id, headless };
+  }
+  const last = readLines(root, runId).at(-1);
+  if (loop.status === 'paused' && lease.owner_run_id === expect.owner
+      && lease.generation === expect.generation && lease.state === 'active'
+      && lease.handoff_phase === 'idle' && lease.handoff_child_run_id == null
+      && last?.type === 'respawn-failed' && last.data?.trigger === 'pre-compact'
+      && typeof last.data?.child_run_id === 'string'
+      && loop.pause_reason === last.data.pause_reason) {
+    return { ok: true, action: 'gate-blocked-paused',
+      childRunId: last.data.child_run_id, headless };
+  }
+  return null;
+}
+
 export async function runPreCompactHandoff(input = {}, {
   root = findRoot(process.cwd()),
   now = Date.now(),
@@ -47,16 +80,39 @@ export async function runPreCompactHandoff(input = {}, {
 } = {}) {
   const runId = currentRunId(root);
   if (!runId) return { ok: true, action: 'no-run' };
-  let loop;
+  let loop; let expect; let mutationIdentities;
   try {
-    loop = readVerifiedState(root, runId).data;
+    const authority = readKernelMutationAuthoritySnapshot(root, runId);
+    loop = authority.data;
+    expect = authority.callerBinding;
+    const observedCwd = cwdFn();
+    const requestDigest = intentField('precompact-handoff-request', {
+      unattended: input.unattended === true, observedCwd,
+      envHeadless: env?.DEEP_LOOP_HEADLESS ?? null,
+      envUnattended: env?.DEEP_LOOP_UNATTENDED ?? null,
+      claudeEntrypoint: env?.CLAUDE_CODE_ENTRYPOINT ?? null,
+    });
+    mutationIdentities = createPrecompactMutationIdentities(expect, requestDigest);
+    if (authority.pending) {
+      const pendingStage = Object.entries(mutationIdentities)
+        .find(([, identity]) => identity.intentDigest === authority.pendingIntentDigest)?.[0];
+      if (pendingStage === undefined) throw new Error('ANCHORED_TRANSACTION_PENDING');
+      loop = withVerifiedMutationLock(root, runId, mutationIdentities[pendingStage], mutation =>
+        mutation.readVerifiedState({ fenceCheck: precompactPostEmitFence(expect) }).data);
+      const recoveredHeadless = resolveSpawnMode(loop,
+        { headless: input.unattended === true, env }) === 'headless';
+      const final = exactRecoveredPrecompactResult(
+        root, runId, loop, expect, recoveredHeadless);
+      if (final !== null) return final;
+      if (pendingStage !== 'emit') throw new Error('PRECOMPACT_RECOVERY_PROJECTION_CHANGED');
+    }
   } catch (caught) {
     return { ok: false, action: 'error',
       reason: String(caught?.message || caught) };
   }
-  const lease = loop.session_chain?.lease || {};
-  const expect = { owner: lease.owner_run_id, generation: lease.generation };
   const headless = resolveSpawnMode(loop, { headless: input.unattended === true, env }) === 'headless';
+  const recovered = exactRecoveredPrecompactResult(root, runId, loop, expect, headless);
+  if (recovered !== null) return recovered;
   const ownerSession = loop.session_chain?.sessions?.find(session =>
     session.run_id === expect.owner);
   const appOrigin = loop.autonomy?.session_runtime === 'codex'
@@ -82,6 +138,7 @@ export async function runPreCompactHandoff(input = {}, {
     cwdFn,
     now,
     nowFn: () => now,
+    mutationIdentity: mutationIdentities.emit,
   });
   if (!em.ok) return { ok: false, action: 'fenced', reason: em.reason };
 
@@ -117,7 +174,7 @@ export async function runPreCompactHandoff(input = {}, {
     if (!exactFallback) throw new Error('APP_ORIGIN_FALLBACK_INVALID');
     try {
       pauseFn(root, runId, { reason: 'app-authority-unconfirmed',
-        mode: 'preserve', expect, now });
+        mode: 'preserve', expect, now, mutationIdentity: mutationIdentities.pause });
     } catch (caught) {
       const message = String(caught?.message || caught);
       if (message.startsWith('RUN_TERMINAL')) {
@@ -157,6 +214,7 @@ export async function runPreCompactHandoff(input = {}, {
         childRunId: em.childRunId, parentOwner: expect.owner, generation: expect.generation,
         eventData: { child_run_id: em.childRunId, gate: gate.reason, trigger: 'pre-compact' },
         pauseReason: `gate:${gate.reason}`,
+        mutationIdentity: mutationIdentities.rollback,
       });
       if (res.terminal) return { ok: false, action: 'terminal', reason: 'RUN_TERMINAL' };
       if (res.fenced) return { ok: false, action: 'fenced', reason: 'lease-changed-before-pause', childRunId: em.childRunId, headless };
