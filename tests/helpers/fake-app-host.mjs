@@ -103,6 +103,80 @@ export class FakeAppHost {
 const HOST_RECEIPT_MAX_DEPTH = 32;
 const HOST_RECEIPT_MAX_NODES = 1024;
 const HOST_RECEIPT_MAX_CONTAINER_ENTRIES = 256;
+const HOST_WIRE_JSON_MAX_BYTES = 1_048_576;
+
+function decodeCanonicalAppWireValue(value, label) {
+  if (typeof value !== 'string') return value;
+  if (Buffer.byteLength(value, 'utf8') > HOST_WIRE_JSON_MAX_BYTES) {
+    throw new Error(`${label}_WIRE_INVALID`);
+  }
+  let decoded;
+  try {
+    decoded = JSON.parse(value);
+  } catch {
+    if (/^[\s\ufeff]*[\[{"]/u.test(value)) throw new Error(`${label}_WIRE_INVALID`);
+    return value;
+  }
+  if (JSON.stringify(decoded) !== value) throw new Error(`${label}_WIRE_INVALID`);
+  if (typeof decoded === 'string' && /^[\s\ufeff]*[\[{]/u.test(decoded)) {
+    try {
+      const nested = JSON.parse(decoded);
+      if (nested && typeof nested === 'object') throw new Error(`${label}_WIRE_INVALID`);
+    } catch (error) {
+      if (error?.message === `${label}_WIRE_INVALID`) throw error;
+    }
+  }
+  return decoded;
+}
+
+function exactPlainDataEntries(value, maxEntries) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return null;
+  let enumerableCount = 0;
+  for (const key in value) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) return null;
+    enumerableCount += 1;
+    if (enumerableCount > maxEntries) return null;
+  }
+  const keys = Reflect.ownKeys(value);
+  if (keys.length > maxEntries || keys.some(key => typeof key !== 'string')) return null;
+  const entries = new Map();
+  for (const key of keys) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || descriptor.enumerable !== true
+        || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) return null;
+    entries.set(key, descriptor.value);
+  }
+  return entries;
+}
+
+function exactDenseDataArray(value, maxEntries) {
+  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype
+      || value.length > maxEntries) return null;
+  let enumerableCount = 0;
+  for (const key in value) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) return null;
+    enumerableCount += 1;
+    if (enumerableCount > maxEntries) return null;
+  }
+  const keys = Reflect.ownKeys(value);
+  const expected = [...Array(value.length).keys()].map(String);
+  if (keys.length !== expected.length + 1 || keys.at(-1) !== 'length'
+      || !expected.every((key, index) => keys[index] === key)) return null;
+  const length = Object.getOwnPropertyDescriptor(value, 'length');
+  if (!length || length.enumerable || length.writable !== true
+      || length.configurable !== false || length.value !== value.length
+      || !Object.prototype.hasOwnProperty.call(length, 'value')) return null;
+  const values = [];
+  for (const key of expected) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || descriptor.enumerable !== true || descriptor.writable !== true
+        || descriptor.configurable !== true
+        || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) return null;
+    values.push(descriptor.value);
+  }
+  return values;
+}
 
 function preflightEnumerableEntryBound(value) {
   let count = 0;
@@ -239,25 +313,28 @@ export async function boundedRootPrepareInput(host, currentHostTaskCwd, {
   const absent = () => ({ discoveryAvailable: false,
     line: JSON.stringify({ host_task_cwd: currentHostTaskCwd }) });
   try {
-    const raw = await callHost(() => host.list_projects({}), 'DISCOVERY', timeoutMs);
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)
-        || ![Object.prototype, null].includes(Object.getPrototypeOf(raw))) return absent();
-    const keys = Reflect.ownKeys(raw);
-    if (keys.length !== 2 || keys.some(key => typeof key !== 'string')
-        || !keys.includes('schemaVersion') || !keys.includes('projects')) return absent();
-    const schemaVersion = Object.getOwnPropertyDescriptor(raw, 'schemaVersion');
-    const projectList = Object.getOwnPropertyDescriptor(raw, 'projects');
-    if (!schemaVersion || !projectList || schemaVersion.enumerable !== true
-        || projectList.enumerable !== true
-        || !Object.prototype.hasOwnProperty.call(schemaVersion, 'value')
-        || !Object.prototype.hasOwnProperty.call(projectList, 'value')
-        || schemaVersion.value !== 1 || !Array.isArray(projectList.value)
-        || projectList.value.length > maxEntries) return absent();
-    const projects = projectList.value.map(item => {
-      if (!item || typeof item !== 'object' || Array.isArray(item)
-          || typeof item.projectId !== 'string' || typeof item.projectKind !== 'string'
-          || typeof item.path !== 'string') throw new Error('DISCOVERY_PROJECTION_INVALID');
-      return { projectId: item.projectId, projectKind: item.projectKind, path: item.path };
+    const wire = await callHost(() => host.list_projects({}), 'DISCOVERY', timeoutMs);
+    const raw = decodeCanonicalAppWireValue(wire, 'DISCOVERY');
+    const envelope = exactPlainDataEntries(raw, 2);
+    if (!envelope || envelope.size !== 2 || !envelope.has('schemaVersion')
+        || !envelope.has('projects') || envelope.get('schemaVersion') !== 1) return absent();
+    const rows = exactDenseDataArray(envelope.get('projects'), maxEntries);
+    if (!rows) return absent();
+    const projects = rows.map(item => {
+      const fields = exactPlainDataEntries(item, 16);
+      if (!fields || typeof fields.get('projectId') !== 'string'
+          || typeof fields.get('projectKind') !== 'string'
+          || typeof fields.get('path') !== 'string') {
+        throw new Error('DISCOVERY_PROJECTION_INVALID');
+      }
+      for (const value of fields.values()) {
+        if (value !== null && typeof value !== 'string' && typeof value !== 'boolean'
+            && !(typeof value === 'number' && Number.isFinite(value))) {
+          throw new Error('DISCOVERY_PROJECTION_INVALID');
+        }
+      }
+      return { projectId: fields.get('projectId'), projectKind: fields.get('projectKind'),
+        path: fields.get('path') };
     });
     const line = JSON.stringify({ host_task_cwd: currentHostTaskCwd, projects });
     return Buffer.byteLength(line, 'utf8') <= maxBytes
@@ -270,18 +347,27 @@ export async function boundedRootPrepareInput(host, currentHostTaskCwd, {
 
 export async function executePreparedAction(action, host, { timeoutMs = 5_000 } = {}) {
   if (action?.tool === 'create_thread') {
-    const receipt = await callHost(
+    const wire = await callHost(
       () => host.create_thread({ target: clone(action.target), prompt: action.prompt }),
       'CREATE', timeoutMs);
+    let receipt;
+    try { receipt = decodeCanonicalAppWireValue(wire, 'CREATE'); }
+    catch { throw new Error('CREATE_RECEIPT_INVALID'); }
     return { threadId: exactThreadId(receipt, 'CREATE') };
   }
   if (action?.tool === 'fork_thread') {
-    const fork = await callHost(
+    const forkWire = await callHost(
       () => host.fork_thread({ environment: clone(action.environment) }), 'FORK', timeoutMs);
+    let fork;
+    try { fork = decodeCanonicalAppWireValue(forkWire, 'FORK'); }
+    catch { throw new Error('FORK_RECEIPT_INVALID'); }
     const threadId = exactThreadId(fork, 'FORK');
-    const sent = await callHost(() => host.send_message_to_thread({
+    const sendWire = await callHost(() => host.send_message_to_thread({
       threadId, prompt: action.followup?.prompt,
     }), 'SEND', timeoutMs);
+    let sent;
+    try { sent = decodeCanonicalAppWireValue(sendWire, 'SEND'); }
+    catch { throw new Error('SEND_RECEIPT_MISMATCH'); }
     const scalar = sent === null || sent === undefined || typeof sent === 'string'
       || typeof sent === 'boolean' || (typeof sent === 'number' && Number.isFinite(sent));
     if (!scalar) {

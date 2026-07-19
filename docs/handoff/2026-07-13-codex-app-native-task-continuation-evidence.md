@@ -4109,7 +4109,9 @@ main-agent judgment:
 
 ## Gate 5 local verification — cross-surface and 3×3 CI candidate
 
-Status: LOCAL PASS — real Codex App smoke and hosted 3×3 CI remain pending their separate gates.
+Status: IN PROGRESS — local verification passed; two approved real Codex App smoke attempts found
+and fail-closed on successive discovery receipt representation mismatches. Both corrections are
+locally verified; final-candidate happy-path re-smoke and hosted 3×3 CI remain pending.
 
 - candidate commit: `f2364e7edc3c21cfd49fc63dd93b5af3e56057ec` on
   `codex/codex-app-native-task-continuation`; tracked worktree clean before this evidence-only edit.
@@ -4139,3 +4141,81 @@ Status: LOCAL PASS — real Codex App smoke and hosted 3×3 CI remain pending th
 - boundary: no personal plugin install, Codex App restart, real App task creation/fork/message, push,
   PR, merge, publication, deep-suite synchronization, or cleanup was performed. The coupled real App
   smoke remains separately approval-gated.
+
+### Gate 5 approved real App smoke — discovery incompatibility and correction
+
+- approval boundary: the user approved the temporary personal candidate install, local marketplace
+  and plugin selection, App restart, disposable project/task creation, real continuation smoke, and
+  post-smoke restoration. Original checkout/main, push/PR/merge, deep-suite synchronization, task or
+  project deletion, and cleanup remained out of scope.
+- candidate/install: detached personal source and installed cache were byte-identical at
+  `d73636b523c1195db5ddd07495aa4acaf17cb8e9`; `deep-loop@deep-loop-personal` 1.8.2 was enabled and
+  the suite copy was disabled. The App restarted from PID 68105 to PID 36148 before the controller
+  task began.
+- disposable root: `/Users/sungmin/Documents/Codex/2026-07-20/deep-loop-app-smoke-d73636b` with a
+  preserved internal detached worktree. The controller initialized one standalone run with
+  `auto` / `human-confirmed` consent and generation 1; `.deep-memory` was neither read nor created.
+- live host observation: exact first-party App provenance, capabilities
+  `create-thread-local,fork-thread-same-directory,list-projects,send-message-to-thread,structured-process-stdin`,
+  host task cwd equal to the disposable root, and `pty-raw-noecho`. Pipe stdin closed early, default
+  PTY failed the no-echo contract, and raw/no-echo PTY emitted the exact READY line with zero echo.
+- first root attempt: `handoff emit --app-intent` produced one exact `create` attempt. The controller
+  called `list_projects` exactly once. The live receipt was the v1 envelope
+  `{schemaVersion:1,projects:[...]}`, while the execution helper required a bare top-level array.
+  The controller therefore omitted `projects` in one prepare; the kernel returned
+  `manual-preserve`, `do_not_call=true`, `resume_policy=human`, and `manual_recovery=true`.
+  `create_thread`, `fork_thread`, `send_message_to_thread`, confirm, and await were all called zero
+  times. No continuation child was created and no retry occurred.
+- disposition: this is a valid fail-closed smoke finding, not a successful happy-path receipt. The
+  correction strictly accepts only a plain/null-prototype top-level object with exactly enumerable
+  own data fields `schemaVersion` and `projects`, requires schema version 1 and a bounded project
+  array, and continues to reject bare arrays, unsupported schemas, extra envelope keys, malformed
+  entries, and exceeded bounds.
+- correction commit: `c25eb8236d890f273e64fb078e1db48d9f026fc2` (`fix: accept current App project discovery envelope`).
+  Changed the design, executable plan, shared handoff protocol, fake App host, and integration tests.
+  Targeted envelope/protocol/failure tests passed `3/3`; isolated rerun of two unrelated race tests
+  that flaked under concurrent machine load passed `2/2`. A subsequent single-process
+  `npm run preflight` exited 0: validation `ok`; tests/pass/fail/cancelled/skipped/todo
+  `1,978/1,978/0/0/0/0`; reported Node test duration `375,397.457625 ms`. The two race tests that
+  failed only during the earlier concurrent-load run both passed in this clean full-suite run.
+- preservation: the failed run, handoff/runtime artifacts, controller task, disposable clone and
+  internal worktree, personal-config backup, and project registration remain preserved for the later
+  separately approved cleanup boundary.
+
+### Gate 5 approved c25 real App re-smoke — wire representation finding and correction
+
+- exact candidate: `c25eb8236d890f273e64fb078e1db48d9f026fc2`; the controller independently
+  matched the candidate/install/cache manifests and exact tracked installable bytes before executing
+  the smoke. The runtime aggregate digest was `bbcf59509019…`, with kernel digest
+  `a24d47fa10d5…`, workflow-skill digest `beeefdf9a78a…`, and handoff-protocol digest
+  `d6850e597f5…` (sanitized prefixes only).
+- adapter and preflight evidence: pipe stdin was closed/write-impossible, default PTY echoed and was
+  rejected, and raw/no-echo PTY emitted the exact READY line with zero echo. The eligible preflight
+  passed with digest `2ba62144484e…` before the continuation attempt.
+- preserved run: the disposable root is
+  `/Users/sungmin/Documents/Codex/2026-07-20/deep-loop-app-smoke-c25eb82`. One minimal run was
+  initialized and left `running`, generation 1, lease `releasing`, with an emitted root `create`
+  attempt and no workstreams or episodes. Its runtime-artifact digest is `16fd01725e2b…`.
+- live finding: the controller called `list_projects` exactly once. Although the App response
+  represented the expected v1 envelope, the tool bridge delivered it to controller code as a JSON
+  string rather than an already-decoded object. The strict object check therefore returned
+  `plain_object=false`; `app-task prepare`, duplicate prepare, `create_thread`, confirm, await, and
+  child acquisition all remained at zero. No task was created and no discovery retry occurred.
+- correction: accept either an already-decoded value or one bounded canonical JSON wire value. A
+  string is capped at 1,048,576 bytes before parse, must have no BOM or surrounding whitespace, must
+  satisfy `JSON.stringify(JSON.parse(raw)) === raw`, and is decoded exactly once; a decoded string
+  containing another object/array encoding is rejected. The same adapter precedes create, fork, and
+  send receipt validation. Discovery additionally requires exact dense array descriptors and plain
+  own-data project rows before allowlist projection.
+- adversarial coverage: integration tests reject malformed, non-canonical, oversized, BOM-prefixed,
+  whitespace-prefixed, and double-encoded wire receipts, plus sparse/custom/accessor/symbol arrays and
+  inherited/custom/accessor project rows. Create/fork failures remain non-retriable receipt failures;
+  send failures remain `message-unconfirmed` without resend authority.
+- verification: focused integration tests passed `26/26`; skills contract tests passed `143/143`;
+  validation returned `ok`; `git diff --check` passed. A subsequent full `npm run preflight` exited
+  0 with tests/pass/fail/cancelled/skipped/todo `1,980/1,980/0/0/0/0` and reported Node test duration
+  `342,798.947459 ms`.
+- preservation and boundary: the c25 run, controller task, disposable clone and internal worktree
+  remain preserved. No new App task, project registration, cleanup, push, PR, merge, or deep-suite
+  synchronization was performed for this correction. A new exact candidate requires its own approved
+  final-candidate real App smoke boundary.

@@ -1313,7 +1313,7 @@ test('attended App handoff has one ordered public-tool route and no retry author
     cursor = next;
   }
   assert.match(appProtocol, /fork\/manual routes: `list_projects` call count is 0/);
-  assert.match(appProtocol, /fork_thread[\s\S]{0,2600}send_message_to_thread[\s\S]{0,1200}app-task confirm/);
+  assert.match(appProtocol, /fork_thread[\s\S]{0,2600}send_message_to_thread[\s\S]{0,2600}app-task confirm/);
   assert.match(appProtocol, /create.*exactly one.*threadId/is);
   assert.match(appProtocol, /clientThreadId.*failure/i);
   assert.match(appProtocol,

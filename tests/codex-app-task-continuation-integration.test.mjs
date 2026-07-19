@@ -1022,18 +1022,19 @@ test('ambiguous project uses one discovery call then durable manual preserve wit
 
 test('current Codex App v1 list_projects envelope is projected for root prepare', async () => {
   const root = '/repo/current-app-envelope';
+  const envelope = {
+    schemaVersion: 1,
+    projects: [{
+      projectId: 'PROJECT-CURRENT-APP',
+      projectKind: 'local',
+      path: root,
+      label: 'current-app-envelope',
+      hostId: 'local',
+      hostDisplayName: 'Local',
+    }],
+  };
   const host = new FakeAppHost({
-    listProjectsReceipt: {
-      schemaVersion: 1,
-      projects: [{
-        projectId: 'PROJECT-CURRENT-APP',
-        projectKind: 'local',
-        path: root,
-        label: 'current-app-envelope',
-        hostId: 'local',
-        hostDisplayName: 'Local',
-      }],
-    },
+    listProjectsReceipt: JSON.stringify(envelope),
   });
 
   const discovery = await boundedRootPrepareInput(host, root, { timeoutMs: 25 });
@@ -1050,11 +1051,110 @@ test('current Codex App v1 list_projects envelope is projected for root prepare'
   assert.deepEqual(host.calls.map(call => call.tool), ['list_projects']);
 });
 
+test('current App wire receipts decode one canonical JSON layer before strict validation', async () => {
+  const root = '/repo/current-app-wire';
+  const envelope = { schemaVersion: 1, projects: [{
+    projectId: 'PROJECT-CURRENT-WIRE', projectKind: 'local', path: root,
+  }] };
+  for (const listProjectsReceipt of [envelope, JSON.stringify(envelope)]) {
+    const discovery = await boundedRootPrepareInput(
+      new FakeAppHost({ listProjectsReceipt }), root, { timeoutMs: 25 });
+    assert.equal(discovery.discoveryAvailable, true);
+    assert.equal(JSON.parse(discovery.line).projects[0].projectId, 'PROJECT-CURRENT-WIRE');
+  }
+
+  const createAction = { tool: 'create_thread', target: {
+    type: 'project', projectId: 'PROJECT', environment: { type: 'local' },
+  }, prompt: 'PROMPT' };
+  assert.deepEqual(await executePreparedAction(createAction, new FakeAppHost({
+    createReceipt: JSON.stringify({ threadId: 'CREATE-WIRE' }),
+  })), { threadId: 'CREATE-WIRE' });
+
+  const forkAction = { tool: 'fork_thread', environment: { type: 'same-directory' },
+    followup: { tool: 'send_message_to_thread', prompt: 'PROMPT' } };
+  assert.deepEqual(await executePreparedAction(forkAction, new FakeAppHost({
+    forkReceipt: JSON.stringify({ threadId: 'FORK-WIRE' }),
+    sendReceipt: JSON.stringify({ threadId: 'FORK-WIRE' }),
+  })), { threadId: 'FORK-WIRE' });
+  assert.deepEqual(await executePreparedAction(forkAction, new FakeAppHost({
+    forkReceipt: JSON.stringify({ threadId: 'FORK-WIRE' }),
+    sendReceipt: 'null',
+  })), { threadId: 'FORK-WIRE' });
+
+  for (const listProjectsReceipt of [
+    ` ${JSON.stringify(envelope)}`,
+    `${JSON.stringify(envelope)}\n`,
+    JSON.stringify(JSON.stringify(envelope)),
+    '{"schemaVersion":1,"projects":',
+    `\ufeff${JSON.stringify(envelope)}`,
+    JSON.stringify({ schemaVersion: 1, projects: [{
+      projectId: 'PROJECT', projectKind: 'local', path: 'x'.repeat(1_048_576),
+    }] }),
+  ]) {
+    const discovery = await boundedRootPrepareInput(
+      new FakeAppHost({ listProjectsReceipt }), root, { timeoutMs: 25 });
+    assert.equal(discovery.discoveryAvailable, false);
+  }
+  for (const createReceipt of [
+    ` ${JSON.stringify({ threadId: 'CREATE-WIRE' })}`,
+    JSON.stringify(JSON.stringify({ threadId: 'CREATE-WIRE' })),
+    '{"threadId":"CREATE-WIRE"',
+    JSON.stringify({ threadId: 'x'.repeat(1_048_576) }),
+  ]) {
+    await assert.rejects(() => executePreparedAction(createAction,
+      new FakeAppHost({ createReceipt })), /CREATE_RECEIPT_INVALID/);
+  }
+  for (const forkReceipt of [
+    ` ${JSON.stringify({ threadId: 'FORK-WIRE' })}`,
+    JSON.stringify(JSON.stringify({ threadId: 'FORK-WIRE' })),
+  ]) {
+    await assert.rejects(() => executePreparedAction(forkAction, new FakeAppHost({
+      forkReceipt,
+    })), /FORK_RECEIPT_INVALID/);
+  }
+  for (const sendReceipt of [
+    ` ${JSON.stringify({ threadId: 'FORK-WIRE' })}`,
+    JSON.stringify(JSON.stringify({ threadId: 'FORK-WIRE' })),
+  ]) {
+    await assert.rejects(() => executePreparedAction(forkAction, new FakeAppHost({
+      forkReceipt: JSON.stringify({ threadId: 'FORK-WIRE' }), sendReceipt,
+    })), /SEND_RECEIPT_MISMATCH/);
+  }
+});
+
+test('project discovery rejects hostile array and row descriptors before projection', async () => {
+  const root = '/repo/hostile-project-envelope';
+  const goodRow = { projectId: 'PROJECT', projectKind: 'local', path: root };
+  const customArray = [goodRow];
+  Object.setPrototypeOf(customArray, { custom: true });
+  const sparseArray = new Array(1);
+  const accessorArray = [];
+  Object.defineProperty(accessorArray, '0', {
+    enumerable: true, configurable: true, get: () => goodRow,
+  });
+  Object.defineProperty(accessorArray, 'length', { value: 1, writable: true });
+  const symbolArray = [goodRow];
+  symbolArray[Symbol('project')] = goodRow;
+  const customRow = Object.create({ inherited: true });
+  Object.assign(customRow, goodRow);
+  const accessorRow = { projectKind: 'local', path: root };
+  Object.defineProperty(accessorRow, 'projectId', {
+    enumerable: true, get: () => 'PROJECT',
+  });
+  for (const projects of [customArray, sparseArray, accessorArray, symbolArray,
+    [customRow], [accessorRow]]) {
+    const discovery = await boundedRootPrepareInput(new FakeAppHost({
+      listProjectsReceipt: { schemaVersion: 1, projects },
+    }), root, { timeoutMs: 25 });
+    assert.equal(discovery.discoveryAvailable, false);
+  }
+});
+
 test('handoff protocol binds discovery to the current strict v1 App envelope', () => {
   const protocol = readFileSync(join(HERE, '..', 'skills', 'deep-loop-workflow',
     'references', 'handoff-respawn.md'), 'utf8');
   assert.match(protocol,
-    /top-level object with exactly `schemaVersion` and `projects`[\s\S]{0,300}`schemaVersion === 1`/u);
+    /canonical JSON wire text[\s\S]{0,300}exactly one layer[\s\S]{0,500}`schemaVersion === 1`/u);
   assert.match(protocol, /bare array[\s\S]{0,180}discovery unavailable/u);
 });
 
