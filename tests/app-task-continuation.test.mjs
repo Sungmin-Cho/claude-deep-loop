@@ -2085,12 +2085,21 @@ test9b('status rejects unsafe App-history handoff paths', () => {
   }
 });
 
-test9b('status CLI forwards the exact attempt under the final API name', () => {
+test9b('app-task CLI status forwards the exact attempt under the final API name', () => {
   const source = readSource9b(new URL('../scripts/deep-loop.mjs', import.meta.url), 'utf8');
   assert9b.match(source,
-    /statusAppTask\(root, runId, \{ attemptId: f\.attempt \?\? null \}\)/);
+    /statusAppTask\(root, runId, \{ attemptId: values\.attempt \}\)/);
   assert9b.doesNotMatch(source,
-    /statusAppTask\(root, runId, \{ attempt: f\.attempt \?\? null \}\)/);
+    /statusAppTask\(root, runId, \{ attemptId: f\.attempt \?\? null \}\)/);
+});
+
+test9b('app-task CLI projects only the exact wrapped wrong-child fence code', () => {
+  const source = readSource9b(new URL('../scripts/deep-loop.mjs', import.meta.url), 'utf8');
+  const body = source.slice(source.indexOf('function appSafeDiagnostic'),
+    source.indexOf('async function handleAppTask'));
+  assert9b.ok(body.includes('^LEASE_FENCED:\\s+(APP_ATTEMPT_FENCED)(?::|$)'));
+  assert9b.match(body, /return wrapped\[1\]/);
+  assert9b.doesNotMatch(body, /return .*message\.(?:slice|substring)/);
 });
 
 test9b('acquire-before-await exact projection succeeds before stale parent fence', () => {

@@ -19,8 +19,10 @@ import { dispatchReview, importReviewOutcome, recordReviewOutcome } from './lib/
 import { readBoundedText, readStructuredLine } from './lib/bounded-input.mjs';
 import { classifyProjectTaskDirectory, exactRawHostObservation,
   normalizeHostObservation } from './lib/host-surface.mjs';
-import { observeHostSurface, redactAppSecrets, revokeAppTaskContinuation,
-  statusAppTask } from './lib/app-task-continuation.mjs';
+import { acquireAppTask, awaitAppTask, confirmAppTask, failAppTask,
+  isAppPublicFailureCode,
+  observeHostSurface, prepareAppTask, redactAppSecrets, revokeAppTaskContinuation,
+  statusAppTask, sweepUnconfirmedAppTask } from './lib/app-task-continuation.mjs';
 import { canonicalProjectRoot } from './lib/project-root.mjs';
 import { contentHash } from './lib/envelope.mjs';
 import { nextAction } from './lib/next-action.mjs';
@@ -61,6 +63,158 @@ function parseFlags(argv) {
     f[body] = v;
   }
   return f;
+}
+
+const APP_COMMON_VALUES = Object.freeze(['project-root', 'run-id']);
+const APP_MUTATION_VALUES = Object.freeze([...APP_COMMON_VALUES, 'owner', 'generation']);
+const APP_ATTEMPT_VALUES = Object.freeze([...APP_MUTATION_VALUES, 'attempt']);
+const appGrammar = ({ values, booleans = [], required = [...values, ...booleans] }) =>
+  Object.freeze({ values: new Set(values), booleans: new Set(booleans), required: new Set(required) });
+
+const APP_GRAMMAR = Object.freeze({
+  prepare: appGrammar({ values: [...APP_MUTATION_VALUES, 'stdin-mode'],
+    booleans: ['app-host-input-stdin'] }),
+  confirm: appGrammar({ values: [...APP_ATTEMPT_VALUES, 'stdin-mode'],
+    booleans: ['receipt-stdin'] }),
+  fail: appGrammar({ values: [...APP_ATTEMPT_VALUES, 'code', 'stdin-mode'],
+    booleans: ['receipt-stdin'], required: [...APP_ATTEMPT_VALUES, 'code'] }),
+  revoke: appGrammar({ values: [...APP_MUTATION_VALUES, 'runtime'] }),
+  'sweep-unconfirmed': appGrammar({ values: APP_ATTEMPT_VALUES }),
+  status: appGrammar({ values: [...APP_COMMON_VALUES, 'attempt'], required: APP_COMMON_VALUES }),
+  await: appGrammar({ values: APP_ATTEMPT_VALUES }),
+  acquire: appGrammar({ values: [...APP_ATTEMPT_VALUES, 'runtime', 'stdin-mode'],
+    booleans: ['observation-stdin'] }),
+});
+
+const APP_ID = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
+const APP_MODES = new Set(['pipe-open-noecho', 'pty-raw-noecho']);
+
+function literalCanonicalAppRoot(raw) {
+  let canonical;
+  try { canonical = canonicalProjectRoot(raw); }
+  catch { throw new Error('PROJECT_ROOT_UNRESOLVABLE'); }
+  if (canonical !== raw) throw new Error('PROJECT_ROOT_FENCED: literal canonical root required');
+  return canonical;
+}
+
+function parseStrictAppFlags(command, argv) {
+  const grammar = APP_GRAMMAR[command];
+  if (!grammar) throw new Error('CLI_USAGE: unknown app-task command');
+  const values = {};
+  const seen = new Set();
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index];
+    if (typeof token !== 'string' || !token.startsWith('--')) {
+      throw new Error('CLI_USAGE: positional App argument');
+    }
+    const body = token.slice(2);
+    const equal = body.indexOf('=');
+    const name = equal < 0 ? body : body.slice(0, equal);
+    if (seen.has(name) || (!grammar.values.has(name) && !grammar.booleans.has(name))) {
+      throw new Error('CLI_USAGE: duplicate or unknown App flag');
+    }
+    seen.add(name);
+    if (grammar.booleans.has(name)) {
+      if (equal >= 0) throw new Error('CLI_USAGE: boolean App flag takes no value');
+      values[name] = true;
+      continue;
+    }
+    const value = equal >= 0 ? body.slice(equal + 1) : argv[++index];
+    if (typeof value !== 'string' || value.length === 0 || value.startsWith('--')) {
+      throw new Error('CLI_USAGE: App flag value required');
+    }
+    values[name] = value;
+  }
+  if ([...grammar.required].some(name => !seen.has(name))) {
+    throw new Error('CLI_USAGE: required App flag missing');
+  }
+  if (!APP_ID.test(values['run-id'])
+      || (values.owner !== undefined && !APP_ID.test(values.owner))
+      || (values.attempt !== undefined && !APP_ID.test(values.attempt))) {
+    throw new Error('CLI_USAGE: App identifier grammar');
+  }
+  if (values.generation !== undefined
+      && (!/^[1-9]\d*$/.test(values.generation)
+        || !Number.isSafeInteger(Number(values.generation)))) {
+    throw new Error('CLI_USAGE: positive safe generation required');
+  }
+  if (values['stdin-mode'] !== undefined && !APP_MODES.has(values['stdin-mode'])) {
+    throw new Error('CLI_USAGE: App stdin mode');
+  }
+  if (values.runtime !== undefined && values.runtime !== 'codex') {
+    throw new Error('CLI_USAGE: App runtime');
+  }
+  if (command === 'fail') {
+    if (!isAppPublicFailureCode(values.code)) {
+      throw new Error('CLI_USAGE: public App failure code');
+    }
+    const receiptFailure = values.code === 'message-unconfirmed';
+    if (receiptFailure !== (values['receipt-stdin'] === true)
+        || receiptFailure !== (typeof values['stdin-mode'] === 'string')) {
+      throw new Error('CLI_USAGE: fail receipt correlation');
+    }
+  }
+  const root = literalCanonicalAppRoot(values['project-root']);
+  return { values, root, runId: values['run-id'] };
+}
+
+async function appStructuredJson({ mode, purpose, binding }) {
+  const line = await readStructuredLine(process.stdin,
+    { mode, purpose, binding, maxBytes: 32_768 });
+  try { return JSON.parse(line); }
+  catch { throw new Error('STRUCTURED_STDIN_JSON_INVALID'); }
+}
+
+const appReceipt = ({ mode, purpose, binding }) => readStructuredLine(process.stdin,
+  { mode, purpose, binding, maxBytes: 513 });
+
+function exactAppPrepareJson(raw) {
+  try {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)
+        || ![Object.prototype, null].includes(Object.getPrototypeOf(raw))
+        || Object.getOwnPropertySymbols(raw).length !== 0) {
+      throw new Error('APP_HOST_INPUT_INVALID');
+    }
+    const names = Object.getOwnPropertyNames(raw);
+    const keys = names.join('\0') === 'host_task_cwd' ? ['host_task_cwd']
+      : names.join('\0') === 'host_task_cwd\0projects'
+        ? ['host_task_cwd', 'projects'] : null;
+    if (keys === null) throw new Error('APP_HOST_INPUT_INVALID');
+    const values = Object.fromEntries(keys.map(key => {
+      const descriptor = Object.getOwnPropertyDescriptor(raw, key);
+      if (!descriptor || descriptor.enumerable !== true || !Object.hasOwn(descriptor, 'value')) {
+        throw new Error('APP_HOST_INPUT_INVALID');
+      }
+      return [key, descriptor.value];
+    }));
+    if (typeof values.host_task_cwd !== 'string') throw new Error('APP_HOST_INPUT_INVALID');
+    return { currentHostTaskCwd: values.host_task_cwd,
+      ...(keys.length === 2 ? { projects: values.projects } : {}) };
+  } catch (error) {
+    if (error?.message === 'APP_HOST_INPUT_INVALID') throw error;
+    throw new Error('APP_HOST_INPUT_INVALID');
+  }
+}
+
+function appFence(values, withAttempt = true) {
+  return { owner: values.owner, generation: Number(values.generation),
+    ...(withAttempt ? { attemptId: values.attempt } : {}) };
+}
+
+const APP_EXIT_3 = /^(?:LEASE_FENCED|FENCE_REQUIRED|RUNTIME_FENCED|PROJECT_ROOT_FENCED|HANDOFF_(?:PHASE_FENCED|KEY_MISMATCH)|APP_TASK_FENCED|APP_(?:CONSENT_FENCED|ATTEMPT_FENCED|RECEIPT_FENCED|STDIN_MODE_FENCED|CHILD_OBSERVATION_FENCED|ACQUIRE_PROJECTION_CHANGED|CONFIRMATION_REQUIRED|TRANSPORT_OWNED|EMIT_AUTHORITY_FENCED|EMIT_BINDING_CONFLICT|PREPARE_REQUEST_FENCED|PREPARE_ROUTE_CHANGED|ROUTE_UNCONFIRMED|ROUTE_AUTHORITY_FENCED|PREPARE_DEADLINE_EXPIRED))(?:[:]|$)/;
+
+function appCliExit(errorValue) {
+  const message = String(errorValue?.message || errorValue);
+  if (message.startsWith('CLI_USAGE:')) return 2;
+  return APP_EXIT_3.test(message) ? 3 : 1;
+}
+
+function appSafeDiagnostic(errorValue) {
+  const message = String(errorValue?.message || errorValue);
+  const wrapped = /^LEASE_FENCED:\s+(APP_ATTEMPT_FENCED)(?::|$)/.exec(message);
+  if (wrapped) return wrapped[1];
+  return /^([A-Z][A-Z0-9_]*)/.exec(message)?.[1]
+    ?? 'APP_TASK_FAILED';
 }
 
 function flagOccurrences(argv, name) {
@@ -359,46 +513,64 @@ function classifyKernelError(e) {
   return null;
 }
 
-function appFenceSyntax(f) {
-  const runId = reqStr(f, 'run-id');
-  const owner = reqStr(f, 'owner');
-  const runtime = reqStr(f, 'runtime');
-  if (runId === null || owner === null || !['claude', 'codex'].includes(runtime)
-      || typeof f.generation !== 'string'
-      || !/^(?:0|[1-9][0-9]*)$/.test(f.generation)
-      || !Number.isSafeInteger(Number(f.generation))) return null;
-  return { runId, owner, runtime, generation: Number(f.generation) };
-}
-
-const APP_TASK_FLAGS = Object.freeze({
-  status: new Set(['project-root', 'run-id', 'attempt']),
-  revoke: new Set(['project-root', 'run-id', 'owner', 'generation', 'runtime']),
-});
-
-const appTaskHandler = async argv => {
-  const [verb, ...flagArgs] = argv;
-  if (!Object.hasOwn(APP_TASK_FLAGS, verb)) return 2;
-  try { assertExactFlagGrammar(flagArgs, APP_TASK_FLAGS[verb]); }
-  catch { return 2; }
-  const f = parseFlags(flagArgs);
-  let root;
-  try { root = explicitRoot(f); }
-  catch { return 2; }
-  if (verb === 'status') {
-    const runId = reqStr(f, 'run-id');
-    if (runId === null || f.attempt === true
-        || f.attempt !== undefined && !INIT_ATTEMPT.test(f.attempt)) return 2;
-    json(statusAppTask(root, runId, { attemptId: f.attempt ?? null }));
+async function handleAppTask(argv) {
+  try {
+    const command = argv[0];
+    const { values, root, runId } = parseStrictAppFlags(command, argv.slice(1));
+    if (command === 'status') {
+      json(statusAppTask(root, runId, { attemptId: values.attempt }));
+      return 0;
+    }
+    const parent = appFence(values, false);
+    const exact = ['prepare', 'revoke'].includes(command) ? parent : appFence(values, true);
+    if (command === 'revoke') {
+      json(revokeAppTaskContinuation(root, runId, { ...parent, runtime: values.runtime }));
+      return 0;
+    }
+    if (command === 'sweep-unconfirmed') {
+      json(sweepUnconfirmedAppTask(root, runId, exact));
+      return 0;
+    }
+    if (command === 'await') {
+      json(awaitAppTask(root, runId, exact));
+      return 0;
+    }
+    if (command === 'prepare') {
+      const raw = await appStructuredJson({ mode: values['stdin-mode'], purpose: 'app-prepare',
+        binding: `${parent.owner}.${parent.generation}` });
+      json(prepareAppTask(root, runId, { ...parent, stdinMode: values['stdin-mode'],
+        hostInput: exactAppPrepareJson(raw) }));
+      return 0;
+    }
+    if (command === 'confirm') {
+      const receipt = await appReceipt({ mode: values['stdin-mode'], purpose: 'app-confirm',
+        binding: exact.attemptId });
+      json(confirmAppTask(root, runId,
+        { ...exact, stdinMode: values['stdin-mode'], threadId: receipt }));
+      return 0;
+    }
+    if (command === 'fail') {
+      if (values.code === 'message-unconfirmed') {
+        const receipt = await appReceipt({ mode: values['stdin-mode'], purpose: 'app-fail',
+          binding: exact.attemptId });
+        json(failAppTask(root, runId, { ...exact, code: values.code,
+          stdinMode: values['stdin-mode'], unconfirmedThreadId: receipt }));
+      } else {
+        json(failAppTask(root, runId, { ...exact, code: values.code }));
+      }
+      return 0;
+    }
+    const observation = await appStructuredJson({ mode: values['stdin-mode'],
+      purpose: 'app-acquire', binding: exact.attemptId });
+    json(acquireAppTask(root, runId, { ...exact, runtime: values.runtime,
+      stdinMode: values['stdin-mode'], observation }));
     return 0;
+  } catch (errorValue) {
+    const code = appCliExit(errorValue);
+    error(appSafeDiagnostic(errorValue));
+    return code;
   }
-  if (verb !== 'revoke') return 2;
-  const syntax = appFenceSyntax(f);
-  if (syntax === null) return 2;
-  json(revokeAppTaskContinuation(root, syntax.runId, {
-    owner: syntax.owner, generation: syntax.generation, runtime: syntax.runtime,
-  }));
-  return 0;
-};
+}
 function requireLease(root, runId, f, intent = 'business') {
   strArg(f, 'owner');
   const generation = intArg(f, 'generation');
@@ -647,8 +819,112 @@ async function handleFinish(a) {
   }
 }
 
+const APP_HANDOFF_VALUES = Object.freeze(new Set([
+  'project-root', 'run-id', 'owner', 'generation', 'reason', 'trigger',
+]));
+const APP_HANDOFF_REQUIRED = Object.freeze(new Set([
+  'app-intent', 'project-root', 'run-id', 'owner', 'generation', 'reason', 'trigger',
+]));
+
+function appIntentRequested(argv) {
+  return argv.some(token => {
+    if (typeof token !== 'string' || !token.startsWith('--')) return false;
+    return token.slice(2).split('=', 1)[0] === 'app-intent';
+  });
+}
+
+function parseStrictAppHandoffFlags(argv) {
+  const values = {};
+  const seen = new Set();
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index];
+    if (typeof token !== 'string' || !token.startsWith('--')) {
+      throw new Error('CLI_USAGE: positional App handoff argument');
+    }
+    const body = token.slice(2);
+    const equal = body.indexOf('=');
+    const name = equal < 0 ? body : body.slice(0, equal);
+    if (seen.has(name) || (name !== 'app-intent' && !APP_HANDOFF_VALUES.has(name))) {
+      throw new Error('CLI_USAGE: duplicate or unknown App handoff flag');
+    }
+    seen.add(name);
+    if (name === 'app-intent') {
+      if (equal >= 0) throw new Error('CLI_USAGE: app-intent is a bare boolean');
+      values[name] = true;
+      continue;
+    }
+    const value = equal >= 0 ? body.slice(equal + 1) : argv[++index];
+    if (typeof value !== 'string' || value.length === 0 || value.startsWith('--')) {
+      throw new Error('CLI_USAGE: App handoff flag value required');
+    }
+    values[name] = value;
+  }
+  if ([...APP_HANDOFF_REQUIRED].some(name => !seen.has(name))) {
+    throw new Error('CLI_USAGE: required App handoff flag missing');
+  }
+  if (!APP_ID.test(values['run-id']) || !APP_ID.test(values.owner)) {
+    throw new Error('CLI_USAGE: App handoff identifier grammar');
+  }
+  if (!/^[1-9]\d*$/.test(values.generation)
+      || !Number.isSafeInteger(Number(values.generation))) {
+    throw new Error('CLI_USAGE: positive safe App handoff generation required');
+  }
+  for (const name of ['reason', 'trigger']) {
+    if (Buffer.byteLength(values[name], 'utf8') > 512
+        || /[\u0000-\u001f\u007f-\u009f]/u.test(values[name])) {
+      throw new Error('CLI_USAGE: bounded App handoff metadata required');
+    }
+  }
+  return { root: literalCanonicalAppRoot(values['project-root']), runId: values['run-id'],
+    reason: values.reason, trigger: values.trigger,
+    expect: { owner: values.owner, generation: Number(values.generation) } };
+}
+
+async function handleHandoff(argv) {
+  const [verb, ...rest] = argv;
+  if (verb !== 'emit') { error(`unknown handoff verb: ${verb}`); return 2; }
+  if (appIntentRequested(rest)) {
+    let parsed;
+    try { parsed = parseStrictAppHandoffFlags(rest); }
+    catch (errorValue) {
+      const code = appCliExit(errorValue);
+      error(appSafeDiagnostic(errorValue));
+      return code;
+    }
+    try {
+      const result = emitHandoff(parsed.root, parsed.runId,
+        { reason: parsed.reason, trigger: parsed.trigger,
+          expect: parsed.expect, env: process.env, appIntent: true });
+      if (!result.ok) {
+        if (result.reason === 'fenced') throw new Error('LEASE_FENCED: handoff-emit');
+        throw new Error(result.reason || 'APP_HANDOFF_FAILED');
+      }
+      json(result);
+      return 0;
+    } catch (errorValue) {
+      const code = appCliExit(errorValue);
+      error(appSafeDiagnostic(errorValue));
+      return code;
+    }
+  }
+
+  const f = parseFlags(rest);
+  const root = rootOf(f);
+  const runId = runIdOf(root, f);
+  requireLease(root, runId, f, 'lease');
+  const expect = { owner: f.owner, generation: intArg(f, 'generation') };
+  const headless = f.headless === true || f.headless === 'true';
+  try { json(emitHandoff(root, runId, { reason: f.reason,
+    trigger: f.trigger || f.reason || 'milestone', headless, expect, env: process.env })); return 0; }
+  catch (errorValue) {
+    const message = String(errorValue?.message || errorValue);
+    if (message.startsWith('LEASE_FENCED')) { error(message); return 3; }
+    error(message); return 1;
+  }
+}
+
 const handlers = {
-  'app-task': appTaskHandler,
+  'app-task': handleAppTask,
   'host-surface': hostSurfaceHandler,
   validate: async (a) => {
     const f = parseFlags(a);
@@ -1001,19 +1277,7 @@ const handlers = {
     }
     error(`unknown review verb: ${verb}`); return 2;
   },
-  handoff: async (a) => {
-    const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
-    const data = requireLease(root, runId, f, 'lease');
-    const expect = { owner: f.owner, generation: intArg(f, 'generation') };
-    if (verb === 'emit') {
-      const h = f.headless === true || f.headless === 'true';
-      // v1.6 (spec §2.3-2 CLI 매핑): 기존 RUN_PAUSED/HANDOFF_KEY_MISMATCH throw의 uncaught stack 해소 —
-      // respawn/pause/recover 핸들러와 동일 패턴. RUN_TERMINAL은 보상 롤백 후 반환 계약(JSON ok:false)이라 여기 안 걸린다.
-      try { json(emitHandoff(root, runId, { reason: f.reason, trigger: f.trigger || f.reason || 'milestone', headless: h, expect, env: process.env })); return 0; }
-      catch (e) { const m = String(e?.message || e); if (m.startsWith('LEASE_FENCED')) { error(m); return 3; } error(m); return 1; }
-    }
-    error(`unknown handoff verb: ${verb}`); return 2;
-  },
+  handoff: handleHandoff,
   // respawn --owner <id> --generation <n> [--attended] [--headless]
   // Resolve the spawn mode first: headless routes through the shared measured host; visible/desktop routes through
   // respawn + visibleSpawn. The caller fence is carried into either path and checked again before CAS.

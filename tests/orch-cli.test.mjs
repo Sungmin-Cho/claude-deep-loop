@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, readdirSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,7 +11,11 @@ import { buildFixedInitializationRequest, commitFixedInitialization, detectIniti
 import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import { canonicalProjectRoot, projectRootDigest } from '../scripts/lib/project-root.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
+import { structuredReadyToken } from '../scripts/lib/bounded-input.mjs';
+import { confirmAppTask, prepareAppTask } from '../scripts/lib/app-task-continuation.mjs';
+import { finishRun as finish11a } from '../scripts/lib/finish.mjs';
 import { appendAnchored, readLines } from '../scripts/lib/integrity.mjs';
+import { createDirectoryJunction } from './helpers/fs-fixtures.mjs';
 import { appHostTaskCwdDigest } from '../scripts/lib/host-surface.mjs';
 import { validate, verifyAppEventCorrelation } from '../scripts/lib/schema.mjs';
 import {
@@ -1716,8 +1720,10 @@ test('App fence mismatches exit 3 but terminal after a valid fence exits 1', () 
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-app-exit-')));
   const { runId } = initRun(root, { runtime: 'codex', goal: 'exit-precedence',
     cwdFn: () => root, now: new Date('2026-07-13T00:00:00.000Z') });
-  assert.equal(runResult(root, ['app-task', 'status', '--project-root', root,
-    '--run-id', runId]).code, 2);
+  assert.equal(runResult(root, ['app-task', 'status', '--run-id', runId]).code, 0);
+  const missingRoot = spawnSync(process.execPath, [CLI, 'app-task', 'status', '--run-id', runId],
+    { cwd: root, encoding: 'utf8', shell: false });
+  assert.equal(missingRoot.status, 2);
   assert.equal(runResult(root, ['app-task', 'status', '--run-id', runId,
     '--attempt', '01JAPPTASK0000000000000000']).code, 0);
   assert.equal(runResult(root, ['app-task', 'status', '--run-id', runId,
@@ -1732,8 +1738,12 @@ test('App fence mismatches exit 3 but terminal after a valid fence exits 1', () 
   assert.equal(runResult(root, ['app-task', 'revoke',
     '--run-id', runId, '--owner', '01JAPPWR0NG000000000000000',
     '--generation', '99', '--runtime', 'codex']).code, 3);
-  assert.equal(runResult(root, ['app-task', 'revoke',
-    '--run-id', runId, '--owner', runId, '--generation', '1', '--runtime', 'claude']).code, 3);
+  const beforeClaude = cliSnapshot(root, runId);
+  const claude = runResult(root, ['app-task', 'revoke',
+    '--run-id', runId, '--owner', runId, '--generation', '1', '--runtime', 'claude']);
+  assert.equal(claude.code, 2);
+  assert.equal((claude.stdout + claude.stderr).includes('DEEP_LOOP_STDIN_READY:'), false);
+  assert.deepEqual(cliSnapshot(root, runId), beforeClaude);
   assert.equal(runResult(root, ['app-task', 'revoke',
     '--run-id', runId, '--owner', runId, '--generation', '1', '--runtime', 'invalid']).code, 2);
   seedCorrelatedTerminal(root, runId, { status: 'completed' });
@@ -1828,8 +1838,13 @@ test('App post-fence transition invalidity exits 1 while fences stay 3 and retry
   assert.equal(runResult(fixture.root, ['app-task', 'revoke', '--run-id', fixture.runId,
     '--owner', '01JAPPWR0NG000000000000000', '--generation', '1',
     '--runtime', 'codex']).code, 3);
-  assert.equal(runResult(fixture.root, ['app-task', 'revoke', '--run-id', fixture.runId,
-    '--owner', fixture.runId, '--generation', '1', '--runtime', 'claude']).code, 3);
+  const beforeClaude = cliSnapshot(fixture.root, fixture.runId);
+  const claude = runResult(fixture.root, ['app-task', 'revoke', '--run-id', fixture.runId,
+    '--owner', fixture.runId, '--generation', '1',
+    '--runtime', 'claude']);
+  assert.equal(claude.code, 2);
+  assert.equal((claude.stdout + claude.stderr).includes('DEEP_LOOP_STDIN_READY:'), false);
+  assert.deepEqual(cliSnapshot(fixture.root, fixture.runId), beforeClaude);
   assert.equal(runResult(fixture.root, ['app-task', 'revoke', '--run-id', fixture.runId,
     '--owner', fixture.runId, '--generation', '1', '--runtime', 'codex']).code, 1);
   assert.deepEqual(cliSnapshot(fixture.root, fixture.runId), before);
@@ -1888,4 +1903,441 @@ test('finish CLI requires the exact App runtime and then settles the bound attem
     { cwd: fixture.root, encoding: 'utf8', shell: false });
   assert.equal(terminal.status, 1);
   assert.match(terminal.stderr, /FINISH_ALREADY_TERMINAL/);
+});
+test('App READY grammar is exact and purpose-separated', () => {
+  assert.equal(structuredReadyToken({ purpose: 'app-prepare',
+    binding: '01JAPPPAR00000000000000000.4',
+    mode: 'pty-raw-noecho' }),
+  'DEEP_LOOP_STDIN_READY:v1:app-prepare:01JAPPPAR00000000000000000.4:pty-raw-noecho');
+  for (const purpose of ['app-confirm', 'app-fail', 'app-acquire']) {
+    assert.equal(structuredReadyToken({ purpose, binding: '01JAPPTASK0000000000000000',
+      mode: 'pty-raw-noecho' }),
+    `DEEP_LOOP_STDIN_READY:v1:${purpose}:01JAPPTASK0000000000000000:pty-raw-noecho`);
+  }
+});
+
+function appCliSeed11a() {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-app-cli-')));
+  const base = Date.now() - 60_000;
+  const observed = new Date(base).toISOString();
+  const { runId } = initRun(root, { runtime: 'codex', goal: 'g', now: new Date(observed),
+    hostObservation: { kind: 'codex-app', source: 'codex-app-tool-provenance',
+      capabilities: ['list-projects', 'create-thread-local', 'structured-process-stdin'],
+      structured_stdin_mode: 'pipe-open-noecho', host_task_cwd: root,
+      host_task_cwd_source: 'app-task-context',
+      observed_at: observed }, cwdFn: () => root, appContinuationConsent: { mode: 'auto',
+      authority: 'human-confirmed', confirmed_at: observed, revoked_at: null } });
+  const attemptId = '01JAPPTASK0000000000000000';
+  const descriptorBuilder = ({ runtime, root: projectRoot, parentRunId, childRunId }) => ({
+    runtime, projectRoot, runId: parentRunId, usageOutputKind: 'json',
+    resumeInvocation: childRunId, entries: Object.fromEntries(['interactive', 'headless', 'cmux',
+      'iterm2', 'terminal-app', 'wt', 'powershell', 'desktop']
+      .map(name => [name, { display: 'manual', unavailable: true }])) });
+  const emitted = emitHandoff(root, runId, { trigger: 'cli', appIntent: true,
+    expect: { owner: runId, generation: 1 }, cwdFn: () => root, descriptorBuilder,
+    attemptIdFactory: () => attemptId,
+    nowFn: () => base + 1_000 });
+  return { root, runId, attemptId, childRunId: emitted.childRunId, base };
+}
+
+function preparedCliSeed11a() {
+  const fixture = appCliSeed11a();
+  prepareAppTask(fixture.root, fixture.runId, { owner: fixture.runId, generation: 1,
+    stdinMode: 'pipe-open-noecho', hostInput: { currentHostTaskCwd: fixture.root,
+      projects: [{ projectId: 'project', projectKind: 'local', path: fixture.root }] } }, {
+    cwdFn: () => fixture.root,
+    nowFn: () => fixture.base + 2_000,
+    descriptorBuilder: () => ({ tool: 'create_thread', target: { type: 'project',
+      projectId: 'project', environment: { type: 'local' } }, prompt: 'prompt' }),
+    reconcileBudgetFn: () => {}, gateFn: () => ({ ok: true, blocked_by: [] }),
+  });
+  return fixture;
+}
+
+function confirmedCliSeed11a() {
+  const fixture = preparedCliSeed11a();
+  confirmAppTask(fixture.root, fixture.runId, { owner: fixture.runId, generation: 1,
+    attemptId: fixture.attemptId, stdinMode: 'pipe-open-noecho', threadId: 'thread' },
+  { cwdFn: () => fixture.root,
+    nowFn: () => fixture.base + 3_000 });
+  return fixture;
+}
+
+function runReady11a(fixture, args, input, expectedReady, { cwd = fixture.root } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [CLI, ...args],
+      { cwd, stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = ''; let stderr = ''; let sent = false;
+    child.stdout.on('data', chunk => {
+      stdout += chunk;
+      const lines = stdout.split('\n').filter(Boolean);
+      const readyLines = lines.filter(line => line.startsWith('DEEP_LOOP_STDIN_READY:'));
+      if (readyLines.some(line => line !== expectedReady)) {
+        child.kill();
+        reject(new Error(`unexpected READY: ${readyLines.join(',')}`));
+        return;
+      }
+      if (!sent && readyLines.includes(expectedReady)) {
+        sent = true;
+        const payload = typeof input === 'string' ? input : JSON.stringify(input);
+        child.stdin.end(`${payload}\n`);
+      }
+    });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    child.on('error', reject);
+    child.on('close', code => resolve({ code, stdout, stderr }));
+  });
+}
+
+test('app-task prepare projects snake_case stdin then fails closed before Task 12 builder', async () => {
+  const fixture = appCliSeed11a();
+  const args = ['app-task', 'prepare', '--project-root', fixture.root, '--run-id', fixture.runId,
+    '--owner', fixture.runId, '--generation', '1', '--stdin-mode', 'pipe-open-noecho',
+    '--app-host-input-stdin'];
+  const ready = `DEEP_LOOP_STDIN_READY:v1:app-prepare:${fixture.runId}.1:pipe-open-noecho`;
+  const result = await runReady11a(fixture, args, { host_task_cwd: fixture.root,
+    projects: [{ projectId: ' p$`\\id ', projectKind: 'local', path: fixture.root }] }, ready);
+  assert.equal(result.code, 1);
+  assert.equal(result.stdout.split('\n')[0], ready);
+  assert.match(result.stderr, /APP_DESCRIPTOR_BUILDER_REQUIRED/);
+  const loop = readState(fixture.root, fixture.runId).data;
+  const child = loop.session_chain.sessions.find(item => item.run_id === fixture.childRunId);
+  assert.equal(child.continuation.phase, 'emitted');
+  assert.equal(readLines(fixture.root, fixture.runId)
+    .filter(event => event.type === 'app-task-prepared').length, 0);
+});
+
+test('app-task prepare rejects extra top-level and project-row IDs without write or echo', async () => {
+  const payloads = fixture => [
+    { host_task_cwd: fixture.root, threadId: 'RAW-ROOT-THREAD' },
+    { host_task_cwd: fixture.root, clientThreadId: 'RAW-ROOT-CLIENT' },
+    { host_task_cwd: fixture.root, observed_at: 'RAW-ROOT-CLOCK' },
+    { host_task_cwd: fixture.root, projects: [{ projectId: 'project', projectKind: 'local',
+      path: fixture.root, threadId: 'RAW-ROW-THREAD' }] },
+    { host_task_cwd: fixture.root, projects: [{ projectId: 'project', projectKind: 'local',
+      path: fixture.root, clientThreadId: 'RAW-ROW-CLIENT' }] },
+  ];
+  for (let index = 0; index < 5; index += 1) {
+    const fixture = appCliSeed11a();
+    const payload = payloads(fixture)[index];
+    const args = ['app-task', 'prepare', '--project-root', fixture.root, '--run-id', fixture.runId,
+      '--owner', fixture.runId, '--generation', '1', '--stdin-mode', 'pipe-open-noecho',
+      '--app-host-input-stdin'];
+    const ready = `DEEP_LOOP_STDIN_READY:v1:app-prepare:${fixture.runId}.1:pipe-open-noecho`;
+    const before = { state: readFileSync(join(fixture.root, '.deep-loop', 'runs', fixture.runId,
+      'loop.json')), events: readLines(fixture.root, fixture.runId) };
+    const result = await runReady11a(fixture, args, payload, ready);
+    assert.equal(result.code, 1, `${index}: ${result.stderr}`);
+    for (const sentinel of Object.values(payload).flatMap(value => typeof value === 'string'
+      ? [value] : Array.isArray(value) ? value.flatMap(Object.values) : [])) {
+      if (String(sentinel).startsWith('RAW-')) {
+        assert.equal((result.stdout + result.stderr).includes(sentinel), false, sentinel);
+      }
+    }
+    assert.deepEqual(readFileSync(join(fixture.root, '.deep-loop', 'runs', fixture.runId,
+      'loop.json')), before.state);
+    assert.deepEqual(readLines(fixture.root, fixture.runId), before.events);
+  }
+});
+
+test('wrong-cwd prepare is an exit-3 authority fence with no durable change', async () => {
+  const fixture = appCliSeed11a();
+  const wrongCwd = realpathSync(mkdtempSync(join(tmpdir(), 'dl-app-cli-cwd-')));
+  const beforeState = readFileSync(join(fixture.root, '.deep-loop', 'runs', fixture.runId,
+    'loop.json'));
+  const beforeEvents = readLines(fixture.root, fixture.runId);
+  const args = ['app-task', 'prepare', '--project-root', fixture.root, '--run-id', fixture.runId,
+    '--owner', fixture.runId, '--generation', '1', '--stdin-mode', 'pipe-open-noecho',
+    '--app-host-input-stdin'];
+  const ready = `DEEP_LOOP_STDIN_READY:v1:app-prepare:${fixture.runId}.1:pipe-open-noecho`;
+  const result = await runReady11a(fixture, args, { host_task_cwd: fixture.root,
+    projects: [{ projectId: 'project', projectKind: 'local', path: fixture.root }] }, ready,
+  { cwd: wrongCwd });
+  assert.equal(result.code, 3, result.stderr);
+  assert.match(result.stderr, /APP_ROUTE_AUTHORITY_FENCED/);
+  assert.deepEqual(readFileSync(join(fixture.root, '.deep-loop', 'runs', fixture.runId,
+    'loop.json')), beforeState);
+  assert.deepEqual(readLines(fixture.root, fixture.runId), beforeEvents);
+});
+
+test('App CLI requires explicit root/run and exposes boolean-only handoff intent', () => {
+  const fixture = appCliSeed11a();
+  const beforeState = readFileSync(join(fixture.root, '.deep-loop', 'runs', fixture.runId,
+    'loop.json'));
+  const beforeEvents = readLines(fixture.root, fixture.runId);
+  const missingRun = spawnSync(process.execPath, [CLI, 'app-task', 'status',
+    '--project-root', fixture.root], { encoding: 'utf8', shell: false });
+  assert.equal(missingRun.status, 2);
+  const invalidUlid = spawnSync(process.execPath, [CLI, 'app-task', 'status',
+    '--project-root', fixture.root, '--run-id', 'ZZZZZZZZZZZZZZZZZZZZZZZZZZ'],
+  { encoding: 'utf8', shell: false });
+  assert.equal(invalidUlid.status, 2);
+  const authority = ['--project-root', fixture.root, '--run-id', fixture.runId,
+    '--owner', fixture.runId, '--generation', '1'];
+  const required = [...authority, '--reason', 'milestone', '--trigger', 'milestone'];
+  const invalidHandoffs = [
+    ['--app-intent', '--run-id', fixture.runId, '--owner', fixture.runId, '--generation', '1'],
+    ['--app-intent', '--project-root', fixture.root, '--owner', fixture.runId, '--generation', '1'],
+    ['--app-intent=true', ...required],
+    ['--app-intent', ...required, '--project-root', fixture.root],
+    ['--app-intent', ...required, '--app-attempt', 'forbidden'],
+    ['--app-intent', ...authority, '--trigger', 'milestone'],
+    ['--app-intent', ...authority, '--reason', 'milestone'],
+    ['--app-intent', ...authority, '--reason', 'bad\nreason', '--trigger', 'milestone'],
+  ];
+  for (const args of invalidHandoffs) {
+    const result = spawnSync(process.execPath, [CLI, 'handoff', 'emit', ...args],
+      { cwd: fixture.root, encoding: 'utf8', shell: false });
+    assert.equal(result.status, 2, `${args.join(' ')}\n${result.stderr}`);
+  }
+  const staleArgs = [...required];
+  staleArgs[staleArgs.indexOf('--generation') + 1] = '2';
+  const stale = spawnSync(process.execPath, [CLI, 'handoff', 'emit', '--app-intent',
+    ...staleArgs], { cwd: fixture.root, encoding: 'utf8', shell: false });
+  assert.equal(stale.status, 3, stale.stderr);
+  assert.deepEqual(readFileSync(join(fixture.root, '.deep-loop', 'runs', fixture.runId,
+    'loop.json')), beforeState);
+  assert.deepEqual(readLines(fixture.root, fixture.runId), beforeEvents);
+  const sentinel = join(fixture.root, 'SENTINEL');
+  const hostile = spawnSync(process.execPath, [CLI, 'app-task', 'status', '--project-root', fixture.root,
+    '--run-id', `${fixture.runId};touch ${sentinel}`], { encoding: 'utf8', shell: false });
+  assert.notEqual(hostile.status, 0);
+  assert.equal(existsSync(sentinel), false);
+  assert.match(readFileSync(CLI, 'utf8'),
+    /HANDOFF_\(\?:PHASE_FENCED\|KEY_MISMATCH\)/,
+    'both final handoff CAS conflicts are exit-3 fences');
+});
+
+test('App parsers reject root aliases before state read and distinguish unresolvable roots', () => {
+  const fixture = appCliSeed11a();
+  const aliasParent = realpathSync(mkdtempSync(join(tmpdir(), 'dl-app-root-alias-')));
+  const link = join(aliasParent, 'project-link');
+  createDirectoryJunction(fixture.root, link);
+  const beforeState = readFileSync(join(fixture.root, '.deep-loop', 'runs', fixture.runId,
+    'loop.json'));
+  const beforeEvents = readLines(fixture.root, fixture.runId);
+  const handoffTail = ['--run-id', fixture.runId, '--owner', fixture.runId,
+    '--generation', '1', '--reason', 'alias', '--trigger', 'alias'];
+  for (const alias of [link, `${fixture.root}/.`, `${fixture.root}/`]) {
+    const status = spawnSync(process.execPath, [CLI, 'app-task', 'status',
+      '--project-root', alias, '--run-id', fixture.runId],
+    { cwd: fixture.root, encoding: 'utf8', shell: false });
+    assert.equal(status.status, 3, status.stderr);
+    assert.match(status.stderr, /PROJECT_ROOT_FENCED/);
+    const handoff = spawnSync(process.execPath, [CLI, 'handoff', 'emit', '--app-intent',
+      '--project-root', alias, ...handoffTail],
+    { cwd: fixture.root, encoding: 'utf8', shell: false });
+    assert.equal(handoff.status, 3, handoff.stderr);
+    assert.match(handoff.stderr, /PROJECT_ROOT_FENCED/);
+  }
+  assert.deepEqual(readFileSync(join(fixture.root, '.deep-loop', 'runs', fixture.runId,
+    'loop.json')), beforeState);
+  assert.deepEqual(readLines(fixture.root, fixture.runId), beforeEvents);
+
+  const absent = join(aliasParent, 'absent-project');
+  const unresolvedStatus = spawnSync(process.execPath, [CLI, 'app-task', 'status',
+    '--project-root', absent, '--run-id', fixture.runId],
+  { cwd: fixture.root, encoding: 'utf8', shell: false });
+  assert.equal(unresolvedStatus.status, 1, unresolvedStatus.stderr);
+  assert.match(unresolvedStatus.stderr, /PROJECT_ROOT_UNRESOLVABLE/);
+  const unresolvedHandoff = spawnSync(process.execPath, [CLI, 'handoff', 'emit', '--app-intent',
+    '--project-root', absent, ...handoffTail],
+  { cwd: fixture.root, encoding: 'utf8', shell: false });
+  assert.equal(unresolvedHandoff.status, 1, unresolvedHandoff.stderr);
+  assert.match(unresolvedHandoff.stderr, /PROJECT_ROOT_UNRESOLVABLE/);
+});
+
+test('confirm accepts one raw bounded receipt only after exact pipe READY', async () => {
+  const fixture = preparedCliSeed11a();
+  const receipt = ' opaque $`\\ receipt ';
+  const ready = `DEEP_LOOP_STDIN_READY:v1:app-confirm:${fixture.attemptId}:pipe-open-noecho`;
+  const result = await runReady11a(fixture, ['app-task', 'confirm',
+    '--project-root', fixture.root, '--run-id', fixture.runId,
+    '--owner', fixture.runId, '--generation', '1', '--attempt', fixture.attemptId,
+    '--stdin-mode', 'pipe-open-noecho', '--receipt-stdin'], receipt, ready);
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.stdout.split('\n')[0], ready);
+  assert.equal((result.stdout + result.stderr).includes(receipt), false);
+  const continuation = readState(fixture.root, fixture.runId).data.session_chain.sessions
+    .find(item => item.run_id === fixture.childRunId).continuation;
+  assert.equal(continuation.phase, 'confirmed');
+  assert.equal(continuation.thread_id, receipt);
+});
+
+test('confirm CLI maps a published marker with a different receipt to exit 3', async () => {
+  const fixture = preparedCliSeed11a();
+  const moduleUrl = new URL('../scripts/lib/app-task-continuation.mjs', import.meta.url).href;
+  const crashScript = `
+    import { confirmAppTask } from ${JSON.stringify(moduleUrl)};
+    confirmAppTask(process.argv[1], process.argv[2], {
+      owner: process.env.DEEP_LOOP_CRASH_OWNER,
+      generation: Number(process.env.DEEP_LOOP_CRASH_GENERATION),
+      attemptId: process.env.DEEP_LOOP_CRASH_ATTEMPT,
+      stdinMode: 'pipe-open-noecho',
+      threadId: 'confirmed-thread',
+    }, { cwdFn: () => process.argv[1], nowFn: () => Number(process.env.DEEP_LOOP_CRASH_NOW) });
+  `;
+  const crashed = spawnSync(process.execPath,
+    ['--input-type=module', '--eval', crashScript, fixture.root, fixture.runId], {
+      cwd: fixture.root, encoding: 'utf8', shell: false, env: { ...process.env,
+        DEEP_LOOP_CRASH_OWNER: fixture.runId,
+        DEEP_LOOP_CRASH_GENERATION: '1',
+        DEEP_LOOP_CRASH_ATTEMPT: fixture.attemptId,
+        DEEP_LOOP_CRASH_NOW: String(fixture.base + 3_000),
+        NODE_ENV: 'test', DEEP_LOOP_TEST_CRASH_AT: 'pending-after-rename' },
+    });
+  assert.equal(crashed.status, 91, crashed.stderr || crashed.stdout);
+  const directory = join(fixture.root, '.deep-loop', 'runs', fixture.runId);
+  rmdirSync(join(directory, '.lock'));
+  const journalNames = ['.anchored-pending.json', '.anchored-events.stage',
+    '.anchored-state.stage', '.anchored-hash.stage', 'event-log.jsonl', 'loop.json', '.loop.hash'];
+  const pending = Object.fromEntries(journalNames.map(name =>
+    [name, readFileSync(join(directory, name))]));
+  const ready = `DEEP_LOOP_STDIN_READY:v1:app-confirm:${fixture.attemptId}:pipe-open-noecho`;
+  const args = ['app-task', 'confirm', '--project-root', fixture.root,
+    '--run-id', fixture.runId, '--owner', fixture.runId, '--generation', '1',
+    '--attempt', fixture.attemptId, '--stdin-mode', 'pipe-open-noecho', '--receipt-stdin'];
+  const different = await runReady11a(fixture, args, 'different-thread', ready);
+  assert.equal(different.code, 3, different.stderr);
+  assert.match(different.stderr, /APP_RECEIPT_FENCED/);
+  assert.deepEqual(Object.fromEntries(journalNames.map(name =>
+    [name, readFileSync(join(directory, name))])), pending);
+  const exact = await runReady11a(fixture, args, 'confirmed-thread', ready);
+  assert.equal(exact.code, 0, exact.stderr);
+});
+
+test('ordinary fail has no stdin mode, receipt flag, or READY', () => {
+  const fixture = preparedCliSeed11a();
+  const result = spawnSync(process.execPath, [CLI, 'app-task', 'fail',
+    '--project-root', fixture.root, '--run-id', fixture.runId,
+    '--owner', fixture.runId, '--generation', '1', '--attempt', fixture.attemptId,
+    '--code', 'host-call-failed'], { cwd: fixture.root, encoding: 'utf8', shell: false });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.includes('DEEP_LOOP_STDIN_READY:'), false);
+  const continuation = readState(fixture.root, fixture.runId).data.session_chain.sessions
+    .find(item => item.run_id === fixture.childRunId).continuation;
+  assert.equal(continuation.failure_code, 'host-call-failed');
+});
+
+test('app-task revoke survives the strict dispatcher with its runtime fence', () => {
+  const fixture = appCliSeed11a();
+  const result = spawnSync(process.execPath, [CLI, 'app-task', 'revoke',
+    '--project-root', fixture.root, '--run-id', fixture.runId,
+    '--owner', fixture.runId, '--generation', '1', '--runtime', 'codex'],
+  { cwd: fixture.root, encoding: 'utf8', shell: false });
+  assert.equal(result.status, 0, result.stderr);
+  const loop = readState(fixture.root, fixture.runId).data;
+  const revokedAt = loop.autonomy.app_task_continuation.revoked_at;
+  assert.equal(new Date(revokedAt).toISOString(), revokedAt);
+  assert.ok(Date.parse(revokedAt) >= Date.parse('2026-07-13T00:00:00.000Z'));
+  assert.equal(loop.session_chain.sessions.find(item => item.run_id === fixture.childRunId)
+    .continuation.failure_code, 'consent-revoked');
+});
+
+test('malformed acquire exits 1 valid authority mismatch exits 3 and terminal remains exit 1', async () => {
+  const malformed = confirmedCliSeed11a();
+  const ready = `DEEP_LOOP_STDIN_READY:v1:app-acquire:${malformed.attemptId}:pipe-open-noecho`;
+  const malformedResult = await runReady11a(malformed, ['app-task', 'acquire',
+    '--project-root', malformed.root, '--run-id', malformed.runId,
+    '--owner', malformed.childRunId, '--generation', '1', '--attempt', malformed.attemptId,
+    '--runtime', 'codex', '--stdin-mode', 'pipe-open-noecho', '--observation-stdin'], {}, ready);
+  assert.equal(malformedResult.code, 1);
+  assert.match(malformedResult.stderr, /APP_CHILD_OBSERVATION_INVALID/);
+
+  const authorityResult = await runReady11a(malformed, ['app-task', 'acquire',
+    '--project-root', malformed.root, '--run-id', malformed.runId,
+    '--owner', malformed.childRunId, '--generation', '1', '--attempt', malformed.attemptId,
+    '--runtime', 'codex', '--stdin-mode', 'pipe-open-noecho', '--observation-stdin'], {
+      kind: 'codex-app', source: 'terminal-app', capabilities: ['structured-process-stdin'],
+      structured_stdin_mode: 'pipe-open-noecho', host_task_cwd: malformed.root,
+      host_task_cwd_source: 'app-task-context',
+    }, ready);
+  assert.equal(authorityResult.code, 3);
+  assert.match(authorityResult.stderr, /APP_CHILD_OBSERVATION_FENCED/);
+
+  const terminal = appCliSeed11a();
+  finish11a(terminal.root, terminal.runId, { status: 'stopped', confirm: true,
+    proof: { human_reason: 'test' },
+    fence: { owner: terminal.runId, generation: 1, runtime: 'codex', intent: 'business' },
+    now: Date.parse('2026-07-13T00:00:02.000Z') });
+  const terminalResult = spawnSync(process.execPath, [CLI, 'app-task', 'revoke',
+    '--project-root', terminal.root, '--run-id', terminal.runId,
+    '--owner', terminal.runId, '--generation', '1', '--runtime', 'codex'],
+  { cwd: terminal.root, encoding: 'utf8', shell: false });
+  assert.equal(terminalResult.status, 1);
+  assert.match(terminalResult.stderr, /APP_TASK_TERMINAL/);
+  const terminalHandoff = spawnSync(process.execPath, [CLI, 'handoff', 'emit', '--app-intent',
+    '--project-root', terminal.root, '--run-id', terminal.runId,
+    '--owner', terminal.runId, '--generation', '1', '--reason', 'terminal',
+    '--trigger', 'terminal'],
+  { cwd: terminal.root, encoding: 'utf8', shell: false });
+  assert.equal(terminalHandoff.status, 1);
+  assert.match(terminalHandoff.stderr, /RUN_TERMINAL/);
+
+  const beforeTerminalFences = {
+    state: readFileSync(join(terminal.root, '.deep-loop', 'runs', terminal.runId, 'loop.json')),
+    events: readLines(terminal.root, terminal.runId),
+  };
+  const staleTerminalHandoff = spawnSync(process.execPath,
+    [CLI, 'handoff', 'emit', '--app-intent', '--project-root', terminal.root,
+      '--run-id', terminal.runId, '--owner', terminal.runId, '--generation', '2',
+      '--reason', 'terminal-stale', '--trigger', 'terminal-stale'],
+    { cwd: terminal.root, encoding: 'utf8', shell: false });
+  assert.equal(staleTerminalHandoff.status, 3, staleTerminalHandoff.stderr);
+  assert.match(staleTerminalHandoff.stderr, /LEASE_FENCED/);
+
+  const acquireReady = `DEEP_LOOP_STDIN_READY:v1:app-acquire:${terminal.attemptId}:pipe-open-noecho`;
+  const wrongChild = await runReady11a(terminal, ['app-task', 'acquire',
+    '--project-root', terminal.root, '--run-id', terminal.runId,
+    '--owner', '01JAPPWR0NG000000000000000', '--generation', '1',
+    '--attempt', terminal.attemptId, '--runtime', 'codex',
+    '--stdin-mode', 'pipe-open-noecho', '--observation-stdin'], {
+      kind: 'codex-app', source: 'codex-app-tool-provenance',
+      capabilities: ['structured-process-stdin'], structured_stdin_mode: 'pipe-open-noecho',
+      host_task_cwd: terminal.root, host_task_cwd_source: 'app-task-context',
+    }, acquireReady);
+  assert.equal(wrongChild.code, 3, wrongChild.stderr);
+  assert.match(wrongChild.stderr, /APP_ATTEMPT_FENCED/);
+  assert.deepEqual(readFileSync(join(terminal.root, '.deep-loop', 'runs', terminal.runId,
+    'loop.json')), beforeTerminalFences.state);
+  assert.deepEqual(readLines(terminal.root, terminal.runId), beforeTerminalFences.events);
+});
+
+test('receipt reader rejects over-513-byte or multi-line input without echo', async () => {
+  for (const receipt of ['x'.repeat(513), 'first\nsecond']) {
+    const fixture = preparedCliSeed11a();
+    const ready = `DEEP_LOOP_STDIN_READY:v1:app-confirm:${fixture.attemptId}:pipe-open-noecho`;
+    const result = await runReady11a(fixture, ['app-task', 'confirm',
+      '--project-root', fixture.root, '--run-id', fixture.runId,
+      '--owner', fixture.runId, '--generation', '1', '--attempt', fixture.attemptId,
+      '--stdin-mode', 'pipe-open-noecho', '--receipt-stdin'], receipt, ready);
+    assert.equal(result.code, 1);
+    assert.equal((result.stdout + result.stderr).includes(receipt), false);
+    assert.equal(readState(fixture.root, fixture.runId).data.session_chain.sessions
+      .find(item => item.run_id === fixture.childRunId).continuation.phase, 'prepared');
+  }
+});
+
+test('every App syntax error exits 2 before state read or READY', () => {
+  const root = join(tmpdir(), 'definitely-absent-app-cli-root');
+  const cases = [
+    ['status', '--project-root', root],
+    ['status', '--project-root', root, '--project-root', root, '--run-id', 'RUN'],
+    ['status', '--project-root', root, '--run-id', 'RUN', 'positional'],
+    ['prepare', '--project-root', root, '--run-id', 'RUN', '--owner', 'P',
+      '--generation', '1', '--stdin-mode', 'pipe-open-noecho'],
+    ['revoke', '--project-root', root, '--run-id', 'RUN', '--owner', 'P',
+      '--generation', '1'],
+    ['fail', '--project-root', root, '--run-id', 'RUN', '--owner', 'P', '--generation', '1',
+      '--attempt', '01JAPPTASK0000000000000000', '--code', 'host-call-failed',
+      '--stdin-mode', 'pipe-open-noecho', '--receipt-stdin'],
+    ['confirm', '--project-root', root, '--run-id', 'RUN', '--owner', 'P', '--generation', '0',
+      '--attempt', 'bad', '--stdin-mode', 'pipe-open-noecho', '--receipt-stdin'],
+  ];
+  for (const args of cases) {
+    const result = spawnSync(process.execPath, [CLI, 'app-task', ...args],
+      { encoding: 'utf8', shell: false });
+    assert.equal(result.status, 2, `${args.join(' ')}\n${result.stderr}`);
+    assert.equal(result.stdout.includes('DEEP_LOOP_STDIN_READY:'), false);
+  }
 });

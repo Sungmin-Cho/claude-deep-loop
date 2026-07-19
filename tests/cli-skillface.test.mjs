@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -41,6 +41,57 @@ test('fixed init skillface is strict explicit-root READY transport with no fallb
     cli.indexOf('const initRunHandler'));
   assert.doesNotMatch(fixedBody, /rootOf\(|runIdOf\(/,
     'fixed dispatcher must not regain implicit cwd/current fallback');
+});
+
+test('app-task CLI exposes only the literal public forms without dynamic route authority', () => {
+  const attempt = '01JAPPTASK0000000000000000';
+  const childOwner = '01JAPPCHD00000000000000010';
+  const forms = fixture => [
+    ['handoff emit', ['handoff', 'emit', '--app-intent', '--project-root', fixture.root,
+      '--run-id', fixture.runId, '--owner', fixture.runId, '--generation', '1',
+      '--reason', 'bounded-reason', '--trigger', 'bounded-trigger'], undefined],
+    ['confirm', ['app-task', 'confirm', '--project-root', fixture.root, '--run-id', fixture.runId,
+      '--owner', fixture.runId, '--generation', '1', '--attempt', attempt,
+      '--stdin-mode', 'pipe-open-noecho', '--receipt-stdin'], 'thread\n'],
+    ['ordinary fail', ['app-task', 'fail', '--project-root', fixture.root,
+      '--run-id', fixture.runId, '--owner', fixture.runId, '--generation', '1',
+      '--attempt', attempt, '--code', 'host-call-failed'], undefined],
+    ['receipt fail', ['app-task', 'fail', '--project-root', fixture.root,
+      '--run-id', fixture.runId, '--owner', fixture.runId, '--generation', '1',
+      '--attempt', attempt, '--code', 'message-unconfirmed', '--stdin-mode',
+      'pipe-open-noecho', '--receipt-stdin'], 'thread\n'],
+    ['revoke', ['app-task', 'revoke', '--project-root', fixture.root,
+      '--run-id', fixture.runId, '--owner', fixture.runId, '--generation', '1',
+      '--runtime', 'codex'], undefined],
+    ['sweep', ['app-task', 'sweep-unconfirmed', '--project-root', fixture.root,
+      '--run-id', fixture.runId, '--owner', fixture.runId, '--generation', '1',
+      '--attempt', attempt], undefined],
+    ['status', ['app-task', 'status', '--project-root', fixture.root,
+      '--run-id', fixture.runId, '--attempt', attempt], undefined],
+    ['await', ['app-task', 'await', '--project-root', fixture.root,
+      '--run-id', fixture.runId, '--owner', fixture.runId, '--generation', '1',
+      '--attempt', attempt], undefined],
+    ['acquire', ['app-task', 'acquire', '--project-root', fixture.root,
+      '--run-id', fixture.runId, '--owner', childOwner, '--generation', '1',
+      '--runtime', 'codex', '--attempt', attempt, '--stdin-mode', 'pipe-open-noecho',
+      '--observation-stdin'], '{}\n'],
+  ];
+  for (let index = 0; index < 9; index += 1) {
+    const fixture = seed();
+    const [label, args, input] = forms(fixture)[index];
+    const accepted = spawnSync(process.execPath, [CLI, ...args], {
+      cwd: fixture.root, encoding: 'utf8', shell: false, ...(input ? { input } : {}),
+    });
+    assert.notEqual(accepted.status, 2, `${label}: ${accepted.stderr}`);
+    for (const forbidden of ['route', 'cwd', 'workstream', 'project']) {
+      const rejected = spawnSync(process.execPath,
+        [CLI, ...args, `--${forbidden}`, 'dynamic-authority'], {
+          cwd: fixture.root, encoding: 'utf8', shell: false, ...(input ? { input } : {}),
+        });
+      assert.equal(rejected.status, 2, `${label}/${forbidden}: ${rejected.stderr}`);
+      assert.equal(rejected.stdout.includes('DEEP_LOOP_STDIN_READY:'), false);
+    }
+  }
 });
 
 // Codex r1 should-fix-2: spec §6 의 4-verb 계약을 CLI 가 노출해야 한다 (dispatch 만 X).
