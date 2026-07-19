@@ -284,135 +284,159 @@ export function observeHostSurface(root, runId, input, deps) {
   }
 }
 
-export function revokeAppTaskContinuation(root, runId, input, deps = {}) {
-  const eventData = { owner_run_id: input.owner, generation: input.generation,
-    attempt_id: null, child_run_id: null, failure_code: null };
-  const callerBinding = { owner: input.owner, generation: input.generation };
-  const intentDigest = appMutationIntentDigest(input, 'app-revoke');
-  try {
-    const recovered = appendAnchored(root, runId,
-      { type: 'app-task-consent-revoked', data: eventData },
-      (loop, _spent, clock) => {
-        const consent = loop.autonomy.app_task_continuation;
-        consent.mode = 'manual'; consent.revoked_at = clock.iso;
-        const lease = loop.session_chain.lease;
-        const exactBareReservation = lease.state === 'active'
-          && lease.handoff_phase === 'reserved'
-          && typeof lease.handoff_idempotency_key === 'string'
-          && typeof lease.handoff_child_run_id === 'string'
-          && lease.handoff_transport === null
-          && lease.handoff_attempt_id === null
-          && !loop.session_chain.sessions.some(session =>
-            session.run_id === lease.handoff_child_run_id);
-        if (exactBareReservation) {
-          Object.assign(lease, { state: 'active', handoff_phase: 'idle',
-            handoff_idempotency_key: null, handoff_child_run_id: null, expires_at: null });
-        }
-        const live = loop.session_chain.sessions.find(session =>
-          session.run_id === lease.handoff_child_run_id
-          && session.continuation?.attempt_id === lease.handoff_attempt_id
-          && session.continuation.transport === 'codex-app'
-          && ['emitted', 'prepared', 'confirmed'].includes(session.continuation.phase));
-        if (live) {
-          live.continuation.phase = 'abandoned';
-          live.continuation.failure_code = 'consent-revoked';
-          loop.session_chain.lease.resume_policy = 'human';
-          loop.session_chain.lease.expires_at = null;
-          loop.status = 'paused'; loop.pause_reason = 'app-task-human-preserve';
-        }
-      },
-      (loop, clock) => {
-        const fence = leaseCheck(loop, { owner: input.owner, generation: input.generation,
-          runtime: input.runtime, intent: 'app-revoke' });
-        if (!fence.ok) {
-          if (fence.reason === 'RUN_TERMINAL') throw new Error('APP_TASK_TERMINAL');
-          throw new Error('APP_TASK_FENCED');
-        }
-        const snapshot = validate(loop);
-        if (!snapshot.ok) {
-          throw new Error(`RUN_SNAPSHOT_INVALID: ${snapshot.errors.join('; ')}`);
-        }
-        const lines = readLines(root, runId);
-        const chain = verifyLines(lines);
-        const head = verifyHeadLines(lines, loop.event_log_head);
-        const correlation = verifyAppEventCorrelation(loop, lines);
-        const proofErrors = [...chain.errors, ...head.errors, ...correlation.errors];
-        if (proofErrors.length !== 0) {
-          throw new Error(`RUN_SNAPSHOT_INVALID: ${proofErrors.join('; ')}`);
-        }
-        const consent = loop.autonomy.app_task_continuation
-          ?? { mode: 'manual', authority: 'default-manual', confirmed_at: null, revoked_at: null };
-        if (consent.mode === 'manual' && consent.authority === 'human-confirmed'
-            && consent.revoked_at !== null) throw new Error('APP_TASK_ALREADY_REVOKED');
-        if (consent.mode === 'manual') throw new Error('APP_TASK_NOT_AUTO');
-        if (consent.mode !== 'auto' || consent.authority !== 'human-confirmed'
-            || consent.revoked_at !== null || !strictInstant(consent.confirmed_at)
-            || !clock || clock.ms < Date.parse(consent.confirmed_at)) {
-          throw new Error('APP_TASK_CONSENT_INVALID');
-        }
-        const lease = loop.session_chain.lease;
-        const livePhases = loop.session_chain.sessions.filter(session =>
-          ['emitted', 'prepared', 'confirmed'].includes(session.continuation?.phase));
-        const exactBound = loop.session_chain.sessions.filter(session =>
-          session.run_id === lease.handoff_child_run_id
-          && session.continuation?.attempt_id === lease.handoff_attempt_id
-          && session.continuation?.transport === 'codex-app');
-        const appBound = lease.handoff_transport === 'codex-app';
-        if (!appBound && (lease.handoff_attempt_id !== null || livePhases.length !== 0)) {
-          throw new Error('APP_TASK_TRANSITION_INVALID');
-        }
-        if (appBound && exactBound.length !== 1) throw new Error('APP_TASK_TRANSITION_INVALID');
-        if (livePhases.length > 0
-            && (livePhases.length !== 1 || exactBound[0] !== livePhases[0])) {
-          throw new Error('APP_TASK_TRANSITION_INVALID');
-        }
-        if (appBound) {
-          const bound = exactBound[0];
-          const primary = ['emitted', 'prepared', 'confirmed'].includes(bound.continuation.phase);
-          Object.assign(eventData, { attempt_id: bound.continuation.attempt_id,
-            child_run_id: bound.run_id, failure_code: primary ? 'consent-revoked' : null });
-          const preserved = ['failed', 'abandoned'].includes(bound.continuation.phase);
-          const expectedPhase = bound.continuation.prepared_at === null ? 'emitted' : 'spawned';
-          const parent = loop.session_chain.sessions.find(
-            session => session.run_id === lease.owner_run_id);
-          const runningPrimary = primary && loop.status === 'running' && loop.pause_reason == null
-            && lease.resume_policy === 'app' && strictInstant(lease.expires_at);
-          const emittedManualPreserve = bound.continuation.phase === 'emitted'
-            && loop.status === 'paused' && loop.pause_reason === 'app-launch-unconfirmed'
-            && lease.resume_policy === 'human' && lease.expires_at === null
-            && bound.continuation.prepared_at === null
-            && bound.continuation.failure_code === null;
-          const confirmedAwaitPreserve = bound.continuation.phase === 'confirmed'
-            && loop.status === 'paused' && loop.pause_reason === 'app-child-timeout-awaiting'
-            && lease.resume_policy === 'human' && lease.expires_at === null
-            && strictInstant(bound.continuation.prepared_at)
-            && strictInstant(bound.continuation.confirmed_at)
-            && bound.continuation.failure_code === null;
-          const settledPreserve = preserved && loop.status === 'paused'
-            && lease.resume_policy === 'human' && lease.expires_at === null
-            && loop.pause_reason === bound.continuation.failure_code;
-          if ((!runningPrimary && !emittedManualPreserve && !confirmedAwaitPreserve
-                && !settledPreserve)
-              || lease.state !== 'releasing' || lease.handoff_phase !== expectedPhase
-              || !parent || parent.superseded_by !== bound.run_id) {
-            throw new Error('APP_TASK_TRANSITION_INVALID');
-          }
-        }
-      }, { nowFn: deps.nowFn ?? Date.now,
-        fenceCheck: loop => assertAppCommandIdentity(loop, input, 'APP_TASK_FENCED'),
-        callerBinding, intentDigest, fenceError: 'APP_TASK_FENCED',
-        onRecovered: () => ({ ok: true, outcome: 'already-revoked' }) });
-    if (recovered !== undefined) return recovered;
-    return { ok: true, outcome: 'revoked' };
-  } catch (error) {
-    if (error.message === 'APP_TASK_ALREADY_REVOKED') {
-      return { ok: true, outcome: 'already-revoked' };
-    }
-    if (error.message === 'APP_TASK_NOT_AUTO') return { ok: true, outcome: 'not-auto' };
-    throw error;
+function appSnapshotPhase(root, runId, input, operation, read) {
+  return withAppMutation(root, runId, input, operation, mutation => {
+    const snapshot = read(mutation);
+    return Object.freeze({ data: structuredClone(snapshot.data), hash: snapshot.hash });
+  });
+}
+
+function appCommitPhase(root, runId, input, operation, expectedHash, read, commit) {
+  return withAppMutation(root, runId, input, operation, mutation => {
+    const fresh = read(mutation);
+    if (fresh.hash !== expectedHash) throw new Error(`APP_CAS_LOST:${operation}`);
+    return commit(mutation, fresh.data);
+  });
+}
+
+function bindAppParentRouteOutsideLock(loop, root, input, deps = {}) {
+  const authority = assertAppParentRoute(loop, root, input, deps);
+  const attemptId = input.attemptId ?? loop.session_chain.lease.handoff_attempt_id;
+  const parent = loop.session_chain.sessions.find(session => session.run_id === input.owner);
+  const { continuation } = findAppAttempt(loop, attemptId);
+  return Object.freeze({ attemptId, route: authority.route,
+    contextMode: authority.contextMode, targetCwd: authority.targetCwd,
+    workstreamId: authority.workstreamId,
+    hostTaskCwdDigest: authority.hostTaskCwdDigest,
+    stdinMode: input.stdinMode === undefined
+      ? undefined : parent?.host_surface?.structured_stdin_mode,
+    continuationPhase: continuation.phase });
+}
+
+function assertBoundAppParentMutationFence(loop, input, phases, routeBinding) {
+  const bound = assertAppParentFence(loop, input, phases);
+  const parent = loop.session_chain.sessions.find(session => session.run_id === input.owner);
+  const continuation = bound.continuation;
+  if (bound.attemptId !== routeBinding.attemptId
+      || continuation.route !== routeBinding.route
+      || continuation.context_mode !== routeBinding.contextMode
+      || continuation.target_cwd !== routeBinding.targetCwd
+      || continuation.workstream_id !== routeBinding.workstreamId
+      || continuation.host_task_cwd_digest !== routeBinding.hostTaskCwdDigest
+      || (routeBinding.stdinMode !== undefined
+        && parent?.host_surface?.structured_stdin_mode !== routeBinding.stdinMode)) {
+    throw new Error('APP_ROUTE_UNCONFIRMED:parent-authority');
+  }
+  return bound;
+}
+
+const appCasLost = (error, operation) =>
+  String(error?.message || error) === `APP_CAS_LOST:${operation}`;
+
+function readParentSnapshot(mutation, input, options = {}) {
+  return mutation.readVerifiedState({ fenceCheck: loop =>
+    assertAppParentEntryIdentity(loop, input, options) });
+}
+
+function revokeProjection(loop, input, clockMs = null) {
+  const fence = leaseCheck(loop, { owner: input.owner, generation: input.generation,
+    runtime: input.runtime, intent: 'app-revoke' });
+  if (!fence.ok) {
+    if (fence.reason === 'RUN_TERMINAL') throw new Error('APP_TASK_TERMINAL');
+    throw new Error('APP_TASK_FENCED');
+  }
+  const consent = loop.autonomy.app_task_continuation;
+  if (consent.mode === 'manual' && consent.authority === 'human-confirmed'
+      && consent.revoked_at !== null) return { outcome: 'already-revoked' };
+  if (consent.mode === 'manual') return { outcome: 'not-auto' };
+  if (consent.mode !== 'auto' || consent.authority !== 'human-confirmed'
+      || consent.revoked_at !== null || !strictInstant(consent.confirmed_at)
+      || clockMs !== null && clockMs < Date.parse(consent.confirmed_at)) {
+    throw new Error('APP_TASK_CONSENT_INVALID');
+  }
+  const lease = loop.session_chain.lease;
+  const live = loop.session_chain.sessions.filter(session =>
+    ['emitted', 'prepared', 'confirmed'].includes(session.continuation?.phase));
+  const exact = loop.session_chain.sessions.filter(session =>
+    session.run_id === lease.handoff_child_run_id
+    && session.continuation?.attempt_id === lease.handoff_attempt_id
+    && session.continuation?.transport === 'codex-app');
+  if ((lease.handoff_transport === 'codex-app' && exact.length !== 1)
+      || (lease.handoff_transport !== 'codex-app'
+        && (lease.handoff_attempt_id !== null || live.length !== 0))
+      || live.length > 0 && (live.length !== 1 || exact[0] !== live[0])) {
+    throw new Error('APP_TASK_FENCED');
+  }
+  const bound = exact[0] ?? null;
+  return { outcome: 'revoke', eventData: { owner_run_id: input.owner,
+    generation: input.generation, attempt_id: bound?.continuation.attempt_id ?? null,
+    child_run_id: bound?.run_id ?? null,
+    failure_code: bound && live.includes(bound) ? 'consent-revoked' : null } };
+}
+
+function applyAppRevocation(loop, clock) {
+  const consent = loop.autonomy.app_task_continuation;
+  consent.mode = 'manual'; consent.revoked_at = clock.iso;
+  const lease = loop.session_chain.lease;
+  const exactBareReservation = lease.state === 'active'
+    && lease.handoff_phase === 'reserved'
+    && typeof lease.handoff_idempotency_key === 'string'
+    && typeof lease.handoff_child_run_id === 'string'
+    && lease.handoff_transport === null
+    && lease.handoff_attempt_id === null
+    && !loop.session_chain.sessions.some(session =>
+      session.run_id === lease.handoff_child_run_id);
+  if (exactBareReservation) {
+    Object.assign(lease, { state: 'active', handoff_phase: 'idle',
+      handoff_idempotency_key: null, handoff_child_run_id: null, expires_at: null });
+  }
+  const bound = loop.session_chain.sessions.find(session =>
+    session.run_id === lease.handoff_child_run_id
+    && session.continuation?.attempt_id === lease.handoff_attempt_id
+    && session.continuation?.transport === 'codex-app');
+  if (bound && ['emitted', 'prepared', 'confirmed'].includes(bound.continuation.phase)) {
+    bound.continuation.phase = 'abandoned';
+    bound.continuation.failure_code = 'consent-revoked';
+    lease.resume_policy = 'human'; lease.expires_at = null;
+    loop.status = 'paused'; loop.pause_reason = 'app-task-human-preserve';
   }
 }
 
+export function revokeAppTaskContinuation(root, runId, input, deps = {}) {
+  for (let casAttempt = 0; casAttempt < 2; casAttempt += 1) {
+    const snapshot = appSnapshotPhase(root, runId, input, 'app-revoke', mutation =>
+      mutation.readVerifiedState({ fenceCheck: loop =>
+        assertAppCommandIdentity(loop, input, 'APP_TASK_FENCED') }));
+    const projection = revokeProjection(snapshot.data, input);
+    if (projection.outcome !== 'revoke') return { ok: true, outcome: projection.outcome };
+    if (casAttempt === 0) deps.beforeAppendFn?.({ operation: 'revoke', snapshot: snapshot.data });
+    try {
+      return appCommitPhase(root, runId, input, 'app-revoke', snapshot.hash,
+        mutation => mutation.readVerifiedState({ fenceCheck: loop =>
+          assertAppCommandIdentity(loop, input, 'APP_TASK_FENCED') }),
+        (mutation, fresh) => {
+          let result;
+          mutation.appendAnchored({ type: 'app-task-consent-revoked',
+            data: revokeProjection(fresh, input).eventData },
+          (candidate, _spent, clock) => {
+            applyAppRevocation(candidate, clock);
+            result = { ok: true, outcome: 'revoked' };
+          }, (candidate, clock) => {
+            revokeProjection(candidate, input, clock.ms);
+            const projected = structuredClone(candidate);
+            applyAppRevocation(projected, clock); validateAppCandidate(projected);
+          }, { nowFn: deps.nowFn ?? Date.now,
+            fenceCheck: candidate => assertAppCommandIdentity(
+              candidate, input, 'APP_TASK_FENCED') });
+          return result;
+        });
+    } catch (error) {
+      if (appCasLost(error, 'app-revoke')) continue;
+      throw error;
+    }
+  }
+  throw new Error('APP_REVOKE_CAS_EXHAUSTED');
+}
 const APP_SECRET_KEYS = new Set(['thread_id', 'unconfirmed_thread_id', 'project_id']);
 
 export function redactAppSecrets(value, keyPath = []) {
@@ -915,57 +939,70 @@ export function prepareAppTask(root, runId, input, deps = {}) {
   // This is the final operation before the CAS. Proved pending transactions returned above enter
   // their complete-action gateway directly, so recovery precedes any new advisory work.
   reconcile(root, runId, {});
+  let commitSnapshot;
   try {
-    return completePhase(mutation => {
+    commitSnapshot = appSnapshotPhase(root, runId, completeRequest, 'app-prepare', mutation =>
+      mutation.readVerifiedState(
+        { fenceCheck: loop => assertAppParentIdentity(loop, completeRequest) }));
+  } catch (error) {
+    // Preserve the established final-CAS clock/proof observation contract: a valid caller whose
+    // reconciler installed a corrupt semantic projection observes one clock sample, while an
+    // identity fence still wins without consulting the clock.
+    if (String(error?.message || error).startsWith('RUN_SNAPSHOT_INVALID')) authoritativeNow();
+    throw error;
+  }
+  const commitExisting = assertAppParentFence(
+    commitSnapshot.data, completeRequest, ['emitted', 'prepared']);
+  if (commitExisting.continuation.phase === 'prepared') return completePhase(preparedNoop);
+  if (commitSnapshot.data.status !== 'running'
+      || commitSnapshot.data.session_chain.lease.resume_policy !== 'app') {
+    throw new Error('RUN_PAUSED: app-prepare');
+  }
+  assertAppParentDirectoryIdentity(commitSnapshot.data, root, completeRequest, deps);
+  let commitRoute;
+  try { commitRoute = resolvePrepareRoute(commitSnapshot.data, root, completeRequest, deps); }
+  catch { throw new Error('APP_PREPARE_ROUTE_CHANGED'); }
+  if (JSON.stringify(commitRoute) !== JSON.stringify(route)) {
+    throw new Error('APP_PREPARE_ROUTE_CHANGED');
+  }
+  const commitRouteBinding = bindAppParentRouteOutsideLock(
+    commitSnapshot.data, root, completeRequest, deps);
+  deps.beforeAppendFn?.({ operation: 'prepare', snapshot: commitSnapshot.data });
+  try {
+    return appCommitPhase(root, runId, completeRequest, 'app-prepare', commitSnapshot.hash,
+      mutation => mutation.readVerifiedState(
+        { fenceCheck: loop => assertAppParentIdentity(loop, completeRequest) }),
+      (mutation, _fresh) => {
       let result;
-      try {
-        mutation.appendAnchored({ type: 'app-task-prepared',
-          data: { attempt_id: existing.attemptId, child_run_id: existing.session.run_id,
+      mutation.appendAnchored({ type: 'app-task-prepared',
+          data: { attempt_id: commitExisting.attemptId,
+            child_run_id: commitExisting.session.run_id,
             descriptor_digest: descriptorDigest } },
         (loop, _spent, clock) => {
-          applyPrepared(loop, existing.attemptId, route, descriptorDigest, clock);
+          applyPrepared(loop, commitExisting.attemptId, route, descriptorDigest, clock);
           result = { ok: true, outcome: 'prepared', do_not_call: false,
-            attempt_id: existing.attemptId, route: route.kind,
-            context_mode: existing.continuation.context_mode, action };
+            attempt_id: commitExisting.attemptId, route: route.kind,
+            context_mode: commitExisting.continuation.context_mode, action };
         }, (loop, clock) => {
-          const bound = assertAppParentMutationFence(loop, root, request,
-            ['emitted', 'prepared'], deps);
+          const bound = assertBoundAppParentMutationFence(loop, request,
+            ['emitted'], commitRouteBinding);
           if (loop.status !== 'running' || loop.session_chain.lease.resume_policy !== 'app') {
             throw new Error('RUN_PAUSED: app-prepare');
           }
-          if (bound.continuation.phase === 'prepared') throw new Error('APP_PREPARE_CAS_LOST');
           if (clock.ms > Date.parse(bound.continuation.prepare_deadline)) {
             throw new Error('APP_PREPARE_DEADLINE_EXPIRED');
-          }
-          let freshRoute;
-          try { freshRoute = resolvePrepareRoute(loop, root, request, deps); }
-          catch { throw new Error('APP_PREPARE_ROUTE_CHANGED'); }
-          if (JSON.stringify(freshRoute) !== JSON.stringify(route)) {
-            throw new Error('APP_PREPARE_ROUTE_CHANGED');
           }
           const freshGate = gateFor(loop, { now: clock.ms });
           if (!freshGate.ok) throw new Error(`APP_GATE_BLOCKED:${freshGate.blocked_by[0]}`);
           const candidate = structuredClone(loop);
-          applyPrepared(candidate, existing.attemptId, route, descriptorDigest, clock);
+          applyPrepared(candidate, commitExisting.attemptId, route, descriptorDigest, clock);
           validateAppCandidate(candidate);
         }, { nowFn: authoritativeNow,
           fenceCheck: loop => assertAppParentIdentity(loop, request) });
-      } catch (error) {
-        if (String(error?.message || error) !== 'APP_PREPARE_CAS_LOST') throw error;
-        const current = mutation.readVerifiedState().data;
-        const bound = assertAppParentFence(current, request, ['prepared']);
-        if (bound.attemptId === existing.attemptId
-            && bound.continuation.descriptor_digest === descriptorDigest
-            && bound.continuation.project_id === (route.kind === 'create' ? route.projectId : null)
-            && current.session_chain.lease.handoff_phase === 'spawned') {
-          return { ok: true, outcome: 'already-prepared', do_not_call: true,
-            attempt_id: existing.attemptId };
-        }
-        throw error;
-      }
       return result;
     });
   } catch (error) {
+    if (appCasLost(error, 'app-prepare')) return completePhase(preparedNoop);
     if (String(error?.message || error) === 'APP_PREPARE_ROUTE_CHANGED') {
       return settlePrepareFailure(root, runId, request, { code: 'app-launch-unconfirmed',
         preserve: true, nowFn: authoritativeNow, gateFn: gateFor, deps,
@@ -980,7 +1017,6 @@ export function prepareAppTask(root, runId, input, deps = {}) {
         phase: requestPhase });
   }
 }
-
 function assertRecordedReaderMode(loop, input) {
   const recorded = loop.session_chain.sessions.find(item => item.run_id === input.owner)
     ?.host_surface?.structured_stdin_mode;
@@ -1154,53 +1190,63 @@ export function isAppPublicFailureCode(value) {
 
 export function confirmAppTask(root, runId, input, deps = {}) {
   const threadId = validateOpaqueId(input.threadId, { label: 'thread-id' });
-  return withAppMutation(root, runId, input, 'app-confirm', mutation => {
-    const snapshot = mutation.readVerifiedState(
-      { fenceCheck: loop => assertAppParentEntryIdentity(loop, input,
-        { allowAcquired: true }) }).data;
-    const existing = findAppAttempt(snapshot, input.attemptId).continuation;
-    if (['confirmed', 'acquired'].includes(existing.phase)) {
-      assertRecordedReaderMode(snapshot, input);
-      if (existing.thread_id !== threadId) throw new Error('APP_RECEIPT_FENCED');
-      const exact = existing.phase === 'acquired'
-        ? exactImmediateAppAcquiredProjection(snapshot, input)
-        : exactConfirmedResponseProjection(snapshot, input);
-      const exactTail = exactAppLifecycleTail(
-        snapshot, readLines(root, runId), input, existing.phase);
+  for (let casAttempt = 0; casAttempt < 2; casAttempt += 1) {
+    const snapshot = appSnapshotPhase(root, runId, input, 'app-confirm', mutation =>
+      readParentSnapshot(mutation, input, { allowAcquired: true }));
+    const existing = findAppAttempt(snapshot.data, input.attemptId);
+    if (['confirmed', 'acquired'].includes(existing.continuation.phase)) {
+      assertRecordedReaderMode(snapshot.data, input);
+      if (existing.continuation.thread_id !== threadId) throw new Error('APP_RECEIPT_FENCED');
+      const exact = existing.continuation.phase === 'acquired'
+        ? exactImmediateAppAcquiredProjection(snapshot.data, input)
+        : exactConfirmedResponseProjection(snapshot.data, input);
+      const exactTail = exactAppLifecycleTail(snapshot.data, readLines(root, runId), input,
+        existing.continuation.phase);
       if (!exact || !exactTail) throw new Error('APP_RESPONSE_PROJECTION_CHANGED');
-      return { ok: true,
-        outcome: existing.phase === 'acquired' ? 'already-complete' : 'already-confirmed',
-        attempt_id: input.attemptId };
+      return { ok: true, outcome: existing.continuation.phase === 'acquired'
+        ? 'already-complete' : 'already-confirmed', attempt_id: input.attemptId };
     }
-    let result;
-    mutation.appendAnchored({ type: 'app-task-confirmed', data: {
-      attempt_id: input.attemptId,
-      child_run_id: findAppAttempt(snapshot, input.attemptId).session.run_id,
-      receipt_digest: contentHash('confirmed-thread\0' + threadId),
-    } }, (loop, _spent, clock) => {
-      const { continuation } = findAppAttempt(loop, input.attemptId);
-      continuation.phase = 'confirmed';
-      continuation.thread_id = threadId;
-      continuation.confirmed_at = clock.iso;
-      result = { ok: true, outcome: 'confirmed', attempt_id: input.attemptId };
-    }, (loop, clock) => {
-      const { continuation } = assertAppParentMutationFence(
-        loop, root, input, ['prepared'], deps);
-      assertRecordedReaderMode(loop, input);
-      if (clock.ms > Date.parse(continuation.confirmation_deadline)) {
-        throw new Error('APP_ATTEMPT_FENCED');
-      }
-      const candidate = structuredClone(loop);
-      const next = findAppAttempt(candidate, input.attemptId).continuation;
-      next.phase = 'confirmed'; next.thread_id = threadId; next.confirmed_at = clock.iso;
-      validateAppCandidate(candidate);
-    }, { nowFn: deps.nowFn ?? Date.now,
-      fenceCheck: loop => assertAppParentIdentity(loop, input),
-    });
-    return result;
-  });
+    assertAppParentFence(snapshot.data, input, ['prepared']);
+    const routeBinding = bindAppParentRouteOutsideLock(snapshot.data, root, input, deps);
+    if (casAttempt === 0) deps.beforeAppendFn?.({ operation: 'confirm', snapshot: snapshot.data });
+    try {
+      return appCommitPhase(root, runId, input, 'app-confirm', snapshot.hash,
+        mutation => readParentSnapshot(mutation, input, { allowAcquired: true }),
+        (mutation, fresh) => {
+          const bound = assertAppParentFence(fresh, input, ['prepared']);
+          assertRecordedReaderMode(fresh, input);
+          let result;
+          mutation.appendAnchored({ type: 'app-task-confirmed', data: {
+            attempt_id: input.attemptId, child_run_id: bound.session.run_id,
+            receipt_digest: contentHash('confirmed-thread\0' + threadId) } },
+          (candidate, _spent, clock) => {
+            const next = findAppAttempt(candidate, input.attemptId).continuation;
+            next.phase = 'confirmed'; next.thread_id = threadId; next.confirmed_at = clock.iso;
+            result = { ok: true, outcome: 'confirmed', attempt_id: input.attemptId };
+          }, (candidate, clock) => {
+            const next = assertBoundAppParentMutationFence(candidate, input,
+              ['prepared'], routeBinding)
+              .continuation;
+            assertRecordedReaderMode(candidate, input);
+            if (clock.ms > Date.parse(next.confirmation_deadline)) {
+              throw new Error('APP_ATTEMPT_FENCED');
+            }
+            const projected = structuredClone(candidate);
+            const continuation = findAppAttempt(projected, input.attemptId).continuation;
+            continuation.phase = 'confirmed'; continuation.thread_id = threadId;
+            continuation.confirmed_at = clock.iso; validateAppCandidate(projected);
+          }, { nowFn: deps.nowFn ?? Date.now,
+            fenceCheck: candidate => assertAppParentIdentity(candidate, input),
+            });
+          return result;
+        });
+    } catch (error) {
+      if (appCasLost(error, 'app-confirm')) continue;
+      throw error;
+    }
+  }
+  throw new Error('APP_CONFIRM_CAS_EXHAUSTED');
 }
-
 function applyAppFailure(loop, input, code, receipt) {
   const { session, continuation } = findAppAttempt(loop, input.attemptId);
   continuation.phase = 'failed';
@@ -1510,69 +1556,81 @@ function readAppAwaitSnapshot(root, runId, input, deps, mutation) {
 }
 
 export function sweepUnconfirmedAppTask(root, runId, input, deps = {}) {
-  return withAppMutation(root, runId, input, 'app-sweep', mutation => {
-    const snapshot = mutation.readVerifiedState(
-      { fenceCheck: loop => assertAppParentEntryIdentity(loop, input,
-        { allowFailed: true }) }).data;
-    const historical = findAppAttempt(snapshot, input.attemptId);
+  for (let casAttempt = 0; casAttempt < 2; casAttempt += 1) {
+    const snapshot = appSnapshotPhase(root, runId, input, 'app-sweep', mutation =>
+      readParentSnapshot(mutation, input, { allowFailed: true }));
+    const historical = findAppAttempt(snapshot.data, input.attemptId);
     if (historical.continuation.phase === 'failed'
         && ['app-prepare-unattended', 'app-launch-unconfirmed']
-          .includes(historical.continuation.failure_code)) {
+          .includes(historical.continuation.failure_code)
+        ) {
       const replayInput = { ...input, code: historical.continuation.failure_code };
-      if (!exactFailedResponseProjection(snapshot, replayInput, null)
-          || !exactAppLifecycleTail(
-            snapshot, readLines(root, runId), replayInput, 'swept', null)) {
+      if (!exactFailedResponseProjection(snapshot.data, replayInput, null)
+          || !exactAppLifecycleTail(snapshot.data, readLines(root, runId),
+            replayInput, 'swept', null)) {
         throw new Error('APP_RESPONSE_PROJECTION_CHANGED');
       }
       return { ok: true, outcome: 'already-swept', attempt_id: input.attemptId,
         failure_code: historical.continuation.failure_code };
     }
-    const existing = assertAppParentFence(snapshot, input, ['emitted', 'prepared']);
+    const existing = assertAppParentFence(snapshot.data, input, ['emitted', 'prepared']);
+    const routeBinding = bindAppParentRouteOutsideLock(snapshot.data, root, input, deps);
     const code = existing.continuation.phase === 'emitted'
       ? 'app-prepare-unattended' : 'app-launch-unconfirmed';
-    let result;
+    if (casAttempt === 0) deps.beforeAppendFn?.({ operation: 'sweep', snapshot: snapshot.data });
     try {
-      mutation.appendAnchored({ type: 'app-task-swept', data: {
-        attempt_id: input.attemptId, child_run_id: existing.session.run_id, failure_code: code,
-        owner_run_id: input.owner, generation: input.generation,
-      } }, loop => {
-        const { continuation } = findAppAttempt(loop, input.attemptId);
-        continuation.phase = 'failed'; continuation.failure_code = code;
-        continuation.failure_binding = { owner_run_id: input.owner, generation: input.generation };
-        loop.status = 'paused'; loop.pause_reason = code;
-        loop.session_chain.lease.resume_policy = 'human';
-        loop.session_chain.lease.expires_at = null;
-        result = { ok: true, outcome: 'swept', attempt_id: input.attemptId, failure_code: code };
-      }, (loop, clock) => {
-        const { continuation } = assertAppParentMutationFence(loop, root, input,
-          [existing.continuation.phase], deps);
-        const freshCode = continuation.phase === 'emitted'
-          ? 'app-prepare-unattended' : 'app-launch-unconfirmed';
-        const freshDeadline = continuation.phase === 'emitted'
-          ? continuation.prepare_deadline : continuation.confirmation_deadline;
-        if (freshCode !== code) throw new Error('APP_ATTEMPT_FENCED');
-        if (clock.ms <= Date.parse(freshDeadline)) throw new Error('APP_NOT_EXPIRED');
-        const candidate = structuredClone(loop);
-        const next = findAppAttempt(candidate, input.attemptId).continuation;
-        next.phase = 'failed'; next.failure_code = code;
-        next.failure_binding = { owner_run_id: input.owner, generation: input.generation };
-        candidate.status = 'paused'; candidate.pause_reason = code;
-        candidate.session_chain.lease.resume_policy = 'human';
-        candidate.session_chain.lease.expires_at = null;
-        validateAppCandidate(candidate);
-      }, { nowFn: deps.nowFn ?? Date.now,
-        fenceCheck: loop => assertAppParentIdentity(loop, input),
-      });
+      return appCommitPhase(root, runId, input, 'app-sweep', snapshot.hash,
+        mutation => readParentSnapshot(mutation, input, { allowFailed: true }),
+        (mutation, fresh) => {
+          const bound = assertAppParentFence(fresh, input, [existing.continuation.phase]);
+          const deadline = bound.continuation.phase === 'emitted'
+            ? bound.continuation.prepare_deadline : bound.continuation.confirmation_deadline;
+          const now = Number((deps.nowFn ?? Date.now)());
+          if (now <= Date.parse(deadline)) {
+            return { ok: true, outcome: 'not-expired', attempt_id: input.attemptId };
+          }
+          let result;
+          mutation.appendAnchored({ type: 'app-task-swept', data: {
+            attempt_id: input.attemptId, child_run_id: bound.session.run_id,
+            failure_code: code, owner_run_id: input.owner, generation: input.generation } },
+          candidate => {
+            const next = findAppAttempt(candidate, input.attemptId).continuation;
+            next.phase = 'failed'; next.failure_code = code;
+            next.failure_binding = { owner_run_id: input.owner, generation: input.generation };
+            candidate.status = 'paused'; candidate.pause_reason = code;
+            candidate.session_chain.lease.resume_policy = 'human';
+            candidate.session_chain.lease.expires_at = null;
+            result = { ok: true, outcome: 'swept', attempt_id: input.attemptId,
+              failure_code: code };
+          }, (candidate, clock) => {
+            const next = assertBoundAppParentMutationFence(candidate, input,
+              [existing.continuation.phase], routeBinding).continuation;
+            const freshDeadline = next.phase === 'emitted'
+              ? next.prepare_deadline : next.confirmation_deadline;
+            if (clock.ms <= Date.parse(freshDeadline)) throw new Error('APP_NOT_EXPIRED');
+            const projected = structuredClone(candidate);
+            const continuation = findAppAttempt(projected, input.attemptId).continuation;
+            continuation.phase = 'failed'; continuation.failure_code = code;
+            continuation.failure_binding = { owner_run_id: input.owner,
+              generation: input.generation };
+            projected.status = 'paused'; projected.pause_reason = code;
+            projected.session_chain.lease.resume_policy = 'human';
+            projected.session_chain.lease.expires_at = null; validateAppCandidate(projected);
+          }, { nowFn: () => now,
+            fenceCheck: candidate => assertAppParentIdentity(candidate, input),
+            });
+          return result;
+        });
     } catch (error) {
+      if (appCasLost(error, 'app-sweep')) continue;
       if (String(error?.message || error) === 'APP_NOT_EXPIRED') {
         return { ok: true, outcome: 'not-expired', attempt_id: input.attemptId };
       }
       throw error;
     }
-    return result;
-  });
+  }
+  throw new Error('APP_SWEEP_CAS_EXHAUSTED');
 }
-
 export function statusAppTask(root, runId, { attemptId } = {}) {
   const loop = readVerifiedState(root, runId).data;
   const allSessions = loop.session_chain?.sessions ?? [];
@@ -1648,8 +1706,14 @@ export function statusAppTask(root, runId, { attemptId } = {}) {
 }
 
 export function awaitAppTask(root, runId, input, deps = {}) {
-  const read = () => withAppMutation(root, runId, input, 'app-await', mutation =>
-    readAppAwaitSnapshot(root, runId, input, deps, mutation));
+  const read = deps.readStateFn
+    ? () => {
+      const loop = deps.readStateFn();
+      assertAppAwaitEntryIdentity(loop, input);
+      return loop;
+    }
+    : () => withAppMutation(root, runId, input, 'app-await', mutation =>
+      readAppAwaitSnapshot(root, runId, input, {}, mutation));
   const authoritativeNow = deps.nowFn ?? Date.now;
   const pollNow = deps.pollNowFn ?? Date.now;
   const sleep = deps.sleepFn ?? (ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms));
@@ -1717,6 +1781,9 @@ export function awaitAppTask(root, runId, input, deps = {}) {
         if (readiness === 'foreign') throw new Error('LEASE_FENCED: App readiness');
         const found = findAppAttempt(loop, input.attemptId).continuation;
         if (['failed', 'abandoned'].includes(found.phase)) throw new Error('APP_READY_CHANGED');
+        if (exactAwaitTimeoutProjection(loop, input)) {
+          throw new Error('APP_AWAIT_ALREADY_PRESERVED');
+        }
         assertAppParentMutationFence(loop, root, input, ['confirmed'], deps);
         if (clock.ms < deadline) throw new Error('APP_AWAIT_NOT_EXPIRED');
         const candidate = structuredClone(loop);
@@ -1729,24 +1796,32 @@ export function awaitAppTask(root, runId, input, deps = {}) {
       }));
   } catch (error) {
     const message = String(error?.message || error);
-    const convergence = ['APP_READY_ACQUIRED', 'APP_READY_CHANGED'].includes(message)
+    const convergence = ['APP_READY_ACQUIRED', 'APP_READY_CHANGED',
+      'APP_AWAIT_ALREADY_PRESERVED'].includes(message)
       || message.startsWith('LEASE_FENCED:');
     if (!convergence) throw error;
-    const current = read();
+    const current = message === 'APP_AWAIT_ALREADY_PRESERVED'
+      ? (deps.catchReadStateFn ?? read)()
+      : read();
     const currentReadiness = exactAppReadiness(current, input);
-    if ((['APP_READY_ACQUIRED', 'APP_READY_CHANGED'].includes(message)
-        || message.startsWith('LEASE_FENCED:')) && currentReadiness === 'foreign') {
+    if (currentReadiness === 'foreign') {
       throw new Error('LEASE_FENCED: App readiness');
     }
-    if ((message === 'APP_READY_ACQUIRED' || message.startsWith('LEASE_FENCED:'))
+    if ((message === 'APP_READY_ACQUIRED' || message === 'APP_AWAIT_ALREADY_PRESERVED'
+        || message.startsWith('LEASE_FENCED:'))
         && currentReadiness === 'acquired') {
       return { ok: true, outcome: 'acquired', attempt_id: input.attemptId };
     }
-    if (message === 'APP_READY_CHANGED') {
+    if (['APP_READY_CHANGED', 'APP_AWAIT_ALREADY_PRESERVED'].includes(message)) {
       if (['failed', 'abandoned'].includes(currentReadiness)) {
         const safe = statusAppTask(root, runId, { attemptId: input.attemptId });
         return { ok: false, outcome: currentReadiness, attempt_id: input.attemptId,
           failure_code: safe.current?.failure_code ?? null };
+      }
+      if (message === 'APP_AWAIT_ALREADY_PRESERVED'
+          && exactAwaitTimeoutProjection(current, input)) {
+        return { ok: false, outcome: 'already-timeout-preserved',
+          attempt_id: input.attemptId };
       }
     }
     throw error;

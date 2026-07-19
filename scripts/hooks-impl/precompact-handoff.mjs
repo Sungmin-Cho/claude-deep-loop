@@ -146,7 +146,7 @@ export async function runPreCompactHandoff(input = {}, {
     return { ok: true, action: 'emitted',
       childRunId: em.childRunId, headless };
   }
-  if (appOrigin) {
+  if (appOrigin || em.appOriginFallback === true) {
     if (em.appOriginFallback !== true) {
       throw new Error('APP_ORIGIN_FALLBACK_MISSING');
     }
