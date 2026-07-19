@@ -581,10 +581,11 @@ test('skill publishes the exact fixed App init command family', () => {
     'init-run preflight --runtime codex --preflight-nonce <32_hex_process_nonce> --stdin-mode <pipe-open-noecho|pty-raw-noecho> --observation-stdin',
     'init-run prepare --runtime codex',
     'init-run prepare --manual-enums --runtime <codex|claude>',
-    'init-run --init-attempt <init_attempt> --expected-current-digest <previous_current_digest> --expected-request-digest <expected_request_digest> --expected-preflight-digest NONE --manual-enums',
+    'init-run --init-attempt <init_attempt> --expected-current-digest <previous_current_digest> --expected-request-digest <expected_request_digest> --expected-preflight-digest NONE --prepared-authority \'<prepared_authority_json_compact>\' --manual-enums',
     'init-run status --attempt <init_attempt>',
     '--expected-current-digest <previous_current_digest>',
     '--expected-request-digest <expected_request_digest>',
+    'DEEP_LOOP_STDIN_READY:v1:init-commit:<attempt>.<previous_current_digest>.<request_digest>.<preflight_digest>.<prepared_authority_digest>:<mode>',
   ]) assert.ok(source.includes(command), `missing fixed init CLI: ${command}`);
 
   const variants = [
@@ -613,7 +614,32 @@ test('skill publishes the exact fixed App init command family', () => {
     }
     assert.ok(commit.includes('--expected-request-digest <expected_request_digest>'),
       `${marker}: full commit must bind prepare request digest`);
+    assert.ok(commit.includes("--prepared-authority '<prepared_authority_json_compact>'"),
+      `${marker}: full commit must transport prepare authority`);
   }
+  assert.match(source, /prepared_authority_json_compact[^\n]*byte-for-byte/i);
+  assert.match(source, /prepared_authority_digest[^\n]*SHA-256/i);
+  assert.match(source, /prepared_authority_json_compact[^\n]*(재구성|reconstruct)[^\n]*(금지|않)/i);
   assert.match(source, /surface\/source paired form:[^\n]*둘 다 생략[^\n]*null\/null/);
   assert.match(source, /capability가 0개이면[^\n]*--capabilities[^\n]*생략[^\n]*exact `\[\]`/i);
+});
+
+test('documented enum prepare authority completes a real fixed init commit', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-skill-authority-')));
+  const common = ['--project-root', root, '--manual-enums', '--runtime', 'codex',
+    '--goal', 'skill-authority-fixture', '--app-continuation', 'manual',
+    '--app-consent-authority', 'default-manual'];
+  const prepared = spawnSync(process.execPath, [CLI, 'init-run', 'prepare', ...common,
+    '--expected-observation-digest', 'NONE'], { cwd: root, encoding: 'utf8' });
+  assert.equal(prepared.status, 0, prepared.stderr);
+  const binding = JSON.parse(prepared.stdout);
+  const authority = JSON.stringify(binding.prepared_authority);
+  const committed = spawnSync(process.execPath, [CLI, 'init-run', ...common,
+    '--init-attempt', binding.attempt_id,
+    '--expected-current-digest', binding.previous_current_digest,
+    '--expected-request-digest', binding.expected_request_digest,
+    '--expected-preflight-digest', 'NONE', '--prepared-authority', authority],
+  { cwd: root, encoding: 'utf8' });
+  assert.equal(committed.status, 0, committed.stderr);
+  assert.equal(JSON.parse(committed.stdout).run_id, binding.attempt_id);
 });
