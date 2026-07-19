@@ -1031,6 +1031,32 @@ export function authenticateVerifiedMutationCaller(root, runId, {
   });
 }
 
+export function readAuthenticatedMutationSnapshot(root, runId, {
+  callerBinding, fenceCheck, fenceError = 'LEASE_FENCED: mutation-snapshot',
+} = {}) {
+  const binding = requireCallerBinding(callerBinding);
+  if (typeof fenceCheck !== 'function') throw new Error('INVALID_FENCE_CHECK');
+  if (typeof fenceError !== 'string' || fenceError.length === 0) {
+    throw new Error('MUTATION_FENCE_ERROR_REQUIRED');
+  }
+  return withLock(root, runId, () => {
+    // Strict marker parsing is deliberately the first durable read. This API authenticates a
+    // snapshot for request construction only; it never recovers or cleans any transaction bytes.
+    const marker = readAnchoredMarkerUnderLock(root, runId);
+    if (marker !== null) {
+      if (marker.caller.owner !== binding.owner
+          || marker.caller.generation !== binding.generation) {
+        throw new Error(fenceError);
+      }
+      const loop = pendingAuthenticationStateUnderLock(root, runId, marker);
+      fenceCheck(loop);
+      return Object.freeze({ data: structuredClone(loop), pending: true });
+    }
+    const verified = readVerifiedStateUnderLock(root, runId, { fenceCheck });
+    return Object.freeze({ data: verified.data, pending: false });
+  });
+}
+
 export function readVerifiedState(root, runId, options = {}) {
   return withLock(root, runId, () => {
     if (readAnchoredMarkerUnderLock(root, runId) !== null) {

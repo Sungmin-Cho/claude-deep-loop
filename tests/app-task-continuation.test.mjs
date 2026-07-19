@@ -716,7 +716,8 @@ test('observe revoke and status fence first then reject a corrupt success projec
 import { test as test8b } from 'node:test';
 import assert8b from 'node:assert/strict';
 import { existsSync as exists8b, mkdirSync as mkdir8b, mkdtempSync as temp8b,
-  rmdirSync as rmdir8b, writeFileSync as write8bFile } from 'node:fs';
+  readdirSync as readDir8b, readFileSync as read8bFile, rmdirSync as rmdir8b,
+  writeFileSync as write8bFile } from 'node:fs';
 import { spawn as spawn8b } from 'node:child_process';
 import { tmpdir as tmp8b } from 'node:os';
 import { join as join8b } from 'node:path';
@@ -1175,6 +1176,98 @@ async function waitForFile8b(path) {
   }
   throw new Error(`barrier-timeout:${path}`);
 }
+
+function pendingJournalBytes8b(root, runId) {
+  const directory = join8b(root, '.deep-loop', 'runs', runId);
+  return Object.fromEntries(readDir8b(directory).filter(name => name.startsWith('.anchored-'))
+    .sort().map(name => [name, read8bFile(join8b(directory, name))]));
+}
+
+test8b('pending prepare authenticates the complete action before recovery', async () => {
+  const fixture = emitted8b();
+  const gateFile = join8b(fixture.root, 'start-pending-prepare');
+  const readyFile = join8b(fixture.root, 'pending-prepare-ready');
+  write8bFile(gateFile, 'go');
+  const crashed = await prepareWorker8b(fixture.root, fixture.runId, {
+    gateFile, readyFile, crashAt: 'pending-after-rename', expectedExit: 91,
+  });
+  assert8b.equal(crashed.status, 91, crashed.stderr || crashed.stdout || 'wrong crash exit');
+  rmdir8b(join8b(fixture.root, '.deep-loop', 'runs', fixture.runId, '.lock'));
+
+  const input = { owner: fixture.runId, generation: 1,
+    stdinMode: 'pty-raw-noecho', hostInput: fixture.hostInput };
+  const action = prompt => ({ tool: 'create_thread', target: { type: 'project',
+    projectId: 'project $`\\', environment: { type: 'local' } }, prompt });
+  const before = bytes7d(fixture.root, fixture.runId);
+  const pendingBefore = pendingJournalBytes8b(fixture.root, fixture.runId);
+  assert8b.throws(() => prepare8b(fixture.root, fixture.runId, input, {
+    cwdFn: () => fixture.root, descriptorBuilder: () => action('changed prompt'),
+    reconcileBudgetFn: () => {}, gateFn: () => ({ ok: true, blocked_by: [] }),
+  }), /APP_PREPARE_REQUEST_FENCED/);
+  assert8b.deepEqual(bytes7d(fixture.root, fixture.runId), before,
+    'divergent action must not publish the pending transaction');
+  assert8b.deepEqual(pendingJournalBytes8b(fixture.root, fixture.runId), pendingBefore,
+    'divergent action must not alter pending transaction bytes');
+  const stillEmitted = read8b(fixture.root, fixture.runId).data.session_chain.sessions
+    .find(session => session.run_id === fixture.childRunId).continuation;
+  assert8b.equal(stillEmitted.phase, 'emitted');
+  assert8b.equal(lines8b(fixture.root, fixture.runId)
+    .filter(event => event.type === 'app-task-prepared').length, 0);
+
+  const exact = prepare8b(fixture.root, fixture.runId, input, {
+    cwdFn: () => fixture.root, descriptorBuilder: () => action('prompt'),
+    nowFn: () => assert8b.fail('pending exact retry does not sample a new clock'),
+    reconcileBudgetFn: () => assert8b.fail('pending exact retry does not reconcile'),
+    gateFn: () => assert8b.fail('pending exact retry does not gate'),
+  });
+  assert8b.deepEqual(exact, { ok: true, outcome: 'already-prepared', do_not_call: true,
+    attempt_id: fixture.attemptId });
+  assert8b.equal(Object.hasOwn(exact, 'action'), false);
+  assert8b.equal(lines8b(fixture.root, fixture.runId)
+    .filter(event => event.type === 'app-task-prepared').length, 1);
+});
+
+const PREPARE_MARKER_CRASH_POINTS8B = Object.freeze([
+  'pending-after-rename', 'event-after-partial-append', 'event-after-full-append',
+  'state-after-rename', 'hash-after-rename', 'before-cleanup',
+  'state-replace-after-create', 'state-replace-after-fsync',
+  'state-replace-after-rename-before-dir-fsync',
+  'hash-replace-after-create', 'hash-replace-after-fsync',
+  'hash-replace-after-rename-before-dir-fsync',
+  'cleanup-events-after-unlink', 'cleanup-state-after-unlink',
+  'cleanup-hash-after-unlink',
+]);
+
+test8b('exact action retry converges from every pending prepare marker stage', async () => {
+  for (const point of PREPARE_MARKER_CRASH_POINTS8B) {
+    const fixture = emitted8b();
+    const gateFile = join8b(fixture.root, `start-${point}`);
+    const readyFile = join8b(fixture.root, `ready-${point}`);
+    write8bFile(gateFile, 'go');
+    const crashed = await prepareWorker8b(fixture.root, fixture.runId, {
+      gateFile, readyFile, crashAt: point, expectedExit: 91,
+    });
+    assert8b.equal(crashed.status, 91,
+      `${point}: ${crashed.stderr || crashed.stdout || 'wrong crash exit'}`);
+    rmdir8b(join8b(fixture.root, '.deep-loop', 'runs', fixture.runId, '.lock'));
+    const exact = prepare8b(fixture.root, fixture.runId, {
+      owner: fixture.runId, generation: 1, stdinMode: 'pty-raw-noecho',
+      hostInput: fixture.hostInput,
+    }, {
+      cwdFn: () => fixture.root,
+      descriptorBuilder: () => ({ tool: 'create_thread', target: { type: 'project',
+        projectId: 'project $`\\', environment: { type: 'local' } }, prompt: 'prompt' }),
+      nowFn: () => assert8b.fail(`${point}: exact retry does not sample a new clock`),
+      reconcileBudgetFn: () => assert8b.fail(`${point}: exact retry does not reconcile`),
+      gateFn: () => assert8b.fail(`${point}: exact retry does not gate`),
+    });
+    assert8b.deepEqual(exact, { ok: true, outcome: 'already-prepared', do_not_call: true,
+      attempt_id: fixture.attemptId }, point);
+    assert8b.equal(Object.hasOwn(exact, 'action'), false, point);
+    assert8b.equal(lines8b(fixture.root, fixture.runId)
+      .filter(event => event.type === 'app-task-prepared').length, 1, point);
+  }
+});
 
 test8b('prepare response loss converges without regranting complete action authority', async () => {
   const fixture = emitted8b();

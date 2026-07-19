@@ -278,6 +278,7 @@ test6b('invalid injected clock fails before an event append', () => {
 import { assertVerifiedRunSnapshot as assertSnapshot7c,
   authenticateVerifiedMutationCaller as authenticate7h,
   appendAnchored as append7c, mutationIntentDigest as intent7c,
+  readAuthenticatedMutationSnapshot as snapshot8b,
   readLines as lines7c, readVerifiedState as verified7c,
   withVerifiedMutationLock as mutation7b }
   from '../scripts/lib/integrity.mjs';
@@ -657,6 +658,88 @@ function genericCrashCase7b(operation) {
       : operation === 'workstream-new' ? workstream : {};
   return { fixture, invoke, retryWithResult, workerInput };
 }
+
+function pendingGenericAppend8b(point = 'pending-after-rename') {
+  const { fixture, workerInput } = genericCrashCase7b('generic-append');
+  const worker = file7b(new URL('./helpers/anchored-crash-worker.mjs', import.meta.url));
+  const child = spawn7c(process.execPath,
+    [worker, fixture.root, fixture.runId, 'generic-append', point], {
+      shell: false, encoding: 'utf8', timeout: 10_000,
+      env: { ...process.env, DEEP_LOOP_CRASH_OWNER: fixture.owner,
+        DEEP_LOOP_CRASH_GENERATION: String(fixture.generation),
+        DEEP_LOOP_CRASH_INPUT: JSON.stringify(workerInput) },
+    });
+  assert6b.equal(child.status, 91, child.stderr || child.stdout || child.error?.message);
+  rmdir7b(join7b(fixture.root, '.deep-loop', 'runs', fixture.runId, '.lock'));
+  return fixture;
+}
+
+test6b('authenticated mutation snapshot is cloned verified and read-only with or without pending', () => {
+  const clean = fixture7c('dl-authenticated-snapshot-clean-');
+  const cleanBefore = bytes7c(clean.root, clean.runId);
+  const cleanResult = snapshot8b(clean.root, clean.runId, {
+    callerBinding: { owner: clean.owner, generation: clean.generation },
+    fenceCheck: loop => assert6b.equal(loop.session_chain.lease.owner_run_id, clean.owner),
+    fenceError: 'LEASE_FENCED: authenticated-snapshot',
+  });
+  assert6b.equal(cleanResult.pending, false);
+  cleanResult.data.goal = 'caller clone only';
+  assert6b.deepEqual(bytes7c(clean.root, clean.runId), cleanBefore);
+
+  const pending = pendingGenericAppend8b();
+  const pendingBefore = completeJournalBytes7b(pending.root, pending.runId);
+  const pendingResult = snapshot8b(pending.root, pending.runId, {
+    callerBinding: { owner: pending.owner, generation: pending.generation },
+    fenceCheck: loop => assert6b.equal(loop.session_chain.lease.owner_run_id, pending.owner),
+    fenceError: 'LEASE_FENCED: authenticated-snapshot',
+  });
+  assert6b.equal(pendingResult.pending, true);
+  pendingResult.data.goal = 'caller clone only';
+  assert6b.deepEqual(completeJournalBytes7b(pending.root, pending.runId), pendingBefore);
+
+  assert6b.throws(() => snapshot8b(pending.root, pending.runId, {
+    callerBinding: { owner: '01JAPPF0R00000000000000000', generation: pending.generation },
+    fenceCheck: () => assert6b.fail('wrong caller precedes semantic fence'),
+    fenceError: 'LEASE_FENCED: authenticated-snapshot',
+  }), /LEASE_FENCED: authenticated-snapshot/);
+  assert6b.deepEqual(completeJournalBytes7b(pending.root, pending.runId), pendingBefore);
+});
+
+test6b('authenticated pending snapshot rejects marker state and root corruption before fence', () => {
+  const malformed = pendingGenericAppend8b();
+  const malformedMarker = join7b(runDir7b(malformed.root, malformed.runId),
+    '.anchored-pending.json');
+  writeFileSync(malformedMarker, '{');
+  const malformedBefore = completeJournalBytes7b(malformed.root, malformed.runId);
+  assert6b.throws(() => snapshot8b(malformed.root, malformed.runId, {
+    callerBinding: { owner: '01JAPPF0R00000000000000000', generation: malformed.generation },
+    fenceCheck: () => assert6b.fail('strict marker read precedes caller fence'),
+    fenceError: 'LEASE_FENCED: authenticated-snapshot',
+  }), /ANCHORED_TRANSACTION_CORRUPT/);
+  assert6b.deepEqual(completeJournalBytes7b(malformed.root, malformed.runId), malformedBefore);
+
+  const stateDrift = pendingGenericAppend8b();
+  const statePath = join7b(runDir7b(stateDrift.root, stateDrift.runId), 'loop.json');
+  writeFileSync(statePath, Buffer.concat([readSource7b(statePath), Buffer.from(' ')]));
+  const stateDriftBefore = completeJournalBytes7b(stateDrift.root, stateDrift.runId);
+  assert6b.throws(() => snapshot8b(stateDrift.root, stateDrift.runId, {
+    callerBinding: { owner: stateDrift.owner, generation: stateDrift.generation },
+    fenceCheck: () => assert6b.fail('state authentication precedes semantic fence'),
+    fenceError: 'LEASE_FENCED: authenticated-snapshot',
+  }), /ANCHORED_TRANSACTION_CORRUPT: authentication state/);
+  assert6b.deepEqual(completeJournalBytes7b(stateDrift.root, stateDrift.runId), stateDriftBefore);
+
+  const moved = pendingGenericAppend8b();
+  const foreignRoot = mkdtempSync(join(tmpdir(), 'dl-authenticated-snapshot-foreign-'));
+  cpSync(join(moved.root, '.deep-loop'), join(foreignRoot, '.deep-loop'), { recursive: true });
+  const foreignBefore = completeJournalBytes7b(foreignRoot, moved.runId);
+  assert6b.throws(() => snapshot8b(foreignRoot, moved.runId, {
+    callerBinding: { owner: moved.owner, generation: moved.generation },
+    fenceCheck: () => assert6b.fail('project root precedes semantic fence'),
+    fenceError: 'LEASE_FENCED: authenticated-snapshot',
+  }), /PROJECT_ROOT_FENCED/);
+  assert6b.deepEqual(completeJournalBytes7b(foreignRoot, moved.runId), foreignBefore);
+});
 
 function assertGenericCrashRecovery7b(operation, point) {
   const { fixture, invoke, workerInput } = genericCrashCase7b(operation);

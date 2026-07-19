@@ -3,7 +3,8 @@ import { resolve } from 'node:path';
 import { types as utilTypes } from 'node:util';
 import { contentHash } from './envelope.mjs';
 import { appendAnchored, intentField, readLines, readVerifiedState, verifyHeadLines,
-  verifyLines, withVerifiedMutationLock } from './integrity.mjs';
+  readAuthenticatedMutationSnapshot, verifyLines, withVerifiedMutationLock }
+  from './integrity.mjs';
 import { reconcileBudget } from './budget.mjs';
 import { leaseCheck } from './lease.mjs';
 import { respawnGate } from './respawn.mjs';
@@ -81,7 +82,8 @@ function appMutationIntentDigest(input, operation) {
       ? { ...base, stdin_mode: input.stdinMode,
         route_digest: intentField('prepare-route', input.route),
         host_input_digest: input.hostInputDigest
-          ?? intentField('prepare-host-input', input.hostInput) }
+          ?? intentField('prepare-host-input', input.hostInput),
+        descriptor_digest: input.descriptorDigest ?? null }
     : operation === 'app-revoke'
       ? { ...base, runtime: input.runtime ?? null }
       : null;
@@ -91,12 +93,13 @@ function appMutationIntentDigest(input, operation) {
   return contentHash(JSON.stringify(projection));
 }
 
-function withAppMutation(root, runId, input, operation, body) {
+function withAppMutation(root, runId, input, operation, body, options = {}) {
   const callerBinding = { owner: input.owner, generation: input.generation };
   const intentDigest = appMutationIntentDigest(input, operation);
   return withVerifiedMutationLock(root, runId, { callerBinding, intentDigest,
     fenceError: `LEASE_FENCED: ${operation}`,
-    intentConflictError: `APP_TASK_FENCED:${operation}` }, body);
+    intentConflictError: options.intentConflictError
+      ?? `APP_TASK_FENCED:${operation}` }, body);
 }
 
 export { APP_PREPARE_TIMEOUT_MS, APP_CONFIRMATION_TIMEOUT_MS } from './schema.mjs';
@@ -781,9 +784,13 @@ export function prepareAppTask(root, runId, input, deps = {}) {
   const gateFor = deps.gateFn ?? respawnGate;
   const authoritativeNow = deps.nowFn ?? Date.now;
   const prepareRequestDigest = appMutationIntentDigest(request, 'app-prepare');
-  const phase = body => withAppMutation(root, runId, request, 'app-prepare', body);
-  const snapshot = phase(mutation => mutation.readVerifiedState(
-    { fenceCheck: loop => assertAppParentIdentity(loop, request) }).data);
+  const requestPhase = body => withAppMutation(root, runId, request, 'app-prepare', body);
+  const authenticated = readAuthenticatedMutationSnapshot(root, runId, {
+    callerBinding: { owner: request.owner, generation: request.generation },
+    fenceCheck: loop => assertAppParentIdentity(loop, request),
+    fenceError: 'LEASE_FENCED: app-prepare',
+  });
+  const snapshot = authenticated.data;
   const existing = assertAppParentFence(snapshot, request, ['emitted', 'prepared']);
   if (snapshot.status !== 'running' || snapshot.session_chain.lease.resume_policy !== 'app') {
     throw new Error('RUN_PAUSED: app-prepare');
@@ -804,30 +811,43 @@ export function prepareAppTask(root, runId, input, deps = {}) {
         ? 'APP_STDIN_MODE_FENCED' : 'APP_PREPARE_REQUEST_FENCED');
     }
     return settlePrepareFailure(root, runId, request, { code: 'app-launch-unconfirmed',
-      preserve: true, nowFn: authoritativeNow, gateFn: gateFor, deps, phase });
+      preserve: true, nowFn: authoritativeNow, gateFn: gateFor, deps, phase: requestPhase });
   }
   if (typeof deps.descriptorBuilder !== 'function') throw new Error('APP_DESCRIPTOR_BUILDER_REQUIRED');
   const action = exactPreparedAction(deps.descriptorBuilder({ loop: snapshot, route,
     child: existing.session, attemptId: existing.attemptId }), route);
   const descriptorDigest = contentHash(JSON.stringify({ action,
     prepare_request_digest: prepareRequestDigest }));
-  if (alreadyPrepared) {
-    if (existing.continuation.descriptor_digest !== descriptorDigest
-        || existing.continuation.project_id
-          !== (route.kind === 'create' ? route.projectId : null)) {
+  const completeRequest = Object.freeze({ ...request, descriptorDigest });
+  const completePhase = body => withAppMutation(root, runId, completeRequest,
+    'app-prepare', body, { intentConflictError: 'APP_PREPARE_REQUEST_FENCED' });
+  const preparedNoop = mutation => {
+    const current = mutation.readVerifiedState(
+      { fenceCheck: loop => assertAppParentIdentity(loop, completeRequest) }).data;
+    const bound = assertAppParentFence(current, completeRequest, ['prepared']);
+    if (bound.continuation.descriptor_digest !== descriptorDigest
+        || bound.continuation.project_id
+          !== (route.kind === 'create' ? route.projectId : null)
+        || current.session_chain.lease.handoff_phase !== 'spawned'
+        || current.session_chain.lease.state !== 'releasing') {
       throw new Error('APP_PREPARE_REQUEST_FENCED');
     }
     return { ok: true, outcome: 'already-prepared', do_not_call: true,
-      attempt_id: existing.attemptId };
+      attempt_id: bound.attemptId };
+  };
+  if (alreadyPrepared || authenticated.pending) {
+    return completePhase(preparedNoop);
   }
   const outerGate = gateFor(snapshot, { now: Number((deps.precheckNowFn ?? Date.now)()) });
   if (!outerGate.ok) return settlePrepareFailure(root, runId, request, {
     code: `gate-${outerGate.blocked_by[0].replaceAll('_', '-')}`,
-    preserve: false, nowFn: authoritativeNow, gateFn: gateFor, deps, phase });
-  // This is the final operation before the CAS; exact prepared retry above does not reconcile.
+    preserve: false, nowFn: authoritativeNow, gateFn: gateFor, deps,
+    phase: requestPhase });
+  // This is the final operation before the CAS. Proved pending transactions returned above enter
+  // their complete-action gateway directly, so recovery precedes any new advisory work.
   reconcile(root, runId, {});
   try {
-    return phase(mutation => {
+    return completePhase(mutation => {
       let result;
       try {
         mutation.appendAnchored({ type: 'app-task-prepared',
@@ -879,13 +899,15 @@ export function prepareAppTask(root, runId, input, deps = {}) {
   } catch (error) {
     if (String(error?.message || error) === 'APP_PREPARE_ROUTE_CHANGED') {
       return settlePrepareFailure(root, runId, request, { code: 'app-launch-unconfirmed',
-        preserve: true, nowFn: authoritativeNow, gateFn: gateFor, deps, phase });
+        preserve: true, nowFn: authoritativeNow, gateFn: gateFor, deps,
+        phase: requestPhase });
     }
     const match = /^APP_GATE_BLOCKED:(budget|breaker|max_sessions|wallclock|auto_handoff)$/.exec(
       String(error?.message || error));
     if (!match) throw error;
     return settlePrepareFailure(root, runId, request,
       { code: `gate-${match[1].replaceAll('_', '-')}`,
-        preserve: false, nowFn: authoritativeNow, gateFn: gateFor, deps, phase });
+        preserve: false, nowFn: authoritativeNow, gateFn: gateFor, deps,
+        phase: requestPhase });
   }
 }
