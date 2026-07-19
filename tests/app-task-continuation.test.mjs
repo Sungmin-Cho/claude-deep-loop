@@ -1473,6 +1473,7 @@ import { APP_FAILURE_CODES as failureCodes9a, APP_PUBLIC_FAILURE_CODES as public
   prepareAppTask as prepare9a } from '../scripts/lib/app-task-continuation.mjs';
 import { readState as state9a, runDir as runDir9a } from '../scripts/lib/state.mjs';
 import { contentHash as hash9a } from '../scripts/lib/envelope.mjs';
+import { recordCost as recordCost9a } from '../scripts/lib/budget.mjs';
 
 function durable9a(root, runId) {
   const dir = runDir9a(root, runId);
@@ -1802,4 +1803,89 @@ test9a('response-loss entry authenticates exact historical parent before semanti
     /RUN_SNAPSHOT_INVALID/);
     assert9a.deepEqual(bytes7d(fixture.root, fixture.runId), corrupt);
   }
+});
+
+test9a('confirmed response-loss rejects a later accounting event without callbacks or writes', () => {
+  const fixture = prepared9a();
+  const input = { owner: fixture.runId, generation: 1, attemptId: fixture.attemptId,
+    stdinMode: 'pty-raw-noecho', threadId: 'confirmed-tail-thread' };
+  confirm9a(fixture.root, fixture.runId, input, {
+    cwdFn: () => fixture.root,
+    nowFn: () => Date.parse('2026-07-13T00:00:03.000Z'),
+  });
+  recordCost9a(fixture.root, fixture.runId, { turns: 1, tokens: 0,
+    requestId: 'task9a-confirm-tail', fence: { owner: fixture.runId, generation: 1,
+      runtime: 'codex', intent: 'accounting' } });
+  const afterCost = durable9a(fixture.root, fixture.runId);
+  assert9a.throws(() => confirm9a(fixture.root, fixture.runId, input, {
+    cwdFn: () => assert9a.fail('displaced confirm retry has no cwd callback'),
+    nowFn: () => assert9a.fail('displaced confirm retry has no clock'),
+  }), /APP_RESPONSE_PROJECTION_CHANGED/);
+  assert9a.deepEqual(durable9a(fixture.root, fixture.runId), afterCost);
+});
+
+test9a('failed response-loss rejects a later accounting event without callbacks or writes', () => {
+  const fixture = prepared9a();
+  const input = { owner: fixture.runId, generation: 1, attemptId: fixture.attemptId,
+    code: 'host-call-failed' };
+  fail9a(fixture.root, fixture.runId, input, { cwdFn: () => fixture.root,
+    nowFn: () => Date.parse('2026-07-13T00:00:03.000Z') });
+  recordCost9a(fixture.root, fixture.runId, { turns: 1, tokens: 0,
+    requestId: 'task9a-fail-tail', fence: { owner: fixture.runId, generation: 1,
+      runtime: 'codex', intent: 'accounting' } });
+  const afterCost = durable9a(fixture.root, fixture.runId);
+  assert9a.throws(() => fail9a(fixture.root, fixture.runId, input, {
+    cwdFn: () => assert9a.fail('displaced fail retry has no cwd callback'),
+    nowFn: () => assert9a.fail('displaced fail retry has no clock'),
+  }), /APP_RESPONSE_PROJECTION_CHANGED/);
+  assert9a.deepEqual(durable9a(fixture.root, fixture.runId), afterCost);
+});
+
+test9a('acquired response-loss rejects extra lifecycle tail data without callbacks or writes', () => {
+  const fixture = prepared9a();
+  const input = { owner: fixture.runId, generation: 1, attemptId: fixture.attemptId,
+    stdinMode: 'pty-raw-noecho', threadId: 'acquired-tail-thread' };
+  confirm9a(fixture.root, fixture.runId, input, { cwdFn: () => fixture.root,
+    nowFn: () => Date.parse('2026-07-13T00:00:03.000Z') });
+  const acquiredAt = '2026-07-13T00:00:04.000Z';
+  const loop = state9a(fixture.root, fixture.runId).data;
+  const parentSurface = loop.session_chain.sessions
+    .find(item => item.run_id === fixture.runId).host_surface;
+  const childSurface = { ...structuredClone(parentSurface),
+    observed_generation: 2, observed_at: acquiredAt };
+  const directory = runDir9a(fixture.root, fixture.runId);
+  const eventPath = join9a(directory, 'event-log.jsonl');
+  const events = read9a(eventPath, 'utf8').trimEnd().split('\n').map(JSON.parse);
+  const tail = events.at(-1);
+  const acquired = { seq: tail.seq + 1, ts: acquiredAt, type: 'app-task-acquired', data: {
+    attempt_id: fixture.attemptId, child_run_id: fixture.childRunId,
+    observation_digest: hostSurfaceFactsDigest(childSurface),
+    raw_receipt: 'must-not-be-accepted',
+  } };
+  acquired.checksum = hash9a(`${acquired.seq}|${acquired.ts}|${acquired.type}`
+    + `|${JSON.stringify(acquired.data)}|${tail.checksum}`);
+  write9a(eventPath, [...events, acquired].map(event => JSON.stringify(event)).join('\n') + '\n');
+  raw7d(fixture.root, fixture.runId, current => {
+    const parent = current.session_chain.sessions.find(item => item.run_id === fixture.runId);
+    const child = current.session_chain.sessions.find(item => item.run_id === fixture.childRunId);
+    Object.assign(current.session_chain.lease, { owner_run_id: fixture.childRunId,
+      generation: 2, acquired_at: acquiredAt, state: 'active', handoff_phase: 'acquired',
+      handoff_transport: null, handoff_attempt_id: null, handoff_child_run_id: null,
+      handoff_idempotency_key: null, resume_policy: null, expires_at: null });
+    Object.assign(child.continuation, { phase: 'acquired', acquired_at: acquiredAt,
+      acquired_generation: 2 });
+    child.host_surface = childSurface;
+    child.started_at = acquiredAt;
+    parent.outcome = 'took_over';
+    current.status = 'running';
+    current.pause_reason = null;
+    current.updated_at = acquiredAt;
+    current.event_log_head = { seq: acquired.seq, checksum: acquired.checksum };
+  });
+  const forged = durable9a(fixture.root, fixture.runId);
+  assert9a.throws(() => confirm9a(fixture.root, fixture.runId, input, {
+    cwdFn: () => assert9a.fail('extra acquired tail retry has no cwd callback'),
+    nowFn: () => assert9a.fail('extra acquired tail retry has no clock'),
+  }), /APP_RESPONSE_PROJECTION_CHANGED/);
+  assert9a.deepEqual(durable9a(fixture.root, fixture.runId), forged);
 });

@@ -1111,6 +1111,43 @@ function exactFailedResponseProjection(loop, input, receipt) {
       .every(key => lease[key] == null);
 }
 
+function exactAppLifecycleTail(loop, lines, input, phase, receipt = null) {
+  const { session: child } = findAppAttempt(loop, input.attemptId);
+  const tail = lines.at(-1);
+  const head = loop.event_log_head;
+  const exactKeys = keys => JSON.stringify(Object.keys(tail?.data ?? {}).sort())
+    === JSON.stringify([...keys].sort());
+  if (tail?.seq !== head?.seq || tail?.checksum !== head?.checksum
+      || tail.data?.attempt_id !== input.attemptId
+      || tail.data?.child_run_id !== child.run_id) return false;
+  if (phase === 'confirmed') {
+    return exactKeys(['attempt_id', 'child_run_id', 'receipt_digest'])
+      && tail.type === 'app-task-confirmed'
+      && tail.data?.receipt_digest === contentHash('confirmed-thread\0' + input.threadId);
+  }
+  if (phase === 'acquired') {
+    let observationDigest;
+    try { observationDigest = hostSurfaceFactsDigest(child.host_surface); }
+    catch { return false; }
+    return exactKeys(['attempt_id', 'child_run_id', 'observation_digest'])
+      && tail.type === 'app-task-acquired'
+      && tail.data?.observation_digest === observationDigest;
+  }
+  if (phase !== 'failed') return false;
+  const binding = child.continuation.failure_binding;
+  const failureKeys = ['attempt_id', 'child_run_id', 'failure_code',
+    'generation', 'owner_run_id'];
+  if (input.code === 'message-unconfirmed') failureKeys.push('unconfirmed_receipt_digest');
+  const exactFailure = exactKeys(failureKeys) && tail.type === 'app-task-failed'
+    && tail.data?.failure_code === input.code
+    && tail.data?.owner_run_id === binding?.owner_run_id
+    && tail.data?.generation === binding?.generation;
+  return exactFailure && (input.code === 'message-unconfirmed'
+    ? tail.data?.unconfirmed_receipt_digest
+      === contentHash('unconfirmed-thread\0' + receipt)
+    : !Object.hasOwn(tail.data ?? {}, 'unconfirmed_receipt_digest'));
+}
+
 export const APP_FAILURE_CODES = Object.freeze([
   'host-call-timeout', 'host-call-no-return', 'host-call-failed',
   'invalid-host-receipt', 'message-unconfirmed', 'app-prepare-unattended',
@@ -1140,7 +1177,9 @@ export function confirmAppTask(root, runId, input, deps = {}) {
       const exact = existing.phase === 'acquired'
         ? exactImmediateAppAcquiredProjection(snapshot, input)
         : exactConfirmedResponseProjection(snapshot, input);
-      if (!exact) throw new Error('APP_RESPONSE_PROJECTION_CHANGED');
+      const exactTail = exactAppLifecycleTail(
+        snapshot, readLines(root, runId), input, existing.phase);
+      if (!exact || !exactTail) throw new Error('APP_RESPONSE_PROJECTION_CHANGED');
       return { ok: true,
         outcome: existing.phase === 'acquired' ? 'already-complete' : 'already-confirmed',
         attempt_id: input.attemptId };
@@ -1208,7 +1247,9 @@ export function failAppTask(root, runId, input, deps = {}) {
       if (existing.failure_code !== input.code || existing.unconfirmed_thread_id !== receipt) {
         throw new Error('APP_RECEIPT_FENCED');
       }
-      if (!exactFailedResponseProjection(snapshot, input, receipt)) {
+      if (!exactFailedResponseProjection(snapshot, input, receipt)
+          || !exactAppLifecycleTail(
+            snapshot, readLines(root, runId), input, 'failed', receipt)) {
         throw new Error('APP_RESPONSE_PROJECTION_CHANGED');
       }
       return { ok: true, outcome: 'already-failed', attempt_id: input.attemptId,
