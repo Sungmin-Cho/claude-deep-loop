@@ -276,6 +276,7 @@ test6b('invalid injected clock fails before an event append', () => {
   assert6b.deepEqual(lines6b(root, runId), before);
 });
 import { assertVerifiedRunSnapshot as assertSnapshot7c,
+  authenticateVerifiedMutationCaller as authenticate7h,
   appendAnchored as append7c, mutationIntentDigest as intent7c,
   readLines as lines7c, readVerifiedState as verified7c,
   withVerifiedMutationLock as mutation7b }
@@ -407,19 +408,33 @@ test6b('verified mutation gateway exposes null before a commit and exact proof a
   const cleanBinding = { owner: clean.owner, generation: clean.generation };
   const cleanIntent = intent7c('gateway-clean', cleanBinding, { request: 'clean' });
   let cleanRecovered = 'unset';
+  let cleanRecoverySource = 'unset';
   const cleanResult = mutation7b(clean.root, clean.runId, {
     callerBinding: cleanBinding, intentDigest: cleanIntent,
     fenceError: 'LEASE_FENCED: gateway-clean',
   }, mutation => {
     cleanRecovered = mutation.recovered;
+    cleanRecoverySource = mutation.recoverySource;
     return mutation.readVerifiedState().data.run_id;
   });
   assert6b.equal(cleanRecovered, null);
+  assert6b.equal(cleanRecoverySource, null);
   assert6b.equal(cleanResult, clean.runId);
 
   const pending = fixture7c('dl-mutation-gateway-pending-');
   const binding = { owner: pending.owner, generation: pending.generation };
   const intentDigest = intent7c('anchored-crash-probe', binding, {});
+  const staleAuthentication = authenticate7h(pending.root, pending.runId, {
+    callerBinding: binding,
+    fenceCheck: loop => {
+      const lease = loop.session_chain.lease;
+      if (lease.owner_run_id !== binding.owner || lease.generation !== binding.generation) {
+        throw new Error('LEASE_FENCED');
+      }
+    },
+    fenceError: 'LEASE_FENCED: gateway-pending',
+  });
+  assert6b.deepEqual(staleAuthentication, { pending: false });
   const worker = file7b(new URL('./helpers/anchored-crash-worker.mjs', import.meta.url));
   const child = spawn7c(process.execPath,
     [worker, pending.root, pending.runId, 'generic-append', 'pending-after-rename'], {
@@ -430,13 +445,15 @@ test6b('verified mutation gateway exposes null before a commit and exact proof a
   assert6b.equal(child.status, 91, child.stderr || child.stdout || child.error?.message);
   rmdir7b(join7b(pending.root, '.deep-loop', 'runs', pending.runId, '.lock'));
 
-  const recovered = mutation7b(pending.root, pending.runId, {
+  const pendingRecovery = mutation7b(pending.root, pending.runId, {
     callerBinding: binding, intentDigest,
     fenceError: 'LEASE_FENCED: gateway-pending',
   }, mutation => {
     mutation.readVerifiedState();
-    return mutation.recovered;
+    return { recovered: mutation.recovered, source: mutation.recoverySource };
   });
+  const recovered = pendingRecovery.recovered;
+  assert6b.equal(pendingRecovery.source, 'pending');
   assert6b.notEqual(recovered, null);
   assert6b.equal(recovered.events.length, 1);
   assert6b.equal(recovered.events[0].type, 'anchored-crash-probe');
@@ -449,6 +466,16 @@ test6b('verified mutation gateway exposes null before a commit and exact proof a
     'recovery exposes the exact durable event sequence');
   assert6b.equal(recovered.events[0].checksum, durable[0].checksum,
     'recovery exposes the exact durable event checksum');
+
+  const receiptRecovery = mutation7b(pending.root, pending.runId, {
+    callerBinding: binding, intentDigest,
+    fenceError: 'LEASE_FENCED: gateway-receipt',
+  }, mutation => {
+    mutation.readVerifiedState();
+    return { recovered: mutation.recovered, source: mutation.recoverySource };
+  });
+  assert6b.equal(receiptRecovery.source, 'receipt');
+  assert6b.deepEqual(receiptRecovery.recovered, recovered);
 });
 
 test6b('prospective commit persists the exact proved event timestamp', () => {

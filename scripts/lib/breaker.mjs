@@ -38,7 +38,7 @@ function breakerMutation(root, runId, fence, operation, intent, body) {
   }
   const callerBinding = { owner: fence.owner, generation: fence.generation };
   const intentDigest = contentHash(JSON.stringify({ operation, ...callerBinding, ...intent }));
-  const authentication = authenticateVerifiedMutationCaller(root, runId, {
+  authenticateVerifiedMutationCaller(root, runId, {
     callerBinding, fenceCheck: breakerPendingFence(fence),
     fenceError: `LEASE_FENCED: ${operation}`,
   });
@@ -46,7 +46,7 @@ function breakerMutation(root, runId, fence, operation, intent, body) {
     fenceError: `LEASE_FENCED: ${operation}` }, context => {
     const { data } = context.readVerifiedState(
       { fenceCheck: breakerPendingFence(fence) });
-    return body(context, data, authentication);
+    return body(context, data);
   });
 }
 
@@ -232,8 +232,8 @@ export function recordReviewVerdict(root, runId, verdict, fence,
   const identity = breakerRequestIdentity('review-verdict', requestId, { verdict });
   return breakerMutation(root, runId, fence, 'breaker-review-verdict',
     { verdict, request_digest: identity.requestDigest },
-    (context, data, authentication) => {
-      if (authentication.pending && context.recovered !== null) {
+    (context, data) => {
+      if (context.recoverySource === 'pending') {
         const pending = recoveredReviewVerdict(root, runId, context, data,
           { fence, verdict, identity });
         if (pending === null) throw new Error('BREAKER_RECOVERY_PROJECTION_MISMATCH');

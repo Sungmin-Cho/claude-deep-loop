@@ -849,6 +849,9 @@ test7g('pending review verdict rejects wrong runtime before recovery changes any
 });
 
 test7g('threshold-crossing pending verdict retry converges once with original response', () => {
+  const breakerSource = read7g(join7g(ROOT7G, 'scripts', 'lib', 'breaker.mjs'), 'utf8');
+  assert7g.match(breakerSource, /context\.recoverySource === 'pending'/);
+  assert7g.doesNotMatch(breakerSource, /authentication\.pending/);
   const worker = file7g(new URL('./helpers/anchored-crash-worker.mjs', import.meta.url));
   for (const point of ['pending-after-rename', 'state-after-rename']) {
     const fixture = fixture7g(`dl-7g-threshold-recovery-${point}-`);

@@ -1071,6 +1071,7 @@ export function withVerifiedMutationLock(root, runId,
   }
   return withLock(root, runId, () => {
     let recovered = null;
+    let recoverySource = null;
     // This strict marker read is deliberately before readState/readLines/root/schema verification.
     const marker = readAnchoredMarkerUnderLock(root, runId);
     if (marker !== null) {
@@ -1084,6 +1085,7 @@ export function withVerifiedMutationLock(root, runId,
       pendingAuthenticationStateUnderLock(root, runId, marker, { allowUnboundRoot });
       // Uses raw exact before/after bytes recorded by the marker, not canonical public readers.
       recovered = recoverAnchoredTransactionUnderLock(root, runId, marker);
+      recoverySource = 'pending';
     } else {
       // Pre-marker stages have no authority and are safe to discard only on a mutation entry.
       // The bounded committed receipt is preserved and may prove an exact response-loss retry.
@@ -1094,6 +1096,7 @@ export function withVerifiedMutationLock(root, runId,
           && receipt.caller.generation === binding.generation
           && receipt.intent_digest === intentDigest) {
         recovered = recoverCommittedReceiptUnderLock(root, runId, receipt);
+        if (recovered !== null) recoverySource = 'receipt';
       }
     }
     // Logical restart: the complete public operation begins its normal read/idempotency path only now.
@@ -1103,6 +1106,7 @@ export function withVerifiedMutationLock(root, runId,
     };
     const context = Object.freeze({
       recovered,
+      recoverySource,
       readVerifiedState(options = {}) {
         assertActive();
         return readVerifiedStateUnderLock(root, runId, options);
