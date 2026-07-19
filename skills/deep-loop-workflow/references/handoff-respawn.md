@@ -287,7 +287,7 @@ handoff descriptor가 제공한 `<canonical_project_root>`, logical `<run_id>`, 
      node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" host-surface stdin-probe --project-root "<canonical_project_root>" --stdin-mode <pipe-open-noecho|pty-raw-noecho> --probe-stdin
      node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" app-task acquire --owner <child_run_id> --generation <parent_generation> --runtime codex --attempt <attempt_id> --stdin-mode <pipe-open-noecho|pty-raw-noecho> --observation-stdin --project-root "<canonical_project_root>" --run-id <run_id>
      ```
-   - `current.phase=acquired`는 candidate only다. Original acquire handle을 live/unknown 동안 재사용하지 않고 exit proven 뒤 byte-identical READY-gated acquire의 `already-acquired`만 수락한다. Failed/abandoned live App binding은 human-preserve이며, cleared terminal history도 same-call exact `recovery_pending` 없이는 acquire하지 않는다.
+   - `current.phase=acquired`는 candidate only다. Acquire 응답이 유실됐을 때 original acquire process handle을 보존해 boundedly poll하고, live/unknown 동안 새 process를 시작하지 않는다. Current acquired status/lease correlation과 exit is proven 뒤 original `--generation <parent_generation>`, 동일 runtime/cwd/mode, byte-identical child observation을 포함한 READY-gated original command를 반복해 `already-acquired`만 수락한다. Original-handle reconciliation이 없으면 App acquire를 쓰지 않는다. Failed/abandoned live App binding은 human-preserve이며, cleared terminal history도 same-call exact `recovery_pending` 없이는 acquire하지 않는다.
    - Historical acquired row는 recovery/current-generic이 모두 null이고 explicit lease가 released, acquired-or-idle, cleared, `owner_run_id=current.run_id`임을 증명하며 descriptor 또는 unique history/document correlation까지 통과할 때만 generic 후보가 된다.
 
    Generic 후보는 그 규칙이 유일하게 선택한 child/generation으로 다음 단일 CAS를 실행한다.
@@ -299,13 +299,13 @@ handoff descriptor가 제공한 `<canonical_project_root>`, logical `<run_id>`, 
 
        APP_OBSERVATION_CONTRACT_V1={"tool_to_kernel":{"list_projects":"list-projects","create_thread(local)":"create-thread-local","fork_thread(same-directory)":"fork-thread-same-directory","send_message_to_thread":"send-message-to-thread","structured_input":"structured-process-stdin"},"raw_template":{"kind":"codex-app","source":"codex-app-tool-provenance","capabilities":[],"structured_stdin_mode":null,"host_task_cwd":null,"host_task_cwd_source":"app-task-context"}}
 
-2. App acquire success는 child surface를 atomically materialize하고 generic acquire/observe로 fall through하지 않는다. Generic acquire success는 bounded no-echo stdin probe 후 full READY-gated observe 또는 enum-only observe를 정확히 한 번 시도한 뒤에만 session-profile을 갱신한다.
+2. App acquire success는 child surface를 atomically materialize하고 generic acquire/observe로 fall through하지 않는다. Generic acquire success는 bounded no-echo stdin probe 후 full READY-gated observe 또는 enum-only observe를 정확히 한 번 시도한 뒤에만 session-profile을 갱신한다. Full form은 exact owner/generation-bound READY line을 match한 뒤 현재 task cwd를 kernel process cwd와 같은 native directory로 식별하는 exact six-key JSON 한 줄만 보낸다.
    ```
    node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" host-surface stdin-probe --project-root "<canonical_project_root>" --stdin-mode <pipe-open-noecho|pty-raw-noecho> --probe-stdin
    node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" host-surface observe --owner <child_run_id> --generation <new_generation> --runtime <claude|codex> --stdin-mode <pipe-open-noecho|pty-raw-noecho> --observation-stdin --project-root "<canonical_project_root>" --run-id <run_id>
    node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" host-surface observe --owner <child_run_id> --generation <new_generation> --runtime <claude|codex> --manual-enums --host-surface <allowlisted_surface> --host-source <allowlisted_source> --capabilities <comma_separated_non_structured_allowlisted_capabilities> --project-root "<canonical_project_root>" --run-id <run_id>
    ```
-   Empty enum capability argv는 생략한다. Same-generation exact repeat는 write-free이고 later-generation identical facts는 `observed_generation`/`observed_at`만 anchored re-attest한다. Changed observation은 fence한다. Both forms fail/ambiguous이면 추가 observe 없이 prior mismatched generation을 stale manual-only로 보존하며 null authority로 만들지 않는다.
+   Empty enum capability argv는 생략한다. Same-generation exact repeat는 write-free이고 later-generation identical facts는 `observed_generation`/`observed_at`만 anchored re-attest한다. 성공 outcome은 `observed`, `reattested`, `already-observed`뿐이다. Changed observation은 fence한다. Both forms fail/ambiguous이면 추가 observe 없이 prior mismatched generation을 stale manual-only로 보존하며 null authority로 만들지 않는다.
 3. active workstream worktree 경로 무결성 확인(existsSync → 소실 시 needs-human)
 3.5. per-action worktree **진입은 `/deep-loop-continue`가 next-action의 `action.workstream_id` 기준으로 수행**한다(resume은 특정 worktree로 미리 진입하지 않음 — 다중 병렬 오진입 방지).
 4. Claude는 `/deep-loop-continue`, Codex는 `$deep-loop:deep-loop-continue`로 진행
