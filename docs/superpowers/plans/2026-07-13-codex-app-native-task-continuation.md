@@ -32622,7 +32622,7 @@ PreCompact and headless never enter this branch.
    `app-task prepare` calls, zero public App tool calls, and zero `respawn` calls, then presents
    manual `$deep-loop:deep-loop-resume` guidance.
 2. From the safe emit result/argumentless safe status obtain only `<emitted_attempt_id>`, then immediately run `node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" app-task status --attempt <emitted_attempt_id> --project-root "<canonical_project_root>" --run-id <run_id>`. Before any discovery or task call, verify emitted attempt/owner/generation/route: `logical_run_id=<run_id>`, `owner_run_id=<owner_run_id>`, `generation=<generation>`, `handoff_phase=emitted`, `current.attempt_id=<emitted_attempt_id>`, `current.phase=emitted`, and `current.route` matches the kernel-produced root `create` or exact active-worktree `fork` route. Missing/mismatched fields stop for manual recovery. This redacted check never reads whole sessions or raw IDs.
-3. Root route only after step 2: call `list_projects` exactly once through a bounded timeout/no-return wrapper. Build a bounded project projection containing only `projectId`, `projectKind`, and `path`, with at most 256 entries and at most the structured-input byte cap. If discovery throws, times out, never returns, is not an array, contains an invalid entry, exceeds either bound, or cannot be safely projected, mark discovery unavailable; do not retry and do not call `app-task fail` while the attempt is still `emitted`. Worktree fork/manual routes: `list_projects` call count is 0.
+3. Root route only after step 2: call `list_projects` exactly once through a bounded timeout/no-return wrapper. Require the current App v1 receipt to be a top-level object with exactly `schemaVersion` and `projects`, require `schemaVersion === 1`, and require `projects` to be an array. Build a bounded project projection from that array containing only `projectId`, `projectKind`, and `path`, with at most 256 entries and at most the structured-input byte cap. A bare array, extra or missing envelope key, unsupported schema version, discovery throw/timeout/no-return, invalid entry, exceeded bound, or unsafe projection makes discovery unavailable; do not retry and do not call `app-task fail` while the attempt is still `emitted`. Worktree fork/manual routes: `list_projects` call count is 0.
 4. Start `node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" app-task prepare --owner <owner_run_id> --generation <generation> --stdin-mode <pipe-open-noecho|pty-raw-noecho> --app-host-input-stdin --project-root "<canonical_project_root>" --run-id <run_id>`. Match the full exact `DEEP_LOOP_STDIN_READY:v1:app-prepare:<owner_run_id>.<generation>:<mode>` line. On successful root discovery send `{ "host_task_cwd": <current_host_task_cwd>, "projects": <bounded_projection> }`; on discovery unavailable send only `{ "host_task_cwd": <current_host_task_cwd> }` and omit the `projects` field. The latter must return `manual-preserve`, keep the child phase `emitted`, set human resume policy, and authorize zero App task actions. Send exactly one bounded JSON line through structured process input in either case. If the prepare process result is lost, boundedly poll that original process handle and make zero App task tool calls while it is live or unknown. Once exit is proven, read redacted exact-attempt status. Only a still-`emitted` attempt with `manual_recovery=false`, exact owner/generation, `handoff_phase=emitted`, and a live deadline may run the same prepare binding and byte-identical input once. An `emitted` projection with `manual_recovery=true` is the durable `manual-preserve` outcome: perform zero prepare retries, zero App task tool calls, and zero automatic sweep, then present manual recovery immediately. Only a `prepared` attempt with `manual_recovery=false` may run that exact re-entry to obtain `already-prepared` with `do_not_call=true`, then must make zero external App actions and wait for its strict deadline. For either an expired `emitted` attempt or an expired `prepared` attempt with `manual_recovery=false`, run exactly `node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" app-task sweep-unconfirmed --owner <owner_run_id> --generation <generation> --attempt <attempt_id> --project-root "<canonical_project_root>" --run-id <run_id>`; no new prepare or host action is allowed, and a lost sweep result is reconciled only by redacted exact-attempt status. Any phase/policy/fence mismatch stops without another mutating process.
 5. `do_not_call=true` means stop without any App tool call. Only a directly observed first exact `do_not_call=false` result authorizes one action; a lost actionable prepare response is never reconstructed from status or retried at the host-tool boundary.
 6. For `action.tool=create_thread`, pass `action.prompt` and `action.target` directly to `create_thread`; omit model and thinking. Success requires exactly one own `threadId` string that passes the bounded opaque receipt validator. Missing/multiple ID, another shape, `clientThreadId`, a control byte, or a UTF-8 value over 512 bytes is `invalid-host-receipt` failure.
@@ -34432,8 +34432,11 @@ const HOST_LABEL = {
 
 export class FakeAppHost {
   constructor({ projects = [], createReceipt = { threadId: 'CREATE-ID' },
-    forkReceipt = { threadId: 'FORK-ID' }, sendReceipt = {}, behaviors = {} } = {}) {
-    this.projects = clone(projects);
+    listProjectsReceipt = undefined, forkReceipt = { threadId: 'FORK-ID' },
+    sendReceipt = {}, behaviors = {} } = {}) {
+    this.listProjectsReceipt = listProjectsReceipt === undefined
+      ? { schemaVersion: 1, projects: clone(projects) }
+      : listProjectsReceipt;
     // Preserve receipt prototypes, symbols, accessors, and descriptors so the strict validator—not
     // structuredClone normalization—sees the exact host return value under test.
     this.createReceipt = createReceipt;
@@ -34455,7 +34458,7 @@ export class FakeAppHost {
 
   async list_projects(args = {}) {
     this.calls.push({ tool: 'list_projects', args: clone(args) });
-    return this.#respond('list_projects', this.projects);
+    return this.#respond('list_projects', this.listProjectsReceipt);
   }
 
   async create_thread(args) {
@@ -34593,8 +34596,20 @@ export async function boundedRootPrepareInput(host, currentHostTaskCwd, {
     line: JSON.stringify({ host_task_cwd: currentHostTaskCwd }) });
   try {
     const raw = await callHost(() => host.list_projects({}), 'DISCOVERY', timeoutMs);
-    if (!Array.isArray(raw) || raw.length > maxEntries) return absent();
-    const projects = raw.map(item => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)
+        || ![Object.prototype, null].includes(Object.getPrototypeOf(raw))) return absent();
+    const keys = Reflect.ownKeys(raw);
+    if (keys.length !== 2 || keys.some(key => typeof key !== 'string')
+        || !keys.includes('schemaVersion') || !keys.includes('projects')) return absent();
+    const schemaVersion = Object.getOwnPropertyDescriptor(raw, 'schemaVersion');
+    const projectList = Object.getOwnPropertyDescriptor(raw, 'projects');
+    if (!schemaVersion || !projectList || schemaVersion.enumerable !== true
+        || projectList.enumerable !== true
+        || !Object.prototype.hasOwnProperty.call(schemaVersion, 'value')
+        || !Object.prototype.hasOwnProperty.call(projectList, 'value')
+        || schemaVersion.value !== 1 || !Array.isArray(projectList.value)
+        || projectList.value.length > maxEntries) return absent();
+    const projects = projectList.value.map(item => {
       if (!item || typeof item !== 'object' || Array.isArray(item)
           || typeof item.projectId !== 'string' || typeof item.projectKind !== 'string'
           || typeof item.path !== 'string') throw new Error('DISCOVERY_PROJECTION_INVALID');

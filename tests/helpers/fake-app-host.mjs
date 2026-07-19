@@ -55,8 +55,11 @@ const HOST_LABEL = {
 
 export class FakeAppHost {
   constructor({ projects = [], createReceipt = { threadId: 'CREATE-ID' },
-    forkReceipt = { threadId: 'FORK-ID' }, sendReceipt = {}, behaviors = {} } = {}) {
-    this.projects = clone(projects);
+    listProjectsReceipt = undefined, forkReceipt = { threadId: 'FORK-ID' },
+    sendReceipt = {}, behaviors = {} } = {}) {
+    this.listProjectsReceipt = listProjectsReceipt === undefined
+      ? { schemaVersion: 1, projects: clone(projects) }
+      : listProjectsReceipt;
     // Preserve receipt prototypes, symbols, accessors, and descriptors so the strict validator—not
     // structuredClone normalization—sees the exact host return value under test.
     this.createReceipt = createReceipt;
@@ -78,7 +81,7 @@ export class FakeAppHost {
 
   async list_projects(args = {}) {
     this.calls.push({ tool: 'list_projects', args: clone(args) });
-    return this.#respond('list_projects', this.projects);
+    return this.#respond('list_projects', this.listProjectsReceipt);
   }
 
   async create_thread(args) {
@@ -237,8 +240,20 @@ export async function boundedRootPrepareInput(host, currentHostTaskCwd, {
     line: JSON.stringify({ host_task_cwd: currentHostTaskCwd }) });
   try {
     const raw = await callHost(() => host.list_projects({}), 'DISCOVERY', timeoutMs);
-    if (!Array.isArray(raw) || raw.length > maxEntries) return absent();
-    const projects = raw.map(item => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)
+        || ![Object.prototype, null].includes(Object.getPrototypeOf(raw))) return absent();
+    const keys = Reflect.ownKeys(raw);
+    if (keys.length !== 2 || keys.some(key => typeof key !== 'string')
+        || !keys.includes('schemaVersion') || !keys.includes('projects')) return absent();
+    const schemaVersion = Object.getOwnPropertyDescriptor(raw, 'schemaVersion');
+    const projectList = Object.getOwnPropertyDescriptor(raw, 'projects');
+    if (!schemaVersion || !projectList || schemaVersion.enumerable !== true
+        || projectList.enumerable !== true
+        || !Object.prototype.hasOwnProperty.call(schemaVersion, 'value')
+        || !Object.prototype.hasOwnProperty.call(projectList, 'value')
+        || schemaVersion.value !== 1 || !Array.isArray(projectList.value)
+        || projectList.value.length > maxEntries) return absent();
+    const projects = projectList.value.map(item => {
       if (!item || typeof item !== 'object' || Array.isArray(item)
           || typeof item.projectId !== 'string' || typeof item.projectKind !== 'string'
           || typeof item.path !== 'string') throw new Error('DISCOVERY_PROJECTION_INVALID');

@@ -1020,11 +1020,54 @@ test('ambiguous project uses one discovery call then durable manual preserve wit
   }
 });
 
+test('current Codex App v1 list_projects envelope is projected for root prepare', async () => {
+  const root = '/repo/current-app-envelope';
+  const host = new FakeAppHost({
+    listProjectsReceipt: {
+      schemaVersion: 1,
+      projects: [{
+        projectId: 'PROJECT-CURRENT-APP',
+        projectKind: 'local',
+        path: root,
+        label: 'current-app-envelope',
+        hostId: 'local',
+        hostDisplayName: 'Local',
+      }],
+    },
+  });
+
+  const discovery = await boundedRootPrepareInput(host, root, { timeoutMs: 25 });
+
+  assert.equal(discovery.discoveryAvailable, true);
+  assert.deepEqual(JSON.parse(discovery.line), {
+    host_task_cwd: root,
+    projects: [{
+      projectId: 'PROJECT-CURRENT-APP',
+      projectKind: 'local',
+      path: root,
+    }],
+  });
+  assert.deepEqual(host.calls.map(call => call.tool), ['list_projects']);
+});
+
+test('handoff protocol binds discovery to the current strict v1 App envelope', () => {
+  const protocol = readFileSync(join(HERE, '..', 'skills', 'deep-loop-workflow',
+    'references', 'handoff-respawn.md'), 'utf8');
+  assert.match(protocol,
+    /top-level object with exactly `schemaVersion` and `projects`[\s\S]{0,300}`schemaVersion === 1`/u);
+  assert.match(protocol, /bare array[\s\S]{0,180}discovery unavailable/u);
+});
+
 test('discovery failure is bounded into one emitted manual-preserve prepare with zero task calls', async () => {
   const rows = [
     ['throw', { behaviors: { list_projects: 'throw' } }],
     ['timeout', { behaviors: { list_projects: 'timeout' } }],
     ['no-return', { behaviors: { list_projects: 'no-return' } }],
+    ['legacy-bare-array', { listProjectsReceipt: [] }],
+    ['unsupported-schema', { listProjectsReceipt: { schemaVersion: 2, projects: [] } }],
+    ['extra-envelope-key', {
+      listProjectsReceipt: { schemaVersion: 1, projects: [], ignored: true },
+    }],
     ['malformed', { projects: { projectId: 'NOT-AN-ARRAY' } }],
     ['too-many', { projects: Array.from({ length: 257 }, (_, index) => ({
       projectId: `P-${index}`, projectKind: 'local', path: `/repo/${index}`,
