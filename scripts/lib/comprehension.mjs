@@ -1,6 +1,4 @@
-import { readState, writeState, withLock } from './state.mjs';
-import { assertVerifiedRunSnapshot, MUTATION_TURN_FLOOR, readLines,
-  withVerifiedMutationLock } from './integrity.mjs';
+import { MUTATION_TURN_FLOOR, readLines, withVerifiedMutationLock } from './integrity.mjs';
 import { contentHash } from './envelope.mjs';
 import { isHeadlessInvocation } from './respawn.mjs';
 import { leaseCheck } from './lease.mjs';
@@ -18,7 +16,6 @@ function ackIdentityFence(fence) {
     }
   };
 }
-
 export function computeDebt(loop) {
   const c = loop.comprehension || {};
   const total = c.episodes_total || 0;
@@ -99,21 +96,72 @@ export function ack(root, runId, episodeId, { actor = 'agent', confirm = false, 
   });
 }
 
-export function recordReviewed(root, runId, episodeId, source) {
-  return withLock(root, runId, () => {
-    const { data } = readState(root, runId);
-    const lines = readLines(root, runId);
-    assertVerifiedRunSnapshot(root, runId, data, { lines });
-    // v1.6 (spec §2.3-7): fence 없는 legacy export — terminal run에 카운터 write 금지.
-    if (data.status === 'completed' || data.status === 'stopped') throw new Error('RUN_TERMINAL: recordReviewed');
-    const requireHumanAck = data.review?.require_human_ack === true;
-    if (source === 'deep-review-approve' && requireHumanAck) return; // ack 필요, 카운트 안 함
-    const ep = data.episodes.find(e => e.id === episodeId);
-    // P2-a (belt-and-suspenders): skip an abandoned episode — it is out of episodes_total and must not be counted.
-    if (ep && ep.status !== 'abandoned' && !ep.human_reviewed) {
-      ep.human_reviewed = true;
-      data.comprehension.episodes_human_reviewed = (data.comprehension.episodes_human_reviewed || 0) + 1;
+const REVIEWED_REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
+export function recordReviewed(root, runId, episodeId, source,
+  { fence, requestId } = {}) {
+  if (typeof fence?.owner !== 'string' || !Number.isSafeInteger(fence?.generation)) {
+    throw new Error('FENCE_REQUIRED: recordReviewed');
+  }
+  if (!REVIEWED_REQUEST_ID.test(requestId || '')) {
+    throw new Error('REQUEST_ID_REQUIRED: recordReviewed');
+  }
+  const callerBinding = { owner: fence.owner, generation: fence.generation };
+  const requestIdDigest = contentHash(`comprehension-reviewed-id\0${requestId}`);
+  const requestDigest = contentHash(JSON.stringify({
+    contract: 'comprehension-reviewed-v1', episode_id: episodeId, source,
+    request_id_digest: requestIdDigest,
+  }));
+  const intentDigest = contentHash(JSON.stringify({
+    operation: 'comprehension-reviewed', ...callerBinding, request_digest: requestDigest,
+  }));
+  const fenceCheck = ackIdentityFence(fence);
+  return withVerifiedMutationLock(root, runId, { callerBinding, intentDigest,
+    fenceError: 'LEASE_FENCED: recordReviewed',
+    intentConflictError: 'COMPREHENSION_REQUEST_CONFLICT' }, context => {
+    const { data } = context.readVerifiedState({ fenceCheck });
+    const authorized = leaseCheck(data, { ...fence, intent: fence.intent ?? 'business' });
+    if (!authorized.ok) {
+      if (authorized.reason === 'RUN_TERMINAL') {
+        throw new Error('RUN_TERMINAL: recordReviewed');
+      }
+      throw new Error(`LEASE_FENCED: ${authorized.reason}`);
     }
-    writeState(root, runId, data);
+    const matches = readLines(root, runId).filter(event =>
+      event.type === 'comprehension-reviewed'
+      && event.data?.request_id_digest === requestIdDigest);
+    if (matches.length > 1) throw new Error('COMPREHENSION_RECOVERY_PROJECTION_MISMATCH');
+    if (matches.length === 1) {
+      const [event] = matches;
+      if (event.data?.request_digest !== requestDigest
+          || event.data?.owner_run_id !== fence.owner
+          || event.data?.generation !== fence.generation
+          || event.data?.episode_id !== episodeId || event.data?.source !== source
+          || event.data?.changed !== true) {
+        throw new Error('COMPREHENSION_REQUEST_CONFLICT');
+      }
+      if (context.recovered !== null
+          && !context.recovered.events.some(item => item.seq === event.seq
+            && item.checksum === event.checksum)) {
+        throw new Error('COMPREHENSION_RECOVERY_PROJECTION_MISMATCH');
+      }
+      return;
+    }
+    if (context.recovered !== null) {
+      throw new Error('COMPREHENSION_RECOVERY_PROJECTION_MISMATCH');
+    }
+    if (source === 'deep-review-approve' && data.review?.require_human_ack === true) return;
+    const episode = data.episodes.find(item => item.id === episodeId);
+    if (!episode || episode.status === 'abandoned' || episode.human_reviewed) return;
+    context.appendAnchored({ type: 'comprehension-reviewed', data: {
+      owner_run_id: fence.owner, generation: fence.generation,
+      episode_id: episodeId, source, changed: true,
+      request_id_digest: requestIdDigest, request_digest: requestDigest,
+    } }, candidate => {
+      const item = candidate.episodes.find(value => value.id === episodeId);
+      item.human_reviewed = true;
+      candidate.comprehension.episodes_human_reviewed =
+        (candidate.comprehension.episodes_human_reviewed || 0) + 1;
+    }, undefined, { fenceCheck });
   });
 }

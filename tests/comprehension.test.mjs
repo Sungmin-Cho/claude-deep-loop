@@ -247,7 +247,9 @@ test('recordReviewed: terminal run throws RUN_TERMINAL, counters unchanged', () 
   const root = mkdtempSync(join(tmpdir(), 'dl-comp-t-'));
   const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-07-09T00:00:00Z') });
   seedCorrelatedTerminal(root, runId, { status: 'stopped' });
-  assert.throws(() => recordReviewed(root, runId, 'ep-x', 'src'), /RUN_TERMINAL: recordReviewed/);
+  assert.throws(() => recordReviewed(root, runId, 'ep-x', 'src',
+    { fence: { owner: runId, generation: 1 }, requestId: 'terminal-reviewed' }),
+  /RUN_TERMINAL: recordReviewed/);
   assert.equal(readState(root, runId).data.comprehension.episodes_human_reviewed || 0, 0);
 });
 
@@ -284,7 +286,120 @@ testComprehension7e('comprehension runtime and recordReviewed no-op require a ve
   assertComprehension7e.throws(() => ack7e(fixture.root, fixture.runId, id,
     { actor: 'agent', env: ATTENDED7E, fence }), /RUN_SNAPSHOT_INVALID/);
   assertComprehension7e.throws(() => recordReviewed7e(fixture.root, fixture.runId, id,
-    'deep-review-approve'), /RUN_SNAPSHOT_INVALID/);
+    'deep-review-approve', { fence, requestId: 'corrupt-reviewed' }),
+  /RUN_SNAPSHOT_INVALID/);
   assertComprehension7e.deepEqual(comprehensionBytes7e(fixture.root, fixture.runId), before,
     'failed ack/no-op paths must not change state, hash, or events');
+});
+
+import { spawnSync as spawnComprehension7g } from 'node:child_process';
+import { rmdirSync as rmdirComprehension7g } from 'node:fs';
+import { fileURLToPath as fileComprehension7g } from 'node:url';
+import { durableRunBytes as comprehensionBytes7g,
+  rawHashValidState as rawComprehension7g,
+  verifiedAppRun as comprehensionFixture7g } from './fixtures/verified-app-run.mjs';
+
+test('recordReviewed requires explicit authority and journals one fixed request receipt', () => {
+  const fixture = comprehensionFixture7g('dl-comprehension-7g-');
+  const fence = { owner: fixture.owner, generation: fixture.generation };
+  const { id } = newEpisode7e(fixture.root, fixture.runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation',
+    expectedArtifacts: [], fence: { ...fence, intent: 'business' },
+  });
+  const initial = comprehensionBytes7g(fixture.root, fixture.runId);
+  assert.throws(() => recordReviewed7e(fixture.root, fixture.runId, id, 'manual'),
+    /FENCE_REQUIRED: recordReviewed/);
+  assert.throws(() => recordReviewed7e(fixture.root, fixture.runId, id, 'manual', { fence }),
+    /REQUEST_ID_REQUIRED: recordReviewed/);
+  assert.throws(() => recordReviewed7e(fixture.root, fixture.runId, id, 'manual', {
+    fence: { ...fence, owner: 'wrong-owner' }, requestId: 'reviewed-wrong-fence',
+  }), /LEASE_FENCED/);
+  assert.deepEqual(comprehensionBytes7g(fixture.root, fixture.runId), initial);
+
+  const request = { fence, requestId: 'reviewed-success' };
+  assert.equal(recordReviewed7e(fixture.root, fixture.runId, id, 'manual', request), undefined);
+  const events = eventLog(fixture.root, fixture.runId)
+    .filter(event => event.type === 'comprehension-reviewed');
+  assert.equal(events.length, 1);
+  assert.deepEqual(Object.keys(events[0].data).sort(), [
+    'changed', 'episode_id', 'generation', 'owner_run_id', 'request_digest',
+    'request_id_digest', 'source',
+  ].sort());
+  assert.deepEqual({ changed: events[0].data.changed, episode: events[0].data.episode_id,
+    source: events[0].data.source }, { changed: true, episode: id, source: 'manual' });
+  assert.equal(readState(fixture.root, fixture.runId)
+    .data.comprehension.episodes_human_reviewed, 1);
+  const committed = comprehensionBytes7g(fixture.root, fixture.runId);
+  assert.equal(recordReviewed7e(fixture.root, fixture.runId, id, 'manual', request), undefined);
+  assert.deepEqual(comprehensionBytes7g(fixture.root, fixture.runId), committed,
+    'exact response-loss retry is byte-preserving');
+  assert.throws(() => recordReviewed7e(fixture.root, fixture.runId, id, 'other', request),
+    /COMPREHENSION_REQUEST_CONFLICT/);
+  assert.deepEqual(comprehensionBytes7g(fixture.root, fixture.runId), committed);
+});
+
+test('recordReviewed semantic no-ops are verified and write-free', () => {
+  const make = prefix => {
+    const fixture = comprehensionFixture7g(prefix);
+    const fence = { owner: fixture.owner, generation: fixture.generation };
+    const { id } = newEpisode7e(fixture.root, fixture.runId, {
+      plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation',
+      expectedArtifacts: [], fence: { ...fence, intent: 'business' },
+    });
+    return { ...fixture, fence, id };
+  };
+  const human = make('dl-comprehension-7g-human-');
+  rawComprehension7g(human.root, human.runId,
+    loop => { loop.review.require_human_ack = true; });
+  const humanBefore = comprehensionBytes7g(human.root, human.runId);
+  assert.equal(recordReviewed7e(human.root, human.runId, human.id,
+    'deep-review-approve', { fence: human.fence, requestId: 'human-ack-noop' }), undefined);
+  assert.deepEqual(comprehensionBytes7g(human.root, human.runId), humanBefore);
+
+  const abandoned = make('dl-comprehension-7g-abandoned-');
+  abandonEpisode(abandoned.root, abandoned.runId, abandoned.id,
+    { reason: 'orphan', confirm: true, fence: { ...abandoned.fence, intent: 'business' } });
+  rawComprehension7g(abandoned.root, abandoned.runId, loop => {
+    loop.episodes.find(item => item.id === abandoned.id).human_reviewed = false;
+  });
+  const abandonedBefore = comprehensionBytes7g(abandoned.root, abandoned.runId);
+  assert.equal(recordReviewed7e(abandoned.root, abandoned.runId, abandoned.id, 'manual',
+    { fence: abandoned.fence, requestId: 'abandoned-noop' }), undefined);
+  assert.deepEqual(comprehensionBytes7g(abandoned.root, abandoned.runId), abandonedBefore);
+
+  const already = make('dl-comprehension-7g-already-');
+  recordReviewed7e(already.root, already.runId, already.id, 'manual',
+    { fence: already.fence, requestId: 'already-setup' });
+  const alreadyBefore = comprehensionBytes7g(already.root, already.runId);
+  assert.equal(recordReviewed7e(already.root, already.runId, already.id, 'manual',
+    { fence: already.fence, requestId: 'already-noop' }), undefined);
+  assert.deepEqual(comprehensionBytes7g(already.root, already.runId), alreadyBefore);
+});
+
+test('recordReviewed response-loss recovery converges through its public API', () => {
+  const fixture = comprehensionFixture7g('dl-comprehension-7g-crash-');
+  const fence = { owner: fixture.owner, generation: fixture.generation };
+  const { id } = newEpisode7e(fixture.root, fixture.runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation',
+    expectedArtifacts: [], fence: { ...fence, intent: 'business' },
+  });
+  const worker = fileComprehension7g(
+    new URL('./helpers/anchored-crash-worker.mjs', import.meta.url));
+  const request = { episodeId: id, source: 'crash-reviewed',
+    requestId: 'crash-reviewed-request' };
+  const child = spawnComprehension7g(process.execPath,
+    [worker, fixture.root, fixture.runId, 'comprehension-reviewed', 'pending-after-rename'], {
+      encoding: 'utf8', shell: false,
+      env: { ...process.env, DEEP_LOOP_CRASH_OWNER: fixture.owner,
+        DEEP_LOOP_CRASH_GENERATION: String(fixture.generation),
+        DEEP_LOOP_CRASH_INPUT: JSON.stringify(request) },
+    });
+  assert.equal(child.status, 91, child.stderr || child.stdout);
+  rmdirComprehension7g(join(fixture.root, '.deep-loop', 'runs', fixture.runId, '.lock'));
+  assert.equal(recordReviewed7e(fixture.root, fixture.runId, id, request.source,
+    { fence, requestId: request.requestId }), undefined);
+  assert.equal(eventLog(fixture.root, fixture.runId)
+    .filter(event => event.type === 'comprehension-reviewed').length, 1);
+  assert.equal(readState(fixture.root, fixture.runId)
+    .data.comprehension.episodes_human_reviewed, 1);
 });

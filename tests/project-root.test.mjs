@@ -540,3 +540,398 @@ test('verified under-lock commit has a closed production reference set', () => {
     else assert.equal(count, 0, `${rel}: unapproved verified under-lock commit reference`);
   }
 });
+
+import test7g from 'node:test';
+import assert7g from 'node:assert/strict';
+import { spawnSync as spawn7g } from 'node:child_process';
+import { readFileSync as read7g, readdirSync as list7g, rmdirSync as rmdir7g,
+  statSync as stat7g }
+  from 'node:fs';
+import { join as join7g, relative as relative7g } from 'node:path';
+import { fileURLToPath as file7g } from 'node:url';
+import { releaseLease as release7g, reserveHandoff as reserve7g,
+  advanceHandoffPhase as advance7g, rollbackHandoff as rollback7g }
+  from '../scripts/lib/lease.mjs';
+import { tripBreaker as trip7g, resetBreaker as reset7g,
+  recordReviewVerdict as rawVerdict7g } from '../scripts/lib/breaker.mjs';
+import { appendAnchored as append7g, directMutationOptions as mutation7g,
+  readLines as lines7g }
+  from '../scripts/lib/integrity.mjs';
+import { durableRunBytes as bytes7g, rawHashValidState as raw7g,
+  seedCorrelatedTerminal as terminal7g,
+  verifiedAppRun as fixture7g }
+  from './fixtures/verified-app-run.mjs';
+
+const ROOT7G = file7g(new URL('..', import.meta.url));
+const verdict7g = (root, runId, verdict, fence, options) =>
+  rawVerdict7g(root, runId, verdict,
+    { ...fence, runtime: fence.runtime ?? 'codex' }, options);
+function sourceFiles7g(directory) {
+  return list7g(directory).flatMap(name => {
+    const path = join7g(directory, name);
+    return stat7g(path).isDirectory() ? sourceFiles7g(path)
+      : /\.mjs$/.test(path) ? [path] : [];
+  });
+}
+
+test7g('post-genesis raw publisher closure', () => {
+  const files = [
+    ...sourceFiles7g(join7g(ROOT7G, 'scripts', 'lib')),
+    ...sourceFiles7g(join7g(ROOT7G, 'scripts', 'hooks-impl')),
+    join7g(ROOT7G, 'scripts', 'deep-loop.mjs'),
+  ];
+  const verdictCallers = [];
+  for (const path of files) {
+    const rel = relative7g(ROOT7G, path).replaceAll('\\', '/');
+    const source = read7g(path, 'utf8');
+    const imports = [...source.matchAll(/import[^;]*\bwriteState\b[^;]*;/g)];
+    const calls = [...source.matchAll(/\bwriteState\s*\(/g)];
+    if (rel === 'scripts/lib/state.mjs') {
+      assert7g.equal(imports.length, 0);
+      assert7g.equal(calls.length, 1, 'the fixture/genesis seam definition only');
+    } else {
+      assert7g.equal(imports.length, 0, `${rel}: raw writer import`);
+      assert7g.equal(calls.length, 0, `${rel}: raw writer call`);
+    }
+    if (rel !== 'scripts/lib/breaker.mjs'
+        && /\brecordReviewVerdict\s*\(/.test(source)) verdictCallers.push(rel);
+  }
+  assert7g.deepEqual(verdictCallers, [],
+    'production review-verdict caller must not bypass the explicit breaker API contract');
+});
+
+function publisherCases7g() {
+  const now = Date.parse('2026-07-13T00:00:10.000Z');
+  const fresh = prefix => {
+    const fixture = fixture7g(prefix);
+    return { ...fixture, fence: { owner: fixture.owner, generation: fixture.generation } };
+  };
+  return [
+    { event: 'lease-released', keys: ['generation', 'owner_run_id'], setup: () => {
+      const f = fresh('dl-7g-release-');
+      return { f, run: () => release7g(f.root, f.runId, f.fence),
+        noOp: () => release7g(f.root, f.runId, f.fence) };
+    } },
+    { event: 'handoff-reserved',
+      keys: ['child_run_id', 'generation', 'key_digest', 'owner_run_id'], setup: () => {
+        const f = fresh('dl-7g-reserve-');
+        const input = { trigger: '7g', now, expect: f.fence };
+        return { f, run: () => reserve7g(f.root, f.runId, input),
+          noOp: () => reserve7g(f.root, f.runId, input) };
+      } },
+    { event: 'handoff-phase-advanced',
+      keys: ['from_phase', 'generation', 'key_digest', 'owner_run_id', 'to_phase'], setup: () => {
+        const f = fresh('dl-7g-advance-');
+        const reserved = reserve7g(f.root, f.runId, { trigger: '7g', now, expect: f.fence });
+        const input = { key: reserved.key, toPhase: 'emitted', now: now + 1, expect: f.fence };
+        return { f, run: () => advance7g(f.root, f.runId, input),
+          noOp: () => advance7g(f.root, f.runId, input) };
+      } },
+    { event: 'handoff-rolled-back',
+      keys: ['generation', 'owner_run_id', 'terminal'], setup: () => {
+        const f = fresh('dl-7g-rollback-');
+        reserve7g(f.root, f.runId, { trigger: '7g', now, expect: f.fence });
+        return { f, run: () => rollback7g(f.root, f.runId, f.fence),
+          noOp: () => rollback7g(f.root, f.runId, f.fence) };
+      } },
+    { event: 'breaker-tripped', keys: ['changed', 'generation', 'owner_run_id',
+      'reason', 'request_digest', 'request_id_digest'], setup: () => {
+      const f = fresh('dl-7g-trip-');
+      const input = { fence: f.fence, requestId: 'publisher-trip' };
+      return { f, run: () => trip7g(f.root, f.runId, 'test', input),
+        noOp: () => trip7g(f.root, f.runId, 'test', input) };
+    } },
+    { event: 'breaker-reset',
+      keys: ['changed', 'generation', 'next_count', 'next_status', 'operation',
+        'owner_run_id', 'previous_count', 'request_digest', 'request_id_digest',
+        'was_breaker'], setup: () => {
+        const f = fresh('dl-7g-reset-');
+        trip7g(f.root, f.runId, 'consecutive-request-changes',
+          { fence: f.fence, requestId: 'publisher-reset-setup-trip' });
+        const input = { fence: { ...f.fence, intent: 'breaker-reset' },
+          requestId: 'publisher-reset' };
+        return { f, run: () => reset7g(f.root, f.runId, input),
+          noOp: () => reset7g(f.root, f.runId, input) };
+    } },
+    { event: 'breaker-review-verdict',
+      keys: ['baseline_count', 'breaker_tripped', 'changed', 'generation', 'next_count',
+        'owner_run_id', 'previous_count', 'request_digest', 'request_id_digest',
+        'verdict'], setup: () => {
+        const f = fresh('dl-7g-verdict-');
+        const input = { requestId: 'publisher-request-changes' };
+        return { f,
+          run: () => verdict7g(f.root, f.runId, 'REQUEST_CHANGES', f.fence, input),
+          noOp: () => verdict7g(f.root, f.runId, 'REQUEST_CHANGES', f.fence, input) };
+      } },
+  ];
+}
+
+function journalBytes7g(root, runId) {
+  const directory = join7g(root, '.deep-loop', 'runs', runId);
+  return Object.fromEntries(list7g(directory).sort()
+    .filter(name => name.startsWith('.anchored-') || name === 'loop.json'
+      || name === '.loop.hash' || name === 'event-log.jsonl')
+    .map(name => [name, read7g(join7g(directory, name))]));
+}
+
+function retryPublisher7g(operation, fixture, foreign = false) {
+  const owner = foreign ? '01JAPPF0R00000000000000000' : fixture.owner;
+  const fence = { owner, generation: fixture.generation };
+  if (operation === 'lease-release') {
+    return release7g(fixture.root, fixture.runId, fence);
+  }
+  if (operation === 'handoff-reserve') {
+    return reserve7g(fixture.root, fixture.runId,
+      { trigger: 'crash-7g', now: Date.parse('2026-07-13T00:00:10.000Z'), expect: fence });
+  }
+  if (operation === 'breaker-trip') {
+    return trip7g(fixture.root, fixture.runId, 'crash-7g',
+      { fence, requestId: 'crash-7g-trip' });
+  }
+  if (operation === 'breaker-verdict') {
+    return verdict7g(fixture.root, fixture.runId, 'REQUEST_CHANGES', fence,
+      { requestId: 'crash-7g-verdict' });
+  }
+  throw new Error(`TEST_OPERATION_UNKNOWN: ${operation}`);
+}
+
+function assertRemainingPublisherCrash7g({ operation, point }) {
+  const fixture = fixture7g(`dl-7g-${operation}-${point}-`);
+  const worker = file7g(new URL('./helpers/anchored-crash-worker.mjs', import.meta.url));
+  const child = spawn7g(process.execPath,
+    [worker, fixture.root, fixture.runId, operation, point], {
+      encoding: 'utf8', shell: false,
+      env: { ...process.env, DEEP_LOOP_CRASH_OWNER: fixture.owner,
+        DEEP_LOOP_CRASH_GENERATION: String(fixture.generation) },
+    });
+  assert7g.equal(child.status, 91, child.stderr || child.stdout);
+  rmdir7g(join7g(fixture.root, '.deep-loop', 'runs', fixture.runId, '.lock'));
+  const pending = journalBytes7g(fixture.root, fixture.runId);
+  let foreign;
+  try { foreign = retryPublisher7g(operation, fixture, true); }
+  catch (error) { assert7g.match(String(error?.message || error), /FENCED|pending/i); }
+  if (foreign !== undefined) assert7g.equal(foreign.ok, false);
+  assert7g.deepEqual(journalBytes7g(fixture.root, fixture.runId), pending,
+    'foreign retry must not recover or change a byte');
+  retryPublisher7g(operation, fixture, false);
+  assert7g.equal(lines7g(fixture.root, fixture.runId)
+    .filter(event => ({ 'lease-release': 'lease-released',
+      'handoff-reserve': 'handoff-reserved', 'breaker-trip': 'breaker-tripped',
+      'breaker-verdict': 'breaker-review-verdict' }[operation] === event.type)).length, 1);
+  assert7g.equal(Object.keys(journalBytes7g(fixture.root, fixture.runId))
+    .some(name => name.startsWith('.anchored-')
+      && name !== '.anchored-committed.json'), false);
+}
+
+test7g('lease mutation events and breaker mutation events are exact and no-op stable', () => {
+  for (const spec of publisherCases7g()) {
+    const { f, run, noOp } = spec.setup();
+    run();
+    const event = lines7g(f.root, f.runId).filter(item => item.type === spec.event).at(-1);
+    assert7g.ok(event, spec.event);
+    assert7g.deepEqual(Object.keys(event.data).sort(), [...spec.keys].sort());
+    const before = bytes7g(f.root, f.runId);
+    noOp();
+    assert7g.deepEqual(bytes7g(f.root, f.runId), before, `${spec.event} no-op wrote`);
+  }
+});
+
+test7g('terminal release is allowed only when no live App binding remains', () => {
+  const clean = fixture7g('dl-7g-terminal-release-');
+  terminal7g(clean.root, clean.runId, { status: 'stopped' });
+  assert7g.deepEqual(release7g(clean.root, clean.runId,
+    { owner: clean.owner, generation: clean.generation }),
+  { ok: true, reason: 'released' });
+  assert7g.equal(lines7g(clean.root, clean.runId)
+    .filter(event => event.type === 'lease-released').length, 1);
+
+  const live = fixture7g('dl-7g-terminal-live-app-release-');
+  terminal7g(live.root, live.runId, { status: 'stopped' });
+  const before = bytes7g(live.root, live.runId);
+  raw7g(live.root, live.runId, loop => {
+    loop.session_chain.lease.handoff_transport = 'codex-app';
+    loop.session_chain.lease.handoff_attempt_id = '01JAPPTASK0000000000000000';
+  });
+  const marked = bytes7g(live.root, live.runId);
+  assert7g.throws(() => release7g(live.root, live.runId,
+    { owner: live.owner, generation: live.generation }), /RUN_SNAPSHOT_INVALID/);
+  assert7g.deepEqual(bytes7g(live.root, live.runId), marked);
+  assert7g.notDeepEqual(marked, before);
+});
+
+test7g('remaining publisher crash recovery uses real public APIs', () => {
+  for (const operation of ['lease-release', 'handoff-reserve', 'breaker-trip', 'breaker-verdict']) {
+    for (const point of ['pending-after-rename', 'event-after-partial-append',
+      'state-after-rename', 'hash-after-rename', 'before-cleanup']) {
+      assertRemainingPublisherCrash7g({ operation, point });
+    }
+  }
+});
+
+test7g('review verdict request identity survives journal cleanup and rejects reuse', () => {
+  const fixture = fixture7g('dl-7g-verdict-response-loss-');
+  const fence = { owner: fixture.owner, generation: fixture.generation };
+  const input = { requestId: 'response-loss-verdict-1' };
+  assert7g.deepEqual(verdict7g(fixture.root, fixture.runId,
+    'REQUEST_CHANGES', fence, input), { ok: true, changed: true });
+  const committed = bytes7g(fixture.root, fixture.runId);
+  assert7g.deepEqual(verdict7g(fixture.root, fixture.runId,
+    'REQUEST_CHANGES', fence, input), { ok: true, changed: true });
+  assert7g.deepEqual(bytes7g(fixture.root, fixture.runId), committed,
+    'post-cleanup retry must not append or increment again');
+  assert7g.throws(() => verdict7g(fixture.root, fixture.runId,
+    'APPROVE', fence, input), /BREAKER_REQUEST_CONFLICT/);
+  assert7g.deepEqual(bytes7g(fixture.root, fixture.runId), committed);
+});
+
+test7g('review verdict enforces released releasing and paused lease policy before replay', () => {
+  for (const state of ['released', 'releasing', 'paused']) {
+    const fixture = fixture7g(`dl-7g-verdict-${state}-`);
+    const fence = { owner: fixture.owner, generation: fixture.generation };
+    raw7g(fixture.root, fixture.runId, loop => {
+      if (state === 'paused') loop.status = 'paused';
+      else loop.session_chain.lease.state = state;
+    });
+    const before = bytes7g(fixture.root, fixture.runId);
+    assert7g.throws(() => verdict7g(fixture.root, fixture.runId,
+      'REQUEST_CHANGES', fence, { requestId: `verdict-${state}` }), /LEASE_FENCED/);
+    assert7g.deepEqual(bytes7g(fixture.root, fixture.runId), before, state);
+  }
+});
+
+test7g('review verdict requires and enforces runtime before fresh or replay semantics', () => {
+  const replay = fixture7g('dl-7g-verdict-runtime-replay-');
+  const correct = { owner: replay.owner, generation: replay.generation, runtime: 'codex' };
+  const input = { requestId: 'runtime-replay-verdict' };
+  assert7g.deepEqual(verdict7g(replay.root, replay.runId,
+    'REQUEST_CHANGES', correct, input), { ok: true, changed: true });
+  const committed = bytes7g(replay.root, replay.runId);
+  assert7g.throws(() => rawVerdict7g(replay.root, replay.runId,
+    'REQUEST_CHANGES', { ...correct, runtime: 'claude' }, input),
+  /LEASE_FENCED: RUNTIME_FENCED/);
+  assert7g.deepEqual(bytes7g(replay.root, replay.runId), committed);
+
+  const fresh = fixture7g('dl-7g-verdict-runtime-fresh-');
+  const before = bytes7g(fresh.root, fresh.runId);
+  assert7g.throws(() => rawVerdict7g(fresh.root, fresh.runId,
+    'REQUEST_CHANGES', { owner: fresh.owner, generation: fresh.generation,
+      runtime: 'claude' }, { requestId: 'runtime-fresh-verdict' }),
+  /LEASE_FENCED: RUNTIME_FENCED/);
+  assert7g.deepEqual(bytes7g(fresh.root, fresh.runId), before);
+});
+
+test7g('zero-count APPROVE receipt cannot reset a newer verdict after response loss', () => {
+  const fixture = fixture7g('dl-7g-approve-noop-response-loss-');
+  const fence = { owner: fixture.owner, generation: fixture.generation };
+  const approve = { requestId: 'approve-noop-before-newer-verdict' };
+  assert7g.deepEqual(verdict7g(fixture.root, fixture.runId,
+    'APPROVE', fence, approve), { ok: true, changed: false });
+  const receipt = lines7g(fixture.root, fixture.runId).at(-1);
+  assert7g.equal(receipt.type, 'breaker-review-verdict');
+  assert7g.deepEqual({ verdict: receipt.data.verdict, changed: receipt.data.changed,
+    previous: receipt.data.previous_count, next: receipt.data.next_count },
+  { verdict: 'APPROVE', changed: false, previous: 0, next: 0 });
+
+  assert7g.deepEqual(verdict7g(fixture.root, fixture.runId,
+    'REQUEST_CHANGES', fence, { requestId: 'newer-request-changes' }),
+  { ok: true, changed: true });
+  const afterNewerVerdict = bytes7g(fixture.root, fixture.runId);
+  assert7g.deepEqual(verdict7g(fixture.root, fixture.runId,
+    'APPROVE', fence, approve), { ok: true, changed: false });
+  assert7g.deepEqual(bytes7g(fixture.root, fixture.runId), afterNewerVerdict,
+    'retry must recover the old no-op receipt without resetting newer state');
+  assert7g.equal(readState(fixture.root, fixture.runId)
+    .data.circuit_breaker.consecutive_request_changes, 1);
+});
+
+test7g('first upgraded verdict authenticates a nonzero legacy counter baseline', () => {
+  for (const baseline of [1, 2]) {
+    const fixture = fixture7g(`dl-7g-legacy-breaker-${baseline}-`);
+    raw7g(fixture.root, fixture.runId, loop => {
+      loop.circuit_breaker.consecutive_request_changes = baseline;
+    });
+    const fence = { owner: fixture.owner, generation: fixture.generation };
+    const input = { requestId: `legacy-baseline-${baseline}` };
+    const first = verdict7g(fixture.root, fixture.runId, 'REQUEST_CHANGES', fence, input);
+    assert7g.deepEqual(first, { ok: true, changed: true });
+    const event = lines7g(fixture.root, fixture.runId)
+      .filter(item => item.type === 'breaker-review-verdict').at(-1);
+    assert7g.equal(event.data.baseline_count, baseline);
+    assert7g.equal(event.data.previous_count, baseline);
+    assert7g.equal(event.data.next_count, baseline + 1);
+    const committed = bytes7g(fixture.root, fixture.runId);
+    assert7g.deepEqual(
+      verdict7g(fixture.root, fixture.runId, 'REQUEST_CHANGES', fence, input), first);
+    assert7g.deepEqual(bytes7g(fixture.root, fixture.runId), committed);
+  }
+
+  const reset = fixture7g('dl-7g-legacy-breaker-reset-');
+  raw7g(reset.root, reset.runId, loop => {
+    loop.circuit_breaker = { consecutive_request_changes: 2,
+      tripped: false, trip_reason: null };
+  });
+  const resetFence = { owner: reset.owner, generation: reset.generation };
+  reset7g(reset.root, reset.runId,
+    { fence: { ...resetFence, intent: 'breaker-reset' },
+      requestId: 'legacy-reset-lineage' });
+  verdict7g(reset.root, reset.runId, 'APPROVE', resetFence,
+    { requestId: 'post-reset-baseline' });
+  const postReset = lines7g(reset.root, reset.runId)
+    .filter(item => item.type === 'breaker-review-verdict').at(-1);
+  assert7g.equal(postReset.data.baseline_count, null,
+    'an anchored reset establishes the zero lineage without a legacy baseline');
+});
+
+test7g('trip and reset retries preserve their original response across newer operations', () => {
+  const fixture = fixture7g('dl-7g-breaker-intervening-retry-');
+  const fence = { owner: fixture.owner, generation: fixture.generation };
+  const trip = { fence, requestId: 'intervening-trip' };
+  assert7g.deepEqual(trip7g(fixture.root, fixture.runId, 'manual-trip', trip),
+    { ok: true, changed: true });
+  const reset = { fence: { ...fence, intent: 'breaker-reset' },
+    requestId: 'intervening-reset' };
+  assert7g.deepEqual(reset7g(fixture.root, fixture.runId, reset),
+    { ok: true, changed: true, status: 'running' });
+  const afterReset = bytes7g(fixture.root, fixture.runId);
+  assert7g.deepEqual(trip7g(fixture.root, fixture.runId, 'manual-trip', trip),
+    { ok: true, changed: true });
+  assert7g.deepEqual(bytes7g(fixture.root, fixture.runId), afterReset,
+    'old trip retry must not re-trip after the newer reset');
+
+  verdict7g(fixture.root, fixture.runId, 'REQUEST_CHANGES', fence,
+    { requestId: 'verdict-after-reset' });
+  const afterVerdict = bytes7g(fixture.root, fixture.runId);
+  assert7g.deepEqual(reset7g(fixture.root, fixture.runId, reset),
+    { ok: true, changed: true, status: 'running' });
+  assert7g.deepEqual(bytes7g(fixture.root, fixture.runId), afterVerdict,
+    'old reset retry must not erase a newer verdict');
+  assert7g.equal(readState(fixture.root, fixture.runId)
+    .data.circuit_breaker.consecutive_request_changes, 1);
+});
+
+test7g('review verdict replay authenticates intervening review-outcome transitions', () => {
+  const fixture = fixture7g('dl-7g-review-outcome-lineage-');
+  const fence = { owner: fixture.owner, generation: fixture.generation };
+  const original = { requestId: 'lineage-verdict' };
+  verdict7g(fixture.root, fixture.runId, 'REQUEST_CHANGES', fence, original);
+  append7g(fixture.root, fixture.runId, {
+    type: 'review-outcome', data: { verdict: 'REQUEST_CHANGES' },
+  }, loop => { loop.circuit_breaker.consecutive_request_changes += 1; }, undefined,
+  mutation7g('test-review-outcome', fence,
+    { requestId: 'lineage-review-request-changes', verdict: 'REQUEST_CHANGES' },
+    'LEASE_FENCED: test-review-outcome'));
+  const afterRequestChanges = bytes7g(fixture.root, fixture.runId);
+  assert7g.deepEqual(verdict7g(fixture.root, fixture.runId,
+    'REQUEST_CHANGES', fence, original), { ok: true, changed: true });
+  assert7g.deepEqual(bytes7g(fixture.root, fixture.runId), afterRequestChanges);
+  append7g(fixture.root, fixture.runId, {
+    type: 'review-outcome', data: { verdict: 'APPROVE' },
+  }, loop => { loop.circuit_breaker.consecutive_request_changes = 0; }, undefined,
+  mutation7g('test-review-outcome', fence,
+    { requestId: 'lineage-review-approve', verdict: 'APPROVE' },
+    'LEASE_FENCED: test-review-outcome'));
+  const afterApprove = bytes7g(fixture.root, fixture.runId);
+  assert7g.deepEqual(verdict7g(fixture.root, fixture.runId,
+    'REQUEST_CHANGES', fence, original), { ok: true, changed: true });
+  assert7g.deepEqual(bytes7g(fixture.root, fixture.runId), afterApprove);
+});

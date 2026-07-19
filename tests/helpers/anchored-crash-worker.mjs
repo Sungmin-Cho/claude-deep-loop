@@ -4,7 +4,9 @@ import { contentHash } from '../../scripts/lib/envelope.mjs';
 import { finishRun } from '../../scripts/lib/finish.mjs';
 import { appendAnchored } from '../../scripts/lib/integrity.mjs';
 import { emitInsights } from '../../scripts/lib/insights.mjs';
-import { acquireLease } from '../../scripts/lib/lease.mjs';
+import { acquireLease, releaseLease, reserveHandoff } from '../../scripts/lib/lease.mjs';
+import { recordReviewVerdict, tripBreaker } from '../../scripts/lib/breaker.mjs';
+import { recordReviewed } from '../../scripts/lib/comprehension.mjs';
 import { patch } from '../../scripts/lib/state.mjs';
 import { newWorkstream } from '../../scripts/lib/workspace.mjs';
 import { recordCost, settleCodexPreflightCost, settleCodexProcessCost,
@@ -41,6 +43,41 @@ export function registerAnchoredCrashExtension(dispatch) {
   if (typeof dispatch !== 'function') throw new Error('CRASH_EXTENSION_INVALID');
   EXTENSIONS.push(dispatch);
 }
+
+const publisher7g = Object.freeze({
+  'lease-release': ({ root, runId, owner, generation }) =>
+    releaseLease(root, runId, { owner, generation }),
+  'handoff-reserve': ({ root, runId, owner, generation }) =>
+    reserveHandoff(root, runId, { trigger: 'crash-7g',
+      now: Date.parse('2026-07-13T00:00:10.000Z'), expect: { owner, generation } }),
+  'breaker-trip': ({ root, runId, owner, generation }) =>
+    tripBreaker(root, runId, 'crash-7g', { fence: { owner, generation },
+      requestId: 'crash-7g-trip' }),
+  'breaker-verdict': ({ root, runId, owner, generation }) =>
+    recordReviewVerdict(root, runId, 'REQUEST_CHANGES',
+      { owner, generation, runtime: 'codex' },
+      { requestId: 'crash-7g-verdict' }),
+  'comprehension-reviewed': ({ root, runId, owner, generation, rawInput }) => {
+    const input = parseInput(rawInput, ['episodeId', 'requestId', 'source']);
+    return recordReviewed(root, runId, input.episodeId, input.source,
+      { fence: { owner, generation }, requestId: input.requestId });
+  },
+});
+
+export function dispatchPublisherCrash7g({ root, runId, operation, point, owner, generation,
+  rawInput }) {
+  if (!Object.hasOwn(publisher7g, operation)) throw new Error('CRASH_OPERATION_INVALID');
+  const points = new Set(['pending-after-rename', 'event-after-partial-append',
+    'state-after-rename', 'hash-after-rename', 'before-cleanup']);
+  if (!points.has(point)) throw new Error('CRASH_POINT_INVALID');
+  return publisher7g[operation]({ root, runId, owner, generation, rawInput });
+}
+
+registerAnchoredCrashExtension(request => {
+  if (!Object.hasOwn(publisher7g, request.operation)) return false;
+  dispatchPublisherCrash7g(request);
+  return true;
+});
 
 const generic = Object.freeze({
   'accounting-record': ({ root, runId, owner, generation, rawInput }) => {

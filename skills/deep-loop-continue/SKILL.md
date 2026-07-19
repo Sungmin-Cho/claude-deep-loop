@@ -61,7 +61,7 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" next-action --json --project-root "<
 
 - `gate.allowed === false` 또는 `action.type ∈ {handoff, await_human}`이면:
   - **budget 소진**: `handoff emit --owner <owner_run_id> --generation <n>` 실행 후 사람에게 재시작 안내.
-  - **breaker tripped**: `/deep-loop-status`로 상태 확인 후 사람이 `breaker reset --confirm --owner <owner_run_id> --generation <n>` 실행 필요 — **autonomous tick은 스스로 `--confirm`을 주지 않는다.**
+  - **breaker tripped**: `/deep-loop-status`로 상태 확인 후 사람이 한 번 정한 `<breaker_reset_request_id>`로 `breaker reset --confirm --request-id <breaker_reset_request_id> --owner <owner_run_id> --generation <n>` 실행 필요 — 응답 유실 retry에는 같은 ID를 쓰며 **autonomous tick은 스스로 `--confirm`을 주지 않는다.**
   - **await_human**: 사람 입력 요청 후 종료.
 
 ## 1.5. Action-keyed Worktree 진입 (maker/checker dispatch 전)

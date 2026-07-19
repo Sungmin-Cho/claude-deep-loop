@@ -55,7 +55,10 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" breaker check --project-root "<canon
 - `tripped: false`이면 정상.
 - `tripped: true`이면 **사람이** 직접 reset해야 한다:
   ```
-  node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" breaker reset --confirm --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+  node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" breaker reset --confirm --request-id <breaker_reset_request_id> --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+
+  `<breaker_reset_request_id>`는 사람이 reset 전에 한 번 정하고 응답 유실 retry에 재사용한다.
+  새 reset 의도에서만 새 ID를 사용한다.
   ```
   (사람 + lease-owner 전용 경로 — autonomous tick은 `--confirm`을 자동으로 주지 않는다.)
 
@@ -87,4 +90,4 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode abandon --id <id> --reason "
 - 정상 진행 중: `/deep-loop-continue`
 - handoff 대기: `/deep-loop-resume`
 - 완료 가능: `/deep-loop-finish`
-- breaker tripped: `breaker reset --confirm --owner <owner_run_id> --generation <n>` (사람 직접 실행)
+- breaker tripped: `breaker reset --confirm --request-id <breaker_reset_request_id> --owner <owner_run_id> --generation <n>` (사람 직접 실행)

@@ -1,6 +1,6 @@
 import { contentHash, ulid } from './envelope.mjs';
 import { runtimeFence } from './runtime.mjs';
-import { readState, writeState, withLock } from './state.mjs';
+import { readState } from './state.mjs';
 import { assertVerifiedRunSnapshot, commitVerifiedEventsUnderLock, readLines,
   withVerifiedMutationLock } from './integrity.mjs';
 
@@ -9,7 +9,6 @@ const PHASE_ORDER = { idle: 0, reserved: 1, emitted: 2, spawned: 3, acquired: 4 
 export function deriveIdempotencyKey(ownerRunId, ownerGeneration, triggerReason) {
   return contentHash(`${ownerRunId}|${ownerGeneration}|${triggerReason}`).slice(0, 16);
 }
-
 // 펜싱 가드 — 읽기를 제외한 모든 커널 mutating 경로가 진입 전에 호출 (spec §9.1).
 // RUN_PAUSED gate: paused 상태에서 업무 write 거부. 예외 intent: 'recover', 'resume', 'breaker-reset'.
 export function leaseCheck(loop, { owner, generation, runtime, intent = 'business' } = {}) {
@@ -116,108 +115,145 @@ export function acquireLease(root, runId, { owner, expectGeneration, runtime,
   });
 }
 
-export function releaseLease(root, runId, { owner, generation }) {
-  if (typeof owner !== 'string' || owner.length === 0) throw new Error('INVALID_OWNER');
-  return withLock(root, runId, () => {
-    const { data } = readState(root, runId);
-    const lease = data.session_chain.lease;
-    if (lease.owner_run_id !== owner || lease.generation !== generation) return { ok: false, reason: 'fenced' };
-    assertVerifiedRunSnapshot(root, runId, data);
-    // Codex r3 🔴1: RUN_PAUSED — refuse to release when paused. An owner that got gate-blocked
-    // (rollbackAndPause) must not call releaseLease to bypass the `recover --confirm` audit path.
-    // leaseCheck intent='recover' (human-only) is the only way to resume from a paused run.
-    if (data.status === 'paused') return { ok: false, reason: 'RUN_PAUSED' };
-    data.session_chain.lease = { ...lease, state: 'released' };
-    writeState(root, runId, data);
-    return { ok: true, reason: 'released' };
-  });
+function runLeaseJournal(root, runId,
+  { owner, generation, operation, intent = {}, mutation = null }, body) {
+  const callerBinding = { owner, generation };
+  const intentDigest = contentHash(JSON.stringify({ operation, owner, generation, ...intent }));
+  const execute = context => body(context);
+  return mutation ? execute(mutation)
+    : withVerifiedMutationLock(root, runId, { callerBinding, intentDigest,
+      fenceError: `LEASE_FENCED: ${operation}` }, execute);
 }
 
-// 멱등키 선예약 CAS — phase∈{idle,acquired}에서만 신규 예약. 이중 트리거를 phase로 봉인 (spec §9.1).
-// RUN_PAUSED: paused 상태에서는 예약 금지 — emitHandoff 도 차단 (lease intent='lease' 는 leaseCheck 예외지만
-// reserveHandoff 는 leaseCheck 를 거치지 않으므로 여기서 명시 차단).
-export function reserveHandoff(root, runId, { trigger, now = Date.now(), expect } = {}) {
-  return withLock(root, runId, () => {
-    const { data } = readState(root, runId);
-    const lease = data.session_chain.lease;
-    if (expect && (lease.owner_run_id !== expect.owner || lease.generation !== expect.generation)) {
-      return { ok: false, reserved: false, reason: 'fenced',
-        key: lease.handoff_idempotency_key, childRunId: lease.handoff_child_run_id };
+function exactLeaseFence(owner, generation) {
+  return loop => {
+    const lease = loop.session_chain?.lease;
+    if (lease?.owner_run_id !== owner || lease?.generation !== generation) {
+      throw new Error('LEASE_FENCED: lease-mutation');
     }
-    assertVerifiedRunSnapshot(root, runId, data);
-    // v1.6 (spec §2.3-1): terminal run에는 새 handoff 예약 금지 — RUN_PAUSED 명시 차단과 대칭.
-    if (data.status === 'completed' || data.status === 'stopped') {
+  };
+}
+
+export function releaseLease(root, runId,
+  { owner, generation, mutation = null } = {}) {
+  if (typeof owner !== 'string' || owner.length === 0) throw new Error('INVALID_OWNER');
+  return runLeaseJournal(root, runId,
+    { owner, generation, operation: 'lease-release', mutation }, context => {
+      const { data } = context.readVerifiedState({ fenceCheck: exactLeaseFence(owner, generation) });
+      const lease = data.session_chain.lease;
+      const terminal = ['completed', 'stopped'].includes(data.status);
+      const liveAppBinding = lease.handoff_transport === 'codex-app'
+        || lease.handoff_attempt_id != null
+        || data.session_chain.sessions.some(session => session.run_id === lease.handoff_child_run_id
+          && session.continuation?.transport === 'codex-app'
+          && ['emitted', 'prepared', 'confirmed'].includes(session.continuation.phase));
+      if (data.status === 'paused') return { ok: false, reason: 'RUN_PAUSED' };
+      if (lease.handoff_phase === 'reserved') return { ok: false, reason: 'handoff-reserved' };
+      if (terminal && liveAppBinding) return { ok: false, reason: 'app-binding-live-terminal' };
+      if (lease.state === 'released') return { ok: true, reason: 'already-released' };
+      context.appendAnchored({ type: 'lease-released',
+        data: { owner_run_id: owner, generation } }, candidate => {
+        candidate.session_chain.lease = { ...candidate.session_chain.lease, state: 'released' };
+      }, undefined, { allowTerminal: terminal && !liveAppBinding,
+        fenceCheck: exactLeaseFence(owner, generation) });
+      return { ok: true, reason: 'released' };
+    });
+}
+
+export function reserveHandoff(root, runId,
+  { trigger, now = Date.now(), expect, mutation = null } = {}) {
+  if (!expect || typeof expect.owner !== 'string' || !Number.isSafeInteger(expect.generation)) {
+    throw new Error('FENCE_REQUIRED: reserveHandoff');
+  }
+  const key = deriveIdempotencyKey(expect.owner, expect.generation, trigger);
+  return runLeaseJournal(root, runId, { owner: expect.owner, generation: expect.generation,
+    operation: 'handoff-reserve', intent: { key_digest: contentHash(key) }, mutation }, context => {
+    const { data } = context.readVerifiedState(
+      { fenceCheck: exactLeaseFence(expect.owner, expect.generation) });
+    const lease = data.session_chain.lease;
+    if (['completed', 'stopped'].includes(data.status)) {
       return { ok: false, reserved: false, reason: 'RUN_TERMINAL', key: null, childRunId: null };
     }
     if (data.status === 'paused') {
       return { ok: false, reserved: false, reason: 'RUN_PAUSED', key: null, childRunId: null };
     }
-    const key = deriveIdempotencyKey(lease.owner_run_id, lease.generation, trigger);
-    if (lease.handoff_phase === 'idle' || lease.handoff_phase === 'acquired') {
-      // Codex r3 🔴1: childRunId 를 **예약 시점에 결정·영속**한다. 동시/재진입 emit 이 같은 child 를 보게 되어
-      // (reserved:false fall-through 가 fresh child 를 만들지 않음) 중복 child 를 봉인한다.
-      const childRunId = ulid(now);
-      data.session_chain.lease = { ...lease, handoff_phase: 'reserved', handoff_idempotency_key: key, handoff_child_run_id: childRunId };
-      writeState(root, runId, data);
-      return { ok: true, reserved: true, key, childRunId, reason: 'reserved' };
+    const exactRetry = lease.handoff_idempotency_key === key
+      && typeof lease.handoff_child_run_id === 'string'
+      && ((lease.state === 'active' && lease.handoff_phase === 'reserved')
+        || (['releasing', 'released'].includes(lease.state)
+          && ['emitted', 'spawned'].includes(lease.handoff_phase)));
+    if (exactRetry) return { ok: true, reserved: false, key,
+      childRunId: lease.handoff_child_run_id, reason: 'already-reserved-same-trigger' };
+    if (lease.state !== 'active' || !['idle', 'acquired'].includes(lease.handoff_phase)) {
+      return { ok: false, reserved: false, key: lease.handoff_idempotency_key,
+        childRunId: lease.handoff_child_run_id, reason: 'handoff-in-flight' };
     }
-    if (lease.handoff_idempotency_key === key) return { ok: true, reserved: false, key, childRunId: lease.handoff_child_run_id, reason: 'already-reserved-same-trigger' };
-    return { ok: false, reserved: false, key: lease.handoff_idempotency_key, childRunId: lease.handoff_child_run_id, reason: 'handoff-in-flight' };
+    const childRunId = ulid(now);
+    context.appendAnchored({ type: 'handoff-reserved', data: {
+      owner_run_id: expect.owner, generation: expect.generation,
+      key_digest: contentHash(key), child_run_id: childRunId,
+    } }, candidate => {
+      candidate.session_chain.lease = { ...candidate.session_chain.lease,
+        handoff_phase: 'reserved', handoff_idempotency_key: key,
+        handoff_child_run_id: childRunId };
+    }, undefined, { nowFn: () => now,
+      fenceCheck: exactLeaseFence(expect.owner, expect.generation) });
+    return { ok: true, reserved: true, key, childRunId, reason: 'reserved' };
   });
 }
 
-export function advanceHandoffPhase(root, runId, { key, toPhase, now = Date.now(), expect } = {}) {
-  return withLock(root, runId, () => {
-    const { data } = readState(root, runId);
-    // v1.6 (spec §2.3-3): terminal run의 handoff 전진 금지 — reserve↔advance 사이 finish 경합 및
-    // 구버전 오염 상태(terminal+emitted 등)에 대한 방어-심층. respawn은 이 reason을 outcome:'terminal'로 전파.
+export function advanceHandoffPhase(root, runId,
+  { key, toPhase, now = Date.now(), expect, mutation = null } = {}) {
+  if (!expect || typeof expect.owner !== 'string' || !Number.isSafeInteger(expect.generation)) {
+    throw new Error('FENCE_REQUIRED: advanceHandoffPhase');
+  }
+  return runLeaseJournal(root, runId, { owner: expect.owner, generation: expect.generation,
+    operation: 'handoff-phase-advance',
+    intent: { key_digest: contentHash(key), to_phase: toPhase }, mutation }, context => {
+    const { data } = context.readVerifiedState(
+      { fenceCheck: exactLeaseFence(expect.owner, expect.generation) });
     const lease = data.session_chain.lease;
-    if (expect && (lease.owner_run_id !== expect.owner || lease.generation !== expect.generation)) {
-      return { ok: false, reason: 'fenced' };
-    }
-    assertVerifiedRunSnapshot(root, runId, data);
-    if (data.status === 'completed' || data.status === 'stopped') {
-      return { ok: false, reason: 'RUN_TERMINAL' };
-    }
+    if (['completed', 'stopped'].includes(data.status)) return { ok: false, reason: 'RUN_TERMINAL' };
     if (lease.handoff_idempotency_key !== key) return { ok: false, reason: 'key-mismatch' };
-    const cur = PHASE_ORDER[lease.handoff_phase];
+    const current = PHASE_ORDER[lease.handoff_phase];
     const next = PHASE_ORDER[toPhase];
     if (next === undefined) return { ok: false, reason: `unknown-phase ${toPhase}` };
-    if (next === cur) return { ok: true, reason: 'idempotent-noop' };
-    if (next !== cur + 1) return { ok: false, reason: `illegal-transition ${lease.handoff_phase}->${toPhase}` };
+    if (next === current) return { ok: true, reason: 'idempotent-noop' };
+    if (next !== current + 1) {
+      return { ok: false, reason: `illegal-transition ${lease.handoff_phase}->${toPhase}` };
+    }
     const patch = { handoff_phase: toPhase };
     if (toPhase === 'emitted') {
-      // 부모 carve-out 시작 + stale TTL 설정. 부모가 emitted 후 죽어 releaseLease 를 못 해도
-      // expires_at 경과 시 자식이 인수 가능 (Codex r1 🔴4: null expires_at 은 영원히 안 만료 → 데드락).
       patch.state = 'releasing';
-      const ttlMs = (data.session_chain.stale_lease_ttl_sec || 900) * 1000;
-      patch.expires_at = new Date(now + ttlMs).toISOString();
+      patch.expires_at = new Date(now
+        + (data.session_chain.stale_lease_ttl_sec || 900) * 1_000).toISOString();
     }
-    data.session_chain.lease = { ...lease, ...patch };
-    writeState(root, runId, data);
+    context.appendAnchored({ type: 'handoff-phase-advanced', data: {
+      owner_run_id: expect.owner, generation: expect.generation,
+      key_digest: contentHash(key), from_phase: lease.handoff_phase, to_phase: toPhase,
+    } }, candidate => {
+      candidate.session_chain.lease = { ...candidate.session_chain.lease, ...patch };
+    }, undefined, { nowFn: () => now,
+      fenceCheck: exactLeaseFence(expect.owner, expect.generation) });
     return { ok: true, reason: 'advanced' };
   });
 }
 
-export function rollbackHandoff(root, runId, { owner, generation }) {
-  return withLock(root, runId, () => {
-    const { data } = readState(root, runId);
-    const lease = data.session_chain.lease;
-    if (lease.owner_run_id !== owner || lease.generation !== generation) return { ok: false, reason: 'fenced' };
-    assertVerifiedRunSnapshot(root, runId, data);
-    const terminal = data.status === 'completed' || data.status === 'stopped';
-    // terminal + 잔여 없음(idle, key/child null) → write 없는 no-op (plan r2 P1: 정상-finish 후
-    // emitHandoff 거부 경로의 무조건 보상 호출이 idle lease를 다시 쓰지 않도록).
-    if (terminal && lease.handoff_phase === 'idle' && !lease.handoff_idempotency_key && !lease.handoff_child_run_id) {
-      return { ok: true, reason: 'noop-idle-terminal' };
-    }
-    // active 복귀 시 expires_at=null — 롤백된 부모가 emit 때 설정된 stale TTL 로 나중에 인수당하지 않게 (Codex r2 🔴2)
-    data.session_chain.lease = terminal
-      // v1.6 terminal-aware (spec §2.3, 3차 r1): active 복원은 terminal run을 "소유된 모양"으로 만들어
-      // 미래 우회-writer 실수 표면을 넓힌다 — released로 불활성 안착 (재획득은 acquireLease가 차단).
-      ? { ...lease, state: 'released', handoff_phase: 'idle', handoff_idempotency_key: null, handoff_child_run_id: null, expires_at: null }
-      : { ...lease, state: 'active', handoff_phase: 'idle', handoff_idempotency_key: null, handoff_child_run_id: null, expires_at: null };
-    writeState(root, runId, data);
-    return { ok: true, reason: 'rolled-back' };
-  });
+export function rollbackHandoff(root, runId, { owner, generation, mutation = null }) {
+  return runLeaseJournal(root, runId,
+    { owner, generation, operation: 'handoff-rollback', mutation }, context => {
+      const { data } = context.readVerifiedState({ fenceCheck: exactLeaseFence(owner, generation) });
+      const lease = data.session_chain.lease;
+      const terminal = ['completed', 'stopped'].includes(data.status);
+      const empty = lease.handoff_phase === 'idle' && lease.handoff_idempotency_key == null
+        && lease.handoff_child_run_id == null;
+      if (empty) return { ok: true, reason: terminal ? 'noop-idle-terminal' : 'noop-idle' };
+      context.appendAnchored({ type: 'handoff-rolled-back',
+        data: { owner_run_id: owner, generation, terminal } }, candidate => {
+        candidate.session_chain.lease = { ...candidate.session_chain.lease,
+          state: terminal ? 'released' : 'active', handoff_phase: 'idle',
+          handoff_idempotency_key: null, handoff_child_run_id: null, expires_at: null };
+      }, undefined, { allowTerminal: terminal, fenceCheck: exactLeaseFence(owner, generation) });
+      return { ok: true, reason: 'rolled-back' };
+    });
 }

@@ -11,7 +11,7 @@ import { matchRecipe, recipesDir, validateRecipesDir } from './lib/recipes.mjs';
 import { json } from './lib/log.mjs';
 import { validate as validateLoop, verifyAppEventCorrelation } from './lib/schema.mjs';
 import { readLines, readVerifiedState, verifyHeadLines, verifyLines } from './lib/integrity.mjs';
-import { readState, writeState, patch as patchState, pauseRun, runDir, findRoot } from './lib/state.mjs';
+import { readState, patch as patchState, pauseRun, runDir, findRoot } from './lib/state.mjs';
 import { leaseCheck, acquireLease, releaseLease } from './lib/lease.mjs';
 import { newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal } from './lib/workspace.mjs';
 import { newEpisode, recordEpisode, abandonEpisode } from './lib/episode.mjs';
@@ -1178,9 +1178,11 @@ const handlers = {
     if (verb === 'check') { const { data } = readVerifiedState(root, runId); json(checkBreaker(data)); return 0; }
     if (verb === 'reset') {
       if (f.confirm !== true && f.confirm !== 'true') { error('BREAKER_RESET_REQUIRES_CONFIRM: pass --confirm (human-only)'); return 2; }
+      const requestId = reqStr(f, 'request-id');
+      if (!requestId) { error('MISSING_REQUIRED_OPTION: --request-id'); return 2; }
       requireLease(root, runId, f, 'breaker-reset');   // Codex r2 critical-1: fence 필수; breaker-reset exempt from RUN_PAUSED gate
       const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'breaker-reset' };
-      try { json(resetBreaker(root, runId, { fence })); return 0; }
+      try { json(resetBreaker(root, runId, { fence, requestId })); return 0; }
       catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }
     }
     error(`unknown breaker verb: ${verb}`); return 2;

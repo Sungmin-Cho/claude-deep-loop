@@ -314,12 +314,19 @@ test('comprehension ack missing --episode exits 2', () => {
 
 test('breaker reset requires --confirm (exit 2)', () => {
   const { root, runId } = seed();
-  assert.equal(runFail(root, ['breaker', 'reset', '--owner', runId, '--generation', '1']), 2);   // confirm 없음
+  assert.equal(runFail(root, ['breaker', 'reset', '--request-id', 'reset-without-confirm',
+    '--owner', runId, '--generation', '1']), 2);
+});
+
+test('breaker reset requires --request-id (exit 2)', () => {
+  const { root, runId } = seed();
+  assert.equal(runFail(root, ['breaker', 'reset', '--confirm',
+    '--owner', runId, '--generation', '1']), 2);
 });
 
 test('breaker reset with --confirm is still fenced (exit 3)', () => {
   const { root, runId } = seed();   // Codex r2 critical-1: confirm 만으로는 부족, fence 도 필요
-  assert.equal(runFail(root, ['breaker', 'reset', '--confirm', '--owner', runId, '--generation', '9']), 3);
+  assert.equal(runFail(root, ['breaker', 'reset', '--confirm', '--request-id', 'wrong-fence-reset', '--owner', runId, '--generation', '9']), 3);
 });
 
 test('breaker check is read-only', () => {

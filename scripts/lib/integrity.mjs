@@ -2,7 +2,7 @@ import { appendFileSync, existsSync, lstatSync, readFileSync, readdirSync,
   truncateSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { contentHash } from './envelope.mjs';
-import { runDir, readState, writeState, withLock } from './state.mjs';
+import { runDir, readState, withLock } from './state.mjs';
 import { assertProjectRootBinding, canonicalProjectRoot, projectRootDigest } from './project-root.mjs';
 import { assertEpisodeTask, episodeProofProjection, episodeRequestMarkdown,
   legacyAuthorityDigest, legacyProofOrigins,
