@@ -352,16 +352,97 @@ function parseLog(path) {
   catch { return []; }
 }
 
-// ── v1.6: terminal run에서 PreCompact 훅 graceful 거부 (spec §4-4③) ──────────
-test('terminal run → hook returns ok:false action:fenced RUN_TERMINAL (graceful, no write)', async () => {
+// ── §3.4.1: terminal run 무해 처리 — 검증-선행 fenced terminal-cleanup ──────────
+// (a) 잔재 없음 → benign no-run-terminal, 상태 무변경(write 없음)
+test('terminal run without residue → benign no-run-terminal, state untouched', async () => {
+  for (const status of ['completed', 'stopped']) {
+    const { root, runId } = seed();
+    const { data } = readState(root, runId);
+    data.status = status;
+    writeState(root, runId, data);
+    const before = structuredClone(readState(root, runId).data);
+    const r = await runPreCompactHandoff({}, { root, now: Date.parse('2026-07-19T00:01:00Z') });
+    assert.deepEqual(r, { ok: true, action: 'no-run-terminal' });
+    assert.deepEqual(readState(root, runId).data, before, `${status}: no write on residue-free terminal`);
+  }
+});
+
+// (a) subprocess 레벨: exit 0 · stdout/stderr 무출력
+test('terminal run subprocess → exit 0, silent', () => {
   const { root, runId } = seed();
   const { data } = readState(root, runId);
   data.status = 'completed';
   writeState(root, runId, data);
-  const r = await runPreCompactHandoff({}, { root, now: Date.parse('2026-07-09T00:01:00Z') });
-  assert.equal(r.ok, false);
-  assert.equal(r.action, 'fenced');
-  assert.equal(r.reason, 'RUN_TERMINAL');
+  const result = runNode([PRECOMPACT_HOOK], { cwd: root, input: '{}' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, '');
+  assert.equal(result.stderr, '');
+});
+
+// (d) terminal + reserved 잔재 → fenced 정리 경로로 잔재(phase/key/child) 정리 + benign
+test('terminal run with reserved residue → residue swept via rollbackHandoff, benign no-run-terminal', async () => {
+  const { root, runId } = seed();
+  const { data } = readState(root, runId);
+  data.status = 'completed';
+  data.session_chain.lease = { ...data.session_chain.lease, handoff_phase: 'reserved', handoff_idempotency_key: 'stale-key', handoff_child_run_id: '01STALECHILD000000000000AA' };
+  writeState(root, runId, data);
+  const r = await runPreCompactHandoff({}, { root, now: Date.parse('2026-07-19T00:01:00Z') });
+  assert.deepEqual(r, { ok: true, action: 'no-run-terminal' });
   const lease = readState(root, runId).data.session_chain.lease;
-  assert.equal(lease.handoff_phase, 'idle');   // 예약 잔여 없음
+  assert.equal(lease.handoff_phase, 'idle');
+  assert.equal(lease.handoff_idempotency_key, null);
+  assert.equal(lease.handoff_child_run_id, null);
+  assert.equal(lease.state, 'released');   // terminal-aware rollback은 released로 불활성 안착
+});
+
+// (d′) version-skew: 스키마(type string)는 통과하지만 emitHandoff의 validateRuntimeProfile(MODEL_RE)이
+// INVALID_MODEL을 던지는 낡은 메타데이터 상태 — 전용 정리 경로는 emitHandoff의 선행 검증을 경유하지
+// 않으므로 정리가 성공하고 silent여야 한다.
+test('terminal run with residue and malformed runtime metadata → cleanup still succeeds silently (version-skew)', () => {
+  const { root, runId } = seed();
+  const { data } = readState(root, runId);
+  data.status = 'stopped';
+  data.autonomy.session_model = 'bad model name!';   // MODEL_RE 위반 — emitHandoff였다면 INVALID_MODEL throw
+  data.session_chain.lease = { ...data.session_chain.lease, handoff_phase: 'emitted', handoff_idempotency_key: 'skewed-key', handoff_child_run_id: '01STALECHILD000000000000BB' };
+  writeState(root, runId, data);
+  const result = runNode([PRECOMPACT_HOOK], { cwd: root, input: '{}' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, '');
+  assert.equal(result.stderr, '');
+  const lease = readState(root, runId).data.session_chain.lease;
+  assert.equal(lease.handoff_phase, 'idle');
+});
+
+// (d-acquired) handoff/resume을 거쳐 완료된 run은 lease가 active/acquired로 남는다(finishRun은 lease
+// 미초기화, acquireLease가 key/child를 null로 세팅) — spec §3.4.1 잔재 정의(phase ≠ idle)에 따라
+// sweep되어 released/idle로 불활성 안착해야 한다 (checker 008 B2).
+test('terminal run with acquired lease (post-resume finish) → swept to released/idle, benign', async () => {
+  const { root, runId } = seed();
+  const { data } = readState(root, runId);
+  data.status = 'completed';
+  data.session_chain.lease = { ...data.session_chain.lease, state: 'active', handoff_phase: 'acquired', handoff_idempotency_key: null, handoff_child_run_id: null };
+  writeState(root, runId, data);
+  const r = await runPreCompactHandoff({}, { root, now: Date.parse('2026-07-19T00:01:00Z') });
+  assert.deepEqual(r, { ok: true, action: 'no-run-terminal' });
+  const lease = readState(root, runId).data.session_chain.lease;
+  assert.equal(lease.state, 'released');
+  assert.equal(lease.handoff_phase, 'idle');
+});
+
+// (d‴) fenced 경합: 정리 도중 owner/generation 변경 → 비-benign 전파 (false success 금지)
+test('terminal cleanup raced by lease change → non-benign fenced propagation', async () => {
+  const { root, runId } = seed();
+  const { data } = readState(root, runId);
+  data.status = 'completed';
+  data.session_chain.lease = { ...data.session_chain.lease, handoff_phase: 'reserved', handoff_idempotency_key: 'race-key', handoff_child_run_id: '01STALECHILD000000000000CC' };
+  writeState(root, runId, data);
+  const { rollbackHandoff } = await import('../scripts/lib/lease.mjs');
+  const cleanupFn = (r2, id2, fence) => {
+    const raced = readState(r2, id2).data;
+    raced.session_chain.lease = { ...raced.session_chain.lease, owner_run_id: 'someone-else', generation: raced.session_chain.lease.generation + 1 };
+    writeState(r2, id2, raced);
+    return rollbackHandoff(r2, id2, fence);
+  };
+  const r = await runPreCompactHandoff({}, { root, now: Date.parse('2026-07-19T00:01:00Z'), cleanupFn });
+  assert.deepEqual(r, { ok: false, action: 'fenced', reason: 'residue-cleanup-fenced' });
 });

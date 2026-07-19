@@ -4,6 +4,7 @@ import { readBoundedText } from '../lib/bounded-input.mjs';
 import { detectMain } from '../lib/detect-main.mjs';
 import { readState, findRoot } from '../lib/state.mjs';
 import { emitHandoff } from '../lib/handoff.mjs';
+import { rollbackHandoff } from '../lib/lease.mjs';
 import { respawnGate, resolveSpawnMode, rollbackAndPause } from '../lib/respawn.mjs';
 
 /**
@@ -22,11 +23,20 @@ function currentRunId(root) {
   return existsSync(p) ? readFileSync(p, 'utf8').trim() : null;
 }
 
+// spec §3.4.1: 정리 호출자는 rollbackHandoff 반환을 검사해야 한다 — fenced(owner/generation 변경)는
+// 비-benign으로 전파하며 절대 no-run-*으로 정규화하지 않는다(실제 lease 경합 은폐 금지).
+function sweepLeaseResidue(root, runId, expect, cleanupFn) {
+  const res = cleanupFn(root, runId, { owner: expect.owner, generation: expect.generation });
+  if (!res.ok) return { ok: false, action: 'fenced', reason: 'residue-cleanup-fenced' };
+  return null;
+}
+
 export async function runPreCompactHandoff(input = {}, {
   root = findRoot(process.cwd()),
   now = Date.now(),
   env = process.env,
   rollbackFn = rollbackAndPause,
+  cleanupFn = rollbackHandoff,
 } = {}) {
   const runId = currentRunId(root);
   if (!runId) return { ok: true, action: 'no-run' };
@@ -34,6 +44,21 @@ export async function runPreCompactHandoff(input = {}, {
   try { ({ data: loop } = readState(root, runId)); } catch (e) { return { ok: false, action: 'error', reason: String(e.message || e) }; }
   const lease = loop.session_chain?.lease || {};
   const expect = { owner: lease.owner_run_id, generation: lease.generation };
+
+  // spec §3.4.1: terminal run은 no-run과 동일하게 무해 처리 — emitHandoff의 runtime/canonical-root
+  // 선행 검증(버전-스큐에 취약)을 경유하지 않는 검증-선행 전용 정리 경로. 잔재 sweep은 커널의
+  // reserve-시점 RUN_TERMINAL rollback과 동일 동작(lease 필드만 정리)이며 session_chain.sessions는
+  // 절대 변경하지 않는다(종료된 run의 역사적 기록 — reconcile은 finish/audit 경로의 몫).
+  // 잔재 술어는 spec 문언 그대로 phase ≠ idle — handoff/resume을 거친 완료 run의 정상 종료 상태인
+  // active/acquired(finishRun은 lease 미초기화)도 released/idle로 불활성 안착시킨다.
+  if (loop.status === 'completed' || loop.status === 'stopped') {
+    if (lease.handoff_phase !== 'idle' || lease.handoff_idempotency_key || lease.handoff_child_run_id) {
+      const fenced = sweepLeaseResidue(root, runId, expect, cleanupFn);
+      if (fenced) return fenced;
+    }
+    return { ok: true, action: 'no-run-terminal' };
+  }
+
   const headless = resolveSpawnMode(loop, { headless: input.unattended === true, env }) === 'headless';
   const em = emitHandoff(root, runId, { reason: 'pre-compact', trigger: 'pre-compact', headless, expect, env });
   if (!em.ok) return { ok: false, action: 'fenced', reason: em.reason };
