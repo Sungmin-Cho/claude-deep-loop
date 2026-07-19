@@ -1373,5 +1373,12 @@ test('attended App handoff has one ordered public-tool route and no retry author
     const block = source.slice(selection, selectionEnd < 0 ? source.length : selectionEnd);
     assert.match(block, /terminal branch/i);
     assert.match(block, /Do not continue to generic `handoff emit` or any `respawn`/i);
+    if (name === 'deep-loop-continue') {
+      assert.match(source,
+        /handoff_phase === 'emitted'[^\n]*4a\.25[^\n]*App selection[^\n]*non-App[^\n]*4c/i,
+        'emitted continuation must pass App selection before legacy 4c');
+      assert.doesNotMatch(source, /handoff_phase === 'emitted'[^\n]*4c로 바로 이동/,
+        'emitted continuation must not bypass App selection');
+    }
   }
 });

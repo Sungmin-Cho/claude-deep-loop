@@ -51,7 +51,7 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" session-profile set --model "<sessio
 
 - **빈 값 금지**: `--model`/`--effort`는 관측된 것만 포함한다(`CLAUDE_EFFORT`가 비면 `--effort` 생략). 모델도 관측 못 하고 effort도 비면 이 단계 전체를 건너뛴다(state 그대로 진행 — 무해).
 - setter는 `intent:'lease'`라 handoff가 이미 emit되어 lease가 `releasing`이어도 통과한다. 값이 그대로면 no-op(이벤트 안 쌓임).
-- **in-flight handoff 조기 분기**: §0에서 읽은 `lease.handoff_phase`가 `emitted` 또는 `spawned`이면(reserved child 존재 — PreCompact 안전망이 이미 emit한 상태), §1.5/§2/§3의 business write는 releasing carve-out으로 fence되므로 **건너뛰고 곧장 §4c(respawn)로 이동**한다. (phase `emitted`이면 respawn이 위 refresh된 state로 launch를 빌드 → 자식이 최신값으로 뜬다. phase `spawned`이면 자식은 이미 떠 있고, 그 자식이 `/deep-loop-resume`에서 자기 값을 refresh해 다음 handoff에 반영한다.)
+- **in-flight handoff 조기 분기**: §0에서 읽은 `lease.handoff_phase === 'emitted'`이면 §1.5/§2/§3의 business write를 건너뛰되 §4a.25 App selection을 먼저 수행하고, confirmed non-App/ineligible handoff만 §4c로 이동한다. `spawned`이면 자식이 이미 떠 있으므로 §4c로 이동한다. App attempt를 legacy respawn으로 보내지 않는다.
 
 ## 1. 게이트 검사 (항상 먼저)
 
@@ -195,7 +195,7 @@ self-report는 best-effort 보정일 뿐이다 — 커널이 각 business mutati
 node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field session_chain.lease --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
-`lease.handoff_phase === 'emitted'`이면 reserved child가 이미 존재한다 — **re-emit 금지**, 4c로 바로 이동.
+`lease.handoff_phase === 'emitted'`이면 reserved child가 이미 존재한다 — **re-emit 금지**, 4a.25 App selection을 먼저 수행하고 confirmed non-App/ineligible handoff만 4c로 이동.
 
 ### 4a.25. App route selection before generic emit
 
