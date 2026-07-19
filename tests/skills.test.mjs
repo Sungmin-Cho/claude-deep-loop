@@ -1456,19 +1456,19 @@ test('resume and handoff reference publish the same fresh-child observation cont
   assert.deepEqual(parseAppObservationContract(handoff), entry);
   assert.match(resume, /parent의 recorded capability를 복사하지 않는다[\s\S]{0,320}child task의 current callable public tools를 새로 관측/i);
   for (const [name, source] of [['resume', resume], ['handoff', handoff]]) {
-    for (const marker of [
-      'original acquire process handle',
-      'live/unknown 동안 새 process를 시작하지 않는다',
-      'original `--generation <parent_generation>`',
-      'Original-handle reconciliation이 없으면 App acquire',
-      'owner/generation-bound READY line',
-      'exact six-key JSON',
-      '현재 task cwd',
-      'kernel process cwd',
-      '`observed`, `reattested`, `already-observed`',
-    ]) {
-      assert.ok(source.includes(marker), `${name}: missing shared resume marker: ${marker}`);
-    }
+    assert.match(source,
+      /original acquire process handle[\s\S]{0,240}boundedly poll[\s\S]{0,320}live\/unknown 동안 새 process를 시작하지 않는다/i,
+      `${name}: response-loss reconciliation must poll and forbid a second live process`);
+    assert.match(source,
+      /original `--generation <parent_generation>`[\s\S]{0,500}byte-identical[\s\S]{0,700}already-acquired/i,
+      `${name}: response-loss retry must preserve original parent-generation authority`);
+    assert.match(source, /Original-handle reconciliation이 없으면 App acquire를 쓰지 않는다/i,
+      `${name}: missing explicit no-handle/no-App-acquire prohibition`);
+    assert.match(source,
+      /owner\/generation-bound READY line[\s\S]{0,320}현재 task cwd를 kernel process cwd와 같은 native directory[\s\S]{0,320}exact six-key JSON/i,
+      `${name}: full observe must bind READY, cwd equality, and the exact observation`);
+    assert.match(source, /성공 outcome은 `observed`, `reattested`, `already-observed`뿐이다/i,
+      `${name}: observe success outcomes must be exclusive`);
   }
 });
 
