@@ -859,6 +859,39 @@ test('respawn: missing durable handoff path preserve-pauses before descriptor or
   assert.equal(lease.handoff_child_run_id, h.childRunId, 'preserve-pause keeps the reserved child recoverable');
 });
 
+test('missing durable handoff path recovers pending preserve exactly on public retry', () => {
+  const { root, runId } = seed();
+  const h = emitHandoff(root, runId,
+    { trigger: 'binding-invalid-crash', now: NOW1, expect: expect_(runId) });
+  const { data } = readState(root, runId);
+  data.session_chain.sessions.find(session => session.run_id === h.childRunId).handoff_rel = null;
+  writeState(root, runId, data);
+  const input = { kind: 'binding-invalid', childRunId: h.childRunId, key: h.key,
+    handoffRel: null, attended: true, now: NOW1 };
+  const worker = spawnRespawn11b(process.execPath,
+    [fileRespawn11b(new URL('./helpers/anchored-crash-worker.mjs', import.meta.url)),
+      root, runId, 'respawn-binding-invalid', 'pending-after-rename'], {
+      shell: false, encoding: 'utf8', timeout: 10_000,
+      env: { ...process.env, DEEP_LOOP_CRASH_OWNER: runId,
+        DEEP_LOOP_CRASH_GENERATION: '1',
+        DEEP_LOOP_CRASH_INPUT: JSON.stringify(input) },
+    });
+  assert.notEqual(worker.error?.code, 'ETIMEDOUT');
+  assert.equal(worker.status, 91, worker.stderr || worker.stdout || worker.error?.message);
+  rmdirSync(join(runDir(root, runId), '.lock'));
+  let spawned = 0;
+  const retry = respawn(root, runId, { ...input, expect: expect_(runId), env: {},
+    spawnFn: () => { spawned += 1; return { ok: true }; } });
+  assert.deepEqual({ ok: retry.ok, outcome: retry.outcome, reason: retry.reason },
+    { ok: false, outcome: 'handoff-binding-invalid',
+      reason: 'durable-handoff-rel-missing' });
+  assert.equal(spawned, 0);
+  const events = readFileSync(join(runDir(root, runId), 'event-log.jsonl'), 'utf8')
+    .split('\n').filter(Boolean).map(JSON.parse);
+  assert.equal(events.filter(event => event.type === 'respawn-timeout'
+    && event.data?.outcome === 'handoff-binding-invalid').length, 1);
+});
+
 test('Codex visible transport without durable runtime approval preserves before spawned CAS', () => {
   const { root, runId } = seedLauncher({ runtime: 'codex', spawn_style: 'visible', launcher: 'cmux' });
   const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });

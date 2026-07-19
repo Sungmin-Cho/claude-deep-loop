@@ -245,7 +245,8 @@ function recoveredRespawnCompensation(root, runId, mutation, input) {
   const outcome = events[0].data?.outcome;
   const reason = events[0].data?.reason;
   if (!['gate-blocked', 'no-launcher', 'build-error', 'identity-drift', 'authority-drift',
-    'failed_launch', 'child-timeout-awaiting', 'spawn-unconfirmed-awaiting'].includes(outcome)
+    'failed_launch', 'child-timeout-awaiting', 'spawn-unconfirmed-awaiting',
+    'handoff-binding-invalid'].includes(outcome)
       || typeof reason !== 'string' || reason.length === 0) {
     throw new Error('RESPAWN_RECOVERY_PROJECTION_MISMATCH');
   }
@@ -259,7 +260,8 @@ function recoveredRespawnCompensation(root, runId, mutation, input) {
       throw new Error('RESPAWN_RECOVERY_PROJECTION_MISMATCH');
     }
     if (!['child-timeout-awaiting', 'spawn-unconfirmed-awaiting', 'no-launcher',
-      'build-error', 'identity-drift', 'authority-drift'].includes(outcome)) {
+      'build-error', 'identity-drift', 'authority-drift',
+      'handoff-binding-invalid'].includes(outcome)) {
       throw new Error('RESPAWN_RECOVERY_PROJECTION_MISMATCH');
     }
     return { ok: false, outcome, reason, childRunId };

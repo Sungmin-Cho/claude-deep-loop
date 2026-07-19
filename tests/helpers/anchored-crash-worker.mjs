@@ -120,6 +120,15 @@ const generic = Object.freeze({
       revalidateRuntimeExecutable: identity => identity,
       revalidateLauncherExecutable: identity => identity });
   },
+  'respawn-binding-invalid': ({ root, runId, owner, generation, rawInput }) => {
+    const input = parseInput(rawInput,
+      ['attended', 'childRunId', 'handoffRel', 'key', 'kind', 'now']);
+    return respawn(root, runId,
+      { ...input, env: {}, expect: { owner, generation },
+        spawnFn: () => { throw new Error('BINDING_INVALID_REACHED_SPAWN'); },
+        revalidateRuntimeExecutable: identity => identity,
+        revalidateLauncherExecutable: identity => identity });
+  },
   'accounting-record': ({ root, runId, owner, generation, rawInput }) => {
     const input = parseInput(rawInput, ['intent', 'requestId', 'tokens', 'turns']);
     return recordCost(root, runId, { turns: input.turns, tokens: input.tokens,

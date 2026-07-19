@@ -92,7 +92,7 @@ export async function runPreCompactHandoff(input = {}, {
       envUnattended: env?.DEEP_LOOP_UNATTENDED ?? null,
       claudeEntrypoint: env?.CLAUDE_CODE_ENTRYPOINT ?? null,
     });
-    mutationIdentities = createPrecompactMutationIdentities(expect, requestDigest);
+    mutationIdentities = createPrecompactMutationIdentities(authority, requestDigest);
     if (authority.pending) {
       const pendingStage = Object.entries(mutationIdentities)
         .find(([, identity]) => identity.intentDigest === authority.pendingIntentDigest)?.[0];

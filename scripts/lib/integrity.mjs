@@ -1062,6 +1062,8 @@ export function readAuthenticatedMutationSnapshot(root, runId, {
 // marker is always read first. Its authenticated before/after image may expose only the same caller
 // that owns the lease; recovery still requires a separately reconstructed exact intent through
 // withVerifiedMutationLock.
+const kernelMutationAuthorityRecords = new WeakMap();
+
 export function readKernelMutationAuthoritySnapshot(root, runId) {
   return withLock(root, runId, () => {
     const marker = readAnchoredMarkerUnderLock(root, runId);
@@ -1076,9 +1078,13 @@ export function readKernelMutationAuthoritySnapshot(root, runId) {
     if (lease?.owner_run_id !== binding.owner || lease?.generation !== binding.generation) {
       throw new Error('ANCHORED_TRANSACTION_CORRUPT: kernel mutation caller');
     }
-    return Object.freeze({ data: structuredClone(loop), callerBinding: binding,
+    const authority = Object.freeze({ data: structuredClone(loop), callerBinding: binding,
       pending: marker !== null,
       pendingIntentDigest: marker?.intent_digest ?? null });
+    kernelMutationAuthorityRecords.set(authority, Object.freeze({
+      owner: binding.owner, generation: binding.generation,
+    }));
+    return authority;
   });
 }
 
@@ -1090,8 +1096,14 @@ const precompactMutationIdentityRecords = new WeakMap();
 // cannot pass an arbitrary object that merely has the same fields, and an emit identity cannot be
 // reused for pause/rollback. A retry in a fresh process deterministically reissues the bounded
 // identities from the authenticated lease + request digest before matching the durable marker.
-export function createPrecompactMutationIdentities(callerBinding, requestDigest) {
-  const binding = requireCallerBinding(callerBinding);
+export function createPrecompactMutationIdentities(authority, requestDigest) {
+  const record = authority !== null && typeof authority === 'object'
+    ? kernelMutationAuthorityRecords.get(authority) : null;
+  if (!record) throw new Error('KERNEL_MUTATION_AUTHORITY_REQUIRED');
+  const binding = requireCallerBinding(authority.callerBinding);
+  if (record.owner !== binding.owner || record.generation !== binding.generation) {
+    throw new Error('KERNEL_MUTATION_AUTHORITY_REQUIRED');
+  }
   if (!/^[0-9a-f]{64}$/.test(requestDigest || '')) {
     throw new Error('PRECOMPACT_REQUEST_DIGEST_REQUIRED');
   }

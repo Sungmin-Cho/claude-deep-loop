@@ -13,7 +13,8 @@ import { rollbackAndPause } from '../scripts/lib/respawn.mjs';
 import { createDirectoryJunction } from './helpers/fs-fixtures.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
 import { revokeAppTaskContinuation } from '../scripts/lib/app-task-continuation.mjs';
-import { readVerifiedState } from '../scripts/lib/integrity.mjs';
+import { createPrecompactMutationIdentities,
+  readVerifiedState } from '../scripts/lib/integrity.mjs';
 import { rawHashValidState,
   seedCorrelatedTerminal } from './fixtures/verified-app-run.mjs';
 const PROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -430,6 +431,12 @@ test('PreCompact recovers exact emit pause and rollback pending stages on public
   assert.equal(rolledBack.action, 'gate-blocked-paused');
   assert.equal(events(rollbackFixture.root, rollbackFixture.runId)
     .filter(event => event.type === 'respawn-failed').length, 1);
+});
+
+test('PreCompact mutation identities reject a raw caller-shaped authority object', () => {
+  assert.throws(() => createPrecompactMutationIdentities(
+    { callerBinding: { owner: '01JAPPFORGED00000000000000', generation: 1 } },
+    'a'.repeat(64)), /KERNEL_MUTATION_AUTHORITY_REQUIRED/);
 });
 
 test('PreCompact exact App authority is emit-only and bypasses every generic branch', async () => {
