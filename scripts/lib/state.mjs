@@ -2,9 +2,9 @@ import { readFileSync, writeFileSync, mkdirSync, rmdirSync, existsSync, statSync
 import path, { join } from 'node:path';
 import { contentHash, atomicWrite } from './envelope.mjs';
 import { validate } from './schema.mjs';
-import { leaseCheck } from './lease.mjs';
-import { appendAnchored, assertVerifiedRunSnapshot, MUTATION_TURN_FLOOR,
-  statePatchIntent } from './integrity.mjs';
+import { appTransportBinding, leaseCheck } from './lease.mjs';
+import { appendAnchored, assertVerifiedRunSnapshot, directMutationOptions,
+  MUTATION_TURN_FLOOR, statePatchIntent } from './integrity.mjs';
 import { assertProjectRootBinding } from './project-root.mjs';
 import { ancestorPaths } from './path-portable.mjs';
 
@@ -135,7 +135,13 @@ export function patch(root, runId, field, value, { fence } = {}) {
   return appendAnchored(root, runId, { type: 'state-patch', data: { field } },
     (loop) => { setPath(loop, field, value); },
     (loop) => {
-      if (fence) { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
+      if (fence) {
+        const identity = leaseCheck(loop, { ...fence, intent: 'lease' });
+        if (!identity.ok) throw new Error('LEASE_FENCED: ' + identity.reason);
+        if (appTransportBinding(loop)) throw new Error('APP_TRANSPORT_OWNED: state-patch');
+        const business = leaseCheck(loop, fence);
+        if (!business.ok) throw new Error('LEASE_FENCED: ' + business.reason);
+      }
       const im = field.match(/^(episodes|workstreams)\.(\d+)\.(.+)$/);
       if (im) {
         const [, arr, idxStr, sub] = im;
@@ -180,8 +186,13 @@ export function withLock(root, runId, fn, { ttlMs = LOCK_STALE_TTL_MS, retries =
 //   sets lease.resume_policy='human' + lease.expires_at=null.
 // mode='rollback': additionally resets lease to active/idle and clears all handoff fields.
 // preCheck: owner/generation fence. Does NOT apply releasing carve-out (pause is privileged).
-export function pauseRun(root, runId, { reason, mode = 'preserve', expect, now = Date.now() } = {}) {
-  return appendAnchored(root, runId, { type: 'run-paused', data: { reason: reason || 'fail-closed', mode } },
+export function pauseRun(root, runId, {
+  reason, mode = 'preserve', expect, now = Date.now(),
+} = {}) {
+  if (!expect || typeof expect.owner !== 'string'
+      || !Number.isSafeInteger(expect.generation)) throw new Error('FENCE_REQUIRED: pauseRun');
+  const recovered = appendAnchored(root, runId,
+    { type: 'run-paused', data: { reason: reason || 'fail-closed', mode } },
     (loop) => {
       loop.status = 'paused';
       loop.pause_reason = reason || 'fail-closed';
@@ -204,11 +215,9 @@ export function pauseRun(root, runId, { reason, mode = 'preserve', expect, now =
       }
     },
     (loop) => {
-      if (expect) {
-        const lease = loop.session_chain?.lease;
-        if (!lease || lease.owner_run_id !== expect.owner || lease.generation !== expect.generation) {
-          throw new Error('LEASE_FENCED: pauseRun wrong generation');
-        }
+      const lease = loop.session_chain?.lease;
+      if (!lease || lease.owner_run_id !== expect.owner || lease.generation !== expect.generation) {
+        throw new Error('LEASE_FENCED: pauseRun wrong generation');
       }
       // Terminal guard (spec §1.2 / acquireLease mirror): completed/stopped runs must never be demoted to paused.
       // Checked after fence so that LEASE_FENCED fires first when both conditions hold —
@@ -216,6 +225,22 @@ export function pauseRun(root, runId, { reason, mode = 'preserve', expect, now =
       if (loop.status === 'completed' || loop.status === 'stopped') {
         throw new Error('RUN_TERMINAL: pauseRun');
       }
-    }
+      if (appTransportBinding(loop)) throw new Error('APP_TRANSPORT_OWNED: pauseRun');
+    }, directMutationOptions('run-pause', expect,
+      { reason: reason || 'fail-closed', mode, now }, 'LEASE_FENCED: pauseRun', {
+        onRecovered: loop => {
+          const lease = loop.session_chain?.lease;
+          const exactLease = mode === 'rollback'
+            ? lease?.state === 'active' && lease.handoff_phase === 'idle'
+              && lease.handoff_child_run_id == null && lease.handoff_idempotency_key == null
+            : lease?.resume_policy === 'human';
+          if (loop.status !== 'paused'
+              || loop.pause_reason !== (reason || 'fail-closed') || !exactLease) {
+            throw new Error('STATE_RESPONSE_PROJECTION_CHANGED');
+          }
+          return undefined;
+        },
+      })
   );
+  return recovered;
 }

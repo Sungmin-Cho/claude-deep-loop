@@ -2607,3 +2607,206 @@ test10a('acquire final lock fences identity before proof and proves before termi
   assert10a.throws(invoke, /RUN_SNAPSHOT_INVALID/);
   assert10a.deepEqual(bytes10a(fixture.root, fixture.runId), corrupted);
 });
+
+import { test as test10b } from 'node:test';
+import assert10b from 'node:assert/strict';
+import { readFileSync as read10b } from 'node:fs';
+import { statusAppTask as status10b } from '../scripts/lib/app-task-continuation.mjs';
+import { emitHandoff as genericEmit10b } from '../scripts/lib/handoff.mjs';
+import { acquireLease as genericAcquire10b, releaseLease as genericRelease10b,
+  reserveHandoff as reserve10b } from '../scripts/lib/lease.mjs';
+import { classifyPatch as classify10b, patch as patch10b,
+  pauseRun as pause10b, readState as state10b } from '../scripts/lib/state.mjs';
+import { readLines as lines10b, verifyLog as verify10b } from '../scripts/lib/integrity.mjs';
+
+test10b('generic acquire and release cannot consume or dismantle a live App attempt', () => {
+  const emitted = emitted8b();
+  const before = structuredClone(state10b(emitted.root, emitted.runId).data);
+  assert10b.deepEqual(genericAcquire10b(emitted.root, emitted.runId,
+    { owner: emitted.childRunId, expectGeneration: 1, runtime: 'codex' }),
+  { ok: false, generation: 1, reason: 'app-confirmation-required' });
+  assert10b.throws(() => genericRelease10b(emitted.root, emitted.runId,
+    { owner: '01JAPPWR0NG000000000000000', generation: 1 }), /LEASE_FENCED/);
+  assert10b.equal(genericRelease10b(emitted.root, emitted.runId,
+    { owner: emitted.runId, generation: 1 }).reason, 'app-transport-owned');
+  assert10b.throws(() => patch10b(emitted.root, emitted.runId, 'active_workstreams', [],
+    { fence: { owner: emitted.runId, generation: 1, runtime: 'codex' } }),
+  /APP_TRANSPORT_OWNED/);
+  const eventsBeforePause = lines10b(emitted.root, emitted.runId);
+  for (const mode of ['preserve', 'rollback']) {
+    assert10b.throws(() => pause10b(emitted.root, emitted.runId, {
+      reason: `generic-${mode}`, mode,
+      expect: { owner: emitted.runId, generation: 1 },
+    }), /APP_TRANSPORT_OWNED/, mode);
+  }
+  assert10b.deepEqual(lines10b(emitted.root, emitted.runId), eventsBeforePause,
+    'rejected pause appends no run-paused event');
+  assert10b.equal(verify10b(emitted.root, emitted.runId).ok, true);
+  assert10b.deepEqual(state10b(emitted.root, emitted.runId).data, before);
+  assert10b.equal(classify10b('session_chain.sessions.1.continuation.phase', 'acquired'), 'forbid');
+});
+
+test10b('paused preserve wins before live-App release and cleared acquire restores normal release', () => {
+  const preserved = emitted8b();
+  prepare8b(preserved.root, preserved.runId,
+    { owner: preserved.runId, generation: 1, stdinMode: 'pty-raw-noecho',
+      hostInput: { currentHostTaskCwd: preserved.root, projects: [] } }, {
+      cwdFn: () => preserved.root, nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'),
+      descriptorBuilder: () => assert10b.fail('no descriptor'), reconcileBudgetFn: () => {},
+      gateFn: () => ({ ok: true, blocked_by: [] }) });
+  assert10b.equal(genericRelease10b(preserved.root, preserved.runId,
+    { owner: preserved.runId, generation: 1 }).reason, 'RUN_PAUSED');
+  const acquired = confirmed10a();
+  const oldAcquire = { attemptId: acquired.attemptId, owner: acquired.childRunId, generation: 1,
+    runtime: 'codex', stdinMode: 'pty-raw-noecho', observation: observation10a(acquired.root) };
+  acquire10a(acquired.root, acquired.runId, oldAcquire,
+    { cwdFn: () => acquired.root, nowFn: () => Date.parse('2026-07-13T00:00:04.000Z') });
+  assert10b.equal(genericRelease10b(acquired.root, acquired.runId,
+    { owner: acquired.childRunId, generation: 2 }).reason, 'released');
+  const releasedBytes = durable9a(acquired.root, acquired.runId);
+  const oldConfirm = { owner: acquired.runId, generation: 1, attemptId: acquired.attemptId,
+    stdinMode: 'pty-raw-noecho', threadId: 'thread' };
+  assert10b.throws(() => confirm10a(acquired.root, acquired.runId, oldConfirm,
+    { nowFn: () => assert10b.fail('released confirm retry has no clock') }),
+  /APP_RESPONSE_PROJECTION_CHANGED/);
+  assert10b.throws(() => acquire10a(acquired.root, acquired.runId, oldAcquire,
+    { cwdFn: () => acquired.root,
+      nowFn: () => assert10b.fail('released acquire retry has no clock') }),
+  /APP_ACQUIRE_PROJECTION_CHANGED/);
+  assert10b.deepEqual(durable9a(acquired.root, acquired.runId), releasedBytes);
+  const projected = status10b(acquired.root, acquired.runId, {});
+  assert10b.deepEqual(projected.generic_current,
+    { run_id: acquired.childRunId, handoff_rel: projected.current.handoff_rel });
+  assert10b.equal(projected.recovery_pending, null);
+  assert10b.deepEqual(genericAcquire10b(acquired.root, acquired.runId, {
+    owner: projected.generic_current.run_id, expectGeneration: 2, runtime: 'codex',
+  }), { ok: true, generation: 3, reason: 'acquired' });
+  const reacquiredBytes = durable9a(acquired.root, acquired.runId);
+  assert10b.throws(() => confirm10a(acquired.root, acquired.runId, oldConfirm,
+    { nowFn: () => assert10b.fail('generation-fenced confirm retry has no clock') }),
+  /LEASE_FENCED/);
+  assert10b.throws(() => acquire10a(acquired.root, acquired.runId, oldAcquire,
+    { cwdFn: () => assert10b.fail('generation-fenced acquire retry has no cwd'),
+      nowFn: () => assert10b.fail('generation-fenced acquire retry has no clock') }),
+  /LEASE_FENCED/);
+  assert10b.deepEqual(durable9a(acquired.root, acquired.runId), reacquiredBytes);
+  const genericallyReacquired = state10b(acquired.root, acquired.runId).data;
+  const currentSession = genericallyReacquired.session_chain.sessions.find(session =>
+    session.run_id === acquired.childRunId);
+  assert10b.equal(currentSession.host_surface.observed_generation, 2);
+  assert10b.equal(genericallyReacquired.session_chain.lease.generation, 3);
+  assert10b.notEqual(currentSession.host_surface.observed_generation,
+    genericallyReacquired.session_chain.lease.generation,
+    'generic reacquire preserves history but invalidates exact App authority until re-attestation');
+});
+
+test10b('failed and abandoned human-preserve bindings remain App-owned', () => {
+  const failed = prepared9a({ route: 'fork' });
+  fail9a(failed.root, failed.runId, { owner: failed.runId, generation: 1,
+    attemptId: failed.attemptId, code: 'message-unconfirmed', stdinMode: 'pty-raw-noecho',
+    unconfirmedThreadId: 'known-child' }, { cwdFn: () => failed.worktree });
+  assert10b.equal(genericAcquire10b(failed.root, failed.runId,
+    { owner: failed.childRunId, expectGeneration: 1, runtime: 'codex' }).reason,
+  'app-confirmation-required');
+  assert10b.equal(genericRelease10b(failed.root, failed.runId,
+    { owner: failed.runId, generation: 1 }).reason, 'RUN_PAUSED');
+
+  const abandoned = emitted8b();
+  revoke8b(abandoned.root, abandoned.runId,
+    { owner: abandoned.runId, generation: 1, runtime: 'codex' });
+  assert10b.equal(genericAcquire10b(abandoned.root, abandoned.runId,
+    { owner: abandoned.childRunId, expectGeneration: 1, runtime: 'codex' }).reason,
+  'app-confirmation-required');
+  assert10b.equal(genericRelease10b(abandoned.root, abandoned.runId,
+    { owner: abandoned.runId, generation: 1 }).reason, 'RUN_PAUSED');
+});
+
+test10b('old acquired provenance survives a same-generation later reservation', () => {
+  const fixture = confirmed10a();
+  const oldAcquire = { attemptId: fixture.attemptId, owner: fixture.childRunId, generation: 1,
+    runtime: 'codex', stdinMode: 'pty-raw-noecho', observation: observation10a(fixture.root) };
+  acquire10a(fixture.root, fixture.runId, oldAcquire,
+    { cwdFn: () => fixture.root, nowFn: () => Date.parse('2026-07-13T00:00:04.000Z') });
+  assert10b.equal(reserve10b(fixture.root, fixture.runId,
+    { trigger: 'next', expect: { owner: fixture.childRunId, generation: 2 } }).ok, true);
+  const loop = state10b(fixture.root, fixture.runId).data;
+  const old = loop.session_chain.sessions.find(session => session.run_id === fixture.childRunId);
+  assert10b.equal(old.continuation.acquired_generation, 2);
+  assert10b.equal(loop.session_chain.lease.handoff_phase, 'reserved');
+  const reservedBytes = durable9a(fixture.root, fixture.runId);
+  assert10b.throws(() => confirm10a(fixture.root, fixture.runId,
+    { owner: fixture.runId, generation: 1, attemptId: fixture.attemptId,
+      stdinMode: 'pty-raw-noecho', threadId: 'thread' },
+    { nowFn: () => assert10b.fail('reserved-progressed confirm retry has no clock') }),
+  /APP_RESPONSE_PROJECTION_CHANGED/);
+  assert10b.throws(() => acquire10a(fixture.root, fixture.runId, oldAcquire,
+    { cwdFn: () => fixture.root,
+      nowFn: () => assert10b.fail('reserved acquire retry has no clock') }),
+  /APP_ACQUIRE_PROJECTION_CHANGED/);
+  assert10b.deepEqual(durable9a(fixture.root, fixture.runId), reservedBytes);
+});
+
+test10b('generic handoff after App history remains acquirable by its new exact child', () => {
+  const fixture = confirmed10a();
+  const oldAcquire = { attemptId: fixture.attemptId, owner: fixture.childRunId, generation: 1,
+    runtime: 'codex', stdinMode: 'pty-raw-noecho', observation: observation10a(fixture.root) };
+  acquire10a(fixture.root, fixture.runId, oldAcquire,
+    { cwdFn: () => fixture.root, nowFn: () => Date.parse('2026-07-13T00:00:04.000Z') });
+  const emitted = genericEmit10b(fixture.root, fixture.runId, {
+    reason: 'next generic child', trigger: 'milestone',
+    now: Date.parse('2026-07-13T00:00:05.000Z'),
+    expect: { owner: fixture.childRunId, generation: 2 },
+  });
+  assert10b.equal(emitted.ok, true);
+  const before = state10b(fixture.root, fixture.runId).data;
+  const historical = before.session_chain.sessions.find(session =>
+    session.run_id === fixture.childRunId);
+  assert10b.equal(historical.continuation.phase, 'acquired');
+  assert10b.equal(before.session_chain.lease.state, 'releasing');
+  assert10b.equal(before.session_chain.lease.handoff_phase, 'emitted');
+  assert10b.equal(before.session_chain.lease.handoff_transport, null);
+  assert10b.equal(before.session_chain.lease.handoff_attempt_id, null);
+  assert10b.equal(before.session_chain.lease.handoff_child_run_id, emitted.childRunId);
+  const emittedBytes = durable9a(fixture.root, fixture.runId);
+  assert10b.throws(() => acquire10a(fixture.root, fixture.runId, oldAcquire,
+    { cwdFn: () => fixture.root,
+      nowFn: () => assert10b.fail('emitted acquire retry has no clock') }),
+  /APP_ACQUIRE_PROJECTION_CHANGED/);
+  assert10b.deepEqual(durable9a(fixture.root, fixture.runId), emittedBytes);
+  const projected = status10b(fixture.root, fixture.runId, {});
+  assert10b.equal(projected.has_app_history, true);
+  assert10b.deepEqual(projected.generic_current,
+    { run_id: emitted.childRunId, handoff_rel: emitted.handoffRel });
+  assert10b.equal(projected.current.run_id, fixture.childRunId,
+    'historical App current remains separate from current generic transport');
+  assert10b.equal(JSON.stringify(projected).includes(emitted.handoffPath), false,
+    'safe generic projection exposes only the relative handoff path');
+  const handoff = read10b(emitted.handoffPath, 'utf8');
+  assert10b.match(handoff, new RegExp(emitted.childRunId));
+  assert10b.match(handoff, new RegExp(fixture.runId));
+  const resumed = genericAcquire10b(fixture.root, fixture.runId, {
+    owner: emitted.childRunId, expectGeneration: 2, runtime: 'codex',
+  });
+  assert10b.deepEqual(resumed, { ok: true, generation: 3, reason: 'acquired' });
+  const after = state10b(fixture.root, fixture.runId).data;
+  assert10b.equal(after.session_chain.lease.owner_run_id, emitted.childRunId);
+  assert10b.equal(after.session_chain.lease.generation, 3);
+  assert10b.equal(after.status, 'running');
+  assert10b.equal(after.session_chain.sessions.find(session =>
+    session.run_id === fixture.childRunId).continuation.phase, 'acquired');
+  assert10b.equal(genericRelease10b(fixture.root, fixture.runId,
+    { owner: emitted.childRunId, generation: 3 }).reason, 'released');
+  const released = status10b(fixture.root, fixture.runId, {});
+  assert10b.deepEqual(released.generic_current,
+    { run_id: emitted.childRunId, handoff_rel: emitted.handoffRel });
+  assert10b.equal(released.current.run_id, fixture.childRunId,
+    'released generic owner outranks stale App history');
+  assert10b.equal(released.recovery_pending, null);
+  const resumedAgain = genericAcquire10b(fixture.root, fixture.runId, {
+    owner: released.generic_current.run_id,
+    expectGeneration: released.generation, runtime: 'codex',
+  });
+  assert10b.deepEqual(resumedAgain, { ok: true, generation: 4, reason: 'acquired' });
+  assert10b.equal(state10b(fixture.root, fixture.runId).data.session_chain.lease.owner_run_id,
+    emitted.childRunId);
+});

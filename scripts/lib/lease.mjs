@@ -42,6 +42,24 @@ export function leaseCheck(loop, { owner, generation, runtime, intent = 'busines
   return { ok: true, reason: 'ok' };
 }
 
+export function appTransportBinding(loop) {
+  const lease = loop.session_chain?.lease;
+  if (lease?.handoff_transport !== 'codex-app' || !lease.handoff_attempt_id
+      || !lease.handoff_child_run_id) return null;
+  const child = loop.session_chain.sessions.find(session =>
+    session.run_id === lease.handoff_child_run_id);
+  return child?.continuation?.attempt_id === lease.handoff_attempt_id
+    && ['emitted', 'prepared', 'confirmed', 'failed', 'abandoned']
+      .includes(child.continuation.phase)
+    ? { lease, child, continuation: child.continuation } : null;
+}
+
+export const liveAppBinding = loop => {
+  const binding = appTransportBinding(loop);
+  return binding !== null
+    && ['emitted', 'prepared', 'confirmed'].includes(binding.continuation.phase);
+};
+
 // Runtime-fenced CAS 인수: released 또는 stale(expired)만, generation === expectGeneration. 성공 시 generation+1.
 export function acquireLease(root, runId, { owner, expectGeneration, runtime,
   now = Date.now() } = {}) {
@@ -83,6 +101,9 @@ export function acquireLease(root, runId, { owner, expectGeneration, runtime,
     if (lease.state === 'active' && lease.handoff_phase === 'reserved') {
       return { ok: false, generation: lease.generation, reason: 'handoff-reserved' };
     }
+    if (appTransportBinding(data)) {
+      return { ok: false, generation: lease.generation, reason: 'app-confirmation-required' };
+    }
     // takeover 가능: released(정상 인수), releasing+expired(부모 크래시 복구), releasing+예약된child(handshake). active 절대 탈취 안 됨.
     const expired = lease.expires_at && now > Date.parse(lease.expires_at);
     const takeable = lease.state === 'released' || (lease.state === 'releasing' && expired) || (lease.state === 'releasing' && owner === lease.handoff_child_run_id);
@@ -103,7 +124,7 @@ export function acquireLease(root, runId, { owner, expectGeneration, runtime,
         candidate.session_chain.lease = {
           ...candidate.session_chain.lease, owner_run_id: owner, generation,
           acquired_at: iso, expires_at: null, state: 'active', handoff_phase: 'acquired',
-          handoff_idempotency_key: null, handoff_child_run_id: null,
+          handoff_idempotency_key: null, handoff_child_run_id: null, resume_policy: null,
         };
         if (waspaused) {
           candidate.status = 'running';
@@ -148,19 +169,14 @@ export function releaseLease(root, runId,
       const { data } = context.readVerifiedState({ fenceCheck: exactLeaseFence(owner, generation) });
       const lease = data.session_chain.lease;
       const terminal = ['completed', 'stopped'].includes(data.status);
-      const liveAppBinding = lease.handoff_transport === 'codex-app'
-        || lease.handoff_attempt_id != null
-        || data.session_chain.sessions.some(session => session.run_id === lease.handoff_child_run_id
-          && session.continuation?.transport === 'codex-app'
-          && ['emitted', 'prepared', 'confirmed'].includes(session.continuation.phase));
-      if (lease.handoff_phase === 'reserved') return { ok: false, reason: 'handoff-reserved' };
       if (data.status === 'paused') return { ok: false, reason: 'RUN_PAUSED' };
-      if (terminal && liveAppBinding) return { ok: false, reason: 'app-binding-live-terminal' };
+      if (appTransportBinding(data)) return { ok: false, reason: 'app-transport-owned' };
+      if (lease.handoff_phase === 'reserved') return { ok: false, reason: 'handoff-reserved' };
       if (lease.state === 'released') return { ok: true, reason: 'already-released' };
       context.appendAnchored({ type: 'lease-released',
         data: { owner_run_id: owner, generation } }, candidate => {
         candidate.session_chain.lease = { ...candidate.session_chain.lease, state: 'released' };
-      }, undefined, { allowTerminal: terminal && !liveAppBinding,
+      }, undefined, { allowTerminal: terminal,
         fenceCheck: exactLeaseFence(owner, generation) });
       return { ok: true, reason: 'released' };
     });

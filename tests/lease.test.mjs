@@ -370,7 +370,7 @@ test('releaseLease on paused run returns RUN_PAUSED; lease NOT released; acquire
   assert.equal(readState(root, runId).data.status, 'paused');
 });
 
-test('paused exact reservation reports handoff-reserved before generic paused policy', () => {
+test('paused exact reservation reports RUN_PAUSED before ordinary reserved policy', () => {
   const { root, runId } = seed();
   const expect = { owner: runId, generation: 1 };
   const reserved = reserveHandoff(root, runId, {
@@ -382,7 +382,7 @@ test('paused exact reservation reports handoff-reserved before generic paused po
     now: Date.parse('2026-07-13T00:00:02.000Z') });
   const before = bytes7b(root, runId);
   assert.deepEqual(releaseLease(root, runId, expect),
-    { ok: false, reason: 'handoff-reserved' });
+    { ok: false, reason: 'RUN_PAUSED' });
   assert.deepEqual(acquireLease(root, runId, { owner: runId, expectGeneration: 1,
     runtime: 'claude' }), { ok: false, generation: 1, reason: 'handoff-reserved' });
   assert.deepEqual(bytes7b(root, runId), before, 'both exclusions are write-free');
