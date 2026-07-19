@@ -1462,3 +1462,344 @@ test8b('fork prepare consumes the one emit-verified durable workstream binding',
   assert8b.equal(result.outcome, 'prepared');
   assert8b.equal(Object.hasOwn(result, 'action'), true);
 });
+
+import { test as test9a } from 'node:test';
+import assert9a from 'node:assert/strict';
+import { readFileSync as read9a, writeFileSync as write9a } from 'node:fs';
+import { join as join9a } from 'node:path';
+import { APP_FAILURE_CODES as failureCodes9a, APP_PUBLIC_FAILURE_CODES as publicCodes9a,
+  confirmAppTask as confirm9a, failAppTask as fail9a,
+  isAppPublicFailureCode as isPublic9a,
+  prepareAppTask as prepare9a } from '../scripts/lib/app-task-continuation.mjs';
+import { readState as state9a, runDir as runDir9a } from '../scripts/lib/state.mjs';
+import { contentHash as hash9a } from '../scripts/lib/envelope.mjs';
+
+function durable9a(root, runId) {
+  const dir = runDir9a(root, runId);
+  return ['loop.json', '.loop.hash', 'event-log.jsonl'].map(name => {
+    try { return read9a(join9a(dir, name), 'utf8'); } catch { return null; }
+  });
+}
+
+function prepared9a({ route = 'create' } = {}) {
+  const fixture = route === 'fork' ? forkEmitted8b() : emitted8b();
+  const projectId = 'project $`\\';
+  prepare9a(fixture.root, fixture.runId, { owner: fixture.runId, generation: 1,
+    stdinMode: 'pty-raw-noecho', hostInput: route === 'fork'
+      ? { currentHostTaskCwd: fixture.worktree } : fixture.hostInput }, {
+    nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'),
+    cwdFn: () => route === 'fork' ? fixture.worktree : fixture.root,
+    descriptorBuilder: ({ route: selected }) => selected.kind === 'create'
+      ? { tool: 'create_thread', target: { type: 'project', projectId,
+        environment: { type: 'local' } }, prompt: 'prompt' }
+      : { tool: 'fork_thread', environment: { type: 'same-directory' },
+        followup: { tool: 'send_message_to_thread', prompt: 'prompt' } },
+    reconcileBudgetFn: () => ({ turns: 0, tokens: 0 }), gateFn: () => ({ ok: true, blocked_by: [] }),
+  });
+  return fixture;
+}
+
+test9a('first confirm is anchored and exact response-loss retry is write-free', () => {
+  const fixture = prepared9a();
+  const threadId = ' id $`\\ data ';
+  const input = { owner: fixture.runId, generation: 1, attemptId: fixture.attemptId,
+    stdinMode: 'pty-raw-noecho', threadId };
+  const first = confirm9a(fixture.root, fixture.runId, input,
+    { cwdFn: () => fixture.root,
+      nowFn: () => Date.parse('2026-07-13T00:00:03.000Z') });
+  const snapshot = durable9a(fixture.root, fixture.runId);
+  const retry = confirm9a(fixture.root, fixture.runId, input,
+    { nowFn: () => Date.parse('2026-07-13T00:03:00.000Z') });
+  assert9a.deepEqual(first, { ok: true, outcome: 'confirmed', attempt_id: fixture.attemptId });
+  assert9a.deepEqual(retry, { ok: true, outcome: 'already-confirmed', attempt_id: fixture.attemptId });
+  const confirmEvent = lines8b(fixture.root, fixture.runId)
+    .filter(event => event.type === 'app-task-confirmed').at(-1);
+  assert9a.equal(confirmEvent.data.receipt_digest,
+    hash9a('confirmed-thread\0' + threadId));
+  assert9a.equal(JSON.stringify(confirmEvent).includes(threadId), false);
+  assert9a.deepEqual(durable9a(fixture.root, fixture.runId), snapshot);
+  assert9a.throws(() => confirm9a(fixture.root, fixture.runId,
+    { ...input, stdinMode: 'pipe-open-noecho' },
+    { nowFn: () => assert9a.fail('mode-fenced retry has no clock') }), /APP_STDIN_MODE_FENCED/);
+  assert9a.deepEqual(durable9a(fixture.root, fixture.runId), snapshot);
+  assert9a.throws(() => confirm9a(fixture.root, fixture.runId,
+    { ...input, threadId: 'different' }, { nowFn: () => Date.now() }), /APP_RECEIPT_FENCED/);
+  raw7d(fixture.root, fixture.runId, loop => {
+    loop.session_chain.sessions.find(item => item.run_id === fixture.childRunId)
+      .continuation.thread_id = 'hash-valid-state-rewrite';
+  });
+  const rewritten = bytes7d(fixture.root, fixture.runId);
+  assert9a.throws(() => confirm9a(fixture.root, fixture.runId, input),
+    /RUN_SNAPSHOT_INVALID/);
+  assert9a.deepEqual(bytes7d(fixture.root, fixture.runId), rewritten);
+});
+
+test9a('fork message failure preserves one known receipt without retry authority', () => {
+  const fixture = prepared9a({ route: 'fork' });
+  const result = fail9a(fixture.root, fixture.runId, { owner: fixture.runId, generation: 1,
+    attemptId: fixture.attemptId, code: 'message-unconfirmed', stdinMode: 'pty-raw-noecho',
+    unconfirmedThreadId: 'known $`\\ child' },
+  { cwdFn: () => fixture.worktree,
+    nowFn: () => Date.parse('2026-07-13T00:00:03.000Z') });
+  assert9a.deepEqual(result, { ok: true, outcome: 'failed', attempt_id: fixture.attemptId,
+    failure_code: 'message-unconfirmed' });
+  const loop = state9a(fixture.root, fixture.runId).data;
+  const continuation = loop.session_chain.sessions.find(item => item.run_id === fixture.childRunId).continuation;
+  assert9a.equal(continuation.phase, 'failed');
+  assert9a.equal(continuation.failure_code, 'message-unconfirmed');
+  assert9a.equal(loop.status, 'paused');
+  assert9a.equal(loop.session_chain.lease.resume_policy, 'human');
+  const failureEvent = lines8b(fixture.root, fixture.runId)
+    .filter(event => event.type === 'app-task-failed').at(-1);
+  assert9a.deepEqual(Object.keys(failureEvent.data).sort(), [
+    'attempt_id', 'child_run_id', 'failure_code', 'generation', 'owner_run_id',
+    'unconfirmed_receipt_digest',
+  ]);
+  assert9a.equal(failureEvent.data.unconfirmed_receipt_digest,
+    hash9a('unconfirmed-thread\0known $`\\ child'));
+  assert9a.equal(JSON.stringify(failureEvent).includes('known $`\\ child'), false);
+  const snapshot = durable9a(fixture.root, fixture.runId);
+  assert9a.throws(() => fail9a(fixture.root, fixture.runId, { owner: fixture.runId,
+    generation: 1, attemptId: fixture.attemptId, code: 'message-unconfirmed',
+    stdinMode: 'pipe-open-noecho', unconfirmedThreadId: 'known $`\\ child' }),
+  /APP_STDIN_MODE_FENCED/);
+  assert9a.deepEqual(durable9a(fixture.root, fixture.runId), snapshot);
+
+  const directory = runDir9a(fixture.root, fixture.runId);
+  const eventPath = join9a(directory, 'event-log.jsonl');
+  const events = read9a(eventPath, 'utf8').trimEnd().split('\n').map(JSON.parse);
+  const forged = events.at(-1);
+  forged.data.unconfirmed_thread_id = 'raw receipt must never enter the log';
+  const previous = events.at(-2)?.checksum ?? 'GENESIS';
+  forged.checksum = hash9a(`${forged.seq}|${forged.ts}|${forged.type}`
+    + `|${JSON.stringify(forged.data)}|${previous}`);
+  write9a(eventPath, events.map(event => JSON.stringify(event)).join('\n') + '\n');
+  raw7d(fixture.root, fixture.runId, loop => { loop.event_log_head = forged.checksum; });
+  const leaked = bytes7d(fixture.root, fixture.runId);
+  assert9a.throws(() => fail9a(fixture.root, fixture.runId, { owner: fixture.runId,
+    generation: 1, attemptId: fixture.attemptId, code: 'message-unconfirmed',
+    stdinMode: 'pty-raw-noecho', unconfirmedThreadId: 'known $`\\ child' }),
+  /RUN_SNAPSHOT_INVALID/);
+  assert9a.deepEqual(bytes7d(fixture.root, fixture.runId), leaked);
+});
+
+test9a('ordinary host failures require no receipt channel and close the live binding', () => {
+  for (const code of ['host-call-timeout', 'host-call-no-return', 'host-call-failed',
+    'invalid-host-receipt']) {
+    const fixture = prepared9a();
+    const result = fail9a(fixture.root, fixture.runId, { owner: fixture.runId,
+      generation: 1, attemptId: fixture.attemptId, code },
+    { cwdFn: () => fixture.root });
+    assert9a.equal(result.failure_code, code);
+    const loop = state9a(fixture.root, fixture.runId).data;
+    const child = loop.session_chain.sessions.find(item => item.run_id === fixture.childRunId);
+    assert9a.equal(child.continuation.phase, 'failed');
+    assert9a.equal(child.continuation.unconfirmed_thread_id, null);
+    assert9a.equal(loop.session_chain.lease.handoff_transport, null);
+    assert9a.equal(JSON.stringify(loop).includes('raw host error'), false);
+  }
+});
+
+test9a('failed response-loss retry requires its exact immediate failure projection', () => {
+  for (const kind of ['ordinary', 'message']) {
+    const fixture = prepared9a({ route: kind === 'message' ? 'fork' : 'create' });
+    const input = kind === 'message'
+      ? { owner: fixture.runId, generation: 1, attemptId: fixture.attemptId,
+        code: 'message-unconfirmed', stdinMode: 'pty-raw-noecho',
+        unconfirmedThreadId: 'known-child' }
+      : { owner: fixture.runId, generation: 1, attemptId: fixture.attemptId,
+        code: 'host-call-failed' };
+    fail9a(fixture.root, fixture.runId, input, {
+      cwdFn: () => kind === 'message' ? fixture.worktree : fixture.root,
+      nowFn: () => Date.parse('2026-07-13T00:00:03.000Z'),
+    });
+    const loop = state9a(fixture.root, fixture.runId).data;
+    const child = loop.session_chain.sessions.find(item => item.run_id === fixture.childRunId);
+    assert9a.deepEqual(child.continuation.failure_binding,
+      { owner_run_id: fixture.runId, generation: 1 });
+    const failureEvent = lines8b(fixture.root, fixture.runId)
+      .filter(event => ['app-task-failed', 'app-task-swept'].includes(event.type)).at(-1);
+    assert9a.deepEqual({ owner_run_id: failureEvent.data.owner_run_id,
+      generation: failureEvent.data.generation }, child.continuation.failure_binding);
+    const snapshot = durable9a(fixture.root, fixture.runId);
+    const retry = fail9a(fixture.root, fixture.runId, input, {
+      cwdFn: () => assert9a.fail('failed retry has no cwd callback'),
+      nowFn: () => assert9a.fail('failed retry has no clock'),
+    });
+    assert9a.equal(retry.outcome, 'already-failed');
+    assert9a.deepEqual(durable9a(fixture.root, fixture.runId), snapshot);
+  }
+});
+
+test9a('ordinary failed response-loss rejects another child and unaudited state revival', () => {
+  const progressed = prepared9a();
+  const input = { owner: progressed.runId, generation: 1,
+    attemptId: progressed.attemptId, code: 'host-call-failed' };
+  fail9a(progressed.root, progressed.runId, input, { cwdFn: () => progressed.root });
+  raw7d(progressed.root, progressed.runId, loop => {
+    const otherRunId = '01JAPPCHD00000000000000077';
+    loop.session_chain.sessions.find(item => item.run_id === progressed.runId)
+      .superseded_by = otherRunId;
+    loop.session_chain.sessions.push({ run_id: otherRunId, started_at: null,
+      ended_at: null, turns: 0, outcome: 'failed_launch', superseded_by: null,
+      handoff_rel: 'handoffs/other.md' });
+  });
+  const progressedBytes = bytes7d(progressed.root, progressed.runId);
+  assert9a.throws(() => fail9a(progressed.root, progressed.runId, input,
+    { nowFn: () => assert9a.fail('progressed failure retry has no clock') }),
+  /APP_RESPONSE_PROJECTION_CHANGED/);
+  assert9a.deepEqual(bytes7d(progressed.root, progressed.runId), progressedBytes);
+
+  for (const forged of ['running', 'released', 'owner-swap', 'terminal']) {
+    const fixture = prepared9a();
+    fail9a(fixture.root, fixture.runId, { owner: fixture.runId, generation: 1,
+      attemptId: fixture.attemptId, code: 'host-call-failed' },
+    { cwdFn: () => fixture.root });
+    raw7d(fixture.root, fixture.runId, loop => {
+      if (forged === 'running') {
+        loop.status = 'running'; loop.pause_reason = null;
+      } else if (forged === 'owner-swap') {
+        const otherRunId = '01JAPPHST00000000000000078';
+        loop.session_chain.sessions.push({ run_id: otherRunId, started_at: null,
+          ended_at: null, turns: 0, outcome: null, superseded_by: null,
+          handoff_rel: 'handoffs/owner-swap.md' });
+        loop.session_chain.lease.owner_run_id = otherRunId;
+        loop.status = 'running'; loop.pause_reason = null;
+      } else if (forged === 'terminal') {
+        loop.status = 'completed'; loop.pause_reason = null;
+        loop.termination = { ...(loop.termination ?? {}),
+          finished_at: '2026-07-13T00:00:09.000Z', final_report: 'final.md' };
+      } else {
+        loop.pause_reason = 'recovered:awaiting-resume';
+        loop.session_chain.lease.state = 'released';
+      }
+    });
+    const before = bytes7d(fixture.root, fixture.runId);
+    assert9a.throws(() => fail9a(fixture.root, fixture.runId,
+      { owner: fixture.runId, generation: 1, attemptId: fixture.attemptId,
+        code: 'host-call-failed' }), /RUN_SNAPSHOT_INVALID/);
+    if (['running', 'owner-swap', 'terminal'].includes(forged)) {
+      assert9a.throws(() => reserveHandoff(fixture.root, fixture.runId,
+        { trigger: 'forged-failure', expect: {
+          owner: forged === 'owner-swap' ? '01JAPPHST00000000000000078' : fixture.runId,
+          generation: 1,
+        } }),
+      /RUN_SNAPSHOT_INVALID/);
+    } else {
+      assert9a.throws(() => acquireLease(fixture.root, fixture.runId,
+        { owner: fixture.runId, expectGeneration: 1, runtime: 'codex' }),
+      /RUN_SNAPSHOT_INVALID/);
+    }
+    assert9a.deepEqual(bytes7d(fixture.root, fixture.runId), before);
+  }
+});
+
+test9a('public fail rejects gate revoke and sweep-only provenance codes without writing', () => {
+  for (const code of ['gate-budget', 'consent-revoked', 'app-prepare-unattended',
+    'app-launch-unconfirmed']) {
+    const fixture = prepared9a();
+    const before = durable9a(fixture.root, fixture.runId);
+    assert9a.throws(() => fail9a(fixture.root, fixture.runId,
+      { owner: fixture.runId, generation: 1, attemptId: fixture.attemptId,
+        code, stdinMode: 'pty-raw-noecho', unconfirmedThreadId: null }),
+    /APP_FAILURE_CODE_INVALID/);
+    assert9a.deepEqual(durable9a(fixture.root, fixture.runId), before);
+  }
+});
+
+test9a('failure-code exports are immutable views over private membership', () => {
+  assert9a.throws(() => publicCodes9a.push('gate-budget'), TypeError);
+  assert9a.throws(() => failureCodes9a.splice(0, 1), TypeError);
+  assert9a.equal(isPublic9a('host-call-failed'), true);
+  assert9a.equal(isPublic9a('gate-budget'), false);
+});
+
+test9a('confirm and fail recheck actual parent cwd and durable route under the mutation lock', () => {
+  for (const operation of ['confirm', 'fail']) {
+    const fixture = prepared9a();
+    const wrongCwd = join8b(fixture.root, 'wrong-parent-cwd');
+    mkdir8b(wrongCwd, { recursive: true });
+    const before = durable9a(fixture.root, fixture.runId);
+    const deps = { cwdFn: () => wrongCwd,
+      nowFn: () => Date.parse('2026-07-13T00:00:03.000Z') };
+    assert9a.throws(() => operation === 'confirm'
+      ? confirm9a(fixture.root, fixture.runId, { owner: fixture.runId, generation: 1,
+        attemptId: fixture.attemptId, stdinMode: 'pty-raw-noecho', threadId: 'thread' }, deps)
+      : fail9a(fixture.root, fixture.runId, { owner: fixture.runId, generation: 1,
+        attemptId: fixture.attemptId, code: 'host-call-failed' }, deps),
+    /APP_ROUTE_UNCONFIRMED/);
+    assert9a.deepEqual(durable9a(fixture.root, fixture.runId), before);
+  }
+});
+
+test9a('confirm and fail prove the snapshot and fence mutation identity before clock or write', () => {
+  for (const operation of ['confirm', 'fail']) {
+    const wrong = prepared9a();
+    const wrongInput = operation === 'confirm'
+      ? { owner: 'wrong-parent', generation: 1, attemptId: wrong.attemptId,
+        stdinMode: 'pty-raw-noecho', threadId: 'thread' }
+      : { owner: 'wrong-parent', generation: 1, attemptId: wrong.attemptId,
+        code: 'host-call-failed' };
+    const wrongBefore = durable9a(wrong.root, wrong.runId);
+    assert9a.throws(() => (operation === 'confirm' ? confirm9a : fail9a)(
+      wrong.root, wrong.runId, wrongInput,
+      { nowFn: () => assert9a.fail('identity-fenced mutation has no clock') }),
+    /LEASE_FENCED/);
+    assert9a.deepEqual(durable9a(wrong.root, wrong.runId), wrongBefore);
+
+    const corrupt = prepared9a();
+    raw7d(corrupt.root, corrupt.runId, loop => {
+      loop.session_chain.sessions[0].host_surface.observed_at =
+        '2026-07-13T00:00:09.000Z';
+    });
+    const corruptInput = operation === 'confirm'
+      ? { owner: corrupt.runId, generation: 1, attemptId: corrupt.attemptId,
+        stdinMode: 'pty-raw-noecho', threadId: 'thread' }
+      : { owner: corrupt.runId, generation: 1, attemptId: corrupt.attemptId,
+        code: 'host-call-failed' };
+    const corruptBefore = bytes7d(corrupt.root, corrupt.runId);
+    assert9a.throws(() => (operation === 'confirm' ? confirm9a : fail9a)(
+      corrupt.root, corrupt.runId, corruptInput,
+      { nowFn: () => assert9a.fail('corrupt mutation has no clock') }),
+    /RUN_SNAPSHOT_INVALID/);
+    assert9a.deepEqual(bytes7d(corrupt.root, corrupt.runId), corruptBefore);
+  }
+});
+
+test9a('response-loss entry authenticates exact historical parent before semantic proof', () => {
+  for (const operation of ['confirm', 'fail']) {
+    const fixture = prepared9a();
+    const input = operation === 'confirm'
+      ? { owner: fixture.runId, generation: 1, attemptId: fixture.attemptId,
+        stdinMode: 'pty-raw-noecho', threadId: 'thread' }
+      : { owner: fixture.runId, generation: 1, attemptId: fixture.attemptId,
+        code: 'host-call-failed' };
+    (operation === 'confirm' ? confirm9a : fail9a)(fixture.root, fixture.runId, input, {
+      cwdFn: () => fixture.root,
+      nowFn: () => Date.parse('2026-07-13T00:00:03.000Z'),
+    });
+    const completed = durable9a(fixture.root, fixture.runId);
+    assert9a.throws(() => (operation === 'confirm' ? confirm9a : fail9a)(
+      fixture.root, fixture.runId, { ...input, generation: 2 },
+      { nowFn: () => assert9a.fail('wrong-generation replay has no clock') }),
+    /LEASE_FENCED/);
+    assert9a.deepEqual(durable9a(fixture.root, fixture.runId), completed);
+
+    raw7d(fixture.root, fixture.runId, loop => {
+      const parent = loop.session_chain.sessions.find(item => item.run_id === fixture.runId);
+      const child = loop.session_chain.sessions.find(item => item.run_id === fixture.childRunId);
+      child.host_surface = structuredClone(parent.host_surface);
+    });
+    const corrupt = bytes7d(fixture.root, fixture.runId);
+    assert9a.throws(() => (operation === 'confirm' ? confirm9a : fail9a)(
+      fixture.root, fixture.runId, { ...input, owner: fixture.childRunId },
+      { nowFn: () => assert9a.fail('wrong historical owner has no clock') }),
+    /LEASE_FENCED/);
+    assert9a.deepEqual(bytes7d(fixture.root, fixture.runId), corrupt);
+    assert9a.throws(() => (operation === 'confirm' ? confirm9a : fail9a)(
+      fixture.root, fixture.runId, input,
+      { nowFn: () => assert9a.fail('corrupt completed retry has no clock') }),
+    /RUN_SNAPSHOT_INVALID/);
+    assert9a.deepEqual(bytes7d(fixture.root, fixture.runId), corrupt);
+  }
+});
