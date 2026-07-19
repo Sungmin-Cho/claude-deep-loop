@@ -2386,3 +2386,224 @@ test9b('swept response-loss rejects a later accounting event without callbacks o
   }), /APP_RESPONSE_PROJECTION_CHANGED/);
   assert9b.deepEqual(durable9a(fixture.root, fixture.runId), afterCost);
 });
+
+import { test as test10a } from 'node:test';
+import assert10a from 'node:assert/strict';
+import { acquireAppTask as acquire10a, awaitAppTask as await10a,
+  confirmAppTask as confirm10a } from '../scripts/lib/app-task-continuation.mjs';
+import { readLines as lines10a } from '../scripts/lib/integrity.mjs';
+import { readState as state10a } from '../scripts/lib/state.mjs';
+import { durableRunBytes as bytes10a, rawHashValidState as raw10a }
+  from './fixtures/verified-app-run.mjs';
+
+function confirmed10a() {
+  const fixture = prepared9a();
+  confirm10a(fixture.root, fixture.runId, { owner: fixture.runId, generation: 1,
+    attemptId: fixture.attemptId, stdinMode: 'pty-raw-noecho', threadId: 'thread' },
+  { cwdFn: () => fixture.root,
+    nowFn: () => Date.parse('2026-07-13T00:00:03.000Z') });
+  return fixture;
+}
+
+const observation10a = root => ({
+  kind: 'codex-app', source: 'codex-app-tool-provenance',
+  capabilities: ['structured-process-stdin'], structured_stdin_mode: 'pty-raw-noecho',
+  host_task_cwd: root, host_task_cwd_source: 'app-task-context',
+});
+
+test10a('App acquire succeeds only from confirmed and exact response-loss retry is inert', () => {
+  const fixture = confirmed10a();
+  const input = { attemptId: fixture.attemptId, owner: fixture.childRunId, generation: 1,
+    runtime: 'codex', stdinMode: 'pty-raw-noecho', observation: observation10a(fixture.root) };
+  const first = acquire10a(fixture.root, fixture.runId, input, { cwdFn: () => fixture.root,
+    nowFn: () => Date.parse('2026-07-13T00:00:04.000Z') });
+  const before = { state: structuredClone(state10a(fixture.root, fixture.runId).data),
+    events: structuredClone(lines10a(fixture.root, fixture.runId)) };
+  const retry = acquire10a(fixture.root, fixture.runId,
+    { ...input, observation: observation10a(fixture.root) },
+    { cwdFn: () => fixture.root, nowFn: () => assert10a.fail('retry has no clock') });
+  assert10a.deepEqual(first, { ok: true, outcome: 'acquired', generation: 2 });
+  assert10a.deepEqual(retry, { ok: true, outcome: 'already-acquired', generation: 2 });
+  const confirmInput = { owner: fixture.runId, generation: 1, attemptId: fixture.attemptId,
+    stdinMode: 'pty-raw-noecho', threadId: 'thread' };
+  const confirmBytes = durable9a(fixture.root, fixture.runId);
+  assert10a.deepEqual(confirm10a(fixture.root, fixture.runId, confirmInput,
+    { nowFn: () => assert10a.fail('confirm response-loss retry has no clock') }),
+  { ok: true, outcome: 'already-complete', attempt_id: fixture.attemptId });
+  assert10a.throws(() => confirm10a(fixture.root, fixture.runId,
+    { ...confirmInput, owner: fixture.childRunId, generation: 2 },
+    { nowFn: () => assert10a.fail('current child is fenced before proof') }), /LEASE_FENCED/);
+  assert10a.deepEqual(durable9a(fixture.root, fixture.runId), confirmBytes);
+  assert10a.deepEqual(state10a(fixture.root, fixture.runId).data, before.state);
+  assert10a.deepEqual(lines10a(fixture.root, fixture.runId), before.events);
+  const loop = before.state;
+  assert10a.equal(loop.session_chain.lease.owner_run_id, fixture.childRunId);
+  for (const key of ['handoff_transport', 'handoff_attempt_id', 'handoff_child_run_id',
+    'handoff_idempotency_key', 'resume_policy', 'expires_at']) {
+    assert10a.equal(loop.session_chain.lease[key], null);
+  }
+  assert10a.equal(loop.session_chain.sessions.find(s => s.run_id === fixture.childRunId)
+    .continuation.phase, 'acquired');
+  assert10a.equal(loop.session_chain.sessions.find(s => s.run_id === fixture.childRunId)
+    .host_surface.observed_at, '2026-07-13T00:00:04.000Z');
+  assert10a.equal(loop.session_chain.sessions.find(s => s.run_id === fixture.childRunId)
+    .host_surface.observed_generation, 2);
+  assert10a.equal(loop.session_chain.sessions.find(s => s.run_id === fixture.childRunId)
+    .host_surface.observed_generation, loop.session_chain.lease.generation);
+  assert10a.throws(() => acquire10a(fixture.root, fixture.runId,
+    { ...input, stdinMode: 'pipe-open-noecho', observation: {
+      ...input.observation, structured_stdin_mode: 'pipe-open-noecho' } },
+    { cwdFn: () => fixture.root, nowFn: () => assert10a.fail('mode-fenced retry has no clock') }),
+  /APP_STDIN_MODE_FENCED/);
+  assert10a.throws(() => acquire10a(fixture.root, fixture.runId,
+    { ...input, observation: { ...input.observation, source: 'codex-app-host-context' } },
+    { cwdFn: () => fixture.root }), /APP_ACQUIRE_PROJECTION_CHANGED/);
+});
+
+test10a('acquire response-loss rejects a later accounting event', () => {
+  const fixture = confirmed10a();
+  const input = { attemptId: fixture.attemptId, owner: fixture.childRunId, generation: 1,
+    runtime: 'codex', stdinMode: 'pty-raw-noecho', observation: observation10a(fixture.root) };
+  acquire10a(fixture.root, fixture.runId, input, { cwdFn: () => fixture.root,
+    nowFn: () => Date.parse('2026-07-13T00:00:04.000Z') });
+  recordCost9a(fixture.root, fixture.runId, { turns: 1, tokens: 0,
+    requestId: 'task10a-acquire-tail', fence: { owner: fixture.childRunId, generation: 2,
+      runtime: 'codex', intent: 'accounting' } });
+  const changed = bytes10a(fixture.root, fixture.runId);
+  assert10a.throws(() => acquire10a(fixture.root, fixture.runId, input,
+    { cwdFn: () => fixture.root,
+      nowFn: () => assert10a.fail('displaced acquire retry has no clock') }),
+  /APP_ACQUIRE_PROJECTION_CHANGED/);
+  assert10a.deepEqual(bytes10a(fixture.root, fixture.runId), changed);
+});
+
+test10a('unconfirmed is fenced but exact confirmed child stays eligible after parent await timeout', () => {
+  const unconfirmed = prepared9a();
+  assert10a.throws(() => acquire10a(unconfirmed.root, unconfirmed.runId,
+    { attemptId: unconfirmed.attemptId, owner: unconfirmed.childRunId, generation: 1,
+      runtime: 'codex', stdinMode: 'pty-raw-noecho',
+      observation: observation10a(unconfirmed.root) }, { cwdFn: () => unconfirmed.root }),
+  /APP_CONFIRMATION_REQUIRED/);
+  const late = confirmed10a();
+  let now = Date.parse('2026-07-13T00:00:03.000Z');
+  await10a(late.root, late.runId, { owner: late.runId, generation: 1,
+    attemptId: late.attemptId }, { pollNowFn: () => now, nowFn: () => now,
+    sleepFn: ms => { now += ms; }, pollIntervalMs: 1_000, cwdFn: () => late.root });
+  const result = acquire10a(late.root, late.runId,
+    { attemptId: late.attemptId, owner: late.childRunId, generation: 1,
+      runtime: 'codex', stdinMode: 'pty-raw-noecho', observation: observation10a(late.root) },
+    { cwdFn: () => late.root, nowFn: () => now + 1 });
+  assert10a.equal(result.outcome, 'acquired');
+  assert10a.equal(state10a(late.root, late.runId).data.status, 'running');
+});
+
+test10a('acquire separates malformed shape from valid authority mismatch after state fences', () => {
+  const fixture = confirmed10a();
+  const base = { attemptId: fixture.attemptId, owner: fixture.childRunId, generation: 1,
+    runtime: 'codex', stdinMode: 'pty-raw-noecho' };
+  const before = durable9a(fixture.root, fixture.runId);
+  assert10a.throws(() => acquire10a(fixture.root, fixture.runId,
+    { ...base, observation: {} }, { cwdFn: () => fixture.root }),
+  /APP_CHILD_OBSERVATION_INVALID/);
+  assert10a.deepEqual(durable9a(fixture.root, fixture.runId), before);
+
+  const wrongCwd = join8b(fixture.root, 'wrong-child-cwd');
+  mkdir8b(wrongCwd, { recursive: true });
+  const authorityMismatch = { ...observation10a(wrongCwd),
+    source: 'terminal-app' };
+  assert10a.throws(() => acquire10a(fixture.root, fixture.runId,
+    { ...base, owner: fixture.runId, observation: authorityMismatch },
+    { cwdFn: () => wrongCwd }), /LEASE_FENCED/);
+  assert10a.throws(() => acquire10a(fixture.root, fixture.runId,
+    { ...base, observation: authorityMismatch }, { cwdFn: () => wrongCwd }),
+  /APP_CHILD_OBSERVATION_FENCED/);
+  assert10a.deepEqual(durable9a(fixture.root, fixture.runId), before);
+});
+
+test10a('confirm and acquire response-loss no-ops reject alias parents and lifecycle drift', () => {
+  for (const operation of ['confirm', 'acquire']) {
+    for (const drift of ['alias-parent', 'child-ended', 'parent-outcome']) {
+      const fixture = confirmed10a();
+      const confirmInput = { owner: fixture.runId, generation: 1,
+        attemptId: fixture.attemptId, stdinMode: 'pty-raw-noecho', threadId: 'thread' };
+      const acquireInput = { attemptId: fixture.attemptId, owner: fixture.childRunId,
+        generation: 1, runtime: 'codex', stdinMode: 'pty-raw-noecho',
+        observation: observation10a(fixture.root) };
+      if (operation === 'acquire') {
+        acquire10a(fixture.root, fixture.runId, acquireInput,
+          { cwdFn: () => fixture.root,
+            nowFn: () => Date.parse('2026-07-13T00:00:04.000Z') });
+      }
+      raw10a(fixture.root, fixture.runId, loop => {
+        const child = loop.session_chain.sessions.find(item => item.run_id === fixture.childRunId);
+        const parent = loop.session_chain.sessions.find(item => item.run_id === fixture.runId);
+        if (drift === 'alias-parent') {
+          loop.session_chain.sessions.push({ run_id: '01JAPPHST00000000000000091',
+            started_at: null, ended_at: null, turns: 0, outcome: null,
+            superseded_by: fixture.childRunId, handoff_rel: 'handoffs/alias.md' });
+        } else if (drift === 'child-ended') {
+          child.ended_at = '2026-07-13T00:00:09.000Z';
+        } else {
+          parent.outcome = operation === 'confirm' ? 'took_over' : null;
+        }
+      });
+      const changed = bytes10a(fixture.root, fixture.runId);
+      const invoke = operation === 'confirm'
+        ? () => confirm10a(fixture.root, fixture.runId, confirmInput,
+          { nowFn: () => assert10a.fail('corrupt confirm retry has no clock') })
+        : () => acquire10a(fixture.root, fixture.runId, acquireInput,
+          { cwdFn: () => fixture.root,
+            nowFn: () => assert10a.fail('corrupt acquire retry has no clock') });
+      assert10a.throws(invoke,
+        /RUN_SNAPSHOT_INVALID|APP_RESPONSE_PROJECTION_CHANGED|APP_ACQUIRE_PROJECTION_CHANGED/,
+      `${operation}/${drift}`);
+      assert10a.deepEqual(bytes10a(fixture.root, fixture.runId), changed,
+        `${operation}/${drift}`);
+    }
+  }
+});
+
+test10a('acquire final lock fences identity before proof and proves before terminal business', () => {
+  const entry = confirmed10a();
+  raw10a(entry.root, entry.runId, loop => {
+    loop.session_chain.sessions[0].host_surface.observed_at =
+      '2026-07-13T00:00:09.000Z';
+  });
+  const entryBefore = bytes10a(entry.root, entry.runId);
+  let callbackCalls = 0;
+  const pathDeps = {
+    platform: process.platform,
+    exists: () => { callbackCalls += 1; return true; },
+    realpath: value => { callbackCalls += 1; return value; },
+    stat: () => { callbackCalls += 1; return { dev: 1, ino: 1 }; },
+    sameFile: () => { callbackCalls += 1; return true; },
+  };
+  for (const [identity, expected] of [
+    [{ owner: entry.runId, generation: 1 }, /APP_ATTEMPT_FENCED/],
+    [{ owner: entry.childRunId, generation: 9 }, /LEASE_FENCED/],
+    [{ owner: entry.childRunId, generation: 1, runtime: 'claude' }, /RUNTIME_FENCED/],
+  ]) {
+    assert10a.throws(() => acquire10a(entry.root, entry.runId, {
+      attemptId: entry.attemptId, runtime: 'codex', ...identity,
+      stdinMode: 'pty-raw-noecho', observation: observation10a(entry.root),
+    }, { cwdFn: () => { callbackCalls += 1; return entry.root; }, pathDeps }), expected);
+  }
+  assert10a.equal(callbackCalls, 0,
+    'entry identity fence precedes observation parsing, cwd, and native-path callbacks');
+  assert10a.deepEqual(bytes10a(entry.root, entry.runId), entryBefore);
+
+  const fixture = confirmed10a();
+  const input = { attemptId: fixture.attemptId, owner: fixture.childRunId, generation: 1,
+    runtime: 'codex', stdinMode: 'pty-raw-noecho',
+    observation: observation10a(fixture.root) };
+  let corrupted;
+  const invoke = () => acquire10a(fixture.root, fixture.runId, input, {
+    cwdFn: () => {
+      raw10a(fixture.root, fixture.runId, loop => { loop.status = 'stopped'; });
+      corrupted = bytes10a(fixture.root, fixture.runId);
+      return fixture.root;
+    },
+  });
+  assert10a.throws(invoke, /RUN_SNAPSHOT_INVALID/);
+  assert10a.deepEqual(bytes10a(fixture.root, fixture.runId), corrupted);
+});

@@ -3,7 +3,8 @@ import { resolve } from 'node:path';
 import { types as utilTypes } from 'node:util';
 import { contentHash } from './envelope.mjs';
 import { appendAnchored, intentField, readLines, readVerifiedState, verifyHeadLines,
-  readAuthenticatedMutationSnapshot, verifyLines, withVerifiedMutationLock }
+  authenticateVerifiedMutationCaller, readAuthenticatedMutationSnapshot, verifyLines,
+  withVerifiedMutationLock }
   from './integrity.mjs';
 import { reconcileBudget } from './budget.mjs';
 import { leaseCheck } from './lease.mjs';
@@ -97,6 +98,11 @@ function appMutationIntentDigest(input, operation) {
     : operation === 'app-await'
       ? { ...base, timeout_ms: input.timeoutMs, interval_ms: input.intervalMs,
         deadline_digest: intentField('await-deadline', input.deadline) }
+    : operation === 'app-acquire'
+      ? { ...base, child_run_id: input.childRunId,
+        observation_digest: input.observationDigest
+          ?? intentField('acquire-observation', input.observation),
+        stdin_mode: input.stdinMode ?? null, runtime: input.runtime ?? null }
     : operation === 'app-revoke'
       ? { ...base, runtime: input.runtime ?? null }
       : null;
@@ -1264,6 +1270,181 @@ export function failAppTask(root, runId, input, deps = {}) {
       validateAppCandidate(candidate);
     }, { nowFn: deps.nowFn ?? Date.now,
       fenceCheck: loop => assertAppParentIdentity(loop, input),
+    });
+    return result;
+  });
+}
+
+function observationFacts(observation) {
+  const copy = structuredClone(observation);
+  delete copy.observed_generation;
+  delete copy.observed_at;
+  return copy;
+}
+
+function exactAcquireObservationInput(value) {
+  let raw;
+  try { raw = exactRawHostObservation(value); }
+  catch { throw new Error('APP_CHILD_OBSERVATION_INVALID'); }
+  if (['host_task_cwd', 'host_task_cwd_source', 'kind', 'source',
+    'structured_stdin_mode'].some(key => typeof raw[key] !== 'string')) {
+    throw new Error('APP_CHILD_OBSERVATION_INVALID');
+  }
+  return raw;
+}
+
+function normalizeAcquireObservation(raw, input, pathDeps, actualCwd, failureCode) {
+  try {
+    return normalizeHostObservation({ ...raw, observed_at: null, runtime: input.runtime },
+      { ...pathDeps, kernelCwd: actualCwd });
+  } catch {
+    throw new Error(failureCode);
+  }
+}
+
+function anchoredAcquireObservation(observation, clock, generation) {
+  return Object.freeze({ ...observationFacts(observation),
+    observed_generation: generation, observed_at: clock.iso });
+}
+
+function assertAppAcquireEntryIdentity(loop, input) {
+  if (loop.autonomy?.session_runtime !== input.runtime || input.runtime !== 'codex') {
+    throw new Error('RUNTIME_FENCED: app-acquire');
+  }
+  const lease = loop.session_chain?.lease;
+  const { session: child } = findAppAttempt(loop, input.attemptId);
+  if (child.run_id !== input.owner) throw new Error('LEASE_FENCED: APP_ATTEMPT_FENCED');
+  const parent = loop.session_chain.sessions.find(session =>
+    session.superseded_by === child.run_id);
+  const beforeAcquire = parent != null && lease?.owner_run_id === parent.run_id
+    && lease?.generation === input.generation;
+  const afterAcquire = parent != null && lease?.owner_run_id === child.run_id
+    && lease?.generation === input.generation + 1;
+  if (!beforeAcquire && !afterAcquire) throw new Error('LEASE_FENCED: app-acquire-entry');
+}
+
+function exactAcquiredProjection(loop, input, observation) {
+  const found = findAppAttempt(loop, input.attemptId);
+  const child = found.session;
+  const parent = appAttemptParent(loop, child);
+  return input.runtime === 'codex' && child.run_id === input.owner && parent != null
+    && exactImmediateAppAcquiredProjection(loop, { attemptId: input.attemptId,
+      owner: parent.run_id, generation: input.generation })
+    && input.stdinMode === child.host_surface?.structured_stdin_mode
+    && input.stdinMode === observation.structured_stdin_mode
+    && JSON.stringify(observationFacts(child.host_surface))
+      === JSON.stringify(observationFacts(observation));
+}
+
+function applyAppAcquire(loop, input, observation, clock) {
+  const { session: child, continuation } = findAppAttempt(loop, input.attemptId);
+  const lease = loop.session_chain.lease;
+  loop.session_chain.lease = { ...lease, owner_run_id: child.run_id,
+    generation: input.generation + 1, state: 'active', handoff_phase: 'acquired',
+    acquired_at: clock.iso, expires_at: null, resume_policy: null,
+    handoff_transport: null, handoff_attempt_id: null, handoff_child_run_id: null,
+    handoff_idempotency_key: null };
+  continuation.phase = 'acquired';
+  continuation.acquired_at = clock.iso;
+  continuation.acquired_generation = input.generation + 1;
+  child.host_surface = anchoredAcquireObservation(observation, clock, input.generation + 1);
+  child.started_at = clock.iso;
+  const parent = appAttemptParent(loop, child);
+  if (parent) parent.outcome = 'took_over';
+  loop.status = 'running';
+  loop.pause_reason = null;
+}
+
+export function acquireAppTask(root, runId, input, deps = {}) {
+  // This first lock is authentication-only. It validates either the verified canonical state or a
+  // marker-authenticated exact before/after state without recovering the marker, then closes before
+  // any caller observation is parsed or cwd/native-path dependency can execute. The final gateway
+  // independently matches the complete intent, recovers if exact, and re-fences.
+  authenticateVerifiedMutationCaller(root, runId, {
+    callerBinding: { owner: input.owner, generation: input.generation },
+    fenceCheck: loop => assertAppAcquireEntryIdentity(loop, input),
+    fenceError: 'LEASE_FENCED: app-acquire-entry',
+  });
+  const rawObservation = exactAcquireObservationInput(input.observation);
+  const pathDeps = deps.pathDeps ?? appNativePathDeps();
+  // After authenticated entry, canonicalize only against the observation's own directory identity.
+  // The post-fence normalization below must reproduce the same immutable facts against actual cwd.
+  const intentObservation = normalizeAcquireObservation(rawObservation,
+    input, pathDeps,
+    rawObservation.host_task_cwd, 'APP_CHILD_OBSERVATION_FENCED');
+  const observationDigest = hostSurfaceFactsDigest(intentObservation);
+  const intentInput = Object.freeze({ ...input, childRunId: input.owner, observationDigest });
+  const actualCwd = (deps.cwdFn ?? process.cwd)();
+  const normalizedObservation = normalizeAcquireObservation(rawObservation,
+    input, pathDeps, actualCwd, 'APP_CHILD_OBSERVATION_FENCED');
+  if (hostSurfaceFactsDigest(normalizedObservation) !== observationDigest) {
+    throw new Error('APP_CHILD_OBSERVATION_FENCED');
+  }
+  return withAppMutation(root, runId, intentInput, 'app-acquire', mutation => {
+    const snapshot = mutation.readVerifiedState(
+      { fenceCheck: loop => assertAppAcquireEntryIdentity(loop, input) }).data;
+    const historical = findAppAttempt(snapshot, input.attemptId);
+    if (historical.continuation.phase === 'acquired') {
+      if (input.stdinMode !== historical.session.host_surface?.structured_stdin_mode) {
+        throw new Error('APP_STDIN_MODE_FENCED');
+      }
+      if (exactAcquiredProjection(snapshot, input, normalizedObservation)
+          && exactAppLifecycleTail(
+            snapshot, readLines(root, runId), input, 'acquired')) {
+        return { ok: true, outcome: 'already-acquired', generation: input.generation + 1 };
+      }
+      throw new Error('APP_ACQUIRE_PROJECTION_CHANGED');
+    }
+    const observation = normalizedObservation;
+    let result;
+    const eventData = { attempt_id: input.attemptId,
+      child_run_id: historical.session.run_id, observation_digest: observationDigest };
+    mutation.appendAnchored({ type: 'app-task-acquired', data: eventData },
+    (loop, _spent, clock) => {
+      applyAppAcquire(loop, input, observation, clock);
+      result = { ok: true, outcome: 'acquired', generation: input.generation + 1 };
+    }, (loop, clock) => {
+      if (loop.status === 'completed' || loop.status === 'stopped') {
+        throw new Error('RUN_TERMINAL: app-acquire');
+      }
+      const lease = loop.session_chain.lease;
+      const exactAttempt = findAppAttempt(loop, input.attemptId);
+      const { session: child, continuation } = exactAttempt;
+      const parent = appAttemptParent(loop, child);
+      const consent = loop.autonomy.app_task_continuation;
+      if (!parent || lease.owner_run_id !== parent.run_id || child.run_id !== input.owner
+          || lease.state !== 'releasing'
+          || lease.handoff_phase !== 'spawned' || lease.handoff_transport !== 'codex-app'
+          || lease.handoff_attempt_id !== input.attemptId
+          || lease.handoff_child_run_id !== child.run_id
+          || continuation.phase !== 'confirmed') throw new Error('APP_CONFIRMATION_REQUIRED');
+      if (consent?.mode !== 'auto' || consent?.authority !== 'human-confirmed'
+          || consent.revoked_at != null) throw new Error('APP_CONSENT_FENCED');
+      if (observation.kind !== 'codex-app'
+          || !['codex-app-host-context', 'codex-app-tool-provenance'].includes(observation.source)
+          || observation.structured_stdin_mode !== input.stdinMode
+          || !observation.capabilities.includes('structured-process-stdin')
+          || !sameNativeDirectory(observation.host_task_cwd, continuation.target_cwd, pathDeps)
+          || !sameNativeDirectory(actualCwd, continuation.target_cwd, pathDeps)) {
+        throw new Error('APP_CHILD_OBSERVATION_FENCED');
+      }
+      const candidate = structuredClone(loop);
+      applyAppAcquire(candidate, input, observation, clock);
+      validateAppCandidate(candidate);
+    }, {
+      nowFn: deps.nowFn ?? Date.now,
+      fenceCheck: loop => {
+        const lease = loop.session_chain.lease;
+        if (loop.autonomy?.session_runtime !== input.runtime || input.runtime !== 'codex') {
+          throw new Error('RUNTIME_FENCED: app-acquire');
+        }
+        const exactAttempt = findAppAttempt(loop, input.attemptId);
+        if (exactAttempt.session.run_id !== input.owner) throw new Error('APP_ATTEMPT_FENCED');
+        if (lease.generation !== input.generation || lease.owner_run_id === input.owner) {
+          throw new Error('LEASE_FENCED: app-acquire');
+        }
+      },
+      // Hard-crash selection is private scalar process state in the anchored publisher.
     });
     return result;
   });
