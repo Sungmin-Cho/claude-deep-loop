@@ -1914,11 +1914,22 @@ test('App READY grammar is exact and purpose-separated', () => {
       mode: 'pty-raw-noecho' }),
     `DEEP_LOOP_STDIN_READY:v1:${purpose}:01JAPPTASK0000000000000000:pty-raw-noecho`);
   }
+  const source = readFileSync(new URL('./orch-cli.test.mjs', import.meta.url), 'utf8');
+  const seed = source.slice(source.indexOf('\nfunction appCliSeed11a() {'),
+    source.indexOf('\nfunction preparedCliSeed11a() {'));
+  const readyRunner = source.slice(source.indexOf('\nfunction runReady11a('),
+    source.indexOf("\ntest('app-task prepare"));
+  assert.match(seed,
+    /const base = Date\.parse\('2026-07-13T00:00:00\.000Z'\)/);
+  assert.doesNotMatch(seed, /Date\.now\(\)/);
+  assert.match(readyRunner, /appNodeArgs11a\(fixture, args\)/);
+  assert.match(source, /\['--import', appClockPreload11a\(fixture\), CLI/);
+  assert.match(source, /data:text\/javascript/);
 });
 
 function appCliSeed11a() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-app-cli-')));
-  const base = Date.now() - 60_000;
+  const base = Date.parse('2026-07-13T00:00:00.000Z');
   const observed = new Date(base).toISOString();
   const { runId } = initRun(root, { runtime: 'codex', goal: 'g', now: new Date(observed),
     hostObservation: { kind: 'codex-app', source: 'codex-app-tool-provenance',
@@ -1963,9 +1974,22 @@ function confirmedCliSeed11a() {
   return fixture;
 }
 
+function appClockPreload11a(fixture) {
+  const childNow = fixture.base + 4_000;
+  return `data:text/javascript,${encodeURIComponent(`Date.now = () => ${childNow};`)}`;
+}
+
+function appNodeArgs11a(fixture, args) {
+  return ['--import', appClockPreload11a(fixture), CLI, ...args];
+}
+
+function appSpawnSync11a(fixture, args, options = {}) {
+  return spawnSync(process.execPath, appNodeArgs11a(fixture, args), options);
+}
+
 function runReady11a(fixture, args, input, expectedReady, { cwd = fixture.root } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [CLI, ...args],
+    const child = spawn(process.execPath, appNodeArgs11a(fixture, args),
       { cwd, stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = ''; let stderr = ''; let sent = false;
     child.stdout.on('data', chunk => {
@@ -2065,10 +2089,10 @@ test('App CLI requires explicit root/run and exposes boolean-only handoff intent
   const beforeState = readFileSync(join(fixture.root, '.deep-loop', 'runs', fixture.runId,
     'loop.json'));
   const beforeEvents = readLines(fixture.root, fixture.runId);
-  const missingRun = spawnSync(process.execPath, [CLI, 'app-task', 'status',
+  const missingRun = appSpawnSync11a(fixture, ['app-task', 'status',
     '--project-root', fixture.root], { encoding: 'utf8', shell: false });
   assert.equal(missingRun.status, 2);
-  const invalidUlid = spawnSync(process.execPath, [CLI, 'app-task', 'status',
+  const invalidUlid = appSpawnSync11a(fixture, ['app-task', 'status',
     '--project-root', fixture.root, '--run-id', 'ZZZZZZZZZZZZZZZZZZZZZZZZZZ'],
   { encoding: 'utf8', shell: false });
   assert.equal(invalidUlid.status, 2);
@@ -2086,20 +2110,20 @@ test('App CLI requires explicit root/run and exposes boolean-only handoff intent
     ['--app-intent', ...authority, '--reason', 'bad\nreason', '--trigger', 'milestone'],
   ];
   for (const args of invalidHandoffs) {
-    const result = spawnSync(process.execPath, [CLI, 'handoff', 'emit', ...args],
+    const result = appSpawnSync11a(fixture, ['handoff', 'emit', ...args],
       { cwd: fixture.root, encoding: 'utf8', shell: false });
     assert.equal(result.status, 2, `${args.join(' ')}\n${result.stderr}`);
   }
   const staleArgs = [...required];
   staleArgs[staleArgs.indexOf('--generation') + 1] = '2';
-  const stale = spawnSync(process.execPath, [CLI, 'handoff', 'emit', '--app-intent',
+  const stale = appSpawnSync11a(fixture, ['handoff', 'emit', '--app-intent',
     ...staleArgs], { cwd: fixture.root, encoding: 'utf8', shell: false });
   assert.equal(stale.status, 3, stale.stderr);
   assert.deepEqual(readFileSync(join(fixture.root, '.deep-loop', 'runs', fixture.runId,
     'loop.json')), beforeState);
   assert.deepEqual(readLines(fixture.root, fixture.runId), beforeEvents);
   const sentinel = join(fixture.root, 'SENTINEL');
-  const hostile = spawnSync(process.execPath, [CLI, 'app-task', 'status', '--project-root', fixture.root,
+  const hostile = appSpawnSync11a(fixture, ['app-task', 'status', '--project-root', fixture.root,
     '--run-id', `${fixture.runId};touch ${sentinel}`], { encoding: 'utf8', shell: false });
   assert.notEqual(hostile.status, 0);
   assert.equal(existsSync(sentinel), false);
@@ -2119,12 +2143,12 @@ test('App parsers reject root aliases before state read and distinguish unresolv
   const handoffTail = ['--run-id', fixture.runId, '--owner', fixture.runId,
     '--generation', '1', '--reason', 'alias', '--trigger', 'alias'];
   for (const alias of [link, `${fixture.root}/.`, `${fixture.root}/`]) {
-    const status = spawnSync(process.execPath, [CLI, 'app-task', 'status',
+    const status = appSpawnSync11a(fixture, ['app-task', 'status',
       '--project-root', alias, '--run-id', fixture.runId],
     { cwd: fixture.root, encoding: 'utf8', shell: false });
     assert.equal(status.status, 3, status.stderr);
     assert.match(status.stderr, /PROJECT_ROOT_FENCED/);
-    const handoff = spawnSync(process.execPath, [CLI, 'handoff', 'emit', '--app-intent',
+    const handoff = appSpawnSync11a(fixture, ['handoff', 'emit', '--app-intent',
       '--project-root', alias, ...handoffTail],
     { cwd: fixture.root, encoding: 'utf8', shell: false });
     assert.equal(handoff.status, 3, handoff.stderr);
@@ -2135,12 +2159,12 @@ test('App parsers reject root aliases before state read and distinguish unresolv
   assert.deepEqual(readLines(fixture.root, fixture.runId), beforeEvents);
 
   const absent = join(aliasParent, 'absent-project');
-  const unresolvedStatus = spawnSync(process.execPath, [CLI, 'app-task', 'status',
+  const unresolvedStatus = appSpawnSync11a(fixture, ['app-task', 'status',
     '--project-root', absent, '--run-id', fixture.runId],
   { cwd: fixture.root, encoding: 'utf8', shell: false });
   assert.equal(unresolvedStatus.status, 1, unresolvedStatus.stderr);
   assert.match(unresolvedStatus.stderr, /PROJECT_ROOT_UNRESOLVABLE/);
-  const unresolvedHandoff = spawnSync(process.execPath, [CLI, 'handoff', 'emit', '--app-intent',
+  const unresolvedHandoff = appSpawnSync11a(fixture, ['handoff', 'emit', '--app-intent',
     '--project-root', absent, ...handoffTail],
   { cwd: fixture.root, encoding: 'utf8', shell: false });
   assert.equal(unresolvedHandoff.status, 1, unresolvedHandoff.stderr);
@@ -2178,7 +2202,8 @@ test('confirm CLI maps a published marker with a different receipt to exit 3', a
     }, { cwdFn: () => process.argv[1], nowFn: () => Number(process.env.DEEP_LOOP_CRASH_NOW) });
   `;
   const crashed = spawnSync(process.execPath,
-    ['--input-type=module', '--eval', crashScript, fixture.root, fixture.runId], {
+    ['--import', appClockPreload11a(fixture), '--input-type=module', '--eval', crashScript,
+      fixture.root, fixture.runId], {
       cwd: fixture.root, encoding: 'utf8', shell: false, env: { ...process.env,
         DEEP_LOOP_CRASH_OWNER: fixture.runId,
         DEEP_LOOP_CRASH_GENERATION: '1',
@@ -2208,7 +2233,7 @@ test('confirm CLI maps a published marker with a different receipt to exit 3', a
 
 test('ordinary fail has no stdin mode, receipt flag, or READY', () => {
   const fixture = preparedCliSeed11a();
-  const result = spawnSync(process.execPath, [CLI, 'app-task', 'fail',
+  const result = appSpawnSync11a(fixture, ['app-task', 'fail',
     '--project-root', fixture.root, '--run-id', fixture.runId,
     '--owner', fixture.runId, '--generation', '1', '--attempt', fixture.attemptId,
     '--code', 'host-call-failed'], { cwd: fixture.root, encoding: 'utf8', shell: false });
@@ -2221,7 +2246,7 @@ test('ordinary fail has no stdin mode, receipt flag, or READY', () => {
 
 test('app-task revoke survives the strict dispatcher with its runtime fence', () => {
   const fixture = appCliSeed11a();
-  const result = spawnSync(process.execPath, [CLI, 'app-task', 'revoke',
+  const result = appSpawnSync11a(fixture, ['app-task', 'revoke',
     '--project-root', fixture.root, '--run-id', fixture.runId,
     '--owner', fixture.runId, '--generation', '1', '--runtime', 'codex'],
   { cwd: fixture.root, encoding: 'utf8', shell: false });
@@ -2229,7 +2254,7 @@ test('app-task revoke survives the strict dispatcher with its runtime fence', ()
   const loop = readState(fixture.root, fixture.runId).data;
   const revokedAt = loop.autonomy.app_task_continuation.revoked_at;
   assert.equal(new Date(revokedAt).toISOString(), revokedAt);
-  assert.ok(Date.parse(revokedAt) >= Date.parse('2026-07-13T00:00:00.000Z'));
+  assert.equal(Date.parse(revokedAt), fixture.base + 4_000);
   assert.equal(loop.session_chain.sessions.find(item => item.run_id === fixture.childRunId)
     .continuation.failure_code, 'consent-revoked');
 });
@@ -2259,14 +2284,14 @@ test('malformed acquire exits 1 valid authority mismatch exits 3 and terminal re
   finish11a(terminal.root, terminal.runId, { status: 'stopped', confirm: true,
     proof: { human_reason: 'test' },
     fence: { owner: terminal.runId, generation: 1, runtime: 'codex', intent: 'business' },
-    now: Date.parse('2026-07-13T00:00:02.000Z') });
-  const terminalResult = spawnSync(process.execPath, [CLI, 'app-task', 'revoke',
+    now: terminal.base + 2_000 });
+  const terminalResult = appSpawnSync11a(terminal, ['app-task', 'revoke',
     '--project-root', terminal.root, '--run-id', terminal.runId,
     '--owner', terminal.runId, '--generation', '1', '--runtime', 'codex'],
   { cwd: terminal.root, encoding: 'utf8', shell: false });
   assert.equal(terminalResult.status, 1);
   assert.match(terminalResult.stderr, /APP_TASK_TERMINAL/);
-  const terminalHandoff = spawnSync(process.execPath, [CLI, 'handoff', 'emit', '--app-intent',
+  const terminalHandoff = appSpawnSync11a(terminal, ['handoff', 'emit', '--app-intent',
     '--project-root', terminal.root, '--run-id', terminal.runId,
     '--owner', terminal.runId, '--generation', '1', '--reason', 'terminal',
     '--trigger', 'terminal'],
@@ -2278,8 +2303,8 @@ test('malformed acquire exits 1 valid authority mismatch exits 3 and terminal re
     state: readFileSync(join(terminal.root, '.deep-loop', 'runs', terminal.runId, 'loop.json')),
     events: readLines(terminal.root, terminal.runId),
   };
-  const staleTerminalHandoff = spawnSync(process.execPath,
-    [CLI, 'handoff', 'emit', '--app-intent', '--project-root', terminal.root,
+  const staleTerminalHandoff = appSpawnSync11a(terminal,
+    ['handoff', 'emit', '--app-intent', '--project-root', terminal.root,
       '--run-id', terminal.runId, '--owner', terminal.runId, '--generation', '2',
       '--reason', 'terminal-stale', '--trigger', 'terminal-stale'],
     { cwd: terminal.root, encoding: 'utf8', shell: false });
@@ -2320,6 +2345,7 @@ test('receipt reader rejects over-513-byte or multi-line input without echo', as
 
 test('every App syntax error exits 2 before state read or READY', () => {
   const root = join(tmpdir(), 'definitely-absent-app-cli-root');
+  const fixture = { base: Date.parse('2026-07-13T00:00:00.000Z') };
   const cases = [
     ['status', '--project-root', root],
     ['status', '--project-root', root, '--project-root', root, '--run-id', 'RUN'],
@@ -2335,7 +2361,7 @@ test('every App syntax error exits 2 before state read or READY', () => {
       '--attempt', 'bad', '--stdin-mode', 'pipe-open-noecho', '--receipt-stdin'],
   ];
   for (const args of cases) {
-    const result = spawnSync(process.execPath, [CLI, 'app-task', ...args],
+    const result = appSpawnSync11a(fixture, ['app-task', ...args],
       { encoding: 'utf8', shell: false });
     assert.equal(result.status, 2, `${args.join(' ')}\n${result.stderr}`);
     assert.equal(result.stdout.includes('DEEP_LOOP_STDIN_READY:'), false);
