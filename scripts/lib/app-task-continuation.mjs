@@ -361,6 +361,9 @@ function revokeProjection(loop, input, clockMs = null) {
     session.run_id === lease.handoff_child_run_id
     && session.continuation?.attempt_id === lease.handoff_attempt_id
     && session.continuation?.transport === 'codex-app');
+  if (exact.length === 1 && !live.includes(exact[0])) {
+    throw new Error('APP_TASK_TRANSITION_INVALID');
+  }
   if ((lease.handoff_transport === 'codex-app' && exact.length !== 1)
       || (lease.handoff_transport !== 'codex-app'
         && (lease.handoff_attempt_id !== null || live.length !== 0))
@@ -927,7 +930,7 @@ export function prepareAppTask(root, runId, input, deps = {}) {
 
   if (authenticated.pending) {
     const pending = buildClaim(authenticated.data);
-    if (pending.completePhase === null) throw new Error('APP_PREPARE_RECOVERY_INVALID');
+    if (pending.completePhase === null) throw new Error('APP_PREPARE_REQUEST_FENCED');
     return pending.completePhase(pending.preparedNoop);
   }
 
