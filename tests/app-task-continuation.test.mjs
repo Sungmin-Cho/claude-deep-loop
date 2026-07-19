@@ -20,6 +20,9 @@ import {
 import { durableRunBytes as bytes7d, rawHashValidState as raw7d,
   verifiedAppRun as fixture7d } from './fixtures/verified-app-run.mjs';
 
+const bytes8a = bytes7d;
+const raw8a = raw7d;
+
 function observedRun({ legacyNullSurface = true } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-observe-')));
   const { runId } = initRun(root, { runtime: 'codex', goal: 'g',
@@ -2809,4 +2812,472 @@ test10b('generic handoff after App history remains acquirable by its new exact c
   assert10b.deepEqual(resumedAgain, { ok: true, generation: 4, reason: 'acquired' });
   assert10b.equal(state10b(fixture.root, fixture.runId).data.session_chain.lease.owner_run_id,
     emitted.childRunId);
+});
+import { test as test10c } from 'node:test';
+import assert10c from 'node:assert/strict';
+import { statusAppTask as status10c } from '../scripts/lib/app-task-continuation.mjs';
+import { acquireLease as genericAcquire10c } from '../scripts/lib/lease.mjs';
+import { recoverRun as recover10c } from '../scripts/lib/recover.mjs';
+
+test10c('recover abandons an in-flight App attempt and clears only its live binding', () => {
+  const fixture = emitted8b();
+  prepare8b(fixture.root, fixture.runId,
+    { owner: fixture.runId, generation: 1, stdinMode: 'pty-raw-noecho',
+      hostInput: { currentHostTaskCwd: fixture.root, projects: [] } }, {
+      cwdFn: () => fixture.root, nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'),
+      descriptorBuilder: () => assert10c.fail('route failure has no descriptor'),
+      reconcileBudgetFn: () => {}, gateFn: () => ({ ok: true, blocked_by: [] }) });
+  recover10c(fixture.root, fixture.runId,
+    { expect: { owner: fixture.runId, generation: 1 }, confirm: true });
+  const loop = state10b(fixture.root, fixture.runId).data;
+  const child = loop.session_chain.sessions.find(session => session.run_id === fixture.childRunId);
+  assert10c.equal(child.continuation.phase, 'abandoned');
+  assert10c.equal(child.continuation.failure_code, 'human-recovered');
+  assert10c.equal(child.outcome, 'abandoned_recover');
+  assert10c.deepEqual(child.recovery_binding,
+    { owner_run_id: fixture.runId, generation: 1 });
+  assert10c.deepEqual(lines8b(fixture.root, fixture.runId)
+    .filter(event => event.type === 'run-recovered').at(-1).data,
+  { attempt_id: fixture.attemptId, child_run_id: fixture.childRunId,
+    failure_code: 'human-recovered', owner_run_id: fixture.runId, generation: 1 });
+  assert10c.equal(loop.session_chain.sessions[0].superseded_by, null);
+  for (const key of ['handoff_transport', 'handoff_attempt_id', 'handoff_child_run_id',
+    'handoff_idempotency_key', 'expires_at', 'resume_policy']) {
+    assert10c.equal(loop.session_chain.lease[key], null);
+  }
+});
+
+test10c('recover preserves definitive failed and abandoned history phases', () => {
+  const failed = prepared9a({ route: 'fork' });
+  fail9a(failed.root, failed.runId, { owner: failed.runId, generation: 1,
+    attemptId: failed.attemptId, code: 'message-unconfirmed', stdinMode: 'pty-raw-noecho',
+    unconfirmedThreadId: 'known-child' },
+  { cwdFn: () => failed.worktree,
+    nowFn: () => Date.parse('2026-07-13T00:00:03.000Z') });
+  recover10c(failed.root, failed.runId,
+    { expect: { owner: failed.runId, generation: 1 }, confirm: true });
+  let child = state10b(failed.root, failed.runId).data.session_chain.sessions
+    .find(session => session.run_id === failed.childRunId);
+  assert10c.equal(child.continuation.phase, 'failed');
+  assert10c.equal(child.continuation.failure_code, 'message-unconfirmed');
+  assert10c.deepEqual(child.continuation.failure_binding,
+    { owner_run_id: failed.runId, generation: 1 });
+  assert10c.deepEqual(child.recovery_binding, child.continuation.failure_binding);
+  const recoveredFailedBytes = durable9a(failed.root, failed.runId);
+  assert10c.throws(() => fail9a(failed.root, failed.runId,
+    { owner: failed.runId, generation: 1, attemptId: failed.attemptId,
+      code: 'message-unconfirmed', stdinMode: 'pty-raw-noecho',
+      unconfirmedThreadId: 'known-child' },
+    { nowFn: () => assert10c.fail('recovered message retry has no clock') }),
+  /APP_RESPONSE_PROJECTION_CHANGED/);
+  assert10c.deepEqual(durable9a(failed.root, failed.runId), recoveredFailedBytes);
+
+  const abandoned = emitted8b();
+  revoke8b(abandoned.root, abandoned.runId,
+    { owner: abandoned.runId, generation: 1, runtime: 'codex' },
+    { nowFn: () => Date.parse('2026-07-13T00:00:02.000Z') });
+  recover10c(abandoned.root, abandoned.runId,
+    { expect: { owner: abandoned.runId, generation: 1 }, confirm: true });
+  child = state10b(abandoned.root, abandoned.runId).data.session_chain.sessions
+    .find(session => session.run_id === abandoned.childRunId);
+  assert10c.equal(child.continuation.phase, 'abandoned');
+  assert10c.equal(child.continuation.failure_code, 'consent-revoked');
+  assert10c.deepEqual(lines8b(abandoned.root, abandoned.runId)
+    .filter(event => event.type === 'run-recovered').at(-1).data,
+  { attempt_id: abandoned.attemptId, child_run_id: abandoned.childRunId,
+    failure_code: 'consent-revoked', owner_run_id: abandoned.runId, generation: 1 });
+});
+
+test10c('recover identity fence precedes proof and corrupt state never projects recovery', () => {
+  const fixture = emitted8b();
+  prepare8b(fixture.root, fixture.runId,
+    { owner: fixture.runId, generation: 1, stdinMode: 'pty-raw-noecho',
+      hostInput: { currentHostTaskCwd: fixture.root, projects: [] } }, {
+      cwdFn: () => fixture.root,
+      nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'),
+      descriptorBuilder: () => assert10c.fail('manual preserve builds no descriptor'),
+      reconcileBudgetFn: () => {}, gateFn: () => ({ ok: true, blocked_by: [] }) });
+  raw8a(fixture.root, fixture.runId, loop => {
+    loop.session_chain.sessions[0].host_surface.observed_at =
+      '2026-07-13T00:00:09.000Z';
+  });
+  const before = bytes8a(fixture.root, fixture.runId);
+  assert10c.throws(() => recover10c(fixture.root, fixture.runId,
+    { expect: { owner: 'wrong', generation: 1 }, confirm: true,
+      nowFn: () => assert10c.fail('wrong caller cannot sample recovery clock') }),
+  /LEASE_FENCED/);
+  assert10c.throws(() => recover10c(fixture.root, fixture.runId,
+    { expect: { owner: fixture.runId, generation: 1 }, confirm: true }),
+  /RUN_SNAPSHOT_INVALID/);
+  assert10c.deepEqual(bytes8a(fixture.root, fixture.runId), before);
+});
+
+test10c('recover leaves retained App history generically acquirable by its exact child', () => {
+  const fixture = prepared9a({ route: 'fork' });
+  fail9a(fixture.root, fixture.runId, { owner: fixture.runId, generation: 1,
+    attemptId: fixture.attemptId, code: 'message-unconfirmed', stdinMode: 'pty-raw-noecho',
+    unconfirmedThreadId: 'known-child' },
+  { cwdFn: () => fixture.worktree,
+    nowFn: () => Date.parse('2026-07-13T00:00:03.000Z') });
+  recover10c(fixture.root, fixture.runId,
+    { expect: { owner: fixture.runId, generation: 1 }, confirm: true });
+  const before = status10c(fixture.root, fixture.runId, { attemptId: fixture.attemptId });
+  const recovered = state10b(fixture.root, fixture.runId).data;
+  assert10c.equal(before.has_app_history, true);
+  assert10c.equal(before.current.run_id, fixture.childRunId);
+  assert10c.equal(before.current.phase, 'failed');
+  assert10c.equal(before.handoff_phase, 'idle');
+  assert10c.equal(before.manual_recovery, true);
+  assert10c.deepEqual(before.recovery_pending, {
+    run_id: fixture.childRunId, handoff_rel: before.current.handoff_rel,
+    transport: 'codex-app', attempt_id: fixture.attemptId, phase: 'failed',
+  });
+  assert10c.equal(before.generic_current, null);
+  assert10c.equal(recovered.status, 'paused');
+  assert10c.equal(recovered.session_chain.lease.state, 'released');
+  for (const key of ['handoff_transport', 'handoff_attempt_id', 'handoff_child_run_id',
+    'handoff_idempotency_key', 'expires_at', 'resume_policy']) {
+    assert10c.equal(recovered.session_chain.lease[key], null);
+  }
+  const acquired = genericAcquire10c(fixture.root, fixture.runId, {
+    owner: before.recovery_pending.run_id, expectGeneration: before.generation, runtime: 'codex',
+  });
+  assert10c.deepEqual(acquired, { ok: true, generation: 2, reason: 'acquired' });
+  const after = status10c(fixture.root, fixture.runId, { attemptId: fixture.attemptId });
+  assert10c.equal(after.owner_run_id, fixture.childRunId);
+  assert10c.equal(after.generation, 2);
+  assert10c.equal(after.manual_recovery, false);
+  assert10c.equal(after.recovery_pending, null);
+  assert10c.equal(after.current.phase, 'failed', 'generic resume preserves audit history');
+  assert10c.deepEqual(after.history, before.history);
+  assert10c.equal(genericRelease10b(fixture.root, fixture.runId,
+    { owner: fixture.childRunId, generation: 2 }).reason, 'released');
+  const released = status10c(fixture.root, fixture.runId, { attemptId: fixture.attemptId });
+  assert10c.deepEqual(released.generic_current,
+    { run_id: fixture.childRunId, handoff_rel: before.current.handoff_rel });
+  assert10c.equal(released.recovery_pending, null);
+  assert10c.deepEqual(genericAcquire10c(fixture.root, fixture.runId, {
+    owner: released.generic_current.run_id, expectGeneration: 2, runtime: 'codex',
+  }), { ok: true, generation: 3, reason: 'acquired' });
+  pause10b(fixture.root, fixture.runId, { reason: 'resume-owner-recovery', mode: 'preserve',
+    expect: { owner: fixture.childRunId, generation: 3 } });
+  recover10c(fixture.root, fixture.runId,
+    { expect: { owner: fixture.childRunId, generation: 3 }, confirm: true });
+  const recoveredOwner = status10c(fixture.root, fixture.runId,
+    { attemptId: fixture.attemptId });
+  assert10c.equal(recoveredOwner.recovery_pending, null);
+  assert10c.deepEqual(recoveredOwner.generic_current,
+    { run_id: fixture.childRunId, handoff_rel: before.current.handoff_rel });
+  assert10c.deepEqual(genericAcquire10c(fixture.root, fixture.runId, {
+    owner: recoveredOwner.generic_current.run_id, expectGeneration: 3, runtime: 'codex',
+  }), { ok: true, generation: 4, reason: 'acquired' });
+});
+
+test10c('ordinary cleared App failure recovers the exact current parent without a handoff', () => {
+  for (const code of ['host-call-failed', 'invalid-host-receipt']) {
+    const fixture = prepared9a();
+    fail9a(fixture.root, fixture.runId, { owner: fixture.runId, generation: 1,
+      attemptId: fixture.attemptId, code }, { cwdFn: () => fixture.root });
+    const failed = state10b(fixture.root, fixture.runId).data;
+    assert10c.equal(failed.session_chain.lease.handoff_child_run_id, null);
+    const failedChild = failed.session_chain.sessions.find(session =>
+      session.run_id === fixture.childRunId);
+    assert10c.deepEqual(failedChild.continuation.failure_binding,
+      { owner_run_id: fixture.runId, generation: 1 });
+    recover10c(fixture.root, fixture.runId,
+      { expect: { owner: fixture.runId, generation: 1 }, confirm: true });
+    const recoveredBytes = durable9a(fixture.root, fixture.runId);
+    assert10c.throws(() => fail9a(fixture.root, fixture.runId,
+      { owner: fixture.runId, generation: 1, attemptId: fixture.attemptId, code },
+      { cwdFn: () => assert10c.fail('recovered fail retry has no cwd callback'),
+        nowFn: () => assert10c.fail('recovered fail retry has no clock') }),
+    /APP_RESPONSE_PROJECTION_CHANGED/);
+    assert10c.deepEqual(durable9a(fixture.root, fixture.runId), recoveredBytes);
+    const projected = status10c(fixture.root, fixture.runId, { attemptId: fixture.attemptId });
+    assert10c.equal(projected.recovery_pending, null);
+    assert10c.deepEqual(projected.generic_current,
+      { run_id: fixture.runId, handoff_rel: null });
+    assert10c.deepEqual(genericAcquire10c(fixture.root, fixture.runId, {
+      owner: projected.generic_current.run_id, expectGeneration: 1, runtime: 'codex',
+    }), { ok: true, generation: 2, reason: 'acquired' });
+    const advancedBytes = durable9a(fixture.root, fixture.runId);
+    assert10c.throws(() => fail9a(fixture.root, fixture.runId,
+      { owner: fixture.runId, generation: 2, attemptId: fixture.attemptId, code },
+      { nowFn: () => assert10c.fail('advanced failure retry has no clock') }),
+    /LEASE_FENCED/);
+    assert10c.deepEqual(durable9a(fixture.root, fixture.runId), advancedBytes);
+    assert10c.equal(genericRelease10b(fixture.root, fixture.runId,
+      { owner: fixture.runId, generation: 2 }).reason, 'released');
+    const released = status10c(fixture.root, fixture.runId, {});
+    assert10c.deepEqual(released.generic_current,
+      { run_id: fixture.runId, handoff_rel: null });
+    assert10c.deepEqual(genericAcquire10c(fixture.root, fixture.runId, {
+      owner: released.generic_current.run_id, expectGeneration: 2, runtime: 'codex',
+    }), { ok: true, generation: 3, reason: 'acquired' });
+  }
+});
+
+test10c('gate rollback recovers the exact current parent without a handoff', () => {
+  const fixture = emitted8b();
+  const result = prepare8b(fixture.root, fixture.runId, { owner: fixture.runId, generation: 1,
+    stdinMode: 'pty-raw-noecho', hostInput: fixture.hostInput }, {
+    nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'), cwdFn: () => fixture.root,
+    descriptorBuilder: () => ({ tool: 'create_thread', target: { type: 'project',
+      projectId: 'project $`\\', environment: { type: 'local' } }, prompt: 'prompt' }),
+    reconcileBudgetFn: () => {}, gateFn: () => ({ ok: false, blocked_by: ['budget'] }),
+  });
+  assert10c.equal(result.reason, 'gate-budget');
+  assert10c.equal(state10b(fixture.root, fixture.runId).data
+    .session_chain.lease.handoff_child_run_id, null);
+  recover10c(fixture.root, fixture.runId,
+    { expect: { owner: fixture.runId, generation: 1 }, confirm: true });
+  const projected = status10c(fixture.root, fixture.runId, {});
+  assert10c.equal(projected.recovery_pending, null);
+  assert10c.deepEqual(projected.generic_current,
+    { run_id: fixture.runId, handoff_rel: null });
+  assert10c.deepEqual(genericAcquire10c(fixture.root, fixture.runId, {
+    owner: projected.generic_current.run_id, expectGeneration: 1, runtime: 'codex',
+  }), { ok: true, generation: 2, reason: 'acquired' });
+  assert10c.equal(genericRelease10b(fixture.root, fixture.runId,
+    { owner: fixture.runId, generation: 2 }).reason, 'released');
+  const released = status10c(fixture.root, fixture.runId, {});
+  assert10c.deepEqual(released.generic_current,
+    { run_id: fixture.runId, handoff_rel: null });
+  assert10c.deepEqual(genericAcquire10c(fixture.root, fixture.runId, {
+    owner: released.generic_current.run_id, expectGeneration: 2, runtime: 'codex',
+  }), { ok: true, generation: 3, reason: 'acquired' });
+});
+
+test10c('current-generation gate abandonment cannot be revived by forged running or released bytes', () => {
+  for (const mutate of [
+    loop => { loop.status = 'running'; loop.pause_reason = null; },
+    loop => { loop.status = 'running'; loop.pause_reason = null;
+      loop.session_chain.lease.state = 'released'; },
+  ]) {
+    const fixture = emitted8b();
+    prepare8b(fixture.root, fixture.runId,
+      { owner: fixture.runId, generation: 1, stdinMode: 'pty-raw-noecho',
+        hostInput: fixture.hostInput }, {
+        nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'), cwdFn: () => fixture.root,
+        descriptorBuilder: () => ({ tool: 'create_thread', target: { type: 'project',
+          projectId: 'project $`\\', environment: { type: 'local' } }, prompt: 'prompt' }),
+        reconcileBudgetFn: () => {},
+        gateFn: () => ({ ok: false, blocked_by: ['budget'] }) });
+    raw8a(fixture.root, fixture.runId, mutate);
+    const forged = bytes8a(fixture.root, fixture.runId);
+    assert10c.throws(() => reserve10b(fixture.root, fixture.runId,
+      { trigger: 'forged-gate-revival',
+        expect: { owner: fixture.runId, generation: 1 } }), /RUN_SNAPSHOT_INVALID/);
+    assert10c.throws(() => genericAcquire10c(fixture.root, fixture.runId,
+      { owner: fixture.runId, expectGeneration: 1, runtime: 'codex' }),
+    /RUN_SNAPSHOT_INVALID/);
+    assert10c.throws(() => recover10c(fixture.root, fixture.runId,
+      { expect: { owner: fixture.runId, generation: 1 }, confirm: true }),
+    /RUN_SNAPSHOT_INVALID/);
+    assert10c.deepEqual(bytes8a(fixture.root, fixture.runId), forged);
+  }
+});
+
+test10c('recover is response-loss idempotent and appends no ambiguous second event', () => {
+  const fixture = emitted8b();
+  prepare8b(fixture.root, fixture.runId,
+    { owner: fixture.runId, generation: 1, stdinMode: 'pty-raw-noecho',
+      hostInput: { currentHostTaskCwd: fixture.root, projects: [] } }, {
+      cwdFn: () => fixture.root,
+      nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'),
+      descriptorBuilder: () => assert10c.fail('manual preserve has no descriptor'),
+      reconcileBudgetFn: () => {}, gateFn: () => ({ ok: true, blocked_by: [] }) });
+  recover10c(fixture.root, fixture.runId,
+    { expect: { owner: fixture.runId, generation: 1 }, confirm: true,
+      nowFn: () => Date.parse('2026-07-13T00:00:03.000Z') });
+  const before = durable9a(fixture.root, fixture.runId);
+  const eventCount = lines8b(fixture.root, fixture.runId)
+    .filter(event => event.type === 'run-recovered').length;
+  assert10c.deepEqual(recover10c(fixture.root, fixture.runId,
+    { expect: { owner: fixture.runId, generation: 1 }, confirm: true,
+      nowFn: () => assert10c.fail('already-recovered retry has no clock') }),
+  { ok: true, reason: 'already-recovered' });
+  assert10c.deepEqual(durable9a(fixture.root, fixture.runId), before);
+  assert10c.equal(lines8b(fixture.root, fixture.runId)
+    .filter(event => event.type === 'run-recovered').length, eventCount);
+});
+
+test10c('recover rejects an already-recovered projection displaced by accounting', () => {
+  const fixture = emitted8b();
+  prepare8b(fixture.root, fixture.runId,
+    { owner: fixture.runId, generation: 1, stdinMode: 'pty-raw-noecho',
+      hostInput: { currentHostTaskCwd: fixture.root, projects: [] } }, {
+      cwdFn: () => fixture.root,
+      nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'),
+      descriptorBuilder: () => assert10c.fail('manual preserve has no descriptor'),
+      reconcileBudgetFn: () => {}, gateFn: () => ({ ok: true, blocked_by: [] }) });
+  const expect = { owner: fixture.runId, generation: 1 };
+  recover10c(fixture.root, fixture.runId, { expect, confirm: true,
+    nowFn: () => Date.parse('2026-07-13T00:00:03.000Z') });
+  appendAnchored(fixture.root, fixture.runId, { type: 'cost',
+    data: { turns: 0, tokens: 0 } }, undefined, undefined, {
+    callerBinding: expect,
+    intentDigest: contentHash(JSON.stringify({ operation: 'task10c-recover-tail' })),
+    fenceCheck: loop => {
+      const lease = loop.session_chain?.lease;
+      if (loop.status !== 'paused' || lease?.owner_run_id !== expect.owner
+          || lease?.generation !== expect.generation) throw new Error('LEASE_FENCED');
+    },
+  });
+  const displaced = durable9a(fixture.root, fixture.runId);
+  const eventCount = lines8b(fixture.root, fixture.runId)
+    .filter(event => event.type === 'run-recovered').length;
+
+  assert10c.throws(() => recover10c(fixture.root, fixture.runId,
+    { expect, confirm: true,
+      nowFn: () => assert10c.fail('displaced recovery retry has no clock') }),
+  /APP_RECOVERY_PROJECTION_CHANGED/);
+  assert10c.deepEqual(durable9a(fixture.root, fixture.runId), displaced);
+  assert10c.equal(lines8b(fixture.root, fixture.runId)
+    .filter(event => event.type === 'run-recovered').length, eventCount);
+});
+
+test10c('recover clears an exact pre-emit generic reservation with no child session', () => {
+  const fixture = confirmed10a();
+  acquire10a(fixture.root, fixture.runId,
+    { attemptId: fixture.attemptId, owner: fixture.childRunId, generation: 1,
+      runtime: 'codex', stdinMode: 'pty-raw-noecho', observation: observation10a(fixture.root) },
+    { cwdFn: () => fixture.root,
+      nowFn: () => Date.parse('2026-07-13T00:00:04.000Z') });
+  const reservation = reserve10b(fixture.root, fixture.runId,
+    { trigger: 'pre-emit-recovery', expect: { owner: fixture.childRunId, generation: 2 },
+      now: Date.parse('2026-07-13T00:00:05.000Z') });
+  assert10c.equal(state10b(fixture.root, fixture.runId).data.session_chain.sessions
+    .some(session => session.run_id === reservation.childRunId), false);
+  pause10b(fixture.root, fixture.runId, { reason: 'recover-pre-emit-reservation',
+    mode: 'preserve', expect: { owner: fixture.childRunId, generation: 2 } });
+  recover10c(fixture.root, fixture.runId,
+    { expect: { owner: fixture.childRunId, generation: 2 }, confirm: true });
+  const recovered = state10b(fixture.root, fixture.runId).data;
+  assert10c.equal(recovered.session_chain.lease.handoff_child_run_id, null);
+  assert10c.equal(recovered.session_chain.lease.handoff_phase, 'idle');
+  assert10c.deepEqual(lines8b(fixture.root, fixture.runId)
+    .filter(event => event.type === 'run-recovered').at(-1).data,
+  { owner_run_id: fixture.childRunId, generation: 2 },
+  'a new-format reservation-only recovery binds its exact current owner without minting a child');
+});
+
+test10c('generic recovery after App history projects only the newly recovered generic child', () => {
+  const fixture = confirmed10a();
+  const oldAcquire = { attemptId: fixture.attemptId, owner: fixture.childRunId, generation: 1,
+    runtime: 'codex', stdinMode: 'pty-raw-noecho', observation: observation10a(fixture.root) };
+  acquire10a(fixture.root, fixture.runId, oldAcquire,
+    { cwdFn: () => fixture.root, nowFn: () => Date.parse('2026-07-13T00:00:04.000Z') });
+  const generic = genericEmit10b(fixture.root, fixture.runId, {
+    trigger: 'generic-recover', now: Date.parse('2026-07-13T00:00:05.000Z'),
+    expect: { owner: fixture.childRunId, generation: 2 },
+  });
+  pause10b(fixture.root, fixture.runId, { reason: 'generic-human-recovery', mode: 'preserve',
+    expect: { owner: fixture.childRunId, generation: 2 } });
+  recover10c(fixture.root, fixture.runId,
+    { expect: { owner: fixture.childRunId, generation: 2 }, confirm: true });
+  assert10c.deepEqual(lines8b(fixture.root, fixture.runId)
+    .filter(event => event.type === 'run-recovered').at(-1).data,
+  { child_run_id: generic.childRunId, owner_run_id: fixture.childRunId, generation: 2 });
+  const recoveredBytes = durable9a(fixture.root, fixture.runId);
+  assert10c.throws(() => acquire10a(fixture.root, fixture.runId, oldAcquire,
+    { cwdFn: () => fixture.root,
+      nowFn: () => assert10c.fail('recovered acquire retry has no clock') }),
+  /APP_ACQUIRE_PROJECTION_CHANGED/);
+  assert10c.deepEqual(durable9a(fixture.root, fixture.runId), recoveredBytes);
+  const projected = status10c(fixture.root, fixture.runId, {});
+  assert10c.equal(projected.has_app_history, true);
+  assert10c.equal(projected.current.run_id, fixture.childRunId,
+    'old App history remains audit-only');
+  assert10c.equal(projected.generic_current, null);
+  assert10c.deepEqual(projected.recovery_pending, {
+    run_id: generic.childRunId, handoff_rel: generic.handoffRel,
+    transport: 'generic', attempt_id: null, phase: null,
+  });
+  const resumed = genericAcquire10c(fixture.root, fixture.runId, {
+    owner: projected.recovery_pending.run_id,
+    expectGeneration: projected.generation, runtime: 'codex',
+  });
+  assert10c.deepEqual(resumed, { ok: true, generation: 3, reason: 'acquired' });
+  const resumedBytes = durable9a(fixture.root, fixture.runId);
+  assert10c.throws(() => acquire10a(fixture.root, fixture.runId, oldAcquire,
+    { cwdFn: () => assert10c.fail('resumed acquire retry has no cwd'),
+      nowFn: () => assert10c.fail('resumed acquire retry has no clock') }),
+  /LEASE_FENCED/);
+  assert10c.deepEqual(durable9a(fixture.root, fixture.runId), resumedBytes);
+  assert10c.equal(status10c(fixture.root, fixture.runId, {}).recovery_pending, null);
+});
+
+test10c('a prior recovered child cannot revive after the same owner advances generation', () => {
+  const fixture = confirmed10a();
+  acquire10a(fixture.root, fixture.runId,
+    { attemptId: fixture.attemptId, owner: fixture.childRunId, generation: 1,
+      runtime: 'codex', stdinMode: 'pty-raw-noecho', observation: observation10a(fixture.root) },
+    { cwdFn: () => fixture.root,
+      nowFn: () => Date.parse('2026-07-13T00:00:04.000Z') });
+  const stale = genericEmit10b(fixture.root, fixture.runId, {
+    reason: 'stale recovery candidate', trigger: 'stale-candidate',
+    now: Date.parse('2026-07-13T00:00:05.000Z'),
+    expect: { owner: fixture.childRunId, generation: 2 },
+  });
+  pause10b(fixture.root, fixture.runId, { reason: 'recover-stale-candidate', mode: 'preserve',
+    expect: { owner: fixture.childRunId, generation: 2 } });
+  recover10c(fixture.root, fixture.runId,
+    { expect: { owner: fixture.childRunId, generation: 2 }, confirm: true });
+  let projected = status10c(fixture.root, fixture.runId, {});
+  assert10c.equal(projected.recovery_pending.run_id, stale.childRunId);
+  assert10c.deepEqual(state10b(fixture.root, fixture.runId).data.session_chain.sessions.at(-1)
+    .recovery_binding, { owner_run_id: fixture.childRunId, generation: 2 });
+
+  assert10c.deepEqual(genericAcquire10c(fixture.root, fixture.runId, {
+    owner: fixture.childRunId, expectGeneration: 2, runtime: 'codex',
+  }), { ok: true, generation: 3, reason: 'acquired' });
+  pause10b(fixture.root, fixture.runId, { reason: 'recover-current-owner', mode: 'preserve',
+    expect: { owner: fixture.childRunId, generation: 3 } });
+  recover10c(fixture.root, fixture.runId,
+    { expect: { owner: fixture.childRunId, generation: 3 }, confirm: true });
+  projected = status10c(fixture.root, fixture.runId, {});
+  assert10c.equal(projected.recovery_pending, null,
+    'the old child binding is stale after the parent generation advances');
+  assert10c.deepEqual(projected.generic_current,
+    { run_id: fixture.childRunId,
+      handoff_rel: state10b(fixture.root, fixture.runId).data.session_chain.sessions
+      .find(session => session.run_id === fixture.childRunId).handoff_rel });
+  const noChildRecovery = lines8b(fixture.root, fixture.runId)
+    .filter(event => event.type === 'run-recovered').at(-1);
+  assert10c.deepEqual(noChildRecovery.data,
+    { owner_run_id: fixture.childRunId, generation: 3 });
+  raw8a(fixture.root, fixture.runId, loop => {
+    loop.session_chain.sessions.find(session => session.run_id === stale.childRunId)
+      .recovery_binding.generation = 3;
+  });
+  const forged = bytes8a(fixture.root, fixture.runId);
+  assert10c.throws(() => status10c(fixture.root, fixture.runId, {}),
+    /RUN_SNAPSHOT_INVALID/);
+  assert10c.deepEqual(bytes8a(fixture.root, fixture.runId), forged);
+});
+
+test10c('a recovered binding to a different existing owner is not recovery authority', () => {
+  const fixture = confirmed10a();
+  acquire10a(fixture.root, fixture.runId,
+    { attemptId: fixture.attemptId, owner: fixture.childRunId, generation: 1,
+      runtime: 'codex', stdinMode: 'pty-raw-noecho', observation: observation10a(fixture.root) },
+    { cwdFn: () => fixture.root,
+      nowFn: () => Date.parse('2026-07-13T00:00:04.000Z') });
+  genericEmit10b(fixture.root, fixture.runId, {
+    reason: 'owner mismatch candidate', trigger: 'owner-mismatch',
+    now: Date.parse('2026-07-13T00:00:05.000Z'),
+    expect: { owner: fixture.childRunId, generation: 2 },
+  });
+  pause10b(fixture.root, fixture.runId, { reason: 'recover-owner-mismatch', mode: 'preserve',
+    expect: { owner: fixture.childRunId, generation: 2 } });
+  recover10c(fixture.root, fixture.runId,
+    { expect: { owner: fixture.childRunId, generation: 2 }, confirm: true });
+  raw8a(fixture.root, fixture.runId, loop => {
+    loop.session_chain.sessions.at(-1).recovery_binding.owner_run_id = fixture.runId;
+  });
+  const changed = bytes8a(fixture.root, fixture.runId);
+  assert10c.throws(() => status10c(fixture.root, fixture.runId, {}),
+    /RUN_SNAPSHOT_INVALID/);
+  assert10c.deepEqual(bytes8a(fixture.root, fixture.runId), changed);
 });
