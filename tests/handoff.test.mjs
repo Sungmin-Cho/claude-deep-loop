@@ -1190,7 +1190,9 @@ test('rollbackHandoff: terminal-aware — reserved settles to released; idle ter
 import { test as test8a } from 'node:test';
 import assert8a from 'node:assert/strict';
 import { existsSync as exists8a, mkdirSync as mkdir8a, mkdtempSync as temp8a,
-  readFileSync as readFile8a, realpathSync as realpath8a } from 'node:fs';
+  readFileSync as readFile8a, realpathSync as realpath8a,
+  rmdirSync as rmdir8a } from 'node:fs';
+import { spawnSync as spawn8a } from 'node:child_process';
 import { tmpdir as tmp8a } from 'node:os';
 import { join as join8a } from 'node:path';
 import { initRun as init8a } from '../scripts/lib/initrun.mjs';
@@ -1229,6 +1231,101 @@ function appRun8a() {
       confirmed_at: '2026-07-13T00:00:00.000Z', revoked_at: null } });
   return { root, runId };
 }
+
+const emitModule8a = new URL('../scripts/lib/handoff.mjs', import.meta.url).href;
+
+function crashBareEmitReservation8a(root, runId, options) {
+  const source = `import { emitHandoff } from ${JSON.stringify(emitModule8a)};\n`
+    + `emitHandoff(${JSON.stringify(root)}, ${JSON.stringify(runId)}, `
+    + `${JSON.stringify(options)});`;
+  const child = spawn8a(process.execPath, ['--input-type=module', '-e', source], {
+    cwd: root, encoding: 'utf8', timeout: 10_000,
+    env: { ...process.env, NODE_ENV: 'test',
+      DEEP_LOOP_TEST_CRASH_AT: 'response-after-cleanup' },
+  });
+  assert8a.equal(child.status, 91, child.stderr || child.stdout || child.error?.message);
+  rmdir8a(join8a(root, '.deep-loop', 'runs', runId, '.lock'));
+  const lease = read8a(root, runId).data.session_chain.lease;
+  assert8a.equal(lease.state, 'active');
+  assert8a.equal(lease.handoff_phase, 'reserved');
+  return { lease, before: bytes8a(root, runId) };
+}
+
+function assertPolicyRetryConflict8a({ label, initial, changed, exact = {} }) {
+  const { root, runId } = seed('claude');
+  const base = { reason: label, trigger: label,
+    now: Date.parse('2026-07-13T00:00:01.000Z'),
+    expect: { owner: runId, generation: 1 }, ...initial };
+  const crashed = crashBareEmitReservation8a(root, runId, base);
+  const conflict = emit8a(root, runId, { ...base, ...changed,
+    descriptorBuilder: descriptor8a });
+  assert8a.equal(conflict.ok, false);
+  assert8a.equal(conflict.reason, 'handoff-in-flight');
+  assert8a.deepEqual(bytes8a(root, runId), crashed.before,
+    `${label}: divergent retry must be write-free`);
+  const converged = emit8a(root, runId,
+    { ...base, ...exact, descriptorBuilder: descriptor8a });
+  assert8a.equal(converged.ok, true);
+  assert8a.equal(converged.reason, 'emitted');
+  assert8a.equal(converged.childRunId, crashed.lease.handoff_child_run_id);
+  assert8a.equal(lines8a(root, runId)
+    .filter(event => event.type === 'handoff-reserved').length, 1);
+  assert8a.equal(lines8a(root, runId)
+    .filter(event => event.type === 'handoff-emitted').length, 1);
+}
+
+test8a('response-lost reservation rejects a changed explicit resume policy', () => {
+  assertPolicyRetryConflict8a({ label: 'policy-resume',
+    initial: { resumePolicy: 'visible', headless: false, env: {} },
+    changed: { resumePolicy: 'headless' } });
+});
+
+test8a('response-lost reservation rejects a changed normalized headless flag', () => {
+  assertPolicyRetryConflict8a({ label: 'policy-headless',
+    initial: { headless: false, env: {} }, changed: { headless: true },
+    exact: { headless: 0 } });
+});
+
+test8a('response-lost reservation rejects a changed env-derived headless classification', () => {
+  assertPolicyRetryConflict8a({ label: 'policy-env',
+    initial: { headless: false, env: {} },
+    changed: { env: { DEEP_LOOP_UNATTENDED: '1' } } });
+});
+
+test8a('handoff policy snapshot rejects accessors and proxies before any durable write', () => {
+  let accessorReads = 0;
+  let proxyReads = 0;
+  const accessorEnv = {};
+  Object.defineProperty(accessorEnv, 'DEEP_LOOP_HEADLESS', { enumerable: true,
+    get() { accessorReads += 1; return '1'; } });
+  const proxyEnv = new Proxy({}, { get(target, key, receiver) {
+    proxyReads += 1; return Reflect.get(target, key, receiver);
+  } });
+  for (const [label, env] of [['accessor', accessorEnv], ['proxy', proxyEnv]]) {
+    const { root, runId } = seed('claude');
+    const before = bytes8a(root, runId);
+    assert8a.throws(() => emit8a(root, runId, { trigger: `invalid-policy-${label}`,
+      expect: { owner: runId, generation: 1 }, env, descriptorBuilder: descriptor8a }),
+    /HANDOFF_POLICY_INPUT_INVALID/);
+    assert8a.deepEqual(bytes8a(root, runId), before);
+    assert8a.equal(exists8a(join8a(root, '.deep-loop', 'runs', runId, 'handoffs')), false);
+  }
+  assert8a.equal(accessorReads, 0);
+  assert8a.equal(proxyReads, 0);
+});
+
+test8a('handoff policy identity persists classifications without raw env values', () => {
+  const { root, runId } = seed('claude');
+  const rawSecret = 'private-print-entrypoint-value';
+  const emitted = emit8a(root, runId, { trigger: 'classified-env-no-raw',
+    expect: { owner: runId, generation: 1 },
+    env: { CLAUDE_CODE_ENTRYPOINT: rawSecret }, descriptorBuilder: descriptor8a });
+  assert8a.equal(emitted.ok, true);
+  assert8a.equal(read8a(root, runId).data.session_chain.lease.resume_policy, 'headless');
+  const durableText = Object.values(bytes8a(root, runId))
+    .filter(value => value !== null).map(value => value.toString('utf8')).join('\n');
+  assert8a.equal(durableText.includes(rawSecret), false);
+});
 
 test8a('final App path factory preserves adjacent BigInt file identities', () => {
   const identities = new Map([

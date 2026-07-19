@@ -370,6 +370,24 @@ test('releaseLease on paused run returns RUN_PAUSED; lease NOT released; acquire
   assert.equal(readState(root, runId).data.status, 'paused');
 });
 
+test('paused exact reservation reports handoff-reserved before generic paused policy', () => {
+  const { root, runId } = seed();
+  const expect = { owner: runId, generation: 1 };
+  const reserved = reserveHandoff(root, runId, {
+    trigger: 'paused-reservation-precedence',
+    now: Date.parse('2026-07-13T00:00:01.000Z'), expect,
+  });
+  assert.equal(reserved.reserved, true);
+  pauseRun(root, runId, { reason: 'preserve exact reservation', mode: 'preserve', expect,
+    now: Date.parse('2026-07-13T00:00:02.000Z') });
+  const before = bytes7b(root, runId);
+  assert.deepEqual(releaseLease(root, runId, expect),
+    { ok: false, reason: 'handoff-reserved' });
+  assert.deepEqual(acquireLease(root, runId, { owner: runId, expectGeneration: 1,
+    runtime: 'claude' }), { ok: false, generation: 1, reason: 'handoff-reserved' });
+  assert.deepEqual(bytes7b(root, runId), before, 'both exclusions are write-free');
+});
+
 // ── v1.6 terminal guard (spec §2.1/§4-1) ─────────────────────────────────────
 function makeTerminal(root, runId, status = 'completed') {
   return terminal7b(root, runId, { status });

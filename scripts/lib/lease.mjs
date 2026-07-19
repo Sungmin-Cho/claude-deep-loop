@@ -153,8 +153,8 @@ export function releaseLease(root, runId,
         || data.session_chain.sessions.some(session => session.run_id === lease.handoff_child_run_id
           && session.continuation?.transport === 'codex-app'
           && ['emitted', 'prepared', 'confirmed'].includes(session.continuation.phase));
-      if (data.status === 'paused') return { ok: false, reason: 'RUN_PAUSED' };
       if (lease.handoff_phase === 'reserved') return { ok: false, reason: 'handoff-reserved' };
+      if (data.status === 'paused') return { ok: false, reason: 'RUN_PAUSED' };
       if (terminal && liveAppBinding) return { ok: false, reason: 'app-binding-live-terminal' };
       if (lease.state === 'released') return { ok: true, reason: 'already-released' };
       context.appendAnchored({ type: 'lease-released',

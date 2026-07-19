@@ -5,8 +5,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync,
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { appendAnchored, readLines } from '../scripts/lib/integrity.mjs';
-import { acquireLease, releaseLease } from '../scripts/lib/lease.mjs';
+import { appendAnchored, readLines, readVerifiedState } from '../scripts/lib/integrity.mjs';
+import { acquireLease, releaseLease, reserveHandoff } from '../scripts/lib/lease.mjs';
 import { readState, writeState } from '../scripts/lib/state.mjs';
 import { observeHostSurface, revokeAppTaskContinuation, statusAppTask,
   validateGenesisConsent } from '../scripts/lib/app-task-continuation.mjs';
@@ -516,6 +516,33 @@ test('revoke rejects a backward consent clock before appending an event', () => 
   assert.deepEqual(readLines(root, runId), before.events);
 });
 
+test('revoke atomically clears an exact bare reservation left by lost emit response', () => {
+  const { root, runId } = autoRun();
+  const expect = { owner: runId, generation: 1 };
+  const reserved = reserveHandoff(root, runId, { trigger: 'lost-app-emit-response',
+    now: Date.parse('2026-07-13T00:00:01.000Z'), expect });
+  assert.equal(reserved.reserved, true);
+  assert.equal(readState(root, runId).data.session_chain.sessions
+    .some(session => session.run_id === reserved.childRunId), false);
+  assert.equal(revokeAppTaskContinuation(root, runId,
+    { ...expect, runtime: 'codex' },
+    { nowFn: () => Date.parse('2026-07-13T00:00:02.000Z') }).outcome, 'revoked');
+  const verified = readVerifiedState(root, runId).data;
+  assert.equal(verified.autonomy.app_task_continuation.mode, 'manual');
+  assert.equal(verified.session_chain.lease.state, 'active');
+  assert.equal(verified.session_chain.lease.handoff_phase, 'idle');
+  assert.equal(verified.session_chain.lease.handoff_idempotency_key, null);
+  assert.equal(verified.session_chain.lease.handoff_child_run_id, null);
+  assert.equal(verified.session_chain.lease.expires_at, null);
+  assert.equal(verified.session_chain.sessions
+    .some(session => session.run_id === reserved.childRunId), false);
+  assert.equal(readLines(root, runId).filter(event =>
+    event.type === 'app-task-consent-revoked').length, 1);
+  assert.deepEqual(acquireLease(root, runId, { owner: runId, expectGeneration: 1,
+    runtime: 'codex' }), { ok: true, generation: 1, reason: 'already-owned' });
+  assert.deepEqual(releaseLease(root, runId, expect), { ok: true, reason: 'released' });
+});
+
 test('revoke checks fence before terminal and abandons an in-flight attempt atomically', () => {
   const { root, runId } = autoRun();
   terminal7b(root, runId, { status: 'completed' });
@@ -590,6 +617,12 @@ test('revoke abandons only the exact current live attempt in the same anchored t
   assert.equal(after.autonomy.app_task_continuation.revoked_at, '2026-07-13T00:00:02.000Z');
   assert.equal(continuation.phase, 'abandoned');
   assert.equal(continuation.failure_code, 'consent-revoked');
+  assert.equal(after.session_chain.lease.state, 'releasing');
+  assert.equal(after.session_chain.lease.handoff_phase, 'emitted');
+  assert.equal(after.session_chain.lease.handoff_idempotency_key, 'a'.repeat(16));
+  assert.equal(after.session_chain.lease.handoff_child_run_id, child);
+  assert.equal(after.session_chain.lease.handoff_transport, 'codex-app');
+  assert.equal(after.session_chain.lease.handoff_attempt_id, attempt);
   assert.equal(after.session_chain.lease.resume_policy, 'human');
   assert.equal(after.session_chain.lease.expires_at, null);
   assert.equal(after.status, 'paused');

@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { types as utilTypes } from 'node:util';
 import { runDir } from './state.mjs';
 import { withVerifiedMutationLock } from './integrity.mjs';
 import { atomicWrite, contentHash, ulid, wrap } from './envelope.mjs';
@@ -13,11 +14,57 @@ import { sessionRuntime } from './runtime.mjs';
 import { canonicalProjectRoot } from './project-root.mjs';
 import { buildRuntimeResumeDescriptor } from './runtime-descriptor.mjs';
 import { validateRuntimeProfile } from './session-profile.mjs';
-import { resolveSpawnMode } from './respawn.mjs';
+import { isHeadlessInvocation } from './respawn.mjs';
 
 export { buildLaunchCommand } from './runtime-descriptor.mjs';
 
 const DEFAULT_DEEP_LOOP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const POLICY_ENV_KEYS = Object.freeze([
+  'DEEP_LOOP_UNATTENDED', 'DEEP_LOOP_HEADLESS', 'CLAUDE_CODE_ENTRYPOINT',
+]);
+const RESUME_POLICIES = new Set(['visible', 'headless', 'human', 'app']);
+
+function snapshotHandoffPolicyInputs(resumePolicy, headless, env) {
+  if (resumePolicy !== undefined && resumePolicy !== null
+      && !RESUME_POLICIES.has(resumePolicy)) {
+    throw new Error('HANDOFF_POLICY_INPUT_INVALID');
+  }
+  if (env === null || typeof env !== 'object' || Array.isArray(env)
+      || utilTypes.isProxy(env)) throw new Error('HANDOFF_POLICY_INPUT_INVALID');
+  const captured = {};
+  for (const key of POLICY_ENV_KEYS) {
+    const descriptor = Object.getOwnPropertyDescriptor(env, key);
+    if (descriptor === undefined) continue;
+    if (!Object.hasOwn(descriptor, 'value')) throw new Error('HANDOFF_POLICY_INPUT_INVALID');
+    const value = descriptor.value;
+    if (value !== undefined && typeof value !== 'string' && typeof value !== 'boolean') {
+      throw new Error('HANDOFF_POLICY_INPUT_INVALID');
+    }
+    captured[key] = value;
+  }
+  return Object.freeze({
+    resumePolicyPresent: resumePolicy !== undefined,
+    resumePolicy: resumePolicy ?? null,
+    headless: Boolean(headless),
+    envHeadlessClaude: isHeadlessInvocation(captured, 'claude'),
+    envHeadlessCodex: isHeadlessInvocation(captured, 'codex'),
+  });
+}
+
+function runtimePolicyIdentity(snapshot, runtime) {
+  return Object.freeze({ resumePolicyPresent: snapshot.resumePolicyPresent,
+    resumePolicy: snapshot.resumePolicy, headless: snapshot.headless,
+    envHeadless: runtime === 'codex'
+      ? snapshot.envHeadlessCodex : snapshot.envHeadlessClaude });
+}
+
+function policyBoundTrigger(trigger, identity) {
+  const baseline = !identity.resumePolicyPresent && identity.resumePolicy === null
+    && !identity.headless && !identity.envHeadless;
+  if (baseline) return trigger;
+  const digest = contentHash(JSON.stringify(identity)).slice(0, 16);
+  return `${String(trigger)}\0handoff-policy:${digest}`;
+}
 
 function descriptorLauncherIdentity(loop, runtime, platform) {
   const sessionIdentity = loop.session_spawn?.launcher_identity ?? null;
@@ -77,6 +124,7 @@ export function emitHandoff(root, runId, {
 } = {}) {
   if (!expect || typeof expect.owner !== 'string' || !Number.isInteger(expect.generation)) throw new Error('FENCE_REQUIRED: emitHandoff');
   if (typeof appIntent !== 'boolean') throw new Error('APP_INTENT_BOOLEAN_REQUIRED');
+  const policySnapshot = snapshotHandoffPolicyInputs(resumePolicy, headless, env);
   const callerBinding = { owner: expect.owner, generation: expect.generation };
   const observedCwd = cwdFn();
   const intentDigest = contentHash(JSON.stringify({ operation: 'handoff-emit',
@@ -84,6 +132,7 @@ export function emitHandoff(root, runId, {
     trigger_digest: contentHash(`emit-trigger\0${String(trigger)}`),
     reason_digest: contentHash(`emit-reason\0${String(reason ?? '')}`),
     observed_cwd_digest: contentHash(`emit-cwd\0${String(observedCwd)}`),
+    policy: policySnapshot,
     app_intent: appIntent }));
   const withEmitMutation = body => withVerifiedMutationLock(root, runId,
     { callerBinding, intentDigest, fenceError: 'LEASE_FENCED: handoff-emit' }, body);
@@ -103,19 +152,23 @@ export function emitHandoff(root, runId, {
       }
       throw error;
     }
-  const initialRuntime = sessionRuntime(initialLoop);
-  const effectiveResumePolicy = resumePolicy
-    ?? (resolveSpawnMode(initialLoop, { headless, env }) === 'headless' ? 'headless' : 'visible');
-  validateRuntimeProfile(initialRuntime, {
-    model: initialLoop.autonomy?.session_model ?? null,
-    effort: initialLoop.autonomy?.session_effort ?? null,
-  });
-  const canonicalRoot = canonicalProjectRoot(initialLoop.project.root);
-  const initialAppAuthority = appIntent
-    ? deriveAppEmitAuthority(initialLoop, canonicalRoot, expect.owner, observedCwd) : null;
-  const res = reserveHandoff(canonicalRoot, runId, { trigger, now, expect, mutation });
-  return { initialLoop, canonicalRoot, initialAppAuthority, res,
-    effectiveResumePolicy };
+    const initialRuntime = sessionRuntime(initialLoop);
+    const policyIdentity = runtimePolicyIdentity(policySnapshot, initialRuntime);
+    const effectiveResumePolicy = policySnapshot.resumePolicy
+      ?? (policySnapshot.headless || policyIdentity.envHeadless
+        || initialLoop.autonomy?.spawn_style === 'headless' ? 'headless' : 'visible');
+    validateRuntimeProfile(initialRuntime, {
+      model: initialLoop.autonomy?.session_model ?? null,
+      effort: initialLoop.autonomy?.session_effort ?? null,
+    });
+    const canonicalRoot = canonicalProjectRoot(initialLoop.project.root);
+    const initialAppAuthority = appIntent
+      ? deriveAppEmitAuthority(initialLoop, canonicalRoot, expect.owner, observedCwd) : null;
+    const reservationTrigger = policyBoundTrigger(trigger, policyIdentity);
+    const res = reserveHandoff(canonicalRoot, runId,
+      { trigger: reservationTrigger, now, expect, mutation });
+    return { initialLoop, canonicalRoot, initialAppAuthority, res,
+      effectiveResumePolicy };
   });
   if (reservationPhase.fencedResult) return reservationPhase.fencedResult;
   const { canonicalRoot, initialAppAuthority, res,
@@ -308,12 +361,6 @@ export function emitHandoff(root, runId, {
         if (fresh.status === 'completed' || fresh.status === 'stopped') {
           throw new Error('RUN_TERMINAL: emitHandoff');
         }
-        if (lease.handoff_idempotency_key !== res.key
-            || lease.handoff_child_run_id !== childRunId) throw new Error('HANDOFF_KEY_MISMATCH');
-        if (lease.state !== 'active' || lease.handoff_phase !== 'reserved'
-            || fresh.session_chain.sessions.some(session => session.run_id === childRunId)) {
-          throw new Error('HANDOFF_PHASE_FENCED');
-        }
         if (appIntent)
         {
           const authority = deriveAppEmitAuthority(
@@ -321,6 +368,12 @@ export function emitHandoff(root, runId, {
           if (JSON.stringify(authority) !== JSON.stringify(initialAppAuthority)) {
             throw new Error('APP_EMIT_AUTHORITY_FENCED');
           }
+        }
+        if (lease.handoff_idempotency_key !== res.key
+            || lease.handoff_child_run_id !== childRunId) throw new Error('HANDOFF_KEY_MISMATCH');
+        if (lease.state !== 'active' || lease.handoff_phase !== 'reserved'
+            || fresh.session_chain.sessions.some(session => session.run_id === childRunId)) {
+          throw new Error('HANDOFF_PHASE_FENCED');
         }
         const candidate = structuredClone(fresh);
         applyFinalEmit(candidate, clock);

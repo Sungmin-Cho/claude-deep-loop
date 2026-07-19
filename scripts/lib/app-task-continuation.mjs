@@ -258,6 +258,18 @@ export function revokeAppTaskContinuation(root, runId, input, deps = {}) {
         const consent = loop.autonomy.app_task_continuation;
         consent.mode = 'manual'; consent.revoked_at = clock.iso;
         const lease = loop.session_chain.lease;
+        const exactBareReservation = lease.state === 'active'
+          && lease.handoff_phase === 'reserved'
+          && typeof lease.handoff_idempotency_key === 'string'
+          && typeof lease.handoff_child_run_id === 'string'
+          && lease.handoff_transport === null
+          && lease.handoff_attempt_id === null
+          && !loop.session_chain.sessions.some(session =>
+            session.run_id === lease.handoff_child_run_id);
+        if (exactBareReservation) {
+          Object.assign(lease, { state: 'active', handoff_phase: 'idle',
+            handoff_idempotency_key: null, handoff_child_run_id: null, expires_at: null });
+        }
         const live = loop.session_chain.sessions.find(session =>
           session.run_id === lease.handoff_child_run_id
           && session.continuation?.attempt_id === lease.handoff_attempt_id
