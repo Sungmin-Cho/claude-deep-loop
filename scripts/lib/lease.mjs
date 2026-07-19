@@ -63,6 +63,9 @@ export function acquireLease(root, runId, { owner, expectGeneration, runtime,
       if (data.status === 'stopped' || data.status === 'completed') {
         return { ok: false, generation: lease.generation, reason: 'run-terminal' };
       }
+      if (lease.handoff_phase === 'reserved') {
+        return { ok: false, generation: lease.generation, reason: 'handoff-reserved' };
+      }
       return { ok: true, generation: lease.generation, reason: 'already-owned' };
     }
     if (lease.generation !== expectGeneration) {
@@ -76,6 +79,9 @@ export function acquireLease(root, runId, { owner, expectGeneration, runtime,
     // A recovered run is 'paused' (not terminal) so it remains acquireable.
     if (data.status === 'stopped' || data.status === 'completed') {
       return { ok: false, generation: lease.generation, reason: 'run-terminal' };
+    }
+    if (lease.state === 'active' && lease.handoff_phase === 'reserved') {
+      return { ok: false, generation: lease.generation, reason: 'handoff-reserved' };
     }
     // takeover 가능: released(정상 인수), releasing+expired(부모 크래시 복구), releasing+예약된child(handshake). active 절대 탈취 안 됨.
     const expired = lease.expires_at && now > Date.parse(lease.expires_at);
@@ -184,7 +190,11 @@ export function reserveHandoff(root, runId,
           && ['emitted', 'spawned'].includes(lease.handoff_phase)));
     if (exactRetry) return { ok: true, reserved: false, key,
       childRunId: lease.handoff_child_run_id, reason: 'already-reserved-same-trigger' };
-    if (lease.state !== 'active' || !['idle', 'acquired'].includes(lease.handoff_phase)) {
+    if (lease.state !== 'active') {
+      return { ok: false, reserved: false, key: null,
+        childRunId: null, reason: 'lease-not-active' };
+    }
+    if (!['idle', 'acquired'].includes(lease.handoff_phase)) {
       return { ok: false, reserved: false, key: lease.handoff_idempotency_key,
         childRunId: lease.handoff_child_run_id, reason: 'handoff-in-flight' };
     }
@@ -256,4 +266,41 @@ export function rollbackHandoff(root, runId, { owner, generation, mutation = nul
       }, undefined, { allowTerminal: terminal, fenceCheck: exactLeaseFence(owner, generation) });
       return { ok: true, reason: 'rolled-back' };
     });
+}
+
+export function rollbackReservedHandoff(root, runId,
+  { owner, generation, key, childRunId, mutation = null }) {
+  const callerBinding = { owner, generation };
+  const intentDigest = contentHash(JSON.stringify({ operation: 'rollback-reserved-handoff',
+    owner, generation, key_digest: contentHash(key), child_run_id: childRunId }));
+  const execute = context => {
+    let data;
+    try {
+      ({ data } = context.readVerifiedState({ fenceCheck: exactLeaseFence(owner, generation) }));
+    } catch (error) {
+      if (String(error?.message || error).startsWith('LEASE_FENCED:')) {
+        return { ok: false, reason: 'fenced' };
+      }
+      throw error;
+    }
+    const lease = data.session_chain.lease;
+    const exactReservation = lease.state === 'active' && lease.handoff_phase === 'reserved'
+      && typeof key === 'string' && typeof childRunId === 'string'
+      && lease.handoff_idempotency_key === key
+      && lease.handoff_child_run_id === childRunId
+      && !data.session_chain.sessions.some(session => session.run_id === childRunId);
+    if (!exactReservation || ['completed', 'stopped'].includes(data.status)) {
+      return { ok: false, reason: 'reservation-changed' };
+    }
+    context.appendAnchored({ type: 'handoff-rolled-back',
+      data: { owner_run_id: owner, generation, terminal: false } }, candidate => {
+      candidate.session_chain.lease = { ...candidate.session_chain.lease,
+        state: 'active', handoff_phase: 'idle', handoff_idempotency_key: null,
+        handoff_child_run_id: null, expires_at: null };
+    });
+    return { ok: true, reason: 'rolled-back-exact-reservation' };
+  };
+  return mutation ? execute(mutation)
+    : withVerifiedMutationLock(root, runId, { callerBinding, intentDigest,
+      fenceError: 'LEASE_FENCED: rollback-reserved-handoff' }, execute);
 }

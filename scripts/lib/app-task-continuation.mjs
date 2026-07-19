@@ -1,3 +1,4 @@
+import { existsSync, realpathSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { types as utilTypes } from 'node:util';
 import { contentHash } from './envelope.mjs';
@@ -7,7 +8,59 @@ import { leaseCheck } from './lease.mjs';
 import { runtimeFence } from './runtime.mjs';
 import { validate, verifyAppEventCorrelation } from './schema.mjs';
 import { classifyProjectTaskDirectory, exactRawHostObservation, normalizeHostObservation,
-  hostSurfaceFactsDigest, sameNativeDirectory } from './host-surface.mjs';
+  appHostTaskCwdDigest, hostSurfaceFactsDigest, sameNativeDirectory,
+  selectAppContinuationRoute } from './host-surface.mjs';
+
+export function appNativePathDeps(statFn = statSync) {
+  return { platform: process.platform, exists: existsSync, realpath: realpathSync.native,
+    stat: value => statFn(value, { bigint: true }),
+    sameFile: (left, right) => left?.dev === right?.dev && left?.ino === right?.ino };
+}
+
+const hasEvery = (values, required) => required.every(value => values.includes(value));
+
+export function deriveAppEmitAuthority(loop, root, parentOwner, actualCwd,
+  deps = appNativePathDeps()) {
+  const consent = loop.autonomy?.app_task_continuation;
+  const lease = loop.session_chain?.lease;
+  const parent = loop.session_chain?.sessions?.find(session => session.run_id === parentOwner);
+  const host = parent?.host_surface;
+  if (loop.autonomy?.session_runtime !== 'codex' || consent?.mode !== 'auto'
+      || consent?.authority !== 'human-confirmed' || consent?.revoked_at != null
+      || lease?.owner_run_id !== parentOwner
+      || host?.kind !== 'codex-app'
+      || !Number.isSafeInteger(host?.observed_generation)
+      || host.observed_generation < 1
+      || host.observed_generation !== lease?.generation
+      || !['codex-app-host-context', 'codex-app-tool-provenance'].includes(host?.source)
+      || host?.host_task_cwd_source !== 'app-task-context'
+      || !['pipe-open-noecho', 'pty-raw-noecho'].includes(host?.structured_stdin_mode)
+      || !sameNativeDirectory(host.host_task_cwd, actualCwd, deps)
+      || !sameNativeDirectory(host.kernel_cwd_at_observation, actualCwd, deps)) {
+    throw new Error('APP_EMIT_AUTHORITY_FENCED');
+  }
+  const canonicalRoot = deps.realpath(root);
+  const targetCwd = deps.realpath(actualCwd);
+  let route;
+  if (sameNativeDirectory(canonicalRoot, targetCwd, deps)) {
+    if (!hasEvery(host.capabilities, ['list-projects', 'create-thread-local',
+      'structured-process-stdin'])) throw new Error('APP_EMIT_AUTHORITY_FENCED');
+    route = { kind: 'create', targetCwd: canonicalRoot, projectId: null,
+      workstreamId: null, contextMode: 'fresh' };
+  } else {
+    route = selectAppContinuationRoute({ root: canonicalRoot,
+      recordedHostTaskCwd: host.host_task_cwd, currentHostTaskCwd: targetCwd,
+      kernelCwd: targetCwd, capabilities: host.capabilities, projects: [],
+      workstreams: loop.workstreams ?? [], activeWorkstreams: loop.active_workstreams ?? [] }, deps);
+    if (route.kind !== 'fork' || route.projectId !== null) {
+      throw new Error('APP_EMIT_AUTHORITY_FENCED');
+    }
+  }
+  return Object.freeze({ route: route.kind, contextMode: route.contextMode,
+    targetCwd: route.targetCwd, workstreamId: route.workstreamId,
+    stdinMode: host.structured_stdin_mode,
+    hostTaskCwdDigest: appHostTaskCwdDigest(host, route.targetCwd) });
+}
 
 function assertAppCommandIdentity(loop, input, code) {
   const runtime = runtimeFence(loop, input.runtime);
@@ -100,12 +153,8 @@ export function validateGenesisConsent({ runtime, route, observation, consent })
   return value;
 }
 
-const withoutKernelAttestation = value => value == null ? null
-  : Object.fromEntries(Object.entries(value)
-    .filter(([key]) => !['observed_generation', 'observed_at'].includes(key)));
-
-const sameObservation = (left, right) => JSON.stringify(withoutKernelAttestation(left))
-  === JSON.stringify(withoutKernelAttestation(right));
+const sameObservation = (left, right) => hostSurfaceFactsDigest(left)
+  === hostSurfaceFactsDigest(right);
 
 function assertObservedTaskDirectory(root, loop, observation, deps) {
   if (observation.kind === null) return;

@@ -1,10 +1,13 @@
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readState, runDir } from './state.mjs';
-import { appendAnchored } from './integrity.mjs';
-import { wrap, atomicWrite } from './envelope.mjs';
-import { reserveHandoff, rollbackHandoff } from './lease.mjs';
+import { runDir } from './state.mjs';
+import { withVerifiedMutationLock } from './integrity.mjs';
+import { atomicWrite, contentHash, ulid, wrap } from './envelope.mjs';
+import { reserveHandoff, rollbackReservedHandoff } from './lease.mjs';
+import { APP_PREPARE_TIMEOUT_MS,
+  deriveAppEmitAuthority } from './app-task-continuation.mjs';
+import { validate } from './schema.mjs';
 import { defaultDesktopProbe } from './desktop-target.mjs';
 import { sessionRuntime } from './runtime.mjs';
 import { canonicalProjectRoot } from './project-root.mjs';
@@ -69,11 +72,37 @@ export function emitHandoff(root, runId, {
   platform = process.platform, desktopProbe = defaultDesktopProbe, env = process.env,
   deepLoopRoot = DEFAULT_DEEP_LOOP_ROOT, exists = existsSync,
   descriptorBuilder = buildRuntimeResumeDescriptor,
+  appIntent = false, cwdFn = process.cwd, nowFn = Date.now,
+  attemptIdFactory = () => ulid(), beforeFinalAppendFn = () => {},
 } = {}) {
   if (!expect || typeof expect.owner !== 'string' || !Number.isInteger(expect.generation)) throw new Error('FENCE_REQUIRED: emitHandoff');
-  // Resolve runtime and canonical root from root-bound durable state. This read
-  // fences copied roots and malformed runtime state before reservation or files.
-  const { data: initialLoop } = readState(root, runId);
+  if (typeof appIntent !== 'boolean') throw new Error('APP_INTENT_BOOLEAN_REQUIRED');
+  const callerBinding = { owner: expect.owner, generation: expect.generation };
+  const observedCwd = cwdFn();
+  const intentDigest = contentHash(JSON.stringify({ operation: 'handoff-emit',
+    owner: expect.owner, generation: expect.generation,
+    trigger_digest: contentHash(`emit-trigger\0${String(trigger)}`),
+    reason_digest: contentHash(`emit-reason\0${String(reason ?? '')}`),
+    observed_cwd_digest: contentHash(`emit-cwd\0${String(observedCwd)}`),
+    app_intent: appIntent }));
+  const withEmitMutation = body => withVerifiedMutationLock(root, runId,
+    { callerBinding, intentDigest, fenceError: 'LEASE_FENCED: handoff-emit' }, body);
+  const emitFence = loop => {
+    const lease = loop?.session_chain?.lease;
+    if (lease?.owner_run_id !== expect.owner || lease?.generation !== expect.generation) {
+      throw new Error('LEASE_FENCED: handoff-emit');
+    }
+  };
+  const reservationPhase = withEmitMutation(mutation => {
+    let initialLoop;
+    try {
+      ({ data: initialLoop } = mutation.readVerifiedState({ fenceCheck: emitFence }));
+    } catch (error) {
+      if (String(error?.message || error).startsWith('LEASE_FENCED: handoff-emit')) {
+        return { fencedResult: { ok: false, reason: 'fenced', key: null } };
+      }
+      throw error;
+    }
   const initialRuntime = sessionRuntime(initialLoop);
   const effectiveResumePolicy = resumePolicy
     ?? (resolveSpawnMode(initialLoop, { headless, env }) === 'headless' ? 'headless' : 'visible');
@@ -82,30 +111,71 @@ export function emitHandoff(root, runId, {
     effort: initialLoop.autonomy?.session_effort ?? null,
   });
   const canonicalRoot = canonicalProjectRoot(initialLoop.project.root);
-  const res = reserveHandoff(canonicalRoot, runId, { trigger, now, expect });
-  if (!res.ok) {
-    if (res.reason === 'RUN_TERMINAL') {
-      // v1.6 (spec §2.3-2 / plan r1 P2-a): 기존-reserved terminal 잔여 정리. rollbackHandoff의 terminal
-      // 분기가 idle(잔여 없음)이면 write 없이 no-op이므로 정상-finish 후 신규-예약-거부 경로는 아무것도 쓰지 않는다.
-      try { rollbackHandoff(canonicalRoot, runId, { owner: expect.owner, generation: expect.generation }); } catch { /* fenced race — 잔여 불활성 */ }
-    }
-    return { ok: false, reason: res.reason, key: res.key };
-  }
-  // Codex r1 🔴1 / r2 🔴1 / r3 🔴1: 같은 트리거 재진입(reserved:false)이면 이미 in-flight handoff 가 있다.
-  // childRunId 는 reserve 가 영속한 값(res.childRunId)이라 동시/재진입이 같은 child 를 본다.
+  const initialAppAuthority = appIntent
+    ? deriveAppEmitAuthority(initialLoop, canonicalRoot, expect.owner, observedCwd) : null;
+  const res = reserveHandoff(canonicalRoot, runId, { trigger, now, expect, mutation });
+  return { initialLoop, canonicalRoot, initialAppAuthority, res,
+    effectiveResumePolicy };
+  });
+  if (reservationPhase.fencedResult) return reservationPhase.fencedResult;
+  const { canonicalRoot, initialAppAuthority, res,
+    effectiveResumePolicy } = reservationPhase;
+  if (!res.ok) return { ok: false, reason: res.reason, key: res.key };
   if (!res.reserved) {
-    const { data } = readState(canonicalRoot, runId);
-    const child = data.session_chain.sessions.find(s => s.run_id === res.childRunId);
+    const { data: current } = withEmitMutation(mutation =>
+      mutation.readVerifiedState({ fenceCheck: emitFence }));
+    const child = current.session_chain.sessions.find(session => session.run_id === res.childRunId);
     if (child) {
-      // 이미 emit 됨(session 존재). emit 은 이제 원자적(child push + phase=emitted 가 한 트랜잭션, Codex impl r11)이라
-      // child 가 존재하면 phase 는 반드시 emitted 이상 → 추가 전이 불필요. 기존 메타데이터를 멱등 반환.
+      const stored = child.continuation;
+      if (!appIntent)
+      {
+        if (stored?.transport === 'codex-app') throw new Error('APP_TRANSPORT_OWNED');
+      } else {
+        const fresh = deriveAppEmitAuthority(current, canonicalRoot, expect.owner, cwdFn());
+        const same = stored?.transport === 'codex-app' && stored.phase === 'emitted'
+          && stored.route === fresh.route && stored.context_mode === fresh.contextMode
+          && stored.target_cwd === fresh.targetCwd
+          && stored.host_task_cwd_digest === fresh.hostTaskCwdDigest
+          && stored.workstream_id === fresh.workstreamId && stored.project_id === null
+          && stored.expected_runtime === 'codex' && stored.expected_host_surface === 'codex-app'
+          && current.session_chain.lease.handoff_transport === 'codex-app'
+          && current.session_chain.lease.handoff_attempt_id === stored.attempt_id
+          && current.session_chain.lease.handoff_child_run_id === child.run_id
+          && current.session_chain.sessions.find(session => session.run_id === expect.owner)
+            ?.host_surface?.structured_stdin_mode === fresh.stdinMode;
+        if (!same) throw new Error('APP_EMIT_BINDING_CONFLICT');
+      }
+      const appOriginFallback = !appIntent
+        && current.autonomy?.session_runtime === 'codex'
+        && current.session_chain.sessions.find(session => session.run_id === expect.owner)
+          ?.host_surface?.kind === 'codex-app'
+        && current.session_chain.lease.resume_policy === 'human';
       return { ok: true, reason: 'already-emitted', childRunId: res.childRunId, key: res.key,
+        attemptId: stored?.attempt_id ?? null,
         handoffRel: child.handoff_rel ?? null, handoffPath: child.handoff_path ?? null,
-        csName: child.handoff_cs ?? null, mdName: child.handoff_md ?? null };
+        csName: child.handoff_cs ?? null, mdName: child.handoff_md ?? null,
+        ...(appOriginFallback ? { appOriginFallback: true } : {}) };
     }
-    // reserved 됐지만 session 미생성 → fall-through 해 emit 완료 (res.childRunId 재사용 → 중복 child 없음)
   }
-  const { data: loop } = readState(canonicalRoot, runId);
+  const { data: loop } = withEmitMutation(mutation =>
+    mutation.readVerifiedState({ fenceCheck: emitFence }));
+  const reserved = loop.session_chain.lease;
+  const exactReservation = reserved.state === 'active'
+    && reserved.handoff_phase === 'reserved'
+    && reserved.handoff_idempotency_key === res.key
+    && reserved.handoff_child_run_id === res.childRunId
+    && !loop.session_chain.sessions.some(session => session.run_id === res.childRunId);
+  if (!exactReservation) throw new Error('HANDOFF_PHASE_FENCED');
+  const newAttemptId = appIntent ? attemptIdFactory() : null;
+  if (
+    appIntent
+    && !/^[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(newAttemptId)
+  ) {
+    try { rollbackReservedHandoff(canonicalRoot, runId, { owner: expect.owner,
+      generation: expect.generation, key: res.key, childRunId: res.childRunId }); }
+    catch { /* preserve validation error */ }
+    throw new Error('APP_ATTEMPT_ID_INVALID');
+  }
   const runtime = sessionRuntime(loop);
   const childRunId = res.childRunId;
   const dir = join(runDir(canonicalRoot, runId), 'handoffs');
@@ -140,7 +210,9 @@ export function emitHandoff(root, runId, {
       launcherIdentity: descriptorLauncherIdentity(loop, runtime, platform),
     });
   } catch (error) {
-    try { rollbackHandoff(canonicalRoot, runId, { owner: expect.owner, generation: expect.generation }); } catch { /* preserve original descriptor error */ }
+    try { rollbackReservedHandoff(canonicalRoot, runId, { owner: expect.owner,
+      generation: expect.generation, key: res.key, childRunId: res.childRunId }); }
+    catch { /* preserve original descriptor error */ }
     throw error;
   }
   const cmds = descriptor.entries;
@@ -184,41 +256,87 @@ export function emitHandoff(root, runId, {
     `# desktop`, desktopLine, ``,
   ].join('\n'));
 
-  // Codex impl r11 🔴: child session push + superseded_by + lease reserved→emitted (releasing + stale TTL) must be
-  // ONE atomic transaction — a crash between a separate event-append and the phase advance previously left a recorded
-  // handoff-emitted with phase still 'reserved' (respawn requires emitted/releasing → stranded). Single appendAnchored.
-  const ttlMs = (loop.session_chain.stale_lease_ttl_sec || 900) * 1000;
+  const appAttemptId = appIntent ? newAttemptId : null;
+  let committedAppOriginFallback = false;
+  const eventData = { child_run_id: childRunId, reason, key: res.key,
+    ...(appAttemptId ? { attempt_id: appAttemptId } : {}) };
+  const applyFinalEmit = (candidate, clock) => {
+    const child = { run_id: childRunId, started_at: null, ended_at: null, turns: 0,
+      outcome: null, superseded_by: null, handoff_rel: handoffRel,
+      handoff_path: handoffPath, handoff_md: mdName, handoff_cs: csName,
+      ...(appIntent
+        ? { host_surface: null, continuation: {
+        transport: 'codex-app', attempt_id: appAttemptId,
+        route: initialAppAuthority.route, context_mode: initialAppAuthority.contextMode,
+        phase: 'emitted', expected_runtime: 'codex', expected_host_surface: 'codex-app',
+        target_cwd: initialAppAuthority.targetCwd,
+        host_task_cwd_digest: initialAppAuthority.hostTaskCwdDigest,
+        workstream_id: initialAppAuthority.workstreamId, project_id: null,
+        descriptor_digest: null, emitted_at: clock.iso,
+        prepare_deadline: new Date(clock.ms + APP_PREPARE_TIMEOUT_MS).toISOString(),
+        prepared_at: null, confirmation_deadline: null, confirmed_at: null,
+        acquired_at: null, acquired_generation: null, thread_id: null,
+        unconfirmed_thread_id: null, failure_code: null, failure_binding: null } } : {}) };
+    candidate.session_chain.sessions.push(child);
+    const parent = candidate.session_chain.sessions.find(session => session.run_id === expect.owner);
+    if (parent) parent.superseded_by = childRunId;
+    const appOriginFallback = !appIntent
+      && candidate.autonomy?.session_runtime === 'codex'
+      && parent?.host_surface?.kind === 'codex-app';
+    const lease = candidate.session_chain.lease;
+    const clockMs = appIntent ? clock.ms : now;
+    candidate.session_chain.lease = { ...lease, handoff_phase: 'emitted', state: 'releasing',
+      expires_at: new Date(clockMs
+        + (candidate.session_chain.stale_lease_ttl_sec || 900) * 1000).toISOString(),
+      resume_policy: appIntent ? 'app'
+        : appOriginFallback ? 'human' : effectiveResumePolicy,
+      handoff_transport: appIntent ? 'codex-app' : lease.handoff_transport ?? null,
+      handoff_attempt_id: appIntent ? appAttemptId : lease.handoff_attempt_id ?? null };
+    return appOriginFallback;
+  };
   try {
-  appendAnchored(canonicalRoot, runId, { type: 'handoff-emitted', data: { child_run_id: childRunId, reason, key: res.key } }, (l) => {
-    // 멱등 push (Codex r3 🔴1): 같은 childRunId 가 이미 있으면 재push 금지 → 동시 emit 도 child 1개.
-    if (!l.session_chain.sessions.some(s => s.run_id === childRunId)) {
-      l.session_chain.sessions.push({ run_id: childRunId, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: null,
-        handoff_rel: handoffRel, handoff_path: handoffPath, handoff_md: mdName, handoff_cs: csName });
-    }
-    const cur = l.session_chain.sessions.find(s => s.run_id === expect.owner);
-    if (cur) cur.superseded_by = childRunId;
-    const lease = l.session_chain.lease;
-    if (lease.handoff_phase === 'reserved') {   // 부모 carve-out 시작 + stale TTL (Codex r1 🔴4)
-      l.session_chain.lease = { ...lease, handoff_phase: 'emitted', state: 'releasing', expires_at: new Date(now + ttlMs).toISOString(), resume_policy: effectiveResumePolicy };
-    }
-  }, (l) => {
-    if (l.status === 'paused') throw new Error('RUN_PAUSED: emitHandoff');
-    // v1.6 (spec §2.3-2, r1 🔴1): reserve(lock A)↔이 최종 append(lock B) 사이 finish 경합을 in-lock에서 봉쇄.
-    if (l.status === 'completed' || l.status === 'stopped') throw new Error('RUN_TERMINAL: emitHandoff');
-    const lease = l.session_chain.lease;
-    if (expect && (lease.owner_run_id !== expect.owner || lease.generation !== expect.generation)) throw new Error('LEASE_FENCED: handoff-emit');
-    if (lease.handoff_idempotency_key !== res.key) throw new Error('HANDOFF_KEY_MISMATCH');
-  });
-  } catch (e) {
-    if (String(e?.message || e).startsWith('RUN_TERMINAL')) {
-      // 보상 롤백 (spec §2.3-2 r4): reservation residue-free — terminal-aware rollback이 released로 안착.
-      // 이미 써진 handoffs/*·launch-command.txt 파일은 삭제하지 않는다(이벤트 미등록이라 세션 체인 미참조,
-      // 모든 재개 경로가 terminal에서 불활성 — 감사 흔적 보존). 보상 실패(경합 fence) 시 잔여도 불활성.
-      try { rollbackHandoff(canonicalRoot, runId, { owner: expect.owner, generation: expect.generation }); } catch { /* 잔여 불활성 */ }
+    beforeFinalAppendFn({ key: res.key, childRunId });
+    const finalObservedCwd = cwdFn();
+    withEmitMutation(mutation => mutation.appendAnchored(
+      { type: 'handoff-emitted', data: eventData },
+      (fresh, _spent, clock) => {
+        committedAppOriginFallback = applyFinalEmit(fresh, clock);
+      },
+      (fresh, clock) => {
+        const lease = fresh.session_chain.lease;
+        if (fresh.status === 'paused') throw new Error('RUN_PAUSED: emitHandoff');
+        if (fresh.status === 'completed' || fresh.status === 'stopped') {
+          throw new Error('RUN_TERMINAL: emitHandoff');
+        }
+        if (lease.handoff_idempotency_key !== res.key
+            || lease.handoff_child_run_id !== childRunId) throw new Error('HANDOFF_KEY_MISMATCH');
+        if (lease.state !== 'active' || lease.handoff_phase !== 'reserved'
+            || fresh.session_chain.sessions.some(session => session.run_id === childRunId)) {
+          throw new Error('HANDOFF_PHASE_FENCED');
+        }
+        if (appIntent)
+        {
+          const authority = deriveAppEmitAuthority(
+            fresh, canonicalRoot, expect.owner, finalObservedCwd);
+          if (JSON.stringify(authority) !== JSON.stringify(initialAppAuthority)) {
+            throw new Error('APP_EMIT_AUTHORITY_FENCED');
+          }
+        }
+        const candidate = structuredClone(fresh);
+        applyFinalEmit(candidate, clock);
+        const checked = validate(candidate);
+        if (!checked.ok) throw new Error(`STATE_INVALID: ${checked.errors.join('; ')}`);
+      }, { ...(appIntent
+        ? { nowFn } : {}), fenceCheck: emitFence }));
+  } catch (error) {
+    try { rollbackReservedHandoff(canonicalRoot, runId, { owner: expect.owner,
+      generation: expect.generation, key: res.key, childRunId: res.childRunId }); }
+    catch { /* keep first failure */ }
+    if (String(error?.message || error).startsWith('RUN_TERMINAL')) {
       return { ok: false, reason: 'RUN_TERMINAL', key: res.key };
     }
-    throw e;
+    throw error;
   }
-  // handoffRel 반환 → respawn 이 동일 경로로 launch 명령을 빌드 (Codex r1 🔴3)
-  return { ok: true, reason: 'emitted', handoffPath, childRunId, key: res.key, csName, mdName, handoffRel };
+  return { ok: true, reason: 'emitted', handoffPath, childRunId, key: res.key, csName, mdName,
+    handoffRel, ...(committedAppOriginFallback ? { appOriginFallback: true } : {}) };
 }

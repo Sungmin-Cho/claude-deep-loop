@@ -685,10 +685,15 @@ test('emitHandoff dedups: second trigger while in-flight is a no-op', () => {
   const { root, runId } = seed();
   const now = Date.parse('2026-06-24T01:00:00Z');
   const ex = expect_(runId);
-  assert.equal(emitHandoff(root, runId, { trigger: 'milestone', now, expect: ex }).ok, true);
+  const first = emitHandoff(root, runId, { trigger: 'milestone', now, expect: ex });
+  assert.equal(first.ok, true);
+  const before = bytes8a(root, runId);
   const second = emitHandoff(root, runId, { trigger: 'precompact', now, expect: ex });
   assert.equal(second.ok, false);
-  assert.equal(second.reason, 'handoff-in-flight');
+  assert.equal(second.reason, 'lease-not-active');
+  assert.deepEqual(bytes8a(root, runId), before);
+  assert.equal(readState(root, runId).data.session_chain.sessions
+    .filter(session => session.run_id === first.childRunId).length, 1);
 });
 
 // Codex r1 🔴1: 같은 트리거 재호출은 새 child/session 을 만들지 않고 기존 emit 을 멱등 반환.
@@ -718,10 +723,12 @@ test('launch command references parent run dir handoff path', () => {
 test('emitHandoff: stale expect fences at reserve (no mutation); correct expect proceeds', () => {
   const { root, runId } = seed();
   const now = Date.parse('2026-06-24T01:00:00Z');
-  // Stale owner → fenced
-  assert.throws(() => emitHandoff(root, runId,
+  const before = bytes8a(root, runId);
+  assert.deepEqual(emitHandoff(root, runId,
     { trigger: 'milestone', now, expect: { owner: 'WRONG', generation: 1 } }),
-  /LEASE_FENCED/);
+  { ok: false, reason: 'fenced', key: null });
+  assert.deepEqual(bytes8a(root, runId), before);
+  assert.equal(existsSync(join(runDir(root, runId), 'handoffs')), false);
   assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'idle');
   // Correct expect → succeeds
   const r2 = emitHandoff(root, runId, { trigger: 'milestone', now, expect: { owner: runId, generation: 1 } });
@@ -737,10 +744,12 @@ test('emitHandoff: lease stolen before call → fenced at reserve, new owner lea
   // Lease is released and taken by another actor (generation bumps to 2)
   releaseLease(root, runId, { owner: runId, generation: 1 });
   acquireLease(root, runId, { owner: CHILD2, expectGeneration: 1, runtime: 'claude', now });
-  // emitHandoff with stale expect (original owner/gen=1) → fenced at reserveHandoff (generation mismatch)
-  assert.throws(() => emitHandoff(root, runId,
+  const before = bytes8a(root, runId);
+  assert.deepEqual(emitHandoff(root, runId,
     { trigger: 'milestone', now, expect: { owner: runId, generation: 1 } }),
-  /LEASE_FENCED/);
+  { ok: false, reason: 'fenced', key: null });
+  assert.deepEqual(bytes8a(root, runId), before);
+  assert.equal(existsSync(join(runDir(root, runId), 'handoffs')), false);
   // New owner's lease is intact (not mutated)
   const lease = readState(root, runId).data.session_chain.lease;
   assert.equal(lease.owner_run_id, CHILD2);
@@ -1108,7 +1117,7 @@ function makeTerminal(root, runId, status = 'completed') {
   seedCorrelatedTerminal(root, runId, { status });
 }
 
-test('emitHandoff: reserve-succeeds-then-finish race → final-append rejected + compensating rollback (spec §4-5e)', () => {
+test('emitHandoff: reserve-succeeds-then-finish race preserves the terminal winner reservation (spec §4-5e)', () => {
   const { root, runId } = seed();
   const expect = expect_(runId);
   // seam (plan r3): desktopProbe는 reserve 성공 후·최종 appendAnchored 전에 호출된다(spawn_style='desktop').
@@ -1122,26 +1131,38 @@ test('emitHandoff: reserve-succeeds-then-finish race → final-append rejected +
   });
   assert.equal(em.ok, false); assert.equal(em.reason, 'RUN_TERMINAL');
   const lease = readState(root, runId).data.session_chain.lease;
-  assert.equal(lease.state, 'released');            // terminal-aware rollback 안착 (3차 r1)
-  assert.equal(lease.handoff_phase, 'idle');
-  assert.equal(lease.handoff_child_run_id, null);
-  assert.equal(lease.handoff_idempotency_key, null);
+  assert.equal(lease.state, 'active');
+  assert.equal(lease.handoff_phase, 'reserved');
+  assert.equal(typeof lease.handoff_child_run_id, 'string');
+  assert.equal(typeof lease.handoff_idempotency_key, 'string');
+  assert.deepEqual(rollbackExact8a(root, runId, { owner: expect.owner,
+    generation: expect.generation, key: lease.handoff_idempotency_key,
+    childRunId: lease.handoff_child_run_id }),
+  { ok: false, reason: 'reservation-changed' });
+  const afterRollback = readState(root, runId).data.session_chain.lease;
+  assert.deepEqual(afterRollback, lease,
+    'terminal winner state is not resurrected or erased by exact compensation');
   const logPath = join(runDir(root, runId), 'event-log.jsonl');
   const log = existsSync(logPath) ? readFileSync(logPath, 'utf8') : '';   // 로그 부재 = 이벤트 0 (fresh run)
   assert.ok(!log.includes('handoff-emitted'));      // 이벤트 미등록 — 파일 잔여는 불활성(감사 흔적 보존)
 });
 
-test('emitHandoff: pre-reserved terminal re-entry → early-return compensation cleans reserved residue (plan r1 P2-a)', () => {
+test('emitHandoff: pre-reserved terminal re-entry preserves the terminal winner reservation', () => {
   const { root, runId } = seed();
   const expect = expect_(runId);
   const res = reserveHandoff(root, runId, { trigger: 'milestone', now: T_NOW, expect });
   assert.equal(res.reserved, true);
   makeTerminal(root, runId, 'stopped');
+  const before = bytes8a(root, runId);
   const em = emitHandoff(root, runId, { reason: 'milestone', trigger: 'milestone', now: T_NOW + 1000, expect });
   assert.equal(em.ok, false); assert.equal(em.reason, 'RUN_TERMINAL');
+  assert.deepEqual(bytes8a(root, runId), before);
   const lease = readState(root, runId).data.session_chain.lease;
-  assert.equal(lease.state, 'released');
-  assert.equal(lease.handoff_phase, 'idle');
+  assert.equal(lease.state, 'active');
+  assert.equal(lease.handoff_phase, 'reserved');
+  assert.equal(lease.handoff_idempotency_key, res.key);
+  assert.equal(lease.handoff_child_run_id, res.childRunId);
+  assert.equal(lines8a(root, runId).filter(event => event.type === 'handoff-emitted').length, 0);
 });
 
 test('rollbackHandoff: terminal-aware — reserved settles to released; idle terminal is a no-op write (plan r2 P1)', () => {
@@ -1164,4 +1185,466 @@ test('rollbackHandoff: terminal-aware — reserved settles to released; idle ter
   assert.equal(r.ok, true);
   assert.equal(r.reason, 'noop-idle-terminal');
   assert.equal(readState(root, runId).data.session_chain.lease.state, 'active');   // write 안 함
+});
+
+import { test as test8a } from 'node:test';
+import assert8a from 'node:assert/strict';
+import { existsSync as exists8a, mkdirSync as mkdir8a, mkdtempSync as temp8a,
+  readFileSync as readFile8a, realpathSync as realpath8a } from 'node:fs';
+import { tmpdir as tmp8a } from 'node:os';
+import { join as join8a } from 'node:path';
+import { initRun as init8a } from '../scripts/lib/initrun.mjs';
+import { emitHandoff as emit8a } from '../scripts/lib/handoff.mjs';
+import { appNativePathDeps as pathDeps8a, observeHostSurface as observe8a,
+  revokeAppTaskContinuation as revoke8a } from '../scripts/lib/app-task-continuation.mjs';
+import { finishRun as finish8a } from '../scripts/lib/finish.mjs';
+import { readLines as lines8a } from '../scripts/lib/integrity.mjs';
+import { acquireLease as acquire8a, releaseLease as release8a,
+  reserveHandoff as reserve8a, rollbackReservedHandoff as rollbackExact8a }
+  from '../scripts/lib/lease.mjs';
+import { readState as read8a } from '../scripts/lib/state.mjs';
+import { newWorkstream as newWorkstream8a,
+  setWorkstreamStatus as setWorkstreamStatus8a } from '../scripts/lib/workspace.mjs';
+import { durableRunBytes as bytes8a, rawHashValidState as raw8a }
+  from './fixtures/verified-app-run.mjs';
+
+function descriptor8a({ runtime, root, parentRunId, childRunId }) {
+  const display = 'manual continuation';
+  return { runtime, projectRoot: root, runId: parentRunId, usageOutputKind: 'json',
+    resumeInvocation: `$deep-loop:deep-loop-resume ${childRunId}`,
+    entries: Object.fromEntries(['interactive', 'headless', 'cmux', 'iterm2', 'terminal-app',
+      'wt', 'powershell', 'desktop'].map(name => [name, { display, unavailable: true }])) };
+}
+
+function appRun8a() {
+  const root = realpath8a(temp8a(join8a(tmp8a(), 'dl-app-emit-')));
+  const { runId } = init8a(root, { runtime: 'codex', goal: 'g',
+    now: new Date('2026-07-13T00:00:00.000Z'),
+    hostObservation: { kind: 'codex-app', source: 'codex-app-tool-provenance',
+      capabilities: ['create-thread-local', 'list-projects', 'structured-process-stdin'],
+      structured_stdin_mode: 'pty-raw-noecho', host_task_cwd: root,
+      host_task_cwd_source: 'app-task-context',
+      observed_at: '2026-07-13T00:00:00.000Z' },
+    cwdFn: () => root, appContinuationConsent: { mode: 'auto', authority: 'human-confirmed',
+      confirmed_at: '2026-07-13T00:00:00.000Z', revoked_at: null } });
+  return { root, runId };
+}
+
+test8a('final App path factory preserves adjacent BigInt file identities', () => {
+  const identities = new Map([
+    ['/left', { dev: 9n, ino: BigInt(Number.MAX_SAFE_INTEGER) + 1n }],
+    ['/right', { dev: 9n, ino: BigInt(Number.MAX_SAFE_INTEGER) + 2n }],
+  ]);
+  const calls = [];
+  const deps = pathDeps8a((value, options) => {
+    calls.push([value, options]);
+    return identities.get(value);
+  });
+  const left = deps.stat('/left');
+  const right = deps.stat('/right');
+  assert8a.deepEqual(calls, [
+    ['/left', { bigint: true }], ['/right', { bigint: true }],
+  ]);
+  assert8a.equal(deps.sameFile(left, right), false);
+});
+
+test8a('boolean App intent derives and atomically binds every emit authority field', () => {
+  const { root, runId } = appRun8a();
+  const attemptId = '01JAPPTASK0000000000000000';
+  const result = emit8a(root, runId, { reason: 'milestone', trigger: 'milestone',
+    now: Date.parse('2026-07-13T00:00:01.000Z'), expect: { owner: runId, generation: 1 },
+    descriptorBuilder: descriptor8a, appIntent: true, cwdFn: () => root,
+    nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'), attemptIdFactory: () => attemptId });
+  assert8a.equal(result.ok, true);
+  const state = read8a(root, runId).data;
+  const child = state.session_chain.sessions.find(session => session.run_id === result.childRunId);
+  assert8a.equal(child.continuation.attempt_id, attemptId);
+  assert8a.equal(child.continuation.phase, 'emitted');
+  assert8a.equal(child.continuation.route, 'create');
+  assert8a.equal(child.continuation.context_mode, 'fresh');
+  assert8a.equal(child.continuation.target_cwd, root);
+  assert8a.match(child.continuation.host_task_cwd_digest, /^[0-9a-f]{64}$/);
+  assert8a.equal(child.continuation.workstream_id, null);
+  assert8a.equal(child.continuation.project_id, null);
+  assert8a.equal(child.continuation.prepare_deadline, '2026-07-13T00:05:02.000Z');
+  assert8a.equal(state.session_chain.lease.handoff_transport, 'codex-app');
+  assert8a.equal(state.session_chain.lease.handoff_attempt_id, attemptId);
+  const event = lines8a(root, runId).find(item => item.type === 'handoff-emitted');
+  assert8a.equal(event.ts, child.continuation.emitted_at);
+  assert8a.deepEqual(event.data.attempt_id, attemptId);
+  const retry = emit8a(root, runId, { reason: 'milestone', trigger: 'milestone',
+    now: Date.parse('2026-07-13T00:00:03.000Z'), expect: { owner: runId, generation: 1 },
+    descriptorBuilder: () => assert8a.fail('exact retry does not rebuild'), appIntent: true,
+    cwdFn: () => root, nowFn: () => assert8a.fail('exact retry does not resample'),
+    attemptIdFactory: () => assert8a.fail('exact retry reuses stored attempt') });
+  assert8a.equal(retry.reason, 'already-emitted');
+  assert8a.equal(retry.attemptId, attemptId);
+  assert8a.equal(lines8a(root, runId).filter(item => item.type === 'handoff-emitted').length, 1);
+});
+
+test8a('invalid App authority fails before reservation or handoff artifacts', () => {
+  const { root, runId } = appRun8a();
+  const loopPath = join8a(root, '.deep-loop', 'runs', runId, 'loop.json');
+  const before = readFile8a(loopPath, 'utf8');
+  assert8a.throws(() => emit8a(root, runId, { trigger: 'milestone', appIntent: true,
+    expect: { owner: runId, generation: 1 }, descriptorBuilder: descriptor8a,
+    cwdFn: () => join8a(root, 'wrong') }), /APP_EMIT_AUTHORITY_FENCED/);
+  assert8a.equal(readFile8a(loopPath, 'utf8'), before);
+  assert8a.equal(lines8a(root, runId).some(event => event.type === 'handoff-reserved'), false);
+});
+
+test8a('same-owner generic reacquire invalidates App intent until identical facts re-attest', () => {
+  const stale = appRun8a();
+  assert8a.equal(release8a(stale.root, stale.runId,
+    { owner: stale.runId, generation: 1 }).reason, 'released');
+  assert8a.deepEqual(acquire8a(stale.root, stale.runId, { owner: stale.runId,
+    expectGeneration: 1, runtime: 'codex', now: Date.parse('2026-07-13T00:00:00.000Z') }),
+  { ok: true, generation: 2, reason: 'acquired' });
+  const staleState = read8a(stale.root, stale.runId).data;
+  assert8a.equal(staleState.session_chain.lease.generation, 2);
+  assert8a.equal(staleState.session_chain.sessions[0].host_surface.observed_generation, 1);
+  const stalePath = join8a(stale.root, '.deep-loop', 'runs', stale.runId, 'loop.json');
+  const before = { state: readFile8a(stalePath), events: lines8a(stale.root, stale.runId) };
+  assert8a.throws(() => emit8a(stale.root, stale.runId, { trigger: 'stale-app-intent',
+    appIntent: true,
+    expect: { owner: stale.runId, generation: 2 },
+    descriptorBuilder: descriptor8a, cwdFn: () => stale.root }),
+  /APP_EMIT_AUTHORITY_FENCED/);
+  assert8a.deepEqual(readFile8a(stalePath), before.state);
+  assert8a.deepEqual(lines8a(stale.root, stale.runId), before.events);
+  const manual = emit8a(stale.root, stale.runId, { trigger: 'stale-manual-fallback',
+    expect: { owner: stale.runId, generation: 2 }, descriptorBuilder: descriptor8a,
+    now: Date.parse('2026-07-13T00:00:01.000Z') });
+  const manualState = read8a(stale.root, stale.runId).data;
+  assert8a.equal(manual.appOriginFallback, true);
+  assert8a.equal(manualState.session_chain.lease.handoff_transport, null);
+  assert8a.equal(manualState.session_chain.lease.resume_policy, 'human');
+
+  const current = appRun8a();
+  release8a(current.root, current.runId, { owner: current.runId, generation: 1 });
+  acquire8a(current.root, current.runId, { owner: current.runId, expectGeneration: 1,
+    runtime: 'codex', now: Date.parse('2026-07-13T00:00:00.000Z') });
+  const reattested = observe8a(current.root, current.runId,
+    { owner: current.runId, generation: 2, runtime: 'codex',
+      readerMode: 'pty-raw-noecho', observation: {
+        kind: 'codex-app', source: 'codex-app-tool-provenance',
+        capabilities: ['create-thread-local', 'list-projects', 'structured-process-stdin'],
+        structured_stdin_mode: 'pty-raw-noecho', host_task_cwd: current.root,
+        host_task_cwd_source: 'app-task-context' } }, {
+      kernelCwd: current.root, platform: process.platform, realpath: value => value,
+      stat: () => ({ dev: 1, ino: 1 }), sameFile: () => true,
+      nowFn: () => Date.parse('2026-07-13T00:00:00.000Z') });
+  assert8a.equal(reattested.outcome, 'reattested');
+  assert8a.equal(read8a(current.root, current.runId).data
+    .session_chain.sessions[0].host_surface.observed_generation, 2);
+  const emitted = emit8a(current.root, current.runId, { trigger: 'current-app-intent',
+    appIntent: true,
+    expect: { owner: current.runId, generation: 2 },
+    descriptorBuilder: descriptor8a, cwdFn: () => current.root,
+    attemptIdFactory: () => '01JAPPTASK0000000000000009',
+    nowFn: () => Date.parse('2026-07-13T00:00:02.000Z') });
+  assert8a.equal(emitted.ok, true);
+  assert8a.equal(read8a(current.root, current.runId).data
+    .session_chain.lease.handoff_transport, 'codex-app');
+});
+
+test8a('generic emitted handoff cannot be upgraded and caller-shaped intent is rejected', () => {
+  const { root, runId } = appRun8a();
+  assert8a.throws(() => emit8a(root, runId, { trigger: 'bad', appIntent:
+    { route: 'create' },
+    expect: { owner: runId, generation: 1 }, descriptorBuilder: descriptor8a }),
+  /APP_INTENT_BOOLEAN_REQUIRED/);
+  const first = emit8a(root, runId, { trigger: 'legacy', expect: { owner: runId, generation: 1 },
+    descriptorBuilder: descriptor8a, now: Date.parse('2026-07-13T00:00:01.000Z') });
+  assert8a.equal(first.ok, true);
+  assert8a.equal(first.appOriginFallback, true);
+  assert8a.equal(read8a(root, runId).data.session_chain.lease.resume_policy, 'human');
+  const exactRetry = emit8a(root, runId, { trigger: 'legacy', appIntent: false,
+    expect: { owner: runId, generation: 1 },
+    descriptorBuilder: () => assert8a.fail('generic exact retry does not rebuild') });
+  assert8a.equal(exactRetry.appOriginFallback, true);
+  assert8a.throws(() => emit8a(root, runId, { trigger: 'legacy', appIntent: true,
+    expect: { owner: runId, generation: 1 }, descriptorBuilder: descriptor8a,
+    cwdFn: () => root }), /APP_EMIT_BINDING_CONFLICT/);
+  assert8a.equal(lines8a(root, runId).filter(event => event.type === 'handoff-emitted').length, 1);
+});
+
+test8a('fresh host-observation winner at generic final emit is atomically human-pinned', () => {
+  const root = realpath8a(temp8a(join8a(tmp8a(), 'dl-app-emit-observe-race-')));
+  const { runId } = init8a(root, { runtime: 'codex', goal: 'g',
+    now: new Date('2026-07-13T00:00:00.000Z'), hostObservation: null,
+    cwdFn: () => root });
+  writeFileSync(join8a(root, '.deep-loop', 'runs', runId, 'event-log.jsonl'), '');
+  raw8a(root, runId, loop => {
+    delete loop.initialization;
+    delete loop.autonomy.app_task_continuation;
+    loop.session_chain.sessions[0].host_surface = null;
+    loop.event_log_head = { seq: 0, checksum: 'GENESIS' };
+  });
+  assert8a.equal(read8a(root, runId).data.session_chain.sessions[0].host_surface, null);
+  let observed = 0;
+  const result = emit8a(root, runId, { trigger: 'observe-race', appIntent: false,
+    headless: true, expect: { owner: runId, generation: 1 },
+    descriptorBuilder: descriptor8a,
+    beforeFinalAppendFn: () => {
+      const outcome = observe8a(root, runId, { owner: runId, generation: 1,
+        runtime: 'codex', readerMode: 'pty-raw-noecho', observation: {
+          kind: 'codex-app', source: 'codex-app-tool-provenance',
+          capabilities: ['list-projects', 'create-thread-local', 'structured-process-stdin'],
+          structured_stdin_mode: 'pty-raw-noecho', host_task_cwd: root,
+          host_task_cwd_source: 'app-task-context' } }, {
+        kernelCwd: root, platform: process.platform, realpath: value => value,
+        stat: () => ({ dev: 1, ino: 1 }), sameFile: () => true,
+        nowFn: () => Date.parse('2026-07-13T00:00:01.000Z') });
+      assert8a.equal(outcome.outcome, 'observed');
+      observed += 1;
+    } });
+  assert8a.equal(observed, 1);
+  assert8a.equal(result.appOriginFallback, true);
+  const state = read8a(root, runId).data;
+  assert8a.equal(state.session_chain.sessions[0].host_surface.kind, 'codex-app');
+  assert8a.equal(state.session_chain.lease.handoff_transport, null);
+  assert8a.equal(state.session_chain.lease.handoff_phase, 'emitted');
+  assert8a.equal(state.session_chain.lease.resume_policy, 'human');
+  assert8a.equal(lines8a(root, runId).filter(event =>
+    event.type === 'host-surface-observed').length, 1);
+  assert8a.equal(lines8a(root, runId).filter(event =>
+    event.type === 'handoff-emitted').length, 1);
+});
+
+test8a('revoke after reserve but before final emit rolls back without an App child binding', () => {
+  const { root, runId } = appRun8a();
+  let reservedChild = null;
+  assert8a.throws(() => emit8a(root, runId, { trigger: 'revoke-before-final-emit',
+    appIntent: true,
+    expect: { owner: runId, generation: 1 }, cwdFn: () => root,
+    attemptIdFactory: () => '01JAPPTASK0000000000000000',
+    nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'),
+    descriptorBuilder: input => {
+      const reserved = read8a(root, runId).data.session_chain.lease;
+      assert8a.equal(reserved.handoff_phase, 'reserved');
+      reservedChild = input.childRunId;
+      revoke8a(root, runId, { owner: runId, generation: 1, runtime: 'codex' },
+        { nowFn: () => Date.parse('2026-07-13T00:00:01.500Z') });
+      return descriptor8a(input);
+    },
+  }), /APP_EMIT_AUTHORITY_FENCED/);
+  const loop = read8a(root, runId).data;
+  assert8a.notEqual(reservedChild, null);
+  assert8a.equal(loop.autonomy.app_task_continuation.mode, 'manual');
+  assert8a.equal(loop.session_chain.lease.handoff_phase, 'idle');
+  assert8a.equal(loop.session_chain.lease.handoff_child_run_id, null);
+  assert8a.equal(loop.session_chain.lease.handoff_attempt_id, null);
+  assert8a.equal(loop.session_chain.sessions.some(session => session.run_id === reservedChild), false);
+  assert8a.equal(lines8a(root, runId).filter(event => event.type === 'handoff-emitted').length, 0);
+  assert8a.equal(lines8a(root, runId)
+    .filter(event => event.type === 'app-task-consent-revoked').length, 1);
+});
+
+test8a('a final-CAS loser never rolls back the exact same-trigger winner', () => {
+  const { root, runId } = appRun8a();
+  const attemptId = '01JAPPTASK0000000000000000';
+  let winner = null;
+  assert8a.throws(() => emit8a(root, runId, { trigger: 'same-trigger-race', appIntent: true,
+    expect: { owner: runId, generation: 1 }, cwdFn: () => root,
+    descriptorBuilder: descriptor8a, attemptIdFactory: () => attemptId,
+    now: Date.parse('2026-07-13T00:00:01.000Z'),
+    nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'),
+    beforeFinalAppendFn: () => {
+      winner = emit8a(root, runId, { trigger: 'same-trigger-race', appIntent: true,
+        expect: { owner: runId, generation: 1 }, cwdFn: () => root,
+        descriptorBuilder: descriptor8a, attemptIdFactory: () => attemptId,
+        now: Date.parse('2026-07-13T00:00:01.000Z'),
+        nowFn: () => Date.parse('2026-07-13T00:00:02.000Z') });
+    },
+  }), /HANDOFF_PHASE_FENCED/);
+  assert8a.equal(winner?.ok, true);
+  const loop = read8a(root, runId).data;
+  assert8a.equal(loop.session_chain.lease.handoff_phase, 'emitted');
+  assert8a.equal(loop.session_chain.lease.handoff_transport, 'codex-app');
+  assert8a.equal(loop.session_chain.lease.handoff_attempt_id, attemptId);
+  assert8a.equal(loop.session_chain.lease.handoff_child_run_id, winner.childRunId);
+  assert8a.equal(loop.session_chain.sessions.filter(session =>
+    session.run_id === winner.childRunId).length, 1);
+  assert8a.equal(lines8a(root, runId)
+    .filter(event => event.type === 'handoff-emitted').length, 1);
+});
+
+test8a('stale owner generation fences before terminal status without mutation', () => {
+  const { root, runId } = appRun8a();
+  finish8a(root, runId, { status: 'stopped', confirm: true,
+    proof: { human_reason: 'terminal fence precedence' },
+    fence: { owner: runId, generation: 1, runtime: 'codex', intent: 'business' },
+    now: Date.parse('2026-07-13T00:00:01.000Z') });
+  const statePath = join8a(root, '.deep-loop', 'runs', runId, 'loop.json');
+  const beforeState = readFile8a(statePath, 'utf8');
+  const beforeEvents = lines8a(root, runId);
+  const fenced = emit8a(root, runId, { trigger: 'terminal-stale', appIntent: true,
+    expect: { owner: runId, generation: 2 }, cwdFn: () => root,
+    descriptorBuilder: descriptor8a });
+  assert8a.deepEqual(fenced, { ok: false, reason: 'fenced', key: null });
+  assert8a.equal(readFile8a(statePath, 'utf8'), beforeState);
+  assert8a.deepEqual(lines8a(root, runId), beforeEvents);
+});
+
+test8a('released lease cannot reserve and active reservation excludes release and acquire', () => {
+  const released = appRun8a();
+  assert8a.deepEqual(release8a(released.root, released.runId,
+    { owner: released.runId, generation: 1 }), { ok: true, reason: 'released' });
+  const releasedBefore = bytes8a(released.root, released.runId);
+  assert8a.deepEqual(reserve8a(released.root, released.runId,
+    { trigger: 'released-cannot-reserve', expect: { owner: released.runId, generation: 1 } }),
+  { ok: false, reserved: false, reason: 'lease-not-active', key: null, childRunId: null });
+  assert8a.deepEqual(bytes8a(released.root, released.runId), releasedBefore);
+
+  const reserved = appRun8a();
+  const reservation = reserve8a(reserved.root, reserved.runId,
+    { trigger: 'reservation-owns-window', expect: { owner: reserved.runId, generation: 1 } });
+  assert8a.equal(reservation.reserved, true);
+  const reservedBefore = bytes8a(reserved.root, reserved.runId);
+  assert8a.deepEqual(release8a(reserved.root, reserved.runId,
+    { owner: reserved.runId, generation: 1 }),
+  { ok: false, reason: 'handoff-reserved' });
+  assert8a.deepEqual(acquire8a(reserved.root, reserved.runId,
+    { owner: reservation.childRunId, expectGeneration: 1, runtime: 'codex' }),
+  { ok: false, generation: 1, reason: 'handoff-reserved' });
+  assert8a.deepEqual(bytes8a(reserved.root, reserved.runId), reservedBefore);
+});
+
+test8a('release attempts in descriptor and final windows lose while emit commits once', () => {
+  const descriptorWindow = appRun8a();
+  let descriptorRelease = null;
+  const descriptorResult = emit8a(descriptorWindow.root, descriptorWindow.runId,
+    { trigger: 'descriptor-release-window', appIntent: true,
+      expect: { owner: descriptorWindow.runId, generation: 1 },
+      cwdFn: () => descriptorWindow.root,
+      attemptIdFactory: () => '01JAPPTASK0000000000000007',
+      nowFn: () => Date.parse('2026-07-13T00:00:01.000Z'),
+      descriptorBuilder: input => {
+        descriptorRelease = release8a(descriptorWindow.root, descriptorWindow.runId,
+          { owner: descriptorWindow.runId, generation: 1 });
+        return descriptor8a(input);
+      } });
+  assert8a.deepEqual(descriptorRelease, { ok: false, reason: 'handoff-reserved' });
+  assert8a.equal(descriptorResult.ok, true);
+  assert8a.equal(lines8a(descriptorWindow.root, descriptorWindow.runId)
+    .filter(event => event.type === 'handoff-emitted').length, 1);
+
+  const finalWindow = appRun8a();
+  let finalRelease = null;
+  const finalResult = emit8a(finalWindow.root, finalWindow.runId,
+    { trigger: 'final-release-window', appIntent: true,
+      expect: { owner: finalWindow.runId, generation: 1 },
+      cwdFn: () => finalWindow.root, descriptorBuilder: descriptor8a,
+      attemptIdFactory: () => '01JAPPTASK0000000000000008',
+      nowFn: () => Date.parse('2026-07-13T00:00:01.000Z'),
+      beforeFinalAppendFn: () => {
+        finalRelease = release8a(finalWindow.root, finalWindow.runId,
+          { owner: finalWindow.runId, generation: 1 });
+      } });
+  assert8a.deepEqual(finalRelease, { ok: false, reason: 'handoff-reserved' });
+  assert8a.equal(finalResult.ok, true);
+  assert8a.equal(lines8a(finalWindow.root, finalWindow.runId)
+    .filter(event => event.type === 'handoff-emitted').length, 1);
+});
+
+test8a('exact rollback fences before proof and never launders a corrupt reservation', () => {
+  const fixture = appRun8a();
+  const reservation = reserve8a(fixture.root, fixture.runId,
+    { trigger: 'rollback-proof', expect: { owner: fixture.runId, generation: 1 } });
+  raw8a(fixture.root, fixture.runId, loop => {
+    loop.session_chain.sessions[0].host_surface.observed_at =
+      '2026-07-13T00:00:01.000Z';
+  });
+  const before = bytes8a(fixture.root, fixture.runId);
+  assert8a.deepEqual(rollbackExact8a(fixture.root, fixture.runId,
+    { owner: 'wrong', generation: 1, key: reservation.key,
+      childRunId: reservation.childRunId }), { ok: false, reason: 'fenced' });
+  assert8a.throws(() => rollbackExact8a(fixture.root, fixture.runId,
+    { owner: fixture.runId, generation: 1, key: reservation.key,
+      childRunId: reservation.childRunId }), /RUN_SNAPSHOT_INVALID/);
+  assert8a.deepEqual(bytes8a(fixture.root, fixture.runId), before);
+});
+
+test8a('emit caller fence precedes semantic proof and neither path writes artifacts', () => {
+  const fixture = appRun8a();
+  raw8a(fixture.root, fixture.runId, loop => {
+    loop.session_chain.sessions[0].host_surface.observed_at =
+      '2026-07-13T00:00:01.000Z';
+  });
+  const before = bytes8a(fixture.root, fixture.runId);
+  assert8a.deepEqual(emit8a(fixture.root, fixture.runId,
+    { trigger: 'wrong-corrupt-emit', appIntent: true,
+      expect: { owner: 'wrong', generation: 1 }, cwdFn: () => fixture.root,
+      descriptorBuilder: descriptor8a }), { ok: false, reason: 'fenced', key: null });
+  assert8a.throws(() => emit8a(fixture.root, fixture.runId,
+    { trigger: 'correct-corrupt-emit', appIntent: true,
+      expect: { owner: fixture.runId, generation: 1 }, cwdFn: () => fixture.root,
+      descriptorBuilder: descriptor8a }), /RUN_SNAPSHOT_INVALID/);
+  assert8a.deepEqual(bytes8a(fixture.root, fixture.runId), before);
+  assert8a.equal(exists8a(join8a(fixture.root, '.deep-loop', 'runs', fixture.runId,
+    'handoffs')), false);
+});
+
+function forkRun8a({ duplicate = false, status = 'in_progress' } = {}) {
+  const root = realpath8a(temp8a(join8a(tmp8a(), 'dl-app-emit-fork-')));
+  const worktree = join8a(root, '.worktrees', 'ws');
+  mkdir8a(worktree, { recursive: true });
+  const { runId } = init8a(root, { runtime: 'codex', goal: 'g',
+    now: new Date('2026-07-13T00:00:00.000Z'),
+    hostObservation: { kind: 'codex-app', source: 'codex-app-host-context',
+      capabilities: ['fork-thread-same-directory', 'send-message-to-thread',
+        'structured-process-stdin'], structured_stdin_mode: 'pipe-open-noecho',
+      host_task_cwd: worktree, host_task_cwd_source: 'app-task-context',
+      observed_at: '2026-07-13T00:00:00.000Z' },
+    cwdFn: () => worktree, appContinuationConsent: { mode: 'auto', authority: 'human-confirmed',
+      confirmed_at: '2026-07-13T00:00:00.000Z', revoked_at: null } });
+  const fence = { owner: runId, generation: 1 };
+  const { id: workstreamId } = newWorkstream8a(root, runId, {
+    title: 'WS1', branch: 'codex/ws1', worktree: '.worktrees/ws',
+    requestId: 'app-emit-fork-ws1', fence,
+  });
+  setWorkstreamStatus8a(root, runId, workstreamId, status, { fence });
+  if (duplicate) {
+    const { id: duplicateId } = newWorkstream8a(root, runId, {
+      title: 'WS2', branch: 'codex/ws2', worktree: '.worktrees/ws',
+      requestId: 'app-emit-fork-ws2', fence,
+    });
+    setWorkstreamStatus8a(root, runId, duplicateId, 'in_progress', { fence });
+    setWorkstreamStatus8a(root, runId, duplicateId, 'in_review', { fence });
+  }
+  return { root, runId, worktree, workstreamId };
+}
+
+test8a('fork intent derives one exact active conventional worktree', () => {
+  const fixture = forkRun8a();
+  const result = emit8a(fixture.root, fixture.runId, { trigger: 'fork', appIntent: true,
+    expect: { owner: fixture.runId, generation: 1 }, descriptorBuilder: descriptor8a,
+    cwdFn: () => fixture.worktree, attemptIdFactory: () => '01JAPPTASK0000000000000000',
+    nowFn: () => Date.parse('2026-07-13T00:00:01.000Z') });
+  const continuation = read8a(fixture.root, fixture.runId).data.session_chain.sessions
+    .find(session => session.run_id === result.childRunId).continuation;
+  assert8a.equal(continuation.route, 'fork');
+  assert8a.equal(continuation.context_mode, 'inherited-completed-history');
+  assert8a.equal(continuation.workstream_id, fixture.workstreamId);
+  assert8a.equal(continuation.target_cwd, fixture.worktree);
+});
+
+test8a('duplicate stale and symlink-mismatched worktree authority never reserves', () => {
+  const cases = [forkRun8a({ duplicate: true }), forkRun8a({ status: 'parked' })];
+  const symlink = forkRun8a();
+  const other = join8a(symlink.root, '.worktrees', 'other');
+  const link = join8a(symlink.root, '.worktrees', 'wrong-link');
+  mkdir8a(other, { recursive: true });
+  createDirectoryJunction(other, link);
+  cases.push({ ...symlink, worktree: link });
+  for (const fixture of cases) {
+    assert8a.throws(() => emit8a(fixture.root, fixture.runId,
+      { trigger: 'fork', appIntent: true,
+        expect: { owner: fixture.runId, generation: 1 },
+        descriptorBuilder: descriptor8a, cwdFn: () => fixture.worktree }),
+    /APP_EMIT_AUTHORITY_FENCED/);
+    assert8a.equal(lines8a(fixture.root, fixture.runId)
+      .some(event => event.type === 'handoff-reserved'), false);
+  }
 });

@@ -550,15 +550,15 @@ test('genesis surface digest and observation clocks are exact anchors', () => {
     'null genesis requires the exact NONE digest');
 });
 
-test('genesis observation cannot evade generation-one clock authority', () => {
+test('later genesis-session re-attestation advances schema clock but still requires event proof', () => {
   const loop = enumProfileSchemaLoop();
   const genesis = loop.session_chain.sessions[0].host_surface;
   genesis.observed_generation = 2;
   genesis.observed_at = '2026-07-13T00:00:01.000Z';
   loop.session_chain.lease.generation = 2;
   loop.initialization.host_surface_digest = hostSurfaceFactsDigest(genesis);
-  assert.equal(validate(loop).ok, false,
-    'later lease generation cannot reclassify the initialized first observation');
+  assert.equal(validate(loop).ok, true,
+    'schema accepts a later stamp; host-surface event correlation remains the proof authority');
 });
 
 test('projection arrays are dense plain arrays and count every slot', () => {
