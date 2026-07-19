@@ -31,12 +31,24 @@ function sweepLeaseResidue(root, runId, expect, cleanupFn) {
   return null;
 }
 
+// 반환/던짐 RUN_PAUSED 공통 경로: phase='reserved' 잔재만 정리(던짐-분기와 동일 규칙 — emitted/spawned는
+// preserve-pause 보존 규칙에 따라 건드리지 않는다) 후 benign no-run-paused.
+function normalizePausedEmit(root, runId, expect, cleanupFn) {
+  const fresh = readState(root, runId).data.session_chain?.lease || {};
+  if (fresh.handoff_phase === 'reserved') {
+    const fenced = sweepLeaseResidue(root, runId, expect, cleanupFn);
+    if (fenced) return fenced;
+  }
+  return { ok: true, action: 'no-run-paused' };
+}
+
 export async function runPreCompactHandoff(input = {}, {
   root = findRoot(process.cwd()),
   now = Date.now(),
   env = process.env,
   rollbackFn = rollbackAndPause,
   cleanupFn = rollbackHandoff,
+  emitFn = emitHandoff,
 } = {}) {
   const runId = currentRunId(root);
   if (!runId) return { ok: true, action: 'no-run' };
@@ -72,8 +84,24 @@ export async function runPreCompactHandoff(input = {}, {
   }
 
   const headless = resolveSpawnMode(loop, { headless: input.unattended === true, env }) === 'headless';
-  const em = emitHandoff(root, runId, { reason: 'pre-compact', trigger: 'pre-compact', headless, expect, env });
-  if (!em.ok) return { ok: false, action: 'fenced', reason: em.reason };
+  let em;
+  try {
+    em = emitFn(root, runId, { reason: 'pre-compact', trigger: 'pre-compact', headless, expect, env });
+  } catch (e) {
+    // spec §3.4.1: reserve 성공 후 append 중 pause → emitHandoff가 rollback 없이 RUN_PAUSED를 던진다
+    // (appendAnchored preCheck). reservation(phase/key/child)을 정리한 뒤에만 benign — 정리 없이
+    // 정규화만 하면 이후 handoff가 handoff-in-flight로 거부되는 교착이 남는다.
+    if (!String(e?.message || e).startsWith('RUN_PAUSED')) throw e;
+    return normalizePausedEmit(root, runId, expect, cleanupFn);
+  }
+  if (!em.ok) {
+    // spec §3.4.1: emit-시점 reason-특정 정규화(체크와 emit 사이 상태 전이 경합) — RUN_TERMINAL 반환은
+    // emitHandoff가 내부 rollback을 이미 수행(reserve-거부 sweep 또는 보상 rollback). fenced는 진짜
+    // lease 이상 신호이므로 정규화 대상이 아니다.
+    if (em.reason === 'RUN_TERMINAL') return { ok: true, action: 'no-run-terminal' };
+    if (em.reason === 'RUN_PAUSED') return normalizePausedEmit(root, runId, expect, cleanupFn);
+    return { ok: false, action: 'fenced', reason: em.reason };
+  }
 
   if (headless && loop.autonomy?.auto_handoff) {
     // Gate check on POST-emit state (Fix 2): emitHandoff appended the reserved child session so

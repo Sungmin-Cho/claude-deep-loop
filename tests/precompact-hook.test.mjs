@@ -347,6 +347,65 @@ test('gate-blocked precompact propagates a terminal rollback race without changi
   assert.deepEqual(readState(root, runId).data, terminalSnapshot);
 });
 
+// ── §3.4.1: emit-시점 경합(체크와 emit 사이 상태 전이) reason-특정 정규화 ──────────
+// (c-1) readState는 active를 봤으나 emitHandoff가 RUN_TERMINAL 반환(내부 rollback 후) → benign
+test('interleaving: emit returns RUN_TERMINAL on active-looking state → benign no-run-terminal', async () => {
+  const { root } = seed();
+  const emitFn = () => ({ ok: false, reason: 'RUN_TERMINAL', key: 'k' });
+  const r = await runPreCompactHandoff({}, { root, now: Date.parse('2026-07-19T00:01:00Z'), emitFn });
+  assert.deepEqual(r, { ok: true, action: 'no-run-terminal' });
+});
+
+// (c-2) emitHandoff가 RUN_PAUSED 반환(reserve-시점 거부) — 잔재 없음 → 단순 benign 정규화
+test('interleaving: emit returns RUN_PAUSED without residue → benign no-run-paused, lease untouched', async () => {
+  const { root, runId } = seed();
+  const before = structuredClone(readState(root, runId).data.session_chain.lease);
+  const emitFn = () => ({ ok: false, reason: 'RUN_PAUSED', key: null });
+  const r = await runPreCompactHandoff({}, { root, now: Date.parse('2026-07-19T00:01:00Z'), emitFn });
+  assert.deepEqual(r, { ok: true, action: 'no-run-paused' });
+  assert.deepEqual(readState(root, runId).data.session_chain.lease, before);
+});
+
+// (c-3) 반환-RUN_PAUSED 시점에 phase='reserved' 잔재 → 정리 경유 후 benign (emitted/spawned는 보존 규칙대로)
+test('interleaving: emit returns RUN_PAUSED with reserved residue → swept then benign no-run-paused', async () => {
+  const { root, runId } = seed();
+  const emitFn = () => {
+    const raced = readState(root, runId).data;
+    raced.session_chain.lease = { ...raced.session_chain.lease, handoff_phase: 'reserved', handoff_idempotency_key: 'race-key', handoff_child_run_id: '01STALECHILD000000000000FF' };
+    writeState(root, runId, raced);
+    return { ok: false, reason: 'RUN_PAUSED', key: 'race-key' };
+  };
+  const r = await runPreCompactHandoff({}, { root, now: Date.parse('2026-07-19T00:01:00Z'), emitFn });
+  assert.deepEqual(r, { ok: true, action: 'no-run-paused' });
+  assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'idle');
+});
+
+// (c-4) reserve 성공 후 append 중 pause → RUN_PAUSED **던짐**(rollback 없이 탈출) → reservation 정리 후 benign,
+// handoff_phase idle 복귀 (정리 없이 정규화만 하면 이후 handoff가 in-flight 거부되는 교착이 남는다)
+test('interleaving: emit THROWS RUN_PAUSED after reserve → reservation swept, handoff_phase back to idle, benign', async () => {
+  const { root, runId } = seed();
+  const emitFn = () => {
+    const raced = readState(root, runId).data;
+    raced.session_chain.lease = { ...raced.session_chain.lease, handoff_phase: 'reserved', handoff_idempotency_key: 'thrown-key', handoff_child_run_id: '01STALECHILD000000000000GG' };
+    writeState(root, runId, raced);
+    throw new Error('RUN_PAUSED: emitHandoff');
+  };
+  const r = await runPreCompactHandoff({}, { root, now: Date.parse('2026-07-19T00:01:00Z'), emitFn });
+  assert.deepEqual(r, { ok: true, action: 'no-run-paused' });
+  const lease = readState(root, runId).data.session_chain.lease;
+  assert.equal(lease.handoff_phase, 'idle');
+  assert.equal(lease.handoff_idempotency_key, null);
+  assert.equal(lease.handoff_child_run_id, null);
+});
+
+// fenced reason은 의도적으로 정규화하지 않는다 — 진짜 lease 이상 신호 표면화 (스코핑 회귀 방지)
+test('emit returns fenced → stays non-benign ok:false action:fenced', async () => {
+  const { root } = seed();
+  const emitFn = () => ({ ok: false, reason: 'fenced', key: null });
+  const r = await runPreCompactHandoff({}, { root, now: Date.parse('2026-07-19T00:01:00Z'), emitFn });
+  assert.deepEqual(r, { ok: false, action: 'fenced', reason: 'fenced' });
+});
+
 function parseLog(path) {
   try { return rf(path, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)); }
   catch { return []; }
