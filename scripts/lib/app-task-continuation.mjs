@@ -3,10 +3,12 @@ import { resolve } from 'node:path';
 import { types as utilTypes } from 'node:util';
 import { contentHash } from './envelope.mjs';
 import { appendAnchored, intentField, readLines, readVerifiedState, verifyHeadLines,
-  verifyLines } from './integrity.mjs';
+  verifyLines, withVerifiedMutationLock } from './integrity.mjs';
+import { reconcileBudget } from './budget.mjs';
 import { leaseCheck } from './lease.mjs';
+import { respawnGate } from './respawn.mjs';
 import { runtimeFence } from './runtime.mjs';
-import { validate, verifyAppEventCorrelation } from './schema.mjs';
+import { APP_CONFIRMATION_TIMEOUT_MS, validate, verifyAppEventCorrelation } from './schema.mjs';
 import { classifyProjectTaskDirectory, exactRawHostObservation, normalizeHostObservation,
   appHostTaskCwdDigest, hostSurfaceFactsDigest, sameNativeDirectory,
   selectAppContinuationRoute } from './host-surface.mjs';
@@ -75,6 +77,11 @@ function appMutationIntentDigest(input, operation) {
   const projection = operation === 'host-observe'
     ? { ...base, runtime: input.runtime ?? null, reader_mode: input.readerMode ?? null,
       observation_digest: intentField('host-observe-raw', input.observation) }
+    : operation === 'app-prepare'
+      ? { ...base, stdin_mode: input.stdinMode,
+        route_digest: intentField('prepare-route', input.route),
+        host_input_digest: input.hostInputDigest
+          ?? intentField('prepare-host-input', input.hostInput) }
     : operation === 'app-revoke'
       ? { ...base, runtime: input.runtime ?? null }
       : null;
@@ -82,6 +89,14 @@ function appMutationIntentDigest(input, operation) {
     throw new Error(`MUTATION_INTENT_OPERATION_UNSUPPORTED: ${operation}`);
   }
   return contentHash(JSON.stringify(projection));
+}
+
+function withAppMutation(root, runId, input, operation, body) {
+  const callerBinding = { owner: input.owner, generation: input.generation };
+  const intentDigest = appMutationIntentDigest(input, operation);
+  return withVerifiedMutationLock(root, runId, { callerBinding, intentDigest,
+    fenceError: `LEASE_FENCED: ${operation}`,
+    intentConflictError: `APP_TASK_FENCED:${operation}` }, body);
 }
 
 export { APP_PREPARE_TIMEOUT_MS, APP_CONFIRMATION_TIMEOUT_MS } from './schema.mjs';
@@ -455,4 +470,422 @@ export function redactAppSecrets(value, keyPath = []) {
     }
   };
   return project(value, path, new WeakSet());
+}
+
+function findAppAttempt(loop, attemptId) {
+  const session = (loop.session_chain?.sessions ?? []).find(item =>
+    item?.continuation?.transport === 'codex-app' && item.continuation.attempt_id === attemptId);
+  if (!session) throw new Error('APP_ATTEMPT_FENCED');
+  return { session, continuation: session.continuation };
+}
+
+function assertAppParentIdentity(loop, input) {
+  const lease = loop.session_chain?.lease;
+  if (lease?.owner_run_id !== input.owner || lease?.generation !== input.generation) {
+    throw new Error('LEASE_FENCED: app-task');
+  }
+  if (loop.autonomy?.session_runtime !== 'codex') throw new Error('RUNTIME_FENCED: app-task');
+}
+
+function assertAppParentFence(loop, input, phases) {
+  assertAppParentIdentity(loop, input);
+  const lease = loop.session_chain?.lease;
+  if (loop.status === 'completed' || loop.status === 'stopped') throw new Error('RUN_TERMINAL: app-task');
+  const consent = loop.autonomy?.app_task_continuation;
+  if (consent?.mode !== 'auto' || consent?.authority !== 'human-confirmed' || consent?.revoked_at != null) {
+    throw new Error('APP_CONSENT_FENCED');
+  }
+  const attemptId = input.attemptId ?? lease.handoff_attempt_id;
+  const found = findAppAttempt(loop, attemptId);
+  if (!phases.includes(found.continuation.phase)
+      || lease.handoff_transport !== 'codex-app'
+      || lease.handoff_attempt_id !== attemptId
+      || lease.handoff_child_run_id !== found.session.run_id) throw new Error('APP_ATTEMPT_FENCED');
+  return { ...found, attemptId };
+}
+
+function assertAppParentRoute(loop, root, input, deps = {}) {
+  const pathDeps = deps.pathDeps ?? appNativePathDeps();
+  const actualCwd = (deps.cwdFn ?? process.cwd)();
+  const parent = loop.session_chain.sessions.find(session => session.run_id === input.owner);
+  const attemptId = input.attemptId ?? loop.session_chain.lease.handoff_attempt_id;
+  const { continuation } = findAppAttempt(loop, attemptId);
+  let authority;
+  try { authority = deriveAppEmitAuthority(loop, root, input.owner, actualCwd, pathDeps); }
+  catch { throw new Error('APP_ROUTE_UNCONFIRMED:parent-authority'); }
+  if (authority.route !== continuation.route
+      || authority.contextMode !== continuation.context_mode
+      || authority.targetCwd !== continuation.target_cwd
+      || authority.workstreamId !== continuation.workstream_id
+      || authority.hostTaskCwdDigest !== continuation.host_task_cwd_digest
+      || (input.stdinMode !== undefined
+        && input.stdinMode !== parent?.host_surface?.structured_stdin_mode)) {
+    throw new Error('APP_ROUTE_UNCONFIRMED:parent-authority');
+  }
+  return authority;
+}
+
+function assertAppParentMutationFence(loop, root, input, phases, deps = {}) {
+  const bound = assertAppParentFence(loop, input, phases);
+  assertAppParentRoute(loop, root, input, deps);
+  return bound;
+}
+
+function assertAppParentDirectoryIdentity(loop, root, input, deps = {}) {
+  const pathDeps = deps.pathDeps ?? appNativePathDeps();
+  const actualCwd = (deps.cwdFn ?? process.cwd)();
+  const parent = loop.session_chain.sessions.find(session => session.run_id === input.owner);
+  const attemptId = input.attemptId ?? loop.session_chain.lease.handoff_attempt_id;
+  const { continuation } = findAppAttempt(loop, attemptId);
+  if (classifyProjectTaskDirectory(root, actualCwd, pathDeps) === null
+      || !sameNativeDirectory(parent?.host_surface?.host_task_cwd, actualCwd, pathDeps)
+      || !sameNativeDirectory(continuation.target_cwd, actualCwd, pathDeps)) {
+    throw new Error('APP_ROUTE_AUTHORITY_FENCED');
+  }
+}
+
+function clearLiveAppBinding(loop, { leaseState = 'active', handoffPhase = 'idle' } = {}) {
+  Object.assign(loop.session_chain.lease, { state: leaseState, handoff_phase: handoffPhase,
+    handoff_transport: null, handoff_attempt_id: null, handoff_child_run_id: null,
+    handoff_idempotency_key: null, expires_at: null, resume_policy: null });
+}
+
+function validateAppCandidate(loop) {
+  const result = validate(loop);
+  if (!result.ok) throw new Error(`STATE_INVALID: ${result.errors.join('; ')}`);
+}
+
+function exactPrepareRecord(value, keys) {
+  try {
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+        || utilTypes.isProxy(value)
+        || ![Object.prototype, null].includes(Object.getPrototypeOf(value))
+        || Object.getOwnPropertySymbols(value).length !== 0
+        || Object.getOwnPropertyNames(value).join('\0') !== keys.join('\0')) {
+      throw new Error('APP_HOST_INPUT_INVALID');
+    }
+    return Object.fromEntries(keys.map(key => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || descriptor.enumerable !== true || !Object.hasOwn(descriptor, 'value')) {
+        throw new Error('APP_HOST_INPUT_INVALID');
+      }
+      return [key, descriptor.value];
+    }));
+  } catch (error) {
+    if (error?.message === 'APP_HOST_INPUT_INVALID') throw error;
+    throw new Error('APP_HOST_INPUT_INVALID');
+  }
+}
+
+function exactPrepareProjects(value) {
+  if (utilTypes.isProxy(value) || !Array.isArray(value)
+      || Object.getPrototypeOf(value) !== Array.prototype
+      || value.length > 256 || Object.getOwnPropertySymbols(value).length !== 0) {
+    throw new Error('APP_HOST_INPUT_INVALID');
+  }
+  const indices = [...Array(value.length).keys()].map(String);
+  const names = Object.getOwnPropertyNames(value);
+  if (names.length !== indices.length + 1 || names.at(-1) !== 'length'
+      || !indices.every((key, index) => names[index] === key)) {
+    throw new Error('APP_HOST_INPUT_INVALID');
+  }
+  return indices.map(key => {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || descriptor.enumerable !== true || !Object.hasOwn(descriptor, 'value')) {
+      throw new Error('APP_HOST_INPUT_INVALID');
+    }
+    const row = exactPrepareRecord(descriptor.value, ['projectId', 'projectKind', 'path']);
+    if (Object.values(row).some(item => typeof item !== 'string')) {
+      throw new Error('APP_HOST_INPUT_INVALID');
+    }
+    return row;
+  });
+}
+
+function exactPrepareHostInput(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+      || utilTypes.isProxy(value)) throw new Error('APP_HOST_INPUT_INVALID');
+  const names = Object.getOwnPropertyNames(value);
+  const keys = names.join('\0') === 'currentHostTaskCwd'
+    ? ['currentHostTaskCwd']
+    : names.join('\0') === 'currentHostTaskCwd\0projects'
+      ? ['currentHostTaskCwd', 'projects'] : null;
+  if (keys === null) throw new Error('APP_HOST_INPUT_INVALID');
+  const hostInput = exactPrepareRecord(value, keys);
+  if (typeof hostInput.currentHostTaskCwd !== 'string') throw new Error('APP_HOST_INPUT_INVALID');
+  if (keys.length === 1) return Object.freeze(hostInput);
+  const projects = exactPrepareProjects(hostInput.projects)
+    .map(project => Object.freeze(project));
+  return Object.freeze({ currentHostTaskCwd: hostInput.currentHostTaskCwd,
+    projects: Object.freeze(projects) });
+}
+
+function resolvePrepareRoute(loop, root, input, deps) {
+  const lease = loop.session_chain.lease;
+  const parent = loop.session_chain.sessions.find(session => session.run_id === input.owner);
+  const pathDeps = deps.pathDeps ?? appNativePathDeps();
+  const actualCwd = (deps.cwdFn ?? process.cwd)();
+  let authority;
+  try { authority = deriveAppEmitAuthority(loop, root, input.owner, actualCwd, pathDeps); }
+  catch { throw new Error('APP_ROUTE_UNCONFIRMED:durable-authority-drift'); }
+  const hostInput = exactPrepareHostInput(input.hostInput);
+  const route = selectAppContinuationRoute({ root, recordedHostTaskCwd: parent.host_surface.host_task_cwd,
+    currentHostTaskCwd: hostInput.currentHostTaskCwd, kernelCwd: actualCwd,
+    capabilities: parent.host_surface.capabilities, projects: hostInput.projects ?? [],
+    workstreams: loop.workstreams ?? [], activeWorkstreams: loop.active_workstreams ?? [] }, pathDeps);
+  const { continuation } = findAppAttempt(loop, lease.handoff_attempt_id);
+  if (!['create', 'fork'].includes(route.kind)
+      || route.kind !== authority.route || route.kind !== continuation.route
+      || route.contextMode !== authority.contextMode
+      || route.contextMode !== continuation.context_mode
+      || route.targetCwd !== authority.targetCwd || route.targetCwd !== continuation.target_cwd
+      || route.workstreamId !== authority.workstreamId
+      || route.workstreamId !== continuation.workstream_id
+      || continuation.host_task_cwd_digest !== authority.hostTaskCwdDigest
+      || parent.host_surface.structured_stdin_mode !== input.stdinMode) {
+    throw new Error(`APP_ROUTE_UNCONFIRMED:${route.reason ?? 'binding-drift'}`);
+  }
+  return Object.freeze(route);
+}
+
+function applyPrepared(loop, attemptId, route, descriptorDigest, clock) {
+  const { continuation } = findAppAttempt(loop, attemptId);
+  continuation.phase = 'prepared';
+  continuation.project_id = route.kind === 'create' ? route.projectId : null;
+  continuation.descriptor_digest = descriptorDigest;
+  continuation.prepared_at = clock.iso;
+  continuation.confirmation_deadline = new Date(clock.ms + APP_CONFIRMATION_TIMEOUT_MS).toISOString();
+  Object.assign(loop.session_chain.lease, { handoff_phase: 'spawned', state: 'releasing' });
+}
+
+function exactActionRecord(value, expected) {
+  try {
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+        || utilTypes.isProxy(value)
+        || ![Object.prototype, null].includes(Object.getPrototypeOf(value))
+        || Object.getOwnPropertySymbols(value).length !== 0
+        || Object.getOwnPropertyNames(value).sort().join('\0')
+          !== [...expected].sort().join('\0')) throw new Error('APP_DESCRIPTOR_INVALID');
+    return Object.fromEntries(expected.map(key => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || descriptor.enumerable !== true || !Object.hasOwn(descriptor, 'value')) {
+        throw new Error('APP_DESCRIPTOR_INVALID');
+      }
+      return [key, descriptor.value];
+    }));
+  } catch (error) {
+    if (error?.message === 'APP_DESCRIPTOR_INVALID') throw error;
+    throw new Error('APP_DESCRIPTOR_INVALID');
+  }
+}
+
+function exactPreparedAction(action, route) {
+  const top = exactActionRecord(action, route.kind === 'create'
+    ? ['tool', 'target', 'prompt'] : ['tool', 'environment', 'followup']);
+  let normalized;
+  if (route.kind === 'create') {
+    const target = exactActionRecord(top.target, ['type', 'projectId', 'environment']);
+    const environment = exactActionRecord(target.environment, ['type']);
+    if (top.tool !== 'create_thread' || target.type !== 'project'
+        || environment.type !== 'local' || target.projectId !== route.projectId
+        || typeof top.prompt !== 'string') {
+      throw new Error('APP_DESCRIPTOR_INVALID');
+    }
+    normalized = { tool: top.tool, target: { type: target.type,
+      projectId: target.projectId, environment: { type: environment.type } },
+    prompt: top.prompt };
+  } else {
+    const environment = exactActionRecord(top.environment, ['type']);
+    const followup = exactActionRecord(top.followup, ['tool', 'prompt']);
+    if (top.tool !== 'fork_thread' || environment.type !== 'same-directory'
+        || followup.tool !== 'send_message_to_thread'
+        || typeof followup.prompt !== 'string') throw new Error('APP_DESCRIPTOR_INVALID');
+    normalized = { tool: top.tool, environment: { type: environment.type },
+      followup: { tool: followup.tool, prompt: followup.prompt } };
+  }
+  if (Buffer.byteLength(JSON.stringify(normalized), 'utf8') > 32_768) {
+    throw new Error('APP_DESCRIPTOR_INVALID');
+  }
+  return normalized;
+}
+
+function applyPrepareFailure(loop, input, code, preserve) {
+  const attemptId = input.attemptId ?? loop.session_chain.lease.handoff_attempt_id;
+  const { session, continuation } = findAppAttempt(loop, attemptId);
+  loop.status = 'paused';
+  loop.pause_reason = code;
+  if (preserve) {
+    loop.session_chain.lease.resume_policy = 'human';
+    loop.session_chain.lease.expires_at = null;
+    return;
+  }
+  continuation.phase = 'abandoned';
+  continuation.failure_code = code;
+  session.outcome = 'failed_launch';
+  const parent = loop.session_chain.sessions.find(item => item.superseded_by === session.run_id);
+  if (parent) parent.superseded_by = null;
+  clearLiveAppBinding(loop);
+}
+
+function settlePrepareFailure(root, runId, input,
+  { code, preserve, nowFn, gateFn, deps, phase }) {
+  return phase(mutation => {
+    const snapshot = mutation.readVerifiedState(
+      { fenceCheck: loop => assertAppParentIdentity(loop, input) }).data;
+    const attemptId = input.attemptId ?? snapshot.session_chain.lease.handoff_attempt_id;
+    const childRunId = findAppAttempt(snapshot, attemptId).session.run_id;
+    let result;
+    mutation.appendAnchored({ type: preserve ? 'app-task-preserved' : 'app-task-abandoned',
+      data: { attempt_id: attemptId, child_run_id: childRunId, failure_code: code,
+        ...(preserve ? {} : { owner_run_id: input.owner, generation: input.generation }) } }, loop => {
+      applyPrepareFailure(loop, input, code, preserve);
+      result = { ok: false, outcome: preserve ? 'manual-preserve' : 'gate-blocked',
+        do_not_call: true, attempt_id: attemptId, reason: code };
+    }, (loop, clock) => {
+      const bound = assertAppParentFence(loop, input, ['emitted']);
+      assertAppParentDirectoryIdentity(loop, root, input, deps);
+      if (clock.ms > Date.parse(bound.continuation.prepare_deadline)) {
+        throw new Error('APP_PREPARE_DEADLINE_EXPIRED');
+      }
+      if (preserve) {
+        let stillUnconfirmed = false;
+        try { resolvePrepareRoute(loop, root, input, deps); }
+        catch (error) {
+          if (String(error?.message || error).startsWith('APP_ROUTE_UNCONFIRMED')) {
+            stillUnconfirmed = true;
+          } else {
+            throw error;
+          }
+        }
+        if (!stillUnconfirmed) throw new Error('APP_PREPARE_ROUTE_CHANGED');
+      } else {
+        const gate = gateFn(loop, { now: clock.ms });
+        if (gate.ok || `gate-${gate.blocked_by[0].replaceAll('_', '-')}` !== code) {
+          throw new Error('APP_GATE_CHANGED');
+        }
+      }
+      const candidate = structuredClone(loop);
+      applyPrepareFailure(candidate, input, code, preserve);
+      validateAppCandidate(candidate);
+    }, { nowFn, fenceCheck: loop => assertAppParentIdentity(loop, input) });
+    return result;
+  });
+}
+
+export function prepareAppTask(root, runId, input, deps = {}) {
+  const hostInput = exactPrepareHostInput(input.hostInput);
+  const request = Object.freeze({ owner: input.owner, generation: input.generation,
+    attemptId: input.attemptId ?? null, stdinMode: input.stdinMode, hostInput,
+    hostInputDigest: intentField('prepare-host-input', hostInput) });
+  const reconcile = deps.reconcileBudgetFn ?? reconcileBudget;
+  const gateFor = deps.gateFn ?? respawnGate;
+  const authoritativeNow = deps.nowFn ?? Date.now;
+  const prepareRequestDigest = appMutationIntentDigest(request, 'app-prepare');
+  const phase = body => withAppMutation(root, runId, request, 'app-prepare', body);
+  const snapshot = phase(mutation => mutation.readVerifiedState(
+    { fenceCheck: loop => assertAppParentIdentity(loop, request) }).data);
+  const existing = assertAppParentFence(snapshot, request, ['emitted', 'prepared']);
+  if (snapshot.status !== 'running' || snapshot.session_chain.lease.resume_policy !== 'app') {
+    throw new Error('RUN_PAUSED: app-prepare');
+  }
+  const alreadyPrepared = existing.continuation.phase === 'prepared';
+  if (alreadyPrepared) {
+    if (snapshot.session_chain.lease.handoff_phase !== 'spawned'
+        || snapshot.session_chain.lease.state !== 'releasing') throw new Error('APP_ATTEMPT_FENCED');
+  }
+  assertAppParentDirectoryIdentity(snapshot, root, request, deps);
+  let route;
+  try { route = resolvePrepareRoute(snapshot, root, request, deps); }
+  catch (error) {
+    if (!String(error?.message || error).startsWith('APP_ROUTE_UNCONFIRMED')) throw error;
+    if (alreadyPrepared) {
+      const parent = snapshot.session_chain.sessions.find(session => session.run_id === request.owner);
+      throw new Error(request.stdinMode !== parent?.host_surface?.structured_stdin_mode
+        ? 'APP_STDIN_MODE_FENCED' : 'APP_PREPARE_REQUEST_FENCED');
+    }
+    return settlePrepareFailure(root, runId, request, { code: 'app-launch-unconfirmed',
+      preserve: true, nowFn: authoritativeNow, gateFn: gateFor, deps, phase });
+  }
+  if (typeof deps.descriptorBuilder !== 'function') throw new Error('APP_DESCRIPTOR_BUILDER_REQUIRED');
+  const action = exactPreparedAction(deps.descriptorBuilder({ loop: snapshot, route,
+    child: existing.session, attemptId: existing.attemptId }), route);
+  const descriptorDigest = contentHash(JSON.stringify({ action,
+    prepare_request_digest: prepareRequestDigest }));
+  if (alreadyPrepared) {
+    if (existing.continuation.descriptor_digest !== descriptorDigest
+        || existing.continuation.project_id
+          !== (route.kind === 'create' ? route.projectId : null)) {
+      throw new Error('APP_PREPARE_REQUEST_FENCED');
+    }
+    return { ok: true, outcome: 'already-prepared', do_not_call: true,
+      attempt_id: existing.attemptId };
+  }
+  const outerGate = gateFor(snapshot, { now: Number((deps.precheckNowFn ?? Date.now)()) });
+  if (!outerGate.ok) return settlePrepareFailure(root, runId, request, {
+    code: `gate-${outerGate.blocked_by[0].replaceAll('_', '-')}`,
+    preserve: false, nowFn: authoritativeNow, gateFn: gateFor, deps, phase });
+  // This is the final operation before the CAS; exact prepared retry above does not reconcile.
+  reconcile(root, runId, {});
+  try {
+    return phase(mutation => {
+      let result;
+      try {
+        mutation.appendAnchored({ type: 'app-task-prepared',
+          data: { attempt_id: existing.attemptId, child_run_id: existing.session.run_id,
+            descriptor_digest: descriptorDigest } },
+        (loop, _spent, clock) => {
+          applyPrepared(loop, existing.attemptId, route, descriptorDigest, clock);
+          result = { ok: true, outcome: 'prepared', do_not_call: false,
+            attempt_id: existing.attemptId, route: route.kind,
+            context_mode: existing.continuation.context_mode, action };
+        }, (loop, clock) => {
+          const bound = assertAppParentMutationFence(loop, root, request,
+            ['emitted', 'prepared'], deps);
+          if (loop.status !== 'running' || loop.session_chain.lease.resume_policy !== 'app') {
+            throw new Error('RUN_PAUSED: app-prepare');
+          }
+          if (bound.continuation.phase === 'prepared') throw new Error('APP_PREPARE_CAS_LOST');
+          if (clock.ms > Date.parse(bound.continuation.prepare_deadline)) {
+            throw new Error('APP_PREPARE_DEADLINE_EXPIRED');
+          }
+          let freshRoute;
+          try { freshRoute = resolvePrepareRoute(loop, root, request, deps); }
+          catch { throw new Error('APP_PREPARE_ROUTE_CHANGED'); }
+          if (JSON.stringify(freshRoute) !== JSON.stringify(route)) {
+            throw new Error('APP_PREPARE_ROUTE_CHANGED');
+          }
+          const freshGate = gateFor(loop, { now: clock.ms });
+          if (!freshGate.ok) throw new Error(`APP_GATE_BLOCKED:${freshGate.blocked_by[0]}`);
+          const candidate = structuredClone(loop);
+          applyPrepared(candidate, existing.attemptId, route, descriptorDigest, clock);
+          validateAppCandidate(candidate);
+        }, { nowFn: authoritativeNow,
+          fenceCheck: loop => assertAppParentIdentity(loop, request) });
+      } catch (error) {
+        if (String(error?.message || error) !== 'APP_PREPARE_CAS_LOST') throw error;
+        const current = mutation.readVerifiedState().data;
+        const bound = assertAppParentFence(current, request, ['prepared']);
+        if (bound.attemptId === existing.attemptId
+            && bound.continuation.descriptor_digest === descriptorDigest
+            && bound.continuation.project_id === (route.kind === 'create' ? route.projectId : null)
+            && current.session_chain.lease.handoff_phase === 'spawned') {
+          return { ok: true, outcome: 'already-prepared', do_not_call: true,
+            attempt_id: existing.attemptId };
+        }
+        throw error;
+      }
+      return result;
+    });
+  } catch (error) {
+    if (String(error?.message || error) === 'APP_PREPARE_ROUTE_CHANGED') {
+      return settlePrepareFailure(root, runId, request, { code: 'app-launch-unconfirmed',
+        preserve: true, nowFn: authoritativeNow, gateFn: gateFor, deps, phase });
+    }
+    const match = /^APP_GATE_BLOCKED:(budget|breaker|max_sessions|wallclock|auto_handoff)$/.exec(
+      String(error?.message || error));
+    if (!match) throw error;
+    return settlePrepareFailure(root, runId, request,
+      { code: `gate-${match[1].replaceAll('_', '-')}`,
+        preserve: false, nowFn: authoritativeNow, gateFn: gateFor, deps, phase });
+  }
 }

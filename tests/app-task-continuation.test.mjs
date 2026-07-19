@@ -712,3 +712,608 @@ test('observe revoke and status fence first then reject a corrupt success projec
   /RUN_SNAPSHOT_INVALID/);
   assert.deepEqual(bytes7d(terminal.root, terminal.runId), terminalBefore);
 });
+
+import { test as test8b } from 'node:test';
+import assert8b from 'node:assert/strict';
+import { existsSync as exists8b, mkdirSync as mkdir8b, mkdtempSync as temp8b,
+  rmdirSync as rmdir8b, writeFileSync as write8bFile } from 'node:fs';
+import { spawn as spawn8b } from 'node:child_process';
+import { tmpdir as tmp8b } from 'node:os';
+import { join as join8b } from 'node:path';
+import { initRun as init8b } from '../scripts/lib/initrun.mjs';
+import { emitHandoff as emit8b } from '../scripts/lib/handoff.mjs';
+import { readLines as lines8b } from '../scripts/lib/integrity.mjs';
+import { readState as read8b } from '../scripts/lib/state.mjs';
+import { newWorkstream as newWorkstream8b,
+  setWorkstreamStatus as setWorkstreamStatus8b } from '../scripts/lib/workspace.mjs';
+import { prepareAppTask as prepare8b } from '../scripts/lib/app-task-continuation.mjs';
+import { revokeAppTaskContinuation as revoke8b } from '../scripts/lib/app-task-continuation.mjs';
+
+function handoffDescriptor8b({ runtime, root, parentRunId, childRunId }) {
+  const display = 'manual continuation';
+  return { runtime, projectRoot: root, runId: parentRunId, usageOutputKind: 'json',
+    resumeInvocation: `$deep-loop:deep-loop-resume ${childRunId}`,
+    entries: Object.fromEntries(['interactive', 'headless', 'cmux', 'iterm2', 'terminal-app',
+      'wt', 'powershell', 'desktop'].map(name => [name, { display, unavailable: true }])) };
+}
+
+function emitted8b() {
+  const root = temp8b(join8b(tmp8b(), 'dl-app-prepare-'));
+  const { runId } = init8b(root, { runtime: 'codex', goal: 'g',
+    now: new Date('2026-07-13T00:00:00.000Z'),
+    hostObservation: { kind: 'codex-app', source: 'codex-app-tool-provenance',
+      capabilities: ['create-thread-local', 'list-projects', 'structured-process-stdin'],
+      structured_stdin_mode: 'pty-raw-noecho', host_task_cwd: root,
+      host_task_cwd_source: 'app-task-context',
+      observed_at: '2026-07-13T00:00:00.000Z' },
+    cwdFn: () => root, appContinuationConsent: { mode: 'auto', authority: 'human-confirmed',
+      confirmed_at: '2026-07-13T00:00:00.000Z', revoked_at: null } });
+  const attemptId = '01JAPPTASK0000000000000000';
+  const emitted = emit8b(root, runId, { trigger: 'milestone', appIntent: true,
+    expect: { owner: runId, generation: 1 }, descriptorBuilder: handoffDescriptor8b,
+    cwdFn: () => root, attemptIdFactory: () => attemptId,
+    now: Date.parse('2026-07-13T00:00:01.000Z'),
+    nowFn: () => Date.parse('2026-07-13T00:00:01.000Z') });
+  return { root, runId, attemptId, childRunId: emitted.childRunId,
+    hostInput: { currentHostTaskCwd: root,
+      projects: [{ projectId: 'project $`\\', projectKind: 'local', path: root }] } };
+}
+
+test8b('prepare grants one action and only the exact request retries descriptor-free', () => {
+  const fixture = emitted8b();
+  const action = { tool: 'create_thread', target: { type: 'project', projectId: 'project $`\\',
+    environment: { type: 'local' } }, prompt: 'bounded prompt' };
+  const deps = { nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'),
+    cwdFn: () => fixture.root, descriptorBuilder: () => action,
+    reconcileBudgetFn: () => ({ turns: 0, tokens: 0 }), gateFn: () => ({ ok: true, blocked_by: [] }) };
+  const input = { owner: fixture.runId, generation: 1,
+    stdinMode: 'pty-raw-noecho', hostInput: fixture.hostInput };
+  const first = prepare8b(fixture.root, fixture.runId, input, deps);
+  const retry = prepare8b(fixture.root, fixture.runId, input, {
+    nowFn: () => assert8b.fail('retry does not sample'),
+    cwdFn: () => fixture.root,
+    descriptorBuilder: () => action,
+    reconcileBudgetFn: () => assert8b.fail('retry does not reconcile'),
+    gateFn: () => assert8b.fail('retry does not gate') });
+  assert8b.deepEqual(first.action, action);
+  assert8b.equal(first.do_not_call, false);
+  assert8b.deepEqual(retry, { ok: true, outcome: 'already-prepared', do_not_call: true,
+    attempt_id: fixture.attemptId });
+  assert8b.equal(Object.hasOwn(retry, 'action'), false);
+  assert8b.throws(() => prepare8b(fixture.root, fixture.runId,
+    { ...input, stdinMode: 'pipe-open-noecho' }, deps), /APP_STDIN_MODE_FENCED/);
+  assert8b.throws(() => prepare8b(fixture.root, fixture.runId,
+    { ...input, hostInput: { ...input.hostInput,
+      currentHostTaskCwd: `${fixture.root}/.` } }, deps), /APP_PREPARE_REQUEST_FENCED/);
+  const preparedEvent = lines8b(fixture.root, fixture.runId)
+    .find(event => event.type === 'app-task-prepared');
+  assert8b.equal(preparedEvent.data.descriptor_digest,
+    read8b(fixture.root, fixture.runId).data.session_chain.sessions
+      .find(session => session.run_id === fixture.childRunId).continuation.descriptor_digest);
+  assert8b.equal(lines8b(fixture.root, fixture.runId)
+    .filter(event => event.type === 'app-task-prepared').length, 1);
+  assert8b.equal(read8b(fixture.root, fixture.runId).data.session_chain.lease.handoff_phase, 'spawned');
+});
+
+test8b('prepare gate failure abandons without granting an action', () => {
+  const fixture = emitted8b();
+  const input = { owner: fixture.runId, generation: 1,
+    stdinMode: 'pty-raw-noecho', hostInput: fixture.hostInput };
+  const result = prepare8b(fixture.root, fixture.runId, input, {
+    nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'),
+    cwdFn: () => fixture.root,
+    descriptorBuilder: () => ({ tool: 'create_thread', target: { type: 'project',
+      projectId: 'project $`\\', environment: { type: 'local' } }, prompt: 'prompt' }),
+    reconcileBudgetFn: () => ({ turns: 0, tokens: 0 }),
+    gateFn: () => ({ ok: false, blocked_by: ['budget'] }),
+  });
+  assert8b.equal(result.do_not_call, true);
+  assert8b.equal(Object.hasOwn(result, 'action'), false);
+  const loop = read8b(fixture.root, fixture.runId).data;
+  const child = loop.session_chain.sessions.find(item => item.run_id === fixture.childRunId);
+  assert8b.equal(child.continuation.phase, 'abandoned');
+  assert8b.equal(child.continuation.failure_code, 'gate-budget');
+  assert8b.equal(loop.session_chain.lease.handoff_transport, null);
+  assert8b.deepEqual(lines8b(fixture.root, fixture.runId)
+    .filter(event => event.type === 'app-task-abandoned').at(-1).data,
+  { attempt_id: fixture.attemptId, child_run_id: fixture.childRunId,
+    failure_code: 'gate-budget', owner_run_id: fixture.runId, generation: 1 });
+});
+
+test8b('route drift with zero matching projects preserves the exact attempt for human recovery', () => {
+  const fixture = emitted8b();
+  const result = prepare8b(fixture.root, fixture.runId, {
+    owner: fixture.runId, generation: 1, stdinMode: 'pty-raw-noecho',
+    hostInput: { currentHostTaskCwd: fixture.root, projects: [] },
+  }, { nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'),
+    cwdFn: () => fixture.root,
+    descriptorBuilder: () => assert8b.fail('descriptor must not be built'),
+    reconcileBudgetFn: () => ({ turns: 0, tokens: 0 }), gateFn: () => ({ ok: true, blocked_by: [] }) });
+  assert8b.equal(result.outcome, 'manual-preserve');
+  const loop = read8b(fixture.root, fixture.runId).data;
+  assert8b.equal(loop.status, 'paused');
+  assert8b.equal(loop.session_chain.lease.resume_policy, 'human');
+  assert8b.equal(loop.session_chain.lease.handoff_attempt_id, fixture.attemptId);
+  assert8b.equal(loop.session_chain.sessions.find(item => item.run_id === fixture.childRunId)
+    .continuation.phase, 'emitted');
+  assert8b.deepEqual(lines8b(fixture.root, fixture.runId)
+    .filter(event => event.type === 'app-task-preserved').at(-1).data,
+  { attempt_id: fixture.attemptId, child_run_id: fixture.childRunId,
+    failure_code: 'app-launch-unconfirmed' });
+  assert8b.equal(revoke8b(fixture.root, fixture.runId,
+    { owner: fixture.runId, generation: 1, runtime: 'codex' },
+    { nowFn: () => Date.parse('2026-07-13T00:00:03.000Z') }).outcome, 'revoked');
+  const revoked = read8b(fixture.root, fixture.runId).data;
+  assert8b.equal(revoked.session_chain.sessions.find(item => item.run_id === fixture.childRunId)
+    .continuation.phase, 'abandoned');
+  assert8b.equal(revoked.session_chain.sessions.find(item => item.run_id === fixture.childRunId)
+    .continuation.failure_code, 'consent-revoked');
+});
+
+test8b('all five respawn gates fail closed with schema-safe codes', () => {
+  for (const [blocked, code] of [
+    ['budget', 'gate-budget'], ['breaker', 'gate-breaker'],
+    ['max_sessions', 'gate-max-sessions'], ['wallclock', 'gate-wallclock'],
+    ['auto_handoff', 'gate-auto-handoff'],
+  ]) {
+    const fixture = emitted8b();
+    const result = prepare8b(fixture.root, fixture.runId, { owner: fixture.runId, generation: 1,
+      stdinMode: 'pty-raw-noecho', hostInput: fixture.hostInput }, {
+      nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'), cwdFn: () => fixture.root,
+      descriptorBuilder: () => ({ tool: 'create_thread', target: { type: 'project',
+        projectId: 'project $`\\', environment: { type: 'local' } }, prompt: 'prompt' }),
+      reconcileBudgetFn: () => {}, gateFn: () => ({ ok: false, blocked_by: [blocked] }) });
+    assert8b.equal(result.reason, code);
+    assert8b.equal(Object.hasOwn(result, 'action'), false);
+  }
+});
+
+test8b('project cardinality zero one and two is decisive', () => {
+  for (const projects of [[], [
+    { projectId: 'one', projectKind: 'local', path: null },
+    { projectId: 'two', projectKind: 'local', path: null },
+  ]]) {
+    const fixture = emitted8b();
+    const normalized = projects.map(project => ({ ...project, path: fixture.root }));
+    const result = prepare8b(fixture.root, fixture.runId, { owner: fixture.runId, generation: 1,
+      stdinMode: 'pty-raw-noecho',
+      hostInput: { currentHostTaskCwd: fixture.root, projects: normalized } }, {
+      nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'), cwdFn: () => fixture.root,
+      descriptorBuilder: () => assert8b.fail('ambiguous route builds no descriptor'),
+      reconcileBudgetFn: () => {}, gateFn: () => ({ ok: true, blocked_by: [] }) });
+    assert8b.equal(result.outcome, 'manual-preserve');
+  }
+  const one = emitted8b();
+  const result = prepare8b(one.root, one.runId, { owner: one.runId, generation: 1,
+    stdinMode: 'pty-raw-noecho', hostInput: one.hostInput }, {
+    nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'), cwdFn: () => one.root,
+    descriptorBuilder: () => ({ tool: 'create_thread', target: { type: 'project',
+      projectId: 'project $`\\', environment: { type: 'local' } }, prompt: 'prompt' }),
+    reconcileBudgetFn: () => {}, gateFn: () => ({ ok: true, blocked_by: [] }) });
+  assert8b.equal(result.outcome, 'prepared');
+});
+
+test8b('prepare rejects every extra or exotic host projection without a durable write', () => {
+  const variants = fixture => {
+    const accessor = { ...fixture.hostInput };
+    Object.defineProperty(accessor, 'currentHostTaskCwd', {
+      enumerable: true, get: () => fixture.root,
+    });
+    const customProjects = [...fixture.hostInput.projects];
+    customProjects.threadId = 'ARRAY-EXTRA';
+    const hugeSparse = new Array(0xffffffff);
+    return [
+      { ...fixture.hostInput, threadId: 'ROOT-THREAD' },
+      { ...fixture.hostInput, clientThreadId: 'ROOT-CLIENT' },
+      { ...fixture.hostInput, observed_at: 'ROOT-CLOCK' },
+      { ...fixture.hostInput, projects: [{ ...fixture.hostInput.projects[0],
+        threadId: 'ROW-THREAD' }] },
+      { ...fixture.hostInput, projects: [{ ...fixture.hostInput.projects[0],
+        clientThreadId: 'ROW-CLIENT' }] },
+      { ...fixture.hostInput, projects: customProjects },
+      { ...fixture.hostInput, projects: hugeSparse },
+      accessor,
+    ];
+  };
+  for (let index = 0; index < 8; index += 1) {
+    const fixture = emitted8b();
+    const hostInput = variants(fixture)[index];
+    const before = { state: structuredClone(read8b(fixture.root, fixture.runId).data),
+      events: structuredClone(lines8b(fixture.root, fixture.runId)) };
+    assert8b.throws(() => prepare8b(fixture.root, fixture.runId,
+      { owner: fixture.runId, generation: 1, stdinMode: 'pty-raw-noecho', hostInput }, {
+        cwdFn: () => fixture.root,
+        nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'),
+        descriptorBuilder: () => assert8b.fail('invalid host input builds no descriptor'),
+        reconcileBudgetFn: () => assert8b.fail('invalid host input does not reconcile'),
+        gateFn: () => ({ ok: true, blocked_by: [] }),
+      }), /APP_HOST_INPUT_INVALID/);
+    assert8b.deepEqual(read8b(fixture.root, fixture.runId).data, before.state, String(index));
+    assert8b.deepEqual(lines8b(fixture.root, fixture.runId), before.events, String(index));
+  }
+});
+
+test8b('prepare rejects a host accessor before intent hashing without invoking it', () => {
+  const fixture = emitted8b();
+  let reads = 0;
+  const hostInput = { projects: fixture.hostInput.projects };
+  Object.defineProperty(hostInput, 'currentHostTaskCwd', { enumerable: true,
+    get() { reads += 1; return fixture.root; } });
+  const before = { state: structuredClone(read8b(fixture.root, fixture.runId).data),
+    events: structuredClone(lines8b(fixture.root, fixture.runId)) };
+  assert8b.throws(() => prepare8b(fixture.root, fixture.runId,
+    { owner: fixture.runId, generation: 1, stdinMode: 'pty-raw-noecho', hostInput }, {
+      cwdFn: () => fixture.root,
+      descriptorBuilder: () => assert8b.fail('invalid host input builds no descriptor'),
+      reconcileBudgetFn: () => assert8b.fail('invalid host input does not reconcile'),
+      gateFn: () => assert8b.fail('invalid host input does not gate'),
+    }), /APP_HOST_INPUT_INVALID/);
+  assert8b.equal(reads, 0);
+  assert8b.deepEqual(read8b(fixture.root, fixture.runId).data, before.state);
+  assert8b.deepEqual(lines8b(fixture.root, fixture.runId), before.events);
+});
+
+test8b('prepare rejects host projection proxies without invoking traps', () => {
+  const trapped = target => {
+    let calls = 0;
+    const handler = Object.fromEntries(['get', 'getPrototypeOf', 'ownKeys',
+      'getOwnPropertyDescriptor'].map(name => [name, (...args) => {
+      calls += 1; return Reflect[name](...args);
+    }]));
+    return { value: new Proxy(target, handler), calls: () => calls };
+  };
+  for (const kind of ['root', 'projects', 'row']) {
+    const fixture = emitted8b();
+    const probe = trapped(kind === 'projects' ? [...fixture.hostInput.projects]
+      : kind === 'row' ? { ...fixture.hostInput.projects[0] } : { ...fixture.hostInput });
+    const hostInput = kind === 'root' ? probe.value
+      : { ...fixture.hostInput, projects: kind === 'projects' ? probe.value : [probe.value] };
+    const before = { state: structuredClone(read8b(fixture.root, fixture.runId).data),
+      events: structuredClone(lines8b(fixture.root, fixture.runId)) };
+    assert8b.throws(() => prepare8b(fixture.root, fixture.runId,
+      { owner: fixture.runId, generation: 1, stdinMode: 'pty-raw-noecho', hostInput }, {
+        cwdFn: () => fixture.root,
+        descriptorBuilder: () => assert8b.fail('proxy host input builds no descriptor'),
+        reconcileBudgetFn: () => assert8b.fail('proxy host input does not reconcile'),
+        gateFn: () => assert8b.fail('proxy host input does not gate'),
+      }), /APP_HOST_INPUT_INVALID/, kind);
+    assert8b.equal(probe.calls(), 0, kind);
+    assert8b.deepEqual(read8b(fixture.root, fixture.runId).data, before.state, kind);
+    assert8b.deepEqual(lines8b(fixture.root, fixture.runId), before.events, kind);
+  }
+});
+
+test8b('prepare rejects descriptor accessors proxies and cycles without invoking them', () => {
+  let accessorReads = 0;
+  let proxyTraps = 0;
+  const accessor = { tool: 'create_thread', target: { type: 'project',
+    projectId: 'project $`\\', environment: { type: 'local' } } };
+  Object.defineProperty(accessor, 'prompt', { enumerable: true,
+    get() { accessorReads += 1; return 'prompt'; } });
+  const plain = { tool: 'create_thread', target: { type: 'project',
+    projectId: 'project $`\\', environment: { type: 'local' } }, prompt: 'prompt' };
+  const proxy = new Proxy(plain, { ownKeys(target) {
+    proxyTraps += 1; return Reflect.ownKeys(target);
+  } });
+  const cycle = { tool: 'create_thread', target: { type: 'project',
+    projectId: 'project $`\\', environment: { type: 'local' } }, prompt: null };
+  cycle.prompt = cycle;
+  for (const [label, action] of [['accessor', accessor], ['proxy', proxy], ['cycle', cycle]]) {
+    const fixture = emitted8b();
+    const before = { state: structuredClone(read8b(fixture.root, fixture.runId).data),
+      events: structuredClone(lines8b(fixture.root, fixture.runId)) };
+    assert8b.throws(() => prepare8b(fixture.root, fixture.runId,
+      { owner: fixture.runId, generation: 1, stdinMode: 'pty-raw-noecho',
+        hostInput: fixture.hostInput }, {
+        cwdFn: () => fixture.root, descriptorBuilder: () => action,
+        reconcileBudgetFn: () => assert8b.fail('invalid descriptor does not reconcile'),
+        gateFn: () => assert8b.fail('invalid descriptor does not gate'),
+      }), /APP_DESCRIPTOR_INVALID/, label);
+    assert8b.deepEqual(read8b(fixture.root, fixture.runId).data, before.state, label);
+    assert8b.deepEqual(lines8b(fixture.root, fixture.runId), before.events, label);
+  }
+  assert8b.equal(accessorReads, 0);
+  assert8b.equal(proxyTraps, 0);
+});
+
+test8b('missing throwing or recursively extra descriptor is write free', () => {
+  for (const builder of [undefined, () => { throw new Error('BUILDER_BOOM'); },
+    () => ({ tool: 'create_thread', target: { type: 'project', projectId: 'project $`\\',
+      environment: { type: 'local', model: 'forbidden' } }, prompt: 'prompt' })]) {
+    const fixture = emitted8b();
+    const before = { state: structuredClone(read8b(fixture.root, fixture.runId).data),
+      events: structuredClone(lines8b(fixture.root, fixture.runId)) };
+    assert8b.throws(() => prepare8b(fixture.root, fixture.runId,
+      { owner: fixture.runId, generation: 1, stdinMode: 'pty-raw-noecho',
+        hostInput: fixture.hostInput }, {
+        nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'), cwdFn: () => fixture.root,
+        ...(builder === undefined ? {} : { descriptorBuilder: builder }),
+        reconcileBudgetFn: () => assert8b.fail('builder failure precedes reconcile'),
+        gateFn: () => ({ ok: true, blocked_by: [] }) }),
+    /APP_DESCRIPTOR_BUILDER_REQUIRED|BUILDER_BOOM|APP_DESCRIPTOR_INVALID/);
+    assert8b.deepEqual(read8b(fixture.root, fixture.runId).data, before.state);
+    assert8b.deepEqual(lines8b(fixture.root, fixture.runId), before.events);
+  }
+});
+
+test8b('expired deadline and reconcile-time revoke grant no action', () => {
+  const expired = emitted8b();
+  assert8b.throws(() => prepare8b(expired.root, expired.runId,
+    { owner: expired.runId, generation: 1, stdinMode: 'pty-raw-noecho',
+      hostInput: expired.hostInput }, {
+      nowFn: () => Date.parse('2026-07-13T00:05:01.001Z'), cwdFn: () => expired.root,
+      descriptorBuilder: () => ({ tool: 'create_thread', target: { type: 'project',
+        projectId: 'project $`\\', environment: { type: 'local' } }, prompt: 'prompt' }),
+      reconcileBudgetFn: () => {}, gateFn: () => ({ ok: true, blocked_by: [] }) }),
+  /APP_PREPARE_DEADLINE_EXPIRED/);
+  const revoked = emitted8b();
+  assert8b.throws(() => prepare8b(revoked.root, revoked.runId,
+    { owner: revoked.runId, generation: 1, stdinMode: 'pty-raw-noecho',
+      hostInput: revoked.hostInput }, {
+      nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'), cwdFn: () => revoked.root,
+      descriptorBuilder: () => ({ tool: 'create_thread', target: { type: 'project',
+        projectId: 'project $`\\', environment: { type: 'local' } }, prompt: 'prompt' }),
+      reconcileBudgetFn: () => revoke8b(revoked.root, revoked.runId,
+        { owner: revoked.runId, generation: 1, runtime: 'codex' },
+        { nowFn: () => Date.parse('2026-07-13T00:00:01.500Z') }),
+      gateFn: () => ({ ok: true, blocked_by: [] }) }), /APP_CONSENT_FENCED|APP_ATTEMPT_FENCED/);
+  assert8b.equal(lines8b(revoked.root, revoked.runId)
+    .filter(event => event.type === 'app-task-prepared').length, 0);
+});
+
+test8b('wrong cwd and expired route or gate settlement are write free', () => {
+  const snapshot = fixture => ({ state: structuredClone(read8b(fixture.root, fixture.runId).data),
+    events: structuredClone(lines8b(fixture.root, fixture.runId)) });
+  const assertUnchanged = (fixture, before) => {
+    assert8b.deepEqual(read8b(fixture.root, fixture.runId).data, before.state);
+    assert8b.deepEqual(lines8b(fixture.root, fixture.runId), before.events);
+  };
+  const action = () => ({ tool: 'create_thread', target: { type: 'project',
+    projectId: 'project $`\\', environment: { type: 'local' } }, prompt: 'prompt' });
+
+  const wrong = emitted8b();
+  const wrongCwd = join8b(wrong.root, 'wrong-parent');
+  mkdir8b(wrongCwd, { recursive: true });
+  const beforeWrong = snapshot(wrong);
+  assert8b.throws(() => prepare8b(wrong.root, wrong.runId,
+    { owner: wrong.runId, generation: 1, stdinMode: 'pty-raw-noecho',
+      hostInput: { ...wrong.hostInput, currentHostTaskCwd: wrongCwd } }, {
+      cwdFn: () => wrongCwd, nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'),
+      descriptorBuilder: action, reconcileBudgetFn: () => {},
+      gateFn: () => ({ ok: true, blocked_by: [] }),
+    }), /APP_ROUTE_AUTHORITY_FENCED/);
+  assertUnchanged(wrong, beforeWrong);
+
+  for (const failure of ['route', 'gate']) {
+    const fixture = emitted8b();
+    const before = snapshot(fixture);
+    assert8b.throws(() => prepare8b(fixture.root, fixture.runId,
+      { owner: fixture.runId, generation: 1, stdinMode: 'pty-raw-noecho',
+        hostInput: failure === 'route' ? { currentHostTaskCwd: fixture.root, projects: [] }
+          : fixture.hostInput }, {
+        cwdFn: () => fixture.root,
+        nowFn: () => Date.parse('2026-07-13T00:05:01.001Z'),
+        descriptorBuilder: action, reconcileBudgetFn: () => {},
+        gateFn: () => failure === 'gate'
+          ? ({ ok: false, blocked_by: ['budget'] }) : ({ ok: true, blocked_by: [] }),
+      }), /APP_PREPARE_DEADLINE_EXPIRED/, failure);
+    assertUnchanged(fixture, before);
+  }
+});
+
+test8b('prepare identity fences precede clock and semantic proof at both read and CAS', () => {
+  const corrupt = emitted8b();
+  raw7d(corrupt.root, corrupt.runId, loop => {
+    loop.session_chain.sessions[0].host_surface.observed_at =
+      '2026-07-13T00:00:09.000Z';
+  });
+  const corruptBefore = bytes7d(corrupt.root, corrupt.runId);
+  const input = { owner: corrupt.runId, generation: 1,
+    stdinMode: 'pty-raw-noecho', hostInput: corrupt.hostInput };
+  assert8b.throws(() => prepare8b(corrupt.root, corrupt.runId,
+    { ...input, owner: 'wrong' }, {
+      nowFn: () => assert8b.fail('wrong caller cannot sample prepare clock') }),
+  /LEASE_FENCED/);
+  assert8b.throws(() => prepare8b(corrupt.root, corrupt.runId, input, {}),
+    /RUN_SNAPSHOT_INVALID/);
+  assert8b.deepEqual(bytes7d(corrupt.root, corrupt.runId), corruptBefore);
+
+  for (const winner of ['fence', 'proof']) {
+    const fixture = emitted8b();
+    let afterInjected = null;
+    let clockCalls = 0;
+    assert8b.throws(() => prepare8b(fixture.root, fixture.runId,
+      { owner: fixture.runId, generation: 1, stdinMode: 'pty-raw-noecho',
+        hostInput: fixture.hostInput }, {
+        cwdFn: () => fixture.root,
+        nowFn: () => { clockCalls += 1; return Date.parse('2026-07-13T00:00:02.000Z'); },
+        descriptorBuilder: () => ({ tool: 'create_thread', target: { type: 'project',
+          projectId: 'project $`\\', environment: { type: 'local' } }, prompt: 'prompt' }),
+        reconcileBudgetFn: () => {
+          raw7d(fixture.root, fixture.runId, loop => {
+            loop.session_chain.sessions[0].host_surface.observed_at =
+              '2026-07-13T00:00:09.000Z';
+            if (winner === 'fence') loop.session_chain.lease.owner_run_id = 'race-winner';
+          });
+          afterInjected = bytes7d(fixture.root, fixture.runId);
+        },
+        gateFn: () => ({ ok: true, blocked_by: [] }),
+      }), winner === 'fence' ? /LEASE_FENCED/ : /RUN_SNAPSHOT_INVALID/);
+    assert8b.deepEqual(bytes7d(fixture.root, fixture.runId), afterInjected);
+    assert8b.equal(lines8b(fixture.root, fixture.runId)
+      .filter(event => event.type === 'app-task-prepared').length, 0);
+    assert8b.equal(clockCalls, winner === 'fence' ? 0 : 1);
+  }
+});
+
+function prepareWorker8b(root, runId, { gateFile, readyFile,
+  mode = 'valid', barrierReady = '-', barrierRelease = '-', crashAt = null,
+  expectedExit = 0 }) {
+  return new Promise((resolve, reject) => {
+    const child = spawn8b(process.execPath,
+      ['tests/fixtures/app-prepare-worker.mjs', root, runId, gateFile, readyFile,
+        mode, barrierReady, barrierRelease],
+      { cwd: new URL('..', import.meta.url), stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, ...(crashAt === null ? {} : {
+          NODE_ENV: 'test', DEEP_LOOP_TEST_CRASH_AT: crashAt,
+        }) } });
+    let out = ''; let err = '';
+    child.stdout.on('data', chunk => { out += chunk; });
+    child.stderr.on('data', chunk => { err += chunk; });
+    child.on('error', reject);
+    child.on('close', code => {
+      if (code !== expectedExit) return reject(new Error(`worker ${code}: ${err}`));
+      return resolve(code === 0 ? JSON.parse(out) : { status: code, stdout: out, stderr: err });
+    });
+  });
+}
+
+async function waitForFile8b(path) {
+  for (let attempt = 0; attempt < 2_000; attempt += 1) {
+    if (exists8b(path)) return;
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  throw new Error(`barrier-timeout:${path}`);
+}
+
+test8b('prepare response loss converges without regranting complete action authority', async () => {
+  const fixture = emitted8b();
+  const gateFile = join8b(fixture.root, 'start-crash-prepare');
+  const readyFile = join8b(fixture.root, 'crash-prepare-ready');
+  write8bFile(gateFile, 'go');
+  const crashed = await prepareWorker8b(fixture.root, fixture.runId, {
+    gateFile, readyFile, crashAt: 'response-after-cleanup', expectedExit: 91,
+  });
+  assert8b.equal(crashed.status, 91, crashed.stderr || crashed.stdout || 'wrong crash exit');
+  rmdir8b(join8b(fixture.root, '.deep-loop', 'runs', fixture.runId, '.lock'));
+
+  const input = { owner: fixture.runId, generation: 1,
+    stdinMode: 'pty-raw-noecho', hostInput: fixture.hostInput };
+  const action = prompt => ({ tool: 'create_thread', target: { type: 'project',
+    projectId: 'project $`\\', environment: { type: 'local' } }, prompt });
+  const retry = prepare8b(fixture.root, fixture.runId, input, {
+    cwdFn: () => fixture.root, descriptorBuilder: () => action('prompt'),
+    nowFn: () => assert8b.fail('committed retry does not sample a clock'),
+    reconcileBudgetFn: () => assert8b.fail('committed retry does not reconcile'),
+    gateFn: () => assert8b.fail('committed retry does not gate'),
+  });
+  assert8b.deepEqual(retry, { ok: true, outcome: 'already-prepared', do_not_call: true,
+    attempt_id: fixture.attemptId });
+  assert8b.equal(Object.hasOwn(retry, 'action'), false);
+  const committed = bytes7d(fixture.root, fixture.runId);
+
+  assert8b.throws(() => prepare8b(fixture.root, fixture.runId, input, {
+    cwdFn: () => fixture.root, descriptorBuilder: () => action('changed prompt'),
+  }), /APP_PREPARE_REQUEST_FENCED/);
+  assert8b.deepEqual(bytes7d(fixture.root, fixture.runId), committed,
+    'changed complete action must be write-free');
+  assert8b.throws(() => prepare8b(fixture.root, fixture.runId,
+    { ...input, stdinMode: 'pipe-open-noecho' }, {
+      cwdFn: () => fixture.root, descriptorBuilder: () => action('prompt'),
+    }), /APP_STDIN_MODE_FENCED/);
+  assert8b.deepEqual(bytes7d(fixture.root, fixture.runId), committed,
+    'changed stdin mode must be write-free');
+  assert8b.throws(() => prepare8b(fixture.root, fixture.runId,
+    { ...input, hostInput: { ...input.hostInput,
+      currentHostTaskCwd: `${fixture.root}/.` } }, {
+      cwdFn: () => fixture.root, descriptorBuilder: () => action('prompt'),
+    }), /APP_PREPARE_REQUEST_FENCED/);
+  assert8b.deepEqual(bytes7d(fixture.root, fixture.runId), committed,
+    'changed host input must be write-free');
+  assert8b.equal(lines8b(fixture.root, fixture.runId)
+    .filter(event => event.type === 'app-task-prepared').length, 1);
+});
+
+test8b('two processes contend and exactly one receives actionable authority', async () => {
+  const fixture = emitted8b();
+  const gateFile = join8b(fixture.root, 'start-prepare');
+  const readyFiles = [join8b(fixture.root, 'prepare-ready-a'),
+    join8b(fixture.root, 'prepare-ready-b')];
+  const workers = readyFiles.map(readyFile => prepareWorker8b(fixture.root, fixture.runId,
+    { gateFile, readyFile }));
+  await Promise.all(readyFiles.map(waitForFile8b));
+  write8bFile(gateFile, 'go');
+  const results = await Promise.all(workers);
+  assert8b.deepEqual(results.map(result => result.do_not_call).sort(), [false, true]);
+  assert8b.equal(results.filter(result => Object.hasOwn(result, 'action')).length, 1);
+  assert8b.equal(lines8b(fixture.root, fixture.runId)
+    .filter(event => event.type === 'app-task-prepared').length, 1);
+  const continuation = read8b(fixture.root, fixture.runId).data.session_chain.sessions
+    .find(session => session.run_id === fixture.childRunId).continuation;
+  assert8b.equal(continuation.confirmation_deadline, '2026-07-13T00:02:02.000Z');
+});
+
+test8b('prepare CAS cannot grant action after a concurrent manual preserve', async () => {
+  const fixture = emitted8b();
+  const gateFile = join8b(fixture.root, 'start-raced-prepare');
+  const workerReady = join8b(fixture.root, 'raced-worker-ready');
+  const barrierReady = join8b(fixture.root, 'raced-pre-cas-ready');
+  const barrierRelease = join8b(fixture.root, 'raced-pre-cas-release');
+  const worker = prepareWorker8b(fixture.root, fixture.runId, { gateFile,
+    readyFile: workerReady, mode: 'barrier-valid', barrierReady, barrierRelease });
+  await waitForFile8b(workerReady);
+  write8bFile(gateFile, 'go');
+  await waitForFile8b(barrierReady);
+
+  const preserved = prepare8b(fixture.root, fixture.runId,
+    { owner: fixture.runId, generation: 1, stdinMode: 'pty-raw-noecho',
+      hostInput: { currentHostTaskCwd: fixture.root, projects: [] } }, {
+      cwdFn: () => fixture.root,
+      nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'),
+      descriptorBuilder: () => assert8b.fail('ambiguous route has no descriptor'),
+      reconcileBudgetFn: () => {}, gateFn: () => ({ ok: true, blocked_by: [] }),
+    });
+  assert8b.equal(preserved.outcome, 'manual-preserve');
+  write8bFile(barrierRelease, 'continue');
+  const raced = await worker;
+  assert8b.match(raced.worker_error, /RUN_PAUSED|APP_ATTEMPT_FENCED/);
+  assert8b.equal(Object.hasOwn(raced, 'action'), false);
+  assert8b.equal(lines8b(fixture.root, fixture.runId)
+    .filter(event => event.type === 'app-task-prepared').length, 0);
+  const loop = read8b(fixture.root, fixture.runId).data;
+  assert8b.equal(loop.status, 'paused');
+  assert8b.equal(loop.session_chain.lease.resume_policy, 'human');
+});
+
+function forkEmitted8b() {
+  const root = temp8b(join8b(tmp8b(), 'dl-app-fork-'));
+  const worktree = join8b(root, '.worktrees', 'ws');
+  mkdir8b(worktree, { recursive: true });
+  const { runId } = init8b(root, { runtime: 'codex', goal: 'g',
+    now: new Date('2026-07-13T00:00:00.000Z'),
+    hostObservation: { kind: 'codex-app', source: 'codex-app-tool-provenance',
+      capabilities: ['fork-thread-same-directory', 'send-message-to-thread',
+        'structured-process-stdin'], structured_stdin_mode: 'pty-raw-noecho',
+      host_task_cwd: worktree, host_task_cwd_source: 'app-task-context',
+      observed_at: '2026-07-13T00:00:00.000Z' },
+    cwdFn: () => worktree, appContinuationConsent: { mode: 'auto', authority: 'human-confirmed',
+      confirmed_at: '2026-07-13T00:00:00.000Z', revoked_at: null } });
+  const fence = { owner: runId, generation: 1 };
+  const { id: workstreamId } = newWorkstream8b(root, runId, {
+    title: 'WS1', branch: 'codex/ws1', worktree: '.worktrees/ws',
+    requestId: 'app-prepare-fork-ws1', fence,
+  });
+  setWorkstreamStatus8b(root, runId, workstreamId, 'in_progress', { fence });
+  const attemptId = '01JAPPTASK0000000000000000';
+  const emitted = emit8b(root, runId, { trigger: 'fork', appIntent: true,
+    expect: { owner: runId, generation: 1 }, descriptorBuilder: handoffDescriptor8b,
+    cwdFn: () => worktree, attemptIdFactory: () => attemptId,
+    now: Date.parse('2026-07-13T00:00:01.000Z'),
+    nowFn: () => Date.parse('2026-07-13T00:00:01.000Z') });
+  return { root, runId, worktree, attemptId, childRunId: emitted.childRunId };
+}
+
+test8b('fork prepare consumes the one emit-verified durable workstream binding', () => {
+  const fixture = forkEmitted8b();
+  const result = prepare8b(fixture.root, fixture.runId,
+    { owner: fixture.runId, generation: 1, stdinMode: 'pty-raw-noecho',
+      hostInput: { currentHostTaskCwd: fixture.worktree } }, {
+      cwdFn: () => fixture.worktree,
+      nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'),
+      descriptorBuilder: () => ({ tool: 'fork_thread',
+        environment: { type: 'same-directory' },
+        followup: { tool: 'send_message_to_thread', prompt: 'prompt' } }),
+      reconcileBudgetFn: () => {}, gateFn: () => ({ ok: true, blocked_by: [] }) });
+  assert8b.equal(result.outcome, 'prepared');
+  assert8b.equal(Object.hasOwn(result, 'action'), true);
+});
