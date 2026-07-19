@@ -9,6 +9,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { runPreCompactHandoff } from '../scripts/hooks-impl/precompact-handoff.mjs';
 import { readLines } from '../scripts/lib/integrity.mjs';
 import { readState } from '../scripts/lib/state.mjs';
+import { normalizeHostObservation } from '../scripts/lib/host-surface.mjs';
 import {
   boundedRootPrepareInput,
   FakeAppHost,
@@ -1548,4 +1549,55 @@ test('confirm result loss retries the exact receipt before and after commit with
         .some(output => output.includes(raw)), false, lossPoint);
     }
   }
+});
+
+test('non-App surface observations confer zero App host-call authority', () => {
+  const rows = [
+    { runtime: 'claude', kind: 'claude-code', source: 'claude-cli-entrypoint', host_task_cwd_source: 'direct-cli-cwd' },
+    { runtime: 'claude', kind: 'claude-desktop', source: 'claude-desktop-local-agent', host_task_cwd_source: 'desktop-code-context' },
+    { runtime: 'codex', kind: 'codex-cli', source: 'codex-cli-host', host_task_cwd_source: 'direct-cli-cwd' },
+  ];
+  for (const row of rows) {
+    const fixture = initializeManualRun([], {
+      runtime: row.runtime, hostSurface: row.kind, hostSource: row.source,
+    });
+    const observation = normalizeHostObservation({
+      ...row, capabilities: [], structured_stdin_mode: null, host_task_cwd: fixture.root,
+    }, {
+      platform: 'linux', kernelCwd: fixture.root, exists: () => true, realpath: value => value,
+      stat: () => ({ dev: 1, ino: 1 }), sameFile: () => true,
+    });
+    assert.notEqual(observation.kind, 'codex-app');
+    const attempted = runKernelResult(fixture.root, [
+      'handoff', 'emit', '--run-id', fixture.runId, '--reason', 'milestone', '--trigger', 'milestone',
+      '--owner', fixture.runId, '--generation', '1', '--app-intent',
+    ], { cwd: fixture.cwd });
+    assert.equal(attempted.status, 3, row.kind);
+    const output = `${attempted.stdout}\n${attempted.stderr}`;
+    assert.doesNotMatch(output,
+      /"action"|create_thread|fork_thread|send_message_to_thread/, row.kind);
+    assert.equal((output.match(/"action"/gu) ?? []).length, 0, row.kind);
+    assert.equal(fixture.consent.mode, 'manual', row.kind);
+    assert.equal(fixture.appStatus.has_app_history, false, row.kind);
+    assert.equal(fixture.appStatus.current, null, row.kind);
+  }
+});
+
+test('manual enum omission preserves exact empty capabilities and paired-null surface source', () => {
+  const fixture = initializeManualRun([], {
+    runtime: 'codex', hostSurface: null, hostSource: null,
+  });
+  assert.equal(fixture.parentSurface, null);
+  assert.equal(fixture.appStatus.has_app_history, false);
+  assert.equal(fixture.appStatus.current, null);
+  assert.deepEqual(fixture.appStatus.history, []);
+  assert.equal(fixture.consent.mode, 'manual');
+  assert.equal(fixture.consent.authority, 'default-manual');
+  const attempted = runKernelResult(fixture.root, [
+    'handoff', 'emit', '--run-id', fixture.runId, '--reason', 'milestone',
+    '--trigger', 'milestone', '--owner', fixture.runId, '--generation', '1', '--app-intent',
+  ], { cwd: fixture.cwd });
+  assert.equal(attempted.status, 3);
+  assert.doesNotMatch(`${attempted.stdout}\n${attempted.stderr}`,
+    /"action"|create_thread|fork_thread|send_message_to_thread/);
 });

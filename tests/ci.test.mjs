@@ -71,7 +71,7 @@ test('workflow has only the requested triggers and top-level read-only contents 
     'permissions must be declared once at the top level');
 });
 
-test('strategy keeps all cells running across the exact 3 by 2 OS and Node matrix', requiresWorkflow, () => {
+test('strategy keeps all cells running across the exact 3 by 3 OS and Node matrix', requiresWorkflow, () => {
   assert.deepEqual(scalarOccurrences('fail-fast'), ['false']);
 
   const matrix = mappingBlock('matrix', 6);
@@ -80,9 +80,9 @@ test('strategy keeps all cells running across the exact 3 by 2 OS and Node matri
   const operatingSystems = inlineMatrixValues('os');
   const nodeVersions = inlineMatrixValues('node');
   assert.deepEqual(operatingSystems, ['ubuntu-latest', 'macos-latest', 'windows-latest']);
-  assert.deepEqual(nodeVersions, ['20', '24']);
-  assert.equal(new Set(operatingSystems).size * new Set(nodeVersions).size, 6,
-    'the matrix must expand to exactly six unique jobs');
+  assert.deepEqual(nodeVersions, ['20', '22', '24']);
+  assert.equal(new Set(operatingSystems).size * new Set(nodeVersions).size, 9,
+    'the matrix must expand to exactly nine unique jobs');
 });
 
 test('one matrix job binds the runner and setup-node version to their axes', requiresWorkflow, () => {
@@ -99,7 +99,7 @@ test('workflow pins exactly checkout v4 and setup-node v4', requiresWorkflow, ()
   assert.deepEqual(actions, ['actions/checkout@v4', 'actions/setup-node@v4']);
 });
 
-test('all six jobs run the same shell-neutral preflight command without dependency installation or cache', requiresWorkflow, () => {
+test('all nine jobs run the same shell-neutral preflight command without dependency installation or cache', requiresWorkflow, () => {
   assert.deepEqual(scalarOccurrences('run'), ['npm run preflight']);
   assert.deepEqual(scalarOccurrences('shell'), [], 'the workflow must not select an OS-specific shell');
   assert.deepEqual(scalarOccurrences('cache'), [], 'zero-dependency CI must not configure a dependency cache');

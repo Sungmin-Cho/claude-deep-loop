@@ -459,3 +459,49 @@ test('project list normalization bounds entries and strips fields', () => {
     assert.throws(() => normalizeProjectList([], { maxEntries }), /PROJECT_LIST_INVALID/);
   }
 });
+
+test('route selection requires native same-file identity across POSIX and Windows cases', () => {
+  const base = {
+    root: '/repo', recordedHostTaskCwd: '/repo', currentHostTaskCwd: '/repo', kernelCwd: '/repo',
+    capabilities: ['list-projects', 'create-thread-local', 'structured-process-stdin'],
+    projects: [{ projectId: 'P', projectKind: 'local', path: '/repo' }],
+    workstreams: [], activeWorkstreams: [],
+  };
+  const posix = {
+    platform: 'linux', exists: () => true, realpath: value => value,
+    stat: value => ({ dev: 1, ino: value === '/repo' ? 1 : 2 }),
+    sameFile: (left, right) => left.dev === right.dev && left.ino === right.ino,
+  };
+  assert.equal(selectAppContinuationRoute(base, posix).kind, 'create');
+  assert.equal(selectAppContinuationRoute({ ...base, currentHostTaskCwd: '/Repo' }, posix).kind, 'manual');
+  assert.equal(selectAppContinuationRoute({ ...base, currentHostTaskCwd: '/repo-other' }, posix).kind, 'manual');
+
+  const windowsBase = {
+    ...base, root: 'C:\\Repo', recordedHostTaskCwd: 'C:\\Repo',
+    currentHostTaskCwd: 'c:/repo', kernelCwd: 'C:\\REPO',
+    projects: [{ projectId: 'P', projectKind: 'local', path: 'c:/repo' }],
+  };
+  const windows = {
+    platform: 'win32', exists: () => true,
+    realpath: value => value.replaceAll('/', '\\').toLowerCase(),
+    stat: () => ({ volumeSerialNumber: 7, fileId: 'same' }),
+    sameFile: (left, right) => left.volumeSerialNumber === right.volumeSerialNumber && left.fileId === right.fileId,
+  };
+  assert.equal(selectAppContinuationRoute(windowsBase, windows).kind, 'create');
+  assert.equal(selectAppContinuationRoute(windowsBase, {
+    ...windows, sameFile: () => false,
+  }).kind, 'manual');
+  assert.equal(selectAppContinuationRoute({ ...windowsBase, currentHostTaskCwd: '\\\\server\\share\\repo' }, {
+    ...windows, realpath: () => { throw new Error('identity unavailable'); },
+  }).kind, 'manual');
+});
+
+test('opaque App receipt boundary is 512 UTF-8 bytes on every platform', () => {
+  const exactly512 = 'é'.repeat(256);
+  const exactly513 = `${exactly512}x`;
+  assert.equal(Buffer.byteLength(exactly512, 'utf8'), 512);
+  assert.equal(Buffer.byteLength(exactly513, 'utf8'), 513);
+  assert.equal(validateOpaqueId(exactly512, { label: 'thread-id', maxBytes: 512 }), exactly512);
+  assert.throws(() => validateOpaqueId(exactly513, { label: 'thread-id', maxBytes: 512 }),
+    /OPAQUE_ID_INVALID/);
+});
