@@ -56,6 +56,10 @@ handoff emit과 respawn은 커널 상태 조작이다. descriptor의 canonical p
 
 maker/checker 파일 작업은 handoff에서 일어나지 않으므로, worktree 진입 없이 단계 2로 진행한다.
 
+## 단계 1.55: App route selection before generic emit
+
+어떤 launcher 승인이나 generic emit보다 먼저 unattended/headless marker가 없음을 확인하고, current attended host evidence와 redacted `app-task status`로 durable Codex App eligibility를 판정한다. `handoff_phase=idle`인 eligible run은 follow the App handoff protocol in `handoff-respawn.md` exactly from step 1. 이미 `handoff_phase=emitted`이고 exact current App attempt가 owner/generation/route와 일치하면 re-emit 없이 그 protocol의 step 2부터 따른다. 두 경우 모두 terminal branch다. Do not continue to generic `handoff emit` or any `respawn`; ambiguity는 protocol의 fail-closed manual `$deep-loop:deep-loop-resume` 경로로만 간다. App-ineligible 또는 non-App run만 단계 1.6 이후 launcher/generic 경로를 계속한다.
+
 ## 단계 1.6: Windows launcher 승인 preflight (handoff emit 전에, handoff_phase=idle인 경우만)
 
 launcher 승인은 `intent:recover` fence를 사용하므로 `handoff emit`이 lease를 `releasing`으로 바꾸기 **전에** 끝내야 한다. 단계 1에서 이미 `emitted`/`spawned`를 확인했다면 승인을 시도하지 말고 단계 3의 수동 fallback/respawn 분기로 간다.
@@ -114,11 +118,9 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field session_spawn --pr
 node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field autonomy --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
-If current attended host evidence and redacted `app-task status` identify an eligible Codex App run, follow the App handoff protocol in `handoff-respawn.md` exactly. Do not also invoke legacy `respawn`; an App-bound attempt is owned only by the App protocol. Any ambiguity preserves/pauses for manual `$deep-loop:deep-loop-resume`.
-
 **분기 (커널 `resolveSpawnMode` 우선순위 headless > desktop > visible > interactive와 동일 순서로 먼저 판정):**
 
-> **현재 Codex transport 경계:** 승인된 native runtime이 있으면 measured headless continuation을 사용할 수 있다. macOS/Linux에서는 그 승인 runtime과 양성 감지된 absolute `cmux` executable + exact socket이 있을 때 visible continuation이 활성화되고, macOS에서는 고정 `/usr/bin/osascript`로 양성 검증된 **선택된** iTerm2 또는 Terminal.app만 활성화된다. 네이티브 Windows에서는 승인된 runtime + WT/PowerShell launcher identity가 있을 때 shell-free visible continuation이 활성화된다. 승인 runtime이 없으면 `runtime-identity-unavailable`, launcher 증적이 없거나 바뀌면 launcher identity 오류로 CAS 전 preserve-pause하며, 지원되지 않는 visible 경로는 `codex-transport-not-activated`로 닫힌다. 어떤 경우에도 Claude process로 대체하지 않는다. **Codex App의 자동 새 task 생성은 지원하지 않으므로 수동 App resume을 유지한다.**
+> **현재 Codex transport 경계:** 승인된 native runtime이 있으면 measured headless continuation을 사용할 수 있다. macOS/Linux에서는 그 승인 runtime과 양성 감지된 absolute `cmux` executable + exact socket이 있을 때 visible continuation이 활성화되고, macOS에서는 고정 `/usr/bin/osascript`로 양성 검증된 **선택된** iTerm2 또는 Terminal.app만 활성화된다. 네이티브 Windows에서는 승인된 runtime + WT/PowerShell launcher identity가 있을 때 shell-free visible continuation이 활성화된다. 승인 runtime이 없으면 `runtime-identity-unavailable`, launcher 증적이 없거나 바뀌면 launcher identity 오류로 CAS 전 preserve-pause하며, 지원되지 않는 visible 경로는 `codex-transport-not-activated`로 닫힌다. 어떤 경우에도 Claude process로 대체하지 않는다. **Codex App 자동 task 생성은 위 eligible attended terminal branch에서만 지원하며, ineligible/manual/headless 경로는 수동 App resume을 유지한다.**
 
 ### Unattended (커널 `isHeadlessInvocation(env)` 마커 전용 — non-tty 아님. **가장 먼저 판정** — Desktop/Visible보다 우선)
 

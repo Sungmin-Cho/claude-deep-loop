@@ -1361,5 +1361,17 @@ test('attended App handoff has one ordered public-tool route and no retry author
   for (const name of ['deep-loop-continue', 'deep-loop-handoff']) {
     const source = readFileSync(skillPath(name), 'utf8');
     assert.ok(source.includes('App handoff protocol in `handoff-respawn.md`'));
+    const selection = source.indexOf('App route selection before generic emit');
+    const genericEmit = source.indexOf(
+      'handoff emit --owner <owner_run_id> --generation <n> --project-root');
+    const firstRespawn = source.indexOf(' respawn --owner <owner_run_id>');
+    assert.ok(selection >= 0 && selection < genericEmit,
+      `${name}: attended App selection must precede generic emit`);
+    assert.ok(firstRespawn < 0 || selection < firstRespawn,
+      `${name}: attended App selection must precede legacy respawn`);
+    const selectionEnd = source.indexOf('\n## ', selection + 4);
+    const block = source.slice(selection, selectionEnd < 0 ? source.length : selectionEnd);
+    assert.match(block, /terminal branch/i);
+    assert.match(block, /Do not continue to generic `handoff emit` or any `respawn`/i);
   }
 });
