@@ -4106,3 +4106,36 @@ main-agent judgment:
 - formal disposition: `APPROVE — CORRECTED GATE 3A COMPLETE`. The earlier false completion is
   superseded by this exact receipt. Begin Gate 3B by refreshing and independently re-reviewing the
   already-present Task 7A against this completed prerequisite before starting Task 7B.
+
+## Gate 5 local verification — cross-surface and 3×3 CI candidate
+
+Status: LOCAL PASS — real Codex App smoke and hosted 3×3 CI remain pending their separate gates.
+
+- candidate commit: `f2364e7edc3c21cfd49fc63dd93b5af3e56057ec` on
+  `codex/codex-app-native-task-continuation`; tracked worktree clean before this evidence-only edit.
+- local host/runtime: `Darwin 25.5.0 arm64`, Node `v26.0.0`. No local Node 20, 22, or 24 result is
+  claimed; those versions are the exact workflow matrix and remain pending hosted CI execution.
+- targeted command: `node --test tests/host-surface.test.mjs tests/codex-app-task-continuation-integration.test.mjs tests/platform-durability.test.mjs tests/ci.test.mjs`.
+  Exit `0`; tests/pass/fail/cancelled/skipped/todo `54/54/0/0/0/0`; TAP skip/todo directives
+  `0/0`; reported duration `72,349.576417 ms`.
+- related command: `node --test tests/platform-durability.test.mjs tests/ci.test.mjs tests/skills.test.mjs tests/precompact-hook.test.mjs tests/headless-host.test.mjs`.
+  Exit `0`; tests/pass/fail/cancelled/skipped/todo `231/231/0/0/0/0`; TAP skip/todo directives
+  `0/0`; reported duration `34,172.3475 ms`.
+- exact-candidate command: `npm run preflight`. Exit `0`; validation `ok`; tests/pass/fail/cancelled/
+  skipped/todo `1,976/1,976/0/0/0/0`; TAP skip/todo directives `0/0`; reported Node test duration
+  `331,932.416917 ms`.
+- test-file SHA-256:
+  - `tests/host-surface.test.mjs`: `ae7168f0280d0a92d0d91b9e12eaca2d387e7760d0be96ee1c80c41569ebb472`.
+  - `tests/codex-app-task-continuation-integration.test.mjs`: `c7e5718250733ee4d7579d27c1af860cf40987b2808983836d1dd76a0c19a7df`.
+  - `tests/platform-durability.test.mjs`: `74b226a431da9eb50ed836b3eb15ef9a3aecc131e5bbe1712931a6368bac9102`.
+  - `tests/ci.test.mjs`: `57422fbd4f2cb732bc1683e3d737bbbb61a01e6f84571ddbcf0bfab65403d675`.
+- evidence classification: POSIX/Windows/UNC route cases are injected deterministic fixtures, not
+  claims of native Windows execution. The durability test used the real current macOS filesystem and
+  retained only the intentional `.anchored-committed.json` recovery receipt. The workflow now defines
+  the exact nine cells `ubuntu-latest|macos-latest|windows-latest` × `20|22|24`; real Windows and
+  per-version results remain pending Gate 7 CI verification.
+- Task 15A review: independent standard and adversarial `gpt-5.6-sol` / high reviewers both returned
+  `APPROVE`, Red/Yellow `0/0`, on exact commit `f2364e7`; no correction round was required.
+- boundary: no personal plugin install, Codex App restart, real App task creation/fork/message, push,
+  PR, merge, publication, deep-suite synchronization, or cleanup was performed. The coupled real App
+  smoke remains separately approval-gated.
