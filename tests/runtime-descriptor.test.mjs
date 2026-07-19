@@ -97,3 +97,52 @@ test('Codex Slice 1 descriptor is manual/fail-closed and never emits Claude tran
   assert.ok(!serialized.includes('--effort'), 'Claude --effort flag must not leak into Codex output');
   assert.ok(!serialized.includes('"bin":"claude"'), 'Codex must not route through the Claude process');
 });
+
+test('fork App prompt is bounded, self-contained, and honest about history', async () => {
+  const { APP_RESUME_PROMPT_MAX_BYTES, buildAppResumePrompt } = await descriptorModule();
+  const prompt = buildAppResumePrompt({
+    projectRoot: '/repo', targetCwd: '/repo/.claude/worktrees/ws', platform: 'linux',
+    logicalRunId: '01JAPPRAN00000000000000000',
+    parentRunId: '01JAPPPAR00000000000000000',
+    childRunId: '01JAPPCHD00000000000000015',
+    parentGeneration: 4, attemptId: '01JAPPTASK0000000000000000', route: 'fork',
+    contextMode: 'inherited-completed-history',
+    handoffRel: 'handoffs/next.md', workstreamId: 'WS-1',
+  });
+  for (const value of [
+    'logical_run_id="01JAPPRAN00000000000000000"',
+    'parent_run_id="01JAPPPAR00000000000000000"',
+    'reserved_child_run_id="01JAPPCHD00000000000000015"',
+    'app_attempt_id="01JAPPTASK0000000000000000"',
+    'workstream_id="WS-1"', '$deep-loop:deep-loop-resume', 'session-profile set',
+  ]) {
+    assert.ok(prompt.includes(value));
+  }
+  assert.match(prompt, /completed history/i);
+  assert.match(prompt, /active turn.*unfinished response/i);
+  assert.match(prompt, /status.*confirmed.*acquire/is);
+  assert.match(prompt, /handoff.*loop state.*source of truth/is);
+  assert.ok(Buffer.byteLength(prompt, 'utf8') <= APP_RESUME_PROMPT_MAX_BYTES);
+  assert.doesNotMatch(prompt, /project[_-]?id|thread[_-]?id|host response|model|thinking|claude:\/\/|\bcodex exec\b/i);
+});
+
+test('App prompt rejects path controls, route drift, and oversize paths', async () => {
+  const { buildAppResumePrompt } = await descriptorModule();
+  const base = {
+    projectRoot: '/repo', targetCwd: '/repo/.claude/worktrees/ws', platform: 'linux',
+    logicalRunId: '01JAPPRAN00000000000000000',
+    parentRunId: '01JAPPPAR00000000000000000',
+    childRunId: '01JAPPCHD00000000000000015',
+    parentGeneration: 4, attemptId: '01JAPPTASK0000000000000000', route: 'fork',
+    contextMode: 'inherited-completed-history',
+    handoffRel: 'handoffs/next.md', workstreamId: 'WS-1',
+  };
+  for (const field of ['projectRoot', 'targetCwd']) {
+    assert.throws(() => buildAppResumePrompt({ ...base, [field]: `${base[field]}\nINJECT` }),
+      /APP_PROMPT_PATH_INVALID/);
+    assert.throws(() => buildAppResumePrompt({ ...base, [field]: `${base[field]}\0INJECT` }),
+      /APP_PROMPT_PATH_INVALID/);
+  }
+  assert.throws(() => buildAppResumePrompt({ ...base, projectRoot: `/${'x'.repeat(4097)}` }), /APP_PROMPT_PATH_INVALID/);
+  assert.throws(() => buildAppResumePrompt({ ...base, contextMode: 'fresh' }), /APP_PROMPT_ROUTE_INVALID/);
+});

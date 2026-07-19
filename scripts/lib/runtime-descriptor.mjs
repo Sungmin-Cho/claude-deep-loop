@@ -34,6 +34,8 @@ function meSh(quote, model, effort) {
 const SAFE_ID = /^[A-Za-z0-9_-]+$/;
 const SAFE_HANDOFF_REL = /^handoffs\/[A-Za-z0-9._-]+$/;
 
+export const APP_RESUME_PROMPT_MAX_BYTES = 16_384;
+
 function validateSpawnArgs({ parentRunId, childRunId, handoffRel }) {
   if (!SAFE_ID.test(String(parentRunId))) {
     throw Object.assign(new Error(`UNSAFE_SPAWN_ARG: parentRunId=${parentRunId}`), { code: 'UNSAFE_SPAWN_ARG' });
@@ -76,6 +78,86 @@ function windowsFullyQualifiedPath(value, { allowUnc = true } = {}) {
 function targetAbsolutePath(value, platform) {
   if (typeof value !== 'string' || value.length === 0 || /[\0\r\n]/.test(value)) return false;
   return platform === 'win32' ? windowsFullyQualifiedPath(value) : posix.isAbsolute(value);
+}
+
+function appPromptId(value, label) {
+  if (typeof value !== 'string' || !SAFE_ID.test(value) || Buffer.byteLength(value, 'utf8') > 256) {
+    throw new Error(`APP_PROMPT_ID_INVALID: ${label}`);
+  }
+  return value;
+}
+
+function appPromptAbsolutePath(value, platform, label) {
+  if (typeof value !== 'string' || /[\u0000\r\n]/u.test(value)
+      || !targetAbsolutePath(value, platform) || Buffer.byteLength(value, 'utf8') > 4096) {
+    throw new Error(`APP_PROMPT_PATH_INVALID: ${label}`);
+  }
+  return value;
+}
+
+function appPromptHandoff(value) {
+  if (typeof value !== 'string' || !SAFE_HANDOFF_REL.test(value)) {
+    throw new Error('APP_PROMPT_HANDOFF_INVALID');
+  }
+  return value;
+}
+
+export function buildAppResumePrompt(input = {}) {
+  const {
+    projectRoot, targetCwd, platform = process.platform, logicalRunId, parentRunId,
+    childRunId, parentGeneration, attemptId, route, contextMode, handoffRel,
+    workstreamId = null,
+  } = input;
+  const root = appPromptAbsolutePath(projectRoot, platform, 'projectRoot');
+  const cwd = appPromptAbsolutePath(targetCwd, platform, 'targetCwd');
+  const logical = appPromptId(logicalRunId, 'logicalRunId');
+  const parent = appPromptId(parentRunId, 'parentRunId');
+  const child = appPromptId(childRunId, 'childRunId');
+  const attempt = appPromptId(attemptId, 'attemptId');
+  const handoff = appPromptHandoff(handoffRel);
+  if (!Number.isInteger(parentGeneration) || parentGeneration < 1) {
+    throw new Error('APP_PROMPT_GENERATION_INVALID');
+  }
+  if ((route === 'create' && contextMode !== 'fresh')
+      || (route === 'fork' && contextMode !== 'inherited-completed-history')
+      || !['create', 'fork'].includes(route)) {
+    throw new Error('APP_PROMPT_ROUTE_INVALID');
+  }
+  const workstream = route === 'fork' ? appPromptId(workstreamId, 'workstreamId') : null;
+  if (route === 'create' && workstreamId != null) throw new Error('APP_PROMPT_ROUTE_INVALID');
+
+  const lines = [
+    'Continue this deep-loop run from durable state.',
+    `project_root=${JSON.stringify(root)}`,
+    `execution_cwd=${JSON.stringify(cwd)}`,
+    `logical_run_id=${JSON.stringify(logical)}`,
+    `parent_run_id=${JSON.stringify(parent)}`,
+    `reserved_child_run_id=${JSON.stringify(child)}`,
+    `expected_parent_generation=${parentGeneration}`,
+    'runtime="codex"',
+    'expected_surface="codex-app"',
+    `app_attempt_id=${JSON.stringify(attempt)}`,
+    `route=${JSON.stringify(route)}`,
+    `context_mode=${JSON.stringify(contextMode)}`,
+    `handoff_relative_path=${JSON.stringify(handoff)}`,
+  ];
+  if (workstream != null) lines.push(`workstream_id=${JSON.stringify(workstream)}`);
+  lines.push(route === 'fork'
+    ? 'This task inherits completed history. The active turn and unfinished response are not inherited.'
+    : 'This is a fresh task and does not inherit conversation history.');
+  lines.push(
+    'The handoff artifact and durable loop state are the source of truth; do not rely on prior conversation alone.',
+    'Run $deep-loop:deep-loop-resume with the exact project root and logical run id above.',
+    'Read app-task status first. Do not acquire the lease until the exact attempt is confirmed.',
+    'Use only lease-fenced kernel CLI mutations; never edit durable state files directly.',
+    'After acquire succeeds, refresh this task profile through the existing fenced session-profile set path.',
+    'Observe this child task current callable capabilities; do not inherit the parent capability claim.',
+  );
+  const prompt = lines.join('\n');
+  if (Buffer.byteLength(prompt, 'utf8') > APP_RESUME_PROMPT_MAX_BYTES) {
+    throw new Error('APP_PROMPT_TOO_LARGE');
+  }
+  return prompt;
 }
 
 function windowsNativePath(identity, { runtime = null, kind = null } = {}) {
