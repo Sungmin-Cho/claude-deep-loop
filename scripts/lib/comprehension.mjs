@@ -1,4 +1,5 @@
-import { MUTATION_TURN_FLOOR, readLines, withVerifiedMutationLock } from './integrity.mjs';
+import { authenticateVerifiedMutationCaller, MUTATION_TURN_FLOOR, readLines,
+  withVerifiedMutationLock } from './integrity.mjs';
 import { contentHash } from './envelope.mjs';
 import { isHeadlessInvocation } from './respawn.mjs';
 import { leaseCheck } from './lease.mjs';
@@ -116,6 +117,17 @@ export function recordReviewed(root, runId, episodeId, source,
     operation: 'comprehension-reviewed', ...callerBinding, request_digest: requestDigest,
   }));
   const fenceCheck = ackIdentityFence(fence);
+  authenticateVerifiedMutationCaller(root, runId, { callerBinding,
+    fenceCheck: loop => {
+      fenceCheck(loop);
+      const authorized = leaseCheck(loop, { ...fence, intent: fence.intent ?? 'business' });
+      if (!authorized.ok) {
+        if (authorized.reason === 'RUN_TERMINAL') {
+          throw new Error('RUN_TERMINAL: recordReviewed');
+        }
+        throw new Error(`LEASE_FENCED: ${authorized.reason}`);
+      }
+    }, fenceError: 'LEASE_FENCED: recordReviewed' });
   return withVerifiedMutationLock(root, runId, { callerBinding, intentDigest,
     fenceError: 'LEASE_FENCED: recordReviewed',
     intentConflictError: 'COMPREHENSION_REQUEST_CONFLICT' }, context => {

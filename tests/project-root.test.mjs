@@ -822,6 +822,77 @@ test7g('review verdict requires and enforces runtime before fresh or replay sema
   assert7g.deepEqual(bytes7g(fresh.root, fresh.runId), before);
 });
 
+test7g('pending review verdict rejects wrong runtime before recovery changes any byte', () => {
+  const worker = file7g(new URL('./helpers/anchored-crash-worker.mjs', import.meta.url));
+  for (const point of ['pending-after-rename', 'state-after-rename']) {
+    const fixture = fixture7g(`dl-7g-verdict-preauth-${point}-`);
+    const child = spawn7g(process.execPath,
+      [worker, fixture.root, fixture.runId, 'breaker-verdict', point], {
+        encoding: 'utf8', shell: false,
+        env: { ...process.env, DEEP_LOOP_CRASH_OWNER: fixture.owner,
+          DEEP_LOOP_CRASH_GENERATION: String(fixture.generation) },
+      });
+    assert7g.equal(child.status, 91, child.stderr || child.stdout);
+    rmdir7g(join7g(fixture.root, '.deep-loop', 'runs', fixture.runId, '.lock'));
+    const pending = bytes7g(fixture.root, fixture.runId);
+    assert7g.throws(() => rawVerdict7g(fixture.root, fixture.runId,
+      'REQUEST_CHANGES', { owner: fixture.owner, generation: fixture.generation,
+        runtime: 'claude' }, { requestId: 'crash-7g-verdict' }),
+    /LEASE_FENCED: RUNTIME_FENCED/);
+    assert7g.deepEqual(bytes7g(fixture.root, fixture.runId), pending,
+      `${point}: wrong runtime must not recover pending journal bytes`);
+    assert7g.deepEqual(rawVerdict7g(fixture.root, fixture.runId,
+      'REQUEST_CHANGES', { owner: fixture.owner, generation: fixture.generation,
+        runtime: 'codex' }, { requestId: 'crash-7g-verdict' }),
+    { ok: true, changed: true });
+  }
+});
+
+test7g('threshold-crossing pending verdict retry converges once with original response', () => {
+  const worker = file7g(new URL('./helpers/anchored-crash-worker.mjs', import.meta.url));
+  for (const point of ['pending-after-rename', 'state-after-rename']) {
+    const fixture = fixture7g(`dl-7g-threshold-recovery-${point}-`);
+    raw7g(fixture.root, fixture.runId, loop => {
+      loop.circuit_breaker.consecutive_request_changes = 2;
+    });
+    const child = spawn7g(process.execPath,
+      [worker, fixture.root, fixture.runId, 'breaker-verdict', point], {
+        encoding: 'utf8', shell: false,
+        env: { ...process.env, DEEP_LOOP_CRASH_OWNER: fixture.owner,
+          DEEP_LOOP_CRASH_GENERATION: String(fixture.generation) },
+      });
+    assert7g.equal(child.status, 91, child.stderr || child.stdout);
+    rmdir7g(join7g(fixture.root, '.deep-loop', 'runs', fixture.runId, '.lock'));
+    assert7g.deepEqual(rawVerdict7g(fixture.root, fixture.runId,
+      'REQUEST_CHANGES', { owner: fixture.owner, generation: fixture.generation,
+        runtime: 'codex' }, { requestId: 'crash-7g-verdict' }),
+    { ok: true, changed: true });
+    const state = readState(fixture.root, fixture.runId).data;
+    assert7g.equal(state.circuit_breaker.consecutive_request_changes, 3);
+    assert7g.equal(state.status, 'paused');
+    assert7g.equal(lines7g(fixture.root, fixture.runId)
+      .filter(event => event.type === 'breaker-review-verdict').length, 1);
+  }
+});
+
+test7g('committed verdict receipt replay enforces current full lease policy first', () => {
+  for (const policy of ['paused', 'released']) {
+    const fixture = fixture7g(`dl-7g-receipt-policy-${policy}-`);
+    const fence = { owner: fixture.owner, generation: fixture.generation, runtime: 'codex' };
+    const input = { requestId: `receipt-policy-${policy}` };
+    assert7g.deepEqual(rawVerdict7g(fixture.root, fixture.runId,
+      'REQUEST_CHANGES', fence, input), { ok: true, changed: true });
+    raw7g(fixture.root, fixture.runId, loop => {
+      if (policy === 'paused') loop.status = 'paused';
+      else loop.session_chain.lease.state = 'released';
+    });
+    const before = bytes7g(fixture.root, fixture.runId);
+    assert7g.throws(() => rawVerdict7g(fixture.root, fixture.runId,
+      'REQUEST_CHANGES', fence, input), /LEASE_FENCED/);
+    assert7g.deepEqual(bytes7g(fixture.root, fixture.runId), before);
+  }
+});
+
 test7g('zero-count APPROVE receipt cannot reset a newer verdict after response loss', () => {
   const fixture = fixture7g('dl-7g-approve-noop-response-loss-');
   const fence = { owner: fixture.owner, generation: fixture.generation };

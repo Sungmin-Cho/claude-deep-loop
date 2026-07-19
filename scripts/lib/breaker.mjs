@@ -1,6 +1,8 @@
 import { contentHash } from './envelope.mjs';
-import { readLines, withVerifiedMutationLock } from './integrity.mjs';
+import { authenticateVerifiedMutationCaller, readLines,
+  withVerifiedMutationLock } from './integrity.mjs';
 import { leaseCheck } from './lease.mjs';
+import { runtimeFence } from './runtime.mjs';
 
 const THRESHOLD = 3;
 
@@ -19,17 +21,32 @@ function breakerLeaseFence(owner, generation) {
   };
 }
 
+function breakerPendingFence(fence) {
+  const identity = breakerLeaseFence(fence.owner, fence.generation);
+  return loop => {
+    identity(loop);
+    if (fence.runtime !== undefined) {
+      const runtime = runtimeFence(loop, fence.runtime);
+      if (!runtime.ok) throw new Error(`LEASE_FENCED: ${runtime.reason}`);
+    }
+  };
+}
+
 function breakerMutation(root, runId, fence, operation, intent, body) {
   if (typeof fence?.owner !== 'string' || !Number.isSafeInteger(fence?.generation)) {
     throw new Error(`FENCE_REQUIRED: ${operation}`);
   }
   const callerBinding = { owner: fence.owner, generation: fence.generation };
   const intentDigest = contentHash(JSON.stringify({ operation, ...callerBinding, ...intent }));
+  const authentication = authenticateVerifiedMutationCaller(root, runId, {
+    callerBinding, fenceCheck: breakerPendingFence(fence),
+    fenceError: `LEASE_FENCED: ${operation}`,
+  });
   return withVerifiedMutationLock(root, runId, { callerBinding, intentDigest,
     fenceError: `LEASE_FENCED: ${operation}` }, context => {
     const { data } = context.readVerifiedState(
-      { fenceCheck: breakerLeaseFence(fence.owner, fence.generation) });
-    return body(context, data);
+      { fenceCheck: breakerPendingFence(fence) });
+    return body(context, data, authentication);
   });
 }
 
@@ -215,7 +232,13 @@ export function recordReviewVerdict(root, runId, verdict, fence,
   const identity = breakerRequestIdentity('review-verdict', requestId, { verdict });
   return breakerMutation(root, runId, fence, 'breaker-review-verdict',
     { verdict, request_digest: identity.requestDigest },
-    (context, data) => {
+    (context, data, authentication) => {
+      if (authentication.pending && context.recovered !== null) {
+        const pending = recoveredReviewVerdict(root, runId, context, data,
+          { fence, verdict, identity });
+        if (pending === null) throw new Error('BREAKER_RECOVERY_PROJECTION_MISMATCH');
+        return pending;
+      }
       const authorized = leaseCheck(data, { ...fence, intent: fence.intent ?? 'business' });
       if (!authorized.ok) {
         if (authorized.reason === 'RUN_TERMINAL') {

@@ -60,7 +60,7 @@ const publisher7g = Object.freeze({
   'comprehension-reviewed': ({ root, runId, owner, generation, rawInput }) => {
     const input = parseInput(rawInput, ['episodeId', 'requestId', 'source']);
     return recordReviewed(root, runId, input.episodeId, input.source,
-      { fence: { owner, generation }, requestId: input.requestId });
+      { fence: { owner, generation, runtime: 'codex' }, requestId: input.requestId });
   },
 });
 

@@ -403,3 +403,35 @@ test('recordReviewed response-loss recovery converges through its public API', (
   assert.equal(readState(fixture.root, fixture.runId)
     .data.comprehension.episodes_human_reviewed, 1);
 });
+
+test('recordReviewed pending recovery rejects wrong runtime without changing bytes', () => {
+  for (const point of ['pending-after-rename', 'state-after-rename']) {
+    const fixture = comprehensionFixture7g(`dl-comprehension-runtime-${point}-`);
+    const fence = { owner: fixture.owner, generation: fixture.generation };
+    const { id } = newEpisode7e(fixture.root, fixture.runId, {
+      plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation',
+      expectedArtifacts: [], fence: { ...fence, intent: 'business' },
+    });
+    const worker = fileComprehension7g(
+      new URL('./helpers/anchored-crash-worker.mjs', import.meta.url));
+    const request = { episodeId: id, source: 'crash-reviewed-runtime',
+      requestId: `crash-reviewed-${point}` };
+    const child = spawnComprehension7g(process.execPath,
+      [worker, fixture.root, fixture.runId, 'comprehension-reviewed', point], {
+        encoding: 'utf8', shell: false,
+        env: { ...process.env, DEEP_LOOP_CRASH_OWNER: fixture.owner,
+          DEEP_LOOP_CRASH_GENERATION: String(fixture.generation),
+          DEEP_LOOP_CRASH_INPUT: JSON.stringify(request) },
+      });
+    assert.equal(child.status, 91, child.stderr || child.stdout);
+    rmdirComprehension7g(join(fixture.root, '.deep-loop', 'runs', fixture.runId, '.lock'));
+    const pending = comprehensionBytes7g(fixture.root, fixture.runId);
+    assert.throws(() => recordReviewed7e(fixture.root, fixture.runId, id, request.source,
+      { fence: { ...fence, runtime: 'claude' }, requestId: request.requestId }),
+    /LEASE_FENCED: RUNTIME_FENCED/);
+    assert.deepEqual(comprehensionBytes7g(fixture.root, fixture.runId), pending,
+      `${point}: wrong runtime must not recover comprehension bytes`);
+    assert.equal(recordReviewed7e(fixture.root, fixture.runId, id, request.source,
+      { fence: { ...fence, runtime: 'codex' }, requestId: request.requestId }), undefined);
+  }
+});
