@@ -283,7 +283,7 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" lease check --owner <owner_run_id> -
 
 **(c) record 실패 시 proposal-only 정리:** `workstream new` 실패 시 "worktree `<path>` 고아(orphan) — 정리(`ExitWorktree`/`git worktree remove`) 제안"을 surface(proposal-only, 자동 삭제 ❌).
 
-**(d) reconcile audit(unattended 보강):** respawn/finish 시 `<canonical_project_root>/.claude/worktrees/`(및 폴백 `.worktrees/`) 밑의 실제 디렉터리 중 active workstream에 매핑되지 않는 것을 고아 후보로 surface(proposal-only 정리 제안). root-밖 native 고아는 Step 1a①②가 처음부터 안 만드므로 audit 대상 아님.
+**(d) reconcile audit(unattended 보강):** respawn/finish 시 `<canonical_project_root>/.claude/worktrees/`(및 폴백 `.worktrees/`) 밑의 실제 디렉터리 중 active workstream에 매핑되지 않는 것을 고아 후보로 surface(proposal-only 정리 제안). root-밖 native 고아는 Step 1a①②가 처음부터 안 만드므로 audit 대상 아님. **매핑 여부와 무관하게** 각 worktree의 `package.json`이 존재하나 JSON parse 불가면 해당 worktree를 정리 대상 후보로 surface하고 정리를 **제안**한다(proposal-only — 서드파티 preload 환경에서 모든 node hook 기동을 죽이는 E1-클래스 크래시 신호).
 
 **(e) 잔여 TOCTOU:** `lease check`와 `workstream new`의 `requireLease` 사이에 좁은 TOCTOU가 남는다. 고아는 gitignored `.claude/worktrees/` 밑이므로 repo를 오염시키지 않으며 (d) audit으로 발견된다.
 
