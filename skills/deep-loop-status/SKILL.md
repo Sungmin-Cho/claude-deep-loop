@@ -20,14 +20,19 @@ status 조회 대상 descriptor/current run의 `<run_id>`는 논리적(logical) 
 
 ## 조회 순서
 
-### 1. 전체 Loop 상태
+### 1. Redacted App status와 safe Loop fields
 
 ```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" app-task status --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field status --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field goal --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field routing.protocol --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field created_at --project-root "<canonical_project_root>" --run-id <run_id>
 node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field session_chain.lease --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field workstreams --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
-`status`, `goal`, `protocol`, `created_at`을 출력한다.
+Unqualified `state get`이나 whole `session_chain.sessions`를 요청하지 않는다. App phase/recovery는 redacted App projection에서만 출력한다. `status`, `goal`, `routing.protocol`, `created_at`을 출력한다.
 `<owner_run_id>`는 `session_chain.lease.owner_run_id`, `<generation>`은 `session_chain.lease.generation`에서 얻는다. read-only 조회에는 fence가 없고, 사람 전용 mutation만 이 current fence와 불변 `<run_id>`를 함께 쓴다.
 
 ### 2. 예산 확인
@@ -63,10 +68,6 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" breaker check --project-root "<canon
   (사람 + lease-owner 전용 경로 — autonomous tick은 `--confirm`을 자동으로 주지 않는다.)
 
 ### 5. Workstream 표
-
-```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field workstreams --project-root "<canonical_project_root>" --run-id <run_id>
-```
 
 각 workstream의 `id`, `title`, `status`, `review_points_done`을 표 형태로 출력한다.
 

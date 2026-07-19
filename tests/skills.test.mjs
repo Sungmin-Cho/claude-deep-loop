@@ -201,7 +201,7 @@ test('portable command contract: execution docs contain no shell-only constructi
     [/\$\(/, 'command substitution'],
     [/\b[A-Z][A-Z0-9_]*\s*=\s*\(/, 'Bash array'],
     [/\$\{[A-Z][A-Z0-9_]*\[@\]\}/, 'Bash array expansion'],
-    [/^(?!\s*APP_OBSERVATION_CONTRACT_V1=)\s*[A-Z][A-Z0-9_]*=\S+(?:\s+[A-Z][A-Z0-9_]*=\S+)*\s+\S+/m, 'POSIX env-prefix assignment'],
+    [/^(?!\s*(?:APP_OBSERVATION_CONTRACT_V1|STATUS_LEASE_MISMATCH_TRANSCRIPT_V1)=)\s*[A-Z][A-Z0-9_]*=\S+(?:\s+[A-Z][A-Z0-9_]*=\S+)*\s+\S+/m, 'POSIX env-prefix assignment'],
     [/^\s*\[[^\n]*\]\s*(?:&&|\|\|)/m, 'Bash test/chaining'],
     [/(?:&&|\|\|)/, 'shell command chaining'],
     [/\\\s*$/m, 'backslash continuation'],
@@ -870,7 +870,7 @@ test('runtime-facing skills assert runtime and carry explicit resume root/run id
   assert.match(resume, /\$deep-loop:deep-loop-resume/, 'Codex resume must use the qualified dollar skill token');
   assert.match(resume, /--project-root\s+"<canonical_project_root>"/, 'resume must accept the canonical project root from the descriptor');
   assert.match(resume, /--run-id\s+<run_id>/, 'resume must accept the explicit logical run id from the descriptor');
-  const acquire = resume.split('\n').find((line) => /lease acquire/.test(line)) || '';
+  const acquire = kernelCommandLines(resume).find((line) => /\blease acquire\b/.test(line)) || '';
   assert.match(acquire, /--runtime\s+<claude\|codex>/, 'lease acquisition must assert the actual host runtime');
   assert.match(acquire, /--project-root\s+"<canonical_project_root>"/);
   assert.match(acquire, /--run-id\s+<run_id>/);
@@ -1053,6 +1053,14 @@ test('lease-fenced argv keeps the immutable logical run id separate from the cur
           `${file}: lease acquire alone uses the reserved child owner: ${line}`);
         assert.match(line, /--generation\s+<new_generation>/,
           `${file}: lease acquire uses the requested next generation: ${line}`);
+      } else if (/\bapp-task acquire\b/.test(line)) {
+        assert.match(line, /--owner\s+<child_run_id>/,
+          `${file}: App acquire uses the reserved child owner: ${line}`);
+        assert.match(line, /--generation\s+<parent_generation>/,
+          `${file}: App acquire fences against the prepared parent generation: ${line}`);
+      } else if (/\bhost-surface observe\b/.test(line) && /--owner\s+<child_run_id>/.test(line)) {
+        assert.match(line, /--generation\s+<new_generation>/,
+          `${file}: post-acquire observation uses the promoted child fence: ${line}`);
       } else {
         assert.match(line, /--owner\s+<owner_run_id>/,
           `${file}: non-acquire commands use the freshly read lease owner: ${line}`);
@@ -1381,4 +1389,83 @@ test('attended App handoff has one ordered public-tool route and no retry author
         'emitted continuation must not bypass App selection');
     }
   }
+});
+
+test('resume status and discovery select the redacted App branch before broad state reads', () => {
+  const resume = readFileSync(skillPath('deep-loop-resume'), 'utf8');
+  const status = readFileSync(skillPath('deep-loop-status'), 'utf8');
+  const discover = readFileSync(skillPath('deep-loop-discover'), 'utf8');
+  for (const [name, source] of [['resume', resume], ['status', status], ['discover', discover]]) {
+    const app = source.indexOf('app-task status');
+    const sessions = source.indexOf('state get --field session_chain.sessions');
+    assert.ok(app >= 0, `${name}: missing App status`);
+    if (sessions >= 0) assert.ok(app < sessions, `${name}: sessions queried before App status`);
+    assert.doesNotMatch(source, /state get\s+--project-root/, `${name}: unqualified whole state read`);
+  }
+  assert.match(resume, /has_app_history=true[\s\S]{0,420}(?:must not|금지)[\s\S]{0,180}session_chain\.sessions/i);
+  assert.match(resume, /app-task status --attempt[\s\S]{0,1800}host-surface stdin-probe[\s\S]{0,900}app-task acquire/);
+  assert.match(resume, /app-task acquire[^\n]*--owner <child_run_id>[^\n]*--generation <parent_generation>[^\n]*--runtime codex/);
+  assert.match(resume, /current\.phase=acquired[\s\S]{0,900}status is a candidate only[\s\S]{0,900}already-acquired[\s\S]{0,700}session-profile set/i);
+  assert.match(resume, /original acquire process handle[\s\S]{0,360}boundedly poll[\s\S]{0,360}exit is proven/i);
+  assert.match(resume, /exact `confirmed`[\s\S]{0,320}manual_recovery=true[\s\S]{0,320}remains acquirable/i);
+  assert.match(resume, /failed\/abandoned[\s\S]{0,700}handoff_transport=codex-app[\s\S]{0,420}(?:never acquires|acquire 금지)/i);
+  assert.match(resume, /failed\/abandoned[\s\S]{0,900}recovery_pending[\s\S]{0,420}(?:alone|단독)[\s\S]{0,420}(?:never|금지)/i);
+  assert.match(resume, /current\.phase=acquired[\s\S]{0,1500}state=released[\s\S]{0,500}owner_run_id=current\.run_id[\s\S]{0,700}generic `lease acquire`/i);
+  assert.match(resume, /current generic binding outranks historical App[\s\S]{0,900}generic_current[\s\S]{0,900}state=releasing[\s\S]{0,500}state=released[\s\S]{0,900}generic `lease acquire`/i);
+  assert.match(resume, /normally released current owner[\s\S]{0,900}handoff_rel=null[\s\S]{0,1200}generic `lease acquire`/i);
+  assert.match(resume, /status `owner_run_id`, `generation`, and `handoff_phase`[\s\S]{0,600}exact-equal[\s\S]{0,600}explicit lease[\s\S]{0,900}zero mutation[\s\S]{0,600}restart/i);
+  const mismatchLine = resume.split('\n').find(line => line.startsWith('STATUS_LEASE_MISMATCH_TRANSCRIPT_V1='));
+  assert.ok(mismatchLine, 'missing deterministic stale-status transcript');
+  assert.deepEqual(JSON.parse(mismatchLine.slice(mismatchLine.indexOf('=') + 1)), {
+    status: { owner_run_id: 'P', generation: 1, handoff_phase: 'idle', recovery_pending: 'A' },
+    lease: { owner_run_id: 'P', generation: 2, handoff_phase: 'idle' },
+    decision: 'zero-acquire-restart',
+  });
+  assert.match(resume, /descriptor is absent[\s\S]{0,500}generic_current[\s\S]{0,500}document correlation[\s\S]{0,500}generic `lease acquire`/i);
+  assert.match(resume, /recovery_pending outranks[\s\S]{0,900}recovered:awaiting-resume[\s\S]{0,900}document correlation[\s\S]{0,700}generic `lease acquire`/i);
+  assert.match(resume, /handoff_transport=null[\s\S]{0,500}handoff_attempt_id=null[\s\S]{0,500}handoff_child_run_id=null/i);
+  const resumeAcquireCommands = kernelCommandLines(resume).filter(line => /\blease acquire\b/.test(line));
+  assert.equal(resumeAcquireCommands.length, 1,
+    'Step 1 through Step 2 is replaced as one block; no baseline duplicate generic acquire remains');
+  assert.match(resumeAcquireCommands[0], /--owner <child_run_id>[\s\S]*--expect-generation <current_generation>[\s\S]*--runtime <claude\|codex>/);
+  for (const field of ['status', 'goal', 'routing.protocol', 'created_at', 'session_chain.lease', 'workstreams']) {
+    assert.ok(status.includes(`state get --field ${field}`), `status missing ${field}`);
+    assert.ok(discover.includes(`state get --field ${field}`), `discover missing ${field}`);
+  }
+  assert.ok(discover.includes('state get --field discovered_items'));
+});
+
+test('all execution docs keep durable writes in the kernel and qualify state reads', () => {
+  for (const file of EXECUTION_DOCS) {
+    const source = readFileSync(file, 'utf8');
+    assert.equal(violatesBoundary(source), false,
+      `${file}: execution plane must not write loop.json, event-log.jsonl, or .loop.hash`);
+    for (const line of kernelCommandLines(source).filter(candidate => /\bstate get\b/.test(candidate))) {
+      assert.match(line, /\bstate get\b[^\n]*--field(?:\s|=)/,
+        `${file}: whole-state reads are forbidden; use an explicit safe field`);
+    }
+  }
+});
+
+test('resume and handoff reference publish the same fresh-child observation contract', () => {
+  const entry = parseAppObservationContract(readFileSync(skillPath('deep-loop'), 'utf8'));
+  const resume = readFileSync(skillPath('deep-loop-resume'), 'utf8');
+  const handoff = readFileSync(join(ROOT, 'skills', 'deep-loop-workflow', 'references', 'handoff-respawn.md'), 'utf8');
+  assert.deepEqual(parseAppObservationContract(resume), entry);
+  assert.deepEqual(parseAppObservationContract(handoff), entry);
+  assert.match(resume, /parent의 recorded capability를 복사하지 않는다[\s\S]{0,320}child task의 current callable public tools를 새로 관측/i);
+});
+
+test('generic and recovered resume materialize the new owner surface before session profile', () => {
+  const resume = readFileSync(skillPath('deep-loop-resume'), 'utf8');
+  const acquire = resume.indexOf('lease acquire --owner <child_run_id>');
+  const profile = resume.indexOf('## 단계 2.5:');
+  assert.ok(acquire >= 0 && profile > acquire, 'post-acquire observation block must precede profile');
+  const postAcquire = resume.slice(acquire, profile);
+  assert.match(postAcquire, /recovery-pending, current-generic, owner-correlated acquired-history, or history-free[\s\S]{0,1200}host-surface stdin-probe/i);
+  assert.match(postAcquire, /probe success[\s\S]{0,1200}host-surface observe --owner <child_run_id> --generation <new_generation> --runtime <claude\|codex>[\s\S]{0,600}--observation-stdin/i);
+  assert.match(postAcquire, /probe failure[\s\S]{0,1200}host-surface observe --owner <child_run_id> --generation <new_generation> --runtime <claude\|codex>[\s\S]{0,600}--manual-enums/i);
+  assert.match(postAcquire, /same generation[\s\S]{0,500}write-free[\s\S]{0,600}later generation[\s\S]{0,700}re-attestation[\s\S]{0,500}observed_generation[\s\S]{0,300}observed_at/i);
+  assert.match(postAcquire, /both observe forms fail[\s\S]{0,700}observed_generation[\s\S]{0,600}lease generation[\s\S]{0,500}stale[\s\S]{0,500}manual-only/i);
+  assert.match(postAcquire, /only after this observation attempt[\s\S]{0,500}session-profile set/i);
 });
