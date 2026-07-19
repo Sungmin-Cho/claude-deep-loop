@@ -429,6 +429,61 @@ test('terminal run with acquired lease (post-resume finish) → swept to release
   assert.equal(lease.handoff_phase, 'idle');
 });
 
+// ── §3.4.1: paused run 무해 처리 — 정리 범위는 phase='reserved'만 ──────────
+// (b) paused, 잔재 없음 → benign no-run-paused, 무변경
+test('paused run without residue → benign no-run-paused, state untouched', async () => {
+  const { root, runId } = seed();
+  const { data } = readState(root, runId);
+  data.status = 'paused';
+  writeState(root, runId, data);
+  const before = structuredClone(readState(root, runId).data);
+  const r = await runPreCompactHandoff({}, { root, now: Date.parse('2026-07-19T00:01:00Z') });
+  assert.deepEqual(r, { ok: true, action: 'no-run-paused' });
+  assert.deepEqual(readState(root, runId).data, before);
+});
+
+// (b) subprocess 레벨: exit 0 · silent
+test('paused run subprocess → exit 0, silent', () => {
+  const { root, runId } = seed();
+  const { data } = readState(root, runId);
+  data.status = 'paused';
+  writeState(root, runId, data);
+  const result = runNode([PRECOMPACT_HOOK], { cwd: root, input: '{}' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, '');
+  assert.equal(result.stderr, '');
+});
+
+// (d″-1) paused + phase='reserved'(stale 중단-emit reservation) → fenced 정리 후 no-run-paused
+test('paused run with reserved residue → residue swept, benign no-run-paused', async () => {
+  const { root, runId } = seed();
+  const { data } = readState(root, runId);
+  data.status = 'paused';
+  data.session_chain.lease = { ...data.session_chain.lease, handoff_phase: 'reserved', handoff_idempotency_key: 'stale-key', handoff_child_run_id: '01STALECHILD000000000000DD' };
+  writeState(root, runId, data);
+  const r = await runPreCompactHandoff({}, { root, now: Date.parse('2026-07-19T00:01:00Z') });
+  assert.deepEqual(r, { ok: true, action: 'no-run-paused' });
+  const lease = readState(root, runId).data.session_chain.lease;
+  assert.equal(lease.handoff_phase, 'idle');
+  assert.equal(lease.handoff_idempotency_key, null);
+  assert.equal(lease.handoff_child_run_id, null);
+});
+
+// (d″-2) paused + emitted/spawned = preserve-pause의 의도적 연속성 상태 → 절대 무변경 보존
+test('paused run with emitted/spawned residue → preserved untouched, benign no-run-paused', async () => {
+  for (const phase of ['emitted', 'spawned']) {
+    const { root, runId } = seed();
+    const { data } = readState(root, runId);
+    data.status = 'paused';
+    data.session_chain.lease = { ...data.session_chain.lease, handoff_phase: phase, handoff_idempotency_key: 'live-key', handoff_child_run_id: '01LIVECHILD0000000000000EE', state: 'releasing' };
+    writeState(root, runId, data);
+    const before = structuredClone(readState(root, runId).data);
+    const r = await runPreCompactHandoff({}, { root, now: Date.parse('2026-07-19T00:01:00Z') });
+    assert.deepEqual(r, { ok: true, action: 'no-run-paused' });
+    assert.deepEqual(readState(root, runId).data, before, `${phase}: preserve-pause 연속성 파괴 금지`);
+  }
+});
+
 // (d‴) fenced 경합: 정리 도중 owner/generation 변경 → 비-benign 전파 (false success 금지)
 test('terminal cleanup raced by lease change → non-benign fenced propagation', async () => {
   const { root, runId } = seed();

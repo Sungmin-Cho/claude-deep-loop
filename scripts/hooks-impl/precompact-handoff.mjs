@@ -59,6 +59,18 @@ export async function runPreCompactHandoff(input = {}, {
     return { ok: true, action: 'no-run-terminal' };
   }
 
+  // spec §3.4.1: paused 정리 범위 한정 — 정리 대상은 오직 phase='reserved'(중단·실패 emit의 stale
+  // reservation; appendAnchored preCheck-선행 원자성 때문에 child session은 커밋된 적 없음 → lease 필드
+  // 정리로 충분). emitted/spawned는 preserve-pause 수명주기가 late child의 lease 인수를 위해 의도적으로
+  // 보존하는 연속성 상태 — 무변경 보존(무조건 정리는 수동 재개 파괴 회귀).
+  if (loop.status === 'paused') {
+    if (lease.handoff_phase === 'reserved') {
+      const fenced = sweepLeaseResidue(root, runId, expect, cleanupFn);
+      if (fenced) return fenced;
+    }
+    return { ok: true, action: 'no-run-paused' };
+  }
+
   const headless = resolveSpawnMode(loop, { headless: input.unattended === true, env }) === 'headless';
   const em = emitHandoff(root, runId, { reason: 'pre-compact', trigger: 'pre-compact', headless, expect, env });
   if (!em.ok) return { ok: false, action: 'fenced', reason: em.reason };
