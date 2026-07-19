@@ -72,6 +72,15 @@ function lastJson(stdout) {
   throw new Error(`SAFE_JSON_MISSING: ${stdout}`);
 }
 
+function snapshotDurableArtifacts(root, runId) {
+  const run = join(root, '.deep-loop', 'runs', runId);
+  return {
+    state: readFileSync(join(run, 'loop.json')),
+    events: readFileSync(join(run, 'event-log.jsonl')),
+    hash: readFileSync(join(run, '.loop.hash')),
+  };
+}
+
 function runKernel(root, args, { cwd = root, env = process.env } = {}) {
   const stdout = execFileSync(process.execPath, [CLI, ...args, '--project-root', root], {
     cwd, encoding: 'utf8', env,
@@ -569,17 +578,14 @@ test('generic same-owner reacquire requires current-generation re-attestation be
     let child = loop.session_chain.sessions.find(session => session.run_id === result.childRunId);
     assert.equal(loop.session_chain.lease.generation, 3);
     assert.equal(child.host_surface.observed_generation, 2);
-    const statePath = join(result.root, '.deep-loop', 'runs', result.runId, 'loop.json');
-    const staleBefore = { state: readFileSync(statePath),
-      events: readLines(result.root, result.runId) };
+    const staleBefore = snapshotDurableArtifacts(result.root, result.runId);
     const fenced = runKernelResult(result.root, [
       'handoff', 'emit', '--run-id', result.runId, '--reason', 'stale-attestation',
       '--trigger', 'stale-attestation', '--owner', result.childRunId,
       '--generation', '3', '--app-intent',
     ], { cwd: result.cwd });
     assert.equal(fenced.status, 3, fenced.stderr);
-    assert.deepEqual(readFileSync(statePath), staleBefore.state);
-    assert.deepEqual(readLines(result.root, result.runId), staleBefore.events);
+    assert.deepEqual(snapshotDurableArtifacts(result.root, result.runId), staleBefore);
 
     const raw = JSON.stringify(result.childObservation);
     const reattested = await runReadyKernel(result.root, [
@@ -592,8 +598,7 @@ test('generic same-owner reacquire requires current-generation re-attestation be
     loop = readState(result.root, result.runId).data;
     child = loop.session_chain.sessions.find(session => session.run_id === result.childRunId);
     assert.equal(child.host_surface.observed_generation, 3);
-    const currentBefore = { state: readFileSync(statePath),
-      events: readLines(result.root, result.runId) };
+    const currentBefore = snapshotDurableArtifacts(result.root, result.runId);
     const exactRetry = await runReadyKernel(result.root, [
       'host-surface', 'observe', '--run-id', result.runId, '--owner', result.childRunId,
       '--generation', '3', '--runtime', 'codex', '--stdin-mode', result.mode,
@@ -601,8 +606,7 @@ test('generic same-owner reacquire requires current-generation re-attestation be
     ], raw, exactReadyPattern('host-observe', `${result.childRunId}.3`, result.mode),
     { cwd: result.cwd });
     assert.equal(exactRetry.json.outcome, 'already-observed');
-    assert.deepEqual(readFileSync(statePath), currentBefore.state);
-    assert.deepEqual(readLines(result.root, result.runId), currentBefore.events);
+    assert.deepEqual(snapshotDurableArtifacts(result.root, result.runId), currentBefore);
     const emitted = runKernel(result.root, [
       'handoff', 'emit', '--run-id', result.runId, '--reason', 'current-attestation',
       '--trigger', 'current-attestation', '--owner', result.childRunId,
