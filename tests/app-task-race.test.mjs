@@ -165,20 +165,6 @@ async function waitForRaceFile(path, operations = []) {
   throw new Error(`snapshot-barrier-timeout:${path}`);
 }
 
-async function waitForRaceEvent(root, runId, type, operations = []) {
-  const deadline = Date.now() + RACE_BARRIER_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    try {
-      if (readLines(root, runId).some(event => event.type === type)) return;
-    } catch (error) {
-      if (!(error instanceof SyntaxError)) throw error;
-    }
-    await new Promise(resolve => setTimeout(resolve, 5));
-  }
-  await stopChildren(operations);
-  throw new Error(`event-barrier-timeout:${type}`);
-}
-
 async function raceAfterInitialSnapshots(left, right) {
   const markerA = join(left.root, 'await-initial-a');
   const markerB = join(left.root, 'await-initial-b');
@@ -195,7 +181,7 @@ async function raceAfterInitialSnapshots(left, right) {
       waitForRaceFile(markerA, [a, b]), waitForRaceFile(markerB, [a, b]),
     ]);
     writeFileSync(releaseA, 'continue', { flag: 'wx' });
-    await waitForRaceEvent(left.root, left.runId, 'app-task-await-timeout', [a, b]);
+    await a.done;
     writeFileSync(releaseB, 'continue', { flag: 'wx' });
     return Promise.all([a.done, b.done]);
   });
@@ -586,7 +572,7 @@ test('await CAS loser converges when acquire commits before its catch re-read', 
       waitForRaceFile(markerA, [a, b]), waitForRaceFile(markerB, [a, b]),
     ]);
     writeFileSync(initialReleaseA, 'continue', { flag: 'wx' });
-    await waitForRaceEvent(fixture.root, fixture.runId, 'app-task-await-timeout', [a, b]);
+    await a.done;
     writeFileSync(initialReleaseB, 'continue', { flag: 'wx' });
     await waitForRaceFile(catchReady, [a, b]);
     const acquired = acquireAppTask(fixture.root, fixture.runId, {
@@ -628,7 +614,7 @@ test('await CAS loser returns safe terminal outcome when revoke wins before catc
       waitForRaceFile(markerA, [a, b]), waitForRaceFile(markerB, [a, b]),
     ]);
     writeFileSync(initialReleaseA, 'continue', { flag: 'wx' });
-    await waitForRaceEvent(fixture.root, fixture.runId, 'app-task-await-timeout', [a, b]);
+    await a.done;
     writeFileSync(initialReleaseB, 'continue', { flag: 'wx' });
     await waitForRaceFile(catchReady, [a, b]);
     revokeAppTaskContinuation(fixture.root, fixture.runId,
