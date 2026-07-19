@@ -206,29 +206,24 @@ function exactPauseStateProjection(loop, reason, mode) {
     : lease?.resume_policy === 'human' && lease.expires_at == null;
 }
 
-function exactPauseEventPair(lines, index, reason, mode, expect) {
-  const pause = lines[index], floor = lines[index + 1];
+function exactPauseEvent(event, reason, mode) {
   const exactKeys = (value, keys) => JSON.stringify(Object.keys(value ?? {}).sort())
     === JSON.stringify([...keys].sort());
-  return pause?.type === 'run-paused'
-    && exactKeys(pause.data, ['mode', 'reason'])
-    && pause.data.reason === reason && pause.data.mode === mode
-    && floor?.type === 'cost' && floor.seq === pause.seq + 1 && floor.ts === pause.ts
-    && exactKeys(floor.data, ['auto_floor', 'for', 'generation', 'owner', 'tokens', 'turns'])
-    && floor.data.auto_floor === true && floor.data.for === 'run-paused'
-    && floor.data.owner === expect.owner && floor.data.generation === expect.generation
-    && floor.data.turns === MUTATION_TURN_FLOOR && floor.data.tokens === 0;
+  return event?.type === 'run-paused'
+    && exactKeys(event.data, ['mode', 'reason'])
+    && event.data.reason === reason && event.data.mode === mode;
 }
 
-function pauseReplayProjection(loop, lines, reason, mode, expect) {
-  const matching = lines.map((_, index) => index)
-    .filter(index => exactPauseEventPair(lines, index, reason, mode, expect));
+function pauseReplayProjection(loop, lines, reason, mode) {
+  const matching = lines.map((event, index) => ({ event, index }))
+    .filter(({ event }) => event?.type === 'run-paused'
+      && event.data?.reason === reason && event.data?.mode === mode);
   if (matching.length === 0) return 'new';
-  const index = matching.at(-1);
-  const floor = lines[index + 1];
-  const immediate = matching.length === 1 && index === lines.length - 2
-    && floor?.seq === loop.event_log_head?.seq
-    && floor?.checksum === loop.event_log_head?.checksum
+  const { event, index } = matching.at(-1);
+  const immediate = matching.length === 1 && index === lines.length - 1
+    && exactPauseEvent(event, reason, mode)
+    && event.seq === loop.event_log_head?.seq
+    && event.checksum === loop.event_log_head?.checksum
     && exactPauseStateProjection(loop, reason, mode);
   return immediate ? 'exact' : 'changed';
 }
@@ -247,8 +242,7 @@ export function pauseRun(root, runId, {
   return withVerifiedMutationLock(root, runId, { callerBinding, intentDigest,
     fenceError: 'LEASE_FENCED: pauseRun' }, mutation => {
     const loop = mutation.readVerifiedState({ fenceCheck }).data;
-    const replay = pauseReplayProjection(loop, readLines(root, runId),
-      pauseReason, mode, expect);
+    const replay = pauseReplayProjection(loop, readLines(root, runId), pauseReason, mode);
     if (replay === 'exact') return undefined;
     if (replay === 'changed') throw new Error('STATE_RESPONSE_PROJECTION_CHANGED');
     return mutation.appendAnchored(
@@ -280,6 +274,6 @@ export function pauseRun(root, runId, {
           throw new Error('RUN_TERMINAL: pauseRun');
         }
         if (appTransportBinding(candidate)) throw new Error('APP_TRANSPORT_OWNED: pauseRun');
-      }, { floor: MUTATION_TURN_FLOOR, nowFn: () => now, fenceCheck });
+      }, { nowFn: () => now, fenceCheck });
   });
 }
