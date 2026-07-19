@@ -374,6 +374,32 @@ function revokeProjection(loop, input, clockMs = null) {
     failure_code: bound && live.includes(bound) ? 'consent-revoked' : null } };
 }
 
+function exactRevokedResponseProjection(loop, lines, input) {
+  const consent = loop.autonomy.app_task_continuation;
+  const tail = lines.at(-1);
+  const head = loop.event_log_head;
+  const exactKeys = ['attempt_id', 'child_run_id', 'failure_code',
+    'generation', 'owner_run_id'];
+  if (consent.mode !== 'manual' || consent.authority !== 'human-confirmed'
+      || !strictInstant(consent.revoked_at)
+      || tail?.type !== 'app-task-consent-revoked'
+      || tail?.seq !== head?.seq || tail?.checksum !== head?.checksum
+      || tail.ts !== consent.revoked_at
+      || JSON.stringify(Object.keys(tail.data ?? {}).sort())
+        !== JSON.stringify(exactKeys.sort())
+      || tail.data.owner_run_id !== input.owner
+      || tail.data.generation !== input.generation) return false;
+  if (tail.data.attempt_id === null) {
+    return tail.data.child_run_id === null && tail.data.failure_code === null;
+  }
+  const bound = loop.session_chain.sessions.find(session =>
+    session.run_id === tail.data.child_run_id
+    && session.continuation?.attempt_id === tail.data.attempt_id);
+  return bound?.continuation?.phase === 'abandoned'
+    && bound.continuation.failure_code === 'consent-revoked'
+    && tail.data.failure_code === 'consent-revoked';
+}
+
 function applyAppRevocation(loop, clock) {
   const consent = loop.autonomy.app_task_continuation;
   consent.mode = 'manual'; consent.revoked_at = clock.iso;
@@ -408,6 +434,12 @@ export function revokeAppTaskContinuation(root, runId, input, deps = {}) {
       mutation.readVerifiedState({ fenceCheck: loop =>
         assertAppCommandIdentity(loop, input, 'APP_TASK_FENCED') }));
     const projection = revokeProjection(snapshot.data, input);
+    if (projection.outcome === 'already-revoked') {
+      if (!exactRevokedResponseProjection(snapshot.data, readLines(root, runId), input)) {
+        throw new Error('APP_RESPONSE_PROJECTION_CHANGED');
+      }
+      return { ok: true, outcome: projection.outcome };
+    }
     if (projection.outcome !== 'revoke') return { ok: true, outcome: projection.outcome };
     if (casAttempt === 0) deps.beforeAppendFn?.({ operation: 'revoke', snapshot: snapshot.data });
     try {
@@ -749,51 +781,6 @@ function applyPrepareFailure(loop, input, code, preserve) {
   clearLiveAppBinding(loop);
 }
 
-function settlePrepareFailure(root, runId, input,
-  { code, preserve, nowFn, gateFn, deps, phase }) {
-  return phase(mutation => {
-    const snapshot = mutation.readVerifiedState(
-      { fenceCheck: loop => assertAppParentIdentity(loop, input) }).data;
-    const attemptId = input.attemptId ?? snapshot.session_chain.lease.handoff_attempt_id;
-    const childRunId = findAppAttempt(snapshot, attemptId).session.run_id;
-    let result;
-    mutation.appendAnchored({ type: preserve ? 'app-task-preserved' : 'app-task-abandoned',
-      data: { attempt_id: attemptId, child_run_id: childRunId, failure_code: code,
-        ...(preserve ? {} : { owner_run_id: input.owner, generation: input.generation }) } }, loop => {
-      applyPrepareFailure(loop, input, code, preserve);
-      result = { ok: false, outcome: preserve ? 'manual-preserve' : 'gate-blocked',
-        do_not_call: true, attempt_id: attemptId, reason: code };
-    }, (loop, clock) => {
-      const bound = assertAppParentFence(loop, input, ['emitted']);
-      assertAppParentDirectoryIdentity(loop, root, input, deps);
-      if (clock.ms > Date.parse(bound.continuation.prepare_deadline)) {
-        throw new Error('APP_PREPARE_DEADLINE_EXPIRED');
-      }
-      if (preserve) {
-        let stillUnconfirmed = false;
-        try { resolvePrepareRoute(loop, root, input, deps); }
-        catch (error) {
-          if (String(error?.message || error).startsWith('APP_ROUTE_UNCONFIRMED')) {
-            stillUnconfirmed = true;
-          } else {
-            throw error;
-          }
-        }
-        if (!stillUnconfirmed) throw new Error('APP_PREPARE_ROUTE_CHANGED');
-      } else {
-        const gate = gateFn(loop, { now: clock.ms });
-        if (gate.ok || `gate-${gate.blocked_by[0].replaceAll('_', '-')}` !== code) {
-          throw new Error('APP_GATE_CHANGED');
-        }
-      }
-      const candidate = structuredClone(loop);
-      applyPrepareFailure(candidate, input, code, preserve);
-      validateAppCandidate(candidate);
-    }, { nowFn, fenceCheck: loop => assertAppParentIdentity(loop, input) });
-    return result;
-  });
-}
-
 const PREPARE_GATE_FAILURE_CODES = new Set([
   'gate-budget', 'gate-breaker', 'gate-max-sessions', 'gate-wallclock',
   'gate-auto-handoff',
@@ -874,7 +861,6 @@ export function prepareAppTask(root, runId, input, deps = {}) {
     fenceCheck: loop => assertAppParentIdentity(loop, request),
     fenceError: 'LEASE_FENCED: app-prepare',
   });
-  const snapshot = authenticated.data;
   try {
     const failureRetry = requestPhase(mutation => mutation.recovered === null
       ? null : recoveredPrepareFailure(mutation, request));
@@ -884,138 +870,176 @@ export function prepareAppTask(root, runId, input, deps = {}) {
     // untouched until the complete action is rebuilt and authenticated by completePhase below.
     if (String(error?.message || error) !== 'APP_TASK_FENCED:app-prepare') throw error;
   }
-  const existing = assertAppParentFence(snapshot, request, ['emitted', 'prepared']);
-  if (snapshot.status !== 'running' || snapshot.session_chain.lease.resume_policy !== 'app') {
-    throw new Error('RUN_PAUSED: app-prepare');
-  }
-  const alreadyPrepared = existing.continuation.phase === 'prepared';
-  if (alreadyPrepared) {
-    if (snapshot.session_chain.lease.handoff_phase !== 'spawned'
-        || snapshot.session_chain.lease.state !== 'releasing') throw new Error('APP_ATTEMPT_FENCED');
-  }
-  assertAppParentDirectoryIdentity(snapshot, root, request, deps);
-  let route;
-  try { route = resolvePrepareRoute(snapshot, root, request, deps); }
-  catch (error) {
-    if (!String(error?.message || error).startsWith('APP_ROUTE_UNCONFIRMED')) throw error;
-    if (alreadyPrepared) {
-      const parent = snapshot.session_chain.sessions.find(session => session.run_id === request.owner);
-      throw new Error(request.stdinMode !== parent?.host_surface?.structured_stdin_mode
-        ? 'APP_STDIN_MODE_FENCED' : 'APP_PREPARE_REQUEST_FENCED');
+  const buildClaim = loop => {
+    const existing = assertAppParentFence(loop, request, ['emitted', 'prepared']);
+    if (loop.status !== 'running' || loop.session_chain.lease.resume_policy !== 'app') {
+      throw new Error('RUN_PAUSED: app-prepare');
     }
-    return settlePrepareFailure(root, runId, request, { code: 'app-launch-unconfirmed',
-      preserve: true, nowFn: authoritativeNow, gateFn: gateFor, deps, phase: requestPhase });
-  }
-  if (typeof deps.descriptorBuilder !== 'function') throw new Error('APP_DESCRIPTOR_BUILDER_REQUIRED');
-  const action = exactPreparedAction(deps.descriptorBuilder({ loop: snapshot, route,
-    child: existing.session, attemptId: existing.attemptId }), route);
-  const descriptorDigest = contentHash(JSON.stringify({ action,
-    prepare_request_digest: prepareRequestDigest }));
-  const completeRequest = Object.freeze({ ...request, descriptorDigest });
-  const completePhase = body => withAppMutation(root, runId, completeRequest,
-    'app-prepare', body, { intentConflictError: 'APP_PREPARE_REQUEST_FENCED' });
-  const preparedNoop = mutation => {
-    const current = mutation.readVerifiedState(
-      { fenceCheck: loop => assertAppParentIdentity(loop, completeRequest) }).data;
-    const bound = assertAppParentFence(current, completeRequest, ['prepared']);
-    if (bound.continuation.descriptor_digest !== descriptorDigest
-        || bound.continuation.project_id
-          !== (route.kind === 'create' ? route.projectId : null)
-        || current.session_chain.lease.handoff_phase !== 'spawned'
-        || current.session_chain.lease.state !== 'releasing') {
-      throw new Error('APP_PREPARE_REQUEST_FENCED');
+    const alreadyPrepared = existing.continuation.phase === 'prepared';
+    if (alreadyPrepared && (loop.session_chain.lease.handoff_phase !== 'spawned'
+        || loop.session_chain.lease.state !== 'releasing')) throw new Error('APP_ATTEMPT_FENCED');
+    assertAppParentDirectoryIdentity(loop, root, request, deps);
+    const parent = loop.session_chain.sessions.find(session => session.run_id === request.owner);
+    if (request.stdinMode !== parent?.host_surface?.structured_stdin_mode) {
+      throw new Error('APP_STDIN_MODE_FENCED');
     }
-    return { ok: true, outcome: 'already-prepared', do_not_call: true,
-      attempt_id: bound.attemptId };
+    const routeBinding = bindAppParentRouteOutsideLock(loop, root, request, deps);
+    let route = null; let failureCode = null; let preserve = false;
+    try { route = resolvePrepareRoute(loop, root, request, deps); }
+    catch (error) {
+      if (!String(error?.message || error).startsWith('APP_ROUTE_UNCONFIRMED')) throw error;
+      if (alreadyPrepared) {
+        throw new Error('APP_PREPARE_REQUEST_FENCED');
+      }
+      failureCode = 'app-launch-unconfirmed'; preserve = true;
+    }
+    let action = null; let descriptorDigest = null;
+    let completeRequest = null; let completePhase = null; let preparedNoop = null;
+    if (route !== null) {
+      if (typeof deps.descriptorBuilder !== 'function') {
+        throw new Error('APP_DESCRIPTOR_BUILDER_REQUIRED');
+      }
+      action = exactPreparedAction(deps.descriptorBuilder({ loop, route,
+        child: existing.session, attemptId: existing.attemptId }), route);
+      descriptorDigest = contentHash(JSON.stringify({ action,
+        prepare_request_digest: prepareRequestDigest }));
+      completeRequest = Object.freeze({ ...request, descriptorDigest });
+      completePhase = body => withAppMutation(root, runId, completeRequest,
+        'app-prepare', body, { intentConflictError: 'APP_PREPARE_REQUEST_FENCED' });
+      preparedNoop = mutation => {
+        const current = mutation.readVerifiedState(
+          { fenceCheck: candidate => assertAppParentIdentity(candidate, completeRequest) }).data;
+        const bound = assertAppParentFence(current, completeRequest, ['prepared']);
+        if (bound.continuation.descriptor_digest !== descriptorDigest
+            || bound.continuation.project_id
+              !== (route.kind === 'create' ? route.projectId : null)
+            || current.session_chain.lease.handoff_phase !== 'spawned'
+            || current.session_chain.lease.state !== 'releasing') {
+          throw new Error('APP_PREPARE_REQUEST_FENCED');
+        }
+        return { ok: true, outcome: 'already-prepared', do_not_call: true,
+          attempt_id: bound.attemptId };
+      };
+    }
+    return { loop, existing, alreadyPrepared, routeBinding, route, failureCode,
+      preserve, action, descriptorDigest, completeRequest, completePhase, preparedNoop };
   };
-  if (alreadyPrepared || authenticated.pending) {
-    return completePhase(preparedNoop);
+
+  if (authenticated.pending) {
+    const pending = buildClaim(authenticated.data);
+    if (pending.completePhase === null) throw new Error('APP_PREPARE_RECOVERY_INVALID');
+    return pending.completePhase(pending.preparedNoop);
   }
-  const outerGate = gateFor(snapshot, { now: Number((deps.precheckNowFn ?? Date.now)()) });
-  if (!outerGate.ok) return settlePrepareFailure(root, runId, request, {
-    code: `gate-${outerGate.blocked_by[0].replaceAll('_', '-')}`,
-    preserve: false, nowFn: authoritativeNow, gateFn: gateFor, deps,
-    phase: requestPhase });
-  // This is the final operation before the CAS. Proved pending transactions returned above enter
-  // their complete-action gateway directly, so recovery precedes any new advisory work.
-  reconcile(root, runId, {});
-  let commitSnapshot;
-  try {
-    commitSnapshot = appSnapshotPhase(root, runId, completeRequest, 'app-prepare', mutation =>
-      mutation.readVerifiedState(
-        { fenceCheck: loop => assertAppParentIdentity(loop, completeRequest) }));
-  } catch (error) {
-    // Preserve the established final-CAS clock/proof observation contract: a valid caller whose
-    // reconciler installed a corrupt semantic projection observes one clock sample, while an
-    // identity fence still wins without consulting the clock.
-    if (String(error?.message || error).startsWith('RUN_SNAPSHOT_INVALID')) authoritativeNow();
-    throw error;
-  }
-  const commitExisting = assertAppParentFence(
-    commitSnapshot.data, completeRequest, ['emitted', 'prepared']);
-  if (commitExisting.continuation.phase === 'prepared') return completePhase(preparedNoop);
-  if (commitSnapshot.data.status !== 'running'
-      || commitSnapshot.data.session_chain.lease.resume_policy !== 'app') {
-    throw new Error('RUN_PAUSED: app-prepare');
-  }
-  assertAppParentDirectoryIdentity(commitSnapshot.data, root, completeRequest, deps);
-  let commitRoute;
-  try { commitRoute = resolvePrepareRoute(commitSnapshot.data, root, completeRequest, deps); }
-  catch { throw new Error('APP_PREPARE_ROUTE_CHANGED'); }
-  if (JSON.stringify(commitRoute) !== JSON.stringify(route)) {
-    throw new Error('APP_PREPARE_ROUTE_CHANGED');
-  }
-  const commitRouteBinding = bindAppParentRouteOutsideLock(
-    commitSnapshot.data, root, completeRequest, deps);
-  deps.beforeAppendFn?.({ operation: 'prepare', snapshot: commitSnapshot.data });
-  try {
-    return appCommitPhase(root, runId, completeRequest, 'app-prepare', commitSnapshot.hash,
-      mutation => mutation.readVerifiedState(
-        { fenceCheck: loop => assertAppParentIdentity(loop, completeRequest) }),
-      (mutation, _fresh) => {
-      let result;
-      mutation.appendAnchored({ type: 'app-task-prepared',
-          data: { attempt_id: commitExisting.attemptId,
-            child_run_id: commitExisting.session.run_id,
-            descriptor_digest: descriptorDigest } },
-        (loop, _spent, clock) => {
-          applyPrepared(loop, commitExisting.attemptId, route, descriptorDigest, clock);
-          result = { ok: true, outcome: 'prepared', do_not_call: false,
-            attempt_id: commitExisting.attemptId, route: route.kind,
-            context_mode: commitExisting.continuation.context_mode, action };
-        }, (loop, clock) => {
-          const bound = assertBoundAppParentMutationFence(loop, request,
-            ['emitted'], commitRouteBinding);
-          if (loop.status !== 'running' || loop.session_chain.lease.resume_policy !== 'app') {
-            throw new Error('RUN_PAUSED: app-prepare');
-          }
-          if (clock.ms > Date.parse(bound.continuation.prepare_deadline)) {
-            throw new Error('APP_PREPARE_DEADLINE_EXPIRED');
-          }
-          const freshGate = gateFor(loop, { now: clock.ms });
-          if (!freshGate.ok) throw new Error(`APP_GATE_BLOCKED:${freshGate.blocked_by[0]}`);
-          const candidate = structuredClone(loop);
-          applyPrepared(candidate, commitExisting.attemptId, route, descriptorDigest, clock);
-          validateAppCandidate(candidate);
-        }, { nowFn: authoritativeNow,
-          fenceCheck: loop => assertAppParentIdentity(loop, request) });
-      return result;
-    });
-  } catch (error) {
-    if (appCasLost(error, 'app-prepare')) return completePhase(preparedNoop);
-    if (String(error?.message || error) === 'APP_PREPARE_ROUTE_CHANGED') {
-      return settlePrepareFailure(root, runId, request, { code: 'app-launch-unconfirmed',
-        preserve: true, nowFn: authoritativeNow, gateFn: gateFor, deps,
-        phase: requestPhase });
+
+  let reconciled = false;
+  for (let casAttempt = 0; casAttempt < 3; casAttempt += 1) {
+    let snapshot;
+    try {
+      snapshot = appSnapshotPhase(root, runId, request, 'app-prepare', mutation =>
+        mutation.readVerifiedState(
+          { fenceCheck: loop => assertAppParentIdentity(loop, request) }));
+    } catch (error) {
+      // Preserve the established final-CAS clock/proof observation contract after reconciliation:
+      // identity fences still win without consulting the clock, while corrupt semantic state gets
+      // the one authoritative sample that the final validator would have consumed.
+      if (reconciled && String(error?.message || error).startsWith('RUN_SNAPSHOT_INVALID')) {
+        authoritativeNow();
+      }
+      throw error;
     }
-    const match = /^APP_GATE_BLOCKED:(budget|breaker|max_sessions|wallclock|auto_handoff)$/.exec(
-      String(error?.message || error));
-    if (!match) throw error;
-    return settlePrepareFailure(root, runId, request,
-      { code: `gate-${match[1].replaceAll('_', '-')}`,
-        preserve: false, nowFn: authoritativeNow, gateFn: gateFor, deps,
-        phase: requestPhase });
+    const claim = buildClaim(snapshot.data);
+    if (claim.alreadyPrepared) return claim.completePhase(claim.preparedNoop);
+    if (claim.route !== null) {
+      const advisoryNow = Number((deps.precheckNowFn ?? Date.now)());
+      const gate = gateFor(claim.loop, { now: advisoryNow });
+      if (!gate.ok) claim.failureCode = `gate-${gate.blocked_by[0].replaceAll('_', '-')}`;
+    }
+    if (!reconciled && claim.failureCode === null) {
+      reconcile(root, runId, {});
+      reconciled = true;
+      continue;
+    }
+    if (casAttempt === 0 || (reconciled && casAttempt === 1)) {
+      deps.beforeAppendFn?.({ operation: 'prepare', snapshot: claim.loop });
+    }
+    const mutationInput = claim.failureCode === null ? claim.completeRequest : request;
+    try {
+      return appCommitPhase(root, runId, mutationInput, 'app-prepare', snapshot.hash,
+        mutation => mutation.readVerifiedState(
+          { fenceCheck: loop => assertAppParentIdentity(loop, mutationInput) }),
+        (mutation, fresh) => {
+          const bound = assertAppParentFence(fresh, request, ['emitted']);
+          let result;
+          if (claim.failureCode !== null) {
+            mutation.appendAnchored({ type: claim.preserve
+              ? 'app-task-preserved' : 'app-task-abandoned',
+            data: { attempt_id: bound.attemptId, child_run_id: bound.session.run_id,
+              failure_code: claim.failureCode,
+              ...(claim.preserve ? {} : { owner_run_id: request.owner,
+                generation: request.generation }) } }, candidate => {
+              applyPrepareFailure(candidate, { ...request, attemptId: bound.attemptId },
+                claim.failureCode, claim.preserve);
+              result = { ok: false, outcome: claim.preserve
+                ? 'manual-preserve' : 'gate-blocked', do_not_call: true,
+              attempt_id: bound.attemptId, reason: claim.failureCode };
+            }, (candidate, clock) => {
+              assertBoundAppParentMutationFence(candidate, request,
+                ['emitted'], claim.routeBinding);
+              if (claim.route !== null) {
+                const freshGate = gateFor(candidate, { now: clock.ms });
+                const freshFailure = freshGate.ok ? null
+                  : `gate-${freshGate.blocked_by[0].replaceAll('_', '-')}`;
+                if (freshFailure !== claim.failureCode) {
+                  throw new Error('APP_PREPARE_DECISION_CHANGED');
+                }
+              }
+              if (clock.ms > Date.parse(bound.continuation.prepare_deadline)) {
+                throw new Error('APP_PREPARE_DEADLINE_EXPIRED');
+              }
+              const projected = structuredClone(candidate);
+              applyPrepareFailure(projected, { ...request, attemptId: bound.attemptId },
+                claim.failureCode, claim.preserve);
+              validateAppCandidate(projected);
+            }, { nowFn: authoritativeNow,
+              fenceCheck: candidate => assertAppParentIdentity(candidate, request) });
+            return result;
+          }
+          mutation.appendAnchored({ type: 'app-task-prepared', data: {
+            attempt_id: bound.attemptId, child_run_id: bound.session.run_id,
+            descriptor_digest: claim.descriptorDigest } },
+          (candidate, _spent, clock) => {
+            applyPrepared(candidate, bound.attemptId, claim.route,
+              claim.descriptorDigest, clock);
+            result = { ok: true, outcome: 'prepared', do_not_call: false,
+              attempt_id: bound.attemptId, route: claim.route.kind,
+              context_mode: bound.continuation.context_mode, action: claim.action };
+          }, (candidate, clock) => {
+            const current = assertBoundAppParentMutationFence(candidate, request,
+              ['emitted'], claim.routeBinding).continuation;
+            const freshGate = gateFor(candidate, { now: clock.ms });
+            const freshFailure = freshGate.ok ? null
+              : `gate-${freshGate.blocked_by[0].replaceAll('_', '-')}`;
+            if (freshFailure !== claim.failureCode) {
+              throw new Error('APP_PREPARE_DECISION_CHANGED');
+            }
+            if (clock.ms > Date.parse(current.prepare_deadline)) {
+              throw new Error('APP_PREPARE_DEADLINE_EXPIRED');
+            }
+            const projected = structuredClone(candidate);
+            applyPrepared(projected, bound.attemptId, claim.route,
+              claim.descriptorDigest, clock);
+            validateAppCandidate(projected);
+          }, { nowFn: authoritativeNow,
+            fenceCheck: candidate => assertAppParentIdentity(candidate, request) });
+          return result;
+        });
+    } catch (error) {
+      if (appCasLost(error, 'app-prepare')
+          || String(error?.message || error) === 'APP_PREPARE_DECISION_CHANGED') continue;
+      throw error;
+    }
   }
+  throw new Error('APP_PREPARE_CAS_EXHAUSTED');
 }
 function assertRecordedReaderMode(loop, input) {
   const recorded = loop.session_chain.sessions.find(item => item.run_id === input.owner)

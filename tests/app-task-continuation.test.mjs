@@ -463,6 +463,26 @@ test('revoke is one anchored write, exact retry is inert, and default manual is 
   assert.deepEqual(readLines(manual.root, manual.runId), manualBefore);
 });
 
+test('revoked response-loss rejects a later accounting event without callbacks or writes', () => {
+  const fixture = autoRun();
+  const input = { owner: fixture.runId, generation: 1, runtime: 'codex' };
+  assert.equal(revokeAppTaskContinuation(fixture.root, fixture.runId, input, {
+    nowFn: () => Date.parse('2026-07-13T00:00:01.000Z'),
+  }).outcome, 'revoked');
+  recordCost9a(fixture.root, fixture.runId, { turns: 1, tokens: 0,
+    requestId: 'task11c-revoke-tail', fence: { owner: fixture.runId, generation: 1,
+      runtime: 'codex', intent: 'accounting' } });
+  const run = join(fixture.root, '.deep-loop', 'runs', fixture.runId);
+  const afterCost = { state: readFileSync(join(run, 'loop.json')),
+    events: readFileSync(join(run, 'event-log.jsonl')) };
+  assert.throws(() => revokeAppTaskContinuation(fixture.root, fixture.runId, input, {
+    beforeAppendFn: () => assert.fail('displaced revoke retry has no append callback'),
+    nowFn: () => assert.fail('displaced revoke retry has no clock'),
+  }), /APP_RESPONSE_PROJECTION_CHANGED/);
+  assert.deepEqual(readFileSync(join(run, 'loop.json')), afterCost.state);
+  assert.deepEqual(readFileSync(join(run, 'event-log.jsonl')), afterCost.events);
+});
+
 test('revoke retry and not-auto verify schema, anchored log, and event correlation before success', () => {
   for (const corruption of ['missing-event', 'tampered-event', 'malformed-state']) {
     const fixture = autoRun();
@@ -813,6 +833,88 @@ test8b('prepare grants one action and only the exact request retries descriptor-
   assert8b.equal(lines8b(fixture.root, fixture.runId)
     .filter(event => event.type === 'app-task-prepared').length, 1);
   assert8b.equal(read8b(fixture.root, fixture.runId).data.session_chain.lease.handoff_phase, 'spawned');
+});
+
+test8b('prepare rebuilds its action from the post-reconciliation snapshot', () => {
+  const fixture = emitted8b();
+  const observed = [];
+  const result = prepare8b(fixture.root, fixture.runId,
+    { owner: fixture.runId, generation: 1, stdinMode: 'pty-raw-noecho',
+      hostInput: fixture.hostInput }, {
+      cwdFn: () => fixture.root,
+      nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'),
+      descriptorBuilder: ({ loop }) => {
+        observed.push(loop.event_log_head.seq);
+        return { tool: 'create_thread', target: { type: 'project',
+          projectId: 'project $`\\', environment: { type: 'local' } },
+        prompt: `snapshot-seq:${loop.event_log_head.seq}` };
+      },
+      reconcileBudgetFn: () => recordCost9a(fixture.root, fixture.runId,
+        { turns: 1, tokens: 0, requestId: 'task11c-reconcile-snapshot',
+          fence: { owner: fixture.runId, generation: 1,
+            runtime: 'codex', intent: 'accounting' } }),
+      gateFn: () => ({ ok: true, blocked_by: [] }),
+    });
+  assert8b.equal(observed.length, 2);
+  assert8b.ok(observed[1] > observed[0]);
+  assert8b.equal(result.action.prompt, `snapshot-seq:${observed[1]}`);
+});
+
+test8b('prepare CAS loser restarts from harmless anchored drift and grants one action', () => {
+  const fixture = emitted8b();
+  let beforeAppendCalls = 0;
+  let builderCalls = 0;
+  const result = prepare8b(fixture.root, fixture.runId,
+    { owner: fixture.runId, generation: 1, stdinMode: 'pty-raw-noecho',
+      hostInput: fixture.hostInput }, {
+      cwdFn: () => fixture.root,
+      nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'),
+      descriptorBuilder: () => {
+        builderCalls += 1;
+        return { tool: 'create_thread', target: { type: 'project',
+          projectId: 'project $`\\', environment: { type: 'local' } }, prompt: 'prompt' };
+      },
+      reconcileBudgetFn: () => {},
+      beforeAppendFn: () => {
+        beforeAppendCalls += 1;
+        recordCost9a(fixture.root, fixture.runId,
+          { turns: 1, tokens: 0, requestId: 'task11c-prepare-cas-drift',
+            fence: { owner: fixture.runId, generation: 1,
+              runtime: 'codex', intent: 'accounting' } });
+      },
+      gateFn: () => ({ ok: true, blocked_by: [] }),
+    });
+  assert8b.equal(result.outcome, 'prepared');
+  assert8b.equal(result.do_not_call, false);
+  assert8b.equal(beforeAppendCalls, 1);
+  assert8b.ok(builderCalls >= 3, 'initial, post-reconcile, and post-CAS snapshots rebuild');
+  assert8b.equal(lines8b(fixture.root, fixture.runId)
+    .filter(event => event.type === 'app-task-prepared').length, 1);
+});
+
+test8b('prepare failure settlement keeps cwd and native-path callbacks outside the lock', () => {
+  for (const failure of ['route', 'gate']) {
+    const fixture = emitted8b();
+    let cwdCalls = 0;
+    const result = prepare8b(fixture.root, fixture.runId,
+      { owner: fixture.runId, generation: 1, stdinMode: 'pty-raw-noecho',
+        hostInput: failure === 'route'
+          ? { currentHostTaskCwd: fixture.root, projects: [] } : fixture.hostInput }, {
+        cwdFn: () => {
+          cwdCalls += 1;
+          readVerifiedState(fixture.root, fixture.runId);
+          return fixture.root;
+        },
+        nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'),
+        descriptorBuilder: () => ({ tool: 'create_thread', target: { type: 'project',
+          projectId: 'project $`\\', environment: { type: 'local' } }, prompt: 'prompt' }),
+        reconcileBudgetFn: () => {},
+        gateFn: () => failure === 'gate'
+          ? ({ ok: false, blocked_by: ['budget'] }) : ({ ok: true, blocked_by: [] }),
+      });
+    assert8b.equal(result.outcome, failure === 'route' ? 'manual-preserve' : 'gate-blocked');
+    assert8b.ok(cwdCalls > 0);
+  }
 });
 
 test8b('prepare gate failure abandons without granting an action', () => {
