@@ -157,3 +157,29 @@ test('App prompt rejects path controls, route drift, and oversize paths', async 
     ...base, parentGeneration: Number.MAX_SAFE_INTEGER + 1,
   }), /APP_PROMPT_GENERATION_INVALID/);
 });
+
+test('App action exposes only the reviewed public create and fork shapes', async () => {
+  const { buildAppTaskAction } = await descriptorModule();
+  const common = {
+    projectRoot: '/repo', targetCwd: '/repo', platform: 'linux',
+    logicalRunId: '01JAPPRAN00000000000000000',
+    parentRunId: '01JAPPPAR00000000000000000',
+    childRunId: '01JAPPCHD00000000000000015',
+    parentGeneration: 1, attemptId: '01JAPPTASK0000000000000000', handoffRel: 'handoffs/next.md',
+  };
+  const create = buildAppTaskAction({ ...common, route: 'create', contextMode: 'fresh', projectId: ' p$`\\id ' });
+  assert.deepEqual(create, {
+    tool: 'create_thread',
+    target: { type: 'project', projectId: ' p$`\\id ', environment: { type: 'local' } },
+    prompt: create.prompt,
+  });
+  const fork = buildAppTaskAction({
+    ...common, targetCwd: '/repo/.claude/worktrees/ws', route: 'fork',
+    contextMode: 'inherited-completed-history', workstreamId: 'WS-1',
+  });
+  assert.deepEqual(fork, {
+    tool: 'fork_thread', environment: { type: 'same-directory' },
+    followup: { tool: 'send_message_to_thread', prompt: fork.followup.prompt },
+  });
+  assert.doesNotMatch(JSON.stringify({ create, fork }), /"(?:model|thinking|clientThreadId)"/);
+});

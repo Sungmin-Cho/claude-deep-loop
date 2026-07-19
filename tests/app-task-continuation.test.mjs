@@ -1130,7 +1130,7 @@ test8b('prepare rejects descriptor accessors proxies and cycles without invoking
         cwdFn: () => fixture.root, descriptorBuilder: () => action,
         reconcileBudgetFn: () => assert8b.fail('invalid descriptor does not reconcile'),
         gateFn: () => assert8b.fail('invalid descriptor does not gate'),
-      }), /APP_DESCRIPTOR_INVALID/, label);
+      }), /APP_PREPARED_ACTION_INVALID/, label);
     assert8b.deepEqual(read8b(fixture.root, fixture.runId).data, before.state, label);
     assert8b.deepEqual(lines8b(fixture.root, fixture.runId), before.events, label);
   }
@@ -1138,10 +1138,80 @@ test8b('prepare rejects descriptor accessors proxies and cycles without invoking
   assert8b.equal(proxyTraps, 0);
 });
 
-test8b('missing throwing or recursively extra descriptor is write free', () => {
-  for (const builder of [undefined, () => { throw new Error('BUILDER_BOOM'); },
-    () => ({ tool: 'create_thread', target: { type: 'project', projectId: 'project $`\\',
-      environment: { type: 'local', model: 'forbidden' } }, prompt: 'prompt' })]) {
+test8b('Task 11C snapshot wrapper composes with production prepare and redacts an exact retry', () => {
+  const fixture = emitted8b();
+  const request = { owner: fixture.runId, generation: 1,
+    stdinMode: 'pty-raw-noecho', hostInput: fixture.hostInput };
+  const productionDeps = {
+    nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'),
+    cwdFn: () => fixture.root,
+    reconcileBudgetFn: () => ({ turns: 0, tokens: 0 }),
+    gateFn: () => ({ ok: true, blocked_by: [] }),
+  };
+  const first = prepare8b(fixture.root, fixture.runId, request, productionDeps);
+  assert8b.equal(first.do_not_call, false);
+  assert8b.equal(first.action.tool, 'create_thread');
+  const retry = prepare8b(fixture.root, fixture.runId, request, {
+    nowFn: () => assert8b.fail('exact retry does not sample'),
+    cwdFn: () => fixture.root,
+    reconcileBudgetFn: () => assert8b.fail('exact retry does not reconcile'),
+    gateFn: () => assert8b.fail('exact retry does not gate'),
+  });
+  assert8b.deepEqual(retry, {
+    ok: true, outcome: 'already-prepared', do_not_call: true, attempt_id: first.attempt_id,
+  });
+  assert8b.equal(JSON.stringify(retry).includes('projectId'), false);
+  assert8b.equal(JSON.stringify(retry).includes('prompt'), false);
+  assert8b.throws(() => prepare8b(fixture.root, fixture.runId,
+    { ...request, stdinMode: 'pipe-open-noecho' }, productionDeps),
+  /APP_STDIN_MODE_FENCED/);
+  assert8b.throws(() => prepare8b(fixture.root, fixture.runId,
+    { ...request, hostInput: { ...request.hostInput,
+      currentHostTaskCwd: `${fixture.root}/.` } }, productionDeps),
+  /APP_PREPARE_REQUEST_FENCED/);
+
+  const noRoute = emitted8b();
+  const preserved = prepare8b(noRoute.root, noRoute.runId,
+    { owner: noRoute.runId, generation: 1, stdinMode: 'pty-raw-noecho',
+      hostInput: { currentHostTaskCwd: noRoute.root, projects: [] } },
+    { ...productionDeps, cwdFn: () => noRoute.root });
+  assert8b.equal(preserved.outcome, 'manual-preserve');
+  assert8b.equal(Object.hasOwn(preserved, 'action'), false,
+    'route-null never invokes the production builder');
+});
+
+test8b('descriptor builder failure leaves emitted state and event log unchanged', () => {
+  for (const [descriptorBuilder, error] of [
+    [() => { throw new Error('TEST_BUILDER_FAILED'); }, /TEST_BUILDER_FAILED/],
+    [() => ({ tool: 'create_thread', target: {}, prompt: 'P', model: 'forbidden' }),
+      /APP_PREPARED_ACTION_INVALID/],
+  ]) {
+    const fixture = emitted8b();
+    const request = { owner: fixture.runId, generation: 1,
+      stdinMode: 'pty-raw-noecho', hostInput: fixture.hostInput };
+    const deps = { nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'),
+      cwdFn: () => fixture.root, descriptorBuilder,
+      reconcileBudgetFn: () => ({ turns: 0, tokens: 0 }),
+      gateFn: () => ({ ok: true, blocked_by: [] }) };
+    const before = {
+      state: structuredClone(read8b(fixture.root, fixture.runId).data),
+      events: structuredClone(lines8b(fixture.root, fixture.runId)),
+    };
+    assert8b.throws(() => prepare8b(fixture.root, fixture.runId, request, deps), error);
+    assert8b.deepEqual({
+      state: read8b(fixture.root, fixture.runId).data,
+      events: lines8b(fixture.root, fixture.runId),
+    }, before);
+  }
+});
+
+test8b('throwing or recursively extra descriptor is write free', () => {
+  for (const [builder, error] of [
+    [() => { throw new Error('BUILDER_BOOM'); }, /BUILDER_BOOM/],
+    [() => ({ tool: 'create_thread', target: { type: 'project', projectId: 'project $`\\',
+      environment: { type: 'local', model: 'forbidden' } }, prompt: 'prompt' }),
+      /APP_PREPARED_ACTION_INVALID/],
+  ]) {
     const fixture = emitted8b();
     const before = { state: structuredClone(read8b(fixture.root, fixture.runId).data),
       events: structuredClone(lines8b(fixture.root, fixture.runId)) };
@@ -1149,10 +1219,10 @@ test8b('missing throwing or recursively extra descriptor is write free', () => {
       { owner: fixture.runId, generation: 1, stdinMode: 'pty-raw-noecho',
         hostInput: fixture.hostInput }, {
         nowFn: () => Date.parse('2026-07-13T00:00:02.000Z'), cwdFn: () => fixture.root,
-        ...(builder === undefined ? {} : { descriptorBuilder: builder }),
+        descriptorBuilder: builder,
         reconcileBudgetFn: () => assert8b.fail('builder failure precedes reconcile'),
-        gateFn: () => ({ ok: true, blocked_by: [] }) }),
-    /APP_DESCRIPTOR_BUILDER_REQUIRED|BUILDER_BOOM|APP_DESCRIPTOR_INVALID/);
+        gateFn: () => ({ ok: true, blocked_by: [] }),
+      }), error);
     assert8b.deepEqual(read8b(fixture.root, fixture.runId).data, before.state);
     assert8b.deepEqual(lines8b(fixture.root, fixture.runId), before.events);
   }

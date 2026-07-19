@@ -11,6 +11,8 @@ import { leaseCheck } from './lease.mjs';
 import { respawnGate } from './respawn.mjs';
 import { runtimeFence } from './runtime.mjs';
 import { APP_CONFIRMATION_TIMEOUT_MS, validate, verifyAppEventCorrelation } from './schema.mjs';
+import { APP_RESUME_PROMPT_MAX_BYTES, appTaskDescriptorInput,
+  buildAppTaskAction } from './runtime-descriptor.mjs';
 import { classifyProjectTaskDirectory, exactRawHostObservation, normalizeHostObservation,
   appHostTaskCwdDigest, hostSurfaceFactsDigest, sameNativeDirectory,
   selectAppContinuationRoute, validateOpaqueId } from './host-surface.mjs';
@@ -715,55 +717,49 @@ function applyPrepared(loop, attemptId, route, descriptorDigest, clock) {
   Object.assign(loop.session_chain.lease, { handoff_phase: 'spawned', state: 'releasing' });
 }
 
-function exactActionRecord(value, expected) {
+function exactObjectKeys(value, keys) {
   try {
     if (!value || typeof value !== 'object' || Array.isArray(value)
         || utilTypes.isProxy(value)
         || ![Object.prototype, null].includes(Object.getPrototypeOf(value))
-        || Object.getOwnPropertySymbols(value).length !== 0
-        || Object.getOwnPropertyNames(value).sort().join('\0')
-          !== [...expected].sort().join('\0')) throw new Error('APP_DESCRIPTOR_INVALID');
-    return Object.fromEntries(expected.map(key => {
-      const descriptor = Object.getOwnPropertyDescriptor(value, key);
-      if (!descriptor || descriptor.enumerable !== true || !Object.hasOwn(descriptor, 'value')) {
-        throw new Error('APP_DESCRIPTOR_INVALID');
-      }
-      return [key, descriptor.value];
-    }));
-  } catch (error) {
-    if (error?.message === 'APP_DESCRIPTOR_INVALID') throw error;
-    throw new Error('APP_DESCRIPTOR_INVALID');
+        || Object.getOwnPropertySymbols(value).length !== 0) return false;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const names = Object.keys(descriptors);
+    return names.sort().join('\0') === [...keys].sort().join('\0')
+      && names.every(key => descriptors[key]?.enumerable === true
+        && Object.hasOwn(descriptors[key], 'value'));
+  } catch {
+    return false;
   }
 }
 
-function exactPreparedAction(action, route) {
-  const top = exactActionRecord(action, route.kind === 'create'
-    ? ['tool', 'target', 'prompt'] : ['tool', 'environment', 'followup']);
-  let normalized;
+function finalizePreparedAppAction(candidate, route, prepareRequestDigest) {
+  const fail = () => { throw new Error('APP_PREPARED_ACTION_INVALID'); };
+  if (!route || !/^[0-9a-f]{64}$/.test(prepareRequestDigest || '')) fail();
+  let prompt;
   if (route.kind === 'create') {
-    const target = exactActionRecord(top.target, ['type', 'projectId', 'environment']);
-    const environment = exactActionRecord(target.environment, ['type']);
-    if (top.tool !== 'create_thread' || target.type !== 'project'
-        || environment.type !== 'local' || target.projectId !== route.projectId
-        || typeof top.prompt !== 'string') {
-      throw new Error('APP_DESCRIPTOR_INVALID');
-    }
-    normalized = { tool: top.tool, target: { type: target.type,
-      projectId: target.projectId, environment: { type: environment.type } },
-    prompt: top.prompt };
-  } else {
-    const environment = exactActionRecord(top.environment, ['type']);
-    const followup = exactActionRecord(top.followup, ['tool', 'prompt']);
-    if (top.tool !== 'fork_thread' || environment.type !== 'same-directory'
-        || followup.tool !== 'send_message_to_thread'
-        || typeof followup.prompt !== 'string') throw new Error('APP_DESCRIPTOR_INVALID');
-    normalized = { tool: top.tool, environment: { type: environment.type },
-      followup: { tool: followup.tool, prompt: followup.prompt } };
-  }
-  if (Buffer.byteLength(JSON.stringify(normalized), 'utf8') > 32_768) {
-    throw new Error('APP_DESCRIPTOR_INVALID');
-  }
-  return normalized;
+    if (!exactObjectKeys(candidate, ['tool', 'target', 'prompt'])
+        || candidate.tool !== 'create_thread'
+        || !exactObjectKeys(candidate.target, ['type', 'projectId', 'environment'])
+        || candidate.target.type !== 'project'
+        || candidate.target.projectId !== route.projectId
+        || !exactObjectKeys(candidate.target.environment, ['type'])
+        || candidate.target.environment.type !== 'local') fail();
+    prompt = candidate.prompt;
+  } else if (route.kind === 'fork') {
+    if (!exactObjectKeys(candidate, ['tool', 'environment', 'followup'])
+        || candidate.tool !== 'fork_thread'
+        || !exactObjectKeys(candidate.environment, ['type'])
+        || candidate.environment.type !== 'same-directory'
+        || !exactObjectKeys(candidate.followup, ['tool', 'prompt'])
+        || candidate.followup.tool !== 'send_message_to_thread') fail();
+    prompt = candidate.followup.prompt;
+  } else fail();
+  if (typeof prompt !== 'string' || prompt.length === 0
+      || Buffer.byteLength(prompt, 'utf8') > APP_RESUME_PROMPT_MAX_BYTES) fail();
+  return { action: candidate, descriptorDigest: contentHash(JSON.stringify({
+    action: candidate, prepare_request_digest: prepareRequestDigest,
+  })) };
 }
 
 function applyPrepareFailure(loop, input, code, preserve) {
@@ -899,13 +895,30 @@ export function prepareAppTask(root, runId, input, deps = {}) {
     let action = null; let descriptorDigest = null;
     let completeRequest = null; let completePhase = null; let preparedNoop = null;
     if (route !== null) {
-      if (typeof deps.descriptorBuilder !== 'function') {
-        throw new Error('APP_DESCRIPTOR_BUILDER_REQUIRED');
-      }
-      action = exactPreparedAction(deps.descriptorBuilder({ loop, route,
-        child: existing.session, attemptId: existing.attemptId }), route);
-      descriptorDigest = contentHash(JSON.stringify({ action,
-        prepare_request_digest: prepareRequestDigest }));
+      const childSession = loop.session_chain.sessions.find(session =>
+        session.run_id === loop.session_chain.lease.handoff_child_run_id);
+      const continuation = childSession?.continuation;
+      const descriptorInput = appTaskDescriptorInput({
+        projectRoot: loop.project.root,
+        platform: deps.platform ?? process.platform,
+        runId,
+        owner: input.owner,
+        generation: input.generation,
+        route,
+        continuation,
+        childSession,
+      });
+      const completed = finalizePreparedAppAction(
+        deps.descriptorBuilder === undefined
+          ? buildAppTaskAction(descriptorInput)
+          : deps.descriptorBuilder({
+            loop, route, child: childSession, attemptId: continuation.attempt_id,
+          }),
+        route,
+        prepareRequestDigest,
+      );
+      action = completed.action;
+      descriptorDigest = completed.descriptorDigest;
       completeRequest = Object.freeze({ ...request, descriptorDigest });
       completePhase = body => withAppMutation(root, runId, completeRequest,
         'app-prepare', body, { intentConflictError: 'APP_PREPARE_REQUEST_FENCED' });

@@ -5,6 +5,7 @@ import { validateSessionRuntime } from './runtime.mjs';
 import { buildCodexExecEntry } from './codex-runtime.mjs';
 import { validateRuntimeProfile } from './session-profile.mjs';
 import { tomlBasicString } from './toml-safe.mjs';
+import { validateOpaqueId } from './host-surface.mjs';
 
 const CODEX_TRANSPORT_UNAVAILABLE = 'codex-transport-not-activated';
 
@@ -166,6 +167,59 @@ export function buildAppResumePrompt(input = {}) {
     throw new Error('APP_PROMPT_TOO_LARGE');
   }
   return prompt;
+}
+
+export function buildAppTaskAction(input = {}) {
+  const prompt = buildAppResumePrompt(input);
+  if (input.route === 'create') {
+    const projectId = validateOpaqueId(input.projectId, { label: 'project-id', maxBytes: 512 });
+    return {
+      tool: 'create_thread',
+      target: { type: 'project', projectId, environment: { type: 'local' } },
+      prompt,
+    };
+  }
+  if (input.route === 'fork') {
+    if (input.projectId != null) throw new Error('APP_ACTION_PROJECT_INVALID');
+    return {
+      tool: 'fork_thread',
+      environment: { type: 'same-directory' },
+      followup: { tool: 'send_message_to_thread', prompt },
+    };
+  }
+  throw new Error('APP_ACTION_ROUTE_INVALID');
+}
+
+export function appTaskDescriptorInput({
+  projectRoot, platform = process.platform, runId, owner, generation,
+  route, continuation, childSession,
+} = {}) {
+  if (!route || !continuation || !childSession
+      || childSession.continuation !== continuation
+      || typeof childSession.run_id !== 'string'
+      || typeof childSession.handoff_rel !== 'string'
+      || typeof continuation.attempt_id !== 'string'
+      || route.kind !== continuation.route
+      || route.contextMode !== continuation.context_mode
+      || route.targetCwd !== continuation.target_cwd
+      || route.workstreamId !== continuation.workstream_id) {
+    throw new Error('APP_DESCRIPTOR_STATE_INVALID');
+  }
+  return {
+    projectRoot,
+    targetCwd: continuation.target_cwd,
+    platform,
+    logicalRunId: runId,
+    parentRunId: owner,
+    childRunId: childSession.run_id,
+    parentGeneration: generation,
+    attemptId: continuation.attempt_id,
+    route: continuation.route,
+    contextMode: continuation.context_mode,
+    handoffRel: childSession.handoff_rel,
+    workstreamId: continuation.workstream_id,
+    projectId: route.projectId,
+  };
 }
 
 function windowsNativePath(identity, { runtime = null, kind = null } = {}) {

@@ -2019,22 +2019,43 @@ function runReady11a(fixture, args, input, expectedReady, { cwd = fixture.root }
   });
 }
 
-test('app-task prepare projects snake_case stdin then fails closed before Task 12 builder', async () => {
+test('app-task prepare projects snake_case stdin into one public create action', async () => {
   const fixture = appCliSeed11a();
   const args = ['app-task', 'prepare', '--project-root', fixture.root, '--run-id', fixture.runId,
     '--owner', fixture.runId, '--generation', '1', '--stdin-mode', 'pipe-open-noecho',
     '--app-host-input-stdin'];
   const ready = `DEEP_LOOP_STDIN_READY:v1:app-prepare:${fixture.runId}.1:pipe-open-noecho`;
-  const result = await runReady11a(fixture, args, { host_task_cwd: fixture.root,
-    projects: [{ projectId: ' p$`\\id ', projectKind: 'local', path: fixture.root }] }, ready);
-  assert.equal(result.code, 1);
-  assert.equal(result.stdout.split('\n')[0], ready);
-  assert.match(result.stderr, /APP_DESCRIPTOR_BUILDER_REQUIRED/);
+  const projectId = ' p$`\\id ';
+  const hostInput = { host_task_cwd: fixture.root,
+    projects: [{ projectId, projectKind: 'local', path: fixture.root }] };
+  const result = await runReady11a(fixture, args, hostInput, ready);
+  assert.equal(result.code, 0, result.stderr);
+  const lines = result.stdout.split('\n').filter(Boolean);
+  assert.equal(lines[0], ready);
+  assert.equal(lines.length, 2, 'READY plus one JSON response only');
+  const response = JSON.parse(lines[1]);
+  assert.deepEqual(Object.keys(response).sort(),
+    ['action', 'attempt_id', 'context_mode', 'do_not_call', 'ok', 'outcome', 'route'].sort());
+  assert.equal(response.ok, true);
+  assert.equal(response.outcome, 'prepared');
+  assert.equal(response.do_not_call, false);
+  assert.equal(response.attempt_id, fixture.attemptId);
+  assert.equal(response.route, 'create');
+  assert.equal(response.context_mode, 'fresh');
+  assert.equal(response.action.tool, 'create_thread');
+  assert.deepEqual(response.action.target,
+    { type: 'project', projectId, environment: { type: 'local' } });
+  assert.equal(typeof response.action.prompt, 'string');
+  const conflict = await runReady11a(fixture, args,
+    { ...hostInput, host_task_cwd: `${fixture.root}/.` }, ready);
+  assert.equal(conflict.code, 3, conflict.stderr);
+  assert.equal(conflict.stdout.split('\n').filter(Boolean)[0], ready);
+  assert.match(conflict.stderr, /APP_PREPARE_REQUEST_FENCED/);
   const loop = readState(fixture.root, fixture.runId).data;
   const child = loop.session_chain.sessions.find(item => item.run_id === fixture.childRunId);
-  assert.equal(child.continuation.phase, 'emitted');
+  assert.equal(child.continuation.phase, 'prepared');
   assert.equal(readLines(fixture.root, fixture.runId)
-    .filter(event => event.type === 'app-task-prepared').length, 0);
+    .filter(event => event.type === 'app-task-prepared').length, 1);
 });
 
 test('app-task prepare rejects extra top-level and project-row IDs without write or echo', async () => {
