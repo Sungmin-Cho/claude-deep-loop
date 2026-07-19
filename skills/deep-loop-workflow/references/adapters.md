@@ -19,7 +19,7 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field session_chain.leas
 
 Host-derived observation, project, or receipt data is never shell argv, environment, temp-file, here-doc, command substitution, or base64 argv. Start the documented static process, match its exact READY token, then send exactly one bounded line with the host structured process-input tool. Missing/duplicate READY, echo, timeout, no-return, extra LF, or uncertain process liveness is fail-closed and never authorizes a fallback process.
 
-`init-run prepare`가 반환한 `prepared_authority`는 host-derived observation/project/receipt가 아니라 kernel이 검증해 만든 non-secret local root/cwd identity binding이다. 따라서 fixed init의 유일한 예외로, direct prepare response에서 반환 key order를 보존해 정확히 한 번 만든 compact JSON을 documented `--prepared-authority` single argv로만 full/retry에 전달한다. 그 값을 재구성·재관측하거나 environment, temp-file, here-doc, command substitution, base64 argv 또는 별도 hashing process로 옮기지 않는다.
+`init-run prepare`가 반환한 `prepared_authority`는 host-derived observation/project/receipt가 아니라 kernel이 검증해 만든 non-secret local root/cwd identity binding이다. 따라서 fixed init의 유일한 예외로, direct prepare response가 함께 반환한 exact `prepared_authority_json_compact`를 documented `--prepared-authority` single argv로만 full/retry에 전달하고, 함께 반환한 kernel-computed `prepared_authority_digest`로 READY를 검증한다. 객체에서 JSON/digest를 다시 만들거나 재관측하지 않으며 environment, temp-file, here-doc, command substitution, base64 argv 또는 별도 hashing process로 옮기지 않는다.
 
 ## 1. dispatch — Maker 스킬 Invoke
 

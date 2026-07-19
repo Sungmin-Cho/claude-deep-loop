@@ -1308,13 +1308,17 @@ test('prepare status and manual-enums forms require exact explicit authority bin
   assert.equal(prepare.status, 0, prepare.stderr);
   const binding = JSON.parse(prepare.stdout);
   assert.deepEqual(Object.keys(binding.prepared_authority).sort(), ['cwd', 'root', 'version']);
+  assert.equal(binding.prepared_authority_json_compact,
+    JSON.stringify(binding.prepared_authority));
+  assert.equal(binding.prepared_authority_digest,
+    createHash('sha256').update(binding.prepared_authority_json_compact).digest('hex'));
   const status = spawnSync(process.execPath, [CLI, 'init-run', 'status', '--project-root', root,
     '--attempt', binding.attempt_id, '--expected-current-digest', binding.previous_current_digest,
     '--expected-request-digest', binding.expected_request_digest], { cwd: root, encoding: 'utf8' });
   assert.equal(status.status, 0, status.stderr);
   assert.equal(JSON.parse(status.stdout).outcome, 'absent');
   assert.equal(existsSync(join(root, '.deep-loop')), false, 'prepare/status are no-write');
-  const authority = JSON.stringify(binding.prepared_authority);
+  const authority = binding.prepared_authority_json_compact;
   const full = spawnSync(process.execPath, [CLI, 'init-run', ...common,
     '--init-attempt', binding.attempt_id, '--expected-current-digest', binding.previous_current_digest,
     '--expected-request-digest', binding.expected_request_digest, '--expected-preflight-digest', 'NONE',
@@ -1498,8 +1502,11 @@ test('fixed full init response loss retries the same structured observation and 
   const prepare = spawnSync(process.execPath, [CLI, 'init-run', 'prepare', ...fixed,
     '--expected-observation-digest', observationDigest], { cwd: root, encoding: 'utf8' });
   assert.equal(prepare.status, 0, prepare.stderr); const binding = JSON.parse(prepare.stdout);
-  const authority = JSON.stringify(binding.prepared_authority);
-  const authorityDigest = createHash('sha256').update(authority).digest('hex');
+  const authority = binding.prepared_authority_json_compact;
+  const authorityDigest = binding.prepared_authority_digest;
+  assert.equal(authority, JSON.stringify(binding.prepared_authority));
+  assert.equal(authorityDigest,
+    createHash('sha256').update(authority).digest('hex'));
   const readyBinding = [binding.attempt_id, binding.previous_current_digest,
     binding.expected_request_digest, observationDigest, authorityDigest].join('.');
   const crashed = spawnSync(process.execPath, [FIXED_INIT_CRASH_WORKER, root, binding.attempt_id,

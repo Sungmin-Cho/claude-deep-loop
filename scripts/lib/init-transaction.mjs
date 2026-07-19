@@ -542,10 +542,17 @@ export function prepareInitialization(root, options, deps) {
   const expectedRequest = initializationRequestDigest(projection);
   const expectedObservation = projection.host_observation_digest;
   const preparedAuthority = capturePreparedAuthority(root, deps);
+  const preparedAuthorityValue = preparedAuthority === undefined
+    ? undefined : structuredClone(preparedAuthority);
+  const preparedAuthorityJsonCompact = preparedAuthorityValue === undefined
+    ? undefined : JSON.stringify(preparedAuthorityValue);
   const finishPrepared = result => {
     verifyPreparedAuthority(root, preparedAuthority, deps);
     return preparedAuthority === undefined ? result
-      : { ...result, prepared_authority: structuredClone(preparedAuthority) };
+      : { ...result,
+        prepared_authority: structuredClone(preparedAuthorityValue),
+        prepared_authority_json_compact: preparedAuthorityJsonCompact,
+        prepared_authority_digest: contentHash(preparedAuthorityJsonCompact) };
   };
   const basePaths = initPaths(root);
   const discovery = stableSet([basePaths.current, basePaths.pending], deps);

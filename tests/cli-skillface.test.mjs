@@ -586,6 +586,8 @@ test('skill publishes the exact fixed App init command family', () => {
     '--expected-current-digest <previous_current_digest>',
     '--expected-request-digest <expected_request_digest>',
     'DEEP_LOOP_STDIN_READY:v1:init-commit:<attempt>.<previous_current_digest>.<request_digest>.<preflight_digest>.<prepared_authority_digest>:<mode>',
+    'prepared_authority_json_compact',
+    'prepared_authority_digest',
   ]) assert.ok(source.includes(command), `missing fixed init CLI: ${command}`);
 
   const variants = [
@@ -618,7 +620,7 @@ test('skill publishes the exact fixed App init command family', () => {
       `${marker}: full commit must transport prepare authority`);
   }
   assert.match(source, /prepared_authority_json_compact[^\n]*byte-for-byte/i);
-  assert.match(source, /prepared_authority_digest[^\n]*SHA-256/i);
+  assert.match(source, /prepared_authority_digest[^\n]*(kernel|prepare)[^\n]*(반환|return)/i);
   assert.match(source, /prepared_authority_json_compact[^\n]*(재구성|reconstruct)[^\n]*(금지|않)/i);
   assert.match(source, /surface\/source paired form:[^\n]*둘 다 생략[^\n]*null\/null/);
   assert.match(source, /capability가 0개이면[^\n]*--capabilities[^\n]*생략[^\n]*exact `\[\]`/i);
@@ -633,7 +635,9 @@ test('documented enum prepare authority completes a real fixed init commit', () 
     '--expected-observation-digest', 'NONE'], { cwd: root, encoding: 'utf8' });
   assert.equal(prepared.status, 0, prepared.stderr);
   const binding = JSON.parse(prepared.stdout);
-  const authority = JSON.stringify(binding.prepared_authority);
+  const authority = binding.prepared_authority_json_compact;
+  assert.equal(authority, JSON.stringify(binding.prepared_authority));
+  assert.match(binding.prepared_authority_digest, /^[0-9a-f]{64}$/);
   const committed = spawnSync(process.execPath, [CLI, 'init-run', ...common,
     '--init-attempt', binding.attempt_id,
     '--expected-current-digest', binding.previous_current_digest,
