@@ -19,7 +19,9 @@ import { acquireAppTask, awaitAppTask, confirmAppTask, failAppTask, prepareAppTa
   revokeAppTaskContinuation, sweepUnconfirmedAppTask }
   from '../scripts/lib/app-task-continuation.mjs';
 import { readLines, readVerifiedState as verified10d } from '../scripts/lib/integrity.mjs';
-import { durableRunBytes as bytes10d, rawHashValidState as raw10d }
+import { durableRunBytes as bytes10d,
+  legacyInProgressProofFixture as legacyFinish10d,
+  rawHashValidState as raw10d }
   from './fixtures/verified-app-run.mjs';
 import { createFileSymlinkOrSkip } from './helpers/fs-fixtures.mjs';
 
@@ -720,6 +722,26 @@ test('finish pending recovery succeeds once but its committed receipt stays term
   const terminalBytes = bytes10d(fixture.root, fixture.runId);
   assert.throws(() => invoke(), /FINISH_ALREADY_TERMINAL/);
   assert.deepEqual(bytes10d(fixture.root, fixture.runId), terminalBytes);
+});
+
+test('legacy first finish recovers its lineage checkpoint with the stopped result', () => {
+  const fixture = legacyFinish10d();
+  const moduleHref = new URL('../scripts/lib/finish.mjs', import.meta.url).href;
+  const child = spawn10d(process.execPath, ['--input-type=module', '--eval',
+    `import { finishRun } from ${JSON.stringify(moduleHref)};
+     finishRun(process.argv[1], process.argv[2], { status: 'stopped', confirm: true,
+       proof: { human_reason: 'legacy crash' },
+       fence: { owner: process.argv[2], generation: 1, runtime: 'codex' } });`,
+    fixture.root, fixture.runId], { shell: false, encoding: 'utf8', env: { ...process.env,
+      NODE_ENV: 'test', DEEP_LOOP_TEST_CRASH_AT: 'pending-after-rename' }, timeout: 10_000 });
+  assertCrashWorkerExit10d(child);
+  rmdir10d(join(fixture.root, '.deep-loop', 'runs', fixture.runId, '.lock'));
+  assert.deepEqual(finishRun(fixture.root, fixture.runId, { status: 'stopped', confirm: true,
+    proof: { human_reason: 'legacy crash' }, fence: fixture.fence,
+    nowFn: () => assert.fail('pending legacy finish recovery cannot sample a new clock') }),
+  { ok: true, status: 'stopped' });
+  assert.deepEqual(readLines(fixture.root, fixture.runId).slice(-3).map(event => event.type),
+    ['lease-lineage-baselined', 'finish', 'cost']);
 });
 
 test('same-length staged-event corruption is rejected before any canonical mutation', () => {

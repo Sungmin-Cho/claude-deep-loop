@@ -130,12 +130,30 @@ function applyFinish(loop, { status, reportRel, binding, clock }) {
 }
 
 function assertRecoveredFinishProjection(loop, recovered, { status, reportRel, fence }) {
-  if (recovered.events?.length !== 2 || recovered.events[0]?.type !== 'finish'
-      || recovered.events[1]?.type !== 'cost') {
+  const events = recovered.events;
+  const hasCheckpoint = events?.length === 3
+    && events[0]?.type === 'lease-lineage-baselined';
+  const finishIndex = hasCheckpoint ? 1 : 0;
+  if (![2, 3].includes(events?.length) || events[finishIndex]?.type !== 'finish'
+      || events[finishIndex + 1]?.type !== 'cost'
+      || events.length === 3 && !hasCheckpoint) {
     throw new Error('FINISH_RESPONSE_PROJECTION_CHANGED');
   }
-  const event = recovered.events[0];
-  const cost = recovered.events[1];
+  const event = events[finishIndex];
+  const cost = events[finishIndex + 1];
+  if (hasCheckpoint) {
+    const checkpoint = events[0];
+    const checkpointKeys = ['acquired_at', 'generation', 'lease_state',
+      'legacy_active_workstreams', 'legacy_authority_digest', 'legacy_episode_count',
+      'legacy_proof_origins', 'legacy_workstream_count', 'owner_run_id'];
+    if (JSON.stringify(Object.keys(checkpoint.data ?? {}).sort())
+          !== JSON.stringify(checkpointKeys)
+        || checkpoint.data.owner_run_id !== fence.owner
+        || checkpoint.data.generation !== fence.generation
+        || checkpoint.ts !== event.ts || event.seq !== checkpoint.seq + 1) {
+      throw new Error('FINISH_RESPONSE_PROJECTION_CHANGED');
+    }
+  }
   const expectedCostKeys = ['auto_floor', 'for', 'generation', 'owner', 'tokens', 'turns'];
   if (JSON.stringify(Object.keys(cost.data ?? {}).sort()) !== JSON.stringify(expectedCostKeys)
       || cost.data.turns !== MUTATION_TURN_FLOOR || cost.data.tokens !== 0
