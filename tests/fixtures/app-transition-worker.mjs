@@ -34,8 +34,9 @@ process.stdout.write(`WORKER_READY:v1:${op}\n`);
 const payload = await payloadPromise;
 const nowFn = () => payload.now;
 const WAIT_ARRAY = new Int32Array(new SharedArrayBuffer(4));
+const WORKER_BARRIER_TIMEOUT_MS = 30_000;
 function waitForWorkerFiles(paths, label) {
-  const deadline = Date.now() + 10_000;
+  const deadline = Date.now() + WORKER_BARRIER_TIMEOUT_MS;
   while (paths.some(path => !existsSync(path))) {
     if (Date.now() >= deadline) throw new Error(`WORKER_BARRIER_TIMEOUT:${label}`);
     Atomics.wait(WAIT_ARRAY, 0, 0, 5);

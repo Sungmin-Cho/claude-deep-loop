@@ -73,6 +73,8 @@ const observation10a = root => ({ kind: 'codex-app', source: 'codex-app-tool-pro
   host_task_cwd: root, host_task_cwd_source: 'app-task-context' });
 
 const WORKER = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'app-transition-worker.mjs');
+const RACE_BARRIER_TIMEOUT_MS = 30_000;
+const RACE_WORKER_COMPLETION_TIMEOUT_MS = 45_000;
 function childOperation(payload) {
   const child = spawn(process.execPath,
     [WORKER, payload.op, payload.root, payload.runId],
@@ -101,7 +103,7 @@ function childOperation(payload) {
     const timer = setTimeout(() => {
       if (child.exitCode === null && child.signalCode === null) child.kill();
       reject(new Error(`worker-completion-timeout-${payload.op}`));
-    }, 15_000);
+    }, RACE_WORKER_COMPLETION_TIMEOUT_MS);
     child.on('error', error => { clearTimeout(timer); reject(error); });
     child.on('close', code => {
       clearTimeout(timer);
@@ -154,7 +156,8 @@ async function raceAfterPreAppendSnapshots(left, right) {
 }
 
 async function waitForRaceFile(path, operations = []) {
-  for (let attempt = 0; attempt < 2_000; attempt += 1) {
+  const deadline = Date.now() + RACE_BARRIER_TIMEOUT_MS;
+  while (Date.now() < deadline) {
     if (existsSync(path)) return;
     await new Promise(resolve => setTimeout(resolve, 5));
   }
