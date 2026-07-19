@@ -10,6 +10,7 @@ import { runPreCompactHandoff } from '../scripts/hooks-impl/precompact-handoff.m
 import { readLines } from '../scripts/lib/integrity.mjs';
 import { readState } from '../scripts/lib/state.mjs';
 import {
+  boundedRootPrepareInput,
   FakeAppHost,
   FakeStructuredProcess,
   executePreparedAction,
@@ -290,7 +291,7 @@ export async function runAppLifecycle(route, {
 
   const emitted = emitSource === 'precompact'
     ? await runPreCompactHandoff({}, { root, cwdFn: () => cwd,
-      now: Date.parse('2026-07-13T00:00:02.000Z') })
+      now: Date.now() - 1_000 })
     : runKernel(root, [
       'handoff', 'emit', '--run-id', runId, '--reason', 'milestone', '--trigger', 'milestone',
       '--owner', runId, '--generation', '1', '--app-intent',
@@ -316,18 +317,23 @@ export async function runAppLifecycle(route, {
     initProbe, questionCount,
     runId, emitted, emittedAttemptId, emittedStatus, preActionStatusVerified, hostCalls: [] };
 
+  const { projectsFor = null, ...resolvedHostOptions } = hostOptions;
+  if (projectsFor != null && typeof projectsFor !== 'function') {
+    throw new Error('TEST_PROJECTS_FOR_INVALID');
+  }
   const host = new FakeAppHost({
-    projects: [{ projectId: 'PROJECT_CANARY_71C2', projectKind: 'local', path: root }],
+    projects: projectsFor == null
+      ? [{ projectId: 'PROJECT_CANARY_71C2', projectKind: 'local', path: root }]
+      : projectsFor({ root, cwd }),
     createReceipt: { threadId: 'CREATE_THREAD_CANARY_71C2' },
     forkReceipt: { threadId: 'FORK_THREAD_CANARY_71C2' },
     sendReceipt: {},
-    ...hostOptions,
+    ...resolvedHostOptions,
   });
-  const projects = route === 'create' ? await host.list_projects() : null;
-  const hostInput = JSON.stringify({
-    host_task_cwd: cwd,
-    ...(projects == null ? {} : { projects }),
-  });
+  const discovery = route === 'create'
+    ? await boundedRootPrepareInput(host, cwd, { timeoutMs: 25 })
+    : { discoveryAvailable: true, line: JSON.stringify({ host_task_cwd: cwd }) };
+  const hostInput = discovery.line;
   const prepareArgs = [
     'app-task', 'prepare', '--run-id', runId, '--owner', runId, '--generation', '1',
     '--stdin-mode', mode, '--app-host-input-stdin',
@@ -347,7 +353,7 @@ export async function runAppLifecycle(route, {
     return {
       root, cwd, route, mode, capabilities, parentObservation, initProbe, questionCount,
       runId, emitted, emittedAttemptId, host,
-      emittedStatus, preActionStatusVerified, hostInput, prepareArgs,
+      emittedStatus, preActionStatusVerified, discovery, hostInput, prepareArgs,
       preparedStatusAfterLoss: exactStatus.json, preparedStatusOutput: exactStatus.stdout,
       prepared: null, duplicate: lostResultRetry.json, duplicateCheckedBeforeAction: true,
     };
@@ -358,7 +364,7 @@ export async function runAppLifecycle(route, {
     return {
       root, cwd, route, mode, capabilities, parentObservation, initProbe, questionCount,
       runId, emitted, emittedAttemptId, host,
-      emittedStatus, preActionStatusVerified, hostInput, prepareArgs,
+      emittedStatus, preActionStatusVerified, discovery, hostInput, prepareArgs,
       prepared: prepared.json, duplicate: null, duplicateCheckedBeforeAction: false,
     };
   }
@@ -372,7 +378,7 @@ export async function runAppLifecycle(route, {
     return {
       root, cwd, route, mode, capabilities, parentObservation, initProbe, questionCount,
       runId, emitted, emittedAttemptId, host,
-      emittedStatus, preActionStatusVerified, hostInput, prepareArgs,
+      emittedStatus, preActionStatusVerified, discovery, hostInput, prepareArgs,
       prepared: prepared.json, duplicate: duplicate.json, duplicateCheckedBeforeAction,
     };
   }
@@ -439,7 +445,7 @@ export async function runAppLifecycle(route, {
   return {
     root, cwd, route, mode, capabilities, parentObservation, childObservation,
     initProbe, questionCount, runId,
-    awaitOrder, host, status, lease, childRunId, emittedAttemptId,
+    awaitOrder, host, discovery, status, lease, childRunId, emittedAttemptId,
     emittedStatus, preActionStatusVerified, duplicateCheckedBeforeAction,
     threadId: receipt.threadId,
     projectId: 'PROJECT_CANARY_71C2',
@@ -449,6 +455,249 @@ export async function runAppLifecycle(route, {
       appStatusResult.stdout, acquire.stdout, parentAwait.stdout,
       wrongOwnerAwait.stdout, wrongOwnerAwait.stderr,
       wrongGenerationAwait.stdout, wrongGenerationAwait.stderr],
+  };
+}
+
+function stopReadyKernelBeforeInput(root, args, readyPattern, {
+  cwd = root,
+  timeoutMs = 5_000,
+} = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [CLI, ...args, '--project-root', root], {
+      cwd, env: process.env, stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    let sawReady = false;
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill();
+    }, timeoutMs);
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', chunk => {
+      stdout += chunk;
+      if (!sawReady && stdout.split(/\r?\n/u).some(line => readyPattern.test(line))) {
+        sawReady = true;
+        child.kill();
+      }
+    });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    child.on('error', error => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on('close', () => {
+      clearTimeout(timer);
+      if (timedOut) return reject(new Error(`READY_PROCESS_TIMEOUT: ${stderr}`));
+      if (!sawReady) return reject(new Error(`READY_TOKEN_MISSING: ${stderr}`));
+      reject(new Error('SIMULATED_CONFIRM_PROCESS_LOSS_BEFORE_COMMIT'));
+    });
+  });
+}
+
+function startLostResultKernel(root, args, {
+  cwd = root, inputLine = null, readyPattern = null, timeoutMs = 5_000,
+} = {}) {
+  if ((readyPattern === null) !== (inputLine === null)) {
+    throw new Error('LOST_RESULT_READY_INPUT_PAIR_INVALID');
+  }
+  const child = spawn(process.execPath, [CLI, ...args, '--project-root', root], {
+    cwd, env: process.env, stdio: [readyPattern ? 'pipe' : 'ignore', 'pipe', 'pipe'],
+  });
+  let stdout = '';
+  let stderr = '';
+  let processState = 'alive';
+  let pollCount = 0;
+  let sent = false;
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  const done = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      if (child.exitCode === null && child.signalCode === null) child.kill();
+      reject(new Error('LOST_RESULT_PROCESS_TIMEOUT'));
+    }, timeoutMs);
+    child.stdout.on('data', chunk => {
+      stdout += chunk;
+      if (readyPattern && !sent) {
+        const readyLines = stdout.split(/\r?\n/u)
+          .filter(line => line.startsWith('DEEP_LOOP_STDIN_READY:'));
+        if (readyLines.length === 1 && readyPattern.test(readyLines[0])) {
+          sent = true;
+          child.stdin.end(`${inputLine}\n`);
+        }
+      }
+    });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    child.on('error', error => { clearTimeout(timer); reject(error); });
+    child.on('close', code => {
+      clearTimeout(timer);
+      processState = 'exited';
+      if (readyPattern && !sent) return reject(new Error(`LOST_RESULT_READY_MISSING: ${stderr}`));
+      if (code !== 0) return reject(new Error(`LOST_RESULT_EXIT_${code}: ${stderr}`));
+      // Suppress stdout/result deliberately: callers may only reconcile after this exact handle exits.
+      resolve();
+    });
+  });
+  return { done, pid: child.pid,
+    poll: () => { pollCount += 1; return processState; },
+    pollCount: () => pollCount,
+    terminate: () => {
+      if (child.exitCode === null && child.signalCode === null) child.kill();
+    } };
+}
+
+async function initializeFromExecutionPlaneDecision({ exactReady, capabilities, process, ask }) {
+  const complete = ['list-projects', 'create-thread-local', 'structured-process-stdin']
+    .every(capability => capabilities.includes(capability));
+  let probeOk = false;
+  if (complete && process !== null) {
+    const ready = process.start();
+    if (ready === exactReady) {
+      const probeInput = '{"probe":"bounded-canary"}';
+      const result = process.writeLine(`${probeInput}\n`);
+      const expected = { ok: true, mode: 'pipe-open-noecho',
+        byte_length: Buffer.byteLength(probeInput, 'utf8'),
+        sha256: createHash('sha256').update(probeInput).digest('hex') };
+      probeOk = result !== null && typeof result === 'object'
+        && Object.keys(result).sort().join(',') === Object.keys(expected).sort().join(',')
+        && Object.entries(expected).every(([key, value]) => result[key] === value)
+        && process.echoedInputs.length === 0;
+    }
+  }
+  if (!probeOk) {
+    return { fixture: initializeManualRun(
+      capabilities.filter(value => value !== 'structured-process-stdin')),
+    questionCount: 0 };
+  }
+  return initializeObservedManualRun({ ask });
+}
+
+async function initializeObservedManualRun({ ask = async () => false } = {}) {
+  const { root, cwd } = createDisposableRepo('create');
+  const mode = 'pipe-open-noecho';
+  const observation = projectObservationFromSkill('deep-loop', {
+    publicTools: publicToolsForRoute('create'), mode, cwd,
+  });
+  const observationLine = JSON.stringify(observation);
+  const preflightNonce = 'fedcba9876543210fedcba9876543210';
+  const preflight = await runReadyKernel(root, [
+    'init-run', 'preflight', '--runtime', 'codex', '--preflight-nonce', preflightNonce,
+    '--stdin-mode', mode, '--observation-stdin',
+  ], observationLine, exactReadyPattern('init-preflight', preflightNonce, mode), { cwd });
+  let questionCount = 0;
+  let approved = false;
+  if (preflight.json.eligible === true) {
+    questionCount += 1;
+    approved = await ask() === true;
+  }
+  if (approved) throw new Error('TEST_AUTO_DECISION_REQUIRES_AUTO_INITIALIZER');
+  const prepared = runKernel(root, [
+    'init-run', 'prepare', '--runtime', 'codex', '--goal', 'App declined fixture',
+    '--app-continuation', 'manual', '--app-consent-authority', 'default-manual',
+    '--expected-observation-digest', preflight.json.observation_digest,
+  ], { cwd }).json;
+  await runReadyKernel(root, [
+    'init-run', '--init-attempt', prepared.attempt_id,
+    '--expected-current-digest', prepared.previous_current_digest,
+    '--expected-request-digest', prepared.expected_request_digest,
+    '--expected-preflight-digest', prepared.expected_observation_digest,
+    '--prepared-authority', prepared.prepared_authority_json_compact,
+    '--stdin-mode', mode, '--app-host-input-stdin', '--app-continuation', 'manual',
+    '--app-consent-authority', 'default-manual', '--runtime', 'codex',
+    '--goal', 'App declined fixture',
+  ], observationLine, exactReadyPattern('init-commit', [
+    prepared.attempt_id, prepared.previous_current_digest,
+    prepared.expected_request_digest, prepared.expected_observation_digest,
+    prepared.prepared_authority_digest,
+  ].join('.'), mode), { cwd });
+  const consent = runKernel(root, [
+    'state', 'get', '--run-id', prepared.attempt_id,
+    '--field', 'autonomy.app_task_continuation',
+  ], { cwd }).json;
+  const sessions = runKernel(root, [
+    'state', 'get', '--run-id', prepared.attempt_id, '--field', 'session_chain.sessions',
+  ], { cwd }).json;
+  const appStatus = runKernel(root, [
+    'app-task', 'status', '--run-id', prepared.attempt_id,
+  ], { cwd }).json;
+  return { fixture: {
+    root, cwd, runId: prepared.attempt_id, consent, appStatus,
+    parentSurface: sessions[0].host_surface,
+    preflightEligible: preflight.json.eligible,
+  }, questionCount };
+}
+
+function initializeManualRun(capabilities, {
+  runtime = 'codex',
+  hostSurface = 'codex-app',
+  hostSource = 'codex-app-tool-provenance',
+} = {}) {
+  const { root, cwd } = createDisposableRepo('create');
+  const surfaceSourceBothNull = hostSurface === null && hostSource === null;
+  const surfaceSourceBothStrings = typeof hostSurface === 'string' && typeof hostSource === 'string';
+  if (!surfaceSourceBothNull && !surfaceSourceBothStrings) {
+    throw new Error('TEST_MANUAL_SURFACE_SOURCE_PAIR_INVALID');
+  }
+  const common = [
+    '--manual-enums', '--runtime', runtime, '--goal', 'App manual fixture',
+    ...(surfaceSourceBothNull ? [] : ['--host-surface', hostSurface, '--host-source', hostSource]),
+    ...(capabilities.length === 0 ? [] : ['--capabilities', capabilities.join(',')]),
+    '--app-continuation', 'manual',
+    '--app-consent-authority', 'default-manual',
+  ];
+  const prepared = runKernel(root, [
+    'init-run', 'prepare', ...common, '--expected-observation-digest', 'NONE',
+  ], { cwd }).json;
+  runKernel(root, [
+    'init-run', '--init-attempt', prepared.attempt_id,
+    '--expected-current-digest', prepared.previous_current_digest,
+    '--expected-request-digest', prepared.expected_request_digest,
+    '--expected-preflight-digest', 'NONE',
+    '--prepared-authority', prepared.prepared_authority_json_compact, ...common,
+  ], { cwd });
+  const consent = runKernel(root, [
+    'state', 'get', '--run-id', prepared.attempt_id,
+    '--field', 'autonomy.app_task_continuation',
+  ], { cwd }).json;
+  const appStatus = runKernel(root, [
+    'app-task', 'status', '--run-id', prepared.attempt_id,
+  ], { cwd }).json;
+  const sessions = runKernel(root, [
+    'state', 'get', '--run-id', prepared.attempt_id, '--field', 'session_chain.sessions',
+  ], { cwd }).json;
+  return { root, cwd, runId: prepared.attempt_id, consent, appStatus,
+    parentSurface: sessions[0].host_surface };
+}
+
+async function settlePreparedFailure(fixture, code, receipt) {
+  if ((code === 'message-unconfirmed') !== (typeof receipt === 'string')) {
+    throw new Error('TEST_FAILURE_RECEIPT_SHAPE_INVALID');
+  }
+  const common = [
+    'app-task', 'fail', '--run-id', fixture.runId, '--owner', fixture.runId,
+    '--generation', '1', '--attempt', fixture.prepared.attempt_id, '--code', code,
+  ];
+  const transition = code === 'message-unconfirmed'
+    ? await runReadyKernel(fixture.root,
+      [...common, '--stdin-mode', fixture.mode, '--receipt-stdin'], receipt,
+      exactReadyPattern('app-fail', fixture.prepared.attempt_id, fixture.mode),
+      { cwd: fixture.cwd })
+    : runKernel(fixture.root, common, { cwd: fixture.cwd });
+  const app = runKernel(fixture.root, [
+    'app-task', 'status', '--run-id', fixture.runId,
+    '--attempt', fixture.prepared.attempt_id,
+  ], { cwd: fixture.cwd });
+  const runStatus = runKernel(fixture.root, [
+    'state', 'get', '--run-id', fixture.runId, '--field', 'status',
+  ], { cwd: fixture.cwd });
+  const lease = runKernel(fixture.root, [
+    'state', 'get', '--run-id', fixture.runId, '--field', 'session_chain.lease',
+  ], { cwd: fixture.cwd });
+  return {
+    appStatus: app.json, runStatus: runStatus.json, lease: lease.json,
+    outputs: [transition.stdout, app.stdout, runStatus.stdout, lease.stdout],
   };
 }
 
@@ -635,4 +884,582 @@ test('fixed-init response-loss matrix never changes attempt or retries a live pr
     assert.equal(classifyInitReconciliation({ outcome, ...matched }, 'exited'), 'stop');
   }
   assert.equal(classifyInitReconciliation({ outcome: 'committed', request_match: false, previous_current_match: true }, 'exited'), 'stop');
+});
+
+test('documented denial partial capability READY and echo paths persist manual state with zero task calls', async () => {
+  const skill = readFileSync(join(HERE, '..', 'skills', 'deep-loop', 'SKILL.md'), 'utf8');
+  const question = '이 run에서 handoff 시 별도 Codex task를 자동 생성하도록 허용할까요?';
+  assert.equal(skill.split(question).length - 1, 1, 'eligible run asks exactly once');
+  assert.match(skill, /partial capability, cwd ambiguity, probe failure, READY mismatch, echo, closed stdin은 질문 없이[^\n]*manual\/default-manual/);
+
+  const exactReady = 'DEEP_LOOP_STDIN_READY:v1:stdin-probe:0123456789abcdef0123456789abcdef:pipe-open-noecho';
+  const probeInput = '{"probe":"bounded-canary"}';
+  const exactProbeReceipt = { ok: true, mode: 'pipe-open-noecho',
+    byte_length: Buffer.byteLength(probeInput, 'utf8'),
+    sha256: createHash('sha256').update(probeInput).digest('hex') };
+  const rows = [
+    { name: 'declined', expectedQuestions: 1,
+      capabilities: ['list-projects', 'create-thread-local', 'structured-process-stdin'],
+      process: new FakeStructuredProcess({ readyToken: exactReady, result: exactProbeReceipt }) },
+    { name: 'partial', expectedQuestions: 0, capabilities: ['list-projects'], process: null },
+    { name: 'wrong-ready', expectedQuestions: 0,
+      capabilities: ['list-projects', 'create-thread-local', 'structured-process-stdin'],
+      process: new FakeStructuredProcess({ readyToken: `${exactReady}-WRONG`, result: exactProbeReceipt }) },
+    { name: 'echo', expectedQuestions: 0,
+      capabilities: ['list-projects', 'create-thread-local', 'structured-process-stdin'],
+      process: new FakeStructuredProcess({ readyToken: exactReady, result: exactProbeReceipt,
+        echoInput: true }) },
+  ];
+  for (const row of rows) {
+    const decision = await initializeFromExecutionPlaneDecision({
+      exactReady, capabilities: row.capabilities, process: row.process,
+      ask: async () => false,
+    });
+    const fixture = decision.fixture;
+    const attempted = runKernelResult(fixture.root, [
+      'handoff', 'emit', '--run-id', fixture.runId, '--reason', 'milestone', '--trigger', 'milestone',
+      '--owner', fixture.runId, '--generation', '1', '--app-intent',
+    ], { cwd: fixture.cwd });
+    assert.equal(attempted.status, 3, row.name);
+    const attemptedOutput = `${attempted.stdout}\n${attempted.stderr}`;
+    assert.doesNotMatch(attemptedOutput,
+      /"action"|create_thread|fork_thread|send_message_to_thread/, row.name);
+    assert.equal((attemptedOutput.match(/"action"/gu) ?? []).length, 0, row.name);
+    assert.equal(fixture.consent.mode, 'manual', row.name);
+    assert.equal(fixture.consent.authority, 'default-manual', row.name);
+    assert.equal(fixture.appStatus.has_app_history, false, row.name);
+    assert.equal(fixture.appStatus.current, null, row.name);
+    assert.equal(decision.questionCount, row.expectedQuestions, row.name);
+    if (row.name === 'declined') {
+      assert.equal(fixture.preflightEligible, true);
+      assert.equal(fixture.parentSurface.kind, 'codex-app');
+      assert.equal(fixture.parentSurface.structured_stdin_mode, 'pipe-open-noecho');
+      assert.deepEqual(fixture.parentSurface.capabilities, [
+        'create-thread-local', 'list-projects', 'structured-process-stdin',
+      ]);
+    }
+  }
+});
+
+test('ambiguous project uses one discovery call then durable manual preserve with zero task calls', async () => {
+  const fixture = await runAppLifecycle('create', { stopAfterPrepare: true, hostOptions: {
+    projectsFor: ({ root }) => [
+      { projectId: ' RAW-PROJECT-ONE ', projectKind: 'local', path: root },
+      { projectId: ' RAW-PROJECT-TWO ', projectKind: 'local', path: root },
+    ],
+  } });
+  const runStatus = runKernel(fixture.root, [
+    'state', 'get', '--run-id', fixture.runId, '--field', 'status',
+  ], { cwd: fixture.cwd });
+  const lease = runKernel(fixture.root, [
+    'state', 'get', '--run-id', fixture.runId, '--field', 'session_chain.lease',
+  ], { cwd: fixture.cwd });
+  const app = runKernel(fixture.root, [
+    'app-task', 'status', '--run-id', fixture.runId, '--attempt', fixture.prepared.attempt_id,
+  ], { cwd: fixture.cwd });
+  assert.equal(fixture.prepared.do_not_call, true);
+  assert.equal(fixture.prepared.outcome, 'manual-preserve');
+  assert.equal(fixture.duplicate, null);
+  assert.equal(fixture.duplicateCheckedBeforeAction, false);
+  assert.equal(fixture.discovery.discoveryAvailable, true);
+  assert.deepEqual(fixture.host.calls.map(call => call.tool), ['list_projects']);
+  assert.equal(runStatus.json, 'paused');
+  assert.equal(lease.json.resume_policy, 'human');
+  assert.equal(app.json.current.phase, 'emitted');
+  for (const raw of [' RAW-PROJECT-ONE ', ' RAW-PROJECT-TWO ']) {
+    assert.equal([runStatus.stdout, lease.stdout, app.stdout].some(output => output.includes(raw)), false);
+  }
+});
+
+test('discovery failure is bounded into one emitted manual-preserve prepare with zero task calls', async () => {
+  const rows = [
+    ['throw', { behaviors: { list_projects: 'throw' } }],
+    ['timeout', { behaviors: { list_projects: 'timeout' } }],
+    ['no-return', { behaviors: { list_projects: 'no-return' } }],
+    ['malformed', { projects: { projectId: 'NOT-AN-ARRAY' } }],
+    ['too-many', { projects: Array.from({ length: 257 }, (_, index) => ({
+      projectId: `P-${index}`, projectKind: 'local', path: `/repo/${index}`,
+    })) }],
+    ['too-large', { projects: [{ projectId: 'P', projectKind: 'local',
+      path: `/${'x'.repeat(32_768)}` }] }],
+  ];
+  for (const [name, hostOptions] of rows) {
+    const fixture = await runAppLifecycle('create', { stopAfterPrepare: true, hostOptions });
+    assert.equal(fixture.discovery.discoveryAvailable, false, name);
+    assert.equal(fixture.prepared.outcome, 'manual-preserve', name);
+    assert.equal(fixture.prepared.do_not_call, true, name);
+    assert.equal(fixture.duplicate, null, name);
+    assert.equal(fixture.duplicateCheckedBeforeAction, false, name);
+    assert.deepEqual(fixture.host.calls.map(call => call.tool), ['list_projects'], name);
+    const app = runKernel(fixture.root, [
+      'app-task', 'status', '--run-id', fixture.runId, '--attempt', fixture.prepared.attempt_id,
+    ], { cwd: fixture.cwd }).json;
+    const status = runKernel(fixture.root, [
+      'state', 'get', '--run-id', fixture.runId, '--field', 'status',
+    ], { cwd: fixture.cwd }).json;
+    const lease = runKernel(fixture.root, [
+      'state', 'get', '--run-id', fixture.runId, '--field', 'session_chain.lease',
+    ], { cwd: fixture.cwd }).json;
+    assert.equal(app.current.phase, 'emitted', name);
+    assert.equal(status, 'paused', name);
+    assert.equal(lease.resume_policy, 'human', name);
+  }
+});
+
+test('PreCompact-first emit is taken over once by an attended tick or swept with no task call', async () => {
+  const takeover = await runAppLifecycle('create', {
+    emitSource: 'precompact', stopAfterPrepare: true,
+  });
+  assert.equal(takeover.prepared.attempt_id, takeover.emittedAttemptId);
+  assert.equal(takeover.prepared.do_not_call, false);
+  assert.equal(takeover.duplicate.do_not_call, true);
+  assert.equal(takeover.duplicateCheckedBeforeAction, true);
+  assert.deepEqual(takeover.host.calls.map(call => call.tool), ['list_projects']);
+
+  const idle = await runAppLifecycle('create', { emitSource: 'precompact', stopAfterEmit: true });
+  const loop = readState(idle.root, idle.runId).data;
+  const child = loop.session_chain.sessions.find(session =>
+    session.continuation?.attempt_id === idle.emittedAttemptId);
+  const swept = runKernel(idle.root, [
+    'app-task', 'sweep-unconfirmed', '--run-id', idle.runId, '--owner', idle.runId,
+    '--generation', '1', '--attempt', idle.emittedAttemptId,
+  ], { cwd: idle.cwd,
+    env: fixedClockEnv(idle.root, Date.parse(child.continuation.prepare_deadline) + 1) }).json;
+  assert.equal(swept.outcome, 'swept');
+  assert.equal(swept.failure_code, 'app-prepare-unattended');
+  const after = runKernel(idle.root, [
+    'app-task', 'status', '--run-id', idle.runId, '--attempt', idle.emittedAttemptId,
+  ], { cwd: idle.cwd }).json;
+  assert.equal(after.current.phase, 'failed');
+  assert.equal(after.current.failure_code, 'app-prepare-unattended');
+  assert.deepEqual(idle.hostCalls, []);
+});
+
+test('strict host receipt validation rejects inherited alternate control and oversize IDs', async () => {
+  const action = { tool: 'create_thread', target: {
+    type: 'project', projectId: 'PROJECT', environment: { type: 'local' },
+  }, prompt: 'PROMPT' };
+  const inherited = Object.create({ threadId: 'INHERITED' });
+  const inheritedAlternate = Object.create({ clientThreadId: 'ALTERNATE' });
+  inheritedAlternate.threadId = 'OWN';
+  const symbolAlternate = { threadId: 'OWN' };
+  symbolAlternate[Symbol('clientThreadId')] = 'ALTERNATE';
+  const accessorId = {};
+  Object.defineProperty(accessorId, 'threadId', {
+    enumerable: true, get: () => 'OWN',
+  });
+  for (const receipt of [
+    inherited,
+    inheritedAlternate,
+    symbolAlternate,
+    accessorId,
+    { threadId: 'OWN', clientThreadId: 'ALTERNATE' },
+    { threadId: 'OWN', clientThreadID: 'ALTERNATE' },
+    { threadId: 'OWN', clientthreadid: 'ALTERNATE' },
+    { threadId: 'OWN', clientThreadiD: 'ALTERNATE' },
+    { threadId: 'OWN', otherId: 'ALTERNATE' },
+    { threadId: 'OWN', otherid: 'ALTERNATE' },
+    { threadId: 'OWN', threadIds: ['OWN', 'ALTERNATE'] },
+    { threadId: 'OWN', threadidS: ['OWN', 'ALTERNATE'] },
+    { threadId: 'OWN', ids: ['ALTERNATE'] },
+    { threadId: 'OWN', nested: { threadId: 'ALTERNATE' } },
+    { threadId: 'OWN', nested: { threadID: 'ALTERNATE' } },
+    { threadId: 'OWN', nested: { identifier: 'ALTERNATE' } },
+    { threadId: 'bad\u0000id' },
+    { threadId: 'bad\nid' },
+    { threadId: 'bad\rid' },
+    { threadId: 'bad\u0085id' },
+    { threadId: 'bad\ud800id' },
+    { threadId: 'bad\udc00id' },
+    { threadId: 'x'.repeat(513) },
+  ]) {
+    await assert.rejects(() => executePreparedAction(action,
+      new FakeAppHost({ createReceipt: receipt })), /CREATE_RECEIPT_INVALID/);
+  }
+  const forkAction = { tool: 'fork_thread', environment: { type: 'same-directory' },
+    followup: { tool: 'send_message_to_thread', prompt: 'PROMPT' } };
+  await assert.rejects(() => executePreparedAction(forkAction, new FakeAppHost({
+    forkReceipt: { threadId: 'FORK', nested: { ids: ['OTHER'] } },
+  })), /FORK_RECEIPT_INVALID/);
+  await assert.rejects(() => executePreparedAction(forkAction, new FakeAppHost({
+    forkReceipt: { threadId: 'FORK' }, sendReceipt: { nested: { threadId: 'OTHER' } },
+  })), /SEND_RECEIPT_MISMATCH/);
+  const functionReceipt = function receipt() {};
+  functionReceipt.clientThreadId = 'OTHER';
+  const customKeyArray = [];
+  customKeyArray.clientThreadId = 'OTHER';
+  const symbolArray = [];
+  symbolArray[Symbol('threadId')] = 'OTHER';
+  const accessorArray = [];
+  Object.defineProperty(accessorArray, 'clientThreadId', {
+    enumerable: true, get: () => 'OTHER',
+  });
+  const customPrototypeArray = [];
+  Object.setPrototypeOf(customPrototypeArray, { custom: true });
+  const sparseArray = new Array(1);
+  const hugeSparseArray = [];
+  hugeSparseArray.length = 0xffff_ffff;
+  const tooDeep = {};
+  let deepCursor = tooDeep;
+  for (let depth = 0; depth < 40; depth += 1) {
+    deepCursor.next = {};
+    deepCursor = deepCursor.next;
+  }
+  const tooWide = Object.fromEntries(
+    [...Array(257).keys()].map(index => [`field${index}`, true]));
+  const nodeFlood = [...Array(5).keys()].map(() => Array(256).fill(true));
+  const nonWritableLength = Object.freeze([]);
+  const nonWritableIndex = ['ok'];
+  Object.defineProperty(nonWritableIndex, '0', {
+    value: 'ok', enumerable: true, writable: false, configurable: true,
+  });
+  const nonConfigurableIndex = ['ok'];
+  Object.defineProperty(nonConfigurableIndex, '0', {
+    value: 'ok', enumerable: true, writable: true, configurable: false,
+  });
+  for (const sendReceipt of [functionReceipt, customKeyArray, symbolArray, accessorArray,
+    customPrototypeArray, new (class ReceiptArray extends Array {})(), sparseArray,
+    hugeSparseArray, tooDeep, tooWide, nodeFlood, nonWritableLength,
+    nonWritableIndex, nonConfigurableIndex,
+    Symbol('receipt'), 1n, Number.NaN, Number.POSITIVE_INFINITY]) {
+    await assert.rejects(() => executePreparedAction(forkAction, new FakeAppHost({
+      forkReceipt: { threadId: 'FORK' }, sendReceipt,
+    })), /SEND_RECEIPT_MISMATCH/);
+  }
+  for (const sendReceipt of [null, undefined, 'ok', 1, true, [], [{ ok: true }]]) {
+    assert.deepEqual(await executePreparedAction(forkAction, new FakeAppHost({
+      forkReceipt: { threadId: 'FORK' }, sendReceipt,
+    })), { threadId: 'FORK' });
+  }
+});
+
+test('raw confirm and message-unconfirmed stdin accept 512 UTF-8 bytes and reject 513 without JSON', async () => {
+  const maxId = 'x'.repeat(512);
+  assert.equal(Buffer.byteLength(maxId, 'utf8'), 512);
+  const accepted = await runAppLifecycle('create', {
+    stopAfterPrepare: true, hostOptions: { createReceipt: { threadId: maxId } },
+  });
+  const receipt = await executePreparedAction(accepted.prepared.action, accepted.host);
+  assert.equal(receipt.threadId, maxId);
+  const args = [
+    'app-task', 'confirm', '--run-id', accepted.runId, '--owner', accepted.runId,
+    '--generation', '1', '--attempt', accepted.prepared.attempt_id,
+    '--stdin-mode', accepted.mode, '--receipt-stdin',
+  ];
+  const confirmed = await runReadyKernel(accepted.root, args, receipt.threadId,
+    exactReadyPattern('app-confirm', accepted.prepared.attempt_id, accepted.mode),
+    { cwd: accepted.cwd });
+  assert.equal(confirmed.json.outcome, 'confirmed');
+  assert.equal(confirmed.stdout.includes(maxId), false);
+
+  const rejected = await runAppLifecycle('create', { stopAfterPrepare: true });
+  const over = 'y'.repeat(513);
+  await assert.rejects(() => runReadyKernel(rejected.root, [
+    'app-task', 'confirm', '--run-id', rejected.runId, '--owner', rejected.runId,
+    '--generation', '1', '--attempt', rejected.prepared.attempt_id,
+    '--stdin-mode', rejected.mode, '--receipt-stdin',
+  ], over, exactReadyPattern('app-confirm', rejected.prepared.attempt_id, rejected.mode),
+  { cwd: rejected.cwd }), /READY_PROCESS_EXIT_1/);
+  const status = runKernel(rejected.root, [
+    'app-task', 'status', '--run-id', rejected.runId,
+    '--attempt', rejected.prepared.attempt_id,
+  ], { cwd: rejected.cwd });
+  assert.equal(status.json.current.phase, 'prepared');
+  assert.equal(status.stdout.includes(over), false);
+
+  const uncertain = await runAppLifecycle('fork', {
+    stopAfterPrepare: true,
+    hostOptions: { forkReceipt: { threadId: maxId }, behaviors: { send_message_to_thread: 'no-return' } },
+  });
+  await assert.rejects(() => executePreparedAction(uncertain.prepared.action, uncertain.host,
+    { timeoutMs: 25 }), /SEND_NO_RETURN/);
+  const failed = await settlePreparedFailure(uncertain, 'message-unconfirmed', maxId);
+  assert.equal(failed.appStatus.current.phase, 'failed');
+  assert.equal(failed.appStatus.current.failure_code, 'message-unconfirmed');
+  assert.equal(failed.outputs.some(output => output.includes(maxId)), false);
+
+  const rejectedMessage = await runAppLifecycle('fork', { stopAfterPrepare: true });
+  await assert.rejects(() => runReadyKernel(rejectedMessage.root, [
+    'app-task', 'fail', '--run-id', rejectedMessage.runId, '--owner', rejectedMessage.runId,
+    '--generation', '1', '--attempt', rejectedMessage.prepared.attempt_id,
+    '--code', 'message-unconfirmed', '--stdin-mode', rejectedMessage.mode, '--receipt-stdin',
+  ], over, exactReadyPattern('app-fail', rejectedMessage.prepared.attempt_id, rejectedMessage.mode),
+  { cwd: rejectedMessage.cwd }), /READY_PROCESS_EXIT_1/);
+  const rejectedMessageStatus = runKernel(rejectedMessage.root, [
+    'app-task', 'status', '--run-id', rejectedMessage.runId,
+    '--attempt', rejectedMessage.prepared.attempt_id,
+  ], { cwd: rejectedMessage.cwd });
+  assert.equal(rejectedMessageStatus.json.current.phase, 'prepared');
+  assert.equal(rejectedMessageStatus.stdout.includes(over), false);
+});
+
+test('resolved null or undefined send completion succeeds and never resends', async () => {
+  for (const [name, hostOptions] of [
+    ['null', { sendReceipt: null }],
+    ['undefined', { behaviors: { send_message_to_thread: 'undefined' } }],
+  ]) {
+    const fixture = await runAppLifecycle('fork', { stopAfterPrepare: true, hostOptions });
+    const receipt = await executePreparedAction(fixture.prepared.action, fixture.host, { timeoutMs: 25 });
+    assert.equal(receipt.threadId, 'FORK_THREAD_CANARY_71C2', name);
+    assert.deepEqual(fixture.host.calls.map(call => call.tool),
+      ['fork_thread', 'send_message_to_thread'], name);
+  }
+});
+
+test('create fork and send throw timeout and invalid rows fail durably without retry', async () => {
+  const scenarios = [
+    { name: 'create-throw', route: 'create', hostOptions: { behaviors: { create_thread: 'throw' } },
+      error: /CREATE_HOST_THROW/, calls: ['list_projects', 'create_thread'], code: 'host-call-failed' },
+    { name: 'create-timeout', route: 'create', hostOptions: { behaviors: { create_thread: 'timeout' } },
+      error: /CREATE_HOST_TIMEOUT/, calls: ['list_projects', 'create_thread'], code: 'host-call-timeout' },
+    { name: 'create-no-return', route: 'create', hostOptions: { behaviors: { create_thread: 'no-return' } },
+      error: /CREATE_NO_RETURN/, calls: ['list_projects', 'create_thread'], code: 'host-call-no-return' },
+    { name: 'create-invalid', route: 'create', hostOptions: { createReceipt: { clientThreadId: 'ALT' } },
+      error: /CREATE_RECEIPT_INVALID/, calls: ['list_projects', 'create_thread'], code: 'invalid-host-receipt' },
+    { name: 'fork-throw', route: 'fork', hostOptions: { behaviors: { fork_thread: 'throw' } },
+      error: /FORK_HOST_THROW/, calls: ['fork_thread'], code: 'host-call-failed' },
+    { name: 'fork-timeout', route: 'fork', hostOptions: { behaviors: { fork_thread: 'timeout' } },
+      error: /FORK_HOST_TIMEOUT/, calls: ['fork_thread'], code: 'host-call-timeout' },
+    { name: 'fork-no-return', route: 'fork', hostOptions: { behaviors: { fork_thread: 'no-return' } },
+      error: /FORK_NO_RETURN/, calls: ['fork_thread'], code: 'host-call-no-return' },
+    { name: 'fork-invalid', route: 'fork', hostOptions: { forkReceipt: { clientThreadId: 'ALT' } },
+      error: /FORK_RECEIPT_INVALID/, calls: ['fork_thread'], code: 'invalid-host-receipt' },
+    { name: 'send-throw', route: 'fork', hostOptions: {
+      forkReceipt: { threadId: 'KNOWN-FORK' }, behaviors: { send_message_to_thread: 'throw' } },
+      error: /SEND_HOST_THROW/, calls: ['fork_thread', 'send_message_to_thread'],
+      code: 'message-unconfirmed', receipt: 'KNOWN-FORK' },
+    { name: 'send-timeout', route: 'fork', hostOptions: {
+      forkReceipt: { threadId: 'KNOWN-FORK' }, behaviors: { send_message_to_thread: 'timeout' } },
+      error: /SEND_HOST_TIMEOUT/, calls: ['fork_thread', 'send_message_to_thread'],
+      code: 'message-unconfirmed', receipt: 'KNOWN-FORK' },
+    { name: 'send-no-return', route: 'fork', hostOptions: {
+      forkReceipt: { threadId: 'KNOWN-FORK' }, behaviors: { send_message_to_thread: 'no-return' } },
+      error: /SEND_NO_RETURN/, calls: ['fork_thread', 'send_message_to_thread'],
+      code: 'message-unconfirmed', receipt: 'KNOWN-FORK' },
+    { name: 'send-invalid', route: 'fork', hostOptions: {
+      forkReceipt: { threadId: 'KNOWN-FORK' }, sendReceipt: { threadId: 7 } },
+      error: /SEND_RECEIPT_MISMATCH/, calls: ['fork_thread', 'send_message_to_thread'],
+      code: 'message-unconfirmed', receipt: 'KNOWN-FORK' },
+    { name: 'send-mismatch', route: 'fork', hostOptions: {
+      forkReceipt: { threadId: 'KNOWN-FORK' }, sendReceipt: { threadId: 'OTHER' } },
+      error: /SEND_RECEIPT_MISMATCH/, calls: ['fork_thread', 'send_message_to_thread'],
+      code: 'message-unconfirmed', receipt: 'KNOWN-FORK' },
+  ];
+  for (const scenario of scenarios) {
+    const fixture = await runAppLifecycle(scenario.route, {
+      stopAfterPrepare: true, hostOptions: scenario.hostOptions,
+    });
+    assert.equal(fixture.duplicate.do_not_call, true, scenario.name);
+    assert.equal(fixture.duplicateCheckedBeforeAction, true, scenario.name);
+    await assert.rejects(() => executePreparedAction(fixture.prepared.action, fixture.host,
+      { timeoutMs: 25 }), scenario.error, scenario.name);
+    assert.deepEqual(fixture.host.calls.map(call => call.tool), scenario.calls, scenario.name);
+    const failed = await settlePreparedFailure(fixture, scenario.code, scenario.receipt ?? null);
+    assert.equal(failed.runStatus, 'paused', scenario.name);
+    assert.equal(failed.appStatus.current.phase, 'failed', scenario.name);
+    assert.equal(failed.appStatus.current.failure_code, scenario.code, scenario.name);
+    assert.equal(failed.lease.resume_policy,
+      scenario.code === 'message-unconfirmed' ? 'human' : null, scenario.name);
+    if (scenario.code !== 'message-unconfirmed') {
+      assert.equal(failed.lease.handoff_transport, null, scenario.name);
+      assert.equal(failed.lease.handoff_attempt_id, null, scenario.name);
+    }
+    if (scenario.code === 'message-unconfirmed') {
+      assert.match(failed.outputs[0], /DEEP_LOOP_STDIN_READY:v1:app-fail:/u, scenario.name);
+    } else {
+      assert.doesNotMatch(failed.outputs[0], /DEEP_LOOP_STDIN_READY:/u, scenario.name);
+    }
+    for (const raw of [scenario.receipt, fixture.prepared.action?.target?.projectId].filter(Boolean)) {
+      assert.equal(failed.outputs.some(output => output.includes(raw)), false, `${scenario.name}: ${raw}`);
+    }
+    assert.deepEqual(fixture.host.calls.map(call => call.tool), scenario.calls,
+      `${scenario.name}: external action count is unchanged`);
+  }
+});
+
+test('ordinary and message failure result loss reconcile only after the original handle exits', async () => {
+  const rows = [
+    { name: 'ordinary', route: 'create', code: 'host-call-failed', receipt: null,
+      hostOptions: { behaviors: { create_thread: 'throw' } }, error: /CREATE_HOST_THROW/,
+      calls: ['list_projects', 'create_thread'] },
+    { name: 'message', route: 'fork', code: 'message-unconfirmed', receipt: 'KNOWN-FORK',
+      hostOptions: { forkReceipt: { threadId: 'KNOWN-FORK' },
+        behaviors: { send_message_to_thread: 'timeout' } }, error: /SEND_HOST_TIMEOUT/,
+      calls: ['fork_thread', 'send_message_to_thread'] },
+  ];
+  for (const row of rows) {
+    const fixture = await runAppLifecycle(row.route, {
+      stopAfterPrepare: true, hostOptions: row.hostOptions,
+    });
+    await assert.rejects(() => executePreparedAction(fixture.prepared.action, fixture.host,
+      { timeoutMs: 25 }), row.error);
+    const args = [
+      'app-task', 'fail', '--run-id', fixture.runId, '--owner', fixture.runId,
+      '--generation', '1', '--attempt', fixture.prepared.attempt_id, '--code', row.code,
+      ...(row.receipt === null ? []
+        : ['--stdin-mode', fixture.mode, '--receipt-stdin']),
+    ];
+    const original = startLostResultKernel(fixture.root, args, {
+      cwd: fixture.cwd, inputLine: row.receipt,
+      readyPattern: row.receipt === null ? null
+        : exactReadyPattern('app-fail', fixture.prepared.attempt_id, fixture.mode),
+    });
+    assert.equal(Number.isInteger(original.pid), true, row.name);
+    original.poll();
+    try { await original.done; }
+    catch (error) { original.terminate(); throw error; }
+    assert.equal(original.poll(), 'exited', row.name);
+    assert.ok(original.pollCount() >= 2, row.name);
+    const status = runKernel(fixture.root, [
+      'app-task', 'status', '--run-id', fixture.runId,
+      '--attempt', fixture.prepared.attempt_id,
+    ], { cwd: fixture.cwd });
+    assert.equal(status.json.current.phase, 'failed', row.name);
+    assert.equal(status.json.current.failure_code, row.code, row.name);
+    assert.deepEqual(fixture.host.calls.map(call => call.tool), row.calls,
+      `${row.name}: no external retry after result loss`);
+    for (const raw of [row.receipt, fixture.prepared.action?.target?.projectId].filter(Boolean)) {
+      assert.equal(status.stdout.includes(raw), false, `${row.name}: safe status redaction`);
+    }
+  }
+});
+
+test('prepare result loss reads exact status then proves do-not-call and sweeps manual with zero task action', async () => {
+  const fixture = await runAppLifecycle('create', { simulatePrepareResultLoss: true });
+  assert.equal(fixture.preparedStatusAfterLoss.current.phase, 'prepared');
+  assert.equal(fixture.duplicate.outcome, 'already-prepared');
+  assert.equal(fixture.duplicate.do_not_call, true);
+  assert.equal(fixture.duplicateCheckedBeforeAction, true);
+  assert.deepEqual(fixture.host.calls.map(call => call.tool), ['list_projects']);
+  assert.equal(fixture.preparedStatusOutput.includes('PROJECT_CANARY_71C2'), false);
+  const loop = readState(fixture.root, fixture.runId).data;
+  const child = loop.session_chain.sessions.find(session =>
+    session.continuation?.attempt_id === fixture.emittedAttemptId);
+  const swept = runKernel(fixture.root, [
+    'app-task', 'sweep-unconfirmed', '--run-id', fixture.runId, '--owner', fixture.runId,
+    '--generation', '1', '--attempt', fixture.emittedAttemptId,
+  ], { cwd: fixture.cwd,
+    env: fixedClockEnv(fixture.root,
+      Date.parse(child.continuation.confirmation_deadline) + 1) }).json;
+  assert.equal(swept.outcome, 'swept');
+  assert.equal(swept.failure_code, 'app-launch-unconfirmed');
+  const status = runKernel(fixture.root, [
+    'app-task', 'status', '--run-id', fixture.runId, '--attempt', fixture.emittedAttemptId,
+  ], { cwd: fixture.cwd });
+  assert.equal(status.json.current.phase, 'failed');
+  assert.equal(status.json.current.failure_code, 'app-launch-unconfirmed');
+  assert.equal(status.json.manual_recovery, true);
+  assert.deepEqual(fixture.host.calls.map(call => call.tool), ['list_projects']);
+});
+
+test('lost manual-preserve prepare result stops from exact status without retry or sweep', async () => {
+  const fixture = await runAppLifecycle('create', { stopAfterEmit: true });
+  const prepareArgs = [
+    'app-task', 'prepare', '--run-id', fixture.runId, '--owner', fixture.runId,
+    '--generation', '1', '--stdin-mode', fixture.mode, '--app-host-input-stdin',
+  ];
+  const hostInput = JSON.stringify({ host_task_cwd: fixture.cwd });
+  const original = startLostResultKernel(fixture.root, prepareArgs, {
+    cwd: fixture.cwd, inputLine: hostInput,
+    readyPattern: exactReadyPattern('app-prepare', `${fixture.runId}.1`, fixture.mode),
+  });
+  assert.equal(original.poll(), 'alive');
+  try { await original.done; }
+  catch (error) { original.terminate(); throw error; }
+  assert.equal(original.poll(), 'exited');
+  assert.ok(original.pollCount() >= 2);
+
+  const status = runKernel(fixture.root, [
+    'app-task', 'status', '--run-id', fixture.runId, '--attempt', fixture.emittedAttemptId,
+  ], { cwd: fixture.cwd });
+  const runStatus = runKernel(fixture.root, [
+    'state', 'get', '--run-id', fixture.runId, '--field', 'status',
+  ], { cwd: fixture.cwd });
+  const lease = runKernel(fixture.root, [
+    'state', 'get', '--run-id', fixture.runId, '--field', 'session_chain.lease',
+  ], { cwd: fixture.cwd });
+  assert.equal(status.json.current.phase, 'emitted');
+  assert.equal(status.json.manual_recovery, true);
+  assert.equal(status.json.handoff_phase, 'emitted');
+  assert.equal(runStatus.json, 'paused');
+  assert.equal(lease.json.resume_policy, 'human');
+  const retryEligible = status.json.current.phase === 'emitted'
+    && status.json.manual_recovery === false
+    && status.json.handoff_phase === 'emitted';
+  assert.equal(retryEligible, false);
+  assert.equal(readLines(fixture.root, fixture.runId)
+    .filter(event => event.type === 'app-task-preserved').length, 1);
+  assert.equal(readLines(fixture.root, fixture.runId)
+    .some(event => event.type === 'app-task-swept'), false);
+  assert.deepEqual(fixture.hostCalls, []);
+});
+
+test('acquired safe status is not success authority after release interleaving', async () => {
+  const fixture = await runAppLifecycle('create');
+  const released = runKernel(fixture.root, [
+    'lease', 'release', '--run-id', fixture.runId,
+    '--owner', fixture.childRunId, '--generation', '2',
+  ], { cwd: fixture.cwd });
+  assert.equal(released.json.reason, 'released');
+  const candidate = runKernel(fixture.root, [
+    'app-task', 'status', '--run-id', fixture.runId, '--attempt', fixture.emittedAttemptId,
+  ], { cwd: fixture.cwd });
+  assert.equal(candidate.json.current.phase, 'acquired');
+  assert.equal(candidate.json.owner_run_id, fixture.childRunId);
+  assert.equal(candidate.json.generation, 2);
+  assert.equal(candidate.json.handoff_phase, 'acquired');
+  const observation = JSON.stringify(fixture.childObservation);
+  await assert.rejects(() => runReadyKernel(fixture.root, [
+    'app-task', 'acquire', '--run-id', fixture.runId, '--owner', fixture.childRunId,
+    '--generation', '1', '--runtime', 'codex', '--attempt', fixture.emittedAttemptId,
+    '--stdin-mode', fixture.mode, '--observation-stdin',
+  ], observation, exactReadyPattern('app-acquire', fixture.emittedAttemptId, fixture.mode),
+  { cwd: fixture.cwd }), /READY_PROCESS_EXIT_3/);
+});
+
+test('confirm result loss retries the exact receipt before and after commit without a second create', async () => {
+  for (const lossPoint of ['before-commit', 'after-commit']) {
+    const fixture = await runAppLifecycle('create', { stopAfterPrepare: true });
+    const receipt = await executePreparedAction(fixture.prepared.action, fixture.host);
+    const args = [
+      'app-task', 'confirm', '--run-id', fixture.runId, '--owner', fixture.runId,
+      '--generation', '1', '--attempt', fixture.prepared.attempt_id,
+      '--stdin-mode', fixture.mode, '--receipt-stdin',
+    ];
+    if (lossPoint === 'before-commit') {
+      await assert.rejects(() => stopReadyKernelBeforeInput(fixture.root, args,
+        exactReadyPattern('app-confirm', fixture.prepared.attempt_id, fixture.mode),
+        { cwd: fixture.cwd }),
+      /SIMULATED_CONFIRM_PROCESS_LOSS_BEFORE_COMMIT/);
+    } else {
+      await assert.rejects(async () => {
+        await runReadyKernel(fixture.root, args,
+          receipt.threadId,
+          exactReadyPattern('app-confirm', fixture.prepared.attempt_id, fixture.mode),
+          { cwd: fixture.cwd });
+        throw new Error('SIMULATED_CONFIRM_RESULT_LOSS_AFTER_COMMIT');
+      }, /SIMULATED_CONFIRM_RESULT_LOSS_AFTER_COMMIT/);
+    }
+    const beforeRetry = runKernel(fixture.root, [
+      'app-task', 'status', '--run-id', fixture.runId, '--attempt', fixture.prepared.attempt_id,
+    ], { cwd: fixture.cwd });
+    assert.equal(beforeRetry.json.current.phase,
+      lossPoint === 'before-commit' ? 'prepared' : 'confirmed', lossPoint);
+    assert.deepEqual(fixture.host.calls.map(call => call.tool), ['list_projects', 'create_thread']);
+    const retry = await runReadyKernel(fixture.root, args,
+      receipt.threadId,
+      exactReadyPattern('app-confirm', fixture.prepared.attempt_id, fixture.mode),
+      { cwd: fixture.cwd });
+    assert.equal(retry.json.outcome,
+      lossPoint === 'before-commit' ? 'confirmed' : 'already-confirmed', lossPoint);
+    const app = runKernel(fixture.root, [
+      'app-task', 'status', '--run-id', fixture.runId, '--attempt', fixture.prepared.attempt_id,
+    ], { cwd: fixture.cwd });
+    assert.equal(app.json.current.phase, 'confirmed', lossPoint);
+    assert.deepEqual(fixture.host.calls.map(call => call.tool), ['list_projects', 'create_thread']);
+    for (const raw of [receipt.threadId, fixture.prepared.action.target.projectId]) {
+      assert.equal([beforeRetry.stdout, retry.stdout, app.stdout]
+        .some(output => output.includes(raw)), false, lossPoint);
+    }
+  }
 });
