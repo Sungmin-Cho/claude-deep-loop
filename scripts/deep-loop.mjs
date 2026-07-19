@@ -388,7 +388,7 @@ const appTaskHandler = async argv => {
     const runId = reqStr(f, 'run-id');
     if (runId === null || f.attempt === true
         || f.attempt !== undefined && !INIT_ATTEMPT.test(f.attempt)) return 2;
-    json(statusAppTask(root, runId, { attempt: f.attempt ?? null }));
+    json(statusAppTask(root, runId, { attemptId: f.attempt ?? null }));
     return 0;
   }
   if (verb !== 'revoke') return 2;
