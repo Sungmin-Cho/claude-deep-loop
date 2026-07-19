@@ -101,6 +101,19 @@ const HOST_RECEIPT_MAX_DEPTH = 32;
 const HOST_RECEIPT_MAX_NODES = 1024;
 const HOST_RECEIPT_MAX_CONTAINER_ENTRIES = 256;
 
+function preflightEnumerableEntryBound(value) {
+  let count = 0;
+  for (const key in value) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) {
+      throw new Error('HOST_RECEIPT_INHERITED_PROPERTY_INVALID');
+    }
+    count += 1;
+    if (count > HOST_RECEIPT_MAX_CONTAINER_ENTRIES) {
+      throw new Error('HOST_RECEIPT_BOUNDS_INVALID');
+    }
+  }
+}
+
 function collectIdFields(value, path = '$', seen = new Set(), found = [],
   budget = { nodes: 0 }, depth = 0) {
   if (depth > HOST_RECEIPT_MAX_DEPTH
@@ -122,7 +135,14 @@ function collectIdFields(value, path = '$', seen = new Set(), found = [],
     if (value.length > HOST_RECEIPT_MAX_CONTAINER_ENTRIES) {
       throw new Error('HOST_RECEIPT_BOUNDS_INVALID');
     }
+    // Reject an ordinary named-property flood incrementally before Reflect.ownKeys creates
+    // its complete key array. The later reflective check remains necessary for symbols and
+    // non-enumerable properties, which JavaScript exposes only through array-returning APIs.
+    preflightEnumerableEntryBound(value);
     const keys = Reflect.ownKeys(value);
+    if (keys.length > HOST_RECEIPT_MAX_CONTAINER_ENTRIES + 1) {
+      throw new Error('HOST_RECEIPT_BOUNDS_INVALID');
+    }
     if (keys.some(key => typeof key !== 'string')) {
       throw new Error('HOST_RECEIPT_SYMBOL_INVALID');
     }
@@ -151,6 +171,7 @@ function collectIdFields(value, path = '$', seen = new Set(), found = [],
   if (prototype !== Object.prototype && prototype !== null) {
     throw new Error('HOST_RECEIPT_PROTOTYPE_INVALID');
   }
+  preflightEnumerableEntryBound(value);
   const keys = Reflect.ownKeys(value);
   if (keys.length > HOST_RECEIPT_MAX_CONTAINER_ENTRIES) {
     throw new Error('HOST_RECEIPT_BOUNDS_INVALID');

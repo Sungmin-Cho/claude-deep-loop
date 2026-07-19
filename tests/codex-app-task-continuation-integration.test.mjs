@@ -82,11 +82,29 @@ function snapshotDurableArtifacts(root, runId) {
   };
 }
 
+function processOutputs(...results) {
+  return results.flatMap(result => [result?.stdout ?? '', result?.stderr ?? '']);
+}
+
+async function captureRejection(thunk, pattern) {
+  try {
+    await thunk();
+  } catch (error) {
+    assert.match(String(error?.message ?? error), pattern);
+    return error;
+  }
+  assert.fail(`EXPECTED_REJECTION:${pattern}`);
+}
+
 function runKernel(root, args, { cwd = root, env = process.env } = {}) {
-  const stdout = execFileSync(process.execPath, [CLI, ...args, '--project-root', root], {
+  const result = spawnSync(process.execPath, [CLI, ...args, '--project-root', root], {
     cwd, encoding: 'utf8', env,
   });
-  return { json: lastJson(stdout), stdout };
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(`KERNEL_EXIT_${result.status}: ${result.stderr}`);
+  }
+  return { json: lastJson(result.stdout), stdout: result.stdout, stderr: result.stderr };
 }
 
 function fixedClockEnv(root, now) {
@@ -182,7 +200,12 @@ function runReadyKernel(root, args, inputLine, readyPattern, { cwd = root, timeo
       if (readyLines.length !== 1 || !readyPattern.test(readyLines[0])) {
         return reject(new Error(`READY_TOKEN_DRIFT: ${readyLines.join('|')}`));
       }
-      if (code !== 0) return reject(new Error(`READY_PROCESS_EXIT_${code}: ${stderr}`));
+      if (code !== 0) {
+        const error = new Error(`READY_PROCESS_EXIT_${code}: ${stderr}`);
+        error.stdout = stdout;
+        error.stderr = stderr;
+        return reject(error);
+      }
       if (!sent) return reject(new Error('READY_TOKEN_MISSING'));
       resolve({ json: lastJson(stdout), stdout, stderr });
     });
@@ -341,12 +364,27 @@ export async function runAppLifecycle(route, {
   const firstPrepareResult = await runReadyKernel(root, prepareArgs, hostInput,
     exactReadyPattern('app-prepare', `${runId}.1`, mode), { cwd });
   if (simulatePrepareResultLoss) {
-    // Deliberately discard firstPrepareResult without reading any field from it. The emitted
-    // attempt is the only durable binding available after the simulated response loss.
-    void firstPrepareResult;
+    // The execution-plane decision below uses only durable status. Retain the captured streams
+    // solely for the test's post-hoc leak audit; they are not result authority.
     const exactStatus = runKernel(root, [
       'app-task', 'status', '--run-id', runId, '--attempt', emittedAttemptId,
     ], { cwd });
+    const exactCurrent = exactStatus.json.current;
+    const lossLoop = readState(root, runId).data;
+    const lossContinuation = lossLoop.session_chain.sessions.find(session =>
+      session.continuation?.attempt_id === emittedAttemptId)?.continuation;
+    const liveDeadline = exactCurrent?.phase === 'emitted'
+      ? lossContinuation?.prepare_deadline : lossContinuation?.confirmation_deadline;
+    const retryEligible = exactStatus.json.logical_run_id === runId
+      && exactStatus.json.owner_run_id === runId
+      && exactStatus.json.generation === 1
+      && exactStatus.json.handoff_phase === (exactCurrent?.phase === 'emitted' ? 'emitted' : 'spawned')
+      && exactStatus.json.manual_recovery === false
+      && exactCurrent?.attempt_id === emittedAttemptId
+      && ['emitted', 'prepared'].includes(exactCurrent?.phase)
+      && Number.isFinite(Date.parse(liveDeadline))
+      && Date.now() <= Date.parse(liveDeadline);
+    assert.equal(retryEligible, true);
     const lostResultRetry = await runReadyKernel(root, prepareArgs, hostInput,
       exactReadyPattern('app-prepare', `${runId}.1`, mode), { cwd });
     assert.equal(lostResultRetry.json.attempt_id, emittedAttemptId);
@@ -354,7 +392,10 @@ export async function runAppLifecycle(route, {
       root, cwd, route, mode, capabilities, parentObservation, initProbe, questionCount,
       runId, emitted, emittedAttemptId, host,
       emittedStatus, preActionStatusVerified, discovery, hostInput, prepareArgs,
-      preparedStatusAfterLoss: exactStatus.json, preparedStatusOutput: exactStatus.stdout,
+      preparedStatusAfterLoss: exactStatus.json,
+      preparedStatusOutput: processOutputs(exactStatus).join('\n'),
+      // Actionable prepare stdout intentionally carries the reviewed project ID; stderr must not.
+      lostPrepareStderrAudit: firstPrepareResult.stderr,
       prepared: null, duplicate: lostResultRetry.json, duplicateCheckedBeforeAction: true,
     };
   }
@@ -451,10 +492,8 @@ export async function runAppLifecycle(route, {
     projectId: 'PROJECT_CANARY_71C2',
     duplicate: duplicate.json, parentAwait: parentAwait.json,
     wrongOwnerAwait, wrongGenerationAwait,
-    postActionOutputs: [confirm.stdout, confirmRetry.stdout, duplicate.stdout,
-      appStatusResult.stdout, acquire.stdout, parentAwait.stdout,
-      wrongOwnerAwait.stdout, wrongOwnerAwait.stderr,
-      wrongGenerationAwait.stdout, wrongGenerationAwait.stderr],
+    postActionOutputs: processOutputs(confirm, confirmRetry, duplicate,
+      appStatusResult, acquire, parentAwait, wrongOwnerAwait, wrongGenerationAwait),
   };
 }
 
@@ -492,7 +531,10 @@ function stopReadyKernelBeforeInput(root, args, readyPattern, {
       clearTimeout(timer);
       if (timedOut) return reject(new Error(`READY_PROCESS_TIMEOUT: ${stderr}`));
       if (!sawReady) return reject(new Error(`READY_TOKEN_MISSING: ${stderr}`));
-      reject(new Error('SIMULATED_CONFIRM_PROCESS_LOSS_BEFORE_COMMIT'));
+      const error = new Error('SIMULATED_CONFIRM_PROCESS_LOSS_BEFORE_COMMIT');
+      error.stdout = stdout;
+      error.stderr = stderr;
+      reject(error);
     });
   });
 }
@@ -543,6 +585,7 @@ function startLostResultKernel(root, args, {
   return { done, pid: child.pid,
     poll: () => { pollCount += 1; return processState; },
     pollCount: () => pollCount,
+    output: () => ({ stdout, stderr }),
     terminate: () => {
       if (child.exitCode === null && child.signalCode === null) child.kill();
     } };
@@ -697,7 +740,7 @@ async function settlePreparedFailure(fixture, code, receipt) {
   ], { cwd: fixture.cwd });
   return {
     appStatus: app.json, runStatus: runStatus.json, lease: lease.json,
-    outputs: [transition.stdout, app.stdout, runStatus.stdout, lease.stdout],
+    outputs: processOutputs(transition, app, runStatus, lease),
   };
 }
 
@@ -967,7 +1010,8 @@ test('ambiguous project uses one discovery call then durable manual preserve wit
   assert.equal(lease.json.resume_policy, 'human');
   assert.equal(app.json.current.phase, 'emitted');
   for (const raw of [' RAW-PROJECT-ONE ', ' RAW-PROJECT-TWO ']) {
-    assert.equal([runStatus.stdout, lease.stdout, app.stdout].some(output => output.includes(raw)), false);
+    assert.equal(processOutputs(runStatus, lease, app)
+      .some(output => output.includes(raw)), false);
   }
 });
 
@@ -1107,6 +1151,8 @@ test('strict host receipt validation rejects inherited alternate control and ove
   }
   const tooWide = Object.fromEntries(
     [...Array(257).keys()].map(index => [`field${index}`, true]));
+  const namedArrayFlood = [];
+  for (let index = 0; index < 257; index += 1) namedArrayFlood[`field${index}`] = true;
   const nodeFlood = [...Array(5).keys()].map(() => Array(256).fill(true));
   const nonWritableLength = Object.freeze([]);
   const nonWritableIndex = ['ok'];
@@ -1119,7 +1165,7 @@ test('strict host receipt validation rejects inherited alternate control and ove
   });
   for (const sendReceipt of [functionReceipt, customKeyArray, symbolArray, accessorArray,
     customPrototypeArray, new (class ReceiptArray extends Array {})(), sparseArray,
-    hugeSparseArray, tooDeep, tooWide, nodeFlood, nonWritableLength,
+    hugeSparseArray, tooDeep, tooWide, namedArrayFlood, nodeFlood, nonWritableLength,
     nonWritableIndex, nonConfigurableIndex,
     Symbol('receipt'), 1n, Number.NaN, Number.POSITIVE_INFINITY]) {
     await assert.rejects(() => executePreparedAction(forkAction, new FakeAppHost({
@@ -1150,22 +1196,23 @@ test('raw confirm and message-unconfirmed stdin accept 512 UTF-8 bytes and rejec
     exactReadyPattern('app-confirm', accepted.prepared.attempt_id, accepted.mode),
     { cwd: accepted.cwd });
   assert.equal(confirmed.json.outcome, 'confirmed');
-  assert.equal(confirmed.stdout.includes(maxId), false);
+  assert.equal(processOutputs(confirmed).some(output => output.includes(maxId)), false);
 
   const rejected = await runAppLifecycle('create', { stopAfterPrepare: true });
   const over = 'y'.repeat(513);
-  await assert.rejects(() => runReadyKernel(rejected.root, [
+  const rejectedError = await captureRejection(() => runReadyKernel(rejected.root, [
     'app-task', 'confirm', '--run-id', rejected.runId, '--owner', rejected.runId,
     '--generation', '1', '--attempt', rejected.prepared.attempt_id,
     '--stdin-mode', rejected.mode, '--receipt-stdin',
   ], over, exactReadyPattern('app-confirm', rejected.prepared.attempt_id, rejected.mode),
   { cwd: rejected.cwd }), /READY_PROCESS_EXIT_1/);
+  assert.equal(processOutputs(rejectedError).some(output => output.includes(over)), false);
   const status = runKernel(rejected.root, [
     'app-task', 'status', '--run-id', rejected.runId,
     '--attempt', rejected.prepared.attempt_id,
   ], { cwd: rejected.cwd });
   assert.equal(status.json.current.phase, 'prepared');
-  assert.equal(status.stdout.includes(over), false);
+  assert.equal(processOutputs(status).some(output => output.includes(over)), false);
 
   const uncertain = await runAppLifecycle('fork', {
     stopAfterPrepare: true,
@@ -1179,18 +1226,19 @@ test('raw confirm and message-unconfirmed stdin accept 512 UTF-8 bytes and rejec
   assert.equal(failed.outputs.some(output => output.includes(maxId)), false);
 
   const rejectedMessage = await runAppLifecycle('fork', { stopAfterPrepare: true });
-  await assert.rejects(() => runReadyKernel(rejectedMessage.root, [
+  const rejectedMessageError = await captureRejection(() => runReadyKernel(rejectedMessage.root, [
     'app-task', 'fail', '--run-id', rejectedMessage.runId, '--owner', rejectedMessage.runId,
     '--generation', '1', '--attempt', rejectedMessage.prepared.attempt_id,
     '--code', 'message-unconfirmed', '--stdin-mode', rejectedMessage.mode, '--receipt-stdin',
   ], over, exactReadyPattern('app-fail', rejectedMessage.prepared.attempt_id, rejectedMessage.mode),
   { cwd: rejectedMessage.cwd }), /READY_PROCESS_EXIT_1/);
+  assert.equal(processOutputs(rejectedMessageError).some(output => output.includes(over)), false);
   const rejectedMessageStatus = runKernel(rejectedMessage.root, [
     'app-task', 'status', '--run-id', rejectedMessage.runId,
     '--attempt', rejectedMessage.prepared.attempt_id,
   ], { cwd: rejectedMessage.cwd });
   assert.equal(rejectedMessageStatus.json.current.phase, 'prepared');
-  assert.equal(rejectedMessageStatus.stdout.includes(over), false);
+  assert.equal(processOutputs(rejectedMessageStatus).some(output => output.includes(over)), false);
 });
 
 test('resolved null or undefined send completion succeeds and never resends', async () => {
@@ -1319,7 +1367,8 @@ test('ordinary and message failure result loss reconcile only after the original
     assert.deepEqual(fixture.host.calls.map(call => call.tool), row.calls,
       `${row.name}: no external retry after result loss`);
     for (const raw of [row.receipt, fixture.prepared.action?.target?.projectId].filter(Boolean)) {
-      assert.equal(status.stdout.includes(raw), false, `${row.name}: safe status redaction`);
+      assert.equal([...processOutputs(status), ...processOutputs(original.output())]
+        .some(output => output.includes(raw)), false, `${row.name}: safe output redaction`);
     }
   }
 });
@@ -1331,7 +1380,8 @@ test('prepare result loss reads exact status then proves do-not-call and sweeps 
   assert.equal(fixture.duplicate.do_not_call, true);
   assert.equal(fixture.duplicateCheckedBeforeAction, true);
   assert.deepEqual(fixture.host.calls.map(call => call.tool), ['list_projects']);
-  assert.equal(fixture.preparedStatusOutput.includes('PROJECT_CANARY_71C2'), false);
+  assert.equal([fixture.preparedStatusOutput, fixture.lostPrepareStderrAudit]
+    .some(output => output.includes('PROJECT_CANARY_71C2')), false);
   const loop = readState(fixture.root, fixture.runId).data;
   const child = loop.session_chain.sessions.find(session =>
     session.continuation?.attempt_id === fixture.emittedAttemptId);
@@ -1359,10 +1409,15 @@ test('lost manual-preserve prepare result stops from exact status without retry 
     '--generation', '1', '--stdin-mode', fixture.mode, '--app-host-input-stdin',
   ];
   const hostInput = JSON.stringify({ host_task_cwd: fixture.cwd });
-  const original = startLostResultKernel(fixture.root, prepareArgs, {
+  let prepareProcessStarts = 0;
+  const startPrepare = () => {
+    prepareProcessStarts += 1;
+    return startLostResultKernel(fixture.root, prepareArgs, {
     cwd: fixture.cwd, inputLine: hostInput,
     readyPattern: exactReadyPattern('app-prepare', `${fixture.runId}.1`, fixture.mode),
-  });
+    });
+  };
+  const original = startPrepare();
   assert.equal(original.poll(), 'alive');
   try { await original.done; }
   catch (error) { original.terminate(); throw error; }
@@ -1379,6 +1434,10 @@ test('lost manual-preserve prepare result stops from exact status without retry 
     'state', 'get', '--run-id', fixture.runId, '--field', 'session_chain.lease',
   ], { cwd: fixture.cwd });
   assert.equal(status.json.current.phase, 'emitted');
+  assert.equal(status.json.current.attempt_id, fixture.emittedAttemptId);
+  assert.equal(status.json.logical_run_id, fixture.runId);
+  assert.equal(status.json.owner_run_id, fixture.runId);
+  assert.equal(status.json.generation, 1);
   assert.equal(status.json.manual_recovery, true);
   assert.equal(status.json.handoff_phase, 'emitted');
   assert.equal(runStatus.json, 'paused');
@@ -1387,11 +1446,14 @@ test('lost manual-preserve prepare result stops from exact status without retry 
     && status.json.manual_recovery === false
     && status.json.handoff_phase === 'emitted';
   assert.equal(retryEligible, false);
+  assert.equal(prepareProcessStarts, 1);
   assert.equal(readLines(fixture.root, fixture.runId)
     .filter(event => event.type === 'app-task-preserved').length, 1);
   assert.equal(readLines(fixture.root, fixture.runId)
     .some(event => event.type === 'app-task-swept'), false);
   assert.deepEqual(fixture.hostCalls, []);
+  assert.equal(processOutputs(status, runStatus, lease, original.output())
+    .some(output => output.includes('PROJECT_CANARY_71C2')), false);
 });
 
 test('acquired safe status is not success authority after release interleaving', async () => {
@@ -1426,14 +1488,15 @@ test('confirm result loss retries the exact receipt before and after commit with
       '--generation', '1', '--attempt', fixture.prepared.attempt_id,
       '--stdin-mode', fixture.mode, '--receipt-stdin',
     ];
+    let lostProcessOutput;
     if (lossPoint === 'before-commit') {
-      await assert.rejects(() => stopReadyKernelBeforeInput(fixture.root, args,
+      lostProcessOutput = await captureRejection(() => stopReadyKernelBeforeInput(fixture.root, args,
         exactReadyPattern('app-confirm', fixture.prepared.attempt_id, fixture.mode),
         { cwd: fixture.cwd }),
       /SIMULATED_CONFIRM_PROCESS_LOSS_BEFORE_COMMIT/);
     } else {
       await assert.rejects(async () => {
-        await runReadyKernel(fixture.root, args,
+        lostProcessOutput = await runReadyKernel(fixture.root, args,
           receipt.threadId,
           exactReadyPattern('app-confirm', fixture.prepared.attempt_id, fixture.mode),
           { cwd: fixture.cwd });
@@ -1443,8 +1506,22 @@ test('confirm result loss retries the exact receipt before and after commit with
     const beforeRetry = runKernel(fixture.root, [
       'app-task', 'status', '--run-id', fixture.runId, '--attempt', fixture.prepared.attempt_id,
     ], { cwd: fixture.cwd });
-    assert.equal(beforeRetry.json.current.phase,
-      lossPoint === 'before-commit' ? 'prepared' : 'confirmed', lossPoint);
+    const expectedPhase = lossPoint === 'before-commit' ? 'prepared' : 'confirmed';
+    assert.equal(beforeRetry.json.current.phase, expectedPhase, lossPoint);
+    const loop = readState(fixture.root, fixture.runId).data;
+    const continuation = loop.session_chain.sessions.find(session =>
+      session.continuation?.attempt_id === fixture.prepared.attempt_id)?.continuation;
+    const retryEligible = beforeRetry.json.logical_run_id === fixture.runId
+      && beforeRetry.json.owner_run_id === fixture.runId
+      && beforeRetry.json.generation === 1
+      && beforeRetry.json.handoff_phase === 'spawned'
+      && beforeRetry.json.manual_recovery === false
+      && beforeRetry.json.current?.attempt_id === fixture.prepared.attempt_id
+      && beforeRetry.json.current?.phase === expectedPhase
+      && (expectedPhase === 'confirmed'
+        || (Number.isFinite(Date.parse(continuation?.confirmation_deadline))
+          && Date.now() <= Date.parse(continuation.confirmation_deadline)));
+    assert.equal(retryEligible, true, lossPoint);
     assert.deepEqual(fixture.host.calls.map(call => call.tool), ['list_projects', 'create_thread']);
     const retry = await runReadyKernel(fixture.root, args,
       receipt.threadId,
@@ -1458,7 +1535,8 @@ test('confirm result loss retries the exact receipt before and after commit with
     assert.equal(app.json.current.phase, 'confirmed', lossPoint);
     assert.deepEqual(fixture.host.calls.map(call => call.tool), ['list_projects', 'create_thread']);
     for (const raw of [receipt.threadId, fixture.prepared.action.target.projectId]) {
-      assert.equal([beforeRetry.stdout, retry.stdout, app.stdout]
+      assert.equal([...processOutputs(lostProcessOutput),
+        ...processOutputs(beforeRetry, retry, app)]
         .some(output => output.includes(raw)), false, lossPoint);
     }
   }
