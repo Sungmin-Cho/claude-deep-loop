@@ -1524,6 +1524,58 @@ test('retry rollback requires fresh proof that both deterministic finals are abs
   assert.equal(events[0].data.reason, 'final-retry');
 });
 
+test('publication failure preserves a sibling final published by a concurrent finalizer', () => {
+  const { root, runId } = seed();
+  const expect = expect_(runId);
+  const reserved = reserveHandoff(root, runId, { trigger: 'milestone', expect, now: 100 });
+  const dir = handoffDir(root, runId);
+  mkdirSync(dir, { recursive: true });
+  const csPath = join(dir, `${reserved.childRunId}-compaction-state.json`);
+  writeFileSync(csPath, 'concurrent-finalizer-publication');
+
+  const failed = emitHandoff(root, runId, {
+    reason: 'failed-finalizer', trigger: 'milestone', expect, now: 200,
+    renameArtifact() { throw Object.assign(new Error('markdown publish failed'), { code: 'EIO' }); },
+  });
+
+  assert.deepEqual(failed, {
+    ok: false, reason: 'EMIT_ARTIFACT_FAILED', childRunId: reserved.childRunId, key: reserved.key,
+  });
+  assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'reserved');
+  assert.equal(readFileSync(csPath, 'utf8'), 'concurrent-finalizer-publication');
+
+  const recovered = emitHandoff(root, runId, {
+    reason: 'recovered-finalizer', trigger: 'pre-compact', expect, now: 300,
+  });
+  assert.ok(recovered.ok);
+  const markdown = readFileSync(join(dir, recovered.mdName), 'utf8');
+  const compaction = JSON.parse(readFileSync(join(dir, recovered.csName), 'utf8'));
+  const events = handoffEvents(root, runId);
+  assert.match(markdown, /- reason for handoff: recovered-finalizer/);
+  assert.equal(compaction.payload.reason, 'recovered-finalizer');
+  assert.equal(events.length, 1);
+  assert.equal(events[0].data.reason, 'recovered-finalizer');
+});
+
+test('staging failure preserves a reserved lease when a prior-crash final survives', () => {
+  const { root, runId } = seed();
+  const expect = expect_(runId);
+  const reserved = reserveHandoff(root, runId, { trigger: 'milestone', expect, now: 100 });
+  const dir = handoffDir(root, runId);
+  mkdirSync(dir, { recursive: true });
+  const mdPath = join(dir, `${reserved.childRunId}-next-session.md`);
+  writeFileSync(mdPath, 'prior-crash-final');
+
+  const failed = emitHandoff(root, runId, {
+    reason: 'staging-failure', trigger: 'milestone', expect, now: 200,
+    writeArtifact() { throw Object.assign(new Error('staging failed'), { code: 'EIO' }); },
+  });
+
+  assert.equal(failed.reason, 'EMIT_ARTIFACT_FAILED');
+  assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'reserved');
+  assert.equal(readFileSync(mdPath, 'utf8'), 'prior-crash-final');
+});
+
 test('byte-identical partial final is retained while its missing sibling is published', () => {
   const { root, runId } = seed();
   const expect = expect_(runId);

@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readState, runDir } from './state.mjs';
@@ -109,6 +109,7 @@ export function emitHandoff(root, runId, {
   descriptorBuilder = buildRuntimeResumeDescriptor,
   onBoundary = () => {}, writeArtifact = writeFileSync, renameArtifact = renameAtomicWithRetry,
   removeArtifact = rmSync, unlinkArtifact = unlinkSync, artifactExists = existsSync,
+  statArtifact = statSync,
 } = {}) {
   if (!expect || typeof expect.owner !== 'string' || !Number.isInteger(expect.generation)) throw new Error('FENCE_REQUIRED: emitHandoff');
   // Resolve runtime and canonical root from root-bound durable state. This read
@@ -202,7 +203,7 @@ export function emitHandoff(root, runId, {
     // concurrent successful finalizer can never be reset by this loser.
     try {
       const compensation = rollbackReservedEmit(canonicalRoot, runId, {
-        key: res.key, childRunId, expect,
+        key: res.key, childRunId, expect, statFn: statArtifact,
       });
       if (compensation.idempotent) return idempotentResult(canonicalRoot, runId, childRunId, res.key);
     } catch { /* preserve original descriptor error */ }
@@ -262,7 +263,7 @@ export function emitHandoff(root, runId, {
     let compensation = null;
     try {
       compensation = rollbackReservedEmit(canonicalRoot, runId, {
-        key: res.key, childRunId, expect,
+        key: res.key, childRunId, expect, statFn: statArtifact,
       });
     } catch { /* return the original filesystem failure */ }
     if (compensation?.idempotent) {
@@ -344,18 +345,12 @@ export function emitHandoff(root, runId, {
       return idempotentResult(canonicalRoot, runId, childRunId, res.key);
     }
     if (e?.handoffPublication) {
-      // Rollback is allowed only when fresh checks prove both deterministic finals absent. The publication
-      // counter cannot see a surviving sibling after an unlink-then-rename failure on the other final.
       let compensation = null;
-      let bothFinalsAbsent = false;
       try {
-        bothFinalsAbsent = !artifactExists(handoffPath) && !artifactExists(join(dir, csName));
-      } catch { /* inability to prove absence preserves the reservation */ }
-      if (bothFinalsAbsent) {
-        try {
-          compensation = rollbackReservedEmit(canonicalRoot, runId, { key: res.key, childRunId, expect });
-        } catch { /* return the original filesystem failure */ }
-      }
+        compensation = rollbackReservedEmit(canonicalRoot, runId, {
+          key: res.key, childRunId, expect, statFn: statArtifact,
+        });
+      } catch { /* return the original filesystem failure */ }
       if (compensation?.idempotent) {
         cleanupChildTemps(dir, childRunId, removeArtifact);
         return idempotentResult(canonicalRoot, runId, childRunId, res.key);
@@ -363,7 +358,12 @@ export function emitHandoff(root, runId, {
       return { ok: false, reason: 'EMIT_ARTIFACT_FAILED', childRunId, key: res.key };
     }
     if (String(e?.message || e).startsWith('RUN_TERMINAL')) {
-      try { rollbackReservedEmit(canonicalRoot, runId, { key: res.key, childRunId, expect }); } catch { /* 잔여 불활성 */ }
+      // Surviving finals deliberately leave the terminal reservation inert: conservative preservation beats orphaning.
+      try {
+        rollbackReservedEmit(canonicalRoot, runId, {
+          key: res.key, childRunId, expect, statFn: statArtifact,
+        });
+      } catch { /* 잔여 불활성 */ }
       return { ok: false, reason: 'RUN_TERMINAL', key: res.key };
     }
     // LEASE_FENCED, RUN_PAUSED, and integrity failures retain their established fail-stop channel.

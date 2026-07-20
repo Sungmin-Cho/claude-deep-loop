@@ -1,6 +1,8 @@
+import { statSync } from 'node:fs';
+import { join } from 'node:path';
 import { contentHash, ulid } from './envelope.mjs';
 import { runtimeFence } from './runtime.mjs';
-import { readState, writeState, withLock } from './state.mjs';
+import { readState, runDir, writeState, withLock } from './state.mjs';
 
 const PHASE_ORDER = { idle: 0, reserved: 1, emitted: 2, spawned: 3, acquired: 4 };
 
@@ -203,9 +205,10 @@ export function rollbackHandoff(root, runId, { owner, generation }) {
   });
 }
 
-// Filesystem-publication compensation for emitHandoff. Unlike rollbackHandoff, this is a
-// key/child-bound CAS: a losing finalizer can never reset an emitted winner or a different reservation.
-export function rollbackReservedEmit(root, runId, { key, childRunId, expect }) {
+// Filesystem-publication compensation for emitHandoff. Rollback is allowed only when the lock-held
+// check proves ENOENT/ENOTDIR for both deterministic finals: boolean existsSync can mistake lookup
+// errors for absence, while an out-of-lock check races a same-key concurrent publication.
+export function rollbackReservedEmit(root, runId, { key, childRunId, expect, statFn = statSync }) {
   return withLock(root, runId, () => {
     const { data } = readState(root, runId);
     const lease = data.session_chain.lease;
@@ -218,6 +221,20 @@ export function rollbackReservedEmit(root, runId, { key, childRunId, expect }) {
     }
     if (lease.handoff_idempotency_key !== key || lease.handoff_child_run_id !== childRunId) {
       return { ok: false, reason: 'reservation-mismatch' };
+    }
+    const handoffDir = join(runDir(root, runId), 'handoffs');
+    const finals = [
+      join(handoffDir, `${childRunId}-next-session.md`),
+      join(handoffDir, `${childRunId}-compaction-state.json`),
+    ];
+    for (const path of finals) {
+      try {
+        statFn(path);
+        return { ok: false, reason: 'finals-present' };
+      } catch (error) {
+        if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') continue;
+        return { ok: false, reason: 'finals-indeterminate' };
+      }
     }
     const terminal = data.status === 'completed' || data.status === 'stopped';
     data.session_chain.lease = {

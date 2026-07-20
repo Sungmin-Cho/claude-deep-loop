@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { contentHash } from '../scripts/lib/envelope.mjs';
@@ -9,6 +9,7 @@ import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import {
   deriveIdempotencyKey, leaseCheck, acquireLease, releaseLease,
   reserveHandoff, advanceHandoffPhase, rollbackHandoff,
+  rollbackReservedEmit,
 } from '../scripts/lib/lease.mjs';
 
 function seed(runtime = 'claude') {
@@ -123,6 +124,59 @@ test('rollbackHandoff restores active/idle (launch-failure path)', () => {
   assert.equal(lease.handoff_phase, 'idle');
   assert.equal(lease.handoff_idempotency_key, null);
   assert.equal(lease.handoff_trigger, null);
+});
+
+test('rollbackReservedEmit preserves a reserved lease when a deterministic final exists', () => {
+  const { root, runId } = seed();
+  const expect = { owner: runId, generation: 1 };
+  const reserved = reserveHandoff(root, runId, { trigger: 'milestone', expect, now: 1 });
+  const dir = join(runDir(root, runId), 'handoffs');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${reserved.childRunId}-next-session.md`), 'published');
+
+  assert.deepEqual(
+    rollbackReservedEmit(root, runId, {
+      key: reserved.key, childRunId: reserved.childRunId, expect,
+    }),
+    { ok: false, reason: 'finals-present' },
+  );
+  assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'reserved');
+});
+
+test('rollbackReservedEmit preserves a reserved lease when final absence is indeterminate', () => {
+  const { root, runId } = seed();
+  const expect = { owner: runId, generation: 1 };
+  const reserved = reserveHandoff(root, runId, { trigger: 'milestone', expect, now: 1 });
+
+  assert.deepEqual(
+    rollbackReservedEmit(root, runId, {
+      key: reserved.key, childRunId: reserved.childRunId, expect,
+      statFn() { throw Object.assign(new Error('denied'), { code: 'EPERM' }); },
+    }),
+    { ok: false, reason: 'finals-indeterminate' },
+  );
+  assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'reserved');
+});
+
+test('rollbackReservedEmit rolls back only after both deterministic finals prove absent', () => {
+  const { root, runId } = seed();
+  const expect = { owner: runId, generation: 1 };
+  const reserved = reserveHandoff(root, runId, { trigger: 'milestone', expect, now: 1 });
+  const checked = [];
+
+  const result = rollbackReservedEmit(root, runId, {
+    key: reserved.key, childRunId: reserved.childRunId, expect,
+    statFn(path) {
+      checked.push(path);
+      throw Object.assign(new Error('absent'), { code: 'ENOENT' });
+    },
+  });
+
+  assert.deepEqual(result, { ok: true, rolledBack: true });
+  assert.equal(checked.length, 2);
+  assert.ok(checked[0].endsWith(`${reserved.childRunId}-next-session.md`));
+  assert.ok(checked[1].endsWith(`${reserved.childRunId}-compaction-state.json`));
+  assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'idle');
 });
 
 test('reserve persists raw handoff_trigger; acquireLease and rollbackHandoff clear it', () => {
