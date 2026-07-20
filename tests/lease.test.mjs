@@ -163,6 +163,28 @@ test('emitted sets expires_at → child can take over after stale TTL without ex
   assert.equal(ok.generation, 2);
 });
 
+test('releasing lease blocks parent self-reacquisition through TTL and permits it only after injected expiry', () => {
+  const { root, runId } = seed();
+  const now0 = Date.parse('2026-06-24T00:00:00.000Z');
+  const { key } = reserveHandoff(root, runId, { trigger: 'parent-self-reacquire', now: now0 });
+  advanceHandoffPhase(root, runId, { key, toPhase: 'emitted', now: now0 });
+  const expiresAt = Date.parse(readState(root, runId).data.session_chain.lease.expires_at);
+
+  const withinTtl = acquireLease(root, runId, {
+    owner: runId, expectGeneration: 1, runtime: 'claude', now: expiresAt,
+  });
+  assert.deepEqual(withinTtl, { ok: false, generation: 1, reason: 'lease-not-takeable' });
+  assert.equal(readState(root, runId).data.session_chain.lease.owner_run_id, runId);
+  assert.equal(readState(root, runId).data.session_chain.lease.generation, 1);
+
+  const afterTtl = acquireLease(root, runId, {
+    owner: runId, expectGeneration: 1, runtime: 'claude', now: expiresAt + 1,
+  });
+  assert.deepEqual(afterTtl, { ok: true, generation: 2, reason: 'acquired' });
+  assert.equal(readState(root, runId).data.session_chain.lease.owner_run_id, runId);
+  assert.equal(readState(root, runId).data.session_chain.lease.generation, 2);
+});
+
 test('leaseCheck allows accounting during releasing for matching owner/generation', () => {
   const loop = { session_chain: { lease: { owner_run_id: 'r', generation: 2, state: 'releasing' } } };
   assert.equal(leaseCheck(loop, { owner: 'r', generation: 2, intent: 'business' }).ok, false);    // 업무 write 거부

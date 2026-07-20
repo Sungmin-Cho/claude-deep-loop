@@ -399,7 +399,7 @@ const handlers = {
       launcher: data.session_spawn?.launcher,
       launcherBin: data.session_spawn?.launcher_bin,
       launcherSocket: data.session_spawn?.launcher_socket,
-      platform: data.session_spawn?.platform || process.platform,
+      platform: process.platform,
       model: data.autonomy?.session_model ?? null,
       effort: data.autonomy?.session_effort ?? null,
       deepLoopRoot: DEEP_LOOP_ROOT,
@@ -410,10 +410,11 @@ const handlers = {
     const launcherGuidance = existsSync(launchPath)
       ? `Launcher guidance (from launch-command.txt):\n${readFileSync(launchPath, 'utf8').trimEnd()}`
       : `Launcher guidance: ${descriptor.entries.interactive.display}`;
+    const leaseState = typeof lease.state === 'string' ? ` lease_state=${lease.state}` : '';
     process.stdout.write([
       descriptor.resumeInvocation,
       launcherGuidance,
-      `Lease: owner=${lease.owner_run_id} lease_state=${lease.state} generation=${lease.generation} handoff_phase=${lease.handoff_phase} child_run_id=${childRunId}`,
+      `Lease: owner=${lease.owner_run_id}${leaseState} generation=${lease.generation} handoff_phase=${lease.handoff_phase} child_run_id=${childRunId}`,
       'Status: 인수 확인은 /deep-loop-status',
       '',
     ].join('\n'));

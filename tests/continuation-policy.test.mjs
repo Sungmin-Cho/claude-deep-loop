@@ -13,6 +13,7 @@ import { newWorkstream, recordWorkstreamTerminal } from '../scripts/lib/workspac
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
 import { acquireLease } from '../scripts/lib/lease.mjs';
 import { nextAction } from '../scripts/lib/next-action.mjs';
+import { verifyHead, verifyLog } from '../scripts/lib/integrity.mjs';
 
 const NOW = new Date('2026-07-20T00:00:00.000Z');
 const noRun = () => ({ code: 1, stdout: '', stderr: '' });
@@ -37,6 +38,20 @@ function cappedClaude(root, { spawnStyle = 'visible' } = {}) {
   data.session_chain.sessions[0].turns = data.budget.per_session_turn_cap;
   writeState(root, runId, data);
   return runId;
+}
+
+function downgradeRunToLegacy(root, runId) {
+  const dir = join(root, '.deep-loop', 'runs', runId);
+  const loopPath = join(dir, 'loop.json');
+  const legacy = JSON.parse(readFileSync(loopPath, 'utf8'));
+  legacy.schema_version = '0.2.0';
+  delete legacy.autonomy.continuation_policy;
+  delete legacy.session_chain.consumed_milestones;
+  delete legacy.session_chain.lease.handoff_trigger;
+  const raw = JSON.stringify(legacy, null, 2);
+  writeFileSync(loopPath, raw);
+  writeFileSync(join(dir, '.loop.hash'), contentHash(raw));
+  return { dir, loopPath, raw, hash: contentHash(raw) };
 }
 
 test('schema: validate hard-pins 0.3.0 and requires continuation_policy', () => {
@@ -64,15 +79,7 @@ test('schema: cross-field — codex cannot be compact-in-place (enum first, then
 test('migration: legacy 0.2.0 run reads as 0.3.0 rotate-per-unit in memory; disk untouched until first write', () => {
   const root = freshRoot();
   const { runId } = initClaude(root);
-  const p = join(root, '.deep-loop', 'runs', runId, 'loop.json');
-  const legacy = JSON.parse(readFileSync(p, 'utf8'));
-  legacy.schema_version = '0.2.0';
-  delete legacy.autonomy.continuation_policy;
-  delete legacy.session_chain.consumed_milestones;
-  delete legacy.session_chain.lease.handoff_trigger;
-  const raw = JSON.stringify(legacy, null, 2);
-  writeFileSync(p, raw);
-  writeFileSync(join(root, '.deep-loop', 'runs', runId, '.loop.hash'), contentHash(raw));
+  const { loopPath: p, raw } = downgradeRunToLegacy(root, runId);
 
   const { data, hash } = readState(root, runId);
   assert.equal(data.schema_version, '0.3.0');
@@ -83,6 +90,57 @@ test('migration: legacy 0.2.0 run reads as 0.3.0 rotate-per-unit in memory; disk
   assert.equal(readFileSync(p, 'utf8'), raw);
   writeState(root, runId, data);
   assert.equal(JSON.parse(readFileSync(p, 'utf8')).schema_version, '0.3.0');
+});
+
+test('migration E2E: read-only CLI views stay non-persistent until the first business mutation, then restart and tamper detection work', () => {
+  const root = freshRoot();
+  const { runId } = initClaude(root);
+  const legacy = downgradeRunToLegacy(root, runId);
+  const common = ['--project-root', root, '--run-id', runId];
+
+  const state = runCli(['state', 'get', ...common]);
+  assert.equal(state.status, 0, state.stderr);
+  assert.equal(JSON.parse(state.stdout).schema_version, '0.3.0');
+  assert.equal(JSON.parse(state.stdout).autonomy.continuation_policy, 'rotate-per-unit');
+
+  const next = runCli(['next-action', ...common, '--now', NOW.toISOString()]);
+  assert.equal(next.status, 0, next.stderr);
+  assert.ok(JSON.parse(next.stdout).action);
+
+  const status = runCli(['comprehension', 'status', ...common]);
+  assert.equal(status.status, 0, status.stderr);
+  assert.equal(typeof JSON.parse(status.stdout).debt_ratio, 'number');
+
+  assert.equal(readFileSync(legacy.loopPath, 'utf8'), legacy.raw, 'read-only CLI commands must not persist migration');
+  assert.equal(readFileSync(join(legacy.dir, '.loop.hash'), 'utf8').trim(), legacy.hash);
+
+  const mutation = runCli([
+    'budget', 'record', ...common,
+    '--owner', runId, '--generation', '1', '--turns', '2', '--tokens', '3',
+  ]);
+  assert.equal(mutation.status, 0, mutation.stderr);
+
+  const persisted = JSON.parse(readFileSync(legacy.loopPath, 'utf8'));
+  assert.equal(persisted.schema_version, '0.3.0');
+  assert.equal(persisted.autonomy.continuation_policy, 'rotate-per-unit');
+  assert.deepEqual(persisted.session_chain.consumed_milestones, []);
+  assert.equal(persisted.session_chain.lease.handoff_trigger, null);
+  assert.equal(verifyLog(root, runId).ok, true);
+  assert.equal(verifyHead(root, runId, persisted.event_log_head).ok, true);
+
+  const restarted = readState(root, runId).data;
+  assert.equal(restarted.schema_version, '0.3.0');
+  assert.equal(restarted.budget.spent, 2);
+  assert.equal(restarted.budget.tokens_spent, 3);
+
+  const persistedRaw = readFileSync(legacy.loopPath, 'utf8');
+  const tamperedRaw = persistedRaw.replace('"goal": "g"', '"goal": "h"');
+  assert.equal(tamperedRaw.length, persistedRaw.length, 'fixture tamper must replace exactly one byte');
+  assert.notEqual(tamperedRaw, persistedRaw);
+  writeFileSync(legacy.loopPath, tamperedRaw);
+  const tampered = runCli(['state', 'get', ...common]);
+  assert.equal(tampered.status, 1, tampered.stderr);
+  assert.match(tampered.stderr, /STATE_TAMPERED/);
 });
 
 test('migration: invalid 0.3.0 state is not healed and cannot be persisted', () => {

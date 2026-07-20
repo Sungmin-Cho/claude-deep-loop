@@ -1,14 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
 import { buildRuntimeResumeDescriptor } from '../scripts/lib/runtime-descriptor.mjs';
-import { readState, runDir } from '../scripts/lib/state.mjs';
+import { contentHash } from '../scripts/lib/envelope.mjs';
+import { advanceHandoffPhase, reserveHandoff } from '../scripts/lib/lease.mjs';
+import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = join(REPO_ROOT, 'scripts', 'deep-loop.mjs');
@@ -133,4 +135,83 @@ test('resume-command without an explicit or current run id is a usage error', ()
 
   assert.equal(result.status, 2, result.stderr);
   assert.match(result.stderr, /MISSING_RUN_ID|USAGE:.*run-id/i);
+});
+
+test('resume-command classifies a copied run with a live stored root as PROJECT_ROOT_FENCED exit 3', () => {
+  const { root, runId } = seed();
+  emitHandoff(root, runId, {
+    reason: 'fenced copy', trigger: 'resume-command-fenced', now: HANDOFF_NOW,
+    expect: { owner: runId, generation: 1 }, env: {},
+  });
+  const candidateRoot = freshRoot('dl-resume-command-fenced-copy-');
+  cpSync(join(root, '.deep-loop'), join(candidateRoot, '.deep-loop'), { recursive: true });
+
+  const result = invoke(['resume-command', '--project-root', candidateRoot, '--run-id', runId]);
+  assert.equal(result.status, 3, result.stderr);
+  assert.match(result.stderr, /PROJECT_ROOT_FENCED/);
+});
+
+test('resume-command falls back to the process-platform descriptor when launch-command.txt is absent', () => {
+  const { root, runId } = seed('claude');
+  emitHandoff(root, runId, {
+    reason: 'missing launch artifact', trigger: 'resume-command-fallback', now: HANDOFF_NOW,
+    expect: { owner: runId, generation: 1 }, env: {},
+  });
+  const { data } = readState(root, runId);
+  data.session_spawn.platform = process.platform === 'win32' ? 'darwin' : 'win32';
+  writeState(root, runId, data);
+  rmSync(join(runDir(root, runId), 'terminal', 'launch-command.txt'));
+  const expected = descriptorForPending(root, runId);
+
+  const result = invoke(['resume-command', '--project-root', root, '--run-id', runId]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(
+    result.stdout.includes(`Launcher guidance: ${expected.entries.interactive.display}`),
+    'fallback descriptor must describe the executing process platform, not the stored detection platform',
+  );
+});
+
+test('resume-command accepts both reserved and spawned pending phases', () => {
+  for (const phase of ['reserved', 'spawned']) {
+    const { root, runId } = seed();
+    const reservation = reserveHandoff(root, runId, {
+      trigger: `resume-command-${phase}`, now: HANDOFF_NOW,
+      expect: { owner: runId, generation: 1 },
+    });
+    if (phase === 'spawned') {
+      assert.equal(advanceHandoffPhase(root, runId, {
+        key: reservation.key, toPhase: 'emitted', now: HANDOFF_NOW,
+        expect: { owner: runId, generation: 1 },
+      }).ok, true);
+      assert.equal(advanceHandoffPhase(root, runId, {
+        key: reservation.key, toPhase: 'spawned', now: HANDOFF_NOW + 1,
+        expect: { owner: runId, generation: 1 },
+      }).ok, true);
+    }
+
+    const result = invoke(['resume-command', '--project-root', root, '--run-id', runId]);
+    assert.equal(result.status, 0, `${phase}: ${result.stderr}`);
+    assert.match(result.stdout, new RegExp(`handoff_phase=${phase}`));
+    assert.match(result.stdout, /deep-loop-resume/);
+  }
+});
+
+test('resume-command omits lease_state when the legacy summary value is not a string', () => {
+  const { root, runId } = seed();
+  emitHandoff(root, runId, {
+    reason: 'legacy summary', trigger: 'resume-command-legacy-summary', now: HANDOFF_NOW,
+    expect: { owner: runId, generation: 1 }, env: {},
+  });
+  const dir = runDir(root, runId);
+  const loopPath = join(dir, 'loop.json');
+  const raw = JSON.parse(readFileSync(loopPath, 'utf8'));
+  delete raw.session_chain.lease.state;
+  const rawText = JSON.stringify(raw, null, 2);
+  writeFileSync(loopPath, rawText);
+  writeFileSync(join(dir, '.loop.hash'), contentHash(rawText));
+
+  const result = invoke(['resume-command', '--project-root', root, '--run-id', runId]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stdout, /lease_state=/);
+  assert.doesNotMatch(result.stdout, /undefined/);
 });

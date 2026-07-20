@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
+import { contentHash } from '../scripts/lib/envelope.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import {
   readState,
@@ -28,6 +29,8 @@ import {
   projectRootDigest,
 } from '../scripts/lib/project-root.mjs';
 import { createDirectoryJunction } from './helpers/fs-fixtures.mjs';
+import { validate } from '../scripts/lib/schema.mjs';
+import { verifyHead, verifyLog } from '../scripts/lib/integrity.mjs';
 
 const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const FIXED_NOW = new Date('2026-07-11T00:00:00.000Z');
@@ -303,6 +306,59 @@ test('successful relocation commits one fixed event, root, and anchor then resto
   assert.equal(data.project.root, canonicalProjectRoot(moved.candidateRoot));
   assert.deepEqual(data.event_log_head, { seq: lines[0].seq, checksum: lines[0].checksum });
   assert.notEqual(durableSnapshot(moved.candidateRoot, moved.runId).hash, before.hash);
+});
+
+test('legacy 0.2.0 relocation diagnoses and rebinds from the migrated view without assuming data/hash content equivalence', async () => {
+  const parent = freshRoot('dl-root-legacy-rebind-');
+  const originalRoot = join(parent, 'original');
+  const candidateRoot = join(parent, 'candidate');
+  mkdirSync(originalRoot);
+  const { runId } = init(originalRoot);
+  const storedRoot = readState(originalRoot, runId).data.project.root;
+  const dir = runDir(originalRoot, runId);
+  const loopPath = join(dir, 'loop.json');
+  const legacy = JSON.parse(readFileSync(loopPath, 'utf8'));
+  legacy.schema_version = '0.2.0';
+  delete legacy.autonomy.continuation_policy;
+  delete legacy.session_chain.consumed_milestones;
+  delete legacy.session_chain.lease.handoff_trigger;
+  const legacyRaw = JSON.stringify(legacy, null, 2);
+  writeFileSync(loopPath, legacyRaw);
+  writeFileSync(join(dir, '.loop.hash'), contentHash(legacyRaw));
+  renameSync(originalRoot, candidateRoot);
+
+  const recoveryView = readStateForRootRecovery(candidateRoot, runId);
+  assert.equal(recoveryView.data.schema_version, '0.3.0');
+  assert.notEqual(
+    contentHash(JSON.stringify(recoveryView.data, null, 2)),
+    recoveryView.hash,
+    'legacy migration intentionally returns 0.3.0 data with the 0.2.0 on-disk hash',
+  );
+
+  const { diagnoseProjectRoot, rebindProjectRoot } = await recoveryApi();
+  assert.deepEqual(diagnoseProjectRoot(candidateRoot, runId), {
+    mismatch_class: 'unresolvable',
+    rebind_allowed: true,
+    stored_root_digest: projectRootDigest(storedRoot),
+    owner: runId,
+    generation: 1,
+  });
+
+  rebindProjectRoot(candidateRoot, runId, {
+    actor: 'human', confirm: true,
+    expectedStoredRootDigest: projectRootDigest(storedRoot),
+    fence: { owner: runId, generation: 1 },
+    now: FIXED_NOW.getTime(),
+  });
+
+  const rebound = readState(candidateRoot, runId).data;
+  assert.equal(rebound.schema_version, '0.3.0');
+  assert.equal(rebound.autonomy.continuation_policy, 'rotate-per-unit');
+  assert.equal(rebound.project.root, canonicalProjectRoot(candidateRoot));
+  assert.equal(validate(rebound).ok, true);
+  assert.equal(verifyLog(candidateRoot, runId).ok, true);
+  assert.equal(verifyHead(candidateRoot, runId, rebound.event_log_head).ok, true);
+  assert.deepEqual(readState(candidateRoot, runId).data, rebound, 'fresh post-rebind read must succeed');
 });
 
 test('rebind rejects a loop.run_id mismatch without durable mutation', async () => {
