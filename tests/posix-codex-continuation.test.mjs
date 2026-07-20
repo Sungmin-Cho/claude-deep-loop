@@ -358,7 +358,7 @@ test('approved POSIX Codex tmux respawn binds both runtime and launcher without 
   const { root, runId, approval } = seedVisible({ launcher: 'tmux' });
   const launcherApproval = tmuxLauncherIdentity();
   const handoff = emitVisible(root, runId);
-  const checks = { runtime: 0, launcher: 0, socket: 0 };
+  const checks = { runtime: 0, launcher: 0, socket: 0, panes: 0, ps: 0 };
   let captured = null;
   const result = respawn(root, runId, {
     childRunId: handoff.childRunId,
@@ -380,6 +380,11 @@ test('approved POSIX Codex tmux respawn binds both runtime and launcher without 
       return identity;
     },
     tmuxProbeRun: () => { checks.socket++; return { code: 0, stdout: '12345 $7\n' }; },
+    tmuxPanesRun: () => { checks.panes++; return { code: 0, stdout: '%1 987654 $7\n' }; },
+    tmuxPsRun: () => {
+      checks.ps++;
+      return { status: 0, stdout: `${process.pid} 987654\n987654 1\n1 0\n` };
+    },
     spawnFn: entry => { captured = entry; return { ok: true }; },
     pollLease: () => ({
       state: 'active', handoff_phase: 'acquired', owner_run_id: handoff.childRunId, generation: 2,
@@ -388,7 +393,7 @@ test('approved POSIX Codex tmux respawn binds both runtime and launcher without 
   });
 
   assert.equal(result.ok, true, `${result.outcome}: ${result.reason}`);
-  assert.deepEqual(checks, { runtime: 3, launcher: 3, socket: 3 });
+  assert.deepEqual(checks, { runtime: 3, launcher: 3, socket: 3, panes: 3, ps: 3 });
   assert.equal(captured.bin, launcherApproval.canonical_path);
   assert.equal(captured.argv.at(-1).includes('$deep-loop:deep-loop-resume'), true);
   assert.equal(captured.argv.at(-1).includes('claude'), false);

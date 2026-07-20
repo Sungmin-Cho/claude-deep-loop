@@ -92,7 +92,7 @@ Windows의 결합 경로는 `%USERPROFILE%\.codex\plugins\deep-loop`와 `%USERPR
 
 Continuation policy는 attended run에 적용됩니다. Claude는 같은 세션의 compaction, Codex는 milestone 경계 rotation이 기본이고, unattended run은 기존 측정형 headless policy를 유지합니다. 수동 resume은 오류 발생 시에만 쓰는 fallback이 아니라 일급 공식 지원 경로입니다.
 
-**Codex POSIX visible authority:** macOS/Linux 자동 visible continuation에는 durable human-approved Codex runtime identity가 필요합니다. `cmux`는 양성 감지가 같은 absolute bundled executable과 exact socket을 성공한 ping으로 묶었을 때만 실행됩니다. `tmux`는 사람이 canonical executable identity를 승인하고 감지가 그 identity를 exact `$TMUX` socket, server PID, session에 묶은 후 지원됩니다(승인 바이너리가 파생한 `#{session_id}`가 일치해야 함). macOS에서는 고정 `/usr/bin/osascript`를 통해 양성 감지된 iTerm2 또는 Terminal.app 하나만 실행되며, system binary의 존재만으로 두 런처를 활성화하지 않습니다. runtime 승인이 없으면 `runtime-identity-unavailable`, identity 또는 launcher drift는 spawned CAS 전후에 fail-closed하며 bare `codex`나 Claude process로 대체하지 않습니다.
+**Codex POSIX visible authority:** macOS/Linux 자동 visible continuation에는 durable human-approved Codex runtime identity가 필요합니다. `cmux`는 양성 감지가 같은 absolute bundled executable과 exact socket을 성공한 ping으로 묶었을 때만 실행됩니다. `tmux`는 사람이 canonical executable identity를 승인하고 감지가 그 identity를 exact `$TMUX` socket, server PID, session에 묶은 후 지원됩니다. 승인 바이너리가 파생한 `#{session_id}`가 일치해야 하며, OS-bound pane ancestry proof(`#{pane_pid}` ↔ process ancestry)가 같은 session을 독립적으로 파생해야 합니다. macOS에서는 고정 `/usr/bin/osascript`를 통해 양성 감지된 iTerm2 또는 Terminal.app 하나만 실행되며, system binary의 존재만으로 두 런처를 활성화하지 않습니다. runtime 승인이 없으면 `runtime-identity-unavailable`, identity 또는 launcher drift는 spawned CAS 전후에 fail-closed하며 bare `codex`나 Claude process로 대체하지 않습니다.
 
 Native Windows에서는 Node control plane을 win32에서 직접 실행하고 문서의 native command는 **PowerShell** 문법을 사용합니다. Windows Terminal과 PowerShell은 서로 다른 승인 launcher kind입니다. **WSL follows Linux behavior and is not native Windows**이므로 WSL의 실행 파일·경로는 native Windows spawn의 권위가 아닙니다. **Native Windows CI: pending external evidence** — 승인된 push 뒤 저장소의 Windows job이 실제 실행되기 전까지 통과를 주장하지 않습니다.
 
@@ -167,7 +167,7 @@ deep-suite 내에서 사용 시, deep-loop는 오케스트레이션 백본으로
 | cmux | `CMUX_BUNDLED_CLI_PATH` + `CMUX_SOCKET_PATH` + surface ID | 소켓을 통한 새 cmux workspace |
 | iTerm2 | `TERM_PROGRAM=iTerm.app` + osascript 프로브 | 새 iTerm 창 |
 | Terminal.app | `TERM_PROGRAM=Apple_Terminal` + osascript 프로브 | 새 Terminal 창 |
-| tmux | `$TMUX` + 사람이 승인한 canonical tmux identity + socket ownership/server-PID probe + session binding(승인 바이너리가 파생한 `#{session_id}` 일치) | 감지된 tmux session의 새 window |
+| tmux | `$TMUX` + 사람이 승인한 canonical tmux identity + socket ownership/server-PID probe + session binding(승인 바이너리가 파생한 `#{session_id}` 일치) + OS-bound pane ancestry proof(`#{pane_pid}` ↔ process ancestry) | 감지된 tmux session의 새 window |
 | Windows Terminal | `WT_SESSION` + 승인된 canonical launcher identity | 정확히 승인된 실행 파일을 통한 새 WT 탭 |
 | desktop | (사용자 opt-in) Claude Desktop Code 탭 | 검증된 핸들러로 `claude://code/new` 딥링크 오픈 (반자동: 폴더 확인 + Enter). macOS(경로+bundle-id+codesign TeamIdentifier)와 v1.7.0부터 **Windows**(전통 인스톨러 정확-일치 경로 + publisher-id 해시 고정 MSIX 경로 패턴 + **실제 Windows 11 관측으로 pin된** Authenticode 서명자 thumbprint) 지원. Windows 제안은 라이브 프로브가 설치된 핸들러를 검증할 때만 표시되며, pin된 leaf 인증서 로테이션(NotAfter 2026-10-21경) 이후에는 새 관측 thumbprint를 재-pin하기 전까지 결정론적 fail-closed로 복귀한다 — 추측성 pin은 절대 쓰지 않는다. |
 

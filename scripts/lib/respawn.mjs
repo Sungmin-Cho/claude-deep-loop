@@ -11,7 +11,9 @@ import { buildLaunchCommand } from './runtime-descriptor.mjs';
 import { defaultDesktopProbe } from './desktop-target.mjs';
 import { sessionRuntime } from './runtime.mjs';
 import { canonicalProjectRoot } from './project-root.mjs';
-import { defaultProbeRun, probeTmuxSocket } from './detect-terminal.mjs';
+import {
+  defaultProbeRun, deriveTmuxSessionByAncestry, listTmuxPanes, probeTmuxSocket,
+} from './detect-terminal.mjs';
 import {
   revalidateTrustedLauncherExecutable,
   revalidateTrustedRuntimeExecutable,
@@ -267,6 +269,8 @@ export function respawn(root, runId, {
   runtimeRevalidationOptions = {},
   launcherRevalidationOptions = {},
   tmuxProbeRun = defaultProbeRun,
+  tmuxPanesRun = defaultProbeRun,
+  tmuxPsRun,
 } = {}) {
   reconcileBudget(root, runId);                       // 무결성 fail-stop (탐지 시 throw)
   const { data: loop } = readState(root, runId);
@@ -419,6 +423,16 @@ export function respawn(root, runId, {
           identityReason = 'launcher-session-unverified';
           throw new Error('launcher session unavailable');
         }
+        const panes = listTmuxPanes(launcherIdentity, {
+          socketPath: posixLauncherSnapshot.launcher_socket, run: tmuxPanesRun,
+        });
+        const ancestrySession = deriveTmuxSessionByAncestry({
+          panes, processPid: process.pid, ...(tmuxPsRun === undefined ? {} : { psRun: tmuxPsRun }),
+        });
+        if (ancestrySession == null || ancestrySession !== posixLauncherSnapshot.launcher_session) {
+          identityReason = 'launcher-session-unverified';
+          throw new Error('launcher session unavailable');
+        }
       } else if (requiresPosixCodexLauncher) {
         identityStage = 'launcher';
         posixLauncherSnapshot = currentPosixCodexLauncher(loop, mode, platform);
@@ -552,6 +566,15 @@ export function respawn(root, runId, {
         });
         if (!socket.ok) return 'launcher-socket-unverified';
         if (socket.sessionId !== session.launcher_session) return 'launcher-session-unverified';
+        const panes = listTmuxPanes(freshIdentity, {
+          socketPath: freshSnapshot.launcher_socket, run: tmuxPanesRun,
+        });
+        const ancestrySession = deriveTmuxSessionByAncestry({
+          panes, processPid: process.pid, ...(tmuxPsRun === undefined ? {} : { psRun: tmuxPsRun }),
+        });
+        if (ancestrySession == null || ancestrySession !== session.launcher_session) {
+          return 'launcher-session-unverified';
+        }
       } catch {
         return 'launcher-identity-drift';
       }

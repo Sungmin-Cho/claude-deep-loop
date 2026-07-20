@@ -2,7 +2,9 @@ import { test } from 'node:test'; import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { detectAndPersist, detectTerminal, probeTmuxSocket } from '../scripts/lib/detect-terminal.mjs';
+import {
+  deriveTmuxSessionByAncestry, detectAndPersist, detectTerminal, listTmuxPanes, probeTmuxSocket,
+} from '../scripts/lib/detect-terminal.mjs';
 import * as runtimeExecutable from '../scripts/lib/runtime-executable.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState } from '../scripts/lib/state.mjs';
@@ -42,6 +44,12 @@ const tmuxIdentity = (platform = 'linux') => ({
   version: 'tmux 3.4', platform, arch: 'x64', source: 'human-explicit',
   authenticode: null, approved_by: 'human', approved_at: '2026-07-20T00:00:00.000Z',
 });
+const tmuxPanes = (sessionId = '7', panePid = '700') => () => ({
+  code: 0, stdout: `%1 ${panePid} $${sessionId}\n`,
+});
+const tmuxPs = (processPid = '900', panePid = '700') => () => ({
+  status: 0, stdout: `${processPid} 800\n800 ${panePid}\n${panePid} 1\n1 0\n`,
+});
 
 test('probeTmuxSocket derives the server pid and session id from the approved binary', () => {
   const identity = tmuxIdentity();
@@ -56,6 +64,55 @@ test('probeTmuxSocket derives the server pid and session id from the approved bi
   });
   assert.equal(result.ok, true);
   assert.equal(result.sessionId, '7');
+});
+
+test('listTmuxPanes uses the approved binary and rejects any malformed pane line', () => {
+  const identity = tmuxIdentity();
+  const panes = listTmuxPanes(identity, {
+    socketPath: '/tmp/tmux-501/default',
+    run: (bin, argv, options) => {
+      assert.equal(bin, identity.canonical_path);
+      assert.deepEqual(argv, ['-S', '/tmp/tmux-501/default', 'list-panes', '-a', '-F', '#{pane_id} #{pane_pid} #{session_id}']);
+      assert.deepEqual(options, { timeoutMs: 5000, capture: true });
+      return { code: 0, stdout: '%1 700 $7\n%2 701 $8\n' };
+    },
+  });
+  assert.deepEqual(panes, [
+    { panePid: '700', sessionId: '7' },
+    { panePid: '701', sessionId: '8' },
+  ]);
+  assert.equal(listTmuxPanes(identity, {
+    socketPath: '/tmp/tmux-501/default',
+    run: () => ({ code: 0, stdout: '%1 700 $7\nmalformed\n' }),
+  }), null);
+});
+
+test('deriveTmuxSessionByAncestry prefers the nearest pane ancestor and fails closed on cycles or beyond 64 hops', () => {
+  const panes = [
+    { panePid: '700', sessionId: '7' },
+    { panePid: '800', sessionId: '8' },
+  ];
+  assert.equal(deriveTmuxSessionByAncestry({
+    panes, processPid: 900,
+    psRun: () => ({ status: 0, stdout: '900 800\n800 700\n700 1\n1 0\n' }),
+  }), '8');
+  assert.equal(deriveTmuxSessionByAncestry({
+    panes: [{ panePid: '700', sessionId: '7' }], processPid: 900,
+    psRun: () => ({ status: 0, stdout: '900 800\n800 900\n' }),
+  }), null);
+
+  const bounded = [];
+  for (let pid = 100; pid <= 165; pid++) bounded.push(`${pid} ${pid + 1}`);
+  bounded.push('166 0');
+  const stdout = `${bounded.join('\n')}\n`;
+  assert.equal(deriveTmuxSessionByAncestry({
+    panes: [{ panePid: '164', sessionId: '64' }], processPid: 100,
+    psRun: () => ({ status: 0, stdout }),
+  }), '64');
+  assert.equal(deriveTmuxSessionByAncestry({
+    panes: [{ panePid: '165', sessionId: '65' }], processPid: 100,
+    psRun: () => ({ status: 0, stdout }),
+  }), null);
 });
 
 test('tmux candidate with revalidated approval and matching socket pid becomes a visible window', () => {
@@ -75,6 +132,7 @@ test('tmux candidate with revalidated approval and matching socket pid becomes a
       calls.push({ bin, argv, options });
       return { code: 0, stdout: '12345 $0\n' };
     },
+    tmuxPanesRun: tmuxPanes('0'), tmuxPsRun: tmuxPs(), pid: 900,
   });
 
   assert.equal(d.launcher, 'tmux');
@@ -89,6 +147,37 @@ test('tmux candidate with revalidated approval and matching socket pid becomes a
     argv: ['-S', '/tmp/tmux-501/default', 'display-message', '-p', '#{pid} #{session_id}'],
     options: { timeoutMs: 5000, capture: true },
   }]);
+});
+
+test('tmux ambient pane spoof is rejected when OS-bound ancestry derives another session', () => {
+  const identity = tmuxIdentity();
+  const d = detectTerminal({
+    env: { TMUX: '/tmp/tmux-501/default,12345,7', TMUX_PANE: '%spoofed' },
+    platform: 'linux', arch: 'x64', now: NOW, pid: 900,
+    launcherIdentities: { tmux: identity }, revalidateLauncher: stored => stored,
+    run: () => ({ code: 0, stdout: '12345 $7\n' }),
+    tmuxPanesRun: tmuxPanes('9'), tmuxPsRun: tmuxPs(),
+  });
+  assert.equal(d.launcher, 'none');
+  assert.equal(d.reason, 'tmux-socket-unverified');
+});
+
+test('tmux ancestry proof fails closed for ps failure, missing ancestry, or malformed pane output', () => {
+  const identity = tmuxIdentity();
+  const base = {
+    env: { TMUX: '/tmp/tmux-501/default,12345,7' }, platform: 'linux', arch: 'x64', now: NOW, pid: 900,
+    launcherIdentities: { tmux: identity }, revalidateLauncher: stored => stored,
+    run: () => ({ code: 0, stdout: '12345 $7\n' }),
+  };
+  for (const [label, evidence] of [
+    ['ps failure', { tmuxPanesRun: tmuxPanes(), tmuxPsRun: () => ({ status: 1, stdout: '' }) }],
+    ['missing ancestry', { tmuxPanesRun: tmuxPanes(), tmuxPsRun: () => ({ status: 0, stdout: '900 800\n800 1\n1 0\n' }) }],
+    ['malformed panes', { tmuxPanesRun: () => ({ code: 0, stdout: '%1 invalid $7\n' }), tmuxPsRun: tmuxPs() }],
+  ]) {
+    const d = detectTerminal({ ...base, ...evidence });
+    assert.equal(d.launcher, 'none', label);
+    assert.equal(d.reason, 'tmux-socket-unverified', label);
+  }
 });
 
 test('tmux candidate without durable approval fails closed before probing', () => {
@@ -361,6 +450,7 @@ test('detectAndPersist consumes durable tmux approval and persists only the pid-
       assert.equal(options.capture, true);
       return { code: 0, stdout: '12345 $7\n' };
     },
+    tmuxPanesRun: tmuxPanes(), tmuxPsRun: tmuxPs(), pid: 900,
   });
   assert.equal(descriptor.launcher, 'tmux');
   assert.equal(descriptor.launcher_session, '7');
@@ -398,6 +488,7 @@ test('detectAndPersist tmux branch rejects durable launcher approval drift in it
         return identity;
       },
       run: () => ({ code: 0, stdout: '12345 $7\n' }),
+      tmuxPanesRun: tmuxPanes(), tmuxPsRun: tmuxPs(), pid: 900,
     }),
     /LAUNCHER_EXECUTABLE_DRIFT: detect-terminal authority changed/,
   );

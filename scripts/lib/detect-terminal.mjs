@@ -106,6 +106,80 @@ export function probeTmuxSocket(identity, {
   };
 }
 
+export function listTmuxPanes(identity, {
+  socketPath, run = defaultProbeRun,
+} = {}) {
+  const argv = ['-S', socketPath, 'list-panes', '-a', '-F', '#{pane_id} #{pane_pid} #{session_id}'];
+  let result;
+  try {
+    if (!identity || identity.kind !== 'tmux'
+      || typeof identity.canonical_path !== 'string' || !posix.isAbsolute(identity.canonical_path)
+      || typeof socketPath !== 'string' || !posix.isAbsolute(socketPath)) return null;
+    result = run(identity.canonical_path, argv, { timeoutMs: 5000, capture: true });
+  } catch {
+    return null;
+  }
+  if (result?.code !== 0 || typeof result.stdout !== 'string') return null;
+  const lines = result.stdout.split('\n');
+  if (lines.at(-1) === '') lines.pop();
+  if (lines.length === 0) return [];
+  const panes = [];
+  for (const line of lines) {
+    const parsed = /^%[0-9]+ ([1-9][0-9]*) \$([0-9]+)$/.exec(line);
+    if (parsed == null) return null;
+    panes.push({ panePid: parsed[1], sessionId: parsed[2] });
+  }
+  return panes;
+}
+
+function defaultPsRun() {
+  const result = spawnSync('/bin/ps', ['-axo', 'pid=,ppid='], {
+    timeout: 5000, encoding: 'utf8', shell: false, env: {},
+  });
+  return {
+    status: result.status ?? 1,
+    stdout: typeof result.stdout === 'string' ? result.stdout : '',
+  };
+}
+
+export function deriveTmuxSessionByAncestry({
+  panes, processPid, psRun = defaultPsRun,
+} = {}) {
+  if (!Array.isArray(panes) || !/^[1-9][0-9]*$/.test(String(processPid ?? ''))) return null;
+  const paneSessions = new Map();
+  for (const pane of panes) {
+    if (!pane || typeof pane !== 'object'
+      || !/^[1-9][0-9]*$/.test(String(pane.panePid ?? ''))
+      || !/^[0-9]+$/.test(String(pane.sessionId ?? ''))) return null;
+    paneSessions.set(String(pane.panePid), String(pane.sessionId));
+  }
+
+  let result;
+  try { result = psRun(); } catch { return null; }
+  if ((result?.status ?? result?.code) !== 0 || typeof result.stdout !== 'string') return null;
+  const lines = result.stdout.split('\n');
+  if (lines.at(-1) === '') lines.pop();
+  if (lines.length === 0) return null;
+  const parents = new Map();
+  for (const line of lines) {
+    const parsed = /^\s*([1-9][0-9]*)\s+([0-9]+)\s*$/.exec(line);
+    if (parsed == null) return null;
+    parents.set(parsed[1], parsed[2]);
+  }
+
+  let current = String(processPid);
+  const visited = new Set([current]);
+  for (let hops = 0; hops < 64; hops++) {
+    const parent = parents.get(current);
+    if (parent == null || parent === '0' || visited.has(parent)) return null;
+    const sessionId = paneSessions.get(parent);
+    if (sessionId != null) return sessionId;
+    visited.add(parent);
+    current = parent;
+  }
+  return null;
+}
+
 // Bounded parent-process ancestry walk. The PS one-liner outputs 3-valued PS/NO/UNKNOWN
 // (only a true top-reach is authoritative NO; CIM failure/exhaustion → UNKNOWN). MEASURED-PS-ONLY:
 // only a measured 'PS' ancestor returns host:true. NO/UNKNOWN/all-probes-failed → host:false.
@@ -144,6 +218,8 @@ export function detectTerminal({
   launcherIdentities = windowsLauncherIdentities,
   revalidateLauncher = revalidateTrustedLauncherExecutable,
   launcherRevalidationOptions = {},
+  tmuxPanesRun = run,
+  tmuxPsRun,
 } = {}) {
   // detected_at is an ISO string passed in; do NOT call .toISOString() on it.
   const detected_at = now;
@@ -242,11 +318,18 @@ export function detectTerminal({
     if (!socketVerified || sessionId !== parsed.sessionId) {
       return noneDescriptor('tmux-socket-unverified', probe);
     }
+    const panes = listTmuxPanes(identity, { socketPath: parsed.socketPath, run: tmuxPanesRun });
+    const ancestrySession = deriveTmuxSessionByAncestry({
+      panes, processPid: pid, ...(tmuxPsRun === undefined ? {} : { psRun: tmuxPsRun }),
+    });
+    if (ancestrySession == null || ancestrySession !== parsed.sessionId) {
+      return noneDescriptor('tmux-socket-unverified', probe);
+    }
 
     return {
       platform, launcher: 'tmux', launcher_bin: identity.canonical_path,
       launcher_identity: identity, launcher_socket: parsed.socketPath,
-      launcher_pid: parsed.serverPid, launcher_session: sessionId,
+      launcher_pid: parsed.serverPid, launcher_session: ancestrySession,
       surface: 'window', reachable: true, visible: true,
       signals, probe, reason: null, fallback: 'launch-command-file', detected_at,
     };
@@ -364,6 +447,8 @@ export function detectAndPersist(root, runId, {
   launcherIdentities = windowsLauncherIdentities,
   revalidateLauncher = revalidateTrustedLauncherExecutable,
   launcherRevalidationOptions = {},
+  tmuxPanesRun = run,
+  tmuxPsRun,
 } = {}) {
   reconcileBudget(root, runId);
   const { data: loop } = readState(root, runId);
@@ -386,7 +471,7 @@ export function detectAndPersist(root, runId, {
   }
   const d = detectTerminal({
     env, platform, run, now, pid, arch, launcherIdentities: effectiveLauncherIdentities,
-    revalidateLauncher, launcherRevalidationOptions,
+    revalidateLauncher, launcherRevalidationOptions, tmuxPanesRun, tmuxPsRun,
   });
   appendAnchored(
     root, runId,

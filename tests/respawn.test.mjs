@@ -78,6 +78,10 @@ function emitHandoff(root, runId, options = {}) {
 
 function respawn(root, runId, options = {}) {
   const normalized = { ...options, platform: targetPlatform(root, runId, options) };
+  if (readState(root, runId).data.session_spawn?.launcher === 'tmux') {
+    normalized.tmuxPanesRun ??= () => ({ code: 0, stdout: '%1 987654 $7\n' });
+    normalized.tmuxPsRun ??= () => ({ status: 0, stdout: `${process.pid} 987654\n987654 1\n1 0\n` });
+  }
   if (isForeignWindowsCodexFixture(root, runId, normalized)) {
     normalized.launchCommandBuilder ??= buildWindowsLaunchCommand;
   } else if (isForeignPosixCodexFixture(root, runId, normalized)) {
@@ -383,6 +387,44 @@ test('tmux probe-derived session mismatch preserves the emitted handoff before s
   const after = readState(root, runId).data;
   assert.equal(after.status, 'paused');
   assert.equal(after.session_chain.lease.handoff_phase, 'emitted');
+});
+
+test('tmux ambient pane spoof is rejected by fresh ancestry proof before spawned CAS', () => {
+  const { root, runId } = seedTmuxLauncher();
+  const h = emitTmux(root, runId, 'tmux-pane-spoof');
+  let spawned = 0;
+  const r = respawn(root, runId, {
+    childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
+    attended: true, env: { TMUX_PANE: '%spoofed' }, now: NOW1, platform: 'linux',
+    revalidateLauncherExecutable: identity => identity,
+    tmuxProbeRun: tmuxProbeOk,
+    tmuxPanesRun: () => ({ code: 0, stdout: '%1 987654 $9\n' }),
+    tmuxPsRun: () => ({ status: 0, stdout: `${process.pid} 987654\n987654 1\n1 0\n` }),
+    spawnFn: () => { spawned++; return { ok: true }; }, sleep: noSleep,
+  });
+
+  assert.equal(spawned, 0);
+  assert.equal(r.outcome, 'no-launcher');
+  assert.equal(r.reason, 'launcher-session-unverified');
+  const after = readState(root, runId).data;
+  assert.equal(after.status, 'paused');
+  assert.equal(after.session_chain.lease.handoff_phase, 'emitted');
+});
+
+test('tmux ps failure preserves the emitted handoff before spawned CAS', () => {
+  const { root, runId } = seedTmuxLauncher();
+  const h = emitTmux(root, runId, 'tmux-ps-failure');
+  const r = respawn(root, runId, {
+    childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
+    attended: true, env: {}, now: NOW1, platform: 'linux',
+    revalidateLauncherExecutable: identity => identity,
+    tmuxProbeRun: tmuxProbeOk,
+    tmuxPsRun: () => ({ status: 1, stdout: '' }),
+    spawnFn: () => assert.fail('spawn must remain unreachable'), sleep: noSleep,
+  });
+  assert.equal(r.outcome, 'no-launcher');
+  assert.equal(r.reason, 'launcher-session-unverified');
+  assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'emitted');
 });
 
 test('respawnGate: total sessions may reach max_sessions but not exceed (off-by-one, Codex r3 🟡6)', () => {
