@@ -6,10 +6,10 @@ import { classifyPatch } from '../scripts/lib/state.mjs';
 
 function minimalValid() {
   return {
-    schema_version: '0.2.0', run_id: 'R', goal: 'g', status: 'running',
-    project: {}, routing: { protocol: 'deep-work' }, review: {}, autonomy: { tier: 'recommend', spawn_style: 'interactive' },
+    schema_version: '0.3.0', run_id: 'R', goal: 'g', status: 'running',
+    project: {}, routing: { protocol: 'deep-work' }, review: {}, autonomy: { tier: 'recommend', spawn_style: 'interactive', continuation_policy: 'rotate-per-unit' },
     budget: { unit: 'turns' }, comprehension: {}, circuit_breaker: {},
-    session_chain: { lease: { state: 'active', handoff_phase: 'idle' }, sessions: [] },
+    session_chain: { lease: { state: 'active', handoff_phase: 'idle', handoff_trigger: null }, consumed_milestones: [], sessions: [] },
     workstreams: [], active_workstreams: [], triage: {}, episodes: [], termination: {},
   };
 }

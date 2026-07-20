@@ -170,9 +170,10 @@ export function validate(loopJson, schema = loadSchema()) {
     const v = get(loopJson, path);
     if (v !== undefined && !allowed.includes(v)) errors.push(`invalid enum at ${path}: ${v}`);
   }
-  // schema_version 정확 일치
-  if (loopJson.schema_version !== undefined && loopJson.schema_version !== '0.2.0') {
-    errors.push(`schema_version must be 0.2.0, got ${loopJson.schema_version}`);
+  // schema_version 정확 일치 (0.2.0 레거시는 readHashVerifiedState가 in-memory 마이그레이션 — validate에 0.2.0이
+  // 도달하면 마이그레이션 누락 경로이므로 실패가 옳다)
+  if (loopJson.schema_version !== undefined && loopJson.schema_version !== '0.3.0') {
+    errors.push(`schema_version must be 0.3.0, got ${loopJson.schema_version}`);
   }
   // 배열 타입
   for (const arr of ['workstreams', 'episodes', 'active_workstreams', 'discovered_items']) {
@@ -199,6 +200,22 @@ export function validate(loopJson, schema = loadSchema()) {
     }
     if (runtime !== undefined && source !== 'skill-asserted') {
       errors.push('autonomy.session_runtime requires autonomy.runtime_source skill-asserted');
+    }
+    // v1.10: continuation_policy 교차 필드 — enum 멤버십은 위 enums 루프가 이미 검사(선행). 여기는 조합만.
+    if (autonomy.continuation_policy === 'compact-in-place' && autonomy.session_runtime === 'codex') {
+      errors.push('autonomy.continuation_policy compact-in-place requires session_runtime claude');
+    }
+    // v1.10 신규 필드 타입 — properties는 미소비이므로 커스텀 검증 (음성 테스트 필수)
+    const sc = loopJson.session_chain;
+    if (sc && typeof sc === 'object') {
+      const cm = sc.consumed_milestones;
+      if (cm !== undefined && (!Array.isArray(cm) || cm.some(x => typeof x !== 'string'))) {
+        errors.push('session_chain.consumed_milestones must be an array of strings');
+      }
+      const ht = sc.lease?.handoff_trigger;
+      if (ht !== undefined && ht !== null && typeof ht !== 'string') {
+        errors.push('session_chain.lease.handoff_trigger must be string or null');
+      }
     }
     validateRuntimeExecutableApproval(autonomy.runtime_executable_approval, autonomy, errors);
     validateLauncherExecutableApprovals(autonomy.launcher_executable_approvals, errors);

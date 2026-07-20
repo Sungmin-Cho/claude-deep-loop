@@ -43,10 +43,10 @@ function mk(root, runId, fence, n) {   // n distinct maker episodes (each a busi
 // 자기완결 minimal valid loop (cross-task import 없음)
 function minimalLoop(root, runId) {
   return {
-    schema_version: '0.2.0', run_id: runId, goal: 'g', status: 'running',
-    project: { root }, routing: { protocol: 'standalone' }, review: {}, autonomy: { tier: 'act-gated', spawn_style: 'interactive' },
+    schema_version: '0.3.0', run_id: runId, goal: 'g', status: 'running',
+    project: { root }, routing: { protocol: 'standalone' }, review: {}, autonomy: { tier: 'act-gated', spawn_style: 'interactive', continuation_policy: 'rotate-per-unit' },
     budget: { unit: 'turns', total: 100, spent: 0, tokens_total: 1000, tokens_spent: 0, soft_stop_ratio: 0.8, hard_stop_ratio: 1.0, max_wallclock_sec: 3600, enforcement: 'best-effort-interactive', on_unmeasurable_usage: 'fail-closed' },
-    comprehension: {}, circuit_breaker: {}, session_chain: { lease: { state: 'active', handoff_phase: 'idle' }, sessions: [] },
+    comprehension: {}, circuit_breaker: {}, session_chain: { lease: { state: 'active', handoff_phase: 'idle', handoff_trigger: null }, consumed_milestones: [], sessions: [] },
     workstreams: [], active_workstreams: [], triage: {}, episodes: [], termination: {},
   };
 }

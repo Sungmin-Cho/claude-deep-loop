@@ -19,16 +19,17 @@ const GEN = 1;
 
 function baseData(overrides = {}) {
   return {
-    schema_version: '0.2.0', run_id: OWNER, goal: 'g', status: 'running',
+    schema_version: '0.3.0', run_id: OWNER, goal: 'g', status: 'running',
     project: {}, routing: { protocol: 'deep-work' }, review: { points: ['design'] },
-    autonomy: { tier: 'recommend', spawn_style: 'interactive' },
+    autonomy: { tier: 'recommend', spawn_style: 'interactive', continuation_policy: 'rotate-per-unit' },
     budget: { unit: 'turns', spent: 0 },
     comprehension: {}, circuit_breaker: { tripped: false },
     session_chain: {
       lease: {
         owner_run_id: OWNER, generation: GEN, state: 'active', handoff_phase: 'idle',
-        handoff_idempotency_key: null, handoff_child_run_id: null, expires_at: null,
+        handoff_idempotency_key: null, handoff_child_run_id: null, handoff_trigger: null, expires_at: null,
       },
+      consumed_milestones: [],
       sessions: [{ run_id: OWNER, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: null }],
     },
     workstreams: [], active_workstreams: [],
@@ -207,7 +208,7 @@ test('RUN_PAUSED gate: respawn on paused run returns {ok:false}', () => {
   const { root, runId } = seed({
     status: 'paused',
     budget: { unit: 'turns', spent: 0, tokens_spent: 0, total: 100, hard_stop_ratio: 0.9, soft_stop_ratio: 0.8 },
-    autonomy: { tier: 'recommend', spawn_style: 'headless', auto_handoff: true, max_sessions: 10 },
+    autonomy: { tier: 'recommend', spawn_style: 'headless', auto_handoff: true, max_sessions: 10, continuation_policy: 'rotate-per-unit' },
     session_chain: {
       lease: {
         owner_run_id: OWNER, generation: GEN, state: 'releasing', handoff_phase: 'emitted',

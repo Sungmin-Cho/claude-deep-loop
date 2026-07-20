@@ -39,17 +39,18 @@ const desktopProbeVerified = (() => {
 
 function baseData(overrides = {}) {
   return {
-    schema_version: '0.2.0', run_id: OWNER, goal: 'g', status: 'running',
+    schema_version: '0.3.0', run_id: OWNER, goal: 'g', status: 'running',
     project: {}, routing: { protocol: 'deep-work' }, review: { points: ['design'] },
-    autonomy: { tier: 'recommend', spawn_style: 'visible' },
+    autonomy: { tier: 'recommend', spawn_style: 'visible', continuation_policy: 'rotate-per-unit' },
     budget: { unit: 'turns', spent: 0 },
     event_log_head: { seq: 0, checksum: 'GENESIS' },
     comprehension: {}, circuit_breaker: { tripped: false },
     session_chain: {
       lease: {
         owner_run_id: OWNER, generation: GEN, state: 'active', handoff_phase: 'idle',
-        handoff_idempotency_key: null, handoff_child_run_id: null, expires_at: null,
+        handoff_idempotency_key: null, handoff_child_run_id: null, handoff_trigger: null, expires_at: null,
       },
+      consumed_milestones: [],
       sessions: [{ run_id: OWNER, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: null }],
     },
     workstreams: [], active_workstreams: [],
@@ -87,7 +88,7 @@ function seedPausedReleasingDesktop() {
   const data = baseData({
     status: 'paused',
     pause_reason: 'desktop-launcher-unavailable',
-    autonomy: { tier: 'recommend', spawn_style: 'desktop' },
+    autonomy: { tier: 'recommend', spawn_style: 'desktop', continuation_policy: 'rotate-per-unit' },
     session_chain: {
       lease: {
         owner_run_id: OWNER, generation: GEN, state: 'releasing', handoff_phase: 'emitted',
@@ -405,7 +406,7 @@ function seedDesktopWith({ status = 'running', leaseState = 'active', handoffPha
   mkdirSync(runDir(root, runId), { recursive: true });
   const data = baseData({
     status,
-    autonomy: { tier: 'recommend', spawn_style: 'desktop' },
+    autonomy: { tier: 'recommend', spawn_style: 'desktop', continuation_policy: 'rotate-per-unit' },
     session_chain: {
       lease: {
         owner_run_id: OWNER, generation: GEN, state: leaseState, handoff_phase: handoffPhase,
