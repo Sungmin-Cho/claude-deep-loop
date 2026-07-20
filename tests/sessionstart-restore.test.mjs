@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import {
   mkdtempSync,
   readFileSync,
+  writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -13,7 +14,7 @@ import { newEpisode } from '../scripts/lib/episode.mjs';
 import { finishRun } from '../scripts/lib/finish.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { reserveHandoff } from '../scripts/lib/lease.mjs';
+import { advanceHandoffPhase, reserveHandoff } from '../scripts/lib/lease.mjs';
 import { pauseRun, readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import { runSessionStartRestore } from '../scripts/hooks-impl/sessionstart-restore.mjs';
 
@@ -41,6 +42,7 @@ const loopPathOf = (root, runId) => join(runDir(root, runId), 'loop.json');
 const hashPathOf = (root, runId) => join(runDir(root, runId), '.loop.hash');
 
 function assertAdvisory(context, runId, generation = 1) {
+  assert.ok(context.startsWith('deep-loop lease '), 'lease advisory must be placed first');
   assert.match(context, new RegExp(`owner=${runId} gen=${generation}`));
   assert.match(context, /mutation을 시도하지 말 것/);
 }
@@ -78,6 +80,14 @@ test('no run / terminal / paused → no injection', () => {
   assert.deepEqual(restore(stoppedRoot), { ok: true, branch: 'terminal-or-paused', additionalContext: null });
 });
 
+test('corrupt loop.json → unreadable with null context', () => {
+  const root = freshRoot();
+  const { runId } = initClaude(root);
+  writeFileSync(loopPathOf(root, runId), '{');
+
+  assert.deepEqual(restore(root), { ok: true, branch: 'unreadable', additionalContext: null });
+});
+
 test('bare reserved(active) → recovery capsule, not resume', () => {
   const root = freshRoot();
   const { runId } = initClaude(root);
@@ -104,6 +114,27 @@ test('emitted/releasing with child → rotation capsule with owner advisory', ()
   assert.equal(r.branch, 'rotation');
   assert.match(r.additionalContext, new RegExp(emitted.childRunId));
   assert.match(r.additionalContext, /새 세션/);
+  assertAdvisory(r.additionalContext, runId);
+});
+
+test('spawned/releasing with child → rotation capsule after emitted→spawned transition', () => {
+  const root = freshRoot();
+  const { runId } = initClaude(root);
+  const emitted = emitHandoff(root, runId, {
+    reason: 'milestone', trigger: 'milestone', headless: false,
+    expect: fence(runId), env: {}, now: NOW_MS + 1,
+  });
+  advanceHandoffPhase(root, runId, {
+    key: emitted.key,
+    toPhase: 'spawned',
+    expect: fence(runId),
+    now: NOW_MS + 2,
+  });
+
+  const r = restore(root);
+
+  assert.equal(r.branch, 'rotation');
+  assert.match(r.additionalContext, new RegExp(emitted.childRunId));
   assertAdvisory(r.additionalContext, runId);
 });
 
@@ -161,6 +192,22 @@ test('all checkpoints stale after state advances → degrade to status guidance'
   writeState(root, runId, data);
 
   const r = restore(root);
+
+  assert.equal(r.branch, 'no-checkpoint');
+  assert.match(r.additionalContext, /deep-loop-status/);
+  assertAdvisory(r.additionalContext, runId);
+});
+
+test('checkpoint parse failure after selection → no-checkpoint with advisory', () => {
+  const root = freshRoot();
+  const { runId } = initClaude(root);
+  const checkpoint = emitCompactCheckpoint(root, runId, { now: NOW_MS + 1 });
+
+  const r = runSessionStartRestore({}, {
+    root,
+    now: NOW_MS,
+    readCheckpoint: path => path === checkpoint.path ? '{' : readFileSync(path, 'utf8'),
+  });
 
   assert.equal(r.branch, 'no-checkpoint');
   assert.match(r.additionalContext, /deep-loop-status/);

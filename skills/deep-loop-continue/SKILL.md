@@ -51,7 +51,7 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" session-profile set --model "<sessio
 
 - **빈 값 금지**: `--model`/`--effort`는 관측된 것만 포함한다(`CLAUDE_EFFORT`가 비면 `--effort` 생략). 모델도 관측 못 하고 effort도 비면 이 단계 전체를 건너뛴다(state 그대로 진행 — 무해).
 - setter는 `intent:'lease'`라 handoff가 이미 emit되어 lease가 `releasing`이어도 통과한다. 값이 그대로면 no-op(이벤트 안 쌓임).
-- **in-flight handoff 조기 분기**: §0에서 읽은 `lease.handoff_phase`가 `emitted` 또는 `spawned`이면(reserved child 존재 — PreCompact 안전망이 이미 emit한 상태), §1.5/§2/§3의 business write는 releasing carve-out으로 fence되므로 **건너뛰고 곧장 §4c(respawn)로 이동**한다. (phase `emitted`이면 respawn이 위 refresh된 state로 launch를 빌드 → 자식이 최신값으로 뜬다. phase `spawned`이면 자식은 이미 떠 있고, 그 자식이 `/deep-loop-resume`에서 자기 값을 refresh해 다음 handoff에 반영한다.)
+- **in-flight handoff 조기 분기**: §0에서 읽은 `lease.handoff_phase`가 `reserved`이고 lease가 `active`이면 미완결 예약 잔재다. §4b의 일반 `handoff emit`을 그대로 실행하라 — 커널의 reserved-finalization이 영속된 `lease.handoff_trigger`로 예약을 완결하므로 다른 트리거로 호출해도 안전하다. 완결 후 §4c로 이동한다. `lease.handoff_phase`가 `emitted` 또는 `spawned`이면(reserved child 존재 — PreCompact 안전망이 이미 emit한 상태), §1.5/§2/§3의 business write는 releasing carve-out으로 fence되므로 **건너뛰고 곧장 §4c(respawn)로 이동**한다. (phase `emitted`이면 respawn이 위 refresh된 state로 launch를 빌드 → 자식이 최신값으로 뜬다. phase `spawned`이면 자식은 이미 떠 있고, 그 자식이 `/deep-loop-resume`에서 자기 값을 refresh해 다음 handoff에 반영한다.)
 
 ## 1. 게이트 검사 (항상 먼저)
 
@@ -181,9 +181,28 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" budget record --turns <n> --owner <o
 
 self-report는 best-effort 보정일 뿐이다 — 커널이 각 business mutation마다 최소 floor(1 turn)를 자동 계상하므로 미보고여도 예산·per_session_turn_cap이 mutation 수에 비례해 진행하고, `max_wallclock_sec`가 self-report 무관 hard bound다. 명시 `budget record`는 그 tick의 floor를 대체한다(max 규칙, 이중계상 없음).
 
+## 3.5. Post-compact comprehension check
+
+직전 `SessionStart(compact)` capsule을 받은 tick이면, capsule의 `run_id`/`generation`을 아래 lease 결과와 대조한다:
+
+```
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field session_chain.lease --project-root "<canonical_project_root>" --run-id <run_id>
+```
+
+capsule의 `episode`/`next_action`도 아래 current episode와 `next-action` 결과에 대조한다. 즉 스펙 §4.3의 `run_id`/`episode`/`next_action`/`generation` 4개 필드를 모두 확인한다:
+
+```
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field current_episode --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" next-action --json --project-root "<canonical_project_root>" --run-id <run_id>
+```
+
+불일치하면 capsule이 가리킨 checkpoint를 다시 읽고 위 read-only 대조를 재시도한다. **2회 연속 불일치면** 문맥 오염 가능성을 설명하고 사람에게 handoff를 제안한다. 자동 rotate는 금지하며 제안만 한다.
+
 ## 4. Decide (마일스톤 / Turn Cap)
 
-마일스톤(`milestone_predicate`) 통과 또는 `per_session_turn_cap` 도달 시 **visible respawn 결정 흐름**을 실행한다. 아니면 다음 episode 안내 후 종료.
+**마일스톤 판정:** §1의 `next-action` 응답에서 `gate.unconsumed_milestones`가 비어 있지 않을 때만 workstream-종결 rotation을 트리거한다. 이미 소비된 terminal 전이는 다시 rotation하지 않는다(once-only). 마일스톤 rotation의 emit에는 §4b의 일반 `handoff emit`이면 충분하다 — 소비는 커널이 최종 commit에서 in-lock 파생으로 자동 기록하며 명시 milestone 플래그는 없다.
+
+**Turn cap 판정:** `per_session_turn_cap`은 `autonomy.continuation_policy`에 따라 처리한다. **compact-in-place에서는 cap 도달만으로 rotate하지 않는다** — 실제 작업 action에 실린 `advice:'compact'`와 `advice_reason:'per_session_turn_cap'`을 표시하고, 사람에게 `/compact <focus>`를 권고한 뒤 정상 작업을 계속한다(`/compact` 자동 실행 금지). `rotate-per-unit`에서는 현행대로 `next-action`의 `{type:'handoff'}`를 따라 아래 visible respawn 결정 흐름을 실행한다. 어느 rotation 조건도 없으면 다음 episode를 안내하고 종료한다.
 
 ### 4a. 이미 emit된 핸드오프 확인 (PreCompact 안전망)
 
@@ -191,7 +210,7 @@ self-report는 best-effort 보정일 뿐이다 — 커널이 각 business mutati
 node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field session_chain.lease --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
-`lease.handoff_phase === 'emitted'`이면 reserved child가 이미 존재한다 — **re-emit 금지**, 4c로 바로 이동.
+`lease.handoff_phase`가 `emitted` 또는 `spawned`이면 reserved child가 이미 존재한다 — **re-emit 금지**, 4c로 바로 이동.
 
 ### 4a.5. Windows launcher 승인 preflight (handoff emit 전에, handoff_phase=idle인 경우만)
 

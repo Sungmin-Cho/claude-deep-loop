@@ -24,6 +24,7 @@ function currentRunId(root) {
 export function runSessionStartRestore(input = {}, {
   root = findRoot(process.cwd()),
   now,
+  readCheckpoint = readFileSync,
 } = {}) {
   void input;
   void now;
@@ -50,7 +51,7 @@ export function runSessionStartRestore(input = {}, {
       ok: true,
       branch: 'reserved-recovery',
       additionalContext: clamp(
-        `deep-loop: handoff 예약 잔재가 남아 있다(미완결 emission). /deep-loop-continue 실행 시 reserved-finalization이 완결하거나 /deep-loop-status 로 확인하라. ${advisory}`,
+        `${advisory} deep-loop: handoff 예약 잔재가 남아 있다(미완결 emission). /deep-loop-continue 실행 시 reserved-finalization이 완결하거나 /deep-loop-status 로 확인하라.`,
       ),
     };
   }
@@ -63,7 +64,7 @@ export function runSessionStartRestore(input = {}, {
       ok: true,
       branch: 'rotation',
       additionalContext: clamp(
-        `deep-loop: handoff가 emit되어 reserved child(${lease.handoff_child_run_id})가 있다. 이 세션이 아니라 **새 세션**에서 resume하라 — .deep-loop/runs/${runId}/handoffs/ 의 next-session 아티팩트와 launch-command 참조. ${advisory}`,
+        `${advisory} deep-loop: handoff가 emit되어 reserved child(${lease.handoff_child_run_id})가 있다. 이 세션이 아니라 **새 세션**에서 resume하라 — .deep-loop/runs/${runId}/handoffs/ 의 next-session 아티팩트와 launch-command 참조.`,
       ),
     };
   }
@@ -73,7 +74,7 @@ export function runSessionStartRestore(input = {}, {
       ok: true,
       branch: 'rotate-retry',
       additionalContext: clamp(
-        `deep-loop: compaction이 발생했으나 handoff 미-emit 상태다(PreCompact 실패 가능). 다음 /deep-loop-continue tick이 fenced handoff emission을 수행한다. ${advisory}`,
+        `${advisory} deep-loop: compaction이 발생했으나 handoff 미-emit 상태다(PreCompact 실패 가능). 다음 /deep-loop-continue tick이 fenced handoff emission을 수행한다.`,
       ),
     };
   }
@@ -88,12 +89,23 @@ export function runSessionStartRestore(input = {}, {
       ok: true,
       branch: 'no-checkpoint',
       additionalContext: clamp(
-        `deep-loop: 일치하는 compact checkpoint 없음 — /deep-loop-status 로 상태 확인. ${advisory}`,
+        `${advisory} deep-loop: 일치하는 compact checkpoint 없음 — /deep-loop-status 로 상태 확인.`,
       ),
     };
   }
 
-  const envelope = JSON.parse(readFileSync(checkpoint, 'utf8'));
+  let envelope;
+  try {
+    envelope = JSON.parse(readCheckpoint(checkpoint, 'utf8'));
+  } catch {
+    return {
+      ok: true,
+      branch: 'no-checkpoint',
+      additionalContext: clamp(
+        `${advisory} deep-loop: compact checkpoint를 읽을 수 없음 — /deep-loop-status 로 상태 확인.`,
+      ),
+    };
+  }
   const payload = envelope.payload || {};
   return {
     ok: true,

@@ -1174,3 +1174,22 @@ test('skills/ 전역: hill-climb 제안 명령에 candidate id 콜론-템플릿 
       `${f}: candidate id 콜론-템플릿("하네스 개선:) 잔존 — 고정 문구 /deep-loop "하네스 개선" 로 동기화되어야 함`);
   }
 });
+
+test('continue SKILL: compact-in-place does not rotate on cap alone (advice display only)', () => {
+  const md = readFileSync('skills/deep-loop-continue/SKILL.md', 'utf8');
+  assert.ok(md.includes('advice'), 'advice 필드 처리 지시 필요');
+  assert.ok(md.includes('compact-in-place'), '정책 분기 지시 필요');
+  assert.ok(/compact-in-place[^\n]*rotate하지 않는다|cap 도달만으로 rotate하지 않는다/.test(md));
+});
+test('continue SKILL: milestone rotation gated on unconsumed_milestones', () => {
+  const md = readFileSync('skills/deep-loop-continue/SKILL.md', 'utf8');
+  assert.ok(md.includes('unconsumed_milestones'));
+});
+test('continue SKILL: §0.5 covers reserved (finalization) in addition to emitted/spawned', () => {
+  const md = readFileSync('skills/deep-loop-continue/SKILL.md', 'utf8');
+  assert.ok(/reserved/.test(md.split('§0.5')[1]?.slice(0, 1200) ?? md));
+});
+test('continue SKILL: post-compact comprehension check present', () => {
+  const md = readFileSync('skills/deep-loop-continue/SKILL.md', 'utf8');
+  assert.ok(md.includes('comprehension') && md.includes('2회'));
+});

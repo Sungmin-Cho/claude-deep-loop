@@ -27,7 +27,7 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --project-root "<canonical
 node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field session_chain.lease --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
-`status`, `goal`, `protocol`, `created_at`을 출력한다.
+`status`, `goal`, `protocol`, `created_at`, 적용 중인 continuation policy(`autonomy.continuation_policy`), `session_spawn.reason`(visible continuation 비활성 사유)을 출력한다.
 `<owner_run_id>`는 `session_chain.lease.owner_run_id`, `<generation>`은 `session_chain.lease.generation`에서 얻는다. read-only 조회에는 fence가 없고, 사람 전용 mutation만 이 current fence와 불변 `<run_id>`를 함께 쓴다.
 
 ### 2. 예산 확인
