@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { readBoundedText } from '../lib/bounded-input.mjs';
 import { detectMain } from '../lib/detect-main.mjs';
 import { readState, findRoot } from '../lib/state.mjs';
+import { emitCompactCheckpoint } from '../lib/checkpoint.mjs';
 import { emitHandoff } from '../lib/handoff.mjs';
 import { rollbackHandoff } from '../lib/lease.mjs';
 import { respawnGate, resolveSpawnMode, rollbackAndPause } from '../lib/respawn.mjs';
@@ -49,6 +50,7 @@ export async function runPreCompactHandoff(input = {}, {
   rollbackFn = rollbackAndPause,
   cleanupFn = rollbackHandoff,
   emitFn = emitHandoff,
+  checkpointFn = emitCompactCheckpoint,
 } = {}) {
   const runId = currentRunId(root);
   if (!runId) return { ok: true, action: 'no-run' };
@@ -84,6 +86,20 @@ export async function runPreCompactHandoff(input = {}, {
   }
 
   const headless = resolveSpawnMode(loop, { headless: input.unattended === true, env }) === 'headless';
+  // v1.10 policy branch (spec §4.1): attended compact-in-place emits only an artifact checkpoint;
+  // headless invocations retain the handoff path. A reserved phase intentionally falls through so the
+  // durable reserved-finalization path in emitHandoff runs before any new policy action.
+  const policy = loop.autonomy?.continuation_policy;
+  const phase = lease.handoff_phase;
+  // Completed in-flight handoffs are harmless no-ops under every policy and must not re-evaluate gates.
+  if (phase === 'emitted' || phase === 'spawned') {
+    return { ok: true, action: 'handoff-in-flight' };
+  }
+  // acquireLease leaves the phase at acquired, so both idle and acquired are valid in-place checkpoint states.
+  if (policy === 'compact-in-place' && !headless && (phase === 'idle' || phase === 'acquired')) {
+    try { checkpointFn(root, runId, { now }); } catch { /* best-effort: compaction must never be blocked */ }
+    return { ok: true, action: 'checkpointed', headless };
+  }
   let em;
   try {
     em = emitFn(root, runId, { reason: 'pre-compact', trigger: 'pre-compact', headless, expect, env });

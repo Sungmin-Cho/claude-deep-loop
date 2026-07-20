@@ -205,20 +205,20 @@ export function validate(loopJson, schema = loadSchema()) {
     if (autonomy.continuation_policy === 'compact-in-place' && autonomy.session_runtime === 'codex') {
       errors.push('autonomy.continuation_policy compact-in-place requires session_runtime claude');
     }
-    // v1.10 신규 필드 타입 — properties는 미소비이므로 커스텀 검증 (음성 테스트 필수)
-    const sc = loopJson.session_chain;
-    if (sc && typeof sc === 'object') {
-      const cm = sc.consumed_milestones;
-      if (cm !== undefined && (!Array.isArray(cm) || cm.some(x => typeof x !== 'string'))) {
-        errors.push('session_chain.consumed_milestones must be an array of strings');
-      }
-      const ht = sc.lease?.handoff_trigger;
-      if (ht !== undefined && ht !== null && typeof ht !== 'string') {
-        errors.push('session_chain.lease.handoff_trigger must be string or null');
-      }
-    }
     validateRuntimeExecutableApproval(autonomy.runtime_executable_approval, autonomy, errors);
     validateLauncherExecutableApprovals(autonomy.launcher_executable_approvals, errors);
+  }
+  // v1.10 continuation state belongs to session_chain and must remain validated even when autonomy is absent.
+  const sc = loopJson.session_chain;
+  if (sc && typeof sc === 'object') {
+    const cm = sc.consumed_milestones;
+    if (cm !== undefined && (!Array.isArray(cm) || cm.some(x => typeof x !== 'string'))) {
+      errors.push('session_chain.consumed_milestones must be an array of strings');
+    }
+    const ht = sc.lease?.handoff_trigger;
+    if (ht !== undefined && ht !== null && typeof ht !== 'string') {
+      errors.push('session_chain.lease.handoff_trigger must be string or null');
+    }
   }
   // episode/workstream item status는 (skill ∪ kernel) 도메인 안에 있어야 함
   const epAllowed = [...(schema.episode_status?.skill || []), ...(schema.episode_status?.kernel || [])];

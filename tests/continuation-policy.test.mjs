@@ -121,6 +121,19 @@ test('schema: continuation state fields enforce their exact types', () => {
   assert.ok(validate(triggerNotString).errors.some(e => e.includes('handoff_trigger must be string or null')));
 });
 
+test('schema: continuation state fields remain validated when autonomy is absent', () => {
+  const loop = minimalValidLoop();
+  delete loop.autonomy;
+  loop.session_chain.consumed_milestones = 'bad';
+  loop.session_chain.lease.handoff_trigger = 7;
+
+  const result = validate(loop);
+
+  assert.ok(result.errors.some(error => error.includes('missing required field: autonomy')));
+  assert.ok(result.errors.some(error => error.includes('consumed_milestones must be an array of strings')));
+  assert.ok(result.errors.some(error => error.includes('handoff_trigger must be string or null')));
+});
+
 test('buildInitialLoop derives per-runtime continuation policy + predicate', () => {
   const cl = buildInitialLoop({ runtime: 'claude', runId: 'c', goal: 'g', recipe: {}, now: NOW, env: {}, platform: 'linux', run: noRun });
   assert.equal(cl.autonomy.continuation_policy, 'compact-in-place');
