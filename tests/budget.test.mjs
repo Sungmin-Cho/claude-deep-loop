@@ -1336,13 +1336,13 @@ test('#3(b): explicit budget record absorbs the tick floor (max-rule, no double 
   assert.doesNotThrow(() => reconcileBudget(root, runId));
 });
 
-// #3(c): the floor drives per_session_turn_cap (= handoff cadence = human checkpoints) proportionally to the
-// number of mutations — reaching the cap through floors alone routes nextAction to handoff.
-test('#3(c): per_session_turn_cap is reached through floors and routes to handoff', () => {
+// #3(c): the floor drives per_session_turn_cap proportionally to the number of mutations — reaching the cap
+// through floors alone routes unattended nextAction to handoff (attended compact-in-place receives advice).
+test('#3(c): per_session_turn_cap is reached through floors and routes unattended to handoff', () => {
   const { root, runId, fence } = floorRun();
   const d = readState(root, runId).data; d.budget.per_session_turn_cap = 2; writeState(root, runId, d);
   mk(root, runId, fence, 2);   // 2 floors → session.turns 2 == cap
-  const r = nextAction(readState(root, runId).data, { now: Date.parse('2026-06-24T00:00:01Z') });
+  const r = nextAction(readState(root, runId).data, { now: Date.parse('2026-06-24T00:00:01Z'), unattended: true });
   assert.equal(r.action.type, 'handoff');
   assert.equal(r.action.reason, 'per_session_turn_cap');
 });

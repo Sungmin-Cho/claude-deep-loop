@@ -19,8 +19,20 @@ function freshRoot() {
 function initClaude(root, extra = {}) {
   return initRun(root, { runtime: 'claude', goal: 'g', detected: {}, now: NOW, env: {}, platform: 'darwin', run: noRun, pid: 1, ...extra });
 }
-function runCli(args) {
-  return spawnSync('node', [CLI, ...args], { encoding: 'utf8' });
+function runCli(args, { env = {} } = {}) {
+  const childEnv = { ...process.env };
+  delete childEnv.DEEP_LOOP_UNATTENDED;
+  delete childEnv.DEEP_LOOP_HEADLESS;
+  delete childEnv.CLAUDE_CODE_ENTRYPOINT;
+  return spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8', env: { ...childEnv, ...env } });
+}
+function cappedClaude(root, { spawnStyle = 'visible' } = {}) {
+  const { runId } = initClaude(root);
+  const { data } = readState(root, runId);
+  data.autonomy.spawn_style = spawnStyle;
+  data.session_chain.sessions[0].turns = data.budget.per_session_turn_cap;
+  writeState(root, runId, data);
+  return runId;
 }
 
 test('schema: validate hard-pins 0.3.0 and requires continuation_policy', () => {
@@ -175,7 +187,51 @@ test('CLI init-run: value-less --continuation is usage exit 2', () => {
   const root = freshRoot();
   const result = runCli(['init-run', '--runtime', 'claude', '--goal', 'g', '--project-root', root, '--continuation']);
   assert.equal(result.status, 2, result.stderr);
-  assert.match(result.stderr, /usage: --continuation <compact-in-place\|rotate-per-unit>/);
+  assert.match(result.stderr, /USAGE: --continuation <compact-in-place\|rotate-per-unit>/);
+});
+
+test('CLI next-action: --unattended derives handoff at the cap', () => {
+  const root = freshRoot();
+  const runId = cappedClaude(root);
+  const result = runCli(['next-action', '--project-root', root, '--run-id', runId, '--now', NOW.toISOString(), '--unattended']);
+  assert.equal(result.status, 0, result.stderr);
+  const action = JSON.parse(result.stdout).action;
+  assert.equal(action.type, 'handoff');
+  assert.equal(action.reason, 'per_session_turn_cap');
+});
+
+test('CLI next-action: durable headless spawn style derives handoff without env markers', () => {
+  const root = freshRoot();
+  const runId = cappedClaude(root, { spawnStyle: 'headless' });
+  const result = runCli(['next-action', '--project-root', root, '--run-id', runId, '--now', NOW.toISOString()]);
+  assert.equal(result.status, 0, result.stderr);
+  const action = JSON.parse(result.stdout).action;
+  assert.equal(action.type, 'handoff');
+  assert.equal(action.reason, 'per_session_turn_cap');
+});
+
+test('CLI next-action: DEEP_LOOP_UNATTENDED env marker derives handoff', () => {
+  const root = freshRoot();
+  const runId = cappedClaude(root);
+  const result = runCli(
+    ['next-action', '--project-root', root, '--run-id', runId, '--now', NOW.toISOString()],
+    { env: { DEEP_LOOP_UNATTENDED: '1' } },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const action = JSON.parse(result.stdout).action;
+  assert.equal(action.type, 'handoff');
+  assert.equal(action.reason, 'per_session_turn_cap');
+});
+
+test('CLI next-action: attended compact-in-place returns real action with cap advice', () => {
+  const root = freshRoot();
+  const runId = cappedClaude(root);
+  const result = runCli(['next-action', '--project-root', root, '--run-id', runId, '--now', NOW.toISOString()]);
+  assert.equal(result.status, 0, result.stderr);
+  const action = JSON.parse(result.stdout).action;
+  assert.equal(action.type, 'discover');
+  assert.equal(action.advice, 'compact');
+  assert.equal(action.advice_reason, 'per_session_turn_cap');
 });
 
 function minimalValidLoop() {

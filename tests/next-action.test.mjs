@@ -17,6 +17,8 @@ function loop(over = {}) {
   return Object.assign(l, over);
 }
 
+const NOW = Date.parse('2026-06-24T00:00:00Z');
+
 test('fresh run with no episodes → discover', () => {
   const r = nextAction(loop(), { now: Date.parse('2026-06-24T00:00:00Z') });
   assert.equal(r.gate.allowed, true);
@@ -29,6 +31,68 @@ test('budget hard stop → gate blocked, handoff', () => {
   assert.equal(r.gate.allowed, false);
   assert.ok(r.gate.blocked_by.includes('budget'));
   assert.equal(r.action.type, 'handoff');
+});
+
+test('cap + compact-in-place attended → real action with advice fields (liveness)', () => {
+  const l = loop();
+  l.autonomy.continuation_policy = 'compact-in-place';
+  l.session_chain.sessions[0].turns = 40;
+  l.budget.per_session_turn_cap = 40;
+  const r = nextAction(l, { now: NOW });
+  assert.notEqual(r.action.type, 'handoff');
+  assert.equal(r.action.advice, 'compact');
+  assert.equal(r.action.advice_reason, 'per_session_turn_cap');
+  assert.ok(['discover', 'dispatch_maker', 'dispatch_checker', 'await_result', 'await_human', 'fix_episode', 'finish'].includes(r.action.type));
+});
+
+test('cap + compact-in-place unattended → handoff (unchanged)', () => {
+  const l = loop();
+  l.autonomy.continuation_policy = 'compact-in-place';
+  l.session_chain.sessions[0].turns = 40;
+  l.budget.per_session_turn_cap = 40;
+  const r = nextAction(l, { now: NOW, unattended: true });
+  assert.equal(r.action.type, 'handoff');
+  assert.equal(r.action.reason, 'per_session_turn_cap');
+});
+
+test('cap + rotate-per-unit (codex or migrated legacy) → handoff (regression)', () => {
+  const l = loop();
+  l.autonomy.continuation_policy = 'rotate-per-unit';
+  l.session_chain.sessions[0].turns = 40;
+  l.budget.per_session_turn_cap = 40;
+  const r = nextAction(l, { now: NOW });
+  assert.equal(r.action.type, 'handoff');
+});
+
+test('budget hard-stop still handoff for both policies', () => {
+  const l = loop();
+  l.autonomy.continuation_policy = 'compact-in-place';
+  l.budget.spent = l.budget.total;
+  const r = nextAction(l, { now: NOW });
+  assert.equal(r.action.type, 'handoff');
+  assert.equal(r.action.reason, 'budget');
+});
+
+test('cap advice covers discover and dispatch_maker routes', () => {
+  const discoverLoop = loop();
+  discoverLoop.autonomy.continuation_policy = 'compact-in-place';
+  discoverLoop.session_chain.sessions[0].turns = 40;
+  discoverLoop.budget.per_session_turn_cap = 40;
+  const discover = nextAction(discoverLoop, { now: NOW });
+  assert.equal(discover.action.type, 'discover');
+  assert.equal(discover.action.advice, 'compact');
+  assert.equal(discover.action.advice_reason, 'per_session_turn_cap');
+
+  const dispatchLoop = loop();
+  dispatchLoop.autonomy.continuation_policy = 'compact-in-place';
+  dispatchLoop.session_chain.sessions[0].turns = 40;
+  dispatchLoop.budget.per_session_turn_cap = 40;
+  dispatchLoop.episodes = [{ id: '001-deep-work', role: 'maker', status: 'pending', point: 'implementation', workstream_id: 'ws-01' }];
+  dispatchLoop.current_episode = '001-deep-work';
+  const dispatch = nextAction(dispatchLoop, { now: NOW });
+  assert.equal(dispatch.action.type, 'dispatch_maker');
+  assert.equal(dispatch.action.advice, 'compact');
+  assert.equal(dispatch.action.advice_reason, 'per_session_turn_cap');
 });
 
 test('breaker tripped → gate blocked, await_human', () => {
@@ -171,8 +235,9 @@ test('non-orphan in_progress maker (expected_artifacts:[x] / omitted) → still 
   assert.equal(nextAction(l2, { now: 0 }).action.type, 'await_result');
 });
 
-test('per_session_turn_cap reached → handoff', () => {
+test('per_session_turn_cap reached under rotate-per-unit → handoff', () => {
   const l = loop();
+  l.autonomy.continuation_policy = 'rotate-per-unit';
   l.budget.per_session_turn_cap = 5;
   l.session_chain.sessions = [{ run_id: 'R', started_at: l.created_at, ended_at: null, turns: 5, outcome: null, superseded_by: null }];
   l.episodes = [{ id: '001-deep-work', role: 'maker', status: 'pending', point: 'implementation' }];

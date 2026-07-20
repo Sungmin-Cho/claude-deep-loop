@@ -44,6 +44,7 @@ export function initRun(root, { runtime, goal, protocol, recipe, review, detecte
   validateSessionRuntime(runtime);
   if (model != null) validateModel(model);
   if (effort != null) validateEffort(effort);
+  // must match schemas/loop-run.schema.json enums['autonomy.continuation_policy']
   const VALID_POLICIES = ['compact-in-place', 'rotate-per-unit'];
   if (continuation != null && !VALID_POLICIES.includes(continuation)) {
     throw new Error(`UNSUPPORTED_RUNTIME_POLICY: unknown continuation policy ${continuation}`);

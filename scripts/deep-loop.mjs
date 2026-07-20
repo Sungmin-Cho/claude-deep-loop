@@ -343,7 +343,7 @@ const handlers = {
     const runtime = reqStr(f, 'runtime');
     if (!runtime) { error('USAGE: --runtime <claude|codex> is required'); return 2; }
     if (f.model === true || f.effort === true) { error('USAGE: --model/--effort require a value'); return 2; }
-    if (f.continuation === true) { error('usage: --continuation <compact-in-place|rotate-per-unit>'); return 2; }
+    if (f.continuation === true) { error('USAGE: --continuation <compact-in-place|rotate-per-unit>'); return 2; }
     const model = f.model !== undefined ? String(f.model) : null;
     const effort = f.effort !== undefined ? String(f.effort) : null;
     try {
@@ -353,8 +353,18 @@ const handlers = {
       error(String(e?.message || e)); return 1;   // INVALID_RUNTIME / INVALID_MODEL / INVALID_EFFORT → exit 1 (fail-closed)
     }
   },
-  'next-action': async (a) => { const f = parseFlags(a); const root = rootOf(f); const { data } = readState(root, runIdOf(root, f)); json(nextAction(data, { now: parseNow(f) })); return 0; },
-  tick: async (a) => { const f = parseFlags(a); const root = rootOf(f); const { data } = readState(root, runIdOf(root, f)); json({ mode: f.mode || 'advance', ...nextAction(data, { now: parseNow(f) }) }); return 0; },
+  'next-action': async (a) => {
+    const f = parseFlags(a); const root = rootOf(f);
+    const { data } = readState(root, runIdOf(root, f));
+    const unattended = !!f.unattended || resolveSpawnMode(data, { env: process.env }) === 'headless';
+    json(nextAction(data, { now: parseNow(f), unattended })); return 0;
+  },
+  tick: async (a) => {
+    const f = parseFlags(a); const root = rootOf(f);
+    const { data } = readState(root, runIdOf(root, f));
+    const unattended = !!f.unattended || resolveSpawnMode(data, { env: process.env }) === 'headless';
+    json({ mode: f.mode || 'advance', ...nextAction(data, { now: parseNow(f), unattended }) }); return 0;
+  },
   lease: async (a) => {
     const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
     if (verb === 'check') { const { data } = readState(root, runId); json(leaseCheck(data, { owner: strArg(f, 'owner'), generation: intArg(f, 'generation') })); return 0; }

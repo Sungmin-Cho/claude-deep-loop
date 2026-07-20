@@ -75,7 +75,7 @@ function finishOrAdvance(loop, gate, fanoutBlocked) {
   return A(gate, { type: 'await_human', reason: 'active-work-remains' }, '/deep-loop-status');
 }
 
-export function nextAction(loop, { now = Date.now() } = {}) {
+export function nextAction(loop, { now = Date.now(), unattended = false } = {}) {
   const b = checkBudget(loop, { now });
   const br = checkBreaker(loop);
   const debt = computeDebt(loop);
@@ -87,54 +87,63 @@ export function nextAction(loop, { now = Date.now() } = {}) {
   // comprehension-debt 는 **새 fan-out(discover)만** 막는다 — 현재 episode 진행/fix/리뷰/handoff/finish 는 허용 (spec §15, Codex r2 🔴4).
   const gate = { allowed: true, blocked_by: debt.blocked ? ['comprehension-debt'] : [], reason: b.reason, tier_after: b.tier_after };
 
-  // 마일스톤: per_session_turn_cap 도달 → 선제 handoff
+  // 마일스톤: per_session_turn_cap 도달. compact-in-place attended는 액션을 대체하지 않고 advice만 부가한다
+  // (대체형 advisory는 rotate 없이는 카운터가 리셋되지 않아 매 tick advisory만 반환하는 liveness 결함 — 스펙 §4.4).
   const cap = loop.budget?.per_session_turn_cap;
-  if (cap && currentSessionTurns(loop) >= cap) return A(gate, { type: 'handoff', reason: 'per_session_turn_cap' }, '/deep-loop-handoff');
+  const capReached = cap && currentSessionTurns(loop) >= cap;
+  const inPlace = loop.autonomy?.continuation_policy === 'compact-in-place' && !unattended;
+  if (capReached && !inPlace) return A(gate, { type: 'handoff', reason: 'per_session_turn_cap' }, '/deep-loop-handoff');
+  const withAdvice = (r) => (capReached && inPlace)
+    ? { ...r, action: { ...r.action, advice: 'compact', advice_reason: 'per_session_turn_cap' } }
+    : r;
 
-  const ep = (loop.episodes || []).find(e => e.id === loop.current_episode);
-  if (!ep) {
-    if (!loop.episodes || loop.episodes.length === 0) {
-      if (debt.blocked) return A(gate, { type: 'await_human', reason: 'comprehension-debt' }, '/deep-loop-status');  // discover=fan-out → debt 면 사람 검토 먼저
-      return A(gate, { type: 'discover' }, '/deep-loop-discover');
+  const route = () => {
+    const ep = (loop.episodes || []).find(e => e.id === loop.current_episode);
+    if (!ep) {
+      if (!loop.episodes || loop.episodes.length === 0) {
+        if (debt.blocked) return A(gate, { type: 'await_human', reason: 'comprehension-debt' }, '/deep-loop-status');  // discover=fan-out → debt 면 사람 검토 먼저
+        return A(gate, { type: 'discover' }, '/deep-loop-discover');
+      }
+      return finishOrAdvance(loop, gate, debt.blocked);
+    }
+    if (ep.role === 'maker') {
+      if (ep.status === 'pending') {
+        // Proof-impossible orphan (expected_artifacts === []) can NEVER reach `done` → human-gated abandon recovery.
+        // BEFORE the debt check (an orphan can never complete regardless of debt). See finishOrAdvance for rationale.
+        if (isOrphanMaker(ep)) return A(gate, { type: 'await_human', episode_id: ep.id, reason: 'orphan-maker-no-artifacts' }, '/deep-loop-status');
+        // Codex r3 🔴3: debt 면 새 fan-out maker(kind≠fix) 차단. fix maker 는 현재 진행이라 허용.
+        if (debt.blocked && ep.kind !== 'fix') return A(gate, { type: 'await_human', episode_id: ep.id, reason: 'comprehension-debt' }, '/deep-loop-status');
+        return A(gate, { type: 'dispatch_maker', episode_id: ep.id, point: ep.point, workstream_id: ep.workstream_id }, '/deep-loop-continue');
+      }
+      if (ep.status === 'in_progress') {
+        // P2-b: same orphan routing as finishOrAdvance — an in_progress orphan maker can never reach `done`, so surface
+        // the human-gated abandon recovery instead of awaiting a result that can never validate.
+        if (isOrphanMaker(ep)) return A(gate, { type: 'await_human', episode_id: ep.id, reason: 'orphan-maker-no-artifacts' }, '/deep-loop-status');
+        // native-worktree: carry workstream_id so the driver can enter the episode's worktree for await_result.
+        return A(gate, { type: 'await_result', episode_id: ep.id, workstream_id: ep.workstream_id }, '/deep-loop-continue');
+      }
+      if (ep.status === 'blocked') return A(gate, { type: 'await_human', episode_id: ep.id, reason: 'episode-blocked' }, '/deep-loop-status');
+      if (ep.status === 'done') {
+        // dispatch_checker 는 workstream 이 있어야 가능 (review dispatch → WORKSTREAM_NOT_FOUND 방지). 없으면 사람에게 surface.
+        if (!(loop.workstreams || []).some(w => w.id === ep.workstream_id)) return A(gate, { type: 'await_human', episode_id: ep.id, reason: 'unbound-proof-episode' }, '/deep-loop-status');
+        return A(gate, { type: 'dispatch_checker', episode_id: ep.id, point: ep.point, workstream_id: ep.workstream_id }, '/deep-loop-continue');
+      }
+    }
+    if (ep.role === 'checker') {
+      // pending checker auto-dispatch 는 중복 checker 를 만든다 (dispatch_checker = review dispatch). 사람에게 surface.
+      if (ep.status === 'pending') return A(gate, { type: 'await_human', episode_id: ep.id, reason: 'pending-checker-unresolved' }, '/deep-loop-status');
+      // native-worktree: carry workstream_id for worktree entry on await_result.
+      if (ep.status === 'in_progress') return A(gate, { type: 'await_result', episode_id: ep.id, workstream_id: ep.workstream_id }, '/deep-loop-continue');   // 재dispatch 금지 (Codex r2 🔴7)
+      if (ep.status === 'blocked') return A(gate, { type: 'await_human', episode_id: ep.id, reason: 'episode-blocked' }, '/deep-loop-status');
+      // Same unified predicate as the finishOrAdvance scan (recommend ≡ enforce). An UNRESOLVED rejected checker is
+      // ALWAYS bound (unbound rejected are rejectionResolved=true → neutral) → fix_episode (re-make THIS maker). A
+      // RESOLVED rejected checker (re-approved newer / later done maker / neutral unbound) falls through to the finish
+      // gate — current_episode points at the last-created episode, so a redundant re-review on an already-approved point
+      // can leave a (resolved) rejected checker as current_episode; this path must not diverge from finishProofState.
+      if (ep.status === 'rejected' && !rejectionResolved(loop, ep)) return A(gate, { type: 'fix_episode', episode_id: ep.id, point: ep.point, workstream_id: ep.workstream_id }, '/deep-loop-continue');
+      if (ep.status === 'approved') return finishOrAdvance(loop, gate, debt.blocked);
     }
     return finishOrAdvance(loop, gate, debt.blocked);
-  }
-  if (ep.role === 'maker') {
-    if (ep.status === 'pending') {
-      // Proof-impossible orphan (expected_artifacts === []) can NEVER reach `done` → human-gated abandon recovery.
-      // BEFORE the debt check (an orphan can never complete regardless of debt). See finishOrAdvance for rationale.
-      if (isOrphanMaker(ep)) return A(gate, { type: 'await_human', episode_id: ep.id, reason: 'orphan-maker-no-artifacts' }, '/deep-loop-status');
-      // Codex r3 🔴3: debt 면 새 fan-out maker(kind≠fix) 차단. fix maker 는 현재 진행이라 허용.
-      if (debt.blocked && ep.kind !== 'fix') return A(gate, { type: 'await_human', episode_id: ep.id, reason: 'comprehension-debt' }, '/deep-loop-status');
-      return A(gate, { type: 'dispatch_maker', episode_id: ep.id, point: ep.point, workstream_id: ep.workstream_id }, '/deep-loop-continue');
-    }
-    if (ep.status === 'in_progress') {
-      // P2-b: same orphan routing as finishOrAdvance — an in_progress orphan maker can never reach `done`, so surface
-      // the human-gated abandon recovery instead of awaiting a result that can never validate.
-      if (isOrphanMaker(ep)) return A(gate, { type: 'await_human', episode_id: ep.id, reason: 'orphan-maker-no-artifacts' }, '/deep-loop-status');
-      // native-worktree: carry workstream_id so the driver can enter the episode's worktree for await_result.
-      return A(gate, { type: 'await_result', episode_id: ep.id, workstream_id: ep.workstream_id }, '/deep-loop-continue');
-    }
-    if (ep.status === 'blocked') return A(gate, { type: 'await_human', episode_id: ep.id, reason: 'episode-blocked' }, '/deep-loop-status');
-    if (ep.status === 'done') {
-      // dispatch_checker 는 workstream 이 있어야 가능 (review dispatch → WORKSTREAM_NOT_FOUND 방지). 없으면 사람에게 surface.
-      if (!(loop.workstreams || []).some(w => w.id === ep.workstream_id)) return A(gate, { type: 'await_human', episode_id: ep.id, reason: 'unbound-proof-episode' }, '/deep-loop-status');
-      return A(gate, { type: 'dispatch_checker', episode_id: ep.id, point: ep.point, workstream_id: ep.workstream_id }, '/deep-loop-continue');
-    }
-  }
-  if (ep.role === 'checker') {
-    // pending checker auto-dispatch 는 중복 checker 를 만든다 (dispatch_checker = review dispatch). 사람에게 surface.
-    if (ep.status === 'pending') return A(gate, { type: 'await_human', episode_id: ep.id, reason: 'pending-checker-unresolved' }, '/deep-loop-status');
-    // native-worktree: carry workstream_id for worktree entry on await_result.
-    if (ep.status === 'in_progress') return A(gate, { type: 'await_result', episode_id: ep.id, workstream_id: ep.workstream_id }, '/deep-loop-continue');   // 재dispatch 금지 (Codex r2 🔴7)
-    if (ep.status === 'blocked') return A(gate, { type: 'await_human', episode_id: ep.id, reason: 'episode-blocked' }, '/deep-loop-status');
-    // Same unified predicate as the finishOrAdvance scan (recommend ≡ enforce). An UNRESOLVED rejected checker is
-    // ALWAYS bound (unbound rejected are rejectionResolved=true → neutral) → fix_episode (re-make THIS maker). A
-    // RESOLVED rejected checker (re-approved newer / later done maker / neutral unbound) falls through to the finish
-    // gate — current_episode points at the last-created episode, so a redundant re-review on an already-approved point
-    // can leave a (resolved) rejected checker as current_episode; this path must not diverge from finishProofState.
-    if (ep.status === 'rejected' && !rejectionResolved(loop, ep)) return A(gate, { type: 'fix_episode', episode_id: ep.id, point: ep.point, workstream_id: ep.workstream_id }, '/deep-loop-continue');
-    if (ep.status === 'approved') return finishOrAdvance(loop, gate, debt.blocked);
-  }
-  return finishOrAdvance(loop, gate, debt.blocked);
+  };
+  return withAdvice(route());
 }
