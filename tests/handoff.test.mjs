@@ -173,12 +173,78 @@ function executableIdentity(runtime, canonicalPath, overrides = {}) {
   };
 }
 
-function launcherIdentity(kind, canonicalPath) {
+function launcherIdentity(kind, canonicalPath, overrides = {}) {
   return {
     kind, canonical_path: canonicalPath, sha256: 'b'.repeat(64), version: '1.0.0',
     platform: 'win32', arch: 'x64', source: 'verified-native', authenticode: null,
+    ...overrides,
   };
 }
+
+test('Claude tmux descriptor uses approved bin, exact target/cwd argv, and one safely quoted shell command', () => {
+  const root = "/repo space/$(touch nope);O'Brien";
+  const tmux = launcherIdentity('tmux', '/opt/tmux tools/tmux', {
+    platform: 'linux', source: 'human-explicit', approved_by: 'human',
+    approved_at: '2026-07-20T00:00:00.000Z', version: 'tmux 3.4',
+  });
+  const c = buildPosixLaunchCommand({
+    runtime: 'claude', root, parentRunId: 'PARENT', childRunId: 'CHILD',
+    handoffRel: 'handoffs/x.md', launcher: 'tmux', launcherBin: tmux.canonical_path,
+    launcherSocket: '/tmp/tmux socket/default', launcherSession: '7', launcherIdentity: tmux,
+    model: 'claude-opus-4-8[1m]', effort: 'xhigh',
+  });
+  const resumeShellCommand = "claude -n 'deep-loop-CHILD' 'Read .deep-loop/runs/PARENT/handoffs/x.md first; then run /deep-loop-resume' --model 'claude-opus-4-8[1m]' --effort 'xhigh'";
+
+  assert.deepEqual(c.tmux, {
+    bin: tmux.canonical_path,
+    argv: ['-S', '/tmp/tmux socket/default', 'new-window', '-t', '7', '-c', root, resumeShellCommand],
+    shell: false,
+    display: c.tmux.display,
+  });
+  assert.equal(c.tmux.argv.at(-1), resumeShellCommand, 'tmux shell_command must be one argv element');
+  assert.ok(!c.tmux.display.includes(root), 'hostile root must not appear unquoted in display');
+  assert.ok(c.tmux.display.includes("'\\''"), 'display must POSIX-escape the apostrophe in root');
+});
+
+test('Codex tmux descriptor reuses the runtime display command with dynamic-only POSIX quoting', () => {
+  const root = "/repo space/$(touch nope);O'Brien";
+  const tmux = launcherIdentity('tmux', '/opt/tmux tools/tmux', {
+    platform: 'linux', source: 'human-explicit', approved_by: 'human',
+    approved_at: '2026-07-20T00:00:00.000Z', version: 'tmux 3.4',
+  });
+  const codex = executableIdentity('codex', '/opt/Codex Tools/codex', { platform: 'linux' });
+  const c = buildPosixLaunchCommand({
+    runtime: 'codex', root, parentRunId: 'PARENT', childRunId: 'CHILD',
+    handoffRel: 'handoffs/x.md', launcher: 'tmux', launcherBin: tmux.canonical_path,
+    launcherSocket: '/tmp/tmux socket/default', launcherSession: '7', launcherIdentity: tmux,
+    runtimeExecutableIdentity: codex, deepLoopRoot: '/opt/deep-loop',
+    model: 'gpt-5.4', effort: 'xhigh',
+  });
+  const quote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
+  const handoffPath = `${root}/.deep-loop/runs/PARENT/handoffs/x.md`;
+  const invocation = `$deep-loop:deep-loop-resume --project-root ${JSON.stringify(root)} --run-id ${JSON.stringify('PARENT')}`;
+  const prompt = `Read ${JSON.stringify(handoffPath)} first; then run ${invocation}`;
+  const resumeShellCommand = `${quote(codex.canonical_path)} -C ${quote(root)} --model ${quote('gpt-5.4')} -c ${quote('model_reasoning_effort="xhigh"')} ${quote(prompt)}`;
+
+  assert.equal(c.tmux.bin, tmux.canonical_path);
+  assert.deepEqual(c.tmux.argv, [
+    '-S', '/tmp/tmux socket/default', 'new-window', '-t', '7', '-c', root, resumeShellCommand,
+  ]);
+  assert.equal(c.tmux.shell, false);
+  assert.equal(c.tmux.argv.at(-1), resumeShellCommand, 'tmux shell_command must be one argv element');
+  assert.ok(!resumeShellCommand.includes("'-C'"), 'static flags must not be redundantly shell-quoted');
+});
+
+test('tmux descriptor stays unavailable without the selected approved launcher identity and session', () => {
+  const base = {
+    runtime: 'claude', root: '/repo', parentRunId: 'P', childRunId: 'C',
+    handoffRel: 'handoffs/x.md', launcher: 'tmux', launcherBin: '/opt/bin/tmux',
+    launcherSocket: '/tmp/tmux/default', launcherSession: '0',
+  };
+  assert.equal(buildPosixLaunchCommand(base).tmux.unavailable, true);
+  const tmux = launcherIdentity('tmux', '/opt/bin/tmux', { platform: 'linux', source: 'human-explicit' });
+  assert.equal(buildPosixLaunchCommand({ ...base, launcherIdentity: tmux, launcherSession: null }).tmux.unavailable, true);
+});
 
 test('Windows Claude descriptors without trusted runtime and launcher identities stay manual/unavailable', () => {
   const c = buildLaunchCommand({
@@ -655,6 +721,50 @@ test('handoff descriptor records canonical project root and explicit logical run
   const launch = readFileSync(join(runDir(storedRoot, runId), 'terminal', 'launch-command.txt'), 'utf8');
   assert.ok(launch.includes(storedRoot), 'launch descriptor must use the canonical root');
   assert.ok(!launch.includes(aliasRoot), 'launch descriptor must not preserve the symlink alias');
+});
+
+test('tmux handoff threads its verified session and canonical spaced root from an unrelated cwd', () => {
+  const parent = mkdtempSync(join(tmpdir(), 'dl tmux handoff '));
+  const canonicalRoot = join(parent, 'canonical project');
+  const aliasRoot = join(parent, 'nested-worktree-alias');
+  mkdirSync(canonicalRoot);
+  createDirectoryJunction(canonicalRoot, aliasRoot);
+  const { runId } = initRun(aliasRoot, {
+    runtime: 'claude', goal: 'g', now: new Date('2026-07-20T00:00:00Z'),
+    env: {}, platform: 'linux', run: () => ({ code: 1 }),
+  });
+  const storedRoot = readState(aliasRoot, runId).data.project.root;
+  const tmux = launcherIdentity('tmux', '/opt/bin/tmux', {
+    platform: 'linux', source: 'human-explicit', approved_by: 'human',
+    approved_at: '2026-07-20T00:00:00.000Z', version: 'tmux 3.4',
+  });
+  writeStateWith(aliasRoot, runId, (data) => {
+    data.autonomy.launcher_executable_approvals.tmux = tmux;
+    data.session_spawn = {
+      platform: 'linux', launcher: 'tmux', launcher_bin: tmux.canonical_path,
+      launcher_identity: tmux, launcher_socket: '/tmp/tmux-501/default',
+      launcher_pid: '12345', launcher_session: '7', surface: 'window',
+      reachable: true, visible: true, signals: { tmux: true },
+      probe: { cmd: [tmux.canonical_path, '-S', '/tmp/tmux-501/default', 'display-message', '-p', '#{pid}'], code: 0 },
+      reason: null, fallback: 'launch-command-file', detected_at: '2026-07-20T00:00:00.000Z',
+    };
+  });
+  let seen;
+  const result = emitHandoff(aliasRoot, runId, {
+    now: Date.parse('2026-07-20T01:00:00Z'), expect: expect_(runId), platform: 'linux',
+    descriptorBuilder: (options) => {
+      seen = options;
+      return buildRuntimeResumeDescriptor(options);
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.notEqual(process.cwd(), storedRoot, 'test call site must not rely on the project cwd');
+  assert.equal(seen.root, storedRoot);
+  assert.equal(seen.launcherSession, '7');
+  const tmuxEntry = buildRuntimeResumeDescriptor(seen).entries.tmux;
+  assert.equal(tmuxEntry.argv[tmuxEntry.argv.indexOf('-c') + 1], storedRoot);
+  assert.ok(!tmuxEntry.argv.includes(aliasRoot));
 });
 
 test('copied-root handoff is fenced before any descriptor file is written', () => {

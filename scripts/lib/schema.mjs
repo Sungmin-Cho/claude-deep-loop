@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { basename, dirname, isAbsolute, join, win32 } from 'node:path';
+import { dirname, isAbsolute, join, posix, win32 } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
 export function loadSchema() {
@@ -113,7 +113,7 @@ function validateLauncherExecutableApprovals(approvals, errors) {
       || /\.(?:cmd|bat|ps1|js|mjs|cjs)$/i.test(path || '')) {
       slotFail('canonical_path must be a safe absolute native path');
     } else {
-      const name = windowsLauncher ? win32.basename(path).toLowerCase() : basename(path);
+      const name = windowsLauncher ? win32.basename(path).toLowerCase() : posix.basename(path);
       if ((kind === 'wt' && name !== 'wt.exe')
         || (kind === 'powershell' && name !== 'pwsh.exe' && name !== 'powershell.exe')
         || (kind === 'tmux' && name !== 'tmux')) {

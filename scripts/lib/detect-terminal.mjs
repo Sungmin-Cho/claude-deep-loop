@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { isAbsolute } from 'node:path';
+import { isAbsolute, posix } from 'node:path';
 import { existsSync } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import { appendAnchored } from './integrity.mjs';
@@ -65,6 +65,18 @@ function launcherAuthority(loop, kind) {
   return approvals[kind];
 }
 
+function parseTmuxSignal(value) {
+  if (typeof value !== 'string' || value.length === 0 || /[\0\r\n]/.test(value)) return null;
+  const firstComma = value.indexOf(',');
+  const secondComma = firstComma < 0 ? -1 : value.indexOf(',', firstComma + 1);
+  if (firstComma <= 0 || secondComma <= firstComma + 1 || value.indexOf(',', secondComma + 1) !== -1) return null;
+  const socketPath = value.slice(0, firstComma);
+  const serverPid = value.slice(firstComma + 1, secondComma);
+  const sessionId = value.slice(secondComma + 1);
+  if (!posix.isAbsolute(socketPath) || !/^[1-9][0-9]*$/.test(serverPid) || !/^[0-9]+$/.test(sessionId)) return null;
+  return { socketPath, serverPid, sessionId };
+}
+
 // Bounded parent-process ancestry walk. The PS one-liner outputs 3-valued PS/NO/UNKNOWN
 // (only a true top-reach is authoritative NO; CIM failure/exhaustion → UNKNOWN). MEASURED-PS-ONLY:
 // only a measured 'PS' ancestor returns host:true. NO/UNKNOWN/all-probes-failed → host:false.
@@ -85,10 +97,10 @@ function detectPsHost({ run, pid, candidates }) {
  * Fail-closed, positive-host-signal terminal/launcher detection.
  *
  * Returns a descriptor matching the session_spawn shape persisted by initrun:
- *   { platform, launcher, launcher_bin, launcher_socket, surface,
- *     reachable, visible, signals, probe, reason, fallback, detected_at }
+ *   { platform, launcher, launcher_bin, launcher_socket, launcher_session,
+ *     surface, reachable, visible, signals, probe, reason, fallback, detected_at }
  *
- * launcher ∈ { cmux, iterm2, terminal-app, wt, powershell, none }
+ * launcher ∈ { cmux, iterm2, terminal-app, wt, powershell, tmux, none }
  * fallback is always 'launch-command-file' (v1 constant).
  */
 export function detectTerminal({
@@ -100,6 +112,7 @@ export function detectTerminal({
   exists = (p) => { try { return existsSync(p); } catch { return false; } },
   arch = process.arch,
   windowsLauncherIdentities = {},
+  launcherIdentities = windowsLauncherIdentities,
   revalidateLauncher = revalidateTrustedLauncherExecutable,
   launcherRevalidationOptions = {},
 } = {}) {
@@ -177,10 +190,44 @@ export function detectTerminal({
     };
   }
 
-  // ── 1.5. Multiplexer v1 unsupported ─────────────────────────────────────────
+  // ── 1.5. tmux approval + socket ownership; screen remains unsupported ──
   // Must come BEFORE the darwin TERM_PROGRAM check because TERM_PROGRAM is
   // stale/incorrect inside a tmux/screen session.
-  if (env.TMUX || env.STY) {
+  if (env.TMUX) {
+    const parsed = parseTmuxSignal(env.TMUX);
+    if (parsed == null) return noneDescriptor('tmux-env-invalid');
+
+    let identity;
+    try {
+      const stored = launcherIdentities?.tmux;
+      if (stored == null) throw new Error('missing');
+      identity = revalidateLauncher(stored, { ...launcherRevalidationOptions, platform, arch });
+      if (!sameLauncherSecurityIdentity(identity, stored) || identity.kind !== 'tmux') throw new Error('mismatch');
+    } catch {
+      return noneDescriptor('tmux-unapproved');
+    }
+
+    const probeArgv = ['-S', parsed.socketPath, 'display-message', '-p', '#{pid}'];
+    let probeResult;
+    try {
+      probeResult = run(identity.canonical_path, probeArgv, { timeoutMs: 5000, capture: true });
+    } catch {
+      probeResult = { code: 1, stdout: '' };
+    }
+    const probe = { cmd: [identity.canonical_path, ...probeArgv], code: probeResult?.code ?? 1 };
+    if (probe.code !== 0 || String(probeResult?.stdout ?? '').trim() !== parsed.serverPid) {
+      return noneDescriptor('tmux-socket-unverified', probe);
+    }
+
+    return {
+      platform, launcher: 'tmux', launcher_bin: identity.canonical_path,
+      launcher_identity: identity, launcher_socket: parsed.socketPath,
+      launcher_pid: parsed.serverPid, launcher_session: parsed.sessionId,
+      surface: 'window', reachable: true, visible: true,
+      signals, probe, reason: null, fallback: 'launch-command-file', detected_at,
+    };
+  }
+  if (env.STY) {
     return noneDescriptor('multiplexer-v1-unsupported');
   }
 
@@ -225,7 +272,7 @@ export function detectTerminal({
     if (env.WT_SESSION) {
       let identity;
       try {
-        const stored = windowsLauncherIdentities?.wt;
+        const stored = launcherIdentities?.wt;
         if (stored == null) throw new Error('missing');
         identity = revalidateLauncher(stored, { ...launcherRevalidationOptions, platform, arch });
         if (!sameLauncherSecurityIdentity(identity, stored) || identity.kind !== 'wt') {
@@ -246,7 +293,7 @@ export function detectTerminal({
     // verified and revalidated native identity; otherwise preserve a manual fallback.
     let identity;
     try {
-      const stored = windowsLauncherIdentities?.powershell;
+      const stored = launcherIdentities?.powershell;
       if (stored == null) throw new Error('missing');
       identity = revalidateLauncher(stored, { ...launcherRevalidationOptions, platform, arch });
       if (!sameLauncherSecurityIdentity(identity, stored) || identity.kind !== 'powershell') {
@@ -277,7 +324,7 @@ export function detectTerminal({
  * Releasing-safe (R11-HH): the lease portion of preCheck compares owner/generation
  * without applying the leaseCheck releasing carve-out, so detect-terminal succeeds
  * while the parent is `releasing`. A separate in-lock guard binds any runnable
- * Windows launcher descriptor to the current durable/legacy authority.
+ * launcher descriptor to the current durable/legacy authority.
  *
  * Returns the descriptor so the CLI can print it.
  */
@@ -290,6 +337,7 @@ export function detectAndPersist(root, runId, {
   pid = (typeof process !== 'undefined' ? process.pid : 0),
   arch = process.arch,
   windowsLauncherIdentities = {},
+  launcherIdentities = windowsLauncherIdentities,
   revalidateLauncher = revalidateTrustedLauncherExecutable,
   launcherRevalidationOptions = {},
 } = {}) {
@@ -298,22 +346,22 @@ export function detectAndPersist(root, runId, {
   const persistedLauncher = loop.session_spawn?.launcher;
   const persistedIdentity = loop.session_spawn?.launcher_identity;
   // Authority order: durable human approval > legacy persisted session identity > explicit test fallback.
-  // Production callers do not inject windowsLauncherIdentities; keeping it last preserves focused tests without
+  // Production callers do not inject launcher identities; keeping them last preserves focused tests without
   // turning PATH/fixed candidates into authority. Legacy states may omit the new approval map entirely.
   const durableApprovals = loop.autonomy?.launcher_executable_approvals;
   const hasDurableApprovalMap = durableApprovals !== undefined;
-  const effectiveWindowsIdentities = hasDurableApprovalMap ? {} : { ...windowsLauncherIdentities };
+  const effectiveLauncherIdentities = hasDurableApprovalMap ? {} : { ...launcherIdentities };
   if (!hasDurableApprovalMap && persistedIdentity != null
     && (persistedLauncher === 'wt' || persistedLauncher === 'powershell')) {
-    effectiveWindowsIdentities[persistedLauncher] = persistedIdentity;
+    effectiveLauncherIdentities[persistedLauncher] = persistedIdentity;
   }
   if (hasDurableApprovalMap && durableApprovals && typeof durableApprovals === 'object' && !Array.isArray(durableApprovals)) {
-    for (const kind of ['wt', 'powershell']) {
-      if (durableApprovals[kind] != null) effectiveWindowsIdentities[kind] = durableApprovals[kind];
+    for (const kind of ['wt', 'powershell', 'tmux']) {
+      if (durableApprovals[kind] != null) effectiveLauncherIdentities[kind] = durableApprovals[kind];
     }
   }
   const d = detectTerminal({
-    env, platform, run, now, pid, arch, windowsLauncherIdentities: effectiveWindowsIdentities,
+    env, platform, run, now, pid, arch, launcherIdentities: effectiveLauncherIdentities,
     revalidateLauncher, launcherRevalidationOptions,
   });
   appendAnchored(
@@ -332,7 +380,7 @@ export function detectAndPersist(root, runId, {
       if (l.status === 'completed' || l.status === 'stopped') {
         throw new Error('RUN_TERMINAL: detect-terminal');
       }
-      if (platform === 'win32' && (d.launcher === 'wt' || d.launcher === 'powershell')) {
+      if (['wt', 'powershell', 'tmux'].includes(d.launcher)) {
         const authority = launcherAuthority(l, d.launcher);
         if (authority == null || !isDeepStrictEqual(d.launcher_identity, authority)) {
           throw new Error('LAUNCHER_EXECUTABLE_DRIFT: detect-terminal authority changed');

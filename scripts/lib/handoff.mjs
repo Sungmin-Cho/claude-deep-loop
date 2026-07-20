@@ -205,6 +205,7 @@ export function emitHandoff(root, runId, {
       launcher: loop.session_spawn?.launcher,
       launcherBin: loop.session_spawn?.launcher_bin,
       launcherSocket: loop.session_spawn?.launcher_socket,
+      launcherSession: loop.session_spawn?.launcher_session,
       platform, desktopTarget: dt && dt.ok ? dt.argvTarget : null,
       exists,
       model: loop.autonomy?.session_model ?? null, effort: loop.autonomy?.session_effort ?? null,
