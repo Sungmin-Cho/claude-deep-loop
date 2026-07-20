@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readState, runDir } from './state.mjs';
@@ -69,22 +69,6 @@ function publicationFailure(error, publishedFinals) {
   return failure;
 }
 
-function validatePublishedFinal(path, kind, { childRunId, parentRunId }) {
-  if (kind === 'markdown') {
-    const markdown = readFileSync(path, 'utf8');
-    return markdown.includes(`# Handoff — next session (${childRunId})`);
-  }
-  try {
-    const artifact = JSON.parse(readFileSync(path, 'utf8'));
-    return artifact.envelope?.producer === 'deep-loop'
-      && artifact.envelope?.artifact_kind === 'compaction-state'
-      && artifact.envelope?.run_id === childRunId
-      && artifact.envelope?.parent_run_id === parentRunId;
-  } catch {
-    return false;
-  }
-}
-
 function handoffMarkdown(loop, childRunId, reason, descriptor) {
   const wsLines = (loop.workstreams || []).map(w => `- ${w.id} [${w.status}] branch=${w.branch} worktree=${w.worktree}`).join('\n') || '- (none)';
   const doneEp = (loop.episodes || []).filter(e => ['done', 'approved'].includes(e.status)).map(e => e.id).join(', ') || '(none)';
@@ -124,7 +108,7 @@ export function emitHandoff(root, runId, {
   deepLoopRoot = DEFAULT_DEEP_LOOP_ROOT, exists = existsSync,
   descriptorBuilder = buildRuntimeResumeDescriptor,
   onBoundary = () => {}, writeArtifact = writeFileSync, renameArtifact = renameAtomicWithRetry,
-  removeArtifact = rmSync, artifactExists = existsSync,
+  removeArtifact = rmSync, unlinkArtifact = unlinkSync, artifactExists = existsSync,
 } = {}) {
   if (!expect || typeof expect.owner !== 'string' || !Number.isInteger(expect.generation)) throw new Error('FENCE_REQUIRED: emitHandoff');
   // Resolve runtime and canonical root from root-bound durable state. This read
@@ -293,17 +277,19 @@ export function emitHandoff(root, runId, {
   // handoff-emitted with phase still 'reserved' (respawn requires emitted/releasing → stranded). Single appendAnchored.
   const ttlMs = (loop.session_chain.stale_lease_ttl_sec || 900) * 1000;
   let publishedFinals = 0;
-  const publishFinal = (temp, final, kind) => {
+  const publishFinal = (temp, final) => {
     try {
-      // Windows rename cannot portably replace an existing destination. A prior partial finalizer's valid
-      // publication is authoritative; preserve it and publish only the missing sibling.
       if (artifactExists(final)) {
-        publishedFinals += 1;
-        if (!validatePublishedFinal(final, kind, { childRunId, parentRunId: runId })) {
-          throw new Error(`HANDOFF_ARTIFACT_CONFLICT: ${final}`);
+        if (readFileSync(final).equals(readFileSync(temp))) {
+          publishedFinals += 1;
+          safeRemove(temp, removeArtifact);
+          return;
         }
-        safeRemove(temp, removeArtifact);
-        return;
+        // Reaching publication means this deterministic pair is not committed: a committed child is
+        // rejected by preCheck with ALREADY_EMITTED_IDEMPOTENT. Existing finals are therefore crash-left
+        // partial publications, and this keyed finalizer's staged pair is authoritative. Unlink first
+        // because Windows rename cannot portably replace an existing destination.
+        unlinkArtifact(final);
       }
       renameArtifact(temp, final, { platform });
       publishedFinals += 1;
@@ -348,8 +334,8 @@ export function emitHandoff(root, runId, {
       if (lease.handoff_idempotency_key !== res.key) throw new Error('HANDOFF_KEY_MISMATCH');
       if (lease.handoff_child_run_id !== childRunId) throw new Error('HANDOFF_CHILD_MISMATCH');
 
-      publishFinal(mdTemp, handoffPath, 'markdown');
-      publishFinal(csTemp, join(dir, csName), 'compaction');
+      publishFinal(mdTemp, handoffPath);
+      publishFinal(csTemp, join(dir, csName));
     });
   } catch (e) {
     for (const temp of ownTemps) safeRemove(temp, removeArtifact);

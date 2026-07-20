@@ -745,7 +745,7 @@ test('tmux handoff threads its verified session and canonical spaced root from a
       launcher_identity: tmux, launcher_socket: '/tmp/tmux-501/default',
       launcher_pid: '12345', launcher_session: '7', surface: 'window',
       reachable: true, visible: true, signals: { tmux: true },
-      probe: { cmd: [tmux.canonical_path, '-S', '/tmp/tmux-501/default', 'display-message', '-p', '#{pid}'], code: 0 },
+      probe: { cmd: [tmux.canonical_path, '-S', '/tmp/tmux-501/default', 'display-message', '-p', '#{pid} #{session_id}'], code: 0 },
       reason: null, fallback: 'launch-command-file', detected_at: '2026-07-20T00:00:00.000Z',
     };
   });
@@ -1414,7 +1414,7 @@ test('concurrent finalizer loser never rewrites winner bytes even with a differe
   assert.equal(handoffEventCount(root, runId), 1);
 });
 
-test('first rename succeeds and second fails: keyed reservation survives and retry publishes missing sibling only', () => {
+test('first rename succeeds and second fails: retry replaces the partial pair with one coherent reason', () => {
   const { root, runId } = seed();
   const expect = expect_(runId);
   let renames = 0;
@@ -1444,7 +1444,72 @@ test('first rename succeeds and second fails: keyed reservation survives and ret
   assert.ok(recovered.ok);
   assert.equal(recovered.childRunId, reserved.handoff_child_run_id);
   assert.equal(readdirSync(handoffDir(root, runId)).length, 2);
-  assert.equal(handoffEventCount(root, runId), 1);
+  const markdown = readFileSync(join(handoffDir(root, runId), recovered.mdName), 'utf8');
+  const compaction = JSON.parse(readFileSync(join(handoffDir(root, runId), recovered.csName), 'utf8'));
+  const events = handoffEvents(root, runId);
+  assert.ok(markdown.includes('- reason for handoff: retry-different-reason'));
+  assert.equal(compaction.payload.reason, 'retry-different-reason');
+  assert.equal(events.length, 1);
+  assert.equal(events[0].data.reason, 'retry-different-reason');
+});
+
+test('two finals published before append failure are both replaced by a different-reason retry', () => {
+  const { root, runId } = seed();
+  const expect = expect_(runId);
+  let renames = 0;
+  const partial = emitHandoff(root, runId, {
+    reason: 'first-pair', trigger: 'milestone', expect, now: 100,
+    renameArtifact(src, dst) {
+      renames += 1;
+      renameSync(src, dst);
+      if (renames === 2) throw Object.assign(new Error('crash after second rename'), { code: 'EIO' });
+    },
+  });
+  assert.equal(partial.ok, false);
+  assert.equal(partial.reason, 'EMIT_ARTIFACT_FAILED');
+  assert.equal(readdirSync(handoffDir(root, runId)).filter(file => !file.startsWith('.tmp-')).length, 2);
+  assert.equal(handoffEventCount(root, runId), 0);
+
+  const recovered = emitHandoff(root, runId, {
+    reason: 'retry-pair', trigger: 'pre-compact', expect, now: 200,
+  });
+  assert.ok(recovered.ok);
+  const markdown = readFileSync(join(handoffDir(root, runId), recovered.mdName), 'utf8');
+  const compaction = JSON.parse(readFileSync(join(handoffDir(root, runId), recovered.csName), 'utf8'));
+  const events = handoffEvents(root, runId);
+  assert.ok(markdown.includes('- reason for handoff: retry-pair'));
+  assert.equal(compaction.payload.reason, 'retry-pair');
+  assert.equal(events.length, 1);
+  assert.equal(events[0].data.reason, 'retry-pair');
+});
+
+test('byte-identical partial final is retained while its missing sibling is published', () => {
+  const { root, runId } = seed();
+  const expect = expect_(runId);
+  let renames = 0;
+  const partial = emitHandoff(root, runId, {
+    reason: 'same-reason', trigger: 'milestone', expect, now: 100,
+    renameArtifact(src, dst) {
+      renames += 1;
+      if (renames === 2) throw Object.assign(new Error('second rename failed'), { code: 'EIO' });
+      renameSync(src, dst);
+    },
+  });
+  assert.equal(partial.ok, false);
+  const reserved = readState(root, runId).data.session_chain.lease;
+  const mdPath = join(handoffDir(root, runId), `${reserved.handoff_child_run_id}-next-session.md`);
+  const originalMarkdown = readFileSync(mdPath);
+  let retryRenames = 0;
+  let finalUnlinks = 0;
+  const recovered = emitHandoff(root, runId, {
+    reason: 'same-reason', trigger: 'pre-compact', expect, now: 100,
+    renameArtifact(src, dst) { retryRenames += 1; renameSync(src, dst); },
+    unlinkArtifact(path) { finalUnlinks += 1; rmSync(path); },
+  });
+  assert.ok(recovered.ok);
+  assert.equal(retryRenames, 1, 'only the missing compaction-state is renamed');
+  assert.equal(finalUnlinks, 0, 'byte-identical markdown is not replaced');
+  assert.deepEqual(readFileSync(mdPath), originalMarkdown);
 });
 
 test('winner commit followed by loser staging failure cannot roll back winner lease or artifacts', () => {
