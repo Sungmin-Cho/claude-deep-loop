@@ -41,7 +41,7 @@ test('native win32 WT initialization stays manual until a launcher is durably ap
     run: () => { processCalls++; return { code: 0 }; },
   });
 
-  assert.deepEqual(loop.autonomy.launcher_executable_approvals, { wt: null, powershell: null });
+  assert.deepEqual(loop.autonomy.launcher_executable_approvals, { wt: null, powershell: null, tmux: null });
   assert.equal(loop.session_spawn.launcher, 'none');
   assert.equal(loop.session_spawn.reason, 'windows-terminal-unverified');
   assert.equal(loop.session_spawn.reachable, false);

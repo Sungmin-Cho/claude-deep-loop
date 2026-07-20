@@ -715,14 +715,20 @@ const WINDOWS_POWERSHELL_CANDIDATES = Object.freeze([
 
 function launcherIdentityShape(identity) {
   if (!identity || typeof identity !== 'object' || Array.isArray(identity)
-    || !['wt', 'powershell'].includes(identity.kind)) {
+    || !['wt', 'powershell', 'tmux'].includes(identity.kind)) {
     throw runtimeError('LAUNCHER_EXECUTABLE_IDENTITY_INVALID', 'launcher identity is invalid');
   }
   launcherAbsolutePath(identity.canonical_path, identity.platform);
+  const platformValid = identity.kind === 'tmux'
+    ? ['linux', 'darwin'].includes(identity.platform)
+    : identity.platform === 'win32';
   if (!/^[0-9a-f]{64}$/.test(identity.sha256 || '') || typeof identity.version !== 'string'
-    || identity.version.length === 0 || identity.platform !== 'win32'
+    || identity.version.length === 0 || !platformValid
     || typeof identity.arch !== 'string' || !['verified-native', 'human-explicit'].includes(identity.source)) {
     throw runtimeError('LAUNCHER_EXECUTABLE_IDENTITY_INVALID', 'launcher identity fields are invalid');
+  }
+  if (identity.kind === 'tmux' && identity.authenticode !== null) {
+    throw runtimeError('LAUNCHER_EXECUTABLE_IDENTITY_INVALID', 'tmux Authenticode identity must be null');
   }
   if (identity.source === 'human-explicit') {
     const approvedAt = new Date(identity.approved_at);
@@ -746,14 +752,15 @@ function launcherSecurityIdentity(identity) {
   };
 }
 
-function assertExpectedLauncherName(kind, path) {
-  assertTrustedLauncherNamespace(path, 'win32');
-  const name = basename(path).toLowerCase();
+function assertExpectedLauncherName(kind, path, platform) {
+  assertTrustedLauncherNamespace(path, platform);
+  const name = platform === 'win32' ? win32.basename(path).toLowerCase() : basename(path);
   if ((kind === 'wt' && name !== 'wt.exe')
-    || (kind === 'powershell' && name !== 'pwsh.exe' && name !== 'powershell.exe')) {
+    || (kind === 'powershell' && name !== 'pwsh.exe' && name !== 'powershell.exe')
+    || (kind === 'tmux' && name !== 'tmux')) {
     throw runtimeError('LAUNCHER_EXECUTABLE_UNTRUSTED', 'unexpected native launcher filename');
   }
-  if (/^(?:\\\\|\/\/)/.test(path)) {
+  if (platform === 'win32' && /^(?:\\\\|\/\/)/.test(path)) {
     throw runtimeError('LAUNCHER_EXECUTABLE_UNTRUSTED', 'UNC launcher targets are not trusted');
   }
   try {
@@ -765,11 +772,13 @@ function assertExpectedLauncherName(kind, path) {
 
 function probeLauncherVersion(kind, executable, runVersion = spawnSync, expectedVersion = null) {
   const isWindowsPowerShell = kind === 'powershell' && basename(executable).toLowerCase() === 'powershell.exe';
-  const argv = kind === 'wt'
-    ? ['--version']
+  const argv = kind === 'tmux'
+    ? ['-V']
+    : (kind === 'wt'
+      ? ['--version']
     : (isWindowsPowerShell
       ? ['-NoProfile', '-NonInteractive', '-Command', '$PSVersionTable.PSVersion.ToString()']
-      : ['--version']);
+      : ['--version']));
   let result;
   try {
     result = runVersion(executable, argv, {
@@ -786,7 +795,8 @@ function probeLauncherVersion(kind, executable, runVersion = spawnSync, expected
   const stderr = typeof result.stderr === 'string' ? result.stderr : String(result.stderr || '');
   const normalized = stdout.replace(/\r\n/g, '\n').trimEnd();
   let version;
-  if (kind === 'wt') version = /^Windows Terminal ([0-9]+(?:\.[0-9]+)+)$/.exec(normalized)?.[1] ?? null;
+  if (kind === 'tmux') version = /^tmux [0-9]+(?:\.[0-9]+)*(?:[A-Za-z][0-9A-Za-z.-]*)?$/.test(normalized) ? normalized : null;
+  else if (kind === 'wt') version = /^Windows Terminal ([0-9]+(?:\.[0-9]+)+)$/.exec(normalized)?.[1] ?? null;
   else version = /^(?:PowerShell )?([0-9]+(?:\.[0-9]+)+)$/.exec(normalized)?.[1] ?? null;
   if (!version || normalized.includes('\n') || stderr.trim() !== ''
     || Buffer.byteLength(stdout) > 1024 || Buffer.byteLength(stderr) > 1024
@@ -813,10 +823,12 @@ function collectLauncherCandidates(kind, options) {
       // Candidate discovery is not authority.
     }
   };
-  if (kind === 'powershell') for (const candidate of WINDOWS_POWERSHELL_CANDIDATES) add(candidate);
   const env = options.env ?? process.env;
-  const names = kind === 'wt' ? ['wt.exe'] : ['pwsh.exe', 'powershell.exe'];
-  for (const entry of String(env.Path ?? env.PATH ?? '').split(';')) {
+  if (kind === 'powershell') for (const candidate of WINDOWS_POWERSHELL_CANDIDATES) add(candidate);
+  const names = kind === 'wt' ? ['wt.exe'] : (kind === 'powershell' ? ['pwsh.exe', 'powershell.exe'] : ['tmux']);
+  const pathValue = kind === 'tmux' ? (env.PATH ?? '') : (env.Path ?? env.PATH ?? '');
+  const pathDelimiter = kind === 'tmux' ? ':' : ';';
+  for (const entry of String(pathValue).split(pathDelimiter)) {
     if (!entry || !(isAbsolute(entry) || win32.isAbsolute(entry))) continue;
     for (const name of names) add(join(entry, name));
   }
@@ -824,24 +836,28 @@ function collectLauncherCandidates(kind, options) {
 }
 
 export function resolveTrustedLauncherExecutable(kind, options = {}) {
-  if (!['wt', 'powershell'].includes(kind)) {
-    throw runtimeError('LAUNCHER_EXECUTABLE_UNTRUSTED', 'unsupported Windows launcher');
+  if (!['wt', 'powershell', 'tmux'].includes(kind)) {
+    throw runtimeError('LAUNCHER_EXECUTABLE_UNTRUSTED', 'unsupported launcher');
   }
   if (options.approval !== undefined) return revalidateTrustedLauncherExecutable(options.approval, options);
   const platform = options.platform ?? process.platform;
   const arch = options.arch ?? process.arch;
-  if (platform !== 'win32') throw runtimeError('LAUNCHER_EXECUTABLE_UNTRUSTED', 'Windows launcher requires win32');
+  if (kind === 'tmux' ? !['linux', 'darwin'].includes(platform) : platform !== 'win32') {
+    throw runtimeError('LAUNCHER_EXECUTABLE_UNTRUSTED', kind === 'tmux' ? 'tmux launcher requires linux or darwin' : 'Windows launcher requires win32');
+  }
   const resolved = new Map();
   const failures = [];
   for (const candidatePath of collectLauncherCandidates(kind, options)) {
     try {
       const candidate = launcherRegularFile(candidatePath);
-      assertExpectedLauncherName(kind, candidate.canonical);
+      assertExpectedLauncherName(kind, candidate.canonical, platform);
       const sha256 = hashLauncherFile(candidate.canonical, candidate.stat);
       const version = probeLauncherVersion(kind, candidate.canonical, options.runVersion ?? spawnSync);
-      const authenticode = normalizeLauncherAuthenticode(candidate.canonical, {
-        platform, authenticodeProbe: options.authenticodeProbe, authenticodePolicy: options.authenticodePolicy,
-      });
+      const authenticode = kind === 'tmux'
+        ? null
+        : normalizeLauncherAuthenticode(candidate.canonical, {
+          platform, authenticodeProbe: options.authenticodeProbe, authenticodePolicy: options.authenticodePolicy,
+        });
       const identity = {
         kind, canonical_path: candidate.canonical, sha256, version, platform, arch,
         source: 'verified-native', authenticode,
@@ -865,7 +881,7 @@ export function revalidateTrustedLauncherExecutable(identity, options = {}) {
   }
   try {
     const candidate = launcherRegularFile(identity.canonical_path);
-    assertExpectedLauncherName(identity.kind, candidate.canonical);
+    assertExpectedLauncherName(identity.kind, candidate.canonical, platform);
     if (candidate.canonical !== identity.canonical_path
       || hashLauncherFile(candidate.canonical, candidate.stat) !== identity.sha256) {
       throw runtimeError('LAUNCHER_EXECUTABLE_DRIFT', 'launcher canonical path or hash changed');
@@ -873,11 +889,13 @@ export function revalidateTrustedLauncherExecutable(identity, options = {}) {
     const version = probeLauncherVersion(
       identity.kind, candidate.canonical, options.runVersion ?? spawnSync, identity.version,
     );
-    const authenticode = identity.authenticode == null && options.authenticodePolicy == null
+    const authenticode = identity.kind === 'tmux'
       ? null
-      : normalizeLauncherAuthenticode(candidate.canonical, {
-        platform, authenticodeProbe: options.authenticodeProbe, authenticodePolicy: options.authenticodePolicy,
-      });
+      : (identity.authenticode == null && options.authenticodePolicy == null
+        ? null
+        : normalizeLauncherAuthenticode(candidate.canonical, {
+          platform, authenticodeProbe: options.authenticodeProbe, authenticodePolicy: options.authenticodePolicy,
+        }));
     const current = { ...launcherSecurityIdentity(identity), version, authenticode };
     if (JSON.stringify(current) !== JSON.stringify(launcherSecurityIdentity(identity))) {
       throw runtimeError('LAUNCHER_EXECUTABLE_DRIFT', 'launcher identity changed');
@@ -891,8 +909,8 @@ export function revalidateTrustedLauncherExecutable(identity, options = {}) {
 }
 
 function validateLauncherKind(kind) {
-  if (!['wt', 'powershell'].includes(kind)) {
-    throw runtimeError('LAUNCHER_EXECUTABLE_KIND_INVALID', 'kind must be wt or powershell');
+  if (!['wt', 'powershell', 'tmux'].includes(kind)) {
+    throw runtimeError('LAUNCHER_EXECUTABLE_KIND_INVALID', 'kind must be wt, powershell, or tmux');
   }
   return kind;
 }
@@ -901,21 +919,26 @@ function inspectHumanApprovedLauncher(kind, candidatePath, {
   platform, arch, expectedSha256, runVersion, authenticodeProbe, authenticodePolicy,
 }) {
   validateLauncherKind(kind);
-  if (platform !== 'win32') {
-    throw runtimeError('LAUNCHER_EXECUTABLE_UNTRUSTED', 'Windows launcher approval requires win32');
+  if (kind === 'tmux' ? !['linux', 'darwin'].includes(platform) : platform !== 'win32') {
+    throw runtimeError(
+      'LAUNCHER_EXECUTABLE_UNTRUSTED',
+      kind === 'tmux' ? 'tmux launcher approval requires linux or darwin' : 'Windows launcher approval requires win32',
+    );
   }
   const selected = launcherAbsolutePath(candidatePath, platform);
   const candidate = launcherRegularFile(selected);
   assertTrustedLauncherNamespace(candidate.canonical, platform);
-  assertExpectedLauncherName(kind, candidate.canonical);
+  assertExpectedLauncherName(kind, candidate.canonical, platform);
   const sha256 = hashLauncherFile(candidate.canonical, candidate.stat);
   if (!/^[0-9a-f]{64}$/.test(expectedSha256 || '') || sha256 !== expectedSha256) {
     throw runtimeError('LAUNCHER_EXECUTABLE_HASH_MISMATCH', 'exact lowercase SHA-256 does not match the canonical launcher');
   }
   const version = probeLauncherVersion(kind, candidate.canonical, runVersion);
-  const authenticode = normalizeLauncherAuthenticode(candidate.canonical, {
-    platform, authenticodeProbe, authenticodePolicy,
-  });
+  const authenticode = kind === 'tmux'
+    ? null
+    : normalizeLauncherAuthenticode(candidate.canonical, {
+      platform, authenticodeProbe, authenticodePolicy,
+    });
   const after = launcherRegularFile(selected);
   if (after.canonical !== candidate.canonical
     || hashLauncherFile(after.canonical, after.stat) !== sha256) {
@@ -937,13 +960,16 @@ export function diagnoseLauncherExecutable(kind, options = {}) {
   validateLauncherKind(kind);
   const platform = options.platform ?? process.platform;
   const arch = options.arch ?? process.arch;
-  if (platform !== 'win32') {
-    throw runtimeError('LAUNCHER_EXECUTABLE_UNTRUSTED', 'Windows launcher diagnosis requires win32');
+  if (kind === 'tmux' ? !['linux', 'darwin'].includes(platform) : platform !== 'win32') {
+    throw runtimeError(
+      'LAUNCHER_EXECUTABLE_UNTRUSTED',
+      kind === 'tmux' ? 'tmux launcher diagnosis requires linux or darwin' : 'Windows launcher diagnosis requires win32',
+    );
   }
   const selected = launcherAbsolutePath(options.explicitPath, platform);
   const candidate = launcherRegularFile(selected);
   assertTrustedLauncherNamespace(candidate.canonical, platform);
-  assertExpectedLauncherName(kind, candidate.canonical);
+  assertExpectedLauncherName(kind, candidate.canonical, platform);
   const sha256 = hashLauncherFile(candidate.canonical, candidate.stat);
   return {
     approval_required: true,

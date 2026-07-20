@@ -10,7 +10,7 @@
     "budget.unit": ["turns","tokens"],
     "session_chain.lease.state": ["active","releasing","released"],
     "session_chain.lease.handoff_phase": ["idle","reserved","emitted","spawned","acquired"],
-    "session_spawn.launcher": ["cmux","iterm2","terminal-app","wt","powershell","none"],
+    "session_spawn.launcher": ["cmux","iterm2","terminal-app","wt","powershell","tmux","none"],
     "autonomy.session_effort": ["low","medium","high","xhigh","max"],
     "autonomy.session_runtime": ["claude","codex"],
     "autonomy.runtime_source": ["skill-asserted"]

@@ -186,6 +186,20 @@ function validRuntimeApproval() {
 }
 
 function validLauncherApproval(kind = 'wt') {
+  if (kind === 'tmux') {
+    return {
+      kind,
+      canonical_path: '/opt/homebrew/bin/tmux',
+      sha256: 'b'.repeat(64),
+      version: 'tmux 3.4',
+      platform: 'darwin',
+      arch: 'arm64',
+      source: 'human-explicit',
+      authenticode: null,
+      approved_by: 'human',
+      approved_at: '2026-07-20T00:00:00.000Z',
+    };
+  }
   return {
     kind,
     canonical_path: kind === 'wt' ? 'C:\\Program Files\\WindowsApps\\wt.exe' : 'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
@@ -233,11 +247,11 @@ test('runtime executable approval schema rejects malformed identity, authority, 
 
 test('launcher approval map is initialized, legacy-safe when absent, valid when exact, and never generic-patchable', () => {
   const loop = buildInitialLoop({ runtime: 'claude', goal: 'g', protocol: 'standalone', recipe: {}, runId: 'r1', now: new Date('2026-07-12T00:00:00Z') });
-  assert.deepEqual(loop.autonomy.launcher_executable_approvals, { wt: null, powershell: null });
+  assert.deepEqual(loop.autonomy.launcher_executable_approvals, { wt: null, powershell: null, tmux: null });
   assert.equal(validate(loop).ok, true, validate(loop).errors.join('; '));
 
   loop.autonomy.launcher_executable_approvals = {
-    wt: validLauncherApproval('wt'), powershell: validLauncherApproval('powershell'),
+    wt: validLauncherApproval('wt'), powershell: validLauncherApproval('powershell'), tmux: validLauncherApproval('tmux'),
   };
   assert.equal(validate(loop).ok, true, validate(loop).errors.join('; '));
   assert.equal(classifyPatch('autonomy.launcher_executable_approvals', loop.autonomy.launcher_executable_approvals), 'forbid');
@@ -245,6 +259,51 @@ test('launcher approval map is initialized, legacy-safe when absent, valid when 
 
   delete loop.autonomy.launcher_executable_approvals;
   assert.equal(validate(loop).ok, true, 'legacy state with no launcher approval map must remain valid');
+});
+
+test('tmux launcher approvals enforce POSIX platform, basename, null Authenticode, and exact fields', () => {
+  const cases = [
+    ['macOS', { canonical_path: '/opt/homebrew/bin/tmux', platform: 'darwin', arch: 'arm64' }],
+    ['Linux', { canonical_path: '/usr/bin/tmux', platform: 'linux', arch: 'x64' }],
+    ['WSL', { canonical_path: '/usr/local/bin/tmux', platform: 'linux', arch: 'x64' }],
+  ];
+  for (const [label, overrides] of cases) {
+    const loop = minimalValid();
+    loop.autonomy.launcher_executable_approvals = {
+      wt: null,
+      powershell: null,
+      tmux: { ...validLauncherApproval('tmux'), ...overrides },
+    };
+    const result = validate(loop);
+    assert.equal(result.ok, true, `${label}: ${result.errors.join('; ')}`);
+  }
+
+  for (const [label, mutate] of [
+    ['unknown field', approval => ({ ...approval, trusted: true })],
+    ['win32', approval => ({ ...approval, platform: 'win32' })],
+    ['wrong basename', approval => ({ ...approval, canonical_path: '/usr/bin/not-tmux' })],
+    ['case-sensitive basename', approval => ({ ...approval, canonical_path: '/usr/bin/TMUX' })],
+    ['non-null Authenticode', approval => ({
+      ...approval,
+      authenticode: { status: 'valid', signer: 'Unexpected', thumbprint: 'aabb' },
+    })],
+  ]) {
+    const loop = minimalValid();
+    loop.autonomy.launcher_executable_approvals = {
+      wt: null,
+      powershell: null,
+      tmux: mutate(validLauncherApproval('tmux')),
+    };
+    const result = validate(loop);
+    assert.equal(result.ok, false, label);
+    assert.ok(result.errors.some(error => /launcher_executable_approvals/.test(error)), `${label}: ${result.errors.join('; ')}`);
+  }
+});
+
+test('session_spawn launcher enum accepts tmux', () => {
+  const loop = minimalValid();
+  loop.session_spawn = { launcher: 'tmux' };
+  assert.equal(validate(loop).ok, true, validate(loop).errors.join('; '));
 });
 
 test('launcher approval schema rejects malformed maps, identities, Authenticode, audit fields, and unknown keys', () => {

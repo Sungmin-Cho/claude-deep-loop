@@ -672,7 +672,7 @@ launcherExecutableCliTest('launcher-executable diagnose is read-only and approve
   const initial = readState(fixture.root, runId).data;
   assert.equal(initial.session_spawn.launcher, 'none');
   assert.equal(initial.session_spawn.reason, 'windows-terminal-unverified');
-  assert.deepEqual(initial.autonomy.launcher_executable_approvals, { wt: null, powershell: null });
+  assert.deepEqual(initial.autonomy.launcher_executable_approvals, { wt: null, powershell: null, tmux: null });
 
   const before = cliSnapshot(fixture.root, runId);
   const diagnosed = win32RunResult(fixture.root, [

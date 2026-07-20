@@ -298,7 +298,7 @@ const handlers = {
       throw new Error('LAUNCHER_EXECUTABLE_AMBIGUOUS: exactly one explicit candidate path is required');
     }
     const kind = reqStr(f, 'kind');
-    if (!kind) { error('USAGE: --kind <wt|powershell> is required'); return 2; }
+    if (!kind) { error('USAGE: --kind <wt|powershell|tmux> is required'); return 2; }
     const candidatePath = reqStr(f, 'path');
     if (!candidatePath) { error('USAGE: --path ABSOLUTE_NATIVE_LAUNCHER is required'); return 2; }
 

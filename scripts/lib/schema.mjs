@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, isAbsolute, join, win32 } from 'node:path';
+import { basename, dirname, isAbsolute, join, win32 } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
 export function loadSchema() {
@@ -89,10 +89,10 @@ function validateLauncherExecutableApprovals(approvals, errors) {
     return;
   }
   const mapKeys = Object.keys(approvals);
-  const unknown = mapKeys.filter(key => !['wt', 'powershell'].includes(key));
+  const unknown = mapKeys.filter(key => !['wt', 'powershell', 'tmux'].includes(key));
   if (unknown.length > 0) fail(`contains unknown keys: ${unknown.join(',')}`);
 
-  for (const kind of ['wt', 'powershell']) {
+  for (const kind of ['wt', 'powershell', 'tmux']) {
     if (!Object.hasOwn(approvals, kind) || approvals[kind] === null) continue;
     const approval = approvals[kind];
     const slotFail = detail => fail(`${kind} ${detail}`);
@@ -107,14 +107,16 @@ function validateLauncherExecutableApprovals(approvals, errors) {
     }
     if (approval.kind !== kind) slotFail('kind must match its map key');
     const path = approval.canonical_path;
+    const windowsLauncher = kind !== 'tmux';
     if (!portableAbsolute(path) || /[\0\r\n]/.test(path || '')
-      || /^[\\/]{2}/.test(path || '') || /^[\\/](?:\?\?|device)[\\/]/i.test(path || '')
+      || (windowsLauncher && (/^[\\/]{2}/.test(path || '') || /^[\\/](?:\?\?|device)[\\/]/i.test(path || '')))
       || /\.(?:cmd|bat|ps1|js|mjs|cjs)$/i.test(path || '')) {
       slotFail('canonical_path must be a safe absolute native path');
     } else {
-      const name = win32.basename(path).toLowerCase();
+      const name = windowsLauncher ? win32.basename(path).toLowerCase() : basename(path);
       if ((kind === 'wt' && name !== 'wt.exe')
-        || (kind === 'powershell' && name !== 'pwsh.exe' && name !== 'powershell.exe')) {
+        || (kind === 'powershell' && name !== 'pwsh.exe' && name !== 'powershell.exe')
+        || (kind === 'tmux' && name !== 'tmux')) {
         slotFail('canonical_path filename does not match kind');
       }
     }
@@ -123,7 +125,10 @@ function validateLauncherExecutableApprovals(approvals, errors) {
       || approval.version.length > 256 || /[\0\r\n]/.test(approval.version)) {
       slotFail('version must be a non-empty safe string');
     }
-    if (approval.platform !== 'win32') slotFail('platform must be win32');
+    if (windowsLauncher && approval.platform !== 'win32') slotFail('platform must be win32');
+    if (!windowsLauncher && !['linux', 'darwin'].includes(approval.platform)) {
+      slotFail('platform must be linux or darwin');
+    }
     if (typeof approval.arch !== 'string' || !/^[A-Za-z0-9_-]+$/.test(approval.arch)) {
       slotFail('arch must be a non-empty safe string');
     }
@@ -138,6 +143,10 @@ function validateLauncherExecutableApprovals(approvals, errors) {
     }
 
     const authenticode = approval.authenticode;
+    if (!windowsLauncher && authenticode !== null) {
+      slotFail('authenticode must be null for tmux');
+      continue;
+    }
     if (authenticode !== null) {
       if (typeof authenticode !== 'object' || Array.isArray(authenticode)) {
         slotFail('authenticode must be an exact object or null');
