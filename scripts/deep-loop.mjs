@@ -343,10 +343,11 @@ const handlers = {
     const runtime = reqStr(f, 'runtime');
     if (!runtime) { error('USAGE: --runtime <claude|codex> is required'); return 2; }
     if (f.model === true || f.effort === true) { error('USAGE: --model/--effort require a value'); return 2; }
+    if (f.continuation === true) { error('usage: --continuation <compact-in-place|rotate-per-unit>'); return 2; }
     const model = f.model !== undefined ? String(f.model) : null;
     const effort = f.effort !== undefined ? String(f.effort) : null;
     try {
-      const { runId } = initRun(root, { runtime, goal: f.goal, protocol: f.protocol, recipe: f.recipe, detected: detectPlugins(root), review: f.review ? JSON.parse(f.review) : undefined, model, effort });
+      const { runId } = initRun(root, { runtime, goal: f.goal, protocol: f.protocol, recipe: f.recipe, detected: detectPlugins(root), review: f.review ? JSON.parse(f.review) : undefined, model, effort, continuation: f.continuation ?? null });
       json({ run_id: runId }); return 0;
     } catch (e) {
       error(String(e?.message || e)); return 1;   // INVALID_RUNTIME / INVALID_MODEL / INVALID_EFFORT → exit 1 (fail-closed)

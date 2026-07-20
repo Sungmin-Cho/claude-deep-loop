@@ -1,20 +1,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { initRun } from '../scripts/lib/initrun.mjs';
+import { fileURLToPath } from 'node:url';
+import { buildInitialLoop, initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState } from '../scripts/lib/state.mjs';
 import { validate } from '../scripts/lib/schema.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 
 const NOW = new Date('2026-07-20T00:00:00.000Z');
 const noRun = () => ({ code: 1, stdout: '', stderr: '' });
+const CLI = fileURLToPath(new URL('../scripts/deep-loop.mjs', import.meta.url));
 function freshRoot() {
   return mkdtempSync(join(tmpdir(), 'dl-cpol-'));
 }
 function initClaude(root, extra = {}) {
   return initRun(root, { runtime: 'claude', goal: 'g', detected: {}, now: NOW, env: {}, platform: 'darwin', run: noRun, pid: 1, ...extra });
+}
+function runCli(args) {
+  return spawnSync('node', [CLI, ...args], { encoding: 'utf8' });
 }
 
 test('schema: validate hard-pins 0.3.0 and requires continuation_policy', () => {
@@ -97,6 +103,79 @@ test('schema: continuation state fields enforce their exact types', () => {
   const triggerNotString = minimalValidLoop();
   triggerNotString.session_chain.lease.handoff_trigger = 7;
   assert.ok(validate(triggerNotString).errors.some(e => e.includes('handoff_trigger must be string or null')));
+});
+
+test('buildInitialLoop derives per-runtime continuation policy + predicate', () => {
+  const cl = buildInitialLoop({ runtime: 'claude', runId: 'c', goal: 'g', recipe: {}, now: NOW, env: {}, platform: 'linux', run: noRun });
+  assert.equal(cl.autonomy.continuation_policy, 'compact-in-place');
+  assert.deepEqual(cl.autonomy.milestone_predicate, ['workstream_status_change']);
+  const cx = buildInitialLoop({ runtime: 'codex', runId: 'x', goal: 'g', recipe: {}, now: NOW, env: {}, platform: 'linux', run: noRun });
+  assert.equal(cx.autonomy.continuation_policy, 'rotate-per-unit');
+  assert.deepEqual(cx.autonomy.milestone_predicate, ['workstream_status_change', 'review_point_passed', 'per_session_turn_cap_reached']);
+  const ov = buildInitialLoop({ runtime: 'claude', continuationPolicy: 'rotate-per-unit', runId: 'o', goal: 'g', recipe: {}, now: NOW, env: {}, platform: 'linux', run: noRun });
+  assert.equal(ov.autonomy.continuation_policy, 'rotate-per-unit');
+});
+
+test('initRun: claude defaults to compact-in-place with single milestone predicate', () => {
+  const root = freshRoot();
+  const { runId } = initClaude(root);
+  const { data } = readState(root, runId);
+  assert.equal(data.autonomy.continuation_policy, 'compact-in-place');
+  assert.deepEqual(data.autonomy.milestone_predicate, ['workstream_status_change']);
+  assert.deepEqual(data.session_chain.consumed_milestones, []);
+  assert.equal(data.session_chain.lease.handoff_trigger, null);
+});
+
+test('initRun: codex defaults to rotate-per-unit with legacy 3 predicates', () => {
+  const root = freshRoot();
+  const { runId } = initRun(root, { runtime: 'codex', goal: 'g', detected: {}, now: NOW, env: {}, platform: 'darwin', run: noRun, pid: 1 });
+  const { data } = readState(root, runId);
+  assert.equal(data.autonomy.continuation_policy, 'rotate-per-unit');
+  assert.deepEqual(data.autonomy.milestone_predicate,
+    ['workstream_status_change', 'review_point_passed', 'per_session_turn_cap_reached']);
+});
+
+test('initRun: claude + rotate-per-unit override restores legacy predicates', () => {
+  const root = freshRoot();
+  const { runId } = initClaude(root, { continuation: 'rotate-per-unit' });
+  const { data } = readState(root, runId);
+  assert.equal(data.autonomy.continuation_policy, 'rotate-per-unit');
+  assert.deepEqual(data.autonomy.milestone_predicate,
+    ['workstream_status_change', 'review_point_passed', 'per_session_turn_cap_reached']);
+});
+
+test('initRun: codex + compact-in-place rejected with UNSUPPORTED_RUNTIME_POLICY', () => {
+  assert.throws(
+    () => initRun(freshRoot(), { runtime: 'codex', goal: 'g', detected: {}, now: NOW, env: {}, platform: 'darwin', run: noRun, pid: 1, continuation: 'compact-in-place' }),
+    /UNSUPPORTED_RUNTIME_POLICY/,
+  );
+});
+
+test('initRun: unknown continuation policy is rejected', () => {
+  assert.throws(
+    () => initClaude(freshRoot(), { continuation: 'unknown-policy' }),
+    /UNSUPPORTED_RUNTIME_POLICY: unknown continuation policy unknown-policy/,
+  );
+});
+
+test('CLI init-run: continuation override persists and invalid combinations exit 1', () => {
+  const validRoot = freshRoot();
+  const valid = runCli(['init-run', '--runtime', 'claude', '--goal', 'g', '--continuation', 'rotate-per-unit', '--project-root', validRoot]);
+  assert.equal(valid.status, 0, valid.stderr);
+  const { run_id: runId } = JSON.parse(valid.stdout);
+  assert.equal(readState(validRoot, runId).data.autonomy.continuation_policy, 'rotate-per-unit');
+
+  const invalidRoot = freshRoot();
+  const invalid = runCli(['init-run', '--runtime', 'codex', '--goal', 'g', '--continuation', 'compact-in-place', '--project-root', invalidRoot]);
+  assert.equal(invalid.status, 1, invalid.stderr);
+  assert.match(invalid.stderr, /UNSUPPORTED_RUNTIME_POLICY/);
+});
+
+test('CLI init-run: value-less --continuation is usage exit 2', () => {
+  const root = freshRoot();
+  const result = runCli(['init-run', '--runtime', 'claude', '--goal', 'g', '--project-root', root, '--continuation']);
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, /usage: --continuation <compact-in-place\|rotate-per-unit>/);
 });
 
 function minimalValidLoop() {

@@ -40,16 +40,23 @@ export function buildInitialLoop({ runtime, goal, protocol, recipe, detected = {
   };
 }
 
-export function initRun(root, { runtime, goal, protocol, recipe, review, detected = {}, now = new Date(), git = {}, env = process.env, platform = process.platform, run = defaultProbeRun, pid = process.pid, model = null, effort = null }) {
+export function initRun(root, { runtime, goal, protocol, recipe, review, detected = {}, now = new Date(), git = {}, env = process.env, platform = process.platform, run = defaultProbeRun, pid = process.pid, model = null, effort = null, continuation = null }) {
   validateSessionRuntime(runtime);
   if (model != null) validateModel(model);
   if (effort != null) validateEffort(effort);
+  const VALID_POLICIES = ['compact-in-place', 'rotate-per-unit'];
+  if (continuation != null && !VALID_POLICIES.includes(continuation)) {
+    throw new Error(`UNSUPPORTED_RUNTIME_POLICY: unknown continuation policy ${continuation}`);
+  }
+  if (runtime === 'codex' && continuation === 'compact-in-place') {
+    throw new Error('UNSUPPORTED_RUNTIME_POLICY: compact-in-place is claude-only');
+  }
   const canonicalRoot = canonicalProjectRoot(root);
   const runId = ulid(now.getTime());
   const m = matchRecipe(goal, detected);
   const proto = protocol || m.protocol;
   const rec = recipe ? { id: recipe, name: recipe, reason: 'user' } : { id: m.recipe, name: m.recipe, reason: m.reason };
-  const loop = buildInitialLoop({ runtime, goal, protocol: proto, recipe: rec, detected, review, now, runId, git, env, platform, run, pid, model, effort });
+  const loop = buildInitialLoop({ runtime, goal, protocol: proto, recipe: rec, detected, review, now, runId, git, env, platform, run, pid, model, effort, continuationPolicy: continuation });
   loop.project.root = canonicalRoot;
   mkdirSync(runDir(canonicalRoot, runId), { recursive: true });
   writeState(canonicalRoot, runId, loop);
