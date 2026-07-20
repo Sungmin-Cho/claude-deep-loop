@@ -763,8 +763,14 @@ test('tmux handoff threads its verified session and canonical spaced root from a
   assert.equal(seen.root, storedRoot);
   assert.equal(seen.launcherSession, '7');
   const tmuxEntry = buildRuntimeResumeDescriptor(seen).entries.tmux;
-  assert.equal(tmuxEntry.argv[tmuxEntry.argv.indexOf('-c') + 1], storedRoot);
-  assert.ok(!tmuxEntry.argv.includes(aliasRoot));
+  if (process.platform === 'win32') {
+    // A physical win32 fixture root is not POSIX-absolute: the tmux entry must fail closed here.
+    assert.equal(tmuxEntry.unavailable, true);
+    assert.equal(tmuxEntry.reason, 'trusted-posix-launcher-unavailable');
+  } else {
+    assert.equal(tmuxEntry.argv[tmuxEntry.argv.indexOf('-c') + 1], storedRoot);
+    assert.ok(!tmuxEntry.argv.includes(aliasRoot));
+  }
 });
 
 test('copied-root handoff is fenced before any descriptor file is written', () => {

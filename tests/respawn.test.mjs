@@ -167,7 +167,15 @@ function expect_(runId) { return { owner: runId, generation: 1 }; }
 function seq(values) { let i = 0; return () => values[Math.min(i++, values.length - 1)]; }
 const noSleep = () => {};
 
-test('tmux visible respawn revalidates the approved launcher and socket before spawn', () => {
+// seedTmuxLauncher hashes a PHYSICAL fake tmux binary, and several of these tests exercise the real
+// revalidateTrustedLauncherExecutable against it. On a win32 host that physical path is a Windows
+// path, which every POSIX tmux validator rejects by design (fail-closed) — the fixtures cannot
+// exist there. Same rule as the runtime-executable POSIX fixture skips.
+const POSIX_TMUX_FIXTURE_SKIP = process.platform === 'win32'
+  ? 'win32 host fixture paths are not POSIX-absolute; the tmux launcher fixtures fail closed by design'
+  : false;
+
+test('tmux visible respawn revalidates the approved launcher and socket before spawn', { skip: POSIX_TMUX_FIXTURE_SKIP }, () => {
   const { root, runId, launcherIdentity } = seedTmuxLauncher();
   const h = emitTmux(root, runId, 'tmux-visible-approved');
   let launcherChecks = 0;
@@ -205,7 +213,7 @@ test('tmux visible respawn revalidates the approved launcher and socket before s
   assert.equal(captured.shell, false);
 });
 
-test('tmux post-CAS launcher identity drift rolls back, pauses, and marks failed launch', () => {
+test('tmux post-CAS launcher identity drift rolls back, pauses, and marks failed launch', { skip: POSIX_TMUX_FIXTURE_SKIP }, () => {
   const { root, runId, launcherIdentity } = seedTmuxLauncher();
   const h = emitTmux(root, runId, 'tmux-post-cas-identity-drift');
   const replacement = {
@@ -246,7 +254,7 @@ test('tmux post-CAS launcher identity drift rolls back, pauses, and marks failed
   assert.equal(after.session_chain.sessions.find(session => session.run_id === h.childRunId)?.outcome, 'failed_launch');
 });
 
-test('tmux executable hash drift preserves the handoff before spawned CAS', () => {
+test('tmux executable hash drift preserves the handoff before spawned CAS', { skip: POSIX_TMUX_FIXTURE_SKIP }, () => {
   const { root, runId, launcherBin } = seedTmuxLauncher();
   const h = emitTmux(root, runId, 'tmux-hash-drift');
   writeFileSync(launcherBin, '#!/bin/sh\nprintf "tmux 9.9\\n"\n');
@@ -267,7 +275,7 @@ test('tmux executable hash drift preserves the handoff before spawned CAS', () =
   assert.equal(after.session_chain.lease.handoff_phase, 'emitted');
 });
 
-test('tmux executable replaced by a final symlink is rejected before spawned CAS', (t) => {
+test('tmux executable replaced by a final symlink is rejected before spawned CAS', { skip: POSIX_TMUX_FIXTURE_SKIP }, (t) => {
   const { root, runId, launcherBin } = seedTmuxLauncher();
   const h = emitTmux(root, runId, 'tmux-symlink-replacement');
   const moved = `${launcherBin}.moved`;
@@ -288,7 +296,7 @@ test('tmux executable replaced by a final symlink is rejected before spawned CAS
   assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'emitted');
 });
 
-test('tmux socket ownership mismatch at pre-CAS revalidation preserves the handoff', () => {
+test('tmux socket ownership mismatch at pre-CAS revalidation preserves the handoff', { skip: POSIX_TMUX_FIXTURE_SKIP }, () => {
   const { root, runId } = seedTmuxLauncher();
   const h = emitTmux(root, runId, 'tmux-socket-race');
   let probes = 0;
@@ -310,7 +318,7 @@ test('tmux socket ownership mismatch at pre-CAS revalidation preserves the hando
   assert.equal(after.session_chain.lease.handoff_phase, 'emitted');
 });
 
-test('tmux detection-to-spawn approval replacement is rejected before spawned CAS', () => {
+test('tmux detection-to-spawn approval replacement is rejected before spawned CAS', { skip: POSIX_TMUX_FIXTURE_SKIP }, () => {
   const { root, runId, launcherIdentity } = seedTmuxLauncher();
   const h = emitTmux(root, runId, 'tmux-approval-race');
   let launcherChecks = 0;
@@ -340,7 +348,7 @@ test('tmux detection-to-spawn approval replacement is rejected before spawned CA
   assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'emitted');
 });
 
-test('tmux stale launcher_session fails closed before spawned CAS', () => {
+test('tmux stale launcher_session fails closed before spawned CAS', { skip: POSIX_TMUX_FIXTURE_SKIP }, () => {
   const { root, runId } = seedTmuxLauncher();
   const h = emitTmux(root, runId, 'tmux-stale-session');
   let launcherChecks = 0;
@@ -367,7 +375,7 @@ test('tmux stale launcher_session fails closed before spawned CAS', () => {
   assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'emitted');
 });
 
-test('tmux probe-derived session mismatch preserves the emitted handoff before spawned CAS', () => {
+test('tmux probe-derived session mismatch preserves the emitted handoff before spawned CAS', { skip: POSIX_TMUX_FIXTURE_SKIP }, () => {
   const { root, runId } = seedTmuxLauncher();
   const h = emitTmux(root, runId, 'tmux-session-mismatch');
   let probes = 0;
@@ -389,7 +397,7 @@ test('tmux probe-derived session mismatch preserves the emitted handoff before s
   assert.equal(after.session_chain.lease.handoff_phase, 'emitted');
 });
 
-test('tmux ambient pane spoof is rejected by fresh ancestry proof before spawned CAS', () => {
+test('tmux ambient pane spoof is rejected by fresh ancestry proof before spawned CAS', { skip: POSIX_TMUX_FIXTURE_SKIP }, () => {
   const { root, runId } = seedTmuxLauncher();
   const h = emitTmux(root, runId, 'tmux-pane-spoof');
   let spawned = 0;
@@ -411,7 +419,7 @@ test('tmux ambient pane spoof is rejected by fresh ancestry proof before spawned
   assert.equal(after.session_chain.lease.handoff_phase, 'emitted');
 });
 
-test('tmux ps failure preserves the emitted handoff before spawned CAS', () => {
+test('tmux ps failure preserves the emitted handoff before spawned CAS', { skip: POSIX_TMUX_FIXTURE_SKIP }, () => {
   const { root, runId } = seedTmuxLauncher();
   const h = emitTmux(root, runId, 'tmux-ps-failure');
   const r = respawn(root, runId, {
