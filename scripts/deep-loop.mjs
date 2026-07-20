@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { error } from './lib/log.mjs';
 import { initRun, buildInitialLoop } from './lib/initrun.mjs';
 import { detectPlugins } from './lib/detect.mjs';
@@ -36,6 +37,11 @@ import {
   diagnoseLauncherExecutable,
   diagnoseRuntimeExecutable,
 } from './lib/runtime-executable.mjs';
+import { sessionRuntime } from './lib/runtime.mjs';
+import { canonicalProjectRoot } from './lib/project-root.mjs';
+import { buildRuntimeResumeDescriptor } from './lib/runtime-descriptor.mjs';
+
+const DEEP_LOOP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 function parseFlags(argv) {
   const f = {};
@@ -358,6 +364,60 @@ const handlers = {
     const { data } = readState(root, runIdOf(root, f));
     const unattended = !!f.unattended || resolveSpawnMode(data, { env: process.env }) === 'headless';
     json(nextAction(data, { now: parseNow(f), unattended })); return 0;
+  },
+  'resume-command': async (a) => {
+    const f = parseFlags(a);
+    // parseFlags represents a value-less option as boolean true. Reject it before rootOf/runIdOf so
+    // true can never become a filesystem root or logical run id.
+    if (f['project-root'] === true || f['run-id'] === true) {
+      error('USAGE: --project-root and --run-id require a value');
+      return 2;
+    }
+    const root = rootOf(f);
+    const runId = runIdOf(root, f);
+    if (!runId) { error('MISSING_RUN_ID'); return 2; }
+    const { data } = readState(root, runId);
+    const lease = data.session_chain?.lease || {};
+    const childRunId = typeof lease.handoff_child_run_id === 'string'
+      ? lease.handoff_child_run_id
+      : null;
+    if (!childRunId || !['reserved', 'emitted', 'spawned'].includes(lease.handoff_phase)) {
+      process.stdout.write('no pending handoff\n');
+      return 0;
+    }
+
+    const child = (data.session_chain?.sessions || []).find(session => session.run_id === childRunId);
+    const handoffRel = child?.handoff_rel || `handoffs/${childRunId}-next-session.md`;
+    const canonicalRoot = canonicalProjectRoot(data.project.root);
+    const runtime = sessionRuntime(data);
+    const descriptor = buildRuntimeResumeDescriptor({
+      runtime,
+      root: canonicalRoot,
+      parentRunId: runId,
+      childRunId,
+      handoffRel,
+      launcher: data.session_spawn?.launcher,
+      launcherBin: data.session_spawn?.launcher_bin,
+      launcherSocket: data.session_spawn?.launcher_socket,
+      platform: data.session_spawn?.platform || process.platform,
+      model: data.autonomy?.session_model ?? null,
+      effort: data.autonomy?.session_effort ?? null,
+      deepLoopRoot: DEEP_LOOP_ROOT,
+      runtimeExecutableIdentity: data.autonomy?.runtime_executable_approval ?? null,
+      launcherIdentity: data.session_spawn?.launcher_identity ?? null,
+    });
+    const launchPath = join(runDir(canonicalRoot, runId), 'terminal', 'launch-command.txt');
+    const launcherGuidance = existsSync(launchPath)
+      ? `Launcher guidance (from launch-command.txt):\n${readFileSync(launchPath, 'utf8').trimEnd()}`
+      : `Launcher guidance: ${descriptor.entries.interactive.display}`;
+    process.stdout.write([
+      descriptor.resumeInvocation,
+      launcherGuidance,
+      `Lease: owner=${lease.owner_run_id} lease_state=${lease.state} generation=${lease.generation} handoff_phase=${lease.handoff_phase} child_run_id=${childRunId}`,
+      'Status: 인수 확인은 /deep-loop-status',
+      '',
+    ].join('\n'));
+    return 0;
   },
   tick: async (a) => {
     const f = parseFlags(a); const root = rootOf(f);

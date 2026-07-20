@@ -89,7 +89,11 @@ function handoffMarkdown(loop, childRunId, reason, descriptor) {
   const wsLines = (loop.workstreams || []).map(w => `- ${w.id} [${w.status}] branch=${w.branch} worktree=${w.worktree}`).join('\n') || '- (none)';
   const doneEp = (loop.episodes || []).filter(e => ['done', 'approved'].includes(e.status)).map(e => e.id).join(', ') || '(none)';
   const abandonedEp = (loop.episodes || []).filter(e => e.status === 'abandoned').map(e => e.id).join(', ') || '(none)';
+  const lease = loop.session_chain?.lease || {};
   return [
+    `Resume command: ${descriptor.resumeInvocation}`,
+    `Lease: owner=${lease.owner_run_id} handoff_phase=${lease.handoff_phase} child_run_id=${childRunId}`,
+    `Status: 인수 확인은 /deep-loop-status`, '',
     `# Handoff — next session (${childRunId})`, '',
     `> source of truth: 이 파일 + loop.json. **이전 대화 컨텍스트를 가정하지 말라.**`, '',
     `## Goal`, '', loop.goal, '',
