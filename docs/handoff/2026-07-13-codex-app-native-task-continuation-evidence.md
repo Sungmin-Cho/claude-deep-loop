@@ -4439,10 +4439,15 @@ receipt correction, a fresh happy-path re-smoke, and hosted 3×3 CI remain pendi
 - reviewer-response targeted GREEN: after making own `contentItems` the sole discriminator, the
   direct-wire, transport happy-path, malformed-transport, and handoff-protocol tests passed 4/4;
   the attended App handoff contract passed 1/1. The complete App integration file passed 34/34 and
-  the complete skill contract file passed 143/143. A fresh exact preflight and two independent
-  reviewer approvals remain before candidate proposal.
+  the complete skill contract file passed 143/143.
+- reviewer-response full verification: code/document target commit
+  `761f12cb7af0aec02654b08373fba6802236387e`, tree
+  `9b059706a167da247ec3807051a7dd7a5ae2ad5f`, was extracted as a clean Git archive at
+  `/Users/sungmin/Documents/Codex/2026-07-20/deep-loop-preflight-761f12c`. Exact-archive
+  `npm run preflight` passed: validate `ok (schema+builder self-test)` and
+  tests/pass/fail/cancelled/skipped/todo `1,988/1,988/0/0/0/0`, duration
+  `365,411.050625 ms`.
 - boundary: correction and verification to this point made zero App task-tool calls and performed no
   install, restart, registration, push, PR, merge, deep-suite synchronization, cleanup, or archival
-  action. The first review findings have been addressed locally; a fresh exact-commit preflight and two
-  independent reviewer approvals remain before any new candidate can be proposed for separately
-  approved smoke.
+  action. The first review findings and exact-target preflight are closed; two independent reviewer
+  approvals remain before any new candidate can be proposed for separately approved smoke.
