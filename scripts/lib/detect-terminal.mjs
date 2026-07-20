@@ -81,7 +81,7 @@ function parseTmuxSignal(value) {
 export function probeTmuxSocket(identity, {
   socketPath, serverPid, run = defaultProbeRun,
 } = {}) {
-  const probeArgv = ['-S', socketPath, 'display-message', '-p', '#{pid}'];
+  const probeArgv = ['-S', socketPath, 'display-message', '-p', '#{pid} #{session_id}'];
   let probeResult;
   try {
     if (!identity || identity.kind !== 'tmux'
@@ -98,8 +98,10 @@ export function probeTmuxSocket(identity, {
     cmd: [identity?.canonical_path ?? null, ...probeArgv],
     code: probeResult?.code ?? 1,
   };
+  const parsed = /^([1-9][0-9]*) \$([0-9]+)$/.exec(String(probeResult?.stdout ?? '').trim());
   return {
-    ok: probe.code === 0 && String(probeResult?.stdout ?? '').trim() === serverPid,
+    ok: probe.code === 0 && parsed != null && parsed[1] === serverPid,
+    sessionId: parsed?.[2] ?? null,
     probe,
   };
 }
@@ -217,7 +219,7 @@ export function detectTerminal({
     };
   }
 
-  // ── 1.5. tmux approval + socket ownership; screen remains unsupported ──
+  // ── 1.5. tmux approval + socket ownership/session binding; screen remains unsupported ──
   // Must come BEFORE the darwin TERM_PROGRAM check because TERM_PROGRAM is
   // stale/incorrect inside a tmux/screen session.
   if (env.TMUX) {
@@ -234,17 +236,17 @@ export function detectTerminal({
       return noneDescriptor('tmux-unapproved');
     }
 
-    const { ok: socketVerified, probe } = probeTmuxSocket(identity, {
+    const { ok: socketVerified, sessionId, probe } = probeTmuxSocket(identity, {
       socketPath: parsed.socketPath, serverPid: parsed.serverPid, run,
     });
-    if (!socketVerified) {
+    if (!socketVerified || sessionId !== parsed.sessionId) {
       return noneDescriptor('tmux-socket-unverified', probe);
     }
 
     return {
       platform, launcher: 'tmux', launcher_bin: identity.canonical_path,
       launcher_identity: identity, launcher_socket: parsed.socketPath,
-      launcher_pid: parsed.serverPid, launcher_session: parsed.sessionId,
+      launcher_pid: parsed.serverPid, launcher_session: sessionId,
       surface: 'window', reachable: true, visible: true,
       signals, probe, reason: null, fallback: 'launch-command-file', detected_at,
     };

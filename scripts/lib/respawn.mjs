@@ -59,7 +59,7 @@ function currentPosixCodexLauncher(loop, expectedMode, platform) {
       || !session.launcher_identity || typeof session.launcher_identity !== 'object'
       || Array.isArray(session.launcher_identity)) return null;
     const expectedProbe = {
-      cmd: [session.launcher_bin, '-S', session.launcher_socket, 'display-message', '-p', '#{pid}'],
+      cmd: [session.launcher_bin, '-S', session.launcher_socket, 'display-message', '-p', '#{pid} #{session_id}'],
       code: 0,
     };
     if (!isDeepStrictEqual(session.probe, expectedProbe)) return null;
@@ -415,6 +415,10 @@ export function respawn(root, runId, {
           identityReason = 'launcher-socket-unverified';
           throw new Error('launcher socket unavailable');
         }
+        if (socket.sessionId !== posixLauncherSnapshot.launcher_session) {
+          identityReason = 'launcher-session-unverified';
+          throw new Error('launcher session unavailable');
+        }
       } else if (requiresPosixCodexLauncher) {
         identityStage = 'launcher';
         posixLauncherSnapshot = currentPosixCodexLauncher(loop, mode, platform);
@@ -547,6 +551,7 @@ export function respawn(root, runId, {
           run: tmuxProbeRun,
         });
         if (!socket.ok) return 'launcher-socket-unverified';
+        if (socket.sessionId !== session.launcher_session) return 'launcher-session-unverified';
       } catch {
         return 'launcher-identity-drift';
       }

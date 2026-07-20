@@ -2,7 +2,7 @@ import { test } from 'node:test'; import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { detectAndPersist, detectTerminal } from '../scripts/lib/detect-terminal.mjs';
+import { detectAndPersist, detectTerminal, probeTmuxSocket } from '../scripts/lib/detect-terminal.mjs';
 import * as runtimeExecutable from '../scripts/lib/runtime-executable.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState } from '../scripts/lib/state.mjs';
@@ -43,6 +43,21 @@ const tmuxIdentity = (platform = 'linux') => ({
   authenticode: null, approved_by: 'human', approved_at: '2026-07-20T00:00:00.000Z',
 });
 
+test('probeTmuxSocket derives the server pid and session id from the approved binary', () => {
+  const identity = tmuxIdentity();
+  const result = probeTmuxSocket(identity, {
+    socketPath: '/tmp/tmux-501/default', serverPid: '123',
+    run: (bin, argv, options) => {
+      assert.equal(bin, identity.canonical_path);
+      assert.deepEqual(argv, ['-S', '/tmp/tmux-501/default', 'display-message', '-p', '#{pid} #{session_id}']);
+      assert.deepEqual(options, { timeoutMs: 5000, capture: true });
+      return { code: 0, stdout: '123 $7\n' };
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.sessionId, '7');
+});
+
 test('tmux candidate with revalidated approval and matching socket pid becomes a visible window', () => {
   const identity = tmuxIdentity('darwin');
   const calls = [];
@@ -58,7 +73,7 @@ test('tmux candidate with revalidated approval and matching socket pid becomes a
     },
     run: (bin, argv, options) => {
       calls.push({ bin, argv, options });
-      return { code: 0, stdout: '12345\n' };
+      return { code: 0, stdout: '12345 $0\n' };
     },
   });
 
@@ -71,7 +86,7 @@ test('tmux candidate with revalidated approval and matching socket pid becomes a
   assert.deepEqual(d.launcher_identity, identity);
   assert.deepEqual(calls, [{
     bin: identity.canonical_path,
-    argv: ['-S', '/tmp/tmux-501/default', 'display-message', '-p', '#{pid}'],
+    argv: ['-S', '/tmp/tmux-501/default', 'display-message', '-p', '#{pid} #{session_id}'],
     options: { timeoutMs: 5000, capture: true },
   }]);
 });
@@ -80,7 +95,7 @@ test('tmux candidate without durable approval fails closed before probing', () =
   let calls = 0;
   const d = detectTerminal({
     env: { TMUX: '/tmp/tmux-501/default,12345,0' }, platform: 'linux', now: NOW,
-    run: () => { calls++; return { code: 0, stdout: '12345\n' }; },
+    run: () => { calls++; return { code: 0, stdout: '12345 $0\n' }; },
   });
   assert.equal(d.launcher, 'none');
   assert.equal(d.reason, 'tmux-unapproved');
@@ -91,7 +106,7 @@ test('tmux socket probe failure or pid mismatch fails closed without terminal fa
   const identity = tmuxIdentity();
   for (const [label, result] of [
     ['probe failure', { code: 1, stdout: '' }],
-    ['pid mismatch', { code: 0, stdout: '99999\n' }],
+    ['pid mismatch', { code: 0, stdout: '99999 $0\n' }],
   ]) {
     const d = detectTerminal({
       env: { TMUX: '/tmp/tmux-501/default,12345,0', TERM_PROGRAM: 'iTerm.app' },
@@ -102,6 +117,17 @@ test('tmux socket probe failure or pid mismatch fails closed without terminal fa
     assert.equal(d.launcher, 'none', label);
     assert.equal(d.reason, 'tmux-socket-unverified', label);
   }
+});
+
+test('tmux socket probe session mismatch rejects the env-claimed launcher session', () => {
+  const identity = tmuxIdentity();
+  const d = detectTerminal({
+    env: { TMUX: '/tmp/tmux-501/default,12345,5' }, platform: 'linux', arch: 'x64', now: NOW,
+    launcherIdentities: { tmux: identity }, revalidateLauncher: stored => stored,
+    run: () => ({ code: 0, stdout: '12345 $7\n' }),
+  });
+  assert.equal(d.launcher, 'none');
+  assert.equal(d.reason, 'tmux-socket-unverified');
 });
 
 test('malformed tmux candidates never revalidate or probe', () => {
@@ -117,7 +143,7 @@ test('malformed tmux candidates never revalidate or probe', () => {
       env: { TMUX: value }, platform: 'linux', now: NOW,
       launcherIdentities: { tmux: tmuxIdentity() },
       revalidateLauncher: () => { calls++; return tmuxIdentity(); },
-      run: () => { calls++; return { code: 0, stdout: '12345\n' }; },
+      run: () => { calls++; return { code: 0, stdout: '12345 $0\n' }; },
     });
     assert.equal(d.launcher, 'none', value);
     assert.equal(calls, 0, value);
@@ -331,9 +357,9 @@ test('detectAndPersist consumes durable tmux approval and persists only the pid-
     revalidateLauncher: stored => stored,
     run: (bin, argv, options) => {
       assert.equal(bin, identity.canonical_path);
-      assert.deepEqual(argv, ['-S', '/tmp/tmux-501/default', 'display-message', '-p', '#{pid}']);
+      assert.deepEqual(argv, ['-S', '/tmp/tmux-501/default', 'display-message', '-p', '#{pid} #{session_id}']);
       assert.equal(options.capture, true);
-      return { code: 0, stdout: '12345\n' };
+      return { code: 0, stdout: '12345 $7\n' };
     },
   });
   assert.equal(descriptor.launcher, 'tmux');
@@ -371,7 +397,7 @@ test('detectAndPersist tmux branch rejects durable launcher approval drift in it
         }
         return identity;
       },
-      run: () => ({ code: 0, stdout: '12345\n' }),
+      run: () => ({ code: 0, stdout: '12345 $7\n' }),
     }),
     /LAUNCHER_EXECUTABLE_DRIFT: detect-terminal authority changed/,
   );

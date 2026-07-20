@@ -88,7 +88,7 @@ function seedVisible({ approval, launcher = 'cmux', platform = 'linux' } = {}) {
     probe: launcher === 'cmux'
       ? { cmd: ['/opt/cmux/bin/cmux', '--socket', '/tmp/cmux.sock', 'ping'], code: 0 }
       : launcher === 'tmux'
-        ? { cmd: [tmuxIdentity.canonical_path, '-S', '/tmp/tmux-501/default', 'display-message', '-p', '#{pid}'], code: 0 }
+        ? { cmd: [tmuxIdentity.canonical_path, '-S', '/tmp/tmux-501/default', 'display-message', '-p', '#{pid} #{session_id}'], code: 0 }
       : { cmd: ['/usr/bin/osascript', '-e', `id of application "${apple}"`], code: 0 },
     reason: null,
     fallback: 'launch-command-file',
@@ -379,7 +379,7 @@ test('approved POSIX Codex tmux respawn binds both runtime and launcher without 
       assert.deepEqual(identity, launcherApproval);
       return identity;
     },
-    tmuxProbeRun: () => { checks.socket++; return { code: 0, stdout: '12345\n' }; },
+    tmuxProbeRun: () => { checks.socket++; return { code: 0, stdout: '12345 $7\n' }; },
     spawnFn: entry => { captured = entry; return { ok: true }; },
     pollLease: () => ({
       state: 'active', handoff_phase: 'acquired', owner_run_id: handoff.childRunId, generation: 2,
@@ -410,7 +410,7 @@ test('POSIX Codex tmux requires its own approved runtime and never falls back to
     deepLoopRoot: '/opt/deep-loop',
     revalidateRuntimeExecutable: () => { throw new Error('missing Codex approval'); },
     revalidateLauncherExecutable: identity => { launcherChecks++; return identity; },
-    tmuxProbeRun: () => ({ code: 0, stdout: '12345\n' }),
+    tmuxProbeRun: () => ({ code: 0, stdout: '12345 $7\n' }),
     spawnFn: () => { spawned++; return { ok: true }; },
     sleep: noSleep,
   });

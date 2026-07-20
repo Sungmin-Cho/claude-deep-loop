@@ -140,7 +140,7 @@ function seedTmuxLauncher(runtime = 'claude') {
     launcher_identity: launcherIdentity, launcher_socket: '/tmp/tmux-501/default',
     launcher_pid: '12345', launcher_session: '7', surface: 'window',
     reachable: true, visible: true, signals: { tmux: true },
-    probe: { cmd: [canonicalLauncherBin, '-S', '/tmp/tmux-501/default', 'display-message', '-p', '#{pid}'], code: 0 },
+    probe: { cmd: [canonicalLauncherBin, '-S', '/tmp/tmux-501/default', 'display-message', '-p', '#{pid} #{session_id}'], code: 0 },
     reason: null, fallback: 'launch-command-file', detected_at: '2026-06-24T00:00:00.000Z',
   };
   writeState(seeded.root, seeded.runId, data);
@@ -155,7 +155,7 @@ function emitTmux(root, runId, trigger) {
 }
 
 const tmuxVersionRun = () => ({ status: 0, signal: null, stdout: 'tmux 3.4\n', stderr: '' });
-const tmuxProbeOk = () => ({ code: 0, stdout: '12345\n' });
+const tmuxProbeOk = () => ({ code: 0, stdout: '12345 $7\n' });
 
 function expect_(runId) { return { owner: runId, generation: 1 }; }
 
@@ -181,7 +181,7 @@ test('tmux visible respawn revalidates the approved launcher and socket before s
     tmuxProbeRun: (bin, argv, options) => {
       probeChecks++;
       assert.equal(bin, launcherIdentity.canonical_path);
-      assert.deepEqual(argv, ['-S', '/tmp/tmux-501/default', 'display-message', '-p', '#{pid}']);
+      assert.deepEqual(argv, ['-S', '/tmp/tmux-501/default', 'display-message', '-p', '#{pid} #{session_id}']);
       assert.equal(options.capture, true);
       return tmuxProbeOk();
     },
@@ -293,7 +293,7 @@ test('tmux socket ownership mismatch at pre-CAS revalidation preserves the hando
     childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
     attended: true, env: {}, now: NOW1, platform: 'linux',
     revalidateLauncherExecutable: identity => identity,
-    tmuxProbeRun: () => ({ code: 0, stdout: ++probes === 1 ? '12345\n' : '99999\n' }),
+    tmuxProbeRun: () => ({ code: 0, stdout: ++probes === 1 ? '12345 $7\n' : '99999 $7\n' }),
     spawnFn: () => { spawned++; return { ok: true }; }, sleep: noSleep,
   });
 
@@ -361,6 +361,28 @@ test('tmux stale launcher_session fails closed before spawned CAS', () => {
   assert.equal(r.outcome, 'no-launcher');
   assert.equal(r.reason, 'launcher-session-invalid');
   assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'emitted');
+});
+
+test('tmux probe-derived session mismatch preserves the emitted handoff before spawned CAS', () => {
+  const { root, runId } = seedTmuxLauncher();
+  const h = emitTmux(root, runId, 'tmux-session-mismatch');
+  let probes = 0;
+  let spawned = 0;
+  const r = respawn(root, runId, {
+    childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
+    attended: true, env: {}, now: NOW1, platform: 'linux',
+    revalidateLauncherExecutable: identity => identity,
+    tmuxProbeRun: () => ({ code: 0, stdout: ++probes === 1 ? '12345 $7\n' : '12345 $9\n' }),
+    spawnFn: () => { spawned++; return { ok: true }; }, sleep: noSleep,
+  });
+
+  assert.equal(probes, 2);
+  assert.equal(spawned, 0);
+  assert.equal(r.outcome, 'no-launcher');
+  assert.equal(r.reason, 'launcher-session-unverified');
+  const after = readState(root, runId).data;
+  assert.equal(after.status, 'paused');
+  assert.equal(after.session_chain.lease.handoff_phase, 'emitted');
 });
 
 test('respawnGate: total sessions may reach max_sessions but not exceed (off-by-one, Codex r3 🟡6)', () => {
