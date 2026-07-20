@@ -66,6 +66,8 @@ function prune(root, runId) {
   const owned = new Set(all.filter(path => {
     try {
       const env = JSON.parse(readFileSync(path, 'utf8'));
+      if (unwrap(env, { producer: 'deep-loop', artifact_kind: 'compact-checkpoint' }) === null) return false;
+      if (env.envelope?.run_id !== runId) return false;
       return env.payload?.owner_run_id === owner && env.payload?.generation === generation;
     } catch {
       return false;

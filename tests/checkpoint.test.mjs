@@ -107,6 +107,46 @@ test('retention: latest-5 with current-owner preference', () => {
   assert.equal(existsSync(valid.path), true, 'current owner/generation checkpoint must survive stale-owner pressure');
 });
 
+test('retention: owner protection ignores forged checkpoint identity', () => {
+  const root = freshRoot();
+  const { runId } = initClaude(root);
+  const dir = checkpointDirOf(root, runId);
+  mkdirSync(dir, { recursive: true });
+  const { data, hash } = readState(root, runId);
+  const owner = data.session_chain.lease.owner_run_id;
+  const generation = data.session_chain.lease.generation;
+
+  const forged = wrap({
+    producer: 'deep-loop',
+    artifact_kind: 'compact-checkpoint',
+    schema: { name: 'compact-checkpoint', version: '1.0' },
+    run_id: runId,
+    payload: { owner_run_id: owner, generation, loop_hash: hash },
+    now: new Date(NOW_MS).toISOString(),
+  });
+  forged.envelope.artifact_kind = 'foreign-checkpoint';
+  const forgedPath = join(dir, `${ulid(NOW_MS, 0)}-compact.json`);
+  writeFileSync(forgedPath, JSON.stringify(forged, null, 2));
+
+  for (let i = 1; i <= 5; i += 1) {
+    const stale = wrap({
+      producer: 'deep-loop',
+      artifact_kind: 'compact-checkpoint',
+      schema: { name: 'compact-checkpoint', version: '1.0' },
+      run_id: runId,
+      payload: { owner_run_id: 'stale-owner', generation, loop_hash: hash },
+      now: new Date(NOW_MS + i).toISOString(),
+    });
+    writeFileSync(join(dir, `${ulid(NOW_MS + i, 0)}-compact.json`), JSON.stringify(stale, null, 2));
+  }
+
+  const valid = emitCompactCheckpoint(root, runId, { now: NOW_MS + 6 });
+
+  assert.equal(existsSync(forgedPath), false, 'foreign envelope must not receive current-owner protection');
+  assert.equal(existsSync(valid.path), true);
+  assert.equal(readdirSync(dir).filter(file => file.endsWith('-compact.json')).length, 5);
+});
+
 test('selectCheckpoint: unwraps identity and requires owner+generation+loop_hash triple match; none → null', () => {
   const root = freshRoot();
   const { runId } = initClaude(root);
