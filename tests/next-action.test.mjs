@@ -71,6 +71,7 @@ test('budget hard-stop still handoff for both policies', () => {
   const r = nextAction(l, { now: NOW });
   assert.equal(r.action.type, 'handoff');
   assert.equal(r.action.reason, 'budget');
+  assert.equal(r.action.advice, undefined);
 });
 
 test('cap advice covers discover and dispatch_maker routes', () => {

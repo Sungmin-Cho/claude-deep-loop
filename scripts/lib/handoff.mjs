@@ -201,6 +201,12 @@ export function emitHandoff(root, runId, {
     if (lease.handoff_phase === 'reserved') {   // 부모 carve-out 시작 + stale TTL (Codex r1 🔴4)
       l.session_chain.lease = { ...lease, handoff_phase: 'emitted', state: 'releasing', expires_at: new Date(now + ttlMs).toISOString(), resume_policy: effectiveResumePolicy };
     }
+    l.session_chain.consumed_milestones ??= [];
+    const consumed = l.session_chain.consumed_milestones;
+    const toConsume = (l.workstreams || [])
+      .flatMap(w => w.terminal_events || [])
+      .filter(event => !consumed.includes(event));
+    consumed.push(...toConsume);
   }, (l) => {
     if (l.status === 'paused') throw new Error('RUN_PAUSED: emitHandoff');
     // v1.6 (spec §2.3-2, r1 🔴1): reserve(lock A)↔이 최종 append(lock B) 사이 finish 경합을 in-lock에서 봉쇄.

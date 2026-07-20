@@ -85,7 +85,17 @@ export function nextAction(loop, { now = Date.now(), unattended = false } = {}) 
   if (br.tripped) return A({ allowed: false, blocked_by: ['breaker'], reason: br.reason, tier_after: b.tier_after }, { type: 'await_human', reason: 'breaker' }, '/deep-loop-status');
 
   // comprehension-debt 는 **새 fan-out(discover)만** 막는다 — 현재 episode 진행/fix/리뷰/handoff/finish 는 허용 (spec §15, Codex r2 🔴4).
-  const gate = { allowed: true, blocked_by: debt.blocked ? ['comprehension-debt'] : [], reason: b.reason, tier_after: b.tier_after };
+  const consumed = loop.session_chain?.consumed_milestones || [];
+  const unconsumedMilestones = (loop.workstreams || [])
+    .flatMap(w => w.terminal_events || [])
+    .filter(event => !consumed.includes(event));
+  const gate = {
+    allowed: true,
+    blocked_by: debt.blocked ? ['comprehension-debt'] : [],
+    reason: b.reason,
+    tier_after: b.tier_after,
+    unconsumed_milestones: unconsumedMilestones,
+  };
 
   // 마일스톤: per_session_turn_cap 도달. compact-in-place attended는 액션을 대체하지 않고 advice만 부가한다
   // (대체형 advisory는 rotate 없이는 카운터가 리셋되지 않아 매 tick advisory만 반환하는 liveness 결함 — 스펙 §4.4).

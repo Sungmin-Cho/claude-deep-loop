@@ -9,6 +9,10 @@ import { buildInitialLoop, initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState } from '../scripts/lib/state.mjs';
 import { validate } from '../scripts/lib/schema.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
+import { newWorkstream, recordWorkstreamTerminal } from '../scripts/lib/workspace.mjs';
+import { emitHandoff } from '../scripts/lib/handoff.mjs';
+import { acquireLease } from '../scripts/lib/lease.mjs';
+import { nextAction } from '../scripts/lib/next-action.mjs';
 
 const NOW = new Date('2026-07-20T00:00:00.000Z');
 const noRun = () => ({ code: 1, stdout: '', stderr: '' });
@@ -232,6 +236,128 @@ test('CLI next-action: attended compact-in-place returns real action with cap ad
   assert.equal(action.type, 'discover');
   assert.equal(action.advice, 'compact');
   assert.equal(action.advice_reason, 'per_session_turn_cap');
+});
+
+test('milestone cursor: terminal transition records identity; emit consumes it; child does not re-emit', () => {
+  const root = freshRoot();
+  const { runId } = initClaude(root);
+  const fence = { owner: runId, generation: 1 };
+  const { id: wsId } = newWorkstream(root, runId, {
+    title: 'cursor test', branch: 'test/cursor', worktree: '.claude/worktrees/cursor-test', fence,
+  });
+  recordWorkstreamTerminal(root, runId, wsId, {
+    status: 'abandoned', proof: { reason: 'test' }, fence,
+  });
+
+  const { data: afterTerminal } = readState(root, runId);
+  const ws = afterTerminal.workstreams.find(w => w.id === wsId);
+  assert.equal(ws.terminal_events.length, 1);
+  assert.match(ws.terminal_events[0], /^\d+:ws-/);
+  assert.deepEqual(nextAction(afterTerminal, { now: NOW }).gate.unconsumed_milestones, [ws.terminal_events[0]]);
+
+  const emitted = emitHandoff(root, runId, {
+    reason: 'milestone', trigger: 'milestone', now: NOW.getTime(), headless: false,
+    expect: fence, env: {},
+  });
+  assert.ok(emitted.ok);
+  const { data: afterEmit } = readState(root, runId);
+  assert.deepEqual(afterEmit.session_chain.consumed_milestones, [ws.terminal_events[0]]);
+  assert.deepEqual(nextAction(afterEmit, { now: NOW }).gate.unconsumed_milestones, []);
+
+  const acquired = acquireLease(root, runId, {
+    owner: emitted.childRunId, expectGeneration: 1, runtime: 'claude', now: NOW.getTime() + 1,
+  });
+  assert.ok(acquired.ok);
+  const childFence = { owner: emitted.childRunId, generation: 2 };
+  assert.deepEqual(nextAction(readState(root, runId).data, { now: NOW }).gate.unconsumed_milestones, []);
+
+  const { id: nextWsId } = newWorkstream(root, runId, {
+    title: 'next cursor', branch: 'test/next-cursor', worktree: '.claude/worktrees/next-cursor', fence: childFence,
+  });
+  recordWorkstreamTerminal(root, runId, nextWsId, {
+    status: 'abandoned', proof: { reason: 'next test' }, fence: childFence,
+  });
+  const { data: afterNextTerminal } = readState(root, runId);
+  const nextEvent = afterNextTerminal.workstreams.find(w => w.id === nextWsId).terminal_events[0];
+  assert.deepEqual(nextAction(afterNextTerminal, { now: NOW }).gate.unconsumed_milestones, [nextEvent]);
+});
+
+test('milestone cursor: pre-compact handoff consumes terminal transition before milestone trigger', () => {
+  const root = freshRoot();
+  const { runId } = initClaude(root);
+  const fence = { owner: runId, generation: 1 };
+  const { id: wsId } = newWorkstream(root, runId, {
+    title: 'precompact cursor', branch: 'test/precompact-cursor', worktree: '.claude/worktrees/precompact-cursor', fence,
+  });
+  recordWorkstreamTerminal(root, runId, wsId, {
+    status: 'abandoned', proof: { reason: 'precompact test' }, fence,
+  });
+  const terminalEvent = readState(root, runId).data.workstreams.find(w => w.id === wsId).terminal_events[0];
+
+  const emitted = emitHandoff(root, runId, {
+    reason: 'pre-compact', trigger: 'precompact', now: NOW.getTime(), headless: false,
+    expect: fence, env: {},
+  });
+  assert.ok(emitted.ok);
+  const afterEmit = readState(root, runId).data;
+  assert.deepEqual(afterEmit.session_chain.consumed_milestones, [terminalEvent]);
+
+  const acquired = acquireLease(root, runId, {
+    owner: emitted.childRunId, expectGeneration: 1, runtime: 'claude', now: NOW.getTime() + 1,
+  });
+  assert.ok(acquired.ok);
+  assert.deepEqual(nextAction(readState(root, runId).data, { now: NOW }).gate.unconsumed_milestones, []);
+});
+
+test('milestone cursor: ready then merged preserves and consumes both terminal identities', () => {
+  const root = freshRoot();
+  const { runId } = initClaude(root);
+  const fence = { owner: runId, generation: 1 };
+  const { id: wsId } = newWorkstream(root, runId, {
+    title: 'ready merged cursor', branch: 'test/ready-merged', worktree: '.claude/worktrees/ready-merged', fence,
+  });
+  const seeded = readState(root, runId).data;
+  seeded.workstreams.find(w => w.id === wsId).review_points_done = [...seeded.review.points];
+  writeState(root, runId, seeded);
+
+  recordWorkstreamTerminal(root, runId, wsId, { status: 'ready', proof: {}, fence });
+  recordWorkstreamTerminal(root, runId, wsId, {
+    status: 'merged', proof: { merge_commit: 'abc123', human_approved: true }, fence,
+  });
+  const beforeEmit = readState(root, runId).data;
+  const terminalEvents = beforeEmit.workstreams.find(w => w.id === wsId).terminal_events;
+  assert.equal(terminalEvents.length, 2);
+  assert.match(terminalEvents[0], /^\d+:ws-.*:ready$/);
+  assert.match(terminalEvents[1], /^\d+:ws-.*:merged$/);
+  assert.deepEqual(nextAction(beforeEmit, { now: NOW }).gate.unconsumed_milestones, terminalEvents);
+
+  const emitted = emitHandoff(root, runId, {
+    reason: 'milestone', trigger: 'milestone', now: NOW.getTime(), headless: false,
+    expect: fence, env: {},
+  });
+  assert.ok(emitted.ok);
+  assert.deepEqual(readState(root, runId).data.session_chain.consumed_milestones, terminalEvents);
+});
+
+test('CLI handoff emit without milestone flag consumes derived terminal identities', () => {
+  const root = freshRoot();
+  const { runId } = initClaude(root);
+  const fence = { owner: runId, generation: 1 };
+  const { id: wsId } = newWorkstream(root, runId, {
+    title: 'cli cursor', branch: 'test/cli-cursor', worktree: '.claude/worktrees/cli-cursor', fence,
+  });
+  recordWorkstreamTerminal(root, runId, wsId, {
+    status: 'abandoned', proof: { reason: 'cli test' }, fence,
+  });
+  const terminalEvent = readState(root, runId).data.workstreams.find(w => w.id === wsId).terminal_events[0];
+
+  const result = runCli([
+    'handoff', 'emit', '--project-root', root, '--run-id', runId,
+    '--owner', runId, '--generation', '1', '--reason', 'milestone',
+  ]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(JSON.parse(result.stdout).ok);
+  assert.deepEqual(readState(root, runId).data.session_chain.consumed_milestones, [terminalEvent]);
 });
 
 function minimalValidLoop() {
