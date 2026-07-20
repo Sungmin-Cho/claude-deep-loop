@@ -11,6 +11,7 @@ import { buildLaunchCommand } from './runtime-descriptor.mjs';
 import { defaultDesktopProbe } from './desktop-target.mjs';
 import { sessionRuntime } from './runtime.mjs';
 import { canonicalProjectRoot } from './project-root.mjs';
+import { defaultProbeRun, probeTmuxSocket } from './detect-terminal.mjs';
 import {
   revalidateTrustedLauncherExecutable,
   revalidateTrustedRuntimeExecutable,
@@ -44,12 +45,25 @@ function currentLauncherAuthority(loop, expectedKind, { allowDetachedDurable = f
 }
 
 function currentPosixCodexLauncher(loop, expectedMode, platform) {
-  if (!['linux', 'darwin'].includes(platform) || !['cmux', 'iterm2', 'terminal-app'].includes(expectedMode)) return null;
+  if (!['linux', 'darwin'].includes(platform) || !['cmux', 'iterm2', 'terminal-app', 'tmux'].includes(expectedMode)) return null;
   const session = loop.session_spawn;
   if (!session || typeof session !== 'object' || Array.isArray(session)
     || session.platform !== platform || session.launcher !== expectedMode
     || session.reachable !== true || session.visible !== true) return null;
-  if (expectedMode === 'cmux') {
+  if (expectedMode === 'tmux') {
+    if (session.surface !== 'window'
+      || typeof session.launcher_bin !== 'string' || !posix.isAbsolute(session.launcher_bin)
+      || typeof session.launcher_socket !== 'string' || !posix.isAbsolute(session.launcher_socket)
+      || typeof session.launcher_pid !== 'string' || !/^[1-9][0-9]*$/.test(session.launcher_pid)
+      || typeof session.launcher_session !== 'string' || !/^[0-9]+$/.test(session.launcher_session)
+      || !session.launcher_identity || typeof session.launcher_identity !== 'object'
+      || Array.isArray(session.launcher_identity)) return null;
+    const expectedProbe = {
+      cmd: [session.launcher_bin, '-S', session.launcher_socket, 'display-message', '-p', '#{pid}'],
+      code: 0,
+    };
+    if (!isDeepStrictEqual(session.probe, expectedProbe)) return null;
+  } else if (expectedMode === 'cmux') {
     if (session.surface !== 'workspace'
       || typeof session.launcher_bin !== 'string' || !posix.isAbsolute(session.launcher_bin)
       || typeof session.launcher_socket !== 'string' || session.launcher_socket.length === 0) return null;
@@ -73,7 +87,10 @@ function currentPosixCodexLauncher(loop, expectedMode, platform) {
     platform: session.platform,
     launcher: session.launcher,
     launcher_bin: session.launcher_bin ?? null,
+    launcher_identity: session.launcher_identity ?? null,
     launcher_socket: session.launcher_socket ?? null,
+    launcher_pid: session.launcher_pid ?? null,
+    launcher_session: session.launcher_session ?? null,
     surface: session.surface ?? null,
     reachable: session.reachable,
     visible: session.visible,
@@ -249,6 +266,7 @@ export function respawn(root, runId, {
   revalidateLauncherExecutable = revalidateTrustedLauncherExecutable,
   runtimeRevalidationOptions = {},
   launcherRevalidationOptions = {},
+  tmuxProbeRun = defaultProbeRun,
 } = {}) {
   reconcileBudget(root, runId);                       // 무결성 fail-stop (탐지 시 throw)
   const { data: loop } = readState(root, runId);
@@ -341,7 +359,8 @@ export function respawn(root, runId, {
   let launcherAuthoritySnapshot = null;
   let posixLauncherSnapshot = null;
   const requiresPosixCodexLauncher = ['linux', 'darwin'].includes(platform) && runtime === 'codex'
-    && ['cmux', 'iterm2', 'terminal-app'].includes(mode);
+    && ['cmux', 'iterm2', 'terminal-app', 'tmux'].includes(mode);
+  const requiresPosixTmuxLauncher = ['linux', 'darwin'].includes(platform) && mode === 'tmux';
   // The shared headless host owns Codex executable preflight and post-CAS
   // revalidation. This local authority path is for auto-visible continuation;
   // Windows keeps its existing direct runtime requirement for every non-App mode.
@@ -349,8 +368,9 @@ export function respawn(root, runId, {
     || requiresPosixCodexLauncher;
   const requiresWindowsLauncher = platform === 'win32'
     && (mode === 'wt' || mode === 'powershell' || (runtime === 'claude' && mode === 'desktop'));
-  if (requiresRuntime || requiresWindowsLauncher || requiresPosixCodexLauncher) {
+  if (requiresRuntime || requiresWindowsLauncher || requiresPosixCodexLauncher || requiresPosixTmuxLauncher) {
     let identityStage = requiresRuntime ? 'runtime' : 'launcher';
+    let identityReason = null;
     try {
       if (requiresRuntime) {
         const stored = loop.autonomy?.runtime_executable_approval;
@@ -371,13 +391,37 @@ export function respawn(root, runId, {
         if (!launcherIdentity || launcherIdentity.kind !== expectedKind
           || !isDeepStrictEqual(launcherIdentity, stored)) throw new Error('launcher identity mismatch');
       }
-      if (requiresPosixCodexLauncher) {
+      if (requiresPosixTmuxLauncher) {
+        identityStage = 'launcher';
+        launcherAuthoritySnapshot = durableLauncherAuthority(loop, 'tmux');
+        const stored = launcherAuthoritySnapshot?.identity;
+        if (stored == null || !isDeepStrictEqual(loop.session_spawn?.launcher_identity, stored)) {
+          throw new Error('launcher authority unavailable');
+        }
+        launcherIdentity = revalidateLauncherExecutable(stored, { ...launcherRevalidationOptions, platform });
+        if (!launcherIdentity || launcherIdentity.kind !== 'tmux'
+          || !isDeepStrictEqual(launcherIdentity, stored)) throw new Error('launcher identity mismatch');
+        posixLauncherSnapshot = currentPosixCodexLauncher(loop, mode, platform);
+        if (posixLauncherSnapshot == null) {
+          identityReason = 'launcher-session-invalid';
+          throw new Error('launcher session unavailable');
+        }
+        const socket = probeTmuxSocket(launcherIdentity, {
+          socketPath: posixLauncherSnapshot.launcher_socket,
+          serverPid: posixLauncherSnapshot.launcher_pid,
+          run: tmuxProbeRun,
+        });
+        if (!socket.ok) {
+          identityReason = 'launcher-socket-unverified';
+          throw new Error('launcher socket unavailable');
+        }
+      } else if (requiresPosixCodexLauncher) {
         identityStage = 'launcher';
         posixLauncherSnapshot = currentPosixCodexLauncher(loop, mode, platform);
         if (posixLauncherSnapshot == null) throw new Error('launcher session unavailable');
       }
     } catch {
-      const reason = `${identityStage}-identity-unavailable`;
+      const reason = identityReason ?? `${identityStage}-identity-unavailable`;
       const res = preservePause(root, runId, { childRunId, parentOwner, generation, pauseReason: reason });
       if (res.terminal) return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };
       if (res.fenced) return { ok: false, outcome: 'fenced', reason: 'lease-changed-before-pause', childRunId };
@@ -406,6 +450,7 @@ export function respawn(root, runId, {
       launcher: loop.session_spawn?.launcher,
       launcherBin: loop.session_spawn?.launcher_bin,
       launcherSocket: loop.session_spawn?.launcher_socket,
+      launcherSession: loop.session_spawn?.launcher_session,
       platform, desktopTarget: dt && dt.ok ? dt.argvTarget : null,
       exists: descriptorExists,
       model: loop.autonomy?.session_model ?? null, effort: loop.autonomy?.session_effort ?? null,
@@ -476,7 +521,36 @@ export function respawn(root, runId, {
         return 'launcher-identity-drift';
       }
     }
-    if (posixLauncherSnapshot != null) {
+    if (requiresPosixTmuxLauncher && launcherIdentity != null) {
+      const session = sourceLoop.session_spawn;
+      if (typeof session?.launcher_session !== 'string' || !/^[0-9]+$/.test(session.launcher_session)
+        || session.launcher_session !== posixLauncherSnapshot?.launcher_session) {
+        return 'launcher-session-invalid';
+      }
+      try {
+        const authority = durableLauncherAuthority(sourceLoop, 'tmux');
+        if (authority == null || launcherAuthoritySnapshot == null
+          || authority.source !== launcherAuthoritySnapshot.source
+          || !isDeepStrictEqual(authority.identity, launcherAuthoritySnapshot.identity)
+          || !isDeepStrictEqual(session.launcher_identity, authority.identity)) {
+          return 'launcher-identity-drift';
+        }
+        const freshIdentity = revalidateLauncherExecutable(authority.identity, {
+          ...launcherRevalidationOptions, platform,
+        });
+        if (!isDeepStrictEqual(freshIdentity, launcherIdentity)) return 'launcher-identity-drift';
+        const freshSnapshot = currentPosixCodexLauncher(sourceLoop, mode, platform);
+        if (!isDeepStrictEqual(freshSnapshot, posixLauncherSnapshot)) return 'launcher-identity-drift';
+        const socket = probeTmuxSocket(freshIdentity, {
+          socketPath: freshSnapshot.launcher_socket,
+          serverPid: freshSnapshot.launcher_pid,
+          run: tmuxProbeRun,
+        });
+        if (!socket.ok) return 'launcher-socket-unverified';
+      } catch {
+        return 'launcher-identity-drift';
+      }
+    } else if (posixLauncherSnapshot != null) {
       const fresh = currentPosixCodexLauncher(sourceLoop, mode, platform);
       if (!isDeepStrictEqual(fresh, posixLauncherSnapshot)) return 'launcher-identity-drift';
     }

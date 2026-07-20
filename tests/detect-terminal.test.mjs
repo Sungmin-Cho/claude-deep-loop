@@ -341,6 +341,46 @@ test('detectAndPersist consumes durable tmux approval and persists only the pid-
   assert.deepEqual(readState(root, runId).data.session_spawn, descriptor);
 });
 
+test('detectAndPersist tmux branch rejects durable launcher approval drift in its in-lock guard', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-terminal-tmux-drift-'));
+  const { runId } = initRun(root, {
+    runtime: 'claude', goal: 'g', now: new Date('2026-07-20T00:00:00Z'),
+    env: {}, platform: 'linux', run: () => ({ code: 1 }),
+  });
+  const oldIdentity = tmuxIdentity();
+  const freshIdentity = {
+    ...oldIdentity, sha256: 'd'.repeat(64), approved_at: '2026-07-20T00:01:00.000Z',
+  };
+  const { data } = readState(root, runId);
+  data.autonomy.launcher_executable_approvals.tmux = oldIdentity;
+  writeState(root, runId, data);
+  let raced = false;
+
+  assert.throws(
+    () => detectAndPersist(root, runId, {
+      owner: runId, generation: 1,
+      env: { TMUX: '/tmp/tmux-501/default,12345,7' },
+      platform: 'linux', arch: 'x64', now: NOW,
+      revalidateLauncher: identity => {
+        assert.deepEqual(identity, oldIdentity);
+        if (!raced) {
+          raced = true;
+          const current = readState(root, runId).data;
+          current.autonomy.launcher_executable_approvals.tmux = freshIdentity;
+          writeState(root, runId, current);
+        }
+        return identity;
+      },
+      run: () => ({ code: 0, stdout: '12345\n' }),
+    }),
+    /LAUNCHER_EXECUTABLE_DRIFT: detect-terminal authority changed/,
+  );
+
+  const after = readState(root, runId).data;
+  assert.deepEqual(after.autonomy.launcher_executable_approvals.tmux, freshIdentity);
+  assert.equal(after.session_spawn.launcher, 'none');
+});
+
 test('durable launcher approval is authoritative while legacy stored session identity remains compatible', () => {
   const durableFixture = launcherFixture('wt.exe', 'Windows Terminal 1.22.10352.0');
   const root = mkdtempSync(join(tmpdir(), 'dl-terminal-authority-'));

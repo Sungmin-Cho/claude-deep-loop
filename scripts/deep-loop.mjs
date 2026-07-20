@@ -7,7 +7,7 @@ import { initRun, buildInitialLoop } from './lib/initrun.mjs';
 import { detectPlugins } from './lib/detect.mjs';
 import { matchRecipe, recipesDir, validateRecipesDir } from './lib/recipes.mjs';
 import { json } from './lib/log.mjs';
-import { validate as validateLoop } from './lib/schema.mjs';
+import { LAUNCHER_KINDS, validate as validateLoop } from './lib/schema.mjs';
 import { readState, writeState, patch as patchState, pauseRun, runDir, findRoot } from './lib/state.mjs';
 import { leaseCheck, acquireLease, releaseLease } from './lib/lease.mjs';
 import { newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal } from './lib/workspace.mjs';
@@ -298,7 +298,7 @@ const handlers = {
       throw new Error('LAUNCHER_EXECUTABLE_AMBIGUOUS: exactly one explicit candidate path is required');
     }
     const kind = reqStr(f, 'kind');
-    if (!kind) { error('USAGE: --kind <wt|powershell|tmux> is required'); return 2; }
+    if (!kind) { error(`USAGE: --kind <${LAUNCHER_KINDS.join('|')}> is required`); return 2; }
     const candidatePath = reqStr(f, 'path');
     if (!candidatePath) { error('USAGE: --path ABSOLUTE_NATIVE_LAUNCHER is required'); return 2; }
 

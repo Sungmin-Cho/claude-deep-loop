@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runDir } from '../scripts/lib/state.mjs';
@@ -11,6 +12,8 @@ import { acquireLease, advanceHandoffPhase, releaseLease } from '../scripts/lib/
 import { respawn as respawnImpl, respawnGate, resolveSpawnMode, isHeadlessInvocation } from '../scripts/lib/respawn.mjs';
 import { buildLaunchCommand, buildRuntimeResumeDescriptor } from '../scripts/lib/runtime-descriptor.mjs';
 import { sessionRuntime } from '../scripts/lib/runtime.mjs';
+import { revalidateTrustedLauncherExecutable } from '../scripts/lib/runtime-executable.mjs';
+import { createFileSymlinkOrSkip } from './helpers/fs-fixtures.mjs';
 
 const NOW0 = new Date('2026-06-24T00:00:00Z');
 const NOW1 = Date.parse('2026-06-24T01:00:00Z');
@@ -104,11 +107,220 @@ function seedLauncher({ spawn_style = 'visible', launcher = 'cmux', runtime = 'c
   }, runtime);
 }
 
+function tmuxRuntimeIdentity() {
+  return {
+    runtime: 'codex', canonical_path: '/opt/openai/codex', sha256: 'a'.repeat(64),
+    version: '0.144.1', platform: 'linux', arch: process.arch,
+    source: 'human-explicit', package: null, authenticode: null,
+    approved_by: 'human', approved_at: '2026-06-24T00:00:00.000Z',
+  };
+}
+
+function seedTmuxLauncher(runtime = 'claude') {
+  const seeded = seed(null, runtime);
+  const binDir = join(seeded.root, 'bin');
+  mkdirSync(binDir);
+  const launcherBin = join(binDir, 'tmux');
+  writeFileSync(launcherBin, '#!/bin/sh\nprintf "tmux 3.4\\n"\n');
+  chmodSync(launcherBin, 0o755);
+  const canonicalLauncherBin = realpathSync(launcherBin);
+  const launcherIdentity = {
+    kind: 'tmux', canonical_path: canonicalLauncherBin,
+    sha256: createHash('sha256').update(readFileSync(canonicalLauncherBin)).digest('hex'),
+    version: 'tmux 3.4', platform: 'linux', arch: process.arch,
+    source: 'human-explicit', authenticode: null,
+    approved_by: 'human', approved_at: '2026-06-24T00:00:00.000Z',
+  };
+  const { data } = readState(seeded.root, seeded.runId);
+  data.autonomy.spawn_style = 'visible';
+  data.autonomy.launcher_executable_approvals.tmux = launcherIdentity;
+  if (runtime === 'codex') data.autonomy.runtime_executable_approval = tmuxRuntimeIdentity();
+  data.session_spawn = {
+    platform: 'linux', launcher: 'tmux', launcher_bin: canonicalLauncherBin,
+    launcher_identity: launcherIdentity, launcher_socket: '/tmp/tmux-501/default',
+    launcher_pid: '12345', launcher_session: '7', surface: 'window',
+    reachable: true, visible: true, signals: { tmux: true },
+    probe: { cmd: [canonicalLauncherBin, '-S', '/tmp/tmux-501/default', 'display-message', '-p', '#{pid}'], code: 0 },
+    reason: null, fallback: 'launch-command-file', detected_at: '2026-06-24T00:00:00.000Z',
+  };
+  writeState(seeded.root, seeded.runId, data);
+  return { ...seeded, launcherBin: canonicalLauncherBin, launcherIdentity };
+}
+
+function emitTmux(root, runId, trigger) {
+  return emitHandoff(root, runId, {
+    trigger, now: NOW1, expect: expect_(runId), platform: 'linux',
+    descriptorBuilder: buildPosixDescriptor,
+  });
+}
+
+const tmuxVersionRun = () => ({ status: 0, signal: null, stdout: 'tmux 3.4\n', stderr: '' });
+const tmuxProbeOk = () => ({ code: 0, stdout: '12345\n' });
+
 function expect_(runId) { return { owner: runId, generation: 1 }; }
 
 // Sequence helper for fake pollLease — returns successive values, last value sticks after exhaustion.
 function seq(values) { let i = 0; return () => values[Math.min(i++, values.length - 1)]; }
 const noSleep = () => {};
+
+test('tmux visible respawn revalidates the approved launcher and socket before spawn', () => {
+  const { root, runId, launcherIdentity } = seedTmuxLauncher();
+  const h = emitTmux(root, runId, 'tmux-visible-approved');
+  let launcherChecks = 0;
+  let probeChecks = 0;
+  let captured = null;
+  const r = respawn(root, runId, {
+    childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
+    attended: true, env: {}, now: NOW1, platform: 'linux',
+    revalidateLauncherExecutable: (identity, options) => {
+      launcherChecks++;
+      assert.deepEqual(identity, launcherIdentity);
+      return revalidateTrustedLauncherExecutable(identity, options);
+    },
+    launcherRevalidationOptions: { arch: process.arch, runVersion: tmuxVersionRun },
+    tmuxProbeRun: (bin, argv, options) => {
+      probeChecks++;
+      assert.equal(bin, launcherIdentity.canonical_path);
+      assert.deepEqual(argv, ['-S', '/tmp/tmux-501/default', 'display-message', '-p', '#{pid}']);
+      assert.equal(options.capture, true);
+      return tmuxProbeOk();
+    },
+    spawnFn: entry => { captured = entry; return { ok: true }; },
+    pollLease: () => ({ state: 'active', handoff_phase: 'acquired', owner_run_id: h.childRunId, generation: 2 }),
+    sleep: noSleep,
+  });
+
+  assert.equal(r.ok, true, `${r.outcome}: ${r.reason}`);
+  assert.equal(r.outcome, 'spawned');
+  assert.equal(launcherChecks, 3, 'initial, pre-CAS, and post-CAS launcher checks are mandatory');
+  assert.equal(probeChecks, 3, 'socket ownership is re-probed at every launcher authority stage');
+  assert.equal(captured.bin, launcherIdentity.canonical_path);
+  assert.deepEqual(captured.argv.slice(0, 7), [
+    '-S', '/tmp/tmux-501/default', 'new-window', '-t', '7', '-c', readState(root, runId).data.project.root,
+  ]);
+  assert.equal(captured.shell, false);
+});
+
+test('tmux executable hash drift preserves the handoff before spawned CAS', () => {
+  const { root, runId, launcherBin } = seedTmuxLauncher();
+  const h = emitTmux(root, runId, 'tmux-hash-drift');
+  writeFileSync(launcherBin, '#!/bin/sh\nprintf "tmux 9.9\\n"\n');
+  let spawned = 0;
+  const r = respawn(root, runId, {
+    childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
+    attended: true, env: {}, now: NOW1, platform: 'linux',
+    launcherRevalidationOptions: { arch: process.arch, runVersion: tmuxVersionRun },
+    tmuxProbeRun: tmuxProbeOk,
+    spawnFn: () => { spawned++; return { ok: true }; }, sleep: noSleep,
+  });
+
+  assert.equal(spawned, 0);
+  assert.equal(r.outcome, 'no-launcher');
+  assert.equal(r.reason, 'launcher-identity-unavailable');
+  const after = readState(root, runId).data;
+  assert.equal(after.status, 'paused');
+  assert.equal(after.session_chain.lease.handoff_phase, 'emitted');
+});
+
+test('tmux executable replaced by a final symlink is rejected before spawned CAS', (t) => {
+  const { root, runId, launcherBin } = seedTmuxLauncher();
+  const h = emitTmux(root, runId, 'tmux-symlink-replacement');
+  const moved = `${launcherBin}.moved`;
+  renameSync(launcherBin, moved);
+  if (!createFileSymlinkOrSkip(t, moved, launcherBin)) return;
+  let spawned = 0;
+  const r = respawn(root, runId, {
+    childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
+    attended: true, env: {}, now: NOW1, platform: 'linux',
+    launcherRevalidationOptions: { arch: process.arch, runVersion: tmuxVersionRun },
+    tmuxProbeRun: tmuxProbeOk,
+    spawnFn: () => { spawned++; return { ok: true }; }, sleep: noSleep,
+  });
+
+  assert.equal(spawned, 0);
+  assert.equal(r.outcome, 'no-launcher');
+  assert.equal(r.reason, 'launcher-identity-unavailable');
+  assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'emitted');
+});
+
+test('tmux socket ownership mismatch at pre-CAS revalidation preserves the handoff', () => {
+  const { root, runId } = seedTmuxLauncher();
+  const h = emitTmux(root, runId, 'tmux-socket-race');
+  let probes = 0;
+  let spawned = 0;
+  const r = respawn(root, runId, {
+    childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
+    attended: true, env: {}, now: NOW1, platform: 'linux',
+    revalidateLauncherExecutable: identity => identity,
+    tmuxProbeRun: () => ({ code: 0, stdout: ++probes === 1 ? '12345\n' : '99999\n' }),
+    spawnFn: () => { spawned++; return { ok: true }; }, sleep: noSleep,
+  });
+
+  assert.equal(probes, 2);
+  assert.equal(spawned, 0);
+  assert.equal(r.outcome, 'no-launcher');
+  assert.equal(r.reason, 'launcher-socket-unverified');
+  const after = readState(root, runId).data;
+  assert.equal(after.status, 'paused');
+  assert.equal(after.session_chain.lease.handoff_phase, 'emitted');
+});
+
+test('tmux detection-to-spawn approval replacement is rejected before spawned CAS', () => {
+  const { root, runId, launcherIdentity } = seedTmuxLauncher();
+  const h = emitTmux(root, runId, 'tmux-approval-race');
+  let launcherChecks = 0;
+  let spawned = 0;
+  const r = respawn(root, runId, {
+    childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
+    attended: true, env: {}, now: NOW1, platform: 'linux',
+    revalidateLauncherExecutable: identity => {
+      launcherChecks++;
+      if (launcherChecks === 1) {
+        const { data } = readState(root, runId);
+        data.autonomy.launcher_executable_approvals.tmux = {
+          ...launcherIdentity, sha256: 'd'.repeat(64), approved_at: '2026-06-24T00:01:00.000Z',
+        };
+        writeState(root, runId, data);
+      }
+      return identity;
+    },
+    tmuxProbeRun: tmuxProbeOk,
+    spawnFn: () => { spawned++; return { ok: true }; }, sleep: noSleep,
+  });
+
+  assert.equal(launcherChecks, 1);
+  assert.equal(spawned, 0);
+  assert.equal(r.outcome, 'no-launcher');
+  assert.equal(r.reason, 'launcher-identity-drift');
+  assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'emitted');
+});
+
+test('tmux stale launcher_session fails closed before spawned CAS', () => {
+  const { root, runId } = seedTmuxLauncher();
+  const h = emitTmux(root, runId, 'tmux-stale-session');
+  let launcherChecks = 0;
+  let spawned = 0;
+  const r = respawn(root, runId, {
+    childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
+    attended: true, env: {}, now: NOW1, platform: 'linux',
+    revalidateLauncherExecutable: identity => {
+      launcherChecks++;
+      if (launcherChecks === 1) {
+        const { data } = readState(root, runId);
+        data.session_spawn.launcher_session = 'stale-session';
+        writeState(root, runId, data);
+      }
+      return identity;
+    },
+    tmuxProbeRun: tmuxProbeOk,
+    spawnFn: () => { spawned++; return { ok: true }; }, sleep: noSleep,
+  });
+
+  assert.equal(spawned, 0);
+  assert.equal(r.outcome, 'no-launcher');
+  assert.equal(r.reason, 'launcher-session-invalid');
+  assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'emitted');
+});
 
 test('respawnGate: total sessions may reach max_sessions but not exceed (off-by-one, Codex r3 🟡6)', () => {
   // 경계: sessions.length == max_sessions (pending child 가 max 번째) → 허용

@@ -6,6 +6,7 @@ import { appendAnchored } from './integrity.mjs';
 import { readState } from './state.mjs';
 import { reconcileBudget } from './budget.mjs';
 import { revalidateTrustedLauncherExecutable } from './runtime-executable.mjs';
+import { LAUNCHER_KINDS } from './schema.mjs';
 
 /** Non-invasive probe runner — never opens a window. capture:true returns stdout. */
 export function defaultProbeRun(bin, argv, { timeoutMs = 5000, capture = false } = {}) {
@@ -75,6 +76,32 @@ function parseTmuxSignal(value) {
   const sessionId = value.slice(secondComma + 1);
   if (!posix.isAbsolute(socketPath) || !/^[1-9][0-9]*$/.test(serverPid) || !/^[0-9]+$/.test(sessionId)) return null;
   return { socketPath, serverPid, sessionId };
+}
+
+export function probeTmuxSocket(identity, {
+  socketPath, serverPid, run = defaultProbeRun,
+} = {}) {
+  const probeArgv = ['-S', socketPath, 'display-message', '-p', '#{pid}'];
+  let probeResult;
+  try {
+    if (!identity || identity.kind !== 'tmux'
+      || typeof identity.canonical_path !== 'string' || !posix.isAbsolute(identity.canonical_path)
+      || typeof socketPath !== 'string' || !posix.isAbsolute(socketPath)
+      || typeof serverPid !== 'string' || !/^[1-9][0-9]*$/.test(serverPid)) {
+      throw new Error('invalid tmux probe target');
+    }
+    probeResult = run(identity.canonical_path, probeArgv, { timeoutMs: 5000, capture: true });
+  } catch {
+    probeResult = { code: 1, stdout: '' };
+  }
+  const probe = {
+    cmd: [identity?.canonical_path ?? null, ...probeArgv],
+    code: probeResult?.code ?? 1,
+  };
+  return {
+    ok: probe.code === 0 && String(probeResult?.stdout ?? '').trim() === serverPid,
+    probe,
+  };
 }
 
 // Bounded parent-process ancestry walk. The PS one-liner outputs 3-valued PS/NO/UNKNOWN
@@ -207,15 +234,10 @@ export function detectTerminal({
       return noneDescriptor('tmux-unapproved');
     }
 
-    const probeArgv = ['-S', parsed.socketPath, 'display-message', '-p', '#{pid}'];
-    let probeResult;
-    try {
-      probeResult = run(identity.canonical_path, probeArgv, { timeoutMs: 5000, capture: true });
-    } catch {
-      probeResult = { code: 1, stdout: '' };
-    }
-    const probe = { cmd: [identity.canonical_path, ...probeArgv], code: probeResult?.code ?? 1 };
-    if (probe.code !== 0 || String(probeResult?.stdout ?? '').trim() !== parsed.serverPid) {
+    const { ok: socketVerified, probe } = probeTmuxSocket(identity, {
+      socketPath: parsed.socketPath, serverPid: parsed.serverPid, run,
+    });
+    if (!socketVerified) {
       return noneDescriptor('tmux-socket-unverified', probe);
     }
 
@@ -356,7 +378,7 @@ export function detectAndPersist(root, runId, {
     effectiveLauncherIdentities[persistedLauncher] = persistedIdentity;
   }
   if (hasDurableApprovalMap && durableApprovals && typeof durableApprovals === 'object' && !Array.isArray(durableApprovals)) {
-    for (const kind of ['wt', 'powershell', 'tmux']) {
+    for (const kind of LAUNCHER_KINDS) {
       if (durableApprovals[kind] != null) effectiveLauncherIdentities[kind] = durableApprovals[kind];
     }
   }
@@ -380,7 +402,7 @@ export function detectAndPersist(root, runId, {
       if (l.status === 'completed' || l.status === 'stopped') {
         throw new Error('RUN_TERMINAL: detect-terminal');
       }
-      if (['wt', 'powershell', 'tmux'].includes(d.launcher)) {
+      if (LAUNCHER_KINDS.includes(d.launcher)) {
         const authority = launcherAuthority(l, d.launcher);
         if (authority == null || !isDeepStrictEqual(d.launcher_identity, authority)) {
           throw new Error('LAUNCHER_EXECUTABLE_DRIFT: detect-terminal authority changed');

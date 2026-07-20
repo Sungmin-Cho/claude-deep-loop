@@ -3,6 +3,8 @@ import { fileURLToPath } from 'node:url';
 import { dirname, isAbsolute, join, posix, win32 } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
+export const LAUNCHER_KINDS = Object.freeze(['wt', 'powershell', 'tmux']);
+
 export function loadSchema() {
   return JSON.parse(readFileSync(join(here, '../../schemas/loop-run.schema.json'), 'utf8'));
 }
@@ -89,10 +91,10 @@ function validateLauncherExecutableApprovals(approvals, errors) {
     return;
   }
   const mapKeys = Object.keys(approvals);
-  const unknown = mapKeys.filter(key => !['wt', 'powershell', 'tmux'].includes(key));
+  const unknown = mapKeys.filter(key => !LAUNCHER_KINDS.includes(key));
   if (unknown.length > 0) fail(`contains unknown keys: ${unknown.join(',')}`);
 
-  for (const kind of ['wt', 'powershell', 'tmux']) {
+  for (const kind of LAUNCHER_KINDS) {
     if (!Object.hasOwn(approvals, kind) || approvals[kind] === null) continue;
     const approval = approvals[kind];
     const slotFail = detail => fail(`${kind} ${detail}`);

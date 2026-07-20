@@ -26,7 +26,7 @@ import {
 import { validateSessionRuntime } from './runtime.mjs';
 import { leaseCheck } from './lease.mjs';
 import { appendAnchored, MUTATION_TURN_FLOOR } from './integrity.mjs';
-import { validate as validateLoop } from './schema.mjs';
+import { LAUNCHER_KINDS, validate as validateLoop } from './schema.mjs';
 
 const VERSION_TIMEOUT_MS = 5_000;
 const VERSION_MAX_BUFFER = 64 * 1024;
@@ -715,7 +715,7 @@ const WINDOWS_POWERSHELL_CANDIDATES = Object.freeze([
 
 function launcherIdentityShape(identity) {
   if (!identity || typeof identity !== 'object' || Array.isArray(identity)
-    || !['wt', 'powershell', 'tmux'].includes(identity.kind)) {
+    || !LAUNCHER_KINDS.includes(identity.kind)) {
     throw runtimeError('LAUNCHER_EXECUTABLE_IDENTITY_INVALID', 'launcher identity is invalid');
   }
   launcherAbsolutePath(identity.canonical_path, identity.platform);
@@ -836,7 +836,7 @@ function collectLauncherCandidates(kind, options) {
 }
 
 export function resolveTrustedLauncherExecutable(kind, options = {}) {
-  if (!['wt', 'powershell', 'tmux'].includes(kind)) {
+  if (!LAUNCHER_KINDS.includes(kind)) {
     throw runtimeError('LAUNCHER_EXECUTABLE_UNTRUSTED', 'unsupported launcher');
   }
   if (options.approval !== undefined) return revalidateTrustedLauncherExecutable(options.approval, options);
@@ -909,8 +909,8 @@ export function revalidateTrustedLauncherExecutable(identity, options = {}) {
 }
 
 function validateLauncherKind(kind) {
-  if (!['wt', 'powershell', 'tmux'].includes(kind)) {
-    throw runtimeError('LAUNCHER_EXECUTABLE_KIND_INVALID', 'kind must be wt, powershell, or tmux');
+  if (!LAUNCHER_KINDS.includes(kind)) {
+    throw runtimeError('LAUNCHER_EXECUTABLE_KIND_INVALID', `kind must be one of ${LAUNCHER_KINDS.join(', ')}`);
   }
   return kind;
 }

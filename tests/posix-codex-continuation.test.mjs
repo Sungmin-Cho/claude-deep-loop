@@ -51,6 +51,14 @@ function runtimeIdentity({
   };
 }
 
+function tmuxLauncherIdentity(platform = 'linux') {
+  return {
+    kind: 'tmux', canonical_path: '/opt/tmux/bin/tmux', sha256: 'c'.repeat(64),
+    version: 'tmux 3.4', platform, arch: 'x64', source: 'human-explicit',
+    authenticode: null, approved_by: 'human', approved_at: '2026-06-24T00:00:00.000Z',
+  };
+}
+
 function seedVisible({ approval, launcher = 'cmux', platform = 'linux' } = {}) {
   const effectiveApproval = approval === undefined ? runtimeIdentity({ platform }) : approval;
   const root = mkdtempSync(join(tmpdir(), 'dl-posix-codex-'));
@@ -60,18 +68,27 @@ function seedVisible({ approval, launcher = 'cmux', platform = 'linux' } = {}) {
   const { data } = readState(root, runId);
   data.autonomy.spawn_style = 'visible';
   data.autonomy.runtime_executable_approval = effectiveApproval;
+  const tmuxIdentity = tmuxLauncherIdentity(platform);
+  if (launcher === 'tmux') data.autonomy.launcher_executable_approvals.tmux = tmuxIdentity;
   const apple = launcher === 'iterm2' ? 'iTerm' : 'Terminal';
   data.session_spawn = {
     platform,
     launcher,
-    launcher_bin: launcher === 'cmux' ? '/opt/cmux/bin/cmux' : '/usr/bin/osascript',
-    launcher_socket: launcher === 'cmux' ? '/tmp/cmux.sock' : null,
+    launcher_bin: launcher === 'cmux' ? '/opt/cmux/bin/cmux'
+      : (launcher === 'tmux' ? tmuxIdentity.canonical_path : '/usr/bin/osascript'),
+    launcher_socket: launcher === 'cmux' ? '/tmp/cmux.sock'
+      : (launcher === 'tmux' ? '/tmp/tmux-501/default' : null),
+    ...(launcher === 'tmux' ? {
+      launcher_identity: tmuxIdentity, launcher_pid: '12345', launcher_session: '7',
+    } : {}),
     surface: launcher === 'cmux' ? 'workspace' : 'window',
     reachable: true,
     visible: true,
-    signals: {},
+    signals: launcher === 'tmux' ? { tmux: true } : {},
     probe: launcher === 'cmux'
       ? { cmd: ['/opt/cmux/bin/cmux', '--socket', '/tmp/cmux.sock', 'ping'], code: 0 }
+      : launcher === 'tmux'
+        ? { cmd: [tmuxIdentity.canonical_path, '-S', '/tmp/tmux-501/default', 'display-message', '-p', '#{pid}'], code: 0 }
       : { cmd: ['/usr/bin/osascript', '-e', `id of application "${apple}"`], code: 0 },
     reason: null,
     fallback: 'launch-command-file',
@@ -335,6 +352,74 @@ test('approved POSIX Codex visible respawn binds the exact runtime through three
   const launch = readFileSync(join(runDir(root, runId), 'terminal', 'launch-command.txt'), 'utf8');
   assert.ok(launch.includes('/opt/openai/codex'));
   assert.ok(launch.includes('/opt/cmux/bin/cmux'));
+});
+
+test('approved POSIX Codex tmux respawn binds both runtime and launcher without cross-runtime fallback', () => {
+  const { root, runId, approval } = seedVisible({ launcher: 'tmux' });
+  const launcherApproval = tmuxLauncherIdentity();
+  const handoff = emitVisible(root, runId);
+  const checks = { runtime: 0, launcher: 0, socket: 0 };
+  let captured = null;
+  const result = respawn(root, runId, {
+    childRunId: handoff.childRunId,
+    key: handoff.key,
+    handoffRel: handoff.handoffRel,
+    attended: true,
+    env: {},
+    now: NOW1,
+    platform: 'linux',
+    deepLoopRoot: '/opt/deep-loop',
+    revalidateRuntimeExecutable: identity => {
+      checks.runtime++;
+      assert.deepEqual(identity, approval);
+      return identity;
+    },
+    revalidateLauncherExecutable: identity => {
+      checks.launcher++;
+      assert.deepEqual(identity, launcherApproval);
+      return identity;
+    },
+    tmuxProbeRun: () => { checks.socket++; return { code: 0, stdout: '12345\n' }; },
+    spawnFn: entry => { captured = entry; return { ok: true }; },
+    pollLease: () => ({
+      state: 'active', handoff_phase: 'acquired', owner_run_id: handoff.childRunId, generation: 2,
+    }),
+    sleep: noSleep,
+  });
+
+  assert.equal(result.ok, true, `${result.outcome}: ${result.reason}`);
+  assert.deepEqual(checks, { runtime: 3, launcher: 3, socket: 3 });
+  assert.equal(captured.bin, launcherApproval.canonical_path);
+  assert.equal(captured.argv.at(-1).includes('$deep-loop:deep-loop-resume'), true);
+  assert.equal(captured.argv.at(-1).includes('claude'), false);
+});
+
+test('POSIX Codex tmux requires its own approved runtime and never falls back to Claude', () => {
+  const { root, runId } = seedVisible({ launcher: 'tmux', approval: null });
+  const handoff = emitVisible(root, runId);
+  let launcherChecks = 0;
+  let spawned = 0;
+  const result = respawn(root, runId, {
+    childRunId: handoff.childRunId,
+    key: handoff.key,
+    handoffRel: handoff.handoffRel,
+    attended: true,
+    env: {},
+    now: NOW1,
+    platform: 'linux',
+    deepLoopRoot: '/opt/deep-loop',
+    revalidateRuntimeExecutable: () => { throw new Error('missing Codex approval'); },
+    revalidateLauncherExecutable: identity => { launcherChecks++; return identity; },
+    tmuxProbeRun: () => ({ code: 0, stdout: '12345\n' }),
+    spawnFn: () => { spawned++; return { ok: true }; },
+    sleep: noSleep,
+  });
+
+  assert.equal(spawned, 0);
+  assert.equal(launcherChecks, 0, 'runtime approval failure precedes launcher activation');
+  assert.equal(result.outcome, 'no-launcher');
+  assert.equal(result.reason, 'runtime-identity-unavailable');
+  assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'emitted');
 });
 
 test('approved Darwin Codex visible respawn reaches only the positively detected Apple launcher', () => {
