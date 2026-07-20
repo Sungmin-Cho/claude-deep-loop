@@ -1313,6 +1313,14 @@ test('attended App handoff has one ordered public-tool route and no retry author
     cursor = next;
   }
   assert.match(appProtocol, /fork\/manual routes: `list_projects` call count is 0/);
+  assert.match(appProtocol,
+    /already-decoded transport envelope[\s\S]{0,500}exact keys `contentItems` and `success`[\s\S]{0,500}`success === true`/i);
+  assert.match(appProtocol,
+    /exact keys `type` and `text`[\s\S]{0,300}`type === "inputText"`[\s\S]{0,500}canonical JSON/i);
+  assert.match(appProtocol,
+    /envelope is transport only, not a logical receipt layer[\s\S]{0,400}decode that logical JSON exactly once/i);
+  assert.match(appProtocol,
+    /top-level JSON string encoding the transport envelope[\s\S]{0,300}invalid rather than a second transport decode/i);
   assert.match(appProtocol, /fork_thread[\s\S]{0,2600}send_message_to_thread[\s\S]{0,2600}app-task confirm/);
   assert.match(appProtocol, /create.*exactly one.*threadId/is);
   assert.match(appProtocol, /clientThreadId.*failure/i);

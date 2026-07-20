@@ -106,7 +106,7 @@ const HOST_RECEIPT_MAX_NODES = 1024;
 const HOST_RECEIPT_MAX_CONTAINER_ENTRIES = 256;
 const HOST_WIRE_JSON_MAX_BYTES = 1_048_576;
 
-function decodeCanonicalAppWireValue(value, label) {
+function decodeCanonicalJsonWireValue(value, label, { requireJson = false } = {}) {
   if (typeof value !== 'string') return value;
   if (Buffer.byteLength(value, 'utf8') > HOST_WIRE_JSON_MAX_BYTES) {
     throw new Error(`${label}_WIRE_INVALID`);
@@ -115,11 +115,17 @@ function decodeCanonicalAppWireValue(value, label) {
   try {
     decoded = JSON.parse(value);
   } catch {
-    if (/^[\s\ufeff]*[\[{"]/u.test(value)) throw new Error(`${label}_WIRE_INVALID`);
+    if (requireJson || /^[\s\ufeff]*[\[{"]/u.test(value)) {
+      throw new Error(`${label}_WIRE_INVALID`);
+    }
     return value;
   }
   if (JSON.stringify(decoded) !== value) throw new Error(`${label}_WIRE_INVALID`);
   if (typeof decoded === 'string' && /^[\s\ufeff]*[\[{]/u.test(decoded)) {
+    throw new Error(`${label}_WIRE_INVALID`);
+  }
+  if (decoded && typeof decoded === 'object' && !Array.isArray(decoded)
+      && Object.hasOwn(decoded, 'contentItems') && Object.hasOwn(decoded, 'success')) {
     throw new Error(`${label}_WIRE_INVALID`);
   }
   return decoded;
@@ -262,6 +268,28 @@ function exactDenseDataArray(value, maxEntries) {
     values.push(descriptor.value);
   }
   return values;
+}
+
+function decodeCanonicalAppWireValue(value, label) {
+  if (typeof value === 'string') return decodeCanonicalJsonWireValue(value, label);
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+      || utilTypes.isProxy(value)) return value;
+  const contentItems = Object.getOwnPropertyDescriptor(value, 'contentItems');
+  const success = Object.getOwnPropertyDescriptor(value, 'success');
+  if (contentItems == null && success == null) return value;
+  const envelope = exactPlainDataEntries(value, 2);
+  if (!envelope || envelope.size !== 2 || !envelope.has('contentItems')
+      || !envelope.has('success') || envelope.get('success') !== true) {
+    throw new Error(`${label}_WIRE_INVALID`);
+  }
+  const items = exactDenseDataArray(envelope.get('contentItems'), 1);
+  if (!items || items.length !== 1) throw new Error(`${label}_WIRE_INVALID`);
+  const item = exactPlainDataEntries(items[0], 2);
+  if (!item || item.size !== 2 || item.get('type') !== 'inputText'
+      || typeof item.get('text') !== 'string') {
+    throw new Error(`${label}_WIRE_INVALID`);
+  }
+  return decodeCanonicalJsonWireValue(item.get('text'), label, { requireJson: true });
 }
 
 function preflightEnumerableEntryBound(value) {

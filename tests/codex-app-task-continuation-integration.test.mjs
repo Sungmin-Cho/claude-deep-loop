@@ -1125,11 +1125,130 @@ test('current App wire receipts decode one canonical JSON layer before strict va
     JSON.stringify(JSON.stringify({ threadId: 'FORK-WIRE' })),
     JSON.stringify(`\ufeff${JSON.stringify({ threadId: 'FORK-WIRE' })}`),
     JSON.stringify(`\u00a0${JSON.stringify([{ threadId: 'FORK-WIRE' }])}`),
+    JSON.stringify({ contentItems: [{ type: 'inputText', text: 'null' }], success: true }),
   ]) {
     await assert.rejects(() => executePreparedAction(forkAction, new FakeAppHost({
       forkReceipt: JSON.stringify({ threadId: 'FORK-WIRE' }), sendReceipt,
     })), /SEND_RECEIPT_MISMATCH/);
   }
+});
+
+test('current App contentItems transport envelope unwraps one canonical logical payload', async () => {
+  const root = '/repo/current-app-content-items';
+  const wrap = value => ({
+    contentItems: [{ type: 'inputText', text: JSON.stringify(value) }],
+    success: true,
+  });
+  const envelope = { schemaVersion: 1, projects: [{
+    projectId: 'PROJECT-CONTENT-ITEMS', projectKind: 'local', path: root,
+  }] };
+  const discovery = await boundedRootPrepareInput(
+    new FakeAppHost({ listProjectsReceipt: wrap(envelope) }), root, { timeoutMs: 25 });
+  assert.equal(discovery.discoveryAvailable, true);
+  assert.equal(JSON.parse(discovery.line).projects[0].projectId, 'PROJECT-CONTENT-ITEMS');
+
+  const createAction = { tool: 'create_thread', target: {
+    type: 'project', projectId: 'PROJECT', environment: { type: 'local' },
+  }, prompt: 'PROMPT' };
+  assert.deepEqual(await executePreparedAction(createAction, new FakeAppHost({
+    createReceipt: wrap({ threadId: 'CREATE-CONTENT-ITEMS', hostId: 'HOST' }),
+  })), { threadId: 'CREATE-CONTENT-ITEMS' });
+
+  const forkAction = { tool: 'fork_thread', environment: { type: 'same-directory' },
+    followup: { tool: 'send_message_to_thread', prompt: 'PROMPT' } };
+  assert.deepEqual(await executePreparedAction(forkAction, new FakeAppHost({
+    forkReceipt: wrap({ threadId: 'FORK-CONTENT-ITEMS' }),
+    sendReceipt: wrap({ threadId: 'FORK-CONTENT-ITEMS' }),
+  })), { threadId: 'FORK-CONTENT-ITEMS' });
+
+  const foreign = runInNewContext(`({
+    contentItems: [{ type: 'inputText', text: ${JSON.stringify(JSON.stringify(envelope))} }],
+    success: true,
+  })`);
+  const foreignDiscovery = await boundedRootPrepareInput(
+    new FakeAppHost({ listProjectsReceipt: foreign }), root, { timeoutMs: 25 });
+  assert.equal(foreignDiscovery.discoveryAvailable, true);
+});
+
+test('malformed contentItems transport envelopes remain fail-closed', async () => {
+  const root = '/repo/malformed-content-items';
+  const logical = JSON.stringify({ schemaVersion: 1, projects: [] });
+  const item = { type: 'inputText', text: logical };
+  let accessorReads = 0;
+  const accessorEnvelope = { success: true };
+  Object.defineProperty(accessorEnvelope, 'contentItems', {
+    enumerable: true,
+    get() { accessorReads += 1; return [item]; },
+  });
+  const accessorItem = { type: 'inputText' };
+  Object.defineProperty(accessorItem, 'text', {
+    enumerable: true,
+    get() { accessorReads += 1; return logical; },
+  });
+  const accessorItems = [];
+  Object.defineProperty(accessorItems, '0', {
+    enumerable: true, configurable: true,
+    get() { accessorReads += 1; return item; },
+  });
+  const proxyEnvelope = new Proxy({ contentItems: [item], success: true }, {
+    getPrototypeOf() { throw new Error('TRANSPORT_PROXY_REFLECTED'); },
+    ownKeys() { throw new Error('TRANSPORT_PROXY_REFLECTED'); },
+  });
+  const proxyItem = new Proxy(item, {
+    getPrototypeOf() { throw new Error('TRANSPORT_ITEM_PROXY_REFLECTED'); },
+    ownKeys() { throw new Error('TRANSPORT_ITEM_PROXY_REFLECTED'); },
+  });
+  const proxyItems = new Proxy([item], {
+    getPrototypeOf() { throw new Error('TRANSPORT_ARRAY_PROXY_REFLECTED'); },
+    ownKeys() { throw new Error('TRANSPORT_ARRAY_PROXY_REFLECTED'); },
+  });
+  const customEnvelope = Object.assign(Object.create({ custom: true }), {
+    contentItems: [item], success: true,
+  });
+  const customItem = Object.assign(Object.create({ custom: true }), item);
+  const customItems = [item];
+  Object.setPrototypeOf(customItems, { custom: true });
+  const symbolEnvelope = { contentItems: [item], success: true };
+  symbolEnvelope[Symbol('extra')] = true;
+  const symbolItem = { ...item };
+  symbolItem[Symbol('extra')] = true;
+  const malformed = [
+    { contentItems: [item], success: false },
+    { contentItems: [item, item], success: true },
+    { contentItems: new Array(1), success: true },
+    { contentItems: accessorItems, success: true },
+    { contentItems: proxyItems, success: true },
+    { contentItems: customItems, success: true },
+    { contentItems: [{ type: 'other', text: logical }], success: true },
+    { contentItems: [{ type: 'inputText', text: '' }], success: true },
+    { contentItems: [{ type: 'inputText', text: 'not-json' }], success: true },
+    { contentItems: [{ type: 'inputText', text: ` ${logical}` }], success: true },
+    { contentItems: [{ type: 'inputText', text: JSON.stringify(logical) }], success: true },
+    { contentItems: [{ ...item, extra: true }], success: true },
+    { contentItems: [item], success: true, extra: true },
+    { contentItems: [accessorItem], success: true },
+    { contentItems: [proxyItem], success: true },
+    { contentItems: [customItem], success: true },
+    { contentItems: [symbolItem], success: true },
+    symbolEnvelope,
+    accessorEnvelope,
+    proxyEnvelope,
+    customEnvelope,
+  ];
+  for (const listProjectsReceipt of malformed) {
+    const discovery = await boundedRootPrepareInput(
+      new FakeAppHost({ listProjectsReceipt }), root, { timeoutMs: 25 });
+    assert.equal(discovery.discoveryAvailable, false);
+  }
+
+  const action = { tool: 'create_thread', target: {
+    type: 'project', projectId: 'PROJECT', environment: { type: 'local' },
+  }, prompt: 'PROMPT' };
+  for (const createReceipt of malformed) {
+    await assert.rejects(() => executePreparedAction(action,
+      new FakeAppHost({ createReceipt })), /CREATE_RECEIPT_INVALID/);
+  }
+  assert.equal(accessorReads, 0);
 });
 
 test('cross-realm already-decoded App receipts normalize before strict validation', async () => {
@@ -1274,8 +1393,15 @@ test('project discovery rejects Proxy envelopes arrays and rows before reflectiv
 test('handoff protocol binds discovery to the current strict v1 App envelope', () => {
   const protocol = readFileSync(join(HERE, '..', 'skills', 'deep-loop-workflow',
     'references', 'handoff-respawn.md'), 'utf8');
-  assert.match(protocol, /canonical JSON wire text[\s\S]{0,300}exactly one layer/u);
-  assert.match(protocol, /exactly one layer[\s\S]{0,1800}`schemaVersion === 1`/u);
+  assert.match(protocol,
+    /already-decoded transport envelope[\s\S]{0,500}`contentItems` and `success`/u);
+  assert.match(protocol,
+    /`type` and `text`[\s\S]{0,180}`type === "inputText"`/u);
+  assert.match(protocol,
+    /transport only, not a logical receipt layer[\s\S]{0,300}decode that logical JSON exactly once/u);
+  assert.match(protocol,
+    /top-level JSON string encoding the transport envelope[\s\S]{0,160}invalid rather than a second transport decode/u);
+  assert.match(protocol, /decode that logical JSON exactly once[\s\S]{0,2200}`schemaVersion === 1`/u);
   assert.match(protocol, /bare array[\s\S]{0,180}discovery unavailable/u);
 });
 

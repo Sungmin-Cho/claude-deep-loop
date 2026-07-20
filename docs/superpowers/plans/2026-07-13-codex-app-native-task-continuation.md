@@ -32631,7 +32631,7 @@ PreCompact and headless never enter this branch.
    `app-task prepare` calls, zero public App tool calls, and zero `respawn` calls, then presents
    manual `$deep-loop:deep-loop-resume` guidance.
 2. From the safe emit result/argumentless safe status obtain only `<emitted_attempt_id>`, then immediately run `node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" app-task status --attempt <emitted_attempt_id> --project-root "<canonical_project_root>" --run-id <run_id>`. Before any discovery or task call, verify emitted attempt/owner/generation/route: `logical_run_id=<run_id>`, `owner_run_id=<owner_run_id>`, `generation=<generation>`, `handoff_phase=emitted`, `current.attempt_id=<emitted_attempt_id>`, `current.phase=emitted`, and `current.route` matches the kernel-produced root `create` or exact active-worktree `fork` route. Missing/mismatched fields stop for manual recovery. This redacted check never reads whole sessions or raw IDs.
-3. Root route only after step 2: call `list_projects` exactly once through a bounded timeout/no-return wrapper. The current App may expose the result as an already-decoded value or canonical JSON wire text. Wire text is capped at 1,048,576 bytes before parsing, rejects BOM and leading/trailing whitespace, requires `JSON.stringify(JSON.parse(raw)) === raw`, decodes exactly one layer, and rejects a decoded string with a whitespace/BOM-prefixed JSON object/array marker. Already-decoded values may originate in another V8 realm, so prototype reference identity is not authority: accept only null/local prototypes or foreign built-in prototypes with complete own-key order, descriptor, native-member, parent-chain, and intrinsic constructor-backlink equivalence, without reading receipt property values. Require the decoded v1 receipt to be a non-Proxy plain/null-prototype top-level data object with exactly `schemaVersion` and `projects`, require `schemaVersion === 1`, and require `projects` to be a non-Proxy canonical dense plain-array data-property array. Every row is a non-Proxy plain/null-prototype own-enumerable-data-property object with at most 16 scalar fields and own string `projectId`, `projectKind`, and `path`; Proxy, symbol, accessor, inherited/custom-prototype, sparse/custom/subclass array, nested extra value, non-finite number, or exceeded bound is invalid. Build a bounded projection from those three fields, with at most 256 entries and at most the structured-input byte cap. A bare array, non-canonical/double-encoded/malformed wire value, extra or missing envelope key, unsupported schema version, discovery throw/timeout/no-return, invalid entry, exceeded bound, or unsafe projection makes discovery unavailable; do not retry and do not call `app-task fail` while the attempt is still `emitted`. Worktree fork/manual routes: `list_projects` call count is 0.
+3. Root route only after step 2: call `list_projects` exactly once through a bounded timeout/no-return wrapper. The current App may expose the logical result as an already-decoded value, canonical JSON wire text, or one already-decoded transport envelope. The sole transport envelope is a realm-safe non-Proxy plain own-data object with exact keys `contentItems` and `success`, `success === true`, and `contentItems` as a canonical dense one-element plain array. Its sole item is a realm-safe non-Proxy plain own-data object with exact keys `type` and `text`, `type === "inputText"`, and string `text`. The envelope is transport rather than a logical receipt layer: require `text` itself to be canonical JSON, then decode that logical JSON exactly once. Accessor, Proxy, custom prototype, symbol, extra/missing key or item, false success, wrong type, non-JSON text, or non-canonical text is invalid; a top-level JSON string encoding the transport envelope is also invalid rather than authorizing a second transport decode. Direct wire text and transport `text` are capped at 1,048,576 bytes before parsing, reject BOM and leading/trailing whitespace, require `JSON.stringify(JSON.parse(raw)) === raw`, decode exactly one logical layer, and reject a decoded string with a whitespace/BOM-prefixed JSON object/array marker. Already-decoded values may originate in another V8 realm, so prototype reference identity is not authority: accept only null/local prototypes or foreign built-in prototypes with complete own-key order, descriptor, native-member, parent-chain, and intrinsic constructor-backlink equivalence, without reading receipt property values. Require the decoded v1 logical receipt to be a non-Proxy plain/null-prototype top-level data object with exactly `schemaVersion` and `projects`, require `schemaVersion === 1`, and require `projects` to be a non-Proxy canonical dense plain-array data-property array. Every row is a non-Proxy plain/null-prototype own-enumerable-data-property object with at most 16 scalar fields and own string `projectId`, `projectKind`, and `path`; Proxy, symbol, accessor, inherited/custom-prototype, sparse/custom/subclass array, nested extra value, non-finite number, or exceeded bound is invalid. Build a bounded projection from those three fields, with at most 256 entries and at most the structured-input byte cap. A bare array, malformed transport envelope, non-canonical/double-encoded/malformed wire value, extra or missing logical envelope key, unsupported schema version, discovery throw/timeout/no-return, invalid entry, exceeded bound, or unsafe projection makes discovery unavailable; do not retry and do not call `app-task fail` while the attempt is still `emitted`. Worktree fork/manual routes: `list_projects` call count is 0.
 4. Start `node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" app-task prepare --owner <owner_run_id> --generation <generation> --stdin-mode <pipe-open-noecho|pty-raw-noecho> --app-host-input-stdin --project-root "<canonical_project_root>" --run-id <run_id>`. Match the full exact `DEEP_LOOP_STDIN_READY:v1:app-prepare:<owner_run_id>.<generation>:<mode>` line. On successful root discovery send `{ "host_task_cwd": <current_host_task_cwd>, "projects": <bounded_projection> }`; on discovery unavailable send only `{ "host_task_cwd": <current_host_task_cwd> }` and omit the `projects` field. The latter must return `manual-preserve`, keep the child phase `emitted`, set human resume policy, and authorize zero App task actions. Send exactly one bounded JSON line through structured process input in either case. If the prepare process result is lost, boundedly poll that original process handle and make zero App task tool calls while it is live or unknown. Once exit is proven, read redacted exact-attempt status. Only a still-`emitted` attempt with `manual_recovery=false`, exact owner/generation, `handoff_phase=emitted`, and a live deadline may run the same prepare binding and byte-identical input once. An `emitted` projection with `manual_recovery=true` is the durable `manual-preserve` outcome: perform zero prepare retries, zero App task tool calls, and zero automatic sweep, then present manual recovery immediately. Only a `prepared` attempt with `manual_recovery=false` may run that exact re-entry to obtain `already-prepared` with `do_not_call=true`, then must make zero external App actions and wait for its strict deadline. For either an expired `emitted` attempt or an expired `prepared` attempt with `manual_recovery=false`, run exactly `node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" app-task sweep-unconfirmed --owner <owner_run_id> --generation <generation> --attempt <attempt_id> --project-root "<canonical_project_root>" --run-id <run_id>`; no new prepare or host action is allowed, and a lost sweep result is reconciled only by redacted exact-attempt status. Any phase/policy/fence mismatch stops without another mutating process.
 5. `do_not_call=true` means stop without any App tool call. Only a directly observed first exact `do_not_call=false` result authorizes one action; a lost actionable prepare response is never reconstructed from status or retried at the host-tool boundary.
 6. For `action.tool=create_thread`, pass `action.prompt` and `action.target` directly to `create_thread`; omit model and thinking. Before strict validation, apply step 3's bounded canonical-JSON and realm-safe plain-data adapter. Success requires exactly one own root `threadId` string that passes the bounded opaque receipt validator. The only second ID-shaped field allowed is optional own root `hostId`; validate it independently with the same 512-byte opaque rules, treat it as non-authoritative, discard it immediately, and return only `{threadId}`. Missing/multiple/nested/plural/alternate ID, another shape, `clientThreadId`, invalid `hostId`, a control byte, a UTF-8 value over 512 bytes, non-equivalent foreign/custom prototype, or non-canonical/malformed/double-encoded object/array wire text is `invalid-host-receipt` failure.
@@ -34550,11 +34550,130 @@ test('current App wire receipts decode one canonical JSON layer before strict va
     JSON.stringify(JSON.stringify({ threadId: 'FORK-WIRE' })),
     JSON.stringify(`\ufeff${JSON.stringify({ threadId: 'FORK-WIRE' })}`),
     JSON.stringify(`\u00a0${JSON.stringify([{ threadId: 'FORK-WIRE' }])}`),
+    JSON.stringify({ contentItems: [{ type: 'inputText', text: 'null' }], success: true }),
   ]) {
     await assert.rejects(() => executePreparedAction(forkAction, new FakeAppHost({
       forkReceipt: JSON.stringify({ threadId: 'FORK-WIRE' }), sendReceipt,
     })), /SEND_RECEIPT_MISMATCH/);
   }
+});
+
+test('current App contentItems transport envelope unwraps one canonical logical payload', async () => {
+  const root = '/repo/current-app-content-items';
+  const wrap = value => ({
+    contentItems: [{ type: 'inputText', text: JSON.stringify(value) }],
+    success: true,
+  });
+  const envelope = { schemaVersion: 1, projects: [{
+    projectId: 'PROJECT-CONTENT-ITEMS', projectKind: 'local', path: root,
+  }] };
+  const discovery = await boundedRootPrepareInput(
+    new FakeAppHost({ listProjectsReceipt: wrap(envelope) }), root, { timeoutMs: 25 });
+  assert.equal(discovery.discoveryAvailable, true);
+  assert.equal(JSON.parse(discovery.line).projects[0].projectId, 'PROJECT-CONTENT-ITEMS');
+
+  const createAction = { tool: 'create_thread', target: {
+    type: 'project', projectId: 'PROJECT', environment: { type: 'local' },
+  }, prompt: 'PROMPT' };
+  assert.deepEqual(await executePreparedAction(createAction, new FakeAppHost({
+    createReceipt: wrap({ threadId: 'CREATE-CONTENT-ITEMS', hostId: 'HOST' }),
+  })), { threadId: 'CREATE-CONTENT-ITEMS' });
+
+  const forkAction = { tool: 'fork_thread', environment: { type: 'same-directory' },
+    followup: { tool: 'send_message_to_thread', prompt: 'PROMPT' } };
+  assert.deepEqual(await executePreparedAction(forkAction, new FakeAppHost({
+    forkReceipt: wrap({ threadId: 'FORK-CONTENT-ITEMS' }),
+    sendReceipt: wrap({ threadId: 'FORK-CONTENT-ITEMS' }),
+  })), { threadId: 'FORK-CONTENT-ITEMS' });
+
+  const foreign = runInNewContext(`({
+    contentItems: [{ type: 'inputText', text: ${JSON.stringify(JSON.stringify(envelope))} }],
+    success: true,
+  })`);
+  const foreignDiscovery = await boundedRootPrepareInput(
+    new FakeAppHost({ listProjectsReceipt: foreign }), root, { timeoutMs: 25 });
+  assert.equal(foreignDiscovery.discoveryAvailable, true);
+});
+
+test('malformed contentItems transport envelopes remain fail-closed', async () => {
+  const root = '/repo/malformed-content-items';
+  const logical = JSON.stringify({ schemaVersion: 1, projects: [] });
+  const item = { type: 'inputText', text: logical };
+  let accessorReads = 0;
+  const accessorEnvelope = { success: true };
+  Object.defineProperty(accessorEnvelope, 'contentItems', {
+    enumerable: true,
+    get() { accessorReads += 1; return [item]; },
+  });
+  const accessorItem = { type: 'inputText' };
+  Object.defineProperty(accessorItem, 'text', {
+    enumerable: true,
+    get() { accessorReads += 1; return logical; },
+  });
+  const accessorItems = [];
+  Object.defineProperty(accessorItems, '0', {
+    enumerable: true, configurable: true,
+    get() { accessorReads += 1; return item; },
+  });
+  const proxyEnvelope = new Proxy({ contentItems: [item], success: true }, {
+    getPrototypeOf() { throw new Error('TRANSPORT_PROXY_REFLECTED'); },
+    ownKeys() { throw new Error('TRANSPORT_PROXY_REFLECTED'); },
+  });
+  const proxyItem = new Proxy(item, {
+    getPrototypeOf() { throw new Error('TRANSPORT_ITEM_PROXY_REFLECTED'); },
+    ownKeys() { throw new Error('TRANSPORT_ITEM_PROXY_REFLECTED'); },
+  });
+  const proxyItems = new Proxy([item], {
+    getPrototypeOf() { throw new Error('TRANSPORT_ARRAY_PROXY_REFLECTED'); },
+    ownKeys() { throw new Error('TRANSPORT_ARRAY_PROXY_REFLECTED'); },
+  });
+  const customEnvelope = Object.assign(Object.create({ custom: true }), {
+    contentItems: [item], success: true,
+  });
+  const customItem = Object.assign(Object.create({ custom: true }), item);
+  const customItems = [item];
+  Object.setPrototypeOf(customItems, { custom: true });
+  const symbolEnvelope = { contentItems: [item], success: true };
+  symbolEnvelope[Symbol('extra')] = true;
+  const symbolItem = { ...item };
+  symbolItem[Symbol('extra')] = true;
+  const malformed = [
+    { contentItems: [item], success: false },
+    { contentItems: [item, item], success: true },
+    { contentItems: new Array(1), success: true },
+    { contentItems: accessorItems, success: true },
+    { contentItems: proxyItems, success: true },
+    { contentItems: customItems, success: true },
+    { contentItems: [{ type: 'other', text: logical }], success: true },
+    { contentItems: [{ type: 'inputText', text: '' }], success: true },
+    { contentItems: [{ type: 'inputText', text: 'not-json' }], success: true },
+    { contentItems: [{ type: 'inputText', text: ` ${logical}` }], success: true },
+    { contentItems: [{ type: 'inputText', text: JSON.stringify(logical) }], success: true },
+    { contentItems: [{ ...item, extra: true }], success: true },
+    { contentItems: [item], success: true, extra: true },
+    { contentItems: [accessorItem], success: true },
+    { contentItems: [proxyItem], success: true },
+    { contentItems: [customItem], success: true },
+    { contentItems: [symbolItem], success: true },
+    symbolEnvelope,
+    accessorEnvelope,
+    proxyEnvelope,
+    customEnvelope,
+  ];
+  for (const listProjectsReceipt of malformed) {
+    const discovery = await boundedRootPrepareInput(
+      new FakeAppHost({ listProjectsReceipt }), root, { timeoutMs: 25 });
+    assert.equal(discovery.discoveryAvailable, false);
+  }
+
+  const action = { tool: 'create_thread', target: {
+    type: 'project', projectId: 'PROJECT', environment: { type: 'local' },
+  }, prompt: 'PROMPT' };
+  for (const createReceipt of malformed) {
+    await assert.rejects(() => executePreparedAction(action,
+      new FakeAppHost({ createReceipt })), /CREATE_RECEIPT_INVALID/);
+  }
+  assert.equal(accessorReads, 0);
 });
 
 test('cross-realm already-decoded App receipts normalize before strict validation', async () => {
@@ -34699,8 +34818,15 @@ test('project discovery rejects Proxy envelopes arrays and rows before reflectiv
 test('handoff protocol binds discovery to the current strict v1 App envelope', () => {
   const protocol = readFileSync(join(HERE, '..', 'skills', 'deep-loop-workflow',
     'references', 'handoff-respawn.md'), 'utf8');
-  assert.match(protocol, /canonical JSON wire text[\s\S]{0,300}exactly one layer/u);
-  assert.match(protocol, /exactly one layer[\s\S]{0,1800}`schemaVersion === 1`/u);
+  assert.match(protocol,
+    /already-decoded transport envelope[\s\S]{0,500}`contentItems` and `success`/u);
+  assert.match(protocol,
+    /`type` and `text`[\s\S]{0,180}`type === "inputText"`/u);
+  assert.match(protocol,
+    /transport only, not a logical receipt layer[\s\S]{0,300}decode that logical JSON exactly once/u);
+  assert.match(protocol,
+    /top-level JSON string encoding the transport envelope[\s\S]{0,160}invalid rather than a second transport decode/u);
+  assert.match(protocol, /decode that logical JSON exactly once[\s\S]{0,2200}`schemaVersion === 1`/u);
   assert.match(protocol, /bare array[\s\S]{0,180}discovery unavailable/u);
 });
 
@@ -34709,7 +34835,7 @@ test('handoff protocol binds discovery to the current strict v1 App envelope', (
 
 - [ ] **Step 2: Run tests to verify RED**
 
-Run: `node --test --test-name-pattern='documented denial|ambiguous project|discovery failure|current App wire receipts|project discovery rejects|PreCompact-first|create receipt|strict host receipt|raw confirm and message-unconfirmed|resolved null|throw timeout|failure result loss|prepare result loss|manual-preserve prepare result|acquired safe status|confirm result loss' tests/codex-app-task-continuation-integration.test.mjs`
+Run: `node --test --test-name-pattern='documented denial|ambiguous project|discovery failure|current App wire receipts|contentItems transport|project discovery rejects|PreCompact-first|create receipt|strict host receipt|raw confirm and message-unconfirmed|resolved null|throw timeout|failure result loss|prepare result loss|manual-preserve prepare result|acquired safe status|confirm result loss' tests/codex-app-task-continuation-integration.test.mjs`
 
 Expected: FAIL because the causal init decision runner, bounded discovery fallback, PreCompact takeover/no-tick proof, strict receipt seams, and prepare/confirm result-loss cases are absent.
 
@@ -34777,7 +34903,7 @@ const HOST_RECEIPT_MAX_NODES = 1024;
 const HOST_RECEIPT_MAX_CONTAINER_ENTRIES = 256;
 const HOST_WIRE_JSON_MAX_BYTES = 1_048_576;
 
-function decodeCanonicalAppWireValue(value, label) {
+function decodeCanonicalJsonWireValue(value, label, { requireJson = false } = {}) {
   if (typeof value !== 'string') return value;
   if (Buffer.byteLength(value, 'utf8') > HOST_WIRE_JSON_MAX_BYTES) {
     throw new Error(`${label}_WIRE_INVALID`);
@@ -34786,11 +34912,17 @@ function decodeCanonicalAppWireValue(value, label) {
   try {
     decoded = JSON.parse(value);
   } catch {
-    if (/^[\s\ufeff]*[\[{"]/u.test(value)) throw new Error(`${label}_WIRE_INVALID`);
+    if (requireJson || /^[\s\ufeff]*[\[{"]/u.test(value)) {
+      throw new Error(`${label}_WIRE_INVALID`);
+    }
     return value;
   }
   if (JSON.stringify(decoded) !== value) throw new Error(`${label}_WIRE_INVALID`);
   if (typeof decoded === 'string' && /^[\s\ufeff]*[\[{]/u.test(decoded)) {
+    throw new Error(`${label}_WIRE_INVALID`);
+  }
+  if (decoded && typeof decoded === 'object' && !Array.isArray(decoded)
+      && Object.hasOwn(decoded, 'contentItems') && Object.hasOwn(decoded, 'success')) {
     throw new Error(`${label}_WIRE_INVALID`);
   }
   return decoded;
@@ -34933,6 +35065,28 @@ function exactDenseDataArray(value, maxEntries) {
     values.push(descriptor.value);
   }
   return values;
+}
+
+function decodeCanonicalAppWireValue(value, label) {
+  if (typeof value === 'string') return decodeCanonicalJsonWireValue(value, label);
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+      || utilTypes.isProxy(value)) return value;
+  const contentItems = Object.getOwnPropertyDescriptor(value, 'contentItems');
+  const success = Object.getOwnPropertyDescriptor(value, 'success');
+  if (contentItems == null && success == null) return value;
+  const envelope = exactPlainDataEntries(value, 2);
+  if (!envelope || envelope.size !== 2 || !envelope.has('contentItems')
+      || !envelope.has('success') || envelope.get('success') !== true) {
+    throw new Error(`${label}_WIRE_INVALID`);
+  }
+  const items = exactDenseDataArray(envelope.get('contentItems'), 1);
+  if (!items || items.length !== 1) throw new Error(`${label}_WIRE_INVALID`);
+  const item = exactPlainDataEntries(items[0], 2);
+  if (!item || item.size !== 2 || item.get('type') !== 'inputText'
+      || typeof item.get('text') !== 'string') {
+    throw new Error(`${label}_WIRE_INVALID`);
+  }
+  return decodeCanonicalJsonWireValue(item.get('text'), label, { requireJson: true });
 }
 
 function preflightEnumerableEntryBound(value) {
@@ -35430,7 +35584,7 @@ Resolved `null`, `undefined`, scalars, or objects without an ID are successful s
 
 - [ ] **Step 4: Run targeted tests to verify GREEN**
 
-Run: `node --test --test-name-pattern='documented denial|ambiguous project|discovery failure|current App wire receipts|project discovery rejects|PreCompact-first|create receipt|strict host receipt|raw confirm and message-unconfirmed|resolved null|throw timeout|failure result loss|prepare result loss|manual-preserve prepare result|acquired safe status|confirm result loss' tests/codex-app-task-continuation-integration.test.mjs`
+Run: `node --test --test-name-pattern='documented denial|ambiguous project|discovery failure|current App wire receipts|contentItems transport|project discovery rejects|PreCompact-first|create receipt|strict host receipt|raw confirm and message-unconfirmed|resolved null|throw timeout|failure result loss|prepare result loss|manual-preserve prepare result|acquired safe status|confirm result loss' tests/codex-app-task-continuation-integration.test.mjs`
 
 Expected: PASS with probe/preflight-caused manual states, exact question/discovery/task call counts,
 same-attempt PreCompact takeover/no-tick sweep, strict recursive receipts, resolved no-ID send

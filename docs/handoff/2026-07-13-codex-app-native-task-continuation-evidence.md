@@ -4331,3 +4331,102 @@ receipt correction, a fresh happy-path re-smoke, and hosted 3×3 CI remain pendi
   push, PR, merge, deep-suite synchronization, cleanup, or archival action. The final correction
   bytes still require the specified two independent reviewer approvals before a new candidate can be
   proposed for a separately approved App smoke.
+
+### Gate 5 v3 correction — exact-candidate review closure
+
+- exact reviewed candidate: `71274d6ab7d2a884f587c035d2c65b3d29e2d05d`, tree
+  `f44da0342db89568074b885776f4528ff751e1f7`; canonical installable payload SHA-256
+  `0879da64951085892b9a3cb6df04e1b8d9616039ea9d123d64886d5f2a66afec` over 314 records and
+  28,786 canonical bytes.
+- commits: `bbcefa6` normalized current App task receipts; `1d3c905` recorded correction
+  verification; `71274d6` aligned the foreign-realm send receipt contract.
+- final verification: the exact clean candidate passed `npm run preflight` with
+  tests/pass/fail/cancelled/skipped/todo `1,986/1,986/0/0/0/0`; reported Node test duration
+  `339,171.946584 ms`.
+- review closure: two fresh independent read-only reviewers were each pinned to actual
+  `gpt-5.6-sol` / `high`, standard and adversarial, with Opus and agy excluded. Both returned
+  `APPROVE`, Red 0 / Yellow 0. Main-agent verification confirmed the exact reviewed bytes remained
+  unchanged, so the correction review converged naturally.
+
+### Gate 5 v4 final-candidate smoke — discovery preservation
+
+- approval and scope: one separately approved v4 attempt ran only in
+  `/Users/sungmin/Documents/Codex/2026-07-20/deep-loop-app-smoke-71274d6`, with recorded internal
+  worktree `.claude/worktrees/app-smoke-internal`. V1–v3 artifacts remained untouched; no
+  `.deep-memory` content, push, PR, merge, deep-suite sync, publish, archive, rename, pin, private
+  URL, or cleanup action was used.
+- binding: before the first real App call, candidate source, installed personal source, installed
+  cache, and internal worktree matched commit `71274d6ab7d2a884f587c035d2c65b3d29e2d05d`, tree
+  `f44da0342db89568074b885776f4528ff751e1f7`; all 315 tracked files were byte-identical and the
+  314-record canonical payload matched
+  `0879da64951085892b9a3cb6df04e1b8d9616039ea9d123d64886d5f2a66afec`.
+- adapter: plain pipe emitted one READY then failed early EOF with no writable handle; default PTY
+  was rejected before READY; raw/no-echo PTY emitted one READY, accepted exactly one approved fixed
+  33-byte canary line, produced one receipt with digest
+  `69051ff6bc4806f19e39e837ed21d71bae7edc17fadff303f87163ef2ead154a`, zero echo, and exit 0.
+- root route: initialization preflight was eligible under `gpt-5.6-sol` / `high`; the kernel emitted
+  and correlated one root `create` attempt. `list_projects` was called exactly once. The observed
+  value did not satisfy the v4 controller's canonical v1 one-layer projection, so the single
+  READY-gated prepare omitted `projects` and durably returned `manual-preserve`, `do_not_call=true`,
+  `resume_policy=human`, paused status, and the emitted child retained for manual recovery. There was
+  no discovery retry and no actionable duplicate prepare.
+- terminal counts: `list_projects=1`, `create_thread=0`, `fork_thread=0`,
+  `send_message_to_thread=0`. The recorded-worktree route, manual/decline, duplicate/reentry,
+  revoke, PreCompact-first, and expiry-sweep rows were not reached after the positive root route
+  failed closed. No App task was created by v4.
+- controller audit: one pre-evaluation JavaScript syntax error occurred before any nested tool could
+  run and consumed zero App calls. The corrected controller executed discovery once. Raw project and
+  task/thread identities remained same-call in-memory only and were absent from argv, environment,
+  temporary files, logs, reports, commentary, and sanitized evidence.
+- sanitized evidence:
+  `/Users/sungmin/Documents/Codex/2026-07-20/deep-loop-app-smoke-71274d6/.deep-loop/gate5-smoke/final-candidate-evidence-v4.md`
+  and `v4-sanitized-summary.json`; terminal verdict `FAIL_CLOSED`.
+- restoration: personal source and installed cache were restored to detached
+  `c25eb8236d890f273e64fb078e1db48d9f026fc2`, tree
+  `66e868a5e2d56333c80a465d0d40fc054ac209df`, both clean. After Codex App restart, config and
+  marketplace SHA-256 values were restored to
+  `cd73f4e89029f95b8defb536f67c82a956f3bff83d370b21c53798b2db248a70` and
+  `c36cbe1cbabe33d5b059d8cd9b1024471f87c878c50c1bfaf53830e93caef24f`, remained exact for eight
+  seconds, and both transient restart jobs were absent.
+- boundary: v4 is terminal and does not prove Gate 5. The consumed approval authorizes no discovery
+  retry or new App smoke. Any next operational attempt requires a fresh diagnosis/correction,
+  verification, two-reviewer closure when candidate bytes change, and separate approval.
+
+### Gate 5 v4 correction — current App transport envelope
+
+- diagnosis: read-only inspection of the locally installed `/Applications/ChatGPT.app` bundle,
+  version `26.715.31925` build `5551`, identified the current task-tool transport wrapper as an
+  already-decoded object with exact outer fields `contentItems` and `success`; its sole
+  `contentItems` entry has `type:"inputText"` and `text` containing the JSON-serialized logical
+  payload. The logical `list_projects` result remains `{schemaVersion:1,projects:[...]}` inside that
+  transport. No bundle content was extracted or modified, and the diagnosis made no App tool call.
+- correction contract: direct already-decoded logical values and direct canonical JSON wire text
+  remain supported. In addition, exactly one already-decoded transport envelope is accepted only
+  when outer object, dense one-element array, and sole item satisfy exact realm-safe non-Proxy
+  plain own-data descriptor contracts; `success` is exactly true; `type` is exactly `inputText`;
+  and `text` is canonical JSON under the existing 1,048,576-byte bound. The transport is not a
+  second logical layer. Malformed, accessor, Proxy, custom-prototype, extra-key/item, non-canonical,
+  non-JSON, double-encoded logical, and top-level JSON-string-encoded transport forms fail closed.
+- strict TDD RED: the new happy-path discovery test first failed `false !== true`. A separate send
+  regression for a top-level JSON string encoding the transport envelope first failed with
+  `Missing expected rejection`, proving both the missing positive seam and the prohibited second
+  transport decode before implementation.
+- targeted GREEN: direct-wire, transport happy path, malformed-transport, and handoff protocol
+  tests passed 4/4; the attended App handoff contract passed 1/1. The plan's changed test block and
+  helper block are byte-identical to their executable source snippets. `git diff --check` passed.
+- related verification: the complete App integration file passed 34/34 and the complete skill
+  contract file passed 143/143. Transport adversarial coverage includes outer object, dense array,
+  and inner item accessor/Proxy/custom-prototype/symbol/sparse variants with getter read count zero.
+- full verification: the authoritative worktree is nested below the original checkout, whose
+  separately preserved completed runtime run currently fails the candidate's global event
+  correlation validation. That runtime was not modified or removed. A git-archive snapshot overlaid
+  with every changed file was therefore used; changed-file SHA-256 values matched the authoritative
+  worktree before execution. Its first full run had one unrelated existing `acquire/await` race
+  assertion fail while another repository's long-running test process overlapped; that test then
+  passed 5/5 in isolation. A fresh complete exact-snapshot `npm run preflight` passed with
+  tests/pass/fail/cancelled/skipped/todo `1,988/1,988/0/0/0/0`, reported Node test duration
+  `346,389.528625 ms`, and included the same race test as GREEN.
+- boundary: correction and verification to this point made zero App task-tool calls and performed no
+  install, restart, registration, push, PR, merge, deep-suite synchronization, cleanup, or archival
+  action. Full preflight and the required two independent reviewers remain before any new candidate
+  can be proposed for separately approved smoke.
