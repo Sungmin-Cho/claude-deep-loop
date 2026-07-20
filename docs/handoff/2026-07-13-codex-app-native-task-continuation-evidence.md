@@ -4298,19 +4298,23 @@ receipt correction, a fresh happy-path re-smoke, and hosted 3×3 CI remain pendi
   root `hostId`, validates both as bounded opaque values, discards `hostId`, and returns only
   `{threadId}`. Fork and send retain the stricter single-authoritative-ID rules. The common receipt
   adapter also recognizes equivalent foreign-realm built-in Object/Array prototypes while preserving
-  Proxy, accessor, custom-prototype, subclass, lookalike, descriptor, and bound failures.
+  Proxy, accessor, custom-prototype, subclass, lookalike, descriptor, and bound failures; intrinsic
+  constructor backlinks distinguish true realm built-ins from descriptor-cloned lookalikes.
 - strict TDD: the create-plus-host acceptance case first failed with `CREATE_RECEIPT_INVALID`; the
   reversed property-order case then exposed selection of the wrong ID value. The minimal correction
-  selects the authoritative field by exact path and both regressions pass. The handoff-protocol
-  assertion was added failing-first and synchronized with the implementation.
-- focused verification: the five host-receipt, realm-safe, wire, and protocol contract tests passed
-  `5/5`; the complete skills test file passed `143/143`; `npm run validate` returned `ok`; and
-  `git diff --check` passed.
-- full verification: the first full `npm run preflight` reached tests/pass/fail
-  `1,985/1,984/1`; the sole failure was the pre-existing multi-process contention timing test. Its
-  immediate isolated rerun passed `1/1`. A subsequent clean full `npm run preflight` exited 0 with
-  tests/pass/fail/cancelled/skipped/todo `1,985/1,985/0/0/0/0` and reported Node test duration
-  `344,303.663667 ms`; the contention test passed inside that full run.
+  selects the authoritative field by exact path and both regressions pass. The cross-realm happy path
+  first failed against prototype reference identity. A later descriptor-cloned lookalike test first
+  failed `true !== false`; intrinsic constructor-backlink validation made normal foreign built-ins,
+  custom/accessor prototypes, and lookalikes pass 3/3 with accessor read count zero.
+- focused verification: create `hostId` accept/discard, property-order independence, hostile ID
+  rejection, and the three cross-realm cases passed 6/6; the attended handoff contract test passed
+  1/1; `npm run validate` returned `ok`; and `git diff --check` passed. The full App race file passed
+  14/14 in isolation while unrelated mutation tests remained active.
+- full verification: earlier concurrent-machine preflight runs exhibited time-sensitive App race
+  failures while multiple unrelated full suites were simultaneously running. No production race file
+  changed; the isolated 14/14 result and the subsequent complete candidate run resolved that
+  environmental failure. Final `npm run preflight` exited 0 with tests/pass/fail/cancelled/skipped/todo
+  `1,986/1,986/0/0/0/0` and reported Node test duration `346,923.637708 ms`.
 - boundary: local verification made zero App calls and performed no install, restart, registration,
   push, PR, merge, deep-suite synchronization, cleanup, or archival action. The final correction
   bytes still require the specified two independent reviewer approvals before a new candidate can be
