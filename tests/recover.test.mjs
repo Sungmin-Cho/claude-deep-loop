@@ -17,11 +17,11 @@ const GEN = 2;
 
 function baseData(overrides = {}) {
   return {
-    schema_version: '0.2.0', run_id: OWNER, goal: 'g', status: 'paused',
+    schema_version: '0.3.0', run_id: OWNER, goal: 'g', status: 'paused',
     pause_reason: 'preserve-handoff',
     project: {}, routing: { protocol: 'deep-work' }, review: { points: ['design'] },
     autonomy: {
-      tier: 'recommend', spawn_style: 'interactive',
+      tier: 'recommend', spawn_style: 'interactive', continuation_policy: 'rotate-per-unit',
       session_runtime: 'claude', runtime_source: 'skill-asserted',
     },
     budget: { unit: 'turns', spent: 0 },
@@ -30,8 +30,9 @@ function baseData(overrides = {}) {
       lease: {
         owner_run_id: OWNER, generation: GEN, state: 'releasing', handoff_phase: 'emitted',
         handoff_idempotency_key: 'key123', handoff_child_run_id: CHILD,
-        expires_at: null, resume_policy: 'human',
+        expires_at: null, resume_policy: 'human', handoff_trigger: 'milestone',
       },
+      consumed_milestones: [],
       sessions: [
         { run_id: OWNER, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: CHILD },
         { run_id: CHILD, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: null },
@@ -91,6 +92,7 @@ test('recoverRun: preserve-paused run → lease.state=released, handoff fields c
   assert.equal(data.session_chain.lease.handoff_phase, 'idle');
   assert.equal(data.session_chain.lease.handoff_child_run_id, null);
   assert.equal(data.session_chain.lease.handoff_idempotency_key, null);
+  assert.equal(data.session_chain.lease.handoff_trigger, null);
   assert.equal(data.session_chain.lease.expires_at, null);
   assert.equal(data.session_chain.lease.resume_policy, null);
 });

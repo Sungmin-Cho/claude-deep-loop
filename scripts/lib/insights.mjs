@@ -378,8 +378,8 @@ export function computeInsights(root, { selfRunId = null, now = Date.now(), retr
     // appendAnchored와 동일 2중 검증)를 반드시 함께 돌린다. 실패 → ≥retryDelayMs 재시도 1회 → integrity_failed.
     let loopHash, loop, events;
     const verifiedRead = () => {
-      // Single verified read: readState hash-checks loop.json and returns the verified content hash — a second
-      // readFileSync would open a TOCTOU window where loop_sha256 hashes different bytes than the analyzed data.
+      // Single verified read: the hash fingerprints verified on-disk bytes; migrated data is their deterministic in-memory form.
+      // A second readFileSync would open a TOCTOU window where loop_sha256 hashes different bytes than the analyzed data.
       // 이벤트 로그도 같은 원리로 **1회만** 읽고 그 in-memory 배열에 체인 검증 + head-anchor 대조를 수행한다 —
       // verifyLog/verifyHead(디스크 재읽기)와 분석용 readLines를 분리하면 그 사이 concurrent append가
       // 검증 밖 suffix로 metrics/last_seq에 유입된다 (impl-R2 🟡2).

@@ -196,7 +196,7 @@ function cacheKeyInput(projectRoot, prompt) {
     executableIdentity: EXECUTABLE,
     model: 'gpt-5.4',
     effort: 'xhigh',
-    durableSchemaContract: 'loop-run.schema.json:0.2.0',
+    durableSchemaContract: 'loop-run.schema.json:0.3.0',
     usageParserContract: 'codex-jsonl-safe-integer-v1',
     resumeSkillIdentity: RESUME_SKILL,
     isolationProfile: {
@@ -232,7 +232,7 @@ test('codexPreflightCacheKey changes for every security and compatibility contra
     ['executable path', (value) => { value.executableIdentity.canonical_path = '/opt/codex/bin/codex-new'; }],
     ['model', (value) => { value.model = 'gpt-6'; }],
     ['effort', (value) => { value.effort = 'high'; }],
-    ['durable schema', (value) => { value.durableSchemaContract = 'loop-run.schema.json:0.3.0'; }],
+    ['durable schema', (value) => { value.durableSchemaContract = 'loop-run.schema.json:0.4.0'; }],
     ['isolation descriptor', (value) => { value.isolationProfile.descriptor.argv[2] = '--not-json'; }],
     ['environment policy', (value) => { value.isolationProfile.envPolicy.inherit = 'all'; }],
     ['environment builder contract', (value) => { value.isolationProfile.envBuilderContract = 'codex-runtime-sha256:changed'; }],

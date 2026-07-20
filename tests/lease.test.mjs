@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { contentHash } from '../scripts/lib/envelope.mjs';
@@ -9,6 +9,7 @@ import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import {
   deriveIdempotencyKey, leaseCheck, acquireLease, releaseLease,
   reserveHandoff, advanceHandoffPhase, rollbackHandoff,
+  rollbackReservedEmit,
 } from '../scripts/lib/lease.mjs';
 
 function seed(runtime = 'claude') {
@@ -122,6 +123,81 @@ test('rollbackHandoff restores active/idle (launch-failure path)', () => {
   assert.equal(lease.state, 'active');
   assert.equal(lease.handoff_phase, 'idle');
   assert.equal(lease.handoff_idempotency_key, null);
+  assert.equal(lease.handoff_trigger, null);
+});
+
+test('rollbackReservedEmit preserves a reserved lease when a deterministic final exists', () => {
+  const { root, runId } = seed();
+  const expect = { owner: runId, generation: 1 };
+  const reserved = reserveHandoff(root, runId, { trigger: 'milestone', expect, now: 1 });
+  const dir = join(runDir(root, runId), 'handoffs');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${reserved.childRunId}-next-session.md`), 'published');
+
+  assert.deepEqual(
+    rollbackReservedEmit(root, runId, {
+      key: reserved.key, childRunId: reserved.childRunId, expect,
+    }),
+    { ok: false, reason: 'finals-present' },
+  );
+  assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'reserved');
+});
+
+test('rollbackReservedEmit preserves a reserved lease when final absence is indeterminate', () => {
+  const { root, runId } = seed();
+  const expect = { owner: runId, generation: 1 };
+  const reserved = reserveHandoff(root, runId, { trigger: 'milestone', expect, now: 1 });
+
+  assert.deepEqual(
+    rollbackReservedEmit(root, runId, {
+      key: reserved.key, childRunId: reserved.childRunId, expect,
+      statFn() { throw Object.assign(new Error('denied'), { code: 'EPERM' }); },
+    }),
+    { ok: false, reason: 'finals-indeterminate' },
+  );
+  assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'reserved');
+});
+
+test('rollbackReservedEmit rolls back only after both deterministic finals prove absent', () => {
+  const { root, runId } = seed();
+  const expect = { owner: runId, generation: 1 };
+  const reserved = reserveHandoff(root, runId, { trigger: 'milestone', expect, now: 1 });
+  const checked = [];
+
+  const result = rollbackReservedEmit(root, runId, {
+    key: reserved.key, childRunId: reserved.childRunId, expect,
+    statFn(path) {
+      checked.push(path);
+      throw Object.assign(new Error('absent'), { code: 'ENOENT' });
+    },
+  });
+
+  assert.deepEqual(result, { ok: true, rolledBack: true });
+  assert.equal(checked.length, 2);
+  assert.ok(checked[0].endsWith(`${reserved.childRunId}-next-session.md`));
+  assert.ok(checked[1].endsWith(`${reserved.childRunId}-compaction-state.json`));
+  assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'idle');
+});
+
+test('reserve persists raw handoff_trigger; acquireLease and rollbackHandoff clear it', () => {
+  const first = seed();
+  const reserved = reserveHandoff(first.root, first.runId, {
+    trigger: 'raw:milestone', expect: { owner: first.runId, generation: 1 }, now: 1,
+  });
+  assert.equal(readState(first.root, first.runId).data.session_chain.lease.handoff_trigger, 'raw:milestone');
+  advanceHandoffPhase(first.root, first.runId, { key: reserved.key, toPhase: 'emitted', now: 1 });
+  const acquired = acquireLease(first.root, first.runId, {
+    owner: reserved.childRunId, expectGeneration: 1, runtime: 'claude', now: 2,
+  });
+  assert.ok(acquired.ok);
+  assert.equal(readState(first.root, first.runId).data.session_chain.lease.handoff_trigger, null);
+
+  const second = seed();
+  reserveHandoff(second.root, second.runId, {
+    trigger: 'rollback-trigger', expect: { owner: second.runId, generation: 1 }, now: 1,
+  });
+  rollbackHandoff(second.root, second.runId, { owner: second.runId, generation: 1 });
+  assert.equal(readState(second.root, second.runId).data.session_chain.lease.handoff_trigger, null);
 });
 
 // Codex r1 🔴4: emitted 진입이 expires_at 를 설정해야 부모 크래시(releaseLease 누락) 후에도 자식이 TTL 경과로 인수 가능.
@@ -139,6 +215,28 @@ test('emitted sets expires_at → child can take over after stale TTL without ex
   const ok = acquireLease(root, runId, { owner: 'CHILD', expectGeneration: 1, runtime: 'claude', now: now0 + 901 * 1000 });
   assert.equal(ok.ok, true);
   assert.equal(ok.generation, 2);
+});
+
+test('releasing lease blocks parent self-reacquisition through TTL and permits it only after injected expiry', () => {
+  const { root, runId } = seed();
+  const now0 = Date.parse('2026-06-24T00:00:00.000Z');
+  const { key } = reserveHandoff(root, runId, { trigger: 'parent-self-reacquire', now: now0 });
+  advanceHandoffPhase(root, runId, { key, toPhase: 'emitted', now: now0 });
+  const expiresAt = Date.parse(readState(root, runId).data.session_chain.lease.expires_at);
+
+  const withinTtl = acquireLease(root, runId, {
+    owner: runId, expectGeneration: 1, runtime: 'claude', now: expiresAt,
+  });
+  assert.deepEqual(withinTtl, { ok: false, generation: 1, reason: 'lease-not-takeable' });
+  assert.equal(readState(root, runId).data.session_chain.lease.owner_run_id, runId);
+  assert.equal(readState(root, runId).data.session_chain.lease.generation, 1);
+
+  const afterTtl = acquireLease(root, runId, {
+    owner: runId, expectGeneration: 1, runtime: 'claude', now: expiresAt + 1,
+  });
+  assert.deepEqual(afterTtl, { ok: true, generation: 2, reason: 'acquired' });
+  assert.equal(readState(root, runId).data.session_chain.lease.owner_run_id, runId);
+  assert.equal(readState(root, runId).data.session_chain.lease.generation, 2);
 });
 
 test('leaseCheck allows accounting during releasing for matching owner/generation', () => {

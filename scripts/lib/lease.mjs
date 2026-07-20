@@ -1,6 +1,8 @@
+import { statSync } from 'node:fs';
+import { join } from 'node:path';
 import { contentHash, ulid } from './envelope.mjs';
 import { runtimeFence } from './runtime.mjs';
-import { readState, writeState, withLock } from './state.mjs';
+import { readState, runDir, writeState, withLock } from './state.mjs';
 
 const PHASE_ORDER = { idle: 0, reserved: 1, emitted: 2, spawned: 3, acquired: 4 };
 
@@ -81,6 +83,7 @@ export function acquireLease(root, runId, { owner, expectGeneration, runtime, no
       ...lease, owner_run_id: owner, generation: expectGeneration + 1,
       acquired_at: iso, expires_at: null,   // active 소유자는 deadline 없음 → 무기한 write (renewal 불필요)
       state: 'active', handoff_phase: 'acquired', handoff_idempotency_key: null, handoff_child_run_id: null,
+      handoff_trigger: null,
     };
     // Unpause (same transaction): covers BOTH preserve-resume (releasing+reserved-child) AND
     // recover-resume (released, no reserved child). This is the acquire-resume path that is
@@ -137,7 +140,10 @@ export function reserveHandoff(root, runId, { trigger, now = Date.now(), expect 
       // Codex r3 🔴1: childRunId 를 **예약 시점에 결정·영속**한다. 동시/재진입 emit 이 같은 child 를 보게 되어
       // (reserved:false fall-through 가 fresh child 를 만들지 않음) 중복 child 를 봉인한다.
       const childRunId = ulid(now);
-      data.session_chain.lease = { ...lease, handoff_phase: 'reserved', handoff_idempotency_key: key, handoff_child_run_id: childRunId };
+      data.session_chain.lease = {
+        ...lease, handoff_phase: 'reserved', handoff_idempotency_key: key,
+        handoff_child_run_id: childRunId, handoff_trigger: trigger,
+      };
       writeState(root, runId, data);
       return { ok: true, reserved: true, key, childRunId, reason: 'reserved' };
     }
@@ -184,16 +190,63 @@ export function rollbackHandoff(root, runId, { owner, generation }) {
     const terminal = data.status === 'completed' || data.status === 'stopped';
     // terminal + 잔여 없음(idle, key/child null) → write 없는 no-op (plan r2 P1: 정상-finish 후
     // emitHandoff 거부 경로의 무조건 보상 호출이 idle lease를 다시 쓰지 않도록).
-    if (terminal && lease.handoff_phase === 'idle' && !lease.handoff_idempotency_key && !lease.handoff_child_run_id) {
+    if (terminal && lease.handoff_phase === 'idle' && !lease.handoff_idempotency_key
+      && !lease.handoff_child_run_id && !lease.handoff_trigger) {
       return { ok: true, reason: 'noop-idle-terminal' };
     }
     // active 복귀 시 expires_at=null — 롤백된 부모가 emit 때 설정된 stale TTL 로 나중에 인수당하지 않게 (Codex r2 🔴2)
     data.session_chain.lease = terminal
       // v1.6 terminal-aware (spec §2.3, 3차 r1): active 복원은 terminal run을 "소유된 모양"으로 만들어
       // 미래 우회-writer 실수 표면을 넓힌다 — released로 불활성 안착 (재획득은 acquireLease가 차단).
-      ? { ...lease, state: 'released', handoff_phase: 'idle', handoff_idempotency_key: null, handoff_child_run_id: null, expires_at: null }
-      : { ...lease, state: 'active', handoff_phase: 'idle', handoff_idempotency_key: null, handoff_child_run_id: null, expires_at: null };
+      ? { ...lease, state: 'released', handoff_phase: 'idle', handoff_idempotency_key: null, handoff_child_run_id: null, handoff_trigger: null, expires_at: null }
+      : { ...lease, state: 'active', handoff_phase: 'idle', handoff_idempotency_key: null, handoff_child_run_id: null, handoff_trigger: null, expires_at: null };
     writeState(root, runId, data);
     return { ok: true, reason: 'rolled-back' };
+  });
+}
+
+// Filesystem-publication compensation for emitHandoff. Rollback is allowed only when the lock-held
+// check proves ENOENT/ENOTDIR for both deterministic finals: boolean existsSync can mistake lookup
+// errors for absence, while an out-of-lock check races a same-key concurrent publication.
+export function rollbackReservedEmit(root, runId, { key, childRunId, expect, statFn = statSync }) {
+  return withLock(root, runId, () => {
+    const { data } = readState(root, runId);
+    const lease = data.session_chain.lease;
+    const childCommitted = data.session_chain.sessions.some(session => session.run_id === childRunId);
+    if (childCommitted || lease.handoff_phase !== 'reserved') {
+      return { ok: true, idempotent: childCommitted || ['emitted', 'spawned', 'acquired'].includes(lease.handoff_phase) };
+    }
+    if (!expect || lease.owner_run_id !== expect.owner || lease.generation !== expect.generation) {
+      return { ok: false, reason: 'fenced' };
+    }
+    if (lease.handoff_idempotency_key !== key || lease.handoff_child_run_id !== childRunId) {
+      return { ok: false, reason: 'reservation-mismatch' };
+    }
+    const handoffDir = join(runDir(root, runId), 'handoffs');
+    const finals = [
+      join(handoffDir, `${childRunId}-next-session.md`),
+      join(handoffDir, `${childRunId}-compaction-state.json`),
+    ];
+    for (const path of finals) {
+      try {
+        statFn(path);
+        return { ok: false, reason: 'finals-present' };
+      } catch (error) {
+        if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') continue;
+        return { ok: false, reason: 'finals-indeterminate' };
+      }
+    }
+    const terminal = data.status === 'completed' || data.status === 'stopped';
+    data.session_chain.lease = {
+      ...lease,
+      state: terminal ? 'released' : 'active',
+      handoff_phase: 'idle',
+      handoff_idempotency_key: null,
+      handoff_child_run_id: null,
+      handoff_trigger: null,
+      expires_at: null,
+    };
+    writeState(root, runId, data);
+    return { ok: true, rolledBack: true };
   });
 }

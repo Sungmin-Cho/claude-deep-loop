@@ -5,6 +5,48 @@ All notable changes to deep-loop are documented in this file.
 > Note: the `[1.1.0]`/`[1.2.0]` entries pre-date this changelog file (a known lag between
 > `plugin.json.version` and the changelog); this release does not retro-fill them.
 
+## [1.10.0] — 2026-07-21
+
+Per-runtime continuation policy release. The change applies to newly initialized runs; existing
+`0.2.0` runs migrate in memory to the legacy `rotate-per-unit` behavior and persist schema `0.3.0`
+on their next business mutation. There are no breaking CLI changes.
+
+### Added
+- **Runtime-specific attended continuation** — new runs persist
+  `autonomy.continuation_policy`: Claude defaults to `compact-in-place`, keeping related work in the
+  same session, while Codex defaults to milestone-bounded `rotate-per-unit`. Unattended invocations
+  still preempt both policies through the measured, fail-closed headless path.
+- **Compaction checkpoint and restore safety net** — attended Claude PreCompact writes bounded,
+  freshness-bound checkpoints without changing `loop.json`; SessionStart(`compact`) injects a
+  bounded restore, recovery, or rotation capsule. Hooks remain shell-free, emit-only, best-effort,
+  and never spawn or block compaction/session start.
+- **First-class manual continuation** — runtime-aware `resume-command`, durable handoff artifacts,
+  and documented `/deep-loop-resume` / `$deep-loop:deep-loop-resume` paths remain authoritative when
+  plugin lifecycle hooks are absent, unsupported by the host version, or not trusted.
+- **Human-approved tmux launcher** — POSIX visible continuation can open a new tmux window only after
+  canonical executable approval plus exact socket/server-PID verification, with identity checks on
+  both sides of the spawned CAS and fail-closed rollback after a post-CAS drift.
+
+### Changed
+- `next-action` keeps the real work action for attended Claude at the per-session turn cap and adds
+  compaction advice instead of replacing the action; milestone consumption prevents repeated
+  rotation on the same terminal event.
+- Codex bundled PreCompact/SessionStart hooks are documented as a trust-reviewed, host-version-
+  dependent safety net with graceful absence; manual resume remains an officially supported path.
+- Claude and Codex plugin manifests are versioned `1.10.0`; the durable run schema is independently
+  versioned `0.3.0`.
+
+### Rejected / Deferred
+- **PostCompact hook** — deferred as observation-only value (YAGNI).
+- **Mid-run continuation-policy switching** — explicit `/deep-loop-handoff` already covers an
+  immediate rotation request.
+- **`codex exec resume <id>` / `--last`** — conflicts with fresh-context handoff and lacks a robust
+  non-interactive session-ID extraction contract.
+- **Claude Agent SDK / Codex SDK** — rejected because external npm packages violate the
+  zero-dependency invariant; documented `claude -p` and `codex exec` transports remain sufficient.
+- **Additional launchers and an external supervisor** — deferred as out of scope and maintenance-
+  heavy; the officially supported manual path covers unsupported terminals.
+
 ## [1.8.0] — 2026-07-12
 
 Dual-runtime and native Windows compatibility release.

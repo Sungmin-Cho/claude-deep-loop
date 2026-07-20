@@ -82,25 +82,28 @@ Windows의 결합 경로는 `%USERPROFILE%\.codex\plugins\deep-loop`와 `%USERPR
 
 ## 지원 표면
 
-| Surface | 인터랙티브 스킬 | 가시적 연속 실행 | 헤드리스 연속 실행 | PreCompact 안전망 |
-|---|---|---|---|---|
-| Claude Code, macOS/Linux | 전체 | 지원 터미널/검증된 Claude Desktop | 측정형 `claude -p` | exact-definition 신뢰를 거친 direct Node hook |
-| Claude Code, native Windows | 전체 | 신뢰된 Windows Terminal/PowerShell 런처 | 신뢰된 native `claude.exe`, 아니면 fail-closed | exact-definition 신뢰를 거친 direct Node hook |
-| Codex CLI, macOS/Linux | 전체 | 신뢰된 runtime을 이용한 터미널 실행 | 격리 `codex exec --json` | exact-definition 신뢰를 거친 direct Node hook |
-| Codex CLI, native Windows | 전체 | 신뢰된 Windows Terminal/PowerShell 런처 | 격리·신뢰 `codex.exe`, 아니면 fail-closed | exact-definition 신뢰를 거친 direct Node hook |
-| Codex App | install/discovery와 in-task execution | 수동 새 task만 | 선택적 격리 `codex exec` 드라이버 | lifecycle 지원, App smoke pending external evidence |
+| Surface | 인터랙티브 스킬 | Attended continuation policy | 가시적 연속 실행 | 수동 resume | 헤드리스 연속 실행 | compaction 안전망 |
+|---|---|---|---|---|---|---|
+| Claude Code, macOS/Linux | 전체 | `compact-in-place` — 같은 세션 유지 | 명시적 rotation 시 지원 터미널/tmux/검증된 Claude Desktop | `/deep-loop-resume`를 통한 **공식 지원 경로** | 측정형 `claude -p` | 신뢰된 direct Node PreCompact checkpoint + SessionStart restore |
+| Claude Code, native Windows | 전체 | `compact-in-place` — 같은 세션 유지 | 명시적 rotation 시 신뢰된 Windows Terminal/PowerShell 런처 | `/deep-loop-resume`를 통한 **공식 지원 경로** | 신뢰된 native `claude.exe`, 아니면 fail-closed | 신뢰된 direct Node PreCompact checkpoint + SessionStart restore |
+| Codex CLI, macOS/Linux | 전체 | `rotate-per-unit` — milestone에서 fresh session | 신뢰된 runtime을 이용한 터미널/tmux 실행 | `$deep-loop:deep-loop-resume`을 통한 **공식 지원 경로** | 격리 `codex exec --json` | trust review 후 플러그인 lifecycle hook; 버전 의존·우아한 부재 |
+| Codex CLI, native Windows | 전체 | `rotate-per-unit` — milestone에서 fresh session | 신뢰된 Windows Terminal/PowerShell 런처 | `$deep-loop:deep-loop-resume`을 통한 **공식 지원 경로** | 격리·신뢰 `codex.exe`, 아니면 fail-closed | trust review 후 플러그인 lifecycle hook; 버전 의존·우아한 부재 |
+| Codex App | install/discovery와 in-task execution | `rotate-per-unit` — 수동 fresh task | 수동 새 task만 | 새 task를 열고 `$deep-loop:deep-loop-resume`을 실행하는 **공식 지원 경로** | 선택적 격리 `codex exec` 드라이버 | trust review 후 플러그인 lifecycle hook; 버전 의존·우아한 부재, App smoke pending |
 
-**Codex POSIX visible authority:** macOS/Linux 자동 visible continuation에는 durable human-approved Codex runtime identity가 필요합니다. `cmux`는 양성 감지가 같은 absolute bundled executable과 exact socket을 성공한 ping으로 묶었을 때만 실행됩니다. macOS에서는 고정 `/usr/bin/osascript`를 통해 양성 감지된 iTerm2 또는 Terminal.app 하나만 실행되며, system binary의 존재만으로 두 런처를 활성화하지 않습니다. runtime 승인이 없으면 `runtime-identity-unavailable`, identity 또는 launcher drift는 spawned CAS 전후에 fail-closed하며 bare `codex`나 Claude process로 대체하지 않습니다.
+Continuation policy는 attended run에 적용됩니다. Claude는 같은 세션의 compaction, Codex는 milestone 경계 rotation이 기본이고, unattended run은 기존 측정형 headless policy를 유지합니다. 수동 resume은 오류 발생 시에만 쓰는 fallback이 아니라 일급 공식 지원 경로입니다.
+
+**Codex POSIX visible authority:** macOS/Linux 자동 visible continuation에는 durable human-approved Codex runtime identity가 필요합니다. `cmux`는 양성 감지가 같은 absolute bundled executable과 exact socket을 성공한 ping으로 묶었을 때만 실행됩니다. `tmux`는 사람이 canonical executable identity를 승인하고 감지가 그 identity를 exact `$TMUX` socket, server PID, session에 묶은 후 지원됩니다. 승인 바이너리가 파생한 `#{session_id}`가 일치해야 하며, OS-bound pane ancestry proof(`#{pane_pid}` ↔ process ancestry)가 같은 session을 독립적으로 파생해야 합니다. macOS에서는 고정 `/usr/bin/osascript`를 통해 양성 감지된 iTerm2 또는 Terminal.app 하나만 실행되며, system binary의 존재만으로 두 런처를 활성화하지 않습니다. runtime 승인이 없으면 `runtime-identity-unavailable`, identity 또는 launcher drift는 spawned CAS 전후에 fail-closed하며 bare `codex`나 Claude process로 대체하지 않습니다.
 
 Native Windows에서는 Node control plane을 win32에서 직접 실행하고 문서의 native command는 **PowerShell** 문법을 사용합니다. Windows Terminal과 PowerShell은 서로 다른 승인 launcher kind입니다. **WSL follows Linux behavior and is not native Windows**이므로 WSL의 실행 파일·경로는 native Windows spawn의 권위가 아닙니다. **Native Windows CI: pending external evidence** — 승인된 push 뒤 저장소의 Windows job이 실제 실행되기 전까지 통과를 주장하지 않습니다.
 
 ## 실행 파일 신뢰와 네이티브 Windows 런처
 
-자동 연속 실행은 command lookup을 권위로 사용하지 않습니다. Runtime executable 진단/승인은 모든 지원 OS에서 선택한 runtime에 적용되고, launcher executable 승인은 native Windows WT/PowerShell에 추가되는 경계입니다. `<absolute-deep-loop-root>`를 설치 플러그인의 canonical absolute root로 치환하고, 선택한 identity에 해당하는 read-only 진단 한 줄만 실행합니다.
+자동 연속 실행은 command lookup을 권위로 사용하지 않습니다. Runtime executable 진단/승인은 모든 지원 OS에서 선택한 runtime에 적용되고, launcher executable 승인은 native Windows WT/PowerShell 또는 POSIX tmux에 추가되는 경계입니다. `<absolute-deep-loop-root>`를 설치 플러그인의 canonical absolute root로 치환하고, 선택한 identity에 해당하는 read-only 진단 한 줄만 실행합니다.
 
 ```text
 node "<absolute-deep-loop-root>/scripts/deep-loop.mjs" runtime-executable diagnose --runtime <claude|codex> --path "<human-supplied-absolute-exe>"
 node "<absolute-deep-loop-root>/scripts/deep-loop.mjs" launcher-executable diagnose --kind <wt|powershell> --path "<human-supplied-absolute-exe>"
+node "<absolute-deep-loop-root>/scripts/deep-loop.mjs" launcher-executable diagnose --kind tmux --path "<human-supplied-absolute-exe>"
 ```
 
 반환된 **canonical absolute path**(`canonical_path`)와 **lowercase SHA-256**(`sha256`)을 사람에게 그대로 보여 주고 exact identity 확인을 받습니다. 그 뒤에만 해당 fenced 승인 한 줄을 실행합니다.
@@ -108,11 +111,14 @@ node "<absolute-deep-loop-root>/scripts/deep-loop.mjs" launcher-executable diagn
 ```text
 node "<absolute-deep-loop-root>/scripts/deep-loop.mjs" runtime-executable approve --runtime <claude|codex> --path "<same-absolute-exe>" --canonical-path "<diagnosed-canonical-path>" --sha256 "<diagnosed-lowercase-sha256>" --actor human --confirm --owner <owner_run_id> --generation <generation> --project-root "<canonical-project-root>" --run-id <run_id>
 node "<absolute-deep-loop-root>/scripts/deep-loop.mjs" launcher-executable approve --kind <wt|powershell> --path "<same-absolute-exe>" --canonical-path "<diagnosed-canonical-path>" --sha256 "<diagnosed-lowercase-sha256>" --actor human --confirm --owner <owner_run_id> --generation <generation> --project-root "<canonical-project-root>" --run-id <run_id>
+node "<absolute-deep-loop-root>/scripts/deep-loop.mjs" launcher-executable approve --kind tmux --path "<same-absolute-exe>" --canonical-path "<diagnosed-canonical-path>" --sha256 "<diagnosed-lowercase-sha256>" --actor human --confirm --owner <owner_run_id> --generation <generation> --project-root "<canonical-project-root>" --run-id <run_id>
 ```
 
 승인할 identity에 해당하는 한 줄만 실행합니다. **Identity drift fails closed and preserves the pause**이며, 다른 실행 파일이나 runtime으로 폴백하지 않습니다.
 
 **Runtime/launcher Authenticode signer policy is pending Windows observation**이며, **distinct from the already-observed Claude Desktop handler pin**입니다. 후자는 검증된 `claude://code/new` 핸들러에만 적용됩니다. **No bare PATH authority**, no shim (`.cmd`, `.ps1`, wrapper) authority, **no bare `wt.exe` authority**입니다. signer policy, 후보 경로, `where.exe`/`Get-Command` 결과는 explicit canonical identity 계약을 대신하지 못합니다.
+
+tmux의 bounded version probe는 `tmux 3.4`, `tmux 3.4a`처럼 release 형태의 출력만 수용합니다. `tmux next-3.4`와 같은 rolling/master label은 fail-closed 승인 경계의 의도에 따라 거부됩니다.
 
 ## 독립 동작 (Standalone)
 
@@ -161,6 +167,7 @@ deep-suite 내에서 사용 시, deep-loop는 오케스트레이션 백본으로
 | cmux | `CMUX_BUNDLED_CLI_PATH` + `CMUX_SOCKET_PATH` + surface ID | 소켓을 통한 새 cmux workspace |
 | iTerm2 | `TERM_PROGRAM=iTerm.app` + osascript 프로브 | 새 iTerm 창 |
 | Terminal.app | `TERM_PROGRAM=Apple_Terminal` + osascript 프로브 | 새 Terminal 창 |
+| tmux | `$TMUX` + 사람이 승인한 canonical tmux identity + socket ownership/server-PID probe + session binding(승인 바이너리가 파생한 `#{session_id}` 일치) + OS-bound pane ancestry proof(`#{pane_pid}` ↔ process ancestry) | 감지된 tmux session의 새 window |
 | Windows Terminal | `WT_SESSION` + 승인된 canonical launcher identity | 정확히 승인된 실행 파일을 통한 새 WT 탭 |
 | desktop | (사용자 opt-in) Claude Desktop Code 탭 | 검증된 핸들러로 `claude://code/new` 딥링크 오픈 (반자동: 폴더 확인 + Enter). macOS(경로+bundle-id+codesign TeamIdentifier)와 v1.7.0부터 **Windows**(전통 인스톨러 정확-일치 경로 + publisher-id 해시 고정 MSIX 경로 패턴 + **실제 Windows 11 관측으로 pin된** Authenticode 서명자 thumbprint) 지원. Windows 제안은 라이브 프로브가 설치된 핸들러를 검증할 때만 표시되며, pin된 leaf 인증서 로테이션(NotAfter 2026-10-21경) 이후에는 새 관측 thumbprint를 재-pin하기 전까지 결정론적 fail-closed로 복귀한다 — 추측성 pin은 절대 쓰지 않는다. |
 
@@ -172,11 +179,11 @@ deep-suite 내에서 사용 시, deep-loop는 오케스트레이션 백본으로
 
 ## PreCompact Hook
 
-deep-loop는 컨텍스트 컴팩션 직전에 clean handoff를 방출하는 `PreCompact` hook을 등록합니다. **Exact hook definition trust is required.** 이 정의는 `hooks/hooks.json`의 **direct shell-free Node**, **emit-only**, **best-effort** 안전망이며 무인 연속 실행은 이후 측정 가능한 `scripts/hooks-impl/drive-headless.mjs`가 담당합니다. hook은 run의 소유권을 갖지 않고 컴팩션을 막지 않습니다(항상 exit 0).
+deep-loop의 `PreCompact` hook은 **emit-only**, **best-effort**로 정책을 분기하고, unattended continuation은 측정 가능한 `scripts/hooks-impl/drive-headless.mjs`가 담당합니다. attended Claude의 `compact-in-place`는 bounded checkpoint를 쓰고 같은 세션을 유지하며, `rotate-per-unit` 또는 headless invocation은 기존 handoff를 emit합니다. `SessionStart(compact)` hook은 일치 checkpoint를 복원하거나 rotation/복구 안내를 주입합니다. `hooks/hooks.json`의 **exact hook definitions trust is required**하며, 두 hook은 **direct shell-free Node** 안전망입니다. hook은 세션을 spawn하지 않으며 예외로 compaction이나 session start를 막지 않습니다.
 
-`hooks/hooks.json`의 static Node bootstrap은 `CLAUDE_PLUGIN_ROOT` 또는 `PLUGIN_ROOT`를 해석하고 file URL로 `scripts/hooks-impl/precompact-handoff.mjs`를 import해 `main()`을 호출합니다. Bash wrapper나 shell expansion에 의존하지 않습니다.
+`hooks/hooks.json`의 static Node bootstrap들은 `CLAUDE_PLUGIN_ROOT` 또는 `PLUGIN_ROOT`를 해석하고 file URL로 `scripts/hooks-impl/precompact-handoff.mjs` 또는 `scripts/hooks-impl/sessionstart-restore.mjs`를 import해 `main()`을 호출합니다. Bash wrapper나 shell expansion에 의존하지 않습니다.
 
-**Missing or untrusted hook reduces automation and falls back to the durable lease, pause, and manual resume path.** fencing을 약화하거나 두 번째 owner를 만들지 않습니다. 격리 Codex child가 plugins와 hooks를 끄는 것도 이 durable fallback을 기대한 설계입니다.
+Codex bundled-hook 발견은 host 버전에 의존하며, 사용자가 plugin hook definition을 검토하고 신뢰한 후에만 적용됩니다. **Missing or untrusted hook**(미지원 host 버전 포함)은 durable handoff artifact, durable lease, pause, 공식 지원 manual resume(수동 resume) 경로로 우아하게 저하하며, fencing을 약화하거나 두 번째 owner를 만들지 않습니다. 격리 Codex child가 plugins와 hooks를 끄는 것도 이 durable fallback을 기대한 설계입니다.
 
 ## 라이센스
 

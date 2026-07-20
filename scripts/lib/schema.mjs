@@ -1,8 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, isAbsolute, join, win32 } from 'node:path';
+import { dirname, isAbsolute, join, posix, win32 } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
+export const LAUNCHER_KINDS = Object.freeze(['wt', 'powershell', 'tmux']);
+
 export function loadSchema() {
   return JSON.parse(readFileSync(join(here, '../../schemas/loop-run.schema.json'), 'utf8'));
 }
@@ -89,10 +91,10 @@ function validateLauncherExecutableApprovals(approvals, errors) {
     return;
   }
   const mapKeys = Object.keys(approvals);
-  const unknown = mapKeys.filter(key => !['wt', 'powershell'].includes(key));
+  const unknown = mapKeys.filter(key => !LAUNCHER_KINDS.includes(key));
   if (unknown.length > 0) fail(`contains unknown keys: ${unknown.join(',')}`);
 
-  for (const kind of ['wt', 'powershell']) {
+  for (const kind of LAUNCHER_KINDS) {
     if (!Object.hasOwn(approvals, kind) || approvals[kind] === null) continue;
     const approval = approvals[kind];
     const slotFail = detail => fail(`${kind} ${detail}`);
@@ -107,14 +109,16 @@ function validateLauncherExecutableApprovals(approvals, errors) {
     }
     if (approval.kind !== kind) slotFail('kind must match its map key');
     const path = approval.canonical_path;
+    const windowsLauncher = kind !== 'tmux';
     if (!portableAbsolute(path) || /[\0\r\n]/.test(path || '')
-      || /^[\\/]{2}/.test(path || '') || /^[\\/](?:\?\?|device)[\\/]/i.test(path || '')
+      || (windowsLauncher && (/^[\\/]{2}/.test(path || '') || /^[\\/](?:\?\?|device)[\\/]/i.test(path || '')))
       || /\.(?:cmd|bat|ps1|js|mjs|cjs)$/i.test(path || '')) {
       slotFail('canonical_path must be a safe absolute native path');
     } else {
-      const name = win32.basename(path).toLowerCase();
+      const name = windowsLauncher ? win32.basename(path).toLowerCase() : posix.basename(path);
       if ((kind === 'wt' && name !== 'wt.exe')
-        || (kind === 'powershell' && name !== 'pwsh.exe' && name !== 'powershell.exe')) {
+        || (kind === 'powershell' && name !== 'pwsh.exe' && name !== 'powershell.exe')
+        || (kind === 'tmux' && name !== 'tmux')) {
         slotFail('canonical_path filename does not match kind');
       }
     }
@@ -123,7 +127,10 @@ function validateLauncherExecutableApprovals(approvals, errors) {
       || approval.version.length > 256 || /[\0\r\n]/.test(approval.version)) {
       slotFail('version must be a non-empty safe string');
     }
-    if (approval.platform !== 'win32') slotFail('platform must be win32');
+    if (windowsLauncher && approval.platform !== 'win32') slotFail('platform must be win32');
+    if (!windowsLauncher && !['linux', 'darwin'].includes(approval.platform)) {
+      slotFail('platform must be linux or darwin');
+    }
     if (typeof approval.arch !== 'string' || !/^[A-Za-z0-9_-]+$/.test(approval.arch)) {
       slotFail('arch must be a non-empty safe string');
     }
@@ -138,6 +145,10 @@ function validateLauncherExecutableApprovals(approvals, errors) {
     }
 
     const authenticode = approval.authenticode;
+    if (!windowsLauncher && authenticode !== null) {
+      slotFail('authenticode must be null for tmux');
+      continue;
+    }
     if (authenticode !== null) {
       if (typeof authenticode !== 'object' || Array.isArray(authenticode)) {
         slotFail('authenticode must be an exact object or null');
@@ -170,9 +181,10 @@ export function validate(loopJson, schema = loadSchema()) {
     const v = get(loopJson, path);
     if (v !== undefined && !allowed.includes(v)) errors.push(`invalid enum at ${path}: ${v}`);
   }
-  // schema_version 정확 일치
-  if (loopJson.schema_version !== undefined && loopJson.schema_version !== '0.2.0') {
-    errors.push(`schema_version must be 0.2.0, got ${loopJson.schema_version}`);
+  // schema_version 정확 일치 (0.2.0 레거시는 readHashVerifiedState가 in-memory 마이그레이션 — validate에 0.2.0이
+  // 도달하면 마이그레이션 누락 경로이므로 실패가 옳다)
+  if (loopJson.schema_version !== undefined && loopJson.schema_version !== '0.3.0') {
+    errors.push(`schema_version must be 0.3.0, got ${loopJson.schema_version}`);
   }
   // 배열 타입
   for (const arr of ['workstreams', 'episodes', 'active_workstreams', 'discovered_items']) {
@@ -200,8 +212,24 @@ export function validate(loopJson, schema = loadSchema()) {
     if (runtime !== undefined && source !== 'skill-asserted') {
       errors.push('autonomy.session_runtime requires autonomy.runtime_source skill-asserted');
     }
+    // v1.10: continuation_policy 교차 필드 — enum 멤버십은 위 enums 루프가 이미 검사(선행). 여기는 조합만.
+    if (autonomy.continuation_policy === 'compact-in-place' && autonomy.session_runtime === 'codex') {
+      errors.push('autonomy.continuation_policy compact-in-place requires session_runtime claude');
+    }
     validateRuntimeExecutableApproval(autonomy.runtime_executable_approval, autonomy, errors);
     validateLauncherExecutableApprovals(autonomy.launcher_executable_approvals, errors);
+  }
+  // v1.10 continuation state belongs to session_chain and must remain validated even when autonomy is absent.
+  const sc = loopJson.session_chain;
+  if (sc && typeof sc === 'object') {
+    const cm = sc.consumed_milestones;
+    if (cm !== undefined && (!Array.isArray(cm) || cm.some(x => typeof x !== 'string'))) {
+      errors.push('session_chain.consumed_milestones must be an array of strings');
+    }
+    const ht = sc.lease?.handoff_trigger;
+    if (ht !== undefined && ht !== null && typeof ht !== 'string') {
+      errors.push('session_chain.lease.handoff_trigger must be string or null');
+    }
   }
   // episode/workstream item status는 (skill ∪ kernel) 도메인 안에 있어야 함
   const epAllowed = [...(schema.episode_status?.skill || []), ...(schema.episode_status?.kernel || [])];
@@ -211,6 +239,11 @@ export function validate(loopJson, schema = loadSchema()) {
   const wsAllowed = [...(schema.workstream_status?.skill || []), ...(schema.workstream_status?.kernel || [])];
   for (const ws of (Array.isArray(loopJson.workstreams) ? loopJson.workstreams : [])) {
     if (ws?.status !== undefined && !wsAllowed.includes(ws.status)) errors.push(`invalid workstream status: ${ws.status}`);
+    const terminalEvents = ws?.terminal_events;
+    if (terminalEvents !== undefined
+      && (!Array.isArray(terminalEvents) || terminalEvents.some(event => typeof event !== 'string'))) {
+      errors.push('workstreams[].terminal_events must be an array of strings');
+    }
   }
   return { ok: errors.length === 0, errors };
 }

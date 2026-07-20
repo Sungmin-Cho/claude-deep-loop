@@ -1,13 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync as rf, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync as rf, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { runPreCompactHandoff } from '../scripts/hooks-impl/precompact-handoff.mjs';
+import { emitHandoff } from '../scripts/lib/handoff.mjs';
+import { acquireLease, reserveHandoff } from '../scripts/lib/lease.mjs';
 import { rollbackAndPause } from '../scripts/lib/respawn.mjs';
 import { createDirectoryJunction } from './helpers/fs-fixtures.mjs';
 const PROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -38,17 +40,163 @@ function seed(runtime = 'claude') {
   return { root, runId };
 }
 
+function seedRotate() {
+  const root = mkdtempSync(join(tmpdir(), 'dl-pc-rotate-'));
+  const { runId } = initRun(root, {
+    runtime: 'claude', continuation: 'rotate-per-unit', goal: 'g', now: new Date('2026-06-24T00:00:00Z'),
+  });
+  return { root, runId };
+}
+
+function checkpointFiles(root, runId) {
+  const dir = join(runDir(root, runId), 'checkpoints');
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir).filter(file => file.endsWith('-compact.json'));
+}
+
 test('no current run → no-op', async () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-pc0-'));
   const r = await runPreCompactHandoff({}, { root, now: Date.parse('2026-06-24T00:01:00Z') });
   assert.equal(r.action, 'no-run');
 });
 
-test('interactive → emits handoff, no spawn', async () => {
+test('interactive compact-in-place → checkpoints in place, no spawn', async () => {
   const { root } = seed();
   // spawnFn is no longer accepted — just verify action and that no side-effect occurs.
   const r = await runPreCompactHandoff({ tty: true }, { root, now: Date.parse('2026-06-24T00:01:00Z') });
+  assert.equal(r.action, 'checkpointed');
+});
+
+test('compact-in-place attended idle → checkpointed with byte-identical loop and no child reservation', async () => {
+  const { root, runId } = seed();
+  const loopPath = join(runDir(root, runId), 'loop.json');
+  const before = rf(loopPath, 'utf8');
+  const beforeSessions = readState(root, runId).data.session_chain.sessions.length;
+
+  const r = await runPreCompactHandoff({}, {
+    root, now: Date.parse('2026-06-24T00:01:00Z'), env: {},
+  });
+
+  assert.deepEqual(r, { ok: true, action: 'checkpointed', headless: false });
+  assert.equal(rf(loopPath, 'utf8'), before);
+  assert.equal(readState(root, runId).data.session_chain.sessions.length, beforeSessions);
+  assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'idle');
+  assert.equal(checkpointFiles(root, runId).length, 1);
+});
+
+test('compact-in-place attended acquired → checkpointed after rotation, byte-identical and no new reservation', async () => {
+  const { root, runId } = seed();
+  const emitted = emitHandoff(root, runId, {
+    reason: 'manual rotation', trigger: 'manual-rotation', now: Date.parse('2026-06-24T00:01:00Z'),
+    expect: { owner: runId, generation: 1 }, env: {},
+  });
+  assert.equal(emitted.ok, true);
+  const acquired = acquireLease(root, runId, {
+    owner: emitted.childRunId, expectGeneration: 1, runtime: 'claude', now: Date.parse('2026-06-24T00:02:00Z'),
+  });
+  assert.equal(acquired.reason, 'acquired');
+  const loopPath = join(runDir(root, runId), 'loop.json');
+  const before = rf(loopPath, 'utf8');
+  const beforeSessions = readState(root, runId).data.session_chain.sessions.length;
+
+  const r = await runPreCompactHandoff({}, {
+    root, now: Date.parse('2026-06-24T00:03:00Z'), env: {},
+  });
+
+  assert.deepEqual(r, { ok: true, action: 'checkpointed', headless: false });
+  assert.equal(rf(loopPath, 'utf8'), before);
+  const after = readState(root, runId).data;
+  assert.equal(after.session_chain.sessions.length, beforeSessions);
+  assert.equal(after.session_chain.lease.owner_run_id, emitted.childRunId);
+  assert.equal(after.session_chain.lease.generation, 2);
+  assert.equal(after.session_chain.lease.handoff_phase, 'acquired');
+  assert.equal(checkpointFiles(root, runId).length, 1);
+});
+
+test('rotate-per-unit attended → existing emitted handoff behavior', async () => {
+  const { root, runId } = seedRotate();
+  const r = await runPreCompactHandoff({}, {
+    root, now: Date.parse('2026-06-24T00:01:00Z'), env: {},
+  });
   assert.equal(r.action, 'emitted');
+  assert.equal(r.headless, false);
+  assert.ok(r.childRunId);
+  assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'emitted');
+  assert.deepEqual(checkpointFiles(root, runId), []);
+});
+
+test('compact-in-place headless invocation ignores attended policy and emits handoff', async () => {
+  const { root, runId } = seed();
+  const r = await runPreCompactHandoff({ unattended: true }, {
+    root, now: Date.parse('2026-06-24T00:01:00Z'), env: {},
+  });
+  assert.equal(r.action, 'emitted');
+  assert.equal(r.headless, true);
+  assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'emitted');
+  assert.deepEqual(checkpointFiles(root, runId), []);
+});
+
+test('compact-in-place reserved residue enters emitFn reserved-finalization path, not checkpoint path', async () => {
+  const { root, runId } = seed();
+  const reserved = reserveHandoff(root, runId, {
+    trigger: 'milestone', now: Date.parse('2026-06-24T00:00:30Z'), expect: { owner: runId, generation: 1 },
+  });
+  assert.equal(reserved.reason, 'reserved');
+  let emitCalls = 0;
+  let checkpointCalls = 0;
+  const emitFn = (...args) => {
+    emitCalls += 1;
+    return emitHandoff(...args);
+  };
+  const checkpointFn = () => { checkpointCalls += 1; };
+
+  const r = await runPreCompactHandoff({}, {
+    root, now: Date.parse('2026-06-24T00:01:00Z'), env: {}, emitFn, checkpointFn,
+  });
+
+  assert.equal(r.action, 'emitted');
+  assert.equal(emitCalls, 1);
+  assert.equal(checkpointCalls, 0);
+  assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'emitted');
+});
+
+test('emitted/spawned handoff is an early no-op regardless of stored trigger', async () => {
+  for (const phase of ['emitted', 'spawned']) {
+    const { root, runId } = seed();
+    const { data } = readState(root, runId);
+    data.session_chain.lease = {
+      ...data.session_chain.lease,
+      state: 'releasing',
+      handoff_phase: phase,
+      handoff_idempotency_key: 'stored-key',
+      handoff_child_run_id: '01INFLIGHTCHILD0000000000AA',
+      handoff_trigger: 'milestone',
+    };
+    writeState(root, runId, data);
+    let emitCalls = 0;
+    let checkpointCalls = 0;
+    const r = await runPreCompactHandoff({}, {
+      root,
+      now: Date.parse('2026-06-24T00:01:00Z'),
+      env: {},
+      emitFn: () => { emitCalls += 1; throw new Error('must not emit'); },
+      checkpointFn: () => { checkpointCalls += 1; throw new Error('must not checkpoint'); },
+    });
+    assert.deepEqual(r, { ok: true, action: 'handoff-in-flight' });
+    assert.equal(emitCalls, 0, `${phase}: emit must not be called`);
+    assert.equal(checkpointCalls, 0, `${phase}: checkpoint must not be called`);
+  }
+});
+
+test('compact-in-place checkpoint failure is best-effort and never blocks compaction', async () => {
+  const { root } = seed();
+  const r = await runPreCompactHandoff({}, {
+    root,
+    now: Date.parse('2026-06-24T00:01:00Z'),
+    env: {},
+    checkpointFn: () => { throw new Error('disk unavailable'); },
+  });
+  assert.deepEqual(r, { ok: true, action: 'checkpointed', headless: false });
 });
 
 // PreCompact is emit-only: unattended within-budget → action='emitted', no child process spawned.
@@ -89,7 +237,7 @@ test('unattended with sessions.length == max_sessions before emit → gate-block
 test('tty===false alone with empty env → headless false (isHeadlessInvocation replaces tty check)', async () => {
   const { root } = seed();
   const r = await runPreCompactHandoff({ tty: false }, { root, now: Date.parse('2026-06-24T00:01:00Z'), env: {} });
-  assert.equal(r.action, 'emitted');
+  assert.equal(r.action, 'checkpointed');
   assert.equal(r.headless, false, 'tty===false alone must NOT trigger headless; only env signals do');
 });
 
@@ -197,7 +345,8 @@ test('precompact direct execution runs main exactly once while imports with miss
   assert.equal(directResult.status, 0, directResult.stderr);
   assert.equal(directResult.stdout, '');
   assert.equal(directResult.stderr, '');
-  assert.equal(events(direct.root, direct.runId).filter(event => event.type === 'handoff-emitted').length, 1);
+  assert.equal(events(direct.root, direct.runId).filter(event => event.type === 'handoff-emitted').length, 0);
+  assert.equal(checkpointFiles(direct.root, direct.runId).length, 1);
 
   for (const extraArgs of [[], [DRIVE_HOOK]]) {
     const imported = seed();
@@ -207,6 +356,7 @@ test('precompact direct execution runs main exactly once while imports with miss
     assert.equal(result.stdout, '');
     assert.equal(result.stderr, '');
     assert.equal(events(imported.root, imported.runId).filter(event => event.type === 'handoff-emitted').length, 0);
+    assert.equal(checkpointFiles(imported.root, imported.runId).length, 0);
   }
 });
 
@@ -351,7 +501,7 @@ test('gate-blocked precompact propagates a terminal rollback race without changi
 // ── §3.4.1: emit-시점 경합(체크와 emit 사이 상태 전이) reason-특정 정규화 ──────────
 // (c-1) readState는 active를 봤으나 emitHandoff가 RUN_TERMINAL 반환(내부 rollback 후) → benign
 test('interleaving: emit returns RUN_TERMINAL on active-looking state → benign no-run-terminal', async () => {
-  const { root } = seed();
+  const { root } = seedRotate();
   const emitFn = () => ({ ok: false, reason: 'RUN_TERMINAL', key: 'k' });
   const r = await runPreCompactHandoff({}, { root, now: Date.parse('2026-07-19T00:01:00Z'), emitFn });
   assert.deepEqual(r, { ok: true, action: 'no-run-terminal' });
@@ -359,7 +509,7 @@ test('interleaving: emit returns RUN_TERMINAL on active-looking state → benign
 
 // (c-2) emitHandoff가 RUN_PAUSED 반환(reserve-시점 거부) — 잔재 없음 → 단순 benign 정규화
 test('interleaving: emit returns RUN_PAUSED without residue → benign no-run-paused, lease untouched', async () => {
-  const { root, runId } = seed();
+  const { root, runId } = seedRotate();
   const before = structuredClone(readState(root, runId).data.session_chain.lease);
   const emitFn = () => ({ ok: false, reason: 'RUN_PAUSED', key: null });
   const r = await runPreCompactHandoff({}, { root, now: Date.parse('2026-07-19T00:01:00Z'), emitFn });
@@ -369,7 +519,7 @@ test('interleaving: emit returns RUN_PAUSED without residue → benign no-run-pa
 
 // (c-3) 반환-RUN_PAUSED 시점에 phase='reserved' 잔재 → 정리 경유 후 benign (emitted/spawned는 보존 규칙대로)
 test('interleaving: emit returns RUN_PAUSED with reserved residue → swept then benign no-run-paused', async () => {
-  const { root, runId } = seed();
+  const { root, runId } = seedRotate();
   const emitFn = () => {
     const raced = readState(root, runId).data;
     raced.session_chain.lease = { ...raced.session_chain.lease, handoff_phase: 'reserved', handoff_idempotency_key: 'race-key', handoff_child_run_id: '01STALECHILD000000000000FF' };
@@ -384,7 +534,7 @@ test('interleaving: emit returns RUN_PAUSED with reserved residue → swept then
 // (c-4) reserve 성공 후 append 중 pause → RUN_PAUSED **던짐**(rollback 없이 탈출) → reservation 정리 후 benign,
 // handoff_phase idle 복귀 (정리 없이 정규화만 하면 이후 handoff가 in-flight 거부되는 교착이 남는다)
 test('interleaving: emit THROWS RUN_PAUSED after reserve → reservation swept, handoff_phase back to idle, benign', async () => {
-  const { root, runId } = seed();
+  const { root, runId } = seedRotate();
   const emitFn = () => {
     const raced = readState(root, runId).data;
     raced.session_chain.lease = { ...raced.session_chain.lease, handoff_phase: 'reserved', handoff_idempotency_key: 'thrown-key', handoff_child_run_id: '01STALECHILD000000000000GG' };
@@ -401,7 +551,7 @@ test('interleaving: emit THROWS RUN_PAUSED after reserve → reservation swept, 
 
 // fenced reason은 의도적으로 정규화하지 않는다 — 진짜 lease 이상 신호 표면화 (스코핑 회귀 방지)
 test('emit returns fenced → stays non-benign ok:false action:fenced', async () => {
-  const { root } = seed();
+  const { root } = seedRotate();
   const emitFn = () => ({ ok: false, reason: 'fenced', key: null });
   const r = await runPreCompactHandoff({}, { root, now: Date.parse('2026-07-19T00:01:00Z'), emitFn });
   assert.deepEqual(r, { ok: false, action: 'fenced', reason: 'fenced' });

@@ -113,10 +113,12 @@ export function recordWorkstreamTerminal(root, runId, wsId, { status, proof = {}
   // Cheap input validation (no atomicity required)
   if (!TERMINAL.includes(status)) throw new Error(`WORKSTREAM_STATUS_INVALID: ${status} is not terminal`);
   if (!proof || typeof proof !== 'object' || Array.isArray(proof)) throw new Error(`WORKSTREAM_TERMINAL_NO_PROOF: ${wsId} requires proof object`);
+  let terminalEventSeq = null;
   appendAnchored(root, runId, { type: 'workstream-terminal', data: { id: wsId, status, proof } }, (loop) => {
     const w = loop.workstreams.find(x => x.id === wsId);
     if (!w) throw new Error(`WORKSTREAM_NOT_FOUND: ${wsId}`);
     w.status = status;
+    (w.terminal_events ??= []).push(`${terminalEventSeq}:${wsId}:${status}`);
     loop.active_workstreams = loop.active_workstreams.filter(x => x !== wsId);
   }, (loop) => {
     // Codex r3 🔴: all throwing validations inside preCheck on fresh loop (atomic terminal guard)
@@ -135,6 +137,8 @@ export function recordWorkstreamTerminal(root, runId, wsId, { status, proof = {}
       status === 'merged'    ? (typeof proof.merge_commit === 'string' && proof.human_approved === true) :
       status === 'abandoned' ? (typeof proof.reason === 'string' && proof.reason.length > 0) : false;
     if (!ok) throw new Error(`WORKSTREAM_TERMINAL_NO_PROOF: ${wsId} -> ${status} proof insufficient`);
+    // Capture the pre-floor head: +1 is this business event; mutate-time head would already be the floor cost event.
+    terminalEventSeq = loop.event_log_head.seq + 1;
   }, { floor: MUTATION_TURN_FLOOR });
 }
 

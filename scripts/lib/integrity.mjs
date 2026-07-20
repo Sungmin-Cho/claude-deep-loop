@@ -108,6 +108,7 @@ export function appendAnchored(root, runId, { type, data }, mutate, preCheck, op
     // caller guards and event writes. readState is already strict, so no unbound reader is exposed here.
     assertProjectRootBinding(root, loop);
     if (preCheck) preCheck(loop);              // throws BEFORE append → anchor stays consistent
+    // Invariant: do not add a throwing guard after preCheck; preCheck side effects are coupled to this ordering.
     // v1.6 gateway terminal gate (spec §2.1.5): 반드시 caller preCheck **뒤** — fence-first 보존
     // (LEASE_FENCED/RESPAWN_FENCED/RUN_TERMINAL:emitHandoff 등 특정-에러 경로가 먼저 발화해야 한다).
     // 여기 도달했는데 terminal이면 "어떤 preCheck도 못 잡은" fence-less 경로 — 최후 방벽.

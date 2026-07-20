@@ -19,7 +19,7 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field session_chain.leas
 ## Handoff 호출자 3종
 
 1. **마일스톤 도달** — `milestone_predicate` 통과 시 `/deep-loop-continue`가 자동 emit
-2. **per_session_turn_cap 소진** — budget 게이트가 `handoff` action을 반환
+2. **per_session_turn_cap 소진** — budget 게이트가 `handoff` action을 반환. 단, cap 소진 트리거는 `rotate-per-unit` 전용이다 — `compact-in-place`는 실제 작업 action의 `advice:'compact'`를 표시하고 작업을 계속한다.
 3. **사람 수동 요청** — `/deep-loop-handoff`로 언제든 emit 가능
 
 ## §0.5 세션 model/effort refresh (handoff emit / respawn 전 항상)

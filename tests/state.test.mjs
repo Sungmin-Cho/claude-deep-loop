@@ -15,10 +15,10 @@ function seed() {
   const dir = runDir(root, runId);
   mkdirSync(dir, { recursive: true });
   const data = {
-    schema_version: '0.2.0', run_id: runId, goal: 'g', status: 'running',
+    schema_version: '0.3.0', run_id: runId, goal: 'g', status: 'running',
     project: { root }, routing: { protocol: 'deep-work' }, review: { points: ['design'] },
-    autonomy: { tier: 'recommend', spawn_style: 'interactive' }, budget: { unit: 'turns', spent: 5 },
-    comprehension: {}, circuit_breaker: { tripped: false }, session_chain: { lease: { state: 'active', handoff_phase: 'idle' }, sessions: [] },
+    autonomy: { tier: 'recommend', spawn_style: 'interactive', continuation_policy: 'rotate-per-unit' }, budget: { unit: 'turns', spent: 5 },
+    comprehension: {}, circuit_breaker: { tripped: false }, session_chain: { lease: { state: 'active', handoff_phase: 'idle', handoff_trigger: null }, consumed_milestones: [], sessions: [] },
     workstreams: [{ id: 'ws-1', status: 'in_progress', depends_on: [] }], active_workstreams: ['ws-1'],
     triage: { actionable: [] }, episodes: [{ id: 'e1', status: 'pending' }], termination: {},
   };

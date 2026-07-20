@@ -1,11 +1,12 @@
 import { spawnSync } from 'node:child_process';
-import { isAbsolute } from 'node:path';
+import { isAbsolute, posix } from 'node:path';
 import { existsSync } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import { appendAnchored } from './integrity.mjs';
 import { readState } from './state.mjs';
 import { reconcileBudget } from './budget.mjs';
 import { revalidateTrustedLauncherExecutable } from './runtime-executable.mjs';
+import { LAUNCHER_KINDS } from './schema.mjs';
 
 /** Non-invasive probe runner — never opens a window. capture:true returns stdout. */
 export function defaultProbeRun(bin, argv, { timeoutMs = 5000, capture = false } = {}) {
@@ -65,6 +66,120 @@ function launcherAuthority(loop, kind) {
   return approvals[kind];
 }
 
+function parseTmuxSignal(value) {
+  if (typeof value !== 'string' || value.length === 0 || /[\0\r\n]/.test(value)) return null;
+  const firstComma = value.indexOf(',');
+  const secondComma = firstComma < 0 ? -1 : value.indexOf(',', firstComma + 1);
+  if (firstComma <= 0 || secondComma <= firstComma + 1 || value.indexOf(',', secondComma + 1) !== -1) return null;
+  const socketPath = value.slice(0, firstComma);
+  const serverPid = value.slice(firstComma + 1, secondComma);
+  const sessionId = value.slice(secondComma + 1);
+  if (!posix.isAbsolute(socketPath) || !/^[1-9][0-9]*$/.test(serverPid) || !/^[0-9]+$/.test(sessionId)) return null;
+  return { socketPath, serverPid, sessionId };
+}
+
+export function probeTmuxSocket(identity, {
+  socketPath, serverPid, run = defaultProbeRun,
+} = {}) {
+  const probeArgv = ['-S', socketPath, 'display-message', '-p', '#{pid} #{session_id}'];
+  let probeResult;
+  try {
+    if (!identity || identity.kind !== 'tmux'
+      || typeof identity.canonical_path !== 'string' || !posix.isAbsolute(identity.canonical_path)
+      || typeof socketPath !== 'string' || !posix.isAbsolute(socketPath)
+      || typeof serverPid !== 'string' || !/^[1-9][0-9]*$/.test(serverPid)) {
+      throw new Error('invalid tmux probe target');
+    }
+    probeResult = run(identity.canonical_path, probeArgv, { timeoutMs: 5000, capture: true });
+  } catch {
+    probeResult = { code: 1, stdout: '' };
+  }
+  const probe = {
+    cmd: [identity?.canonical_path ?? null, ...probeArgv],
+    code: probeResult?.code ?? 1,
+  };
+  const parsed = /^([1-9][0-9]*) \$([0-9]+)$/.exec(String(probeResult?.stdout ?? '').trim());
+  return {
+    ok: probe.code === 0 && parsed != null && parsed[1] === serverPid,
+    sessionId: parsed?.[2] ?? null,
+    probe,
+  };
+}
+
+export function listTmuxPanes(identity, {
+  socketPath, run = defaultProbeRun,
+} = {}) {
+  const argv = ['-S', socketPath, 'list-panes', '-a', '-F', '#{pane_id} #{pane_pid} #{session_id}'];
+  let result;
+  try {
+    if (!identity || identity.kind !== 'tmux'
+      || typeof identity.canonical_path !== 'string' || !posix.isAbsolute(identity.canonical_path)
+      || typeof socketPath !== 'string' || !posix.isAbsolute(socketPath)) return null;
+    result = run(identity.canonical_path, argv, { timeoutMs: 5000, capture: true });
+  } catch {
+    return null;
+  }
+  if (result?.code !== 0 || typeof result.stdout !== 'string') return null;
+  const lines = result.stdout.split('\n');
+  if (lines.at(-1) === '') lines.pop();
+  if (lines.length === 0) return [];
+  const panes = [];
+  for (const line of lines) {
+    const parsed = /^%[0-9]+ ([1-9][0-9]*) \$([0-9]+)$/.exec(line);
+    if (parsed == null) return null;
+    panes.push({ panePid: parsed[1], sessionId: parsed[2] });
+  }
+  return panes;
+}
+
+function defaultPsRun() {
+  const result = spawnSync('/bin/ps', ['-axo', 'pid=,ppid='], {
+    timeout: 5000, encoding: 'utf8', shell: false, env: {},
+  });
+  return {
+    status: result.status ?? 1,
+    stdout: typeof result.stdout === 'string' ? result.stdout : '',
+  };
+}
+
+export function deriveTmuxSessionByAncestry({
+  panes, processPid, psRun = defaultPsRun,
+} = {}) {
+  if (!Array.isArray(panes) || !/^[1-9][0-9]*$/.test(String(processPid ?? ''))) return null;
+  const paneSessions = new Map();
+  for (const pane of panes) {
+    if (!pane || typeof pane !== 'object'
+      || !/^[1-9][0-9]*$/.test(String(pane.panePid ?? ''))
+      || !/^[0-9]+$/.test(String(pane.sessionId ?? ''))) return null;
+    paneSessions.set(String(pane.panePid), String(pane.sessionId));
+  }
+
+  let result;
+  try { result = psRun(); } catch { return null; }
+  if ((result?.status ?? result?.code) !== 0 || typeof result.stdout !== 'string') return null;
+  const lines = result.stdout.split('\n');
+  if (lines.at(-1) === '') lines.pop();
+  if (lines.length === 0) return null;
+  const parents = new Map();
+  for (const line of lines) {
+    const parsed = /^\s*([1-9][0-9]*)\s+([0-9]+)\s*$/.exec(line);
+    if (parsed == null) return null;
+    parents.set(parsed[1], parsed[2]);
+  }
+
+  let current = String(processPid);
+  const visited = new Set([current]);
+  for (let hops = 0; hops < 64; hops++) {
+    const parent = parents.get(current);
+    if (parent == null || parent === '0' || visited.has(parent)) return null;
+    const sessionId = paneSessions.get(parent);
+    if (sessionId != null) return sessionId;
+    visited.add(parent);
+    current = parent;
+  }
+  return null;
+}
+
 // Bounded parent-process ancestry walk. The PS one-liner outputs 3-valued PS/NO/UNKNOWN
 // (only a true top-reach is authoritative NO; CIM failure/exhaustion → UNKNOWN). MEASURED-PS-ONLY:
 // only a measured 'PS' ancestor returns host:true. NO/UNKNOWN/all-probes-failed → host:false.
@@ -85,10 +200,10 @@ function detectPsHost({ run, pid, candidates }) {
  * Fail-closed, positive-host-signal terminal/launcher detection.
  *
  * Returns a descriptor matching the session_spawn shape persisted by initrun:
- *   { platform, launcher, launcher_bin, launcher_socket, surface,
- *     reachable, visible, signals, probe, reason, fallback, detected_at }
+ *   { platform, launcher, launcher_bin, launcher_socket, launcher_session,
+ *     surface, reachable, visible, signals, probe, reason, fallback, detected_at }
  *
- * launcher ∈ { cmux, iterm2, terminal-app, wt, powershell, none }
+ * launcher ∈ { cmux, iterm2, terminal-app, wt, powershell, tmux, none }
  * fallback is always 'launch-command-file' (v1 constant).
  */
 export function detectTerminal({
@@ -100,8 +215,11 @@ export function detectTerminal({
   exists = (p) => { try { return existsSync(p); } catch { return false; } },
   arch = process.arch,
   windowsLauncherIdentities = {},
+  launcherIdentities = windowsLauncherIdentities,
   revalidateLauncher = revalidateTrustedLauncherExecutable,
   launcherRevalidationOptions = {},
+  tmuxPanesRun = run,
+  tmuxPsRun,
 } = {}) {
   // detected_at is an ISO string passed in; do NOT call .toISOString() on it.
   const detected_at = now;
@@ -177,10 +295,46 @@ export function detectTerminal({
     };
   }
 
-  // ── 1.5. Multiplexer v1 unsupported ─────────────────────────────────────────
+  // ── 1.5. tmux approval + socket ownership/session binding; screen remains unsupported ──
   // Must come BEFORE the darwin TERM_PROGRAM check because TERM_PROGRAM is
   // stale/incorrect inside a tmux/screen session.
-  if (env.TMUX || env.STY) {
+  if (env.TMUX) {
+    const parsed = parseTmuxSignal(env.TMUX);
+    if (parsed == null) return noneDescriptor('tmux-env-invalid');
+
+    let identity;
+    try {
+      const stored = launcherIdentities?.tmux;
+      if (stored == null) throw new Error('missing');
+      identity = revalidateLauncher(stored, { ...launcherRevalidationOptions, platform, arch });
+      if (!sameLauncherSecurityIdentity(identity, stored) || identity.kind !== 'tmux') throw new Error('mismatch');
+    } catch {
+      return noneDescriptor('tmux-unapproved');
+    }
+
+    const { ok: socketVerified, sessionId, probe } = probeTmuxSocket(identity, {
+      socketPath: parsed.socketPath, serverPid: parsed.serverPid, run,
+    });
+    if (!socketVerified || sessionId !== parsed.sessionId) {
+      return noneDescriptor('tmux-socket-unverified', probe);
+    }
+    const panes = listTmuxPanes(identity, { socketPath: parsed.socketPath, run: tmuxPanesRun });
+    const ancestrySession = deriveTmuxSessionByAncestry({
+      panes, processPid: pid, ...(tmuxPsRun === undefined ? {} : { psRun: tmuxPsRun }),
+    });
+    if (ancestrySession == null || ancestrySession !== parsed.sessionId) {
+      return noneDescriptor('tmux-socket-unverified', probe);
+    }
+
+    return {
+      platform, launcher: 'tmux', launcher_bin: identity.canonical_path,
+      launcher_identity: identity, launcher_socket: parsed.socketPath,
+      launcher_pid: parsed.serverPid, launcher_session: ancestrySession,
+      surface: 'window', reachable: true, visible: true,
+      signals, probe, reason: null, fallback: 'launch-command-file', detected_at,
+    };
+  }
+  if (env.STY) {
     return noneDescriptor('multiplexer-v1-unsupported');
   }
 
@@ -225,7 +379,7 @@ export function detectTerminal({
     if (env.WT_SESSION) {
       let identity;
       try {
-        const stored = windowsLauncherIdentities?.wt;
+        const stored = launcherIdentities?.wt;
         if (stored == null) throw new Error('missing');
         identity = revalidateLauncher(stored, { ...launcherRevalidationOptions, platform, arch });
         if (!sameLauncherSecurityIdentity(identity, stored) || identity.kind !== 'wt') {
@@ -246,7 +400,7 @@ export function detectTerminal({
     // verified and revalidated native identity; otherwise preserve a manual fallback.
     let identity;
     try {
-      const stored = windowsLauncherIdentities?.powershell;
+      const stored = launcherIdentities?.powershell;
       if (stored == null) throw new Error('missing');
       identity = revalidateLauncher(stored, { ...launcherRevalidationOptions, platform, arch });
       if (!sameLauncherSecurityIdentity(identity, stored) || identity.kind !== 'powershell') {
@@ -277,7 +431,7 @@ export function detectTerminal({
  * Releasing-safe (R11-HH): the lease portion of preCheck compares owner/generation
  * without applying the leaseCheck releasing carve-out, so detect-terminal succeeds
  * while the parent is `releasing`. A separate in-lock guard binds any runnable
- * Windows launcher descriptor to the current durable/legacy authority.
+ * launcher descriptor to the current durable/legacy authority.
  *
  * Returns the descriptor so the CLI can print it.
  */
@@ -290,31 +444,34 @@ export function detectAndPersist(root, runId, {
   pid = (typeof process !== 'undefined' ? process.pid : 0),
   arch = process.arch,
   windowsLauncherIdentities = {},
+  launcherIdentities = windowsLauncherIdentities,
   revalidateLauncher = revalidateTrustedLauncherExecutable,
   launcherRevalidationOptions = {},
+  tmuxPanesRun = run,
+  tmuxPsRun,
 } = {}) {
   reconcileBudget(root, runId);
   const { data: loop } = readState(root, runId);
   const persistedLauncher = loop.session_spawn?.launcher;
   const persistedIdentity = loop.session_spawn?.launcher_identity;
   // Authority order: durable human approval > legacy persisted session identity > explicit test fallback.
-  // Production callers do not inject windowsLauncherIdentities; keeping it last preserves focused tests without
+  // Production callers do not inject launcher identities; keeping them last preserves focused tests without
   // turning PATH/fixed candidates into authority. Legacy states may omit the new approval map entirely.
   const durableApprovals = loop.autonomy?.launcher_executable_approvals;
   const hasDurableApprovalMap = durableApprovals !== undefined;
-  const effectiveWindowsIdentities = hasDurableApprovalMap ? {} : { ...windowsLauncherIdentities };
+  const effectiveLauncherIdentities = hasDurableApprovalMap ? {} : { ...launcherIdentities };
   if (!hasDurableApprovalMap && persistedIdentity != null
     && (persistedLauncher === 'wt' || persistedLauncher === 'powershell')) {
-    effectiveWindowsIdentities[persistedLauncher] = persistedIdentity;
+    effectiveLauncherIdentities[persistedLauncher] = persistedIdentity;
   }
   if (hasDurableApprovalMap && durableApprovals && typeof durableApprovals === 'object' && !Array.isArray(durableApprovals)) {
-    for (const kind of ['wt', 'powershell']) {
-      if (durableApprovals[kind] != null) effectiveWindowsIdentities[kind] = durableApprovals[kind];
+    for (const kind of LAUNCHER_KINDS) {
+      if (durableApprovals[kind] != null) effectiveLauncherIdentities[kind] = durableApprovals[kind];
     }
   }
   const d = detectTerminal({
-    env, platform, run, now, pid, arch, windowsLauncherIdentities: effectiveWindowsIdentities,
-    revalidateLauncher, launcherRevalidationOptions,
+    env, platform, run, now, pid, arch, launcherIdentities: effectiveLauncherIdentities,
+    revalidateLauncher, launcherRevalidationOptions, tmuxPanesRun, tmuxPsRun,
   });
   appendAnchored(
     root, runId,
@@ -332,7 +489,7 @@ export function detectAndPersist(root, runId, {
       if (l.status === 'completed' || l.status === 'stopped') {
         throw new Error('RUN_TERMINAL: detect-terminal');
       }
-      if (platform === 'win32' && (d.launcher === 'wt' || d.launcher === 'powershell')) {
+      if (LAUNCHER_KINDS.includes(d.launcher)) {
         const authority = launcherAuthority(l, d.launcher);
         if (authority == null || !isDeepStrictEqual(d.launcher_identity, authority)) {
           throw new Error('LAUNCHER_EXECUTABLE_DRIFT: detect-terminal authority changed');

@@ -145,6 +145,41 @@ function codexInteractiveArgv(root, prompt, model, effort) {
   ];
 }
 
+function claudeInteractiveShellCommand(childRunId, prompt, model, effort) {
+  return `claude -n ${q(`deep-loop-${childRunId}`)} ${q(prompt)}${meSh(q, model, effort)}`;
+}
+
+function codexInteractiveShellCommand(executable, root, prompt, model, effort) {
+  return `${q(executable)} -C ${q(root)}`
+    + `${model == null ? '' : ` --model ${q(model)}`}`
+    + `${effort == null ? '' : ` -c ${q(`model_reasoning_effort=${tomlBasicString(effort)}`)}`}`
+    + ` ${q(prompt)}`;
+}
+
+function tmuxEntry({
+  root, launcher, launcherBin, launcherSocket, launcherSession, launcherIdentity,
+  platform, resumeShellCommand,
+}) {
+  const approvedBin = launcherIdentity?.canonical_path;
+  if (launcher !== 'tmux' || !['linux', 'darwin'].includes(platform)
+    || launcherIdentity?.kind !== 'tmux' || launcherIdentity?.platform !== platform
+    || launcherIdentity?.source !== 'human-explicit'
+    || typeof approvedBin !== 'string' || !posix.isAbsolute(approvedBin)
+    || launcherBin !== approvedBin
+    || typeof launcherSocket !== 'string' || !posix.isAbsolute(launcherSocket) || /[\0\r\n]/.test(launcherSocket)
+    || typeof launcherSession !== 'string' || !/^[0-9]+$/.test(launcherSession)
+    || !targetAbsolutePath(root, platform)) {
+    return unavailableEntry('tmux', 'trusted-posix-launcher-unavailable');
+  }
+  const argv = ['-S', launcherSocket, 'new-window', '-t', launcherSession, '-c', root, resumeShellCommand];
+  return {
+    bin: approvedBin,
+    argv,
+    shell: false,
+    display: `${q(approvedBin)} -S ${q(launcherSocket)} new-window -t ${q(launcherSession)} -c ${q(root)} ${q(resumeShellCommand)}`,
+  };
+}
+
 function codexInteractivePsArgs(root, prompt, model, effort) {
   return [
     `-C ${psArg(root)}`,
@@ -156,7 +191,7 @@ function codexInteractivePsArgs(root, prompt, model, effort) {
 
 function buildCodexEntries({
   root, parentRunId, childRunId, handoffRel,
-  launcher, launcherBin, launcherSocket, exists = existsSync,
+  launcher, launcherBin, launcherSocket, launcherSession, exists = existsSync,
   model = null, effort = null, codexExecutable = null, deepLoopRoot = null,
   platform = process.platform, runtimeExecutableIdentity = null, launcherIdentity = null,
 }) {
@@ -171,6 +206,7 @@ function buildCodexEntries({
   });
   const entries = {
     cmux: unavailable('cmux'),
+    tmux: unavailable('tmux'),
     iterm2: unavailable('iterm2'),
     'terminal-app': unavailable('terminal-app'),
     wt: unavailable('wt'),
@@ -227,6 +263,7 @@ function buildCodexEntries({
     } else if (visibleExecutable != null) {
       const interactiveArgv = codexInteractiveArgv(root, manualPrompt, model, effort);
       const interactiveCommand = [visibleExecutable, ...interactiveArgv].map(q).join(' ');
+      const tmuxResumeShellCommand = codexInteractiveShellCommand(visibleExecutable, root, manualPrompt, model, effort);
       if (launcher === 'cmux' && typeof launcherBin === 'string' && posix.isAbsolute(launcherBin)
         && typeof launcherSocket === 'string' && launcherSocket.length > 0) {
         const cmuxArgv = [
@@ -244,6 +281,10 @@ function buildCodexEntries({
       } else {
         entries.cmux = unavailableEntry('cmux', 'trusted-posix-launcher-unavailable');
       }
+      entries.tmux = tmuxEntry({
+        root, launcher, launcherBin, launcherSocket, launcherSession, launcherIdentity,
+        platform, resumeShellCommand: tmuxResumeShellCommand,
+      });
 
       const osascript = '/usr/bin/osascript';
       if (platform === 'darwin' && exists(osascript)) {
@@ -277,7 +318,7 @@ function buildCodexEntries({
 
 function buildClaudeEntries({
   root, parentRunId, childRunId, handoffRel,
-  launcher, launcherBin, launcherSocket,
+  launcher, launcherBin, launcherSocket, launcherSession,
   platform = process.platform, desktopTarget = null, exists = existsSync,
   model = null, effort = null,
   runtimeExecutableIdentity = null, launcherIdentity = null,
@@ -303,7 +344,7 @@ function buildClaudeEntries({
     desktopEntry = { unavailable: true };
   }
 
-  const cmuxCmdStr = `claude -n ${q(inner)} ${q(resumePrompt)}${meSh(q, model, effort)}`;
+  const cmuxCmdStr = claudeInteractiveShellCommand(childRunId, resumePrompt, model, effort);
   const cmuxArgv = launcherSocket
     ? ['--socket', launcherSocket, 'new-workspace', '--cwd', root, '--command', cmuxCmdStr, '--focus', 'true']
     : ['new-workspace', '--cwd', root, '--command', cmuxCmdStr, '--focus', 'true'];
@@ -360,6 +401,7 @@ function buildClaudeEntries({
       : unavailableEntry('headless', 'trusted-native-runtime-unavailable');
     return {
       cmux: unavailableEntry('cmux', 'native-windows-launcher-unavailable'),
+      tmux: unavailableEntry('tmux', 'native-windows-launcher-unavailable'),
       iterm2: unavailableEntry('iterm2', 'unsupported-on-win32'),
       'terminal-app': unavailableEntry('terminal-app', 'unsupported-on-win32'),
       wt,
@@ -376,6 +418,10 @@ function buildClaudeEntries({
       argv: cmuxArgv,
       display: cmuxDisplay,
     },
+    tmux: tmuxEntry({
+      root, launcher, launcherBin, launcherSocket, launcherSession, launcherIdentity,
+      platform, resumeShellCommand: cmuxCmdStr,
+    }),
     iterm2: {
       bin: 'osascript',
       argv: ['-e', iterm2Script],
@@ -407,7 +453,7 @@ function buildClaudeEntries({
 
 export function buildRuntimeResumeDescriptor({
   runtime = 'claude', root, parentRunId, childRunId, handoffRel,
-  launcher, launcherBin, launcherSocket,
+  launcher, launcherBin, launcherSocket, launcherSession,
   platform = process.platform, desktopTarget = null, exists = existsSync,
   model = null, effort = null,
   codexExecutable = null, deepLoopRoot = null,
@@ -421,8 +467,8 @@ export function buildRuntimeResumeDescriptor({
     ? `Read .deep-loop/runs/${parentRunId}/${handoffRel} first; then run /deep-loop-resume`
     : `Read ${JSON.stringify(pathFor(platform, root, '.deep-loop', 'runs', parentRunId, handoffRel))} first; then run ${invocation}`;
   const entries = selectedRuntime === 'claude'
-    ? buildClaudeEntries({ root, parentRunId, childRunId, handoffRel, launcher, launcherBin, launcherSocket, platform, desktopTarget, exists, model, effort, runtimeExecutableIdentity, launcherIdentity })
-    : buildCodexEntries({ root, parentRunId, childRunId, handoffRel, launcher, launcherBin, launcherSocket, exists, model, effort, codexExecutable, deepLoopRoot, platform, runtimeExecutableIdentity, launcherIdentity });
+    ? buildClaudeEntries({ root, parentRunId, childRunId, handoffRel, launcher, launcherBin, launcherSocket, launcherSession, platform, desktopTarget, exists, model, effort, runtimeExecutableIdentity, launcherIdentity })
+    : buildCodexEntries({ root, parentRunId, childRunId, handoffRel, launcher, launcherBin, launcherSocket, launcherSession, exists, model, effort, codexExecutable, deepLoopRoot, platform, runtimeExecutableIdentity, launcherIdentity });
   return {
     runtime: selectedRuntime,
     projectRoot: root,

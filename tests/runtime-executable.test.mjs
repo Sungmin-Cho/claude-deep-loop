@@ -160,14 +160,19 @@ function durableApprovalBytes(root, runId) {
   }));
 }
 
-function launcherApprovalFixture({ kind = 'wt', name = kind === 'wt' ? 'wt.exe' : 'pwsh.exe' } = {}) {
+function launcherApprovalFixture({
+  kind = 'wt',
+  name = kind === 'wt' ? 'wt.exe' : (kind === 'powershell' ? 'pwsh.exe' : 'tmux'),
+  platform = kind === 'tmux' ? 'linux' : 'win32',
+  arch = 'x64',
+} = {}) {
   const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-launcher-approval-')));
   const executable = join(root, name);
   writeFileSync(executable, `${kind} native launcher bytes`);
   chmodSync(executable, 0o755);
   const sha256 = createHash('sha256').update(readFileSync(executable)).digest('hex');
-  const version = kind === 'wt' ? '1.22.10352.0' : '7.5.2';
-  const versionLine = kind === 'wt' ? `Windows Terminal ${version}` : `PowerShell ${version}`;
+  const version = kind === 'wt' ? '1.22.10352.0' : (kind === 'powershell' ? '7.5.2' : 'tmux 3.4');
+  const versionLine = kind === 'wt' ? `Windows Terminal ${version}` : (kind === 'powershell' ? `PowerShell ${version}` : version);
   const calls = [];
   const runVersion = (bin, argv, options) => {
     calls.push({ bin, argv, options });
@@ -177,7 +182,7 @@ function launcherApprovalFixture({ kind = 'wt', name = kind === 'wt' ? 'wt.exe' 
     runtime: 'claude', goal: 'g', now: new Date('2026-07-12T00:00:00.000Z'),
     env: {}, platform: 'linux', run: () => ({ code: 1 }),
   });
-  return { root, runId, kind, executable, sha256, version, versionLine, calls, runVersion };
+  return { root, runId, kind, executable, sha256, version, versionLine, calls, runVersion, platform, arch };
 }
 
 function launcherApprovalOptions(fixture, overrides = {}) {
@@ -190,8 +195,8 @@ function launcherApprovalOptions(fixture, overrides = {}) {
     confirm: true,
     fence: { owner: fixture.runId, generation: 1 },
     now: Date.parse('2026-07-12T01:00:00.000Z'),
-    platform: 'win32',
-    arch: 'x64',
+    platform: fixture.platform,
+    arch: fixture.arch,
     runVersion: fixture.runVersion,
     ...overrides,
   };
@@ -788,7 +793,7 @@ test('launcher diagnosis hashes one explicit native path without executing it; a
 
   const state = readState(fixture.root, fixture.runId).data;
   assert.deepEqual(state.autonomy.launcher_executable_approvals, {
-    wt: result.approval, powershell: null,
+    wt: result.approval, powershell: null, tmux: null,
   });
   const events = readFileSync(join(fixture.root, '.deep-loop', 'runs', fixture.runId, 'event-log.jsonl'), 'utf8')
     .trim().split('\n').map(line => JSON.parse(line));
@@ -798,6 +803,118 @@ test('launcher diagnosis hashes one explicit native path without executing it; a
     kind: 'wt', canonical_path: fixture.executable, sha256: fixture.sha256,
     version: fixture.version, source: 'human-explicit', actor: 'human',
   });
+});
+
+test('tmux launcher collects only absolute POSIX PATH candidates and omits Authenticode', () => {
+  const fixture = launcherApprovalFixture({ kind: 'tmux' });
+  const relativeShadow = join(fixture.root, 'relative-bin');
+  let authenticodeCalls = 0;
+  const identity = runtimeExecutable.resolveTrustedLauncherExecutable('tmux', {
+    env: { PATH: `relative-bin::${fixture.root}` },
+    cwd: relativeShadow,
+    platform: 'linux',
+    arch: 'x64',
+    runVersion: fixture.runVersion,
+    authenticodeProbe: () => { authenticodeCalls++; throw new Error('must not probe'); },
+  });
+
+  assert.deepEqual(identity, {
+    kind: 'tmux', canonical_path: fixture.executable, sha256: fixture.sha256,
+    version: 'tmux 3.4', platform: 'linux', arch: 'x64', source: 'verified-native',
+    authenticode: null,
+  });
+  assert.deepEqual(fixture.calls.map(call => call.argv), [['-V']]);
+  assert.equal(authenticodeCalls, 0);
+});
+
+test('tmux diagnose, human approval, and exact revalidation persist fail-closed POSIX authority', () => {
+  const fixture = launcherApprovalFixture({ kind: 'tmux' });
+  let authenticodeCalls = 0;
+  const authenticodeProbe = () => { authenticodeCalls++; throw new Error('must not probe'); };
+  const before = durableApprovalBytes(fixture.root, fixture.runId);
+
+  const diagnosed = runtimeExecutable.diagnoseLauncherExecutable('tmux', {
+    explicitPath: fixture.executable,
+    platform: 'linux',
+    arch: 'x64',
+    authenticodeProbe,
+  });
+  assert.equal(diagnosed.identity.canonical_path, fixture.executable);
+  assert.equal(diagnosed.identity.sha256, fixture.sha256);
+  assert.equal(diagnosed.identity.authenticode, null);
+  assert.equal(fixture.calls.length, 0, 'diagnosis must not execute unapproved tmux');
+  assert.deepEqual(durableApprovalBytes(fixture.root, fixture.runId), before);
+
+  const approved = runtimeExecutable.approveLauncherExecutable(
+    fixture.root,
+    fixture.runId,
+    launcherApprovalOptions(fixture, { authenticodeProbe }),
+  ).approval;
+  assert.deepEqual(approved, {
+    kind: 'tmux', canonical_path: fixture.executable, sha256: fixture.sha256,
+    version: 'tmux 3.4', platform: 'linux', arch: 'x64', source: 'human-explicit',
+    authenticode: null, approved_by: 'human', approved_at: '2026-07-12T01:00:00.000Z',
+  });
+  assert.deepEqual(readState(fixture.root, fixture.runId).data.autonomy.launcher_executable_approvals.tmux, approved);
+  assert.deepEqual(fixture.calls.map(call => call.argv), [['-V'], ['-V']]);
+  assert.equal(authenticodeCalls, 0);
+
+  assert.deepEqual(runtimeExecutable.revalidateTrustedLauncherExecutable(approved, {
+    platform: 'linux', arch: 'x64', runVersion: fixture.runVersion, authenticodeProbe,
+  }), approved);
+  assert.deepEqual(fixture.calls.map(call => call.argv), [['-V'], ['-V'], ['-V']]);
+
+  writeFileSync(fixture.executable, 'tmux hash drift');
+  assert.throws(
+    () => runtimeExecutable.revalidateTrustedLauncherExecutable(approved, {
+      platform: 'linux', arch: 'x64', runVersion: fixture.runVersion, authenticodeProbe,
+    }),
+    /LAUNCHER_EXECUTABLE_DRIFT/,
+  );
+  assert.equal(fixture.calls.length, 3, 'hash drift must fail before executing replacement tmux');
+
+  writeFileSync(fixture.executable, 'tmux native launcher bytes');
+  assert.throws(
+    () => runtimeExecutable.revalidateTrustedLauncherExecutable(approved, {
+      platform: 'linux',
+      arch: 'x64',
+      runVersion: () => ({ status: 0, signal: null, stdout: 'tmux 3.5\n', stderr: '' }),
+      authenticodeProbe,
+    }),
+    /LAUNCHER_EXECUTABLE_DRIFT/,
+  );
+  assert.equal(authenticodeCalls, 0);
+});
+
+test('tmux launcher kind is rejected on win32 before observation or mutation', () => {
+  const fixture = launcherApprovalFixture({ kind: 'tmux' });
+  const before = durableApprovalBytes(fixture.root, fixture.runId);
+
+  assert.throws(
+    () => runtimeExecutable.diagnoseLauncherExecutable('tmux', {
+      explicitPath: fixture.executable, platform: 'win32', arch: 'x64',
+    }),
+    /LAUNCHER_EXECUTABLE_UNTRUSTED/,
+  );
+  assert.throws(
+    () => runtimeExecutable.approveLauncherExecutable(fixture.root, fixture.runId, launcherApprovalOptions(fixture, {
+      platform: 'win32',
+    })),
+    /LAUNCHER_EXECUTABLE_UNTRUSTED/,
+  );
+  assert.equal(fixture.calls.length, 0);
+  assert.deepEqual(durableApprovalBytes(fixture.root, fixture.runId), before);
+});
+
+test('tmux launcher basename is exact and case-sensitive on POSIX', () => {
+  const fixture = launcherApprovalFixture({ kind: 'tmux', name: 'TMUX' });
+  assert.throws(
+    () => runtimeExecutable.diagnoseLauncherExecutable('tmux', {
+      explicitPath: fixture.executable, platform: 'linux', arch: 'x64',
+    }),
+    /LAUNCHER_EXECUTABLE_UNTRUSTED/,
+  );
+  assert.equal(fixture.calls.length, 0);
 });
 
 test('launcher approval rejects missing authority, unsafe targets, and version failure without probing or appending', () => {

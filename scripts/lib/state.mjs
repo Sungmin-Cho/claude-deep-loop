@@ -76,6 +76,27 @@ export function classifyPatch(field, value) {
   return 'forbid';
 }
 
+// v1.10 마이그레이션 — hash 검증 직후 in-memory 전용 (디스크·.loop.hash는 첫 writeState까지 불변).
+// 일반 read/root-recovery/rebind-validate 세 경로 전부 이 리더를 지나므로 여기가 유일 진입점 (스펙 §7).
+// 결정적·내용 기반(주입 시계 불필요). 반환 data(0.3.0)와 반환 hash(디스크 0.2.0)는 content-hash 등가가 아니다.
+function migrateLoopStateInPlace(data) {
+  if (!data || typeof data !== 'object') return;
+  // 마이그레이션은 **0.2.0 레거시에만** 적용한다 — 버전 무관 기본값 주입은 필드가 결손된 불량 0.3.0
+  // 상태를 몰래 치유해 SCHEMA_INVALID 대신 유효로 읽히게 만든다(다음 mutation이 치유본을 지속화).
+  // 0.3.0/미지 버전은 무접촉 → validate가 정상적으로 거부한다.
+  if (data.schema_version !== '0.2.0') return;
+  data.schema_version = '0.3.0';
+  if (data.autonomy && data.autonomy.continuation_policy === undefined) {
+    data.autonomy.continuation_policy = 'rotate-per-unit';
+  }
+  if (data.session_chain) {
+    if (data.session_chain.consumed_milestones === undefined) data.session_chain.consumed_milestones = [];
+    if (data.session_chain.lease && data.session_chain.lease.handoff_trigger === undefined) {
+      data.session_chain.lease.handoff_trigger = null;
+    }
+  }
+}
+
 function readHashVerifiedState(root, runId) {
   const raw = readFileSync(loopPath(root, runId), 'utf8');
   // loop.json이 있는데 hash anchor가 없으면 = anchor 제거 공격/손상 → fail-closed (Codex impl 🔴1)
@@ -86,7 +107,9 @@ function readHashVerifiedState(root, runId) {
   if (contentHash(raw) !== stored) {
     throw new Error(`STATE_TAMPERED: ${runId} loop.json content-hash mismatch`);
   }
-  return { data: JSON.parse(raw), hash: stored };
+  const data = JSON.parse(raw);
+  migrateLoopStateInPlace(data);
+  return { data, hash: stored };
 }
 
 export function readStateForRootRecovery(root, runId) {
@@ -182,6 +205,7 @@ export function pauseRun(root, runId, { reason, mode = 'preserve', expect, now =
           handoff_phase: 'idle',
           handoff_child_run_id: null,
           handoff_idempotency_key: null,
+          handoff_trigger: null,
           expires_at: null,
         };
       } else {

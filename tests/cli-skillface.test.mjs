@@ -122,10 +122,10 @@ test('budget check is read-only and reports ok', () => {
 });
 
 // Codex r3 critical-1: budget record 가 세션 turns 를 증가시켜 per_session_turn_cap 마일스톤을 실제로 구동.
-test('budget record drives per_session_turn_cap → next-action handoff', () => {
+test('budget record drives per_session_turn_cap → unattended next-action handoff', () => {
   const { root, runId } = seed();
   run(root, ['budget', 'record', '--turns', '40', '--owner', runId, '--generation', '1']);   // == per_session_turn_cap(40)
-  const na = JSON.parse(run(root, ['next-action', '--json', '--now', '2026-06-24T00:00:01Z']));
+  const na = JSON.parse(run(root, ['next-action', '--json', '--now', '2026-06-24T00:00:01Z', '--unattended']));
   assert.equal(na.action.type, 'handoff');
   assert.equal(na.action.reason, 'per_session_turn_cap');
 });

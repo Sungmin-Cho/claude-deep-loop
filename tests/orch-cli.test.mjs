@@ -672,7 +672,7 @@ launcherExecutableCliTest('launcher-executable diagnose is read-only and approve
   const initial = readState(fixture.root, runId).data;
   assert.equal(initial.session_spawn.launcher, 'none');
   assert.equal(initial.session_spawn.reason, 'windows-terminal-unverified');
-  assert.deepEqual(initial.autonomy.launcher_executable_approvals, { wt: null, powershell: null });
+  assert.deepEqual(initial.autonomy.launcher_executable_approvals, { wt: null, powershell: null, tmux: null });
 
   const before = cliSnapshot(fixture.root, runId);
   const diagnosed = win32RunResult(fixture.root, [
@@ -973,6 +973,25 @@ test('handoff emit via CLI sets releasing', () => {
   const { root, runId } = seed();
   run(root, ['handoff', 'emit', '--reason', 'milestone', '--trigger', 'milestone', '--owner', runId, '--generation', '1']);
   assert.equal(readState(root, runId).data.session_chain.lease.state, 'releasing');
+});
+
+test('handoff emit CLI maps an in-lock LEASE_FENCED result to exit 3', () => {
+  const { root, runId } = seed();
+  const loopPath = join(runDir(root, runId), 'loop.json');
+  const before = readFileSync(loopPath, 'utf8');
+  const result = spawnSync(process.execPath, [
+    CLI,
+    'handoff', 'emit',
+    '--reason', 'milestone',
+    '--trigger', 'milestone',
+    '--owner', runId,
+    '--generation', '2',
+    '--project-root', root,
+  ], { encoding: 'utf8' });
+
+  assert.equal(result.status, 3, result.stderr);
+  assert.match(result.stderr, /LEASE_FENCED/);
+  assert.equal(readFileSync(loopPath, 'utf8'), before);
 });
 
 // Codex r5 🟡3: lease acquire with valueless --owner exits 3
