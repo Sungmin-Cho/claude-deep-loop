@@ -4401,7 +4401,9 @@ receipt correction, a fresh happy-path re-smoke, and hosted 3×3 CI remain pendi
   payload. The logical `list_projects` result remains `{schemaVersion:1,projects:[...]}` inside that
   transport. No bundle content was extracted or modified, and the diagnosis made no App tool call.
 - correction contract: direct already-decoded logical values and direct canonical JSON wire text
-  remain supported. In addition, exactly one already-decoded transport envelope is accepted only
+  remain supported. Own `contentItems` is the sole transport discriminator: without it, an own
+  `success` field remains part of a direct logical receipt; with it, the exact transport pair and
+  `success:true` are mandatory. Exactly one already-decoded transport envelope is accepted only
   when outer object, dense one-element array, and sole item satisfy exact realm-safe non-Proxy
   plain own-data descriptor contracts; `success` is exactly true; `type` is exactly `inputText`;
   and `text` is canonical JSON under the existing 1,048,576-byte bound. The transport is not a
@@ -4426,7 +4428,21 @@ receipt correction, a fresh happy-path re-smoke, and hosted 3×3 CI remain pendi
   passed 5/5 in isolation. A fresh complete exact-snapshot `npm run preflight` passed with
   tests/pass/fail/cancelled/skipped/todo `1,988/1,988/0/0/0/0`, reported Node test duration
   `346,389.528625 ms`, and included the same race test as GREEN.
+- first independent review: standard `REQUEST_CHANGES`, Red 0 / Yellow 3; adversarial
+  `REQUEST_CHANGES`, Red 0 / Yellow 1. Both reviewers independently identified that treating an own
+  `success` field by itself as transport broke the pre-existing direct create/send logical receipt
+  contract. The standard review also found the §6.2 create/fork/send transport prose incomplete and
+  the boundary sentence inconsistent with the already recorded full preflight.
+- reviewer-response strict TDD RED: direct and canonical-JSON create receipts
+  `{threadId,success:true}` first failed with `CREATE_RECEIPT_INVALID`; the paired direct/JSON send
+  `{success:true}` cases were added in the same bounded regression matrix before implementation.
+- reviewer-response targeted GREEN: after making own `contentItems` the sole discriminator, the
+  direct-wire, transport happy-path, malformed-transport, and handoff-protocol tests passed 4/4;
+  the attended App handoff contract passed 1/1. The complete App integration file passed 34/34 and
+  the complete skill contract file passed 143/143. A fresh exact preflight and two independent
+  reviewer approvals remain before candidate proposal.
 - boundary: correction and verification to this point made zero App task-tool calls and performed no
   install, restart, registration, push, PR, merge, deep-suite synchronization, cleanup, or archival
-  action. Full preflight and the required two independent reviewers remain before any new candidate
-  can be proposed for separately approved smoke.
+  action. The first review findings have been addressed locally; a fresh exact-commit preflight and two
+  independent reviewer approvals remain before any new candidate can be proposed for separately
+  approved smoke.

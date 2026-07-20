@@ -1073,6 +1073,14 @@ test('current App wire receipts decode one canonical JSON layer before strict va
   assert.deepEqual(await executePreparedAction(createAction, new FakeAppHost({
     createReceipt: JSON.stringify({ threadId: 'CREATE-WIRE', hostId: 'HOST-WIRE' }),
   })), { threadId: 'CREATE-WIRE' });
+  for (const createReceipt of [
+    { threadId: 'CREATE-WIRE-SUCCESS', success: true },
+    JSON.stringify({ threadId: 'CREATE-WIRE-SUCCESS', success: true }),
+  ]) {
+    assert.deepEqual(await executePreparedAction(createAction, new FakeAppHost({
+      createReceipt,
+    })), { threadId: 'CREATE-WIRE-SUCCESS' });
+  }
 
   const forkAction = { tool: 'fork_thread', environment: { type: 'same-directory' },
     followup: { tool: 'send_message_to_thread', prompt: 'PROMPT' } };
@@ -1084,6 +1092,11 @@ test('current App wire receipts decode one canonical JSON layer before strict va
     forkReceipt: JSON.stringify({ threadId: 'FORK-WIRE' }),
     sendReceipt: 'null',
   })), { threadId: 'FORK-WIRE' });
+  for (const sendReceipt of [{ success: true }, JSON.stringify({ success: true })]) {
+    assert.deepEqual(await executePreparedAction(forkAction, new FakeAppHost({
+      forkReceipt: JSON.stringify({ threadId: 'FORK-WIRE-SUCCESS' }), sendReceipt,
+    })), { threadId: 'FORK-WIRE-SUCCESS' });
+  }
 
   for (const listProjectsReceipt of [
     ` ${JSON.stringify(envelope)}`,
@@ -1213,6 +1226,7 @@ test('malformed contentItems transport envelopes remain fail-closed', async () =
   const symbolItem = { ...item };
   symbolItem[Symbol('extra')] = true;
   const malformed = [
+    { contentItems: [item] },
     { contentItems: [item], success: false },
     { contentItems: [item, item], success: true },
     { contentItems: new Array(1), success: true },
@@ -1395,6 +1409,8 @@ test('handoff protocol binds discovery to the current strict v1 App envelope', (
     'references', 'handoff-respawn.md'), 'utf8');
   assert.match(protocol,
     /already-decoded transport envelope[\s\S]{0,500}`contentItems` and `success`/u);
+  assert.match(protocol,
+    /own `contentItems` property is the sole transport discriminator[\s\S]{0,300}absent[\s\S]{0,220}own `success` property/u);
   assert.match(protocol,
     /`type` and `text`[\s\S]{0,180}`type === "inputText"`/u);
   assert.match(protocol,

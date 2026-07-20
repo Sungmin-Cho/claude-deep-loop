@@ -125,7 +125,7 @@ function decodeCanonicalJsonWireValue(value, label, { requireJson = false } = {}
     throw new Error(`${label}_WIRE_INVALID`);
   }
   if (decoded && typeof decoded === 'object' && !Array.isArray(decoded)
-      && Object.hasOwn(decoded, 'contentItems') && Object.hasOwn(decoded, 'success')) {
+      && Object.hasOwn(decoded, 'contentItems')) {
     throw new Error(`${label}_WIRE_INVALID`);
   }
   return decoded;
@@ -275,8 +275,8 @@ function decodeCanonicalAppWireValue(value, label) {
   if (!value || typeof value !== 'object' || Array.isArray(value)
       || utilTypes.isProxy(value)) return value;
   const contentItems = Object.getOwnPropertyDescriptor(value, 'contentItems');
+  if (contentItems == null) return value;
   const success = Object.getOwnPropertyDescriptor(value, 'success');
-  if (contentItems == null && success == null) return value;
   const envelope = exactPlainDataEntries(value, 2);
   if (!envelope || envelope.size !== 2 || !envelope.has('contentItems')
       || !envelope.has('success') || envelope.get('success') !== true) {
