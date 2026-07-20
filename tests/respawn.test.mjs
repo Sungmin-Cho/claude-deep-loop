@@ -201,6 +201,47 @@ test('tmux visible respawn revalidates the approved launcher and socket before s
   assert.equal(captured.shell, false);
 });
 
+test('tmux post-CAS launcher identity drift rolls back, pauses, and marks failed launch', () => {
+  const { root, runId, launcherIdentity } = seedTmuxLauncher();
+  const h = emitTmux(root, runId, 'tmux-post-cas-identity-drift');
+  const replacement = {
+    ...launcherIdentity,
+    sha256: 'd'.repeat(64),
+    approved_at: '2026-06-24T00:01:00.000Z',
+  };
+  let launcherChecks = 0;
+  let spawned = 0;
+  const r = respawn(root, runId, {
+    childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
+    attended: true, env: {}, now: NOW1, platform: 'linux',
+    revalidateLauncherExecutable: identity => {
+      launcherChecks++;
+      assert.deepEqual(identity, launcherIdentity);
+      if (launcherChecks === 2) {
+        const { data } = readState(root, runId);
+        data.autonomy.launcher_executable_approvals.tmux = replacement;
+        writeState(root, runId, data);
+      }
+      return identity;
+    },
+    tmuxProbeRun: tmuxProbeOk,
+    spawnFn: () => { spawned++; return { ok: true }; },
+    sleep: noSleep,
+  });
+
+  assert.equal(launcherChecks, 2, 'post-CAS authority mismatch rejects the replaced approval before a third probe');
+  assert.equal(spawned, 0);
+  assert.equal(r.outcome, 'failed_launch');
+  assert.equal(r.reason, 'launcher-identity-drift');
+  const after = readState(root, runId).data;
+  assert.equal(after.status, 'paused');
+  assert.equal(after.pause_reason, 'launch-failed');
+  assert.equal(after.session_chain.lease.state, 'active');
+  assert.equal(after.session_chain.lease.handoff_phase, 'idle');
+  assert.equal(after.session_chain.lease.handoff_child_run_id, null);
+  assert.equal(after.session_chain.sessions.find(session => session.run_id === h.childRunId)?.outcome, 'failed_launch');
+});
+
 test('tmux executable hash drift preserves the handoff before spawned CAS', () => {
   const { root, runId, launcherBin } = seedTmuxLauncher();
   const h = emitTmux(root, runId, 'tmux-hash-drift');

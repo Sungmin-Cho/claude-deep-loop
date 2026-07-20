@@ -92,25 +92,28 @@ Codex App install/discovery and in-task skill execution are supported by the plu
 
 ## Supported Surfaces
 
-| Surface | Interactive skills | Visible continuation | Headless continuation | PreCompact safety net |
-|---|---|---|---|---|
-| Claude Code, macOS/Linux | Full | Supported terminal/verified Claude Desktop transports | Measured `claude -p` | Exact-definition-trusted direct Node hook |
-| Claude Code, native Windows | Full | Trusted Windows Terminal/PowerShell launcher | Trusted native `claude.exe`; otherwise fail-closed | Exact-definition-trusted direct Node hook |
-| Codex CLI, macOS/Linux | Full | Terminal launch using the trusted runtime | Isolated `codex exec --json` | Exact-definition-trusted direct Node hook |
-| Codex CLI, native Windows | Full | Trusted Windows Terminal/PowerShell launcher | Isolated trusted `codex.exe`; otherwise fail-closed | Exact-definition-trusted direct Node hook |
-| Codex App | Install/discovery and in-task execution | Manual new task only | Optional isolated `codex exec` driver | Lifecycle supported; App smoke pending external evidence |
+| Surface | Interactive skills | Attended continuation policy | Visible continuation | Manual resume | Headless continuation | Compaction safety net |
+|---|---|---|---|---|---|---|
+| Claude Code, macOS/Linux | Full | `compact-in-place` — keep the same session | Supported terminal/tmux/verified Claude Desktop transports for explicit rotation | **Officially supported** via `/deep-loop-resume` | Measured `claude -p` | Trusted direct Node PreCompact checkpoint + SessionStart restore |
+| Claude Code, native Windows | Full | `compact-in-place` — keep the same session | Trusted Windows Terminal/PowerShell launcher for explicit rotation | **Officially supported** via `/deep-loop-resume` | Trusted native `claude.exe`; otherwise fail-closed | Trusted direct Node PreCompact checkpoint + SessionStart restore |
+| Codex CLI, macOS/Linux | Full | `rotate-per-unit` — fresh session at a milestone | Terminal/tmux launch using the trusted runtime | **Officially supported** via `$deep-loop:deep-loop-resume` | Isolated `codex exec --json` | Plugin lifecycle hooks after trust review; version-dependent and gracefully absent |
+| Codex CLI, native Windows | Full | `rotate-per-unit` — fresh session at a milestone | Trusted Windows Terminal/PowerShell launcher | **Officially supported** via `$deep-loop:deep-loop-resume` | Isolated trusted `codex.exe`; otherwise fail-closed | Plugin lifecycle hooks after trust review; version-dependent and gracefully absent |
+| Codex App | Install/discovery and in-task execution | `rotate-per-unit` — manual fresh task | Manual new task only | **Officially supported** by opening a new task, then `$deep-loop:deep-loop-resume` | Optional isolated `codex exec` driver | Plugin lifecycle hooks after trust review; version-dependent, graceful absence; App smoke pending |
 
-**Codex POSIX visible authority:** macOS/Linux automatic visible continuation requires the durable human-approved Codex runtime identity. `cmux` is runnable only when detection bound the same absolute bundled executable to the exact socket with a successful ping. On macOS, the fixed `/usr/bin/osascript` may launch only the positively detected iTerm2 or Terminal.app entry; finding that system binary alone never activates both launchers. Missing runtime approval returns `runtime-identity-unavailable`, identity or launcher drift fails closed around the spawned CAS, and no path substitutes a bare `codex` or a Claude process.
+Continuation policy applies to attended runs: Claude defaults to same-session compaction, Codex defaults to milestone-bounded rotation, and unattended runs keep the measured headless policy. Manual resume is a first-class supported continuation path, not an error-only fallback.
+
+**Codex POSIX visible authority:** macOS/Linux automatic visible continuation requires the durable human-approved Codex runtime identity. `cmux` is runnable only when detection bound the same absolute bundled executable to the exact socket with a successful ping. `tmux` is supported after a human approves its canonical executable identity and detection binds that identity to the exact `$TMUX` socket and server PID. On macOS, the fixed `/usr/bin/osascript` may launch only the positively detected iTerm2 or Terminal.app entry; finding that system binary alone never activates both launchers. Missing runtime approval returns `runtime-identity-unavailable`, identity or launcher drift fails closed around the spawned CAS, and no path substitutes a bare `codex` or a Claude process.
 
 Native Windows means the Node control plane runs directly on win32 and the documented native commands use **PowerShell**; Windows Terminal and PowerShell remain separate approved launcher kinds. **WSL follows Linux behavior and is not native Windows**; a WSL executable or path is not authority for a native-Windows spawn. **Native Windows CI: pending external evidence** until the repository's Windows job actually runs after an approved push.
 
 ## Executable Trust and Native Windows Launchers
 
-Automatic continuation never trusts command lookup alone. Runtime executable diagnosis/approval applies to the selected runtime on every supported OS; launcher executable approval is the additional native-Windows WT/PowerShell boundary. Substitute the installed plugin's canonical absolute root for `<absolute-deep-loop-root>` and run exactly one read-only diagnosis for the selected identity:
+Automatic continuation never trusts command lookup alone. Runtime executable diagnosis/approval applies to the selected runtime on every supported OS; launcher executable approval is the additional native-Windows WT/PowerShell or POSIX tmux boundary. Substitute the installed plugin's canonical absolute root for `<absolute-deep-loop-root>` and run exactly one read-only diagnosis for the selected identity:
 
 ```text
 node "<absolute-deep-loop-root>/scripts/deep-loop.mjs" runtime-executable diagnose --runtime <claude|codex> --path "<human-supplied-absolute-exe>"
 node "<absolute-deep-loop-root>/scripts/deep-loop.mjs" launcher-executable diagnose --kind <wt|powershell> --path "<human-supplied-absolute-exe>"
+node "<absolute-deep-loop-root>/scripts/deep-loop.mjs" launcher-executable diagnose --kind tmux --path "<human-supplied-absolute-exe>"
 ```
 
 Show the returned **canonical absolute path** (`canonical_path`) and **lowercase SHA-256** (`sha256`) to the user. Only after the user confirms that exact identity may the matching fenced approval run:
@@ -118,11 +121,14 @@ Show the returned **canonical absolute path** (`canonical_path`) and **lowercase
 ```text
 node "<absolute-deep-loop-root>/scripts/deep-loop.mjs" runtime-executable approve --runtime <claude|codex> --path "<same-absolute-exe>" --canonical-path "<diagnosed-canonical-path>" --sha256 "<diagnosed-lowercase-sha256>" --actor human --confirm --owner <owner_run_id> --generation <generation> --project-root "<canonical-project-root>" --run-id <run_id>
 node "<absolute-deep-loop-root>/scripts/deep-loop.mjs" launcher-executable approve --kind <wt|powershell> --path "<same-absolute-exe>" --canonical-path "<diagnosed-canonical-path>" --sha256 "<diagnosed-lowercase-sha256>" --actor human --confirm --owner <owner_run_id> --generation <generation> --project-root "<canonical-project-root>" --run-id <run_id>
+node "<absolute-deep-loop-root>/scripts/deep-loop.mjs" launcher-executable approve --kind tmux --path "<same-absolute-exe>" --canonical-path "<diagnosed-canonical-path>" --sha256 "<diagnosed-lowercase-sha256>" --actor human --confirm --owner <owner_run_id> --generation <generation> --project-root "<canonical-project-root>" --run-id <run_id>
 ```
 
 Run only the line for the identity being approved. Identity drift fails closed and preserves or restores the pause; it never falls back to another executable or runtime.
 
 The runtime/launcher Authenticode signer policy is **pending Windows observation** and is distinct from the already-observed **Claude Desktop handler pin** used only for the verified `claude://code/new` handler. There is **no bare PATH authority**, no shim (`.cmd`, `.ps1`, or wrapper) authority, and no bare `wt.exe` authority. A signer policy, path candidate, or `where.exe`/`Get-Command` result never substitutes for the explicit canonical identity contract.
+
+For tmux, the bounded version probe accepts release-shaped output such as `tmux 3.4` or `tmux 3.4a`. Rolling/master labels such as `tmux next-3.4` are rejected intentionally; this is a fail-closed approval boundary.
 
 ## Standalone Operation
 
@@ -171,6 +177,7 @@ When `autonomy.spawn_style` is `'visible'` and deep-loop detects a supported ter
 | cmux | `CMUX_BUNDLED_CLI_PATH` + `CMUX_SOCKET_PATH` + surface ID | new cmux workspace via socket |
 | iTerm2 | `TERM_PROGRAM=iTerm.app` + osascript probe | new iTerm window |
 | Terminal.app | `TERM_PROGRAM=Apple_Terminal` + osascript probe | new Terminal window |
+| tmux | `$TMUX` + human-approved canonical tmux identity + socket/server-PID probe | new window in the detected tmux session |
 | Windows Terminal | `WT_SESSION` + approved canonical launcher identity | new WT tab through the exact approved executable |
 | desktop | (user opt-in) Claude Desktop Code tab | opens a verified Claude Desktop handler via `claude://code/new` deeplink — **semi-automatic**: user confirms folder + presses Enter. macOS (path + bundle-id + codesign TeamIdentifier) and, since v1.7.0, **Windows** (traditional-installer exact paths + MSIX path pattern with a pinned publisher-id hash, plus an Authenticode signer thumbprint **pinned from a real Windows 11 observation**). On Windows the offer appears only when the live probe verifies the installed handler; after the pinned leaf cert rotates (NotAfter ~2026-10-21) dispatch returns to deterministic fail-closed until a newly observed thumbprint is re-pinned — guessed pins are never used. |
 
@@ -182,11 +189,11 @@ The spawn is **attended-only**: the parent session must have been launched inter
 
 ## PreCompact Hook
 
-deep-loop registers a `PreCompact` hook that emits a clean handoff before context compaction. The **exact hook definition** in `hooks/hooks.json` must be trusted by the host. It is a direct shell-free Node, emit-only, best-effort safety net; unattended continuation is handled later by the measured `scripts/hooks-impl/drive-headless.mjs` driver. The hook never owns the run and never blocks compaction (always exits 0).
+deep-loop registers a `PreCompact` hook whose emit-only, best-effort action follows the durable continuation policy; unattended continuation remains assigned to the measured `scripts/hooks-impl/drive-headless.mjs` driver. Attended Claude `compact-in-place` writes a bounded checkpoint and keeps the session, while `rotate-per-unit` or headless invocation emits the existing handoff. A `SessionStart(compact)` hook can restore a matching checkpoint or inject rotation/recovery guidance. The **exact hook definitions** in `hooks/hooks.json` must be trusted by the host. They are direct shell-free Node safety nets. Neither hook owns or spawns a session, and exceptions never block compaction or session start.
 
-`hooks/hooks.json` uses a static, shell-free Node bootstrap that resolves `CLAUDE_PLUGIN_ROOT` (or `PLUGIN_ROOT`), imports `scripts/hooks-impl/precompact-handoff.mjs` through a file URL, and invokes its `main()` export. The bootstrap does not depend on a Bash wrapper or shell expansion.
+`hooks/hooks.json` uses static, shell-free Node bootstraps that resolve `CLAUDE_PLUGIN_ROOT` (or `PLUGIN_ROOT`), import `scripts/hooks-impl/precompact-handoff.mjs` or `scripts/hooks-impl/sessionstart-restore.mjs` through a file URL, and invoke `main()`. The bootstraps do not depend on a Bash wrapper or shell expansion.
 
-A missing or untrusted hook reduces automation and falls back to the durable lease, pause, and manual resume path; it never weakens fencing or grants a second owner. The deliberately isolated Codex child disables plugins and hooks, so this fallback is also its expected continuity model.
+Codex bundled-hook discovery is host-version-dependent and occurs only after the user reviews and trusts the plugin hook definition. A **missing or untrusted hook** (including an unsupported host version) degrades gracefully to the durable handoff artifacts, durable lease, pause, and officially supported manual resume path; it never weakens fencing or grants a second owner. The deliberately isolated Codex child disables plugins and hooks, so this fallback is also its expected continuity model.
 
 ## License
 
