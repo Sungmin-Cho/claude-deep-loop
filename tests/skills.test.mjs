@@ -1187,7 +1187,9 @@ test('continue SKILL: milestone rotation gated on unconsumed_milestones', () => 
 });
 test('continue SKILL: §0.5 covers reserved (finalization) in addition to emitted/spawned', () => {
   const md = readFileSync('skills/deep-loop-continue/SKILL.md', 'utf8');
-  assert.ok(/reserved/.test(md.split('§0.5')[1]?.slice(0, 1200) ?? md));
+  const s = md.split('## 0.5.')[1] ?? '';
+  assert.ok(/handoff emit[\s\S]*reserved-finalization/.test(s.slice(0, 1500)),
+    '§0.5 must instruct handoff emit → reserved-finalization');
 });
 test('continue SKILL: post-compact comprehension check present', () => {
   const md = readFileSync('skills/deep-loop-continue/SKILL.md', 'utf8');
