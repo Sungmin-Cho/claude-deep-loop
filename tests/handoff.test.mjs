@@ -1,6 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cpSync, mkdirSync, mkdtempSync, existsSync, readFileSync } from 'node:fs';
+import {
+  appendFileSync, cpSync, mkdirSync, mkdtempSync, existsSync, readFileSync,
+  readdirSync, renameSync, rmSync, writeFileSync,
+} from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
@@ -675,14 +679,15 @@ test('copied-root handoff is fenced before any descriptor file is written', () =
   assert.equal(readFileSync(join(copiedRunDir, '.loop.hash'), 'utf8'), beforeHash, 'copied state anchor must remain byte-identical');
 });
 
-test('emitHandoff dedups: second trigger while in-flight is a no-op', () => {
+test('emitHandoff dedups: second trigger after commit is an idempotent no-op', () => {
   const { root, runId } = seed();
   const now = Date.parse('2026-06-24T01:00:00Z');
   const ex = expect_(runId);
   assert.equal(emitHandoff(root, runId, { trigger: 'milestone', now, expect: ex }).ok, true);
   const second = emitHandoff(root, runId, { trigger: 'precompact', now, expect: ex });
-  assert.equal(second.ok, false);
-  assert.equal(second.reason, 'handoff-in-flight');
+  assert.equal(second.ok, true);
+  assert.equal(second.idempotent, true);
+  assert.equal(second.reason, 'already-emitted');
 });
 
 // Codex r1 🔴1: 같은 트리거 재호출은 새 child/session 을 만들지 않고 기존 emit 을 멱등 반환.
@@ -1160,4 +1165,237 @@ test('rollbackHandoff: terminal-aware — reserved settles to released; idle ter
   assert.equal(r.ok, true);
   assert.equal(r.reason, 'noop-idle-terminal');
   assert.equal(readState(root, runId).data.session_chain.lease.state, 'active');   // write 안 함
+});
+
+// ── v1.10 durable reserved-finalization + deterministic staged publication ──
+
+function handoffDir(root, runId) {
+  return join(runDir(root, runId), 'handoffs');
+}
+
+function handoffEventCount(root, runId) {
+  const path = join(runDir(root, runId), 'event-log.jsonl');
+  if (!existsSync(path)) return 0;
+  return readFileSync(path, 'utf8').split('\n').filter(Boolean)
+    .map(line => JSON.parse(line)).filter(event => event.type === 'handoff-emitted').length;
+}
+
+function handoffEvents(root, runId) {
+  const path = join(runDir(root, runId), 'event-log.jsonl');
+  if (!existsSync(path)) return [];
+  return readFileSync(path, 'utf8').split('\n').filter(Boolean)
+    .map(line => JSON.parse(line)).filter(event => event.type === 'handoff-emitted');
+}
+
+test('reserved-finalization: a different-trigger session completes a stranded reservation via stored handoff_trigger', () => {
+  const { root, runId } = seed();
+  const expect = expect_(runId);
+  const now = Date.parse('2026-07-20T00:00:00Z');
+  const reserved = reserveHandoff(root, runId, { trigger: 'milestone', expect, now });
+  assert.ok(reserved.reserved);
+  const stranded = readState(root, runId).data.session_chain.lease;
+  assert.equal(stranded.handoff_phase, 'reserved');
+  assert.equal(stranded.state, 'active');
+  assert.equal(stranded.handoff_trigger, 'milestone');
+
+  const emitted = emitHandoff(root, runId, {
+    reason: 'pre-compact', trigger: 'pre-compact', headless: false, expect, env: {}, now: now + 1,
+  });
+  assert.ok(emitted.ok);
+  assert.equal(emitted.childRunId, reserved.childRunId);
+  assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'emitted');
+});
+
+test('legacy reserved state without handoff_trigger keeps handoff-in-flight rejection', () => {
+  const { root, runId } = seed();
+  const expect = expect_(runId);
+  reserveHandoff(root, runId, { trigger: 'milestone', expect, now: 1 });
+  const { data } = readState(root, runId);
+  data.session_chain.lease.handoff_trigger = null;
+  writeState(root, runId, data);
+  const result = emitHandoff(root, runId, { trigger: 'pre-compact', expect, now: 2, env: {} });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'handoff-in-flight');
+});
+
+test('soft staging failure (zero final renames): key-bound rollback, no bare reserved, zero orphans', () => {
+  const { root, runId } = seed();
+  const expect = expect_(runId);
+  const dir = handoffDir(root, runId);
+  writeFileSync(dir, 'occupied');
+  const failed = emitHandoff(root, runId, {
+    reason: 'milestone', trigger: 'milestone', headless: false, expect, env: {}, now: 1,
+  });
+  assert.equal(failed.ok, false);
+  assert.equal(failed.reason, 'EMIT_ARTIFACT_FAILED');
+  const afterFailure = readState(root, runId).data.session_chain.lease;
+  assert.notEqual(afterFailure.handoff_phase, 'reserved');
+  assert.equal(afterFailure.handoff_trigger, null);
+
+  rmSync(dir, { force: true });
+  const emitted = emitHandoff(root, runId, {
+    reason: 'milestone', trigger: 'milestone', headless: false, expect, env: {}, now: 2,
+  });
+  assert.ok(emitted.ok);
+  const files = readdirSync(dir);
+  assert.equal(files.filter(file => file.startsWith('.tmp-')).length, 0);
+  assert.deepEqual(files.sort(), [
+    `${emitted.childRunId}-compaction-state.json`,
+    `${emitted.childRunId}-next-session.md`,
+  ]);
+});
+
+test('hard termination at each boundary: subprocess exit then restart finalizes with zero orphans', () => {
+  for (const boundary of ['reserved', 'artifacts-staged', 'committed']) {
+    const { root, runId } = seed();
+    const child = spawnSync(process.execPath, ['tests/fixtures/emit-handoff-child.mjs', root, runId], {
+      cwd: process.cwd(), env: { ...process.env, DEEP_LOOP_TEST_EXIT_AT: boundary },
+    });
+    assert.equal(child.status, 137, `${boundary}: ${child.stderr.toString()}`);
+    const emitted = emitHandoff(root, runId, {
+      reason: 'pre-compact', trigger: 'pre-compact', headless: false,
+      expect: expect_(runId), env: {}, now: Date.parse('2026-07-20T00:00:01Z'),
+    });
+    assert.ok(emitted.ok, boundary);
+    assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'emitted', boundary);
+    const files = readdirSync(handoffDir(root, runId));
+    assert.equal(files.filter(file => file.startsWith('.tmp-')).length, 0, boundary);
+    assert.equal(files.length, 2, boundary);
+    assert.equal(handoffEventCount(root, runId), 1, boundary);
+  }
+});
+
+test('deterministic artifact names and idempotent final CAS leave one pair and one audit event', () => {
+  const { root, runId } = seed();
+  const first = emitHandoff(root, runId, { trigger: 'milestone', expect: expect_(runId), now: 10 });
+  const second = emitHandoff(root, runId, { trigger: 'milestone', expect: expect_(runId), now: 20 });
+  assert.ok(first.ok && second.ok);
+  assert.equal(first.childRunId, second.childRunId);
+  assert.deepEqual(readdirSync(handoffDir(root, runId)).sort(), [
+    `${first.childRunId}-compaction-state.json`,
+    `${first.childRunId}-next-session.md`,
+  ]);
+  const events = handoffEvents(root, runId);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].data.child_run_id, first.childRunId);
+});
+
+test('concurrent finalizer loser never rewrites winner bytes even with a different reason and time', () => {
+  const { root, runId } = seed();
+  const expect = expect_(runId);
+  let winner;
+  let winnerBytes;
+  const loser = emitHandoff(root, runId, {
+    reason: 'loser-reason', trigger: 'milestone', expect, now: 100,
+    onBoundary(name) {
+      if (name !== 'artifacts-staged') return;
+      winner = emitHandoff(root, runId, {
+        reason: 'winner-reason', trigger: 'pre-compact', expect, now: 200,
+      });
+      winnerBytes = readdirSync(handoffDir(root, runId)).sort()
+        .map(file => [file, readFileSync(join(handoffDir(root, runId), file))]);
+    },
+  });
+  assert.ok(winner.ok);
+  assert.ok(loser.ok && loser.idempotent);
+  const afterBytes = readdirSync(handoffDir(root, runId)).sort()
+    .map(file => [file, readFileSync(join(handoffDir(root, runId), file))]);
+  assert.deepEqual(afterBytes, winnerBytes);
+  assert.equal(handoffEventCount(root, runId), 1);
+});
+
+test('first rename succeeds and second fails: keyed reservation survives and retry publishes missing sibling only', () => {
+  const { root, runId } = seed();
+  const expect = expect_(runId);
+  let renames = 0;
+  const partial = emitHandoff(root, runId, {
+    reason: 'first', trigger: 'milestone', expect, now: 100,
+    renameArtifact(src, dst) {
+      renames += 1;
+      if (renames === 2) throw Object.assign(new Error('second rename failed'), { code: 'EIO' });
+      renameSync(src, dst);
+    },
+  });
+  assert.equal(partial.ok, false);
+  assert.equal(partial.reason, 'EMIT_ARTIFACT_FAILED');
+  const reserved = readState(root, runId).data.session_chain.lease;
+  assert.equal(reserved.handoff_phase, 'reserved');
+  assert.equal(reserved.handoff_trigger, 'milestone');
+  assert.equal(readdirSync(handoffDir(root, runId)).filter(file => !file.startsWith('.tmp-')).length, 1);
+
+  const recovered = emitHandoff(root, runId, {
+    reason: 'retry-different-reason', trigger: 'pre-compact', expect, now: 200,
+    platform: 'win32',
+    renameArtifact(src, dst) {
+      if (existsSync(dst)) throw Object.assign(new Error('Windows destination exists'), { code: 'EEXIST' });
+      renameSync(src, dst);
+    },
+  });
+  assert.ok(recovered.ok);
+  assert.equal(recovered.childRunId, reserved.handoff_child_run_id);
+  assert.equal(readdirSync(handoffDir(root, runId)).length, 2);
+  assert.equal(handoffEventCount(root, runId), 1);
+});
+
+test('winner commit followed by loser staging failure cannot roll back winner lease or artifacts', () => {
+  const { root, runId } = seed();
+  const expect = expect_(runId);
+  let winner;
+  let writes = 0;
+  const loser = emitHandoff(root, runId, {
+    reason: 'loser', trigger: 'milestone', expect, now: 100,
+    writeArtifact(path, contents, options) {
+      writes += 1;
+      if (writes === 1) {
+        winner = emitHandoff(root, runId, {
+          reason: 'winner', trigger: 'pre-compact', expect, now: 200,
+        });
+        throw Object.assign(new Error('loser staging failed'), { code: 'EIO' });
+      }
+      writeFileSync(path, contents, options);
+    },
+  });
+  assert.ok(winner.ok);
+  assert.ok(loser.ok && loser.idempotent);
+  assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'emitted');
+  assert.equal(readdirSync(handoffDir(root, runId)).length, 2);
+  assert.equal(handoffEventCount(root, runId), 1);
+});
+
+test('event-log tamper is detected before either deterministic final artifact is published', () => {
+  const { root, runId } = seed();
+  const dir = handoffDir(root, runId);
+  assert.throws(() => emitHandoff(root, runId, {
+    trigger: 'milestone', expect: expect_(runId), now: 100,
+    onBoundary(name) {
+      if (name === 'artifacts-staged') {
+        appendFileSync(join(runDir(root, runId), 'event-log.jsonl'), JSON.stringify({
+          seq: 1, ts: '2026-07-20T00:00:00.000Z', type: 'tampered', data: {}, checksum: 'bad',
+        }) + '\n');
+      }
+    },
+  }), /LOG_TAMPERED/);
+  const finals = existsSync(dir)
+    ? readdirSync(dir).filter(file => !file.startsWith('.tmp-'))
+    : [];
+  assert.deepEqual(finals, []);
+});
+
+test('final preCheck fence propagates LEASE_FENCED and is never normalized as an artifact failure', () => {
+  const { root, runId } = seed();
+  const dir = handoffDir(root, runId);
+  assert.throws(() => emitHandoff(root, runId, {
+    trigger: 'milestone', expect: expect_(runId), now: 100,
+    onBoundary(name) {
+      if (name === 'artifacts-staged') {
+        const { data } = readState(root, runId);
+        data.session_chain.lease.generation = 2;
+        writeState(root, runId, data);
+      }
+    },
+  }), /LEASE_FENCED: handoff-emit/);
+  const finals = existsSync(dir)
+    ? readdirSync(dir).filter(file => !file.startsWith('.tmp-'))
+    : [];
+  assert.deepEqual(finals, []);
 });

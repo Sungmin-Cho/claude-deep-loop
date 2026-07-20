@@ -137,6 +137,7 @@ export function recordWorkstreamTerminal(root, runId, wsId, { status, proof = {}
       status === 'merged'    ? (typeof proof.merge_commit === 'string' && proof.human_approved === true) :
       status === 'abandoned' ? (typeof proof.reason === 'string' && proof.reason.length > 0) : false;
     if (!ok) throw new Error(`WORKSTREAM_TERMINAL_NO_PROOF: ${wsId} -> ${status} proof insufficient`);
+    // Capture the pre-floor head: +1 is this business event; mutate-time head would already be the floor cost event.
     terminalEventSeq = loop.event_log_head.seq + 1;
   }, { floor: MUTATION_TURN_FLOOR });
 }

@@ -35,6 +35,7 @@ export function recoverRun(root, runId, { expect, confirm, now = Date.now() } = 
     }
     lease.handoff_child_run_id = null;
     lease.handoff_idempotency_key = null;
+    lease.handoff_trigger = null;
     lease.handoff_phase = 'idle';
     lease.state = 'released';
     lease.expires_at = null;

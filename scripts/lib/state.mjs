@@ -205,6 +205,7 @@ export function pauseRun(root, runId, { reason, mode = 'preserve', expect, now =
           handoff_phase: 'idle',
           handoff_child_run_id: null,
           handoff_idempotency_key: null,
+          handoff_trigger: null,
           expires_at: null,
         };
       } else {

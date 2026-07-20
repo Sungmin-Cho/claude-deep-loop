@@ -80,6 +80,16 @@ test('invalid workstream status fails', () => {
   const o = minimalValid(); o.workstreams = [{ id: 'w', status: 'nope' }];
   assert.equal(validate(o).ok, false);
 });
+
+test('workstream terminal_events must be an array of strings', () => {
+  for (const terminalEvents of ['bad', [1]]) {
+    const loop = minimalValid();
+    loop.workstreams = [{ id: 'w', status: 'ready', terminal_events: terminalEvents }];
+    const result = validate(loop);
+    assert.equal(result.ok, false);
+    assert.ok(result.errors.some(error => error.includes('workstreams[].terminal_events must be an array of strings')));
+  }
+});
 test('non-number budget.total fails', () => {
   const o = minimalValid(); o.budget = { unit: 'turns', total: 'lots' };
   assert.equal(validate(o).ok, false);

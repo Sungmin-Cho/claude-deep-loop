@@ -414,6 +414,7 @@ test('respawn gate-blocked (budget) → rollback + paused, no spawn (mode A; R12
   assert.equal(after.session_chain.lease.handoff_phase, 'idle');
   assert.equal(after.session_chain.lease.state, 'active');
   assert.equal(after.session_chain.lease.handoff_child_run_id, null);
+  assert.equal(after.session_chain.lease.handoff_trigger, null);
 });
 
 test('respawn launch failure (throw) → failed_launch + lease rollback + paused (mode B)', () => {
@@ -629,8 +630,8 @@ test('double emit + single respawn (race): only one child chain, no double spawn
   const { root, runId } = seed();
   const ex = expect_(runId);
   const a = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: ex });
-  const b = emitHandoff(root, runId, { trigger: 'precompact', now: NOW1, expect: ex });   // no-op
-  assert.equal(a.ok, true); assert.equal(b.ok, false);
+  const b = emitHandoff(root, runId, { trigger: 'precompact', now: NOW1, expect: ex });   // idempotent no-op
+  assert.equal(a.ok, true); assert.equal(b.ok, true); assert.equal(b.idempotent, true);
   let spawns = 0;
   const r1 = respawn(root, runId, { childRunId: a.childRunId, key: a.key, handoffRel: a.handoffRel, headless: true, now: NOW1, spawnFn: () => { spawns++; return { ok: true }; } });
   assert.equal(r1.ok, true);
@@ -786,6 +787,7 @@ test('R12-LL: gate-blocked + no-launcher → gate wins, reserved child rolled ba
   assert.equal(d.status, 'paused');
   assert.match(d.pause_reason, /^gate:/, 'pause_reason must start with gate:');
   assert.equal(d.session_chain.lease.handoff_child_run_id, null, 'handoff_child_run_id must be cleared (invalidated)');
+  assert.equal(d.session_chain.lease.handoff_trigger, null, 'handoff_trigger must be cleared with the invalidated reservation');
   assert.equal(d.session_chain.lease.state, 'active', 'lease state must roll back to active');
   assert.equal(d.session_chain.lease.handoff_phase, 'idle', 'handoff_phase must roll back to idle');
   const childSession = d.session_chain.sessions.find(s => s.run_id === h.childRunId);

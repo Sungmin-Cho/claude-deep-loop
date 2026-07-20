@@ -55,7 +55,7 @@ test('pauseRun preserve: status=paused, lease.state stays releasing, child intac
     session_chain: {
       lease: {
         owner_run_id: OWNER, generation: GEN, state: 'releasing', handoff_phase: 'emitted',
-        handoff_idempotency_key: 'abc123', handoff_child_run_id: 'CHILD01',
+        handoff_idempotency_key: 'abc123', handoff_child_run_id: 'CHILD01', handoff_trigger: 'milestone',
         expires_at: '2099-01-01T00:00:00.000Z',
       },
       sessions: [
@@ -71,6 +71,7 @@ test('pauseRun preserve: status=paused, lease.state stays releasing, child intac
   assert.equal(data.pause_reason, 'test-pause');
   assert.equal(data.session_chain.lease.state, 'releasing', 'preserve keeps lease.state=releasing');
   assert.equal(data.session_chain.lease.handoff_child_run_id, 'CHILD01', 'preserve keeps handoff_child_run_id');
+  assert.equal(data.session_chain.lease.handoff_trigger, 'milestone', 'preserve keeps handoff_trigger');
   assert.equal(data.session_chain.lease.resume_policy, 'human');
   assert.equal(data.session_chain.lease.expires_at, null);
 });
@@ -82,7 +83,7 @@ test('pauseRun rollback: lease back to active/idle, handoff fields cleared', () 
     session_chain: {
       lease: {
         owner_run_id: OWNER, generation: GEN, state: 'releasing', handoff_phase: 'emitted',
-        handoff_idempotency_key: 'abc123', handoff_child_run_id: 'CHILD01',
+        handoff_idempotency_key: 'abc123', handoff_child_run_id: 'CHILD01', handoff_trigger: 'milestone',
         expires_at: '2099-01-01T00:00:00.000Z',
       },
       sessions: [
@@ -100,6 +101,7 @@ test('pauseRun rollback: lease back to active/idle, handoff fields cleared', () 
   assert.equal(data.session_chain.lease.handoff_phase, 'idle');
   assert.equal(data.session_chain.lease.handoff_child_run_id, null);
   assert.equal(data.session_chain.lease.handoff_idempotency_key, null);
+  assert.equal(data.session_chain.lease.handoff_trigger, null);
   assert.equal(data.session_chain.lease.expires_at, null);
 });
 

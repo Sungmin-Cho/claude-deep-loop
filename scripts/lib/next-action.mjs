@@ -90,6 +90,7 @@ export function nextAction(loop, { now = Date.now(), unattended = false } = {}) 
     .flatMap(w => w.terminal_events || [])
     .filter(event => !consumed.includes(event));
   const gate = {
+    // unconsumed_milestones is a passable-gate signal only; global blocks already route to handoff/await_human.
     allowed: true,
     blocked_by: debt.blocked ? ['comprehension-debt'] : [],
     reason: b.reason,

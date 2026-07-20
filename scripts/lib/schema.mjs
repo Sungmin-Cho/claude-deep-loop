@@ -228,6 +228,11 @@ export function validate(loopJson, schema = loadSchema()) {
   const wsAllowed = [...(schema.workstream_status?.skill || []), ...(schema.workstream_status?.kernel || [])];
   for (const ws of (Array.isArray(loopJson.workstreams) ? loopJson.workstreams : [])) {
     if (ws?.status !== undefined && !wsAllowed.includes(ws.status)) errors.push(`invalid workstream status: ${ws.status}`);
+    const terminalEvents = ws?.terminal_events;
+    if (terminalEvents !== undefined
+      && (!Array.isArray(terminalEvents) || terminalEvents.some(event => typeof event !== 'string'))) {
+      errors.push('workstreams[].terminal_events must be an array of strings');
+    }
   }
   return { ok: errors.length === 0, errors };
 }

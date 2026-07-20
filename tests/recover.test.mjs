@@ -30,7 +30,7 @@ function baseData(overrides = {}) {
       lease: {
         owner_run_id: OWNER, generation: GEN, state: 'releasing', handoff_phase: 'emitted',
         handoff_idempotency_key: 'key123', handoff_child_run_id: CHILD,
-        expires_at: null, resume_policy: 'human', handoff_trigger: null,
+        expires_at: null, resume_policy: 'human', handoff_trigger: 'milestone',
       },
       consumed_milestones: [],
       sessions: [
@@ -92,6 +92,7 @@ test('recoverRun: preserve-paused run → lease.state=released, handoff fields c
   assert.equal(data.session_chain.lease.handoff_phase, 'idle');
   assert.equal(data.session_chain.lease.handoff_child_run_id, null);
   assert.equal(data.session_chain.lease.handoff_idempotency_key, null);
+  assert.equal(data.session_chain.lease.handoff_trigger, null);
   assert.equal(data.session_chain.lease.expires_at, null);
   assert.equal(data.session_chain.lease.resume_policy, null);
 });

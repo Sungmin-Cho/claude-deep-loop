@@ -162,7 +162,7 @@ export function rollbackAndPause(root, runId, { childRunId, parentOwner, generat
       if (child) child.outcome = 'failed_launch';
       const parent = l.session_chain.sessions.find(s => s.superseded_by === childRunId);
       if (parent) parent.superseded_by = null;
-      l.session_chain.lease = { ...l.session_chain.lease, state: 'active', handoff_phase: 'idle', handoff_idempotency_key: null, handoff_child_run_id: null, expires_at: null, resume_policy: null };
+      l.session_chain.lease = { ...l.session_chain.lease, state: 'active', handoff_phase: 'idle', handoff_idempotency_key: null, handoff_child_run_id: null, handoff_trigger: null, expires_at: null, resume_policy: null };
       l.status = 'paused';
       l.pause_reason = pauseReason;
     }, (l) => {

@@ -1,10 +1,12 @@
-import { existsSync, mkdirSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readState, runDir } from './state.mjs';
-import { appendAnchored } from './integrity.mjs';
+import { appendAnchored, verifyHead, verifyLog } from './integrity.mjs';
 import { wrap, atomicWrite } from './envelope.mjs';
-import { reserveHandoff, rollbackHandoff } from './lease.mjs';
+import { reserveHandoff, rollbackHandoff, rollbackReservedEmit } from './lease.mjs';
+import { renameAtomicWithRetry } from './atomic-write.mjs';
 import { defaultDesktopProbe } from './desktop-target.mjs';
 import { sessionRuntime } from './runtime.mjs';
 import { canonicalProjectRoot } from './project-root.mjs';
@@ -33,7 +35,55 @@ function descriptorLauncherIdentity(loop, runtime, platform) {
     : null;
 }
 
-function tsName(now) { return new Date(now).toISOString().replace(/[:.]/g, '-'); }
+const ALREADY_EMITTED_IDEMPOTENT = 'ALREADY_EMITTED_IDEMPOTENT';
+
+function safeRemove(path, remove = rmSync) {
+  if (!path) return;
+  try { remove(path, { force: true }); } catch { /* best-effort temp cleanup */ }
+}
+
+function cleanupChildTemps(dir, childRunId, remove = rmSync) {
+  if (!existsSync(dir)) return;
+  let files;
+  try { files = readdirSync(dir); } catch { return; }
+  const prefix = `.tmp-${childRunId}-`;
+  for (const file of files) if (file.startsWith(prefix)) safeRemove(join(dir, file), remove);
+}
+
+function idempotentResult(root, runId, childRunId, key) {
+  const { data } = readState(root, runId);
+  const child = data.session_chain.sessions.find(session => session.run_id === childRunId);
+  return {
+    ok: true, idempotent: true, reason: 'already-emitted', childRunId, key,
+    handoffRel: child?.handoff_rel ?? null,
+    handoffPath: child?.handoff_path ?? null,
+    csName: child?.handoff_cs ?? null,
+    mdName: child?.handoff_md ?? null,
+  };
+}
+
+function publicationFailure(error, publishedFinals) {
+  const failure = new Error(`EMIT_ARTIFACT_FAILED: ${String(error?.message || error)}`, { cause: error });
+  failure.handoffPublication = true;
+  failure.publishedFinals = publishedFinals;
+  return failure;
+}
+
+function validatePublishedFinal(path, kind, { childRunId, parentRunId }) {
+  if (kind === 'markdown') {
+    const markdown = readFileSync(path, 'utf8');
+    return markdown.includes(`# Handoff — next session (${childRunId})`);
+  }
+  try {
+    const artifact = JSON.parse(readFileSync(path, 'utf8'));
+    return artifact.envelope?.producer === 'deep-loop'
+      && artifact.envelope?.artifact_kind === 'compaction-state'
+      && artifact.envelope?.run_id === childRunId
+      && artifact.envelope?.parent_run_id === parentRunId;
+  } catch {
+    return false;
+  }
+}
 
 function handoffMarkdown(loop, childRunId, reason, descriptor) {
   const wsLines = (loop.workstreams || []).map(w => `- ${w.id} [${w.status}] branch=${w.branch} worktree=${w.worktree}`).join('\n') || '- (none)';
@@ -69,6 +119,8 @@ export function emitHandoff(root, runId, {
   platform = process.platform, desktopProbe = defaultDesktopProbe, env = process.env,
   deepLoopRoot = DEFAULT_DEEP_LOOP_ROOT, exists = existsSync,
   descriptorBuilder = buildRuntimeResumeDescriptor,
+  onBoundary = () => {}, writeArtifact = writeFileSync, renameArtifact = renameAtomicWithRetry,
+  removeArtifact = rmSync, artifactExists = existsSync,
 } = {}) {
   if (!expect || typeof expect.owner !== 'string' || !Number.isInteger(expect.generation)) throw new Error('FENCE_REQUIRED: emitHandoff');
   // Resolve runtime and canonical root from root-bound durable state. This read
@@ -82,6 +134,24 @@ export function emitHandoff(root, runId, {
     effort: initialLoop.autonomy?.session_effort ?? null,
   });
   const canonicalRoot = canonicalProjectRoot(initialLoop.project.root);
+  const initialLease = initialLoop.session_chain?.lease || {};
+  const committedChild = initialLoop.session_chain?.sessions?.find(
+    session => session.run_id === initialLease.handoff_child_run_id,
+  );
+  if (initialLoop.status === 'running'
+    && committedChild
+    && ['emitted', 'spawned'].includes(initialLease.handoff_phase)
+    && initialLease.owner_run_id === expect.owner
+    && initialLease.generation === expect.generation) {
+    cleanupChildTemps(join(runDir(canonicalRoot, runId), 'handoffs'), committedChild.run_id, removeArtifact);
+    return idempotentResult(canonicalRoot, runId, committedChild.run_id, initialLease.handoff_idempotency_key);
+  }
+  // A hard-terminated reservation is finalized from its durable raw trigger. The caller's reason remains
+  // audit/logging context, but cannot strand a reservation by deriving a different key.
+  if (initialLoop.session_chain?.lease?.handoff_phase === 'reserved'
+    && typeof initialLoop.session_chain.lease.handoff_trigger === 'string') {
+    trigger = initialLoop.session_chain.lease.handoff_trigger;
+  }
   const res = reserveHandoff(canonicalRoot, runId, { trigger, now, expect });
   if (!res.ok) {
     if (res.reason === 'RUN_TERMINAL') {
@@ -99,20 +169,19 @@ export function emitHandoff(root, runId, {
     if (child) {
       // 이미 emit 됨(session 존재). emit 은 이제 원자적(child push + phase=emitted 가 한 트랜잭션, Codex impl r11)이라
       // child 가 존재하면 phase 는 반드시 emitted 이상 → 추가 전이 불필요. 기존 메타데이터를 멱등 반환.
-      return { ok: true, reason: 'already-emitted', childRunId: res.childRunId, key: res.key,
-        handoffRel: child.handoff_rel ?? null, handoffPath: child.handoff_path ?? null,
-        csName: child.handoff_cs ?? null, mdName: child.handoff_md ?? null };
+      cleanupChildTemps(join(runDir(canonicalRoot, runId), 'handoffs'), res.childRunId, removeArtifact);
+      return idempotentResult(canonicalRoot, runId, res.childRunId, res.key);
     }
     // reserved 됐지만 session 미생성 → fall-through 해 emit 완료 (res.childRunId 재사용 → 중복 child 없음)
   }
+  onBoundary('reserved');
   const { data: loop } = readState(canonicalRoot, runId);
   const runtime = sessionRuntime(loop);
   const childRunId = res.childRunId;
   const dir = join(runDir(canonicalRoot, runId), 'handoffs');
   const termDir = join(runDir(canonicalRoot, runId), 'terminal');
-  const stamp = tsName(now);
-  const mdName = `${stamp}-next-session.md`;
-  const csName = `${stamp}-compaction-state.json`;
+  const mdName = `${childRunId}-next-session.md`;
+  const csName = `${childRunId}-compaction-state.json`;
   const handoffPath = join(dir, mdName);
   const handoffRel = `handoffs/${mdName}`;
 
@@ -140,15 +209,18 @@ export function emitHandoff(root, runId, {
       launcherIdentity: descriptorLauncherIdentity(loop, runtime, platform),
     });
   } catch (error) {
-    try { rollbackHandoff(canonicalRoot, runId, { owner: expect.owner, generation: expect.generation }); } catch { /* preserve original descriptor error */ }
+    // Descriptor construction is still rethrown unchanged, but its reservation cleanup is key-bound so a
+    // concurrent successful finalizer can never be reset by this loser.
+    try {
+      const compensation = rollbackReservedEmit(canonicalRoot, runId, {
+        key: res.key, childRunId, expect,
+      });
+      if (compensation.idempotent) return idempotentResult(canonicalRoot, runId, childRunId, res.key);
+    } catch { /* preserve original descriptor error */ }
     throw error;
   }
   const cmds = descriptor.entries;
-
-  mkdirSync(dir, { recursive: true });
-  mkdirSync(termDir, { recursive: true });
-
-  atomicWrite(handoffPath, handoffMarkdown(loop, childRunId, reason, descriptor));
+  const markdown = handoffMarkdown(loop, childRunId, reason, descriptor);
   const compaction = wrap({
     producer: 'deep-loop', artifact_kind: 'compaction-state',
     schema: { name: 'compaction-state', version: '1.0' }, run_id: childRunId, parent_run_id: runId,
@@ -157,7 +229,7 @@ export function emitHandoff(root, runId, {
     payload: { goal: loop.goal, routing: loop.routing, recipe: loop.recipe, current_episode: loop.current_episode, active_workstreams: loop.active_workstreams, reason },
     now: new Date(now).toISOString(),
   });
-  atomicWrite(join(dir, csName), JSON.stringify(compaction, null, 2));
+  const compactionText = JSON.stringify(compaction, null, 2);
 
   // desktop 라인은 여기서 구성(P4-2/P5): available이면 사람용 재개 지시(URL 없음), 아니면 마커.
   // 자동 auto-pop이 주 경로. 이 수동 fallback은 auto-pop readiness timeout 시 사람이 쓰며, releasing lease를
@@ -173,7 +245,7 @@ export function emitHandoff(root, runId, {
     : (cmds.desktop.available
       ? '# desktop: 새 Claude Desktop Code 탭을 열고 `/deep-loop-resume` 실행 (auto-pop 미개방 시 수동 재개)'
       : '# desktop: unavailable (handler unverified)') + meNote;
-  atomicWrite(join(termDir, 'launch-command.txt'), [
+  const launchCommand = [
     `# interactive`, cmds.interactive.display, ``,
     `# headless`, cmds.headless.display, ``,
     `# cmux`, cmds.cmux.display, ``,
@@ -182,49 +254,128 @@ export function emitHandoff(root, runId, {
     `# wt`, cmds.wt.display, ``,
     `# powershell`, cmds.powershell.display, ``,
     `# desktop`, desktopLine, ``,
-  ].join('\n'));
+  ].join('\n');
+
+  // Stage outside the lock. Final-name publication is serialized with the anchored CAS below.
+  const tempToken = `${process.pid}-${randomBytes(6).toString('hex')}`;
+  const mdTemp = join(dir, `.tmp-${childRunId}-${tempToken}-next-session.md`);
+  const csTemp = join(dir, `.tmp-${childRunId}-${tempToken}-compaction-state.json`);
+  const ownTemps = [mdTemp, csTemp];
+  try {
+    mkdirSync(dir, { recursive: true });
+    mkdirSync(termDir, { recursive: true });
+    writeArtifact(mdTemp, markdown, { flag: 'wx' });
+    writeArtifact(csTemp, compactionText, { flag: 'wx' });
+    atomicWrite(join(termDir, 'launch-command.txt'), launchCommand);
+    onBoundary('artifacts-staged');
+  } catch (error) {
+    for (const temp of ownTemps) safeRemove(temp, removeArtifact);
+    let compensation = null;
+    try {
+      compensation = rollbackReservedEmit(canonicalRoot, runId, {
+        key: res.key, childRunId, expect,
+      });
+    } catch { /* return the original filesystem failure */ }
+    if (compensation?.idempotent) {
+      cleanupChildTemps(dir, childRunId, removeArtifact);
+      return idempotentResult(canonicalRoot, runId, childRunId, res.key);
+    }
+    return { ok: false, reason: 'EMIT_ARTIFACT_FAILED', childRunId, key: res.key };
+  }
 
   // Codex impl r11 🔴: child session push + superseded_by + lease reserved→emitted (releasing + stale TTL) must be
   // ONE atomic transaction — a crash between a separate event-append and the phase advance previously left a recorded
   // handoff-emitted with phase still 'reserved' (respawn requires emitted/releasing → stranded). Single appendAnchored.
   const ttlMs = (loop.session_chain.stale_lease_ttl_sec || 900) * 1000;
+  let publishedFinals = 0;
+  const publishFinal = (temp, final, kind) => {
+    try {
+      // Windows rename cannot portably replace an existing destination. A prior partial finalizer's valid
+      // publication is authoritative; preserve it and publish only the missing sibling.
+      if (artifactExists(final)) {
+        publishedFinals += 1;
+        if (!validatePublishedFinal(final, kind, { childRunId, parentRunId: runId })) {
+          throw new Error(`HANDOFF_ARTIFACT_CONFLICT: ${final}`);
+        }
+        safeRemove(temp, removeArtifact);
+        return;
+      }
+      renameArtifact(temp, final, { platform });
+      publishedFinals += 1;
+    } catch (error) {
+      throw publicationFailure(error, publishedFinals);
+    }
+  };
   try {
-  appendAnchored(canonicalRoot, runId, { type: 'handoff-emitted', data: { child_run_id: childRunId, reason, key: res.key } }, (l) => {
-    // 멱등 push (Codex r3 🔴1): 같은 childRunId 가 이미 있으면 재push 금지 → 동시 emit 도 child 1개.
-    if (!l.session_chain.sessions.some(s => s.run_id === childRunId)) {
+    appendAnchored(canonicalRoot, runId, { type: 'handoff-emitted', data: { child_run_id: childRunId, reason, key: res.key } }, (l) => {
       l.session_chain.sessions.push({ run_id: childRunId, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: null,
         handoff_rel: handoffRel, handoff_path: handoffPath, handoff_md: mdName, handoff_cs: csName });
-    }
-    const cur = l.session_chain.sessions.find(s => s.run_id === expect.owner);
-    if (cur) cur.superseded_by = childRunId;
-    const lease = l.session_chain.lease;
-    if (lease.handoff_phase === 'reserved') {   // 부모 carve-out 시작 + stale TTL (Codex r1 🔴4)
+      const cur = l.session_chain.sessions.find(s => s.run_id === expect.owner);
+      if (cur) cur.superseded_by = childRunId;
+      const lease = l.session_chain.lease;
       l.session_chain.lease = { ...lease, handoff_phase: 'emitted', state: 'releasing', expires_at: new Date(now + ttlMs).toISOString(), resume_policy: effectiveResumePolicy };
-    }
-    l.session_chain.consumed_milestones ??= [];
-    const consumed = l.session_chain.consumed_milestones;
-    const toConsume = (l.workstreams || [])
-      .flatMap(w => w.terminal_events || [])
-      .filter(event => !consumed.includes(event));
-    consumed.push(...toConsume);
-  }, (l) => {
-    if (l.status === 'paused') throw new Error('RUN_PAUSED: emitHandoff');
-    // v1.6 (spec §2.3-2, r1 🔴1): reserve(lock A)↔이 최종 append(lock B) 사이 finish 경합을 in-lock에서 봉쇄.
-    if (l.status === 'completed' || l.status === 'stopped') throw new Error('RUN_TERMINAL: emitHandoff');
-    const lease = l.session_chain.lease;
-    if (expect && (lease.owner_run_id !== expect.owner || lease.generation !== expect.generation)) throw new Error('LEASE_FENCED: handoff-emit');
-    if (lease.handoff_idempotency_key !== res.key) throw new Error('HANDOFF_KEY_MISMATCH');
-  });
+      l.session_chain.consumed_milestones ??= [];
+      const consumed = l.session_chain.consumed_milestones;
+      const toConsume = (l.workstreams || [])
+        .flatMap(w => w.terminal_events || [])
+        .filter(event => !consumed.includes(event));
+      consumed.push(...toConsume);
+    }, (l) => {
+      // appendAnchored performs its own integrity checks after preCheck; publication must verify first or a
+      // tampered log could still receive final artifacts before the shared gateway rejects the append.
+      const verifiedLog = verifyLog(canonicalRoot, runId);
+      if (!verifiedLog.ok) throw new Error(`LOG_TAMPERED: ${verifiedLog.errors.join('; ')}`);
+      const verifiedHead = verifyHead(canonicalRoot, runId, l.event_log_head);
+      if (!verifiedHead.ok) throw new Error(`LOG_TAMPERED: ${verifiedHead.errors.join('; ')}`);
+
+      const lease = l.session_chain.lease;
+      if (lease.owner_run_id !== expect.owner || lease.generation !== expect.generation) {
+        throw new Error('LEASE_FENCED: handoff-emit');
+      }
+      const childCommitted = l.session_chain.sessions.some(session => session.run_id === childRunId);
+      if (childCommitted && ['emitted', 'spawned', 'acquired'].includes(lease.handoff_phase)) {
+        // appendAnchored ignores preCheck return values; throwing is the only way to skip the duplicate event.
+        throw new Error(ALREADY_EMITTED_IDEMPOTENT);
+      }
+      if (l.status === 'paused') throw new Error('RUN_PAUSED: emitHandoff');
+      if (l.status === 'completed' || l.status === 'stopped') throw new Error('RUN_TERMINAL: emitHandoff');
+      if (lease.handoff_phase !== 'reserved') throw new Error(`HANDOFF_PHASE_MISMATCH: ${lease.handoff_phase}`);
+      if (lease.handoff_idempotency_key !== res.key) throw new Error('HANDOFF_KEY_MISMATCH');
+      if (lease.handoff_child_run_id !== childRunId) throw new Error('HANDOFF_CHILD_MISMATCH');
+
+      publishFinal(mdTemp, handoffPath, 'markdown');
+      publishFinal(csTemp, join(dir, csName), 'compaction');
+    });
   } catch (e) {
+    for (const temp of ownTemps) safeRemove(temp, removeArtifact);
+    if (String(e?.message || e) === ALREADY_EMITTED_IDEMPOTENT) {
+      cleanupChildTemps(dir, childRunId, removeArtifact);
+      return idempotentResult(canonicalRoot, runId, childRunId, res.key);
+    }
+    if (e?.handoffPublication) {
+      // Unlike the legacy policy, committed deterministic finals are never deleted. Zero publication permits
+      // a key-bound rollback; one surviving final preserves the reservation for same-child finalization.
+      let compensation = null;
+      if ((e.publishedFinals ?? publishedFinals) === 0) {
+        try {
+          compensation = rollbackReservedEmit(canonicalRoot, runId, { key: res.key, childRunId, expect });
+        } catch { /* return the original filesystem failure */ }
+      }
+      if (compensation?.idempotent) {
+        cleanupChildTemps(dir, childRunId, removeArtifact);
+        return idempotentResult(canonicalRoot, runId, childRunId, res.key);
+      }
+      return { ok: false, reason: 'EMIT_ARTIFACT_FAILED', childRunId, key: res.key };
+    }
     if (String(e?.message || e).startsWith('RUN_TERMINAL')) {
-      // 보상 롤백 (spec §2.3-2 r4): reservation residue-free — terminal-aware rollback이 released로 안착.
-      // 이미 써진 handoffs/*·launch-command.txt 파일은 삭제하지 않는다(이벤트 미등록이라 세션 체인 미참조,
-      // 모든 재개 경로가 terminal에서 불활성 — 감사 흔적 보존). 보상 실패(경합 fence) 시 잔여도 불활성.
-      try { rollbackHandoff(canonicalRoot, runId, { owner: expect.owner, generation: expect.generation }); } catch { /* 잔여 불활성 */ }
+      try { rollbackReservedEmit(canonicalRoot, runId, { key: res.key, childRunId, expect }); } catch { /* 잔여 불활성 */ }
       return { ok: false, reason: 'RUN_TERMINAL', key: res.key };
     }
+    // LEASE_FENCED, RUN_PAUSED, and integrity failures retain their established fail-stop channel.
     throw e;
   }
+  cleanupChildTemps(dir, childRunId, removeArtifact);
+  onBoundary('committed');
   // handoffRel 반환 → respawn 이 동일 경로로 launch 명령을 빌드 (Codex r1 🔴3)
   return { ok: true, reason: 'emitted', handoffPath, childRunId, key: res.key, csName, mdName, handoffRel };
 }

@@ -122,6 +122,28 @@ test('rollbackHandoff restores active/idle (launch-failure path)', () => {
   assert.equal(lease.state, 'active');
   assert.equal(lease.handoff_phase, 'idle');
   assert.equal(lease.handoff_idempotency_key, null);
+  assert.equal(lease.handoff_trigger, null);
+});
+
+test('reserve persists raw handoff_trigger; acquireLease and rollbackHandoff clear it', () => {
+  const first = seed();
+  const reserved = reserveHandoff(first.root, first.runId, {
+    trigger: 'raw:milestone', expect: { owner: first.runId, generation: 1 }, now: 1,
+  });
+  assert.equal(readState(first.root, first.runId).data.session_chain.lease.handoff_trigger, 'raw:milestone');
+  advanceHandoffPhase(first.root, first.runId, { key: reserved.key, toPhase: 'emitted', now: 1 });
+  const acquired = acquireLease(first.root, first.runId, {
+    owner: reserved.childRunId, expectGeneration: 1, runtime: 'claude', now: 2,
+  });
+  assert.ok(acquired.ok);
+  assert.equal(readState(first.root, first.runId).data.session_chain.lease.handoff_trigger, null);
+
+  const second = seed();
+  reserveHandoff(second.root, second.runId, {
+    trigger: 'rollback-trigger', expect: { owner: second.runId, generation: 1 }, now: 1,
+  });
+  rollbackHandoff(second.root, second.runId, { owner: second.runId, generation: 1 });
+  assert.equal(readState(second.root, second.runId).data.session_chain.lease.handoff_trigger, null);
 });
 
 // Codex r1 🔴4: emitted 진입이 expires_at 를 설정해야 부모 크래시(releaseLease 누락) 후에도 자식이 TTL 경과로 인수 가능.
