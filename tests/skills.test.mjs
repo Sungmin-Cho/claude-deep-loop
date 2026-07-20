@@ -1323,6 +1323,8 @@ test('attended App handoff has one ordered public-tool route and no retry author
   assert.match(appProtocol,
     /native members[\s\S]{0,300}intrinsic constructor backlink/i);
   assert.match(appProtocol,
+    /local `Array\.prototype` or an equivalent foreign intrinsic Array prototype/i);
+  assert.match(appProtocol,
     /fork_thread[\s\S]{0,900}before `send_message_to_thread`[\s\S]{0,500}same strict recursive receipt validator/i);
   assert.match(appProtocol,
     /send receipt[\s\S]{0,700}zero ID-shaped fields[\s\S]{0,700}exactly one own root `threadId`[\s\S]{0,500}byte-equal/i);

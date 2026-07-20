@@ -1155,6 +1155,10 @@ test('cross-realm already-decoded App receipts normalize before strict validatio
     forkReceipt: runInNewContext(`({ threadId: 'FORK-CROSS-REALM' })`),
     sendReceipt: runInNewContext(`({ threadId: 'FORK-CROSS-REALM' })`),
   })), { threadId: 'FORK-CROSS-REALM' });
+  assert.deepEqual(await executePreparedAction(forkAction, new FakeAppHost({
+    forkReceipt: runInNewContext(`({ threadId: 'FORK-CROSS-REALM-ARRAY' })`),
+    sendReceipt: runInNewContext(`[]`),
+  })), { threadId: 'FORK-CROSS-REALM-ARRAY' });
 });
 
 test('cross-realm custom prototypes and accessors remain fail-closed', async () => {
