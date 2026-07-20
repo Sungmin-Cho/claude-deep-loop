@@ -805,7 +805,13 @@ test('launcher diagnosis hashes one explicit native path without executing it; a
   });
 });
 
-test('tmux launcher collects only absolute POSIX PATH candidates and omits Authenticode', () => {
+// Physical fixture executables live at host paths; on a win32 host those are Windows paths, which
+// the POSIX tmux validator rejects by design (fail-closed), so these two cannot run there.
+const POSIX_TMUX_FIXTURE_SKIP = process.platform === 'win32'
+  ? 'win32 host fixture paths are not POSIX-absolute; the tmux validator fails closed by design'
+  : false;
+
+test('tmux launcher collects only absolute POSIX PATH candidates and omits Authenticode', { skip: POSIX_TMUX_FIXTURE_SKIP }, () => {
   const fixture = launcherApprovalFixture({ kind: 'tmux' });
   const relativeShadow = join(fixture.root, 'relative-bin');
   let authenticodeCalls = 0;
@@ -827,7 +833,7 @@ test('tmux launcher collects only absolute POSIX PATH candidates and omits Authe
   assert.equal(authenticodeCalls, 0);
 });
 
-test('tmux diagnose, human approval, and exact revalidation persist fail-closed POSIX authority', () => {
+test('tmux diagnose, human approval, and exact revalidation persist fail-closed POSIX authority', { skip: POSIX_TMUX_FIXTURE_SKIP }, () => {
   const fixture = launcherApprovalFixture({ kind: 'tmux' });
   let authenticodeCalls = 0;
   const authenticodeProbe = () => { authenticodeCalls++; throw new Error('must not probe'); };
