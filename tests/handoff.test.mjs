@@ -1483,6 +1483,47 @@ test('two finals published before append failure are both replaced by a differen
   assert.equal(events[0].data.reason, 'retry-pair');
 });
 
+test('retry rollback requires fresh proof that both deterministic finals are absent', () => {
+  const { root, runId } = seed();
+  const expect = expect_(runId);
+  let initialRenames = 0;
+  const crashed = emitHandoff(root, runId, {
+    reason: 'crash-pair', trigger: 'milestone', expect, now: 100,
+    renameArtifact(src, dst) {
+      initialRenames += 1;
+      renameSync(src, dst);
+      if (initialRenames === 2) throw Object.assign(new Error('crash after both finals'), { code: 'EIO' });
+    },
+  });
+  assert.equal(crashed.reason, 'EMIT_ARTIFACT_FAILED');
+  const reserved = readState(root, runId).data.session_chain.lease;
+  const mdPath = join(handoffDir(root, runId), `${reserved.handoff_child_run_id}-next-session.md`);
+  const csPath = join(handoffDir(root, runId), `${reserved.handoff_child_run_id}-compaction-state.json`);
+  assert.equal(existsSync(mdPath), true);
+  assert.equal(existsSync(csPath), true);
+
+  const failedRetry = emitHandoff(root, runId, {
+    reason: 'retry-after-crash', trigger: 'pre-compact', expect, now: 200,
+    renameArtifact() { throw Object.assign(new Error('rename after markdown unlink failed'), { code: 'EIO' }); },
+  });
+  assert.equal(failedRetry.reason, 'EMIT_ARTIFACT_FAILED');
+  assert.equal(existsSync(mdPath), false, 'the first stale final was removed before the injected rename failure');
+  assert.equal(existsSync(csPath), true, 'the sibling final survives and keeps the reservation recoverable');
+  assert.equal(readState(root, runId).data.session_chain.lease.handoff_phase, 'reserved');
+
+  const recovered = emitHandoff(root, runId, {
+    reason: 'final-retry', trigger: 'pre-compact', expect, now: 300,
+  });
+  assert.ok(recovered.ok);
+  const markdown = readFileSync(join(handoffDir(root, runId), recovered.mdName), 'utf8');
+  const compaction = JSON.parse(readFileSync(join(handoffDir(root, runId), recovered.csName), 'utf8'));
+  const events = handoffEvents(root, runId);
+  assert.ok(markdown.includes('- reason for handoff: final-retry'));
+  assert.equal(compaction.payload.reason, 'final-retry');
+  assert.equal(events.length, 1);
+  assert.equal(events[0].data.reason, 'final-retry');
+});
+
 test('byte-identical partial final is retained while its missing sibling is published', () => {
   const { root, runId } = seed();
   const expect = expect_(runId);

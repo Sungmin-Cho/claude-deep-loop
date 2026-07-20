@@ -344,10 +344,14 @@ export function emitHandoff(root, runId, {
       return idempotentResult(canonicalRoot, runId, childRunId, res.key);
     }
     if (e?.handoffPublication) {
-      // Unlike the legacy policy, committed deterministic finals are never deleted. Zero publication permits
-      // a key-bound rollback; one surviving final preserves the reservation for same-child finalization.
+      // Rollback is allowed only when fresh checks prove both deterministic finals absent. The publication
+      // counter cannot see a surviving sibling after an unlink-then-rename failure on the other final.
       let compensation = null;
-      if ((e.publishedFinals ?? publishedFinals) === 0) {
+      let bothFinalsAbsent = false;
+      try {
+        bothFinalsAbsent = !artifactExists(handoffPath) && !artifactExists(join(dir, csName));
+      } catch { /* inability to prove absence preserves the reservation */ }
+      if (bothFinalsAbsent) {
         try {
           compensation = rollbackReservedEmit(canonicalRoot, runId, { key: res.key, childRunId, expect });
         } catch { /* return the original filesystem failure */ }
