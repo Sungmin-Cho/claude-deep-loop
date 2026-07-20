@@ -1,6 +1,7 @@
 # deep-suite scratch / runtime state (never committed)
 .deep-review/
 .deep-loop/
+.deep-memory/
 .superpowers/
 # whole .claude/ — hook input capture (.claude/.hook-tool-input.<pid>: transcript path / permission_mode /
 # personal paths+email) and .claude/.sensor-detection-cache.json are untracked-but-not-ignored otherwise (#6).
