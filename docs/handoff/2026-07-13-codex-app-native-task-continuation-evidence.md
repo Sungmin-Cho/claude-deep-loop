@@ -4447,7 +4447,22 @@ receipt correction, a fresh happy-path re-smoke, and hosted 3×3 CI remain pendi
   `npm run preflight` passed: validate `ok (schema+builder self-test)` and
   tests/pass/fail/cancelled/skipped/todo `1,988/1,988/0/0/0/0`, duration
   `365,411.050625 ms`.
+- exact evidence target verification: evidence target commit
+  `d5ade072c7a4660acc9b383c21b234cace069ffa`, tree
+  `73e263ac6b9af6ee266f5bca49aa2a65b8754f92`, was extracted at
+  `/Users/sungmin/Documents/Codex/2026-07-20/deep-loop-preflight-d5ade07`. One controller command
+  initially invoked `npm run preflight` in the authoritative worktree instead of the new archive and
+  reproduced the already documented preserved-runtime `RUN_SNAPSHOT_INVALID`; it changed no source
+  or runtime state. The corrected exact-archive invocation passed validate and
+  `1,988/1,988/0/0/0/0`, duration `373,031.474792 ms`.
+- independent re-review closure: fresh standard and adversarial checkers both used actual
+  `gpt-5.6-sol` with high effort against exact HEAD
+  `d5ade072c7a4660acc9b383c21b234cace069ffa`. Standard: `APPROVE`, Red 0 / Yellow 0. Adversarial:
+  `APPROVE`, Red 0 / Yellow 0. The adversarial checker separately exercised direct/JSON
+  create/fork/send symmetry, missing/false-success envelopes, and top-level encoded transport
+  rejection; no counterexample, retry authority, raw-ID leak, or App task call was found.
 - boundary: correction and verification to this point made zero App task-tool calls and performed no
   install, restart, registration, push, PR, merge, deep-suite synchronization, cleanup, or archival
-  action. The first review findings and exact-target preflight are closed; two independent reviewer
-  approvals remain before any new candidate can be proposed for separately approved smoke.
+  action. The first review findings, exact-target preflight, and two independent approvals are
+  closed. The final evidence-only receipt commit and its exact verification remain before any new
+  candidate can be proposed for separately approved smoke.
