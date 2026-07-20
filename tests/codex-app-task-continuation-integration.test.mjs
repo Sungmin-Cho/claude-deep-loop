@@ -6,6 +6,7 @@ import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { runInNewContext } from 'node:vm';
 import { runPreCompactHandoff } from '../scripts/hooks-impl/precompact-handoff.mjs';
 import { readLines } from '../scripts/lib/integrity.mjs';
 import { readState } from '../scripts/lib/state.mjs';
@@ -1069,6 +1070,9 @@ test('current App wire receipts decode one canonical JSON layer before strict va
   assert.deepEqual(await executePreparedAction(createAction, new FakeAppHost({
     createReceipt: JSON.stringify({ threadId: 'CREATE-WIRE' }),
   })), { threadId: 'CREATE-WIRE' });
+  assert.deepEqual(await executePreparedAction(createAction, new FakeAppHost({
+    createReceipt: JSON.stringify({ threadId: 'CREATE-WIRE', hostId: 'HOST-WIRE' }),
+  })), { threadId: 'CREATE-WIRE' });
 
   const forkAction = { tool: 'fork_thread', environment: { type: 'same-directory' },
     followup: { tool: 'send_message_to_thread', prompt: 'PROMPT' } };
@@ -1128,6 +1132,89 @@ test('current App wire receipts decode one canonical JSON layer before strict va
   }
 });
 
+test('cross-realm already-decoded App receipts normalize before strict validation', async () => {
+  const root = '/repo/cross-realm-app-wire';
+  const envelope = runInNewContext(`({ schemaVersion: 1, projects: [{
+    projectId: 'PROJECT-CROSS-REALM', projectKind: 'local', path: '${root}',
+  }] })`);
+  const discovery = await boundedRootPrepareInput(
+    new FakeAppHost({ listProjectsReceipt: envelope }), root, { timeoutMs: 25 });
+  assert.equal(discovery.discoveryAvailable, true);
+  assert.equal(JSON.parse(discovery.line).projects[0].projectId, 'PROJECT-CROSS-REALM');
+
+  const createAction = { tool: 'create_thread', target: {
+    type: 'project', projectId: 'PROJECT', environment: { type: 'local' },
+  }, prompt: 'PROMPT' };
+  assert.deepEqual(await executePreparedAction(createAction, new FakeAppHost({
+    createReceipt: runInNewContext(`({ threadId: 'CREATE-CROSS-REALM', hostId: 'HOST' })`),
+  })), { threadId: 'CREATE-CROSS-REALM' });
+
+  const forkAction = { tool: 'fork_thread', environment: { type: 'same-directory' },
+    followup: { tool: 'send_message_to_thread', prompt: 'PROMPT' } };
+  assert.deepEqual(await executePreparedAction(forkAction, new FakeAppHost({
+    forkReceipt: runInNewContext(`({ threadId: 'FORK-CROSS-REALM' })`),
+    sendReceipt: runInNewContext(`({ threadId: 'FORK-CROSS-REALM' })`),
+  })), { threadId: 'FORK-CROSS-REALM' });
+});
+
+test('cross-realm custom prototypes and accessors remain fail-closed', async () => {
+  const root = '/repo/cross-realm-hostile';
+  const customEnvelope = runInNewContext(`(() => {
+    const value = Object.create({ custom: true });
+    value.schemaVersion = 1;
+    value.projects = [];
+    return value;
+  })()`);
+  const accessorFixture = runInNewContext(`(() => {
+    let reads = 0;
+    const value = { projects: [] };
+    Object.defineProperty(value, 'schemaVersion', {
+      enumerable: true,
+      get() { reads += 1; return 1; },
+    });
+    return { value, reads: () => reads };
+  })()`);
+  for (const listProjectsReceipt of [customEnvelope, accessorFixture.value]) {
+    const discovery = await boundedRootPrepareInput(
+      new FakeAppHost({ listProjectsReceipt }), root, { timeoutMs: 25 });
+    assert.equal(discovery.discoveryAvailable, false);
+  }
+  assert.equal(accessorFixture.reads(), 0);
+
+  const createAction = { tool: 'create_thread', target: {
+    type: 'project', projectId: 'PROJECT', environment: { type: 'local' },
+  }, prompt: 'PROMPT' };
+  const customCreate = runInNewContext(`(() => {
+    const value = Object.create({ custom: true });
+    value.threadId = 'CREATE';
+    value.hostId = 'HOST';
+    return value;
+  })()`);
+  await assert.rejects(() => executePreparedAction(createAction,
+    new FakeAppHost({ createReceipt: customCreate })), /CREATE_RECEIPT_INVALID/);
+});
+
+test('lookalike built-in prototypes without intrinsic constructor backlinks remain fail-closed', async () => {
+  const root = '/repo/lookalike-builtins';
+  const fakeObjectPrototype = Object.create(null,
+    Object.getOwnPropertyDescriptors(Object.prototype));
+  const envelope = Object.create(fakeObjectPrototype);
+  envelope.schemaVersion = 1;
+  envelope.projects = [];
+  const discovery = await boundedRootPrepareInput(
+    new FakeAppHost({ listProjectsReceipt: envelope }), root, { timeoutMs: 25 });
+  assert.equal(discovery.discoveryAvailable, false);
+
+  const fakeArrayPrototype = Object.create(Object.prototype,
+    Object.getOwnPropertyDescriptors(Array.prototype));
+  const projects = [];
+  Object.setPrototypeOf(projects, fakeArrayPrototype);
+  const arrayEnvelope = { schemaVersion: 1, projects };
+  const arrayDiscovery = await boundedRootPrepareInput(
+    new FakeAppHost({ listProjectsReceipt: arrayEnvelope }), root, { timeoutMs: 25 });
+  assert.equal(arrayDiscovery.discoveryAvailable, false);
+});
+
 test('project discovery rejects hostile array and row descriptors before projection', async () => {
   const root = '/repo/hostile-project-envelope';
   const goodRow = { projectId: 'PROJECT', projectKind: 'local', path: root };
@@ -1183,8 +1270,8 @@ test('project discovery rejects Proxy envelopes arrays and rows before reflectiv
 test('handoff protocol binds discovery to the current strict v1 App envelope', () => {
   const protocol = readFileSync(join(HERE, '..', 'skills', 'deep-loop-workflow',
     'references', 'handoff-respawn.md'), 'utf8');
-  assert.match(protocol,
-    /canonical JSON wire text[\s\S]{0,300}exactly one layer[\s\S]{0,500}`schemaVersion === 1`/u);
+  assert.match(protocol, /canonical JSON wire text[\s\S]{0,300}exactly one layer/u);
+  assert.match(protocol, /exactly one layer[\s\S]{0,1800}`schemaVersion === 1`/u);
   assert.match(protocol, /bare array[\s\S]{0,180}discovery unavailable/u);
 });
 
@@ -1257,6 +1344,26 @@ test('PreCompact-first emit is taken over once by an attended tick or swept with
   assert.deepEqual(idle.hostCalls, []);
 });
 
+test('create receipt accepts exact root hostId metadata and discards it', async () => {
+  const action = { tool: 'create_thread', target: {
+    type: 'project', projectId: 'PROJECT', environment: { type: 'local' },
+  }, prompt: 'PROMPT' };
+  const receipt = await executePreparedAction(action, new FakeAppHost({
+    createReceipt: { threadId: 'CREATE', hostId: 'HOST' },
+  }));
+  assert.deepEqual(receipt, { threadId: 'CREATE' });
+  assert.equal(Object.prototype.hasOwnProperty.call(receipt, 'hostId'), false);
+});
+
+test('create receipt selects threadId independently of host metadata property order', async () => {
+  const action = { tool: 'create_thread', target: {
+    type: 'project', projectId: 'PROJECT', environment: { type: 'local' },
+  }, prompt: 'PROMPT' };
+  assert.deepEqual(await executePreparedAction(action, new FakeAppHost({
+    createReceipt: { hostId: 'HOST', threadId: 'CREATE' },
+  })), { threadId: 'CREATE' });
+});
+
 test('strict host receipt validation rejects inherited alternate control and oversize IDs', async () => {
   const action = { tool: 'create_thread', target: {
     type: 'project', projectId: 'PROJECT', environment: { type: 'local' },
@@ -1276,6 +1383,11 @@ test('strict host receipt validation rejects inherited alternate control and ove
     symbolAlternate,
     accessorId,
     { threadId: 'OWN', clientThreadId: 'ALTERNATE' },
+    { threadId: 'OWN', hostId: '' },
+    { threadId: 'OWN', hostId: 'bad\n-id' },
+    { threadId: 'OWN', hostId: 'x'.repeat(513) },
+    { threadId: 'OWN', hostId: 'HOST', otherId: 'ALTERNATE' },
+    { threadId: 'OWN', hostId: 'HOST', nested: { hostId: 'ALTERNATE' } },
     { threadId: 'OWN', clientThreadID: 'ALTERNATE' },
     { threadId: 'OWN', clientthreadid: 'ALTERNATE' },
     { threadId: 'OWN', clientThreadiD: 'ALTERNATE' },

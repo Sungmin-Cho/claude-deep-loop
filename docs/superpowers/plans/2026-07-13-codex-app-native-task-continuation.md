@@ -32529,6 +32529,12 @@ test('attended App handoff has one ordered public-tool route and no retry author
   assert.match(appProtocol, /create.*exactly one.*threadId/is);
   assert.match(appProtocol, /clientThreadId.*failure/i);
   assert.match(appProtocol,
+    /create_thread[\s\S]{0,1200}optional own root `hostId`[\s\S]{0,500}validated[\s\S]{0,500}discarded/i);
+  assert.match(appProtocol,
+    /different V8 realm[\s\S]{0,700}reference-equal[\s\S]{0,900}own-key order[\s\S]{0,500}native members/i);
+  assert.match(appProtocol,
+    /native members[\s\S]{0,300}intrinsic constructor backlink/i);
+  assert.match(appProtocol,
     /fork_thread[\s\S]{0,900}before `send_message_to_thread`[\s\S]{0,500}same strict recursive receipt validator/i);
   assert.match(appProtocol,
     /send receipt[\s\S]{0,700}zero ID-shaped fields[\s\S]{0,700}exactly one own root `threadId`[\s\S]{0,500}byte-equal/i);
@@ -32623,11 +32629,11 @@ PreCompact and headless never enter this branch.
    `app-task prepare` calls, zero public App tool calls, and zero `respawn` calls, then presents
    manual `$deep-loop:deep-loop-resume` guidance.
 2. From the safe emit result/argumentless safe status obtain only `<emitted_attempt_id>`, then immediately run `node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" app-task status --attempt <emitted_attempt_id> --project-root "<canonical_project_root>" --run-id <run_id>`. Before any discovery or task call, verify emitted attempt/owner/generation/route: `logical_run_id=<run_id>`, `owner_run_id=<owner_run_id>`, `generation=<generation>`, `handoff_phase=emitted`, `current.attempt_id=<emitted_attempt_id>`, `current.phase=emitted`, and `current.route` matches the kernel-produced root `create` or exact active-worktree `fork` route. Missing/mismatched fields stop for manual recovery. This redacted check never reads whole sessions or raw IDs.
-3. Root route only after step 2: call `list_projects` exactly once through a bounded timeout/no-return wrapper. The current App may expose the result as an already-decoded value or canonical JSON wire text. Wire text is capped at 1,048,576 bytes before parsing, rejects BOM and leading/trailing whitespace, requires `JSON.stringify(JSON.parse(raw)) === raw`, decodes exactly one layer, and rejects a decoded string with a whitespace/BOM-prefixed JSON object/array marker. Require the decoded v1 receipt to be a non-Proxy plain/null-prototype top-level data object with exactly `schemaVersion` and `projects`, require `schemaVersion === 1`, and require `projects` to be a non-Proxy canonical dense `Array.prototype` data-property array. Every row is a non-Proxy plain/null-prototype own-enumerable-data-property object with at most 16 scalar fields and own string `projectId`, `projectKind`, and `path`; Proxy, symbol, accessor, inherited/custom-prototype, sparse/custom-array, nested extra value, non-finite number, or exceeded bound is invalid. Build a bounded projection from those three fields, with at most 256 entries and at most the structured-input byte cap. A bare array, non-canonical/double-encoded/malformed wire value, extra or missing envelope key, unsupported schema version, discovery throw/timeout/no-return, invalid entry, exceeded bound, or unsafe projection makes discovery unavailable; do not retry and do not call `app-task fail` while the attempt is still `emitted`. Worktree fork/manual routes: `list_projects` call count is 0.
+3. Root route only after step 2: call `list_projects` exactly once through a bounded timeout/no-return wrapper. The current App may expose the result as an already-decoded value or canonical JSON wire text. Wire text is capped at 1,048,576 bytes before parsing, rejects BOM and leading/trailing whitespace, requires `JSON.stringify(JSON.parse(raw)) === raw`, decodes exactly one layer, and rejects a decoded string with a whitespace/BOM-prefixed JSON object/array marker. Already-decoded values may originate in another V8 realm, so prototype reference identity is not authority: accept only null/local prototypes or foreign built-in prototypes with complete own-key order, descriptor, native-member, parent-chain, and intrinsic constructor-backlink equivalence, without reading receipt property values. Require the decoded v1 receipt to be a non-Proxy plain/null-prototype top-level data object with exactly `schemaVersion` and `projects`, require `schemaVersion === 1`, and require `projects` to be a non-Proxy canonical dense plain-array data-property array. Every row is a non-Proxy plain/null-prototype own-enumerable-data-property object with at most 16 scalar fields and own string `projectId`, `projectKind`, and `path`; Proxy, symbol, accessor, inherited/custom-prototype, sparse/custom/subclass array, nested extra value, non-finite number, or exceeded bound is invalid. Build a bounded projection from those three fields, with at most 256 entries and at most the structured-input byte cap. A bare array, non-canonical/double-encoded/malformed wire value, extra or missing envelope key, unsupported schema version, discovery throw/timeout/no-return, invalid entry, exceeded bound, or unsafe projection makes discovery unavailable; do not retry and do not call `app-task fail` while the attempt is still `emitted`. Worktree fork/manual routes: `list_projects` call count is 0.
 4. Start `node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" app-task prepare --owner <owner_run_id> --generation <generation> --stdin-mode <pipe-open-noecho|pty-raw-noecho> --app-host-input-stdin --project-root "<canonical_project_root>" --run-id <run_id>`. Match the full exact `DEEP_LOOP_STDIN_READY:v1:app-prepare:<owner_run_id>.<generation>:<mode>` line. On successful root discovery send `{ "host_task_cwd": <current_host_task_cwd>, "projects": <bounded_projection> }`; on discovery unavailable send only `{ "host_task_cwd": <current_host_task_cwd> }` and omit the `projects` field. The latter must return `manual-preserve`, keep the child phase `emitted`, set human resume policy, and authorize zero App task actions. Send exactly one bounded JSON line through structured process input in either case. If the prepare process result is lost, boundedly poll that original process handle and make zero App task tool calls while it is live or unknown. Once exit is proven, read redacted exact-attempt status. Only a still-`emitted` attempt with `manual_recovery=false`, exact owner/generation, `handoff_phase=emitted`, and a live deadline may run the same prepare binding and byte-identical input once. An `emitted` projection with `manual_recovery=true` is the durable `manual-preserve` outcome: perform zero prepare retries, zero App task tool calls, and zero automatic sweep, then present manual recovery immediately. Only a `prepared` attempt with `manual_recovery=false` may run that exact re-entry to obtain `already-prepared` with `do_not_call=true`, then must make zero external App actions and wait for its strict deadline. For either an expired `emitted` attempt or an expired `prepared` attempt with `manual_recovery=false`, run exactly `node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" app-task sweep-unconfirmed --owner <owner_run_id> --generation <generation> --attempt <attempt_id> --project-root "<canonical_project_root>" --run-id <run_id>`; no new prepare or host action is allowed, and a lost sweep result is reconciled only by redacted exact-attempt status. Any phase/policy/fence mismatch stops without another mutating process.
 5. `do_not_call=true` means stop without any App tool call. Only a directly observed first exact `do_not_call=false` result authorizes one action; a lost actionable prepare response is never reconstructed from status or retried at the host-tool boundary.
-6. For `action.tool=create_thread`, pass `action.prompt` and `action.target` directly to `create_thread`; omit model and thinking. Before strict validation, apply step 3's bounded canonical-JSON wire adapter once to a string result. Success requires exactly one own `threadId` string that passes the bounded opaque receipt validator. Missing/multiple ID, another shape, `clientThreadId`, a control byte, a UTF-8 value over 512 bytes, or non-canonical/malformed/double-encoded object/array wire text is `invalid-host-receipt` failure.
-7. For `action.tool=fork_thread`, call `fork_thread` once with `environment.type=same-directory`. Apply step 6's wire adapter and, before `send_message_to_thread`, pass the complete decoded fork result through the same strict recursive receipt validator as create: the root must have a plain/null prototype; every traversed property must be an own enumerable data property; symbol, accessor, custom-prototype, function, non-finite/bigint/symbol value, or cyclic shapes fail; case-insensitive keys ending in `id|ids|identifier|identifiers` count as ID-shaped fields; and exactly one such field must exist as the own root `threadId` whose bounded opaque UTF-8 value is at most 512 bytes. Receipt traversal is fail-closed at maximum depth 32, maximum total nodes 1024, and maximum container entries 256; check array length before allocating or enumerating expected indices. Missing/multiple/nested/plural/alternate/control/surrogate/oversize/bounds-exceeded fork IDs are `invalid-host-receipt`; make zero message calls. Only after this validation, retain the fork ID in memory and call `send_message_to_thread` once for that same child with `action.followup.prompt`; omit model and thinking. Apply the wire adapter once to the send result too. A decoded null/undefined/string/finite-number/boolean send receipt, or a recursively valid plain object/exact plain array with zero ID-shaped fields, is success. An array must have `Array.prototype`. Array index descriptors must be canonical dense own data descriptors with `enumerable=true,writable=true,configurable=true`, and the canonical `length` data descriptor has `enumerable=false,writable=true,configurable=false`; custom key, symbol, accessor, hole, frozen/non-writable index, or subclass prototype fails. If a send receipt has an ID-shaped field, it must have exactly one own root `threadId`, pass the same bounded opaque validator, and byte-equal the fork ID. Any non-canonical/double-encoded object/array wire text, nested, plural, alternate, multiple, accessor, symbol, custom-prototype, function, custom-array, cyclic, bounds-exceeded, or mismatched send ID is `message-unconfirmed` with the already-known fork receipt and never authorizes a resend.
+6. For `action.tool=create_thread`, pass `action.prompt` and `action.target` directly to `create_thread`; omit model and thinking. Before strict validation, apply step 3's bounded canonical-JSON and realm-safe plain-data adapter. Success requires exactly one own root `threadId` string that passes the bounded opaque receipt validator. The only second ID-shaped field allowed is optional own root `hostId`; validate it independently with the same 512-byte opaque rules, treat it as non-authoritative, discard it immediately, and return only `{threadId}`. Missing/multiple/nested/plural/alternate ID, another shape, `clientThreadId`, invalid `hostId`, a control byte, a UTF-8 value over 512 bytes, non-equivalent foreign/custom prototype, or non-canonical/malformed/double-encoded object/array wire text is `invalid-host-receipt` failure.
+7. For `action.tool=fork_thread`, call `fork_thread` once with `environment.type=same-directory`. Apply step 6's wire adapter and, before `send_message_to_thread`, pass the complete decoded fork result through the same strict recursive receipt validator with the create-only `hostId` allowance disabled: the root must have a plain/null prototype; every traversed property must be an own enumerable data property; symbol, accessor, custom-prototype, function, non-finite/bigint/symbol value, or cyclic shapes fail; case-insensitive keys ending in `id|ids|identifier|identifiers` count as ID-shaped fields; and exactly one such field must exist as the own root `threadId` whose bounded opaque UTF-8 value is at most 512 bytes. Receipt traversal is fail-closed at maximum depth 32, maximum total nodes 1024, and maximum container entries 256; check array length before allocating or enumerating expected indices. Missing/multiple/nested/plural/alternate/control/surrogate/oversize/bounds-exceeded fork IDs are `invalid-host-receipt`; make zero message calls. Only after this validation, retain the fork ID in memory and call `send_message_to_thread` once for that same child with `action.followup.prompt`; omit model and thinking. Apply the wire adapter once to the send result too. A decoded null/undefined/string/finite-number/boolean send receipt, or a recursively valid plain object/exact plain array with zero ID-shaped fields, is success. An array must have `Array.prototype`. Array index descriptors must be canonical dense own data descriptors with `enumerable=true,writable=true,configurable=true`, and the canonical `length` data descriptor has `enumerable=false,writable=true,configurable=false`; custom key, symbol, accessor, hole, frozen/non-writable index, or subclass prototype fails. If a send receipt has an ID-shaped field, it must have exactly one own root `threadId`, pass the same bounded opaque validator, and byte-equal the fork ID. Any non-canonical/double-encoded object/array wire text, nested, plural, alternate, multiple, accessor, symbol, custom-prototype, function, custom-array, cyclic, bounds-exceeded, or mismatched send ID is `message-unconfirmed` with the already-known fork receipt and never authorizes a resend.
 8. After create success or fork plus message success, start `node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" app-task confirm --owner <owner_run_id> --generation <generation> --attempt <attempt_id> --stdin-mode <pipe-open-noecho|pty-raw-noecho> --receipt-stdin --project-root "<canonical_project_root>" --run-id <run_id>`. Match the full exact `DEEP_LOOP_STDIN_READY:v1:app-confirm:<attempt_id>:<mode>` line, then send the raw UTF-8 opaque ID itself (not JSON, quotes, or an object), at most 512 bytes, followed by exactly one LF through structured process input. A 513-byte value fails closed. Never put the ID in argv, environment, temp files, logs, or reports. If the confirm process result is lost, boundedly poll only that original process handle; while liveness is unknown, stop. After exit is proven, read redacted exact-attempt status and run the exact confirm command again with the same raw receipt and mode—never another create/fork/send call. A committed first confirm returns the write-free `already-confirmed` (or exact acquired completion); an uncommitted live-deadline confirm performs the one commit. A different receipt, expired first confirm, or a second lost result stops for status/manual diagnosis.
 9. Start `node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" app-task await --owner <owner_run_id> --generation <generation> --attempt <attempt_id> --project-root "<canonical_project_root>" --run-id <run_id>`. Only exact child acquisition is success.
 
@@ -33983,6 +33989,26 @@ test('PreCompact-first emit is taken over once by an attended tick or swept with
   assert.deepEqual(idle.hostCalls, []);
 });
 
+test('create receipt accepts exact root hostId metadata and discards it', async () => {
+  const action = { tool: 'create_thread', target: {
+    type: 'project', projectId: 'PROJECT', environment: { type: 'local' },
+  }, prompt: 'PROMPT' };
+  const receipt = await executePreparedAction(action, new FakeAppHost({
+    createReceipt: { threadId: 'CREATE', hostId: 'HOST' },
+  }));
+  assert.deepEqual(receipt, { threadId: 'CREATE' });
+  assert.equal(Object.prototype.hasOwnProperty.call(receipt, 'hostId'), false);
+});
+
+test('create receipt selects threadId independently of host metadata property order', async () => {
+  const action = { tool: 'create_thread', target: {
+    type: 'project', projectId: 'PROJECT', environment: { type: 'local' },
+  }, prompt: 'PROMPT' };
+  assert.deepEqual(await executePreparedAction(action, new FakeAppHost({
+    createReceipt: { hostId: 'HOST', threadId: 'CREATE' },
+  })), { threadId: 'CREATE' });
+});
+
 test('strict host receipt validation rejects inherited alternate control and oversize IDs', async () => {
   const action = { tool: 'create_thread', target: {
     type: 'project', projectId: 'PROJECT', environment: { type: 'local' },
@@ -34002,6 +34028,11 @@ test('strict host receipt validation rejects inherited alternate control and ove
     symbolAlternate,
     accessorId,
     { threadId: 'OWN', clientThreadId: 'ALTERNATE' },
+    { threadId: 'OWN', hostId: '' },
+    { threadId: 'OWN', hostId: 'bad\n-id' },
+    { threadId: 'OWN', hostId: 'x'.repeat(513) },
+    { threadId: 'OWN', hostId: 'HOST', otherId: 'ALTERNATE' },
+    { threadId: 'OWN', hostId: 'HOST', nested: { hostId: 'ALTERNATE' } },
     { threadId: 'OWN', clientThreadID: 'ALTERNATE' },
     { threadId: 'OWN', clientthreadid: 'ALTERNATE' },
     { threadId: 'OWN', clientThreadiD: 'ALTERNATE' },
@@ -34462,6 +34493,9 @@ test('current App wire receipts decode one canonical JSON layer before strict va
   assert.deepEqual(await executePreparedAction(createAction, new FakeAppHost({
     createReceipt: JSON.stringify({ threadId: 'CREATE-WIRE' }),
   })), { threadId: 'CREATE-WIRE' });
+  assert.deepEqual(await executePreparedAction(createAction, new FakeAppHost({
+    createReceipt: JSON.stringify({ threadId: 'CREATE-WIRE', hostId: 'HOST-WIRE' }),
+  })), { threadId: 'CREATE-WIRE' });
 
   const forkAction = { tool: 'fork_thread', environment: { type: 'same-directory' },
     followup: { tool: 'send_message_to_thread', prompt: 'PROMPT' } };
@@ -34521,6 +34555,89 @@ test('current App wire receipts decode one canonical JSON layer before strict va
   }
 });
 
+test('cross-realm already-decoded App receipts normalize before strict validation', async () => {
+  const root = '/repo/cross-realm-app-wire';
+  const envelope = runInNewContext(`({ schemaVersion: 1, projects: [{
+    projectId: 'PROJECT-CROSS-REALM', projectKind: 'local', path: '${root}',
+  }] })`);
+  const discovery = await boundedRootPrepareInput(
+    new FakeAppHost({ listProjectsReceipt: envelope }), root, { timeoutMs: 25 });
+  assert.equal(discovery.discoveryAvailable, true);
+  assert.equal(JSON.parse(discovery.line).projects[0].projectId, 'PROJECT-CROSS-REALM');
+
+  const createAction = { tool: 'create_thread', target: {
+    type: 'project', projectId: 'PROJECT', environment: { type: 'local' },
+  }, prompt: 'PROMPT' };
+  assert.deepEqual(await executePreparedAction(createAction, new FakeAppHost({
+    createReceipt: runInNewContext(`({ threadId: 'CREATE-CROSS-REALM', hostId: 'HOST' })`),
+  })), { threadId: 'CREATE-CROSS-REALM' });
+
+  const forkAction = { tool: 'fork_thread', environment: { type: 'same-directory' },
+    followup: { tool: 'send_message_to_thread', prompt: 'PROMPT' } };
+  assert.deepEqual(await executePreparedAction(forkAction, new FakeAppHost({
+    forkReceipt: runInNewContext(`({ threadId: 'FORK-CROSS-REALM' })`),
+    sendReceipt: runInNewContext(`({ threadId: 'FORK-CROSS-REALM' })`),
+  })), { threadId: 'FORK-CROSS-REALM' });
+});
+
+test('cross-realm custom prototypes and accessors remain fail-closed', async () => {
+  const root = '/repo/cross-realm-hostile';
+  const customEnvelope = runInNewContext(`(() => {
+    const value = Object.create({ custom: true });
+    value.schemaVersion = 1;
+    value.projects = [];
+    return value;
+  })()`);
+  const accessorFixture = runInNewContext(`(() => {
+    let reads = 0;
+    const value = { projects: [] };
+    Object.defineProperty(value, 'schemaVersion', {
+      enumerable: true,
+      get() { reads += 1; return 1; },
+    });
+    return { value, reads: () => reads };
+  })()`);
+  for (const listProjectsReceipt of [customEnvelope, accessorFixture.value]) {
+    const discovery = await boundedRootPrepareInput(
+      new FakeAppHost({ listProjectsReceipt }), root, { timeoutMs: 25 });
+    assert.equal(discovery.discoveryAvailable, false);
+  }
+  assert.equal(accessorFixture.reads(), 0);
+
+  const createAction = { tool: 'create_thread', target: {
+    type: 'project', projectId: 'PROJECT', environment: { type: 'local' },
+  }, prompt: 'PROMPT' };
+  const customCreate = runInNewContext(`(() => {
+    const value = Object.create({ custom: true });
+    value.threadId = 'CREATE';
+    value.hostId = 'HOST';
+    return value;
+  })()`);
+  await assert.rejects(() => executePreparedAction(createAction,
+    new FakeAppHost({ createReceipt: customCreate })), /CREATE_RECEIPT_INVALID/);
+});
+
+test('lookalike built-in prototypes without intrinsic constructor backlinks remain fail-closed', async () => {
+  const root = '/repo/lookalike-builtins';
+  const fakeObjectPrototype = Object.create(null,
+    Object.getOwnPropertyDescriptors(Object.prototype));
+  const envelope = Object.create(fakeObjectPrototype);
+  envelope.schemaVersion = 1;
+  envelope.projects = [];
+  const discovery = await boundedRootPrepareInput(
+    new FakeAppHost({ listProjectsReceipt: envelope }), root, { timeoutMs: 25 });
+  assert.equal(discovery.discoveryAvailable, false);
+
+  const fakeArrayPrototype = Object.create(Object.prototype,
+    Object.getOwnPropertyDescriptors(Array.prototype));
+  const projects = [];
+  Object.setPrototypeOf(projects, fakeArrayPrototype);
+  const arrayEnvelope = { schemaVersion: 1, projects };
+  const arrayDiscovery = await boundedRootPrepareInput(
+    new FakeAppHost({ listProjectsReceipt: arrayEnvelope }), root, { timeoutMs: 25 });
+  assert.equal(arrayDiscovery.discoveryAvailable, false);
+});
+
 test('project discovery rejects hostile array and row descriptors before projection', async () => {
   const root = '/repo/hostile-project-envelope';
   const goodRow = { projectId: 'PROJECT', projectKind: 'local', path: root };
@@ -34576,8 +34693,8 @@ test('project discovery rejects Proxy envelopes arrays and rows before reflectiv
 test('handoff protocol binds discovery to the current strict v1 App envelope', () => {
   const protocol = readFileSync(join(HERE, '..', 'skills', 'deep-loop-workflow',
     'references', 'handoff-respawn.md'), 'utf8');
-  assert.match(protocol,
-    /canonical JSON wire text[\s\S]{0,300}exactly one layer[\s\S]{0,500}`schemaVersion === 1`/u);
+  assert.match(protocol, /canonical JSON wire text[\s\S]{0,300}exactly one layer/u);
+  assert.match(protocol, /exactly one layer[\s\S]{0,1800}`schemaVersion === 1`/u);
   assert.match(protocol, /bare array[\s\S]{0,180}discovery unavailable/u);
 });
 
@@ -34586,13 +34703,13 @@ test('handoff protocol binds discovery to the current strict v1 App envelope', (
 
 - [ ] **Step 2: Run tests to verify RED**
 
-Run: `node --test --test-name-pattern='documented denial|ambiguous project|discovery failure|current App wire receipts|project discovery rejects|PreCompact-first|strict host receipt|raw confirm and message-unconfirmed|resolved null|throw timeout|failure result loss|prepare result loss|manual-preserve prepare result|acquired safe status|confirm result loss' tests/codex-app-task-continuation-integration.test.mjs`
+Run: `node --test --test-name-pattern='documented denial|ambiguous project|discovery failure|current App wire receipts|project discovery rejects|PreCompact-first|create receipt|strict host receipt|raw confirm and message-unconfirmed|resolved null|throw timeout|failure result loss|prepare result loss|manual-preserve prepare result|acquired safe status|confirm result loss' tests/codex-app-task-continuation-integration.test.mjs`
 
 Expected: FAIL because the causal init decision runner, bounded discovery fallback, PreCompact takeover/no-tick proof, strict receipt seams, and prepare/confirm result-loss cases are absent.
 
 - [ ] **Step 3: Implement strict host seams and production-CLI state helpers**
 
-Add `import { types as utilTypes } from 'node:util';` and `import { validateOpaqueId } from '../../scripts/lib/host-surface.mjs';` at the top of `tests/helpers/fake-app-host.mjs`, and add `boundedRootPrepareInput` to the integration test's existing fake-host import. Replace its `FakeAppHost`, receipt validator, discovery wrapper, and executor with these complete definitions; keep Task 14A's `clone` and `FakeStructuredProcess` unchanged:
+Add `import { types as utilTypes } from 'node:util';` and `import { validateOpaqueId } from '../../scripts/lib/host-surface.mjs';` at the top of `tests/helpers/fake-app-host.mjs`; add `import { runInNewContext } from 'node:vm';` and `boundedRootPrepareInput` to the integration test's imports. Replace its `FakeAppHost`, receipt validator, discovery wrapper, and executor with these complete definitions; keep Task 14A's `clone` and `FakeStructuredProcess` unchanged:
 
 ```js
 const HOST_LABEL = {
@@ -34603,7 +34720,7 @@ const HOST_LABEL = {
 };
 
 export class FakeAppHost {
-  constructor({ projects = [], createReceipt = { threadId: 'CREATE-ID' },
+  constructor({ projects = [], createReceipt = { threadId: 'CREATE-ID', hostId: 'CREATE-HOST' },
     listProjectsReceipt = undefined, forkReceipt = { threadId: 'FORK-ID' },
     sendReceipt = {}, behaviors = {} } = {}) {
     this.listProjectsReceipt = listProjectsReceipt === undefined
@@ -34673,9 +34790,98 @@ function decodeCanonicalAppWireValue(value, label) {
   return decoded;
 }
 
+function sameBuiltinValue(actual, expected, depth = 0) {
+  if (Object.is(actual, expected)) return true;
+  if (depth > 4 || typeof actual !== typeof expected) return false;
+  if (typeof expected === 'function') {
+    if (utilTypes.isProxy(actual) || utilTypes.isProxy(expected)) return false;
+    try {
+      return Function.prototype.toString.call(actual)
+        === Function.prototype.toString.call(expected);
+    } catch {
+      return false;
+    }
+  }
+  if (!actual || !expected || typeof expected !== 'object'
+      || utilTypes.isProxy(actual) || utilTypes.isProxy(expected)
+      || Object.getPrototypeOf(actual) !== Object.getPrototypeOf(expected)) return false;
+  const actualKeys = Reflect.ownKeys(actual);
+  const expectedKeys = Reflect.ownKeys(expected);
+  if (actualKeys.length !== expectedKeys.length
+      || !expectedKeys.every((key, index) => actualKeys[index] === key)) return false;
+  return expectedKeys.every(key => {
+    const left = Object.getOwnPropertyDescriptor(actual, key);
+    const right = Object.getOwnPropertyDescriptor(expected, key);
+    if (!left || !right || left.enumerable !== right.enumerable
+        || left.configurable !== right.configurable
+        || left.writable !== right.writable
+        || Object.prototype.hasOwnProperty.call(left, 'value')
+          !== Object.prototype.hasOwnProperty.call(right, 'value')) return false;
+    return sameBuiltinValue(left.value, right.value, depth + 1)
+      && sameBuiltinValue(left.get, right.get, depth + 1)
+      && sameBuiltinValue(left.set, right.set, depth + 1);
+  });
+}
+
+function sameBuiltinPrototype(actual, expected) {
+  if (!actual || utilTypes.isProxy(actual)) return false;
+  const actualKeys = Reflect.ownKeys(actual);
+  const expectedKeys = Reflect.ownKeys(expected);
+  if (actualKeys.length !== expectedKeys.length
+      || !expectedKeys.every((key, index) => actualKeys[index] === key)) return false;
+  return expectedKeys.every(key => {
+    const left = Object.getOwnPropertyDescriptor(actual, key);
+    const right = Object.getOwnPropertyDescriptor(expected, key);
+    if (!left || !right || left.enumerable !== right.enumerable
+        || left.configurable !== right.configurable
+        || left.writable !== right.writable
+        || Object.prototype.hasOwnProperty.call(left, 'value')
+          !== Object.prototype.hasOwnProperty.call(right, 'value')) return false;
+    return sameBuiltinValue(left.value, right.value)
+      && sameBuiltinValue(left.get, right.get)
+      && sameBuiltinValue(left.set, right.set);
+  });
+}
+
+function hasIntrinsicConstructorBacklink(actual, expected) {
+  const leftConstructor = Object.getOwnPropertyDescriptor(actual, 'constructor');
+  const rightConstructor = Object.getOwnPropertyDescriptor(expected, 'constructor');
+  if (!leftConstructor || !rightConstructor
+      || !Object.prototype.hasOwnProperty.call(leftConstructor, 'value')
+      || !Object.prototype.hasOwnProperty.call(rightConstructor, 'value')
+      || typeof leftConstructor.value !== 'function'
+      || typeof rightConstructor.value !== 'function'
+      || utilTypes.isProxy(leftConstructor.value)) return false;
+  const leftPrototype = Object.getOwnPropertyDescriptor(leftConstructor.value, 'prototype');
+  const rightPrototype = Object.getOwnPropertyDescriptor(rightConstructor.value, 'prototype');
+  return Boolean(leftPrototype && rightPrototype
+    && Object.prototype.hasOwnProperty.call(leftPrototype, 'value')
+    && Object.prototype.hasOwnProperty.call(rightPrototype, 'value')
+    && leftPrototype.value === actual && rightPrototype.value === expected
+    && leftPrototype.enumerable === rightPrototype.enumerable
+    && leftPrototype.configurable === rightPrototype.configurable
+    && leftPrototype.writable === rightPrototype.writable);
+}
+
+function isPlainObjectPrototype(prototype) {
+  if (prototype === null || prototype === Object.prototype) return true;
+  return !utilTypes.isProxy(prototype) && Object.getPrototypeOf(prototype) === null
+    && sameBuiltinPrototype(prototype, Object.prototype)
+    && hasIntrinsicConstructorBacklink(prototype, Object.prototype);
+}
+
+function isCanonicalArrayPrototype(prototype) {
+  if (prototype === Array.prototype) return true;
+  if (!prototype || utilTypes.isProxy(prototype)
+      || !sameBuiltinPrototype(prototype, Array.prototype)) return false;
+  const parent = Object.getPrototypeOf(prototype);
+  return parent !== null && isPlainObjectPrototype(parent)
+    && hasIntrinsicConstructorBacklink(prototype, Array.prototype);
+}
+
 function exactPlainDataEntries(value, maxEntries) {
   if (!value || typeof value !== 'object' || utilTypes.isProxy(value) || Array.isArray(value)
-      || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return null;
+      || !isPlainObjectPrototype(Object.getPrototypeOf(value))) return null;
   let enumerableCount = 0;
   for (const key in value) {
     if (!Object.prototype.hasOwnProperty.call(value, key)) return null;
@@ -34696,7 +34902,7 @@ function exactPlainDataEntries(value, maxEntries) {
 
 function exactDenseDataArray(value, maxEntries) {
   if (utilTypes.isProxy(value) || !Array.isArray(value)
-      || Object.getPrototypeOf(value) !== Array.prototype
+      || !isCanonicalArrayPrototype(Object.getPrototypeOf(value))
       || value.length > maxEntries) return null;
   let enumerableCount = 0;
   for (const key in value) {
@@ -34752,7 +34958,7 @@ function collectIdFields(value, path = '$', seen = new Set(), found = [],
   if (seen.has(value)) throw new Error('HOST_RECEIPT_CYCLIC');
   seen.add(value);
   if (Array.isArray(value)) {
-    if (Object.getPrototypeOf(value) !== Array.prototype) {
+    if (!isCanonicalArrayPrototype(Object.getPrototypeOf(value))) {
       throw new Error('HOST_RECEIPT_ARRAY_PROTOTYPE_INVALID');
     }
     if (value.length > HOST_RECEIPT_MAX_CONTAINER_ENTRIES) {
@@ -34791,7 +34997,7 @@ function collectIdFields(value, path = '$', seen = new Set(), found = [],
     return found;
   }
   const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) {
+  if (!isPlainObjectPrototype(prototype)) {
     throw new Error('HOST_RECEIPT_PROTOTYPE_INVALID');
   }
   preflightEnumerableEntryBound(value);
@@ -34821,14 +35027,21 @@ function exactThreadId(receipt, label) {
   let fields;
   try { fields = collectIdFields(receipt); }
   catch { throw new Error(`${label}_RECEIPT_INVALID`); }
+  const hasCreateHostId = label === 'CREATE' && own.call(receipt ?? {}, 'hostId');
+  const expectedPaths = hasCreateHostId
+    ? new Set(['$.threadId', '$.hostId'])
+    : new Set(['$.threadId']);
   if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)
-      || ![Object.prototype, null].includes(Object.getPrototypeOf(receipt))
-      || !own.call(receipt, 'threadId') || fields.length !== 1
-      || fields[0].path !== '$.threadId') {
+      || !isPlainObjectPrototype(Object.getPrototypeOf(receipt))
+      || !own.call(receipt, 'threadId') || fields.length !== expectedPaths.size
+      || fields.some(field => !expectedPaths.has(field.path))) {
     throw new Error(`${label}_RECEIPT_INVALID`);
   }
   try {
-    return validateOpaqueId(fields[0].value, {
+    if (hasCreateHostId) validateOpaqueId(receipt.hostId, {
+      label: 'create-host-id', maxBytes: 512,
+    });
+    return validateOpaqueId(fields.find(field => field.path === '$.threadId').value, {
       label: `${label.toLowerCase()}-thread-id`, maxBytes: 512,
     });
   } catch {
@@ -34941,7 +35154,7 @@ In Task 14B's `runAppLifecycle`, replace the `FakeAppHost` construction with thi
     projects: projectsFor == null
       ? [{ projectId: 'PROJECT_CANARY_71C2', projectKind: 'local', path: root }]
       : projectsFor({ root, cwd }),
-    createReceipt: { threadId: 'CREATE_THREAD_CANARY_71C2' },
+    createReceipt: { threadId: 'CREATE_THREAD_CANARY_71C2', hostId: 'CREATE_HOST_CANARY_71C2' },
     forkReceipt: { threadId: 'FORK_THREAD_CANARY_71C2' },
     sendReceipt: {},
     ...resolvedHostOptions,
@@ -35211,7 +35424,7 @@ Resolved `null`, `undefined`, scalars, or objects without an ID are successful s
 
 - [ ] **Step 4: Run targeted tests to verify GREEN**
 
-Run: `node --test --test-name-pattern='documented denial|ambiguous project|discovery failure|current App wire receipts|project discovery rejects|PreCompact-first|strict host receipt|raw confirm and message-unconfirmed|resolved null|throw timeout|failure result loss|prepare result loss|manual-preserve prepare result|acquired safe status|confirm result loss' tests/codex-app-task-continuation-integration.test.mjs`
+Run: `node --test --test-name-pattern='documented denial|ambiguous project|discovery failure|current App wire receipts|project discovery rejects|PreCompact-first|create receipt|strict host receipt|raw confirm and message-unconfirmed|resolved null|throw timeout|failure result loss|prepare result loss|manual-preserve prepare result|acquired safe status|confirm result loss' tests/codex-app-task-continuation-integration.test.mjs`
 
 Expected: PASS with probe/preflight-caused manual states, exact question/discovery/task call counts,
 same-attempt PreCompact takeover/no-tick sweep, strict recursive receipts, resolved no-ID send
@@ -36623,10 +36836,10 @@ const implementationAuthorityRaw = implementationAuthorityMatch == null
 const gate6Raw = gate6HeadingMatch == null || gate6RawEnd < 0 ? ''
   : source.slice(gate6HeadingMatch.index, gate6RawEnd);
 const expectedImplementationAuthorityHash =
-  '8edc669921ba42ff5ed7d058d1e4f75b56ccda1ab0cb52614ac4ba3921d6609f';
+  '7c98c359b01514a92a5eac0b8a936c732f42ac5c0366216403a906a6b8d0287d';
 const expectedGate6SectionHash =
   '648504926fc529d9e02202399384c09d5bc2737884187ed9923c90f1270733a4';
-if (Buffer.byteLength(implementationAuthorityRaw, 'utf8') !== 1992437) {
+if (Buffer.byteLength(implementationAuthorityRaw, 'utf8') !== 2003698) {
   fail('pre-Gate-6 authority UTF-8 byte length differs from its exact reviewed binding');
 }
 if (createHash('sha256').update(implementationAuthorityRaw).digest('hex')

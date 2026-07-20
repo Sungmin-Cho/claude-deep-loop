@@ -1317,6 +1317,12 @@ test('attended App handoff has one ordered public-tool route and no retry author
   assert.match(appProtocol, /create.*exactly one.*threadId/is);
   assert.match(appProtocol, /clientThreadId.*failure/i);
   assert.match(appProtocol,
+    /create_thread[\s\S]{0,1200}optional own root `hostId`[\s\S]{0,500}validated[\s\S]{0,500}discarded/i);
+  assert.match(appProtocol,
+    /different V8 realm[\s\S]{0,700}reference-equal[\s\S]{0,900}own-key order[\s\S]{0,500}native members/i);
+  assert.match(appProtocol,
+    /native members[\s\S]{0,300}intrinsic constructor backlink/i);
+  assert.match(appProtocol,
     /fork_thread[\s\S]{0,900}before `send_message_to_thread`[\s\S]{0,500}same strict recursive receipt validator/i);
   assert.match(appProtocol,
     /send receipt[\s\S]{0,700}zero ID-shaped fields[\s\S]{0,700}exactly one own root `threadId`[\s\S]{0,500}byte-equal/i);

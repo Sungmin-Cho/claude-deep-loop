@@ -55,7 +55,7 @@ const HOST_LABEL = {
 };
 
 export class FakeAppHost {
-  constructor({ projects = [], createReceipt = { threadId: 'CREATE-ID' },
+  constructor({ projects = [], createReceipt = { threadId: 'CREATE-ID', hostId: 'CREATE-HOST' },
     listProjectsReceipt = undefined, forkReceipt = { threadId: 'FORK-ID' },
     sendReceipt = {}, behaviors = {} } = {}) {
     this.listProjectsReceipt = listProjectsReceipt === undefined
@@ -125,9 +125,98 @@ function decodeCanonicalAppWireValue(value, label) {
   return decoded;
 }
 
+function sameBuiltinValue(actual, expected, depth = 0) {
+  if (Object.is(actual, expected)) return true;
+  if (depth > 4 || typeof actual !== typeof expected) return false;
+  if (typeof expected === 'function') {
+    if (utilTypes.isProxy(actual) || utilTypes.isProxy(expected)) return false;
+    try {
+      return Function.prototype.toString.call(actual)
+        === Function.prototype.toString.call(expected);
+    } catch {
+      return false;
+    }
+  }
+  if (!actual || !expected || typeof expected !== 'object'
+      || utilTypes.isProxy(actual) || utilTypes.isProxy(expected)
+      || Object.getPrototypeOf(actual) !== Object.getPrototypeOf(expected)) return false;
+  const actualKeys = Reflect.ownKeys(actual);
+  const expectedKeys = Reflect.ownKeys(expected);
+  if (actualKeys.length !== expectedKeys.length
+      || !expectedKeys.every((key, index) => actualKeys[index] === key)) return false;
+  return expectedKeys.every(key => {
+    const left = Object.getOwnPropertyDescriptor(actual, key);
+    const right = Object.getOwnPropertyDescriptor(expected, key);
+    if (!left || !right || left.enumerable !== right.enumerable
+        || left.configurable !== right.configurable
+        || left.writable !== right.writable
+        || Object.prototype.hasOwnProperty.call(left, 'value')
+          !== Object.prototype.hasOwnProperty.call(right, 'value')) return false;
+    return sameBuiltinValue(left.value, right.value, depth + 1)
+      && sameBuiltinValue(left.get, right.get, depth + 1)
+      && sameBuiltinValue(left.set, right.set, depth + 1);
+  });
+}
+
+function sameBuiltinPrototype(actual, expected) {
+  if (!actual || utilTypes.isProxy(actual)) return false;
+  const actualKeys = Reflect.ownKeys(actual);
+  const expectedKeys = Reflect.ownKeys(expected);
+  if (actualKeys.length !== expectedKeys.length
+      || !expectedKeys.every((key, index) => actualKeys[index] === key)) return false;
+  return expectedKeys.every(key => {
+    const left = Object.getOwnPropertyDescriptor(actual, key);
+    const right = Object.getOwnPropertyDescriptor(expected, key);
+    if (!left || !right || left.enumerable !== right.enumerable
+        || left.configurable !== right.configurable
+        || left.writable !== right.writable
+        || Object.prototype.hasOwnProperty.call(left, 'value')
+          !== Object.prototype.hasOwnProperty.call(right, 'value')) return false;
+    return sameBuiltinValue(left.value, right.value)
+      && sameBuiltinValue(left.get, right.get)
+      && sameBuiltinValue(left.set, right.set);
+  });
+}
+
+function hasIntrinsicConstructorBacklink(actual, expected) {
+  const leftConstructor = Object.getOwnPropertyDescriptor(actual, 'constructor');
+  const rightConstructor = Object.getOwnPropertyDescriptor(expected, 'constructor');
+  if (!leftConstructor || !rightConstructor
+      || !Object.prototype.hasOwnProperty.call(leftConstructor, 'value')
+      || !Object.prototype.hasOwnProperty.call(rightConstructor, 'value')
+      || typeof leftConstructor.value !== 'function'
+      || typeof rightConstructor.value !== 'function'
+      || utilTypes.isProxy(leftConstructor.value)) return false;
+  const leftPrototype = Object.getOwnPropertyDescriptor(leftConstructor.value, 'prototype');
+  const rightPrototype = Object.getOwnPropertyDescriptor(rightConstructor.value, 'prototype');
+  return Boolean(leftPrototype && rightPrototype
+    && Object.prototype.hasOwnProperty.call(leftPrototype, 'value')
+    && Object.prototype.hasOwnProperty.call(rightPrototype, 'value')
+    && leftPrototype.value === actual && rightPrototype.value === expected
+    && leftPrototype.enumerable === rightPrototype.enumerable
+    && leftPrototype.configurable === rightPrototype.configurable
+    && leftPrototype.writable === rightPrototype.writable);
+}
+
+function isPlainObjectPrototype(prototype) {
+  if (prototype === null || prototype === Object.prototype) return true;
+  return !utilTypes.isProxy(prototype) && Object.getPrototypeOf(prototype) === null
+    && sameBuiltinPrototype(prototype, Object.prototype)
+    && hasIntrinsicConstructorBacklink(prototype, Object.prototype);
+}
+
+function isCanonicalArrayPrototype(prototype) {
+  if (prototype === Array.prototype) return true;
+  if (!prototype || utilTypes.isProxy(prototype)
+      || !sameBuiltinPrototype(prototype, Array.prototype)) return false;
+  const parent = Object.getPrototypeOf(prototype);
+  return parent !== null && isPlainObjectPrototype(parent)
+    && hasIntrinsicConstructorBacklink(prototype, Array.prototype);
+}
+
 function exactPlainDataEntries(value, maxEntries) {
   if (!value || typeof value !== 'object' || utilTypes.isProxy(value) || Array.isArray(value)
-      || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return null;
+      || !isPlainObjectPrototype(Object.getPrototypeOf(value))) return null;
   let enumerableCount = 0;
   for (const key in value) {
     if (!Object.prototype.hasOwnProperty.call(value, key)) return null;
@@ -148,7 +237,7 @@ function exactPlainDataEntries(value, maxEntries) {
 
 function exactDenseDataArray(value, maxEntries) {
   if (utilTypes.isProxy(value) || !Array.isArray(value)
-      || Object.getPrototypeOf(value) !== Array.prototype
+      || !isCanonicalArrayPrototype(Object.getPrototypeOf(value))
       || value.length > maxEntries) return null;
   let enumerableCount = 0;
   for (const key in value) {
@@ -204,7 +293,7 @@ function collectIdFields(value, path = '$', seen = new Set(), found = [],
   if (seen.has(value)) throw new Error('HOST_RECEIPT_CYCLIC');
   seen.add(value);
   if (Array.isArray(value)) {
-    if (Object.getPrototypeOf(value) !== Array.prototype) {
+    if (!isCanonicalArrayPrototype(Object.getPrototypeOf(value))) {
       throw new Error('HOST_RECEIPT_ARRAY_PROTOTYPE_INVALID');
     }
     if (value.length > HOST_RECEIPT_MAX_CONTAINER_ENTRIES) {
@@ -243,7 +332,7 @@ function collectIdFields(value, path = '$', seen = new Set(), found = [],
     return found;
   }
   const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) {
+  if (!isPlainObjectPrototype(prototype)) {
     throw new Error('HOST_RECEIPT_PROTOTYPE_INVALID');
   }
   preflightEnumerableEntryBound(value);
@@ -273,14 +362,21 @@ function exactThreadId(receipt, label) {
   let fields;
   try { fields = collectIdFields(receipt); }
   catch { throw new Error(`${label}_RECEIPT_INVALID`); }
+  const hasCreateHostId = label === 'CREATE' && own.call(receipt ?? {}, 'hostId');
+  const expectedPaths = hasCreateHostId
+    ? new Set(['$.threadId', '$.hostId'])
+    : new Set(['$.threadId']);
   if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)
-      || ![Object.prototype, null].includes(Object.getPrototypeOf(receipt))
-      || !own.call(receipt, 'threadId') || fields.length !== 1
-      || fields[0].path !== '$.threadId') {
+      || !isPlainObjectPrototype(Object.getPrototypeOf(receipt))
+      || !own.call(receipt, 'threadId') || fields.length !== expectedPaths.size
+      || fields.some(field => !expectedPaths.has(field.path))) {
     throw new Error(`${label}_RECEIPT_INVALID`);
   }
   try {
-    return validateOpaqueId(fields[0].value, {
+    if (hasCreateHostId) validateOpaqueId(receipt.hostId, {
+      label: 'create-host-id', maxBytes: 512,
+    });
+    return validateOpaqueId(fields.find(field => field.path === '$.threadId').value, {
       label: `${label.toLowerCase()}-thread-id`, maxBytes: 512,
     });
   } catch {

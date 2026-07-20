@@ -53,7 +53,7 @@ Design target: `docs/superpowers/specs/2026-07-13-codex-app-native-task-continua
 
 - Current task exposes first-party Codex App provenance with callable `list_projects`, `create_thread`, `fork_thread`, and `send_message_to_thread` contracts. This is positive App-host evidence for the current session; environment variables and process paths are not adopted as durable authority.
 - Read-only `list_projects` returned a local project whose `projectId` and `path` both exactly identify `/Users/sungmin/Dev/claude-plugins/deep-loop`. Optional/missing project paths, non-local projects, and duplicate exact matches are excluded by design.
-- `create_thread` local project target is `{type:'project', projectId, environment:{type:'local'}}`. Read-only inspection of the currently installed App implementation indicates a local result carrying `threadId`, but its exposed declaration is `Promise<unknown>` rather than a stable public success schema. Therefore a bounded opaque `threadId` parser is fail-closed/provisional until approved smoke verifies the actual receipt. A worktree/client-thread-only result is intentionally not used.
+- `create_thread` local project target is `{type:'project', projectId, environment:{type:'local'}}`. Its exposed declaration remains `Promise<unknown>` rather than a stable public success schema. Approved Gate 5 v3 smoke later observed a local result carrying own root `threadId` plus own root `hostId`; the adapter validates both bounded opaque values, discards `hostId` as non-authoritative metadata, and retains only `threadId`. A worktree/client-thread-only result is intentionally not used.
 - `fork_thread` uses `{type:'same-directory'}` without scraping or passing a source thread ID. It inherits completed history only; the active turn and unfinished response are not copied.
 - `send_message_to_thread` also exposes `Promise<unknown>` without a guaranteed ID echo. The current installed implementation appears to return the target thread ID, but the design relies only on successful host-tool completion as the dispatch receipt; if an ID is present it must exactly match the forked thread. Model/thinking are omitted so host defaults/current child settings remain authoritative.
 - Host failures are text/dynamic and may timeout or return no receipt. Raw host errors are not durable; they map to bounded internal codes and no automatic retry.
@@ -4109,9 +4109,10 @@ main-agent judgment:
 
 ## Gate 5 local verification — cross-surface and 3×3 CI candidate
 
-Status: IN PROGRESS — local verification passed; two approved real Codex App smoke attempts found
-and fail-closed on successive discovery receipt representation mismatches. Both corrections are
-locally verified; final-candidate happy-path re-smoke and hosted 3×3 CI remain pending.
+Status: IN PROGRESS — local verification passed; three approved real Codex App smoke attempts found
+and fail-closed on discovery/receipt contract mismatches. The third attempt was also invalidated by a
+controller duplication incident. The first two corrections are locally verified; the third create
+receipt correction, a fresh happy-path re-smoke, and hosted 3×3 CI remain pending.
 
 - candidate commit: `f2364e7edc3c21cfd49fc63dd93b5af3e56057ec` on
   `codex/codex-app-native-task-continuation`; tracked worktree clean before this evidence-only edit.
@@ -4246,3 +4247,71 @@ locally verified; final-candidate happy-path re-smoke and hosted 3×3 CI remain 
 - boundary: this response performed no App tool action, install, restart, registration, push, PR,
   merge, deep-suite synchronization, or cleanup. Final-candidate real App smoke remains separately
   approval-gated.
+
+### Gate 5 v3 final-candidate smoke — controller duplication and create receipt finding
+
+- exact candidate: `68c1857de8bc1c969b11c76e534f430e28e27add`, tree
+  `51b2c6f3017802aef99d4279cdb25edf163a5f7f`, canonical installable payload SHA-256
+  `7c333449e23ec8039d6ef7ee3be9d05a0fe50dab54fd497c14a71a0eb194cf38`. Candidate source,
+  installed cache, and the recorded internal worktree matched before any App task call.
+- process adapter: plain pipe proved closed/write-impossible; default PTY echoed and was rejected;
+  raw/no-echo PTY produced one exact READY, one input, zero echo, byte length 33, fixed digest
+  `69051ff6bc4806f19e39e837ed21d71bae7edc17fadff303f87163ef2ead154a`, and exit 0.
+- intended controller: called `list_projects` once, rejected its observed discovery representation,
+  sent a projects-omitted READY-gated prepare, received durable `manual-preserve` with
+  `do_not_call=true`, and made `create_thread=0`, `fork_thread=0`, `send_message_to_thread=0`.
+- incident: a UI focus race also submitted the controller prompt into the supervising task. That
+  second path independently ran the adapter and discovery, accepted a v1 projection, obtained one
+  actionable create descriptor plus a write-free duplicate prepare, and called `create_thread`
+  exactly once. Aggregate v3 counts became `list_projects=2`, `create_thread=1`, `fork_thread=0`,
+  `send_message_to_thread=0`, exceeding the approved list-projects cap. V3 is therefore terminal
+  `FAIL_CLOSED` and cannot prove Gate 5 even apart from either controller result.
+- create finding: the direct local create success receipt contained own root `threadId` plus own root
+  `hostId`. Candidate `68c1857` required exactly one ID-shaped field and therefore recorded
+  `invalid-host-receipt` without confirm, acquire, await, fork, send, or retry. The task remains
+  preserved for separately approved cleanup; no raw App identity was retained in this evidence.
+- correction contract: create alone may accept an optional own root `hostId` as the only second
+  ID-shaped field. It must pass the same 512-byte opaque/control/surrogate validation, is
+  non-authoritative, and is discarded before the adapter returns `{threadId}`. Fork/send retain their
+  prior exact rules; any other/nested/plural/alternate ID-shaped field remains fail-closed.
+- discovery diagnosis: an already-decoded plain App result can cross a V8 realm boundary, so its
+  normal built-in object/array prototypes need not be reference-equal to the controller realm's
+  prototypes. The previous identity check therefore conflated a valid foreign-realm built-in with a
+  custom prototype. The corrected validator accepts only a descriptor/native-member/parent-chain
+  equivalent foreign built-in prototype with its intrinsic constructor backlink intact, still
+  rejects Proxy/accessor/custom/subclass/lookalike shapes before reading receipt property values,
+  and applies the same rule to discovery/create/fork/send receipts.
+- restoration: after the pause/resume boundary, personal source and cache were restored to detached
+  `c25eb8236d890f273e64fb078e1db48d9f026fc2`, tree
+  `66e868a5e2d56333c80a465d0d40fc054ac209df`. Codex config and marketplace files matched their
+  pre-smoke SHA-256 values `28e53d873a1e83645a766d7fc07404d79562b939c79cb14010a2eeeba903f95c`
+  and `c36cbe1cbabe33d5b059d8cd9b1024471f87c878c50c1bfaf53830e93caef24f` after App restart and an
+  eight-second stability check. V1, v2, v3, sanitized summary, incident report, runtime runs, clones,
+  backups, and created App task remain preserved.
+- boundary: the consumed v3 approval authorizes no further App call. The correction must pass local
+  verification and the required two-reviewer gate before a new exact candidate and separately
+  approved smoke attempt are proposed.
+
+### Gate 5 v3 correction — local verification before quality review
+
+- correction surface: the create adapter accepts the observed own root `threadId` plus optional own
+  root `hostId`, validates both as bounded opaque values, discards `hostId`, and returns only
+  `{threadId}`. Fork and send retain the stricter single-authoritative-ID rules. The common receipt
+  adapter also recognizes equivalent foreign-realm built-in Object/Array prototypes while preserving
+  Proxy, accessor, custom-prototype, subclass, lookalike, descriptor, and bound failures.
+- strict TDD: the create-plus-host acceptance case first failed with `CREATE_RECEIPT_INVALID`; the
+  reversed property-order case then exposed selection of the wrong ID value. The minimal correction
+  selects the authoritative field by exact path and both regressions pass. The handoff-protocol
+  assertion was added failing-first and synchronized with the implementation.
+- focused verification: the five host-receipt, realm-safe, wire, and protocol contract tests passed
+  `5/5`; the complete skills test file passed `143/143`; `npm run validate` returned `ok`; and
+  `git diff --check` passed.
+- full verification: the first full `npm run preflight` reached tests/pass/fail
+  `1,985/1,984/1`; the sole failure was the pre-existing multi-process contention timing test. Its
+  immediate isolated rerun passed `1/1`. A subsequent clean full `npm run preflight` exited 0 with
+  tests/pass/fail/cancelled/skipped/todo `1,985/1,985/0/0/0/0` and reported Node test duration
+  `344,303.663667 ms`; the contention test passed inside that full run.
+- boundary: local verification made zero App calls and performed no install, restart, registration,
+  push, PR, merge, deep-suite synchronization, cleanup, or archival action. The final correction
+  bytes still require the specified two independent reviewer approvals before a new candidate can be
+  proposed for a separately approved App smoke.
