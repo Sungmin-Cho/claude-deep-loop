@@ -20,6 +20,9 @@ import { flushDirectory, renameAtomicWithRetry } from '../scripts/lib/atomic-wri
 import { contentHash, unwrap } from '../scripts/lib/envelope.mjs';
 import { captureStableFileIdentity } from '../scripts/lib/fs-safe.mjs';
 import { runDir, withLock } from '../scripts/lib/state.mjs';
+import * as stateApi from '../scripts/lib/state.mjs';
+import { appendAnchored } from '../scripts/lib/integrity.mjs';
+import { initRun } from '../scripts/lib/initrun.mjs';
 import { createDirectoryJunction, createFileSymlinkOrSkip } from './helpers/fs-fixtures.mjs';
 
 test('transaction journal exports the locked preparation surface', () => {
@@ -654,6 +657,7 @@ test('artifact publication exposes injectable durable phases and converges after
     'artifact:0:rename',
     'artifact:0:parent-flush',
     'artifact:0:digest-verified',
+    'artifact:0:target-done',
   ]);
 });
 
@@ -902,4 +906,235 @@ test('transaction journal remains artifact-only and independent from state/integ
   assert.doesNotMatch(source, /from\s+['"]\.\/(?:state|integrity)\.mjs['"]/);
   assert.doesNotMatch(source, /\b(?:appendEvent|appendAnchored|writeState)\s*\(/);
   assert.doesNotMatch(source, /join\([^\n]*(?:loop\.json|\.loop\.hash)/);
+});
+
+function anchoredSeed() {
+  const root = mkdtempSync(join(tmpdir(), 'dl-tx-anchored-'));
+  const { runId } = initRun(root, {
+    runtime: 'claude',
+    goal: 'anchored',
+    now: new Date('2026-07-23T00:00:00.000Z'),
+  });
+  return { root, runId, dir: runDir(root, runId) };
+}
+
+function publishOnce(root, runId, operationId, { faultAt = () => {} } = {}) {
+  return appendAnchored(
+    root,
+    runId,
+    { type: 'anchored-test', data: { operation_id: operationId }, now: '2026-07-23T00:01:00.000Z' },
+    (loop, _spent, tx) => {
+      assert.equal(Object.isFrozen(tx), true);
+      assert.equal(Object.isFrozen(tx.event), true);
+      assert.equal(Object.isFrozen(tx.event_identity), true);
+      loop.discovered_items.push(operationId);
+    },
+    undefined,
+    {
+      publication: {
+        kind: 'workstream-boundary',
+        operationId,
+        artifacts: [
+          { rel: 'artifacts/boundary.txt', bytes: Buffer.from(`artifact:${operationId}`) },
+          { rel: 'artifacts/boundary.meta', bytes: Buffer.from(`meta:${operationId}`) },
+        ],
+        topology: { operation_id: operationId, phase: 'prepared' },
+        faultAt,
+      },
+      floor: 1,
+    },
+  );
+}
+
+test('publication-mode appendAnchored replays artifacts, exact events, candidate loop, hash, and commit in order', () => {
+  assert.equal(typeof stateApi.captureReconciledRunSnapshot, 'function');
+  const { root, runId, dir } = anchoredSeed();
+  const seen = [];
+  assert.throws(
+    () => publishOnce(root, runId, 'gateway-replay', {
+      faultAt(label) {
+        seen.push(label);
+        if (label === 'state:loop:rename') throw new Error('simulated crash');
+      },
+    }),
+    /TRANSACTION_PENDING/,
+  );
+
+  assert.notEqual(contentHash(readFileSync(join(dir, 'loop.json'))), readFileSync(join(dir, '.loop.hash'), 'utf8').trim());
+  const snapshot = stateApi.captureReconciledRunSnapshot(root, runId);
+  assert.deepEqual(snapshot.data.discovered_items, ['gateway-replay']);
+  assert.equal(readFileSync(join(dir, 'artifacts', 'boundary.txt'), 'utf8'), 'artifact:gateway-replay');
+  assert.equal(snapshot.logLines.filter(event => event.type === 'anchored-test').length, 1);
+  assert.equal(snapshot.data.event_log_head.checksum, snapshot.logLines.at(-1).checksum);
+  assert.equal(contentHash(snapshot.loopBytes), snapshot.hash);
+  assert.deepEqual(snapshot.logLines.map(event => event.type), ['anchored-test', 'cost']);
+  assert.equal(snapshot.data.budget.spent, 1);
+  const prepared = JSON.parse(readFileSync(join(dir, 'transactions', 'gateway-replay', 'prepared.json'), 'utf8'));
+  assert.deepEqual(prepared.payload.stages.map(stage => stage.role), [
+    'artifact', 'artifact', 'event-line', 'event-line', 'candidate-loop', 'candidate-loop-hash',
+  ]);
+  assert.deepEqual(prepared.payload.manifest.eventLines.map(line => line.stage_index), [2, 3]);
+  assert.deepEqual(prepared.payload.manifest.targets.map(target => target.stage_index), [0, 1]);
+  assert.ok(seen.indexOf('artifact:0:target-done') < seen.indexOf('event:0:append'));
+  assert.ok(seen.indexOf('event:0:append') < seen.indexOf('state:loop:rename'));
+  assert.equal(existsSync(join(dir, 'transactions', 'gateway-replay', 'committed.json')), true);
+  const exactBytes = {
+    loop: readFileSync(join(dir, 'loop.json')),
+    hash: readFileSync(join(dir, '.loop.hash')),
+    log: readFileSync(join(dir, 'event-log.jsonl')),
+  };
+  assert.deepEqual(publishOnce(root, runId, 'gateway-replay'), {
+    ok: true,
+    event_identity: {
+      seq: snapshot.logLines[0].seq,
+      checksum: snapshot.logLines[0].checksum,
+    },
+    operation_id: 'gateway-replay',
+  });
+  assert.deepEqual(readFileSync(join(dir, 'loop.json')), exactBytes.loop);
+  assert.deepEqual(readFileSync(join(dir, '.loop.hash')), exactBytes.hash);
+  assert.deepEqual(readFileSync(join(dir, 'event-log.jsonl')), exactBytes.log);
+});
+
+test('reconciliation fail-stops unreachable state/hash, divergent log, and artifact predecessor conflicts', () => {
+  for (const conflict of ['candidate-hash-first', 'divergent-log', 'artifact-third-state']) {
+    const { root, runId, dir } = anchoredSeed();
+    assert.throws(
+      () => publishOnce(root, runId, `conflict-${conflict}`, {
+        faultAt(label) {
+          if (label === 'prepared:digest-verified') throw new Error('stop after prepare');
+        },
+      }),
+      /TRANSACTION_PENDING/,
+    );
+    const prepared = JSON.parse(readFileSync(join(dir, 'transactions', `conflict-${conflict}`, 'prepared.json'), 'utf8'));
+    const stages = prepared.payload.stages;
+    const stagePath = role => join(
+      dir,
+      'transactions',
+      `conflict-${conflict}`,
+      'stages',
+      `${String(stages.find(stage => stage.role === role).index).padStart(6, '0')}.bin`,
+    );
+    if (conflict === 'candidate-hash-first') {
+      writeFileSync(join(dir, '.loop.hash'), readFileSync(stagePath('candidate-loop-hash')));
+    } else if (conflict === 'divergent-log') {
+      writeFileSync(join(dir, 'event-log.jsonl'), '{"seq":1,"divergent":true}\n');
+    } else {
+      mkdirSync(join(dir, 'artifacts'), { recursive: true });
+      writeFileSync(join(dir, 'artifacts', 'boundary.txt'), 'unrelated-writer');
+    }
+    assert.throws(
+      () => stateApi.captureReconciledRunSnapshot(root, runId),
+      /TRANSACTION_RECONCILIATION_REQUIRED/,
+      conflict,
+    );
+  }
+});
+
+test('ordinary append reconciles a journal prepared immediately before its business lock', () => {
+  const { root, runId } = anchoredSeed();
+  assert.throws(
+    () => publishOnce(root, runId, 'prepared-before-append', {
+      faultAt(label) {
+        if (label === 'prepared:digest-verified') throw new Error('barrier');
+      },
+    }),
+    /TRANSACTION_PENDING/,
+  );
+
+  appendAnchored(root, runId, { type: 'second-event', data: {} }, loop => {
+    assert.deepEqual(loop.discovered_items, ['prepared-before-append']);
+    loop.discovered_items.push('second');
+  });
+
+  const snapshot = stateApi.captureReconciledRunSnapshot(root, runId);
+  assert.deepEqual(snapshot.data.discovered_items, ['prepared-before-append', 'second']);
+  assert.deepEqual(snapshot.logLines.map(event => event.type), ['anchored-test', 'cost', 'second-event']);
+});
+
+test('every reachable publication crash barrier reopens to one exact committed candidate', () => {
+  const barriers = [
+    'artifact:0:rename',
+    'artifact:0:target-done',
+    'artifact:1:rename',
+    'artifact:1:target-done',
+    'event:0:append',
+    'event:1:append',
+    'state:loop:rename',
+    'state:hash:rename',
+    'committed:rename',
+  ];
+  for (const barrier of barriers) {
+    const { root, runId, dir } = anchoredSeed();
+    assert.throws(() => publishOnce(root, runId, `fault-${barrier.replaceAll(':', '-')}`, {
+      faultAt(label) { if (label === barrier) throw new Error(`fault:${barrier}`); },
+    }), /TRANSACTION_PENDING/, barrier);
+    const snapshot = stateApi.captureReconciledRunSnapshot(root, runId);
+    assert.equal(snapshot.logLines.filter(event => event.type === 'anchored-test').length, 1, barrier);
+    assert.equal(snapshot.logLines.filter(event => event.type === 'cost').length, 1, barrier);
+    assert.equal(contentHash(snapshot.loopBytes), snapshot.hash, barrier);
+    assert.equal(readFileSync(join(dir, 'artifacts', 'boundary.txt'), 'utf8'), `artifact:fault-${barrier.replaceAll(':', '-')}`, barrier);
+    assert.equal(readFileSync(join(dir, 'artifacts', 'boundary.meta'), 'utf8'), `meta:fault-${barrier.replaceAll(':', '-')}`, barrier);
+  }
+});
+
+test('forced unlink replacement persists intent and replays predecessor, absent, and target-done transitions', () => {
+  for (const barrier of ['artifact:0:replace-intent', 'artifact:0:unlink', 'artifact:0:target-done']) {
+    const { root, runId, dir } = anchoredSeed();
+    mkdirSync(join(dir, 'artifacts'), { recursive: true });
+    writeFileSync(join(dir, 'artifacts', 'boundary.txt'), 'predecessor');
+    assert.throws(() => appendAnchored(
+      root,
+      runId,
+      { type: 'replace-test', data: {}, now: '2026-07-23T00:01:00.000Z' },
+      loop => { loop.discovered_items.push(barrier); },
+      undefined,
+      {
+        publication: {
+          kind: 'replacement', operationId: `replace-${barrier.replaceAll(':', '-')}`,
+          artifacts: [{ rel: 'artifacts/boundary.txt', bytes: Buffer.from('candidate') }],
+          topology: { barrier }, forceUnlinkReplacement: true,
+          faultAt(label) { if (label === barrier) throw new Error(`fault:${barrier}`); },
+        },
+      },
+    ), /TRANSACTION_PENDING/, barrier);
+    const snapshot = stateApi.captureReconciledRunSnapshot(root, runId);
+    assert.deepEqual(snapshot.data.discovered_items, [barrier]);
+    assert.equal(readFileSync(join(dir, 'artifacts', 'boundary.txt'), 'utf8'), 'candidate');
+  }
+});
+
+test('full-vector classification rejects later-ahead artifacts, event-ahead artifacts, and early commit without repair', () => {
+  for (const vector of ['later-artifact-ahead', 'event-ahead', 'committed-early']) {
+    const { root, runId, dir } = anchoredSeed();
+    const operationId = `vector-${vector}`;
+    assert.throws(() => publishOnce(root, runId, operationId, {
+      faultAt(label) { if (label === 'prepared:digest-verified') throw new Error('prepared'); },
+    }), /TRANSACTION_PENDING/);
+    const operationDir = join(dir, 'transactions', operationId);
+    const prepared = JSON.parse(readFileSync(join(operationDir, 'prepared.json'), 'utf8'));
+    const stagePath = index => join(operationDir, 'stages', `${String(index).padStart(6, '0')}.bin`);
+
+    if (vector === 'later-artifact-ahead') {
+      mkdirSync(join(dir, 'artifacts'), { recursive: true });
+      writeFileSync(join(dir, 'artifacts', 'boundary.meta'), readFileSync(stagePath(1)));
+    } else if (vector === 'event-ahead') {
+      writeFileSync(join(dir, 'event-log.jsonl'), readFileSync(stagePath(2)));
+    } else {
+      writeFileSync(join(operationDir, 'committed.json'), JSON.stringify({
+        kind: 'committed',
+        operation_id: operationId,
+        candidate_loop_hash: prepared.payload.manifest.candidateLoopHash,
+      }));
+    }
+
+    assert.throws(
+      () => stateApi.captureReconciledRunSnapshot(root, runId),
+      /TRANSACTION_RECONCILIATION_REQUIRED/,
+      vector,
+    );
+    assert.equal(existsSync(join(dir, 'artifacts', 'boundary.txt')), false, `${vector}: no earlier artifact repair`);
+    assert.equal(existsSync(join(operationDir, 'markers')), false, `${vector}: no marker repair`);
+  }
 });

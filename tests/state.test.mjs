@@ -5,8 +5,11 @@ import { hostname, tmpdir } from 'node:os';
 import { basename, join, dirname as _dn, posix, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { LOCK_STALE_TTL_MS, readState, writeState, patch, withLock, runDir, findRoot } from '../scripts/lib/state.mjs';
+import * as stateApi from '../scripts/lib/state.mjs';
+import { appendAnchored } from '../scripts/lib/integrity.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { flushDirectory } from '../scripts/lib/atomic-write.mjs';
+import { contentHash } from '../scripts/lib/envelope.mjs';
 
 const atomicApiPromise = import('../scripts/lib/atomic-write.mjs').catch(() => ({}));
 
@@ -599,4 +602,48 @@ test('findRoot is shared across CLI + hook + headless entrypoints', () => {
   for (const f of ['scripts/deep-loop.mjs', 'scripts/hooks-impl/precompact-handoff.mjs', 'scripts/hooks-impl/drive-headless.mjs']) {
     assert.match(_rfRoot(join(_R, f), 'utf8'), /findRoot\s*\(/, `${f} must resolve root via shared findRoot`);
   }
+});
+
+test('captureReconciledRunSnapshot returns immutable-by-copy verified loop/hash/log bytes', () => {
+  assert.equal(typeof stateApi.captureReconciledRunSnapshot, 'function');
+  const root = mkdtempSync(join(tmpdir(), 'dl-snapshot-'));
+  const { runId } = initRun(root, {
+    runtime: 'claude', goal: 'snapshot', now: new Date('2026-07-23T00:00:00.000Z'),
+  });
+  const first = stateApi.captureReconciledRunSnapshot(root, runId);
+  first.loopBytes.fill(0);
+  first.hashBytes.fill(0);
+  first.logBytes.fill(0);
+  first.data.goal = 'mutated-return-value';
+
+  const second = stateApi.captureReconciledRunSnapshot(root, runId);
+  assert.equal(second.data.goal, 'snapshot');
+  assert.equal(contentHash(second.loopBytes), second.hash);
+  assert.equal(second.hashBytes.toString('utf8').trim(), second.hash);
+  assert.deepEqual(second.logLines, []);
+});
+
+test('withReconciledMutationLock repairs a prepared candidate before invoking its fixed writer callback', () => {
+  assert.equal(typeof stateApi.withReconciledMutationLock, 'function');
+  const root = mkdtempSync(join(tmpdir(), 'dl-writer-barrier-'));
+  const { runId } = initRun(root, {
+    runtime: 'claude', goal: 'writer barrier', now: new Date('2026-07-23T00:00:00.000Z'),
+  });
+  assert.throws(() => appendAnchored(
+    root,
+    runId,
+    { type: 'prepared-first', data: {}, now: '2026-07-23T00:01:00.000Z' },
+    loop => { loop.discovered_items.push('candidate'); },
+    undefined,
+    {
+      publication: {
+        kind: 'writer-barrier', operationId: 'writer-barrier', artifacts: [], topology: {},
+        faultAt(label) { if (label === 'prepared:digest-verified') throw new Error('barrier'); },
+      },
+    },
+  ), /TRANSACTION_PENDING/);
+
+  stateApi.withReconciledMutationLock(root, runId, (_guard, snapshot) => {
+    assert.deepEqual(snapshot.data.discovered_items, ['candidate']);
+  });
 });

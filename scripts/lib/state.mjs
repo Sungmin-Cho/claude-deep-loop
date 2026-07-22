@@ -21,7 +21,12 @@ import {
 } from './fs-safe.mjs';
 import { validate } from './schema.mjs';
 import { leaseCheck } from './lease.mjs';
-import { appendAnchored, MUTATION_TURN_FLOOR } from './integrity.mjs';
+import {
+  appendAnchored,
+  captureReconciledRunSnapshot as captureReconciledRunSnapshotImpl,
+  MUTATION_TURN_FLOOR,
+  withReconciledMutationLock as withReconciledMutationLockImpl,
+} from './integrity.mjs';
 import { assertProjectRootBinding } from './project-root.mjs';
 import { ancestorPaths } from './path-portable.mjs';
 
@@ -115,19 +120,33 @@ function migrateLoopStateInPlace(data) {
   }
 }
 
-function readHashVerifiedState(root, runId) {
-  const raw = readFileSync(loopPath(root, runId), 'utf8');
+export function parseHashVerifiedStateBytes(root, runId, loopBytes, hashBytes, {
+  requireSchema = false,
+  requireProjectBinding = true,
+} = {}) {
+  const raw = Buffer.isBuffer(loopBytes) ? loopBytes.toString('utf8') : String(loopBytes);
   // loop.json이 있는데 hash anchor가 없으면 = anchor 제거 공격/손상 → fail-closed (Codex impl 🔴1)
-  if (!existsSync(hashPath(root, runId))) {
+  if (hashBytes == null) {
     throw new Error(`STATE_TAMPERED: ${runId} .loop.hash anchor missing`);
   }
-  const stored = readFileSync(hashPath(root, runId), 'utf8').trim();
+  const stored = (Buffer.isBuffer(hashBytes) ? hashBytes.toString('utf8') : String(hashBytes)).trim();
   if (contentHash(raw) !== stored) {
     throw new Error(`STATE_TAMPERED: ${runId} loop.json content-hash mismatch`);
   }
   const data = JSON.parse(raw);
   migrateLoopStateInPlace(data);
+  if (requireSchema) {
+    const checked = validate(data);
+    if (!checked.ok) throw new Error(`SCHEMA_INVALID: ${checked.errors.join('; ')}`);
+  }
+  if (requireProjectBinding) assertProjectRootBinding(root, data);
   return { data, hash: stored };
+}
+
+function readHashVerifiedState(root, runId) {
+  const raw = readFileSync(loopPath(root, runId));
+  const anchor = existsSync(hashPath(root, runId)) ? readFileSync(hashPath(root, runId)) : null;
+  return parseHashVerifiedStateBytes(root, runId, raw, anchor, { requireProjectBinding: false });
 }
 
 export function readStateForRootRecovery(root, runId) {
@@ -138,6 +157,14 @@ export function readState(root, runId) {
   const state = readHashVerifiedState(root, runId);
   assertProjectRootBinding(root, state.data);
   return state;
+}
+
+export function captureReconciledRunSnapshot(...args) {
+  return captureReconciledRunSnapshotImpl(...args);
+}
+
+export function withReconciledMutationLock(...args) {
+  return withReconciledMutationLockImpl(...args);
 }
 
 export function writeState(root, runId, data, { atomicWriteFn = atomicWrite } = {}) {

@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
+import { appendAnchored } from '../scripts/lib/integrity.mjs';
 
 const CLI = join(process.cwd(), 'scripts', 'deep-loop.mjs');
 
@@ -189,4 +190,108 @@ test('CLI lease release on terminal run is intentionally allowed (cleanup path) 
   const w = run(root, ['state', 'patch', '--field', 'discovered_items', '--value', '[]', '--owner', owner, '--generation', String(gen)]);
   assert.equal(w.status, 3);
   assert.match(w.stderr, /RUN_TERMINAL/);
+});
+
+test('CLI state get reconciles a publication prepared after argument preflight and never exposes predecessor bytes', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-state-get-reconcile-'));
+  const { runId } = initRun(root, {
+    runtime: 'claude', goal: 'before', now: new Date('2026-07-23T00:00:00.000Z'),
+  });
+  assert.throws(() => appendAnchored(
+    root,
+    runId,
+    { type: 'state-get-candidate', data: {}, now: '2026-07-23T00:01:00.000Z' },
+    loop => { loop.goal = 'after'; },
+    undefined,
+    {
+      publication: {
+        kind: 'state-get-barrier', operationId: 'state-get-barrier', artifacts: [], topology: {},
+        faultAt(label) { if (label === 'prepared:digest-verified') throw new Error('barrier'); },
+      },
+    },
+  ), /TRANSACTION_PENDING/);
+
+  const result = run(root, ['state', 'get', '--run-id', runId]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(JSON.parse(result.stdout).goal, 'after');
+  assert.equal(readState(root, runId).data.goal, 'after');
+});
+
+test('CLI state get fail-stops byte-different replay lines without publishing later resources', () => {
+  const cases = [
+    {
+      name: 'business-leading-space',
+      barrier: 'event:0:append',
+      tamper(bytes) { return Buffer.concat([Buffer.from(' '), bytes]); },
+    },
+    {
+      name: 'business-crlf',
+      barrier: 'event:0:append',
+      tamper(bytes) { return Buffer.concat([bytes.subarray(0, -1), Buffer.from('\r\n')]); },
+    },
+    {
+      name: 'business-extra-trailing-newline',
+      barrier: 'event:0:append',
+      tamper(bytes) { return Buffer.concat([bytes, Buffer.from('\n')]); },
+    },
+    {
+      name: 'floor-trailing-space',
+      barrier: 'event:1:append',
+      tamper(bytes) {
+        const firstEnd = bytes.indexOf(0x0a) + 1;
+        return Buffer.concat([
+          bytes.subarray(0, firstEnd),
+          bytes.subarray(firstEnd, -1),
+          Buffer.from(' \n'),
+        ]);
+      },
+    },
+  ];
+
+  for (const scenario of cases) {
+    const root = mkdtempSync(join(tmpdir(), 'dl-state-get-exact-event-'));
+    const { runId } = initRun(root, {
+      runtime: 'claude', goal: 'before', now: new Date('2026-07-23T00:00:00.000Z'),
+    });
+    const dir = runDir(root, runId);
+    const operationId = `exact-${scenario.name}`;
+    assert.throws(() => appendAnchored(
+      root,
+      runId,
+      { type: 'state-get-exact-event', data: { scenario: scenario.name }, now: '2026-07-23T00:01:00.000Z' },
+      loop => { loop.goal = 'after'; },
+      undefined,
+      {
+        publication: {
+          kind: 'state-get-exact-event', operationId, artifacts: [], topology: { scenario: scenario.name },
+          faultAt(label) { if (label === scenario.barrier) throw new Error('barrier'); },
+        },
+        floor: 1,
+      },
+    ), /TRANSACTION_PENDING/, scenario.name);
+
+    const logPath = join(dir, 'event-log.jsonl');
+    const tamperedLog = scenario.tamper(readFileSync(logPath));
+    writeFileSync(logPath, tamperedLog);
+    const beforeLoop = readFileSync(join(dir, 'loop.json'));
+    const beforeHash = readFileSync(join(dir, '.loop.hash'));
+    const committedPath = join(dir, 'transactions', operationId, 'committed.json');
+
+    const result = run(root, ['state', 'get', '--run-id', runId]);
+    assert.deepEqual({
+      status: result.status,
+      classified: /TRANSACTION_RECONCILIATION_REQUIRED/.test(result.stderr),
+      rawEqual: readFileSync(logPath).equals(tamperedLog),
+      loopEqual: readFileSync(join(dir, 'loop.json')).equals(beforeLoop),
+      hashEqual: readFileSync(join(dir, '.loop.hash')).equals(beforeHash),
+      committed: existsSync(committedPath),
+    }, {
+      status: 1,
+      classified: true,
+      rawEqual: true,
+      loopEqual: true,
+      hashEqual: true,
+      committed: false,
+    }, scenario.name);
+  }
 });

@@ -8,7 +8,15 @@ import { detectPlugins } from './lib/detect.mjs';
 import { matchRecipe, recipesDir, validateRecipesDir } from './lib/recipes.mjs';
 import { json } from './lib/log.mjs';
 import { LAUNCHER_KINDS, validate as validateLoop } from './lib/schema.mjs';
-import { readState, writeState, patch as patchState, pauseRun, runDir, findRoot } from './lib/state.mjs';
+import {
+  captureReconciledRunSnapshot,
+  readState,
+  writeState,
+  patch as patchState,
+  pauseRun,
+  runDir,
+  findRoot,
+} from './lib/state.mjs';
 import { leaseCheck, acquireLease, releaseLease } from './lib/lease.mjs';
 import { newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal } from './lib/workspace.mjs';
 import { newEpisode, recordEpisode, abandonEpisode } from './lib/episode.mjs';
@@ -627,10 +635,11 @@ const handlers = {
       if (runId == null) { json(null); return 0; }   // no pointer at all (first entry) → clean null
       const explicit = f['run-id'] != null;           // explicit --run-id vs implicit .deep-loop/current
       let data;
-      try { ({ data } = readState(root, runId)); }
+      try { ({ data } = captureReconciledRunSnapshot(root, runId)); }
       catch (e) {
         // null ONLY for: implicit current pointer AND the run dir itself is absent (genuine stale pointer).
-        if (e && e.code === 'ENOENT' && !explicit && !existsSync(runDir(root, runId))) { json(null); return 0; }
+        if ((e && e.code === 'ENOENT' || String(e?.message || e) === 'LOCK_RUN_INVALID')
+          && !explicit && !existsSync(runDir(root, runId))) { json(null); return 0; }
         // run dir present but loop.json gone = partial state loss → fail closed (don't mask as "no run").
         if (e && e.code === 'ENOENT' && existsSync(runDir(root, runId))) {
           error(`STATE_MISSING: ${runId} loop.json absent but run dir exists`); return 1;

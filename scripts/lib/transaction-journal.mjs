@@ -714,72 +714,248 @@ export function findPreparedPublicationLocked(runDir, lockGuard) {
   return prepared.length === 0 ? null : verifyPreparedOperation(prepared[0], lockGuard);
 }
 
-function safeArtifactPath(runDir, rel, lockGuard) {
+function artifactPathReadOnly(runDir, rel, lockGuard) {
   const normalized = normalizePortableRelativePath(rel);
   if (!normalized) throw transactionError('artifact target');
   const segments = normalized.split('/');
   const leaf = segments.pop();
-  const parent = segments.length
-    ? guarded(lockGuard, () => ensureStrictDirectory(runDir, segments.join('/')))
-    : runDir;
+  let parent = runDir;
+  let parentAbsent = false;
+  for (const segment of segments) {
+    parent = join(parent, segment);
+    if (parentAbsent || !guarded(lockGuard, () => existsSync(parent))) {
+      parentAbsent = true;
+      continue;
+    }
+    const stat = guarded(lockGuard, () => lstatSync(parent, { bigint: true }));
+    if (stat.isSymbolicLink() || !stat.isDirectory()) throw reconciliationError('artifact parent type');
+    const canonical = guarded(lockGuard, () => (realpathSync.native || realpathSync)(parent));
+    if (resolve(canonical) !== resolve(parent)) throw reconciliationError('artifact parent substitution');
+  }
   const target = join(parent, leaf);
   if (resolve(target) !== resolve(runDir, ...normalized.split('/'))) throw transactionError('artifact containment');
-  if (guarded(lockGuard, () => existsSync(target))) {
+  if (!parentAbsent && guarded(lockGuard, () => existsSync(target))) {
     const stat = guarded(lockGuard, () => lstatSync(target, { bigint: true }));
     if (stat.isSymbolicLink() || !stat.isFile()) throw reconciliationError('artifact target type');
   }
-  return target;
+  return { target, parentAbsent };
 }
 
-export function publishArtifactTargetsLocked(runDir, lockGuard, manifest, {
-  durableWriteFn = durableAtomicWrite,
-  faultAt = () => {},
-} = {}) {
+function markerRecord(kind, target) {
+  return {
+    kind,
+    stage_index: target.stage_index,
+    rel: target.rel,
+    candidate_sha256: target.candidate_sha256,
+    predecessor_sha256: target.predecessor.kind === 'present' ? target.predecessor.sha256 : null,
+  };
+}
+
+function markerPath(prepared, kind, stageIndex) {
+  return join(prepared.operationDir, 'markers', `${kind}-${String(stageIndex).padStart(6, '0')}.json`);
+}
+
+function inspectMarker(prepared, kind, target, lockGuard) {
+  const path = markerPath(prepared, kind, target.stage_index);
+  if (!guarded(lockGuard, () => existsSync(path))) return false;
+  const stat = guarded(lockGuard, () => lstatSync(path, { bigint: true }));
+  if (stat.isSymbolicLink() || !stat.isFile()) throw reconciliationError(`${kind} marker type`);
+  const expected = JSON.stringify(markerRecord(kind, target));
+  const observed = guarded(lockGuard, () => readFileSync(path, 'utf8'));
+  if (observed !== expected) throw reconciliationError(`${kind} marker mismatch`);
+  return true;
+}
+
+function readStableArtifact(path, lockGuard) {
+  const before = guarded(lockGuard, () => captureStableFileIdentity(path));
+  const bytes = guarded(lockGuard, () => readFileSync(path));
+  const after = guarded(lockGuard, () => captureStableFileIdentity(path));
+  if (!matchingStableFileIdentity(before, after)) throw reconciliationError('artifact identity drift');
+  return { bytes, identity: before, sha256: contentHash(bytes), size: String(bytes.length) };
+}
+
+export function classifyArtifactTargetsLocked(runDir, lockGuard, manifest) {
   const canonicalRunDir = ensureCanonicalRunDir(runDir);
   lockGuard = scopeGuard(lockGuard, canonicalRunDir);
   const prepared = findPreparedPublicationLocked(canonicalRunDir, lockGuard);
   if (!prepared || JSON.stringify(prepared.manifest) !== JSON.stringify(manifest)) {
     throw reconciliationError('prepared manifest mismatch');
   }
-  let published = 0;
+  const classifications = [];
+  let sawPredecessor = false;
   for (const target of manifest.targets) {
     const record = prepared.stages[target.stage_index];
     if (!record || record.role !== 'artifact' || record.target_rel !== target.rel) {
       throw reconciliationError('non-artifact target');
     }
-    const finalPath = safeArtifactPath(canonicalRunDir, target.rel, lockGuard);
-    const candidate = prepared.readStage(target.stage_index);
-    if (guarded(lockGuard, () => existsSync(finalPath))) {
-      const current = guarded(lockGuard, () => readFileSync(finalPath));
-      const currentHash = guarded(lockGuard, () => contentHash(current));
-      if (String(current.length) === target.candidate_size && currentHash === target.candidate_sha256) {
-        published += 1;
-        continue;
-      }
-      if (target.predecessor.kind !== 'present') throw reconciliationError('unexpected artifact predecessor');
-      const identity = guarded(lockGuard, () => captureStableFileIdentity(finalPath));
-      if (!matchingStableFileIdentity(identity, target.predecessor.identity)
-        || String(current.length) !== target.predecessor.size || currentHash !== target.predecessor.sha256) {
+    const { target: finalPath, parentAbsent } = artifactPathReadOnly(canonicalRunDir, target.rel, lockGuard);
+    const replaceIntent = inspectMarker(prepared, 'replace-intent', target, lockGuard);
+    const targetDone = inspectMarker(prepared, 'target-done', target, lockGuard);
+    let state;
+    if (!parentAbsent && guarded(lockGuard, () => existsSync(finalPath))) {
+      const current = readStableArtifact(finalPath, lockGuard);
+      if (current.size === target.candidate_size && current.sha256 === target.candidate_sha256) {
+        state = 'candidate';
+      } else if (target.predecessor.kind === 'present'
+        && current.size === target.predecessor.size
+        && current.sha256 === target.predecessor.sha256
+        && matchingStableFileIdentity(current.identity, target.predecessor.identity)) {
+        state = 'predecessor';
+      } else {
         throw reconciliationError('artifact predecessor mismatch');
       }
-    } else if (target.predecessor.kind !== 'absent') {
+    } else if (target.predecessor.kind === 'absent') {
+      state = 'predecessor';
+    } else if (replaceIntent) {
+      state = 'replace-unlinked';
+    } else {
       throw reconciliationError('missing artifact predecessor');
+    }
+    if (targetDone && state !== 'candidate') throw reconciliationError('target-done before candidate');
+    if (replaceIntent && target.predecessor.kind !== 'present') {
+      throw reconciliationError('replace-intent for absent predecessor');
+    }
+    if (sawPredecessor && state === 'candidate') {
+      throw reconciliationError('artifact publication order');
+    }
+    if (state !== 'candidate') sawPredecessor = true;
+    classifications.push(Object.freeze({
+      target,
+      finalPath,
+      state,
+      replaceIntent,
+      targetDone,
+    }));
+  }
+  return Object.freeze({ prepared, classifications: Object.freeze(classifications) });
+}
+
+function writeMarker(prepared, kind, target, lockGuard, durableWriteFn, faultAt) {
+  const markersDir = guarded(lockGuard, () => ensureStrictDirectory(prepared.operationDir, 'markers'));
+  guarded(lockGuard, () => flushDirectory(prepared.operationDir));
+  guarded(lockGuard, () => flushDirectory(markersDir));
+  const path = markerPath(prepared, kind, target.stage_index);
+  const bytes = JSON.stringify(markerRecord(kind, target));
+  if (guarded(lockGuard, () => existsSync(path))) {
+    if (!inspectMarker(prepared, kind, target, lockGuard)) throw reconciliationError(`${kind} marker`);
+    return;
+  }
+  guardedDurableWrite(lockGuard, durableWriteFn, path, bytes, `${kind}:${target.stage_index}`, faultAt);
+  if (!inspectMarker(prepared, kind, target, lockGuard)) throw reconciliationError(`${kind} marker`);
+  faultAt(`${kind}:${target.stage_index}`);
+}
+
+export function publishArtifactTargetsLocked(runDir, lockGuard, manifest, {
+  durableWriteFn = durableAtomicWrite,
+  faultAt = () => {},
+  forceUnlinkReplacement = false,
+} = {}) {
+  const canonicalRunDir = ensureCanonicalRunDir(runDir);
+  lockGuard = scopeGuard(lockGuard, canonicalRunDir);
+  const { prepared, classifications } = classifyArtifactTargetsLocked(canonicalRunDir, lockGuard, manifest);
+  let published = 0;
+  for (const classification of classifications) {
+    const { target, finalPath } = classification;
+    const candidate = prepared.readStage(target.stage_index);
+    if (classification.state === 'candidate') {
+      if (!classification.targetDone) {
+        writeMarker(prepared, 'target-done', target, lockGuard, durableWriteFn, faultAt);
+      }
+      published += 1;
+      continue;
+    }
+    const segments = target.rel.split('/');
+    segments.pop();
+    if (segments.length) guarded(lockGuard, () => ensureStrictDirectory(canonicalRunDir, segments.join('/')));
+    const replaceExisting = (forceUnlinkReplacement || classification.replaceIntent)
+      && classification.state === 'predecessor'
+      && target.predecessor.kind === 'present';
+    if (replaceExisting && !classification.replaceIntent) {
+      writeMarker(prepared, 'replace-intent', target, lockGuard, durableWriteFn, faultAt);
     }
     guardedDurableWrite(
       lockGuard,
-      durableWriteFn,
+      (path, contents, options) => durableWriteFn(path, contents, {
+        ...options,
+        unlinkBeforeRename: replaceExisting,
+        beforeUnlink() {
+          lockGuard.assertOwned();
+          faultAt(`artifact:${target.stage_index}:replace-intent`);
+        },
+      }),
       finalPath,
       candidate,
       `artifact:${target.stage_index}`,
       faultAt,
     );
+    if (replaceExisting) faultAt(`artifact:${target.stage_index}:unlink`);
     const installed = guarded(lockGuard, () => readFileSync(finalPath));
     const installedHash = guarded(lockGuard, () => contentHash(installed));
     if (String(installed.length) !== target.candidate_size || installedHash !== target.candidate_sha256) {
       throw reconciliationError('artifact candidate mismatch');
     }
     faultAt(`artifact:${target.stage_index}:digest-verified`);
+    writeMarker(prepared, 'target-done', target, lockGuard, durableWriteFn, faultAt);
+    faultAt(`artifact:${target.stage_index}:target-done`);
     published += 1;
   }
   return { ok: true, published };
+}
+
+function committedRecord(prepared) {
+  return JSON.stringify({
+    kind: 'committed',
+    operation_id: prepared.manifest.operationId,
+    candidate_loop_hash: prepared.manifest.candidateLoopHash,
+  });
+}
+
+export function publicationCommittedLocked(runDir, lockGuard, prepared = null) {
+  const canonicalRunDir = ensureCanonicalRunDir(runDir);
+  lockGuard = scopeGuard(lockGuard, canonicalRunDir);
+  prepared ||= findPreparedPublicationLocked(canonicalRunDir, lockGuard);
+  if (!prepared) return false;
+  const path = join(prepared.operationDir, 'committed.json');
+  if (!guarded(lockGuard, () => existsSync(path))) return false;
+  const stat = guarded(lockGuard, () => lstatSync(path, { bigint: true }));
+  if (stat.isSymbolicLink() || !stat.isFile()
+    || guarded(lockGuard, () => readFileSync(path, 'utf8')) !== committedRecord(prepared)) {
+    throw reconciliationError('committed marker mismatch');
+  }
+  return true;
+}
+
+export function markPublicationCommittedLocked(runDir, lockGuard, prepared, {
+  durableWriteFn = durableAtomicWrite,
+  faultAt = () => {},
+} = {}) {
+  const canonicalRunDir = ensureCanonicalRunDir(runDir);
+  lockGuard = scopeGuard(lockGuard, canonicalRunDir);
+  if (publicationCommittedLocked(canonicalRunDir, lockGuard, prepared)) return { ok: true };
+  guardedDurableWrite(
+    lockGuard,
+    durableWriteFn,
+    join(prepared.operationDir, 'committed.json'),
+    committedRecord(prepared),
+    'committed',
+    faultAt,
+  );
+  faultAt('committed:rename');
+  if (!publicationCommittedLocked(canonicalRunDir, lockGuard, prepared)) {
+    throw reconciliationError('committed marker missing');
+  }
+  return { ok: true };
+}
+
+export function retireCommittedPublicationLocked(runDir, lockGuard) {
+  const canonicalRunDir = ensureCanonicalRunDir(runDir);
+  lockGuard = scopeGuard(lockGuard, canonicalRunDir);
+  const prepared = findPreparedPublicationLocked(canonicalRunDir, lockGuard);
+  if (!prepared || !publicationCommittedLocked(canonicalRunDir, lockGuard, prepared)) return false;
+  lockGuard.assertOwned();
+  rmSync(prepared.operationDir, { recursive: true, force: false });
+  lockGuard.renew();
+  flushDirectory(dirname(prepared.operationDir));
+  lockGuard.renew();
+  return true;
 }

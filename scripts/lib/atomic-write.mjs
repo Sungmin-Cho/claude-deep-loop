@@ -75,6 +75,8 @@ export function durableAtomicWrite(path, contents, {
   monotonicNowFn,
   sleepFn,
   barrierAt = () => {},
+  unlinkBeforeRename = false,
+  beforeUnlink = () => {},
 } = {}) {
   const tmp = tempPathFactory(path);
   let renamed = false;
@@ -89,6 +91,11 @@ export function durableAtomicWrite(path, contents, {
       if (fd !== undefined) closeFn(fd);
     }
     barrierAt('file-flush');
+    if (unlinkBeforeRename) {
+      beforeUnlink();
+      unlinkFn(path);
+      barrierAt('unlink');
+    }
     renameAtomicWithRetry(tmp, path, {
       platform,
       renameFn,
