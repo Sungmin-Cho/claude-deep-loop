@@ -284,20 +284,18 @@ test('review dispatch accepts --independent-subagent and records a neutral legac
   assert.equal(checker.reviewer_resolution.asserted_capability, 'independent-subagent');
 });
 
-test('root diagnose exits 0 with redacted eligibility for resolvable copies and moved roots', () => {
+test('root diagnose fences resolvable copies without mutation and accepts moved roots', () => {
   const original = seed();
   const copyRoot = mkdtempSync(join(tmpdir(), 'dl-root-cli-copy-'));
-  const storedRoot = readState(original.root, original.runId).data.project.root;
   cpSync(join(original.root, '.deep-loop'), join(copyRoot, '.deep-loop'), { recursive: true });
+  const before = cliSnapshot(copyRoot, original.runId);
 
   const copied = runResult(copyRoot, [
     'root', 'diagnose', '--candidate-project-root', copyRoot, '--run-id', original.runId,
   ]);
-  assert.equal(copied.code, 0);
-  assert.deepEqual(JSON.parse(copied.stdout), {
-    mismatch_class: 'fenced', rebind_allowed: false,
-    stored_root_digest: projectRootDigest(storedRoot), owner: original.runId, generation: 1,
-  });
+  assert.equal(copied.code, 3);
+  assert.match(copied.stderr, /PROJECT_ROOT_FENCED/);
+  assert.deepEqual(cliSnapshot(copyRoot, original.runId), before);
 
   const moved = movedCliRun();
   const relocated = runResult(moved.candidateRoot, [

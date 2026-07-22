@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import {
   existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
-  renameSync, rmdirSync, writeFileSync,
+  renameSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
@@ -366,62 +366,56 @@ function spawnImport(root, runId, raw, extra = []) {
   return { child, done: new Promise(resolve => child.on('close', code => resolve({ code, stdout, stderr }))) };
 }
 
-async function waitForEnvelope(root, runId) {
-  const reviews = join(runDir(root, runId), 'reviews');
-  for (let i = 0; i < 80; i++) {
-    if (existsSync(reviews)) {
-      const name = readdirSync(reviews).find(n => n.endsWith('.json'));
-      if (name) return join(reviews, name);
-    }
-    await new Promise(resolve => setTimeout(resolve, 5));
-  }
-  throw new Error('test timed out waiting for review envelope');
-}
-
-test('locked commit reopens the exact envelope and rejects post-materialization tampering', async () => {
-  const f = fixture(); const lock = join(runDir(f.root, f.runId), '.lock'); mkdirSync(lock);
-  const proc = spawnImport(f.root, f.runId, JSON.stringify(f.input));
-  const envelopePath = await waitForEnvelope(f.root, f.runId);
-  const envelope = JSON.parse(readFileSync(envelopePath, 'utf8'));
-  envelope.payload.report_body = 'tampered after materialization';
-  writeFileSync(envelopePath, JSON.stringify(envelope));
-  rmdirSync(lock);
-  const result = await proc.done;
-  assert.equal(result.code, 1);
-  assert.match(result.stderr, /REVIEW_REPORT_HASH_MISMATCH/);
+test('locked commit reopens the exact envelope and rejects post-materialization tampering', () => {
+  const f = fixture();
+  const beforeEvents = eventLog(f.root, f.runId).length;
+  assert.throws(() => importReviewOutcome(f.root, f.runId, {
+    raw: JSON.stringify(f.input), fence: f.fence, now: FIXED_NOW,
+  }, {
+    afterMaterialize({ reportAbs }) {
+      const envelope = JSON.parse(readFileSync(reportAbs, 'utf8'));
+      envelope.payload.report_body = 'tampered after materialization';
+      writeFileSync(reportAbs, JSON.stringify(envelope));
+    },
+  }), /REVIEW_REPORT_HASH_MISMATCH/);
   assert.equal(readState(f.root, f.runId).data.episodes.find(e => e.id === f.checkerId).status, 'in_progress');
+  assert.equal(eventLog(f.root, f.runId).length, beforeEvents);
 });
 
-test('locked commit runtime snapshot is fenced if stored runtime changes after envelope creation', async () => {
-  const f = fixture(); const lock = join(runDir(f.root, f.runId), '.lock'); mkdirSync(lock);
-  const proc = spawnImport(f.root, f.runId, JSON.stringify(f.input));
-  await waitForEnvelope(f.root, f.runId);
-  const state = readState(f.root, f.runId).data;
-  state.autonomy.session_runtime = 'claude';
-  writeState(f.root, f.runId, state);
-  rmdirSync(lock);
-  const result = await proc.done;
-  assert.equal(result.code, 3);
-  assert.match(result.stderr, /RUNTIME_FENCED/);
+test('locked commit runtime snapshot is fenced if stored runtime changes after envelope creation', () => {
+  const f = fixture();
+  const beforeEvents = eventLog(f.root, f.runId).length;
+  assert.throws(() => importReviewOutcome(f.root, f.runId, {
+    raw: JSON.stringify(f.input), fence: f.fence, now: FIXED_NOW,
+  }, {
+    afterMaterialize() {
+      const state = readState(f.root, f.runId).data;
+      state.autonomy.session_runtime = 'claude';
+      writeState(f.root, f.runId, state);
+    },
+  }), /RUNTIME_FENCED/);
   assert.equal(readState(f.root, f.runId).data.episodes.find(e => e.id === f.checkerId).status, 'in_progress');
+  assert.equal(eventLog(f.root, f.runId).length, beforeEvents);
 });
 
-test('appendAnchored root-bound read fences a copied-root identity change before review proof', async () => {
-  const f = fixture(); const lock = join(runDir(f.root, f.runId), '.lock'); mkdirSync(lock);
-  const proc = spawnImport(f.root, f.runId, JSON.stringify(f.input));
-  await waitForEnvelope(f.root, f.runId);
+test('appendAnchored root-bound read fences a copied-root identity change before review proof', () => {
+  const f = fixture();
+  const beforeEvents = eventLog(f.root, f.runId).length;
   const loopPath = join(runDir(f.root, f.runId), 'loop.json');
-  const state = JSON.parse(readFileSync(loopPath, 'utf8'));
-  state.project.root = mkdtempSync(join(tmpdir(), 'dl-review-other-root-'));
-  const raw = JSON.stringify(state, null, 2);
-  writeFileSync(loopPath, raw);
-  writeFileSync(join(runDir(f.root, f.runId), '.loop.hash'), contentHash(raw));
-  rmdirSync(lock);
-  const result = await proc.done;
-  assert.equal(result.code, 3);
-  assert.match(result.stderr, /PROJECT_ROOT_FENCED/);
+  assert.throws(() => importReviewOutcome(f.root, f.runId, {
+    raw: JSON.stringify(f.input), fence: f.fence, now: FIXED_NOW,
+  }, {
+    afterMaterialize() {
+      const state = JSON.parse(readFileSync(loopPath, 'utf8'));
+      state.project.root = mkdtempSync(join(tmpdir(), 'dl-review-other-root-'));
+      const raw = JSON.stringify(state, null, 2);
+      writeFileSync(loopPath, raw);
+      writeFileSync(join(runDir(f.root, f.runId), '.loop.hash'), contentHash(raw));
+    },
+  }), /PROJECT_ROOT_FENCED/);
   const persisted = JSON.parse(readFileSync(loopPath, 'utf8'));
   assert.equal(persisted.episodes.find(e => e.id === f.checkerId).status, 'in_progress');
+  assert.equal(eventLog(f.root, f.runId).length, beforeEvents);
 });
 
 test('CLI import requires --stdin, rejects caller metadata/runtime, and classifies invalid/fence errors', async () => {

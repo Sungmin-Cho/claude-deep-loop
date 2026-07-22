@@ -635,10 +635,14 @@ export function recordReviewOutcome(root, runId, options = {}) {
   });
 }
 
-export function importReviewOutcome(root, runId, options = {}) {
+// The fourth argument is an internal dependency seam for deterministic post-materialization,
+// pre-append race tests. CLI callers never populate it.
+export function importReviewOutcome(root, runId, options = {}, internal = {}) {
   if (options === null || typeof options !== 'object' || Array.isArray(options)) {
     throw new Error('REVIEW_INPUT_INVALID: options');
   }
+  const afterMaterialize = internal?.afterMaterialize ?? (() => {});
+  if (typeof afterMaterialize !== 'function') throw new Error('REVIEW_INPUT_INVALID: internal.afterMaterialize');
   rejectCallerMetadata(options, 'importReviewOutcome');
   const { raw, fence, now } = options;
   validFence(fence, 'importReviewOutcome');
@@ -651,6 +655,11 @@ export function importReviewOutcome(root, runId, options = {}) {
     const checked = checkedContext(preState, input.checker_episode_id, { reviewSource: 'imported-stdin' });
     const binding = validateImportedEvidence(root, preState, input, checked);
     evidence = materializeImportedReview(root, runId, input, binding, { now });
+    afterMaterialize(Object.freeze({
+      report: evidence.report,
+      reportAbs: evidence.reportAbs,
+      reportSha256: evidence.reportSha256,
+    }));
   } catch (preparationError) {
     // Preserve the authoritative locked error order. Invalid/stale source material never receives proof,
     // but the commit preCheck still gets to report root/runtime/lease/checker fences first.
