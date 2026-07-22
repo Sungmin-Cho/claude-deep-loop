@@ -3,7 +3,13 @@ import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, readdirSync, writeFileSync, realpathSync } from 'node:fs';
 import { dirname, join, relative, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { containedRealFile, normalizePortableRelativePath, pathWithin } from '../scripts/lib/fs-safe.mjs';
+import {
+  captureStableFileIdentity,
+  containedRealFile,
+  matchingStableFileIdentity,
+  normalizePortableRelativePath,
+  pathWithin,
+} from '../scripts/lib/fs-safe.mjs';
 import * as fsFixtures from './helpers/fs-fixtures.mjs';
 
 const {
@@ -15,6 +21,50 @@ const {
 const TESTS_ROOT = dirname(fileURLToPath(import.meta.url));
 
 function base() { return fixtureDir('dl-fss-'); }
+
+function identityFrom(stat) {
+  return captureStableFileIdentity('/virtual/node', { lstatFn: () => stat });
+}
+
+test('stable identities use nonzero dev+ino and ignore birthtime drift', () => {
+  const left = identityFrom({ dev: 7n, ino: 9n, birthtimeNs: 10n });
+  const right = identityFrom({ dev: 7n, ino: 9n, birthtimeNs: 99n });
+  assert.equal(Object.isFrozen(left), true);
+  assert.deepEqual(left, { dev: '7', ino: '9', birthtime_ns: '10' });
+  assert.equal(matchingStableFileIdentity(left, right), true);
+  assert.equal(matchingStableFileIdentity(left, { ...right, dev: '8' }), false);
+  assert.equal(matchingStableFileIdentity(left, { ...right, ino: '10' }), false);
+});
+
+test('stable identities fail closed on zero ino and use nonzero birthtime when either dev is zero', () => {
+  const windows = identityFrom({ dev: 0n, ino: 9n, birthtimeNs: 10n });
+  const comparable = identityFrom({ dev: 7n, ino: 9n, birthtimeNs: 10n });
+  assert.equal(matchingStableFileIdentity(windows, comparable), true);
+  assert.equal(matchingStableFileIdentity(windows, { ...comparable, birthtime_ns: '11' }), false);
+  assert.equal(matchingStableFileIdentity(windows, { ...comparable, birthtime_ns: '0' }), false);
+  assert.equal(matchingStableFileIdentity(windows, { dev: '0', ino: '9' }), false);
+  assert.equal(matchingStableFileIdentity(
+    identityFrom({ dev: 7n, ino: 0n, birthtimeNs: 10n }),
+    identityFrom({ dev: 7n, ino: 0n, birthtimeNs: 10n }),
+  ), false);
+});
+
+test('stable identity wire accepts only canonical decimal strings', () => {
+  const canonical = { dev: '7', ino: '9', birthtime_ns: '10' };
+  for (const value of [
+    { dev: 7, ino: '9', birthtime_ns: '10' },
+    { dev: 7n, ino: '9', birthtime_ns: '10' },
+    { dev: '07', ino: '9', birthtime_ns: '10' },
+    { dev: '+7', ino: '9', birthtime_ns: '10' },
+    { dev: ' 7', ino: '9', birthtime_ns: '10' },
+    { dev: '7.0', ino: '9', birthtime_ns: '10' },
+    { dev: '-0', ino: '9', birthtime_ns: '10' },
+  ]) {
+    assert.equal(matchingStableFileIdentity(canonical, value), false, String(value.dev));
+  }
+  assert.equal(matchingStableFileIdentity(canonical, { ...canonical }), true);
+  assert.deepEqual(identityFrom({ dev: 7n, ino: 9n, birthtimeNs: 10n }), canonical);
+});
 
 function discoveredTestFiles(directory) {
   const paths = [];

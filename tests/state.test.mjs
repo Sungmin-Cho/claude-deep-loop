@@ -1,11 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cpSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync, readFileSync as _rfRoot } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync as _rfRoot, readdirSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { hostname, tmpdir } from 'node:os';
 import { basename, join, dirname as _dn, posix, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readState, writeState, patch, withLock, runDir, findRoot } from '../scripts/lib/state.mjs';
+import { LOCK_STALE_TTL_MS, readState, writeState, patch, withLock, runDir, findRoot } from '../scripts/lib/state.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
+import { flushDirectory } from '../scripts/lib/atomic-write.mjs';
 
 const atomicApiPromise = import('../scripts/lib/atomic-write.mjs').catch(() => ({}));
 
@@ -119,15 +120,271 @@ test('prototype-pollution field path forbidden', () => {
   assert.throws(() => patch(root, runId, 'episodes.0.__proto__', { x: 1 }), /FIELD_FORBIDDEN/);
 });
 
-test('stale lock is reclaimed after TTL', () => {
+test('a manually-created empty stale lock is indeterminate and never age-reclaimed', () => {
   const { root, runId } = seed();
   const lock = join(runDir(root, runId), '.lock');
-  mkdirSync(lock);                               // simulate dead-process lock
+  mkdirSync(lock);
   const old = new Date(Date.now() - 60000);
-  utimesSync(lock, old, old);                    // 60s old > 30s TTL
-  let ran = false;
-  withLock(root, runId, () => { ran = true; }, { retries: 5, backoffMs: 1 });
-  assert.equal(ran, true);
+  utimesSync(lock, old, old);
+  assert.throws(() => withLock(root, runId, () => {}, { retries: 1, backoffMs: 0 }), /LOCK_BUSY/);
+  assert.equal(statSync(lock).isDirectory(), true);
+});
+
+test('withLock persists canonical ownership before exposing a frozen guard', () => {
+  const { root, runId } = seed();
+  const now = 1_782_864_000_000;
+  const token = '11111111-1111-4111-8111-111111111111';
+  withLock(root, runId, guard => {
+    assert.equal(Object.isFrozen(guard), true);
+    assert.deepEqual(Object.keys(guard), ['token', 'assertOwned', 'renew']);
+    assert.equal(guard.token, token);
+    const lock = join(runDir(root, runId), '.lock');
+    const ownerPath = join(lock, 'owner.json');
+    const owner = JSON.parse(_rfRoot(ownerPath, 'utf8'));
+    assert.deepEqual(Object.keys(owner), [
+      'protocol_version', 'token', 'pid', 'hostname', 'acquired_at_ms', 'heartbeat_at_ms', 'lock_identity',
+    ]);
+    assert.equal(owner.protocol_version, 1);
+    assert.equal(owner.token, token);
+    assert.equal(owner.pid, 4242);
+    assert.equal(owner.hostname, hostname().normalize('NFC').toLowerCase());
+    assert.equal(owner.acquired_at_ms, now);
+    assert.equal(owner.heartbeat_at_ms, now);
+    assert.deepEqual(Object.keys(owner.lock_identity), ['dev', 'ino', 'birthtime_ns']);
+    assert.equal(statSync(ownerPath).mode & 0o777, 0o600);
+    assert.doesNotThrow(() => guard.assertOwned());
+  }, {
+    nowFn: () => now,
+    hostnameFn: hostname,
+    pid: 4242,
+    tokenFactory: () => token,
+  });
+});
+
+test('withLock guard binds optional run validation without changing its public keys', () => {
+  const first = seed();
+  const second = seed();
+  withLock(first.root, first.runId, guard => {
+    assert.deepEqual(Object.keys(guard), ['token', 'assertOwned', 'renew']);
+    assert.doesNotThrow(() => guard.assertOwned(runDir(first.root, first.runId)));
+    assert.doesNotThrow(() => guard.renew(runDir(first.root, first.runId)));
+    assert.throws(() => guard.assertOwned(runDir(second.root, second.runId)), /LOCK_RUN_MISMATCH/);
+    assert.throws(() => guard.renew(runDir(second.root, second.runId)), /LOCK_RUN_MISMATCH/);
+  });
+});
+
+test('withLock renews the heartbeat under the same ownership token and identity', () => {
+  const { root, runId } = seed();
+  let now = 1_782_864_000_000;
+  const token = '22222222-2222-4222-8222-222222222222';
+  withLock(root, runId, guard => {
+    const ownerPath = join(runDir(root, runId), '.lock', 'owner.json');
+    const before = JSON.parse(_rfRoot(ownerPath, 'utf8'));
+    now += 5_000;
+    guard.renew();
+    const after = JSON.parse(_rfRoot(ownerPath, 'utf8'));
+    assert.equal(after.token, before.token);
+    assert.deepEqual(after.lock_identity, before.lock_identity);
+    assert.equal(after.acquired_at_ms, before.acquired_at_ms);
+    assert.equal(after.heartbeat_at_ms, now);
+  }, { nowFn: () => now, tokenFactory: () => token });
+});
+
+test('a released guard cannot validate a successor lock', () => {
+  const { root, runId } = seed();
+  let stale;
+  withLock(root, runId, guard => { stale = guard; }, {
+    tokenFactory: () => '33333333-3333-4333-8333-333333333333',
+  });
+  withLock(root, runId, () => {
+    assert.throws(() => stale.assertOwned(), /LOCK_OWNERSHIP_LOST/);
+    assert.throws(() => stale.renew(), /LOCK_OWNERSHIP_LOST/);
+  }, { tokenFactory: () => '44444444-4444-4444-8444-444444444444' });
+});
+
+test('a local definitely-dead stale owner is quarantined before reclaim', () => {
+  const { root, runId } = seed();
+  let now = 1_000;
+  withLock(root, runId, () => {}, {
+    nowFn: () => now,
+    pid: 40_001,
+    tokenFactory: () => '55555555-5555-4555-8555-555555555555',
+    faultAt(label) { if (label === 'release:validated') throw new Error('KILL'); },
+  });
+  now += LOCK_STALE_TTL_MS + 1;
+  const labels = [];
+  const flushes = [];
+  let entered = false;
+  withLock(root, runId, () => { entered = true; }, {
+    nowFn: () => now,
+    pid: 40_002,
+    tokenFactory: () => '66666666-6666-4666-8666-666666666666',
+    probePid: () => 'dead',
+    faultAt(label) { labels.push(label); },
+    flushDirectoryFn(path) { flushes.push(path); flushDirectory(path); },
+    retries: 2,
+    backoffMs: 0,
+  });
+  assert.equal(entered, true);
+  assert.ok(labels.includes('reclaim:quarantined'));
+  assert.ok(labels.includes('reclaim:quarantine-parent-flushed'));
+  assert.ok(labels.includes('reclaim:deleted'));
+  assert.ok(labels.includes('reclaim:delete-parent-flushed'));
+  assert.ok(flushes.filter(path => path === runDir(root, runId)).length >= 2);
+});
+
+test('an interrupted dead-owner quarantine is revalidated and completed exactly once', () => {
+  const { root, runId } = seed();
+  let now = 1_000;
+  withLock(root, runId, () => {}, {
+    nowFn: () => now, pid: 40_101,
+    tokenFactory: () => '10101010-1010-4010-8010-101010101010',
+    faultAt(label) { if (label === 'release:validated') throw new Error('KILL'); },
+  });
+  now += LOCK_STALE_TTL_MS + 1;
+  assert.throws(() => withLock(root, runId, () => {}, {
+    nowFn: () => now, pid: 40_102,
+    tokenFactory: () => '20202020-2020-4020-8020-202020202020',
+    probePid: () => 'dead', retries: 1, backoffMs: 0,
+    faultAt(label) { if (label === 'reclaim:quarantined') throw new Error('KILL'); },
+  }), /KILL/);
+  const run = runDir(root, runId);
+  assert.equal(existsSync(join(run, '.lock')), false);
+  assert.equal(readdirSync(run)
+    .some(name => name.startsWith('.lock.quarantine-')), true);
+  let entered = false;
+  const resumeLabels = [];
+  const resumeFlushes = [];
+  withLock(root, runId, () => { entered = true; }, {
+    nowFn: () => now, pid: 40_103,
+    tokenFactory: () => '30303030-3030-4030-8030-303030303030',
+    probePid: () => 'dead', retries: 1, backoffMs: 0,
+    faultAt(label) { resumeLabels.push(label); },
+    flushDirectoryFn(path) { resumeFlushes.push(path); flushDirectory(path); },
+  });
+  assert.equal(entered, true);
+  assert.equal(readdirSync(run)
+    .some(name => name.startsWith('.lock.quarantine-')), false);
+  assert.ok(resumeLabels.includes('reclaim:resumed-deleted'));
+  assert.ok(resumeLabels.includes('reclaim:resumed-delete-parent-flushed'));
+  assert.ok(resumeFlushes.includes(run));
+});
+
+test('live, reused, EPERM, or unknown stale owners remain busy beyond the TTL', () => {
+  for (const liveness of ['alive', 'unknown', 'eperm']) {
+    const { root, runId } = seed();
+    let now = 1_000;
+    withLock(root, runId, () => {}, {
+      nowFn: () => now,
+      pid: 41_001,
+      tokenFactory: () => '77777777-7777-4777-8777-777777777777',
+      faultAt(label) { if (label === 'release:validated') throw new Error('KILL'); },
+    });
+    now += LOCK_STALE_TTL_MS + 1;
+    assert.throws(() => withLock(root, runId, () => {}, {
+      nowFn: () => now,
+      pid: 41_002,
+      tokenFactory: () => '88888888-8888-4888-8888-888888888888',
+      probePid: () => {
+        if (liveness === 'eperm') throw Object.assign(new Error('denied'), { code: 'EPERM' });
+        return liveness;
+      },
+      retries: 1,
+      backoffMs: 0,
+    }), /LOCK_BUSY/, liveness);
+  }
+});
+
+test('foreign-host and missing-owner stale locks fail closed', () => {
+  const foreign = seed();
+  let now = 1_000;
+  withLock(foreign.root, foreign.runId, () => {}, {
+    nowFn: () => now,
+    hostnameFn: () => 'foreign.example',
+    pid: 42_001,
+    tokenFactory: () => '99999999-9999-4999-8999-999999999999',
+    faultAt(label) { if (label === 'release:validated') throw new Error('KILL'); },
+  });
+  now += LOCK_STALE_TTL_MS + 1;
+  assert.throws(() => withLock(foreign.root, foreign.runId, () => {}, {
+    nowFn: () => now,
+    hostnameFn: () => 'local.example',
+    pid: 42_002,
+    tokenFactory: () => 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    probePid: () => 'dead', retries: 1, backoffMs: 0,
+  }), /LOCK_BUSY/);
+
+  const missing = seed();
+  const lock = join(runDir(missing.root, missing.runId), '.lock');
+  mkdirSync(lock);
+  const old = new Date(Date.now() - 60_000);
+  utimesSync(lock, old, old);
+  assert.throws(() => withLock(missing.root, missing.runId, () => {}, {
+    probePid: () => 'dead', retries: 1, backoffMs: 0,
+  }), /LOCK_BUSY/);
+});
+
+test('token drift and directory replacement fence the guard and preserve the successor', () => {
+  const tokenDrift = seed();
+  withLock(tokenDrift.root, tokenDrift.runId, guard => {
+    const ownerPath = join(runDir(tokenDrift.root, tokenDrift.runId), '.lock', 'owner.json');
+    const owner = JSON.parse(_rfRoot(ownerPath, 'utf8'));
+    writeFileSync(ownerPath, JSON.stringify({ ...owner, token: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }));
+    assert.throws(() => guard.assertOwned(), /LOCK_OWNERSHIP_LOST/);
+  }, { tokenFactory: () => 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' });
+
+  const replaced = seed();
+  const lock = join(runDir(replaced.root, replaced.runId), '.lock');
+  const displaced = `${lock}.displaced`;
+  withLock(replaced.root, replaced.runId, guard => {
+    renameSync(lock, displaced);
+    mkdirSync(lock);
+    writeFileSync(join(lock, 'successor'), 'keep');
+    assert.throws(() => guard.assertOwned(), /LOCK_OWNERSHIP_LOST/);
+  });
+  assert.equal(_rfRoot(join(lock, 'successor'), 'utf8'), 'keep');
+});
+
+test('release quarantine cannot remove a successor created at the lock path', () => {
+  const { root, runId } = seed();
+  const lock = join(runDir(root, runId), '.lock');
+  const labels = [];
+  const flushes = [];
+  withLock(root, runId, () => {}, {
+    tokenFactory: () => 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+    faultAt(label) {
+      labels.push(label);
+      if (label === 'release:quarantined') {
+        mkdirSync(lock);
+        writeFileSync(join(lock, 'successor'), 'keep');
+      }
+    },
+    flushDirectoryFn(path) { flushes.push(path); flushDirectory(path); },
+  });
+  assert.equal(_rfRoot(join(lock, 'successor'), 'utf8'), 'keep');
+  assert.ok(labels.includes('release:quarantine-parent-flushed'));
+  assert.ok(labels.includes('release:deleted'));
+  assert.ok(labels.includes('release:delete-parent-flushed'));
+  assert.ok(flushes.filter(path => path === runDir(root, runId)).length >= 2);
+});
+
+test('a competing command cannot age-reap an active owner during blocked synchronous work', () => {
+  const { root, runId } = seed();
+  let now = 1_000;
+  withLock(root, runId, guard => {
+    now += LOCK_STALE_TTL_MS + 1;
+    assert.throws(() => withLock(root, runId, () => {}, {
+      nowFn: () => now,
+      pid: 43_002,
+      tokenFactory: () => 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      probePid: () => 'alive', retries: 1, backoffMs: 0,
+    }), /LOCK_BUSY/);
+    assert.doesNotThrow(() => guard.assertOwned());
+  }, {
+    nowFn: () => now,
+    pid: 43_001,
+    tokenFactory: () => 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+  });
 });
 
 test('lock and rename timing constants pin the two-replacement transaction budget', async () => {

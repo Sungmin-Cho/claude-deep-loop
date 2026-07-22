@@ -1,6 +1,24 @@
-import { readFileSync, writeFileSync, mkdirSync, rmdirSync, existsSync, statSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  statSync,
+} from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { hostname } from 'node:os';
 import path, { join } from 'node:path';
 import { contentHash, atomicWrite } from './envelope.mjs';
+import { durableAtomicWrite, flushDirectory } from './atomic-write.mjs';
+import {
+  canonicalNonSymlinkDirectory,
+  captureStableFileIdentity,
+  matchingStableFileIdentity,
+} from './fs-safe.mjs';
 import { validate } from './schema.mjs';
 import { leaseCheck } from './lease.mjs';
 import { appendAnchored, MUTATION_TURN_FLOOR } from './integrity.mjs';
@@ -175,17 +193,258 @@ export function patch(root, runId, field, value, { fence } = {}) {
 
 function sleepMs(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
 
-export function withLock(root, runId, fn, { ttlMs = LOCK_STALE_TTL_MS, retries = 100, backoffMs = 5 } = {}) {
-  const lock = join(runDir(root, runId), '.lock');
+const LOCK_TOKEN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const LOCK_OWNER_KEYS = [
+  'protocol_version', 'token', 'pid', 'hostname', 'acquired_at_ms', 'heartbeat_at_ms', 'lock_identity',
+];
+
+function canonicalHostname(value) {
+  if (typeof value !== 'string') throw new Error('LOCK_HOSTNAME_INVALID');
+  const normalized = value.normalize('NFC').trim().toLowerCase();
+  if (!normalized || /[\u0000-\u001f\u007f]/.test(normalized)) throw new Error('LOCK_HOSTNAME_INVALID');
+  return normalized;
+}
+
+function boundedTime(value) {
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error('LOCK_TIME_INVALID');
+  return value;
+}
+
+function validLockOwner(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || JSON.stringify(Object.keys(value)) !== JSON.stringify(LOCK_OWNER_KEYS)
+    || value.protocol_version !== 1 || !LOCK_TOKEN.test(value.token || '')
+    || !Number.isSafeInteger(value.pid) || value.pid <= 0
+    || typeof value.hostname !== 'string' || canonicalHostname(value.hostname) !== value.hostname
+    || !Number.isSafeInteger(value.acquired_at_ms) || value.acquired_at_ms < 0
+    || !Number.isSafeInteger(value.heartbeat_at_ms) || value.heartbeat_at_ms < value.acquired_at_ms
+    || !value.lock_identity || typeof value.lock_identity !== 'object') return false;
+  return matchingStableFileIdentity(value.lock_identity, value.lock_identity);
+}
+
+function readLockOwner(ownerPath, readFn = readFileSync) {
+  try {
+    const owner = JSON.parse(readFn(ownerPath, 'utf8'));
+    return validLockOwner(owner) ? owner : null;
+  } catch {
+    return null;
+  }
+}
+
+function defaultProbePid(pid) {
+  try {
+    process.kill(pid, 0);
+    return 'alive';
+  } catch (error) {
+    return error?.code === 'ESRCH' ? 'dead' : 'unknown';
+  }
+}
+
+function sameOwner(left, right) {
+  return left && right && JSON.stringify(left) === JSON.stringify(right);
+}
+
+export function withLock(root, runId, fn, {
+  ttlMs = LOCK_STALE_TTL_MS,
+  retries = 100,
+  backoffMs = 5,
+  nowFn = Date.now,
+  hostnameFn = hostname,
+  pid = process.pid,
+  tokenFactory = randomUUID,
+  probePid = defaultProbePid,
+  sleepFn = sleepMs,
+  faultAt = () => {},
+  mkdirFn = mkdirSync,
+  renameFn = renameSync,
+  removeFn = rmSync,
+  lstatFn = lstatSync,
+  readFileFn = readFileSync,
+  readdirFn = readdirSync,
+  durableWriteFn = durableAtomicWrite,
+  flushDirectoryFn = flushDirectory,
+  platform = process.platform,
+} = {}) {
+  const lexicalRunDir = runDir(root, runId);
+  const lockedRunDir = (() => {
+    try {
+      const canonical = realpathSync(lexicalRunDir);
+      return statSync(canonical).isDirectory() ? canonical : null;
+    } catch { return null; }
+  })();
+  if (!lockedRunDir) throw new Error('LOCK_RUN_INVALID');
+  const lock = join(lexicalRunDir, '.lock');
+  const ownerPath = join(lock, 'owner.json');
+  const localHostname = canonicalHostname(hostnameFn());
+  const token = String(tokenFactory()).toLowerCase();
+  if (!LOCK_TOKEN.test(token) || !Number.isSafeInteger(pid) || pid <= 0
+    || !Number.isInteger(ttlMs) || ttlMs < 0 || !Number.isInteger(retries) || retries < 1
+    || !Number.isFinite(backoffMs) || backoffMs < 0) throw new Error('LOCK_OPTIONS_INVALID');
   let acquired = false;
+  let lockIdentity = null;
+  let owner = null;
+
+  const inspectOwned = (path = lock, expectedOwner = owner, expectedIdentity = lockIdentity) => {
+    try {
+      const lexical = lstatFn(path, { bigint: true });
+      if (lexical.isSymbolicLink?.() || !lexical.isDirectory?.()) return false;
+      const identity = captureStableFileIdentity(path, { lstatFn });
+      if (!matchingStableFileIdentity(identity, expectedIdentity)) return false;
+      const observed = (() => {
+        try {
+          const parsed = JSON.parse(readFileFn(join(path, 'owner.json'), 'utf8'));
+          return validLockOwner(parsed) ? parsed : null;
+        } catch { return null; }
+      })();
+      return sameOwner(observed, expectedOwner);
+    } catch {
+      return false;
+    }
+  };
+
+  const tryReclaim = () => {
+    let observedIdentity;
+    let observedOwner;
+    try {
+      const lexical = lstatFn(lock, { bigint: true });
+      if (lexical.isSymbolicLink?.() || !lexical.isDirectory?.()) return false;
+      observedIdentity = captureStableFileIdentity(lock, { lstatFn });
+      observedOwner = readLockOwner(ownerPath, readFileFn);
+    } catch {
+      return false;
+    }
+    if (!observedOwner || !matchingStableFileIdentity(observedOwner.lock_identity, observedIdentity)
+      || observedOwner.hostname !== localHostname) return false;
+    const now = boundedTime(nowFn());
+    if (now - observedOwner.heartbeat_at_ms <= ttlMs) return false;
+    let liveness = 'unknown';
+    try { liveness = probePid(observedOwner.pid); } catch { liveness = 'unknown'; }
+    if (liveness !== 'dead') return false;
+    if (!inspectOwned(lock, observedOwner, observedIdentity)) return false;
+    const quarantine = `${lock}.quarantine-${observedOwner.token}`;
+    try {
+      renameFn(lock, quarantine);
+    } catch {
+      return false;
+    }
+    faultAt('reclaim:quarantined');
+    flushDirectoryFn(path.dirname(lock), { platform });
+    faultAt('reclaim:quarantine-parent-flushed');
+    if (!inspectOwned(quarantine, observedOwner, observedIdentity)) {
+      throw new Error('LOCK_RECLAIM_CONFLICT');
+    }
+    removeFn(quarantine, { recursive: true, force: false });
+    faultAt('reclaim:deleted');
+    flushDirectoryFn(path.dirname(lock), { platform });
+    faultAt('reclaim:delete-parent-flushed');
+    return true;
+  };
+
+  const resumeReclaim = () => {
+    const parent = path.dirname(lock);
+    const prefix = `${path.basename(lock)}.quarantine-`;
+    let names;
+    try {
+      names = readdirFn(parent)
+        .filter(name => name.startsWith(prefix));
+    } catch {
+      return;
+    }
+    if (names.length > 1) throw new Error('LOCK_RECLAIM_CONFLICT');
+    if (names.length === 0) return;
+    const quarantine = join(parent, names[0]);
+    const observedOwner = readLockOwner(join(quarantine, 'owner.json'), readFileFn);
+    if (!observedOwner || names[0] !== `${prefix}${observedOwner.token}`) throw new Error('LOCK_RECLAIM_CONFLICT');
+    const observedIdentity = captureStableFileIdentity(quarantine, { lstatFn });
+    const now = boundedTime(nowFn());
+    let liveness = 'unknown';
+    try { liveness = probePid(observedOwner.pid); } catch { liveness = 'unknown'; }
+    if (!matchingStableFileIdentity(observedOwner.lock_identity, observedIdentity)
+      || observedOwner.hostname !== localHostname || now - observedOwner.heartbeat_at_ms <= ttlMs
+      || liveness !== 'dead' || !inspectOwned(quarantine, observedOwner, observedIdentity)) {
+      throw new Error('LOCK_RECLAIM_CONFLICT');
+    }
+    flushDirectoryFn(parent, { platform });
+    faultAt('reclaim:resumed-quarantine-parent-flushed');
+    if (!inspectOwned(quarantine, observedOwner, observedIdentity)) {
+      throw new Error('LOCK_RECLAIM_CONFLICT');
+    }
+    removeFn(quarantine, { recursive: true, force: false });
+    faultAt('reclaim:resumed-deleted');
+    flushDirectoryFn(parent, { platform });
+    faultAt('reclaim:resumed-delete-parent-flushed');
+  };
+
   for (let i = 0; i < retries && !acquired; i++) {
-    try { mkdirSync(lock); acquired = true; break; } catch { /* held */ }
-    // stale-lock 복구: 소유 프로세스가 죽어 남은 락은 TTL 후 회수
-    try { if (Date.now() - statSync(lock).mtimeMs > ttlMs) { rmdirSync(lock); continue; } } catch { /* lock vanished */ }
-    sleepMs(backoffMs);
+    resumeReclaim();
+    try {
+      mkdirFn(lock, { mode: 0o700 });
+      acquired = true;
+      break;
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+    }
+    if (tryReclaim()) continue;
+    sleepFn(backoffMs);
   }
   if (!acquired) throw new Error(`LOCK_BUSY: ${runId}`);
-  try { return fn(); } finally { try { rmdirSync(lock); } catch {} }
+  try {
+    lockIdentity = captureStableFileIdentity(lock, { lstatFn });
+    const acquiredAt = boundedTime(nowFn());
+    owner = {
+      protocol_version: 1,
+      token,
+      pid,
+      hostname: localHostname,
+      acquired_at_ms: acquiredAt,
+      heartbeat_at_ms: acquiredAt,
+      lock_identity: lockIdentity,
+    };
+    durableWriteFn(ownerPath, JSON.stringify(owner), { platform });
+    faultAt('acquire:owner-durable');
+    if (!inspectOwned()) throw new Error('LOCK_OWNERSHIP_LOST');
+
+    const assertRunBinding = (expectedRunDir) => {
+      if (expectedRunDir === undefined) return;
+      const canonicalExpected = canonicalNonSymlinkDirectory(expectedRunDir);
+      if (!canonicalExpected || canonicalExpected !== lockedRunDir) throw new Error('LOCK_RUN_MISMATCH');
+    };
+    const assertOwned = (expectedRunDir) => {
+      assertRunBinding(expectedRunDir);
+      if (!inspectOwned()) throw new Error('LOCK_OWNERSHIP_LOST');
+      return true;
+    };
+    const renew = (expectedRunDir) => {
+      assertOwned(expectedRunDir);
+      faultAt('renew:validated');
+      const heartbeat = boundedTime(nowFn());
+      if (heartbeat < owner.heartbeat_at_ms) throw new Error('LOCK_TIME_INVALID');
+      owner = { ...owner, heartbeat_at_ms: heartbeat };
+      durableWriteFn(ownerPath, JSON.stringify(owner), { platform });
+      assertOwned(expectedRunDir);
+      return true;
+    };
+    const guard = Object.freeze({ token, assertOwned, renew });
+    return fn(guard);
+  } finally {
+    if (owner && lockIdentity && inspectOwned()) {
+      try {
+        faultAt('release:validated');
+        if (!inspectOwned()) throw new Error('LOCK_OWNERSHIP_LOST');
+        const quarantine = `${lock}.release-${token}`;
+        renameFn(lock, quarantine);
+        faultAt('release:quarantined');
+        flushDirectoryFn(path.dirname(lock), { platform });
+        faultAt('release:quarantine-parent-flushed');
+        if (inspectOwned(quarantine, owner, lockIdentity)) {
+          removeFn(quarantine, { recursive: true, force: false });
+          faultAt('release:deleted');
+          flushDirectoryFn(path.dirname(lock), { platform });
+          faultAt('release:delete-parent-flushed');
+        }
+      } catch { /* ownership loss preserves evidence and never removes a successor */ }
+    }
+  }
 }
 
 // Two-mode safety pause (spec §9 / §1.2). Uses appendAnchored for event-log consistency.

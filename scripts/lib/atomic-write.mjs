@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { renameSync, writeFileSync } from 'node:fs';
+import { closeSync, fsyncSync, openSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 
@@ -38,4 +38,71 @@ export function atomicWrite(path, contents, { writeFn = writeFileSync, ...rename
   const tmp = join(dirname(path), `.tmp-${process.pid}-${Date.now()}-${randomBytes(4).toString('hex')}`);
   writeFn(tmp, contents);
   return renameAtomicWithRetry(tmp, path, renameOptions);
+}
+
+const WINDOWS_UNSUPPORTED_DIRECTORY_FLUSH = new Set(['EINVAL', 'ENOTSUP', 'ENOSYS', 'EISDIR']);
+
+function randomTempPath(path) {
+  return join(dirname(path), `.tmp-${process.pid}-${Date.now()}-${randomBytes(4).toString('hex')}`);
+}
+
+export function flushDirectory(path, {
+  platform = process.platform,
+  openFn = openSync,
+  fsyncFn = fsyncSync,
+  closeFn = closeSync,
+} = {}) {
+  let fd;
+  try {
+    fd = openFn(path, 'r');
+    fsyncFn(fd);
+  } catch (error) {
+    if (platform !== 'win32' || !WINDOWS_UNSUPPORTED_DIRECTORY_FLUSH.has(error?.code)) throw error;
+  } finally {
+    if (fd !== undefined) closeFn(fd);
+  }
+}
+
+export function durableAtomicWrite(path, contents, {
+  platform = process.platform,
+  tempPathFactory = randomTempPath,
+  writeFn = writeFileSync,
+  openFn = openSync,
+  fsyncFn = fsyncSync,
+  closeFn = closeSync,
+  unlinkFn = unlinkSync,
+  renameFn = renameSync,
+  monotonicNowFn,
+  sleepFn,
+  barrierAt = () => {},
+} = {}) {
+  const tmp = tempPathFactory(path);
+  let renamed = false;
+  try {
+    writeFn(tmp, contents, { flag: 'wx', mode: 0o600 });
+    barrierAt('write');
+    let fd;
+    try {
+      fd = openFn(tmp, 'r');
+      fsyncFn(fd);
+    } finally {
+      if (fd !== undefined) closeFn(fd);
+    }
+    barrierAt('file-flush');
+    renameAtomicWithRetry(tmp, path, {
+      platform,
+      renameFn,
+      ...(monotonicNowFn ? { monotonicNowFn } : {}),
+      ...(sleepFn ? { sleepFn } : {}),
+    });
+    renamed = true;
+    barrierAt('rename');
+    flushDirectory(dirname(path), { platform, openFn, fsyncFn, closeFn });
+    barrierAt('parent-flush');
+    return path;
+  } finally {
+    if (!renamed) {
+      try { unlinkFn(tmp); } catch { /* preserve the primary failure */ }
+    }
+  }
 }
