@@ -23,9 +23,12 @@ import { validate } from './schema.mjs';
 import { leaseCheck } from './lease.mjs';
 import {
   appendAnchored,
+  captureReconciledRootRecoverySnapshot as captureReconciledRootRecoverySnapshotImpl,
+  captureReconciledRunSet as captureReconciledRunSetImpl,
   captureReconciledRunSnapshot as captureReconciledRunSnapshotImpl,
   MUTATION_TURN_FLOOR,
   withReconciledMutationLock as withReconciledMutationLockImpl,
+  withReconciledRootRecoveryLock as withReconciledRootRecoveryLockImpl,
 } from './integrity.mjs';
 import { assertProjectRootBinding } from './project-root.mjs';
 import { ancestorPaths } from './path-portable.mjs';
@@ -163,8 +166,20 @@ export function captureReconciledRunSnapshot(...args) {
   return captureReconciledRunSnapshotImpl(...args);
 }
 
+export function captureReconciledRunSet(...args) {
+  return captureReconciledRunSetImpl(...args);
+}
+
+export function captureReconciledRootRecoverySnapshot(...args) {
+  return captureReconciledRootRecoverySnapshotImpl(...args);
+}
+
 export function withReconciledMutationLock(...args) {
   return withReconciledMutationLockImpl(...args);
+}
+
+export function withReconciledRootRecoveryLock(...args) {
+  return withReconciledRootRecoveryLockImpl(...args);
 }
 
 export function writeState(root, runId, data, { atomicWriteFn = atomicWrite } = {}) {

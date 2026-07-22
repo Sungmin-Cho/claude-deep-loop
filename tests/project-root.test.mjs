@@ -30,7 +30,7 @@ import {
 } from '../scripts/lib/project-root.mjs';
 import { createDirectoryJunction } from './helpers/fs-fixtures.mjs';
 import { validate } from '../scripts/lib/schema.mjs';
-import { verifyHead, verifyLog } from '../scripts/lib/integrity.mjs';
+import { appendAnchored, verifyHead, verifyLog } from '../scripts/lib/integrity.mjs';
 
 const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const FIXED_NOW = new Date('2026-07-11T00:00:00.000Z');
@@ -79,6 +79,53 @@ function durableSnapshot(root, runId) {
     event: existsSync(eventPath) ? readFileSync(eventPath, 'utf8') : null,
   };
 }
+
+function relocatedPendingPublication(barrier, suffix) {
+  const parent = freshRoot(`dl-root-wal-${suffix}-`);
+  const originalRoot = join(parent, 'original');
+  const candidateRoot = join(parent, 'candidate');
+  mkdirSync(originalRoot);
+  const { runId } = init(originalRoot);
+  const storedRoot = readState(originalRoot, runId).data.project.root;
+  assert.throws(() => appendAnchored(
+    originalRoot,
+    runId,
+    { type: 'relocated-candidate', data: { barrier }, now: '2026-07-11T00:01:00.000Z' },
+    loop => { loop.goal = `candidate:${barrier}`; },
+    undefined,
+    {
+      publication: {
+        kind: 'relocated-reader-barrier',
+        operationId: `root-${suffix}-${barrier.replaceAll(':', '-')}`,
+        artifacts: [],
+        topology: { barrier },
+        faultAt(label) { if (label === barrier) throw new Error(`fault:${barrier}`); },
+      },
+    },
+  ), /TRANSACTION_PENDING/);
+  renameSync(originalRoot, candidateRoot);
+  return { candidateRoot, runId, storedRoot };
+}
+
+test('candidate-root diagnosis and rebind replay relocated prepared publications at every state barrier', async () => {
+  const { diagnoseProjectRoot, rebindProjectRoot } = await recoveryApi();
+  const barriers = ['event:0:append', 'state:loop:rename', 'state:hash:rename', 'committed:rename'];
+  for (const barrier of barriers) {
+    const diagnosed = relocatedPendingPublication(barrier, 'diagnose');
+    assert.equal(diagnoseProjectRoot(diagnosed.candidateRoot, diagnosed.runId).mismatch_class, 'unresolvable');
+    assert.equal(readStateForRootRecovery(diagnosed.candidateRoot, diagnosed.runId).data.goal, `candidate:${barrier}`);
+
+    const rebound = relocatedPendingPublication(barrier, 'rebind');
+    rebindProjectRoot(rebound.candidateRoot, rebound.runId, {
+      actor: 'human',
+      confirm: true,
+      expectedStoredRootDigest: projectRootDigest(rebound.storedRoot),
+      fence: { owner: rebound.runId, generation: 1 },
+      now: FIXED_NOW.getTime(),
+    });
+    assert.equal(readState(rebound.candidateRoot, rebound.runId).data.goal, `candidate:${barrier}`);
+  }
+});
 
 function sourceFiles(dir) {
   const out = [];
@@ -177,17 +224,13 @@ test('root diagnosis is hash-verified, read-only, path-redacted, and denies a re
   const before = durableSnapshot(candidateRoot, runId);
   const { diagnoseProjectRoot } = await recoveryApi();
 
-  const result = diagnoseProjectRoot(candidateRoot, runId);
-
-  assert.deepEqual(result, {
-    mismatch_class: 'fenced',
-    rebind_allowed: false,
-    stored_root_digest: projectRootDigest(storedRoot),
-    owner: runId,
-    generation: 1,
+  let message = '';
+  assert.throws(() => diagnoseProjectRoot(candidateRoot, runId), error => {
+    message = String(error?.message || error);
+    return /PROJECT_ROOT_FENCED/.test(message);
   });
-  assert.equal(JSON.stringify(result).includes(originalRoot), false, 'diagnosis must not reveal the stored path');
-  assert.equal(JSON.stringify(result).includes(candidateRoot), false, 'diagnosis must not reveal the candidate path');
+  assert.equal(message.includes(originalRoot), false, 'diagnosis must not reveal the stored path');
+  assert.equal(message.includes(candidateRoot), false, 'diagnosis must not reveal the candidate path');
   assert.deepEqual(durableSnapshot(candidateRoot, runId), before, 'diagnosis must not mutate state, hash, or event log');
 
   const loopPath = join(runDir(candidateRoot, runId), 'loop.json');
@@ -224,7 +267,7 @@ test('a stopped original still fences diagnosis and rebind while its stored root
   const before = durableSnapshot(candidateRoot, runId);
   const { diagnoseProjectRoot, rebindProjectRoot } = await recoveryApi();
 
-  assert.equal(diagnoseProjectRoot(candidateRoot, runId).rebind_allowed, false);
+  assert.throws(() => diagnoseProjectRoot(candidateRoot, runId), /PROJECT_ROOT_FENCED/);
   assert.throws(
     () => rebindProjectRoot(candidateRoot, runId, {
       actor: 'human', confirm: true,

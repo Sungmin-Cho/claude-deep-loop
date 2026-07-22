@@ -93,7 +93,8 @@ for (const runtime of ['claude', 'codex']) {
     assert.equal(lines[0].includes(emitted.childRunId), false, 'resume binds the logical parent run, never the child owner');
     assert.ok(result.stdout.includes(`child_run_id=${emitted.childRunId}`), 'child id belongs in the lease/handoff summary');
     assert.ok(result.stdout.includes(`handoff_phase=emitted`));
-    assert.ok(result.stdout.includes(launchCommand.trimEnd()), 'existing launch-command.txt is the preferred launcher guidance');
+    assert.ok(!result.stdout.includes(launchCommand.trimEnd()), 'legacy launch text without bound metadata must be ignored');
+    assert.ok(result.stdout.includes(`Launcher guidance: ${descriptor.entries.interactive.display}`));
     assert.match(result.stdout, /인수 확인은 \/deep-loop-status/);
     assertStateBytesEqual(root, runId, before);
 
@@ -169,6 +170,31 @@ test('resume-command falls back to the process-platform descriptor when launch-c
     result.stdout.includes(`Launcher guidance: ${expected.entries.interactive.display}`),
     'fallback descriptor must describe the executing process platform, not the stored detection platform',
   );
+});
+
+test('resume-command ignores stale or mismatched launch metadata and never trusts text existence alone', () => {
+  const { root, runId } = seed('claude');
+  emitHandoff(root, runId, {
+    reason: 'stale metadata', trigger: 'resume-command-stale-meta', now: HANDOFF_NOW,
+    expect: { owner: runId, generation: 1 }, env: {},
+  });
+  const dir = runDir(root, runId);
+  const textPath = join(dir, 'terminal', 'launch-command.txt');
+  const metaPath = join(dir, 'terminal', 'launch-command.meta.json');
+  writeFileSync(textPath, 'STALE-LAUNCH-TEXT\n');
+  writeFileSync(metaPath, JSON.stringify({
+    launch_command_sha256: contentHash(Buffer.from('different bytes')),
+    parent_run_id: runId,
+    child_run_id: readState(root, runId).data.session_chain.lease.handoff_child_run_id,
+    handoff_phase: 'emitted',
+    project_root_digest: '0'.repeat(64),
+    project_binding_generation: 0,
+  }));
+  const expected = descriptorForPending(root, runId);
+  const result = invoke(['resume-command', '--project-root', root, '--run-id', runId]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stdout, /STALE-LAUNCH-TEXT/);
+  assert.ok(result.stdout.includes(`Launcher guidance: ${expected.entries.interactive.display}`));
 });
 
 test('resume-command accepts both reserved and spawned pending phases', () => {

@@ -10,7 +10,11 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { emitCompactCheckpoint, selectCheckpoint } from '../scripts/lib/checkpoint.mjs';
+import {
+  captureCheckpointSet,
+  emitCompactCheckpoint,
+  selectCheckpoint as selectCheckpointFromSet,
+} from '../scripts/lib/checkpoint.mjs';
 import { newEpisode } from '../scripts/lib/episode.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { nextAction } from '../scripts/lib/next-action.mjs';
@@ -20,6 +24,10 @@ import { ulid, wrap } from '../scripts/lib/envelope.mjs';
 const NOW_MS = Date.parse('2026-07-20T00:00:00.000Z');
 const NOW = new Date(NOW_MS);
 const noRun = () => ({ code: 1, stdout: '', stderr: '' });
+const selectCheckpoint = (root, runId, identity) => {
+  const selected = selectCheckpointFromSet(captureCheckpointSet(root, runId), identity);
+  return selected?.path ?? null;
+};
 
 function freshRoot() {
   return mkdtempSync(join(tmpdir(), 'dl-checkpoint-'));

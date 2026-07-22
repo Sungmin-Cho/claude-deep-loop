@@ -2,8 +2,8 @@ import { readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { latestInsights } from './insights.mjs';
-import { readState } from './state.mjs';
+import { captureLatestInsightsSet, latestInsights } from './insights.mjs';
+import { captureReconciledRunSnapshot } from './state.mjs';
 import { appendAnchored } from './integrity.mjs';
 import { newBlockedCheckerEpisode, newEpisode } from './episode.mjs';
 import { leaseCheck } from './lease.mjs';
@@ -169,7 +169,7 @@ export function revalidateIndependentReviewClaim(root, runId, options = {}) {
   const { episodeId, attemptId, fence } = options;
   validFence(fence, 'revalidateIndependentReviewClaim');
   if (!REVIEW_ATTEMPT_ID.test(attemptId || '')) throw new Error('REVIEW_CLAIM_ATTEMPT_INVALID');
-  const { data: loop } = readState(root, runId);
+  const { data: loop } = captureReconciledRunSnapshot(root, runId);
   const checker = loop.episodes.find(episode => episode.id === episodeId);
   if (checker?.status !== 'in_progress' || checker.attempt_id !== attemptId || !checker.review_claim) {
     throw new Error('REVIEW_CLAIM_MISMATCH');
@@ -311,7 +311,7 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: dispatchReview');
   // Fix 3: validate point before any state read/write
   if (!point || typeof point !== 'string' || !point.length) throw new Error('REVIEW_INPUT_INVALID: point');
-  const { data } = readState(root, runId);
+  const { data } = captureReconciledRunSnapshot(root, runId);
   // Codex impl r14 🟡: validate the workstream EXISTS at dispatch time — otherwise the checker is bound to a phantom
   // workstream and recordReviewOutcome (which derives workstream_id from the checker) later fails WORKSTREAM_NOT_FOUND,
   // stranding a pending checker that can't converge. Fail early instead.
@@ -404,7 +404,7 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
     //    maker가 인용한 emit과 다를 수 있다 — checker는 evidence의 sha256/emit_ulid를 maker 인용
     //    (ledger 항목의 insights_ref/insights_sha256, design/plan은 문서의 인용)과 대조하고 mismatch를
     //    criterion (a) 위반으로 판정한다(v1 바인딩 메커니즘 — 커널은 T1 ledger를 파싱하지 않는다).
-    const li = latestInsights(root);
+    const li = latestInsights(captureLatestInsightsSet(root));
     evidence = li ? {
       insights_path: li.path,
       emit_ulid: li.path.replace(/^.*\//, '').replace(/-insights\.json$/, ''),
@@ -619,7 +619,7 @@ export function recordReviewOutcome(root, runId, options = {}) {
   validVerdict(verdict);
   if (proof === null || typeof proof !== 'object' || Array.isArray(proof)) throw new Error('REVIEW_INPUT_INVALID: proof');
   rejectCallerMetadata(proof, 'recordReviewOutcome proof');
-  const preState = readState(root, runId).data;
+  const preState = captureReconciledRunSnapshot(root, runId).data;
   const runtime = sessionRuntime(preState);
   const snapshot = snapshotContext(preState, episodeId);
   const passed = verdict === 'APPROVE' || verdict === 'CONCERN';
@@ -643,7 +643,7 @@ export function importReviewOutcome(root, runId, options = {}) {
   const { raw, fence, now } = options;
   validFence(fence, 'importReviewOutcome');
   const input = parseReviewImport(raw);
-  const preState = readState(root, runId).data;
+  const preState = captureReconciledRunSnapshot(root, runId).data;
   const runtime = sessionRuntime(preState);
   const snapshot = snapshotContext(preState, input.checker_episode_id);
   let evidence;

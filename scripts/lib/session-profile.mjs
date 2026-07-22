@@ -1,6 +1,6 @@
 import { appendAnchored } from './integrity.mjs';
 import { leaseCheck } from './lease.mjs';
-import { readState, withLock } from './state.mjs';
+import { withReconciledMutationLock } from './state.mjs';
 import { sessionRuntime, validateSessionRuntime } from './runtime.mjs';
 
 // Session model/effort continuity (WS1). Validation is the write-boundary defense (init-run + this setter);
@@ -37,7 +37,7 @@ export function validateRuntimeProfile(runtime, { model = null, effort = null } 
 // fields are validated/compared/written.
 //
 // The no-op decision + fence are done IN-LOCK (fresh read) so a stale caller gets LEASE_FENCED (exit 3) even
-// when its values happen to match — never a silent exit-0 no-op. withLock is non-reentrant (CLAUDE.md inv #7),
+// when its values happen to match — never a silent exit-0 no-op. The run lock is non-reentrant (CLAUDE.md inv #7),
 // so we only DECIDE inside the lock and, if a write is needed, appendAnchored AFTER releasing it; appendAnchored's
 // own in-lock preCheck re-fences the write, so a concurrent lease change between the two locks can never cause
 // an unfenced write — the worst case is one harmless redundant event.
@@ -48,8 +48,7 @@ export function setSessionProfile(root, runId, { model, effort, expect, now = Da
   if (effort != null) validateEffort(effort);
 
   let needsWrite = false;
-  withLock(root, runId, () => {
-    const { data } = readState(root, runId);
+  withReconciledMutationLock(root, runId, (_guard, { data }) => {
     const lc = leaseCheck(data, { owner: expect.owner, generation: expect.generation, intent: 'lease' });
     if (!lc.ok) throw new Error('LEASE_FENCED: ' + lc.reason);   // in-lock authoritative fence (even for no-op)
     validateRuntimeProfile(sessionRuntime(data), {

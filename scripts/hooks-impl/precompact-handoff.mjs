@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readBoundedText } from '../lib/bounded-input.mjs';
 import { detectMain } from '../lib/detect-main.mjs';
-import { readState, findRoot } from '../lib/state.mjs';
+import { captureReconciledRunSnapshot, findRoot } from '../lib/state.mjs';
 import { emitCompactCheckpoint } from '../lib/checkpoint.mjs';
 import { emitHandoff } from '../lib/handoff.mjs';
 import { rollbackHandoff } from '../lib/lease.mjs';
@@ -35,7 +35,7 @@ function sweepLeaseResidue(root, runId, expect, cleanupFn) {
 // 반환/던짐 RUN_PAUSED 공통 경로: phase='reserved' 잔재만 정리(던짐-분기와 동일 규칙 — emitted/spawned는
 // preserve-pause 보존 규칙에 따라 건드리지 않는다) 후 benign no-run-paused.
 function normalizePausedEmit(root, runId, expect, cleanupFn) {
-  const fresh = readState(root, runId).data.session_chain?.lease || {};
+  const fresh = captureReconciledRunSnapshot(root, runId).data.session_chain?.lease || {};
   if (fresh.handoff_phase === 'reserved') {
     const fenced = sweepLeaseResidue(root, runId, expect, cleanupFn);
     if (fenced) return fenced;
@@ -55,7 +55,7 @@ export async function runPreCompactHandoff(input = {}, {
   const runId = currentRunId(root);
   if (!runId) return { ok: true, action: 'no-run' };
   let loop;
-  try { ({ data: loop } = readState(root, runId)); } catch (e) { return { ok: false, action: 'error', reason: String(e.message || e) }; }
+  try { ({ data: loop } = captureReconciledRunSnapshot(root, runId)); } catch (e) { return { ok: false, action: 'error', reason: String(e.message || e) }; }
   const lease = loop.session_chain?.lease || {};
   const expect = { owner: lease.owner_run_id, generation: lease.generation };
 
@@ -122,7 +122,9 @@ export async function runPreCompactHandoff(input = {}, {
   if (headless && loop.autonomy?.auto_handoff) {
     // Gate check on POST-emit state (Fix 2): emitHandoff appended the reserved child session so
     // sessions.length grew — respawnGate must see the fresh state or max_sessions is off-by-one.
-    const fresh = readState(root, runId).data;
+    let fresh;
+    try { fresh = captureReconciledRunSnapshot(root, runId).data; }
+    catch (error) { return { ok: false, action: 'error', reason: String(error?.message || error) }; }
     const gate = respawnGate(fresh, { now });
     if (!gate.ok) {
       // R12-LL fix: gate-blocked must ROLLBACK (invalidate reserved child), not merely set status=paused.

@@ -623,6 +623,41 @@ test('captureReconciledRunSnapshot returns immutable-by-copy verified loop/hash/
   assert.deepEqual(second.logLines, []);
 });
 
+test('captureReconciledRunSnapshot captures only route-declared artifact bytes under the same immutable snapshot', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-artifact-snapshot-'));
+  const { runId } = initRun(root, {
+    runtime: 'claude', goal: 'artifact snapshot', now: new Date('2026-07-23T00:00:00.000Z'),
+  });
+  const terminal = join(runDir(root, runId), 'terminal');
+  mkdirSync(terminal, { recursive: true });
+  writeFileSync(join(terminal, 'launch-command.txt'), 'candidate launch\n');
+
+  const snapshot = stateApi.captureReconciledRunSnapshot(root, runId, {
+    artifactRels: ['terminal/launch-command.txt', 'terminal/launch-command.meta.json'],
+  });
+  assert.deepEqual(Object.keys(snapshot.artifacts), [
+    'terminal/launch-command.txt',
+    'terminal/launch-command.meta.json',
+  ]);
+  assert.equal(snapshot.artifacts['terminal/launch-command.txt'].state, 'present');
+  assert.equal(snapshot.artifacts['terminal/launch-command.txt'].bytes.toString(), 'candidate launch\n');
+  assert.equal(
+    snapshot.artifacts['terminal/launch-command.txt'].sha256,
+    contentHash(Buffer.from('candidate launch\n')),
+  );
+  assert.deepEqual(snapshot.artifacts['terminal/launch-command.meta.json'], { state: 'absent' });
+
+  snapshot.artifacts['terminal/launch-command.txt'].bytes.fill(0);
+  const reopened = stateApi.captureReconciledRunSnapshot(root, runId, {
+    artifactRels: ['terminal/launch-command.txt'],
+  });
+  assert.equal(reopened.artifacts['terminal/launch-command.txt'].bytes.toString(), 'candidate launch\n');
+  assert.throws(
+    () => stateApi.captureReconciledRunSnapshot(root, runId, { artifactRels: ['../loop.json'] }),
+    /ARTIFACT_REL_INVALID/,
+  );
+});
+
 test('withReconciledMutationLock repairs a prepared candidate before invoking its fixed writer callback', () => {
   assert.equal(typeof stateApi.withReconciledMutationLock, 'function');
   const root = mkdtempSync(join(tmpdir(), 'dl-writer-barrier-'));

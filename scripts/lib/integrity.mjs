@@ -6,6 +6,7 @@ import {
   lstatSync,
   openSync,
   readFileSync,
+  readdirSync,
   realpathSync,
 } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -17,7 +18,12 @@ import {
   writeState,
   withLock,
 } from './state.mjs';
-import { assertProjectRootBinding, canonicalProjectRoot, projectRootDigest } from './project-root.mjs';
+import {
+  assertProjectRootBinding,
+  canonicalProjectRoot,
+  classifyProjectRootBinding,
+  projectRootDigest,
+} from './project-root.mjs';
 import { validate } from './schema.mjs';
 import { durableAtomicWrite, flushDirectory } from './atomic-write.mjs';
 import {
@@ -111,10 +117,10 @@ function readRawRun(root, runId) {
   return { dir, loopBytes, hashBytes, logBytes };
 }
 
-function snapshotRaw(root, runId, raw, { requireSchema = true } = {}) {
+function snapshotRaw(root, runId, raw, { requireSchema = true, requireProjectBinding = true } = {}) {
   const parsed = parseHashVerifiedStateBytes(root, runId, raw.loopBytes, raw.hashBytes, {
     requireSchema,
-    requireProjectBinding: true,
+    requireProjectBinding,
   });
   const { lines: logLines } = parseExactLogBytes(raw.logBytes);
   const head = verifyHeadLines(logLines, parsed.data.event_log_head);
@@ -127,6 +133,43 @@ function snapshotRaw(root, runId, raw, { requireSchema = true } = {}) {
     logBytes: Buffer.from(raw.logBytes),
     logLines: structuredClone(logLines),
   };
+}
+
+function captureArtifactLocked(root, runId, rel) {
+  if (normalizePortableRelativePath(rel) !== rel) throw new Error(`ARTIFACT_REL_INVALID: ${String(rel)}`);
+  const base = runDir(root, runId);
+  const canonicalBase = (realpathSync.native || realpathSync)(base);
+  const parts = rel.split('/');
+  let current = base;
+  for (let index = 0; index < parts.length; index++) {
+    current = join(current, parts[index]);
+    if (!existsSync(current)) return Object.freeze({ state: 'absent' });
+    const stat = lstatSync(current, { bigint: true });
+    if (stat.isSymbolicLink()) throw new Error(`ARTIFACT_REL_INVALID: symlink ${rel}`);
+    if (index < parts.length - 1) {
+      if (!stat.isDirectory()) throw new Error(`ARTIFACT_REL_INVALID: parent ${rel}`);
+      const canonical = (realpathSync.native || realpathSync)(current);
+      const expected = join(canonicalBase, ...parts.slice(0, index + 1));
+      if (resolve(canonical) !== resolve(expected)) throw new Error(`ARTIFACT_REL_INVALID: alias ${rel}`);
+      continue;
+    }
+    if (!stat.isFile()) throw new Error(`ARTIFACT_REL_INVALID: target ${rel}`);
+    const before = captureStableFileIdentity(current);
+    const bytes = readFileSync(current);
+    const after = captureStableFileIdentity(current);
+    if (!matchingStableFileIdentity(before, after)) throw new Error(`ARTIFACT_REL_INVALID: identity drift ${rel}`);
+    return Object.freeze({ state: 'present', bytes: Buffer.from(bytes), sha256: contentHash(bytes) });
+  }
+  throw new Error(`ARTIFACT_REL_INVALID: ${rel}`);
+}
+
+function captureArtifactsLocked(root, runId, artifactRels = []) {
+  if (!Array.isArray(artifactRels) || new Set(artifactRels).size !== artifactRels.length) {
+    throw new Error('ARTIFACT_REL_INVALID: fixed unique list required');
+  }
+  const artifacts = Object.create(null);
+  for (const rel of artifactRels) artifacts[rel] = captureArtifactLocked(root, runId, rel);
+  return artifacts;
 }
 
 function operationTimestamp(now) {
@@ -245,9 +288,14 @@ function stableArtifactPredecessor(rootDir, rel) {
   };
 }
 
-function validatePreparedAuthority(root, runId, prepared, candidate, candidateBytes, candidateHashBytes) {
+function validatePreparedAuthority(root, runId, prepared, candidate, candidateBytes, candidateHashBytes, {
+  rootRecovery = false,
+} = {}) {
   const manifest = prepared.manifest;
-  if (manifest.projectRoot !== canonicalProjectRoot(root)
+  const projectAuthorityMatches = rootRecovery
+    ? projectRootDigest(manifest.projectRoot) === projectRootDigest(candidate.project?.root)
+    : manifest.projectRoot === canonicalProjectRoot(root);
+  if (!projectAuthorityMatches
     || candidate.run_id !== runId
     || candidate.autonomy?.session_runtime !== manifest.runtime
     || contentHash(candidateBytes) !== manifest.candidateLoopHash
@@ -260,7 +308,7 @@ function validatePreparedAuthority(root, runId, prepared, candidate, candidateBy
   }
 }
 
-function classifyPreparedRun(root, runId, guard, prepared) {
+function classifyPreparedRun(root, runId, guard, prepared, { rootRecovery = false } = {}) {
   const manifest = prepared.manifest;
   const loopStage = prepared.stages.find(stage => stage.role === 'candidate-loop');
   const hashStage = prepared.stages.find(stage => stage.role === 'candidate-loop-hash');
@@ -271,12 +319,12 @@ function classifyPreparedRun(root, runId, guard, prepared) {
   try {
     candidate = parseHashVerifiedStateBytes(root, runId, candidateBytes, candidateHashBytes, {
       requireSchema: true,
-      requireProjectBinding: true,
+      requireProjectBinding: !rootRecovery,
     }).data;
   } catch (error) {
     throw transactionError(`candidate state: ${error?.message || error}`);
   }
-  validatePreparedAuthority(root, runId, prepared, candidate, candidateBytes, candidateHashBytes);
+  validatePreparedAuthority(root, runId, prepared, candidate, candidateBytes, candidateHashBytes, { rootRecovery });
 
   const stagedEvents = [];
   let expectedHead = manifest.preEventHead;
@@ -332,7 +380,7 @@ function classifyPreparedRun(root, runId, guard, prepared) {
     try {
       predecessor = parseHashVerifiedStateBytes(root, runId, raw.loopBytes, raw.hashBytes, {
         requireSchema: true,
-        requireProjectBinding: true,
+        requireProjectBinding: !rootRecovery,
       }).data;
     } catch (error) {
       throw transactionError(`predecessor state: ${error?.message || error}`);
@@ -413,6 +461,7 @@ export function reconcileAnchoredPublicationLocked(root, runId, guard, {
   faultAt = () => {},
   forceUnlinkReplacement = false,
   durableWriteFn = durableAtomicWrite,
+  rootRecovery = false,
 } = {}) {
   guard.assertOwned();
   if (!existsSync(join(runDir(root, runId), 'transactions'))) {
@@ -420,7 +469,7 @@ export function reconcileAnchoredPublicationLocked(root, runId, guard, {
   }
   const prepared = findPreparedPublicationLocked(runDir(root, runId), guard);
   if (!prepared) return { ok: true, reconciled: false };
-  const classified = classifyPreparedRun(root, runId, guard, prepared);
+  const classified = classifyPreparedRun(root, runId, guard, prepared, { rootRecovery });
   if (classified.committed) return { ok: true, reconciled: true, committed: true };
 
   publishArtifactTargetsLocked(runDir(root, runId), guard, classified.manifest, {
@@ -443,7 +492,7 @@ export function reconcileAnchoredPublicationLocked(root, runId, guard, {
     });
     faultAt('state:hash:rename');
   }
-  const finalClassified = classifyPreparedRun(root, runId, guard, prepared);
+  const finalClassified = classifyPreparedRun(root, runId, guard, prepared, { rootRecovery });
   if (finalClassified.loopState !== 'candidate' || finalClassified.hashState !== 'candidate'
     || finalClassified.appendedCount !== finalClassified.stagedEvents.length
     || !finalClassified.raw.hashBytes) throw transactionError('incomplete replay');
@@ -454,7 +503,86 @@ export function reconcileAnchoredPublicationLocked(root, runId, guard, {
 export function captureReconciledRunSnapshot(root, runId, options = {}) {
   return withLock(root, runId, guard => {
     reconcileAnchoredPublicationLocked(root, runId, guard, options);
-    return snapshotRaw(root, runId, readRawRun(root, runId));
+    const snapshot = snapshotRaw(root, runId, readRawRun(root, runId));
+    return { ...snapshot, artifacts: captureArtifactsLocked(root, runId, options.artifactRels) };
+  }, options.lockOptions);
+}
+
+function frozenRunIds(root, requested) {
+  if (requested !== undefined) {
+    if (!Array.isArray(requested)) throw new Error('RUN_SET_INVALID: runIds');
+    const ids = [...new Set(requested)].sort();
+    for (const id of ids) runDir(root, id);
+    return Object.freeze(ids);
+  }
+  const dir = join(root, '.deep-loop', 'runs');
+  if (!existsSync(dir)) return Object.freeze([]);
+  return Object.freeze([...new Set(readdirSync(dir, { withFileTypes: true })
+    .filter(entry => entry.isDirectory())
+    .map(entry => entry.name))].sort());
+}
+
+export function captureReconciledRunSet(root, options = {}) {
+  const runIds = frozenRunIds(root, options.runIds);
+  options.afterEnumeration?.(runIds);
+  const runs = Object.create(null);
+  const errors = Object.create(null);
+  for (const runId of runIds) {
+    const capture = () => captureReconciledRunSnapshot(root, runId, {
+      artifactRels: options.artifactRelsByRun?.[runId] || [],
+      lockOptions: options.lockOptions,
+    });
+    try {
+      runs[runId] = capture();
+    } catch (firstError) {
+      try {
+        const delay = options.retryDelayMs ?? 50;
+        if (options.sleepFn) options.sleepFn(delay);
+        else Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delay);
+        runs[runId] = capture();
+      } catch (error) {
+        errors[runId] = Object.freeze({
+          kind: error?.name === 'SyntaxError' ? 'unreadable' : 'integrity',
+          message: String(error?.message || error),
+        });
+      }
+    }
+  }
+  return Object.freeze({ root: canonicalProjectRoot(root), runIds, runs, errors });
+}
+
+function assertRootRecoveryBinding(candidateRoot, snapshot) {
+  const binding = classifyProjectRootBinding(candidateRoot, snapshot.data.project?.root);
+  if (binding.mismatch_class !== 'unresolvable') {
+    if (binding.mismatch_class === 'fenced') throw new Error('PROJECT_ROOT_FENCED: stored project root still resolves');
+    throw new Error('PROJECT_ROOT_REBIND_NOT_ALLOWED: project root already matches');
+  }
+  return binding;
+}
+
+export function captureReconciledRootRecoverySnapshot(candidateRoot, runId, options = {}) {
+  return withLock(candidateRoot, runId, guard => {
+    reconcileAnchoredPublicationLocked(candidateRoot, runId, guard, { ...options, rootRecovery: true });
+    const snapshot = snapshotRaw(candidateRoot, runId, readRawRun(candidateRoot, runId), {
+      requireProjectBinding: false,
+    });
+    assertRootRecoveryBinding(candidateRoot, snapshot);
+    return { ...snapshot, artifacts: captureArtifactsLocked(candidateRoot, runId, options.artifactRels) };
+  }, options.lockOptions);
+}
+
+export function withReconciledRootRecoveryLock(candidateRoot, runId, callback, options = {}) {
+  if (typeof callback !== 'function') throw new Error('MUTATION_CALLBACK_REQUIRED');
+  return withLock(candidateRoot, runId, guard => {
+    reconcileAnchoredPublicationLocked(candidateRoot, runId, guard, { ...options, rootRecovery: true });
+    const snapshot = snapshotRaw(candidateRoot, runId, readRawRun(candidateRoot, runId), {
+      requireProjectBinding: false,
+    });
+    assertRootRecoveryBinding(candidateRoot, snapshot);
+    if (existsSync(join(runDir(candidateRoot, runId), 'transactions'))) {
+      retireCommittedPublicationLocked(runDir(candidateRoot, runId), guard);
+    }
+    return callback(guard, snapshot);
   }, options.lockOptions);
 }
 
@@ -462,7 +590,7 @@ export function withReconciledMutationLock(root, runId, callback, options = {}) 
   if (typeof callback !== 'function') throw new Error('MUTATION_CALLBACK_REQUIRED');
   return withLock(root, runId, guard => {
     reconcileAnchoredPublicationLocked(root, runId, guard, options);
-    const snapshot = snapshotRaw(root, runId, readRawRun(root, runId));
+    const snapshot = snapshotRaw(root, runId, readRawRun(root, runId), { requireSchema: false });
     if (existsSync(join(runDir(root, runId), 'transactions'))) {
       retireCommittedPublicationLocked(runDir(root, runId), guard);
     }

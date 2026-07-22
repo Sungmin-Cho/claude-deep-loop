@@ -1,5 +1,8 @@
 import { validate } from './schema.mjs';
-import { readStateForRootRecovery, withLock } from './state.mjs';
+import {
+  captureReconciledRootRecoverySnapshot,
+  withReconciledRootRecoveryLock,
+} from './state.mjs';
 import {
   canonicalProjectRoot,
   classifyProjectRootBinding,
@@ -46,7 +49,7 @@ function diagnosis(candidateRoot, runId, loop) {
 
 export function diagnoseProjectRoot(candidateRoot, runId) {
   const candidateCanonical = canonicalCandidate(candidateRoot);
-  const { data: loop } = readStateForRootRecovery(candidateCanonical, runId);
+  const { data: loop } = captureReconciledRootRecoverySnapshot(candidateCanonical, runId);
   return diagnosis(candidateCanonical, runId, loop);
 }
 
@@ -58,13 +61,12 @@ export function rebindProjectRoot(candidateRoot, runId, {
   now,
 } = {}) {
   const lockedRoot = canonicalCandidate(candidateRoot);
-  return withLock(lockedRoot, runId, () => {
+  return withReconciledRootRecoveryLock(lockedRoot, runId, (_guard, { data: loop }) => {
     const candidateCanonical = canonicalCandidate(candidateRoot);
     if (candidateCanonical !== lockedRoot) {
       throw new Error('PROJECT_ROOT_UNRESOLVABLE: candidate root identity changed');
     }
 
-    const { data: loop } = readStateForRootRecovery(lockedRoot, runId);
     const lease = assertRecoveryState(loop, runId);
     const binding = classifyProjectRootBinding(candidateCanonical, loop.project.root);
     if (binding.mismatch_class === 'fenced') {

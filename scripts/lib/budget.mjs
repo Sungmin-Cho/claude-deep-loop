@@ -8,7 +8,7 @@ import {
   verifyHead,
   validCost,
 } from './integrity.mjs';
-import { readState, writeState, withLock } from './state.mjs';
+import { writeState, withReconciledMutationLock } from './state.mjs';
 import { leaseCheck } from './lease.mjs';
 import { sessionRuntime } from './runtime.mjs';
 import { contentHash } from './envelope.mjs';
@@ -273,13 +273,12 @@ function trailingFloor(lines, owner, generation) {
   return { tf, tk };
 }
 
-// Explicit cost report — its own withLock (needs to read the log to absorb the tick's floor before appending an
+// Explicit cost report — its own reconciled mutation lock (needs the log to absorb the tick's floor before appending an
 // ADJUSTED cost). Mirrors appendAnchored's verify→append→anchor→reconcile sequence; recomputeSpent stays a PURE
 // sum so reconcileBudget agrees automatically. Negative/non-finite still rejected (validCost).
 export function recordCost(root, runId, { turns = 0, tokens = 0, fence } = {}) {
   if (!validCost({ turns, tokens })) throw new Error(`INVALID_COST: turns/tokens must be finite >= 0 (got ${turns}/${tokens})`);
-  return withLock(root, runId, () => {
-    const { data: loop } = readState(root, runId);
+  return withReconciledMutationLock(root, runId, (_guard, { data: loop }) => {
     if (fence) { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
     // v1.6 (spec §2.3-7): recordCost는 자체 appendEvent+writeState 경로(appendAnchored 관문 비경유).
     // fence가 있으면 위 leaseCheck가 LEASE_FENCED: RUN_TERMINAL로 선착 — drive-headless의 LEASE_FENCED
@@ -419,8 +418,7 @@ export function settleCodexPreflightCost(root, runId, { receipt, fence } = {}) {
     || fence.intent !== 'accounting') {
     throw new Error('PREFLIGHT_ACCOUNTING_FENCE_REQUIRED');
   }
-  return withLock(root, runId, () => {
-    const { data: loop } = readState(root, runId);
+  return withReconciledMutationLock(root, runId, (_guard, { data: loop }) => {
     const lease = loop.session_chain?.lease || {};
     if (lease.owner_run_id !== fence.owner) throw new Error('LEASE_FENCED: owner-mismatch');
     if (lease.generation !== fence.generation) throw new Error('LEASE_FENCED: generation-mismatch');
@@ -840,8 +838,7 @@ export function settleCodexProcessCost(root, runId, { receipt, fence } = {}) {
     || fence.intent !== 'accounting') {
     throw new Error('PROCESS_ACCOUNTING_FENCE_REQUIRED');
   }
-  return withLock(root, runId, () => {
-    const { data: loop } = readState(root, runId);
+  return withReconciledMutationLock(root, runId, (_guard, { data: loop }) => {
     const lease = loop.session_chain?.lease || {};
     if (lease.owner_run_id !== fence.owner) throw new Error('LEASE_FENCED: owner-mismatch');
     if (lease.generation !== fence.generation) throw new Error('LEASE_FENCED: generation-mismatch');
@@ -948,8 +945,7 @@ export function settleTerminalCodexMakerCost(root, runId, { usage, fence, handof
   if (typeof handoffKey !== 'string' || !/^[a-f0-9]{16}$/.test(handoffKey)) {
     throw new Error('TERMINAL_ACCOUNTING_HANDOFF_INVALID');
   }
-  return withLock(root, runId, () => {
-    const { data: loop } = readState(root, runId);
+  return withReconciledMutationLock(root, runId, (_guard, { data: loop }) => {
     const lease = loop.session_chain?.lease || {};
     if (lease.owner_run_id !== fence.owner) throw new Error('LEASE_FENCED: owner-mismatch');
     if (lease.generation !== fence.generation) throw new Error('LEASE_FENCED: generation-mismatch');
@@ -1052,16 +1048,22 @@ export function settleTerminalCodexMakerCost(root, runId, { usage, fence, handof
 
 // 저장된 budget vs event-log 재계산 비교 + log head 앵커 대조 — 불일치/손상/truncation 시 fail-stop
 export function reconcileBudget(root, runId) {
-  return withLock(root, runId, () => {
-    const v = verifyLog(root, runId);
-    if (!v.ok) throw new Error(`BUDGET_TAMPERED: event-log integrity: ${v.errors.join('; ')}`);
-    const { data } = readState(root, runId);
-    const h = verifyHead(root, runId, data.event_log_head);   // suffix truncation 탐지
-    if (!h.ok) throw new Error(`BUDGET_TAMPERED: ${h.errors.join('; ')}`);
-    const t = recomputeSpent(root, runId);
-    if ((data.budget.spent || 0) !== t.turns || (data.budget.tokens_spent || 0) !== t.tokens) {
-      throw new Error(`BUDGET_TAMPERED: stored ${data.budget.spent}/${data.budget.tokens_spent} != log ${t.turns}/${t.tokens}`);
+  try {
+    return withReconciledMutationLock(root, runId, (_guard, { data }) => {
+      const v = verifyLog(root, runId);
+      if (!v.ok) throw new Error(`BUDGET_TAMPERED: event-log integrity: ${v.errors.join('; ')}`);
+      const h = verifyHead(root, runId, data.event_log_head);   // suffix truncation 탐지
+      if (!h.ok) throw new Error(`BUDGET_TAMPERED: ${h.errors.join('; ')}`);
+      const t = recomputeSpent(root, runId);
+      if ((data.budget.spent || 0) !== t.turns || (data.budget.tokens_spent || 0) !== t.tokens) {
+        throw new Error(`BUDGET_TAMPERED: stored ${data.budget.spent}/${data.budget.tokens_spent} != log ${t.turns}/${t.tokens}`);
+      }
+      return { turns: t.turns, tokens: t.tokens };
+    });
+  } catch (error) {
+    if (String(error?.message || error).startsWith('LOG_TAMPERED:')) {
+      throw new Error(`BUDGET_TAMPERED: ${error.message}`);
     }
-    return { turns: t.turns, tokens: t.tokens };
-  });
+    throw error;
+  }
 }

@@ -15,7 +15,13 @@ import {
 } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
-import { findRoot, pauseRun, readState, runDir, withLock } from './state.mjs';
+import {
+  captureReconciledRunSnapshot,
+  findRoot,
+  pauseRun,
+  runDir,
+  withReconciledMutationLock,
+} from './state.mjs';
 import {
   codexCheckerClaimHash,
   recordCost,
@@ -63,6 +69,7 @@ const HOST_LOCK_GRACE_MS = 15 * 60 * 1000;
 const HOST_LOCK_CRASH_GRACE_MS = 30 * 1000;
 const NODE_TIMER_MAX_MS = 2_147_483_647;
 const CHECKER_IMPORT_TIMEOUT_MS = 30_000;
+const captureFreshLoop = (root, runId) => captureReconciledRunSnapshot(root, runId).data;
 
 function sameFileIdentity(left, right) {
   return left.dev === right.dev && left.ino === right.ino && left.mode === right.mode
@@ -159,7 +166,7 @@ function acquireHeadlessHostLock(root, runId, {
   try {
     // The kernel lock coordinates only this small metadata transaction. It is released before authentication,
     // preflight, cost recording, maker CAS, or any runtime process, so normal kernel mutations cannot deadlock.
-    acquired = withLock(root, runId, () => {
+    acquired = withReconciledMutationLock(root, runId, () => {
       try {
         mkdirSync(lockPath, { mode: 0o700 });
       } catch (error) {
@@ -208,7 +215,7 @@ function acquireHeadlessHostLock(root, runId, {
   return {
     release() {
       if (released) return;
-      withLock(root, runId, () => {
+      withReconciledMutationLock(root, runId, () => {
         let current;
         try { current = readFileSync(ownerPath, 'utf8'); } catch (error) {
           if (error?.code === 'ENOENT') return;
@@ -328,7 +335,7 @@ function pauseWithFreshFence(root, runId, { reason, expect, now }) {
     if (message.startsWith('RUN_TERMINAL')) return 'terminal';
     if (!message.startsWith('LEASE_FENCED')) throw error;
   }
-  const { data: freshLoop } = readState(root, runId);
+  const freshLoop = captureFreshLoop(root, runId);
   if (terminal(freshLoop)) return 'terminal';
   const freshLease = freshLoop.session_chain?.lease || {};
   try {
@@ -421,7 +428,7 @@ function driveIndependentChecker({
       if (message.includes('LEASE_FENCED') || message.includes('RUN_TERMINAL')) {
         return { ok: false, action: message.includes('RUN_TERMINAL') ? 'terminal' : 'fenced', reason };
       }
-      const { data: raceLoop } = readState(projectRoot, runId);
+      const raceLoop = captureFreshLoop(projectRoot, runId);
       const raced = inProgressIndependentChecker(raceLoop);
       if (raced) {
         return {
@@ -622,7 +629,7 @@ function driveIndependentChecker({
     return { ok: false, action: pauseOutcome === 'fenced' ? 'fenced' : 'preflight-failed', reason: preflight.reason };
   }
 
-  const { data: postCostLoop } = readState(projectRoot, runId);
+  const postCostLoop = captureFreshLoop(projectRoot, runId);
   const postLease = postCostLoop.session_chain?.lease || {};
   if (postLease.owner_run_id !== parentOwner || postLease.generation !== parentGeneration
     || sessionRuntime(postCostLoop) !== 'codex' || canonicalProjectRoot(postCostLoop.project.root) !== projectRoot) {
@@ -649,7 +656,7 @@ function driveIndependentChecker({
     const message = String(error?.message || error);
     if (message.includes('LEASE_FENCED')) return { ok: false, action: 'fenced', reason: 'checker-claim-failed' };
     if (message.includes('RUN_TERMINAL')) return { ok: false, action: 'terminal', reason: 'checker-claim-failed' };
-    const { data: raceLoop } = readState(projectRoot, runId);
+    const raceLoop = captureFreshLoop(projectRoot, runId);
     const raced = inProgressIndependentChecker(raceLoop);
     if (raced) {
       return {
@@ -736,7 +743,7 @@ function driveIndependentChecker({
 
   const identityFresh = () => {
     try {
-      const { data: freshLoop } = readState(projectRoot, runId);
+      const freshLoop = captureFreshLoop(projectRoot, runId);
       const freshLease = freshLoop.session_chain?.lease || {};
       const freshExecutable = revalidateExecutable(freshLoop.autonomy?.runtime_executable_approval);
       const freshHome = resolveCodexHome({ env, expectedIdentity: codexHome, platform: freshExecutable.platform });
@@ -870,7 +877,7 @@ function driveIndependentChecker({
   }
   if (imported?.ok) {
     try {
-      const { data: proofLoop } = readState(projectRoot, runId);
+      const proofLoop = captureFreshLoop(projectRoot, runId);
       const proofChecker = proofLoop.episodes.find(episode => episode.id === pending.id);
       if (!['approved', 'rejected'].includes(proofChecker?.status)
         || proofChecker.review_source !== 'imported-stdin'
@@ -892,7 +899,7 @@ function driveIndependentChecker({
 
   let continuation = false;
   let continuationFailure = null;
-  const { data: afterImport } = readState(projectRoot, runId);
+  const afterImport = captureFreshLoop(projectRoot, runId);
   if (afterImport.status === 'running') {
     try {
       const handoff = emitHandoffFn(projectRoot, runId, {
@@ -997,7 +1004,7 @@ function driveHeadlessRunLocked({
 } = {}) {
   const sampleNow = typeof clock === 'function' ? clock : (now === undefined ? Date.now : () => now);
   const entryNow = now === undefined ? sampleNow() : now;
-  let { data: initialLoop } = readState(root, runId);
+  let initialLoop = captureFreshLoop(root, runId);
   const runtime = sessionRuntime(initialLoop);
   const projectRoot = canonicalProjectRoot(initialLoop.project.root);
   const initialLease = initialLoop.session_chain?.lease || {};
@@ -1038,7 +1045,7 @@ function driveHeadlessRunLocked({
         return leftRank - rightRank || left.journalPath.localeCompare(right.journalPath);
       });
       for (const item of cleanupOrder) removeProcessReceiptFn(item);
-      if (pendingReceipts.length > 0) initialLoop = readState(projectRoot, runId).data;
+      if (pendingReceipts.length > 0) initialLoop = captureFreshLoop(projectRoot, runId);
     } catch (error) {
       return {
         ok: false,
@@ -1286,7 +1293,7 @@ function driveHeadlessRunLocked({
           || !sameValue(freshPluginDirectory, pluginDirectorySnapshot)) {
           return { ok: false, reason: 'post-cas-root-drift' };
         }
-        const { data: freshLoop } = readState(projectRoot, runId);
+        const freshLoop = captureFreshLoop(projectRoot, runId);
         const freshLease = freshLoop.session_chain?.lease || {};
         const freshExecutable = revalidateExecutable(freshLoop.autonomy?.runtime_executable_approval);
         const freshHome = resolveCodexHome({
@@ -1407,7 +1414,7 @@ function driveHeadlessRunLocked({
     expect: parentFence,
     expectedMode: 'headless',
   });
-  const { data: freshLoop } = readState(projectRoot, runId);
+  const freshLoop = captureFreshLoop(projectRoot, runId);
   const childAcquired = exactChildAcquired(freshLoop, childRunId);
   if (result.outcome === 'already-spawned' && captured == null) {
     if (terminal(freshLoop) || childAcquired) return { ok: true, action: 'already-spawned' };

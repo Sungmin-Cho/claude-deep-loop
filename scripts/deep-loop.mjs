@@ -10,7 +10,6 @@ import { json } from './lib/log.mjs';
 import { LAUNCHER_KINDS, validate as validateLoop } from './lib/schema.mjs';
 import {
   captureReconciledRunSnapshot,
-  readState,
   writeState,
   patch as patchState,
   pauseRun,
@@ -37,7 +36,14 @@ import { defaultDesktopProbe } from './lib/desktop-target.mjs';
 import { finishRun } from './lib/finish.mjs';
 import { detectAndPersist } from './lib/detect-terminal.mjs';
 import { recoverRun } from './lib/recover.mjs';
-import { computeInsights, emitInsights, latestInsights, validateLedger } from './lib/insights.mjs';
+import {
+  captureLatestInsightsSet,
+  captureReconciledRunSet,
+  computeInsights,
+  emitInsights,
+  latestInsights,
+  validateLedger,
+} from './lib/insights.mjs';
 import { diagnoseProjectRoot, rebindProjectRoot } from './lib/project-root-recovery.mjs';
 import {
   approveLauncherExecutable,
@@ -46,8 +52,9 @@ import {
   diagnoseRuntimeExecutable,
 } from './lib/runtime-executable.mjs';
 import { sessionRuntime } from './lib/runtime.mjs';
-import { canonicalProjectRoot } from './lib/project-root.mjs';
+import { canonicalProjectRoot, projectRootDigest } from './lib/project-root.mjs';
 import { buildRuntimeResumeDescriptor } from './lib/runtime-descriptor.mjs';
+import { contentHash } from './lib/envelope.mjs';
 
 const DEEP_LOOP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -150,7 +157,7 @@ function classifyKernelError(e) {
 function requireLease(root, runId, f, intent = 'business') {
   strArg(f, 'owner');
   const generation = intArg(f, 'generation');
-  const { data } = readState(root, runId);
+  const { data } = captureReconciledRunSnapshot(root, runId);
   const r = leaseCheck(data, { owner: f.owner, generation, intent });
   if (!r.ok) { error(`LEASE_FENCED: ${r.reason}`); process.exit(3); }
   return data;
@@ -160,7 +167,7 @@ const [, , sub, ...rest] = process.argv;
 
 // validate: 비공허 검증 (Codex impl 🟡4)
 // 1) 스키마+빌더 self-test: buildInitialLoop 산출물이 항상 검증 통과해야 함 (regression 게이트)
-// 2) 현재/지정 run이 있으면 readState(해시 검증 발화) + schema.validate
+// 2) 현재/지정 run이 있으면 reconciled snapshot + schema.validate
 const handlers = {
   validate: async (a) => {
     const f = parseFlags(a);
@@ -172,7 +179,7 @@ const handlers = {
     const runId = runIdOf(root, f);
     if (runId) {
       try {
-        const { data } = readState(root, runId);   // 해시 anchor 검증 발화
+        const { data } = captureReconciledRunSnapshot(root, runId);
         const rv = validateLoop(data);
         if (!rv.ok) errors.push(`run ${runId}: ${rv.errors.join('; ')}`);
       } catch (e) { errors.push(`run ${runId}: ${e.message}`); }
@@ -369,7 +376,7 @@ const handlers = {
   },
   'next-action': async (a) => {
     const f = parseFlags(a); const root = rootOf(f);
-    const { data } = readState(root, runIdOf(root, f));
+    const { data } = captureReconciledRunSnapshot(root, runIdOf(root, f));
     const unattended = !!f.unattended || resolveSpawnMode(data, { env: process.env }) === 'headless';
     json(nextAction(data, { now: parseNow(f), unattended })); return 0;
   },
@@ -384,7 +391,10 @@ const handlers = {
     const root = rootOf(f);
     const runId = runIdOf(root, f);
     if (!runId) { error('MISSING_RUN_ID'); return 2; }
-    const { data } = readState(root, runId);
+    const snapshot = captureReconciledRunSnapshot(root, runId, {
+      artifactRels: ['terminal/launch-command.txt', 'terminal/launch-command.meta.json'],
+    });
+    const { data } = snapshot;
     const lease = data.session_chain?.lease || {};
     const childRunId = typeof lease.handoff_child_run_id === 'string'
       ? lease.handoff_child_run_id
@@ -414,9 +424,26 @@ const handlers = {
       runtimeExecutableIdentity: data.autonomy?.runtime_executable_approval ?? null,
       launcherIdentity: data.session_spawn?.launcher_identity ?? null,
     });
-    const launchPath = join(runDir(canonicalRoot, runId), 'terminal', 'launch-command.txt');
-    const launcherGuidance = existsSync(launchPath)
-      ? `Launcher guidance (from launch-command.txt):\n${readFileSync(launchPath, 'utf8').trimEnd()}`
+    const launchText = snapshot.artifacts['terminal/launch-command.txt'];
+    const launchMeta = snapshot.artifacts['terminal/launch-command.meta.json'];
+    let boundLaunchText = null;
+    if (launchText?.state === 'present' && launchMeta?.state === 'present'
+      && Number.isSafeInteger(data.project?.binding_generation)) {
+      try {
+        const parsed = JSON.parse(launchMeta.bytes.toString('utf8'));
+        const meta = parsed?.payload && typeof parsed.payload === 'object' ? parsed.payload : parsed;
+        if (meta.launch_command_sha256 === contentHash(launchText.bytes)
+          && meta.parent_run_id === runId
+          && meta.child_run_id === childRunId
+          && meta.handoff_phase === lease.handoff_phase
+          && meta.project_root_digest === projectRootDigest(data.project.root)
+          && meta.project_binding_generation === data.project.binding_generation) {
+          boundLaunchText = launchText.bytes.toString('utf8').trimEnd();
+        }
+      } catch { /* stale/malformed metadata selects the current-root fallback */ }
+    }
+    const launcherGuidance = boundLaunchText !== null
+      ? `Launcher guidance (from launch-command.txt):\n${boundLaunchText}`
       : `Launcher guidance: ${descriptor.entries.interactive.display}`;
     const leaseState = typeof lease.state === 'string' ? ` lease_state=${lease.state}` : '';
     process.stdout.write([
@@ -430,13 +457,13 @@ const handlers = {
   },
   tick: async (a) => {
     const f = parseFlags(a); const root = rootOf(f);
-    const { data } = readState(root, runIdOf(root, f));
+    const { data } = captureReconciledRunSnapshot(root, runIdOf(root, f));
     const unattended = !!f.unattended || resolveSpawnMode(data, { env: process.env }) === 'headless';
     json({ mode: f.mode || 'advance', ...nextAction(data, { now: parseNow(f), unattended }) }); return 0;
   },
   lease: async (a) => {
     const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
-    if (verb === 'check') { const { data } = readState(root, runId); json(leaseCheck(data, { owner: strArg(f, 'owner'), generation: intArg(f, 'generation') })); return 0; }
+    if (verb === 'check') { const { data } = captureReconciledRunSnapshot(root, runId); json(leaseCheck(data, { owner: strArg(f, 'owner'), generation: intArg(f, 'generation') })); return 0; }
     if (verb === 'acquire') {
       const owner = strArg(f, 'owner');
       const expectGeneration = intArg(f, f['expect-generation'] !== undefined ? 'expect-generation' : 'generation');
@@ -585,7 +612,7 @@ const handlers = {
   respawn: async (a) => {
     const f = parseFlags(a); const root = rootOf(f); const runId = runIdOf(root, f);
     if (!runId) { error('MISSING_RUN_ID'); return 2; }
-    const { data } = readState(root, runId);
+    const { data } = captureReconciledRunSnapshot(root, runId);
     if (f['dry-run']) { json(respawnGate(data)); return 0; }
     // Require + fence --owner/--generation (exit 3). intent 'lease' so a releasing handoff lease is not rejected.
     requireLease(root, runId, f, 'lease');
@@ -605,7 +632,7 @@ const handlers = {
     const key = lease.handoff_idempotency_key;
     const cs = (data.session_chain?.sessions || []).find(s => s.run_id === childRunId);
     const handoffRel = cs && cs.handoff_rel;
-    const pollLease = () => readState(root, runId).data.session_chain.lease;
+    const pollLease = () => captureReconciledRunSnapshot(root, runId).data.session_chain.lease;
     const expect = { owner: f.owner, generation: intArg(f, 'generation') };
     const now = parseNow(f);
     try {
@@ -732,7 +759,7 @@ const handlers = {
   },
   budget: async (a) => {
     const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
-    if (verb === 'check') { const { data } = readState(root, runId); json(checkBudget(data, { now: parseNow(f) })); return 0; }
+    if (verb === 'check') { const { data } = captureReconciledRunSnapshot(root, runId); json(checkBudget(data, { now: parseNow(f) })); return 0; }
     if (verb === 'record') {
       requireLease(root, runId, f);
       // Codex r4 sf-4: parseFlags 는 값 없는 플래그를 true 로 둔다 → Number(true)=1 오기록 방지.
@@ -742,14 +769,14 @@ const handlers = {
       const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'business' };
       try { recordCost(root, runId, { turns, tokens, fence }); }
       catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }
-      const { data } = readState(root, runId);
+      const { data } = captureReconciledRunSnapshot(root, runId);
       json({ ok: true, spent: data.budget.spent, tokens_spent: data.budget.tokens_spent }); return 0;
     }
     error(`unknown budget verb: ${verb}`); return 2;
   },
   comprehension: async (a) => {
     const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
-    if (verb === 'status') { const { data } = readState(root, runId); json(computeDebt(data)); return 0; }
+    if (verb === 'status') { const { data } = captureReconciledRunSnapshot(root, runId); json(computeDebt(data)); return 0; }
     if (verb === 'ack') {
       requireLease(root, runId, f);   // fence 인자 → exit 3
       const episode = reqStr(f, 'episode'); if (!episode) { error('MISSING_EPISODE'); return 2; }   // Codex r1 sf-6
@@ -766,15 +793,15 @@ const handlers = {
       if (r && r.ok === false && r.rejected) {
         // headless-human fail-closed (the ack-rejected event is already appended). Surface as usage error.
         error(`ACK_REJECTED: ${r.reason}`);
-        const { data } = readState(root, runId); json({ ok: false, ...computeDebt(data) }); return 2;
+        const { data } = captureReconciledRunSnapshot(root, runId); json({ ok: false, ...computeDebt(data) }); return 2;
       }
-      const { data } = readState(root, runId); json({ ok: true, ...computeDebt(data) }); return 0;
+      const { data } = captureReconciledRunSnapshot(root, runId); json({ ok: true, ...computeDebt(data) }); return 0;
     }
     error(`unknown comprehension verb: ${verb}`); return 2;
   },
   breaker: async (a) => {
     const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
-    if (verb === 'check') { const { data } = readState(root, runId); json(checkBreaker(data)); return 0; }
+    if (verb === 'check') { const { data } = captureReconciledRunSnapshot(root, runId); json(checkBreaker(data)); return 0; }
     if (verb === 'reset') {
       if (f.confirm !== true && f.confirm !== 'true') { error('BREAKER_RESET_REQUIRES_CONFIRM: pass --confirm (human-only)'); return 2; }
       requireLease(root, runId, f, 'breaker-reset');   // Codex r2 critical-1: fence 필수; breaker-reset exempt from RUN_PAUSED gate
@@ -799,12 +826,12 @@ const handlers = {
         let targetDir;
         try { targetDir = runDir(root, target); } catch { error(`RUN_NOT_FOUND: ${target}`); return 1; }
         if (!existsSync(targetDir)) { error(`RUN_NOT_FOUND: ${target}`); return 1; }
-        const out = computeInsights(root, { selfRunId, now: parseNow(f) });
+        const out = computeInsights(captureReconciledRunSet(root), { selfRunId, now: parseNow(f) });
         json({ ...out, per_run: { [target]: out.per_run[target] ?? null } }); return 0;
       }
-      json(computeInsights(root, { selfRunId, now: parseNow(f) })); return 0;
+      json(computeInsights(captureReconciledRunSet(root), { selfRunId, now: parseNow(f) })); return 0;
     }
-    if (verb === 'latest') { json(latestInsights(root)); return 0; }
+    if (verb === 'latest') { json(latestInsights(captureLatestInsightsSet(root))); return 0; }
     if (verb === 'emit') {
       const runId = runIdOf(root, f);
       requireLease(root, runId, f);

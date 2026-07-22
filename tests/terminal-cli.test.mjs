@@ -295,3 +295,40 @@ test('CLI state get fail-stops byte-different replay lines without publishing la
     }, scenario.name);
   }
 });
+
+test('public/transitive readers and independent writers are statically closed through reconciliation gateways', () => {
+  const readers = [
+    'scripts/deep-loop.mjs',
+    'scripts/lib/insights.mjs',
+    'scripts/lib/review.mjs',
+    'scripts/lib/respawn.mjs',
+    'scripts/lib/headless-host.mjs',
+    'scripts/lib/checkpoint.mjs',
+    'scripts/lib/session-profile.mjs',
+    'scripts/hooks-impl/precompact-handoff.mjs',
+    'scripts/hooks-impl/sessionstart-restore.mjs',
+  ];
+  for (const rel of readers) {
+    const source = readFileSync(join(process.cwd(), rel), 'utf8');
+    assert.doesNotMatch(source, /\breadState\s*\(/, `${rel}: raw state read`);
+  }
+
+  const writers = [
+    'scripts/lib/budget.mjs',
+    'scripts/lib/breaker.mjs',
+    'scripts/lib/comprehension.mjs',
+    'scripts/lib/lease.mjs',
+    'scripts/lib/headless-host.mjs',
+    'scripts/lib/checkpoint.mjs',
+    'scripts/lib/session-profile.mjs',
+  ];
+  for (const rel of writers) {
+    const source = readFileSync(join(process.cwd(), rel), 'utf8');
+    assert.doesNotMatch(source, /\bwithLock\s*\(/, `${rel}: raw writer lock`);
+  }
+
+  const rootRecovery = readFileSync(join(process.cwd(), 'scripts/lib/project-root-recovery.mjs'), 'utf8');
+  assert.match(rootRecovery, /captureReconciledRootRecoverySnapshot\s*\(/);
+  assert.match(rootRecovery, /withReconciledRootRecoveryLock\s*\(/);
+  assert.doesNotMatch(rootRecovery, /\b(?:withLock|captureReconciledRunSnapshot|withReconciledMutationLock)\s*\(/);
+});

@@ -2,7 +2,7 @@ import { statSync } from 'node:fs';
 import { join } from 'node:path';
 import { contentHash, ulid } from './envelope.mjs';
 import { runtimeFence } from './runtime.mjs';
-import { readState, runDir, writeState, withLock } from './state.mjs';
+import { runDir, writeState, withReconciledMutationLock } from './state.mjs';
 
 const PHASE_ORDER = { idle: 0, reserved: 1, emitted: 2, spawned: 3, acquired: 4 };
 
@@ -44,8 +44,7 @@ export function leaseCheck(loop, { owner, generation, runtime, intent = 'busines
 // Runtime-fenced CAS 인수: released 또는 stale(expired)만, generation === expectGeneration. 성공 시 generation+1.
 export function acquireLease(root, runId, { owner, expectGeneration, runtime, now = Date.now() }) {
   if (typeof owner !== 'string' || owner.length === 0) throw new Error('INVALID_OWNER');
-  return withLock(root, runId, () => {
-    const { data } = readState(root, runId);
+  return withReconciledMutationLock(root, runId, (_guard, { data }) => {
     const runtimeResult = runtimeFence(data, runtime);
     if (!runtimeResult.ok) return runtimeResult;
     const lease = data.session_chain.lease;
@@ -104,8 +103,7 @@ export function acquireLease(root, runId, { owner, expectGeneration, runtime, no
 
 export function releaseLease(root, runId, { owner, generation }) {
   if (typeof owner !== 'string' || owner.length === 0) throw new Error('INVALID_OWNER');
-  return withLock(root, runId, () => {
-    const { data } = readState(root, runId);
+  return withReconciledMutationLock(root, runId, (_guard, { data }) => {
     const lease = data.session_chain.lease;
     if (lease.owner_run_id !== owner || lease.generation !== generation) return { ok: false, reason: 'fenced' };
     // Codex r3 🔴1: RUN_PAUSED — refuse to release when paused. An owner that got gate-blocked
@@ -122,8 +120,7 @@ export function releaseLease(root, runId, { owner, generation }) {
 // RUN_PAUSED: paused 상태에서는 예약 금지 — emitHandoff 도 차단 (lease intent='lease' 는 leaseCheck 예외지만
 // reserveHandoff 는 leaseCheck 를 거치지 않으므로 여기서 명시 차단).
 export function reserveHandoff(root, runId, { trigger, now = Date.now(), expect } = {}) {
-  return withLock(root, runId, () => {
-    const { data } = readState(root, runId);
+  return withReconciledMutationLock(root, runId, (_guard, { data }) => {
     // v1.6 (spec §2.3-1): terminal run에는 새 handoff 예약 금지 — RUN_PAUSED 명시 차단과 대칭.
     if (data.status === 'completed' || data.status === 'stopped') {
       return { ok: false, reserved: false, reason: 'RUN_TERMINAL', key: null, childRunId: null };
@@ -153,8 +150,7 @@ export function reserveHandoff(root, runId, { trigger, now = Date.now(), expect 
 }
 
 export function advanceHandoffPhase(root, runId, { key, toPhase, now = Date.now(), expect } = {}) {
-  return withLock(root, runId, () => {
-    const { data } = readState(root, runId);
+  return withReconciledMutationLock(root, runId, (_guard, { data }) => {
     // v1.6 (spec §2.3-3): terminal run의 handoff 전진 금지 — reserve↔advance 사이 finish 경합 및
     // 구버전 오염 상태(terminal+emitted 등)에 대한 방어-심층. respawn은 이 reason을 outcome:'terminal'로 전파.
     if (data.status === 'completed' || data.status === 'stopped') return { ok: false, reason: 'RUN_TERMINAL' };
@@ -183,8 +179,7 @@ export function advanceHandoffPhase(root, runId, { key, toPhase, now = Date.now(
 }
 
 export function rollbackHandoff(root, runId, { owner, generation }) {
-  return withLock(root, runId, () => {
-    const { data } = readState(root, runId);
+  return withReconciledMutationLock(root, runId, (_guard, { data }) => {
     const lease = data.session_chain.lease;
     if (lease.owner_run_id !== owner || lease.generation !== generation) return { ok: false, reason: 'fenced' };
     const terminal = data.status === 'completed' || data.status === 'stopped';
@@ -209,8 +204,7 @@ export function rollbackHandoff(root, runId, { owner, generation }) {
 // check proves ENOENT/ENOTDIR for both deterministic finals: boolean existsSync can mistake lookup
 // errors for absence, while an out-of-lock check races a same-key concurrent publication.
 export function rollbackReservedEmit(root, runId, { key, childRunId, expect, statFn = statSync }) {
-  return withLock(root, runId, () => {
-    const { data } = readState(root, runId);
+  return withReconciledMutationLock(root, runId, (_guard, { data }) => {
     const lease = data.session_chain.lease;
     const childCommitted = data.session_chain.sessions.some(session => session.run_id === childRunId);
     if (childCommitted || lease.handoff_phase !== 'reserved') {

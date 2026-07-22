@@ -1,9 +1,9 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readBoundedText } from '../lib/bounded-input.mjs';
-import { selectCheckpoint } from '../lib/checkpoint.mjs';
+import { captureCheckpointSet, selectCheckpoint } from '../lib/checkpoint.mjs';
 import { detectMain } from '../lib/detect-main.mjs';
-import { findRoot, readState } from '../lib/state.mjs';
+import { findRoot } from '../lib/state.mjs';
 
 const CAP = 3072;
 
@@ -24,7 +24,7 @@ function currentRunId(root) {
 export function runSessionStartRestore(input = {}, {
   root = findRoot(process.cwd()),
   now,
-  readCheckpoint = readFileSync,
+  readCheckpoint = (_path, bytes) => bytes.toString('utf8'),
 } = {}) {
   void input;
   void now;
@@ -33,8 +33,10 @@ export function runSessionStartRestore(input = {}, {
 
   let loop;
   let hash;
+  let checkpointSet;
   try {
-    ({ data: loop, hash } = readState(root, runId));
+    checkpointSet = captureCheckpointSet(root, runId);
+    ({ data: loop, hash } = checkpointSet.snapshot);
   } catch {
     return { ok: true, branch: 'unreadable', additionalContext: null };
   }
@@ -79,7 +81,7 @@ export function runSessionStartRestore(input = {}, {
     };
   }
 
-  const checkpoint = selectCheckpoint(root, runId, {
+  const checkpoint = selectCheckpoint(checkpointSet, {
     owner: lease.owner_run_id,
     generation: lease.generation,
     loopHash: hash,
@@ -96,7 +98,7 @@ export function runSessionStartRestore(input = {}, {
 
   let envelope;
   try {
-    envelope = JSON.parse(readCheckpoint(checkpoint, 'utf8'));
+    envelope = JSON.parse(readCheckpoint(checkpoint.path, checkpoint.bytes));
   } catch {
     return {
       ok: true,
@@ -115,7 +117,7 @@ export function runSessionStartRestore(input = {}, {
       + `${payload.current_episode_detail ? `(${payload.current_episode_detail.role}/${payload.current_episode_detail.status}@${payload.current_episode_detail.point})` : ''} `
       + `active_ws=${(payload.active_workstreams || []).join(',') || 'none'} `
       + `next=${payload.next_action_hint?.type ?? 'unknown'}(${payload.next_action_hint?.next_command ?? '/deep-loop-continue'}) `
-      + `artifacts=${(payload.artifacts || []).join(',') || 'none'}. 완료된 작업을 반복하지 말 것. 상세: ${checkpoint}.`,
+      + `artifacts=${(payload.artifacts || []).join(',') || 'none'}. 완료된 작업을 반복하지 말 것. 상세: ${checkpoint.path}.`,
     ),
   };
 }

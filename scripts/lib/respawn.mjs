@@ -1,4 +1,4 @@
-import { readState } from './state.mjs';
+import { captureReconciledRunSnapshot } from './state.mjs';
 import { existsSync } from 'node:fs';
 import { dirname, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,6 +20,7 @@ import {
 } from './runtime-executable.mjs';
 
 const DEFAULT_DEEP_LOOP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const captureFreshLoop = (root, runId) => captureReconciledRunSnapshot(root, runId).data;
 
 function durableLauncherAuthority(loop, expectedKind) {
   const approvals = loop.autonomy?.launcher_executable_approvals;
@@ -219,7 +220,7 @@ function preservePause(root, runId, { childRunId, parentOwner, generation, pause
   } catch (appendErr) {
     if (String(appendErr.message).startsWith('RUN_TERMINAL')) return { terminal: true };   // v1.6
     if (String(appendErr.message).startsWith('RESPAWN_FENCED')) {
-      const fresh = readState(root, runId).data.session_chain.lease;
+      const fresh = captureFreshLoop(root, runId).session_chain.lease;
       if (fresh.owner_run_id === childRunId && fresh.state === 'active' && fresh.handoff_phase === 'acquired') return { acquired: true };
       return { fenced: true };
     }
@@ -273,13 +274,13 @@ export function respawn(root, runId, {
   tmuxPsRun,
 } = {}) {
   reconcileBudget(root, runId);                       // 무결성 fail-stop (탐지 시 throw)
-  const { data: loop } = readState(root, runId);
+  const loop = captureFreshLoop(root, runId);
   const runtime = sessionRuntime(loop);
   const canonicalRoot = canonicalProjectRoot(loop.project.root);
   const lease = loop.session_chain.lease;
   const generation = lease.generation;
   const parentOwner = lease.owner_run_id;
-  const poll = pollLease || (() => readState(root, runId).data.session_chain.lease);
+  const poll = pollLease || (() => captureFreshLoop(root, runId).session_chain.lease);
 
   if (expect && (lease.owner_run_id !== expect.owner || lease.generation !== expect.generation)) {
     return { ok: false, outcome: 'fenced', reason: 'caller-parent-fence-mismatch', childRunId };
@@ -586,7 +587,7 @@ export function respawn(root, runId, {
   };
 
   // Fresh durable identity + direct version/hash checks immediately before the CAS may authorize spawn.
-  const preClaimIdentityFailure = revalidateIdentityStage(readState(root, runId).data);
+  const preClaimIdentityFailure = revalidateIdentityStage(captureFreshLoop(root, runId));
   if (preClaimIdentityFailure) {
     const res = preservePause(root, runId, {
       childRunId, parentOwner, generation, pauseReason: preClaimIdentityFailure,
@@ -609,7 +610,7 @@ export function respawn(root, runId, {
 
   // Codex impl r8 🟡: entry is already built + validated before the CAS above.
   const entry = _entry;
-  const identityFailure = revalidateIdentityStage(readState(root, runId).data);
+  const identityFailure = revalidateIdentityStage(captureFreshLoop(root, runId));
   if (identityFailure) {
     const res = rollbackAndPause(root, runId, {
       childRunId, parentOwner, generation,
@@ -649,7 +650,7 @@ export function respawn(root, runId, {
     }
     if (String(appendErr.message).startsWith('RESPAWN_FENCED')) {
       // R6-U: a fast RESERVED child may have acquired before we recorded → that is SUCCESS, not a fence.
-      const fresh = readState(root, runId).data.session_chain.lease;
+      const fresh = captureFreshLoop(root, runId).session_chain.lease;
       if (fresh.owner_run_id === childRunId && fresh.state === 'active' && fresh.handoff_phase === 'acquired') {
         return { ok: true, outcome: 'spawned', reason: 'fast-child-acquired', childRunId };
       }
