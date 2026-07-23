@@ -90,6 +90,7 @@ const VERBS = (o, g) => [
   ['spawn-style', 'confirm-desktop', '--nonce', 'n'],
   ['spawn-style', 'decline-desktop'],
   ['handoff', 'emit'],
+  ['checkpoint', 'emit', '--runtime', 'claude'],
   ['respawn'],
   ['session-profile', 'set', '--model', 'm'],
   ['detect-terminal'],

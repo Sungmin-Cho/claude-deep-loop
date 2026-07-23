@@ -205,6 +205,106 @@ test('handoff boundary-event CLI spelling is strict base10 seq without leading z
   }
 });
 
+function bindCheckpointAffinity(root, runId) {
+  mkdirSync(join(root, '.claude', 'worktrees', 'checkpoint'), { recursive: true });
+  const workstream = JSON.parse(run(root, [
+    'workstream', 'new',
+    '--title', 'checkpoint',
+    '--branch', 'feature/checkpoint',
+    '--worktree', '.claude/worktrees/checkpoint',
+    '--owner', runId,
+    '--generation', '1',
+  ]));
+  const episode = JSON.parse(run(root, [
+    'episode', 'new',
+    '--plugin', 'deep-work',
+    '--role', 'maker',
+    '--kind', 'implementation',
+    '--point', 'implementation',
+    '--workstream', workstream.id,
+    '--artifacts', '[".claude/worktrees/checkpoint/result.txt"]',
+    '--owner', runId,
+    '--generation', '1',
+  ]));
+  run(root, [
+    'episode', 'record',
+    '--id', episode.id,
+    '--status', 'in_progress',
+    '--owner', runId,
+    '--generation', '1',
+  ]);
+  return { workstream, episode };
+}
+
+test('checkpoint emit, inspect, and restore expose the exact public grammar', () => {
+  const { root, runId } = seed();
+  bindCheckpointAffinity(root, runId);
+
+  const emitted = runBoth(root, [
+    'checkpoint', 'emit',
+    '--owner', runId,
+    '--generation', '1',
+    '--runtime', 'claude',
+  ]);
+  assert.equal(emitted.code, 0, emitted.err);
+  const checkpoint = JSON.parse(emitted.out);
+  assert.match(checkpoint.checkpoint_rel, /^checkpoints\/[0-9a-f]{64}-compact\.json$/);
+
+  const inspected = runBoth(root, ['checkpoint', 'inspect', '--json']);
+  assert.equal(inspected.code, 0, inspected.err);
+  assert.equal(JSON.parse(inspected.out).checkpoint_rel, checkpoint.checkpoint_rel);
+
+  const restored = runBoth(root, [
+    'checkpoint', 'restore',
+    '--checkpoint', checkpoint.checkpoint_rel,
+    '--owner', runId,
+    '--generation', '1',
+    '--runtime', 'claude',
+    '--json',
+  ]);
+  assert.equal(restored.code, 0, restored.err);
+  const descriptor = JSON.parse(restored.out);
+  assert.equal(descriptor.checkpoint_rel, checkpoint.checkpoint_rel);
+  assert.equal(descriptor.owner_run_id, runId);
+  assert.equal(descriptor.generation, 1);
+  assert.equal(descriptor.runtime, 'claude');
+  assert.equal(descriptor.scope.workstream_id, checkpoint.workstream_id);
+  assert.equal(typeof descriptor.next_action.action.type, 'string');
+});
+
+test('checkpoint public grammar distinguishes usage, fence, and invalid data exits', () => {
+  const { root, runId } = seed();
+  bindCheckpointAffinity(root, runId);
+  for (const args of [
+    ['checkpoint', 'emit', '--owner', runId, '--generation', '1'],
+    ['checkpoint', 'inspect'],
+    ['checkpoint', 'restore', '--checkpoint', 'checkpoints/x-compact.json',
+      '--owner', runId, '--generation', '1', '--runtime', 'claude'],
+  ]) {
+    assert.equal(runBoth(root, args).code, 2, args.join(' '));
+  }
+  assert.equal(runBoth(root, [
+    'checkpoint', 'emit',
+    '--owner', runId,
+    '--generation', '9',
+    '--runtime', 'claude',
+  ]).code, 3);
+  assert.equal(runBoth(root, [
+    'checkpoint', 'emit',
+    '--owner', runId,
+    '--generation', '1',
+    '--runtime', 'invalid',
+  ]).code, 1);
+  assert.equal(runBoth(root, [
+    'checkpoint', 'restore',
+    '--checkpoint', '../outside.json',
+    '--owner', runId,
+    '--generation', '1',
+    '--runtime', 'claude',
+    '--json',
+  ]).code, 1);
+});
+
 test('comprehension status is read-only', () => {
   const { root } = seed();
   const r = JSON.parse(run(root, ['comprehension', 'status']));

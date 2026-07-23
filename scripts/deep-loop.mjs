@@ -57,6 +57,11 @@ import {
   buildRuntimeResumeDescriptor,
   validateLaunchCommandMetadata,
 } from './lib/runtime-descriptor.mjs';
+import {
+  emitCompactCheckpoint,
+  inspectCompactCheckpoint,
+  restoreCompactCheckpoint,
+} from './lib/checkpoint.mjs';
 
 const DEEP_LOOP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -74,6 +79,21 @@ function parseFlags(argv) {
     f[body] = v;
   }
   return f;
+}
+
+function exactFlagGrammar(argv, allowed) {
+  const seen = new Set();
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index];
+    if (typeof token !== 'string' || !token.startsWith('--')) return false;
+    const body = token.slice(2);
+    const eq = body.indexOf('=');
+    const name = eq < 0 ? body : body.slice(0, eq);
+    if (!allowed.has(name) || seen.has(name)) return false;
+    seen.add(name);
+    if (eq < 0 && argv[index + 1] !== undefined && !argv[index + 1].startsWith('--')) index += 1;
+  }
+  return true;
 }
 
 function flagOccurrences(argv, name) {
@@ -167,6 +187,9 @@ function classifyKernelError(e) {
     return { code: 3, message };
   }
   if (/^(?:INVALID_NOW|INVALID_RUNTIME(?:_STATE)?|PROJECT_ROOT_UNRESOLVABLE)(?::|$)/.test(message)) {
+    return { code: 1, message };
+  }
+  if (/^CHECKPOINT_[A-Z_]+(?::|$)/.test(message)) {
     return { code: 1, message };
   }
   if (/^(?:INVALID_ACTOR|INVALID_GENERATION|INVALID_STORED_ROOT_DIGEST|PROJECT_ROOT_REBIND_NOT_ALLOWED|RUN_ID_INVALID|STATE_INVALID)(?::|$)/.test(message)) {
@@ -402,6 +425,65 @@ const handlers = {
     const { data } = captureReconciledRunSnapshot(root, runIdOf(root, f));
     const unattended = !!f.unattended || resolveSpawnMode(data, { env: process.env }) === 'headless';
     json(renderNextAction(nextAction(data, { now: parseNow(f), unattended }))); return 0;
+  },
+  checkpoint: async (a) => {
+    const [verb, ...rest] = a;
+    const allowed = {
+      emit: new Set(['project-root', 'run-id', 'now', 'owner', 'generation', 'runtime']),
+      inspect: new Set(['project-root', 'run-id', 'now', 'json']),
+      restore: new Set([
+        'project-root', 'run-id', 'now', 'checkpoint', 'owner', 'generation', 'runtime', 'json',
+      ]),
+    };
+    if (!Object.hasOwn(allowed, verb) || !exactFlagGrammar(rest, allowed[verb])) {
+      error(`USAGE: checkpoint <emit|inspect|restore> has invalid grammar`);
+      return 2;
+    }
+    const f = parseFlags(rest);
+    if (f['project-root'] === true || f['run-id'] === true) {
+      error('USAGE: --project-root and --run-id require a value');
+      return 2;
+    }
+    const root = rootOf(f);
+    const runId = runIdOf(root, f);
+    if (!runId) { error('USAGE: --run-id RUN_ID or .deep-loop/current is required'); return 2; }
+    const now = parseNow(f);
+
+    if (verb === 'inspect') {
+      if (f.json !== true) { error('USAGE: checkpoint inspect requires --json'); return 2; }
+      json(inspectCompactCheckpoint(root, runId, { now }));
+      return 0;
+    }
+
+    const owner = reqStr(f, 'owner');
+    const runtime = reqStr(f, 'runtime');
+    if (!owner || !runtime
+      || typeof f.generation !== 'string'
+      || !/^[1-9]\d*$/.test(f.generation)
+      || !Number.isSafeInteger(Number(f.generation))) {
+      error(`USAGE: checkpoint ${verb} requires --owner OWNER --generation N --runtime RUNTIME`);
+      return 2;
+    }
+    const options = {
+      fence: { owner, generation: Number(f.generation) },
+      runtime,
+      now,
+    };
+    if (verb === 'emit') {
+      json(emitCompactCheckpoint(root, runId, options));
+      return 0;
+    }
+
+    const requested = reqStr(f, 'checkpoint');
+    if (!requested || f.json !== true) {
+      error('USAGE: checkpoint restore requires --checkpoint REL and --json');
+      return 2;
+    }
+    json(restoreCompactCheckpoint(root, runId, {
+      checkpointRel: requested,
+      ...options,
+    }));
+    return 0;
   },
   'resume-command': async (a) => {
     const f = parseFlags(a);
