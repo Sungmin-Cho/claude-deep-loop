@@ -33,6 +33,7 @@ import {
 } from './integrity.mjs';
 import { assertProjectRootBinding } from './project-root.mjs';
 import { ancestorPaths } from './path-portable.mjs';
+import { assertScopeAllows } from './session-scope.mjs';
 
 export const LOCK_STALE_TTL_MS = 30_000;
 
@@ -292,7 +293,9 @@ function setPath(obj, path, value) {
 }
 
 export function patch(root, runId, field, value, { fence } = {}) {
-  if (classifyPatch(field, value) !== 'allow') throw new Error(`FIELD_FORBIDDEN: ${field}`);
+  const classification = classifyPatch(field, value);
+  const lifecycleStatus = /^(?:episodes|workstreams)\.\d+\.status$/.test(field);
+  if (classification !== 'allow' && !lifecycleStatus) throw new Error(`FIELD_FORBIDDEN: ${field}`);
   // #3 (R1 Fix 2): route through appendAnchored so a whitelisted patch (which can flip active_workstreams — a
   // finish proof input — and non-terminal episode/workstream status — a next-action routing input) is BOTH
   // tamper-evident (was a silent withLock+writeState) AND floor-charged. The value is NOT recorded in the event
@@ -301,6 +304,11 @@ export function patch(root, runId, field, value, { fence } = {}) {
     (loop) => { setPath(loop, field, value); },
     (loop) => {
       if (fence) { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
+      const newPolicy = loop.autonomy?.continuation_policy === 'workstream-session';
+      if (newPolicy && (field === 'active_workstreams' || lifecycleStatus)) {
+        throw new Error(`PATCH_TYPED_ROUTE_REQUIRED: ${field}`);
+      }
+      if (classification !== 'allow') throw new Error(`FIELD_FORBIDDEN: ${field}`);
       const im = field.match(/^(episodes|workstreams)\.(\d+)\.(.+)$/);
       if (im) {
         const [, arr, idxStr, sub] = im;
@@ -310,6 +318,10 @@ export function patch(root, runId, field, value, { fence } = {}) {
         if (sub === 'status') {
           const term = arr === 'episodes' ? TERMINAL_EPISODE : TERMINAL_WORKSTREAM;
           if (term.includes(list[idx].status)) throw new Error(`FIELD_FORBIDDEN: ${field} (terminal status immutable)`);
+        }
+        if (newPolicy && (sub === 'depends_on' || /^result_[A-Za-z0-9_]+$/.test(sub))) {
+          const workstreamId = arr === 'episodes' ? list[idx].workstream_id : list[idx].id;
+          assertScopeAllows(loop, workstreamId);
         }
       }
       // impl-R2 Fix 3: pre-validate the POST-patch candidate here (before the event append). Otherwise an invalid

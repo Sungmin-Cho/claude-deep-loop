@@ -6,6 +6,7 @@ import { slugify } from './slug.mjs';
 import { leaseCheck } from './lease.mjs';
 import { MUTATION_TURN_FLOOR } from './budget.mjs';
 import { normalizePortableRelativePath, pathWithin } from './fs-safe.mjs';
+import { assertScopeAllows } from './session-scope.mjs';
 
 const NON_TERMINAL = ['planned', 'in_progress', 'in_review', 'parked'];
 const TERMINAL = ['ready', 'merged', 'abandoned'];
@@ -100,6 +101,9 @@ export function setWorkstreamStatus(root, runId, wsId, status, opts = {}) {
       const ws = loop.workstreams.find(w => w.id === wsId);
       if (!ws) throw new Error(`WORKSTREAM_NOT_FOUND: ${wsId}`);
       if (['ready', 'merged', 'abandoned'].includes(ws.status)) throw new Error(`WORKSTREAM_TERMINAL_LOCKED: ${wsId} is ${ws.status}`);
+      if (loop.autonomy?.continuation_policy === 'workstream-session') {
+        assertScopeAllows(loop, wsId, { allowUnbound: true });
+      }
       if (status === 'in_progress' && !loop.active_workstreams.includes(wsId)) {
         const cap = loop.autonomy?.max_parallel ?? 2;
         if (loop.active_workstreams.length >= cap) throw new Error(`MAX_PARALLEL_EXCEEDED: ${loop.active_workstreams.length}/${cap}`);
@@ -130,6 +134,10 @@ export function recordWorkstreamTerminal(root, runId, wsId, { status, proof = {}
       if (!(ws.status === 'ready' && status === 'merged')) {
         throw new Error('WORKSTREAM_TERMINAL_LOCKED: ' + wsId + ' ' + ws.status + '->' + status + ' not allowed');
       }
+    }
+    if (!(ws.status === 'ready' && status === 'merged')
+      && loop.autonomy?.continuation_policy === 'workstream-session') {
+      assertScopeAllows(loop, wsId, { allowUnbound: true });
     }
     const reviewPoints = (loop.review?.points || []);
     const ok =

@@ -4,12 +4,25 @@ import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync as _rfRoot, re
 import { hostname, tmpdir } from 'node:os';
 import { basename, join, dirname as _dn, posix, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import { LOCK_STALE_TTL_MS, readState, writeState, patch, withLock, runDir, findRoot } from '../scripts/lib/state.mjs';
 import * as stateApi from '../scripts/lib/state.mjs';
 import { appendAnchored } from '../scripts/lib/integrity.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { flushDirectory } from '../scripts/lib/atomic-write.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
+import { newWorkstream } from '../scripts/lib/workspace.mjs';
+import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
+
+const STATE_TEST_HERE = _dn(fileURLToPath(import.meta.url));
+const STATE_TEST_CLI = join(STATE_TEST_HERE, '..', 'scripts', 'deep-loop.mjs');
+
+function runStateCli(root, runId, args) {
+  return spawnSync(process.execPath, [
+    STATE_TEST_CLI, ...args, '--owner', runId, '--generation', '1',
+    '--project-root', root, '--run-id', runId,
+  ], { encoding: 'utf8' });
+}
 
 const atomicApiPromise = import('../scripts/lib/atomic-write.mjs').catch(() => ({}));
 
@@ -97,6 +110,69 @@ test('non-terminal status + depends_on allowed', () => {
   patch(root, runId, 'workstreams.0.depends_on', ['ws-2']);
   assert.equal(readState(root, runId).data.episodes[0].status, 'in_progress');
   assert.deepEqual(readState(root, runId).data.workstreams[0].depends_on, ['ws-2']);
+});
+
+test('public new-policy state patch requires typed lifecycle routes and scopes remaining indexed fields', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-state-scope-'));
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-07-23T00:00:00Z') });
+  const fence = { owner: runId, generation: 1, intent: 'business' };
+  mkdirSync(join(root, '.claude/worktrees'), { recursive: true });
+  const wsA = newWorkstream(root, runId, { title: 'a', branch: 'a', worktree: '.claude/worktrees/a', fence }).id;
+  const wsB = newWorkstream(root, runId, { title: 'b', branch: 'b', worktree: '.claude/worktrees/b', fence }).id;
+  const makerA = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: wsA, fence }).id;
+  const makerB = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: wsB, fence }).id;
+  recordEpisode(root, runId, makerA, { status: 'in_progress', fence });
+  const loop = readState(root, runId).data;
+  const epA = loop.episodes.findIndex(ep => ep.id === makerA);
+  const epB = loop.episodes.findIndex(ep => ep.id === makerB);
+  const idxA = loop.workstreams.findIndex(ws => ws.id === wsA);
+  const idxB = loop.workstreams.findIndex(ws => ws.id === wsB);
+
+  for (const [field, value] of [
+    ['active_workstreams', '[]'],
+    [`episodes.${epA}.status`, '"blocked"'],
+    [`episodes.${epA}.status`, '"done"'],
+    [`workstreams.${idxA}.status`, '"parked"'],
+    [`workstreams.${idxA}.status`, '"ready"'],
+  ]) {
+    const result = runStateCli(root, runId, ['state', 'patch', '--field', field, '--value', value]);
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /PATCH_TYPED_ROUTE_REQUIRED/);
+  }
+
+  for (const [field, value] of [
+    [`episodes.${epA}.result_note`, '"same"'],
+    [`workstreams.${idxA}.depends_on`, '[]'],
+  ]) {
+    const result = runStateCli(root, runId, ['state', 'patch', '--field', field, '--value', value]);
+    assert.equal(result.status, 0, result.stderr);
+  }
+  for (const [field, value] of [
+    [`episodes.${epB}.result_note`, '"cross"'],
+    [`workstreams.${idxB}.depends_on`, '[]'],
+  ]) {
+    const before = _rfRoot(join(runDir(root, runId), 'loop.json'));
+    const logBefore = _rfRoot(join(runDir(root, runId), 'event-log.jsonl'));
+    const result = runStateCli(root, runId, ['state', 'patch', '--field', field, '--value', value]);
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /SESSION_SCOPE_MISMATCH/);
+    assert.equal(_rfRoot(join(runDir(root, runId), 'loop.json')).equals(before), true);
+    assert.equal(_rfRoot(join(runDir(root, runId), 'event-log.jsonl')).equals(logBefore), true);
+  }
+});
+
+test('public authentic legacy state patch retains the v1.10 whitelist', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-state-legacy-scope-'));
+  const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-07-23T00:00:00Z') });
+  const loop = readState(root, runId).data;
+  loop.autonomy.continuation_policy = 'rotate-per-unit';
+  loop.autonomy.milestone_predicate = ['workstream_terminal'];
+  for (const session of loop.session_chain.sessions) {
+    session.scope = { kind: 'legacy', workstream_id: null, bound_at_seq: null, terminal_event: null, closed_at: session.ended_at ?? null };
+  }
+  writeState(root, runId, loop);
+  assert.equal(runStateCli(root, runId, ['state', 'patch', '--field', 'active_workstreams', '--value', '[]']).status, 0);
+  assert.equal(runStateCli(root, runId, ['state', 'patch', '--field', 'triage.actionable', '--value', '[]']).status, 0);
 });
 
 test('non-status workstream field (title) forbidden', () => {

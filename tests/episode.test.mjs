@@ -1,12 +1,23 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { reconcileBudget } from '../scripts/lib/budget.mjs';
 import { newEpisode, recordEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
+import { newWorkstream } from '../scripts/lib/workspace.mjs';
+
+const EPISODE_CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'deep-loop.mjs');
+function runEpisodeCli(root, runId, args) {
+  return spawnSync(process.execPath, [
+    EPISODE_CLI, ...args, '--owner', runId, '--generation', '1',
+    '--project-root', root, '--run-id', runId,
+  ], { encoding: 'utf8' });
+}
 
 function seed() {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
@@ -35,7 +46,8 @@ test('newEpisode scaffolds request.md, bumps episodes_total, sets current', () =
 test('recordEpisode non-terminal status + result_* allowed', () => {
   const { root, runId } = seed();
   const f = fence(runId);
-  const { id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation', fence: f });
+  const workstream = newWorkstream(root, runId, { title: 'impl', branch: 'impl', worktree: '.claude/worktrees/impl', fence: f }).id;
+  const { id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation', workstream, fence: f });
   recordEpisode(root, runId, id, { status: 'in_progress', proof: { result_summary: 'started' }, fence: f });
   assert.equal(readState(root, runId).data.episodes[0].status, 'in_progress');
 });
@@ -134,7 +146,8 @@ test('recordEpisode done throws EPISODE_ARTIFACT_ESCAPE for path-traversal in su
 test('recordEpisode rejects null artifacts/proof cleanly without staling the event_log_head anchor', () => {
   const { root, runId } = seed();
   const f = fence(runId);
-  const { id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation', fence: f });
+  const workstream = newWorkstream(root, runId, { title: 'impl', branch: 'impl', worktree: '.claude/worktrees/impl', fence: f }).id;
+  const { id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation', workstream, fence: f });
   // FENCE_REQUIRED is thrown first when fence is missing, but we pass a valid fence here to test the null artifact/proof path
   assert.throws(() => recordEpisode(root, runId, id, { status: 'in_progress', artifacts: null, fence: f }), /EPISODE_INPUT_INVALID/);
   assert.throws(() => recordEpisode(root, runId, id, { status: 'in_progress', proof: null, fence: f }), /EPISODE_INPUT_INVALID/);
@@ -173,6 +186,42 @@ test('newEpisode rejects a non-null nonexistent workstream; no episode created, 
   );
   assert.equal(readState(root, runId).data.episodes.length, 0);   // no stranded episode
   assert.doesNotThrow(() => reconcileBudget(root, runId));          // preCheck threw before append → anchor consistent
+});
+
+test('public episode routes preserve a bound Workstream and reject cross-scope new/record/abandon before bytes', () => {
+  const { root, runId } = seed();
+  const f = fence(runId);
+  mkdirSync(join(root, '.claude/worktrees'), { recursive: true });
+  const wsA = newWorkstream(root, runId, { title: 'a', branch: 'a', worktree: '.claude/worktrees/a', fence: f }).id;
+  const wsB = newWorkstream(root, runId, { title: 'b', branch: 'b', worktree: '.claude/worktrees/b', fence: f }).id;
+  const makerA = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: wsA, fence: f }).id;
+  const makerB = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: wsB, fence: f }).id;
+  assert.equal(runEpisodeCli(root, runId, ['episode', 'record', '--id', makerA, '--status', 'in_progress']).status, 0);
+
+  for (const args of [
+    ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'implementation', '--point', 'implementation', '--workstream', wsB],
+    ['episode', 'record', '--id', makerB, '--status', 'in_progress'],
+    ['episode', 'abandon', '--id', makerB, '--reason', 'cross', '--confirm'],
+  ]) {
+    const loopBefore = readFileSync(join(runDir(root, runId), 'loop.json'));
+    const hashBefore = readFileSync(join(runDir(root, runId), '.loop.hash'));
+    const logBefore = readFileSync(join(runDir(root, runId), 'event-log.jsonl'));
+    const result = runEpisodeCli(root, runId, args);
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /SESSION_SCOPE_MISMATCH/);
+    assert.equal(readFileSync(join(runDir(root, runId), 'loop.json')).equals(loopBefore), true);
+    assert.equal(readFileSync(join(runDir(root, runId), '.loop.hash')).equals(hashBefore), true);
+    assert.equal(readFileSync(join(runDir(root, runId), 'event-log.jsonl')).equals(logBefore), true);
+  }
+
+  const same = runEpisodeCli(root, runId, [
+    'episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'fix',
+    '--point', 'implementation', '--workstream', wsA,
+  ]);
+  assert.equal(same.status, 0, same.stderr);
+  const sameId = JSON.parse(same.stdout).id;
+  const abandon = runEpisodeCli(root, runId, ['episode', 'abandon', '--id', sameId, '--reason', 'settled', '--confirm']);
+  assert.equal(abandon.status, 0, abandon.stderr);
 });
 
 test('abandonEpisode: non-terminal maker -> abandoned, requires --confirm + reason + fence', () => {

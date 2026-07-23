@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { captureLatestInsightsSet, latestInsights } from './insights.mjs';
-import { captureReconciledRunSnapshot } from './state.mjs';
+import { captureReconciledRunSnapshot, withReconciledMutationLock } from './state.mjs';
 import { appendAnchored } from './integrity.mjs';
 import { newBlockedCheckerEpisode, newEpisode } from './episode.mjs';
 import { leaseCheck } from './lease.mjs';
@@ -14,14 +14,14 @@ import { MUTATION_TURN_FLOOR } from './budget.mjs';
 import { sessionRuntime } from './runtime.mjs';
 import { canonicalProjectRoot } from './project-root.mjs';
 import { validate } from './schema.mjs';
+import { assertScopeAllows } from './session-scope.mjs';
 import {
   isProofCapableChecker,
   deriveReviewArtifactContract,
-  materializeImportedReview,
   parseReviewImport,
+  prepareImportedReview,
   sha256File,
   validateImportedEvidence,
-  verifyImportedEnvelope,
   REVIEW_ATTEMPT_ID,
 } from './review-import.mjs';
 
@@ -68,6 +68,9 @@ function claimedContext(root, loop, episodeId, attemptId, fence) {
   }
   if (!context.workstream || checker.workstream_id !== context.maker.workstream_id
     || checker.point !== context.maker.point) throw new Error('REVIEW_CLAIM_BINDING_INVALID');
+  if (loop.autonomy?.continuation_policy === 'workstream-session') {
+    assertScopeAllows(loop, context.maker.workstream_id, { allowUnbound: true });
+  }
   const artifacts = deriveReviewArtifactContract(root, context.maker, context.workstream);
   const lease = loop.session_chain?.lease || {};
   const claim = {
@@ -315,7 +318,11 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
   // Codex impl r14 🟡: validate the workstream EXISTS at dispatch time — otherwise the checker is bound to a phantom
   // workstream and recordReviewOutcome (which derives workstream_id from the checker) later fails WORKSTREAM_NOT_FOUND,
   // stranding a pending checker that can't converge. Fail early instead.
-  if (!workstreamId || !data.workstreams.find(w => w.id === workstreamId)) throw new Error(`WORKSTREAM_NOT_FOUND: ${workstreamId}`);
+  const dispatchWorkstream = workstreamId && data.workstreams.find(w => w.id === workstreamId);
+  if (!dispatchWorkstream) throw new Error(`WORKSTREAM_NOT_FOUND: ${workstreamId}`);
+  if (['ready', 'merged', 'abandoned'].includes(dispatchWorkstream.status)) {
+    throw new Error(`WORKSTREAM_TERMINAL_LOCKED: ${workstreamId} is ${dispatchWorkstream.status}`);
+  }
   // Derive the target maker: the latest done maker for this (workstreamId, point) that does NOT already have a bound terminal checker.
   const eps = data.episodes || [];
   // P2 codex r7: hill-climb 마이그레이션 특례 — pre-patch 커널이 approve한 checker(contract 미pin)에 묶인
@@ -474,6 +481,9 @@ function checkedContext(loop, episodeId, { reviewSource } = {}) {
     throw new Error('REVIEW_MAKER_BINDING_MISMATCH: checker and maker workstream/point differ');
   }
   if (!context.workstream) throw new Error(`WORKSTREAM_NOT_FOUND: ${checker.workstream_id}`);
+  if (loop.autonomy?.continuation_policy === 'workstream-session') {
+    assertScopeAllows(loop, maker.workstream_id, { allowUnbound: true });
+  }
   return context;
 }
 
@@ -513,9 +523,23 @@ function commitReviewOutcome(root, runId, {
     ...(evidence.report ? { report: evidence.report, report_sha256: evidence.reportSha256 } : {}),
     ...(evidence.findings ? { findings: evidence.findings } : {}),
   };
+  const publication = reviewSource === 'imported-stdin' && evidence.report ? {
+    kind: 'review-import',
+    operationId: `review-import-${evidence.reportSha256}`,
+    artifacts: [{ rel: evidence.reportRel, bytes: evidence.bytes }],
+    topology: {
+      checker_episode_id: episodeId,
+      target_maker: snapshot.targetMaker,
+      attempt_id: evidence.input.attempt_id,
+      report_sha256: evidence.reportSha256,
+    },
+  } : null;
   let lockedContext;
   let result;
-  appendAnchored(root, runId, { type: 'review-outcome', data: eventData },
+  appendAnchored(root, runId, {
+    type: 'review-outcome', data: eventData,
+    ...(reviewSource === 'imported-stdin' && evidence.generatedAt ? { now: evidence.generatedAt } : {}),
+  },
     (loop) => {
       const checker = lockedContext.checker;
       const maker = lockedContext.maker;
@@ -581,7 +605,12 @@ function commitReviewOutcome(root, runId, {
       } else {
         if (evidence.preparationError) throw evidence.preparationError;
         const binding = validateImportedEvidence(root, loop, evidence.input, lockedContext);
-        verifyImportedEnvelope(root, runId, evidence, binding);
+        const prepared = prepareImportedReview(root, runId, evidence.input, binding, { now: evidence.generatedAt });
+        if (prepared.report !== evidence.report || prepared.reportRel !== evidence.reportRel
+          || prepared.reportAbs !== evidence.reportAbs || prepared.reportBytes !== evidence.reportBytes
+          || prepared.reportSha256 !== evidence.reportSha256 || !prepared.bytes.equals(evidence.bytes)) {
+          throw new Error('REVIEW_REPORT_HASH_MISMATCH: prepared import changed before commit');
+        }
       }
       // P2 codex r3/r4: hill-climb run의 passing verdict는 계약-강제 리뷰 proof다 — recipe를 기준으로
       // 게이트한다(체커 필드 유무가 아니라). pre-patch dispatch로 만들어진 legacy pending checker는
@@ -605,7 +634,10 @@ function commitReviewOutcome(root, runId, {
         } catch { stillValid = false; }
         if (!stillValid) throw new Error(`REVIEW_CONTRACT_MISSING: contract ${checker.contract.path} was removed or altered since dispatch (recorded sha256 mismatch) — re-materialize the tracked contract (그대로 복사), re-run the review, and record this SAME checker episode (it stays pending; do NOT dispatch a second checker)`);
       }
-    }, { floor: MUTATION_TURN_FLOOR });
+    }, {
+      floor: MUTATION_TURN_FLOOR,
+      ...(publication ? { publication } : {}),
+    });
   return result;
 }
 
@@ -654,18 +686,19 @@ export function importReviewOutcome(root, runId, options = {}, internal = {}) {
   try {
     const checked = checkedContext(preState, input.checker_episode_id, { reviewSource: 'imported-stdin' });
     const binding = validateImportedEvidence(root, preState, input, checked);
-    evidence = materializeImportedReview(root, runId, input, binding, { now });
+    evidence = prepareImportedReview(root, runId, input, binding, { now });
     afterMaterialize(Object.freeze({
       report: evidence.report,
       reportAbs: evidence.reportAbs,
       reportSha256: evidence.reportSha256,
+      bytes: evidence.bytes,
     }));
   } catch (preparationError) {
     // Preserve the authoritative locked error order. Invalid/stale source material never receives proof,
     // but the commit preCheck still gets to report root/runtime/lease/checker fences first.
     evidence = { input, preparationError, report: null, reportSha256: null };
   }
-  return commitReviewOutcome(root, runId, {
+  const result = commitReviewOutcome(root, runId, {
     episodeId: input.checker_episode_id,
     verdict: input.verdict,
     reviewSource: 'imported-stdin',
@@ -674,6 +707,10 @@ export function importReviewOutcome(root, runId, options = {}, internal = {}) {
     runtime,
     snapshot,
   });
+  // Successful publication no longer needs its retry marker: retire it before returning so a
+  // caller's subsequent fenced mutation cannot race a still-visible committed predecessor.
+  withReconciledMutationLock(root, runId, () => {});
+  return result;
 }
 
 // review.points = run-level 계약. 충족은 workstream review_points_done(bound approved checker가 채움)이 단일 출처.

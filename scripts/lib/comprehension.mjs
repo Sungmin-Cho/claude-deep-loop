@@ -3,6 +3,13 @@ import { appendAnchored, MUTATION_TURN_FLOOR } from './integrity.mjs';
 import { isHeadlessInvocation } from './respawn.mjs';
 import { leaseCheck } from './lease.mjs';
 import { sessionRuntime } from './runtime.mjs';
+import { assertScopeAllows } from './session-scope.mjs';
+
+function assertEpisodeScope(loop, episode) {
+  if (loop.autonomy?.continuation_policy === 'workstream-session' && episode?.workstream_id) {
+    assertScopeAllows(loop, episode.workstream_id, { allowUnbound: true });
+  }
+}
 
 export function computeDebt(loop) {
   const c = loop.comprehension || {};
@@ -42,6 +49,7 @@ export function ack(root, runId, episodeId, { actor = 'agent', confirm = false, 
         const ep = loop.episodes.find(e => e.id === episodeId);
         if (!ep) throw new Error(`EPISODE_NOT_FOUND: ${episodeId}`);
         if (ep.role !== 'maker') throw new Error('ACK_NOT_MAKER: only a maker episode can be acked');   // impl-R3 Fix 5
+        assertEpisodeScope(loop, ep);
       },
       { floor: MUTATION_TURN_FLOOR });
     return { ok: false, rejected: true, reason: 'headless-human-ack-forbidden' };
@@ -70,6 +78,7 @@ export function ack(root, runId, episodeId, { actor = 'agent', confirm = false, 
       // impl-R3 Fix 5: ack is a MAKER-review signal. episodes_total counts only makers, so acking a checker would
       // inflate episodes_human_reviewed past episodes_total and drive debt_ratio below threshold with no maker reviewed.
       if (ep.role !== 'maker') throw new Error('ACK_NOT_MAKER: only a maker episode can be acked');
+      assertEpisodeScope(loop, ep);
     },
     { floor: MUTATION_TURN_FLOOR });
   return out;
@@ -82,6 +91,7 @@ export function recordReviewed(root, runId, episodeId, source) {
     const requireHumanAck = data.review?.require_human_ack === true;
     if (source === 'deep-review-approve' && requireHumanAck) return; // ack 필요, 카운트 안 함
     const ep = data.episodes.find(e => e.id === episodeId);
+    assertEpisodeScope(data, ep);
     // P2-a (belt-and-suspenders): skip an abandoned episode — it is out of episodes_total and must not be counted.
     if (ep && ep.status !== 'abandoned' && !ep.human_reviewed) {
       ep.human_reviewed = true;

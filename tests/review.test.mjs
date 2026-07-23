@@ -2,18 +2,28 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { newEpisode, recordEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
 import {
   resolveReviewer, dispatchReview, importReviewOutcome, makerReviewed, parseVerdict,
-  recordReviewOutcome, unsatisfiedReviewPoints,
+  claimIndependentReview, recordReviewOutcome, unsatisfiedReviewPoints,
 } from '../scripts/lib/review.mjs';
 import { releaseLease, acquireLease } from '../scripts/lib/lease.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { createFileSymlinkOrSkip } from './helpers/fs-fixtures.mjs';
+
+const REVIEW_CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'deep-loop.mjs');
+function runReviewCli(root, runId, args) {
+  return spawnSync(process.execPath, [
+    REVIEW_CLI, ...args, '--owner', runId, '--generation', '1',
+    '--project-root', root, '--run-id', runId,
+  ], { encoding: 'utf8' });
+}
 
 function eventLog(root, runId) {
   return readFileSync(join(runDir(root, runId), 'event-log.jsonl'), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l));
@@ -54,6 +64,7 @@ function doneMaker(root, runId, ws, point, f, file) {
   const art = file || `${point}-art.txt`;
   writeFileSync(join(root, art), 'artifact');
   const { id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: point, point, workstream: ws, expectedArtifacts: [art], fence: f });
+  recordEpisode(root, runId, id, { status: 'in_progress', fence: f });
   recordEpisode(root, runId, id, { status: 'done', artifacts: [art], proof: {}, fence: f });
   return id;
 }
@@ -109,6 +120,42 @@ test('dispatchReview creates checker episode + returns descriptor (no call)', ()
   assert.equal(ep.target_maker, makerId);   // always bound going forward
 });
 
+test('public review dispatch/record and independent claim derive target-maker scope without binding', () => {
+  const { root, runId } = seed();
+  const f = fence(runId);
+  mkdirSync(join(root, '.claude/worktrees/a'), { recursive: true });
+  mkdirSync(join(root, '.claude/worktrees/b'), { recursive: true });
+  const wsA = newWorkstream(root, runId, { title: 'a', branch: 'a', worktree: '.claude/worktrees/a', fence: f }).id;
+  const wsB = newWorkstream(root, runId, { title: 'b', branch: 'b', worktree: '.claude/worktrees/b', fence: f }).id;
+  const makerA = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: wsA, fence: f }).id;
+  const artifactB = '.claude/worktrees/b/artifact.txt';
+  writeFileSync(join(root, artifactB), 'b');
+  const makerB = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: wsB, expectedArtifacts: [artifactB], fence: f }).id;
+  const checkerB = newEpisode(root, runId, {
+    plugin: 'deep-review', role: 'checker', kind: 'implementation-review', point: 'implementation',
+    workstream: wsB, targetMaker: makerB, fence: f,
+  }).id;
+  const prepared = readState(root, runId).data;
+  Object.assign(prepared.episodes.find(ep => ep.id === makerB), { status: 'done', artifacts: [artifactB] });
+  writeState(root, runId, prepared);
+  recordEpisode(root, runId, makerA, { status: 'in_progress', fence: f });
+
+  const dispatch = runReviewCli(root, runId, ['review', 'dispatch', '--point', 'implementation', '--workstream', wsB]);
+  assert.equal(dispatch.status, 1, dispatch.stderr);
+  assert.match(dispatch.stderr, /SESSION_SCOPE_MISMATCH/);
+
+  const before = eventLog(root, runId).length;
+  const record = runReviewCli(root, runId, ['review', 'record', '--episode', checkerB, '--verdict', 'REQUEST_CHANGES']);
+  assert.equal(record.status, 1, record.stderr);
+  assert.match(record.stderr, /SESSION_SCOPE_MISMATCH/);
+  assert.equal(eventLog(root, runId).length, before);
+  assert.throws(() => claimIndependentReview(root, runId, {
+    episodeId: checkerB, fence: f, attemptIdFactory: () => 'cross-scope-attempt',
+  }), /SESSION_SCOPE_MISMATCH/);
+  assert.equal(eventLog(root, runId).length, before);
+  assert.equal(readState(root, runId).data.session_chain.sessions[0].scope.workstream_id, wsA);
+});
+
 test('recordReviewOutcome derives checker terminal + drives breaker/comprehension/points', () => {
   const { root, runId } = seed();
   const f = fence(runId);
@@ -116,6 +163,7 @@ test('recordReviewOutcome derives checker terminal + drives breaker/comprehensio
   // Create a done maker for 'plan' so dispatchReview binds the checker (target_maker required for review_points_done).
   writeFileSync(join(root, 'plan.txt'), 'plan artifact');
   const { id: planMakerId } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'plan', point: 'plan', workstream: ws, expectedArtifacts: ['plan.txt'], fence: f });
+  recordEpisode(root, runId, planMakerId, { status: 'in_progress', fence: f });
   recordEpisode(root, runId, planMakerId, { status: 'done', artifacts: ['plan.txt'], proof: {}, fence: f });
   // REQUEST_CHANGES → checker rejected + breaker++ (Codex r1 🔴5: checker 터미널 파생)
   const r1 = dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
@@ -380,6 +428,7 @@ test('recordReviewOutcome: bound approve increments episodes_agent_reviewed by 1
   writeFileSync(join(root, 'impl1.txt'), 'artifact 1');
   writeFileSync(join(root, 'impl2.txt'), 'artifact 2');
   const { id: maker1Id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws, expectedArtifacts: ['impl1.txt'], fence: f });
+  recordEpisode(root, runId, maker1Id, { status: 'in_progress', fence: f });
   recordEpisode(root, runId, maker1Id, { status: 'done', artifacts: ['impl1.txt'], proof: {}, fence: f });
   const { id: maker2Id } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws, expectedArtifacts: ['impl2.txt'], fence: f });
   recordEpisode(root, runId, maker2Id, { status: 'done', artifacts: ['impl2.txt'], proof: {}, fence: f });

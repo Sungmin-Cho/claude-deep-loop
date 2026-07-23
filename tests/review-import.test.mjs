@@ -65,6 +65,7 @@ function fixture({ runtime = 'codex', detected = { 'deep-review': true }, artifa
     plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation',
     workstream: ws, expectedArtifacts: [artifactRel], fence,
   }).id;
+  recordEpisode(root, runId, makerId, { status: 'in_progress', fence });
   recordEpisode(root, runId, makerId, { status: 'done', artifacts: [artifactRel], fence });
   const checkerId = dispatchReview(root, runId, {
     point: 'implementation', workstreamId: ws, detected, independentSubagent: detected['deep-review'] !== true, fence,
@@ -258,6 +259,7 @@ test('import rejects file-symlink escapes from the reviewed worktree', (t) => {
   const artifactRel = `${worktree}/link.txt`;
   if (!createFileSymlinkOrSkip(t, external, join(root, artifactRel))) return;
   const makerId = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws, expectedArtifacts: [artifactRel], fence }).id;
+  recordEpisode(root, runId, makerId, { status: 'in_progress', fence });
   recordEpisode(root, runId, makerId, { status: 'done', artifacts: [artifactRel], fence });
   const checkerId = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws, detected: { 'deep-review': true }, fence }).checkerEpisodeId;
   assert.throws(() => claimIndependentReview(root, runId, {
@@ -302,14 +304,15 @@ test('shared commit validates mutable structures before append so mutate remains
   assert.equal(eventLog(f.root, f.runId).length, before);
 });
 
-test('stale lease leaves at most an unreferenced envelope and never checker proof', () => {
+test('stale lease creates no envelope and never checker proof', () => {
   const f = fixture(); const before = eventLog(f.root, f.runId).length;
   assert.throws(() => importReviewOutcome(f.root, f.runId, {
     raw: JSON.stringify(f.input), fence: { ...f.fence, generation: 9 }, now: FIXED_NOW,
   }), /LEASE_FENCED/);
   assert.equal(readState(f.root, f.runId).data.episodes.find(e => e.id === f.checkerId).status, 'in_progress');
   assert.equal(eventLog(f.root, f.runId).length, before);
-  assert.equal(readdirSync(join(runDir(f.root, f.runId), 'reviews')).filter(n => n.endsWith('.json')).length, 1);
+  const reviews = join(runDir(f.root, f.runId), 'reviews');
+  assert.equal(existsSync(reviews) ? readdirSync(reviews).filter(n => n.endsWith('.json')).length : 0, 0);
 });
 
 test('locked error order keeps runtime/lease fencing ahead of source and terminal validation', () => {
@@ -366,20 +369,55 @@ function spawnImport(root, runId, raw, extra = []) {
   return { child, done: new Promise(resolve => child.on('close', code => resolve({ code, stdout, stderr }))) };
 }
 
-test('locked commit reopens the exact envelope and rejects post-materialization tampering', () => {
+test('locked commit rebuilds the exact envelope and rejects post-preparation byte tampering', () => {
   const f = fixture();
   const beforeEvents = eventLog(f.root, f.runId).length;
   assert.throws(() => importReviewOutcome(f.root, f.runId, {
     raw: JSON.stringify(f.input), fence: f.fence, now: FIXED_NOW,
   }, {
-    afterMaterialize({ reportAbs }) {
-      const envelope = JSON.parse(readFileSync(reportAbs, 'utf8'));
-      envelope.payload.report_body = 'tampered after materialization';
-      writeFileSync(reportAbs, JSON.stringify(envelope));
+    afterMaterialize({ reportAbs, bytes }) {
+      assert.equal(existsSync(reportAbs), false, 'prepared proof is not published before the locked commit');
+      bytes[0] ^= 1;
     },
   }), /REVIEW_REPORT_HASH_MISMATCH/);
   assert.equal(readState(f.root, f.runId).data.episodes.find(e => e.id === f.checkerId).status, 'in_progress');
   assert.equal(eventLog(f.root, f.runId).length, beforeEvents);
+});
+
+test('post-preparation scope drift rejects imported proof without orphaning a review report', () => {
+  const f = fixture();
+  const wsOther = newWorkstream(f.root, f.runId, {
+    title: 'other', branch: 'other', worktree: '.claude/worktrees/other', fence: f.fence,
+  }).id;
+  const reviews = join(runDir(f.root, f.runId), 'reviews');
+  const before = existsSync(reviews) ? readdirSync(reviews).sort() : [];
+  assert.throws(() => importReviewOutcome(f.root, f.runId, {
+    raw: JSON.stringify(f.input), fence: f.fence, now: FIXED_NOW,
+  }, {
+    afterMaterialize() {
+      const state = readState(f.root, f.runId).data;
+      state.session_chain.sessions.find(session => session.run_id === f.runId).scope.workstream_id = wsOther;
+      writeState(f.root, f.runId, state);
+    },
+  }), /SESSION_SCOPE_MISMATCH/);
+  assert.deepEqual(existsSync(reviews) ? readdirSync(reviews).sort() : [], before);
+  assert.equal(readState(f.root, f.runId).data.episodes.find(ep => ep.id === f.checkerId).status, 'in_progress');
+});
+
+test('public review import rejects cross-scope target before report artifact creation', async () => {
+  const f = fixture();
+  const wsOther = newWorkstream(f.root, f.runId, {
+    title: 'other', branch: 'other', worktree: '.claude/worktrees/other', fence: f.fence,
+  }).id;
+  const state = readState(f.root, f.runId).data;
+  state.session_chain.sessions.find(session => session.run_id === f.runId).scope.workstream_id = wsOther;
+  writeState(f.root, f.runId, state);
+  const reviews = join(runDir(f.root, f.runId), 'reviews');
+  const before = existsSync(reviews) ? readdirSync(reviews).sort() : [];
+  const result = await spawnImport(f.root, f.runId, JSON.stringify(f.input)).done;
+  assert.equal(result.code, 1, result.stderr);
+  assert.match(result.stderr, /SESSION_SCOPE_MISMATCH/);
+  assert.deepEqual(existsSync(reviews) ? readdirSync(reviews).sort() : [], before);
 });
 
 test('locked commit runtime snapshot is fenced if stored runtime changes after envelope creation', () => {

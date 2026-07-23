@@ -3,11 +3,24 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { newEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
 import { ack, computeDebt } from '../scripts/lib/comprehension.mjs';
 import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { verifyLog } from '../scripts/lib/integrity.mjs';
+import { newWorkstream } from '../scripts/lib/workspace.mjs';
+import { recordEpisode } from '../scripts/lib/episode.mjs';
+
+const COMPREHENSION_CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'deep-loop.mjs');
+function runComprehensionCli(root, runId, args) {
+  return spawnSync(process.execPath, [
+    COMPREHENSION_CLI, ...args, '--owner', runId, '--generation', '1',
+    '--project-root', root, '--run-id', runId,
+  ], { encoding: 'utf8', env: { ...process.env, DEEP_LOOP_HEADLESS: '' } });
+}
 
 // Non-headless env for attended human acks — the test runner may inherit a headless CLAUDE_CODE_ENTRYPOINT,
 // so pass an explicit empty env whenever an ack should NOT be treated as headless.
@@ -48,6 +61,26 @@ test('ack is idempotent and validates episode existence', () => {
   assert.equal(readState(root, runId).data.comprehension.episodes_human_reviewed, 1);
   assert.throws(() => ack(root, runId, 'ghost', { actor: 'human', confirm: true, env: ATTENDED, fence }), /EPISODE_NOT_FOUND/);
   assert.throws(() => ack(root, runId, ep.id, { actor: 'human', confirm: true, env: ATTENDED, fence: { owner: runId, generation: 9 } }), /LEASE_FENCED/);
+});
+
+test('public comprehension ack and legacy recordReviewed reject a maker outside the owner scope', () => {
+  const { root, runId, fence } = freshRun();
+  const wsA = newWorkstream(root, runId, { title: 'a', branch: 'a', worktree: '.claude/worktrees/a', fence }).id;
+  const wsB = newWorkstream(root, runId, { title: 'b', branch: 'b', worktree: '.claude/worktrees/b', fence }).id;
+  const makerA = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: wsA, fence }).id;
+  const makerB = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: wsB, fence }).id;
+  recordEpisode(root, runId, makerA, { status: 'in_progress', fence });
+  const before = eventLog(root, runId).length;
+
+  const rejected = runComprehensionCli(root, runId, ['comprehension', 'ack', '--episode', makerB]);
+  assert.equal(rejected.status, 1, rejected.stderr);
+  assert.match(rejected.stderr, /SESSION_SCOPE_MISMATCH/);
+  assert.equal(eventLog(root, runId).length, before);
+  assert.throws(() => recordReviewed(root, runId, makerB, 'manual'), /SESSION_SCOPE_MISMATCH/);
+  assert.equal(eventLog(root, runId).length, before);
+
+  const accepted = runComprehensionCli(root, runId, ['comprehension', 'ack', '--episode', makerA]);
+  assert.equal(accepted.status, 0, accepted.stderr);
 });
 
 test('abandonEpisode decrements episodes_total for a maker (0-clamp)', () => {
