@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
-  mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync,
+  mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -20,6 +20,8 @@ import { contentHash } from '../scripts/lib/envelope.mjs';
 import { projectRootDigest } from '../scripts/lib/project-root.mjs';
 import { respawn } from '../scripts/lib/respawn.mjs';
 import { appendAnchored } from '../scripts/lib/integrity.mjs';
+import { makeCodexProcessReceipt, settleCodexProcessCost } from '../scripts/lib/budget.mjs';
+import { finishRun } from '../scripts/lib/finish.mjs';
 
 const CLI = join(process.cwd(), 'scripts', 'deep-loop.mjs');
 const NOW = '2026-07-23T04:05:06.789Z';
@@ -57,14 +59,14 @@ function durableBytes(root) {
   return files;
 }
 
-function seedReviewed() {
+function seedReviewed(runtime = 'claude') {
   const root = mkdtempSync(join(tmpdir(), 'dl-workstream-boundary-'));
   const review = {
     points: ['implementation'], reviewer: 'subagent-checker', mode: 'cross-model',
     flags: [], converge: true, max_review_rounds: 5, require_human_ack: false,
   };
   const { runId } = initRun(root, {
-    runtime: 'claude', goal: 'g', review, now: new Date('2026-07-23T00:00:00.000Z'),
+    runtime, goal: 'g', review, now: new Date('2026-07-23T00:00:00.000Z'),
   });
   const f = fence(runId);
   const worktree = '.claude/worktrees/closure';
@@ -408,8 +410,8 @@ test('shared closure helper exposes literal order-aware proof defects', () => {
   assert.ok(proof.missing.includes('non-converged-maker'));
 });
 
-function closeWithSibling() {
-  const f = seedReviewed();
+function closeWithSibling(runtime = 'claude') {
+  const f = seedReviewed(runtime);
   const sibling = newWorkstream(f.root, f.runId, {
     title: 'sibling', branch: 'feature/sibling',
     worktree: '.claude/worktrees/sibling', fence: f.f,
@@ -512,6 +514,11 @@ test('public boundary handoff journals four artifacts, exact topology, one event
   const acquiredState = readState(f.root, f.runId).data;
   assert.equal(acquiredState.session_chain.lease.takeover_kind, null);
   assert.equal(acquiredState.session_chain.lease.handoff_boundary_event, undefined);
+  assert.equal(acquiredState.session_chain.sessions
+    .find(session => session.run_id === emitted.childRunId).started_at,
+  new Date(Date.parse(NOW) + 1).toISOString());
+  assert.equal(acquiredState.session_chain.sessions
+    .find(session => session.run_id === f.runId).outcome, 'took_over');
 
   mkdirSync(join(f.root, '.claude/worktrees/sibling'), { recursive: true });
   const nextMaker = newEpisode(f.root, f.runId, {
@@ -524,6 +531,126 @@ test('public boundary handoff journals four artifacts, exact topology, one event
   });
   assert.equal(readState(f.root, f.runId).data.session_chain.sessions
     .find(session => session.run_id === emitted.childRunId).scope.workstream_id, f.sibling);
+});
+
+test('expired boundary reservations remain exclusive to the exact child and reject unrelated owners byte-for-byte', () => {
+  const f = closeWithSibling();
+  const emitted = emitHandoff(f.root, f.runId, {
+    boundaryEvent: f.boundary,
+    reason: 'workstream-terminal',
+    trigger: 'workstream-terminal',
+    now: Date.parse(NOW),
+    expect: { owner: f.runId, generation: 1 },
+    env: {},
+  });
+  captureReconciledRunSnapshot(f.root, f.runId);
+  const dir = runDir(f.root, f.runId);
+  const before = ['loop.json', '.loop.hash', 'event-log.jsonl']
+    .map(name => readFileSync(join(dir, name)));
+  const unrelated = acquireLease(f.root, f.runId, {
+    owner: '01KUNRELATEDOWNER0000000000',
+    expectGeneration: 1,
+    runtime: 'claude',
+    now: Date.parse(NOW) + (16 * 60 * 1000),
+  });
+  assert.deepEqual(unrelated, {
+    ok: false,
+    generation: 1,
+    reason: 'child-not-reserved',
+  });
+  assert.deepEqual(
+    ['loop.json', '.loop.hash', 'event-log.jsonl'].map(name => readFileSync(join(dir, name))),
+    before,
+  );
+
+  const acquired = acquireLease(f.root, f.runId, {
+    owner: emitted.childRunId,
+    expectGeneration: 1,
+    runtime: 'claude',
+    now: Date.parse(NOW) + (16 * 60 * 1000),
+  });
+  assert.equal(acquired.ok, true);
+});
+
+test('new-policy Codex boundary key constructs and settles a real terminal maker receipt', () => {
+  const f = closeWithSibling('codex');
+  const emitted = emitHandoff(f.root, f.runId, {
+    boundaryEvent: f.boundary,
+    reason: 'workstream-terminal',
+    trigger: 'workstream-terminal',
+    now: Date.parse(NOW),
+    expect: { owner: f.runId, generation: 1 },
+    env: {},
+  });
+  assert.match(emitted.key, /^[a-f0-9]{64}$/);
+  const usage = { num_turns: 1, input_tokens: 5, output_tokens: 7, tokens: 12 };
+  const receipt = makeCodexProcessReceipt({
+    root: f.root,
+    runId: f.runId,
+    processKind: 'maker',
+    context: {
+      parent_owner: f.runId,
+      parent_generation: 1,
+      child_run_id: emitted.childRunId,
+      child_generation: 2,
+      handoff_key: emitted.key,
+      handoff_rel: emitted.handoffRel,
+    },
+    usage,
+  });
+  assert.equal(acquireLease(f.root, f.runId, {
+    owner: emitted.childRunId,
+    expectGeneration: 1,
+    runtime: 'codex',
+    now: Date.parse(NOW) + 1,
+  }).ok, true);
+  finishRun(f.root, f.runId, {
+    status: 'stopped',
+    confirm: true,
+    proof: { human_reason: 'public terminal accounting integration' },
+    fence: { owner: emitted.childRunId, generation: 2, intent: 'business' },
+    now: Date.parse(NOW) + 2,
+  });
+  assert.deepEqual(settleCodexProcessCost(f.root, f.runId, {
+    receipt,
+    fence: { owner: emitted.childRunId, generation: 2, intent: 'accounting' },
+  }), { ok: true, recorded: true, reason: 'recorded' });
+  assert.equal(readState(f.root, f.runId).data.budget.tokens_spent, 12);
+});
+
+test('resume-command trusts exact boundary launch metadata and falls back after retired-journal metadata drift', () => {
+  for (const [label, mutate] of [
+    ['envelope-extra', meta => { meta.envelope.extra = true; }],
+    ['payload-extra', meta => { meta.payload.extra = true; }],
+    ['schema-version', meta => { meta.envelope.schema.version = '9.9'; }],
+    ['timestamp', meta => { meta.envelope.generated_at = '2026-07-23T04:05:06Z'; }],
+  ]) {
+    const f = closeWithSibling();
+    const emitted = emitHandoff(f.root, f.runId, {
+      boundaryEvent: f.boundary,
+      reason: 'workstream-terminal',
+      trigger: 'workstream-terminal',
+      now: Date.parse(NOW),
+      expect: { owner: f.runId, generation: 1 },
+      env: {},
+    });
+    const dir = runDir(f.root, f.runId);
+    const launch = readFileSync(join(dir, 'terminal', 'launch-command.txt'), 'utf8').trimEnd();
+    const exact = runReadCli(f.root, f.runId, ['resume-command']);
+    assert.equal(exact.status, 0, exact.stdout + exact.stderr);
+    assert.ok(exact.stdout.includes(launch), `${label}: exact metadata must bind launch text`);
+
+    rmSync(join(dir, 'transactions', emitted.key), { recursive: true });
+    const metaPath = join(dir, 'terminal', 'launch-command.meta.json');
+    const meta = JSON.parse(readFileSync(metaPath, 'utf8'));
+    mutate(meta);
+    writeFileSync(metaPath, JSON.stringify(meta));
+    const fallback = runReadCli(f.root, f.runId, ['resume-command']);
+    assert.equal(fallback.status, 0, fallback.stdout + fallback.stderr);
+    assert.ok(!fallback.stdout.includes(launch), `${label}: drifted metadata must be ignored`);
+    assert.match(fallback.stdout, /Launcher guidance:/);
+    assert.ok(fallback.stdout.includes(emitted.childRunId));
+  }
 });
 
 test('public boundary emit rejects missing, forged, sibling, safety-blocked, and finish-ready calls before bytes', () => {
@@ -692,6 +819,48 @@ test('prepared boundary publication replays exactly once and rejects forged mani
       /TRANSACTION_RECONCILIATION_REQUIRED: boundary publication/,
     );
   }
+
+  {
+    const f = closeWithSibling();
+    let faulted = false;
+    assert.throws(() => emitHandoff(f.root, f.runId, {
+      boundaryEvent: f.boundary,
+      reason: 'workstream-terminal',
+      trigger: 'workstream-terminal',
+      now: Date.parse(NOW),
+      expect: { owner: f.runId, generation: 1 },
+      env: {},
+      publicationFaultAt(label) {
+        if (!faulted && label === 'artifact:0:target-done') {
+          faulted = true;
+          throw new Error('prepared-boundary-fault');
+        }
+      },
+    }), /TRANSACTION_PENDING/);
+    const state = readState(f.root, f.runId).data;
+    const operationDir = join(
+      runDir(f.root, f.runId),
+      'transactions',
+      state.session_chain.lease.handoff_idempotency_key,
+    );
+    const preparedPath = join(operationDir, 'prepared.json');
+    const prepared = JSON.parse(readFileSync(preparedPath, 'utf8'));
+    const metaIndex = prepared.payload.manifest.targets[3].stage_index;
+    const metaPath = join(operationDir, 'stages', `${String(metaIndex).padStart(6, '0')}.bin`);
+    const meta = JSON.parse(readFileSync(metaPath, 'utf8'));
+    meta.payload.unreviewed_extra = true;
+    const bytes = Buffer.from(JSON.stringify(meta, null, 2));
+    writeFileSync(metaPath, bytes);
+    prepared.payload.stages[metaIndex].sha256 = contentHash(bytes);
+    prepared.payload.stages[metaIndex].size = String(bytes.length);
+    prepared.payload.manifest.targets[3].candidate_sha256 = contentHash(bytes);
+    prepared.payload.manifest.targets[3].candidate_size = String(bytes.length);
+    writeFileSync(preparedPath, JSON.stringify(prepared));
+    assert.throws(
+      () => captureReconciledRunSnapshot(f.root, f.runId),
+      /TRANSACTION_RECONCILIATION_REQUIRED: boundary publication metadata/,
+    );
+  }
 });
 
 test('respawn refuses forged boundary topology before claim or external spawn', () => {
@@ -726,6 +895,60 @@ test('respawn refuses forged boundary topology before claim or external spawn', 
   assert.equal(result.outcome, 'boundary-invalid');
   assert.equal(spawned, 0);
   assert.equal(readState(f.root, f.runId).data.session_chain.lease.handoff_phase, 'emitted');
+});
+
+test('spawn claim rechecks every ordered boundary gate inside the CAS and never consumes emitted state', () => {
+  for (const [label, mutate, reason] of [
+    ['budget', state => { state.budget.total = state.budget.spent; }, 'budget'],
+    ['breaker', state => { state.circuit_breaker.tripped = true; }, 'breaker'],
+    ['finish', state => {
+      state.workstreams.find(ws => ws.status === 'planned').status = 'abandoned';
+      state.active_workstreams = [];
+    }, 'FINISH_REQUIRED'],
+    ['boundary', state => {
+      state.session_chain.sessions.find(session =>
+        session.run_id === state.session_chain.lease.handoff_child_run_id)
+        .parent_boundary_event = { seq: 999, checksum: 'd'.repeat(64) };
+    }, 'boundary-topology-invalid'],
+    ['max-sessions', state => { state.autonomy.max_sessions = 1; }, 'max_sessions'],
+    ['wallclock', state => { state.budget.max_wallclock_sec = 1; }, 'wallclock'],
+    ['auto-handoff', state => { state.autonomy.auto_handoff = false; }, 'auto_handoff'],
+  ]) {
+    const f = closeWithSibling();
+    const emitted = emitHandoff(f.root, f.runId, {
+      boundaryEvent: f.boundary,
+      reason: 'workstream-terminal',
+      trigger: 'workstream-terminal',
+      now: Date.parse(NOW),
+      expect: { owner: f.runId, generation: 1 },
+      env: {},
+      headless: true,
+    });
+    let spawned = 0;
+    const result = respawn(f.root, f.runId, {
+      childRunId: emitted.childRunId,
+      key: emitted.key,
+      handoffRel: emitted.handoffRel,
+      headless: true,
+      now: Date.parse(NOW) + 1,
+      beforeClaim() {
+        const state = readState(f.root, f.runId).data;
+        mutate(state);
+        writeState(f.root, f.runId, state);
+      },
+      spawnFn: () => { spawned += 1; return { ok: true }; },
+      expect: { owner: f.runId, generation: 1 },
+      env: {},
+    });
+    assert.equal(spawned, 0, label);
+    assert.equal(result.ok, false, label);
+    assert.equal(result.reason, reason, label);
+    assert.equal(
+      readState(f.root, f.runId).data.session_chain.lease.handoff_phase,
+      'emitted',
+      label,
+    );
+  }
 });
 
 test('resume-command trusts the journaled launch text only with exact M3 boundary topology', () => {

@@ -26,6 +26,7 @@ import {
 } from './project-root.mjs';
 import { validate } from './schema.mjs';
 import { durableAtomicWrite, flushDirectory } from './atomic-write.mjs';
+import { validateLaunchCommandMetadata } from './runtime-descriptor.mjs';
 import {
   classifyArtifactTargetsLocked,
   findPreparedPublicationLocked,
@@ -375,18 +376,16 @@ function validateBoundaryPublication(prepared, candidate) {
   } catch {
     throw transactionError('boundary publication metadata');
   }
-  const payload = meta?.payload;
-  if (meta?.envelope?.producer !== 'deep-loop'
-    || meta.envelope.artifact_kind !== 'launch-command-meta'
-    || meta.envelope.schema?.name !== 'launch-command-meta'
-    || payload?.launch_command_sha256 !== contentHash(launchBytes)
-    || payload.parent_run_id !== topology.parent_run_id
-    || payload.child_run_id !== topology.child_run_id
-    || payload.handoff_phase !== topology.phase
-    || payload.handoff_rel !== topology.handoff_rel
-    || payload.project_binding_generation !== topology.project_binding_generation
-    || payload.project_root_digest !== topology.project_root_digest
-    || !sameBoundaryIdentity(payload.boundary_event, topology.boundary_event)) {
+  if (!validateLaunchCommandMetadata(meta, {
+    launchBytes,
+    parentRunId: topology.parent_run_id,
+    childRunId: topology.child_run_id,
+    handoffRel: topology.handoff_rel,
+    projectRootDigest: topology.project_root_digest,
+    projectBindingGeneration: topology.project_binding_generation,
+    boundaryEvent: topology.boundary_event,
+    generatedAt: parent.scope.superseded_at,
+  })) {
     throw transactionError('boundary publication metadata');
   }
 }

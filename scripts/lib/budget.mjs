@@ -66,6 +66,21 @@ function hasExactEventData(data, requiredKeys) {
 const CODEX_PREFLIGHT_RECEIPT_CONTRACT = 'deep-loop-codex-preflight-accounting-receipt-v1';
 const CODEX_PROCESS_RECEIPT_CONTRACT = 'deep-loop-codex-process-accounting-receipt-v1';
 
+// New workstream-boundary reservations use the complete SHA-256 digest. The two
+// authentic pre-boundary policies retain their historical 16-hex transport key.
+// Receipt byte reconstruction does not have loop state, so an omitted policy
+// recognizes either canonical grammar; settlement always supplies the durable
+// policy and binds the key to the kernel-authored handoff event.
+export function isCanonicalHandoffKey(value, continuationPolicy = null) {
+  if (typeof value !== 'string') return false;
+  if (continuationPolicy === 'workstream-session') return /^[a-f0-9]{64}$/.test(value);
+  if (continuationPolicy === 'compact-in-place' || continuationPolicy === 'rotate-per-unit') {
+    return /^[a-f0-9]{16}$/.test(value);
+  }
+  if (continuationPolicy != null) return false;
+  return /^(?:[a-f0-9]{16}|[a-f0-9]{64})$/.test(value);
+}
+
 function exactMeasuredUsage(usage) {
   return {
     num_turns: usage.num_turns,
@@ -124,7 +139,7 @@ function normalizedProcessContext(processKind, context) {
       || !Number.isInteger(context.parent_generation) || context.parent_generation < 1
       || !boundedText(context.child_run_id, 512)
       || context.child_generation !== context.parent_generation + 1
-      || typeof context.handoff_key !== 'string' || !/^[a-f0-9]{16}$/.test(context.handoff_key)
+      || !isCanonicalHandoffKey(context.handoff_key)
       || typeof context.handoff_rel !== 'string' || context.handoff_rel.length > 4_096
       || context.handoff_rel.includes('\0')) {
       throw new Error('PROCESS_ACCOUNTING_CONTEXT_INVALID');
@@ -582,6 +597,9 @@ function exactSession(loop, owner) {
 
 function makerContext(loop, exact, lines) {
   const context = exact.context;
+  if (!isCanonicalHandoffKey(context.handoff_key, loop.autonomy?.continuation_policy)) {
+    throw new Error('PROCESS_ACCOUNTING_CONTEXT_MISMATCH');
+  }
   const parent = exactSession(loop, context.parent_owner);
   const child = exactSession(loop, context.child_run_id);
   if (child.handoff_rel !== context.handoff_rel) {
@@ -942,10 +960,10 @@ export function settleTerminalCodexMakerCost(root, runId, { usage, fence, handof
     || fence.intent !== 'accounting') {
     throw new Error('TERMINAL_ACCOUNTING_FENCE_REQUIRED');
   }
-  if (typeof handoffKey !== 'string' || !/^[a-f0-9]{16}$/.test(handoffKey)) {
-    throw new Error('TERMINAL_ACCOUNTING_HANDOFF_INVALID');
-  }
   return withReconciledMutationLock(root, runId, (_guard, { data: loop }) => {
+    if (!isCanonicalHandoffKey(handoffKey, loop.autonomy?.continuation_policy)) {
+      throw new Error('TERMINAL_ACCOUNTING_HANDOFF_INVALID');
+    }
     const lease = loop.session_chain?.lease || {};
     if (lease.owner_run_id !== fence.owner) throw new Error('LEASE_FENCED: owner-mismatch');
     if (lease.generation !== fence.generation) throw new Error('LEASE_FENCED: generation-mismatch');

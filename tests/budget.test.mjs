@@ -1451,7 +1451,7 @@ function terminalCodexChildRun() {
     runtime: 'codex', goal: 'g', now: new Date('2026-07-11T00:00:00Z'),
   });
   const childRunId = '01JTERMINALCHILD0000000000';
-  const handoffKey = 'a'.repeat(16);
+  const handoffKey = 'a'.repeat(64);
   appendAnchored(root, runId, {
     type: 'handoff-emitted',
     data: { child_run_id: childRunId, reason: 'fixture', key: handoffKey },
@@ -1534,7 +1534,7 @@ test('terminal Codex maker settlement remains narrow to an exact acquired child 
     usage, fence: { owner: childRunId, generation: 3, intent: 'accounting' }, handoffKey,
   }), /LEASE_FENCED: generation-mismatch/);
   assert.throws(() => settleTerminalCodexMakerCost(root, runId, {
-    usage, fence: { owner: childRunId, generation: 2, intent: 'accounting' }, handoffKey: 'b'.repeat(16),
+    usage, fence: { owner: childRunId, generation: 2, intent: 'accounting' }, handoffKey: 'b'.repeat(64),
   }), /TERMINAL_ACCOUNTING_PROOF_MISSING/);
 
   const { data } = readState(root, runId);

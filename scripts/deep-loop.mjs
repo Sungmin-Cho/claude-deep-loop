@@ -53,8 +53,10 @@ import {
 } from './lib/runtime-executable.mjs';
 import { sessionRuntime } from './lib/runtime.mjs';
 import { canonicalProjectRoot, projectRootDigest } from './lib/project-root.mjs';
-import { buildRuntimeResumeDescriptor } from './lib/runtime-descriptor.mjs';
-import { contentHash, unwrap } from './lib/envelope.mjs';
+import {
+  buildRuntimeResumeDescriptor,
+  validateLaunchCommandMetadata,
+} from './lib/runtime-descriptor.mjs';
 
 const DEEP_LOOP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -452,21 +454,20 @@ const handlers = {
       && Number.isSafeInteger(data.project?.binding_generation)) {
       try {
         const parsed = JSON.parse(launchMeta.bytes.toString('utf8'));
-        const envelope = unwrap(parsed, {
-          producer: 'deep-loop',
-          artifact_kind: 'launch-command-meta',
-        });
-        const meta = envelope?.payload;
         const parent = child && (data.session_chain?.sessions || [])
           .find(session => session.run_id === child.parent_run_id);
+        const validated = validateLaunchCommandMetadata(parsed, {
+          launchBytes: launchText.bytes,
+          parentRunId: runId,
+          childRunId,
+          handoffRel: child?.handoff_rel,
+          projectRootDigest: projectRootDigest(data.project.root),
+          projectBindingGeneration: data.project.binding_generation,
+          boundaryEvent: lease.handoff_boundary_event,
+          generatedAt: parent?.scope?.superseded_at,
+        });
+        const meta = validated?.payload;
         if (meta
-          && meta.launch_command_sha256 === contentHash(launchText.bytes)
-          && meta.parent_run_id === runId
-          && meta.child_run_id === childRunId
-          && meta.handoff_phase === 'emitted'
-          && meta.handoff_rel === child?.handoff_rel
-          && meta.project_root_digest === projectRootDigest(data.project.root)
-          && meta.project_binding_generation === data.project.binding_generation
           && lease.takeover_kind === 'boundary-handoff'
           && lease.handoff_project_root_digest === meta.project_root_digest
           && lease.handoff_project_binding_generation === meta.project_binding_generation

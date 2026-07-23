@@ -5,6 +5,7 @@ import { validateSessionRuntime } from './runtime.mjs';
 import { buildCodexExecEntry } from './codex-runtime.mjs';
 import { validateRuntimeProfile } from './session-profile.mjs';
 import { tomlBasicString } from './toml-safe.mjs';
+import { contentHash } from './envelope.mjs';
 
 const CODEX_TRANSPORT_UNAVAILABLE = 'codex-transport-not-activated';
 
@@ -33,6 +34,76 @@ function meSh(quote, model, effort) {
 
 const SAFE_ID = /^[A-Za-z0-9_-]+$/;
 const SAFE_HANDOFF_REL = /^handoffs\/[A-Za-z0-9._-]+$/;
+
+function exactObjectKeys(value, expected) {
+  return value != null
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...expected].sort());
+}
+
+function canonicalIso(value) {
+  if (typeof value !== 'string') return false;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
+}
+
+// Shared M3 validator for both prepared-publication reconciliation and the
+// read-only resume surface. It deliberately validates the complete envelope,
+// not merely the fields currently consumed by either caller.
+export function validateLaunchCommandMetadata(metadata, {
+  launchBytes,
+  parentRunId,
+  childRunId,
+  handoffRel,
+  projectRootDigest,
+  projectBindingGeneration,
+  boundaryEvent,
+  generatedAt,
+} = {}) {
+  const envelopeKeys = [
+    'artifact_kind', 'generated_at', 'git', 'parent_run_id',
+    'producer', 'provenance', 'run_id', 'schema',
+  ];
+  const payloadKeys = [
+    'boundary_event', 'child_run_id', 'handoff_phase', 'handoff_rel',
+    'launch_command_sha256', 'parent_run_id', 'project_binding_generation',
+    'project_root_digest',
+  ];
+  const envelope = metadata?.envelope;
+  const payload = metadata?.payload;
+  const provenance = envelope?.provenance;
+  if (!exactObjectKeys(metadata, ['schema_version', 'envelope', 'payload'])
+    || metadata.schema_version !== '1.0'
+    || !exactObjectKeys(envelope, envelopeKeys)
+    || envelope.producer !== 'deep-loop'
+    || envelope.artifact_kind !== 'launch-command-meta'
+    || !exactObjectKeys(envelope.schema, ['name', 'version'])
+    || envelope.schema.name !== 'launch-command-meta'
+    || envelope.schema.version !== '1.0'
+    || envelope.run_id !== childRunId
+    || envelope.parent_run_id !== parentRunId
+    || !canonicalIso(envelope.generated_at)
+    || envelope.generated_at !== generatedAt
+    || !exactObjectKeys(envelope.git, [])
+    || !exactObjectKeys(provenance, ['source_artifacts', 'tool_versions'])
+    || JSON.stringify(provenance.source_artifacts) !== JSON.stringify([handoffRel])
+    || !exactObjectKeys(provenance.tool_versions, [])
+    || !exactObjectKeys(payload, payloadKeys)
+    || payload.launch_command_sha256 !== contentHash(launchBytes)
+    || payload.parent_run_id !== parentRunId
+    || payload.child_run_id !== childRunId
+    || payload.handoff_phase !== 'emitted'
+    || payload.handoff_rel !== handoffRel
+    || payload.project_root_digest !== projectRootDigest
+    || payload.project_binding_generation !== projectBindingGeneration
+    || !exactObjectKeys(payload.boundary_event, ['checksum', 'seq'])
+    || payload.boundary_event.seq !== boundaryEvent?.seq
+    || payload.boundary_event.checksum !== boundaryEvent?.checksum) {
+    return null;
+  }
+  return metadata;
+}
 
 function validateSpawnArgs({ parentRunId, childRunId, handoffRel }) {
   if (!SAFE_ID.test(String(parentRunId))) {

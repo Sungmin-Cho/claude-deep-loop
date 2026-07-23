@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { contentHash, wrap } from '../scripts/lib/envelope.mjs';
 
 async function descriptorModule() {
   try {
@@ -16,6 +17,62 @@ const base = {
   childRunId: '01CHILD',
   handoffRel: 'handoffs/next.md',
 };
+
+test('launch metadata validator accepts only the exact M3 boundary envelope and payload', async () => {
+  const { validateLaunchCommandMetadata } = await descriptorModule();
+  assert.equal(typeof validateLaunchCommandMetadata, 'function');
+  const launchBytes = Buffer.from('launch\n');
+  const boundaryEvent = { seq: 7, checksum: 'a'.repeat(64) };
+  const expected = {
+    launchBytes,
+    parentRunId: base.parentRunId,
+    childRunId: base.childRunId,
+    handoffRel: base.handoffRel,
+    projectRootDigest: 'b'.repeat(64),
+    projectBindingGeneration: 3,
+    boundaryEvent,
+    generatedAt: '2026-07-23T01:02:03.004Z',
+  };
+  const metadata = wrap({
+    producer: 'deep-loop',
+    artifact_kind: 'launch-command-meta',
+    schema: { name: 'launch-command-meta', version: '1.0' },
+    run_id: base.childRunId,
+    parent_run_id: base.parentRunId,
+    provenance: { source_artifacts: [base.handoffRel], tool_versions: {} },
+    payload: {
+      launch_command_sha256: contentHash(launchBytes),
+      parent_run_id: base.parentRunId,
+      child_run_id: base.childRunId,
+      handoff_phase: 'emitted',
+      boundary_event: boundaryEvent,
+      handoff_rel: base.handoffRel,
+      project_root_digest: expected.projectRootDigest,
+      project_binding_generation: expected.projectBindingGeneration,
+    },
+    now: expected.generatedAt,
+  });
+  assert.equal(validateLaunchCommandMetadata(metadata, expected)?.payload.child_run_id, base.childRunId);
+
+  const mutations = [
+    value => { value.extra = true; },
+    value => { value.schema_version = '0.9'; },
+    value => { value.envelope.extra = true; },
+    value => { value.envelope.schema.version = '9.9'; },
+    value => { value.envelope.run_id = base.parentRunId; },
+    value => { value.envelope.parent_run_id = base.childRunId; },
+    value => { value.envelope.generated_at = '2026-07-23T01:02:03Z'; },
+    value => { value.envelope.git.extra = true; },
+    value => { value.envelope.provenance.extra = true; },
+    value => { value.payload.extra = true; },
+    value => { value.payload.boundary_event.extra = true; },
+  ];
+  for (const mutate of mutations) {
+    const forged = structuredClone(metadata);
+    mutate(forged);
+    assert.equal(validateLaunchCommandMetadata(forged, expected), null);
+  }
+});
 
 test('runtime helpers select the host-native resume token and usage output kind', async () => {
   const { resumeSkillToken, usageOutputKind } = await descriptorModule();

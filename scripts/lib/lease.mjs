@@ -148,12 +148,19 @@ export function acquireLease(root, runId, { owner, expectGeneration, runtime, no
     }
     const topologyError = boundaryHandoffTopologyError(data);
     if (topologyError) return { ok: false, generation: lease.generation, reason: topologyError };
+    // A boundary handoff is a durable one-child reservation, not a stale-lease
+    // takeover invitation. TTL expiry is handled by the explicit recovery path;
+    // it must never broaden this acquisition authority to an unrelated owner.
+    if (lease.takeover_kind === 'boundary-handoff'
+      && owner !== lease.handoff_child_run_id) {
+      return { ok: false, generation: lease.generation, reason: 'child-not-reserved' };
+    }
     // takeover 가능: released(정상 인수), releasing+expired(부모 크래시 복구), releasing+예약된child(handshake). active 절대 탈취 안 됨.
     const expired = lease.expires_at && now > Date.parse(lease.expires_at);
     const takeable = lease.state === 'released' || (lease.state === 'releasing' && expired) || (lease.state === 'releasing' && owner === lease.handoff_child_run_id);
     if (!takeable) return { ok: false, generation: lease.generation, reason: 'lease-not-takeable' };
-    // Codex impl r9 🔴: a RELEASED handoff lease reserved a specific child — only that child may acquire it
-    // (binds reserve→emit→claim→release→acquire). After stale TTL (expired), allow recovery by any owner.
+    // Legacy handoffs reserved a specific child while the reservation was live.
+    // Boundary handoffs were fenced above regardless of TTL.
     if (lease.state === 'released' && lease.handoff_child_run_id && owner !== lease.handoff_child_run_id && !expired) {
       return { ok: false, generation: lease.generation, reason: 'child-not-reserved' };
     }

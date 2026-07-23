@@ -1,4 +1,8 @@
-import { captureReconciledRunSnapshot } from './state.mjs';
+import {
+  captureReconciledRunSnapshot,
+  withReconciledMutationLock,
+  writeState,
+} from './state.mjs';
 import { existsSync } from 'node:fs';
 import { dirname, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -6,7 +10,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { appendAnchored } from './integrity.mjs';
 import { checkBudget, reconcileBudget } from './budget.mjs';
 import { checkBreaker } from './breaker.mjs';
-import { advanceHandoffPhase, boundaryHandoffTopologyError } from './lease.mjs';
+import { boundaryHandoffTopologyError } from './lease.mjs';
 import { buildLaunchCommand } from './runtime-descriptor.mjs';
 import { defaultDesktopProbe } from './desktop-target.mjs';
 import { sessionRuntime } from './runtime.mjs';
@@ -18,6 +22,7 @@ import {
   revalidateTrustedLauncherExecutable,
   revalidateTrustedRuntimeExecutable,
 } from './runtime-executable.mjs';
+import { nextAction } from './next-action.mjs';
 
 const DEFAULT_DEEP_LOOP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const captureFreshLoop = (root, runId) => captureReconciledRunSnapshot(root, runId).data;
@@ -119,6 +124,54 @@ export function respawnGate(loop, { now = Date.now() } = {}) {
   if (loop.budget?.max_wallclock_sec && (now - start) / 1000 >= loop.budget.max_wallclock_sec) blocked_by.push('wallclock');
   if (!loop.autonomy?.auto_handoff) blocked_by.push('auto_handoff');
   return { ok: blocked_by.length === 0, blocked_by, reason: blocked_by.join(',') || 'ok' };
+}
+
+function claimSpawnedHandoff(root, runId, {
+  key,
+  childRunId,
+  parentOwner,
+  generation,
+  now,
+}) {
+  return withReconciledMutationLock(root, runId, (_guard, { data }) => {
+    const lease = data.session_chain?.lease || {};
+    if (lease.owner_run_id !== parentOwner || lease.generation !== generation) {
+      return { ok: false, reason: 'fenced' };
+    }
+    if (data.status === 'completed' || data.status === 'stopped') {
+      return { ok: false, reason: 'RUN_TERMINAL' };
+    }
+    if (lease.handoff_idempotency_key !== key) return { ok: false, reason: 'key-mismatch' };
+    if (lease.handoff_child_run_id !== childRunId) return { ok: false, reason: 'child-mismatch' };
+    if (lease.handoff_phase === 'spawned') return { ok: true, reason: 'idempotent-noop' };
+    if (lease.handoff_phase !== 'emitted' || lease.state !== 'releasing') {
+      return { ok: false, reason: `illegal-transition ${lease.handoff_phase}->spawned` };
+    }
+
+    // The spawned CAS is the final internal authorization boundary before an
+    // irreversible external process launch. Re-evaluate in the documented
+    // order while holding the same lock that consumes `emitted`.
+    const budget = checkBudget(data, { now, sessionStart: now });
+    if (!budget.ok) return { ok: false, reason: 'budget' };
+    if (checkBreaker(data).tripped) return { ok: false, reason: 'breaker' };
+
+    if (lease.takeover_kind === 'boundary-handoff') {
+      const topologyError = boundaryHandoffTopologyError(data);
+      if (topologyError) return { ok: false, reason: topologyError };
+      const action = nextAction(data, { now }).action;
+      if (action?.type === 'finish') return { ok: false, reason: 'FINISH_REQUIRED' };
+    } else {
+      const topologyError = boundaryHandoffTopologyError(data);
+      if (topologyError) return { ok: false, reason: topologyError };
+    }
+
+    const gate = respawnGate(data, { now });
+    if (!gate.ok) return { ok: false, reason: gate.reason };
+
+    data.session_chain.lease = { ...lease, handoff_phase: 'spawned' };
+    writeState(root, runId, data);
+    return { ok: true, reason: 'advanced' };
+  });
 }
 
 // Headless (non-interactive) invocation detection — an ADDITIONAL safety net beyond the driver's explicit
@@ -288,6 +341,7 @@ export function respawn(root, runId, {
   tmuxProbeRun = defaultProbeRun,
   tmuxPanesRun = defaultProbeRun,
   tmuxPsRun,
+  beforeClaim = () => {},
 } = {}) {
   reconcileBudget(root, runId);                       // 무결성 fail-stop (탐지 시 throw)
   const loop = captureFreshLoop(root, runId);
@@ -617,13 +671,28 @@ export function respawn(root, runId, {
     return { ok: false, outcome: 'no-launcher', reason: preClaimIdentityFailure, childRunId };
   }
 
+  beforeClaim();
+
   // Codex r2 🔴3: 외부 spawn **이전에** emitted→spawned 를 원자적(withLock CAS)으로 클레임 (이중 외부 spawn 차단).
   // Command is already validated above; only the CAS + spawnFn call remain below.
-  const claim = advanceHandoffPhase(root, runId, { key, toPhase: 'spawned', now, expect: { owner: parentOwner, generation } });
+  const claim = claimSpawnedHandoff(root, runId, {
+    key, childRunId, parentOwner, generation, now,
+  });
   if (!claim.ok) {
     // v1.6 (spec §2.3-5, plan r1): 초입 read↔클레임 사이 finish 경합 — phase-error로 뭉개짐 금지.
     if (claim.reason === 'RUN_TERMINAL') return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };
     if (claim.reason === 'fenced') return { ok: false, outcome: 'fenced', reason: 'lease-changed-during-claim', childRunId };
+    if (claim.reason === 'boundary-topology-invalid'
+      || claim.reason === 'BOUNDARY_EVENT_MISMATCH') {
+      return { ok: false, outcome: 'boundary-invalid', reason: claim.reason, childRunId };
+    }
+    if (claim.reason === 'budget' || claim.reason === 'breaker'
+      || claim.reason === 'FINISH_REQUIRED'
+      || claim.reason.includes('max_sessions')
+      || claim.reason.includes('wallclock')
+      || claim.reason.includes('auto_handoff')) {
+      return { ok: false, outcome: 'gate-blocked', reason: claim.reason, childRunId };
+    }
     return { ok: false, outcome: 'phase-error', reason: claim.reason, childRunId };
   }
   if (claim.reason === 'idempotent-noop') return { ok: true, outcome: 'already-spawned', reason: 'idempotent', childRunId };
