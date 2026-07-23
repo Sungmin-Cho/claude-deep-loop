@@ -436,9 +436,7 @@ export function validate(loopJson, schema = loadSchema()) {
   for (const ws of (Array.isArray(loopJson.workstreams) ? loopJson.workstreams : [])) {
     if (ws?.status !== undefined && !wsAllowed.includes(ws.status)) errors.push(`invalid workstream status: ${ws.status}`);
     const terminalEvents = ws?.terminal_events;
-    const validTerminalEvent = event => {
-      if (typeof event === 'string') return true;
-      return !!event
+    const validStructuredTerminalEvent = event => !!event
         && typeof event === 'object'
         && !Array.isArray(event)
         && Object.keys(event).length === 2
@@ -447,10 +445,15 @@ export function validate(loopJson, schema = loadSchema()) {
         && Number.isSafeInteger(event.seq)
         && event.seq > 0
         && /^[0-9a-f]{64}$/.test(event.checksum);
-    };
-    if (terminalEvents !== undefined
-      && (!Array.isArray(terminalEvents) || terminalEvents.some(event => !validTerminalEvent(event)))) {
-      errors.push('workstreams[].terminal_events must contain legacy strings or exact event identities');
+    if (terminalEvents !== undefined) {
+      if (autonomy?.continuation_policy === 'workstream-session') {
+        if (!Array.isArray(terminalEvents) || terminalEvents.some(event => !validStructuredTerminalEvent(event))) {
+          errors.push('workstreams[].terminal_events under workstream-session must contain exact structured event identities');
+        }
+      } else if (['compact-in-place', 'rotate-per-unit'].includes(autonomy?.continuation_policy)
+        && (!Array.isArray(terminalEvents) || terminalEvents.some(event => typeof event !== 'string'))) {
+        errors.push('workstreams[].terminal_events under a legacy continuation policy must contain strings');
+      }
     }
   }
   return { ok: errors.length === 0, errors };

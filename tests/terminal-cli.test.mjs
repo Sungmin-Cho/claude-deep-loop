@@ -108,48 +108,194 @@ for (const status of ['completed', 'stopped']) {
   });
 }
 
-test('workstream terminal CLI pins confirm grammar without mutation', () => {
-  {
+test('workstream terminal CLI accepts exactly the three affirmative abandoned spellings', () => {
+  for (const confirmArgs of [
+    ['--confirm'],
+    ['--confirm=true'],
+    ['--confirm', 'true'],
+  ]) {
+    const f = seedBoundaryCli();
+    const result = run(f.root, [
+      'workstream', 'terminal', '--id', f.ws, '--status', 'abandoned',
+      '--proof', '{"reason":"cancelled"}', ...confirmArgs,
+      '--owner', f.owner, '--generation', String(f.gen),
+    ]);
+    assert.equal(result.status, 0, `${confirmArgs.join(' ')}\n${result.stdout}${result.stderr}`);
+  }
+});
+
+test('workstream terminal CLI rejects missing, false, empty, valued, and duplicate abandoned confirmation without mutation', () => {
+  for (const confirmArgs of [
+    [],
+    ['--confirm=false'],
+    ['--confirm', 'false'],
+    ['--confirm='],
+    ['--confirm=yes'],
+    ['--confirm', '--confirm'],
+    ['--confirm=true', '--confirm=true'],
+    ['--confirm=true', '--confirm=false'],
+  ]) {
     const f = seedBoundaryCli();
     const before = terminalDurableBytes(f.root, f.runId);
     const missing = run(f.root, [
       'workstream', 'terminal', '--id', f.ws, '--status', 'abandoned',
-      '--proof', '{"reason":"cancelled"}', '--owner', f.owner, '--generation', String(f.gen),
+      '--proof', '{"reason":"cancelled"}', ...confirmArgs,
+      '--owner', f.owner, '--generation', String(f.gen),
     ]);
     assert.equal(missing.status, 2, missing.stdout + missing.stderr);
     assert.match(missing.stderr, /CONFIRM_REQUIRED/);
     assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
   }
+});
 
-  {
+test('workstream terminal CLI rejects any ready or merged confirm occurrence without mutation', () => {
+  for (const [status, setup, proof] of [
+    ['ready', () => {}, '{}'],
+    ['merged', (f) => {
+      const ready = run(f.root, [
+        'workstream', 'terminal', '--id', f.ws, '--status', 'ready',
+        '--proof', '{}', '--owner', f.owner, '--generation', String(f.gen),
+      ]);
+      assert.equal(ready.status, 0, ready.stdout + ready.stderr);
+    }, '{"merge_commit":"abc123","human_approved":true}'],
+  ]) {
+    for (const confirmArgs of [
+      ['--confirm'],
+      ['--confirm=true'],
+      ['--confirm', 'true'],
+      ['--confirm=false'],
+      ['--confirm='],
+      ['--confirm', '--confirm'],
+      ['--confirm=true', '--confirm=false'],
+    ]) {
+      const f = seedBoundaryCli();
+      setup(f);
+      const before = terminalDurableBytes(f.root, f.runId);
+      const forbidden = run(f.root, [
+        'workstream', 'terminal', '--id', f.ws, '--status', status,
+        '--proof', proof, ...confirmArgs,
+        '--owner', f.owner, '--generation', String(f.gen),
+      ]);
+      assert.equal(forbidden.status, 2, `${status} ${confirmArgs.join(' ')}\n${forbidden.stdout}${forbidden.stderr}`);
+      assert.match(forbidden.stderr, /CONFIRM_FORBIDDEN/);
+      assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
+    }
+  }
+});
+
+test('workstream terminal confirmation grammar precedes proof parsing and state lookup', () => {
+  for (const [status, confirmArgs, expected] of [
+    ['abandoned', [], /CONFIRM_REQUIRED/],
+    ['ready', ['--confirm=false'], /CONFIRM_FORBIDDEN/],
+    ['merged', ['--confirm='], /CONFIRM_FORBIDDEN/],
+  ]) {
     const f = seedBoundaryCli();
     const before = terminalDurableBytes(f.root, f.runId);
-    const forbidden = run(f.root, [
-      'workstream', 'terminal', '--id', f.ws, '--status', 'ready',
-      '--proof', '{}', '--confirm', '--owner', f.owner, '--generation', String(f.gen),
+    const malformed = run(f.root, [
+      'workstream', 'terminal', '--id', 'ws-does-not-exist', '--status', status,
+      '--proof', '{', ...confirmArgs,
+      '--owner', f.owner, '--generation', String(f.gen),
     ]);
-    assert.equal(forbidden.status, 2, forbidden.stdout + forbidden.stderr);
-    assert.match(forbidden.stderr, /CONFIRM_FORBIDDEN/);
+    assert.equal(malformed.status, 2, malformed.stdout + malformed.stderr);
+    assert.match(malformed.stderr, expected);
+    assert.doesNotMatch(malformed.stderr, /Unexpected|WORKSTREAM_NOT_FOUND/);
     assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
+  }
+});
+
+test('workstream terminal public precedence is status, existence, transition, scope, closure, then proof', () => {
+  {
+    const f = seedBoundaryCli();
+    const invalid = run(f.root, [
+      'workstream', 'terminal', '--id', f.ws, '--status', 'bogus',
+      '--proof', '{', '--confirm', '--owner', f.owner, '--generation', String(f.gen),
+    ]);
+    assert.equal(invalid.status, 1, invalid.stdout + invalid.stderr);
+    assert.match(invalid.stderr, /WORKSTREAM_STATUS_INVALID/);
+    assert.doesNotMatch(invalid.stderr, /CONFIRM_FORBIDDEN|Unexpected/);
   }
 
   {
     const f = seedBoundaryCli();
-    const ready = run(f.root, [
+    const missing = run(f.root, [
+      'workstream', 'terminal', '--id', 'ws-does-not-exist', '--status', 'abandoned',
+      '--proof', '{"reason":"cancelled"}', '--confirm',
+      '--owner', f.owner, '--generation', String(f.gen),
+    ]);
+    assert.equal(missing.status, 1, missing.stdout + missing.stderr);
+    assert.match(missing.stderr, /WORKSTREAM_NOT_FOUND/);
+  }
+
+  {
+    const f = seedBoundaryCli();
+    const state = readState(f.root, f.runId).data;
+    state.session_chain.sessions[0].scope.workstream_id = 'ws-other';
+    state.workstreams.find(item => item.id === f.ws).review_points_done = [];
+    state.episodes.find(item => item.role === 'maker').status = 'pending';
+    writeState(f.root, f.runId, state);
+    const before = terminalDurableBytes(f.root, f.runId);
+
+    const transition = run(f.root, [
+      'workstream', 'terminal', '--id', f.ws, '--status', 'merged',
+      '--proof', '{"merge_commit":"abc123","human_approved":true}',
+      '--owner', f.owner, '--generation', String(f.gen),
+    ]);
+    assert.equal(transition.status, 1, transition.stdout + transition.stderr);
+    assert.match(transition.stderr, /WORKSTREAM_TERMINAL_LOCKED/);
+    assert.doesNotMatch(transition.stderr, /SESSION_SCOPE_MISMATCH|WORKSTREAM_CLOSURE_UNMET/);
+
+    const scope = run(f.root, [
       'workstream', 'terminal', '--id', f.ws, '--status', 'ready',
       '--proof', '{}', '--owner', f.owner, '--generation', String(f.gen),
     ]);
-    assert.equal(ready.status, 0, ready.stdout + ready.stderr);
-    const before = terminalDurableBytes(f.root, f.runId);
-    const forbidden = run(f.root, [
-      'workstream', 'terminal', '--id', f.ws, '--status', 'merged',
-      '--proof', '{"merge_commit":"abc123","human_approved":true}',
-      '--confirm', '--owner', f.owner, '--generation', String(f.gen),
-    ]);
-    assert.equal(forbidden.status, 2, forbidden.stdout + forbidden.stderr);
-    assert.match(forbidden.stderr, /CONFIRM_FORBIDDEN/);
+    assert.equal(scope.status, 1, scope.stdout + scope.stderr);
+    assert.match(scope.stderr, /SESSION_SCOPE_MISMATCH/);
+    assert.doesNotMatch(scope.stderr, /WORKSTREAM_CLOSURE_UNMET|WORKSTREAM_TERMINAL_NO_PROOF/);
     assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
   }
+
+  {
+    const f = seedBoundaryCli();
+    const state = readState(f.root, f.runId).data;
+    state.workstreams.find(item => item.id === f.ws).review_points_done = [];
+    state.episodes.find(item => item.role === 'maker').status = 'pending';
+    writeState(f.root, f.runId, state);
+    const closure = run(f.root, [
+      'workstream', 'terminal', '--id', f.ws, '--status', 'ready',
+      '--proof', '{}', '--owner', f.owner, '--generation', String(f.gen),
+    ]);
+    assert.equal(closure.status, 1, closure.stdout + closure.stderr);
+    assert.match(closure.stderr, /WORKSTREAM_CLOSURE_UNMET/);
+    assert.doesNotMatch(closure.stderr, /WORKSTREAM_TERMINAL_NO_PROOF/);
+  }
+
+  {
+    const f = seedBoundaryCli();
+    const state = readState(f.root, f.runId).data;
+    state.workstreams.find(item => item.id === f.ws).review_points_done = [];
+    writeState(f.root, f.runId, state);
+    const proof = run(f.root, [
+      'workstream', 'terminal', '--id', f.ws, '--status', 'ready',
+      '--proof', '{}', '--owner', f.owner, '--generation', String(f.gen),
+    ]);
+    assert.equal(proof.status, 1, proof.stdout + proof.stderr);
+    assert.match(proof.stderr, /WORKSTREAM_TERMINAL_NO_PROOF/);
+  }
+});
+
+test('public state get rejects a forged legacy terminal-event string under workstream-session', () => {
+  const f = seedBoundaryCli();
+  const dir = runDir(f.root, f.runId);
+  const state = readState(f.root, f.runId).data;
+  state.workstreams.find(item => item.id === f.ws).terminal_events = ['999:forged:ready'];
+  const raw = JSON.stringify(state, null, 2);
+  writeFileSync(join(dir, 'loop.json'), raw);
+  writeFileSync(join(dir, '.loop.hash'), contentHash(raw));
+
+  const result = run(f.root, ['state', 'get', '--run-id', f.runId]);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /SCHEMA_INVALID.*workstream-session/);
+  assert.equal(result.stdout, '');
 });
 
 // §4-5d (plan r3): reset-desktop은 requireLease 우회 human-recovery verb — 자체 계약(JSON ok:false + exit 1) 고정.

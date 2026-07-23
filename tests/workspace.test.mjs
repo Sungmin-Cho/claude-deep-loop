@@ -207,11 +207,13 @@ test('recordWorkstreamTerminal library enforces new-policy confirm grammar befor
       worktree: '.claude/worktrees/confirm-abandoned', fence: f,
     });
     bindWorkstream(root, runId, id, f);
-    const before = terminalBytes(root, runId);
-    assert.throws(() => recordWorkstreamTerminal(root, runId, id, {
-      status: 'abandoned', proof: { reason: 'cancelled' }, fence: f,
-    }), /CONFIRM_REQUIRED/);
-    assert.deepEqual(terminalBytes(root, runId), before);
+    for (const confirm of [undefined, false, 'true']) {
+      const before = terminalBytes(root, runId);
+      assert.throws(() => recordWorkstreamTerminal(root, runId, id, {
+        status: 'abandoned', proof: { reason: 'cancelled' }, confirm, fence: f,
+      }), /CONFIRM_REQUIRED/);
+      assert.deepEqual(terminalBytes(root, runId), before);
+    }
   }
 
   {
@@ -225,11 +227,13 @@ test('recordWorkstreamTerminal library enforces new-policy confirm grammar befor
     const state = readState(root, runId).data;
     state.workstreams.find(w => w.id === id).review_points_done = [...state.review.points];
     writeState(root, runId, state);
-    const before = terminalBytes(root, runId);
-    assert.throws(() => recordWorkstreamTerminal(root, runId, id, {
-      status: 'ready', proof: {}, confirm: true, fence: f,
-    }), /CONFIRM_FORBIDDEN/);
-    assert.deepEqual(terminalBytes(root, runId), before);
+    for (const confirm of [true, false, 'true']) {
+      const before = terminalBytes(root, runId);
+      assert.throws(() => recordWorkstreamTerminal(root, runId, id, {
+        status: 'ready', proof: {}, confirm, fence: f,
+      }), /CONFIRM_FORBIDDEN/);
+      assert.deepEqual(terminalBytes(root, runId), before);
+    }
   }
 });
 

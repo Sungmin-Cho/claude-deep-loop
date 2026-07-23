@@ -519,9 +519,22 @@ const handlers = {
     if (verb === 'terminal') {
       const id = reqStr(f, 'id'); if (!id) { error('MISSING_ID'); return 2; }
       const status = reqStr(f, 'status'); if (!status) { error('MISSING_STATUS'); return 2; }
-      const confirm = Object.hasOwn(f, 'confirm')
-        ? (f.confirm === true || f.confirm === 'true')
-        : undefined;
+      if (!['ready', 'merged', 'abandoned'].includes(status)) {
+        error(`WORKSTREAM_STATUS_INVALID: ${status} is not terminal`); return 1;
+      }
+      // Confirmation is command grammar, not persisted-state validation. Classify it before proof JSON
+      // parsing or any workstream lookup so malformed/missing state cannot change a usage error into exit 1.
+      // A single bare flag, `=true`, or space-valued `true` is affirmative; duplicates are always ambiguous.
+      const confirmCount = flagOccurrences(rest, 'confirm');
+      let confirm;
+      if (status === 'abandoned') {
+        if (confirmCount !== 1 || (f.confirm !== true && f.confirm !== 'true')) {
+          error('CONFIRM_REQUIRED: abandoned requires exactly one affirmative --confirm (human-only)'); return 2;
+        }
+        confirm = true;
+      } else if (confirmCount !== 0) {
+        error('CONFIRM_FORBIDDEN: --confirm is only valid for abandoned'); return 2;
+      }
       try {
         recordWorkstreamTerminal(root, runId, id, {
           status,

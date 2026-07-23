@@ -86,15 +86,43 @@ test('invalid workstream status fails', () => {
   assert.equal(validate(o).ok, false);
 });
 
-test('workstream terminal_events accepts legacy strings plus exact structured event identities', () => {
+test('workstream terminal_events are policy-pinned and reject mixed authority', () => {
   for (const terminalEvents of [
-    ['12:ws-01:ready'],
     [{ seq: 12, checksum: 'a'.repeat(64) }],
-    ['12:ws-01:ready', { seq: 13, checksum: 'b'.repeat(64) }],
+    [{ seq: 12, checksum: 'a'.repeat(64) }, { seq: 13, checksum: 'b'.repeat(64) }],
   ]) {
     const loop = minimalValid();
     loop.workstreams = [{ id: 'w', status: 'ready', terminal_events: terminalEvents }];
     assert.equal(validate(loop).ok, true, validate(loop).errors.join('; '));
+  }
+
+  for (const terminalEvents of [
+    ['12:ws-01:ready'],
+    ['12:ws-01:ready', { seq: 13, checksum: 'b'.repeat(64) }],
+  ]) {
+    const loop = minimalValid();
+    loop.workstreams = [{ id: 'w', status: 'ready', terminal_events: terminalEvents }];
+    const result = validate(loop);
+    assert.equal(result.ok, false);
+    assert.ok(result.errors.some(error => error.includes('workstream-session')));
+  }
+
+  for (const policy of ['compact-in-place', 'rotate-per-unit']) {
+    const loop = minimalValid();
+    loop.autonomy.continuation_policy = policy;
+    loop.workstreams = [{ id: 'w', status: 'ready', terminal_events: ['12:ws-01:ready'] }];
+    assert.equal(validate(loop).ok, true, `${policy}: ${validate(loop).errors.join('; ')}`);
+
+    loop.workstreams[0].terminal_events = [{ seq: 12, checksum: 'a'.repeat(64) }];
+    const structured = validate(loop);
+    assert.equal(structured.ok, false);
+    assert.ok(structured.errors.some(error => error.includes('legacy continuation policy')));
+
+    loop.workstreams[0].terminal_events = [
+      '12:ws-01:ready',
+      { seq: 13, checksum: 'b'.repeat(64) },
+    ];
+    assert.equal(validate(loop).ok, false, `${policy} mixed authority`);
   }
 
   for (const terminalEvents of [

@@ -116,6 +116,17 @@ function prepareDefect(kind) {
     recordEpisode(f.root, f.runId, maker.id, { status: 'blocked', proof: {}, fence: f.f });
   } else if (kind === 'done-unreviewed') {
     addDoneMaker(f, 'done-unreviewed');
+  } else if (['checker-pending', 'checker-in-progress', 'checker-blocked'].includes(kind)) {
+    addDoneMaker(f, kind);
+    const checkerId = dispatchReview(f.root, f.runId, {
+      point: 'implementation', workstreamId: f.ws, detected: {}, fence: f.f,
+    }).checkerEpisodeId;
+    if (kind !== 'checker-pending') {
+      const state = readState(f.root, f.runId).data;
+      state.episodes.find(ep => ep.id === checkerId).status =
+        kind === 'checker-in-progress' ? 'in_progress' : 'blocked';
+      writeState(f.root, f.runId, state);
+    }
   } else if (kind === 'unresolved-rejected') {
     addDoneMaker(f, 'unresolved-rejected');
     const checkerId = dispatchReview(f.root, f.runId, {
@@ -129,7 +140,7 @@ function prepareDefect(kind) {
     addApprovedReview(f, makerId, 'latest-checker-approved-first');
     const state = readState(f.root, f.runId).data;
     state.episodes.push({
-      id: '999-subagent-checker',
+      id: '1000-subagent-checker',
       plugin: 'subagent-checker',
       role: 'checker',
       kind: 'implementation-review',
@@ -137,7 +148,7 @@ function prepareDefect(kind) {
       workstream_id: f.ws,
       target_maker: makerId,
       status: 'rejected',
-      request_rel: 'episodes/999-subagent-checker/request.md',
+      request_rel: 'episodes/1000-subagent-checker/request.md',
     });
     writeState(f.root, f.runId, state);
   } else if (kind === 'contract-unpinned') {
@@ -171,6 +182,9 @@ for (const status of ['ready', 'abandoned']) {
     'blocked',
     'unresolved-rejected',
     'done-unreviewed',
+    'checker-pending',
+    'checker-in-progress',
+    'checker-blocked',
     'latest-checker-rejected',
     'contract-unpinned',
   ]) {
@@ -224,6 +238,106 @@ for (const status of ['ready', 'abandoned']) {
   });
 }
 
+test('public terminal accepts a rejection resolved by a newer approval across 999 to 1000', () => {
+  for (const status of ['ready', 'abandoned']) {
+    const f = seedReviewed();
+    const state = readState(f.root, f.runId).data;
+    state.episodes.push(
+      {
+        id: '999-subagent-checker',
+        plugin: 'subagent-checker',
+        role: 'checker',
+        kind: 'implementation-review',
+        point: 'implementation',
+        workstream_id: f.ws,
+        target_maker: f.baseline,
+        status: 'rejected',
+        request_rel: 'episodes/999-subagent-checker/request.md',
+      },
+      {
+        id: '1000-subagent-checker',
+        plugin: 'subagent-checker',
+        role: 'checker',
+        kind: 'implementation-review',
+        point: 'implementation',
+        workstream_id: f.ws,
+        target_maker: f.baseline,
+        status: 'approved',
+        request_rel: 'episodes/1000-subagent-checker/request.md',
+      },
+    );
+    writeState(f.root, f.runId, state);
+
+    const result = runCli(f.root, f.runId, terminalArgs(f.ws, status));
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+  }
+});
+
+test('public terminal accepts a rejection resolved by a later done and approved maker', () => {
+  for (const status of ['ready', 'abandoned']) {
+    const f = seedReviewed();
+    const rejectedMaker = addDoneMaker(f, `${status}-rejected`);
+    const rejectedChecker = dispatchReview(f.root, f.runId, {
+      point: 'implementation', workstreamId: f.ws, detected: {}, fence: f.f,
+    }).checkerEpisodeId;
+    recordReviewOutcome(f.root, f.runId, {
+      episodeId: rejectedChecker, verdict: 'REQUEST_CHANGES', fence: f.f,
+    });
+    const resolvedMaker = addDoneMaker(f, `${status}-resolved`);
+    addApprovedReview(f, resolvedMaker, `${status}-resolved`);
+    assert.ok(rejectedMaker);
+
+    const result = runCli(f.root, f.runId, terminalArgs(f.ws, status));
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+  }
+});
+
+test('unsupported legacy checker history is neutral at the public terminal boundary', () => {
+  for (const status of ['ready', 'abandoned']) {
+    const f = seedReviewed();
+    const state = readState(f.root, f.runId).data;
+    state.episodes.push({
+      id: '999-standalone',
+      plugin: 'standalone',
+      role: 'checker',
+      kind: 'implementation-review',
+      point: 'implementation',
+      workstream_id: f.ws,
+      target_maker: f.baseline,
+      status: 'rejected',
+      request_rel: 'episodes/999-standalone/request.md',
+    });
+    writeState(f.root, f.runId, state);
+
+    const result = runCli(f.root, f.runId, terminalArgs(f.ws, status));
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+  }
+});
+
+test('confirmed abandonment accepts a fully cancelled workstream', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-workstream-fully-cancelled-'));
+  const { runId } = initRun(root, {
+    runtime: 'claude', goal: 'g', now: new Date('2026-07-23T00:00:00.000Z'),
+  });
+  const f = {
+    root, runId, f: fence(runId),
+    worktree: '.claude/worktrees/fully-cancelled',
+  };
+  mkdirSync(join(root, f.worktree), { recursive: true });
+  f.ws = newWorkstream(root, runId, {
+    title: 'fully cancelled', branch: 'feature/fully-cancelled',
+    worktree: f.worktree, fence: f.f,
+  }).id;
+  const pending = addMaker(f, 'cancelled-before-work');
+  recordEpisode(root, runId, pending.id, { status: 'in_progress', fence: f.f });
+  abandonEpisode(root, runId, pending.id, {
+    reason: 'cancelled before work', confirm: true, fence: f.f,
+  });
+
+  const result = runCli(f.root, f.runId, terminalArgs(f.ws, 'abandoned'));
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+});
+
 test('ready to merged is lifecycle-only and cannot alter the closed boundary', () => {
   const f = seedReviewed();
   assert.equal(runCli(f.root, f.runId, terminalArgs(f.ws, 'ready')).status, 0);
@@ -242,6 +356,21 @@ test('ready to merged is lifecycle-only and cannot alter the closed boundary', (
   assert.deepEqual(afterWs.terminal_events, boundary);
   assert.deepEqual(afterScope, scopeBoundary);
 });
+
+for (const status of ['ready', 'abandoned', 'merged']) {
+  test(`repeat ${status} terminal rejection preserves every durable byte`, () => {
+    const f = seedReviewed();
+    if (status === 'merged') {
+      assert.equal(runCli(f.root, f.runId, terminalArgs(f.ws, 'ready')).status, 0);
+    }
+    assert.equal(runCli(f.root, f.runId, terminalArgs(f.ws, status)).status, 0);
+    const before = durableBytes(f.root);
+    const repeated = runCli(f.root, f.runId, terminalArgs(f.ws, status));
+    assert.equal(repeated.status, 1, repeated.stdout + repeated.stderr);
+    assert.match(repeated.stderr, /WORKSTREAM_TERMINAL_LOCKED/);
+    assert.deepEqual(durableBytes(f.root), before);
+  });
+}
 
 test('shared closure helper exposes literal order-aware proof defects', () => {
   assert.equal(typeof finishModule.workstreamClosureProofState, 'function');
