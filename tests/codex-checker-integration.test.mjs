@@ -311,6 +311,60 @@ test('headless host drives an unclaimed checker before no-pending-handoff and em
   assert.equal(explicitCosts.length, 1);
 });
 
+test('checker measured usage that crosses a hard budget settles before routing and preserve-pauses without a child', () => {
+  const f = seed({ newPolicy: true });
+  newWorkstream(f.root, f.runId, {
+    title: 'sibling',
+    branch: 'sibling',
+    worktree: '.claude/worktrees/sibling',
+    fence: f.fence,
+  });
+  const deps = hostDeps(f);
+  const before = readState(f.root, f.runId).data;
+  const owner = before.session_chain.lease.owner_run_id;
+  const generation = before.session_chain.lease.generation;
+  before.budget.tokens_total = before.budget.tokens_spent + measuredUsage().tokens;
+  writeState(f.root, f.runId, before);
+  const baseImport = deps.checkerImportFn;
+
+  const result = driveHeadlessRun({
+    root: f.root,
+    runId: f.runId,
+    now: Date.parse(FIXED_NOW),
+    ...deps,
+    checkerImportFn(options, bytes) {
+      const imported = baseImport(options, bytes);
+      recordWorkstreamTerminal(f.root, f.runId, f.ws, {
+        status: 'abandoned',
+        proof: { reason: 'budget crossing fixture closed' },
+        confirm: true,
+        fence: f.fence,
+        now: FIXED_NOW,
+      });
+      return imported;
+    },
+  });
+
+  assert.equal(result.ok, false, JSON.stringify(result));
+  assert.equal(result.action, 'gate-blocked', JSON.stringify(result));
+  assert.equal(result.reason, 'budget');
+  assert.equal(result.recorded, true);
+  const after = readState(f.root, f.runId).data;
+  assert.equal(after.status, 'paused');
+  assert.equal(after.pause_reason, 'checker-gate:budget');
+  assert.equal(after.session_chain.lease.owner_run_id, owner);
+  assert.equal(after.session_chain.lease.generation, generation);
+  assert.equal(after.session_chain.lease.handoff_phase, 'idle');
+  assert.equal(after.session_chain.lease.handoff_child_run_id ?? null, null);
+  assert.equal(after.session_chain.sessions.length, 1, 'no continuation child may be reserved');
+  assert.equal(events(f.root, f.runId).filter(event => event.type === 'handoff-emitted').length, 0);
+  assert.equal(
+    events(f.root, f.runId).filter(event => event.type === 'cost' && event.data.reported_tokens === measuredUsage().tokens).length,
+    1,
+    'the measured checker turn must be durably settled before the pause decision',
+  );
+});
+
 test('workstream-session headless checker preserves open affinity and emits only an exact closed boundary', () => {
   {
     const f = seed({ newPolicy: true });

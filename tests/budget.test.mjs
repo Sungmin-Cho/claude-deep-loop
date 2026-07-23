@@ -27,6 +27,7 @@ import { finishRun } from '../scripts/lib/finish.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
+import * as budgetApi from '../scripts/lib/budget.mjs';
 
 function persistLegacyContinuationFixture(root, runId, policy) {
   assert.ok(['compact-in-place', 'rotate-per-unit'].includes(policy));
@@ -110,6 +111,235 @@ test('soft stop demotes tier', () => {
 test('headless unmeasurable → fail-closed', () => {
   const l = base(); l.budget.enforcement = 'hard'; l.budget.spent = 1;
   assert.equal(checkBudget(l, { now: 0, sessionStart: 0, measurable: false }).ok, false);
+});
+
+test('shared hard-budget predicate reports turns, tokens, and wallclock without soft-stop policy', () => {
+  assert.equal(typeof budgetApi.checkHardBudget, 'function');
+  const l = base();
+  l.budget.spent = l.budget.total;
+  assert.deepEqual(budgetApi.checkHardBudget(l, { now: 0, sessionStart: 0 }), {
+    blocked: true,
+    reason: 'turns-hard-stop',
+  });
+  l.budget.total += 1;
+  l.budget.tokens_spent = l.budget.tokens_total;
+  assert.equal(budgetApi.checkHardBudget(l, { now: 0, sessionStart: 0 }).reason, 'tokens-hard-stop');
+  l.budget.tokens_total += 1;
+  assert.equal(budgetApi.checkHardBudget(l, { now: 3_601_000, sessionStart: 0 }).reason, 'wallclock-hard-stop');
+});
+
+function budgetPauseFixture({ wallclock = true } = {}) {
+  const root = mkdtempSync(join(tmpdir(), 'dl-budget-extend-'));
+  const now = Date.parse('2026-07-23T00:00:00Z');
+  const { runId } = initRun(root, {
+    runtime: 'claude', goal: 'g', now: new Date(now),
+  });
+  const { data } = readState(root, runId);
+  data.status = 'paused';
+  data.pause_reason = 'gate:budget';
+  data.budget.total = 2;
+  data.budget.spent = 2;
+  data.budget.tokens_total = 100;
+  data.budget.tokens_spent = 10;
+  if (!wallclock) delete data.budget.max_wallclock_sec;
+  writeState(root, runId, data);
+  return { root, runId, now, fence: { owner: runId, generation: 1 } };
+}
+
+test('confirmed positive extension clears every hard predicate and resumes the same owner without resetting spent', () => {
+  const f = budgetPauseFixture();
+  const before = readState(f.root, f.runId).data;
+  const result = budgetApi.extendBudget(f.root, f.runId, {
+    turns: 2,
+    reason: 'operator authorizes same-session completion',
+    confirm: true,
+    fence: f.fence,
+    now: f.now,
+  });
+  assert.deepEqual(result, { ok: true, status: 'running' });
+  const after = readState(f.root, f.runId).data;
+  assert.equal(after.status, 'running');
+  assert.equal(after.pause_reason, null);
+  assert.equal(after.session_chain.lease.owner_run_id, before.session_chain.lease.owner_run_id);
+  assert.equal(after.session_chain.lease.generation, before.session_chain.lease.generation);
+  assert.equal(after.budget.total, 4);
+  assert.equal(after.budget.spent, 2);
+  assert.equal(after.budget.tokens_total, before.budget.tokens_total);
+  assert.equal(after.budget.max_wallclock_sec, before.budget.max_wallclock_sec);
+  assert.equal(readLines(f.root, f.runId).filter(event => event.type === 'budget-extended').length, 1);
+});
+
+test('budget extension rejects zero, negative, unsafe, absent-wallclock, wrong-pause, stale-fence, and insufficient deltas without mutation', () => {
+  const cases = [
+    { label: 'zero', options: { turns: 0 }, pattern: /BUDGET_EXTENSION_INVALID/ },
+    { label: 'negative', options: { turns: -1 }, pattern: /BUDGET_EXTENSION_INVALID/ },
+    { label: 'unsafe', options: { turns: Number.MAX_SAFE_INTEGER }, pattern: /BUDGET_EXTENSION_INVALID/ },
+    { label: 'insufficient', options: { turns: 1 }, mutate: data => { data.budget.spent = 4; }, pattern: /BUDGET_EXTENSION_INSUFFICIENT/ },
+    { label: 'stale fence', options: { turns: 3 }, fence: { owner: 'STALE', generation: 1 }, pattern: /LEASE_FENCED/ },
+    { label: 'wrong pause', options: { turns: 3 }, mutate: data => { data.pause_reason = 'manual'; }, pattern: /BUDGET_EXTENSION_STATUS_INVALID/ },
+  ];
+  for (const item of cases) {
+    const f = budgetPauseFixture();
+    if (item.mutate) {
+      const { data } = readState(f.root, f.runId);
+      item.mutate(data);
+      writeState(f.root, f.runId, data);
+    }
+    const before = JSON.stringify(readState(f.root, f.runId).data);
+    assert.throws(() => budgetApi.extendBudget(f.root, f.runId, {
+      ...item.options,
+      reason: 'bounded operator reason',
+      confirm: true,
+      fence: item.fence ?? f.fence,
+      now: f.now,
+    }), item.pattern, item.label);
+    assert.equal(JSON.stringify(readState(f.root, f.runId).data), before, item.label);
+  }
+
+  const absent = budgetPauseFixture({ wallclock: false });
+  const before = JSON.stringify(readState(absent.root, absent.runId).data);
+  assert.throws(() => budgetApi.extendBudget(absent.root, absent.runId, {
+    wallclockSec: 1, reason: 'bounded operator reason', confirm: true,
+    fence: absent.fence, now: absent.now,
+  }), /BUDGET_EXTENSION_WALLCLOCK_UNAVAILABLE/);
+  assert.equal(JSON.stringify(readState(absent.root, absent.runId).data), before);
+});
+
+test('public hard pause → confirmed extend → same-session finish never emits handoff', () => {
+  const f = budgetPauseFixture();
+  assert.equal(nextAction(readState(f.root, f.runId).data, { now: f.now }).action.reason, 'budget');
+  assert.throws(() => finishRun(f.root, f.runId, {
+    status: 'stopped', reportRel: null, proof: { human_reason: 'operator stop after bounded work' },
+    confirm: true, fence: { ...f.fence, intent: 'business' }, now: f.now,
+  }), /LEASE_FENCED|RUN_PAUSED/);
+  budgetApi.extendBudget(f.root, f.runId, {
+    turns: 2, reason: 'finish this proof-ready session', confirm: true,
+    fence: f.fence, now: f.now,
+  });
+  finishRun(f.root, f.runId, {
+    status: 'stopped', reportRel: null, proof: { human_reason: 'operator stop after bounded work' },
+    confirm: true, fence: { ...f.fence, intent: 'business' }, now: f.now,
+  });
+  const after = readState(f.root, f.runId).data;
+  assert.equal(after.status, 'stopped');
+  assert.equal(after.session_chain.sessions.length, 1);
+  assert.equal(readLines(f.root, f.runId).some(event => event.type === 'handoff-emitted'), false);
+});
+
+function recoveryBudgetPauseFixture(takeoverKind) {
+  const f = budgetPauseFixture();
+  const { data } = readState(f.root, f.runId);
+  data.pause_reason = `recovery:${takeoverKind}`;
+  data.session_chain.lease = {
+    ...data.session_chain.lease,
+    state: 'released',
+    takeover_kind: takeoverKind,
+    handoff_phase: 'reserved',
+    handoff_child_run_id: 'RECOVERY-CHILD',
+    handoff_idempotency_key: 'a'.repeat(64),
+    expires_at: null,
+    recovery_rel: `recoveries/${takeoverKind}.json`,
+    recovery_sha256: 'b'.repeat(64),
+    recovery_discriminator: `disc:${takeoverKind}`,
+  };
+  data.session_chain.sessions[0].superseded_by = 'RECOVERY-CHILD';
+  data.session_chain.sessions.push({
+    run_id: 'RECOVERY-CHILD', started_at: null, ended_at: null, turns: 0,
+    outcome: null, superseded_by: null,
+    recovered_from: takeoverKind === 'boundary-recovery' ? 'STALE-BOUNDARY-CHILD' : f.runId,
+    recovery_kind: takeoverKind, recovery_rel: data.session_chain.lease.recovery_rel,
+    recovery_sha256: data.session_chain.lease.recovery_sha256,
+    scope: {
+      kind: 'workstream',
+      workstream_id: takeoverKind === 'boundary-recovery' ? null : 'ws-recovery',
+      bound_at_seq: takeoverKind === 'boundary-recovery' ? null : 7,
+      terminal_event: null, closed_at: null, superseded_at: null,
+    },
+  });
+  writeState(f.root, f.runId, data);
+  return f;
+}
+
+test('budget extension preserves both released recovery reservations byte-semantically except anchor and budget', () => {
+  for (const kind of ['affinity-supersession', 'boundary-recovery']) {
+    const f = recoveryBudgetPauseFixture(kind);
+    const before = readState(f.root, f.runId).data;
+    const topology = structuredClone({
+      status: before.status,
+      pause_reason: before.pause_reason,
+      lease: before.session_chain.lease,
+      sessions: before.session_chain.sessions,
+    });
+    budgetApi.extendBudget(f.root, f.runId, {
+      turns: 2, reason: `resume exact ${kind} reservation`, confirm: true,
+      fence: f.fence, now: f.now,
+    });
+    const after = readState(f.root, f.runId).data;
+    assert.deepEqual({
+      status: after.status,
+      pause_reason: after.pause_reason,
+      lease: after.session_chain.lease,
+      sessions: after.session_chain.sessions,
+    }, topology, kind);
+    assert.equal(after.budget.total, before.budget.total + 2, kind);
+    assert.equal(after.budget.spent, before.budget.spent, kind);
+  }
+});
+
+test('ordinary extension recognizes the concrete hard-budget pause reason forms', () => {
+  for (const pauseReason of [
+    'gate:turns-hard-stop',
+    'checker-gate:tokens-hard-stop',
+    'budget:wallclock-hard-stop',
+  ]) {
+    const f = budgetPauseFixture();
+    const { data } = readState(f.root, f.runId);
+    data.pause_reason = pauseReason;
+    writeState(f.root, f.runId, data);
+    assert.deepEqual(budgetApi.extendBudget(f.root, f.runId, {
+      turns: 2,
+      reason: `operator clears ${pauseReason}`,
+      confirm: true,
+      fence: f.fence,
+      now: f.now,
+    }), { ok: true, status: 'running' }, pauseReason);
+  }
+});
+
+test('wallclock extension increments the existing cap relative to created_at and clears the locked-time gate', () => {
+  const f = budgetPauseFixture();
+  const { data } = readState(f.root, f.runId);
+  data.budget.spent = 1;
+  data.budget.max_wallclock_sec = 1;
+  data.pause_reason = 'budget:wallclock-hard-stop';
+  writeState(f.root, f.runId, data);
+  assert.deepEqual(budgetApi.extendBudget(f.root, f.runId, {
+    wallclockSec: 2,
+    reason: 'operator adds two seconds',
+    confirm: true,
+    fence: f.fence,
+    now: f.now + 2_000,
+  }), { ok: true, status: 'running' });
+  const after = readState(f.root, f.runId).data;
+  assert.equal(after.budget.max_wallclock_sec, 3);
+  assert.equal(after.budget.spent, 1);
+  assert.equal(budgetApi.checkHardBudget(after, { now: f.now + 2_000 }).blocked, false);
+});
+
+test('malformed released recovery reservation is rejected without mutation', () => {
+  const f = recoveryBudgetPauseFixture('boundary-recovery');
+  const { data } = readState(f.root, f.runId);
+  data.session_chain.lease.handoff_phase = 'emitted';
+  writeState(f.root, f.runId, data);
+  const before = JSON.stringify(readState(f.root, f.runId).data);
+  assert.throws(() => budgetApi.extendBudget(f.root, f.runId, {
+    turns: 2,
+    reason: 'must not widen malformed recovery',
+    confirm: true,
+    fence: f.fence,
+    now: f.now,
+  }), /BUDGET_EXTENSION_STATUS_INVALID/);
+  assert.equal(JSON.stringify(readState(f.root, f.runId).data), before);
 });
 
 test('isMeasuredOneTurnUsage accepts only an exact safe Codex one-turn measurement', () => {

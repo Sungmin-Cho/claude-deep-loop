@@ -898,14 +898,62 @@ function driveIndependentChecker({
     );
   }
 
+  let recorded = false;
+  let accountingReason = null;
+  try {
+    if (checkerResult.usageReceipt != null) {
+      const settlement = settleProcessCostFn(projectRoot, runId, {
+        receipt: checkerResult.usageReceipt,
+        fence: { owner: parentOwner, generation: parentGeneration, intent: 'accounting' },
+      });
+      if (!validReceiptSettlement(settlement)) throw new Error('PROCESS_ACCOUNTING_PROTOCOL_INVALID');
+      recorded = true;
+      removeProcessReceiptFn({
+        receipt: checkerResult.usageReceipt,
+        descriptor: checkerUsageReceiptDescriptor,
+      });
+    } else {
+      recordCostFn(projectRoot, runId, {
+        turns: checkerResult.usage.num_turns,
+        tokens: checkerResult.usage.tokens,
+        fence: { owner: parentOwner, generation: parentGeneration, intent: 'accounting' },
+      });
+      recorded = true;
+    }
+  } catch (error) {
+    accountingReason = checkerResult.usageReceipt == null
+      ? accountingFailureReason(error)
+      : processAccountingFailureReason(error);
+  }
+
   let continuation = false;
   let continuationFailure = null;
-  const afterImport = captureFreshLoop(projectRoot, runId);
-  if (afterImport.status === 'running') {
-    const boundaryPolicy = afterImport.autonomy?.continuation_policy === 'workstream-session';
-    const routed = boundaryPolicy
-      ? nextAction(afterImport, { now: actionNow, unattended: true }).action
-      : null;
+  const afterAccounting = captureFreshLoop(projectRoot, runId);
+  if (recorded && afterAccounting.status === 'running') {
+    actionNow = clock();
+    const selected = nextAction(afterAccounting, { now: actionNow, unattended: true }).action;
+    if (selected?.type === 'await_human'
+      && (selected.reason === 'budget' || selected.reason === 'breaker')) {
+      const pauseOutcome = pauseWithOriginalFence(projectRoot, runId, {
+        reason: `checker-gate:${selected.reason}`,
+        expect: parentFence,
+        now: actionNow,
+      });
+      return {
+        ok: false,
+        action: pauseOutcome === 'fenced' ? 'fenced'
+          : (pauseOutcome === 'terminal' ? 'terminal' : 'gate-blocked'),
+        reason: selected.reason,
+        checkerEpisodeId: pending.id,
+        attemptId: claimed.attemptId,
+        continuation: false,
+        usage: checkerResult.usage,
+        recorded,
+      };
+    }
+
+    const boundaryPolicy = afterAccounting.autonomy?.continuation_policy === 'workstream-session';
+    const routed = boundaryPolicy ? selected : null;
     // Workstream sessions may rotate only at an exact closed boundary. An
     // independent checker completing inside an open affinity continues in the
     // same session; it must not synthesize a transport milestone.
@@ -938,34 +986,6 @@ function driveIndependentChecker({
       if (pauseOutcome === 'terminal') continuationFailure = 'terminal';
       else if (pauseOutcome === 'fenced') continuationFailure = 'fenced';
     }
-  }
-
-  let recorded = false;
-  let accountingReason = null;
-  try {
-    if (checkerResult.usageReceipt != null) {
-      const settlement = settleProcessCostFn(projectRoot, runId, {
-        receipt: checkerResult.usageReceipt,
-        fence: { owner: parentOwner, generation: parentGeneration, intent: 'accounting' },
-      });
-      if (!validReceiptSettlement(settlement)) throw new Error('PROCESS_ACCOUNTING_PROTOCOL_INVALID');
-      recorded = true;
-      removeProcessReceiptFn({
-        receipt: checkerResult.usageReceipt,
-        descriptor: checkerUsageReceiptDescriptor,
-      });
-    } else {
-      recordCostFn(projectRoot, runId, {
-        turns: checkerResult.usage.num_turns,
-        tokens: checkerResult.usage.tokens,
-        fence: { owner: parentOwner, generation: parentGeneration, intent: 'accounting' },
-      });
-      recorded = true;
-    }
-  } catch (error) {
-    accountingReason = checkerResult.usageReceipt == null
-      ? accountingFailureReason(error)
-      : processAccountingFailureReason(error);
   }
   return {
     ok: continuationFailure == null,

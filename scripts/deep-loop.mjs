@@ -27,7 +27,7 @@ import { respawn, respawnGate, resolveSpawnMode } from './lib/respawn.mjs';
 import { visibleSpawn } from './lib/spawn-driver.mjs';
 import { driveHeadlessRun } from './lib/headless-host.mjs';
 import { resolveAdapter, guardTierProtocol, loadProtocol } from './lib/adapters.mjs';
-import { recordCost, checkBudget } from './lib/budget.mjs';
+import { recordCost, checkBudget, extendBudget } from './lib/budget.mjs';
 import { computeDebt, ack as ackComprehension } from './lib/comprehension.mjs';
 import { checkBreaker, resetBreaker } from './lib/breaker.mjs';
 import { offerDesktop, confirmDesktop, declineDesktop, resetDesktop } from './lib/spawn-optin.mjs';
@@ -176,6 +176,14 @@ function optInt(f, name) {   // 미지정 → 0; 지정 시 비음정수 문자�
   if (v === undefined) return 0;
   if (typeof v !== 'string' || !/^\d+$/.test(v)) return null;
   return Number(v);
+}
+
+function positiveDeltaArg(f, name) {
+  const v = f[name];
+  if (v === undefined) return undefined;
+  if (typeof v !== 'string' || !/^[1-9]\d*$/.test(v)) return null;
+  const parsed = Number(v);
+  return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
 function rootOf(f) { return f['project-root'] || findRoot(process.cwd()); }
@@ -968,6 +976,38 @@ const handlers = {
       const { data } = captureReconciledRunSnapshot(root, runId);
       json({ ok: true, spent: data.budget.spent, tokens_spent: data.budget.tokens_spent }); return 0;
     }
+    if (verb === 'extend') {
+      if (f.confirm !== true && f.confirm !== 'true') {
+        error('BUDGET_EXTENSION_CONFIRM_REQUIRED: pass --confirm (human-only)'); return 2;
+      }
+      const reason = reqStr(f, 'reason');
+      if (!reason) { error('BUDGET_EXTENSION_REASON_REQUIRED: pass --reason <text>'); return 2; }
+      const turns = positiveDeltaArg(f, 'turns');
+      const tokens = positiveDeltaArg(f, 'tokens');
+      const wallclockSec = positiveDeltaArg(f, 'wallclock-sec');
+      if ([turns, tokens, wallclockSec].includes(null)
+        || [turns, tokens, wallclockSec].every(value => value === undefined)) {
+        error('BUDGET_EXTENSION_INVALID: deltas must be positive safe integers'); return 1;
+      }
+      const owner = strArg(f, 'owner');
+      const generation = intArg(f, 'generation');
+      try {
+        json(extendBudget(root, runId, {
+          turns,
+          tokens,
+          wallclockSec,
+          reason,
+          confirm: true,
+          fence: { owner, generation },
+          now: parseNow(f),
+        }));
+        return 0;
+      } catch (e) {
+        const message = String(e?.message || e);
+        if (message.startsWith('LEASE_FENCED')) { error(message); return 3; }
+        error(message); return 1;
+      }
+    }
     error(`unknown budget verb: ${verb}`); return 2;
   },
   comprehension: async (a) => {
@@ -1000,8 +1040,8 @@ const handlers = {
     if (verb === 'check') { const { data } = captureReconciledRunSnapshot(root, runId); json(checkBreaker(data)); return 0; }
     if (verb === 'reset') {
       if (f.confirm !== true && f.confirm !== 'true') { error('BREAKER_RESET_REQUIRES_CONFIRM: pass --confirm (human-only)'); return 2; }
-      requireLease(root, runId, f, 'breaker-reset');   // Codex r2 critical-1: fence 필수; breaker-reset exempt from RUN_PAUSED gate
-      const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'breaker-reset' };
+      const owner = strArg(f, 'owner');
+      const fence = { owner, generation: intArg(f, 'generation'), intent: 'breaker-reset' };
       try { json(resetBreaker(root, runId, { fence })); return 0; }
       catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }
     }

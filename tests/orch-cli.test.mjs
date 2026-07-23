@@ -258,7 +258,9 @@ test('next-action prints descriptor JSON (deterministic now)', () => {
 test('next-action honors --now for wallclock hard-stop', () => {
   const { root } = seed();
   const out = JSON.parse(run(root, ['next-action', '--json', '--now', '2026-06-30T00:00:00Z'])); // > 24h
-  assert.equal(out.action.type, 'handoff');
+  assert.equal(out.action.type, 'await_human');
+  assert.equal(out.action.reason, 'budget');
+  assert.equal(out.next_command, '/deep-loop-status');
   assert.equal(out.gate.blocked_by[0], 'budget');
 });
 

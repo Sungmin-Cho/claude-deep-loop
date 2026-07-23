@@ -8,7 +8,7 @@ import { dirname, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { appendAnchored } from './integrity.mjs';
-import { checkBudget, reconcileBudget } from './budget.mjs';
+import { checkHardBudget, reconcileBudget } from './budget.mjs';
 import { checkBreaker } from './breaker.mjs';
 import { boundaryHandoffTopologyError } from './lease.mjs';
 import { buildLaunchCommand } from './runtime-descriptor.mjs';
@@ -110,10 +110,10 @@ function currentPosixCodexLauncher(loop, expectedMode, platform) {
 // 게이트 순서: budget → breaker → max_sessions → wallclock → auto_handoff (spec §9). 순수.
 export function respawnGate(loop, { now = Date.now() } = {}) {
   const blocked_by = [];
-  // Codex r1 🟡8: checkBudget 은 created_at 기반 wallclock 도 검사하므로, sessionStart=now 로 그 내부 검사를
+  // Codex r1 🟡8: hard-budget predicate는 created_at 기반 wallclock도 검사하므로, sessionStart=now로 그 내부 검사를
   // 무력화(wall=0)하고 wallclock 은 아래 문서화된 순서(max_sessions 다음)에서 명시 검사 → 순서/라벨 일관.
-  const b = checkBudget(loop, { now, sessionStart: now });
-  if (!b.ok) blocked_by.push('budget');
+  const budget = checkHardBudget(loop, { now, sessionStart: now });
+  if (budget.blocked) blocked_by.push('budget');
   if (checkBreaker(loop).tripped) blocked_by.push('breaker');
   // Codex r3 🟡6: emitHandoff 가 child 세션을 미리 append 하므로 pending child 가 이미 카운트됨 → `>`(>= 아님)로 비교해
   // 총 세션이 max_sessions 까지는 허용하되 초과는 금지 (off-by-one 방지).
@@ -153,8 +153,8 @@ function claimSpawnedHandoff(root, runId, {
     // The spawned CAS is the final internal authorization boundary before an
     // irreversible external process launch. Re-evaluate in the documented
     // order while holding the same lock that consumes `emitted`.
-    const budget = checkBudget(data, { now, sessionStart: now });
-    if (!budget.ok) return { ok: false, reason: 'budget' };
+    const budget = checkHardBudget(data, { now, sessionStart: now });
+    if (budget.blocked) return { ok: false, reason: 'budget' };
     if (checkBreaker(data).tripped) return { ok: false, reason: 'breaker' };
 
     if (lease.takeover_kind === 'boundary-handoff') {

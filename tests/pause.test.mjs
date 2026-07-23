@@ -318,6 +318,82 @@ test('pauseRun terminal guard: stopped status throws RUN_TERMINAL, no state chan
   assert.equal(readState(root, runId).data.status, 'stopped', 'stopped status must not be demoted');
 });
 
+function runCliStatus(args) {
+  try {
+    execFileSync('node', [CLI, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    return 0;
+  } catch (error) {
+    return error.status;
+  }
+}
+
+function cliBudgetPause() {
+  const f = seed();
+  mkdirSync(join(f.root, '.deep-loop'), { recursive: true });
+  writeFileSync(join(f.root, '.deep-loop', 'current'), f.runId);
+  const { data } = readState(f.root, f.runId);
+  data.status = 'paused';
+  data.pause_reason = 'gate:budget';
+  data.budget = {
+    unit: 'turns', total: 2, spent: 2,
+    tokens_total: 100, tokens_spent: 10,
+    soft_stop_ratio: 0.8, hard_stop_ratio: 1,
+    max_wallclock_sec: 3600,
+    enforcement: 'best-effort-interactive',
+    on_unmeasurable_usage: 'fail-closed',
+  };
+  data.created_at = '2026-07-23T00:00:00.000Z';
+  writeState(f.root, f.runId, data);
+  return f;
+}
+
+test('budget extend CLI classifies usage, invalid state, and fence errors exactly', () => {
+  const usages = [
+    ['--turns', '2', '--reason', 'operator', '--owner', OWNER, '--generation', '1'],
+    ['--turns', '2', '--confirm', '--owner', OWNER, '--generation', '1'],
+  ];
+  for (const tail of usages) {
+    const f = cliBudgetPause();
+    assert.equal(runCliStatus(['budget', 'extend', ...tail, '--project-root', f.root]), 2);
+  }
+  for (const tail of [
+    ['--turns', '0'],
+    ['--turns', '-1'],
+    ['--tokens', '1'],
+  ]) {
+    const f = cliBudgetPause();
+    if (tail[0] === '--tokens') {
+      const { data } = readState(f.root, f.runId);
+      data.budget.tokens_spent = data.budget.tokens_total;
+      writeState(f.root, f.runId, data);
+    }
+    assert.equal(runCliStatus([
+      'budget', 'extend', ...tail, '--reason', 'operator', '--confirm',
+      '--owner', OWNER, '--generation', '1', '--project-root', f.root,
+    ]), 1);
+  }
+  const stale = cliBudgetPause();
+  assert.equal(runCliStatus([
+    'budget', 'extend', '--turns', '2', '--reason', 'operator', '--confirm',
+    '--owner', OWNER, '--generation', '99', '--project-root', stale.root,
+  ]), 3);
+});
+
+test('budget extend CLI resumes the same session and preserves spent values', () => {
+  const f = cliBudgetPause();
+  assert.equal(runCliStatus([
+    'budget', 'extend', '--turns', '2', '--reason', 'operator approved',
+    '--confirm', '--owner', OWNER, '--generation', '1',
+    '--project-root', f.root, '--now', '2026-07-23T00:00:00Z',
+  ]), 0);
+  const { data } = readState(f.root, f.runId);
+  assert.equal(data.status, 'running');
+  assert.equal(data.session_chain.lease.owner_run_id, OWNER);
+  assert.equal(data.session_chain.lease.generation, 1);
+  assert.equal(data.budget.total, 4);
+  assert.equal(data.budget.spent, 2);
+});
+
 // ── helpers ────────────────────────────────────────────────────────────────────
 
 import { readFileSync } from 'node:fs';

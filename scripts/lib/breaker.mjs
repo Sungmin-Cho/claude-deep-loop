@@ -1,5 +1,6 @@
 import { writeState, withReconciledMutationLock } from './state.mjs';
 import { leaseCheck } from './lease.mjs';
+import { recoveryReservationKind } from './budget.mjs';
 
 const THRESHOLD = 3;
 
@@ -22,13 +23,22 @@ export function tripBreaker(root, runId, reason) {
 
 export function resetBreaker(root, runId, { fence } = {}) {
   return withReconciledMutationLock(root, runId, (_guard, { data }) => {
-    if (fence) { const r = leaseCheck(data, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }   // Codex r2 critical-1: in-lock fence
+    const recoveryKind = recoveryReservationKind(data);
+    if (recoveryKind !== null) {
+      const lease = data.session_chain.lease;
+      if (!fence || lease.owner_run_id !== fence.owner || lease.generation !== fence.generation) {
+        throw new Error('LEASE_FENCED: recovery-parent-mismatch');
+      }
+    } else if (fence) {
+      const r = leaseCheck(data, fence);
+      if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason);
+    }   // Codex r2 critical-1: authoritative in-lock fence
     // v1.6 (spec §2.3-7): fence가 있으면 위 leaseCheck가 LEASE_FENCED: RUN_TERMINAL로 선착(채널 보존);
     // fence-less 직접 호출만 이 자체 가드가 잡는다 — 순서가 계약이다.
     if (data.status === 'completed' || data.status === 'stopped') throw new Error('RUN_TERMINAL: resetBreaker');
     const wasBreaker = data.status === 'paused' && /request-changes|consecutive/.test(data.circuit_breaker?.trip_reason || '');
     data.circuit_breaker = { consecutive_request_changes: 0, tripped: false, trip_reason: null };
-    if (wasBreaker) data.status = 'running';
+    if (wasBreaker && recoveryKind === null) data.status = 'running';
     writeState(root, runId, data);
     return { ok: true, status: data.status };
   });

@@ -94,3 +94,94 @@ test('resetBreaker: fenced call rejects via LEASE_FENCED channel; fence-less via
   // fence-less 직접 호출 → 자체 가드
   assert.throws(() => resetBreaker(root, runId, {}), /RUN_TERMINAL: resetBreaker/);
 });
+
+test('resetBreaker preserves exact paused released recovery reservations for both recovery kinds', () => {
+  for (const kind of ['affinity-supersession', 'boundary-recovery']) {
+    const { root, runId } = seed();
+    const { data } = readState(root, runId);
+    data.status = 'paused';
+    data.pause_reason = `recovery:${kind}`;
+    data.circuit_breaker = {
+      consecutive_request_changes: 3,
+      tripped: true,
+      trip_reason: 'consecutive-request-changes',
+    };
+    data.session_chain.lease = {
+      ...data.session_chain.lease,
+      state: 'released',
+      takeover_kind: kind,
+      handoff_phase: 'reserved',
+      handoff_child_run_id: 'RECOVERY-CHILD',
+      handoff_idempotency_key: 'a'.repeat(64),
+      expires_at: null,
+      recovery_rel: `recoveries/${kind}.json`,
+      recovery_sha256: 'b'.repeat(64),
+      recovery_discriminator: `disc:${kind}`,
+    };
+    data.session_chain.sessions[0].superseded_by = 'RECOVERY-CHILD';
+    data.session_chain.sessions.push({
+      run_id: 'RECOVERY-CHILD', started_at: null, ended_at: null, turns: 0,
+      outcome: null, superseded_by: null,
+      recovered_from: kind === 'boundary-recovery' ? 'STALE-BOUNDARY-CHILD' : runId,
+      recovery_kind: kind, recovery_rel: data.session_chain.lease.recovery_rel,
+      recovery_sha256: data.session_chain.lease.recovery_sha256,
+      scope: {
+        kind: 'workstream',
+        workstream_id: kind === 'boundary-recovery' ? null : 'ws-recovery',
+        bound_at_seq: kind === 'boundary-recovery' ? null : 7,
+        terminal_event: null, closed_at: null, superseded_at: null,
+      },
+    });
+    writeState(root, runId, data);
+    const before = readState(root, runId).data;
+    const topology = structuredClone({
+      status: before.status,
+      pause_reason: before.pause_reason,
+      lease: before.session_chain.lease,
+      sessions: before.session_chain.sessions,
+    });
+    const result = resetBreaker(root, runId, {
+      fence: { owner: runId, generation: 1, intent: 'breaker-reset' },
+    });
+    assert.deepEqual(result, { ok: true, status: 'paused' }, kind);
+    const after = readState(root, runId).data;
+    assert.deepEqual({
+      status: after.status,
+      pause_reason: after.pause_reason,
+      lease: after.session_chain.lease,
+      sessions: after.session_chain.sessions,
+    }, topology, kind);
+    assert.deepEqual(after.circuit_breaker, {
+      consecutive_request_changes: 0,
+      tripped: false,
+      trip_reason: null,
+    }, kind);
+  }
+});
+
+test('resetBreaker rejects a malformed released recovery reservation without mutation', () => {
+  const { root, runId } = seed();
+  const { data } = readState(root, runId);
+  data.status = 'paused';
+  data.pause_reason = 'recovery:boundary-recovery';
+  data.circuit_breaker = {
+    consecutive_request_changes: 3,
+    tripped: true,
+    trip_reason: 'consecutive-request-changes',
+  };
+  data.session_chain.lease = {
+    ...data.session_chain.lease,
+    state: 'released',
+    takeover_kind: 'boundary-recovery',
+    handoff_phase: 'spawned',
+    handoff_child_run_id: 'RECOVERY-CHILD',
+    handoff_idempotency_key: 'a'.repeat(64),
+    expires_at: null,
+  };
+  writeState(root, runId, data);
+  const before = JSON.stringify(readState(root, runId).data);
+  assert.throws(() => resetBreaker(root, runId, {
+    fence: { owner: runId, generation: 1, intent: 'breaker-reset' },
+  }), /LEASE_FENCED/);
+  assert.equal(JSON.stringify(readState(root, runId).data), before);
+});

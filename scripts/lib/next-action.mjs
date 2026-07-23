@@ -128,8 +128,8 @@ export function nextAction(loop, { now = Date.now(), unattended = false } = {}) 
   // budget hard-stop / breaker 는 모든 행동을 막는 전역 게이트.
   if (!b.ok) return A(
     { allowed: false, blocked_by: ['budget'], reason: b.reason, tier_after: b.tier_after },
-    workstreamSession ? { type: 'await_human', reason: 'budget' } : { type: 'handoff', reason: 'budget' },
-    workstreamSession ? '/deep-loop-status' : '/deep-loop-handoff',
+    { type: 'await_human', reason: 'budget' },
+    '/deep-loop-status',
   );
   if (br.tripped) return A({ allowed: false, blocked_by: ['breaker'], reason: br.reason, tier_after: b.tier_after }, { type: 'await_human', reason: 'breaker' }, '/deep-loop-status');
 

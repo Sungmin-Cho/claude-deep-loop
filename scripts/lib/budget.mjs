@@ -1,4 +1,5 @@
 import {
+  appendAnchored,
   appendEvent,
   lastLogHead,
   MUTATION_TURN_FLOOR,
@@ -253,22 +254,180 @@ function validateCodexPreflightReceipt(root, runId, receipt) {
   return expected;
 }
 
+export function checkHardBudget(loop, { now = Date.now(), sessionStart } = {}) {
+  const b = loop.budget;
+  // sessionStart 미지정 시 run의 created_at에서 파생 → 호출자가 빠뜨려도 wallclock이 0으로 무력화되지 않음 (Codex impl 🟡6)
+  const start = sessionStart ?? (loop.created_at ? Date.parse(loop.created_at) : now);
+  const wall = (now - start) / 1000;
+  if (b.spent >= b.total * b.hard_stop_ratio) return { blocked: true, reason: 'turns-hard-stop' };
+  if (b.tokens_total && b.tokens_spent >= b.tokens_total) return { blocked: true, reason: 'tokens-hard-stop' };
+  if (b.max_wallclock_sec && wall >= b.max_wallclock_sec) return { blocked: true, reason: 'wallclock-hard-stop' };
+  return { blocked: false, reason: null };
+}
+
 export function checkBudget(loop, { now = Date.now(), sessionStart, measurable = true } = {}) {
   const b = loop.budget;
   if (!measurable && b.enforcement !== 'best-effort-interactive' && b.on_unmeasurable_usage === 'fail-closed') {
     return { ok: false, reason: 'unmeasurable-usage-fail-closed', tier_after: loop.autonomy.tier };
   }
-  // sessionStart 미지정 시 run의 created_at에서 파생 → 호출자가 빠뜨려도 wallclock이 0으로 무력화되지 않음 (Codex impl 🟡6)
-  const start = sessionStart ?? (loop.created_at ? Date.parse(loop.created_at) : now);
-  const wall = (now - start) / 1000;
-  if (b.spent >= b.total * b.hard_stop_ratio) return { ok: false, reason: 'turns-hard-stop', tier_after: loop.autonomy.tier };
-  if (b.tokens_total && b.tokens_spent >= b.tokens_total) return { ok: false, reason: 'tokens-hard-stop', tier_after: loop.autonomy.tier };
-  if (b.max_wallclock_sec && wall >= b.max_wallclock_sec) return { ok: false, reason: 'wallclock-hard-stop', tier_after: loop.autonomy.tier };
+  const hard = checkHardBudget(loop, { now, sessionStart });
+  if (hard.blocked) return { ok: false, reason: hard.reason, tier_after: loop.autonomy.tier };
   if (b.spent >= b.total * b.soft_stop_ratio) {
     const demoted = ['act-gated', 'act-reversible'].includes(loop.autonomy.tier) ? 'recommend' : loop.autonomy.tier;
     return { ok: true, reason: 'soft-stop-demote', tier_after: demoted };
   }
   return { ok: true, reason: 'ok', tier_after: loop.autonomy.tier };
+}
+
+const RECOVERY_TAKEOVER_KINDS = new Set(['affinity-supersession', 'boundary-recovery']);
+const HARD_BUDGET_REASONS = new Set([
+  'turns-hard-stop',
+  'tokens-hard-stop',
+  'wallclock-hard-stop',
+]);
+
+function hardBudgetPauseReason(reason) {
+  if (reason === 'budget' || HARD_BUDGET_REASONS.has(reason)) return true;
+  if (typeof reason !== 'string') return false;
+  const match = /^(?:gate|checker-gate|budget):(.+)$/.exec(reason);
+  return match !== null && (match[1] === 'budget' || HARD_BUDGET_REASONS.has(match[1]));
+}
+
+export function recoveryReservationKind(loop) {
+  const lease = loop.session_chain?.lease || {};
+  const kind = lease.takeover_kind;
+  if (loop.status !== 'paused' || lease.state !== 'released'
+    || !RECOVERY_TAKEOVER_KINDS.has(kind)
+    || lease.handoff_phase !== 'reserved'
+    || lease.expires_at !== null
+    || typeof lease.owner_run_id !== 'string' || lease.owner_run_id.length === 0
+    || !Number.isSafeInteger(lease.generation) || lease.generation < 1
+    || typeof lease.handoff_child_run_id !== 'string' || lease.handoff_child_run_id.length === 0
+    || !/^[0-9a-f]{64}$/.test(lease.handoff_idempotency_key || '')) {
+    return null;
+  }
+  const matchingChildren = (loop.session_chain?.sessions || [])
+    .filter(session => session.run_id === lease.handoff_child_run_id
+      && session.recovery_kind === kind
+      && typeof session.recovered_from === 'string' && session.recovered_from.length > 0
+      && /^recoveries\/[^/].+/.test(session.recovery_rel || '')
+      && /^[0-9a-f]{64}$/.test(session.recovery_sha256 || ''));
+  if (matchingChildren.length !== 1) return null;
+  const child = matchingChildren[0];
+  if (kind === 'affinity-supersession' && child.recovered_from !== lease.owner_run_id) return null;
+  const scope = child.scope;
+  if (scope?.kind !== 'workstream' || scope.closed_at !== null || scope.superseded_at !== null) return null;
+  if (kind === 'affinity-supersession'
+    && (typeof scope.workstream_id !== 'string' || scope.workstream_id.length === 0
+      || !Number.isSafeInteger(scope.bound_at_seq) || scope.bound_at_seq < 1)) return null;
+  if (kind === 'boundary-recovery'
+    && (scope.workstream_id !== null || scope.bound_at_seq !== null)) return null;
+  return kind;
+}
+
+function assertExactParentFence(loop, fence) {
+  const lease = loop.session_chain?.lease || {};
+  if (!fence || typeof fence.owner !== 'string' || fence.owner.length === 0
+    || !Number.isSafeInteger(fence.generation) || fence.generation < 1) {
+    throw new Error('LEASE_FENCED: invalid-fence');
+  }
+  if (lease.owner_run_id !== fence.owner) throw new Error('LEASE_FENCED: owner-mismatch');
+  if (lease.generation !== fence.generation) throw new Error('LEASE_FENCED: generation-mismatch');
+  if (loop.status === 'completed' || loop.status === 'stopped') {
+    throw new Error('LEASE_FENCED: RUN_TERMINAL');
+  }
+}
+
+function positiveDelta(value) {
+  return value === undefined || (Number.isSafeInteger(value) && value > 0);
+}
+
+function safeIncrement(current, delta) {
+  if (delta === undefined) return current;
+  const next = current + delta;
+  if (!Number.isSafeInteger(current) || current < 0 || !Number.isSafeInteger(next) || next < current) {
+    throw new Error('BUDGET_EXTENSION_INVALID: unsafe total');
+  }
+  return next;
+}
+
+export function extendBudget(root, runId, {
+  turns,
+  tokens,
+  wallclockSec,
+  reason,
+  confirm,
+  fence,
+  now = Date.now(),
+} = {}) {
+  if (confirm !== true) throw new Error('BUDGET_EXTENSION_CONFIRM_REQUIRED');
+  if (typeof reason !== 'string' || reason.trim().length === 0
+    || reason.length > 1_024 || reason.includes('\0')) {
+    throw new Error('BUDGET_EXTENSION_REASON_INVALID');
+  }
+  if (![turns, tokens, wallclockSec].every(positiveDelta)
+    || [turns, tokens, wallclockSec].every(value => value === undefined)) {
+    throw new Error('BUDGET_EXTENSION_INVALID: deltas must be positive safe integers');
+  }
+
+  let resultStatus = null;
+  appendAnchored(
+    root,
+    runId,
+    {
+      type: 'budget-extended',
+      data: {
+        ...(turns !== undefined ? { turns } : {}),
+        ...(tokens !== undefined ? { tokens } : {}),
+        ...(wallclockSec !== undefined ? { wallclock_sec: wallclockSec } : {}),
+        reason,
+      },
+      now,
+    },
+    (loop) => {
+      loop.budget.total = safeIncrement(loop.budget.total, turns);
+      loop.budget.tokens_total = safeIncrement(loop.budget.tokens_total, tokens);
+      if (wallclockSec !== undefined) {
+        loop.budget.max_wallclock_sec = safeIncrement(loop.budget.max_wallclock_sec, wallclockSec);
+      }
+      if (recoveryReservationKind(loop) === null) {
+        loop.status = 'running';
+        loop.pause_reason = null;
+      }
+      resultStatus = loop.status;
+    },
+    (loop) => {
+      assertExactParentFence(loop, fence);
+      const recoveryKind = recoveryReservationKind(loop);
+      const ordinaryPause = loop.status === 'paused'
+        && hardBudgetPauseReason(loop.pause_reason)
+        && loop.session_chain?.lease?.state === 'active';
+      if (!ordinaryPause && recoveryKind === null) {
+        throw new Error('BUDGET_EXTENSION_STATUS_INVALID');
+      }
+      if (!checkHardBudget(loop, { now }).blocked) {
+        throw new Error('BUDGET_EXTENSION_STATUS_INVALID: budget is not hard-blocked');
+      }
+      if (wallclockSec !== undefined
+        && (!Number.isSafeInteger(loop.budget.max_wallclock_sec)
+          || loop.budget.max_wallclock_sec <= 0)) {
+        throw new Error('BUDGET_EXTENSION_WALLCLOCK_UNAVAILABLE');
+      }
+      const candidate = structuredClone(loop);
+      candidate.budget.total = safeIncrement(candidate.budget.total, turns);
+      candidate.budget.tokens_total = safeIncrement(candidate.budget.tokens_total, tokens);
+      if (wallclockSec !== undefined) {
+        candidate.budget.max_wallclock_sec = safeIncrement(
+          candidate.budget.max_wallclock_sec,
+          wallclockSec,
+        );
+      }
+      if (checkHardBudget(candidate, { now }).blocked) {
+        throw new Error('BUDGET_EXTENSION_INSUFFICIENT');
+      }
+    },
+  );
+  return { ok: true, status: resultStatus };
 }
 
 // #3 max-rule: the auto-floor turns/tokens accrued since the last EXPLICIT cost event (i.e. the current "tick").

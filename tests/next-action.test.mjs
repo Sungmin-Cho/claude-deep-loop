@@ -169,7 +169,7 @@ test('fresh run with no episodes → discover', () => {
   assert.equal(r.action.type, 'discover');
 });
 
-test('budget hard stop → gate blocked, handoff', () => {
+test('budget hard stop → gate blocked, await_human without minting a handoff', () => {
   const l = migratedLegacyLoop('compact-in-place');
   assert.equal(
     l.autonomy.continuation_policy,
@@ -180,7 +180,9 @@ test('budget hard stop → gate blocked, handoff', () => {
   const r = nextAction(l, { now: Date.parse('2026-06-24T00:00:00Z') });
   assert.equal(r.gate.allowed, false);
   assert.ok(r.gate.blocked_by.includes('budget'));
-  assert.equal(r.action.type, 'handoff');
+  assert.equal(r.action.type, 'await_human');
+  assert.equal(r.action.reason, 'budget');
+  assert.equal(r.next_command, '/deep-loop-status');
 });
 
 test('cap + compact-in-place attended → real action with advice fields (liveness)', () => {
@@ -214,14 +216,15 @@ test('cap + rotate-per-unit (codex or migrated legacy) → handoff (regression)'
   assert.equal(r.action.type, 'handoff');
 });
 
-test('budget hard-stop still handoff for both policies', () => {
+test('budget hard-stop pauses for both migrated legacy policies', () => {
   for (const policy of ['compact-in-place', 'rotate-per-unit']) {
     const l = migratedLegacyLoop(policy);
     assert.equal(l.autonomy.continuation_policy, policy);
     l.budget.spent = l.budget.total;
     const r = nextAction(l, { now: NOW });
-    assert.equal(r.action.type, 'handoff', policy);
+    assert.equal(r.action.type, 'await_human', policy);
     assert.equal(r.action.reason, 'budget', policy);
+    assert.equal(r.next_command, '/deep-loop-status', policy);
     assert.equal(r.action.advice, undefined, policy);
   }
 });
