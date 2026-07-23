@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { checkBreaker, recordReviewVerdict, resetBreaker } from '../scripts/lib/breaker.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState } from '../scripts/lib/state.mjs';
+import { projectRootDigest } from '../scripts/lib/project-root.mjs';
 
 function seed() {
   const root = mkdtempSync(join(tmpdir(), 'dl-breaker-'));
@@ -138,6 +139,10 @@ function recoveryBreakerFixture(kind) {
     data.session_chain.sessions.push({
       run_id: 'STALE-BOUNDARY-CHILD', started_at: null, ended_at: supersededAt,
       turns: 0, outcome: 'abandoned_recover', superseded_by: 'RECOVERY-CHILD',
+      parent_run_id: owner.run_id,
+      parent_boundary_event: { ...owner.scope.terminal_event },
+      project_binding_generation: data.project.binding_generation,
+      project_root_digest: projectRootDigest(data.project.root),
       scope: {
         kind: 'workstream', workstream_id: null, bound_at_seq: null,
         terminal_event: null, closed_at: null, superseded_at: supersededAt,
@@ -189,6 +194,20 @@ test('resetBreaker preserves exact paused released recovery reservations for bot
       trip_reason: null,
     }, kind);
   }
+});
+
+test('resetBreaker preserves boundary recovery when the stale predecessor owns the released lease', () => {
+  const { root, runId } = recoveryBreakerFixture('boundary-recovery');
+  const { data } = readState(root, runId);
+  data.session_chain.lease.owner_run_id = 'STALE-BOUNDARY-CHILD';
+  writeState(root, runId, data);
+  const before = readState(root, runId).data;
+  assert.deepEqual(resetBreaker(root, runId, {
+    fence: { owner: 'STALE-BOUNDARY-CHILD', generation: 1, intent: 'breaker-reset' },
+  }), { ok: true, status: 'paused' });
+  const after = readState(root, runId).data;
+  assert.equal(after.session_chain.lease.owner_run_id, 'STALE-BOUNDARY-CHILD');
+  assert.deepEqual(after.session_chain.sessions, before.session_chain.sessions);
 });
 
 const inexactBreakerRecoveryCases = [
@@ -270,6 +289,94 @@ const inexactBreakerRecoveryCases = [
       label: 'used replacement child',
       mutate(_data, child) {
         child.turns = 1;
+      },
+    },
+    {
+      label: 'broken original parent link',
+      mutate(data, child) {
+        const stale = data.session_chain.sessions.find(
+          session => session.run_id === child.recovered_from,
+        );
+        data.session_chain.sessions.find(
+          session => session.run_id === stale.parent_run_id,
+        ).superseded_by = 'UNRELATED';
+      },
+    },
+    {
+      label: 'mismatched parent boundary event',
+      mutate(data, child) {
+        data.session_chain.sessions.find(
+          session => session.run_id === child.recovered_from,
+        ).parent_boundary_event = { seq: 11, checksum: 'e'.repeat(64) };
+      },
+    },
+    {
+      label: 'stale parent run id',
+      mutate(data, child) {
+        data.session_chain.sessions.find(
+          session => session.run_id === child.recovered_from,
+        ).parent_run_id = 'UNRELATED-PARENT';
+      },
+    },
+    {
+      label: 'stale project binding generation',
+      mutate(data, child) {
+        data.session_chain.sessions.find(
+          session => session.run_id === child.recovered_from,
+        ).project_binding_generation += 1;
+      },
+    },
+    {
+      label: 'stale project root digest',
+      mutate(data, child) {
+        data.session_chain.sessions.find(
+          session => session.run_id === child.recovered_from,
+        ).project_root_digest = 'e'.repeat(64);
+      },
+    },
+    {
+      label: 'missing closed parent terminal identity',
+      mutate(data, child) {
+        const stale = data.session_chain.sessions.find(
+          session => session.run_id === child.recovered_from,
+        );
+        data.session_chain.sessions.find(
+          session => session.run_id === stale.parent_run_id,
+        ).scope.terminal_event = null;
+      },
+    },
+    {
+      label: 'unclosed original parent scope',
+      mutate(data, child) {
+        const stale = data.session_chain.sessions.find(
+          session => session.run_id === child.recovered_from,
+        );
+        data.session_chain.sessions.find(
+          session => session.run_id === stale.parent_run_id,
+        ).scope.closed_at = null;
+      },
+    },
+    {
+      label: 'superseded original parent scope',
+      mutate(data, child) {
+        const stale = data.session_chain.sessions.find(
+          session => session.run_id === child.recovered_from,
+        );
+        data.session_chain.sessions.find(
+          session => session.run_id === stale.parent_run_id,
+        ).scope.superseded_at = '2026-07-23T00:00:01.000Z';
+      },
+    },
+    {
+      label: 'duplicate original parent identity',
+      mutate(data, child) {
+        const stale = data.session_chain.sessions.find(
+          session => session.run_id === child.recovered_from,
+        );
+        const parent = data.session_chain.sessions.find(
+          session => session.run_id === stale.parent_run_id,
+        );
+        data.session_chain.sessions.push(structuredClone(parent));
       },
     },
 ];

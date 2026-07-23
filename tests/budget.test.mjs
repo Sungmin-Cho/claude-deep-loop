@@ -26,6 +26,7 @@ import { releaseLease, acquireLease } from '../scripts/lib/lease.mjs';
 import { finishRun } from '../scripts/lib/finish.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
+import { projectRootDigest } from '../scripts/lib/project-root.mjs';
 import { validate } from '../scripts/lib/schema.mjs';
 import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
 import * as budgetApi from '../scripts/lib/budget.mjs';
@@ -263,6 +264,10 @@ function recoveryBudgetPauseFixture(takeoverKind) {
     data.session_chain.sessions.push({
       run_id: 'STALE-BOUNDARY-CHILD', started_at: null, ended_at: supersededAt,
       turns: 0, outcome: 'abandoned_recover', superseded_by: 'RECOVERY-CHILD',
+      parent_run_id: owner.run_id,
+      parent_boundary_event: { ...owner.scope.terminal_event },
+      project_binding_generation: data.project.binding_generation,
+      project_root_digest: projectRootDigest(data.project.root),
       scope: {
         kind: 'workstream', workstream_id: null, bound_at_seq: null,
         terminal_event: null, closed_at: null, superseded_at: supersededAt,
@@ -299,6 +304,13 @@ function recoveryPredecessor(data) {
   );
 }
 
+function recoveryOriginalParent(data) {
+  const predecessor = recoveryPredecessor(data);
+  return data.session_chain.sessions.find(
+    session => session.run_id === predecessor.parent_run_id,
+  );
+}
+
 test('budget extension preserves both released recovery reservations byte-semantically except anchor and budget', () => {
   for (const kind of ['affinity-supersession', 'boundary-recovery']) {
     const f = recoveryBudgetPauseFixture(kind);
@@ -323,6 +335,24 @@ test('budget extension preserves both released recovery reservations byte-semant
     assert.equal(after.budget.total, before.budget.total + 2, kind);
     assert.equal(after.budget.spent, before.budget.spent, kind);
   }
+});
+
+test('budget extension preserves boundary recovery when the stale predecessor owns the released lease', () => {
+  const f = recoveryBudgetPauseFixture('boundary-recovery');
+  const { data } = readState(f.root, f.runId);
+  data.session_chain.lease.owner_run_id = 'STALE-BOUNDARY-CHILD';
+  writeState(f.root, f.runId, data);
+  const before = readState(f.root, f.runId).data;
+  assert.deepEqual(budgetApi.extendBudget(f.root, f.runId, {
+    turns: 2,
+    reason: 'preserve acquired-unbound boundary recovery',
+    confirm: true,
+    fence: { owner: 'STALE-BOUNDARY-CHILD', generation: 1 },
+    now: f.now,
+  }), { ok: true, status: 'paused' });
+  const after = readState(f.root, f.runId).data;
+  assert.equal(after.session_chain.lease.owner_run_id, 'STALE-BOUNDARY-CHILD');
+  assert.deepEqual(after.session_chain.sessions, before.session_chain.sessions);
 });
 
 test('ordinary extension recognizes the concrete hard-budget pause reason forms', () => {
@@ -459,6 +489,63 @@ const inexactBudgetRecoveryCases = [
       label: 'used replacement child',
       mutate(data) {
         recoveryChild(data).turns = 1;
+      },
+    },
+    {
+      label: 'broken original parent link',
+      mutate(data) {
+        recoveryOriginalParent(data).superseded_by = 'UNRELATED';
+      },
+    },
+    {
+      label: 'mismatched parent boundary event',
+      mutate(data) {
+        recoveryPredecessor(data).parent_boundary_event = {
+          seq: 11,
+          checksum: 'e'.repeat(64),
+        };
+      },
+    },
+    {
+      label: 'stale parent run id',
+      mutate(data) {
+        recoveryPredecessor(data).parent_run_id = 'UNRELATED-PARENT';
+      },
+    },
+    {
+      label: 'stale project binding generation',
+      mutate(data) {
+        recoveryPredecessor(data).project_binding_generation += 1;
+      },
+    },
+    {
+      label: 'stale project root digest',
+      mutate(data) {
+        recoveryPredecessor(data).project_root_digest = 'e'.repeat(64);
+      },
+    },
+    {
+      label: 'missing closed parent terminal identity',
+      mutate(data) {
+        recoveryOriginalParent(data).scope.terminal_event = null;
+      },
+    },
+    {
+      label: 'unclosed original parent scope',
+      mutate(data) {
+        recoveryOriginalParent(data).scope.closed_at = null;
+      },
+    },
+    {
+      label: 'superseded original parent scope',
+      mutate(data) {
+        recoveryOriginalParent(data).scope.superseded_at = '2026-07-23T00:00:01.000Z';
+      },
+    },
+    {
+      label: 'duplicate original parent identity',
+      mutate(data) {
+        data.session_chain.sessions.push(structuredClone(recoveryOriginalParent(data)));
       },
     },
 ];

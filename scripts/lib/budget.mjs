@@ -294,6 +294,13 @@ function hardBudgetPauseReason(reason) {
   return match !== null && (match[1] === 'budget' || HARD_BUDGET_REASONS.has(match[1]));
 }
 
+function sameBoundaryIdentity(left, right) {
+  return Number.isSafeInteger(left?.seq) && left.seq > 0
+    && /^[0-9a-f]{64}$/.test(left.checksum || '')
+    && left.seq === right?.seq
+    && left.checksum === right?.checksum;
+}
+
 export function recoveryReservationKind(loop) {
   const lease = loop.session_chain?.lease || {};
   const kind = lease.takeover_kind;
@@ -357,6 +364,27 @@ export function recoveryReservationKind(loop) {
       || predecessorScope.workstream_id !== null
       || predecessorScope.bound_at_seq !== null
       || predecessorScope.supersede_reason !== 'boundary-recovery')) return null;
+  if (kind === 'boundary-recovery') {
+    const parentRows = sessions.filter(
+      session => session?.run_id === predecessor.parent_run_id,
+    );
+    if (parentRows.length !== 1) return null;
+    const parent = parentRows[0];
+    const parentScope = parent.scope;
+    if (parent === predecessor || parent === child
+      || parent.superseded_by !== predecessor.run_id
+      || parentScope?.kind !== 'workstream'
+      || parentScope.closed_at === null
+      || parentScope.superseded_at !== null
+      || !sameBoundaryIdentity(
+        predecessor.parent_boundary_event,
+        parentScope.terminal_event,
+      )
+      || predecessor.project_binding_generation !== loop.project?.binding_generation
+      || predecessor.project_root_digest !== projectRootDigest(loop.project?.root)) {
+      return null;
+    }
+  }
   return kind;
 }
 
