@@ -203,8 +203,12 @@ test('live-surface docs name the shell-free PreCompact implementation and never 
   });
 });
 
-test('PreCompact manifest is emit-only and assigns unattended continuation to the measured driver', () => {
+test('hook manifest describes cross-host affinity checkpointing while retaining legacy handoff compatibility', () => {
   const manifest = JSON.parse(readFileSync(join(R, 'hooks/hooks.json'), 'utf8'));
+  assert.match(manifest.description, /Claude and Codex/i);
+  assert.match(manifest.description, /workstream affinity/i);
+  assert.match(manifest.description, /artifact-only checkpoint/i);
+  assert.match(manifest.description, /legacy handoff/i);
   assert.match(manifest.description, /\bemit-only\b/i);
   assert.match(manifest.description, /unattended continuation is deferred to the measured driveHeadless driver/i);
   assert.doesNotMatch(manifest.description, /\b(?:headless\s+)?respawn\b/i);

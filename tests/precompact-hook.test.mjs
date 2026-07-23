@@ -8,10 +8,17 @@ import { dirname, join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { runPreCompactHandoff } from '../scripts/hooks-impl/precompact-handoff.mjs';
+import { inspectCompactCheckpoint } from '../scripts/lib/checkpoint.mjs';
+import { abandonEpisode, newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
 import { acquireLease, reserveHandoff } from '../scripts/lib/lease.mjs';
 import { rollbackAndPause } from '../scripts/lib/respawn.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
+import {
+  newWorkstream,
+  recordWorkstreamTerminal,
+  setWorkstreamStatus,
+} from '../scripts/lib/workspace.mjs';
 import { createDirectoryJunction } from './helpers/fs-fixtures.mjs';
 const PROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PRECOMPACT_HOOK = join(PROOT, 'scripts', 'hooks-impl', 'precompact-handoff.mjs');
@@ -70,11 +77,211 @@ function seedRotate() {
   return { root, runId };
 }
 
+function seedBound(runtime = 'claude') {
+  const root = mkdtempSync(join(tmpdir(), `dl-pc-bound-${runtime}-`));
+  const { runId } = initRun(root, {
+    runtime, goal: 'g', now: new Date('2026-06-24T00:00:00Z'),
+  });
+  const fence = { owner: runId, generation: 1 };
+  const worktree = `.claude/worktrees/precompact-${runtime}`;
+  mkdirSync(join(root, worktree), { recursive: true });
+  const workstreamId = newWorkstream(root, runId, {
+    title: `precompact-${runtime}`,
+    branch: `feature/precompact-${runtime}`,
+    worktree,
+    fence,
+  }).id;
+  setWorkstreamStatus(root, runId, workstreamId, 'in_progress', { fence });
+  const episodeId = newEpisode(root, runId, {
+    plugin: 'deep-work',
+    role: 'maker',
+    kind: 'implementation',
+    point: 'implementation',
+    workstream: workstreamId,
+    expectedArtifacts: [],
+    fence,
+  }).id;
+  recordEpisode(root, runId, episodeId, { status: 'in_progress', fence });
+  return { root, runId, runtime, fence, workstreamId, episodeId };
+}
+
+function closeBound(fixture) {
+  abandonEpisode(fixture.root, fixture.runId, fixture.episodeId, {
+    reason: 'Task9 closed-scope fixture',
+    confirm: true,
+    fence: fixture.fence,
+  });
+  recordWorkstreamTerminal(fixture.root, fixture.runId, fixture.workstreamId, {
+    status: 'abandoned',
+    proof: { reason: 'Task9 closed-scope fixture' },
+    confirm: true,
+    fence: fixture.fence,
+    now: Date.parse('2026-06-24T00:00:30Z'),
+  });
+}
+
 function checkpointFiles(root, runId) {
   const dir = join(runDir(root, runId), 'checkpoints');
   if (!existsSync(dir)) return [];
   return readdirSync(dir).filter(file => file.endsWith('-compact.json'));
 }
+
+function durableBytes(root, runId) {
+  const dir = runDir(root, runId);
+  const logPath = join(dir, 'event-log.jsonl');
+  return {
+    loop: rf(join(dir, 'loop.json')),
+    hash: rf(join(dir, '.loop.hash')),
+    log: existsSync(logPath) ? rf(logPath) : null,
+  };
+}
+
+test('workstream-session PreCompact checkpoints every runtime and trigger mode without rotating affinity', async () => {
+  const cases = [
+    ['claude', { hook_event_name: 'PreCompact', trigger: 'manual', session_id: 'claude-manual' }, {}, false],
+    ['claude', { hook_event_name: 'PreCompact', trigger: 'auto', session_id: 'claude-auto' }, {}, false],
+    ['claude', { hook_event_name: 'PreCompact', trigger: 'auto', session_id: 'claude-headless' }, { DEEP_LOOP_HEADLESS: '1' }, true],
+    ['claude', { hook_event_name: 'PreCompact', trigger: 'manual' }, {}, false],
+    ['codex', { hook_event_name: 'PreCompact', trigger: 'manual', session_id: 'codex-manual' }, {}, false],
+    ['codex', { hook_event_name: 'PreCompact', trigger: 'auto', session_id: 'codex-auto' }, {}, false],
+    ['codex', { hook_event_name: 'PreCompact', trigger: 'auto', session_id: 'codex-headless' }, { DEEP_LOOP_HEADLESS: '1' }, true],
+    ['codex', { hook_event_name: 'PreCompact', trigger: 'manual', conversation_id: 'ignored' }, {}, false],
+  ];
+  for (const [runtime, input, env, headless] of cases) {
+    const fixture = seedBound(runtime);
+    const before = durableBytes(fixture.root, fixture.runId);
+    const beforeState = readState(fixture.root, fixture.runId).data;
+    const beforeLease = structuredClone(beforeState.session_chain.lease);
+    const beforeSessions = structuredClone(beforeState.session_chain.sessions);
+
+    const result = await runPreCompactHandoff(input, {
+      root: fixture.root,
+      now: Date.parse('2026-06-24T00:01:00Z'),
+      env,
+    });
+
+    assert.deepEqual(result, { ok: true, action: 'checkpointed', headless }, `${runtime}:${JSON.stringify(input)}`);
+    assert.deepEqual(durableBytes(fixture.root, fixture.runId), before);
+    const after = readState(fixture.root, fixture.runId).data;
+    assert.deepEqual(after.session_chain.lease, beforeLease);
+    assert.deepEqual(after.session_chain.sessions, beforeSessions);
+    assert.equal(events(fixture.root, fixture.runId).some(event => event.type === 'handoff-emitted'), false);
+    assert.equal(checkpointFiles(fixture.root, fixture.runId).length, 1);
+    const evidence = Object.hasOwn(input, 'session_id')
+      ? { provider: runtime === 'claude' ? 'claude-code' : 'codex', id: input.session_id }
+      : undefined;
+    const inspected = inspectCompactCheckpoint(fixture.root, fixture.runId, {
+      hostSessionEvidence: evidence,
+      now: Date.parse('2026-06-24T00:01:00Z'),
+    });
+    assert.equal(inspected.ok, true);
+    assert.deepEqual(inspected.provider_evidence, {
+      present: evidence !== undefined,
+      matched: evidence === undefined ? null : true,
+    });
+  }
+});
+
+test('workstream-session PreCompact rejects malformed or ambiguous host evidence without legacy fallthrough', async () => {
+  const cases = [
+    ['claude', { hook_event_name: 'PreCompact', trigger: 'manual', session_id: '' }],
+    ['claude', { hook_event_name: 'PreCompact', trigger: 'manual', session_id: 42 }],
+    ['codex', { hook_event_name: 'PreCompact', trigger: 'manual', session_id: '' }],
+    ['codex', { hook_event_name: 'PreCompact', trigger: 'manual', session_id: 42 }],
+    ['claude', { hook_event_name: 'SessionStart', trigger: 'manual' }],
+    ['codex', { hook_event_name: 'PreCompact', trigger: 'unknown' }],
+  ];
+  for (const [runtime, input] of cases) {
+    const fixture = seedBound(runtime);
+    const before = durableBytes(fixture.root, fixture.runId);
+    const beforeState = structuredClone(readState(fixture.root, fixture.runId).data);
+
+    const result = await runPreCompactHandoff(input, {
+      root: fixture.root,
+      now: Date.parse('2026-06-24T00:01:00Z'),
+      env: {},
+    });
+
+    assert.deepEqual(result, {
+      ok: false,
+      action: 'checkpoint-failed',
+      reason: 'host-evidence-invalid',
+    });
+    assert.deepEqual(durableBytes(fixture.root, fixture.runId), before);
+    assert.deepEqual(readState(fixture.root, fixture.runId).data, beforeState);
+    assert.deepEqual(checkpointFiles(fixture.root, fixture.runId), []);
+  }
+});
+
+test('workstream-session PreCompact unbound and closed scopes never fall through to legacy checkpoint or handoff', async () => {
+  const unboundRoot = mkdtempSync(join(tmpdir(), 'dl-pc-unbound-'));
+  const { runId: unboundRunId } = initRun(unboundRoot, {
+    runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z'),
+  });
+  const closed = seedBound('codex');
+  closeBound(closed);
+
+  for (const [root, runId, input] of [
+    [unboundRoot, unboundRunId, {
+      hook_event_name: 'PreCompact', trigger: 'manual', session_id: 'unbound-session',
+    }],
+    [closed.root, closed.runId, {
+      hook_event_name: 'PreCompact', trigger: 'auto', session_id: 'closed-session',
+    }],
+  ]) {
+    const before = durableBytes(root, runId);
+    const beforeState = structuredClone(readState(root, runId).data);
+    const result = await runPreCompactHandoff(input, {
+      root,
+      now: Date.parse('2026-06-24T00:01:00Z'),
+      env: {},
+    });
+    assert.deepEqual(result, { ok: true, action: 'no-affinity' });
+    assert.deepEqual(durableBytes(root, runId), before);
+    assert.deepEqual(readState(root, runId).data, beforeState);
+    assert.deepEqual(checkpointFiles(root, runId), []);
+    assert.equal(events(root, runId).some(event => event.type === 'handoff-emitted'), false);
+  }
+});
+
+test('exact manifest PreCompact subprocess checkpoints Claude and Codex manual, auto, and headless affinity', () => {
+  const manifest = JSON.parse(rf(join(PROOT, 'hooks', 'hooks.json'), 'utf8'));
+  const command = manifest.hooks.PreCompact[0].hooks[0].command;
+  assert.equal(command, EXPECTED_BOOTSTRAP);
+  for (const [runtime, input] of [
+    ['claude', { hook_event_name: 'PreCompact', trigger: 'manual', session_id: 'claude-manual' }],
+    ['claude', { hook_event_name: 'PreCompact', trigger: 'auto', session_id: 'claude-auto' }],
+    ['claude', { hook_event_name: 'PreCompact', trigger: 'auto', session_id: 'claude-headless', headless: true }],
+    ['codex', { hook_event_name: 'PreCompact', trigger: 'manual', session_id: 'codex-manual' }],
+    ['codex', { hook_event_name: 'PreCompact', trigger: 'auto', session_id: 'codex-auto' }],
+    ['codex', { hook_event_name: 'PreCompact', trigger: 'auto', session_id: 'codex-headless', headless: true }],
+  ]) {
+    const fixture = seedBound(runtime);
+    const before = durableBytes(fixture.root, fixture.runId);
+    const beforeState = readState(fixture.root, fixture.runId).data;
+    const result = runNode(['-e', BOOTSTRAP_SOURCE], {
+      cwd: fixture.root,
+      env: {
+        ...bootstrapEnv(runtime === 'claude' ? 'CLAUDE_PLUGIN_ROOT' : 'PLUGIN_ROOT', PROOT),
+        ...(input.headless ? { DEEP_LOOP_HEADLESS: '1' } : {}),
+      },
+      input: JSON.stringify({
+        cwd: fixture.root,
+        hook_event_name: input.hook_event_name,
+        trigger: input.trigger,
+        session_id: input.session_id,
+      }),
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, '');
+    assert.equal(result.stderr, '');
+    assert.deepEqual(durableBytes(fixture.root, fixture.runId), before);
+    const after = readState(fixture.root, fixture.runId).data;
+    assert.deepEqual(after.session_chain.lease, beforeState.session_chain.lease);
+    assert.deepEqual(after.session_chain.sessions, beforeState.session_chain.sessions);
+    assert.equal(checkpointFiles(fixture.root, fixture.runId).length, 1);
+  }
+});
 
 test('no current run → no-op', async () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-pc0-'));

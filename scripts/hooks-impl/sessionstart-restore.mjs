@@ -1,9 +1,14 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readBoundedText } from '../lib/bounded-input.mjs';
-import { captureCheckpointSet, selectCheckpoint } from '../lib/checkpoint.mjs';
+import {
+  captureCheckpointSet,
+  inspectCompactCheckpoint,
+  selectCheckpoint,
+} from '../lib/checkpoint.mjs';
 import { detectMain } from '../lib/detect-main.mjs';
 import { findRoot } from '../lib/state.mjs';
+import { sessionRuntime } from '../lib/runtime.mjs';
 
 const CAP = 3072;
 
@@ -20,14 +25,56 @@ function currentRunId(root) {
   return existsSync(path) ? readFileSync(path, 'utf8').trim() : null;
 }
 
+function strictHostSessionEvidence(input, runtime) {
+  if (input.hook_event_name !== 'SessionStart') throw new Error('host-context-invalid');
+  if (!Object.hasOwn(input, 'session_id')) return undefined;
+  if (typeof input.session_id !== 'string'
+    || input.session_id.length === 0
+    || input.session_id.length > 1024
+    || /[\0\r\n]/.test(input.session_id)) {
+    throw new Error('host-evidence-invalid');
+  }
+  return {
+    provider: runtime === 'claude' ? 'claude-code' : 'codex',
+    id: input.session_id,
+  };
+}
+
+function strictRestoreContext(runId, descriptor, { source, evidencePresent }) {
+  const runtime = descriptor.runtime;
+  const command = runtime === 'claude'
+    ? '/deep-loop-compact restore'
+    : '$deep-loop:deep-loop-compact restore';
+  const sourceLabel = source === 'compact' ? 'source=compact' : 'source-unverified';
+  const evidenceLabel = evidencePresent ? 'evidence-verified' : 'evidence-unverified';
+  return clamp(
+    `deep-loop compact restore ${sourceLabel} ${evidenceLabel}: invoke ${command} now in the same owner session. `
+    + `checkpoint_rel=${descriptor.checkpoint_rel} owner=${descriptor.owner_run_id} `
+    + `generation=${descriptor.generation} runtime=${runtime} `
+    + `workstream=${descriptor.scope?.workstream_id ?? 'none'} run=${runId}.`,
+  );
+}
+
+function strictUnavailableContext({ evidencePresent }) {
+  return evidencePresent
+    ? clamp(
+      'deep-loop checkpoint-unavailable-with-trusted-evidence: preserve-pause and use host resume guidance. '
+      + 'do not retry without trusted evidence. Run /deep-loop-status for bounded diagnostics.',
+    )
+    : clamp(
+      'deep-loop checkpoint-unavailable evidence-unverified: run /deep-loop-status and preserve the current owner session.',
+    );
+}
+
 // Read-only restore glue (spec §4.2). No branch mutates durable state.
 export function runSessionStartRestore(input = {}, {
   root = findRoot(process.cwd()),
-  now,
+  now = Date.now(),
   readCheckpoint = (_path, bytes) => bytes.toString('utf8'),
 } = {}) {
-  void input;
-  void now;
+  if (Object.hasOwn(input, 'source') && input.source !== 'compact') {
+    return { ok: true, branch: 'source-other', additionalContext: null };
+  }
   const runId = currentRunId(root);
   if (!runId) return { ok: true, branch: 'no-run', additionalContext: null };
 
@@ -46,6 +93,40 @@ export function runSessionStartRestore(input = {}, {
   }
 
   const lease = loop.session_chain?.lease || {};
+  if (loop.autonomy?.continuation_policy === 'workstream-session') {
+    let runtime;
+    let hostSessionEvidence;
+    try {
+      runtime = sessionRuntime(loop);
+      hostSessionEvidence = strictHostSessionEvidence(input, runtime);
+    } catch {
+      return { ok: false, branch: 'evidence-invalid', additionalContext: null };
+    }
+    const inspected = inspectCompactCheckpoint(root, runId, {
+      hostSessionEvidence,
+      now,
+    });
+    if (!inspected.ok) {
+      return {
+        ok: true,
+        branch: hostSessionEvidence
+          ? 'checkpoint-unavailable-with-trusted-evidence'
+          : 'no-checkpoint',
+        additionalContext: strictUnavailableContext({
+          evidencePresent: hostSessionEvidence !== undefined,
+        }),
+      };
+    }
+    return {
+      ok: true,
+      branch: input.source === 'compact' ? 'resume' : 'resume-source-unverified',
+      additionalContext: strictRestoreContext(runId, inspected, {
+        source: input.source,
+        evidencePresent: hostSessionEvidence !== undefined,
+      }),
+    };
+  }
+
   const advisory = `deep-loop lease owner=${lease.owner_run_id} gen=${lease.generation}. 이 세션이 해당 run의 owner가 아니면 mutation을 시도하지 말 것.`;
 
   if (lease.handoff_phase === 'reserved' && lease.state === 'active') {
@@ -130,6 +211,7 @@ export async function main() {
       ? input.cwd
       : process.cwd();
     const result = runSessionStartRestore(input ?? {}, { root: findRoot(cwd) });
+    if (!result.ok) throw new Error('restore-context-invalid');
     if (result.additionalContext) {
       process.stdout.write(`${JSON.stringify({
         hookSpecificOutput: {
