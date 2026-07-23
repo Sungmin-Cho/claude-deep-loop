@@ -11,6 +11,7 @@ import { buildRuntimeResumeDescriptor } from '../scripts/lib/runtime-descriptor.
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { advanceHandoffPhase, reserveHandoff } from '../scripts/lib/lease.mjs';
 import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
+import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = join(REPO_ROOT, 'scripts', 'deep-loop.mjs');
@@ -32,6 +33,7 @@ function seed(runtime = 'claude') {
     platform: process.platform,
     run: () => ({ code: 1 }),
   });
+  migrateAuthenticLegacyTransport(root, runId);
   return { root, runId };
 }
 

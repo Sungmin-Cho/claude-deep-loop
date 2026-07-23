@@ -26,6 +26,7 @@ import { releaseLease, acquireLease } from '../scripts/lib/lease.mjs';
 import { finishRun } from '../scripts/lib/finish.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
+import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
 
 function persistLegacyContinuationFixture(root, runId, policy) {
   assert.ok(['compact-in-place', 'rotate-per-unit'].includes(policy));
@@ -543,6 +544,7 @@ function makerProcessReceiptFixture({ acquire = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'dl-maker-process-receipt-'));
   const now = Date.parse('2026-07-12T00:00:00.000Z');
   const { runId } = initRun(root, { runtime: 'codex', goal: 'g', now: new Date(now) });
+  migrateAuthenticLegacyTransport(root, runId);
   const handoff = emitHandoff(root, runId, {
     trigger: 'maker-process-receipt',
     headless: true,
@@ -896,6 +898,7 @@ function checkerProcessReceiptFixture({ originOwner, originGeneration } = {}) {
   const { runId } = initRun(root, {
     runtime: 'codex', goal: 'g', now: new Date('2026-07-12T00:00:00Z'),
   });
+  migrateAuthenticLegacyTransport(root, runId);
   const claim = {
     run_id: runId,
     reviewer_id: 'deep-review',

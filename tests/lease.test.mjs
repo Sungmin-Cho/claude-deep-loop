@@ -11,10 +11,12 @@ import {
   reserveHandoff, advanceHandoffPhase, rollbackHandoff,
   rollbackReservedEmit,
 } from '../scripts/lib/lease.mjs';
+import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
 
 function seed(runtime = 'claude') {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
   const { runId } = initRun(root, { runtime, goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  migrateAuthenticLegacyTransport(root, runId);
   return { root, runId };
 }
 

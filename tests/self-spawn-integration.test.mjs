@@ -25,6 +25,7 @@ import { readState, writeState, pauseRun, patch } from '../scripts/lib/state.mjs
 import { emitHandoff, buildLaunchCommand } from '../scripts/lib/handoff.mjs';
 import { acquireLease } from '../scripts/lib/lease.mjs';
 import { respawn as respawnImpl } from '../scripts/lib/respawn.mjs';
+import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -78,6 +79,7 @@ function seed(mutate) {
     mutate(data);
     writeState(root, runId, data);
   }
+  migrateAuthenticLegacyTransport(root, runId);
   return { root, runId };
 }
 
@@ -402,6 +404,7 @@ test('Codex emitted handoff stays on the shared measured host path through prefl
   seeded.autonomy.spawn_style = 'headless';
   seeded.autonomy.runtime_executable_approval = executable;
   writeState(root, runId, seeded);
+  migrateAuthenticLegacyTransport(root, runId);
   const handoff = emitHandoff(root, runId, {
     trigger: 'shared-measured-host', headless: true, resumePolicy: 'headless',
     expect: { owner: runId, generation: 1 }, now: NOW1,

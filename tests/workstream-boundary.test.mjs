@@ -7,12 +7,19 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { readState, writeState } from '../scripts/lib/state.mjs';
+import { captureReconciledRunSnapshot, readState, writeState } from '../scripts/lib/state.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { abandonEpisode, newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
 import { nextAction } from '../scripts/lib/next-action.mjs';
 import * as finishModule from '../scripts/lib/finish.mjs';
+import { emitHandoff } from '../scripts/lib/handoff.mjs';
+import { acquireLease } from '../scripts/lib/lease.mjs';
+import { runDir } from '../scripts/lib/state.mjs';
+import { contentHash } from '../scripts/lib/envelope.mjs';
+import { projectRootDigest } from '../scripts/lib/project-root.mjs';
+import { respawn } from '../scripts/lib/respawn.mjs';
+import { appendAnchored } from '../scripts/lib/integrity.mjs';
 
 const CLI = join(process.cwd(), 'scripts', 'deep-loop.mjs');
 const NOW = '2026-07-23T04:05:06.789Z';
@@ -26,6 +33,12 @@ function runCli(root, runId, args, generation = 1) {
     CLI, ...args,
     '--owner', runId, '--generation', String(generation),
     '--run-id', runId, '--project-root', root,
+  ], { encoding: 'utf8' });
+}
+
+function runReadCli(root, runId, args) {
+  return spawnSync(process.execPath, [
+    CLI, ...args, '--run-id', runId, '--project-root', root,
   ], { encoding: 'utf8' });
 }
 
@@ -346,6 +359,7 @@ test('ready to merged is lifecycle-only and cannot alter the closed boundary', (
   const readyScope = ready.session_chain.sessions.find(session => session.run_id === f.runId).scope;
   const boundary = structuredClone(readyWs.terminal_events);
   const scopeBoundary = structuredClone(readyScope);
+  const readyAction = nextAction(ready, { now: Date.parse(NOW) }).action;
 
   const merged = runCli(f.root, f.runId, terminalArgs(f.ws, 'merged'));
   assert.equal(merged.status, 0, merged.stdout + merged.stderr);
@@ -355,6 +369,7 @@ test('ready to merged is lifecycle-only and cannot alter the closed boundary', (
   assert.equal(afterWs.status, 'merged');
   assert.deepEqual(afterWs.terminal_events, boundary);
   assert.deepEqual(afterScope, scopeBoundary);
+  assert.deepEqual(nextAction(after, { now: Date.parse(NOW) }).action, readyAction);
 });
 
 for (const status of ['ready', 'abandoned', 'merged']) {
@@ -391,4 +406,345 @@ test('shared closure helper exposes literal order-aware proof defects', () => {
   assert.ok(proof.missing.includes('unsettled-episodes'));
   assert.ok(proof.missing.includes('unresolved-rejection'));
   assert.ok(proof.missing.includes('non-converged-maker'));
+});
+
+function closeWithSibling() {
+  const f = seedReviewed();
+  const sibling = newWorkstream(f.root, f.runId, {
+    title: 'sibling', branch: 'feature/sibling',
+    worktree: '.claude/worktrees/sibling', fence: f.f,
+  }).id;
+  const closed = runCli(f.root, f.runId, terminalArgs(f.ws, 'ready'));
+  assert.equal(closed.status, 0, closed.stdout + closed.stderr);
+  const state = readState(f.root, f.runId).data;
+  const boundary = state.session_chain.sessions
+    .find(session => session.run_id === f.runId).scope.terminal_event;
+  return { ...f, sibling, boundary };
+}
+
+test('public next-action renders one exact closed boundary while the pure action retains its object identity', () => {
+  const f = closeWithSibling();
+  const pure = nextAction(readState(f.root, f.runId).data, { now: Date.parse(NOW) });
+  assert.deepEqual(pure.action, {
+    type: 'handoff', reason: 'workstream-terminal', boundary_event: f.boundary,
+  });
+  assert.equal(typeof pure.action.boundary_event, 'object');
+  assert.deepEqual(pure.gate.unconsumed_milestones, []);
+
+  const cli = runReadCli(f.root, f.runId, ['next-action', '--now', NOW]);
+  assert.equal(cli.status, 0, cli.stdout + cli.stderr);
+  const rendered = JSON.parse(cli.stdout);
+  assert.equal(rendered.action.boundary_event, `${f.boundary.seq}:${f.boundary.checksum}`);
+});
+
+test('public boundary handoff journals four artifacts, exact topology, one event, and no structured milestone cursor', () => {
+  const f = closeWithSibling();
+  const siblingBoundary = { seq: f.boundary.seq + 100, checksum: 'b'.repeat(64) };
+  const before = readState(f.root, f.runId).data;
+  before.workstreams.find(ws => ws.id === f.sibling).terminal_events = [siblingBoundary];
+  writeState(f.root, f.runId, before);
+
+  const emitted = emitHandoff(f.root, f.runId, {
+    boundaryEvent: f.boundary,
+    reason: 'workstream-terminal',
+    trigger: 'workstream-terminal',
+    now: Date.parse(NOW),
+    expect: { owner: f.runId, generation: 1 },
+    env: {},
+  });
+  assert.equal(emitted.ok, true);
+  const after = readState(f.root, f.runId).data;
+  const lease = after.session_chain.lease;
+  const parent = after.session_chain.sessions.find(session => session.run_id === f.runId);
+  const child = after.session_chain.sessions.find(session => session.run_id === emitted.childRunId);
+  assert.deepEqual(lease.handoff_boundary_event, f.boundary);
+  assert.equal(lease.handoff_project_binding_generation, after.project.binding_generation);
+  assert.equal(lease.handoff_project_root_digest, projectRootDigest(after.project.root));
+  assert.equal(lease.takeover_kind, 'boundary-handoff');
+  assert.equal(parent.superseded_by, emitted.childRunId);
+  assert.equal(child.parent_run_id, f.runId);
+  assert.deepEqual(child.parent_boundary_event, f.boundary);
+  assert.equal(child.project_binding_generation, after.project.binding_generation);
+  assert.equal(child.project_root_digest, projectRootDigest(after.project.root));
+  assert.equal(child.scope.workstream_id, null);
+  assert.equal(child.scope.terminal_event, null);
+  assert.deepEqual(after.session_chain.consumed_milestones, []);
+  assert.deepEqual(after.workstreams.find(ws => ws.id === f.sibling).terminal_events, [siblingBoundary]);
+
+  const dir = runDir(f.root, f.runId);
+  const artifactRels = [
+    emitted.handoffRel,
+    `handoffs/${emitted.csName}`,
+    'terminal/launch-command.txt',
+    'terminal/launch-command.meta.json',
+  ];
+  for (const rel of artifactRels) assert.equal(readFileSync(join(dir, ...rel.split('/'))).length > 0, true, rel);
+  const metaBytes = readFileSync(join(dir, 'terminal', 'launch-command.meta.json'));
+  const meta = JSON.parse(metaBytes);
+  assert.equal(meta.envelope.artifact_kind, 'launch-command-meta');
+  assert.equal(meta.payload.launch_command_sha256, contentHash(readFileSync(join(dir, 'terminal', 'launch-command.txt'))));
+  assert.deepEqual(meta.payload.boundary_event, f.boundary);
+  assert.equal(meta.payload.parent_run_id, f.runId);
+  assert.equal(meta.payload.child_run_id, emitted.childRunId);
+  const operationDir = join(dir, 'transactions', emitted.key);
+  const prepared = JSON.parse(readFileSync(join(operationDir, 'prepared.json'), 'utf8'));
+  assert.deepEqual(prepared.payload.manifest.targets.map(target => target.rel), artifactRels);
+  assert.equal(prepared.payload.manifest.eventLines.length, 2);
+
+  const retryBytes = durableBytes(f.root);
+  const retry = emitHandoff(f.root, f.runId, {
+    boundaryEvent: f.boundary,
+    reason: 'workstream-terminal',
+    trigger: 'workstream-terminal',
+    now: Date.parse(NOW),
+    expect: { owner: f.runId, generation: 1 },
+    env: {},
+  });
+  assert.equal(retry.ok, true);
+  assert.equal(retry.idempotent, true);
+  assert.deepEqual(durableBytes(f.root), retryBytes);
+
+  const acquired = acquireLease(f.root, f.runId, {
+    owner: emitted.childRunId, expectGeneration: 1, runtime: 'claude',
+    now: Date.parse(NOW) + 1,
+  });
+  assert.equal(acquired.ok, true);
+  const acquiredState = readState(f.root, f.runId).data;
+  assert.equal(acquiredState.session_chain.lease.takeover_kind, null);
+  assert.equal(acquiredState.session_chain.lease.handoff_boundary_event, undefined);
+
+  mkdirSync(join(f.root, '.claude/worktrees/sibling'), { recursive: true });
+  const nextMaker = newEpisode(f.root, f.runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation',
+    workstream: f.sibling, expectedArtifacts: ['.claude/worktrees/sibling/next.txt'],
+    fence: fence(emitted.childRunId, 2),
+  }).id;
+  recordEpisode(f.root, f.runId, nextMaker, {
+    status: 'in_progress', fence: fence(emitted.childRunId, 2),
+  });
+  assert.equal(readState(f.root, f.runId).data.session_chain.sessions
+    .find(session => session.run_id === emitted.childRunId).scope.workstream_id, f.sibling);
+});
+
+test('public boundary emit rejects missing, forged, sibling, safety-blocked, and finish-ready calls before bytes', () => {
+  {
+    const f = closeWithSibling();
+    const before = durableBytes(f.root);
+    const missing = runCli(f.root, f.runId, [
+      'handoff', 'emit', '--reason', 'workstream-terminal',
+    ]);
+    assert.equal(missing.status, 2, missing.stdout + missing.stderr);
+    assert.match(missing.stderr, /boundary-event/i);
+    assert.deepEqual(durableBytes(f.root), before);
+  }
+
+  for (const [label, boundary] of [
+    ['forged', { seq: 999, checksum: 'f'.repeat(64) }],
+    ['sibling', { seq: 1000, checksum: 'e'.repeat(64) }],
+  ]) {
+    const f = closeWithSibling();
+    if (label === 'sibling') {
+      const state = readState(f.root, f.runId).data;
+      state.workstreams.find(ws => ws.id === f.sibling).terminal_events = [boundary];
+      writeState(f.root, f.runId, state);
+    }
+    const before = durableBytes(f.root);
+    assert.throws(() => emitHandoff(f.root, f.runId, {
+      boundaryEvent: boundary, reason: 'workstream-terminal', trigger: 'workstream-terminal',
+      now: Date.parse(NOW), expect: { owner: f.runId, generation: 1 }, env: {},
+    }), /BOUNDARY_EVENT_MISMATCH/);
+    assert.deepEqual(durableBytes(f.root), before);
+  }
+
+  for (const gate of ['budget', 'breaker']) {
+    const f = closeWithSibling();
+    const state = readState(f.root, f.runId).data;
+    if (gate === 'budget') state.budget.spent = state.budget.total;
+    else state.circuit_breaker.tripped = true;
+    writeState(f.root, f.runId, state);
+    const before = durableBytes(f.root);
+    assert.throws(() => emitHandoff(f.root, f.runId, {
+      boundaryEvent: f.boundary, reason: 'workstream-terminal', trigger: 'workstream-terminal',
+      now: Date.parse(NOW), expect: { owner: f.runId, generation: 1 }, env: {},
+    }), new RegExp(gate === 'budget' ? 'BUDGET_BLOCKED' : 'BREAKER_BLOCKED'));
+    assert.deepEqual(durableBytes(f.root), before);
+  }
+
+  {
+    const f = seedReviewed();
+    assert.equal(runCli(f.root, f.runId, terminalArgs(f.ws, 'ready')).status, 0);
+    const boundary = readState(f.root, f.runId).data.session_chain.sessions[0].scope.terminal_event;
+    const before = durableBytes(f.root);
+    assert.throws(() => emitHandoff(f.root, f.runId, {
+      boundaryEvent: boundary, reason: 'workstream-terminal', trigger: 'workstream-terminal',
+      now: Date.parse(NOW), expect: { owner: f.runId, generation: 1 }, env: {},
+    }), /FINISH_REQUIRED/);
+    assert.deepEqual(durableBytes(f.root), before);
+  }
+});
+
+test('boundary publication rechecks budget, breaker, finish, scope, and history after reservation', () => {
+  for (const [label, boundaryName, mutate, error] of [
+    ['budget', 'reserved', state => { state.budget.spent = state.budget.total; }, /BUDGET_BLOCKED/],
+    ['breaker', 'reserved', state => { state.circuit_breaker.tripped = true; }, /BREAKER_BLOCKED/],
+    ['finish', 'artifacts-generated', state => {
+      const sibling = state.workstreams.find(ws => ws.status === 'planned');
+      sibling.status = 'abandoned';
+      sibling.review_points_done = ['implementation'];
+      state.active_workstreams = [];
+    }, /FINISH_REQUIRED/],
+    ['scope', 'artifacts-generated', state => {
+      state.session_chain.sessions[0].scope.terminal_event = {
+        seq: 999, checksum: 'd'.repeat(64),
+      };
+    }, /BOUNDARY_EVENT_MISMATCH/],
+    ['history', 'artifacts-generated', state => {
+      state.workstreams.find(ws => ws.id === state.session_chain.sessions[0].scope.workstream_id)
+        .terminal_events = [];
+    }, /BOUNDARY_EVENT_MISMATCH/],
+  ]) {
+    const f = closeWithSibling();
+    assert.throws(() => emitHandoff(f.root, f.runId, {
+      boundaryEvent: f.boundary,
+      reason: 'workstream-terminal',
+      trigger: 'workstream-terminal',
+      now: Date.parse(NOW),
+      expect: { owner: f.runId, generation: 1 },
+      env: {},
+      onBoundary(name) {
+        if (name !== boundaryName) return;
+        const state = readState(f.root, f.runId).data;
+        mutate(state);
+        writeState(f.root, f.runId, state);
+      },
+    }), error, label);
+    const state = readState(f.root, f.runId).data;
+    assert.equal(state.session_chain.lease.handoff_phase, 'idle', label);
+    assert.equal(state.session_chain.lease.handoff_child_run_id, null, label);
+    assert.equal(state.session_chain.sessions.length, 1, label);
+  }
+});
+
+test('prepared boundary publication replays exactly once and rejects forged manifest topology', () => {
+  {
+    const f = closeWithSibling();
+    let faulted = false;
+    assert.throws(() => emitHandoff(f.root, f.runId, {
+      boundaryEvent: f.boundary,
+      reason: 'workstream-terminal',
+      trigger: 'workstream-terminal',
+      now: Date.parse(NOW),
+      expect: { owner: f.runId, generation: 1 },
+      env: {},
+      publicationFaultAt(label) {
+        if (!faulted && label === 'artifact:0:target-done') {
+          faulted = true;
+          throw new Error('prepared-boundary-fault');
+        }
+      },
+    }), /TRANSACTION_PENDING/);
+    const retry = emitHandoff(f.root, f.runId, {
+      boundaryEvent: f.boundary,
+      reason: 'workstream-terminal',
+      trigger: 'workstream-terminal',
+      now: Date.parse(NOW),
+      expect: { owner: f.runId, generation: 1 },
+      env: {},
+    });
+    assert.equal(retry.idempotent, true);
+    const log = readFileSync(join(runDir(f.root, f.runId), 'event-log.jsonl'), 'utf8')
+      .split('\n').filter(Boolean).map(line => JSON.parse(line));
+    assert.equal(log.filter(event => event.type === 'handoff-emitted').length, 1);
+  }
+
+  {
+    const f = closeWithSibling();
+    let faulted = false;
+    assert.throws(() => emitHandoff(f.root, f.runId, {
+      boundaryEvent: f.boundary,
+      reason: 'workstream-terminal',
+      trigger: 'workstream-terminal',
+      now: Date.parse(NOW),
+      expect: { owner: f.runId, generation: 1 },
+      env: {},
+      publicationFaultAt(label) {
+        if (!faulted && label === 'artifact:0:target-done') {
+          faulted = true;
+          throw new Error('prepared-boundary-fault');
+        }
+      },
+    }), /TRANSACTION_PENDING/);
+    const state = readState(f.root, f.runId).data;
+    const preparedPath = join(
+      runDir(f.root, f.runId),
+      'transactions',
+      state.session_chain.lease.handoff_idempotency_key,
+      'prepared.json',
+    );
+    const prepared = JSON.parse(readFileSync(preparedPath, 'utf8'));
+    prepared.payload.manifest.topology.boundary_event = {
+      seq: f.boundary.seq + 1,
+      checksum: 'f'.repeat(64),
+    };
+    writeFileSync(preparedPath, JSON.stringify(prepared));
+    assert.throws(
+      () => captureReconciledRunSnapshot(f.root, f.runId),
+      /TRANSACTION_RECONCILIATION_REQUIRED: boundary publication/,
+    );
+  }
+});
+
+test('respawn refuses forged boundary topology before claim or external spawn', () => {
+  const f = closeWithSibling();
+  const emitted = emitHandoff(f.root, f.runId, {
+    boundaryEvent: f.boundary,
+    reason: 'workstream-terminal',
+    trigger: 'workstream-terminal',
+    now: Date.parse(NOW),
+    expect: { owner: f.runId, generation: 1 },
+    env: {},
+  });
+  appendAnchored(f.root, f.runId, {
+    type: 'test-boundary-forgery',
+    data: {},
+    now: Date.parse(NOW) + 1,
+  }, state => {
+    state.session_chain.sessions.find(session => session.run_id === emitted.childRunId)
+      .parent_boundary_event = { seq: f.boundary.seq + 1, checksum: 'e'.repeat(64) };
+  });
+  let spawned = 0;
+  const result = respawn(f.root, f.runId, {
+    childRunId: emitted.childRunId,
+    key: emitted.key,
+    handoffRel: emitted.handoffRel,
+    headless: true,
+    now: Date.parse(NOW) + 1,
+    spawnFn: () => { spawned += 1; return { ok: true }; },
+    expect: { owner: f.runId, generation: 1 },
+    env: {},
+  });
+  assert.equal(result.outcome, 'boundary-invalid');
+  assert.equal(spawned, 0);
+  assert.equal(readState(f.root, f.runId).data.session_chain.lease.handoff_phase, 'emitted');
+});
+
+test('resume-command trusts the journaled launch text only with exact M3 boundary topology', () => {
+  const f = closeWithSibling();
+  const emitted = emitHandoff(f.root, f.runId, {
+    boundaryEvent: f.boundary,
+    reason: 'workstream-terminal',
+    trigger: 'workstream-terminal',
+    now: Date.parse(NOW),
+    expect: { owner: f.runId, generation: 1 },
+    env: {},
+  });
+  const launch = readFileSync(
+    join(runDir(f.root, f.runId), 'terminal', 'launch-command.txt'),
+    'utf8',
+  ).trimEnd();
+  const result = runReadCli(f.root, f.runId, ['resume-command']);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(result.stdout.includes('Launcher guidance (from launch-command.txt):'));
+  assert.ok(result.stdout.includes(launch));
+  assert.ok(result.stdout.includes(`child_run_id=${emitted.childRunId}`));
 });

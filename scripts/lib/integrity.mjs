@@ -288,6 +288,109 @@ function stableArtifactPredecessor(rootDir, rel) {
   };
 }
 
+function exactBoundaryIdentity(value) {
+  return value != null
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && JSON.stringify(Object.keys(value).sort()) === JSON.stringify(['checksum', 'seq'])
+    && Number.isSafeInteger(value.seq)
+    && value.seq > 0
+    && /^[0-9a-f]{64}$/.test(value.checksum || '');
+}
+
+function sameBoundaryIdentity(left, right) {
+  return exactBoundaryIdentity(left)
+    && exactBoundaryIdentity(right)
+    && left.seq === right.seq
+    && left.checksum === right.checksum;
+}
+
+function validateBoundaryPublication(prepared, candidate) {
+  const manifest = prepared.manifest;
+  if (manifest.kind !== 'workstream-boundary-handoff') return;
+  const topology = manifest.topology;
+  const topologyKeys = [
+    'boundary_event', 'child_run_id', 'handoff_rel', 'parent_run_id',
+    'phase', 'project_binding_generation', 'project_root_digest',
+  ];
+  if (!topology || typeof topology !== 'object' || Array.isArray(topology)
+    || JSON.stringify(Object.keys(topology).sort()) !== JSON.stringify(topologyKeys)
+    || topology.parent_run_id !== manifest.expect.owner
+    || typeof topology.child_run_id !== 'string' || topology.child_run_id.length === 0
+    || topology.phase !== 'emitted'
+    || topology.project_binding_generation !== candidate.project?.binding_generation
+    || topology.project_root_digest !== projectRootDigest(candidate.project?.root)
+    || !sameBoundaryIdentity(topology.boundary_event, topology.boundary_event)) {
+    throw transactionError('boundary publication topology');
+  }
+  const lease = candidate.session_chain?.lease || {};
+  const child = (candidate.session_chain?.sessions || [])
+    .find(session => session.run_id === topology.child_run_id);
+  const parent = (candidate.session_chain?.sessions || [])
+    .find(session => session.run_id === topology.parent_run_id);
+  const workstream = parent && (candidate.workstreams || [])
+    .find(item => item.id === parent.scope?.workstream_id);
+  if (lease.takeover_kind !== 'boundary-handoff'
+    || lease.handoff_phase !== 'emitted'
+    || lease.handoff_idempotency_key !== manifest.operationId
+    || lease.handoff_child_run_id !== topology.child_run_id
+    || !sameBoundaryIdentity(lease.handoff_boundary_event, topology.boundary_event)
+    || lease.handoff_project_binding_generation !== topology.project_binding_generation
+    || lease.handoff_project_root_digest !== topology.project_root_digest
+    || !child
+    || child.parent_run_id !== topology.parent_run_id
+    || child.handoff_rel !== topology.handoff_rel
+    || child.project_binding_generation !== topology.project_binding_generation
+    || child.project_root_digest !== topology.project_root_digest
+    || !sameBoundaryIdentity(child.parent_boundary_event, topology.boundary_event)
+    || child.scope?.kind !== 'workstream'
+    || child.scope.workstream_id !== null
+    || child.scope.terminal_event !== null
+    || !parent
+    || parent.superseded_by !== topology.child_run_id
+    || parent.scope?.kind !== 'workstream'
+    || parent.scope.closed_at == null
+    || parent.scope.superseded_at == null
+    || !sameBoundaryIdentity(parent.scope.terminal_event, topology.boundary_event)
+    || !workstream
+    || !(workstream.terminal_events || [])
+      .some(event => sameBoundaryIdentity(event, topology.boundary_event))) {
+    throw transactionError('boundary publication candidate topology');
+  }
+  const expectedTargets = [
+    topology.handoff_rel,
+    `handoffs/${topology.child_run_id}-compaction-state.json`,
+    'terminal/launch-command.txt',
+    'terminal/launch-command.meta.json',
+  ];
+  if (manifest.targets.length !== expectedTargets.length
+    || manifest.targets.some((target, index) => target.rel !== expectedTargets[index])) {
+    throw transactionError('boundary publication targets');
+  }
+  let launchBytes;
+  let meta;
+  try {
+    launchBytes = prepared.readStage(manifest.targets[2].stage_index);
+    meta = JSON.parse(prepared.readStage(manifest.targets[3].stage_index).toString('utf8'));
+  } catch {
+    throw transactionError('boundary publication metadata');
+  }
+  const payload = meta?.payload;
+  if (meta?.envelope?.producer !== 'deep-loop'
+    || meta.envelope.artifact_kind !== 'launch-command-meta'
+    || meta.envelope.schema?.name !== 'launch-command-meta'
+    || payload?.launch_command_sha256 !== contentHash(launchBytes)
+    || payload.parent_run_id !== topology.parent_run_id
+    || payload.child_run_id !== topology.child_run_id
+    || payload.handoff_phase !== topology.phase
+    || payload.handoff_rel !== topology.handoff_rel
+    || payload.project_binding_generation !== topology.project_binding_generation
+    || payload.project_root_digest !== topology.project_root_digest
+    || !sameBoundaryIdentity(payload.boundary_event, topology.boundary_event)) {
+    throw transactionError('boundary publication metadata');
+  }
+}
+
 function validatePreparedAuthority(root, runId, prepared, candidate, candidateBytes, candidateHashBytes, {
   rootRecovery = false,
 } = {}) {
@@ -306,6 +409,7 @@ function validatePreparedAuthority(root, runId, prepared, candidate, candidateBy
   if (!lease || lease.owner_run_id !== manifest.expect.owner || lease.generation !== manifest.expect.generation) {
     throw transactionError('prepared fence authority');
   }
+  validateBoundaryPublication(prepared, candidate);
 }
 
 function classifyPreparedRun(root, runId, guard, prepared, { rootRecovery = false } = {}) {

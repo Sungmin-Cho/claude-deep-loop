@@ -36,6 +36,7 @@ import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { removeProcessUsageReceipt } from '../scripts/lib/preflight-receipt-journal.mjs';
 import { respawn } from '../scripts/lib/respawn.mjs';
 import { canonicalRealpath } from './helpers/fs-fixtures.mjs';
+import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DEEP_LOOP_ROOT = canonicalRealpath(join(HERE, '..'));
@@ -165,6 +166,7 @@ function createHostHarness({ makerMode = 'success', model = 'gpt-5.4', effort = 
   seeded.autonomy.spawn_style = 'headless';
   seeded.autonomy.runtime_executable_approval = executable;
   writeState(root, runId, seeded);
+  migrateAuthenticLegacyTransport(root, runId);
   const handoff = emitHandoff(root, runId, {
     trigger: 'task-2.8-hostile-maker',
     headless: true,

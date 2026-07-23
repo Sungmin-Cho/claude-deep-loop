@@ -3,11 +3,90 @@ import { join } from 'node:path';
 import { contentHash, ulid } from './envelope.mjs';
 import { runtimeFence } from './runtime.mjs';
 import { runDir, writeState, withReconciledMutationLock } from './state.mjs';
+import { nextAction } from './next-action.mjs';
+import { projectRootDigest } from './project-root.mjs';
 
 const PHASE_ORDER = { idle: 0, reserved: 1, emitted: 2, spawned: 3, acquired: 4 };
 
 export function deriveIdempotencyKey(ownerRunId, ownerGeneration, triggerReason) {
   return contentHash(`${ownerRunId}|${ownerGeneration}|${triggerReason}`).slice(0, 16);
+}
+
+export function sameBoundaryEvent(left, right) {
+  return left != null
+    && typeof left === 'object'
+    && !Array.isArray(left)
+    && JSON.stringify(Object.keys(left).sort()) === JSON.stringify(['checksum', 'seq'])
+    && right != null
+    && typeof right === 'object'
+    && !Array.isArray(right)
+    && JSON.stringify(Object.keys(right).sort()) === JSON.stringify(['checksum', 'seq'])
+    && Number.isSafeInteger(left.seq)
+    && left.seq > 0
+    && left.seq === right?.seq
+    && /^[0-9a-f]{64}$/.test(left.checksum || '')
+    && left.checksum === right?.checksum;
+}
+
+export function boundaryHandoffTopologyError(data) {
+  const lease = data?.session_chain?.lease || {};
+  if (lease.takeover_kind !== 'boundary-handoff') return null;
+  const child = (data.session_chain?.sessions || [])
+    .find(session => session.run_id === lease.handoff_child_run_id);
+  const parent = child && (data.session_chain.sessions || [])
+    .find(session => session.run_id === child.parent_run_id);
+  const rootDigest = projectRootDigest(data.project?.root);
+  if (!child
+    || !parent
+    || parent.superseded_by !== child.run_id
+    || parent.scope?.kind !== 'workstream'
+    || parent.scope.closed_at == null
+    || parent.scope.superseded_at == null
+    || !sameBoundaryEvent(parent.scope.terminal_event, lease.handoff_boundary_event)
+    || child.parent_run_id !== parent.run_id
+    || !sameBoundaryEvent(child.parent_boundary_event, lease.handoff_boundary_event)
+    || child.project_binding_generation !== data.project?.binding_generation
+    || child.project_root_digest !== rootDigest
+    || lease.handoff_project_binding_generation !== data.project?.binding_generation
+    || lease.handoff_project_root_digest !== rootDigest
+    || child.scope?.kind !== 'workstream'
+    || child.scope.workstream_id !== null
+    || child.scope.terminal_event !== null
+    || child.scope.closed_at !== null
+    || child.scope.superseded_at !== null) {
+    return 'boundary-topology-invalid';
+  }
+  return null;
+}
+
+function boundaryReservationError(data, boundaryEvent, now) {
+  if (!sameBoundaryEvent(boundaryEvent, boundaryEvent)) return 'BOUNDARY_EVENT_INVALID';
+  const lease = data.session_chain?.lease || {};
+  const owner = (data.session_chain?.sessions || [])
+    .find(session => session.run_id === lease.owner_run_id);
+  const scope = owner?.scope;
+  if (scope?.kind !== 'workstream'
+    || scope.closed_at == null
+    || scope.superseded_at != null
+    || !sameBoundaryEvent(scope.terminal_event, boundaryEvent)) {
+    return 'BOUNDARY_EVENT_MISMATCH';
+  }
+  const workstream = (data.workstreams || [])
+    .find(item => item.id === scope.workstream_id);
+  if (!workstream || !(workstream.terminal_events || [])
+    .some(event => sameBoundaryEvent(event, boundaryEvent))) {
+    return 'BOUNDARY_EVENT_MISMATCH';
+  }
+  const action = nextAction(data, { now }).action;
+  if (action?.type === 'await_human' && action.reason === 'budget') return 'BUDGET_BLOCKED';
+  if (action?.type === 'await_human' && action.reason === 'breaker') return 'BREAKER_BLOCKED';
+  if (action?.type === 'finish') return 'FINISH_REQUIRED';
+  if (action?.type !== 'handoff'
+    || action.reason !== 'workstream-terminal'
+    || !sameBoundaryEvent(action.boundary_event, boundaryEvent)) {
+    return 'BOUNDARY_EVENT_MISMATCH';
+  }
+  return null;
 }
 
 // 펜싱 가드 — 읽기를 제외한 모든 커널 mutating 경로가 진입 전에 호출 (spec §9.1).
@@ -67,6 +146,8 @@ export function acquireLease(root, runId, { owner, expectGeneration, runtime, no
     if (data.status === 'stopped' || data.status === 'completed') {
       return { ok: false, generation: lease.generation, reason: 'run-terminal' };
     }
+    const topologyError = boundaryHandoffTopologyError(data);
+    if (topologyError) return { ok: false, generation: lease.generation, reason: topologyError };
     // takeover 가능: released(정상 인수), releasing+expired(부모 크래시 복구), releasing+예약된child(handshake). active 절대 탈취 안 됨.
     const expired = lease.expires_at && now > Date.parse(lease.expires_at);
     const takeable = lease.state === 'released' || (lease.state === 'releasing' && expired) || (lease.state === 'releasing' && owner === lease.handoff_child_run_id);
@@ -78,11 +159,17 @@ export function acquireLease(root, runId, { owner, expectGeneration, runtime, no
     }
     const waspaused = data.status === 'paused';
     const iso = new Date(now).toISOString();
+    const {
+      handoff_boundary_event: _boundaryEvent,
+      handoff_project_binding_generation: _bindingGeneration,
+      handoff_project_root_digest: _rootDigest,
+      ...leaseAfterBoundary
+    } = lease;
     data.session_chain.lease = {
-      ...lease, owner_run_id: owner, generation: expectGeneration + 1,
+      ...leaseAfterBoundary, owner_run_id: owner, generation: expectGeneration + 1,
       acquired_at: iso, expires_at: null,   // active 소유자는 deadline 없음 → 무기한 write (renewal 불필요)
       state: 'active', handoff_phase: 'acquired', handoff_idempotency_key: null, handoff_child_run_id: null,
-      handoff_trigger: null,
+      handoff_trigger: null, takeover_kind: null,
     };
     // Unpause (same transaction): covers BOTH preserve-resume (releasing+reserved-child) AND
     // recover-resume (released, no reserved child). This is the acquire-resume path that is
@@ -119,7 +206,7 @@ export function releaseLease(root, runId, { owner, generation }) {
 // 멱등키 선예약 CAS — phase∈{idle,acquired}에서만 신규 예약. 이중 트리거를 phase로 봉인 (spec §9.1).
 // RUN_PAUSED: paused 상태에서는 예약 금지 — emitHandoff 도 차단 (lease intent='lease' 는 leaseCheck 예외지만
 // reserveHandoff 는 leaseCheck 를 거치지 않으므로 여기서 명시 차단).
-export function reserveHandoff(root, runId, { trigger, now = Date.now(), expect } = {}) {
+export function reserveHandoff(root, runId, { trigger, boundaryEvent, now = Date.now(), expect } = {}) {
   return withReconciledMutationLock(root, runId, (_guard, { data }) => {
     // v1.6 (spec §2.3-1): terminal run에는 새 handoff 예약 금지 — RUN_PAUSED 명시 차단과 대칭.
     if (data.status === 'completed' || data.status === 'stopped') {
@@ -132,7 +219,23 @@ export function reserveHandoff(root, runId, { trigger, now = Date.now(), expect 
     if (expect && (lease.owner_run_id !== expect.owner || lease.generation !== expect.generation)) {
       return { ok: false, reserved: false, reason: 'fenced', key: lease.handoff_idempotency_key, childRunId: lease.handoff_child_run_id };
     }
-    const key = deriveIdempotencyKey(lease.owner_run_id, lease.generation, trigger);
+    const boundaryPolicy = data.autonomy?.continuation_policy === 'workstream-session';
+    const boundaryError = boundaryPolicy ? boundaryReservationError(data, boundaryEvent, now) : null;
+    if (boundaryError) {
+      return { ok: false, reserved: false, reason: boundaryError, key: null, childRunId: null };
+    }
+    const rootDigest = projectRootDigest(data.project?.root);
+    const key = boundaryPolicy
+      ? contentHash(JSON.stringify([
+        'deep-loop-boundary-handoff-v1',
+        lease.owner_run_id,
+        lease.generation,
+        data.project?.binding_generation,
+        rootDigest,
+        boundaryEvent.seq,
+        boundaryEvent.checksum,
+      ]))
+      : deriveIdempotencyKey(lease.owner_run_id, lease.generation, trigger);
     if (lease.handoff_phase === 'idle' || lease.handoff_phase === 'acquired') {
       // Codex r3 🔴1: childRunId 를 **예약 시점에 결정·영속**한다. 동시/재진입 emit 이 같은 child 를 보게 되어
       // (reserved:false fall-through 가 fresh child 를 만들지 않음) 중복 child 를 봉인한다.
@@ -140,11 +243,24 @@ export function reserveHandoff(root, runId, { trigger, now = Date.now(), expect 
       data.session_chain.lease = {
         ...lease, handoff_phase: 'reserved', handoff_idempotency_key: key,
         handoff_child_run_id: childRunId, handoff_trigger: trigger,
+        ...(boundaryPolicy ? {
+          handoff_boundary_event: { ...boundaryEvent },
+          handoff_project_binding_generation: data.project.binding_generation,
+          handoff_project_root_digest: rootDigest,
+        } : {}),
       };
       writeState(root, runId, data);
       return { ok: true, reserved: true, key, childRunId, reason: 'reserved' };
     }
-    if (lease.handoff_idempotency_key === key) return { ok: true, reserved: false, key, childRunId: lease.handoff_child_run_id, reason: 'already-reserved-same-trigger' };
+    if (lease.handoff_idempotency_key === key) {
+      if (boundaryPolicy
+        && (!sameBoundaryEvent(lease.handoff_boundary_event, boundaryEvent)
+          || lease.handoff_project_binding_generation !== data.project.binding_generation
+          || lease.handoff_project_root_digest !== rootDigest)) {
+        return { ok: false, reserved: false, key, childRunId: lease.handoff_child_run_id, reason: 'BOUNDARY_EVENT_MISMATCH' };
+      }
+      return { ok: true, reserved: false, key, childRunId: lease.handoff_child_run_id, reason: 'already-reserved-same-trigger' };
+    }
     return { ok: false, reserved: false, key: lease.handoff_idempotency_key, childRunId: lease.handoff_child_run_id, reason: 'handoff-in-flight' };
   });
 }
@@ -159,6 +275,8 @@ export function advanceHandoffPhase(root, runId, { key, toPhase, now = Date.now(
       return { ok: false, reason: 'fenced' };
     }
     if (lease.handoff_idempotency_key !== key) return { ok: false, reason: 'key-mismatch' };
+    const topologyError = boundaryHandoffTopologyError(data);
+    if (topologyError) return { ok: false, reason: topologyError };
     const cur = PHASE_ORDER[lease.handoff_phase];
     const next = PHASE_ORDER[toPhase];
     if (next === undefined) return { ok: false, reason: `unknown-phase ${toPhase}` };
@@ -193,8 +311,11 @@ export function rollbackHandoff(root, runId, { owner, generation }) {
     data.session_chain.lease = terminal
       // v1.6 terminal-aware (spec §2.3, 3차 r1): active 복원은 terminal run을 "소유된 모양"으로 만들어
       // 미래 우회-writer 실수 표면을 넓힌다 — released로 불활성 안착 (재획득은 acquireLease가 차단).
-      ? { ...lease, state: 'released', handoff_phase: 'idle', handoff_idempotency_key: null, handoff_child_run_id: null, handoff_trigger: null, expires_at: null }
-      : { ...lease, state: 'active', handoff_phase: 'idle', handoff_idempotency_key: null, handoff_child_run_id: null, handoff_trigger: null, expires_at: null };
+      ? { ...lease, state: 'released', handoff_phase: 'idle', handoff_idempotency_key: null, handoff_child_run_id: null, handoff_trigger: null, expires_at: null, takeover_kind: null }
+      : { ...lease, state: 'active', handoff_phase: 'idle', handoff_idempotency_key: null, handoff_child_run_id: null, handoff_trigger: null, expires_at: null, takeover_kind: null };
+    delete data.session_chain.lease.handoff_boundary_event;
+    delete data.session_chain.lease.handoff_project_binding_generation;
+    delete data.session_chain.lease.handoff_project_root_digest;
     writeState(root, runId, data);
     return { ok: true, reason: 'rolled-back' };
   });
@@ -239,7 +360,11 @@ export function rollbackReservedEmit(root, runId, { key, childRunId, expect, sta
       handoff_child_run_id: null,
       handoff_trigger: null,
       expires_at: null,
+      takeover_kind: null,
     };
+    delete data.session_chain.lease.handoff_boundary_event;
+    delete data.session_chain.lease.handoff_project_binding_generation;
+    delete data.session_chain.lease.handoff_project_root_digest;
     writeState(root, runId, data);
     return { ok: true, rolledBack: true };
   });

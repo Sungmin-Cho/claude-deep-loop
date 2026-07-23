@@ -54,6 +54,7 @@ import {
   sameCheckerIdentity,
 } from './codex-checker.mjs';
 import { emitHandoff } from './handoff.mjs';
+import { nextAction } from './next-action.mjs';
 import { STREAM_LIMITS } from './usage-parser.mjs';
 import {
   listProcessUsageReceipts,
@@ -901,20 +902,32 @@ function driveIndependentChecker({
   let continuationFailure = null;
   const afterImport = captureFreshLoop(projectRoot, runId);
   if (afterImport.status === 'running') {
-    try {
-      const handoff = emitHandoffFn(projectRoot, runId, {
-        reason: 'independent-review-complete',
-        trigger: `independent-review-complete:${pending.id}:${claimed.attemptId}`,
-        headless: true,
-        resumePolicy: 'headless',
-        expect: { owner: parentOwner, generation: parentGeneration },
-        now: actionNow,
-        env,
-      });
-      continuation = handoff?.ok === true;
-      if (!continuation) continuationFailure = handoff?.reason || 'handoff-not-emitted';
-    } catch (error) {
-      continuationFailure = String(error?.message || error || 'handoff-error').slice(0, 128);
+    const boundaryPolicy = afterImport.autonomy?.continuation_policy === 'workstream-session';
+    const routed = boundaryPolicy
+      ? nextAction(afterImport, { now: actionNow, unattended: true }).action
+      : null;
+    // Workstream sessions may rotate only at an exact closed boundary. An
+    // independent checker completing inside an open affinity continues in the
+    // same session; it must not synthesize a transport milestone.
+    if (!boundaryPolicy || routed?.type === 'handoff') {
+      try {
+        const handoff = emitHandoffFn(projectRoot, runId, {
+          reason: boundaryPolicy ? routed.reason : 'independent-review-complete',
+          trigger: boundaryPolicy
+            ? routed.reason
+            : `independent-review-complete:${pending.id}:${claimed.attemptId}`,
+          ...(boundaryPolicy ? { boundaryEvent: routed.boundary_event } : {}),
+          headless: true,
+          resumePolicy: 'headless',
+          expect: { owner: parentOwner, generation: parentGeneration },
+          now: actionNow,
+          env,
+        });
+        continuation = handoff?.ok === true;
+        if (!continuation) continuationFailure = handoff?.reason || 'handoff-not-emitted';
+      } catch (error) {
+        continuationFailure = String(error?.message || error || 'handoff-error').slice(0, 128);
+      }
     }
     if (continuationFailure) {
       const pauseOutcome = pauseWithOriginalFence(projectRoot, runId, {

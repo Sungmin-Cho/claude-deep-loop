@@ -20,6 +20,8 @@ import { driveHeadlessRun } from '../scripts/lib/headless-host.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
 import { recordCost } from '../scripts/lib/budget.mjs';
 import { canonicalRealpath } from './helpers/fs-fixtures.mjs';
+import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
+import { recordWorkstreamTerminal } from '../scripts/lib/workspace.mjs';
 
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const FIXED_NOW = '2026-07-11T01:00:00.000Z';
@@ -30,13 +32,14 @@ function events(root, runId) {
   return readFileSync(path, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line));
 }
 
-function seed({ reviewer = 'deep-review' } = {}) {
+function seed({ reviewer = 'deep-review', newPolicy = false } = {}) {
   const root = canonicalRealpath(mkdtempSync(join(tmpdir(), 'dl-checker-int-')));
   const detected = reviewer === 'deep-review' ? { 'deep-review': true } : { 'deep-review': false };
   const { runId } = initRun(root, {
     runtime: 'codex', goal: 'g', detected, now: new Date('2026-07-11T00:00:00Z'),
     env: {}, platform: 'linux', run: () => ({ code: 1 }),
   });
+  if (!newPolicy) migrateAuthenticLegacyTransport(root, runId);
   const fence = { owner: runId, generation: 1, intent: 'business' };
   const worktree = '.claude/worktrees/w';
   const artifact = `${worktree}/artifact.txt`;
@@ -306,6 +309,76 @@ test('headless host drives an unclaimed checker before no-pending-handoff and em
   assert.equal(handoffs.length, 1);
   const explicitCosts = events(f.root, f.runId).filter(event => event.type === 'cost' && event.data.reported_turns === 1);
   assert.equal(explicitCosts.length, 1);
+});
+
+test('workstream-session headless checker preserves open affinity and emits only an exact closed boundary', () => {
+  {
+    const f = seed({ newPolicy: true });
+    const deps = hostDeps(f);
+    let emitCalls = 0;
+    const result = driveHeadlessRun({
+      root: f.root,
+      runId: f.runId,
+      now: Date.parse(FIXED_NOW),
+      ...deps,
+      emitHandoffFn: () => { emitCalls += 1; throw new Error('open affinity must not rotate'); },
+    });
+    assert.equal(result.action, 'checker-complete', JSON.stringify(result));
+    assert.equal(result.continuation, false);
+    assert.equal(emitCalls, 0);
+    const state = readState(f.root, f.runId).data;
+    assert.equal(state.session_chain.lease.handoff_phase, 'idle');
+    assert.equal(state.session_chain.sessions[0].scope.workstream_id, f.ws);
+  }
+
+  {
+    const f = seed({ newPolicy: true });
+    newWorkstream(f.root, f.runId, {
+      title: 'sibling',
+      branch: 'sibling',
+      worktree: '.claude/worktrees/sibling',
+      fence: f.fence,
+    });
+    const deps = hostDeps(f);
+    let emittedOptions = null;
+    let terminalError = null;
+    const baseImport = deps.checkerImportFn;
+    const result = driveHeadlessRun({
+      root: f.root,
+      runId: f.runId,
+      now: Date.parse(FIXED_NOW),
+      ...deps,
+      checkerImportFn(options, bytes) {
+        const imported = baseImport(options, bytes);
+        assert.equal(imported.ok, true);
+        try {
+          recordWorkstreamTerminal(f.root, f.runId, f.ws, {
+            status: 'abandoned',
+            proof: { reason: 'checker fixture closed' },
+            confirm: true,
+            fence: f.fence,
+            now: FIXED_NOW,
+          });
+        } catch (error) {
+          terminalError = error;
+          throw error;
+        }
+        return imported;
+      },
+      emitHandoffFn: (_root, _runId, options) => {
+        emittedOptions = options;
+        return { ok: true };
+      },
+    });
+    assert.equal(terminalError, null, String(terminalError?.message || terminalError));
+    assert.equal(result.action, 'checker-complete', JSON.stringify(result));
+    assert.equal(result.continuation, true);
+    const state = readState(f.root, f.runId).data;
+    const boundary = state.session_chain.sessions[0].scope.terminal_event;
+    assert.deepEqual(emittedOptions.boundaryEvent, boundary);
+    assert.equal(emittedOptions.reason, 'workstream-terminal');
+    assert.equal(emittedOptions.trigger, 'workstream-terminal');
+  }
 });
 
 test('checker samples an injectable clock again after preflight and blocks at a crossed wallclock boundary', () => {

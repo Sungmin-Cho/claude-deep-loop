@@ -14,6 +14,7 @@ import { respawn } from '../scripts/lib/respawn.mjs';
 import { buildLaunchCommand } from '../scripts/lib/runtime-descriptor.mjs';
 import { finishRun } from '../scripts/lib/finish.mjs';
 import { canonicalRealpath } from './helpers/fs-fixtures.mjs';
+import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
 
 const NOW0 = new Date('2026-07-11T00:00:00Z');
 const NOW1 = Date.parse('2026-07-11T00:01:00Z');
@@ -95,6 +96,7 @@ function seedCodexHandoff() {
     approved_at: '2026-07-11T00:00:00.000Z',
   };
   writeState(root, runId, data);
+  migrateAuthenticLegacyTransport(root, runId);
   const handoff = emitHandoff(root, runId, {
     trigger: 'milestone',
     headless: true,
@@ -115,6 +117,7 @@ function seedClaudeHandoff() {
   const { data } = readState(root, runId);
   data.autonomy.spawn_style = 'headless';
   writeState(root, runId, data);
+  migrateAuthenticLegacyTransport(root, runId);
   const handoff = emitHandoff(root, runId, {
     trigger: 'milestone',
     headless: true,

@@ -15,11 +15,13 @@ import { buildRuntimeResumeDescriptor } from '../scripts/lib/runtime-descriptor.
 import { newEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
 import { createDirectoryJunction } from './helpers/fs-fixtures.mjs';
 import { appendAnchored } from '../scripts/lib/integrity.mjs';
+import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
 
 // Inject deterministic env so detectTerminal never probes real cmux/osascript.
 function seed(runtime = 'claude') {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
   const { runId } = initRun(root, { runtime, goal: '인증 기능 구현', detected: { 'deep-work': true }, now: new Date('2026-06-24T00:00:00Z'), env: {}, platform: 'linux', run: () => ({ code: 1 }) });
+  migrateAuthenticLegacyTransport(root, runId);
   return { root, runId };
 }
 
@@ -432,8 +434,8 @@ test('emitHandoff writes md + compaction-state(M3) + launch-command, chains sess
   assert.equal(Object.hasOwn(child, 'handoff_path'), false);
   assert.equal(r.handoffPath, join(runDir(data.project.root, runId), child.handoff_rel));
   assert.deepEqual(child.scope, {
-    kind: 'workstream', workstream_id: null, bound_at_seq: null, terminal_event: null,
-    closed_at: null, superseded_at: null,
+    kind: 'legacy', workstream_id: null, bound_at_seq: null, terminal_event: null,
+    closed_at: null,
   });
   const md = readFileSync(r.handoffPath, 'utf8');
   assert.match(md, /이전 대화/);
@@ -720,6 +722,7 @@ test('handoff descriptor records canonical project root and explicit logical run
   mkdirSync(canonicalRoot);
   createDirectoryJunction(canonicalRoot, aliasRoot);
   const { runId } = initRun(aliasRoot, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z'), env: {}, platform: 'linux', run: () => ({ code: 1 }) });
+  migrateAuthenticLegacyTransport(aliasRoot, runId);
   const storedRoot = readState(aliasRoot, runId).data.project.root;
   const r = emitHandoff(aliasRoot, runId, { now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId), platform: POSIX_PLATFORM });
   assert.equal(r.ok, true);
@@ -742,6 +745,7 @@ test('tmux handoff threads its verified session and canonical spaced root from a
     runtime: 'claude', goal: 'g', now: new Date('2026-07-20T00:00:00Z'),
     env: {}, platform: 'linux', run: () => ({ code: 1 }),
   });
+  migrateAuthenticLegacyTransport(aliasRoot, runId);
   const storedRoot = readState(aliasRoot, runId).data.project.root;
   const tmux = launcherIdentity('tmux', '/opt/bin/tmux', {
     platform: 'linux', source: 'human-explicit', approved_by: 'human',

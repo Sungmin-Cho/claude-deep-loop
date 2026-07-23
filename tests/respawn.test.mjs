@@ -14,6 +14,7 @@ import { buildLaunchCommand, buildRuntimeResumeDescriptor } from '../scripts/lib
 import { sessionRuntime } from '../scripts/lib/runtime.mjs';
 import { revalidateTrustedLauncherExecutable } from '../scripts/lib/runtime-executable.mjs';
 import { createFileSymlinkOrSkip } from './helpers/fs-fixtures.mjs';
+import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
 
 const NOW0 = new Date('2026-06-24T00:00:00Z');
 const NOW1 = Date.parse('2026-06-24T01:00:00Z');
@@ -94,6 +95,7 @@ function respawn(root, runId, options = {}) {
 function seed(mutate, runtime = 'claude') {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
   const { runId } = initRun(root, { runtime, goal: 'g', now: NOW0, env: {}, platform: 'linux', run: noOpRun });
+  migrateAuthenticLegacyTransport(root, runId);
   if (mutate) { const { data } = readState(root, runId); mutate(data); writeState(root, runId, data); }
   return { root, runId };
 }

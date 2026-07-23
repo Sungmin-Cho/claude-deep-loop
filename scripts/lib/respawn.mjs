@@ -6,7 +6,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { appendAnchored } from './integrity.mjs';
 import { checkBudget, reconcileBudget } from './budget.mjs';
 import { checkBreaker } from './breaker.mjs';
-import { advanceHandoffPhase } from './lease.mjs';
+import { advanceHandoffPhase, boundaryHandoffTopologyError } from './lease.mjs';
 import { buildLaunchCommand } from './runtime-descriptor.mjs';
 import { defaultDesktopProbe } from './desktop-target.mjs';
 import { sessionRuntime } from './runtime.mjs';
@@ -181,8 +181,24 @@ export function rollbackAndPause(root, runId, { childRunId, parentOwner, generat
       const child = l.session_chain.sessions.find(s => s.run_id === childRunId);
       if (child) child.outcome = 'failed_launch';
       const parent = l.session_chain.sessions.find(s => s.superseded_by === childRunId);
-      if (parent) parent.superseded_by = null;
-      l.session_chain.lease = { ...l.session_chain.lease, state: 'active', handoff_phase: 'idle', handoff_idempotency_key: null, handoff_child_run_id: null, handoff_trigger: null, expires_at: null, resume_policy: null };
+      if (parent) {
+        parent.superseded_by = null;
+        if (parent.scope?.kind === 'workstream') parent.scope.superseded_at = null;
+      }
+      l.session_chain.lease = {
+        ...l.session_chain.lease,
+        state: 'active',
+        handoff_phase: 'idle',
+        handoff_idempotency_key: null,
+        handoff_child_run_id: null,
+        handoff_trigger: null,
+        expires_at: null,
+        resume_policy: null,
+        takeover_kind: null,
+      };
+      delete l.session_chain.lease.handoff_boundary_event;
+      delete l.session_chain.lease.handoff_project_binding_generation;
+      delete l.session_chain.lease.handoff_project_root_digest;
       l.status = 'paused';
       l.pause_reason = pauseReason;
     }, (l) => {
@@ -296,6 +312,10 @@ export function respawn(root, runId, {
   if (lease.handoff_idempotency_key !== key) return { ok: false, outcome: 'key-mismatch', reason: 'key-mismatch', childRunId };
   // Codex impl r8 🟡: bind the spawn to the RESERVED handoff child — a valid key must not spawn an arbitrary child.
   if (childRunId !== lease.handoff_child_run_id) return { ok: false, outcome: 'child-mismatch', reason: `childRunId ${childRunId} != reserved ${lease.handoff_child_run_id}`, childRunId };
+  const topologyError = boundaryHandoffTopologyError(loop);
+  if (topologyError) {
+    return { ok: false, outcome: 'boundary-invalid', reason: topologyError, childRunId };
+  }
   // Codex r5 finding A (HIGH): 'spawned' is the CAS-before-spawn CLAIM, NOT proof the child launched + took
   // over. A prior call may have crashed AFTER the CAS, before/during the external spawn → a blind
   // already-spawned return would strand the handoff with no autonomous recovery. So VERIFY child acquisition;
@@ -643,6 +663,8 @@ export function respawn(root, runId, {
       }
       // v1.6 (spec §2.3-5): terminal run에 respawn-spawned 이벤트 append 금지 (spawn↔기록 사이 TOCTOU).
       if (l.status === 'completed' || l.status === 'stopped') throw new Error('RUN_TERMINAL: respawn');
+      const boundaryError = boundaryHandoffTopologyError(l);
+      if (boundaryError) throw new Error(`RESPAWN_BOUNDARY_INVALID: ${boundaryError}`);
     });
   } catch (appendErr) {
     if (String(appendErr.message).startsWith('RUN_TERMINAL')) {
@@ -655,6 +677,9 @@ export function respawn(root, runId, {
         return { ok: true, outcome: 'spawned', reason: 'fast-child-acquired', childRunId };
       }
       return { ok: false, outcome: 'fenced', reason: 'lease-changed-after-spawn', childRunId };
+    }
+    if (String(appendErr.message).startsWith('RESPAWN_BOUNDARY_INVALID')) {
+      return { ok: false, outcome: 'boundary-invalid', reason: 'boundary-topology-invalid', childRunId };
     }
     throw appendErr;
   }

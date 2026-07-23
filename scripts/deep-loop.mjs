@@ -16,7 +16,7 @@ import {
   runDir,
   findRoot,
 } from './lib/state.mjs';
-import { leaseCheck, acquireLease, releaseLease } from './lib/lease.mjs';
+import { leaseCheck, acquireLease, releaseLease, sameBoundaryEvent } from './lib/lease.mjs';
 import { newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal } from './lib/workspace.mjs';
 import { newEpisode, recordEpisode, abandonEpisode } from './lib/episode.mjs';
 import { dispatchReview, importReviewOutcome, recordReviewOutcome } from './lib/review.mjs';
@@ -54,7 +54,7 @@ import {
 import { sessionRuntime } from './lib/runtime.mjs';
 import { canonicalProjectRoot, projectRootDigest } from './lib/project-root.mjs';
 import { buildRuntimeResumeDescriptor } from './lib/runtime-descriptor.mjs';
-import { contentHash } from './lib/envelope.mjs';
+import { contentHash, unwrap } from './lib/envelope.mjs';
 
 const DEEP_LOOP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -86,6 +86,18 @@ function parseBoundaryEventFlag(value) {
   const seq = Number(match[1]);
   if (!Number.isSafeInteger(seq)) return { ok: false, usage: false };
   return { ok: true, value: { seq, checksum: match[2] } };
+}
+
+function renderNextAction(result) {
+  const boundary = result?.action?.boundary_event;
+  if (!boundary) return result;
+  return {
+    ...result,
+    action: {
+      ...result.action,
+      boundary_event: `${boundary.seq}:${boundary.checksum}`,
+    },
+  };
 }
 
 // --now 관례(v1.5.0, spec §4): 미지정 → Date.now() 폴백. 지정 시 화이트리스트 — ① 순수 정수(epoch ms)
@@ -387,7 +399,7 @@ const handlers = {
     const f = parseFlags(a); const root = rootOf(f);
     const { data } = captureReconciledRunSnapshot(root, runIdOf(root, f));
     const unattended = !!f.unattended || resolveSpawnMode(data, { env: process.env }) === 'headless';
-    json(nextAction(data, { now: parseNow(f), unattended })); return 0;
+    json(renderNextAction(nextAction(data, { now: parseNow(f), unattended }))); return 0;
   },
   'resume-command': async (a) => {
     const f = parseFlags(a);
@@ -440,13 +452,31 @@ const handlers = {
       && Number.isSafeInteger(data.project?.binding_generation)) {
       try {
         const parsed = JSON.parse(launchMeta.bytes.toString('utf8'));
-        const meta = parsed?.payload && typeof parsed.payload === 'object' ? parsed.payload : parsed;
-        if (meta.launch_command_sha256 === contentHash(launchText.bytes)
+        const envelope = unwrap(parsed, {
+          producer: 'deep-loop',
+          artifact_kind: 'launch-command-meta',
+        });
+        const meta = envelope?.payload;
+        const parent = child && (data.session_chain?.sessions || [])
+          .find(session => session.run_id === child.parent_run_id);
+        if (meta
+          && meta.launch_command_sha256 === contentHash(launchText.bytes)
           && meta.parent_run_id === runId
           && meta.child_run_id === childRunId
-          && meta.handoff_phase === lease.handoff_phase
+          && meta.handoff_phase === 'emitted'
+          && meta.handoff_rel === child?.handoff_rel
           && meta.project_root_digest === projectRootDigest(data.project.root)
-          && meta.project_binding_generation === data.project.binding_generation) {
+          && meta.project_binding_generation === data.project.binding_generation
+          && lease.takeover_kind === 'boundary-handoff'
+          && lease.handoff_project_root_digest === meta.project_root_digest
+          && lease.handoff_project_binding_generation === meta.project_binding_generation
+          && sameBoundaryEvent(meta.boundary_event, lease.handoff_boundary_event)
+          && sameBoundaryEvent(child?.parent_boundary_event, meta.boundary_event)
+          && child?.parent_run_id === runId
+          && child?.project_root_digest === meta.project_root_digest
+          && child?.project_binding_generation === meta.project_binding_generation
+          && parent?.superseded_by === childRunId
+          && sameBoundaryEvent(parent?.scope?.terminal_event, meta.boundary_event)) {
           boundLaunchText = launchText.bytes.toString('utf8').trimEnd();
         }
       } catch { /* stale/malformed metadata selects the current-root fallback */ }
@@ -468,7 +498,7 @@ const handlers = {
     const f = parseFlags(a); const root = rootOf(f);
     const { data } = captureReconciledRunSnapshot(root, runIdOf(root, f));
     const unattended = !!f.unattended || resolveSpawnMode(data, { env: process.env }) === 'headless';
-    json({ mode: f.mode || 'advance', ...nextAction(data, { now: parseNow(f), unattended }) }); return 0;
+    json(renderNextAction({ mode: f.mode || 'advance', ...nextAction(data, { now: parseNow(f), unattended }) })); return 0;
   },
   lease: async (a) => {
     const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
@@ -649,6 +679,10 @@ const handlers = {
           return parsed.usage ? 2 : 1;
         }
         boundaryEvent = parsed.value;
+      }
+      if (data.autonomy?.continuation_policy === 'workstream-session' && !boundaryEvent) {
+        error('USAGE: handoff emit requires --boundary-event <seq>:<64-lowercase-hex-checksum>');
+        return 2;
       }
       const h = f.headless === true || f.headless === 'true';
       // v1.6 (spec §2.3-2 CLI 매핑): 기존 RUN_PAUSED/HANDOFF_KEY_MISMATCH throw의 uncaught stack 해소 —

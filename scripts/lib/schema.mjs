@@ -112,6 +112,13 @@ const LEGACY_SCOPE_KEYS = Object.freeze([
   'kind', 'workstream_id', 'bound_at_seq', 'terminal_event', 'closed_at',
 ]);
 
+function validBoundaryIdentity(value) {
+  return exactObject(value, ['seq', 'checksum'])
+    && Number.isSafeInteger(value.seq)
+    && value.seq > 0
+    && /^[0-9a-f]{64}$/.test(value.checksum || '');
+}
+
 function validateSessionScope(scope, session, errors) {
   const fail = detail => errors.push(`session_chain.sessions[].scope ${detail}`);
   if (scope?.kind === 'workstream') {
@@ -171,6 +178,27 @@ function validateSessions(sc, errors) {
     if (Object.hasOwn(session, 'handoff_path')) errors.push('session_chain.sessions[].handoff_path is forbidden in v0.4');
     if (session.handoff_rel !== undefined && !portableRel(session.handoff_rel, 'handoffs/')) {
       errors.push('session_chain.sessions[].handoff_rel must be a safe handoffs/ relative path');
+    }
+    const boundaryParentFields = [
+      'parent_run_id', 'parent_boundary_event',
+      'project_binding_generation', 'project_root_digest',
+    ];
+    const boundaryParentPresent = boundaryParentFields.filter(key => Object.hasOwn(session, key));
+    if (boundaryParentPresent.length !== 0 && boundaryParentPresent.length !== boundaryParentFields.length) {
+      errors.push('session_chain.sessions[] boundary parent fields must appear together');
+    } else if (boundaryParentPresent.length === boundaryParentFields.length) {
+      if (typeof session.parent_run_id !== 'string' || session.parent_run_id.length === 0) {
+        errors.push('session_chain.sessions[].parent_run_id must be non-empty string');
+      }
+      if (!validBoundaryIdentity(session.parent_boundary_event)) {
+        errors.push('session_chain.sessions[].parent_boundary_event must be an exact boundary identity');
+      }
+      if (!Number.isSafeInteger(session.project_binding_generation) || session.project_binding_generation < 1) {
+        errors.push('session_chain.sessions[].project_binding_generation must be a positive integer');
+      }
+      if (!/^[0-9a-f]{64}$/.test(session.project_root_digest || '')) {
+        errors.push('session_chain.sessions[].project_root_digest must be lowercase 64-hex');
+      }
     }
     const recoveryFields = ['recovered_from', 'recovery_kind', 'recovery_rel', 'recovery_sha256'];
     const present = recoveryFields.filter(key => Object.hasOwn(session, key));
@@ -420,6 +448,30 @@ export function validate(loopJson, schema = loadSchema()) {
       errors.push('missing required field: session_chain.lease.takeover_kind');
     } else if (takeover !== null && !['boundary-handoff', 'boundary-recovery', 'affinity-supersession'].includes(takeover)) {
       errors.push('session_chain.lease.takeover_kind is invalid');
+    }
+    const boundaryLeaseFields = [
+      'handoff_boundary_event',
+      'handoff_project_binding_generation',
+      'handoff_project_root_digest',
+    ];
+    const boundaryLeasePresent = boundaryLeaseFields
+      .filter(key => Object.hasOwn(sc.lease || {}, key));
+    if (boundaryLeasePresent.length !== 0 && boundaryLeasePresent.length !== boundaryLeaseFields.length) {
+      errors.push('session_chain.lease boundary handoff fields must appear together');
+    } else if (boundaryLeasePresent.length === boundaryLeaseFields.length) {
+      if (!validBoundaryIdentity(sc.lease.handoff_boundary_event)) {
+        errors.push('session_chain.lease.handoff_boundary_event must be an exact boundary identity');
+      }
+      if (!Number.isSafeInteger(sc.lease.handoff_project_binding_generation)
+        || sc.lease.handoff_project_binding_generation < 1) {
+        errors.push('session_chain.lease.handoff_project_binding_generation must be a positive integer');
+      }
+      if (!/^[0-9a-f]{64}$/.test(sc.lease.handoff_project_root_digest || '')) {
+        errors.push('session_chain.lease.handoff_project_root_digest must be lowercase 64-hex');
+      }
+    }
+    if (takeover === 'boundary-handoff' && boundaryLeasePresent.length !== boundaryLeaseFields.length) {
+      errors.push('boundary-handoff takeover requires exact boundary handoff fields');
     }
     validateSessions(sc, errors);
   }

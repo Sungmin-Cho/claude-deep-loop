@@ -53,6 +53,115 @@ function migratedLegacyLoop(policy) {
 }
 
 const NOW = Date.parse('2026-06-24T00:00:00Z');
+const BOUNDARY = Object.freeze({ seq: 41, checksum: 'a'.repeat(64) });
+
+function scopedRoutingLoop({ closed = false, sibling = true, bound = true } = {}) {
+  const l = loop();
+  const scope = l.session_chain.sessions[0].scope;
+  scope.workstream_id = bound ? 'ws-a' : null;
+  scope.bound_at_seq = bound ? 7 : null;
+  scope.terminal_event = closed ? { ...BOUNDARY } : null;
+  scope.closed_at = closed ? '2026-06-24T00:10:00.000Z' : null;
+  l.review.points = ['implementation'];
+  l.workstreams = [
+    {
+      id: 'ws-a', status: closed ? 'ready' : 'in_progress',
+      review_points_done: closed ? ['implementation'] : [],
+      episodes: [], depends_on: [],
+      ...(closed ? { terminal_events: [{ ...BOUNDARY }] } : {}),
+    },
+    ...(sibling ? [{
+      id: 'ws-b', status: 'planned', review_points_done: [], episodes: [], depends_on: [],
+    }] : []),
+  ];
+  l.active_workstreams = closed ? [] : ['ws-a'];
+  l.episodes = closed ? [
+    { id: '001-deep-work', role: 'maker', plugin: 'deep-work', status: 'done', point: 'implementation', workstream_id: 'ws-a' },
+    { id: '002-subagent-checker', role: 'checker', plugin: 'subagent-checker', status: 'approved', point: 'implementation', workstream_id: 'ws-a', target_maker: '001-deep-work' },
+  ] : [];
+  l.current_episode = closed ? '002-subagent-checker' : null;
+  return l;
+}
+
+test('workstream-session hard budget and breaker precede every boundary or work action', () => {
+  const budget = scopedRoutingLoop({ closed: true });
+  budget.budget.spent = budget.budget.total;
+  const budgetAction = nextAction(budget, { now: NOW });
+  assert.equal(budgetAction.action.type, 'await_human');
+  assert.equal(budgetAction.action.reason, 'budget');
+  assert.deepEqual(budgetAction.gate.blocked_by, ['budget']);
+
+  const breaker = scopedRoutingLoop({ closed: true });
+  breaker.circuit_breaker.tripped = true;
+  const breakerAction = nextAction(breaker, { now: NOW });
+  assert.equal(breakerAction.action.type, 'await_human');
+  assert.equal(breakerAction.action.reason, 'breaker');
+});
+
+test('workstream-session finish wins a closed boundary, otherwise handoff carries the exact object identity', () => {
+  const proofReady = scopedRoutingLoop({ closed: true, sibling: false });
+  assert.equal(finishProofState(proofReady).missing.length, 0);
+  assert.deepEqual(nextAction(proofReady, { now: NOW }).action, { type: 'finish' });
+
+  const needsNextSession = scopedRoutingLoop({ closed: true, sibling: true });
+  const action = nextAction(needsNextSession, { now: NOW });
+  assert.equal(action.action.type, 'handoff');
+  assert.equal(action.action.reason, 'workstream-terminal');
+  assert.deepEqual(action.action.boundary_event, BOUNDARY);
+  assert.equal(typeof action.action.boundary_event, 'object');
+  assert.deepEqual(action.gate.unconsumed_milestones, []);
+
+  needsNextSession.session_chain.sessions[0].superseded_by = 'CHILD';
+  needsNextSession.session_chain.sessions.push({
+    run_id: 'CHILD', started_at: null, ended_at: null, turns: 0, outcome: null,
+    superseded_by: null, parent_run_id: 'R', parent_boundary_event: { ...BOUNDARY },
+    project_binding_generation: 1,
+    project_root_digest: contentHash(needsNextSession.project.root),
+    scope: {
+      kind: 'workstream', workstream_id: null, bound_at_seq: null,
+      terminal_event: null, closed_at: null, superseded_at: null,
+    },
+  });
+  assert.notEqual(nextAction(needsNextSession, { now: NOW }).action.type, 'handoff');
+});
+
+test('workstream-session open affinity routes only its Workstream and unbound routing ignores terminal siblings', () => {
+  const bound = scopedRoutingLoop();
+  bound.episodes = [
+    { id: '001-a', role: 'maker', status: 'pending', point: 'implementation', workstream_id: 'ws-a', expected_artifacts: ['a'] },
+    { id: '002-b', role: 'maker', status: 'pending', point: 'implementation', workstream_id: 'ws-b', expected_artifacts: ['b'] },
+  ];
+  bound.current_episode = '002-b';
+  const scoped = nextAction(bound, { now: NOW });
+  assert.equal(scoped.action.type, 'dispatch_maker');
+  assert.equal(scoped.action.episode_id, '001-a');
+  assert.equal(scoped.action.workstream_id, 'ws-a');
+
+  const unbound = scopedRoutingLoop({ bound: false });
+  unbound.workstreams[0].status = 'ready';
+  unbound.workstreams[0].terminal_events = [{ ...BOUNDARY }];
+  unbound.episodes = [
+    { id: '001-terminal', role: 'maker', status: 'pending', point: 'implementation', workstream_id: 'ws-a', expected_artifacts: ['a'] },
+    { id: '002-eligible', role: 'maker', status: 'pending', point: 'implementation', workstream_id: 'ws-b', expected_artifacts: ['b'] },
+  ];
+  unbound.current_episode = '001-terminal';
+  const selected = nextAction(unbound, { now: NOW });
+  assert.equal(selected.action.type, 'dispatch_maker');
+  assert.equal(selected.action.episode_id, '002-eligible');
+});
+
+test('workstream-session turn cap decorates the real action with compact advice and never rotates', () => {
+  const l = scopedRoutingLoop();
+  l.episodes = [
+    { id: '001-a', role: 'maker', status: 'pending', point: 'implementation', workstream_id: 'ws-a', expected_artifacts: ['a'] },
+  ];
+  l.current_episode = '001-a';
+  l.session_chain.sessions[0].turns = l.budget.per_session_turn_cap;
+  const action = nextAction(l, { now: NOW, unattended: true });
+  assert.equal(action.action.type, 'dispatch_maker');
+  assert.equal(action.action.advice, 'compact');
+  assert.equal(action.action.advice_reason, 'per_session_turn_cap');
+});
 
 test('fresh run with no episodes → discover', () => {
   const r = nextAction(loop(), { now: Date.parse('2026-06-24T00:00:00Z') });

@@ -14,6 +14,7 @@ import { respawn as respawnImpl } from '../scripts/lib/respawn.mjs';
 import { acquireLease } from '../scripts/lib/lease.mjs';
 import { driveHeadless as driveHeadlessImpl } from '../scripts/hooks-impl/drive-headless.mjs';
 import { pauseRun } from '../scripts/lib/state.mjs';
+import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
 
 const A = join(dirname(fileURLToPath(import.meta.url)), '..', 'recipes', 'automation');
 const HANDOFF_REFERENCE = join(dirname(fileURLToPath(import.meta.url)), '..', 'skills', 'deep-loop-workflow', 'references', 'handoff-respawn.md');
@@ -41,6 +42,7 @@ function driveHeadless(options = {}) {
 function seedRunWithHandoff() {
   const root = mkdtempSync(join(tmpdir(), 'dl-auto-'));
   const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  migrateAuthenticLegacyTransport(root, runId);
   const em = emitHandoff(root, runId, {
     reason: 'pre-compact', trigger: 'pre-compact', headless: true,
     expect: { owner: runId, generation: 1 },
@@ -59,6 +61,7 @@ function seedRunWithHandoff() {
 function seedRun() {
   const root = mkdtempSync(join(tmpdir(), 'dl-auto-'));
   const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  migrateAuthenticLegacyTransport(root, runId);
   return { root, runId };
 }
 
@@ -122,6 +125,7 @@ test('driveHeadless fails closed when usage unmeasurable/timeout', () => {
 test('driveHeadless returns gate-blocked and pauses run when respawnGate blocks', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-auto-'));
   const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  migrateAuthenticLegacyTransport(root, runId);
   // Emit handoff first so there is a pending handoff to attempt.
   const em = emitHandoff(root, runId, {
     reason: 'pre-compact', trigger: 'pre-compact', headless: true,
@@ -226,6 +230,7 @@ test('driveHeadless fails closed (pauses) when measurement fails after the child
 test('driveHeadless skips handoff with resume_policy=human (spawnFn must NOT be called)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-auto-'));
   const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  migrateAuthenticLegacyTransport(root, runId);
   const em = emitHandoff(root, runId, {
     reason: 'pre-compact', trigger: 'pre-compact', headless: true,
     expect: { owner: runId, generation: 1 },
@@ -248,6 +253,7 @@ test('driveHeadless skips handoff with resume_policy=human (spawnFn must NOT be 
 test('driveHeadless skips visible-intended handoff (resume_policy visible — not-headless-intended)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-auto-'));
   const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  migrateAuthenticLegacyTransport(root, runId);
   const em = emitHandoff(root, runId, {
     reason: 'pre-compact', trigger: 'pre-compact', headless: true, resumePolicy: 'visible',
     expect: { owner: runId, generation: 1 },
@@ -267,6 +273,7 @@ test('driveHeadless skips visible-intended handoff (resume_policy visible — no
 test('driveHeadless resumes headless-intended handoff (resume_policy=headless)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-auto-'));
   const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  migrateAuthenticLegacyTransport(root, runId);
   const em = emitHandoff(root, runId, {
     reason: 'pre-compact', trigger: 'pre-compact', headless: true,
     expect: { owner: runId, generation: 1 },
@@ -346,6 +353,7 @@ test('github-actions template is a scheduled workflow calling the driver', () =>
 test('handoff emit derives resume_policy=headless from spawn_style without --headless flag (CLI regression)', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-auto-'));
   const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  migrateAuthenticLegacyTransport(root, runId);
   // Seed spawn_style='headless' so autonomous driver knows this run is headless.
   const { data } = readState(root, runId);
   data.autonomy.spawn_style = 'headless';
@@ -391,6 +399,7 @@ test('Codex handoff intent ignores CLAUDE_CODE_ENTRYPOINT and honors only durabl
       runtime: 'codex', goal: 'g', now: new Date('2026-07-11T00:00:00Z'),
       env: {}, platform: 'linux', run: () => ({ code: 1 }),
     });
+    migrateAuthenticLegacyTransport(root, runId);
     const emitted = emitHandoff(root, runId, {
       trigger: 'milestone',
       expect: { owner: runId, generation: 1 },
@@ -486,6 +495,7 @@ test('driveHeadless: resumed with cost when child acquires lease (acquisition pr
 function seedRun2ndGenHandoff() {
   const root = mkdtempSync(join(tmpdir(), 'dl-auto-'));
   const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  migrateAuthenticLegacyTransport(root, runId);
 
   // 1st handoff: top-level runId emits, child1 is reserved then acquired.
   const em1 = emitHandoff(root, runId, {

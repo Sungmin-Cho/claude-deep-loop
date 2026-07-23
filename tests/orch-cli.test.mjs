@@ -9,6 +9,7 @@ import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import { canonicalProjectRoot, projectRootDigest } from '../scripts/lib/project-root.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
+import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
 
 const CLI = join(process.cwd(), 'scripts', 'deep-loop.mjs');
 const FORCE_WIN32 = join(process.cwd(), 'tests', 'helpers', 'force-win32.mjs');
@@ -18,6 +19,7 @@ function run(root, args) {
 function seed() {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
   const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  migrateAuthenticLegacyTransport(root, runId);
   return { root, runId };
 }
 
@@ -64,6 +66,7 @@ function runtimeExecutableCliFixture({
   const { alias, suffix, triple, executable } = target;
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-runtime-cli-')));
   const { runId } = initRun(root, { runtime: runRuntime, goal: 'g', now: new Date('2026-07-11T00:00:00Z') });
+  migrateAuthenticLegacyTransport(root, runId);
   const version = '0.144.1';
   const wrapperRoot = join(root, 'tool', 'node_modules', '@openai', 'codex');
   const wrapper = join(wrapperRoot, 'bin', 'codex.js');
@@ -226,7 +229,9 @@ function initWin32LauncherRun(fixture) {
     'init-run', '--runtime', 'claude', '--goal', 'native launcher CLI integration',
   ], fixture.env);
   assert.equal(result.code, 0, result.stderr);
-  return JSON.parse(result.stdout).run_id;
+  const runId = JSON.parse(result.stdout).run_id;
+  migrateAuthenticLegacyTransport(fixture.root, runId);
+  return runId;
 }
 
 function validRebindArgs({ candidateRoot, runId, storedRoot }) {
@@ -923,6 +928,7 @@ test('explicit CLI Codex --headless overrides visible handoff intent and cannot 
   const { data } = readState(root, runId);
   data.autonomy.spawn_style = 'visible';
   writeState(root, runId, data);
+  migrateAuthenticLegacyTransport(root, runId);
   const handoff = emitHandoff(root, runId, {
     trigger: 'milestone',
     resumePolicy: 'visible',
