@@ -234,10 +234,12 @@ test('strict SessionStart labels supplied evidence unverified when the stored ch
   assert.doesNotMatch(context, /evidence-verified/);
 });
 
-test('strict SessionStart trusted-evidence rejection never retries without evidence and emits generic preserve-pause guidance', () => {
-  for (const [runtime, provider] of [
-    ['claude', 'claude-code'],
-    ['codex', 'codex'],
+test('strict SessionStart trusted-evidence rejection invokes runtime-correct restore and status guidance read-only', () => {
+  for (const [runtime, provider, restoreToken, statusToken, oppositeRestore, oppositeStatus] of [
+    ['claude', 'claude-code', '/deep-loop-compact restore', '/deep-loop-status',
+      '$deep-loop:deep-loop-compact restore', '$deep-loop:deep-loop-status'],
+    ['codex', 'codex', '$deep-loop:deep-loop-compact restore', '$deep-loop:deep-loop-status',
+      '/deep-loop-compact restore', '/deep-loop-status'],
   ]) {
     const root = freshRoot();
     const fixture = initBound(root, runtime);
@@ -248,6 +250,7 @@ test('strict SessionStart trusted-evidence rejection never retries without evide
       now: NOW_MS + 1,
     });
     const before = stateBytes(root, fixture.runId);
+    const beforeState = structuredClone(readState(root, fixture.runId).data);
 
     const result = runManifestHook(root, {
       cwd: root,
@@ -263,10 +266,48 @@ test('strict SessionStart trusted-evidence rejection never retries without evide
     assert.match(context, /preserve-pause/);
     assert.match(context, /host resume/i);
     assert.match(context, /do not retry without trusted evidence/i);
-    assert.doesNotMatch(context, /deep-loop-compact restore/);
+    assert.ok(context.includes(restoreToken), `${runtime}: missing ${restoreToken}`);
+    assert.ok(context.includes(statusToken), `${runtime}: missing ${statusToken}`);
+    assert.equal(context.includes(oppositeRestore), false);
+    assert.equal(context.includes(oppositeStatus), false);
     assert.doesNotMatch(context, /lease acquire|handoff emit|\brespawn\b|workstream terminal|\bfinish\b/i);
     assert.equal(context.includes(root), false);
     assert.deepEqual(stateBytes(root, fixture.runId), before);
+    assert.deepEqual(readState(root, fixture.runId).data, beforeState);
+  }
+});
+
+test('strict SessionStart evidence-unverified absence invokes runtime-correct restore and status fallback read-only', () => {
+  for (const [runtime, restoreToken, statusToken, oppositeRestore, oppositeStatus] of [
+    ['claude', '/deep-loop-compact restore', '/deep-loop-status',
+      '$deep-loop:deep-loop-compact restore', '$deep-loop:deep-loop-status'],
+    ['codex', '$deep-loop:deep-loop-compact restore', '$deep-loop:deep-loop-status',
+      '/deep-loop-compact restore', '/deep-loop-status'],
+  ]) {
+    const root = freshRoot();
+    const fixture = initBound(root, runtime);
+    const before = stateBytes(root, fixture.runId);
+    const beforeState = structuredClone(readState(root, fixture.runId).data);
+
+    const result = runManifestHook(root, {
+      cwd: root,
+      hook_event_name: 'SessionStart',
+      source: 'compact',
+    }, runtime);
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stderr, '');
+    const context = JSON.parse(result.stdout).hookSpecificOutput.additionalContext;
+    assert.match(context, /checkpoint-unavailable/);
+    assert.match(context, /evidence-unverified/);
+    assert.doesNotMatch(context, /checkpoint-unavailable-with-trusted-evidence/);
+    assert.ok(context.includes(restoreToken), `${runtime}: missing ${restoreToken}`);
+    assert.ok(context.includes(statusToken), `${runtime}: missing ${statusToken}`);
+    assert.equal(context.includes(oppositeRestore), false);
+    assert.equal(context.includes(oppositeStatus), false);
+    assert.equal(context.includes(root), false);
+    assert.deepEqual(stateBytes(root, fixture.runId), before);
+    assert.deepEqual(readState(root, fixture.runId).data, beforeState);
   }
 });
 

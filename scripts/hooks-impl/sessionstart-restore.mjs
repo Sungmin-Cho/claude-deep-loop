@@ -57,14 +57,22 @@ function strictRestoreContext(runId, descriptor, { source }) {
   );
 }
 
-function strictUnavailableContext({ evidencePresent }) {
+function strictUnavailableContext({ evidencePresent, runtime }) {
+  const restoreCommand = runtime === 'claude'
+    ? '/deep-loop-compact restore'
+    : '$deep-loop:deep-loop-compact restore';
+  const statusCommand = runtime === 'claude'
+    ? '/deep-loop-status'
+    : '$deep-loop:deep-loop-status';
   return evidencePresent
     ? clamp(
-      'deep-loop checkpoint-unavailable-with-trusted-evidence: preserve-pause and use host resume guidance. '
-      + 'do not retry without trusted evidence. Run /deep-loop-status for bounded diagnostics.',
+      `deep-loop checkpoint-unavailable-with-trusted-evidence: invoke ${restoreCommand} now for `
+      + 'preserve-pause and host resume guidance; do not retry without trusted evidence. '
+      + `Run ${statusCommand} for bounded diagnostics.`,
     )
     : clamp(
-      'deep-loop checkpoint-unavailable evidence-unverified: run /deep-loop-status and preserve the current owner session.',
+      `deep-loop checkpoint-unavailable evidence-unverified: invoke ${restoreCommand} now for the `
+      + `state-derived fallback; run ${statusCommand} for bounded diagnostics and preserve the current owner session.`,
     );
 }
 
@@ -116,6 +124,7 @@ export function runSessionStartRestore(input = {}, {
           : 'no-checkpoint',
         additionalContext: strictUnavailableContext({
           evidencePresent: hostSessionEvidence !== undefined,
+          runtime,
         }),
       };
     }
