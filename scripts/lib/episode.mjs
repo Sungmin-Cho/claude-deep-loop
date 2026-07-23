@@ -1,6 +1,6 @@
 import { mkdirSync, existsSync } from 'node:fs';
 import { isAbsolute, join, resolve, sep } from 'node:path';
-import { readState, writeState, withLock, runDir } from './state.mjs';
+import { runDir } from './state.mjs';
 import { appendAnchored } from './integrity.mjs';
 import { atomicWrite } from './envelope.mjs';
 import { slugify } from './slug.mjs';

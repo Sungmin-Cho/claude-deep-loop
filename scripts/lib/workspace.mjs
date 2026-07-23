@@ -1,6 +1,6 @@
 import { existsSync, realpathSync, lstatSync } from 'node:fs';
 import { isAbsolute, join, resolve, relative, dirname, basename } from 'node:path';
-import { readState, writeState, withLock } from './state.mjs';
+import { captureReconciledRunSnapshot } from './state.mjs';
 import { appendAnchored } from './integrity.mjs';
 import { slugify } from './slug.mjs';
 import { leaseCheck } from './lease.mjs';
@@ -144,7 +144,7 @@ export function recordWorkstreamTerminal(root, runId, wsId, { status, proof = {}
 
 // respawn 인수: active worktree 경로가 디스크에 존재하는지만 확인. 누락은 조용히 재생성 ❌ → fail-safe.
 export function inheritWorkstreams(root, runId) {
-  const { data } = readState(root, runId);
+  const { data } = captureReconciledRunSnapshot(root, runId);
   const inherited = [], missing = [];
   for (const id of data.active_workstreams) {
     const ws = data.workstreams.find(w => w.id === id);

@@ -2,9 +2,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
@@ -305,6 +305,11 @@ test('public/transitive readers and independent writers are statically closed th
     'scripts/lib/headless-host.mjs',
     'scripts/lib/checkpoint.mjs',
     'scripts/lib/session-profile.mjs',
+    'scripts/lib/handoff.mjs',
+    'scripts/lib/detect-terminal.mjs',
+    'scripts/lib/recover.mjs',
+    'scripts/lib/workspace.mjs',
+    'scripts/lib/episode.mjs',
     'scripts/hooks-impl/precompact-handoff.mjs',
     'scripts/hooks-impl/sessionstart-restore.mjs',
   ];
@@ -331,4 +336,60 @@ test('public/transitive readers and independent writers are statically closed th
   assert.match(rootRecovery, /captureReconciledRootRecoverySnapshot\s*\(/);
   assert.match(rootRecovery, /withReconciledRootRecoveryLock\s*\(/);
   assert.doesNotMatch(rootRecovery, /\b(?:withLock|captureReconciledRunSnapshot|withReconciledMutationLock)\s*\(/);
+});
+
+test('semantic public import graph admits no raw state reader or lock consumer outside integrity', () => {
+  const scriptsRoot = resolve(process.cwd(), 'scripts');
+  const files = [];
+  const enumerate = directory => {
+    for (const name of readdirSync(directory).sort()) {
+      const path = join(directory, name);
+      if (statSync(path).isDirectory()) enumerate(path);
+      else if (name.endsWith('.mjs')) files.push(path);
+    }
+  };
+  enumerate(scriptsRoot);
+
+  const sources = new Map(files.map(path => [path, readFileSync(path, 'utf8')]));
+  const dependencies = new Map();
+  const importPattern = /import\s+(?:[^'";]+?\s+from\s+)?['"]([^'"]+)['"]/g;
+  for (const [path, source] of sources) {
+    const imported = [];
+    for (const match of source.matchAll(importPattern)) {
+      if (!match[1].startsWith('.')) continue;
+      const target = resolve(dirname(path), match[1]);
+      if (sources.has(target)) imported.push(target);
+    }
+    dependencies.set(path, imported);
+  }
+
+  const scriptRel = path => relative(scriptsRoot, path).split(sep).join('/');
+  const roots = files.filter(path => scriptRel(path) === 'deep-loop.mjs'
+    || scriptRel(path).startsWith('hooks-impl/')
+    || scriptRel(path).startsWith('workers/'));
+  const reachable = new Set();
+  const queue = [...roots];
+  while (queue.length) {
+    const path = queue.shift();
+    if (reachable.has(path)) continue;
+    reachable.add(path);
+    queue.push(...(dependencies.get(path) || []));
+  }
+
+  for (const expected of ['handoff.mjs', 'detect-terminal.mjs', 'recover.mjs', 'workspace.mjs', 'episode.mjs']) {
+    assert.ok([...reachable].some(path => scriptRel(path) === `lib/${expected}`), `${expected}: public graph reachability`);
+  }
+
+  const forbidden = new Set(['readState', 'readStateForRootRecovery', 'withLock']);
+  const stateImport = /import\s*\{([^}]+)\}\s*from\s*['"][^'"]*state\.mjs['"]/gs;
+  for (const path of reachable) {
+    if (scriptRel(path) === 'lib/integrity.mjs') continue;
+    const source = sources.get(path);
+    assert.doesNotMatch(source, /import\s*\*\s*as\s+\w+\s+from\s*['"][^'"]*state\.mjs['"]/, `${relative(process.cwd(), path)}: state namespace import`);
+    for (const match of source.matchAll(stateImport)) {
+      const bindings = match[1].split(',').map(binding => binding.trim().split(/\s+as\s+/)[0]);
+      const raw = bindings.filter(binding => forbidden.has(binding));
+      assert.deepEqual(raw, [], `${relative(process.cwd(), path)}: raw state bindings`);
+    }
+  }
 });

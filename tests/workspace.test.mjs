@@ -10,6 +10,7 @@ import {
   inheritWorkstreams, integrationOrder,
 } from '../scripts/lib/workspace.mjs';
 import { createDirectoryJunction, fixtureDir } from './helpers/fs-fixtures.mjs';
+import { appendAnchored } from '../scripts/lib/integrity.mjs';
 
 function seed() {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
@@ -159,6 +160,35 @@ test('inheritWorkstreams reports missing worktree paths (no silent recreate)', (
   assert.deepEqual(r.inherited, [a]);
   assert.equal(r.missing.length, 1);
   assert.equal(r.missing[0].id, b);
+});
+
+test('inheritWorkstreams reconciles a prepared worktree-path update before reporting inheritance', () => {
+  const { root, runId } = seed();
+  const f = fence(runId);
+  const present = join(root, '.claude', 'worktrees', 'wt-before');
+  mkdirSync(present, { recursive: true });
+  const id = newWorkstream(root, runId, {
+    title: 'Reconciled', branch: 'reconciled', worktree: present, fence: f,
+  }).id;
+  setWorkstreamStatus(root, runId, id, 'in_progress', { fence: f });
+  assert.throws(() => appendAnchored(
+    root,
+    runId,
+    { type: 'worktree-relocated', data: { id }, now: '2026-07-23T01:00:00.000Z' },
+    loop => { loop.workstreams.find(workstream => workstream.id === id).worktree = '.claude/worktrees/wt-after'; },
+    undefined,
+    {
+      publication: {
+        kind: 'worktree-relocated', operationId: 'worktree-relocated', artifacts: [], topology: { id },
+        faultAt(label) { if (label === 'prepared:digest-verified') throw new Error('barrier'); },
+      },
+    },
+  ), /TRANSACTION_PENDING/);
+
+  assert.deepEqual(inheritWorkstreams(root, runId), {
+    inherited: [],
+    missing: [{ id, worktree: '.claude/worktrees/wt-after', reason: 'worktree-path-missing' }],
+  });
 });
 
 // Codex r6 🟡: workstream input validation

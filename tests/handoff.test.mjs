@@ -14,6 +14,7 @@ import { emitHandoff, buildLaunchCommand } from '../scripts/lib/handoff.mjs';
 import { buildRuntimeResumeDescriptor } from '../scripts/lib/runtime-descriptor.mjs';
 import { newEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
 import { createDirectoryJunction } from './helpers/fs-fixtures.mjs';
+import { appendAnchored } from '../scripts/lib/integrity.mjs';
 
 // Inject deterministic env so detectTerminal never probes real cmux/osascript.
 function seed(runtime = 'claude') {
@@ -1653,6 +1654,60 @@ test('event-log tamper is detected before either deterministic final artifact is
     ? readdirSync(dir).filter(file => !file.startsWith('.tmp-'))
     : [];
   assert.deepEqual(finals, []);
+});
+
+function prepareHandoffGoalPublication(root, runId, operationId, goal) {
+  assert.throws(() => appendAnchored(
+    root,
+    runId,
+    { type: 'handoff-late-state', data: { goal }, now: '2026-07-23T01:00:00.000Z' },
+    loop => { loop.goal = goal; },
+    undefined,
+    {
+      publication: {
+        kind: 'handoff-late-state', operationId, artifacts: [], topology: { goal },
+        faultAt(label) { if (label === 'prepared:digest-verified') throw new Error('barrier'); },
+      },
+    },
+  ), /TRANSACTION_PENDING/);
+}
+
+test('handoff reconciles a publication prepared after reservation before generating artifacts', () => {
+  const { root, runId } = seed();
+  let prepared = false;
+  const emitted = emitHandoff(root, runId, {
+    trigger: 'milestone', expect: expect_(runId), now: 100,
+    onBoundary(name) {
+      if (name !== 'reserved' || prepared) return;
+      prepared = true;
+      prepareHandoffGoalPublication(root, runId, 'handoff-after-reserve', 'NEW-GOAL');
+    },
+  });
+  assert.equal(emitted.ok, true);
+  assert.equal(readState(root, runId).data.goal, 'NEW-GOAL');
+  const markdown = readFileSync(join(handoffDir(root, runId), emitted.mdName), 'utf8');
+  const compaction = JSON.parse(readFileSync(join(handoffDir(root, runId), emitted.csName), 'utf8'));
+  assert.match(markdown, /NEW-GOAL/);
+  assert.equal(compaction.payload.goal, 'NEW-GOAL');
+});
+
+test('handoff rejects a publication prepared after artifact generation instead of committing stale artifacts', () => {
+  const { root, runId } = seed();
+  let prepared = false;
+  assert.throws(() => emitHandoff(root, runId, {
+    trigger: 'milestone', expect: expect_(runId), now: 100,
+    onBoundary(name) {
+      if (name !== 'artifacts-staged' || prepared) return;
+      prepared = true;
+      prepareHandoffGoalPublication(root, runId, 'handoff-after-generation', 'NEW-GOAL');
+    },
+  }), /HANDOFF_SNAPSHOT_STALE/);
+  assert.equal(readState(root, runId).data.goal, 'NEW-GOAL');
+  const finals = existsSync(handoffDir(root, runId))
+    ? readdirSync(handoffDir(root, runId)).filter(file => !file.startsWith('.tmp-'))
+    : [];
+  assert.deepEqual(finals, []);
+  assert.equal(handoffEventCount(root, runId), 0);
 });
 
 test('final preCheck fence propagates LEASE_FENCED and is never normalized as an artifact failure', () => {

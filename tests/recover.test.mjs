@@ -7,8 +7,10 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
+import { pauseRun, readState, writeState, runDir } from '../scripts/lib/state.mjs';
+import { initRun } from '../scripts/lib/initrun.mjs';
 import { recoverRun } from '../scripts/lib/recover.mjs';
+import { appendAnchored } from '../scripts/lib/integrity.mjs';
 
 const CLI = join(process.cwd(), 'scripts', 'deep-loop.mjs');
 const OWNER = 'RECOVER01';
@@ -95,6 +97,33 @@ test('recoverRun: preserve-paused run → lease.state=released, handoff fields c
   assert.equal(data.session_chain.lease.handoff_trigger, null);
   assert.equal(data.session_chain.lease.expires_at, null);
   assert.equal(data.session_chain.lease.resume_policy, null);
+});
+
+test('recoverRun reconciles a prepared candidate before applying recovery', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-recover-current-'));
+  const { runId } = initRun(root, {
+    runtime: 'claude', goal: 'OLD-GOAL', now: new Date('2026-07-23T00:00:00.000Z'),
+  });
+  pauseRun(root, runId, {
+    reason: 'test-recovery', expect: { owner: runId, generation: 1 }, now: Date.parse('2026-07-23T00:30:00.000Z'),
+  });
+  assert.throws(() => appendAnchored(
+    root,
+    runId,
+    { type: 'recover-late-state', data: {}, now: '2026-07-23T01:00:00.000Z' },
+    loop => { loop.goal = 'NEW-GOAL'; },
+    undefined,
+    {
+      publication: {
+        kind: 'recover-late-state', operationId: 'recover-late-state', artifacts: [], topology: {},
+        faultAt(label) { if (label === 'prepared:digest-verified') throw new Error('barrier'); },
+      },
+    },
+  ), /TRANSACTION_PENDING/);
+  recoverRun(root, runId, { expect: { owner: runId, generation: 1 }, confirm: true });
+  const { data } = readState(root, runId);
+  assert.equal(data.goal, 'NEW-GOAL');
+  assert.equal(data.pause_reason, 'recovered:awaiting-resume');
 });
 
 test('recoverRun: abandoned child outcome + parent superseded_by cleared', () => {

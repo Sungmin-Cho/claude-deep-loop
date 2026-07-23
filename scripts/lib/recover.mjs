@@ -1,4 +1,4 @@
-import { readState } from './state.mjs';
+import { captureReconciledRunSnapshot } from './state.mjs';
 import { appendAnchored } from './integrity.mjs';
 
 // Human-approved escape hatch (mirrors breaker reset --confirm) — unstick-for-resume, NOT terminate.
@@ -7,8 +7,8 @@ import { appendAnchored } from './integrity.mjs';
 export function recoverRun(root, runId, { expect, confirm, now = Date.now() } = {}) {
   if (confirm !== true) throw new Error('CONFIRM_REQUIRED: pass --confirm (human-only)');
 
-  // Early status check (outside lock) — fast path rejection before taking a lock.
-  const { data: snap } = readState(root, runId);
+  // Early reconciled status check — rejects before the recovery mutation lock while never exposing predecessor state.
+  const { data: snap } = captureReconciledRunSnapshot(root, runId);
   if (snap.status !== 'paused') {
     throw new Error(`NOT_RECOVERABLE: status is ${snap.status}, expected paused`);
   }

@@ -2,9 +2,9 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readState, runDir } from './state.mjs';
+import { captureReconciledRunSnapshot, runDir } from './state.mjs';
 import { appendAnchored, verifyHead, verifyLog } from './integrity.mjs';
-import { wrap, atomicWrite } from './envelope.mjs';
+import { wrap, atomicWrite, contentHash } from './envelope.mjs';
 import { reserveHandoff, rollbackHandoff, rollbackReservedEmit } from './lease.mjs';
 import { renameAtomicWithRetry } from './atomic-write.mjs';
 import { defaultDesktopProbe } from './desktop-target.mjs';
@@ -51,7 +51,7 @@ function cleanupChildTemps(dir, childRunId, remove = rmSync) {
 }
 
 function idempotentResult(root, runId, childRunId, key) {
-  const { data } = readState(root, runId);
+  const { data } = captureReconciledRunSnapshot(root, runId);
   const child = data.session_chain.sessions.find(session => session.run_id === childRunId);
   return {
     ok: true, idempotent: true, reason: 'already-emitted', childRunId, key,
@@ -114,10 +114,8 @@ export function emitHandoff(root, runId, {
   if (!expect || typeof expect.owner !== 'string' || !Number.isInteger(expect.generation)) throw new Error('FENCE_REQUIRED: emitHandoff');
   // Resolve runtime and canonical root from root-bound durable state. This read
   // fences copied roots and malformed runtime state before reservation or files.
-  const { data: initialLoop } = readState(root, runId);
+  const { data: initialLoop } = captureReconciledRunSnapshot(root, runId);
   const initialRuntime = sessionRuntime(initialLoop);
-  const effectiveResumePolicy = resumePolicy
-    ?? (resolveSpawnMode(initialLoop, { headless, env }) === 'headless' ? 'headless' : 'visible');
   validateRuntimeProfile(initialRuntime, {
     model: initialLoop.autonomy?.session_model ?? null,
     effort: initialLoop.autonomy?.session_effort ?? null,
@@ -153,7 +151,7 @@ export function emitHandoff(root, runId, {
   // Codex r1 🔴1 / r2 🔴1 / r3 🔴1: 같은 트리거 재진입(reserved:false)이면 이미 in-flight handoff 가 있다.
   // childRunId 는 reserve 가 영속한 값(res.childRunId)이라 동시/재진입이 같은 child 를 본다.
   if (!res.reserved) {
-    const { data } = readState(canonicalRoot, runId);
+    const { data } = captureReconciledRunSnapshot(canonicalRoot, runId);
     const child = data.session_chain.sessions.find(s => s.run_id === res.childRunId);
     if (child) {
       // 이미 emit 됨(session 존재). emit 은 이제 원자적(child push + phase=emitted 가 한 트랜잭션, Codex impl r11)이라
@@ -164,8 +162,14 @@ export function emitHandoff(root, runId, {
     // reserved 됐지만 session 미생성 → fall-through 해 emit 완료 (res.childRunId 재사용 → 중복 child 없음)
   }
   onBoundary('reserved');
-  const { data: loop } = readState(canonicalRoot, runId);
+  const { data: loop, hash: generationHash } = captureReconciledRunSnapshot(canonicalRoot, runId);
   const runtime = sessionRuntime(loop);
+  const effectiveResumePolicy = resumePolicy
+    ?? (resolveSpawnMode(loop, { headless, env }) === 'headless' ? 'headless' : 'visible');
+  validateRuntimeProfile(runtime, {
+    model: loop.autonomy?.session_model ?? null,
+    effort: loop.autonomy?.session_effort ?? null,
+  });
   const childRunId = res.childRunId;
   const dir = join(runDir(canonicalRoot, runId), 'handoffs');
   const termDir = join(runDir(canonicalRoot, runId), 'terminal');
@@ -334,6 +338,9 @@ export function emitHandoff(root, runId, {
       if (lease.handoff_phase !== 'reserved') throw new Error(`HANDOFF_PHASE_MISMATCH: ${lease.handoff_phase}`);
       if (lease.handoff_idempotency_key !== res.key) throw new Error('HANDOFF_KEY_MISMATCH');
       if (lease.handoff_child_run_id !== childRunId) throw new Error('HANDOFF_CHILD_MISMATCH');
+      if (contentHash(JSON.stringify(l, null, 2)) !== generationHash) {
+        throw new Error('HANDOFF_SNAPSHOT_STALE: reconciled state changed after artifact generation');
+      }
 
       publishFinal(mdTemp, handoffPath);
       publishFinal(csTemp, join(dir, csName));

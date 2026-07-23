@@ -8,6 +8,7 @@ import {
 import * as runtimeExecutable from '../scripts/lib/runtime-executable.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState } from '../scripts/lib/state.mjs';
+import { appendAnchored } from '../scripts/lib/integrity.mjs';
 const ok = () => ({ code: 0 }); const fail = () => ({ code: 1 });
 const NOW = '2026-06-27T00:00:00Z';
 
@@ -455,6 +456,33 @@ test('detectAndPersist consumes durable tmux approval and persists only the pid-
   assert.equal(descriptor.launcher, 'tmux');
   assert.equal(descriptor.launcher_session, '7');
   assert.deepEqual(readState(root, runId).data.session_spawn, descriptor);
+});
+
+test('detectAndPersist preserves a prepared candidate while persisting its descriptor', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-terminal-reconciled-'));
+  const { runId } = initRun(root, {
+    runtime: 'claude', goal: 'OLD-GOAL', now: new Date('2026-07-20T00:00:00Z'),
+    env: {}, platform: 'linux', run: () => ({ code: 1 }),
+  });
+  assert.throws(() => appendAnchored(
+    root,
+    runId,
+    { type: 'terminal-late-state', data: {}, now: '2026-07-23T01:00:00.000Z' },
+    loop => { loop.goal = 'NEW-GOAL'; },
+    undefined,
+    {
+      publication: {
+        kind: 'terminal-late-state', operationId: 'terminal-late-state', artifacts: [], topology: {},
+        faultAt(label) { if (label === 'prepared:digest-verified') throw new Error('barrier'); },
+      },
+    },
+  ), /TRANSACTION_PENDING/);
+  const descriptor = detectAndPersist(root, runId, {
+    owner: runId, generation: 1, env: {}, platform: 'linux', now: NOW,
+  });
+  const { data } = readState(root, runId);
+  assert.equal(data.goal, 'NEW-GOAL');
+  assert.deepEqual(data.session_spawn, descriptor);
 });
 
 test('detectAndPersist tmux branch rejects durable launcher approval drift in its in-lock guard', () => {
