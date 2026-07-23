@@ -89,6 +89,7 @@ const VERBS = (o, g) => [
   ['spawn-style', 'offer-desktop'],
   ['spawn-style', 'confirm-desktop', '--nonce', 'n'],
   ['spawn-style', 'decline-desktop'],
+  ['attended-launch', 'approve', '--style', 'visible', '--confirm'],
   ['handoff', 'emit'],
   ['checkpoint', 'emit', '--runtime', 'claude'],
   ['respawn'],

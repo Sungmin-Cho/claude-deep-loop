@@ -31,6 +31,7 @@ import { recordCost, checkBudget } from './lib/budget.mjs';
 import { computeDebt, ack as ackComprehension } from './lib/comprehension.mjs';
 import { checkBreaker, resetBreaker } from './lib/breaker.mjs';
 import { offerDesktop, confirmDesktop, declineDesktop, resetDesktop } from './lib/spawn-optin.mjs';
+import { approveAttendedLaunch, revokeAttendedLaunch } from './lib/attended-launch.mjs';
 import { setSessionProfile } from './lib/session-profile.mjs';
 import { defaultDesktopProbe } from './lib/desktop-target.mjs';
 import { finishRun } from './lib/finish.mjs';
@@ -1094,6 +1095,75 @@ const handlers = {
       catch (e) { const msg = String(e?.message || e); if (msg.startsWith('LEASE_FENCED')) { error(msg); return 3; } error(msg); return 1; }
     }
     error(`unknown spawn-style verb: ${verb}`); return 2;
+  },
+  // attended-launch approve --style visible --confirm --owner <id> --generation <n>
+  // attended-launch revoke --confirm --owner <id> --generation <n>
+  // Desktop approval is intentionally exclusive to the nonce + live-handler
+  // `spawn-style confirm-desktop` flow.
+  'attended-launch': async (a) => {
+    const [verb, ...rest] = a;
+    const allowed = verb === 'approve'
+      ? new Set(['style', 'confirm', 'owner', 'generation', 'now', 'project-root', 'run-id'])
+      : new Set(['confirm', 'owner', 'generation', 'now', 'project-root', 'run-id']);
+    if (!['approve', 'revoke'].includes(verb)) {
+      error(`unknown attended-launch verb: ${verb ?? '<none>'}`);
+      return 2;
+    }
+    if (!exactFlagGrammar(rest, allowed)) {
+      error('USAGE: attended-launch flags are malformed, duplicated, or unknown');
+      return 2;
+    }
+    const f = parseFlags(rest);
+    if (f.confirm !== true && f.confirm !== 'true') {
+      error('CONFIRM_REQUIRED: attended launch mutation requires --confirm');
+      return 2;
+    }
+    const root = rootOf(f);
+    const runId = runIdOf(root, f);
+    if (!runId) { error('MISSING_RUN_ID'); return 2; }
+    const fence = { owner: strArg(f, 'owner'), generation: intArg(f, 'generation') };
+    const now = parseNow(f);
+
+    if (verb === 'approve') {
+      // Ordinary approval is an active-session mutation. The library repeats
+      // the authoritative fence in its anchored transaction.
+      requireLease(root, runId, f);
+      try {
+        const result = approveAttendedLaunch(root, runId, {
+          style: f.style === true || f.style === undefined ? undefined : String(f.style),
+          confirm: true, fence, now,
+        });
+        if (result.reason === 'DESKTOP_FLOW_REQUIRED') {
+          error('DESKTOP_FLOW_REQUIRED: use spawn-style offer-desktop then spawn-style confirm-desktop');
+          return 1;
+        }
+        if (!result.ok) { error(result.reason); return result.reason === 'CONFIRM_REQUIRED' ? 2 : 1; }
+        json(result);
+        return 0;
+      } catch (error_) {
+        const message = String(error_?.message || error_);
+        if (message.startsWith('LEASE_FENCED')) { error(message); return 3; }
+        error(message);
+        return 1;
+      }
+    }
+
+    // Revoke deliberately bypasses ordinary leaseCheck so it can operate on a
+    // safely paused active lease; revokeAttendedLaunch owns the exact in-lock
+    // owner/generation, terminal, state, and handoff-phase checks.
+    try {
+      const result = revokeAttendedLaunch(root, runId, {
+        confirm: true, fence, now,
+      });
+      if (!result.ok) { error(result.reason); return result.reason === 'CONFIRM_REQUIRED' ? 2 : 1; }
+      json(result);
+      return 0;
+    } catch (error_) {
+      const message = String(error_?.message || error_);
+      if (message.startsWith('LEASE_FENCED')) { error(message); return 3; }
+      error(message);
+      return 1;
+    }
   },
   // session-profile set --model <m> --effort <e> --owner <id> --generation <n>
   // Refresh durable autonomy.session_model/effort (WS1). intent:'lease' (releasing-safe, like respawn/

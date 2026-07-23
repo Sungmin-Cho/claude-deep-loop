@@ -23,6 +23,7 @@ import {
   revalidateTrustedRuntimeExecutable,
 } from './runtime-executable.mjs';
 import { nextAction } from './next-action.mjs';
+import { attendedLaunchAuthorized } from './attended-launch.mjs';
 
 const DEFAULT_DEEP_LOOP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const captureFreshLoop = (root, runId) => captureReconciledRunSnapshot(root, runId).data;
@@ -132,6 +133,7 @@ function claimSpawnedHandoff(root, runId, {
   parentOwner,
   generation,
   now,
+  mode,
 }) {
   return withReconciledMutationLock(root, runId, (_guard, { data }) => {
     const lease = data.session_chain?.lease || {};
@@ -168,6 +170,13 @@ function claimSpawnedHandoff(root, runId, {
     const gate = respawnGate(data, { now });
     if (!gate.ok) return { ok: false, reason: gate.reason };
 
+    const attendedStyle = mode === 'desktop'
+      ? 'desktop'
+      : (mode === 'headless' ? null : 'visible');
+    if (attendedStyle != null && !attendedLaunchAuthorized(data, attendedStyle)) {
+      return { ok: false, reason: 'attended-launch-unauthorized' };
+    }
+
     data.session_chain.lease = { ...lease, handoff_phase: 'spawned' };
     writeState(root, runId, data);
     return { ok: true, reason: 'advanced' };
@@ -200,9 +209,10 @@ export function isHeadlessInvocation(env = process.env, runtime = 'claude') {
 export function resolveSpawnMode(loop, { headless = false, attended = false, env = process.env } = {}) {
   const runtime = sessionRuntime(loop);
   if (headless || loop?.autonomy?.spawn_style === 'headless' || isHeadlessInvocation(env, runtime)) return 'headless';
-  if (loop?.autonomy?.spawn_style === 'desktop' && attended === true) return 'desktop';
+  if (attended === true && attendedLaunchAuthorized(loop, 'desktop')) return 'desktop';
   const launcher = loop?.session_spawn?.launcher;
-  if (loop?.autonomy?.spawn_style === 'visible' && attended === true && launcher && launcher !== 'none') return launcher;
+  if (attended === true && attendedLaunchAuthorized(loop, 'visible')
+    && launcher && launcher !== 'none') return launcher;
   return 'interactive';
 }
 
@@ -716,12 +726,33 @@ export function respawn(root, runId, {
   // Codex r2 🔴3: 외부 spawn **이전에** emitted→spawned 를 원자적(withLock CAS)으로 클레임 (이중 외부 spawn 차단).
   // Command is already validated above; only the CAS + spawnFn call remain below.
   const claim = claimSpawnedHandoff(root, runId, {
-    key, childRunId, parentOwner, generation, now,
+    key, childRunId, parentOwner, generation, now, mode,
   });
   if (!claim.ok) {
     // v1.6 (spec §2.3-5, plan r1): 초입 read↔클레임 사이 finish 경합 — phase-error로 뭉개짐 금지.
     if (claim.reason === 'RUN_TERMINAL') return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };
     if (claim.reason === 'fenced') return { ok: false, outcome: 'fenced', reason: 'lease-changed-during-claim', childRunId };
+    if (claim.reason === 'attended-launch-unauthorized') {
+      const preserved = preservePause(root, runId, {
+        childRunId, parentOwner, generation, pauseReason: claim.reason,
+      });
+      if (preserved.acquired) {
+        return {
+          ok: true, outcome: 'spawned',
+          reason: 'child-acquired-during-attended-authorization-race', childRunId,
+        };
+      }
+      if (preserved.terminal) {
+        return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };
+      }
+      if (preserved.fenced) {
+        return {
+          ok: false, outcome: 'fenced',
+          reason: 'lease-changed-before-attended-authorization-pause', childRunId,
+        };
+      }
+      return { ok: false, outcome: 'no-launcher', reason: claim.reason, childRunId };
+    }
     if (claim.reason === 'boundary-topology-invalid'
       || claim.reason === 'BOUNDARY_EVENT_MISMATCH') {
       return { ok: false, outcome: 'boundary-invalid', reason: claim.reason, childRunId };

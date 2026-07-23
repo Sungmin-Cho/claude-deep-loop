@@ -97,6 +97,11 @@ function seedVisible({ approval, launcher = 'cmux', platform = 'linux' } = {}) {
   };
   writeState(root, runId, data);
   migrateAuthenticLegacyTransport(root, runId);
+  const { data: migrated } = readState(root, runId);
+  migrated.autonomy.attended_launch_approval = {
+    style: 'visible', approved_at: '2026-06-24T00:00:00.000Z',
+  };
+  writeState(root, runId, migrated);
   return { root, runId, approval: effectiveApproval };
 }
 

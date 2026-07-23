@@ -22,6 +22,9 @@ const WINDOWS_TARGET_ROOT = 'C:\\Fixture Project';
 const WINDOWS_DEEP_LOOP_ROOT = 'C:\\Fixture Deep Loop';
 const POSIX_TARGET_ROOT = '/fixture-project';
 const POSIX_DEEP_LOOP_ROOT = '/fixture-deep-loop';
+const attendedApproval = style => ({
+  style, approved_at: '2026-06-24T00:00:00.000Z',
+});
 
 // Inject no-signal env + no-op run so detect-terminal is deterministic regardless of ambient env.
 const noOpRun = () => ({ code: 1 });
@@ -108,9 +111,15 @@ function openWorkstreamScope() {
 }
 
 // seed a run with a concrete visible launcher (cmux by default) + spawn_style.
-function seedLauncher({ spawn_style = 'visible', launcher = 'cmux', runtime = 'claude' } = {}) {
+// Existing attended-launch fixtures opt in explicitly; tests covering migration/default safety pass approved:false.
+function seedLauncher({
+  spawn_style = 'visible', launcher = 'cmux', runtime = 'claude', approved = true,
+} = {}) {
   return seed((d) => {
     d.autonomy.spawn_style = spawn_style;
+    d.autonomy.attended_launch_approval = approved && ['visible', 'desktop'].includes(spawn_style)
+      ? attendedApproval(spawn_style)
+      : null;
     d.session_spawn = {
       platform: 'darwin', launcher,
       launcher_bin: '/abs/bin/' + launcher, launcher_socket: '/tmp/' + launcher + '.sock',
@@ -146,6 +155,7 @@ function seedTmuxLauncher(runtime = 'claude') {
   };
   const { data } = readState(seeded.root, seeded.runId);
   data.autonomy.spawn_style = 'visible';
+  data.autonomy.attended_launch_approval = attendedApproval('visible');
   data.autonomy.launcher_executable_approvals.tmux = launcherIdentity;
   if (runtime === 'codex') data.autonomy.runtime_executable_approval = tmuxRuntimeIdentity();
   data.session_spawn = {
@@ -516,8 +526,22 @@ test('resolveSpawnMode: precedence (headless flag / spawn_style / invocation > v
   assert.equal(resolveSpawnMode(hl, { headless: false, attended: true, env: {} }), 'headless');
 });
 
+test('resolveSpawnMode: detected visible launcher without durable attended approval stays interactive', () => {
+  const { root, runId } = seedLauncher({
+    spawn_style: 'visible', launcher: 'cmux', approved: false,
+  });
+  const loop = readState(root, runId).data;
+  assert.equal(loop.autonomy.attended_launch_approval, null);
+  assert.equal(resolveSpawnMode(loop, { attended: true, env: {} }), 'interactive');
+});
+
 test('desktop mode when spawn_style=desktop and attended', () => {
-  const base = (over = {}) => ({ autonomy: { spawn_style: 'desktop' }, session_spawn: { launcher: 'none' }, ...over });
+  const base = (over = {}) => ({
+    autonomy: {
+      spawn_style: 'desktop', attended_launch_approval: attendedApproval('desktop'),
+    },
+    session_spawn: { launcher: 'none' }, ...over,
+  });
   assert.equal(resolveSpawnMode(base(), { attended: true, env: {} }), 'desktop');
 });
 
@@ -533,7 +557,12 @@ test('desktop requires attended; else interactive', () => {
 });
 
 test('existing visible launcher path unchanged', () => {
-  const loop = { autonomy: { spawn_style: 'visible' }, session_spawn: { launcher: 'iterm2' } };
+  const loop = {
+    autonomy: {
+      spawn_style: 'visible', attended_launch_approval: attendedApproval('visible'),
+    },
+    session_spawn: { launcher: 'iterm2' },
+  };
   assert.equal(resolveSpawnMode(loop, { attended: true, env: {} }), 'iterm2');
 });
 
@@ -648,6 +677,65 @@ test('visible + attended + launcher: spawnFn gets cmds[launcher] (bin+socket thr
   const lc = readFileSync(join(runDir(root, runId), 'terminal', 'launch-command.txt'), 'utf8');
   assert.ok(lc.includes('/abs/bin/cmux'), 'launch-command.txt cmux line must use the absolute launcher_bin');
   assert.ok(lc.includes('/tmp/cmux.sock'), 'launch-command.txt cmux line must thread the launcher_socket');
+});
+
+test('attended approval revoked before the lock-held spawn claim fails closed without spawning', () => {
+  const { root, runId } = seedLauncher({ spawn_style: 'visible', launcher: 'cmux' });
+  const h = emitHandoff(root, runId, {
+    trigger: 'attended-approval-race', now: NOW1, expect: expect_(runId),
+  });
+  let spawned = 0;
+  const result = respawn(root, runId, {
+    childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
+    attended: true, env: {}, now: NOW1,
+    beforeClaim: () => {
+      const { data } = readState(root, runId);
+      data.autonomy.attended_launch_approval = null;
+      writeState(root, runId, data);
+    },
+    spawnFn: () => { spawned += 1; return { ok: true }; },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.outcome, 'no-launcher');
+  assert.equal(result.reason, 'attended-launch-unauthorized');
+  assert.equal(spawned, 0);
+  const after = readState(root, runId).data;
+  assert.equal(after.status, 'paused');
+  assert.equal(after.pause_reason, 'attended-launch-unauthorized');
+  assert.equal(after.session_chain.lease.handoff_phase, 'emitted');
+  assert.equal(after.session_chain.lease.state, 'releasing');
+  assert.equal(after.session_chain.lease.handoff_child_run_id, h.childRunId);
+  assert.equal(after.session_chain.lease.handoff_idempotency_key, h.key);
+});
+
+test('revoke after the spawned claim is HANDOFF_IN_FLIGHT and cannot pretend to cancel launch', async () => {
+  const { revokeAttendedLaunch } = await import('../scripts/lib/attended-launch.mjs');
+  const { root, runId } = seedLauncher({ spawn_style: 'visible', launcher: 'cmux' });
+  const h = emitHandoff(root, runId, {
+    trigger: 'attended-post-claim-revoke', now: NOW1, expect: expect_(runId),
+  });
+  let revokeResult;
+  const result = respawn(root, runId, {
+    childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel,
+    attended: true, env: {}, now: NOW1,
+    spawnFn: () => {
+      revokeResult = revokeAttendedLaunch(root, runId, {
+        confirm: true, fence: expect_(runId), now: NOW1,
+      });
+      return { ok: true };
+    },
+    pollLease: () => ({
+      state: 'active', handoff_phase: 'acquired',
+      owner_run_id: h.childRunId, generation: 2,
+    }),
+    sleep: noSleep,
+  });
+  assert.deepEqual(revokeResult, { ok: false, reason: 'HANDOFF_IN_FLIGHT' });
+  assert.equal(result.ok, true);
+  assert.equal(result.outcome, 'spawned');
+  assert.deepEqual(readState(root, runId).data.autonomy.attended_launch_approval, {
+    style: 'visible', approved_at: '2026-06-24T00:00:00.000Z',
+  });
 });
 
 test('child-readiness timeout → PRESERVE (reserved child kept, late acquire safe) — R6-plan', () => {
@@ -1069,6 +1157,7 @@ test('Codex headless transport is rejected before spawned CAS and never reaches 
 test('Codex App manual continuation never probes the Claude Desktop handler', () => {
   const { root, runId } = seed((data) => {
     data.autonomy.spawn_style = 'desktop';
+    data.autonomy.attended_launch_approval = attendedApproval('desktop');
   }, 'codex');
   const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });
   let probed = false;
@@ -1165,6 +1254,7 @@ test('R12-LL: gate-OK + no-launcher → no-launcher outcome, reserved child pres
 test('B3: powershell launcher with null launcher_bin → no-launcher (preserve), never spawns', () => {
   const { root, runId } = seed((d) => {
     d.autonomy.spawn_style = 'visible';
+    d.autonomy.attended_launch_approval = attendedApproval('visible');
     d.session_spawn = {
       platform: 'win32', launcher: 'powershell', launcher_bin: null, launcher_socket: null,
       surface: 'window', reachable: true, visible: true, signals: {}, probe: null,
@@ -1221,6 +1311,7 @@ function seedWindowsLauncher(kind = 'wt', runtime = 'claude') {
   const launcherIdentity = windowsLauncherIdentity(kind);
   const seeded = seed((data) => {
     data.autonomy.spawn_style = 'visible';
+    data.autonomy.attended_launch_approval = attendedApproval('visible');
     data.autonomy.runtime_executable_approval = runtimeIdentity;
     data.autonomy.launcher_executable_approvals = {
       wt: kind === 'wt' ? launcherIdentity : null,
@@ -1241,6 +1332,7 @@ function seedWindowsDesktop(runtime = 'claude') {
   const launcherIdentity = windowsLauncherIdentity('powershell');
   const seeded = seed((data) => {
     data.autonomy.spawn_style = 'desktop';
+    data.autonomy.attended_launch_approval = attendedApproval('desktop');
     data.autonomy.launcher_executable_approvals = {
       wt: null,
       powershell: launcherIdentity,
@@ -1844,6 +1936,7 @@ test('native Windows Codex post-CAS runtime or launcher drift rolls back, pauses
 test('desktop mode with unverified target (desktopProbe: ok:false) → preserve-pause, not rollback', () => {
   const { root, runId } = seed((d) => {
     d.autonomy.spawn_style = 'desktop';
+    d.autonomy.attended_launch_approval = attendedApproval('desktop');
     d.session_spawn = {
       platform: 'darwin', launcher: 'none', launcher_bin: null, launcher_socket: null,
       surface: 'window', reachable: true, visible: true, signals: {}, probe: null,
@@ -1874,6 +1967,7 @@ test('desktop mode with unverified target (desktopProbe: ok:false) → preserve-
 function seedDesktop() {
   return seed((d) => {
     d.autonomy.spawn_style = 'desktop';
+    d.autonomy.attended_launch_approval = attendedApproval('desktop');
     d.session_spawn = {
       platform: 'darwin', launcher: 'none', launcher_bin: null, launcher_socket: null,
       surface: 'window', reachable: true, visible: true, signals: {}, probe: null,

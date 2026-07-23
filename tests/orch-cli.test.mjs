@@ -518,6 +518,9 @@ runtimeExecutableCliTest('POSIX Codex CLI visible respawn consumes durable appro
 
   const { data } = readState(fixture.root, fixture.runId);
   data.autonomy.spawn_style = 'visible';
+  data.autonomy.attended_launch_approval = {
+    style: 'visible', approved_at: '2026-07-11T08:01:00.000Z',
+  };
   data.autonomy.child_ready_timeout_sec = 0;
   data.session_spawn = {
     platform: process.platform,

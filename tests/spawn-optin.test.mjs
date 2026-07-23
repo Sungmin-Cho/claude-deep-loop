@@ -138,6 +138,9 @@ test('offer→confirm transitions to desktop and consumes nonce (single-use)', (
   assert.equal(readState(root, runId).data.autonomy.spawn_style_optin_pending.nonce, 'n1');
   assert.equal(confirmDesktop(root, runId, { expect, now: T0 + 1000, nonce: 'n1', platform: 'darwin', desktopProbe: passingProbe }).ok, true);
   assert.equal(readState(root, runId).data.autonomy.spawn_style, 'desktop');
+  assert.deepEqual(readState(root, runId).data.autonomy.attended_launch_approval, {
+    style: 'desktop', approved_at: '2026-07-01T00:00:01.000Z',
+  });
   assert.equal(readState(root, runId).data.autonomy.spawn_style_optin_pending, undefined, 'pending cleared on confirm');
   // reuse rejected — nonce is single-use
   const r2 = confirmDesktop(root, runId, { expect, now: T0 + 2000, nonce: 'n1', platform: 'darwin', desktopProbe: passingProbe });
@@ -169,6 +172,18 @@ test('decline clears pending nonce', () => {
   assert.equal(readState(root, runId).data.autonomy.spawn_style_optin_pending, undefined);
   assert.equal(confirmDesktop(root, runId, { expect, now: T0 + 2000, nonce: 'n1', platform: 'darwin' }).ok, false);
   assert.equal(readState(root, runId).data.autonomy.spawn_style, 'visible');
+});
+
+test('offer and decline preserve an existing attended approval byte-for-byte', () => {
+  const { root, runId, expect } = seedFreshRun();
+  const { data } = readState(root, runId);
+  const approval = { style: 'visible', approved_at: '2026-07-01T00:00:00.000Z' };
+  data.autonomy.attended_launch_approval = approval;
+  writeState(root, runId, data);
+  offerDesktop(root, runId, { expect, now: T0, nonce: 'n1' });
+  assert.deepEqual(readState(root, runId).data.autonomy.attended_launch_approval, approval);
+  declineDesktop(root, runId, { expect, now: T0 + 1 });
+  assert.deepEqual(readState(root, runId).data.autonomy.attended_launch_approval, approval);
 });
 
 test('expired nonce is rejected', () => {
@@ -332,9 +347,15 @@ test('offerDesktop with non-finite now returns {ok:false} INVALID_TTL_SEC and ap
 
 test('resetDesktop transitions desktop -> visible (fenced)', () => {
   const { root, runId, expect } = seedFreshRun({ spawn_style: 'desktop' });
+  const { data } = readState(root, runId);
+  data.autonomy.attended_launch_approval = {
+    style: 'desktop', approved_at: '2026-07-01T00:00:00.000Z',
+  };
+  writeState(root, runId, data);
   const r = resetDesktop(root, runId, { expect, now: T0 });
   assert.equal(r.ok, true);
   assert.equal(readState(root, runId).data.autonomy.spawn_style, 'visible');
+  assert.equal(readState(root, runId).data.autonomy.attended_launch_approval, null);
 });
 
 test('resetDesktop also clears a stray pending nonce', () => {
