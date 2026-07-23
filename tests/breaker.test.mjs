@@ -126,6 +126,14 @@ function recoveryBreakerFixture(kind) {
     ? 'STALE-BOUNDARY-CHILD'
     : 'RECOVERY-CHILD';
   if (kind === 'affinity-supersession') {
+    data.workstreams.push({
+      id: 'ws-recovery', title: 'open recovery source', status: 'in_progress',
+      branch: 'recovery/source', worktree: '.worktrees/recovery-source',
+      base_commit: null, dirty_on_handoff: false,
+      pr: { intended: true, state: 'none', url: null },
+      episodes: [], review_points_done: [], depends_on: [],
+      terminal_events: [],
+    });
     owner.scope = {
       kind: 'workstream', workstream_id: 'ws-recovery', bound_at_seq: 7,
       terminal_event: null, closed_at: null, superseded_at: supersededAt,
@@ -191,6 +199,7 @@ test('resetBreaker preserves exact paused released recovery reservations for bot
       pause_reason: before.pause_reason,
       lease: before.session_chain.lease,
       sessions: before.session_chain.sessions,
+      workstreams: before.workstreams,
     });
     const result = resetBreaker(root, runId, {
       fence: { owner: runId, generation: 1, intent: 'breaker-reset' },
@@ -202,6 +211,7 @@ test('resetBreaker preserves exact paused released recovery reservations for bot
       pause_reason: after.pause_reason,
       lease: after.session_chain.lease,
       sessions: after.session_chain.sessions,
+      workstreams: after.workstreams,
     }, topology, kind);
     assert.deepEqual(after.circuit_breaker, {
       consecutive_request_changes: 0,
@@ -502,6 +512,17 @@ const inexactBreakerRecoveryCases = [
       },
     },
     {
+      label: 'acquired stale session starts before parent supersession',
+      mutate(data, child) {
+        const stale = data.session_chain.sessions.find(
+          session => session.run_id === child.recovered_from,
+        );
+        stale.started_at = '2026-07-22T23:58:59.000Z';
+        stale.turns = 2;
+        data.session_chain.lease.owner_run_id = stale.run_id;
+      },
+    },
+    {
       label: 'invalid parent supersession chronology',
       mutate(data, child) {
         const stale = data.session_chain.sessions.find(
@@ -604,6 +625,24 @@ const inexactBreakerRecoveryCases = [
         data.workstreams.push(structuredClone(data.workstreams[0]));
       },
     },
+    {
+      label: 'duplicate exact boundary event in source Workstream',
+      mutate(data) {
+        data.workstreams[0].terminal_events.push(
+          structuredClone(data.workstreams[0].terminal_events[0]),
+        );
+      },
+    },
+    {
+      label: 'exact boundary event copied to a second Workstream',
+      mutate(data) {
+        const sibling = structuredClone(data.workstreams[0]);
+        sibling.id = 'ws-other';
+        sibling.branch = 'recovery/other';
+        sibling.worktree = '.worktrees/recovery-other';
+        data.workstreams.push(sibling);
+      },
+    },
 ];
 
 for (const item of inexactBreakerRecoveryCases) {
@@ -623,6 +662,57 @@ for (const item of inexactBreakerRecoveryCases) {
         generation: data.session_chain.lease.generation,
         intent: 'breaker-reset',
       },
+    }), /LEASE_FENCED/, item.label);
+    assert.equal(JSON.stringify(readState(root, runId).data), before, item.label);
+  });
+}
+
+const inexactAffinityBreakerRecoveryCases = [
+  {
+    label: 'affinity recovery under a legacy continuation policy',
+    mutate(data) {
+      data.autonomy.continuation_policy = 'compact-in-place';
+    },
+  },
+  {
+    label: 'affinity recovery without its Workstream',
+    mutate(data) {
+      data.workstreams = [];
+    },
+  },
+  {
+    label: 'affinity recovery with a terminal Workstream',
+    mutate(data) {
+      data.workstreams[0].status = 'ready';
+    },
+  },
+  {
+    label: 'affinity recovery with duplicate matching Workstreams',
+    mutate(data) {
+      data.workstreams.push(structuredClone(data.workstreams[0]));
+    },
+  },
+  {
+    label: 'affinity recovery with a forged terminal event',
+    mutate(data) {
+      data.workstreams[0].terminal_events.push({
+        seq: 12,
+        checksum: 'd'.repeat(64),
+      });
+    },
+  },
+];
+
+for (const item of inexactAffinityBreakerRecoveryCases) {
+  test(`resetBreaker rejects schema-valid ${item.label} without mutation`, () => {
+    const { root, runId } = recoveryBreakerFixture('affinity-supersession');
+    const { data } = readState(root, runId);
+    item.mutate(data);
+    assert.deepEqual(validate(data), { ok: true, errors: [] }, item.label);
+    writeState(root, runId, data);
+    const before = JSON.stringify(readState(root, runId).data);
+    assert.throws(() => resetBreaker(root, runId, {
+      fence: { owner: runId, generation: 1, intent: 'breaker-reset' },
     }), /LEASE_FENCED/, item.label);
     assert.equal(JSON.stringify(readState(root, runId).data), before, item.label);
   });

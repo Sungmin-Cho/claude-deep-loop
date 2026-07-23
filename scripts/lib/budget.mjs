@@ -363,13 +363,26 @@ export function recoveryReservationKind(loop) {
   if (linkedSessions.length !== 1 || linkedSessions[0] !== predecessor
     || linkedScopes.length !== 1 || linkedScopes[0] !== predecessor) return null;
 
-  if (kind === 'affinity-supersession'
-    && (owner !== predecessor
+  const workstreams = Array.isArray(loop.workstreams) ? loop.workstreams : [];
+  if (kind === 'affinity-supersession') {
+    const affinityRows = workstreams.filter(
+      workstream => workstream?.id === scope.workstream_id,
+    );
+    const affinityWorkstream = affinityRows[0];
+    if (loop.autonomy?.continuation_policy !== 'workstream-session'
+      || owner !== predecessor
       || child.recovered_from !== lease.owner_run_id
       || typeof scope.workstream_id !== 'string' || scope.workstream_id.length === 0
       || !Number.isSafeInteger(scope.bound_at_seq) || scope.bound_at_seq < 1
       || predecessorScope.workstream_id !== scope.workstream_id
-      || predecessorScope.bound_at_seq !== scope.bound_at_seq)) return null;
+      || predecessorScope.bound_at_seq !== scope.bound_at_seq
+      || affinityRows.length !== 1
+      || !['planned', 'in_progress', 'in_review', 'parked'].includes(
+        affinityWorkstream?.status,
+      )
+      || !Array.isArray(affinityWorkstream?.terminal_events)
+      || affinityWorkstream.terminal_events.length !== 0) return null;
+  }
   if (kind === 'boundary-recovery'
     && (scope.workstream_id !== null || scope.bound_at_seq !== null
       || predecessorScope.workstream_id !== null
@@ -388,9 +401,16 @@ export function recoveryReservationKind(loop) {
     const parentClosedAt = canonicalTimestamp(parentScope?.closed_at);
     const parentSupersededAt = canonicalTimestamp(parentScope?.superseded_at);
     const rootDigest = projectRootDigest(loop.project?.root);
-    const workstreamRows = (Array.isArray(loop.workstreams) ? loop.workstreams : [])
+    const workstreamRows = workstreams
       .filter(workstream => workstream?.id === parentScope?.workstream_id);
     const workstream = workstreamRows[0];
+    const boundaryEventRows = workstreams.flatMap(workstreamRow => (
+      Array.isArray(workstreamRow?.terminal_events)
+        ? workstreamRow.terminal_events
+          .filter(event => sameBoundaryIdentity(event, lease.handoff_boundary_event))
+          .map(() => workstreamRow)
+        : []
+    ));
     const neverAcquiredOwner = owner === parent
       && predecessor.started_at === null
       && staleEndedAt !== null
@@ -399,6 +419,8 @@ export function recoveryReservationKind(loop) {
       && staleStartedAt !== null
       && staleEndedAt !== null
       && staleEndedAt >= staleStartedAt
+      && parentSupersededAt !== null
+      && parentSupersededAt <= staleStartedAt
       && Number.isSafeInteger(predecessor.turns)
       && predecessor.turns >= 0;
     if (parent === predecessor || parent === child
@@ -431,9 +453,8 @@ export function recoveryReservationKind(loop) {
       || workstreamRows.length !== 1
       || !['ready', 'merged', 'abandoned'].includes(workstream?.status)
       || !Array.isArray(workstream?.terminal_events)
-      || !workstream.terminal_events.some(event => (
-        sameBoundaryIdentity(event, lease.handoff_boundary_event)
-      ))
+      || boundaryEventRows.length !== 1
+      || boundaryEventRows[0] !== workstream
       || predecessor.outcome !== 'abandoned_recover'
       || (!neverAcquiredOwner && !acquiredOwner)) {
       return null;

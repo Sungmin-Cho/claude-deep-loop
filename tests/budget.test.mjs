@@ -251,6 +251,14 @@ function recoveryBudgetPauseFixture(takeoverKind) {
     ? 'STALE-BOUNDARY-CHILD'
     : 'RECOVERY-CHILD';
   if (takeoverKind === 'affinity-supersession') {
+    data.workstreams.push({
+      id: 'ws-recovery', title: 'open recovery source', status: 'in_progress',
+      branch: 'recovery/source', worktree: '.worktrees/recovery-source',
+      base_commit: null, dirty_on_handoff: false,
+      pr: { intended: true, state: 'none', url: null },
+      episodes: [], review_points_done: [], depends_on: [],
+      terminal_events: [],
+    });
     owner.scope = {
       kind: 'workstream', workstream_id: 'ws-recovery', bound_at_seq: 7,
       terminal_event: null, closed_at: null, superseded_at: supersededAt,
@@ -335,6 +343,7 @@ test('budget extension preserves both released recovery reservations byte-semant
       pause_reason: before.pause_reason,
       lease: before.session_chain.lease,
       sessions: before.session_chain.sessions,
+      workstreams: before.workstreams,
     });
     budgetApi.extendBudget(f.root, f.runId, {
       turns: 2, reason: `resume exact ${kind} reservation`, confirm: true,
@@ -346,6 +355,7 @@ test('budget extension preserves both released recovery reservations byte-semant
       pause_reason: after.pause_reason,
       lease: after.session_chain.lease,
       sessions: after.session_chain.sessions,
+      workstreams: after.workstreams,
     }, topology, kind);
     assert.equal(after.budget.total, before.budget.total + 2, kind);
     assert.equal(after.budget.spent, before.budget.spent, kind);
@@ -645,6 +655,15 @@ const inexactBudgetRecoveryCases = [
       },
     },
     {
+      label: 'acquired stale session starts before parent supersession',
+      mutate(data) {
+        const stale = recoveryPredecessor(data);
+        stale.started_at = '2026-07-22T23:58:59.000Z';
+        stale.turns = 2;
+        data.session_chain.lease.owner_run_id = stale.run_id;
+      },
+    },
+    {
       label: 'invalid parent supersession chronology',
       mutate(data) {
         recoveryOriginalParent(data).scope.superseded_at =
@@ -733,6 +752,24 @@ const inexactBudgetRecoveryCases = [
         data.workstreams.push(structuredClone(data.workstreams[0]));
       },
     },
+    {
+      label: 'duplicate exact boundary event in source Workstream',
+      mutate(data) {
+        data.workstreams[0].terminal_events.push(
+          structuredClone(data.workstreams[0].terminal_events[0]),
+        );
+      },
+    },
+    {
+      label: 'exact boundary event copied to a second Workstream',
+      mutate(data) {
+        const sibling = structuredClone(data.workstreams[0]);
+        sibling.id = 'ws-other';
+        sibling.branch = 'recovery/other';
+        sibling.worktree = '.worktrees/recovery-other';
+        data.workstreams.push(sibling);
+      },
+    },
 ];
 
 for (const item of inexactBudgetRecoveryCases) {
@@ -751,6 +788,61 @@ for (const item of inexactBudgetRecoveryCases) {
         owner: data.session_chain.lease.owner_run_id,
         generation: data.session_chain.lease.generation,
       },
+      now: f.now,
+    }), /BUDGET_EXTENSION_STATUS_INVALID/, item.label);
+    assert.equal(JSON.stringify(readState(f.root, f.runId).data), before, item.label);
+  });
+}
+
+const inexactAffinityBudgetRecoveryCases = [
+  {
+    label: 'affinity recovery under a legacy continuation policy',
+    mutate(data) {
+      data.autonomy.continuation_policy = 'compact-in-place';
+    },
+  },
+  {
+    label: 'affinity recovery without its Workstream',
+    mutate(data) {
+      data.workstreams = [];
+    },
+  },
+  {
+    label: 'affinity recovery with a terminal Workstream',
+    mutate(data) {
+      data.workstreams[0].status = 'ready';
+    },
+  },
+  {
+    label: 'affinity recovery with duplicate matching Workstreams',
+    mutate(data) {
+      data.workstreams.push(structuredClone(data.workstreams[0]));
+    },
+  },
+  {
+    label: 'affinity recovery with a forged terminal event',
+    mutate(data) {
+      data.workstreams[0].terminal_events.push({
+        seq: 12,
+        checksum: 'd'.repeat(64),
+      });
+    },
+  },
+];
+
+for (const item of inexactAffinityBudgetRecoveryCases) {
+  test(`budget extension rejects schema-valid ${item.label} without mutation`, () => {
+    const f = recoveryBudgetPauseFixture('affinity-supersession');
+    const { data } = readState(f.root, f.runId);
+    item.mutate(data);
+    assert.deepEqual(validate(data), { ok: true, errors: [] }, item.label);
+    writeState(f.root, f.runId, data);
+    const before = JSON.stringify(readState(f.root, f.runId).data);
+    assert.throws(() => budgetApi.extendBudget(f.root, f.runId, {
+      turns: 2,
+      reason: `reject ${item.label}`,
+      confirm: true,
+      fence: f.fence,
       now: f.now,
     }), /BUDGET_EXTENSION_STATUS_INVALID/, item.label);
     assert.equal(JSON.stringify(readState(f.root, f.runId).data), before, item.label);
