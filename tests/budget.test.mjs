@@ -130,12 +130,23 @@ test('shared hard-budget predicate reports turns, tokens, and wallclock without 
   assert.equal(budgetApi.checkHardBudget(l, { now: 3_601_000, sessionStart: 0 }).reason, 'wallclock-hard-stop');
 });
 
-function budgetPauseFixture({ wallclock = true } = {}) {
+function budgetPauseFixture({ wallclock = true, liveWorkstream = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'dl-budget-extend-'));
   const now = Date.parse('2026-07-23T00:00:00Z');
   const { runId } = initRun(root, {
     runtime: 'claude', goal: 'g', now: new Date(now),
   });
+  let workstreamId = null;
+  if (liveWorkstream) {
+    const fence = { owner: runId, generation: 1, intent: 'business' };
+    ({ id: workstreamId } = newWorkstream(root, runId, {
+      title: 'open recovery source',
+      branch: 'recovery/source',
+      worktree: '.worktrees/recovery-source',
+      fence,
+    }));
+    setWorkstreamStatus(root, runId, workstreamId, 'in_progress', { fence });
+  }
   const { data } = readState(root, runId);
   data.status = 'paused';
   data.pause_reason = 'gate:budget';
@@ -145,7 +156,10 @@ function budgetPauseFixture({ wallclock = true } = {}) {
   data.budget.tokens_spent = 10;
   if (!wallclock) delete data.budget.max_wallclock_sec;
   writeState(root, runId, data);
-  return { root, runId, now, fence: { owner: runId, generation: 1 } };
+  return {
+    root, runId, now, workstreamId,
+    fence: { owner: runId, generation: 1 },
+  };
 }
 
 test('confirmed positive extension clears every hard predicate and resumes the same owner without resetting spent', () => {
@@ -229,7 +243,9 @@ test('public hard pause → confirmed extend → same-session finish never emits
 });
 
 function recoveryBudgetPauseFixture(takeoverKind) {
-  const f = budgetPauseFixture();
+  const f = budgetPauseFixture({
+    liveWorkstream: takeoverKind === 'affinity-supersession',
+  });
   const { data } = readState(f.root, f.runId);
   const supersededAt = new Date(f.now).toISOString();
   const handoffAt = new Date(f.now - 60_000).toISOString();
@@ -251,16 +267,12 @@ function recoveryBudgetPauseFixture(takeoverKind) {
     ? 'STALE-BOUNDARY-CHILD'
     : 'RECOVERY-CHILD';
   if (takeoverKind === 'affinity-supersession') {
-    data.workstreams.push({
-      id: 'ws-recovery', title: 'open recovery source', status: 'in_progress',
-      branch: 'recovery/source', worktree: '.worktrees/recovery-source',
-      base_commit: null, dirty_on_handoff: false,
-      pr: { intended: true, state: 'none', url: null },
-      episodes: [], review_points_done: [], depends_on: [],
-      terminal_events: [],
-    });
+    assert.equal(data.workstreams.length, 1);
+    assert.equal(data.workstreams[0].id, f.workstreamId);
+    assert.equal(data.workstreams[0].status, 'in_progress');
+    assert.equal(Object.hasOwn(data.workstreams[0], 'terminal_events'), false);
     owner.scope = {
-      kind: 'workstream', workstream_id: 'ws-recovery', bound_at_seq: 7,
+      kind: 'workstream', workstream_id: f.workstreamId, bound_at_seq: 7,
       terminal_event: null, closed_at: null, superseded_at: supersededAt,
       supersede_reason: 'host-session-lost', superseded_by: 'RECOVERY-CHILD',
     };
@@ -306,7 +318,7 @@ function recoveryBudgetPauseFixture(takeoverKind) {
     recovery_sha256: data.session_chain.lease.recovery_sha256,
     scope: {
       kind: 'workstream',
-      workstream_id: takeoverKind === 'boundary-recovery' ? null : 'ws-recovery',
+      workstream_id: takeoverKind === 'boundary-recovery' ? null : f.workstreamId,
       bound_at_seq: takeoverKind === 'boundary-recovery' ? null : 7,
       terminal_event: null, closed_at: null, superseded_at: null,
     },
@@ -360,6 +372,22 @@ test('budget extension preserves both released recovery reservations byte-semant
     assert.equal(after.budget.total, before.budget.total + 2, kind);
     assert.equal(after.budget.spent, before.budget.spent, kind);
   }
+});
+
+test('budget extension preserves affinity recovery with an explicit empty terminal event list', () => {
+  const f = recoveryBudgetPauseFixture('affinity-supersession');
+  const { data } = readState(f.root, f.runId);
+  data.workstreams[0].terminal_events = [];
+  writeState(f.root, f.runId, data);
+  const before = readState(f.root, f.runId).data;
+  assert.deepEqual(budgetApi.extendBudget(f.root, f.runId, {
+    turns: 2,
+    reason: 'preserve explicit empty live affinity provenance',
+    confirm: true,
+    fence: f.fence,
+    now: f.now,
+  }), { ok: true, status: 'paused' });
+  assert.deepEqual(readState(f.root, f.runId).data.workstreams, before.workstreams);
 });
 
 test('budget extension preserves boundary recovery when the stale predecessor owns the released lease', () => {
@@ -822,10 +850,10 @@ const inexactAffinityBudgetRecoveryCases = [
   {
     label: 'affinity recovery with a forged terminal event',
     mutate(data) {
-      data.workstreams[0].terminal_events.push({
+      data.workstreams[0].terminal_events = [{
         seq: 12,
         checksum: 'd'.repeat(64),
-      });
+      }];
     },
   },
 ];
@@ -848,6 +876,28 @@ for (const item of inexactAffinityBudgetRecoveryCases) {
     assert.equal(JSON.stringify(readState(f.root, f.runId).data), before, item.label);
   });
 }
+
+test('budget extension rejects non-array affinity terminal events without mutation', () => {
+  const f = recoveryBudgetPauseFixture('affinity-supersession');
+  const { data } = readState(f.root, f.runId);
+  data.workstreams[0].terminal_events = {};
+  assert.equal(validate(data).ok, false);
+  const dir = runDir(f.root, f.runId);
+  const raw = JSON.stringify(data, null, 2);
+  writeFileSync(join(dir, 'loop.json'), raw);
+  writeFileSync(join(dir, '.loop.hash'), contentHash(raw));
+  const beforeLoop = readFileSync(join(dir, 'loop.json'), 'utf8');
+  const beforeHash = readFileSync(join(dir, '.loop.hash'), 'utf8');
+  assert.throws(() => budgetApi.extendBudget(f.root, f.runId, {
+    turns: 2,
+    reason: 'reject malformed live affinity provenance',
+    confirm: true,
+    fence: f.fence,
+    now: f.now,
+  }), /BUDGET_EXTENSION_STATUS_INVALID/);
+  assert.equal(readFileSync(join(dir, 'loop.json'), 'utf8'), beforeLoop);
+  assert.equal(readFileSync(join(dir, '.loop.hash'), 'utf8'), beforeHash);
+});
 
 test('isMeasuredOneTurnUsage accepts only an exact safe Codex one-turn measurement', () => {
   assert.equal(isMeasuredOneTurnUsage({

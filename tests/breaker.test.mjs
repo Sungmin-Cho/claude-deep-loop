@@ -1,12 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { checkBreaker, recordReviewVerdict, resetBreaker } from '../scripts/lib/breaker.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { readState } from '../scripts/lib/state.mjs';
+import { readState, runDir } from '../scripts/lib/state.mjs';
 import { projectRootDigest } from '../scripts/lib/project-root.mjs';
+import { newWorkstream, setWorkstreamStatus } from '../scripts/lib/workspace.mjs';
+import { contentHash } from '../scripts/lib/envelope.mjs';
 
 function seed() {
   const root = mkdtempSync(join(tmpdir(), 'dl-breaker-'));
@@ -99,6 +101,17 @@ test('resetBreaker: fenced call rejects via LEASE_FENCED channel; fence-less via
 
 function recoveryBreakerFixture(kind) {
   const { root, runId } = seed();
+  let affinityWorkstreamId = null;
+  if (kind === 'affinity-supersession') {
+    const fence = { owner: runId, generation: 1, intent: 'business' };
+    ({ id: affinityWorkstreamId } = newWorkstream(root, runId, {
+      title: 'open recovery source',
+      branch: 'recovery/source',
+      worktree: '.worktrees/recovery-source',
+      fence,
+    }));
+    setWorkstreamStatus(root, runId, affinityWorkstreamId, 'in_progress', { fence });
+  }
   const { data } = readState(root, runId);
   const supersededAt = '2026-07-23T00:00:00.000Z';
   const handoffAt = '2026-07-22T23:59:00.000Z';
@@ -126,16 +139,12 @@ function recoveryBreakerFixture(kind) {
     ? 'STALE-BOUNDARY-CHILD'
     : 'RECOVERY-CHILD';
   if (kind === 'affinity-supersession') {
-    data.workstreams.push({
-      id: 'ws-recovery', title: 'open recovery source', status: 'in_progress',
-      branch: 'recovery/source', worktree: '.worktrees/recovery-source',
-      base_commit: null, dirty_on_handoff: false,
-      pr: { intended: true, state: 'none', url: null },
-      episodes: [], review_points_done: [], depends_on: [],
-      terminal_events: [],
-    });
+    assert.equal(data.workstreams.length, 1);
+    assert.equal(data.workstreams[0].id, affinityWorkstreamId);
+    assert.equal(data.workstreams[0].status, 'in_progress');
+    assert.equal(Object.hasOwn(data.workstreams[0], 'terminal_events'), false);
     owner.scope = {
-      kind: 'workstream', workstream_id: 'ws-recovery', bound_at_seq: 7,
+      kind: 'workstream', workstream_id: affinityWorkstreamId, bound_at_seq: 7,
       terminal_event: null, closed_at: null, superseded_at: supersededAt,
       supersede_reason: 'host-session-lost', superseded_by: 'RECOVERY-CHILD',
     };
@@ -181,7 +190,7 @@ function recoveryBreakerFixture(kind) {
     recovery_sha256: data.session_chain.lease.recovery_sha256,
     scope: {
       kind: 'workstream',
-      workstream_id: kind === 'boundary-recovery' ? null : 'ws-recovery',
+      workstream_id: kind === 'boundary-recovery' ? null : affinityWorkstreamId,
       bound_at_seq: kind === 'boundary-recovery' ? null : 7,
       terminal_event: null, closed_at: null, superseded_at: null,
     },
@@ -219,6 +228,18 @@ test('resetBreaker preserves exact paused released recovery reservations for bot
       trip_reason: null,
     }, kind);
   }
+});
+
+test('resetBreaker preserves affinity recovery with an explicit empty terminal event list', () => {
+  const { root, runId } = recoveryBreakerFixture('affinity-supersession');
+  const { data } = readState(root, runId);
+  data.workstreams[0].terminal_events = [];
+  writeState(root, runId, data);
+  const before = readState(root, runId).data;
+  assert.deepEqual(resetBreaker(root, runId, {
+    fence: { owner: runId, generation: 1, intent: 'breaker-reset' },
+  }), { ok: true, status: 'paused' });
+  assert.deepEqual(readState(root, runId).data.workstreams, before.workstreams);
 });
 
 test('resetBreaker preserves boundary recovery when the stale predecessor owns the released lease', () => {
@@ -695,10 +716,10 @@ const inexactAffinityBreakerRecoveryCases = [
   {
     label: 'affinity recovery with a forged terminal event',
     mutate(data) {
-      data.workstreams[0].terminal_events.push({
+      data.workstreams[0].terminal_events = [{
         seq: 12,
         checksum: 'd'.repeat(64),
-      });
+      }];
     },
   },
 ];
@@ -717,6 +738,24 @@ for (const item of inexactAffinityBreakerRecoveryCases) {
     assert.equal(JSON.stringify(readState(root, runId).data), before, item.label);
   });
 }
+
+test('resetBreaker rejects non-array affinity terminal events without mutation', () => {
+  const { root, runId } = recoveryBreakerFixture('affinity-supersession');
+  const { data } = readState(root, runId);
+  data.workstreams[0].terminal_events = {};
+  assert.equal(validate(data).ok, false);
+  const dir = runDir(root, runId);
+  const raw = JSON.stringify(data, null, 2);
+  writeFileSync(join(dir, 'loop.json'), raw);
+  writeFileSync(join(dir, '.loop.hash'), contentHash(raw));
+  const beforeLoop = readFileSync(join(dir, 'loop.json'), 'utf8');
+  const beforeHash = readFileSync(join(dir, '.loop.hash'), 'utf8');
+  assert.throws(() => resetBreaker(root, runId, {
+    fence: { owner: runId, generation: 1, intent: 'breaker-reset' },
+  }), /LEASE_FENCED/);
+  assert.equal(readFileSync(join(dir, 'loop.json'), 'utf8'), beforeLoop);
+  assert.equal(readFileSync(join(dir, '.loop.hash'), 'utf8'), beforeHash);
+});
 
 test('resetBreaker rejects a malformed released recovery reservation without mutation', () => {
   const { root, runId } = seed();

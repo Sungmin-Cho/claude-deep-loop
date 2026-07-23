@@ -380,8 +380,9 @@ export function recoveryReservationKind(loop) {
       || !['planned', 'in_progress', 'in_review', 'parked'].includes(
         affinityWorkstream?.status,
       )
-      || !Array.isArray(affinityWorkstream?.terminal_events)
-      || affinityWorkstream.terminal_events.length !== 0) return null;
+      || (affinityWorkstream?.terminal_events !== undefined
+        && (!Array.isArray(affinityWorkstream.terminal_events)
+          || affinityWorkstream.terminal_events.length !== 0))) return null;
   }
   if (kind === 'boundary-recovery'
     && (scope.workstream_id !== null || scope.bound_at_seq !== null
