@@ -897,22 +897,22 @@ test('respawn refuses forged boundary topology before claim or external spawn', 
   assert.equal(readState(f.root, f.runId).data.session_chain.lease.handoff_phase, 'emitted');
 });
 
-test('spawn claim rechecks every ordered boundary gate inside the CAS and never consumes emitted state', () => {
-  for (const [label, mutate, reason] of [
-    ['budget', state => { state.budget.total = state.budget.spent; }, 'budget'],
-    ['breaker', state => { state.circuit_breaker.tripped = true; }, 'breaker'],
+test('spawn claim compensates every ordered boundary gate before external spawn', () => {
+  for (const [label, mutate, reason, compensation] of [
+    ['budget', state => { state.budget.total = state.budget.spent; }, 'budget', 'pause'],
+    ['breaker', state => { state.circuit_breaker.tripped = true; }, 'breaker', 'pause'],
     ['finish', state => {
       state.workstreams.find(ws => ws.status === 'planned').status = 'abandoned';
       state.active_workstreams = [];
-    }, 'FINISH_REQUIRED'],
+    }, 'FINISH_REQUIRED', 'finish'],
     ['boundary', state => {
       state.session_chain.sessions.find(session =>
         session.run_id === state.session_chain.lease.handoff_child_run_id)
         .parent_boundary_event = { seq: 999, checksum: 'd'.repeat(64) };
-    }, 'boundary-topology-invalid'],
-    ['max-sessions', state => { state.autonomy.max_sessions = 1; }, 'max_sessions'],
-    ['wallclock', state => { state.budget.max_wallclock_sec = 1; }, 'wallclock'],
-    ['auto-handoff', state => { state.autonomy.auto_handoff = false; }, 'auto_handoff'],
+    }, 'boundary-topology-invalid', 'preserve'],
+    ['max-sessions', state => { state.autonomy.max_sessions = 1; }, 'max_sessions', 'pause'],
+    ['wallclock', state => { state.budget.max_wallclock_sec = 1; }, 'wallclock', 'pause'],
+    ['auto-handoff', state => { state.autonomy.auto_handoff = false; }, 'auto_handoff', 'pause'],
   ]) {
     const f = closeWithSibling();
     const emitted = emitHandoff(f.root, f.runId, {
@@ -943,11 +943,52 @@ test('spawn claim rechecks every ordered boundary gate inside the CAS and never 
     assert.equal(spawned, 0, label);
     assert.equal(result.ok, false, label);
     assert.equal(result.reason, reason, label);
-    assert.equal(
-      readState(f.root, f.runId).data.session_chain.lease.handoff_phase,
-      'emitted',
-      label,
-    );
+    const state = readState(f.root, f.runId).data;
+    const lease = state.session_chain.lease;
+    const parent = state.session_chain.sessions.find(session => session.run_id === f.runId);
+    const child = state.session_chain.sessions.find(session => session.run_id === emitted.childRunId);
+    assert.deepEqual(parent.scope.terminal_event, f.boundary, label);
+    assert.deepEqual(lease.handoff_project_root_digest === undefined
+      ? child.project_root_digest
+      : lease.handoff_project_root_digest, projectRootDigest(state.project.root), label);
+    if (compensation === 'preserve') {
+      assert.equal(result.outcome, 'boundary-invalid', label);
+      assert.equal(state.status, 'running', label);
+      assert.equal(lease.state, 'releasing', label);
+      assert.equal(lease.handoff_phase, 'emitted', label);
+      assert.equal(lease.handoff_child_run_id, emitted.childRunId, label);
+      assert.notEqual(child.outcome, 'failed_launch', label);
+      assert.equal(parent.superseded_by, emitted.childRunId, label);
+      continue;
+    }
+    assert.equal(result.outcome, 'gate-blocked', label);
+    assert.equal(lease.state, 'active', label);
+    assert.equal(lease.handoff_phase, 'idle', label);
+    assert.equal(lease.handoff_child_run_id, null, label);
+    assert.equal(lease.takeover_kind, null, label);
+    assert.equal(lease.handoff_boundary_event, undefined, label);
+    assert.equal(lease.handoff_project_binding_generation, undefined, label);
+    assert.equal(lease.handoff_project_root_digest, undefined, label);
+    assert.equal(child.outcome, 'failed_launch', label);
+    assert.deepEqual(child.parent_boundary_event, f.boundary, label);
+    assert.equal(parent.superseded_by, null, label);
+    assert.equal(parent.scope.superseded_at, null, label);
+    if (compensation === 'pause') {
+      assert.equal(state.status, 'paused', label);
+      assert.equal(state.pause_reason, `gate:${reason}`, label);
+      continue;
+    }
+    assert.equal(state.status, 'running', label);
+    assert.notEqual(state.pause_reason, `gate:${reason}`, label);
+    assert.equal(nextAction(state, { now: Date.parse(NOW) + 1 }).action.type, 'finish', label);
+    writeFileSync(join(runDir(f.root, f.runId), 'final-report.md'), '# complete');
+    assert.equal(finishRun(f.root, f.runId, {
+      status: 'completed',
+      reportRel: 'final-report.md',
+      proof: {},
+      fence: f.f,
+      now: Date.parse(NOW) + 2,
+    }).ok, true, label);
   }
 });
 

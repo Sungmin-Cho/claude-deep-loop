@@ -228,30 +228,34 @@ function classifyReadiness(l, { childRunId, startGeneration }) {
 // cleared, lease rolled back to active/idle (stale TTL released), status='paused' + pause_reason. The reserved
 // child is invalidated (it never ran). In-lock parent fence → if the lease changed (child took over), abort
 // WITHOUT mutating (returns {fenced:true}). No half-commit: event + chain + lease + status are one transaction.
+function invalidateHandoff(l, childRunId) {
+  const child = l.session_chain.sessions.find(s => s.run_id === childRunId);
+  if (child) child.outcome = 'failed_launch';
+  const parent = l.session_chain.sessions.find(s => s.superseded_by === childRunId);
+  if (parent) {
+    parent.superseded_by = null;
+    if (parent.scope?.kind === 'workstream') parent.scope.superseded_at = null;
+  }
+  l.session_chain.lease = {
+    ...l.session_chain.lease,
+    state: 'active',
+    handoff_phase: 'idle',
+    handoff_idempotency_key: null,
+    handoff_child_run_id: null,
+    handoff_trigger: null,
+    expires_at: null,
+    resume_policy: null,
+    takeover_kind: null,
+  };
+  delete l.session_chain.lease.handoff_boundary_event;
+  delete l.session_chain.lease.handoff_project_binding_generation;
+  delete l.session_chain.lease.handoff_project_root_digest;
+}
+
 export function rollbackAndPause(root, runId, { childRunId, parentOwner, generation, eventData, pauseReason }) {
   try {
     appendAnchored(root, runId, { type: 'respawn-failed', data: { ...eventData, pause_reason: pauseReason } }, (l) => {
-      const child = l.session_chain.sessions.find(s => s.run_id === childRunId);
-      if (child) child.outcome = 'failed_launch';
-      const parent = l.session_chain.sessions.find(s => s.superseded_by === childRunId);
-      if (parent) {
-        parent.superseded_by = null;
-        if (parent.scope?.kind === 'workstream') parent.scope.superseded_at = null;
-      }
-      l.session_chain.lease = {
-        ...l.session_chain.lease,
-        state: 'active',
-        handoff_phase: 'idle',
-        handoff_idempotency_key: null,
-        handoff_child_run_id: null,
-        handoff_trigger: null,
-        expires_at: null,
-        resume_policy: null,
-        takeover_kind: null,
-      };
-      delete l.session_chain.lease.handoff_boundary_event;
-      delete l.session_chain.lease.handoff_project_binding_generation;
-      delete l.session_chain.lease.handoff_project_root_digest;
+      invalidateHandoff(l, childRunId);
       l.status = 'paused';
       l.pause_reason = pauseReason;
     }, (l) => {
@@ -263,6 +267,42 @@ export function rollbackAndPause(root, runId, { childRunId, parentOwner, generat
   } catch (appendErr) {
     if (String(appendErr.message).startsWith('RESPAWN_FENCED')) return { fenced: true };
     if (String(appendErr.message).startsWith('RUN_TERMINAL')) return { terminal: true };   // v1.6 — caller가 outcome:'terminal'로 전파
+    throw appendErr;
+  }
+  return { ok: true };
+}
+
+function cancelHandoffForFinish(root, runId, {
+  childRunId, parentOwner, generation, now,
+}) {
+  try {
+    appendAnchored(root, runId, {
+      type: 'respawn-cancelled',
+      data: { child_run_id: childRunId, reason: 'finish-required' },
+      now,
+    }, (l) => {
+      invalidateHandoff(l, childRunId);
+    }, (l) => {
+      const lease = l.session_chain.lease;
+      if (lease.owner_run_id !== parentOwner || lease.generation !== generation) {
+        throw new Error('RESPAWN_FENCED: finish-cancel');
+      }
+      if (l.status === 'completed' || l.status === 'stopped') {
+        throw new Error('RUN_TERMINAL: respawn');
+      }
+      if (lease.handoff_child_run_id !== childRunId
+        || lease.handoff_phase !== 'emitted'
+        || lease.state !== 'releasing') {
+        throw new Error('RESPAWN_FENCED: finish-cancel');
+      }
+      if (nextAction(l, { now }).action?.type !== 'finish') {
+        throw new Error('FINISH_NO_LONGER_REQUIRED');
+      }
+    });
+  } catch (appendErr) {
+    if (String(appendErr.message).startsWith('RESPAWN_FENCED')) return { fenced: true };
+    if (String(appendErr.message).startsWith('RUN_TERMINAL')) return { terminal: true };
+    if (String(appendErr.message).startsWith('FINISH_NO_LONGER_REQUIRED')) return { changed: true };
     throw appendErr;
   }
   return { ok: true };
@@ -686,11 +726,26 @@ export function respawn(root, runId, {
       || claim.reason === 'BOUNDARY_EVENT_MISMATCH') {
       return { ok: false, outcome: 'boundary-invalid', reason: claim.reason, childRunId };
     }
+    if (claim.reason === 'FINISH_REQUIRED') {
+      const res = cancelHandoffForFinish(root, runId, {
+        childRunId, parentOwner, generation, now,
+      });
+      if (res.terminal) return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };
+      if (res.fenced) return { ok: false, outcome: 'fenced', reason: 'lease-changed-before-finish-cancel', childRunId };
+      if (res.changed) return { ok: false, outcome: 'phase-error', reason: 'FINISH_NO_LONGER_REQUIRED', childRunId };
+      return { ok: false, outcome: 'gate-blocked', reason: claim.reason, childRunId };
+    }
     if (claim.reason === 'budget' || claim.reason === 'breaker'
-      || claim.reason === 'FINISH_REQUIRED'
       || claim.reason.includes('max_sessions')
       || claim.reason.includes('wallclock')
       || claim.reason.includes('auto_handoff')) {
+      const res = rollbackAndPause(root, runId, {
+        childRunId, parentOwner, generation,
+        eventData: { child_run_id: childRunId, gate: claim.reason },
+        pauseReason: `gate:${claim.reason}`,
+      });
+      if (res.terminal) return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };
+      if (res.fenced) return { ok: false, outcome: 'fenced', reason: 'lease-changed-before-pause', childRunId };
       return { ok: false, outcome: 'gate-blocked', reason: claim.reason, childRunId };
     }
     return { ok: false, outcome: 'phase-error', reason: claim.reason, childRunId };
