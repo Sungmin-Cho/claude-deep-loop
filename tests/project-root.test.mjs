@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import {
   cpSync,
   existsSync,
@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
-import { contentHash } from '../scripts/lib/envelope.mjs';
+import { contentHash, unwrap, wrap } from '../scripts/lib/envelope.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import {
@@ -34,7 +34,12 @@ import {
 import { createDirectoryJunction } from './helpers/fs-fixtures.mjs';
 import { validate } from '../scripts/lib/schema.mjs';
 import { appendAnchored, verifyHead, verifyLog } from '../scripts/lib/integrity.mjs';
-import { makeCodexProcessReceipt } from '../scripts/lib/budget.mjs';
+import {
+  codexCheckerClaimHash,
+  makeCodexProcessReceipt,
+} from '../scripts/lib/budget.mjs';
+import { emitHandoff } from '../scripts/lib/handoff.mjs';
+import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
 
 const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const CLI = join(REPO_ROOT, 'scripts', 'deep-loop.mjs');
@@ -201,27 +206,60 @@ function movedRunWithProcessReceipt({
   malformed = false,
   conflicting = false,
   unverifiable = false,
+  incomplete = false,
+  wrongRoot = false,
+  unmeasurable = false,
 } = {}) {
   const parent = freshRoot('dl-root-accounting-');
   const originalRoot = join(parent, 'old root');
   const candidateRoot = join(parent, 'new root');
   mkdirSync(originalRoot);
   const { runId } = init(originalRoot, 'codex');
+  migrateAuthenticLegacyTransport(originalRoot, runId);
+  const handoff = emitHandoff(originalRoot, runId, {
+    trigger: 'project-root-accounting',
+    headless: true,
+    resumePolicy: 'headless',
+    expect: { owner: runId, generation: 1 },
+    now: FIXED_NOW.getTime() + 1_000,
+  });
+  assert.equal(handoff.ok, true);
   const context = {
-    parent_owner: unverifiable ? 'MISSING-ORIGIN' : runId,
+    parent_owner: runId,
     parent_generation: 1,
-    child_run_id: 'ORPHAN-CHILD',
+    child_run_id: handoff.childRunId,
     child_generation: 2,
-    handoff_key: 'a'.repeat(64),
-    handoff_rel: 'handoffs/ORPHAN-CHILD-next-session.md',
+    handoff_key: handoff.key,
+    handoff_rel: handoff.handoffRel,
   };
-  const receipt = makeCodexProcessReceipt({
+  let receipt = makeCodexProcessReceipt({
     root: originalRoot,
     runId,
     processKind: 'maker',
     context,
     usage: { num_turns: 1, input_tokens: 2, output_tokens: 3, tokens: 5 },
   });
+  if (unverifiable) receipt = rehashProcessReceipt({
+    ...receipt,
+    context: {
+      ...receipt.context,
+      parent_generation: 9,
+      child_generation: 10,
+    },
+  });
+  if (wrongRoot) receipt = rehashProcessReceipt({
+    ...receipt,
+    project_root_digest: '0'.repeat(64),
+  });
+  if (unmeasurable) receipt = rehashProcessReceipt({
+    ...receipt,
+    usage: { num_turns: 0, input_tokens: 2, output_tokens: 3, tokens: 5 },
+  });
+  if (incomplete) {
+    receipt = { ...receipt };
+    delete receipt.usage;
+    receipt = rehashProcessReceipt(receipt);
+  }
   if (conflicting) {
     appendAnchored(originalRoot, runId, {
       type: 'cost',
@@ -245,12 +283,92 @@ function movedRunWithProcessReceipt({
   const receipts = join(runDir(originalRoot, runId), 'preflight', 'process-receipts');
   mkdirSync(receipts, { recursive: true });
   writeFileSync(
-    join(receipts, `${receipt.receipt_id}.json`),
+    join(receipts, expectedProcessReceiptName(receipt)),
     malformed ? JSON.stringify({ ...receipt, receipt_id: '0'.repeat(64) }) : JSON.stringify(receipt),
   );
   const storedRoot = readState(originalRoot, runId).data.project.root;
   renameSync(originalRoot, candidateRoot);
-  return { originalRoot, candidateRoot, runId, storedRoot, receipt };
+  return {
+    originalRoot,
+    candidateRoot,
+    runId,
+    storedRoot,
+    receipt,
+    receipts,
+    handoff,
+  };
+}
+
+function processReceiptDescriptorId(receipt) {
+  return contentHash(JSON.stringify({
+    process_kind: receipt.process_kind,
+    context: receipt.context,
+  }));
+}
+
+function expectedProcessReceiptName(receipt) {
+  return `${processReceiptDescriptorId(receipt)}-${receipt.process_kind}.json`;
+}
+
+function rehashProcessReceipt(receipt) {
+  const payload = { ...receipt };
+  delete payload.receipt_id;
+  return { ...payload, receipt_id: contentHash(JSON.stringify(payload)) };
+}
+
+function rootReceiptPath(moved, operationId) {
+  return join(
+    runDir(moved.candidateRoot, moved.runId),
+    'recoveries',
+    'root-operations',
+    `${operationId}.json`,
+  );
+}
+
+function rootReceiptPayload(document) {
+  return document?.payload ?? document;
+}
+
+function rewriteRootReceipt(path, document, mutate) {
+  const payload = structuredClone(rootReceiptPayload(document));
+  mutate(payload);
+  if (!document?.envelope) {
+    writeFileSync(path, JSON.stringify(payload));
+    return;
+  }
+  writeFileSync(path, JSON.stringify(wrap({
+    producer: document.envelope.producer,
+    artifact_kind: document.envelope.artifact_kind,
+    schema: document.envelope.schema,
+    run_id: document.envelope.run_id,
+    parent_run_id: document.envelope.parent_run_id,
+    payload,
+    now: document.envelope.generated_at,
+    provenance: document.envelope.provenance,
+    git: document.envelope.git,
+  })));
+}
+
+function splitInvocation(command) {
+  return command.match(/"(?:\\.|[^"])*"|[^\s]+/g).map(token =>
+    token.startsWith('"') ? JSON.parse(token) : token);
+}
+
+function invokeRootAcquire(command, cwd = REPO_ROOT) {
+  const parts = splitInvocation(command);
+  assert.deepEqual(parts.slice(0, 3), ['root', 'recovery', 'acquire']);
+  return invoke(parts, cwd);
+}
+
+function runCliAsync(args, cwd = REPO_ROOT) {
+  return new Promise((resolvePromise) => {
+    const child = spawn(process.execPath, [CLI, ...args], { cwd, encoding: 'utf8' });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', chunk => { stdout += chunk; });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    child.on('close', status => resolvePromise({ status, stdout, stderr }));
+  });
 }
 
 function durableSnapshot(root, runId) {
@@ -741,9 +859,9 @@ test('Task 13 active checker is invalidated exactly and a live headless producer
 });
 
 test('Task 13 verified orphan accounting settles once while malformed receipts fail closed', async () => {
-  const { diagnoseProjectRoot, rebindProjectRoot } = await recoveryApi();
+  const { diagnoseProjectRoot, recoverRelocatedRoot } = await recoveryApi();
   const moved = movedRunWithProcessReceipt();
-  const result = rebindProjectRoot(
+  const result = recoverRelocatedRoot(
     moved.candidateRoot,
     moved.runId,
     relocationOptions(moved),
@@ -758,7 +876,7 @@ test('Task 13 verified orphan accounting settles once while malformed receipts f
   const rebound = lines.find(event => event.type === 'project-root-rebound');
   assert.deepEqual(rebound.data.settled_receipt_ids, [moved.receipt.receipt_id]);
   const beforeRetry = durableSnapshot(moved.candidateRoot, moved.runId);
-  assert.equal(rebindProjectRoot(moved.candidateRoot, moved.runId, {
+  assert.equal(recoverRelocatedRoot(moved.candidateRoot, moved.runId, {
     actor: 'human',
     confirm: true,
     expectedStoredRootDigest: projectRootDigest(moved.storedRoot),
@@ -770,7 +888,7 @@ test('Task 13 verified orphan accounting settles once while malformed receipts f
   const bad = movedRunWithProcessReceipt({ malformed: true });
   const beforeBad = durableSnapshot(bad.candidateRoot, bad.runId);
   assert.throws(
-    () => rebindProjectRoot(bad.candidateRoot, bad.runId, relocationOptions(bad)),
+    () => recoverRelocatedRoot(bad.candidateRoot, bad.runId, relocationOptions(bad)),
     /PROJECT_ROOT_ACCOUNTING_UNMEASURABLE/,
   );
   assert.deepEqual(durableSnapshot(bad.candidateRoot, bad.runId), beforeBad);
@@ -781,7 +899,7 @@ test('Task 13 verified orphan accounting settles once while malformed receipts f
   ]) {
     const before = durableSnapshot(fixture.candidateRoot, fixture.runId);
     assert.throws(
-      () => rebindProjectRoot(fixture.candidateRoot, fixture.runId, relocationOptions(fixture)),
+      () => recoverRelocatedRoot(fixture.candidateRoot, fixture.runId, relocationOptions(fixture)),
       error,
       label,
     );
@@ -802,7 +920,7 @@ test('Task 13 verified orphan accounting settles once while malformed receipts f
   );
   const beforeLive = durableSnapshot(live.candidateRoot, live.runId);
   assert.throws(
-    () => rebindProjectRoot(live.candidateRoot, live.runId, relocationOptions(live)),
+    () => recoverRelocatedRoot(live.candidateRoot, live.runId, relocationOptions(live)),
     /PROJECT_ROOT_RELOCATION_WAIT/,
   );
   assert.deepEqual(durableSnapshot(live.candidateRoot, live.runId), beforeLive);
@@ -984,6 +1102,419 @@ test('Task 13 plain and replacement root publications roll forward exactly once 
       assert.equal(eventLines(moved.candidateRoot, moved.runId)
         .filter(event => event.type === 'project-root-rebound').length, 1, `${route}/${barrier}`);
     }
+  }
+});
+
+for (const [label, options] of [
+  ['incomplete', { incomplete: true }],
+  ['wrong-root', { wrongRoot: true }],
+  ['unmeasurable', { unmeasurable: true }],
+  ['conflicting', { conflicting: true }],
+  ['unassociated', { unverifiable: true }],
+]) {
+  test(`Round1 diagnosis accounting RED: ${label} evidence waits without a command`, async () => {
+    const { diagnoseProjectRoot } = await recoveryApi();
+    const moved = movedRunWithProcessReceipt(options);
+    const before = durableSnapshot(moved.candidateRoot, moved.runId);
+    const result = diagnoseProjectRoot(moved.candidateRoot, moved.runId);
+    assert.equal(result.action, 'wait');
+    assert.equal(result.blocker, 'project-root-accounting');
+    assert.equal(result.command, null);
+    assert.deepEqual(durableSnapshot(moved.candidateRoot, moved.runId), before);
+  });
+}
+
+test('Round1 settlement RED: filename identity, batch uniqueness, and predecessor handoff are mandatory', async () => {
+  const { diagnoseProjectRoot, recoverRelocatedRoot } = await recoveryApi();
+  const accepted = [];
+
+  for (const [label, mutateFixture] of [
+    ['filename-mismatch', (moved) => {
+      const dir = join(runDir(moved.candidateRoot, moved.runId), 'preflight', 'process-receipts');
+      const source = join(dir, expectedProcessReceiptName(moved.receipt));
+      renameSync(source, join(dir, `${'f'.repeat(64)}-maker.json`));
+    }],
+    ['duplicate-content', (moved) => {
+      const dir = join(runDir(moved.candidateRoot, moved.runId), 'preflight', 'process-receipts');
+      const source = join(dir, expectedProcessReceiptName(moved.receipt));
+      cpSync(source, join(dir, `${'e'.repeat(64)}-maker.json`));
+    }],
+    ['unrelated-generation', () => {}],
+    ['unrelated-handoff', (moved) => {
+      const dir = join(runDir(moved.candidateRoot, moved.runId), 'preflight', 'process-receipts');
+      const source = join(dir, expectedProcessReceiptName(moved.receipt));
+      const unrelated = rehashProcessReceipt({
+        ...moved.receipt,
+        context: { ...moved.receipt.context, handoff_key: 'f'.repeat(64) },
+      });
+      rmSync(source);
+      writeFileSync(join(dir, expectedProcessReceiptName(unrelated)), JSON.stringify(unrelated));
+    }],
+  ]) {
+    const moved = movedRunWithProcessReceipt(
+      label === 'unrelated-generation' ? { unverifiable: true } : {},
+    );
+    mutateFixture(moved);
+    const before = durableSnapshot(moved.candidateRoot, moved.runId);
+    try {
+      recoverRelocatedRoot(moved.candidateRoot, moved.runId, relocationOptions(moved));
+      accepted.push(label);
+    } catch (error) {
+      assert.match(String(error?.message || error), /PROJECT_ROOT_ACCOUNTING_(?:UNMEASURABLE|CONFLICT)/);
+      assert.deepEqual(durableSnapshot(moved.candidateRoot, moved.runId), before, label);
+      const diagnosis = diagnoseProjectRoot(moved.candidateRoot, moved.runId);
+      assert.equal(diagnosis.action, 'wait', label);
+      assert.equal(diagnosis.command, null, label);
+    }
+  }
+  assert.deepEqual(accepted, []);
+});
+
+test('Round1 settlement RED: checker receipt must match the exact immutable claim hash', async () => {
+  const parent = freshRoot('dl-root-checker-accounting-');
+  const originalRoot = join(parent, 'old root');
+  const candidateRoot = join(parent, 'new root');
+  mkdirSync(originalRoot);
+  const { runId } = init(originalRoot, 'codex');
+  const { id: workstreamId } = newWorkstream(originalRoot, runId, {
+    title: 'checker accounting',
+    branch: 'feature/checker-accounting',
+    worktree: '.worktrees/checker-accounting',
+    fence: { owner: runId, generation: 1, intent: 'business' },
+  });
+  const { data } = readState(originalRoot, runId);
+  data.workstreams.find(item => item.id === workstreamId).status = 'in_progress';
+  data.active_workstreams = [workstreamId];
+  data.session_chain.sessions[0].scope.workstream_id = workstreamId;
+  data.session_chain.sessions[0].scope.bound_at_seq = 1;
+  const claim = {
+    run_id: runId,
+    reviewer_id: 'deep-review',
+    checker_episode_id: 'checker-accounting',
+    target_maker: 'maker-accounting',
+    attempt_id: 'attempt-accounting',
+    workstream_id: workstreamId,
+    point: 'implementation',
+    project_root: data.project.root,
+    runtime: 'codex',
+    lease_owner: runId,
+    lease_generation: 1,
+    artifacts: [],
+  };
+  data.episodes.push({
+    id: claim.checker_episode_id,
+    role: 'checker',
+    status: 'in_progress',
+    request_rel: `episodes/${claim.checker_episode_id}/request.md`,
+    attempt_id: claim.attempt_id,
+    target_maker: claim.target_maker,
+    review_claim: claim,
+  });
+  writeState(originalRoot, runId, data);
+  appendAnchored(originalRoot, runId, {
+    type: 'independent-review-claimed',
+    data: {
+      episode_id: claim.checker_episode_id,
+      attempt_id: claim.attempt_id,
+      reviewer_id: claim.reviewer_id,
+      target_maker: claim.target_maker,
+      workstream_id: claim.workstream_id,
+      point: claim.point,
+      artifacts: claim.artifacts,
+    },
+    now: FIXED_NOW.getTime() + 1_000,
+  }, () => {});
+  const context = {
+    origin_owner: runId,
+    origin_generation: 1,
+    checker_episode_id: claim.checker_episode_id,
+    attempt_id: claim.attempt_id,
+    target_maker: claim.target_maker,
+    claim_hash: '0'.repeat(64),
+  };
+  const receipt = makeCodexProcessReceipt({
+    root: originalRoot,
+    runId,
+    processKind: 'checker',
+    context,
+    usage: { num_turns: 1, input_tokens: 2, output_tokens: 3, tokens: 5 },
+  });
+  assert.notEqual(receipt.context.claim_hash, codexCheckerClaimHash(claim));
+  const receipts = join(runDir(originalRoot, runId), 'preflight', 'process-receipts');
+  mkdirSync(receipts, { recursive: true });
+  writeFileSync(join(receipts, expectedProcessReceiptName(receipt)), JSON.stringify(receipt));
+  const storedRoot = data.project.root;
+  renameSync(originalRoot, candidateRoot);
+  const moved = { originalRoot, candidateRoot, runId, storedRoot };
+  const before = durableSnapshot(candidateRoot, runId);
+  const { recoverRelocatedRoot } = await recoveryApi();
+  assert.throws(
+    () => recoverRelocatedRoot(candidateRoot, runId, relocationOptions(moved)),
+    /PROJECT_ROOT_ACCOUNTING_UNMEASURABLE/,
+  );
+  assert.deepEqual(durableSnapshot(candidateRoot, runId), before);
+});
+
+test('Round1 retained proof RED: committed receipt is one exact M3 wrapped schema', async () => {
+  const { rebindProjectRoot } = await recoveryApi();
+  const moved = seedRelocationTopology('quiescent', 'claude', 'dl-root-proof-wrap-');
+  const result = rebindProjectRoot(moved.candidateRoot, moved.runId, relocationOptions(moved));
+  const document = JSON.parse(readFileSync(rootReceiptPath(moved, result.operation_id), 'utf8'));
+  const opened = unwrap(document, {
+    producer: 'deep-loop',
+    artifact_kind: 'project-root-operation',
+  });
+  assert.ok(opened);
+  assert.deepEqual(Object.keys(document), ['schema_version', 'envelope', 'payload']);
+  assert.deepEqual(Object.keys(document.envelope.schema), ['name', 'version']);
+  assert.equal(document.envelope.schema.name, 'project-root-operation');
+  assert.equal(document.envelope.schema.version, '1.0');
+});
+
+test('Round1 retained proof RED: every frozen field, exact event/artifact, and operation identity is revalidated', async () => {
+  const { diagnoseProjectRoot, recoverRelocatedRoot } = await recoveryApi();
+  const moved = seedRelocationTopology('open-affinity', 'codex', 'dl-root-proof-fields-');
+  const result = recoverRelocatedRoot(moved.candidateRoot, moved.runId, relocationOptions(moved));
+  const path = rootReceiptPath(moved, result.operation_id);
+  const originalBytes = readFileSync(path);
+  const original = JSON.parse(originalBytes);
+  const accepted = [];
+  const mutations = [
+    ['old-root', payload => { payload.old_root_digest = '0'.repeat(64); }],
+    ['new-root', payload => { payload.new_root_digest = '0'.repeat(64); }],
+    ['old-binding-generation', payload => { payload.old_binding_generation += 9; }],
+    ['new-binding-generation', payload => { payload.new_binding_generation += 9; }],
+    ['old-lease-owner', payload => { payload.old_lease_owner = 'OTHER'; }],
+    ['old-lease-generation', payload => { payload.old_lease_generation += 9; }],
+    ['new-lease-owner', payload => { payload.new_lease_owner = 'OTHER'; }],
+    ['new-lease-generation', payload => { payload.new_lease_generation += 9; }],
+    ['recovery-kind', payload => { payload.recovery_kind = 'boundary'; }],
+    ['stale-session', payload => { payload.stale_session_id = 'OTHER'; }],
+    ['replacement-session', payload => { payload.replacement_session_id = 'OTHER'; }],
+    ['predecessor-loop-hash', payload => { payload.predecessor_loop_hash = '0'.repeat(64); }],
+    ['route-kind', payload => { payload.route_kind = 'rebind'; }],
+    ['actor', payload => { payload.actor = 'agent'; }],
+    ['confirmation', payload => { payload.confirmed = false; }],
+    ['exact-event', payload => {
+      if (payload.event) payload.event.data = { ...payload.event.data, extra: true };
+      else payload.event_identity = { ...payload.event_identity, seq: payload.event_identity.seq + 1 };
+    }],
+    ['exact-artifacts', payload => { payload.artifact_digests = {}; }],
+    ['candidate-loop-hash', payload => { payload.candidate_loop_hash = '0'.repeat(64); }],
+  ];
+  for (const [label, mutate] of mutations) {
+    rewriteRootReceipt(path, original, mutate);
+    try {
+      diagnoseProjectRoot(moved.candidateRoot, moved.runId);
+      accepted.push(label);
+    } catch (error) {
+      assert.match(String(error?.message || error), /ROOT_OPERATION_PROOF_INVALID/);
+    } finally {
+      writeFileSync(path, originalBytes);
+    }
+  }
+  assert.deepEqual(accepted, []);
+});
+
+test('Round1 retained proof RED: retry pins route, human actor, and confirmation', async () => {
+  const { rebindProjectRoot, recoverRelocatedRoot } = await recoveryApi();
+  const moved = seedRelocationTopology('quiescent', 'claude', 'dl-root-proof-retry-');
+  rebindProjectRoot(moved.candidateRoot, moved.runId, relocationOptions(moved));
+  const retryOptions = {
+    actor: 'human',
+    confirm: true,
+    expectedStoredRootDigest: projectRootDigest(moved.storedRoot),
+    expectedBindingGeneration: 1,
+    fence: { owner: moved.runId, generation: 1 },
+    now: FIXED_NOW.getTime(),
+  };
+  const accepted = [];
+  for (const [label, mutate, options] of [
+    ['wrong-route', recoverRelocatedRoot, retryOptions],
+    ['missing-actor', rebindProjectRoot, { ...retryOptions, actor: undefined }],
+    ['missing-confirm', rebindProjectRoot, { ...retryOptions, confirm: undefined }],
+  ]) {
+    try {
+      mutate(moved.candidateRoot, moved.runId, options);
+      accepted.push(label);
+    } catch (error) {
+      assert.match(String(error?.message || error), /ROOT_OPERATION_RETRY_MISMATCH|INVALID_ACTOR|CONFIRM_REQUIRED/);
+    }
+  }
+  assert.deepEqual(accepted, []);
+});
+
+test('Round1 acceptance RED: every relocation topology replays every artifact and executes fresh acquisition', async () => {
+  const { recoverRelocatedRoot } = await recoveryApi();
+  const topologies = [
+    'reserved',
+    'emitted',
+    'spawned',
+    'acquired-unbound',
+    'open-affinity',
+    'affinity-recovery',
+    'boundary-recovery',
+  ];
+  const barriers = [
+    'artifact:0:rename',
+    'artifact:1:rename',
+    'event:0:append',
+    'state:loop:rename',
+    'state:hash:rename',
+    'committed:rename',
+  ];
+  for (const topology of topologies) {
+    for (const barrier of barriers) {
+      const moved = seedRelocationTopology(
+        topology,
+        'codex',
+        `dl-root-r1-crash-${topology}-${barrier.replaceAll(':', '-')}-`,
+      );
+      assert.throws(
+        () => recoverRelocatedRoot(moved.candidateRoot, moved.runId, relocationOptions(moved, {
+          faultAt(label) { if (label === barrier) throw new Error(`fault:${barrier}`); },
+        })),
+        /TRANSACTION_PENDING|TRANSACTION_RECONCILIATION_REQUIRED/,
+        `${topology}/${barrier}`,
+      );
+      const reopened = invoke([
+        'root', 'diagnose',
+        '--candidate-project-root', moved.candidateRoot,
+        '--run-id', moved.runId,
+      ], freshRoot('dl-root-r1-crash-diagnose-'));
+      assert.equal(reopened.status, 0, `${topology}/${barrier}: ${reopened.stderr}`);
+      assert.equal(JSON.parse(reopened.stdout).action, 'already-rebound');
+      const resume = invoke([
+        'resume-command',
+        '--project-root', moved.candidateRoot,
+        '--run-id', moved.runId,
+      ], freshRoot('dl-root-r1-crash-resume-'));
+      assert.equal(resume.status, 0, `${topology}/${barrier}: ${resume.stderr}`);
+      const command = resume.stdout.split('\n')[0];
+      const acquired = invokeRootAcquire(command, freshRoot('dl-root-r1-crash-acquire-'));
+      assert.equal(acquired.status, 0, `${topology}/${barrier}: ${acquired.stderr}`);
+      const after = readState(moved.candidateRoot, moved.runId).data;
+      assert.equal(after.status, 'running');
+      assert.equal(after.session_chain.lease.owner_run_id, JSON.parse(acquired.stdout).owner);
+      assert.equal(eventLines(moved.candidateRoot, moved.runId)
+        .filter(event => event.type === 'project-root-rebound').length, 1);
+    }
+  }
+});
+
+test('Round1 acceptance RED: retention removes commit-oldest only and concurrent retries preserve references', async () => {
+  const { rebindProjectRoot, diagnoseProjectRoot, recoverRelocatedRoot } = await recoveryApi();
+  const parent = freshRoot('dl-root-r1-retention-order-');
+  let currentRoot = join(parent, 'root-00');
+  mkdirSync(currentRoot);
+  const { runId } = init(currentRoot, 'claude');
+  const operationIds = [];
+  for (let index = 1; index <= 24; index += 1) {
+    const storedRoot = readState(currentRoot, runId).data.project.root;
+    const candidateRoot = join(parent, `root-${String(index).padStart(2, '0')}`);
+    renameSync(currentRoot, candidateRoot);
+    const moved = { candidateRoot, runId, storedRoot };
+    const result = rebindProjectRoot(candidateRoot, runId, {
+      ...relocationOptions(moved),
+      now: FIXED_NOW.getTime() + index * 1_000,
+    });
+    operationIds.push(result.operation_id);
+    currentRoot = candidateRoot;
+  }
+  const receiptDir = join(runDir(currentRoot, runId), 'recoveries', 'root-operations');
+  const retained = new Set(readdirSync(receiptDir).map(name => name.slice(0, -5)));
+  assert.deepEqual(
+    operationIds.slice(-17).filter(id => !retained.has(id)),
+    [],
+    'the current proof plus the sixteen newest committed retries must survive',
+  );
+  assert.equal(
+    operationIds.slice(0, -17).some(id => retained.has(id)),
+    false,
+    'commit-oldest unreferenced receipts must be pruned first',
+  );
+
+  const concurrent = await Promise.all(Array.from({ length: 4 }, () => runCliAsync([
+    'root', 'diagnose',
+    '--candidate-project-root', currentRoot,
+    '--run-id', runId,
+  ], freshRoot('dl-root-r1-retention-cwd-'))));
+  assert.deepEqual(concurrent.map(result => result.status), [0, 0, 0, 0]);
+  assert.deepEqual(
+    concurrent.map(result => JSON.parse(result.stdout).operation_id),
+    Array(4).fill(operationIds.at(-1)),
+  );
+  assert.equal(existsSync(join(receiptDir, `${operationIds.at(-1)}.json`)), true);
+  assert.equal(diagnoseProjectRoot(currentRoot, runId).action, 'already-rebound');
+
+  const recovery = seedRelocationTopology('open-affinity', 'codex', 'dl-root-r1-retention-child-');
+  const recovered = recoverRelocatedRoot(
+    recovery.candidateRoot,
+    recovery.runId,
+    relocationOptions(recovery),
+  );
+  const childBefore = readState(recovery.candidateRoot, recovery.runId).data.session_chain.sessions
+    .find(session => session.run_id === recovered.replacement_session_id);
+  const recoveryReceipts = join(
+    runDir(recovery.candidateRoot, recovery.runId),
+    'recoveries',
+    'root-operations',
+  );
+  for (let index = 0; index < 40; index += 1) {
+    writeFileSync(join(recoveryReceipts, `${String(index).padStart(64, '0')}.json`), '{}');
+  }
+  assert.equal(diagnoseProjectRoot(recovery.candidateRoot, recovery.runId).action, 'already-rebound');
+  assert.equal(existsSync(rootReceiptPath(recovery, recovered.operation_id)), true);
+  assert.equal(existsSync(join(
+    runDir(recovery.candidateRoot, recovery.runId),
+    childBefore.recovery_rel,
+  )), true);
+});
+
+test('Round1 acceptance RED: acquisition gates preserve the exact root reservation', async () => {
+  const { acquireRootRecovery, recoverRelocatedRoot } = await recoveryApi();
+  for (const [label, configure, expected, clock] of [
+    ['budget', data => {
+      data.budget.total = 1;
+      data.budget.spent = 1;
+    }, /BUDGET_BLOCKED/, FIXED_NOW.getTime()],
+    ['breaker', data => {
+      data.circuit_breaker.tripped = true;
+      data.circuit_breaker.consecutive_request_changes = 3;
+      data.circuit_breaker.trip_reason = 'consecutive-request-changes';
+    }, /BREAKER_BLOCKED/, FIXED_NOW.getTime()],
+    ['wallclock', data => {
+      data.budget.max_wallclock_sec = 1;
+    }, /BUDGET_BLOCKED/, FIXED_NOW.getTime() + 2_000],
+  ]) {
+    const moved = seedRelocationTopology('open-affinity', 'codex', `dl-root-r1-acquire-${label}-`);
+    const { data } = readStateForRootRecovery(moved.candidateRoot, moved.runId);
+    configure(data);
+    writeRecoveryFixture(moved.candidateRoot, moved.runId, data);
+    const recovered = recoverRelocatedRoot(
+      moved.candidateRoot,
+      moved.runId,
+      relocationOptions(moved),
+    );
+    const before = readState(moved.candidateRoot, moved.runId).data;
+    const child = before.session_chain.sessions.find(
+      session => session.run_id === recovered.replacement_session_id,
+    );
+    const snapshot = durableSnapshot(moved.candidateRoot, moved.runId);
+    assert.throws(
+      () => acquireRootRecovery(moved.candidateRoot, moved.runId, {
+        capsuleRel: child.recovery_rel,
+        owner: child.run_id,
+        expectGeneration: before.session_chain.lease.generation,
+        bindingGeneration: before.project.binding_generation,
+        runtime: 'codex',
+        now: FIXED_NOW.getTime(),
+        clock: () => clock,
+      }),
+      expected,
+      label,
+    );
+    assert.deepEqual(durableSnapshot(moved.candidateRoot, moved.runId), snapshot, label);
   }
 });
 

@@ -18,7 +18,7 @@ import {
   projectRootDigest,
 } from './project-root.mjs';
 import { appendAnchored, readLines } from './integrity.mjs';
-import { contentHash } from './envelope.mjs';
+import { contentHash, unwrap, wrap } from './envelope.mjs';
 import { sessionRuntime } from './runtime.mjs';
 import { buildRootRecoveryResumeDescriptor } from './runtime-descriptor.mjs';
 import {
@@ -134,44 +134,142 @@ function latestRootEvent(candidateRoot, runId) {
   return events.at(-1) || null;
 }
 
+function exactKeys(value, keys) {
+  return value != null
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && JSON.stringify(Object.keys(value)) === JSON.stringify(keys);
+}
+
 function exactReceipt(candidateRoot, runId, loop, hash) {
   const event = latestRootEvent(candidateRoot, runId);
   if (!event || !ROOT_DIGEST.test(event.data?.operation_id || '')) {
     throw new Error('ROOT_OPERATION_PROOF_MISSING');
   }
   const path = join(receiptDirectory(candidateRoot, runId), `${event.data.operation_id}.json`);
-  let receipt;
+  let document;
   try {
-    receipt = JSON.parse(readFileSync(path, 'utf8'));
+    document = JSON.parse(readFileSync(path, 'utf8'));
   } catch {
     throw new Error('ROOT_OPERATION_PROOF_INVALID');
   }
+  const opened = unwrap(document, {
+    producer: 'deep-loop',
+    artifact_kind: 'project-root-operation',
+  });
+  const envelope = document?.envelope;
+  const receipt = document?.payload;
+  const expectedEnvelopeKeys = [
+    'producer', 'artifact_kind', 'schema', 'run_id', 'parent_run_id',
+    'generated_at', 'git', 'provenance',
+  ];
   const expectedKeys = [
-    'operation_id', 'old_root_digest', 'new_root_digest',
+    'contract', 'run_id', 'route_kind', 'actor', 'confirmed',
+    'predecessor_loop_hash', 'operation_id',
+    'old_root_digest', 'new_root_digest',
     'old_binding_generation', 'new_binding_generation',
     'old_lease_owner', 'old_lease_generation',
     'new_lease_owner', 'new_lease_generation',
     'recovery_kind', 'stale_session_id', 'replacement_session_id',
-    'event_identity', 'event_data_sha256', 'artifact_digests',
-    'candidate_loop_hash',
+    'event', 'artifact_digests', 'candidate_loop_hash',
   ];
-  const artifactDigests = receipt.artifact_digests;
-  const eventIdentity = receipt.event_identity;
-  if (JSON.stringify(Object.keys(receipt)) !== JSON.stringify(expectedKeys)
+  const artifactDigests = receipt?.artifact_digests;
+  const replacementRows = (loop.session_chain.sessions || [])
+    .filter(session => session.run_id === receipt?.replacement_session_id);
+  const replacement = replacementRows[0];
+  const expectedOperationId = contentHash(JSON.stringify([
+    'deep-loop-root-recovery-v1',
+    runId,
+    receipt?.old_root_digest,
+    receipt?.new_root_digest,
+    receipt?.old_binding_generation,
+    receipt?.new_binding_generation,
+    receipt?.recovery_kind,
+    receipt?.stale_session_id,
+    receipt?.replacement_session_id,
+    receipt?.predecessor_loop_hash,
+  ]));
+  const eventDataKeys = [
+    'operation_id',
+    'old_root_digest',
+    'new_root_digest',
+    'old_binding_generation',
+    'new_binding_generation',
+    'recovery_kind',
+    'stale_session_id',
+    'replacement_session_id',
+    'invalidated_review_attempt_ids',
+    'settled_receipt_ids',
+  ];
+  if (!opened
+    || !exactKeys(document, ['schema_version', 'envelope', 'payload'])
+    || document.schema_version !== '1.0'
+    || !exactKeys(envelope, expectedEnvelopeKeys)
+    || !exactKeys(envelope.schema, ['name', 'version'])
+    || envelope.schema.name !== 'project-root-operation'
+    || envelope.schema.version !== '1.0'
+    || envelope.run_id !== runId
+    || envelope.parent_run_id !== null
+    || envelope.generated_at !== event.ts
+    || !exactKeys(envelope.git, [])
+    || !exactKeys(envelope.provenance, ['source_artifacts', 'tool_versions'])
+    || JSON.stringify(envelope.provenance.source_artifacts) !== JSON.stringify([])
+    || !exactKeys(envelope.provenance.tool_versions, [])
+    || !exactKeys(receipt, expectedKeys)
+    || receipt.contract !== 'deep-loop-root-operation-v1'
+    || receipt.run_id !== runId
+    || !['rebind', 'recover'].includes(receipt.route_kind)
+    || receipt.route_kind !== (receipt.recovery_kind === 'none' ? 'rebind' : 'recover')
+    || receipt.actor !== 'human'
+    || receipt.confirmed !== true
+    || !ROOT_DIGEST.test(receipt.predecessor_loop_hash || '')
     || receipt.operation_id !== event.data.operation_id
+    || receipt.operation_id !== expectedOperationId
+    || !ROOT_DIGEST.test(receipt.old_root_digest || '')
     || receipt.new_root_digest !== projectRootDigest(loop.project.root)
+    || receipt.old_root_digest !== event.data.old_root_digest
+    || receipt.new_root_digest !== event.data.new_root_digest
+    || receipt.old_binding_generation !== event.data.old_binding_generation
+    || receipt.new_binding_generation !== event.data.new_binding_generation
+    || receipt.new_binding_generation !== receipt.old_binding_generation + 1
     || receipt.new_binding_generation !== loop.project.binding_generation
+    || receipt.new_lease_owner !== receipt.old_lease_owner
+    || receipt.new_lease_generation !== receipt.old_lease_generation + 1
     || receipt.new_lease_owner !== loop.session_chain.lease.owner_run_id
     || receipt.new_lease_generation !== loop.session_chain.lease.generation
+    || !['none', 'boundary', 'affinity'].includes(receipt.recovery_kind)
+    || receipt.recovery_kind !== event.data.recovery_kind
+    || receipt.stale_session_id !== event.data.stale_session_id
+    || receipt.replacement_session_id !== event.data.replacement_session_id
     || receipt.candidate_loop_hash !== hash
-    || eventIdentity?.seq !== event.seq
-    || eventIdentity?.checksum !== event.checksum
-    || receipt.event_data_sha256 !== contentHash(JSON.stringify(event.data))
+    || JSON.stringify(receipt.event) !== JSON.stringify(event)
+    || !exactKeys(event.data, eventDataKeys)
     || artifactDigests == null || typeof artifactDigests !== 'object'
     || Array.isArray(artifactDigests)) {
     throw new Error('ROOT_OPERATION_PROOF_INVALID');
   }
-  for (const [rel, digest] of Object.entries(artifactDigests)) {
+  const artifactEntries = Object.entries(artifactDigests);
+  if (receipt.recovery_kind === 'none') {
+    if (receipt.stale_session_id !== null
+      || receipt.replacement_session_id !== null
+      || artifactEntries.length !== 0) {
+      throw new Error('ROOT_OPERATION_PROOF_INVALID');
+    }
+  } else if (replacementRows.length !== 1
+    || replacement?.root_recovery_operation_id !== receipt.operation_id
+    || replacement?.recovered_from !== receipt.stale_session_id
+    || replacement?.recovery_project_binding_generation !== receipt.new_binding_generation
+    || replacement?.recovery_project_root_digest !== receipt.new_root_digest
+    || replacement?.recovery_kind !== (receipt.recovery_kind === 'affinity'
+      ? 'affinity-supersession' : 'boundary-recovery')
+    || loop.session_chain.lease.recovery_discriminator !== receipt.operation_id
+    || loop.session_chain.lease.handoff_child_run_id !== receipt.replacement_session_id
+    || artifactEntries.length !== 1
+    || artifactEntries[0][0] !== replacement.recovery_rel
+    || artifactEntries[0][1] !== replacement.recovery_sha256) {
+    throw new Error('ROOT_OPERATION_PROOF_INVALID');
+  }
+  for (const [rel, digest] of artifactEntries) {
     let bytes;
     try { bytes = readFileSync(join(runDir(candidateRoot, runId), rel)); }
     catch { throw new Error('ROOT_OPERATION_PROOF_INVALID'); }
@@ -180,16 +278,84 @@ function exactReceipt(candidateRoot, runId, loop, hash) {
   return { receipt, event };
 }
 
+function receiptCreatedAt(dir, name) {
+  try {
+    const document = JSON.parse(readFileSync(join(dir, name), 'utf8'));
+    if (!unwrap(document, {
+      producer: 'deep-loop',
+      artifact_kind: 'project-root-operation',
+    })) return Number.NEGATIVE_INFINITY;
+    const value = Date.parse(document.envelope.generated_at);
+    return Number.isFinite(value) ? value : Number.NEGATIVE_INFINITY;
+  } catch {
+    return Number.NEGATIVE_INFINITY;
+  }
+}
+
+function protectedReceiptIds(candidateRoot, runId, loop, latestOperationId) {
+  const protectedIds = new Set();
+  if (ROOT_DIGEST.test(latestOperationId || '')) protectedIds.add(latestOperationId);
+  for (const session of loop.session_chain?.sessions || []) {
+    if (ROOT_DIGEST.test(session.root_recovery_operation_id || '')) {
+      protectedIds.add(session.root_recovery_operation_id);
+    }
+  }
+  const discriminator = loop.session_chain?.lease?.recovery_discriminator;
+  if (ROOT_DIGEST.test(discriminator || '')) protectedIds.add(discriminator);
+  const recoveryDir = join(runDir(candidateRoot, runId), 'recoveries', 'root');
+  if (existsSync(recoveryDir)) {
+    for (const name of readdirSync(recoveryDir).filter(value => value.endsWith('.json'))) {
+      try {
+        const rel = `recoveries/root/${name}`;
+        const bytes = readFileSync(join(recoveryDir, name));
+        const capsule = JSON.parse(bytes.toString('utf8'));
+        const session = (loop.session_chain?.sessions || []).find(
+          item => item.recovery_rel === rel
+            && item.recovery_sha256 === contentHash(bytes)
+            && item.root_recovery_operation_id === capsule.operation_id,
+        );
+        if (session && ROOT_DIGEST.test(capsule.operation_id || '')) {
+          protectedIds.add(capsule.operation_id);
+        }
+      } catch {
+        // Invalid capsules are rejected by proof validation; they confer no retention authority.
+      }
+    }
+  }
+  const transactionsDir = join(runDir(candidateRoot, runId), 'transactions');
+  if (existsSync(transactionsDir)) {
+    for (const name of readdirSync(transactionsDir)) {
+      try {
+        const prepared = JSON.parse(readFileSync(join(transactionsDir, name, 'prepared.json'), 'utf8'));
+        const operationId = prepared?.payload?.manifest?.operationId;
+        if (unwrap(prepared, {
+          producer: 'deep-loop',
+          artifact_kind: 'anchored-publication',
+        }) && prepared.payload.manifest?.kind === 'project-root-relocation'
+          && ROOT_DIGEST.test(operationId || '')) {
+          protectedIds.add(operationId);
+        }
+      } catch {
+        // An incomplete/invalid transaction does not grant a receipt retention reference.
+      }
+    }
+  }
+  return protectedIds;
+}
+
 function pruneReceipts(candidateRoot, runId, guard, protectedIds) {
   const dir = receiptDirectory(candidateRoot, runId);
   if (!existsSync(dir)) return;
   guard.assertOwned(runDir(candidateRoot, runId));
   const files = readdirSync(dir)
     .filter(name => ROOT_DIGEST.test(name.slice(0, -5)) && name.endsWith('.json'))
-    .sort();
-  const unprotected = files.filter(name => !protectedIds.has(name.slice(0, -5)));
-  const removeCount = Math.max(0, files.length - RECEIPT_LIMIT - protectedIds.size);
-  for (const name of unprotected.slice(0, removeCount)) {
+    .map(name => ({ name, createdAt: receiptCreatedAt(dir, name) }))
+    .sort((left, right) => left.createdAt - right.createdAt
+      || left.name.localeCompare(right.name));
+  const unprotected = files.filter(({ name }) => !protectedIds.has(name.slice(0, -5)));
+  const protectedFileCount = files.length - unprotected.length;
+  const removeCount = Math.max(0, files.length - RECEIPT_LIMIT - protectedFileCount);
+  for (const { name } of unprotected.slice(0, removeCount)) {
     guard.assertOwned(runDir(candidateRoot, runId));
     rmSync(join(dir, name), { force: true });
   }
@@ -236,6 +402,28 @@ function diagnosis(candidateRoot, runId, snapshot) {
     };
   }
   const classified = classifyTopology(loop);
+  try {
+    inventoryRelocatedProcessReceipts(
+      candidateRoot,
+      runId,
+      loop,
+      projectRootDigest(loop.project.root),
+    );
+  } catch (error) {
+    if (!/^PROJECT_ROOT_ACCOUNTING_(?:UNMEASURABLE|CONFLICT)(?::|$)/
+      .test(String(error?.message || error))) {
+      throw error;
+    }
+    return {
+      action: 'wait',
+      blocker: 'project-root-accounting',
+      topology: classified.topology,
+      current_root_digest: projectRootDigest(loop.project.root),
+      current_binding_generation: loop.project.binding_generation,
+      fence: { owner: lease.owner_run_id, generation: lease.generation },
+      command: null,
+    };
+  }
   const action = classified.actionable;
   return {
     action,
@@ -258,10 +446,12 @@ export function diagnoseProjectRoot(candidateRoot, runId) {
   return withReconciledRootRecoveryLock(candidateCanonical, runId, (guard, snapshot) => {
     const result = diagnosis(candidateCanonical, runId, snapshot);
     if (result.action === 'already-rebound') {
-      const protectedIds = new Set([result.operation_id]);
-      const child = snapshot.data.session_chain.sessions
-        .find(session => session.run_id === result.replacement_session_id);
-      if (child?.root_recovery_operation_id) protectedIds.add(child.root_recovery_operation_id);
+      const protectedIds = protectedReceiptIds(
+        candidateCanonical,
+        runId,
+        snapshot.data,
+        result.operation_id,
+      );
       pruneReceipts(candidateCanonical, runId, guard, protectedIds);
     }
     return result;
@@ -541,7 +731,14 @@ function executeRelocation(candidateRoot, runId, input, expectedRoute) {
   if (binding.mismatch_class === 'match') {
     const result = alreadyRebound(candidateCanonical, runId, snapshot);
     const receipt = exactReceipt(candidateCanonical, runId, snapshot.data, snapshot.hash).receipt;
-    if (input.expectedStoredRootDigest !== receipt.old_root_digest
+    if (input.actor !== 'human') {
+      throw new Error('INVALID_ACTOR: root rebind requires actor human');
+    }
+    if (input.confirm !== true) {
+      throw new Error('CONFIRM_REQUIRED: root rebind requires confirmation');
+    }
+    if (receipt.route_kind !== expectedRoute
+      || input.expectedStoredRootDigest !== receipt.old_root_digest
       || input.expectedBindingGeneration !== receipt.old_binding_generation
       || input.fence?.owner !== receipt.old_lease_owner
       || input.fence?.generation !== receipt.old_lease_generation) {
@@ -620,7 +817,7 @@ function executeRelocation(candidateRoot, runId, input, expectedRoute) {
         topology,
         faultAt: input.faultAt,
         durableWriteFn: input.durableWriteFn,
-        artifactFactory({ candidateLoopHash, event, eventIdentity }) {
+        artifactFactory({ candidateLoopHash, event }) {
           const artifacts = [];
           const artifactDigests = {};
           if (operation.capsuleBytes) {
@@ -628,6 +825,12 @@ function executeRelocation(candidateRoot, runId, input, expectedRoute) {
             artifactDigests[operation.recoveryRel] = operation.capsuleSha256;
           }
           const receipt = {
+            contract: 'deep-loop-root-operation-v1',
+            run_id: runId,
+            route_kind: expectedRoute,
+            actor: 'human',
+            confirmed: true,
+            predecessor_loop_hash: snapshot.hash,
             operation_id: operation.operationId,
             old_root_digest: operation.oldRootDigest,
             new_root_digest: operation.newRootDigest,
@@ -640,14 +843,21 @@ function executeRelocation(candidateRoot, runId, input, expectedRoute) {
             recovery_kind: operation.recoveryKind,
             stale_session_id: operation.staleSessionId,
             replacement_session_id: operation.replacementSessionId,
-            event_identity: eventIdentity,
-            event_data_sha256: contentHash(JSON.stringify(event.data)),
+            event,
             artifact_digests: artifactDigests,
             candidate_loop_hash: candidateLoopHash,
           };
+          const document = wrap({
+            producer: 'deep-loop',
+            artifact_kind: 'project-root-operation',
+            schema: { name: 'project-root-operation', version: '1.0' },
+            run_id: runId,
+            payload: receipt,
+            now: event.ts,
+          });
           artifacts.push({
             rel: `recoveries/root-operations/${operation.operationId}.json`,
-            bytes: Buffer.from(JSON.stringify(receipt)),
+            bytes: Buffer.from(JSON.stringify(document)),
           });
           return artifacts;
         },

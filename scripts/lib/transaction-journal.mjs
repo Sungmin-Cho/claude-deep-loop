@@ -194,11 +194,36 @@ function validateRecoveryPublication(manifest, stages) {
       'root recovery event JSON',
     );
     const receiptTarget = manifest.targets.at(-1);
-    const receipt = parseStageJson(
+    const receiptDocument = parseStageJson(
       stages[receiptTarget?.stage_index],
       'root recovery receipt JSON',
     );
+    const receipt = receiptDocument?.payload;
     const expectedReceiptRel = `recoveries/root-operations/${manifest.operationId}.json`;
+    const expectedRoute = topology.recovery_kind === 'none' ? 'rebind' : 'recover';
+    const expectedOperationId = contentHash(JSON.stringify([
+      'deep-loop-root-recovery-v1',
+      candidate.run_id,
+      topology.old_root_digest,
+      topology.new_root_digest,
+      topology.old_binding_generation,
+      topology.new_binding_generation,
+      topology.recovery_kind,
+      topology.stale_session_id,
+      topology.replacement_session_id,
+      manifest.preLoopHash,
+    ]));
+    const expectedPayloadKeys = [
+      'contract', 'run_id', 'route_kind', 'actor', 'confirmed',
+      'predecessor_loop_hash', 'operation_id',
+      'old_root_digest', 'new_root_digest',
+      'old_binding_generation', 'new_binding_generation',
+      'old_lease_owner', 'old_lease_generation',
+      'new_lease_owner', 'new_lease_generation',
+      'recovery_kind', 'stale_session_id', 'replacement_session_id',
+      'event', 'artifact_digests', 'candidate_loop_hash',
+    ];
+    const artifactEntries = Object.entries(receipt?.artifact_digests || {});
     if (candidate.project?.binding_generation !== topology.new_binding_generation
       || projectRootDigest(candidate.project?.root) !== topology.new_root_digest
       || candidate.session_chain?.lease?.owner_run_id !== topology.new_lease_owner
@@ -213,21 +238,57 @@ function validateRecoveryPublication(manifest, stages) {
       || event.data?.stale_session_id !== topology.stale_session_id
       || event.data?.replacement_session_id !== topology.replacement_session_id
       || receiptTarget?.rel !== expectedReceiptRel
+      || !unwrap(receiptDocument, {
+        producer: 'deep-loop',
+        artifact_kind: 'project-root-operation',
+      })
+      || !exactKeySet(receiptDocument, ['schema_version', 'envelope', 'payload'])
+      || receiptDocument.schema_version !== '1.0'
+      || !exactKeySet(receiptDocument.envelope, [
+        'producer', 'artifact_kind', 'schema', 'run_id', 'parent_run_id',
+        'generated_at', 'git', 'provenance',
+      ])
+      || receiptDocument.envelope.schema?.version !== '1.0'
+      || receiptDocument.envelope.run_id !== candidate.run_id
+      || receiptDocument.envelope.parent_run_id !== null
+      || receiptDocument.envelope.generated_at !== event.ts
+      || !exactKeySet(receiptDocument.envelope.git, [])
+      || !exactKeySet(receiptDocument.envelope.provenance, ['source_artifacts', 'tool_versions'])
+      || JSON.stringify(receiptDocument.envelope.provenance.source_artifacts) !== '[]'
+      || !exactKeySet(receiptDocument.envelope.provenance.tool_versions, [])
+      || !exactKeySet(receipt, expectedPayloadKeys)
+      || receipt.contract !== 'deep-loop-root-operation-v1'
+      || receipt.run_id !== candidate.run_id
+      || receipt.route_kind !== expectedRoute
+      || receipt.actor !== 'human'
+      || receipt.confirmed !== true
+      || receipt.predecessor_loop_hash !== manifest.preLoopHash
       || receipt.operation_id !== manifest.operationId
+      || receipt.operation_id !== expectedOperationId
       || receipt.candidate_loop_hash !== manifest.candidateLoopHash
-      || receipt.event_identity?.seq !== event.seq
-      || receipt.event_identity?.checksum !== event.checksum
+      || JSON.stringify(receipt.event) !== JSON.stringify(event)
+      || receipt.old_root_digest !== topology.old_root_digest
       || receipt.new_root_digest !== topology.new_root_digest
+      || receipt.old_binding_generation !== topology.old_binding_generation
       || receipt.new_binding_generation !== topology.new_binding_generation
+      || receipt.old_lease_owner !== topology.old_lease_owner
+      || receipt.old_lease_generation !== topology.old_lease_generation
       || receipt.new_lease_owner !== topology.new_lease_owner
-      || receipt.new_lease_generation !== topology.new_lease_generation) {
+      || receipt.new_lease_generation !== topology.new_lease_generation
+      || receipt.recovery_kind !== topology.recovery_kind
+      || receipt.stale_session_id !== topology.stale_session_id
+      || receipt.replacement_session_id !== topology.replacement_session_id) {
       throw transactionError('root recovery publication binding');
     }
     const expectsCapsule = topology.recovery_kind !== 'none';
     if (expectsCapsule !== (manifest.targets.length === 2)
       || (expectsCapsule && (manifest.targets[0].rel !== topology.recovery_rel
         || receipt.artifact_digests?.[topology.recovery_rel]
-          !== manifest.targets[0].candidate_sha256))) {
+          !== manifest.targets[0].candidate_sha256))
+      || (!expectsCapsule && artifactEntries.length !== 0)
+      || (expectsCapsule && (artifactEntries.length !== 1
+        || artifactEntries[0][0] !== topology.recovery_rel
+        || artifactEntries[0][1] !== manifest.targets[0].candidate_sha256))) {
       throw transactionError('root recovery publication targets');
     }
     return;

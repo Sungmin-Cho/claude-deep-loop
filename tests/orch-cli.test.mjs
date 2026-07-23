@@ -417,6 +417,18 @@ test('root rebind stale owner or generation exits 3 and changes no durable file'
   }
 });
 
+test('Round1 binding fence RED: stale binding generation exits 3 without a stack', () => {
+  const moved = movedCliRun();
+  const args = validRebindArgs(moved);
+  args[args.indexOf('--expected-binding-generation') + 1] = '9';
+  const before = cliSnapshot(moved.candidateRoot, moved.runId);
+  const result = runResult(moved.candidateRoot, args);
+  assert.equal(result.code, 3);
+  assert.match(result.stderr, /PROJECT_BINDING_FENCED/);
+  assert.doesNotMatch(result.stderr, /\n\s+at\s|Node\.js v/);
+  assert.deepEqual(cliSnapshot(moved.candidateRoot, moved.runId), before);
+});
+
 test('root rebind CLI relocates once and restores ordinary strict state access', () => {
   const moved = movedCliRun();
   const result = runResult(moved.candidateRoot, validRebindArgs(moved));

@@ -26,20 +26,114 @@ export function inventoryRelocatedProcessReceipts(root, runId, loop, oldRootDige
   const lines = readLines(root, runId);
   const settledReceiptIds = [];
   const costEvents = [];
+  const batchReceiptIds = new Set();
   for (const name of readdirSync(dir).filter(value => value.endsWith('.json')).sort()) {
     let receipt;
     try { receipt = JSON.parse(readFileSync(join(dir, name), 'utf8')); }
     catch { throw new Error('PROJECT_ROOT_ACCOUNTING_UNMEASURABLE'); }
     const payload = { ...receipt };
     delete payload.receipt_id;
+    const expectedName = receipt?.process_kind && receipt?.context
+      ? `${contentHash(JSON.stringify({
+        process_kind: receipt.process_kind,
+        context: receipt.context,
+      }))}-${receipt.process_kind}.json`
+      : null;
     if (receipt.contract !== 'deep-loop-codex-process-accounting-receipt-v1'
       || receipt.run_id !== runId
       || receipt.project_root_digest !== oldRootDigest
       || !/^[0-9a-f]{64}$/.test(receipt.receipt_id || '')
       || receipt.receipt_id !== contentHash(JSON.stringify(payload))
+      || name !== expectedName
+      || batchReceiptIds.has(receipt.receipt_id)
       || !['maker', 'checker'].includes(receipt.process_kind)
       || !isMeasuredOneTurnUsage(receipt.usage)) {
       throw new Error('PROJECT_ROOT_ACCOUNTING_UNMEASURABLE');
+    }
+    batchReceiptIds.add(receipt.receipt_id);
+    const context = receipt.context || {};
+    let origin;
+    if (receipt.process_kind === 'maker') {
+      const parent = (loop.session_chain.sessions || []).find(
+        session => session.run_id === context.parent_owner,
+      );
+      const child = (loop.session_chain.sessions || []).find(
+        session => session.run_id === context.child_run_id,
+      );
+      const handoffs = lines.filter(event => event.type === 'handoff-emitted'
+        && event.data?.child_run_id === context.child_run_id
+        && event.data?.key === context.handoff_key);
+      const ordinaryHandoff = handoffs.length === 1
+        && parent
+        && child
+        && child.handoff_rel === context.handoff_rel
+        && parent.superseded_by === context.child_run_id
+        && context.child_generation === context.parent_generation + 1
+        && (
+          (child.started_at === null
+            && loop.session_chain.lease.owner_run_id === context.parent_owner
+            && loop.session_chain.lease.generation === context.parent_generation)
+          || (child.started_at !== null
+            && loop.session_chain.lease.owner_run_id === context.child_run_id
+            && loop.session_chain.lease.generation === context.child_generation)
+        );
+      let recoveryCapsule = false;
+      if (parent && child?.recovery_rel === context.handoff_rel
+        && child.recovery_sha256 && context.child_generation === context.parent_generation + 1) {
+        try {
+          const bytes = readFileSync(join(runDir(root, runId), child.recovery_rel));
+          const capsule = JSON.parse(bytes.toString('utf8'));
+          recoveryCapsule = contentHash(bytes) === child.recovery_sha256
+            && capsule.replacement_session_id === context.child_run_id
+            && capsule.lease_generation === context.parent_generation
+            && capsule.operation_id === child.root_recovery_operation_id;
+        } catch {
+          recoveryCapsule = false;
+        }
+      }
+      if (!ordinaryHandoff && !recoveryCapsule) {
+        throw new Error('PROJECT_ROOT_ACCOUNTING_UNMEASURABLE');
+      }
+      const acquired = child.started_at !== null;
+      origin = acquired
+        ? { owner: context.child_run_id, generation: context.child_generation }
+        : { owner: context.parent_owner, generation: context.parent_generation };
+    } else {
+      const checker = (loop.episodes || []).find(
+        episode => episode.id === context.checker_episode_id,
+      );
+      const claim = checker?.review_claim;
+      const claims = lines.filter(event => event.type === 'independent-review-claimed'
+        && event.data?.episode_id === context.checker_episode_id
+        && event.data?.attempt_id === context.attempt_id);
+      const claimEvent = claims[0];
+      const exactClaimEvent = claims.length === 1
+        && JSON.stringify(claimEvent.data) === JSON.stringify({
+          episode_id: context.checker_episode_id,
+          attempt_id: context.attempt_id,
+          reviewer_id: claim?.reviewer_id,
+          target_maker: context.target_maker,
+          workstream_id: claim?.workstream_id,
+          point: claim?.point,
+          artifacts: claim?.artifacts,
+        });
+      if (!claim
+        || claim.attempt_id !== context.attempt_id
+        || claim.target_maker !== context.target_maker
+        || claim.lease_owner !== context.origin_owner
+        || claim.lease_generation !== context.origin_generation
+        || claim.project_root !== loop.project.root
+        || projectRootDigest(claim.project_root) !== oldRootDigest
+        || context.claim_hash !== codexCheckerClaimHash(claim)
+        || !(loop.session_chain.sessions || []).some(
+          session => session.run_id === context.origin_owner,
+        )
+        || loop.session_chain.lease.owner_run_id !== context.origin_owner
+        || loop.session_chain.lease.generation !== context.origin_generation
+        || !exactClaimEvent) {
+        throw new Error('PROJECT_ROOT_ACCOUNTING_UNMEASURABLE');
+      }
+      origin = { owner: claim.lease_owner, generation: claim.lease_generation };
     }
     const exact = lines.filter(event =>
       event.type === 'cost' && event.data?.process_receipt_id === receipt.receipt_id);
@@ -52,36 +146,20 @@ export function inventoryRelocatedProcessReceipts(root, runId, loop, oldRootDige
       throw new Error('PROJECT_ROOT_ACCOUNTING_CONFLICT');
     }
     if (exact.length === 1) {
+      const recorded = exact[0].data;
+      if (recorded?.process_kind !== receipt.process_kind
+        || JSON.stringify(recorded.process_context) !== JSON.stringify(receipt.context)
+        || recorded.reported_turns !== receipt.usage.num_turns
+        || recorded.reported_tokens !== receipt.usage.tokens
+        || recorded.input_tokens !== receipt.usage.input_tokens
+        || recorded.output_tokens !== receipt.usage.output_tokens
+        || recorded.owner !== origin.owner
+        || recorded.generation !== origin.generation
+        || recorded.source !== `codex-${receipt.process_kind}-measured`) {
+        throw new Error('PROJECT_ROOT_ACCOUNTING_CONFLICT');
+      }
       settledReceiptIds.push(receipt.receipt_id);
       continue;
-    }
-    let origin;
-    if (receipt.process_kind === 'maker') {
-      const context = receipt.context || {};
-      const acquired = (loop.session_chain.sessions || []).find(
-        session => session.run_id === context.child_run_id && session.started_at !== null,
-      );
-      const owner = acquired ? context.child_run_id : context.parent_owner;
-      const generation = acquired ? context.child_generation : context.parent_generation;
-      const session = (loop.session_chain.sessions || []).find(item => item.run_id === owner);
-      if (!session || !Number.isSafeInteger(generation) || generation < 1) {
-        throw new Error('PROJECT_ROOT_ACCOUNTING_UNMEASURABLE');
-      }
-      origin = { owner, generation };
-    } else {
-      const context = receipt.context || {};
-      const checker = (loop.episodes || []).find(
-        episode => episode.id === context.checker_episode_id,
-      );
-      const claim = checker?.review_claim;
-      if (!claim
-        || claim.attempt_id !== context.attempt_id
-        || claim.target_maker !== context.target_maker
-        || claim.lease_owner !== context.origin_owner
-        || claim.lease_generation !== context.origin_generation) {
-        throw new Error('PROJECT_ROOT_ACCOUNTING_UNMEASURABLE');
-      }
-      origin = { owner: claim.lease_owner, generation: claim.lease_generation };
     }
     const trailing = [...lines].reverse().find(event => event.type === 'cost'
       && event.data?.auto_floor === true
