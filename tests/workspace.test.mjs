@@ -1,15 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { readState, writeState } from '../scripts/lib/state.mjs';
+import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import {
   newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal,
   inheritWorkstreams, integrationOrder,
 } from '../scripts/lib/workspace.mjs';
-import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
+import { abandonEpisode, newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { createDirectoryJunction, fixtureDir } from './helpers/fs-fixtures.mjs';
 import { appendAnchored } from '../scripts/lib/integrity.mjs';
 
@@ -27,14 +27,16 @@ function bindWorkstream(root, runId, workstreamId, f) {
     point: 'implementation', workstream: workstreamId, fence: f,
   });
   recordEpisode(root, runId, id, { status: 'in_progress', fence: f });
+  return id;
 }
 
-function clearOwnerScope(root, runId) {
-  const { data } = readState(root, runId);
-  const scope = data.session_chain.sessions.find(session => session.run_id === runId).scope;
-  scope.workstream_id = null;
-  scope.bound_at_seq = null;
-  writeState(root, runId, data);
+function terminalBytes(root, runId) {
+  const dir = runDir(root, runId);
+  return {
+    loop: readFileSync(join(dir, 'loop.json')),
+    hash: readFileSync(join(dir, '.loop.hash')),
+    events: readFileSync(join(dir, 'event-log.jsonl')),
+  };
 }
 
 test('newWorkstream creates planned workstream with kernel fields', () => {
@@ -70,7 +72,8 @@ test('recordWorkstreamTerminal derives terminal from proof content; clears activ
   const { root, runId } = seed();
   const f = fence(runId);
   const { id } = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: '.claude/worktrees/w', fence: f });
-  bindWorkstream(root, runId, id, f);
+  const binder = bindWorkstream(root, runId, id, f);
+  abandonEpisode(root, runId, binder, { reason: 'fixture settled', confirm: true, fence: f });
   setWorkstreamStatus(root, runId, id, 'in_progress', { fence: f });
   // ready FAILS when review_points_done is empty (kernel-derived, not proof shortcut)
   assert.throws(() => recordWorkstreamTerminal(root, runId, id, { status: 'ready', proof: {}, fence: f }), /WORKSTREAM_TERMINAL_NO_PROOF/);
@@ -105,7 +108,8 @@ test('setWorkstreamStatus throws WORKSTREAM_TERMINAL_LOCKED when workstream is t
   const { root, runId } = seed();
   const f = fence(runId);
   const { id } = newWorkstream(root, runId, { title: 'C', branch: 'c', worktree: '.claude/worktrees/wc', fence: f });
-  bindWorkstream(root, runId, id, f);
+  const binder = bindWorkstream(root, runId, id, f);
+  abandonEpisode(root, runId, binder, { reason: 'fixture settled', confirm: true, fence: f });
   setWorkstreamStatus(root, runId, id, 'in_progress', { fence: f });
   // Mark it ready via state manipulation + recordWorkstreamTerminal
   {
@@ -141,7 +145,8 @@ test('recordWorkstreamTerminal blocks terminal->terminal rewrites (merged/abando
 
   // Set up a workstream that is 'ready' and confirm it CAN go to 'merged'
   const { id: idR } = newWorkstream(root, runId, { title: 'R', branch: 'br', worktree: '.claude/worktrees/wr', fence: f });
-  bindWorkstream(root, runId, idR, f);
+  const readyBinder = bindWorkstream(root, runId, idR, f);
+  abandonEpisode(root, runId, readyBinder, { reason: 'fixture settled', confirm: true, fence: f });
   {
     const { data } = readState(root, runId);
     const ws = data.workstreams.find(w => w.id === idR);
@@ -155,13 +160,19 @@ test('recordWorkstreamTerminal blocks terminal->terminal rewrites (merged/abando
   assert.equal(readState(root, runId).data.workstreams.find(w => w.id === idR).status, 'merged');
 
   // Set up an abandoned workstream — cannot go to merged
-  clearOwnerScope(root, runId);
-  const { id: idA } = newWorkstream(root, runId, { title: 'Ab', branch: 'ba2', worktree: '.claude/worktrees/wa2', fence: f });
-  bindWorkstream(root, runId, idA, f);
-  recordWorkstreamTerminal(root, runId, idA, { status: 'abandoned', proof: { reason: 'no longer needed' }, fence: f });
-  assert.equal(readState(root, runId).data.workstreams.find(w => w.id === idA).status, 'abandoned');
+  const { root: rootA, runId: runIdA } = seed();
+  const fA = fence(runIdA);
+  const { id: idA } = newWorkstream(rootA, runIdA, { title: 'Ab', branch: 'ba2', worktree: '.claude/worktrees/wa2', fence: fA });
+  const abandonedBinder = bindWorkstream(rootA, runIdA, idA, fA);
+  abandonEpisode(rootA, runIdA, abandonedBinder, { reason: 'fixture settled', confirm: true, fence: fA });
+  recordWorkstreamTerminal(rootA, runIdA, idA, {
+    status: 'abandoned', proof: { reason: 'no longer needed' }, confirm: true, fence: fA,
+  });
+  assert.equal(readState(rootA, runIdA).data.workstreams.find(w => w.id === idA).status, 'abandoned');
   assert.throws(
-    () => recordWorkstreamTerminal(root, runId, idA, { status: 'merged', proof: { merge_commit: 'xyz', human_approved: true }, fence: f }),
+    () => recordWorkstreamTerminal(rootA, runIdA, idA, {
+      status: 'merged', proof: { merge_commit: 'xyz', human_approved: true }, fence: fA,
+    }),
     /WORKSTREAM_TERMINAL_LOCKED/
   );
 });
@@ -171,9 +182,12 @@ test('recordWorkstreamTerminal twice on same workstream → second throws WORKST
   const { root, runId } = seed();
   const f = fence(runId);
   const { id } = newWorkstream(root, runId, { title: 'T', branch: 'b', worktree: '.claude/worktrees/w', fence: f });
-  bindWorkstream(root, runId, id, f);
+  const binder = bindWorkstream(root, runId, id, f);
+  abandonEpisode(root, runId, binder, { reason: 'fixture settled', confirm: true, fence: f });
   // First terminal call (abandoned is immediately takeable from planned without review points)
-  recordWorkstreamTerminal(root, runId, id, { status: 'abandoned', proof: { reason: 'no longer needed' }, fence: f });
+  recordWorkstreamTerminal(root, runId, id, {
+    status: 'abandoned', proof: { reason: 'no longer needed' }, confirm: true, fence: f,
+  });
   assert.equal(readState(root, runId).data.workstreams.find(w => w.id === id).status, 'abandoned');
   // Second call — must throw WORKSTREAM_TERMINAL_LOCKED atomically
   assert.throws(
@@ -182,6 +196,41 @@ test('recordWorkstreamTerminal twice on same workstream → second throws WORKST
   );
   // Status must be unchanged
   assert.equal(readState(root, runId).data.workstreams.find(w => w.id === id).status, 'abandoned');
+});
+
+test('recordWorkstreamTerminal library enforces new-policy confirm grammar before mutation', () => {
+  {
+    const { root, runId } = seed();
+    const f = fence(runId);
+    const { id } = newWorkstream(root, runId, {
+      title: 'Confirm abandoned', branch: 'confirm-abandoned',
+      worktree: '.claude/worktrees/confirm-abandoned', fence: f,
+    });
+    bindWorkstream(root, runId, id, f);
+    const before = terminalBytes(root, runId);
+    assert.throws(() => recordWorkstreamTerminal(root, runId, id, {
+      status: 'abandoned', proof: { reason: 'cancelled' }, fence: f,
+    }), /CONFIRM_REQUIRED/);
+    assert.deepEqual(terminalBytes(root, runId), before);
+  }
+
+  {
+    const { root, runId } = seed();
+    const f = fence(runId);
+    const { id } = newWorkstream(root, runId, {
+      title: 'Confirm ready', branch: 'confirm-ready',
+      worktree: '.claude/worktrees/confirm-ready', fence: f,
+    });
+    bindWorkstream(root, runId, id, f);
+    const state = readState(root, runId).data;
+    state.workstreams.find(w => w.id === id).review_points_done = [...state.review.points];
+    writeState(root, runId, state);
+    const before = terminalBytes(root, runId);
+    assert.throws(() => recordWorkstreamTerminal(root, runId, id, {
+      status: 'ready', proof: {}, confirm: true, fence: f,
+    }), /CONFIRM_FORBIDDEN/);
+    assert.deepEqual(terminalBytes(root, runId), before);
+  }
 });
 
 test('inheritWorkstreams reports missing worktree paths (no silent recreate)', () => {

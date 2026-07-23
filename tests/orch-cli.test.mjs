@@ -857,8 +857,9 @@ test('workstream terminal (abandoned) + review record reach kernel via CLI', () 
     const ws = JSON.parse(run(root, ['workstream', 'new', '--title', 'A', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--owner', runId, '--generation', '1']));
     const maker = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'plan', '--point', 'plan', '--workstream', ws.id, '--owner', runId, '--generation', '1']));
     run(root, ['episode', 'record', '--id', maker.id, '--status', 'in_progress', '--owner', runId, '--generation', '1']);
+    run(root, ['episode', 'abandon', '--id', maker.id, '--reason', 'superseded fixture', '--confirm', '--owner', runId, '--generation', '1']);
     run(root, ['workstream', 'set', '--id', ws.id, '--status', 'in_progress', '--owner', runId, '--generation', '1']);
-    run(root, ['workstream', 'terminal', '--id', ws.id, '--status', 'abandoned', '--proof', '{"reason":"superseded"}', '--owner', runId, '--generation', '1']);
+    run(root, ['workstream', 'terminal', '--id', ws.id, '--status', 'abandoned', '--proof', '{"reason":"superseded"}', '--confirm', '--owner', runId, '--generation', '1']);
     assert.equal(readState(root, runId).data.workstreams[0].status, 'abandoned');
   }
   // review record: a done maker (so the checker binds — dispatchReview refuses unbound), then dispatch + record.

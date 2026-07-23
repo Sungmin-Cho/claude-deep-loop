@@ -91,7 +91,7 @@ export function closeScope(loop, workstreamId, terminalEvent, now) {
   const timestamp = new Date(now);
   if (!Number.isFinite(timestamp.getTime())) throw new Error('INVALID_NOW: scope close');
   const closedAt = timestamp.toISOString();
-  scope.terminal_event = { seq: terminalEvent.seq, checksum: terminalEvent.checksum };
+  scope.terminal_event = terminalEvent;
   scope.closed_at = closedAt;
   return scope;
 }

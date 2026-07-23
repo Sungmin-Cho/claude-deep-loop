@@ -505,7 +505,7 @@ test('CLI next-action: attended compact-in-place returns real action with cap ad
   assert.equal(action.advice_reason, 'per_session_turn_cap');
 });
 
-test('legacy milestone cursor: terminal transition records identity; emit consumes it; child does not re-emit', () => {
+test('authentic legacy milestone cursor: terminal transition records string identity; emit consumes it; child does not re-emit', () => {
   const root = freshRoot();
   const { runId } = initClaude(root);
   persistLegacyFixture(root, runId, { version: '0.3.0', withEpisode: false });
@@ -520,6 +520,7 @@ test('legacy milestone cursor: terminal transition records identity; emit consum
   const { data: afterTerminal } = readState(root, runId);
   const ws = afterTerminal.workstreams.find(w => w.id === wsId);
   assert.equal(ws.terminal_events.length, 1);
+  assert.equal(typeof ws.terminal_events[0], 'string');
   assert.match(ws.terminal_events[0], /^\d+:ws-/);
   assert.deepEqual(nextAction(afterTerminal, { now: NOW }).gate.unconsumed_milestones, [ws.terminal_events[0]]);
 
@@ -550,7 +551,7 @@ test('legacy milestone cursor: terminal transition records identity; emit consum
   assert.deepEqual(nextAction(afterNextTerminal, { now: NOW }).gate.unconsumed_milestones, [nextEvent]);
 });
 
-test('legacy milestone cursor: pre-compact handoff consumes terminal transition before milestone trigger', () => {
+test('authentic legacy milestone cursor: pre-compact handoff consumes string transition before milestone trigger', () => {
   const root = freshRoot();
   const { runId } = initClaude(root);
   persistLegacyFixture(root, runId, { version: '0.3.0', withEpisode: false });
@@ -562,6 +563,7 @@ test('legacy milestone cursor: pre-compact handoff consumes terminal transition 
     status: 'abandoned', proof: { reason: 'precompact test' }, fence,
   });
   const terminalEvent = readState(root, runId).data.workstreams.find(w => w.id === wsId).terminal_events[0];
+  assert.equal(typeof terminalEvent, 'string');
 
   const emitted = emitHandoff(root, runId, {
     reason: 'pre-compact', trigger: 'precompact', now: NOW.getTime(), headless: false,
@@ -578,7 +580,7 @@ test('legacy milestone cursor: pre-compact handoff consumes terminal transition 
   assert.deepEqual(nextAction(readState(root, runId).data, { now: NOW }).gate.unconsumed_milestones, []);
 });
 
-test('legacy milestone cursor: ready then merged preserves and consumes both terminal identities', () => {
+test('authentic legacy milestone cursor: ready then merged preserves and consumes both string identities', () => {
   const root = freshRoot();
   const { runId } = initClaude(root);
   persistLegacyFixture(root, runId, { version: '0.3.0', withEpisode: false });
@@ -596,6 +598,7 @@ test('legacy milestone cursor: ready then merged preserves and consumes both ter
   });
   const beforeEmit = readState(root, runId).data;
   const terminalEvents = beforeEmit.workstreams.find(w => w.id === wsId).terminal_events;
+  assert.ok(terminalEvents.every(event => typeof event === 'string'));
   assert.equal(terminalEvents.length, 2);
   assert.match(terminalEvents[0], /^\d+:ws-.*:ready$/);
   assert.match(terminalEvents[1], /^\d+:ws-.*:merged$/);

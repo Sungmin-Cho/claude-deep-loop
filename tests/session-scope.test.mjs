@@ -191,7 +191,7 @@ test('public Workstream set and terminal routes reject a second Workstream befor
   assert.equal(same.status, 0, same.stderr);
   for (const args of [
     ['workstream', 'set', '--id', wsB, '--status', 'in_progress'],
-    ['workstream', 'terminal', '--id', wsB, '--status', 'abandoned', '--proof', '{"reason":"cross"}'],
+    ['workstream', 'terminal', '--id', wsB, '--status', 'abandoned', '--proof', '{"reason":"cross"}', '--confirm'],
   ]) {
     const before = fileInventory(root, runId);
     const result = runCli(root, runId, args);
@@ -235,6 +235,9 @@ test('public Workstream merged accepts only ready and preserves fence-first byte
   const ws = newWorkstream(root, runId, 'ready');
   const maker = newEpisode(root, runId, { workstream: ws });
   assert.equal(runCli(root, runId, ['episode', 'record', '--id', maker, '--status', 'in_progress']).status, 0);
+  assert.equal(runCli(root, runId, [
+    'episode', 'abandon', '--id', maker, '--reason', 'fixture settled', '--confirm',
+  ]).status, 0);
   const prepared = readState(root, runId).data;
   prepared.workstreams.find(item => item.id === ws).review_points_done = [...prepared.review.points];
   writeState(root, runId, prepared);

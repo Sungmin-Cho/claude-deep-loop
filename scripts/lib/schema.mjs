@@ -436,9 +436,21 @@ export function validate(loopJson, schema = loadSchema()) {
   for (const ws of (Array.isArray(loopJson.workstreams) ? loopJson.workstreams : [])) {
     if (ws?.status !== undefined && !wsAllowed.includes(ws.status)) errors.push(`invalid workstream status: ${ws.status}`);
     const terminalEvents = ws?.terminal_events;
+    const validTerminalEvent = event => {
+      if (typeof event === 'string') return true;
+      return !!event
+        && typeof event === 'object'
+        && !Array.isArray(event)
+        && Object.keys(event).length === 2
+        && Object.hasOwn(event, 'seq')
+        && Object.hasOwn(event, 'checksum')
+        && Number.isSafeInteger(event.seq)
+        && event.seq > 0
+        && /^[0-9a-f]{64}$/.test(event.checksum);
+    };
     if (terminalEvents !== undefined
-      && (!Array.isArray(terminalEvents) || terminalEvents.some(event => typeof event !== 'string'))) {
-      errors.push('workstreams[].terminal_events must be an array of strings');
+      && (!Array.isArray(terminalEvents) || terminalEvents.some(event => !validTerminalEvent(event)))) {
+      errors.push('workstreams[].terminal_events must contain legacy strings or exact event identities');
     }
   }
   return { ok: errors.length === 0, errors };

@@ -519,7 +519,26 @@ const handlers = {
     if (verb === 'terminal') {
       const id = reqStr(f, 'id'); if (!id) { error('MISSING_ID'); return 2; }
       const status = reqStr(f, 'status'); if (!status) { error('MISSING_STATUS'); return 2; }
-      recordWorkstreamTerminal(root, runId, id, { status, proof: f.proof ? JSON.parse(f.proof) : {}, fence }); json({ ok: true }); return 0;
+      const confirm = Object.hasOwn(f, 'confirm')
+        ? (f.confirm === true || f.confirm === 'true')
+        : undefined;
+      try {
+        recordWorkstreamTerminal(root, runId, id, {
+          status,
+          proof: f.proof ? JSON.parse(f.proof) : {},
+          confirm,
+          fence,
+          now: parseNow(f),
+        });
+        json({ ok: true }); return 0;
+      } catch (e) {
+        const message = String(e?.message || e);
+        if (message.startsWith('CONFIRM_REQUIRED') || message.startsWith('CONFIRM_FORBIDDEN')) {
+          error(message); return 2;
+        }
+        if (message.startsWith('LEASE_FENCED')) { error(message); return 3; }
+        error(message); return 1;
+      }
     }
     error(`unknown workstream verb: ${verb}`); return 2;
   },

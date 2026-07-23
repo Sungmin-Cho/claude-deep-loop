@@ -6,7 +6,8 @@ import { slugify } from './slug.mjs';
 import { leaseCheck } from './lease.mjs';
 import { MUTATION_TURN_FLOOR } from './budget.mjs';
 import { normalizePortableRelativePath, pathWithin } from './fs-safe.mjs';
-import { assertScopeAllows } from './session-scope.mjs';
+import { assertScopeAllows, closeScope } from './session-scope.mjs';
+import { workstreamClosureProofState } from './finish.mjs';
 
 const NON_TERMINAL = ['planned', 'in_progress', 'in_review', 'parked'];
 const TERMINAL = ['ready', 'merged', 'abandoned'];
@@ -112,23 +113,37 @@ export function setWorkstreamStatus(root, runId, wsId, status, opts = {}) {
     { floor: MUTATION_TURN_FLOOR });
 }
 
-export function recordWorkstreamTerminal(root, runId, wsId, { status, proof = {}, fence } = {}) {
+export function recordWorkstreamTerminal(root, runId, wsId, {
+  status, proof = {}, confirm, fence, now = Date.now(),
+} = {}) {
   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: recordWorkstreamTerminal');
-  // Cheap input validation (no atomicity required)
-  if (!TERMINAL.includes(status)) throw new Error(`WORKSTREAM_STATUS_INVALID: ${status} is not terminal`);
-  if (!proof || typeof proof !== 'object' || Array.isArray(proof)) throw new Error(`WORKSTREAM_TERMINAL_NO_PROOF: ${wsId} requires proof object`);
-  let terminalEventSeq = null;
-  appendAnchored(root, runId, { type: 'workstream-terminal', data: { id: wsId, status, proof } }, (loop) => {
+  appendAnchored(root, runId, {
+    type: 'workstream-terminal', data: { id: wsId, status, proof }, now,
+  }, (loop, _spent, tx) => {
     const w = loop.workstreams.find(x => x.id === wsId);
     if (!w) throw new Error(`WORKSTREAM_NOT_FOUND: ${wsId}`);
+    const newPolicy = loop.autonomy?.continuation_policy === 'workstream-session';
+    const closesAffinity = newPolicy
+      && NON_TERMINAL.includes(w.status)
+      && (status === 'ready' || status === 'abandoned');
     w.status = status;
-    (w.terminal_events ??= []).push(`${terminalEventSeq}:${wsId}:${status}`);
+    if (closesAffinity) {
+      (w.terminal_events ??= []).push(tx.event_identity);
+      closeScope(loop, wsId, tx.event_identity, tx.event.ts);
+    } else if (!newPolicy) {
+      (w.terminal_events ??= []).push(`${tx.event_identity.seq}:${wsId}:${status}`);
+    }
     loop.active_workstreams = loop.active_workstreams.filter(x => x !== wsId);
   }, (loop) => {
     // Codex r3 🔴: all throwing validations inside preCheck on fresh loop (atomic terminal guard)
     if (fence) { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
+    if (!TERMINAL.includes(status)) throw new Error(`WORKSTREAM_STATUS_INVALID: ${status} is not terminal`);
+    if (!proof || typeof proof !== 'object' || Array.isArray(proof)) {
+      throw new Error(`WORKSTREAM_TERMINAL_NO_PROOF: ${wsId} requires proof object`);
+    }
     const ws = loop.workstreams.find(w => w.id === wsId);
     if (!ws) throw new Error(`WORKSTREAM_NOT_FOUND: ${wsId}`);
+    const newPolicy = loop.autonomy?.continuation_policy === 'workstream-session';
     if (status === 'merged' && ws.status !== 'ready') {
       throw new Error(`WORKSTREAM_TERMINAL_LOCKED: ${wsId} ${ws.status}->merged not allowed`);
     }
@@ -138,9 +153,21 @@ export function recordWorkstreamTerminal(root, runId, wsId, { status, proof = {}
         throw new Error('WORKSTREAM_TERMINAL_LOCKED: ' + wsId + ' ' + ws.status + '->' + status + ' not allowed');
       }
     }
-    if (!(ws.status === 'ready' && status === 'merged')
-      && loop.autonomy?.continuation_policy === 'workstream-session') {
+    if (newPolicy && status === 'abandoned' && confirm !== true) {
+      throw new Error('CONFIRM_REQUIRED: abandoned requires --confirm (human-only)');
+    }
+    if (newPolicy && status !== 'abandoned' && confirm !== undefined) {
+      throw new Error('CONFIRM_FORBIDDEN: --confirm is only valid for abandoned');
+    }
+    const closesAffinity = newPolicy
+      && NON_TERMINAL.includes(ws.status)
+      && (status === 'ready' || status === 'abandoned');
+    if (closesAffinity) {
       assertScopeAllows(loop, wsId);
+      const closure = workstreamClosureProofState(loop, wsId);
+      if (!closure.ok) {
+        throw new Error(`WORKSTREAM_CLOSURE_UNMET: ${wsId} ${closure.missing.join(',')}`);
+      }
     }
     const reviewPoints = (loop.review?.points || []);
     const ok =
@@ -148,8 +175,6 @@ export function recordWorkstreamTerminal(root, runId, wsId, { status, proof = {}
       status === 'merged'    ? (typeof proof.merge_commit === 'string' && proof.human_approved === true) :
       status === 'abandoned' ? (typeof proof.reason === 'string' && proof.reason.length > 0) : false;
     if (!ok) throw new Error(`WORKSTREAM_TERMINAL_NO_PROOF: ${wsId} -> ${status} proof insufficient`);
-    // Capture the pre-floor head: +1 is this business event; mutate-time head would already be the floor cost event.
-    terminalEventSeq = loop.event_log_head.seq + 1;
   }, { floor: MUTATION_TURN_FLOOR });
 }
 

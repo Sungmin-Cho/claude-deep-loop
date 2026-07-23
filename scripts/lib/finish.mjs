@@ -13,45 +13,82 @@ import { containedRealFile } from './fs-safe.mjs';
 const settledEp = (loop, e) => ['done', 'approved', 'abandoned'].includes(e.status) || (e.role === 'checker' && e.status === 'rejected' && rejectionResolved(loop, e));
 const TERMINAL_WS = ['ready', 'merged', 'abandoned'];
 
+function latestBoundChecker(loop, makerId) {
+  const checkers = (loop.episodes || []).filter(episode =>
+    isProofCapableChecker(episode)
+    && episode.target_maker === makerId
+    && (episode.status === 'approved' || episode.status === 'rejected'));
+  return checkers.length
+    ? checkers.reduce((a, b) => (epOrder(a.id, b.id) >= 0 ? a : b))
+    : null;
+}
+
+export function workstreamClosureProofState(loop, workstreamId) {
+  const episodes = (loop.episodes || []).filter(episode => episode.workstream_id === workstreamId);
+  const doneMakers = episodes.filter(episode => episode.role === 'maker' && episode.status === 'done');
+  const unsettledEpisodeIds = episodes
+    .filter(episode => !settledEp(loop, episode))
+    .map(episode => episode.id);
+  const unreviewedMakerIds = doneMakers
+    .filter(maker => !makerReviewed(loop, maker))
+    .map(maker => maker.id);
+  const unresolvedRejectionIds = episodes
+    .filter(episode =>
+      episode.role === 'checker'
+      && episode.status === 'rejected'
+      && !rejectionResolved(loop, episode))
+    .map(episode => episode.id);
+
+  const latestByPoint = new Map();
+  for (const maker of doneMakers) {
+    const current = latestByPoint.get(maker.point);
+    if (!current || epOrder(maker.id, current.id) > 0) latestByPoint.set(maker.point, maker);
+  }
+  const latestMakers = [...latestByPoint.values()];
+  const nonConvergedMakerIds = latestMakers
+    .filter(maker => latestBoundChecker(loop, maker.id)?.status !== 'approved')
+    .map(maker => maker.id);
+  const contractUnpinned = loop.recipe?.id === 'harness-hill-climb'
+    && latestMakers.some(maker => {
+      const checker = latestBoundChecker(loop, maker.id);
+      return checker?.status === 'approved' && !checker.contract?.sha256;
+    });
+
+  const missing = [];
+  if (unsettledEpisodeIds.length) missing.push('unsettled-episodes');
+  if (unreviewedMakerIds.length) missing.push('unreviewed-maker');
+  if (unresolvedRejectionIds.length) missing.push('unresolved-rejection');
+  if (nonConvergedMakerIds.length) missing.push('non-converged-maker');
+  if (contractUnpinned) missing.push('hillclimb-contract-unpinned');
+  return {
+    ok: missing.length === 0,
+    missing,
+    unsettledEpisodeIds,
+    unreviewedMakerIds,
+    unresolvedRejectionIds,
+    nonConvergedMakerIds,
+  };
+}
+
 export function finishProofState(loop) {
   const eps = loop.episodes || [];
   const hasWork = eps.length > 0;                                  // Codex r1 critical-1: 빈 run 의 공허-통과 차단
-  const settled = eps.every(e => settledEp(loop, e));
+  const closureIds = [...new Set(eps.map(episode => episode.workstream_id))];
+  const closures = closureIds.map(workstreamId => workstreamClosureProofState(loop, workstreamId));
+  const settled = closures.every(closure => closure.unsettledEpisodeIds.length === 0);
   const noActiveWs = (loop.active_workstreams || []).length === 0;
   const wsAll = (loop.workstreams || []).every(w => TERMINAL_WS.includes(w.status));
   // Per-maker binding check: every done maker must have a bound terminal checker (target_maker === maker.id).
   const doneMakers = eps.filter(e => e.role === 'maker' && e.status === 'done');
-  const allMakersReviewed = doneMakers.every(m => makerReviewed(loop, m));
-  // Convergence: for each (ws,point) that has done makers, the LATEST done maker (highest episode id,
-  // via epOrder — numeric prefix compare, not string, so the 999→1000 boundary is correct)
-  // must have a bound APPROVED checker. An unbound approved checker cannot satisfy this requirement.
-  const latestByPoint = new Map();
-  for (const m of doneMakers) {
-    const k = `${m.workstream_id}|${m.point}`;
-    const cur = latestByPoint.get(k);
-    if (!cur || epOrder(m.id, cur.id) > 0) latestByPoint.set(k, m);
-  }
-  // final-fix-4: convergence must be ORDER-AWARE on the checker side too — mirror the unified rejectionResolved.
-  // A maker converges only when its LATEST bound terminal checker (by epOrder) is APPROVED. An older approve
-  // followed by a newer reject (same target_maker) must NOT mask the rejection (a plain any-approved test would,
-  // diverging from nextAction which routes to fix_episode). An unbound checker has no target_maker so cannot count.
-  const latestBoundChecker = (mid) => {
-    const cs = (loop.episodes || []).filter(e => isProofCapableChecker(e) && e.target_maker === mid && (e.status === 'approved' || e.status === 'rejected'));
-    return cs.length ? cs.reduce((a, b) => (epOrder(a.id, b.id) >= 0 ? a : b)) : null;
-  };
-  const boundLatestApproved = (mid) => latestBoundChecker(mid)?.status === 'approved';
-  const allPointsConverged = [...latestByPoint.values()].every(m => boundLatestApproved(m.id));
+  const allMakersReviewed = closures.every(closure => closure.unreviewedMakerIds.length === 0);
+  const allPointsConverged = closures.every(closure => closure.nonConvergedMakerIds.length === 0);
   // P2 codex r6: hill-climb run의 review proof는 계약-강제 리뷰여야 한다 — proof를 만족시키는 각 latest
   // APPROVED checker에 dispatch가 pin한 contract(sha256)가 있어야 한다. pre-patch 커널로 approved된
   // legacy checker는 record-시점 게이트를 다시 거치지 않으므로 finish에서 막는다. 마이그레이션(r7,
   // abandon 불필요 — terminal checker는 abandon 불가): dispatchReview의 legacyUnpinned 특례가 해당
   // maker를 재리뷰 재적격으로 되돌리므로, 사람이 `review dispatch`를 다시 실행해 계약-pinned checker가
   // 최신이 되면 이 게이트가 해소된다.
-  const hillClimb = loop.recipe?.id === 'harness-hill-climb';
-  const contractPinned = !hillClimb || [...latestByPoint.values()].every(m => {
-    const c = latestBoundChecker(m.id);
-    return !c || c.status !== 'approved' || !!c.contract?.sha256;
-  });
+  const contractPinned = closures.every(closure => !closure.missing.includes('hillclimb-contract-unpinned'));
   const reviewedProof = doneMakers.length > 0 && allMakersReviewed && allPointsConverged && contractPinned;
   const unboundDoneMaker = doneMakers.some(m => !m.workstream_id || !(loop.workstreams || []).some(w => w.id === m.workstream_id));
   const missing = [];

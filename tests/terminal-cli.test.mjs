@@ -2,13 +2,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { appendAnchored } from '../scripts/lib/integrity.mjs';
+import { newWorkstream } from '../scripts/lib/workspace.mjs';
+import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
+import { dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
 
 const CLI = join(process.cwd(), 'scripts', 'deep-loop.mjs');
 
@@ -22,6 +25,50 @@ function seedTerminal(status, mutate, runtime = 'claude') {
   return { root, runId, owner: data.session_chain.lease.owner_run_id, gen: data.session_chain.lease.generation };
 }
 const run = (root, args) => spawnSync(process.execPath, [CLI, ...args, '--project-root', root], { encoding: 'utf8' });
+
+function seedBoundaryCli() {
+  const root = mkdtempSync(join(tmpdir(), 'dl-term-boundary-'));
+  const review = {
+    points: ['implementation'], reviewer: 'subagent-checker', mode: 'cross-model',
+    flags: [], converge: true, max_review_rounds: 5, require_human_ack: false,
+  };
+  const { runId } = initRun(root, {
+    runtime: 'claude', goal: 'g', review, now: new Date('2026-07-23T00:00:00.000Z'),
+  });
+  const fence = { owner: runId, generation: 1, intent: 'business' };
+  const worktree = '.claude/worktrees/boundary';
+  mkdirSync(join(root, worktree), { recursive: true });
+  const ws = newWorkstream(root, runId, {
+    title: 'boundary', branch: 'feature/boundary', worktree, fence,
+  }).id;
+  const artifact = `${worktree}/artifact.txt`;
+  writeFileSync(join(root, artifact), 'artifact');
+  const maker = newEpisode(root, runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation',
+    workstream: ws, expectedArtifacts: [artifact], fence,
+  }).id;
+  recordEpisode(root, runId, maker, { status: 'in_progress', fence });
+  recordEpisode(root, runId, maker, { status: 'done', artifacts: [artifact], proof: {}, fence });
+  const checker = dispatchReview(root, runId, {
+    point: 'implementation', workstreamId: ws, detected: {}, fence,
+  }).checkerEpisodeId;
+  const report = `${worktree}/review.md`;
+  writeFileSync(join(root, report), '# review');
+  recordReviewOutcome(root, runId, {
+    episodeId: checker, verdict: 'APPROVE', proof: { report }, fence,
+  });
+  return { root, runId, owner: runId, gen: 1, ws };
+}
+
+function terminalDurableBytes(root, runId) {
+  const dir = runDir(root, runId);
+  const eventPath = join(dir, 'event-log.jsonl');
+  return {
+    loop: readFileSync(join(dir, 'loop.json')),
+    hash: readFileSync(join(dir, '.loop.hash')),
+    events: existsSync(eventPath) ? readFileSync(eventPath) : null,
+  };
+}
 
 // spec §4-2: 외곽 requireLease(leaseCheck)가 RUN_TERMINAL을 exit 3로 — requireLease-경유 mutating verb 전수.
 // (spawn-style reset-desktop은 requireLease 우회 verb — 아래 자체-계약 테스트에서 별도 고정, §4-5d.)
@@ -60,6 +107,50 @@ for (const status of ['completed', 'stopped']) {
     }
   });
 }
+
+test('workstream terminal CLI pins confirm grammar without mutation', () => {
+  {
+    const f = seedBoundaryCli();
+    const before = terminalDurableBytes(f.root, f.runId);
+    const missing = run(f.root, [
+      'workstream', 'terminal', '--id', f.ws, '--status', 'abandoned',
+      '--proof', '{"reason":"cancelled"}', '--owner', f.owner, '--generation', String(f.gen),
+    ]);
+    assert.equal(missing.status, 2, missing.stdout + missing.stderr);
+    assert.match(missing.stderr, /CONFIRM_REQUIRED/);
+    assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
+  }
+
+  {
+    const f = seedBoundaryCli();
+    const before = terminalDurableBytes(f.root, f.runId);
+    const forbidden = run(f.root, [
+      'workstream', 'terminal', '--id', f.ws, '--status', 'ready',
+      '--proof', '{}', '--confirm', '--owner', f.owner, '--generation', String(f.gen),
+    ]);
+    assert.equal(forbidden.status, 2, forbidden.stdout + forbidden.stderr);
+    assert.match(forbidden.stderr, /CONFIRM_FORBIDDEN/);
+    assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
+  }
+
+  {
+    const f = seedBoundaryCli();
+    const ready = run(f.root, [
+      'workstream', 'terminal', '--id', f.ws, '--status', 'ready',
+      '--proof', '{}', '--owner', f.owner, '--generation', String(f.gen),
+    ]);
+    assert.equal(ready.status, 0, ready.stdout + ready.stderr);
+    const before = terminalDurableBytes(f.root, f.runId);
+    const forbidden = run(f.root, [
+      'workstream', 'terminal', '--id', f.ws, '--status', 'merged',
+      '--proof', '{"merge_commit":"abc123","human_approved":true}',
+      '--confirm', '--owner', f.owner, '--generation', String(f.gen),
+    ]);
+    assert.equal(forbidden.status, 2, forbidden.stdout + forbidden.stderr);
+    assert.match(forbidden.stderr, /CONFIRM_FORBIDDEN/);
+    assert.deepEqual(terminalDurableBytes(f.root, f.runId), before);
+  }
+});
 
 // §4-5d (plan r3): reset-desktop은 requireLease 우회 human-recovery verb — 자체 계약(JSON ok:false + exit 1) 고정.
 test('CLI spawn-style reset-desktop on terminal run: exit 1 + JSON ok:false RUN_TERMINAL, no mutation', () => {

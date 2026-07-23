@@ -86,13 +86,31 @@ test('invalid workstream status fails', () => {
   assert.equal(validate(o).ok, false);
 });
 
-test('workstream terminal_events must be an array of strings', () => {
-  for (const terminalEvents of ['bad', [1]]) {
+test('workstream terminal_events accepts legacy strings plus exact structured event identities', () => {
+  for (const terminalEvents of [
+    ['12:ws-01:ready'],
+    [{ seq: 12, checksum: 'a'.repeat(64) }],
+    ['12:ws-01:ready', { seq: 13, checksum: 'b'.repeat(64) }],
+  ]) {
+    const loop = minimalValid();
+    loop.workstreams = [{ id: 'w', status: 'ready', terminal_events: terminalEvents }];
+    assert.equal(validate(loop).ok, true, validate(loop).errors.join('; '));
+  }
+
+  for (const terminalEvents of [
+    'bad',
+    [1],
+    [{ seq: 0, checksum: 'a'.repeat(64) }],
+    [{ seq: 1.5, checksum: 'a'.repeat(64) }],
+    [{ seq: 1, checksum: 'A'.repeat(64) }],
+    [{ seq: 1, checksum: 'a'.repeat(64), extra: true }],
+    [{ seq: 1 }],
+  ]) {
     const loop = minimalValid();
     loop.workstreams = [{ id: 'w', status: 'ready', terminal_events: terminalEvents }];
     const result = validate(loop);
     assert.equal(result.ok, false);
-    assert.ok(result.errors.some(error => error.includes('workstreams[].terminal_events must be an array of strings')));
+    assert.ok(result.errors.some(error => error.includes('workstreams[].terminal_events')));
   }
 });
 test('non-number budget.total fails', () => {

@@ -91,6 +91,7 @@ test('recordWorkstreamTerminal with stale fence throws LEASE_FENCED', () => {
   releaseLease(root, runId, { owner, generation: gen1 });
   acquireLease(root, runId, { owner: 'child-run-003', expectGeneration: gen1, runtime: 'claude' });
 
+  // Deliberately omit the abandoned confirmation: the stale lease fence must win first.
   assert.throws(
     () => recordWorkstreamTerminal(root, runId, id, { status: 'abandoned', proof: { reason: 'x' }, fence: { owner, generation: gen1, intent: 'business' } }),
     /LEASE_FENCED/
@@ -170,6 +171,7 @@ test('all mutators without fence param throw FENCE_REQUIRED (fence is now mandat
     /FENCE_REQUIRED/
   );
   // recordWorkstreamTerminal
+  // Deliberately omit the abandoned confirmation: the mandatory fence guard must win first.
   assert.throws(
     () => recordWorkstreamTerminal(root, runId, 'ws-01', { status: 'abandoned', proof: { reason: 'x' } }),
     /FENCE_REQUIRED/

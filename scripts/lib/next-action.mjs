@@ -88,6 +88,9 @@ export function nextAction(loop, { now = Date.now(), unattended = false } = {}) 
   const consumed = loop.session_chain?.consumed_milestones || [];
   const unconsumedMilestones = (loop.workstreams || [])
     .flatMap(w => w.terminal_events || [])
+    // Task 6 transition: structured workstream-session boundaries are routed from scope.terminal_event
+    // in Task 7. Keep the existing milestone channel legacy-string-only until that boundary grammar lands.
+    .filter(event => typeof event === 'string')
     .filter(event => !consumed.includes(event));
   const gate = {
     // unconsumed_milestones is a passable-gate signal only; global blocks already route to handoff/await_human.

@@ -323,6 +323,9 @@ export function emitHandoff(root, runId, {
       const consumed = l.session_chain.consumed_milestones;
       const toConsume = (l.workstreams || [])
         .flatMap(w => w.terminal_events || [])
+        // Task 6 transition: do not leak structured affinity identities into the legacy string cursor.
+        // Task 7 consumes the exact scope.terminal_event through its boundary-event grammar.
+        .filter(event => typeof event === 'string')
         .filter(event => !consumed.includes(event));
       consumed.push(...toConsume);
     }, (l) => {
