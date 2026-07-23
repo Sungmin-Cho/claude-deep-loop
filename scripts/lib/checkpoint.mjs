@@ -565,8 +565,10 @@ function strictRel(value) {
   return match[1];
 }
 
-function absoluteLike(value) {
-  return /(?:^|[^A-Za-z0-9._~-])(?:[A-Za-z]:[\\/]|\\\\|\/)/.test(value);
+function pathBearing(value) {
+  return value.includes('/')
+    || /[A-Za-z]:[\\/]/.test(value)
+    || value.includes('\\\\');
 }
 
 function stringSummary(value) {
@@ -579,7 +581,7 @@ function stringSummary(value) {
 function boundedDescriptorValue(value, depth = 0) {
   if (typeof value === 'string') {
     if (DESCRIPTOR_SLASH_COMMANDS.has(value)
-      || (Buffer.byteLength(value) <= 192 && !absoluteLike(value))) {
+      || (Buffer.byteLength(value) <= 192 && !pathBearing(value))) {
       return value;
     }
     return stringSummary(value);
