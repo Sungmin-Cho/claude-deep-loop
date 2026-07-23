@@ -199,6 +199,11 @@ test('resetBreaker preserves exact paused released recovery reservations for bot
 test('resetBreaker preserves boundary recovery when the stale predecessor owns the released lease', () => {
   const { root, runId } = recoveryBreakerFixture('boundary-recovery');
   const { data } = readState(root, runId);
+  const stale = data.session_chain.sessions.find(
+    session => session.run_id === 'STALE-BOUNDARY-CHILD',
+  );
+  stale.started_at = '2026-07-22T23:59:00.000Z';
+  stale.turns = 2;
   data.session_chain.lease.owner_run_id = 'STALE-BOUNDARY-CHILD';
   writeState(root, runId, data);
   const before = readState(root, runId).data;
@@ -379,6 +384,108 @@ const inexactBreakerRecoveryCases = [
         data.session_chain.sessions.push(structuredClone(parent));
       },
     },
+    {
+      label: 'unrelated boundary lease owner',
+      mutate(data, child) {
+        const stale = data.session_chain.sessions.find(
+          session => session.run_id === child.recovered_from,
+        );
+        const unrelated = structuredClone(data.session_chain.sessions.find(
+          session => session.run_id === stale.parent_run_id,
+        ));
+        unrelated.run_id = 'UNRELATED-OWNER';
+        unrelated.superseded_by = null;
+        data.session_chain.sessions.push(unrelated);
+        data.session_chain.lease.owner_run_id = unrelated.run_id;
+      },
+    },
+    {
+      label: 'missing boundary lease owner row',
+      mutate(data) {
+        data.session_chain.lease.owner_run_id = 'MISSING-OWNER';
+      },
+    },
+    {
+      label: 'duplicate boundary lease owner identity',
+      mutate(data, child) {
+        const stale = data.session_chain.sessions.find(
+          session => session.run_id === child.recovered_from,
+        );
+        const unrelated = structuredClone(data.session_chain.sessions.find(
+          session => session.run_id === stale.parent_run_id,
+        ));
+        unrelated.run_id = 'DUPLICATE-OWNER';
+        unrelated.superseded_by = null;
+        data.session_chain.sessions.push(unrelated, structuredClone(unrelated));
+        data.session_chain.lease.owner_run_id = unrelated.run_id;
+      },
+    },
+    {
+      label: 'parent owner with acquired stale lifecycle',
+      mutate(data, child) {
+        data.session_chain.sessions.find(
+          session => session.run_id === child.recovered_from,
+        ).started_at = '2026-07-22T23:59:00.000Z';
+      },
+    },
+    {
+      label: 'stale owner with never-acquired lifecycle',
+      mutate(data, child) {
+        data.session_chain.lease.owner_run_id = child.recovered_from;
+      },
+    },
+    {
+      label: 'missing stale completion timestamp',
+      mutate(data, child) {
+        data.session_chain.sessions.find(
+          session => session.run_id === child.recovered_from,
+        ).ended_at = null;
+      },
+    },
+    {
+      label: 'invalid stale completion timestamp',
+      mutate(data, child) {
+        data.session_chain.sessions.find(
+          session => session.run_id === child.recovered_from,
+        ).ended_at = '2026-02-31T00:00:00.000Z';
+      },
+    },
+    {
+      label: 'wrong stale recovery outcome',
+      mutate(data, child) {
+        data.session_chain.sessions.find(
+          session => session.run_id === child.recovered_from,
+        ).outcome = null;
+      },
+    },
+    {
+      label: 'used never-acquired stale session',
+      mutate(data, child) {
+        data.session_chain.sessions.find(
+          session => session.run_id === child.recovered_from,
+        ).turns = 1;
+      },
+    },
+    {
+      label: 'acquired stale lifecycle ends before start',
+      mutate(data, child) {
+        const stale = data.session_chain.sessions.find(
+          session => session.run_id === child.recovered_from,
+        );
+        stale.started_at = '2026-07-23T00:00:01.000Z';
+        data.session_chain.lease.owner_run_id = stale.run_id;
+      },
+    },
+    {
+      label: 'invalid acquired stale start timestamp',
+      mutate(data, child) {
+        const stale = data.session_chain.sessions.find(
+          session => session.run_id === child.recovered_from,
+        );
+        stale.started_at = 'not-a-timestamp';
+        data.session_chain.lease.owner_run_id = stale.run_id;
+      },
+    },
 ];
 
 for (const item of inexactBreakerRecoveryCases) {
@@ -393,7 +500,11 @@ for (const item of inexactBreakerRecoveryCases) {
     writeState(root, runId, data);
     const before = JSON.stringify(readState(root, runId).data);
     assert.throws(() => resetBreaker(root, runId, {
-      fence: { owner: runId, generation: 1, intent: 'breaker-reset' },
+      fence: {
+        owner: data.session_chain.lease.owner_run_id,
+        generation: data.session_chain.lease.generation,
+        intent: 'breaker-reset',
+      },
     }), /LEASE_FENCED/, item.label);
     assert.equal(JSON.stringify(readState(root, runId).data), before, item.label);
   });

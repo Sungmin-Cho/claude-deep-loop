@@ -301,6 +301,13 @@ function sameBoundaryIdentity(left, right) {
     && left.checksum === right?.checksum;
 }
 
+function canonicalTimestamp(value) {
+  if (typeof value !== 'string') return null;
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp) || new Date(timestamp).toISOString() !== value) return null;
+  return timestamp;
+}
+
 export function recoveryReservationKind(loop) {
   const lease = loop.session_chain?.lease || {};
   const kind = lease.takeover_kind;
@@ -316,6 +323,9 @@ export function recoveryReservationKind(loop) {
   }
   const sessions = loop.session_chain?.sessions;
   if (!Array.isArray(sessions)) return null;
+  const ownerRows = sessions.filter(session => session?.run_id === lease.owner_run_id);
+  if (ownerRows.length !== 1) return null;
+  const owner = ownerRows[0];
   const childRows = sessions.filter(session => session?.run_id === lease.handoff_child_run_id);
   if (childRows.length !== 1) return null;
   const child = childRows[0];
@@ -354,7 +364,8 @@ export function recoveryReservationKind(loop) {
     || linkedScopes.length !== 1 || linkedScopes[0] !== predecessor) return null;
 
   if (kind === 'affinity-supersession'
-    && (child.recovered_from !== lease.owner_run_id
+    && (owner !== predecessor
+      || child.recovered_from !== lease.owner_run_id
       || typeof scope.workstream_id !== 'string' || scope.workstream_id.length === 0
       || !Number.isSafeInteger(scope.bound_at_seq) || scope.bound_at_seq < 1
       || predecessorScope.workstream_id !== scope.workstream_id
@@ -371,6 +382,18 @@ export function recoveryReservationKind(loop) {
     if (parentRows.length !== 1) return null;
     const parent = parentRows[0];
     const parentScope = parent.scope;
+    const staleEndedAt = canonicalTimestamp(predecessor.ended_at);
+    const staleStartedAt = canonicalTimestamp(predecessor.started_at);
+    const neverAcquiredOwner = owner === parent
+      && predecessor.started_at === null
+      && staleEndedAt !== null
+      && predecessor.turns === 0;
+    const acquiredOwner = owner === predecessor
+      && staleStartedAt !== null
+      && staleEndedAt !== null
+      && staleEndedAt >= staleStartedAt
+      && Number.isSafeInteger(predecessor.turns)
+      && predecessor.turns >= 0;
     if (parent === predecessor || parent === child
       || parent.superseded_by !== predecessor.run_id
       || parentScope?.kind !== 'workstream'
@@ -381,7 +404,9 @@ export function recoveryReservationKind(loop) {
         parentScope.terminal_event,
       )
       || predecessor.project_binding_generation !== loop.project?.binding_generation
-      || predecessor.project_root_digest !== projectRootDigest(loop.project?.root)) {
+      || predecessor.project_root_digest !== projectRootDigest(loop.project?.root)
+      || predecessor.outcome !== 'abandoned_recover'
+      || (!neverAcquiredOwner && !acquiredOwner)) {
       return null;
     }
   }

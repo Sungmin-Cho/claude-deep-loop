@@ -340,6 +340,9 @@ test('budget extension preserves both released recovery reservations byte-semant
 test('budget extension preserves boundary recovery when the stale predecessor owns the released lease', () => {
   const f = recoveryBudgetPauseFixture('boundary-recovery');
   const { data } = readState(f.root, f.runId);
+  const stale = recoveryPredecessor(data);
+  stale.started_at = '2026-07-22T23:59:00.000Z';
+  stale.turns = 2;
   data.session_chain.lease.owner_run_id = 'STALE-BOUNDARY-CHILD';
   writeState(f.root, f.runId, data);
   const before = readState(f.root, f.runId).data;
@@ -548,6 +551,84 @@ const inexactBudgetRecoveryCases = [
         data.session_chain.sessions.push(structuredClone(recoveryOriginalParent(data)));
       },
     },
+    {
+      label: 'unrelated boundary lease owner',
+      mutate(data) {
+        const unrelated = structuredClone(recoveryOriginalParent(data));
+        unrelated.run_id = 'UNRELATED-OWNER';
+        unrelated.superseded_by = null;
+        data.session_chain.sessions.push(unrelated);
+        data.session_chain.lease.owner_run_id = unrelated.run_id;
+      },
+    },
+    {
+      label: 'missing boundary lease owner row',
+      mutate(data) {
+        data.session_chain.lease.owner_run_id = 'MISSING-OWNER';
+      },
+    },
+    {
+      label: 'duplicate boundary lease owner identity',
+      mutate(data) {
+        const unrelated = structuredClone(recoveryOriginalParent(data));
+        unrelated.run_id = 'DUPLICATE-OWNER';
+        unrelated.superseded_by = null;
+        data.session_chain.sessions.push(unrelated, structuredClone(unrelated));
+        data.session_chain.lease.owner_run_id = unrelated.run_id;
+      },
+    },
+    {
+      label: 'parent owner with acquired stale lifecycle',
+      mutate(data) {
+        recoveryPredecessor(data).started_at = '2026-07-22T23:59:00.000Z';
+      },
+    },
+    {
+      label: 'stale owner with never-acquired lifecycle',
+      mutate(data) {
+        data.session_chain.lease.owner_run_id = recoveryPredecessor(data).run_id;
+      },
+    },
+    {
+      label: 'missing stale completion timestamp',
+      mutate(data) {
+        recoveryPredecessor(data).ended_at = null;
+      },
+    },
+    {
+      label: 'invalid stale completion timestamp',
+      mutate(data) {
+        recoveryPredecessor(data).ended_at = '2026-02-31T00:00:00.000Z';
+      },
+    },
+    {
+      label: 'wrong stale recovery outcome',
+      mutate(data) {
+        recoveryPredecessor(data).outcome = null;
+      },
+    },
+    {
+      label: 'used never-acquired stale session',
+      mutate(data) {
+        recoveryPredecessor(data).turns = 1;
+      },
+    },
+    {
+      label: 'acquired stale lifecycle ends before start',
+      mutate(data) {
+        const stale = recoveryPredecessor(data);
+        stale.started_at = '2026-07-23T00:00:01.000Z';
+        data.session_chain.lease.owner_run_id = stale.run_id;
+      },
+    },
+    {
+      label: 'invalid acquired stale start timestamp',
+      mutate(data) {
+        const stale = recoveryPredecessor(data);
+        stale.started_at = 'not-a-timestamp';
+        data.session_chain.lease.owner_run_id = stale.run_id;
+      },
+    },
 ];
 
 for (const item of inexactBudgetRecoveryCases) {
@@ -562,7 +643,10 @@ for (const item of inexactBudgetRecoveryCases) {
       turns: 2,
       reason: `reject ${item.label}`,
       confirm: true,
-      fence: f.fence,
+      fence: {
+        owner: data.session_chain.lease.owner_run_id,
+        generation: data.session_chain.lease.generation,
+      },
       now: f.now,
     }), /BUDGET_EXTENSION_STATUS_INVALID/, item.label);
     assert.equal(JSON.stringify(readState(f.root, f.runId).data), before, item.label);
