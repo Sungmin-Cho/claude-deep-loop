@@ -15,6 +15,26 @@ import {
 const PHASE_ORDER = { idle: 0, reserved: 1, emitted: 2, spawned: 3, acquired: 4 };
 const RECOVERY_TAKEOVER_KINDS = new Set(['affinity-supersession', 'boundary-recovery']);
 
+function lockedTime(now, clock, context) {
+  const value = now === undefined
+    ? (typeof clock === 'function' ? clock() : Number.NaN)
+    : now;
+  const timestamp = new Date(value).getTime();
+  if (!Number.isSafeInteger(timestamp) || timestamp < 0) {
+    throw new Error(`INVALID_NOW: ${context}`);
+  }
+  return timestamp;
+}
+
+function classifiedAcquireFailure(generation, reason, kernelExitCode) {
+  const result = { ok: false, generation, reason };
+  Object.defineProperty(result, 'kernel_exit_code', {
+    value: kernelExitCode,
+    enumerable: false,
+  });
+  return result;
+}
+
 export function deriveIdempotencyKey(ownerRunId, ownerGeneration, triggerReason) {
   return contentHash(`${ownerRunId}|${ownerGeneration}|${triggerReason}`).slice(0, 16);
 }
@@ -128,7 +148,13 @@ export function leaseCheck(loop, { owner, generation, runtime, intent = 'busines
 }
 
 // Runtime-fenced CAS 인수: released 또는 stale(expired)만, generation === expectGeneration. 성공 시 generation+1.
-export function acquireLease(root, runId, { owner, expectGeneration, runtime, now = Date.now() }) {
+export function acquireLease(root, runId, {
+  owner,
+  expectGeneration,
+  runtime,
+  now,
+  clock = Date.now,
+}) {
   if (typeof owner !== 'string' || owner.length === 0) throw new Error('INVALID_OWNER');
   return withReconciledMutationLock(root, runId, (_guard, { data }) => {
     const runtimeResult = runtimeFence(data, runtime);
@@ -144,7 +170,9 @@ export function acquireLease(root, runId, { owner, expectGeneration, runtime, no
       return { ok: true, generation: lease.generation, reason: 'already-owned' };
     }
     if (lease.generation !== expectGeneration) {
-      return { ok: false, generation: lease.generation, reason: 'generation-mismatch' };
+      return lease.takeover_kind === 'boundary-recovery'
+        ? classifiedAcquireFailure(lease.generation, 'generation-mismatch', 3)
+        : { ok: false, generation: lease.generation, reason: 'generation-mismatch' };
     }
     // v1.6 (spec §2.3-6): generation CAS 직후·takeable 체크 앞 — stale expectGeneration은 위에서
     // generation-mismatch(fence-first), generation이 맞는 terminal acquire는 여기서 안정적으로 run-terminal
@@ -166,18 +194,10 @@ export function acquireLease(root, runId, { owner, expectGeneration, runtime, no
     }
     if (lease.takeover_kind === 'boundary-recovery') {
       if (owner !== lease.handoff_child_run_id) {
-        return {
-          ok: false,
-          generation: lease.generation,
-          reason: 'child-not-reserved',
-        };
+        return classifiedAcquireFailure(lease.generation, 'child-not-reserved', 3);
       }
       if (recoveryReservationKind(data) !== 'boundary-recovery') {
-        return {
-          ok: false,
-          generation: lease.generation,
-          reason: 'recovery-topology-invalid',
-        };
+        return classifiedAcquireFailure(lease.generation, 'recovery-topology-invalid', 1);
       }
       const child = data.session_chain.sessions.find(session => session.run_id === owner);
       if (!child
@@ -185,22 +205,15 @@ export function acquireLease(root, runId, { owner, expectGeneration, runtime, no
         || child.recovery_project_root_digest !== projectRootDigest(data.project?.root)
         || lease.recovery_rel !== child.recovery_rel
         || lease.recovery_sha256 !== child.recovery_sha256) {
-        return {
-          ok: false,
-          generation: lease.generation,
-          reason: 'recovery-topology-invalid',
-        };
+        return classifiedAcquireFailure(lease.generation, 'recovery-topology-invalid', 1);
       }
       try {
         validateBoundaryRecoveryArtifactLocked(root, runId, data, child, _guard);
       } catch {
-        return {
-          ok: false,
-          generation: lease.generation,
-          reason: 'recovery-capsule-invalid',
-        };
+        return classifiedAcquireFailure(lease.generation, 'recovery-capsule-invalid', 1);
       }
-      const safety = recoverySafetyReason(data, now);
+      const lockedNow = lockedTime(now, clock, 'boundary recovery acquire');
+      const safety = recoverySafetyReason(data, lockedNow);
       if (safety) {
         return {
           ok: false,
@@ -209,7 +222,7 @@ export function acquireLease(root, runId, { owner, expectGeneration, runtime, no
           preserved: true,
         };
       }
-      const iso = new Date(now).toISOString();
+      const iso = new Date(lockedNow).toISOString();
       data.session_chain.lease = clearRecoveryLease(
         lease,
         owner,
@@ -236,7 +249,8 @@ export function acquireLease(root, runId, { owner, expectGeneration, runtime, no
       return { ok: false, generation: lease.generation, reason: 'child-not-reserved' };
     }
     // takeover 가능: released(정상 인수), releasing+expired(부모 크래시 복구), releasing+예약된child(handshake). active 절대 탈취 안 됨.
-    const expired = lease.expires_at && now > Date.parse(lease.expires_at);
+    const lockedNow = lockedTime(now, clock, 'lease acquire');
+    const expired = lease.expires_at && lockedNow > Date.parse(lease.expires_at);
     const takeable = lease.state === 'released' || (lease.state === 'releasing' && expired) || (lease.state === 'releasing' && owner === lease.handoff_child_run_id);
     if (!takeable) return { ok: false, generation: lease.generation, reason: 'lease-not-takeable' };
     // Legacy handoffs reserved a specific child while the reservation was live.
@@ -245,7 +259,7 @@ export function acquireLease(root, runId, { owner, expectGeneration, runtime, no
       return { ok: false, generation: lease.generation, reason: 'child-not-reserved' };
     }
     const waspaused = data.status === 'paused';
-    const iso = new Date(now).toISOString();
+    const iso = new Date(lockedNow).toISOString();
     const {
       handoff_boundary_event: _boundaryEvent,
       handoff_project_binding_generation: _bindingGeneration,

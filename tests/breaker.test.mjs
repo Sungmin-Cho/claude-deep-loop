@@ -188,6 +188,8 @@ function recoveryBreakerFixture(kind) {
     recovered_from: kind === 'boundary-recovery' ? 'STALE-BOUNDARY-CHILD' : runId,
     recovery_kind: kind, recovery_rel: data.session_chain.lease.recovery_rel,
     recovery_sha256: data.session_chain.lease.recovery_sha256,
+    recovery_project_binding_generation: data.project.binding_generation,
+    recovery_project_root_digest: projectRootDigest(data.project.root),
     scope: {
       kind: 'workstream',
       workstream_id: kind === 'boundary-recovery' ? null : affinityWorkstreamId,

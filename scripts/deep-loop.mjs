@@ -180,6 +180,10 @@ function parseNow(f) {
   return n;
 }
 
+function parseExplicitNow(f) {
+  return f.now === undefined ? undefined : parseNow(f);
+}
+
 function reqStr(f, name) { const v = f[name]; return (typeof v === 'string' && v.length) ? v : null; }   // 누락 시 null (핸들러가 exit 2 결정)
 function optInt(f, name) {   // 미지정 → 0; 지정 시 비음정수 문자열만 허용, 아니면 null(핸들러가 exit 1)
   const v = f[name];
@@ -670,7 +674,7 @@ const handlers = {
         owner,
         expectGeneration,
         runtime,
-        now: parseNow(f),
+        now: parseExplicitNow(f),
       }); }
       catch (e) {
         const classified = classifyKernelError(e);
@@ -678,6 +682,7 @@ const handlers = {
         error(classified.message); return classified.code;
       }
       json(r);
+      if (Number.isInteger(r.kernel_exit_code)) return r.kernel_exit_code;
       // terminal/runtime fence는 exit 3 — resume의 소유권 인수 경계에서 성공-모양(exit 0)으로 위장 금지.
       // 그 외 ok:false(generation/takeability)는 기존 exit 0 + JSON 계약을 유지한다.
       return (r.ok === false && (
@@ -997,7 +1002,7 @@ const handlers = {
           reason,
           expect: { owner, generation },
           confirm: true,
-          now: parseNow(f),
+          now: parseExplicitNow(f),
         });
       } else {
         if (Object.hasOwn(f, 'reason')) {
@@ -1007,7 +1012,7 @@ const handlers = {
         result = recoverRun(root, runId, {
           expect: { owner, generation },
           confirm: true,
-          now: parseNow(f),
+          now: parseExplicitNow(f),
         });
       }
       json(result); return 0;
@@ -1054,7 +1059,7 @@ const handlers = {
         owner,
         expectGeneration: Number(generationValue),
         runtime,
-        now: parseNow(f),
+        now: parseExplicitNow(f),
       });
       json(result);
       return result.ok ? 0 : 1;

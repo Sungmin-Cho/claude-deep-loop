@@ -70,6 +70,17 @@ function canonicalNow(now, context = 'recovery') {
   return date.toISOString();
 }
 
+function lockedTime(now, clock, context) {
+  const value = now === undefined
+    ? (typeof clock === 'function' ? clock() : Number.NaN)
+    : now;
+  const timestamp = new Date(value).getTime();
+  if (!Number.isSafeInteger(timestamp) || timestamp < 0) {
+    throw new Error(`INVALID_NOW: ${context}`);
+  }
+  return timestamp;
+}
+
 function assertFence(loop, expect) {
   const lease = loop.session_chain?.lease;
   if (!lease
@@ -240,7 +251,7 @@ function openAffinityState(loop) {
 function assertAffinitySupersessionReady(loop, {
   expect,
   reason,
-  now,
+  sampleSafetyNow,
   predecessorHash,
 }) {
   assertFence(loop, expect);
@@ -271,8 +282,10 @@ function assertAffinitySupersessionReady(loop, {
   if (!affinity || affinity.session.run_id !== expect.owner) {
     throw new Error('AFFINITY_SUPERSESSION_REQUIRED');
   }
-  const safety = recoverySafetyReason(loop, now);
-  if (safety) throw new Error(safety);
+  if (sampleSafetyNow) {
+    const safety = recoverySafetyReason(loop, sampleSafetyNow());
+    if (safety) throw new Error(safety);
+  }
   assertReason(reason);
   if (contentHash(JSON.stringify(loop, null, 2)) !== predecessorHash) {
     throw new Error('RECOVERY_SNAPSHOT_STALE');
@@ -284,7 +297,8 @@ export function supersedeAffinity(root, runId, {
   reason,
   confirm,
   expect,
-  now = Date.now(),
+  now,
+  clock = Date.now,
   publicationFaultAt = () => {},
   durableWriteFn,
 } = {}) {
@@ -295,7 +309,6 @@ export function supersedeAffinity(root, runId, {
   assertAffinitySupersessionReady(loop, {
     expect,
     reason,
-    now,
     predecessorHash: snapshot.hash,
   });
   const affinity = openAffinityState(loop);
@@ -325,11 +338,12 @@ export function supersedeAffinity(root, runId, {
     recoveryRel,
     generation: loop.session_chain.lease.generation,
   });
+  const capsuleNow = now === undefined ? loop.updated_at : now;
   const capsule = capsuleEnvelope({
     artifactKind: 'affinity-recovery',
     childRunId,
     parentRunId: expect.owner,
-    now,
+    now: capsuleNow,
     sourceArtifacts: boundedArtifactReferences(loop, affinity.workstream.id),
     payload: {
       operation_id: operationId,
@@ -364,6 +378,11 @@ export function supersedeAffinity(root, runId, {
     recovery_rel: recoveryRel,
     recovery_sha256: recoverySha256,
   };
+  let lockedNow;
+  const sampleSafetyNow = () => {
+    lockedNow = lockedTime(now, clock, 'affinity supersession');
+    return lockedNow;
+  };
 
   appendAnchored(root, runId, {
     type: 'affinity-superseded',
@@ -378,7 +397,7 @@ export function supersedeAffinity(root, runId, {
     supersedeScope(current.scope, {
       reason,
       supersededBy: childRunId,
-      now,
+      now: lockedNow,
     });
     current.superseded_by = childRunId;
     candidate.session_chain.sessions.push(baseRecoverySession({
@@ -413,7 +432,7 @@ export function supersedeAffinity(root, runId, {
     assertAffinitySupersessionReady(candidate, {
       expect,
       reason,
-      now,
+      sampleSafetyNow,
       predecessorHash: snapshot.hash,
     });
   }, {
@@ -424,6 +443,7 @@ export function supersedeAffinity(root, runId, {
       topology,
       faultAt: publicationFaultAt,
       durableWriteFn,
+      nowFn: () => lockedNow,
     },
   });
 
@@ -549,7 +569,7 @@ function boundaryRecoverySource(loop) {
 
 function assertBoundaryRecoveryReady(loop, {
   expect,
-  now,
+  sampleSafetyNow,
   predecessorHash,
 }) {
   assertFence(loop, expect);
@@ -566,8 +586,10 @@ function assertBoundaryRecoveryReady(loop, {
   if (!source || openScopeSessions(loop).some(session => session !== source.staleSession)) {
     throw new Error('BOUNDARY_RECOVERY_PHASE_INVALID');
   }
-  const safety = recoverySafetyReason(loop, now);
-  if (safety) throw new Error(safety);
+  if (sampleSafetyNow) {
+    const safety = recoverySafetyReason(loop, sampleSafetyNow());
+    if (safety) throw new Error(safety);
+  }
   if (contentHash(JSON.stringify(loop, null, 2)) !== predecessorHash) {
     throw new Error('RECOVERY_SNAPSHOT_STALE');
   }
@@ -577,7 +599,8 @@ function assertBoundaryRecoveryReady(loop, {
 export function recoverBoundary(root, runId, {
   confirm,
   expect,
-  now = Date.now(),
+  now,
+  clock = Date.now,
   publicationFaultAt = () => {},
   durableWriteFn,
 } = {}) {
@@ -586,7 +609,6 @@ export function recoverBoundary(root, runId, {
   const loop = snapshot.data;
   const source = assertBoundaryRecoveryReady(loop, {
     expect,
-    now,
     predecessorHash: snapshot.hash,
   });
   const runtime = sessionRuntime(loop);
@@ -619,11 +641,12 @@ export function recoverBoundary(root, runId, {
     recoveryRel,
     generation: loop.session_chain.lease.generation,
   });
+  const capsuleNow = now === undefined ? loop.updated_at : now;
   const capsule = capsuleEnvelope({
     artifactKind: 'boundary-recovery',
     childRunId: replacementSessionId,
     parentRunId: source.parent.run_id,
-    now,
+    now: capsuleNow,
     sourceArtifacts: [],
     payload: {
       operation_id: operationId,
@@ -643,7 +666,6 @@ export function recoverBoundary(root, runId, {
     },
   });
   const recoverySha256 = contentHash(capsule);
-  const iso = canonicalNow(now);
   const topology = {
     operation_id: operationId,
     recovery_kind: 'boundary-recovery',
@@ -656,6 +678,11 @@ export function recoverBoundary(root, runId, {
     project_root_digest: rootDigest,
     recovery_rel: recoveryRel,
     recovery_sha256: recoverySha256,
+  };
+  let lockedNow;
+  const sampleSafetyNow = () => {
+    lockedNow = lockedTime(now, clock, 'boundary recovery');
+    return lockedNow;
   };
 
   appendAnchored(root, runId, {
@@ -670,6 +697,7 @@ export function recoverBoundary(root, runId, {
     },
     now,
   }, candidate => {
+    const iso = canonicalNow(lockedNow);
     const sessions = candidate.session_chain.sessions;
     const parent = sessions.find(session => session.run_id === source.parent.run_id);
     let stale = sessions.find(session => session.run_id === source.staleSessionId);
@@ -706,7 +734,7 @@ export function recoverBoundary(root, runId, {
       supersedeScope(stale.scope, {
         reason: 'boundary-recovery',
         supersededBy: replacementSessionId,
-        now,
+        now: lockedNow,
       });
     }
     sessions.push(baseRecoverySession({
@@ -741,7 +769,7 @@ export function recoverBoundary(root, runId, {
   }, candidate => {
     assertBoundaryRecoveryReady(candidate, {
       expect,
-      now,
+      sampleSafetyNow,
       predecessorHash: snapshot.hash,
     });
   }, {
@@ -752,6 +780,7 @@ export function recoverBoundary(root, runId, {
       topology,
       faultAt: publicationFaultAt,
       durableWriteFn,
+      nowFn: () => lockedNow,
     },
   });
 
@@ -817,7 +846,8 @@ function legacyRecover(root, runId, {
 export function recoverRun(root, runId, {
   expect,
   confirm,
-  now = Date.now(),
+  now,
+  clock = Date.now,
 } = {}) {
   if (confirm !== true) throw new Error('CONFIRM_REQUIRED: pass --confirm (human-only)');
   const { data: snapshot } = captureReconciledRunSnapshot(root, runId);
@@ -831,7 +861,7 @@ export function recoverRun(root, runId, {
   if (openAffinityState(snapshot)) {
     throw new Error('AFFINITY_SUPERSESSION_REQUIRED');
   }
-  return recoverBoundary(root, runId, { confirm, expect, now });
+  return recoverBoundary(root, runId, { confirm, expect, now, clock });
 }
 
 function recoveryArtifactBytesLocked(root, runId, rel, guard) {
@@ -944,7 +974,8 @@ export function acquireRecovery(root, runId, {
   owner,
   expectGeneration,
   runtime,
-  now = Date.now(),
+  now,
+  clock = Date.now,
 } = {}) {
   if (typeof capsuleRel !== 'string' || capsuleRel.length === 0
     || typeof owner !== 'string' || owner.length === 0
@@ -980,7 +1011,8 @@ export function acquireRecovery(root, runId, {
     const payload = exactAffinityCapsule(loop, child, bytes);
     if (!payload) throw new Error('RECOVERY_CAPSULE_INVALID');
     validateAffinityEvent(root, runId, loop, child, payload);
-    const safety = recoverySafetyReason(loop, now);
+    const lockedNow = lockedTime(now, clock, 'recovery acquire');
+    const safety = recoverySafetyReason(loop, lockedNow);
     if (safety) {
       return {
         ok: false,
@@ -989,7 +1021,7 @@ export function acquireRecovery(root, runId, {
         preserved: true,
       };
     }
-    const iso = canonicalNow(now, 'recovery acquire');
+    const iso = canonicalNow(lockedNow, 'recovery acquire');
     loop.session_chain.lease = clearRecoveryLease(
       lease,
       owner,

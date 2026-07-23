@@ -216,6 +216,10 @@ function validateSessions(sc, errors) {
     ];
     const recoveryBindingPresent = recoveryBindingFields
       .filter(key => Object.hasOwn(session, key));
+    if (present.length === recoveryFields.length
+      && recoveryBindingPresent.length !== recoveryBindingFields.length) {
+      errors.push('session_chain.sessions[] recovery project binding fields are required with recovery fields');
+    }
     if (recoveryBindingPresent.length !== 0
       && recoveryBindingPresent.length !== recoveryBindingFields.length) {
       errors.push('session_chain.sessions[] recovery project binding fields must appear together');

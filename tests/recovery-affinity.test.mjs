@@ -1,11 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -43,6 +45,7 @@ import { projectRootDigest } from '../scripts/lib/project-root.mjs';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = join(REPO_ROOT, 'scripts', 'deep-loop.mjs');
+const STATE_MODULE_URL = new URL('../scripts/lib/state.mjs', import.meta.url).href;
 const NOW = Date.parse('2026-07-23T00:00:00.000Z');
 
 function openAffinityFixture(runtime = 'claude', episodePhase = 'maker-in-progress') {
@@ -141,6 +144,18 @@ function invokeReadOnly(root, runId, args) {
   });
 }
 
+function invokeWithoutNow(root, runId, args) {
+  return spawnSync(process.execPath, [
+    CLI,
+    ...args,
+    '--project-root', root,
+    '--run-id', runId,
+  ], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+  });
+}
+
 function durableBytes(root, runId) {
   const dir = runDir(root, runId);
   const eventPath = join(dir, 'event-log.jsonl');
@@ -149,6 +164,77 @@ function durableBytes(root, runId) {
     hash: readFileSync(join(dir, '.loop.hash')),
     events: existsSync(eventPath) ? readFileSync(eventPath) : null,
   };
+}
+
+function durableRecoveryBytes(root, runId) {
+  const recoveries = join(runDir(root, runId), 'recoveries');
+  return {
+    ...durableBytes(root, runId),
+    recoveries: existsSync(recoveries)
+      ? readdirSync(recoveries).sort().map(name => ({
+        name,
+        bytes: readFileSync(join(recoveries, name)),
+      }))
+      : [],
+  };
+}
+
+function armRealWallclock(root, runId, maxWallclockSec = 0.2) {
+  const startedAt = Date.now();
+  const state = readState(root, runId).data;
+  state.created_at = new Date(startedAt).toISOString();
+  state.budget.max_wallclock_sec = maxWallclockSec;
+  writeState(root, runId, state);
+  return startedAt;
+}
+
+async function whileRunLockIsHeld(root, runId, callback, holdMs = 350) {
+  const script = `
+    import { withLock } from ${JSON.stringify(STATE_MODULE_URL)};
+    const [root, runId, holdMs] = process.argv.slice(1);
+    withLock(root, runId, () => {
+      process.stdout.write('LOCKED\\n');
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(holdMs));
+    });
+  `;
+  const holder = spawn(process.execPath, [
+    '--input-type=module',
+    '--eval',
+    script,
+    root,
+    runId,
+    String(holdMs),
+  ], {
+    cwd: REPO_ROOT,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stderr = '';
+  holder.stderr.on('data', chunk => { stderr += chunk; });
+  await new Promise((resolve, reject) => {
+    let stdout = '';
+    holder.once('error', reject);
+    holder.stdout.on('data', chunk => {
+      stdout += chunk;
+      if (stdout.includes('LOCKED\n')) resolve();
+    });
+    holder.once('exit', code => {
+      if (!stdout.includes('LOCKED\n')) {
+        reject(new Error(`lock holder exited ${code}: ${stderr}`));
+      }
+    });
+  });
+  let result;
+  try {
+    result = callback();
+  } finally {
+    if (holder.exitCode === null) {
+      const [code] = await once(holder, 'exit');
+      assert.equal(code, 0, stderr);
+    } else {
+      assert.equal(holder.exitCode, 0, stderr);
+    }
+  }
+  return result;
 }
 
 function commandArgs(invocation) {
@@ -1002,6 +1088,177 @@ test('boundary acquire breaker failure preserves exact topology through reset an
     generation: fixture.expect.generation + 1,
     reason: 'acquired',
   });
+});
+
+test('affinity recovery acquire samples production time after lock contention crosses wallclock', async () => {
+  const fixture = openAffinityFixture();
+  const recovery = supersedeAffinity(fixture.root, fixture.runId, {
+    reason: 'locked affinity acquisition clock',
+    confirm: true,
+    expect: { owner: fixture.runId, generation: 1 },
+    now: NOW + 2_000,
+  });
+  tripBreaker(fixture.root, fixture.runId, 'retire recovery journal');
+  resetBreaker(fixture.root, fixture.runId, {
+    fence: { owner: fixture.runId, generation: 1, intent: 'breaker-reset' },
+  });
+  armRealWallclock(fixture.root, fixture.runId);
+  const before = durableRecoveryBytes(fixture.root, fixture.runId);
+  const acquired = await whileRunLockIsHeld(
+    fixture.root,
+    fixture.runId,
+    () => executeReturnedCommand(recovery.resume_command),
+  );
+  assert.equal(acquired.status, 1, acquired.stderr);
+  assert.deepEqual(JSON.parse(acquired.stdout), {
+    ok: false,
+    generation: 1,
+    reason: 'BUDGET_BLOCKED',
+    preserved: true,
+  });
+  assert.deepEqual(durableRecoveryBytes(fixture.root, fixture.runId), before);
+});
+
+test('boundary recovery acquire samples production time after lock contention crosses wallclock', async () => {
+  const fixture = boundaryFixture('reserved');
+  const recovery = recoverBoundary(fixture.root, fixture.runId, {
+    confirm: true,
+    expect: fixture.expect,
+    now: NOW + 4_000,
+  });
+  tripBreaker(fixture.root, fixture.runId, 'retire recovery journal');
+  resetBreaker(fixture.root, fixture.runId, {
+    fence: { ...fixture.expect, intent: 'breaker-reset' },
+  });
+  armRealWallclock(fixture.root, fixture.runId);
+  const before = durableRecoveryBytes(fixture.root, fixture.runId);
+  const acquired = await whileRunLockIsHeld(
+    fixture.root,
+    fixture.runId,
+    () => executeReturnedCommand(recovery.resume_command),
+  );
+  assert.equal(acquired.status, 0, acquired.stderr);
+  assert.deepEqual(JSON.parse(acquired.stdout), {
+    ok: false,
+    generation: 1,
+    reason: 'BUDGET_BLOCKED',
+    preserved: true,
+  });
+  assert.deepEqual(durableRecoveryBytes(fixture.root, fixture.runId), before);
+});
+
+test('affinity supersession publication samples production time after lock contention crosses wallclock', async () => {
+  const fixture = openAffinityFixture();
+  armRealWallclock(fixture.root, fixture.runId);
+  const before = durableRecoveryBytes(fixture.root, fixture.runId);
+  const recovered = await whileRunLockIsHeld(
+    fixture.root,
+    fixture.runId,
+    () => invokeWithoutNow(fixture.root, fixture.runId, [
+      'recover',
+      '--supersede-affinity',
+      '--reason', 'locked affinity publication clock',
+      '--confirm',
+      '--owner', fixture.runId,
+      '--generation', '1',
+    ]),
+  );
+  assert.equal(recovered.status, 1, recovered.stderr);
+  assert.match(recovered.stderr, /BUDGET_BLOCKED/);
+  assert.deepEqual(durableRecoveryBytes(fixture.root, fixture.runId), before);
+});
+
+test('boundary recovery publication samples production time after lock contention crosses wallclock', async () => {
+  const fixture = boundaryFixture('reserved');
+  armRealWallclock(fixture.root, fixture.runId);
+  const before = durableRecoveryBytes(fixture.root, fixture.runId);
+  const recovered = await whileRunLockIsHeld(
+    fixture.root,
+    fixture.runId,
+    () => invokeWithoutNow(fixture.root, fixture.runId, [
+      'recover',
+      '--confirm',
+      '--owner', fixture.expect.owner,
+      '--generation', String(fixture.expect.generation),
+    ]),
+  );
+  assert.equal(recovered.status, 1, recovered.stderr);
+  assert.match(recovered.stderr, /BUDGET_BLOCKED/);
+  assert.deepEqual(durableRecoveryBytes(fixture.root, fixture.runId), before);
+});
+
+test('boundary recovery CLI classifies child reservation mismatch as fence exit 3 without mutation', () => {
+  const fixture = boundaryFixture('reserved');
+  recoverBoundary(fixture.root, fixture.runId, {
+    confirm: true,
+    expect: fixture.expect,
+    now: NOW + 4_000,
+  });
+  const before = durableRecoveryBytes(fixture.root, fixture.runId);
+  const result = invoke(fixture.root, fixture.runId, [
+    'lease', 'acquire',
+    '--owner', 'ARBITRARY-OWNER',
+    '--generation', String(fixture.expect.generation),
+    '--runtime', 'claude',
+  ]);
+  assert.equal(result.status, 3, result.stderr);
+  assert.equal(JSON.parse(result.stdout).reason, 'child-not-reserved');
+  assert.deepEqual(durableRecoveryBytes(fixture.root, fixture.runId), before);
+});
+
+test('boundary recovery CLI classifies invalid topology as exit 1 without mutation', () => {
+  const fixture = boundaryFixture('reserved');
+  const recovery = recoverBoundary(fixture.root, fixture.runId, {
+    confirm: true,
+    expect: fixture.expect,
+    now: NOW + 4_000,
+  });
+  tripBreaker(fixture.root, fixture.runId, 'retire recovery journal');
+  resetBreaker(fixture.root, fixture.runId, {
+    fence: { ...fixture.expect, intent: 'breaker-reset' },
+  });
+  const state = readState(fixture.root, fixture.runId).data;
+  state.session_chain.sessions.find(
+    session => session.run_id === recovery.child_run_id,
+  ).recovery_project_root_digest = 'f'.repeat(64);
+  writeState(fixture.root, fixture.runId, state);
+  const before = durableRecoveryBytes(fixture.root, fixture.runId);
+  const result = invoke(fixture.root, fixture.runId, [
+    'lease', 'acquire',
+    '--owner', recovery.child_run_id,
+    '--generation', String(fixture.expect.generation),
+    '--runtime', 'claude',
+  ]);
+  assert.equal(result.status, 1, result.stderr);
+  assert.equal(JSON.parse(result.stdout).reason, 'recovery-topology-invalid');
+  assert.deepEqual(durableRecoveryBytes(fixture.root, fixture.runId), before);
+});
+
+test('boundary recovery CLI classifies invalid capsule as exit 1 without mutation', () => {
+  const fixture = boundaryFixture('reserved');
+  const recovery = recoverBoundary(fixture.root, fixture.runId, {
+    confirm: true,
+    expect: fixture.expect,
+    now: NOW + 4_000,
+  });
+  tripBreaker(fixture.root, fixture.runId, 'retire recovery journal');
+  resetBreaker(fixture.root, fixture.runId, {
+    fence: { ...fixture.expect, intent: 'breaker-reset' },
+  });
+  writeFileSync(join(
+    runDir(fixture.root, fixture.runId),
+    recovery.recovery_rel,
+  ), '{}');
+  const before = durableRecoveryBytes(fixture.root, fixture.runId);
+  const result = invoke(fixture.root, fixture.runId, [
+    'lease', 'acquire',
+    '--owner', recovery.child_run_id,
+    '--generation', String(fixture.expect.generation),
+    '--runtime', 'claude',
+  ]);
+  assert.equal(result.status, 1, result.stderr);
+  assert.equal(JSON.parse(result.stdout).reason, 'recovery-capsule-invalid');
+  assert.deepEqual(durableRecoveryBytes(fixture.root, fixture.runId), before);
 });
 
 test('recovery acquire CLI classifies missing command input as usage', () => {

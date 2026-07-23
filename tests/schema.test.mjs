@@ -211,6 +211,40 @@ test('v0.4 schema pins exact Workstream/legacy scopes and recovery-owned optiona
   }
 });
 
+test('every affinity or boundary recovery tuple requires both root-binding fields', () => {
+  const acceptedWithoutBinding = [];
+  for (const recoveryKind of ['affinity-supersession', 'boundary-recovery']) {
+    const loop = minimalValid();
+    loop.session_chain.sessions = [{
+      run_id: `RECOVERY-${recoveryKind}`,
+      recovered_from: 'PARENT',
+      recovery_kind: recoveryKind,
+      recovery_rel: `recoveries/${recoveryKind}.json`,
+      recovery_sha256: 'b'.repeat(64),
+      scope: { ...OPEN_WORKSTREAM_SCOPE },
+    }];
+    const result = validate(loop);
+    if (result.ok) acceptedWithoutBinding.push(recoveryKind);
+    if (!result.ok) {
+      assert.ok(result.errors.some(error => error.includes('recovery project binding')));
+    }
+  }
+  assert.deepEqual(acceptedWithoutBinding, []);
+
+  const orphanBinding = minimalValid();
+  orphanBinding.session_chain.sessions = [{
+    run_id: 'ORPHAN-BINDING',
+    recovery_project_binding_generation: 1,
+    recovery_project_root_digest: 'c'.repeat(64),
+    scope: { ...OPEN_WORKSTREAM_SCOPE },
+  }];
+  const orphanResult = validate(orphanBinding);
+  assert.equal(orphanResult.ok, false);
+  assert.ok(orphanResult.errors.some(error => (
+    error.includes('recovery project binding requires recovery fields')
+  )));
+});
+
 test('v0.4 schema accepts all three policy labels but no longer rejects legacy Codex compact-in-place', () => {
   for (const policy of ['workstream-session', 'compact-in-place', 'rotate-per-unit']) {
     const loop = minimalValid();
