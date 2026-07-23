@@ -17,13 +17,21 @@ const OWNER = 'RECOVER01';
 const CHILD = 'CHILD01';
 const GEN = 2;
 
+function legacyScope() {
+  return {
+    kind: 'legacy', workstream_id: null, bound_at_seq: null,
+    terminal_event: null, closed_at: null,
+  };
+}
+
 function baseData(overrides = {}) {
   return {
-    schema_version: '0.3.0', run_id: OWNER, goal: 'g', status: 'paused',
+    schema_version: '0.4.0', run_id: OWNER, goal: 'g', status: 'paused',
     pause_reason: 'preserve-handoff',
-    project: {}, routing: { protocol: 'deep-work' }, review: { points: ['design'] },
+    project: { binding_generation: 1 }, routing: { protocol: 'deep-work' }, review: { points: ['design'] },
     autonomy: {
       tier: 'recommend', spawn_style: 'interactive', continuation_policy: 'rotate-per-unit',
+      attended_launch_approval: null,
       session_runtime: 'claude', runtime_source: 'skill-asserted',
     },
     budget: { unit: 'turns', spent: 0 },
@@ -33,11 +41,12 @@ function baseData(overrides = {}) {
         owner_run_id: OWNER, generation: GEN, state: 'releasing', handoff_phase: 'emitted',
         handoff_idempotency_key: 'key123', handoff_child_run_id: CHILD,
         expires_at: null, resume_policy: 'human', handoff_trigger: 'milestone',
+        takeover_kind: null,
       },
       consumed_milestones: [],
       sessions: [
-        { run_id: OWNER, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: CHILD },
-        { run_id: CHILD, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: null },
+        { run_id: OWNER, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: CHILD, scope: legacyScope() },
+        { run_id: CHILD, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: null, scope: legacyScope() },
       ],
       stale_lease_ttl_sec: 900,
     },
@@ -151,8 +160,8 @@ test('recoverRun: throws NOT_RECOVERABLE on running run', () => {
   const { root, runId } = seed({ status: 'running', pause_reason: undefined,
     session_chain: {
       lease: { owner_run_id: OWNER, generation: GEN, state: 'active', handoff_phase: 'idle',
-        handoff_idempotency_key: null, handoff_child_run_id: null, expires_at: null },
-      sessions: [{ run_id: OWNER, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: null }],
+        handoff_idempotency_key: null, handoff_child_run_id: null, expires_at: null, takeover_kind: null },
+      sessions: [{ run_id: OWNER, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: null, scope: legacyScope() }],
       stale_lease_ttl_sec: 900,
     }
   });
@@ -167,8 +176,8 @@ test('recoverRun: throws NOT_RECOVERABLE on completed run', () => {
   const { root, runId } = seed({ status: 'completed', pause_reason: undefined,
     session_chain: {
       lease: { owner_run_id: OWNER, generation: GEN, state: 'released', handoff_phase: 'idle',
-        handoff_idempotency_key: null, handoff_child_run_id: null, expires_at: null },
-      sessions: [{ run_id: OWNER, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: null }],
+        handoff_idempotency_key: null, handoff_child_run_id: null, expires_at: null, takeover_kind: null },
+      sessions: [{ run_id: OWNER, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: null, scope: legacyScope() }],
       stale_lease_ttl_sec: 900,
     }
   });
@@ -206,10 +215,11 @@ test('recoverRun: child with existing outcome is not overwritten', () => {
         owner_run_id: OWNER, generation: GEN, state: 'releasing', handoff_phase: 'emitted',
         handoff_idempotency_key: 'key123', handoff_child_run_id: CHILD,
         expires_at: null, resume_policy: 'human',
+        takeover_kind: null,
       },
       sessions: [
-        { run_id: OWNER, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: CHILD },
-        { run_id: CHILD, started_at: null, ended_at: null, turns: 0, outcome: 'took_over', superseded_by: null },
+        { run_id: OWNER, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: CHILD, scope: legacyScope() },
+        { run_id: CHILD, started_at: null, ended_at: null, turns: 0, outcome: 'took_over', superseded_by: null, scope: legacyScope() },
       ],
       stale_lease_ttl_sec: 900,
     },

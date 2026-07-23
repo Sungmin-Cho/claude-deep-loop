@@ -149,7 +149,7 @@ function posixTokenize(s) {
 // ── Test (a): R14-RR — no-launcher attended round-trip ───────────────────────
 //
 // Flow:
-//   1. Seed with launcher='none' (linux + noOpRun), spawn_style='visible'.
+//   1. Seed with launcher='none' (linux + noOpRun), spawn_style='interactive'.
 //   2. emitHandoff → reserved child.
 //   3. respawn(attended=true) → mode='interactive' (launcher=none) → {ok:false, outcome:'no-launcher'}.
 //      Handoff is PRESERVED (not rolled back) — skill does NOT auto-spawn.
@@ -157,11 +157,11 @@ function posixTokenize(s) {
 //   5. Reserved child calls acquireLease → SUCCEEDS, run UNPAUSES.
 //   6. Business mutation (patch) SUCCEEDS with child's lease fence.
 test('(R14-RR) no-launcher attended round-trip: respawn no-launcher → pauseRun preserve → child acquires → unpauses → mutation succeeds', () => {
-  // Step 1: seed — launcher='none' (linux + noOpRun), spawn_style='visible' (initRun default)
+  // Step 1: seed — launcher='none' (linux + noOpRun), spawn_style='interactive' (initRun default)
   const { root, runId } = seed();
   const initState = readState(root, runId).data;
   assert.equal(initState.session_spawn.launcher, 'none', 'sanity: linux seed must detect launcher=none');
-  assert.equal(initState.autonomy.spawn_style, 'visible', 'sanity: initRun defaults to spawn_style=visible');
+  assert.equal(initState.autonomy.spawn_style, 'interactive', 'sanity: initRun defaults to spawn_style=interactive');
 
   // Step 2: emit handoff → reserve a child
   const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: { owner: runId, generation: 1 } });

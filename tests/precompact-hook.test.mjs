@@ -11,6 +11,7 @@ import { runPreCompactHandoff } from '../scripts/hooks-impl/precompact-handoff.m
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
 import { acquireLease, reserveHandoff } from '../scripts/lib/lease.mjs';
 import { rollbackAndPause } from '../scripts/lib/respawn.mjs';
+import { contentHash } from '../scripts/lib/envelope.mjs';
 import { createDirectoryJunction } from './helpers/fs-fixtures.mjs';
 const PROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PRECOMPACT_HOOK = join(PROOT, 'scripts', 'hooks-impl', 'precompact-handoff.mjs');
@@ -34,17 +35,38 @@ function bootstrapEnv(rootName, root) {
   return env;
 }
 
+function persistLegacyPolicy(root, runId, policy) {
+  const dir = runDir(root, runId);
+  const loopPath = join(dir, 'loop.json');
+  const legacy = JSON.parse(rf(loopPath, 'utf8'));
+  legacy.schema_version = '0.3.0';
+  delete legacy.project.binding_generation;
+  delete legacy.autonomy.attended_launch_approval;
+  delete legacy.session_chain.lease.takeover_kind;
+  for (const session of legacy.session_chain.sessions) delete session.scope;
+  legacy.autonomy.spawn_style = 'visible';
+  legacy.autonomy.continuation_policy = policy;
+  legacy.autonomy.milestone_predicate = policy === 'compact-in-place'
+    ? ['workstream_status_change']
+    : ['workstream_status_change', 'review_point_passed', 'per_session_turn_cap_reached'];
+  const raw = JSON.stringify(legacy, null, 2);
+  writeFileSync(loopPath, raw);
+  writeFileSync(join(dir, '.loop.hash'), contentHash(raw));
+}
+
 function seed(runtime = 'claude') {
   const root = mkdtempSync(join(tmpdir(), 'dl-pc-'));
   const { runId } = initRun(root, { runtime, goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  persistLegacyPolicy(root, runId, runtime === 'claude' ? 'compact-in-place' : 'rotate-per-unit');
   return { root, runId };
 }
 
 function seedRotate() {
   const root = mkdtempSync(join(tmpdir(), 'dl-pc-rotate-'));
   const { runId } = initRun(root, {
-    runtime: 'claude', continuation: 'rotate-per-unit', goal: 'g', now: new Date('2026-06-24T00:00:00Z'),
+    runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z'),
   });
+  persistLegacyPolicy(root, runId, 'rotate-per-unit');
   return { root, runId };
 }
 

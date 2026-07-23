@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { readState, writeState } from '../scripts/lib/state.mjs';
+import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { finishProofState } from '../scripts/lib/finish.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
@@ -180,7 +180,8 @@ test('P2: hill-climb run dispatch succeeds after contract is materialized into t
   assert.equal(r.descriptor.evidence, null, 'fresh test run has no verified insights — evidence is null');
   // codex r2: evidence는 디스크립터(휘발)만이 아니라 checker request.md에 durable 기록되어야 한다
   const ep = readState(root, runId).data.episodes.find(e => e.id === r.checkerEpisodeId);
-  const req = readFileSync(ep.request_path, 'utf8');
+  assert.equal(Object.hasOwn(ep, 'request_path'), false);
+  const req = readFileSync(join(runDir(root, runId), ...ep.request_rel.split('/')), 'utf8');
   assert.match(req, /## Evidence \(kernel-verified insights\)/);
   assert.match(req, /```json\nnull\n```/);
 });
@@ -191,7 +192,8 @@ test('P2: non-hill-climb checker request has no evidence section (undefined omit
   const r = dispatchReview(root, runId, { point: 'design', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
   assert.ok(!('evidence' in r.descriptor), 'non-hill-climb descriptor has no evidence key');
   const ep = readState(root, runId).data.episodes.find(e => e.id === r.checkerEpisodeId);
-  assert.doesNotMatch(readFileSync(ep.request_path, 'utf8'), /## Evidence/);
+  assert.equal(Object.hasOwn(ep, 'request_path'), false);
+  assert.doesNotMatch(readFileSync(join(runDir(root, runId), ...ep.request_rel.split('/')), 'utf8'), /## Evidence/);
 });
 
 test('P2: project-root-only contract copy does NOT satisfy the worktree-local gate', () => {

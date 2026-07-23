@@ -43,10 +43,10 @@ function mk(root, runId, fence, n) {   // n distinct maker episodes (each a busi
 // 자기완결 minimal valid loop (cross-task import 없음)
 function minimalLoop(root, runId) {
   return {
-    schema_version: '0.3.0', run_id: runId, goal: 'g', status: 'running',
-    project: { root }, routing: { protocol: 'standalone' }, review: {}, autonomy: { tier: 'act-gated', spawn_style: 'interactive', continuation_policy: 'rotate-per-unit' },
+    schema_version: '0.4.0', run_id: runId, goal: 'g', status: 'running',
+    project: { root, binding_generation: 1 }, routing: { protocol: 'standalone' }, review: {}, autonomy: { tier: 'act-gated', spawn_style: 'interactive', continuation_policy: 'rotate-per-unit', attended_launch_approval: null },
     budget: { unit: 'turns', total: 100, spent: 0, tokens_total: 1000, tokens_spent: 0, soft_stop_ratio: 0.8, hard_stop_ratio: 1.0, max_wallclock_sec: 3600, enforcement: 'best-effort-interactive', on_unmeasurable_usage: 'fail-closed' },
-    comprehension: {}, circuit_breaker: {}, session_chain: { lease: { state: 'active', handoff_phase: 'idle', handoff_trigger: null }, consumed_milestones: [], sessions: [] },
+    comprehension: {}, circuit_breaker: {}, session_chain: { lease: { state: 'active', handoff_phase: 'idle', handoff_trigger: null, takeover_kind: null }, consumed_milestones: [], sessions: [] },
     workstreams: [], active_workstreams: [], triage: {}, episodes: [], termination: {},
   };
 }
@@ -889,6 +889,7 @@ function checkerProcessReceiptFixture({ originOwner, originGeneration } = {}) {
     id: claim.checker_episode_id,
     role: 'checker',
     status: 'in_progress',
+    request_rel: `episodes/${claim.checker_episode_id}/request.md`,
     attempt_id: claim.attempt_id,
     target_maker: claim.target_maker,
     review_claim: claim,
@@ -900,6 +901,10 @@ function checkerProcessReceiptFixture({ originOwner, originGeneration } = {}) {
     turns: 0,
     outcome: null,
     superseded_by: null,
+    scope: {
+      kind: 'workstream', workstream_id: null, bound_at_seq: null,
+      terminal_event: null, closed_at: null, superseded_at: null,
+    },
   });
   writeState(root, runId, data);
   const receipt = makeCodexProcessReceipt({
@@ -1420,6 +1425,10 @@ function terminalCodexChildRun() {
     data.session_chain.sessions.push({
       run_id: childRunId, started_at: null, ended_at: null,
       turns: 0, outcome: null, superseded_by: null,
+      scope: {
+        kind: 'workstream', workstream_id: null, bound_at_seq: null,
+        terminal_event: null, closed_at: null, superseded_at: null,
+      },
     });
     data.session_chain.lease = {
       ...data.session_chain.lease,

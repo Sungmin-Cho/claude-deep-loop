@@ -98,6 +98,13 @@ function seed(mutate, runtime = 'claude') {
   return { root, runId };
 }
 
+function openWorkstreamScope() {
+  return {
+    kind: 'workstream', workstream_id: null, bound_at_seq: null,
+    terminal_event: null, closed_at: null, superseded_at: null,
+  };
+}
+
 // seed a run with a concrete visible launcher (cmux by default) + spawn_style.
 function seedLauncher({ spawn_style = 'visible', launcher = 'cmux', runtime = 'claude' } = {}) {
   return seed((d) => {
@@ -437,10 +444,10 @@ test('tmux ps failure preserves the emitted handoff before spawned CAS', { skip:
 
 test('respawnGate: total sessions may reach max_sessions but not exceed (off-by-one, Codex r3 🟡6)', () => {
   // 경계: sessions.length == max_sessions (pending child 가 max 번째) → 허용
-  const ok = seed((d) => { d.autonomy.max_sessions = 2; d.session_chain.sessions = [{ run_id: 'a' }, { run_id: 'b' }]; });
+  const ok = seed((d) => { d.autonomy.max_sessions = 2; d.session_chain.sessions = [{ run_id: 'a', scope: openWorkstreamScope() }, { run_id: 'b', scope: openWorkstreamScope() }]; });
   assert.equal(respawnGate(readState(ok.root, ok.runId).data, { now: NOW1 }).blocked_by.includes('max_sessions'), false);
   // 초과: sessions.length > max_sessions → 차단
-  const over = seed((d) => { d.autonomy.max_sessions = 1; d.session_chain.sessions = [{ run_id: 'a' }, { run_id: 'b' }]; });
+  const over = seed((d) => { d.autonomy.max_sessions = 1; d.session_chain.sessions = [{ run_id: 'a', scope: openWorkstreamScope() }, { run_id: 'b', scope: openWorkstreamScope() }]; });
   const r = respawnGate(readState(over.root, over.runId).data, { now: NOW1 });
   assert.equal(r.ok, false);
   assert.ok(r.blocked_by.includes('max_sessions'));
@@ -452,11 +459,11 @@ test('respawnGate excludes failed_launch sessions from max_sessions (R4-plan, no
   const { root, runId } = seed((d) => {
     d.autonomy.max_sessions = 1;
     d.session_chain.sessions = [
-      { run_id: 'live', outcome: null },
-      { run_id: 'p1', outcome: 'failed_launch' },
-      { run_id: 'p2', outcome: 'failed_launch' },
-      { run_id: 'p3', outcome: 'failed_launch' },
-      { run_id: 'p4', outcome: 'failed_launch' },
+      { run_id: 'live', outcome: null, scope: openWorkstreamScope() },
+      { run_id: 'p1', outcome: 'failed_launch', scope: openWorkstreamScope() },
+      { run_id: 'p2', outcome: 'failed_launch', scope: openWorkstreamScope() },
+      { run_id: 'p3', outcome: 'failed_launch', scope: openWorkstreamScope() },
+      { run_id: 'p4', outcome: 'failed_launch', scope: openWorkstreamScope() },
     ];
   });
   const r = respawnGate(readState(root, runId).data, { now: NOW1 });
@@ -845,7 +852,7 @@ test('crash after spawned-claim recovers via stale-TTL acquire (not permanently 
 // Codex r1 🟡8: 동시 다발 실패 시 게이트 순서(budget→breaker→max_sessions→wallclock) 보고가 일관적인지.
 test('respawnGate reports documented order; wallclock not mislabeled as budget', () => {
   const { root, runId } = seed((d) => {
-    d.autonomy.max_sessions = 1; d.session_chain.sessions = [{ run_id: 'a' }, { run_id: 'b' }];
+    d.autonomy.max_sessions = 1; d.session_chain.sessions = [{ run_id: 'a', scope: openWorkstreamScope() }, { run_id: 'b', scope: openWorkstreamScope() }];
     d.budget.max_wallclock_sec = 1;            // created_at(NOW0) 기준 NOW1 은 1h 경과 → wallclock 초과
   });
   const r = respawnGate(readState(root, runId).data, { now: NOW1 });
@@ -997,10 +1004,11 @@ test('child can acquire the releasing lease after a headless respawn via handsha
 test('respawn: buildLaunchCommand throw self-pauses emitted handoff without advancing to spawned', () => {
   const { root, runId } = seed();
   const h = emitHandoff(root, runId, { trigger: 'milestone', now: NOW1, expect: expect_(runId) });
-  // Blank the child session's handoff_rel so effHandoffRel falls back to the respawn arg.
-  { const { data } = readState(root, runId); const cs = data.session_chain.sessions.find(s => s.run_id === h.childRunId); if (cs) cs.handoff_rel = null; writeState(root, runId, data); }
-  // Pass unsafe/empty handoffRel (fails SAFE_HANDOFF_REL → buildLaunchCommand throws UNSAFE_SPAWN_ARG).
-  const r = respawn(root, runId, { childRunId: h.childRunId, key: h.key, handoffRel: '', headless: true, now: NOW1, spawnFn: () => { throw new Error('must not reach spawnFn'); } });
+  const r = respawn(root, runId, {
+    childRunId: h.childRunId, key: h.key, handoffRel: h.handoffRel, headless: true, now: NOW1,
+    launchCommandBuilder: () => { throw new Error('UNSAFE_SPAWN_ARG: injected descriptor failure'); },
+    spawnFn: () => { throw new Error('must not reach spawnFn'); },
+  });
   // Lease MUST NOT have advanced to 'spawned' (must be emitted/releasing — re-tryable, not stranded).
   const after = readState(root, runId).data;
   const lease = after.session_chain.lease;

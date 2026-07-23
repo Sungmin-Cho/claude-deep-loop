@@ -299,7 +299,11 @@ test('recordReviewOutcome throws REVIEW_UNBOUND_CHECKER on a checker with no tar
   const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: '.claude/worktrees/w', fence: f }).id;
   // Inject a legacy unbound pending checker directly (dispatchReview can no longer create one) to prove the guard.
   const data = readState(root, runId).data;
-  data.episodes.push({ id: '001-deep-review', role: 'checker', plugin: 'subagent-checker', status: 'pending', point: 'plan', workstream_id: ws, kind: 'plan-review' });
+  data.episodes.push({
+    id: '001-deep-review', role: 'checker', plugin: 'subagent-checker', status: 'pending',
+    point: 'plan', workstream_id: ws, kind: 'plan-review',
+    request_rel: 'episodes/001-deep-review/request.md',
+  });
   writeState(root, runId, data);
   assert.throws(
     () => recordReviewOutcome(root, runId, { episodeId: '001-deep-review', verdict: 'APPROVE', fence: f }),

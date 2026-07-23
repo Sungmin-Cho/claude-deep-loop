@@ -814,15 +814,15 @@ launcherExecutableCliTest('forced-win32 POSIX CLI fixture never becomes runnable
   ], fixture.env);
   assert.equal(respawned.code, 0, respawned.stderr);
   const outcome = JSON.parse(respawned.stdout);
-  assert.equal(outcome.mode, 'wt');
+  assert.equal(outcome.mode, 'interactive');
   assert.equal(outcome.ok, false);
   assert.equal(outcome.outcome, 'no-launcher');
-  assert.equal(outcome.reason, 'trusted-native-identity-unavailable');
+  assert.equal(outcome.reason, 'no-auto-launcher');
 
   assert.equal(existsSync(fixture.launches), false, 'a POSIX fixture path must never be invoked as native Windows authority');
   const finalState = readState(fixture.root, runId).data;
-  assert.equal(finalState.status, 'paused');
-  assert.equal(finalState.pause_reason, 'trusted-native-identity-unavailable');
+  assert.equal(finalState.status, 'running');
+  assert.equal(finalState.pause_reason, undefined);
   assert.equal(finalState.session_chain.lease.handoff_phase, 'emitted');
 });
 

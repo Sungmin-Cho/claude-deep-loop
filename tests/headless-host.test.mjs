@@ -145,8 +145,8 @@ function prepareCompletableCodexRun(root, runId) {
   const state = readState(root, runId).data;
   state.review.points = ['implementation'];
   state.episodes = [
-    { id: '001-maker', role: 'maker', plugin: 'deep-work', point: 'implementation', workstream_id: 'ws', status: 'done' },
-    { id: '002-checker', role: 'checker', plugin: 'deep-review', point: 'implementation', workstream_id: 'ws', status: 'approved', target_maker: '001-maker' },
+    { id: '001-maker', role: 'maker', plugin: 'deep-work', point: 'implementation', workstream_id: 'ws', status: 'done', request_rel: 'episodes/001-maker/request.md' },
+    { id: '002-checker', role: 'checker', plugin: 'deep-review', point: 'implementation', workstream_id: 'ws', status: 'approved', target_maker: '001-maker', request_rel: 'episodes/002-checker/request.md' },
   ];
   state.workstreams = [{ id: 'ws', status: 'ready', review_points_done: ['implementation'] }];
   state.active_workstreams = [];

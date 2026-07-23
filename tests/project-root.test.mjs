@@ -362,6 +362,10 @@ test('legacy 0.2.0 relocation diagnoses and rebinds from the migrated view witho
   const loopPath = join(dir, 'loop.json');
   const legacy = JSON.parse(readFileSync(loopPath, 'utf8'));
   legacy.schema_version = '0.2.0';
+  delete legacy.project.binding_generation;
+  delete legacy.autonomy.attended_launch_approval;
+  delete legacy.session_chain.lease.takeover_kind;
+  for (const session of legacy.session_chain.sessions) delete session.scope;
   delete legacy.autonomy.continuation_policy;
   delete legacy.session_chain.consumed_milestones;
   delete legacy.session_chain.lease.handoff_trigger;
@@ -371,11 +375,11 @@ test('legacy 0.2.0 relocation diagnoses and rebinds from the migrated view witho
   renameSync(originalRoot, candidateRoot);
 
   const recoveryView = readStateForRootRecovery(candidateRoot, runId);
-  assert.equal(recoveryView.data.schema_version, '0.3.0');
+  assert.equal(recoveryView.data.schema_version, '0.4.0');
   assert.notEqual(
     contentHash(JSON.stringify(recoveryView.data, null, 2)),
     recoveryView.hash,
-    'legacy migration intentionally returns 0.3.0 data with the 0.2.0 on-disk hash',
+    'legacy migration intentionally returns 0.4.0 data with the 0.2.0 on-disk hash',
   );
 
   const { diagnoseProjectRoot, rebindProjectRoot } = await recoveryApi();
@@ -395,7 +399,7 @@ test('legacy 0.2.0 relocation diagnoses and rebinds from the migrated view witho
   });
 
   const rebound = readState(candidateRoot, runId).data;
-  assert.equal(rebound.schema_version, '0.3.0');
+  assert.equal(rebound.schema_version, '0.4.0');
   assert.equal(rebound.autonomy.continuation_policy, 'rotate-per-unit');
   assert.equal(rebound.project.root, canonicalProjectRoot(candidateRoot));
   assert.equal(validate(rebound).ok, true);

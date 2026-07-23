@@ -17,6 +17,7 @@ import { initRun } from '../scripts/lib/initrun.mjs';
 import { advanceHandoffPhase, reserveHandoff } from '../scripts/lib/lease.mjs';
 import { pauseRun, readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import { runSessionStartRestore } from '../scripts/hooks-impl/sessionstart-restore.mjs';
+import { contentHash } from '../scripts/lib/envelope.mjs';
 
 const PROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const RESTORE_HOOK = join(PROOT, 'scripts', 'hooks-impl', 'sessionstart-restore.mjs');
@@ -30,10 +31,28 @@ function freshRoot() {
 }
 
 function initClaude(root, extra = {}) {
-  return initRun(root, {
+  const { continuation = 'compact-in-place', ...currentOptions } = extra;
+  const result = initRun(root, {
     runtime: 'claude', goal: 'g', detected: {}, now: NOW, env: {}, platform: 'darwin', run: noRun, pid: 1,
-    ...extra,
+    ...currentOptions,
   });
+  const dir = runDir(root, result.runId);
+  const loopPath = join(dir, 'loop.json');
+  const legacy = JSON.parse(readFileSync(loopPath, 'utf8'));
+  legacy.schema_version = '0.3.0';
+  delete legacy.project.binding_generation;
+  delete legacy.autonomy.attended_launch_approval;
+  delete legacy.session_chain.lease.takeover_kind;
+  for (const session of legacy.session_chain.sessions) delete session.scope;
+  legacy.autonomy.spawn_style = 'visible';
+  legacy.autonomy.continuation_policy = continuation;
+  legacy.autonomy.milestone_predicate = continuation === 'compact-in-place'
+    ? ['workstream_status_change']
+    : ['workstream_status_change', 'review_point_passed', 'per_session_turn_cap_reached'];
+  const raw = JSON.stringify(legacy, null, 2);
+  writeFileSync(loopPath, raw);
+  writeFileSync(join(dir, '.loop.hash'), contentHash(raw));
+  return result;
 }
 
 const restore = root => runSessionStartRestore({}, { root, now: NOW_MS });
