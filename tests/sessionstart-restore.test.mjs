@@ -9,7 +9,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { emitCompactCheckpoint } from '../scripts/lib/checkpoint.mjs';
+import { emitLegacyCompactCheckpointFromTrustedHook } from '../scripts/lib/checkpoint.mjs';
 import { newEpisode } from '../scripts/lib/episode.mjs';
 import { finishRun } from '../scripts/lib/finish.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
@@ -172,7 +172,7 @@ test('rotate-per-unit + idle → retry-guidance capsule without nonexistent-hand
 test('compact-in-place + matching checkpoint → resume capsule ≤3KB(bytes) with run/ws/episode', () => {
   const root = freshRoot();
   const { runId } = initClaude(root);
-  emitCompactCheckpoint(root, runId, { now: NOW_MS + 1 });
+  emitLegacyCompactCheckpointFromTrustedHook(root, runId, { now: NOW_MS + 1 });
 
   const r = restore(root);
 
@@ -191,7 +191,7 @@ test('UTF-8 clamp preserves code points and the owner advisory within 3072 bytes
     plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation',
     expectedArtifacts: [`아티팩트-${'한'.repeat(2_000)}`], fence: fence(runId), now: NOW_MS + 1,
   });
-  emitCompactCheckpoint(root, runId, { now: NOW_MS + 2 });
+  emitLegacyCompactCheckpointFromTrustedHook(root, runId, { now: NOW_MS + 2 });
 
   const r = restore(root);
 
@@ -205,7 +205,7 @@ test('UTF-8 clamp preserves code points and the owner advisory within 3072 bytes
 test('all checkpoints stale after state advances → degrade to status guidance', () => {
   const root = freshRoot();
   const { runId } = initClaude(root);
-  emitCompactCheckpoint(root, runId, { now: NOW_MS + 1 });
+  emitLegacyCompactCheckpointFromTrustedHook(root, runId, { now: NOW_MS + 1 });
   const { data } = readState(root, runId);
   data.discovered_items.push({ note: 'advance state revision' });
   writeState(root, runId, data);
@@ -220,7 +220,7 @@ test('all checkpoints stale after state advances → degrade to status guidance'
 test('checkpoint parse failure after selection → no-checkpoint with advisory', () => {
   const root = freshRoot();
   const { runId } = initClaude(root);
-  const checkpoint = emitCompactCheckpoint(root, runId, { now: NOW_MS + 1 });
+  const checkpoint = emitLegacyCompactCheckpointFromTrustedHook(root, runId, { now: NOW_MS + 1 });
 
   const r = runSessionStartRestore({}, {
     root,
@@ -255,7 +255,7 @@ test('read-only: loop.json/.loop.hash bytes remain unchanged across capsule bran
   }
   {
     const root = freshRoot(); const { runId } = initClaude(root);
-    emitCompactCheckpoint(root, runId, { now: NOW_MS + 1 });
+    emitLegacyCompactCheckpointFromTrustedHook(root, runId, { now: NOW_MS + 1 });
     fixtures.push({ root, runId, branch: 'resume' });
   }
   {
@@ -284,7 +284,7 @@ test('Claude and Codex compact payloads receive identical additionalContext JSON
   const root = freshRoot();
   initClaude(root);
   const currentRunId = readFileSync(join(root, '.deep-loop', 'current'), 'utf8').trim();
-  emitCompactCheckpoint(root, currentRunId, { now: NOW_MS + 1 });
+  emitLegacyCompactCheckpointFromTrustedHook(root, currentRunId, { now: NOW_MS + 1 });
   const claude = runHook(root, { cwd: root, hook_event_name: 'SessionStart', source: 'compact', session_id: 'claude-session' });
   const codex = runHook(root, { cwd: root, hook_event_name: 'SessionStart', source: 'compact', conversation_id: 'codex-conversation' });
 

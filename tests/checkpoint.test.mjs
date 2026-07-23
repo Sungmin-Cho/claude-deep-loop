@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import {
   captureCheckpointSet,
   emitCompactCheckpoint,
+  emitLegacyCompactCheckpointFromTrustedHook,
   inspectCompactCheckpoint,
   restoreCompactCheckpoint,
   selectCheckpoint as selectCheckpointFromSet,
@@ -70,6 +71,7 @@ const loopPathOf = (root, runId) => join(runDir(root, runId), 'loop.json');
 const hashPathOf = (root, runId) => join(runDir(root, runId), '.loop.hash');
 const logPathOf = (root, runId) => join(runDir(root, runId), 'event-log.jsonl');
 const checkpointDirOf = (root, runId) => join(runDir(root, runId), 'checkpoints');
+const strictCheckpointPath = (root, runId, emitted) => join(runDir(root, runId), emitted.checkpoint_rel);
 
 test('emitCompactCheckpoint: artifact-only — loop.json bytes and .loop.hash unchanged, no lease change', () => {
   const root = freshRoot();
@@ -85,7 +87,7 @@ test('emitCompactCheckpoint: artifact-only — loop.json bytes and .loop.hash un
   const beforeLease = structuredClone(beforeState.session_chain.lease);
   const expectedNext = nextAction(beforeState, { now: NOW_MS, unattended: false });
 
-  const r = emitCompactCheckpoint(root, runId, { now: NOW_MS });
+  const r = emitLegacyCompactCheckpointFromTrustedHook(root, runId, { now: NOW_MS });
 
   assert.ok(r.ok && existsSync(r.path));
   assert.equal(readFileSync(loopPathOf(root, runId), 'utf8'), before);
@@ -135,7 +137,7 @@ test('retention: latest-5 with current-owner preference', () => {
     writeFileSync(join(dir, `${ulid(NOW_MS + i, 0)}-compact.json`), JSON.stringify(stale, null, 2));
   }
 
-  const valid = emitCompactCheckpoint(root, runId, { now: NOW_MS });
+  const valid = emitLegacyCompactCheckpointFromTrustedHook(root, runId, { now: NOW_MS });
   const files = readdirSync(dir).filter(file => file.endsWith('-compact.json'));
 
   assert.equal(files.length, 5);
@@ -175,7 +177,7 @@ test('retention: owner protection ignores forged checkpoint identity', () => {
     writeFileSync(join(dir, `${ulid(NOW_MS + i, 0)}-compact.json`), JSON.stringify(stale, null, 2));
   }
 
-  const valid = emitCompactCheckpoint(root, runId, { now: NOW_MS + 6 });
+  const valid = emitLegacyCompactCheckpointFromTrustedHook(root, runId, { now: NOW_MS + 6 });
 
   assert.equal(existsSync(forgedPath), false, 'foreign envelope must not receive current-owner protection');
   assert.equal(existsSync(valid.path), true);
@@ -185,8 +187,8 @@ test('retention: owner protection ignores forged checkpoint identity', () => {
 test('selectCheckpoint: unwraps identity and requires owner+generation+loop_hash triple match; none → null', () => {
   const root = freshRoot();
   const { runId } = initClaude(root);
-  const first = emitCompactCheckpoint(root, runId, { now: NOW_MS });
-  const second = emitCompactCheckpoint(root, runId, { now: NOW_MS + 1 });
+  const first = emitLegacyCompactCheckpointFromTrustedHook(root, runId, { now: NOW_MS });
+  const second = emitLegacyCompactCheckpointFromTrustedHook(root, runId, { now: NOW_MS + 1 });
   const { data, hash } = readState(root, runId);
   const owner = data.session_chain.lease.owner_run_id;
   const generation = data.session_chain.lease.generation;
@@ -209,7 +211,49 @@ test('selectCheckpoint: unwraps identity and requires owner+generation+loop_hash
   assert.equal(selectCheckpoint(root, runId, { owner, generation, loopHash: freshHash }), null);
 });
 
-function seedBound(runtime = 'claude') {
+test('public emit never downgrades to legacy and preserves fence, runtime, and terminal checks', () => {
+  const wrongFence = freshRoot();
+  const { runId: fencedRunId } = initClaude(wrongFence);
+  assert.throws(() => emitCompactCheckpoint(wrongFence, fencedRunId, {
+    fence: { owner: fencedRunId, generation: 9 },
+    runtime: 'claude',
+    now: NOW_MS,
+  }), /LEASE_FENCED/);
+
+  const wrongRuntime = freshRoot();
+  const { runId: runtimeRunId } = initClaude(wrongRuntime);
+  assert.throws(() => emitCompactCheckpoint(wrongRuntime, runtimeRunId, {
+    fence: { owner: runtimeRunId, generation: 1 },
+    runtime: 'codex',
+    now: NOW_MS,
+  }), /RUNTIME_FENCED/);
+
+  const active = freshRoot();
+  const { runId: activeRunId } = initClaude(active);
+  assert.throws(() => emitCompactCheckpoint(active, activeRunId, {
+    fence: { owner: activeRunId, generation: 1 },
+    runtime: 'claude',
+    now: NOW_MS,
+  }), /CHECKPOINT_LEGACY_TRUST_REQUIRED/);
+  assert.equal(existsSync(checkpointDirOf(active, activeRunId)), false);
+
+  const terminal = freshRoot();
+  const { runId: terminalRunId } = initClaude(terminal);
+  const terminalState = readState(terminal, terminalRunId).data;
+  terminalState.status = 'stopped';
+  writeState(terminal, terminalRunId, terminalState);
+  assert.throws(() => emitCompactCheckpoint(terminal, terminalRunId, {
+    fence: { owner: terminalRunId, generation: 1 },
+    runtime: 'claude',
+    now: NOW_MS,
+  }), /LEASE_FENCED: RUN_TERMINAL/);
+  assert.equal(existsSync(checkpointDirOf(terminal, terminalRunId)), false);
+});
+
+function seedBound(runtime = 'claude', {
+  expectedArtifacts,
+  point = 'implementation',
+} = {}) {
   const root = freshRoot();
   const { runId } = initCurrent(root, runtime);
   const fence = { owner: runId, generation: 1 };
@@ -229,9 +273,9 @@ function seedBound(runtime = 'claude') {
     plugin: 'deep-work',
     role: 'maker',
     kind: 'implementation',
-    point: 'implementation',
+    point,
     workstream: workstreamId,
-    expectedArtifacts: [present, absent],
+    expectedArtifacts: expectedArtifacts ?? [present, absent],
     fence,
   }).id;
   recordEpisode(root, runId, episodeId, { status: 'in_progress', fence });
@@ -269,8 +313,11 @@ test('strict v0.4 emit binds exact affinity context and exact retry is byte- and
   assert.equal(first.created, true);
   assert.match(first.checkpoint_key, /^[0-9a-f]{64}$/);
   assert.equal(first.checkpoint_rel, `checkpoints/${first.checkpoint_key}-compact.json`);
-  const firstBytes = readFileSync(first.path);
-  const firstIdentity = lstatSync(first.path, { bigint: true });
+  assert.equal(Object.hasOwn(first, 'path'), false);
+  assert.equal(JSON.stringify(first).includes(fixture.root), false);
+  const firstPath = strictCheckpointPath(fixture.root, fixture.runId, first);
+  const firstBytes = readFileSync(firstPath);
+  const firstIdentity = lstatSync(firstPath, { bigint: true });
   const filesBeforeRetry = readdirSync(checkpointDirOf(fixture.root, fixture.runId)).sort();
 
   const retry = emitCompactCheckpoint(fixture.root, fixture.runId, {
@@ -281,8 +328,8 @@ test('strict v0.4 emit binds exact affinity context and exact retry is byte- and
   });
   assert.deepEqual(retry, { ...first, created: false });
   assert.deepEqual(readdirSync(checkpointDirOf(fixture.root, fixture.runId)).sort(), filesBeforeRetry);
-  assert.deepEqual(readFileSync(first.path), firstBytes);
-  const retryIdentity = lstatSync(first.path, { bigint: true });
+  assert.deepEqual(readFileSync(firstPath), firstBytes);
+  const retryIdentity = lstatSync(firstPath, { bigint: true });
   assert.equal(retryIdentity.ino, firstIdentity.ino);
   assert.equal(retryIdentity.birthtimeNs, firstIdentity.birthtimeNs);
   assert.deepEqual(durableRunBytes(fixture), before);
@@ -345,6 +392,75 @@ test('strict v0.4 emit binds exact affinity context and exact retry is byte- and
     first.checkpoint_key,
     contentHash(JSON.stringify(['deep-loop-compact-checkpoint-v2', context])),
   );
+});
+
+test('strict inspect orders two equal-time checkpoints by checkpoint_rel without mutating the frozen capture', () => {
+  const fixture = seedBound();
+  const first = emitCompactCheckpoint(fixture.root, fixture.runId, {
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    hostSessionEvidence: hostEvidence('claude-code', 'tie-a'),
+    now: NOW_MS + 1000,
+  });
+  const second = emitCompactCheckpoint(fixture.root, fixture.runId, {
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    hostSessionEvidence: hostEvidence('claude-code', 'tie-b'),
+    now: NOW_MS + 1000,
+  });
+
+  const inspected = inspectCompactCheckpoint(fixture.root, fixture.runId, {
+    now: NOW_MS + 1000,
+  });
+  assert.equal(
+    inspected.checkpoint_rel,
+    [first.checkpoint_rel, second.checkpoint_rel].sort()[0],
+  );
+});
+
+test('strict retention validates chronology, keeps the newest five, and removes malformed pressure first', () => {
+  const fixture = seedBound();
+  const dir = checkpointDirOf(fixture.root, fixture.runId);
+  mkdirSync(dir, { recursive: true });
+  const malformed = join(dir, `${'f'.repeat(64)}-compact.json`);
+  writeFileSync(malformed, '{}');
+  const emitted = [];
+  for (let index = 0; index < 6; index += 1) {
+    emitted.push(emitCompactCheckpoint(fixture.root, fixture.runId, {
+      fence: fixture.fence,
+      runtime: fixture.runtime,
+      hostSessionEvidence: hostEvidence('claude-code', `chronology-${index}`),
+      now: NOW_MS + 1000 + index,
+    }));
+  }
+
+  assert.equal(existsSync(malformed), false);
+  assert.equal(
+    existsSync(strictCheckpointPath(fixture.root, fixture.runId, emitted[0])),
+    false,
+  );
+  for (const retained of emitted.slice(1)) {
+    assert.equal(existsSync(strictCheckpointPath(fixture.root, fixture.runId, retained)), true);
+  }
+  assert.equal(readdirSync(dir).filter(name => name.endsWith('-compact.json')).length, 5);
+  assert.equal(
+    inspectCompactCheckpoint(fixture.root, fixture.runId, { now: NOW_MS + 2000 }).checkpoint_rel,
+    emitted.at(-1).checkpoint_rel,
+  );
+});
+
+test('strict affinity permits a bound current episode with an empty expected_artifacts set', () => {
+  const fixture = seedBound('claude', { expectedArtifacts: [] });
+  const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    now: NOW_MS + 1000,
+  });
+  const env = JSON.parse(readFileSync(
+    strictCheckpointPath(fixture.root, fixture.runId, emitted),
+    'utf8',
+  ));
+  assert.deepEqual(env.payload.context.artifacts, []);
 });
 
 test('strict emit rejects missing fences, runtime drift, and every non-bound affinity without artifacts', () => {
@@ -464,55 +580,87 @@ test('strict inspect derives current selectors and restore returns one bounded r
   );
 });
 
+test('restore always bounds and sanitizes schema-valid hostile strings without leaking absolute paths', () => {
+  const hostilePoint = `/Users/reviewer/private/${'x'.repeat(4000)}`;
+  const fixture = seedBound('claude', {
+    expectedArtifacts: [],
+    point: hostilePoint,
+  });
+  const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    now: NOW_MS + 1000,
+  });
+  const restored = restoreCompactCheckpoint(fixture.root, fixture.runId, {
+    checkpointRel: emitted.checkpoint_rel,
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    now: NOW_MS + 1000,
+  });
+  const json = JSON.stringify(restored);
+  assert.ok(Buffer.byteLength(json) <= 3072);
+  assert.equal(json.includes('/Users/reviewer/private/'), false);
+  assert.equal(json.includes(fixture.root), false);
+  assert.equal(restored.owner_run_id, fixture.runId);
+  assert.equal(restored.generation, 1);
+  assert.equal(restored.runtime, 'claude');
+  assert.equal(restored.scope.workstream_id, fixture.workstreamId);
+  assert.equal(restored.next_action.action.type, 'await_human');
+  assert.deepEqual(restored.current_episode.point, {
+    sha256: contentHash(hostilePoint),
+    utf8_bytes: Buffer.byteLength(hostilePoint),
+  });
+});
+
 test('strict validator rejects tamper, stale context, foreign run, evidence mismatch, and conflicting retry bytes', () => {
   const variants = [
-    ['malformed', (_fixture, emitted) => writeFileSync(emitted.path, '{')],
+    ['malformed', (fixture, emitted) => writeFileSync(strictCheckpointPath(fixture.root, fixture.runId, emitted), '{')],
     ['foreign-run', (_fixture, emitted, env) => {
       env.envelope.run_id = 'foreign-run';
-      writeFileSync(emitted.path, JSON.stringify(env));
+      writeFileSync(strictCheckpointPath(_fixture.root, _fixture.runId, emitted), JSON.stringify(env));
     }],
     ['owner', (_fixture, emitted, env) => {
       env.payload.context.owner_run_id = 'foreign-owner';
       env.payload.context_sha256 = contentHash(JSON.stringify(env.payload.context));
-      writeFileSync(emitted.path, JSON.stringify(env));
+      writeFileSync(strictCheckpointPath(_fixture.root, _fixture.runId, emitted), JSON.stringify(env));
     }],
     ['generation', (_fixture, emitted, env) => {
       env.payload.context.generation += 1;
       env.payload.context_sha256 = contentHash(JSON.stringify(env.payload.context));
-      writeFileSync(emitted.path, JSON.stringify(env));
+      writeFileSync(strictCheckpointPath(_fixture.root, _fixture.runId, emitted), JSON.stringify(env));
     }],
     ['root-digest', (_fixture, emitted, env) => {
       env.payload.context.project_root_digest = 'a'.repeat(64);
       env.payload.context_sha256 = contentHash(JSON.stringify(env.payload.context));
-      writeFileSync(emitted.path, JSON.stringify(env));
+      writeFileSync(strictCheckpointPath(_fixture.root, _fixture.runId, emitted), JSON.stringify(env));
     }],
     ['root-generation', (_fixture, emitted, env) => {
       env.payload.context.project_binding_generation += 1;
       env.payload.context_sha256 = contentHash(JSON.stringify(env.payload.context));
-      writeFileSync(emitted.path, JSON.stringify(env));
+      writeFileSync(strictCheckpointPath(_fixture.root, _fixture.runId, emitted), JSON.stringify(env));
     }],
     ['runtime', (_fixture, emitted, env) => {
       env.payload.context.runtime = 'codex';
       env.payload.context_sha256 = contentHash(JSON.stringify(env.payload.context));
-      writeFileSync(emitted.path, JSON.stringify(env));
+      writeFileSync(strictCheckpointPath(_fixture.root, _fixture.runId, emitted), JSON.stringify(env));
     }],
     ['loop-hash', (_fixture, emitted, env) => {
       env.payload.context.loop_hash = 'b'.repeat(64);
       env.payload.context_sha256 = contentHash(JSON.stringify(env.payload.context));
-      writeFileSync(emitted.path, JSON.stringify(env));
+      writeFileSync(strictCheckpointPath(_fixture.root, _fixture.runId, emitted), JSON.stringify(env));
     }],
     ['scope', (_fixture, emitted, env) => {
       env.payload.context.scope.workstream_id = 'foreign-workstream';
       env.payload.context_sha256 = contentHash(JSON.stringify(env.payload.context));
-      writeFileSync(emitted.path, JSON.stringify(env));
+      writeFileSync(strictCheckpointPath(_fixture.root, _fixture.runId, emitted), JSON.stringify(env));
     }],
     ['context-digest', (_fixture, emitted, env) => {
       env.payload.context_sha256 = 'c'.repeat(64);
-      writeFileSync(emitted.path, JSON.stringify(env));
+      writeFileSync(strictCheckpointPath(_fixture.root, _fixture.runId, emitted), JSON.stringify(env));
     }],
     ['extra-key', (_fixture, emitted, env) => {
       env.payload.extra = true;
-      writeFileSync(emitted.path, JSON.stringify(env));
+      writeFileSync(strictCheckpointPath(_fixture.root, _fixture.runId, emitted), JSON.stringify(env));
     }],
   ];
   for (const [label, mutate] of variants) {
@@ -523,7 +671,7 @@ test('strict validator rejects tamper, stale context, foreign run, evidence mism
       hostSessionEvidence: hostEvidence(),
       now: NOW_MS + 1000,
     });
-    const env = JSON.parse(readFileSync(emitted.path, 'utf8'));
+    const env = JSON.parse(readFileSync(strictCheckpointPath(fixture.root, fixture.runId, emitted), 'utf8'));
     mutate(fixture, emitted, env);
     assert.throws(() => restoreCompactCheckpoint(fixture.root, fixture.runId, {
       checkpointRel: emitted.checkpoint_rel,
@@ -561,13 +709,14 @@ test('strict validator rejects tamper, stale context, foreign run, evidence mism
     runtime: conflictFixture.runtime,
     now: NOW_MS + 1000,
   });
-  writeFileSync(conflict.path, '{}');
+  const conflictPath = strictCheckpointPath(conflictFixture.root, conflictFixture.runId, conflict);
+  writeFileSync(conflictPath, '{}');
   assert.throws(() => emitCompactCheckpoint(conflictFixture.root, conflictFixture.runId, {
     fence: conflictFixture.fence,
     runtime: conflictFixture.runtime,
     now: NOW_MS + 2000,
   }), /CHECKPOINT_CONFLICT/);
-  assert.equal(readFileSync(conflict.path, 'utf8'), '{}');
+  assert.equal(readFileSync(conflictPath, 'utf8'), '{}');
 });
 
 test('strict restore rejects every unsafe rel spelling and symlink without mutation', t => {
@@ -597,9 +746,10 @@ test('strict restore rejects every unsafe rel spelling and symlink without mutat
   }
 
   const target = join(fixture.root, 'checkpoint-target.json');
-  writeFileSync(target, readFileSync(emitted.path));
-  rmSync(emitted.path);
-  if (!createFileSymlinkOrSkip(t, target, emitted.path)) return;
+  const emittedPath = strictCheckpointPath(fixture.root, fixture.runId, emitted);
+  writeFileSync(target, readFileSync(emittedPath));
+  rmSync(emittedPath);
+  if (!createFileSymlinkOrSkip(t, target, emittedPath)) return;
   assert.throws(() => restoreCompactCheckpoint(fixture.root, fixture.runId, {
     checkpointRel: emitted.checkpoint_rel,
     fence: fixture.fence,
@@ -635,6 +785,6 @@ test('strict artifact observations stale on content change and invalid entries c
     runtime: pressure.runtime,
     now: NOW_MS + 1000,
   });
-  assert.equal(existsSync(current.path), true);
+  assert.equal(existsSync(strictCheckpointPath(pressure.root, pressure.runId, current)), true);
   assert.equal(readdirSync(dir).filter(name => name.endsWith('-compact.json')).length, 5);
 });

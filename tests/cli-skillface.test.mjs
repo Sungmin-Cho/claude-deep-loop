@@ -249,6 +249,8 @@ test('checkpoint emit, inspect, and restore expose the exact public grammar', ()
   assert.equal(emitted.code, 0, emitted.err);
   const checkpoint = JSON.parse(emitted.out);
   assert.match(checkpoint.checkpoint_rel, /^checkpoints\/[0-9a-f]{64}-compact\.json$/);
+  assert.equal(Object.hasOwn(checkpoint, 'path'), false);
+  assert.equal(emitted.out.includes(root), false);
 
   const inspected = runBoth(root, ['checkpoint', 'inspect', '--json']);
   assert.equal(inspected.code, 0, inspected.err);
@@ -283,6 +285,24 @@ test('checkpoint public grammar distinguishes usage, fence, and invalid data exi
   ]) {
     assert.equal(runBoth(root, args).code, 2, args.join(' '));
   }
+  for (const args of [
+    ['checkpoint', 'emit', '--runtime', 'claude'],
+    ['checkpoint', 'emit', '--owner', runId, '--runtime', 'claude'],
+    ['checkpoint', 'emit', '--owner', runId, '--generation', 'zero', '--runtime', 'claude'],
+    ['checkpoint', 'emit', '--owner', runId, '--owner', runId,
+      '--generation', '1', '--runtime', 'claude'],
+    ['checkpoint', 'emit', '--owner', runId,
+      '--generation', '1', '--generation', '1', '--runtime', 'claude'],
+  ]) {
+    assert.equal(runBoth(root, args).code, 3, args.join(' '));
+  }
+  assert.equal(runBoth(root, [
+    'checkpoint', 'emit',
+    '--owner', runId,
+    '--generation', '1',
+    '--runtime', 'claude',
+    '--runtime', 'claude',
+  ]).code, 2);
   assert.equal(runBoth(root, [
     'checkpoint', 'emit',
     '--owner', runId,
@@ -303,6 +323,36 @@ test('checkpoint public grammar distinguishes usage, fence, and invalid data exi
     '--runtime', 'claude',
     '--json',
   ]).code, 1);
+});
+
+test('checkpoint CLI cannot invoke the trusted legacy compatibility emitter', () => {
+  const { root, runId } = seedMigratedLegacy();
+  const active = runBoth(root, [
+    'checkpoint', 'emit',
+    '--owner', runId,
+    '--generation', '1',
+    '--runtime', 'claude',
+  ]);
+  assert.equal(active.code, 1, active.err);
+  assert.match(active.err, /CHECKPOINT_LEGACY_TRUST_REQUIRED/);
+  assert.equal(
+    runBoth(root, [
+      'checkpoint', 'emit',
+      '--owner', runId,
+      '--generation', '9',
+      '--runtime', 'claude',
+    ]).code,
+    3,
+  );
+  assert.equal(
+    runBoth(root, [
+      'checkpoint', 'emit',
+      '--owner', runId,
+      '--generation', '1',
+      '--runtime', 'codex',
+    ]).code,
+    3,
+  );
 });
 
 test('comprehension status is read-only', () => {

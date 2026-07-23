@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { readBoundedText } from '../lib/bounded-input.mjs';
 import { detectMain } from '../lib/detect-main.mjs';
 import { captureReconciledRunSnapshot, findRoot } from '../lib/state.mjs';
-import { emitCompactCheckpoint } from '../lib/checkpoint.mjs';
+import { emitLegacyCompactCheckpointFromTrustedHook } from '../lib/checkpoint.mjs';
 import { emitHandoff } from '../lib/handoff.mjs';
 import { rollbackHandoff } from '../lib/lease.mjs';
 import { respawnGate, resolveSpawnMode, rollbackAndPause } from '../lib/respawn.mjs';
@@ -50,7 +50,7 @@ export async function runPreCompactHandoff(input = {}, {
   rollbackFn = rollbackAndPause,
   cleanupFn = rollbackHandoff,
   emitFn = emitHandoff,
-  checkpointFn = emitCompactCheckpoint,
+  checkpointFn = emitLegacyCompactCheckpointFromTrustedHook,
 } = {}) {
   const runId = currentRunId(root);
   if (!runId) return { ok: true, action: 'no-run' };

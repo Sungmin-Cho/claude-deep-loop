@@ -96,6 +96,19 @@ function exactFlagGrammar(argv, allowed) {
   return true;
 }
 
+function knownFlagVocabulary(argv, allowed) {
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index];
+    if (typeof token !== 'string' || !token.startsWith('--')) return false;
+    const body = token.slice(2);
+    const eq = body.indexOf('=');
+    const name = eq < 0 ? body : body.slice(0, eq);
+    if (!allowed.has(name)) return false;
+    if (eq < 0 && argv[index + 1] !== undefined && !argv[index + 1].startsWith('--')) index += 1;
+  }
+  return true;
+}
+
 function flagOccurrences(argv, name) {
   const flag = `--${name}`;
   return argv.filter(token => token === flag || token.startsWith(`${flag}=`)).length;
@@ -435,7 +448,16 @@ const handlers = {
         'project-root', 'run-id', 'now', 'checkpoint', 'owner', 'generation', 'runtime', 'json',
       ]),
     };
-    if (!Object.hasOwn(allowed, verb) || !exactFlagGrammar(rest, allowed[verb])) {
+    if (!Object.hasOwn(allowed, verb) || !knownFlagVocabulary(rest, allowed[verb])) {
+      error(`USAGE: checkpoint <emit|inspect|restore> has invalid grammar`);
+      return 2;
+    }
+    if (verb !== 'inspect'
+      && (flagOccurrences(rest, 'owner') !== 1 || flagOccurrences(rest, 'generation') !== 1)) {
+      error(`LEASE_FENCED: checkpoint ${verb} requires exactly one owner and generation`);
+      return 3;
+    }
+    if (!exactFlagGrammar(rest, allowed[verb])) {
       error(`USAGE: checkpoint <emit|inspect|restore> has invalid grammar`);
       return 2;
     }
@@ -447,27 +469,30 @@ const handlers = {
     const root = rootOf(f);
     const runId = runIdOf(root, f);
     if (!runId) { error('USAGE: --run-id RUN_ID or .deep-loop/current is required'); return 2; }
-    const now = parseNow(f);
 
     if (verb === 'inspect') {
       if (f.json !== true) { error('USAGE: checkpoint inspect requires --json'); return 2; }
-      json(inspectCompactCheckpoint(root, runId, { now }));
+      json(inspectCompactCheckpoint(root, runId, { now: parseNow(f) }));
       return 0;
     }
 
     const owner = reqStr(f, 'owner');
-    const runtime = reqStr(f, 'runtime');
-    if (!owner || !runtime
+    if (!owner
       || typeof f.generation !== 'string'
       || !/^[1-9]\d*$/.test(f.generation)
       || !Number.isSafeInteger(Number(f.generation))) {
-      error(`USAGE: checkpoint ${verb} requires --owner OWNER --generation N --runtime RUNTIME`);
+      error(`LEASE_FENCED: checkpoint ${verb} requires a valid owner and positive generation`);
+      return 3;
+    }
+    const runtime = reqStr(f, 'runtime');
+    if (!runtime) {
+      error(`USAGE: checkpoint ${verb} requires --runtime RUNTIME`);
       return 2;
     }
     const options = {
       fence: { owner, generation: Number(f.generation) },
       runtime,
-      now,
+      now: parseNow(f),
     };
     if (verb === 'emit') {
       json(emitCompactCheckpoint(root, runId, options));

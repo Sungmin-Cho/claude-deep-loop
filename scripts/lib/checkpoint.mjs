@@ -73,6 +73,7 @@ const canonicalIso = value => typeof value === 'string'
   && Number.isFinite(new Date(value).getTime())
   && new Date(value).toISOString() === value;
 const plainObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+const compareLexical = (left, right) => (left < right ? -1 : left > right ? 1 : 0);
 const exactKeys = (value, keys) => plainObject(value)
   && Object.keys(value).length === keys.length
   && keys.every((key, index) => Object.keys(value)[index] === key);
@@ -216,8 +217,8 @@ function affinity(loop) {
     ...(Array.isArray(episode.expected_artifacts) ? episode.expected_artifacts : []),
     ...(Array.isArray(episode.artifacts) ? episode.artifacts : []),
   ])].sort();
-  if (artifacts.length === 0 || artifacts.length > MAX_ARTIFACTS) {
-    throw new Error('CHECKPOINT_AFFINITY_INVALID: fixed artifact set required');
+  if (artifacts.length > MAX_ARTIFACTS) {
+    throw new Error('CHECKPOINT_AFFINITY_INVALID: artifact set too large');
   }
   return { scope, workstream, episode, artifacts };
 }
@@ -351,22 +352,81 @@ function captureDirectoryEntries(dir) {
   }));
 }
 
-function pruneCaptured(entries, currentPath, created) {
+function readCapturedStable(entry, invalidCode = 'CHECKPOINT_PATH_INVALID') {
+  if (!entry.regular || !entry.identity) throw new Error(invalidCode);
+  let before;
+  try { before = captureStableFileIdentity(entry.path); } catch { throw new Error(invalidCode); }
+  if (!matchingStableFileIdentity(entry.identity, before)) throw new Error(invalidCode);
+  const bytes = readFileSync(entry.path);
+  let after;
+  try { after = captureStableFileIdentity(entry.path); } catch { throw new Error(invalidCode); }
+  if (!matchingStableFileIdentity(before, after)
+    || !matchingStableFileIdentity(entry.identity, after)) {
+    throw new Error(invalidCode);
+  }
+  return bytes;
+}
+
+function capturedStrictMetadata(entry, runId) {
+  const match = entry.name.match(STRICT_FILE);
+  if (!match) throw new Error('CHECKPOINT_INVALID');
+  const bytes = readCapturedStable(entry);
+  if (bytes.length === 0 || bytes.length > MAX_CHECKPOINT_BYTES) {
+    throw new Error('CHECKPOINT_INVALID');
+  }
+  let env;
+  try { env = JSON.parse(bytes.toString('utf8')); } catch { throw new Error('CHECKPOINT_INVALID'); }
+  validateStrictSelf(env, { runId, key: match[1] });
+  return {
+    entry,
+    bytes,
+    key: match[1],
+    rel: checkpointRel(match[1]),
+    generatedAt: env.envelope.generated_at,
+  };
+}
+
+function compareNewest(left, right) {
+  const time = compareLexical(right.generatedAt, left.generatedAt);
+  return time !== 0 ? time : compareLexical(left.rel, right.rel);
+}
+
+function removeCaptured(entry) {
+  if (!entry.identity || !entry.removable) return false;
+  let currentIdentity;
+  try { currentIdentity = captureStableFileIdentity(entry.path); } catch { return false; }
+  if (!matchingStableFileIdentity(entry.identity, currentIdentity)) return false;
+  rmSync(entry.path, { force: true });
+  return true;
+}
+
+function pruneCaptured(entries, currentPath, created, runId) {
   let count = entries.filter(entry => entry.removable && entry.name.endsWith('-compact.json')).length
     + (created ? 1 : 0);
   if (count <= KEEP) return;
+  const invalid = [];
+  const valid = [];
+  for (const entry of entries) {
+    if (!entry.removable || !entry.name.endsWith('-compact.json')) continue;
+    try {
+      valid.push(capturedStrictMetadata(entry, runId));
+    } catch {
+      invalid.push(entry);
+    }
+  }
+  invalid.sort((left, right) => compareLexical(left.name, right.name));
+  valid.sort((left, right) => {
+    const time = compareLexical(left.generatedAt, right.generatedAt);
+    return time !== 0 ? time : compareLexical(right.rel, left.rel);
+  });
   const candidates = [
-    ...entries.filter(entry => !STRICT_FILE.test(entry.name)),
-    ...entries.filter(entry => STRICT_FILE.test(entry.name)),
+    ...invalid,
+    ...valid.map(item => item.entry),
   ];
   for (const entry of candidates) {
     if (count <= KEEP) break;
-    if (entry.path === currentPath || !entry.identity || !entry.removable) continue;
-    let currentIdentity;
-    try { currentIdentity = captureStableFileIdentity(entry.path); } catch { continue; }
-    if (!matchingStableFileIdentity(entry.identity, currentIdentity)) continue;
-    rmSync(entry.path, { force: true });
-    count -= 1;
+    if (entry.path === currentPath) continue;
+    if (removeCaptured(entry)) count -= 1;
   }
 }
 
@@ -388,7 +448,6 @@ function strictEmit(root, runId, snapshot, options) {
   const rel = checkpointRel(key);
   const result = {
     ok: true,
-    path,
     checkpoint_rel: rel,
     checkpoint_key: key,
     workstream_id: context.scope.workstream_id,
@@ -414,7 +473,7 @@ function strictEmit(root, runId, snapshot, options) {
     return { ...result, created: false };
   }
   atomicWrite(path, bytes);
-  pruneCaptured(entries, path, true);
+  pruneCaptured(entries, path, true, runId);
   return result;
 }
 
@@ -461,13 +520,29 @@ export function emitCompactCheckpoint(root, runId, {
   now = Date.now(),
 } = {}) {
   return withReconciledMutationLock(root, runId, (_guard, snapshot) => {
-    if (authenticLegacy(snapshot.data)) return legacyEmit(root, runId, snapshot, now);
+    if (authenticLegacy(snapshot.data)) {
+      assertFence(snapshot.data, fence, runtime);
+      throw new Error('CHECKPOINT_LEGACY_TRUST_REQUIRED');
+    }
     return strictEmit(root, runId, snapshot, {
       fence,
       runtime,
       hostSessionEvidence,
       now,
     });
+  });
+}
+
+// Compatibility-only adapter for the installed PreCompact hook. Public callers must use
+// emitCompactCheckpoint, whose fence/runtime/status checks never downgrade to v1 semantics.
+export function emitLegacyCompactCheckpointFromTrustedHook(root, runId, {
+  now = Date.now(),
+} = {}) {
+  return withReconciledMutationLock(root, runId, (_guard, snapshot) => {
+    if (!authenticLegacy(snapshot.data)) {
+      throw new Error('CHECKPOINT_LEGACY_POLICY_REQUIRED');
+    }
+    return legacyEmit(root, runId, snapshot, now);
   });
 }
 
@@ -483,21 +558,73 @@ function strictRel(value) {
   return match[1];
 }
 
+function absoluteLike(value) {
+  return /(?:^|[\s"'=:(])\/(?!deep-loop-[a-z0-9-]+(?:$|[\s"'=)]))/.test(value)
+    || /(?:^|[\s"'=:(])[A-Za-z]:[\\/]/.test(value)
+    || /(?:^|[\s"'=:(])\\\\/.test(value);
+}
+
+function stringSummary(value) {
+  return {
+    sha256: contentHash(value),
+    utf8_bytes: Buffer.byteLength(value),
+  };
+}
+
+function boundedDescriptorValue(value, depth = 0) {
+  if (typeof value === 'string') {
+    if ((value.startsWith('/deep-loop-') && /^\/deep-loop-[a-z0-9-]+$/.test(value))
+      || (Buffer.byteLength(value) <= 192 && !absoluteLike(value))) {
+      return value;
+    }
+    return stringSummary(value);
+  }
+  if (value === null || typeof value === 'boolean' || typeof value === 'number') return value;
+  if (Array.isArray(value)) {
+    if (value.length > 8 || depth >= 3) return {
+      sha256: contentHash(JSON.stringify(value)),
+      items: value.length,
+    };
+    return value.map(item => boundedDescriptorValue(item, depth + 1));
+  }
+  if (!plainObject(value)) return null;
+  const entries = Object.entries(value);
+  if (entries.length > 16 || depth >= 4) return {
+    sha256: contentHash(JSON.stringify(value)),
+    keys: entries.length,
+  };
+  return Object.fromEntries(entries.map(([key, item]) => [
+    key,
+    boundedDescriptorValue(item, depth + 1),
+  ]));
+}
+
+function summarizeScope(value) {
+  return boundedDescriptorValue({
+    kind: value.kind,
+    workstream_id: value.workstream_id,
+    bound_at_seq: value.bound_at_seq,
+    terminal_event: value.terminal_event,
+    closed_at: value.closed_at,
+    superseded_at: value.superseded_at,
+  });
+}
+
 function summarizeWorkstream(value) {
   return {
-    id: value.id,
-    status: value.status,
-    worktree: value.worktree,
+    id: boundedDescriptorValue(value.id),
+    status: boundedDescriptorValue(value.status),
+    worktree: boundedDescriptorValue(value.worktree),
   };
 }
 
 function summarizeEpisode(value) {
   return {
-    id: value.id,
-    role: value.role,
-    status: value.status,
-    point: value.point,
-    workstream_id: value.workstream_id,
+    id: boundedDescriptorValue(value.id),
+    role: boundedDescriptorValue(value.role),
+    status: boundedDescriptorValue(value.status),
+    point: boundedDescriptorValue(value.point),
+    workstream_id: boundedDescriptorValue(value.workstream_id),
   };
 }
 
@@ -507,13 +634,13 @@ function descriptor(rel, key, validation) {
     ok: true,
     checkpoint_rel: rel,
     checkpoint_key: key,
-    owner_run_id: context.owner_run_id,
+    owner_run_id: boundedDescriptorValue(context.owner_run_id),
     generation: context.generation,
     runtime: context.runtime,
-    scope: structuredClone(context.scope),
+    scope: summarizeScope(context.scope),
     workstream: summarizeWorkstream(context.workstream),
     current_episode: summarizeEpisode(context.current_episode),
-    next_action: structuredClone(freshNextAction),
+    next_action: boundedDescriptorValue(freshNextAction),
     context_sha256: contentHash(JSON.stringify(context)),
     provider_evidence: {
       present: context.provider_evidence !== null,
@@ -521,9 +648,42 @@ function descriptor(rel, key, validation) {
     },
   };
   const bytes = Buffer.from(JSON.stringify(result));
-  if (bytes.length > MAX_DESCRIPTOR_BYTES
-    || bytes.toString('utf8').includes('\uFFFD')) {
-    throw new Error('CHECKPOINT_DESCRIPTOR_TOO_LARGE');
+  if (bytes.length > MAX_DESCRIPTOR_BYTES) {
+    result.scope = {
+      kind: boundedDescriptorValue(context.scope.kind),
+      workstream_id: boundedDescriptorValue(context.scope.workstream_id),
+      bound_at_seq: context.scope.bound_at_seq,
+    };
+    result.workstream = {
+      id: boundedDescriptorValue(context.workstream.id),
+      status: boundedDescriptorValue(context.workstream.status),
+    };
+    result.current_episode = summarizeEpisode(context.current_episode);
+    result.next_action = {
+      action: {
+        type: boundedDescriptorValue(freshNextAction?.action?.type),
+      },
+      next_command: boundedDescriptorValue(freshNextAction?.next_command),
+    };
+  }
+  if (Buffer.byteLength(JSON.stringify(result)) > MAX_DESCRIPTOR_BYTES) {
+    result.scope = {
+      kind: boundedDescriptorValue(context.scope.kind),
+      sha256: contentHash(JSON.stringify(context.scope)),
+    };
+    result.workstream = {
+      id: boundedDescriptorValue(context.workstream.id),
+      status: boundedDescriptorValue(context.workstream.status),
+    };
+    result.current_episode = {
+      id: boundedDescriptorValue(context.current_episode.id),
+      point: boundedDescriptorValue(context.current_episode.point),
+    };
+    result.next_action = {
+      action: {
+        type: boundedDescriptorValue(freshNextAction?.action?.type),
+      },
+    };
   }
   return result;
 }
@@ -540,27 +700,28 @@ export function inspectCompactCheckpoint(root, runId, {
     affinity(snapshot.data);
     const dir = assertCheckpointDirectory(root, runId);
     if (dir === null) return { ok: false, reason: 'CHECKPOINT_NOT_FOUND' };
-    const entries = captureDirectoryEntries(dir).sort((left, right) => right.name.localeCompare(left.name));
+    const candidates = [];
+    const entries = captureDirectoryEntries(dir);
     for (const entry of entries) {
-      const match = entry.name.match(STRICT_FILE);
-      if (!match || !entry.regular || !entry.identity) continue;
       try {
-        const currentIdentity = captureStableFileIdentity(entry.path);
-        if (!matchingStableFileIdentity(entry.identity, currentIdentity)) continue;
-        const bytes = readFileSync(entry.path);
-        if (!matchingStableFileIdentity(currentIdentity, captureStableFileIdentity(entry.path))) continue;
-        const validation = validateStrictBytes(bytes, {
+        const metadata = capturedStrictMetadata(entry, runId);
+        const validation = validateStrictBytes(metadata.bytes, {
           root,
           runId,
-          key: match[1],
+          key: metadata.key,
           snapshot,
           now,
           hostSessionEvidence,
         });
-        return descriptor(checkpointRel(match[1]), match[1], validation);
+        candidates.push({ ...metadata, validation });
       } catch {
         // A malformed, stale, foreign, or replaced entry is never eligible.
       }
+    }
+    candidates.sort(compareNewest);
+    if (candidates.length > 0) {
+      const selected = candidates[0];
+      return descriptor(selected.rel, selected.key, selected.validation);
     }
     return { ok: false, reason: 'CHECKPOINT_NOT_FOUND' };
   });
