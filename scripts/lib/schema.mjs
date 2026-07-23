@@ -36,6 +36,67 @@ function portableRel(value, prefix = null) {
   return normalized !== null && normalized === value && (prefix === null || normalized.startsWith(prefix));
 }
 
+const REVIEW_ATTEMPT_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const SHA256 = /^[0-9a-f]{64}$/;
+const FROZEN_REVIEW_CLAIM_KEYS = Object.freeze([
+  'run_id', 'reviewer_id', 'checker_episode_id', 'target_maker', 'attempt_id',
+  'workstream_id', 'point', 'project_root', 'runtime', 'lease_owner',
+  'lease_generation', 'artifacts', 'invalidated_at', 'reason',
+]);
+const REVIEW_EVIDENCE_KEYS = Object.freeze([
+  'insights_path', 'emit_ulid', 'producer_run_id', 'sha256', 'candidates',
+]);
+
+function nonEmptyString(value) {
+  return typeof value === 'string' && value.length > 0 && !/[\0\r\n]/.test(value);
+}
+
+function validFrozenArtifacts(artifacts) {
+  if (!Array.isArray(artifacts) || artifacts.length > 256) return false;
+  let previous = null;
+  for (const artifact of artifacts) {
+    if (!exactObject(artifact, ['path', 'sha256']) || !portableRel(artifact.path)
+      || !SHA256.test(artifact.sha256 || '') || (previous !== null && artifact.path <= previous)) return false;
+    previous = artifact.path;
+  }
+  return true;
+}
+
+function validFrozenEvidence(evidence) {
+  if (evidence === null) return true;
+  return exactObject(evidence, REVIEW_EVIDENCE_KEYS)
+    && portableRel(evidence.insights_path, '.deep-loop/insights/')
+    && nonEmptyString(evidence.emit_ulid)
+    && (evidence.producer_run_id === null || nonEmptyString(evidence.producer_run_id))
+    && (evidence.sha256 === null || SHA256.test(evidence.sha256 || ''))
+    && Array.isArray(evidence.candidates)
+    && evidence.candidates.every(candidate => candidate !== null && typeof candidate === 'object' && !Array.isArray(candidate));
+}
+
+function validFrozenContract(contract) {
+  return exactObject(contract, ['slice', 'path', 'sha256'])
+    && contract.slice === 'HILLCLIMB-001'
+    && portableRel(contract.path)
+    && SHA256.test(contract.sha256 || '');
+}
+
+function validInvalidatedReviewClaim(claim) {
+  if (!exactObject(claim, FROZEN_REVIEW_CLAIM_KEYS, ['evidence', 'contract'])) return false;
+  for (const field of [
+    'run_id', 'checker_episode_id', 'target_maker', 'workstream_id', 'point', 'lease_owner',
+  ]) if (!nonEmptyString(claim[field])) return false;
+  return ['deep-review', 'subagent-checker'].includes(claim.reviewer_id)
+    && REVIEW_ATTEMPT_ID.test(claim.attempt_id || '')
+    && portableAbsolute(claim.project_root) && !/[\0\r\n]/.test(claim.project_root)
+    && ['claude', 'codex'].includes(claim.runtime)
+    && Number.isSafeInteger(claim.lease_generation) && claim.lease_generation > 0
+    && validFrozenArtifacts(claim.artifacts)
+    && claim.reason === 'project-root-relocated'
+    && canonicalIso(claim.invalidated_at)
+    && (!Object.hasOwn(claim, 'evidence') || validFrozenEvidence(claim.evidence))
+    && (!Object.hasOwn(claim, 'contract') || validFrozenContract(claim.contract));
+}
+
 function validateAttendedLaunchApproval(value, errors) {
   const fail = detail => errors.push(`autonomy.attended_launch_approval ${detail}`);
   if (value === null) return;
@@ -137,11 +198,9 @@ function validateEpisodeV040(ep, errors) {
     return;
   }
   for (const claim of invalidated) {
-    if (claim === null || typeof claim !== 'object' || Array.isArray(claim)
-      || claim.reason !== 'project-root-relocated' || !canonicalIso(claim.invalidated_at)
-      || Object.keys(claim).filter(key => !['reason', 'invalidated_at'].includes(key)).length === 0) {
-      errors.push('episodes[].invalidated_review_claims[] must contain a frozen claim, canonical invalidated_at, and project-root-relocated reason');
-    }
+    if (!validInvalidatedReviewClaim(claim)) errors.push(
+      'episodes[].invalidated_review_claims[] must be an exact frozen review claim with canonical invalidation metadata',
+    );
   }
 }
 

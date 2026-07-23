@@ -172,12 +172,33 @@ test('v0.4 schema accepts all three policy labels but no longer rejects legacy C
 
 test('v0.4 schema validates relative locators and root-relocation review-claim history', () => {
   const loop = minimalValid();
+  const frozenClaim = {
+    run_id: 'R',
+    reviewer_id: 'deep-review',
+    checker_episode_id: '002-checker',
+    target_maker: '001-maker',
+    attempt_id: 'attempt-1',
+    workstream_id: 'ws-1',
+    point: 'implementation',
+    project_root: '/old/root',
+    runtime: 'codex',
+    lease_owner: 'R',
+    lease_generation: 1,
+    artifacts: [{ path: '.claude/worktrees/ws/artifact.txt', sha256: 'a'.repeat(64) }],
+    evidence: {
+      insights_path: '.deep-loop/insights/01TEST-insights.json', emit_ulid: '01TEST',
+      producer_run_id: 'R', sha256: 'b'.repeat(64), candidates: [],
+    },
+    contract: {
+      slice: 'HILLCLIMB-001', path: '.claude/worktrees/ws/.deep-review/contracts/HILLCLIMB-001.yaml',
+      sha256: 'c'.repeat(64),
+    },
+    invalidated_at: '2026-07-23T00:00:00.000Z',
+    reason: 'project-root-relocated',
+  };
   loop.episodes = [{
     id: '001-maker', status: 'pending', request_rel: 'episodes/001-maker/request.md',
-    invalidated_review_claims: [{
-      run_id: 'R', project_root: '/old/root', invalidated_at: '2026-07-23T00:00:00.000Z',
-      reason: 'project-root-relocated',
-    }],
+    invalidated_review_claims: [frozenClaim],
   }];
   loop.session_chain.sessions = [{ run_id: 'R', handoff_rel: 'handoffs/next.md', scope: { ...OPEN_WORKSTREAM_SCOPE } }];
   assert.equal(validate(loop).ok, true, validate(loop).errors.join('; '));
@@ -193,6 +214,44 @@ test('v0.4 schema validates relative locators and root-relocation review-claim h
   ]) {
     const candidate = structuredClone(loop);
     mutate(candidate);
+    assert.equal(validate(candidate).ok, false, label);
+  }
+
+  const requiredClaimKeys = [
+    'run_id', 'reviewer_id', 'checker_episode_id', 'target_maker', 'attempt_id',
+    'workstream_id', 'point', 'project_root', 'runtime', 'lease_owner',
+    'lease_generation', 'artifacts', 'invalidated_at', 'reason',
+  ];
+  const malformedClaims = requiredClaimKeys.map(key => [
+    `missing ${key}`,
+    claim => { delete claim[key]; },
+  ]);
+  malformedClaims.push(
+    ['arbitrary frozen object', (_claim, episode) => { episode.invalidated_review_claims[0] = { run_id: 'R', invalidated_at: '2026-07-23T00:00:00.000Z', reason: 'project-root-relocated' }; }],
+    ['extra claim field', claim => { claim.extra = true; }],
+    ['unsupported reviewer', claim => { claim.reviewer_id = 'standalone'; }],
+    ['unsafe attempt id', claim => { claim.attempt_id = '../attempt'; }],
+    ['relative project root', claim => { claim.project_root = 'old/root'; }],
+    ['invalid runtime', claim => { claim.runtime = 'other'; }],
+    ['invalid lease generation', claim => { claim.lease_generation = 0; }],
+    ['artifact extra field', claim => { claim.artifacts[0].extra = true; }],
+    ['artifact unsafe path', claim => { claim.artifacts[0].path = '../artifact'; }],
+    ['artifact invalid hash', claim => { claim.artifacts[0].sha256 = 'A'.repeat(64); }],
+    ['duplicate artifact', claim => { claim.artifacts.push({ ...claim.artifacts[0] }); }],
+    ['evidence missing producer', claim => { delete claim.evidence.producer_run_id; }],
+    ['evidence extra field', claim => { claim.evidence.extra = true; }],
+    ['evidence unsafe path', claim => { claim.evidence.insights_path = '../insights.json'; }],
+    ['evidence invalid hash', claim => { claim.evidence.sha256 = 'bad'; }],
+    ['evidence invalid candidates', claim => { claim.evidence.candidates = {}; }],
+    ['contract missing slice', claim => { delete claim.contract.slice; }],
+    ['contract extra field', claim => { claim.contract.extra = true; }],
+    ['contract unsafe path', claim => { claim.contract.path = '../contract.yaml'; }],
+    ['contract invalid hash', claim => { claim.contract.sha256 = 'bad'; }],
+  );
+  for (const [label, mutate] of malformedClaims) {
+    const candidate = structuredClone(loop);
+    const episode = candidate.episodes[0];
+    mutate(episode.invalidated_review_claims[0], episode);
     assert.equal(validate(candidate).ok, false, label);
   }
 });

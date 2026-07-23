@@ -141,16 +141,28 @@ function safePortableRel(value, prefix) {
   return normalized !== null && normalized === value && normalized.startsWith(prefix);
 }
 
+function hasPartial040Marker(data) {
+  const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+  if (Object.hasOwn(data.project, 'binding_generation')
+    || Object.hasOwn(data.autonomy, 'attended_launch_approval')
+    || Object.hasOwn(data.session_chain.lease, 'takeover_kind')) return true;
+  if ((Array.isArray(data.episodes) ? data.episodes : []).some(ep => plain(ep)
+    && (Object.hasOwn(ep, 'request_rel') || Object.hasOwn(ep, 'invalidated_review_claims')))) return true;
+  const recoveryFields = ['recovered_from', 'recovery_kind', 'recovery_rel', 'recovery_sha256'];
+  return data.session_chain.sessions.some(session => plain(session) && (
+    Object.hasOwn(session, 'scope')
+    || recoveryFields.some(field => Object.hasOwn(session, field))
+    || (Object.hasOwn(session, 'handoff_rel') && !Object.hasOwn(session, 'handoff_path'))
+  ));
+}
+
 function migrate030To040(data) {
   const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
   if (!plain(data.project) || !plain(data.autonomy) || !plain(data.session_chain)
     || !plain(data.session_chain.lease) || !Array.isArray(data.session_chain.sessions)) return false;
   // A genuine v0.3 record cannot already contain a partial v0.4 upgrade. Treat such input as malformed
   // instead of supplying the remaining defaults and accidentally making it persistable.
-  if (Object.hasOwn(data.project, 'binding_generation')
-    || Object.hasOwn(data.autonomy, 'attended_launch_approval')
-    || Object.hasOwn(data.session_chain.lease, 'takeover_kind')
-    || data.session_chain.sessions.some(session => plain(session) && Object.hasOwn(session, 'scope'))) return false;
+  if (hasPartial040Marker(data)) return false;
   const candidate = structuredClone(data);
   candidate.project.binding_generation = 1;
   candidate.autonomy.attended_launch_approval = null;

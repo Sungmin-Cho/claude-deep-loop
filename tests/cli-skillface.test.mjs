@@ -1,10 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
+import { contentHash } from '../scripts/lib/envelope.mjs';
 
 const CLI = join(process.cwd(), 'scripts', 'deep-loop.mjs');
 function run(root, args) { return execFileSync('node', [CLI, ...args, '--project-root', root], { encoding: 'utf8' }); }
@@ -13,6 +14,23 @@ function seed() {
   const root = mkdtempSync(join(tmpdir(), 'dl-sf-'));
   const { runId } = initRun(root, { runtime: 'claude', goal: 'g', protocol: 'deep-work', now: new Date('2026-06-24T00:00:00Z') });
   return { root, runId };
+}
+function seedMigratedLegacy() {
+  const seeded = seed();
+  const dir = join(seeded.root, '.deep-loop', 'runs', seeded.runId);
+  const loopPath = join(dir, 'loop.json');
+  const loop = JSON.parse(readFileSync(loopPath, 'utf8'));
+  loop.schema_version = '0.3.0';
+  delete loop.project.binding_generation;
+  delete loop.autonomy.attended_launch_approval;
+  delete loop.session_chain.lease.takeover_kind;
+  for (const session of loop.session_chain.sessions) delete session.scope;
+  loop.autonomy.continuation_policy = 'rotate-per-unit';
+  loop.autonomy.milestone_predicate = ['workstream_status_change'];
+  const raw = JSON.stringify(loop, null, 2);
+  writeFileSync(loopPath, raw);
+  writeFileSync(join(dir, '.loop.hash'), contentHash(raw));
+  return seeded;
 }
 
 // Codex r1 should-fix-2: spec §6 의 4-verb 계약을 CLI 가 노출해야 한다 (dispatch 만 X).
@@ -122,8 +140,8 @@ test('budget check is read-only and reports ok', () => {
 });
 
 // Codex r3 critical-1: budget record 가 세션 turns 를 증가시켜 per_session_turn_cap 마일스톤을 실제로 구동.
-test('budget record drives per_session_turn_cap → unattended next-action handoff', () => {
-  const { root, runId } = seed();
+test('budget record drives migrated rotate-per-unit cap → legacy unattended handoff', () => {
+  const { root, runId } = seedMigratedLegacy();
   run(root, ['budget', 'record', '--turns', '40', '--owner', runId, '--generation', '1']);   // == per_session_turn_cap(40)
   const na = JSON.parse(run(root, ['next-action', '--json', '--now', '2026-06-24T00:00:01Z', '--unattended']));
   assert.equal(na.action.type, 'handoff');

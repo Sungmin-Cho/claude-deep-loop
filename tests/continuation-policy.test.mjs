@@ -31,9 +31,9 @@ function runCli(args, { env = {} } = {}) {
   delete childEnv.CLAUDE_CODE_ENTRYPOINT;
   return spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8', env: { ...childEnv, ...env } });
 }
-function cappedClaude(root, { spawnStyle = 'interactive', legacyCompact = false } = {}) {
+function cappedLegacyClaude(root, { spawnStyle = 'interactive' } = {}) {
   const { runId } = initClaude(root);
-  if (legacyCompact) persistLegacyFixture(root, runId, { version: '0.3.0', phase: 'acquired', withEpisode: false });
+  persistLegacyFixture(root, runId, { version: '0.3.0', phase: 'acquired', withEpisode: false });
   const { data } = readState(root, runId);
   data.autonomy.spawn_style = spawnStyle;
   data.session_chain.sessions[0].turns = data.budget.per_session_turn_cap;
@@ -313,21 +313,61 @@ test('migration: invalid 0.3.0 state is not healed and cannot be persisted', () 
   assert.equal(readFileSync(p, 'utf8'), raw);
 });
 
-test('migration: a partial v0.4 field on v0.3 is not completed into a valid state', () => {
-  const root = freshRoot();
-  const { runId } = initClaude(root);
-  const fixture = persistLegacyFixture(root, runId, { version: '0.3.0', withEpisode: false });
-  const partial = JSON.parse(fixture.raw);
-  partial.project.binding_generation = 9;
-  const raw = JSON.stringify(partial, null, 2);
-  writeFileSync(fixture.loopPath, raw);
-  writeFileSync(join(fixture.dir, '.loop.hash'), contentHash(raw));
+test('migration: every partial v0.4 marker on v0.3 is rejected without changing source bytes', () => {
+  const markers = [
+    ['project.binding_generation', loop => { loop.project.binding_generation = 9; }],
+    ['autonomy.attended_launch_approval', loop => { loop.autonomy.attended_launch_approval = null; }],
+    ['session_chain.lease.takeover_kind', loop => { loop.session_chain.lease.takeover_kind = null; }],
+    ['episodes[].request_rel', loop => {
+      delete loop.episodes[0].request_path;
+      loop.episodes[0].request_rel = 'episodes/001-maker/request.md';
+    }],
+    ['episodes[].invalidated_review_claims', loop => { loop.episodes[0].invalidated_review_claims = []; }],
+    ['sessions[].scope', loop => {
+      loop.session_chain.sessions[0].scope = {
+        kind: 'workstream', workstream_id: null, bound_at_seq: null, terminal_event: null,
+        closed_at: null, superseded_at: null,
+      };
+    }],
+    ['sessions[].handoff_rel without its authentic v0.3 handoff_path', loop => {
+      delete loop.session_chain.sessions.at(-1).handoff_path;
+    }],
+    ['sessions[].recovered_from', loop => { loop.session_chain.sessions[0].recovered_from = 'OLD'; }],
+    ['sessions[].recovery_kind', loop => { loop.session_chain.sessions[0].recovery_kind = 'boundary-recovery'; }],
+    ['sessions[].recovery_rel', loop => { loop.session_chain.sessions[0].recovery_rel = 'recoveries/r.json'; }],
+    ['sessions[].recovery_sha256', loop => { loop.session_chain.sessions[0].recovery_sha256 = 'a'.repeat(64); }],
+    ['scope.supersede_reason', loop => {
+      loop.session_chain.sessions[0].scope = {
+        kind: 'workstream', workstream_id: 'ws', bound_at_seq: 1, terminal_event: null,
+        closed_at: null, superseded_at: NOW.toISOString(), supersede_reason: 'boundary-recovery',
+      };
+    }],
+    ['scope.superseded_by', loop => {
+      loop.session_chain.sessions[0].scope = {
+        kind: 'workstream', workstream_id: 'ws', bound_at_seq: 1, terminal_event: null,
+        closed_at: null, superseded_at: NOW.toISOString(), superseded_by: 'NEXT',
+      };
+    }],
+  ];
 
-  const { data } = readState(root, runId);
-  assert.equal(data.schema_version, '0.3.0');
-  assert.equal(data.autonomy.attended_launch_approval, undefined);
-  assert.throws(() => writeState(root, runId, data), /SCHEMA_INVALID/);
-  assert.equal(readFileSync(fixture.loopPath, 'utf8'), raw);
+  for (const [label, mutate] of markers) {
+    const root = freshRoot();
+    const { runId } = initClaude(root);
+    const fixture = persistLegacyFixture(root, runId, { version: '0.3.0', phase: 'emitted' });
+    const partial = JSON.parse(fixture.raw);
+    mutate(partial);
+    const raw = JSON.stringify(partial, null, 2);
+    const hash = contentHash(raw);
+    const hashPath = join(fixture.dir, '.loop.hash');
+    writeFileSync(fixture.loopPath, raw);
+    writeFileSync(hashPath, hash);
+
+    const { data } = readState(root, runId);
+    assert.equal(data.schema_version, '0.3.0', label);
+    assert.throws(() => writeState(root, runId, data), /SCHEMA_INVALID/, label);
+    assert.equal(readFileSync(fixture.loopPath, 'utf8'), raw, `${label}: loop bytes`);
+    assert.equal(readFileSync(hashPath, 'utf8'), hash, `${label}: hash bytes`);
+  }
 });
 
 test('schema: continuation state fields enforce their exact types', () => {
@@ -421,9 +461,9 @@ test('CLI init-run: value-less --continuation is usage exit 2', () => {
   assert.match(result.stderr, /USAGE: --continuation <workstream-session>/);
 });
 
-test('CLI next-action: --unattended derives handoff at the cap', () => {
+test('CLI next-action: migrated compact-in-place --unattended derives legacy handoff at the cap', () => {
   const root = freshRoot();
-  const runId = cappedClaude(root);
+  const runId = cappedLegacyClaude(root);
   const result = runCli(['next-action', '--project-root', root, '--run-id', runId, '--now', NOW.toISOString(), '--unattended']);
   assert.equal(result.status, 0, result.stderr);
   const action = JSON.parse(result.stdout).action;
@@ -431,9 +471,9 @@ test('CLI next-action: --unattended derives handoff at the cap', () => {
   assert.equal(action.reason, 'per_session_turn_cap');
 });
 
-test('CLI next-action: durable headless spawn style derives handoff without env markers', () => {
+test('CLI next-action: migrated compact-in-place headless style derives legacy handoff without env markers', () => {
   const root = freshRoot();
-  const runId = cappedClaude(root, { spawnStyle: 'headless' });
+  const runId = cappedLegacyClaude(root, { spawnStyle: 'headless' });
   const result = runCli(['next-action', '--project-root', root, '--run-id', runId, '--now', NOW.toISOString()]);
   assert.equal(result.status, 0, result.stderr);
   const action = JSON.parse(result.stdout).action;
@@ -441,9 +481,9 @@ test('CLI next-action: durable headless spawn style derives handoff without env 
   assert.equal(action.reason, 'per_session_turn_cap');
 });
 
-test('CLI next-action: DEEP_LOOP_UNATTENDED env marker derives handoff', () => {
+test('CLI next-action: migrated compact-in-place honors the DEEP_LOOP_UNATTENDED marker', () => {
   const root = freshRoot();
-  const runId = cappedClaude(root);
+  const runId = cappedLegacyClaude(root);
   const result = runCli(
     ['next-action', '--project-root', root, '--run-id', runId, '--now', NOW.toISOString()],
     { env: { DEEP_LOOP_UNATTENDED: '1' } },
@@ -456,7 +496,7 @@ test('CLI next-action: DEEP_LOOP_UNATTENDED env marker derives handoff', () => {
 
 test('CLI next-action: attended compact-in-place returns real action with cap advice', () => {
   const root = freshRoot();
-  const runId = cappedClaude(root, { legacyCompact: true });
+  const runId = cappedLegacyClaude(root);
   const result = runCli(['next-action', '--project-root', root, '--run-id', runId, '--now', NOW.toISOString()]);
   assert.equal(result.status, 0, result.stderr);
   const action = JSON.parse(result.stdout).action;
@@ -465,9 +505,10 @@ test('CLI next-action: attended compact-in-place returns real action with cap ad
   assert.equal(action.advice_reason, 'per_session_turn_cap');
 });
 
-test('milestone cursor: terminal transition records identity; emit consumes it; child does not re-emit', () => {
+test('legacy milestone cursor: terminal transition records identity; emit consumes it; child does not re-emit', () => {
   const root = freshRoot();
   const { runId } = initClaude(root);
+  persistLegacyFixture(root, runId, { version: '0.3.0', withEpisode: false });
   const fence = { owner: runId, generation: 1 };
   const { id: wsId } = newWorkstream(root, runId, {
     title: 'cursor test', branch: 'test/cursor', worktree: '.claude/worktrees/cursor-test', fence,
@@ -509,9 +550,10 @@ test('milestone cursor: terminal transition records identity; emit consumes it; 
   assert.deepEqual(nextAction(afterNextTerminal, { now: NOW }).gate.unconsumed_milestones, [nextEvent]);
 });
 
-test('milestone cursor: pre-compact handoff consumes terminal transition before milestone trigger', () => {
+test('legacy milestone cursor: pre-compact handoff consumes terminal transition before milestone trigger', () => {
   const root = freshRoot();
   const { runId } = initClaude(root);
+  persistLegacyFixture(root, runId, { version: '0.3.0', withEpisode: false });
   const fence = { owner: runId, generation: 1 };
   const { id: wsId } = newWorkstream(root, runId, {
     title: 'precompact cursor', branch: 'test/precompact-cursor', worktree: '.claude/worktrees/precompact-cursor', fence,
@@ -536,9 +578,10 @@ test('milestone cursor: pre-compact handoff consumes terminal transition before 
   assert.deepEqual(nextAction(readState(root, runId).data, { now: NOW }).gate.unconsumed_milestones, []);
 });
 
-test('milestone cursor: ready then merged preserves and consumes both terminal identities', () => {
+test('legacy milestone cursor: ready then merged preserves and consumes both terminal identities', () => {
   const root = freshRoot();
   const { runId } = initClaude(root);
+  persistLegacyFixture(root, runId, { version: '0.3.0', withEpisode: false });
   const fence = { owner: runId, generation: 1 };
   const { id: wsId } = newWorkstream(root, runId, {
     title: 'ready merged cursor', branch: 'test/ready-merged', worktree: '.claude/worktrees/ready-merged', fence,
@@ -566,9 +609,10 @@ test('milestone cursor: ready then merged preserves and consumes both terminal i
   assert.deepEqual(readState(root, runId).data.session_chain.consumed_milestones, terminalEvents);
 });
 
-test('CLI handoff emit without milestone flag consumes derived terminal identities', () => {
+test('legacy CLI handoff emit without milestone flag consumes derived terminal identities', () => {
   const root = freshRoot();
   const { runId } = initClaude(root);
+  persistLegacyFixture(root, runId, { version: '0.3.0', withEpisode: false });
   const fence = { owner: runId, generation: 1 };
   const { id: wsId } = newWorkstream(root, runId, {
     title: 'cli cursor', branch: 'test/cli-cursor', worktree: '.claude/worktrees/cli-cursor', fence,
