@@ -49,7 +49,7 @@ function createEpisode(root, runId, { plugin, role, kind, point, workstream = nu
   for (const a of expectedArtifacts) {
     if (isAbsolute(a) || a.split(/[/\\]/).includes('..')) throw new Error('EPISODE_ARTIFACT_UNSAFE: ' + a);
   }
-  let id, requestPath, dir;
+  let id, requestPath, requestRel, dir;
   const safePlugin = slugify(plugin) || 'plugin';
   appendAnchored(root, runId, { type: 'episode-new', data: {
     plugin, role, kind, point,
@@ -59,10 +59,11 @@ function createEpisode(root, runId, { plugin, role, kind, point, workstream = nu
     const n = String(loop.episodes.length + 1).padStart(3, '0');
     id = `${n}-${safePlugin}`;
     dir = join(runDir(root, runId), 'episodes', id);
+    requestRel = `episodes/${id}/request.md`;
     requestPath = join(dir, 'request.md');
     const epObj = {
       id, plugin, role, kind, point, workstream_id: workstream, status: initialStatus,
-      request_path: requestPath, expected_artifacts: expectedArtifacts,
+      request_rel: requestRel, expected_artifacts: expectedArtifacts,
       verification: { checker_episode_required: role === 'maker', checker_plugin: 'deep-review', review_point: point, proof_required: expectedArtifacts },
     };
     if (targetMaker && typeof targetMaker === 'string' && targetMaker.length) epObj.target_maker = targetMaker;
@@ -95,7 +96,7 @@ function createEpisode(root, runId, { plugin, role, kind, point, workstream = nu
   if (full !== base && !full.startsWith(base + sep)) throw new Error('EPISODE_PATH_ESCAPE: ' + id);
   mkdirSync(dir, { recursive: true });
   atomicWrite(requestPath, requestSkeleton({ id, plugin, role, kind, point, workstream, expectedArtifacts, evidence }));
-  return { id, requestPath };
+  return { id, requestPath, requestRel };
 }
 
 export function newEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker, reviewerResolution, evidence, contract, fence } = {}) {

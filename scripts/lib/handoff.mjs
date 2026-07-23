@@ -13,6 +13,7 @@ import { canonicalProjectRoot } from './project-root.mjs';
 import { buildRuntimeResumeDescriptor } from './runtime-descriptor.mjs';
 import { validateRuntimeProfile } from './session-profile.mjs';
 import { resolveSpawnMode } from './respawn.mjs';
+import { normalizePortableRelativePath } from './fs-safe.mjs';
 
 export { buildLaunchCommand } from './runtime-descriptor.mjs';
 
@@ -53,10 +54,15 @@ function cleanupChildTemps(dir, childRunId, remove = rmSync) {
 function idempotentResult(root, runId, childRunId, key) {
   const { data } = captureReconciledRunSnapshot(root, runId);
   const child = data.session_chain.sessions.find(session => session.run_id === childRunId);
+  const handoffRel = child?.handoff_rel ?? null;
+  const normalized = normalizePortableRelativePath(handoffRel);
+  const handoffPath = normalized === handoffRel && normalized?.startsWith('handoffs/')
+    ? join(runDir(root, runId), ...normalized.split('/'))
+    : null;
   return {
     ok: true, idempotent: true, reason: 'already-emitted', childRunId, key,
-    handoffRel: child?.handoff_rel ?? null,
-    handoffPath: child?.handoff_path ?? null,
+    handoffRel,
+    handoffPath,
     csName: child?.handoff_cs ?? null,
     mdName: child?.handoff_md ?? null,
   };
@@ -304,8 +310,11 @@ export function emitHandoff(root, runId, {
   };
   try {
     appendAnchored(canonicalRoot, runId, { type: 'handoff-emitted', data: { child_run_id: childRunId, reason, key: res.key } }, (l) => {
+      const scope = l.autonomy?.continuation_policy === 'workstream-session'
+        ? { kind: 'workstream', workstream_id: null, bound_at_seq: null, terminal_event: null, closed_at: null, superseded_at: null }
+        : { kind: 'legacy', workstream_id: null, bound_at_seq: null, terminal_event: null, closed_at: null };
       l.session_chain.sessions.push({ run_id: childRunId, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: null,
-        handoff_rel: handoffRel, handoff_path: handoffPath, handoff_md: mdName, handoff_cs: csName });
+        handoff_rel: handoffRel, handoff_md: mdName, handoff_cs: csName, scope });
       const cur = l.session_chain.sessions.find(s => s.run_id === expect.owner);
       if (cur) cur.superseded_by = childRunId;
       const lease = l.session_chain.lease;

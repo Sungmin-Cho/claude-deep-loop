@@ -18,6 +18,7 @@ import {
   canonicalNonSymlinkDirectory,
   captureStableFileIdentity,
   matchingStableFileIdentity,
+  normalizePortableRelativePath,
 } from './fs-safe.mjs';
 import { validate } from './schema.mjs';
 import { leaseCheck } from './lease.mjs';
@@ -102,15 +103,10 @@ export function classifyPatch(field, value) {
   return 'forbid';
 }
 
-// v1.10 마이그레이션 — hash 검증 직후 in-memory 전용 (디스크·.loop.hash는 첫 writeState까지 불변).
+// Hash 검증 직후 in-memory 전용 (디스크·.loop.hash는 첫 writeState까지 불변).
 // 일반 read/root-recovery/rebind-validate 세 경로 전부 이 리더를 지나므로 여기가 유일 진입점 (스펙 §7).
-// 결정적·내용 기반(주입 시계 불필요). 반환 data(0.3.0)와 반환 hash(디스크 0.2.0)는 content-hash 등가가 아니다.
-function migrateLoopStateInPlace(data) {
-  if (!data || typeof data !== 'object') return;
-  // 마이그레이션은 **0.2.0 레거시에만** 적용한다 — 버전 무관 기본값 주입은 필드가 결손된 불량 0.3.0
-  // 상태를 몰래 치유해 SCHEMA_INVALID 대신 유효로 읽히게 만든다(다음 mutation이 치유본을 지속화).
-  // 0.3.0/미지 버전은 무접촉 → validate가 정상적으로 거부한다.
-  if (data.schema_version !== '0.2.0') return;
+// 결정적·내용 기반(주입 시계 불필요). 반환 data와 반환 hash(디스크 legacy bytes)는 content-hash 등가가 아니다.
+function migrate020To030(data) {
   data.schema_version = '0.3.0';
   if (data.autonomy && data.autonomy.continuation_policy === undefined) {
     data.autonomy.continuation_policy = 'rotate-per-unit';
@@ -120,6 +116,89 @@ function migrateLoopStateInPlace(data) {
     if (data.session_chain.lease && data.session_chain.lease.handoff_trigger === undefined) {
       data.session_chain.lease.handoff_trigger = null;
     }
+  }
+}
+
+function portablePathApi(storedRoot) {
+  if (typeof storedRoot === 'string' && path.win32.isAbsolute(storedRoot) && !path.posix.isAbsolute(storedRoot)) {
+    return path.win32;
+  }
+  return path.posix;
+}
+
+function expectedLegacyAbsolute(data, rel) {
+  const storedRoot = data.project?.root;
+  const pathApi = portablePathApi(storedRoot);
+  if (typeof storedRoot !== 'string' || !pathApi.isAbsolute(storedRoot)
+    || typeof data.run_id !== 'string' || data.run_id.length === 0) {
+    throw new Error('PROJECT_LOCATOR_UNSAFE: invalid stored project/run identity');
+  }
+  return pathApi.join(storedRoot, '.deep-loop', 'runs', data.run_id, ...rel.split('/'));
+}
+
+function safePortableRel(value, prefix) {
+  const normalized = normalizePortableRelativePath(value);
+  return normalized !== null && normalized === value && normalized.startsWith(prefix);
+}
+
+function migrate030To040(data) {
+  const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+  if (!plain(data.project) || !plain(data.autonomy) || !plain(data.session_chain)
+    || !plain(data.session_chain.lease) || !Array.isArray(data.session_chain.sessions)) return false;
+  // A genuine v0.3 record cannot already contain a partial v0.4 upgrade. Treat such input as malformed
+  // instead of supplying the remaining defaults and accidentally making it persistable.
+  if (Object.hasOwn(data.project, 'binding_generation')
+    || Object.hasOwn(data.autonomy, 'attended_launch_approval')
+    || Object.hasOwn(data.session_chain.lease, 'takeover_kind')
+    || data.session_chain.sessions.some(session => plain(session) && Object.hasOwn(session, 'scope'))) return false;
+  const candidate = structuredClone(data);
+  candidate.project.binding_generation = 1;
+  candidate.autonomy.attended_launch_approval = null;
+  candidate.session_chain.lease.takeover_kind = null;
+
+  for (const ep of (Array.isArray(candidate.episodes) ? candidate.episodes : [])) {
+    if (!Object.hasOwn(ep, 'request_path')) continue;
+    const requestRel = `episodes/${ep.id}/request.md`;
+    if (typeof ep.id !== 'string' || ep.id.length === 0
+      || ep.request_path !== expectedLegacyAbsolute(candidate, requestRel)
+      || (ep.request_rel !== undefined && ep.request_rel !== requestRel)) {
+      throw new Error(`PROJECT_LOCATOR_UNSAFE: episode ${ep.id ?? '(unknown)'} request_path`);
+    }
+    ep.request_rel = requestRel;
+    delete ep.request_path;
+  }
+
+  for (const session of (Array.isArray(candidate.session_chain.sessions) ? candidate.session_chain.sessions : [])) {
+    if (Object.hasOwn(session, 'handoff_path')) {
+      if (!safePortableRel(session.handoff_rel, 'handoffs/')
+        || session.handoff_path !== expectedLegacyAbsolute(candidate, session.handoff_rel)) {
+        throw new Error(`PROJECT_LOCATOR_UNSAFE: session ${session.run_id ?? '(unknown)'} handoff_path`);
+      }
+      delete session.handoff_path;
+    }
+    if (!Object.hasOwn(session, 'scope')) {
+      session.scope = {
+        kind: 'legacy', workstream_id: null, bound_at_seq: null, terminal_event: null,
+        closed_at: session.ended_at ?? null,
+      };
+    }
+  }
+  candidate.schema_version = '0.4.0';
+
+  // Validate the complete candidate before touching the source object. This is the anti-self-healing gate:
+  // a malformed v0.3 record remains v0.3 and cannot become persistable merely because v0.4 defaults exist.
+  const checked = validate(candidate);
+  if (!checked.ok) return false;
+  for (const key of Object.keys(data)) delete data[key];
+  Object.assign(data, candidate);
+  return true;
+}
+
+function migrateLoopStateInPlace(data) {
+  if (!data || typeof data !== 'object') return;
+  while (data.schema_version === '0.2.0' || data.schema_version === '0.3.0') {
+    if (data.schema_version === '0.2.0') migrate020To030(data);
+    else if (!migrate030To040(data)) break;
   }
 }
 

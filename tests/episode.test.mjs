@@ -26,6 +26,9 @@ test('newEpisode scaffolds request.md, bumps episodes_total, sets current', () =
   assert.equal(data.comprehension.episodes_total, 1);
   assert.equal(data.current_episode, id);
   assert.equal(data.episodes[0].status, 'pending');
+  assert.equal(data.episodes[0].request_rel, `episodes/${id}/request.md`);
+  assert.equal(Object.hasOwn(data.episodes[0], 'request_path'), false);
+  assert.equal(requestPath, join(runDir(root, runId), data.episodes[0].request_rel));
   assert.equal(data.episodes[0].verification.checker_episode_required, true);
 });
 

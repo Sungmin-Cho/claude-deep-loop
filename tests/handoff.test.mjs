@@ -426,7 +426,15 @@ test('emitHandoff writes md + compaction-state(M3) + launch-command, chains sess
   assert.equal(data.session_chain.lease.state, 'releasing');
   const cur = data.session_chain.sessions.find(s => s.run_id === runId);
   assert.equal(cur.superseded_by, r.childRunId);
-  assert.ok(data.session_chain.sessions.some(s => s.run_id === r.childRunId));
+  const child = data.session_chain.sessions.find(s => s.run_id === r.childRunId);
+  assert.ok(child);
+  assert.equal(child.handoff_rel, r.handoffRel);
+  assert.equal(Object.hasOwn(child, 'handoff_path'), false);
+  assert.equal(r.handoffPath, join(runDir(data.project.root, runId), child.handoff_rel));
+  assert.deepEqual(child.scope, {
+    kind: 'workstream', workstream_id: null, bound_at_seq: null, terminal_event: null,
+    closed_at: null, superseded_at: null,
+  });
   const md = readFileSync(r.handoffPath, 'utf8');
   assert.match(md, /이전 대화/);
   assert.match(md, /\/deep-loop-resume/);
@@ -1105,9 +1113,9 @@ test('emitHandoff: Windows desktop artifact uses durable PowerShell approval wit
   assert.ok(!/claude:\/\//.test(txt), 'raw desktop URL remains machine-only');
 });
 
-test('emitHandoff: non-desktop spawn_style (default visible) never invokes desktopProbe', () => {
+test('emitHandoff: non-desktop spawn_style (default interactive) never invokes desktopProbe', () => {
   const { root, runId } = seed();   // seed()'s initRun leaves autonomy.spawn_style at its default ('visible')
-  assert.equal(readState(root, runId).data.autonomy.spawn_style, 'visible');
+  assert.equal(readState(root, runId).data.autonomy.spawn_style, 'interactive');
   const now = Date.parse('2026-06-24T01:00:00Z');
   let called = false;
   const desktopProbe = () => { called = true; throw new Error('desktopProbe must not be called for non-desktop runs'); };

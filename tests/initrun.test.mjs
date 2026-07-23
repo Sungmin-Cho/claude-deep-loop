@@ -12,9 +12,21 @@ const noSignalEnv = {};
 const noSignalPlatform = 'linux';
 const noOpRun = () => ({ code: 1 });
 
-test('buildInitialLoop autonomy defaults — spawn_style visible, new fields', () => {
+const OPEN_WORKSTREAM_SCOPE = {
+  kind: 'workstream', workstream_id: null, bound_at_seq: null, terminal_event: null,
+  closed_at: null, superseded_at: null,
+};
+
+test('buildInitialLoop autonomy defaults — interactive workstream session with a root epoch', () => {
   const loop = buildInitialLoop({ runtime: 'claude', runId: 'r2', goal: 'g', recipe: {}, now: new Date('2026-06-27T00:00:00Z'), env: noSignalEnv, platform: noSignalPlatform, run: noOpRun });
-  assert.equal(loop.autonomy.spawn_style, 'visible');
+  assert.equal(loop.schema_version, '0.4.0');
+  assert.equal(loop.project.binding_generation, 1);
+  assert.equal(loop.autonomy.spawn_style, 'interactive');
+  assert.equal(loop.autonomy.continuation_policy, 'workstream-session');
+  assert.deepEqual(loop.autonomy.milestone_predicate, ['bound_workstream_first_terminal']);
+  assert.equal(loop.autonomy.attended_launch_approval, null);
+  assert.equal(loop.session_chain.lease.takeover_kind, null);
+  assert.deepEqual(loop.session_chain.sessions[0].scope, OPEN_WORKSTREAM_SCOPE);
   assert.ok(!loop.autonomy.unattended_detect.includes('non-tty'), `unattended_detect must not include 'non-tty': ${JSON.stringify(loop.autonomy.unattended_detect)}`);
   assert.ok(loop.autonomy.unattended_detect.includes('headless-invocation'), `unattended_detect must include 'headless-invocation': ${JSON.stringify(loop.autonomy.unattended_detect)}`);
   assert.equal(loop.autonomy.child_ready_timeout_sec, 75);
@@ -30,6 +42,9 @@ test('buildInitialLoop records explicit claude and codex runtime', () => {
     const loop = buildInitialLoop({ runtime, runId: `runtime-${runtime}`, goal: 'g', recipe: {}, now: new Date('2026-06-27T00:00:00Z'), env: noSignalEnv, platform: noSignalPlatform, run: noOpRun });
     assert.equal(loop.autonomy.session_runtime, runtime);
     assert.equal(loop.autonomy.runtime_source, 'skill-asserted');
+    assert.equal(loop.autonomy.continuation_policy, 'workstream-session');
+    assert.equal(loop.autonomy.spawn_style, 'interactive');
+    assert.deepEqual(loop.session_chain.sessions[0].scope, OPEN_WORKSTREAM_SCOPE);
   }
 });
 

@@ -79,6 +79,15 @@ function flagOccurrences(argv, name) {
   return argv.filter(token => token === flag || token.startsWith(`${flag}=`)).length;
 }
 
+function parseBoundaryEventFlag(value) {
+  if (value === true) return { ok: false, usage: true };
+  const match = /^([1-9]\d*):([0-9a-f]{64})$/.exec(String(value));
+  if (!match) return { ok: false, usage: false };
+  const seq = Number(match[1]);
+  if (!Number.isSafeInteger(seq)) return { ok: false, usage: false };
+  return { ok: true, value: { seq, checksum: match[2] } };
+}
+
 // --now 관례(v1.5.0, spec §4): 미지정 → Date.now() 폴백. 지정 시 화이트리스트 — ① 순수 정수(epoch ms)
 // ② ISO-8601: date-only(YYYY-MM-DD, UTC 자정 해석) 또는 tz 지정자 필수 datetime(YYYY-MM-DDTHH:mm[:ss[.sss]](Z|±HH:MM)).
 // 그 외 전부 INVALID_NOW exit 1 (dispatcher 말미의 좁은 catch가 변환; 불변식 #2: 1 = invalid value).
@@ -364,7 +373,7 @@ const handlers = {
     const runtime = reqStr(f, 'runtime');
     if (!runtime) { error('USAGE: --runtime <claude|codex> is required'); return 2; }
     if (f.model === true || f.effort === true) { error('USAGE: --model/--effort require a value'); return 2; }
-    if (f.continuation === true) { error('USAGE: --continuation <compact-in-place|rotate-per-unit>'); return 2; }
+    if (f.continuation === true) { error('USAGE: --continuation <workstream-session>'); return 2; }
     const model = f.model !== undefined ? String(f.model) : null;
     const effort = f.effort !== undefined ? String(f.effort) : null;
     try {
@@ -523,7 +532,7 @@ const handlers = {
       const role = reqStr(f, 'role'); if (!role) { error('MISSING_ROLE'); return 2; }
       const kind = reqStr(f, 'kind'); if (!kind) { error('MISSING_KIND'); return 2; }
       const point = reqStr(f, 'point'); if (!point) { error('MISSING_POINT'); return 2; }
-      const r = newEpisode(root, runId, { plugin, role, kind, point, workstream: f.workstream, expectedArtifacts: f.artifacts ? JSON.parse(f.artifacts) : [], fence }); json({ id: r.id, request_path: r.requestPath }); return 0;
+      const r = newEpisode(root, runId, { plugin, role, kind, point, workstream: f.workstream, expectedArtifacts: f.artifacts ? JSON.parse(f.artifacts) : [], fence }); json({ id: r.id, request_rel: r.requestRel, request_path: r.requestPath }); return 0;
     }
     if (verb === 'record') {
       const id = reqStr(f, 'id'); if (!id) { error('MISSING_ID'); return 2; }
@@ -598,10 +607,21 @@ const handlers = {
     const data = requireLease(root, runId, f, 'lease');
     const expect = { owner: f.owner, generation: intArg(f, 'generation') };
     if (verb === 'emit') {
+      let boundaryEvent;
+      if (Object.hasOwn(f, 'boundary-event')) {
+        const parsed = parseBoundaryEventFlag(f['boundary-event']);
+        if (!parsed.ok) {
+          error(parsed.usage
+            ? 'USAGE: --boundary-event <seq>:<64-lowercase-hex-checksum>'
+            : 'BOUNDARY_EVENT_INVALID: expected positive base10 seq without leading zero plus lowercase checksum');
+          return parsed.usage ? 2 : 1;
+        }
+        boundaryEvent = parsed.value;
+      }
       const h = f.headless === true || f.headless === 'true';
       // v1.6 (spec §2.3-2 CLI 매핑): 기존 RUN_PAUSED/HANDOFF_KEY_MISMATCH throw의 uncaught stack 해소 —
       // respawn/pause/recover 핸들러와 동일 패턴. RUN_TERMINAL은 보상 롤백 후 반환 계약(JSON ok:false)이라 여기 안 걸린다.
-      try { json(emitHandoff(root, runId, { reason: f.reason, trigger: f.trigger || f.reason || 'milestone', headless: h, expect, env: process.env })); return 0; }
+      try { json(emitHandoff(root, runId, { reason: f.reason, trigger: f.trigger || f.reason || 'milestone', boundaryEvent, headless: h, expect, env: process.env })); return 0; }
       catch (e) { const m = String(e?.message || e); if (m.startsWith('LEASE_FENCED')) { error(m); return 3; } error(m); return 1; }
     }
     error(`unknown handoff verb: ${verb}`); return 2;

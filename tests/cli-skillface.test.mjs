@@ -139,6 +139,54 @@ test('episode new --artifacts then record done (the skill flow)', () => {
   assert.equal(JSON.parse(run(root, ['state', 'get', '--field', 'episodes.0.status'])), 'done');
 });
 
+test('episode new returns a derived absolute request path while durable state stores only request_rel', () => {
+  const { root, runId } = seed();
+  const ep = JSON.parse(run(root, [
+    'episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'implementation',
+    '--point', 'implementation', '--owner', runId, '--generation', '1',
+  ]));
+  assert.equal(ep.request_path, join(root, '.deep-loop', 'runs', runId, ep.request_rel));
+  const durable = JSON.parse(run(root, ['state', 'get', '--field', 'episodes.0']));
+  assert.equal(durable.request_rel, ep.request_rel);
+  assert.equal(Object.hasOwn(durable, 'request_path'), false);
+});
+
+test('init-run continuation CLI accepts only workstream-session with pinned usage/invalid exits', () => {
+  const validRoot = mkdtempSync(join(tmpdir(), 'dl-init-policy-'));
+  const valid = runBoth(validRoot, ['init-run', '--runtime', 'codex', '--goal', 'g', '--continuation', 'workstream-session']);
+  assert.equal(valid.code, 0, valid.err);
+
+  const valuelessRoot = mkdtempSync(join(tmpdir(), 'dl-init-policy-'));
+  const valueless = runBoth(valuelessRoot, ['init-run', '--runtime', 'claude', '--goal', 'g', '--continuation']);
+  assert.equal(valueless.code, 2, valueless.err);
+  assert.match(valueless.err, /USAGE: --continuation <workstream-session>/);
+
+  for (const legacy of ['compact-in-place', 'rotate-per-unit']) {
+    const root = mkdtempSync(join(tmpdir(), 'dl-init-policy-'));
+    const result = runBoth(root, ['init-run', '--runtime', 'claude', '--goal', 'g', '--continuation', legacy]);
+    assert.equal(result.code, 1, `${legacy}: ${result.err}`);
+    assert.match(result.err, /UNSUPPORTED_RUNTIME_POLICY/);
+  }
+});
+
+test('handoff boundary-event CLI spelling is strict base10 seq without leading zero plus lowercase checksum', () => {
+  for (const [value, expectedCode] of [
+    [null, 2],
+    ['0:' + 'a'.repeat(64), 1],
+    ['01:' + 'a'.repeat(64), 1],
+    ['1:' + 'A'.repeat(64), 1],
+    ['1:' + 'a'.repeat(63), 1],
+    ['1:not-a-checksum', 1],
+  ]) {
+    const { root, runId } = seed();
+    const args = ['handoff', 'emit', '--owner', runId, '--generation', '1', '--boundary-event'];
+    if (value !== null) args.push(value);
+    const result = runBoth(root, args);
+    assert.equal(result.code, expectedCode, `${value}: ${result.err}`);
+    assert.match(result.err, value === null ? /USAGE: --boundary-event/ : /BOUNDARY_EVENT_INVALID/);
+  }
+});
+
 test('comprehension status is read-only', () => {
   const { root } = seed();
   const r = JSON.parse(run(root, ['comprehension', 'status']));
