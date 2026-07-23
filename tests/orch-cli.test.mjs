@@ -244,6 +244,7 @@ function validRebindArgs({ candidateRoot, runId, storedRoot }) {
     '--actor', 'human',
     '--confirm',
     '--expected-stored-root-digest', projectRootDigest(storedRoot),
+    '--expected-binding-generation', '1',
     '--now', '2026-07-11T00:00:00Z',
   ];
 }
@@ -311,8 +312,16 @@ test('root diagnose fences resolvable copies without mutation and accepts moved 
   ]);
   assert.equal(relocated.code, 0);
   assert.deepEqual(JSON.parse(relocated.stdout), {
-    mismatch_class: 'unresolvable', rebind_allowed: true,
-    stored_root_digest: projectRootDigest(moved.storedRoot), owner: moved.runId, generation: 1,
+    action: 'rebind',
+    blocker: null,
+    topology: 'quiescent',
+    current_root_digest: projectRootDigest(moved.storedRoot),
+    current_binding_generation: 1,
+    fence: { owner: moved.runId, generation: 1 },
+    command: `root rebind --candidate-project-root "${canonicalProjectRoot(moved.candidateRoot)}" `
+      + `--run-id "${moved.runId}" --actor human --confirm `
+      + `--expected-stored-root-digest ${projectRootDigest(moved.storedRoot)} `
+      + `--expected-binding-generation 1 --owner "${moved.runId}" --generation 1`,
   });
 });
 
@@ -341,7 +350,10 @@ test('root rebind missing required flags or confirm exits 2 with usage errors', 
     return [...base.slice(0, index), ...base.slice(index + count)];
   };
 
-  for (const name of ['candidate-project-root', 'run-id', 'owner', 'generation', 'actor', 'confirm', 'expected-stored-root-digest']) {
+  for (const name of [
+    'candidate-project-root', 'run-id', 'owner', 'generation', 'actor', 'confirm',
+    'expected-stored-root-digest', 'expected-binding-generation',
+  ]) {
     const result = runResult(moved.candidateRoot, omitFlag(name));
     assert.equal(result.code, 2, name);
     assert.match(result.stderr, /(?:USAGE|REQUIRED|CONFIRM_REQUIRED)/, name);
@@ -409,7 +421,20 @@ test('root rebind CLI relocates once and restores ordinary strict state access',
   const moved = movedCliRun();
   const result = runResult(moved.candidateRoot, validRebindArgs(moved));
   assert.equal(result.code, 0);
-  assert.deepEqual(JSON.parse(result.stdout), { ok: true });
+  const rebound = JSON.parse(result.stdout);
+  assert.equal(rebound.action, 'already-rebound');
+  assert.equal(rebound.blocker, null);
+  assert.equal(rebound.topology, 'quiescent');
+  assert.equal(rebound.current_root_digest, projectRootDigest(canonicalProjectRoot(moved.candidateRoot)));
+  assert.equal(rebound.current_binding_generation, 2);
+  assert.deepEqual(rebound.fence, { owner: moved.runId, generation: 2 });
+  assert.equal(rebound.command, null);
+  assert.match(rebound.operation_id, /^[0-9a-f]{64}$/);
+  assert.equal(rebound.recovery_kind, 'none');
+  assert.equal(rebound.stale_session_id, null);
+  assert.equal(rebound.replacement_session_id, null);
+  assert.equal(rebound.event_identity.seq, 1);
+  assert.match(rebound.event_identity.checksum, /^[0-9a-f]{64}$/);
   const { data } = readState(moved.candidateRoot, moved.runId);
   assert.equal(data.project.root, canonicalProjectRoot(moved.candidateRoot));
 });

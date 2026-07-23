@@ -157,6 +157,81 @@ function parseStageJson(stage, label) {
 }
 
 function validateRecoveryPublication(manifest, stages) {
+  if (manifest.kind === 'project-root-relocation') {
+    const topologyKeys = [
+      'old_root_digest', 'new_root_digest',
+      'old_binding_generation', 'new_binding_generation',
+      'old_lease_owner', 'old_lease_generation',
+      'new_lease_owner', 'new_lease_generation',
+      'recovery_kind', 'stale_session_id', 'replacement_session_id',
+      'recovery_rel',
+    ];
+    const topology = manifest.topology;
+    if (!SHA256.test(manifest.operationId)
+      || !exactKeySet(topology, topologyKeys)
+      || !SHA256.test(topology.old_root_digest || '')
+      || !SHA256.test(topology.new_root_digest || '')
+      || !Number.isSafeInteger(topology.old_binding_generation)
+      || topology.old_binding_generation < 1
+      || topology.new_binding_generation !== topology.old_binding_generation + 1
+      || typeof topology.old_lease_owner !== 'string'
+      || topology.old_lease_owner.length === 0
+      || topology.new_lease_owner !== topology.old_lease_owner
+      || !Number.isSafeInteger(topology.old_lease_generation)
+      || topology.old_lease_generation < 1
+      || topology.new_lease_generation !== topology.old_lease_generation + 1
+      || !['none', 'boundary', 'affinity'].includes(topology.recovery_kind)
+      || manifest.eventLines.length < 1
+      || ![1, 2].includes(manifest.targets.length)) {
+      throw transactionError('root recovery publication topology');
+    }
+    const candidate = parseStageJson(
+      stages.find(stage => stage.role === 'candidate-loop'),
+      'root recovery candidate JSON',
+    );
+    const event = parseStageJson(
+      stages[manifest.eventLines[0]?.stage_index],
+      'root recovery event JSON',
+    );
+    const receiptTarget = manifest.targets.at(-1);
+    const receipt = parseStageJson(
+      stages[receiptTarget?.stage_index],
+      'root recovery receipt JSON',
+    );
+    const expectedReceiptRel = `recoveries/root-operations/${manifest.operationId}.json`;
+    if (candidate.project?.binding_generation !== topology.new_binding_generation
+      || projectRootDigest(candidate.project?.root) !== topology.new_root_digest
+      || candidate.session_chain?.lease?.owner_run_id !== topology.new_lease_owner
+      || candidate.session_chain?.lease?.generation !== topology.new_lease_generation
+      || event.type !== 'project-root-rebound'
+      || event.data?.operation_id !== manifest.operationId
+      || event.data?.old_root_digest !== topology.old_root_digest
+      || event.data?.new_root_digest !== topology.new_root_digest
+      || event.data?.old_binding_generation !== topology.old_binding_generation
+      || event.data?.new_binding_generation !== topology.new_binding_generation
+      || event.data?.recovery_kind !== topology.recovery_kind
+      || event.data?.stale_session_id !== topology.stale_session_id
+      || event.data?.replacement_session_id !== topology.replacement_session_id
+      || receiptTarget?.rel !== expectedReceiptRel
+      || receipt.operation_id !== manifest.operationId
+      || receipt.candidate_loop_hash !== manifest.candidateLoopHash
+      || receipt.event_identity?.seq !== event.seq
+      || receipt.event_identity?.checksum !== event.checksum
+      || receipt.new_root_digest !== topology.new_root_digest
+      || receipt.new_binding_generation !== topology.new_binding_generation
+      || receipt.new_lease_owner !== topology.new_lease_owner
+      || receipt.new_lease_generation !== topology.new_lease_generation) {
+      throw transactionError('root recovery publication binding');
+    }
+    const expectsCapsule = topology.recovery_kind !== 'none';
+    if (expectsCapsule !== (manifest.targets.length === 2)
+      || (expectsCapsule && (manifest.targets[0].rel !== topology.recovery_rel
+        || receipt.artifact_digests?.[topology.recovery_rel]
+          !== manifest.targets[0].candidate_sha256))) {
+      throw transactionError('root recovery publication targets');
+    }
+    return;
+  }
   const kinds = {
     'affinity-supersession': {
       artifactKind: 'affinity-recovery',

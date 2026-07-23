@@ -185,16 +185,16 @@ function materializePublication(publication) {
   }
   const allowed = new Set([
     'kind', 'operationId', 'artifacts', 'topology', 'faultAt', 'forceUnlinkReplacement',
-    'durableWriteFn', 'nowFn',
+    'durableWriteFn', 'nowFn', 'artifactFactory',
   ]);
   if (Object.keys(publication).some(key => !allowed.has(key))
     || typeof publication.kind !== 'string' || publication.kind.length === 0
     || typeof publication.operationId !== 'string' || publication.operationId.length === 0
-    || !Array.isArray(publication.artifacts)
+    || (!Array.isArray(publication.artifacts) && typeof publication.artifactFactory !== 'function')
     || !publication.topology || typeof publication.topology !== 'object' || Array.isArray(publication.topology)) {
     throw new Error('TRANSACTION_INVALID: publication shape');
   }
-  const artifacts = publication.artifacts.map((artifact, index) => {
+  const materializeArtifacts = input => input.map((artifact, index) => {
     if (!artifact || typeof artifact !== 'object'
       || JSON.stringify(Object.keys(artifact)) !== JSON.stringify(['rel', 'bytes'])
       || normalizePortableRelativePath(artifact.rel) !== artifact.rel
@@ -203,10 +203,16 @@ function materializePublication(publication) {
     }
     return Object.freeze({ rel: artifact.rel, bytes: Buffer.from(artifact.bytes) });
   });
+  const artifacts = Array.isArray(publication.artifacts)
+    ? materializeArtifacts(publication.artifacts)
+    : [];
   return Object.freeze({
     kind: publication.kind,
     operationId: publication.operationId,
     artifacts: Object.freeze(artifacts),
+    artifactFactory: typeof publication.artifactFactory === 'function'
+      ? context => Object.freeze(materializeArtifacts(publication.artifactFactory(context)))
+      : null,
     topology: deepFreeze(structuredClone(publication.topology)),
     faultAt: typeof publication.faultAt === 'function' ? publication.faultAt : () => {},
     forceUnlinkReplacement: publication.forceUnlinkReplacement === true,
@@ -405,7 +411,13 @@ function validatePreparedAuthority(root, runId, prepared, candidate, candidateBy
     throw transactionError('prepared candidate authority');
   }
   const lease = candidate.session_chain?.lease;
-  if (!lease || lease.owner_run_id !== manifest.expect.owner || lease.generation !== manifest.expect.generation) {
+  const expectedCandidateOwner = rootRecovery
+    ? manifest.topology?.new_lease_owner ?? manifest.expect.owner
+    : manifest.expect.owner;
+  const expectedCandidateGeneration = rootRecovery
+    ? manifest.topology?.new_lease_generation ?? manifest.expect.generation
+    : manifest.expect.generation;
+  if (!lease || lease.owner_run_id !== expectedCandidateOwner || lease.generation !== expectedCandidateGeneration) {
     throw transactionError('prepared fence authority');
   }
   validateBoundaryPublication(prepared, candidate);
@@ -656,9 +668,11 @@ export function captureReconciledRunSet(root, options = {}) {
 
 function assertRootRecoveryBinding(candidateRoot, snapshot) {
   const binding = classifyProjectRootBinding(candidateRoot, snapshot.data.project?.root);
-  if (binding.mismatch_class !== 'unresolvable') {
-    if (binding.mismatch_class === 'fenced') throw new Error('PROJECT_ROOT_FENCED: stored project root still resolves');
-    throw new Error('PROJECT_ROOT_REBIND_NOT_ALLOWED: project root already matches');
+  if (binding.mismatch_class === 'fenced') {
+    throw new Error('PROJECT_ROOT_FENCED: stored project root still resolves');
+  }
+  if (!['unresolvable', 'match'].includes(binding.mismatch_class)) {
+    throw new Error('PROJECT_ROOT_UNRESOLVABLE: invalid root classifier');
   }
   return binding;
 }
@@ -772,11 +786,13 @@ export function verifyHead(root, runId, expected) {
 // behavior exactly — floor is strictly opt-in.
 export function appendAnchored(root, runId, { type, data, now }, mutate, preCheck, opts = {}) {
   return withLock(root, runId, guard => {
+    const rootRecovery = opts.rootRecovery === true;
     const publication = opts.publication ? materializePublication(opts.publication) : null;
     reconcileAnchoredPublicationLocked(root, runId, guard, {
       faultAt: publication?.faultAt,
       forceUnlinkReplacement: publication?.forceUnlinkReplacement,
       durableWriteFn: publication?.durableWriteFn,
+      rootRecovery,
     });
     if (publication && existsSync(join(runDir(root, runId), 'transactions'))) {
       const existing = findPreparedPublicationLocked(runDir(root, runId), guard);
@@ -788,18 +804,33 @@ export function appendAnchored(root, runId, { type, data, now }, mutate, preChec
     if (existsSync(join(runDir(root, runId), 'transactions'))) {
       retireCommittedPublicationLocked(runDir(root, runId), guard);
     }
-    const before = snapshotRaw(root, runId, readRawRun(root, runId), { requireSchema: false });
+    const before = snapshotRaw(root, runId, readRawRun(root, runId), {
+      requireSchema: false,
+      requireProjectBinding: !rootRecovery,
+    });
     const loop = structuredClone(before.data);
     // Defense in depth at the shared mutation gateway: this check stays inside the existing lock and precedes
     // caller guards and event writes. readState is already strict, so no unbound reader is exposed here.
-    assertProjectRootBinding(root, loop);
+    if (rootRecovery) {
+      const binding = classifyProjectRootBinding(root, loop.project?.root);
+      if (binding.mismatch_class === 'fenced') {
+        throw new Error('PROJECT_ROOT_FENCED: stored project root still resolves');
+      }
+      if (binding.mismatch_class !== 'unresolvable') {
+        throw new Error('PROJECT_ROOT_REBIND_NOT_ALLOWED: project root already matches');
+      }
+    } else {
+      assertProjectRootBinding(root, loop);
+    }
     if (preCheck) preCheck(loop);              // throws BEFORE append → anchor stays consistent
     // Invariant: do not add a throwing guard after preCheck; preCheck side effects are coupled to this ordering.
     // v1.6 gateway terminal gate (spec §2.1.5): 반드시 caller preCheck **뒤** — fence-first 보존
     // (LEASE_FENCED/RESPAWN_FENCED/RUN_TERMINAL:emitHandoff 등 특정-에러 경로가 먼저 발화해야 한다).
     // 여기 도달했는데 terminal이면 "어떤 preCheck도 못 잡은" fence-less 경로 — 최후 방벽.
     // finish 이벤트는 preCheck 시점 non-terminal(전이는 mutate 단계)이라 자연 통과; double-finish는 차단된다.
-    if (loop.status === 'completed' || loop.status === 'stopped') throw new Error('RUN_TERMINAL: append');
+    if (!rootRecovery && (loop.status === 'completed' || loop.status === 'stopped')) {
+      throw new Error('RUN_TERMINAL: append');
+    }
     // Codex impl r12 🔴: verify the existing log (chain + tail vs stored anchor) BEFORE appending. Otherwise a
     // suffix-truncated/tampered log would be laundered — a new append + fresh anchor would hide the loss and
     // reconcileBudget would no longer detect it. Fail-stop here keeps the anchor honest.
@@ -807,6 +838,23 @@ export function appendAnchored(root, runId, { type, data, now }, mutate, preChec
     const frozenData = deepFreeze(structuredClone(data));
     const event = deepFreeze(nextEvent(before.logLines, { type, data: frozenData, now: timestamp }));
     const events = [event];
+    if (opts.additionalEvents !== undefined) {
+      if (!Array.isArray(opts.additionalEvents)) {
+        throw new Error('TRANSACTION_INVALID: additional events');
+      }
+      for (const additional of opts.additionalEvents) {
+        if (!additional || typeof additional.type !== 'string' || additional.type.length === 0
+          || additional.data == null || typeof additional.data !== 'object'
+          || Array.isArray(additional.data)) {
+          throw new Error('TRANSACTION_INVALID: additional event shape');
+        }
+        events.push(deepFreeze(nextEvent([...before.logLines, ...events], {
+          type: additional.type,
+          data: deepFreeze(structuredClone(additional.data)),
+          now: timestamp,
+        })));
+      }
+    }
     // Paired floor cost — SAME lock/anchor as the mutation event, so verifyHead/reconcileBudget stay consistent.
     // impl-R1 Fix 1: tag the floor with the CURRENT lease owner+generation. recordCost only absorbs floors from its
     // OWN session, so an explicit report in a LATER session cannot swallow an EARLIER session's floors (which are
@@ -826,14 +874,21 @@ export function appendAnchored(root, runId, { type, data, now }, mutate, preChec
         return { turns: acc.turns + item.data.turns, tokens: acc.tokens + item.data.tokens };
       }, { turns: 0, tokens: 0 })
       : null;
-    if (opts.floor) {
+    if (opts.floor || opts.additionalEvents?.length) {
       loop.budget.spent = spent.turns;
       loop.budget.tokens_spent = spent.tokens;
       // per_session_turn_cap is judged off the lease owner's session.turns (next-action.mjs) — bump it here so
       // the floor drives the handoff cadence (= human checkpoints) too, not only budget.spent.
       const owner = loop.session_chain?.lease?.owner_run_id;
       const sess = (loop.session_chain?.sessions || []).find(s => s.run_id === owner);
-      if (sess) sess.turns = (sess.turns || 0) + opts.floor;
+      if (opts.floor && sess) sess.turns = (sess.turns || 0) + opts.floor;
+      for (const item of events.slice(1, 1 + (opts.additionalEvents?.length || 0))) {
+        if (item.type !== 'cost' || !validCost(item.data)) continue;
+        const origin = (loop.session_chain?.sessions || []).find(
+          session => session.run_id === item.data.owner,
+        );
+        if (origin) origin.turns = (origin.turns || 0) + item.data.turns;
+      }
     }
     const tx = deepFreeze({
       event,
@@ -855,10 +910,18 @@ export function appendAnchored(root, runId, { type, data, now }, mutate, preChec
     const candidateBytes = Buffer.from(JSON.stringify(loop, null, 2));
     const candidateLoopHash = contentHash(candidateBytes);
     const candidateHashBytes = Buffer.from(candidateLoopHash);
-    const stages = publication.artifacts.map(artifact => ({
+    const publicationArtifacts = publication.artifactFactory
+      ? publication.artifactFactory({
+        candidateLoopHash,
+        event: structuredClone(event),
+        eventIdentity: structuredClone(tx.event_identity),
+        timestamp,
+      })
+      : publication.artifacts;
+    const stages = publicationArtifacts.map(artifact => ({
       role: 'artifact', target_rel: artifact.rel, bytes: artifact.bytes,
     }));
-    const targets = publication.artifacts.map((artifact, stageIndex) => ({
+    const targets = publicationArtifacts.map((artifact, stageIndex) => ({
       role: 'artifact',
       rel: artifact.rel,
       stage_index: stageIndex,
@@ -906,9 +969,10 @@ export function appendAnchored(root, runId, { type, data, now }, mutate, preChec
     if (!prepared.ok) throw new Error('TRANSACTION_NOT_PREPARED');
     try {
       reconcileAnchoredPublicationLocked(root, runId, guard, {
-        faultAt: publication.faultAt,
-        forceUnlinkReplacement: publication.forceUnlinkReplacement,
-        durableWriteFn: publication.durableWriteFn,
+      faultAt: publication.faultAt,
+      forceUnlinkReplacement: publication.forceUnlinkReplacement,
+      durableWriteFn: publication.durableWriteFn,
+      rootRecovery,
       });
     } catch (error) {
       const message = String(error?.message || error);
@@ -917,45 +981,4 @@ export function appendAnchored(root, runId, { type, data, now }, mutate, preChec
     }
     return { ok: true, event_identity: tx.event_identity, operation_id: publication.operationId };
   });
-}
-
-// Root relocation is the sole mutation that cannot enter appendAnchored: the old lexical root is intentionally
-// unresolvable, while appendAnchored performs a strict bound read and owns its own non-reentrant lock. The caller
-// already owns the candidate run lock. This fixed commit accepts neither a caller-selected event nor a mutation
-// callback; all validation completes before its single hard-coded append.
-export function commitProjectRootRebindUnderLock(root, runId, loop, { oldRootDigest, newRoot, now }) {
-  if (!loop || typeof loop !== 'object' || loop.run_id !== runId) {
-    throw new Error('STATE_INVALID: loop.run_id mismatch');
-  }
-  if (!/^[0-9a-f]{64}$/.test(oldRootDigest || '') || projectRootDigest(loop.project?.root) !== oldRootDigest) {
-    throw new Error('INVALID_STORED_ROOT_DIGEST: stored root changed');
-  }
-  let canonicalRoot;
-  try {
-    canonicalRoot = canonicalProjectRoot(root);
-    if (canonicalProjectRoot(newRoot) !== canonicalRoot || newRoot !== canonicalRoot) {
-      throw new Error('PROJECT_ROOT_UNRESOLVABLE: candidate root identity changed');
-    }
-  } catch (error) {
-    if (String(error?.message || error) === 'PROJECT_ROOT_UNRESOLVABLE: candidate root identity changed') throw error;
-    throw new Error('PROJECT_ROOT_UNRESOLVABLE: candidate root', { cause: error });
-  }
-
-  const lines = readLines(root, runId);
-  const verified = verifyLines(lines);
-  if (!verified.ok) throw new Error(`LOG_TAMPERED: ${verified.errors.join('; ')}`);
-  const anchored = verifyHeadLines(lines, loop.event_log_head);
-  if (!anchored.ok) throw new Error(`LOG_TAMPERED: ${anchored.errors.join('; ')}`);
-
-  const data = { old_root_digest: oldRootDigest, new_root: canonicalRoot };
-  const event = nextEvent(lines, { type: 'project-root-rebound', data, now });
-  const candidate = structuredClone(loop);
-  candidate.project.root = canonicalRoot;
-  candidate.event_log_head = { seq: event.seq, checksum: event.checksum };
-  const stateValidation = validate(candidate);
-  if (!stateValidation.ok) throw new Error(`STATE_INVALID: ${stateValidation.errors.join('; ')}`);
-
-  appendFileSync(logPath(root, runId), JSON.stringify(event) + '\n');
-  writeState(root, runId, candidate);
-  return { ok: true };
 }

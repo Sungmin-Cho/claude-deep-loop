@@ -562,8 +562,10 @@ export function withLock(root, runId, fn, {
     const renew = (expectedRunDir) => {
       assertOwned(expectedRunDir);
       faultAt('renew:validated');
-      const heartbeat = boundedTime(nowFn());
-      if (heartbeat < owner.heartbeat_at_ms) throw new Error('LOCK_TIME_INVALID');
+      // Wall clocks can step backwards under NTP/VM pressure. A lock heartbeat is
+      // freshness metadata, not an authorization clock, so preserve monotonicity
+      // instead of turning a harmless host-clock correction into a random fence.
+      const heartbeat = Math.max(boundedTime(nowFn()), owner.heartbeat_at_ms);
       owner = { ...owner, heartbeat_at_ms: heartbeat };
       durableWriteFn(ownerPath, JSON.stringify(owner), { platform });
       assertOwned(expectedRunDir);

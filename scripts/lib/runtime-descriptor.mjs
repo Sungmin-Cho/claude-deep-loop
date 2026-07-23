@@ -35,6 +35,7 @@ function meSh(quote, model, effort) {
 const SAFE_ID = /^[A-Za-z0-9_-]+$/;
 const SAFE_HANDOFF_REL = /^handoffs\/[A-Za-z0-9._-]+$/;
 const SAFE_RECOVERY_REL = /^recoveries\/[A-Za-z0-9._-]+$/;
+const SAFE_ROOT_RECOVERY_REL = /^recoveries\/root\/[A-Za-z0-9._-]+\.json$/;
 
 function exactObjectKeys(value, expected) {
   return value != null
@@ -190,6 +191,47 @@ export function buildRecoveryResumeDescriptor({
     resumeInvocation: acquireInvocation,
     acquireInvocation,
   });
+}
+
+export function buildRootRecoveryResumeDescriptor({
+  runtime = 'claude',
+  root,
+  runId,
+  childRunId,
+  recoveryRel,
+  generation,
+  bindingGeneration,
+} = {}) {
+  const selectedRuntime = validateSessionRuntime(runtime);
+  if (!SAFE_ID.test(String(runId))
+    || !SAFE_ID.test(String(childRunId))
+    || !SAFE_ROOT_RECOVERY_REL.test(String(recoveryRel))
+    || !Number.isSafeInteger(generation) || generation < 1
+    || !Number.isSafeInteger(bindingGeneration) || bindingGeneration < 1
+    || typeof root !== 'string' || root.length === 0 || /[\0\r\n]/.test(root)) {
+    throw new Error('ROOT_RECOVERY_DESCRIPTOR_INVALID');
+  }
+  const acquireInvocation = [
+    'root recovery acquire',
+    `--capsule ${JSON.stringify(recoveryRel)}`,
+    `--owner ${JSON.stringify(childRunId)}`,
+    `--generation ${generation}`,
+    `--binding-generation ${bindingGeneration}`,
+    `--runtime ${selectedRuntime}`,
+    `--candidate-project-root ${JSON.stringify(root)}`,
+    `--run-id ${JSON.stringify(runId)}`,
+  ].join(' ');
+  return {
+    runtime: selectedRuntime,
+    projectRoot: root,
+    runId,
+    childRunId,
+    recoveryRel,
+    generation,
+    bindingGeneration,
+    acquireInvocation,
+    resumeInvocation: acquireInvocation,
+  };
 }
 
 function targetPathApi(platform) {

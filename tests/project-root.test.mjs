@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import {
   cpSync,
   existsSync,
@@ -7,6 +8,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  rmSync,
   renameSync,
   writeFileSync,
 } from 'node:fs';
@@ -16,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { contentHash } from '../scripts/lib/envelope.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
+import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import {
   readState,
   readStateForRootRecovery,
@@ -31,11 +34,12 @@ import {
 import { createDirectoryJunction } from './helpers/fs-fixtures.mjs';
 import { validate } from '../scripts/lib/schema.mjs';
 import { appendAnchored, verifyHead, verifyLog } from '../scripts/lib/integrity.mjs';
+import { makeCodexProcessReceipt } from '../scripts/lib/budget.mjs';
 
 const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+const CLI = join(REPO_ROOT, 'scripts', 'deep-loop.mjs');
 const FIXED_NOW = new Date('2026-07-11T00:00:00.000Z');
 const recoveryReaderReferencePattern = /\breadStateForRootRecovery\b/;
-const recoveryCommitReferencePattern = /\bcommitProjectRootRebindUnderLock\b/;
 const portableRelative = (from, to) => relative(from, to).split(sep).join('/');
 const genericRootBypassPattern = /\b(?:(?:skip|bypass|disable|ignore)(?:Project)?Root(?:Check|Binding)?|(?:skip|bypass|disable|ignore)[_-](?:project[_-])?root(?:[_-](?:check|binding))?)\b/i;
 const recoveryApiPromise = import('../scripts/lib/project-root-recovery.mjs').catch(() => ({}));
@@ -44,8 +48,8 @@ function freshRoot(prefix = 'dl-root-') {
   return mkdtempSync(join(tmpdir(), prefix));
 }
 
-function init(root) {
-  return initRun(root, { runtime: 'claude', goal: 'bind root', now: FIXED_NOW });
+function init(root, runtime = 'claude') {
+  return initRun(root, { runtime, goal: 'bind root', now: FIXED_NOW });
 }
 
 function copyDurableState(sourceRoot, candidateRoot) {
@@ -56,7 +60,130 @@ async function recoveryApi() {
   const api = await recoveryApiPromise;
   assert.equal(typeof api.diagnoseProjectRoot, 'function', 'diagnoseProjectRoot must be exported');
   assert.equal(typeof api.rebindProjectRoot, 'function', 'rebindProjectRoot must be exported');
+  assert.equal(typeof api.recoverRelocatedRoot, 'function', 'recoverRelocatedRoot must be exported');
+  assert.equal(typeof api.acquireRootRecovery, 'function', 'acquireRootRecovery must be exported');
   return api;
+}
+
+function invoke(args, cwd = REPO_ROOT) {
+  return spawnSync(process.execPath, [CLI, ...args], { cwd, encoding: 'utf8' });
+}
+
+function eventLines(root, runId) {
+  const path = join(runDir(root, runId), 'event-log.jsonl');
+  return existsSync(path)
+    ? readFileSync(path, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line))
+    : [];
+}
+
+function relocationOptions(moved, overrides = {}) {
+  const current = readStateForRootRecovery(moved.candidateRoot, moved.runId).data;
+  return {
+    actor: 'human',
+    confirm: true,
+    expectedStoredRootDigest: projectRootDigest(moved.storedRoot),
+    expectedBindingGeneration: current.project.binding_generation,
+    fence: {
+      owner: current.session_chain.lease.owner_run_id,
+      generation: current.session_chain.lease.generation,
+    },
+    now: FIXED_NOW.getTime(),
+    ...overrides,
+  };
+}
+
+function seedRelocationTopology(topology, runtime = 'claude', prefix = 'dl-root-topology-') {
+  const parent = freshRoot(prefix);
+  const originalRoot = join(parent, `old root 'quoted' ${runtime}`);
+  const candidateRoot = join(parent, `new root 'quoted' ${runtime}`);
+  mkdirSync(originalRoot);
+  const { runId } = init(originalRoot, runtime);
+  let affinityWorkstreamId = null;
+  if (topology.includes('affinity')) {
+    ({ id: affinityWorkstreamId } = newWorkstream(originalRoot, runId, {
+      title: 'relocated affinity',
+      branch: 'feature/relocated-affinity',
+      worktree: '.worktrees/relocated-affinity',
+      fence: { owner: runId, generation: 1, intent: 'business' },
+    }));
+  }
+  const { data } = readState(originalRoot, runId);
+  data.budget.max_wallclock_sec = 10 * 365 * 24 * 60 * 60;
+  const lease = data.session_chain.lease;
+  const rootDigest = projectRootDigest(data.project.root);
+  const childId = `CHILD-${topology.toUpperCase()}`;
+  const child = {
+    run_id: childId,
+    started_at: topology === 'acquired-unbound' ? '2026-07-11T00:00:01.000Z' : null,
+    ended_at: null,
+    turns: 0,
+    outcome: null,
+    superseded_by: null,
+    handoff_rel: `handoffs/${childId}-next-session.md`,
+    scope: {
+      kind: 'workstream',
+      workstream_id: affinityWorkstreamId,
+      bound_at_seq: topology.includes('affinity') ? 1 : null,
+      terminal_event: null,
+      closed_at: null,
+      superseded_at: null,
+    },
+  };
+  if (topology === 'terminal') {
+    data.status = 'stopped';
+    lease.state = 'released';
+  } else if (topology === 'open-affinity') {
+    data.workstreams.find(item => item.id === affinityWorkstreamId).status = 'in_progress';
+    data.active_workstreams = [affinityWorkstreamId];
+    data.session_chain.sessions[0].scope.workstream_id = affinityWorkstreamId;
+    data.session_chain.sessions[0].scope.bound_at_seq = 1;
+  } else if (topology !== 'quiescent') {
+    lease.handoff_phase = topology === 'acquired-unbound'
+      ? 'acquired'
+      : topology.replace('-recovery', '') === 'affinity' || topology.replace('-recovery', '') === 'boundary'
+        ? 'reserved'
+        : topology;
+    lease.handoff_child_run_id = childId;
+    lease.handoff_idempotency_key = 'a'.repeat(64);
+    lease.handoff_trigger = topology.includes('affinity') ? 'affinity-recovery' : 'workstream-terminal';
+    if (topology !== 'reserved') {
+      data.session_chain.sessions.push(child);
+      data.session_chain.sessions[0].superseded_by = childId;
+      data.session_chain.sessions[0].scope.superseded_at = '2026-07-11T00:00:01.000Z';
+    }
+    if (topology === 'emitted' || topology === 'spawned') {
+      lease.state = 'releasing';
+      lease.takeover_kind = null;
+    } else if (topology === 'acquired-unbound') {
+      lease.owner_run_id = childId;
+      lease.generation = 2;
+      lease.state = 'active';
+      lease.handoff_idempotency_key = null;
+      lease.handoff_child_run_id = null;
+      lease.handoff_trigger = null;
+    } else if (topology === 'affinity-recovery' || topology === 'boundary-recovery') {
+      lease.state = 'releasing';
+      lease.takeover_kind = topology === 'affinity-recovery'
+        ? 'affinity-supersession'
+        : 'boundary-recovery';
+      const pending = data.session_chain.sessions.find(session => session.run_id === childId);
+      if (pending) {
+        pending.recovered_from = runId;
+        pending.recovery_kind = topology === 'affinity-recovery'
+          ? 'affinity-supersession'
+          : 'boundary-recovery';
+        pending.recovery_discriminator = 'f'.repeat(64);
+        pending.recovery_rel = `recoveries/${topology}/${childId}.json`;
+        pending.recovery_sha256 = 'b'.repeat(64);
+        pending.recovery_project_binding_generation = data.project.binding_generation;
+        pending.recovery_project_root_digest = rootDigest;
+      }
+    }
+  }
+  writeState(originalRoot, runId, data);
+  const storedRoot = data.project.root;
+  renameSync(originalRoot, candidateRoot);
+  return { originalRoot, candidateRoot, runId, storedRoot, childId, topology, runtime };
 }
 
 function movedRun(prefix = 'dl-root-relocated-') {
@@ -70,6 +197,62 @@ function movedRun(prefix = 'dl-root-relocated-') {
   return { originalRoot, candidateRoot, runId, storedRoot };
 }
 
+function movedRunWithProcessReceipt({
+  malformed = false,
+  conflicting = false,
+  unverifiable = false,
+} = {}) {
+  const parent = freshRoot('dl-root-accounting-');
+  const originalRoot = join(parent, 'old root');
+  const candidateRoot = join(parent, 'new root');
+  mkdirSync(originalRoot);
+  const { runId } = init(originalRoot, 'codex');
+  const context = {
+    parent_owner: unverifiable ? 'MISSING-ORIGIN' : runId,
+    parent_generation: 1,
+    child_run_id: 'ORPHAN-CHILD',
+    child_generation: 2,
+    handoff_key: 'a'.repeat(64),
+    handoff_rel: 'handoffs/ORPHAN-CHILD-next-session.md',
+  };
+  const receipt = makeCodexProcessReceipt({
+    root: originalRoot,
+    runId,
+    processKind: 'maker',
+    context,
+    usage: { num_turns: 1, input_tokens: 2, output_tokens: 3, tokens: 5 },
+  });
+  if (conflicting) {
+    appendAnchored(originalRoot, runId, {
+      type: 'cost',
+      data: {
+        turns: 1,
+        tokens: 1,
+        owner: runId,
+        generation: 1,
+        source: 'codex-maker-measured',
+        process_receipt_id: 'f'.repeat(64),
+        process_kind: 'maker',
+        process_context: context,
+      },
+      now: FIXED_NOW.getTime(),
+    }, (loop, spent) => {
+      loop.budget.spent = spent.turns;
+      loop.budget.tokens_spent = spent.tokens;
+      loop.session_chain.sessions[0].turns += 1;
+    });
+  }
+  const receipts = join(runDir(originalRoot, runId), 'preflight', 'process-receipts');
+  mkdirSync(receipts, { recursive: true });
+  writeFileSync(
+    join(receipts, `${receipt.receipt_id}.json`),
+    malformed ? JSON.stringify({ ...receipt, receipt_id: '0'.repeat(64) }) : JSON.stringify(receipt),
+  );
+  const storedRoot = readState(originalRoot, runId).data.project.root;
+  renameSync(originalRoot, candidateRoot);
+  return { originalRoot, candidateRoot, runId, storedRoot, receipt };
+}
+
 function durableSnapshot(root, runId) {
   const dir = runDir(root, runId);
   const eventPath = join(dir, 'event-log.jsonl');
@@ -78,6 +261,14 @@ function durableSnapshot(root, runId) {
     hash: readFileSync(join(dir, '.loop.hash'), 'utf8'),
     event: existsSync(eventPath) ? readFileSync(eventPath, 'utf8') : null,
   };
+}
+
+function writeRecoveryFixture(root, runId, data) {
+  const dir = runDir(root, runId);
+  data.updated_at = FIXED_NOW.toISOString();
+  const raw = JSON.stringify(data, null, 2);
+  writeFileSync(join(dir, 'loop.json'), raw);
+  writeFileSync(join(dir, '.loop.hash'), contentHash(raw));
 }
 
 function relocatedPendingPublication(barrier, suffix) {
@@ -112,7 +303,7 @@ test('candidate-root diagnosis and rebind replay relocated prepared publications
   const barriers = ['event:0:append', 'state:loop:rename', 'state:hash:rename', 'committed:rename'];
   for (const barrier of barriers) {
     const diagnosed = relocatedPendingPublication(barrier, 'diagnose');
-    assert.equal(diagnoseProjectRoot(diagnosed.candidateRoot, diagnosed.runId).mismatch_class, 'unresolvable');
+    assert.equal(diagnoseProjectRoot(diagnosed.candidateRoot, diagnosed.runId).action, 'rebind');
     assert.equal(readStateForRootRecovery(diagnosed.candidateRoot, diagnosed.runId).data.goal, `candidate:${barrier}`);
 
     const rebound = relocatedPendingPublication(barrier, 'rebind');
@@ -120,6 +311,7 @@ test('candidate-root diagnosis and rebind replay relocated prepared publications
       actor: 'human',
       confirm: true,
       expectedStoredRootDigest: projectRootDigest(rebound.storedRoot),
+      expectedBindingGeneration: 1,
       fence: { owner: rebound.runId, generation: 1 },
       now: FIXED_NOW.getTime(),
     });
@@ -246,13 +438,11 @@ test('only an unresolvable stored root is diagnosed as rebindable', async () => 
   const { candidateRoot, runId, storedRoot } = movedRun();
   const { diagnoseProjectRoot } = await recoveryApi();
 
-  assert.deepEqual(diagnoseProjectRoot(candidateRoot, runId), {
-    mismatch_class: 'unresolvable',
-    rebind_allowed: true,
-    stored_root_digest: projectRootDigest(storedRoot),
-    owner: runId,
-    generation: 1,
-  });
+  const diagnosed = diagnoseProjectRoot(candidateRoot, runId);
+  assert.equal(diagnosed.action, 'rebind');
+  assert.equal(diagnosed.topology, 'quiescent');
+  assert.equal(diagnosed.current_root_digest, projectRootDigest(storedRoot));
+  assert.deepEqual(diagnosed.fence, { owner: runId, generation: 1 });
 });
 
 test('a stopped original still fences diagnosis and rebind while its stored root resolves', async () => {
@@ -272,6 +462,7 @@ test('a stopped original still fences diagnosis and rebind while its stored root
     () => rebindProjectRoot(candidateRoot, runId, {
       actor: 'human', confirm: true,
       expectedStoredRootDigest: projectRootDigest(storedRoot),
+      expectedBindingGeneration: 1,
       fence: { owner: runId, generation: 1 }, now: FIXED_NOW.getTime(),
     }),
     /PROJECT_ROOT_FENCED/
@@ -282,13 +473,13 @@ test('a stopped original still fences diagnosis and rebind while its stored root
 test('rebind requires the exact human confirmation, stored-root digest, owner, and generation', async () => {
   const { rebindProjectRoot } = await recoveryApi();
   const variants = [
-    ['actor', ({ runId, digest }) => ({ actor: 'agent', confirm: true, expectedStoredRootDigest: digest, fence: { owner: runId, generation: 1 } }), /INVALID_ACTOR/],
-    ['confirm', ({ runId, digest }) => ({ actor: 'human', confirm: false, expectedStoredRootDigest: digest, fence: { owner: runId, generation: 1 } }), /CONFIRM_REQUIRED/],
-    ['missing digest', ({ runId }) => ({ actor: 'human', confirm: true, fence: { owner: runId, generation: 1 } }), /INVALID_STORED_ROOT_DIGEST/],
-    ['wrong digest', ({ runId }) => ({ actor: 'human', confirm: true, expectedStoredRootDigest: '0'.repeat(64), fence: { owner: runId, generation: 1 } }), /INVALID_STORED_ROOT_DIGEST/],
-    ['non-canonical digest spelling', ({ runId }) => ({ actor: 'human', confirm: true, expectedStoredRootDigest: 'A'.repeat(64), fence: { owner: runId, generation: 1 } }), /INVALID_STORED_ROOT_DIGEST/],
-    ['missing owner', ({ digest }) => ({ actor: 'human', confirm: true, expectedStoredRootDigest: digest, fence: { generation: 1 } }), /FENCE_REQUIRED/],
-    ['missing generation', ({ runId, digest }) => ({ actor: 'human', confirm: true, expectedStoredRootDigest: digest, fence: { owner: runId } }), /FENCE_REQUIRED/],
+    ['actor', ({ runId, digest }) => ({ actor: 'agent', confirm: true, expectedStoredRootDigest: digest, expectedBindingGeneration: 1, fence: { owner: runId, generation: 1 } }), /INVALID_ACTOR/],
+    ['confirm', ({ runId, digest }) => ({ actor: 'human', confirm: false, expectedStoredRootDigest: digest, expectedBindingGeneration: 1, fence: { owner: runId, generation: 1 } }), /CONFIRM_REQUIRED/],
+    ['missing digest', ({ runId }) => ({ actor: 'human', confirm: true, expectedBindingGeneration: 1, fence: { owner: runId, generation: 1 } }), /INVALID_STORED_ROOT_DIGEST/],
+    ['wrong digest', ({ runId }) => ({ actor: 'human', confirm: true, expectedStoredRootDigest: '0'.repeat(64), expectedBindingGeneration: 1, fence: { owner: runId, generation: 1 } }), /INVALID_STORED_ROOT_DIGEST/],
+    ['non-canonical digest spelling', ({ runId }) => ({ actor: 'human', confirm: true, expectedStoredRootDigest: 'A'.repeat(64), expectedBindingGeneration: 1, fence: { owner: runId, generation: 1 } }), /INVALID_STORED_ROOT_DIGEST/],
+    ['missing owner', ({ digest }) => ({ actor: 'human', confirm: true, expectedStoredRootDigest: digest, expectedBindingGeneration: 1, fence: { generation: 1 } }), /FENCE_REQUIRED/],
+    ['missing generation', ({ runId, digest }) => ({ actor: 'human', confirm: true, expectedStoredRootDigest: digest, expectedBindingGeneration: 1, fence: { owner: runId } }), /FENCE_REQUIRED/],
   ];
 
   for (const [label, optionsFor, expectedError] of variants) {
@@ -316,6 +507,7 @@ test('rebind rejects stale owner or generation without changing event, hash, or 
       () => rebindProjectRoot(moved.candidateRoot, moved.runId, {
         actor: 'human', confirm: true,
         expectedStoredRootDigest: projectRootDigest(moved.storedRoot),
+        expectedBindingGeneration: 1,
         fence: actualFence, now: FIXED_NOW.getTime(),
       }),
       /LEASE_FENCED/
@@ -332,6 +524,7 @@ test('successful relocation commits one fixed event, root, and anchor then resto
   rebindProjectRoot(moved.candidateRoot, moved.runId, {
     actor: 'human', confirm: true,
     expectedStoredRootDigest: projectRootDigest(moved.storedRoot),
+    expectedBindingGeneration: 1,
     fence: { owner: moved.runId, generation: 1 },
     now: FIXED_NOW.getTime(),
   });
@@ -342,13 +535,456 @@ test('successful relocation commits one fixed event, root, and anchor then resto
   assert.equal(lines.length, 1);
   assert.equal(lines[0].type, 'project-root-rebound');
   assert.equal(lines[0].ts, FIXED_NOW.toISOString());
-  assert.deepEqual(lines[0].data, {
-    old_root_digest: projectRootDigest(moved.storedRoot),
-    new_root: canonicalProjectRoot(moved.candidateRoot),
-  });
+  assert.equal(lines[0].data.old_root_digest, projectRootDigest(moved.storedRoot));
+  assert.equal(lines[0].data.new_root_digest, projectRootDigest(canonicalProjectRoot(moved.candidateRoot)));
   assert.equal(data.project.root, canonicalProjectRoot(moved.candidateRoot));
   assert.deepEqual(data.event_log_head, { seq: lines[0].seq, checksum: lines[0].checksum });
   assert.notEqual(durableSnapshot(moved.candidateRoot, moved.runId).hash, before.hash);
+});
+
+test('Task 13 plain rebind matrix preserves topology and journals root plus lease epochs for both runtimes', async () => {
+  const { diagnoseProjectRoot, rebindProjectRoot } = await recoveryApi();
+  for (const runtime of ['claude', 'codex']) {
+    for (const topology of ['terminal', 'quiescent']) {
+      const moved = seedRelocationTopology(topology, runtime, `dl-root-plain-${runtime}-${topology}-`);
+      const before = readStateForRootRecovery(moved.candidateRoot, moved.runId).data;
+      const oldOwner = before.session_chain.lease.owner_run_id;
+      const oldSessions = structuredClone(before.session_chain.sessions);
+      before.autonomy.attended_launch_approval = {
+        style: 'visible',
+        approved_at: '2026-07-11T00:00:00.000Z',
+      };
+      before.autonomy.runtime_executable_approval = {
+        runtime,
+        canonical_path: join(moved.storedRoot, 'bin', runtime),
+        sha256: 'a'.repeat(64),
+        version: '1.0.0',
+        platform: process.platform,
+        arch: process.arch,
+        source: 'human-explicit',
+        package: null,
+        authenticode: null,
+        approved_by: 'human',
+        approved_at: '2026-07-11T00:00:00.000Z',
+      };
+      before.autonomy.launcher_executable_approvals.tmux = {
+        kind: 'tmux',
+        canonical_path: '/opt/external/tmux',
+        sha256: 'b'.repeat(64),
+        version: 'tmux 3.4',
+        platform: process.platform,
+        arch: process.arch,
+        source: 'human-explicit',
+        authenticode: null,
+        approved_by: 'human',
+        approved_at: '2026-07-11T00:00:00.000Z',
+      };
+      writeRecoveryFixture(moved.candidateRoot, moved.runId, before);
+
+      const diagnosis = diagnoseProjectRoot(moved.candidateRoot, moved.runId);
+      assert.equal(diagnosis.action, 'rebind');
+      assert.equal(diagnosis.current_root_digest, projectRootDigest(moved.storedRoot));
+      assert.equal(diagnosis.current_binding_generation, before.project.binding_generation);
+      assert.equal(diagnosis.fence.owner, oldOwner);
+      assert.equal(diagnosis.fence.generation, before.session_chain.lease.generation);
+      assert.match(diagnosis.command, /root rebind/);
+      assert.match(diagnosis.command, /--expected-stored-root-digest [0-9a-f]{64}/);
+      assert.match(diagnosis.command, /--expected-binding-generation 1/);
+
+      const result = rebindProjectRoot(moved.candidateRoot, moved.runId, relocationOptions(moved));
+      const rebound = readState(moved.candidateRoot, moved.runId).data;
+      assert.equal(result.action, 'already-rebound');
+      assert.equal(rebound.project.binding_generation, before.project.binding_generation + 1);
+      assert.equal(rebound.session_chain.lease.generation, before.session_chain.lease.generation + 1);
+      assert.equal(rebound.session_chain.lease.owner_run_id, oldOwner);
+      assert.deepEqual(
+        rebound.session_chain.sessions.map(({ run_id }) => run_id),
+        oldSessions.map(({ run_id }) => run_id),
+      );
+      assert.equal(rebound.status, 'paused');
+      assert.equal(rebound.autonomy.attended_launch_approval, null);
+      assert.equal(rebound.autonomy.runtime_executable_approval, null);
+      assert.equal(rebound.autonomy.launcher_executable_approvals.tmux.canonical_path, '/opt/external/tmux');
+      assert.equal(rebound.session_spawn.launcher, 'none');
+      assert.equal(rebound.autonomy.spawn_style, 'interactive');
+      const rootEvents = eventLines(moved.candidateRoot, moved.runId)
+        .filter(event => event.type === 'project-root-rebound');
+      assert.equal(rootEvents.length, 1);
+      assert.deepEqual(Object.keys(rootEvents[0].data), [
+        'operation_id',
+        'old_root_digest',
+        'new_root_digest',
+        'old_binding_generation',
+        'new_binding_generation',
+        'recovery_kind',
+        'stale_session_id',
+        'replacement_session_id',
+        'invalidated_review_attempt_ids',
+        'settled_receipt_ids',
+      ]);
+      assert.equal(existsSync(join(
+        runDir(moved.candidateRoot, moved.runId),
+        'recoveries',
+        'root-operations',
+        `${rootEvents[0].data.operation_id}.json`,
+      )), true);
+    }
+  }
+});
+
+test('Task 13 relocation topology matrix rejects plain rebind and creates one fresh scoped child', async () => {
+  const { diagnoseProjectRoot, rebindProjectRoot, recoverRelocatedRoot } = await recoveryApi();
+  const matrix = [
+    ['reserved', 'boundary'],
+    ['emitted', 'boundary'],
+    ['spawned', 'boundary'],
+    ['acquired-unbound', 'boundary'],
+    ['open-affinity', 'affinity'],
+    ['affinity-recovery', 'affinity'],
+    ['boundary-recovery', 'boundary'],
+  ];
+  for (const runtime of ['claude', 'codex']) {
+    for (const [topology, recoveryKind] of matrix) {
+      const moved = seedRelocationTopology(topology, runtime, `dl-root-recovery-${runtime}-${topology}-`);
+      const before = durableSnapshot(moved.candidateRoot, moved.runId);
+      const beforeLoop = readStateForRootRecovery(moved.candidateRoot, moved.runId).data;
+      const diagnosed = diagnoseProjectRoot(moved.candidateRoot, moved.runId);
+      assert.equal(diagnosed.action, 'relocation-recovery', `${runtime}/${topology}`);
+      assert.equal(diagnosed.topology, topology);
+      assert.match(diagnosed.command, /root recover/);
+      assert.throws(
+        () => rebindProjectRoot(moved.candidateRoot, moved.runId, relocationOptions(moved)),
+        /PROJECT_ROOT_RELOCATION_RECOVERY_REQUIRED/,
+      );
+      assert.deepEqual(durableSnapshot(moved.candidateRoot, moved.runId), before);
+
+      const result = recoverRelocatedRoot(
+        moved.candidateRoot,
+        moved.runId,
+        relocationOptions(moved),
+      );
+      const rebound = readState(moved.candidateRoot, moved.runId).data;
+      const replacements = rebound.session_chain.sessions.filter(
+        session => !beforeLoop.session_chain.sessions.some(old => old.run_id === session.run_id),
+      );
+      assert.equal(replacements.length, 1, `${runtime}/${topology}`);
+      assert.notEqual(replacements[0].run_id, moved.childId);
+      assert.equal(result.recovery_kind, recoveryKind);
+      assert.equal(
+        replacements[0].scope.workstream_id,
+        recoveryKind === 'affinity'
+          ? beforeLoop.session_chain.sessions.find(
+            session => session.scope?.workstream_id,
+          )?.scope.workstream_id
+          : null,
+      );
+      assert.equal(existsSync(join(runDir(moved.candidateRoot, moved.runId), replacements[0].recovery_rel)), true);
+      assert.equal(eventLines(moved.candidateRoot, moved.runId)
+        .filter(event => event.type === 'project-root-rebound').length, 1);
+    }
+  }
+});
+
+test('Task 13 active checker is invalidated exactly and a live headless producer makes diagnosis wait', async () => {
+  const { diagnoseProjectRoot, recoverRelocatedRoot } = await recoveryApi();
+  const moved = seedRelocationTopology('open-affinity', 'codex', 'dl-root-review-headless-');
+  const { data } = readStateForRootRecovery(moved.candidateRoot, moved.runId);
+  const claim = {
+    run_id: moved.runId,
+    reviewer_id: 'deep-review',
+    checker_episode_id: 'checker-1',
+    target_maker: 'maker-1',
+    attempt_id: 'attempt-root-relocation',
+    workstream_id: data.session_chain.sessions[0].scope.workstream_id,
+    point: 'implementation',
+    project_root: moved.storedRoot,
+    runtime: 'codex',
+    lease_owner: data.session_chain.lease.owner_run_id,
+    lease_generation: data.session_chain.lease.generation,
+    artifacts: [],
+  };
+  data.episodes.push({
+    id: 'checker-1',
+    role: 'checker',
+    status: 'in_progress',
+    request_rel: 'episodes/checker-1/request.md',
+    attempt_id: claim.attempt_id,
+    target_maker: claim.target_maker,
+    review_claim: claim,
+  });
+  writeRecoveryFixture(moved.candidateRoot, moved.runId, data);
+  const hostLock = join(runDir(moved.candidateRoot, moved.runId), '.headless-host.lock');
+  mkdirSync(hostLock);
+  writeFileSync(join(hostLock, 'owner'), JSON.stringify({
+    token: 'live-root-relocation-producer',
+    pid: process.pid,
+    started_at_ms: FIXED_NOW.getTime(),
+  }));
+  const waiting = diagnoseProjectRoot(moved.candidateRoot, moved.runId);
+  assert.equal(waiting.action, 'wait');
+  assert.equal(waiting.blocker, 'live-headless-producer');
+  rmSync(hostLock, { recursive: true });
+
+  recoverRelocatedRoot(moved.candidateRoot, moved.runId, relocationOptions(moved));
+  const rebound = readState(moved.candidateRoot, moved.runId).data;
+  const checker = rebound.episodes.find(episode => episode.id === 'checker-1');
+  assert.equal(checker.review_claim, undefined);
+  assert.equal(checker.attempt_id, undefined);
+  assert.equal(checker.status, 'blocked');
+  assert.equal(checker.block_reason, 'project-root-relocated');
+  assert.equal(checker.needs_human, true);
+  assert.deepEqual(checker.invalidated_review_claims, [{
+    ...claim,
+    invalidated_at: FIXED_NOW.toISOString(),
+    reason: 'project-root-relocated',
+  }]);
+});
+
+test('Task 13 verified orphan accounting settles once while malformed receipts fail closed', async () => {
+  const { diagnoseProjectRoot, rebindProjectRoot } = await recoveryApi();
+  const moved = movedRunWithProcessReceipt();
+  const result = rebindProjectRoot(
+    moved.candidateRoot,
+    moved.runId,
+    relocationOptions(moved),
+  );
+  const lines = eventLines(moved.candidateRoot, moved.runId);
+  const costs = lines.filter(event =>
+    event.type === 'cost' && event.data?.process_receipt_id === moved.receipt.receipt_id);
+  assert.equal(costs.length, 1);
+  assert.equal(costs[0].data.owner, moved.runId);
+  assert.equal(costs[0].data.turns, 1);
+  assert.equal(costs[0].data.tokens, 5);
+  const rebound = lines.find(event => event.type === 'project-root-rebound');
+  assert.deepEqual(rebound.data.settled_receipt_ids, [moved.receipt.receipt_id]);
+  const beforeRetry = durableSnapshot(moved.candidateRoot, moved.runId);
+  assert.equal(rebindProjectRoot(moved.candidateRoot, moved.runId, {
+    actor: 'human',
+    confirm: true,
+    expectedStoredRootDigest: projectRootDigest(moved.storedRoot),
+    expectedBindingGeneration: 1,
+    fence: { owner: moved.runId, generation: 1 },
+  }).operation_id, result.operation_id);
+  assert.deepEqual(durableSnapshot(moved.candidateRoot, moved.runId), beforeRetry);
+
+  const bad = movedRunWithProcessReceipt({ malformed: true });
+  const beforeBad = durableSnapshot(bad.candidateRoot, bad.runId);
+  assert.throws(
+    () => rebindProjectRoot(bad.candidateRoot, bad.runId, relocationOptions(bad)),
+    /PROJECT_ROOT_ACCOUNTING_UNMEASURABLE/,
+  );
+  assert.deepEqual(durableSnapshot(bad.candidateRoot, bad.runId), beforeBad);
+
+  for (const [label, fixture, error] of [
+    ['conflicting', movedRunWithProcessReceipt({ conflicting: true }), /PROJECT_ROOT_ACCOUNTING_CONFLICT/],
+    ['unverifiable', movedRunWithProcessReceipt({ unverifiable: true }), /PROJECT_ROOT_ACCOUNTING_UNMEASURABLE/],
+  ]) {
+    const before = durableSnapshot(fixture.candidateRoot, fixture.runId);
+    assert.throws(
+      () => rebindProjectRoot(fixture.candidateRoot, fixture.runId, relocationOptions(fixture)),
+      error,
+      label,
+    );
+    assert.deepEqual(durableSnapshot(fixture.candidateRoot, fixture.runId), before, label);
+  }
+
+  const live = movedRunWithProcessReceipt();
+  const lock = join(runDir(live.candidateRoot, live.runId), '.headless-host.lock');
+  mkdirSync(lock);
+  writeFileSync(join(lock, 'owner'), JSON.stringify({
+    token: 'live-accounting-producer',
+    pid: process.pid,
+    started_at_ms: FIXED_NOW.getTime(),
+  }));
+  assert.deepEqual(
+    diagnoseProjectRoot(live.candidateRoot, live.runId).action,
+    'wait',
+  );
+  const beforeLive = durableSnapshot(live.candidateRoot, live.runId);
+  assert.throws(
+    () => rebindProjectRoot(live.candidateRoot, live.runId, relocationOptions(live)),
+    /PROJECT_ROOT_RELOCATION_WAIT/,
+  );
+  assert.deepEqual(durableSnapshot(live.candidateRoot, live.runId), beforeLive);
+});
+
+test('Task 13 post-candidate retry is proof-bound and forged root-operation receipts fail closed', async () => {
+  const { diagnoseProjectRoot, rebindProjectRoot } = await recoveryApi();
+  const moved = seedRelocationTopology('quiescent', 'claude', 'dl-root-idempotent-');
+  const first = rebindProjectRoot(moved.candidateRoot, moved.runId, relocationOptions(moved));
+  const beforeRetry = durableSnapshot(moved.candidateRoot, moved.runId);
+  const diagnosed = diagnoseProjectRoot(moved.candidateRoot, moved.runId);
+  assert.equal(diagnosed.action, 'already-rebound');
+  assert.equal(diagnosed.operation_id, first.operation_id);
+  const retried = rebindProjectRoot(moved.candidateRoot, moved.runId, {
+    ...relocationOptions({
+      ...moved,
+      storedRoot: moved.storedRoot,
+    }),
+    expectedStoredRootDigest: projectRootDigest(moved.storedRoot),
+    expectedBindingGeneration: 1,
+    fence: { owner: moved.runId, generation: 1 },
+  });
+  assert.equal(retried.operation_id, first.operation_id);
+  assert.deepEqual(durableSnapshot(moved.candidateRoot, moved.runId), beforeRetry);
+
+  const receiptPath = join(
+    runDir(moved.candidateRoot, moved.runId),
+    'recoveries',
+    'root-operations',
+    `${first.operation_id}.json`,
+  );
+  const forged = JSON.parse(readFileSync(receiptPath, 'utf8'));
+  forged.candidate_loop_hash = '0'.repeat(64);
+  writeFileSync(receiptPath, JSON.stringify(forged));
+  assert.throws(
+    () => diagnoseProjectRoot(moved.candidateRoot, moved.runId),
+    /ROOT_OPERATION_PROOF_INVALID/,
+  );
+  assert.deepEqual(durableSnapshot(moved.candidateRoot, moved.runId), beforeRetry);
+});
+
+test('Task 13 stale launch metadata and old-root text never override the candidate-root descriptor', async () => {
+  const { recoverRelocatedRoot } = await recoveryApi();
+  for (const runtime of ['claude', 'codex']) {
+    const moved = seedRelocationTopology('reserved', runtime, `dl-root-launch-${runtime}-`);
+    const result = recoverRelocatedRoot(moved.candidateRoot, moved.runId, relocationOptions(moved));
+    const dir = join(runDir(moved.candidateRoot, moved.runId), 'terminal');
+    mkdirSync(dir, { recursive: true });
+    const variants = [
+      null,
+      '{malformed',
+      JSON.stringify({ launch_command_sha256: '0'.repeat(64) }),
+      JSON.stringify({
+        launch_command_sha256: contentHash(Buffer.from(`OLD:${moved.storedRoot}\n`)),
+        parent_run_id: moved.runId,
+        child_run_id: 'WRONG-CHILD',
+        topology: 'wrong',
+        project_root_digest: projectRootDigest(moved.storedRoot),
+        project_binding_generation: 1,
+      }),
+    ];
+    for (const meta of variants) {
+      writeFileSync(join(dir, 'launch-command.txt'), `OLD:${moved.storedRoot}\n`);
+      const metaPath = join(dir, 'launch-command.meta.json');
+      if (meta === null) rmSync(metaPath, { force: true });
+      else writeFileSync(metaPath, meta);
+      const cli = invoke([
+        'resume-command',
+        '--project-root', moved.candidateRoot,
+        '--run-id', moved.runId,
+      ], freshRoot('dl-root-launch-cwd-'));
+      assert.equal(cli.status, 0, cli.stderr);
+      assert.equal(cli.stdout.includes(moved.storedRoot), false);
+      assert.match(cli.stdout, new RegExp(moved.candidateRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+      assert.match(cli.stdout, new RegExp(result.replacement_session_id));
+    }
+  }
+});
+
+test('Task 13 committed receipt retention keeps referenced retries and prunes only unreferenced oldest entries', async () => {
+  const { diagnoseProjectRoot, rebindProjectRoot } = await recoveryApi();
+  const moved = seedRelocationTopology('quiescent', 'claude', 'dl-root-retention-');
+  const first = rebindProjectRoot(moved.candidateRoot, moved.runId, relocationOptions(moved));
+  const receipts = join(runDir(moved.candidateRoot, moved.runId), 'recoveries', 'root-operations');
+  mkdirSync(receipts, { recursive: true });
+  for (let index = 0; index < 40; index += 1) {
+    writeFileSync(join(receipts, `${String(index).padStart(64, '0')}.json`), JSON.stringify({
+      operation_id: String(index).padStart(64, '0'),
+      unreferenced_fixture: true,
+    }));
+  }
+  const diagnosis = diagnoseProjectRoot(moved.candidateRoot, moved.runId);
+  assert.equal(diagnosis.action, 'already-rebound');
+  assert.equal(existsSync(join(receipts, `${first.operation_id}.json`)), true);
+  assert.ok(readdirSync(receipts).length <= 17, 'bounded retention keeps latest proof plus configured history');
+});
+
+test('Task 13 root recovery acquire is the sole fresh-process takeover path', async () => {
+  const { recoverRelocatedRoot } = await recoveryApi();
+  const moved = seedRelocationTopology('open-affinity', 'codex', 'dl-root-acquire-');
+  const recovered = recoverRelocatedRoot(
+    moved.candidateRoot,
+    moved.runId,
+    relocationOptions(moved),
+  );
+  const before = readState(moved.candidateRoot, moved.runId).data;
+  const child = before.session_chain.sessions.find(
+    session => session.run_id === recovered.replacement_session_id,
+  );
+  const generic = invoke([
+    'lease', 'acquire',
+    '--owner', child.run_id,
+    '--generation', String(before.session_chain.lease.generation),
+    '--runtime', 'codex',
+    '--project-root', moved.candidateRoot,
+    '--run-id', moved.runId,
+  ]);
+  assert.notEqual(generic.status, 0, generic.stdout);
+  assert.equal(readState(moved.candidateRoot, moved.runId).data.session_chain.lease.owner_run_id,
+    before.session_chain.lease.owner_run_id);
+
+  const acquired = invoke([
+    'root', 'recovery', 'acquire',
+    '--capsule', child.recovery_rel,
+    '--owner', child.run_id,
+    '--generation', String(before.session_chain.lease.generation),
+    '--binding-generation', String(before.project.binding_generation),
+    '--runtime', 'codex',
+    '--candidate-project-root', moved.candidateRoot,
+    '--run-id', moved.runId,
+  ], freshRoot('dl-root-acquire-cwd-'));
+  assert.equal(acquired.status, 0, acquired.stderr);
+  const after = readState(moved.candidateRoot, moved.runId).data;
+  assert.equal(after.session_chain.lease.owner_run_id, child.run_id);
+  assert.equal(after.session_chain.lease.generation, before.session_chain.lease.generation + 1);
+  assert.equal(after.status, 'running');
+});
+
+test('Task 13 plain and replacement root publications roll forward exactly once at every crash barrier', async () => {
+  const { rebindProjectRoot, recoverRelocatedRoot } = await recoveryApi();
+  const barriers = [
+    'artifact:0:rename',
+    'event:0:append',
+    'state:loop:rename',
+    'state:hash:rename',
+    'committed:rename',
+  ];
+  for (const [route, mutate, topology] of [
+    ['plain', rebindProjectRoot, 'quiescent'],
+    ['replacement', recoverRelocatedRoot, 'open-affinity'],
+  ]) {
+    for (const barrier of barriers) {
+      const moved = seedRelocationTopology(
+        topology,
+        route === 'plain' ? 'claude' : 'codex',
+        `dl-root-crash-${route}-${barrier.replaceAll(':', '-')}-`,
+      );
+      assert.throws(
+        () => mutate(moved.candidateRoot, moved.runId, relocationOptions(moved, {
+          faultAt(label) { if (label === barrier) throw new Error(`fault:${barrier}`); },
+        })),
+        /TRANSACTION_PENDING|TRANSACTION_RECONCILIATION_REQUIRED/,
+        `${route}/${barrier}`,
+      );
+      const reopened = invoke([
+        'root', 'diagnose',
+        '--candidate-project-root', moved.candidateRoot,
+        '--run-id', moved.runId,
+      ], freshRoot('dl-root-crash-cwd-'));
+      assert.equal(reopened.status, 0, `${route}/${barrier}: ${reopened.stderr}`);
+      const result = JSON.parse(reopened.stdout);
+      assert.equal(result.action, 'already-rebound', `${route}/${barrier}`);
+      const state = readState(moved.candidateRoot, moved.runId);
+      assert.equal(
+        contentHash(readFileSync(join(runDir(moved.candidateRoot, moved.runId), 'loop.json'))),
+        state.hash,
+        `${route}/${barrier}`,
+      );
+      assert.equal(eventLines(moved.candidateRoot, moved.runId)
+        .filter(event => event.type === 'project-root-rebound').length, 1, `${route}/${barrier}`);
+    }
+  }
 });
 
 test('legacy 0.2.0 relocation diagnoses and rebinds from the migrated view without assuming data/hash content equivalence', async () => {
@@ -383,17 +1019,15 @@ test('legacy 0.2.0 relocation diagnoses and rebinds from the migrated view witho
   );
 
   const { diagnoseProjectRoot, rebindProjectRoot } = await recoveryApi();
-  assert.deepEqual(diagnoseProjectRoot(candidateRoot, runId), {
-    mismatch_class: 'unresolvable',
-    rebind_allowed: true,
-    stored_root_digest: projectRootDigest(storedRoot),
-    owner: runId,
-    generation: 1,
-  });
+  const diagnosed = diagnoseProjectRoot(candidateRoot, runId);
+  assert.equal(diagnosed.action, 'rebind');
+  assert.equal(diagnosed.current_root_digest, projectRootDigest(storedRoot));
+  assert.deepEqual(diagnosed.fence, { owner: runId, generation: 1 });
 
   rebindProjectRoot(candidateRoot, runId, {
     actor: 'human', confirm: true,
     expectedStoredRootDigest: projectRootDigest(storedRoot),
+    expectedBindingGeneration: 1,
     fence: { owner: runId, generation: 1 },
     now: FIXED_NOW.getTime(),
   });
@@ -426,6 +1060,7 @@ test('rebind rejects a loop.run_id mismatch without durable mutation', async () 
     () => rebindProjectRoot(candidateRoot, runId, {
       actor: 'human', confirm: true,
       expectedStoredRootDigest: projectRootDigest(storedRoot),
+      expectedBindingGeneration: 1,
       fence: { owner: runId, generation: 1 }, now: FIXED_NOW.getTime(),
     }),
     /STATE_INVALID/
@@ -485,17 +1120,6 @@ test('source guard detects namespace, alias/reference, and dynamic recovery-read
   }
 });
 
-test('source guard detects namespace, alias/reference, and dynamic recovery-commit access', () => {
-  const hostileSources = [
-    `import * as integrity from './integrity.mjs'; integrity.commitProjectRootRebindUnderLock(root, runId, loop, input);`,
-    `const commit = integrity['commitProjectRootRebindUnderLock']; commit(root, runId, loop, input);`,
-    `const { commitProjectRootRebindUnderLock: commit } = await import('./integrity.mjs');`,
-  ];
-  for (const source of hostileSources) {
-    assert.equal(recoveryCommitReferencePattern.test(source), true, `must detect: ${source}`);
-  }
-});
-
 test('source guard detects generic root-check bypass spellings', () => {
   const hostileSources = [
     'const skipRootCheck = true;',
@@ -523,31 +1147,6 @@ test('only the state export and dedicated recovery module may reference readStat
       violations.push(`${rel}: ${references.length} forbidden recovery-reader reference(s)`);
     }
   }
-  assert.deepEqual(violations, []);
-});
-
-test('only integrity and the dedicated recovery module may reference the fixed rebind commit', () => {
-  const violations = [];
-  let integrityDefinitions = 0;
-  let recoveryReferences = 0;
-  for (const path of sourceFiles(join(REPO_ROOT, 'scripts'))) {
-    const rel = portableRelative(REPO_ROOT, path);
-    const source = readFileSync(path, 'utf8');
-    const references = source.match(/\bcommitProjectRootRebindUnderLock\b/g) || [];
-    if (rel === 'scripts/lib/integrity.mjs') {
-      const definitions = source.match(/\bexport\s+function\s+commitProjectRootRebindUnderLock\s*\(/g) || [];
-      integrityDefinitions += definitions.length;
-      if (references.length !== 1 || definitions.length !== 1) {
-        violations.push(`${rel}: expected exactly one export definition, found ${references.length} references/${definitions.length} definitions`);
-      }
-    } else if (rel === 'scripts/lib/project-root-recovery.mjs') {
-      recoveryReferences += references.length;
-    } else if (references.length > 0) {
-      violations.push(`${rel}: ${references.length} forbidden recovery-commit reference(s)`);
-    }
-  }
-  if (integrityDefinitions !== 1) violations.push(`integrity helper definitions: expected 1, found ${integrityDefinitions}`);
-  if (recoveryReferences < 2) violations.push(`recovery helper references: expected import + call, found ${recoveryReferences}`);
   assert.deepEqual(violations, []);
 });
 

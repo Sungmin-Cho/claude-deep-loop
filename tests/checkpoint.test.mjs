@@ -7,6 +7,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -26,6 +27,10 @@ import { nextAction } from '../scripts/lib/next-action.mjs';
 import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import { contentHash, ulid, wrap } from '../scripts/lib/envelope.mjs';
 import { projectRootDigest } from '../scripts/lib/project-root.mjs';
+import {
+  acquireRootRecovery,
+  recoverRelocatedRoot,
+} from '../scripts/lib/project-root-recovery.mjs';
 import { newWorkstream, setWorkstreamStatus } from '../scripts/lib/workspace.mjs';
 import { createFileSymlinkOrSkip } from './helpers/fs-fixtures.mjs';
 
@@ -942,4 +947,74 @@ test('strict artifact observations stale on content change and invalid entries c
   });
   assert.equal(existsSync(strictCheckpointPath(pressure.root, pressure.runId, current)), true);
   assert.equal(readdirSync(dir).filter(name => name.endsWith('-compact.json')).length, 5);
+});
+
+test('root relocation stales old compact checkpoints by root epoch, generation, and loop hash', () => {
+  const fixture = seedBound('claude');
+  const stateBefore = readState(fixture.root, fixture.runId);
+  stateBefore.data.budget.max_wallclock_sec = 10 * 365 * 24 * 60 * 60;
+  writeState(fixture.root, fixture.runId, stateBefore.data);
+  const oldIdentity = readState(fixture.root, fixture.runId);
+  const oldCheckpoint = emitCompactCheckpoint(fixture.root, fixture.runId, {
+    fence: fixture.fence,
+    runtime: fixture.runtime,
+    hostSessionEvidence: hostEvidence(),
+    now: NOW_MS + 5_000,
+  });
+  const oldPath = strictCheckpointPath(fixture.root, fixture.runId, oldCheckpoint);
+  const oldBytes = readFileSync(oldPath);
+  const candidateRoot = `${fixture.root}-relocated`;
+  renameSync(fixture.root, candidateRoot);
+  const recovered = recoverRelocatedRoot(candidateRoot, fixture.runId, {
+    actor: 'human',
+    confirm: true,
+    expectedStoredRootDigest: projectRootDigest(oldIdentity.data.project.root),
+    expectedBindingGeneration: oldIdentity.data.project.binding_generation,
+    fence: {
+      owner: oldIdentity.data.session_chain.lease.owner_run_id,
+      generation: oldIdentity.data.session_chain.lease.generation,
+    },
+    now: NOW_MS + 6_000,
+  });
+  const reserved = readState(candidateRoot, fixture.runId).data;
+  const child = reserved.session_chain.sessions.find(
+    session => session.run_id === recovered.replacement_session_id,
+  );
+  acquireRootRecovery(candidateRoot, fixture.runId, {
+    capsuleRel: child.recovery_rel,
+    owner: child.run_id,
+    expectGeneration: reserved.session_chain.lease.generation,
+    bindingGeneration: reserved.project.binding_generation,
+    runtime: 'claude',
+    now: NOW_MS + 7_000,
+    clock: () => NOW_MS + 7_000,
+  });
+  assert.deepEqual(inspectCompactCheckpoint(candidateRoot, fixture.runId, {
+    hostSessionEvidence: hostEvidence(),
+    now: NOW_MS + 8_000,
+  }), { ok: false, reason: 'CHECKPOINT_NOT_FOUND' });
+  assert.deepEqual(readFileSync(join(runDir(candidateRoot, fixture.runId), oldCheckpoint.checkpoint_rel)), oldBytes);
+
+  const acquired = readState(candidateRoot, fixture.runId).data;
+  const freshCheckpoint = emitCompactCheckpoint(candidateRoot, fixture.runId, {
+    fence: {
+      owner: acquired.session_chain.lease.owner_run_id,
+      generation: acquired.session_chain.lease.generation,
+    },
+    runtime: 'claude',
+    hostSessionEvidence: hostEvidence(),
+    now: NOW_MS + 9_000,
+  });
+  const fresh = JSON.parse(readFileSync(
+    join(runDir(candidateRoot, fixture.runId), freshCheckpoint.checkpoint_rel),
+    'utf8',
+  ));
+  assert.equal(
+    fresh.payload.context.project_root_digest,
+    projectRootDigest(readState(candidateRoot, fixture.runId).data.project.root),
+  );
+  assert.equal(fresh.payload.context.project_binding_generation, oldIdentity.data.project.binding_generation + 1);
+  assert.equal(fresh.payload.context.generation, oldIdentity.data.session_chain.lease.generation + 2);
+  assert.notEqual(fresh.payload.context.loop_hash, oldIdentity.hash);
+  assert.equal(JSON.stringify(fresh).includes(oldIdentity.data.project.root), false);
 });

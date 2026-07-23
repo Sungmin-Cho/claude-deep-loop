@@ -9,7 +9,7 @@ import {
   verifyHead,
   validCost,
 } from './integrity.mjs';
-import { writeState, withReconciledMutationLock } from './state.mjs';
+import { runDir, writeState, withReconciledMutationLock } from './state.mjs';
 import { leaseCheck } from './lease.mjs';
 import { sessionRuntime } from './runtime.mjs';
 import { contentHash } from './envelope.mjs';
@@ -19,6 +19,104 @@ import { isOpenScope } from './session-scope.mjs';
 // #3: re-exported from integrity.mjs (the floor mechanism's home) so call sites/tests can import it from budget.mjs
 // while state.mjs imports it directly from integrity.mjs (no state↔budget cycle).
 export { MUTATION_TURN_FLOOR };
+
+export function inventoryRelocatedProcessReceipts(root, runId, loop, oldRootDigest) {
+  const dir = join(runDir(root, runId), 'preflight', 'process-receipts');
+  if (!existsSync(dir)) return { settledReceiptIds: [], costEvents: [] };
+  const lines = readLines(root, runId);
+  const settledReceiptIds = [];
+  const costEvents = [];
+  for (const name of readdirSync(dir).filter(value => value.endsWith('.json')).sort()) {
+    let receipt;
+    try { receipt = JSON.parse(readFileSync(join(dir, name), 'utf8')); }
+    catch { throw new Error('PROJECT_ROOT_ACCOUNTING_UNMEASURABLE'); }
+    const payload = { ...receipt };
+    delete payload.receipt_id;
+    if (receipt.contract !== 'deep-loop-codex-process-accounting-receipt-v1'
+      || receipt.run_id !== runId
+      || receipt.project_root_digest !== oldRootDigest
+      || !/^[0-9a-f]{64}$/.test(receipt.receipt_id || '')
+      || receipt.receipt_id !== contentHash(JSON.stringify(payload))
+      || !['maker', 'checker'].includes(receipt.process_kind)
+      || !isMeasuredOneTurnUsage(receipt.usage)) {
+      throw new Error('PROJECT_ROOT_ACCOUNTING_UNMEASURABLE');
+    }
+    const exact = lines.filter(event =>
+      event.type === 'cost' && event.data?.process_receipt_id === receipt.receipt_id);
+    const conflicting = lines.filter(event =>
+      event.type === 'cost'
+      && event.data?.process_kind === receipt.process_kind
+      && JSON.stringify(event.data?.process_context) === JSON.stringify(receipt.context)
+      && event.data?.process_receipt_id !== receipt.receipt_id);
+    if (exact.length > 1 || conflicting.length > 0) {
+      throw new Error('PROJECT_ROOT_ACCOUNTING_CONFLICT');
+    }
+    if (exact.length === 1) {
+      settledReceiptIds.push(receipt.receipt_id);
+      continue;
+    }
+    let origin;
+    if (receipt.process_kind === 'maker') {
+      const context = receipt.context || {};
+      const acquired = (loop.session_chain.sessions || []).find(
+        session => session.run_id === context.child_run_id && session.started_at !== null,
+      );
+      const owner = acquired ? context.child_run_id : context.parent_owner;
+      const generation = acquired ? context.child_generation : context.parent_generation;
+      const session = (loop.session_chain.sessions || []).find(item => item.run_id === owner);
+      if (!session || !Number.isSafeInteger(generation) || generation < 1) {
+        throw new Error('PROJECT_ROOT_ACCOUNTING_UNMEASURABLE');
+      }
+      origin = { owner, generation };
+    } else {
+      const context = receipt.context || {};
+      const checker = (loop.episodes || []).find(
+        episode => episode.id === context.checker_episode_id,
+      );
+      const claim = checker?.review_claim;
+      if (!claim
+        || claim.attempt_id !== context.attempt_id
+        || claim.target_maker !== context.target_maker
+        || claim.lease_owner !== context.origin_owner
+        || claim.lease_generation !== context.origin_generation) {
+        throw new Error('PROJECT_ROOT_ACCOUNTING_UNMEASURABLE');
+      }
+      origin = { owner: claim.lease_owner, generation: claim.lease_generation };
+    }
+    const trailing = [...lines].reverse().find(event => event.type === 'cost'
+      && event.data?.auto_floor === true
+      && event.data?.owner === origin.owner
+      && event.data?.generation === origin.generation);
+    const absorbedTurns = trailing?.data?.turns || 0;
+    const absorbedTokens = trailing?.data?.tokens || 0;
+    costEvents.push({
+      type: 'cost',
+      data: {
+        turns: Math.max(0, receipt.usage.num_turns - absorbedTurns),
+        tokens: Math.max(0, receipt.usage.tokens - absorbedTokens),
+        reported_turns: receipt.usage.num_turns,
+        reported_tokens: receipt.usage.tokens,
+        input_tokens: receipt.usage.input_tokens,
+        output_tokens: receipt.usage.output_tokens,
+        ...(receipt.usage.cached_input_tokens !== undefined
+          ? { cached_input_tokens: receipt.usage.cached_input_tokens } : {}),
+        ...(receipt.usage.reasoning_output_tokens !== undefined
+          ? { reasoning_output_tokens: receipt.usage.reasoning_output_tokens } : {}),
+        owner: origin.owner,
+        generation: origin.generation,
+        source: `codex-${receipt.process_kind}-measured`,
+        process_receipt_id: receipt.receipt_id,
+        process_kind: receipt.process_kind,
+        process_context: receipt.context,
+      },
+    });
+    settledReceiptIds.push(receipt.receipt_id);
+  }
+  return {
+    settledReceiptIds: [...new Set(settledReceiptIds)].sort(),
+    costEvents,
+  };
+}
 
 function safeTokenCount(value) {
   return Number.isSafeInteger(value) && value >= 0;
@@ -1383,3 +1481,5 @@ export function reconcileBudget(root, runId) {
     throw error;
   }
 }
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';

@@ -54,7 +54,12 @@ import {
   latestInsights,
   validateLedger,
 } from './lib/insights.mjs';
-import { diagnoseProjectRoot, rebindProjectRoot } from './lib/project-root-recovery.mjs';
+import {
+  acquireRootRecovery,
+  diagnoseProjectRoot,
+  rebindProjectRoot,
+  recoverRelocatedRoot,
+} from './lib/project-root-recovery.mjs';
 import {
   approveLauncherExecutable,
   approveRuntimeExecutable,
@@ -65,6 +70,7 @@ import { sessionRuntime } from './lib/runtime.mjs';
 import { canonicalProjectRoot, projectRootDigest } from './lib/project-root.mjs';
 import {
   buildRecoveryResumeDescriptor,
+  buildRootRecoveryResumeDescriptor,
   buildRuntimeResumeDescriptor,
   validateLaunchCommandMetadata,
 } from './lib/runtime-descriptor.mjs';
@@ -290,8 +296,41 @@ const handlers = {
   },
   root: async (a) => {
     const [verb, ...rest] = a;
+    if (verb === 'recovery') {
+      const [subverb, ...acquireArgs] = rest;
+      const f = parseFlags(acquireArgs);
+      if (subverb !== 'acquire') { error('USAGE: root recovery acquire'); return 2; }
+      const candidateRoot = reqStr(f, 'candidate-project-root');
+      const runId = reqStr(f, 'run-id');
+      const capsuleRel = reqStr(f, 'capsule');
+      const owner = reqStr(f, 'owner');
+      const runtime = reqStr(f, 'runtime');
+      const generation = reqStr(f, 'generation');
+      const bindingGeneration = reqStr(f, 'binding-generation');
+      if (!candidateRoot || !runId || !capsuleRel || !owner || !runtime
+        || !/^[1-9]\d*$/.test(generation || '')
+        || !/^[1-9]\d*$/.test(bindingGeneration || '')) {
+        error('USAGE: root recovery acquire requires capsule, owner, generations, runtime, root, and run id');
+        return 2;
+      }
+      try {
+        json(acquireRootRecovery(candidateRoot, runId, {
+          capsuleRel,
+          owner,
+          expectGeneration: Number(generation),
+          bindingGeneration: Number(bindingGeneration),
+          runtime,
+          now: parseExplicitNow(f),
+        }));
+        return 0;
+      } catch (e) {
+        const message = String(e?.message || e);
+        error(message);
+        return /^(?:LEASE_FENCED|RUNTIME_FENCED|PROJECT_BINDING_FENCED)(?::|$)/.test(message) ? 3 : 1;
+      }
+    }
     const f = parseFlags(rest);
-    if (verb !== 'diagnose' && verb !== 'rebind') { error(`unknown root verb: ${verb}`); return 2; }
+    if (!['diagnose', 'rebind', 'recover'].includes(verb)) { error(`unknown root verb: ${verb}`); return 2; }
     const candidateRoot = reqStr(f, 'candidate-project-root');
     if (!candidateRoot) { error('USAGE: --candidate-project-root ROOT is required'); return 2; }
     const runId = reqStr(f, 'run-id');
@@ -320,11 +359,17 @@ const handlers = {
     if (!expectedStoredRootDigest) {
       error('USAGE: --expected-stored-root-digest SHA256 is required'); return 2;
     }
+    const expectedBindingGeneration = reqStr(f, 'expected-binding-generation');
+    if (!/^[1-9]\d*$/.test(expectedBindingGeneration || '')) {
+      error('USAGE: --expected-binding-generation N is required'); return 2;
+    }
 
-    const result = rebindProjectRoot(candidateRoot, runId, {
+    const mutateRoot = verb === 'recover' ? recoverRelocatedRoot : rebindProjectRoot;
+    const result = mutateRoot(candidateRoot, runId, {
       actor,
       confirm: true,
       expectedStoredRootDigest,
+      expectedBindingGeneration: Number(expectedBindingGeneration),
       fence: { owner, generation: Number(f.generation) },
       now: parseNow(f),
     });
@@ -560,6 +605,33 @@ const handlers = {
 
     const child = (data.session_chain?.sessions || []).find(session => session.run_id === childRunId);
     if (['affinity-supersession', 'boundary-recovery'].includes(lease.takeover_kind)) {
+      if (child?.root_recovery_operation_id) {
+        if (lease.recovery_discriminator !== child.root_recovery_operation_id
+          || lease.recovery_rel !== child.recovery_rel
+          || lease.recovery_sha256 !== child.recovery_sha256
+          || child.recovery_project_binding_generation !== data.project?.binding_generation
+          || child.recovery_project_root_digest !== projectRootDigest(data.project?.root)) {
+          error('ROOT_RECOVERY_TOPOLOGY_INVALID');
+          return 1;
+        }
+        const descriptor = buildRootRecoveryResumeDescriptor({
+          runtime: sessionRuntime(data),
+          root: canonicalProjectRoot(data.project.root),
+          runId,
+          childRunId,
+          recoveryRel: child.recovery_rel,
+          generation: lease.generation,
+          bindingGeneration: data.project.binding_generation,
+        });
+        process.stdout.write([
+          descriptor.resumeInvocation,
+          `Recovery: kind=project-root capsule=${child.recovery_rel}`,
+          `Lease: owner=${lease.owner_run_id} lease_state=${lease.state} generation=${lease.generation} handoff_phase=${lease.handoff_phase} child_run_id=${childRunId}`,
+          'Status: exact root recovery child acquisition is required',
+          '',
+        ].join('\n'));
+        return 0;
+      }
       if (recoveryReservationKind(data) !== lease.takeover_kind
         || !child
         || child.recovery_kind !== lease.takeover_kind
