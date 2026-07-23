@@ -70,15 +70,23 @@ function canonicalNow(now, context = 'recovery') {
   return date.toISOString();
 }
 
-function lockedTime(now, clock, context) {
-  const value = now === undefined
-    ? (typeof clock === 'function' ? clock() : Number.NaN)
-    : now;
+function normalizedTime(value, context) {
   const timestamp = new Date(value).getTime();
   if (!Number.isSafeInteger(timestamp) || timestamp < 0) {
     throw new Error(`INVALID_NOW: ${context}`);
   }
   return timestamp;
+}
+
+function lockedSafetyTime(clock, context) {
+  return normalizedTime(
+    typeof clock === 'function' ? clock() : Number.NaN,
+    context,
+  );
+}
+
+function operationTime(now, safetyNow, context) {
+  return normalizedTime(now === undefined ? safetyNow : now, context);
 }
 
 function assertFence(loop, expect) {
@@ -380,8 +388,9 @@ export function supersedeAffinity(root, runId, {
   };
   let lockedNow;
   const sampleSafetyNow = () => {
-    lockedNow = lockedTime(now, clock, 'affinity supersession');
-    return lockedNow;
+    const safetyNow = lockedSafetyTime(clock, 'affinity supersession safety');
+    lockedNow = operationTime(now, safetyNow, 'affinity supersession');
+    return safetyNow;
   };
 
   appendAnchored(root, runId, {
@@ -681,8 +690,9 @@ export function recoverBoundary(root, runId, {
   };
   let lockedNow;
   const sampleSafetyNow = () => {
-    lockedNow = lockedTime(now, clock, 'boundary recovery');
-    return lockedNow;
+    const safetyNow = lockedSafetyTime(clock, 'boundary recovery safety');
+    lockedNow = operationTime(now, safetyNow, 'boundary recovery');
+    return safetyNow;
   };
 
   appendAnchored(root, runId, {
@@ -1011,8 +1021,9 @@ export function acquireRecovery(root, runId, {
     const payload = exactAffinityCapsule(loop, child, bytes);
     if (!payload) throw new Error('RECOVERY_CAPSULE_INVALID');
     validateAffinityEvent(root, runId, loop, child, payload);
-    const lockedNow = lockedTime(now, clock, 'recovery acquire');
-    const safety = recoverySafetyReason(loop, lockedNow);
+    const safetyNow = lockedSafetyTime(clock, 'recovery acquire safety');
+    const lockedNow = operationTime(now, safetyNow, 'recovery acquire');
+    const safety = recoverySafetyReason(loop, safetyNow);
     if (safety) {
       return {
         ok: false,

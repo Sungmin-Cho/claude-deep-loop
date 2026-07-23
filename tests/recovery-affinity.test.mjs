@@ -116,6 +116,9 @@ function openAffinityFixture(runtime = 'claude', episodePhase = 'maker-in-progre
     expect: { owner: runId, generation: 1 },
     now: NOW + 1_000,
   });
+  const state = readState(root, runId).data;
+  state.budget.max_wallclock_sec = 0;
+  writeState(root, runId, state);
   return { root, runId, workstreamId, makerId };
 }
 
@@ -156,6 +159,19 @@ function invokeWithoutNow(root, runId, args) {
   });
 }
 
+function invokeAt(root, runId, args, now) {
+  return spawnSync(process.execPath, [
+    CLI,
+    ...args,
+    '--project-root', root,
+    '--run-id', runId,
+    '--now', new Date(now).toISOString(),
+  ], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+  });
+}
+
 function durableBytes(root, runId) {
   const dir = runDir(root, runId);
   const eventPath = join(dir, 'event-log.jsonl');
@@ -186,6 +202,12 @@ function armRealWallclock(root, runId, maxWallclockSec = 0.2) {
   state.budget.max_wallclock_sec = maxWallclockSec;
   writeState(root, runId, state);
   return startedAt;
+}
+
+async function stalePreCapNowAfterExpiry(root, runId) {
+  const startedAt = armRealWallclock(root, runId, 0.05);
+  await new Promise(resolve => setTimeout(resolve, 140));
+  return startedAt + 10;
 }
 
 async function whileRunLockIsHeld(root, runId, callback, holdMs = 350) {
@@ -372,6 +394,7 @@ function boundaryFixture(phase) {
   } else {
     throw new Error(`unknown boundary phase ${phase}`);
   }
+  state.budget.max_wallclock_sec = 0;
   writeState(root, runId, state);
   return {
     root,
@@ -640,11 +663,15 @@ test('resume-command rejects a malformed recovery topology without falling throu
 
 test('affinity acquire safety failure and capsule mismatch preserve the exact reservation', () => {
   const budgetFixture = openAffinityFixture();
+  const budgetState = readState(budgetFixture.root, budgetFixture.runId).data;
+  budgetState.budget.max_wallclock_sec = 86_400;
+  writeState(budgetFixture.root, budgetFixture.runId, budgetState);
   const budgetRecovery = supersedeAffinity(budgetFixture.root, budgetFixture.runId, {
     reason: 'budget recheck',
     confirm: true,
     expect: { owner: budgetFixture.runId, generation: 1 },
     now: NOW + 2_000,
+    clock: () => NOW + 2_000,
   });
   const budgetBefore = durableBytes(budgetFixture.root, budgetFixture.runId);
   const blocked = acquireRecovery(budgetFixture.root, budgetFixture.runId, {
@@ -653,6 +680,7 @@ test('affinity acquire safety failure and capsule mismatch preserve the exact re
     expectGeneration: 1,
     runtime: 'claude',
     now: NOW + (2 * 86_400_000),
+    clock: () => NOW + (2 * 86_400_000),
   });
   assert.deepEqual(blocked, {
     ok: false,
@@ -674,6 +702,7 @@ test('affinity acquire safety failure and capsule mismatch preserve the exact re
     expectGeneration: 1,
     runtime: 'claude',
     now: NOW + (2 * 86_400_000),
+    clock: () => NOW + (2 * 86_400_000),
   }), {
     ok: true,
     generation: 2,
@@ -801,6 +830,11 @@ test('failed affinity prechecks create no capsule, event, child, scope, or gener
     { label: 'breaker', now: NOW + 2_000, pattern: /BREAKER_BLOCKED/, breaker: true },
   ]) {
     const fixture = openAffinityFixture();
+    if (configure.label === 'budget') {
+      const state = readState(fixture.root, fixture.runId).data;
+      state.budget.max_wallclock_sec = 86_400;
+      writeState(fixture.root, fixture.runId, state);
+    }
     if (configure.breaker) {
       const state = readState(fixture.root, fixture.runId).data;
       state.circuit_breaker = {
@@ -816,6 +850,7 @@ test('failed affinity prechecks create no capsule, event, child, scope, or gener
       confirm: true,
       expect: { owner: fixture.runId, generation: 1 },
       now: configure.now,
+      clock: () => configure.now,
     }), configure.pattern);
     assert.deepEqual(durableBytes(fixture.root, fixture.runId), before);
     assert.equal(existsSync(join(runDir(fixture.root, fixture.runId), 'recoveries')), false);
@@ -847,6 +882,7 @@ for (const stalePhase of ['reserved', 'emitted', 'spawned', 'acquired']) {
       confirm: true,
       expect: fixture.expect,
       now: NOW + 4_000,
+      clock: () => NOW + 4_000,
     });
     const after = readState(fixture.root, fixture.runId).data;
     const lease = after.session_chain.lease;
@@ -935,12 +971,16 @@ for (const stalePhase of ['reserved', 'emitted', 'spawned', 'acquired']) {
     assert.equal(arbitrary.ok, false);
     assert.deepEqual(durableBytes(fixture.root, fixture.runId), arbitraryBefore);
 
+    const budgetState = readState(fixture.root, fixture.runId).data;
+    budgetState.budget.max_wallclock_sec = 86_400;
+    writeState(fixture.root, fixture.runId, budgetState);
     const reservedBefore = durableBytes(fixture.root, fixture.runId);
     const blocked = acquireLease(fixture.root, fixture.runId, {
       owner: result.child_run_id,
       expectGeneration: fixture.expect.generation,
       runtime: 'claude',
       now: NOW + (2 * 86_400_000),
+      clock: () => NOW + (2 * 86_400_000),
     });
     assert.deepEqual(blocked, {
       ok: false,
@@ -976,6 +1016,7 @@ for (const stalePhase of ['reserved', 'emitted', 'spawned', 'acquired']) {
       expectGeneration: fixture.expect.generation,
       runtime: 'claude',
       now: NOW + (2 * 86_400_000),
+      clock: () => NOW + (2 * 86_400_000),
     });
     assert.deepEqual(acquired, {
       ok: true,
@@ -1088,6 +1129,100 @@ test('boundary acquire breaker failure preserves exact topology through reset an
     generation: fixture.expect.generation + 1,
     reason: 'acquired',
   });
+});
+
+test('affinity publication rejects stale public --now after real wallclock expiry', async () => {
+  const fixture = openAffinityFixture();
+  const staleNow = await stalePreCapNowAfterExpiry(fixture.root, fixture.runId);
+  const before = durableRecoveryBytes(fixture.root, fixture.runId);
+  const recovered = invokeAt(fixture.root, fixture.runId, [
+    'recover',
+    '--supersede-affinity',
+    '--reason', 'stale public affinity publication time',
+    '--confirm',
+    '--owner', fixture.runId,
+    '--generation', '1',
+  ], staleNow);
+  assert.equal(recovered.status, 1, recovered.stderr);
+  assert.match(recovered.stderr, /BUDGET_BLOCKED/);
+  assert.deepEqual(durableRecoveryBytes(fixture.root, fixture.runId), before);
+});
+
+test('boundary publication rejects stale public --now after real wallclock expiry', async () => {
+  const fixture = boundaryFixture('reserved');
+  const staleNow = await stalePreCapNowAfterExpiry(fixture.root, fixture.runId);
+  const before = durableRecoveryBytes(fixture.root, fixture.runId);
+  const recovered = invokeAt(fixture.root, fixture.runId, [
+    'recover',
+    '--confirm',
+    '--owner', fixture.expect.owner,
+    '--generation', String(fixture.expect.generation),
+  ], staleNow);
+  assert.equal(recovered.status, 1, recovered.stderr);
+  assert.match(recovered.stderr, /BUDGET_BLOCKED/);
+  assert.deepEqual(durableRecoveryBytes(fixture.root, fixture.runId), before);
+});
+
+test('affinity recovery acquire rejects stale public --now after real wallclock expiry', async () => {
+  const fixture = openAffinityFixture();
+  const recovery = supersedeAffinity(fixture.root, fixture.runId, {
+    reason: 'stale public affinity acquisition time',
+    confirm: true,
+    expect: { owner: fixture.runId, generation: 1 },
+    now: NOW + 2_000,
+    clock: () => NOW + 2_000,
+  });
+  tripBreaker(fixture.root, fixture.runId, 'retire recovery journal');
+  resetBreaker(fixture.root, fixture.runId, {
+    fence: { owner: fixture.runId, generation: 1, intent: 'breaker-reset' },
+  });
+  const staleNow = await stalePreCapNowAfterExpiry(fixture.root, fixture.runId);
+  const before = durableRecoveryBytes(fixture.root, fixture.runId);
+  const acquired = invokeAt(fixture.root, fixture.runId, [
+    'recovery', 'acquire',
+    '--capsule', recovery.recovery_rel,
+    '--owner', recovery.child_run_id,
+    '--generation', '1',
+    '--runtime', 'claude',
+  ], staleNow);
+  assert.equal(acquired.status, 1, acquired.stderr);
+  assert.deepEqual(JSON.parse(acquired.stdout), {
+    ok: false,
+    generation: 1,
+    reason: 'BUDGET_BLOCKED',
+    preserved: true,
+  });
+  assert.deepEqual(durableRecoveryBytes(fixture.root, fixture.runId), before);
+});
+
+test('boundary lease acquire rejects stale public --now after real wallclock expiry', async () => {
+  const fixture = boundaryFixture('reserved');
+  const recovery = recoverBoundary(fixture.root, fixture.runId, {
+    confirm: true,
+    expect: fixture.expect,
+    now: NOW + 4_000,
+    clock: () => NOW + 4_000,
+  });
+  tripBreaker(fixture.root, fixture.runId, 'retire recovery journal');
+  resetBreaker(fixture.root, fixture.runId, {
+    fence: { ...fixture.expect, intent: 'breaker-reset' },
+  });
+  const staleNow = await stalePreCapNowAfterExpiry(fixture.root, fixture.runId);
+  const before = durableRecoveryBytes(fixture.root, fixture.runId);
+  const acquired = invokeAt(fixture.root, fixture.runId, [
+    'lease', 'acquire',
+    '--owner', recovery.child_run_id,
+    '--generation', String(fixture.expect.generation),
+    '--runtime', 'claude',
+  ], staleNow);
+  assert.equal(acquired.status, 0, acquired.stderr);
+  assert.deepEqual(JSON.parse(acquired.stdout), {
+    ok: false,
+    generation: fixture.expect.generation,
+    reason: 'BUDGET_BLOCKED',
+    preserved: true,
+  });
+  assert.deepEqual(durableRecoveryBytes(fixture.root, fixture.runId), before);
 });
 
 test('affinity recovery acquire samples production time after lock contention crosses wallclock', async () => {

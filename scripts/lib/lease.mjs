@@ -26,6 +26,10 @@ function lockedTime(now, clock, context) {
   return timestamp;
 }
 
+function lockedSafetyTime(clock, context) {
+  return lockedTime(undefined, clock, context);
+}
+
 function classifiedAcquireFailure(generation, reason, kernelExitCode) {
   const result = { ok: false, generation, reason };
   Object.defineProperty(result, 'kernel_exit_code', {
@@ -212,8 +216,9 @@ export function acquireLease(root, runId, {
       } catch {
         return classifiedAcquireFailure(lease.generation, 'recovery-capsule-invalid', 1);
       }
-      const lockedNow = lockedTime(now, clock, 'boundary recovery acquire');
-      const safety = recoverySafetyReason(data, lockedNow);
+      const safetyNow = lockedSafetyTime(clock, 'boundary recovery acquire safety');
+      const lockedNow = lockedTime(now, () => safetyNow, 'boundary recovery acquire');
+      const safety = recoverySafetyReason(data, safetyNow);
       if (safety) {
         return {
           ok: false,
