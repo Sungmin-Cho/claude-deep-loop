@@ -26,6 +26,7 @@ import { releaseLease, acquireLease } from '../scripts/lib/lease.mjs';
 import { finishRun } from '../scripts/lib/finish.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
 import { contentHash } from '../scripts/lib/envelope.mjs';
+import { validate } from '../scripts/lib/schema.mjs';
 import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
 import * as budgetApi from '../scripts/lib/budget.mjs';
 
@@ -229,6 +230,8 @@ test('public hard pause → confirmed extend → same-session finish never emits
 function recoveryBudgetPauseFixture(takeoverKind) {
   const f = budgetPauseFixture();
   const { data } = readState(f.root, f.runId);
+  const supersededAt = new Date(f.now).toISOString();
+  const owner = data.session_chain.sessions[0];
   data.pause_reason = `recovery:${takeoverKind}`;
   data.session_chain.lease = {
     ...data.session_chain.lease,
@@ -242,7 +245,31 @@ function recoveryBudgetPauseFixture(takeoverKind) {
     recovery_sha256: 'b'.repeat(64),
     recovery_discriminator: `disc:${takeoverKind}`,
   };
-  data.session_chain.sessions[0].superseded_by = 'RECOVERY-CHILD';
+  owner.superseded_by = takeoverKind === 'boundary-recovery'
+    ? 'STALE-BOUNDARY-CHILD'
+    : 'RECOVERY-CHILD';
+  if (takeoverKind === 'affinity-supersession') {
+    owner.scope = {
+      kind: 'workstream', workstream_id: 'ws-recovery', bound_at_seq: 7,
+      terminal_event: null, closed_at: null, superseded_at: supersededAt,
+      supersede_reason: 'host-session-lost', superseded_by: 'RECOVERY-CHILD',
+    };
+  } else {
+    owner.scope = {
+      kind: 'workstream', workstream_id: 'ws-closed', bound_at_seq: 5,
+      terminal_event: { seq: 11, checksum: 'c'.repeat(64) },
+      closed_at: supersededAt, superseded_at: null,
+    };
+    data.session_chain.sessions.push({
+      run_id: 'STALE-BOUNDARY-CHILD', started_at: null, ended_at: supersededAt,
+      turns: 0, outcome: 'abandoned_recover', superseded_by: 'RECOVERY-CHILD',
+      scope: {
+        kind: 'workstream', workstream_id: null, bound_at_seq: null,
+        terminal_event: null, closed_at: null, superseded_at: supersededAt,
+        supersede_reason: 'boundary-recovery', superseded_by: 'RECOVERY-CHILD',
+      },
+    });
+  }
   data.session_chain.sessions.push({
     run_id: 'RECOVERY-CHILD', started_at: null, ended_at: null, turns: 0,
     outcome: null, superseded_by: null,
@@ -258,6 +285,18 @@ function recoveryBudgetPauseFixture(takeoverKind) {
   });
   writeState(f.root, f.runId, data);
   return f;
+}
+
+function recoveryChild(data) {
+  return data.session_chain.sessions.find(
+    session => session.run_id === data.session_chain.lease.handoff_child_run_id,
+  );
+}
+
+function recoveryPredecessor(data) {
+  return data.session_chain.sessions.find(
+    session => session.run_id === recoveryChild(data).recovered_from,
+  );
 }
 
 test('budget extension preserves both released recovery reservations byte-semantically except anchor and budget', () => {
@@ -341,6 +380,107 @@ test('malformed released recovery reservation is rejected without mutation', () 
   }), /BUDGET_EXTENSION_STATUS_INVALID/);
   assert.equal(JSON.stringify(readState(f.root, f.runId).data), before);
 });
+
+const inexactBudgetRecoveryCases = [
+    {
+      label: 'terminal replacement child',
+      mutate(data) {
+        recoveryChild(data).scope.terminal_event = {
+          seq: 12,
+          checksum: 'd'.repeat(64),
+        };
+      },
+    },
+    {
+      label: 'extra open scope',
+      mutate(data) {
+        data.session_chain.sessions.push({
+          run_id: 'EXTRA-OPEN', started_at: null, ended_at: null, turns: 0,
+          outcome: null, superseded_by: null,
+          scope: {
+            kind: 'workstream', workstream_id: null, bound_at_seq: null,
+            terminal_event: null, closed_at: null, superseded_at: null,
+          },
+        });
+      },
+    },
+    {
+      label: 'duplicate child session identity',
+      mutate(data) {
+        data.session_chain.sessions.push({
+          run_id: data.session_chain.lease.handoff_child_run_id,
+          started_at: null, ended_at: null, turns: 0,
+          outcome: 'abandoned_recover', superseded_by: null,
+          scope: {
+            kind: 'workstream', workstream_id: null, bound_at_seq: null,
+            terminal_event: null, closed_at: null,
+            superseded_at: '2026-07-23T00:00:00.000Z',
+            supersede_reason: 'boundary-recovery',
+            superseded_by: 'UNRELATED',
+          },
+        });
+      },
+    },
+    {
+      label: 'broken predecessor link',
+      mutate(data) {
+        const predecessor = recoveryPredecessor(data);
+        predecessor.superseded_by = 'UNRELATED';
+        predecessor.scope.superseded_by = 'UNRELATED';
+      },
+    },
+    {
+      label: 'wrong boundary supersession reason',
+      mutate(data) {
+        recoveryPredecessor(data).scope.supersede_reason = 'operator-recovery';
+      },
+    },
+    {
+      label: 'already-started replacement child',
+      mutate(data) {
+        recoveryChild(data).started_at = '2026-07-23T00:00:01.000Z';
+      },
+    },
+    {
+      label: 'ended replacement child',
+      mutate(data) {
+        const child = recoveryChild(data);
+        child.ended_at = '2026-07-23T00:00:01.000Z';
+        child.outcome = 'abandoned_recover';
+      },
+    },
+    {
+      label: 're-superseded replacement child',
+      mutate(data) {
+        recoveryChild(data).superseded_by = 'UNRELATED';
+      },
+    },
+    {
+      label: 'used replacement child',
+      mutate(data) {
+        recoveryChild(data).turns = 1;
+      },
+    },
+];
+
+for (const item of inexactBudgetRecoveryCases) {
+  test(`budget extension rejects schema-valid ${item.label} without mutation`, () => {
+    const f = recoveryBudgetPauseFixture('boundary-recovery');
+    const { data } = readState(f.root, f.runId);
+    item.mutate(data);
+    assert.deepEqual(validate(data), { ok: true, errors: [] }, item.label);
+    writeState(f.root, f.runId, data);
+    const before = JSON.stringify(readState(f.root, f.runId).data);
+    assert.throws(() => budgetApi.extendBudget(f.root, f.runId, {
+      turns: 2,
+      reason: `reject ${item.label}`,
+      confirm: true,
+      fence: f.fence,
+      now: f.now,
+    }), /BUDGET_EXTENSION_STATUS_INVALID/, item.label);
+    assert.equal(JSON.stringify(readState(f.root, f.runId).data), before, item.label);
+  });
+}
 
 test('isMeasuredOneTurnUsage accepts only an exact safe Codex one-turn measurement', () => {
   assert.equal(isMeasuredOneTurnUsage({

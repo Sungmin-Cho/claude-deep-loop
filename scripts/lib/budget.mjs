@@ -14,6 +14,7 @@ import { leaseCheck } from './lease.mjs';
 import { sessionRuntime } from './runtime.mjs';
 import { contentHash } from './envelope.mjs';
 import { canonicalProjectRoot, projectRootDigest } from './project-root.mjs';
+import { isOpenScope } from './session-scope.mjs';
 
 // #3: re-exported from integrity.mjs (the floor mechanism's home) so call sites/tests can import it from budget.mjs
 // while state.mjs imports it directly from integrity.mjs (no state↔budget cycle).
@@ -306,22 +307,56 @@ export function recoveryReservationKind(loop) {
     || !/^[0-9a-f]{64}$/.test(lease.handoff_idempotency_key || '')) {
     return null;
   }
-  const matchingChildren = (loop.session_chain?.sessions || [])
-    .filter(session => session.run_id === lease.handoff_child_run_id
-      && session.recovery_kind === kind
-      && typeof session.recovered_from === 'string' && session.recovered_from.length > 0
-      && /^recoveries\/[^/].+/.test(session.recovery_rel || '')
-      && /^[0-9a-f]{64}$/.test(session.recovery_sha256 || ''));
-  if (matchingChildren.length !== 1) return null;
-  const child = matchingChildren[0];
-  if (kind === 'affinity-supersession' && child.recovered_from !== lease.owner_run_id) return null;
+  const sessions = loop.session_chain?.sessions;
+  if (!Array.isArray(sessions)) return null;
+  const childRows = sessions.filter(session => session?.run_id === lease.handoff_child_run_id);
+  if (childRows.length !== 1) return null;
+  const child = childRows[0];
+  if (child.recovery_kind !== kind
+    || typeof child.recovered_from !== 'string' || child.recovered_from.length === 0
+    || child.recovered_from === child.run_id
+    || child.started_at !== null
+    || child.ended_at !== null
+    || child.turns !== 0
+    || child.outcome !== null
+    || child.superseded_by !== null
+    || !/^recoveries\/[^/].+/.test(child.recovery_rel || '')
+    || !/^[0-9a-f]{64}$/.test(child.recovery_sha256 || '')) return null;
   const scope = child.scope;
-  if (scope?.kind !== 'workstream' || scope.closed_at !== null || scope.superseded_at !== null) return null;
+  if (!isOpenScope(scope) || scope.closed_at !== null) return null;
+  const openSessions = sessions.filter(
+    session => isOpenScope(session?.scope) && session.scope.closed_at === null,
+  );
+  if (openSessions.length !== 1 || openSessions[0] !== child) return null;
+
+  const predecessorRows = sessions.filter(session => session?.run_id === child.recovered_from);
+  if (predecessorRows.length !== 1) return null;
+  const predecessor = predecessorRows[0];
+  const predecessorScope = predecessor.scope;
+  if (predecessor.superseded_by !== child.run_id
+    || predecessorScope?.kind !== 'workstream'
+    || predecessorScope.terminal_event !== null
+    || predecessorScope.closed_at !== null
+    || predecessorScope.superseded_at === null
+    || typeof predecessorScope.supersede_reason !== 'string'
+    || predecessorScope.supersede_reason.length === 0
+    || predecessorScope.superseded_by !== child.run_id) return null;
+  const linkedSessions = sessions.filter(session => session?.superseded_by === child.run_id);
+  const linkedScopes = sessions.filter(session => session?.scope?.superseded_by === child.run_id);
+  if (linkedSessions.length !== 1 || linkedSessions[0] !== predecessor
+    || linkedScopes.length !== 1 || linkedScopes[0] !== predecessor) return null;
+
   if (kind === 'affinity-supersession'
-    && (typeof scope.workstream_id !== 'string' || scope.workstream_id.length === 0
-      || !Number.isSafeInteger(scope.bound_at_seq) || scope.bound_at_seq < 1)) return null;
+    && (child.recovered_from !== lease.owner_run_id
+      || typeof scope.workstream_id !== 'string' || scope.workstream_id.length === 0
+      || !Number.isSafeInteger(scope.bound_at_seq) || scope.bound_at_seq < 1
+      || predecessorScope.workstream_id !== scope.workstream_id
+      || predecessorScope.bound_at_seq !== scope.bound_at_seq)) return null;
   if (kind === 'boundary-recovery'
-    && (scope.workstream_id !== null || scope.bound_at_seq !== null)) return null;
+    && (scope.workstream_id !== null || scope.bound_at_seq !== null
+      || predecessorScope.workstream_id !== null
+      || predecessorScope.bound_at_seq !== null
+      || predecessorScope.supersede_reason !== 'boundary-recovery')) return null;
   return kind;
 }
 
