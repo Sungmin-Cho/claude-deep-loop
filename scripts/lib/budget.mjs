@@ -384,6 +384,13 @@ export function recoveryReservationKind(loop) {
     const parentScope = parent.scope;
     const staleEndedAt = canonicalTimestamp(predecessor.ended_at);
     const staleStartedAt = canonicalTimestamp(predecessor.started_at);
+    const staleRecoveredAt = canonicalTimestamp(predecessorScope.superseded_at);
+    const parentClosedAt = canonicalTimestamp(parentScope?.closed_at);
+    const parentSupersededAt = canonicalTimestamp(parentScope?.superseded_at);
+    const rootDigest = projectRootDigest(loop.project?.root);
+    const workstreamRows = (Array.isArray(loop.workstreams) ? loop.workstreams : [])
+      .filter(workstream => workstream?.id === parentScope?.workstream_id);
+    const workstream = workstreamRows[0];
     const neverAcquiredOwner = owner === parent
       && predecessor.started_at === null
       && staleEndedAt !== null
@@ -397,14 +404,36 @@ export function recoveryReservationKind(loop) {
     if (parent === predecessor || parent === child
       || parent.superseded_by !== predecessor.run_id
       || parentScope?.kind !== 'workstream'
-      || parentScope.closed_at === null
-      || parentScope.superseded_at !== null
+      || parentClosedAt === null
+      || parentSupersededAt === null
+      || staleRecoveredAt === null
+      || staleEndedAt !== staleRecoveredAt
+      || parentClosedAt > parentSupersededAt
+      || parentSupersededAt > staleRecoveredAt
       || !sameBoundaryIdentity(
         predecessor.parent_boundary_event,
         parentScope.terminal_event,
       )
+      || !sameBoundaryIdentity(
+        lease.handoff_boundary_event,
+        parentScope.terminal_event,
+      )
+      || !sameBoundaryIdentity(
+        lease.handoff_boundary_event,
+        predecessor.parent_boundary_event,
+      )
       || predecessor.project_binding_generation !== loop.project?.binding_generation
-      || predecessor.project_root_digest !== projectRootDigest(loop.project?.root)
+      || lease.handoff_project_binding_generation !== loop.project?.binding_generation
+      || lease.handoff_project_binding_generation !== predecessor.project_binding_generation
+      || predecessor.project_root_digest !== rootDigest
+      || lease.handoff_project_root_digest !== rootDigest
+      || lease.handoff_project_root_digest !== predecessor.project_root_digest
+      || workstreamRows.length !== 1
+      || !['ready', 'merged', 'abandoned'].includes(workstream?.status)
+      || !Array.isArray(workstream?.terminal_events)
+      || !workstream.terminal_events.some(event => (
+        sameBoundaryIdentity(event, lease.handoff_boundary_event)
+      ))
       || predecessor.outcome !== 'abandoned_recover'
       || (!neverAcquiredOwner && !acquiredOwner)) {
       return null;

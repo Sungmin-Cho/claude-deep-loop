@@ -101,6 +101,7 @@ function recoveryBreakerFixture(kind) {
   const { root, runId } = seed();
   const { data } = readState(root, runId);
   const supersededAt = '2026-07-23T00:00:00.000Z';
+  const handoffAt = '2026-07-22T23:59:00.000Z';
   const owner = data.session_chain.sessions[0];
   data.status = 'paused';
   data.pause_reason = `recovery:${kind}`;
@@ -131,11 +132,25 @@ function recoveryBreakerFixture(kind) {
       supersede_reason: 'host-session-lost', superseded_by: 'RECOVERY-CHILD',
     };
   } else {
+    const boundaryEvent = { seq: 11, checksum: 'c'.repeat(64) };
     owner.scope = {
       kind: 'workstream', workstream_id: 'ws-closed', bound_at_seq: 5,
-      terminal_event: { seq: 11, checksum: 'c'.repeat(64) },
-      closed_at: supersededAt, superseded_at: null,
+      terminal_event: boundaryEvent,
+      closed_at: handoffAt, superseded_at: handoffAt,
     };
+    data.session_chain.lease.handoff_boundary_event = { ...boundaryEvent };
+    data.session_chain.lease.handoff_project_binding_generation =
+      data.project.binding_generation;
+    data.session_chain.lease.handoff_project_root_digest =
+      projectRootDigest(data.project.root);
+    data.workstreams.push({
+      id: 'ws-closed', title: 'closed recovery source', status: 'ready',
+      branch: 'recovery/source', worktree: '.worktrees/recovery-source',
+      base_commit: null, dirty_on_handoff: false,
+      pr: { intended: true, state: 'none', url: null },
+      episodes: [], review_points_done: [], depends_on: [],
+      terminal_events: [{ ...boundaryEvent }],
+    });
     data.session_chain.sessions.push({
       run_id: 'STALE-BOUNDARY-CHILD', started_at: null, ended_at: supersededAt,
       turns: 0, outcome: 'abandoned_recover', superseded_by: 'RECOVERY-CHILD',
@@ -362,14 +377,14 @@ const inexactBreakerRecoveryCases = [
       },
     },
     {
-      label: 'superseded original parent scope',
+      label: 'missing original parent supersession timestamp',
       mutate(data, child) {
         const stale = data.session_chain.sessions.find(
           session => session.run_id === child.recovered_from,
         );
         data.session_chain.sessions.find(
           session => session.run_id === stale.parent_run_id,
-        ).scope.superseded_at = '2026-07-23T00:00:01.000Z';
+        ).scope.superseded_at = null;
       },
     },
     {
@@ -484,6 +499,109 @@ const inexactBreakerRecoveryCases = [
         );
         stale.started_at = 'not-a-timestamp';
         data.session_chain.lease.owner_run_id = stale.run_id;
+      },
+    },
+    {
+      label: 'invalid parent supersession chronology',
+      mutate(data, child) {
+        const stale = data.session_chain.sessions.find(
+          session => session.run_id === child.recovered_from,
+        );
+        data.session_chain.sessions.find(
+          session => session.run_id === stale.parent_run_id,
+        ).scope.superseded_at = '2026-07-23T00:00:01.000Z';
+      },
+    },
+    {
+      label: 'parent scope closes after its supersession timestamp',
+      mutate(data, child) {
+        const stale = data.session_chain.sessions.find(
+          session => session.run_id === child.recovered_from,
+        );
+        data.session_chain.sessions.find(
+          session => session.run_id === stale.parent_run_id,
+        ).scope.closed_at = '2026-07-22T23:59:01.000Z';
+      },
+    },
+    {
+      label: 'stale completion differs from scope recovery timestamp',
+      mutate(data, child) {
+        data.session_chain.sessions.find(
+          session => session.run_id === child.recovered_from,
+        ).scope.superseded_at = '2026-07-23T00:00:01.000Z';
+      },
+    },
+    {
+      label: 'missing lease boundary metadata',
+      mutate(data) {
+        delete data.session_chain.lease.handoff_boundary_event;
+        delete data.session_chain.lease.handoff_project_binding_generation;
+        delete data.session_chain.lease.handoff_project_root_digest;
+      },
+    },
+    {
+      label: 'mismatched lease boundary event',
+      mutate(data) {
+        data.session_chain.lease.handoff_boundary_event = {
+          seq: 11,
+          checksum: 'e'.repeat(64),
+        };
+      },
+    },
+    {
+      label: 'stale lease project binding generation',
+      mutate(data) {
+        data.session_chain.lease.handoff_project_binding_generation += 1;
+      },
+    },
+    {
+      label: 'stale lease project root digest',
+      mutate(data) {
+        data.session_chain.lease.handoff_project_root_digest = 'e'.repeat(64);
+      },
+    },
+    {
+      label: 'missing boundary Workstream',
+      mutate(data) {
+        data.workstreams = [];
+      },
+    },
+    {
+      label: 'mismatched parent Workstream id',
+      mutate(data, child) {
+        const stale = data.session_chain.sessions.find(
+          session => session.run_id === child.recovered_from,
+        );
+        data.session_chain.sessions.find(
+          session => session.run_id === stale.parent_run_id,
+        ).scope.workstream_id = 'ws-missing';
+      },
+    },
+    {
+      label: 'missing Workstream terminal event',
+      mutate(data) {
+        data.workstreams[0].terminal_events = [];
+      },
+    },
+    {
+      label: 'mismatched Workstream terminal event',
+      mutate(data) {
+        data.workstreams[0].terminal_events = [{
+          seq: 11,
+          checksum: 'e'.repeat(64),
+        }];
+      },
+    },
+    {
+      label: 'nonterminal boundary Workstream',
+      mutate(data) {
+        data.workstreams[0].status = 'in_progress';
+      },
+    },
+    {
+      label: 'duplicate boundary Workstream identity',
+      mutate(data) {
+        data.workstreams.push(structuredClone(data.workstreams[0]));
       },
     },
 ];
