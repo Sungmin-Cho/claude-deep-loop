@@ -567,8 +567,7 @@ function strictRel(value) {
 
 function pathBearing(value) {
   return value.includes('/')
-    || /[A-Za-z]:[\\/]/.test(value)
-    || value.includes('\\\\');
+    || value.includes('\\');
 }
 
 function stringSummary(value) {
