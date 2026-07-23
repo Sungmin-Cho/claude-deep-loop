@@ -628,6 +628,10 @@ export function pauseRun(root, runId, { reason, mode = 'preserve', expect, now =
           throw new Error('LEASE_FENCED: pauseRun wrong generation');
         }
       }
+      if (['affinity-supersession', 'boundary-recovery']
+        .includes(loop.session_chain?.lease?.takeover_kind)) {
+        throw new Error('RECOVERY_IN_FLIGHT');
+      }
       // Terminal guard (spec §1.2 / acquireLease mirror): completed/stopped runs must never be demoted to paused.
       // Checked after fence so that LEASE_FENCED fires first when both conditions hold —
       // drive-headless re-reads state to detect terminal after catching LEASE_FENCED.

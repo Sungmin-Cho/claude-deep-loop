@@ -38,6 +38,11 @@ export function reservedOpenScope(loop) {
   return scopes[0] ?? null;
 }
 
+export function openScopeSessions(loop) {
+  return (Array.isArray(loop?.session_chain?.sessions) ? loop.session_chain.sessions : [])
+    .filter(session => isOpenScope(session?.scope));
+}
+
 export function assertScopeAllows(loop, workstreamId, { allowUnbound = false } = {}) {
   if (typeof workstreamId !== 'string' || workstreamId.length === 0) {
     throw new Error('WORKSTREAM_REQUIRED: a non-null Workstream is required');
@@ -93,5 +98,28 @@ export function closeScope(loop, workstreamId, terminalEvent, now) {
   const closedAt = timestamp.toISOString();
   scope.terminal_event = terminalEvent;
   scope.closed_at = closedAt;
+  return scope;
+}
+
+export function supersedeScope(scope, {
+  reason,
+  supersededBy,
+  now,
+} = {}) {
+  if (!isOpenScope(scope)) {
+    throw new Error('SESSION_SCOPE_MISMATCH: only an open Workstream scope can be superseded');
+  }
+  if (typeof reason !== 'string' || reason.length === 0 || reason.length > 1_024
+    || reason.includes('\0')) {
+    throw new Error('RECOVERY_REASON_INVALID');
+  }
+  if (typeof supersededBy !== 'string' || supersededBy.length === 0) {
+    throw new Error('RECOVERY_CHILD_INVALID');
+  }
+  const timestamp = new Date(now);
+  if (!Number.isFinite(timestamp.getTime())) throw new Error('INVALID_NOW: scope supersession');
+  scope.superseded_at = timestamp.toISOString();
+  scope.supersede_reason = reason;
+  scope.superseded_by = supersededBy;
   return scope;
 }

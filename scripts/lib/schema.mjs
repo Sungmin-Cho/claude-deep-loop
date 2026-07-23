@@ -210,6 +210,27 @@ function validateSessions(sc, errors) {
       if (!portableRel(session.recovery_rel, 'recoveries/')) errors.push('session_chain.sessions[].recovery_rel must be a safe recoveries/ relative path');
       if (!/^[0-9a-f]{64}$/.test(session.recovery_sha256 || '')) errors.push('session_chain.sessions[].recovery_sha256 must be lowercase 64-hex');
     }
+    const recoveryBindingFields = [
+      'recovery_project_binding_generation',
+      'recovery_project_root_digest',
+    ];
+    const recoveryBindingPresent = recoveryBindingFields
+      .filter(key => Object.hasOwn(session, key));
+    if (recoveryBindingPresent.length !== 0
+      && recoveryBindingPresent.length !== recoveryBindingFields.length) {
+      errors.push('session_chain.sessions[] recovery project binding fields must appear together');
+    } else if (recoveryBindingPresent.length === recoveryBindingFields.length) {
+      if (present.length !== recoveryFields.length) {
+        errors.push('session_chain.sessions[] recovery project binding requires recovery fields');
+      }
+      if (!Number.isSafeInteger(session.recovery_project_binding_generation)
+        || session.recovery_project_binding_generation < 1) {
+        errors.push('session_chain.sessions[].recovery_project_binding_generation must be a positive integer');
+      }
+      if (!/^[0-9a-f]{64}$/.test(session.recovery_project_root_digest || '')) {
+        errors.push('session_chain.sessions[].recovery_project_root_digest must be lowercase 64-hex');
+      }
+    }
   }
 }
 

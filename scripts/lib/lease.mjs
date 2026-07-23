@@ -5,8 +5,15 @@ import { runtimeFence } from './runtime.mjs';
 import { runDir, writeState, withReconciledMutationLock } from './state.mjs';
 import { nextAction } from './next-action.mjs';
 import { projectRootDigest } from './project-root.mjs';
+import { recoveryReservationKind } from './budget.mjs';
+import {
+  clearRecoveryLease,
+  recoverySafetyReason,
+  validateBoundaryRecoveryArtifactLocked,
+} from './recover.mjs';
 
 const PHASE_ORDER = { idle: 0, reserved: 1, emitted: 2, spawned: 3, acquired: 4 };
+const RECOVERY_TAKEOVER_KINDS = new Set(['affinity-supersession', 'boundary-recovery']);
 
 export function deriveIdempotencyKey(ownerRunId, ownerGeneration, triggerReason) {
   return contentHash(`${ownerRunId}|${ownerGeneration}|${triggerReason}`).slice(0, 16);
@@ -146,6 +153,79 @@ export function acquireLease(root, runId, { owner, expectGeneration, runtime, no
     if (data.status === 'stopped' || data.status === 'completed') {
       return { ok: false, generation: lease.generation, reason: 'run-terminal' };
     }
+    const recoveryChild = data.session_chain.sessions.find(
+      session => session.run_id === lease.handoff_child_run_id,
+    );
+    if (lease.takeover_kind === 'affinity-supersession'
+      || recoveryChild?.recovery_kind === 'affinity-supersession') {
+      return {
+        ok: false,
+        generation: lease.generation,
+        reason: 'RECOVERY_ACQUIRE_REQUIRED',
+      };
+    }
+    if (lease.takeover_kind === 'boundary-recovery') {
+      if (owner !== lease.handoff_child_run_id) {
+        return {
+          ok: false,
+          generation: lease.generation,
+          reason: 'child-not-reserved',
+        };
+      }
+      if (recoveryReservationKind(data) !== 'boundary-recovery') {
+        return {
+          ok: false,
+          generation: lease.generation,
+          reason: 'recovery-topology-invalid',
+        };
+      }
+      const child = data.session_chain.sessions.find(session => session.run_id === owner);
+      if (!child
+        || child.recovery_project_binding_generation !== data.project?.binding_generation
+        || child.recovery_project_root_digest !== projectRootDigest(data.project?.root)
+        || lease.recovery_rel !== child.recovery_rel
+        || lease.recovery_sha256 !== child.recovery_sha256) {
+        return {
+          ok: false,
+          generation: lease.generation,
+          reason: 'recovery-topology-invalid',
+        };
+      }
+      try {
+        validateBoundaryRecoveryArtifactLocked(root, runId, data, child, _guard);
+      } catch {
+        return {
+          ok: false,
+          generation: lease.generation,
+          reason: 'recovery-capsule-invalid',
+        };
+      }
+      const safety = recoverySafetyReason(data, now);
+      if (safety) {
+        return {
+          ok: false,
+          generation: lease.generation,
+          reason: safety,
+          preserved: true,
+        };
+      }
+      const iso = new Date(now).toISOString();
+      data.session_chain.lease = clearRecoveryLease(
+        lease,
+        owner,
+        expectGeneration + 1,
+        iso,
+      );
+      data.status = 'running';
+      data.pause_reason = null;
+      child.started_at = iso;
+      writeState(root, runId, data);
+      return {
+        ok: true,
+        generation: expectGeneration + 1,
+        reason: 'acquired',
+      };
+    }
     const topologyError = boundaryHandoffTopologyError(data);
     if (topologyError) return { ok: false, generation: lease.generation, reason: topologyError };
     // A boundary handoff is a durable one-child reservation, not a stale-lease
@@ -200,6 +280,9 @@ export function releaseLease(root, runId, { owner, generation }) {
   return withReconciledMutationLock(root, runId, (_guard, { data }) => {
     const lease = data.session_chain.lease;
     if (lease.owner_run_id !== owner || lease.generation !== generation) return { ok: false, reason: 'fenced' };
+    if (RECOVERY_TAKEOVER_KINDS.has(lease.takeover_kind)) {
+      return { ok: false, reason: 'RECOVERY_IN_FLIGHT' };
+    }
     // Codex r3 🔴1: RUN_PAUSED — refuse to release when paused. An owner that got gate-blocked
     // (rollbackAndPause) must not call releaseLease to bypass the `recover --confirm` audit path.
     // leaseCheck intent='recover' (human-only) is the only way to resume from a paused run.
@@ -219,10 +302,19 @@ export function reserveHandoff(root, runId, { trigger, boundaryEvent, now = Date
     if (data.status === 'completed' || data.status === 'stopped') {
       return { ok: false, reserved: false, reason: 'RUN_TERMINAL', key: null, childRunId: null };
     }
+    const lease = data.session_chain.lease;
+    if (RECOVERY_TAKEOVER_KINDS.has(lease.takeover_kind)) {
+      return {
+        ok: false,
+        reserved: false,
+        reason: 'RECOVERY_IN_FLIGHT',
+        key: lease.handoff_idempotency_key,
+        childRunId: lease.handoff_child_run_id,
+      };
+    }
     if (data.status === 'paused') {
       return { ok: false, reserved: false, reason: 'RUN_PAUSED', key: null, childRunId: null };
     }
-    const lease = data.session_chain.lease;
     if (expect && (lease.owner_run_id !== expect.owner || lease.generation !== expect.generation)) {
       return { ok: false, reserved: false, reason: 'fenced', key: lease.handoff_idempotency_key, childRunId: lease.handoff_child_run_id };
     }
@@ -278,6 +370,9 @@ export function advanceHandoffPhase(root, runId, { key, toPhase, now = Date.now(
     // 구버전 오염 상태(terminal+emitted 등)에 대한 방어-심층. respawn은 이 reason을 outcome:'terminal'로 전파.
     if (data.status === 'completed' || data.status === 'stopped') return { ok: false, reason: 'RUN_TERMINAL' };
     const lease = data.session_chain.lease;
+    if (RECOVERY_TAKEOVER_KINDS.has(lease.takeover_kind)) {
+      return { ok: false, reason: 'RECOVERY_IN_FLIGHT' };
+    }
     if (expect && (lease.owner_run_id !== expect.owner || lease.generation !== expect.generation)) {
       return { ok: false, reason: 'fenced' };
     }
@@ -307,6 +402,9 @@ export function rollbackHandoff(root, runId, { owner, generation }) {
   return withReconciledMutationLock(root, runId, (_guard, { data }) => {
     const lease = data.session_chain.lease;
     if (lease.owner_run_id !== owner || lease.generation !== generation) return { ok: false, reason: 'fenced' };
+    if (RECOVERY_TAKEOVER_KINDS.has(lease.takeover_kind)) {
+      return { ok: false, reason: 'RECOVERY_IN_FLIGHT' };
+    }
     const terminal = data.status === 'completed' || data.status === 'stopped';
     // terminal + 잔여 없음(idle, key/child null) → write 없는 no-op (plan r2 P1: 정상-finish 후
     // emitHandoff 거부 경로의 무조건 보상 호출이 idle lease를 다시 쓰지 않도록).
@@ -334,6 +432,9 @@ export function rollbackHandoff(root, runId, { owner, generation }) {
 export function rollbackReservedEmit(root, runId, { key, childRunId, expect, statFn = statSync }) {
   return withReconciledMutationLock(root, runId, (_guard, { data }) => {
     const lease = data.session_chain.lease;
+    if (RECOVERY_TAKEOVER_KINDS.has(lease.takeover_kind)) {
+      return { ok: false, reason: 'RECOVERY_IN_FLIGHT' };
+    }
     const childCommitted = data.session_chain.sessions.some(session => session.run_id === childRunId);
     if (childCommitted || lease.handoff_phase !== 'reserved') {
       return { ok: true, idempotent: childCommitted || ['emitted', 'spawned', 'acquired'].includes(lease.handoff_phase) };

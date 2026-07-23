@@ -175,6 +175,8 @@ test('v0.4 schema pins exact Workstream/legacy scopes and recovery-owned optiona
     {
       run_id: 'R', recovered_from: 'OLD', recovery_kind: 'affinity-supersession',
       recovery_rel: 'recoveries/r.json', recovery_sha256: 'b'.repeat(64),
+      recovery_project_binding_generation: 2,
+      recovery_project_root_digest: 'c'.repeat(64),
       scope: {
         kind: 'workstream', workstream_id: 'ws-1', bound_at_seq: 7,
         terminal_event: { seq: 8, checksum }, closed_at: '2026-07-23T00:00:00.000Z',
@@ -197,6 +199,9 @@ test('v0.4 schema pins exact Workstream/legacy scopes and recovery-owned optiona
     ['unsafe recovery rel', loop => { loop.session_chain.sessions[0].recovery_rel = '../escape.json'; }],
     ['bad recovery hash', loop => { loop.session_chain.sessions[0].recovery_sha256 = 'B'.repeat(64); }],
     ['partial recovery tuple', loop => { delete loop.session_chain.sessions[0].recovery_sha256; }],
+    ['partial recovery root binding', loop => { delete loop.session_chain.sessions[0].recovery_project_root_digest; }],
+    ['bad recovery root epoch', loop => { loop.session_chain.sessions[0].recovery_project_binding_generation = 0; }],
+    ['bad recovery root digest', loop => { loop.session_chain.sessions[0].recovery_project_root_digest = 'C'.repeat(64); }],
     ['legacy supersession field', loop => { loop.session_chain.sessions[1].scope.superseded_by = 'NEXT'; }],
   ];
   for (const [label, mutate] of mutations) {

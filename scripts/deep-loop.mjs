@@ -27,7 +27,12 @@ import { respawn, respawnGate, resolveSpawnMode } from './lib/respawn.mjs';
 import { visibleSpawn } from './lib/spawn-driver.mjs';
 import { driveHeadlessRun } from './lib/headless-host.mjs';
 import { resolveAdapter, guardTierProtocol, loadProtocol } from './lib/adapters.mjs';
-import { recordCost, checkBudget, extendBudget } from './lib/budget.mjs';
+import {
+  recordCost,
+  checkBudget,
+  extendBudget,
+  recoveryReservationKind,
+} from './lib/budget.mjs';
 import { computeDebt, ack as ackComprehension } from './lib/comprehension.mjs';
 import { checkBreaker, resetBreaker } from './lib/breaker.mjs';
 import { offerDesktop, confirmDesktop, declineDesktop, resetDesktop } from './lib/spawn-optin.mjs';
@@ -36,7 +41,11 @@ import { setSessionProfile } from './lib/session-profile.mjs';
 import { defaultDesktopProbe } from './lib/desktop-target.mjs';
 import { finishRun } from './lib/finish.mjs';
 import { detectAndPersist } from './lib/detect-terminal.mjs';
-import { recoverRun } from './lib/recover.mjs';
+import {
+  acquireRecovery,
+  recoverRun,
+  supersedeAffinity,
+} from './lib/recover.mjs';
 import {
   captureLatestInsightsSet,
   captureReconciledRunSet,
@@ -55,6 +64,7 @@ import {
 import { sessionRuntime } from './lib/runtime.mjs';
 import { canonicalProjectRoot, projectRootDigest } from './lib/project-root.mjs';
 import {
+  buildRecoveryResumeDescriptor,
   buildRuntimeResumeDescriptor,
   validateLaunchCommandMetadata,
 } from './lib/runtime-descriptor.mjs';
@@ -545,6 +555,35 @@ const handlers = {
     }
 
     const child = (data.session_chain?.sessions || []).find(session => session.run_id === childRunId);
+    if (['affinity-supersession', 'boundary-recovery'].includes(lease.takeover_kind)) {
+      if (recoveryReservationKind(data) !== lease.takeover_kind
+        || !child
+        || child.recovery_kind !== lease.takeover_kind
+        || child.recovery_project_binding_generation !== data.project?.binding_generation
+        || child.recovery_project_root_digest !== projectRootDigest(data.project?.root)
+        || lease.recovery_rel !== child.recovery_rel
+        || lease.recovery_sha256 !== child.recovery_sha256) {
+        error('RECOVERY_TOPOLOGY_INVALID');
+        return 1;
+      }
+      const descriptor = buildRecoveryResumeDescriptor({
+        kind: child.recovery_kind,
+        runtime: sessionRuntime(data),
+        root: canonicalProjectRoot(data.project.root),
+        runId,
+        childRunId,
+        recoveryRel: child.recovery_rel,
+        generation: lease.generation,
+      });
+      process.stdout.write([
+        descriptor.resumeInvocation,
+        `Recovery: kind=${child.recovery_kind} capsule=${child.recovery_rel}`,
+        `Lease: owner=${lease.owner_run_id} lease_state=${lease.state} generation=${lease.generation} handoff_phase=${lease.handoff_phase} child_run_id=${childRunId}`,
+        'Status: exact recovery child acquisition is required',
+        '',
+      ].join('\n'));
+      return 0;
+    }
     const handoffRel = child?.handoff_rel || `handoffs/${childRunId}-next-session.md`;
     const canonicalRoot = canonicalProjectRoot(data.project.root);
     const runtime = sessionRuntime(data);
@@ -627,7 +666,12 @@ const handlers = {
       const runtime = reqStr(f, 'runtime');
       if (!runtime) { error('USAGE: --runtime <claude|codex> is required'); return 2; }
       let r;
-      try { r = acquireLease(root, runId, { owner, expectGeneration, runtime }); }
+      try { r = acquireLease(root, runId, {
+        owner,
+        expectGeneration,
+        runtime,
+        now: parseNow(f),
+      }); }
       catch (e) {
         const classified = classifyKernelError(e);
         if (!classified) throw e;
@@ -636,7 +680,11 @@ const handlers = {
       json(r);
       // terminal/runtime fence는 exit 3 — resume의 소유권 인수 경계에서 성공-모양(exit 0)으로 위장 금지.
       // 그 외 ok:false(generation/takeability)는 기존 exit 0 + JSON 계약을 유지한다.
-      return (r.ok === false && (r.reason === 'run-terminal' || r.reason === 'RUNTIME_FENCED')) ? 3 : 0;
+      return (r.ok === false && (
+        r.reason === 'run-terminal'
+        || r.reason === 'RUNTIME_FENCED'
+        || r.reason === 'RECOVERY_ACQUIRE_REQUIRED'
+      )) ? 3 : 0;
     }
     if (verb === 'release') { json(releaseLease(root, runId, { owner: strArg(f, 'owner'), generation: intArg(f, 'generation') })); return 0; }
     error(`unknown lease verb: ${verb}`); return 2;
@@ -914,23 +962,110 @@ const handlers = {
     }
   },
   // recover --owner <id> --generation <n> --confirm
-  // Human-approved escape hatch (mirrors breaker reset --confirm): unstick-for-resume, NOT terminate.
-  // Clears stale handoff state so a fresh acquireLease (Task 8) can take over and unpause.
-  // Exit 3 = LEASE_FENCED (wrong owner/generation); 2 = missing --confirm or usage; 0 = success.
+  // recover --supersede-affinity --reason <text> --owner <id> --generation <n> --confirm
+  // The new-policy route never releases an open affinity to a generic future owner.
   recover: async (a) => {
-    const f = parseFlags(a); const root = rootOf(f); const runId = runIdOf(root, f);
+    const allowed = new Set([
+      'confirm', 'supersede-affinity', 'reason', 'owner', 'generation',
+      'project-root', 'run-id', 'now',
+    ]);
+    if (!knownFlagVocabulary(a, allowed) || !exactFlagGrammar(a, allowed)) {
+      error('USAGE: recover has invalid grammar');
+      return 2;
+    }
+    const f = parseFlags(a);
+    if (['project-root', 'run-id', 'reason', 'owner', 'generation', 'now']
+      .some(name => f[name] === true)) {
+      error('USAGE: recover option requires a value');
+      return 2;
+    }
+    const root = rootOf(f); const runId = runIdOf(root, f);
     if (!runId) { error('MISSING_RUN_ID'); return 2; }
     if (f.confirm !== true && f.confirm !== 'true') { error('CONFIRM_REQUIRED: pass --confirm (human-only)'); return 2; }
     const owner = reqStr(f, 'owner'); if (!owner) { error('MISSING_OWNER'); return 2; }
     const generation = intArg(f, 'generation');   // exits 3 on invalid/missing
     try {
-      recoverRun(root, runId, { expect: { owner, generation }, confirm: true, now: parseNow(f) });
-      json({ ok: true, status: 'paused', pause_reason: 'recovered:awaiting-resume' }); return 0;
+      let result;
+      if (Object.hasOwn(f, 'supersede-affinity')) {
+        if (f['supersede-affinity'] !== true && f['supersede-affinity'] !== 'true') {
+          error('USAGE: --supersede-affinity must be affirmative');
+          return 2;
+        }
+        const reason = reqStr(f, 'reason');
+        if (!reason) { error('USAGE: affinity supersession requires --reason TEXT'); return 2; }
+        result = supersedeAffinity(root, runId, {
+          reason,
+          expect: { owner, generation },
+          confirm: true,
+          now: parseNow(f),
+        });
+      } else {
+        if (Object.hasOwn(f, 'reason')) {
+          error('USAGE: --reason is valid only with --supersede-affinity');
+          return 2;
+        }
+        result = recoverRun(root, runId, {
+          expect: { owner, generation },
+          confirm: true,
+          now: parseNow(f),
+        });
+      }
+      json(result); return 0;
     } catch (e) {
       const msg = String(e?.message || e);
       if (msg.startsWith('LEASE_FENCED')) { error(msg); return 3; }
       if (msg.startsWith('NOT_RECOVERABLE') || msg.startsWith('CONFIRM_REQUIRED')) { error(msg); return 2; }
       error(msg); return 1;
+    }
+  },
+  recovery: async (a) => {
+    const [verb, ...rest] = a;
+    const allowed = new Set([
+      'capsule', 'owner', 'generation', 'runtime', 'project-root', 'run-id', 'now',
+    ]);
+    if (verb !== 'acquire'
+      || !knownFlagVocabulary(rest, allowed)
+      || !exactFlagGrammar(rest, allowed)) {
+      error('USAGE: recovery acquire has invalid grammar');
+      return 2;
+    }
+    const f = parseFlags(rest);
+    if (['capsule', 'owner', 'generation', 'runtime', 'project-root', 'run-id', 'now']
+      .some(name => f[name] === true)) {
+      error('USAGE: recovery acquire option requires a value');
+      return 2;
+    }
+    const capsuleRel = reqStr(f, 'capsule');
+    const owner = reqStr(f, 'owner');
+    const runtime = reqStr(f, 'runtime');
+    const generationValue = reqStr(f, 'generation');
+    if (!capsuleRel || !owner || !runtime
+      || !/^[1-9]\d*$/.test(generationValue || '')
+      || !Number.isSafeInteger(Number(generationValue))) {
+      error('USAGE: recovery acquire requires capsule, owner, positive generation, and runtime');
+      return 2;
+    }
+    const root = rootOf(f);
+    const runId = runIdOf(root, f);
+    if (!runId) { error('MISSING_RUN_ID'); return 2; }
+    try {
+      const result = acquireRecovery(root, runId, {
+        capsuleRel,
+        owner,
+        expectGeneration: Number(generationValue),
+        runtime,
+        now: parseNow(f),
+      });
+      json(result);
+      return result.ok ? 0 : 1;
+    } catch (e) {
+      const message = String(e?.message || e);
+      if (/^(?:LEASE_FENCED|RUNTIME_FENCED)(?::|$)/.test(message)) {
+        error(message);
+        return 3;
+      }
+      error(message);
+      return 1;
     }
   },
   adapter: async (a) => {

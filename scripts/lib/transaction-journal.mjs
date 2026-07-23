@@ -18,6 +18,7 @@ import {
   matchingStableFileIdentity,
   normalizePortableRelativePath,
 } from './fs-safe.mjs';
+import { projectRootDigest } from './project-root.mjs';
 
 const MANIFEST_KEYS = [
   'kind', 'operationId', 'expect', 'runtime', 'projectRoot', 'preLoopHash', 'preEventHead',
@@ -130,6 +131,178 @@ function validatePredecessor(value) {
   }
 }
 
+function exactKeySet(value, keys) {
+  return value != null
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...keys].sort());
+}
+
+function sameBoundaryIdentity(left, right) {
+  return exactKeySet(left, ['seq', 'checksum'])
+    && exactKeySet(right, ['seq', 'checksum'])
+    && Number.isSafeInteger(left.seq)
+    && left.seq > 0
+    && left.seq === right.seq
+    && SHA256.test(left.checksum || '')
+    && left.checksum === right.checksum;
+}
+
+function parseStageJson(stage, label) {
+  try {
+    return JSON.parse(stage.bytes.toString('utf8').trimEnd());
+  } catch {
+    throw transactionError(label);
+  }
+}
+
+function validateRecoveryPublication(manifest, stages) {
+  const kinds = {
+    'affinity-supersession': {
+      artifactKind: 'affinity-recovery',
+      eventType: 'affinity-superseded',
+      topologyKeys: [
+        'operation_id', 'recovery_kind', 'parent_session_id', 'child_session_id',
+        'workstream_id', 'bound_at_seq', 'project_binding_generation',
+        'project_root_digest', 'recovery_rel', 'recovery_sha256',
+      ],
+      childKey: 'child_session_id',
+    },
+    'boundary-recovery': {
+      artifactKind: 'boundary-recovery',
+      eventType: 'boundary-recovered',
+      topologyKeys: [
+        'operation_id', 'recovery_kind', 'boundary_event', 'stale_phase',
+        'stale_session_id', 'replacement_session_id', 'parent_session_id',
+        'project_binding_generation', 'project_root_digest', 'recovery_rel',
+        'recovery_sha256',
+      ],
+      childKey: 'replacement_session_id',
+    },
+  };
+  const contract = kinds[manifest.kind];
+  if (!contract) return;
+  const topology = manifest.topology;
+  if (!SHA256.test(manifest.operationId)
+    || !exactKeySet(topology, contract.topologyKeys)
+    || topology.operation_id !== manifest.operationId
+    || topology.recovery_kind !== manifest.kind
+    || !Number.isSafeInteger(topology.project_binding_generation)
+    || topology.project_binding_generation < 1
+    || !SHA256.test(topology.project_root_digest || '')
+    || normalizePortableRelativePath(topology.recovery_rel) !== topology.recovery_rel
+    || !topology.recovery_rel.startsWith('recoveries/')
+    || !SHA256.test(topology.recovery_sha256 || '')
+    || manifest.eventLines.length !== 1
+    || manifest.targets.length !== 1) {
+    throw transactionError('recovery publication topology');
+  }
+  const childId = topology[contract.childKey];
+  const target = manifest.targets[0];
+  const artifactStage = stages[target?.stage_index];
+  const eventStage = stages[manifest.eventLines[0]?.stage_index];
+  if (typeof childId !== 'string' || childId.length === 0
+    || target?.rel !== topology.recovery_rel
+    || target?.candidate_sha256 !== topology.recovery_sha256
+    || artifactStage?.role !== 'artifact'
+    || artifactStage.sha256 !== topology.recovery_sha256
+    || Number(artifactStage.size) > 256 * 1024
+    || eventStage?.role !== 'event-line') {
+    throw transactionError('recovery publication targets');
+  }
+  const capsule = parseStageJson(artifactStage, 'recovery capsule JSON');
+  const opened = unwrap(capsule, {
+    producer: 'deep-loop',
+    artifact_kind: contract.artifactKind,
+  });
+  const payload = opened?.payload;
+  if (!opened
+    || opened.envelope.run_id !== childId
+    || opened.envelope.parent_run_id !== topology.parent_session_id
+    || payload?.operation_id !== manifest.operationId
+    || payload.recovery_kind !== manifest.kind
+    || payload.parent_loop_hash !== manifest.preLoopHash
+    || payload.runtime !== manifest.runtime
+    || payload.project_binding_generation !== topology.project_binding_generation
+    || payload.project_root_digest !== topology.project_root_digest) {
+    throw transactionError('recovery capsule binding');
+  }
+  const event = parseStageJson(eventStage, 'recovery event JSON');
+  if (event.type !== contract.eventType) {
+    throw transactionError('recovery event type');
+  }
+  if (manifest.kind === 'affinity-supersession') {
+    if (payload.parent_session_id !== topology.parent_session_id
+      || payload.child_session_id !== childId
+      || payload.workstream_id !== topology.workstream_id
+      || payload.bound_at_seq !== topology.bound_at_seq
+      || JSON.stringify(event.data) !== JSON.stringify({
+        reason: payload.reason,
+        workstream_id: topology.workstream_id,
+        child_run_id: childId,
+      })) {
+      throw transactionError('affinity recovery binding');
+    }
+  } else {
+    const candidateRun = parseStageJson(
+      stages.find(stage => stage.role === 'candidate-loop'),
+      'recovery candidate JSON',
+    );
+    const expectedFromCandidate = contentHash(JSON.stringify([
+      'deep-loop-boundary-recovery-v1',
+      candidateRun.run_id,
+      topology.boundary_event?.seq,
+      topology.boundary_event?.checksum,
+      topology.stale_phase,
+      topology.stale_session_id,
+      childId,
+      manifest.preLoopHash,
+    ]));
+    if (!sameBoundaryIdentity(payload.boundary_event, topology.boundary_event)
+      || payload.stale_phase !== topology.stale_phase
+      || payload.stale_session_id !== topology.stale_session_id
+      || payload.replacement_session_id !== childId
+      || payload.parent_session_id !== topology.parent_session_id
+      || expectedFromCandidate !== manifest.operationId
+      || JSON.stringify(event.data) !== JSON.stringify({
+        operation_id: manifest.operationId,
+        boundary_event: topology.boundary_event,
+        stale_phase: topology.stale_phase,
+        stale_session_id: topology.stale_session_id,
+        replacement_session_id: childId,
+        parent_session_id: topology.parent_session_id,
+      })) {
+      throw transactionError('boundary recovery binding');
+    }
+  }
+  const candidate = parseStageJson(
+    stages.find(stage => stage.role === 'candidate-loop'),
+    'recovery candidate JSON',
+  );
+  const lease = candidate.session_chain?.lease;
+  const childRows = (candidate.session_chain?.sessions || [])
+    .filter(session => session?.run_id === childId);
+  const child = childRows[0];
+  if (candidate.project?.binding_generation !== topology.project_binding_generation
+    || projectRootDigest(candidate.project?.root) !== topology.project_root_digest
+    || lease?.takeover_kind !== manifest.kind
+    || lease.state !== 'released'
+    || lease.handoff_phase !== 'reserved'
+    || lease.handoff_idempotency_key !== manifest.operationId
+    || lease.handoff_child_run_id !== childId
+    || lease.expires_at !== null
+    || lease.recovery_rel !== topology.recovery_rel
+    || lease.recovery_sha256 !== topology.recovery_sha256
+    || childRows.length !== 1
+    || child.recovery_kind !== manifest.kind
+    || child.recovery_rel !== topology.recovery_rel
+    || child.recovery_sha256 !== topology.recovery_sha256
+    || child.recovery_project_binding_generation !== topology.project_binding_generation
+    || child.recovery_project_root_digest !== topology.project_root_digest) {
+    throw transactionError('recovery candidate binding');
+  }
+}
+
 function validateAndMaterialize(manifest, inputStages) {
   if (!exactKeys(manifest, MANIFEST_KEYS) || !validOperationId(manifest.operationId)
     || typeof manifest.kind !== 'string' || !manifest.kind
@@ -195,6 +368,7 @@ function validateAndMaterialize(manifest, inputStages) {
       || target.candidate_size !== stages[target.stage_index].size) throw transactionError('target stage reference');
     validatePredecessor(target.predecessor);
   }
+  validateRecoveryPublication(manifest, stages);
   return stages;
 }
 

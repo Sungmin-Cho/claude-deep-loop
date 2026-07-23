@@ -34,6 +34,7 @@ function meSh(quote, model, effort) {
 
 const SAFE_ID = /^[A-Za-z0-9_-]+$/;
 const SAFE_HANDOFF_REL = /^handoffs\/[A-Za-z0-9._-]+$/;
+const SAFE_RECOVERY_REL = /^recoveries\/[A-Za-z0-9._-]+$/;
 
 function exactObjectKeys(value, expected) {
   return value != null
@@ -129,6 +130,66 @@ export function usageOutputKind(runtime = 'claude') {
 
 function resumeInvocation(runtime, root, runId) {
   return `${resumeSkillToken(runtime)} --project-root ${JSON.stringify(root)} --run-id ${JSON.stringify(runId)}`;
+}
+
+function recoveryAcquireInvocation({
+  kind,
+  runtime,
+  root,
+  runId,
+  childRunId,
+  recoveryRel,
+  generation,
+}) {
+  const route = kind === 'affinity-supersession'
+    ? `recovery acquire --capsule ${JSON.stringify(recoveryRel)}`
+    : 'lease acquire';
+  return `${route} --owner ${JSON.stringify(childRunId)} --generation ${generation}`
+    + ` --runtime ${runtime} --project-root ${JSON.stringify(root)} --run-id ${JSON.stringify(runId)}`;
+}
+
+export function buildRecoveryResumeDescriptor({
+  kind,
+  runtime = 'claude',
+  root,
+  runId,
+  childRunId,
+  recoveryRel,
+  generation,
+} = {}) {
+  const selectedRuntime = validateSessionRuntime(runtime);
+  if (!['affinity-supersession', 'boundary-recovery'].includes(kind)
+    || !SAFE_ID.test(String(runId))
+    || !SAFE_ID.test(String(childRunId))
+    || !SAFE_RECOVERY_REL.test(String(recoveryRel))
+    || !Number.isSafeInteger(generation)
+    || generation < 1
+    || typeof root !== 'string'
+    || root.length === 0
+    || /[\0\r\n]/.test(root)) {
+    throw new Error('RECOVERY_DESCRIPTOR_INVALID');
+  }
+  const acquireInvocation = recoveryAcquireInvocation({
+    kind,
+    runtime: selectedRuntime,
+    root,
+    runId,
+    childRunId,
+    recoveryRel,
+    generation,
+  });
+  return Object.freeze({
+    kind,
+    runtime: selectedRuntime,
+    projectRoot: root,
+    runId,
+    childRunId,
+    recoveryRel,
+    generation,
+    resumeSkillToken: resumeSkillToken(selectedRuntime),
+    resumeInvocation: acquireInvocation,
+    acquireInvocation,
+  });
 }
 
 function targetPathApi(platform) {

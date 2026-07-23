@@ -82,6 +82,45 @@ test('runtime helpers select the host-native resume token and usage output kind'
   assert.equal(usageOutputKind('codex'), 'codex-jsonl');
 });
 
+test('recovery descriptor emits only the exact affinity or boundary acquisition route', async () => {
+  const { buildRecoveryResumeDescriptor } = await descriptorModule();
+  const common = {
+    root: '/repo with space',
+    runId: '01PARENT',
+    childRunId: 'RECOVERY-CHILD',
+    recoveryRel: 'recoveries/RECOVERY-CHILD.json',
+    generation: 4,
+  };
+  assert.equal(buildRecoveryResumeDescriptor({
+    ...common,
+    kind: 'affinity-supersession',
+    runtime: 'codex',
+  }).acquireInvocation,
+  'recovery acquire --capsule "recoveries/RECOVERY-CHILD.json"'
+    + ' --owner "RECOVERY-CHILD" --generation 4 --runtime codex'
+    + ' --project-root "/repo with space" --run-id "01PARENT"');
+  assert.equal(buildRecoveryResumeDescriptor({
+    ...common,
+    kind: 'boundary-recovery',
+    runtime: 'claude',
+  }).acquireInvocation,
+  'lease acquire --owner "RECOVERY-CHILD" --generation 4 --runtime claude'
+    + ' --project-root "/repo with space" --run-id "01PARENT"');
+  for (const overrides of [
+    { kind: 'boundary-handoff' },
+    { recoveryRel: '../capsule.json' },
+    { generation: 0 },
+    { childRunId: 'bad child' },
+  ]) {
+    assert.throws(() => buildRecoveryResumeDescriptor({
+      ...common,
+      kind: 'affinity-supersession',
+      runtime: 'claude',
+      ...overrides,
+    }), /RECOVERY_DESCRIPTOR_INVALID/);
+  }
+});
+
 test('runtime descriptor freezes a minimal root/run/runtime contract', async () => {
   const { buildRuntimeResumeDescriptor } = await descriptorModule();
   const descriptor = buildRuntimeResumeDescriptor({ ...base, runtime: 'codex' });

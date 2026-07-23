@@ -116,6 +116,10 @@ test('recoverRun reconciles a prepared candidate before applying recovery', () =
   pauseRun(root, runId, {
     reason: 'test-recovery', expect: { owner: runId, generation: 1 }, now: Date.parse('2026-07-23T00:30:00.000Z'),
   });
+  const legacy = readState(root, runId).data;
+  legacy.autonomy.continuation_policy = 'rotate-per-unit';
+  legacy.session_chain.sessions[0].scope = legacyScope();
+  writeState(root, runId, legacy);
   assert.throws(() => appendAnchored(
     root,
     runId,
