@@ -142,6 +142,7 @@ test('recordReviewOutcome with stale fence throws LEASE_FENCED', () => {
   // A done maker so dispatchReview binds the checker (unbound checkers are refused: REVIEW_NO_ELIGIBLE_MAKER).
   writeFileSync(join(root, 'plan-art.txt'), 'artifact');
   const m = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'plan', point: 'plan', workstream: ws, expectedArtifacts: ['plan-art.txt'], fence: fence1 });
+  recordEpisode(root, runId, m.id, { status: 'in_progress', fence: fence1 });
   recordEpisode(root, runId, m.id, { status: 'done', artifacts: ['plan-art.txt'], proof: {}, fence: fence1 });
   const r = dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { 'deep-review': true }, fence: fence1 });
 

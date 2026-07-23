@@ -420,6 +420,24 @@ test('public review import rejects cross-scope target before report artifact cre
   assert.deepEqual(existsSync(reviews) ? readdirSync(reviews).sort() : [], before);
 });
 
+test('public review import rejects an unbound owner before report artifact creation', async () => {
+  const f = fixture();
+  const state = readState(f.root, f.runId).data;
+  const scope = state.session_chain.sessions.find(session => session.run_id === f.runId).scope;
+  scope.workstream_id = null;
+  scope.bound_at_seq = null;
+  writeState(f.root, f.runId, state);
+  const reviews = join(runDir(f.root, f.runId), 'reviews');
+  const before = existsSync(reviews) ? readdirSync(reviews).sort() : [];
+  const eventCount = eventLog(f.root, f.runId).length;
+  const result = await spawnImport(f.root, f.runId, JSON.stringify(f.input)).done;
+  assert.equal(result.code, 1, result.stderr);
+  assert.match(result.stderr, /SESSION_SCOPE_MISMATCH/);
+  assert.deepEqual(existsSync(reviews) ? readdirSync(reviews).sort() : [], before);
+  assert.equal(eventLog(f.root, f.runId).length, eventCount);
+  assert.equal(readState(f.root, f.runId).data.episodes.find(ep => ep.id === f.checkerId).status, 'in_progress');
+});
+
 test('locked commit runtime snapshot is fenced if stored runtime changes after envelope creation', () => {
   const f = fixture();
   const beforeEvents = eventLog(f.root, f.runId).length;

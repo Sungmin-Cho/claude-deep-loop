@@ -39,6 +39,7 @@ function doneMakerOn(root, runId, f, point = 'design') {
   const art = `${point}-art.txt`;
   writeFileSync(join(root, art), 'artifact');
   const { id } = newEpisode(root, runId, { plugin: 'standalone', role: 'maker', kind: point, point, workstream: ws, expectedArtifacts: [art], fence: f });
+  recordEpisode(root, runId, id, { status: 'in_progress', fence: f });
   recordEpisode(root, runId, id, { status: 'done', artifacts: [art], proof: {}, fence: f });
   return ws;
 }

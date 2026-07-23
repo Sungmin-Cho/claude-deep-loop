@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -199,4 +199,102 @@ test('public Workstream set and terminal routes reject a second Workstream befor
     assert.match(result.stderr, /SESSION_SCOPE_MISMATCH/);
     assert.deepEqual(fileInventory(root, runId), before);
   }
+});
+
+test('public Workstream merged accepts only ready and preserves fence-first byte invariance', () => {
+  for (const status of ['planned', 'in_progress', 'in_review', 'parked']) {
+    const { root, runId } = fixture();
+    const ws = newWorkstream(root, runId, status);
+    const maker = newEpisode(root, runId, { workstream: ws });
+    const bind = runCli(root, runId, ['episode', 'record', '--id', maker, '--status', 'in_progress']);
+    assert.equal(bind.status, 0, bind.stderr);
+    if (status !== 'planned') {
+      const set = runCli(root, runId, ['workstream', 'set', '--id', ws, '--status', status]);
+      assert.equal(set.status, 0, set.stderr);
+    }
+
+    const before = fileInventory(root, runId);
+    const merged = runCli(root, runId, [
+      'workstream', 'terminal', '--id', ws, '--status', 'merged',
+      '--proof', '{"merge_commit":"abc123","human_approved":true}',
+    ]);
+    assert.equal(merged.status, 1, `${status}: ${merged.stderr}`);
+    assert.match(merged.stderr, /WORKSTREAM_TERMINAL_LOCKED/);
+    assert.deepEqual(fileInventory(root, runId), before, status);
+
+    const stale = runCli(root, runId, [
+      'workstream', 'terminal', '--id', ws, '--status', 'merged',
+      '--proof', '{"merge_commit":"abc123","human_approved":true}',
+    ], { generation: 9 });
+    assert.equal(stale.status, 3, stale.stderr);
+    assert.match(stale.stderr, /LEASE_FENCED/);
+    assert.deepEqual(fileInventory(root, runId), before, `${status}-stale`);
+  }
+
+  const { root, runId } = fixture();
+  const ws = newWorkstream(root, runId, 'ready');
+  const maker = newEpisode(root, runId, { workstream: ws });
+  assert.equal(runCli(root, runId, ['episode', 'record', '--id', maker, '--status', 'in_progress']).status, 0);
+  const prepared = readState(root, runId).data;
+  prepared.workstreams.find(item => item.id === ws).review_points_done = [...prepared.review.points];
+  writeState(root, runId, prepared);
+  assert.equal(runCli(root, runId, [
+    'workstream', 'terminal', '--id', ws, '--status', 'ready', '--proof', '{}',
+  ]).status, 0);
+  const merged = runCli(root, runId, [
+    'workstream', 'terminal', '--id', ws, '--status', 'merged',
+    '--proof', '{"merge_commit":"abc123","human_approved":true}',
+  ]);
+  assert.equal(merged.status, 0, merged.stderr);
+});
+
+test('public maker terminal and result routes reject an unbound owner before durable mutation', () => {
+  for (const [status, proof] of [
+    ['done', '{}'],
+    ['blocked', '{"result_note":"blocked"}'],
+  ]) {
+    const { root, runId } = fixture();
+    const ws = newWorkstream(root, runId, status);
+    const artifact = `.claude/worktrees/${status}/artifact.txt`;
+    mkdirSync(dirname(join(root, artifact)), { recursive: true });
+    writeFileSync(join(root, artifact), 'artifact');
+    const episode = runCli(root, runId, [
+      'episode', 'new', '--plugin', 'deep-work', '--role', 'maker',
+      '--kind', 'implementation', '--point', 'implementation', '--workstream', ws,
+      '--artifacts', JSON.stringify([artifact]),
+    ]);
+    assert.equal(episode.status, 0, episode.stderr);
+    const episodeId = JSON.parse(episode.stdout).id;
+    const before = fileInventory(root, runId);
+    const record = runCli(root, runId, [
+      'episode', 'record', '--id', episodeId, '--status', status,
+      '--artifacts', JSON.stringify(status === 'done' ? [artifact] : []), '--proof', proof,
+    ]);
+    assert.equal(record.status, 1, record.stderr);
+    assert.match(record.stderr, /SESSION_SCOPE_MISMATCH/);
+    assert.deepEqual(fileInventory(root, runId), before, status);
+  }
+});
+
+test('authentic legacy policy keeps direct maker terminal behavior unchanged', () => {
+  const { root, runId } = fixture();
+  const ws = newWorkstream(root, runId, 'legacy');
+  const artifact = '.claude/worktrees/legacy/artifact.txt';
+  mkdirSync(dirname(join(root, artifact)), { recursive: true });
+  writeFileSync(join(root, artifact), 'artifact');
+  const episode = newEpisode(root, runId, { workstream: ws, suffix: 'legacy' });
+  const loop = readState(root, runId).data;
+  loop.autonomy.continuation_policy = 'compact-in-place';
+  loop.autonomy.milestone_predicate = ['workstream_terminal'];
+  loop.episodes.find(item => item.id === episode).expected_artifacts = [artifact];
+  loop.session_chain.sessions[0].scope = {
+    kind: 'legacy', workstream_id: null, bound_at_seq: null,
+    terminal_event: null, closed_at: null,
+  };
+  writeState(root, runId, loop);
+  const done = runCli(root, runId, [
+    'episode', 'record', '--id', episode, '--status', 'done',
+    '--artifacts', JSON.stringify([artifact]),
+  ]);
+  assert.equal(done.status, 0, done.stderr);
 });

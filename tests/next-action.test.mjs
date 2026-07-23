@@ -325,6 +325,7 @@ test('unsupported legacy inline checker dispatch becomes blocked and nextAction 
   const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: '.claude/worktrees/w', fence: f }).id;
   writeFileSync(join(root, 'plan.txt'), 'artifact');
   const { id: makerId } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'plan', point: 'plan', workstream: ws, expectedArtifacts: ['plan.txt'], fence: f });
+  recordEpisode(root, runId, makerId, { status: 'in_progress', fence: f });
   recordEpisode(root, runId, makerId, { status: 'done', artifacts: ['plan.txt'], proof: {}, fence: f });
   const { data } = readState(root, runId);
   data.review.reviewer = 'standalone';
@@ -383,6 +384,7 @@ test('#1: recordReviewOutcome(APPROVE) marks the maker agent-reviewed; comprehen
   // Maker must be 'done' so dispatchReview binds the checker to it (target_maker set).
   writeFileSync(join(root, 'art.txt'), 'artifact');
   const { id: makerId } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation', workstream: ws, expectedArtifacts: ['art.txt'], fence: f });
+  recordEpisode(root, runId, makerId, { status: 'in_progress', fence: f });
   recordEpisode(root, runId, makerId, { status: 'done', artifacts: ['art.txt'], proof: {}, fence: f });
   // Dispatch and approve the review — checker is now bound to the done maker.
   const r = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
@@ -412,6 +414,7 @@ test('dispatchReview → recordReviewOutcome(RC) → nextAction returns fix_epis
   // A done maker so dispatchReview binds the checker to it (target_maker set) — the realistic review flow.
   writeFileSync(join(root, 'art.txt'), 'artifact');
   const { id: makerId } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'plan', workstream: ws, expectedArtifacts: ['art.txt'], fence: f });
+  recordEpisode(root, runId, makerId, { status: 'in_progress', fence: f });
   recordEpisode(root, runId, makerId, { status: 'done', artifacts: ['art.txt'], proof: {}, fence: f });
   const r = dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
   recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, verdict: 'REQUEST_CHANGES', fence: f });

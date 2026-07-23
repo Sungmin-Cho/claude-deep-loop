@@ -9,6 +9,7 @@ import {
   newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal,
   inheritWorkstreams, integrationOrder,
 } from '../scripts/lib/workspace.mjs';
+import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { createDirectoryJunction, fixtureDir } from './helpers/fs-fixtures.mjs';
 import { appendAnchored } from '../scripts/lib/integrity.mjs';
 
@@ -19,6 +20,22 @@ function seed() {
 }
 
 function fence(runId) { return { owner: runId, generation: 1, intent: 'business' }; }
+
+function bindWorkstream(root, runId, workstreamId, f) {
+  const { id } = newEpisode(root, runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'implementation',
+    point: 'implementation', workstream: workstreamId, fence: f,
+  });
+  recordEpisode(root, runId, id, { status: 'in_progress', fence: f });
+}
+
+function clearOwnerScope(root, runId) {
+  const { data } = readState(root, runId);
+  const scope = data.session_chain.sessions.find(session => session.run_id === runId).scope;
+  scope.workstream_id = null;
+  scope.bound_at_seq = null;
+  writeState(root, runId, data);
+}
 
 test('newWorkstream creates planned workstream with kernel fields', () => {
   const { root, runId } = seed();
@@ -53,6 +70,7 @@ test('recordWorkstreamTerminal derives terminal from proof content; clears activ
   const { root, runId } = seed();
   const f = fence(runId);
   const { id } = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: '.claude/worktrees/w', fence: f });
+  bindWorkstream(root, runId, id, f);
   setWorkstreamStatus(root, runId, id, 'in_progress', { fence: f });
   // ready FAILS when review_points_done is empty (kernel-derived, not proof shortcut)
   assert.throws(() => recordWorkstreamTerminal(root, runId, id, { status: 'ready', proof: {}, fence: f }), /WORKSTREAM_TERMINAL_NO_PROOF/);
@@ -70,6 +88,14 @@ test('recordWorkstreamTerminal derives terminal from proof content; clears activ
   assert.equal(data.active_workstreams.includes(id), false);
   // merged 는 사람 승인(merge_commit + human_approved) 필수 — 임의 proof 거부 (proposal-only)
   const { id: id2 } = newWorkstream(root, runId, { title: 'B', branch: 'b2', worktree: '.claude/worktrees/w2', fence: f });
+  assert.throws(() => recordWorkstreamTerminal(root, runId, id2, {
+    status: 'merged', proof: { merge_commit: 'abc123', human_approved: true }, fence: f,
+  }), /WORKSTREAM_TERMINAL_LOCKED/);
+  {
+    const state = readState(root, runId).data;
+    state.workstreams.find(w => w.id === id2).status = 'ready';
+    writeState(root, runId, state);
+  }
   assert.throws(() => recordWorkstreamTerminal(root, runId, id2, { status: 'merged', proof: { x: true }, fence: f }), /WORKSTREAM_TERMINAL_NO_PROOF/);
   recordWorkstreamTerminal(root, runId, id2, { status: 'merged', proof: { merge_commit: 'abc123', human_approved: true }, fence: f });
   assert.equal(readState(root, runId).data.workstreams.find(w => w.id === id2).status, 'merged');
@@ -79,6 +105,7 @@ test('setWorkstreamStatus throws WORKSTREAM_TERMINAL_LOCKED when workstream is t
   const { root, runId } = seed();
   const f = fence(runId);
   const { id } = newWorkstream(root, runId, { title: 'C', branch: 'c', worktree: '.claude/worktrees/wc', fence: f });
+  bindWorkstream(root, runId, id, f);
   setWorkstreamStatus(root, runId, id, 'in_progress', { fence: f });
   // Mark it ready via state manipulation + recordWorkstreamTerminal
   {
@@ -99,6 +126,11 @@ test('recordWorkstreamTerminal blocks terminal->terminal rewrites (merged/abando
   const f = fence(runId);
   // Set up a workstream that is already merged
   const { id: idM } = newWorkstream(root, runId, { title: 'M', branch: 'bm', worktree: '.claude/worktrees/wm', fence: f });
+  {
+    const { data } = readState(root, runId);
+    data.workstreams.find(w => w.id === idM).status = 'ready';
+    writeState(root, runId, data);
+  }
   recordWorkstreamTerminal(root, runId, idM, { status: 'merged', proof: { merge_commit: 'abc123', human_approved: true }, fence: f });
   assert.equal(readState(root, runId).data.workstreams.find(w => w.id === idM).status, 'merged');
   // merged → abandoned must throw WORKSTREAM_TERMINAL_LOCKED
@@ -109,6 +141,7 @@ test('recordWorkstreamTerminal blocks terminal->terminal rewrites (merged/abando
 
   // Set up a workstream that is 'ready' and confirm it CAN go to 'merged'
   const { id: idR } = newWorkstream(root, runId, { title: 'R', branch: 'br', worktree: '.claude/worktrees/wr', fence: f });
+  bindWorkstream(root, runId, idR, f);
   {
     const { data } = readState(root, runId);
     const ws = data.workstreams.find(w => w.id === idR);
@@ -122,7 +155,9 @@ test('recordWorkstreamTerminal blocks terminal->terminal rewrites (merged/abando
   assert.equal(readState(root, runId).data.workstreams.find(w => w.id === idR).status, 'merged');
 
   // Set up an abandoned workstream — cannot go to merged
+  clearOwnerScope(root, runId);
   const { id: idA } = newWorkstream(root, runId, { title: 'Ab', branch: 'ba2', worktree: '.claude/worktrees/wa2', fence: f });
+  bindWorkstream(root, runId, idA, f);
   recordWorkstreamTerminal(root, runId, idA, { status: 'abandoned', proof: { reason: 'no longer needed' }, fence: f });
   assert.equal(readState(root, runId).data.workstreams.find(w => w.id === idA).status, 'abandoned');
   assert.throws(
@@ -136,6 +171,7 @@ test('recordWorkstreamTerminal twice on same workstream → second throws WORKST
   const { root, runId } = seed();
   const f = fence(runId);
   const { id } = newWorkstream(root, runId, { title: 'T', branch: 'b', worktree: '.claude/worktrees/w', fence: f });
+  bindWorkstream(root, runId, id, f);
   // First terminal call (abandoned is immediately takeable from planned without review points)
   recordWorkstreamTerminal(root, runId, id, { status: 'abandoned', proof: { reason: 'no longer needed' }, fence: f });
   assert.equal(readState(root, runId).data.workstreams.find(w => w.id === id).status, 'abandoned');

@@ -120,7 +120,7 @@ function createEpisode(root, runId, { plugin, role, kind, point, workstream = nu
     if (scopeTarget) {
       requireNonterminalWorkstream(loop, scopeTarget);
       if (loop.autonomy?.continuation_policy === 'workstream-session') {
-        assertScopeAllows(loop, scopeTarget, { allowUnbound: true });
+        assertScopeAllows(loop, scopeTarget, { allowUnbound: role === 'maker' || !targetMaker });
       }
     }
   }, { floor: MUTATION_TURN_FLOOR });
@@ -178,7 +178,7 @@ export function abandonEpisode(root, runId, episodeId, { reason, confirm, fence 
         throw new Error(`WORKSTREAM_NOT_FOUND: ${scopeTarget}`);
       }
       if (loop.autonomy?.continuation_policy === 'workstream-session') {
-        assertScopeAllows(loop, scopeTarget, { allowUnbound: true });
+        assertScopeAllows(loop, scopeTarget);
       }
     }
   }, { floor: MUTATION_TURN_FLOOR });
@@ -224,7 +224,7 @@ export function recordEpisode(root, runId, episodeId, { status, artifacts = [], 
     } else if (scopeTarget) {
       requireNonterminalWorkstream(loop, scopeTarget);
       if (newPolicy) {
-        assertScopeAllows(loop, scopeTarget, { allowUnbound: status !== 'in_progress' });
+        assertScopeAllows(loop, scopeTarget);
       }
     }
     // 터미널은 커널이 proof에서 파생 — 검증 후에만 (spec §4)

@@ -273,6 +273,7 @@ test('review dispatch accepts --independent-subagent and records a neutral legac
   const ws = JSON.parse(run(root, ['workstream', 'new', '--title', 'A', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--owner', runId, '--generation', '1']));
   writeFileSync(join(root, 'plan.txt'), 'artifact');
   const maker = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'plan', '--point', 'plan', '--workstream', ws.id, '--artifacts', '["plan.txt"]', '--owner', runId, '--generation', '1']));
+  run(root, ['episode', 'record', '--id', maker.id, '--status', 'in_progress', '--owner', runId, '--generation', '1']);
   run(root, ['episode', 'record', '--id', maker.id, '--status', 'done', '--artifacts', '["plan.txt"]', '--owner', runId, '--generation', '1']);
 
   const dispatched = JSON.parse(run(root, ['review', 'dispatch', '--point', 'plan', '--workstream', ws.id, '--independent-subagent', '--owner', runId, '--generation', '1']));
@@ -851,15 +852,21 @@ test('episode new creates request + episode via CLI', () => {
 // Codex r1 🔴6: proof-파생 터미널/리뷰 결과가 CLI 경계로 도달 가능해야 (Execution 은 CLI 로만 상태 변경).
 // Fix 2: workstream terminal --status ready now uses kernel-derived proof (abandoned doesn't need review_points).
 test('workstream terminal (abandoned) + review record reach kernel via CLI', () => {
-  const { root, runId } = seed();
-  const ws = JSON.parse(run(root, ['workstream', 'new', '--title', 'A', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--owner', runId, '--generation', '1']));
-  run(root, ['workstream', 'set', '--id', ws.id, '--status', 'in_progress', '--owner', runId, '--generation', '1']);
-  run(root, ['workstream', 'terminal', '--id', ws.id, '--status', 'abandoned', '--proof', '{"reason":"superseded"}', '--owner', runId, '--generation', '1']);
-  assert.equal(readState(root, runId).data.workstreams[0].status, 'abandoned');
+  {
+    const { root, runId } = seed();
+    const ws = JSON.parse(run(root, ['workstream', 'new', '--title', 'A', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--owner', runId, '--generation', '1']));
+    const maker = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'plan', '--point', 'plan', '--workstream', ws.id, '--owner', runId, '--generation', '1']));
+    run(root, ['episode', 'record', '--id', maker.id, '--status', 'in_progress', '--owner', runId, '--generation', '1']);
+    run(root, ['workstream', 'set', '--id', ws.id, '--status', 'in_progress', '--owner', runId, '--generation', '1']);
+    run(root, ['workstream', 'terminal', '--id', ws.id, '--status', 'abandoned', '--proof', '{"reason":"superseded"}', '--owner', runId, '--generation', '1']);
+    assert.equal(readState(root, runId).data.workstreams[0].status, 'abandoned');
+  }
   // review record: a done maker (so the checker binds — dispatchReview refuses unbound), then dispatch + record.
+  const { root, runId } = seed();
   const ws2 = JSON.parse(run(root, ['workstream', 'new', '--title', 'B', '--branch', 'b2', '--worktree', '.claude/worktrees/w2', '--owner', runId, '--generation', '1']));
   writeFileSync(join(root, 'plan-art.txt'), 'artifact');
   const maker = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'plan', '--point', 'plan', '--workstream', ws2.id, '--artifacts', '["plan-art.txt"]', '--owner', runId, '--generation', '1']));
+  run(root, ['episode', 'record', '--id', maker.id, '--status', 'in_progress', '--owner', runId, '--generation', '1']);
   run(root, ['episode', 'record', '--id', maker.id, '--status', 'done', '--artifacts', '["plan-art.txt"]', '--owner', runId, '--generation', '1']);
   const disp = JSON.parse(run(root, ['review', 'dispatch', '--point', 'plan', '--workstream', ws2.id, '--owner', runId, '--generation', '1']));
   // #2+Fix4: a passing verdict via CLI must carry --report — a real file under the reviewed ws worktree (.claude/worktrees/w2).

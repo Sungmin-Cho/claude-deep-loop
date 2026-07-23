@@ -7,7 +7,7 @@ import { assertScopeAllows } from './session-scope.mjs';
 
 function assertEpisodeScope(loop, episode) {
   if (loop.autonomy?.continuation_policy === 'workstream-session' && episode?.workstream_id) {
-    assertScopeAllows(loop, episode.workstream_id, { allowUnbound: true });
+    assertScopeAllows(loop, episode.workstream_id);
   }
 }
 

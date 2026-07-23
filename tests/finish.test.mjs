@@ -27,6 +27,7 @@ function buildSettledRun(root, runId, fence) {
   writeFileSync(join(root, 'art.txt'), 'artifact');   // expected artifact 가 디스크에 존재해야 done 통과
   const ws = newWorkstream(root, runId, { title: 'W', branch: 'b', worktree: '.claude/worktrees/wt', fence });
   const ep = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws.id, expectedArtifacts: ['art.txt'], fence });
+  recordEpisode(root, runId, ep.id, { status: 'in_progress', fence });
   recordEpisode(root, runId, ep.id, { status: 'done', artifacts: ['art.txt'], proof: {}, fence });   // artifacts 가 expected 를 커버
   const dr = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws.id, detected: {}, fence });
   mkdirSync(join(root, '.claude/worktrees/wt'), { recursive: true });
@@ -302,6 +303,7 @@ test('repro: abandoning the orphan pending maker unblocks finish --status comple
   // Normal sequence: done maker + approved checker (satisfies implementation review point).
   writeFileSync(join(root, 'art.txt'), 'x');
   const good = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws.id, expectedArtifacts: ['art.txt'], fence });
+  recordEpisode(root, runId, good.id, { status: 'in_progress', fence });
   recordEpisode(root, runId, good.id, { status: 'done', artifacts: ['art.txt'], proof: {}, fence });
   const dr = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws.id, detected: {}, fence });
   mkdirSync(join(root, '.claude/worktrees/wt'), { recursive: true });

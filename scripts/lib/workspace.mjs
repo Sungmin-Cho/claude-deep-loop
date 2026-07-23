@@ -129,6 +129,9 @@ export function recordWorkstreamTerminal(root, runId, wsId, { status, proof = {}
     if (fence) { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
     const ws = loop.workstreams.find(w => w.id === wsId);
     if (!ws) throw new Error(`WORKSTREAM_NOT_FOUND: ${wsId}`);
+    if (status === 'merged' && ws.status !== 'ready') {
+      throw new Error(`WORKSTREAM_TERMINAL_LOCKED: ${wsId} ${ws.status}->merged not allowed`);
+    }
     // Codex r2 🔴: 터미널→터미널 전환 차단 — merged/abandoned 는 흡수 상태; 유일한 허용 전환은 ready→merged.
     if (TERMINAL.includes(ws.status)) {
       if (!(ws.status === 'ready' && status === 'merged')) {
@@ -137,7 +140,7 @@ export function recordWorkstreamTerminal(root, runId, wsId, { status, proof = {}
     }
     if (!(ws.status === 'ready' && status === 'merged')
       && loop.autonomy?.continuation_policy === 'workstream-session') {
-      assertScopeAllows(loop, wsId, { allowUnbound: true });
+      assertScopeAllows(loop, wsId);
     }
     const reviewPoints = (loop.review?.points || []);
     const ok =

@@ -48,6 +48,7 @@ function seed({ reviewer = 'deep-review' } = {}) {
     plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation',
     workstream: ws, expectedArtifacts: [artifact], fence,
   }).id;
+  recordEpisode(root, runId, makerId, { status: 'in_progress', fence });
   recordEpisode(root, runId, makerId, { status: 'done', artifacts: [artifact], fence });
   const checkerId = dispatchReview(root, runId, {
     point: 'implementation', workstreamId: ws, detected,

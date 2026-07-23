@@ -158,7 +158,7 @@ export function validateImportedEvidence(root, loop, input, { checker, maker, wo
     throw new Error(`REVIEW_IMPORT_TARGET_MISMATCH: ${input.target_maker} != ${checker.target_maker}`);
   }
   if (loop.autonomy?.continuation_policy === 'workstream-session') {
-    assertScopeAllows(loop, maker.workstream_id, { allowUnbound: true });
+    assertScopeAllows(loop, maker.workstream_id);
   }
 
   const claim = checker.review_claim;

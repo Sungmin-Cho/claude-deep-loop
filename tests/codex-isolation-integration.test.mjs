@@ -256,6 +256,7 @@ function seedIndependentChecker(h) {
     plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation',
     workstream: workstreamId, expectedArtifacts: [artifact], fence,
   }).id;
+  recordEpisode(h.root, h.runId, makerId, { status: 'in_progress', fence });
   recordEpisode(h.root, h.runId, makerId, { status: 'done', artifacts: [artifact], fence });
   const checkerId = dispatchReview(h.root, h.runId, {
     point: 'implementation',

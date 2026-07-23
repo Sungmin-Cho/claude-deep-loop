@@ -69,7 +69,7 @@ function claimedContext(root, loop, episodeId, attemptId, fence) {
   if (!context.workstream || checker.workstream_id !== context.maker.workstream_id
     || checker.point !== context.maker.point) throw new Error('REVIEW_CLAIM_BINDING_INVALID');
   if (loop.autonomy?.continuation_policy === 'workstream-session') {
-    assertScopeAllows(loop, context.maker.workstream_id, { allowUnbound: true });
+    assertScopeAllows(loop, context.maker.workstream_id);
   }
   const artifacts = deriveReviewArtifactContract(root, context.maker, context.workstream);
   const lease = loop.session_chain?.lease || {};
@@ -482,7 +482,7 @@ function checkedContext(loop, episodeId, { reviewSource } = {}) {
   }
   if (!context.workstream) throw new Error(`WORKSTREAM_NOT_FOUND: ${checker.workstream_id}`);
   if (loop.autonomy?.continuation_policy === 'workstream-session') {
-    assertScopeAllows(loop, maker.workstream_id, { allowUnbound: true });
+    assertScopeAllows(loop, maker.workstream_id);
   }
   return context;
 }
