@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
-import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
+import { pauseRun, readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { runPreCompactHandoff } from '../scripts/hooks-impl/precompact-handoff.mjs';
 import { inspectCompactCheckpoint } from '../scripts/lib/checkpoint.mjs';
 import { abandonEpisode, newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
@@ -118,6 +118,37 @@ function closeBound(fixture) {
     fence: fixture.fence,
     now: Date.parse('2026-06-24T00:00:30Z'),
   });
+}
+
+function reserveAndPauseClosedBoundary(fixture) {
+  const siblingWorktree = `.claude/worktrees/precompact-sibling-${fixture.runtime}`;
+  mkdirSync(join(fixture.root, siblingWorktree), { recursive: true });
+  newWorkstream(fixture.root, fixture.runId, {
+    title: `precompact-sibling-${fixture.runtime}`,
+    branch: `feature/precompact-sibling-${fixture.runtime}`,
+    worktree: siblingWorktree,
+    fence: fixture.fence,
+  });
+  closeBound(fixture);
+  const closed = readState(fixture.root, fixture.runId).data;
+  const owner = closed.session_chain.sessions
+    .find(session => session.run_id === fixture.runId);
+  const boundaryEvent = owner.scope.terminal_event;
+  const reserved = reserveHandoff(fixture.root, fixture.runId, {
+    trigger: 'workstream-terminal',
+    boundaryEvent,
+    expect: fixture.fence,
+    now: Date.parse('2026-06-24T00:00:40Z'),
+  });
+  assert.equal(reserved.ok, true);
+  assert.equal(reserved.reason, 'reserved');
+  pauseRun(fixture.root, fixture.runId, {
+    reason: 'host-session-lost',
+    mode: 'preserve',
+    expect: fixture.fence,
+    now: Date.parse('2026-06-24T00:00:50Z'),
+  });
+  return { boundaryEvent, reserved };
 }
 
 function checkpointFiles(root, runId) {
@@ -242,6 +273,34 @@ test('workstream-session PreCompact unbound and closed scopes never fall through
     assert.deepEqual(checkpointFiles(root, runId), []);
     assert.equal(events(root, runId).some(event => event.type === 'handoff-emitted'), false);
   }
+});
+
+test('workstream-session PreCompact preserves a public reserved boundary across fenced preserve-pause', async () => {
+  const fixture = seedBound('claude');
+  const { boundaryEvent, reserved } = reserveAndPauseClosedBoundary(fixture);
+  const before = durableBytes(fixture.root, fixture.runId);
+  const beforeState = structuredClone(readState(fixture.root, fixture.runId).data);
+
+  const result = await runPreCompactHandoff({
+    hook_event_name: 'PreCompact',
+    trigger: 'auto',
+    session_id: 'paused-owner-session',
+  }, {
+    root: fixture.root,
+    now: Date.parse('2026-06-24T00:01:00Z'),
+    env: { DEEP_LOOP_HEADLESS: '1' },
+  });
+
+  const after = readState(fixture.root, fixture.runId).data;
+  assert.deepEqual(durableBytes(fixture.root, fixture.runId), before);
+  assert.deepEqual(after, beforeState);
+  assert.equal(after.status, 'paused');
+  assert.equal(after.session_chain.lease.handoff_phase, 'reserved');
+  assert.equal(after.session_chain.lease.handoff_child_run_id, reserved.childRunId);
+  assert.equal(after.session_chain.lease.handoff_idempotency_key, reserved.key);
+  assert.deepEqual(after.session_chain.lease.handoff_boundary_event, boundaryEvent);
+  assert.deepEqual(result, { ok: true, action: 'no-affinity' });
+  assert.deepEqual(checkpointFiles(fixture.root, fixture.runId), []);
 });
 
 test('exact manifest PreCompact subprocess checkpoints Claude and Codex manual, auto, and headless affinity', () => {

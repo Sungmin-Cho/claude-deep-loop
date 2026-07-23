@@ -95,6 +95,41 @@ export async function runPreCompactHandoff(input = {}, {
   if (!runId) return { ok: true, action: 'no-run' };
   let loop;
   try { ({ data: loop } = captureReconciledRunSnapshot(root, runId)); } catch (e) { return { ok: false, action: 'error', reason: String(e.message || e) }; }
+
+  const policy = loop.autonomy?.continuation_policy;
+  if (policy === 'workstream-session') {
+    const currentLease = loop.session_chain?.lease || {};
+    const currentExpect = {
+      owner: currentLease.owner_run_id,
+      generation: currentLease.generation,
+    };
+    let hostSessionEvidence;
+    let runtime;
+    try {
+      runtime = sessionRuntime(loop);
+      hostSessionEvidence = strictHostSessionEvidence(input, runtime);
+    } catch {
+      return {
+        ok: false,
+        action: 'checkpoint-failed',
+        reason: 'host-evidence-invalid',
+      };
+    }
+    if (!hasOpenAffinity(loop)) return { ok: true, action: 'no-affinity' };
+    const headless = resolveSpawnMode(loop, { headless: false, env }) === 'headless';
+    try {
+      emitCompactCheckpoint(root, runId, {
+        fence: currentExpect,
+        runtime,
+        hostSessionEvidence,
+        now,
+      });
+    } catch {
+      return { ok: false, action: 'checkpoint-failed', reason: 'checkpoint-write-failed' };
+    }
+    return { ok: true, action: 'checkpointed', headless };
+  }
+
   const lease = loop.session_chain?.lease || {};
   const expect = { owner: lease.owner_run_id, generation: lease.generation };
 
@@ -122,35 +157,6 @@ export async function runPreCompactHandoff(input = {}, {
       if (fenced) return fenced;
     }
     return { ok: true, action: 'no-run-paused' };
-  }
-
-  const policy = loop.autonomy?.continuation_policy;
-  if (policy === 'workstream-session') {
-    let hostSessionEvidence;
-    let runtime;
-    try {
-      runtime = sessionRuntime(loop);
-      hostSessionEvidence = strictHostSessionEvidence(input, runtime);
-    } catch {
-      return {
-        ok: false,
-        action: 'checkpoint-failed',
-        reason: 'host-evidence-invalid',
-      };
-    }
-    if (!hasOpenAffinity(loop)) return { ok: true, action: 'no-affinity' };
-    const headless = resolveSpawnMode(loop, { headless: false, env }) === 'headless';
-    try {
-      emitCompactCheckpoint(root, runId, {
-        fence: expect,
-        runtime,
-        hostSessionEvidence,
-        now,
-      });
-    } catch {
-      return { ok: false, action: 'checkpoint-failed', reason: 'checkpoint-write-failed' };
-    }
-    return { ok: true, action: 'checkpointed', headless };
   }
 
   const headless = resolveSpawnMode(loop, { headless: input.unattended === true, env }) === 'headless';

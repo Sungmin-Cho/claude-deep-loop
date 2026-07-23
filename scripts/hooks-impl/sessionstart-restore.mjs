@@ -40,13 +40,15 @@ function strictHostSessionEvidence(input, runtime) {
   };
 }
 
-function strictRestoreContext(runId, descriptor, { source, evidencePresent }) {
+function strictRestoreContext(runId, descriptor, { source }) {
   const runtime = descriptor.runtime;
   const command = runtime === 'claude'
     ? '/deep-loop-compact restore'
     : '$deep-loop:deep-loop-compact restore';
   const sourceLabel = source === 'compact' ? 'source=compact' : 'source-unverified';
-  const evidenceLabel = evidencePresent ? 'evidence-verified' : 'evidence-unverified';
+  const evidenceLabel = descriptor.provider_evidence?.matched === true
+    ? 'evidence-verified'
+    : 'evidence-unverified';
   return clamp(
     `deep-loop compact restore ${sourceLabel} ${evidenceLabel}: invoke ${command} now in the same owner session. `
     + `checkpoint_rel=${descriptor.checkpoint_rel} owner=${descriptor.owner_run_id} `
@@ -122,7 +124,6 @@ export function runSessionStartRestore(input = {}, {
       branch: input.source === 'compact' ? 'resume' : 'resume-source-unverified',
       additionalContext: strictRestoreContext(runId, inspected, {
         source: input.source,
-        evidencePresent: hostSessionEvidence !== undefined,
       }),
     };
   }

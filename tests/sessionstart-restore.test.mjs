@@ -210,6 +210,30 @@ test('strict SessionStart treats other sources as silent and missing provider ev
   assert.match(context, /evidence-unverified/);
 });
 
+test('strict SessionStart labels supplied evidence unverified when the stored checkpoint has no evidence', () => {
+  const root = freshRoot();
+  const fixture = initBound(root, 'claude');
+  const emitted = emitCompactCheckpoint(root, fixture.runId, {
+    fence: fixture.fence,
+    runtime: 'claude',
+    now: NOW_MS + 1,
+  });
+
+  const result = runManifestHook(root, {
+    cwd: root,
+    hook_event_name: 'SessionStart',
+    source: 'compact',
+    session_id: 'newly-supplied-session',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stderr, '');
+  const context = JSON.parse(result.stdout).hookSpecificOutput.additionalContext;
+  assert.match(context, new RegExp(emitted.checkpoint_rel.replace(/[.]/g, '\\.')));
+  assert.match(context, /evidence-unverified/);
+  assert.doesNotMatch(context, /evidence-verified/);
+});
+
 test('strict SessionStart trusted-evidence rejection never retries without evidence and emits generic preserve-pause guidance', () => {
   for (const [runtime, provider] of [
     ['claude', 'claude-code'],

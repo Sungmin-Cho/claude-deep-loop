@@ -1031,6 +1031,7 @@ test('init review JSON is one exact cross-POSIX/PowerShell single-quoted argv ar
 test('portable command contract: free-form reason placeholders remain one argv value', () => {
   for (const file of EXECUTION_DOCS) {
     for (const line of kernelCommandLines(readFileSync(file, 'utf8')).filter((candidate) => /--reason\b/.test(candidate))) {
+      if (/--reason\s+"host-session-lost"(?:\s|$)/.test(line)) continue;
       assert.match(line, /--reason\s+"[^"]*<[^>]+>[^"]*"(?:\s|$)/,
         `${file}: free-form reason placeholder must be double-quoted: ${line}`);
     }
@@ -1152,16 +1153,30 @@ test('deep-loop-compact exposes only explicit prepare and restore modes with pub
   assert.match(prepare, /(?:print|출력)[\s\S]{0,160}(?:never execute|실행하지)/i);
 
   const restore = body.match(/## Restore([\s\S]*)/i)?.[1] ?? '';
+  const trustedStart = restore.indexOf('If trusted host context');
+  const inspectStart = restore.indexOf('checkpoint inspect --json');
+  assert.ok(trustedStart >= 0 && trustedStart < inspectStart,
+    'trusted evidence rejection must branch before checkpoint inspection');
   assert.match(restore, /checkpoint inspect --json/);
   assert.match(restore, /checkpoint restore[^\n]*--checkpoint <checkpoint_rel>[^\n]*--owner <owner_run_id>[^\n]*--generation <generation>[^\n]*--runtime <claude\|codex>[^\n]*--json/);
   assert.match(restore, /\/deep-loop-continue/);
   assert.match(restore, /\$deep-loop:deep-loop-continue/);
   assert.match(restore, /same (?:owner )?session|동일 owner 세션/i);
-  assert.match(restore, /provider-evidence-mismatch[\s\S]{0,300}do not retry without trusted evidence/i);
-  assert.match(restore, /<pause_reason>[\s\S]{0,80}exactly[\s\S]{0,80}host-session-lost/);
-  assert.match(restore, /pause[^\n]*--owner <owner_run_id>[^\n]*--generation <generation>[^\n]*--mode preserve[^\n]*--reason "<pause_reason>"/);
+  const trustedBranch = restore.slice(trustedStart, inspectStart);
+  assert.match(trustedBranch, /provider-evidence-mismatch[\s\S]{0,300}do not retry without trusted evidence/i);
+  assert.doesNotMatch(trustedBranch, /checkpoint inspect --json/);
+  assert.match(trustedBranch, /state get --field session_chain\.lease/);
+  assert.match(trustedBranch, /state get --field session_chain\.sessions/);
+  assert.match(trustedBranch, /(?:execute|invoke)[\s\S]{0,180}public fenced preserve-pause/i);
+  assert.match(trustedBranch, /pause[^\n]*--owner <owner_run_id>[^\n]*--generation <generation>[^\n]*--mode preserve[^\n]*--reason "host-session-lost"/);
+  assert.match(trustedBranch, /fence (?:failure|rejection)[\s\S]{0,240}host resume/i);
   assert.match(restore, /host resume/i);
-  assert.match(restore, /missing checkpoint[\s\S]{0,500}fresh[\s\S]{0,300}same owner[\s\S]{0,300}open bound Workstream affinity/i);
+  const fallback = restore.match(/For a stale, corrupt, foreign, or missing checkpoint([\s\S]*)/i)?.[1] ?? '';
+  assert.match(fallback, /fresh[\s\S]{0,300}same owner[\s\S]{0,300}open bound Workstream affinity/i);
+  assert.match(fallback, /otherwise[\s\S]{0,240}(?:execute|invoke)[\s\S]{0,180}public fenced preserve-pause/i);
+  assert.match(fallback, /pause[^\n]*--owner <owner_run_id>[^\n]*--generation <generation>[^\n]*--mode preserve[^\n]*--reason "host-session-lost"/);
+  assert.match(fallback, /fence (?:failure|rejection)[\s\S]{0,240}host resume/i);
+  assert.match(fallback, /do not retry/i);
   assert.doesNotMatch(body, /\/deep-loop-resume/);
   assert.doesNotMatch(body, /deep-loop\.mjs"\s+lease acquire/);
   assert.doesNotMatch(body, /deep-loop\.mjs"\s+handoff emit/);

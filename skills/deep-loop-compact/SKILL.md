@@ -63,15 +63,34 @@ session, or marks a Workstream terminal.
 
 ## Restore
 
-Read the current lease and current owner-session runtime again:
+Before any evidence-free checkpoint inspection, evaluate the trusted
+SessionStart host context. If trusted host context explicitly reports
+`provider-evidence-mismatch` or
+`checkpoint-unavailable-with-trusted-evidence`, do not retry without trusted evidence.
+Do not inspect for a checkpoint. Freshly read the lease and owner-session
+runtime:
 
 ```text
 node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field session_chain.lease --project-root "<canonical_project_root>" --run-id <run_id>
 node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field session_chain.sessions --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
-Inspect through the public reader even when trusted SessionStart context names
-a relative checkpoint:
+Set `<owner_run_id>` and `<generation>` only from those fresh values. Execute
+the public fenced preserve-pause mutation:
+
+```text
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" pause --owner <owner_run_id> --generation <generation> --mode preserve --reason "host-session-lost" --project-root "<canonical_project_root>" --run-id <run_id>
+```
+
+If that mutation reports a fence failure or fence rejection, do not retry it
+with another identity; state that ownership changed and print native host
+resume guidance. After a successful pause, print the same host resume
+guidance. Do not claim same-chat identity in either case.
+
+For the successful same-owner restore path, freshly read
+`session_chain.lease` and `session_chain.sessions` as above. Inspect through
+the public reader even when trusted SessionStart context names a relative
+checkpoint:
 
 ```text
 node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" checkpoint inspect --json --project-root "<canonical_project_root>" --run-id <run_id>
@@ -87,25 +106,23 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" checkpoint restore --checkpoint <che
 On success, continue in the same owner session. Claude invokes
 `/deep-loop-continue`; Codex invokes `$deep-loop:deep-loop-continue`.
 
-If trusted host context explicitly reports
-`provider-evidence-mismatch` or
-`checkpoint-unavailable-with-trusted-evidence`, do not retry without trusted evidence
-and do not claim same-chat identity. Print the exact fenced
-preserve-pause command below and host resume guidance; execution requires the
-current owner session and is never implicit. Set `<pause_reason>` to exactly
-`host-session-lost` before invocation:
-
-```text
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" pause --owner <owner_run_id> --generation <generation> --mode preserve --reason "<pause_reason>" --project-root "<canonical_project_root>" --run-id <run_id>
-```
-
 For a stale, corrupt, foreign, or missing checkpoint without a trusted
 evidence rejection, freshly re-read `session_chain.lease`,
 `session_chain.sessions`, the owner scope, current Workstream, and current
-episode. State-derived continuation is allowed only when those fresh values
-prove the same owner, generation, and open bound Workstream affinity. Then
-delegate to the same runtime-specific continue command above. Otherwise print
-the same fenced preserve-pause command and native host resume guidance.
+episode. Those fresh values must prove the same owner, generation, and open
+bound Workstream affinity before state-derived continuation is allowed.
+Specifically require an open bound Workstream affinity in the same owner
+session. Then delegate to the same runtime-specific continue command above.
+Otherwise execute the public fenced preserve-pause mutation:
+
+```text
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" pause --owner <owner_run_id> --generation <generation> --mode preserve --reason "host-session-lost" --project-root "<canonical_project_root>" --run-id <run_id>
+```
+
+If the fallback pause reports a fence failure or fence rejection, do not retry
+with another identity; report the ownership change and print native host
+resume guidance. After a successful pause, print the same host resume
+guidance.
 
 Never acquire a lease, emit a handoff, invoke a respawn route, create a new
 session, or request a terminal transition from compact prepare or restore.
