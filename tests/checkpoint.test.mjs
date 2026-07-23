@@ -612,6 +612,55 @@ test('restore always bounds and sanitizes schema-valid hostile strings without l
   });
 });
 
+test('restore hash-summarizes absolute path tokens after any punctuation and preserves exact slash commands', () => {
+  const hostilePoints = [
+    'hostile,[/tmp/strict-secret]',
+    'hostile,{/var/tmp/strict-secret}',
+    'hostile,(/opt/strict-secret)',
+    'hostile,!/srv/strict-secret',
+    'hostile,[C:\\strict-secret\\file.txt]',
+    'hostile,{D:/strict-secret/file.txt}',
+    'hostile,(\\\\server\\share\\strict-secret)',
+    'hostile,[/deep-loop-status]',
+  ];
+  for (const point of hostilePoints) {
+    const fixture = seedBound('claude', { expectedArtifacts: [], point });
+    const emitted = emitCompactCheckpoint(fixture.root, fixture.runId, {
+      fence: fixture.fence,
+      runtime: fixture.runtime,
+      now: NOW_MS + 1000,
+    });
+    const restored = restoreCompactCheckpoint(fixture.root, fixture.runId, {
+      checkpointRel: emitted.checkpoint_rel,
+      fence: fixture.fence,
+      runtime: fixture.runtime,
+      now: NOW_MS + 1000,
+    });
+    const json = JSON.stringify(restored);
+    assert.deepEqual(restored.current_episode.point, {
+      sha256: contentHash(point),
+      utf8_bytes: Buffer.byteLength(point),
+    }, point);
+    assert.equal(json.includes(point), false, point);
+    assert.equal(json.includes(fixture.root), false, point);
+  }
+
+  const commandFixture = seedBound('claude', { point: '/deep-loop-status' });
+  const commandCheckpoint = emitCompactCheckpoint(commandFixture.root, commandFixture.runId, {
+    fence: commandFixture.fence,
+    runtime: commandFixture.runtime,
+    now: NOW_MS + 1000,
+  });
+  const commandRestore = restoreCompactCheckpoint(commandFixture.root, commandFixture.runId, {
+    checkpointRel: commandCheckpoint.checkpoint_rel,
+    fence: commandFixture.fence,
+    runtime: commandFixture.runtime,
+    now: NOW_MS + 1000,
+  });
+  assert.equal(commandRestore.current_episode.point, '/deep-loop-status');
+  assert.equal(commandRestore.next_action.next_command, '/deep-loop-continue');
+});
+
 test('strict validator rejects tamper, stale context, foreign run, evidence mismatch, and conflicting retry bytes', () => {
   const variants = [
     ['malformed', (fixture, emitted) => writeFileSync(strictCheckpointPath(fixture.root, fixture.runId, emitted), '{')],

@@ -462,8 +462,9 @@ const handlers = {
       return 2;
     }
     const f = parseFlags(rest);
-    if (f['project-root'] === true || f['run-id'] === true) {
-      error('USAGE: --project-root and --run-id require a value');
+    if ((Object.hasOwn(f, 'project-root') && reqStr(f, 'project-root') === null)
+      || (Object.hasOwn(f, 'run-id') && reqStr(f, 'run-id') === null)) {
+      error('USAGE: explicit --project-root and --run-id require a non-empty value');
       return 2;
     }
     const root = rootOf(f);

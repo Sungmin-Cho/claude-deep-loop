@@ -32,6 +32,13 @@ const MAX_ARTIFACT_BYTES = 1024 * 1024;
 const MAX_ARTIFACTS = 256;
 const MAX_DESCRIPTOR_BYTES = 3072;
 const TERMINAL_WORKSTREAM = new Set(['ready', 'merged', 'abandoned']);
+const DESCRIPTOR_SLASH_COMMANDS = new Set([
+  '/deep-loop-continue',
+  '/deep-loop-discover',
+  '/deep-loop-finish',
+  '/deep-loop-handoff',
+  '/deep-loop-status',
+]);
 
 const TOP_KEYS = Object.freeze(['schema_version', 'envelope', 'payload']);
 const ENVELOPE_KEYS = Object.freeze([
@@ -559,9 +566,7 @@ function strictRel(value) {
 }
 
 function absoluteLike(value) {
-  return /(?:^|[\s"'=:(])\/(?!deep-loop-[a-z0-9-]+(?:$|[\s"'=)]))/.test(value)
-    || /(?:^|[\s"'=:(])[A-Za-z]:[\\/]/.test(value)
-    || /(?:^|[\s"'=:(])\\\\/.test(value);
+  return /(?:^|[^A-Za-z0-9._~-])(?:[A-Za-z]:[\\/]|\\\\|\/)/.test(value);
 }
 
 function stringSummary(value) {
@@ -573,7 +578,7 @@ function stringSummary(value) {
 
 function boundedDescriptorValue(value, depth = 0) {
   if (typeof value === 'string') {
-    if ((value.startsWith('/deep-loop-') && /^\/deep-loop-[a-z0-9-]+$/.test(value))
+    if (DESCRIPTOR_SLASH_COMMANDS.has(value)
       || (Buffer.byteLength(value) <= 192 && !absoluteLike(value))) {
       return value;
     }

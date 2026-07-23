@@ -325,6 +325,48 @@ test('checkpoint public grammar distinguishes usage, fence, and invalid data exi
   ]).code, 1);
 });
 
+test('checkpoint verbs reject explicit-empty and duplicate-empty project roots and run ids before fallback', () => {
+  const { root, runId } = seed();
+  bindCheckpointAffinity(root, runId);
+  const emitted = JSON.parse(run(root, [
+    'checkpoint', 'emit',
+    '--owner', runId,
+    '--generation', '1',
+    '--runtime', 'claude',
+  ]));
+  const verbs = [
+    [
+      'checkpoint', 'emit',
+      '--owner', runId,
+      '--generation', '1',
+      '--runtime', 'claude',
+    ],
+    ['checkpoint', 'inspect', '--json'],
+    [
+      'checkpoint', 'restore',
+      '--checkpoint', emitted.checkpoint_rel,
+      '--owner', runId,
+      '--generation', '1',
+      '--runtime', 'claude',
+      '--json',
+    ],
+  ];
+  for (const verb of verbs) {
+    for (const explicitEmpty of [
+      [...verb, '--run-id', runId, '--project-root='],
+      [...verb, '--run-id', runId, '--project-root', ''],
+      [...verb, '--run-id', runId, '--project-root=', '--project-root', root],
+      [...verb, '--project-root', root, '--run-id='],
+      [...verb, '--project-root', root, '--run-id', ''],
+      [...verb, '--project-root', root, '--run-id=', '--run-id', runId],
+    ]) {
+      const result = runRaw(root, explicitEmpty);
+      assert.equal(result.code, 2, explicitEmpty.join(' '));
+      assert.match(result.err, /USAGE:/, explicitEmpty.join(' '));
+    }
+  }
+});
+
 test('checkpoint CLI cannot invoke the trusted legacy compatibility emitter', () => {
   const { root, runId } = seedMigratedLegacy();
   const active = runBoth(root, [
@@ -415,6 +457,14 @@ import { mkdirSync, rmSync } from 'node:fs';
 function runBoth(root, args) {
   try { const out = execFileSync('node', [CLI, ...args, '--project-root', root], { encoding: 'utf8' }); return { out: out.trim(), code: 0, err: '' }; }
   catch (e) { return { out: (e.stdout || '').trim(), code: e.status ?? 1, err: (e.stderr || '').trim() }; }
+}
+function runRaw(root, args) {
+  try {
+    const out = execFileSync('node', [CLI, ...args], { cwd: root, encoding: 'utf8' });
+    return { out: out.trim(), code: 0, err: '' };
+  } catch (e) {
+    return { out: (e.stdout || '').trim(), code: e.status ?? 1, err: (e.stderr || '').trim() };
+  }
 }
 
 test('A1: state get with no current pointer → null, exit 0, no stacktrace', () => {
