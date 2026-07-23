@@ -25,10 +25,36 @@ import { nextAction } from '../scripts/lib/next-action.mjs';
 import { releaseLease, acquireLease } from '../scripts/lib/lease.mjs';
 import { finishRun } from '../scripts/lib/finish.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
+import { contentHash } from '../scripts/lib/envelope.mjs';
 
-function floorRun() {
+function persistLegacyContinuationFixture(root, runId, policy) {
+  assert.ok(['compact-in-place', 'rotate-per-unit'].includes(policy));
+  const dir = runDir(root, runId);
+  const loopPath = join(dir, 'loop.json');
+  const legacy = JSON.parse(readFileSync(loopPath, 'utf8'));
+  legacy.schema_version = '0.3.0';
+  delete legacy.project.binding_generation;
+  delete legacy.autonomy.attended_launch_approval;
+  delete legacy.session_chain.lease.takeover_kind;
+  legacy.autonomy.spawn_style = 'visible';
+  legacy.autonomy.continuation_policy = policy;
+  legacy.autonomy.milestone_predicate = policy === 'compact-in-place'
+    ? ['workstream_status_change']
+    : ['workstream_status_change', 'review_point_passed', 'per_session_turn_cap_reached'];
+  assert.deepEqual(legacy.episodes, [], 'legacy floor fixture has no episode locators');
+  for (const session of legacy.session_chain.sessions) {
+    delete session.scope;
+    assert.equal(session.handoff_rel, undefined, 'legacy floor fixture has no v0.4 handoff locator');
+  }
+  const raw = JSON.stringify(legacy, null, 2);
+  writeFileSync(loopPath, raw);
+  writeFileSync(join(dir, '.loop.hash'), contentHash(raw));
+}
+
+function floorRun({ continuationPolicy = null } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'dl-floor-'));
   const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  if (continuationPolicy) persistLegacyContinuationFixture(root, runId, continuationPolicy);
   return { root, runId, fence: { owner: runId, generation: 1, intent: 'business' } };
 }
 function ownerSessionTurns(root, runId) {
@@ -1344,7 +1370,12 @@ test('#3(b): explicit budget record absorbs the tick floor (max-rule, no double 
 // #3(c): the floor drives per_session_turn_cap proportionally to the number of mutations — reaching the cap
 // through floors alone routes unattended nextAction to handoff (attended compact-in-place receives advice).
 test('#3(c): per_session_turn_cap is reached through floors and routes unattended to handoff', () => {
-  const { root, runId, fence } = floorRun();
+  const { root, runId, fence } = floorRun({ continuationPolicy: 'compact-in-place' });
+  assert.equal(
+    readState(root, runId).data.autonomy.continuation_policy,
+    'compact-in-place',
+    'legacy cap-routing fixture must come from public v0.3 migration',
+  );
   const d = readState(root, runId).data; d.budget.per_session_turn_cap = 2; writeState(root, runId, d);
   mk(root, runId, fence, 2);   // 2 floors → session.turns 2 == cap
   const r = nextAction(readState(root, runId).data, { now: Date.parse('2026-06-24T00:00:01Z'), unattended: true });

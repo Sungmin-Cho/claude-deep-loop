@@ -1,20 +1,55 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildInitialLoop, initRun } from '../scripts/lib/initrun.mjs';
-import { readState, writeState } from '../scripts/lib/state.mjs';
+import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
 import { nextAction } from '../scripts/lib/next-action.mjs';
 import { finishProofState } from '../scripts/lib/finish.mjs';
 import { computeDebt, ack } from '../scripts/lib/comprehension.mjs';
+import { contentHash } from '../scripts/lib/envelope.mjs';
 
 function loop(over = {}) {
   const l = buildInitialLoop({ runtime: 'claude', goal: 'g', protocol: 'deep-work', recipe: { id: 'r', name: 'r', reason: '' }, runId: 'R', now: new Date('2026-06-24T00:00:00Z') });
   return Object.assign(l, over);
+}
+
+function migratedLegacyLoop(policy) {
+  assert.ok(['compact-in-place', 'rotate-per-unit'].includes(policy));
+  const root = mkdtempSync(join(tmpdir(), 'dl-next-legacy-'));
+  const { runId } = initRun(root, {
+    runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z'),
+  });
+  const dir = runDir(root, runId);
+  const loopPath = join(dir, 'loop.json');
+  const legacy = JSON.parse(readFileSync(loopPath, 'utf8'));
+  legacy.schema_version = '0.3.0';
+  delete legacy.project.binding_generation;
+  delete legacy.autonomy.attended_launch_approval;
+  delete legacy.session_chain.lease.takeover_kind;
+  legacy.autonomy.spawn_style = 'visible';
+  legacy.autonomy.continuation_policy = policy;
+  legacy.autonomy.milestone_predicate = policy === 'compact-in-place'
+    ? ['workstream_status_change']
+    : ['workstream_status_change', 'review_point_passed', 'per_session_turn_cap_reached'];
+  assert.deepEqual(legacy.episodes, [], 'legacy next-action fixture has no episode locators');
+  for (const session of legacy.session_chain.sessions) {
+    delete session.scope;
+    assert.equal(session.handoff_rel, undefined, 'legacy next-action fixture has no v0.4 handoff locator');
+  }
+  const raw = JSON.stringify(legacy, null, 2);
+  writeFileSync(loopPath, raw);
+  writeFileSync(join(dir, '.loop.hash'), contentHash(raw));
+
+  const migrated = readState(root, runId).data;
+  assert.equal(migrated.schema_version, '0.4.0', 'legacy fixture must pass through public migration');
+  assert.equal(migrated.autonomy.continuation_policy, policy, 'public migration must preserve legacy policy');
+  assert.ok(migrated.session_chain.sessions.every(session => session.scope.kind === 'legacy'));
+  return migrated;
 }
 
 const NOW = Date.parse('2026-06-24T00:00:00Z');
@@ -26,7 +61,13 @@ test('fresh run with no episodes → discover', () => {
 });
 
 test('budget hard stop → gate blocked, handoff', () => {
-  const l = loop(); l.budget.spent = l.budget.total;
+  const l = migratedLegacyLoop('compact-in-place');
+  assert.equal(
+    l.autonomy.continuation_policy,
+    'compact-in-place',
+    'legacy budget-routing fixture must come from public v0.3 migration',
+  );
+  l.budget.spent = l.budget.total;
   const r = nextAction(l, { now: Date.parse('2026-06-24T00:00:00Z') });
   assert.equal(r.gate.allowed, false);
   assert.ok(r.gate.blocked_by.includes('budget'));
@@ -34,8 +75,8 @@ test('budget hard stop → gate blocked, handoff', () => {
 });
 
 test('cap + compact-in-place attended → real action with advice fields (liveness)', () => {
-  const l = loop();
-  l.autonomy.continuation_policy = 'compact-in-place';
+  const l = migratedLegacyLoop('compact-in-place');
+  assert.equal(l.autonomy.continuation_policy, 'compact-in-place');
   l.session_chain.sessions[0].turns = 40;
   l.budget.per_session_turn_cap = 40;
   const r = nextAction(l, { now: NOW });
@@ -46,8 +87,8 @@ test('cap + compact-in-place attended → real action with advice fields (livene
 });
 
 test('cap + compact-in-place unattended → handoff (unchanged)', () => {
-  const l = loop();
-  l.autonomy.continuation_policy = 'compact-in-place';
+  const l = migratedLegacyLoop('compact-in-place');
+  assert.equal(l.autonomy.continuation_policy, 'compact-in-place');
   l.session_chain.sessions[0].turns = 40;
   l.budget.per_session_turn_cap = 40;
   const r = nextAction(l, { now: NOW, unattended: true });
@@ -56,8 +97,8 @@ test('cap + compact-in-place unattended → handoff (unchanged)', () => {
 });
 
 test('cap + rotate-per-unit (codex or migrated legacy) → handoff (regression)', () => {
-  const l = loop();
-  l.autonomy.continuation_policy = 'rotate-per-unit';
+  const l = migratedLegacyLoop('rotate-per-unit');
+  assert.equal(l.autonomy.continuation_policy, 'rotate-per-unit');
   l.session_chain.sessions[0].turns = 40;
   l.budget.per_session_turn_cap = 40;
   const r = nextAction(l, { now: NOW });
@@ -65,18 +106,20 @@ test('cap + rotate-per-unit (codex or migrated legacy) → handoff (regression)'
 });
 
 test('budget hard-stop still handoff for both policies', () => {
-  const l = loop();
-  l.autonomy.continuation_policy = 'compact-in-place';
-  l.budget.spent = l.budget.total;
-  const r = nextAction(l, { now: NOW });
-  assert.equal(r.action.type, 'handoff');
-  assert.equal(r.action.reason, 'budget');
-  assert.equal(r.action.advice, undefined);
+  for (const policy of ['compact-in-place', 'rotate-per-unit']) {
+    const l = migratedLegacyLoop(policy);
+    assert.equal(l.autonomy.continuation_policy, policy);
+    l.budget.spent = l.budget.total;
+    const r = nextAction(l, { now: NOW });
+    assert.equal(r.action.type, 'handoff', policy);
+    assert.equal(r.action.reason, 'budget', policy);
+    assert.equal(r.action.advice, undefined, policy);
+  }
 });
 
 test('cap advice covers discover and dispatch_maker routes', () => {
-  const discoverLoop = loop();
-  discoverLoop.autonomy.continuation_policy = 'compact-in-place';
+  const discoverLoop = migratedLegacyLoop('compact-in-place');
+  assert.equal(discoverLoop.autonomy.continuation_policy, 'compact-in-place');
   discoverLoop.session_chain.sessions[0].turns = 40;
   discoverLoop.budget.per_session_turn_cap = 40;
   const discover = nextAction(discoverLoop, { now: NOW });
@@ -84,8 +127,8 @@ test('cap advice covers discover and dispatch_maker routes', () => {
   assert.equal(discover.action.advice, 'compact');
   assert.equal(discover.action.advice_reason, 'per_session_turn_cap');
 
-  const dispatchLoop = loop();
-  dispatchLoop.autonomy.continuation_policy = 'compact-in-place';
+  const dispatchLoop = migratedLegacyLoop('compact-in-place');
+  assert.equal(dispatchLoop.autonomy.continuation_policy, 'compact-in-place');
   dispatchLoop.session_chain.sessions[0].turns = 40;
   dispatchLoop.budget.per_session_turn_cap = 40;
   dispatchLoop.episodes = [{ id: '001-deep-work', role: 'maker', status: 'pending', point: 'implementation', workstream_id: 'ws-01' }];
@@ -237,10 +280,10 @@ test('non-orphan in_progress maker (expected_artifacts:[x] / omitted) → still 
 });
 
 test('per_session_turn_cap reached under rotate-per-unit → handoff', () => {
-  const l = loop();
-  l.autonomy.continuation_policy = 'rotate-per-unit';
+  const l = migratedLegacyLoop('rotate-per-unit');
+  assert.equal(l.autonomy.continuation_policy, 'rotate-per-unit');
   l.budget.per_session_turn_cap = 5;
-  l.session_chain.sessions = [{ run_id: 'R', started_at: l.created_at, ended_at: null, turns: 5, outcome: null, superseded_by: null }];
+  l.session_chain.sessions[0].turns = 5;
   l.episodes = [{ id: '001-deep-work', role: 'maker', status: 'pending', point: 'implementation' }];
   l.current_episode = '001-deep-work';
   assert.equal(nextAction(l, { now: 0 }).action.type, 'handoff');
