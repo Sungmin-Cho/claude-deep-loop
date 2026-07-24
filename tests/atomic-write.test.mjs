@@ -157,9 +157,16 @@ test('durableAtomicWrite orders write, file fsync, rename, then parent-directory
   let nextFd = 10;
   const fdKinds = new Map();
   durableAtomicWrite('/virtual/parent/final.bin', Buffer.from('bytes'), {
+    platform: 'linux',
     tempPathFactory: () => '/virtual/parent/temp.bin',
     writeFn(path, bytes, options) { calls.push(['write', path, Buffer.from(bytes).toString(), options]); },
-    openFn(path) { const fd = nextFd++; fdKinds.set(fd, path); calls.push(['open', path]); return fd; },
+    openFn(path, mode) {
+      assert.equal(mode, 'r');
+      const fd = nextFd++;
+      fdKinds.set(fd, path);
+      calls.push(['open', path]);
+      return fd;
+    },
     fsyncFn(fd) { calls.push(['fsync', fdKinds.get(fd)]); },
     closeFn(fd) { calls.push(['close', fdKinds.get(fd)]); },
     renameFn(src, dst) { calls.push(['rename', src, dst]); },
@@ -173,6 +180,34 @@ test('durableAtomicWrite orders write, file fsync, rename, then parent-directory
     ['open', '/virtual/parent'],
     ['fsync', '/virtual/parent'],
     ['close', '/virtual/parent'],
+  ]);
+});
+
+test('durableAtomicWrite uses a writable Windows temp-file handle and a read-only directory handle', async () => {
+  const { durableAtomicWrite } = await atomicApi();
+  const opens = [];
+  durableAtomicWrite('/virtual/parent/final.bin', Buffer.from('bytes'), {
+    platform: 'win32',
+    tempPathFactory: () => '/virtual/parent/temp.bin',
+    writeFn() {},
+    openFn(path, mode) {
+      opens.push([path, mode]);
+      if (path === '/virtual/parent/temp.bin') {
+        if (mode === 'r') throw Object.assign(new Error('Windows fsync requires a writable file handle'), { code: 'EPERM' });
+        assert.equal(mode, 'r+');
+        return 10;
+      }
+      assert.equal(path, '/virtual/parent');
+      assert.equal(mode, 'r');
+      return 11;
+    },
+    fsyncFn() {},
+    closeFn() {},
+    renameFn() {},
+  });
+  assert.deepEqual(opens, [
+    ['/virtual/parent/temp.bin', 'r+'],
+    ['/virtual/parent', 'r'],
   ]);
 });
 

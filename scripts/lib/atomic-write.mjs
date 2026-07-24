@@ -85,7 +85,7 @@ export function durableAtomicWrite(path, contents, {
     barrierAt('write');
     let fd;
     try {
-      fd = openFn(tmp, 'r');
+      fd = openFn(tmp, platform === 'win32' ? 'r+' : 'r');
       fsyncFn(fd);
     } finally {
       if (fd !== undefined) closeFn(fd);
