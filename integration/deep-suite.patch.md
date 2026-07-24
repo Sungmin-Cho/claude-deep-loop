@@ -83,7 +83,8 @@ The existing object remains Node-only and declares both hook event types. `Sessi
       ".deep-dashboard/harnessability-report.json"
     ]
   },
-  "hooks_active": ["PreCompact", "SessionStart"]
+  "hooks_active": ["PreCompact", "SessionStart"],
+  "x-session-start-sources":["compact"]
 }
 ```
 

@@ -159,9 +159,19 @@ test('Codex POSIX visible docs bind approved runtime and exact detected launcher
 test('user docs define exact-hook trust and durable fallback without granting isolated children plugins', () => {
   for (const path of USER_DOCS) {
     const source = readFileSync(join(R, path), 'utf8');
+    const sectionStart = source.indexOf('## PreCompact Hook');
+    assert.notEqual(sectionStart, -1, `${path} missing PreCompact Hook section`);
+    const sectionEnd = source.indexOf('\n## ', sectionStart + 1);
+    const section = source.slice(sectionStart, sectionEnd === -1 ? undefined : sectionEnd);
     assert.match(source, /exact hook definition/i);
     assert.match(source, /direct shell-free Node/i);
     assert.match(source, /PreCompact[\s\S]{0,300}emit-only[\s\S]{0,300}best-effort/i);
+    assert.match(section, /workstream-session[\s\S]{0,240}open bound Workstream affinity[\s\S]{0,160}checkpoint[\s\S]{0,160}`no-affinity`[\s\S]{0,80}otherwise/i,
+      `${path} must scope workstream-session PreCompact to open-affinity checkpointing`);
+    assert.match(section, /first-terminal boundary handoff[\s\S]{0,140}(?:(?:selected by|선택[^.\n]{0,40})\s*`next-action`|`next-action`[^.\n]{0,80}(?:select|선택))/i,
+      `${path} must assign first-terminal boundary handoff selection to next-action`);
+    assert.match(section, /manual compact restore[\s\S]{0,180}fresh evidence[\s\S]{0,180}same owner[\s\S]{0,180}open bound Workstream affinity[\s\S]{0,180}state-derived continuation[\s\S]{0,180}otherwise[\s\S]{0,100}preserve-pause[\s\S]{0,180}manual resume/i,
+      `${path} must define the evidence-derived manual compact restore fallback`);
     assert.match(source, /missing or untrusted hook[\s\S]{0,500}fresh state[\s\S]{0,200}same owner[\s\S]{0,180}open bound Workstream affinity[\s\S]{0,180}(?:continue|continuation)/i,
       `${path} must permit state-derived continuation only with fresh same-owner open-affinity proof`);
     assert.match(source, /otherwise[\s\S]{0,180}preserve-pause[\s\S]{0,250}manual resume/i,
@@ -239,6 +249,8 @@ test('deep-suite patch declares node-only runtime and current durable artifacts 
     '.deep-loop/runs/<run-id>/terminal/launch-command.meta.json',
   ]) assert.ok(source.includes(artifact), `integration patch missing ${artifact}`);
   assert.match(source, /"hooks_active":\s*\["PreCompact",\s*"SessionStart"\]/);
+  assert.ok(source.includes('"x-session-start-sources":["compact"]'),
+    'integration patch must include the exact schema-valid SessionStart compact source sidecar');
   assert.match(source, /PreCompact[\s\S]{0,180}workstream-session[\s\S]{0,180}open affinity[\s\S]{0,120}checkpoint[\s\S]{0,160}closed boundary[\s\S]{0,120}no-affinity/i,
     'integration patch must describe workstream-session checkpoint/no-affinity behavior');
   assert.match(source, /migrated polic(?:y|ies)[\s\S]{0,200}legacy[\s\S]{0,120}handoff/i,

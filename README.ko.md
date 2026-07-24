@@ -199,11 +199,11 @@ deep-suite 내에서 사용 시, deep-loop는 오케스트레이션 백본으로
 
 ## PreCompact Hook
 
-deep-loop의 `PreCompact` hook은 **emit-only**, **best-effort**로 `workstream-session`을 따르고, unattended continuation은 측정 가능한 `scripts/hooks-impl/drive-headless.mjs`가 담당합니다. open bound Workstream은 bounded checkpoint를 쓰고 같은 대화를 유지합니다. 정확한 first-terminal 경계나 migrated legacy policy만 handoff를 emit할 수 있습니다. `SessionStart(compact)` hook은 일치 checkpoint를 복원하거나 boundary/복구 안내를 주입합니다. `hooks/hooks.json`의 **exact hook definitions trust is required**하며, 두 hook은 **direct shell-free Node** 안전망입니다. hook은 세션을 spawn하지 않으며 예외로 compaction이나 session start를 막지 않습니다.
+deep-loop의 `PreCompact` hook은 **emit-only**, **best-effort**로 `workstream-session`을 따르고, unattended continuation은 측정 가능한 `scripts/hooks-impl/drive-headless.mjs`가 담당합니다. `workstream-session`에서 open bound Workstream affinity만 bounded checkpoint를 받고 같은 대화를 유지하며, PreCompact는 `no-affinity`를 반환하고 otherwise 이 policy의 handoff를 emit하지 않습니다. first-terminal boundary handoff는 PreCompact가 아니라 `next-action`이 선택합니다. migrated legacy policy만 PreCompact handoff 경로를 유지합니다. `SessionStart(compact)` hook은 일치 checkpoint를 복원하거나 boundary/복구 안내를 주입합니다. `hooks/hooks.json`의 **exact hook definitions trust is required**하며, 두 hook은 **direct shell-free Node** 안전망입니다. hook은 세션을 spawn하지 않으며 예외로 compaction이나 session start를 막지 않습니다.
 
 `hooks/hooks.json`의 static Node bootstrap들은 `CLAUDE_PLUGIN_ROOT` 또는 `PLUGIN_ROOT`를 해석하고 file URL로 `scripts/hooks-impl/precompact-handoff.mjs` 또는 `scripts/hooks-impl/sessionstart-restore.mjs`를 import해 `main()`을 호출합니다. Bash wrapper나 shell expansion에 의존하지 않습니다.
 
-Codex bundled-hook 발견은 host 버전에 의존하며, 사용자가 plugin hook definition을 검토하고 신뢰한 후에만 적용됩니다. **Missing or untrusted hook**(미지원 host 버전 포함)은 durable handoff artifact, durable lease, pause, 공식 지원 manual resume(수동 resume) 경로로 우아하게 저하하며, fencing을 약화하거나 두 번째 owner를 만들지 않습니다. 격리 Codex child가 plugins와 hooks를 끄는 것도 이 durable fallback을 기대한 설계입니다.
+Codex bundled-hook 발견은 host 버전에 의존하며, 사용자가 plugin hook definition을 검토하고 신뢰한 후에만 적용됩니다. **Missing or untrusted hook**(미지원 host 버전 포함)의 manual compact restore는 fresh evidence를 읽어 same owner와 open bound Workstream affinity를 입증하고, 이 증거가 있을 때만 state-derived continuation을 선택합니다. Otherwise preserve-pause와 공식 manual resume(수동 resume) 경로를 선택합니다. 이 fallback은 fencing을 약화하거나 두 번째 owner를 만들지 않습니다. 격리 Codex child가 plugins와 hooks를 끄는 것도 이 durable fallback을 기대한 설계입니다.
 
 ## 라이센스
 
