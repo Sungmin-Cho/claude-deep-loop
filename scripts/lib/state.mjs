@@ -4,10 +4,8 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
-  realpathSync,
   renameSync,
   rmSync,
-  statSync,
 } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
@@ -411,12 +409,7 @@ export function withLock(root, runId, fn, {
   platform = process.platform,
 } = {}) {
   const lexicalRunDir = runDir(root, runId);
-  const lockedRunDir = (() => {
-    try {
-      const canonical = realpathSync(lexicalRunDir);
-      return statSync(canonical).isDirectory() ? canonical : null;
-    } catch { return null; }
-  })();
+  const lockedRunDir = canonicalNonSymlinkDirectory(lexicalRunDir);
   if (!lockedRunDir) throw new Error('LOCK_RUN_INVALID');
   const lock = join(lexicalRunDir, '.lock');
   const ownerPath = join(lock, 'owner.json');

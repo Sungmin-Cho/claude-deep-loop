@@ -50,7 +50,7 @@ export function canonicalNonSymlinkDirectory(path) {
   try {
     const lexical = lstatSync(path);
     if (lexical.isSymbolicLink() || !lexical.isDirectory()) return null;
-    const canonical = realpathSync(path);
+    const canonical = (realpathSync.native || realpathSync)(path);
     if (!statSync(canonical).isDirectory()) return null;
     return canonical;
   } catch { return null; }
