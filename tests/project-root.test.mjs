@@ -37,12 +37,15 @@ import { appendAnchored, verifyHead, verifyLog } from '../scripts/lib/integrity.
 import {
   codexCheckerClaimHash,
   extendBudget,
+  inventoryRelocatedProcessReceipts,
   makeCodexProcessReceipt,
   recoveryReservationKind,
   settleCodexProcessCost,
 } from '../scripts/lib/budget.mjs';
 import { resetBreaker } from '../scripts/lib/breaker.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
+import { acquireLease } from '../scripts/lib/lease.mjs';
+import { finishRun } from '../scripts/lib/finish.mjs';
 import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
 
 const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -215,6 +218,8 @@ function movedRunWithProcessReceipt({
   unmeasurable = false,
   usage = { num_turns: 1, input_tokens: 2, output_tokens: 3, tokens: 5 },
   existingCostMutation = null,
+  terminal = false,
+  autoFloors = [],
 } = {}) {
   const parent = freshRoot('dl-root-accounting-');
   const originalRoot = join(parent, 'old root');
@@ -292,10 +297,53 @@ function movedRunWithProcessReceipt({
     join(receipts, expectedProcessReceiptName(receipt)),
     malformed ? JSON.stringify({ ...receipt, receipt_id: '0'.repeat(64) }) : JSON.stringify(receipt),
   );
+  for (const [index, floor] of autoFloors.entries()) {
+    appendAnchored(originalRoot, runId, {
+      type: 'cost',
+      data: {
+        turns: floor.turns,
+        tokens: floor.tokens,
+        owner: runId,
+        generation: 1,
+        source: `round3-floor-${index}`,
+        auto_floor: true,
+      },
+      now: FIXED_NOW.getTime() + 2_000 + index,
+    }, (loop, spent) => {
+      loop.budget.spent = spent.turns;
+      loop.budget.tokens_spent = spent.tokens;
+      loop.session_chain.sessions[0].turns += floor.turns;
+    });
+  }
+  let settlementFence = { owner: runId, generation: 1, intent: 'accounting' };
+  if (terminal) {
+    assert.equal(acquireLease(originalRoot, runId, {
+      owner: handoff.childRunId,
+      expectGeneration: 1,
+      runtime: 'codex',
+      now: FIXED_NOW.getTime() + 10_000,
+    }).ok, true);
+    finishRun(originalRoot, runId, {
+      status: 'stopped',
+      confirm: true,
+      proof: { human_reason: 'relocated terminal accounting fixture' },
+      fence: {
+        owner: handoff.childRunId,
+        generation: 2,
+        intent: 'business',
+      },
+      now: FIXED_NOW.getTime() + 20_000,
+    });
+    settlementFence = {
+      owner: handoff.childRunId,
+      generation: 2,
+      intent: 'accounting',
+    };
+  }
   if (existingCostMutation !== null) {
     assert.deepEqual(settleCodexProcessCost(originalRoot, runId, {
       receipt,
-      fence: { owner: runId, generation: 1, intent: 'accounting' },
+      fence: settlementFence,
     }), { ok: true, recorded: true, reason: 'recorded' });
     rewriteExistingCostEvent(originalRoot, runId, receipt.receipt_id, existingCostMutation);
   }
@@ -1738,6 +1786,47 @@ test('Round2 accounting RED: existing cost evidence must match the complete norm
     }
   }
   assert.deepEqual(accepted, []);
+});
+
+test('Round3 accounting RED: terminal maker evidence preserves the canonical terminal marker', async () => {
+  const { diagnoseProjectRoot } = await recoveryApi();
+  const moved = movedRunWithProcessReceipt({
+    terminal: true,
+    existingCostMutation() {},
+  });
+  const terminalCost = eventLines(moved.candidateRoot, moved.runId).find(
+    event => event.data?.process_receipt_id === moved.receipt.receipt_id,
+  );
+  assert.equal(terminalCost.data.terminal_process, 'codex-maker');
+  assert.equal(
+    diagnoseProjectRoot(moved.candidateRoot, moved.runId).action,
+    'rebind',
+  );
+});
+
+test('Round3 accounting RED: unsettled relocation absorbs the complete trailing floor', () => {
+  const moved = movedRunWithProcessReceipt({
+    usage: {
+      num_turns: 1,
+      input_tokens: 4,
+      output_tokens: 6,
+      tokens: 10,
+    },
+    autoFloors: [
+      { turns: 0, tokens: 2 },
+      { turns: 0, tokens: 3 },
+    ],
+  });
+  const loop = readStateForRootRecovery(moved.candidateRoot, moved.runId).data;
+  const accounting = inventoryRelocatedProcessReceipts(
+    moved.candidateRoot,
+    moved.runId,
+    loop,
+    projectRootDigest(moved.storedRoot),
+  );
+  assert.equal(accounting.costEvents.length, 1);
+  assert.equal(accounting.costEvents[0].data.turns, 1);
+  assert.equal(accounting.costEvents[0].data.tokens, 5);
 });
 
 test('legacy 0.2.0 relocation diagnoses and rebinds from the migrated view without assuming data/hash content equivalence', async () => {

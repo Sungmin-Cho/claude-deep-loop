@@ -153,6 +153,8 @@ export function inventoryRelocatedProcessReceipts(root, runId, loop, oldRootDige
         origin.owner,
         origin.generation,
       );
+      const terminalMaker = receipt.process_kind === 'maker'
+        && lines.slice(0, eventIndex).some(event => event.type === 'finish');
       const expected = {
         turns: Math.max(0, receipt.usage.num_turns - tf),
         tokens: Math.max(0, receipt.usage.tokens - tk),
@@ -170,6 +172,7 @@ export function inventoryRelocatedProcessReceipts(root, runId, loop, oldRootDige
         process_receipt_id: receipt.receipt_id,
         process_kind: receipt.process_kind,
         process_context: receipt.context,
+        ...(terminalMaker ? { terminal_process: 'codex-maker' } : {}),
       };
       if (JSON.stringify(recorded) !== JSON.stringify(expected)) {
         throw new Error('PROJECT_ROOT_ACCOUNTING_CONFLICT');
@@ -177,12 +180,13 @@ export function inventoryRelocatedProcessReceipts(root, runId, loop, oldRootDige
       settledReceiptIds.push(receipt.receipt_id);
       continue;
     }
-    const trailing = [...lines].reverse().find(event => event.type === 'cost'
-      && event.data?.auto_floor === true
-      && event.data?.owner === origin.owner
-      && event.data?.generation === origin.generation);
-    const absorbedTurns = trailing?.data?.turns || 0;
-    const absorbedTokens = trailing?.data?.tokens || 0;
+    const { tf: absorbedTurns, tk: absorbedTokens } = trailingFloor(
+      lines,
+      origin.owner,
+      origin.generation,
+    );
+    const terminalMaker = receipt.process_kind === 'maker'
+      && lines.some(event => event.type === 'finish');
     costEvents.push({
       type: 'cost',
       data: {
@@ -202,6 +206,7 @@ export function inventoryRelocatedProcessReceipts(root, runId, loop, oldRootDige
         process_receipt_id: receipt.receipt_id,
         process_kind: receipt.process_kind,
         process_context: receipt.context,
+        ...(terminalMaker ? { terminal_process: 'codex-maker' } : {}),
       },
     });
     settledReceiptIds.push(receipt.receipt_id);
