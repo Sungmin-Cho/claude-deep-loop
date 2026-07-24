@@ -229,8 +229,10 @@ test('Task 14 continuity docs do not route new sessions from legacy policy or la
     const source = readFileSync(join(R, path), 'utf8');
     assert.doesNotMatch(source, /gate\.unconsumed_milestones|spawn_style==='(?:desktop|visible)'/,
       `${path}: continuity must follow next-action, not a surface heuristic`);
-    assert.doesNotMatch(source, /per_session_turn_cap[\s\S]{0,240}(?:rotate|handoff)/,
-      `${path}: turn-cap advice must remain native compact guidance in this conversation`);
+    assert.match(source, /workstream-session[\s\S]{0,320}action\.boundary_event/,
+      `${path}: new-policy handoff must remain exact-boundary-only`);
+    assert.match(source, /(?:compact-in-place|rotate-per-unit)[\s\S]{0,420}per_session_turn_cap/,
+      `${path}: migrated policies must retain their explicit kernel-action compatibility path`);
     assert.match(source, /action\.boundary_event/,
       `${path}: exact Workstream boundary identity must come from the kernel action`);
     assert.match(source, /native[\s\S]{0,120}\/compact|\/compact[\s\S]{0,120}native/i,

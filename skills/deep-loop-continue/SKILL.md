@@ -64,6 +64,7 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" session-profile set --model "<sessio
 
 ```
 node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" next-action --json --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field autonomy.continuation_policy --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
 `action.type`이 유일한 routing authority다.
@@ -71,7 +72,9 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" next-action --json --project-root "<
 - `await_human`: `action.reason`과 커널 진단을 그대로 보고하고
   `/deep-loop-status`를 안내한 뒤 멈춘다. 이 autonomous tick은 recovery,
   budget relief, breaker reset, 또는 attended approval을 실행하지 않는다.
-- `handoff`: §4의 exact-boundary 경로만 수행한다.
+- `handoff`: `continuation_policy`가 `workstream-session`이면 §4의
+  exact-boundary 경로만 수행한다. migrated `compact-in-place` 또는
+  `rotate-per-unit`이면 아래 legacy compatibility 경로만 수행한다.
 - 그 밖의 action: 현재 owner conversation에서 계속 수행한다.
 
 ## 1.5. Action-keyed Worktree 진입 (maker/checker dispatch 전)
@@ -223,7 +226,8 @@ affinity를 유지한다.
 
 ### Exact Workstream boundary handoff
 
-`action.type === 'handoff'`이고 `action.reason === 'workstream-terminal'`이며
+`continuation_policy === 'workstream-session'`,
+`action.type === 'handoff'`, `action.reason === 'workstream-terminal'`이며
 `action.boundary_event`가 있을 때만 handoff한다. public
 `next-action --json`은 boundary를 이미
 `<boundary_seq>:<boundary_checksum>` 문자열로 렌더한다. 그
@@ -233,6 +237,20 @@ affinity를 유지한다.
 ```
 node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" handoff emit --boundary-event <boundary_seq>:<boundary_checksum> --reason "workstream-terminal" --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
+
+### Migrated policy compatibility
+
+`continuation_policy`가 migrated `compact-in-place` 또는 `rotate-per-unit`이고,
+fresh kernel action이 정확히 `action.type === 'handoff'`,
+`action.reason === 'per_session_turn_cap'`이며 `action.boundary_event`가 없을
+때만 legacy public route를 사용한다:
+
+```
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" handoff emit --reason "per_session_turn_cap" --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+```
+
+이 branch는 기존 run의 호환성만 보존한다. 새 run의 policy를 바꾸거나
+turn count, launcher, tty, spawn style로 handoff를 추론하지 않는다.
 
 unattended invocation이면 measured `drive-headless` host가 이후 gate와 spawn을
 소유한다. 이 스킬은 respawn을 직접 호출하지 않고 즉시 yield한다.

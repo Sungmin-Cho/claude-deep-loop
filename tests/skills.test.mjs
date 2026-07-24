@@ -807,7 +807,7 @@ test('portable command contract: free-form reason placeholders remain one argv v
   for (const file of EXECUTION_DOCS) {
     for (const line of kernelCommandLines(readFileSync(file, 'utf8')).filter((candidate) => /--reason\b/.test(candidate))) {
       if (/--reason\s+"host-session-lost"(?:\s|$)/.test(line)) continue;
-      if (/--reason\s+"(?:workstream-terminal|needs-human:workstream-terminal)"(?:\s|$)/.test(line)) continue;
+      if (/--reason\s+"(?:workstream-terminal|needs-human:workstream-terminal|per_session_turn_cap)"(?:\s|$)/.test(line)) continue;
       assert.match(line, /--reason\s+"[^"]*<[^>]+>[^"]*"(?:\s|$)/,
         `${file}: free-form reason placeholder must be double-quoted: ${line}`);
     }
@@ -1103,4 +1103,23 @@ test('Task 14 compact restore stays in-conversation and never acquires a lease',
   assert.match(restore, /same owner session|동일 owner 세션/i);
   assert.match(restore, /\/deep-loop-continue/);
   assert.doesNotMatch(restore, /deep-loop\.mjs"\s+lease acquire/);
+});
+
+test('Task 14 migrated policies execute only their fresh boundary-less kernel handoff action', () => {
+  for (const file of [
+    skillPath('deep-loop-continue'),
+    skillPath('deep-loop-handoff'),
+    join(ROOT, 'skills', 'deep-loop-workflow', 'references', 'handoff-respawn.md'),
+  ]) {
+    const body = readFileSync(file, 'utf8');
+    assert.match(body,
+      /continuation_policy[\s\S]{0,260}(?:compact-in-place|rotate-per-unit)[\s\S]{0,420}action\.reason[\s\S]{0,160}per_session_turn_cap/,
+      `${file}: compatibility must be policy- and action-keyed`);
+    assert.match(body,
+      /handoff emit[^\n]*--reason "per_session_turn_cap"[^\n]*--owner <owner_run_id>[^\n]*--generation <(?:generation|n)>/,
+      `${file}: legacy action must use the public boundary-less emit route`);
+    assert.doesNotMatch(body,
+      /per_session_turn_cap[\s\S]{0,500}respawn[^\n]*--attended/,
+      `${file}: legacy compatibility must not restore inferred attended launch`);
+  }
 });

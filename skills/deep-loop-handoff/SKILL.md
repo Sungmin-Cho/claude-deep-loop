@@ -35,6 +35,7 @@ authority를 한 번 새로 읽는다:
 
 ```
 node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" next-action --json --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field autonomy.continuation_policy --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
 단계 1.5의 worktree 진입은 불필요하다. 커널은 explicit project root와
@@ -51,6 +52,7 @@ logical run id로 run을 찾고, 이 스킬은 maker/checker 파일을 변경하
 - `action.type === 'await_human'`이면 `action.reason`을 그대로 보고하고
   `/deep-loop-status`를 안내한다.
 
+`continuation_policy === 'workstream-session'`,
 `action.type === 'handoff'`, `action.reason === 'workstream-terminal'`, 그리고
 `action.boundary_event`가 모두 있을 때만 진행한다.
 public `next-action --json`은 boundary를
@@ -65,6 +67,20 @@ surface milestone, turn cap, launcher, 또는 spawn style로 boundary를 추론�
 ```
 node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" handoff emit --boundary-event <boundary_seq>:<boundary_checksum> --reason "workstream-terminal" --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
+
+### Migrated policy compatibility
+
+`continuation_policy`가 migrated `compact-in-place` 또는 `rotate-per-unit`이고
+fresh action이 `action.type === 'handoff'`,
+`action.reason === 'per_session_turn_cap'`이며 `action.boundary_event`가 없을
+때만 다음 boundary-less legacy route를 사용한다:
+
+```
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" handoff emit --reason "per_session_turn_cap" --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+```
+
+이 compatibility branch도 kernel action만 따른다. launcher, tty, turn count,
+spawn style에서 handoff나 attended launch를 추론하지 않는다.
 
 커널이 exact boundary, root digest/epoch, owner fence, budget, breaker, finish
 상태를 다시 검증한다. 실패하면 recovery나 alternate boundary를 추측하지

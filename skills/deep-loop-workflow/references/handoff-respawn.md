@@ -29,6 +29,7 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field session_chain.leas
 
 ```
 node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" next-action --json --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field autonomy.continuation_policy --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
 - action에 열린 affinity의 `workstream_id`가 있으면 현재 owner conversation에
@@ -37,9 +38,13 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" next-action --json --project-root "<
   `$deep-loop:deep-loop-compact prepare`가 출력하는 host native `/compact`
   명령을 사용한다. prepare/restore는 같은 conversation과 lease를 유지한다.
 - `action.type === 'await_human'`이면 exact reason을 보고하고 멈춘다.
-- 오직 `action.type === 'handoff'`,
+- `continuation_policy === 'workstream-session'`에서는 오직
+  `action.type === 'handoff'`,
   `action.reason === 'workstream-terminal'`, `action.boundary_event`가 모두
   있는 경우에만 fresh owner를 준비한다.
+- migrated `compact-in-place` 또는 `rotate-per-unit`에서는 fresh action이
+  `action.type === 'handoff'`, `action.reason === 'per_session_turn_cap'`,
+  boundary 없음인 경우에만 legacy compatibility handoff를 준비한다.
 
 surface milestone, turn cap, launcher, tty, spawn style로 affinity closure나
 handoff를 추론하지 않는다.
@@ -54,6 +59,20 @@ public `next-action --json`은 boundary를
 ```
 node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" handoff emit --boundary-event <boundary_seq>:<boundary_checksum> --reason "workstream-terminal" --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
+
+## Migrated policy compatibility
+
+`continuation_policy`가 migrated `compact-in-place` 또는 `rotate-per-unit`이고,
+fresh kernel action이 `action.type === 'handoff'`,
+`action.reason === 'per_session_turn_cap'`이며 `action.boundary_event`가 없을
+때만 다음 public route를 사용한다:
+
+```
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" handoff emit --reason "per_session_turn_cap" --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+```
+
+이는 기존 run 호환성 전용이다. 새 run의 policy를 바꾸거나 launcher, tty,
+turn count, spawn style로 continuity를 추론하지 않는다.
 
 커널이 root digest/epoch, owner fence, exact terminal event, budget, breaker,
 finish 상태를 in-lock으로 재검증한다. 스킬은 다른 boundary를 구성하지 않는다.
