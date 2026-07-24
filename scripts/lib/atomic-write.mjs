@@ -40,7 +40,7 @@ export function atomicWrite(path, contents, { writeFn = writeFileSync, ...rename
   return renameAtomicWithRetry(tmp, path, renameOptions);
 }
 
-const WINDOWS_UNSUPPORTED_DIRECTORY_FLUSH = new Set(['EINVAL', 'ENOTSUP', 'ENOSYS', 'EISDIR']);
+const WINDOWS_UNSUPPORTED_DIRECTORY_FLUSH = new Set(['EINVAL', 'ENOTSUP', 'ENOSYS', 'EISDIR', 'EPERM']);
 
 function randomTempPath(path) {
   return join(dirname(path), `.tmp-${process.pid}-${Date.now()}-${randomBytes(4).toString('hex')}`);

@@ -227,6 +227,35 @@ test('durableAtomicWrite exposes exact post-operation crash barriers', async () 
   assert.deepEqual(barriers, ['write', 'file-flush', 'rename', 'parent-flush']);
 });
 
+test('durableAtomicWrite tolerates Windows EPERM from parent-directory fsync', async () => {
+  const { durableAtomicWrite } = await atomicApi();
+  const fdKinds = new Map();
+  let nextFd = 40;
+  let renamed = false;
+  let parentClosed = false;
+  durableAtomicWrite('/virtual/parent/final.bin', Buffer.from('bytes'), {
+    platform: 'win32',
+    tempPathFactory: () => '/virtual/parent/temp.bin',
+    writeFn() {},
+    openFn(path) {
+      const fd = nextFd++;
+      fdKinds.set(fd, path);
+      return fd;
+    },
+    fsyncFn(fd) {
+      if (fdKinds.get(fd) === '/virtual/parent') {
+        throw Object.assign(new Error('directory-fsync'), { code: 'EPERM' });
+      }
+    },
+    closeFn(fd) {
+      if (fdKinds.get(fd) === '/virtual/parent') parentClosed = true;
+    },
+    renameFn() { renamed = true; },
+  });
+  assert.equal(renamed, true);
+  assert.equal(parentClosed, true);
+});
+
 test('durableAtomicWrite tolerates only documented Windows directory capability errors', async () => {
   const { durableAtomicWrite } = await atomicApi();
   for (const code of ['EINVAL', 'ENOTSUP', 'ENOSYS', 'EISDIR']) {
@@ -258,14 +287,14 @@ test('durableAtomicWrite tolerates only documented Windows directory capability 
   }), /EINVAL/);
 });
 
-test('durableAtomicWrite never suppresses a file fsync failure', async () => {
+test('durableAtomicWrite never suppresses a Windows temp-file fsync EPERM', async () => {
   const { durableAtomicWrite } = await atomicApi();
   let renamed = false;
   let closed = false;
   assert.throws(() => durableAtomicWrite('/virtual/final.bin', 'x', {
     platform: 'win32', tempPathFactory: () => '/virtual/temp.bin', writeFn() {},
     openFn: () => 7,
-    fsyncFn() { throw Object.assign(new Error('file-fsync'), { code: 'EINVAL' }); },
+    fsyncFn() { throw Object.assign(new Error('file-fsync'), { code: 'EPERM' }); },
     closeFn() { closed = true; },
     renameFn() { renamed = true; },
     unlinkFn() {},
