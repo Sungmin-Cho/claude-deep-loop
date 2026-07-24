@@ -930,7 +930,7 @@ const handlers = {
       const h = f.headless === true || f.headless === 'true';
       // v1.6 (spec §2.3-2 CLI 매핑): 기존 RUN_PAUSED/HANDOFF_KEY_MISMATCH throw의 uncaught stack 해소 —
       // respawn/pause/recover 핸들러와 동일 패턴. RUN_TERMINAL은 보상 롤백 후 반환 계약(JSON ok:false)이라 여기 안 걸린다.
-      try { json(emitHandoff(root, runId, { reason: f.reason, trigger: f.trigger || f.reason || 'milestone', boundaryEvent, headless: h, expect, env: process.env })); return 0; }
+      try { json(emitHandoff(root, runId, { reason: f.reason, trigger: f.trigger || f.reason || 'milestone', boundaryEvent, headless: h, expect, env: process.env, now: parseNow(f) })); return 0; }
       catch (e) { const m = String(e?.message || e); if (m.startsWith('LEASE_FENCED')) { error(m); return 3; } error(m); return 1; }
     }
     error(`unknown handoff verb: ${verb}`); return 2;
