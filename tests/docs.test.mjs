@@ -162,7 +162,10 @@ test('user docs define exact-hook trust and durable fallback without granting is
     assert.match(source, /exact hook definition/i);
     assert.match(source, /direct shell-free Node/i);
     assert.match(source, /PreCompact[\s\S]{0,300}emit-only[\s\S]{0,300}best-effort/i);
-    assert.match(source, /missing or untrusted hook[\s\S]{0,350}durable lease[\s\S]{0,250}pause[\s\S]{0,250}manual resume/i);
+    assert.match(source, /missing or untrusted hook[\s\S]{0,500}fresh state[\s\S]{0,200}same owner[\s\S]{0,180}open bound Workstream affinity[\s\S]{0,180}(?:continue|continuation)/i,
+      `${path} must permit state-derived continuation only with fresh same-owner open-affinity proof`);
+    assert.match(source, /otherwise[\s\S]{0,180}preserve-pause[\s\S]{0,250}manual resume/i,
+      `${path} must preserve-pause and require manual resume when fresh affinity proof fails`);
     assert.match(source, /isolated Codex child[\s\S]{0,250}(?:disables|disabled)[\s\S]{0,120}plugins[\s\S]{0,120}hooks/i);
   }
 });
@@ -236,6 +239,12 @@ test('deep-suite patch declares node-only runtime and current durable artifacts 
     '.deep-loop/runs/<run-id>/terminal/launch-command.meta.json',
   ]) assert.ok(source.includes(artifact), `integration patch missing ${artifact}`);
   assert.match(source, /"hooks_active":\s*\["PreCompact",\s*"SessionStart"\]/);
+  assert.match(source, /PreCompact[\s\S]{0,180}workstream-session[\s\S]{0,180}open affinity[\s\S]{0,120}checkpoint[\s\S]{0,160}closed boundary[\s\S]{0,120}no-affinity/i,
+    'integration patch must describe workstream-session checkpoint/no-affinity behavior');
+  assert.match(source, /migrated polic(?:y|ies)[\s\S]{0,200}legacy[\s\S]{0,120}handoff/i,
+    'integration patch must reserve the legacy pre-compact handoff path for migrated policies');
+  assert.doesNotMatch(source, /PreCompact[^.\n]*(?:exact-boundary|exact boundary)[^.\n]*handoff/i,
+    'integration patch must not claim workstream-session PreCompact prepares an exact-boundary handoff');
   assert.match(source, /SessionStart[\s\S]{0,120}(?:source|matcher)[\s\S]{0,40}compact/i);
   assert.match(source, /\.claude-plugin\/marketplace\.json[\s\S]{0,240}\.agents\/plugins\/marketplace\.json/);
   assert.match(source, /generated docs|생성 문서/i);

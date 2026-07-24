@@ -89,7 +89,7 @@ The existing object remains Node-only and declares both hook event types. `Sessi
 
 The hook inventory means:
 
-- `PreCompact`: emit-only checkpoint or exact-boundary handoff preparation.
+- `PreCompact`: under `workstream-session`, an open affinity emits a checkpoint; a closed boundary (or any other absence of open affinity) returns `no-affinity`. Migrated policies alone retain the legacy pre-compact handoff path.
 - `SessionStart`: restore/context injection only when its source/matcher is `compact`.
 
 Because `hooks_active` is non-empty, do not add `hooks_intentionally_empty_reason`. Registration adds discoverability only; deep-loop continues to run standalone and the SHA bump does not prove publication.
