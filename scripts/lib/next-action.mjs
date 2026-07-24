@@ -10,6 +10,49 @@ function currentSessionTurns(loop) {
 }
 
 const A = (gate, action, next_command) => ({ gate, action, next_command });
+const TERMINAL_WORKSTREAM_STATUSES = new Set(['ready', 'merged', 'abandoned']);
+
+function sameBoundary(left, right) {
+  return Number.isSafeInteger(left?.seq)
+    && left.seq > 0
+    && left.seq === right?.seq
+    && typeof left.checksum === 'string'
+    && left.checksum === right?.checksum;
+}
+
+function ownerSession(loop) {
+  const owner = loop.session_chain?.lease?.owner_run_id;
+  return (loop.session_chain?.sessions || []).find(session => session.run_id === owner) || null;
+}
+
+function boundaryAlreadyLinked(loop, parent, boundary) {
+  if (!parent?.superseded_by) return false;
+  const child = (loop.session_chain?.sessions || [])
+    .find(session => session.run_id === parent.superseded_by);
+  return child?.parent_run_id === parent.run_id
+    && sameBoundary(child.parent_boundary_event, boundary);
+}
+
+function scopedRoutingView(loop, session) {
+  const workstreams = loop.workstreams || [];
+  let eligibleIds;
+  if (session?.scope?.workstream_id) {
+    eligibleIds = new Set([session.scope.workstream_id]);
+  } else {
+    eligibleIds = new Set(workstreams
+      .filter(workstream => !TERMINAL_WORKSTREAM_STATUSES.has(workstream.status))
+      .map(workstream => workstream.id));
+    // With no eligible Workstream there is nothing to isolate from a terminal
+    // sibling. Preserve the canonical finish/proof diagnostics for the whole run.
+    if (eligibleIds.size === 0) return loop;
+  }
+  const episodes = (loop.episodes || [])
+    .filter(episode => episode.workstream_id == null || eligibleIds.has(episode.workstream_id));
+  const current = episodes.some(episode => episode.id === loop.current_episode)
+    ? loop.current_episode
+    : null;
+  return { ...loop, episodes, current_episode: current };
+}
 
 // Finish-path robustness (repro-009): a PROOF-IMPOSSIBLE ORPHAN maker — one whose expected_artifacts is an explicit
 // empty array — can NEVER be recorded `done` (recordEpisode rejects empty expected_artifacts with
@@ -79,15 +122,24 @@ export function nextAction(loop, { now = Date.now(), unattended = false } = {}) 
   const b = checkBudget(loop, { now });
   const br = checkBreaker(loop);
   const debt = computeDebt(loop);
+  const workstreamSession = loop.autonomy?.continuation_policy === 'workstream-session';
+  const currentSession = ownerSession(loop);
 
   // budget hard-stop / breaker 는 모든 행동을 막는 전역 게이트.
-  if (!b.ok) return A({ allowed: false, blocked_by: ['budget'], reason: b.reason, tier_after: b.tier_after }, { type: 'handoff', reason: 'budget' }, '/deep-loop-handoff');
+  if (!b.ok) return A(
+    { allowed: false, blocked_by: ['budget'], reason: b.reason, tier_after: b.tier_after },
+    { type: 'await_human', reason: 'budget' },
+    '/deep-loop-status',
+  );
   if (br.tripped) return A({ allowed: false, blocked_by: ['breaker'], reason: br.reason, tier_after: b.tier_after }, { type: 'await_human', reason: 'breaker' }, '/deep-loop-status');
 
   // comprehension-debt 는 **새 fan-out(discover)만** 막는다 — 현재 episode 진행/fix/리뷰/handoff/finish 는 허용 (spec §15, Codex r2 🔴4).
   const consumed = loop.session_chain?.consumed_milestones || [];
   const unconsumedMilestones = (loop.workstreams || [])
     .flatMap(w => w.terminal_events || [])
+    // Task 6 transition: structured workstream-session boundaries are routed from scope.terminal_event
+    // in Task 7. Keep the existing milestone channel legacy-string-only until that boundary grammar lands.
+    .filter(event => typeof event === 'string')
     .filter(event => !consumed.includes(event));
   const gate = {
     // unconsumed_milestones is a passable-gate signal only; global blocks already route to handoff/await_human.
@@ -98,24 +150,47 @@ export function nextAction(loop, { now = Date.now(), unattended = false } = {}) 
     unconsumed_milestones: unconsumedMilestones,
   };
 
+  // A Workstream session closes on one anchored event identity. Completion wins
+  // because there is no successor work to own; otherwise publish exactly that
+  // boundary once. Consumption is the durable parent→child topology, never a
+  // second cursor channel.
+  const boundary = currentSession?.scope?.terminal_event;
+  const closedBoundary = workstreamSession
+    && currentSession?.scope?.kind === 'workstream'
+    && currentSession.scope.closed_at != null
+    && currentSession.scope.superseded_at == null
+    && sameBoundary(boundary, boundary);
+  if (closedBoundary && !boundaryAlreadyLinked(loop, currentSession, boundary)) {
+    if (finishProofState(loop).missing.length === 0) {
+      return A(gate, { type: 'finish' }, '/deep-loop-finish');
+    }
+    return A(
+      gate,
+      { type: 'handoff', reason: 'workstream-terminal', boundary_event: { ...boundary } },
+      '/deep-loop-handoff',
+    );
+  }
+
   // 마일스톤: per_session_turn_cap 도달. compact-in-place attended는 액션을 대체하지 않고 advice만 부가한다
   // (대체형 advisory는 rotate 없이는 카운터가 리셋되지 않아 매 tick advisory만 반환하는 liveness 결함 — 스펙 §4.4).
   const cap = loop.budget?.per_session_turn_cap;
   const capReached = cap && currentSessionTurns(loop) >= cap;
-  const inPlace = loop.autonomy?.continuation_policy === 'compact-in-place' && !unattended;
+  const inPlace = (workstreamSession || loop.autonomy?.continuation_policy === 'compact-in-place')
+    && (workstreamSession || !unattended);
   if (capReached && !inPlace) return A(gate, { type: 'handoff', reason: 'per_session_turn_cap' }, '/deep-loop-handoff');
   const withAdvice = (r) => (capReached && inPlace)
     ? { ...r, action: { ...r.action, advice: 'compact', advice_reason: 'per_session_turn_cap' } }
     : r;
 
+  const routingLoop = workstreamSession ? scopedRoutingView(loop, currentSession) : loop;
   const route = () => {
-    const ep = (loop.episodes || []).find(e => e.id === loop.current_episode);
+    const ep = (routingLoop.episodes || []).find(e => e.id === routingLoop.current_episode);
     if (!ep) {
-      if (!loop.episodes || loop.episodes.length === 0) {
+      if (!routingLoop.episodes || routingLoop.episodes.length === 0) {
         if (debt.blocked) return A(gate, { type: 'await_human', reason: 'comprehension-debt' }, '/deep-loop-status');  // discover=fan-out → debt 면 사람 검토 먼저
         return A(gate, { type: 'discover' }, '/deep-loop-discover');
       }
-      return finishOrAdvance(loop, gate, debt.blocked);
+      return finishOrAdvance(routingLoop, gate, debt.blocked);
     }
     if (ep.role === 'maker') {
       if (ep.status === 'pending') {
@@ -136,7 +211,7 @@ export function nextAction(loop, { now = Date.now(), unattended = false } = {}) 
       if (ep.status === 'blocked') return A(gate, { type: 'await_human', episode_id: ep.id, reason: 'episode-blocked' }, '/deep-loop-status');
       if (ep.status === 'done') {
         // dispatch_checker 는 workstream 이 있어야 가능 (review dispatch → WORKSTREAM_NOT_FOUND 방지). 없으면 사람에게 surface.
-        if (!(loop.workstreams || []).some(w => w.id === ep.workstream_id)) return A(gate, { type: 'await_human', episode_id: ep.id, reason: 'unbound-proof-episode' }, '/deep-loop-status');
+        if (!(routingLoop.workstreams || []).some(w => w.id === ep.workstream_id)) return A(gate, { type: 'await_human', episode_id: ep.id, reason: 'unbound-proof-episode' }, '/deep-loop-status');
         return A(gate, { type: 'dispatch_checker', episode_id: ep.id, point: ep.point, workstream_id: ep.workstream_id }, '/deep-loop-continue');
       }
     }
@@ -151,10 +226,10 @@ export function nextAction(loop, { now = Date.now(), unattended = false } = {}) 
       // RESOLVED rejected checker (re-approved newer / later done maker / neutral unbound) falls through to the finish
       // gate — current_episode points at the last-created episode, so a redundant re-review on an already-approved point
       // can leave a (resolved) rejected checker as current_episode; this path must not diverge from finishProofState.
-      if (ep.status === 'rejected' && !rejectionResolved(loop, ep)) return A(gate, { type: 'fix_episode', episode_id: ep.id, point: ep.point, workstream_id: ep.workstream_id }, '/deep-loop-continue');
-      if (ep.status === 'approved') return finishOrAdvance(loop, gate, debt.blocked);
+      if (ep.status === 'rejected' && !rejectionResolved(routingLoop, ep)) return A(gate, { type: 'fix_episode', episode_id: ep.id, point: ep.point, workstream_id: ep.workstream_id }, '/deep-loop-continue');
+      if (ep.status === 'approved') return finishOrAdvance(routingLoop, gate, debt.blocked);
     }
-    return finishOrAdvance(loop, gate, debt.blocked);
+    return finishOrAdvance(routingLoop, gate, debt.blocked);
   };
   return withAdvice(route());
 }

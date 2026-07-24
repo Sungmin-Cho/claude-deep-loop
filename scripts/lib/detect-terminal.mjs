@@ -3,7 +3,7 @@ import { isAbsolute, posix } from 'node:path';
 import { existsSync } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import { appendAnchored } from './integrity.mjs';
-import { readState } from './state.mjs';
+import { captureReconciledRunSnapshot } from './state.mjs';
 import { reconcileBudget } from './budget.mjs';
 import { revalidateTrustedLauncherExecutable } from './runtime-executable.mjs';
 import { LAUNCHER_KINDS } from './schema.mjs';
@@ -451,7 +451,7 @@ export function detectAndPersist(root, runId, {
   tmuxPsRun,
 } = {}) {
   reconcileBudget(root, runId);
-  const { data: loop } = readState(root, runId);
+  const { data: loop } = captureReconciledRunSnapshot(root, runId);
   const persistedLauncher = loop.session_spawn?.launcher;
   const persistedIdentity = loop.session_spawn?.launcher_identity;
   // Authority order: durable human approval > legacy persisted session identity > explicit test fallback.

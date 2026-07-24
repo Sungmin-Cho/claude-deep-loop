@@ -36,24 +36,24 @@ test('plugin manifest is installable-shaped', () => {
   if ('repository' in m) assert.equal(typeof m.repository, 'string', 'repository must be a string URL, not an object');
 });
 
-test('release metadata uses version 1.10.0 across both hosts and npm', () => {
+test('release metadata uses version 1.11.0 across both hosts and npm', () => {
   const claude = readJson('.claude-plugin/plugin.json');
   const codex = readJson('.codex-plugin/plugin.json');
   const pkg = readJson('package.json');
 
-  assert.equal(claude.version, '1.10.0');
-  assert.equal(codex.version, '1.10.0');
-  assert.equal(pkg.version, '1.10.0');
+  assert.equal(claude.version, '1.11.0');
+  assert.equal(codex.version, '1.11.0');
+  assert.equal(pkg.version, '1.11.0');
 });
 
-test('durable run schema remains at 0.3.0 independently of the release version', () => {
+test('durable run schema is pinned at 0.4.0 independently of the release version', () => {
   const schema = readJson('schemas/loop-run.schema.json');
   const initRunSource = readFileSync('scripts/lib/initrun.mjs', 'utf8');
   const validatorSource = readFileSync('scripts/lib/schema.mjs', 'utf8');
 
-  assert.equal(schema.$schema, 'deep-loop/v0.3.0');
-  assert.match(initRunSource, /schema_version:\s*'0\.3\.0'/);
-  assert.match(validatorSource, /loopJson\.schema_version !== '0\.3\.0'/);
+  assert.equal(schema.$schema, 'deep-loop/v0.4.0');
+  assert.match(initRunSource, /schema_version:\s*'0\.4\.0'/);
+  assert.match(validatorSource, /loopJson\.schema_version !== '0\.4\.0'/);
 });
 
 test('Claude and Codex manifests share release identity and declare the publisher', () => {

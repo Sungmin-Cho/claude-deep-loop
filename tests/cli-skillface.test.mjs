@@ -1,10 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun } from '../scripts/lib/initrun.mjs';
+import { contentHash } from '../scripts/lib/envelope.mjs';
 
 const CLI = join(process.cwd(), 'scripts', 'deep-loop.mjs');
 function run(root, args) { return execFileSync('node', [CLI, ...args, '--project-root', root], { encoding: 'utf8' }); }
@@ -13,6 +14,23 @@ function seed() {
   const root = mkdtempSync(join(tmpdir(), 'dl-sf-'));
   const { runId } = initRun(root, { runtime: 'claude', goal: 'g', protocol: 'deep-work', now: new Date('2026-06-24T00:00:00Z') });
   return { root, runId };
+}
+function seedMigratedLegacy() {
+  const seeded = seed();
+  const dir = join(seeded.root, '.deep-loop', 'runs', seeded.runId);
+  const loopPath = join(dir, 'loop.json');
+  const loop = JSON.parse(readFileSync(loopPath, 'utf8'));
+  loop.schema_version = '0.3.0';
+  delete loop.project.binding_generation;
+  delete loop.autonomy.attended_launch_approval;
+  delete loop.session_chain.lease.takeover_kind;
+  for (const session of loop.session_chain.sessions) delete session.scope;
+  loop.autonomy.continuation_policy = 'rotate-per-unit';
+  loop.autonomy.milestone_predicate = ['workstream_status_change'];
+  const raw = JSON.stringify(loop, null, 2);
+  writeFileSync(loopPath, raw);
+  writeFileSync(join(dir, '.loop.hash'), contentHash(raw));
+  return seeded;
 }
 
 // Codex r1 should-fix-2: spec §6 의 4-verb 계약을 CLI 가 노출해야 한다 (dispatch 만 X).
@@ -122,8 +140,8 @@ test('budget check is read-only and reports ok', () => {
 });
 
 // Codex r3 critical-1: budget record 가 세션 turns 를 증가시켜 per_session_turn_cap 마일스톤을 실제로 구동.
-test('budget record drives per_session_turn_cap → unattended next-action handoff', () => {
-  const { root, runId } = seed();
+test('budget record drives migrated rotate-per-unit cap → legacy unattended handoff', () => {
+  const { root, runId } = seedMigratedLegacy();
   run(root, ['budget', 'record', '--turns', '40', '--owner', runId, '--generation', '1']);   // == per_session_turn_cap(40)
   const na = JSON.parse(run(root, ['next-action', '--json', '--now', '2026-06-24T00:00:01Z', '--unattended']));
   assert.equal(na.action.type, 'handoff');
@@ -137,6 +155,246 @@ test('episode new --artifacts then record done (the skill flow)', () => {
   const ep = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'implementation', '--point', 'implementation', '--artifacts', '["art.txt"]', '--owner', runId, '--generation', '1']));
   run(root, ['episode', 'record', '--id', ep.id, '--status', 'done', '--artifacts', '["art.txt"]', '--owner', runId, '--generation', '1']);
   assert.equal(JSON.parse(run(root, ['state', 'get', '--field', 'episodes.0.status'])), 'done');
+});
+
+test('episode new returns a derived absolute request path while durable state stores only request_rel', () => {
+  const { root, runId } = seed();
+  const ep = JSON.parse(run(root, [
+    'episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'implementation',
+    '--point', 'implementation', '--owner', runId, '--generation', '1',
+  ]));
+  assert.equal(ep.request_path, join(root, '.deep-loop', 'runs', runId, ep.request_rel));
+  const durable = JSON.parse(run(root, ['state', 'get', '--field', 'episodes.0']));
+  assert.equal(durable.request_rel, ep.request_rel);
+  assert.equal(Object.hasOwn(durable, 'request_path'), false);
+});
+
+test('init-run continuation CLI accepts only workstream-session with pinned usage/invalid exits', () => {
+  const validRoot = mkdtempSync(join(tmpdir(), 'dl-init-policy-'));
+  const valid = runBoth(validRoot, ['init-run', '--runtime', 'codex', '--goal', 'g', '--continuation', 'workstream-session']);
+  assert.equal(valid.code, 0, valid.err);
+
+  const valuelessRoot = mkdtempSync(join(tmpdir(), 'dl-init-policy-'));
+  const valueless = runBoth(valuelessRoot, ['init-run', '--runtime', 'claude', '--goal', 'g', '--continuation']);
+  assert.equal(valueless.code, 2, valueless.err);
+  assert.match(valueless.err, /USAGE: --continuation <workstream-session>/);
+
+  for (const legacy of ['compact-in-place', 'rotate-per-unit']) {
+    const root = mkdtempSync(join(tmpdir(), 'dl-init-policy-'));
+    const result = runBoth(root, ['init-run', '--runtime', 'claude', '--goal', 'g', '--continuation', legacy]);
+    assert.equal(result.code, 1, `${legacy}: ${result.err}`);
+    assert.match(result.err, /UNSUPPORTED_RUNTIME_POLICY/);
+  }
+});
+
+test('handoff boundary-event CLI spelling is strict base10 seq without leading zero plus lowercase checksum', () => {
+  for (const [value, expectedCode] of [
+    [null, 2],
+    ['0:' + 'a'.repeat(64), 1],
+    ['01:' + 'a'.repeat(64), 1],
+    ['1:' + 'A'.repeat(64), 1],
+    ['1:' + 'a'.repeat(63), 1],
+    ['1:not-a-checksum', 1],
+  ]) {
+    const { root, runId } = seed();
+    const args = ['handoff', 'emit', '--owner', runId, '--generation', '1', '--boundary-event'];
+    if (value !== null) args.push(value);
+    const result = runBoth(root, args);
+    assert.equal(result.code, expectedCode, `${value}: ${result.err}`);
+    assert.match(result.err, value === null ? /USAGE: --boundary-event/ : /BOUNDARY_EVENT_INVALID/);
+  }
+});
+
+function bindCheckpointAffinity(root, runId) {
+  mkdirSync(join(root, '.claude', 'worktrees', 'checkpoint'), { recursive: true });
+  const workstream = JSON.parse(run(root, [
+    'workstream', 'new',
+    '--title', 'checkpoint',
+    '--branch', 'feature/checkpoint',
+    '--worktree', '.claude/worktrees/checkpoint',
+    '--owner', runId,
+    '--generation', '1',
+  ]));
+  const episode = JSON.parse(run(root, [
+    'episode', 'new',
+    '--plugin', 'deep-work',
+    '--role', 'maker',
+    '--kind', 'implementation',
+    '--point', 'implementation',
+    '--workstream', workstream.id,
+    '--artifacts', '[".claude/worktrees/checkpoint/result.txt"]',
+    '--owner', runId,
+    '--generation', '1',
+  ]));
+  run(root, [
+    'episode', 'record',
+    '--id', episode.id,
+    '--status', 'in_progress',
+    '--owner', runId,
+    '--generation', '1',
+  ]);
+  return { workstream, episode };
+}
+
+test('checkpoint emit, inspect, and restore expose the exact public grammar', () => {
+  const { root, runId } = seed();
+  bindCheckpointAffinity(root, runId);
+
+  const emitted = runBoth(root, [
+    'checkpoint', 'emit',
+    '--owner', runId,
+    '--generation', '1',
+    '--runtime', 'claude',
+  ]);
+  assert.equal(emitted.code, 0, emitted.err);
+  const checkpoint = JSON.parse(emitted.out);
+  assert.match(checkpoint.checkpoint_rel, /^checkpoints\/[0-9a-f]{64}-compact\.json$/);
+  assert.equal(Object.hasOwn(checkpoint, 'path'), false);
+  assert.equal(emitted.out.includes(root), false);
+
+  const inspected = runBoth(root, ['checkpoint', 'inspect', '--json']);
+  assert.equal(inspected.code, 0, inspected.err);
+  assert.equal(JSON.parse(inspected.out).checkpoint_rel, checkpoint.checkpoint_rel);
+
+  const restored = runBoth(root, [
+    'checkpoint', 'restore',
+    '--checkpoint', checkpoint.checkpoint_rel,
+    '--owner', runId,
+    '--generation', '1',
+    '--runtime', 'claude',
+    '--json',
+  ]);
+  assert.equal(restored.code, 0, restored.err);
+  const descriptor = JSON.parse(restored.out);
+  assert.equal(descriptor.checkpoint_rel, checkpoint.checkpoint_rel);
+  assert.equal(descriptor.owner_run_id, runId);
+  assert.equal(descriptor.generation, 1);
+  assert.equal(descriptor.runtime, 'claude');
+  assert.equal(descriptor.scope.workstream_id, checkpoint.workstream_id);
+  assert.equal(typeof descriptor.next_action.action.type, 'string');
+});
+
+test('checkpoint public grammar distinguishes usage, fence, and invalid data exits', () => {
+  const { root, runId } = seed();
+  bindCheckpointAffinity(root, runId);
+  for (const args of [
+    ['checkpoint', 'emit', '--owner', runId, '--generation', '1'],
+    ['checkpoint', 'inspect'],
+    ['checkpoint', 'restore', '--checkpoint', 'checkpoints/x-compact.json',
+      '--owner', runId, '--generation', '1', '--runtime', 'claude'],
+  ]) {
+    assert.equal(runBoth(root, args).code, 2, args.join(' '));
+  }
+  for (const args of [
+    ['checkpoint', 'emit', '--runtime', 'claude'],
+    ['checkpoint', 'emit', '--owner', runId, '--runtime', 'claude'],
+    ['checkpoint', 'emit', '--owner', runId, '--generation', 'zero', '--runtime', 'claude'],
+    ['checkpoint', 'emit', '--owner', runId, '--owner', runId,
+      '--generation', '1', '--runtime', 'claude'],
+    ['checkpoint', 'emit', '--owner', runId,
+      '--generation', '1', '--generation', '1', '--runtime', 'claude'],
+  ]) {
+    assert.equal(runBoth(root, args).code, 3, args.join(' '));
+  }
+  assert.equal(runBoth(root, [
+    'checkpoint', 'emit',
+    '--owner', runId,
+    '--generation', '1',
+    '--runtime', 'claude',
+    '--runtime', 'claude',
+  ]).code, 2);
+  assert.equal(runBoth(root, [
+    'checkpoint', 'emit',
+    '--owner', runId,
+    '--generation', '9',
+    '--runtime', 'claude',
+  ]).code, 3);
+  assert.equal(runBoth(root, [
+    'checkpoint', 'emit',
+    '--owner', runId,
+    '--generation', '1',
+    '--runtime', 'invalid',
+  ]).code, 1);
+  assert.equal(runBoth(root, [
+    'checkpoint', 'restore',
+    '--checkpoint', '../outside.json',
+    '--owner', runId,
+    '--generation', '1',
+    '--runtime', 'claude',
+    '--json',
+  ]).code, 1);
+});
+
+test('checkpoint verbs reject explicit-empty and duplicate-empty project roots and run ids before fallback', () => {
+  const { root, runId } = seed();
+  bindCheckpointAffinity(root, runId);
+  const emitted = JSON.parse(run(root, [
+    'checkpoint', 'emit',
+    '--owner', runId,
+    '--generation', '1',
+    '--runtime', 'claude',
+  ]));
+  const verbs = [
+    [
+      'checkpoint', 'emit',
+      '--owner', runId,
+      '--generation', '1',
+      '--runtime', 'claude',
+    ],
+    ['checkpoint', 'inspect', '--json'],
+    [
+      'checkpoint', 'restore',
+      '--checkpoint', emitted.checkpoint_rel,
+      '--owner', runId,
+      '--generation', '1',
+      '--runtime', 'claude',
+      '--json',
+    ],
+  ];
+  for (const verb of verbs) {
+    for (const explicitEmpty of [
+      [...verb, '--run-id', runId, '--project-root='],
+      [...verb, '--run-id', runId, '--project-root', ''],
+      [...verb, '--run-id', runId, '--project-root=', '--project-root', root],
+      [...verb, '--project-root', root, '--run-id='],
+      [...verb, '--project-root', root, '--run-id', ''],
+      [...verb, '--project-root', root, '--run-id=', '--run-id', runId],
+    ]) {
+      const result = runRaw(root, explicitEmpty);
+      assert.equal(result.code, 2, explicitEmpty.join(' '));
+      assert.match(result.err, /USAGE:/, explicitEmpty.join(' '));
+    }
+  }
+});
+
+test('checkpoint CLI cannot invoke the trusted legacy compatibility emitter', () => {
+  const { root, runId } = seedMigratedLegacy();
+  const active = runBoth(root, [
+    'checkpoint', 'emit',
+    '--owner', runId,
+    '--generation', '1',
+    '--runtime', 'claude',
+  ]);
+  assert.equal(active.code, 1, active.err);
+  assert.match(active.err, /CHECKPOINT_LEGACY_TRUST_REQUIRED/);
+  assert.equal(
+    runBoth(root, [
+      'checkpoint', 'emit',
+      '--owner', runId,
+      '--generation', '9',
+      '--runtime', 'claude',
+    ]).code,
+    3,
+  );
+  assert.equal(
+    runBoth(root, [
+      'checkpoint', 'emit',
+      '--owner', runId,
+      '--generation', '1',
+      '--runtime', 'codex',
+    ]).code,
+    3,
+  );
 });
 
 test('comprehension status is read-only', () => {
@@ -199,6 +457,14 @@ import { mkdirSync, rmSync } from 'node:fs';
 function runBoth(root, args) {
   try { const out = execFileSync('node', [CLI, ...args, '--project-root', root], { encoding: 'utf8' }); return { out: out.trim(), code: 0, err: '' }; }
   catch (e) { return { out: (e.stdout || '').trim(), code: e.status ?? 1, err: (e.stderr || '').trim() }; }
+}
+function runRaw(root, args) {
+  try {
+    const out = execFileSync('node', [CLI, ...args], { cwd: root, encoding: 'utf8' });
+    return { out: out.trim(), code: 0, err: '' };
+  } catch (e) {
+    return { out: (e.stdout || '').trim(), code: e.status ?? 1, err: (e.stderr || '').trim() };
+  }
 }
 
 test('A1: state get with no current pointer → null, exit 0, no stacktrace', () => {

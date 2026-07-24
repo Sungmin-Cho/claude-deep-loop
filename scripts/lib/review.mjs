@@ -2,8 +2,8 @@ import { readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { latestInsights } from './insights.mjs';
-import { readState } from './state.mjs';
+import { captureLatestInsightsSet, latestInsights } from './insights.mjs';
+import { captureReconciledRunSnapshot, withReconciledMutationLock } from './state.mjs';
 import { appendAnchored } from './integrity.mjs';
 import { newBlockedCheckerEpisode, newEpisode } from './episode.mjs';
 import { leaseCheck } from './lease.mjs';
@@ -14,14 +14,14 @@ import { MUTATION_TURN_FLOOR } from './budget.mjs';
 import { sessionRuntime } from './runtime.mjs';
 import { canonicalProjectRoot } from './project-root.mjs';
 import { validate } from './schema.mjs';
+import { assertScopeAllows } from './session-scope.mjs';
 import {
   isProofCapableChecker,
   deriveReviewArtifactContract,
-  materializeImportedReview,
   parseReviewImport,
+  prepareImportedReview,
   sha256File,
   validateImportedEvidence,
-  verifyImportedEnvelope,
   REVIEW_ATTEMPT_ID,
 } from './review-import.mjs';
 
@@ -68,6 +68,9 @@ function claimedContext(root, loop, episodeId, attemptId, fence) {
   }
   if (!context.workstream || checker.workstream_id !== context.maker.workstream_id
     || checker.point !== context.maker.point) throw new Error('REVIEW_CLAIM_BINDING_INVALID');
+  if (loop.autonomy?.continuation_policy === 'workstream-session') {
+    assertScopeAllows(loop, context.maker.workstream_id);
+  }
   const artifacts = deriveReviewArtifactContract(root, context.maker, context.workstream);
   const lease = loop.session_chain?.lease || {};
   const claim = {
@@ -169,7 +172,7 @@ export function revalidateIndependentReviewClaim(root, runId, options = {}) {
   const { episodeId, attemptId, fence } = options;
   validFence(fence, 'revalidateIndependentReviewClaim');
   if (!REVIEW_ATTEMPT_ID.test(attemptId || '')) throw new Error('REVIEW_CLAIM_ATTEMPT_INVALID');
-  const { data: loop } = readState(root, runId);
+  const { data: loop } = captureReconciledRunSnapshot(root, runId);
   const checker = loop.episodes.find(episode => episode.id === episodeId);
   if (checker?.status !== 'in_progress' || checker.attempt_id !== attemptId || !checker.review_claim) {
     throw new Error('REVIEW_CLAIM_MISMATCH');
@@ -311,11 +314,15 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: dispatchReview');
   // Fix 3: validate point before any state read/write
   if (!point || typeof point !== 'string' || !point.length) throw new Error('REVIEW_INPUT_INVALID: point');
-  const { data } = readState(root, runId);
+  const { data } = captureReconciledRunSnapshot(root, runId);
   // Codex impl r14 🟡: validate the workstream EXISTS at dispatch time — otherwise the checker is bound to a phantom
   // workstream and recordReviewOutcome (which derives workstream_id from the checker) later fails WORKSTREAM_NOT_FOUND,
   // stranding a pending checker that can't converge. Fail early instead.
-  if (!workstreamId || !data.workstreams.find(w => w.id === workstreamId)) throw new Error(`WORKSTREAM_NOT_FOUND: ${workstreamId}`);
+  const dispatchWorkstream = workstreamId && data.workstreams.find(w => w.id === workstreamId);
+  if (!dispatchWorkstream) throw new Error(`WORKSTREAM_NOT_FOUND: ${workstreamId}`);
+  if (['ready', 'merged', 'abandoned'].includes(dispatchWorkstream.status)) {
+    throw new Error(`WORKSTREAM_TERMINAL_LOCKED: ${workstreamId} is ${dispatchWorkstream.status}`);
+  }
   // Derive the target maker: the latest done maker for this (workstreamId, point) that does NOT already have a bound terminal checker.
   const eps = data.episodes || [];
   // P2 codex r7: hill-climb 마이그레이션 특례 — pre-patch 커널이 approve한 checker(contract 미pin)에 묶인
@@ -346,6 +353,13 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
   // source, so every checker is ALWAYS bound going forward. (preCheck — thrown before newEpisode: no episode created.)
   if (!targetMakerEp) throw new Error('REVIEW_NO_ELIGIBLE_MAKER: no done maker to review for ' + point + '/' + workstreamId);
   const targetMaker = targetMakerEp.id;
+  // Session scope is the local authorization boundary and must fail before optional
+  // reviewer discovery. Otherwise an installation-dependent dependency error can
+  // mask a cross-Workstream dispatch and make the same durable state behave
+  // differently between a developer checkout and a clean CI host.
+  if (data.autonomy?.continuation_policy === 'workstream-session') {
+    assertScopeAllows(data, workstreamId);
+  }
   const { reviewer, flags, mode, reviewerResolution, blockedReason } = resolveReviewer(data, detected, { independentSubagent });
   // P2 (hillclimb-ledger 2026-07-10, release-blocking): hill-climb run은 checker 계약(HILLCLIMB-001)이 실제로
   // 강제되는 리뷰만 만들 수 있다. `.deep-review/`는 gitignored라 fresh checkout에는 계약이 없고, deep-review는
@@ -404,7 +418,7 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
     //    maker가 인용한 emit과 다를 수 있다 — checker는 evidence의 sha256/emit_ulid를 maker 인용
     //    (ledger 항목의 insights_ref/insights_sha256, design/plan은 문서의 인용)과 대조하고 mismatch를
     //    criterion (a) 위반으로 판정한다(v1 바인딩 메커니즘 — 커널은 T1 ledger를 파싱하지 않는다).
-    const li = latestInsights(root);
+    const li = latestInsights(captureLatestInsightsSet(root));
     evidence = li ? {
       insights_path: li.path,
       emit_ulid: li.path.replace(/^.*\//, '').replace(/-insights\.json$/, ''),
@@ -474,6 +488,9 @@ function checkedContext(loop, episodeId, { reviewSource } = {}) {
     throw new Error('REVIEW_MAKER_BINDING_MISMATCH: checker and maker workstream/point differ');
   }
   if (!context.workstream) throw new Error(`WORKSTREAM_NOT_FOUND: ${checker.workstream_id}`);
+  if (loop.autonomy?.continuation_policy === 'workstream-session') {
+    assertScopeAllows(loop, maker.workstream_id);
+  }
   return context;
 }
 
@@ -513,9 +530,23 @@ function commitReviewOutcome(root, runId, {
     ...(evidence.report ? { report: evidence.report, report_sha256: evidence.reportSha256 } : {}),
     ...(evidence.findings ? { findings: evidence.findings } : {}),
   };
+  const publication = reviewSource === 'imported-stdin' && evidence.report ? {
+    kind: 'review-import',
+    operationId: `review-import-${evidence.reportSha256}`,
+    artifacts: [{ rel: evidence.reportRel, bytes: evidence.bytes }],
+    topology: {
+      checker_episode_id: episodeId,
+      target_maker: snapshot.targetMaker,
+      attempt_id: evidence.input.attempt_id,
+      report_sha256: evidence.reportSha256,
+    },
+  } : null;
   let lockedContext;
   let result;
-  appendAnchored(root, runId, { type: 'review-outcome', data: eventData },
+  appendAnchored(root, runId, {
+    type: 'review-outcome', data: eventData,
+    ...(reviewSource === 'imported-stdin' && evidence.generatedAt ? { now: evidence.generatedAt } : {}),
+  },
     (loop) => {
       const checker = lockedContext.checker;
       const maker = lockedContext.maker;
@@ -581,7 +612,12 @@ function commitReviewOutcome(root, runId, {
       } else {
         if (evidence.preparationError) throw evidence.preparationError;
         const binding = validateImportedEvidence(root, loop, evidence.input, lockedContext);
-        verifyImportedEnvelope(root, runId, evidence, binding);
+        const prepared = prepareImportedReview(root, runId, evidence.input, binding, { now: evidence.generatedAt });
+        if (prepared.report !== evidence.report || prepared.reportRel !== evidence.reportRel
+          || prepared.reportAbs !== evidence.reportAbs || prepared.reportBytes !== evidence.reportBytes
+          || prepared.reportSha256 !== evidence.reportSha256 || !prepared.bytes.equals(evidence.bytes)) {
+          throw new Error('REVIEW_REPORT_HASH_MISMATCH: prepared import changed before commit');
+        }
       }
       // P2 codex r3/r4: hill-climb run의 passing verdict는 계약-강제 리뷰 proof다 — recipe를 기준으로
       // 게이트한다(체커 필드 유무가 아니라). pre-patch dispatch로 만들어진 legacy pending checker는
@@ -605,7 +641,10 @@ function commitReviewOutcome(root, runId, {
         } catch { stillValid = false; }
         if (!stillValid) throw new Error(`REVIEW_CONTRACT_MISSING: contract ${checker.contract.path} was removed or altered since dispatch (recorded sha256 mismatch) — re-materialize the tracked contract (그대로 복사), re-run the review, and record this SAME checker episode (it stays pending; do NOT dispatch a second checker)`);
       }
-    }, { floor: MUTATION_TURN_FLOOR });
+    }, {
+      floor: MUTATION_TURN_FLOOR,
+      ...(publication ? { publication } : {}),
+    });
   return result;
 }
 
@@ -619,7 +658,7 @@ export function recordReviewOutcome(root, runId, options = {}) {
   validVerdict(verdict);
   if (proof === null || typeof proof !== 'object' || Array.isArray(proof)) throw new Error('REVIEW_INPUT_INVALID: proof');
   rejectCallerMetadata(proof, 'recordReviewOutcome proof');
-  const preState = readState(root, runId).data;
+  const preState = captureReconciledRunSnapshot(root, runId).data;
   const runtime = sessionRuntime(preState);
   const snapshot = snapshotContext(preState, episodeId);
   const passed = verdict === 'APPROVE' || verdict === 'CONCERN';
@@ -635,28 +674,38 @@ export function recordReviewOutcome(root, runId, options = {}) {
   });
 }
 
-export function importReviewOutcome(root, runId, options = {}) {
+// The fourth argument is an internal dependency seam for deterministic post-materialization,
+// pre-append race tests. CLI callers never populate it.
+export function importReviewOutcome(root, runId, options = {}, internal = {}) {
   if (options === null || typeof options !== 'object' || Array.isArray(options)) {
     throw new Error('REVIEW_INPUT_INVALID: options');
   }
+  const afterMaterialize = internal?.afterMaterialize ?? (() => {});
+  if (typeof afterMaterialize !== 'function') throw new Error('REVIEW_INPUT_INVALID: internal.afterMaterialize');
   rejectCallerMetadata(options, 'importReviewOutcome');
   const { raw, fence, now } = options;
   validFence(fence, 'importReviewOutcome');
   const input = parseReviewImport(raw);
-  const preState = readState(root, runId).data;
+  const preState = captureReconciledRunSnapshot(root, runId).data;
   const runtime = sessionRuntime(preState);
   const snapshot = snapshotContext(preState, input.checker_episode_id);
   let evidence;
   try {
     const checked = checkedContext(preState, input.checker_episode_id, { reviewSource: 'imported-stdin' });
     const binding = validateImportedEvidence(root, preState, input, checked);
-    evidence = materializeImportedReview(root, runId, input, binding, { now });
+    evidence = prepareImportedReview(root, runId, input, binding, { now });
+    afterMaterialize(Object.freeze({
+      report: evidence.report,
+      reportAbs: evidence.reportAbs,
+      reportSha256: evidence.reportSha256,
+      bytes: evidence.bytes,
+    }));
   } catch (preparationError) {
     // Preserve the authoritative locked error order. Invalid/stale source material never receives proof,
     // but the commit preCheck still gets to report root/runtime/lease/checker fences first.
     evidence = { input, preparationError, report: null, reportSha256: null };
   }
-  return commitReviewOutcome(root, runId, {
+  const result = commitReviewOutcome(root, runId, {
     episodeId: input.checker_episode_id,
     verdict: input.verdict,
     reviewSource: 'imported-stdin',
@@ -665,6 +714,10 @@ export function importReviewOutcome(root, runId, options = {}) {
     runtime,
     snapshot,
   });
+  // Successful publication no longer needs its retry marker: retire it before returning so a
+  // caller's subsequent fenced mutation cannot race a still-visible committed predecessor.
+  withReconciledMutationLock(root, runId, () => {});
+  return result;
 }
 
 // review.points = run-level 계약. 충족은 workstream review_points_done(bound approved checker가 채움)이 단일 출처.

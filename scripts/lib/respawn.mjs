@@ -1,12 +1,16 @@
-import { readState } from './state.mjs';
+import {
+  captureReconciledRunSnapshot,
+  withReconciledMutationLock,
+  writeState,
+} from './state.mjs';
 import { existsSync } from 'node:fs';
 import { dirname, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { appendAnchored } from './integrity.mjs';
-import { checkBudget, reconcileBudget } from './budget.mjs';
+import { checkHardBudget, reconcileBudget } from './budget.mjs';
 import { checkBreaker } from './breaker.mjs';
-import { advanceHandoffPhase } from './lease.mjs';
+import { boundaryHandoffTopologyError } from './lease.mjs';
 import { buildLaunchCommand } from './runtime-descriptor.mjs';
 import { defaultDesktopProbe } from './desktop-target.mjs';
 import { sessionRuntime } from './runtime.mjs';
@@ -18,8 +22,11 @@ import {
   revalidateTrustedLauncherExecutable,
   revalidateTrustedRuntimeExecutable,
 } from './runtime-executable.mjs';
+import { nextAction } from './next-action.mjs';
+import { attendedLaunchAuthorized } from './attended-launch.mjs';
 
 const DEFAULT_DEEP_LOOP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const captureFreshLoop = (root, runId) => captureReconciledRunSnapshot(root, runId).data;
 
 function durableLauncherAuthority(loop, expectedKind) {
   const approvals = loop.autonomy?.launcher_executable_approvals;
@@ -103,10 +110,10 @@ function currentPosixCodexLauncher(loop, expectedMode, platform) {
 // 게이트 순서: budget → breaker → max_sessions → wallclock → auto_handoff (spec §9). 순수.
 export function respawnGate(loop, { now = Date.now() } = {}) {
   const blocked_by = [];
-  // Codex r1 🟡8: checkBudget 은 created_at 기반 wallclock 도 검사하므로, sessionStart=now 로 그 내부 검사를
+  // Codex r1 🟡8: hard-budget predicate는 created_at 기반 wallclock도 검사하므로, sessionStart=now로 그 내부 검사를
   // 무력화(wall=0)하고 wallclock 은 아래 문서화된 순서(max_sessions 다음)에서 명시 검사 → 순서/라벨 일관.
-  const b = checkBudget(loop, { now, sessionStart: now });
-  if (!b.ok) blocked_by.push('budget');
+  const budget = checkHardBudget(loop, { now, sessionStart: now });
+  if (budget.blocked) blocked_by.push('budget');
   if (checkBreaker(loop).tripped) blocked_by.push('breaker');
   // Codex r3 🟡6: emitHandoff 가 child 세션을 미리 append 하므로 pending child 가 이미 카운트됨 → `>`(>= 아님)로 비교해
   // 총 세션이 max_sessions 까지는 허용하되 초과는 금지 (off-by-one 방지).
@@ -118,6 +125,62 @@ export function respawnGate(loop, { now = Date.now() } = {}) {
   if (loop.budget?.max_wallclock_sec && (now - start) / 1000 >= loop.budget.max_wallclock_sec) blocked_by.push('wallclock');
   if (!loop.autonomy?.auto_handoff) blocked_by.push('auto_handoff');
   return { ok: blocked_by.length === 0, blocked_by, reason: blocked_by.join(',') || 'ok' };
+}
+
+function claimSpawnedHandoff(root, runId, {
+  key,
+  childRunId,
+  parentOwner,
+  generation,
+  now,
+  mode,
+}) {
+  return withReconciledMutationLock(root, runId, (_guard, { data }) => {
+    const lease = data.session_chain?.lease || {};
+    if (lease.owner_run_id !== parentOwner || lease.generation !== generation) {
+      return { ok: false, reason: 'fenced' };
+    }
+    if (data.status === 'completed' || data.status === 'stopped') {
+      return { ok: false, reason: 'RUN_TERMINAL' };
+    }
+    if (lease.handoff_idempotency_key !== key) return { ok: false, reason: 'key-mismatch' };
+    if (lease.handoff_child_run_id !== childRunId) return { ok: false, reason: 'child-mismatch' };
+    if (lease.handoff_phase === 'spawned') return { ok: true, reason: 'idempotent-noop' };
+    if (lease.handoff_phase !== 'emitted' || lease.state !== 'releasing') {
+      return { ok: false, reason: `illegal-transition ${lease.handoff_phase}->spawned` };
+    }
+
+    // The spawned CAS is the final internal authorization boundary before an
+    // irreversible external process launch. Re-evaluate in the documented
+    // order while holding the same lock that consumes `emitted`.
+    const budget = checkHardBudget(data, { now, sessionStart: now });
+    if (budget.blocked) return { ok: false, reason: 'budget' };
+    if (checkBreaker(data).tripped) return { ok: false, reason: 'breaker' };
+
+    if (lease.takeover_kind === 'boundary-handoff') {
+      const topologyError = boundaryHandoffTopologyError(data);
+      if (topologyError) return { ok: false, reason: topologyError };
+      const action = nextAction(data, { now }).action;
+      if (action?.type === 'finish') return { ok: false, reason: 'FINISH_REQUIRED' };
+    } else {
+      const topologyError = boundaryHandoffTopologyError(data);
+      if (topologyError) return { ok: false, reason: topologyError };
+    }
+
+    const gate = respawnGate(data, { now });
+    if (!gate.ok) return { ok: false, reason: gate.reason };
+
+    const attendedStyle = mode === 'desktop'
+      ? 'desktop'
+      : (mode === 'headless' ? null : 'visible');
+    if (attendedStyle != null && !attendedLaunchAuthorized(data, attendedStyle)) {
+      return { ok: false, reason: 'attended-launch-unauthorized' };
+    }
+
+    data.session_chain.lease = { ...lease, handoff_phase: 'spawned' };
+    writeState(root, runId, data);
+    return { ok: true, reason: 'advanced' };
+  });
 }
 
 // Headless (non-interactive) invocation detection — an ADDITIONAL safety net beyond the driver's explicit
@@ -146,9 +209,10 @@ export function isHeadlessInvocation(env = process.env, runtime = 'claude') {
 export function resolveSpawnMode(loop, { headless = false, attended = false, env = process.env } = {}) {
   const runtime = sessionRuntime(loop);
   if (headless || loop?.autonomy?.spawn_style === 'headless' || isHeadlessInvocation(env, runtime)) return 'headless';
-  if (loop?.autonomy?.spawn_style === 'desktop' && attended === true) return 'desktop';
+  if (attended === true && attendedLaunchAuthorized(loop, 'desktop')) return 'desktop';
   const launcher = loop?.session_spawn?.launcher;
-  if (loop?.autonomy?.spawn_style === 'visible' && attended === true && launcher && launcher !== 'none') return launcher;
+  if (attended === true && attendedLaunchAuthorized(loop, 'visible')
+    && launcher && launcher !== 'none') return launcher;
   return 'interactive';
 }
 
@@ -174,14 +238,34 @@ function classifyReadiness(l, { childRunId, startGeneration }) {
 // cleared, lease rolled back to active/idle (stale TTL released), status='paused' + pause_reason. The reserved
 // child is invalidated (it never ran). In-lock parent fence → if the lease changed (child took over), abort
 // WITHOUT mutating (returns {fenced:true}). No half-commit: event + chain + lease + status are one transaction.
+function invalidateHandoff(l, childRunId) {
+  const child = l.session_chain.sessions.find(s => s.run_id === childRunId);
+  if (child) child.outcome = 'failed_launch';
+  const parent = l.session_chain.sessions.find(s => s.superseded_by === childRunId);
+  if (parent) {
+    parent.superseded_by = null;
+    if (parent.scope?.kind === 'workstream') parent.scope.superseded_at = null;
+  }
+  l.session_chain.lease = {
+    ...l.session_chain.lease,
+    state: 'active',
+    handoff_phase: 'idle',
+    handoff_idempotency_key: null,
+    handoff_child_run_id: null,
+    handoff_trigger: null,
+    expires_at: null,
+    resume_policy: null,
+    takeover_kind: null,
+  };
+  delete l.session_chain.lease.handoff_boundary_event;
+  delete l.session_chain.lease.handoff_project_binding_generation;
+  delete l.session_chain.lease.handoff_project_root_digest;
+}
+
 export function rollbackAndPause(root, runId, { childRunId, parentOwner, generation, eventData, pauseReason }) {
   try {
     appendAnchored(root, runId, { type: 'respawn-failed', data: { ...eventData, pause_reason: pauseReason } }, (l) => {
-      const child = l.session_chain.sessions.find(s => s.run_id === childRunId);
-      if (child) child.outcome = 'failed_launch';
-      const parent = l.session_chain.sessions.find(s => s.superseded_by === childRunId);
-      if (parent) parent.superseded_by = null;
-      l.session_chain.lease = { ...l.session_chain.lease, state: 'active', handoff_phase: 'idle', handoff_idempotency_key: null, handoff_child_run_id: null, handoff_trigger: null, expires_at: null, resume_policy: null };
+      invalidateHandoff(l, childRunId);
       l.status = 'paused';
       l.pause_reason = pauseReason;
     }, (l) => {
@@ -193,6 +277,42 @@ export function rollbackAndPause(root, runId, { childRunId, parentOwner, generat
   } catch (appendErr) {
     if (String(appendErr.message).startsWith('RESPAWN_FENCED')) return { fenced: true };
     if (String(appendErr.message).startsWith('RUN_TERMINAL')) return { terminal: true };   // v1.6 — caller가 outcome:'terminal'로 전파
+    throw appendErr;
+  }
+  return { ok: true };
+}
+
+function cancelHandoffForFinish(root, runId, {
+  childRunId, parentOwner, generation, now,
+}) {
+  try {
+    appendAnchored(root, runId, {
+      type: 'respawn-cancelled',
+      data: { child_run_id: childRunId, reason: 'finish-required' },
+      now,
+    }, (l) => {
+      invalidateHandoff(l, childRunId);
+    }, (l) => {
+      const lease = l.session_chain.lease;
+      if (lease.owner_run_id !== parentOwner || lease.generation !== generation) {
+        throw new Error('RESPAWN_FENCED: finish-cancel');
+      }
+      if (l.status === 'completed' || l.status === 'stopped') {
+        throw new Error('RUN_TERMINAL: respawn');
+      }
+      if (lease.handoff_child_run_id !== childRunId
+        || lease.handoff_phase !== 'emitted'
+        || lease.state !== 'releasing') {
+        throw new Error('RESPAWN_FENCED: finish-cancel');
+      }
+      if (nextAction(l, { now }).action?.type !== 'finish') {
+        throw new Error('FINISH_NO_LONGER_REQUIRED');
+      }
+    });
+  } catch (appendErr) {
+    if (String(appendErr.message).startsWith('RESPAWN_FENCED')) return { fenced: true };
+    if (String(appendErr.message).startsWith('RUN_TERMINAL')) return { terminal: true };
+    if (String(appendErr.message).startsWith('FINISH_NO_LONGER_REQUIRED')) return { changed: true };
     throw appendErr;
   }
   return { ok: true };
@@ -219,7 +339,7 @@ function preservePause(root, runId, { childRunId, parentOwner, generation, pause
   } catch (appendErr) {
     if (String(appendErr.message).startsWith('RUN_TERMINAL')) return { terminal: true };   // v1.6
     if (String(appendErr.message).startsWith('RESPAWN_FENCED')) {
-      const fresh = readState(root, runId).data.session_chain.lease;
+      const fresh = captureFreshLoop(root, runId).session_chain.lease;
       if (fresh.owner_run_id === childRunId && fresh.state === 'active' && fresh.handoff_phase === 'acquired') return { acquired: true };
       return { fenced: true };
     }
@@ -271,15 +391,16 @@ export function respawn(root, runId, {
   tmuxProbeRun = defaultProbeRun,
   tmuxPanesRun = defaultProbeRun,
   tmuxPsRun,
+  beforeClaim = () => {},
 } = {}) {
   reconcileBudget(root, runId);                       // 무결성 fail-stop (탐지 시 throw)
-  const { data: loop } = readState(root, runId);
+  const loop = captureFreshLoop(root, runId);
   const runtime = sessionRuntime(loop);
   const canonicalRoot = canonicalProjectRoot(loop.project.root);
   const lease = loop.session_chain.lease;
   const generation = lease.generation;
   const parentOwner = lease.owner_run_id;
-  const poll = pollLease || (() => readState(root, runId).data.session_chain.lease);
+  const poll = pollLease || (() => captureFreshLoop(root, runId).session_chain.lease);
 
   if (expect && (lease.owner_run_id !== expect.owner || lease.generation !== expect.generation)) {
     return { ok: false, outcome: 'fenced', reason: 'caller-parent-fence-mismatch', childRunId };
@@ -295,6 +416,10 @@ export function respawn(root, runId, {
   if (lease.handoff_idempotency_key !== key) return { ok: false, outcome: 'key-mismatch', reason: 'key-mismatch', childRunId };
   // Codex impl r8 🟡: bind the spawn to the RESERVED handoff child — a valid key must not spawn an arbitrary child.
   if (childRunId !== lease.handoff_child_run_id) return { ok: false, outcome: 'child-mismatch', reason: `childRunId ${childRunId} != reserved ${lease.handoff_child_run_id}`, childRunId };
+  const topologyError = boundaryHandoffTopologyError(loop);
+  if (topologyError) {
+    return { ok: false, outcome: 'boundary-invalid', reason: topologyError, childRunId };
+  }
   // Codex r5 finding A (HIGH): 'spawned' is the CAS-before-spawn CLAIM, NOT proof the child launched + took
   // over. A prior call may have crashed AFTER the CAS, before/during the external spawn → a blind
   // already-spawned return would strand the handoff with no autonomous recovery. So VERIFY child acquisition;
@@ -586,7 +711,7 @@ export function respawn(root, runId, {
   };
 
   // Fresh durable identity + direct version/hash checks immediately before the CAS may authorize spawn.
-  const preClaimIdentityFailure = revalidateIdentityStage(readState(root, runId).data);
+  const preClaimIdentityFailure = revalidateIdentityStage(captureFreshLoop(root, runId));
   if (preClaimIdentityFailure) {
     const res = preservePause(root, runId, {
       childRunId, parentOwner, generation, pauseReason: preClaimIdentityFailure,
@@ -596,20 +721,71 @@ export function respawn(root, runId, {
     return { ok: false, outcome: 'no-launcher', reason: preClaimIdentityFailure, childRunId };
   }
 
+  beforeClaim();
+
   // Codex r2 🔴3: 외부 spawn **이전에** emitted→spawned 를 원자적(withLock CAS)으로 클레임 (이중 외부 spawn 차단).
   // Command is already validated above; only the CAS + spawnFn call remain below.
-  const claim = advanceHandoffPhase(root, runId, { key, toPhase: 'spawned', now, expect: { owner: parentOwner, generation } });
+  const claim = claimSpawnedHandoff(root, runId, {
+    key, childRunId, parentOwner, generation, now, mode,
+  });
   if (!claim.ok) {
     // v1.6 (spec §2.3-5, plan r1): 초입 read↔클레임 사이 finish 경합 — phase-error로 뭉개짐 금지.
     if (claim.reason === 'RUN_TERMINAL') return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };
     if (claim.reason === 'fenced') return { ok: false, outcome: 'fenced', reason: 'lease-changed-during-claim', childRunId };
+    if (claim.reason === 'attended-launch-unauthorized') {
+      const preserved = preservePause(root, runId, {
+        childRunId, parentOwner, generation, pauseReason: claim.reason,
+      });
+      if (preserved.acquired) {
+        return {
+          ok: true, outcome: 'spawned',
+          reason: 'child-acquired-during-attended-authorization-race', childRunId,
+        };
+      }
+      if (preserved.terminal) {
+        return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };
+      }
+      if (preserved.fenced) {
+        return {
+          ok: false, outcome: 'fenced',
+          reason: 'lease-changed-before-attended-authorization-pause', childRunId,
+        };
+      }
+      return { ok: false, outcome: 'no-launcher', reason: claim.reason, childRunId };
+    }
+    if (claim.reason === 'boundary-topology-invalid'
+      || claim.reason === 'BOUNDARY_EVENT_MISMATCH') {
+      return { ok: false, outcome: 'boundary-invalid', reason: claim.reason, childRunId };
+    }
+    if (claim.reason === 'FINISH_REQUIRED') {
+      const res = cancelHandoffForFinish(root, runId, {
+        childRunId, parentOwner, generation, now,
+      });
+      if (res.terminal) return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };
+      if (res.fenced) return { ok: false, outcome: 'fenced', reason: 'lease-changed-before-finish-cancel', childRunId };
+      if (res.changed) return { ok: false, outcome: 'phase-error', reason: 'FINISH_NO_LONGER_REQUIRED', childRunId };
+      return { ok: false, outcome: 'gate-blocked', reason: claim.reason, childRunId };
+    }
+    if (claim.reason === 'budget' || claim.reason === 'breaker'
+      || claim.reason.includes('max_sessions')
+      || claim.reason.includes('wallclock')
+      || claim.reason.includes('auto_handoff')) {
+      const res = rollbackAndPause(root, runId, {
+        childRunId, parentOwner, generation,
+        eventData: { child_run_id: childRunId, gate: claim.reason },
+        pauseReason: `gate:${claim.reason}`,
+      });
+      if (res.terminal) return { ok: false, outcome: 'terminal', reason: 'RUN_TERMINAL', childRunId };
+      if (res.fenced) return { ok: false, outcome: 'fenced', reason: 'lease-changed-before-pause', childRunId };
+      return { ok: false, outcome: 'gate-blocked', reason: claim.reason, childRunId };
+    }
     return { ok: false, outcome: 'phase-error', reason: claim.reason, childRunId };
   }
   if (claim.reason === 'idempotent-noop') return { ok: true, outcome: 'already-spawned', reason: 'idempotent', childRunId };
 
   // Codex impl r8 🟡: entry is already built + validated before the CAS above.
   const entry = _entry;
-  const identityFailure = revalidateIdentityStage(readState(root, runId).data);
+  const identityFailure = revalidateIdentityStage(captureFreshLoop(root, runId));
   if (identityFailure) {
     const res = rollbackAndPause(root, runId, {
       childRunId, parentOwner, generation,
@@ -642,6 +818,8 @@ export function respawn(root, runId, {
       }
       // v1.6 (spec §2.3-5): terminal run에 respawn-spawned 이벤트 append 금지 (spawn↔기록 사이 TOCTOU).
       if (l.status === 'completed' || l.status === 'stopped') throw new Error('RUN_TERMINAL: respawn');
+      const boundaryError = boundaryHandoffTopologyError(l);
+      if (boundaryError) throw new Error(`RESPAWN_BOUNDARY_INVALID: ${boundaryError}`);
     });
   } catch (appendErr) {
     if (String(appendErr.message).startsWith('RUN_TERMINAL')) {
@@ -649,11 +827,14 @@ export function respawn(root, runId, {
     }
     if (String(appendErr.message).startsWith('RESPAWN_FENCED')) {
       // R6-U: a fast RESERVED child may have acquired before we recorded → that is SUCCESS, not a fence.
-      const fresh = readState(root, runId).data.session_chain.lease;
+      const fresh = captureFreshLoop(root, runId).session_chain.lease;
       if (fresh.owner_run_id === childRunId && fresh.state === 'active' && fresh.handoff_phase === 'acquired') {
         return { ok: true, outcome: 'spawned', reason: 'fast-child-acquired', childRunId };
       }
       return { ok: false, outcome: 'fenced', reason: 'lease-changed-after-spawn', childRunId };
+    }
+    if (String(appendErr.message).startsWith('RESPAWN_BOUNDARY_INVALID')) {
+      return { ok: false, outcome: 'boundary-invalid', reason: 'boundary-topology-invalid', childRunId };
     }
     throw appendErr;
   }

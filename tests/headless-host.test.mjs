@@ -14,6 +14,7 @@ import { respawn } from '../scripts/lib/respawn.mjs';
 import { buildLaunchCommand } from '../scripts/lib/runtime-descriptor.mjs';
 import { finishRun } from '../scripts/lib/finish.mjs';
 import { canonicalRealpath } from './helpers/fs-fixtures.mjs';
+import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
 
 const NOW0 = new Date('2026-07-11T00:00:00Z');
 const NOW1 = Date.parse('2026-07-11T00:01:00Z');
@@ -95,6 +96,7 @@ function seedCodexHandoff() {
     approved_at: '2026-07-11T00:00:00.000Z',
   };
   writeState(root, runId, data);
+  migrateAuthenticLegacyTransport(root, runId);
   const handoff = emitHandoff(root, runId, {
     trigger: 'milestone',
     headless: true,
@@ -115,6 +117,7 @@ function seedClaudeHandoff() {
   const { data } = readState(root, runId);
   data.autonomy.spawn_style = 'headless';
   writeState(root, runId, data);
+  migrateAuthenticLegacyTransport(root, runId);
   const handoff = emitHandoff(root, runId, {
     trigger: 'milestone',
     headless: true,
@@ -145,8 +148,8 @@ function prepareCompletableCodexRun(root, runId) {
   const state = readState(root, runId).data;
   state.review.points = ['implementation'];
   state.episodes = [
-    { id: '001-maker', role: 'maker', plugin: 'deep-work', point: 'implementation', workstream_id: 'ws', status: 'done' },
-    { id: '002-checker', role: 'checker', plugin: 'deep-review', point: 'implementation', workstream_id: 'ws', status: 'approved', target_maker: '001-maker' },
+    { id: '001-maker', role: 'maker', plugin: 'deep-work', point: 'implementation', workstream_id: 'ws', status: 'done', request_rel: 'episodes/001-maker/request.md' },
+    { id: '002-checker', role: 'checker', plugin: 'deep-review', point: 'implementation', workstream_id: 'ws', status: 'approved', target_maker: '001-maker', request_rel: 'episodes/002-checker/request.md' },
   ];
   state.workstreams = [{ id: 'ws', status: 'ready', review_points_done: ['implementation'] }];
   state.active_workstreams = [];

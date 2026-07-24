@@ -34,7 +34,7 @@ Skill (LLM) ──write──▶ state patch / budget record / comprehension ack
                         loop.json + event-log.jsonl (kernel-owned)
 ```
 
-## Commands (9 User Skills)
+## Commands (10 User Skills)
 
 | Claude Code | Codex CLI / App | Description |
 |---|---|---|
@@ -42,6 +42,7 @@ Skill (LLM) ──write──▶ state patch / budget record / comprehension ack
 | `/deep-loop-discover` | `$deep-loop:deep-loop-discover` | Discovery phase — populates `discovered_items`, maps them to workstreams |
 | `/deep-loop-triage` | `$deep-loop:deep-loop-triage` | Triage phase — prioritizes workstreams, assigns protocols, confirms with human |
 | `/deep-loop-continue` | `$deep-loop:deep-loop-continue` | Main tick — advances the current workstream: dispatch maker → await → read artifacts → dispatch checker |
+| `/deep-loop-compact` | `$deep-loop:deep-loop-compact` | Explicit `prepare`/`restore` path for a trusted same-conversation compaction checkpoint |
 | `/deep-loop-handoff` | `$deep-loop:deep-loop-handoff` | Emits a clean handoff for the next session |
 | `/deep-loop-resume` | `$deep-loop:deep-loop-resume` | Resumes an interrupted run from a handoff document |
 | `/deep-loop-status` | `$deep-loop:deep-loop-status` | Read-only status report — state, budget, workstreams, and comprehension debt |
@@ -49,6 +50,25 @@ Skill (LLM) ──write──▶ state patch / budget record / comprehension ack
 | `/deep-loop-finish` | `$deep-loop:deep-loop-finish` | Verifies settled episodes, writes the final report, and finishes the run |
 
 > Note: `/deep-loop-workflow` is an internal non-user-invocable skill used by `/deep-loop-continue` and other skills.
+
+## Compatibility and recovery contract
+
+New runs use `workstream-session` with `spawn_style='interactive'` on Claude Code, Codex CLI, and Codex App. The active host conversation owns one bound Workstream until its exact `bound_workstream_first_terminal` event; compaction stays in that conversation, and only that first-terminal boundary may publish a normal child handoff. There is **no unattended mid-Workstream respawn**. The default continuation is interactive, and **manual resume** through `/deep-loop-resume` or `$deep-loop:deep-loop-resume` is a first-class supported path rather than an error-only fallback.
+
+PreCompact publishes a bounded checkpoint and SessionStart with source/matcher `compact` performs **host-mediated restore**. Restore liveness belongs to the host: the hook is emit-only, best-effort, and never creates a session. **Provider identity is optional** when the host supplies no stable identity; when present, its digest must match. A missing or untrusted hook is conditional, not an unconditional pause: without an explicit trusted-evidence rejection, restore reads fresh state; if it proves the same owner and generation with an open bound Workstream affinity in that owner session, state-derived continuation may proceed. Otherwise restore uses preserve-pause for the durable lease and the same manual resume path. An explicit trusted `provider-evidence-mismatch` or `checkpoint-unavailable-with-trusted-evidence` result takes that preserve-pause path directly. The isolated headless driver may continue only after the Workstream boundary and still fails closed on unmeasurable usage.
+
+Visible and desktop launches are never inferred from terminal detection. A human must inspect the current lease and executable diagnosis, then explicitly run `attended-launch approve --style visible --confirm ...`; desktop uses the nonce-bound `spawn-style offer-desktop ...` followed by `spawn-style confirm-desktop ...`. Budget exhaustion and a latched breaker also stop for a human: only confirmed `budget extend ...` and `breaker reset --confirm ...` recovery may resume the run. Neither approval is granted by an autonomous skill.
+
+Lost-host recovery is likewise human-only. Preserve-pause comes first, then a confirmed affinity supersession publishes a capsule; a fresh process executes only the exact returned `recovery acquire --capsule ...` command. For a moved project, run the read-only `root diagnose --candidate-project-root ...`; only its exact returned `root rebind ...` or `root recover ...` command may change the binding, and a replacement process uses the returned `root recovery acquire --capsule ...`. `project.binding_generation` is the **root epoch**. Every state command and every **relative locator** is bound to that epoch, root digest, run id, lease owner, and lease generation. **Stale root-bound commands** are rejected by the epoch fence and are **never edited in place**; diagnose again to obtain a fresh command.
+
+The durable artifact inventory under `.deep-loop/runs/<run-id>/` includes:
+
+- `checkpoints/<checkpoint-key>-compact.json` for same-conversation compaction;
+- `transactions/<operation-id>/prepared.json` and `transactions/<operation-id>/committed.json` for the write-ahead log (**WAL**);
+- `recoveries/<child-run-id>-affinity-recovery.json`, boundary-recovery capsules, and `recoveries/root/<replacement-session-id>.json` root-relocation capsules;
+- `terminal/launch-command.txt` plus bound `terminal/launch-command.meta.json` launch metadata.
+
+The WAL reconciles before ordinary reads or mutations. An incomplete, invalid, or identity-mismatched prepared/committed publication is **fail-stop**: it cannot be skipped to continue from a partially published state.
 
 ## Kernel CLI: `insights` (Hill-Climbing)
 
@@ -76,13 +96,13 @@ The payload (`insights_schema_version` stays `1` — these are additive fields) 
 
 ## Installation and Discovery
 
-The marketplace entries may be synchronized only after merge and separate approval. Until then, use the local-repository paths below; do not infer that v1.8.0 has already been published.
+The marketplace entries may be synchronized only after merge and separate approval. Until then, use the local-repository paths below; do not infer that v1.11.0 has already been published.
 
 | Surface | Local installation and discovery | After a local plugin change |
 |---|---|---|
 | Claude Code | Use `claude --plugin-dir /absolute/path/to/deep-loop`. Only after the separately approved post-merge registry sync, use `/plugin marketplace add Sungmin-Cho/claude-deep-suite` and `/plugin install deep-loop@claude-deep-suite`. | Start a new session. |
 | Codex CLI | Complete both coupled local-install steps below, then open `/plugins`. | Start a new task/session and verify it in `/plugins`. |
-| Codex App | Complete the same coupled install. In the ChatGPT desktop app, select **Work or Codex**, open **Plugins**, and select deep-loop. | **Restart the App**, then start a new task. |
+| Codex App | Complete the same coupled install. In the ChatGPT desktop app, select **Work or Codex**, open **Plugins**, and select deep-loop; continuation uses `workstream-session`. | **Restart the App**, then start a new task. |
 
 The Codex personal install is one coupled operation, not alternatives: first copy/place this repository at the official current personal plugin directory `~/.codex/plugins/deep-loop`; then add or update its entry in the local personal marketplace `~/.agents/plugins/marketplace.json` with `source.path` set to `"./.codex/plugins/deep-loop"`. Both steps are required. In the ChatGPT desktop app: select **Work or Codex**, then open **Plugins**.
 
@@ -94,13 +114,13 @@ Codex App install/discovery and in-task skill execution are supported by the plu
 
 | Surface | Interactive skills | Attended continuation policy | Visible continuation | Manual resume | Headless continuation | Compaction safety net |
 |---|---|---|---|---|---|---|
-| Claude Code, macOS/Linux | Full | `compact-in-place` — keep the same session | Supported terminal/tmux/verified Claude Desktop transports for explicit rotation | **Officially supported** via `/deep-loop-resume` | Measured `claude -p` | Trusted direct Node PreCompact checkpoint + SessionStart restore |
-| Claude Code, native Windows | Full | `compact-in-place` — keep the same session | Trusted Windows Terminal/PowerShell launcher for explicit rotation | **Officially supported** via `/deep-loop-resume` | Trusted native `claude.exe`; otherwise fail-closed | Trusted direct Node PreCompact checkpoint + SessionStart restore |
-| Codex CLI, macOS/Linux | Full | `rotate-per-unit` — fresh session at a milestone | Terminal/tmux launch using the trusted runtime | **Officially supported** via `$deep-loop:deep-loop-resume` | Isolated `codex exec --json` | Plugin lifecycle hooks after trust review; version-dependent and gracefully absent |
-| Codex CLI, native Windows | Full | `rotate-per-unit` — fresh session at a milestone | Trusted Windows Terminal/PowerShell launcher | **Officially supported** via `$deep-loop:deep-loop-resume` | Isolated trusted `codex.exe`; otherwise fail-closed | Plugin lifecycle hooks after trust review; version-dependent and gracefully absent |
-| Codex App | Install/discovery and in-task execution | `rotate-per-unit` — manual fresh task | Manual new task only | **Officially supported** by opening a new task, then `$deep-loop:deep-loop-resume` | Optional isolated `codex exec` driver | Plugin lifecycle hooks after trust review; version-dependent, graceful absence; App smoke pending |
+| Claude Code, macOS/Linux | Full | `workstream-session` — compact in place while the Workstream is open | Explicitly approved terminal/tmux/verified Claude Desktop handoff at the first-terminal boundary | **Officially supported** via `/deep-loop-resume` | Measured `claude -p` after the boundary only | Trusted direct Node PreCompact checkpoint + SessionStart restore |
+| Claude Code, native Windows | Full | `workstream-session` — compact in place while the Workstream is open | Explicitly approved Windows Terminal/PowerShell handoff at the first-terminal boundary | **Officially supported** via `/deep-loop-resume` | Trusted native `claude.exe` after the boundary; otherwise fail-closed | Trusted direct Node PreCompact checkpoint + SessionStart restore |
+| Codex CLI, macOS/Linux | Full | `workstream-session` — keep affinity until the first-terminal boundary | Explicitly approved terminal/tmux launch using the trusted runtime | **Officially supported** via `$deep-loop:deep-loop-resume` | Isolated `codex exec --json` after the boundary only | Plugin lifecycle hooks after trust review; version-dependent and gracefully absent |
+| Codex CLI, native Windows | Full | `workstream-session` — keep affinity until the first-terminal boundary | Explicitly approved Windows Terminal/PowerShell launch | **Officially supported** via `$deep-loop:deep-loop-resume` | Isolated trusted `codex.exe` after the boundary; otherwise fail-closed | Plugin lifecycle hooks after trust review; version-dependent and gracefully absent |
+| Codex App | Install/discovery and in-task execution | `workstream-session` — manual task change only at the first-terminal boundary | Manual new task only | **Officially supported** by opening a new task, then `$deep-loop:deep-loop-resume` | Optional isolated `codex exec` driver after the boundary | Plugin lifecycle hooks after trust review; version-dependent, graceful absence; App smoke pending |
 
-Continuation policy applies to attended runs: Claude defaults to same-session compaction, Codex defaults to milestone-bounded rotation, and unattended runs keep the measured headless policy. Manual resume is a first-class supported continuation path, not an error-only fallback.
+The `workstream-session` continuation policy applies on every host. An attended run defaults to interactive same-conversation work until the first-terminal boundary; unattended runs retain measured headless execution but cannot rotate mid-Workstream. Manual resume is a first-class supported path, not only an error fallback.
 
 **Codex POSIX visible authority:** macOS/Linux automatic visible continuation requires the durable human-approved Codex runtime identity. `cmux` is runnable only when detection bound the same absolute bundled executable to the exact socket with a successful ping. `tmux` is supported after a human approves its canonical executable identity and detection binds that identity to the exact `$TMUX` socket, server PID, and session: the approved binary's `#{session_id}` must match, and an OS-bound pane ancestry proof (`#{pane_pid}` ↔ process ancestry) must independently derive the same session. On macOS, the fixed `/usr/bin/osascript` may launch only the positively detected iTerm2 or Terminal.app entry; finding that system binary alone never activates both launchers. Missing runtime approval returns `runtime-identity-unavailable`, identity or launcher drift fails closed around the spawned CAS, and no path substitutes a bare `codex` or a Claude process.
 
@@ -170,7 +190,7 @@ The `adapter resolve` CLI returns normalized 4-verb descriptors (dispatch/await/
 
 ## Visible Session Continuity (Self-Spawn)
 
-When `autonomy.spawn_style` is `'visible'` and deep-loop detects a supported terminal multiplexer at run-init, it can spawn the next session in a new visible window automatically:
+After explicit attended authorization sets `autonomy.spawn_style` to `'visible'` and deep-loop detects a supported terminal multiplexer, it can spawn the next boundary session in a new visible window:
 
 | Launcher | Detection signal | New session target |
 |----------|-----------------|-------------------|
@@ -181,7 +201,7 @@ When `autonomy.spawn_style` is `'visible'` and deep-loop detects a supported ter
 | Windows Terminal | `WT_SESSION` + approved canonical launcher identity | new WT tab through the exact approved executable |
 | desktop | (user opt-in) Claude Desktop Code tab | opens a verified Claude Desktop handler via `claude://code/new` deeplink — **semi-automatic**: user confirms folder + presses Enter. macOS (path + bundle-id + codesign TeamIdentifier) and, since v1.7.0, **Windows** (traditional-installer exact paths + MSIX path pattern with a pinned publisher-id hash, plus an Authenticode signer thumbprint **pinned from a real Windows 11 observation**). On Windows the offer appears only when the live probe verifies the installed handler; after the pinned leaf cert rotates (NotAfter ~2026-10-21) dispatch returns to deterministic fail-closed until a newly observed thumbprint is re-pinned — guessed pins are never used. |
 
-The spawn is **attended-only**: the parent session must have been launched interactively (`--attended` flag set by the skill). If the parent is headless (`DEEP_LOOP_UNATTENDED=1`, `spawn_style='headless'`, or a headless-entrypoint is detected), visible spawn is bypassed and the headless path is taken instead.
+The spawn is **attended-only** and boundary-only: the parent session must be interactive and carry durable `attended_launch_approval`. If the parent is headless (`DEEP_LOOP_UNATTENDED=1`, `spawn_style='headless'`, or a headless-entrypoint is detected), visible spawn is bypassed; it never grants a mid-Workstream rotation.
 
 **OS-agnostic fallback**: If no launcher is detected (`launcher='none'`), or the session is not attended, `respawn` returns `{ok:false, outcome:'no-launcher'}`. The skill then calls `pauseRun({mode:'preserve'})`, keeping the reserved child in the handoff. A human opens a new terminal and runs `/deep-loop-resume` in Claude Code or `$deep-loop:deep-loop-resume` in Codex, or the reserved child session starts later and acquires the still-releasing lease — either path unpauses the run automatically. The handoff document and `launch-command.txt` always provide a runtime-correct copy-paste command for manual use.
 
@@ -189,11 +209,11 @@ The spawn is **attended-only**: the parent session must have been launched inter
 
 ## PreCompact Hook
 
-deep-loop registers a `PreCompact` hook whose emit-only, best-effort action follows the durable continuation policy; unattended continuation remains assigned to the measured `scripts/hooks-impl/drive-headless.mjs` driver. Attended Claude `compact-in-place` writes a bounded checkpoint and keeps the session, while `rotate-per-unit` or headless invocation emits the existing handoff. A `SessionStart(compact)` hook can restore a matching checkpoint or inject rotation/recovery guidance. The **exact hook definitions** in `hooks/hooks.json` must be trusted by the host. They are direct shell-free Node safety nets. Neither hook owns or spawns a session, and exceptions never block compaction or session start.
+deep-loop registers a `PreCompact` hook whose emit-only, best-effort action follows `workstream-session`; unattended continuation remains assigned to the measured `scripts/hooks-impl/drive-headless.mjs` driver. Under `workstream-session`, an open bound Workstream affinity receives a bounded checkpoint and keeps the same conversation; PreCompact returns `no-affinity` otherwise and never emits a handoff for that policy. A first-terminal boundary handoff is selected by `next-action`, not by PreCompact. Migrated legacy policies alone retain the PreCompact handoff path. A `SessionStart(compact)` hook can restore a matching checkpoint or inject boundary/recovery guidance. The **exact hook definitions** in `hooks/hooks.json` must be trusted by the host. They are direct shell-free Node safety nets. Neither hook owns or spawns a session, and exceptions never block compaction or session start.
 
 `hooks/hooks.json` uses static, shell-free Node bootstraps that resolve `CLAUDE_PLUGIN_ROOT` (or `PLUGIN_ROOT`), import `scripts/hooks-impl/precompact-handoff.mjs` or `scripts/hooks-impl/sessionstart-restore.mjs` through a file URL, and invoke `main()`. The bootstraps do not depend on a Bash wrapper or shell expansion.
 
-Codex bundled-hook discovery is host-version-dependent and occurs only after the user reviews and trusts the plugin hook definition. A **missing or untrusted hook** (including an unsupported host version) degrades gracefully to the durable handoff artifacts, durable lease, pause, and officially supported manual resume path; it never weakens fencing or grants a second owner. The deliberately isolated Codex child disables plugins and hooks, so this fallback is also its expected continuity model.
+Codex bundled-hook discovery is host-version-dependent and occurs only after the user reviews and trusts the plugin hook definition. For a **missing or untrusted hook** (including an unsupported host version), manual compact restore reads fresh evidence for the same owner and open bound Workstream affinity; only that proof permits state-derived continuation. Otherwise it chooses preserve-pause and the officially supported manual resume path. This fallback never weakens fencing or grants a second owner. The deliberately isolated Codex child disables plugins and hooks, so this fallback is also its expected continuity model.
 
 ## License
 

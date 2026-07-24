@@ -1,23 +1,167 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildInitialLoop, initRun } from '../scripts/lib/initrun.mjs';
-import { readState, writeState } from '../scripts/lib/state.mjs';
+import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { newEpisode, recordEpisode } from '../scripts/lib/episode.mjs';
 import { dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
 import { nextAction } from '../scripts/lib/next-action.mjs';
 import { finishProofState } from '../scripts/lib/finish.mjs';
 import { computeDebt, ack } from '../scripts/lib/comprehension.mjs';
+import { contentHash } from '../scripts/lib/envelope.mjs';
 
 function loop(over = {}) {
   const l = buildInitialLoop({ runtime: 'claude', goal: 'g', protocol: 'deep-work', recipe: { id: 'r', name: 'r', reason: '' }, runId: 'R', now: new Date('2026-06-24T00:00:00Z') });
   return Object.assign(l, over);
 }
 
+function migratedLegacyLoop(policy) {
+  assert.ok(['compact-in-place', 'rotate-per-unit'].includes(policy));
+  const root = mkdtempSync(join(tmpdir(), 'dl-next-legacy-'));
+  const { runId } = initRun(root, {
+    runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z'),
+  });
+  const dir = runDir(root, runId);
+  const loopPath = join(dir, 'loop.json');
+  const legacy = JSON.parse(readFileSync(loopPath, 'utf8'));
+  legacy.schema_version = '0.3.0';
+  delete legacy.project.binding_generation;
+  delete legacy.autonomy.attended_launch_approval;
+  delete legacy.session_chain.lease.takeover_kind;
+  legacy.autonomy.spawn_style = 'visible';
+  legacy.autonomy.continuation_policy = policy;
+  legacy.autonomy.milestone_predicate = policy === 'compact-in-place'
+    ? ['workstream_status_change']
+    : ['workstream_status_change', 'review_point_passed', 'per_session_turn_cap_reached'];
+  assert.deepEqual(legacy.episodes, [], 'legacy next-action fixture has no episode locators');
+  for (const session of legacy.session_chain.sessions) {
+    delete session.scope;
+    assert.equal(session.handoff_rel, undefined, 'legacy next-action fixture has no v0.4 handoff locator');
+  }
+  const raw = JSON.stringify(legacy, null, 2);
+  writeFileSync(loopPath, raw);
+  writeFileSync(join(dir, '.loop.hash'), contentHash(raw));
+
+  const migrated = readState(root, runId).data;
+  assert.equal(migrated.schema_version, '0.4.0', 'legacy fixture must pass through public migration');
+  assert.equal(migrated.autonomy.continuation_policy, policy, 'public migration must preserve legacy policy');
+  assert.ok(migrated.session_chain.sessions.every(session => session.scope.kind === 'legacy'));
+  return migrated;
+}
+
 const NOW = Date.parse('2026-06-24T00:00:00Z');
+const BOUNDARY = Object.freeze({ seq: 41, checksum: 'a'.repeat(64) });
+
+function scopedRoutingLoop({ closed = false, sibling = true, bound = true } = {}) {
+  const l = loop();
+  const scope = l.session_chain.sessions[0].scope;
+  scope.workstream_id = bound ? 'ws-a' : null;
+  scope.bound_at_seq = bound ? 7 : null;
+  scope.terminal_event = closed ? { ...BOUNDARY } : null;
+  scope.closed_at = closed ? '2026-06-24T00:10:00.000Z' : null;
+  l.review.points = ['implementation'];
+  l.workstreams = [
+    {
+      id: 'ws-a', status: closed ? 'ready' : 'in_progress',
+      review_points_done: closed ? ['implementation'] : [],
+      episodes: [], depends_on: [],
+      ...(closed ? { terminal_events: [{ ...BOUNDARY }] } : {}),
+    },
+    ...(sibling ? [{
+      id: 'ws-b', status: 'planned', review_points_done: [], episodes: [], depends_on: [],
+    }] : []),
+  ];
+  l.active_workstreams = closed ? [] : ['ws-a'];
+  l.episodes = closed ? [
+    { id: '001-deep-work', role: 'maker', plugin: 'deep-work', status: 'done', point: 'implementation', workstream_id: 'ws-a' },
+    { id: '002-subagent-checker', role: 'checker', plugin: 'subagent-checker', status: 'approved', point: 'implementation', workstream_id: 'ws-a', target_maker: '001-deep-work' },
+  ] : [];
+  l.current_episode = closed ? '002-subagent-checker' : null;
+  return l;
+}
+
+test('workstream-session hard budget and breaker precede every boundary or work action', () => {
+  const budget = scopedRoutingLoop({ closed: true });
+  budget.budget.spent = budget.budget.total;
+  const budgetAction = nextAction(budget, { now: NOW });
+  assert.equal(budgetAction.action.type, 'await_human');
+  assert.equal(budgetAction.action.reason, 'budget');
+  assert.deepEqual(budgetAction.gate.blocked_by, ['budget']);
+
+  const breaker = scopedRoutingLoop({ closed: true });
+  breaker.circuit_breaker.tripped = true;
+  const breakerAction = nextAction(breaker, { now: NOW });
+  assert.equal(breakerAction.action.type, 'await_human');
+  assert.equal(breakerAction.action.reason, 'breaker');
+});
+
+test('workstream-session finish wins a closed boundary, otherwise handoff carries the exact object identity', () => {
+  const proofReady = scopedRoutingLoop({ closed: true, sibling: false });
+  assert.equal(finishProofState(proofReady).missing.length, 0);
+  assert.deepEqual(nextAction(proofReady, { now: NOW }).action, { type: 'finish' });
+
+  const needsNextSession = scopedRoutingLoop({ closed: true, sibling: true });
+  const action = nextAction(needsNextSession, { now: NOW });
+  assert.equal(action.action.type, 'handoff');
+  assert.equal(action.action.reason, 'workstream-terminal');
+  assert.deepEqual(action.action.boundary_event, BOUNDARY);
+  assert.equal(typeof action.action.boundary_event, 'object');
+  assert.deepEqual(action.gate.unconsumed_milestones, []);
+
+  needsNextSession.session_chain.sessions[0].superseded_by = 'CHILD';
+  needsNextSession.session_chain.sessions.push({
+    run_id: 'CHILD', started_at: null, ended_at: null, turns: 0, outcome: null,
+    superseded_by: null, parent_run_id: 'R', parent_boundary_event: { ...BOUNDARY },
+    project_binding_generation: 1,
+    project_root_digest: contentHash(needsNextSession.project.root),
+    scope: {
+      kind: 'workstream', workstream_id: null, bound_at_seq: null,
+      terminal_event: null, closed_at: null, superseded_at: null,
+    },
+  });
+  assert.notEqual(nextAction(needsNextSession, { now: NOW }).action.type, 'handoff');
+});
+
+test('workstream-session open affinity routes only its Workstream and unbound routing ignores terminal siblings', () => {
+  const bound = scopedRoutingLoop();
+  bound.episodes = [
+    { id: '001-a', role: 'maker', status: 'pending', point: 'implementation', workstream_id: 'ws-a', expected_artifacts: ['a'] },
+    { id: '002-b', role: 'maker', status: 'pending', point: 'implementation', workstream_id: 'ws-b', expected_artifacts: ['b'] },
+  ];
+  bound.current_episode = '002-b';
+  const scoped = nextAction(bound, { now: NOW });
+  assert.equal(scoped.action.type, 'dispatch_maker');
+  assert.equal(scoped.action.episode_id, '001-a');
+  assert.equal(scoped.action.workstream_id, 'ws-a');
+
+  const unbound = scopedRoutingLoop({ bound: false });
+  unbound.workstreams[0].status = 'ready';
+  unbound.workstreams[0].terminal_events = [{ ...BOUNDARY }];
+  unbound.episodes = [
+    { id: '001-terminal', role: 'maker', status: 'pending', point: 'implementation', workstream_id: 'ws-a', expected_artifacts: ['a'] },
+    { id: '002-eligible', role: 'maker', status: 'pending', point: 'implementation', workstream_id: 'ws-b', expected_artifacts: ['b'] },
+  ];
+  unbound.current_episode = '001-terminal';
+  const selected = nextAction(unbound, { now: NOW });
+  assert.equal(selected.action.type, 'dispatch_maker');
+  assert.equal(selected.action.episode_id, '002-eligible');
+});
+
+test('workstream-session turn cap decorates the real action with compact advice and never rotates', () => {
+  const l = scopedRoutingLoop();
+  l.episodes = [
+    { id: '001-a', role: 'maker', status: 'pending', point: 'implementation', workstream_id: 'ws-a', expected_artifacts: ['a'] },
+  ];
+  l.current_episode = '001-a';
+  l.session_chain.sessions[0].turns = l.budget.per_session_turn_cap;
+  const action = nextAction(l, { now: NOW, unattended: true });
+  assert.equal(action.action.type, 'dispatch_maker');
+  assert.equal(action.action.advice, 'compact');
+  assert.equal(action.action.advice_reason, 'per_session_turn_cap');
+});
 
 test('fresh run with no episodes → discover', () => {
   const r = nextAction(loop(), { now: Date.parse('2026-06-24T00:00:00Z') });
@@ -25,17 +169,25 @@ test('fresh run with no episodes → discover', () => {
   assert.equal(r.action.type, 'discover');
 });
 
-test('budget hard stop → gate blocked, handoff', () => {
-  const l = loop(); l.budget.spent = l.budget.total;
+test('budget hard stop → gate blocked, await_human without minting a handoff', () => {
+  const l = migratedLegacyLoop('compact-in-place');
+  assert.equal(
+    l.autonomy.continuation_policy,
+    'compact-in-place',
+    'legacy budget-routing fixture must come from public v0.3 migration',
+  );
+  l.budget.spent = l.budget.total;
   const r = nextAction(l, { now: Date.parse('2026-06-24T00:00:00Z') });
   assert.equal(r.gate.allowed, false);
   assert.ok(r.gate.blocked_by.includes('budget'));
-  assert.equal(r.action.type, 'handoff');
+  assert.equal(r.action.type, 'await_human');
+  assert.equal(r.action.reason, 'budget');
+  assert.equal(r.next_command, '/deep-loop-status');
 });
 
 test('cap + compact-in-place attended → real action with advice fields (liveness)', () => {
-  const l = loop();
-  l.autonomy.continuation_policy = 'compact-in-place';
+  const l = migratedLegacyLoop('compact-in-place');
+  assert.equal(l.autonomy.continuation_policy, 'compact-in-place');
   l.session_chain.sessions[0].turns = 40;
   l.budget.per_session_turn_cap = 40;
   const r = nextAction(l, { now: NOW });
@@ -46,8 +198,8 @@ test('cap + compact-in-place attended → real action with advice fields (livene
 });
 
 test('cap + compact-in-place unattended → handoff (unchanged)', () => {
-  const l = loop();
-  l.autonomy.continuation_policy = 'compact-in-place';
+  const l = migratedLegacyLoop('compact-in-place');
+  assert.equal(l.autonomy.continuation_policy, 'compact-in-place');
   l.session_chain.sessions[0].turns = 40;
   l.budget.per_session_turn_cap = 40;
   const r = nextAction(l, { now: NOW, unattended: true });
@@ -56,27 +208,30 @@ test('cap + compact-in-place unattended → handoff (unchanged)', () => {
 });
 
 test('cap + rotate-per-unit (codex or migrated legacy) → handoff (regression)', () => {
-  const l = loop();
-  l.autonomy.continuation_policy = 'rotate-per-unit';
+  const l = migratedLegacyLoop('rotate-per-unit');
+  assert.equal(l.autonomy.continuation_policy, 'rotate-per-unit');
   l.session_chain.sessions[0].turns = 40;
   l.budget.per_session_turn_cap = 40;
   const r = nextAction(l, { now: NOW });
   assert.equal(r.action.type, 'handoff');
 });
 
-test('budget hard-stop still handoff for both policies', () => {
-  const l = loop();
-  l.autonomy.continuation_policy = 'compact-in-place';
-  l.budget.spent = l.budget.total;
-  const r = nextAction(l, { now: NOW });
-  assert.equal(r.action.type, 'handoff');
-  assert.equal(r.action.reason, 'budget');
-  assert.equal(r.action.advice, undefined);
+test('budget hard-stop pauses for both migrated legacy policies', () => {
+  for (const policy of ['compact-in-place', 'rotate-per-unit']) {
+    const l = migratedLegacyLoop(policy);
+    assert.equal(l.autonomy.continuation_policy, policy);
+    l.budget.spent = l.budget.total;
+    const r = nextAction(l, { now: NOW });
+    assert.equal(r.action.type, 'await_human', policy);
+    assert.equal(r.action.reason, 'budget', policy);
+    assert.equal(r.next_command, '/deep-loop-status', policy);
+    assert.equal(r.action.advice, undefined, policy);
+  }
 });
 
 test('cap advice covers discover and dispatch_maker routes', () => {
-  const discoverLoop = loop();
-  discoverLoop.autonomy.continuation_policy = 'compact-in-place';
+  const discoverLoop = migratedLegacyLoop('compact-in-place');
+  assert.equal(discoverLoop.autonomy.continuation_policy, 'compact-in-place');
   discoverLoop.session_chain.sessions[0].turns = 40;
   discoverLoop.budget.per_session_turn_cap = 40;
   const discover = nextAction(discoverLoop, { now: NOW });
@@ -84,8 +239,8 @@ test('cap advice covers discover and dispatch_maker routes', () => {
   assert.equal(discover.action.advice, 'compact');
   assert.equal(discover.action.advice_reason, 'per_session_turn_cap');
 
-  const dispatchLoop = loop();
-  dispatchLoop.autonomy.continuation_policy = 'compact-in-place';
+  const dispatchLoop = migratedLegacyLoop('compact-in-place');
+  assert.equal(dispatchLoop.autonomy.continuation_policy, 'compact-in-place');
   dispatchLoop.session_chain.sessions[0].turns = 40;
   dispatchLoop.budget.per_session_turn_cap = 40;
   dispatchLoop.episodes = [{ id: '001-deep-work', role: 'maker', status: 'pending', point: 'implementation', workstream_id: 'ws-01' }];
@@ -237,10 +392,10 @@ test('non-orphan in_progress maker (expected_artifacts:[x] / omitted) → still 
 });
 
 test('per_session_turn_cap reached under rotate-per-unit → handoff', () => {
-  const l = loop();
-  l.autonomy.continuation_policy = 'rotate-per-unit';
+  const l = migratedLegacyLoop('rotate-per-unit');
+  assert.equal(l.autonomy.continuation_policy, 'rotate-per-unit');
   l.budget.per_session_turn_cap = 5;
-  l.session_chain.sessions = [{ run_id: 'R', started_at: l.created_at, ended_at: null, turns: 5, outcome: null, superseded_by: null }];
+  l.session_chain.sessions[0].turns = 5;
   l.episodes = [{ id: '001-deep-work', role: 'maker', status: 'pending', point: 'implementation' }];
   l.current_episode = '001-deep-work';
   assert.equal(nextAction(l, { now: 0 }).action.type, 'handoff');
@@ -282,6 +437,7 @@ test('unsupported legacy inline checker dispatch becomes blocked and nextAction 
   const ws = newWorkstream(root, runId, { title: 'A', branch: 'b', worktree: '.claude/worktrees/w', fence: f }).id;
   writeFileSync(join(root, 'plan.txt'), 'artifact');
   const { id: makerId } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'plan', point: 'plan', workstream: ws, expectedArtifacts: ['plan.txt'], fence: f });
+  recordEpisode(root, runId, makerId, { status: 'in_progress', fence: f });
   recordEpisode(root, runId, makerId, { status: 'done', artifacts: ['plan.txt'], proof: {}, fence: f });
   const { data } = readState(root, runId);
   data.review.reviewer = 'standalone';
@@ -340,6 +496,7 @@ test('#1: recordReviewOutcome(APPROVE) marks the maker agent-reviewed; comprehen
   // Maker must be 'done' so dispatchReview binds the checker to it (target_maker set).
   writeFileSync(join(root, 'art.txt'), 'artifact');
   const { id: makerId } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'implementation', workstream: ws, expectedArtifacts: ['art.txt'], fence: f });
+  recordEpisode(root, runId, makerId, { status: 'in_progress', fence: f });
   recordEpisode(root, runId, makerId, { status: 'done', artifacts: ['art.txt'], proof: {}, fence: f });
   // Dispatch and approve the review — checker is now bound to the done maker.
   const r = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
@@ -369,6 +526,7 @@ test('dispatchReview → recordReviewOutcome(RC) → nextAction returns fix_epis
   // A done maker so dispatchReview binds the checker to it (target_maker set) — the realistic review flow.
   writeFileSync(join(root, 'art.txt'), 'artifact');
   const { id: makerId } = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'plan', workstream: ws, expectedArtifacts: ['art.txt'], fence: f });
+  recordEpisode(root, runId, makerId, { status: 'in_progress', fence: f });
   recordEpisode(root, runId, makerId, { status: 'done', artifacts: ['art.txt'], proof: {}, fence: f });
   const r = dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { 'deep-review': true }, fence: f });
   recordReviewOutcome(root, runId, { episodeId: r.checkerEpisodeId, verdict: 'REQUEST_CHANGES', fence: f });

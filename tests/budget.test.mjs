@@ -25,10 +25,40 @@ import { nextAction } from '../scripts/lib/next-action.mjs';
 import { releaseLease, acquireLease } from '../scripts/lib/lease.mjs';
 import { finishRun } from '../scripts/lib/finish.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
+import { contentHash } from '../scripts/lib/envelope.mjs';
+import { projectRootDigest } from '../scripts/lib/project-root.mjs';
+import { validate } from '../scripts/lib/schema.mjs';
+import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
+import * as budgetApi from '../scripts/lib/budget.mjs';
 
-function floorRun() {
+function persistLegacyContinuationFixture(root, runId, policy) {
+  assert.ok(['compact-in-place', 'rotate-per-unit'].includes(policy));
+  const dir = runDir(root, runId);
+  const loopPath = join(dir, 'loop.json');
+  const legacy = JSON.parse(readFileSync(loopPath, 'utf8'));
+  legacy.schema_version = '0.3.0';
+  delete legacy.project.binding_generation;
+  delete legacy.autonomy.attended_launch_approval;
+  delete legacy.session_chain.lease.takeover_kind;
+  legacy.autonomy.spawn_style = 'visible';
+  legacy.autonomy.continuation_policy = policy;
+  legacy.autonomy.milestone_predicate = policy === 'compact-in-place'
+    ? ['workstream_status_change']
+    : ['workstream_status_change', 'review_point_passed', 'per_session_turn_cap_reached'];
+  assert.deepEqual(legacy.episodes, [], 'legacy floor fixture has no episode locators');
+  for (const session of legacy.session_chain.sessions) {
+    delete session.scope;
+    assert.equal(session.handoff_rel, undefined, 'legacy floor fixture has no v0.4 handoff locator');
+  }
+  const raw = JSON.stringify(legacy, null, 2);
+  writeFileSync(loopPath, raw);
+  writeFileSync(join(dir, '.loop.hash'), contentHash(raw));
+}
+
+function floorRun({ continuationPolicy = null } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'dl-floor-'));
   const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  if (continuationPolicy) persistLegacyContinuationFixture(root, runId, continuationPolicy);
   return { root, runId, fence: { owner: runId, generation: 1, intent: 'business' } };
 }
 function ownerSessionTurns(root, runId) {
@@ -43,10 +73,10 @@ function mk(root, runId, fence, n) {   // n distinct maker episodes (each a busi
 // 자기완결 minimal valid loop (cross-task import 없음)
 function minimalLoop(root, runId) {
   return {
-    schema_version: '0.3.0', run_id: runId, goal: 'g', status: 'running',
-    project: { root }, routing: { protocol: 'standalone' }, review: {}, autonomy: { tier: 'act-gated', spawn_style: 'interactive', continuation_policy: 'rotate-per-unit' },
+    schema_version: '0.4.0', run_id: runId, goal: 'g', status: 'running',
+    project: { root, binding_generation: 1 }, routing: { protocol: 'standalone' }, review: {}, autonomy: { tier: 'act-gated', spawn_style: 'interactive', continuation_policy: 'rotate-per-unit', attended_launch_approval: null },
     budget: { unit: 'turns', total: 100, spent: 0, tokens_total: 1000, tokens_spent: 0, soft_stop_ratio: 0.8, hard_stop_ratio: 1.0, max_wallclock_sec: 3600, enforcement: 'best-effort-interactive', on_unmeasurable_usage: 'fail-closed' },
-    comprehension: {}, circuit_breaker: {}, session_chain: { lease: { state: 'active', handoff_phase: 'idle', handoff_trigger: null }, consumed_milestones: [], sessions: [] },
+    comprehension: {}, circuit_breaker: {}, session_chain: { lease: { state: 'active', handoff_phase: 'idle', handoff_trigger: null, takeover_kind: null }, consumed_milestones: [], sessions: [] },
     workstreams: [], active_workstreams: [], triage: {}, episodes: [], termination: {},
   };
 }
@@ -83,6 +113,792 @@ test('soft stop demotes tier', () => {
 test('headless unmeasurable → fail-closed', () => {
   const l = base(); l.budget.enforcement = 'hard'; l.budget.spent = 1;
   assert.equal(checkBudget(l, { now: 0, sessionStart: 0, measurable: false }).ok, false);
+});
+
+test('shared hard-budget predicate reports turns, tokens, and wallclock without soft-stop policy', () => {
+  assert.equal(typeof budgetApi.checkHardBudget, 'function');
+  const l = base();
+  l.budget.spent = l.budget.total;
+  assert.deepEqual(budgetApi.checkHardBudget(l, { now: 0, sessionStart: 0 }), {
+    blocked: true,
+    reason: 'turns-hard-stop',
+  });
+  l.budget.total += 1;
+  l.budget.tokens_spent = l.budget.tokens_total;
+  assert.equal(budgetApi.checkHardBudget(l, { now: 0, sessionStart: 0 }).reason, 'tokens-hard-stop');
+  l.budget.tokens_total += 1;
+  assert.equal(budgetApi.checkHardBudget(l, { now: 3_601_000, sessionStart: 0 }).reason, 'wallclock-hard-stop');
+});
+
+function budgetPauseFixture({ wallclock = true, liveWorkstream = false } = {}) {
+  const root = mkdtempSync(join(tmpdir(), 'dl-budget-extend-'));
+  const now = Date.parse('2026-07-23T00:00:00Z');
+  const { runId } = initRun(root, {
+    runtime: 'claude', goal: 'g', now: new Date(now),
+  });
+  let workstreamId = null;
+  if (liveWorkstream) {
+    const fence = { owner: runId, generation: 1, intent: 'business' };
+    ({ id: workstreamId } = newWorkstream(root, runId, {
+      title: 'open recovery source',
+      branch: 'recovery/source',
+      worktree: '.worktrees/recovery-source',
+      fence,
+    }));
+    setWorkstreamStatus(root, runId, workstreamId, 'in_progress', { fence });
+  }
+  const { data } = readState(root, runId);
+  data.status = 'paused';
+  data.pause_reason = 'gate:budget';
+  data.budget.total = 2;
+  data.budget.spent = 2;
+  data.budget.tokens_total = 100;
+  data.budget.tokens_spent = 10;
+  if (!wallclock) delete data.budget.max_wallclock_sec;
+  writeState(root, runId, data);
+  return {
+    root, runId, now, workstreamId,
+    fence: { owner: runId, generation: 1 },
+  };
+}
+
+test('confirmed positive extension clears every hard predicate and resumes the same owner without resetting spent', () => {
+  const f = budgetPauseFixture();
+  const before = readState(f.root, f.runId).data;
+  const result = budgetApi.extendBudget(f.root, f.runId, {
+    turns: 2,
+    reason: 'operator authorizes same-session completion',
+    confirm: true,
+    fence: f.fence,
+    now: f.now,
+  });
+  assert.deepEqual(result, { ok: true, status: 'running' });
+  const after = readState(f.root, f.runId).data;
+  assert.equal(after.status, 'running');
+  assert.equal(after.pause_reason, null);
+  assert.equal(after.session_chain.lease.owner_run_id, before.session_chain.lease.owner_run_id);
+  assert.equal(after.session_chain.lease.generation, before.session_chain.lease.generation);
+  assert.equal(after.budget.total, 4);
+  assert.equal(after.budget.spent, 2);
+  assert.equal(after.budget.tokens_total, before.budget.tokens_total);
+  assert.equal(after.budget.max_wallclock_sec, before.budget.max_wallclock_sec);
+  assert.equal(readLines(f.root, f.runId).filter(event => event.type === 'budget-extended').length, 1);
+});
+
+test('budget extension rejects zero, negative, unsafe, absent-wallclock, wrong-pause, stale-fence, and insufficient deltas without mutation', () => {
+  const cases = [
+    { label: 'zero', options: { turns: 0 }, pattern: /BUDGET_EXTENSION_INVALID/ },
+    { label: 'negative', options: { turns: -1 }, pattern: /BUDGET_EXTENSION_INVALID/ },
+    { label: 'unsafe', options: { turns: Number.MAX_SAFE_INTEGER }, pattern: /BUDGET_EXTENSION_INVALID/ },
+    { label: 'insufficient', options: { turns: 1 }, mutate: data => { data.budget.spent = 4; }, pattern: /BUDGET_EXTENSION_INSUFFICIENT/ },
+    { label: 'stale fence', options: { turns: 3 }, fence: { owner: 'STALE', generation: 1 }, pattern: /LEASE_FENCED/ },
+    { label: 'wrong pause', options: { turns: 3 }, mutate: data => { data.pause_reason = 'manual'; }, pattern: /BUDGET_EXTENSION_STATUS_INVALID/ },
+  ];
+  for (const item of cases) {
+    const f = budgetPauseFixture();
+    if (item.mutate) {
+      const { data } = readState(f.root, f.runId);
+      item.mutate(data);
+      writeState(f.root, f.runId, data);
+    }
+    const before = JSON.stringify(readState(f.root, f.runId).data);
+    assert.throws(() => budgetApi.extendBudget(f.root, f.runId, {
+      ...item.options,
+      reason: 'bounded operator reason',
+      confirm: true,
+      fence: item.fence ?? f.fence,
+      now: f.now,
+    }), item.pattern, item.label);
+    assert.equal(JSON.stringify(readState(f.root, f.runId).data), before, item.label);
+  }
+
+  const absent = budgetPauseFixture({ wallclock: false });
+  const before = JSON.stringify(readState(absent.root, absent.runId).data);
+  assert.throws(() => budgetApi.extendBudget(absent.root, absent.runId, {
+    wallclockSec: 1, reason: 'bounded operator reason', confirm: true,
+    fence: absent.fence, now: absent.now,
+  }), /BUDGET_EXTENSION_WALLCLOCK_UNAVAILABLE/);
+  assert.equal(JSON.stringify(readState(absent.root, absent.runId).data), before);
+});
+
+test('public hard pause → confirmed extend → same-session finish never emits handoff', () => {
+  const f = budgetPauseFixture();
+  assert.equal(nextAction(readState(f.root, f.runId).data, { now: f.now }).action.reason, 'budget');
+  assert.throws(() => finishRun(f.root, f.runId, {
+    status: 'stopped', reportRel: null, proof: { human_reason: 'operator stop after bounded work' },
+    confirm: true, fence: { ...f.fence, intent: 'business' }, now: f.now,
+  }), /LEASE_FENCED|RUN_PAUSED/);
+  budgetApi.extendBudget(f.root, f.runId, {
+    turns: 2, reason: 'finish this proof-ready session', confirm: true,
+    fence: f.fence, now: f.now,
+  });
+  finishRun(f.root, f.runId, {
+    status: 'stopped', reportRel: null, proof: { human_reason: 'operator stop after bounded work' },
+    confirm: true, fence: { ...f.fence, intent: 'business' }, now: f.now,
+  });
+  const after = readState(f.root, f.runId).data;
+  assert.equal(after.status, 'stopped');
+  assert.equal(after.session_chain.sessions.length, 1);
+  assert.equal(readLines(f.root, f.runId).some(event => event.type === 'handoff-emitted'), false);
+});
+
+function recoveryBudgetPauseFixture(takeoverKind) {
+  const f = budgetPauseFixture({
+    liveWorkstream: takeoverKind === 'affinity-supersession',
+  });
+  const { data } = readState(f.root, f.runId);
+  const supersededAt = new Date(f.now).toISOString();
+  const handoffAt = new Date(f.now - 60_000).toISOString();
+  const owner = data.session_chain.sessions[0];
+  data.pause_reason = `recovery:${takeoverKind}`;
+  data.session_chain.lease = {
+    ...data.session_chain.lease,
+    state: 'released',
+    takeover_kind: takeoverKind,
+    handoff_phase: 'reserved',
+    handoff_child_run_id: 'RECOVERY-CHILD',
+    handoff_idempotency_key: 'a'.repeat(64),
+    expires_at: null,
+    recovery_rel: `recoveries/${takeoverKind}.json`,
+    recovery_sha256: 'b'.repeat(64),
+    recovery_discriminator: `disc:${takeoverKind}`,
+  };
+  owner.superseded_by = takeoverKind === 'boundary-recovery'
+    ? 'STALE-BOUNDARY-CHILD'
+    : 'RECOVERY-CHILD';
+  if (takeoverKind === 'affinity-supersession') {
+    assert.equal(data.workstreams.length, 1);
+    assert.equal(data.workstreams[0].id, f.workstreamId);
+    assert.equal(data.workstreams[0].status, 'in_progress');
+    assert.equal(Object.hasOwn(data.workstreams[0], 'terminal_events'), false);
+    owner.scope = {
+      kind: 'workstream', workstream_id: f.workstreamId, bound_at_seq: 7,
+      terminal_event: null, closed_at: null, superseded_at: supersededAt,
+      supersede_reason: 'host-session-lost', superseded_by: 'RECOVERY-CHILD',
+    };
+  } else {
+    const boundaryEvent = { seq: 11, checksum: 'c'.repeat(64) };
+    owner.scope = {
+      kind: 'workstream', workstream_id: 'ws-closed', bound_at_seq: 5,
+      terminal_event: boundaryEvent,
+      closed_at: handoffAt, superseded_at: handoffAt,
+    };
+    data.session_chain.lease.handoff_boundary_event = { ...boundaryEvent };
+    data.session_chain.lease.handoff_project_binding_generation =
+      data.project.binding_generation;
+    data.session_chain.lease.handoff_project_root_digest =
+      projectRootDigest(data.project.root);
+    data.workstreams.push({
+      id: 'ws-closed', title: 'closed recovery source', status: 'ready',
+      branch: 'recovery/source', worktree: '.worktrees/recovery-source',
+      base_commit: null, dirty_on_handoff: false,
+      pr: { intended: true, state: 'none', url: null },
+      episodes: [], review_points_done: [], depends_on: [],
+      terminal_events: [{ ...boundaryEvent }],
+    });
+    data.session_chain.sessions.push({
+      run_id: 'STALE-BOUNDARY-CHILD', started_at: null, ended_at: supersededAt,
+      turns: 0, outcome: 'abandoned_recover', superseded_by: 'RECOVERY-CHILD',
+      parent_run_id: owner.run_id,
+      parent_boundary_event: { ...owner.scope.terminal_event },
+      project_binding_generation: data.project.binding_generation,
+      project_root_digest: projectRootDigest(data.project.root),
+      scope: {
+        kind: 'workstream', workstream_id: null, bound_at_seq: null,
+        terminal_event: null, closed_at: null, superseded_at: supersededAt,
+        supersede_reason: 'boundary-recovery', superseded_by: 'RECOVERY-CHILD',
+      },
+    });
+  }
+  data.session_chain.sessions.push({
+    run_id: 'RECOVERY-CHILD', started_at: null, ended_at: null, turns: 0,
+    outcome: null, superseded_by: null,
+    recovered_from: takeoverKind === 'boundary-recovery' ? 'STALE-BOUNDARY-CHILD' : f.runId,
+    recovery_kind: takeoverKind, recovery_rel: data.session_chain.lease.recovery_rel,
+    recovery_sha256: data.session_chain.lease.recovery_sha256,
+    recovery_project_binding_generation: data.project.binding_generation,
+    recovery_project_root_digest: projectRootDigest(data.project.root),
+    scope: {
+      kind: 'workstream',
+      workstream_id: takeoverKind === 'boundary-recovery' ? null : f.workstreamId,
+      bound_at_seq: takeoverKind === 'boundary-recovery' ? null : 7,
+      terminal_event: null, closed_at: null, superseded_at: null,
+    },
+  });
+  writeState(f.root, f.runId, data);
+  return f;
+}
+
+function recoveryChild(data) {
+  return data.session_chain.sessions.find(
+    session => session.run_id === data.session_chain.lease.handoff_child_run_id,
+  );
+}
+
+function recoveryPredecessor(data) {
+  return data.session_chain.sessions.find(
+    session => session.run_id === recoveryChild(data).recovered_from,
+  );
+}
+
+function recoveryOriginalParent(data) {
+  const predecessor = recoveryPredecessor(data);
+  return data.session_chain.sessions.find(
+    session => session.run_id === predecessor.parent_run_id,
+  );
+}
+
+test('budget extension preserves both released recovery reservations byte-semantically except anchor and budget', () => {
+  for (const kind of ['affinity-supersession', 'boundary-recovery']) {
+    const f = recoveryBudgetPauseFixture(kind);
+    const before = readState(f.root, f.runId).data;
+    const topology = structuredClone({
+      status: before.status,
+      pause_reason: before.pause_reason,
+      lease: before.session_chain.lease,
+      sessions: before.session_chain.sessions,
+      workstreams: before.workstreams,
+    });
+    budgetApi.extendBudget(f.root, f.runId, {
+      turns: 2, reason: `resume exact ${kind} reservation`, confirm: true,
+      fence: f.fence, now: f.now,
+    });
+    const after = readState(f.root, f.runId).data;
+    assert.deepEqual({
+      status: after.status,
+      pause_reason: after.pause_reason,
+      lease: after.session_chain.lease,
+      sessions: after.session_chain.sessions,
+      workstreams: after.workstreams,
+    }, topology, kind);
+    assert.equal(after.budget.total, before.budget.total + 2, kind);
+    assert.equal(after.budget.spent, before.budget.spent, kind);
+  }
+});
+
+test('budget extension preserves affinity recovery with an explicit empty terminal event list', () => {
+  const f = recoveryBudgetPauseFixture('affinity-supersession');
+  const { data } = readState(f.root, f.runId);
+  data.workstreams[0].terminal_events = [];
+  writeState(f.root, f.runId, data);
+  const before = readState(f.root, f.runId).data;
+  assert.deepEqual(budgetApi.extendBudget(f.root, f.runId, {
+    turns: 2,
+    reason: 'preserve explicit empty live affinity provenance',
+    confirm: true,
+    fence: f.fence,
+    now: f.now,
+  }), { ok: true, status: 'paused' });
+  assert.deepEqual(readState(f.root, f.runId).data.workstreams, before.workstreams);
+});
+
+test('budget extension preserves boundary recovery when the stale predecessor owns the released lease', () => {
+  const f = recoveryBudgetPauseFixture('boundary-recovery');
+  const { data } = readState(f.root, f.runId);
+  const stale = recoveryPredecessor(data);
+  stale.started_at = '2026-07-22T23:59:00.000Z';
+  stale.turns = 2;
+  data.session_chain.lease.owner_run_id = 'STALE-BOUNDARY-CHILD';
+  writeState(f.root, f.runId, data);
+  const before = readState(f.root, f.runId).data;
+  assert.deepEqual(budgetApi.extendBudget(f.root, f.runId, {
+    turns: 2,
+    reason: 'preserve acquired-unbound boundary recovery',
+    confirm: true,
+    fence: { owner: 'STALE-BOUNDARY-CHILD', generation: 1 },
+    now: f.now,
+  }), { ok: true, status: 'paused' });
+  const after = readState(f.root, f.runId).data;
+  assert.equal(after.session_chain.lease.owner_run_id, 'STALE-BOUNDARY-CHILD');
+  assert.deepEqual(after.session_chain.sessions, before.session_chain.sessions);
+});
+
+test('ordinary extension recognizes the concrete hard-budget pause reason forms', () => {
+  for (const pauseReason of [
+    'gate:turns-hard-stop',
+    'checker-gate:tokens-hard-stop',
+    'budget:wallclock-hard-stop',
+  ]) {
+    const f = budgetPauseFixture();
+    const { data } = readState(f.root, f.runId);
+    data.pause_reason = pauseReason;
+    writeState(f.root, f.runId, data);
+    assert.deepEqual(budgetApi.extendBudget(f.root, f.runId, {
+      turns: 2,
+      reason: `operator clears ${pauseReason}`,
+      confirm: true,
+      fence: f.fence,
+      now: f.now,
+    }), { ok: true, status: 'running' }, pauseReason);
+  }
+});
+
+test('wallclock extension increments the existing cap relative to created_at and clears the locked-time gate', () => {
+  const f = budgetPauseFixture();
+  const { data } = readState(f.root, f.runId);
+  data.budget.spent = 1;
+  data.budget.max_wallclock_sec = 1;
+  data.pause_reason = 'budget:wallclock-hard-stop';
+  writeState(f.root, f.runId, data);
+  assert.deepEqual(budgetApi.extendBudget(f.root, f.runId, {
+    wallclockSec: 2,
+    reason: 'operator adds two seconds',
+    confirm: true,
+    fence: f.fence,
+    now: f.now + 2_000,
+  }), { ok: true, status: 'running' });
+  const after = readState(f.root, f.runId).data;
+  assert.equal(after.budget.max_wallclock_sec, 3);
+  assert.equal(after.budget.spent, 1);
+  assert.equal(budgetApi.checkHardBudget(after, { now: f.now + 2_000 }).blocked, false);
+});
+
+test('malformed released recovery reservation is rejected without mutation', () => {
+  const f = recoveryBudgetPauseFixture('boundary-recovery');
+  const { data } = readState(f.root, f.runId);
+  data.session_chain.lease.handoff_phase = 'emitted';
+  writeState(f.root, f.runId, data);
+  const before = JSON.stringify(readState(f.root, f.runId).data);
+  assert.throws(() => budgetApi.extendBudget(f.root, f.runId, {
+    turns: 2,
+    reason: 'must not widen malformed recovery',
+    confirm: true,
+    fence: f.fence,
+    now: f.now,
+  }), /BUDGET_EXTENSION_STATUS_INVALID/);
+  assert.equal(JSON.stringify(readState(f.root, f.runId).data), before);
+});
+
+const inexactBudgetRecoveryCases = [
+    {
+      label: 'terminal replacement child',
+      mutate(data) {
+        recoveryChild(data).scope.terminal_event = {
+          seq: 12,
+          checksum: 'd'.repeat(64),
+        };
+      },
+    },
+    {
+      label: 'extra open scope',
+      mutate(data) {
+        data.session_chain.sessions.push({
+          run_id: 'EXTRA-OPEN', started_at: null, ended_at: null, turns: 0,
+          outcome: null, superseded_by: null,
+          scope: {
+            kind: 'workstream', workstream_id: null, bound_at_seq: null,
+            terminal_event: null, closed_at: null, superseded_at: null,
+          },
+        });
+      },
+    },
+    {
+      label: 'duplicate child session identity',
+      mutate(data) {
+        data.session_chain.sessions.push({
+          run_id: data.session_chain.lease.handoff_child_run_id,
+          started_at: null, ended_at: null, turns: 0,
+          outcome: 'abandoned_recover', superseded_by: null,
+          scope: {
+            kind: 'workstream', workstream_id: null, bound_at_seq: null,
+            terminal_event: null, closed_at: null,
+            superseded_at: '2026-07-23T00:00:00.000Z',
+            supersede_reason: 'boundary-recovery',
+            superseded_by: 'UNRELATED',
+          },
+        });
+      },
+    },
+    {
+      label: 'broken predecessor link',
+      mutate(data) {
+        const predecessor = recoveryPredecessor(data);
+        predecessor.superseded_by = 'UNRELATED';
+        predecessor.scope.superseded_by = 'UNRELATED';
+      },
+    },
+    {
+      label: 'wrong boundary supersession reason',
+      mutate(data) {
+        recoveryPredecessor(data).scope.supersede_reason = 'operator-recovery';
+      },
+    },
+    {
+      label: 'already-started replacement child',
+      mutate(data) {
+        recoveryChild(data).started_at = '2026-07-23T00:00:01.000Z';
+      },
+    },
+    {
+      label: 'ended replacement child',
+      mutate(data) {
+        const child = recoveryChild(data);
+        child.ended_at = '2026-07-23T00:00:01.000Z';
+        child.outcome = 'abandoned_recover';
+      },
+    },
+    {
+      label: 're-superseded replacement child',
+      mutate(data) {
+        recoveryChild(data).superseded_by = 'UNRELATED';
+      },
+    },
+    {
+      label: 'used replacement child',
+      mutate(data) {
+        recoveryChild(data).turns = 1;
+      },
+    },
+    {
+      label: 'broken original parent link',
+      mutate(data) {
+        recoveryOriginalParent(data).superseded_by = 'UNRELATED';
+      },
+    },
+    {
+      label: 'mismatched parent boundary event',
+      mutate(data) {
+        recoveryPredecessor(data).parent_boundary_event = {
+          seq: 11,
+          checksum: 'e'.repeat(64),
+        };
+      },
+    },
+    {
+      label: 'stale parent run id',
+      mutate(data) {
+        recoveryPredecessor(data).parent_run_id = 'UNRELATED-PARENT';
+      },
+    },
+    {
+      label: 'stale project binding generation',
+      mutate(data) {
+        recoveryPredecessor(data).project_binding_generation += 1;
+      },
+    },
+    {
+      label: 'stale project root digest',
+      mutate(data) {
+        recoveryPredecessor(data).project_root_digest = 'e'.repeat(64);
+      },
+    },
+    {
+      label: 'missing closed parent terminal identity',
+      mutate(data) {
+        recoveryOriginalParent(data).scope.terminal_event = null;
+      },
+    },
+    {
+      label: 'unclosed original parent scope',
+      mutate(data) {
+        recoveryOriginalParent(data).scope.closed_at = null;
+      },
+    },
+    {
+      label: 'missing original parent supersession timestamp',
+      mutate(data) {
+        recoveryOriginalParent(data).scope.superseded_at = null;
+      },
+    },
+    {
+      label: 'duplicate original parent identity',
+      mutate(data) {
+        data.session_chain.sessions.push(structuredClone(recoveryOriginalParent(data)));
+      },
+    },
+    {
+      label: 'unrelated boundary lease owner',
+      mutate(data) {
+        const unrelated = structuredClone(recoveryOriginalParent(data));
+        unrelated.run_id = 'UNRELATED-OWNER';
+        unrelated.superseded_by = null;
+        data.session_chain.sessions.push(unrelated);
+        data.session_chain.lease.owner_run_id = unrelated.run_id;
+      },
+    },
+    {
+      label: 'missing boundary lease owner row',
+      mutate(data) {
+        data.session_chain.lease.owner_run_id = 'MISSING-OWNER';
+      },
+    },
+    {
+      label: 'duplicate boundary lease owner identity',
+      mutate(data) {
+        const unrelated = structuredClone(recoveryOriginalParent(data));
+        unrelated.run_id = 'DUPLICATE-OWNER';
+        unrelated.superseded_by = null;
+        data.session_chain.sessions.push(unrelated, structuredClone(unrelated));
+        data.session_chain.lease.owner_run_id = unrelated.run_id;
+      },
+    },
+    {
+      label: 'parent owner with acquired stale lifecycle',
+      mutate(data) {
+        recoveryPredecessor(data).started_at = '2026-07-22T23:59:00.000Z';
+      },
+    },
+    {
+      label: 'stale owner with never-acquired lifecycle',
+      mutate(data) {
+        data.session_chain.lease.owner_run_id = recoveryPredecessor(data).run_id;
+      },
+    },
+    {
+      label: 'missing stale completion timestamp',
+      mutate(data) {
+        recoveryPredecessor(data).ended_at = null;
+      },
+    },
+    {
+      label: 'invalid stale completion timestamp',
+      mutate(data) {
+        recoveryPredecessor(data).ended_at = '2026-02-31T00:00:00.000Z';
+      },
+    },
+    {
+      label: 'wrong stale recovery outcome',
+      mutate(data) {
+        recoveryPredecessor(data).outcome = null;
+      },
+    },
+    {
+      label: 'used never-acquired stale session',
+      mutate(data) {
+        recoveryPredecessor(data).turns = 1;
+      },
+    },
+    {
+      label: 'acquired stale lifecycle ends before start',
+      mutate(data) {
+        const stale = recoveryPredecessor(data);
+        stale.started_at = '2026-07-23T00:00:01.000Z';
+        data.session_chain.lease.owner_run_id = stale.run_id;
+      },
+    },
+    {
+      label: 'invalid acquired stale start timestamp',
+      mutate(data) {
+        const stale = recoveryPredecessor(data);
+        stale.started_at = 'not-a-timestamp';
+        data.session_chain.lease.owner_run_id = stale.run_id;
+      },
+    },
+    {
+      label: 'acquired stale session starts before parent supersession',
+      mutate(data) {
+        const stale = recoveryPredecessor(data);
+        stale.started_at = '2026-07-22T23:58:59.000Z';
+        stale.turns = 2;
+        data.session_chain.lease.owner_run_id = stale.run_id;
+      },
+    },
+    {
+      label: 'invalid parent supersession chronology',
+      mutate(data) {
+        recoveryOriginalParent(data).scope.superseded_at =
+          '2026-07-23T00:00:01.000Z';
+      },
+    },
+    {
+      label: 'parent scope closes after its supersession timestamp',
+      mutate(data) {
+        recoveryOriginalParent(data).scope.closed_at =
+          '2026-07-22T23:59:01.000Z';
+      },
+    },
+    {
+      label: 'stale completion differs from scope recovery timestamp',
+      mutate(data) {
+        recoveryPredecessor(data).scope.superseded_at =
+          '2026-07-23T00:00:01.000Z';
+      },
+    },
+    {
+      label: 'missing lease boundary metadata',
+      mutate(data) {
+        delete data.session_chain.lease.handoff_boundary_event;
+        delete data.session_chain.lease.handoff_project_binding_generation;
+        delete data.session_chain.lease.handoff_project_root_digest;
+      },
+    },
+    {
+      label: 'mismatched lease boundary event',
+      mutate(data) {
+        data.session_chain.lease.handoff_boundary_event = {
+          seq: 11,
+          checksum: 'e'.repeat(64),
+        };
+      },
+    },
+    {
+      label: 'stale lease project binding generation',
+      mutate(data) {
+        data.session_chain.lease.handoff_project_binding_generation += 1;
+      },
+    },
+    {
+      label: 'stale lease project root digest',
+      mutate(data) {
+        data.session_chain.lease.handoff_project_root_digest = 'e'.repeat(64);
+      },
+    },
+    {
+      label: 'missing boundary Workstream',
+      mutate(data) {
+        data.workstreams = [];
+      },
+    },
+    {
+      label: 'mismatched parent Workstream id',
+      mutate(data) {
+        recoveryOriginalParent(data).scope.workstream_id = 'ws-missing';
+      },
+    },
+    {
+      label: 'missing Workstream terminal event',
+      mutate(data) {
+        data.workstreams[0].terminal_events = [];
+      },
+    },
+    {
+      label: 'mismatched Workstream terminal event',
+      mutate(data) {
+        data.workstreams[0].terminal_events = [{
+          seq: 11,
+          checksum: 'e'.repeat(64),
+        }];
+      },
+    },
+    {
+      label: 'nonterminal boundary Workstream',
+      mutate(data) {
+        data.workstreams[0].status = 'in_progress';
+      },
+    },
+    {
+      label: 'duplicate boundary Workstream identity',
+      mutate(data) {
+        data.workstreams.push(structuredClone(data.workstreams[0]));
+      },
+    },
+    {
+      label: 'duplicate exact boundary event in source Workstream',
+      mutate(data) {
+        data.workstreams[0].terminal_events.push(
+          structuredClone(data.workstreams[0].terminal_events[0]),
+        );
+      },
+    },
+    {
+      label: 'exact boundary event copied to a second Workstream',
+      mutate(data) {
+        const sibling = structuredClone(data.workstreams[0]);
+        sibling.id = 'ws-other';
+        sibling.branch = 'recovery/other';
+        sibling.worktree = '.worktrees/recovery-other';
+        data.workstreams.push(sibling);
+      },
+    },
+];
+
+for (const item of inexactBudgetRecoveryCases) {
+  test(`budget extension rejects schema-valid ${item.label} without mutation`, () => {
+    const f = recoveryBudgetPauseFixture('boundary-recovery');
+    const { data } = readState(f.root, f.runId);
+    item.mutate(data);
+    assert.deepEqual(validate(data), { ok: true, errors: [] }, item.label);
+    writeState(f.root, f.runId, data);
+    const before = JSON.stringify(readState(f.root, f.runId).data);
+    assert.throws(() => budgetApi.extendBudget(f.root, f.runId, {
+      turns: 2,
+      reason: `reject ${item.label}`,
+      confirm: true,
+      fence: {
+        owner: data.session_chain.lease.owner_run_id,
+        generation: data.session_chain.lease.generation,
+      },
+      now: f.now,
+    }), /BUDGET_EXTENSION_STATUS_INVALID/, item.label);
+    assert.equal(JSON.stringify(readState(f.root, f.runId).data), before, item.label);
+  });
+}
+
+const inexactAffinityBudgetRecoveryCases = [
+  {
+    label: 'affinity recovery under a legacy continuation policy',
+    mutate(data) {
+      data.autonomy.continuation_policy = 'compact-in-place';
+    },
+  },
+  {
+    label: 'affinity recovery without its Workstream',
+    mutate(data) {
+      data.workstreams = [];
+    },
+  },
+  {
+    label: 'affinity recovery with a terminal Workstream',
+    mutate(data) {
+      data.workstreams[0].status = 'ready';
+    },
+  },
+  {
+    label: 'affinity recovery with duplicate matching Workstreams',
+    mutate(data) {
+      data.workstreams.push(structuredClone(data.workstreams[0]));
+    },
+  },
+  {
+    label: 'affinity recovery with a forged terminal event',
+    mutate(data) {
+      data.workstreams[0].terminal_events = [{
+        seq: 12,
+        checksum: 'd'.repeat(64),
+      }];
+    },
+  },
+];
+
+for (const item of inexactAffinityBudgetRecoveryCases) {
+  test(`budget extension rejects schema-valid ${item.label} without mutation`, () => {
+    const f = recoveryBudgetPauseFixture('affinity-supersession');
+    const { data } = readState(f.root, f.runId);
+    item.mutate(data);
+    assert.deepEqual(validate(data), { ok: true, errors: [] }, item.label);
+    writeState(f.root, f.runId, data);
+    const before = JSON.stringify(readState(f.root, f.runId).data);
+    assert.throws(() => budgetApi.extendBudget(f.root, f.runId, {
+      turns: 2,
+      reason: `reject ${item.label}`,
+      confirm: true,
+      fence: f.fence,
+      now: f.now,
+    }), /BUDGET_EXTENSION_STATUS_INVALID/, item.label);
+    assert.equal(JSON.stringify(readState(f.root, f.runId).data), before, item.label);
+  });
+}
+
+test('budget extension rejects non-array affinity terminal events without mutation', () => {
+  const f = recoveryBudgetPauseFixture('affinity-supersession');
+  const { data } = readState(f.root, f.runId);
+  data.workstreams[0].terminal_events = {};
+  assert.equal(validate(data).ok, false);
+  const dir = runDir(f.root, f.runId);
+  const raw = JSON.stringify(data, null, 2);
+  writeFileSync(join(dir, 'loop.json'), raw);
+  writeFileSync(join(dir, '.loop.hash'), contentHash(raw));
+  const beforeLoop = readFileSync(join(dir, 'loop.json'), 'utf8');
+  const beforeHash = readFileSync(join(dir, '.loop.hash'), 'utf8');
+  assert.throws(() => budgetApi.extendBudget(f.root, f.runId, {
+    turns: 2,
+    reason: 'reject malformed live affinity provenance',
+    confirm: true,
+    fence: f.fence,
+    now: f.now,
+  }), /BUDGET_EXTENSION_STATUS_INVALID/);
+  assert.equal(readFileSync(join(dir, 'loop.json'), 'utf8'), beforeLoop);
+  assert.equal(readFileSync(join(dir, '.loop.hash'), 'utf8'), beforeHash);
 });
 
 test('isMeasuredOneTurnUsage accepts only an exact safe Codex one-turn measurement', () => {
@@ -517,6 +1333,7 @@ function makerProcessReceiptFixture({ acquire = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'dl-maker-process-receipt-'));
   const now = Date.parse('2026-07-12T00:00:00.000Z');
   const { runId } = initRun(root, { runtime: 'codex', goal: 'g', now: new Date(now) });
+  migrateAuthenticLegacyTransport(root, runId);
   const handoff = emitHandoff(root, runId, {
     trigger: 'maker-process-receipt',
     headless: true,
@@ -870,6 +1687,7 @@ function checkerProcessReceiptFixture({ originOwner, originGeneration } = {}) {
   const { runId } = initRun(root, {
     runtime: 'codex', goal: 'g', now: new Date('2026-07-12T00:00:00Z'),
   });
+  migrateAuthenticLegacyTransport(root, runId);
   const claim = {
     run_id: runId,
     reviewer_id: 'deep-review',
@@ -889,6 +1707,7 @@ function checkerProcessReceiptFixture({ originOwner, originGeneration } = {}) {
     id: claim.checker_episode_id,
     role: 'checker',
     status: 'in_progress',
+    request_rel: `episodes/${claim.checker_episode_id}/request.md`,
     attempt_id: claim.attempt_id,
     target_maker: claim.target_maker,
     review_claim: claim,
@@ -900,6 +1719,10 @@ function checkerProcessReceiptFixture({ originOwner, originGeneration } = {}) {
     turns: 0,
     outcome: null,
     superseded_by: null,
+    scope: {
+      kind: 'workstream', workstream_id: null, bound_at_seq: null,
+      terminal_event: null, closed_at: null, superseded_at: null,
+    },
   });
   writeState(root, runId, data);
   const receipt = makeCodexProcessReceipt({
@@ -1339,7 +2162,12 @@ test('#3(b): explicit budget record absorbs the tick floor (max-rule, no double 
 // #3(c): the floor drives per_session_turn_cap proportionally to the number of mutations — reaching the cap
 // through floors alone routes unattended nextAction to handoff (attended compact-in-place receives advice).
 test('#3(c): per_session_turn_cap is reached through floors and routes unattended to handoff', () => {
-  const { root, runId, fence } = floorRun();
+  const { root, runId, fence } = floorRun({ continuationPolicy: 'compact-in-place' });
+  assert.equal(
+    readState(root, runId).data.autonomy.continuation_policy,
+    'compact-in-place',
+    'legacy cap-routing fixture must come from public v0.3 migration',
+  );
   const d = readState(root, runId).data; d.budget.per_session_turn_cap = 2; writeState(root, runId, d);
   mk(root, runId, fence, 2);   // 2 floors → session.turns 2 == cap
   const r = nextAction(readState(root, runId).data, { now: Date.parse('2026-06-24T00:00:01Z'), unattended: true });
@@ -1412,7 +2240,7 @@ function terminalCodexChildRun() {
     runtime: 'codex', goal: 'g', now: new Date('2026-07-11T00:00:00Z'),
   });
   const childRunId = '01JTERMINALCHILD0000000000';
-  const handoffKey = 'a'.repeat(16);
+  const handoffKey = 'a'.repeat(64);
   appendAnchored(root, runId, {
     type: 'handoff-emitted',
     data: { child_run_id: childRunId, reason: 'fixture', key: handoffKey },
@@ -1420,6 +2248,10 @@ function terminalCodexChildRun() {
     data.session_chain.sessions.push({
       run_id: childRunId, started_at: null, ended_at: null,
       turns: 0, outcome: null, superseded_by: null,
+      scope: {
+        kind: 'workstream', workstream_id: null, bound_at_seq: null,
+        terminal_event: null, closed_at: null, superseded_at: null,
+      },
     });
     data.session_chain.lease = {
       ...data.session_chain.lease,
@@ -1491,7 +2323,7 @@ test('terminal Codex maker settlement remains narrow to an exact acquired child 
     usage, fence: { owner: childRunId, generation: 3, intent: 'accounting' }, handoffKey,
   }), /LEASE_FENCED: generation-mismatch/);
   assert.throws(() => settleTerminalCodexMakerCost(root, runId, {
-    usage, fence: { owner: childRunId, generation: 2, intent: 'accounting' }, handoffKey: 'b'.repeat(16),
+    usage, fence: { owner: childRunId, generation: 2, intent: 'accounting' }, handoffKey: 'b'.repeat(64),
   }), /TERMINAL_ACCOUNTING_PROOF_MISSING/);
 
   const { data } = readState(root, runId);

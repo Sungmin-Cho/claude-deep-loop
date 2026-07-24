@@ -2,17 +2,24 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readState, runDir } from './state.mjs';
-import { appendAnchored, verifyHead, verifyLog } from './integrity.mjs';
-import { wrap, atomicWrite } from './envelope.mjs';
-import { reserveHandoff, rollbackHandoff, rollbackReservedEmit } from './lease.mjs';
+import { captureReconciledRunSnapshot, runDir } from './state.mjs';
+import { appendAnchored, verifyHead, verifyLog, MUTATION_TURN_FLOOR } from './integrity.mjs';
+import { wrap, unwrap, atomicWrite, contentHash } from './envelope.mjs';
+import {
+  reserveHandoff,
+  rollbackHandoff,
+  rollbackReservedEmit,
+  sameBoundaryEvent,
+} from './lease.mjs';
 import { renameAtomicWithRetry } from './atomic-write.mjs';
 import { defaultDesktopProbe } from './desktop-target.mjs';
 import { sessionRuntime } from './runtime.mjs';
-import { canonicalProjectRoot } from './project-root.mjs';
+import { canonicalProjectRoot, projectRootDigest } from './project-root.mjs';
 import { buildRuntimeResumeDescriptor } from './runtime-descriptor.mjs';
 import { validateRuntimeProfile } from './session-profile.mjs';
 import { resolveSpawnMode } from './respawn.mjs';
+import { normalizePortableRelativePath } from './fs-safe.mjs';
+import { nextAction } from './next-action.mjs';
 
 export { buildLaunchCommand } from './runtime-descriptor.mjs';
 
@@ -51,12 +58,17 @@ function cleanupChildTemps(dir, childRunId, remove = rmSync) {
 }
 
 function idempotentResult(root, runId, childRunId, key) {
-  const { data } = readState(root, runId);
+  const { data } = captureReconciledRunSnapshot(root, runId);
   const child = data.session_chain.sessions.find(session => session.run_id === childRunId);
+  const handoffRel = child?.handoff_rel ?? null;
+  const normalized = normalizePortableRelativePath(handoffRel);
+  const handoffPath = normalized === handoffRel && normalized?.startsWith('handoffs/')
+    ? join(runDir(root, runId), ...normalized.split('/'))
+    : null;
   return {
     ok: true, idempotent: true, reason: 'already-emitted', childRunId, key,
-    handoffRel: child?.handoff_rel ?? null,
-    handoffPath: child?.handoff_path ?? null,
+    handoffRel,
+    handoffPath,
     csName: child?.handoff_cs ?? null,
     mdName: child?.handoff_md ?? null,
   };
@@ -102,27 +114,356 @@ function handoffMarkdown(loop, childRunId, reason, descriptor) {
   ].join('\n');
 }
 
+function assertBoundaryReady(loop, { boundaryEvent, expect, now, key, childRunId }) {
+  const lease = loop.session_chain?.lease || {};
+  if (lease.owner_run_id !== expect.owner || lease.generation !== expect.generation) {
+    throw new Error('LEASE_FENCED: handoff-emit');
+  }
+  if (loop.status === 'paused') throw new Error('RUN_PAUSED: emitHandoff');
+  if (loop.status === 'completed' || loop.status === 'stopped') throw new Error('RUN_TERMINAL: emitHandoff');
+  if (lease.handoff_phase !== 'reserved') throw new Error(`HANDOFF_PHASE_MISMATCH: ${lease.handoff_phase}`);
+  if (lease.handoff_idempotency_key !== key) throw new Error('HANDOFF_KEY_MISMATCH');
+  if (lease.handoff_child_run_id !== childRunId) throw new Error('HANDOFF_CHILD_MISMATCH');
+  if (!sameBoundaryEvent(lease.handoff_boundary_event, boundaryEvent)) throw new Error('BOUNDARY_EVENT_MISMATCH');
+  if (lease.handoff_project_binding_generation !== loop.project?.binding_generation
+    || lease.handoff_project_root_digest !== projectRootDigest(loop.project?.root)) {
+    throw new Error('PROJECT_BINDING_MISMATCH');
+  }
+  const parent = (loop.session_chain?.sessions || [])
+    .find(session => session.run_id === expect.owner);
+  const scope = parent?.scope;
+  if (scope?.kind !== 'workstream'
+    || scope.closed_at == null
+    || scope.superseded_at != null
+    || parent.superseded_by != null
+    || !sameBoundaryEvent(scope.terminal_event, boundaryEvent)) {
+    throw new Error('BOUNDARY_EVENT_MISMATCH');
+  }
+  const workstream = (loop.workstreams || []).find(item => item.id === scope.workstream_id);
+  if (!workstream || !(workstream.terminal_events || [])
+    .some(event => sameBoundaryEvent(event, boundaryEvent))) {
+    throw new Error('BOUNDARY_EVENT_MISMATCH');
+  }
+  const action = nextAction(loop, { now }).action;
+  if (action?.type === 'await_human' && action.reason === 'budget') throw new Error('BUDGET_BLOCKED');
+  if (action?.type === 'await_human' && action.reason === 'breaker') throw new Error('BREAKER_BLOCKED');
+  if (action?.type === 'finish') throw new Error('FINISH_REQUIRED');
+  if (action?.type !== 'handoff'
+    || action.reason !== 'workstream-terminal'
+    || !sameBoundaryEvent(action.boundary_event, boundaryEvent)) {
+    throw new Error('BOUNDARY_EVENT_MISMATCH');
+  }
+}
+
+function boundaryIdempotentResult(root, runId, loop, boundaryEvent, expect) {
+  const lease = loop.session_chain?.lease || {};
+  const childRunId = lease.handoff_child_run_id;
+  const child = (loop.session_chain?.sessions || []).find(session => session.run_id === childRunId);
+  const parent = (loop.session_chain?.sessions || []).find(session => session.run_id === expect.owner);
+  if (!child
+    || parent?.superseded_by !== childRunId
+    || child.parent_run_id !== expect.owner
+    || !sameBoundaryEvent(child.parent_boundary_event, boundaryEvent)
+    || !sameBoundaryEvent(lease.handoff_boundary_event, boundaryEvent)
+    || child.project_binding_generation !== loop.project?.binding_generation
+    || child.project_root_digest !== projectRootDigest(loop.project?.root)
+    || lease.handoff_project_binding_generation !== loop.project?.binding_generation
+    || lease.handoff_project_root_digest !== projectRootDigest(loop.project?.root)) {
+    throw new Error('HANDOFF_IDEMPOTENCY_MISMATCH');
+  }
+  const artifactRels = [
+    child.handoff_rel,
+    `handoffs/${child.handoff_cs}`,
+    'terminal/launch-command.txt',
+    'terminal/launch-command.meta.json',
+  ];
+  const snapshot = captureReconciledRunSnapshot(root, runId, { artifactRels });
+  if (artifactRels.some(rel => snapshot.artifacts[rel]?.state !== 'present')) {
+    throw new Error('HANDOFF_IDEMPOTENCY_MISMATCH');
+  }
+  try {
+    const launch = snapshot.artifacts['terminal/launch-command.txt'].bytes;
+    const meta = unwrap(
+      JSON.parse(snapshot.artifacts['terminal/launch-command.meta.json'].bytes.toString('utf8')),
+      { producer: 'deep-loop', artifact_kind: 'launch-command-meta' },
+    )?.payload;
+    const compaction = unwrap(
+      JSON.parse(snapshot.artifacts[`handoffs/${child.handoff_cs}`].bytes.toString('utf8')),
+      { producer: 'deep-loop', artifact_kind: 'compaction-state' },
+    );
+    if (!meta
+      || !compaction
+      || compaction.envelope.run_id !== childRunId
+      || compaction.envelope.parent_run_id !== expect.owner
+      || meta.launch_command_sha256 !== contentHash(launch)
+      || meta.parent_run_id !== expect.owner
+      || meta.child_run_id !== childRunId
+      || meta.handoff_phase !== 'emitted'
+      || meta.handoff_rel !== child.handoff_rel
+      || meta.project_binding_generation !== loop.project.binding_generation
+      || meta.project_root_digest !== projectRootDigest(loop.project.root)
+      || !sameBoundaryEvent(meta.boundary_event, boundaryEvent)) {
+      throw new Error('HANDOFF_IDEMPOTENCY_MISMATCH');
+    }
+  } catch (error) {
+    if (String(error?.message || error) === 'HANDOFF_IDEMPOTENCY_MISMATCH') throw error;
+    throw new Error('HANDOFF_IDEMPOTENCY_MISMATCH', { cause: error });
+  }
+  return idempotentResult(root, runId, childRunId, lease.handoff_idempotency_key);
+}
+
+function buildBoundaryArtifacts(loop, {
+  root, runId, childRunId, handoffRel, reason, now, headless, env,
+  resumePolicy, platform, desktopProbe, deepLoopRoot, exists, descriptorBuilder,
+  boundaryEvent,
+}) {
+  const runtime = sessionRuntime(loop);
+  const effectiveResumePolicy = resumePolicy
+    ?? (resolveSpawnMode(loop, { headless, env }) === 'headless' ? 'headless' : 'visible');
+  validateRuntimeProfile(runtime, {
+    model: loop.autonomy?.session_model ?? null,
+    effort: loop.autonomy?.session_effort ?? null,
+  });
+  let dt = null;
+  if (runtime === 'claude' && loop.autonomy?.spawn_style === 'desktop') {
+    try { dt = desktopProbe({ platform }); } catch { dt = null; }
+  }
+  const descriptor = descriptorBuilder({
+    runtime, root, parentRunId: runId, childRunId, handoffRel,
+    launcher: loop.session_spawn?.launcher,
+    launcherBin: loop.session_spawn?.launcher_bin,
+    launcherSocket: loop.session_spawn?.launcher_socket,
+    launcherSession: loop.session_spawn?.launcher_session,
+    platform, desktopTarget: dt && dt.ok ? dt.argvTarget : null,
+    exists,
+    model: loop.autonomy?.session_model ?? null,
+    effort: loop.autonomy?.session_effort ?? null,
+    deepLoopRoot,
+    runtimeExecutableIdentity: loop.autonomy?.runtime_executable_approval ?? null,
+    launcherIdentity: descriptorLauncherIdentity(loop, runtime, platform),
+  });
+  const markdown = handoffMarkdown(loop, childRunId, reason, descriptor);
+  const compaction = JSON.stringify(wrap({
+    producer: 'deep-loop', artifact_kind: 'compaction-state',
+    schema: { name: 'compaction-state', version: '1.0' }, run_id: childRunId, parent_run_id: runId,
+    git: loop.project ? { head: loop.project.head, branch: loop.project.branch, dirty: loop.project.dirty } : {},
+    provenance: { source_artifacts: [handoffRel], tool_versions: {} },
+    payload: {
+      goal: loop.goal, routing: loop.routing, recipe: loop.recipe,
+      current_episode: loop.current_episode, active_workstreams: loop.active_workstreams, reason,
+    },
+    now: new Date(now).toISOString(),
+  }), null, 2);
+  const cmds = descriptor.entries;
+  const meNote = (loop.autonomy?.session_model || loop.autonomy?.session_effort)
+    ? ` [model=${loop.autonomy?.session_model || 'default'} effort=${loop.autonomy?.session_effort || 'default'}]`
+    : '';
+  const desktopLine = runtime === 'codex'
+    ? cmds.desktop.display
+    : (cmds.desktop.available
+      ? '# desktop: 새 Claude Desktop Code 탭을 열고 `/deep-loop-resume` 실행 (auto-pop 미개방 시 수동 재개)'
+      : '# desktop: unavailable (handler unverified)') + meNote;
+  const launchCommand = [
+    '# interactive', cmds.interactive.display, '',
+    '# headless', cmds.headless.display, '',
+    '# cmux', cmds.cmux.display, '',
+    '# iterm2', cmds.iterm2.display, '',
+    '# terminal-app', cmds['terminal-app'].display, '',
+    '# wt', cmds.wt.display, '',
+    '# powershell', cmds.powershell.display, '',
+    '# desktop', desktopLine, '',
+  ].join('\n');
+  const launchBytes = Buffer.from(launchCommand);
+  const rootDigest = projectRootDigest(loop.project.root);
+  const metadata = JSON.stringify(wrap({
+    producer: 'deep-loop', artifact_kind: 'launch-command-meta',
+    schema: { name: 'launch-command-meta', version: '1.0' },
+    run_id: childRunId, parent_run_id: runId,
+    provenance: { source_artifacts: [handoffRel], tool_versions: {} },
+    payload: {
+      launch_command_sha256: contentHash(launchBytes),
+      parent_run_id: runId,
+      child_run_id: childRunId,
+      handoff_phase: 'emitted',
+      boundary_event: { ...boundaryEvent },
+      handoff_rel: handoffRel,
+      project_root_digest: rootDigest,
+      project_binding_generation: loop.project.binding_generation,
+    },
+    now: new Date(now).toISOString(),
+  }), null, 2);
+  return {
+    descriptor,
+    effectiveResumePolicy,
+    markdown: Buffer.from(markdown),
+    compaction: Buffer.from(compaction),
+    launch: launchBytes,
+    metadata: Buffer.from(metadata),
+  };
+}
+
+function emitBoundaryHandoff(root, runId, {
+  initialLoop, boundaryEvent, reason, trigger, now, headless, resumePolicy, expect,
+  platform, desktopProbe, env, deepLoopRoot, exists, descriptorBuilder, onBoundary,
+  publicationFaultAt, forceUnlinkReplacement, durableWriteFn,
+}) {
+  if (!sameBoundaryEvent(boundaryEvent, boundaryEvent)) throw new Error('BOUNDARY_EVENT_INVALID');
+  const initialLease = initialLoop.session_chain?.lease || {};
+  if (initialLoop.status === 'running'
+    && ['emitted', 'spawned'].includes(initialLease.handoff_phase)
+    && initialLease.owner_run_id === expect.owner
+    && initialLease.generation === expect.generation) {
+    return boundaryIdempotentResult(root, runId, initialLoop, boundaryEvent, expect);
+  }
+  const res = reserveHandoff(root, runId, { trigger, boundaryEvent, now, expect });
+  if (!res.ok) {
+    if (res.reason === 'fenced') throw new Error('LEASE_FENCED: handoff-emit');
+    throw new Error(res.reason);
+  }
+  onBoundary('reserved');
+  const { data: loop, hash: generationHash } = captureReconciledRunSnapshot(root, runId);
+  if (!res.reserved) {
+    const child = loop.session_chain.sessions.find(session => session.run_id === res.childRunId);
+    if (child) return boundaryIdempotentResult(root, runId, loop, boundaryEvent, expect);
+  }
+  const childRunId = res.childRunId;
+  const mdName = `${childRunId}-next-session.md`;
+  const csName = `${childRunId}-compaction-state.json`;
+  const handoffRel = `handoffs/${mdName}`;
+  let artifacts;
+  try {
+    artifacts = buildBoundaryArtifacts(loop, {
+      root, runId, childRunId, handoffRel, reason, now, headless, env,
+      resumePolicy, platform, desktopProbe, deepLoopRoot, exists, descriptorBuilder,
+      boundaryEvent,
+    });
+    onBoundary('artifacts-generated');
+  } catch (error) {
+    try { rollbackReservedEmit(root, runId, { key: res.key, childRunId, expect }); } catch { /* original error wins */ }
+    throw error;
+  }
+  const rootDigest = projectRootDigest(loop.project.root);
+  const topology = {
+    parent_run_id: runId,
+    child_run_id: childRunId,
+    boundary_event: { ...boundaryEvent },
+    project_binding_generation: loop.project.binding_generation,
+    project_root_digest: rootDigest,
+    handoff_rel: handoffRel,
+    phase: 'emitted',
+  };
+  const iso = new Date(now).toISOString();
+  const ttlMs = (loop.session_chain.stale_lease_ttl_sec || 900) * 1000;
+  try {
+    appendAnchored(root, runId, {
+      type: 'handoff-emitted',
+      data: {
+        child_run_id: childRunId,
+        reason,
+        key: res.key,
+        boundary_event: { ...boundaryEvent },
+      },
+      now,
+    }, l => {
+      l.session_chain.sessions.push({
+        run_id: childRunId,
+        started_at: null,
+        ended_at: null,
+        turns: 0,
+        outcome: null,
+        superseded_by: null,
+        parent_run_id: runId,
+        parent_boundary_event: { ...boundaryEvent },
+        project_binding_generation: l.project.binding_generation,
+        project_root_digest: rootDigest,
+        handoff_rel: handoffRel,
+        handoff_md: mdName,
+        handoff_cs: csName,
+        scope: {
+          kind: 'workstream', workstream_id: null, bound_at_seq: null,
+          terminal_event: null, closed_at: null, superseded_at: null,
+        },
+      });
+      const parent = l.session_chain.sessions.find(session => session.run_id === expect.owner);
+      parent.superseded_by = childRunId;
+      parent.scope.superseded_at = iso;
+      l.session_chain.lease = {
+        ...l.session_chain.lease,
+        handoff_phase: 'emitted',
+        state: 'releasing',
+        expires_at: new Date(now + ttlMs).toISOString(),
+        resume_policy: artifacts.effectiveResumePolicy,
+        takeover_kind: 'boundary-handoff',
+      };
+    }, l => {
+      assertBoundaryReady(l, { boundaryEvent, expect, now, key: res.key, childRunId });
+      if (contentHash(JSON.stringify(l, null, 2)) !== generationHash) {
+        throw new Error('HANDOFF_SNAPSHOT_STALE: reconciled state changed after artifact generation');
+      }
+    }, {
+      floor: MUTATION_TURN_FLOOR,
+      publication: {
+        kind: 'workstream-boundary-handoff',
+        operationId: res.key,
+        artifacts: [
+          { rel: handoffRel, bytes: artifacts.markdown },
+          { rel: `handoffs/${csName}`, bytes: artifacts.compaction },
+          { rel: 'terminal/launch-command.txt', bytes: artifacts.launch },
+          { rel: 'terminal/launch-command.meta.json', bytes: artifacts.metadata },
+        ],
+        topology,
+        faultAt: publicationFaultAt,
+        forceUnlinkReplacement,
+        durableWriteFn,
+      },
+    });
+  } catch (error) {
+    if (!String(error?.message || error).startsWith('TRANSACTION_PENDING')) {
+      try { rollbackReservedEmit(root, runId, { key: res.key, childRunId, expect }); } catch { /* original error wins */ }
+    }
+    throw error;
+  }
+  onBoundary('committed');
+  return {
+    ok: true,
+    idempotent: false,
+    reason: 'emitted',
+    handoffPath: join(runDir(root, runId), ...handoffRel.split('/')),
+    childRunId,
+    key: res.key,
+    csName,
+    mdName,
+    handoffRel,
+  };
+}
+
 export function emitHandoff(root, runId, {
-  reason = 'milestone', trigger = 'milestone', now = Date.now(), headless = false, resumePolicy, expect,
+  reason = 'milestone', trigger = 'milestone', boundaryEvent, now = Date.now(), headless = false, resumePolicy, expect,
   platform = process.platform, desktopProbe = defaultDesktopProbe, env = process.env,
   deepLoopRoot = DEFAULT_DEEP_LOOP_ROOT, exists = existsSync,
   descriptorBuilder = buildRuntimeResumeDescriptor,
   onBoundary = () => {}, writeArtifact = writeFileSync, renameArtifact = renameAtomicWithRetry,
   removeArtifact = rmSync, unlinkArtifact = unlinkSync, artifactExists = existsSync,
   statArtifact = statSync,
+  publicationFaultAt = () => {}, forceUnlinkReplacement = false, durableWriteFn,
 } = {}) {
   if (!expect || typeof expect.owner !== 'string' || !Number.isInteger(expect.generation)) throw new Error('FENCE_REQUIRED: emitHandoff');
   // Resolve runtime and canonical root from root-bound durable state. This read
   // fences copied roots and malformed runtime state before reservation or files.
-  const { data: initialLoop } = readState(root, runId);
+  const { data: initialLoop } = captureReconciledRunSnapshot(root, runId);
   const initialRuntime = sessionRuntime(initialLoop);
-  const effectiveResumePolicy = resumePolicy
-    ?? (resolveSpawnMode(initialLoop, { headless, env }) === 'headless' ? 'headless' : 'visible');
   validateRuntimeProfile(initialRuntime, {
     model: initialLoop.autonomy?.session_model ?? null,
     effort: initialLoop.autonomy?.session_effort ?? null,
   });
   const canonicalRoot = canonicalProjectRoot(initialLoop.project.root);
+  if (initialLoop.autonomy?.continuation_policy === 'workstream-session') {
+    return emitBoundaryHandoff(canonicalRoot, runId, {
+      initialLoop, boundaryEvent, reason, trigger, now, headless, resumePolicy, expect,
+      platform, desktopProbe, env, deepLoopRoot, exists, descriptorBuilder, onBoundary,
+      publicationFaultAt, forceUnlinkReplacement, durableWriteFn,
+    });
+  }
   const initialLease = initialLoop.session_chain?.lease || {};
   const committedChild = initialLoop.session_chain?.sessions?.find(
     session => session.run_id === initialLease.handoff_child_run_id,
@@ -153,7 +494,7 @@ export function emitHandoff(root, runId, {
   // Codex r1 🔴1 / r2 🔴1 / r3 🔴1: 같은 트리거 재진입(reserved:false)이면 이미 in-flight handoff 가 있다.
   // childRunId 는 reserve 가 영속한 값(res.childRunId)이라 동시/재진입이 같은 child 를 본다.
   if (!res.reserved) {
-    const { data } = readState(canonicalRoot, runId);
+    const { data } = captureReconciledRunSnapshot(canonicalRoot, runId);
     const child = data.session_chain.sessions.find(s => s.run_id === res.childRunId);
     if (child) {
       // 이미 emit 됨(session 존재). emit 은 이제 원자적(child push + phase=emitted 가 한 트랜잭션, Codex impl r11)이라
@@ -164,8 +505,14 @@ export function emitHandoff(root, runId, {
     // reserved 됐지만 session 미생성 → fall-through 해 emit 완료 (res.childRunId 재사용 → 중복 child 없음)
   }
   onBoundary('reserved');
-  const { data: loop } = readState(canonicalRoot, runId);
+  const { data: loop, hash: generationHash } = captureReconciledRunSnapshot(canonicalRoot, runId);
   const runtime = sessionRuntime(loop);
+  const effectiveResumePolicy = resumePolicy
+    ?? (resolveSpawnMode(loop, { headless, env }) === 'headless' ? 'headless' : 'visible');
+  validateRuntimeProfile(runtime, {
+    model: loop.autonomy?.session_model ?? null,
+    effort: loop.autonomy?.session_effort ?? null,
+  });
   const childRunId = res.childRunId;
   const dir = join(runDir(canonicalRoot, runId), 'handoffs');
   const termDir = join(runDir(canonicalRoot, runId), 'terminal');
@@ -300,8 +647,11 @@ export function emitHandoff(root, runId, {
   };
   try {
     appendAnchored(canonicalRoot, runId, { type: 'handoff-emitted', data: { child_run_id: childRunId, reason, key: res.key } }, (l) => {
+      const scope = l.autonomy?.continuation_policy === 'workstream-session'
+        ? { kind: 'workstream', workstream_id: null, bound_at_seq: null, terminal_event: null, closed_at: null, superseded_at: null }
+        : { kind: 'legacy', workstream_id: null, bound_at_seq: null, terminal_event: null, closed_at: null };
       l.session_chain.sessions.push({ run_id: childRunId, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: null,
-        handoff_rel: handoffRel, handoff_path: handoffPath, handoff_md: mdName, handoff_cs: csName });
+        handoff_rel: handoffRel, handoff_md: mdName, handoff_cs: csName, scope });
       const cur = l.session_chain.sessions.find(s => s.run_id === expect.owner);
       if (cur) cur.superseded_by = childRunId;
       const lease = l.session_chain.lease;
@@ -310,6 +660,9 @@ export function emitHandoff(root, runId, {
       const consumed = l.session_chain.consumed_milestones;
       const toConsume = (l.workstreams || [])
         .flatMap(w => w.terminal_events || [])
+        // Task 6 transition: do not leak structured affinity identities into the legacy string cursor.
+        // Task 7 consumes the exact scope.terminal_event through its boundary-event grammar.
+        .filter(event => typeof event === 'string')
         .filter(event => !consumed.includes(event));
       consumed.push(...toConsume);
     }, (l) => {
@@ -334,6 +687,9 @@ export function emitHandoff(root, runId, {
       if (lease.handoff_phase !== 'reserved') throw new Error(`HANDOFF_PHASE_MISMATCH: ${lease.handoff_phase}`);
       if (lease.handoff_idempotency_key !== res.key) throw new Error('HANDOFF_KEY_MISMATCH');
       if (lease.handoff_child_run_id !== childRunId) throw new Error('HANDOFF_CHILD_MISMATCH');
+      if (contentHash(JSON.stringify(l, null, 2)) !== generationHash) {
+        throw new Error('HANDOFF_SNAPSHOT_STALE: reconciled state changed after artifact generation');
+      }
 
       publishFinal(mdTemp, handoffPath);
       publishFinal(csTemp, join(dir, csName));

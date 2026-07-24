@@ -2,19 +2,25 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readBoundedText } from '../lib/bounded-input.mjs';
 import { detectMain } from '../lib/detect-main.mjs';
-import { readState, findRoot } from '../lib/state.mjs';
-import { emitCompactCheckpoint } from '../lib/checkpoint.mjs';
+import { captureReconciledRunSnapshot, findRoot } from '../lib/state.mjs';
+import {
+  emitCompactCheckpoint,
+  emitLegacyCompactCheckpointFromTrustedHook,
+} from '../lib/checkpoint.mjs';
 import { emitHandoff } from '../lib/handoff.mjs';
 import { rollbackHandoff } from '../lib/lease.mjs';
 import { respawnGate, resolveSpawnMode, rollbackAndPause } from '../lib/respawn.mjs';
+import { sessionRuntime } from '../lib/runtime.mjs';
+import { isOpenScope, ownerSession } from '../lib/session-scope.mjs';
 
 /**
- * PreCompact emits a clean handoff only; measured fail-closed resumption is the cron `driveHeadless`
- * driver's job (spec §9). Gate-blocked unattended → status=paused (fail-closed).
+ * PreCompact emits an artifact only: a strict checkpoint for an open workstream-session affinity,
+ * or the legacy clean handoff. Measured fail-closed legacy resumption is the cron `driveHeadless`
+ * driver's job (spec §9). Legacy gate-blocked unattended → status=paused (fail-closed).
  *
- * PreCompact is a within-session SAFETY NET: it writes the handoff artifact and updates the lease to
- * `releasing` so the measured cron driver (`driveHeadless`, whose shared host uses `headlessSpawn` with timeout
- * and usage accounting) can pick it up. PreCompact must NOT itself spawn an unmeasured child:
+ * For legacy handoff policies it writes the handoff artifact and updates the lease to `releasing`
+ * so the measured cron driver (`driveHeadless`, whose shared host uses `headlessSpawn` with timeout and
+ * usage accounting) can pick it up. PreCompact must NOT itself spawn an unmeasured child:
  * - sync spawn would block the hook (compaction delayed indefinitely on long runs)
  * - detached spawn can't measure turns/tokens → violates spec §9 fail-closed requirement
  */
@@ -22,6 +28,39 @@ import { respawnGate, resolveSpawnMode, rollbackAndPause } from '../lib/respawn.
 function currentRunId(root) {
   const p = join(root, '.deep-loop', 'current');
   return existsSync(p) ? readFileSync(p, 'utf8').trim() : null;
+}
+
+function strictHostSessionEvidence(input, runtime) {
+  if (input.hook_event_name !== 'PreCompact'
+    || !['manual', 'auto'].includes(input.trigger)) {
+    throw new Error('host-context-invalid');
+  }
+  if (!Object.hasOwn(input, 'session_id')) return undefined;
+  if (typeof input.session_id !== 'string'
+    || input.session_id.length === 0
+    || input.session_id.length > 1024
+    || /[\0\r\n]/.test(input.session_id)) {
+    throw new Error('host-evidence-invalid');
+  }
+  return {
+    provider: runtime === 'claude' ? 'claude-code' : 'codex',
+    id: input.session_id,
+  };
+}
+
+function hasOpenAffinity(loop) {
+  try {
+    const scope = ownerSession(loop).scope;
+    if (!isOpenScope(scope) || scope.closed_at !== null) return false;
+    const workstream = (loop.workstreams || []).find(item => item?.id === scope.workstream_id);
+    const episode = (loop.episodes || []).find(item => item?.id === loop.current_episode);
+    return Boolean(workstream
+      && !['ready', 'merged', 'abandoned'].includes(workstream.status)
+      && episode
+      && episode.workstream_id === scope.workstream_id);
+  } catch {
+    return false;
+  }
 }
 
 // spec §3.4.1: 정리 호출자는 rollbackHandoff 반환을 검사해야 한다 — fenced(owner/generation 변경)는
@@ -35,7 +74,7 @@ function sweepLeaseResidue(root, runId, expect, cleanupFn) {
 // 반환/던짐 RUN_PAUSED 공통 경로: phase='reserved' 잔재만 정리(던짐-분기와 동일 규칙 — emitted/spawned는
 // preserve-pause 보존 규칙에 따라 건드리지 않는다) 후 benign no-run-paused.
 function normalizePausedEmit(root, runId, expect, cleanupFn) {
-  const fresh = readState(root, runId).data.session_chain?.lease || {};
+  const fresh = captureReconciledRunSnapshot(root, runId).data.session_chain?.lease || {};
   if (fresh.handoff_phase === 'reserved') {
     const fenced = sweepLeaseResidue(root, runId, expect, cleanupFn);
     if (fenced) return fenced;
@@ -50,12 +89,47 @@ export async function runPreCompactHandoff(input = {}, {
   rollbackFn = rollbackAndPause,
   cleanupFn = rollbackHandoff,
   emitFn = emitHandoff,
-  checkpointFn = emitCompactCheckpoint,
+  checkpointFn = emitLegacyCompactCheckpointFromTrustedHook,
 } = {}) {
   const runId = currentRunId(root);
   if (!runId) return { ok: true, action: 'no-run' };
   let loop;
-  try { ({ data: loop } = readState(root, runId)); } catch (e) { return { ok: false, action: 'error', reason: String(e.message || e) }; }
+  try { ({ data: loop } = captureReconciledRunSnapshot(root, runId)); } catch (e) { return { ok: false, action: 'error', reason: String(e.message || e) }; }
+
+  const policy = loop.autonomy?.continuation_policy;
+  if (policy === 'workstream-session') {
+    const currentLease = loop.session_chain?.lease || {};
+    const currentExpect = {
+      owner: currentLease.owner_run_id,
+      generation: currentLease.generation,
+    };
+    let hostSessionEvidence;
+    let runtime;
+    try {
+      runtime = sessionRuntime(loop);
+      hostSessionEvidence = strictHostSessionEvidence(input, runtime);
+    } catch {
+      return {
+        ok: false,
+        action: 'checkpoint-failed',
+        reason: 'host-evidence-invalid',
+      };
+    }
+    if (!hasOpenAffinity(loop)) return { ok: true, action: 'no-affinity' };
+    const headless = resolveSpawnMode(loop, { headless: false, env }) === 'headless';
+    try {
+      emitCompactCheckpoint(root, runId, {
+        fence: currentExpect,
+        runtime,
+        hostSessionEvidence,
+        now,
+      });
+    } catch {
+      return { ok: false, action: 'checkpoint-failed', reason: 'checkpoint-write-failed' };
+    }
+    return { ok: true, action: 'checkpointed', headless };
+  }
+
   const lease = loop.session_chain?.lease || {};
   const expect = { owner: lease.owner_run_id, generation: lease.generation };
 
@@ -89,7 +163,6 @@ export async function runPreCompactHandoff(input = {}, {
   // v1.10 policy branch (spec §4.1): attended compact-in-place emits only an artifact checkpoint;
   // headless invocations retain the handoff path. A reserved phase intentionally falls through so the
   // durable reserved-finalization path in emitHandoff runs before any new policy action.
-  const policy = loop.autonomy?.continuation_policy;
   const phase = lease.handoff_phase;
   // Completed in-flight handoffs are harmless no-ops under every policy and must not re-evaluate gates.
   if (phase === 'emitted' || phase === 'spawned') {
@@ -122,7 +195,9 @@ export async function runPreCompactHandoff(input = {}, {
   if (headless && loop.autonomy?.auto_handoff) {
     // Gate check on POST-emit state (Fix 2): emitHandoff appended the reserved child session so
     // sessions.length grew — respawnGate must see the fresh state or max_sessions is off-by-one.
-    const fresh = readState(root, runId).data;
+    let fresh;
+    try { fresh = captureReconciledRunSnapshot(root, runId).data; }
+    catch (error) { return { ok: false, action: 'error', reason: String(error?.message || error) }; }
     const gate = respawnGate(fresh, { now });
     if (!gate.ok) {
       // R12-LL fix: gate-blocked must ROLLBACK (invalidate reserved child), not merely set status=paused.

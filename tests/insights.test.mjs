@@ -5,7 +5,18 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
-import { computeRunMetrics, computeInsights, deriveCandidates, emitInsights, latestInsights, relInsightsPath, validateLedger, isSuspiciousActive } from '../scripts/lib/insights.mjs';
+import {
+  captureLatestInsightsSet,
+  captureReconciledRunSet,
+  computeRunMetrics,
+  computeInsights as computeInsightsFromSet,
+  deriveCandidates,
+  emitInsights,
+  latestInsights as latestInsightsFromSet,
+  relInsightsPath,
+  validateLedger,
+  isSuspiciousActive,
+} from '../scripts/lib/insights.mjs';
 import { readState, writeState, runDir as runDirOf } from '../scripts/lib/state.mjs';
 import { readLines, appendAnchored, appendEvent, lastLogHead } from '../scripts/lib/integrity.mjs';
 import { initRun } from '../scripts/lib/initrun.mjs';
@@ -18,6 +29,54 @@ const NOSLEEP = () => {};
 
 const T0 = Date.parse('2026-07-07T00:00:00Z');
 const iso = (ms) => new Date(ms).toISOString();
+const computeInsights = (root, options = {}) => computeInsightsFromSet(captureReconciledRunSet(root, {
+  retryDelayMs: options.retryDelayMs,
+  sleepFn: options.sleepFn,
+}), options);
+const latestInsights = root => latestInsightsFromSet(captureLatestInsightsSet(root));
+
+test('insights exposes immutable run/artifact capture adapters and pure snapshot consumers', () => {
+  assert.equal(typeof captureReconciledRunSet, 'function');
+  assert.equal(typeof captureLatestInsightsSet, 'function');
+  const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'lib', 'insights.mjs'), 'utf8');
+  const computeBody = source.slice(source.indexOf('export function computeInsights'), source.indexOf('const insightsDir'));
+  const latestBody = source.slice(source.indexOf('export function latestInsights'));
+  assert.doesNotMatch(computeBody, /\b(?:readdirSync|readFileSync|readState|readLines)\s*\(/);
+  assert.doesNotMatch(latestBody, /\b(?:readdirSync|readFileSync|readState|readLines)\s*\(/);
+});
+
+test('captureReconciledRunSet freezes run enumeration before a concurrent insertion', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-ins-runset-'));
+  const { runId: first } = initRun(root, { runtime: 'claude', goal: 'first', now: FIXED });
+  let inserted;
+  const captured = captureReconciledRunSet(root, {
+    sleepFn: NOSLEEP,
+    afterEnumeration() {
+      ({ runId: inserted } = initRun(root, {
+        runtime: 'claude', goal: 'inserted', now: new Date(FIXED.getTime() + 1),
+      }));
+    },
+  });
+  assert.deepEqual(captured.runIds, [first]);
+  assert.equal(captured.runs[inserted], undefined);
+  assert.deepEqual(computeInsightsFromSet(captured, { selfRunId: first, now: FIXED.getTime() }).runs_analyzed
+    .map(run => run.run_id), [first]);
+});
+
+test('captureLatestInsightsSet freezes artifact enumeration before a concurrent insertion', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dl-ins-artset-'));
+  const dir = join(root, '.deep-loop', 'insights');
+  mkdirSync(dir, { recursive: true });
+  const first = '01J00000000000000000000000-insights.json';
+  const inserted = '01J00000000000000000000001-insights.json';
+  writeFileSync(join(dir, first), '{}');
+  const captured = captureLatestInsightsSet(root, {
+    afterEnumeration() { writeFileSync(join(dir, inserted), '{}'); },
+  });
+  assert.deepEqual(captured.artifactNames, [first]);
+  assert.equal(captured.artifacts[inserted], undefined);
+  assert.equal(captured.artifacts[first].bytes.toString('utf8'), '{}');
+});
 
 function loopFixture() {
   return {
@@ -140,7 +199,7 @@ test('computeInsights: 터미널 + self만 집계, self_snapshot 표기, loop_sh
     contentHash(readFileSync(join(runDirOf(root, rB), 'loop.json'), 'utf8')));
 });
 
-test('computeInsights: 비터미널 타 run은 excluded_active, raw parse 실패는 unreadable(후보 없음)', () => {
+test('computeInsights: 비터미널 타 run은 excluded_active, unanchored malformed run은 integrity failure', () => {
   const root = mkdtempSync(join(tmpdir(), 'dl-ins2-'));
   const { runId: self } = initRun(root, { runtime: 'claude', goal: 'self', now: FIXED });
   const { runId: other } = initRun(root, { runtime: 'claude', goal: 'other', now: FIXED }); // running 타 run
@@ -148,9 +207,9 @@ test('computeInsights: 비터미널 타 run은 excluded_active, raw parse 실패
   writeFileSync(join(root, '.deep-loop', 'runs', 'BROKEN', 'loop.json'), '{not json');
   const out = computeInsights(root, { selfRunId: self, now: FIXED.getTime(), sleepFn: NOSLEEP });
   assert.deepEqual(out.excluded_active, [other]);
-  assert.deepEqual(out.unreadable, ['BROKEN']);
-  assert.deepEqual(out.integrity_failed_runs, []);
-  assert.ok(!out.candidates.some(c => c.id === 'integrity_failure'));    // unreadable은 후보 발행 ❌
+  assert.deepEqual(out.unreadable, []);
+  assert.deepEqual(out.integrity_failed_runs, ['BROKEN']);
+  assert.ok(out.candidates.some(c => c.id === 'integrity_failure'));
 });
 
 test('computeInsights: 터미널 검증 실패(해시 불일치) → 재시도 후 재실패만 integrity_failed', () => {

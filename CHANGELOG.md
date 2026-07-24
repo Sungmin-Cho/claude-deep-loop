@@ -5,6 +5,30 @@ All notable changes to deep-loop are documented in this file.
 > Note: the `[1.1.0]`/`[1.2.0]` entries pre-date this changelog file (a known lag between
 > `plugin.json.version` and the changelog); this release does not retro-fill them.
 
+## [1.11.0] — 2026-07-24
+
+Workstream-scoped session continuity release. New runs keep one Workstream in one session across
+context compaction and rotate only after a proof-derived Workstream terminal boundary.
+
+### Added
+- **First-class compact continuation** — `/deep-loop-compact` and
+  `$deep-loop:deep-loop-compact` checkpoint and restore the current Workstream on Claude Code and
+  Codex without changing lease ownership or creating a new session.
+- **Compact-source restore hook** — `SessionStart` restores bounded checkpoint context only for the
+  `compact` source; `PreCompact` remains shell-free, emit-only, and best-effort.
+- **Durable Workstream session scopes** — schema `0.4.0` records open/closed affinity, exact terminal
+  event identity, boundary handoff topology, and project-root recovery capsules.
+
+### Changed
+- New runs require `workstream-session`; older `0.2.0` and `0.3.0` state migrates to an explicit
+  legacy policy and cannot silently gain the new rotation semantics.
+- Attended non-headless surfaces no longer open a new session by default. Visible launch remains an
+  explicit, durable human approval, while unattended continuation keeps measured fail-closed gates.
+- Windows durable writes use writable file handles for file flushes, tolerate only documented
+  unsupported directory-flush errors, and canonicalize lock and journal paths consistently.
+- Claude Code and Codex manifests, npm metadata, generated docs, schemas, and release integration
+  guidance are synchronized at `1.11.0`.
+
 ## [1.10.0] — 2026-07-21
 
 Per-runtime continuation policy release. The change applies to newly initialized runs; existing

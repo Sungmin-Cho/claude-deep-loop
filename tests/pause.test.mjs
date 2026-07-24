@@ -17,20 +17,28 @@ const CLI = join(process.cwd(), 'scripts', 'deep-loop.mjs');
 const OWNER = 'PAUSE01';
 const GEN = 1;
 
+function legacyScope() {
+  return {
+    kind: 'legacy', workstream_id: null, bound_at_seq: null,
+    terminal_event: null, closed_at: null,
+  };
+}
+
 function baseData(overrides = {}) {
   return {
-    schema_version: '0.3.0', run_id: OWNER, goal: 'g', status: 'running',
-    project: {}, routing: { protocol: 'deep-work' }, review: { points: ['design'] },
-    autonomy: { tier: 'recommend', spawn_style: 'interactive', continuation_policy: 'rotate-per-unit' },
+    schema_version: '0.4.0', run_id: OWNER, goal: 'g', status: 'running',
+    project: { binding_generation: 1 }, routing: { protocol: 'deep-work' }, review: { points: ['design'] },
+    autonomy: { tier: 'recommend', spawn_style: 'interactive', continuation_policy: 'rotate-per-unit', attended_launch_approval: null },
     budget: { unit: 'turns', spent: 0 },
     comprehension: {}, circuit_breaker: { tripped: false },
     session_chain: {
       lease: {
         owner_run_id: OWNER, generation: GEN, state: 'active', handoff_phase: 'idle',
         handoff_idempotency_key: null, handoff_child_run_id: null, handoff_trigger: null, expires_at: null,
+        takeover_kind: null,
       },
       consumed_milestones: [],
-      sessions: [{ run_id: OWNER, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: null }],
+      sessions: [{ run_id: OWNER, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: null, scope: legacyScope() }],
     },
     workstreams: [], active_workstreams: [],
     triage: { actionable: [] }, episodes: [], termination: {},
@@ -57,10 +65,11 @@ test('pauseRun preserve: status=paused, lease.state stays releasing, child intac
         owner_run_id: OWNER, generation: GEN, state: 'releasing', handoff_phase: 'emitted',
         handoff_idempotency_key: 'abc123', handoff_child_run_id: 'CHILD01', handoff_trigger: 'milestone',
         expires_at: '2099-01-01T00:00:00.000Z',
+        takeover_kind: null,
       },
       sessions: [
-        { run_id: OWNER, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: 'CHILD01' },
-        { run_id: 'CHILD01', started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: null },
+        { run_id: OWNER, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: 'CHILD01', scope: legacyScope() },
+        { run_id: 'CHILD01', started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: null, scope: legacyScope() },
       ],
       stale_lease_ttl_sec: 900,
     },
@@ -85,10 +94,11 @@ test('pauseRun rollback: lease back to active/idle, handoff fields cleared', () 
         owner_run_id: OWNER, generation: GEN, state: 'releasing', handoff_phase: 'emitted',
         handoff_idempotency_key: 'abc123', handoff_child_run_id: 'CHILD01', handoff_trigger: 'milestone',
         expires_at: '2099-01-01T00:00:00.000Z',
+        takeover_kind: null,
       },
       sessions: [
-        { run_id: OWNER, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: 'CHILD01' },
-        { run_id: 'CHILD01', started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: null },
+        { run_id: OWNER, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: 'CHILD01', scope: legacyScope() },
+        { run_id: 'CHILD01', started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: null, scope: legacyScope() },
       ],
       stale_lease_ttl_sec: 900,
     },
@@ -176,10 +186,10 @@ test('RUN_PAUSED gate: recordReviewOutcome on paused run throws LEASE_FENCED RUN
       pr: { intended: true, state: 'none', url: null }, episodes: [], review_points_done: [] }],
     episodes: [
       { id: '001-maker', plugin: 'deep-work', role: 'maker', kind: 'impl', point: 'design',
-        workstream_id: 'ws-01-test', status: 'done', request_path: '/x/r.md', expected_artifacts: [],
+        workstream_id: 'ws-01-test', status: 'done', request_rel: 'episodes/001-maker/request.md', expected_artifacts: [],
         verification: { checker_episode_required: true, checker_plugin: 'deep-review', review_point: 'design', proof_required: [] } },
       { id: '002-checker', plugin: 'deep-review', role: 'checker', kind: 'design-review', point: 'design',
-        workstream_id: 'ws-01-test', status: 'pending', target_maker: '001-maker', request_path: '/x/r2.md', expected_artifacts: [],
+        workstream_id: 'ws-01-test', status: 'pending', target_maker: '001-maker', request_rel: 'episodes/002-checker/request.md', expected_artifacts: [],
         verification: { checker_episode_required: false, checker_plugin: 'deep-review', review_point: 'design', proof_required: [] } },
     ],
   });
@@ -210,16 +220,17 @@ test('RUN_PAUSED gate: respawn on paused run returns {ok:false}', () => {
   const { root, runId } = seed({
     status: 'paused',
     budget: { unit: 'turns', spent: 0, tokens_spent: 0, total: 100, hard_stop_ratio: 0.9, soft_stop_ratio: 0.8 },
-    autonomy: { tier: 'recommend', spawn_style: 'headless', auto_handoff: true, max_sessions: 10, continuation_policy: 'rotate-per-unit' },
+    autonomy: { tier: 'recommend', spawn_style: 'headless', auto_handoff: true, max_sessions: 10, continuation_policy: 'rotate-per-unit', attended_launch_approval: null },
     session_chain: {
       lease: {
         owner_run_id: OWNER, generation: GEN, state: 'releasing', handoff_phase: 'emitted',
         handoff_idempotency_key: 'k123', handoff_child_run_id: 'CHILD01',
         expires_at: '2099-01-01T00:00:00.000Z',
+        takeover_kind: null,
       },
       sessions: [
-        { run_id: OWNER, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: 'CHILD01' },
-        { run_id: 'CHILD01', started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: null, handoff_rel: 'handoffs/h.md' },
+        { run_id: OWNER, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: 'CHILD01', scope: legacyScope() },
+        { run_id: 'CHILD01', started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: null, handoff_rel: 'handoffs/h.md', scope: legacyScope() },
       ],
       stale_lease_ttl_sec: 900,
     },
@@ -305,6 +316,82 @@ test('pauseRun terminal guard: stopped status throws RUN_TERMINAL, no state chan
   );
   // status must not have been demoted to paused
   assert.equal(readState(root, runId).data.status, 'stopped', 'stopped status must not be demoted');
+});
+
+function runCliStatus(args) {
+  try {
+    execFileSync('node', [CLI, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    return 0;
+  } catch (error) {
+    return error.status;
+  }
+}
+
+function cliBudgetPause() {
+  const f = seed();
+  mkdirSync(join(f.root, '.deep-loop'), { recursive: true });
+  writeFileSync(join(f.root, '.deep-loop', 'current'), f.runId);
+  const { data } = readState(f.root, f.runId);
+  data.status = 'paused';
+  data.pause_reason = 'gate:budget';
+  data.budget = {
+    unit: 'turns', total: 2, spent: 2,
+    tokens_total: 100, tokens_spent: 10,
+    soft_stop_ratio: 0.8, hard_stop_ratio: 1,
+    max_wallclock_sec: 3600,
+    enforcement: 'best-effort-interactive',
+    on_unmeasurable_usage: 'fail-closed',
+  };
+  data.created_at = '2026-07-23T00:00:00.000Z';
+  writeState(f.root, f.runId, data);
+  return f;
+}
+
+test('budget extend CLI classifies usage, invalid state, and fence errors exactly', () => {
+  const usages = [
+    ['--turns', '2', '--reason', 'operator', '--owner', OWNER, '--generation', '1'],
+    ['--turns', '2', '--confirm', '--owner', OWNER, '--generation', '1'],
+  ];
+  for (const tail of usages) {
+    const f = cliBudgetPause();
+    assert.equal(runCliStatus(['budget', 'extend', ...tail, '--project-root', f.root]), 2);
+  }
+  for (const tail of [
+    ['--turns', '0'],
+    ['--turns', '-1'],
+    ['--tokens', '1'],
+  ]) {
+    const f = cliBudgetPause();
+    if (tail[0] === '--tokens') {
+      const { data } = readState(f.root, f.runId);
+      data.budget.tokens_spent = data.budget.tokens_total;
+      writeState(f.root, f.runId, data);
+    }
+    assert.equal(runCliStatus([
+      'budget', 'extend', ...tail, '--reason', 'operator', '--confirm',
+      '--owner', OWNER, '--generation', '1', '--project-root', f.root,
+    ]), 1);
+  }
+  const stale = cliBudgetPause();
+  assert.equal(runCliStatus([
+    'budget', 'extend', '--turns', '2', '--reason', 'operator', '--confirm',
+    '--owner', OWNER, '--generation', '99', '--project-root', stale.root,
+  ]), 3);
+});
+
+test('budget extend CLI resumes the same session and preserves spent values', () => {
+  const f = cliBudgetPause();
+  assert.equal(runCliStatus([
+    'budget', 'extend', '--turns', '2', '--reason', 'operator approved',
+    '--confirm', '--owner', OWNER, '--generation', '1',
+    '--project-root', f.root, '--now', '2026-07-23T00:00:00Z',
+  ]), 0);
+  const { data } = readState(f.root, f.runId);
+  assert.equal(data.status, 'running');
+  assert.equal(data.session_chain.lease.owner_run_id, OWNER);
+  assert.equal(data.session_chain.lease.generation, 1);
+  assert.equal(data.budget.total, 4);
+  assert.equal(data.budget.spent, 2);
 });
 
 // ── helpers ────────────────────────────────────────────────────────────────────

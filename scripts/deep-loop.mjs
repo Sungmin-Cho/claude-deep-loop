@@ -8,8 +8,15 @@ import { detectPlugins } from './lib/detect.mjs';
 import { matchRecipe, recipesDir, validateRecipesDir } from './lib/recipes.mjs';
 import { json } from './lib/log.mjs';
 import { LAUNCHER_KINDS, validate as validateLoop } from './lib/schema.mjs';
-import { readState, writeState, patch as patchState, pauseRun, runDir, findRoot } from './lib/state.mjs';
-import { leaseCheck, acquireLease, releaseLease } from './lib/lease.mjs';
+import {
+  captureReconciledRunSnapshot,
+  writeState,
+  patch as patchState,
+  pauseRun,
+  runDir,
+  findRoot,
+} from './lib/state.mjs';
+import { leaseCheck, acquireLease, releaseLease, sameBoundaryEvent } from './lib/lease.mjs';
 import { newWorkstream, setWorkstreamStatus, recordWorkstreamTerminal } from './lib/workspace.mjs';
 import { newEpisode, recordEpisode, abandonEpisode } from './lib/episode.mjs';
 import { dispatchReview, importReviewOutcome, recordReviewOutcome } from './lib/review.mjs';
@@ -20,17 +27,39 @@ import { respawn, respawnGate, resolveSpawnMode } from './lib/respawn.mjs';
 import { visibleSpawn } from './lib/spawn-driver.mjs';
 import { driveHeadlessRun } from './lib/headless-host.mjs';
 import { resolveAdapter, guardTierProtocol, loadProtocol } from './lib/adapters.mjs';
-import { recordCost, checkBudget } from './lib/budget.mjs';
+import {
+  recordCost,
+  checkBudget,
+  extendBudget,
+  recoveryReservationKind,
+} from './lib/budget.mjs';
 import { computeDebt, ack as ackComprehension } from './lib/comprehension.mjs';
 import { checkBreaker, resetBreaker } from './lib/breaker.mjs';
 import { offerDesktop, confirmDesktop, declineDesktop, resetDesktop } from './lib/spawn-optin.mjs';
+import { approveAttendedLaunch, revokeAttendedLaunch } from './lib/attended-launch.mjs';
 import { setSessionProfile } from './lib/session-profile.mjs';
 import { defaultDesktopProbe } from './lib/desktop-target.mjs';
 import { finishRun } from './lib/finish.mjs';
 import { detectAndPersist } from './lib/detect-terminal.mjs';
-import { recoverRun } from './lib/recover.mjs';
-import { computeInsights, emitInsights, latestInsights, validateLedger } from './lib/insights.mjs';
-import { diagnoseProjectRoot, rebindProjectRoot } from './lib/project-root-recovery.mjs';
+import {
+  acquireRecovery,
+  recoverRun,
+  supersedeAffinity,
+} from './lib/recover.mjs';
+import {
+  captureLatestInsightsSet,
+  captureReconciledRunSet,
+  computeInsights,
+  emitInsights,
+  latestInsights,
+  validateLedger,
+} from './lib/insights.mjs';
+import {
+  acquireRootRecovery,
+  diagnoseProjectRoot,
+  rebindProjectRoot,
+  recoverRelocatedRoot,
+} from './lib/project-root-recovery.mjs';
 import {
   approveLauncherExecutable,
   approveRuntimeExecutable,
@@ -38,8 +67,18 @@ import {
   diagnoseRuntimeExecutable,
 } from './lib/runtime-executable.mjs';
 import { sessionRuntime } from './lib/runtime.mjs';
-import { canonicalProjectRoot } from './lib/project-root.mjs';
-import { buildRuntimeResumeDescriptor } from './lib/runtime-descriptor.mjs';
+import { canonicalProjectRoot, projectRootDigest } from './lib/project-root.mjs';
+import {
+  buildRecoveryResumeDescriptor,
+  buildRootRecoveryResumeDescriptor,
+  buildRuntimeResumeDescriptor,
+  validateLaunchCommandMetadata,
+} from './lib/runtime-descriptor.mjs';
+import {
+  emitCompactCheckpoint,
+  inspectCompactCheckpoint,
+  restoreCompactCheckpoint,
+} from './lib/checkpoint.mjs';
 
 const DEEP_LOOP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -59,9 +98,58 @@ function parseFlags(argv) {
   return f;
 }
 
+function exactFlagGrammar(argv, allowed) {
+  const seen = new Set();
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index];
+    if (typeof token !== 'string' || !token.startsWith('--')) return false;
+    const body = token.slice(2);
+    const eq = body.indexOf('=');
+    const name = eq < 0 ? body : body.slice(0, eq);
+    if (!allowed.has(name) || seen.has(name)) return false;
+    seen.add(name);
+    if (eq < 0 && argv[index + 1] !== undefined && !argv[index + 1].startsWith('--')) index += 1;
+  }
+  return true;
+}
+
+function knownFlagVocabulary(argv, allowed) {
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index];
+    if (typeof token !== 'string' || !token.startsWith('--')) return false;
+    const body = token.slice(2);
+    const eq = body.indexOf('=');
+    const name = eq < 0 ? body : body.slice(0, eq);
+    if (!allowed.has(name)) return false;
+    if (eq < 0 && argv[index + 1] !== undefined && !argv[index + 1].startsWith('--')) index += 1;
+  }
+  return true;
+}
+
 function flagOccurrences(argv, name) {
   const flag = `--${name}`;
   return argv.filter(token => token === flag || token.startsWith(`${flag}=`)).length;
+}
+
+function parseBoundaryEventFlag(value) {
+  if (value === true) return { ok: false, usage: true };
+  const match = /^([1-9]\d*):([0-9a-f]{64})$/.exec(String(value));
+  if (!match) return { ok: false, usage: false };
+  const seq = Number(match[1]);
+  if (!Number.isSafeInteger(seq)) return { ok: false, usage: false };
+  return { ok: true, value: { seq, checksum: match[2] } };
+}
+
+function renderNextAction(result) {
+  const boundary = result?.action?.boundary_event;
+  if (!boundary) return result;
+  return {
+    ...result,
+    action: {
+      ...result.action,
+      boundary_event: `${boundary.seq}:${boundary.checksum}`,
+    },
+  };
 }
 
 // --now 관례(v1.5.0, spec §4): 미지정 → Date.now() 폴백. 지정 시 화이트리스트 — ① 순수 정수(epoch ms)
@@ -98,12 +186,24 @@ function parseNow(f) {
   return n;
 }
 
+function parseExplicitNow(f) {
+  return f.now === undefined ? undefined : parseNow(f);
+}
+
 function reqStr(f, name) { const v = f[name]; return (typeof v === 'string' && v.length) ? v : null; }   // 누락 시 null (핸들러가 exit 2 결정)
 function optInt(f, name) {   // 미지정 → 0; 지정 시 비음정수 문자열만 허용, 아니면 null(핸들러가 exit 1)
   const v = f[name];
   if (v === undefined) return 0;
   if (typeof v !== 'string' || !/^\d+$/.test(v)) return null;
   return Number(v);
+}
+
+function positiveDeltaArg(f, name) {
+  const v = f[name];
+  if (v === undefined) return undefined;
+  if (typeof v !== 'string' || !/^[1-9]\d*$/.test(v)) return null;
+  const parsed = Number(v);
+  return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
 function rootOf(f) { return f['project-root'] || findRoot(process.cwd()); }
@@ -125,10 +225,13 @@ function strArg(f, name) {
 }
 function classifyKernelError(e) {
   const message = String(e?.message || e);
-  if (/^(?:LEASE_FENCED|FENCE_REQUIRED|RUNTIME_FENCED|PROJECT_ROOT_FENCED)(?::|$)/.test(message)) {
+  if (/^(?:LEASE_FENCED|FENCE_REQUIRED|RUNTIME_FENCED|PROJECT_ROOT_FENCED|PROJECT_BINDING_FENCED)(?::|$)/.test(message)) {
     return { code: 3, message };
   }
   if (/^(?:INVALID_NOW|INVALID_RUNTIME(?:_STATE)?|PROJECT_ROOT_UNRESOLVABLE)(?::|$)/.test(message)) {
+    return { code: 1, message };
+  }
+  if (/^CHECKPOINT_[A-Z_]+(?::|$)/.test(message)) {
     return { code: 1, message };
   }
   if (/^(?:INVALID_ACTOR|INVALID_GENERATION|INVALID_STORED_ROOT_DIGEST|PROJECT_ROOT_REBIND_NOT_ALLOWED|RUN_ID_INVALID|STATE_INVALID)(?::|$)/.test(message)) {
@@ -142,7 +245,7 @@ function classifyKernelError(e) {
 function requireLease(root, runId, f, intent = 'business') {
   strArg(f, 'owner');
   const generation = intArg(f, 'generation');
-  const { data } = readState(root, runId);
+  const { data } = captureReconciledRunSnapshot(root, runId);
   const r = leaseCheck(data, { owner: f.owner, generation, intent });
   if (!r.ok) { error(`LEASE_FENCED: ${r.reason}`); process.exit(3); }
   return data;
@@ -152,7 +255,7 @@ const [, , sub, ...rest] = process.argv;
 
 // validate: 비공허 검증 (Codex impl 🟡4)
 // 1) 스키마+빌더 self-test: buildInitialLoop 산출물이 항상 검증 통과해야 함 (regression 게이트)
-// 2) 현재/지정 run이 있으면 readState(해시 검증 발화) + schema.validate
+// 2) 현재/지정 run이 있으면 reconciled snapshot + schema.validate
 const handlers = {
   validate: async (a) => {
     const f = parseFlags(a);
@@ -164,7 +267,7 @@ const handlers = {
     const runId = runIdOf(root, f);
     if (runId) {
       try {
-        const { data } = readState(root, runId);   // 해시 anchor 검증 발화
+        const { data } = captureReconciledRunSnapshot(root, runId);
         const rv = validateLoop(data);
         if (!rv.ok) errors.push(`run ${runId}: ${rv.errors.join('; ')}`);
       } catch (e) { errors.push(`run ${runId}: ${e.message}`); }
@@ -193,8 +296,41 @@ const handlers = {
   },
   root: async (a) => {
     const [verb, ...rest] = a;
+    if (verb === 'recovery') {
+      const [subverb, ...acquireArgs] = rest;
+      const f = parseFlags(acquireArgs);
+      if (subverb !== 'acquire') { error('USAGE: root recovery acquire'); return 2; }
+      const candidateRoot = reqStr(f, 'candidate-project-root');
+      const runId = reqStr(f, 'run-id');
+      const capsuleRel = reqStr(f, 'capsule');
+      const owner = reqStr(f, 'owner');
+      const runtime = reqStr(f, 'runtime');
+      const generation = reqStr(f, 'generation');
+      const bindingGeneration = reqStr(f, 'binding-generation');
+      if (!candidateRoot || !runId || !capsuleRel || !owner || !runtime
+        || !/^[1-9]\d*$/.test(generation || '')
+        || !/^[1-9]\d*$/.test(bindingGeneration || '')) {
+        error('USAGE: root recovery acquire requires capsule, owner, generations, runtime, root, and run id');
+        return 2;
+      }
+      try {
+        json(acquireRootRecovery(candidateRoot, runId, {
+          capsuleRel,
+          owner,
+          expectGeneration: Number(generation),
+          bindingGeneration: Number(bindingGeneration),
+          runtime,
+          now: parseExplicitNow(f),
+        }));
+        return 0;
+      } catch (e) {
+        const message = String(e?.message || e);
+        error(message);
+        return /^(?:LEASE_FENCED|RUNTIME_FENCED|PROJECT_BINDING_FENCED)(?::|$)/.test(message) ? 3 : 1;
+      }
+    }
     const f = parseFlags(rest);
-    if (verb !== 'diagnose' && verb !== 'rebind') { error(`unknown root verb: ${verb}`); return 2; }
+    if (!['diagnose', 'rebind', 'recover'].includes(verb)) { error(`unknown root verb: ${verb}`); return 2; }
     const candidateRoot = reqStr(f, 'candidate-project-root');
     if (!candidateRoot) { error('USAGE: --candidate-project-root ROOT is required'); return 2; }
     const runId = reqStr(f, 'run-id');
@@ -223,11 +359,17 @@ const handlers = {
     if (!expectedStoredRootDigest) {
       error('USAGE: --expected-stored-root-digest SHA256 is required'); return 2;
     }
+    const expectedBindingGeneration = reqStr(f, 'expected-binding-generation');
+    if (!/^[1-9]\d*$/.test(expectedBindingGeneration || '')) {
+      error('USAGE: --expected-binding-generation N is required'); return 2;
+    }
 
-    const result = rebindProjectRoot(candidateRoot, runId, {
+    const mutateRoot = verb === 'recover' ? recoverRelocatedRoot : rebindProjectRoot;
+    const result = mutateRoot(candidateRoot, runId, {
       actor,
       confirm: true,
       expectedStoredRootDigest,
+      expectedBindingGeneration: Number(expectedBindingGeneration),
       fence: { owner, generation: Number(f.generation) },
       now: parseNow(f),
     });
@@ -349,11 +491,11 @@ const handlers = {
     const runtime = reqStr(f, 'runtime');
     if (!runtime) { error('USAGE: --runtime <claude|codex> is required'); return 2; }
     if (f.model === true || f.effort === true) { error('USAGE: --model/--effort require a value'); return 2; }
-    if (f.continuation === true) { error('USAGE: --continuation <compact-in-place|rotate-per-unit>'); return 2; }
+    if (f.continuation === true) { error('USAGE: --continuation <workstream-session>'); return 2; }
     const model = f.model !== undefined ? String(f.model) : null;
     const effort = f.effort !== undefined ? String(f.effort) : null;
     try {
-      const { runId } = initRun(root, { runtime, goal: f.goal, protocol: f.protocol, recipe: f.recipe, detected: detectPlugins(root), review: f.review ? JSON.parse(f.review) : undefined, model, effort, continuation: f.continuation ?? null });
+      const { runId } = initRun(root, { runtime, goal: f.goal, protocol: f.protocol, recipe: f.recipe, detected: detectPlugins(root), review: f.review ? JSON.parse(f.review) : undefined, model, effort, continuation: f.continuation ?? null, now: new Date(parseNow(f)) });
       json({ run_id: runId }); return 0;
     } catch (e) {
       error(String(e?.message || e)); return 1;   // INVALID_RUNTIME / INVALID_MODEL / INVALID_EFFORT → exit 1 (fail-closed)
@@ -361,9 +503,81 @@ const handlers = {
   },
   'next-action': async (a) => {
     const f = parseFlags(a); const root = rootOf(f);
-    const { data } = readState(root, runIdOf(root, f));
+    const { data } = captureReconciledRunSnapshot(root, runIdOf(root, f));
     const unattended = !!f.unattended || resolveSpawnMode(data, { env: process.env }) === 'headless';
-    json(nextAction(data, { now: parseNow(f), unattended })); return 0;
+    json(renderNextAction(nextAction(data, { now: parseNow(f), unattended }))); return 0;
+  },
+  checkpoint: async (a) => {
+    const [verb, ...rest] = a;
+    const allowed = {
+      emit: new Set(['project-root', 'run-id', 'now', 'owner', 'generation', 'runtime']),
+      inspect: new Set(['project-root', 'run-id', 'now', 'json']),
+      restore: new Set([
+        'project-root', 'run-id', 'now', 'checkpoint', 'owner', 'generation', 'runtime', 'json',
+      ]),
+    };
+    if (!Object.hasOwn(allowed, verb) || !knownFlagVocabulary(rest, allowed[verb])) {
+      error(`USAGE: checkpoint <emit|inspect|restore> has invalid grammar`);
+      return 2;
+    }
+    if (verb !== 'inspect'
+      && (flagOccurrences(rest, 'owner') !== 1 || flagOccurrences(rest, 'generation') !== 1)) {
+      error(`LEASE_FENCED: checkpoint ${verb} requires exactly one owner and generation`);
+      return 3;
+    }
+    if (!exactFlagGrammar(rest, allowed[verb])) {
+      error(`USAGE: checkpoint <emit|inspect|restore> has invalid grammar`);
+      return 2;
+    }
+    const f = parseFlags(rest);
+    if ((Object.hasOwn(f, 'project-root') && reqStr(f, 'project-root') === null)
+      || (Object.hasOwn(f, 'run-id') && reqStr(f, 'run-id') === null)) {
+      error('USAGE: explicit --project-root and --run-id require a non-empty value');
+      return 2;
+    }
+    const root = rootOf(f);
+    const runId = runIdOf(root, f);
+    if (!runId) { error('USAGE: --run-id RUN_ID or .deep-loop/current is required'); return 2; }
+
+    if (verb === 'inspect') {
+      if (f.json !== true) { error('USAGE: checkpoint inspect requires --json'); return 2; }
+      json(inspectCompactCheckpoint(root, runId, { now: parseNow(f) }));
+      return 0;
+    }
+
+    const owner = reqStr(f, 'owner');
+    if (!owner
+      || typeof f.generation !== 'string'
+      || !/^[1-9]\d*$/.test(f.generation)
+      || !Number.isSafeInteger(Number(f.generation))) {
+      error(`LEASE_FENCED: checkpoint ${verb} requires a valid owner and positive generation`);
+      return 3;
+    }
+    const runtime = reqStr(f, 'runtime');
+    if (!runtime) {
+      error(`USAGE: checkpoint ${verb} requires --runtime RUNTIME`);
+      return 2;
+    }
+    const options = {
+      fence: { owner, generation: Number(f.generation) },
+      runtime,
+      now: parseNow(f),
+    };
+    if (verb === 'emit') {
+      json(emitCompactCheckpoint(root, runId, options));
+      return 0;
+    }
+
+    const requested = reqStr(f, 'checkpoint');
+    if (!requested || f.json !== true) {
+      error('USAGE: checkpoint restore requires --checkpoint REL and --json');
+      return 2;
+    }
+    json(restoreCompactCheckpoint(root, runId, {
+      checkpointRel: requested,
+      ...options,
+    }));
+    return 0;
   },
   'resume-command': async (a) => {
     const f = parseFlags(a);
@@ -376,7 +590,10 @@ const handlers = {
     const root = rootOf(f);
     const runId = runIdOf(root, f);
     if (!runId) { error('MISSING_RUN_ID'); return 2; }
-    const { data } = readState(root, runId);
+    const snapshot = captureReconciledRunSnapshot(root, runId, {
+      artifactRels: ['terminal/launch-command.txt', 'terminal/launch-command.meta.json'],
+    });
+    const { data } = snapshot;
     const lease = data.session_chain?.lease || {};
     const childRunId = typeof lease.handoff_child_run_id === 'string'
       ? lease.handoff_child_run_id
@@ -387,6 +604,62 @@ const handlers = {
     }
 
     const child = (data.session_chain?.sessions || []).find(session => session.run_id === childRunId);
+    if (['affinity-supersession', 'boundary-recovery'].includes(lease.takeover_kind)) {
+      if (child?.root_recovery_operation_id) {
+        if (lease.recovery_discriminator !== child.root_recovery_operation_id
+          || lease.recovery_rel !== child.recovery_rel
+          || lease.recovery_sha256 !== child.recovery_sha256
+          || child.recovery_project_binding_generation !== data.project?.binding_generation
+          || child.recovery_project_root_digest !== projectRootDigest(data.project?.root)) {
+          error('ROOT_RECOVERY_TOPOLOGY_INVALID');
+          return 1;
+        }
+        const descriptor = buildRootRecoveryResumeDescriptor({
+          runtime: sessionRuntime(data),
+          root: canonicalProjectRoot(data.project.root),
+          runId,
+          childRunId,
+          recoveryRel: child.recovery_rel,
+          generation: lease.generation,
+          bindingGeneration: data.project.binding_generation,
+        });
+        process.stdout.write([
+          descriptor.resumeInvocation,
+          `Recovery: kind=project-root capsule=${child.recovery_rel}`,
+          `Lease: owner=${lease.owner_run_id} lease_state=${lease.state} generation=${lease.generation} handoff_phase=${lease.handoff_phase} child_run_id=${childRunId}`,
+          'Status: exact root recovery child acquisition is required',
+          '',
+        ].join('\n'));
+        return 0;
+      }
+      if (recoveryReservationKind(data) !== lease.takeover_kind
+        || !child
+        || child.recovery_kind !== lease.takeover_kind
+        || child.recovery_project_binding_generation !== data.project?.binding_generation
+        || child.recovery_project_root_digest !== projectRootDigest(data.project?.root)
+        || lease.recovery_rel !== child.recovery_rel
+        || lease.recovery_sha256 !== child.recovery_sha256) {
+        error('RECOVERY_TOPOLOGY_INVALID');
+        return 1;
+      }
+      const descriptor = buildRecoveryResumeDescriptor({
+        kind: child.recovery_kind,
+        runtime: sessionRuntime(data),
+        root: canonicalProjectRoot(data.project.root),
+        runId,
+        childRunId,
+        recoveryRel: child.recovery_rel,
+        generation: lease.generation,
+      });
+      process.stdout.write([
+        descriptor.resumeInvocation,
+        `Recovery: kind=${child.recovery_kind} capsule=${child.recovery_rel}`,
+        `Lease: owner=${lease.owner_run_id} lease_state=${lease.state} generation=${lease.generation} handoff_phase=${lease.handoff_phase} child_run_id=${childRunId}`,
+        'Status: exact recovery child acquisition is required',
+        '',
+      ].join('\n'));
+      return 0;
+    }
     const handoffRel = child?.handoff_rel || `handoffs/${childRunId}-next-session.md`;
     const canonicalRoot = canonicalProjectRoot(data.project.root);
     const runtime = sessionRuntime(data);
@@ -406,9 +679,43 @@ const handlers = {
       runtimeExecutableIdentity: data.autonomy?.runtime_executable_approval ?? null,
       launcherIdentity: data.session_spawn?.launcher_identity ?? null,
     });
-    const launchPath = join(runDir(canonicalRoot, runId), 'terminal', 'launch-command.txt');
-    const launcherGuidance = existsSync(launchPath)
-      ? `Launcher guidance (from launch-command.txt):\n${readFileSync(launchPath, 'utf8').trimEnd()}`
+    const launchText = snapshot.artifacts['terminal/launch-command.txt'];
+    const launchMeta = snapshot.artifacts['terminal/launch-command.meta.json'];
+    let boundLaunchText = null;
+    if (launchText?.state === 'present' && launchMeta?.state === 'present'
+      && Number.isSafeInteger(data.project?.binding_generation)) {
+      try {
+        const parsed = JSON.parse(launchMeta.bytes.toString('utf8'));
+        const parent = child && (data.session_chain?.sessions || [])
+          .find(session => session.run_id === child.parent_run_id);
+        const validated = validateLaunchCommandMetadata(parsed, {
+          launchBytes: launchText.bytes,
+          parentRunId: runId,
+          childRunId,
+          handoffRel: child?.handoff_rel,
+          projectRootDigest: projectRootDigest(data.project.root),
+          projectBindingGeneration: data.project.binding_generation,
+          boundaryEvent: lease.handoff_boundary_event,
+          generatedAt: parent?.scope?.superseded_at,
+        });
+        const meta = validated?.payload;
+        if (meta
+          && lease.takeover_kind === 'boundary-handoff'
+          && lease.handoff_project_root_digest === meta.project_root_digest
+          && lease.handoff_project_binding_generation === meta.project_binding_generation
+          && sameBoundaryEvent(meta.boundary_event, lease.handoff_boundary_event)
+          && sameBoundaryEvent(child?.parent_boundary_event, meta.boundary_event)
+          && child?.parent_run_id === runId
+          && child?.project_root_digest === meta.project_root_digest
+          && child?.project_binding_generation === meta.project_binding_generation
+          && parent?.superseded_by === childRunId
+          && sameBoundaryEvent(parent?.scope?.terminal_event, meta.boundary_event)) {
+          boundLaunchText = launchText.bytes.toString('utf8').trimEnd();
+        }
+      } catch { /* stale/malformed metadata selects the current-root fallback */ }
+    }
+    const launcherGuidance = boundLaunchText !== null
+      ? `Launcher guidance (from launch-command.txt):\n${boundLaunchText}`
       : `Launcher guidance: ${descriptor.entries.interactive.display}`;
     const leaseState = typeof lease.state === 'string' ? ` lease_state=${lease.state}` : '';
     process.stdout.write([
@@ -422,29 +729,39 @@ const handlers = {
   },
   tick: async (a) => {
     const f = parseFlags(a); const root = rootOf(f);
-    const { data } = readState(root, runIdOf(root, f));
+    const { data } = captureReconciledRunSnapshot(root, runIdOf(root, f));
     const unattended = !!f.unattended || resolveSpawnMode(data, { env: process.env }) === 'headless';
-    json({ mode: f.mode || 'advance', ...nextAction(data, { now: parseNow(f), unattended }) }); return 0;
+    json(renderNextAction({ mode: f.mode || 'advance', ...nextAction(data, { now: parseNow(f), unattended }) })); return 0;
   },
   lease: async (a) => {
     const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
-    if (verb === 'check') { const { data } = readState(root, runId); json(leaseCheck(data, { owner: strArg(f, 'owner'), generation: intArg(f, 'generation') })); return 0; }
+    if (verb === 'check') { const { data } = captureReconciledRunSnapshot(root, runId); json(leaseCheck(data, { owner: strArg(f, 'owner'), generation: intArg(f, 'generation') })); return 0; }
     if (verb === 'acquire') {
       const owner = strArg(f, 'owner');
       const expectGeneration = intArg(f, f['expect-generation'] !== undefined ? 'expect-generation' : 'generation');
       const runtime = reqStr(f, 'runtime');
       if (!runtime) { error('USAGE: --runtime <claude|codex> is required'); return 2; }
       let r;
-      try { r = acquireLease(root, runId, { owner, expectGeneration, runtime }); }
+      try { r = acquireLease(root, runId, {
+        owner,
+        expectGeneration,
+        runtime,
+        now: parseExplicitNow(f),
+      }); }
       catch (e) {
         const classified = classifyKernelError(e);
         if (!classified) throw e;
         error(classified.message); return classified.code;
       }
       json(r);
+      if (Number.isInteger(r.kernel_exit_code)) return r.kernel_exit_code;
       // terminal/runtime fence는 exit 3 — resume의 소유권 인수 경계에서 성공-모양(exit 0)으로 위장 금지.
       // 그 외 ok:false(generation/takeability)는 기존 exit 0 + JSON 계약을 유지한다.
-      return (r.ok === false && (r.reason === 'run-terminal' || r.reason === 'RUNTIME_FENCED')) ? 3 : 0;
+      return (r.ok === false && (
+        r.reason === 'run-terminal'
+        || r.reason === 'RUNTIME_FENCED'
+        || r.reason === 'RECOVERY_ACQUIRE_REQUIRED'
+      )) ? 3 : 0;
     }
     if (verb === 'release') { json(releaseLease(root, runId, { owner: strArg(f, 'owner'), generation: intArg(f, 'generation') })); return 0; }
     error(`unknown lease verb: ${verb}`); return 2;
@@ -464,18 +781,50 @@ const handlers = {
         if (!Array.isArray(parsed) || parsed.some(d => typeof d !== 'string' || d.length === 0)) { error('INVALID_DEPENDS_ON'); return 1; }
         dependsOn = parsed;
       }
-      const r = newWorkstream(root, runId, { title, branch, worktree, dependsOn, fence }); json(r); return 0;
+      const r = newWorkstream(root, runId, { title, branch, worktree, dependsOn, fence, now: parseNow(f) }); json(r); return 0;
     }
     if (verb === 'set') {
       const id = reqStr(f, 'id'); if (!id) { error('MISSING_ID'); return 2; }
       const status = reqStr(f, 'status'); if (!status) { error('MISSING_STATUS'); return 2; }
-      setWorkstreamStatus(root, runId, id, status, { fence }); json({ ok: true }); return 0;
+      setWorkstreamStatus(root, runId, id, status, { fence, now: parseNow(f) }); json({ ok: true }); return 0;
     }
     // 터미널(ready/merged/abandoned)은 proof 필수 — 커널 파생 (Codex r1 🔴6: CLI 경계로 노출)
     if (verb === 'terminal') {
       const id = reqStr(f, 'id'); if (!id) { error('MISSING_ID'); return 2; }
       const status = reqStr(f, 'status'); if (!status) { error('MISSING_STATUS'); return 2; }
-      recordWorkstreamTerminal(root, runId, id, { status, proof: f.proof ? JSON.parse(f.proof) : {}, fence }); json({ ok: true }); return 0;
+      if (!['ready', 'merged', 'abandoned'].includes(status)) {
+        error(`WORKSTREAM_STATUS_INVALID: ${status} is not terminal`); return 1;
+      }
+      // Confirmation is command grammar, not persisted-state validation. Classify it before proof JSON
+      // parsing or any workstream lookup so malformed/missing state cannot change a usage error into exit 1.
+      // A single bare flag, `=true`, or space-valued `true` is affirmative; duplicates are always ambiguous.
+      const confirmCount = flagOccurrences(rest, 'confirm');
+      let confirm;
+      if (status === 'abandoned') {
+        if (confirmCount !== 1 || (f.confirm !== true && f.confirm !== 'true')) {
+          error('CONFIRM_REQUIRED: abandoned requires exactly one affirmative --confirm (human-only)'); return 2;
+        }
+        confirm = true;
+      } else if (confirmCount !== 0) {
+        error('CONFIRM_FORBIDDEN: --confirm is only valid for abandoned'); return 2;
+      }
+      try {
+        recordWorkstreamTerminal(root, runId, id, {
+          status,
+          proof: f.proof ? JSON.parse(f.proof) : {},
+          confirm,
+          fence,
+          now: parseNow(f),
+        });
+        json({ ok: true }); return 0;
+      } catch (e) {
+        const message = String(e?.message || e);
+        if (message.startsWith('CONFIRM_REQUIRED') || message.startsWith('CONFIRM_FORBIDDEN')) {
+          error(message); return 2;
+        }
+        if (message.startsWith('LEASE_FENCED')) { error(message); return 3; }
+        error(message); return 1;
+      }
     }
     error(`unknown workstream verb: ${verb}`); return 2;
   },
@@ -488,14 +837,14 @@ const handlers = {
       const role = reqStr(f, 'role'); if (!role) { error('MISSING_ROLE'); return 2; }
       const kind = reqStr(f, 'kind'); if (!kind) { error('MISSING_KIND'); return 2; }
       const point = reqStr(f, 'point'); if (!point) { error('MISSING_POINT'); return 2; }
-      const r = newEpisode(root, runId, { plugin, role, kind, point, workstream: f.workstream, expectedArtifacts: f.artifacts ? JSON.parse(f.artifacts) : [], fence }); json({ id: r.id, request_path: r.requestPath }); return 0;
+      const r = newEpisode(root, runId, { plugin, role, kind, point, workstream: f.workstream, expectedArtifacts: f.artifacts ? JSON.parse(f.artifacts) : [], fence, now: parseNow(f) }); json({ id: r.id, request_rel: r.requestRel, request_path: r.requestPath }); return 0;
     }
     if (verb === 'record') {
       const id = reqStr(f, 'id'); if (!id) { error('MISSING_ID'); return 2; }
       const status = reqStr(f, 'status'); if (!status) { error('MISSING_STATUS'); return 2; }
       if (status === 'approved' || status === 'rejected') { error(`EPISODE_TERMINAL_VIA_REVIEW: approved/rejected come only from 'review record'`); return 1; }
       if (status === 'abandoned') { error(`EPISODE_ABANDON_VIA_VERB: use 'episode abandon --confirm'`); return 1; }
-      recordEpisode(root, runId, id, { status, artifacts: f.artifacts ? JSON.parse(f.artifacts) : [], proof: f.proof ? JSON.parse(f.proof) : {}, fence }); json({ ok: true }); return 0;
+      recordEpisode(root, runId, id, { status, artifacts: f.artifacts ? JSON.parse(f.artifacts) : [], proof: f.proof ? JSON.parse(f.proof) : {}, fence, now: parseNow(f) }); json({ ok: true }); return 0;
     }
     if (verb === 'abandon') {
       const id = reqStr(f, 'id'); if (!id) { error('MISSING_ID'); return 2; }
@@ -504,7 +853,7 @@ const handlers = {
       // uncaught CONFIRM_REQUIRED stack trace (exit 1). Keep passing confirm:true into the lib (defense in depth).
       if (f.confirm !== true && f.confirm !== 'true') { error('CONFIRM_REQUIRED: pass --confirm (human-only)'); return 2; }
       try {
-        abandonEpisode(root, runId, id, { reason, confirm: true, fence }); json({ ok: true, status: 'abandoned' }); return 0;
+        abandonEpisode(root, runId, id, { reason, confirm: true, fence, now: parseNow(f) }); json({ ok: true, status: 'abandoned' }); return 0;
       } catch (e) {
         const msg = String(e?.message || e);
         if (msg.startsWith('LEASE_FENCED')) { error(msg); return 3; }
@@ -563,10 +912,25 @@ const handlers = {
     const data = requireLease(root, runId, f, 'lease');
     const expect = { owner: f.owner, generation: intArg(f, 'generation') };
     if (verb === 'emit') {
+      let boundaryEvent;
+      if (Object.hasOwn(f, 'boundary-event')) {
+        const parsed = parseBoundaryEventFlag(f['boundary-event']);
+        if (!parsed.ok) {
+          error(parsed.usage
+            ? 'USAGE: --boundary-event <seq>:<64-lowercase-hex-checksum>'
+            : 'BOUNDARY_EVENT_INVALID: expected positive base10 seq without leading zero plus lowercase checksum');
+          return parsed.usage ? 2 : 1;
+        }
+        boundaryEvent = parsed.value;
+      }
+      if (data.autonomy?.continuation_policy === 'workstream-session' && !boundaryEvent) {
+        error('USAGE: handoff emit requires --boundary-event <seq>:<64-lowercase-hex-checksum>');
+        return 2;
+      }
       const h = f.headless === true || f.headless === 'true';
       // v1.6 (spec §2.3-2 CLI 매핑): 기존 RUN_PAUSED/HANDOFF_KEY_MISMATCH throw의 uncaught stack 해소 —
       // respawn/pause/recover 핸들러와 동일 패턴. RUN_TERMINAL은 보상 롤백 후 반환 계약(JSON ok:false)이라 여기 안 걸린다.
-      try { json(emitHandoff(root, runId, { reason: f.reason, trigger: f.trigger || f.reason || 'milestone', headless: h, expect, env: process.env })); return 0; }
+      try { json(emitHandoff(root, runId, { reason: f.reason, trigger: f.trigger || f.reason || 'milestone', boundaryEvent, headless: h, expect, env: process.env, now: parseNow(f) })); return 0; }
       catch (e) { const m = String(e?.message || e); if (m.startsWith('LEASE_FENCED')) { error(m); return 3; } error(m); return 1; }
     }
     error(`unknown handoff verb: ${verb}`); return 2;
@@ -577,7 +941,7 @@ const handlers = {
   respawn: async (a) => {
     const f = parseFlags(a); const root = rootOf(f); const runId = runIdOf(root, f);
     if (!runId) { error('MISSING_RUN_ID'); return 2; }
-    const { data } = readState(root, runId);
+    const { data } = captureReconciledRunSnapshot(root, runId);
     if (f['dry-run']) { json(respawnGate(data)); return 0; }
     // Require + fence --owner/--generation (exit 3). intent 'lease' so a releasing handoff lease is not rejected.
     requireLease(root, runId, f, 'lease');
@@ -597,7 +961,7 @@ const handlers = {
     const key = lease.handoff_idempotency_key;
     const cs = (data.session_chain?.sessions || []).find(s => s.run_id === childRunId);
     const handoffRel = cs && cs.handoff_rel;
-    const pollLease = () => readState(root, runId).data.session_chain.lease;
+    const pollLease = () => captureReconciledRunSnapshot(root, runId).data.session_chain.lease;
     const expect = { owner: f.owner, generation: intArg(f, 'generation') };
     const now = parseNow(f);
     try {
@@ -627,10 +991,11 @@ const handlers = {
       if (runId == null) { json(null); return 0; }   // no pointer at all (first entry) → clean null
       const explicit = f['run-id'] != null;           // explicit --run-id vs implicit .deep-loop/current
       let data;
-      try { ({ data } = readState(root, runId)); }
+      try { ({ data } = captureReconciledRunSnapshot(root, runId)); }
       catch (e) {
         // null ONLY for: implicit current pointer AND the run dir itself is absent (genuine stale pointer).
-        if (e && e.code === 'ENOENT' && !explicit && !existsSync(runDir(root, runId))) { json(null); return 0; }
+        if ((e && e.code === 'ENOENT' || String(e?.message || e) === 'LOCK_RUN_INVALID')
+          && !explicit && !existsSync(runDir(root, runId))) { json(null); return 0; }
         // run dir present but loop.json gone = partial state loss → fail closed (don't mask as "no run").
         if (e && e.code === 'ENOENT' && existsSync(runDir(root, runId))) {
           error(`STATE_MISSING: ${runId} loop.json absent but run dir exists`); return 1;
@@ -674,23 +1039,110 @@ const handlers = {
     }
   },
   // recover --owner <id> --generation <n> --confirm
-  // Human-approved escape hatch (mirrors breaker reset --confirm): unstick-for-resume, NOT terminate.
-  // Clears stale handoff state so a fresh acquireLease (Task 8) can take over and unpause.
-  // Exit 3 = LEASE_FENCED (wrong owner/generation); 2 = missing --confirm or usage; 0 = success.
+  // recover --supersede-affinity --reason <text> --owner <id> --generation <n> --confirm
+  // The new-policy route never releases an open affinity to a generic future owner.
   recover: async (a) => {
-    const f = parseFlags(a); const root = rootOf(f); const runId = runIdOf(root, f);
+    const allowed = new Set([
+      'confirm', 'supersede-affinity', 'reason', 'owner', 'generation',
+      'project-root', 'run-id', 'now',
+    ]);
+    if (!knownFlagVocabulary(a, allowed) || !exactFlagGrammar(a, allowed)) {
+      error('USAGE: recover has invalid grammar');
+      return 2;
+    }
+    const f = parseFlags(a);
+    if (['project-root', 'run-id', 'reason', 'owner', 'generation', 'now']
+      .some(name => f[name] === true)) {
+      error('USAGE: recover option requires a value');
+      return 2;
+    }
+    const root = rootOf(f); const runId = runIdOf(root, f);
     if (!runId) { error('MISSING_RUN_ID'); return 2; }
     if (f.confirm !== true && f.confirm !== 'true') { error('CONFIRM_REQUIRED: pass --confirm (human-only)'); return 2; }
     const owner = reqStr(f, 'owner'); if (!owner) { error('MISSING_OWNER'); return 2; }
     const generation = intArg(f, 'generation');   // exits 3 on invalid/missing
     try {
-      recoverRun(root, runId, { expect: { owner, generation }, confirm: true, now: parseNow(f) });
-      json({ ok: true, status: 'paused', pause_reason: 'recovered:awaiting-resume' }); return 0;
+      let result;
+      if (Object.hasOwn(f, 'supersede-affinity')) {
+        if (f['supersede-affinity'] !== true && f['supersede-affinity'] !== 'true') {
+          error('USAGE: --supersede-affinity must be affirmative');
+          return 2;
+        }
+        const reason = reqStr(f, 'reason');
+        if (!reason) { error('USAGE: affinity supersession requires --reason TEXT'); return 2; }
+        result = supersedeAffinity(root, runId, {
+          reason,
+          expect: { owner, generation },
+          confirm: true,
+          now: parseExplicitNow(f),
+        });
+      } else {
+        if (Object.hasOwn(f, 'reason')) {
+          error('USAGE: --reason is valid only with --supersede-affinity');
+          return 2;
+        }
+        result = recoverRun(root, runId, {
+          expect: { owner, generation },
+          confirm: true,
+          now: parseExplicitNow(f),
+        });
+      }
+      json(result); return 0;
     } catch (e) {
       const msg = String(e?.message || e);
       if (msg.startsWith('LEASE_FENCED')) { error(msg); return 3; }
       if (msg.startsWith('NOT_RECOVERABLE') || msg.startsWith('CONFIRM_REQUIRED')) { error(msg); return 2; }
       error(msg); return 1;
+    }
+  },
+  recovery: async (a) => {
+    const [verb, ...rest] = a;
+    const allowed = new Set([
+      'capsule', 'owner', 'generation', 'runtime', 'project-root', 'run-id', 'now',
+    ]);
+    if (verb !== 'acquire'
+      || !knownFlagVocabulary(rest, allowed)
+      || !exactFlagGrammar(rest, allowed)) {
+      error('USAGE: recovery acquire has invalid grammar');
+      return 2;
+    }
+    const f = parseFlags(rest);
+    if (['capsule', 'owner', 'generation', 'runtime', 'project-root', 'run-id', 'now']
+      .some(name => f[name] === true)) {
+      error('USAGE: recovery acquire option requires a value');
+      return 2;
+    }
+    const capsuleRel = reqStr(f, 'capsule');
+    const owner = reqStr(f, 'owner');
+    const runtime = reqStr(f, 'runtime');
+    const generationValue = reqStr(f, 'generation');
+    if (!capsuleRel || !owner || !runtime
+      || !/^[1-9]\d*$/.test(generationValue || '')
+      || !Number.isSafeInteger(Number(generationValue))) {
+      error('USAGE: recovery acquire requires capsule, owner, positive generation, and runtime');
+      return 2;
+    }
+    const root = rootOf(f);
+    const runId = runIdOf(root, f);
+    if (!runId) { error('MISSING_RUN_ID'); return 2; }
+    try {
+      const result = acquireRecovery(root, runId, {
+        capsuleRel,
+        owner,
+        expectGeneration: Number(generationValue),
+        runtime,
+        now: parseExplicitNow(f),
+      });
+      json(result);
+      return result.ok ? 0 : 1;
+    } catch (e) {
+      const message = String(e?.message || e);
+      if (/^(?:LEASE_FENCED|RUNTIME_FENCED)(?::|$)/.test(message)) {
+        error(message);
+        return 3;
+      }
+      error(message);
+      return 1;
     }
   },
   adapter: async (a) => {
@@ -723,7 +1175,7 @@ const handlers = {
   },
   budget: async (a) => {
     const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
-    if (verb === 'check') { const { data } = readState(root, runId); json(checkBudget(data, { now: parseNow(f) })); return 0; }
+    if (verb === 'check') { const { data } = captureReconciledRunSnapshot(root, runId); json(checkBudget(data, { now: parseNow(f) })); return 0; }
     if (verb === 'record') {
       requireLease(root, runId, f);
       // Codex r4 sf-4: parseFlags 는 값 없는 플래그를 true 로 둔다 → Number(true)=1 오기록 방지.
@@ -733,14 +1185,46 @@ const handlers = {
       const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'business' };
       try { recordCost(root, runId, { turns, tokens, fence }); }
       catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }
-      const { data } = readState(root, runId);
+      const { data } = captureReconciledRunSnapshot(root, runId);
       json({ ok: true, spent: data.budget.spent, tokens_spent: data.budget.tokens_spent }); return 0;
+    }
+    if (verb === 'extend') {
+      if (f.confirm !== true && f.confirm !== 'true') {
+        error('BUDGET_EXTENSION_CONFIRM_REQUIRED: pass --confirm (human-only)'); return 2;
+      }
+      const reason = reqStr(f, 'reason');
+      if (!reason) { error('BUDGET_EXTENSION_REASON_REQUIRED: pass --reason <text>'); return 2; }
+      const turns = positiveDeltaArg(f, 'turns');
+      const tokens = positiveDeltaArg(f, 'tokens');
+      const wallclockSec = positiveDeltaArg(f, 'wallclock-sec');
+      if ([turns, tokens, wallclockSec].includes(null)
+        || [turns, tokens, wallclockSec].every(value => value === undefined)) {
+        error('BUDGET_EXTENSION_INVALID: deltas must be positive safe integers'); return 1;
+      }
+      const owner = strArg(f, 'owner');
+      const generation = intArg(f, 'generation');
+      try {
+        json(extendBudget(root, runId, {
+          turns,
+          tokens,
+          wallclockSec,
+          reason,
+          confirm: true,
+          fence: { owner, generation },
+          now: parseNow(f),
+        }));
+        return 0;
+      } catch (e) {
+        const message = String(e?.message || e);
+        if (message.startsWith('LEASE_FENCED')) { error(message); return 3; }
+        error(message); return 1;
+      }
     }
     error(`unknown budget verb: ${verb}`); return 2;
   },
   comprehension: async (a) => {
     const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
-    if (verb === 'status') { const { data } = readState(root, runId); json(computeDebt(data)); return 0; }
+    if (verb === 'status') { const { data } = captureReconciledRunSnapshot(root, runId); json(computeDebt(data)); return 0; }
     if (verb === 'ack') {
       requireLease(root, runId, f);   // fence 인자 → exit 3
       const episode = reqStr(f, 'episode'); if (!episode) { error('MISSING_EPISODE'); return 2; }   // Codex r1 sf-6
@@ -757,19 +1241,19 @@ const handlers = {
       if (r && r.ok === false && r.rejected) {
         // headless-human fail-closed (the ack-rejected event is already appended). Surface as usage error.
         error(`ACK_REJECTED: ${r.reason}`);
-        const { data } = readState(root, runId); json({ ok: false, ...computeDebt(data) }); return 2;
+        const { data } = captureReconciledRunSnapshot(root, runId); json({ ok: false, ...computeDebt(data) }); return 2;
       }
-      const { data } = readState(root, runId); json({ ok: true, ...computeDebt(data) }); return 0;
+      const { data } = captureReconciledRunSnapshot(root, runId); json({ ok: true, ...computeDebt(data) }); return 0;
     }
     error(`unknown comprehension verb: ${verb}`); return 2;
   },
   breaker: async (a) => {
     const [verb, ...rest] = a; const f = parseFlags(rest); const root = rootOf(f); const runId = runIdOf(root, f);
-    if (verb === 'check') { const { data } = readState(root, runId); json(checkBreaker(data)); return 0; }
+    if (verb === 'check') { const { data } = captureReconciledRunSnapshot(root, runId); json(checkBreaker(data)); return 0; }
     if (verb === 'reset') {
       if (f.confirm !== true && f.confirm !== 'true') { error('BREAKER_RESET_REQUIRES_CONFIRM: pass --confirm (human-only)'); return 2; }
-      requireLease(root, runId, f, 'breaker-reset');   // Codex r2 critical-1: fence 필수; breaker-reset exempt from RUN_PAUSED gate
-      const fence = { owner: f.owner, generation: intArg(f, 'generation'), intent: 'breaker-reset' };
+      const owner = strArg(f, 'owner');
+      const fence = { owner, generation: intArg(f, 'generation'), intent: 'breaker-reset' };
       try { json(resetBreaker(root, runId, { fence })); return 0; }
       catch (e) { if (String(e.message).startsWith('LEASE_FENCED')) { error(e.message); return 3; } error(e.message); return 1; }
     }
@@ -790,12 +1274,12 @@ const handlers = {
         let targetDir;
         try { targetDir = runDir(root, target); } catch { error(`RUN_NOT_FOUND: ${target}`); return 1; }
         if (!existsSync(targetDir)) { error(`RUN_NOT_FOUND: ${target}`); return 1; }
-        const out = computeInsights(root, { selfRunId, now: parseNow(f) });
+        const out = computeInsights(captureReconciledRunSet(root), { selfRunId, now: parseNow(f) });
         json({ ...out, per_run: { [target]: out.per_run[target] ?? null } }); return 0;
       }
-      json(computeInsights(root, { selfRunId, now: parseNow(f) })); return 0;
+      json(computeInsights(captureReconciledRunSet(root), { selfRunId, now: parseNow(f) })); return 0;
     }
-    if (verb === 'latest') { json(latestInsights(root)); return 0; }
+    if (verb === 'latest') { json(latestInsights(captureLatestInsightsSet(root))); return 0; }
     if (verb === 'emit') {
       const runId = runIdOf(root, f);
       requireLease(root, runId, f);
@@ -863,6 +1347,75 @@ const handlers = {
       catch (e) { const msg = String(e?.message || e); if (msg.startsWith('LEASE_FENCED')) { error(msg); return 3; } error(msg); return 1; }
     }
     error(`unknown spawn-style verb: ${verb}`); return 2;
+  },
+  // attended-launch approve --style visible --confirm --owner <id> --generation <n>
+  // attended-launch revoke --confirm --owner <id> --generation <n>
+  // Desktop approval is intentionally exclusive to the nonce + live-handler
+  // `spawn-style confirm-desktop` flow.
+  'attended-launch': async (a) => {
+    const [verb, ...rest] = a;
+    const allowed = verb === 'approve'
+      ? new Set(['style', 'confirm', 'owner', 'generation', 'now', 'project-root', 'run-id'])
+      : new Set(['confirm', 'owner', 'generation', 'now', 'project-root', 'run-id']);
+    if (!['approve', 'revoke'].includes(verb)) {
+      error(`unknown attended-launch verb: ${verb ?? '<none>'}`);
+      return 2;
+    }
+    if (!exactFlagGrammar(rest, allowed)) {
+      error('USAGE: attended-launch flags are malformed, duplicated, or unknown');
+      return 2;
+    }
+    const f = parseFlags(rest);
+    if (f.confirm !== true && f.confirm !== 'true') {
+      error('CONFIRM_REQUIRED: attended launch mutation requires --confirm');
+      return 2;
+    }
+    const root = rootOf(f);
+    const runId = runIdOf(root, f);
+    if (!runId) { error('MISSING_RUN_ID'); return 2; }
+    const fence = { owner: strArg(f, 'owner'), generation: intArg(f, 'generation') };
+    const now = parseNow(f);
+
+    if (verb === 'approve') {
+      // Ordinary approval is an active-session mutation. The library repeats
+      // the authoritative fence in its anchored transaction.
+      requireLease(root, runId, f);
+      try {
+        const result = approveAttendedLaunch(root, runId, {
+          style: f.style === true || f.style === undefined ? undefined : String(f.style),
+          confirm: true, fence, now,
+        });
+        if (result.reason === 'DESKTOP_FLOW_REQUIRED') {
+          error('DESKTOP_FLOW_REQUIRED: use spawn-style offer-desktop then spawn-style confirm-desktop');
+          return 1;
+        }
+        if (!result.ok) { error(result.reason); return result.reason === 'CONFIRM_REQUIRED' ? 2 : 1; }
+        json(result);
+        return 0;
+      } catch (error_) {
+        const message = String(error_?.message || error_);
+        if (message.startsWith('LEASE_FENCED')) { error(message); return 3; }
+        error(message);
+        return 1;
+      }
+    }
+
+    // Revoke deliberately bypasses ordinary leaseCheck so it can operate on a
+    // safely paused active lease; revokeAttendedLaunch owns the exact in-lock
+    // owner/generation, terminal, state, and handoff-phase checks.
+    try {
+      const result = revokeAttendedLaunch(root, runId, {
+        confirm: true, fence, now,
+      });
+      if (!result.ok) { error(result.reason); return result.reason === 'CONFIRM_REQUIRED' ? 2 : 1; }
+      json(result);
+      return 0;
+    } catch (error_) {
+      const message = String(error_?.message || error_);
+      if (message.startsWith('LEASE_FENCED')) { error(message); return 3; }
+      error(message);
+      return 1;
+    }
   },
   // session-profile set --model <m> --effort <e> --owner <id> --generation <n>
   // Refresh durable autonomy.session_model/effort (WS1). intent:'lease' (releasing-safe, like respawn/

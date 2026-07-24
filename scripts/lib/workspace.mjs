@@ -1,16 +1,20 @@
 import { existsSync, realpathSync, lstatSync } from 'node:fs';
 import { isAbsolute, join, resolve, relative, dirname, basename } from 'node:path';
-import { readState, writeState, withLock } from './state.mjs';
+import { captureReconciledRunSnapshot } from './state.mjs';
 import { appendAnchored } from './integrity.mjs';
 import { slugify } from './slug.mjs';
 import { leaseCheck } from './lease.mjs';
 import { MUTATION_TURN_FLOOR } from './budget.mjs';
 import { normalizePortableRelativePath, pathWithin } from './fs-safe.mjs';
+import { assertScopeAllows, closeScope } from './session-scope.mjs';
+import { workstreamClosureProofState } from './finish.mjs';
 
 const NON_TERMINAL = ['planned', 'in_progress', 'in_review', 'parked'];
 const TERMINAL = ['ready', 'merged', 'abandoned'];
 
-export function newWorkstream(root, runId, { title, branch, worktree, baseCommit = null, dependsOn = [], fence } = {}) {
+export function newWorkstream(root, runId, {
+  title, branch, worktree, baseCommit = null, dependsOn = [], fence, now = Date.now(),
+} = {}) {
   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: newWorkstream');
   if (typeof title !== 'string' || title.length === 0 ||
       typeof branch !== 'string' || branch.length === 0 ||
@@ -68,7 +72,7 @@ export function newWorkstream(root, runId, { title, branch, worktree, baseCommit
   const _storedWorktree = normalizePortableRelativePath(relative(_rootResolved, _wtResolved));
   if (!_storedWorktree) throw new Error('WORKSTREAM_WORKTREE_ESCAPE: worktree is not durably relative: ' + worktree);
   let id;
-  appendAnchored(root, runId, { type: 'workstream-new', data: { title } }, (loop) => {
+  appendAnchored(root, runId, { type: 'workstream-new', data: { title }, now }, (loop) => {
     const n = String(loop.workstreams.length + 1).padStart(2, '0');
     id = `ws-${n}-${slugify(title) || 'ws'}`;
     loop.workstreams.push({
@@ -83,13 +87,13 @@ export function newWorkstream(root, runId, { title, branch, worktree, baseCommit
 export function setWorkstreamStatus(root, runId, wsId, status, opts = {}) {
   if (TERMINAL.includes(status)) throw new Error(`WORKSTREAM_TERMINAL_NO_PROOF: ${status} is kernel-derived (use recordWorkstreamTerminal)`);
   if (!NON_TERMINAL.includes(status)) throw new Error(`WORKSTREAM_STATUS_INVALID: ${status}`);
-  const { fence } = opts;
+  const { fence, now = Date.now() } = opts;
   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: setWorkstreamStatus');
   // #3 (R1 Fix 2): route through appendAnchored so this status flip (which drives active_workstreams — a finish
   // proof input — and non-terminal status — a next-action routing input) is BOTH tamper-evident (was a silent
   // withLock+writeState) AND floor-charged. All throwing guards move to preCheck (fresh loop, before the append)
   // so a rejected transition never stales the anchor; the mutate is pure.
-  appendAnchored(root, runId, { type: 'workstream-status', data: { id: wsId, status } },
+  appendAnchored(root, runId, { type: 'workstream-status', data: { id: wsId, status }, now },
     (loop) => {
       if (status === 'in_progress' && !loop.active_workstreams.includes(wsId)) loop.active_workstreams.push(wsId);
       if (status === 'parked') loop.active_workstreams = loop.active_workstreams.filter(x => x !== wsId);
@@ -100,6 +104,9 @@ export function setWorkstreamStatus(root, runId, wsId, status, opts = {}) {
       const ws = loop.workstreams.find(w => w.id === wsId);
       if (!ws) throw new Error(`WORKSTREAM_NOT_FOUND: ${wsId}`);
       if (['ready', 'merged', 'abandoned'].includes(ws.status)) throw new Error(`WORKSTREAM_TERMINAL_LOCKED: ${wsId} is ${ws.status}`);
+      if (loop.autonomy?.continuation_policy === 'workstream-session') {
+        assertScopeAllows(loop, wsId, { allowUnbound: true });
+      }
       if (status === 'in_progress' && !loop.active_workstreams.includes(wsId)) {
         const cap = loop.autonomy?.max_parallel ?? 2;
         if (loop.active_workstreams.length >= cap) throw new Error(`MAX_PARALLEL_EXCEEDED: ${loop.active_workstreams.length}/${cap}`);
@@ -108,27 +115,60 @@ export function setWorkstreamStatus(root, runId, wsId, status, opts = {}) {
     { floor: MUTATION_TURN_FLOOR });
 }
 
-export function recordWorkstreamTerminal(root, runId, wsId, { status, proof = {}, fence } = {}) {
+export function recordWorkstreamTerminal(root, runId, wsId, {
+  status, proof = {}, confirm, fence, now = Date.now(),
+} = {}) {
   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: recordWorkstreamTerminal');
-  // Cheap input validation (no atomicity required)
-  if (!TERMINAL.includes(status)) throw new Error(`WORKSTREAM_STATUS_INVALID: ${status} is not terminal`);
-  if (!proof || typeof proof !== 'object' || Array.isArray(proof)) throw new Error(`WORKSTREAM_TERMINAL_NO_PROOF: ${wsId} requires proof object`);
-  let terminalEventSeq = null;
-  appendAnchored(root, runId, { type: 'workstream-terminal', data: { id: wsId, status, proof } }, (loop) => {
+  appendAnchored(root, runId, {
+    type: 'workstream-terminal', data: { id: wsId, status, proof }, now,
+  }, (loop, _spent, tx) => {
     const w = loop.workstreams.find(x => x.id === wsId);
     if (!w) throw new Error(`WORKSTREAM_NOT_FOUND: ${wsId}`);
+    const newPolicy = loop.autonomy?.continuation_policy === 'workstream-session';
+    const closesAffinity = newPolicy
+      && NON_TERMINAL.includes(w.status)
+      && (status === 'ready' || status === 'abandoned');
     w.status = status;
-    (w.terminal_events ??= []).push(`${terminalEventSeq}:${wsId}:${status}`);
+    if (closesAffinity) {
+      (w.terminal_events ??= []).push(tx.event_identity);
+      closeScope(loop, wsId, tx.event_identity, tx.event.ts);
+    } else if (!newPolicy) {
+      (w.terminal_events ??= []).push(`${tx.event_identity.seq}:${wsId}:${status}`);
+    }
     loop.active_workstreams = loop.active_workstreams.filter(x => x !== wsId);
   }, (loop) => {
     // Codex r3 🔴: all throwing validations inside preCheck on fresh loop (atomic terminal guard)
     if (fence) { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
+    if (!TERMINAL.includes(status)) throw new Error(`WORKSTREAM_STATUS_INVALID: ${status} is not terminal`);
+    if (!proof || typeof proof !== 'object' || Array.isArray(proof)) {
+      throw new Error(`WORKSTREAM_TERMINAL_NO_PROOF: ${wsId} requires proof object`);
+    }
     const ws = loop.workstreams.find(w => w.id === wsId);
     if (!ws) throw new Error(`WORKSTREAM_NOT_FOUND: ${wsId}`);
+    const newPolicy = loop.autonomy?.continuation_policy === 'workstream-session';
+    if (status === 'merged' && ws.status !== 'ready') {
+      throw new Error(`WORKSTREAM_TERMINAL_LOCKED: ${wsId} ${ws.status}->merged not allowed`);
+    }
     // Codex r2 🔴: 터미널→터미널 전환 차단 — merged/abandoned 는 흡수 상태; 유일한 허용 전환은 ready→merged.
     if (TERMINAL.includes(ws.status)) {
       if (!(ws.status === 'ready' && status === 'merged')) {
         throw new Error('WORKSTREAM_TERMINAL_LOCKED: ' + wsId + ' ' + ws.status + '->' + status + ' not allowed');
+      }
+    }
+    if (newPolicy && status === 'abandoned' && confirm !== true) {
+      throw new Error('CONFIRM_REQUIRED: abandoned requires --confirm (human-only)');
+    }
+    if (newPolicy && status !== 'abandoned' && confirm !== undefined) {
+      throw new Error('CONFIRM_FORBIDDEN: --confirm is only valid for abandoned');
+    }
+    const closesAffinity = newPolicy
+      && NON_TERMINAL.includes(ws.status)
+      && (status === 'ready' || status === 'abandoned');
+    if (closesAffinity) {
+      assertScopeAllows(loop, wsId);
+      const closure = workstreamClosureProofState(loop, wsId);
+      if (!closure.ok) {
+        throw new Error(`WORKSTREAM_CLOSURE_UNMET: ${wsId} ${closure.missing.join(',')}`);
       }
     }
     const reviewPoints = (loop.review?.points || []);
@@ -137,14 +177,12 @@ export function recordWorkstreamTerminal(root, runId, wsId, { status, proof = {}
       status === 'merged'    ? (typeof proof.merge_commit === 'string' && proof.human_approved === true) :
       status === 'abandoned' ? (typeof proof.reason === 'string' && proof.reason.length > 0) : false;
     if (!ok) throw new Error(`WORKSTREAM_TERMINAL_NO_PROOF: ${wsId} -> ${status} proof insufficient`);
-    // Capture the pre-floor head: +1 is this business event; mutate-time head would already be the floor cost event.
-    terminalEventSeq = loop.event_log_head.seq + 1;
   }, { floor: MUTATION_TURN_FLOOR });
 }
 
 // respawn 인수: active worktree 경로가 디스크에 존재하는지만 확인. 누락은 조용히 재생성 ❌ → fail-safe.
 export function inheritWorkstreams(root, runId) {
-  const { data } = readState(root, runId);
+  const { data } = captureReconciledRunSnapshot(root, runId);
   const inherited = [], missing = [];
   for (const id of data.active_workstreams) {
     const ws = data.workstreams.find(w => w.id === id);

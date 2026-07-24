@@ -6,13 +6,18 @@ import { classifyPatch } from '../scripts/lib/state.mjs';
 
 function minimalValid() {
   return {
-    schema_version: '0.3.0', run_id: 'R', goal: 'g', status: 'running',
-    project: {}, routing: { protocol: 'deep-work' }, review: {}, autonomy: { tier: 'recommend', spawn_style: 'interactive', continuation_policy: 'rotate-per-unit' },
+    schema_version: '0.4.0', run_id: 'R', goal: 'g', status: 'running',
+    project: { binding_generation: 1 }, routing: { protocol: 'deep-work' }, review: {}, autonomy: { tier: 'recommend', spawn_style: 'interactive', continuation_policy: 'workstream-session', attended_launch_approval: null },
     budget: { unit: 'turns' }, comprehension: {}, circuit_breaker: {},
-    session_chain: { lease: { state: 'active', handoff_phase: 'idle', handoff_trigger: null }, consumed_milestones: [], sessions: [] },
+    session_chain: { lease: { state: 'active', handoff_phase: 'idle', handoff_trigger: null, takeover_kind: null }, consumed_milestones: [], sessions: [] },
     workstreams: [], active_workstreams: [], triage: {}, episodes: [], termination: {},
   };
 }
+
+const OPEN_WORKSTREAM_SCOPE = Object.freeze({
+  kind: 'workstream', workstream_id: null, bound_at_seq: null, terminal_event: null,
+  closed_at: null, superseded_at: null,
+});
 
 test('valid loop.json passes', () => {
   assert.equal(validate(minimalValid()).ok, true);
@@ -81,13 +86,59 @@ test('invalid workstream status fails', () => {
   assert.equal(validate(o).ok, false);
 });
 
-test('workstream terminal_events must be an array of strings', () => {
-  for (const terminalEvents of ['bad', [1]]) {
+test('workstream terminal_events are policy-pinned and reject mixed authority', () => {
+  for (const terminalEvents of [
+    [{ seq: 12, checksum: 'a'.repeat(64) }],
+    [{ seq: 12, checksum: 'a'.repeat(64) }, { seq: 13, checksum: 'b'.repeat(64) }],
+  ]) {
+    const loop = minimalValid();
+    loop.workstreams = [{ id: 'w', status: 'ready', terminal_events: terminalEvents }];
+    assert.equal(validate(loop).ok, true, validate(loop).errors.join('; '));
+  }
+
+  for (const terminalEvents of [
+    ['12:ws-01:ready'],
+    ['12:ws-01:ready', { seq: 13, checksum: 'b'.repeat(64) }],
+  ]) {
     const loop = minimalValid();
     loop.workstreams = [{ id: 'w', status: 'ready', terminal_events: terminalEvents }];
     const result = validate(loop);
     assert.equal(result.ok, false);
-    assert.ok(result.errors.some(error => error.includes('workstreams[].terminal_events must be an array of strings')));
+    assert.ok(result.errors.some(error => error.includes('workstream-session')));
+  }
+
+  for (const policy of ['compact-in-place', 'rotate-per-unit']) {
+    const loop = minimalValid();
+    loop.autonomy.continuation_policy = policy;
+    loop.workstreams = [{ id: 'w', status: 'ready', terminal_events: ['12:ws-01:ready'] }];
+    assert.equal(validate(loop).ok, true, `${policy}: ${validate(loop).errors.join('; ')}`);
+
+    loop.workstreams[0].terminal_events = [{ seq: 12, checksum: 'a'.repeat(64) }];
+    const structured = validate(loop);
+    assert.equal(structured.ok, false);
+    assert.ok(structured.errors.some(error => error.includes('legacy continuation policy')));
+
+    loop.workstreams[0].terminal_events = [
+      '12:ws-01:ready',
+      { seq: 13, checksum: 'b'.repeat(64) },
+    ];
+    assert.equal(validate(loop).ok, false, `${policy} mixed authority`);
+  }
+
+  for (const terminalEvents of [
+    'bad',
+    [1],
+    [{ seq: 0, checksum: 'a'.repeat(64) }],
+    [{ seq: 1.5, checksum: 'a'.repeat(64) }],
+    [{ seq: 1, checksum: 'A'.repeat(64) }],
+    [{ seq: 1, checksum: 'a'.repeat(64), extra: true }],
+    [{ seq: 1 }],
+  ]) {
+    const loop = minimalValid();
+    loop.workstreams = [{ id: 'w', status: 'ready', terminal_events: terminalEvents }];
+    const result = validate(loop);
+    assert.equal(result.ok, false);
+    assert.ok(result.errors.some(error => error.includes('workstreams[].terminal_events')));
   }
 });
 test('non-number budget.total fails', () => {
@@ -97,6 +148,197 @@ test('non-number budget.total fails', () => {
 test('wrong schema_version fails', () => {
   const o = minimalValid(); o.schema_version = '9.9.9';
   assert.equal(validate(o).ok, false);
+});
+
+test('v0.4 schema requires root epoch, launch approval, takeover discriminator, and an exact scope per session', () => {
+  const valid = minimalValid();
+  valid.session_chain.sessions = [{ run_id: 'R', scope: { ...OPEN_WORKSTREAM_SCOPE } }];
+  assert.equal(validate(valid).ok, true, validate(valid).errors.join('; '));
+
+  for (const [label, mutate] of [
+    ['binding generation', loop => { delete loop.project.binding_generation; }],
+    ['attended approval', loop => { delete loop.autonomy.attended_launch_approval; }],
+    ['takeover kind', loop => { delete loop.session_chain.lease.takeover_kind; }],
+    ['scope', loop => { delete loop.session_chain.sessions[0].scope; }],
+    ['scope extra field', loop => { loop.session_chain.sessions[0].scope.extra = true; }],
+  ]) {
+    const loop = structuredClone(valid);
+    mutate(loop);
+    assert.equal(validate(loop).ok, false, label);
+  }
+});
+
+test('v0.4 schema pins exact Workstream/legacy scopes and recovery-owned optional fields', () => {
+  const checksum = 'a'.repeat(64);
+  const valid = minimalValid();
+  valid.session_chain.sessions = [
+    {
+      run_id: 'R', recovered_from: 'OLD', recovery_kind: 'affinity-supersession',
+      recovery_rel: 'recoveries/r.json', recovery_sha256: 'b'.repeat(64),
+      recovery_project_binding_generation: 2,
+      recovery_project_root_digest: 'c'.repeat(64),
+      scope: {
+        kind: 'workstream', workstream_id: 'ws-1', bound_at_seq: 7,
+        terminal_event: { seq: 8, checksum }, closed_at: '2026-07-23T00:00:00.000Z',
+        superseded_at: null, supersede_reason: 'host-session-lost', superseded_by: 'NEXT',
+      },
+    },
+    {
+      run_id: 'OLD', ended_at: '2026-07-22T00:00:00.000Z',
+      scope: { kind: 'legacy', workstream_id: null, bound_at_seq: null, terminal_event: null, closed_at: '2026-07-22T00:00:00.000Z' },
+    },
+  ];
+  assert.equal(validate(valid).ok, true, validate(valid).errors.join('; '));
+
+  const mutations = [
+    ['non-positive seq', loop => { loop.session_chain.sessions[0].scope.terminal_event.seq = 0; }],
+    ['fractional seq', loop => { loop.session_chain.sessions[0].scope.terminal_event.seq = 1.5; }],
+    ['uppercase checksum', loop => { loop.session_chain.sessions[0].scope.terminal_event.checksum = 'A'.repeat(64); }],
+    ['rolled timestamp', loop => { loop.session_chain.sessions[0].scope.closed_at = '2026-02-31T00:00:00.000Z'; }],
+    ['legacy workstream', loop => { loop.session_chain.sessions[1].scope.workstream_id = 'ws-1'; }],
+    ['unsafe recovery rel', loop => { loop.session_chain.sessions[0].recovery_rel = '../escape.json'; }],
+    ['bad recovery hash', loop => { loop.session_chain.sessions[0].recovery_sha256 = 'B'.repeat(64); }],
+    ['partial recovery tuple', loop => { delete loop.session_chain.sessions[0].recovery_sha256; }],
+    ['partial recovery root binding', loop => { delete loop.session_chain.sessions[0].recovery_project_root_digest; }],
+    ['bad recovery root epoch', loop => { loop.session_chain.sessions[0].recovery_project_binding_generation = 0; }],
+    ['bad recovery root digest', loop => { loop.session_chain.sessions[0].recovery_project_root_digest = 'C'.repeat(64); }],
+    ['legacy supersession field', loop => { loop.session_chain.sessions[1].scope.superseded_by = 'NEXT'; }],
+  ];
+  for (const [label, mutate] of mutations) {
+    const loop = structuredClone(valid);
+    mutate(loop);
+    assert.equal(validate(loop).ok, false, label);
+  }
+});
+
+test('every affinity or boundary recovery tuple requires both root-binding fields', () => {
+  const acceptedWithoutBinding = [];
+  for (const recoveryKind of ['affinity-supersession', 'boundary-recovery']) {
+    const loop = minimalValid();
+    loop.session_chain.sessions = [{
+      run_id: `RECOVERY-${recoveryKind}`,
+      recovered_from: 'PARENT',
+      recovery_kind: recoveryKind,
+      recovery_rel: `recoveries/${recoveryKind}.json`,
+      recovery_sha256: 'b'.repeat(64),
+      scope: { ...OPEN_WORKSTREAM_SCOPE },
+    }];
+    const result = validate(loop);
+    if (result.ok) acceptedWithoutBinding.push(recoveryKind);
+    if (!result.ok) {
+      assert.ok(result.errors.some(error => error.includes('recovery project binding')));
+    }
+  }
+  assert.deepEqual(acceptedWithoutBinding, []);
+
+  const orphanBinding = minimalValid();
+  orphanBinding.session_chain.sessions = [{
+    run_id: 'ORPHAN-BINDING',
+    recovery_project_binding_generation: 1,
+    recovery_project_root_digest: 'c'.repeat(64),
+    scope: { ...OPEN_WORKSTREAM_SCOPE },
+  }];
+  const orphanResult = validate(orphanBinding);
+  assert.equal(orphanResult.ok, false);
+  assert.ok(orphanResult.errors.some(error => (
+    error.includes('recovery project binding requires recovery fields')
+  )));
+});
+
+test('v0.4 schema accepts all three policy labels but no longer rejects legacy Codex compact-in-place', () => {
+  for (const policy of ['workstream-session', 'compact-in-place', 'rotate-per-unit']) {
+    const loop = minimalValid();
+    loop.autonomy.session_runtime = 'codex';
+    loop.autonomy.runtime_source = 'skill-asserted';
+    loop.autonomy.continuation_policy = policy;
+    assert.equal(validate(loop).ok, true, `${policy}: ${validate(loop).errors.join('; ')}`);
+  }
+});
+
+test('v0.4 schema validates relative locators and root-relocation review-claim history', () => {
+  const loop = minimalValid();
+  const frozenClaim = {
+    run_id: 'R',
+    reviewer_id: 'deep-review',
+    checker_episode_id: '002-checker',
+    target_maker: '001-maker',
+    attempt_id: 'attempt-1',
+    workstream_id: 'ws-1',
+    point: 'implementation',
+    project_root: '/old/root',
+    runtime: 'codex',
+    lease_owner: 'R',
+    lease_generation: 1,
+    artifacts: [{ path: '.claude/worktrees/ws/artifact.txt', sha256: 'a'.repeat(64) }],
+    evidence: {
+      insights_path: '.deep-loop/insights/01TEST-insights.json', emit_ulid: '01TEST',
+      producer_run_id: 'R', sha256: 'b'.repeat(64), candidates: [],
+    },
+    contract: {
+      slice: 'HILLCLIMB-001', path: '.claude/worktrees/ws/.deep-review/contracts/HILLCLIMB-001.yaml',
+      sha256: 'c'.repeat(64),
+    },
+    invalidated_at: '2026-07-23T00:00:00.000Z',
+    reason: 'project-root-relocated',
+  };
+  loop.episodes = [{
+    id: '001-maker', status: 'pending', request_rel: 'episodes/001-maker/request.md',
+    invalidated_review_claims: [frozenClaim],
+  }];
+  loop.session_chain.sessions = [{ run_id: 'R', handoff_rel: 'handoffs/next.md', scope: { ...OPEN_WORKSTREAM_SCOPE } }];
+  assert.equal(validate(loop).ok, true, validate(loop).errors.join('; '));
+
+  for (const [label, mutate] of [
+    ['absolute request locator', x => { x.episodes[0].request_rel = '/tmp/request.md'; }],
+    ['backslash request locator', x => { x.episodes[0].request_rel = String.raw`episodes\001-maker\request.md`; }],
+    ['persisted request path', x => { x.episodes[0].request_path = '/tmp/request.md'; }],
+    ['absolute handoff locator', x => { x.session_chain.sessions[0].handoff_rel = '/tmp/handoff.md'; }],
+    ['persisted handoff path', x => { x.session_chain.sessions[0].handoff_path = '/tmp/handoff.md'; }],
+    ['invalidated reason', x => { x.episodes[0].invalidated_review_claims[0].reason = 'other'; }],
+    ['invalidated timestamp', x => { x.episodes[0].invalidated_review_claims[0].invalidated_at = 'today'; }],
+  ]) {
+    const candidate = structuredClone(loop);
+    mutate(candidate);
+    assert.equal(validate(candidate).ok, false, label);
+  }
+
+  const requiredClaimKeys = [
+    'run_id', 'reviewer_id', 'checker_episode_id', 'target_maker', 'attempt_id',
+    'workstream_id', 'point', 'project_root', 'runtime', 'lease_owner',
+    'lease_generation', 'artifacts', 'invalidated_at', 'reason',
+  ];
+  const malformedClaims = requiredClaimKeys.map(key => [
+    `missing ${key}`,
+    claim => { delete claim[key]; },
+  ]);
+  malformedClaims.push(
+    ['arbitrary frozen object', (_claim, episode) => { episode.invalidated_review_claims[0] = { run_id: 'R', invalidated_at: '2026-07-23T00:00:00.000Z', reason: 'project-root-relocated' }; }],
+    ['extra claim field', claim => { claim.extra = true; }],
+    ['unsupported reviewer', claim => { claim.reviewer_id = 'standalone'; }],
+    ['unsafe attempt id', claim => { claim.attempt_id = '../attempt'; }],
+    ['relative project root', claim => { claim.project_root = 'old/root'; }],
+    ['invalid runtime', claim => { claim.runtime = 'other'; }],
+    ['invalid lease generation', claim => { claim.lease_generation = 0; }],
+    ['artifact extra field', claim => { claim.artifacts[0].extra = true; }],
+    ['artifact unsafe path', claim => { claim.artifacts[0].path = '../artifact'; }],
+    ['artifact invalid hash', claim => { claim.artifacts[0].sha256 = 'A'.repeat(64); }],
+    ['duplicate artifact', claim => { claim.artifacts.push({ ...claim.artifacts[0] }); }],
+    ['evidence missing producer', claim => { delete claim.evidence.producer_run_id; }],
+    ['evidence extra field', claim => { claim.evidence.extra = true; }],
+    ['evidence unsafe path', claim => { claim.evidence.insights_path = '../insights.json'; }],
+    ['evidence invalid hash', claim => { claim.evidence.sha256 = 'bad'; }],
+    ['evidence invalid candidates', claim => { claim.evidence.candidates = {}; }],
+    ['contract missing slice', claim => { delete claim.contract.slice; }],
+    ['contract extra field', claim => { claim.contract.extra = true; }],
+    ['contract unsafe path', claim => { claim.contract.path = '../contract.yaml'; }],
+    ['contract invalid hash', claim => { claim.contract.sha256 = 'bad'; }],
+  );
+  for (const [label, mutate] of malformedClaims) {
+    const candidate = structuredClone(loop);
+    const episode = candidate.episodes[0];
+    mutate(episode.invalidated_review_claims[0], episode);
+    assert.equal(validate(candidate).ok, false, label);
+  }
 });
 test('non-number budget.soft_stop_ratio fails', () => {
   const o = minimalValid(); o.budget = { unit: 'turns', soft_stop_ratio: '0.8' };
@@ -127,7 +369,7 @@ test('session_spawn absent still validates', () => {
 
 test('episode status "abandoned" is a valid kernel terminal', () => {
   const base = minimalValid();
-  base.episodes = [{ id: 'e1', role: 'maker', status: 'abandoned', point: 'implementation', workstream_id: 'w' }];
+  base.episodes = [{ id: 'e1', role: 'maker', status: 'abandoned', point: 'implementation', workstream_id: 'w', request_rel: 'episodes/e1/request.md' }];
   const v = validate(base);
   assert.equal(v.ok, true, v.errors?.join('; '));
 });

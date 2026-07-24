@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, isAbsolute, join, posix, win32 } from 'node:path';
+import { normalizePortableRelativePath } from './fs-safe.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const LAUNCHER_KINDS = Object.freeze(['wt', 'powershell', 'tmux']);
@@ -15,6 +16,245 @@ function get(obj, path) {
 
 function portableAbsolute(path) {
   return typeof path === 'string' && path.length > 0 && (isAbsolute(path) || win32.isAbsolute(path));
+}
+
+function exactObject(value, required, optional = []) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const allowed = new Set([...required, ...optional]);
+  const keys = Object.keys(value);
+  return required.every(key => Object.hasOwn(value, key)) && keys.every(key => allowed.has(key));
+}
+
+function canonicalIso(value) {
+  if (typeof value !== 'string') return false;
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value;
+}
+
+function portableRel(value, prefix = null) {
+  const normalized = normalizePortableRelativePath(value);
+  return normalized !== null && normalized === value && (prefix === null || normalized.startsWith(prefix));
+}
+
+const REVIEW_ATTEMPT_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const SHA256 = /^[0-9a-f]{64}$/;
+const FROZEN_REVIEW_CLAIM_KEYS = Object.freeze([
+  'run_id', 'reviewer_id', 'checker_episode_id', 'target_maker', 'attempt_id',
+  'workstream_id', 'point', 'project_root', 'runtime', 'lease_owner',
+  'lease_generation', 'artifacts', 'invalidated_at', 'reason',
+]);
+const REVIEW_EVIDENCE_KEYS = Object.freeze([
+  'insights_path', 'emit_ulid', 'producer_run_id', 'sha256', 'candidates',
+]);
+
+function nonEmptyString(value) {
+  return typeof value === 'string' && value.length > 0 && !/[\0\r\n]/.test(value);
+}
+
+function validFrozenArtifacts(artifacts) {
+  if (!Array.isArray(artifacts) || artifacts.length > 256) return false;
+  let previous = null;
+  for (const artifact of artifacts) {
+    if (!exactObject(artifact, ['path', 'sha256']) || !portableRel(artifact.path)
+      || !SHA256.test(artifact.sha256 || '') || (previous !== null && artifact.path <= previous)) return false;
+    previous = artifact.path;
+  }
+  return true;
+}
+
+function validFrozenEvidence(evidence) {
+  if (evidence === null) return true;
+  return exactObject(evidence, REVIEW_EVIDENCE_KEYS)
+    && portableRel(evidence.insights_path, '.deep-loop/insights/')
+    && nonEmptyString(evidence.emit_ulid)
+    && (evidence.producer_run_id === null || nonEmptyString(evidence.producer_run_id))
+    && (evidence.sha256 === null || SHA256.test(evidence.sha256 || ''))
+    && Array.isArray(evidence.candidates)
+    && evidence.candidates.every(candidate => candidate !== null && typeof candidate === 'object' && !Array.isArray(candidate));
+}
+
+function validFrozenContract(contract) {
+  return exactObject(contract, ['slice', 'path', 'sha256'])
+    && contract.slice === 'HILLCLIMB-001'
+    && portableRel(contract.path)
+    && SHA256.test(contract.sha256 || '');
+}
+
+function validInvalidatedReviewClaim(claim) {
+  if (!exactObject(claim, FROZEN_REVIEW_CLAIM_KEYS, ['evidence', 'contract'])) return false;
+  for (const field of [
+    'run_id', 'checker_episode_id', 'target_maker', 'workstream_id', 'point', 'lease_owner',
+  ]) if (!nonEmptyString(claim[field])) return false;
+  return ['deep-review', 'subagent-checker'].includes(claim.reviewer_id)
+    && REVIEW_ATTEMPT_ID.test(claim.attempt_id || '')
+    && portableAbsolute(claim.project_root) && !/[\0\r\n]/.test(claim.project_root)
+    && ['claude', 'codex'].includes(claim.runtime)
+    && Number.isSafeInteger(claim.lease_generation) && claim.lease_generation > 0
+    && validFrozenArtifacts(claim.artifacts)
+    && claim.reason === 'project-root-relocated'
+    && canonicalIso(claim.invalidated_at)
+    && (!Object.hasOwn(claim, 'evidence') || validFrozenEvidence(claim.evidence))
+    && (!Object.hasOwn(claim, 'contract') || validFrozenContract(claim.contract));
+}
+
+function validateAttendedLaunchApproval(value, errors) {
+  const fail = detail => errors.push(`autonomy.attended_launch_approval ${detail}`);
+  if (value === null) return;
+  if (!exactObject(value, ['style', 'approved_at'])) { fail('must be null or an exact style/approved_at object'); return; }
+  if (!['visible', 'desktop'].includes(value.style)) fail('style must be visible or desktop');
+  if (!canonicalIso(value.approved_at)) fail('approved_at must be canonical ISO-8601');
+}
+
+const WORKSTREAM_SCOPE_KEYS = Object.freeze([
+  'kind', 'workstream_id', 'bound_at_seq', 'terminal_event', 'closed_at', 'superseded_at',
+]);
+const LEGACY_SCOPE_KEYS = Object.freeze([
+  'kind', 'workstream_id', 'bound_at_seq', 'terminal_event', 'closed_at',
+]);
+
+function validBoundaryIdentity(value) {
+  return exactObject(value, ['seq', 'checksum'])
+    && Number.isSafeInteger(value.seq)
+    && value.seq > 0
+    && /^[0-9a-f]{64}$/.test(value.checksum || '');
+}
+
+function validateSessionScope(scope, session, errors) {
+  const fail = detail => errors.push(`session_chain.sessions[].scope ${detail}`);
+  if (scope?.kind === 'workstream') {
+    if (!exactObject(scope, WORKSTREAM_SCOPE_KEYS, ['supersede_reason', 'superseded_by'])) {
+      fail('must have the exact Workstream scope shape');
+      return;
+    }
+    if (scope.workstream_id !== null && (typeof scope.workstream_id !== 'string' || scope.workstream_id.length === 0)) {
+      fail('workstream_id must be null or a non-empty string');
+    }
+    if (scope.bound_at_seq !== null && (!Number.isSafeInteger(scope.bound_at_seq) || scope.bound_at_seq < 1)) {
+      fail('bound_at_seq must be null or a positive integer');
+    }
+    if (scope.terminal_event !== null) {
+      if (!exactObject(scope.terminal_event, ['seq', 'checksum'])
+        || !Number.isSafeInteger(scope.terminal_event.seq) || scope.terminal_event.seq < 1
+        || !/^[0-9a-f]{64}$/.test(scope.terminal_event.checksum || '')) {
+        fail('terminal_event must be null or exact positive seq/lowercase checksum');
+      }
+    }
+    for (const field of ['closed_at', 'superseded_at']) {
+      if (scope[field] !== null && !canonicalIso(scope[field])) fail(`${field} must be null or canonical ISO-8601`);
+    }
+    const recoveryKeys = ['supersede_reason', 'superseded_by'].filter(key => Object.hasOwn(scope, key));
+    if (recoveryKeys.length !== 0 && recoveryKeys.length !== 2) fail('supersede_reason and superseded_by must appear together');
+    if (recoveryKeys.length === 2
+      && ((typeof scope.supersede_reason !== 'string' || scope.supersede_reason.length === 0)
+        || (typeof scope.superseded_by !== 'string' || scope.superseded_by.length === 0))) {
+      fail('supersede_reason and superseded_by must be non-empty strings');
+    }
+    return;
+  }
+  if (scope?.kind === 'legacy') {
+    if (!exactObject(scope, LEGACY_SCOPE_KEYS)) { fail('must have the exact legacy scope shape'); return; }
+    if (scope.workstream_id !== null || scope.bound_at_seq !== null || scope.terminal_event !== null) {
+      fail('legacy identity fields must be null');
+    }
+    const expectedClosedAt = session.ended_at ?? null;
+    if (scope.closed_at !== expectedClosedAt) fail('legacy closed_at must mirror session.ended_at');
+    if (scope.closed_at !== null && !canonicalIso(scope.closed_at)) fail('legacy closed_at must be null or canonical ISO-8601');
+    return;
+  }
+  fail('kind must be workstream or legacy');
+}
+
+function validateSessions(sc, errors) {
+  if (!Array.isArray(sc?.sessions)) {
+    errors.push('session_chain.sessions must be array');
+    return;
+  }
+  for (const session of sc.sessions) {
+    if (session === null || typeof session !== 'object' || Array.isArray(session)) {
+      errors.push('session_chain.sessions[] must be object');
+      continue;
+    }
+    validateSessionScope(session.scope, session, errors);
+    if (Object.hasOwn(session, 'handoff_path')) errors.push('session_chain.sessions[].handoff_path is forbidden in v0.4');
+    if (session.handoff_rel !== undefined && !portableRel(session.handoff_rel, 'handoffs/')) {
+      errors.push('session_chain.sessions[].handoff_rel must be a safe handoffs/ relative path');
+    }
+    const boundaryParentFields = [
+      'parent_run_id', 'parent_boundary_event',
+      'project_binding_generation', 'project_root_digest',
+    ];
+    const boundaryParentPresent = boundaryParentFields.filter(key => Object.hasOwn(session, key));
+    if (boundaryParentPresent.length !== 0 && boundaryParentPresent.length !== boundaryParentFields.length) {
+      errors.push('session_chain.sessions[] boundary parent fields must appear together');
+    } else if (boundaryParentPresent.length === boundaryParentFields.length) {
+      if (typeof session.parent_run_id !== 'string' || session.parent_run_id.length === 0) {
+        errors.push('session_chain.sessions[].parent_run_id must be non-empty string');
+      }
+      if (!validBoundaryIdentity(session.parent_boundary_event)) {
+        errors.push('session_chain.sessions[].parent_boundary_event must be an exact boundary identity');
+      }
+      if (!Number.isSafeInteger(session.project_binding_generation) || session.project_binding_generation < 1) {
+        errors.push('session_chain.sessions[].project_binding_generation must be a positive integer');
+      }
+      if (!/^[0-9a-f]{64}$/.test(session.project_root_digest || '')) {
+        errors.push('session_chain.sessions[].project_root_digest must be lowercase 64-hex');
+      }
+    }
+    const recoveryFields = ['recovered_from', 'recovery_kind', 'recovery_rel', 'recovery_sha256'];
+    const present = recoveryFields.filter(key => Object.hasOwn(session, key));
+    if (present.length !== 0 && present.length !== recoveryFields.length) {
+      errors.push('session_chain.sessions[] recovery fields must appear together');
+    } else if (present.length === recoveryFields.length) {
+      if (typeof session.recovered_from !== 'string' || session.recovered_from.length === 0) errors.push('session_chain.sessions[].recovered_from must be non-empty string');
+      if (!['affinity-supersession', 'boundary-recovery'].includes(session.recovery_kind)) errors.push('session_chain.sessions[].recovery_kind is invalid');
+      if (!portableRel(session.recovery_rel, 'recoveries/')) errors.push('session_chain.sessions[].recovery_rel must be a safe recoveries/ relative path');
+      if (!/^[0-9a-f]{64}$/.test(session.recovery_sha256 || '')) errors.push('session_chain.sessions[].recovery_sha256 must be lowercase 64-hex');
+    }
+    const recoveryBindingFields = [
+      'recovery_project_binding_generation',
+      'recovery_project_root_digest',
+    ];
+    const recoveryBindingPresent = recoveryBindingFields
+      .filter(key => Object.hasOwn(session, key));
+    if (present.length === recoveryFields.length
+      && recoveryBindingPresent.length !== recoveryBindingFields.length) {
+      errors.push('session_chain.sessions[] recovery project binding fields are required with recovery fields');
+    }
+    if (recoveryBindingPresent.length !== 0
+      && recoveryBindingPresent.length !== recoveryBindingFields.length) {
+      errors.push('session_chain.sessions[] recovery project binding fields must appear together');
+    } else if (recoveryBindingPresent.length === recoveryBindingFields.length) {
+      if (present.length !== recoveryFields.length) {
+        errors.push('session_chain.sessions[] recovery project binding requires recovery fields');
+      }
+      if (!Number.isSafeInteger(session.recovery_project_binding_generation)
+        || session.recovery_project_binding_generation < 1) {
+        errors.push('session_chain.sessions[].recovery_project_binding_generation must be a positive integer');
+      }
+      if (!/^[0-9a-f]{64}$/.test(session.recovery_project_root_digest || '')) {
+        errors.push('session_chain.sessions[].recovery_project_root_digest must be lowercase 64-hex');
+      }
+    }
+  }
+}
+
+function validateEpisodeV040(ep, errors) {
+  if (Object.hasOwn(ep, 'request_path')) errors.push('episodes[].request_path is forbidden in v0.4');
+  const expectedRequestRel = typeof ep.id === 'string' ? `episodes/${ep.id}/request.md` : null;
+  if (!portableRel(ep.request_rel, 'episodes/') || ep.request_rel !== expectedRequestRel) {
+    errors.push('episodes[].request_rel must exactly match episodes/<id>/request.md');
+  }
+  const invalidated = ep.invalidated_review_claims;
+  if (invalidated === undefined) return;
+  if (!Array.isArray(invalidated)) {
+    errors.push('episodes[].invalidated_review_claims must be array');
+    return;
+  }
+  for (const claim of invalidated) {
+    if (!validInvalidatedReviewClaim(claim)) errors.push(
+      'episodes[].invalidated_review_claims[] must be an exact frozen review claim with canonical invalidation metadata',
+    );
+  }
 }
 
 const APPROVAL_PACKAGE_KEYS = Object.freeze([
@@ -181,10 +421,10 @@ export function validate(loopJson, schema = loadSchema()) {
     const v = get(loopJson, path);
     if (v !== undefined && !allowed.includes(v)) errors.push(`invalid enum at ${path}: ${v}`);
   }
-  // schema_version 정확 일치 (0.2.0 레거시는 readHashVerifiedState가 in-memory 마이그레이션 — validate에 0.2.0이
+  // schema_version 정확 일치 (legacy는 readHashVerifiedState가 in-memory 마이그레이션 — validate에 구버전이
   // 도달하면 마이그레이션 누락 경로이므로 실패가 옳다)
-  if (loopJson.schema_version !== undefined && loopJson.schema_version !== '0.3.0') {
-    errors.push(`schema_version must be 0.3.0, got ${loopJson.schema_version}`);
+  if (loopJson.schema_version !== undefined && loopJson.schema_version !== '0.4.0') {
+    errors.push(`schema_version must be 0.4.0, got ${loopJson.schema_version}`);
   }
   // 배열 타입
   for (const arr of ['workstreams', 'episodes', 'active_workstreams', 'discovered_items']) {
@@ -212,10 +452,8 @@ export function validate(loopJson, schema = loadSchema()) {
     if (runtime !== undefined && source !== 'skill-asserted') {
       errors.push('autonomy.session_runtime requires autonomy.runtime_source skill-asserted');
     }
-    // v1.10: continuation_policy 교차 필드 — enum 멤버십은 위 enums 루프가 이미 검사(선행). 여기는 조합만.
-    if (autonomy.continuation_policy === 'compact-in-place' && autonomy.session_runtime === 'codex') {
-      errors.push('autonomy.continuation_policy compact-in-place requires session_runtime claude');
-    }
+    if (!Object.hasOwn(autonomy, 'attended_launch_approval')) errors.push('missing required field: autonomy.attended_launch_approval');
+    else validateAttendedLaunchApproval(autonomy.attended_launch_approval, errors);
     validateRuntimeExecutableApproval(autonomy.runtime_executable_approval, autonomy, errors);
     validateLauncherExecutableApprovals(autonomy.launcher_executable_approvals, errors);
   }
@@ -230,19 +468,69 @@ export function validate(loopJson, schema = loadSchema()) {
     if (ht !== undefined && ht !== null && typeof ht !== 'string') {
       errors.push('session_chain.lease.handoff_trigger must be string or null');
     }
+    const takeover = sc.lease?.takeover_kind;
+    if (!sc.lease || !Object.hasOwn(sc.lease, 'takeover_kind')) {
+      errors.push('missing required field: session_chain.lease.takeover_kind');
+    } else if (takeover !== null && !['boundary-handoff', 'boundary-recovery', 'affinity-supersession'].includes(takeover)) {
+      errors.push('session_chain.lease.takeover_kind is invalid');
+    }
+    const boundaryLeaseFields = [
+      'handoff_boundary_event',
+      'handoff_project_binding_generation',
+      'handoff_project_root_digest',
+    ];
+    const boundaryLeasePresent = boundaryLeaseFields
+      .filter(key => Object.hasOwn(sc.lease || {}, key));
+    if (boundaryLeasePresent.length !== 0 && boundaryLeasePresent.length !== boundaryLeaseFields.length) {
+      errors.push('session_chain.lease boundary handoff fields must appear together');
+    } else if (boundaryLeasePresent.length === boundaryLeaseFields.length) {
+      if (!validBoundaryIdentity(sc.lease.handoff_boundary_event)) {
+        errors.push('session_chain.lease.handoff_boundary_event must be an exact boundary identity');
+      }
+      if (!Number.isSafeInteger(sc.lease.handoff_project_binding_generation)
+        || sc.lease.handoff_project_binding_generation < 1) {
+        errors.push('session_chain.lease.handoff_project_binding_generation must be a positive integer');
+      }
+      if (!/^[0-9a-f]{64}$/.test(sc.lease.handoff_project_root_digest || '')) {
+        errors.push('session_chain.lease.handoff_project_root_digest must be lowercase 64-hex');
+      }
+    }
+    if (takeover === 'boundary-handoff' && boundaryLeasePresent.length !== boundaryLeaseFields.length) {
+      errors.push('boundary-handoff takeover requires exact boundary handoff fields');
+    }
+    validateSessions(sc, errors);
+  }
+  if (!Number.isSafeInteger(loopJson.project?.binding_generation) || loopJson.project.binding_generation < 1) {
+    errors.push('project.binding_generation must be a positive integer');
   }
   // episode/workstream item status는 (skill ∪ kernel) 도메인 안에 있어야 함
   const epAllowed = [...(schema.episode_status?.skill || []), ...(schema.episode_status?.kernel || [])];
   for (const ep of (Array.isArray(loopJson.episodes) ? loopJson.episodes : [])) {
     if (ep?.status !== undefined && !epAllowed.includes(ep.status)) errors.push(`invalid episode status: ${ep.status}`);
+    if (ep && typeof ep === 'object' && !Array.isArray(ep)) validateEpisodeV040(ep, errors);
   }
   const wsAllowed = [...(schema.workstream_status?.skill || []), ...(schema.workstream_status?.kernel || [])];
   for (const ws of (Array.isArray(loopJson.workstreams) ? loopJson.workstreams : [])) {
     if (ws?.status !== undefined && !wsAllowed.includes(ws.status)) errors.push(`invalid workstream status: ${ws.status}`);
     const terminalEvents = ws?.terminal_events;
-    if (terminalEvents !== undefined
-      && (!Array.isArray(terminalEvents) || terminalEvents.some(event => typeof event !== 'string'))) {
-      errors.push('workstreams[].terminal_events must be an array of strings');
+    const validStructuredTerminalEvent = event => !!event
+        && typeof event === 'object'
+        && !Array.isArray(event)
+        && Object.keys(event).length === 2
+        && Object.hasOwn(event, 'seq')
+        && Object.hasOwn(event, 'checksum')
+        && Number.isSafeInteger(event.seq)
+        && event.seq > 0
+        && /^[0-9a-f]{64}$/.test(event.checksum);
+    if (terminalEvents !== undefined) {
+      if (autonomy?.continuation_policy === 'workstream-session') {
+        if (!Array.isArray(terminalEvents) || terminalEvents.some(event => !validStructuredTerminalEvent(event))) {
+          errors.push('workstreams[].terminal_events under workstream-session must contain exact structured event identities');
+        }
+      } else if (['compact-in-place', 'rotate-per-unit'].includes(autonomy?.continuation_policy)
+        && (!Array.isArray(terminalEvents) || terminalEvents.some(event => typeof event !== 'string'))) {
+        errors.push('workstreams[].terminal_events under a legacy continuation policy must contain strings');
+      }
     }
   }
   return { ok: errors.length === 0, errors };

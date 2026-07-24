@@ -14,11 +14,14 @@ import { emitHandoff, buildLaunchCommand } from '../scripts/lib/handoff.mjs';
 import { buildRuntimeResumeDescriptor } from '../scripts/lib/runtime-descriptor.mjs';
 import { newEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
 import { createDirectoryJunction } from './helpers/fs-fixtures.mjs';
+import { appendAnchored } from '../scripts/lib/integrity.mjs';
+import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
 
 // Inject deterministic env so detectTerminal never probes real cmux/osascript.
 function seed(runtime = 'claude') {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
   const { runId } = initRun(root, { runtime, goal: '인증 기능 구현', detected: { 'deep-work': true }, now: new Date('2026-06-24T00:00:00Z'), env: {}, platform: 'linux', run: () => ({ code: 1 }) });
+  migrateAuthenticLegacyTransport(root, runId);
   return { root, runId };
 }
 
@@ -425,7 +428,15 @@ test('emitHandoff writes md + compaction-state(M3) + launch-command, chains sess
   assert.equal(data.session_chain.lease.state, 'releasing');
   const cur = data.session_chain.sessions.find(s => s.run_id === runId);
   assert.equal(cur.superseded_by, r.childRunId);
-  assert.ok(data.session_chain.sessions.some(s => s.run_id === r.childRunId));
+  const child = data.session_chain.sessions.find(s => s.run_id === r.childRunId);
+  assert.ok(child);
+  assert.equal(child.handoff_rel, r.handoffRel);
+  assert.equal(Object.hasOwn(child, 'handoff_path'), false);
+  assert.equal(r.handoffPath, join(runDir(data.project.root, runId), child.handoff_rel));
+  assert.deepEqual(child.scope, {
+    kind: 'legacy', workstream_id: null, bound_at_seq: null, terminal_event: null,
+    closed_at: null,
+  });
   const md = readFileSync(r.handoffPath, 'utf8');
   assert.match(md, /이전 대화/);
   assert.match(md, /\/deep-loop-resume/);
@@ -711,6 +722,7 @@ test('handoff descriptor records canonical project root and explicit logical run
   mkdirSync(canonicalRoot);
   createDirectoryJunction(canonicalRoot, aliasRoot);
   const { runId } = initRun(aliasRoot, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z'), env: {}, platform: 'linux', run: () => ({ code: 1 }) });
+  migrateAuthenticLegacyTransport(aliasRoot, runId);
   const storedRoot = readState(aliasRoot, runId).data.project.root;
   const r = emitHandoff(aliasRoot, runId, { now: Date.parse('2026-06-24T01:00:00Z'), expect: expect_(runId), platform: POSIX_PLATFORM });
   assert.equal(r.ok, true);
@@ -733,6 +745,7 @@ test('tmux handoff threads its verified session and canonical spaced root from a
     runtime: 'claude', goal: 'g', now: new Date('2026-07-20T00:00:00Z'),
     env: {}, platform: 'linux', run: () => ({ code: 1 }),
   });
+  migrateAuthenticLegacyTransport(aliasRoot, runId);
   const storedRoot = readState(aliasRoot, runId).data.project.root;
   const tmux = launcherIdentity('tmux', '/opt/bin/tmux', {
     platform: 'linux', source: 'human-explicit', approved_by: 'human',
@@ -1104,9 +1117,9 @@ test('emitHandoff: Windows desktop artifact uses durable PowerShell approval wit
   assert.ok(!/claude:\/\//.test(txt), 'raw desktop URL remains machine-only');
 });
 
-test('emitHandoff: non-desktop spawn_style (default visible) never invokes desktopProbe', () => {
+test('emitHandoff: non-desktop spawn_style (default interactive) never invokes desktopProbe', () => {
   const { root, runId } = seed();   // seed()'s initRun leaves autonomy.spawn_style at its default ('visible')
-  assert.equal(readState(root, runId).data.autonomy.spawn_style, 'visible');
+  assert.equal(readState(root, runId).data.autonomy.spawn_style, 'interactive');
   const now = Date.parse('2026-06-24T01:00:00Z');
   let called = false;
   const desktopProbe = () => { called = true; throw new Error('desktopProbe must not be called for non-desktop runs'); };
@@ -1653,6 +1666,60 @@ test('event-log tamper is detected before either deterministic final artifact is
     ? readdirSync(dir).filter(file => !file.startsWith('.tmp-'))
     : [];
   assert.deepEqual(finals, []);
+});
+
+function prepareHandoffGoalPublication(root, runId, operationId, goal) {
+  assert.throws(() => appendAnchored(
+    root,
+    runId,
+    { type: 'handoff-late-state', data: { goal }, now: '2026-07-23T01:00:00.000Z' },
+    loop => { loop.goal = goal; },
+    undefined,
+    {
+      publication: {
+        kind: 'handoff-late-state', operationId, artifacts: [], topology: { goal },
+        faultAt(label) { if (label === 'prepared:digest-verified') throw new Error('barrier'); },
+      },
+    },
+  ), /TRANSACTION_PENDING/);
+}
+
+test('handoff reconciles a publication prepared after reservation before generating artifacts', () => {
+  const { root, runId } = seed();
+  let prepared = false;
+  const emitted = emitHandoff(root, runId, {
+    trigger: 'milestone', expect: expect_(runId), now: 100,
+    onBoundary(name) {
+      if (name !== 'reserved' || prepared) return;
+      prepared = true;
+      prepareHandoffGoalPublication(root, runId, 'handoff-after-reserve', 'NEW-GOAL');
+    },
+  });
+  assert.equal(emitted.ok, true);
+  assert.equal(readState(root, runId).data.goal, 'NEW-GOAL');
+  const markdown = readFileSync(join(handoffDir(root, runId), emitted.mdName), 'utf8');
+  const compaction = JSON.parse(readFileSync(join(handoffDir(root, runId), emitted.csName), 'utf8'));
+  assert.match(markdown, /NEW-GOAL/);
+  assert.equal(compaction.payload.goal, 'NEW-GOAL');
+});
+
+test('handoff rejects a publication prepared after artifact generation instead of committing stale artifacts', () => {
+  const { root, runId } = seed();
+  let prepared = false;
+  assert.throws(() => emitHandoff(root, runId, {
+    trigger: 'milestone', expect: expect_(runId), now: 100,
+    onBoundary(name) {
+      if (name !== 'artifacts-staged' || prepared) return;
+      prepared = true;
+      prepareHandoffGoalPublication(root, runId, 'handoff-after-generation', 'NEW-GOAL');
+    },
+  }), /HANDOFF_SNAPSHOT_STALE/);
+  assert.equal(readState(root, runId).data.goal, 'NEW-GOAL');
+  const finals = existsSync(handoffDir(root, runId))
+    ? readdirSync(handoffDir(root, runId)).filter(file => !file.startsWith('.tmp-'))
+    : [];
+  assert.deepEqual(finals, []);
+  assert.equal(handoffEventCount(root, runId), 0);
 });
 
 test('final preCheck fence propagates LEASE_FENCED and is never normalized as an artifact failure', () => {

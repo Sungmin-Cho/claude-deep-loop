@@ -1,11 +1,39 @@
-import { readFileSync, writeFileSync, mkdirSync, rmdirSync, existsSync, statSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  statSync,
+} from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { hostname } from 'node:os';
 import path, { join } from 'node:path';
 import { contentHash, atomicWrite } from './envelope.mjs';
+import { durableAtomicWrite, flushDirectory } from './atomic-write.mjs';
+import {
+  canonicalNonSymlinkDirectory,
+  captureStableFileIdentity,
+  matchingStableFileIdentity,
+  normalizePortableRelativePath,
+} from './fs-safe.mjs';
 import { validate } from './schema.mjs';
 import { leaseCheck } from './lease.mjs';
-import { appendAnchored, MUTATION_TURN_FLOOR } from './integrity.mjs';
+import {
+  appendAnchored,
+  captureReconciledRootRecoverySnapshot as captureReconciledRootRecoverySnapshotImpl,
+  captureReconciledRunSet as captureReconciledRunSetImpl,
+  captureReconciledRunSnapshot as captureReconciledRunSnapshotImpl,
+  MUTATION_TURN_FLOOR,
+  withReconciledMutationLock as withReconciledMutationLockImpl,
+  withReconciledRootRecoveryLock as withReconciledRootRecoveryLockImpl,
+} from './integrity.mjs';
 import { assertProjectRootBinding } from './project-root.mjs';
 import { ancestorPaths } from './path-portable.mjs';
+import { assertScopeAllows } from './session-scope.mjs';
 
 export const LOCK_STALE_TTL_MS = 30_000;
 
@@ -76,15 +104,10 @@ export function classifyPatch(field, value) {
   return 'forbid';
 }
 
-// v1.10 마이그레이션 — hash 검증 직후 in-memory 전용 (디스크·.loop.hash는 첫 writeState까지 불변).
+// Hash 검증 직후 in-memory 전용 (디스크·.loop.hash는 첫 writeState까지 불변).
 // 일반 read/root-recovery/rebind-validate 세 경로 전부 이 리더를 지나므로 여기가 유일 진입점 (스펙 §7).
-// 결정적·내용 기반(주입 시계 불필요). 반환 data(0.3.0)와 반환 hash(디스크 0.2.0)는 content-hash 등가가 아니다.
-function migrateLoopStateInPlace(data) {
-  if (!data || typeof data !== 'object') return;
-  // 마이그레이션은 **0.2.0 레거시에만** 적용한다 — 버전 무관 기본값 주입은 필드가 결손된 불량 0.3.0
-  // 상태를 몰래 치유해 SCHEMA_INVALID 대신 유효로 읽히게 만든다(다음 mutation이 치유본을 지속화).
-  // 0.3.0/미지 버전은 무접촉 → validate가 정상적으로 거부한다.
-  if (data.schema_version !== '0.2.0') return;
+// 결정적·내용 기반(주입 시계 불필요). 반환 data와 반환 hash(디스크 legacy bytes)는 content-hash 등가가 아니다.
+function migrate020To030(data) {
   data.schema_version = '0.3.0';
   if (data.autonomy && data.autonomy.continuation_policy === undefined) {
     data.autonomy.continuation_policy = 'rotate-per-unit';
@@ -97,19 +120,128 @@ function migrateLoopStateInPlace(data) {
   }
 }
 
-function readHashVerifiedState(root, runId) {
-  const raw = readFileSync(loopPath(root, runId), 'utf8');
+function portablePathApi(storedRoot) {
+  if (typeof storedRoot === 'string' && path.win32.isAbsolute(storedRoot) && !path.posix.isAbsolute(storedRoot)) {
+    return path.win32;
+  }
+  return path.posix;
+}
+
+function expectedLegacyAbsolute(data, rel) {
+  const storedRoot = data.project?.root;
+  const pathApi = portablePathApi(storedRoot);
+  if (typeof storedRoot !== 'string' || !pathApi.isAbsolute(storedRoot)
+    || typeof data.run_id !== 'string' || data.run_id.length === 0) {
+    throw new Error('PROJECT_LOCATOR_UNSAFE: invalid stored project/run identity');
+  }
+  return pathApi.join(storedRoot, '.deep-loop', 'runs', data.run_id, ...rel.split('/'));
+}
+
+function safePortableRel(value, prefix) {
+  const normalized = normalizePortableRelativePath(value);
+  return normalized !== null && normalized === value && normalized.startsWith(prefix);
+}
+
+function hasPartial040Marker(data) {
+  const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+  if (Object.hasOwn(data.project, 'binding_generation')
+    || Object.hasOwn(data.autonomy, 'attended_launch_approval')
+    || Object.hasOwn(data.session_chain.lease, 'takeover_kind')) return true;
+  if ((Array.isArray(data.episodes) ? data.episodes : []).some(ep => plain(ep)
+    && (Object.hasOwn(ep, 'request_rel') || Object.hasOwn(ep, 'invalidated_review_claims')))) return true;
+  const recoveryFields = ['recovered_from', 'recovery_kind', 'recovery_rel', 'recovery_sha256'];
+  return data.session_chain.sessions.some(session => plain(session) && (
+    Object.hasOwn(session, 'scope')
+    || recoveryFields.some(field => Object.hasOwn(session, field))
+    || (Object.hasOwn(session, 'handoff_rel') && !Object.hasOwn(session, 'handoff_path'))
+  ));
+}
+
+function migrate030To040(data) {
+  const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+  if (!plain(data.project) || !plain(data.autonomy) || !plain(data.session_chain)
+    || !plain(data.session_chain.lease) || !Array.isArray(data.session_chain.sessions)) return false;
+  // A genuine v0.3 record cannot already contain a partial v0.4 upgrade. Treat such input as malformed
+  // instead of supplying the remaining defaults and accidentally making it persistable.
+  if (hasPartial040Marker(data)) return false;
+  const candidate = structuredClone(data);
+  candidate.project.binding_generation = 1;
+  candidate.autonomy.attended_launch_approval = null;
+  candidate.session_chain.lease.takeover_kind = null;
+
+  for (const ep of (Array.isArray(candidate.episodes) ? candidate.episodes : [])) {
+    if (!Object.hasOwn(ep, 'request_path')) continue;
+    const requestRel = `episodes/${ep.id}/request.md`;
+    if (typeof ep.id !== 'string' || ep.id.length === 0
+      || ep.request_path !== expectedLegacyAbsolute(candidate, requestRel)
+      || (ep.request_rel !== undefined && ep.request_rel !== requestRel)) {
+      throw new Error(`PROJECT_LOCATOR_UNSAFE: episode ${ep.id ?? '(unknown)'} request_path`);
+    }
+    ep.request_rel = requestRel;
+    delete ep.request_path;
+  }
+
+  for (const session of (Array.isArray(candidate.session_chain.sessions) ? candidate.session_chain.sessions : [])) {
+    if (Object.hasOwn(session, 'handoff_path')) {
+      if (!safePortableRel(session.handoff_rel, 'handoffs/')
+        || session.handoff_path !== expectedLegacyAbsolute(candidate, session.handoff_rel)) {
+        throw new Error(`PROJECT_LOCATOR_UNSAFE: session ${session.run_id ?? '(unknown)'} handoff_path`);
+      }
+      delete session.handoff_path;
+    }
+    if (!Object.hasOwn(session, 'scope')) {
+      session.scope = {
+        kind: 'legacy', workstream_id: null, bound_at_seq: null, terminal_event: null,
+        closed_at: session.ended_at ?? null,
+      };
+    }
+  }
+  candidate.schema_version = '0.4.0';
+
+  // Validate the complete candidate before touching the source object. This is the anti-self-healing gate:
+  // a malformed v0.3 record remains v0.3 and cannot become persistable merely because v0.4 defaults exist.
+  const checked = validate(candidate);
+  if (!checked.ok) return false;
+  for (const key of Object.keys(data)) delete data[key];
+  Object.assign(data, candidate);
+  return true;
+}
+
+function migrateLoopStateInPlace(data) {
+  if (!data || typeof data !== 'object') return;
+  while (data.schema_version === '0.2.0' || data.schema_version === '0.3.0') {
+    if (data.schema_version === '0.2.0') migrate020To030(data);
+    else if (!migrate030To040(data)) break;
+  }
+}
+
+export function parseHashVerifiedStateBytes(root, runId, loopBytes, hashBytes, {
+  requireSchema = false,
+  requireProjectBinding = true,
+} = {}) {
+  const raw = Buffer.isBuffer(loopBytes) ? loopBytes.toString('utf8') : String(loopBytes);
   // loop.json이 있는데 hash anchor가 없으면 = anchor 제거 공격/손상 → fail-closed (Codex impl 🔴1)
-  if (!existsSync(hashPath(root, runId))) {
+  if (hashBytes == null) {
     throw new Error(`STATE_TAMPERED: ${runId} .loop.hash anchor missing`);
   }
-  const stored = readFileSync(hashPath(root, runId), 'utf8').trim();
+  const stored = (Buffer.isBuffer(hashBytes) ? hashBytes.toString('utf8') : String(hashBytes)).trim();
   if (contentHash(raw) !== stored) {
     throw new Error(`STATE_TAMPERED: ${runId} loop.json content-hash mismatch`);
   }
   const data = JSON.parse(raw);
   migrateLoopStateInPlace(data);
+  if (requireSchema) {
+    const checked = validate(data);
+    if (!checked.ok) throw new Error(`SCHEMA_INVALID: ${checked.errors.join('; ')}`);
+  }
+  if (requireProjectBinding) assertProjectRootBinding(root, data);
   return { data, hash: stored };
+}
+
+function readHashVerifiedState(root, runId) {
+  const raw = readFileSync(loopPath(root, runId));
+  const anchor = existsSync(hashPath(root, runId)) ? readFileSync(hashPath(root, runId)) : null;
+  return parseHashVerifiedStateBytes(root, runId, raw, anchor, { requireProjectBinding: false });
 }
 
 export function readStateForRootRecovery(root, runId) {
@@ -120,6 +252,26 @@ export function readState(root, runId) {
   const state = readHashVerifiedState(root, runId);
   assertProjectRootBinding(root, state.data);
   return state;
+}
+
+export function captureReconciledRunSnapshot(...args) {
+  return captureReconciledRunSnapshotImpl(...args);
+}
+
+export function captureReconciledRunSet(...args) {
+  return captureReconciledRunSetImpl(...args);
+}
+
+export function captureReconciledRootRecoverySnapshot(...args) {
+  return captureReconciledRootRecoverySnapshotImpl(...args);
+}
+
+export function withReconciledMutationLock(...args) {
+  return withReconciledMutationLockImpl(...args);
+}
+
+export function withReconciledRootRecoveryLock(...args) {
+  return withReconciledRootRecoveryLockImpl(...args);
 }
 
 export function writeState(root, runId, data, { atomicWriteFn = atomicWrite } = {}) {
@@ -141,7 +293,9 @@ function setPath(obj, path, value) {
 }
 
 export function patch(root, runId, field, value, { fence } = {}) {
-  if (classifyPatch(field, value) !== 'allow') throw new Error(`FIELD_FORBIDDEN: ${field}`);
+  const classification = classifyPatch(field, value);
+  const lifecycleStatus = /^(?:episodes|workstreams)\.\d+\.status$/.test(field);
+  if (classification !== 'allow' && !lifecycleStatus) throw new Error(`FIELD_FORBIDDEN: ${field}`);
   // #3 (R1 Fix 2): route through appendAnchored so a whitelisted patch (which can flip active_workstreams — a
   // finish proof input — and non-terminal episode/workstream status — a next-action routing input) is BOTH
   // tamper-evident (was a silent withLock+writeState) AND floor-charged. The value is NOT recorded in the event
@@ -150,6 +304,11 @@ export function patch(root, runId, field, value, { fence } = {}) {
     (loop) => { setPath(loop, field, value); },
     (loop) => {
       if (fence) { const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason); }
+      const newPolicy = loop.autonomy?.continuation_policy === 'workstream-session';
+      if (newPolicy && (field === 'active_workstreams' || lifecycleStatus)) {
+        throw new Error(`PATCH_TYPED_ROUTE_REQUIRED: ${field}`);
+      }
+      if (classification !== 'allow') throw new Error(`FIELD_FORBIDDEN: ${field}`);
       const im = field.match(/^(episodes|workstreams)\.(\d+)\.(.+)$/);
       if (im) {
         const [, arr, idxStr, sub] = im;
@@ -159,6 +318,10 @@ export function patch(root, runId, field, value, { fence } = {}) {
         if (sub === 'status') {
           const term = arr === 'episodes' ? TERMINAL_EPISODE : TERMINAL_WORKSTREAM;
           if (term.includes(list[idx].status)) throw new Error(`FIELD_FORBIDDEN: ${field} (terminal status immutable)`);
+        }
+        if (newPolicy && (sub === 'depends_on' || /^result_[A-Za-z0-9_]+$/.test(sub))) {
+          const workstreamId = arr === 'episodes' ? list[idx].workstream_id : list[idx].id;
+          assertScopeAllows(loop, workstreamId);
         }
       }
       // impl-R2 Fix 3: pre-validate the POST-patch candidate here (before the event append). Otherwise an invalid
@@ -175,17 +338,260 @@ export function patch(root, runId, field, value, { fence } = {}) {
 
 function sleepMs(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
 
-export function withLock(root, runId, fn, { ttlMs = LOCK_STALE_TTL_MS, retries = 100, backoffMs = 5 } = {}) {
-  const lock = join(runDir(root, runId), '.lock');
+const LOCK_TOKEN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const LOCK_OWNER_KEYS = [
+  'protocol_version', 'token', 'pid', 'hostname', 'acquired_at_ms', 'heartbeat_at_ms', 'lock_identity',
+];
+
+function canonicalHostname(value) {
+  if (typeof value !== 'string') throw new Error('LOCK_HOSTNAME_INVALID');
+  const normalized = value.normalize('NFC').trim().toLowerCase();
+  if (!normalized || /[\u0000-\u001f\u007f]/.test(normalized)) throw new Error('LOCK_HOSTNAME_INVALID');
+  return normalized;
+}
+
+function boundedTime(value) {
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error('LOCK_TIME_INVALID');
+  return value;
+}
+
+function validLockOwner(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || JSON.stringify(Object.keys(value)) !== JSON.stringify(LOCK_OWNER_KEYS)
+    || value.protocol_version !== 1 || !LOCK_TOKEN.test(value.token || '')
+    || !Number.isSafeInteger(value.pid) || value.pid <= 0
+    || typeof value.hostname !== 'string' || canonicalHostname(value.hostname) !== value.hostname
+    || !Number.isSafeInteger(value.acquired_at_ms) || value.acquired_at_ms < 0
+    || !Number.isSafeInteger(value.heartbeat_at_ms) || value.heartbeat_at_ms < value.acquired_at_ms
+    || !value.lock_identity || typeof value.lock_identity !== 'object') return false;
+  return matchingStableFileIdentity(value.lock_identity, value.lock_identity);
+}
+
+function readLockOwner(ownerPath, readFn = readFileSync) {
+  try {
+    const owner = JSON.parse(readFn(ownerPath, 'utf8'));
+    return validLockOwner(owner) ? owner : null;
+  } catch {
+    return null;
+  }
+}
+
+function defaultProbePid(pid) {
+  try {
+    process.kill(pid, 0);
+    return 'alive';
+  } catch (error) {
+    return error?.code === 'ESRCH' ? 'dead' : 'unknown';
+  }
+}
+
+function sameOwner(left, right) {
+  return left && right && JSON.stringify(left) === JSON.stringify(right);
+}
+
+export function withLock(root, runId, fn, {
+  ttlMs = LOCK_STALE_TTL_MS,
+  retries = 100,
+  backoffMs = 5,
+  nowFn = Date.now,
+  hostnameFn = hostname,
+  pid = process.pid,
+  tokenFactory = randomUUID,
+  probePid = defaultProbePid,
+  sleepFn = sleepMs,
+  faultAt = () => {},
+  mkdirFn = mkdirSync,
+  renameFn = renameSync,
+  removeFn = rmSync,
+  lstatFn = lstatSync,
+  readFileFn = readFileSync,
+  readdirFn = readdirSync,
+  durableWriteFn = durableAtomicWrite,
+  flushDirectoryFn = flushDirectory,
+  platform = process.platform,
+} = {}) {
+  const lexicalRunDir = runDir(root, runId);
+  const lockedRunDir = (() => {
+    try {
+      const canonical = (realpathSync.native || realpathSync)(lexicalRunDir);
+      return statSync(canonical).isDirectory() ? canonical : null;
+    } catch { return null; }
+  })();
+  if (!lockedRunDir) throw new Error('LOCK_RUN_INVALID');
+  const lock = join(lexicalRunDir, '.lock');
+  const ownerPath = join(lock, 'owner.json');
+  const localHostname = canonicalHostname(hostnameFn());
+  const token = String(tokenFactory()).toLowerCase();
+  if (!LOCK_TOKEN.test(token) || !Number.isSafeInteger(pid) || pid <= 0
+    || !Number.isInteger(ttlMs) || ttlMs < 0 || !Number.isInteger(retries) || retries < 1
+    || !Number.isFinite(backoffMs) || backoffMs < 0) throw new Error('LOCK_OPTIONS_INVALID');
   let acquired = false;
+  let lockIdentity = null;
+  let owner = null;
+
+  const inspectOwned = (path = lock, expectedOwner = owner, expectedIdentity = lockIdentity) => {
+    try {
+      const lexical = lstatFn(path, { bigint: true });
+      if (lexical.isSymbolicLink?.() || !lexical.isDirectory?.()) return false;
+      const identity = captureStableFileIdentity(path, { lstatFn });
+      if (!matchingStableFileIdentity(identity, expectedIdentity)) return false;
+      const observed = (() => {
+        try {
+          const parsed = JSON.parse(readFileFn(join(path, 'owner.json'), 'utf8'));
+          return validLockOwner(parsed) ? parsed : null;
+        } catch { return null; }
+      })();
+      return sameOwner(observed, expectedOwner);
+    } catch {
+      return false;
+    }
+  };
+
+  const tryReclaim = () => {
+    let observedIdentity;
+    let observedOwner;
+    try {
+      const lexical = lstatFn(lock, { bigint: true });
+      if (lexical.isSymbolicLink?.() || !lexical.isDirectory?.()) return false;
+      observedIdentity = captureStableFileIdentity(lock, { lstatFn });
+      observedOwner = readLockOwner(ownerPath, readFileFn);
+    } catch {
+      return false;
+    }
+    if (!observedOwner || !matchingStableFileIdentity(observedOwner.lock_identity, observedIdentity)
+      || observedOwner.hostname !== localHostname) return false;
+    const now = boundedTime(nowFn());
+    if (now - observedOwner.heartbeat_at_ms <= ttlMs) return false;
+    let liveness = 'unknown';
+    try { liveness = probePid(observedOwner.pid); } catch { liveness = 'unknown'; }
+    if (liveness !== 'dead') return false;
+    if (!inspectOwned(lock, observedOwner, observedIdentity)) return false;
+    const quarantine = `${lock}.quarantine-${observedOwner.token}`;
+    try {
+      renameFn(lock, quarantine);
+    } catch {
+      return false;
+    }
+    faultAt('reclaim:quarantined');
+    flushDirectoryFn(path.dirname(lock), { platform });
+    faultAt('reclaim:quarantine-parent-flushed');
+    if (!inspectOwned(quarantine, observedOwner, observedIdentity)) {
+      throw new Error('LOCK_RECLAIM_CONFLICT');
+    }
+    removeFn(quarantine, { recursive: true, force: false });
+    faultAt('reclaim:deleted');
+    flushDirectoryFn(path.dirname(lock), { platform });
+    faultAt('reclaim:delete-parent-flushed');
+    return true;
+  };
+
+  const resumeReclaim = () => {
+    const parent = path.dirname(lock);
+    const prefix = `${path.basename(lock)}.quarantine-`;
+    let names;
+    try {
+      names = readdirFn(parent)
+        .filter(name => name.startsWith(prefix));
+    } catch {
+      return;
+    }
+    if (names.length > 1) throw new Error('LOCK_RECLAIM_CONFLICT');
+    if (names.length === 0) return;
+    const quarantine = join(parent, names[0]);
+    const observedOwner = readLockOwner(join(quarantine, 'owner.json'), readFileFn);
+    if (!observedOwner || names[0] !== `${prefix}${observedOwner.token}`) throw new Error('LOCK_RECLAIM_CONFLICT');
+    const observedIdentity = captureStableFileIdentity(quarantine, { lstatFn });
+    const now = boundedTime(nowFn());
+    let liveness = 'unknown';
+    try { liveness = probePid(observedOwner.pid); } catch { liveness = 'unknown'; }
+    if (!matchingStableFileIdentity(observedOwner.lock_identity, observedIdentity)
+      || observedOwner.hostname !== localHostname || now - observedOwner.heartbeat_at_ms <= ttlMs
+      || liveness !== 'dead' || !inspectOwned(quarantine, observedOwner, observedIdentity)) {
+      throw new Error('LOCK_RECLAIM_CONFLICT');
+    }
+    flushDirectoryFn(parent, { platform });
+    faultAt('reclaim:resumed-quarantine-parent-flushed');
+    if (!inspectOwned(quarantine, observedOwner, observedIdentity)) {
+      throw new Error('LOCK_RECLAIM_CONFLICT');
+    }
+    removeFn(quarantine, { recursive: true, force: false });
+    faultAt('reclaim:resumed-deleted');
+    flushDirectoryFn(parent, { platform });
+    faultAt('reclaim:resumed-delete-parent-flushed');
+  };
+
   for (let i = 0; i < retries && !acquired; i++) {
-    try { mkdirSync(lock); acquired = true; break; } catch { /* held */ }
-    // stale-lock 복구: 소유 프로세스가 죽어 남은 락은 TTL 후 회수
-    try { if (Date.now() - statSync(lock).mtimeMs > ttlMs) { rmdirSync(lock); continue; } } catch { /* lock vanished */ }
-    sleepMs(backoffMs);
+    resumeReclaim();
+    try {
+      mkdirFn(lock, { mode: 0o700 });
+      acquired = true;
+      break;
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+    }
+    if (tryReclaim()) continue;
+    sleepFn(backoffMs);
   }
   if (!acquired) throw new Error(`LOCK_BUSY: ${runId}`);
-  try { return fn(); } finally { try { rmdirSync(lock); } catch {} }
+  try {
+    lockIdentity = captureStableFileIdentity(lock, { lstatFn });
+    const acquiredAt = boundedTime(nowFn());
+    owner = {
+      protocol_version: 1,
+      token,
+      pid,
+      hostname: localHostname,
+      acquired_at_ms: acquiredAt,
+      heartbeat_at_ms: acquiredAt,
+      lock_identity: lockIdentity,
+    };
+    durableWriteFn(ownerPath, JSON.stringify(owner), { platform });
+    faultAt('acquire:owner-durable');
+    if (!inspectOwned()) throw new Error('LOCK_OWNERSHIP_LOST');
+
+    const assertRunBinding = (expectedRunDir) => {
+      if (expectedRunDir === undefined) return;
+      const canonicalExpected = canonicalNonSymlinkDirectory(expectedRunDir);
+      if (!canonicalExpected || canonicalExpected !== lockedRunDir) throw new Error('LOCK_RUN_MISMATCH');
+    };
+    const assertOwned = (expectedRunDir) => {
+      assertRunBinding(expectedRunDir);
+      if (!inspectOwned()) throw new Error('LOCK_OWNERSHIP_LOST');
+      return true;
+    };
+    const renew = (expectedRunDir) => {
+      assertOwned(expectedRunDir);
+      faultAt('renew:validated');
+      // Wall clocks can step backwards under NTP/VM pressure. A lock heartbeat is
+      // freshness metadata, not an authorization clock, so preserve monotonicity
+      // instead of turning a harmless host-clock correction into a random fence.
+      const heartbeat = Math.max(boundedTime(nowFn()), owner.heartbeat_at_ms);
+      owner = { ...owner, heartbeat_at_ms: heartbeat };
+      durableWriteFn(ownerPath, JSON.stringify(owner), { platform });
+      assertOwned(expectedRunDir);
+      return true;
+    };
+    const guard = Object.freeze({ token, assertOwned, renew });
+    return fn(guard);
+  } finally {
+    if (owner && lockIdentity && inspectOwned()) {
+      try {
+        faultAt('release:validated');
+        if (!inspectOwned()) throw new Error('LOCK_OWNERSHIP_LOST');
+        const quarantine = `${lock}.release-${token}`;
+        renameFn(lock, quarantine);
+        faultAt('release:quarantined');
+        flushDirectoryFn(path.dirname(lock), { platform });
+        faultAt('release:quarantine-parent-flushed');
+        if (inspectOwned(quarantine, owner, lockIdentity)) {
+          removeFn(quarantine, { recursive: true, force: false });
+          faultAt('release:deleted');
+          flushDirectoryFn(path.dirname(lock), { platform });
+          faultAt('release:delete-parent-flushed');
+        }
+      } catch { /* ownership loss preserves evidence and never removes a successor */ }
+    }
+  }
 }
 
 // Two-mode safety pause (spec §9 / §1.2). Uses appendAnchored for event-log consistency.
@@ -223,6 +629,10 @@ export function pauseRun(root, runId, { reason, mode = 'preserve', expect, now =
         if (!lease || lease.owner_run_id !== expect.owner || lease.generation !== expect.generation) {
           throw new Error('LEASE_FENCED: pauseRun wrong generation');
         }
+      }
+      if (['affinity-supersession', 'boundary-recovery']
+        .includes(loop.session_chain?.lease?.takeover_kind)) {
+        throw new Error('RECOVERY_IN_FLIGHT');
       }
       // Terminal guard (spec §1.2 / acquireLease mirror): completed/stopped runs must never be demoted to paused.
       // Checked after fence so that LEASE_FENCED fires first when both conditions hold —

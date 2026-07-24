@@ -1,7 +1,10 @@
 import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { runDir, readState } from './state.mjs';
-import { readLines, verifyLines, verifyHeadLines, appendAnchored, MUTATION_TURN_FLOOR } from './integrity.mjs';
+import {
+  captureReconciledRunSet,
+  captureReconciledRunSnapshot,
+} from './state.mjs';
+import { verifyLines, verifyHeadLines, appendAnchored, MUTATION_TURN_FLOOR } from './integrity.mjs';
 import { contentHash, wrap, unwrap, ulid, atomicWrite, renameAtomicWithRetry } from './envelope.mjs';
 import { leaseCheck } from './lease.mjs';
 
@@ -302,7 +305,6 @@ export function deriveCandidates(perRunMap, { integrityFailed = [] } = {}) {
   return candidates;
 }
 
-function defaultSleep(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
 const TERMINAL_RUN = new Set(['completed', 'stopped']);
 
 // (b) finish-edge 인접성의 예외는 auto-floor cost와, 종료한 Codex child의 측정 결과를 프로세스 exit 후
@@ -322,17 +324,7 @@ const terminalMakerReceipt = e => e.type === 'cost'
 const nonExemptEvent = e => !(e.type === 'cost'
   && (e.data?.auto_floor === true || terminalMakerReceipt(e)));
 
-function listRunIds(root) {
-  const dir = join(root, '.deep-loop', 'runs');
-  if (!existsSync(dir)) return [];
-  return readdirSync(dir, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name).sort();
-}
-
-// 1단 raw 읽기: 한 번의 JSON.parse에서 status + lease를 함께 뽑는다 (추가 I/O 없음 — 두-단계 읽기 구조 유지).
-function rawProbeOnce(root, runId) {
-  const parsed = JSON.parse(readFileSync(join(runDir(root, runId), 'loop.json'), 'utf8'));
-  return { status: parsed.status, lease: parsed.session_chain?.lease ?? null };
-}
+export { captureReconciledRunSet };
 
 // (a) suspicious_active 판정 — raw(비검증) 읽기 기반의 **라벨**이지 신뢰 판단이 아니다(집계 제외 원칙은
 // terminal-only 불변; spec §2 판정 표를 위에서 아래로 첫 매치). paused 는 preserve-pause 사람-대기 정상
@@ -354,7 +346,9 @@ export function isSuspiciousActive(status, lease, nowMs) {
   return false;
 }
 
-export function computeInsights(root, { selfRunId = null, now = Date.now(), retryDelayMs = 50, sleepFn = defaultSleep } = {}) {
+export function computeInsights(runSet, { selfRunId = null, now = Date.now() } = {}) {
+  if (!runSet || typeof runSet !== 'object' || !Array.isArray(runSet.runIds)
+    || !runSet.runs || !runSet.errors) throw new Error('INSIGHTS_SNAPSHOT_REQUIRED');
   const out = {
     insights_schema_version: INSIGHTS_SCHEMA_VERSION,
     generated_at: new Date(now).toISOString(),
@@ -362,37 +356,23 @@ export function computeInsights(root, { selfRunId = null, now = Date.now(), retr
     post_finish_mutated: [],
     per_run: Object.create(null), aggregates: {}, candidates: [],
   };
-  for (const id of listRunIds(root)) {
+  for (const id of runSet.runIds) {
     const isSelf = id === selfRunId;
-    // 1단: raw parse (실패 → 1회 재시도 → unreadable)
-    let probe;
-    try { probe = rawProbeOnce(root, id); }
-    catch { try { sleepFn(retryDelayMs); probe = rawProbeOnce(root, id); } catch { out.unreadable.push(id); continue; } }
-    if (!isSelf && !TERMINAL_RUN.has(probe.status)) {
+    const snapshot = runSet.runs[id];
+    if (!snapshot) {
+      if (runSet.errors[id]?.kind === 'unreadable') out.unreadable.push(id);
+      else out.integrity_failed_runs.push(id);
+      continue;
+    }
+    const probe = { status: snapshot.data.status, lease: snapshot.data.session_chain?.lease ?? null };
+    if (!isSelf && !TERMINAL_RUN.has(snapshot.data.status)) {
       out.excluded_active.push(id);
       if (isSuspiciousActive(probe.status, probe.lease, now)) out.suspicious_active.push(id);
       continue;
     }
-    // 2단: 검증 읽기 = readState + verifyLog + verifyHead + readLines (스펙 §4-2). readLines는 JSON parse만 하므로
-    // verifyLog(checksum/seq 체인)와 verifyHead(loop.json의 event_log_head anchor 대조 — suffix truncation 탐지,
-    // appendAnchored와 동일 2중 검증)를 반드시 함께 돌린다. 실패 → ≥retryDelayMs 재시도 1회 → integrity_failed.
-    let loopHash, loop, events;
-    const verifiedRead = () => {
-      // Single verified read: the hash fingerprints verified on-disk bytes; migrated data is their deterministic in-memory form.
-      // A second readFileSync would open a TOCTOU window where loop_sha256 hashes different bytes than the analyzed data.
-      // 이벤트 로그도 같은 원리로 **1회만** 읽고 그 in-memory 배열에 체인 검증 + head-anchor 대조를 수행한다 —
-      // verifyLog/verifyHead(디스크 재읽기)와 분석용 readLines를 분리하면 그 사이 concurrent append가
-      // 검증 밖 suffix로 metrics/last_seq에 유입된다 (impl-R2 🟡2).
-      const r = readState(root, id);                                   // hash anchor 검증
-      const lines = readLines(root, id);                               // 단일 읽기 — 검증 배열 == 분석 배열
-      const vl = verifyLines(lines);                                   // event-log 체인 검증
-      if (!vl.ok) throw new Error(`LOG_TAMPERED: ${vl.errors.join('; ')}`);
-      const vh = verifyHeadLines(lines, r.data.event_log_head);        // suffix truncation 탐지
-      if (!vh.ok) throw new Error(`LOG_TAMPERED: ${vh.errors.join('; ')}`);
-      return { hash: r.hash, data: r.data, events: lines };
-    };
-    try { ({ hash: loopHash, data: loop, events } = verifiedRead()); }
-    catch { try { sleepFn(retryDelayMs); ({ hash: loopHash, data: loop, events } = verifiedRead()); } catch { out.integrity_failed_runs.push(id); continue; } }
+    const loopHash = snapshot.hash;
+    const loop = snapshot.data;
+    const events = snapshot.logLines;
     // 검증은 통과했으나 metrics 산출이 불능인 run(과거/타 버전 커널의 이벤트 shape drift)은 fail-soft로
     // unreadable에 분류 — run 하나가 insights 전체(피드백 루프)를 크래시하면 안 된다 (impl-R3 🟡D).
     let m;
@@ -424,9 +404,11 @@ export function emitInsights(root, runId, {
   }
   // fast-fail leaseCheck를 tmp write **이전에** 수행 (r2 리뷰 정정 — wrong-generation 호출이 .tmp- 잔재를 남기지 않게).
   // 권위 검사는 여전히 아래 appendAnchored preCheck(락 안)에 있다 — 이건 잔재 방지용 사전 검사.
-  { const { data: pre } = readState(root, runId); const lc = leaseCheck(pre, fence); if (!lc.ok) throw new Error('LEASE_FENCED: ' + lc.reason); }
-  const payload = computeInsights(root, { selfRunId: runId, now, ...(sleepFn ? { sleepFn } : {}) });
-  const { data: loop } = readState(root, runId);
+  { const { data: pre } = captureReconciledRunSnapshot(root, runId); const lc = leaseCheck(pre, fence); if (!lc.ok) throw new Error('LEASE_FENCED: ' + lc.reason); }
+  const runSet = captureReconciledRunSet(root);
+  const payload = computeInsights(runSet, { selfRunId: runId, now });
+  const loop = runSet.runs[runId]?.data;
+  if (!loop) throw new Error(`INSIGHTS_SNAPSHOT_MISSING: ${runId}`);
   const envelope = wrap({ producer: 'deep-loop', artifact_kind: 'loop-insights',
     schema: { name: 'loop-insights', version: String(INSIGHTS_SCHEMA_VERSION) },
     run_id: runId, parent_run_id: loop.session_chain?.parent_run_id ?? null,
@@ -452,13 +434,36 @@ export function emitInsights(root, runId, {
     suspicious_active: payload.suspicious_active, post_finish_mutated: payload.post_finish_mutated };
 }
 
-export function latestInsights(root) {
+export function captureLatestInsightsSet(root, { afterEnumeration } = {}) {
   const dir = insightsDir(root);
-  if (!existsSync(dir)) return null;
-  const files = readdirSync(dir).filter(f => f.endsWith('-insights.json') && !f.startsWith('.tmp-')).sort().reverse();
-  for (const f of files) {
+  const artifactNames = Object.freeze(!existsSync(dir) ? [] : readdirSync(dir)
+    .filter(f => f.endsWith('-insights.json') && !f.startsWith('.tmp-')).sort().reverse());
+  afterEnumeration?.(artifactNames);
+  const artifacts = Object.create(null);
+  const producerIds = [];
+  for (const name of artifactNames) {
     try {
-      const raw = readFileSync(join(dir, f), 'utf8');
+      const bytes = Buffer.from(readFileSync(join(dir, name)));
+      artifacts[name] = Object.freeze({ state: 'present', bytes, sha256: contentHash(bytes) });
+      const parsed = JSON.parse(bytes.toString('utf8'));
+      const producer = parsed?.envelope?.run_id;
+      if (typeof producer === 'string') producerIds.push(producer);
+    } catch (error) {
+      artifacts[name] = Object.freeze({ state: 'error', error: String(error?.message || error) });
+    }
+  }
+  const runSet = captureReconciledRunSet(root, { runIds: producerIds });
+  return Object.freeze({ root, artifactNames, artifacts, runSet });
+}
+
+export function latestInsights(snapshotSet) {
+  if (!snapshotSet || typeof snapshotSet !== 'object' || !Array.isArray(snapshotSet.artifactNames)
+    || !snapshotSet.artifacts || !snapshotSet.runSet) throw new Error('INSIGHTS_SNAPSHOT_REQUIRED');
+  for (const f of snapshotSet.artifactNames) {
+    try {
+      const artifact = snapshotSet.artifacts[f];
+      if (artifact?.state !== 'present') continue;
+      const raw = artifact.bytes.toString('utf8');
       const obj = unwrap(JSON.parse(raw), { producer: 'deep-loop', artifact_kind: 'loop-insights' });
       if (!obj) continue;
       if ((obj.payload?.insights_schema_version ?? Infinity) > INSIGHTS_SCHEMA_VERSION) { process.stderr.write(`[deep-loop:warn] insights ${f}: newer schema — skipped\n`); continue; }
@@ -468,7 +473,9 @@ export function latestInsights(root) {
       // 증거로 인정한다 (computeInsights §4-2 동형 — 단일 읽기, impl-R2 🟡2). 실패는 throw → per-file
       // catch → fail-soft skip.
       const rid = obj.envelope.run_id;
-      const producerData = readState(root, rid).data;
+      const producerSnapshot = snapshotSet.runSet.runs[rid];
+      if (!producerSnapshot) throw new Error(`producer run ${rid} unavailable`);
+      const producerData = producerSnapshot.data;
       // Phase6 ITEM-4: finish는 proof 검증 **이전**에 insights emit을 실행하므로, proof 미충족으로
       // finish가 실패하면 status=running인 run의 insights가 검증 통과 상태로 latest에 남아 다음
       // init/hill-climb이 소비할 수 있다 — computeInsights가 타 run에 적용하는 terminal-only 원칙
@@ -479,7 +486,7 @@ export function latestInsights(root) {
         continue;
       }
       const anchor = producerData.event_log_head;
-      const lines = readLines(root, rid);
+      const lines = producerSnapshot.logLines;
       const vl = verifyLines(lines);
       if (!vl.ok) throw new Error(`LOG_TAMPERED: ${vl.errors.join('; ')}`);
       const vh = verifyHeadLines(lines, anchor);

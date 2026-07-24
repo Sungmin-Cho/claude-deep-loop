@@ -15,6 +15,13 @@ const OWNER = 'SPAWNOPTIN01';
 const GEN = 1;
 const T0 = Date.parse('2026-07-01T00:00:00.000Z');
 
+function legacyScope() {
+  return {
+    kind: 'legacy', workstream_id: null, bound_at_seq: null,
+    terminal_event: null, closed_at: null,
+  };
+}
+
 // Round-6 review fix (part a): confirmDesktop now gates the desktop→ transition on a LIVE
 // desktopProbe({platform}) result — lib-level happy-path tests inject a deterministic PASSING probe so
 // they never depend on this host's real Claude Desktop install (host-dependence is confined to the
@@ -39,9 +46,9 @@ const desktopProbeVerified = (() => {
 
 function baseData(overrides = {}) {
   return {
-    schema_version: '0.3.0', run_id: OWNER, goal: 'g', status: 'running',
-    project: {}, routing: { protocol: 'deep-work' }, review: { points: ['design'] },
-    autonomy: { tier: 'recommend', spawn_style: 'visible', continuation_policy: 'rotate-per-unit' },
+    schema_version: '0.4.0', run_id: OWNER, goal: 'g', status: 'running',
+    project: { binding_generation: 1 }, routing: { protocol: 'deep-work' }, review: { points: ['design'] },
+    autonomy: { tier: 'recommend', spawn_style: 'visible', continuation_policy: 'rotate-per-unit', attended_launch_approval: null },
     budget: { unit: 'turns', spent: 0 },
     event_log_head: { seq: 0, checksum: 'GENESIS' },
     comprehension: {}, circuit_breaker: { tripped: false },
@@ -49,9 +56,10 @@ function baseData(overrides = {}) {
       lease: {
         owner_run_id: OWNER, generation: GEN, state: 'active', handoff_phase: 'idle',
         handoff_idempotency_key: null, handoff_child_run_id: null, handoff_trigger: null, expires_at: null,
+        takeover_kind: null,
       },
       consumed_milestones: [],
-      sessions: [{ run_id: OWNER, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: null }],
+      sessions: [{ run_id: OWNER, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: null, scope: legacyScope() }],
     },
     workstreams: [], active_workstreams: [],
     triage: { actionable: [] }, episodes: [], termination: {},
@@ -88,16 +96,17 @@ function seedPausedReleasingDesktop() {
   const data = baseData({
     status: 'paused',
     pause_reason: 'desktop-launcher-unavailable',
-    autonomy: { tier: 'recommend', spawn_style: 'desktop', continuation_policy: 'rotate-per-unit' },
+    autonomy: { tier: 'recommend', spawn_style: 'desktop', continuation_policy: 'rotate-per-unit', attended_launch_approval: null },
     session_chain: {
       lease: {
         owner_run_id: OWNER, generation: GEN, state: 'releasing', handoff_phase: 'emitted',
         handoff_idempotency_key: 'key123', handoff_child_run_id: CHILD,
         expires_at: null, resume_policy: 'human',
+        takeover_kind: null,
       },
       sessions: [
-        { run_id: OWNER, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: CHILD },
-        { run_id: CHILD, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: null },
+        { run_id: OWNER, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: CHILD, scope: legacyScope() },
+        { run_id: CHILD, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: null, scope: legacyScope() },
       ],
     },
   });
@@ -129,6 +138,9 @@ test('offer→confirm transitions to desktop and consumes nonce (single-use)', (
   assert.equal(readState(root, runId).data.autonomy.spawn_style_optin_pending.nonce, 'n1');
   assert.equal(confirmDesktop(root, runId, { expect, now: T0 + 1000, nonce: 'n1', platform: 'darwin', desktopProbe: passingProbe }).ok, true);
   assert.equal(readState(root, runId).data.autonomy.spawn_style, 'desktop');
+  assert.deepEqual(readState(root, runId).data.autonomy.attended_launch_approval, {
+    style: 'desktop', approved_at: '2026-07-01T00:00:01.000Z',
+  });
   assert.equal(readState(root, runId).data.autonomy.spawn_style_optin_pending, undefined, 'pending cleared on confirm');
   // reuse rejected — nonce is single-use
   const r2 = confirmDesktop(root, runId, { expect, now: T0 + 2000, nonce: 'n1', platform: 'darwin', desktopProbe: passingProbe });
@@ -160,6 +172,18 @@ test('decline clears pending nonce', () => {
   assert.equal(readState(root, runId).data.autonomy.spawn_style_optin_pending, undefined);
   assert.equal(confirmDesktop(root, runId, { expect, now: T0 + 2000, nonce: 'n1', platform: 'darwin' }).ok, false);
   assert.equal(readState(root, runId).data.autonomy.spawn_style, 'visible');
+});
+
+test('offer and decline preserve an existing attended approval byte-for-byte', () => {
+  const { root, runId, expect } = seedFreshRun();
+  const { data } = readState(root, runId);
+  const approval = { style: 'visible', approved_at: '2026-07-01T00:00:00.000Z' };
+  data.autonomy.attended_launch_approval = approval;
+  writeState(root, runId, data);
+  offerDesktop(root, runId, { expect, now: T0, nonce: 'n1' });
+  assert.deepEqual(readState(root, runId).data.autonomy.attended_launch_approval, approval);
+  declineDesktop(root, runId, { expect, now: T0 + 1 });
+  assert.deepEqual(readState(root, runId).data.autonomy.attended_launch_approval, approval);
 });
 
 test('expired nonce is rejected', () => {
@@ -323,9 +347,15 @@ test('offerDesktop with non-finite now returns {ok:false} INVALID_TTL_SEC and ap
 
 test('resetDesktop transitions desktop -> visible (fenced)', () => {
   const { root, runId, expect } = seedFreshRun({ spawn_style: 'desktop' });
+  const { data } = readState(root, runId);
+  data.autonomy.attended_launch_approval = {
+    style: 'desktop', approved_at: '2026-07-01T00:00:00.000Z',
+  };
+  writeState(root, runId, data);
   const r = resetDesktop(root, runId, { expect, now: T0 });
   assert.equal(r.ok, true);
   assert.equal(readState(root, runId).data.autonomy.spawn_style, 'visible');
+  assert.equal(readState(root, runId).data.autonomy.attended_launch_approval, null);
 });
 
 test('resetDesktop also clears a stray pending nonce', () => {
@@ -406,13 +436,14 @@ function seedDesktopWith({ status = 'running', leaseState = 'active', handoffPha
   mkdirSync(runDir(root, runId), { recursive: true });
   const data = baseData({
     status,
-    autonomy: { tier: 'recommend', spawn_style: 'desktop', continuation_policy: 'rotate-per-unit' },
+    autonomy: { tier: 'recommend', spawn_style: 'desktop', continuation_policy: 'rotate-per-unit', attended_launch_approval: null },
     session_chain: {
       lease: {
         owner_run_id: OWNER, generation: GEN, state: leaseState, handoff_phase: handoffPhase,
         handoff_idempotency_key: null, handoff_child_run_id: null, expires_at: null,
+        takeover_kind: null,
       },
-      sessions: [{ run_id: OWNER, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: null }],
+      sessions: [{ run_id: OWNER, started_at: null, ended_at: null, turns: 0, outcome: null, superseded_by: null, scope: legacyScope() }],
     },
   });
   data.project.root = root;

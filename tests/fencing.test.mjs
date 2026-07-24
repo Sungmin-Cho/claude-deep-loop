@@ -91,6 +91,7 @@ test('recordWorkstreamTerminal with stale fence throws LEASE_FENCED', () => {
   releaseLease(root, runId, { owner, generation: gen1 });
   acquireLease(root, runId, { owner: 'child-run-003', expectGeneration: gen1, runtime: 'claude' });
 
+  // Deliberately omit the abandoned confirmation: the stale lease fence must win first.
   assert.throws(
     () => recordWorkstreamTerminal(root, runId, id, { status: 'abandoned', proof: { reason: 'x' }, fence: { owner, generation: gen1, intent: 'business' } }),
     /LEASE_FENCED/
@@ -142,6 +143,7 @@ test('recordReviewOutcome with stale fence throws LEASE_FENCED', () => {
   // A done maker so dispatchReview binds the checker (unbound checkers are refused: REVIEW_NO_ELIGIBLE_MAKER).
   writeFileSync(join(root, 'plan-art.txt'), 'artifact');
   const m = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'plan', point: 'plan', workstream: ws, expectedArtifacts: ['plan-art.txt'], fence: fence1 });
+  recordEpisode(root, runId, m.id, { status: 'in_progress', fence: fence1 });
   recordEpisode(root, runId, m.id, { status: 'done', artifacts: ['plan-art.txt'], proof: {}, fence: fence1 });
   const r = dispatchReview(root, runId, { point: 'plan', workstreamId: ws, detected: { 'deep-review': true }, fence: fence1 });
 
@@ -169,6 +171,7 @@ test('all mutators without fence param throw FENCE_REQUIRED (fence is now mandat
     /FENCE_REQUIRED/
   );
   // recordWorkstreamTerminal
+  // Deliberately omit the abandoned confirmation: the mandatory fence guard must win first.
   assert.throws(
     () => recordWorkstreamTerminal(root, runId, 'ws-01', { status: 'abandoned', proof: { reason: 'x' } }),
     /FENCE_REQUIRED/

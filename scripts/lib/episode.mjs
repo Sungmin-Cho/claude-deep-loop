@@ -1,16 +1,42 @@
 import { mkdirSync, existsSync } from 'node:fs';
 import { isAbsolute, join, resolve, sep } from 'node:path';
-import { readState, writeState, withLock, runDir } from './state.mjs';
+import { runDir } from './state.mjs';
 import { appendAnchored } from './integrity.mjs';
 import { atomicWrite } from './envelope.mjs';
 import { slugify } from './slug.mjs';
 import { leaseCheck } from './lease.mjs';
 import { MUTATION_TURN_FLOOR } from './budget.mjs';
+import { assertScopeAllows, bindMakerScope } from './session-scope.mjs';
 
 const NON_TERMINAL = ['pending', 'in_progress', 'blocked'];
 const RECORDABLE_TERMINAL = ['done', 'approved', 'rejected'];   // record 가 설정 가능한 터미널 (abandoned 제외)
 const TERMINAL = RECORDABLE_TERMINAL;                            // 하위 호환 — done 가드/검증 등 기존 참조 유지
 const ALL_TERMINAL = [...RECORDABLE_TERMINAL, 'abandoned'];     // 4개 전체 터미널 (abandonEpisode 가드 포함)
+const WORKSTREAM_TERMINAL = new Set(['ready', 'merged', 'abandoned']);
+
+function requireNonterminalWorkstream(loop, workstreamId) {
+  const workstream = loop.workstreams.find(item => item.id === workstreamId);
+  if (!workstream) throw new Error(`WORKSTREAM_NOT_FOUND: ${workstreamId}`);
+  if (WORKSTREAM_TERMINAL.has(workstream.status)) {
+    throw new Error(`WORKSTREAM_TERMINAL_LOCKED: ${workstreamId} is ${workstream.status}`);
+  }
+  return workstream;
+}
+
+function episodeScopeTarget(loop, episode, { checkerTargetRequired = false } = {}) {
+  if (episode?.role !== 'checker') return episode?.workstream_id ?? null;
+  if (episode.target_maker) {
+    const maker = loop.episodes.find(item => item.id === episode.target_maker);
+    if (!maker || maker.role !== 'maker') {
+      throw new Error(`REVIEW_TARGET_MAKER_INVALID: ${String(episode.target_maker)}`);
+    }
+    return maker.workstream_id;
+  }
+  if (checkerTargetRequired) {
+    throw new Error(`SESSION_SCOPE_MISMATCH: checker has no target maker: ${String(episode?.id)}`);
+  }
+  return episode?.workstream_id ?? null;
+}
 
 function requestSkeleton({ id, plugin, role, kind, point, workstream, expectedArtifacts, evidence }) {
   return [
@@ -28,7 +54,7 @@ function requestSkeleton({ id, plugin, role, kind, point, workstream, expectedAr
   ].join('\n');
 }
 
-function createEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker, reviewerResolution, evidence, contract, initialStatus = 'pending', blockReason, fence, operation } = {}) {
+function createEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker, reviewerResolution, evidence, contract, initialStatus = 'pending', blockReason, fence, operation, now = Date.now() } = {}) {
   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error(`FENCE_REQUIRED: ${operation}`);
   // Fix 3: validate required non-fence args before any state write
   if (!plugin || typeof plugin !== 'string' || !plugin.length) throw new Error('EPISODE_INPUT_INVALID: plugin');
@@ -49,20 +75,21 @@ function createEpisode(root, runId, { plugin, role, kind, point, workstream = nu
   for (const a of expectedArtifacts) {
     if (isAbsolute(a) || a.split(/[/\\]/).includes('..')) throw new Error('EPISODE_ARTIFACT_UNSAFE: ' + a);
   }
-  let id, requestPath, dir;
+  let id, requestPath, requestRel, dir;
   const safePlugin = slugify(plugin) || 'plugin';
   appendAnchored(root, runId, { type: 'episode-new', data: {
     plugin, role, kind, point,
     ...(initialStatus === 'blocked' ? { status: initialStatus, block_reason: blockReason } : {}),
     ...(reviewerResolution ? { reviewer_resolution: reviewerResolution } : {}),
-  } }, (loop) => {
+  }, now }, (loop) => {
     const n = String(loop.episodes.length + 1).padStart(3, '0');
     id = `${n}-${safePlugin}`;
     dir = join(runDir(root, runId), 'episodes', id);
+    requestRel = `episodes/${id}/request.md`;
     requestPath = join(dir, 'request.md');
     const epObj = {
       id, plugin, role, kind, point, workstream_id: workstream, status: initialStatus,
-      request_path: requestPath, expected_artifacts: expectedArtifacts,
+      request_rel: requestRel, expected_artifacts: expectedArtifacts,
       verification: { checker_episode_required: role === 'maker', checker_plugin: 'deep-review', review_point: point, proof_required: expectedArtifacts },
     };
     if (targetMaker && typeof targetMaker === 'string' && targetMaker.length) epObj.target_maker = targetMaker;
@@ -87,7 +114,15 @@ function createEpisode(root, runId, { plugin, role, kind, point, workstream = nu
     const r = leaseCheck(loop, fence); if (!r.ok) throw new Error('LEASE_FENCED: ' + r.reason);
     // Codex impl r15 🟡: reject a non-null workstream that does not exist — otherwise a maker bound to a phantom
     // workstream becomes unreviewable (dispatchReview rightly rejects WORKSTREAM_NOT_FOUND at review time).
-    if (workstream && !loop.workstreams.find(w => w.id === workstream)) throw new Error(`WORKSTREAM_NOT_FOUND: ${workstream}`);
+    const scopeTarget = role === 'checker' && targetMaker
+      ? episodeScopeTarget(loop, { role, target_maker: targetMaker, workstream_id: workstream })
+      : workstream;
+    if (scopeTarget) {
+      requireNonterminalWorkstream(loop, scopeTarget);
+      if (loop.autonomy?.continuation_policy === 'workstream-session') {
+        assertScopeAllows(loop, scopeTarget, { allowUnbound: role === 'maker' || !targetMaker });
+      }
+    }
   }, { floor: MUTATION_TURN_FLOOR });
   // Assert containment before FS writes
   const base = resolve(runDir(root, runId), 'episodes');
@@ -95,11 +130,11 @@ function createEpisode(root, runId, { plugin, role, kind, point, workstream = nu
   if (full !== base && !full.startsWith(base + sep)) throw new Error('EPISODE_PATH_ESCAPE: ' + id);
   mkdirSync(dir, { recursive: true });
   atomicWrite(requestPath, requestSkeleton({ id, plugin, role, kind, point, workstream, expectedArtifacts, evidence }));
-  return { id, requestPath };
+  return { id, requestPath, requestRel };
 }
 
-export function newEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker, reviewerResolution, evidence, contract, fence } = {}) {
-  return createEpisode(root, runId, { plugin, role, kind, point, workstream, expectedArtifacts, targetMaker, reviewerResolution, evidence, contract, fence, operation: 'newEpisode' });
+export function newEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker, reviewerResolution, evidence, contract, fence, now = Date.now() } = {}) {
+  return createEpisode(root, runId, { plugin, role, kind, point, workstream, expectedArtifacts, targetMaker, reviewerResolution, evidence, contract, fence, operation: 'newEpisode', now });
 }
 
 // Fail-closed compatibility path only: a checker with no independent dispatch capability is born blocked.
@@ -113,12 +148,16 @@ export function newBlockedCheckerEpisode(root, runId, { plugin, kind, point, wor
 
 // Human-gated escape hatch — settles a stranded non-terminal episode as abandoned.
 // Separate from the record path to preserve the done-needs-proof invariant.
-export function abandonEpisode(root, runId, episodeId, { reason, confirm, fence } = {}) {
+export function abandonEpisode(root, runId, episodeId, {
+  reason, confirm, fence, now = Date.now(),
+} = {}) {
   if (confirm !== true) throw new Error('CONFIRM_REQUIRED: pass --confirm (human-only)');
   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: abandonEpisode');
   if (!episodeId || typeof episodeId !== 'string' || !episodeId.length) throw new Error('EPISODE_INPUT_INVALID: episodeId');
   if (!reason || typeof reason !== 'string' || !reason.length) throw new Error('EPISODE_INPUT_INVALID: reason');
-  appendAnchored(root, runId, { type: 'episode-abandon', data: { id: episodeId, reason } }, (loop) => {
+  appendAnchored(root, runId, {
+    type: 'episode-abandon', data: { id: episodeId, reason }, now,
+  }, (loop) => {
     const ep = loop.episodes.find(e => e.id === episodeId);
     ep.status = 'abandoned';
     ep.abandon_reason = reason;
@@ -137,10 +176,21 @@ export function abandonEpisode(root, runId, episodeId, { reason, confirm, fence 
     const ep = loop.episodes.find(e => e.id === episodeId);
     if (!ep) throw new Error(`EPISODE_NOT_FOUND: ${episodeId}`);
     if (ALL_TERMINAL.includes(ep.status)) throw new Error('EPISODE_ALREADY_TERMINAL: ' + episodeId);
+    const scopeTarget = episodeScopeTarget(loop, ep);
+    if (scopeTarget) {
+      if (!loop.workstreams.find(item => item.id === scopeTarget)) {
+        throw new Error(`WORKSTREAM_NOT_FOUND: ${scopeTarget}`);
+      }
+      if (loop.autonomy?.continuation_policy === 'workstream-session') {
+        assertScopeAllows(loop, scopeTarget);
+      }
+    }
   }, { floor: MUTATION_TURN_FLOOR });
 }
 
-export function recordEpisode(root, runId, episodeId, { status, artifacts = [], proof = {}, fence } = {}) {
+export function recordEpisode(root, runId, episodeId, {
+  status, artifacts = [], proof = {}, fence, now = Date.now(),
+} = {}) {
   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: recordEpisode');
   // Fix 3: episodeId must be a non-empty string
   if (!episodeId || typeof episodeId !== 'string' || !episodeId.length) throw new Error('EPISODE_INPUT_INVALID: episodeId');
@@ -150,9 +200,15 @@ export function recordEpisode(root, runId, episodeId, { status, artifacts = [], 
   if (![...NON_TERMINAL, ...TERMINAL].includes(status)) throw new Error(`EPISODE_STATUS_INVALID: ${status}`);
   if (!Array.isArray(artifacts) || !artifacts.every(a => typeof a === 'string')) throw new Error('EPISODE_INPUT_INVALID: artifacts must be an array of strings');
   if (proof === null || typeof proof !== 'object' || Array.isArray(proof)) throw new Error('EPISODE_INPUT_INVALID: proof must be an object');
-  appendAnchored(root, runId, { type: 'episode-record', data: { id: episodeId, status, artifacts } }, (loop) => {
+  appendAnchored(root, runId, {
+    type: 'episode-record', data: { id: episodeId, status, artifacts }, now,
+  }, (loop, _spent, tx) => {
     const ep = loop.episodes.find(e => e.id === episodeId);
     if (!ep) throw new Error(`EPISODE_NOT_FOUND: ${episodeId}`);   // 방어적
+    if (status === 'in_progress' && ep.role === 'maker'
+      && loop.autonomy?.continuation_policy === 'workstream-session') {
+      bindMakerScope(loop, ep, tx.event_identity.seq);
+    }
     ep.status = status;
     if (artifacts.length) ep.artifacts = artifacts;
     for (const [k, v] of Object.entries(proof)) if (/^result_[A-Za-z0-9_]+$/.test(k)) ep[k] = v;
@@ -164,6 +220,20 @@ export function recordEpisode(root, runId, episodeId, { status, artifacts = [], 
     // Codex r3 🔴2 + R1 f2/R2 f1: 현재 status 가 터미널(abandoned 포함)이면 요청 status 무관하게 재기록 불가.
     if (ALL_TERMINAL.includes(ep.status)) {
       throw new Error('EPISODE_ALREADY_TERMINAL: ' + episodeId);
+    }
+    const newPolicy = loop.autonomy?.continuation_policy === 'workstream-session';
+    const scopeTarget = episodeScopeTarget(loop, ep, {
+      checkerTargetRequired: newPolicy && status === 'in_progress',
+    });
+    if (newPolicy && status === 'in_progress' && ep.role === 'maker') {
+      if (!scopeTarget) throw new Error(`WORKSTREAM_REQUIRED: ${episodeId}`);
+      requireNonterminalWorkstream(loop, scopeTarget);
+      assertScopeAllows(loop, scopeTarget, { allowUnbound: true });
+    } else if (scopeTarget) {
+      requireNonterminalWorkstream(loop, scopeTarget);
+      if (newPolicy) {
+        assertScopeAllows(loop, scopeTarget);
+      }
     }
     // 터미널은 커널이 proof에서 파생 — 검증 후에만 (spec §4)
     if (TERMINAL.includes(status)) {

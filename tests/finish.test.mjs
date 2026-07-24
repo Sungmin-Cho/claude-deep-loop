@@ -9,6 +9,7 @@ import { newWorkstream, recordWorkstreamTerminal } from '../scripts/lib/workspac
 import { newEpisode, recordEpisode, abandonEpisode } from '../scripts/lib/episode.mjs';
 import { dispatchReview, recordReviewOutcome } from '../scripts/lib/review.mjs';
 import { finishRun, finishProofState } from '../scripts/lib/finish.mjs';
+import * as finishModule from '../scripts/lib/finish.mjs';
 import { createFileSymlinkOrSkip } from './helpers/fs-fixtures.mjs';
 
 // Codex r2 should-fix-2: review.points 를 ['implementation'] 한 개로 시드해야 recordWorkstreamTerminal('ready')
@@ -27,6 +28,7 @@ function buildSettledRun(root, runId, fence) {
   writeFileSync(join(root, 'art.txt'), 'artifact');   // expected artifact 가 디스크에 존재해야 done 통과
   const ws = newWorkstream(root, runId, { title: 'W', branch: 'b', worktree: '.claude/worktrees/wt', fence });
   const ep = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws.id, expectedArtifacts: ['art.txt'], fence });
+  recordEpisode(root, runId, ep.id, { status: 'in_progress', fence });
   recordEpisode(root, runId, ep.id, { status: 'done', artifacts: ['art.txt'], proof: {}, fence });   // artifacts 가 expected 를 커버
   const dr = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws.id, detected: {}, fence });
   mkdirSync(join(root, '.claude/worktrees/wt'), { recursive: true });
@@ -133,6 +135,29 @@ test('finishProofState passes for a fix-loop (maker1+rejected-checker, maker2+ap
       { id: 'c1', role: 'checker', plugin: 'subagent-checker', point: 'implementation', workstream_id: 'w', status: 'rejected', target_maker: 'm1' },
       { id: 'c2', role: 'checker', plugin: 'subagent-checker', point: 'implementation', workstream_id: 'w', status: 'approved', target_maker: 'm2' }],
     workstreams: [{ id: 'w', status: 'ready', review_points_done: ['implementation'] }], active_workstreams: [] };
+  assert.deepEqual(finishProofState(loop).missing, []);
+});
+
+test('workstreamClosureProofState and finishProofState share fix-loop convergence literally', () => {
+  assert.equal(typeof finishModule.workstreamClosureProofState, 'function');
+  const loop = { review: { points: ['implementation'] },
+    episodes: [
+      { id: '001-maker', role: 'maker', point: 'implementation', workstream_id: 'w', status: 'done' },
+      { id: '002-checker', role: 'checker', plugin: 'subagent-checker', point: 'implementation', workstream_id: 'w', status: 'rejected', target_maker: '001-maker' },
+      { id: '003-maker', role: 'maker', point: 'implementation', workstream_id: 'w', status: 'done' },
+      { id: '004-checker', role: 'checker', plugin: 'subagent-checker', point: 'implementation', workstream_id: 'w', status: 'approved', target_maker: '003-maker' },
+    ],
+    workstreams: [{ id: 'w', status: 'ready', review_points_done: ['implementation'] }],
+    active_workstreams: [] };
+  const closure = finishModule.workstreamClosureProofState(loop, 'w');
+  assert.deepEqual(closure, {
+    ok: true,
+    missing: [],
+    unsettledEpisodeIds: [],
+    unreviewedMakerIds: [],
+    unresolvedRejectionIds: [],
+    nonConvergedMakerIds: [],
+  });
   assert.deepEqual(finishProofState(loop).missing, []);
 });
 
@@ -302,6 +327,7 @@ test('repro: abandoning the orphan pending maker unblocks finish --status comple
   // Normal sequence: done maker + approved checker (satisfies implementation review point).
   writeFileSync(join(root, 'art.txt'), 'x');
   const good = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws.id, expectedArtifacts: ['art.txt'], fence });
+  recordEpisode(root, runId, good.id, { status: 'in_progress', fence });
   recordEpisode(root, runId, good.id, { status: 'done', artifacts: ['art.txt'], proof: {}, fence });
   const dr = dispatchReview(root, runId, { point: 'implementation', workstreamId: ws.id, detected: {}, fence });
   mkdirSync(join(root, '.claude/worktrees/wt'), { recursive: true });
@@ -309,11 +335,13 @@ test('repro: abandoning the orphan pending maker unblocks finish --status comple
   recordReviewOutcome(root, runId, { episodeId: dr.checkerEpisodeId, verdict: 'APPROVE', proof: { report: '.claude/worktrees/wt/review.md' }, fence });
   // Orphan: stranded pending maker with zero expectedArtifacts — isomorphic to repro episode 009.
   const orphan = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation', workstream: ws.id, expectedArtifacts: [], fence });
-  recordWorkstreamTerminal(root, runId, ws.id, { status: 'ready', proof: {}, fence });
-  // Mid-test assertion 1: orphan blocks finish.
-  assert.ok(finishProofState(readState(root, runId).data).missing.includes('unsettled-episodes'));
+  // Mid-test assertion 1: closure itself now rejects the unsettled orphan.
+  assert.throws(() => recordWorkstreamTerminal(root, runId, ws.id, {
+    status: 'ready', proof: {}, fence,
+  }), /WORKSTREAM_CLOSURE_UNMET/);
   // Resolve via abandonEpisode (human-gated escape hatch).
   abandonEpisode(root, runId, orphan.id, { reason: 'orphan, no artifacts', confirm: true, fence });
+  recordWorkstreamTerminal(root, runId, ws.id, { status: 'ready', proof: {}, fence });
   // Mid-test assertion 2: completed path succeeds after abandon.
   writeFileSync(join(runDir(root, runId), 'final-report.md'), '# done');
   const res = finishRun(root, runId, { status: 'completed', reportRel: 'final-report.md', fence });

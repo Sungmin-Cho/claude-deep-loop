@@ -11,6 +11,7 @@ async function atomicApi() {
   const api = await atomicApiPromise;
   assert.equal(typeof api.renameAtomicWithRetry, 'function', 'renameAtomicWithRetry must be exported');
   assert.equal(typeof api.atomicWrite, 'function', 'atomicWrite must be exported');
+  assert.equal(typeof api.durableAtomicWrite, 'function', 'durableAtomicWrite must be exported');
   return api;
 }
 
@@ -148,4 +149,156 @@ test('atomicWrite repeatedly replaces an existing destination', async () => {
   atomicWrite(path, 'first');
   atomicWrite(path, 'second');
   assert.equal(readFileSync(path, 'utf8'), 'second');
+});
+
+test('durableAtomicWrite orders write, file fsync, rename, then parent-directory fsync', async () => {
+  const { durableAtomicWrite } = await atomicApi();
+  const calls = [];
+  let nextFd = 10;
+  const fdKinds = new Map();
+  durableAtomicWrite('/virtual/parent/final.bin', Buffer.from('bytes'), {
+    platform: 'linux',
+    tempPathFactory: () => '/virtual/parent/temp.bin',
+    writeFn(path, bytes, options) { calls.push(['write', path, Buffer.from(bytes).toString(), options]); },
+    openFn(path, mode) {
+      assert.equal(mode, 'r');
+      const fd = nextFd++;
+      fdKinds.set(fd, path);
+      calls.push(['open', path]);
+      return fd;
+    },
+    fsyncFn(fd) { calls.push(['fsync', fdKinds.get(fd)]); },
+    closeFn(fd) { calls.push(['close', fdKinds.get(fd)]); },
+    renameFn(src, dst) { calls.push(['rename', src, dst]); },
+  });
+  assert.deepEqual(calls.map(call => call.slice(0, 3)), [
+    ['write', '/virtual/parent/temp.bin', 'bytes'],
+    ['open', '/virtual/parent/temp.bin'],
+    ['fsync', '/virtual/parent/temp.bin'],
+    ['close', '/virtual/parent/temp.bin'],
+    ['rename', '/virtual/parent/temp.bin', '/virtual/parent/final.bin'],
+    ['open', '/virtual/parent'],
+    ['fsync', '/virtual/parent'],
+    ['close', '/virtual/parent'],
+  ]);
+});
+
+test('durableAtomicWrite uses a writable Windows temp-file handle and a read-only directory handle', async () => {
+  const { durableAtomicWrite } = await atomicApi();
+  const opens = [];
+  durableAtomicWrite('/virtual/parent/final.bin', Buffer.from('bytes'), {
+    platform: 'win32',
+    tempPathFactory: () => '/virtual/parent/temp.bin',
+    writeFn() {},
+    openFn(path, mode) {
+      opens.push([path, mode]);
+      if (path === '/virtual/parent/temp.bin') {
+        if (mode === 'r') throw Object.assign(new Error('Windows fsync requires a writable file handle'), { code: 'EPERM' });
+        assert.equal(mode, 'r+');
+        return 10;
+      }
+      assert.equal(path, '/virtual/parent');
+      assert.equal(mode, 'r');
+      return 11;
+    },
+    fsyncFn() {},
+    closeFn() {},
+    renameFn() {},
+  });
+  assert.deepEqual(opens, [
+    ['/virtual/parent/temp.bin', 'r+'],
+    ['/virtual/parent', 'r'],
+  ]);
+});
+
+test('durableAtomicWrite exposes exact post-operation crash barriers', async () => {
+  const { durableAtomicWrite } = await atomicApi();
+  const barriers = [];
+  let nextFd = 30;
+  durableAtomicWrite('/virtual/parent/final.bin', Buffer.from('bytes'), {
+    tempPathFactory: () => '/virtual/parent/temp.bin',
+    writeFn() {},
+    openFn: () => nextFd++,
+    fsyncFn() {},
+    closeFn() {},
+    renameFn() {},
+    barrierAt(label) { barriers.push(label); },
+  });
+  assert.deepEqual(barriers, ['write', 'file-flush', 'rename', 'parent-flush']);
+});
+
+test('durableAtomicWrite tolerates Windows EPERM from parent-directory fsync', async () => {
+  const { durableAtomicWrite } = await atomicApi();
+  const fdKinds = new Map();
+  let nextFd = 40;
+  let renamed = false;
+  let parentClosed = false;
+  durableAtomicWrite('/virtual/parent/final.bin', Buffer.from('bytes'), {
+    platform: 'win32',
+    tempPathFactory: () => '/virtual/parent/temp.bin',
+    writeFn() {},
+    openFn(path) {
+      const fd = nextFd++;
+      fdKinds.set(fd, path);
+      return fd;
+    },
+    fsyncFn(fd) {
+      if (fdKinds.get(fd) === '/virtual/parent') {
+        throw Object.assign(new Error('directory-fsync'), { code: 'EPERM' });
+      }
+    },
+    closeFn(fd) {
+      if (fdKinds.get(fd) === '/virtual/parent') parentClosed = true;
+    },
+    renameFn() { renamed = true; },
+  });
+  assert.equal(renamed, true);
+  assert.equal(parentClosed, true);
+});
+
+test('durableAtomicWrite tolerates only documented Windows directory capability errors', async () => {
+  const { durableAtomicWrite } = await atomicApi();
+  for (const code of ['EINVAL', 'ENOTSUP', 'ENOSYS', 'EISDIR']) {
+    assert.doesNotThrow(() => durableAtomicWrite('/virtual/final.bin', 'x', {
+      platform: 'win32', tempPathFactory: () => '/virtual/temp.bin', writeFn() {},
+      openFn(path) {
+        if (path === '/virtual') throw Object.assign(new Error(code), { code });
+        return 1;
+      },
+      fsyncFn() {}, closeFn() {}, renameFn() {},
+    }));
+  }
+  assert.throws(() => durableAtomicWrite('/virtual/final.bin', 'x', {
+    platform: 'win32', tempPathFactory: () => '/virtual/temp.bin', writeFn() {},
+    openFn(path) {
+      if (path === '/virtual') throw Object.assign(new Error('EIO'), { code: 'EIO' });
+      return 1;
+    },
+    fsyncFn() {}, closeFn() {}, renameFn() {},
+  }), /EIO/);
+
+  assert.throws(() => durableAtomicWrite('/virtual/final.bin', 'x', {
+    platform: 'linux', tempPathFactory: () => '/virtual/temp.bin', writeFn() {},
+    openFn(path) {
+      if (path === '/virtual') throw Object.assign(new Error('EINVAL'), { code: 'EINVAL' });
+      return 1;
+    },
+    fsyncFn() {}, closeFn() {}, renameFn() {},
+  }), /EINVAL/);
+});
+
+test('durableAtomicWrite never suppresses a Windows temp-file fsync EPERM', async () => {
+  const { durableAtomicWrite } = await atomicApi();
+  let renamed = false;
+  let closed = false;
+  assert.throws(() => durableAtomicWrite('/virtual/final.bin', 'x', {
+    platform: 'win32', tempPathFactory: () => '/virtual/temp.bin', writeFn() {},
+    openFn: () => 7,
+    fsyncFn() { throw Object.assign(new Error('file-fsync'), { code: 'EPERM' }); },
+    closeFn() { closed = true; },
+    renameFn() { renamed = true; },
+    unlinkFn() {},
+  }), /file-fsync/);
+  assert.equal(closed, true);
+  assert.equal(renamed, false);
 });

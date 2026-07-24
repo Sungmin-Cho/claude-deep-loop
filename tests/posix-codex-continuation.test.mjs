@@ -8,6 +8,7 @@ import { initRun } from '../scripts/lib/initrun.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
 import { respawn as respawnImpl } from '../scripts/lib/respawn.mjs';
 import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
+import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
 
 const NOW0 = new Date('2026-06-24T00:00:00Z');
 const NOW1 = Date.parse('2026-06-24T01:00:00Z');
@@ -95,6 +96,12 @@ function seedVisible({ approval, launcher = 'cmux', platform = 'linux' } = {}) {
     detected_at: '2026-06-24T00:00:00Z',
   };
   writeState(root, runId, data);
+  migrateAuthenticLegacyTransport(root, runId);
+  const { data: migrated } = readState(root, runId);
+  migrated.autonomy.attended_launch_approval = {
+    style: 'visible', approved_at: '2026-06-24T00:00:00.000Z',
+  };
+  writeState(root, runId, migrated);
   return { root, runId, approval: effectiveApproval };
 }
 

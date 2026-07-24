@@ -12,6 +12,7 @@ import { runDir } from './state.mjs';
 import { REVIEW_IMPORT_MAX_BYTES } from './bounded-input.mjs';
 import { canonicalProjectRoot } from './project-root.mjs';
 import { sessionRuntime } from './runtime.mjs';
+import { assertScopeAllows } from './session-scope.mjs';
 
 export const REVIEW_REPORT_BODY_MAX_BYTES = 262_144;
 export const REVIEW_IMPORT_MAX_ARTIFACTS = 256;
@@ -156,6 +157,9 @@ export function validateImportedEvidence(root, loop, input, { checker, maker, wo
   if (input.target_maker !== maker.id || input.target_maker !== checker.target_maker) {
     throw new Error(`REVIEW_IMPORT_TARGET_MISMATCH: ${input.target_maker} != ${checker.target_maker}`);
   }
+  if (loop.autonomy?.continuation_policy === 'workstream-session') {
+    assertScopeAllows(loop, maker.workstream_id);
+  }
 
   const claim = checker.review_claim;
   if (checker.status !== 'in_progress' || claim == null || typeof claim !== 'object' || Array.isArray(claim)) {
@@ -240,8 +244,21 @@ function generatedAt(now) {
   return value.toISOString();
 }
 
-export function materializeImportedReview(root, runId, input, binding, { now } = {}) {
-  const { canonicalRoot, reviews } = requireReviewDirectory(root, runId, { createReviews: true });
+export function prepareImportedReview(root, runId, input, binding, { now } = {}) {
+  const canonicalRoot = canonicalProjectRoot(root);
+  const run = runDir(canonicalRoot, runId);
+  const canonicalRun = canonicalNonSymlinkDirectory(run);
+  if (!canonicalRun || !pathWithin(canonicalRoot, canonicalRun)) {
+    throw new Error('REVIEW_IMPORT_DIRECTORY_UNSAFE: canonical run directory is unavailable');
+  }
+  const reviews = join(canonicalRun, 'reviews');
+  if (existsSync(reviews)) {
+    const canonicalReviews = canonicalNonSymlinkDirectory(reviews);
+    if (!canonicalReviews || !pathWithin(canonicalRun, canonicalReviews)) {
+      throw new Error('REVIEW_IMPORT_DIRECTORY_UNSAFE: reviews directory is unsafe');
+    }
+  }
+  const generated = generatedAt(now);
   const envelope = wrap({
     producer: 'deep-loop', artifact_kind: 'review-report',
     schema: { name: 'review-report', version: '1.0' }, run_id: runId,
@@ -257,26 +274,44 @@ export function materializeImportedReview(root, runId, input, binding, { now } =
       },
     },
     payload: { verdict: input.verdict, report_body: input.report_body },
-    now: generatedAt(now),
+    now: generated,
   });
   const raw = JSON.stringify(envelope, null, 2);
-  const reportBytes = Buffer.byteLength(raw, 'utf8');
-  const reportSha256 = sha256Bytes(Buffer.from(raw));
+  const bytes = Buffer.from(raw);
+  const reportBytes = bytes.length;
+  const reportSha256 = sha256Bytes(bytes);
   const name = `${reportSha256}.json`;
+  const reportRel = `reviews/${name}`;
   const reportAbs = join(reviews, name);
-  if (existsSync(reportAbs)) {
-    const st = lstatSync(reportAbs);
-    if (st.isSymbolicLink() || !st.isFile() || st.size !== reportBytes || !readFileSync(reportAbs).equals(Buffer.from(raw))) {
-      throw new Error(`REVIEW_IMPORT_ENVELOPE_COLLISION: ${name}`);
-    }
-  } else {
-    atomicWrite(reportAbs, raw);
-  }
   const report = ['.deep-loop', 'runs', runId, 'reviews', name].join('/');
   if (resolve(canonicalRoot, ...report.split('/')) !== reportAbs) {
     throw new Error('REVIEW_IMPORT_DIRECTORY_UNSAFE: durable report path mismatch');
   }
-  return { report, reportAbs, reportBytes, reportSha256, input, binding };
+  return {
+    report, reportRel, reportAbs, reportBytes, reportSha256, bytes,
+    generatedAt: generated, input, binding,
+  };
+}
+
+export function materializeImportedReview(root, runId, input, binding, { now } = {}) {
+  const prepared = prepareImportedReview(root, runId, input, binding, { now });
+  const { canonicalRoot, reviews } = requireReviewDirectory(root, runId, { createReviews: true });
+  const { report, reportAbs, reportBytes, reportSha256, bytes } = prepared;
+  if (reportAbs !== join(reviews, `${reportSha256}.json`)) {
+    throw new Error('REVIEW_IMPORT_DIRECTORY_UNSAFE: prepared report path mismatch');
+  }
+  if (existsSync(reportAbs)) {
+    const st = lstatSync(reportAbs);
+    if (st.isSymbolicLink() || !st.isFile() || st.size !== reportBytes || !readFileSync(reportAbs).equals(bytes)) {
+      throw new Error(`REVIEW_IMPORT_ENVELOPE_COLLISION: ${reportSha256}.json`);
+    }
+  } else {
+    atomicWrite(reportAbs, bytes);
+  }
+  if (resolve(canonicalRoot, ...report.split('/')) !== reportAbs) {
+    throw new Error('REVIEW_IMPORT_DIRECTORY_UNSAFE: durable report path mismatch');
+  }
+  return prepared;
 }
 
 const sameArtifacts = (left, right) => JSON.stringify(left) === JSON.stringify(right);

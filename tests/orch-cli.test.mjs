@@ -9,6 +9,7 @@ import { initRun } from '../scripts/lib/initrun.mjs';
 import { readState, runDir, writeState } from '../scripts/lib/state.mjs';
 import { canonicalProjectRoot, projectRootDigest } from '../scripts/lib/project-root.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
+import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
 
 const CLI = join(process.cwd(), 'scripts', 'deep-loop.mjs');
 const FORCE_WIN32 = join(process.cwd(), 'tests', 'helpers', 'force-win32.mjs');
@@ -18,6 +19,7 @@ function run(root, args) {
 function seed() {
   const root = mkdtempSync(join(tmpdir(), 'dl-'));
   const { runId } = initRun(root, { runtime: 'claude', goal: 'g', now: new Date('2026-06-24T00:00:00Z') });
+  migrateAuthenticLegacyTransport(root, runId);
   return { root, runId };
 }
 
@@ -64,6 +66,7 @@ function runtimeExecutableCliFixture({
   const { alias, suffix, triple, executable } = target;
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'dl-runtime-cli-')));
   const { runId } = initRun(root, { runtime: runRuntime, goal: 'g', now: new Date('2026-07-11T00:00:00Z') });
+  migrateAuthenticLegacyTransport(root, runId);
   const version = '0.144.1';
   const wrapperRoot = join(root, 'tool', 'node_modules', '@openai', 'codex');
   const wrapper = join(wrapperRoot, 'bin', 'codex.js');
@@ -226,7 +229,9 @@ function initWin32LauncherRun(fixture) {
     'init-run', '--runtime', 'claude', '--goal', 'native launcher CLI integration',
   ], fixture.env);
   assert.equal(result.code, 0, result.stderr);
-  return JSON.parse(result.stdout).run_id;
+  const runId = JSON.parse(result.stdout).run_id;
+  migrateAuthenticLegacyTransport(fixture.root, runId);
+  return runId;
 }
 
 function validRebindArgs({ candidateRoot, runId, storedRoot }) {
@@ -239,6 +244,7 @@ function validRebindArgs({ candidateRoot, runId, storedRoot }) {
     '--actor', 'human',
     '--confirm',
     '--expected-stored-root-digest', projectRootDigest(storedRoot),
+    '--expected-binding-generation', '1',
     '--now', '2026-07-11T00:00:00Z',
   ];
 }
@@ -253,7 +259,9 @@ test('next-action prints descriptor JSON (deterministic now)', () => {
 test('next-action honors --now for wallclock hard-stop', () => {
   const { root } = seed();
   const out = JSON.parse(run(root, ['next-action', '--json', '--now', '2026-06-30T00:00:00Z'])); // > 24h
-  assert.equal(out.action.type, 'handoff');
+  assert.equal(out.action.type, 'await_human');
+  assert.equal(out.action.reason, 'budget');
+  assert.equal(out.next_command, '/deep-loop-status');
   assert.equal(out.gate.blocked_by[0], 'budget');
 });
 
@@ -273,6 +281,7 @@ test('review dispatch accepts --independent-subagent and records a neutral legac
   const ws = JSON.parse(run(root, ['workstream', 'new', '--title', 'A', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--owner', runId, '--generation', '1']));
   writeFileSync(join(root, 'plan.txt'), 'artifact');
   const maker = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'plan', '--point', 'plan', '--workstream', ws.id, '--artifacts', '["plan.txt"]', '--owner', runId, '--generation', '1']));
+  run(root, ['episode', 'record', '--id', maker.id, '--status', 'in_progress', '--owner', runId, '--generation', '1']);
   run(root, ['episode', 'record', '--id', maker.id, '--status', 'done', '--artifacts', '["plan.txt"]', '--owner', runId, '--generation', '1']);
 
   const dispatched = JSON.parse(run(root, ['review', 'dispatch', '--point', 'plan', '--workstream', ws.id, '--independent-subagent', '--owner', runId, '--generation', '1']));
@@ -284,20 +293,18 @@ test('review dispatch accepts --independent-subagent and records a neutral legac
   assert.equal(checker.reviewer_resolution.asserted_capability, 'independent-subagent');
 });
 
-test('root diagnose exits 0 with redacted eligibility for resolvable copies and moved roots', () => {
+test('root diagnose fences resolvable copies without mutation and accepts moved roots', () => {
   const original = seed();
   const copyRoot = mkdtempSync(join(tmpdir(), 'dl-root-cli-copy-'));
-  const storedRoot = readState(original.root, original.runId).data.project.root;
   cpSync(join(original.root, '.deep-loop'), join(copyRoot, '.deep-loop'), { recursive: true });
+  const before = cliSnapshot(copyRoot, original.runId);
 
   const copied = runResult(copyRoot, [
     'root', 'diagnose', '--candidate-project-root', copyRoot, '--run-id', original.runId,
   ]);
-  assert.equal(copied.code, 0);
-  assert.deepEqual(JSON.parse(copied.stdout), {
-    mismatch_class: 'fenced', rebind_allowed: false,
-    stored_root_digest: projectRootDigest(storedRoot), owner: original.runId, generation: 1,
-  });
+  assert.equal(copied.code, 3);
+  assert.match(copied.stderr, /PROJECT_ROOT_FENCED/);
+  assert.deepEqual(cliSnapshot(copyRoot, original.runId), before);
 
   const moved = movedCliRun();
   const relocated = runResult(moved.candidateRoot, [
@@ -305,8 +312,16 @@ test('root diagnose exits 0 with redacted eligibility for resolvable copies and 
   ]);
   assert.equal(relocated.code, 0);
   assert.deepEqual(JSON.parse(relocated.stdout), {
-    mismatch_class: 'unresolvable', rebind_allowed: true,
-    stored_root_digest: projectRootDigest(moved.storedRoot), owner: moved.runId, generation: 1,
+    action: 'rebind',
+    blocker: null,
+    topology: 'quiescent',
+    current_root_digest: projectRootDigest(moved.storedRoot),
+    current_binding_generation: 1,
+    fence: { owner: moved.runId, generation: 1 },
+    command: `root rebind --candidate-project-root ${JSON.stringify(canonicalProjectRoot(moved.candidateRoot))} `
+      + `--run-id "${moved.runId}" --actor human --confirm `
+      + `--expected-stored-root-digest ${projectRootDigest(moved.storedRoot)} `
+      + `--expected-binding-generation 1 --owner "${moved.runId}" --generation 1`,
   });
 });
 
@@ -335,7 +350,10 @@ test('root rebind missing required flags or confirm exits 2 with usage errors', 
     return [...base.slice(0, index), ...base.slice(index + count)];
   };
 
-  for (const name of ['candidate-project-root', 'run-id', 'owner', 'generation', 'actor', 'confirm', 'expected-stored-root-digest']) {
+  for (const name of [
+    'candidate-project-root', 'run-id', 'owner', 'generation', 'actor', 'confirm',
+    'expected-stored-root-digest', 'expected-binding-generation',
+  ]) {
     const result = runResult(moved.candidateRoot, omitFlag(name));
     assert.equal(result.code, 2, name);
     assert.match(result.stderr, /(?:USAGE|REQUIRED|CONFIRM_REQUIRED)/, name);
@@ -399,11 +417,36 @@ test('root rebind stale owner or generation exits 3 and changes no durable file'
   }
 });
 
+test('Round1 binding fence RED: stale binding generation exits 3 without a stack', () => {
+  const moved = movedCliRun();
+  const args = validRebindArgs(moved);
+  args[args.indexOf('--expected-binding-generation') + 1] = '9';
+  const before = cliSnapshot(moved.candidateRoot, moved.runId);
+  const result = runResult(moved.candidateRoot, args);
+  assert.equal(result.code, 3);
+  assert.match(result.stderr, /PROJECT_BINDING_FENCED/);
+  assert.doesNotMatch(result.stderr, /\n\s+at\s|Node\.js v/);
+  assert.deepEqual(cliSnapshot(moved.candidateRoot, moved.runId), before);
+});
+
 test('root rebind CLI relocates once and restores ordinary strict state access', () => {
   const moved = movedCliRun();
   const result = runResult(moved.candidateRoot, validRebindArgs(moved));
   assert.equal(result.code, 0);
-  assert.deepEqual(JSON.parse(result.stdout), { ok: true });
+  const rebound = JSON.parse(result.stdout);
+  assert.equal(rebound.action, 'already-rebound');
+  assert.equal(rebound.blocker, null);
+  assert.equal(rebound.topology, 'quiescent');
+  assert.equal(rebound.current_root_digest, projectRootDigest(canonicalProjectRoot(moved.candidateRoot)));
+  assert.equal(rebound.current_binding_generation, 2);
+  assert.deepEqual(rebound.fence, { owner: moved.runId, generation: 2 });
+  assert.equal(rebound.command, null);
+  assert.match(rebound.operation_id, /^[0-9a-f]{64}$/);
+  assert.equal(rebound.recovery_kind, 'none');
+  assert.equal(rebound.stale_session_id, null);
+  assert.equal(rebound.replacement_session_id, null);
+  assert.equal(rebound.event_identity.seq, 1);
+  assert.match(rebound.event_identity.checksum, /^[0-9a-f]{64}$/);
   const { data } = readState(moved.candidateRoot, moved.runId);
   assert.equal(data.project.root, canonicalProjectRoot(moved.candidateRoot));
 });
@@ -514,6 +557,9 @@ runtimeExecutableCliTest('POSIX Codex CLI visible respawn consumes durable appro
 
   const { data } = readState(fixture.root, fixture.runId);
   data.autonomy.spawn_style = 'visible';
+  data.autonomy.attended_launch_approval = {
+    style: 'visible', approved_at: '2026-07-11T08:01:00.000Z',
+  };
   data.autonomy.child_ready_timeout_sec = 0;
   data.session_spawn = {
     platform: process.platform,
@@ -816,15 +862,15 @@ launcherExecutableCliTest('forced-win32 POSIX CLI fixture never becomes runnable
   ], fixture.env);
   assert.equal(respawned.code, 0, respawned.stderr);
   const outcome = JSON.parse(respawned.stdout);
-  assert.equal(outcome.mode, 'wt');
+  assert.equal(outcome.mode, 'interactive');
   assert.equal(outcome.ok, false);
   assert.equal(outcome.outcome, 'no-launcher');
-  assert.equal(outcome.reason, 'trusted-native-identity-unavailable');
+  assert.equal(outcome.reason, 'no-auto-launcher');
 
   assert.equal(existsSync(fixture.launches), false, 'a POSIX fixture path must never be invoked as native Windows authority');
   const finalState = readState(fixture.root, runId).data;
-  assert.equal(finalState.status, 'paused');
-  assert.equal(finalState.pause_reason, 'trusted-native-identity-unavailable');
+  assert.equal(finalState.status, 'running');
+  assert.equal(finalState.pause_reason, undefined);
   assert.equal(finalState.session_chain.lease.handoff_phase, 'emitted');
 });
 
@@ -853,15 +899,22 @@ test('episode new creates request + episode via CLI', () => {
 // Codex r1 🔴6: proof-파생 터미널/리뷰 결과가 CLI 경계로 도달 가능해야 (Execution 은 CLI 로만 상태 변경).
 // Fix 2: workstream terminal --status ready now uses kernel-derived proof (abandoned doesn't need review_points).
 test('workstream terminal (abandoned) + review record reach kernel via CLI', () => {
-  const { root, runId } = seed();
-  const ws = JSON.parse(run(root, ['workstream', 'new', '--title', 'A', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--owner', runId, '--generation', '1']));
-  run(root, ['workstream', 'set', '--id', ws.id, '--status', 'in_progress', '--owner', runId, '--generation', '1']);
-  run(root, ['workstream', 'terminal', '--id', ws.id, '--status', 'abandoned', '--proof', '{"reason":"superseded"}', '--owner', runId, '--generation', '1']);
-  assert.equal(readState(root, runId).data.workstreams[0].status, 'abandoned');
+  {
+    const { root, runId } = seed();
+    const ws = JSON.parse(run(root, ['workstream', 'new', '--title', 'A', '--branch', 'b', '--worktree', '.claude/worktrees/w', '--owner', runId, '--generation', '1']));
+    const maker = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'plan', '--point', 'plan', '--workstream', ws.id, '--owner', runId, '--generation', '1']));
+    run(root, ['episode', 'record', '--id', maker.id, '--status', 'in_progress', '--owner', runId, '--generation', '1']);
+    run(root, ['episode', 'abandon', '--id', maker.id, '--reason', 'superseded fixture', '--confirm', '--owner', runId, '--generation', '1']);
+    run(root, ['workstream', 'set', '--id', ws.id, '--status', 'in_progress', '--owner', runId, '--generation', '1']);
+    run(root, ['workstream', 'terminal', '--id', ws.id, '--status', 'abandoned', '--proof', '{"reason":"superseded"}', '--confirm', '--owner', runId, '--generation', '1']);
+    assert.equal(readState(root, runId).data.workstreams[0].status, 'abandoned');
+  }
   // review record: a done maker (so the checker binds — dispatchReview refuses unbound), then dispatch + record.
+  const { root, runId } = seed();
   const ws2 = JSON.parse(run(root, ['workstream', 'new', '--title', 'B', '--branch', 'b2', '--worktree', '.claude/worktrees/w2', '--owner', runId, '--generation', '1']));
   writeFileSync(join(root, 'plan-art.txt'), 'artifact');
   const maker = JSON.parse(run(root, ['episode', 'new', '--plugin', 'deep-work', '--role', 'maker', '--kind', 'plan', '--point', 'plan', '--workstream', ws2.id, '--artifacts', '["plan-art.txt"]', '--owner', runId, '--generation', '1']));
+  run(root, ['episode', 'record', '--id', maker.id, '--status', 'in_progress', '--owner', runId, '--generation', '1']);
   run(root, ['episode', 'record', '--id', maker.id, '--status', 'done', '--artifacts', '["plan-art.txt"]', '--owner', runId, '--generation', '1']);
   const disp = JSON.parse(run(root, ['review', 'dispatch', '--point', 'plan', '--workstream', ws2.id, '--owner', runId, '--generation', '1']));
   // #2+Fix4: a passing verdict via CLI must carry --report — a real file under the reviewed ws worktree (.claude/worktrees/w2).
@@ -917,6 +970,7 @@ test('explicit CLI Codex --headless overrides visible handoff intent and cannot 
   const { data } = readState(root, runId);
   data.autonomy.spawn_style = 'visible';
   writeState(root, runId, data);
+  migrateAuthenticLegacyTransport(root, runId);
   const handoff = emitHandoff(root, runId, {
     trigger: 'milestone',
     resumePolicy: 'visible',

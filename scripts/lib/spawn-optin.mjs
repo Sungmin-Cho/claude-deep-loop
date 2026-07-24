@@ -80,12 +80,23 @@ export function offerDesktop(root, runId, { expect, now = Date.now(), ttlSec = 6
 // handler on this host.
 export function confirmDesktop(root, runId, { expect, now = Date.now(), nonce, platform = process.platform, desktopProbe = defaultDesktopProbe } = {}) {
   assertFenceShape(expect, 'confirmDesktop');
+  let approvedAt;
+  try {
+    if (!Number.isFinite(now)) return { ok: false, reason: 'INVALID_NOW' };
+    approvedAt = new Date(now).toISOString();
+    if (new Date(approvedAt).toISOString() !== approvedAt) return { ok: false, reason: 'INVALID_NOW' };
+  } catch {
+    return { ok: false, reason: 'INVALID_NOW' };
+  }
   let probeResult;
   try { probeResult = desktopProbe({ platform }); } catch { probeResult = { ok: false, reason: 'probe-error' }; }
   try {
     appendAnchored(root, runId, { type: 'spawn-style-desktop-confirmed', data: { nonce } },
       (l) => {
         l.autonomy.spawn_style = 'desktop';
+        l.autonomy.attended_launch_approval = {
+          style: 'desktop', approved_at: approvedAt,
+        };
         delete l.autonomy.spawn_style_optin_pending;
       },
       (l) => {
@@ -168,6 +179,7 @@ export function resetDesktop(root, runId, { expect, now = Date.now() } = {}) {
     appendAnchored(root, runId, { type: 'spawn-style-desktop-reset', data: {} },
       (l) => {
         l.autonomy.spawn_style = 'visible';
+        l.autonomy.attended_launch_approval = null;
         delete l.autonomy.spawn_style_optin_pending;
       },
       (l) => {
