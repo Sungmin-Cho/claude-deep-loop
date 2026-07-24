@@ -810,8 +810,8 @@ test('Task 13 plain rebind matrix preserves topology and journals root plus leas
         canonical_path: '/opt/external/tmux',
         sha256: 'b'.repeat(64),
         version: 'tmux 3.4',
-        platform: process.platform,
-        arch: process.arch,
+        platform: 'linux',
+        arch: 'x64',
         source: 'human-explicit',
         authenticode: null,
         approved_by: 'human',
@@ -1113,8 +1113,11 @@ test('Task 13 stale launch metadata and old-root text never override the candida
         '--run-id', moved.runId,
       ], freshRoot('dl-root-launch-cwd-'));
       assert.equal(cli.status, 0, cli.stderr);
-      assert.equal(cli.stdout.includes(moved.storedRoot), false);
-      assert.match(cli.stdout, new RegExp(moved.candidateRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+      const command = splitInvocation(cli.stdout.split('\n')[0]);
+      const rootIndex = command.indexOf('--candidate-project-root');
+      assert.notEqual(rootIndex, -1);
+      assert.equal(command[rootIndex + 1], canonicalProjectRoot(moved.candidateRoot));
+      assert.equal(command.includes(moved.storedRoot), false);
       assert.match(cli.stdout, new RegExp(result.replacement_session_id));
     }
   }

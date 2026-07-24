@@ -293,9 +293,10 @@ test('hook manifest describes cross-host affinity checkpointing while retaining 
   assert.doesNotMatch(manifest.description, /\b(?:headless\s+)?respawn\b/i);
 });
 
-test('CHANGELOG has a 0.1.0 entry', () => {
+test('CHANGELOG documents the current plugin release', () => {
   assert.ok(existsSync(join(R, 'CHANGELOG.md')));
-  assert.match(readFileSync(join(R, 'CHANGELOG.md'), 'utf8'), /0\.1\.0|v1/);
+  const version = JSON.parse(readFileSync(join(R, '.claude-plugin', 'plugin.json'), 'utf8')).version;
+  assert.match(readFileSync(join(R, 'CHANGELOG.md'), 'utf8'), new RegExp(`## \\[${version.replaceAll('.', '\\.')}\\]`));
 });
 
 test('Task 14 continuity docs do not route new sessions from legacy policy or launcher heuristics', () => {

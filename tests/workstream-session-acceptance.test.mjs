@@ -118,8 +118,14 @@ function sha256(bytes) {
 }
 
 function launchCapableHost(root) {
-  const launcher = join(root, 'task15-cmux');
   const marker = join(root, 'spawn-attempt.jsonl');
+  if (process.platform === 'win32') {
+    return {
+      env: { TASK15_SPAWN_MARKER: marker },
+      marker,
+    };
+  }
+  const launcher = join(root, 'task15-cmux');
   writeFileSync(launcher, `#!${process.execPath}
 import { appendFileSync } from 'node:fs';
 const args = process.argv.slice(2);
@@ -156,9 +162,14 @@ for (const runtime of ['claude', 'codex']) {
     const runId = initialized.run_id;
     const initial = state(root, runId);
     assert.equal(initial.autonomy.continuation_policy, 'workstream-session');
-    assert.equal(initial.session_spawn.launcher, 'cmux');
-    assert.equal(initial.session_spawn.reachable, true);
-    assert.equal(initial.session_spawn.visible, true);
+    // Windows intentionally exercises the no-launcher path here; dedicated
+    // native-launcher tests own Windows launch authorization.
+    const expectedLauncher = process.platform === 'win32'
+      ? { launcher: 'none', reachable: false, visible: false }
+      : { launcher: 'cmux', reachable: true, visible: true };
+    assert.equal(initial.session_spawn.launcher, expectedLauncher.launcher);
+    assert.equal(initial.session_spawn.reachable, expectedLauncher.reachable);
+    assert.equal(initial.session_spawn.visible, expectedLauncher.visible);
     assert.equal(initial.session_chain.lease.owner_run_id, runId);
     assert.equal(initial.session_chain.lease.generation, 1);
     assert.equal(initial.session_chain.sessions.length, 1);

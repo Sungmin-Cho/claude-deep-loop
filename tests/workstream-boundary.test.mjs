@@ -939,6 +939,7 @@ test('spawn claim compensates every ordered boundary gate before external spawn'
       spawnFn: () => { spawned += 1; return { ok: true }; },
       expect: { owner: f.runId, generation: 1 },
       env: {},
+      platform: 'linux',
     });
     assert.equal(spawned, 0, label);
     assert.equal(result.ok, false, label);

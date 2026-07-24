@@ -230,7 +230,9 @@ test('withLock persists canonical ownership before exposing a frozen guard', () 
     assert.equal(owner.acquired_at_ms, now);
     assert.equal(owner.heartbeat_at_ms, now);
     assert.deepEqual(Object.keys(owner.lock_identity), ['dev', 'ino', 'birthtime_ns']);
-    assert.equal(statSync(ownerPath).mode & 0o777, 0o600);
+    if (process.platform !== 'win32') {
+      assert.equal(statSync(ownerPath).mode & 0o777, 0o600);
+    }
     assert.doesNotThrow(() => guard.assertOwned());
   }, {
     nowFn: () => now,

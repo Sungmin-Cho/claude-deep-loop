@@ -318,7 +318,7 @@ test('root diagnose fences resolvable copies without mutation and accepts moved 
     current_root_digest: projectRootDigest(moved.storedRoot),
     current_binding_generation: 1,
     fence: { owner: moved.runId, generation: 1 },
-    command: `root rebind --candidate-project-root "${canonicalProjectRoot(moved.candidateRoot)}" `
+    command: `root rebind --candidate-project-root ${JSON.stringify(canonicalProjectRoot(moved.candidateRoot))} `
       + `--run-id "${moved.runId}" --actor human --confirm `
       + `--expected-stored-root-digest ${projectRootDigest(moved.storedRoot)} `
       + `--expected-binding-generation 1 --owner "${moved.runId}" --generation 1`,
