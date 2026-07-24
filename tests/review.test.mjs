@@ -136,6 +136,26 @@ test('dispatchReview creates checker episode + returns descriptor (no call)', ()
   assert.equal(ep.target_maker, makerId);   // always bound going forward
 });
 
+test('dispatchReview rejects a mismatched Workstream scope before reviewer dependency discovery', () => {
+  const { root, runId } = seed();
+  const f = fence(runId);
+  const wsA = newWorkstream(root, runId, { title: 'a', branch: 'a', worktree: '.claude/worktrees/a', fence: f }).id;
+  const wsB = newWorkstream(root, runId, { title: 'b', branch: 'b', worktree: '.claude/worktrees/b', fence: f }).id;
+  doneMaker(root, runId, wsB, 'implementation', f);
+  const state = readState(root, runId).data;
+  const ownerScope = state.session_chain.sessions.find(session => session.run_id === runId).scope;
+  ownerScope.workstream_id = wsA;
+  ownerScope.bound_at_seq = 1;
+  writeState(root, runId, state);
+
+  assert.throws(() => dispatchReview(root, runId, {
+    point: 'implementation',
+    workstreamId: wsB,
+    detected: { 'deep-review': false },
+    fence: f,
+  }), /SESSION_SCOPE_MISMATCH/);
+});
+
 test('public review dispatch/record and independent claim derive target-maker scope without binding', () => {
   const { root, runId } = seed();
   const f = fence(runId);

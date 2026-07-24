@@ -353,6 +353,13 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
   // source, so every checker is ALWAYS bound going forward. (preCheck — thrown before newEpisode: no episode created.)
   if (!targetMakerEp) throw new Error('REVIEW_NO_ELIGIBLE_MAKER: no done maker to review for ' + point + '/' + workstreamId);
   const targetMaker = targetMakerEp.id;
+  // Session scope is the local authorization boundary and must fail before optional
+  // reviewer discovery. Otherwise an installation-dependent dependency error can
+  // mask a cross-Workstream dispatch and make the same durable state behave
+  // differently between a developer checkout and a clean CI host.
+  if (data.autonomy?.continuation_policy === 'workstream-session') {
+    assertScopeAllows(data, workstreamId);
+  }
   const { reviewer, flags, mode, reviewerResolution, blockedReason } = resolveReviewer(data, detected, { independentSubagent });
   // P2 (hillclimb-ledger 2026-07-10, release-blocking): hill-climb run은 checker 계약(HILLCLIMB-001)이 실제로
   // 강제되는 리뷰만 만들 수 있다. `.deep-review/`는 gitignored라 fresh checkout에는 계약이 없고, deep-review는
