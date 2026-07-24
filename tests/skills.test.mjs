@@ -426,68 +426,16 @@ test('all skills + workflow references fence every mutating CLI line', () => {
   }
 });
 
-// Task 12: visible respawn decision flow — string-presence checks (read+CLI only, 2-plane boundary).
-test('continue + handoff Decide: detect-terminal subcommand documented', () => {
-  for (const dir of ['deep-loop-continue', 'deep-loop-handoff']) {
-    const src = readFileSync(skillPath(dir), 'utf8');
-    assert.ok(src.includes('detect-terminal'),
-      `${dir} Decide step must reference the detect-terminal subcommand`);
-  }
-});
-
-test('continue + handoff Decide: respawn --attended documented', () => {
-  for (const dir of ['deep-loop-continue', 'deep-loop-handoff']) {
-    const src = readFileSync(skillPath(dir), 'utf8');
-    assert.ok(src.includes('respawn'),
-      `${dir} must reference the respawn subcommand`);
-    assert.ok(src.includes('--attended'),
-      `${dir} must reference the --attended flag for visible-session respawn`);
-  }
-});
-
-test('continue + handoff Decide: fenced pause --mode preserve (R6-plan: --owner+--generation mandatory)', () => {
+test('continue + handoff boundary fallback is a fenced preserve-pause', () => {
   for (const dir of ['deep-loop-continue', 'deep-loop-handoff']) {
     const src = readFileSync(skillPath(dir), 'utf8');
     assert.ok(src.includes('--mode preserve'),
-      `${dir} must document pause --mode preserve for the legacy-interactive branch`);
-    // R6-plan: handoff emit already moved lease to 'releasing'; unfenced pause exits 3 → stale takeover.
-    // Assert the --mode preserve guidance carries BOTH --owner and --generation on the same line.
+      `${dir} must document pause --mode preserve for attended boundary handoff`);
     const hasFencedPause = src.split('\n').some(
       l => l.includes('--mode preserve') && l.includes('--owner') && l.includes('--generation')
     );
     assert.ok(hasFencedPause,
-      `${dir} pause --mode preserve must carry --owner and --generation on the same line (R6-plan)`);
-  }
-});
-
-test('resume: recover --confirm documented as human escape hatch', () => {
-  const src = readFileSync(skillPath('deep-loop-resume'), 'utf8');
-  assert.ok(src.includes('recover --confirm'),
-    'deep-loop-resume must document recover --confirm as the escape hatch for stuck preserve-paused/gate-blocked runs');
-});
-
-// Codex r6 CRITICAL: no-launcher else-branch must always route through respawn (gate-first) before preserve-pause.
-// respawn returns gate-blocked (rollback+paused, skill must NOT re-pause) or no-launcher (gate passed, then preserve).
-test('continue + handoff no-launcher else-branch: respawn before preserve-pause, gate-blocked/no-launcher branching', () => {
-  for (const dir of ['deep-loop-continue', 'deep-loop-handoff']) {
-    const src = readFileSync(skillPath(dir), 'utf8');
-    // Must document gate-blocked outcome (respawn already paused — skill must NOT pause again).
-    assert.ok(src.includes('gate-blocked'),
-      `${dir}: no-launcher branch must handle respawn gate-blocked outcome`);
-    // gate-blocked recovery: recover --confirm (documented escape hatch), not re-pause.
-    assert.ok(src.includes('recover --confirm'),
-      `${dir}: gate-blocked path must document recover --confirm (not re-pause)`);
-    // Must document no-launcher outcome (gate passed but no auto-launcher — then preserve-pause).
-    assert.ok(src.includes('no-launcher'),
-      `${dir}: must reference no-launcher outcome from respawn`);
-    // preserve-pause must be conditioned on no-launcher outcome:
-    // 'no-launcher' substring must appear BEFORE '--mode preserve' in the text.
-    const noLauncherIdx = src.lastIndexOf('no-launcher');
-    const preserveIdx = src.lastIndexOf('--mode preserve');
-    assert.ok(noLauncherIdx !== -1, `${dir}: must reference no-launcher outcome`);
-    assert.ok(preserveIdx !== -1, `${dir}: must reference --mode preserve`);
-    assert.ok(noLauncherIdx < preserveIdx,
-      `${dir}: no-launcher outcome must appear before --mode preserve (preserve-pause conditioned on no-launcher, not before respawn gate)`);
+      `${dir} pause --mode preserve must carry --owner and --generation on the same line`);
   }
 });
 
@@ -524,16 +472,16 @@ test('continue: worktree-entry ordering — §1.5 entry must precede §2 dispatc
 
 // Task 1.6 follow-up: fresh resume must use descriptor-bound root/run/runtime;
 // only per-action worktree entry remains delegated to continue.
-test('handoff-respawn resume contract uses descriptor root/run/runtime and delegates worktree routing', () => {
+test('handoff-respawn resume contract uses descriptor root/run/runtime and exact recovery routes', () => {
   const refPath = join(ROOT, 'skills', 'deep-loop-workflow', 'references', 'handoff-respawn.md');
   const src = readFileSync(refPath, 'utf8');
-  assert.match(src, /Resume 흐름[\s\S]{0,800}--project-root "<canonical_project_root>"[\s\S]{0,240}--run-id <run_id>/,
+  assert.match(src, /Resume acquisition[\s\S]{0,800}--project-root "<canonical_project_root>"[\s\S]{0,240}--run-id <run_id>/,
     'resume flow must consume the descriptor canonical root and logical run id');
   assert.match(src, /lease acquire[^\n]*--runtime <claude\|codex>[^\n]*--project-root "<canonical_project_root>"[^\n]*--run-id <run_id>/,
     'resume lease acquisition must assert runtime and explicit root/run identity');
-  assert.doesNotMatch(src, /--project-root[^\n]{0,100}(?:불필요|unnecessary)/i,
-    'resume reference must not claim explicit --project-root is unnecessary');
-  assert.match(src, /worktree[\s\S]{0,240}\/deep-loop-continue/,
+  assert.match(src, /recovery acquire --capsule/);
+  assert.match(src, /root recovery acquire --capsule/);
+  assert.match(src, /worktree[\s\S]{0,240}\/deep-loop-continue/i,
     'per-action worktree routing must remain delegated to deep-loop-continue');
 });
 
@@ -673,26 +621,7 @@ test('desktop skill wiring stays 2-plane (kernel CLI only)', () => {
   }
 });
 
-test('all three declared desktop skill paths branch to respawn --attended', () => {
-  const files = [
-    skillPath('deep-loop-handoff'),
-    skillPath('deep-loop-continue'),
-    join(ROOT, 'skills', 'deep-loop-workflow', 'references', 'handoff-respawn.md'),
-  ];
-  for (const f of files) {
-    const s = _rf(f, 'utf8');
-    assert.match(s, /spawn_style==='desktop'[\s\S]*respawn[\s\S]*--attended/, `${f} missing desktop branch (spawn_style==='desktop' → respawn ... --attended)`);
-  }
-});
-
-// Round-8 review Finding 1: the CONTINUE/HANDOFF unattended branch previously keyed off a bare
-// non-tty check ("드라이버 마커 / DEEP_LOOP_UNATTENDED / non-tty"), inconsistent with the kernel's
-// isHeadlessInvocation semantics and the init-skill fix that treats non-tty Desktop Code tabs as
-// attended. A launcher=none attended non-tty session (desktop declined/suppressed) would fall into
-// the do-nothing unattended branch after handoff emit — stranding the lease in 'releasing' with no
-// respawn/preserve-pause. Fixed to key unattended ONLY off headless markers (isHeadlessInvocation:
-// DEEP_LOOP_UNATTENDED/DEEP_LOOP_HEADLESS/driver entrypoint heuristic), never a bare tty check.
-test('continue + handoff + handoff-respawn.md: unattended branch keys ONLY off headless markers, not non-tty', () => {
+test('Task 14 continuity docs never branch on desktop/visible launcher surface state', () => {
   const files = [
     skillPath('deep-loop-continue'),
     skillPath('deep-loop-handoff'),
@@ -700,154 +629,23 @@ test('continue + handoff + handoff-respawn.md: unattended branch keys ONLY off h
   ];
   for (const f of files) {
     const s = _rf(f, 'utf8');
-    // The unattended branch heading/description must reference the kernel's isHeadlessInvocation
-    // semantics (or the concrete headless markers it recognizes), not a bare tty check.
-    assert.match(s, /isHeadlessInvocation|DEEP_LOOP_HEADLESS/,
-      `${f}: unattended branch must reference isHeadlessInvocation/DEEP_LOOP_HEADLESS kernel markers`);
-    // Must explicitly state tty/non-tty is NOT a trigger for the unattended branch (documents the
-    // fix, guards against reintroducing the bare tty check).
-    assert.match(s, /tty[\s\S]{0,80}(아니다|not a (signal|trigger))/i,
-      `${f}: must explicitly document that non-tty alone is not an unattended signal`);
-    // The unattended branch's own heading/description must NOT contain a bare "non-tty" trigger
-    // token immediately inside its own parenthetical marker list (i.e. no regression to
-    // "드라이버 마커 / DEEP_LOOP_UNATTENDED / non-tty" style bare-list phrasing).
-    assert.ok(!/(?:드라이버 마커|explicit driver marker)\s*\/\s*`?DEEP_LOOP_UNATTENDED`?\s*(?:set)?\s*\/\s*non-tty/.test(s),
-      `${f}: must not regress to the bare "driver marker / DEEP_LOOP_UNATTENDED / non-tty" unattended trigger list`);
+    assert.doesNotMatch(s, /spawn_style==='(?:desktop|visible)'|session_spawn\.launcher\s*[!=]=/);
+    assert.doesNotMatch(s, /deep-loop\.mjs"\s+respawn[^\n]*--attended/);
   }
 });
 
-// Round-8 review Finding 1 (part 2): a launcher=none ATTENDED session (not a headless marker, not
-// desktop) must route through respawn (gate-first) then preserve-pause on the no-launcher outcome —
-// the existing else/manual path — never the do-nothing unattended branch. Verify structurally: the
-// unattended-branch text block must appear BEFORE the else/no-launcher/preserve-pause block (so an
-// attended non-tty session that isn't caught by the (now headless-marker-only) unattended check
-// falls through to the manual respawn-gate → preserve-pause path documented later in the file),
-// and the file must NOT describe the unattended branch as also covering launcher=none/attended cases.
-test('continue + handoff + handoff-respawn.md: launcher=none attended routes to respawn/preserve-pause (manual), not a no-op', () => {
-  const files = [
-    skillPath('deep-loop-continue'),
-    skillPath('deep-loop-handoff'),
-    join(ROOT, 'skills', 'deep-loop-workflow', 'references', 'handoff-respawn.md'),
-  ];
-  for (const f of files) {
-    const s = _rf(f, 'utf8');
-    // else/manual branch (launcher=none / visible 아님 / legacy interactive) must exist and route
-    // through respawn (gate) before any pause, exactly like the existing no-launcher-else assertions
-    // elsewhere in this file — reconfirm no-launcher precedes --mode preserve.
-    const noLauncherIdx = s.lastIndexOf('no-launcher');
-    const preserveIdx = s.lastIndexOf('--mode preserve');
-    assert.ok(noLauncherIdx !== -1 && preserveIdx !== -1 && noLauncherIdx < preserveIdx,
-      `${f}: launcher=none attended path must reach the no-launcher → --mode preserve manual path (not the unattended do-nothing branch)`);
-    // The unattended branch must not itself instruct pause/preserve or claim it is a no-op for
-    // launcher=none — it defers entirely to the driver.
-    const unattendedHeadingIdx = s.search(/unattended|Unattended/);
-    assert.ok(unattendedHeadingIdx !== -1, `${f}: unattended branch heading must exist`);
-  }
-});
-
-// Round-9 review Finding: the CONTINUE/HANDOFF/handoff-respawn.md desktop branch (spawn_style==='desktop'
-// → respawn --attended) previously preceded the unattended/headless-marker branch. A run that opted into
-// desktop but is later executing under a headless invocation (DEEP_LOOP_UNATTENDED / headless entrypoint)
-// would take the desktop branch and call `respawn --attended` directly from the skill — bypassing the
-// drive-headless wrapper that records measured usage, undermining the budget/fail-closed model (invariant
-// #6 at the skill layer). Fixed by reordering so the unattended/headless-marker branch is evaluated BEFORE
-// the desktop branch, mirroring the kernel's resolveSpawnMode precedence (headless > desktop > visible >
-// interactive). Verify structurally: the unattended/headless-marker branch text must appear BEFORE the
-// spawn_style==='desktop' branch text in each of the three files.
-test('continue + handoff + handoff-respawn.md: unattended/headless branch precedes the desktop branch (kernel precedence: headless > desktop)', () => {
-  const files = [
-    skillPath('deep-loop-continue'),
-    skillPath('deep-loop-handoff'),
-    join(ROOT, 'skills', 'deep-loop-workflow', 'references', 'handoff-respawn.md'),
-  ];
-  for (const f of files) {
-    const s = _rf(f, 'utf8');
-    // First occurrence of the unattended/headless-marker branch heading (isHeadlessInvocation reference)
-    // must come before the first occurrence of the spawn_style==='desktop' branch condition.
-    const unattendedIdx = s.search(/isHeadlessInvocation/);
-    const desktopIdx = s.indexOf(`spawn_style==='desktop'`);
-    assert.ok(unattendedIdx !== -1, `${f}: unattended/headless branch (isHeadlessInvocation) must exist`);
-    assert.ok(desktopIdx !== -1, `${f}: desktop branch (spawn_style==='desktop') must exist`);
-    assert.ok(unattendedIdx < desktopIdx,
-      `${f}: unattended/headless-marker branch must precede the spawn_style==='desktop' branch (kernel resolveSpawnMode: headless preempts desktop, invariant #6) — got unattendedIdx=${unattendedIdx}, desktopIdx=${desktopIdx}`);
-  }
-});
-
-test('deep-loop SKILL.md: init opt-in offer gated on launcher===none + attended + darwin/win32', () => {
+test('deep-loop entry keeps workstream-session interactive and defers human approval to status', () => {
   const s = dlSkill();
-  assert.match(s, /detect-terminal/, 'must run detect-terminal before offering desktop opt-in');
-  assert.match(s, /launcher\s*===?\s*'none'/, "must gate on session_spawn.launcher === 'none'");
-  assert.match(s, /attended/, 'must gate on the session being attended (not headless)');
-  assert.match(s, /darwin/, 'must gate on process.platform darwin');
-  assert.match(s, /win32/, 'must gate on process.platform win32');
-  assert.match(s, /spawn-style offer-desktop/, 'must call spawn-style offer-desktop');
-  assert.match(s, /AskUserQuestion/, 'must present the opt-in question via AskUserQuestion');
-  assert.match(s, /spawn-style confirm-desktop/, 'must call spawn-style confirm-desktop on yes');
-  assert.match(s, /spawn-style decline-desktop/, 'must call spawn-style decline-desktop on no');
-  // both offer/confirm/decline lines must carry the fence (kernel requires it; not enforced by mutatingFenced's MUTATING_SUB list)
-  for (const line of s.split('\n').filter(l => /spawn-style\s+(offer|confirm|decline)-desktop/.test(l))) {
-    assert.ok(/--owner\b/.test(line) && /--generation\b/.test(line), `spawn-style line missing fence flags: ${line}`);
-  }
+  assert.match(s, /workstream-session/);
+  assert.match(s, /spawn_style:'interactive'/);
+  assert.match(s, /\/deep-loop-status/);
+  assert.doesNotMatch(s, /deep-loop\.mjs"\s+spawn-style\s+(?:offer|confirm|decline|reset)-desktop/);
 });
 
-test('runtime-facing launcher recovery docs diagnose read-only, require explicit human approval, then re-detect', () => {
-  const files = [
-    skillPath('deep-loop'),
-    skillPath('deep-loop-continue'),
-    skillPath('deep-loop-handoff'),
-    join(ROOT, 'skills', 'deep-loop-workflow', 'references', 'handoff-respawn.md'),
-  ];
-  for (const file of files) {
-    const body = _rf(file, 'utf8');
-    assert.match(body, /windows-terminal-unverified/, `${file}: WT fail-closed reason must branch to recovery`);
-    assert.match(body, /powershell-unverified/, `${file}: PowerShell fail-closed reason must branch to recovery`);
-    const diagnose = body.indexOf('launcher-executable diagnose');
-    const approve = body.indexOf('launcher-executable approve');
-    const redetect = body.indexOf('detect-terminal', approve);
-    assert.ok(diagnose !== -1 && approve > diagnose && redetect > approve,
-      `${file}: required order is diagnose -> explicit approve -> detect-terminal`);
-    assert.match(body.slice(Math.max(0, diagnose - 500), approve), /read-only|읽기 전용/i,
-      `${file}: diagnosis must be described as read-only`);
-    assert.match(body.slice(Math.max(0, approve - 900), approve + 500), /AskUserQuestion|explicit human|명시적.*사람/i,
-      `${file}: approval must be offered to a human, never inferred`);
-    assert.match(body.slice(Math.max(0, approve - 900), approve + 500), /auto-confirm|자동.*confirm|자동 확인/i,
-      `${file}: docs must explicitly prohibit auto-confirmation`);
-    const approvalLines = body.split('\n').filter(line => /launcher-executable\s+approve/.test(line));
-    assert.ok(approvalLines.length > 0, `${file}: approval command example is required`);
-    for (const line of approvalLines) {
-      assert.match(line, /--actor\s+human/);
-      assert.match(line, /--confirm\b/);
-      assert.match(line, /--owner\b/);
-      assert.match(line, /--generation\b/);
-    }
-    assert.match(body, /node "DEEP_LOOP_ROOT\/scripts\/deep-loop\.mjs"/,
-      `${file}: launcher commands must use the canonical root placeholder`);
-  }
-});
-
-test('launcher approval recovery runs before handoff emit enters the releasing lease', () => {
-  const files = [
-    skillPath('deep-loop-continue'),
-    skillPath('deep-loop-handoff'),
-    join(ROOT, 'skills', 'deep-loop-workflow', 'references', 'handoff-respawn.md'),
-  ];
-  for (const file of files) {
-    const body = _rf(file, 'utf8');
-    const approval = body.indexOf('launcher-executable approve');
-    const emit = body.indexOf('node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" handoff emit');
-    assert.ok(approval !== -1 && emit !== -1 && approval < emit,
-      `${file}: human launcher approval must complete before handoff emit changes the lease to releasing`);
-    assert.match(body.slice(Math.max(0, approval - 1400), emit), /handoff emit[\s\S]{0,240}(?:before|이전|전)/i,
-      `${file}: ordering rationale must explicitly name the pre-emit fence boundary`);
-  }
-});
-
-test('continue/handoff/resume skills + shared reference wire session-profile refresh (WS1)', () => {
+test('continue and resume refresh the active owner session profile (WS1)', () => {
   const paths = [
     '../skills/deep-loop-continue/SKILL.md',
-    '../skills/deep-loop-handoff/SKILL.md',
     '../skills/deep-loop-resume/SKILL.md',
-    '../skills/deep-loop-workflow/references/handoff-respawn.md',
   ];
   for (const p of paths) {
     const body = readFileSync(new URL(p, import.meta.url), 'utf8');
@@ -886,7 +684,7 @@ test('handoff execution docs preserve runtime-correct resume tokens and current 
     assert.match(body, /\/deep-loop-resume/, `${path} must retain the Claude resume token`);
     assert.match(body, /\$deep-loop:deep-loop-resume/, `${path} must document the Codex resume token`);
     assert.match(body, /codex-transport-not-activated/, `${path} must retain the fail-closed reason for unsupported Codex paths`);
-    assert.match(body, /native Windows|네이티브 Windows/i,
+    assert.match(body, /native\s+Windows|네이티브\s+Windows/i,
       `${path} must distinguish the activated native-Windows Codex path`);
     assert.match(body, /macOS\/Linux[\s\S]{0,360}cmux/i,
       `${path} must document approved Codex visible cmux continuation on POSIX`);
@@ -894,8 +692,8 @@ test('handoff execution docs preserve runtime-correct resume tokens and current 
       `${path} must bind Darwin Codex continuation to the detected Apple terminal`);
     assert.match(body, /runtime-identity-unavailable/,
       `${path} must name the missing approved-runtime fail-closed reason`);
-    assert.match(body, /trusted|승인된|검증된/i,
-      `${path} must bind native-Windows transport to trusted executable identities`);
+    assert.match(body, /exact|정확|검증한/i,
+      `${path} must use kernel-validated exact continuation guidance`);
     assert.match(body, /Codex App[\s\S]{0,240}(?:manual|수동)/i,
       `${path} must keep Codex App new-task continuation manual`);
     assert.doesNotMatch(body, /visible\/headless\/App 자동 process transport는 아직 활성화하지 않는다/,
@@ -903,39 +701,16 @@ test('handoff execution docs preserve runtime-correct resume tokens and current 
   }
 });
 
-test('runtime-facing headless docs describe both measured drivers without a cross-runtime fallback', () => {
+test('runtime-facing headless docs keep measured continuation host-owned without cross-runtime fallback', () => {
   const shared = readFileSync(
     new URL('../skills/deep-loop-workflow/references/handoff-respawn.md', import.meta.url),
     'utf8',
   );
-  const headlessStart = shared.indexOf('### Headless /');
-  const headlessEnd = shared.indexOf('## Respawn 게이트', headlessStart);
-  assert.ok(headlessStart !== -1 && headlessEnd > headlessStart,
-    'shared reference must retain a bounded later Headless section');
-  const headless = shared.slice(headlessStart, headlessEnd);
-
-  const documents = [
-    ['shared handoff reference', headless],
-    ['English README', readFileSync(new URL('../README.md', import.meta.url), 'utf8')],
-    ['Korean README', readFileSync(new URL('../README.ko.md', import.meta.url), 'utf8')],
-    ['CLAUDE project guide', readFileSync(new URL('../CLAUDE.md', import.meta.url), 'utf8')],
-  ];
-  for (const [name, body] of documents) {
-    assert.match(body, /Claude[\s\S]{0,500}claude -p/i,
-      `${name}: Claude headless driver must remain explicit`);
-    assert.match(body, /Codex[\s\S]{0,500}codex exec --json/i,
-      `${name}: measured Codex JSONL driver must be explicit`);
-    assert.match(body, /JSONL/i, `${name}: Codex transport must name its JSONL accounting format`);
-    assert.match(body, /(?:no cross-runtime fallback|교차 런타임[^\n]{0,120}(?:fallback|폴백)[^\n]{0,80}(?:없|금지|하지))/i,
-      `${name}: docs must prohibit fallback to the other runtime`);
-  }
-
-  assert.doesNotMatch(documents[1][1], /headless driver wraps `claude -p`/i,
-    'English README must not describe the runtime-selected driver as Claude-only');
-  assert.doesNotMatch(documents[2][1], /무인 모드에서는 headless respawn도 트리거/i,
-    'Korean README must keep PreCompact emit-only');
-  assert.match(documents[2][1], /PreCompact[\s\S]{0,300}(?:emit-only|방출 전용)[\s\S]{0,300}drive-headless/i,
-    'Korean README must assign unattended continuation to the measured driver');
+  assert.match(shared, /## Unattended continuation/);
+  assert.match(shared, /drive-headless/);
+  assert.match(shared, /Claude measured[\s\S]{0,240}Codex incremental JSONL/);
+  assert.match(shared, /cross-runtime fallback[\s\S]{0,80}(?:없|금지|하지)/i);
+  assert.doesNotMatch(shared, /deep-loop\.mjs"\s+respawn/);
 });
 
 test('runtime-neutral adapter reference routes exact skill/agent/blocked descriptors and capability flag', () => {
@@ -1032,6 +807,7 @@ test('portable command contract: free-form reason placeholders remain one argv v
   for (const file of EXECUTION_DOCS) {
     for (const line of kernelCommandLines(readFileSync(file, 'utf8')).filter((candidate) => /--reason\b/.test(candidate))) {
       if (/--reason\s+"host-session-lost"(?:\s|$)/.test(line)) continue;
+      if (/--reason\s+"(?:workstream-terminal|needs-human:workstream-terminal)"(?:\s|$)/.test(line)) continue;
       assert.match(line, /--reason\s+"[^"]*<[^>]+>[^"]*"(?:\s|$)/,
         `${file}: free-form reason placeholder must be double-quoted: ${line}`);
     }
@@ -1050,8 +826,10 @@ test('lease-fenced argv keeps the immutable logical run id separate from the cur
       if (/\blease acquire\b/.test(line)) {
         assert.match(line, /--owner\s+<child_run_id>/,
           `${file}: lease acquire alone uses the reserved child owner: ${line}`);
-        assert.match(line, /--generation\s+<new_generation>/,
-          `${file}: lease acquire uses the requested next generation: ${line}`);
+        assert.match(line, /--generation\s+<current_generation>/,
+          `${file}: lease acquire CASes the freshly read current generation: ${line}`);
+        assert.doesNotMatch(line, /--generation\s+<new_generation>/,
+          `${file}: the next generation is returned by the kernel, not supplied by the skill: ${line}`);
       } else {
         assert.match(line, /--owner\s+<owner_run_id>/,
           `${file}: non-acquire commands use the freshly read lease owner: ${line}`);
@@ -1191,9 +969,9 @@ test('deep-loop-compact exposes only explicit prepare and restore modes with pub
 // 잡는 것은 **삭제**뿐이다: 마커 문자열이 남아 있으면 그 옆의 지시문이 약화·반전되어도 이 존재-검사는 통과한다.
 // 의미 반전 탐지는 hill-climb checker 계약 (e)(적대적 diff 리뷰) + 사람 머지 리뷰의 몫이다 — overclaim 금지.
 const GATE_MARKERS = {
-  'deep-loop-continue': ['budget', 'breaker', 'comprehension', 'gate.allowed', '--confirm'],
-  'deep-loop-handoff': ['handoff emit', '--owner', 'gate-blocked', 'recover --confirm', 'isHeadlessInvocation'],
-  'deep-loop-resume': ['lease acquire', '--expect-generation', 'recover --confirm', 'needs-human'],
+  'deep-loop-continue': ['budget', 'breaker', 'comprehension', 'action.boundary_event', '--boundary-event'],
+  'deep-loop-handoff': ['handoff emit', '--owner', 'action.boundary_event', 'resume-command'],
+  'deep-loop-resume': ['lease acquire', '--generation', 'recovery acquire', 'root recovery acquire'],
   'deep-loop-ack': ['--actor human', '--confirm', 'CONFIRM_REQUIRED', 'ACK_REJECTED'],
   'deep-loop-discover': ['state patch', '--owner', '--generation', 'debt_ratio'],
   'deep-loop-finish': ['proof', '--confirm', 'FINISH_PROOF_UNMET', 'proposal-only'],
@@ -1227,23 +1005,102 @@ test('skills/ 전역: hill-climb 제안 명령에 candidate id 콜론-템플릿 
   }
 });
 
-test('continue SKILL: compact-in-place does not rotate on cap alone (advice display only)', () => {
+test('continue SKILL: compact advice uses native same-conversation preparation', () => {
   const md = readFileSync('skills/deep-loop-continue/SKILL.md', 'utf8');
   assert.ok(md.includes('advice'), 'advice 필드 처리 지시 필요');
-  assert.ok(md.includes('compact-in-place'), '정책 분기 지시 필요');
-  assert.ok(/compact-in-place[^\n]*rotate하지 않는다|cap 도달만으로 rotate하지 않는다/.test(md));
+  assert.match(md, /deep-loop-compact prepare/);
+  assert.match(md, /native `\/compact`/);
+  assert.match(md, /same conversation|같은 conversation/i);
 });
-test('continue SKILL: milestone rotation gated on unconsumed_milestones', () => {
+test('continue SKILL: handoff uses exact kernel terminal boundary only', () => {
   const md = readFileSync('skills/deep-loop-continue/SKILL.md', 'utf8');
-  assert.ok(md.includes('unconsumed_milestones'));
+  assert.match(md, /action\.type === 'handoff'/);
+  assert.match(md, /action\.reason === 'workstream-terminal'/);
+  assert.match(md, /action\.boundary_event/);
+  assert.doesNotMatch(md, /unconsumed_milestones/);
 });
-test('continue SKILL: §0.5 covers reserved (finalization) in addition to emitted/spawned', () => {
+test('continue SKILL: in-flight continuity is re-read from next-action', () => {
   const md = readFileSync('skills/deep-loop-continue/SKILL.md', 'utf8');
   const s = md.split('## 0.5.')[1] ?? '';
-  assert.ok(/handoff emit[\s\S]*reserved-finalization/.test(s.slice(0, 1500)),
-    '§0.5 must instruct handoff emit → reserved-finalization');
+  assert.match(s.slice(0, 1800), /next-action/);
+  assert.doesNotMatch(s.slice(0, 1800), /reserved-finalization/);
 });
 test('continue SKILL: post-compact comprehension check present', () => {
   const md = readFileSync('skills/deep-loop-continue/SKILL.md', 'utf8');
-  assert.ok(md.includes('comprehension') && md.includes('2회'));
+  assert.ok(md.includes('comprehension') && md.includes('SessionStart(compact)'));
+});
+
+// Task 14: execution-plane continuity is selected by the kernel, never by
+// skill-side milestone, launcher, or recovery heuristics.
+const TASK14_AUTONOMOUS_DOCS = [
+  skillPath('deep-loop'),
+  skillPath('deep-loop-continue'),
+  skillPath('deep-loop-handoff'),
+  join(ROOT, 'skills', 'deep-loop-workflow', 'references', 'handoff-respawn.md'),
+];
+
+test('Task 14 autonomous skills never issue human-only recovery, relief, or attended-approval commands', () => {
+  const forbiddenCommand = /deep-loop\.mjs"\s+(?:recover\b[^\n]*--supersede-affinity|root\s+(?:rebind|recover)\b|budget\s+extend\b|breaker\s+reset\b|attended-launch\s+(?:approve|revoke)\b|spawn-style\s+(?:offer-desktop|confirm-desktop|decline-desktop|reset-desktop)\b)/;
+  for (const file of TASK14_AUTONOMOUS_DOCS) {
+    const body = readFileSync(file, 'utf8');
+    assert.doesNotMatch(body, forbiddenCommand,
+      `${file}: autonomous execution must stop and report human-only recovery/approval`);
+  }
+});
+
+test('Task 14 continue and handoff consume the exact kernel Workstream boundary action', () => {
+  for (const dir of ['deep-loop-continue', 'deep-loop-handoff']) {
+    const body = readFileSync(skillPath(dir), 'utf8');
+    assert.match(body, /next-action --json/, `${dir}: kernel next-action is the router`);
+    assert.match(body, /action\.type[\s\S]{0,180}handoff/, `${dir}: handoff is action.type-driven`);
+    assert.match(body, /action\.boundary_event/, `${dir}: exact boundary identity comes from the action`);
+    assert.doesNotMatch(body, /action\.boundary_event\.(?:seq|checksum)/,
+      `${dir}: public next-action renders boundary_event as one seq:checksum string`);
+    assert.match(body, /action\.boundary_event[\s\S]{0,220}(?:그대로|unchanged)/,
+      `${dir}: rendered boundary_event must be forwarded unchanged`);
+    assert.match(body,
+      /handoff emit[^\n]*--boundary-event <boundary_seq>:<boundary_checksum>[^\n]*--owner <owner_run_id>[^\n]*--generation <(?:generation|n)>/,
+      `${dir}: handoff emit must carry the exact rendered boundary event`);
+    assert.doesNotMatch(body, /deep-loop\.mjs"\s+respawn[^\n]*--attended/,
+      `${dir}: attended launch must not be inferred by the skill`);
+  }
+});
+
+test('Task 14 interactive handoff prints kernel resume-command output before preserve-pause', () => {
+  for (const file of [
+    skillPath('deep-loop-continue'),
+    skillPath('deep-loop-handoff'),
+    join(ROOT, 'skills', 'deep-loop-workflow', 'references', 'handoff-respawn.md'),
+  ]) {
+    const body = readFileSync(file, 'utf8');
+    const resumeIndex = body.indexOf('resume-command --project-root');
+    const pauseIndex = body.indexOf('--mode preserve');
+    assert.ok(resumeIndex !== -1 && pauseIndex > resumeIndex,
+      `${file}: print the exact resume-command result, then preserve-pause`);
+    assert.match(body.slice(Math.max(0, resumeIndex - 240), pauseIndex), /exact|정확/,
+      `${file}: resume text must be kernel-returned and byte-exact`);
+  }
+});
+
+test('Task 14 resume distinguishes handoff, recovery capsule, and root-relocation recovery', () => {
+  const body = readFileSync(skillPath('deep-loop-resume'), 'utf8');
+  assert.match(body, /Boundary handoff/i);
+  assert.match(body, /Affinity recovery capsule/i);
+  assert.match(body, /Project-root relocation recovery/i);
+  assert.match(body, /resume-command --project-root/);
+  assert.match(body, /recovery acquire --capsule/);
+  assert.match(body, /root recovery acquire --capsule/);
+  assert.match(body, /root diagnose --candidate-project-root/);
+  assert.match(body, /current_root_digest/);
+  assert.match(body, /current_binding_generation/);
+  assert.match(body, /exact returned command|반환된 정확한 명령/i);
+});
+
+test('Task 14 compact restore stays in-conversation and never acquires a lease', () => {
+  const body = readFileSync(skillPath('deep-loop-compact'), 'utf8');
+  const restore = body.match(/## Restore([\s\S]*)/i)?.[1] ?? '';
+  assert.match(restore, /checkpoint restore/);
+  assert.match(restore, /same owner session|동일 owner 세션/i);
+  assert.match(restore, /\/deep-loop-continue/);
+  assert.doesNotMatch(restore, /deep-loop\.mjs"\s+lease acquire/);
 });

@@ -10,6 +10,7 @@ user-invocable: true
 > **loop.json + handoff 파일이 source of truth** — 이전 대화 컨텍스트를 가정하지 말 것.
 > **비가역 외부 행동(push/PR/publish/merge/delete)은 proposal-only**, 항상 사람 승인을 받는다.
 > **maker/checker 분리 유지** — 같은 세션이 동일 workstream의 maker와 checker를 겸하지 않는다.
+> 스킬은 durable state를 **읽기만** 하며, 모든 변경은 public kernel CLI로만 요청한다.
 
 ## 실행 루트와 호스트 호출
 
@@ -140,76 +141,18 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" init-run --runtime <claude|codex> --
 `--model`/`--effort`는 §2-4.5에서 관측한 값(관측된 것만; effort가 비면 `--effort` 생략, 둘 다 못 하면 둘 다 생략 → 커널 기본값). 이 값이 `autonomy.session_model`/`session_effort`로 seed된다.
 init-run 반환의 `<run_id>`를 저장한다. 이 값은 descriptor/current run의 논리적(logical) loop run id이며 전체 run 수명 동안 불변(immutable)이다. 초기 lease는 init-run이 같은 ID와 generation 1로 만들지만 두 역할의 placeholder는 이후에도 구분한다: `<owner_run_id> = <run_id>`, `<generation> = 1`. 이후 모든 mutating CLI는 `--owner <owner_run_id> --generation <generation> --run-id <run_id>`를 사용하며 논리 ID를 owner 변수로 재사용하지 않는다.
 
-### 2-5-1. Desktop 딥링크 재시작 opt-in 제안 (선택적, 최초 1회)
+### 2-5-1. Continuity 기본값
 
-`init-run` 직후, 이번 run에서 **딱 한 번만** 실행한다(선택은 durable — 이후 handoff/continue에서 재질문하지 않는다).
-이 절차는 asserted runtime이 `claude`일 때만 수행한다. `codex`이면 Codex App 자동 task 생성 URL을 추측하지 않고 handoff의 수동 `$deep-loop:deep-loop-resume` descriptor를 사용한다.
+새 run은 `workstream-session`과 `spawn_style:'interactive'`로 시작한다. entry
+skill은 launcher, tty, platform, 또는 handler probe에서 attended launch
+approval을 추론하거나 발행하지 않는다. 열린 Workstream은 현재 owner
+conversation에 남고, compact는 native `/compact`를 통해 같은 conversation
+안에서 수행한다.
 
-터미널 상태를 감지한다:
-
-```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" detect-terminal --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field session_spawn --project-root "<canonical_project_root>" --run-id <run_id>
-```
-
-Windows에서 reason이 `windows-terminal-unverified` 또는 `powershell-unverified`이면 먼저 네이티브 런처 승인 복구를 제안한다(`wt` 또는 `powershell`). PATH, 고정 설치 경로, `where` 결과를 권위로 추측하지 말고 사람이 제공한 정확한 절대 `.exe` 경로 하나만 사용한다.
-
-1. 후보를 실행하지 않는 **read-only(읽기 전용)** 진단을 수행한다:
-   ```
-   node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" launcher-executable diagnose --kind <wt|powershell> --path "<human_supplied_absolute_exe>" --project-root "<canonical_project_root>" --run-id <run_id>
-   ```
-2. 반환된 `canonical_path`와 lowercase `sha256`을 그대로 보여 주고 `AskUserQuestion`으로 **명시적 사람 승인**을 묻는다. `--confirm`을 자동 생성하거나 auto-confirm하지 않는다.
-3. 사람이 그 path/SHA를 명시적으로 확인한 경우에만 다음 한 줄을 실행한다:
-   ```
-   node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" launcher-executable approve --kind <wt|powershell> --path "<same_absolute_exe>" --canonical-path "<diagnosed_canonical_path>" --sha256 "<diagnosed_lowercase_sha256>" --actor human --confirm --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>
-   ```
-4. 승인 성공 후에만 다시 감지한다:
-   ```
-   node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" detect-terminal --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>
-   ```
-
-경로 미제공, 진단 실패, 승인 거절이면 durable 상태를 바꾸지 않고 수동 fallback을 유지한다. 스킬은 상태 파일을 직접 쓰지 않으며 모든 변경은 위 fenced 커널 명령을 통해서만 수행한다.
-
-`session_spawn.launcher === 'none'` **AND** 현재 세션이 attended **AND** `process.platform ∈ {darwin, win32}`(Claude Desktop이 존재하는 플랫폼)일 때만 아래 제안을 진행한다. 그 외(런처 정상 감지 · unattended · 미지원 플랫폼)에는 **아무것도 묻지 않는다** — 기존 happy path 무마찰이며, `decline-desktop` 호출조차 생략한다.
-
-**"attended"의 정의(중요 — TTY 유무가 아니다):** 커널의 `isHeadlessInvocation(env)`가 `false`인 것, 즉 명시적 unattended/headless 마커(`DEEP_LOOP_UNATTENDED`/`DEEP_LOOP_HEADLESS`/드라이버 entrypoint 휴리스틱)가 하나도 없는 세션을 attended로 판단한다. **non-tty라는 이유만으로 unattended로 취급하지 않는다** — Claude Desktop의 Code 탭은 사람이 지켜보는 GUI이지만 tty가 없으므로, tty 존재를 기준으로 삼으면 정확히 이 desktop 대상 환경에서 opt-in 제안이 억제되는 버그가 된다. 판단이 애매하면(마커도 없고 tty도 없는 등) fail-open하여 attended로 간주하고 제안한다 — 사람은 언제든 "아니오"로 거절할 수 있으므로 과소-제안보다 과다-제안이 안전하다.
-
-**위 게이트를 통과했더라도, 핸들러가 지금 실제로 검증되지 않으면 제안 자체를 하지 않는다(round-6 리뷰 수정 — 코덱스 리뷰어 2/2):**
-
-```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" spawn-style probe-desktop --project-root "<canonical_project_root>" --run-id <run_id>
-```
-
-이 subcommand는 **read-only**다(상태 변경 없음, fence/owner/generation 불필요, run이 없어도 호출 가능). `{ ok: true, ... }`를 반환할 때만 아래 AskUserQuestion 제안을 진행한다. `{ ok: false, reason: ... }`이면 **조용히 건너뛴다** — AskUserQuestion도, `decline-desktop` 호출도 하지 않는다(기존 수동 `/deep-loop-resume` 흐름 유지). Windows에서는 v1.7.0부터 `ALLOW_WIN_PUBLISHERS`에 실기 관측 서명자 thumbprint가 pin되어(desktop-target.mjs — 2026-07-09 Windows 11 관측, MSIX 경로 패턴 포함) 정상 설치에서 `probe-desktop`이 `ok:true`를 반환할 수 있다. 단 leaf 인증서 로테이션(NotAfter 2026-10-21경) 이후에는 재-pin 전까지 `ok:false`(publisher-not-allowed)로 **fail-closed 복귀**한다 — 그 상태에서는 Windows 사용자에게 "켤 수 있다"고 묻는 것이 다시 원천 차단된다(관측 없는 추측성 pin은 금지). `confirmDesktop` 커널 자체도 동일한 라이브 프로브를 재확인하므로(guarantee (a)), 설령 스킬이 이 사전 게이트를 건너뛰더라도 durable 전이는 프로브가 실패하는 한 발생할 수 없다 — 이 스킬 단계는 순수 UX 최적화(불필요한 질문 방지)이며 안전장치의 유일한 층이 아니다.
-
-게이트를 통과하면 커널에 단명 pending nonce를 기록한다:
-
-```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" spawn-style offer-desktop --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>
-```
-
-반환된 `nonce`를 받아 `AskUserQuestion`으로 사람에게 묻는다:
-
-> "터미널 런처가 감지되지 않았습니다. Claude Desktop에서 실행 중이면 딥링크 자동 재시작(반자동: 폴더 확인+Enter 필요)을 켤까요?"
-
-- **예**:
-  ```
-  node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" spawn-style confirm-desktop --owner <owner_run_id> --generation <generation> --nonce <nonce> --project-root "<canonical_project_root>" --run-id <run_id>
-  ```
-  `autonomy.spawn_style`이 `desktop`으로 전이한다(`visible`/`interactive`에서만 유효한 전이 — `exit 3`=fence, `exit 1`=거부). **`confirmDesktop` 커널은 이 전이 직전에 다시 한번 라이브 핸들러 프로브를 실행한다** — 위의 사전 `probe-desktop` 게이트와 이 순간 사이에 핸들러가 사라지는(앱 삭제 등) TOCTOU 경합이 있어도, 프로브가 실패하면 `exit 1` `{ ok:false, reason:'HANDLER_UNVERIFIED' }`이고 **아무것도 저장되지 않는다**(durable 전이 없음).
-- **아니오** (또는 미지원 플랫폼/프로브 실패라 애초에 제안하지 않은 경우는 호출 불필요):
-  ```
-  node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" spawn-style decline-desktop --owner <owner_run_id> --generation <generation> --project-root "<canonical_project_root>" --run-id <run_id>
-  ```
-  pending nonce를 clear하고 기존 수동 `/deep-loop-resume` 흐름을 유지한다.
-
-이 선택은 `autonomy.spawn_style`에 durable하게 저장된다 — `/deep-loop-continue`·`/deep-loop-handoff`가 이후 매 handoff마다 `spawn_style==='desktop'`이면 자동으로 `respawn --attended`를 호출하므로, 이 opt-in을 다시 묻지 않는다.
-
-**복구 경로(round-6 part c):** 과거에 확인되었던 핸들러가 이후 깨진 경우(앱 삭제/이동, 서명 변경 등) — `spawn_style`이 이미 `desktop`으로 durable하게 저장된 뒤라 매 handoff가 프로브 실패 → preserve-pause를 반복하게 된다. 사람이 다음으로 복구한다:
-```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" spawn-style reset-desktop --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
-```
-`spawn_style`을 `desktop → visible`로 되돌린다(fenced; `desktop`이 아닐 때는 `exit 1` `SOURCE_INVALID`, fence 불일치는 `exit 3`). 이후 위 opt-in 절차를 다시 밟아 재확인할 수 있다.
+visible/desktop attended launch를 원하는 사람은 run 생성 뒤
+`/deep-loop-status`의 human-only approval 진단을 명시적으로 요청해야 한다.
+autonomous `/deep-loop-continue`와 `/deep-loop-handoff`는 그 승인 유무를
+surface heuristic으로 소비하지 않고 kernel `next-action`만 따른다.
 
 ### 2-6. Workstream 생성
 

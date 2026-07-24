@@ -17,6 +17,8 @@ user-invocable: true
 `/deep-loop-status` — 현재 run의 상태(status), 예산, comprehension debt, circuit breaker, 미검토 episode, session chain, workstream 표를 **읽기 전용**으로 표시한다.
 
 status 조회 대상 descriptor/current run의 `<run_id>`는 논리적(logical) loop run id이며 run 수명 동안 불변(immutable)이다. 아래 사람 전용 mutation을 제안하거나 실행하기 전에는 current lease를 새로 읽는다.
+스킬의 autonomous 진단은 durable state를 **읽기만** 한다. 아래 mutation은
+명시적 사람 확인 뒤 public kernel CLI로만 실행하며 상태 파일을 직접 쓰지 않는다.
 
 ## 조회 순서
 
@@ -88,3 +90,88 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" episode abandon --id <id> --reason "
 - handoff 대기: `/deep-loop-resume`
 - 완료 가능: `/deep-loop-finish`
 - breaker tripped: `breaker reset --confirm --owner <owner_run_id> --generation <n>` (사람 직접 실행)
+
+## Human-only safety relief
+
+`next-action`이 `await_human`을 반환하면 autonomous skill은 relief command를
+실행하지 않는다. 사람이 현재 pause reason, fresh owner/generation, 요청한
+positive delta를 확인한 경우에만 예산을 확장한다:
+
+```
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" budget extend --turns <positive_turn_delta> --reason "<human_confirmed_reason>" --confirm --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+```
+
+breaker reset은 위 §4의 exact command를 사람이 직접 확인한 경우에만
+실행한다. recovery reservation에서는 두 route 모두 exact child/capsule을
+보존하며, autonomous tick은 실행하지 않는다.
+
+## Human-only attended launch approval
+
+interactive가 기본이다. 사람이 visible launch를 명시적으로 요청하고 fresh
+lease와 executable/launcher diagnosis를 확인한 경우에만 다음 command를
+제시하고 확인 후 실행한다:
+
+```
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" attended-launch approve --style visible --confirm --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+```
+
+desktop은 이 command의 style을 바꾸지 않고 전용 `spawn-style
+offer-desktop`/`confirm-desktop` human flow를 사용한다. revoke도 사람이
+명시적으로 확인한 경우에만 실행한다:
+
+```
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" attended-launch revoke --confirm --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+```
+
+continue/handoff skill은 승인 state에서 자동 respawn을 추론하지 않는다.
+
+## Human-only lost-host affinity recovery
+
+열린 Workstream의 original host conversation이 실제로 복구 불가능하다는
+사람 확인 없이는 affinity를 supersede하지 않는다. 먼저 fresh lease,
+owner scope, Workstream, episode, budget, breaker를 진단하고 original owner
+fence로 exact preserve-pause reason을 기록한다:
+
+```
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" pause --owner <owner_run_id> --generation <n> --mode preserve --reason "host-session-lost" --project-root "<canonical_project_root>" --run-id <run_id>
+```
+
+사람이 진단과 reason을 확인한 경우에만 다음 command를 실행한다:
+
+```
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" recover --supersede-affinity --reason "<human_confirmed_reason>" --confirm --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+```
+
+커널 반환의 child id, `recovery_rel`, `recovery_sha256`, project root digest,
+binding generation, current generation, runtime, `resume_command`를 그대로
+표시한다. 이어서 read-only descriptor를 다시 열고 첫 줄이 같은 exact
+`recovery acquire --capsule ...`인지 확인한다:
+
+```
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" resume-command --project-root "<canonical_project_root>" --run-id <run_id>
+```
+
+사람은 반환된 exact command만 새 process에서 실행한다. plain acquisition,
+capsule/path 편집, stale artifact 재사용은 금지한다.
+
+## Human-only project-root relocation recovery
+
+candidate root를 사람이 명시한 경우에만 read-only diagnosis를 실행한다:
+
+```
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" root diagnose --candidate-project-root "<candidate_project_root>" --run-id <run_id>
+```
+
+`action`, blocker/topology, `current_root_digest`,
+`current_binding_generation`, owner/generation fence를 모두 표시한다.
+`wait`이면 멈추고 `already-rebound`이면 새 command를 만들지 않는다.
+`rebind` 또는 `relocation-recovery`이면 사람이 exact diagnosis,
+preserve-pause reason, root digest/epoch, fence를 확인한 뒤에만 kernel이
+반환한 exact command를 실행한다. command의 `--confirm`, `--actor human`,
+expected stored-root digest, expected binding generation을 바꾸지 않는다.
+
+relocation recovery 뒤에는 `resume-command`를 다시 실행하고, returned
+`root recovery acquire --capsule ...` command의 candidate root, capsule
+SHA-256, binding generation, child, runtime, lease generation이 fresh state와
+일치할 때만 그대로 실행한다. stale root-bound command나 locator를 손으로
+고치지 않는다.

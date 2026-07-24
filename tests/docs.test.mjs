@@ -218,3 +218,40 @@ test('CHANGELOG has a 0.1.0 entry', () => {
   assert.ok(existsSync(join(R, 'CHANGELOG.md')));
   assert.match(readFileSync(join(R, 'CHANGELOG.md'), 'utf8'), /0\.1\.0|v1/);
 });
+
+test('Task 14 continuity docs do not route new sessions from legacy policy or launcher heuristics', () => {
+  const decisionDocs = [
+    'skills/deep-loop-continue/SKILL.md',
+    'skills/deep-loop-handoff/SKILL.md',
+    'skills/deep-loop-workflow/references/handoff-respawn.md',
+  ];
+  for (const path of decisionDocs) {
+    const source = readFileSync(join(R, path), 'utf8');
+    assert.doesNotMatch(source, /gate\.unconsumed_milestones|spawn_style==='(?:desktop|visible)'/,
+      `${path}: continuity must follow next-action, not a surface heuristic`);
+    assert.doesNotMatch(source, /per_session_turn_cap[\s\S]{0,240}(?:rotate|handoff)/,
+      `${path}: turn-cap advice must remain native compact guidance in this conversation`);
+    assert.match(source, /action\.boundary_event/,
+      `${path}: exact Workstream boundary identity must come from the kernel action`);
+    assert.match(source, /native[\s\S]{0,120}\/compact|\/compact[\s\S]{0,120}native/i,
+      `${path}: compact advice must use the native same-conversation path`);
+  }
+});
+
+test('Task 14 execution docs keep durable state read-only outside public kernel commands', () => {
+  const paths = [
+    'skills/deep-loop/SKILL.md',
+    'skills/deep-loop-continue/SKILL.md',
+    'skills/deep-loop-handoff/SKILL.md',
+    'skills/deep-loop-resume/SKILL.md',
+    'skills/deep-loop-status/SKILL.md',
+    'skills/deep-loop-workflow/references/handoff-respawn.md',
+  ];
+  const directWrite = /(?:writeFile|appendFile|Write|Edit)\s*\([^)]*(?:loop\.json|event-log\.jsonl|\.loop\.hash|transactions\/)/i;
+  for (const path of paths) {
+    const source = readFileSync(join(R, path), 'utf8');
+    assert.doesNotMatch(source, directWrite, `${path}: durable state is kernel-owned`);
+    assert.match(source, /state[\s\S]{0,80}(?:read-only|읽기만|읽기 전용)|상태 파일을 직접 쓰지 않/i,
+      `${path}: read-only execution-plane boundary must be explicit`);
+  }
+});

@@ -1,6 +1,6 @@
 ---
 name: deep-loop-continue
-description: "deep-loop main tick — advances the loop one step: checks budget/breaker/comprehension gates, reads next-action, dispatches the maker or checker, records the outcome, decides whether to hand off, and pre-emptively respawns at a milestone or per-session turn cap. Triggered by '/deep-loop-continue', 'continue the loop', 'advance the loop', 'next tick', '루프 진행', '루프 계속', '다음 tick', '계속 진행', cross-platform Skill({ skill: \"deep-loop:deep-loop-continue\" })."
+description: "deep-loop main tick — advances the kernel-returned next action in the current Workstream owner conversation, using native compact in place and handing off only at an exact terminal Workstream boundary. Triggered by '/deep-loop-continue', 'continue the loop', 'advance the loop', 'next tick', '루프 진행', '루프 계속', '다음 tick', '계속 진행', cross-platform Skill({ skill: \"deep-loop:deep-loop-continue\" })."
 user-invocable: true
 ---
 
@@ -10,6 +10,7 @@ user-invocable: true
 > **loop.json + handoff 파일이 source of truth** — 이전 대화 컨텍스트를 가정하지 말 것.
 > **비가역 외부 행동(push/PR/publish/merge/delete)은 proposal-only**, 항상 사람 승인(human approval)을 받는다.
 > **maker/checker 분리 유지** — 같은 세션이 동일 workstream의 maker와 checker를 겸하지 않는다.
+> 스킬은 durable state를 **읽기만** 하며, 모든 변경은 public kernel CLI로만 요청한다.
 
 ## 실행 루트와 호스트 호출
 
@@ -19,7 +20,10 @@ user-invocable: true
 
 ## 개요
 
-`/deep-loop-continue` — 루프를 한 단계 진행(tick)한다. 게이트 검사 → next-action 읽기 → dispatch/record → Decide → 필요 시 handoff+respawn.
+`/deep-loop-continue` — 커널의 `next-action`을 한 단계 수행한다. 열린
+Workstream affinity는 현재 owner conversation에 계속 남는다. 새 owner는
+커널이 정확한 terminal Workstream boundary를 `handoff` action으로 반환한
+뒤에만 준비한다.
 
 ## 0. Run ID / Generation 확보
 
@@ -33,9 +37,11 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field session_chain.leas
 
 `<owner_run_id> = lease.owner_run_id`, `<generation> = lease.generation`. 여기서 `lease`는 방금 읽은 `session_chain.lease`다. 즉 `<owner_run_id>`는 `session_chain.lease.owner_run_id`, `<generation>`은 `session_chain.lease.generation`에서 매 tick 새로 읽고, `<run_id>`는 절대 재바인딩하지 않는다.
 
-## 0.5. 세션 model/effort refresh (respawn 전 항상)
+## 0.5. 세션 model/effort refresh
 
-§0에서 lease를 확보한 직후, 게이트/디스패치 이전에 현재 세션의 model/effort를 durable state에 갱신한다(self-healing). 이래야 이 tick이 띄울 자식이 최신 model/effort로 열린다.
+§0에서 lease를 확보한 직후, 게이트/디스패치 이전에 현재 세션의
+model/effort를 public kernel route로 갱신한다. 스킬이 상태 파일을 직접
+쓰지 않는다.
 
 현재 호스트가 알려 준 model과 effort를 직접 관측한다. 둘 다 있으면 다음 완전한 명령을 사용한다:
 
@@ -50,8 +56,9 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" session-profile set --model "<sessio
 ```
 
 - **빈 값 금지**: `--model`/`--effort`는 관측된 것만 포함한다(`CLAUDE_EFFORT`가 비면 `--effort` 생략). 모델도 관측 못 하고 effort도 비면 이 단계 전체를 건너뛴다(state 그대로 진행 — 무해).
-- setter는 `intent:'lease'`라 handoff가 이미 emit되어 lease가 `releasing`이어도 통과한다. 값이 그대로면 no-op(이벤트 안 쌓임).
-- **in-flight handoff 조기 분기**: §0에서 읽은 `lease.handoff_phase`가 `reserved`이고 lease가 `active`이면 미완결 예약 잔재다. §4b의 일반 `handoff emit`을 그대로 실행하라 — 커널의 reserved-finalization이 영속된 `lease.handoff_trigger`로 예약을 완결하므로 다른 트리거로 호출해도 안전하다. 완결 후 §4c로 이동한다. `lease.handoff_phase`가 `emitted` 또는 `spawned`이면(reserved child 존재 — PreCompact 안전망이 이미 emit한 상태), §1.5/§2/§3의 business write는 releasing carve-out으로 fence되므로 **건너뛰고 곧장 §4c(respawn)로 이동**한다. (phase `emitted`이면 respawn이 위 refresh된 state로 launch를 빌드 → 자식이 최신값으로 뜬다. phase `spawned`이면 자식은 이미 떠 있고, 그 자식이 `/deep-loop-resume`에서 자기 값을 refresh해 다음 handoff에 반영한다.)
+- 값이 그대로면 no-op이다. 관측값이 없으면 이 단계를 건너뛴다.
+- handoff가 진행 중이어도 다음 분기를 추측하지 않는다. 항상 §1의 새
+  `next-action` 응답만 따른다.
 
 ## 1. 게이트 검사 (항상 먼저)
 
@@ -59,10 +66,13 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" session-profile set --model "<sessio
 node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" next-action --json --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
-- `gate.allowed === false` 또는 `action.type ∈ {handoff, await_human}`이면:
-  - **budget 소진**: `handoff emit --owner <owner_run_id> --generation <n>` 실행 후 사람에게 재시작 안내.
-  - **breaker tripped**: `/deep-loop-status`로 상태 확인 후 사람이 `breaker reset --confirm --owner <owner_run_id> --generation <n>` 실행 필요 — **autonomous tick은 스스로 `--confirm`을 주지 않는다.**
-  - **await_human**: 사람 입력 요청 후 종료.
+`action.type`이 유일한 routing authority다.
+
+- `await_human`: `action.reason`과 커널 진단을 그대로 보고하고
+  `/deep-loop-status`를 안내한 뒤 멈춘다. 이 autonomous tick은 recovery,
+  budget relief, breaker reset, 또는 attended approval을 실행하지 않는다.
+- `handoff`: §4의 exact-boundary 경로만 수행한다.
+- 그 밖의 action: 현재 owner conversation에서 계속 수행한다.
 
 ## 1.5. Action-keyed Worktree 진입 (maker/checker dispatch 전)
 
@@ -179,11 +189,13 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" budget record --turns <n> --owner <o
 
 **`DEEP_LOOP_UNATTENDED` set 시 자기보고를 생략** — drive-headless 드라이버가 측정 usage를 권위있게 기록하므로 이중계상 방지.
 
-self-report는 best-effort 보정일 뿐이다 — 커널이 각 business mutation마다 최소 floor(1 turn)를 자동 계상하므로 미보고여도 예산·per_session_turn_cap이 mutation 수에 비례해 진행하고, `max_wallclock_sec`가 self-report 무관 hard bound다. 명시 `budget record`는 그 tick의 floor를 대체한다(max 규칙, 이중계상 없음).
+self-report는 best-effort 보정일 뿐이다. 커널이 각 business mutation마다
+최소 floor를 계상하고 wallclock hard bound를 적용한다.
 
 ## 3.5. Post-compact comprehension check
 
-직전 `SessionStart(compact)` capsule을 받은 tick이면, capsule의 `run_id`/`generation`을 아래 lease 결과와 대조한다:
+직전 `SessionStart(compact)` capsule을 받은 tick이면, capsule의
+`run_id`/`generation`을 아래 lease 결과와 대조한다:
 
 ```
 node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field session_chain.lease --project-root "<canonical_project_root>" --run-id <run_id>
@@ -196,113 +208,51 @@ node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field current_episode --
 node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" next-action --json --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
-불일치하면 capsule이 가리킨 checkpoint를 다시 읽고 위 read-only 대조를 재시도한다. **2회 연속 불일치면** 문맥 오염 가능성을 설명하고 사람에게 handoff를 제안한다. 자동 rotate는 금지하며 제안만 한다.
+불일치하면 checkpoint restore를 다시 추측하지 않는다. `/deep-loop-status`로
+진단을 요청하고 현재 conversation에서 멈춘다.
 
-## 4. Decide (마일스톤 / Turn Cap)
+## 4. Kernel action 이후 continuity
 
-**마일스톤 판정:** §1의 `next-action` 응답에서 `gate.unconsumed_milestones`가 비어 있지 않을 때만 workstream-종결 rotation을 트리거한다. 이미 소비된 terminal 전이는 다시 rotation하지 않는다(once-only). 마일스톤 rotation의 emit에는 §4b의 일반 `handoff emit`이면 충분하다 — 소비는 커널이 최종 commit에서 in-lock 파생으로 자동 기록하며 명시 milestone 플래그는 없다.
+### Compact advice
 
-**Turn cap 판정:** `per_session_turn_cap`은 `autonomy.continuation_policy`에 따라 처리한다. **compact-in-place에서는 cap 도달만으로 rotate하지 않는다** — 실제 작업 action에 실린 `advice:'compact'`와 `advice_reason:'per_session_turn_cap'`을 표시하고, 사람에게 `/compact <focus>`를 권고한 뒤 정상 작업을 계속한다(`/compact` 자동 실행 금지). `rotate-per-unit`에서는 현행대로 `next-action`의 `{type:'handoff'}`를 따라 아래 visible respawn 결정 흐름을 실행한다. 어느 rotation 조건도 없으면 다음 episode를 안내하고 종료한다.
+`action.advice === 'compact'`이면 handoff하지 않는다. 현재 owner conversation에서
+`/deep-loop-compact prepare` 또는 `$deep-loop:deep-loop-compact prepare`를
+호출하고, 그 스킬이 출력한 host native `/compact` 명령을 사람에게 제시한다.
+compact prepare/restore는 같은 conversation, 같은 lease, 같은 Workstream
+affinity를 유지한다.
 
-### 4a. 이미 emit된 핸드오프 확인 (PreCompact 안전망)
+### Exact Workstream boundary handoff
 
-```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field session_chain.lease --project-root "<canonical_project_root>" --run-id <run_id>
-```
-
-`lease.handoff_phase`가 `emitted` 또는 `spawned`이면 reserved child가 이미 존재한다 — **re-emit 금지**, 4c로 바로 이동.
-
-### 4a.5. Windows launcher 승인 preflight (handoff emit 전에, handoff_phase=idle인 경우만)
-
-launcher 승인은 `intent:recover` fence를 사용하므로 `handoff emit`이 lease를 `releasing`으로 바꾸기 **전에** 끝내야 한다. 이미 `emitted`/`spawned`이면 승인을 시도하지 말고 4c의 수동 fallback/respawn 분기로 간다.
-
-```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" detect-terminal --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field session_spawn --project-root "<canonical_project_root>" --run-id <run_id>
-```
-
-Windows에서 reason이 `windows-terminal-unverified` 또는 `powershell-unverified`이면 PATH·고정 경로를 추측하지 말고, 사람이 제공한 절대 `.exe` 하나를 실행하지 않는 read-only 진단에 사용한다:
+`action.type === 'handoff'`이고 `action.reason === 'workstream-terminal'`이며
+`action.boundary_event`가 있을 때만 handoff한다. public
+`next-action --json`은 boundary를 이미
+`<boundary_seq>:<boundary_checksum>` 문자열로 렌더한다. 그
+`action.boundary_event` 문자열을 검증된 한 값으로 그대로 전달하고,
+재구성하거나 이전 action의 값을 재사용하지 않는다.
 
 ```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" launcher-executable diagnose --kind <wt|powershell> --path "<human_supplied_absolute_exe>" --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" handoff emit --boundary-event <boundary_seq>:<boundary_checksum> --reason "workstream-terminal" --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
-반환된 `canonical_path`와 lowercase `sha256`을 그대로 보여 주고 `AskUserQuestion`으로 명시적 사람 승인을 받는다. `--confirm` 자동 생성/auto-confirm은 금지한다. 사람이 동일 path/SHA를 확인한 경우에만 실행한다:
+unattended invocation이면 measured `drive-headless` host가 이후 gate와 spawn을
+소유한다. 이 스킬은 respawn을 직접 호출하지 않고 즉시 yield한다.
+
+attended invocation이면 커널의 현재 root/epoch/topology 검증을 거친 exact
+resume command를 얻어 **그 출력을 바꾸지 않고 먼저 출력**한다:
 
 ```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" launcher-executable approve --kind <wt|powershell> --path "<same_absolute_exe>" --canonical-path "<diagnosed_canonical_path>" --sha256 "<diagnosed_lowercase_sha256>" --actor human --confirm --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" detect-terminal --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" resume-command --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
-경로 미제공, 진단 실패, 승인 거절이면 durable 상태를 바꾸지 않고 수동 fallback을 유지한다. 스킬은 상태 파일을 직접 쓰지 않는다.
-
-### 4b. 핸드오프 Emit (handoff_phase=idle인 경우)
+그 다음 현재 parent fence로 preserve-pause하고 종료한다:
 
 ```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" handoff emit --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
+node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" pause --owner <owner_run_id> --generation <n> --mode preserve --reason "needs-human:workstream-terminal" --project-root "<canonical_project_root>" --run-id <run_id>
 ```
 
-### 4c. Terminal 감지 및 Spawn Style 결정
-
-```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" detect-terminal --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
-```
-
-`session_spawn`과 `autonomy`를 읽는다:
-
-```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field session_spawn --project-root "<canonical_project_root>" --run-id <run_id>
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" state get --field autonomy --project-root "<canonical_project_root>" --run-id <run_id>
-```
-
-**분기 (커널 `resolveSpawnMode` 우선순위 headless > desktop > visible > interactive와 동일 순서로 먼저 판정):**
-
-> **현재 Codex transport 경계:** 승인된 native runtime이 있으면 measured headless continuation을 사용할 수 있다. macOS/Linux에서는 그 승인 runtime과 양성 감지된 absolute `cmux` executable + exact socket이 있을 때 visible continuation이 활성화되고, macOS에서는 고정 `/usr/bin/osascript`로 양성 검증된 **선택된** iTerm2 또는 Terminal.app만 활성화된다. 네이티브 Windows에서는 승인된 runtime + WT/PowerShell launcher identity가 있을 때 shell-free visible continuation이 활성화된다. 승인 runtime이 없으면 `runtime-identity-unavailable`, launcher 증적이 없거나 바뀌면 launcher identity 오류로 CAS 전 preserve-pause하며, 지원되지 않는 visible 경로는 `codex-transport-not-activated`로 닫힌다. 어떤 경우에도 Claude process로 대체하지 않는다. **Codex App의 자동 새 task 생성은 지원하지 않으므로 수동 App resume을 유지한다.**
-
-**1. unattended** (커널 `isHeadlessInvocation(env)` 마커 전용 — non-tty 아님. **가장 먼저 판정** — desktop/visible보다 우선):
-
-**판단 기준은 오직 커널의 `isHeadlessInvocation(env)`뿐이다** — `DEEP_LOOP_UNATTENDED`/`DEEP_LOOP_HEADLESS` 또는 드라이버 entrypoint 휴리스틱(`CLAUDE_CODE_ENTRYPOINT`가 sdk*/print/headless/non-interactive) 중 하나가 참일 때만 unattended로 판정한다. **tty 유무는 신호가 아니다** — Claude Desktop Code 탭은 사람이 지켜보는 GUI이지만 tty가 없다(§init의 "attended" 정의와 동일 기준). **이 마커가 하나라도 있으면 durable `autonomy.spawn_style`이 `desktop`이든 `visible`이든 무조건 이 분기가 우선한다** — desktop opt-in한 run이라도 현재 호출이 headless라면(예: drive-headless 사이클 도중) 아래 desktop 분기로 새지 않는다(커널 `resolveSpawnMode`의 headless-preempts-desktop, 불변식 #6). 마커가 하나도 없으면 아래 desktop 또는 visible/else 분기로 진행한다(non-tty만으로 여기서 멈추지 않는다).
-
-드라이버(`drive-headless.mjs`)가 respawn을 처리한다 — **이 스킬은 여기서 `respawn`을 직접 호출하지 않는다** (직접 호출하면 drive-headless 래퍼 없이 측정 usage가 계상되지 않아 예산/fail-closed 모델이 깨진다).
-
-**2. desktop** (`spawn_style==='desktop'` — init 시 opt-in한 Claude Desktop 딥링크 재시작, `session_spawn.launcher`가 `none`이어도 유효. **위 unattended 마커가 없을 때만** 해당):
-
-```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" respawn --owner <owner_run_id> --generation <n> --attended --project-root "<canonical_project_root>" --run-id <run_id>
-```
-
-visible과 동일한 명령이다 — 커널이 검증된 desktop 엔트리(`open -a`/직접 실행)를 골라 자동으로 재시작한다. 사람이 이미 init에서 확정한 선택이므로 재질문하지 않는다.
-
-**3. visible** (`spawn_style=visible` + `launcher≠none`):
-
-```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" respawn --owner <owner_run_id> --generation <n> --attended --project-root "<canonical_project_root>" --run-id <run_id>
-```
-
-커널이 자동으로 새 세션을 시작한다. 이 스킬은 직접 `claude -p`나 `codex exec --json`을 실행하지 않는다(§9).
-
-**4. else** (`launcher=none` / visible 아님 / legacy interactive):
-
-respawn을 통해 게이트를 먼저 평가한다 — unfenced pause 전에 항상 respawn 경유 필수:
-
-```
-node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" respawn --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
-```
-
-respawn의 `outcome`에 따라 분기:
-
-- **`gate-blocked`**: respawn이 이미 rollback + `status=paused` 처리 완료. 다시 pause 하지 않는다.
-  사람에게 게이트 해소 후 수동 재개를 안내한다:
-  ```
-  node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" recover --confirm --owner <owner_run_id> --generation <n> --project-root "<canonical_project_root>" --run-id <run_id>
-  ```
-
-- **`no-launcher`**: 게이트 통과 — 이제 preserve-pause가 적합. fence flag 필수(R6-plan):
-  ```
-  node "DEEP_LOOP_ROOT/scripts/deep-loop.mjs" pause --owner <owner_run_id> --generation <n> --mode preserve --reason "needs-human:<reason>" --project-root "<canonical_project_root>" --run-id <run_id>
-  ```
-  > **R6-plan 필수**: `handoff emit`이 lease를 `releasing` 상태로 전환했으므로 `--owner`/`--generation` fence가 반드시 필요하다. Unfenced `pause`는 exit 3(LEASE_FENCED)으로 실패하여 run이 un-paused 상태로 남는다 → stale takeover 위험.
-
-  `terminal/launch-command.txt` 내용을 사람에게 제시한다. 다음 세션에서 Claude는 `/deep-loop-resume`, Codex는 `$deep-loop:deep-loop-resume`을 실행한다.
-
-- **그 외** (`fenced` 등): 보고만 하고 pause 하지 않는다.
+사람은 출력된 Claude `/deep-loop-resume` 또는 Codex
+`$deep-loop:deep-loop-resume` 명령을 새 conversation에서 그대로 실행한다.
+지원되지 않는 Codex 자동 transport는 `codex-transport-not-activated`,
+승인 runtime 부재는 `runtime-identity-unavailable`로 남으며, native Windows,
+macOS/Linux `cmux`, macOS iTerm2/Terminal.app 어느 경우도 이 스킬이
+surface heuristic으로 attended respawn하지 않는다. Codex App 새 task는 수동이다.
