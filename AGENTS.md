@@ -4,7 +4,7 @@ Loop Engineering control plane over the deep-suite: a 2-plane plugin (determinis
 
 To check the current version: `node -e "console.log(require('./.claude-plugin/plugin.json').version)"`. Node ≥ 20, `type: module`, zero external dependencies.
 
-> Full working guide (architecture, invariants, conventions): `CLAUDE.md`. Current compatibility design: `docs/superpowers/specs/2026-07-10-codex-windows-compatibility-design.md`. User docs: `README.md` / `README.ko.md`. Source of truth is the repo + `git log` + those docs — do not assume prior conversation context.
+> Full working guide (architecture, invariants, conventions): `CLAUDE.md`. Tracked compatibility/recovery contract: [`README.md`](README.md#compatibility-and-recovery-contract). User docs: `README.md` / `README.ko.md`. Source of truth is the repo + `git log` + those docs — do not assume prior conversation context.
 
 ## Runtime Surfaces
 

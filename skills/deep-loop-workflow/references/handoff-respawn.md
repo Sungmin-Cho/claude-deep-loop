@@ -101,6 +101,9 @@ unattended continuation은 measured `drive-headless` host가 소유한다. execu
 skill은 직접 respawn하지 않으며 headless driver에 yield한다. Claude measured
 JSON과 approved Codex incremental JSONL은 각각 자기 runtime 안에서만
 계상하며 cross-runtime fallback은 없다.
+durable state에 저장된 **immutable runtime**이 해당 **trusted measured driver**
+실행 파일을 선택하며, execution plane은 다른 runtime으로 바꾸거나 추론하지
+않는 **no cross-runtime fallback** 계약을 지킨다.
 
 지원되지 않는 Codex transport는 `codex-transport-not-activated`, 승인 runtime
 부재는 `runtime-identity-unavailable`로 fail closed한다. native Windows,

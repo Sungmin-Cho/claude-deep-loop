@@ -4,7 +4,7 @@ Loop Engineering control plane over the deep-suite: a 2-plane Claude Code / Code
 
 Version: `node -e "console.log(require('./.claude-plugin/plugin.json').version)"`. Node ≥ 20, `type: module`, **zero external dependencies**.
 
-> This file guides agents working **on** the deep-loop codebase. User-facing usage is in `README.md` / `README.ko.md`; the current compatibility design is `docs/superpowers/specs/2026-07-10-codex-windows-compatibility-design.md`; bite-sized plans and review evidence are in `docs/superpowers/plans/`. **Source of truth is the repo + `git log` + those docs — do not assume prior conversation context.**
+> This file guides agents working **on** the deep-loop codebase. User-facing usage and the tracked compatibility/recovery contract are in [`README.md`](README.md#compatibility-and-recovery-contract) / `README.ko.md`; bite-sized plans and review evidence are in `docs/superpowers/plans/`. **Source of truth is the repo + `git log` + those docs — do not assume prior conversation context.**
 
 ## Architecture — 2-plane (strict)
 
@@ -20,7 +20,7 @@ CONTROL PLANE (Node, deterministic)   scripts/deep-loop.mjs + scripts/lib/*.mjs
 
 The kernel **never calls sibling skills as functions** — it returns descriptors (`next-action`, `adapter resolve`, `review dispatch`) and the Execution-plane LLM performs the dispatch (`Skill()` or a runtime-selected measured headless subprocess: **Claude** uses bounded `claude -p` JSON, while approved **Codex** uses shell-free `codex exec --json` with incremental JSONL). There is no cross-runtime fallback.
 
-Attended continuation is runtime-specific: Claude defaults to `compact-in-place`, Codex defaults to `rotate-per-unit`, and unattended invocations always use the measured headless path before policy-specific routing.
+New runs use `workstream-session` with interactive same-conversation affinity until the bound Workstream's first terminal event. Attended launch requires explicit durable authorization; unattended invocations use the measured headless path and never respawn mid-Workstream. `compact-in-place` and `rotate-per-unit` remain migrated compatibility policies only.
 
 ## Repo map
 

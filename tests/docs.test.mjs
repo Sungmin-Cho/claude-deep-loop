@@ -5,7 +5,8 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 const R = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SKILL_CMDS = ['/deep-loop', '/deep-loop-discover', '/deep-loop-triage', '/deep-loop-continue',
-  '/deep-loop-handoff', '/deep-loop-resume', '/deep-loop-status', '/deep-loop-ack', '/deep-loop-finish'];
+  '/deep-loop-compact', '/deep-loop-handoff', '/deep-loop-resume', '/deep-loop-status',
+  '/deep-loop-ack', '/deep-loop-finish'];
 const CODEX_SKILL_CMDS = SKILL_CMDS.map(command => `$deep-loop:${command.slice(1)}`);
 const USER_DOCS = ['README.md', 'README.ko.md'];
 const LIVE_SURFACE_DOCS = ['README.md', 'AGENTS.md', 'CLAUDE.md', 'hooks/hooks.json'];
@@ -76,13 +77,56 @@ test('user docs carry the exact cross-runtime support matrix and distinguish Pow
   ];
   for (const path of USER_DOCS) {
     const source = readFileSync(join(R, path), 'utf8');
-    for (const row of rows) assert.ok(source.includes(`| ${row} |`), `${path} missing support row ${row}`);
+    for (const row of rows) {
+      const line = source.split('\n').find(candidate => candidate.startsWith(`| ${row} |`));
+      assert.ok(line, `${path} missing support row ${row}`);
+      assert.match(line, /workstream-session/,
+        `${path} must publish workstream-session for ${row}`);
+    }
     assert.match(source, /native Windows[\s\S]{0,500}PowerShell/i);
     assert.match(source, /WSL[\s\S]{0,500}(?:Linux|not native Windows|네이티브 Windows가 아님)/i);
     assert.match(source, /native Windows CI[^\n]*(?:pending external evidence|외부 증거 대기)/i);
     assert.match(source, /App smoke pending external evidence/i);
     assert.ok(source.includes("$env:DEEP_LOOP_UNATTENDED = '1'"),
       `${path} must include the native PowerShell unattended invocation`);
+  }
+});
+
+test('user docs publish the compatibility, authorization, recovery, and WAL contract', () => {
+  for (const path of USER_DOCS) {
+    const source = readFileSync(join(R, path), 'utf8');
+    assert.match(source, /^## (?:Compatibility and recovery contract|호환성 및 복구 계약)$/m);
+    assert.match(source, /workstream-session[\s\S]{0,300}spawn_style(?:`|')?\s*(?:=|:)\s*(?:`|')?interactive/i);
+    assert.match(source, /bound_workstream_first_terminal/);
+    assert.match(source, /manual resume/i);
+    assert.match(source, /host-mediated restore/i);
+    assert.match(source, /provider identity is optional/i);
+    assert.match(source, /no unattended mid-Workstream respawn/i);
+    assert.match(source, /budget extend[\s\S]{0,240}breaker reset/i);
+    assert.match(source, /attended-launch approve --style visible/);
+    assert.match(source, /spawn-style offer-desktop[\s\S]{0,240}spawn-style confirm-desktop/);
+    for (const command of [
+      'recovery acquire --capsule',
+      'root diagnose --candidate-project-root',
+      'root rebind',
+      'root recover',
+      'root recovery acquire --capsule',
+    ]) assert.ok(source.includes(command), `${path} missing ${command}`);
+    assert.match(source, /project\.binding_generation/);
+    assert.match(source, /root epoch/i);
+    assert.match(source, /relative locator/i);
+    assert.match(source, /stale root-bound commands[\s\S]{0,240}never edited in place/i);
+    assert.match(source, /write-ahead log|WAL/i);
+    assert.match(source, /WAL[\s\S]{0,240}fail-stop|fail-stop[\s\S]{0,240}WAL/i);
+    for (const artifact of [
+      'checkpoints/<checkpoint-key>-compact.json',
+      'transactions/<operation-id>/prepared.json',
+      'transactions/<operation-id>/committed.json',
+      'recoveries/<child-run-id>-affinity-recovery.json',
+      'recoveries/root/<replacement-session-id>.json',
+      'terminal/launch-command.txt',
+      'terminal/launch-command.meta.json',
+    ]) assert.ok(source.includes(artifact), `${path} missing ${artifact}`);
   }
 });
 
@@ -159,14 +203,16 @@ test('proposal-only scope includes repository, release, deletion, and registry s
   }
 });
 
-test('maintainer guides use portable test discovery and the current compatibility design without fixed module counts', () => {
+test('maintainer guides use portable test discovery and the tracked README compatibility contract without fixed module counts', () => {
   for (const path of ['CLAUDE.md', 'AGENTS.md']) {
     const source = readFileSync(join(R, path), 'utf8');
     assert.match(source, /node --test/);
     assert.doesNotMatch(source, /node --test tests\/\*\.test\.mjs/,
       `${path} must not document shell-expanded test discovery`);
-    assert.ok(source.includes('docs/superpowers/specs/2026-07-10-codex-windows-compatibility-design.md'),
-      `${path} must link the current compatibility design`);
+    assert.ok(source.includes('README.md#compatibility-and-recovery-contract'),
+      `${path} must link the tracked compatibility contract`);
+    assert.doesNotMatch(source, /docs\/superpowers\/specs\/2026-07-10-codex-windows-compatibility-design\.md/,
+      `${path} must not point at the ignored compatibility spec`);
     assert.doesNotMatch(source, /scripts\/lib\/\*\.mjs`?\s*\(\d+ modules\)/i);
   }
 });
@@ -181,7 +227,19 @@ test('deep-suite patch declares node-only runtime and current durable artifacts 
     '.deep-loop/runs/<run-id>/preflight/cache/<cache-key>.json',
     '.deep-loop/runs/<run-id>/preflight/accounting/<cache-key>.json',
     '.deep-loop/runs/<run-id>/preflight/process-receipts/<receipt>.json',
+    '.deep-loop/runs/<run-id>/checkpoints/<checkpoint-key>-compact.json',
+    '.deep-loop/runs/<run-id>/transactions/<operation-id>/prepared.json',
+    '.deep-loop/runs/<run-id>/transactions/<operation-id>/committed.json',
+    '.deep-loop/runs/<run-id>/recoveries/<child-run-id>-affinity-recovery.json',
+    '.deep-loop/runs/<run-id>/recoveries/root/<replacement-session-id>.json',
+    '.deep-loop/runs/<run-id>/terminal/launch-command.txt',
+    '.deep-loop/runs/<run-id>/terminal/launch-command.meta.json',
   ]) assert.ok(source.includes(artifact), `integration patch missing ${artifact}`);
+  assert.match(source, /"hooks_active":\s*\["PreCompact",\s*"SessionStart"\]/);
+  assert.match(source, /SessionStart[\s\S]{0,120}(?:source|matcher)[\s\S]{0,40}compact/i);
+  assert.match(source, /\.claude-plugin\/marketplace\.json[\s\S]{0,240}\.agents\/plugins\/marketplace\.json/);
+  assert.match(source, /generated docs|생성 문서/i);
+  assert.match(source, /deep-suite `npm run preflight`[\s\S]{0,300}(?:PR|merge)/i);
   assert.match(source, /post-merge[\s\S]{0,240}(?:separate approval|별도 승인)/i);
   assert.match(source, /marketplace[\s\S]{0,200}sync[\s\S]{0,200}(?:proposal-only|별도 승인)/i);
 });

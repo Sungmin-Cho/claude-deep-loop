@@ -253,6 +253,23 @@ test('portable host invocation contract: every user entry names Claude slash and
   }
 });
 
+test('tracked user command inventories expose every user skill on both hosts', () => {
+  const expected = SKILLS
+    .filter(([, , invocable]) => invocable)
+    .map(([, name]) => name);
+  for (const path of ['README.md', 'README.ko.md']) {
+    const source = readFileSync(join(ROOT, path), 'utf8');
+    for (const name of expected) {
+      assert.match(source, new RegExp(`/${name}\\b`),
+        `${path}: missing Claude command /${name}`);
+      assert.match(source, new RegExp(`\\$deep-loop:${name}\\b`),
+        `${path}: missing Codex command $deep-loop:${name}`);
+    }
+    assert.match(source, /(?:Commands|명령어) \((?:10 User Skills|사용자 스킬 10개)\)/,
+      `${path}: user skill count must include deep-loop-compact`);
+  }
+});
+
 // Task 4: deep-loop §2-6 worktree creation discipline
 const dlSkill = () => _rf(skillPath('deep-loop'), 'utf8');
 
