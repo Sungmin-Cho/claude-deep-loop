@@ -24,6 +24,7 @@ import { buildRootRecoveryResumeDescriptor } from './runtime-descriptor.mjs';
 import {
   checkHardBudget,
   inventoryRelocatedProcessReceipts,
+  recoveryReservationKind,
 } from './budget.mjs';
 import { checkBreaker } from './breaker.mjs';
 
@@ -141,7 +142,9 @@ function exactKeys(value, keys) {
     && JSON.stringify(Object.keys(value)) === JSON.stringify(keys);
 }
 
-function exactReceipt(candidateRoot, runId, loop, hash) {
+function exactReceipt(candidateRoot, runId, loop, hash, {
+  currentReservation = false,
+} = {}) {
   const event = latestRootEvent(candidateRoot, runId);
   if (!event || !ROOT_DIGEST.test(event.data?.operation_id || '')) {
     throw new Error('ROOT_OPERATION_PROOF_MISSING');
@@ -235,13 +238,17 @@ function exactReceipt(candidateRoot, runId, loop, hash) {
     || receipt.new_binding_generation !== loop.project.binding_generation
     || receipt.new_lease_owner !== receipt.old_lease_owner
     || receipt.new_lease_generation !== receipt.old_lease_generation + 1
-    || receipt.new_lease_owner !== loop.session_chain.lease.owner_run_id
-    || receipt.new_lease_generation !== loop.session_chain.lease.generation
+    || (!currentReservation
+      && receipt.new_lease_owner !== loop.session_chain.lease.owner_run_id)
+    || (!currentReservation
+      && receipt.new_lease_generation !== loop.session_chain.lease.generation)
     || !['none', 'boundary', 'affinity'].includes(receipt.recovery_kind)
     || receipt.recovery_kind !== event.data.recovery_kind
     || receipt.stale_session_id !== event.data.stale_session_id
     || receipt.replacement_session_id !== event.data.replacement_session_id
-    || receipt.candidate_loop_hash !== hash
+    || (currentReservation
+      ? !ROOT_DIGEST.test(receipt.candidate_loop_hash || '')
+      : receipt.candidate_loop_hash !== hash)
     || JSON.stringify(receipt.event) !== JSON.stringify(event)
     || !exactKeys(event.data, eventDataKeys)
     || artifactDigests == null || typeof artifactDigests !== 'object'
@@ -894,12 +901,16 @@ export function acquireRootRecovery(candidateRoot, runId, {
   }
   return withReconciledRootRecoveryLock(root, runId, (guard, snapshot) => {
     const loop = snapshot.data;
-    exactReceipt(root, runId, loop, snapshot.hash);
     const lease = loop.session_chain.lease;
     const child = loop.session_chain.sessions.find(session => session.run_id === owner);
-    if (lease.generation !== expectGeneration
+    const receipt = exactReceipt(root, runId, loop, snapshot.hash, {
+      currentReservation: true,
+    }).receipt;
+    if (recoveryReservationKind(loop) !== child?.recovery_kind
+      || lease.generation !== expectGeneration
       || lease.handoff_child_run_id !== owner
       || child?.root_recovery_operation_id !== lease.recovery_discriminator
+      || child?.root_recovery_operation_id !== receipt.operation_id
       || child?.recovery_rel !== capsuleRel
       || child?.recovery_project_binding_generation !== bindingGeneration
       || bindingGeneration !== loop.project.binding_generation) {

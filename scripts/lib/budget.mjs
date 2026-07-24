@@ -147,15 +147,31 @@ export function inventoryRelocatedProcessReceipts(root, runId, loop, oldRootDige
     }
     if (exact.length === 1) {
       const recorded = exact[0].data;
-      if (recorded?.process_kind !== receipt.process_kind
-        || JSON.stringify(recorded.process_context) !== JSON.stringify(receipt.context)
-        || recorded.reported_turns !== receipt.usage.num_turns
-        || recorded.reported_tokens !== receipt.usage.tokens
-        || recorded.input_tokens !== receipt.usage.input_tokens
-        || recorded.output_tokens !== receipt.usage.output_tokens
-        || recorded.owner !== origin.owner
-        || recorded.generation !== origin.generation
-        || recorded.source !== `codex-${receipt.process_kind}-measured`) {
+      const eventIndex = lines.indexOf(exact[0]);
+      const { tf, tk } = trailingFloor(
+        lines.slice(0, eventIndex),
+        origin.owner,
+        origin.generation,
+      );
+      const expected = {
+        turns: Math.max(0, receipt.usage.num_turns - tf),
+        tokens: Math.max(0, receipt.usage.tokens - tk),
+        reported_turns: receipt.usage.num_turns,
+        reported_tokens: receipt.usage.tokens,
+        input_tokens: receipt.usage.input_tokens,
+        output_tokens: receipt.usage.output_tokens,
+        ...(receipt.usage.cached_input_tokens !== undefined
+          ? { cached_input_tokens: receipt.usage.cached_input_tokens } : {}),
+        ...(receipt.usage.reasoning_output_tokens !== undefined
+          ? { reasoning_output_tokens: receipt.usage.reasoning_output_tokens } : {}),
+        owner: origin.owner,
+        generation: origin.generation,
+        source: `codex-${receipt.process_kind}-measured`,
+        process_receipt_id: receipt.receipt_id,
+        process_kind: receipt.process_kind,
+        process_context: receipt.context,
+      };
+      if (JSON.stringify(recorded) !== JSON.stringify(expected)) {
         throw new Error('PROJECT_ROOT_ACCOUNTING_CONFLICT');
       }
       settledReceiptIds.push(receipt.receipt_id);
@@ -484,7 +500,72 @@ function canonicalTimestamp(value) {
   return timestamp;
 }
 
+function rootRecoveryReservationKind(loop) {
+  const lease = loop.session_chain?.lease || {};
+  const kind = lease.takeover_kind;
+  const sessions = loop.session_chain?.sessions;
+  const operationId = lease.recovery_discriminator;
+  if (loop.status !== 'paused'
+    || loop.pause_reason !== 'project-root-relocated'
+    || lease.state !== 'released'
+    || !RECOVERY_TAKEOVER_KINDS.has(kind)
+    || lease.handoff_phase !== 'reserved'
+    || lease.handoff_trigger !== 'project-root-relocated'
+    || lease.expires_at !== null
+    || lease.handoff_idempotency_key !== operationId
+    || !/^[0-9a-f]{64}$/.test(operationId || '')
+    || typeof lease.owner_run_id !== 'string' || lease.owner_run_id.length === 0
+    || !Number.isSafeInteger(lease.generation) || lease.generation < 1
+    || typeof lease.handoff_child_run_id !== 'string'
+    || lease.handoff_child_run_id.length === 0
+    || !Array.isArray(sessions)) return null;
+  const ownerRows = sessions.filter(session => session?.run_id === lease.owner_run_id);
+  const childRows = sessions.filter(session => session?.run_id === lease.handoff_child_run_id);
+  const child = childRows[0];
+  const predecessorRows = sessions.filter(session => session?.run_id === child?.recovered_from);
+  const predecessor = predecessorRows[0];
+  const relocatedPredecessors = sessions.filter(
+    session => session?.superseded_by === child?.run_id
+      && session?.scope?.superseded_by === child?.run_id
+      && session?.scope?.supersede_reason === 'project-root-relocated'
+      && session?.scope?.superseded_at !== null
+      && session?.ended_at !== null
+      && session?.outcome === 'superseded',
+  );
+  const rootOperationRows = sessions.filter(
+    session => session?.root_recovery_operation_id === operationId,
+  );
+  const openSessions = sessions.filter(session => isOpenScope(session?.scope));
+  const rootDigest = projectRootDigest(loop.project?.root);
+  if (ownerRows.length !== 1
+    || childRows.length !== 1
+    || predecessorRows.length > 1
+    || rootOperationRows.length !== 1
+    || rootOperationRows[0] !== child
+    || child.recovery_kind !== kind
+    || child.started_at !== null
+    || child.ended_at !== null
+    || child.turns !== 0
+    || child.outcome !== null
+    || child.superseded_by !== null
+    || child.root_recovery_operation_id !== operationId
+    || child.recovery_rel !== lease.recovery_rel
+    || !/^recoveries\/root\/[^/]+\.json$/.test(child.recovery_rel || '')
+    || child.recovery_sha256 !== lease.recovery_sha256
+    || !/^[0-9a-f]{64}$/.test(child.recovery_sha256 || '')
+    || child.recovery_project_binding_generation !== loop.project?.binding_generation
+    || child.recovery_project_root_digest !== rootDigest
+    || !isOpenScope(child.scope)
+    || openSessions.length !== 1
+    || openSessions[0] !== child
+    || relocatedPredecessors.length < 1
+    || (predecessor !== undefined && !relocatedPredecessors.includes(predecessor))) return null;
+  return kind;
+}
+
 export function recoveryReservationKind(loop) {
+  const rootKind = rootRecoveryReservationKind(loop);
+  if (rootKind !== null) return rootKind;
   const lease = loop.session_chain?.lease || {};
   const kind = lease.takeover_kind;
   if (loop.status !== 'paused' || lease.state !== 'released'

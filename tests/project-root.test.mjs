@@ -36,8 +36,12 @@ import { validate } from '../scripts/lib/schema.mjs';
 import { appendAnchored, verifyHead, verifyLog } from '../scripts/lib/integrity.mjs';
 import {
   codexCheckerClaimHash,
+  extendBudget,
   makeCodexProcessReceipt,
+  recoveryReservationKind,
+  settleCodexProcessCost,
 } from '../scripts/lib/budget.mjs';
+import { resetBreaker } from '../scripts/lib/breaker.mjs';
 import { emitHandoff } from '../scripts/lib/handoff.mjs';
 import { migrateAuthenticLegacyTransport } from './helpers/legacy-transport.mjs';
 
@@ -209,6 +213,8 @@ function movedRunWithProcessReceipt({
   incomplete = false,
   wrongRoot = false,
   unmeasurable = false,
+  usage = { num_turns: 1, input_tokens: 2, output_tokens: 3, tokens: 5 },
+  existingCostMutation = null,
 } = {}) {
   const parent = freshRoot('dl-root-accounting-');
   const originalRoot = join(parent, 'old root');
@@ -237,7 +243,7 @@ function movedRunWithProcessReceipt({
     runId,
     processKind: 'maker',
     context,
-    usage: { num_turns: 1, input_tokens: 2, output_tokens: 3, tokens: 5 },
+    usage,
   });
   if (unverifiable) receipt = rehashProcessReceipt({
     ...receipt,
@@ -286,6 +292,13 @@ function movedRunWithProcessReceipt({
     join(receipts, expectedProcessReceiptName(receipt)),
     malformed ? JSON.stringify({ ...receipt, receipt_id: '0'.repeat(64) }) : JSON.stringify(receipt),
   );
+  if (existingCostMutation !== null) {
+    assert.deepEqual(settleCodexProcessCost(originalRoot, runId, {
+      receipt,
+      fence: { owner: runId, generation: 1, intent: 'accounting' },
+    }), { ok: true, recorded: true, reason: 'recorded' });
+    rewriteExistingCostEvent(originalRoot, runId, receipt.receipt_id, existingCostMutation);
+  }
   const storedRoot = readState(originalRoot, runId).data.project.root;
   renameSync(originalRoot, candidateRoot);
   return {
@@ -297,6 +310,32 @@ function movedRunWithProcessReceipt({
     receipts,
     handoff,
   };
+}
+
+function rewriteExistingCostEvent(root, runId, receiptId, mutate) {
+  const data = readState(root, runId).data;
+  const path = join(runDir(root, runId), 'event-log.jsonl');
+  const lines = eventLines(root, runId);
+  const event = lines.find(line =>
+    line.type === 'cost' && line.data?.process_receipt_id === receiptId);
+  assert.ok(event, 'settled process receipt cost event must exist');
+  mutate(event.data);
+  let previous = 'GENESIS';
+  for (const line of lines) {
+    line.checksum = contentHash(
+      `${line.seq}|${line.ts}|${line.type}|${JSON.stringify(line.data)}|${previous}`,
+    );
+    previous = line.checksum;
+  }
+  writeFileSync(path, `${lines.map(line => JSON.stringify(line)).join('\n')}\n`);
+  data.event_log_head = { seq: lines.at(-1).seq, checksum: lines.at(-1).checksum };
+  data.budget.spent = lines
+    .filter(line => line.type === 'cost')
+    .reduce((sum, line) => sum + line.data.turns, 0);
+  data.budget.tokens_spent = lines
+    .filter(line => line.type === 'cost')
+    .reduce((sum, line) => sum + line.data.tokens, 0);
+  writeState(root, runId, data);
 }
 
 function processReceiptDescriptorId(receipt) {
@@ -358,6 +397,39 @@ function invokeRootAcquire(command, cwd = REPO_ROOT) {
   const parts = splitInvocation(command);
   assert.deepEqual(parts.slice(0, 3), ['root', 'recovery', 'acquire']);
   return invoke(parts, cwd);
+}
+
+function exactRootRecoveryCommand(root, runId) {
+  const resume = invoke([
+    'resume-command',
+    '--project-root', root,
+    '--run-id', runId,
+  ], freshRoot('dl-root-r2-resume-cwd-'));
+  assert.equal(resume.status, 0, resume.stderr);
+  return resume.stdout.split('\n')[0];
+}
+
+function rootReservationEvidence(root, runId) {
+  const state = readState(root, runId).data;
+  const lease = state.session_chain.lease;
+  const child = state.session_chain.sessions.find(
+    session => session.run_id === lease.handoff_child_run_id,
+  );
+  assert.ok(child);
+  return {
+    project: structuredClone(state.project),
+    lease: structuredClone(lease),
+    child: structuredClone(child),
+    rebound: structuredClone(eventLines(root, runId)
+      .filter(event => event.type === 'project-root-rebound')),
+    capsule: readFileSync(join(runDir(root, runId), child.recovery_rel), 'utf8'),
+    receipt: readFileSync(join(
+      runDir(root, runId),
+      'recoveries',
+      'root-operations',
+      `${child.root_recovery_operation_id}.json`,
+    ), 'utf8'),
+  };
 }
 
 function runCliAsync(args, cwd = REPO_ROOT) {
@@ -1516,6 +1588,156 @@ test('Round1 acceptance RED: acquisition gates preserve the exact root reservati
     );
     assert.deepEqual(durableSnapshot(moved.candidateRoot, moved.runId), snapshot, label);
   }
+});
+
+for (const [label, blocker, relieve] of [
+  ['budget', data => {
+    data.budget.max_wallclock_sec = 1;
+  }, (root, runId, state) => extendBudget(root, runId, {
+    wallclockSec: 10 * 365 * 24 * 60 * 60,
+    reason: 'resume exact relocated-root reservation',
+    confirm: true,
+    fence: {
+      owner: state.session_chain.lease.owner_run_id,
+      generation: state.session_chain.lease.generation,
+    },
+    now: FIXED_NOW.getTime() + 10_000,
+  })],
+  ['breaker', data => {
+    data.circuit_breaker = {
+      consecutive_request_changes: 3,
+      tripped: true,
+      trip_reason: 'consecutive-request-changes',
+    };
+  }, (root, runId, state) => resetBreaker(root, runId, {
+    fence: {
+      owner: state.session_chain.lease.owner_run_id,
+      generation: state.session_chain.lease.generation,
+      intent: 'breaker-reset',
+    },
+  })],
+]) {
+  for (const [topology, expectedKind] of [
+    ['open-affinity', 'affinity-supersession'],
+    ['boundary-recovery', 'boundary-recovery'],
+  ]) {
+    test(`Round2 reservation RED: ${label} relief preserves and acquires ${expectedKind} root recovery`, async () => {
+      const { recoverRelocatedRoot } = await recoveryApi();
+      const moved = seedRelocationTopology(
+        topology,
+        'codex',
+        `dl-root-r2-${label}-${topology}-`,
+      );
+      const { data } = readStateForRootRecovery(moved.candidateRoot, moved.runId);
+      blocker(data);
+      writeRecoveryFixture(moved.candidateRoot, moved.runId, data);
+      recoverRelocatedRoot(
+        moved.candidateRoot,
+        moved.runId,
+        relocationOptions(moved),
+      );
+      const command = exactRootRecoveryCommand(moved.candidateRoot, moved.runId);
+      const beforeBlockedAcquire = durableSnapshot(moved.candidateRoot, moved.runId);
+      const blocked = invokeRootAcquire(command, freshRoot('dl-root-r2-blocked-acquire-'));
+      assert.notEqual(blocked.status, 0, `${label}/${topology}: acquisition must be gated`);
+      assert.match(blocked.stderr, label === 'budget' ? /BUDGET_BLOCKED/ : /BREAKER_BLOCKED/);
+      assert.deepEqual(
+        durableSnapshot(moved.candidateRoot, moved.runId),
+        beforeBlockedAcquire,
+        `${label}/${topology}: blocked acquisition must be read-only`,
+      );
+
+      const beforeRelief = rootReservationEvidence(moved.candidateRoot, moved.runId);
+      const stateBeforeRelief = readState(moved.candidateRoot, moved.runId).data;
+      assert.equal(recoveryReservationKind(stateBeforeRelief), expectedKind);
+      relieve(moved.candidateRoot, moved.runId, stateBeforeRelief);
+      const afterRelief = rootReservationEvidence(moved.candidateRoot, moved.runId);
+      assert.deepEqual(afterRelief, beforeRelief, `${label}/${topology}: reservation drift`);
+      assert.equal(
+        recoveryReservationKind(readState(moved.candidateRoot, moved.runId).data),
+        expectedKind,
+      );
+
+      const acquired = invokeRootAcquire(command, freshRoot('dl-root-r2-relieved-acquire-'));
+      assert.equal(acquired.status, 0, `${label}/${topology}: ${acquired.stderr}`);
+      const result = JSON.parse(acquired.stdout);
+      const finalState = readState(moved.candidateRoot, moved.runId).data;
+      const finalChild = finalState.session_chain.sessions.find(
+        session => session.run_id === beforeRelief.child.run_id,
+      );
+      assert.equal(finalState.status, 'running');
+      assert.deepEqual(finalState.project, beforeRelief.project);
+      assert.equal(finalState.session_chain.lease.owner_run_id, beforeRelief.child.run_id);
+      assert.equal(finalState.session_chain.lease.generation, beforeRelief.lease.generation + 1);
+      assert.equal(finalState.session_chain.lease.handoff_phase, 'acquired');
+      assert.equal(finalState.session_chain.lease.takeover_kind, null);
+      assert.equal(finalChild.root_recovery_operation_id, beforeRelief.child.root_recovery_operation_id);
+      assert.equal(finalChild.recovery_rel, beforeRelief.child.recovery_rel);
+      assert.equal(finalChild.recovery_sha256, beforeRelief.child.recovery_sha256);
+      assert.equal(result.owner, beforeRelief.child.run_id);
+      assert.equal(Number.isFinite(Date.parse(finalChild.started_at)), true);
+      assert.deepEqual(
+        eventLines(moved.candidateRoot, moved.runId)
+          .filter(event => event.type === 'project-root-rebound'),
+        beforeRelief.rebound,
+      );
+      assert.equal(
+        readFileSync(join(runDir(moved.candidateRoot, moved.runId), beforeRelief.child.recovery_rel), 'utf8'),
+        beforeRelief.capsule,
+      );
+      assert.equal(
+        readFileSync(rootReceiptPath(moved, beforeRelief.child.root_recovery_operation_id), 'utf8'),
+        beforeRelief.receipt,
+      );
+    });
+  }
+}
+
+test('Round2 accounting RED: existing cost evidence must match the complete normalized event', async () => {
+  const { diagnoseProjectRoot } = await recoveryApi();
+  const usage = {
+    num_turns: 1,
+    input_tokens: 2,
+    output_tokens: 3,
+    tokens: 5,
+    cached_input_tokens: 1,
+    reasoning_output_tokens: 2,
+  };
+  const valid = movedRunWithProcessReceipt({
+    usage,
+    existingCostMutation() {},
+  });
+  assert.equal(
+    diagnoseProjectRoot(valid.candidateRoot, valid.runId).action,
+    'relocation-recovery',
+  );
+
+  const accepted = [];
+  for (const [label, mutate] of [
+    ['effective-turns', data => { data.turns += 7; }],
+    ['effective-tokens', data => { data.tokens += 7; }],
+    ['cached-input', data => { data.cached_input_tokens += 1; }],
+    ['reasoning-output', data => { data.reasoning_output_tokens += 1; }],
+    ['owner', data => { data.owner = 'UNRELATED-OWNER'; }],
+    ['generation', data => { data.generation += 1; }],
+    ['source', data => { data.source = 'unrelated-source'; }],
+    ['receipt-id', data => { data.process_receipt_id = 'f'.repeat(64); }],
+    ['process-kind', data => { data.process_kind = 'checker'; }],
+    ['process-context', data => { data.process_context = { unrelated: true }; }],
+    ['extra-field', data => { data.unexpected = true; }],
+  ]) {
+    const moved = movedRunWithProcessReceipt({
+      usage,
+      existingCostMutation: mutate,
+    });
+    const result = diagnoseProjectRoot(moved.candidateRoot, moved.runId);
+    if (result.action !== 'wait'
+      || result.blocker !== 'project-root-accounting'
+      || result.command !== null) {
+      accepted.push(label);
+    }
+  }
+  assert.deepEqual(accepted, []);
 });
 
 test('legacy 0.2.0 relocation diagnoses and rebinds from the migrated view without assuming data/hash content equivalence', async () => {
