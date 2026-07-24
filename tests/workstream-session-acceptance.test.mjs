@@ -3,14 +3,21 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import {
+  chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
+  writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  readState as readKernelState,
+  writeState,
+} from '../scripts/lib/state.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = join(ROOT, 'scripts', 'deep-loop.mjs');
@@ -18,9 +25,10 @@ const SESSIONSTART = join(ROOT, 'scripts', 'hooks-impl', 'sessionstart-restore.m
 const COMPACT_SKILL = join(ROOT, 'skills', 'deep-loop-compact', 'SKILL.md');
 const FIXED_NOW = '2026-07-24T00:05:00.000Z';
 
-function cli(root, args, { input } = {}) {
+function cli(root, args, { input, env } = {}) {
   return spawnSync(process.execPath, [CLI, ...args, '--project-root', root], {
     encoding: 'utf8',
+    env: env == null ? process.env : { ...process.env, ...env },
     input,
     maxBuffer: 2_097_152,
   });
@@ -109,24 +117,52 @@ function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
+function launchCapableHost(root) {
+  const launcher = join(root, 'task15-cmux');
+  const marker = join(root, 'spawn-attempt.jsonl');
+  writeFileSync(launcher, `#!${process.execPath}
+import { appendFileSync } from 'node:fs';
+const args = process.argv.slice(2);
+if (args.at(-1) !== 'ping') {
+  appendFileSync(process.env.TASK15_SPAWN_MARKER, JSON.stringify(args) + '\\n');
+}
+`, 'utf8');
+  chmodSync(launcher, 0o755);
+  return {
+    env: {
+      CMUX_BUNDLED_CLI_PATH: launcher,
+      CMUX_SOCKET_PATH: join(root, 'task15-cmux.sock'),
+      CMUX_WORKSPACE_ID: 'task15-workspace',
+      TASK15_SPAWN_MARKER: marker,
+    },
+    marker,
+  };
+}
+
 for (const runtime of ['claude', 'codex']) {
   test(`${runtime} public routes preserve one Workstream across compact and rotate only at its boundary`, () => {
     const root = mkdtempSync(join(tmpdir(), `deep-loop-task15-${runtime}-`));
     mkdirSync(join(root, '.claude', 'worktrees', 'acceptance-a'), { recursive: true });
     mkdirSync(join(root, '.claude', 'worktrees', 'acceptance-b'), { recursive: true });
+    const host = launchCapableHost(root);
 
     const initialized = jsonResult(cli(root, [
       'init-run',
       '--runtime', runtime,
       '--goal', `Task 15 ${runtime} acceptance`,
       '--continuation', 'workstream-session',
-    ]), 'init-run');
+      '--now', FIXED_NOW,
+    ], { env: host.env }), 'init-run');
     const runId = initialized.run_id;
     const initial = state(root, runId);
     assert.equal(initial.autonomy.continuation_policy, 'workstream-session');
+    assert.equal(initial.session_spawn.launcher, 'cmux');
+    assert.equal(initial.session_spawn.reachable, true);
+    assert.equal(initial.session_spawn.visible, true);
     assert.equal(initial.session_chain.lease.owner_run_id, runId);
     assert.equal(initial.session_chain.lease.generation, 1);
     assert.equal(initial.session_chain.sessions.length, 1);
+    assert.equal(initial.created_at, FIXED_NOW);
 
     const fence1 = mutationArgs(runId, runId, 1);
     const workstreamA = jsonResult(cli(root, [
@@ -134,6 +170,7 @@ for (const runtime of ['claude', 'codex']) {
       '--title', 'Acceptance A',
       '--branch', `task15-${runtime}-a`,
       '--worktree', '.claude/worktrees/acceptance-a',
+      '--now', FIXED_NOW,
       ...fence1,
     ]), 'workstream A new').id;
     const workstreamB = jsonResult(cli(root, [
@@ -141,6 +178,7 @@ for (const runtime of ['claude', 'codex']) {
       '--title', 'Acceptance B',
       '--branch', `task15-${runtime}-b`,
       '--worktree', '.claude/worktrees/acceptance-b',
+      '--now', FIXED_NOW,
       ...fence1,
     ]), 'workstream B new').id;
 
@@ -153,6 +191,7 @@ for (const runtime of ['claude', 'codex']) {
       '--kind', 'implementation',
       '--point', 'implementation',
       '--workstream', workstreamB,
+      '--now', FIXED_NOW,
       ...fence1,
     ]), 'Workstream B maker new').id;
     const makerA = jsonResult(cli(root, [
@@ -162,14 +201,21 @@ for (const runtime of ['claude', 'codex']) {
       '--kind', 'implementation',
       '--point', 'implementation',
       '--workstream', workstreamA,
+      '--now', FIXED_NOW,
       ...fence1,
     ]), 'Workstream A maker new').id;
     jsonResult(cli(root, [
       'episode', 'record',
       '--id', makerA,
       '--status', 'in_progress',
+      '--now', FIXED_NOW,
       ...fence1,
     ]), 'Workstream A maker bind');
+
+    const setupEvents = eventLog(root, runId).filter(event =>
+      ['workstream-new', 'episode-new', 'episode-record'].includes(event.type));
+    assert.equal(setupEvents.length, 5);
+    assert.deepEqual(setupEvents.map(event => event.ts), Array(5).fill(FIXED_NOW));
 
     const beforeCompact = state(root, runId);
     const identityBeforeCompact = compactIdentity(beforeCompact);
@@ -249,6 +295,15 @@ for (const runtime of ['claude', 'codex']) {
     assert.match(unconfirmedApproval.stderr, /CONFIRM_REQUIRED/);
     assert.deepEqual(durableInventory(root, runId), beforeApproval);
 
+    // Fixture-only setup: make the persisted transport otherwise eligible for
+    // attended visible launch while leaving durable approval absent. The route
+    // under test remains the public respawn CLI. If its approval predicate is
+    // removed, the fake reachable launcher records the external spawn attempt.
+    const seeded = readKernelState(root, runId).data;
+    seeded.autonomy.spawn_style = 'visible';
+    seeded.autonomy.attended_launch_approval = null;
+    writeState(root, runId, seeded);
+
     const beforeBudget = durableInventory(root, runId);
     const unconfirmedBudget = cli(root, [
       'budget', 'extend',
@@ -265,6 +320,7 @@ for (const runtime of ['claude', 'codex']) {
       '--id', makerA,
       '--reason', 'Task 15 fixture reached its exact terminal boundary',
       '--confirm',
+      '--now', FIXED_NOW,
       ...fence1,
     ]), 'continue and settle Workstream A');
     jsonResult(cli(root, [
@@ -288,12 +344,15 @@ for (const runtime of ['claude', 'codex']) {
     );
     assert.equal(afterTerminal.workstreams
       .flatMap(item => item.terminal_events ?? []).length, 1);
+    assert.equal(eventLog(root, runId)
+      .find(event => event.type === 'episode-abandon').ts, FIXED_NOW);
 
     const beforePrematureB = durableInventory(root, runId);
     const prematureB = cli(root, [
       'episode', 'record',
       '--id', makerB,
       '--status', 'in_progress',
+      '--now', FIXED_NOW,
       ...fence1,
     ]);
     assert.equal(prematureB.status, 1, prematureB.stderr);
@@ -382,11 +441,12 @@ for (const runtime of ['claude', 'codex']) {
       '--timeout-ms', '0',
       '--now', FIXED_NOW,
       ...fence1,
-    ]), 'unapproved attended respawn');
+    ], { env: host.env }), 'unapproved attended respawn');
     assert.equal(noLaunch.mode, 'interactive');
     assert.equal(noLaunch.ok, false);
     assert.equal(noLaunch.outcome, 'no-launcher');
     assert.equal(noLaunch.reason, 'no-auto-launcher');
+    assert.equal(existsSync(host.marker), false);
 
     const acquired = jsonResult(cli(root, [
       'lease', 'acquire',
@@ -405,6 +465,7 @@ for (const runtime of ['claude', 'codex']) {
       'episode', 'record',
       '--id', makerB,
       '--status', 'in_progress',
+      '--now', FIXED_NOW,
       ...fence2,
     ]), 'Workstream B bind after child acquisition');
     const final = state(root, runId);

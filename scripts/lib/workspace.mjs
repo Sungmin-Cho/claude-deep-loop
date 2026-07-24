@@ -12,7 +12,9 @@ import { workstreamClosureProofState } from './finish.mjs';
 const NON_TERMINAL = ['planned', 'in_progress', 'in_review', 'parked'];
 const TERMINAL = ['ready', 'merged', 'abandoned'];
 
-export function newWorkstream(root, runId, { title, branch, worktree, baseCommit = null, dependsOn = [], fence } = {}) {
+export function newWorkstream(root, runId, {
+  title, branch, worktree, baseCommit = null, dependsOn = [], fence, now = Date.now(),
+} = {}) {
   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: newWorkstream');
   if (typeof title !== 'string' || title.length === 0 ||
       typeof branch !== 'string' || branch.length === 0 ||
@@ -70,7 +72,7 @@ export function newWorkstream(root, runId, { title, branch, worktree, baseCommit
   const _storedWorktree = normalizePortableRelativePath(relative(_rootResolved, _wtResolved));
   if (!_storedWorktree) throw new Error('WORKSTREAM_WORKTREE_ESCAPE: worktree is not durably relative: ' + worktree);
   let id;
-  appendAnchored(root, runId, { type: 'workstream-new', data: { title } }, (loop) => {
+  appendAnchored(root, runId, { type: 'workstream-new', data: { title }, now }, (loop) => {
     const n = String(loop.workstreams.length + 1).padStart(2, '0');
     id = `ws-${n}-${slugify(title) || 'ws'}`;
     loop.workstreams.push({
@@ -85,13 +87,13 @@ export function newWorkstream(root, runId, { title, branch, worktree, baseCommit
 export function setWorkstreamStatus(root, runId, wsId, status, opts = {}) {
   if (TERMINAL.includes(status)) throw new Error(`WORKSTREAM_TERMINAL_NO_PROOF: ${status} is kernel-derived (use recordWorkstreamTerminal)`);
   if (!NON_TERMINAL.includes(status)) throw new Error(`WORKSTREAM_STATUS_INVALID: ${status}`);
-  const { fence } = opts;
+  const { fence, now = Date.now() } = opts;
   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: setWorkstreamStatus');
   // #3 (R1 Fix 2): route through appendAnchored so this status flip (which drives active_workstreams — a finish
   // proof input — and non-terminal status — a next-action routing input) is BOTH tamper-evident (was a silent
   // withLock+writeState) AND floor-charged. All throwing guards move to preCheck (fresh loop, before the append)
   // so a rejected transition never stales the anchor; the mutate is pure.
-  appendAnchored(root, runId, { type: 'workstream-status', data: { id: wsId, status } },
+  appendAnchored(root, runId, { type: 'workstream-status', data: { id: wsId, status }, now },
     (loop) => {
       if (status === 'in_progress' && !loop.active_workstreams.includes(wsId)) loop.active_workstreams.push(wsId);
       if (status === 'parked') loop.active_workstreams = loop.active_workstreams.filter(x => x !== wsId);

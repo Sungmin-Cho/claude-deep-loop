@@ -495,7 +495,7 @@ const handlers = {
     const model = f.model !== undefined ? String(f.model) : null;
     const effort = f.effort !== undefined ? String(f.effort) : null;
     try {
-      const { runId } = initRun(root, { runtime, goal: f.goal, protocol: f.protocol, recipe: f.recipe, detected: detectPlugins(root), review: f.review ? JSON.parse(f.review) : undefined, model, effort, continuation: f.continuation ?? null });
+      const { runId } = initRun(root, { runtime, goal: f.goal, protocol: f.protocol, recipe: f.recipe, detected: detectPlugins(root), review: f.review ? JSON.parse(f.review) : undefined, model, effort, continuation: f.continuation ?? null, now: new Date(parseNow(f)) });
       json({ run_id: runId }); return 0;
     } catch (e) {
       error(String(e?.message || e)); return 1;   // INVALID_RUNTIME / INVALID_MODEL / INVALID_EFFORT → exit 1 (fail-closed)
@@ -781,12 +781,12 @@ const handlers = {
         if (!Array.isArray(parsed) || parsed.some(d => typeof d !== 'string' || d.length === 0)) { error('INVALID_DEPENDS_ON'); return 1; }
         dependsOn = parsed;
       }
-      const r = newWorkstream(root, runId, { title, branch, worktree, dependsOn, fence }); json(r); return 0;
+      const r = newWorkstream(root, runId, { title, branch, worktree, dependsOn, fence, now: parseNow(f) }); json(r); return 0;
     }
     if (verb === 'set') {
       const id = reqStr(f, 'id'); if (!id) { error('MISSING_ID'); return 2; }
       const status = reqStr(f, 'status'); if (!status) { error('MISSING_STATUS'); return 2; }
-      setWorkstreamStatus(root, runId, id, status, { fence }); json({ ok: true }); return 0;
+      setWorkstreamStatus(root, runId, id, status, { fence, now: parseNow(f) }); json({ ok: true }); return 0;
     }
     // 터미널(ready/merged/abandoned)은 proof 필수 — 커널 파생 (Codex r1 🔴6: CLI 경계로 노출)
     if (verb === 'terminal') {
@@ -837,14 +837,14 @@ const handlers = {
       const role = reqStr(f, 'role'); if (!role) { error('MISSING_ROLE'); return 2; }
       const kind = reqStr(f, 'kind'); if (!kind) { error('MISSING_KIND'); return 2; }
       const point = reqStr(f, 'point'); if (!point) { error('MISSING_POINT'); return 2; }
-      const r = newEpisode(root, runId, { plugin, role, kind, point, workstream: f.workstream, expectedArtifacts: f.artifacts ? JSON.parse(f.artifacts) : [], fence }); json({ id: r.id, request_rel: r.requestRel, request_path: r.requestPath }); return 0;
+      const r = newEpisode(root, runId, { plugin, role, kind, point, workstream: f.workstream, expectedArtifacts: f.artifacts ? JSON.parse(f.artifacts) : [], fence, now: parseNow(f) }); json({ id: r.id, request_rel: r.requestRel, request_path: r.requestPath }); return 0;
     }
     if (verb === 'record') {
       const id = reqStr(f, 'id'); if (!id) { error('MISSING_ID'); return 2; }
       const status = reqStr(f, 'status'); if (!status) { error('MISSING_STATUS'); return 2; }
       if (status === 'approved' || status === 'rejected') { error(`EPISODE_TERMINAL_VIA_REVIEW: approved/rejected come only from 'review record'`); return 1; }
       if (status === 'abandoned') { error(`EPISODE_ABANDON_VIA_VERB: use 'episode abandon --confirm'`); return 1; }
-      recordEpisode(root, runId, id, { status, artifacts: f.artifacts ? JSON.parse(f.artifacts) : [], proof: f.proof ? JSON.parse(f.proof) : {}, fence }); json({ ok: true }); return 0;
+      recordEpisode(root, runId, id, { status, artifacts: f.artifacts ? JSON.parse(f.artifacts) : [], proof: f.proof ? JSON.parse(f.proof) : {}, fence, now: parseNow(f) }); json({ ok: true }); return 0;
     }
     if (verb === 'abandon') {
       const id = reqStr(f, 'id'); if (!id) { error('MISSING_ID'); return 2; }
@@ -853,7 +853,7 @@ const handlers = {
       // uncaught CONFIRM_REQUIRED stack trace (exit 1). Keep passing confirm:true into the lib (defense in depth).
       if (f.confirm !== true && f.confirm !== 'true') { error('CONFIRM_REQUIRED: pass --confirm (human-only)'); return 2; }
       try {
-        abandonEpisode(root, runId, id, { reason, confirm: true, fence }); json({ ok: true, status: 'abandoned' }); return 0;
+        abandonEpisode(root, runId, id, { reason, confirm: true, fence, now: parseNow(f) }); json({ ok: true, status: 'abandoned' }); return 0;
       } catch (e) {
         const msg = String(e?.message || e);
         if (msg.startsWith('LEASE_FENCED')) { error(msg); return 3; }

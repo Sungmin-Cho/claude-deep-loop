@@ -54,7 +54,7 @@ function requestSkeleton({ id, plugin, role, kind, point, workstream, expectedAr
   ].join('\n');
 }
 
-function createEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker, reviewerResolution, evidence, contract, initialStatus = 'pending', blockReason, fence, operation } = {}) {
+function createEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker, reviewerResolution, evidence, contract, initialStatus = 'pending', blockReason, fence, operation, now = Date.now() } = {}) {
   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error(`FENCE_REQUIRED: ${operation}`);
   // Fix 3: validate required non-fence args before any state write
   if (!plugin || typeof plugin !== 'string' || !plugin.length) throw new Error('EPISODE_INPUT_INVALID: plugin');
@@ -81,7 +81,7 @@ function createEpisode(root, runId, { plugin, role, kind, point, workstream = nu
     plugin, role, kind, point,
     ...(initialStatus === 'blocked' ? { status: initialStatus, block_reason: blockReason } : {}),
     ...(reviewerResolution ? { reviewer_resolution: reviewerResolution } : {}),
-  } }, (loop) => {
+  }, now }, (loop) => {
     const n = String(loop.episodes.length + 1).padStart(3, '0');
     id = `${n}-${safePlugin}`;
     dir = join(runDir(root, runId), 'episodes', id);
@@ -133,8 +133,8 @@ function createEpisode(root, runId, { plugin, role, kind, point, workstream = nu
   return { id, requestPath, requestRel };
 }
 
-export function newEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker, reviewerResolution, evidence, contract, fence } = {}) {
-  return createEpisode(root, runId, { plugin, role, kind, point, workstream, expectedArtifacts, targetMaker, reviewerResolution, evidence, contract, fence, operation: 'newEpisode' });
+export function newEpisode(root, runId, { plugin, role, kind, point, workstream = null, expectedArtifacts = [], targetMaker, reviewerResolution, evidence, contract, fence, now = Date.now() } = {}) {
+  return createEpisode(root, runId, { plugin, role, kind, point, workstream, expectedArtifacts, targetMaker, reviewerResolution, evidence, contract, fence, operation: 'newEpisode', now });
 }
 
 // Fail-closed compatibility path only: a checker with no independent dispatch capability is born blocked.
@@ -148,12 +148,16 @@ export function newBlockedCheckerEpisode(root, runId, { plugin, kind, point, wor
 
 // Human-gated escape hatch — settles a stranded non-terminal episode as abandoned.
 // Separate from the record path to preserve the done-needs-proof invariant.
-export function abandonEpisode(root, runId, episodeId, { reason, confirm, fence } = {}) {
+export function abandonEpisode(root, runId, episodeId, {
+  reason, confirm, fence, now = Date.now(),
+} = {}) {
   if (confirm !== true) throw new Error('CONFIRM_REQUIRED: pass --confirm (human-only)');
   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: abandonEpisode');
   if (!episodeId || typeof episodeId !== 'string' || !episodeId.length) throw new Error('EPISODE_INPUT_INVALID: episodeId');
   if (!reason || typeof reason !== 'string' || !reason.length) throw new Error('EPISODE_INPUT_INVALID: reason');
-  appendAnchored(root, runId, { type: 'episode-abandon', data: { id: episodeId, reason } }, (loop) => {
+  appendAnchored(root, runId, {
+    type: 'episode-abandon', data: { id: episodeId, reason }, now,
+  }, (loop) => {
     const ep = loop.episodes.find(e => e.id === episodeId);
     ep.status = 'abandoned';
     ep.abandon_reason = reason;
@@ -184,7 +188,9 @@ export function abandonEpisode(root, runId, episodeId, { reason, confirm, fence 
   }, { floor: MUTATION_TURN_FLOOR });
 }
 
-export function recordEpisode(root, runId, episodeId, { status, artifacts = [], proof = {}, fence } = {}) {
+export function recordEpisode(root, runId, episodeId, {
+  status, artifacts = [], proof = {}, fence, now = Date.now(),
+} = {}) {
   if (!fence || typeof fence.owner !== 'string' || !Number.isInteger(fence.generation)) throw new Error('FENCE_REQUIRED: recordEpisode');
   // Fix 3: episodeId must be a non-empty string
   if (!episodeId || typeof episodeId !== 'string' || !episodeId.length) throw new Error('EPISODE_INPUT_INVALID: episodeId');
@@ -194,7 +200,9 @@ export function recordEpisode(root, runId, episodeId, { status, artifacts = [], 
   if (![...NON_TERMINAL, ...TERMINAL].includes(status)) throw new Error(`EPISODE_STATUS_INVALID: ${status}`);
   if (!Array.isArray(artifacts) || !artifacts.every(a => typeof a === 'string')) throw new Error('EPISODE_INPUT_INVALID: artifacts must be an array of strings');
   if (proof === null || typeof proof !== 'object' || Array.isArray(proof)) throw new Error('EPISODE_INPUT_INVALID: proof must be an object');
-  appendAnchored(root, runId, { type: 'episode-record', data: { id: episodeId, status, artifacts } }, (loop, _spent, tx) => {
+  appendAnchored(root, runId, {
+    type: 'episode-record', data: { id: episodeId, status, artifacts }, now,
+  }, (loop, _spent, tx) => {
     const ep = loop.episodes.find(e => e.id === episodeId);
     if (!ep) throw new Error(`EPISODE_NOT_FOUND: ${episodeId}`);   // 방어적
     if (status === 'in_progress' && ep.role === 'maker'
