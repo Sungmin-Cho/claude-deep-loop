@@ -182,7 +182,10 @@ export function abandonEpisode(root, runId, episodeId, {
         throw new Error(`WORKSTREAM_NOT_FOUND: ${scopeTarget}`);
       }
       if (loop.autonomy?.continuation_policy === 'workstream-session') {
-        assertScopeAllows(loop, scopeTarget);
+        // next-action.mjs:81 routes an orphan maker to await_human BEFORE the debt check, and the status skill
+        // offers `episode abandon --confirm` as the only recovery. That remedy must be executable before the owner
+        // scope is bound. abandon only READS the scope — binding stays exclusive to bindMakerScope.
+        assertScopeAllows(loop, scopeTarget, { allowUnbound: true });
       }
     }
   }, { floor: MUTATION_TURN_FLOOR });

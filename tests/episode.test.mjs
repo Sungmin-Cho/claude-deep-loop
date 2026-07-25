@@ -278,3 +278,26 @@ test('recordEpisode: cannot resurrect an approved/rejected episode to non-termin
     assert.throws(() => recordEpisode(root, runId, id, { status: 'in_progress', fence }), /EPISODE_ALREADY_TERMINAL/);
   }
 });
+
+test('B″: unbound owner scope can abandon a workstream-bound orphan maker', () => {
+  const { root, runId, fence } = freshRun();
+  const ws = newWorkstream(root, runId, { title: 'a', branch: 'a', worktree: '.claude/worktrees/a', fence }).id;
+  const { id } = newEpisode(root, runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'design',
+    workstream: ws, expectedArtifacts: [], fence,
+  });
+  // owner scope is still unbound: only `episode record --status in_progress` binds it.
+  assert.equal(readState(root, runId).data.session_chain.sessions[0].scope.workstream_id, null);
+  abandonEpisode(root, runId, id, { reason: 'orphan', confirm: true, fence });
+  assert.equal(readState(root, runId).data.episodes.find(e => e.id === id).status, 'abandoned');
+});
+
+test('B″: a bound owner still cannot abandon another workstream’s episode', () => {
+  const { root, runId, fence } = freshRun();
+  const wsA = newWorkstream(root, runId, { title: 'a', branch: 'a', worktree: '.claude/worktrees/a', fence }).id;
+  const wsB = newWorkstream(root, runId, { title: 'b', branch: 'b', worktree: '.claude/worktrees/b', fence }).id;
+  const makerA = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'design', workstream: wsA, expectedArtifacts: ['a'], fence }).id;
+  const makerB = newEpisode(root, runId, { plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'design', workstream: wsB, expectedArtifacts: [], fence }).id;
+  recordEpisode(root, runId, makerA, { status: 'in_progress', fence });   // binds owner scope to wsA
+  assert.throws(() => abandonEpisode(root, runId, makerB, { reason: 'x', confirm: true, fence }), /SESSION_SCOPE_MISMATCH/);
+});
