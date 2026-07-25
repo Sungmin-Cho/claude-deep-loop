@@ -43,7 +43,7 @@ export function openScopeSessions(loop) {
     .filter(session => isOpenScope(session?.scope));
 }
 
-export function assertScopeAllows(loop, workstreamId, { allowUnbound = false } = {}) {
+export function assertScopeAllows(loop, workstreamId, { allowUnbound = false, allowCrossWorkstream = false } = {}) {
   if (typeof workstreamId !== 'string' || workstreamId.length === 0) {
     throw new Error('WORKSTREAM_REQUIRED: a non-null Workstream is required');
   }
@@ -53,6 +53,9 @@ export function assertScopeAllows(loop, workstreamId, { allowUnbound = false } =
     throw new Error(`SESSION_SCOPE_MISMATCH: owner scope is closed for ${workstreamId}`);
   }
   if (scope.workstream_id === null && allowUnbound) return scope;
+  // allowCrossWorkstream exempts the identity comparison ONLY. The scope-shape validation above and the
+  // closed-scope rejection stay in force, so this can never authorize work under a closed owner scope.
+  if (allowCrossWorkstream) return scope;
   if (scope.workstream_id !== workstreamId) {
     throw new Error(`SESSION_SCOPE_MISMATCH: ${workstreamId}`);
   }

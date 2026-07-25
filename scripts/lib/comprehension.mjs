@@ -5,9 +5,9 @@ import { leaseCheck } from './lease.mjs';
 import { sessionRuntime } from './runtime.mjs';
 import { assertScopeAllows } from './session-scope.mjs';
 
-function assertEpisodeScope(loop, episode) {
+function assertEpisodeScope(loop, episode, { allowCrossWorkstream = false } = {}) {
   if (loop.autonomy?.continuation_policy === 'workstream-session' && episode?.workstream_id) {
-    assertScopeAllows(loop, episode.workstream_id);
+    assertScopeAllows(loop, episode.workstream_id, { allowCrossWorkstream });
   }
 }
 
@@ -78,7 +78,11 @@ export function ack(root, runId, episodeId, { actor = 'agent', confirm = false, 
       // impl-R3 Fix 5: ack is a MAKER-review signal. episodes_total counts only makers, so acking a checker would
       // inflate episodes_human_reviewed past episodes_total and drive debt_ratio below threshold with no maker reviewed.
       if (ep.role !== 'maker') throw new Error('ACK_NOT_MAKER: only a maker episode can be acked');
-      assertEpisodeScope(loop, ep);
+      // The debt gate is run-global (computeDebt reads the whole loop), so its remedy must be reachable
+      // run-globally too. Only a settled (done) maker's HUMAN ack gets the exemption: an agent ack does not
+      // release the gate, so widening it would be pure isolation loss. The headless rejection precheck below
+      // stays strict — it only appends a rejection event and must not reference foreign workstreams.
+      assertEpisodeScope(loop, ep, { allowCrossWorkstream: isHuman && ep.status === 'done' });
     },
     { floor: MUTATION_TURN_FLOOR });
   return out;

@@ -13,6 +13,7 @@ import { readState, writeState, runDir } from '../scripts/lib/state.mjs';
 import { verifyLog } from '../scripts/lib/integrity.mjs';
 import { newWorkstream } from '../scripts/lib/workspace.mjs';
 import { recordEpisode } from '../scripts/lib/episode.mjs';
+import { reviewedMakerThenHandoff } from './helpers/unbound-owner.mjs';
 
 const COMPREHENSION_CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'deep-loop.mjs');
 function runComprehensionCli(root, runId, args) {
@@ -81,6 +82,65 @@ test('public comprehension ack and legacy recordReviewed reject a maker outside 
 
   const accepted = runComprehensionCli(root, runId, ['comprehension', 'ack', '--episode', makerA]);
   assert.equal(accepted.status, 0, accepted.stderr);
+});
+
+test('B′: an open-unbound child can human-ack the reviewed done maker from the closed parent workstream', () => {
+  const { root, runId, fence, makerId } = reviewedMakerThenHandoff();
+  ack(root, runId, makerId, { actor: 'human', confirm: true, env: ATTENDED, fence });
+  const data = readState(root, runId).data;
+  assert.equal(data.episodes.find(e => e.id === makerId).human_reviewed, true);
+  assert.equal(data.comprehension.episodes_human_reviewed, 1);
+});
+
+test('B′: an agent ack does NOT get the same exemption', () => {
+  const { root, runId, fence, makerId } = reviewedMakerThenHandoff();
+  assert.throws(() => ack(root, runId, makerId, { actor: 'agent', env: ATTENDED, fence }), /SESSION_SCOPE_MISMATCH/);
+});
+
+test('B′/G3: after the child binds ws-A it can human-ack ws-B’s reviewed done maker', () => {
+  const { root, runId, fence, makerId: makerB } = reviewedMakerThenHandoff();
+  const wsA = newWorkstream(root, runId, {
+    title: 'a', branch: 'a', worktree: '.claude/worktrees/a', fence,
+  }).id;
+  const makerA = newEpisode(root, runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation',
+    workstream: wsA, expectedArtifacts: ['a.txt'], fence,
+  }).id;
+  recordEpisode(root, runId, makerA, { status: 'in_progress', fence });
+  ack(root, runId, makerB, { actor: 'human', confirm: true, env: ATTENDED, fence });
+  const data = readState(root, runId).data;
+  assert.equal(data.episodes.find(e => e.id === makerB).human_reviewed, true);
+  assert.equal(data.comprehension.episodes_human_reviewed, 1);
+});
+
+test('B′: a non-done maker keeps cross-workstream session isolation', () => {
+  const { root, runId, fence } = freshRun();
+  const wsA = newWorkstream(root, runId, {
+    title: 'a', branch: 'a', worktree: '.claude/worktrees/a', fence,
+  }).id;
+  const wsB = newWorkstream(root, runId, {
+    title: 'b', branch: 'b', worktree: '.claude/worktrees/b', fence,
+  }).id;
+  const makerA = newEpisode(root, runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation',
+    workstream: wsA, fence,
+  }).id;
+  const makerB = newEpisode(root, runId, {
+    plugin: 'deep-work', role: 'maker', kind: 'implementation', point: 'implementation',
+    workstream: wsB, fence,
+  }).id;
+  recordEpisode(root, runId, makerA, { status: 'in_progress', fence });
+  assert.throws(
+    () => ack(root, runId, makerB, { actor: 'human', confirm: true, env: ATTENDED, fence }),
+    /SESSION_SCOPE_MISMATCH/,
+  );
+});
+
+test('B′ characterization: legacy recordReviewed stays strict for an open-unbound owner', () => {
+  const { root, runId, makerId } = reviewedMakerThenHandoff();
+  const before = readState(root, runId).data.comprehension.episodes_human_reviewed;
+  assert.throws(() => recordReviewed(root, runId, makerId, 'manual'), /SESSION_SCOPE_MISMATCH/);
+  assert.equal(readState(root, runId).data.comprehension.episodes_human_reviewed, before);
 });
 
 test('abandonEpisode decrements episodes_total for a maker (0-clamp)', () => {
