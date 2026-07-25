@@ -69,7 +69,9 @@ function claimedContext(root, loop, episodeId, attemptId, fence) {
   if (!context.workstream || checker.workstream_id !== context.maker.workstream_id
     || checker.point !== context.maker.point) throw new Error('REVIEW_CLAIM_BINDING_INVALID');
   if (loop.autonomy?.continuation_policy === 'workstream-session') {
-    assertScopeAllows(loop, context.maker.workstream_id);
+    // Change F: an unbound owner must be able to complete the checker lifecycle the kernel directs for a done
+    // maker. allowUnbound ONLY — a bound owner must never reach another workstream's checker mutations.
+    assertScopeAllows(loop, context.maker.workstream_id, { allowUnbound: true });
   }
   const artifacts = deriveReviewArtifactContract(root, context.maker, context.workstream);
   const lease = loop.session_chain?.lease || {};
@@ -358,7 +360,7 @@ export function dispatchReview(root, runId, { point, workstreamId, detected = {}
   // mask a cross-Workstream dispatch and make the same durable state behave
   // differently between a developer checkout and a clean CI host.
   if (data.autonomy?.continuation_policy === 'workstream-session') {
-    assertScopeAllows(data, workstreamId);
+    assertScopeAllows(data, workstreamId, { allowUnbound: true });   // Change F — see claimedContext
   }
   const { reviewer, flags, mode, reviewerResolution, blockedReason } = resolveReviewer(data, detected, { independentSubagent });
   // P2 (hillclimb-ledger 2026-07-10, release-blocking): hill-climb run은 checker 계약(HILLCLIMB-001)이 실제로
@@ -489,7 +491,7 @@ function checkedContext(loop, episodeId, { reviewSource } = {}) {
   }
   if (!context.workstream) throw new Error(`WORKSTREAM_NOT_FOUND: ${checker.workstream_id}`);
   if (loop.autonomy?.continuation_policy === 'workstream-session') {
-    assertScopeAllows(loop, maker.workstream_id);
+    assertScopeAllows(loop, maker.workstream_id, { allowUnbound: true });   // Change F
   }
   return context;
 }

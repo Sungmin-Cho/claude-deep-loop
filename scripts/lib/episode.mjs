@@ -120,7 +120,11 @@ function createEpisode(root, runId, { plugin, role, kind, point, workstream = nu
     if (scopeTarget) {
       requireNonterminalWorkstream(loop, scopeTarget);
       if (loop.autonomy?.continuation_policy === 'workstream-session') {
-        assertScopeAllows(loop, scopeTarget, { allowUnbound: role === 'maker' || !targetMaker });
+        // Change F: a checker created for a DONE target maker may be born under an unbound owner scope — that is
+        // exactly the lifecycle next-action directs. Any other checker keeps the bound-only rule.
+        const targetIsDone = role === 'checker' && targetMaker
+          && loop.episodes.find(e => e.id === targetMaker)?.status === 'done';
+        assertScopeAllows(loop, scopeTarget, { allowUnbound: role === 'maker' || !targetMaker || targetIsDone });
       }
     }
   }, { floor: MUTATION_TURN_FLOOR });
